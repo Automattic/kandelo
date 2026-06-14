@@ -1,0 +1,86 @@
+name: Prepare package toolchain
+description: |
+  Build or restore the sysroots and host tools consumed by package
+  archive matrix jobs.
+
+runs:
+  using: composite
+  steps:
+    - name: Fetch musl submodule
+      # build-musl.sh and package configure steps consume libc/musl/
+      # directly. The other submodules are test inputs, not package
+      # build inputs.
+      uses: ./.github/actions/fetch-submodules
+      with:
+        submodules: libc/musl
+
+    - name: Install Nix
+      uses: DeterminateSystems/nix-installer-action@ef8a148080ab6020fd15196c2084a2eea5ff2d25 # v22
+      with:
+        github-token: ""
+
+    - name: Cache Nix store + flake eval
+      uses: DeterminateSystems/magic-nix-cache-action@908b263ff629f4cc17666315b7fd3ec127c6244d # v14
+      with:
+        use-gha-cache: false
+        use-flakehub: false
+
+    - name: Compute cache key
+      id: key
+      shell: bash
+      run: |
+        set -euo pipefail
+        musl_gitlink="$(git rev-parse HEAD:libc/musl)"
+        KEY="musl-sysroot-v5-${{ runner.os }}-$musl_gitlink-${{ hashFiles('flake.nix', 'flake.lock', 'rust-toolchain.toml', 'scripts/dev-shell.sh', 'scripts/build-musl.sh', 'scripts/install-overlay-headers.sh', 'packages/registry/libcxx/**', 'libc/musl-overlay/**', 'libc/glue/**', 'sdk/activate.sh', 'sdk/bin/**', 'sdk/config.site', 'sdk/package.json', 'sdk/package-lock.json', 'sdk/src/**') }}"
+        echo "value=$KEY" >> "$GITHUB_OUTPUT"
+        echo "toolchain-cache key: $KEY"
+
+    - name: Cache musl sysroot + libc++
+      uses: actions/cache@v5
+      id: cache
+      with:
+        path: |
+          sysroot
+          sysroot64
+        key: ${{ steps.key.outputs.value }}
+
+    - name: Build sysroots if cache miss
+      if: ${{ steps.cache.outputs.cache-hit != 'true' }}
+      shell: bash
+      run: |
+        bash scripts/dev-shell.sh bash scripts/build-musl.sh
+        bash scripts/dev-shell.sh bash scripts/build-musl.sh --arch wasm64posix
+        bash scripts/dev-shell.sh bash -c '
+          set -euo pipefail
+          HOST_TARGET="$(rustc -vV | awk "/^host/ {print \$2}")"
+          for arch in wasm32 wasm64; do
+            cargo run -p xtask --target "$HOST_TARGET" --quiet -- \
+              build-deps resolve libcxx --arch "$arch"
+            prefix="$(cargo run -p xtask --target "$HOST_TARGET" --quiet -- \
+              build-deps path libcxx --arch "$arch")"
+            if [ "$arch" = "wasm64" ]; then sysroot="sysroot64"; else sysroot="sysroot"; fi
+            mkdir -p "$sysroot/lib" "$sysroot/include/c++"
+            ln -sf "$prefix/lib/libc++.a"    "$sysroot/lib/libc++.a"
+            ln -sf "$prefix/lib/libc++abi.a" "$sysroot/lib/libc++abi.a"
+            rm -rf "$sysroot/include/c++/v1"
+            ln -sfn "$prefix/include/c++/v1" "$sysroot/include/c++/v1"
+          done
+        '
+
+    - name: Build fork-instrument host tool
+      shell: bash
+      run: bash scripts/dev-shell.sh bash scripts/build-fork-instrument-tool.sh
+
+    - name: Pack toolchain sysroots + host tools
+      shell: bash
+      run: |
+        tar --zstd -cf "$RUNNER_TEMP/toolchain-sysroots.tar.zst" \
+          sysroot sysroot64 tools/bin/wasm-fork-instrument
+
+    - name: Upload toolchain sysroots artifact
+      uses: actions/upload-artifact@v7
+      with:
+        name: toolchain-sysroots
+        path: ${{ runner.temp }}/toolchain-sysroots.tar.zst
+        retention-days: 1
+        if-no-files-found: error

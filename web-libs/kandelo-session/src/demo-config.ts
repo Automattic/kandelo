@@ -21,7 +21,7 @@ export interface DemoAssetConfig {
   devCorsProxy?: boolean;
 }
 
-export type DemoActionKind = "terminal.run" | "terminal.write";
+export type DemoActionKind = "terminal.run" | "terminal.write" | "web.wordpressLogin";
 
 export interface DemoActionConfig {
   id: string;
@@ -115,7 +115,11 @@ const PRIMARY_SURFACES = new Set<PrimarySurface>([
   "kms",
 ]);
 const ACCESS_MODES = new Set(["primary", "drawer", "side"]);
-const ACTION_KINDS = new Set<DemoActionKind>(["terminal.run", "terminal.write"]);
+const ACTION_KINDS = new Set<DemoActionKind>([
+  "terminal.run",
+  "terminal.write",
+  "web.wordpressLogin",
+]);
 
 export function parseKandeloDemoConfig(text: string): KandeloDemoConfig | null {
   const value: unknown = JSON.parse(text);

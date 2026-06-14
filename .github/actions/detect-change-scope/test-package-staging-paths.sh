@@ -65,6 +65,10 @@ assert_not_selected "tools/xtask/src/dump_abi.rs" "tools/xtask/src/dump_abi.rs"
 assert_not_selected "tools/xtask/README.md" "tools/xtask/README.md"
 assert_selected "tools/mkrootfs/src/builder.ts" "tools/mkrootfs/src/builder.ts"
 assert_not_selected "tools/mkrootfs/test/builder.test.ts" "tools/mkrootfs/test/builder.test.ts"
+assert_selected "host/src/vfs/memory-fs.ts" "host/src/vfs/memory-fs.ts"
+assert_selected "host/src/vfs/sharedfs-vendor.ts" "host/src/vfs/sharedfs-vendor.ts"
+assert_selected "images/rootfs/etc/profile" "images/rootfs/etc/profile"
+assert_not_selected "host/src/process.ts" "host/src/process.ts"
 
 assert_selected "crates/fork-instrument/src/main.rs" "crates/fork-instrument/src/main.rs"
 assert_selected \
@@ -76,5 +80,23 @@ assert_not_selected \
 assert_not_selected \
   "crates/fork-instrument/tests/instrument.rs" \
   "crates/fork-instrument/tests/instrument.rs"
+assert_selected \
+  ".github/actions/package-archive-build/action.yml" \
+  ".github/actions/package-archive-build/action.yml"
+assert_selected \
+  ".github/actions/package-toolchain/action.yml" \
+  ".github/actions/package-toolchain/action.yml"
+assert_selected \
+  ".github/actions/download-run-artifacts/action.yml" \
+  ".github/actions/download-run-artifacts/action.yml"
+assert_selected \
+  ".github/scripts/download-dependency-artifacts.sh" \
+  ".github/scripts/download-dependency-artifacts.sh"
+assert_not_selected \
+  ".github/workflows/staging-build.yml" \
+  ".github/workflows/staging-build.yml"
+assert_not_selected \
+  ".github/workflows/prepare-merge.yml" \
+  ".github/workflows/prepare-merge.yml"
 
 echo "package-staging path filter tests passed"

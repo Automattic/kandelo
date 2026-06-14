@@ -90,6 +90,14 @@ const VFS_IMAGE_FLAG_HAS_LAZY = 1 << 0;
 const VFS_IMAGE_FLAG_HAS_LAZY_ARCHIVES = 1 << 1;
 const VFS_IMAGE_FLAG_HAS_METADATA = 1 << 2;
 const VFS_IMAGE_HEADER_SIZE = 16; // magic(4) + version(4) + flags(4) + sabLen(4)
+const S_IFMT = 0xf000;
+const S_IFREG = 0x8000;
+const S_IFDIR = 0x4000;
+const S_IFLNK = 0xa000;
+const O_RDONLY = 0x0000;
+const O_WRONLY_CREAT_TRUNC = 0o1101;
+const COPY_CHUNK_BYTES = 1024 * 1024;
+const MIN_REBASE_INITIAL_BYTES = 16 * 1024 * 1024;
 const VFS_IMAGE_MAX_METADATA_BYTES = 64 * 1024;
 
 function cloneMetadata(metadata: VfsImageMetadata | null): VfsImageMetadata | null {
@@ -245,6 +253,58 @@ export class MemoryFileSystem implements FileSystemBackend {
 
   static fromExisting(sab: SharedArrayBuffer): MemoryFileSystem {
     return new MemoryFileSystem(SharedFS.mount(sab));
+  }
+
+  /**
+   * Copy this filesystem into a freshly formatted SharedFS whose superblock
+   * records `maxByteLength` as its growth ceiling. Lazy file/archive metadata
+   * is rebuilt from paths so the destination carries the new inode numbers.
+   */
+  rebaseToNewFileSystem(maxByteLength: number): MemoryFileSystem {
+    if (!Number.isSafeInteger(maxByteLength) || maxByteLength <= 0) {
+      throw new Error(`Invalid MemoryFileSystem maxByteLength: ${maxByteLength}`);
+    }
+
+    const initialByteLength = Math.min(
+      maxByteLength,
+      Math.max(this.sharedBuffer.byteLength, MIN_REBASE_INITIAL_BYTES),
+    );
+    const SharedArrayBufferCtor = SharedArrayBuffer as new (
+      byteLength: number,
+      options?: { maxByteLength?: number },
+    ) => SharedArrayBuffer;
+    const sab = new SharedArrayBufferCtor(initialByteLength, { maxByteLength });
+    const target = MemoryFileSystem.create(sab, maxByteLength);
+    target.setImageMetadata(this.imageMetadata);
+
+    const lazyEntries = this.exportLazyEntries();
+    const lazyFilePaths = new Set(lazyEntries.map((entry) => entry.path));
+    const lazyArchiveEntries = this.exportLazyArchiveEntries();
+    const lazyArchiveStubPaths = new Set<string>();
+    for (const group of lazyArchiveEntries) {
+      if (group.materialized) continue;
+      for (const entry of group.entries) {
+        if (!entry.deleted && !entry.isSymlink) {
+          lazyArchiveStubPaths.add(entry.vfsPath);
+        }
+      }
+    }
+
+    this.copyPathToFreshFileSystem("/", target, lazyFilePaths, lazyArchiveStubPaths);
+
+    target.importLazyEntries(lazyEntries.map((entry) => ({
+      ...entry,
+      ino: target.lstat(entry.path).ino,
+    })));
+    target.importLazyArchiveEntries(lazyArchiveEntries.map((group) => ({
+      ...group,
+      entries: group.entries.map((entry) => ({
+        ...entry,
+        ino: entry.deleted ? 0 : target.lstat(entry.vfsPath).ino,
+      })),
+    })));
+
+    return target;
   }
 
   /** Return a copy of image-level metadata, or null if the image did not declare any. */
@@ -653,7 +713,8 @@ export class MemoryFileSystem implements FileSystemBackend {
    * Allocates a new SharedArrayBuffer and populates it from the image.
    *
    * When `maxByteLength` is specified, creates a growable SharedArrayBuffer
-   * so the filesystem can expand beyond the image's original size.
+   * so the filesystem can expand beyond the image's original size, up to the
+   * maximum already recorded in the image superblock.
    */
   static fromImage(image: Uint8Array, options?: { maxByteLength?: number }): MemoryFileSystem {
     const parsed = parseImageHeader(image);
@@ -946,6 +1007,113 @@ export class MemoryFileSystem implements FileSystemBackend {
   symlinkWithOwner(target: string, path: string, uid: number, gid: number): void {
     this.symlink(target, path);
     this.lchown(path, uid, gid);
+  }
+
+  private copyPathToFreshFileSystem(
+    path: string,
+    target: MemoryFileSystem,
+    lazyFilePaths: Set<string>,
+    lazyArchiveStubPaths: Set<string>,
+  ): void {
+    const st = this.lstat(path);
+    const kind = st.mode & S_IFMT;
+    const mode = st.mode & 0o7777;
+
+    if (kind === S_IFDIR) {
+      if (path === "/") {
+        target.chown(path, st.uid, st.gid);
+        target.chmod(path, mode);
+      } else {
+        target.mkdirWithOwner(path, mode, st.uid, st.gid);
+      }
+
+      const dh = this.opendir(path);
+      try {
+        for (;;) {
+          const entry = this.readdir(dh);
+          if (!entry) break;
+          if (entry.name === "." || entry.name === "..") continue;
+          this.copyPathToFreshFileSystem(
+            path === "/" ? `/${entry.name}` : `${path}/${entry.name}`,
+            target,
+            lazyFilePaths,
+            lazyArchiveStubPaths,
+          );
+        }
+      } finally {
+        this.closedir(dh);
+      }
+      MemoryFileSystem.applyTimes(target, path, st);
+      return;
+    }
+
+    if (kind === S_IFLNK) {
+      target.symlinkWithOwner(this.readlink(path), path, st.uid, st.gid);
+      return;
+    }
+
+    if (kind !== S_IFREG) {
+      throw new Error(`Unsupported file type while rebasing VFS: ${path}`);
+    }
+
+    const isLazyStub = lazyFilePaths.has(path) || lazyArchiveStubPaths.has(path);
+    if (isLazyStub) {
+      target.createFileWithOwner(path, mode, st.uid, st.gid, new Uint8Array(0));
+      MemoryFileSystem.applyTimes(target, path, st);
+      return;
+    }
+
+    this.copyRegularFileToFreshFileSystem(path, target, st, mode);
+  }
+
+  private copyRegularFileToFreshFileSystem(
+    path: string,
+    target: MemoryFileSystem,
+    st: StatResult,
+    mode: number,
+  ): void {
+    const inFd = this.open(path, O_RDONLY, 0);
+    let outFd: number | null = null;
+    try {
+      outFd = target.open(path, O_WRONLY_CREAT_TRUNC, mode);
+      const chunk = new Uint8Array(Math.min(COPY_CHUNK_BYTES, Math.max(1, st.size)));
+      let remaining = st.size;
+      while (remaining > 0) {
+        const wanted = Math.min(chunk.byteLength, remaining);
+        const nread = this.read(inFd, chunk, null, wanted);
+        if (nread <= 0) {
+          throw new Error(`Unexpected EOF while rebasing VFS file: ${path}`);
+        }
+        let written = 0;
+        while (written < nread) {
+          const nwritten = target.write(
+            outFd,
+            chunk.subarray(written, nread),
+            null,
+            nread - written,
+          );
+          if (nwritten <= 0) {
+            throw new Error(`Short write while rebasing VFS file: ${path}`);
+          }
+          written += nwritten;
+        }
+        remaining -= nread;
+      }
+    } finally {
+      if (outFd !== null) target.close(outFd);
+      this.close(inFd);
+    }
+    target.chown(path, st.uid, st.gid);
+    target.chmod(path, mode);
+    MemoryFileSystem.applyTimes(target, path, st);
+  }
+
+  private static applyTimes(fs: MemoryFileSystem, path: string, st: StatResult): void {
+    const atimeSec = Math.floor(st.atimeMs / 1000);
+    const atimeNsec = Math.floor((st.atimeMs - atimeSec * 1000) * 1_000_000);
+    const mtimeSec = Math.floor(st.mtimeMs / 1000);
+    const mtimeNsec = Math.floor((st.mtimeMs - mtimeSec * 1000) * 1_000_000);
+    fs.utimensat(path, atimeSec, atimeNsec, mtimeSec, mtimeNsec);
   }
 
   // access: check if path exists by stat'ing it (stat throws on error)

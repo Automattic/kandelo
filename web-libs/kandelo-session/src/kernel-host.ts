@@ -146,8 +146,31 @@ export interface KernelLike {
   spawn(
     programBytes: ArrayBuffer,
     argv: string[],
-    options?: { env?: string[]; cwd?: string; uid?: number; gid?: number; pty?: boolean; stdin?: Uint8Array },
+    options?: {
+      env?: string[];
+      cwd?: string;
+      uid?: number;
+      gid?: number;
+      pty?: boolean;
+      stdin?: Uint8Array;
+      ptyCols?: number;
+      ptyRows?: number;
+    },
   ): Promise<number>;
+  spawnFromVfs?(
+    programPath: string,
+    argv: string[],
+    options?: {
+      env?: string[];
+      cwd?: string;
+      uid?: number;
+      gid?: number;
+      pty?: boolean;
+      stdin?: Uint8Array;
+      ptyCols?: number;
+      ptyRows?: number;
+    },
+  ): Promise<{ pid: number; exit: Promise<number> }>;
   onPtyOutput(pid: number, callback: (data: Uint8Array) => void): void;
   ptyWrite(pid: number, data: Uint8Array): void;
   ptyResize(pid: number, rows: number, cols: number): void;
@@ -630,6 +653,7 @@ export interface LiveKernelHostOptions {
    * to bash; pages that ship dash or another shell should override.
    */
   shell?: {
+    programPath?: string;
     programBytes: ArrayBuffer;
     argv: string[];
     env?: string[];
@@ -857,6 +881,7 @@ export class LiveKernelHost implements KernelHost {
   setStatus(s: MachineStatus): void {
     if (s === this._status) return;
     this._status = s;
+    this.refreshTerminalAvailability();
     this.statusListeners.emit(s);
   }
 
@@ -910,7 +935,9 @@ export class LiveKernelHost implements KernelHost {
   }
 
   private refreshTerminalAvailability(): void {
-    this.setSurfaceAvailability({ terminal: Boolean(this.kernel && this.shell) });
+    this.setSurfaceAvailability({
+      terminal: this._status === "running" && Boolean(this.kernel && this.shell),
+    });
   }
 
   private refreshFramebufferAvailability(): void {
@@ -1011,17 +1038,35 @@ export class LiveKernelHost implements KernelHost {
 
     let session = this.ptySessions.get(sessionKey);
     if (!session || session.closed) {
-      // Spawn the shell with PTY; PTY pid is `nextPid - 1` per the
-      // existing PtyTerminal pattern (KernelLike assigns pids sequentially
-      // and exposes `nextPid`).
-      const exitPromise = kernel.spawn(shell.programBytes, shell.argv, {
-        pty: true,
-        env: shell.env,
-        cwd: shell.cwd,
-        uid: shell.uid,
-        gid: shell.gid,
-      });
-      const pid = kernel.nextPid - 1;
+      let pid: number;
+      let exitPromise: Promise<number>;
+      if (shell.programPath && kernel.spawnFromVfs) {
+        const spawned = await kernel.spawnFromVfs(shell.programPath, shell.argv, {
+          pty: true,
+          env: shell.env,
+          cwd: shell.cwd,
+          uid: shell.uid,
+          gid: shell.gid,
+          ptyCols: opts.cols,
+          ptyRows: opts.rows,
+        });
+        pid = spawned.pid;
+        exitPromise = spawned.exit;
+      } else {
+        // Legacy BrowserKernel.spawn preassigns pids on the main thread.
+        // Prefer spawnFromVfs above whenever the staged shell path is known,
+        // because long-running demos may fork worker-owned pids first.
+        exitPromise = kernel.spawn(shell.programBytes, shell.argv, {
+          pty: true,
+          env: shell.env,
+          cwd: shell.cwd,
+          uid: shell.uid,
+          gid: shell.gid,
+          ptyCols: opts.cols,
+          ptyRows: opts.rows,
+        });
+        pid = kernel.nextPid - 1;
+      }
       this.shellPids.set(pid, sessionKey);
 
       const dataListeners = new ListenerSet<Uint8Array>();

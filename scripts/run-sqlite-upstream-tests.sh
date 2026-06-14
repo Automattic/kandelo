@@ -303,7 +303,7 @@ run_test() {
         fi
     elif echo "$output" | grep -qE '[0-9]+ errors out of [0-9]+ tests'; then
         echo "FAIL"
-    elif echo "$output" | grep -qE 'Unimplemented import:|Centralized worker failed:'; then
+    elif echo "$output" | grep -qE 'Unimplemented import:|Kernel worker failed:'; then
         echo "FAIL"
     else
         local ok_count

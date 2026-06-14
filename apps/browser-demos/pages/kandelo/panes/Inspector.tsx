@@ -83,7 +83,6 @@ const SyslogTable: React.FC<{ lines: DmesgLine[] }> = ({ lines }) => {
         <div key={i} className="ksys-line">
           <span className="ksys-t">[{(l.t / 1000).toFixed(6).padStart(11, " ")}]</span>
           <span className={`ksys-lvl ksys-lvl-${l.level}`}>{l.level}</span>
-          <span className="ksys-fac">{l.facility}:</span>
           <span className="ksys-msg">{l.msg}</span>
         </div>
       ))}

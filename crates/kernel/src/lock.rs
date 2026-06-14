@@ -1,5 +1,6 @@
 extern crate alloc;
 use alloc::vec::Vec;
+use core::cell::UnsafeCell;
 use wasm_posix_shared::lock_type::*;
 
 /// A single byte-range lock on a file.
@@ -44,12 +45,12 @@ impl FileLock {
 
 /// Per-file lock table keyed by host_handle.
 pub struct LockTable {
-    /// All active locks. Centralized kernel manages locks for all processes.
+    /// All active locks. The kernel manages locks for all processes.
     locks: Vec<(i64, FileLock)>, // (host_handle, lock)
 }
 
 impl LockTable {
-    pub fn new() -> Self {
+    pub const fn new() -> Self {
         LockTable { locks: Vec::new() }
     }
 
@@ -95,6 +96,33 @@ impl LockTable {
         self.locks
             .retain(|(h, l)| !(*h == host_handle && l.pid == pid));
     }
+
+    /// Remove every lock from the table.
+    pub fn clear(&mut self) {
+        self.locks.clear();
+    }
+}
+
+/// Global fallback lock table for non-host-backed file descriptions.
+pub struct GlobalFallbackLockTable(pub UnsafeCell<LockTable>);
+
+/// SAFETY: Kernel access is serialized by the host worker; tests that access
+/// this table directly must serialize themselves.
+unsafe impl Sync for GlobalFallbackLockTable {}
+
+/// Kernel-wide fallback advisory lock table.
+pub static FALLBACK_LOCK_TABLE: GlobalFallbackLockTable =
+    GlobalFallbackLockTable(UnsafeCell::new(LockTable::new()));
+
+#[cfg(test)]
+pub static FALLBACK_LOCK_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+/// Get a mutable reference to the global fallback lock table.
+///
+/// # Safety
+/// Only safe when access is serialized.
+pub unsafe fn global_fallback_lock_table() -> &'static mut LockTable {
+    unsafe { &mut *FALLBACK_LOCK_TABLE.0.get() }
 }
 
 #[cfg(test)]

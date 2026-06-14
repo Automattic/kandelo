@@ -1,0 +1,65 @@
+:root {
+  --vp-c-brand-1: #c95726;
+  --vp-c-brand-2: #d46a3c;
+  --vp-c-brand-3: #e1855f;
+  --vp-home-hero-name-color: #c95726;
+  --docs-review-notice-height: 52px;
+}
+
+.custom-block.warning {
+  border-color: #d46a3c;
+}
+
+.docs-review-notice {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  z-index: 100;
+  box-sizing: border-box;
+  min-height: var(--docs-review-notice-height);
+  padding: 8px 24px;
+  border-bottom: 1px solid rgba(201, 87, 38, 0.28);
+  background: rgba(201, 87, 38, 0.1);
+  color: var(--vp-c-text-1);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 13px;
+  line-height: 1.45;
+  text-align: center;
+}
+
+.docs-review-notice strong {
+  color: var(--vp-c-brand-1);
+}
+
+body {
+  padding-top: var(--docs-review-notice-height);
+}
+
+.VPNav {
+  top: var(--docs-review-notice-height) !important;
+}
+
+.VPSidebar {
+  top: calc(var(--vp-nav-height) + var(--docs-review-notice-height)) !important;
+}
+
+.VPLocalNav {
+  top: calc(var(--vp-nav-height) + var(--docs-review-notice-height)) !important;
+}
+
+.vp-doc code {
+  white-space: break-spaces;
+}
+
+@media (max-width: 719px) {
+  :root {
+    --docs-review-notice-height: 72px;
+  }
+
+  .docs-review-notice {
+    padding: 8px 16px;
+  }
+}

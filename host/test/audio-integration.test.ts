@@ -14,8 +14,8 @@
  *   - audioSampleRate() / audioChannels() report what audiotest configured
  *   - drainAudio() returns the same 256 bytes the program wrote
  *
- * Runs in centralized worker mode (single shared kernel, per-process
- * worker) — same harness as mouse-integration.test.ts.
+ * Runs with the shared kernel and one worker per process — same harness as
+ * mouse-integration.test.ts.
  */
 import { describe, it, expect } from "vitest";
 import { existsSync, readFileSync } from "node:fs";

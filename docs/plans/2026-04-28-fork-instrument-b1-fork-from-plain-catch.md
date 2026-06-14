@@ -703,7 +703,7 @@ If a non-SpiderMonkey port forces fork-from-plain-catch first, that port becomes
 **Goal:** Catch shape-sensitivity bugs that synthetic fixtures miss.
 
 - **4a — Extend the existing fuzz generator** at `crates/fork-instrument/fuzz/` to emit programs with plain-catch handlers containing fork-path calls.
-- **4b — Add a runtime oracle** that instruments the generated module, drives it under wasmtime through unwind/rewind, and compares observable state (memory + globals + exit code) against an unmodified single-process run.
+- **4b — Add a runtime oracle** that instruments the generated module, drives it under wasmtime through unwind/rewind, and compares observable state (memory + globals + exit code) against an unmodified baseline run.
 - **4c — Run 10000 iterations clean** as the gate, matching the existing Phase 6 fuzz bar (`scripts/run-fork-instrument-fuzz.sh`).
 
 ---

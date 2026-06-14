@@ -185,7 +185,7 @@ fn expand_tilde(s: &str) -> PathBuf {
 ///   domain `"wasm-posix-pkg\n"`, then
 ///   `name`, `version`, `revision`, `target_arch`, `abi_version`,
 ///   `source.url`, `source.sha256`, declared build input content
-///   digests, global toolchain/sysroot content digests, optional
+///   digests, global package build/toolchain content digests, optional
 ///   fork-instrument tool content digests for program outputs that use
 ///   that post-processor, then for each dep (sorted by name):
 ///   `dep.name`, `dep.version`, hex(dep_sha).
@@ -407,6 +407,10 @@ const GLOBAL_PACKAGE_TOOLCHAIN_INPUTS: &[&str] = &[
     "scripts/dev-shell.sh",
     "scripts/build-musl.sh",
     "scripts/install-overlay-headers.sh",
+    ".github/actions/package-archive-build",
+    ".github/actions/package-toolchain",
+    ".github/actions/fetch-submodules",
+    ".github/actions/download-run-artifacts",
     "libc/glue",
     "libc/musl-overlay",
     "libc/musl",
@@ -420,7 +424,6 @@ const GLOBAL_PACKAGE_TOOLCHAIN_INPUTS: &[&str] = &[
 
 const FORK_INSTRUMENT_TOOL_INPUTS: &[&str] = &[
     "Cargo.toml",
-    "Cargo.lock",
     "crates/fork-instrument/Cargo.toml",
     "crates/fork-instrument/src",
     "scripts/build-fork-instrument-tool.sh",
@@ -443,7 +446,14 @@ fn global_package_toolchain_digests() -> Result<Vec<BuildInputDigest>, String> {
 fn fork_instrument_tool_digests() -> Result<Vec<BuildInputDigest>, String> {
     FORK_INSTRUMENT_TOOL_DIGESTS
         .get_or_init(|| {
-            global_package_build_input_digests_for(&repo_root(), FORK_INSTRUMENT_TOOL_INPUTS)
+            let root = repo_root();
+            let mut digests =
+                global_package_build_input_digests_for(&root, FORK_INSTRUMENT_TOOL_INPUTS)?;
+            digests.push(BuildInputDigest {
+                label: "cargo-metadata:fork-instrument-build-deps".to_string(),
+                digest: fork_instrument_cargo_dependency_digest(&root)?,
+            });
+            Ok(digests)
         })
         .clone()
 }
@@ -454,6 +464,271 @@ fn package_uses_fork_instrument_tool(target: &DepsManifest) -> bool {
             .program_outputs
             .iter()
             .any(|out| out.fork_instrumentation != ForkInstrumentationPolicy::Disabled)
+}
+
+#[derive(Debug, serde::Deserialize)]
+struct CargoLock {
+    #[serde(default)]
+    package: Vec<CargoLockPackage>,
+}
+
+#[derive(Debug, serde::Deserialize)]
+struct CargoLockPackage {
+    name: String,
+    version: String,
+    source: Option<String>,
+    checksum: Option<String>,
+}
+
+fn fork_instrument_cargo_dependency_digest(root: &Path) -> Result<[u8; 32], String> {
+    let host_target = host_target_triple()?;
+    let output = Command::new("cargo")
+        .arg("metadata")
+        .arg("--format-version=1")
+        .arg("--locked")
+        .arg("--filter-platform")
+        .arg(&host_target)
+        .current_dir(root)
+        .output()
+        .map_err(|e| format!("run cargo metadata for fork-instrument cache key: {e}"))?;
+    if !output.status.success() {
+        return Err(format!(
+            "cargo metadata for fork-instrument cache key failed: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        ));
+    }
+
+    let metadata: serde_json::Value = serde_json::from_slice(&output.stdout)
+        .map_err(|e| format!("parse cargo metadata for fork-instrument cache key: {e}"))?;
+    let lock_text = std::fs::read_to_string(root.join("Cargo.lock"))
+        .map_err(|e| format!("read Cargo.lock for fork-instrument cache key: {e}"))?;
+    let lock: CargoLock = toml::from_str(&lock_text)
+        .map_err(|e| format!("parse Cargo.lock for fork-instrument cache key: {e}"))?;
+    fork_instrument_cargo_dependency_digest_from_metadata(root, &metadata, &lock)
+}
+
+fn host_target_triple() -> Result<String, String> {
+    let output = Command::new("rustc")
+        .arg("-vV")
+        .output()
+        .map_err(|e| format!("run rustc -vV: {e}"))?;
+    if !output.status.success() {
+        return Err(format!(
+            "rustc -vV failed: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        ));
+    }
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    stdout
+        .lines()
+        .find_map(|line| line.strip_prefix("host: ").map(str::to_owned))
+        .filter(|host| !host.is_empty())
+        .ok_or_else(|| "rustc -vV did not report host target".to_string())
+}
+
+fn fork_instrument_cargo_dependency_digest_from_metadata(
+    root: &Path,
+    metadata: &serde_json::Value,
+    lock: &CargoLock,
+) -> Result<[u8; 32], String> {
+    let packages = metadata_array(metadata, "packages")?;
+    let nodes = metadata
+        .get("resolve")
+        .and_then(|resolve| resolve.get("nodes"))
+        .and_then(|nodes| nodes.as_array())
+        .ok_or_else(|| "cargo metadata missing resolve.nodes".to_string())?;
+
+    let mut packages_by_id: BTreeMap<String, &serde_json::Value> = BTreeMap::new();
+    let mut root_package_id: Option<String> = None;
+    for package in packages {
+        let id = metadata_str(package, "id")?.to_string();
+        let name = metadata_str(package, "name")?;
+        let manifest_path = metadata_str(package, "manifest_path")?;
+        if name == "fork-instrument"
+            && manifest_path.ends_with("/crates/fork-instrument/Cargo.toml")
+        {
+            root_package_id = Some(id.clone());
+        }
+        packages_by_id.insert(id, package);
+    }
+
+    let root_package_id = root_package_id
+        .ok_or_else(|| "cargo metadata missing fork-instrument package".to_string())?;
+    let mut nodes_by_id: BTreeMap<String, &serde_json::Value> = BTreeMap::new();
+    for node in nodes {
+        nodes_by_id.insert(metadata_str(node, "id")?.to_string(), node);
+    }
+
+    let mut closure = BTreeSet::new();
+    let mut stack = vec![root_package_id.clone()];
+    while let Some(package_id) = stack.pop() {
+        if !closure.insert(package_id.clone()) {
+            continue;
+        }
+        let node = nodes_by_id
+            .get(&package_id)
+            .ok_or_else(|| format!("cargo metadata missing resolve node for {package_id}"))?;
+        for dep in selected_cargo_metadata_deps(node)? {
+            stack.push(dep);
+        }
+    }
+
+    let lock_checksums = cargo_lock_checksums(lock);
+    let mut entries = Vec::with_capacity(closure.len());
+    for package_id in closure {
+        let package = packages_by_id
+            .get(&package_id)
+            .ok_or_else(|| format!("cargo metadata missing package for {package_id}"))?;
+        let node = nodes_by_id
+            .get(&package_id)
+            .ok_or_else(|| format!("cargo metadata missing resolve node for {package_id}"))?;
+        let stable_id = stable_cargo_package_id(root, package)?;
+        let features = sorted_string_array(node, "features")?;
+        let deps = selected_cargo_metadata_deps(node)?
+            .into_iter()
+            .map(|dep_id| {
+                let dep_package = packages_by_id
+                    .get(&dep_id)
+                    .ok_or_else(|| format!("cargo metadata missing package for {dep_id}"))?;
+                stable_cargo_package_id(root, dep_package)
+            })
+            .collect::<Result<BTreeSet<_>, _>>()?;
+        let lock_key = cargo_lock_key(package)?;
+        let checksum = lock_checksums.get(&lock_key).cloned().unwrap_or_default();
+        entries.push((stable_id, features, deps, checksum));
+    }
+    entries.sort_by(|a, b| a.0.cmp(&b.0));
+
+    let mut h = Sha256::new();
+    h.update(b"fork-instrument-cargo-build-deps-v1\n");
+    for (stable_id, features, deps, checksum) in entries {
+        h.update(b"package\0");
+        h.update(stable_id.as_bytes());
+        h.update(b"\0checksum\0");
+        h.update(checksum.as_bytes());
+        h.update(b"\0features\0");
+        for feature in features {
+            h.update(feature.as_bytes());
+            h.update(b"\0");
+        }
+        h.update(b"deps\0");
+        for dep in deps {
+            h.update(dep.as_bytes());
+            h.update(b"\0");
+        }
+        h.update(b"\n");
+    }
+    Ok(h.finalize().into())
+}
+
+fn selected_cargo_metadata_deps(node: &serde_json::Value) -> Result<Vec<String>, String> {
+    let deps = match node.get("deps").and_then(|deps| deps.as_array()) {
+        Some(deps) => deps,
+        None => return Ok(Vec::new()),
+    };
+    let mut out = Vec::new();
+    for dep in deps {
+        if !cargo_metadata_dep_is_build_input(dep)? {
+            continue;
+        }
+        out.push(metadata_str(dep, "pkg")?.to_string());
+    }
+    out.sort();
+    out.dedup();
+    Ok(out)
+}
+
+fn cargo_metadata_dep_is_build_input(dep: &serde_json::Value) -> Result<bool, String> {
+    let dep_kinds = dep
+        .get("dep_kinds")
+        .and_then(|dep_kinds| dep_kinds.as_array())
+        .ok_or_else(|| "cargo metadata dependency missing dep_kinds".to_string())?;
+    Ok(dep_kinds.iter().any(|kind| {
+        kind.get("kind")
+            .and_then(|kind| kind.as_str())
+            .map(|kind| kind == "build")
+            .unwrap_or(true)
+    }))
+}
+
+fn stable_cargo_package_id(root: &Path, package: &serde_json::Value) -> Result<String, String> {
+    let name = metadata_str(package, "name")?;
+    let version = metadata_str(package, "version")?;
+    let source = package.get("source").and_then(|source| source.as_str());
+    if let Some(source) = source {
+        return Ok(format!("{source}#{name}@{version}"));
+    }
+
+    let manifest_path = PathBuf::from(metadata_str(package, "manifest_path")?);
+    let rel_manifest = manifest_path.strip_prefix(root).unwrap_or(&manifest_path);
+    Ok(format!(
+        "path:{}#{name}@{version}",
+        rel_manifest.to_string_lossy()
+    ))
+}
+
+fn cargo_lock_key(package: &serde_json::Value) -> Result<(String, String, String), String> {
+    Ok((
+        metadata_str(package, "name")?.to_string(),
+        metadata_str(package, "version")?.to_string(),
+        package
+            .get("source")
+            .and_then(|source| source.as_str())
+            .unwrap_or("")
+            .to_string(),
+    ))
+}
+
+fn cargo_lock_checksums(lock: &CargoLock) -> BTreeMap<(String, String, String), String> {
+    lock.package
+        .iter()
+        .filter_map(|package| {
+            package.checksum.as_ref().map(|checksum| {
+                (
+                    (
+                        package.name.clone(),
+                        package.version.clone(),
+                        package.source.clone().unwrap_or_default(),
+                    ),
+                    checksum.clone(),
+                )
+            })
+        })
+        .collect()
+}
+
+fn metadata_array<'a>(
+    value: &'a serde_json::Value,
+    field: &str,
+) -> Result<&'a Vec<serde_json::Value>, String> {
+    value
+        .get(field)
+        .and_then(|value| value.as_array())
+        .ok_or_else(|| format!("cargo metadata missing {field} array"))
+}
+
+fn metadata_str<'a>(value: &'a serde_json::Value, field: &str) -> Result<&'a str, String> {
+    value
+        .get(field)
+        .and_then(|value| value.as_str())
+        .ok_or_else(|| format!("cargo metadata missing {field} string"))
+}
+
+fn sorted_string_array(value: &serde_json::Value, field: &str) -> Result<Vec<String>, String> {
+    let mut out = value
+        .get(field)
+        .and_then(|value| value.as_array())
+        .ok_or_else(|| format!("cargo metadata missing {field} array"))?
+        .iter()
+        .map(|value| {
+            value
+                .as_str()
+                .map(str::to_string)
+                .ok_or_else(|| format!("cargo metadata {field} array contains a non-string"))
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    out.sort();
+    Ok(out)
 }
 
 fn global_package_build_input_digests_for(
@@ -703,9 +978,13 @@ pub struct ResolveOpts<'a> {
     /// `None` means "no force rebuild" (the default for every consumer
     /// other than the manual workflow). `local_libs` still wins over
     /// force_source_build (a hand-patched override is always honored).
-    /// The single-process resolver assumes no concurrent peers during
-    /// a force rebuild — see `build_into_cache`'s atomic-install comment.
+    /// A force rebuild assumes no concurrent resolver invocation for
+    /// the same package -- see `build_into_cache`'s atomic-install comment.
     pub force_source_build: Option<&'a BTreeSet<String>>,
+    /// Refuse any source build or source fetch fallback. Used by CI
+    /// binary-materialization gates, where package bytes must come from
+    /// staging overlays, the durable index, or an existing valid cache entry.
+    pub fetch_only: bool,
     /// Repo root used to resolve `[build].script_path` (which is
     /// repo-relative as of Phase A-bis Task 2). `None` means "use
     /// `crate::repo_root()`", which is the production default.
@@ -856,7 +1135,9 @@ fn render_probe_failures(target: &DepsManifest, failures: &[ProbeFailure]) -> St
 ///   a force-rebuild-all loop every call has the same flag, so the
 ///   memo collapses N calls per (name, arch) into 1 build — the
 ///   actual optimization we wanted.
-type BuildMemoKey = (PathBuf, String, TargetArch, bool);
+/// * `fetch_only` — fetch-only failures must not poison later normal
+///   resolves, which are allowed to build from source.
+type BuildMemoKey = (PathBuf, String, TargetArch, bool, bool);
 type BuildMemoValue = Result<(PathBuf, BTreeSet<PathBuf>), String>;
 
 fn build_memo() -> &'static Mutex<BTreeMap<BuildMemoKey, BuildMemoValue>> {
@@ -872,7 +1153,7 @@ fn is_cycle_error(e: &str) -> bool {
     e.starts_with("cycle while building:")
 }
 
-/// Fast path for `build-deps resolve --binaries-dir <dir>` callers.
+/// Fast path for archive-only resolver callers.
 ///
 /// Browser/dev-server preparation needs to materialize self-contained program
 /// archives into `binaries/`. If one of those programs has a stale or corrupt
@@ -880,7 +1161,11 @@ fn is_cycle_error(e: &str) -> bool {
 /// source build even though the target archive itself is valid. Keep normal
 /// source-build resolution unchanged, but allow program archive fetches in
 /// binary-materialization mode to satisfy the request before walking deps.
-fn try_fetch_program_without_deps(
+///
+/// Fetch-only CI materialization is stricter: it accepts only a valid cache
+/// entry or prebuilt archive for the target package and never falls through to
+/// dependency resolution/source builds.
+fn try_fetch_without_deps(
     target: &DepsManifest,
     registry: &Registry,
     arch: TargetArch,
@@ -888,9 +1173,11 @@ fn try_fetch_program_without_deps(
     opts: &ResolveOpts<'_>,
     memo: &mut BTreeMap<String, [u8; 32]>,
 ) -> Result<Option<PathBuf>, String> {
-    if opts.binaries_dir.is_none()
-        || !matches!(target.kind, ManifestKind::Program)
-        || target.program_outputs.is_empty()
+    let binary_materialization_fast_path = opts.binaries_dir.is_some()
+        && matches!(target.kind, ManifestKind::Program)
+        && !target.program_outputs.is_empty();
+    if (!opts.fetch_only && !binary_materialization_fast_path)
+        || !matches!(target.kind, ManifestKind::Library | ManifestKind::Program)
     {
         return Ok(None);
     }
@@ -900,13 +1187,22 @@ fn try_fetch_program_without_deps(
         .map(|s| s.contains(&target.name))
         .unwrap_or(false);
     if force_rebuild {
+        if opts.fetch_only {
+            return Err(format!(
+                "{}: fetch-only resolve cannot honor force source-build for arch {}",
+                target.spec(),
+                arch.as_str(),
+            ));
+        }
         return Ok(None);
     }
 
-    if let Some(lr) = opts.local_libs {
-        let override_dir = lr.join(&target.name).join("build");
-        if override_dir.is_dir() {
-            return Ok(Some(override_dir));
+    if !opts.fetch_only {
+        if let Some(lr) = opts.local_libs {
+            let override_dir = lr.join(&target.name).join("build");
+            if override_dir.is_dir() {
+                return Ok(Some(override_dir));
+            }
         }
     }
 
@@ -949,11 +1245,11 @@ fn try_fetch_program_without_deps(
                 Err(e) => {
                     eprintln!(
                         "warning: direct binary fetch for {} from {} produced \
-                         a stale artifact ({}); falling back to dependency \
-                         resolution/source build",
+                         a stale artifact ({}); {}",
                         target.spec(),
                         binary.archive_url,
                         e,
+                        fetch_fallback_phrase(opts.fetch_only),
                     );
                     let _ = std::fs::remove_dir_all(&canonical);
                 }
@@ -961,17 +1257,35 @@ fn try_fetch_program_without_deps(
             Err(e) => {
                 eprintln!(
                     "warning: direct binary fetch for {} from {} failed ({}); \
-                     falling back to dependency resolution/source build",
+                     {}",
                     target.spec(),
                     binary.archive_url,
                     e,
+                    fetch_fallback_phrase(opts.fetch_only),
                 );
             }
         }
     }
 
-    if let Some(()) = try_index_install(target, arch, abi_version, &canonical, &cache_key_sha_hex) {
+    if let Some(()) = try_index_install(
+        target,
+        arch,
+        abi_version,
+        &canonical,
+        &cache_key_sha_hex,
+        opts.fetch_only,
+    ) {
         return Ok(Some(canonical));
+    }
+
+    if opts.fetch_only {
+        return Err(format!(
+            "{}: fetch-only resolve could not install a valid archive for arch {}; \
+             run package staging/prepare to publish this package instead of \
+             source-building during binary materialization",
+            target.spec(),
+            arch.as_str(),
+        ));
     }
 
     Ok(None)
@@ -1012,6 +1326,7 @@ fn ensure_built_inner(
         target.name.clone(),
         arch,
         was_force_rebuild,
+        opts.fetch_only,
     );
     {
         let cache = build_memo().lock().unwrap();
@@ -1057,9 +1372,7 @@ fn ensure_built_uncached(
     }
     building.push(target.name.clone());
 
-    if let Some(path) =
-        try_fetch_program_without_deps(target, registry, arch, abi_version, opts, memo)?
-    {
+    if let Some(path) = try_fetch_without_deps(target, registry, arch, abi_version, opts, memo)? {
         building.pop();
         return Ok((path, BTreeSet::new()));
     }
@@ -1130,11 +1443,10 @@ fn ensure_built_uncached(
         // Place binaries/programs/<arch>/<output> symlinks for each
         // program dep so consumer build scripts can find them via
         // `tryResolveBinary("programs/<x>.wasm")`. Only kicks in when
-        // the caller (cmd_resolve under --binaries-dir) opted in;
-        // other ensure_built consumers (archive-stage, tests) leave
-        // binaries_dir = None and no symlinks land. Library deps and
-        // source deps are linked at compile time via WASM_POSIX_DEP_*
-        // env vars and don't need a binaries/ entry.
+        // the caller opts in with binaries_dir; other ensure_built
+        // consumers leave binaries_dir = None and no symlinks land.
+        // Library deps and source deps are linked at compile time via
+        // WASM_POSIX_DEP_* env vars and don't need a binaries/ entry.
         if let Some(bdir) = opts.binaries_dir {
             if matches!(dep_m.kind, ManifestKind::Program) && !dep_m.program_outputs.is_empty() {
                 place_binaries_symlinks(&dep_m, &dep_path, bdir, dep_arch)?;
@@ -1239,6 +1551,13 @@ fn ensure_built_uncached(
     //                        back to the build script.
     match (target.kind, target.build.script_path.is_some()) {
         (ManifestKind::Source, false) => {
+            if opts.fetch_only {
+                return Err(format!(
+                    "{}: fetch-only resolve cannot fetch source package fallback for arch {}",
+                    target.spec(),
+                    arch.as_str(),
+                ));
+            }
             let parent = canonical
                 .parent()
                 .ok_or_else(|| format!("canonical path has no parent: {}", canonical.display()))?;
@@ -1277,6 +1596,13 @@ fn ensure_built_uncached(
             Ok((canonical, transitive))
         }
         (ManifestKind::Source, true) => {
+            if opts.fetch_only {
+                return Err(format!(
+                    "{}: fetch-only resolve cannot run source package build script for arch {}",
+                    target.spec(),
+                    arch.as_str(),
+                ));
+            }
             // Override path: run the script. No remote-binary fetch for
             // sources (`[binary]` is rejected at parse time for source
             // kind), so we go straight to `build_into_cache`.
@@ -1333,11 +1659,11 @@ fn ensure_built_uncached(
                             Err(e) => {
                                 eprintln!(
                                     "warning: direct binary fetch for {} from {} produced \
-                                     a stale artifact ({}); falling back to indexed \
-                                     binary/source build",
+                                     a stale artifact ({}); {}",
                                     target.spec(),
                                     binary.archive_url,
                                     e,
+                                    fetch_fallback_phrase(opts.fetch_only),
                                 );
                                 let _ = std::fs::remove_dir_all(&canonical);
                             }
@@ -1345,19 +1671,34 @@ fn ensure_built_uncached(
                         Err(e) => {
                             eprintln!(
                                 "warning: direct binary fetch for {} from {} failed ({}); \
-                                 falling back to indexed binary/source build",
+                                 {}",
                                 target.spec(),
                                 binary.archive_url,
                                 e,
+                                fetch_fallback_phrase(opts.fetch_only),
                             );
                         }
                     }
                 }
-                if let Some(()) =
-                    try_index_install(target, arch, abi_version, &canonical, &cache_key_sha_hex)
-                {
+                if let Some(()) = try_index_install(
+                    target,
+                    arch,
+                    abi_version,
+                    &canonical,
+                    &cache_key_sha_hex,
+                    opts.fetch_only,
+                ) {
                     return Ok((canonical, transitive));
                 }
+            }
+
+            if opts.fetch_only {
+                return Err(format!(
+                    "{}: fetch-only resolve could not install a valid archive for arch {}; \
+                     package staging or the durable release must provide one",
+                    target.spec(),
+                    arch.as_str(),
+                ));
             }
 
             let pkgconfig_path = compose_pkgconfig_path(&transitive);
@@ -1386,13 +1727,23 @@ fn ensure_built_uncached(
 ///
 /// Logging is on stderr (matching the prior remote-fetch
 /// implementation's UX): users see warnings about why the index
-/// path was skipped, but the build still completes via source.
+/// path was skipped. Normal resolves then build from source; fetch-only
+/// resolves turn the miss into an error at the caller.
+fn fetch_fallback_phrase(fetch_only: bool) -> &'static str {
+    if fetch_only {
+        "source builds disabled by fetch-only mode"
+    } else {
+        "falling back to source build"
+    }
+}
+
 fn try_index_install(
     target: &DepsManifest,
     arch: TargetArch,
     abi_version: u32,
     canonical: &Path,
     cache_key_sha_hex: &str,
+    fetch_only: bool,
 ) -> Option<()> {
     // 1. Load build.toml. Source manifests without one (e.g. an
     //    upstream package that hasn't been ported to the new schema
@@ -1421,10 +1772,11 @@ fn try_index_install(
                 Err(e) => {
                     eprintln!(
                         "warning: index fetch for {} from {} failed ({}); \
-                         falling back to source build",
+                         {}",
                         target.spec(),
                         index_url,
                         e,
+                        fetch_fallback_phrase(fetch_only),
                     );
                     return None;
                 }
@@ -1432,11 +1784,12 @@ fn try_index_install(
             if index.abi_version != abi_version {
                 eprintln!(
                     "warning: index for {} from {} declares ABI {}, but resolver ABI is {}; \
-                     falling back to source build",
+                     {}",
                     target.spec(),
                     index_url,
                     index.abi_version,
                     abi_version,
+                    fetch_fallback_phrase(fetch_only),
                 );
                 return None;
             }
@@ -1445,9 +1798,10 @@ fn try_index_install(
                 None => {
                     eprintln!(
                         "warning: no index entry for {} in {}; \
-                         falling back to source build",
+                         {}",
                         target.spec(),
                         index_url,
+                        fetch_fallback_phrase(fetch_only),
                     );
                     return None;
                 }
@@ -1483,9 +1837,10 @@ fn try_index_install(
                 _ => {
                     eprintln!(
                         "warning: {} index entry status={:?} has no usable archive; \
-                         falling back to source build",
+                         {}",
                         target.spec(),
                         entry.status,
+                        fetch_fallback_phrase(fetch_only),
                     );
                     return None;
                 }
@@ -1511,10 +1866,11 @@ fn try_index_install(
             Err(e) => {
                 eprintln!(
                     "warning: index-based fetch for {} from {} produced \
-                     a stale artifact ({}); falling back to source build",
+                     a stale artifact ({}); {}",
                     target.spec(),
                     archive_url,
                     e,
+                    fetch_fallback_phrase(fetch_only),
                 );
                 let _ = std::fs::remove_dir_all(canonical);
                 None
@@ -1523,10 +1879,11 @@ fn try_index_install(
         Err(e) => {
             eprintln!(
                 "warning: index-based fetch for {} from {} failed ({}); \
-                 falling back to source build",
+                 {}",
                 target.spec(),
                 archive_url,
                 e,
+                fetch_fallback_phrase(fetch_only),
             );
             None
         }
@@ -2209,6 +2566,22 @@ fn extract_binaries_dir_flag(args: Vec<String>) -> Result<(Option<PathBuf>, Vec<
     Ok((binaries_dir, rest))
 }
 
+/// Extract `--fetch-only` from `args`, leaving non-flag arguments in place.
+/// Only meaningful for `resolve`: it turns archive/source mismatches into
+/// errors instead of running package build scripts.
+fn extract_fetch_only_flag(args: Vec<String>) -> (bool, Vec<String>) {
+    let mut fetch_only = false;
+    let mut rest: Vec<String> = Vec::with_capacity(args.len());
+    for a in args {
+        if a == "--fetch-only" {
+            fetch_only = true;
+        } else {
+            rest.push(a);
+        }
+    }
+    (fetch_only, rest)
+}
+
 pub fn run(args: Vec<String>) -> Result<(), String> {
     let (arch_flag, rest) = extract_arch_flag(args)?;
     let arch = match arch_flag {
@@ -2221,10 +2594,11 @@ pub fn run(args: Vec<String>) -> Result<(), String> {
     // `--binaries-dir x resolve foo` both work, matching `--arch`'s
     // shape.
     let (binaries_dir, rest) = extract_binaries_dir_flag(rest)?;
+    let (fetch_only, rest) = extract_fetch_only_flag(rest);
 
     let mut it = rest.into_iter();
     let sub = it.next().ok_or(
-        "usage: xtask build-deps [--arch=wasm32|wasm64] [--binaries-dir <path>] \
+        "usage: xtask build-deps [--arch=wasm32|wasm64] [--binaries-dir <path>] [--fetch-only] \
          <parse|sha|path|resolve|check|output-path|output-fork-instrumentation|output-fork-instrumentation-for-rel> \
          [<name|path> [<wasm-basename>]]",
     )?;
@@ -2247,6 +2621,11 @@ pub fn run(args: Vec<String>) -> Result<(), String> {
     if binaries_dir.is_some() && sub != "resolve" {
         return Err(format!(
             "build-deps {sub}: --binaries-dir is only valid for `resolve`"
+        ));
+    }
+    if fetch_only && sub != "resolve" {
+        return Err(format!(
+            "build-deps {sub}: --fetch-only is only valid for `resolve`"
         ));
     }
 
@@ -2298,7 +2677,14 @@ pub fn run(args: Vec<String>) -> Result<(), String> {
                     if extra.is_some() {
                         return Err("build-deps resolve: unexpected extra arg".into());
                     }
-                    cmd_resolve(&manifest, &registry, &repo, arch, binaries_dir.as_deref())
+                    cmd_resolve(
+                        &manifest,
+                        &registry,
+                        &repo,
+                        arch,
+                        binaries_dir.as_deref(),
+                        fetch_only,
+                    )
                 }
                 "output-path" => {
                     let basename = extra.ok_or_else(|| {
@@ -2464,6 +2850,7 @@ fn cmd_resolve(
     repo: &Path,
     arch: TargetArch,
     binaries_dir: Option<&Path>,
+    fetch_only: bool,
 ) -> Result<(), String> {
     let cache_root = default_cache_root();
     let local_libs = repo.join("local-libs");
@@ -2471,6 +2858,7 @@ fn cmd_resolve(
         cache_root: &cache_root,
         local_libs: Some(&local_libs),
         force_source_build: None,
+        fetch_only,
         repo_root: Some(repo),
         // Plumb binaries_dir into ensure_built so place_binaries_symlinks
         // runs for every transitive program dep, not just the target.
@@ -2740,6 +3128,7 @@ fn cmd_check(registry: &Registry) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::json;
     use std::fs;
 
     fn write(dir: &Path, name: &str, version: &str, depends_on: &[&str]) {
@@ -3213,6 +3602,163 @@ index_url = "https://example.test/releases/download/binaries-abi-v{abi}/index.to
         assert_ne!(
             before[0].digest, after[0].digest,
             "global build input content changes must change its digest"
+        );
+    }
+
+    #[test]
+    fn global_package_toolchain_inputs_include_package_build_actions() {
+        for input in [
+            ".github/actions/package-archive-build",
+            ".github/actions/package-toolchain",
+            ".github/actions/fetch-submodules",
+            ".github/actions/download-run-artifacts",
+        ] {
+            assert!(
+                GLOBAL_PACKAGE_TOOLCHAIN_INPUTS.contains(&input),
+                "{input} must stay in package cache-key inputs"
+            );
+        }
+    }
+
+    #[test]
+    fn fork_instrument_tool_inputs_hash_dependency_closure_instead_of_whole_lockfile() {
+        assert!(
+            !FORK_INSTRUMENT_TOOL_INPUTS.contains(&"Cargo.lock"),
+            "raw Cargo.lock changes are too broad for program package cache keys"
+        );
+    }
+
+    #[test]
+    fn fork_instrument_cargo_dependency_digest_ignores_unrelated_lockfile_entries() {
+        let root = tempdir("fork-cargo-closure");
+        let fork_manifest = root.join("crates/fork-instrument/Cargo.toml");
+        fs::create_dir_all(fork_manifest.parent().unwrap()).unwrap();
+        fs::write(&fork_manifest, "").unwrap();
+        let fork_manifest = fork_manifest.to_string_lossy().to_string();
+
+        let metadata = json!({
+            "packages": [
+                {
+                    "id": "path+file:///repo/crates/fork-instrument#0.1.0",
+                    "name": "fork-instrument",
+                    "version": "0.1.0",
+                    "source": null,
+                    "manifest_path": fork_manifest,
+                },
+                {
+                    "id": "registry+https://github.com/rust-lang/crates.io-index#anyhow@1.0.0",
+                    "name": "anyhow",
+                    "version": "1.0.0",
+                    "source": "registry+https://github.com/rust-lang/crates.io-index",
+                    "manifest_path": "/cargo/registry/anyhow-1.0.0/Cargo.toml",
+                },
+                {
+                    "id": "registry+https://github.com/rust-lang/crates.io-index#dev-only@1.0.0",
+                    "name": "dev-only",
+                    "version": "1.0.0",
+                    "source": "registry+https://github.com/rust-lang/crates.io-index",
+                    "manifest_path": "/cargo/registry/dev-only-1.0.0/Cargo.toml",
+                },
+                {
+                    "id": "registry+https://github.com/rust-lang/crates.io-index#kernel-only@1.0.0",
+                    "name": "kernel-only",
+                    "version": "1.0.0",
+                    "source": "registry+https://github.com/rust-lang/crates.io-index",
+                    "manifest_path": "/cargo/registry/kernel-only-1.0.0/Cargo.toml",
+                }
+            ],
+            "resolve": {
+                "nodes": [
+                    {
+                        "id": "path+file:///repo/crates/fork-instrument#0.1.0",
+                        "features": [],
+                        "deps": [
+                            {
+                                "name": "anyhow",
+                                "pkg": "registry+https://github.com/rust-lang/crates.io-index#anyhow@1.0.0",
+                                "dep_kinds": [{ "kind": null, "target": null }]
+                            },
+                            {
+                                "name": "dev-only",
+                                "pkg": "registry+https://github.com/rust-lang/crates.io-index#dev-only@1.0.0",
+                                "dep_kinds": [{ "kind": "dev", "target": null }]
+                            }
+                        ]
+                    },
+                    {
+                        "id": "registry+https://github.com/rust-lang/crates.io-index#anyhow@1.0.0",
+                        "features": ["std"],
+                        "deps": []
+                    },
+                    {
+                        "id": "registry+https://github.com/rust-lang/crates.io-index#dev-only@1.0.0",
+                        "features": [],
+                        "deps": []
+                    },
+                    {
+                        "id": "registry+https://github.com/rust-lang/crates.io-index#kernel-only@1.0.0",
+                        "features": [],
+                        "deps": []
+                    }
+                ]
+            }
+        });
+        let lock =
+            |anyhow_checksum: &str, dev_checksum: &str, unrelated_checksum: &str| CargoLock {
+                package: vec![
+                    CargoLockPackage {
+                        name: "anyhow".into(),
+                        version: "1.0.0".into(),
+                        source: Some(
+                            "registry+https://github.com/rust-lang/crates.io-index".into(),
+                        ),
+                        checksum: Some(anyhow_checksum.into()),
+                    },
+                    CargoLockPackage {
+                        name: "dev-only".into(),
+                        version: "1.0.0".into(),
+                        source: Some(
+                            "registry+https://github.com/rust-lang/crates.io-index".into(),
+                        ),
+                        checksum: Some(dev_checksum.into()),
+                    },
+                    CargoLockPackage {
+                        name: "kernel-only".into(),
+                        version: "1.0.0".into(),
+                        source: Some(
+                            "registry+https://github.com/rust-lang/crates.io-index".into(),
+                        ),
+                        checksum: Some(unrelated_checksum.into()),
+                    },
+                ],
+            };
+
+        let before = fork_instrument_cargo_dependency_digest_from_metadata(
+            &root,
+            &metadata,
+            &lock("normal-a", "dev-a", "unrelated-a"),
+        )
+        .unwrap();
+        let unrelated_after = fork_instrument_cargo_dependency_digest_from_metadata(
+            &root,
+            &metadata,
+            &lock("normal-a", "dev-b", "unrelated-b"),
+        )
+        .unwrap();
+        assert_eq!(
+            before, unrelated_after,
+            "dev-only and unrelated Cargo.lock entries must not affect the fork-instrument build digest"
+        );
+
+        let dependency_after = fork_instrument_cargo_dependency_digest_from_metadata(
+            &root,
+            &metadata,
+            &lock("normal-b", "dev-b", "unrelated-b"),
+        )
+        .unwrap();
+        assert_ne!(
+            before, dependency_after,
+            "normal fork-instrument dependency lockfile changes must affect the build digest"
         );
     }
 
@@ -3766,6 +4312,7 @@ spdx = "TestLicense"
             cache_root: cache,
             local_libs: local,
             force_source_build: None,
+            fetch_only: false,
             repo_root: None,
             binaries_dir: None,
         }
@@ -3784,6 +4331,7 @@ spdx = "TestLicense"
             cache_root: cache,
             local_libs: local,
             force_source_build: None,
+            fetch_only: false,
             repo_root: Some(repo_root),
             binaries_dir: None,
         }
@@ -5087,6 +5635,7 @@ cache_key_sha = "{cache_key_hex}"
             cache_root: &cache,
             local_libs: None,
             force_source_build: None,
+            fetch_only: false,
             repo_root: Some(&root),
             binaries_dir: Some(&bin_dir),
         };
@@ -5289,6 +5838,57 @@ cache_key_sha = "{cache_key_hex}"
         assert!(
             path.join("via-build").exists(),
             "cache_key_sha mismatch must fall through to source build"
+        );
+    }
+
+    #[test]
+    fn fetch_only_rejects_missing_index_entry_without_source_build() {
+        let root = tempdir("fetch-only-missing-reg");
+        let cache = tempdir("fetch-only-missing-cache");
+        let index_dir = tempdir("fetch-only-missing-index");
+
+        let index_path = index_dir.join("index.toml");
+        std::fs::write(
+            &index_path,
+            format!(
+                r#"abi_version = {TEST_ABI}
+generated_at = "2026-06-09T00:00:00Z"
+generator = "test"
+"#
+            ),
+        )
+        .unwrap();
+        let index_url = format!("file://{}", index_path.display());
+        write_lib_with_build_toml(&root, "libFetchOnly", &index_url);
+
+        let reg = Registry {
+            roots: vec![root.clone()],
+        };
+        let m = reg.load("libFetchOnly").unwrap();
+        let sha = compute_sha(
+            &m,
+            &reg,
+            TEST_ARCH,
+            TEST_ABI,
+            &mut BTreeMap::new(),
+            &mut Vec::new(),
+        )
+        .unwrap();
+        let canonical = canonical_path(&cache, &m, TEST_ARCH, &sha);
+        let opts = ResolveOpts {
+            cache_root: &cache,
+            local_libs: None,
+            force_source_build: None,
+            fetch_only: true,
+            repo_root: Some(&root),
+            binaries_dir: None,
+        };
+
+        let err = ensure_built(&m, &reg, TEST_ARCH, TEST_ABI, &opts).unwrap_err();
+        assert!(err.contains("fetch-only resolve"), "got: {err}");
+        assert!(
+            !canonical.join("via-build").exists(),
+            "fetch-only must not run the source build script"
         );
     }
 
@@ -5842,6 +6442,7 @@ spdx = "BSD-3-Clause"
             cache_root: &cache,
             local_libs: None,
             force_source_build: None,
+            fetch_only: false,
             repo_root: None,
             binaries_dir: None,
         };
@@ -6384,6 +6985,7 @@ libs = ["lib/libF1.a"]
             cache_root: &cache,
             local_libs: None,
             force_source_build: Some(&force),
+            fetch_only: false,
             repo_root: None,
             binaries_dir: None,
         };
@@ -6470,6 +7072,7 @@ libs = ["lib/libF1.a"]
             cache_root: &cache,
             local_libs: None,
             force_source_build: Some(&force),
+            fetch_only: false,
             repo_root: None,
             binaries_dir: None,
         };
@@ -6557,6 +7160,7 @@ libs = ["lib/libF3b.a"]
             cache_root: &cache,
             local_libs: None,
             force_source_build: Some(&force),
+            fetch_only: false,
             repo_root: None,
             binaries_dir: None,
         };
@@ -6627,6 +7231,14 @@ libs = ["lib/libF3b.a"]
         ])
         .unwrap_err();
         assert!(err.contains("more than once"), "got: {err}");
+    }
+
+    #[test]
+    fn extract_fetch_only_flag_removes_flag() {
+        let (got, rest) =
+            extract_fetch_only_flag(vec!["resolve".into(), "--fetch-only".into(), "bash".into()]);
+        assert!(got);
+        assert_eq!(rest, vec!["resolve".to_string(), "bash".into()]);
     }
 
     #[test]
@@ -6823,6 +7435,7 @@ touch "$WASM_POSIX_DEP_OUT_DIR/beta.wasm""#,
             cache_root,
             local_libs: None,
             force_source_build: None,
+            fetch_only: false,
             repo_root: Some(repo),
             binaries_dir: None,
         };

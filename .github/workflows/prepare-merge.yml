@@ -163,7 +163,7 @@ jobs:
           echo "Synthetic merge $MERGE_SHA uses base $BASE_SHA and head $PR_HEAD_SHA."
 
       - name: Upload synthetic merge bundle
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: synthetic-pr-merge
           path: ${{ runner.temp }}/synthetic-pr-merge/synthesized-merge.bundle
@@ -201,12 +201,12 @@ jobs:
       package_staging_required: ${{ steps.scope.outputs.package_staging_required }}
       package_staging_reason: ${{ steps.scope.outputs.package_staging_reason }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6.0.2
         with:
           ref: ${{ needs.synthesize-merge.outputs.base_sha }}
           fetch-depth: 1
 
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           name: ${{ needs.synthesize-merge.outputs.bundle_artifact }}
           path: ${{ runner.temp }}/synthetic-pr-merge
@@ -359,15 +359,19 @@ jobs:
           fi
 
       - name: Checkout workflow helpers
-        if: needs.change-scope.outputs.package_staging_required == 'true'
-        uses: actions/checkout@v4
+        if: |
+          needs.change-scope.outputs.package_staging_required == 'true' ||
+          needs.change-scope.outputs.test_gate_required == 'true'
+        uses: actions/checkout@v6.0.2
         with:
           ref: ${{ github.sha }}
           sparse-checkout: |
             .github/scripts
 
       - name: Inspect staging-build on PR HEAD
-        if: needs.change-scope.outputs.package_staging_required == 'true'
+        if: |
+          needs.change-scope.outputs.package_staging_required == 'true' ||
+          needs.change-scope.outputs.test_gate_required == 'true'
         # staging-build runs the same matrix flow on every PR push.
         # If a real non-skipped staging-build exists for this HEAD,
         # respect it: wait while it is running and block if it failed.
@@ -554,7 +558,9 @@ jobs:
 
   preflight:
     needs: [synthesize-merge, gate, change-scope]
-    if: needs.change-scope.outputs.package_staging_required == 'true'
+    if: |
+      needs.change-scope.outputs.package_staging_required == 'true' ||
+      needs.change-scope.outputs.test_gate_required == 'true'
     runs-on: ubuntu-latest
     permissions:
       actions: read            # download synthesized merge artifact
@@ -568,12 +574,12 @@ jobs:
       staging_tag: ${{ steps.compute.outputs.staging_tag }}
       merge_base_sha: ${{ steps.compute.outputs.merge_base_sha }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6.0.2
         with:
           ref: ${{ needs.synthesize-merge.outputs.base_sha }}
           fetch-depth: 1
 
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           name: ${{ needs.synthesize-merge.outputs.bundle_artifact }}
           path: ${{ runner.temp }}/synthetic-pr-merge
@@ -620,7 +626,7 @@ jobs:
           github-token: ""
 
       - name: Cache Nix store + flake eval
-        uses: DeterminateSystems/magic-nix-cache-action@565684385bcd71bad329742eefe8d12f2e765b39 # v13
+        uses: DeterminateSystems/magic-nix-cache-action@908b263ff629f4cc17666315b7fd3ec127c6244d # v14
         with:
           use-gha-cache: false
           use-flakehub: false
@@ -629,7 +635,7 @@ jobs:
         run: bash scripts/dev-shell.sh true
 
       - name: Cache xtask build
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: |
             ~/.cargo/registry
@@ -655,6 +661,7 @@ jobs:
         run: |
           bash scripts/dev-shell.sh bash -c '
             set -euo pipefail
+            PACKAGE_STAGING_REQUIRED="${{ needs.change-scope.outputs.package_staging_required }}"
 
             if [ "$(git rev-parse HEAD)" != "$SYNTHETIC_MERGE_SHA" ]; then
               echo "::error::preflight is not on synthetic merge $SYNTHETIC_MERGE_SHA"
@@ -682,6 +689,14 @@ jobs:
             echo "target_tag=$TARGET_TAG" >> "$GITHUB_OUTPUT"
             STAGING_TAG="pr-${{ github.event.pull_request.number }}-staging"
             echo "staging_tag=$STAGING_TAG" >> "$GITHUB_OUTPUT"
+
+            if [ "$PACKAGE_STAGING_REQUIRED" != "true" ]; then
+              echo "library_matrix=[]" >> "$GITHUB_OUTPUT"
+              echo "program_matrix=[]" >> "$GITHUB_OUTPUT"
+              echo "promote_matrix=[]" >> "$GITHUB_OUTPUT"
+              echo "preflight: package staging not required; skipping package drift matrix"
+              exit 0
+            fi
 
             existing_assets=$(gh release view "$TARGET_TAG" --repo "${{ github.repository }}" --json assets --jq "[.assets[].name]" 2>/dev/null || echo "[]")
             echo "existing-assets:"
@@ -784,6 +799,14 @@ jobs:
               done
             done
 
+            program_matrix_file=$(mktemp)
+            printf "%s" "$program_matrix" > "$program_matrix_file"
+            program_matrix=$(cargo run --release -p xtask --target "$HOST_TARGET" --quiet -- \
+              sort-package-matrix \
+                --registry packages/registry \
+                --matrix "$program_matrix_file")
+            rm -f "$program_matrix_file"
+
             echo "library_matrix=$library_matrix" >> "$GITHUB_OUTPUT"
             echo "program_matrix=$program_matrix" >> "$GITHUB_OUTPUT"
             echo "promote_matrix=$promote_matrix" >> "$GITHUB_OUTPUT"
@@ -800,12 +823,12 @@ jobs:
       needs.change-scope.outputs.test_gate_required == 'true'
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6.0.2
         with:
           ref: ${{ needs.synthesize-merge.outputs.base_sha }}
           fetch-depth: 1
 
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           name: ${{ needs.synthesize-merge.outputs.bundle_artifact }}
           path: ${{ runner.temp }}/synthetic-pr-merge
@@ -835,79 +858,8 @@ jobs:
             exit 1
           fi
 
-      - name: Fetch musl submodule
-        uses: ./.github/actions/fetch-submodules
-        with:
-          submodules: libc/musl
-
-      - name: Install Nix
-        uses: DeterminateSystems/nix-installer-action@c723f3a885e3f1d866d91f4f0c33dd44b1fc7c60 # v18
-        with:
-          github-token: ""
-
-      - name: Cache Nix store + flake eval
-        uses: DeterminateSystems/magic-nix-cache-action@565684385bcd71bad329742eefe8d12f2e765b39 # v13
-        with:
-          use-gha-cache: false
-          use-flakehub: false
-
-      - name: Compute cache key
-        # Mirrors `staging-build.yml`'s `toolchain-cache.key` formula
-        # exactly so a hit on either workflow's cache warms both.
-        id: key
-        run: |
-          set -euo pipefail
-          musl_gitlink="$(git rev-parse HEAD:libc/musl)"
-          KEY="musl-sysroot-v5-${{ runner.os }}-$musl_gitlink-${{ hashFiles('flake.nix', 'flake.lock', 'rust-toolchain.toml', 'scripts/dev-shell.sh', 'scripts/build-musl.sh', 'scripts/install-overlay-headers.sh', 'packages/registry/libcxx/**', 'libc/musl-overlay/**', 'libc/glue/**', 'sdk/activate.sh', 'sdk/bin/**', 'sdk/config.site', 'sdk/package.json', 'sdk/package-lock.json', 'sdk/src/**') }}"
-          echo "value=$KEY" >> "$GITHUB_OUTPUT"
-          echo "toolchain-cache key: $KEY"
-
-      - name: Cache musl sysroot + libc++
-        uses: actions/cache@v4
-        id: cache
-        with:
-          path: |
-            sysroot
-            sysroot64
-          key: ${{ steps.key.outputs.value }}
-
-      - name: Build sysroots if cache miss
-        if: steps.cache.outputs.cache-hit != 'true'
-        run: |
-          bash scripts/dev-shell.sh bash scripts/build-musl.sh
-          bash scripts/dev-shell.sh bash scripts/build-musl.sh --arch wasm64posix
-          bash scripts/dev-shell.sh bash -c '
-            set -euo pipefail
-            HOST_TARGET="$(rustc -vV | awk "/^host/ {print \$2}")"
-            for arch in wasm32 wasm64; do
-              cargo run -p xtask --target "$HOST_TARGET" --quiet -- \
-                build-deps resolve libcxx --arch "$arch"
-              prefix="$(cargo run -p xtask --target "$HOST_TARGET" --quiet -- \
-                build-deps path libcxx --arch "$arch")"
-              if [ "$arch" = "wasm64" ]; then sysroot="sysroot64"; else sysroot="sysroot"; fi
-              mkdir -p "$sysroot/lib" "$sysroot/include/c++"
-              ln -sf "$prefix/lib/libc++.a"    "$sysroot/lib/libc++.a"
-              ln -sf "$prefix/lib/libc++abi.a" "$sysroot/lib/libc++abi.a"
-              rm -rf "$sysroot/include/c++/v1"
-              ln -sfn "$prefix/include/c++/v1" "$sysroot/include/c++/v1"
-            done
-          '
-
-      - name: Build fork-instrument host tool
-        run: bash scripts/dev-shell.sh bash scripts/build-fork-instrument-tool.sh
-
-      - name: Pack toolchain sysroots + host tools
-        run: |
-          tar --zstd -cf "$RUNNER_TEMP/toolchain-sysroots.tar.zst" \
-            sysroot sysroot64 tools/bin/wasm-fork-instrument
-
-      - name: Upload toolchain sysroots artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: toolchain-sysroots
-          path: ${{ runner.temp }}/toolchain-sysroots.tar.zst
-          retention-days: 1
-          if-no-files-found: error
+      - name: Prepare package toolchain
+        uses: ./.github/actions/package-toolchain
 
   # Fast path for prepare-merge: if staging already built the exact
   # cache-keyed archive for the merged tree, copy that asset into the
@@ -927,12 +879,12 @@ jobs:
       matrix:
         include: ${{ fromJSON(needs.preflight.outputs.promote_matrix) }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6.0.2
         with:
           ref: ${{ needs.synthesize-merge.outputs.base_sha }}
           fetch-depth: 1
 
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           name: ${{ needs.synthesize-merge.outputs.bundle_artifact }}
           path: ${{ runner.temp }}/synthetic-pr-merge
@@ -1011,7 +963,7 @@ jobs:
     if: ${{ needs.preflight.result == 'success' && needs.toolchain-cache.result == 'success' && needs.preflight.outputs.library_matrix != '[]' }}
     runs-on: ubuntu-latest
     permissions:
-      actions: read      # gh run download library artifacts
+      actions: read      # download toolchain artifact
       contents: write    # state-lock git push + gh release create/upload
     env:
       WASM_POSIX_BINARY_INDEX_URL: https://github.com/${{ github.repository }}/releases/download/${{ needs.preflight.outputs.target_tag }}/index.toml
@@ -1022,12 +974,12 @@ jobs:
         include: ${{ fromJSON(needs.preflight.outputs.library_matrix) }}
     steps:
       - id: checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6.0.2
         with:
           ref: ${{ needs.synthesize-merge.outputs.base_sha }}
           fetch-depth: 1
 
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           name: ${{ needs.synthesize-merge.outputs.bundle_artifact }}
           path: ${{ runner.temp }}/synthetic-pr-merge
@@ -1057,80 +1009,14 @@ jobs:
             exit 1
           fi
 
-      - name: Compute commit-bound build provenance
-        id: provenance
-        run: |
-          ts=$(git log -1 --format=%aI HEAD)
-          echo "build-timestamp=$ts" >> "$GITHUB_OUTPUT"
-          echo "build-host=${{ github.repository }}@${{ needs.synthesize-merge.outputs.merge_sha }}" >> "$GITHUB_OUTPUT"
-
-      - name: Fetch musl submodule
-        uses: ./.github/actions/fetch-submodules
-        with:
-          submodules: libc/musl
-
-      - name: Install Nix
-        uses: DeterminateSystems/nix-installer-action@ef8a148080ab6020fd15196c2084a2eea5ff2d25 # v22
-        with:
-          github-token: ""
-
-      - name: Cache Nix store + flake eval
-        uses: DeterminateSystems/magic-nix-cache-action@565684385bcd71bad329742eefe8d12f2e765b39 # v13
-        with:
-          use-gha-cache: false
-          use-flakehub: false
-
-      - name: Download toolchain sysroots artifact
-        uses: actions/download-artifact@v4
-        with:
-          name: toolchain-sysroots
-          path: ${{ runner.temp }}/toolchain
-
-      - name: Extract toolchain sysroots
-        run: |
-          tar --zstd -xf "$RUNNER_TEMP/toolchain/toolchain-sysroots.tar.zst"
-
-      - name: Install host npm deps (build prereq)
-        run: |
-          bash scripts/dev-shell.sh bash -c '
-            PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1 npm ci --no-audit --no-fund
-            cd host && PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1 npm ci --no-audit --no-fund
-          '
-
-      - name: Resolve target package's transitive deps
-        run: |
-          bash scripts/dev-shell.sh bash -c '
-            HOST_TARGET=$(rustc -vV | awk "/^host/ {print \$2}")
-            cargo run --release -p xtask --target "$HOST_TARGET" --quiet -- \
-              build-deps --arch "${{ matrix.arch }}" --binaries-dir "$(pwd)/binaries" \
-                resolve "${{ matrix.package }}"
-          '
-
       - name: Build ${{ matrix.package }} (${{ matrix.arch }})
         id: build
-        run: |
-          bash scripts/dev-shell.sh bash -c '
-            HOST_TARGET=$(rustc -vV | awk "/^host/ {print \$2}")
-            cargo run --release -p xtask --target "$HOST_TARGET" --quiet -- \
-              archive-stage \
-                --package "packages/registry/${{ matrix.package }}" \
-                --arch "${{ matrix.arch }}" \
-                --out "$RUNNER_TEMP/staged" \
-                --build-timestamp "${{ steps.provenance.outputs.build-timestamp }}" \
-                --build-host "${{ steps.provenance.outputs.build-host }}"
-          '
-          archive_path=$(find "$RUNNER_TEMP/staged" -name '*.tar.zst' -print -quit)
-          archive_name=$(basename "$archive_path")
-          echo "archive-path=$archive_path" >> "$GITHUB_OUTPUT"
-          echo "archive-name=$archive_name" >> "$GITHUB_OUTPUT"
-
-      - name: Upload archive as workflow artifact
-        uses: actions/upload-artifact@v4
+        uses: ./.github/actions/package-archive-build
         with:
-          name: ${{ matrix.package }}-${{ matrix.arch }}
-          path: ${{ runner.temp }}/staged/*.tar.zst
-          retention-days: 7
-          if-no-files-found: error
+          package: ${{ matrix.package }}
+          arch: ${{ matrix.arch }}
+          build-host: ${{ github.repository }}@${{ needs.synthesize-merge.outputs.merge_sha }}
+          expected-cache-key-sha: ${{ matrix.sha }}
 
       # Atomic per-matrix-entry publish: archive upload + index.toml
       # mutation under the state-lock acquired for the target tag.
@@ -1187,6 +1073,7 @@ jobs:
       needs.preflight.outputs.program_matrix != '[]'
     runs-on: ubuntu-latest
     permissions:
+      actions: read      # download toolchain + library artifacts
       contents: write    # state-lock git push + gh release create/upload
     env:
       WASM_POSIX_BINARY_INDEX_URL: https://github.com/${{ github.repository }}/releases/download/${{ needs.preflight.outputs.target_tag }}/index.toml
@@ -1197,12 +1084,12 @@ jobs:
         include: ${{ fromJSON(needs.preflight.outputs.program_matrix) }}
     steps:
       - id: checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6.0.2
         with:
           ref: ${{ needs.synthesize-merge.outputs.base_sha }}
           fetch-depth: 1
 
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           name: ${{ needs.synthesize-merge.outputs.bundle_artifact }}
           path: ${{ runner.temp }}/synthetic-pr-merge
@@ -1232,94 +1119,18 @@ jobs:
             exit 1
           fi
 
-      - name: Compute commit-bound build provenance
-        id: provenance
-        run: |
-          ts=$(git log -1 --format=%aI HEAD)
-          echo "build-timestamp=$ts" >> "$GITHUB_OUTPUT"
-          echo "build-host=${{ github.repository }}@${{ needs.synthesize-merge.outputs.merge_sha }}" >> "$GITHUB_OUTPUT"
-          echo "provenance: build-timestamp=$ts" >&2
-
-      - name: Fetch musl submodule
-        uses: ./.github/actions/fetch-submodules
-        with:
-          submodules: libc/musl
-
-      - name: Install Nix
-        uses: DeterminateSystems/nix-installer-action@ef8a148080ab6020fd15196c2084a2eea5ff2d25 # v22
-        with:
-          github-token: ""
-
-      - name: Cache Nix store + flake eval
-        uses: DeterminateSystems/magic-nix-cache-action@565684385bcd71bad329742eefe8d12f2e765b39 # v13
-        with:
-          use-gha-cache: false
-          use-flakehub: false
-
-      - name: Download toolchain sysroots artifact
-        uses: actions/download-artifact@v4
-        with:
-          name: toolchain-sysroots
-          path: ${{ runner.temp }}/toolchain
-
-      - name: Extract toolchain sysroots
-        run: |
-          tar --zstd -xf "$RUNNER_TEMP/toolchain/toolchain-sysroots.tar.zst"
-
-      - name: Install host npm deps (build prereq)
-        run: |
-          bash scripts/dev-shell.sh bash -c '
-            PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1 npm ci --no-audit --no-fund
-            cd host && PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1 npm ci --no-audit --no-fund
-          '
-
-      - name: Download library archives from lib-matrix-build
-        if: needs.preflight.outputs.library_matrix != '[]'
-        uses: ./.github/actions/download-run-artifacts
-        with:
-          github-token: ${{ secrets.GITHUB_TOKEN }}
-          pattern: '*-wasm*'
-          path: ${{ runner.temp }}/lib-archives
-
-      - name: Materialize library overlays
-        if: needs.preflight.outputs.library_matrix != '[]'
-        run: |
-          bash scripts/materialize-pr-overlays.sh "$RUNNER_TEMP/lib-archives"
-
-      - name: Resolve target package's transitive deps
-        run: |
-          bash scripts/dev-shell.sh bash -c '
-            HOST_TARGET=$(rustc -vV | awk "/^host/ {print \$2}")
-            cargo run --release -p xtask --target "$HOST_TARGET" --quiet -- \
-              build-deps --arch "${{ matrix.arch }}" --binaries-dir "$(pwd)/binaries" \
-                resolve "${{ matrix.package }}"
-          '
-
       - name: Build ${{ matrix.package }} (${{ matrix.arch }})
         id: build
-        run: |
-          bash scripts/dev-shell.sh bash -c '
-            HOST_TARGET=$(rustc -vV | awk "/^host/ {print \$2}")
-            cargo run --release -p xtask --target "$HOST_TARGET" --quiet -- \
-              archive-stage \
-                --package "packages/registry/${{ matrix.package }}" \
-                --arch "${{ matrix.arch }}" \
-                --out "$RUNNER_TEMP/staged" \
-                --build-timestamp "${{ steps.provenance.outputs.build-timestamp }}" \
-                --build-host "${{ steps.provenance.outputs.build-host }}"
-          '
-          archive_path=$(find "$RUNNER_TEMP/staged" -name '*.tar.zst' -print -quit)
-          archive_name=$(basename "$archive_path")
-          echo "archive-path=$archive_path" >> "$GITHUB_OUTPUT"
-          echo "archive-name=$archive_name" >> "$GITHUB_OUTPUT"
-
-      - name: Upload archive as workflow artifact
-        uses: actions/upload-artifact@v4
+        uses: ./.github/actions/package-archive-build
         with:
-          name: ${{ matrix.package }}-${{ matrix.arch }}
-          path: ${{ runner.temp }}/staged/*.tar.zst
-          retention-days: 7
-          if-no-files-found: error
+          package: ${{ matrix.package }}
+          arch: ${{ matrix.arch }}
+          build-host: ${{ github.repository }}@${{ needs.synthesize-merge.outputs.merge_sha }}
+          expected-cache-key-sha: ${{ matrix.sha }}
+          materialize-library-overlays: ${{ needs.preflight.outputs.library_matrix != '[]' }}
+          library-matrix: ${{ needs.preflight.outputs.library_matrix }}
+          dependency-matrix: ${{ needs.preflight.outputs.program_matrix }}
+          github-token: ${{ github.token }}
 
       # Atomic per-matrix-entry publish — see lib-matrix-build for
       # the rationale.
@@ -1361,19 +1172,10 @@ jobs:
     if: |
       !cancelled() &&
       needs.toolchain-cache.result == 'success' &&
-      (
-        (
-          needs.change-scope.outputs.package_staging_required == 'true' &&
-          needs.preflight.result == 'success' &&
-          (needs.promote-staging.result == 'success' || needs.promote-staging.result == 'skipped') &&
-          (needs.lib-matrix-build.result == 'success' || needs.lib-matrix-build.result == 'skipped') &&
-          (needs.matrix-build.result == 'success' || needs.matrix-build.result == 'skipped')
-        ) ||
-        (
-          needs.change-scope.outputs.package_staging_required == 'false' &&
-          needs.change-scope.outputs.test_gate_required == 'true'
-        )
-      )
+      needs.preflight.result == 'success' &&
+      (needs.promote-staging.result == 'success' || needs.promote-staging.result == 'skipped') &&
+      (needs.lib-matrix-build.result == 'success' || needs.lib-matrix-build.result == 'skipped') &&
+      (needs.matrix-build.result == 'success' || needs.matrix-build.result == 'skipped')
     runs-on: ubuntu-latest
     permissions:
       actions: read
@@ -1382,16 +1184,17 @@ jobs:
       merge_base_sha: ${{ steps.merge_ref.outputs.merge_base_sha }}
     env:
       PACKAGE_STAGING_REQUIRED: ${{ needs.change-scope.outputs.package_staging_required }}
+      PACKAGE_STAGE_OVERLAYS_REQUIRED: ${{ needs.preflight.outputs.library_matrix != '[]' || needs.preflight.outputs.program_matrix != '[]' }}
       PACKAGE_PUBLISH_FLOW_CHANGED: ${{ needs.change-scope.outputs.package_publish_flow_changed }}
       BINARY_MATERIALIZATION_CHANGED: ${{ needs.change-scope.outputs.binary_materialization_changed }}
       PACKAGE_TARGET_TAG: ${{ needs.preflight.outputs.target_tag }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6.0.2
         with:
           ref: ${{ needs.synthesize-merge.outputs.base_sha }}
           fetch-depth: 1
 
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           name: ${{ needs.synthesize-merge.outputs.bundle_artifact }}
           path: ${{ runner.temp }}/synthetic-pr-merge
@@ -1448,18 +1251,18 @@ jobs:
           submodules: libc/musl tests/libc/libc-test tests/sortix/os-test
 
       - name: Install Nix
-        uses: DeterminateSystems/nix-installer-action@c723f3a885e3f1d866d91f4f0c33dd44b1fc7c60 # v18
+        uses: DeterminateSystems/nix-installer-action@ef8a148080ab6020fd15196c2084a2eea5ff2d25 # v22
         with:
           github-token: ""
 
       - name: Cache Nix store + flake eval
-        uses: DeterminateSystems/magic-nix-cache-action@565684385bcd71bad329742eefe8d12f2e765b39 # v13
+        uses: DeterminateSystems/magic-nix-cache-action@908b263ff629f4cc17666315b7fd3ec127c6244d # v14
         with:
           use-gha-cache: false
           use-flakehub: false
 
       - name: Download toolchain sysroots artifact
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: toolchain-sysroots
           path: ${{ runner.temp }}/toolchain
@@ -1469,15 +1272,17 @@ jobs:
           tar --zstd -xf "$RUNNER_TEMP/toolchain/toolchain-sysroots.tar.zst"
 
       - name: Download matrix artifacts
-        if: ${{ needs.change-scope.outputs.package_staging_required == 'true' && (needs.preflight.outputs.library_matrix != '[]' || needs.preflight.outputs.program_matrix != '[]') }}
+        if: ${{ needs.preflight.outputs.library_matrix != '[]' || needs.preflight.outputs.program_matrix != '[]' }}
         uses: ./.github/actions/download-run-artifacts
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           pattern: '*-wasm*'
           path: ${{ runner.temp }}/staged-archives
 
-      - name: Install host npm deps (resolver prereq)
-        # Must run before Materialize binaries (see staging-build.yml).
+      - name: Install host npm deps
+        # Keep this before the host typecheck, package-system tests,
+        # and later test-program/rootfs build steps. Binary
+        # materialization itself runs fetch-only in CI.
         run: |
           bash scripts/dev-shell.sh bash -c '
             PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1 npm ci --no-audit --no-fund
@@ -1503,14 +1308,13 @@ jobs:
       - name: Materialize binaries
         env:
           WASM_POSIX_FETCH_SKIP_PKGS: cpython erlang erlang-vfs perl perl-vfs python-vfs redis ruby texlive
-        # Package-staging runs resolve against the durable release plus
-        # local file:// overlays for newly built/promoted archives.
-        # Non-archive validation runs skip overlays and resolve every
-        # package from the existing durable ABI release; the fresh kernel
-        # built below shadows kernel.wasm via local-binaries/.
+        # Resolve against the durable release plus local file://
+        # overlays for newly built archives. Runtime-only PRs can still
+        # reach this overlay path when preflight detects durable index
+        # drift from an earlier package-key change.
         run: |
           set -euo pipefail
-          if [ "$PACKAGE_STAGING_REQUIRED" = "true" ]; then
+          if [ "$PACKAGE_STAGE_OVERLAYS_REQUIRED" = "true" ]; then
             export WASM_POSIX_BINARY_INDEX_URL="https://github.com/${GITHUB_REPOSITORY}/releases/download/${PACKAGE_TARGET_TAG}/index.toml"
             STAGE="$RUNNER_TEMP/staged-overlay"
             bash scripts/materialize-pr-overlays.sh "$RUNNER_TEMP/staged-archives" "$STAGE"
@@ -1519,7 +1323,7 @@ jobs:
             export WASM_POSIX_BINARY_INDEX_URL="https://github.com/${GITHUB_REPOSITORY}/releases/download/binaries-abi-v${ABI}/index.toml"
           fi
           echo "WASM_POSIX_BINARY_INDEX_URL=$WASM_POSIX_BINARY_INDEX_URL" >> "$GITHUB_ENV"
-          bash scripts/dev-shell.sh bash scripts/fetch-binaries.sh --allow-stale
+          bash scripts/dev-shell.sh bash scripts/fetch-binaries.sh --fetch-only
 
       - name: Build kernel + test programs + install host deps
         # The vitest suite installs Chromium in its own runner because
@@ -1539,12 +1343,20 @@ jobs:
             bash scripts/build-rootfs.sh
           '
 
+      - name: Prepare browser assets from package index
+        run: |
+          bash scripts/dev-shell.sh bash -c '
+            set -euo pipefail
+            ./run.sh --fetch-only prepare-browser
+            bash scripts/ci-check-browser-assets.sh
+          '
+
       - name: Pack prepared test workspace
         run: |
           bash scripts/pack-ci-test-workspace.sh "$RUNNER_TEMP/test-workspace.tar.zst"
 
       - name: Upload prepared test workspace
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: test-workspace
           path: ${{ runner.temp }}/test-workspace.tar.zst
@@ -1616,13 +1428,13 @@ jobs:
           fi
           echo "skip=false" >> "$GITHUB_OUTPUT"
 
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6.0.2
         if: steps.suite.outputs.skip != 'true'
         with:
           ref: ${{ needs.synthesize-merge.outputs.base_sha }}
           fetch-depth: 1
 
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         if: steps.suite.outputs.skip != 'true'
         with:
           name: ${{ needs.synthesize-merge.outputs.bundle_artifact }}
@@ -1662,20 +1474,20 @@ jobs:
 
       - name: Install Nix
         if: steps.suite.outputs.skip != 'true'
-        uses: DeterminateSystems/nix-installer-action@c723f3a885e3f1d866d91f4f0c33dd44b1fc7c60 # v18
+        uses: DeterminateSystems/nix-installer-action@ef8a148080ab6020fd15196c2084a2eea5ff2d25 # v22
         with:
           github-token: ""
 
       - name: Cache Nix store + flake eval
         if: steps.suite.outputs.skip != 'true'
-        uses: DeterminateSystems/magic-nix-cache-action@565684385bcd71bad329742eefe8d12f2e765b39 # v13
+        uses: DeterminateSystems/magic-nix-cache-action@908b263ff629f4cc17666315b7fd3ec127c6244d # v14
         with:
           use-gha-cache: false
           use-flakehub: false
 
       - name: Download toolchain sysroots artifact
         if: steps.suite.outputs.skip != 'true' && matrix.needs_toolchain == true
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: toolchain-sysroots
           path: ${{ runner.temp }}/toolchain
@@ -1687,7 +1499,7 @@ jobs:
 
       - name: Download prepared test workspace
         if: steps.suite.outputs.skip != 'true' && matrix.needs_workspace == true
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: test-workspace
           path: ${{ runner.temp }}/test-workspace
@@ -1701,6 +1513,16 @@ jobs:
         if: steps.suite.outputs.skip != 'true'
         run: |
           bash scripts/dev-shell.sh bash scripts/ci-run-test-suite.sh "$SUITE"
+
+      - name: Upload browser test artifacts
+        if: failure() && steps.suite.outputs.skip != 'true' && matrix.suite == 'browser'
+        uses: actions/upload-artifact@v4
+        with:
+          name: browser-test-artifacts
+          path: |
+            apps/browser-demos/test-results
+          if-no-files-found: ignore
+          retention-days: 7
 
   test-gate:
     needs: [test-gate-prepare, test-suite]

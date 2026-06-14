@@ -1,0 +1,7 @@
+jobid	state	displaytype	displayname	cases	errors	ms
+3	failed	tcl	test/sysfault.test	1360	2	8907
+4	failed	tcl	test/writecrash.test	20	1	7888
+48	failed	tcl	test/like.test	159	1	1747
+50	failed	tcl	test/savepoint6.test	3325	1000	56592
+63	running	tcl	test/walfault.test	0	0	0
+727	running	tcl	test/sort4.test	0	0	0

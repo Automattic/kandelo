@@ -530,7 +530,7 @@ pub struct Process {
     pub thread_name: [u8; 16],
     /// True if this process is a fork child that should exec on startup.
     pub fork_child: bool,
-    /// Saved signal mask during sigsuspend (centralized mode blocking retry).
+    /// Saved signal mask during sigsuspend host retry.
     /// Set on first sigsuspend call, restored when a signal is delivered.
     pub sigsuspend_saved_mask: Option<u64>,
     /// Path to exec after fork (set by posix_spawn before forking).
@@ -541,7 +541,7 @@ pub struct Process {
     pub fork_fd_actions: Vec<FdAction>,
     /// Next ephemeral port to assign for bind(port=0).
     pub next_ephemeral_port: u16,
-    /// Threads created by this process (centralized mode).
+    /// Threads created by this process.
     pub threads: Vec<ThreadInfo>,
     /// Next thread ID to allocate.
     pub next_tid: u32,
@@ -680,7 +680,8 @@ impl Process {
         self.fork_count += 1;
     }
 
-    /// Allocate a process-local pipe buffer, reusing the first free slot.
+    /// Compatibility helper for the legacy pipe slot vector, reusing the first
+    /// free slot. Runtime pipe operations use the kernel-global pipe table.
     pub fn alloc_pipe(&mut self, pipe: PipeBuffer) -> usize {
         for (i, slot) in self.pipes.iter().enumerate() {
             if slot.is_none() {
@@ -693,8 +694,8 @@ impl Process {
         idx
     }
 
-    /// Allocate a consecutive pair of process-local pipe buffers, reusing freed
-    /// slots. Preserves adjacency so that `second_idx == first_idx + 1`.
+    /// Compatibility helper for a consecutive pair of legacy pipe slots.
+    /// Runtime pipe operations use the kernel-global pipe table.
     pub fn alloc_pipe_pair(&mut self, first: PipeBuffer, second: PipeBuffer) -> (usize, usize) {
         let len = self.pipes.len();
         for i in 0..len.saturating_sub(1) {

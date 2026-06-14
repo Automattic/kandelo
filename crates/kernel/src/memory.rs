@@ -10,6 +10,12 @@ pub struct MappedRegion {
     pub flags: u32,  // map flags
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ReservedRegion {
+    pub addr: usize,
+    pub len: usize,
+}
+
 #[derive(Debug, Clone, Copy)]
 pub struct MemoryLayoutMetadata {
     pub initial_brk: usize,
@@ -23,6 +29,9 @@ pub struct MemoryLayoutMetadata {
 pub struct MemoryManager {
     /// List of active mappings, kept sorted by address.
     mappings: Vec<MappedRegion>,
+    /// Host-owned dynamic control ranges. These occupy process address space
+    /// but are not guest mmap mappings and cannot be released by munmap.
+    reserved_regions: Vec<ReservedRegion>,
     /// Current program break (for brk).
     program_break: usize,
     /// Upper bound for mmap allocation (default 1GB = Wasm max-memory).
@@ -62,6 +71,7 @@ impl MemoryManager {
     pub fn new() -> Self {
         MemoryManager {
             mappings: Vec::new(),
+            reserved_regions: Vec::new(),
             program_break: Self::INITIAL_BRK,
             max_addr: Self::DEFAULT_MAX_ADDR,
             mmap_base: Self::MMAP_BASE,
@@ -75,6 +85,10 @@ impl MemoryManager {
     /// Read-only access to the mmap mappings (for fork serialization).
     pub fn mappings(&self) -> &[MappedRegion] {
         &self.mappings
+    }
+
+    pub fn reserved_regions(&self) -> &[ReservedRegion] {
+        &self.reserved_regions
     }
 
     /// Restore mmap mappings from fork (used by deserialize_fork_state).
@@ -106,6 +120,7 @@ impl MemoryManager {
             let end = hint.saturating_add(aligned_len);
             if end > self.max_addr
                 || self.overlaps_reserved_prefix(hint, aligned_len)
+                || self.overlaps_reserved_regions(hint, aligned_len)
                 || self.overlaps_host_control(hint, aligned_len)
                 || (self.reserved_until != 0 && self.overlaps_brk_heap(hint, aligned_len))
             {
@@ -144,21 +159,27 @@ impl MemoryManager {
     /// Find the first gap in [mmap_base, max_addr) that can fit `needed` bytes.
     fn find_gap(&self, needed: usize) -> Option<usize> {
         let mut cursor = self.mmap_base.max(self.program_break);
-        for m in &self.mappings {
-            if m.addr < cursor {
-                let end = m.addr.saturating_add(m.len);
+        let mut occupied: Vec<(usize, usize)> =
+            Vec::with_capacity(self.mappings.len() + self.reserved_regions.len());
+        occupied.extend(self.mappings.iter().map(|m| (m.addr, m.len)));
+        occupied.extend(self.reserved_regions.iter().map(|r| (r.addr, r.len)));
+        occupied.sort_by_key(|(addr, _)| *addr);
+
+        for (addr, len) in occupied {
+            if addr < cursor {
+                let end = addr.saturating_add(len);
                 if end > cursor {
                     cursor = end;
                 }
                 continue;
             }
-            if m.addr >= cursor {
-                let gap = m.addr - cursor;
+            if addr >= cursor {
+                let gap = addr - cursor;
                 if gap >= needed {
                     return Some(cursor);
                 }
             }
-            let end = m.addr.saturating_add(m.len);
+            let end = addr.saturating_add(len);
             if end > cursor {
                 cursor = end;
             }
@@ -205,6 +226,24 @@ impl MemoryManager {
             }
         }
         false
+    }
+
+    fn overlaps_reserved_regions(&self, addr: usize, len: usize) -> bool {
+        let end = match addr.checked_add(len) {
+            Some(e) => e,
+            None => return true,
+        };
+        for r in &self.reserved_regions {
+            let r_end = r.addr.saturating_add(r.len);
+            if addr < r_end && end > r.addr {
+                return true;
+            }
+        }
+        false
+    }
+
+    pub fn overlaps_host_reserved_region(&self, addr: usize, len: usize) -> bool {
+        self.overlaps_reserved_regions(addr, len)
     }
 
     fn overlaps_brk_heap(&self, addr: usize, len: usize) -> bool {
@@ -314,6 +353,11 @@ impl MemoryManager {
         {
             return self.program_break;
         }
+        if new_brk > self.program_break
+            && self.overlaps_reserved_regions(self.program_break, new_brk - self.program_break)
+        {
+            return self.program_break;
+        }
         // Enforce RLIMIT_DATA: data segment growth from initial_brk
         if new_brk > self.initial_brk {
             let growth = (new_brk - self.initial_brk) as u64;
@@ -353,6 +397,9 @@ impl MemoryManager {
         if self.overlaps_reserved_prefix(addr, len) {
             return false;
         }
+        if self.overlaps_reserved_regions(addr, len) {
+            return false;
+        }
         if self.reserved_until != 0 && self.overlaps_brk_heap(addr, len) {
             return false;
         }
@@ -364,6 +411,61 @@ impl MemoryManager {
             }
         }
         true
+    }
+
+    pub fn reserve_host_region(&mut self, len: usize) -> usize {
+        if len == 0 {
+            return wasm_posix_shared::mmap::MAP_FAILED;
+        }
+        let aligned_len = match len.checked_add(0xFFFF) {
+            Some(v) => v & !0xFFFF,
+            None => return wasm_posix_shared::mmap::MAP_FAILED,
+        };
+        let Some(addr) = self.find_gap(aligned_len) else {
+            return wasm_posix_shared::mmap::MAP_FAILED;
+        };
+        let pos = self.reserved_regions.partition_point(|r| r.addr < addr);
+        self.reserved_regions.insert(
+            pos,
+            ReservedRegion {
+                addr,
+                len: aligned_len,
+            },
+        );
+        addr
+    }
+
+    pub fn reserve_host_region_at(&mut self, addr: usize, len: usize) -> usize {
+        if len == 0 || addr & 0xFFFF != 0 {
+            return wasm_posix_shared::mmap::MAP_FAILED;
+        }
+        let aligned_len = match len.checked_add(0xFFFF) {
+            Some(v) => v & !0xFFFF,
+            None => return wasm_posix_shared::mmap::MAP_FAILED,
+        };
+        let end = match addr.checked_add(aligned_len) {
+            Some(v) => v,
+            None => return wasm_posix_shared::mmap::MAP_FAILED,
+        };
+        if end > self.max_addr
+            || self.overlaps_reserved_prefix(addr, aligned_len)
+            || self.overlaps_host_control(addr, aligned_len)
+            || self.overlaps_mappings(addr, aligned_len)
+            || self.overlaps_reserved_regions(addr, aligned_len)
+            || (self.reserved_until != 0 && self.overlaps_brk_heap(addr, aligned_len))
+        {
+            return wasm_posix_shared::mmap::MAP_FAILED;
+        }
+
+        let pos = self.reserved_regions.partition_point(|r| r.addr < addr);
+        self.reserved_regions.insert(
+            pos,
+            ReservedRegion {
+                addr,
+                len: aligned_len,
+            },
+        );
+        addr
     }
 
     /// Lower the upper bound for mmap allocation.
@@ -935,5 +1037,96 @@ mod tests {
         let addr = mm.mmap_anonymous(0, 0x10000, rw, anon);
         mm.extend_mapping(addr, 0x10000, 0x20000);
         assert!(mm.is_mapped(addr + 0x10000)); // extended area is now mapped
+    }
+
+    #[test]
+    fn test_host_reserved_region_blocks_mmap_and_reuses_next_gap() {
+        let mut mm = MemoryManager::new();
+        let rw = PROT_READ | PROT_WRITE;
+        let anon = MAP_PRIVATE | MAP_ANONYMOUS;
+        let fixed_anon = MAP_FIXED | anon;
+
+        let reserved = mm.reserve_host_region(0x10000);
+        assert_ne!(reserved, MAP_FAILED);
+        assert!(mm.overlaps_host_reserved_region(reserved, 0x10000));
+
+        let fixed = mm.mmap_anonymous(reserved, 0x10000, rw, fixed_anon);
+        assert_eq!(fixed, MAP_FAILED);
+
+        let mapped = mm.mmap_anonymous(0, 0x10000, rw, anon);
+        assert_eq!(mapped, reserved + 0x10000);
+    }
+
+    #[test]
+    fn test_host_reserved_region_at_keeps_exact_fork_caller_slot() {
+        let mut mm = MemoryManager::new();
+        let rw = PROT_READ | PROT_WRITE;
+        let fixed_anon = MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED;
+        let slot_addr = MemoryManager::MMAP_BASE;
+
+        let reserved = mm.reserve_host_region_at(slot_addr, 0x40000);
+        assert_eq!(reserved, slot_addr);
+        assert_eq!(
+            mm.reserved_regions(),
+            &[ReservedRegion {
+                addr: slot_addr,
+                len: 0x40000,
+            }]
+        );
+
+        let fixed = mm.mmap_anonymous(slot_addr, 0x10000, rw, fixed_anon);
+        assert_eq!(fixed, MAP_FAILED);
+
+        let next = mm.reserve_host_region(0x40000);
+        assert_eq!(next, slot_addr + 0x40000);
+    }
+
+    #[test]
+    fn test_host_reserved_region_at_rejects_guest_owned_ranges() {
+        let mut mm = MemoryManager::new();
+        let rw = PROT_READ | PROT_WRITE;
+        let anon = MAP_PRIVATE | MAP_ANONYMOUS;
+        let brk_base = 0x00200000;
+        mm.set_brk_base(brk_base);
+        mm.set_mmap_base(brk_base);
+        assert_eq!(mm.set_brk(brk_base + 0x20000), brk_base + 0x20000);
+
+        assert_eq!(
+            mm.reserve_host_region_at(brk_base + 0x10000, 0x10000),
+            MAP_FAILED,
+        );
+
+        let mapped = mm.mmap_anonymous(0, 0x10000, rw, anon);
+        assert_ne!(mapped, MAP_FAILED);
+        assert_eq!(mm.reserve_host_region_at(mapped, 0x10000), MAP_FAILED);
+        assert_eq!(mm.reserve_host_region_at(mapped + 1, 0x10000), MAP_FAILED);
+    }
+
+    #[test]
+    fn test_host_reserved_region_blocks_brk_growth() {
+        let mut mm = MemoryManager::new();
+        let brk_base = 0x00200000;
+        mm.set_brk_base(brk_base);
+        mm.set_mmap_base(brk_base);
+
+        let reserved = mm.reserve_host_region(0x10000);
+        assert_eq!(reserved, brk_base);
+
+        let result = mm.set_brk(brk_base + 0x10000);
+        assert_eq!(result, brk_base);
+        assert_eq!(mm.get_brk(), brk_base);
+    }
+
+    #[test]
+    fn test_host_reserved_region_blocks_mapping_growth() {
+        let mut mm = MemoryManager::new();
+        let rw = PROT_READ | PROT_WRITE;
+        let anon = MAP_PRIVATE | MAP_ANONYMOUS;
+
+        let mapped = mm.mmap_anonymous(0, 0x10000, rw, anon);
+        let reserved = mm.reserve_host_region(0x10000);
+        assert_eq!(reserved, mapped + 0x10000);
+
+        assert!(!mm.can_grow_at(mapped + 0x10000, 0x10000));
     }
 }

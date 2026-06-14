@@ -12,6 +12,8 @@ export default defineConfig({
   workers: process.env.CI ? 1 : undefined,
   use: {
     baseURL: `http://127.0.0.1:${port}`,
+    screenshot: "only-on-failure",
+    trace: process.env.CI ? "retain-on-failure" : "off",
   },
   webServer: {
     command: `npx vite --config ${join(__dirname, "vite.config.ts")} --host 127.0.0.1 --port ${port} --strictPort`,
@@ -32,12 +34,16 @@ export default defineConfig({
     },
     {
       name: "firefox",
-      testMatch: "coi.spec.ts",
+      testMatch: ["coi.spec.ts", "wasm-trap-signal.spec.ts"],
       use: { browserName: "firefox" },
     },
     {
       name: "webkit",
-      testMatch: ["coi.spec.ts", "kandelo-webkit-smoke.spec.ts"],
+      testMatch: [
+        "coi.spec.ts",
+        "kandelo-webkit-smoke.spec.ts",
+        "wasm-trap-signal.spec.ts",
+      ],
       use: { browserName: "webkit" },
     },
   ],

@@ -69,26 +69,6 @@ const SPIDERMONKEY_NODE_PRESENTATION: DemoPresentation = {
   internalsAccess: "drawer",
 };
 
-const SM_NODE_WORKER_RUNTIME_COMMAND = [
-  "node -e \"",
-  "const assert=require('node:assert');",
-  "const path=require('path');",
-  "const {Worker}=require('worker_threads');",
-  "const b=Buffer.from('Kandelo');",
-  "assert.strictEqual(path.basename('/usr/bin/node'),'node');",
-  "console.log('SpiderMonkey Node', process.version, process.arch);",
-  "console.log(b.toString('hex'));",
-  "console.log(new Intl.NumberFormat('de-DE').format(1234567.89));",
-  "const sab=new SharedArrayBuffer(8);",
-  "const view=new Int32Array(sab);",
-  "const worker=new Worker('const view=new Int32Array(workerData); Atomics.store(view,0,42); Atomics.store(view,1,1); Atomics.notify(view,1);',{eval:true,workerData:sab});",
-  "if(Atomics.load(view,1)===0) Atomics.wait(view,1,0,5000);",
-  "if(Atomics.load(view,1)!==1) throw new Error('worker did not finish');",
-  "console.log('worker', Atomics.load(view,0));",
-  "worker.terminate();",
-  "\"",
-].join(" ");
-
 const SM_NODE_WORKER_DEMO_COMMAND = [
   "node -e \"",
   "const {Worker}=require('worker_threads');",
@@ -119,10 +99,6 @@ function isWebKitLikeBrowser(): boolean {
 
 function spiderMonkeyNodeRuntimeCommand(): string {
   return SM_NODE_WORKER_DEMO_COMMAND;
-}
-
-function spiderMonkeyNodeSmokeCommand(): string {
-  return `${SM_NODE_WORKER_RUNTIME_COMMAND} && npm --version`;
 }
 
 function spiderMonkeyNodeGuide(): DemoGuideConfig {
@@ -173,7 +149,7 @@ function spiderMonkeyNodeGuide(): DemoGuideConfig {
     script: {
       title: "SpiderMonkey Node script",
       language: "sh",
-      initialText: `${runtimeCommand}\n${SM_NODE_COWSAY_DEMO_COMMAND}`,
+      initialText: SM_NODE_COWSAY_DEMO_COMMAND,
     },
     companion: {
       title: "Companion HTML",
@@ -269,9 +245,10 @@ export async function createLiveSpiderMonkeyNodeHost(
       await previousKernel.destroy().catch(() => {});
     }
     h.detachKernel();
+    const bootStartedAt = performance.now();
 
     try {
-      const kernel = await boot(h, nextDescriptor, () => seq === bootSeq);
+      const kernel = await boot(h, nextDescriptor, bootStartedAt, () => seq === bootSeq);
       if (seq !== bootSeq) {
         await kernel.destroy().catch(() => {});
         return;
@@ -282,7 +259,7 @@ export async function createLiveSpiderMonkeyNodeHost(
       currentKernel = null;
       h.detachKernel();
       const message = err instanceof Error ? err.message : String(err);
-      h.pushDmesg({ t: 50, level: "err", facility: "kandelo", msg: message });
+      h.pushDmesg({ t: bootElapsedMs(bootStartedAt), level: "err", facility: "kandelo", msg: message });
       h.setStatus("error");
     }
   }
@@ -291,6 +268,7 @@ export async function createLiveSpiderMonkeyNodeHost(
 async function boot(
   host: LiveKernelHost,
   descriptor: BootDescriptor,
+  bootStartedAt: number,
   isCurrent: () => boolean,
 ): Promise<BrowserKernel> {
   const assertCurrent = () => {
@@ -304,10 +282,9 @@ async function boot(
   host.setDemoGuide(null);
   host.setStatus("booting");
 
-  let t = 0;
   const tick = (msg: string) => {
     if (!isCurrent()) return;
-    host.pushDmesg({ t: (t += 50), level: "info", facility: "kandelo", msg });
+    host.pushDmesg({ t: bootElapsedMs(bootStartedAt), level: "info", facility: "kandelo", msg });
   };
   let kernel: BrowserKernel | null = null;
 
@@ -371,14 +348,11 @@ async function boot(
     host.setPresentation(SPIDERMONKEY_NODE_PRESENTATION);
     host.setDemoGuide(spiderMonkeyNodeGuide());
     host.setDefaultShell({
+      programPath: "/bin/bash",
       programBytes: bashBytes,
       argv: ["bash", "-l", "-i"],
       env: SHELL_ENV,
       cwd: "/work",
-    });
-    tick("running SpiderMonkey Node smoke...");
-    await host.runShellCommand(spiderMonkeyNodeSmokeCommand()).catch((err) => {
-      tick(`command failed: ${err instanceof Error ? err.message : String(err)}`);
     });
     assertCurrent();
     tick("ready");
@@ -390,6 +364,10 @@ async function boot(
     }
     throw err;
   }
+}
+
+function bootElapsedMs(bootStartedAt: number): number {
+  return Math.max(0, performance.now() - bootStartedAt);
 }
 
 function rewriteNodeLazyFileUrl(fs: MemoryFileSystem): void {
