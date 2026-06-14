@@ -16,9 +16,10 @@
 # falls back to the in-tree `ncurses-install/` layout.
 #
 # Produces libncursesw.a and libtinfow.a with compiled-in fallback
-# terminal entries (xterm-256color, xterm, vt100, dumb). Consumers
-# don't need a runtime terminfo database — ncurses resolves these
-# names against the linked-in table.
+# terminal entries (xterm-256color, xterm, vt100, dumb), plus the
+# standard ncurses terminal utilities as wasm program outputs. Consumers
+# don't need a runtime terminfo database for the common demo terminals —
+# ncurses resolves these names against the linked-in table.
 #
 # Host `tic` and `infocmp` are needed during the build to regenerate
 # `fallback.c` from `terminfo.src`. They live under
@@ -28,6 +29,7 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
 SRC_DIR="$SCRIPT_DIR/ncurses-src"
 
 # --- Inputs from resolver, with legacy fallbacks ---
@@ -139,56 +141,49 @@ export ac_cv_sizeof_void_p=4
         --without-ada \
         --without-tests \
         --without-manpages \
-        --without-progs \
         --with-termlib \
         --without-debug \
         --without-profile \
         --without-shared \
         --with-normal \
-        --disable-database \
+        --disable-db-install \
+        --with-default-terminfo-dir=/usr/share/terminfo \
+        --with-terminfo-dirs=/usr/share/terminfo \
         --with-fallbacks=xterm-256color,xterm,vt100,dumb \
+        --with-tic-path="$HOST_TIC" \
+        --with-infocmp-path="$HOST_INFOCMP" \
         --enable-pc-files=no \
         --with-pkg-config=no \
         --disable-stripping \
         --enable-widec \
         2>&1 | tail -20
 
-    # The cross-compiled `tic` can't run during `make`, so MKfallback.sh
-    # would produce an empty fallback.c. Stub it out now and regenerate
-    # it below with the host-built tic/infocmp.
-    cat > ncurses/fallback.c <<'STUB'
-#include <curses.priv.h>
-NCURSES_EXPORT(const TERMTYPE2 *)
-_nc_fallback2(const char *name GCC_UNUSED)
-{ return (0); }
-#if NCURSES_EXT_NUMBERS
-NCURSES_EXPORT(const TERMTYPE *)
-_nc_fallback(const char *name GCC_UNUSED)
-{ return (0); }
-#endif
-STUB
+    # On Darwin hosts, ncurses' configure probes add `-dynamic` as the
+    # counterpart to `-static` in generated program link flags. The
+    # wasm32 SDK links static binaries and clang rejects both switches
+    # together, so strip the host-only dynamic-mode flag.
+    for makefile in progs/Makefile ncurses/Makefile; do
+        if [ -f "$makefile" ]; then
+            sed -i.bak 's/[[:space:]]-dynamic//g' "$makefile"
+        fi
+    done
+
+    # The target utilities are statically linked, so the fallback table
+    # must be present before `make` links clear/tput/etc. Generate it
+    # with the host tic/infocmp configured above; the target tic cannot
+    # run on the build host.
+    echo "==> Generating fallback terminal entries..."
+    TERMINFO_SRC="$SRC_DIR/misc/terminfo.src"
+    MKFALLBACK="$SRC_DIR/ncurses/tinfo/MKfallback.sh"
+    TERMINFO="$TERMINFO_DIR" bash -e "$MKFALLBACK" \
+        "$TERMINFO_DIR" "$TERMINFO_SRC" "$HOST_TIC" "$HOST_INFOCMP" \
+        xterm-256color xterm vt100 dumb \
+        > ncurses/fallback.c 2>/dev/null
 
     echo "==> Building ncurses..."
     make -j"$(sysctl -n hw.ncpu 2>/dev/null || nproc)" 2>&1 | tail -20
 )
 
-# --- Regenerate fallback.c with real terminal entries, recompile, re-archive ---
-echo "==> Regenerating fallback terminal entries..."
-TERMINFO_SRC="$SRC_DIR/misc/terminfo.src"
-MKFALLBACK="$SRC_DIR/ncurses/tinfo/MKfallback.sh"
-TERMINFO="$TERMINFO_DIR" bash -e "$MKFALLBACK" \
-    "$TERMINFO_DIR" "$TERMINFO_SRC" "$HOST_TIC" "$HOST_INFOCMP" \
-    xterm-256color xterm vt100 dumb \
-    > "$WASM_BUILD_DIR/ncurses/fallback.c" 2>/dev/null
-
-(
-    cd "$WASM_BUILD_DIR"
-    wasm32posix-cc -I./ncurses -I./include -I"$SRC_DIR/ncurses" -I"$SRC_DIR/include" \
-        -DHAVE_CONFIG_H -DNDEBUG -O2 -DNCURSES_STATIC -DUSE_TERMLIB \
-        -c ncurses/fallback.c -o objects/fallback.o 2>&1 | grep -v warning || true
-    wasm32posix-ar r lib/libtinfow.a objects/fallback.o 2>&1
-    wasm32posix-ranlib lib/libtinfow.a
-)
 echo "==> Fallback entries compiled into libtinfow.a"
 
 # --- Install into $INSTALL_DIR ---
@@ -223,10 +218,51 @@ echo "==> Installing to $INSTALL_DIR..."
     done
 )
 
+source_program_for() {
+    case "$1" in
+        reset) echo "tset" ;;
+        captoinfo | infotocap) echo "tic" ;;
+        *) echo "$1" ;;
+    esac
+}
+
+# --- Collect ncurses utility program outputs ---
+NCURSES_PROGRAMS=(
+    clear
+    reset
+    tset
+    tput
+    tabs
+    tic
+    infocmp
+    toe
+    captoinfo
+    infotocap
+)
+BIN_DIR="$SCRIPT_DIR/bin"
+rm -rf "$BIN_DIR"
+mkdir -p "$BIN_DIR"
+
+for program in "${NCURSES_PROGRAMS[@]}"; do
+    source_program="$(source_program_for "$program")"
+    source_path="$INSTALL_DIR/bin/$source_program"
+    if [ ! -f "$source_path" ]; then
+        echo "ERROR: expected ncurses program not found: $source_path" >&2
+        exit 1
+    fi
+    cp "$source_path" "$BIN_DIR/$program.wasm"
+done
+
+source "$REPO_ROOT/scripts/install-local-binary.sh"
+for program in "${NCURSES_PROGRAMS[@]}"; do
+    install_local_binary ncurses "$BIN_DIR/$program.wasm"
+done
+
 if [ -f "$INSTALL_DIR/lib/libncursesw.a" ] && [ -f "$INSTALL_DIR/lib/libtinfow.a" ]; then
     echo ""
     echo "==> ncurses $NCURSES_VERSION built successfully!"
     ls -lh "$INSTALL_DIR/lib/libncursesw.a" "$INSTALL_DIR/lib/libtinfow.a"
+    ls -lh "$BIN_DIR"/*.wasm
 else
     echo "ERROR: Build failed — expected libraries not found" >&2
     exit 1

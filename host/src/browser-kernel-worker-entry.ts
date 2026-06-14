@@ -200,6 +200,7 @@ interface ThreadWorkerInfo {
 }
 const threadWorkers = new Map<number, ThreadWorkerInfo[]>();
 const threadExits = new ThreadExitCoordinator();
+const reportedNonzeroProcessExits = new Set<number>();
 
 function delay(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -218,6 +219,34 @@ function processWorkerTerminationSettleMs(argv: readonly string[] | undefined): 
   return name === "node" || name === "spidermonkey-node" || name === "spidermonkey-node.wasm"
     ? NODE_PROCESS_WORKER_TERMINATION_SETTLE_MS
     : 0;
+}
+
+function reportNonzeroProcessExitDiagnostic(
+  pid: number,
+  status: number,
+  source: string,
+): void {
+  if (status === 0 || reportedNonzeroProcessExits.has(pid)) return;
+  reportedNonzeroProcessExits.add(pid);
+  const info = processes.get(pid);
+  const syscalls = kernelWorker.dumpLastSyscalls(pid) || "<none>";
+  const serviceLog = readServiceLogForProcess(info?.argv);
+  const diagnostic =
+    `[kernel-worker] nonzero process exit pid=${pid} status=${status} source=${source} argv=${JSON.stringify(info?.argv ?? [])}` +
+    (serviceLog ? `\n${serviceLog}` : "") +
+    `\n${syscalls}`;
+  console.warn(diagnostic);
+  post({ type: "stderr", pid, data: new TextEncoder().encode(`${diagnostic}\n`) });
+}
+
+function readServiceLogForProcess(argv: readonly string[] | undefined): string | null {
+  const name = basename(argv?.[0] ?? "");
+  const logPath = name === "nginx" ? "/var/log/nginx.log" : null;
+  if (!logPath) return null;
+  const bytes = readFileFromFs(logPath);
+  if (!bytes || bytes.byteLength === 0) return `${logPath}: <empty>`;
+  const text = new TextDecoder("utf-8", { fatal: false }).decode(bytes).trimEnd();
+  return `${logPath}:\n${text || "<empty>"}`;
 }
 
 async function waitForProcessTeardowns(): Promise<void> {
@@ -319,11 +348,66 @@ function threadAllocatorForLayout(
   });
 }
 
+interface ProcessMemoryAllocationContext {
+  operation: "spawn" | "exec" | "posix_spawn";
+  path?: string;
+  argv?: readonly string[];
+}
+
+function processMemoryAllocationDiagnostics(
+  pid: number,
+  ptrWidth: 4 | 8,
+  layout: ProcessMemoryLayout,
+  heapBase: bigint | number | null,
+  context?: ProcessMemoryAllocationContext,
+) {
+  let totalLiveBufferBytes = 0;
+  const liveProcesses = Array.from(processes.entries())
+    .sort(([a], [b]) => a - b)
+    .map(([livePid, info]) => {
+      const bufferBytes = info.memory.buffer.byteLength;
+      totalLiveBufferBytes += bufferBytes;
+      return {
+        pid: livePid,
+        argv: info.argv.slice(0, 8),
+        ptrWidth: info.ptrWidth,
+        currentPages: Math.ceil(bufferBytes / PAGE_SIZE),
+        maximumPages: info.layout.maximumPages,
+        bufferBytes,
+      };
+    });
+
+  return {
+    operation: context?.operation,
+    pid,
+    path: context?.path,
+    argv: context?.argv,
+    ptrWidth,
+    heapBase: heapBase == null ? null : heapBase.toString(),
+    requestedLayout: {
+      initialPages: layout.initialPages,
+      maximumPages: layout.maximumPages,
+      controlBase: layout.controlBase,
+      brkBase: layout.brkBase,
+      mmapBase: layout.mmapBase,
+      maxAddr: layout.maxAddr,
+      threadSlotCount: layout.threadSlotCount,
+      threadArenaEndPage: layout.threadArenaEndPage,
+    },
+    liveProcessCount: processes.size,
+    pendingProcessTeardowns: processTeardowns.size,
+    pendingWorkerTeardowns: workerTeardowns.size,
+    totalLiveBufferBytes,
+    liveProcesses,
+  };
+}
+
 function createFreshProcessMemory(
   pid: number,
   programBytes: ArrayBuffer,
   ptrWidth: 4 | 8,
   processMaxPages = maxPages,
+  context?: ProcessMemoryAllocationContext,
 ): {
   memory: WebAssembly.Memory;
   layout: ProcessMemoryLayout;
@@ -337,7 +421,18 @@ function createFreshProcessMemory(
     programBytes,
     heapBase,
   });
-  const memory = createProcessMemory(ptrWidth, layout);
+  let memory: WebAssembly.Memory;
+  try {
+    memory = createProcessMemory(ptrWidth, layout);
+  } catch (e) {
+    console.error(
+      "[kernel-worker] process memory allocation failed",
+      JSON.stringify(
+        processMemoryAllocationDiagnostics(pid, ptrWidth, layout, heapBase, context),
+      ),
+    );
+    throw e;
+  }
   new Uint8Array(memory.buffer, layout.channelOffset, CH_TOTAL_SIZE).fill(0);
   return {
     memory,
@@ -658,13 +753,18 @@ async function handleSpawn(msg: Extract<MainToKernelMessage, { type: "spawn" }>)
     // Pid: if the caller pre-picked one, honor it (legacy spawn() callers
     // still do); otherwise the worker is the source of truth and allocates.
     const pid = msg.pid ?? kernelWorker.allocatePid();
+    const path = msg.programPath ?? msg.argv[0];
     const pages = msg.maxPages ?? maxPages;
     const ptrWidth = detectPtrWidth(programBytes);
     const {
       memory,
       layout,
       threadAllocator,
-    } = createFreshProcessMemory(pid, programBytes, ptrWidth, pages);
+    } = createFreshProcessMemory(pid, programBytes, ptrWidth, pages, {
+      operation: "spawn",
+      path,
+      argv: msg.argv,
+    });
     const channelOffset = layout.channelOffset;
 
     kernelWorker.registerProcess(pid, memory, [channelOffset], {
@@ -763,6 +863,7 @@ function installProcessWorkerListeners(
     } else {
       console.warn(message);
     }
+    reportNonzeroProcessExitDiagnostic(pid, status, source);
     handleExit(pid, status, crashSignum);
   };
 
@@ -933,7 +1034,11 @@ async function handleExec(
     memory: newMemory,
     layout: newLayout,
     threadAllocator: newThreadAllocator,
-  } = createFreshProcessMemory(pid, bytes, ptrWidth);
+  } = createFreshProcessMemory(pid, bytes, ptrWidth, maxPages, {
+    operation: "exec",
+    path,
+    argv: launchArgv,
+  });
   const newChannelOffset = newLayout.channelOffset;
 
   kernelWorker.registerProcess(pid, newMemory, [newChannelOffset], {
@@ -1039,7 +1144,11 @@ async function handlePosixSpawn(
     memory: newMemory,
     layout: newLayout,
     threadAllocator,
-  } = createFreshProcessMemory(childPid, programBytes, ptrWidth);
+  } = createFreshProcessMemory(childPid, programBytes, ptrWidth, maxPages, {
+    operation: "posix_spawn",
+    path: argv[0],
+    argv,
+  });
   const newChannelOffset = newLayout.channelOffset;
 
   // Kernel already created the child via kernel_spawn_process.
@@ -1224,6 +1333,7 @@ async function finishProcessExit(
   if (processTeardowns.has(pid)) return;
 
   const info = processes.get(pid);
+  reportNonzeroProcessExitDiagnostic(pid, exitStatus, "kernel process exit");
   const threadedSettleMs = threadedProcessPids.has(pid)
     ? THREADED_WORKER_TERMINATION_SETTLE_MS
     : 0;

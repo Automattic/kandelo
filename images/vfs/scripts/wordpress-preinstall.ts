@@ -36,6 +36,11 @@ const MYSQL_UID = 101;
 const MYSQL_GID = 101;
 const MARIADB_SOCKET_PATH = "/tmp/mysql.sock";
 const MARIADB_PREINSTALL_SOCKET_PATH = "/data/mysql.sock";
+const MARIADB_ARIA_LOG_FILE_SIZE = 16 * 1024 * 1024;
+const MARIADB_ARIA_PAGECACHE_SIZE = 1024 * 1024;
+const MARIADB_INNODB_LOG_FILE_SIZE = 16 * 1024 * 1024;
+const MARIADB_INNODB_LOG_BUFFER_SIZE = 1024 * 1024;
+const MARIADB_INNODB_BUFFER_POOL_SIZE = 8 * 1024 * 1024;
 
 const BASE_ENV = [
   "HOME=/tmp",
@@ -58,7 +63,6 @@ const DUMP_END = "===WPDB_DUMP_END===";
 
 interface KernelSession {
   host: NodeKernelHost;
-  dashBytes: ArrayBuffer;
   hostDataDir?: string;
   runPhp: (phase: string, script: string, opts?: RunPhpOptions) => Promise<Uint8Array>;
   runPhpToHostFile: (
@@ -243,10 +247,8 @@ async function withKernelSession(
   try {
     await host.init();
     const phpBytes = loadProgram("programs/php/php.wasm");
-    const dashBytes = loadProgram("programs/dash.wasm");
     const session: KernelSession = {
       host,
-      dashBytes,
       hostDataDir,
       runPhp: async (phase, script, opts = {}) => {
         const chunks: Uint8Array[] = [];
@@ -324,6 +326,11 @@ function mariadbServerArgs(): string[] {
     "--datadir=/data",
     "--tmpdir=/data/tmp",
     "--default-storage-engine=Aria",
+    `--aria-log-file-size=${MARIADB_ARIA_LOG_FILE_SIZE}`,
+    `--aria-pagecache-buffer-size=${MARIADB_ARIA_PAGECACHE_SIZE}`,
+    `--innodb-log-file-size=${MARIADB_INNODB_LOG_FILE_SIZE}`,
+    `--innodb-log-buffer-size=${MARIADB_INNODB_LOG_BUFFER_SIZE}`,
+    `--innodb-buffer-pool-size=${MARIADB_INNODB_BUFFER_POOL_SIZE}`,
     "--skip-grant-tables",
     "--key-buffer-size=1048576",
     "--table-open-cache=10",
@@ -342,6 +349,11 @@ function mariadbBootstrapArgs(): string[] {
     "--datadir=/data",
     "--tmpdir=/data/tmp",
     "--default-storage-engine=Aria",
+    `--aria-log-file-size=${MARIADB_ARIA_LOG_FILE_SIZE}`,
+    `--aria-pagecache-buffer-size=${MARIADB_ARIA_PAGECACHE_SIZE}`,
+    `--innodb-log-file-size=${MARIADB_INNODB_LOG_FILE_SIZE}`,
+    `--innodb-log-buffer-size=${MARIADB_INNODB_LOG_BUFFER_SIZE}`,
+    `--innodb-buffer-pool-size=${MARIADB_INNODB_BUFFER_POOL_SIZE}`,
     "--skip-grant-tables",
     "--key-buffer-size=1048576",
     "--table-open-cache=10",
@@ -404,13 +416,18 @@ async function bootstrapMariaDbSystemTables(
   bootstrapExit.catch(() => {});
   await withTimeout(started, 10_000, "mariadbd bootstrap did not start");
 
+  const wordpressDataDir = join(session.hostDataDir, "wordpress");
   try {
     await Promise.race([
-      waitForHostPath(join(session.hostDataDir, "wordpress"), 120_000),
+      waitForHostPath(wordpressDataDir, 120_000),
       bootstrapExit.then((code) => {
+        if (code === 0 && hostPathExists(wordpressDataDir)) return;
         throw new Error(`mariadbd bootstrap exited before creating wordpress database with code ${code}`);
       }),
     ]);
+    if (!hostPathExists(wordpressDataDir)) {
+      await waitForHostPath(wordpressDataDir, 2_000);
+    }
     await delay(60_000);
   } catch (err) {
     const diagnostics = collectHostMariaDbDiagnostics(session.hostDataDir);
@@ -809,6 +826,15 @@ async function waitForHostPath(path: string, timeoutMs: number): Promise<void> {
     }
   }
   throw new Error(`timed out waiting for host path: ${path}`);
+}
+
+function hostPathExists(path: string): boolean {
+  try {
+    lstatSync(path);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 async function withTimeout<T>(

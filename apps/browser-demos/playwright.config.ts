@@ -12,6 +12,8 @@ export default defineConfig({
   workers: process.env.CI ? 1 : undefined,
   use: {
     baseURL: `http://127.0.0.1:${port}`,
+    screenshot: "only-on-failure",
+    trace: process.env.CI ? "retain-on-failure" : "off",
   },
   webServer: {
     command: `npx vite --config ${join(__dirname, "vite.config.ts")} --host 127.0.0.1 --port ${port} --strictPort`,

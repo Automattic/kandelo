@@ -227,6 +227,13 @@ function _validateString(value, name) {
     }
 }
 
+function _makeUnsupportedPlatformError(feature) {
+    return _makeNodeError(
+        `${feature} is not supported in Kandelo's SpiderMonkey Node compatibility runtime`,
+        'ERR_FEATURE_UNAVAILABLE_ON_PLATFORM',
+    );
+}
+
 function _throwErrno(errno, syscall, path) {
     const code = _errnoToCode(errno);
     const msg = `${code}: ${syscall}` + (path ? ` '${path}'` : '');
@@ -4966,6 +4973,166 @@ const child_process = (() => {
 })();
 
 // ============================================================
+// cluster module
+// ============================================================
+
+const cluster = (() => {
+    const SCHED_NONE = 1;
+    const SCHED_RR = 2;
+    const mod = new events.EventEmitter();
+
+    function initEmitter(target) {
+        const emitter = new events.EventEmitter();
+        target._events = emitter._events;
+        target._maxListeners = emitter._maxListeners;
+    }
+
+    function Worker(options) {
+        if (!(this instanceof Worker)) return new Worker(options);
+        initEmitter(this);
+        if (options === null || typeof options !== 'object') options = {};
+        this.exitedAfterDisconnect = undefined;
+        this.state = options.state || 'none';
+        this.id = options.id | 0;
+        if (options.process) {
+            this.process = options.process;
+            if (typeof this.process.on === 'function') {
+                this.process.on('error', (code, signal) => this.emit('error', code, signal));
+                this.process.on('message', (message, handle) => this.emit('message', message, handle));
+                this.process.on('disconnect', () => this._markDisconnected());
+                this.process.on('exit', () => this._markDead());
+            }
+        }
+    }
+
+    Worker.prototype = Object.create(events.EventEmitter.prototype);
+    Object.defineProperty(Worker.prototype, 'constructor', {
+        value: Worker,
+        writable: true,
+        configurable: true,
+    });
+
+    Worker.prototype._markDisconnected = function() {
+        if (this.state === 'dead' || this.state === 'disconnected') return;
+        this.state = 'disconnected';
+        this.emit('disconnect');
+    };
+
+    Worker.prototype._markDead = function() {
+        this.state = 'dead';
+        this.emit('exit', this.process && this.process.exitCode, this.process && this.process.signalCode);
+    };
+
+    Worker.prototype.disconnect = function() {
+        this.exitedAfterDisconnect = true;
+        if (this.process && typeof this.process.disconnect === 'function') {
+            this.process.disconnect();
+        } else {
+            queueMicrotask(() => this._markDisconnected());
+        }
+        return this;
+    };
+
+    Worker.prototype.destroy = function(signal) {
+        if (this.process && typeof this.process.kill === 'function') {
+            this.process.kill(signal);
+        }
+        queueMicrotask(() => {
+            if (this.state !== 'dead') {
+                this._markDisconnected();
+                this._markDead();
+            }
+        });
+        return this;
+    };
+
+    Worker.prototype.kill = function(signal) {
+        return this.destroy(signal);
+    };
+
+    Worker.prototype.send = function() {
+        if (this.process && typeof this.process.send === 'function') {
+            return this.process.send.apply(this.process, arguments);
+        }
+        const callback = Array.from(arguments).find((arg) => typeof arg === 'function');
+        const err = _makeUnsupportedPlatformError('cluster worker IPC');
+        if (callback) queueMicrotask(() => callback(err));
+        else queueMicrotask(() => this.emit('error', err));
+        return false;
+    };
+
+    Worker.prototype.isDead = function() {
+        if (!this.process) return this.state === 'dead';
+        return this.process.exitCode != null || this.process.signalCode != null || this.state === 'dead';
+    };
+
+    Worker.prototype.isConnected = function() {
+        if (!this.process) return this.state !== 'disconnected' && this.state !== 'dead';
+        return this.process.connected !== false && this.state !== 'disconnected' && this.state !== 'dead';
+    };
+
+    function defaultSettings() {
+        return {
+            args: process.argv.slice(2),
+            exec: process.argv[1],
+            execArgv: process.execArgv,
+            silent: false,
+        };
+    }
+
+    function emitSetup(settings) {
+        queueMicrotask(() => mod.emit('setup', settings));
+    }
+
+    function setupPrimary(options) {
+        const settings = {
+            ...defaultSettings(),
+            ...mod.settings,
+            ...(options && typeof options === 'object' ? options : {}),
+        };
+        mod.settings = settings;
+        emitSetup(settings);
+        return settings;
+    }
+
+    function fork() {
+        throw _makeUnsupportedPlatformError('cluster.fork');
+    }
+
+    function disconnect(callback) {
+        const workers = Object.keys(mod.workers).map((id) => mod.workers[id]);
+        if (typeof callback === 'function') mod.once('disconnect', callback);
+        queueMicrotask(() => {
+            for (const worker of workers) {
+                if (worker && typeof worker.isConnected === 'function' && worker.isConnected()) {
+                    worker.disconnect();
+                }
+            }
+            mod.emit('disconnect');
+        });
+    }
+
+    Object.assign(mod, {
+        isMaster: true,
+        isPrimary: true,
+        isWorker: false,
+        worker: undefined,
+        workers: {},
+        settings: {},
+        SCHED_NONE,
+        SCHED_RR,
+        schedulingPolicy: SCHED_RR,
+        setupPrimary,
+        setupMaster: setupPrimary,
+        disconnect,
+        fork,
+        Worker,
+    });
+
+    return mod;
+})();
+
+// ============================================================
 // crypto module (minimal)
 // ============================================================
 
@@ -7874,11 +8041,7 @@ const _builtinModules = {
             workerData: null,
             Worker: class Worker {},
         },
-    'cluster': {
-        isMaster: true,
-        isPrimary: true,
-        isWorker: false,
-    },
+    'cluster': cluster,
     // node:console — exposes the Console class so libs (e.g. undici's mock
     // formatter) can construct a logger backed by arbitrary streams. The
     // global `console` in some engines is not an instance of this class; that

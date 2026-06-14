@@ -774,6 +774,61 @@ describe.skipIf(!nodeWasm)("SpiderMonkey Node compatibility runtime", () => {
     expect(result.stdout.trim()).toBe("ERR_ASSERTION:true:true");
   }, DEFAULT_TEST_TIMEOUT);
 
+  it("exposes primary cluster setup, Worker, and disconnect control APIs", async () => {
+    const result = await runNode(
+      [
+        "const assert = require('node:assert')",
+        "const cluster = require('node:cluster')",
+        "assert.strictEqual(cluster.isPrimary, true)",
+        "assert.strictEqual(cluster.isMaster, true)",
+        "assert.strictEqual(cluster.isWorker, false)",
+        "assert.deepStrictEqual(cluster.settings, {})",
+        "let setupCount = 0",
+        "cluster.on('setup', (settings) => {",
+        "  setupCount++",
+        "  console.log('setup:' + settings.exec + ':' + settings.args.join(','))",
+        "})",
+        "process.argv = ['node', '/tmp/entry.js', 'one']",
+        "cluster.setupPrimary()",
+        "cluster.setupMaster({ exec: '/tmp/override.js', args: ['two'], cwd: '/tmp', serialization: 'advanced' })",
+        "assert.deepStrictEqual(cluster.settings, {",
+        "  args: ['two'],",
+        "  exec: '/tmp/override.js',",
+        "  execArgv: [],",
+        "  silent: false,",
+        "  cwd: '/tmp',",
+        "  serialization: 'advanced',",
+        "})",
+        "const worker = new cluster.Worker({ id: 3, state: 'online', process })",
+        "assert.strictEqual(worker.exitedAfterDisconnect, undefined)",
+        "assert.strictEqual(worker.id, 3)",
+        "assert.strictEqual(worker.state, 'online')",
+        "assert.strictEqual(worker.process, process)",
+        "const calledWorker = cluster.Worker.call({}, { id: 5 })",
+        "assert(calledWorker instanceof cluster.Worker)",
+        "assert.strictEqual(calledWorker.id, 5)",
+        "assert.strictEqual(new cluster.Worker().state, 'none')",
+        "assert.strictEqual(typeof cluster.on, 'function')",
+        "assert.strictEqual(typeof cluster.once, 'function')",
+        "assert.throws(() => cluster.fork(), { code: 'ERR_FEATURE_UNAVAILABLE_ON_PLATFORM' })",
+        "let disconnected = false",
+        "cluster.disconnect(() => { disconnected = true; console.log('disconnect') })",
+        "assert.strictEqual(disconnected, false)",
+        "drainJobQueue()",
+        "assert.strictEqual(setupCount, 2)",
+        "assert.strictEqual(disconnected, true)",
+      ].join("\n"),
+    );
+
+    expect(result.exitCode).toBe(0);
+    expect(result.stderr).toBe("");
+    expect(result.stdout.trim().split("\n")).toEqual([
+      "setup:/tmp/entry.js:one",
+      "setup:/tmp/override.js:two",
+      "disconnect",
+    ]);
+  }, DEFAULT_TEST_TIMEOUT);
+
   it("resolves events.once for streams that replay cached events from on()", async () => {
     const result = await runNode(
       [

@@ -67,6 +67,8 @@ export interface DinitService {
   restart?: boolean;
   /** Seconds to wait between restart attempts (default: dinit's). */
   restartDelay?: number;
+  /** Seconds before dinit cancels startup; 0 disables dinit's start timeout. */
+  startTimeout?: number;
   /** Where to log stdout/stderr (default: /var/log/<name>.log). */
   logfile?: string;
   /** Working directory for the command. */
@@ -97,6 +99,7 @@ function renderService(svc: DinitService): string {
   } else {
     lines.push("restart = false");
   }
+  if (svc.startTimeout !== undefined) lines.push(`start-timeout = ${svc.startTimeout}`);
   if (svc.logfile !== undefined) {
     lines.push(`logfile = ${svc.logfile}`);
   }
