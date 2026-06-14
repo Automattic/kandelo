@@ -70,6 +70,9 @@ export const IMAGE_MEMFS_MAX_BYTES = 1 * 1024 * 1024 * 1024;
  */
 export const BROWSER_SCRATCH_SAB_BYTES = 16 * 1024 * 1024;
 
+/** Default growth ceiling for browser scratch memfs mounts. */
+export const BROWSER_SCRATCH_MAX_BYTES = IMAGE_MEMFS_MAX_BYTES;
+
 function readTextFile(fs: MemoryFileSystem, path: string): string | null {
   let fd: number | null = null;
   try {
@@ -144,6 +147,39 @@ export function validateSpec(spec: MountSpec[]): void {
 export interface BrowserResolverOptions {
   /** Mount path → initial SAB size in bytes. Overrides the default. */
   scratchSabBytes?: Record<string, number>;
+  /** Mount path → growable SAB maximum size in bytes. Overrides the default. */
+  scratchMaxByteLength?: Record<string, number>;
+}
+
+function createBrowserScratchBuffer(
+  byteLength: number,
+  maxByteLength: number,
+): { sab: SharedArrayBuffer; maxSizeBytes: number } {
+  const max = Math.max(byteLength, maxByteLength);
+  const SharedArrayBufferCtor = SharedArrayBuffer as new (
+    byteLength: number,
+    options?: { maxByteLength?: number },
+  ) => SharedArrayBuffer;
+
+  if (max > byteLength) {
+    try {
+      const sab = new SharedArrayBufferCtor(byteLength, { maxByteLength: max });
+      if (typeof (sab as { grow?: unknown }).grow === "function") {
+        return { sab, maxSizeBytes: max };
+      }
+    } catch {
+      // Fall through to a fixed-size SAB on runtimes without growable SAB.
+    }
+  }
+
+  return { sab: new SharedArrayBuffer(byteLength), maxSizeBytes: byteLength };
+}
+
+function defaultScratchMaxByteLength(byteLength: number): number {
+  if (byteLength < BROWSER_SCRATCH_SAB_BYTES) {
+    return byteLength * 4;
+  }
+  return BROWSER_SCRATCH_MAX_BYTES;
 }
 
 /**
@@ -174,8 +210,9 @@ export function resolveForBrowser(
       });
     } else {
       const bytes = options.scratchSabBytes?.[m.path] ?? BROWSER_SCRATCH_SAB_BYTES;
-      const sab = new SharedArrayBuffer(bytes);
-      const backend = MemoryFileSystem.create(sab);
+      const maxBytes = options.scratchMaxByteLength?.[m.path] ?? defaultScratchMaxByteLength(bytes);
+      const { sab, maxSizeBytes } = createBrowserScratchBuffer(bytes, maxBytes);
+      const backend = MemoryFileSystem.create(sab, maxSizeBytes);
       if (m.mode !== undefined) backend.chmod("/", m.mode);
       if (m.uid !== undefined || m.gid !== undefined) {
         backend.chown("/", m.uid ?? 0, m.gid ?? 0);
