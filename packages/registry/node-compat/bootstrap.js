@@ -13,10 +13,16 @@ import * as _nodeNative from 'qjs:node';
 // TextEncoder/TextDecoder polyfill for engines that do not provide it.
 // ============================================================
 
+const _TEXT_ENCODER_BRAND = Symbol('kandelo.TextEncoder');
+
 if (typeof globalThis.TextEncoder === 'undefined') {
     globalThis.TextEncoder = class TextEncoder {
-        get encoding() { return 'utf-8'; }
-        encode(str) {
+        constructor() {
+            Object.defineProperty(this, _TEXT_ENCODER_BRAND, { value: true });
+        }
+        get encoding() { _assertTextEncoder(this); return 'utf-8'; }
+        encode(str = '') {
+            _assertTextEncoder(this);
             if (typeof str !== 'string') str = String(str);
             const bytes = [];
             for (let i = 0; i < str.length; i++) {
@@ -42,6 +48,8 @@ if (typeof globalThis.TextEncoder === 'undefined') {
             return new Uint8Array(bytes);
         }
         encodeInto(str, dest) {
+            _assertTextEncoder(this);
+            if (str === undefined) str = '';
             const encoded = this.encode(str);
             const len = Math.min(encoded.length, dest.length);
             dest.set(encoded.subarray(0, len));
@@ -319,6 +327,14 @@ function _assertTextDecoder(value) {
     }
 }
 
+function _assertTextEncoder(value) {
+    if (!value || value[_TEXT_ENCODER_BRAND] !== true) {
+        const err = new TypeError('Value of "this" must be of type TextEncoder');
+        err.code = 'ERR_INVALID_THIS';
+        throw err;
+    }
+}
+
 // Some JavaScript engine parsers are very slow on multi-MB npm packuments.
 // Use the native JSON parser hook when present; fall back otherwise.
 if (typeof _nodeNative.jsonParse === 'function') {
@@ -341,6 +357,7 @@ if (typeof globalThis.atob === 'undefined') {
     for (let i = 0; i < _b64chars.length; i++) _b64lookup[_b64chars.charCodeAt(i)] = i;
 
     globalThis.btoa = function(str) {
+        if (arguments.length === 0) throw new TypeError('btoa requires an argument');
         str = String(str);
         let result = '';
         const len = str.length;
@@ -361,6 +378,7 @@ if (typeof globalThis.atob === 'undefined') {
     };
 
     globalThis.atob = function(str) {
+        if (arguments.length === 0) throw new TypeError('atob requires an argument');
         str = String(str).replace(/[\t\n\f\r ]+/g, '');
         if (str.length % 4 === 1 || /[^A-Za-z0-9+/=]/.test(str) ||
             /=.*[^=]/.test(str) || /={3,}$/.test(str)) {
@@ -2321,7 +2339,24 @@ const util = (() => {
         if (options && options.depth < 0 && obj && obj.constructor && obj.constructor.name === 'BlockList') return '[BlockList]';
         if (obj instanceof TextDecoder) {
             if (options && options.depth < 0) return '[TextDecoder]';
+            if (options && options.showHidden) {
+                const flags = (obj.fatal ? 1 : 0) | (obj.ignoreBOM ? 4 : 0);
+                return 'TextDecoder {\n' +
+                    `  encoding: '${obj.encoding}',\n` +
+                    `  fatal: ${obj.fatal},\n` +
+                    `  ignoreBOM: ${obj.ignoreBOM},\n` +
+                    `  [Symbol(flags)]: ${flags},\n` +
+                    '  [Symbol(handle)]: StringDecoder {\n' +
+                    "    encoding: 'utf8',\n" +
+                    '    [Symbol(kNativeDecoder)]: <Buffer 00 00 00 00 00 00 01>\n' +
+                    '  }\n' +
+                    '}';
+            }
             return `TextDecoder { encoding: '${obj.encoding}', fatal: ${obj.fatal}, ignoreBOM: ${obj.ignoreBOM} }`;
+        }
+        if (obj instanceof TextEncoder) {
+            if (options && options.depth < 0) return '[TextEncoder]';
+            return 'TextEncoder {}';
         }
         if (typeof globalThis.Event !== 'undefined' && obj instanceof globalThis.Event) {
             if (options && options.depth < 0) return obj.constructor && obj.constructor.name || 'Event';
@@ -2445,6 +2480,10 @@ const util = (() => {
     function formatWithOptions(_opts, ...args) { return format(...args); }
 
     const customInspectSymbol = Symbol.for('nodejs.util.inspect.custom');
+    TextEncoder.prototype[customInspectSymbol] = function() {
+        _assertTextEncoder(this);
+        return 'TextEncoder {}';
+    };
     TextDecoder.prototype[customInspectSymbol] = function(_depth, options) {
         return inspect(this, options);
     };
@@ -4333,7 +4372,13 @@ const net = (() => {
             this._push('subnet', parsed.family, start, end, prefix, `Subnet: ${label} ${parsed.address}/${prefix}`);
         }
         check(address, family) {
-            const parsed = _addressValue(address, family);
+            let parsed;
+            try {
+                parsed = _addressValue(address, family);
+            } catch (err) {
+                if (family === undefined && typeof address === 'string') return false;
+                throw err;
+            }
             for (const rule of this._rules) {
                 if (rule.family === parsed.family && parsed.value >= rule.start && parsed.value <= rule.end) return true;
                 if (rule.family === 'ipv4' && parsed.family === 'ipv6') {
@@ -4342,6 +4387,10 @@ const net = (() => {
                         const v4 = parsed.value & 0xffffffffn;
                         if (v4 >= rule.start && v4 <= rule.end) return true;
                     }
+                }
+                if (rule.family === 'ipv6' && parsed.family === 'ipv4') {
+                    const mapped = 0xffff00000000n | parsed.value;
+                    if (mapped >= rule.start && mapped <= rule.end) return true;
                 }
             }
             return false;
@@ -5651,6 +5700,8 @@ const _builtinModules = {
     'events': events,
     'buffer': {
         Buffer,
+        atob: globalThis.atob,
+        btoa: globalThis.btoa,
         SlowBuffer(size) { return Buffer.alloc(size); },
         kMaxLength: Buffer.kMaxLength,
         constants: { MAX_LENGTH: Buffer.kMaxLength, MAX_STRING_LENGTH: 0x1fffffe8 },
@@ -6997,6 +7048,16 @@ _defineGlobal('DOMException', KandeloDOMException);
 _defineGlobal('AbortSignal', KandeloAbortSignal);
 _defineGlobal('AbortController', KandeloAbortController);
 
+function _messageClone(data) {
+    if (data instanceof net.BlockList) {
+        const clone = new net.BlockList();
+        clone._rules = data._rules;
+        clone.rules = data.rules;
+        return clone;
+    }
+    return data;
+}
+
 class KandeloMessagePort extends KandeloEventTarget {
     constructor() {
         super();
@@ -7009,7 +7070,7 @@ class KandeloMessagePort extends KandeloEventTarget {
         const target = this._peer;
         queueMicrotask(() => {
             if (target._closed) return;
-            const event = new KandeloMessageEvent('message', { data });
+            const event = new KandeloMessageEvent('message', { data: _messageClone(data) });
             if (typeof target.onmessage === 'function') target.onmessage.call(target, event);
             target.dispatchEvent(event);
         });
