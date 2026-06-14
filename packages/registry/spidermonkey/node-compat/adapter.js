@@ -172,9 +172,14 @@
             const result = typeof shellOs.popenRead === 'function'
                 ? shellOs.popenRead(String(command))
                 : { output: '', status: typeof shellOs.system === 'function' ? shellOs.system(String(command)) : 127 };
-            const lines = String(result.output || '').split('\n');
+            const output = String(result.output || '');
+            const lines = output.split('\n');
             let index = 0;
             return {
+                readAll() {
+                    index = lines.length;
+                    return output;
+                },
                 getline() {
                     if (index >= lines.length) return null;
                     const line = lines[index++];

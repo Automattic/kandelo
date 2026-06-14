@@ -2126,6 +2126,7 @@ const util = (() => {
     }
 
     function promisify(fn) {
+        if (fn && fn[promisify.custom]) return fn[promisify.custom];
         return function(...args) {
             return new Promise((resolve, reject) => {
                 fn(...args, (err, result) => {
@@ -2135,6 +2136,7 @@ const util = (() => {
             });
         };
     }
+    promisify.custom = Symbol.for('nodejs.util.promisify.custom');
 
     function callbackify(fn) {
         return function(...args) {
@@ -2332,10 +2334,18 @@ const stream = (() => {
         constructor(options) {
             super();
             this.readable = true;
-            this._readableState = { ended: false, flowing: null, buffer: [], endPending: false };
+            this.readableEnded = false;
+            this.destroyed = false;
+            this._readableState = { ended: false, flowing: null, buffer: [], endPending: false, encoding: null };
             if (options && options.read) this._read = options.read;
         }
         _read(size) {}
+        _formatChunk(chunk) {
+            if (this._readableState.encoding && chunk != null && typeof chunk !== 'string') {
+                return Buffer.from(chunk).toString(this._readableState.encoding);
+            }
+            return chunk;
+        }
         // Buffer until a consumer attaches: pipelines that wire up the data
         // listener one microtask later (minipass-fetch's gzip decoder)
         // otherwise drop chunks pushed synchronously from the parser.
@@ -2344,6 +2354,8 @@ const stream = (() => {
                 if (this._readableState.flowing || this.listenerCount('end') > 0
                     || this._readableState.buffer.length === 0) {
                     this._readableState.ended = true;
+                    this.readableEnded = true;
+                    this.readable = false;
                     this.emit('end');
                 } else {
                     this._readableState.endPending = true;
@@ -2352,7 +2364,7 @@ const stream = (() => {
             }
             if (this._readableState.flowing || this.listenerCount('data') > 0) {
                 this._readableState.flowing = true;
-                this.emit('data', chunk);
+                this.emit('data', this._formatChunk(chunk));
             } else {
                 this._readableState.buffer.push(chunk);
             }
@@ -2360,16 +2372,18 @@ const stream = (() => {
         }
         read(size) {
             if (this._readableState.buffer.length === 0) return null;
-            return this._readableState.buffer.shift();
+            return this._formatChunk(this._readableState.buffer.shift());
         }
         _drain() {
             this._readableState.flowing = true;
             const buf = this._readableState.buffer;
             this._readableState.buffer = [];
-            for (const c of buf) this.emit('data', c);
+            for (const c of buf) this.emit('data', this._formatChunk(c));
             if (this._readableState.endPending) {
                 this._readableState.endPending = false;
                 this._readableState.ended = true;
+                this.readableEnded = true;
+                this.readable = false;
                 this.emit('end');
             }
         }
@@ -2380,13 +2394,23 @@ const stream = (() => {
         addListener(event, fn) { const r = super.addListener(event, fn); this._maybeDrain(event); return r; }
         resume() { this._drain(); return this; }
         pause() { this._readableState.flowing = false; return this; }
-        destroy() { this.emit('close'); return this; }
+        setEncoding(enc) { this._readableState.encoding = enc || 'utf8'; return this; }
+        destroy(err) {
+            if (this.destroyed) return this;
+            this.destroyed = true;
+            this.readable = false;
+            if (err) this.emit('error', err);
+            this.emit('close');
+            return this;
+        }
     }
 
     class Writable extends Stream {
         constructor(options) {
             super();
             this.writable = true;
+            this.writableEnded = false;
+            this.destroyed = false;
             this._writableState = { ended: false };
             if (options && options.write) this._write = options.write;
         }
@@ -2404,11 +2428,20 @@ const stream = (() => {
             if (typeof encoding === 'function') { cb = encoding; encoding = undefined; }
             if (chunk) this.write(chunk, encoding);
             this._writableState.ended = true;
+            this.writableEnded = true;
+            this.writable = false;
             this.emit('finish');
             if (cb) cb();
             return this;
         }
-        destroy() { this.emit('close'); return this; }
+        destroy(err) {
+            if (this.destroyed) return this;
+            this.destroyed = true;
+            this.writable = false;
+            if (err) this.emit('error', err);
+            this.emit('close');
+            return this;
+        }
     }
 
     class Duplex extends Readable {
@@ -3052,106 +3085,422 @@ const timersPromises = {
 // ============================================================
 
 const child_process = (() => {
-    function execSync(command, options) {
-        const opts = options || {};
-        // Real Node's spawn{,Sync}/exec{,Sync} default to stdio:'pipe', which
-        // captures the child's stderr into result.stderr instead of letting
-        // it leak to the parent's terminal. popen("…", "r") inherits stderr,
-        // so dash's "command not found" messages from probes like
-        // commandExists('fd') used to render right in the user's terminal.
-        // We don't actually capture stderr (our result.stderr is always
-        // empty), but at minimum we must not leak it. Only inherit when the
-        // caller explicitly asked for it.
-        const inheritStderr = opts.stdio === 'inherit'
-            || (Array.isArray(opts.stdio) && opts.stdio[2] === 'inherit');
-        const popenCmd = inheritStderr ? command : command + ' 2>/dev/null';
-        const f = std.popen(popenCmd, 'r');
-        if (!f) throw new Error(`execSync failed: ${command}`);
+    let nextPid = Math.max(2, (process.pid || 1) + 1);
+    let nextTemp = 1;
+
+    function shellQuote(value) {
+        return "'" + String(value).replace(/'/g, "'\\''") + "'";
+    }
+
+    function readPopen(file) {
+        if (file && typeof file.readAll === 'function') return file.readAll();
         let output = '';
         let line;
-        while ((line = f.getline()) !== null) {
-            output += line + '\n';
-        }
-        const status = f.close();
-        if (status !== 0 && !opts.stdio) {
-            const err = new Error(`Command failed: ${command}`);
-            err.status = status;
-            err.output = [null, output, ''];
-            err.stdout = output;
-            err.stderr = '';
-            throw err;
-        }
-        if (opts.encoding === 'buffer' || !opts.encoding) {
-            return Buffer.from(output);
-        }
+        while ((line = file.getline()) !== null) output += line + '\n';
         return output;
     }
 
-    function execFileSync(file, args, options) {
-        const cmd = file + ' ' + (args || []).map(a => `'${a}'`).join(' ');
-        return execSync(cmd, options);
+    function normalizeOptions(options) {
+        if (options == null) return {};
+        if (typeof options === 'string') return { encoding: options };
+        if (typeof options !== 'object') throw _makeInvalidArgTypeError('options', 'object', options);
+        return options;
     }
 
-    function spawnSync(command, args, options) {
-        const cmd = command + ' ' + (args || []).map(a => `'${a}'`).join(' ');
-        try {
-            const stdout = execSync(cmd, { ...options, encoding: 'buffer' });
-            return { status: 0, stdout, stderr: Buffer.alloc(0), output: [null, stdout, Buffer.alloc(0)], pid: 0, signal: null, error: null };
-        } catch (e) {
-            return { status: e.status || 1, stdout: Buffer.from(e.stdout || ''), stderr: Buffer.from(e.stderr || ''), output: [null, Buffer.from(e.stdout || ''), Buffer.from(e.stderr || '')], pid: 0, signal: null, error: e };
+    function normalizeArgs(args, name) {
+        if (args == null) return [];
+        if (!Array.isArray(args)) throw _makeInvalidArgTypeError(name || 'args', 'Array', args);
+        return args.map((arg) => String(arg));
+    }
+
+    function envValuePairs(env, includeInternal) {
+        const source = env || process.env;
+        const pairs = [];
+        for (const key in source) {
+            const value = source[key];
+            if (value === undefined) continue;
+            pairs.push([String(key), String(value)]);
         }
-    }
-
-    function exec(command, options, cb) {
-        if (typeof options === 'function') { cb = options; options = {}; }
-        try {
-            const result = execSync(command, { ...options, encoding: 'utf8' });
-            queueMicrotask(() => cb(null, result, ''));
-        } catch (e) {
-            queueMicrotask(() => cb(e, e.stdout || '', e.stderr || ''));
+        if (includeInternal) {
+            for (const pair of includeInternal) pairs.push(pair);
         }
+        return pairs;
     }
 
-    function execFile(file, args, options, cb) {
-        if (typeof args === 'function') { cb = args; args = []; options = {}; }
-        else if (typeof options === 'function') { cb = options; options = {}; }
-        const cmd = file + ' ' + (args || []).map(a => `'${a}'`).join(' ');
+    function envCommandPrefix(env, internalPairs) {
+        const pairs = envValuePairs(env, internalPairs);
+        if (pairs.length === 0 && !env) return '';
+        const args = ['env'];
+        if (env) args.push('-i');
+        for (const [key, value] of pairs) {
+            if (key.includes('=')) continue;
+            args.push(`${key}=${value}`);
+        }
+        return args.map(shellQuote).join(' ') + ' ';
+    }
+
+    function normalizeStdio(stdio) {
+        if (stdio === undefined || stdio === null) return ['pipe', 'pipe', 'pipe'];
+        if (typeof stdio === 'string') {
+            if (stdio === 'pipe') return ['pipe', 'pipe', 'pipe'];
+            if (stdio === 'ignore') return ['ignore', 'ignore', 'ignore'];
+            if (stdio === 'inherit') return ['inherit', 'inherit', 'inherit'];
+            throw _makeInvalidArgTypeError('options.stdio', 'string', stdio);
+        }
+        if (!Array.isArray(stdio)) throw _makeInvalidArgTypeError('options.stdio', 'Array', stdio);
+        const out = ['pipe', 'pipe', 'pipe'];
+        for (let i = 0; i < Math.min(3, stdio.length); i++) out[i] = stdio[i] == null ? 'pipe' : stdio[i];
+        return out;
+    }
+
+    function resolveExecutable(file, env) {
+        if (file.includes('/')) return fs.existsSync(file) ? file : null;
+        const pathValue = (env && env.PATH !== undefined ? env.PATH : process.env.PATH) || '/usr/local/bin:/usr/bin:/bin';
+        for (const dir of String(pathValue).split(':')) {
+            const candidate = (dir || '.') + '/' + file;
+            if (fs.existsSync(candidate)) return candidate;
+        }
+        return null;
+    }
+
+    function makeSpawnError(file, args) {
+        const err = _makeNodeError(`spawn ${file} ENOENT`, 'ENOENT', 2, `spawn ${file}`, file);
+        err.spawnargs = args.slice();
+        return err;
+    }
+
+    function makeUnknownSignalError(signal) {
+        const err = new TypeError(`Unknown signal: ${signal}`);
+        err.code = 'ERR_UNKNOWN_SIGNAL';
+        return err;
+    }
+
+    function buildCommand(file, args, options, forceShell) {
+        _validateString(file, 'file');
+        const opts = normalizeOptions(options);
+        const argv = normalizeArgs(args, 'args');
+        if (opts.argv0 !== undefined && typeof opts.argv0 !== 'string') {
+            throw _makeInvalidArgTypeError('options.argv0', 'string', opts.argv0);
+        }
+        if (opts.cwd !== undefined && typeof opts.cwd !== 'string') {
+            throw _makeInvalidArgTypeError('options.cwd', 'string', opts.cwd);
+        }
+        const useShell = forceShell || opts.shell === true || typeof opts.shell === 'string';
+        const env = opts.env || null;
+        const nodeLikeExecutable =
+            file === process.execPath || file === 'node' || String(file).endsWith('/node');
+        const internalArgv0 = opts.argv0 || (nodeLikeExecutable ? file : null);
+        const internalEnv = internalArgv0 ? [['KANDELO_NODE_ARGV0', internalArgv0]] : null;
+        let commandText;
+        let spawnfile;
+        let spawnargs;
+        let resolved = file;
+
+        if (useShell) {
+            const displayText = [file, ...argv].join(' ');
+            commandText = [file, ...argv.map(shellQuote)].join(' ');
+            spawnfile = typeof opts.shell === 'string' ? opts.shell : '/bin/sh';
+            spawnargs = [spawnfile, '-c', displayText];
+        } else {
+            resolved = resolveExecutable(file, env);
+            if (!resolved) return { error: makeSpawnError(file, argv), file, args: argv, options: opts, shell: false };
+            commandText = [shellQuote(resolved), ...argv.map(shellQuote)].join(' ');
+            spawnfile = file;
+            spawnargs = [file, ...argv];
+        }
+
+        let shellCommand = envCommandPrefix(env, internalEnv) + commandText;
+        if (opts.input !== undefined) {
+            const input = Buffer.isBuffer(opts.input) ? opts.input.toString() : String(opts.input);
+            shellCommand = `printf %s ${shellQuote(input)} | ${shellCommand}`;
+        }
+        if (opts.cwd) shellCommand = `cd ${shellQuote(opts.cwd)} && ${shellCommand}`;
+        return { shellCommand, displayCommand: useShell ? spawnargs[2] : [file, ...argv].join(' '), file, args: argv, options: opts, spawnfile, spawnargs, resolved, shell: useShell };
+    }
+
+    function runBuiltCommand(spec) {
+        if (spec.error) throw spec.error;
+        const opts = spec.options || {};
+        const stdio = normalizeStdio(opts.stdio);
+        const inheritStderr = stdio[2] === 'inherit';
+        const stderrPath = `/tmp/kandelo-child-process-${process.pid}-${Date.now()}-${nextTemp++}.stderr`;
+        const command = inheritStderr ? spec.shellCommand : `(${spec.shellCommand}) 2>${shellQuote(stderrPath)}`;
+        let stdout = '';
+        let stderr = '';
+        let status = 127;
+        let f = null;
         try {
-            const result = execSync(cmd, { ...options, encoding: 'utf8' });
-            queueMicrotask(() => cb && cb(null, result, ''));
-        } catch (e) {
-            queueMicrotask(() => cb && cb(e, e.stdout || '', e.stderr || ''));
+            f = std.popen(command, 'r');
+            if (!f) throw _makeNodeError(`spawn ${spec.file} ENOENT`, 'ENOENT', 2, 'spawn', spec.file);
+            stdout = readPopen(f);
+            status = f.close();
+        } catch (err) {
+            const wrapped = err && err.code ? err : _makeNodeError(String(err && err.message || err), 'ENOENT', 2, 'spawn', spec.file);
+            wrapped.cmd = spec.displayCommand;
+            throw wrapped;
+        } finally {
+            if (!inheritStderr) {
+                try { stderr = fs.readFileSync(stderrPath, 'utf8'); } catch (_) { stderr = ''; }
+                try { fs.unlinkSync(stderrPath); } catch (_) {}
+            }
+        }
+        const maxBuffer = opts.maxBuffer == null ? 1024 * 1024 : Number(opts.maxBuffer);
+        if (maxBuffer >= 0 && (Buffer.byteLength(stdout) > maxBuffer || Buffer.byteLength(stderr) > maxBuffer)) {
+            const err = new RangeError('stdout maxBuffer length exceeded');
+            err.code = 'ERR_CHILD_PROCESS_STDIO_MAXBUFFER';
+            err.cmd = spec.displayCommand;
+            err.stdout = stdout;
+            err.stderr = stderr;
+            err.status = null;
+            throw err;
+        }
+        return { status, stdout, stderr, signal: null };
+    }
+
+    function encodeOutput(value, options) {
+        const enc = options && options.encoding;
+        if (enc === 'buffer' || enc === null || enc === undefined) return Buffer.from(value);
+        return Buffer.from(value).toString(enc);
+    }
+
+    function makeCommandError(spec, result) {
+        const err = new Error(`Command failed: ${spec.displayCommand}${result.stderr ? '\n' + result.stderr : ''}`);
+        err.code = result.status;
+        err.status = result.status;
+        err.signal = result.signal;
+        err.killed = false;
+        err.cmd = spec.displayCommand;
+        err.stdout = result.stdout;
+        err.stderr = result.stderr;
+        return err;
+    }
+
+    class ChildProcess extends events.EventEmitter {
+        constructor() {
+            super();
+            this.pid = undefined;
+            this.stdin = null;
+            this.stdout = null;
+            this.stderr = null;
+            this.stdio = [null, null, null];
+            this.killed = false;
+            this.exitCode = null;
+            this.signalCode = null;
+            this.spawnfile = undefined;
+            this.spawnargs = undefined;
+            this.connected = false;
+        }
+
+        _initStdio(options) {
+            const stdio = normalizeStdio(options && options.stdio);
+            this.stdin = stdio[0] === 'pipe' ? new stream.Writable() : null;
+            this.stdout = stdio[1] === 'pipe' ? new stream.Readable() : null;
+            this.stderr = stdio[2] === 'pipe' ? new stream.Readable() : null;
+            if (this.stdout && options && options.encoding) this.stdout.setEncoding(options.encoding);
+            if (this.stderr && options && options.encoding) this.stderr.setEncoding(options.encoding);
+            this.stdio = [this.stdin, this.stdout, this.stderr];
+        }
+
+        _complete(status, signal) {
+            this.exitCode = status;
+            this.signalCode = signal || null;
+            if (this.stdin && !this.stdin.writableEnded) this.stdin.end();
+            if (this.stdout) this.stdout.push(null);
+            if (this.stderr) this.stderr.push(null);
+            this.emit('exit', status, signal || null);
+            this.emit('close', status, signal || null);
+        }
+
+        spawn(options) {
+            if (options == null || typeof options !== 'object' || Array.isArray(options)) {
+                throw _makeInvalidArgTypeError('options', 'object', options);
+            }
+            if (typeof options.file !== 'string') {
+                throw _makeInvalidArgTypeError('options.file', 'string', options.file);
+            }
+            if (options.args !== undefined && !Array.isArray(options.args)) {
+                throw _makeInvalidArgTypeError('options.args', 'Array', options.args);
+            }
+            if (options.envPairs !== undefined && !Array.isArray(options.envPairs)) {
+                throw _makeInvalidArgTypeError('options.envPairs', 'Array', options.envPairs);
+            }
+            const args = normalizeArgs(options.args, 'options.args');
+            this.pid = nextPid++;
+            this.spawnfile = options.file;
+            this.spawnargs = [options.file, ...args];
+            this._initStdio(options);
+            queueMicrotask(() => this.emit('spawn'));
+            return this;
+        }
+
+        kill(signal) {
+            if (signal !== undefined && typeof signal === 'string') {
+                const signals = nodeOs.constants && nodeOs.constants.signals;
+                if (!signals || !signals[signal]) throw makeUnknownSignalError(signal);
+            }
+            this.killed = true;
+            return true;
+        }
+
+        ref() { return this; }
+        unref() { return this; }
+        disconnect() { this.connected = false; this.emit('disconnect'); }
+        send(_message, _handle, _options, callback) {
+            if (typeof _handle === 'function') callback = _handle;
+            else if (typeof _options === 'function') callback = _options;
+            if (callback) queueMicrotask(() => callback(null));
+            return false;
         }
     }
 
     function spawn(command, args, options) {
-        // Return a minimal ChildProcess-like object
-        const child = new events.EventEmitter();
-        child.pid = 0;
-        child.stdin = new stream.Writable();
-        child.stdout = new stream.Readable();
-        child.stderr = new stream.Readable();
-
+        if (args && !Array.isArray(args) && typeof args === 'object') { options = args; args = []; }
+        const spec = buildCommand(command, args || [], options || {}, false);
+        const child = new ChildProcess();
+        child.pid = spec.error ? undefined : nextPid++;
+        child.spawnfile = spec.spawnfile || command;
+        child.spawnargs = spec.spawnargs || [command, ...normalizeArgs(args || [], 'args')];
+        child._initStdio(spec.options || options || {});
         queueMicrotask(() => {
-            try {
-                const cmd = command + ' ' + (args || []).map(a => `'${a}'`).join(' ');
-                const result = execSync(cmd, { encoding: 'utf8' });
-                child.stdout.push(Buffer.from(result));
-                child.stdout.push(null);
-                child.stderr.push(null);
-                child.emit('close', 0);
-                child.emit('exit', 0);
-            } catch (e) {
-                child.emit('error', e);
-                child.emit('close', 1);
-                child.emit('exit', 1);
+            if (spec.error) {
+                child.emit('error', spec.error);
+                child._complete(1, null);
+                return;
             }
+            child.emit('spawn');
+            let result;
+            try {
+                result = runBuiltCommand(spec);
+            } catch (err) {
+                child.emit('error', err);
+                child._complete(1, null);
+                return;
+            }
+            if (child.stdout && result.stdout) child.stdout.push(Buffer.from(result.stdout));
+            if (child.stderr && result.stderr) child.stderr.push(Buffer.from(result.stderr));
+            child._complete(result.status, result.signal);
         });
-
         return child;
     }
 
-    return { execSync, execFileSync, spawnSync, exec, execFile, spawn };
+    function spawnSync(command, args, options) {
+        if (args && !Array.isArray(args) && typeof args === 'object') { options = args; args = []; }
+        const opts = normalizeOptions(options || {});
+        const spec = buildCommand(command, args || [], opts, false);
+        if (spec.error) {
+            return { status: null, signal: null, error: spec.error, stdout: Buffer.alloc(0), stderr: Buffer.alloc(0), output: [null, Buffer.alloc(0), Buffer.alloc(0)], pid: undefined };
+        }
+        try {
+            const result = runBuiltCommand(spec);
+            const stdout = encodeOutput(result.stdout, opts);
+            const stderr = encodeOutput(result.stderr, opts);
+            return { status: result.status, signal: result.signal, error: undefined, stdout, stderr, output: [null, stdout, stderr], pid: nextPid++ };
+        } catch (err) {
+            const stdout = encodeOutput(err.stdout || '', opts);
+            const stderr = encodeOutput(err.stderr || '', opts);
+            return { status: err.status == null ? null : err.status, signal: err.signal || null, error: err, stdout, stderr, output: [null, stdout, stderr], pid: undefined };
+        }
+    }
+
+    function execSync(command, options) {
+        _validateString(command, 'command');
+        const opts = normalizeOptions(options || {});
+        const spec = buildCommand(command, [], opts, true);
+        const result = runBuiltCommand(spec);
+        if (result.status !== 0) throw makeCommandError(spec, result);
+        return encodeOutput(result.stdout, opts);
+    }
+
+    function execFileSync(file, args, options) {
+        if (args && !Array.isArray(args) && typeof args === 'object') { options = args; args = []; }
+        const opts = normalizeOptions(options || {});
+        const spec = buildCommand(file, args || [], opts, !!opts.shell);
+        const result = runBuiltCommand(spec);
+        if (result.status !== 0) throw makeCommandError(spec, result);
+        return encodeOutput(result.stdout, opts);
+    }
+
+    function exec(command, options, cb) {
+        if (typeof options === 'function') { cb = options; options = {}; }
+        const opts = normalizeOptions(options || {});
+        const spec = buildCommand(command, [], opts, true);
+        const child = new ChildProcess();
+        child.pid = nextPid++;
+        child.spawnfile = spec.spawnfile;
+        child.spawnargs = spec.spawnargs;
+        child._initStdio(opts);
+        queueMicrotask(() => {
+            let err = null;
+            let result = { status: 0, stdout: '', stderr: '', signal: null };
+            try {
+                result = runBuiltCommand(spec);
+                if (result.status !== 0) err = makeCommandError(spec, result);
+            } catch (e) {
+                err = e;
+                result.stdout = e.stdout || '';
+                result.stderr = e.stderr || '';
+            }
+            if (child.stdout && result.stdout) child.stdout.push(Buffer.from(result.stdout));
+            if (child.stderr && result.stderr) child.stderr.push(Buffer.from(result.stderr));
+            child._complete(result.status || (err ? 1 : 0), result.signal);
+            if (cb) cb(err, result.stdout, result.stderr);
+        });
+        return child;
+    }
+
+    function execFile(file, args, options, cb) {
+        if (typeof args === 'function') { cb = args; args = []; options = {}; }
+        else if (args && !Array.isArray(args) && typeof args === 'object') { cb = options; options = args; args = []; }
+        else if (typeof options === 'function') { cb = options; options = {}; }
+        const opts = normalizeOptions(options || {});
+        const spec = buildCommand(file, args || [], opts, !!opts.shell);
+        const child = new ChildProcess();
+        child.pid = spec.error ? undefined : nextPid++;
+        child.spawnfile = spec.spawnfile || file;
+        child.spawnargs = spec.spawnargs || [file, ...normalizeArgs(args || [], 'args')];
+        child._initStdio(opts);
+        queueMicrotask(() => {
+            let err = null;
+            let result = { status: 0, stdout: '', stderr: '', signal: null };
+            if (spec.error) {
+                err = spec.error;
+                result.status = null;
+            } else {
+                try {
+                    result = runBuiltCommand(spec);
+                    if (result.status !== 0) err = makeCommandError(spec, result);
+                } catch (e) {
+                    err = e;
+                    result.stdout = e.stdout || '';
+                    result.stderr = e.stderr || '';
+                }
+            }
+            if (child.stdout && result.stdout) child.stdout.push(Buffer.from(result.stdout));
+            if (child.stderr && result.stderr) child.stderr.push(Buffer.from(result.stderr));
+            child._complete(result.status || (err ? 1 : 0), result.signal);
+            if (cb) cb(err, result.stdout, result.stderr);
+        });
+        return child;
+    }
+
+    const kPromisify = util.promisify.custom;
+    function makePromisified(fn) {
+        return function(...args) {
+            let child;
+            const promise = new Promise((resolve, reject) => {
+                child = fn(...args, (err, stdout, stderr) => {
+                    if (err) reject(err);
+                    else resolve({ stdout, stderr });
+                });
+            });
+            promise.child = child;
+            return promise;
+        };
+    }
+    exec[kPromisify] = makePromisified(exec);
+    execFile[kPromisify] = makePromisified(execFile);
+
+    return { ChildProcess, execSync, execFileSync, spawnSync, exec, execFile, spawn };
 })();
 
 // ============================================================
@@ -5079,7 +5428,8 @@ function _runMainScriptIfPresent() {
 // process.argv is set by the C entry point via execArgv global
 if (typeof execArgv !== 'undefined') {
     process.argv = Array.from(execArgv);
-    process.argv0 = typeof argv0 !== 'undefined' ? argv0 : (process.argv[0] || 'node');
+    const envArgv0 = std.getenv('KANDELO_NODE_ARGV0');
+    process.argv0 = envArgv0 || ((typeof argv0 !== 'undefined' && argv0) ? argv0 : (process.argv[0] || 'node'));
 }
 
 // Global require. For `node script.js`, basedir is the script's directory
