@@ -8730,6 +8730,75 @@ const querystring = (() => {
         }
     }
 
+    function throwInvalidUri() {
+        const err = new URIError('URI malformed');
+        err.code = 'ERR_INVALID_URI';
+        throw err;
+    }
+
+    function isQuerystringNoEscape(code) {
+        return (code >= 48 && code <= 57) ||
+            (code >= 65 && code <= 90) ||
+            (code >= 97 && code <= 122) ||
+            code === 33 ||
+            code === 39 ||
+            code === 40 ||
+            code === 41 ||
+            code === 42 ||
+            code === 45 ||
+            code === 46 ||
+            code === 95 ||
+            code === 126;
+    }
+
+    function encodeByte(byte) {
+        return '%' + byte.toString(16).toUpperCase().padStart(2, '0');
+    }
+
+    function encodeCodePoint(code) {
+        if (code < 0x80) {
+            return encodeByte(code);
+        }
+        if (code < 0x800) {
+            return encodeByte(0xc0 | (code >> 6)) +
+                encodeByte(0x80 | (code & 0x3f));
+        }
+        if (code < 0x10000) {
+            return encodeByte(0xe0 | (code >> 12)) +
+                encodeByte(0x80 | ((code >> 6) & 0x3f)) +
+                encodeByte(0x80 | (code & 0x3f));
+        }
+        return encodeByte(0xf0 | (code >> 18)) +
+            encodeByte(0x80 | ((code >> 12) & 0x3f)) +
+            encodeByte(0x80 | ((code >> 6) & 0x3f)) +
+            encodeByte(0x80 | (code & 0x3f));
+    }
+
+    function querystringEscape(value) {
+        let str = value;
+        if (typeof str !== 'string') {
+            if (typeof str === 'object') str = String(str);
+            else str += '';
+        }
+        let out = '';
+        for (let i = 0; i < str.length; i++) {
+            const code = str.charCodeAt(i);
+            if (code < 0x80 && isQuerystringNoEscape(code)) {
+                out += str[i];
+            } else if (code >= 0xd800 && code <= 0xdfff) {
+                if (code >= 0xdc00 || i + 1 >= str.length) {
+                    throwInvalidUri();
+                }
+                const next = str.charCodeAt(++i);
+                const point = 0x10000 + (((code & 0x3ff) << 10) | (next & 0x3ff));
+                out += encodeCodePoint(point);
+            } else {
+                out += encodeCodePoint(code);
+            }
+        }
+        return out;
+    }
+
     function scalarString(value) {
         if (typeof value === 'string') return value;
         if (typeof value === 'number') return Number.isFinite(value) ? String(value) : '';
@@ -8743,7 +8812,12 @@ const querystring = (() => {
         const decoder = options && typeof options.decodeURIComponent === 'function'
             ? options.decodeURIComponent
             : api.unescape;
-        const maxKeys = options && typeof options.maxKeys === 'number' ? options.maxKeys : 0;
+        let maxKeys = 1000;
+        if (options && typeof options.maxKeys === 'number') {
+            maxKeys = options.maxKeys > 0 && Number.isInteger(options.maxKeys)
+                ? options.maxKeys
+                : 0;
+        }
         const result = Object.create(null);
         if (!qs) return result;
         const pairs = String(qs).split(sepStr);
@@ -8774,7 +8848,7 @@ const querystring = (() => {
         if (obj == null || typeof obj !== 'object') return '';
         const encoder = options && typeof options.encodeURIComponent === 'function'
             ? options.encodeURIComponent
-            : encodeURIComponent;
+            : querystringEscape;
         const pairs = [];
         for (const key of Object.keys(obj)) {
             const val = obj[key];
@@ -8787,7 +8861,7 @@ const querystring = (() => {
         return pairs.join(sep);
     }
 
-    function escape(str) { return encodeValue(str, encodeURIComponent); }
+    function escape(str) { return querystringEscape(str); }
     function unescape(str) { return safeDecode(str); }
 
     function unescapeBuffer(str, decodeSpaces) {
