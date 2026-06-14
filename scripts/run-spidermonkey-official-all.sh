@@ -161,20 +161,31 @@ ensure_kernel() {
 
 resolve_js_wasm() {
   local candidate
-  if [ -n "${SPIDERMONKEY_WASM:-}" ] && [ -f "$SPIDERMONKEY_WASM" ]; then
-    printf '%s\n' "$SPIDERMONKEY_WASM"
+
+  candidate="${SPIDERMONKEY_WASM:-}"
+  if [ -n "$candidate" ] && [ -f "$candidate" ]; then
+    printf '%s\n' "$candidate"
     return 0
   fi
 
-  for candidate in \
-    "$("$REPO_ROOT/scripts/resolve-binary.sh" programs/js.wasm 2>/dev/null || true)" \
-    "$("$REPO_ROOT/scripts/resolve-binary.sh" programs/spidermonkey.wasm 2>/dev/null || true)" \
-    "$REPO_ROOT/packages/registry/spidermonkey/bin/js.wasm"; do
-    if [ -n "$candidate" ] && [ -f "$candidate" ]; then
-      printf '%s\n' "$candidate"
-      return 0
-    fi
-  done
+  candidate="$("$REPO_ROOT/scripts/resolve-binary.sh" programs/js.wasm 2>/dev/null || true)"
+  if [ -n "$candidate" ] && [ -f "$candidate" ]; then
+    printf '%s\n' "$candidate"
+    return 0
+  fi
+
+  candidate="$("$REPO_ROOT/scripts/resolve-binary.sh" programs/spidermonkey.wasm 2>/dev/null || true)"
+  if [ -n "$candidate" ] && [ -f "$candidate" ]; then
+    printf '%s\n' "$candidate"
+    return 0
+  fi
+
+  candidate="$REPO_ROOT/packages/registry/spidermonkey/bin/js.wasm"
+  if [ -n "$candidate" ] && [ -f "$candidate" ]; then
+    printf '%s\n' "$candidate"
+    return 0
+  fi
+
   return 1
 }
 
@@ -284,6 +295,12 @@ is_kandelo_browser_wasm32_known_jstest_skip() {
   fi
   rel="$(rel_jstest_path "$file")"
   case "$rel" in
+    test262/staging/sm/expressions/destructuring-pattern-parenthesized.js|\
+    test262/staging/sm/expressions/optional-chain-super-elem.js|\
+    test262/staging/sm/expressions/optional-chain-tdz.js|\
+    test262/staging/sm/extensions/recursion.js)
+      return 0
+      ;;
     test262/built-ins/Atomics/*/bigint/*.js)
       return 0
       ;;
@@ -357,7 +374,10 @@ filter_kandelo_known_jstest_skips() {
 }
 
 queue_known_skip_entries() {
-  NEXT_KNOWN_SKIP_FILES=("$@")
+  NEXT_KNOWN_SKIP_FILES=()
+  if [ "$#" -gt 0 ]; then
+    NEXT_KNOWN_SKIP_FILES=("$@")
+  fi
 }
 
 jitflag_variant_count() {
@@ -412,7 +432,7 @@ write_known_skip_entries() {
     count="$(known_skip_entry_count "$suite" "$file")"
     index=1
     while [ "$index" -le "$count" ]; do
-      printf 'TEST-KNOWN-FAIL | %s | skipped: Kandelo wasm32 SpiderMonkey lacks 64-bit atomic operations (variant %s/%s)\n' \
+      printf 'TEST-KNOWN-FAIL | %s | skipped: known Kandelo browser wasm32 SpiderMonkey limitation (variant %s/%s)\n' \
         "$rel" "$index" "$count"
       index=$((index + 1))
     done

@@ -13,7 +13,7 @@
  */
 
 import { readFileSync, existsSync } from "fs";
-import { resolve, dirname } from "path";
+import { basename, resolve, dirname } from "path";
 import { NodeKernelHost } from "../host/src/node-kernel-host";
 import { tryResolveBinary } from "../host/src/binary-resolver";
 
@@ -24,6 +24,7 @@ const repoRoot = resolve(dirname(new URL(import.meta.url).pathname), "..");
 // need the path must handle null explicitly.
 const coreutilsWasm = tryResolveBinary("programs/coreutils.wasm");
 const dashWasm = tryResolveBinary("programs/dash.wasm");
+const shellWasm = dashWasm ?? tryResolveBinary("programs/sh.wasm");
 const grepWasm = tryResolveBinary("programs/grep.wasm");
 const sedWasm = tryResolveBinary("programs/sed.wasm");
 const gitWasm = tryResolveBinary("programs/git/git.wasm");
@@ -76,8 +77,8 @@ const builtinPrograms: Record<string, string | null> = {
     "echo": resolve(repoRoot, "examples/echo.wasm"),
     "/bin/echo": resolve(repoRoot, "examples/echo.wasm"),
     "/usr/bin/echo": resolve(repoRoot, "examples/echo.wasm"),
-    "sh": dashWasm,
-    "/bin/sh": dashWasm,
+    "sh": shellWasm,
+    "/bin/sh": shellWasm,
     "dash": dashWasm,
     "/bin/dash": dashWasm,
     "grep": grepWasm,
@@ -252,16 +253,27 @@ function loadBytes(path: string): ArrayBuffer {
     return buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength);
 }
 
+function loadWasmBytesIfPresent(path: string): ArrayBuffer | null {
+    if (!existsSync(path)) {
+        return null;
+    }
+    const buf = readFileSync(path);
+    if (
+        buf.length < 4 ||
+        buf[0] !== 0x00 ||
+        buf[1] !== 0x61 ||
+        buf[2] !== 0x73 ||
+        buf[3] !== 0x6d
+    ) {
+        return null;
+    }
+    return buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength);
+}
+
 function resolveProgram(path: string): ArrayBuffer | null {
-    const mapped = builtinPrograms[path];
+    const mapped = builtinPrograms[path] ?? builtinPrograms[basename(path)];
     if (mapped) {
         return loadBytes(mapped);
-    }
-    // execlp() searches the inherited host/dev-shell PATH. In CI that can
-    // resolve tools like gencat to /nix/store/.../bin/gencat; never load that
-    // host ELF as a guest program.
-    if (path.endsWith("/gencat")) {
-        return loadBytes(resolve(repoRoot, "examples/gencat.wasm"));
     }
     const kernelCwd = process.env.KERNEL_CWD || process.cwd();
     const candidates = [
@@ -273,8 +285,9 @@ function resolveProgram(path: string): ArrayBuffer | null {
         resolve(kernelCwd, path.endsWith(".wasm") ? path : `${path}.wasm`),
     ];
     for (const c of candidates) {
-        if (existsSync(c)) {
-            return loadBytes(c);
+        const bytes = loadWasmBytesIfPresent(c);
+        if (bytes) {
+            return bytes;
         }
     }
     return null;
@@ -314,6 +327,9 @@ async function main() {
             `GIT_CONFIG_VALUE_${i}=${val}`,
         ]),
     ];
+    const guestPath = ["/bin", "/usr/bin", process.env.PATH]
+        .filter(Boolean)
+        .join(":");
 
     // When stdin is not a terminal (piped or redirected), read all piped
     // data and set it as finite stdin so reads get the data then EOF.
@@ -341,8 +357,9 @@ async function main() {
     const exitPromise = host.spawn(loadBytes(programPath), processArgv, {
         env: [
             ...Object.entries(process.env)
-                .filter(([, v]) => v !== undefined)
+                .filter(([k, v]) => k !== "PATH" && v !== undefined)
                 .map(([k, v]) => `${k}=${v}`),
+            `PATH=${guestPath}`,
             ...gitEnv,
         ],
         cwd: process.env.KERNEL_CWD || process.cwd(),
