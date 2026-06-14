@@ -9297,13 +9297,116 @@ const _builtinModules = {
             TracingChannel: class TracingChannel {},
         };
     })(),
-    'v8': {
-        // arborist sizes its packument LRU as floor(heap_size_limit * 0.25),
-        // so heap_size_limit must be > 0 or lru-cache rejects the config.
-        getHeapStatistics() {
-            return { heap_size_limit: 256 * 1024 * 1024 };
-        },
-    },
+    'v8': (() => {
+        let flagVersion = 0;
+        const heapSizeLimit = 256 * 1024 * 1024;
+        const unsupported = (member) => { throw _unsupportedNodeApi('v8', member); };
+        const notBuildingSnapshot = () => {
+            const err = new Error('Operation cannot be invoked when not building startup snapshot');
+            err.code = 'ERR_NOT_BUILDING_SNAPSHOT';
+            return err;
+        };
+        const heapSpaceNames = [
+            'code_large_object_space',
+            'code_space',
+            'large_object_space',
+            'new_large_object_space',
+            'new_space',
+            'old_space',
+            'read_only_space',
+            'shared_large_object_space',
+            'shared_space',
+            'trusted_large_object_space',
+            'trusted_space',
+        ];
+        return {
+            // arborist sizes its packument LRU as floor(heap_size_limit * 0.25),
+            // so heap_size_limit must be > 0 or lru-cache rejects the config.
+            getHeapStatistics() {
+                return {
+                    total_heap_size: 8 * 1024 * 1024,
+                    total_heap_size_executable: 0,
+                    total_physical_size: 8 * 1024 * 1024,
+                    total_available_size: heapSizeLimit - 4 * 1024 * 1024,
+                    used_heap_size: 4 * 1024 * 1024,
+                    heap_size_limit: heapSizeLimit,
+                    malloced_memory: 0,
+                    peak_malloced_memory: 0,
+                    does_zap_garbage: 0,
+                    number_of_native_contexts: 1,
+                    number_of_detached_contexts: 0,
+                    total_global_handles_size: 0,
+                    used_global_handles_size: 0,
+                    external_memory: process.memoryUsage().external,
+                };
+            },
+            getHeapCodeStatistics() {
+                return {
+                    code_and_metadata_size: 0,
+                    bytecode_and_metadata_size: 0,
+                    external_script_source_size: 0,
+                    cpu_profiler_metadata_size: 0,
+                };
+            },
+            getHeapSpaceStatistics() {
+                return heapSpaceNames.map((space_name) => ({
+                    space_name,
+                    space_size: 0,
+                    space_used_size: 0,
+                    space_available_size: 0,
+                    physical_space_size: 0,
+                }));
+            },
+            setFlagsFromString(flags) {
+                _validateString(flags, 'flags');
+                flagVersion = (flagVersion + 1) >>> 0;
+            },
+            cachedDataVersionTag() {
+                return (0x534d0000 ^ flagVersion) >>> 0;
+            },
+            getHeapSnapshot() {
+                const payload = Buffer.from(JSON.stringify({
+                    snapshot: {
+                        meta: {
+                            node_fields: ['type', 'name', 'id', 'self_size', 'edge_count', 'trace_node_id', 'detachedness'],
+                            node_types: [['synthetic'], 'string', 'number', 'number', 'number', 'number', 'number'],
+                            edge_fields: ['type', 'name_or_index', 'to_node'],
+                            edge_types: [['element'], 'string_or_number', 'node'],
+                            trace_function_info_fields: ['function_id', 'name', 'script_name', 'script_id', 'line', 'column'],
+                            trace_node_fields: ['id', 'function_info_index', 'count', 'size', 'children'],
+                            sample_fields: ['timestamp_us', 'last_assigned_id'],
+                            location_fields: ['object_index', 'script_id', 'line', 'column'],
+                        },
+                        node_count: 0,
+                        edge_count: 0,
+                        trace_function_count: 0,
+                    },
+                    nodes: [],
+                    edges: [],
+                    trace_function_infos: [],
+                    trace_tree: [],
+                    samples: [],
+                    locations: [],
+                    strings: [],
+                }));
+                return stream.Readable.from([payload]);
+            },
+            serialize() { unsupported('serialize'); },
+            deserialize() { unsupported('deserialize'); },
+            writeHeapSnapshot() { unsupported('writeHeapSnapshot'); },
+            queryObjects() { unsupported('queryObjects'); },
+            GCProfiler: class GCProfiler {
+                start() { unsupported('GCProfiler.start'); }
+                stop() { unsupported('GCProfiler.stop'); }
+            },
+            startupSnapshot: {
+                isBuildingSnapshot() { return false; },
+                addSerializeCallback() { throw notBuildingSnapshot(); },
+                addDeserializeCallback() { throw notBuildingSnapshot(); },
+                setDeserializeMainFunction() { throw notBuildingSnapshot(); },
+            },
+        };
+    })(),
     'vm': vm,
     // Minimal stubs — undici/file-type/anthropic-sdk import these at module
     // init even when their stream code paths aren't exercised by the agent's
