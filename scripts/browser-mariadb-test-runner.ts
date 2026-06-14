@@ -158,15 +158,27 @@ async function runTest(page: Page, testName: string, testTimeout: number): Promi
     else if (result.exitCode === 62) status = "skip";
     else status = "fail";
 
+    let stderr = result.stderr || undefined;
+    if (status === "fail") {
+      const serverLog = await page.evaluate(async () => {
+        const readFile = (window as any).__readMariadbFile;
+        if (typeof readFile !== "function") return "";
+        return await readFile("/data/error.log", 3000);
+      }).catch(() => "");
+      if (serverLog.trim()) {
+        stderr = `${stderr ?? ""}\n\n[data/error.log]\n${serverLog.slice(-4000)}`;
+      }
+    }
+
     const recentBrowserErrors = browserConsoleErrors.slice(browserErrorStart);
-    const runtimeFailure = classifyRuntimeFailure(result.stderr || undefined, recentBrowserErrors);
+    const runtimeFailure = classifyRuntimeFailure(stderr, recentBrowserErrors);
 
     return {
       test: testName,
       status,
       time_ms: elapsed,
-      stderr: result.stderr || undefined,
-      error: runtimeFailure ?? (result.exitCode === -1 ? result.stderr : undefined),
+      stderr,
+      error: runtimeFailure ?? (result.exitCode === -1 ? stderr : undefined),
       runtimeFailure,
     };
   } catch (err: any) {

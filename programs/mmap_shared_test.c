@@ -26,6 +26,23 @@ int main(void) {
     printf("mmap ok at %p\n", ptr);
 
     // Write through the mapping
+    ptr[0] = 'a';
+    ptr[1] = 'b';
+    ptr[2] = 'c';
+
+    // Linux page-cache semantics make MAP_SHARED writes visible to file I/O
+    // before msync; msync is durability, not same-process coherence.
+    lseek(fd, 0, SEEK_SET);
+    char coherent_buf[4] = {0};
+    if (read(fd, coherent_buf, 3) != 3) { perror("read before msync"); return 1; }
+    if (memcmp(coherent_buf, "abc", 3) != 0) {
+        fprintf(stderr, "read before msync failed: got '%c%c%c'\n",
+                coherent_buf[0], coherent_buf[1], coherent_buf[2]);
+        return 1;
+    }
+    printf("read before msync: %c%c%c\n",
+           coherent_buf[0], coherent_buf[1], coherent_buf[2]);
+
     ptr[0] = 'x';
     ptr[1] = 'y';
     ptr[2] = 'z';
@@ -47,11 +64,14 @@ int main(void) {
 
     // Also test: write more data and verify munmap flushes it back to
     // the file. Some linkers write their output via MAP_SHARED and rely
-    // on munmap for final writeback.
+    // on munmap for final writeback. POSIX mappings also outlive close(fd),
+    // so close the original fd before unmapping.
     ptr[3] = 'w';
+    if (close(fd) < 0) { perror("close before munmap"); return 1; }
     if (munmap(ptr, pagesize) < 0) { perror("munmap"); return 1; }
 
-    lseek(fd, 0, SEEK_SET);
+    fd = open(path, O_RDONLY);
+    if (fd < 0) { perror("reopen after munmap"); return 1; }
     char munmap_buf[5] = {0};
     if (read(fd, munmap_buf, 4) != 4) { perror("read after munmap"); return 1; }
     if (memcmp(munmap_buf, "xyzw", 4) != 0) {

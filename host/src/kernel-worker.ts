@@ -213,6 +213,7 @@ const SYS_SHMDT = ABI_SYSCALLS.Shmdt;
 const SYS_MQ_TIMEDSEND = ABI_SYSCALLS.MqTimedsend;
 const SYS_MQ_TIMEDRECEIVE = ABI_SYSCALLS.MqTimedreceive;
 
+const SYS_DUP = ABI_SYSCALLS.Dup;
 const SYS_CLOSE = ABI_SYSCALLS.Close;
 
 /** IPC constants (must match musl) */
@@ -271,6 +272,31 @@ function syscallHasMsgDontwait(syscallNr: number, args: number[]): boolean {
       return false;
   }
   return flags !== undefined && (flags & MSG_DONTWAIT) !== 0;
+}
+
+function syscallNeedsSharedMappingFlush(syscallNr: number, args: number[]): boolean {
+  switch (syscallNr) {
+    case SYS_READ:
+    case SYS_PREAD:
+    case SYS_READV:
+    case SYS_PREADV:
+    case SYS_CLOSE:
+    case ABI_SYSCALLS.Open:
+    case ABI_SYSCALLS.Openat:
+    case ABI_SYSCALLS.Stat:
+    case ABI_SYSCALLS.Lstat:
+    case ABI_SYSCALLS.Fstat:
+    case ABI_SYSCALLS.Fstatat:
+    case ABI_SYSCALLS.Truncate:
+    case ABI_SYSCALLS.Ftruncate:
+    case ABI_SYSCALLS.Fsync:
+    case ABI_SYSCALLS.Fdatasync:
+      return true;
+    case SYS_MMAP:
+      return args[4] >= 0 && ((args[3] >>> 0) & MAP_ANONYMOUS) === 0;
+    default:
+      return false;
+  }
 }
 // Signal delivery area — last 48 bytes of data buffer.
 // Written by kernel_dequeue_signal, read by glue channel_syscall.c.
@@ -797,6 +823,7 @@ export class CentralizedKernelWorker {
     fd: number;
     fileOffset: number;
     len: number;
+    closeOnRelease: boolean;
   }>>();
   /** Host-side mirror of epoll interest lists: "pid:epfd" → interests.
    *  Maintained by intercepting epoll_ctl results. Used by handleEpollPwait
@@ -1452,6 +1479,12 @@ export class CentralizedKernelWorker {
    * it from the kernel's process table.
    */
   unregisterProcess(pid: number): void {
+    const registration = this.processes.get(pid);
+    const cleanupChannel = registration?.channels?.[0];
+    if (cleanupChannel) {
+      this.releaseSharedMappingsForProcess(cleanupChannel, true);
+    }
+
     // Remove channels from active list
     this.activeChannels = this.activeChannels.filter((ch) => ch.pid !== pid);
 
@@ -1544,6 +1577,12 @@ export class CentralizedKernelWorker {
   }
 
   deactivateProcess(pid: number): void {
+    const registration = this.processes.get(pid);
+    const cleanupChannel = registration?.channels?.[0];
+    if (cleanupChannel) {
+      this.releaseSharedMappingsForProcess(cleanupChannel, true);
+    }
+
     this.activeChannels = this.activeChannels.filter((ch) => ch.pid !== pid);
     this.processes.delete(pid);
     this.stdinFinite.delete(pid);
@@ -1598,6 +1637,12 @@ export class CentralizedKernelWorker {
    * Does NOT cancel timers (POSIX: timers are preserved across exec).
    */
   prepareProcessForExec(pid: number): void {
+    const registration = this.processes.get(pid);
+    const cleanupChannel = registration?.channels?.[0];
+    if (cleanupChannel) {
+      this.releaseSharedMappingsForProcess(cleanupChannel, true);
+    }
+
     // Remove channels from active list (stops listening on old memory)
     this.activeChannels = this.activeChannels.filter((ch) => ch.pid !== pid);
 
@@ -2056,6 +2101,10 @@ export class CentralizedKernelWorker {
       return;
     }
 
+    if (syscallNeedsSharedMappingFlush(syscallNr, origArgs)) {
+      this.flushAllSharedMappings(channel);
+    }
+
     // --- Scatter/gather I/O (writev/readv/pwritev/preadv) ---
     // These have nested pointers (iov array → base buffers) that can't be
     // handled by the simple ArgDesc system.
@@ -2385,15 +2434,17 @@ export class CentralizedKernelWorker {
         // Track MAP_SHARED file-backed mappings for msync writeback
         if (mmapFlags & MAP_SHARED) {
           const pageOffset = origArgs[5] >>> 0;
+          const mappingFd = this.dupFdForSharedMapping(channel, mmapFd);
           let pidMap = this.sharedMappings.get(channel.pid);
           if (!pidMap) {
             pidMap = new Map();
             this.sharedMappings.set(channel.pid, pidMap);
           }
           pidMap.set(retVal >>> 0, {
-            fd: mmapFd,
+            fd: mappingFd.fd,
             fileOffset: pageOffset * 4096,
             len: origArgs[1] >>> 0,
+            closeOnRelease: mappingFd.closeOnRelease,
           });
         }
       }
@@ -2407,7 +2458,7 @@ export class CentralizedKernelWorker {
     // --- munmap: flush + clean up shared mapping tracking ---
     if (syscallNr === SYS_MUNMAP && retVal === 0) {
       this.flushSharedMappings(channel, origArgs);
-      this.cleanupSharedMappings(channel.pid, origArgs[0] >>> 0, origArgs[1] >>> 0);
+      this.cleanupSharedMappings(channel, origArgs[0] >>> 0, origArgs[1] >>> 0);
     }
 
     // --- Signal-death check ---
@@ -6215,6 +6266,8 @@ export class CentralizedKernelWorker {
       return;
     }
 
+    this.releaseSharedMappingsForProcess(channel, true);
+
     // Run the kernel's exit path so it closes all FDs (including pipe
     // write ends). kernel_exit calls sys_exit then traps — catch the trap.
     {
@@ -6284,7 +6337,7 @@ export class CentralizedKernelWorker {
     this.notifyParentOfExitedProcess(exitingPid);
 
     // Clean up per-process state
-    this.sharedMappings.delete(exitingPid);
+    this.releaseSharedMappingsForProcess(channel, true);
 
     // Do NOT complete the channel — the worker is blocked on Atomics.wait
     // and waking it would cause the C code to continue executing.
@@ -6327,7 +6380,12 @@ export class CentralizedKernelWorker {
     if (markSignaled && markSignaled(pid, signum) < 0) return;
     this.hostReaped.add(pid);
     this.notifyParentOfExitedProcess(pid);
-    this.sharedMappings.delete(pid);
+    const cleanupChannel = this.processes?.get(pid)?.channels?.[0];
+    if (cleanupChannel) {
+      this.releaseSharedMappingsForProcess(cleanupChannel, false);
+    } else {
+      this.sharedMappings.delete(pid);
+    }
   }
 
   /**
@@ -6360,7 +6418,7 @@ export class CentralizedKernelWorker {
       if (ps) { clearTimeout(ps.timer); this.pendingSleeps.delete(pid); }
 
       const proc = this.processes.get(pid);
-      const ch = proc?.channels[0];
+      const ch = proc?.channels?.[0];
       // handleProcessTerminated re-checks hostReaped and adds the pid
       // itself, so passing through here is idempotent if two reap
       // events fire close together.
@@ -7040,8 +7098,9 @@ export class CentralizedKernelWorker {
         handleChannel(this.toKernelPtr(this.scratchOffset), channel.pid);
       } catch {
         break; // pread failed, leave rest as zeros
+      } finally {
+        this.currentHandlePid = 0;
       }
-      this.currentHandlePid = 0;
 
       const bytesRead = Number(kernelView.getBigInt64(CH_RETURN, true));
       if (bytesRead <= 0) break; // EOF or error
@@ -7058,6 +7117,56 @@ export class CentralizedKernelWorker {
 
       if (bytesRead < chunkSize) break; // short read = EOF
     }
+  }
+
+  private runKernelScalarSyscall(
+    channel: ChannelInfo,
+    syscallNr: number,
+    args: number[],
+  ): { retVal: number; errVal: number } {
+    const handleChannel = this.kernelInstance!.exports.kernel_handle_channel as
+      (offset: KernelPointer, pid: number) => number;
+    const kernelView = new DataView(this.kernelMemory!.buffer, this.scratchOffset);
+
+    kernelView.setUint32(CH_SYSCALL, syscallNr, true);
+    kernelView.setUint32(CH_ERRNO, 0, true);
+    for (let i = 0; i < CH_ARGS_COUNT; i++) {
+      kernelView.setBigInt64(
+        CH_ARGS + i * CH_ARG_SIZE,
+        BigInt(args[i] ?? 0),
+        true,
+      );
+    }
+
+    this.currentHandlePid = channel.pid;
+    this.bindKernelTidForChannel(channel);
+    try {
+      handleChannel(this.toKernelPtr(this.scratchOffset), channel.pid);
+    } catch {
+      return { retVal: -1, errVal: 5 };
+    } finally {
+      this.currentHandlePid = 0;
+    }
+
+    return {
+      retVal: Number(kernelView.getBigInt64(CH_RETURN, true)),
+      errVal: kernelView.getUint32(CH_ERRNO, true),
+    };
+  }
+
+  private dupFdForSharedMapping(
+    channel: ChannelInfo,
+    fd: number,
+  ): { fd: number; closeOnRelease: boolean } {
+    const result = this.runKernelScalarSyscall(channel, SYS_DUP, [fd]);
+    if (result.retVal >= 0 && result.errVal === 0) {
+      return { fd: result.retVal, closeOnRelease: true };
+    }
+    return { fd, closeOnRelease: false };
+  }
+
+  private closeSharedMappingFd(channel: ChannelInfo, fd: number): void {
+    this.runKernelScalarSyscall(channel, SYS_CLOSE, [fd]);
   }
 
   /**
@@ -7094,6 +7203,38 @@ export class CentralizedKernelWorker {
         channel, mapping.fd, flushStart, flushLen, fileOffsetBase,
       );
     }
+  }
+
+  private flushAllSharedMappings(channel: ChannelInfo): void {
+    const pidMap = this.sharedMappings.get(channel.pid);
+    if (!pidMap || pidMap.size === 0) return;
+
+    for (const [mapAddr, mapping] of pidMap) {
+      if (mapping.len <= 0) continue;
+      this.pwriteFromProcessMemory(
+        channel,
+        mapping.fd,
+        mapAddr,
+        mapping.len,
+        mapping.fileOffset,
+      );
+    }
+  }
+
+  private releaseSharedMappingsForProcess(channel: ChannelInfo, flush: boolean): void {
+    const pidMap = this.sharedMappings.get(channel.pid);
+    if (!pidMap) return;
+
+    if (flush) {
+      this.flushAllSharedMappings(channel);
+    }
+
+    for (const mapping of pidMap.values()) {
+      if (mapping.closeOnRelease) {
+        this.closeSharedMappingFd(channel, mapping.fd);
+      }
+    }
+    this.sharedMappings.delete(channel.pid);
   }
 
   /**
@@ -7140,8 +7281,9 @@ export class CentralizedKernelWorker {
         handleChannel(this.toKernelPtr(this.scratchOffset), channel.pid);
       } catch {
         break;
+      } finally {
+        this.currentHandlePid = 0;
       }
-      this.currentHandlePid = 0;
 
       const bytesWritten = Number(kernelView.getBigInt64(CH_RETURN, true));
       if (bytesWritten <= 0) break;
@@ -7154,21 +7296,24 @@ export class CentralizedKernelWorker {
   /**
    * Remove shared mapping entries that overlap the munmap range.
    */
-  private cleanupSharedMappings(pid: number, addr: number, len: number): void {
-    const pidMap = this.sharedMappings.get(pid);
+  private cleanupSharedMappings(channel: ChannelInfo, addr: number, len: number): void {
+    const pidMap = this.sharedMappings.get(channel.pid);
     if (!pidMap) return;
 
     const unmapEnd = addr + len;
-    for (const [mapAddr, mapping] of pidMap) {
+    for (const [mapAddr, mapping] of Array.from(pidMap)) {
       const mapEnd = mapAddr + mapping.len;
       // Remove if fully contained in unmap range
       if (mapAddr >= addr && mapEnd <= unmapEnd) {
+        if (mapping.closeOnRelease) {
+          this.closeSharedMappingFd(channel, mapping.fd);
+        }
         pidMap.delete(mapAddr);
       }
     }
 
     if (pidMap.size === 0) {
-      this.sharedMappings.delete(pid);
+      this.sharedMappings.delete(channel.pid);
     }
   }
 

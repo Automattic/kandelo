@@ -8,10 +8,14 @@ import { MemoryFileSystem } from "../src/vfs/memory-fs";
 import {
   BLOCK_SIZE,
   EMFILE,
+  EEXIST,
   FD_ENTRY_SIZE,
+  FD_TABLE_EXTENSION_BLOCKS,
   FD_TABLE_OFFSET,
+  LEGACY_MAX_FDS,
   MAX_FDS,
   O_CREAT,
+  O_EXCL,
   O_RDONLY,
   O_RDWR,
   O_TRUNC,
@@ -387,10 +391,14 @@ describe("MemoryFileSystem", () => {
   });
 
   it("opens more than the old 64-descriptor SharedFS table limit", () => {
-    expect(MAX_FDS).toBe(
+    expect(LEGACY_MAX_FDS).toBe(
       Math.floor((BLOCK_SIZE - FD_TABLE_OFFSET) / FD_ENTRY_SIZE),
     );
-    expect(MAX_FDS).toBeGreaterThan(64);
+    expect(MAX_FDS).toBe(
+      LEGACY_MAX_FDS +
+        Math.floor((FD_TABLE_EXTENSION_BLOCKS * BLOCK_SIZE) / FD_ENTRY_SIZE),
+    );
+    expect(MAX_FDS).toBeGreaterThan(1024);
 
     const sab = new SharedArrayBuffer(4 * 1024 * 1024);
     const mfs = MemoryFileSystem.create(sab);
@@ -413,9 +421,56 @@ describe("MemoryFileSystem", () => {
     }
   });
 
-  it("throws EMFILE when the derived SharedFS fd table is full", () => {
-    expect(MAX_FDS).toBeLessThanOrEqual(160);
+  it("opens descriptors beyond the legacy block-0 table", () => {
+    const sab = new SharedArrayBuffer(4 * 1024 * 1024);
+    const mfs = MemoryFileSystem.create(sab);
+    const createFd = mfs.open(
+      "/extended-fds.txt",
+      O_CREAT | O_RDWR | O_TRUNC,
+      0o644,
+    );
+    mfs.close(createFd);
 
+    const fds: number[] = [];
+    try {
+      for (let i = 0; i <= LEGACY_MAX_FDS; i++) {
+        fds.push(mfs.open("/extended-fds.txt", O_RDONLY, 0o644));
+      }
+      expect(Math.max(...fds)).toBe(LEGACY_MAX_FDS);
+    } finally {
+      for (const fd of fds) mfs.close(fd);
+    }
+  });
+
+  it("backfills the extended fd table when mounting an older SharedFS image", () => {
+    const SUPERBLOCK_FD_TABLE_EXTENSION_START = 76;
+    const SUPERBLOCK_FD_TABLE_EXTENSION_BLOCKS = 80;
+    const sab = new SharedArrayBuffer(4 * 1024 * 1024);
+    const original = MemoryFileSystem.create(sab);
+    const createFd = original.open(
+      "/mounted-extended-fds.txt",
+      O_CREAT | O_RDWR | O_TRUNC,
+      0o644,
+    );
+    original.close(createFd);
+
+    const superblock = new DataView(sab);
+    superblock.setUint32(SUPERBLOCK_FD_TABLE_EXTENSION_START, 0, true);
+    superblock.setUint32(SUPERBLOCK_FD_TABLE_EXTENSION_BLOCKS, 0, true);
+
+    const mounted = MemoryFileSystem.fromExisting(sab);
+    const fds: number[] = [];
+    try {
+      for (let i = 0; i <= LEGACY_MAX_FDS; i++) {
+        fds.push(mounted.open("/mounted-extended-fds.txt", O_RDONLY, 0o644));
+      }
+      expect(Math.max(...fds)).toBe(LEGACY_MAX_FDS);
+    } finally {
+      for (const fd of fds) mounted.close(fd);
+    }
+  });
+
+  it("throws EMFILE when the extended SharedFS fd table is full", () => {
     const sab = new SharedArrayBuffer(4 * 1024 * 1024);
     const mfs = MemoryFileSystem.create(sab);
     const createFd = mfs.open(
@@ -441,6 +496,42 @@ describe("MemoryFileSystem", () => {
 
     expect(error).toBeInstanceOf(SFSError);
     expect((error as SFSError).code).toBe(EMFILE);
+  });
+
+  it("rejects O_CREAT|O_EXCL when the target already exists", () => {
+    const sab = new SharedArrayBuffer(4 * 1024 * 1024);
+    const mfs = MemoryFileSystem.create(sab);
+    const fd = mfs.open("/exclusive.txt", O_CREAT | O_RDWR | O_TRUNC, 0o644);
+    mfs.close(fd);
+
+    let error: unknown;
+    try {
+      mfs.open("/exclusive.txt", O_CREAT | O_EXCL | O_RDWR, 0o644);
+    } catch (err) {
+      error = err;
+    }
+
+    expect(error).toBeInstanceOf(SFSError);
+    expect((error as SFSError).code).toBe(EEXIST);
+  });
+
+  it("zeros stale partial-block bytes after truncate and re-extend", () => {
+    const sab = new SharedArrayBuffer(4 * 1024 * 1024);
+    const mfs = MemoryFileSystem.create(sab);
+    const fd = mfs.open("/truncate-zero.txt", O_CREAT | O_RDWR | O_TRUNC, 0o644);
+    const original = new Uint8Array(BLOCK_SIZE + 128);
+    original.fill(0x5a);
+    expect(mfs.write(fd, original, null, original.length)).toBe(original.length);
+
+    mfs.ftruncate(fd, 17);
+    mfs.ftruncate(fd, original.length);
+    mfs.seek(fd, 0, 0);
+
+    const actual = new Uint8Array(original.length);
+    expect(mfs.read(fd, actual, null, actual.length)).toBe(actual.length);
+    expect(Array.from(actual.slice(0, 17))).toEqual(Array(17).fill(0x5a));
+    expect(actual.slice(17).every((byte) => byte === 0)).toBe(true);
+    mfs.close(fd);
   });
 
   it("creates and lists directories", () => {
@@ -486,6 +577,23 @@ describe("MemoryFileSystem", () => {
     mfs.close(fd);
     mfs.unlink("/todelete.txt");
     expect(() => mfs.stat("/todelete.txt")).toThrow();
+  });
+
+  it("renaming a file to itself preserves the directory entry", () => {
+    const sab = new SharedArrayBuffer(4 * 1024 * 1024);
+    const mfs = MemoryFileSystem.create(sab);
+    const fd = mfs.open("/same-name.txt", O_CREAT | O_RDWR | O_TRUNC, 0o644);
+    const data = new TextEncoder().encode("still here");
+    mfs.write(fd, data, null, data.length);
+    mfs.close(fd);
+
+    mfs.rename("/same-name.txt", "/same-name.txt");
+
+    const readFd = mfs.open("/same-name.txt", O_RDONLY, 0);
+    const actual = new Uint8Array(data.length);
+    expect(mfs.read(readFd, actual, null, actual.length)).toBe(data.length);
+    mfs.close(readFd);
+    expect(new TextDecoder().decode(actual)).toBe("still here");
   });
 
   it("ftruncate changes file size", () => {
