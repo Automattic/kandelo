@@ -421,6 +421,7 @@ if (!testFile) {
 process.argv[1] = testFile;
 process.env.NODE_SKIP_FLAG_CHECK = '1';
 process.env.NODE_DISABLE_COLORS = process.env.NODE_DISABLE_COLORS || '1';
+process.env.NODE_TEST_KNOWN_GLOBALS = process.env.NODE_TEST_KNOWN_GLOBALS || '0';
 
 process.config = process.config || {};
 process.config.variables = Object.assign({
@@ -544,6 +545,7 @@ function envForRun(isolation?: TestIsolation): string[] {
   );
   env.set("NODE_SKIP_FLAG_CHECK", "1");
   env.set("NODE_DISABLE_COLORS", "1");
+  env.set("NODE_TEST_KNOWN_GLOBALS", "0");
   env.set("TERM", "dumb");
   env.set("CI", "1");
   if (isolation) {
