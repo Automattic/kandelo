@@ -145,6 +145,36 @@ describe("BrowserKernel", () => {
     expect(await exit).toBe(7);
   });
 
+  it("spawn() leaves PID allocation to the kernel worker after boot", async () => {
+    const BrowserKernel = await loadBrowserKernel();
+    const kernel = new BrowserKernel({ kernelOwnedFs: true });
+    const bootPromise = kernel.boot({
+      kernelWasm: new ArrayBuffer(8),
+      vfsImage: new Uint8Array(0),
+      argv: ["/init"],
+    });
+
+    await new Promise((r) => setTimeout(r, 0));
+    const w = MockWorker.instances[0]!;
+    w.simulateMessage({ type: "ready" });
+    await new Promise((r) => setTimeout(r, 0));
+    const initSpawn = w.lastMessage("spawn");
+    w.simulateMessage({ type: "response", requestId: initSpawn.requestId, result: 100 });
+    await bootPromise;
+
+    const exitPromise = kernel.spawn(new ArrayBuffer(8), ["mysqltest"]);
+    await new Promise((r) => setTimeout(r, 0));
+    const testSpawn = w.lastMessage("spawn");
+
+    expect(testSpawn.argv).toEqual(["mysqltest"]);
+    expect(testSpawn.pid).toBeUndefined();
+
+    w.simulateMessage({ type: "response", requestId: testSpawn.requestId, result: 105 });
+    w.simulateMessage({ type: "exit", pid: 105, status: 9 });
+
+    await expect(exitPromise).resolves.toBe(9);
+  });
+
   describe("fetchInKernel", () => {
     async function bootedKernel() {
       const BrowserKernel = await loadBrowserKernel();

@@ -10,16 +10,17 @@ set -euo pipefail
 #
 # Usage:
 #   scripts/run-browser-mariadb-tests.sh              # run curated tests
-#   scripts/run-browser-mariadb-tests.sh test1 test2   # run specific tests
+#   scripts/run-browser-mariadb-tests.sh --all        # run all mysql-test main tests
+#   scripts/run-browser-mariadb-tests.sh test1 test2  # run specific tests
 
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 INSTALL_DIR="$REPO_ROOT/packages/registry/mariadb/mariadb-install"
-KERNEL_WASM="$("$REPO_ROOT/scripts/resolve-binary.sh" kernel.wasm)"
+KERNEL_WASM="$("$REPO_ROOT/scripts/resolve-binary.sh" kernel.wasm 2>/dev/null || true)"
 VFS_IMAGE="$REPO_ROOT/apps/browser-demos/public/mariadb-test.vfs.zst"
 RUNNER="$REPO_ROOT/scripts/browser-mariadb-test-runner.ts"
 
 # ── Curated tests (from full browser triage of all 1184 tests) ──
-# 185 tests verified to pass in headless Chromium with MariaDB on kandelo.
+# 185 tests verified to pass in headless Chromium with MariaDB on Kandelo.
 # Excludes: 230 connect-command tests (deadlock with no-threads), 339 timeouts,
 #           143 self-skipping, 287 other failures.
 CURATED_TESTS=(
@@ -104,8 +105,8 @@ is_expected_fail() {
 check_prereqs() {
     local missing=0
 
-    if [ ! -f "$INSTALL_DIR/bin/mariadbd.wasm" ]; then
-        echo "ERROR: mariadbd.wasm not found. Run: bash packages/registry/mariadb/build-mariadb.sh" >&2
+    if [ ! -f "$INSTALL_DIR/bin/mariadbd" ]; then
+        echo "ERROR: mariadbd not found. Run: bash packages/registry/mariadb/build-mariadb.sh" >&2
         missing=1
     fi
 
@@ -136,13 +137,21 @@ check_prereqs() {
 # ── Main ──
 
 TEST_ARGS=()
+ALL_MODE=false
 
 while [ $# -gt 0 ]; do
     case "$1" in
+        --all)
+            ALL_MODE=true
+            shift
+            ;;
         --help|-h)
             echo "Usage: $0 [OPTIONS] [test1 test2 ...]"
             echo ""
-            echo "Without test names, runs the curated set of ${#CURATED_TESTS[@]} tests."
+            echo "Options:"
+            echo "  --all    Run every mysql-test main/*.test file present in the MariaDB tree."
+            echo ""
+            echo "Without --all or test names, runs the curated set of ${#CURATED_TESTS[@]} tests."
             echo ""
             echo "Environment:"
             echo "  TEST_TIMEOUT    Per-test timeout in ms (default: 60000)"
@@ -154,18 +163,44 @@ done
 
 check_prereqs
 
-# Build test VFS image if missing
-if [ ! -f "$VFS_IMAGE" ]; then
+discover_all_tests() {
+    local main_dir="$INSTALL_DIR/mysql-test/main"
+    if [ ! -d "$main_dir" ]; then
+        echo "ERROR: mysql-test main directory not found at $main_dir" >&2
+        echo "Run: bash packages/registry/mariadb/build-mariadb.sh" >&2
+        exit 1
+    fi
+    find "$main_dir" -maxdepth 1 -type f -name '*.test' \
+        | sed 's#.*/##; s#\.test$##' \
+        | sort
+}
+
+# Build test VFS image if missing. Full-suite mode forces a rebuild so
+# the image contains every main/*.test file instead of only the curated set.
+if [ ! -f "$VFS_IMAGE" ] || $ALL_MODE; then
     echo "Building test VFS image..."
-    bash "$REPO_ROOT/images/vfs/scripts/build-mariadb-test-vfs-image.sh"
+    if $ALL_MODE; then
+        bash "$REPO_ROOT/images/vfs/scripts/build-mariadb-test-vfs-image.sh" --all
+    else
+        bash "$REPO_ROOT/images/vfs/scripts/build-mariadb-test-vfs-image.sh"
+    fi
 fi
 
-# Use curated tests if none specified
+# Use all/curated tests if none specified
 if [ ${#TEST_ARGS[@]} -eq 0 ]; then
-    TEST_ARGS=("${CURATED_TESTS[@]}")
+    if $ALL_MODE; then
+        while IFS= read -r test_name; do
+            TEST_ARGS+=("$test_name")
+        done < <(discover_all_tests)
+    else
+        TEST_ARGS=("${CURATED_TESTS[@]}")
+    fi
 fi
 
 echo "===== MariaDB mysql-test (browser) ====="
+if $ALL_MODE; then
+    echo "Mode: all tests"
+fi
 echo "Tests: ${#TEST_ARGS[@]}"
 echo ""
 
@@ -176,10 +211,27 @@ trap 'rm -f "$RESULTS_FILE" "$STDERR_FILE"' EXIT
 
 TIMEOUT="${TEST_TIMEOUT:-60000}"
 
-set +e
-npx tsx "$RUNNER" --json --timeout "$TIMEOUT" "${TEST_ARGS[@]}" > "$RESULTS_FILE" 2>"$STDERR_FILE"
-RUNNER_EXIT=$?
-set -e
+RUNNER_RETRIES="${MARIADB_BROWSER_RUNNER_RETRIES:-3}"
+RUNNER_EXIT=0
+for ((attempt=1; attempt<=RUNNER_RETRIES; attempt++)); do
+    : > "$RESULTS_FILE"
+    : > "$STDERR_FILE"
+    set +e
+    npx tsx "$RUNNER" --json --timeout "$TIMEOUT" "${TEST_ARGS[@]}" > "$RESULTS_FILE" 2>"$STDERR_FILE"
+    RUNNER_EXIT=$?
+    set -e
+
+    # Browser boots can intermittently fail before producing any JSON result
+    # (usually while the page reaches TCP listen but setup SQL times out).
+    # Retry the whole browser process for that case; once at least one result
+    # exists, preserve it exactly so all test outcomes remain visible.
+    if grep -q '^{' "$RESULTS_FILE" || [ "$attempt" -ge "$RUNNER_RETRIES" ]; then
+        break
+    fi
+    echo "NOTE: MariaDB browser runner produced zero JSON results on attempt $attempt/$RUNNER_RETRIES; retrying" >&2
+    tail -40 "$STDERR_FILE" >&2 || true
+    sleep 1
+done
 
 # Show runner stderr
 cat "$STDERR_FILE" >&2
@@ -204,12 +256,32 @@ try:
     print(d['test'])
     print(d['status'])
     print(d.get('time_ms', 0))
+    import base64
+    error = d.get('error') or ''
+    stderr = d.get('stderr') or ''
+    if error and stderr and error not in stderr:
+        detail = f'{error}: {stderr}'
+    else:
+        detail = error or stderr
+    print(base64.b64encode(detail.encode()).decode())
 except: pass
 " 2>/dev/null) || continue
 
     test_name=$(echo "$parsed" | sed -n '1p')
     status=$(echo "$parsed" | sed -n '2p')
     time_ms=$(echo "$parsed" | sed -n '3p')
+    stderr_b64=$(echo "$parsed" | sed -n '4p')
+    stderr_summary=""
+    if [ -n "$stderr_b64" ]; then
+        stderr_summary=$(printf '%s' "$stderr_b64" | python3 -c "
+import sys, base64
+try:
+    text = base64.b64decode(sys.stdin.read()).decode('utf-8', 'replace')
+    print(' '.join(text.split())[:240])
+except Exception:
+    pass
+" 2>/dev/null || true)
+    fi
 
     [ -z "$test_name" ] && continue
     [[ "$test_name" == __* ]] && continue
@@ -237,7 +309,11 @@ except: pass
                 RESULTS+=("XFAIL $test_name")
                 XFAIL=$((XFAIL + 1))
             else
-                echo "FAIL  $test_name (${time_ms}ms)"
+                if [ -n "$stderr_summary" ]; then
+                    echo "FAIL  $test_name (${time_ms}ms) -- $stderr_summary"
+                else
+                    echo "FAIL  $test_name (${time_ms}ms)"
+                fi
                 RESULTS+=("FAIL  $test_name")
                 FAIL=$((FAIL + 1))
             fi
@@ -260,6 +336,13 @@ echo "SKIP:    $SKIP"
 echo "TOTAL:   $TOTAL"
 echo ""
 
+if [ "$RUNNER_EXIT" -ne 0 ]; then
+    echo "NOTE: MariaDB browser harness raw runner exited with status $RUNNER_EXIT; classified results below determine wrapper status" >&2
+fi
+if [ "$TOTAL" -eq 0 ]; then
+    echo "ERROR: MariaDB browser harness produced zero test results" >&2
+fi
+
 # Show unexpected results
 for status_prefix in "FAIL " "XPASS"; do
     count=0
@@ -275,7 +358,10 @@ for status_prefix in "FAIL " "XPASS"; do
     fi
 done
 
-# Exit with error if any unexpected failures
-if [ $FAIL -gt 0 ] || [ $XPASS -gt 0 ]; then
+# Exit with error only if result collection failed or unexpected results remain.
+# The browser runner exits non-zero whenever any raw mysqltest invocation fails,
+# including failures intentionally classified here as XFAIL. Treat the wrapper's
+# expected-failure classification as authoritative for shell status.
+if [ "$TOTAL" -eq 0 ] || [ $FAIL -gt 0 ] || [ $XPASS -gt 0 ]; then
     exit 1
 fi

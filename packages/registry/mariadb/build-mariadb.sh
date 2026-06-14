@@ -462,6 +462,13 @@ if [ -f "$MYSQLD_BIN" ]; then
                 cp "$SHARE_BUILD/$lang/errmsg.sys" "$INSTALL_DIR/share/$lang/"
             fi
         done
+        # The lightweight harness passes --lc-messages-dir=$INSTALL_DIR/share.
+        # Some MariaDB code paths first probe errmsg.sys directly in that
+        # directory before falling back to a language subdirectory, so keep an
+        # English root copy alongside the per-language files.
+        if [ -f "$INSTALL_DIR/share/english/errmsg.sys" ]; then
+            cp "$INSTALL_DIR/share/english/errmsg.sys" "$INSTALL_DIR/share/errmsg.sys"
+        fi
         echo "==> Error message files copied."
     fi
 

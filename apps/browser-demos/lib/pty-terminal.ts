@@ -72,20 +72,13 @@ export class PtyTerminal {
       pty: true,
       ptyCols: this.terminal.cols,
       ptyRows: this.terminal.rows,
-    });
+      onStarted: (pid) => {
+        this.pid = pid;
 
-    // The spawn creates the process with the next pid. We need to find it.
-    // BrowserKernel uses sequential pids starting from 1.
-    // The pid is assigned inside spawn() before the worker starts.
-    // We can get it from the exit promise's resolver tracking.
-    // Since spawn returns immediately after creating the process, the pid
-    // is the one that was just assigned. Access it via the kernel's internals.
-    const pid = (this.kernel as any).nextPid - 1;
-    this.pid = pid;
-
-    // Connect PTY output → xterm.js
-    this.kernel.onPtyOutput(pid, (data: Uint8Array) => {
-      this.terminal.write(data);
+        this.kernel.onPtyOutput(pid, (data: Uint8Array) => {
+          this.terminal.write(data);
+        });
+      },
     });
 
     // Connect xterm.js input → PTY master

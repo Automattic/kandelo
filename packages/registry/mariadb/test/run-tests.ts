@@ -1,5 +1,5 @@
 /**
- * MariaDB mysql-test suite runner for kandelo.
+ * MariaDB mysql-test suite runner for Kandelo.
  *
  * Manages the full lifecycle:
  *   1. Bootstrap mariadbd (system tables) if needed
@@ -20,7 +20,7 @@ import { CentralizedKernelWorker } from "../../../../host/src/kernel-worker";
 import { NodePlatformIO } from "../../../../host/src/platform/node";
 import { NodeWorkerAdapter } from "../../../../host/src/worker-adapter";
 import { patchWasmForThread } from "../../../../host/src/worker-main";
-import { resolveBinary, tryResolveBinary } from "../../../../host/src/binary-resolver";
+import { resolveBinary } from "../../../../host/src/binary-resolver";
 import type {
     CentralizedWorkerInitMessage,
     CentralizedThreadInitMessage,
@@ -30,6 +30,8 @@ import { ThreadPageAllocator } from "../../../../host/src/thread-allocator";
 
 const CH_TOTAL_SIZE = 72 + 65536;
 const MAX_PAGES = 16384;
+const SERVER_PID = 100;
+const FIRST_CLIENT_PID = 1000;
 
 const scriptDir = dirname(new URL(import.meta.url).pathname);
 const repoRoot = resolve(scriptDir, "../../../..");
@@ -113,8 +115,9 @@ function patchIncludeFiles(testDir: string) {
 // Module-level state
 let serverStderr = "";
 let tmpTestDir = "/tmp";
+let mysqlTestDataDir = "";
 const clientExitResolvers = new Map<number, (status: number) => void>();
-let _nextPid = 10;
+let _nextPid = FIRST_CLIENT_PID;
 function nextPid(): number { return _nextPid++; }
 
 // Server mid-test restart state
@@ -127,14 +130,33 @@ let currentTestReject: ((err: Error) => void) | null = null;
 let currentTestWorker: ReturnType<NodeWorkerAdapter["createWorker"]> | null = null;
 let needsRestart = false;
 
+function failureRequiresFreshBootstrap(stderr: string): boolean {
+    return stderr.includes("Out of memory") ||
+        stderr.includes("out of memory") ||
+        stderr.includes("Column count of mysql.proc is wrong") ||
+        stderr.includes("Incorrect definition of table mysql.proc") ||
+        stderr.includes("Cannot load from mysql.proc") ||
+        (stderr.includes("mysql.proc") && stderr.includes("table is probably corrupted"));
+}
+
+function failureRequiresServerRestart(stderr: string): boolean {
+    return stderr.includes("Could not open connection") ||
+        stderr.includes("Can't connect to") ||
+        stderr.includes("timed out") ||
+        stderr.includes("null function or function signature") ||
+        stderr.includes("Aborting") ||
+        stderr.includes("Server thread crash") ||
+        stderr.includes("table index is out of bounds") ||
+        stderr.includes("Hard timeout");
+}
+
 async function main() {
-    const mysqldPath = tryResolveBinary("programs/mariadb/mariadbd.wasm")
-        ?? resolve(installDir, "bin/mariadbd.wasm");
+    const mysqldPath = resolve(installDir, "bin/mariadbd");
     const mysqlTestPath = resolveBinary("programs/mariadb/mysqltest.wasm");
     const kernelPath = resolveBinary("kernel.wasm");
 
     for (const [label, path] of [
-        ["mariadbd.wasm", mysqldPath],
+        ["mariadbd", mysqldPath],
         ["mysqltest.wasm", mysqlTestPath],
         ["kernel wasm", kernelPath],
         ["mysql-test dir", mysqlTestDir],
@@ -181,7 +203,8 @@ async function main() {
     console.error(`Thread module ready.`);
 
     // Create data directory
-    const dataDir = resolve(scriptDir, "test-data");
+    const dataDir = resolve(process.env.MARIADB_TEST_DATA_DIR ?? resolve(scriptDir, "test-data"));
+    mysqlTestDataDir = dataDir;
     mkdirSync(resolve(dataDir, "mysql"), { recursive: true });
     mkdirSync(resolve(dataDir, "tmp"), { recursive: true });
     tmpTestDir = resolve(dataDir, "tmp", "mysqltest");
@@ -247,6 +270,7 @@ async function main() {
                     memory,
                     channelOffset: alloc.channelOffset,
                     fnPtr, argPtr, stackPtr, tlsPtr, ctidPtr,
+                    tlsOffset: alloc.tlsOffset,
                     tlsAllocAddr: alloc.tlsAllocAddr,
                 };
                 const threadWorker = workerAdapter.createWorker(threadInitData);
@@ -283,7 +307,7 @@ async function main() {
             onExec: async () => -38, // ENOSYS
 
             onExit: (exitPid, exitStatus) => {
-                if (exitPid === 1) {
+                if (exitPid === SERVER_PID) {
                     kernelWorker.unregisterProcess(exitPid);
                     workers.delete(exitPid);
                     if (autoRestartOnServerExit) {
@@ -326,6 +350,19 @@ async function main() {
 
     // .expect file path for MTR restart protocol
     const expectFilePath = resolve(dataDir, "tmp", "tmp.expect");
+
+    async function stopAllWorkers(): Promise<void> {
+        for (const tw of serverThreadWorkers) {
+            await tw.terminate().catch(() => {});
+        }
+        serverThreadWorkers.clear();
+        for (const [pid, w] of workers) {
+            await w.terminate().catch(() => {});
+            try { kernelWorker.unregisterProcess(pid); } catch {}
+        }
+        workers.clear();
+        threadAllocator = new ThreadPageAllocator(MAX_PAGES);
+    }
 
     /** Perform mid-test server restart (called from onExit when server shuts down). */
     async function performMidTestRestart(
@@ -385,16 +422,7 @@ async function main() {
     /** Kill all workers and start a fresh server instance. */
     async function restartServer(): Promise<void> {
         // Terminate all workers (including server threads)
-        for (const tw of serverThreadWorkers) {
-            await tw.terminate().catch(() => {});
-        }
-        serverThreadWorkers.clear();
-        for (const [pid, w] of workers) {
-            await w.terminate().catch(() => {});
-            try { kernelWorker.unregisterProcess(pid); } catch {}
-        }
-        workers.clear();
-        threadAllocator = new ThreadPageAllocator(MAX_PAGES);
+        await stopAllWorkers();
 
         // Clean Aria control/log files to prevent checksum mismatch on restart
         const { unlinkSync, readdirSync: readdir } = await import("fs");
@@ -433,7 +461,8 @@ async function main() {
             }
         }
         restartFailCount++;
-        throw new Error("MariaDB did not become ready within 60s");
+        const tail = serverStderr.slice(-4000).trim();
+        throw new Error(`MariaDB did not become ready within 60s${tail ? `\n\nServer stderr tail:\n${tail}` : ""}`);
     }
 
     /** Run the setup SQL to create mtr database. */
@@ -446,29 +475,29 @@ USE mtr;
 CREATE TABLE IF NOT EXISTS test_suppressions (pattern VARCHAR(255));
 # Create mysql.proc if it doesn't exist (needed for stored procedure tests)
 CREATE TABLE IF NOT EXISTS mysql.proc (
-  db char(64) NOT NULL DEFAULT '',
+  db char(64) collate utf8_bin DEFAULT '' NOT NULL,
   name char(64) NOT NULL DEFAULT '',
-  type enum('FUNCTION','PROCEDURE') NOT NULL,
+  type enum('FUNCTION','PROCEDURE','PACKAGE','PACKAGE BODY') NOT NULL,
   specific_name char(64) NOT NULL DEFAULT '',
   language enum('SQL') DEFAULT 'SQL' NOT NULL,
   sql_data_access enum('CONTAINS_SQL','NO_SQL','READS_SQL_DATA','MODIFIES_SQL_DATA') DEFAULT 'CONTAINS_SQL' NOT NULL,
-  is_deterministic enum('YES','NO') NOT NULL DEFAULT 'NO',
+  is_deterministic enum('YES','NO') DEFAULT 'NO' NOT NULL,
   security_type enum('INVOKER','DEFINER') DEFAULT 'DEFINER' NOT NULL,
   param_list blob NOT NULL,
   returns longblob NOT NULL,
   body longblob NOT NULL,
-  definer char(141) NOT NULL DEFAULT '',
+  definer char(141) collate utf8_bin DEFAULT '' NOT NULL,
   created timestamp NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
   modified timestamp NOT NULL DEFAULT '0000-00-00 00:00:00',
-  sql_mode set('REAL_AS_FLOAT','PIPES_AS_CONCAT','ANSI_QUOTES','IGNORE_SPACE','IGNORE_BAD_TABLE_OPTIONS','ONLY_FULL_GROUP_BY','NO_UNSIGNED_SUBTRACTION','NO_DIR_IN_CREATE','POSTGRESQL','ORACLE','MSSQL','DB2','MAXDB','NO_KEY_OPTIONS','NO_TABLE_OPTIONS','NO_FIELD_OPTIONS','MYSQL323','MYSQL40','ANSI','NO_AUTO_VALUE_ON_ZERO','NO_BACKSLASH_ESCAPES','STRICT_TRANS_TABLES','STRICT_ALL_TABLES','NO_ZERO_IN_DATE','NO_ZERO_DATE','INVALID_DATES','ERROR_FOR_DIVISION_BY_ZERO','TRADITIONAL','NO_AUTO_CREATE_USER','HIGH_NOT_PRECEDENCE','NO_ENGINE_SUBSTITUTION','PAD_CHAR_TO_FULL_LENGTH','EMPTY_STRING_IS_NULL','SIMULTANEOUS_ASSIGNMENT') DEFAULT '' NOT NULL,
-  comment text NOT NULL,
-  character_set_client char(32) DEFAULT NULL,
-  collation_connection char(32) DEFAULT NULL,
-  db_collation char(32) DEFAULT NULL,
+  sql_mode set('REAL_AS_FLOAT','PIPES_AS_CONCAT','ANSI_QUOTES','IGNORE_SPACE','IGNORE_BAD_TABLE_OPTIONS','ONLY_FULL_GROUP_BY','NO_UNSIGNED_SUBTRACTION','NO_DIR_IN_CREATE','POSTGRESQL','ORACLE','MSSQL','DB2','MAXDB','NO_KEY_OPTIONS','NO_TABLE_OPTIONS','NO_FIELD_OPTIONS','MYSQL323','MYSQL40','ANSI','NO_AUTO_VALUE_ON_ZERO','NO_BACKSLASH_ESCAPES','STRICT_TRANS_TABLES','STRICT_ALL_TABLES','NO_ZERO_IN_DATE','NO_ZERO_DATE','INVALID_DATES','ERROR_FOR_DIVISION_BY_ZERO','TRADITIONAL','NO_AUTO_CREATE_USER','HIGH_NOT_PRECEDENCE','NO_ENGINE_SUBSTITUTION','PAD_CHAR_TO_FULL_LENGTH','EMPTY_STRING_IS_NULL','SIMULTANEOUS_ASSIGNMENT','TIME_ROUND_FRACTIONAL') DEFAULT '' NOT NULL,
+  comment text collate utf8_bin NOT NULL,
+  character_set_client char(32) collate utf8_bin,
+  collation_connection char(32) collate utf8_bin,
+  db_collation char(32) collate utf8_bin,
   body_utf8 longblob,
-  aggregate enum('NONE','GROUP') DEFAULT 'NONE' NOT NULL,
+  aggregate enum('NONE', 'GROUP') DEFAULT 'NONE' NOT NULL,
   PRIMARY KEY (db,name,type)
-) engine=Aria;
+) engine=Aria transactional=1 character set utf8 comment='Stored Procedures';
 DROP PROCEDURE IF EXISTS add_suppression;
 delimiter |;
 CREATE DEFINER='root'@'localhost' PROCEDURE add_suppression(pattern VARCHAR(255))
@@ -543,9 +572,32 @@ CREATE DATABASE test;
 `);
 
     let consecutiveRestartFailures = 0;
+    let needsRebootstrap = false;
     const MAX_CONSECUTIVE_RESTART_FAILURES = 5;
     // Hard per-iteration timeout: test timeout + 120s for reset/restart overhead
     const iterationTimeout = testTimeout + 120000;
+
+    async function recoverServerFromScratch(reason: string): Promise<void> {
+        console.error(`Server unrecoverable (${reason}) — re-bootstrapping from scratch...`);
+        const { rmSync, mkdirSync: mkd } = await import("fs");
+        await stopAllWorkers();
+        rmSync(dataDir, { recursive: true, force: true });
+        mkd(resolve(dataDir, "mysql"), { recursive: true });
+        mkd(resolve(dataDir, "tmp"), { recursive: true });
+        tmpTestDir = resolve(dataDir, "tmp", "mysqltest");
+        mkd(tmpTestDir, { recursive: true });
+
+        serverStderr = "";
+        await kernelWorker.init(kernelBytes);
+        restartFailCount = 0;
+        await runBootstrap(kernelWorker, workerAdapter, workers, mysqldBytes, dataDir);
+        await restartServer();
+        await runSetup();
+        needsRestart = false;
+        needsRebootstrap = false;
+        consecutiveRestartFailures = 0;
+        console.error("Re-bootstrap complete.");
+    }
 
     for (const testName of testNames) {
         // Run GC before each test to keep memory pressure low
@@ -567,42 +619,34 @@ CREATE DATABASE test;
         results.push(iterationResult);
         outputResult(iterationResult);
         const errText = iterationResult.stderr || "";
-        if (iterationResult.status === "fail" && (
-            errText.includes("Could not open connection") ||
-            errText.includes("Can't connect to") ||
-            errText.includes("timed out") ||
-            errText.includes("null function or function signature") ||
-            errText.includes("Aborting") ||
-            errText.includes("Server thread crash") ||
-            errText.includes("table index is out of bounds") ||
-            errText.includes("Hard timeout")
-        )) {
-            needsRestart = true;
+        if (iterationResult.status === "fail") {
+            if (failureRequiresFreshBootstrap(errText)) {
+                needsRebootstrap = true;
+                needsRestart = false;
+            } else if (failureRequiresServerRestart(errText)) {
+                needsRestart = true;
+            }
         }
     }
 
     async function runTestIteration(testName: string): Promise<TestResult> {
+        // OOM and system-table corruption can leave Aria tables half-written.
+        // A server restart on the same datadir preserves the poison, so rebuild
+        // the test datadir before the next mysqltest invocation.
+        if (needsRebootstrap) {
+            try {
+                await recoverServerFromScratch("previous test left MariaDB system tables unsafe");
+            } catch (e) {
+                console.error("Re-bootstrap failed:", e);
+                return { test: testName, status: "fail", time_ms: 0, stderr: "re-bootstrap failed" };
+            }
+        }
+
         // Restart server if previous test caused issues
         if (needsRestart) {
             if (consecutiveRestartFailures >= MAX_CONSECUTIVE_RESTART_FAILURES) {
-                // Nuclear recovery: re-bootstrap from scratch
-                console.error("Server unrecoverable — re-bootstrapping from scratch...");
                 try {
-                    // Clean data directory
-                    const { rmSync, mkdirSync: mkd } = await import("fs");
-                    rmSync(dataDir, { recursive: true, force: true });
-                    mkd(resolve(dataDir, "mysql"), { recursive: true });
-                    mkd(resolve(dataDir, "tmp"), { recursive: true });
-                    tmpTestDir = resolve(dataDir, "tmp", "mysqltest");
-                    mkd(tmpTestDir, { recursive: true });
-                    // Reinit kernel and re-bootstrap
-                    await kernelWorker.init(kernelBytes);
-                    await runBootstrap(kernelWorker, workerAdapter, workers, mysqldBytes, dataDir);
-                    await restartServer();
-                    await runSetup();
-                    needsRestart = false;
-                    consecutiveRestartFailures = 0;
-                    console.error("Re-bootstrap complete.");
+                    await recoverServerFromScratch("repeated restart failures");
                 } catch (e) {
                     console.error("Re-bootstrap failed:", e);
                     return { test: testName, status: "fail", time_ms: 0, stderr: "re-bootstrap failed" };
@@ -617,7 +661,12 @@ CREATE DATABASE test;
                 } catch (e) {
                     consecutiveRestartFailures++;
                     console.error(`Server restart failed (${consecutiveRestartFailures}/${MAX_CONSECUTIVE_RESTART_FAILURES}):`, e);
-                    return { test: testName, status: "fail", time_ms: 0, stderr: "server restart failed" };
+                    try {
+                        await recoverServerFromScratch("restart/setup failure");
+                    } catch (recoveryError) {
+                        console.error("Re-bootstrap failed:", recoveryError);
+                        return { test: testName, status: "fail", time_ms: 0, stderr: "server restart failed" };
+                    }
                 }
             }
         }
@@ -631,13 +680,38 @@ CREATE DATABASE test;
 
         // Reset test database (non-fatal)
         try {
-            await runMysqlTest(
+            const resetResult = await runMysqlTest(
                 kernelWorker, workerAdapter, workers, mysqlTestBytes,
                 "__reset", resetSql, "", serverPort, 15000,
             );
+            if (resetResult.status !== "pass") {
+                const resetErr = resetResult.stderr || "";
+                if (failureRequiresFreshBootstrap(resetErr)) {
+                    needsRebootstrap = true;
+                    needsRestart = false;
+                } else if (failureRequiresServerRestart(resetErr)) {
+                    needsRestart = true;
+                }
+            }
         } catch {
             // Reset failed — server may be stuck. Set restart flag.
             needsRestart = true;
+        }
+
+        if (needsRebootstrap) {
+            console.error(`Re-bootstrapping server before ${testName}...`);
+            try {
+                await recoverServerFromScratch("pre-test reset found unsafe system tables");
+                try {
+                    await runMysqlTest(
+                        kernelWorker, workerAdapter, workers, mysqlTestBytes,
+                        "__reset", resetSql, "", serverPort, 15000,
+                    );
+                } catch {}
+            } catch (e) {
+                console.error(`Server re-bootstrap before ${testName} failed:`, e);
+                return { test: testName, status: "fail", time_ms: 0, stderr: "server re-bootstrap failed" };
+            }
         }
 
         if (needsRestart) {
@@ -655,7 +729,13 @@ CREATE DATABASE test;
                     );
                 } catch {}
             } catch (e) {
-                return { test: testName, status: "fail", time_ms: 0, stderr: "server restart failed" };
+                console.error(`Server restart before ${testName} failed:`, e);
+                try {
+                    await recoverServerFromScratch("pre-test restart failure");
+                } catch (recoveryError) {
+                    console.error("Re-bootstrap failed:", recoveryError);
+                    return { test: testName, status: "fail", time_ms: 0, stderr: "server restart failed" };
+                }
             }
         }
 
@@ -723,19 +803,20 @@ async function runBootstrap(
     memory.grow(MAX_PAGES - 17);
     new Uint8Array(memory.buffer, channelOffset, CH_TOTAL_SIZE).fill(0);
 
-    const pid = 1;
+    const pid = SERVER_PID;
     kernelWorker.registerProcess(pid, memory, [channelOffset]);
     kernelWorker.setCwd(pid, dataDir);
-    kernelWorker.setNextChildPid(2);
+    kernelWorker.setNextChildPid(SERVER_PID + 1);
 
     const shareDir = resolve(installDir, "share/mysql");
     const systemTables = readFileSync(resolve(shareDir, "mysql_system_tables.sql"), "utf-8");
     const systemData = readFileSync(resolve(shareDir, "mysql_system_tables_data.sql"), "utf-8");
-    const bootstrapSql = `use mysql;\n${systemTables}\n${systemData}\nCREATE DATABASE IF NOT EXISTS test;\n`;
+    const testDb = readFileSync(resolve(shareDir, "mysql_test_db.sql"), "utf-8");
+    const bootstrapSql = `use mysql;\n${systemTables}\n${systemData}\n${testDb}\n`;
     kernelWorker.setStdinData(pid, new TextEncoder().encode(bootstrapSql));
 
     const argv = [
-        "mariadbd", "--no-defaults",
+        "mariadbd", "--no-defaults", "--user=root",
         `--datadir=${dataDir}`, `--tmpdir=${resolve(dataDir, "tmp")}`,
         "--default-storage-engine=Aria", "--skip-grant-tables",
         "--key-buffer-size=1048576", "--table-open-cache=10",
@@ -800,13 +881,13 @@ function startServer(
     memory.grow(MAX_PAGES - 17);
     new Uint8Array(memory.buffer, channelOffset, CH_TOTAL_SIZE).fill(0);
 
-    const pid = 1;
+    const pid = SERVER_PID;
     kernelWorker.registerProcess(pid, memory, [channelOffset]);
     kernelWorker.setCwd(pid, dataDir);
-    kernelWorker.setNextChildPid(2);
+    kernelWorker.setNextChildPid(SERVER_PID + 1);
 
     const argv = [
-        "mariadbd", "--no-defaults",
+        "mariadbd", "--no-defaults", "--user=root",
         `--datadir=${dataDir}`, `--tmpdir=${resolve(dataDir, "tmp")}`,
         "--default-storage-engine=Aria", "--skip-grant-tables",
         "--key-buffer-size=1048576", "--table-open-cache=10",
@@ -898,13 +979,18 @@ async function runMysqlTest(
         env: [
             "HOME=/tmp", "PATH=/usr/bin", "TMPDIR=/tmp",
             `MYSQL_TEST_DIR=${mysqlTestDir}`,
-            `MYSQLTEST_VARDIR=${resolve(scriptDir, "test-data")}`,
+            // Keep mysqltest's vardir/datadir variables aligned with the
+            // per-run datadir.  Several upstream tests copy files into
+            // $MYSQLTEST_VARDIR/tmp or inspect $MYSQLD_DATADIR directly; using
+            // the package-level default leaked state across chunks/runs and
+            // produced false EEXIST/stale-file failures.
+            `MYSQLTEST_VARDIR=${mysqlTestDataDir}`,
             `MYSQL_TMP_DIR=${tmpTestDir}`,
             // Standard MTR environment variables expected by test scripts
             `MASTER_MYPORT=${port}`,
             `MASTER_MYPORT1=${port}`,
             `MASTER_MYSOCK=/tmp/mysql.sock`,
-            `MYSQLD_DATADIR=${resolve(scriptDir, "test-data")}`,
+            `MYSQLD_DATADIR=${mysqlTestDataDir}`,
             `MYSQL_BINDIR=${resolve(installDir, "bin")}`,
             `MYSQL_SHAREDIR=${resolve(installDir, "share")}`,
             `MYSQL_LIBDIR=${resolve(installDir, "lib")}`,

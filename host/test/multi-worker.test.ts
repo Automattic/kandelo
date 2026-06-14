@@ -91,6 +91,36 @@ describe("CentralizedKernelWorker Process Management", () => {
     expect((kw as any).hostReaped.has(pid)).toBe(false);
   });
 
+  it("unregisters kernel zombies after host registration is already deactivated", () => {
+    const pid = 100;
+    const removeProcess = vi.fn(() => 0);
+    const kw = Object.assign(Object.create(CentralizedKernelWorker.prototype), {
+      initialized: true,
+      kernelInstance: { exports: { kernel_remove_process: removeProcess } },
+      activeChannels: [],
+      processes: new Map(),
+      stdinFinite: new Set(),
+      stdinBuffers: new Map(),
+      socketTimeoutTimers: new Map(),
+      epollInterests: new Map(),
+      usePolling: false,
+      ptyIndexByPid: new Map(),
+      activePtyIndices: new Set(),
+      ptyOutputCallbacks: new Map(),
+      cleanupUdpBindings: vi.fn(),
+      cleanupTcpListeners: vi.fn(),
+      cleanupPendingPollRetries: vi.fn(),
+      cleanupPendingSelectRetries: vi.fn(),
+      cleanupPendingPipeReaders: vi.fn(),
+      cleanupPendingPipeWriters: vi.fn(),
+      releaseAdvisoryLocksForPid: vi.fn(),
+    }) as CentralizedKernelWorker;
+
+    kw.unregisterProcess(pid);
+
+    expect(removeProcess).toHaveBeenCalledWith(pid);
+  });
+
   it("lets the host terminate pthread workers without waking SYS_EXIT back into guest code", () => {
     const pid = 123;
     const mainChannelOffset = WASM_PAGE_SIZE;
@@ -288,6 +318,40 @@ describe("CentralizedKernelWorker Process Management", () => {
 
     expect(setMaxAddr).toHaveBeenCalledTimes(1);
     expect(setMaxAddr).toHaveBeenCalledWith(321, maxAddr);
+  });
+
+  it("caps legacy high-channel process memory below host control pages", () => {
+    const setMaxAddr = vi.fn(() => 0);
+    const kw = Object.assign(Object.create(CentralizedKernelWorker.prototype), {
+      initialized: true,
+      hostReaped: new Set(),
+      processes: new Map(),
+      activeChannels: [],
+      usePolling: true,
+      kernel: {
+        toKernelPtr(value: number | bigint): number {
+          return Number(value);
+        },
+      },
+      kernelInstance: {
+        exports: {
+          kernel_create_process: vi.fn(() => 0),
+          kernel_set_max_addr: setMaxAddr,
+        },
+      },
+    }) as CentralizedKernelWorker;
+    const maxPages = 2048;
+    const channelOffset = (maxPages - 2) * WASM_PAGE_SIZE;
+    const memory = new WebAssembly.Memory({
+      initial: maxPages,
+      maximum: maxPages,
+      shared: true,
+    });
+
+    kw.registerProcess(322, memory, [channelOffset]);
+
+    expect(setMaxAddr).toHaveBeenCalledTimes(1);
+    expect(setMaxAddr).toHaveBeenCalledWith(322, channelOffset - 2 * WASM_PAGE_SIZE);
   });
 
   it("should register and unregister processes", async () => {

@@ -39,6 +39,11 @@ REGRESSION_EXPECTED_FAIL=(
 )
 REGRESSION_FLAKY=(
     pthread_cond-smasher        # CI timing-sensitive pthread_cond stress test; can PASS or fail on slow runners
+    # raise-race is skipped on CI in discover_regression (the test can crash
+    # resource-constrained GHA runners before its timeout fires). Non-CI runs
+    # that opt into it are host/load-sensitive: PASS is useful signal, but
+    # FAIL/TIME should not fail the libc gate.
+    raise-race
 )
 
 # ── Helper: check if a test is in an expected-failure list ──

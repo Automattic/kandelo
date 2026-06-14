@@ -505,18 +505,22 @@ export interface ResolvedSpawnProgram {
   argv: string[];
 }
 
-export interface SpawnResolveError {
+export interface FailedSpawnProgramResolution {
   errno: number;
+  error?: string;
 }
 
-export type SpawnProgramResolution = ArrayBuffer | ResolvedSpawnProgram | SpawnResolveError;
+export type SpawnProgramResolution =
+  | ArrayBuffer
+  | ResolvedSpawnProgram
+  | FailedSpawnProgramResolution;
 
-function isSpawnResolveError(
-  resolution: SpawnProgramResolution,
-): resolution is SpawnResolveError {
-  return !(resolution instanceof ArrayBuffer) &&
-    "errno" in resolution &&
-    typeof resolution.errno === "number";
+export function isFailedSpawnProgramResolution(
+  resolved: SpawnProgramResolution,
+): resolved is FailedSpawnProgramResolution {
+  return !(resolved instanceof ArrayBuffer) &&
+    "errno" in resolved &&
+    typeof (resolved as FailedSpawnProgramResolution).errno === "number";
 }
 
 /** Callbacks for fork/exec/exit handling. */
@@ -560,8 +564,9 @@ export interface CentralizedKernelCallbacks {
   /**
    * Pre-flight resolution step for SYS_SPAWN. Returns the program bytes
    * for `path` (or `{ programBytes, argv }` when resolution rewrites argv,
-   * e.g. a shebang script), `{ errno }` for a located but unlaunchable
-   * program, or `null` for ENOENT. **Must NOT have side effects** —
+   * e.g. a shebang script), `{ errno, error? }` for a located but
+   * unlaunchable program, or `null` for ENOENT. **Must NOT have side
+   * effects** —
    * `handleSpawn` calls this BEFORE `kernel_spawn_process` so that file
    * actions never run on a doomed PATH-iteration. POSIX requires
    * file_actions to run "exactly once," and `posix_spawnp`'s PATH-walk
@@ -1076,13 +1081,13 @@ export class CentralizedKernelWorker {
 
     // Cap mmap address space. New hosts pass the process memory maximum here
     // because syscall channels live below PROCESS_MMAP_BASE in a reserved
-    // control arena. Legacy callers without maxAddr still cap at the lowest
-    // channel offset, preserving the old high-channel layout behavior.
+    // control arena. Legacy callers without maxAddr still cap below the first
+    // high-address host control page, not at the channel header itself.
     const setMaxAddr = this.kernelInstance!.exports.kernel_set_max_addr as
       ((pid: number, maxAddr: KernelPointer) => number) | undefined;
     if (setMaxAddr) {
       const maxAddr = options?.maxAddr ?? (
-        channelOffsets.length > 0 ? Math.min(...channelOffsets) : undefined
+        this.legacyMaxAddrForChannels(channelOffsets)
       );
       if (maxAddr !== undefined) {
         setMaxAddr(pid, this.toKernelPtr(maxAddr));
@@ -1447,9 +1452,6 @@ export class CentralizedKernelWorker {
    * it from the kernel's process table.
    */
   unregisterProcess(pid: number): void {
-    const registration = this.processes.get(pid);
-    if (!registration) return;
-
     // Remove channels from active list
     this.activeChannels = this.activeChannels.filter((ch) => ch.pid !== pid);
 
@@ -1481,7 +1483,12 @@ export class CentralizedKernelWorker {
 
     this.releaseAdvisoryLocksForPid(pid);
 
-    // Remove from kernel process table
+    // Remove from kernel process table. A clean exit deactivates the host-side
+    // channel registration before the host observes the exit callback, leaving
+    // the pid as a kernel zombie for waitpid(). Explicit host cleanup
+    // (destroy, test harness teardown, externally terminating a top-level
+    // process) must still be able to discard that zombie so the numeric pid
+    // can be reused.
     this.removeFromKernelProcessTable(pid);
 
     this.processes.delete(pid);
@@ -1615,7 +1622,10 @@ export class CentralizedKernelWorker {
    * Called when a zombie is reaped by wait/waitpid.
    */
   removeFromKernelProcessTable(pid: number): void {
-    const removeProcess = this.kernelInstance!.exports.kernel_remove_process as (pid: number) => number;
+    if (!this.initialized || !this.kernelInstance) return;
+    const removeProcess = this.kernelInstance.exports.kernel_remove_process as
+      ((pid: number) => number) | undefined;
+    if (!removeProcess) return;
     removeProcess(pid);
   }
 
@@ -1663,7 +1673,7 @@ export class CentralizedKernelWorker {
     const setMaxAddr = this.kernelInstance!.exports.kernel_set_max_addr as
       ((pid: number, maxAddr: KernelPointer) => number) | undefined;
     if (setMaxAddr && !registration.explicitMaxAddr) {
-      const tlsPageAddr = channelOffset - 2 * WASM_PAGE_SIZE;
+      const tlsPageAddr = this.legacyHighControlFloorForChannel(channelOffset);
       if (tlsPageAddr >= PROCESS_MMAP_BASE) {
         setMaxAddr(pid, this.toKernelPtr(tlsPageAddr));
       }
@@ -2312,12 +2322,8 @@ export class CentralizedKernelWorker {
     try {
       handleChannel(this.toKernelPtr(this.scratchOffset), channel.pid);
     } catch (err) {
-      // If the kernel throws (e.g., invalid memory access), complete the
-      // channel with -EIO to unblock the process rather than deadlocking.
       if (logging) console.error(logEntry + " = KERNEL THROW");
-      console.error(`[handleSyscall] kernel threw for pid=${channel.pid} syscall=${syscallNr} args=[${origArgs}]:`, err);
-      this.completeChannelRaw(channel, -5, 5); // -EIO
-      this.relistenChannel(channel);
+      this.handleFatalKernelTrap(channel, "handleSyscall", err, syscallNr, origArgs);
       return;
     } finally {
       this.currentHandlePid = 0;
@@ -2773,6 +2779,28 @@ export class CentralizedKernelWorker {
     channel.handling = false;
     this.clearSocketTimeout(channel);
     this.pendingCancels.delete(channel.channelOffset);
+  }
+
+  private handleFatalKernelTrap(
+    channel: ChannelInfo,
+    source: string,
+    err: unknown,
+    syscallNr?: number,
+    origArgs?: readonly number[],
+  ): void {
+    const syscallContext = syscallNr === undefined
+      ? ""
+      : ` syscall=${syscallNr} args=[${origArgs?.join(",") ?? ""}]`;
+    console.error(`[${source}] kernel threw for pid=${channel.pid}${syscallContext}:`, err);
+
+    // A trap from kernel_handle_channel means the kernel rejected this process
+    // path catastrophically. Resuming the guest with a synthetic errno lets it
+    // loop through more syscalls against damaged state, producing repeated
+    // "unreachable" spam and contaminating later harness results. Mark the
+    // process as host-crashed and let the host entry terminate its worker.
+    this.abandonChannel(channel);
+    this.notifyHostProcessCrashed(channel.pid, 11);
+    this.callbacks.onExit?.(channel.pid, 128 + 11);
   }
 
   /**
@@ -4934,13 +4962,7 @@ export class CentralizedKernelWorker {
       try {
         handleChannel(this.toKernelPtr(this.scratchOffset), channel.pid);
       } catch (err) {
-        console.error(`[handleLargeWrite] kernel threw for pid=${channel.pid}:`, err);
-        if (totalWritten > 0) {
-          this.completeChannelRaw(channel, totalWritten, 0);
-        } else {
-          this.completeChannelRaw(channel, -5, 5); // -EIO
-        }
-        this.relistenChannel(channel);
+        this.handleFatalKernelTrap(channel, "handleLargeWrite", err, syscallNr, origArgs);
         return;
       } finally {
         this.currentHandlePid = 0;
@@ -5021,13 +5043,7 @@ export class CentralizedKernelWorker {
       try {
         handleChannel(this.toKernelPtr(this.scratchOffset), channel.pid);
       } catch (err) {
-        console.error(`[handleLargeRead] kernel threw for pid=${channel.pid}:`, err);
-        if (totalRead > 0) {
-          this.completeChannelRaw(channel, totalRead, 0);
-        } else {
-          this.completeChannelRaw(channel, -5, 5); // -EIO
-        }
-        this.relistenChannel(channel);
+        this.handleFatalKernelTrap(channel, "handleLargeRead", err, syscallNr, origArgs);
         return;
       } finally {
         this.currentHandlePid = 0;
@@ -5784,7 +5800,7 @@ export class CentralizedKernelWorker {
         this.completeChannel(channel, SYS_SPAWN, origArgs, undefined, -1, 2); // ENOENT
         return;
       }
-      if (isSpawnResolveError(resolved)) {
+      if (isFailedSpawnProgramResolution(resolved)) {
         this.completeChannel(channel, SYS_SPAWN, origArgs, undefined, -1, resolved.errno >>> 0);
         return;
       }
@@ -7244,14 +7260,32 @@ export class CentralizedKernelWorker {
     const registration = this.processes.get(pid);
     if (!registration) return null;
     if (registration.explicitMaxAddr) return null;
-    let floor: number | null = null;
-    for (const ch of registration.channels) {
-      const tlsPageAddr = ch.channelOffset - 2 * WASM_PAGE_SIZE;
-      if (tlsPageAddr >= PROCESS_MMAP_BASE) {
-        floor = floor === null ? tlsPageAddr : Math.min(floor, tlsPageAddr);
+    return this.legacyHighControlFloorForChannels(
+      registration.channels.map((ch) => ch.channelOffset),
+    ) ?? null;
+  }
+
+  private legacyMaxAddrForChannels(channelOffsets: number[]): number | undefined {
+    const highControlFloor = this.legacyHighControlFloorForChannels(channelOffsets);
+    if (highControlFloor !== undefined) {
+      return highControlFloor;
+    }
+    return channelOffsets.length > 0 ? Math.min(...channelOffsets) : undefined;
+  }
+
+  private legacyHighControlFloorForChannels(channelOffsets: number[]): number | undefined {
+    let floor: number | undefined;
+    for (const channelOffset of channelOffsets) {
+      const controlFloor = this.legacyHighControlFloorForChannel(channelOffset);
+      if (controlFloor >= PROCESS_MMAP_BASE) {
+        floor = floor === undefined ? controlFloor : Math.min(floor, controlFloor);
       }
     }
     return floor;
+  }
+
+  private legacyHighControlFloorForChannel(channelOffset: number): number {
+    return channelOffset - PROCESS_MEMORY_THREAD_SLOT_CHANNEL_PRIMARY_PAGE * WASM_PAGE_SIZE;
   }
 
   /**

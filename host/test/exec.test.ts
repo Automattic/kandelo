@@ -2,6 +2,9 @@
  * Tests for execve support — loading a new program binary into an existing process.
  */
 import { describe, it, expect } from "vitest";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { runCentralizedProgram } from "./centralized-test-helper";
 import { tryResolveBinary } from "../src/binary-resolver";
 
@@ -37,6 +40,30 @@ describe("execve", () => {
     // exec-child prints env vars passed by exec-caller
     expect(result.stdout).toContain("FOO=bar");
     expect(result.stdout).toContain("TEST=exec");
+  });
+
+  it.skipIf(!hasExecCaller)("returns ENOEXEC for a non-Wasm exec target", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "kandelo-invalid-exec-"));
+    const invalidProgram = join(dir, "mysql");
+    writeFileSync(invalidProgram, new Uint8Array([0x69, 0x0e, 0x00, 0x00]));
+
+    try {
+      const result = await runCentralizedProgram({
+        programPath: execCallerBinary!,
+        argv: ["exec-caller"],
+        timeout: 15_000,
+        execPrograms: new Map([
+          ["/bin/exec-child", invalidProgram],
+        ]),
+      });
+
+      expect(result.exitCode).toBe(127);
+      expect(result.stderr).toContain("execve: Exec format error");
+      expect(result.stderr).not.toContain("WebAssembly.compile");
+      expect(result.stderr).not.toContain("expected magic word");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 
   it.skipIf(!hasForkExec)("fork + exec: child execs while parent waits", async () => {
