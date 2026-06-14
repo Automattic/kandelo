@@ -465,6 +465,88 @@ describe.skipIf(!nodeWasm)("SpiderMonkey Node compatibility runtime", () => {
     expect(result.stdout.trim()).toBe("sha512-test");
   }, DEFAULT_TEST_TIMEOUT);
 
+  it("supports Node stream readable and writable compatibility APIs", async () => {
+    const result = await runNode(
+      [
+        "const stream = require('stream')",
+        "const util = require('util')",
+        "const events = require('events')",
+        "const { Readable, Writable, PassThrough } = stream",
+        "const checks = []",
+        "function fail(msg) { throw new Error(msg) }",
+        "if (stream.getDefaultHighWaterMark(false) !== 65536) fail('bad byte hwm')",
+        "if (stream.getDefaultHighWaterMark(true) !== 16) fail('bad object hwm')",
+        "stream.setDefaultHighWaterMark(false, 1234)",
+        "if (new Readable().readableHighWaterMark !== 1234) fail('set byte hwm failed')",
+        "stream.setDefaultHighWaterMark(false, 65536)",
+        "function collect(readable) {",
+        "  return new Promise((resolve, reject) => {",
+        "    let out = ''",
+        "    readable.on('data', (chunk) => { out += String(chunk) })",
+        "    readable.on('end', () => resolve(out))",
+        "    readable.on('error', reject)",
+        "    readable.resume()",
+        "  })",
+        "}",
+        "const encoded = new Readable({ read() {} })",
+        "encoded.push(Buffer.from('b'))",
+        "encoded.unshift(Buffer.from('a'))",
+        "encoded.setEncoding('utf8')",
+        "encoded.push(Buffer.from('c'))",
+        "encoded.push(null)",
+        "const encodedDone = collect(encoded).then((out) => checks.push('encoded:' + out + ':' + encoded.readableEncoding))",
+        "const fromDone = Readable.from([1, 2, 3]).map((n) => n * 2).filter((n) => n > 2).toArray()",
+        "  .then((items) => checks.push('from:' + items.join(',')))",
+        "const old = new events.EventEmitter()",
+        "old.pause = () => {}",
+        "old.resume = () => {}",
+        "const wrapped = new Readable({ read() {} }).wrap(old).setEncoding('utf8')",
+        "const wrappedDone = collect(wrapped).then((out) => checks.push('wrap:' + out))",
+        "old.emit('data', Buffer.from('old'))",
+        "old.emit('end')",
+        "const pass = new PassThrough()",
+        "const writes = []",
+        "const pipeEvents = []",
+        "const dest = new Writable({",
+        "  write(chunk, enc, cb) { writes.push(Buffer.from(chunk).toString() + ':' + enc); cb() }",
+        "})",
+        "dest.on('pipe', () => pipeEvents.push('pipe'))",
+        "dest.on('unpipe', () => pipeEvents.push('unpipe'))",
+        "pass.pipe(dest)",
+        "pass.write(Buffer.from('x'))",
+        "pass.unpipe(dest)",
+        "pass.write(Buffer.from('y'))",
+        "pass.end()",
+        "checks.push('pipe:' + pipeEvents.join(',') + ':' + writes.join(','))",
+        "function LegacyReadable() { Readable.call(this, { read() {} }) }",
+        "util.inherits(LegacyReadable, Readable)",
+        "const legacy = new LegacyReadable()",
+        "const legacyDone = collect(legacy).then((out) => checks.push('legacy:' + out))",
+        "legacy.push('ok')",
+        "legacy.push(null)",
+        "const encodings = []",
+        "const writable = new Writable({ write(_chunk, enc, cb) { encodings.push(enc); cb() } })",
+        "writable.cork()",
+        "writable.write(Buffer.from('buf'))",
+        "writable.write('txt', 'utf8')",
+        "writable.uncork()",
+        "writable.end(() => checks.push('write:' + encodings.join(',') + ':' + writable.writableFinished))",
+        "Promise.all([encodedDone, fromDone, wrappedDone, legacyDone]).then(() => {",
+        "  checks.sort()",
+        "  console.log(checks.join('|'))",
+        "  globalThis.__streamCompatDone = true",
+        "})",
+        "for (let i = 0; i < 20 && !globalThis.__streamCompatDone; i++) drainJobQueue()",
+      ].join("\n"),
+    );
+
+    expect(result.stderr).toBe("");
+    expect(result.exitCode).toBe(0);
+    expect(result.stdout.trim()).toBe(
+      "encoded:abc:utf8|from:4,6|legacy:ok|pipe:pipe,unpipe:x:buffer|wrap:old|write:buffer,buffer:true",
+    );
+  }, DEFAULT_TEST_TIMEOUT);
+
   it("maps EMFILE to Node's canonical errno code for graceful-fs retry queues", async () => {
     const result = await runNode(
       [
