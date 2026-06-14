@@ -4157,6 +4157,7 @@ class IncomingMessage extends stream.Readable {
         this.statusCode = 0;
         this.statusMessage = '';
         this.complete = false;
+        this.aborted = false;
         this.url = '';
         this.method = null;
     }
@@ -4186,6 +4187,10 @@ class OutgoingMessage extends stream.Writable {
         this._headerValues[lk] = value;
     }
     getHeader(name) { return this._headerValues[String(name).toLowerCase()]; }
+    getHeaderNames() { return Object.keys(this._headerValues); }
+    getRawHeaderNames() {
+        return Object.keys(this._headerValues).map((lk) => this._headerNames[lk] || lk);
+    }
     getHeaders() {
         const out = Object.create(null);
         for (const lk of Object.keys(this._headerValues)) out[lk] = this._headerValues[lk];
@@ -4530,8 +4535,365 @@ function makeIncomingMessage() {
     return new IncomingMessage();
 }
 
+function appendHttpHeader(message, name, value) {
+    const lk = name.toLowerCase();
+    const strValue = String(value).trim();
+    message.rawHeaders.push(name, strValue);
+    if (lk === 'set-cookie') {
+        if (Array.isArray(message.headers[lk])) message.headers[lk].push(strValue);
+        else message.headers[lk] = [strValue];
+    } else if (message.headers[lk] !== undefined) {
+        message.headers[lk] += ', ' + strValue;
+    } else {
+        message.headers[lk] = strValue;
+    }
+}
+
 function makeHttpModule({ connect, defaultPort, defaultProtocol }) {
     const protoLower = defaultProtocol.toLowerCase();
+    const loopbackServers = new Map(); // port -> Server
+    let nextLoopbackPort = 49152;
+
+    function isLoopbackHost(host) {
+        const normalized = String(host || 'localhost').toLowerCase();
+        return normalized === 'localhost' || normalized === '127.0.0.1' ||
+            normalized === '0.0.0.0' || normalized === '::1' || normalized === '[::1]';
+    }
+
+    function allocateLoopbackPort(requested) {
+        if (requested && requested > 0) {
+            if (loopbackServers.has(requested)) return -1;
+            return requested;
+        }
+        for (let i = 0; i < 16384; i++) {
+            const port = nextLoopbackPort++;
+            if (nextLoopbackPort > 65535) nextLoopbackPort = 49152;
+            if (!loopbackServers.has(port)) return port;
+        }
+        return -1;
+    }
+
+    function normalizeListenArgs(args) {
+        let port = 0;
+        let host = '0.0.0.0';
+        let cb = null;
+        if (args.length > 0 && args[0] && typeof args[0] === 'object') {
+            port = args[0].port == null ? 0 : parseInt(args[0].port, 10);
+            host = args[0].host || args[0].hostname || host;
+            for (let i = 1; i < args.length; i++) {
+                if (typeof args[i] === 'function') cb = args[i];
+            }
+        } else {
+            if (typeof args[0] === 'number' || typeof args[0] === 'string') {
+                port = parseInt(args[0], 10);
+                if (!Number.isFinite(port)) port = 0;
+            }
+            for (let i = 1; i < args.length; i++) {
+                if (typeof args[i] === 'string') host = args[i];
+                else if (typeof args[i] === 'function') cb = args[i];
+            }
+        }
+        if (args.length > 0 && typeof args[args.length - 1] === 'function') {
+            cb = args[args.length - 1];
+        }
+        return { port, host, cb };
+    }
+
+    function normalizeHeaderValue(value) {
+        if (Array.isArray(value)) return value.map((v) => String(v));
+        return String(value);
+    }
+
+    class LoopbackServerResponse extends ServerResponse {
+        constructor(req, sendResponse) {
+            super(req);
+            this.statusMessage = '';
+            this.sendDate = true;
+            this.writableFinished = false;
+            this.shouldKeepAlive = false;
+            this._sendResponse = sendResponse;
+            this._bodyChunks = [];
+        }
+
+        setHeader(name, value) {
+            const lk = String(name).toLowerCase();
+            this._headerNames[lk] = String(name);
+            this._headerValues[lk] = normalizeHeaderValue(value);
+            return this;
+        }
+        getHeader(name) { return this._headerValues[String(name).toLowerCase()]; }
+        hasHeader(name) { return this.getHeader(name) !== undefined; }
+        getHeaderNames() { return Object.keys(this._headerValues); }
+        getRawHeaderNames() {
+            return Object.keys(this._headerValues).map((lk) => this._headerNames[lk] || lk);
+        }
+        removeHeader(name) {
+            const lk = String(name).toLowerCase();
+            delete this._headerNames[lk];
+            delete this._headerValues[lk];
+        }
+        getHeaders() {
+            const out = Object.create(null);
+            for (const lk of Object.keys(this._headerValues)) out[lk] = this._headerValues[lk];
+            return out;
+        }
+        writeHead(statusCode, statusMessage, headers) {
+            this.statusCode = statusCode | 0;
+            if (typeof statusMessage === 'string') {
+                this.statusMessage = statusMessage;
+            } else {
+                headers = statusMessage;
+                this.statusMessage = STATUS_CODES[this.statusCode] || '';
+            }
+            if (Array.isArray(headers)) {
+                for (let i = 0; i + 1 < headers.length; i += 2) this.setHeader(headers[i], headers[i + 1]);
+            } else if (headers && typeof headers === 'object') {
+                for (const k of Object.keys(headers)) this.setHeader(k, headers[k]);
+            }
+            this.headersSent = true;
+            return this;
+        }
+        write(chunk, encoding, cb) {
+            if (!this.headersSent) this.headersSent = true;
+            return super.write(chunk, encoding, cb);
+        }
+        _write(chunk, encoding, cb) {
+            const buf = (chunk instanceof Uint8Array) ? Buffer.from(chunk)
+                : (typeof chunk === 'string') ? Buffer.from(chunk, encoding || 'utf8')
+                : Buffer.from(chunk);
+            this._bodyChunks.push(buf);
+            if (cb) cb();
+        }
+        end(chunk, encoding, cb) {
+            if (typeof chunk === 'function') { cb = chunk; chunk = undefined; }
+            if (typeof encoding === 'function') { cb = encoding; encoding = undefined; }
+            if (chunk !== undefined && chunk !== null) this.write(chunk, encoding);
+            if (!this.finished) this._finishResponse();
+            if (cb) cb();
+            return this;
+        }
+        _finishResponse() {
+            this.finished = true;
+            this.writableEnded = true;
+            this.writableFinished = true;
+            this._writableState.ended = true;
+            const body = Buffer.concat(this._bodyChunks);
+            if (!this.hasHeader('date') && this.sendDate) this.setHeader('Date', new Date().toUTCString());
+            if (!this.hasHeader('connection')) this.setHeader('Connection', 'close');
+            const status = this.statusCode | 0;
+            const bodyAllowed = this.req.method !== 'HEAD'
+                && !((status >= 100 && status < 200) || status === 204 || status === 304);
+            if (!this.hasHeader('content-length') && !this.hasHeader('transfer-encoding') && bodyAllowed) {
+                this.setHeader('Content-Length', String(body.length));
+            }
+            const statusMessage = this.statusMessage || STATUS_CODES[status] || '';
+            let head = `HTTP/1.1 ${status} ${statusMessage}\r\n`;
+            for (const lk of Object.keys(this._headerValues)) {
+                const name = this._headerNames[lk] || lk;
+                const value = this._headerValues[lk];
+                if (Array.isArray(value)) {
+                    for (const item of value) head += `${name}: ${item}\r\n`;
+                } else {
+                    head += `${name}: ${value}\r\n`;
+                }
+            }
+            head += '\r\n';
+            this.headersSent = true;
+            this._sendResponse(Buffer.concat([
+                Buffer.from(head, 'latin1'),
+                bodyAllowed ? body : Buffer.alloc(0),
+            ]));
+            this.emit('finish');
+            this.emit('close');
+        }
+        flushHeaders() { this.headersSent = true; }
+        writeContinue() {}
+        writeProcessing() {}
+        destroy(err) {
+            if (this.destroyed) return this;
+            this.destroyed = true;
+            if (err) this.emit('error', err);
+            this.emit('close');
+            return this;
+        }
+    }
+
+    class LoopbackHttpSocket extends events.EventEmitter {
+        constructor(server) {
+            super();
+            this.server = server;
+            this.destroyed = false;
+            this.readable = true;
+            this.writable = true;
+            this.writableEnded = false;
+            this.localAddress = server._host || '127.0.0.1';
+            this.localPort = server._port || 0;
+            this.remoteAddress = '127.0.0.1';
+            this.remotePort = 40000 + Math.floor(Math.random() * 20000);
+            this._chunks = [];
+            this._requestFinished = false;
+            this._handled = false;
+            queueMicrotask(() => { if (!this.destroyed) this.emit('connect'); });
+        }
+        write(chunk, encoding, cb) {
+            if (typeof encoding === 'function') { cb = encoding; encoding = undefined; }
+            const buf = (chunk instanceof Uint8Array) ? Buffer.from(chunk)
+                : (typeof chunk === 'string') ? Buffer.from(chunk, encoding || 'utf8')
+                : Buffer.from(chunk);
+            this._chunks.push(buf);
+            this._tryHandleRequest();
+            if (cb) cb();
+            return true;
+        }
+        end(chunk, encoding, cb) {
+            if (typeof chunk === 'function') { cb = chunk; chunk = undefined; }
+            if (typeof encoding === 'function') { cb = encoding; encoding = undefined; }
+            if (chunk !== undefined && chunk !== null) this.write(chunk, encoding);
+            this.writableEnded = true;
+            this.finishRequest();
+            if (cb) cb();
+            return this;
+        }
+        finishRequest() {
+            this._requestFinished = true;
+            this._tryHandleRequest();
+        }
+        _tryHandleRequest() {
+            if (this._handled || this.destroyed) return;
+            const raw = Buffer.concat(this._chunks);
+            const text = raw.toString('latin1');
+            const headerEnd = text.indexOf('\r\n\r\n');
+            if (headerEnd < 0) return;
+            const headerText = text.slice(0, headerEnd);
+            const lines = headerText.split('\r\n');
+            const first = lines.shift() || '';
+            const m = /^([!#$%&'*+\-.^_`|~0-9A-Za-z]+)\s+(\S+)\s+HTTP\/(\d+)\.(\d+)$/.exec(first);
+            if (!m) {
+                this._sendBadRequest();
+                return;
+            }
+            const req = makeIncomingMessage();
+            req.method = m[1];
+            req.url = m[2];
+            req.httpVersionMajor = parseInt(m[3], 10);
+            req.httpVersionMinor = parseInt(m[4], 10);
+            req.httpVersion = `${m[3]}.${m[4]}`;
+            req.socket = this;
+            req.connection = this;
+            for (const line of lines) {
+                const colon = line.indexOf(':');
+                if (colon < 0) continue;
+                appendHttpHeader(req, line.slice(0, colon).trim(), line.slice(colon + 1));
+            }
+            const bodyStart = headerEnd + 4;
+            const availableBody = raw.subarray(bodyStart);
+            const cl = req.headers['content-length'];
+            const bodyLen = cl === undefined ? 0 : parseInt(cl, 10);
+            if (cl !== undefined && (!Number.isFinite(bodyLen) || bodyLen < 0)) {
+                this._sendBadRequest();
+                return;
+            }
+            if (cl !== undefined && availableBody.length < bodyLen) return;
+            if (cl === undefined && availableBody.length > 0 && !this._requestFinished) return;
+            this._handled = true;
+            const body = cl === undefined ? availableBody : availableBody.subarray(0, bodyLen);
+            const res = new LoopbackServerResponse(req, (bytes) => this._deliverResponse(bytes));
+            this.server.emit('connection', this);
+            this.server.emit('request', req, res);
+            queueMicrotask(() => {
+                if (body.length > 0) req.push(Buffer.from(body));
+                req.complete = true;
+                req.push(null);
+                if (!res.finished && this.server.listenerCount('request') === 0) {
+                    res.statusCode = 404;
+                    res.end();
+                }
+            });
+        }
+        _sendBadRequest() {
+            this._handled = true;
+            this._deliverResponse(Buffer.from('HTTP/1.1 400 Bad Request\r\nConnection: close\r\nContent-Length: 0\r\n\r\n', 'latin1'));
+        }
+        _deliverResponse(bytes) {
+            if (this.destroyed) return;
+            queueMicrotask(() => {
+                if (this.destroyed) return;
+                this.emit('data', Buffer.from(bytes));
+                queueMicrotask(() => {
+                    if (this.destroyed) return;
+                    this.emit('end');
+                    this.destroy();
+                });
+            });
+        }
+        pause() { return this; }
+        resume() { return this; }
+        setNoDelay() { return this; }
+        setKeepAlive() { return this; }
+        setTimeout(ms, cb) { if (cb) this.once('timeout', cb); return this; }
+        address() { return { address: this.localAddress, port: this.localPort, family: 'IPv4' }; }
+        destroy(err) {
+            if (this.destroyed) return this;
+            this.destroyed = true;
+            this.readable = false;
+            this.writable = false;
+            if (err) this.emit('error', err);
+            this.emit('close', !!err);
+            return this;
+        }
+        ref() { return this; }
+        unref() { return this; }
+    }
+
+    class Server extends events.EventEmitter {
+        constructor(options, requestListener) {
+            super();
+            if (typeof options === 'function') { requestListener = options; options = {}; }
+            this.listening = false;
+            this.timeout = 0;
+            this.keepAliveTimeout = 5000;
+            this.headersTimeout = 60000;
+            this.maxHeadersCount = null;
+            this._host = '0.0.0.0';
+            this._port = 0;
+            if (requestListener) this.on('request', requestListener);
+        }
+        listen(...args) {
+            const { port, host, cb } = normalizeListenArgs(args);
+            if (cb) this.once('listening', cb);
+            const assigned = allocateLoopbackPort(port);
+            if (assigned < 0) {
+                const err = _makeNodeError('EADDRINUSE: address already in use', 'EADDRINUSE', 98, 'listen');
+                queueMicrotask(() => this.emit('error', err));
+                return this;
+            }
+            if (this.listening) loopbackServers.delete(this._port);
+            this._port = assigned;
+            this._host = host || '0.0.0.0';
+            this.listening = true;
+            loopbackServers.set(this._port, this);
+            queueMicrotask(() => this.emit('listening'));
+            return this;
+        }
+        address() {
+            if (!this.listening) return null;
+            return { address: this._host, port: this._port, family: 'IPv4' };
+        }
+        close(cb) {
+            if (cb) this.once('close', cb);
+            if (this.listening) {
+                loopbackServers.delete(this._port);
+                this.listening = false;
+            }
+            queueMicrotask(() => this.emit('close'));
+            return this;
+        }
+        closeAllConnections() { return this; }
+        closeIdleConnections() { return this; }
+        setTimeout(ms, cb) { this.timeout = ms; if (cb) this.on('timeout', cb); return this; }
+        ref() { return this; }
+        unref() { return this; }
+    }
 
     // Per-origin keep-alive socket pool. Sequential npm fetches against the
     // same registry reuse one TLS connection instead of paying ~28 fresh
@@ -4655,6 +5017,7 @@ function makeHttpModule({ connect, defaultPort, defaultProtocol }) {
             this._headersSent = false;
             this._destroyed = false;
             this._redirected = false;
+            this._requestEnded = false;
             this._pendingBody = []; // chunks buffered until socket is connected
 
             if (cb) this.once('response', cb);
@@ -4686,8 +5049,11 @@ function makeHttpModule({ connect, defaultPort, defaultProtocol }) {
         _openSocket(retryFresh) {
             const key = poolKey(this._host, this._port);
             this._sockPoolKey = key;
-            let sock = retryFresh ? null : popLiveFromPool(key);
-            const fromPool = sock != null;
+            const loopbackServer = protoLower === 'http:' && isLoopbackHost(this._host)
+                ? loopbackServers.get(this._port) : null;
+            let sock = loopbackServer ? new LoopbackHttpSocket(loopbackServer)
+                : (retryFresh ? null : popLiveFromPool(key));
+            const fromPool = sock != null && !loopbackServer;
             if (!sock) {
                 sock = connect({
                     host: this._host,
@@ -4752,6 +5118,9 @@ function makeHttpModule({ connect, defaultPort, defaultProtocol }) {
                 this._sendHeaders();
                 for (const buf of this._pendingBody) this._socket.write(buf);
                 this._pendingBody = [];
+                if (this._requestEnded && typeof this._socket.finishRequest === 'function') {
+                    this._socket.finishRequest();
+                }
                 // Drain bytes the previous response left buffered on this
                 // socket — they're the start of OUR response (server
                 // pipelined, or our parser read past end-of-message).
@@ -4835,6 +5204,10 @@ function makeHttpModule({ connect, defaultPort, defaultProtocol }) {
             if (typeof encoding === 'function') { cb = encoding; encoding = undefined; }
             if (chunk) this.write(chunk, encoding);
             if (this._connected) this._sendHeaders();
+            this._requestEnded = true;
+            if (this._connected && this._socket && typeof this._socket.finishRequest === 'function') {
+                this._socket.finishRequest();
+            }
             this._writableState.ended = true;
             this.emit('finish');
             if (cb) cb();
@@ -4964,8 +5337,11 @@ function makeHttpModule({ connect, defaultPort, defaultProtocol }) {
         ClientRequest, IncomingMessage, OutgoingMessage, ServerResponse, Server,
         Agent,
         globalAgent,
-        createServer() {
-            throw new Error('http.createServer is not yet implemented (Phase 4 part 2 shipped client-side only)');
+        createServer(options, listener) {
+            if (protoLower !== 'http:') {
+                throw new Error('https.createServer is not yet implemented');
+            }
+            return new Server(options, listener);
         },
     };
 }

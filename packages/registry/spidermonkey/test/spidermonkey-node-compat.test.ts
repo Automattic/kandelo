@@ -487,6 +487,80 @@ describe.skipIf(!nodeWasm)("SpiderMonkey Node compatibility runtime", () => {
     expect(result.stdout.trim()).toBe("EMFILE");
   }, DEFAULT_TEST_TIMEOUT);
 
+  it("serves same-process HTTP requests through createServer", async () => {
+    const result = await runNode(
+      [
+        "const assert = require('assert')",
+        "const http = require('http')",
+        "let done = false",
+        "let failure = null",
+        "function fail(err) { failure = err; done = true }",
+        "const server = http.createServer((req, res) => {",
+        "  try {",
+        "    assert.ok(req instanceof http.IncomingMessage)",
+        "    assert.strictEqual(req.method, 'POST')",
+        "    assert.strictEqual(req.url, '/hello?x=1')",
+        "    assert.strictEqual(req.headers['x-test'], 'client')",
+        "    const chunks = []",
+        "    req.on('data', (chunk) => chunks.push(chunk))",
+        "    req.on('end', () => {",
+        "      try {",
+        "        assert.strictEqual(Buffer.concat(chunks).toString(), 'payload')",
+        "        assert.strictEqual(req.complete, true)",
+        "        res.statusCode = 201",
+        "        res.statusMessage = 'Created'",
+        "        res.setHeader('X-Reply', 'ok')",
+        "        res.setHeader('Set-Cookie', ['a=1', 'b=2'])",
+        "        assert.deepStrictEqual(res.getHeaderNames().sort(), ['set-cookie', 'x-reply'])",
+        "        assert.deepStrictEqual(res.getRawHeaderNames().sort(), ['Set-Cookie', 'X-Reply'])",
+        "        res.end('response-body')",
+        "      } catch (err) { fail(err) }",
+        "    })",
+        "  } catch (err) { fail(err) }",
+        "})",
+        "server.on('connection', (socket) => {",
+        "  try { assert.strictEqual(socket.remoteAddress, '127.0.0.1') } catch (err) { fail(err) }",
+        "})",
+        "server.listen(0, '127.0.0.1', () => {",
+        "  const addr = server.address()",
+        "  const req = http.request({",
+        "    host: '127.0.0.1',",
+        "    port: addr.port,",
+        "    method: 'POST',",
+        "    path: '/hello?x=1',",
+        "    headers: { 'Content-Length': '7', 'X-Test': 'client' },",
+        "  }, (res) => {",
+        "    try {",
+        "      assert.ok(res instanceof http.IncomingMessage)",
+        "      assert.strictEqual(res.statusCode, 201)",
+        "      assert.strictEqual(res.statusMessage, 'Created')",
+        "      assert.strictEqual(res.headers['x-reply'], 'ok')",
+        "      assert.deepStrictEqual(res.headers['set-cookie'], ['a=1', 'b=2'])",
+        "      const chunks = []",
+        "      res.on('data', (chunk) => chunks.push(chunk))",
+        "      res.on('end', () => {",
+        "        try {",
+        "          assert.strictEqual(Buffer.concat(chunks).toString(), 'response-body')",
+        "          server.close(() => { console.log('http-ok'); done = true })",
+        "        } catch (err) { fail(err) }",
+        "      })",
+        "    } catch (err) { fail(err) }",
+        "  })",
+        "  req.on('error', fail)",
+        "  req.end('payload')",
+        "})",
+        "let spins = 0",
+        "while (!done && !failure && typeof drainJobQueue === 'function' && spins++ < 1000) drainJobQueue()",
+        "if (failure) throw failure",
+        "assert.strictEqual(done, true)",
+      ].join("\n"),
+    );
+
+    expect(result.stderr).toBe("");
+    expect(result.exitCode).toBe(0);
+    expect(result.stdout.trim()).toBe("http-ok");
+  }, DEFAULT_TEST_TIMEOUT);
+
   describe.skipIf(!hasNpm)("npm package installation", () => {
     it("installs cowsay with npm and runs its package bin", async () => {
       const tempDir = mkdtempSync(join(tmpdir(), "sm-node-npm-"));

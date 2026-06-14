@@ -76,3 +76,15 @@ commands, artifact paths, root-cause grouping, and follow-up beads.
 buckets into module-specific follow-up beads. See
 `docs/plans/2026-06-14-node-core-semantic-mismatch-triage-kad-nct23.md` for the
 fix bead breakdown.
+
+The manifest is intentionally small and public-API focused. Tests that require
+Node's private `--expose-internals` hooks, such as `internal/test/binding`, must
+be marked as an explicit support-boundary `SKIP` with a reason instead of being
+reported as runtime parity failures.
+
+The Node-compatible `http.createServer()` support used by these tests is
+same-process loopback support inside the runtime. It lets `http.request()` and
+`http.get()` connect to a server created in the same Node-compatible process on
+`localhost`/`127.0.0.1`, but it does not expose a real host-visible listening
+port. Browser-facing HTTP server demos still use the kernel TCP listener and
+service-worker HTTP bridge documented in `docs/browser-support.md`.
