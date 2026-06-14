@@ -7375,6 +7375,17 @@ const timersPromises = {
 // child_process module
 // ============================================================
 
+function isNodeLikeExecutable(file) {
+    const text = String(file || '');
+    const base = path.basename(text);
+    return text === process.execPath ||
+        text === 'node' ||
+        base === 'node' ||
+        base === 'node.wasm' ||
+        base === 'spidermonkey-node' ||
+        base === 'spidermonkey-node.wasm';
+}
+
 const child_process = (() => {
     let nextPid = Math.max(2, (process.pid || 1) + 1);
     let nextTemp = 1;
@@ -7445,6 +7456,7 @@ const child_process = (() => {
     }
 
     function resolveExecutable(file, env) {
+        if (isNodeLikeExecutable(file)) return file;
         if (file.includes('/')) return fs.existsSync(file) ? file : null;
         const pathValue = (env && env.PATH !== undefined ? env.PATH : process.env.PATH) || '/usr/local/bin:/usr/bin:/bin';
         for (const dir of String(pathValue).split(':')) {
@@ -7478,8 +7490,7 @@ const child_process = (() => {
         }
         const useShell = forceShell || opts.shell === true || typeof opts.shell === 'string';
         const env = opts.env || null;
-        const nodeLikeExecutable =
-            file === process.execPath || file === 'node' || String(file).endsWith('/node');
+        const nodeLikeExecutable = isNodeLikeExecutable(file);
         const internalArgv0 = opts.argv0 || (nodeLikeExecutable ? file : null);
         const internalEnv = internalArgv0 ? [['KANDELO_NODE_ARGV0', internalArgv0]] : null;
         let commandText;
@@ -11900,31 +11911,118 @@ function _processBinding(name) {
 // jiti's CJS loader does `new Be.Module(filename)` and
 // `Be.Module._nodeModulePaths(dir)`, so the shim must be a callable
 // function with that static surface attached.
+// Shared across every _makeRequire — Node's module cache is process-global,
+// keyed by absolute resolved path. Builtin cache overrides also live here
+// under the bare builtin name, matching Node's CommonJS cache semantics.
+const _moduleCache = Object.create(null);
+let _mainModule = null;
+
+function _emitModuleParentDeprecation() {
+    process.emitWarning(
+        'module.parent is deprecated due to accuracy issues. Please use require.main to find program entry point instead.',
+        'DeprecationWarning',
+        'DEP0144'
+    );
+}
+
+function _defineModuleParent(mod, parent) {
+    let value = parent || null;
+    Object.defineProperty(mod, 'parent', {
+        enumerable: true,
+        configurable: true,
+        get() {
+            _emitModuleParentDeprecation();
+            return value;
+        },
+        set(next) {
+            _emitModuleParentDeprecation();
+            value = next;
+        },
+    });
+}
+
 function Module(id, parent) {
     this.id = id || '';
     this.filename = id || '';
     this.loaded = false;
     this.exports = {};
-    this.parent = parent || null;
+    _defineModuleParent(this, parent || null);
     this.children = [];
     this.paths = id ? Module._nodeModulePaths(path.dirname(id)) : [];
     this.require = (request) => Module.prototype.require.call(this, request);
 }
 Module.Module = Module;
-Module.builtinModules = Object.keys(_builtinModules);
+function _isPublicBuiltinName(name) {
+    return name !== 'test' && !name.startsWith('internal/');
+}
+function _refreshBuiltinMetadata() {
+    Module.builtinModules = Object.keys(_builtinModules).filter(_isPublicBuiltinName);
+}
+function _builtinForSpecifier(id, options) {
+    options = options || {};
+    if (typeof id !== 'string') return null;
+    if (id.startsWith('node:')) {
+        if (id === 'node:test') return { cacheKey: 'node:test', publicName: 'node:test', value: _builtinModules['node:test'] };
+        const bare = id.slice(5);
+        if (_builtinModules[bare] !== undefined && _isPublicBuiltinName(bare)) {
+            return { cacheKey: bare, publicName: id, value: _builtinModules[bare] };
+        }
+        if (options.throwUnknownNodePrefix) {
+            const err = new Error(`No such built-in module: ${id}`);
+            err.code = 'ERR_UNKNOWN_BUILTIN_MODULE';
+            throw err;
+        }
+        return null;
+    }
+    if (id === 'test') {
+        return { cacheKey: 'test', publicName: 'test', value: _builtinModules.test, privateAlias: true };
+    }
+    if (_builtinModules[id] !== undefined) {
+        return { cacheKey: id, publicName: id, value: _builtinModules[id] };
+    }
+    return null;
+}
+function _formatCreateRequireArg(value) {
+    if (value && typeof value === 'object' &&
+        value.constructor === Object &&
+        Object.keys(value).length === 0) {
+        return '{}';
+    }
+    return util.inspect(value);
+}
 Module.createRequire = function (filename) {
-    if (filename && typeof filename === 'object' && filename.href) filename = filename.href;
-    if (typeof filename === 'string' && filename.startsWith('file://')) {
-        filename = url.fileURLToPath(filename);
+    const original = filename;
+    if (filename && typeof filename === 'object') {
+        if (typeof filename.href === 'string' && filename.protocol === 'file:') {
+            filename = filename.href;
+        } else {
+            const err = new TypeError(`The argument 'filename' must be a file URL object, file URL string, or absolute path string. Received ${_formatCreateRequireArg(original)}`);
+            err.code = 'ERR_INVALID_ARG_VALUE';
+            throw err;
+        }
+    }
+    if (typeof filename === 'string') {
+        if (filename.startsWith('file://')) {
+            filename = url.fileURLToPath(filename);
+        } else if (!path.isAbsolute(filename)) {
+            const err = new TypeError(`The argument 'filename' must be a file URL object, file URL string, or absolute path string. Received '${filename}'`);
+            err.code = 'ERR_INVALID_ARG_VALUE';
+            throw err;
+        }
+    } else {
+        const err = new TypeError(`The argument 'filename' must be a file URL object, file URL string, or absolute path string. Received ${_formatCreateRequireArg(original)}`);
+        err.code = 'ERR_INVALID_ARG_VALUE';
+        throw err;
     }
     return _makeRequire(filename);
 };
-Module._cache = {};
+Module._cache = _moduleCache;
 Module._extensions = {
     '.js': null,
     '.json': null,
     '.node': null,
 };
+Module.globalPaths = [];
 Module._nodeModulePaths = function (from) {
     const paths = [];
     let dir = from;
@@ -11938,10 +12036,38 @@ Module._nodeModulePaths = function (from) {
     }
     return paths;
 };
+Module._initPaths = function () {
+    const paths = [];
+    const nodePath = process.env.NODE_PATH;
+    if (nodePath) {
+        for (const entry of String(nodePath).split(':')) {
+            if (entry) paths.push(entry);
+        }
+    }
+    const home = process.env.HOME || process.env.USERPROFILE;
+    if (home) {
+        paths.push(path.join(home, '.node_modules'));
+        paths.push(path.join(home, '.node_libraries'));
+    }
+    const execDir = path.dirname(process.execPath || '/usr/bin/node');
+    const prefix = path.dirname(execDir);
+    paths.push(path.join(prefix, 'lib', 'node'));
+    Module.globalPaths = paths;
+    return paths;
+};
+Module._resolveLookupPaths = function (request, parent) {
+    if (typeof request !== 'string') request = String(request);
+    const isRelative = request === '.' || request === '..' ||
+        request.startsWith('./') || request.startsWith('../');
+    if (isRelative) return ['.'];
+    if (request.startsWith('/')) return [''];
+    const parentPaths = parent && Array.isArray(parent.paths) ? parent.paths : [];
+    return parentPaths.concat(Module.globalPaths);
+};
 Module._resolveFilename = function (id, parent) {
-    let name = id;
-    if (name.startsWith('node:')) name = name.slice(5);
-    if (_builtinModules[name] !== undefined) return name;
+    const builtin = _builtinForSpecifier(id, { throwUnknownNodePrefix: true });
+    if (builtin && !builtin.privateAlias) return builtin.publicName;
+    if (builtin) return builtin.cacheKey;
     const basedir = parent && parent.filename ? path.dirname(parent.filename) : process.cwd();
     const resolvedPath = _resolveFile(id, basedir);
     if (!resolvedPath) {
@@ -11951,9 +12077,13 @@ Module._resolveFilename = function (id, parent) {
     }
     return _moduleRealpath(resolvedPath);
 };
+Module.isBuiltin = function (id) {
+    const builtin = _builtinForSpecifier(id);
+    return !!builtin && !builtin.privateAlias && _isPublicBuiltinName(builtin.publicName);
+};
 Module.prototype.require = function (id) {
     const filename = this.filename || this.id || process.cwd() + '/repl';
-    return _makeRequire(filename)(id);
+    return _makeRequire(filename, this)(id);
 };
 _builtinModules['module'] = Module;
 
@@ -11961,6 +12091,8 @@ _builtinModules['module'] = Module;
 // global. Node ships this as a real builtin module; npm's chalk dependency
 // (via its vendored supports-color) does `import process from 'node:process'`.
 _builtinModules['process'] = process;
+_refreshBuiltinMetadata();
+Module._initPaths();
 
 // Mode bits for stat(): S_IFDIR / S_IFREG match os.stat() return mode field.
 function _isDir(p) {
@@ -11983,7 +12115,9 @@ function _resolvePackageMain(pkgDir) {
     if (_isReg(pkgJson)) {
         try {
             const pkg = JSON.parse(std.loadFile(pkgJson));
-            const main = pkg.main || 'index.js';
+            const main = pkg && Object.prototype.hasOwnProperty.call(pkg, 'main') && pkg.main
+                ? pkg.main
+                : 'index.js';
             const mainPath = path.resolve(pkgDir, main);
             if (_isReg(mainPath)) return mainPath;
             if (_isReg(mainPath + '.js')) return mainPath + '.js';
@@ -11997,6 +12131,25 @@ function _resolvePackageMain(pkgDir) {
     return null;
 }
 
+function _hasKnownModuleExtension(p) {
+    return p.endsWith('.js') || p.endsWith('.json') || p.endsWith('.mjs') || p.endsWith('.cjs');
+}
+
+function _resolveAsFileOrDirectory(target, options) {
+    options = options || {};
+    const allowExtensions = options.allowExtensions !== false;
+    if (_isReg(target)) return target;
+    if (allowExtensions && !_hasKnownModuleExtension(target)) {
+        if (_isReg(target + '.js')) return target + '.js';
+        if (_isReg(target + '.json')) return target + '.json';
+    }
+    if (_isDir(target)) {
+        const main = _resolvePackageMain(target);
+        if (main) return main;
+    }
+    return null;
+}
+
 function _resolveFile(id, basedir) {
     // Relative or absolute id: resolve against basedir without node_modules walk.
     // Bare '.' / '..' are valid (sigstore tuf does `require(".")` for sibling index.js).
@@ -12005,53 +12158,25 @@ function _resolveFile(id, basedir) {
     if (isRelOrAbs) {
         const baseAbs = id.startsWith('/') ? id : basedir + '/' + id;
         const norm = path.normalize(baseAbs);
-        // 1. exact file
-        if (_isReg(norm)) return norm;
-        // 2. file + .js / .json
-        if (!id.endsWith('.js') && !id.endsWith('.json') && !id.endsWith('.mjs') && !id.endsWith('.cjs')) {
-            if (_isReg(norm + '.js')) return norm + '.js';
-            if (_isReg(norm + '.json')) return norm + '.json';
-        }
-        // 3. directory: package.json#main → index.js
-        if (_isDir(norm)) {
-            const main = _resolvePackageMain(norm);
-            if (main) return main;
-        }
-        return null;
+        return _resolveAsFileOrDirectory(norm, { allowExtensions: !id.endsWith('/') });
     }
 
     // Bare specifier: walk node_modules upward.
     let dir = basedir;
     while (true) {
         const nmDir = dir + '/node_modules/' + id;
-        // 1. nmDir as a regular file (rare: node_modules/foo as a single file)
-        if (_isReg(nmDir)) return nmDir;
-        // 2. nmDir + .js / .json
-        if (_isReg(nmDir + '.js')) return nmDir + '.js';
-        if (_isReg(nmDir + '.json')) return nmDir + '.json';
-        // 3. nmDir is a directory: package.json#main → index.js
-        if (_isDir(nmDir)) {
-            const main = _resolvePackageMain(nmDir);
-            if (main) return main;
-        }
+        const local = _resolveAsFileOrDirectory(nmDir, { allowExtensions: !id.endsWith('/') });
+        if (local) return local;
         if (dir === '/' || dir === '') break;
         const parent = path.dirname(dir);
         if (parent === dir) break;
         dir = parent;
     }
+    for (const globalPath of Module.globalPaths) {
+        const resolved = _resolveAsFileOrDirectory(path.join(globalPath, id), { allowExtensions: !id.endsWith('/') });
+        if (resolved) return resolved;
+    }
     return null;
-}
-
-// Shared across every _makeRequire — Node's module cache is process-global,
-// keyed by absolute resolved path. Without this, circular requires loop
-// forever (each module gets its own cache and re-evaluates the cycle).
-const _moduleCache = {};
-Module._cache = _moduleCache;
-
-function _throwUnknownBuiltinModule(id) {
-    const err = new Error(`No such built-in module: ${id}`);
-    err.code = 'ERR_UNKNOWN_BUILTIN_MODULE';
-    throw err;
 }
 
 function _stripShebang(source) {
@@ -12063,20 +12188,43 @@ function _stripShebang(source) {
     return source;
 }
 
-function _makeRequire(filename) {
+function _addModuleChild(parentModule, childModule) {
+    if (!parentModule || !childModule || !Array.isArray(parentModule.children)) return;
+    if (!parentModule.children.includes(childModule)) parentModule.children.push(childModule);
+}
+
+function _defineRequireProperties(require) {
+    Object.defineProperty(require, 'cache', {
+        value: _moduleCache,
+        writable: true,
+        configurable: true,
+        enumerable: true,
+    });
+    Object.defineProperty(require, 'main', {
+        value: _mainModule,
+        writable: true,
+        configurable: true,
+        enumerable: true,
+    });
+    Object.defineProperty(require, 'extensions', {
+        value: Module._extensions,
+        writable: true,
+        configurable: true,
+        enumerable: true,
+    });
+}
+
+function _makeRequire(filename, parentModule) {
     const basedir = path.dirname(_moduleRealpath(filename || process.cwd() + '/repl'));
 
     function require(id) {
         // Built-in modules (with or without 'node:' prefix)
-        const nodePrefixed = id.startsWith('node:');
-        let name = id;
-        if (nodePrefixed) name = name.slice(5);
-        if (nodePrefixed && (name.startsWith('internal/') || _builtinModules[name] === undefined)) {
-            _throwUnknownBuiltinModule(id);
-        }
-        if (_builtinModules[name] !== undefined) {
-            if (!nodePrefixed && _moduleCache[name]) return _moduleCache[name].exports;
-            return _builtinModules[name];
+        const builtin = _builtinForSpecifier(id, { throwUnknownNodePrefix: true });
+        if (builtin) {
+            if (!id.startsWith('node:') && _moduleCache[builtin.cacheKey]) {
+                return _moduleCache[builtin.cacheKey].exports;
+            }
+            return builtin.value;
         }
 
         // Resolve file path
@@ -12089,7 +12237,10 @@ function _makeRequire(filename) {
         const resolved = _moduleRealpath(resolvedPath);
 
         // Check cache
-        if (_moduleCache[resolved]) return _moduleCache[resolved].exports;
+        if (_moduleCache[resolved]) {
+            _addModuleChild(parentModule, _moduleCache[resolved]);
+            return _moduleCache[resolved].exports;
+        }
 
         // Load and execute
         let source = std.loadFile(resolved);
@@ -12100,24 +12251,22 @@ function _makeRequire(filename) {
         }
         source = _stripShebang(source);
 
-        if (resolved.endsWith('.json')) {
-            const exports = JSON.parse(source);
-            _moduleCache[resolved] = { exports };
-            return exports;
-        }
-
-        // Create module object
         const dirname = path.dirname(resolved);
-        const mod = {
-            id: resolved,
-            filename: resolved,
-            loaded: false,
-            exports: {},
-            children: [],
-            paths: Module._nodeModulePaths(dirname),
-            require: null,
-        };
+        const mod = new Module(resolved, parentModule || null);
+        mod.id = resolved;
+        mod.filename = resolved;
+        mod.loaded = false;
+        mod.exports = {};
+        mod.children = [];
+        mod.paths = Module._nodeModulePaths(dirname);
         _moduleCache[resolved] = mod;
+        _addModuleChild(parentModule, mod);
+
+        if (resolved.endsWith('.json')) {
+            mod.exports = JSON.parse(source);
+            mod.loaded = true;
+            return mod.exports;
+        }
 
         // Wrap and execute. Compile via evalScriptAsFunction (not `new Function`)
         // so the wrapped script's [[ScriptOrModule]] carries `resolved` — that's
@@ -12131,7 +12280,7 @@ function _makeRequire(filename) {
             resolved
         );
 
-        const childRequire = _makeRequire(resolved);
+        const childRequire = _makeRequire(resolved, mod);
         mod.require = childRequire;
         try {
             wrappedFn(mod.exports, childRequire, mod, resolved, dirname);
@@ -12144,13 +12293,9 @@ function _makeRequire(filename) {
     }
 
     require.resolve = function(id) {
-        const nodePrefixed = id.startsWith('node:');
-        let name = id;
-        if (nodePrefixed) name = name.slice(5);
-        if (nodePrefixed && (name.startsWith('internal/') || _builtinModules[name] === undefined)) {
-            _throwUnknownBuiltinModule(id);
-        }
-        if (_builtinModules[name] !== undefined) return name;
+        const builtin = _builtinForSpecifier(id, { throwUnknownNodePrefix: true });
+        if (builtin && !builtin.privateAlias) return builtin.publicName;
+        if (builtin) return builtin.cacheKey;
         const resolvedPath = _resolveFile(id, basedir);
         if (!resolvedPath) {
             const err = new Error(`Cannot find module '${id}'`);
@@ -12160,8 +12305,7 @@ function _makeRequire(filename) {
         return _moduleRealpath(resolvedPath);
     };
 
-    require.cache = _moduleCache;
-    require.main = null;
+    _defineRequireProperties(require);
 
     return require;
 }
@@ -12173,7 +12317,7 @@ function _nearestPackageType(filename) {
         if (_isReg(pkgJson)) {
             try {
                 const pkg = JSON.parse(std.loadFile(pkgJson));
-                if (pkg && typeof pkg.type === 'string') return pkg.type;
+                if (pkg && Object.prototype.hasOwnProperty.call(pkg, 'type') && typeof pkg.type === 'string') return pkg.type;
             } catch {}
             return '';
         }
@@ -12324,11 +12468,33 @@ function _runNodeEventLoop() {
 }
 
 function _runCommonJsMain(filename) {
-    const mainRequire = _makeRequire(filename);
+    filename = _moduleRealpath(filename);
+    const source = std.loadFile(filename);
+    if (source === null) {
+        const err = new Error(`Cannot find module '${filename}'`);
+        err.code = 'MODULE_NOT_FOUND';
+        throw err;
+    }
+    const dirname = path.dirname(filename);
+    const mainModule = new Module(filename, null);
+    mainModule.id = '.';
+    mainModule.filename = filename;
+    mainModule.paths = Module._nodeModulePaths(dirname);
+    _mainModule = mainModule;
+    _moduleCache[filename] = mainModule;
+    mainModule.require = _makeRequire(filename, mainModule);
     let continueEventLoop = true;
     try {
-        mainRequire(filename);
+        const wrappedFn = _nodeNative.evalScriptAsFunction(
+            '(function (exports, require, module, __filename, __dirname) {\n' +
+                _stripShebang(source) +
+                '\n})',
+            filename
+        );
+        wrappedFn(mainModule.exports, mainModule.require, mainModule, filename, dirname);
+        mainModule.loaded = true;
     } catch (err) {
+        delete _moduleCache[filename];
         continueEventLoop = _handleTopLevelFailure(err);
     }
     if (continueEventLoop) {
@@ -12357,8 +12523,13 @@ function _formatThrownFailure(failure) {
 }
 
 function _runEsmMain(filename, source) {
-    const module = { id: filename, filename, loaded: false, exports: {}, children: [], paths: Module._nodeModulePaths(path.dirname(filename)) };
-    const require = _makeRequire(filename);
+    const module = new Module(filename, null);
+    module.id = '.';
+    module.filename = filename;
+    module.paths = Module._nodeModulePaths(path.dirname(filename));
+    _mainModule = module;
+    _moduleCache[filename] = module;
+    const require = _makeRequire(filename, module);
     module.require = require;
     const dirname = path.dirname(filename);
     const fileUrl = url.pathToFileURL(filename).href;
@@ -12415,6 +12586,14 @@ function _runMainScriptIfPresent() {
     }
 }
 
+_defineGlobal('__kandeloRunCommonJsMain', function __kandeloRunCommonJsMain(filename) {
+    if (typeof filename !== 'string' || filename.length === 0) {
+        throw _makeInvalidArgTypeError('filename', 'string', filename);
+    }
+    const resolved = path.isAbsolute(filename) ? filename : path.resolve(process.cwd(), filename);
+    _runCommonJsMain(resolved);
+});
+
 // ============================================================
 // Set up globals
 // ============================================================
@@ -12426,15 +12605,29 @@ if (typeof execArgv !== 'undefined') {
     process.argv0 = envArgv0 || ((typeof argv0 !== 'undefined' && argv0) ? argv0 : (process.argv[0] || 'node'));
 }
 
+function _findMainScriptArg(argv) {
+    if (!argv || argv.length <= 1) return '';
+    for (let i = 1; i < argv.length; i++) {
+        const arg = String(argv[i] || '');
+        if (arg === '--') {
+            const next = argv[i + 1];
+            return next ? (path.isAbsolute(next) ? next : path.resolve(process.cwd(), next)) : '';
+        }
+        if (arg === '-e' || arg === '--eval' || arg === '-p' || arg === '--print') {
+            return '';
+        }
+        if (arg.startsWith('-')) continue;
+        return path.isAbsolute(arg) ? arg : path.resolve(process.cwd(), arg);
+    }
+    return '';
+}
+
 // Global require. For `node script.js`, basedir is the script's directory
 // so its top-level relative requires resolve against itself, matching Node's
 // per-file require semantics. For -e/-p/REPL (no script in argv), basedir
 // falls back to cwd.
-_defineGlobal('require', _makeRequire(
-    (process.argv && process.argv.length > 1 && process.argv[1] && process.argv[1][0] === '/')
-        ? process.argv[1]
-        : process.cwd() + '/repl'
-));
+const _detectedMainScriptArg = _findMainScriptArg(process.argv);
+_defineGlobal('require', _makeRequire(_detectedMainScriptArg || process.cwd() + '/repl'));
 
 // Node.js globals
 _defineGlobal('process', process);
@@ -13113,10 +13306,7 @@ if (typeof globalThis.Intl === 'undefined') {
 }
 
 // __dirname and __filename for the main module (set when running a file)
-const _mainScriptArg =
-    process.argv && process.argv.length > 1 && process.argv[1] && process.argv[1][0] === '/'
-        ? process.argv[1]
-        : '';
+const _mainScriptArg = _detectedMainScriptArg;
 const _mainScriptPath = _mainScriptArg ? _moduleRealpath(_mainScriptArg) : '';
 _defineGlobal('__filename', _mainScriptPath);
 _defineGlobal('__dirname', _mainScriptPath ? path.dirname(_mainScriptPath) : '');
