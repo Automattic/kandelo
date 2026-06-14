@@ -5434,9 +5434,18 @@ const timers = (() => {
     // int64 timer id. Node returns an object with .unref()/.refresh(); npm's
     // Display calls both on its spinner timers, so wrap the id in an object.
     // clearAny() unwraps _id when the wrapper is passed back to clear*().
+    const TIMEOUT_MAX = 2147483647;
+    let nextImmediateId = 1;
+    const immediateQueue = [];
+    const normalizeDelay = (ms) => {
+        const value = Number(ms);
+        if (!Number.isFinite(value) || value < 1 || value > TIMEOUT_MAX) return 1;
+        return Math.trunc(value);
+    };
     const wrap = (id, resourceId) => ({
         _id: id,
         _resourceId: resourceId,
+        _destroyed: false,
         unref() { return this; },
         ref() { return this; },
         hasRef() { return true; },
@@ -5444,17 +5453,55 @@ const timers = (() => {
     });
     const clearAny = (t) => {
         if (t == null) return;
-        if (typeof t === 'object') _untrackActiveResource(t._resourceId);
-        os.clearTimeout(typeof t === 'object' ? t._id : t);
+        if (typeof t === 'object') {
+            if (t._destroyed) return;
+            t._destroyed = true;
+            _untrackActiveResource(t._resourceId);
+            os.clearTimeout(t._id);
+            return;
+        }
+        os.clearTimeout(t);
+    };
+    const clearImmediateHandle = (t) => {
+        if (t == null) return;
+        if (typeof t === 'object') {
+            if (t._destroyed) return;
+            t._destroyed = true;
+            _untrackActiveResource(t._resourceId);
+        }
+    };
+    const runImmediateTurn = () => {
+        const turn = immediateQueue.splice(0, immediateQueue.length);
+        let ran = 0;
+        for (const entry of turn) {
+            const t = entry.handle;
+            if (t._destroyed) continue;
+            t._destroyed = true;
+            _untrackActiveResource(t._resourceId);
+            entry.fn.apply(t, entry.args);
+            ran++;
+        }
+        return ran;
+    };
+    const hasImmediate = () => immediateQueue.some((entry) => !entry.handle._destroyed);
+    const scheduleInterval = (t, fn, delay, args) => {
+        t._id = os.setTimeout(() => {
+            if (t._destroyed) return;
+            fn.apply(t, args);
+            if (!t._destroyed) scheduleInterval(t, fn, delay, args);
+        }, delay);
     };
     return {
         setTimeout: (fn, ms, ...args) => {
             const resourceId = _trackActiveResource('Timeout');
             const t = wrap(0, resourceId);
+            const delay = normalizeDelay(ms);
             t._id = os.setTimeout(() => {
-                try { fn(...args); }
+                if (t._destroyed) return;
+                t._destroyed = true;
+                try { fn.apply(t, args); }
                 finally { _untrackActiveResource(resourceId); }
-            }, ms || 0);
+            }, delay);
             return t;
         },
         clearTimeout: clearAny,
@@ -5463,28 +5510,27 @@ const timers = (() => {
             // clearInterval cancels.
             const resourceId = _trackActiveResource('Timeout');
             const t = wrap(0, resourceId);
-            const tick = () => { fn(...args); t._id = os.setTimeout(tick, ms || 0); };
-            t._id = os.setTimeout(tick, ms || 0);
+            scheduleInterval(t, fn, normalizeDelay(ms), args);
             return t;
         },
         clearInterval: clearAny,
         setImmediate: (fn, ...args) => {
             const resourceId = _trackActiveResource('Immediate');
-            const t = wrap(0, resourceId);
-            t._id = os.setTimeout(() => {
-                _untrackActiveResource(resourceId);
-                fn(...args);
-            }, 0);
+            const t = wrap(nextImmediateId++, resourceId);
+            immediateQueue.push({ handle: t, fn, args });
             return t;
         },
-        clearImmediate: clearAny,
+        clearImmediate: clearImmediateHandle,
+        _runImmediateTurn: runImmediateTurn,
+        _hasImmediate: hasImmediate,
+        _normalizeDelay: normalizeDelay,
     };
 })();
 
 // `timers/promises` — @npmcli/agent uses `setTimeout(ms)` as a connection-timeout
 // race against the connect promise. AbortSignal handling isn't needed for that.
 const timersPromises = {
-    setTimeout: (delay, value) => new Promise(r => os.setTimeout(() => r(value), delay || 0)),
+    setTimeout: (delay, value) => new Promise(r => os.setTimeout(() => r(value), timers._normalizeDelay(delay))),
 };
 
 // ============================================================
@@ -9958,19 +10004,93 @@ function _drainSpiderMonkeyJobs(maxSpins) {
     for (let i = 0; i < spins; i++) drainJobQueue();
 }
 
+const _eventLoopSleepView =
+    typeof SharedArrayBuffer === 'function' && typeof Atomics === 'object'
+        ? new Int32Array(new SharedArrayBuffer(4))
+        : null;
+
+function _eventLoopSleep(ms) {
+    ms = Math.max(0, Math.min(Number(ms) || 0, 10));
+    if (ms <= 0) return;
+    if (_eventLoopSleepView) {
+        try {
+            Atomics.wait(_eventLoopSleepView, 0, 0, ms);
+            return;
+        } catch {}
+    }
+    const deadline = Date.now() + ms;
+    while (Date.now() < deadline) {}
+}
+
+function _runAdapterDueTimers() {
+    if (typeof __kandeloRunDueTimers !== 'function') return 0;
+    return Number(__kandeloRunDueTimers()) || 0;
+}
+
+function _nextAdapterTimerDelay() {
+    if (typeof __kandeloNextTimerDelay !== 'function') return null;
+    const delay = __kandeloNextTimerDelay();
+    if (delay === null || delay === undefined) return null;
+    return Math.max(0, Number(delay) || 0);
+}
+
+function _handleTopLevelFailure(err) {
+    try {
+        if (!process._handleUncaughtException(err)) {
+            console.error(_formatThrownFailure(err));
+            process.exitCode = process.exitCode || 1;
+            return false;
+        }
+        return true;
+    } catch (handlerErr) {
+        console.error(_formatThrownFailure(handlerErr));
+        process.exitCode = process.exitCode || 1;
+        return false;
+    }
+}
+
+function _runNodeEventLoop() {
+    let turns = 0;
+    while (!process._exiting && _activeResources.size > 0) {
+        let ran = 0;
+        _drainSpiderMonkeyJobs();
+        ran += _runAdapterDueTimers();
+        _drainSpiderMonkeyJobs();
+        ran += timers._runImmediateTurn();
+        _drainSpiderMonkeyJobs();
+
+        if (_activeResources.size === 0 || process._exiting) return;
+        if (ran > 0) {
+            turns++;
+        } else {
+            const delay = _nextAdapterTimerDelay();
+            if (delay === null) {
+                if (!timers._hasImmediate()) return;
+            } else {
+                _eventLoopSleep(delay);
+            }
+            turns++;
+        }
+
+        if (turns > 100000) {
+            throw new Error('Kandelo Node event loop did not quiesce after 100000 turns');
+        }
+    }
+}
+
 function _runCommonJsMain(filename) {
     const mainRequire = _makeRequire(filename);
+    let continueEventLoop = true;
     try {
         mainRequire(filename);
     } catch (err) {
+        continueEventLoop = _handleTopLevelFailure(err);
+    }
+    if (continueEventLoop) {
         try {
-            if (!process._handleUncaughtException(err)) {
-                console.error(_formatThrownFailure(err));
-                process.exitCode = process.exitCode || 1;
-            }
-        } catch (handlerErr) {
-            console.error(_formatThrownFailure(handlerErr));
-            process.exitCode = process.exitCode || 1;
+            _runNodeEventLoop();
+        } catch (err) {
+            _handleTopLevelFailure(err);
         }
     }
     _drainSpiderMonkeyJobs();
@@ -10021,15 +10141,15 @@ function _runEsmMain(filename, source) {
         }
     }
     if (failure) {
-        try {
-            if (!process._handleUncaughtException(failure)) {
-                console.error(_formatThrownFailure(failure));
-                process.exitCode = process.exitCode || 1;
-            }
-        } catch (handlerErr) {
-            console.error(_formatThrownFailure(handlerErr));
-            process.exitCode = process.exitCode || 1;
+        if (!_handleTopLevelFailure(failure)) {
+            _drainSpiderMonkeyJobs();
+            process.exit(process.exitCode || 0);
         }
+    }
+    try {
+        _runNodeEventLoop();
+    } catch (err) {
+        _handleTopLevelFailure(err);
     }
     _drainSpiderMonkeyJobs();
     process.exit(process.exitCode || 0);
