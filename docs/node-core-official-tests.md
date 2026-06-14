@@ -64,6 +64,16 @@ or environment assumption is recorded as a concrete failure or timeout artifact.
 Principled support-boundary exclusions belong in explicit follow-up manifests
 only after the complete suite has been attempted and triaged.
 
+## SpiderMonkey VM Boundary
+
+Kandelo's `node:vm` shim is backed by SpiderMonkey globals, not V8 isolates.
+It supports context creation/execution, `Script` cached-data bookkeeping,
+`Script#sourceMapURL`, `measureMemory` result-shape compatibility, and a small
+`SourceTextModule`/`SyntheticModule` surface for simple module smoke cases.
+Full V8 vm-module semantics remain a support boundary: async linker graphs,
+V8 bytecode cache compatibility, timeout interruption, stack formatting, and
+complete ES module live-binding behavior are not implemented by the shim.
+
 ## Current Full-Suite Status
 
 `kad-nct.17` records the first complete correction run against Node v22.0.0:
