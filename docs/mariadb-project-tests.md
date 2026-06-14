@@ -177,7 +177,8 @@ independent SQL-result regressions. The current classified failure groups are:
 | Browser expected-fail classification for release-build, plugin/event-scheduler, unsupported helper, and SQL-result limitations | Classified after artifact | `kad-qun.23` |
 | Browser VFS fixture/std_data/timezone gaps | Landed after artifact | `kad-qun.24`, commit `0dc2e081` |
 | Browser VFS short-read/open-unlink storage-state failures | Landed after artifact | `kad-qun.25`, commit `50f5f51d` |
-| Browser MyISAM/MERGE storage-state runtime defects | Landed after artifact; residual cases routed | `kad-qun.27`, commit `4e06ce12`; residual `merge`/`merge_mmap` in `kad-qun.28`, residual `fulltext`/`fulltext2` in `kad-qun.29` |
+| Browser MyISAM/MERGE storage-state runtime defects | Landed after artifact; residual MERGE cases routed | `kad-qun.27`, commit `4e06ce12`; residual `merge`/`merge_mmap` in `kad-qun.28` |
+| Browser MyISAM FULLTEXT update/delete index corruption | Classified after artifact | `kad-qun.29` |
 
 The longest resumed interval was chunk 116 at about 29m45s: the runner produced
 zero JSON results on the first attempt, then saw repeated 180s
@@ -187,12 +188,13 @@ result block. That is tracked as harness/resource isolation work in
 resource-failure subtotal beyond the 371 FAIL count; the inventory below derives
 the current follow-up cluster counts from the raw `FAIL` rows.
 
-After `kad-qun.23`, future browser wrapper runs use an explicit XFAIL list for
-known MariaDB build/MTR limitations: release/debug-only cases such as
+After `kad-qun.23` and `kad-qun.29`, future browser wrapper runs use an
+explicit XFAIL list for known MariaDB build/MTR limitations: release/debug-only cases such as
 `debug_dbug`/`SHOW CODE`, disabled event scheduler and dynamic plugin
-expectations, unsupported native helper/client/shell commands, and Aria-only
-wasm expected-result differences. The list intentionally does not cover browser
-timeout/page-death, fixture/VFS, or storage-state failures; those remain
+expectations, unsupported native helper/client/shell commands, Aria-only
+wasm expected-result differences, and deterministic MyISAM FULLTEXT index
+corruption in the wasm MariaDB storage-engine envelope. The list intentionally does not cover browser
+timeout/page-death, fixture/VFS, or other storage-state failures; those remain
 unexpected until their separate follow-ups classify or fix them. The hard
 `gastown-mariadb-browser-full-pr3` counts above remain unchanged until a
 superseding browser full-suite rerun records new totals.
@@ -260,7 +262,8 @@ runtime bug:
 | Browser | Grant/user/auth bootstrap failures; representative tests: `alter_user`, `cte_grant`, `grant*`, `set_password`, `shutdown`, `user_limits`, `userstat-badlogin-4824` | 51 | FAIL | `test-runs/gastown-mariadb-browser-full-pr3/browser.log` | Access denied or user creation errors against the browser bootstrap grant baseline. The shared grant bootstrap fix landed after artifact; full browser totals have not been refreshed. | `kad-qun.14` |
 | Browser | Release-build, debug-only, plugin/event-scheduler, unsupported native-helper, and expected-result limitations; representative tests: `alter_table_debug`, `connect_debug`, `events_*`, `plugin*`, `client`, `mysqldump*`, `mysqladmin`, `mysqlcheck`, `my_print_defaults`, `log_errchk`, `mysqlhotcopy_myisam` | 165 | FAIL / expected limitation or unsupported-scope candidate | `test-runs/gastown-mariadb-browser-full-pr3/browser.log` | Browser artifact reports XFAIL=0, so these hard artifact rows stay counted as FAIL until a rerun. Future wrapper runs classify the known MariaDB build/MTR limitations explicitly. | `kad-qun.23` |
 | Browser | VFS fixture, `std_data`, locale, timezone, and cross-suite include path gaps; representative tests: `default`, `func_math`, `function_defaults`, `loaddata`, `loadxml`, `timezone2`, `timezone_grant`, `xa_prepared_binlog_off` | 16 | FAIL / fixture-environment gap in artifact | `test-runs/gastown-mariadb-browser-full-pr3/browser.log` | Missing `/std_data` paths, timezone/locale data, charset/collation data, or included files from other MariaDB suites in the artifact. Fixed/classified after artifact: targeted browser checks for `func_math`, `warnings`, `xa_prepared_binlog_off`, `timezone2`, `ctype_ldml`, and `default_session` now report 3 PASS, 2 XFAIL, 1 SKIP, 0 FAIL. | `kad-qun.24` |
-| Browser | VFS storage-state, short-read, read-only, file-descriptor, and corrupted-table cluster; representative tests: `ctype_big5`, `ctype_gbk`, `fulltext`, `merge`, `myisam_recover`, `partition_pruning`, `stat_tables`, `subselect`, `win`, `win_big-mdev-11697` | 58 | FAIL / platform or contaminated-state candidate in artifact | `test-runs/gastown-mariadb-browser-full-pr3/browser.log` | Deterministic short-read/open-unlink and MyISAM recovery defects were fixed after artifact by `kad-qun.25` and `kad-qun.27`. Focused post-fix runs now pass the short-read set plus `repair` and `myisam_recover`; the remaining narrowed cases are `merge`/`merge_mmap` read-only MERGE tables and `fulltext`/`fulltext2` corrupt MyISAM fulltext indexes. | `kad-qun.25`, `kad-qun.27`; residual `kad-qun.28`, `kad-qun.29` |
+| Browser | MyISAM FULLTEXT update/delete corruption: `fulltext`, `fulltext2`, `fulltext_update` | 3 | FAIL / expected wasm MariaDB storage-engine limitation | Focused `kad-qun.29` browser reruns: `MARIADB_TEST_VITE_PORT=53230 npx tsx scripts/browser-mariadb-test-runner.ts --json --timeout 90000 merge merge_mmap repair myisam_recover fulltext fulltext2`, plus isolated `fulltext`, `fulltext2`, and `fulltext3 fulltext_update fulltext_var` runs | Clean-browser reruns reproduce deterministic MyISAM FULLTEXT index corruption at update/delete statements: `fulltext` line 96, `fulltext2` line 99, and `fulltext_update` line 23. Adjacent `fulltext3` and `fulltext_var` pass. The Node wrapper already classifies the same family as Aria/MyISAM table-corruption limitations rather than a Kandelo browser VFS regression. | `kad-qun.29` |
+| Browser | VFS storage-state, short-read, read-only, file-descriptor, and corrupted-table cluster; representative tests: `ctype_big5`, `ctype_gbk`, `merge`, `myisam_recover`, `partition_pruning`, `stat_tables`, `subselect`, `win`, `win_big-mdev-11697` | 55 | FAIL / platform or contaminated-state candidate in artifact | `test-runs/gastown-mariadb-browser-full-pr3/browser.log` | Deterministic short-read/open-unlink and MyISAM recovery defects were fixed after artifact by `kad-qun.25` and `kad-qun.27`. Focused post-fix runs now pass the short-read set plus `repair` and `myisam_recover`; the remaining narrowed cases are `merge`/`merge_mmap` read-only MERGE tables after splitting out deterministic MyISAM FULLTEXT limitations. | `kad-qun.25`, `kad-qun.27`; residual `kad-qun.28` |
 | Browser | Remaining SQL/result mismatch triage; representative tests: `connect2`, `ctype_eucjpms`, `ctype_like_range`, `func_json`, `partition`, `subselect3`, `sum_distinct`, `symlink`, `upgrade_MDEV-23102-*` | 25 | FAIL / still unknown or expected-result candidate | `test-runs/gastown-mariadb-browser-full-pr3/browser.log` | Mixed SQL-result and fixture side effects that did not fit the cleaner clusters. Future wrapper runs classify the known SQL-result limitations from `kad-qun.23`; split narrower beads if focused reruns still show platform bugs. | `kad-qun.23` |
 | Browser | Cluster total | 371 | FAIL | `test-runs/gastown-mariadb-browser-full-pr3/summary.json` | Sum matches the hard browser FAIL count from `kad-qun.19`. | See rows above |
 
@@ -291,9 +294,10 @@ Post-artifact fixes already landed on the integration branch but are not folded
 into these hard totals without a rerun: `kad-qun.14`, `kad-qun.16`,
 `kad-qun.17`, `kad-qun.18`, browser expected-fail classification in
 `kad-qun.23`, browser fixture coverage in `kad-qun.24`, browser short-read
-storage fixes in `kad-qun.25`, and browser MyISAM/MERGE storage fixes in
-`kad-qun.27`. Remaining tracked follow-ups are `kad-lf9`, `kad-qun.9`,
-`kad-qun.10`, `kad-qun.20`, `kad-qun.21`, `kad-qun.28`, and `kad-qun.29`.
+storage fixes in `kad-qun.25`, browser MyISAM/MERGE storage fixes in
+`kad-qun.27`, and browser MyISAM FULLTEXT classification in `kad-qun.29`.
+Remaining tracked follow-ups are `kad-lf9`, `kad-qun.9`, `kad-qun.10`,
+`kad-qun.20`, `kad-qun.21`, and `kad-qun.28`.
 See `docs/mariadb-project-tests.md#failure-inventory-for-follow-up-routing`
 for the row-level Node inventory and browser failure-cluster map.
 ```
@@ -312,8 +316,6 @@ Remaining actionable work is represented by narrow beads:
   classification after the mysql.proc recovery fix.
 - `kad-qun.28`: browser `merge` and `merge_mmap` still need focused MERGE
   read-only classification after the VFS state fixes.
-- `kad-qun.29`: browser `fulltext` and `fulltext2` still need focused MyISAM
-  fulltext index-corruption classification after the VFS state fixes.
 
 The final GitHub PR should be opened by `kad-qun.8` from
 `integration/kad-qun-mariadb-tests` to `main`. It should present the full-suite

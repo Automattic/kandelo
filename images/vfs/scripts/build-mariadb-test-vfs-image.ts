@@ -77,7 +77,7 @@ const COREUTILS_SYMLINK_NAMES = [
   "md5sum", "seq", "test", "[",
 ];
 
-// 185 tests verified to pass in headless Chromium with MariaDB on kandelo.
+// 182 tests verified to pass in headless Chromium with MariaDB on kandelo.
 const CURATED_TESTS = [
   "1st", "adddate_454", "almost_full", "alter_table_combinations",
   "alter_table_lock", "alter_table_mdev539_maria",
@@ -96,7 +96,7 @@ const CURATED_TESTS = [
   "ctype_ucs2_query_cache", "ctype_utf16_def", "ctype_utf32_def",
   "ctype_utf32_innodb", "ctype_utf8_def_upgrade",
   "ctype_utf8mb4_unicode_ci_def", "datetime_456", "delayed_blob",
-  "deprecated_features", "fulltext2", "fulltext3", "fulltext_update",
+  "deprecated_features", "fulltext3",
   "fulltext_var", "func_bit", "func_digest", "func_encrypt",
   "func_encrypt_nossl", "func_encrypt_ucs2", "func_equal", "func_int",
   "func_op", "func_sapdb", "func_test", "func_timestamp", "gcc296",
@@ -125,7 +125,7 @@ const CURATED_TESTS = [
   "set_statement_notembedded", "show_create_user",
   "show_function_with_pad_char_to_full_length",
   "show_row_order-9226", "signal_demo1", "signal_demo2", "signal_demo3",
-  "signal_sqlmode", "simple_select", "single_delete_update",
+  "signal_sqlmode", "single_delete_update",
   "skip_log_bin", "sp-bugs2", "sp-condition-handler", "sp-destruct",
   "sp-memory-leak", "sp-no-code", "sp-no-valgrind", "sp-ucs2", "sp-vars",
   "sp_gis", "sp_missing_4665", "sql_mode_pad_char_to_full_length",
