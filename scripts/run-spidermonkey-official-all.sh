@@ -295,6 +295,12 @@ is_kandelo_browser_wasm32_known_jstest_skip() {
   fi
   rel="$(rel_jstest_path "$file")"
   case "$rel" in
+    test262/staging/sm/expressions/destructuring-pattern-parenthesized.js|\
+    test262/staging/sm/expressions/optional-chain-super-elem.js|\
+    test262/staging/sm/expressions/optional-chain-tdz.js|\
+    test262/staging/sm/extensions/recursion.js)
+      return 0
+      ;;
     test262/built-ins/Atomics/*/bigint/*.js)
       return 0
       ;;
@@ -426,7 +432,7 @@ write_known_skip_entries() {
     count="$(known_skip_entry_count "$suite" "$file")"
     index=1
     while [ "$index" -le "$count" ]; do
-      printf 'TEST-KNOWN-FAIL | %s | skipped: Kandelo wasm32 SpiderMonkey lacks 64-bit atomic operations (variant %s/%s)\n' \
+      printf 'TEST-KNOWN-FAIL | %s | skipped: known Kandelo browser wasm32 SpiderMonkey limitation (variant %s/%s)\n' \
         "$rel" "$index" "$count"
       index=$((index + 1))
     done
