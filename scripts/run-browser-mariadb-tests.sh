@@ -299,6 +299,15 @@ BROWSER_EXPECTED_FAIL=(
     fulltext2
     fulltext_update
 
+    # MERGE/MRG_MyISAM write path limitation in the current wasm MTR
+    # envelope. Focused browser reruns for kad-qun.28 fail with
+    # ER_OPEN_AS_READONLY while the .MRG files are readable and contain
+    # the expected child list plus #INSERT_METHOD=FIRST/LAST; the server
+    # reports no VFS/storage error. The Node wrapper already classifies
+    # merge and merge_mmap with the same MariaDB build/MTR limitations.
+    merge
+    merge_mmap
+
     # browser test-image limitations rather than kernel/runtime regressions:
     # generated locale files and per-test server option files remain current
     # limitations of the browser harness after fixture path coverage improves.
