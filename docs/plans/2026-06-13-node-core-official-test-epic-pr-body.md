@@ -127,7 +127,8 @@ must be justified; they are not hidden from the full-suite correction:
 - `kad-nct.11`: fix Node global surface leaks, now observed in 3354 full-suite
   Node-host stderr logs.
 - `kad-nct.19`-`kad-nct.24`: full-suite failure classes created by
-  `kad-nct.17`.
+  `kad-nct.17`; `kad-nct.24` now maps the timeout bucket to specific runtime
+  and runner-cleanup follow-ups.
 - `kad-nct.12`-`kad-nct.15`: existing selected narrow runtime bugs still linked
   from the full-suite semantic mismatch group.
 - `kad-nct.8`: open or update the GitHub PR using the command in the comment at

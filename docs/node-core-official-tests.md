@@ -76,3 +76,7 @@ commands, artifact paths, root-cause grouping, and follow-up beads.
 buckets into module-specific follow-up beads. See
 `docs/plans/2026-06-14-node-core-semantic-mismatch-triage-kad-nct23.md` for the
 fix bead breakdown.
+
+`kad-nct.24` breaks the original 13 Node-host timeout artifacts into specific
+runtime-progress bugs, long-running rows, and a runner cleanup blocker. See
+`docs/plans/2026-06-14-node-core-timeout-triage-kad-nct24.md`.
