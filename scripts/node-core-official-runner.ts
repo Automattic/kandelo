@@ -1,5 +1,6 @@
 import { spawn, spawnSync, type ChildProcess } from "node:child_process";
 import {
+  copyFileSync,
   existsSync,
   mkdirSync,
   readdirSync,
@@ -560,7 +561,10 @@ if (common && typeof common.allowGlobals === 'function') {
     .map((name) => globalThis[name]));
 }
 
-require(testFile);
+if (typeof globalThis.__kandeloRunCommonJsMain !== 'function') {
+  throw new Error('Kandelo runtime is missing __kandeloRunCommonJsMain');
+}
+globalThis.__kandeloRunCommonJsMain(testFile);
 `);
   return preludePath;
 }
@@ -688,6 +692,9 @@ async function runNodeTest(
   let pid: number | null = null;
   let timeout = false;
   const testPath = join(sourceDir, test.spec.path);
+  const nodeBinDir = join(isolation.nodeTestDir, "usr-bin");
+  mkdirSync(nodeBinDir, { recursive: true });
+  copyFileSync(runtimePath, join(nodeBinDir, "node"));
 
   const host = new NodeKernelHost({
     maxWorkers: 4,
@@ -697,6 +704,9 @@ async function runNodeTest(
       "/usr/bin/node": runtimePath,
       "/usr/local/bin/node": runtimePath,
     },
+    extraMounts: [
+      { mountPoint: "/usr/bin", hostPath: nodeBinDir, readonly: true },
+    ],
     onStdout: (_pid, data) => { stdout += textDecoder.decode(data); },
     onStderr: (_pid, data) => { stderr += textDecoder.decode(data); },
   });
@@ -787,6 +797,7 @@ async function runBrowserTests(
           const dataFiles = [
             dataFileFromSourceUrl(sourceDir, testHostPath, `/node-v22.0.0/${test.spec.path}`),
             { path: isolation.browserMarkerPath, data: [], mode: 0o644 },
+            { path: "/usr/bin/node", useWasmBytes: true, mode: 0o755 },
           ];
           try {
             const result = await withHostTimeout(
@@ -918,6 +929,7 @@ interface BrowserDataFile {
   lazy?: boolean;
   size?: number;
   mode?: number;
+  useWasmBytes?: boolean;
 }
 
 function collectBrowserDataFiles(sourceDir: string, preludePath: string): BrowserDataFile[] {
