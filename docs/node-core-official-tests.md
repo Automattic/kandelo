@@ -84,6 +84,10 @@ buckets into module-specific follow-up beads. See
 `docs/plans/2026-06-14-node-core-semantic-mismatch-triage-kad-nct23.md` for the
 fix bead breakdown.
 
+`kad-nct.24` breaks the original 13 Node-host timeout artifacts into specific
+runtime-progress bugs, long-running rows, and a runner cleanup blocker. See
+`docs/plans/2026-06-14-node-core-timeout-triage-kad-nct24.md`.
+
 The manifest is intentionally small and public-API focused. Tests that require
 Node's private `--expose-internals` hooks, such as `internal/test/binding`, must
 be marked as an explicit support-boundary `SKIP` with a reason instead of being

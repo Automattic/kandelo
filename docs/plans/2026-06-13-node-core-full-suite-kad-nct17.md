@@ -140,6 +140,8 @@ Contains-pattern counts that cut across primary groups:
 - `kad-nct.21`: missing built-in/internal module and API surface.
 - `kad-nct.22`: `child_process.fork` and `cluster.fork` semantics.
 - `kad-nct.23`: remaining assertion/TypeError semantic mismatch triage.
-- `kad-nct.24`: unexplained full-suite timeouts.
+- `kad-nct.24`: timeout triage. It mapped all 13 timeout artifacts to
+  existing runtime beads, expected long-running/global-leak rows, and new
+  follow-ups `kad-nct.51` through `kad-nct.54`.
 - `kad-nct.12`-`kad-nct.15`: existing selected narrow runtime bugs for
   Buffer, querystring, StringDecoder, and URLSearchParams.
