@@ -310,6 +310,23 @@ async function runNode(
   );
 }
 
+async function runNodeFile(source: string, timeout = DEFAULT_TIMEOUT) {
+  const root = mkdtempSync(join(tmpdir(), "kandelo-node-main-"));
+  const scriptPath = join(root, "main.js");
+  writeFileSync(scriptPath, source);
+  try {
+    return await runCentralizedProgram({
+      programPath: nodeWasm!,
+      programModule: nodeModule,
+      argv: ["node", scriptPath],
+      io: new NodePlatformIO(),
+      timeout,
+    });
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+}
+
 async function withCiProgress<T>(label: string, promise: Promise<T>): Promise<T> {
   if (!process.env.CI) {
     return promise;
@@ -590,7 +607,7 @@ describe.skipIf(!nodeWasm)("SpiderMonkey Node compatibility runtime", () => {
   }, DEFAULT_TEST_TIMEOUT);
 
   it("tracks active process resources and uncaught-exception capture callbacks", async () => {
-    const result = await runNode(
+    const result = await runNodeFile(
       [
         "const assert = require('assert')",
         "assert.strictEqual(process.hasUncaughtExceptionCaptureCallback(), false)",
@@ -609,7 +626,6 @@ describe.skipIf(!nodeWasm)("SpiderMonkey Node compatibility runtime", () => {
         "  assert.strictEqual(process.getActiveResourcesInfo().filter((x) => x === 'Immediate').length, 0)",
         "})",
         "assert.strictEqual(process.getActiveResourcesInfo().filter((x) => x === 'Immediate').length, 1)",
-        "drainJobQueue()",
         "throw new Error('captured')",
       ].join("\n"),
     );
@@ -617,6 +633,101 @@ describe.skipIf(!nodeWasm)("SpiderMonkey Node compatibility runtime", () => {
     expect(result.stderr).toBe("");
     expect(result.exitCode).toBe(0);
     expect(result.stdout.trim()).toBe("captured");
+  }, DEFAULT_TEST_TIMEOUT);
+
+  it("runs immediates queued during the immediate phase on the next event-loop turn", async () => {
+    const result = await runNodeFile(
+      [
+        "const assert = require('assert')",
+        "let ticked = false",
+        "let hit = 0",
+        "const QUEUE = 10",
+        "function run() {",
+        "  if (hit === 0) {",
+        "    setTimeout(() => { ticked = true }, 1)",
+        "    const now = Date.now()",
+        "    while (Date.now() - now < 2) {}",
+        "  }",
+        "  if (ticked) return",
+        "  hit++",
+        "  setImmediate(run)",
+        "}",
+        "for (let i = 0; i < QUEUE; i++) setImmediate(run)",
+        "process.on('exit', () => {",
+        "  assert.strictEqual(hit, QUEUE)",
+        "  console.log('hit', hit)",
+        "})",
+      ].join("\n"),
+    );
+
+    expect(result.stderr).toBe("");
+    expect(result.exitCode).toBe(0);
+    expect(result.stdout.trim()).toBe("hit 10");
+  }, DEFAULT_TEST_TIMEOUT);
+
+  it("passes timer arguments and clears zero-delay intervals from callbacks", async () => {
+    const result = await runNodeFile(
+      [
+        "const assert = require('assert')",
+        "let timeoutCalled = false",
+        "setTimeout(function(a, b, c) {",
+        "  assert.strictEqual(a, 'foo')",
+        "  assert.strictEqual(b, 'bar')",
+        "  assert.strictEqual(c, 'baz')",
+        "  timeoutCalled = true",
+        "}, 0, 'foo', 'bar', 'baz')",
+        "let remaining = 3",
+        "const iv = setInterval(function(a, b, c) {",
+        "  assert.strictEqual(a, 'foo')",
+        "  assert.strictEqual(b, 'bar')",
+        "  assert.strictEqual(c, 'baz')",
+        "  if (--remaining === 0) clearInterval(iv)",
+        "}, 0, 'foo', 'bar', 'baz')",
+        "process.on('exit', () => {",
+        "  assert.strictEqual(timeoutCalled, true)",
+        "  assert.strictEqual(remaining, 0)",
+        "  console.log('ok')",
+        "})",
+      ].join("\n"),
+    );
+
+    expect(result.stderr).toBe("");
+    expect(result.exitCode).toBe(0);
+    expect(result.stdout.trim()).toBe("ok");
+  }, DEFAULT_TEST_TIMEOUT);
+
+  it("coerces invalid timer delays to one millisecond before later timers", async () => {
+    const result = await runNodeFile(
+      [
+        "const assert = require('assert')",
+        "const inputs = [",
+        "  undefined, null, true, false, '', [], {}, NaN, +Infinity, -Infinity,",
+        "  (1.0 / 0.0), parseFloat('x'), -10, -1, -0.5, -0.1, -0.0,",
+        "  0, 0.0, 0.1, 0.5, 1, 1.0, 2147483648, 12345678901234,",
+        "]",
+        "const timeouts = []",
+        "const intervals = []",
+        "inputs.forEach((value, index) => {",
+        "  setTimeout(() => { timeouts[index] = true }, value)",
+        "  const handle = setInterval(function() {",
+        "    clearInterval(this)",
+        "    intervals[index] = true",
+        "    assert.strictEqual(this, handle)",
+        "  }, value)",
+        "})",
+        "setTimeout(() => {",
+        "  inputs.forEach((value, index) => {",
+        "    assert.strictEqual(timeouts[index], true, `timeout ${index} ${value}`)",
+        "    assert.strictEqual(intervals[index], true, `interval ${index} ${value}`)",
+        "  })",
+        "  console.log('coerced')",
+        "}, 2)",
+      ].join("\n"),
+    );
+
+    expect(result.stderr).toBe("");
+    expect(result.exitCode).toBe(0);
+    expect(result.stdout.trim()).toBe("coerced");
   }, DEFAULT_TEST_TIMEOUT);
 
   it("drains promise jobs before main script exit", async () => {

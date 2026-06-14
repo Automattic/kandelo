@@ -245,4 +245,115 @@ if (failures.length) throw new Error(failures.join("\\n"));
     expect(child.stderr).toBe("");
     expect(child.status).toBe(0);
   });
+
+  it("drives Node timers and immediates through event-loop turns", () => {
+    const main = `
+const assert = require("assert");
+
+let ticked = false;
+let hit = 0;
+const QUEUE = 10;
+function runImmediateQueue() {
+  if (hit === 0) {
+    setTimeout(() => { ticked = true; }, 1);
+    const now = Date.now();
+    while (Date.now() - now < 2) {}
+  }
+  if (ticked) return;
+  hit++;
+  setImmediate(runImmediateQueue);
+}
+for (let i = 0; i < QUEUE; i++) setImmediate(runImmediateQueue);
+
+let timeoutCalled = false;
+setTimeout(function(a, b, c) {
+  assert.strictEqual(a, "foo");
+  assert.strictEqual(b, "bar");
+  assert.strictEqual(c, "baz");
+  timeoutCalled = true;
+}, 0, "foo", "bar", "baz");
+
+let remaining = 3;
+const iv = setInterval(function(a, b, c) {
+  assert.strictEqual(a, "foo");
+  assert.strictEqual(b, "bar");
+  assert.strictEqual(c, "baz");
+  if (--remaining === 0) clearInterval(iv);
+}, 0, "foo", "bar", "baz");
+
+const inputs = [
+  undefined, null, true, false, "", [], {}, NaN, +Infinity, -Infinity,
+  (1.0 / 0.0), parseFloat("x"), -10, -1, -0.5, -0.1, -0.0,
+  0, 0.0, 0.1, 0.5, 1, 1.0, 2147483648, 12345678901234,
+];
+const timeouts = [];
+const intervals = [];
+inputs.forEach((value, index) => {
+  setTimeout(() => { timeouts[index] = true; }, value);
+  const handle = setInterval(function() {
+    clearInterval(this);
+    intervals[index] = true;
+    assert.strictEqual(this, handle);
+  }, value);
+});
+
+setTimeout(() => {
+  inputs.forEach((value, index) => {
+    assert.strictEqual(timeouts[index], true, "timeout " + index + " " + value);
+    assert.strictEqual(intervals[index], true, "interval " + index + " " + value);
+  });
+}, 2);
+
+process.on("exit", () => {
+  assert.strictEqual(hit, QUEUE);
+  assert.strictEqual(timeoutCalled, true);
+  assert.strictEqual(remaining, 0);
+  console.log("timer-ok");
+});
+`;
+
+    const smoke = `
+const nativeProcess = process;
+globalThis.evalInWorker = function() {};
+globalThis.quit = (code) => nativeProcess.exit(code | 0);
+globalThis.putstr = (text) => nativeProcess.stdout.write(String(text));
+globalThis.printErr = (text) => nativeProcess.stderr.write(String(text) + "\\n");
+globalThis.scriptPath = "/main.js";
+globalThis.scriptArgs = [];
+const files = new Map([["/main.js", ${JSON.stringify(main)}]]);
+function statFor(path) {
+  if (files.has(path)) return { mode: 0o100000, size: files.get(path).length };
+  if (path === "/") return { mode: 0o40000, size: 0 };
+  throw new Error("ENOENT: " + path);
+}
+globalThis.os = {
+  getenv() { return null; },
+  getcwd() { return "/"; },
+  getpid() { return 1; },
+  kill() { return 0; },
+  file: {
+    readFile(path) {
+      if (files.has(String(path))) return files.get(String(path));
+      throw new Error("ENOENT: " + path);
+    },
+    stat(path) { return statFor(String(path)); },
+    lstat(path) { return statFor(String(path)); },
+    realpath(path) {
+      path = String(path);
+      if (files.has(path) || path === "/") return path;
+      throw new Error("ENOENT: " + path);
+    },
+  },
+};
+${generatedBootstrapSource()}
+`;
+    const child = spawnSync(process.execPath, ["-"], {
+      input: smoke,
+      encoding: "utf8",
+      maxBuffer: 1024 * 1024,
+    });
+    expect(child.stderr).toBe("");
+    expect(child.status).toBe(0);
+    expect(child.stdout.trim()).toBe("timer-ok");
+  });
 });

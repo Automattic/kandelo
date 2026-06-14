@@ -241,9 +241,6 @@
             const id = nextTimerId++;
             const ms = Math.max(0, Number(delay) || 0);
             pendingTimers.set(id, { fn, due: Date.now() + ms });
-            if (ms === 0) {
-                queueMicrotask(() => runTimer(id));
-            }
             return id;
         },
         clearTimeout(id) { pendingTimers.delete(id); },
@@ -259,16 +256,14 @@
 
     function runDueTimers() {
         let ran = 0;
-        while (true) {
-            const now = Date.now();
-            const dueIds = [];
-            for (const [id, timer] of pendingTimers) {
-                if (timer.due <= now) dueIds.push(id);
-            }
-            if (dueIds.length === 0) break;
-            for (const id of dueIds) {
-                if (runTimer(id)) ran++;
-            }
+        const now = Date.now();
+        const dueIds = [];
+        for (const [id, timer] of pendingTimers) {
+            if (timer.due <= now) dueIds.push([id, timer.due]);
+        }
+        dueIds.sort((a, b) => a[1] - b[1] || a[0] - b[0]);
+        for (const [id] of dueIds) {
+            if (runTimer(id)) ran++;
         }
         return ran;
     }
