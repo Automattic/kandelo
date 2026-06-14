@@ -164,13 +164,17 @@ independent SQL-result regressions. The current classified failure groups are:
 | `huge_frm-6224` mysqltest OOM causing kernel `unreachable` noise | Landed after artifact | `kad-qun.16`, commit `926225ac` |
 | Tests that exec a missing or non-Wasm `mysql` client | Landed after artifact | `kad-qun.17`, commit `d2493661` |
 | `selectivity` exhausting the test VFS image capacity | Landed after artifact | `kad-qun.18`, commit `811ba5e4` |
+| Browser expected-fail classification for release-build, MTR-helper, and SQL-result limitations | Open | `kad-qun.23` |
+| Browser VFS fixture/std_data/timezone gaps | Open | `kad-qun.24` |
+| Browser VFS storage-state, short-read, and corrupted-table failures | Open | `kad-qun.25` |
 
 The longest resumed interval was chunk 116 at about 29m45s: the runner produced
 zero JSON results on the first attempt, then saw repeated 180s
 `waitForMariadbReady` timeouts before a later attempt recovered and emitted a
 result block. That is tracked as harness/resource isolation work in
 `kad-qun.10`. The artifact does not provide a separate numeric timeout or
-resource-failure subtotal beyond the 371 FAIL count.
+resource-failure subtotal beyond the 371 FAIL count; the inventory below derives
+the current follow-up cluster counts from the raw `FAIL` rows.
 
 ## Both-host synthesis for the epic PR
 
@@ -189,6 +193,55 @@ records a superseding rerun:
 |------|----------|------|------|-------|-------|------|-------|------|
 | Node | `test-runs/mariadb-project/kad-qun.4-node-20260613T112749Z/` plus focused chunk reruns | 608 | 18 | 317 | 0 | 240 | 1183 | 1 |
 | Browser | `test-runs/gastown-mariadb-browser-full-pr3/` | 559 | 371 | 0 | 0 | 253 | 1183 | 1 |
+
+## Failure inventory for follow-up routing
+
+This inventory preserves the hard counts above. It does not fold in any
+post-artifact fix unless a later full-suite rerun replaces the authoritative
+artifact.
+
+Node has 18 unexpected failures after substituting the focused chunk reruns.
+Each row below is one unexpected failure in the reconciled count:
+
+| Host | Test | Outcome | Proof artifact | Why / current status | Follow-up |
+|------|------|---------|----------------|----------------------|-----------|
+| Node | `mysql-test/main/check.test` | timeout | `test-runs/mariadb-project/kad-qun.4-node-20260613T112749Z/node.log:422` | 60s per-test timeout in a long-running main-suite check test; still needs timeout/resource-envelope vs runtime-bug classification. | `kad-qun.20` |
+| Node | `mysql-test/main/count_distinct2.test` | timeout | `test-runs/mariadb-project/kad-qun.4-node-20260613T112749Z/node.log:573` | 60s timeout in count-distinct optimizer coverage; classify timeout budget, MariaDB expectation, or runtime behavior. | `kad-qun.20` |
+| Node | `mysql-test/main/cte_recursive.test` | timeout | `test-runs/mariadb-project/kad-qun.4-node-20260613T112749Z/node.log:775` | 60s timeout in recursive CTE coverage; classify timeout/resource envelope vs runtime bug. | `kad-qun.20` |
+| Node | `mysql-test/main/derived_opt.test` | timeout | `test-runs/mariadb-project/kad-qun.4-node-20260613T112749Z/node.log:1225` | 60s timeout in derived-table optimizer coverage. | `kad-qun.20` |
+| Node | `mysql-test/main/huge_frm-6224.test` | timeout | `test-runs/mariadb-project/kad-qun.4-node-20260613T112749Z/node.log:2122` | 60s timeout in large `.frm` workload on Node; browser OOM/kernel trap for the same test was fixed separately after artifact by `kad-qun.16`. | `kad-qun.20` |
+| Node | `mysql-test/main/lowercase_table2.test` | FAIL | `test-runs/mariadb-project/kad-qun.4-node-current-reruns-20260613T1430Z/chunk-55/node.log:38` | Access denied for `mysqltest_1` to database `test`; fixed after artifact by the grant bootstrap work, but hard totals still include the failure until a rerun replaces them. | `kad-qun.14` |
+| Node | `mysql-test/main/mrr_icp_extra.test` | timeout | `test-runs/mariadb-project/kad-qun.4-node-20260613T112749Z/node.log:2960` | 60s timeout in MRR/ICP optimizer coverage. | `kad-qun.20` |
+| Node | `mysql-test/main/precedence.test` | timeout | `test-runs/mariadb-project/kad-qun.4-node-20260613T112749Z/node.log:3936` | 60s timeout in expression precedence coverage. | `kad-qun.20` |
+| Node | `mysql-test/main/range.test` | timeout | `test-runs/mariadb-project/kad-qun.4-node-20260613T112749Z/node.log:4169` | Timed out after 60s; part of the range optimizer cluster. | `kad-qun.20` |
+| Node | `mysql-test/main/range_aria_dbt3.test` | harness hard timeout | `test-runs/mariadb-project/kad-qun.4-node-20260613T112749Z/node.log:4170` | Hit the 180s hard iteration timeout after restart overhead; still open as range/resource-envelope classification. | `kad-qun.20` |
+| Node | `mysql-test/main/range_mrr_icp.test` | harness hard timeout | `test-runs/mariadb-project/kad-qun.4-node-20260613T112749Z/node.log:4171` | Hit the 180s hard iteration timeout after restart overhead; still open as range/resource-envelope classification. | `kad-qun.20` |
+| Node | `mysql-test/main/selectivity.test` | timeout | `test-runs/mariadb-project/kad-qun.4-node-20260613T112749Z/node.log:4369` | 60s timeout in selectivity/index workload; browser ENOSPC for the same test was fixed after artifact by `kad-qun.18`. | `kad-qun.20` |
+| Node | `mysql-test/main/sp_stress_case.test` | OOM/resource failure | `test-runs/mariadb-project/kad-qun.4-node-20260613T112749Z/node.log:4818` | MariaDB reports repeated out-of-memory errors under the current Node/Wasm memory envelope; downstream SP corruption is fixed, but this test still needs focused memory classification. | `kad-qun.21` |
+| Node | `mysql-test/main/subselect_mat.test` | timeout | `test-runs/mariadb-project/kad-qun.4-node-20260613T112749Z/node.log:5118` | 60s timeout in subselect materialization coverage. | `kad-qun.20` |
+| Node | `mysql-test/main/subselect_sj.test` | timeout | `test-runs/mariadb-project/kad-qun.4-node-20260613T112749Z/node.log:5227` | 60s timeout in semijoin subselect coverage. | `kad-qun.20` |
+| Node | `mysql-test/main/subselect_sj_jcl6.test` | timeout | `test-runs/mariadb-project/kad-qun.4-node-20260613T112749Z/node.log:5228` | 60s timeout in semijoin/JCL6 subselect coverage. | `kad-qun.20` |
+| Node | `mysql-test/main/subselect_sj_mat.test` | timeout | `test-runs/mariadb-project/kad-qun.4-node-20260613T112749Z/node.log:5229` | 60s timeout in semijoin materialization coverage. | `kad-qun.20` |
+| Node | `mysql-test/main/win_big-mdev-11697.test` | timeout | `test-runs/mariadb-project/kad-qun.4-node-20260613T112749Z/node.log:5909` | 60s timeout in window-function coverage. | `kad-qun.20` |
+
+Browser has 371 raw `FAIL` rows in
+`test-runs/gastown-mariadb-browser-full-pr3/browser.log`. The browser artifact
+does not contain expected-fail classifications, so this table accounts for the
+371 rows by failure cluster instead of treating each row as an independent
+runtime bug:
+
+| Host | Tests / cluster | Count | Outcome | Proof artifact | Why / current status | Follow-up |
+|------|-----------------|------:|---------|----------------|----------------------|-----------|
+| Browser | `huge_frm-6224` | 1 | OOM/resource failure | `test-runs/gastown-mariadb-browser-full-pr3/browser.log` | `mysqltest` OOM produced kernel `unreachable` noise; fixed after artifact so future runs classify the OOM cleanly without contaminating follow-on tests. | `kad-qun.16` |
+| Browser | `selectivity` | 1 | VFS ENOSPC/resource failure | `test-runs/gastown-mariadb-browser-full-pr3/browser.log` | `/data/master-data` ran out of space in the browser test image; fixed after artifact by increasing the MariaDB test VFS capacity and rebooting on ENOSPC. | `kad-qun.18` |
+| Browser | Timeout, page death, and server readiness failures; representative tests: `alter_table`, `bootstrap_innodb`, `check`, `derived_opt`, `events_restart`, `xa`, plus page/server loss in `analyze_debug`, `assign_key_cache`, `bootstrap`, and readiness failures around chunk 116 | 45 | timeout / harness failure | `test-runs/gastown-mariadb-browser-full-pr3/browser.log`; `test-runs/gastown-mariadb-browser-full-pr3/chunk-status.tsv` | Primarily all-suite isolation/resource handling. Chunk 116 also spent 29m45s with repeated 180s readiness timeouts before recovery. Still open. | `kad-qun.10` |
+| Browser | Stored-procedure OOM and `mysql.proc` corruption cluster: `sp-cursor`, `sp-destruct`, `sp-dynamic`, `sp-error`, `sp-expr`, `sp-fib`, `sp-for-loop`, `sp-group`, `sp-i_s_columns` | 9 | OOM/resource failure / contaminated state | `test-runs/gastown-mariadb-browser-full-pr3/browser.log` | Same class as the Node SP chunk: OOM followed by corrupted procedure metadata. Harness isolation fix landed after artifact; hard browser totals have not been rerun. | `kad-qun.15`; residual Node memory envelope is `kad-qun.21` |
+| Browser | Grant/user/auth bootstrap failures; representative tests: `alter_user`, `cte_grant`, `grant*`, `set_password`, `shutdown`, `user_limits`, `userstat-badlogin-4824` | 51 | FAIL | `test-runs/gastown-mariadb-browser-full-pr3/browser.log` | Access denied or user creation errors against the browser bootstrap grant baseline. The shared grant bootstrap fix landed after artifact; full browser totals have not been refreshed. | `kad-qun.14` |
+| Browser | Release-build, debug-only, plugin/event-scheduler, unsupported native-helper, and expected-result limitations; representative tests: `alter_table_debug`, `connect_debug`, `events_*`, `plugin*`, `client`, `mysqldump*`, `mysqladmin`, `mysqlcheck`, `my_print_defaults`, `log_errchk`, `mysqlhotcopy_myisam` | 165 | FAIL / expected limitation or unsupported-scope candidate | `test-runs/gastown-mariadb-browser-full-pr3/browser.log` | Browser artifact reports XFAIL=0, so these known MariaDB build/MTR limitations are still undifferentiated FAIL rows. They need explicit expected-fail or unsupported-scope classification. | `kad-qun.23` |
+| Browser | VFS fixture, `std_data`, locale, timezone, and cross-suite include path gaps; representative tests: `default`, `func_math`, `function_defaults`, `loaddata`, `loadxml`, `timezone2`, `timezone_grant`, `xa_prepared_binlog_off` | 16 | FAIL / fixture-environment gap | `test-runs/gastown-mariadb-browser-full-pr3/browser.log` | Missing `/std_data` paths, timezone/locale data, charset/collation data, or included files from other MariaDB suites. Needs VFS fixture fix or expected fixture limitation. | `kad-qun.24` |
+| Browser | VFS storage-state, short-read, read-only, file-descriptor, and corrupted-table cluster; representative tests: `ctype_big5`, `ctype_gbk`, `fulltext`, `merge`, `myisam_recover`, `partition_pruning`, `stat_tables`, `subselect`, `win`, `win_big-mdev-11697` | 58 | FAIL / platform or contaminated-state candidate | `test-runs/gastown-mariadb-browser-full-pr3/browser.log` | Recurrent `Unexpected end-of-file`, `File too short`, read-only table, corrupt index/table, missing temp file, I/O, and file-descriptor failures. Some may be follow-on contamination from `kad-qun.10`; deterministic cases need VFS/runtime investigation. | `kad-qun.25` |
+| Browser | Remaining SQL/result mismatch triage; representative tests: `connect2`, `ctype_eucjpms`, `ctype_like_range`, `func_json`, `partition`, `subselect3`, `sum_distinct`, `symlink`, `upgrade_MDEV-23102-*` | 25 | FAIL / still unknown or expected-result candidate | `test-runs/gastown-mariadb-browser-full-pr3/browser.log` | Mixed SQL-result and fixture side effects that did not fit the cleaner clusters. Route with the browser expected-fail classification work first, then split narrower beads if focused reruns show platform bugs. | `kad-qun.23` |
+| Browser | Cluster total | 371 | FAIL | `test-runs/gastown-mariadb-browser-full-pr3/summary.json` | Sum matches the hard browser FAIL count from `kad-qun.19`. | See rows above |
 
 PR body replacement text:
 
@@ -216,7 +269,10 @@ artifact already folds its pre-rebase chunks 1-49 and post-rebase resumed chunks
 Post-artifact fixes already landed on the integration branch but are not folded
 into these hard totals without a rerun: `kad-qun.14`, `kad-qun.16`,
 `kad-qun.17`, and `kad-qun.18`. Remaining tracked follow-ups are `kad-lf9`,
-`kad-qun.9`, `kad-qun.10`, `kad-qun.20`, and `kad-qun.21`.
+`kad-qun.9`, `kad-qun.10`, `kad-qun.20`, `kad-qun.21`, `kad-qun.23`,
+`kad-qun.24`, and `kad-qun.25`. See
+`docs/mariadb-project-tests.md#failure-inventory-for-follow-up-routing` for the
+row-level Node inventory and browser failure-cluster map.
 ```
 
 Remaining actionable work is represented by narrow beads:
@@ -231,6 +287,14 @@ Remaining actionable work is represented by narrow beads:
   classification or timeout/resource-envelope treatment.
 - `kad-qun.21`: Node `sp_stress_case` still needs isolated memory-envelope
   classification after the mysql.proc recovery fix.
+- `kad-qun.23`: browser MariaDB expected-fail classifications need to cover
+  release-build, plugin/event-scheduler, unsupported helper, and SQL-result
+  limitations that currently appear as raw FAIL rows.
+- `kad-qun.24`: browser VFS fixture coverage needs std_data, timezone, locale,
+  charset, and cross-suite include path gaps fixed or classified.
+- `kad-qun.25`: browser VFS/storage-state short reads, read-only tables, file
+  descriptor/resource errors, and corrupted table/index rows need focused
+  reproduction and classification.
 
 The final GitHub PR should be opened by `kad-qun.8` from
 `integration/kad-qun-mariadb-tests` to `main`. It should present the full-suite
