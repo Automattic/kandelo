@@ -205,6 +205,13 @@ function _makeNodeError(message, code, errno, syscall, path) {
     return err;
 }
 
+function _makeUnsupportedPlatformError(feature) {
+    return _makeNodeError(
+        `${feature} is not supported in Kandelo's SpiderMonkey Node compatibility runtime`,
+        'ERR_FEATURE_UNAVAILABLE_ON_PLATFORM',
+    );
+}
+
 function _makeInvalidArgTypeError(name, expected, value) {
     const actual = value === null ? 'null' :
                    Array.isArray(value) ? 'an instance of Array' :
@@ -3151,7 +3158,68 @@ const child_process = (() => {
         return child;
     }
 
-    return { execSync, execFileSync, spawnSync, exec, execFile, spawn };
+    function fork(modulePath, args, options) {
+        _validateString(modulePath, 'modulePath');
+        if (args === undefined) {
+            args = [];
+        } else if (!Array.isArray(args) && options === undefined && args && typeof args === 'object') {
+            options = args;
+            args = [];
+        }
+        if (!Array.isArray(args)) {
+            throw _makeInvalidArgTypeError('args', 'Array', args);
+        }
+        options = options || {};
+        const execPath = options.execPath || process.execPath || 'node';
+        const execArgv = Array.isArray(options.execArgv) ? options.execArgv : process.execArgv || [];
+        const child = spawn(execPath, [...execArgv, modulePath, ...args], options);
+        child.connected = false;
+        child.channel = undefined;
+        child.disconnect = () => {
+            child.connected = false;
+            child.emit('disconnect');
+        };
+        child.send = (_message, _sendHandle, _options, callback) => {
+            if (typeof _sendHandle === 'function') callback = _sendHandle;
+            if (typeof _options === 'function') callback = _options;
+            const err = _makeUnsupportedPlatformError('child_process.fork IPC');
+            if (typeof callback === 'function') queueMicrotask(() => callback(err));
+            else queueMicrotask(() => child.emit('error', err));
+            return false;
+        };
+        return child;
+    }
+
+    return { execSync, execFileSync, spawnSync, exec, execFile, spawn, fork };
+})();
+
+// ============================================================
+// cluster module
+// ============================================================
+
+const cluster = (() => {
+    const mod = new events.EventEmitter();
+    const settings = {};
+    const workers = {};
+    function fork() {
+        throw _makeUnsupportedPlatformError('cluster.fork');
+    }
+    function setupPrimary(options) {
+        if (options && typeof options === 'object') Object.assign(settings, options);
+        return settings;
+    }
+    Object.assign(mod, {
+        isMaster: true,
+        isPrimary: true,
+        isWorker: false,
+        settings,
+        workers,
+        fork,
+        setupPrimary,
+        setupMaster: setupPrimary,
+        Worker: class Worker extends events.EventEmitter {},
+    });
+    return mod;
 })();
 
 // ============================================================
@@ -4451,11 +4519,7 @@ const _builtinModules = {
             workerData: null,
             Worker: class Worker {},
         },
-    'cluster': {
-        isMaster: true,
-        isPrimary: true,
-        isWorker: false,
-    },
+    'cluster': cluster,
     // node:console — exposes the Console class so libs (e.g. undici's mock
     // formatter) can construct a logger backed by arbitrary streams. The
     // global `console` in some engines is not an instance of this class; that

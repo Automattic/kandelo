@@ -393,6 +393,47 @@ describe.skipIf(!nodeWasm)("SpiderMonkey Node compatibility runtime", () => {
     expect(result.stdout.trim()).toBe("node:5");
   }, DEFAULT_TEST_TIMEOUT);
 
+  it("exposes child_process.fork and documents unsupported cluster.fork semantics", async () => {
+    const result = await runNode(
+      [
+        "const assert = require('node:assert')",
+        "const fs = require('node:fs')",
+        "const cp = require('child_process')",
+        "const nodeCp = require('node:child_process')",
+        "const cluster = require('node:cluster')",
+        "assert.strictEqual(cp.fork, nodeCp.fork)",
+        "assert.strictEqual(typeof cp.fork, 'function')",
+        "assert.strictEqual(typeof cluster.on, 'function')",
+        "assert.strictEqual(typeof cluster.fork, 'function')",
+        "assert.throws(() => cluster.fork(), { code: 'ERR_FEATURE_UNAVAILABLE_ON_PLATFORM' })",
+        "fs.writeFileSync('/tmp/kandelo-fork-child.js', \"console.log('fork-child:' + process.argv.slice(2).join(','))\\n\")",
+        "const child = cp.fork('/tmp/kandelo-fork-child.js', ['alpha', 'beta'])",
+        "let out = ''",
+        "let closed = false",
+        "child.stdout.on('data', chunk => { out += chunk.toString() })",
+        "child.on('close', code => {",
+        "  closed = true",
+        "  assert.strictEqual(code, 0)",
+        "  console.log(out.trim())",
+        "  console.log(child.connected)",
+        "})",
+        "drainJobQueue()",
+        "assert.strictEqual(closed, true)",
+        "assert.strictEqual(typeof child.send, 'function')",
+        "assert.strictEqual(child.send({ hello: 'world' }, (err) => console.log(err.code)), false)",
+        "drainJobQueue()",
+      ].join("\n"),
+    );
+
+    expect(result.exitCode).toBe(0);
+    expect(result.stderr).toBe("");
+    expect(result.stdout.trim().split("\n")).toEqual([
+      "fork-child:alpha,beta",
+      "false",
+      "ERR_FEATURE_UNAVAILABLE_ON_PLATFORM",
+    ]);
+  }, DEFAULT_TEST_TIMEOUT);
+
   it("provides vm.runInNewContext for foreign objects and sandbox globals", async () => {
     const result = await runNode(
       [

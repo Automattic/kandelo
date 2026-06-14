@@ -57,6 +57,19 @@ or environment assumption is recorded as a concrete failure or timeout artifact.
 Principled support-boundary exclusions belong in explicit follow-up manifests
 only after the complete suite has been attempted and triaged.
 
+The manifest is intentionally small and public-API focused. Tests that require
+Node's private `--expose-internals` hooks, such as `internal/test/binding`, must
+be marked as an explicit support-boundary `SKIP` with a reason instead of being
+reported as runtime parity failures.
+
+The SpiderMonkey Node-compatible runtime exposes `child_process.fork()` as a
+best-effort process launcher backed by the normal Kandelo `exec` path for
+`/usr/bin/node`. It does not provide Node's IPC channel semantics: `child.send()`
+reports `ERR_FEATURE_UNAVAILABLE_ON_PLATFORM`, and `cluster.fork()` is an
+explicit unsupported platform boundary for the same reason. Official tests that
+require fork IPC or cluster primary/worker coordination should be marked `SKIP`
+with that reason instead of failing as missing functions.
+
 ## Current Full-Suite Status
 
 `kad-nct.17` records the first complete correction run against Node v22.0.0:
