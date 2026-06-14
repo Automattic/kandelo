@@ -356,6 +356,29 @@ describe.skipIf(!nodeWasm)("SpiderMonkey Node compatibility runtime", () => {
     expect(result.stdout.trim()).toBe("v22.0.0");
   }, DEFAULT_TEST_TIMEOUT);
 
+  it("keeps compatibility helper globals out of global enumeration", async () => {
+    const result = await runNode(
+      [
+        "const assert = require('assert')",
+        "const leakCandidates = [",
+        "  '__kandeloRunDueTimers', '__kandeloNextTimerDelay', '__kandeloCreateWorkerThreads',",
+        "  'argv0', 'execArgv', 'TextEncoder', 'TextDecoder', 'btoa', 'atob',",
+        "  'Blob', 'File', 'FormData', 'MessagePort', 'MessageChannel', 'BroadcastChannel',",
+        "  'Event', 'EventTarget', 'MessageEvent', 'CloseEvent', 'ErrorEvent',",
+        "  'DOMException', 'AbortSignal'",
+        "]",
+        "const enumerableGlobals = new Set(Object.keys(globalThis))",
+        "const leaked = leakCandidates.filter((name) => enumerableGlobals.has(name) || Object.prototype.propertyIsEnumerable.call(globalThis, name))",
+        "assert.deepStrictEqual(leaked, [])",
+        "console.log('ok')",
+      ].join("\n"),
+    );
+
+    expect(result.stderr).toBe("");
+    expect(result.exitCode).toBe(0);
+    expect(result.stdout.trim()).toBe("ok");
+  }, DEFAULT_TEST_TIMEOUT);
+
   it("is not fork-instrumented so it can start in browser workers", () => {
     const exportNames = new Set(
       WebAssembly.Module.exports(nodeModule!).map((entry) => entry.name),

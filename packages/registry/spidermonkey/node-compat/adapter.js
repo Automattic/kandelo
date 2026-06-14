@@ -14,7 +14,7 @@
         }
     }
 
-    function defineGlobal(name, value) {
+    function defineAdapterGlobal(name, value) {
         Object.defineProperty(globalThis, name, {
             value,
             writable: true,
@@ -24,7 +24,7 @@
     }
 
     if (typeof globalThis.queueMicrotask !== 'function') {
-        defineGlobal('queueMicrotask', function queueMicrotask(callback) {
+        defineAdapterGlobal('queueMicrotask', function queueMicrotask(callback) {
             Promise.resolve().then(() => callback());
         });
     }
@@ -282,10 +282,10 @@
         return next === Infinity ? null : Math.max(0, next - now);
     }
 
-    defineGlobal('__kandeloRunDueTimers', runDueTimers);
-    defineGlobal('__kandeloNextTimerDelay', nextTimerDelay);
+    defineAdapterGlobal('__kandeloRunDueTimers', runDueTimers);
+    defineAdapterGlobal('__kandeloNextTimerDelay', nextTimerDelay);
 
-    defineGlobal('__kandeloCreateWorkerThreads', function(EventEmitter) {
+    defineAdapterGlobal('__kandeloCreateWorkerThreads', function createWorkerThreads(EventEmitter) {
         function unsupportedWorkerMessageApi(member) {
             const err = new Error('SpiderMonkey shell workers expose eval-time workerData/shared memory, not a bidirectional worker_threads message channel');
             err.code = 'ERR_KANDELO_UNSUPPORTED_NODE_API';
@@ -438,5 +438,5 @@
             args.shift();
         }
     }
-    defineGlobal('argv0', 'node');
-    defineGlobal('execArgv', entryPath ? ['node', entryPath, ...args] : ['node', ...args]);
+    defineAdapterGlobal('argv0', 'node');
+    defineAdapterGlobal('execArgv', entryPath ? ['node', entryPath, ...args] : ['node', ...args]);
