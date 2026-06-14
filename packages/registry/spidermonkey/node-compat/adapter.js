@@ -406,5 +406,13 @@
 
     const entryPath = typeof scriptPath === 'string' && scriptPath ? scriptPath : '';
     const args = typeof scriptArgs !== 'undefined' ? Array.from(scriptArgs) : [];
+    if (!entryPath && args.length > 0) {
+        const firstArg = String(args[0]);
+        const base = firstArg.slice(firstArg.lastIndexOf('/') + 1);
+        if (base === 'node' || base === 'node.wasm' ||
+            base === 'spidermonkey-node' || base === 'spidermonkey-node.wasm') {
+            args.shift();
+        }
+    }
     globalThis.argv0 = 'node';
     globalThis.execArgv = entryPath ? ['node', entryPath, ...args] : ['node', ...args];
