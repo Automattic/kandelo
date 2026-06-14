@@ -64,6 +64,16 @@ set, `include/`, `std_data/`, and MariaDB `share/` files. The browser page runs
 mysqltest with `MYSQLTEST_VARDIR=/data`, the server datadir under
 `/data/master-data`, and recreates `/data/tmp` before each invocation because
 upstream tests may create/drop a database named `tmp`.
+The image also exposes compatibility paths used by upstream MTR fixtures:
+`/std_data` and `/data/std_data` point at `/mysql-test/std_data`, and
+`/mysql-test/suite` is present for tests in `main/` that source helper files
+from another suite. The browser bootstrap seeds MariaDB's test time-zone rows
+from `mysql_test_data_timezone.sql`, so named zones such as `MET`,
+`Europe/Moscow`, and `UTC` are available without invoking external host tools.
+Browser locale and LDML collation tests remain explicit expected limitations:
+locale rows need generated server locale/message data, while LDML rows depend
+on per-test `*-master.opt` server options that the current one-server browser
+harness does not apply.
 
 Both hosts bootstrap MariaDB with `mysql_system_tables.sql`,
 `mysql_system_tables_data.sql`, and `mysql_test_db.sql`, matching

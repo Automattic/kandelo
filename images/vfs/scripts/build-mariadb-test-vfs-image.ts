@@ -44,6 +44,7 @@ const MYSQL_TEST_DIR = existsSync(join(MARIADB_LEGACY_INSTALL, "mysql-test"))
 const MARIADB_SHARE_DIR = existsSync(join(MARIADB_LEGACY_INSTALL, "share"))
   ? join(MARIADB_LEGACY_INSTALL, "share")
   : "";
+const MARIADB_SOURCE_SHARE_DIR = join(MARIADB_SOURCE, "sql/share");
 const SYSTEM_TABLES_PATH = existsSync(join(MARIADB_LEGACY_INSTALL, "share/mysql/mysql_system_tables.sql"))
   ? join(MARIADB_LEGACY_INSTALL, "share/mysql/mysql_system_tables.sql")
   : join(MARIADB_SOURCE, "scripts/mysql_system_tables.sql");
@@ -53,6 +54,7 @@ const SYSTEM_DATA_PATH = existsSync(join(MARIADB_LEGACY_INSTALL, "share/mysql/my
 const TEST_DB_PATH = existsSync(join(MARIADB_LEGACY_INSTALL, "share/mysql/mysql_test_db.sql"))
   ? join(MARIADB_LEGACY_INSTALL, "share/mysql/mysql_test_db.sql")
   : join(MARIADB_SOURCE, "scripts/mysql_test_db.sql");
+const TIMEZONE_DATA_PATH = join(MARIADB_SOURCE, "scripts/mysql_test_data_timezone.sql");
 const DASH_PATH = resolveBinary("programs/dash.wasm");
 const COREUTILS_PATH = tryResolveBinary("programs/coreutils.wasm");
 
@@ -188,6 +190,7 @@ function commonMariadbArgs(): string[] {
     "--key-buffer-size=1048576", "--table-open-cache=10",
     "--sort-buffer-size=262144",
     "--lc-messages-dir=/usr/share/mysql",
+    "--character-sets-dir=/usr/share/mysql/charsets",
   ];
 }
 
@@ -300,13 +303,21 @@ async function main() {
     console.log("  Writing MariaDB share/ directory...");
     walkAndWrite(fs, MARIADB_SHARE_DIR, "/usr/share/mysql");
   }
+  const sourceCharsetsDir = join(MARIADB_SOURCE_SHARE_DIR, "charsets");
+  if (existsSync(sourceCharsetsDir)) {
+    console.log("  Writing MariaDB source charsets/ directory...");
+    walkAndWrite(fs, sourceCharsetsDir, "/usr/share/mysql/charsets");
+  }
 
   console.log("  Writing bootstrap SQL...");
   ensureDirRecursive(fs, "/etc/mariadb");
   const systemTables = readFileSync(SYSTEM_TABLES_PATH, "utf-8");
   const systemData = readFileSync(SYSTEM_DATA_PATH, "utf-8");
   const testDb = readFileSync(TEST_DB_PATH, "utf-8");
-  const bootstrapSql = `use mysql;\n${systemTables}\n${systemData}\n${testDb}\n`;
+  const timezoneData = existsSync(TIMEZONE_DATA_PATH)
+    ? readFileSync(TIMEZONE_DATA_PATH, "utf-8")
+    : "";
+  const bootstrapSql = `use mysql;\n${systemTables}\n${systemData}\n${testDb}\n${timezoneData}\n`;
   writeVfsFile(fs, "/etc/mariadb/bootstrap.sql", bootstrapSql);
 
   // bootstrap-runner: backgrounds mariadbd --bootstrap, sleeps to let
@@ -382,6 +393,14 @@ exit 0
   if (existsSync(stdDataDir)) {
     console.log("  Writing std_data/ directory...");
     walkAndWrite(fs, stdDataDir, "/mysql-test/std_data");
+    symlink(fs, "/mysql-test/std_data", "/std_data");
+    symlink(fs, "/mysql-test/std_data", "/data/std_data");
+  }
+  const suiteDir = resolve(MYSQL_TEST_DIR, "suite");
+  if (existsSync(suiteDir)) {
+    console.log("  Writing suite/ directory...");
+    walkAndWrite(fs, suiteDir, "/mysql-test/suite");
+    symlink(fs, "/mysql-test/suite", "/suite");
   }
 
   // dinit service tree (no auto-boot — page passes target service as argv).
