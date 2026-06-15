@@ -8183,7 +8183,14 @@ export class CentralizedKernelWorker {
         if (arr.length === 0) this.tcpConnections?.delete(pid);
       }
       if (!clientSocket.destroyed) {
-        clientSocket.destroy();
+        // A guest close(2) on a TCP socket should be an orderly close (FIN)
+        // after queued data, not an immediate reset. Preserve that for the
+        // host bridge so protocols layered above TCP can finish their own
+        // shutdown handshakes.
+        clientSocket.end();
+        clientSocket.setTimeout(1_000, () => {
+          if (!clientSocket.destroyed) clientSocket.destroy();
+        });
       }
     };
   }
