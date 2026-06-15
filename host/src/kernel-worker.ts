@@ -1055,6 +1055,15 @@ export class CentralizedKernelWorker {
     this.lockTable = SharedLockTable.create();
     this.kernel.registerSharedLockTable(this.lockTable.getBuffer());
 
+    // Start the vblank pump unconditionally. kernel_vblank now drains
+    // queued DRM_IOCTL_MODE_PAGE_FLIP requests into the per-fd
+    // event_ring at monitor-refresh rate; without an always-on tick
+    // any card0 client would block forever on poll(POLLIN). On Node
+    // the interval is `.unref()`'d (see startVblankPump) so tests
+    // still exit cleanly. tickVblank no-ops gracefully if no canvas
+    // or stats SAB is attached.
+    this.startVblankPump();
+
     this.initialized = true;
   }
 
@@ -7375,6 +7384,34 @@ export class CentralizedKernelWorker {
   }
 
   /**
+   * Push one evdev record into `/dev/input/event{0,1}` and wake any
+   * process blocked on `sys_read` / `sys_poll` against the device.
+   * The per-OFD ring caps at 1024 records; overflow latches `dropped`
+   * and the next read returns `SYN_DROPPED` (kernel A4/A5). Wake
+   * routing reuses `scheduleWakeBlockedRetries` so the existing
+   * pending-readers tick services event ofds too — same shape as
+   * `injectMouseEvent` for `/dev/input/mice`.
+   */
+  injectInputEvent(
+    device: 0 | 1,
+    ev_type: number,
+    code: number,
+    value: number,
+  ): void {
+    this.kernel.injectInputEvent(device, ev_type, code, value);
+    this.scheduleWakeBlockedRetries();
+  }
+
+  /**
+   * Tell the kernel the current host canvas dimensions so EVIOCGABS
+   * on `/dev/input/event1` reports the right `ABS_X.maximum` /
+   * `ABS_Y.maximum`. Idempotent; call again on canvas resize.
+   */
+  setInputCanvasDims(width: number, height: number): void {
+    this.kernel.setInputCanvasDims(width, height);
+  }
+
+  /**
    * Drain up to `out.byteLength` bytes of PCM audio buffered in
    * `/dev/dsp` into `out`. Returns the number of bytes copied, always
    * a multiple of the active frame size (2 bytes mono / 4 bytes
@@ -7403,6 +7440,50 @@ export class CentralizedKernelWorker {
   /** Bytes buffered in the `/dev/dsp` ring waiting to be drained. */
   audioPending(): number {
     return this.kernel.audioPending();
+  }
+
+  /**
+   * Allocate a kernel-memory window for an ALSA PCM SAB ring of
+   * `byteLen` bytes and bind it to `pcmId`. Returns the kernel-memory
+   * `(byteOffset, byteLength)` pair plus the underlying kernel
+   * `SharedArrayBuffer`, so the host-thread AudioDriver can view it
+   * with `new Int16Array(buffer, byteOffset, byteLength / 2)`. Returns
+   * `null` if the kernel allocator declined.
+   */
+  audioInitRing(
+    pcmId: number,
+    byteLen: number,
+  ): {
+    buffer: SharedArrayBuffer | ArrayBuffer;
+    byteOffset: number;
+    byteLength: number;
+  } | null {
+    const base = this.kernel.audioAllocRing(byteLen);
+    if (base === 0) return null;
+    this.kernel.audioInitSab(pcmId, base, byteLen);
+    const buffer = this.kernel.getKernelMemoryBuffer();
+    if (!buffer) return null;
+    return { buffer, byteOffset: base, byteLength: byteLen };
+  }
+
+  /**
+   * Forward an audio period tick from the host AudioDriver into the
+   * kernel: advances `mmap_status.hw_ptr`, detects XRUN, wakes any
+   * process parked on `POLLOUT` against `/dev/snd/pcmC0D<pcmId>p`.
+   */
+  audioPeriodTick(pcmId: number, framesConsumed: number): void {
+    this.kernel.audioPeriodTick(pcmId, framesConsumed);
+    this.scheduleWakeBlockedRetries();
+  }
+
+  /**
+   * Return the current `mmap_control.appl_ptr` for any OFD bound to
+   * `pcmId`. The browser AudioDriver polls this each 10 ms and pushes
+   * the value into the AudioWorklet so the worklet gates `hwPtr`
+   * advance on producer progress.
+   */
+  audioGetApplPtr(pcmId: number): number {
+    return this.kernel.audioGetApplPtr(pcmId);
   }
 
   /**

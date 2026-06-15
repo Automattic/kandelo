@@ -1,0 +1,13 @@
+script_path = "packages/registry/espeak-ng/build-espeak-ng.sh"
+inputs = [
+  "packages/registry/espeak-ng/build-espeak-ng.sh",
+  "packages/registry/espeak-ng/wasm32-posix-toolchain.cmake",
+  "packages/registry/espeak-ng/pcaudiolib-src/src/audio.c",
+  "packages/registry/espeak-ng/pcaudiolib-src/src/audio_kandelo.c",
+]
+repo_url    = "https://github.com/Automattic/kandelo.git"
+commit      = ""
+revision    = 1
+
+[binary]
+index_url = "https://github.com/Automattic/kandelo/releases/download/binaries-abi-v{abi}/index.toml"

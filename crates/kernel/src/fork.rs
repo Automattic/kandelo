@@ -281,6 +281,18 @@ const DRI_TAG_RENDER_NODE: u8 = 1;
 const DRI_TAG_CARD: u8 = 2;
 const DRI_TAG_PRIME_BO: u8 = 3;
 
+const INPUT_TAG_NONE: u8 = 0;
+const INPUT_TAG_SOME: u8 = 1;
+
+const AUDIO_TAG_NONE: u8 = 0;
+const AUDIO_TAG_SOME: u8 = 1;
+
+const AUDIO_CTL_TAG_NONE: u8 = 0;
+const AUDIO_CTL_TAG_SOME: u8 = 1;
+
+const PCM_DIR_PLAYBACK: u8 = 0;
+const PCM_DIR_CAPTURE: u8 = 1;
+
 fn write_dri_fd_state(
     w: &mut Writer<'_>,
     dri: &crate::ofd::DriFdState,
@@ -349,6 +361,120 @@ fn write_dri_state(
             w.write_u64(p.cookie)
         }
     }
+}
+
+/// Serialise the evdev sidecar across a fork/exec. The ring is copied
+/// byte-for-byte; the child inherits the parent's grab + dropped flag.
+/// `EVIOCGRAB` is per-OFD in Linux, so each side of the fork ends up
+/// with its own copy of the InputFdState.
+fn write_input_state(
+    w: &mut Writer<'_>,
+    state: Option<&crate::ofd::InputFdState>,
+) -> Result<(), Errno> {
+    let Some(input) = state else {
+        return w.write_u8(INPUT_TAG_NONE);
+    };
+    w.write_u8(INPUT_TAG_SOME)?;
+    w.write_u8(input.device)?;
+    w.write_u8(input.grabbed as u8)?;
+    w.write_u8(input.dropped as u8)?;
+    w.write_u32(input.event_ring.len() as u32)?;
+    for &b in input.event_ring.iter() {
+        w.write_u8(b)?;
+    }
+    Ok(())
+}
+
+/// Serialise the ALSA `/dev/snd/pcmC0D0p` sidecar across a fork/exec.
+/// The child inherits the full state machine snapshot (state +
+/// hw_params + sw_params + mmap pages + pcm_id). The SAB registry is a
+/// global keyed by `pcm_id`; the kernel-side ring is not copied — both
+/// sides keep referring to the same host-allocated buffer.
+fn write_audio_state(
+    w: &mut Writer<'_>,
+    state: Option<&crate::ofd::AlsaFdState>,
+) -> Result<(), Errno> {
+    let Some(audio) = state else {
+        return w.write_u8(AUDIO_TAG_NONE);
+    };
+    w.write_u8(AUDIO_TAG_SOME)?;
+    w.write_u8(audio.card)?;
+    w.write_u8(audio.device)?;
+    w.write_u8(audio.sub)?;
+    w.write_u8(match audio.kind {
+        crate::ofd::PcmDir::Playback => PCM_DIR_PLAYBACK,
+        crate::ofd::PcmDir::Capture => PCM_DIR_CAPTURE,
+    })?;
+    w.write_u32(audio.state)?;
+    match audio.hw_params.as_deref() {
+        None => w.write_u8(0)?,
+        Some(hw) => {
+            w.write_u8(1)?;
+            w.write_u32(hw.format)?;
+            w.write_u32(hw.access)?;
+            w.write_u32(hw.channels)?;
+            w.write_u32(hw.rate)?;
+            w.write_u64(hw.period_size)?;
+            w.write_u64(hw.buffer_size)?;
+            w.write_u32(hw.periods)?;
+        }
+    }
+    match audio.sw_params.as_deref() {
+        None => w.write_u8(0)?,
+        Some(sw) => {
+            w.write_u8(1)?;
+            w.write_u64(sw.avail_min)?;
+            w.write_u64(sw.start_threshold)?;
+            w.write_u64(sw.stop_threshold)?;
+            w.write_u64(sw.boundary)?;
+        }
+    }
+    match audio.mmap_status.as_deref() {
+        None => w.write_u8(0)?,
+        Some(s) => {
+            w.write_u8(1)?;
+            w.write_u32(s.state)?;
+            w.write_u32(s._pad0)?;
+            w.write_i64(s.hw_ptr)?;
+            w.write_i64(s.tstamp_sec)?;
+            w.write_i64(s.tstamp_nsec)?;
+            w.write_u32(s.suspended_state)?;
+            w.write_u32(s.audio_tstamp_data)?;
+            w.write_i64(s.audio_tstamp_sec)?;
+            w.write_i64(s.audio_tstamp_nsec)?;
+            for &b in &s._reserved_tail {
+                w.write_u8(b)?;
+            }
+        }
+    }
+    match audio.mmap_control.as_deref() {
+        None => w.write_u8(0)?,
+        Some(c) => {
+            w.write_u8(1)?;
+            w.write_i64(c.appl_ptr)?;
+            w.write_i64(c.avail_min)?;
+            for &b in &c._reserved {
+                w.write_u8(b)?;
+            }
+        }
+    }
+    w.write_u32(audio.pcm_id)?;
+    Ok(())
+}
+
+/// Serialise the ALSA `/dev/snd/controlC0` sidecar across a fork/exec.
+/// v1 carries only a card binding — `CARD_INFO` / `ELEM_LIST` serve
+/// from kernel globals, so no further state.
+fn write_audio_ctl_state(
+    w: &mut Writer<'_>,
+    state: Option<&crate::ofd::AlsaControlFdState>,
+) -> Result<(), Errno> {
+    let Some(ctl) = state else {
+        return w.write_u8(AUDIO_CTL_TAG_NONE);
+    };
+    w.write_u8(AUDIO_CTL_TAG_SOME)?;
+    w.write_u8(ctl.card)?;
+    Ok(())
 }
 
 /// Read a `DriFdState` from the wire and incref every referenced bo
@@ -431,6 +557,163 @@ fn read_kms_fd_state(r: &mut Reader<'_>) -> Result<crate::ofd::KmsFdState, Errno
         pending_flips,
         event_ring: VecDeque::new(),
     })
+}
+
+fn read_input_state(
+    r: &mut Reader<'_>,
+) -> Result<Option<alloc::boxed::Box<crate::ofd::InputFdState>>, Errno> {
+    use alloc::collections::VecDeque;
+    let tag = r.read_u8()?;
+    match tag {
+        INPUT_TAG_NONE => Ok(None),
+        INPUT_TAG_SOME => {
+            let device = r.read_u8()?;
+            let grabbed = r.read_u8()? != 0;
+            let dropped = r.read_u8()? != 0;
+            let ring_len = r.read_u32()? as usize;
+            // The ring is always whole 24-byte records and bounded at
+            // INPUT_RING_MAX_BYTES — reject anything else as a
+            // corrupted/forged fork stream.
+            if ring_len > crate::ofd::INPUT_RING_MAX_BYTES
+                || ring_len % core::mem::size_of::<
+                    wasm_posix_shared::input::WpkInputEvent,
+                >() != 0
+            {
+                return Err(Errno::EINVAL);
+            }
+            let mut event_ring = VecDeque::with_capacity(ring_len);
+            for _ in 0..ring_len {
+                event_ring.push_back(r.read_u8()?);
+            }
+            Ok(Some(alloc::boxed::Box::new(crate::ofd::InputFdState {
+                device,
+                event_ring,
+                grabbed,
+                dropped,
+            })))
+        }
+        _ => Err(Errno::EINVAL),
+    }
+}
+
+fn read_audio_state(
+    r: &mut Reader<'_>,
+) -> Result<Option<alloc::boxed::Box<crate::ofd::AlsaFdState>>, Errno> {
+    use wasm_posix_shared::audio::{WpkAlsaPcmMmapControl, WpkAlsaPcmMmapStatus};
+    let tag = r.read_u8()?;
+    match tag {
+        AUDIO_TAG_NONE => Ok(None),
+        AUDIO_TAG_SOME => {
+            let card = r.read_u8()?;
+            let device = r.read_u8()?;
+            let sub = r.read_u8()?;
+            let kind = match r.read_u8()? {
+                PCM_DIR_PLAYBACK => crate::ofd::PcmDir::Playback,
+                PCM_DIR_CAPTURE => crate::ofd::PcmDir::Capture,
+                _ => return Err(Errno::EINVAL),
+            };
+            let state = r.read_u32()?;
+            let hw_params = match r.read_u8()? {
+                0 => None,
+                1 => Some(alloc::boxed::Box::new(crate::ofd::HwParamsCache {
+                    format: r.read_u32()?,
+                    access: r.read_u32()?,
+                    channels: r.read_u32()?,
+                    rate: r.read_u32()?,
+                    period_size: r.read_u64()?,
+                    buffer_size: r.read_u64()?,
+                    periods: r.read_u32()?,
+                })),
+                _ => return Err(Errno::EINVAL),
+            };
+            let sw_params = match r.read_u8()? {
+                0 => None,
+                1 => Some(alloc::boxed::Box::new(crate::ofd::SwParamsCache {
+                    avail_min: r.read_u64()?,
+                    start_threshold: r.read_u64()?,
+                    stop_threshold: r.read_u64()?,
+                    boundary: r.read_u64()?,
+                })),
+                _ => return Err(Errno::EINVAL),
+            };
+            let mmap_status = match r.read_u8()? {
+                0 => None,
+                1 => {
+                    let s_state = r.read_u32()?;
+                    let pad0 = r.read_u32()?;
+                    let hw_ptr = r.read_i64()?;
+                    let tstamp_sec = r.read_i64()?;
+                    let tstamp_nsec = r.read_i64()?;
+                    let suspended_state = r.read_u32()?;
+                    let audio_tstamp_data = r.read_u32()?;
+                    let audio_tstamp_sec = r.read_i64()?;
+                    let audio_tstamp_nsec = r.read_i64()?;
+                    let mut tail = [0u8; 8];
+                    for byte in tail.iter_mut() {
+                        *byte = r.read_u8()?;
+                    }
+                    Some(alloc::boxed::Box::new(WpkAlsaPcmMmapStatus {
+                        state: s_state,
+                        _pad0: pad0,
+                        hw_ptr,
+                        tstamp_sec,
+                        tstamp_nsec,
+                        suspended_state,
+                        audio_tstamp_data,
+                        audio_tstamp_sec,
+                        audio_tstamp_nsec,
+                        _reserved_tail: tail,
+                    }))
+                }
+                _ => return Err(Errno::EINVAL),
+            };
+            let mmap_control = match r.read_u8()? {
+                0 => None,
+                1 => {
+                    let appl_ptr = r.read_i64()?;
+                    let avail_min = r.read_i64()?;
+                    let mut reserved = [0u8; 48];
+                    for byte in reserved.iter_mut() {
+                        *byte = r.read_u8()?;
+                    }
+                    Some(alloc::boxed::Box::new(WpkAlsaPcmMmapControl {
+                        appl_ptr,
+                        avail_min,
+                        _reserved: reserved,
+                    }))
+                }
+                _ => return Err(Errno::EINVAL),
+            };
+            let pcm_id = r.read_u32()?;
+            Ok(Some(alloc::boxed::Box::new(crate::ofd::AlsaFdState {
+                card,
+                device,
+                sub,
+                kind,
+                state,
+                hw_params,
+                sw_params,
+                mmap_status,
+                mmap_control,
+                pcm_id,
+            })))
+        }
+        _ => Err(Errno::EINVAL),
+    }
+}
+
+fn read_audio_ctl_state(
+    r: &mut Reader<'_>,
+) -> Result<Option<alloc::boxed::Box<crate::ofd::AlsaControlFdState>>, Errno> {
+    let tag = r.read_u8()?;
+    match tag {
+        AUDIO_CTL_TAG_NONE => Ok(None),
+        AUDIO_CTL_TAG_SOME => {
+            let card = r.read_u8()?;
+            Ok(Some(alloc::boxed::Box::new(crate::ofd::AlsaControlFdState { card })))
+        }
+        _ => Err(Errno::EINVAL),
+    }
 }
 
 fn read_dri_state(
@@ -558,6 +841,13 @@ pub fn serialize_fork_state(proc: &Process, buf: &mut [u8]) -> Result<usize, Err
         // DRI sidecar — `preserve_master = false` because the master
         // lease must drop on fork (only one process may hold it).
         write_dri_state(&mut w, ofd.dri_state.as_deref(), false)?;
+        // evdev sidecar — child inherits the per-OFD ring + grab.
+        write_input_state(&mut w, ofd.input_state.as_deref())?;
+        // ALSA sidecars — child inherits the PCM state machine snapshot
+        // and the controlC0 card binding. The SAB registry is global by
+        // `pcm_id` so no per-fork copy is needed.
+        write_audio_state(&mut w, ofd.audio.as_deref())?;
+        write_audio_ctl_state(&mut w, ofd.audio_ctl.as_deref())?;
     }
 
     // ── Environment ──
@@ -859,6 +1149,9 @@ pub fn deserialize_fork_state(buf: &[u8], child_pid: u32) -> Result<Process, Err
             ofd_entries.push(None);
         }
         let dri_state = read_dri_state(&mut r)?;
+        let input_state = read_input_state(&mut r)?;
+        let audio = read_audio_state(&mut r)?;
+        let audio_ctl = read_audio_ctl_state(&mut r)?;
         ofd_entries[index] = Some(OpenFileDesc {
             file_type,
             status_flags,
@@ -871,6 +1164,9 @@ pub fn deserialize_fork_state(buf: &[u8], child_pid: u32) -> Result<Process, Err
             dir_synth_state: 0,
             dir_entry_offset: 0,
             dri_state,
+            input_state,
+            audio,
+            audio_ctl,
         });
     }
     let ofd_table = OfdTable::from_raw(ofd_entries);
@@ -1327,6 +1623,13 @@ pub fn serialize_exec_state(proc: &Process, buf: &mut [u8]) -> Result<usize, Err
         // the same process identity and any inherited card0 OFD
         // legitimately retains its KMS lease across the image swap.
         write_dri_state(&mut w, ofd.dri_state.as_deref(), true)?;
+        // evdev sidecar — exec keeps the per-OFD ring + grab (the OFD
+        // survives the image swap; CLOEXEC is handled by the fd table,
+        // not the OFD).
+        write_input_state(&mut w, ofd.input_state.as_deref())?;
+        // ALSA sidecars — same survival semantics as evdev across exec.
+        write_audio_state(&mut w, ofd.audio.as_deref())?;
+        write_audio_ctl_state(&mut w, ofd.audio_ctl.as_deref())?;
     }
 
     // ── Environment ──
@@ -1470,6 +1773,9 @@ pub fn deserialize_exec_state(buf: &[u8], pid: u32) -> Result<Process, Errno> {
             ofd_entries.push(None);
         }
         let dri_state = read_dri_state(&mut r)?;
+        let input_state = read_input_state(&mut r)?;
+        let audio = read_audio_state(&mut r)?;
+        let audio_ctl = read_audio_ctl_state(&mut r)?;
         ofd_entries[index] = Some(OpenFileDesc {
             file_type,
             status_flags,
@@ -1482,6 +1788,9 @@ pub fn deserialize_exec_state(buf: &[u8], pid: u32) -> Result<Process, Errno> {
             dir_synth_state: 0,
             dir_entry_offset: 0,
             dri_state,
+            input_state,
+            audio,
+            audio_ctl,
         });
     }
     let ofd_table = OfdTable::from_raw(ofd_entries);
@@ -2453,5 +2762,222 @@ mod tests {
             post_kms.holds_master,
             "exec keeps the same process identity; KMS master should survive"
         );
+    }
+
+    // ── ALSA fork/exec inheritance tests ──────────────────────────────────
+
+    /// Build an AlsaFdState with the full state machine populated:
+    /// committed HW/SW params, mmap pages with seeded ptrs, and a
+    /// non-zero pcm_id. Lets the round-trip tests assert every field
+    /// survives without relying on defaults.
+    fn populated_alsa_pcm_state() -> crate::ofd::AlsaFdState {
+        use crate::ofd::{AlsaFdState, HwParamsCache, PcmDir, SwParamsCache};
+        use wasm_posix_shared::audio::{
+            WpkAlsaPcmMmapControl, WpkAlsaPcmMmapStatus, SNDRV_PCM_FORMAT_S16_LE,
+            SNDRV_PCM_STATE_RUNNING,
+        };
+        AlsaFdState {
+            card: 0,
+            device: 0,
+            sub: 0,
+            kind: PcmDir::Playback,
+            state: SNDRV_PCM_STATE_RUNNING,
+            hw_params: Some(alloc::boxed::Box::new(HwParamsCache {
+                format: SNDRV_PCM_FORMAT_S16_LE,
+                access: 0,
+                channels: 2,
+                rate: 48000,
+                period_size: 1024,
+                buffer_size: 4096,
+                periods: 4,
+            })),
+            sw_params: Some(alloc::boxed::Box::new(SwParamsCache {
+                avail_min: 1024,
+                start_threshold: 2048,
+                stop_threshold: 4096,
+                boundary: 1 << 30,
+            })),
+            mmap_status: Some(alloc::boxed::Box::new(WpkAlsaPcmMmapStatus {
+                state: SNDRV_PCM_STATE_RUNNING,
+                hw_ptr: 512,
+                tstamp_sec: 7,
+                tstamp_nsec: 123_456_789,
+                ..WpkAlsaPcmMmapStatus::default()
+            })),
+            mmap_control: Some(alloc::boxed::Box::new(WpkAlsaPcmMmapControl {
+                appl_ptr: 1536,
+                avail_min: 1024,
+                _reserved: [0u8; 48],
+            })),
+            pcm_id: 0,
+        }
+    }
+
+    #[test]
+    fn fork_inherits_alsa_pcm_state() {
+        use crate::syscalls::VirtualDevice;
+        use wasm_posix_shared::audio::{
+            SNDRV_PCM_FORMAT_S16_LE, SNDRV_PCM_STATE_RUNNING,
+        };
+
+        let mut proc = Process::new(1);
+        let host_handle = VirtualDevice::AlsaPcm {
+            card: 0,
+            device: 0,
+            sub: 0,
+            kind: crate::ofd::PcmDir::Playback,
+        }
+        .host_handle();
+        let ofd_idx = proc.ofd_table.create(
+            crate::ofd::FileType::CharDevice,
+            0,
+            host_handle,
+            b"/dev/snd/pcmC0D0p".to_vec(),
+        );
+        proc.ofd_table.get_mut(ofd_idx).unwrap().audio =
+            Some(alloc::boxed::Box::new(populated_alsa_pcm_state()));
+        proc.fd_table
+            .alloc(crate::fd::OpenFileDescRef(ofd_idx), 0)
+            .unwrap();
+
+        let mut buf = vec![0u8; 64 * 1024];
+        let written = serialize_fork_state(&proc, &mut buf).unwrap();
+        let child = deserialize_fork_state(&buf[..written], 99).unwrap();
+
+        let child_audio = child
+            .ofd_table
+            .get(ofd_idx)
+            .unwrap()
+            .audio()
+            .expect("child must inherit AlsaFdState");
+        assert_eq!(child_audio.card, 0);
+        assert_eq!(child_audio.device, 0);
+        assert_eq!(child_audio.sub, 0);
+        assert_eq!(child_audio.kind, crate::ofd::PcmDir::Playback);
+        assert_eq!(child_audio.state, SNDRV_PCM_STATE_RUNNING);
+        let hw = child_audio.hw_params.as_deref().expect("hw_params survives");
+        assert_eq!(hw.format, SNDRV_PCM_FORMAT_S16_LE);
+        assert_eq!(hw.channels, 2);
+        assert_eq!(hw.rate, 48000);
+        assert_eq!(hw.period_size, 1024);
+        assert_eq!(hw.buffer_size, 4096);
+        assert_eq!(hw.periods, 4);
+        let sw = child_audio.sw_params.as_deref().expect("sw_params survives");
+        assert_eq!(sw.avail_min, 1024);
+        assert_eq!(sw.start_threshold, 2048);
+        assert_eq!(sw.stop_threshold, 4096);
+        assert_eq!(sw.boundary, 1 << 30);
+        let status = child_audio.mmap_status.as_deref().expect("status survives");
+        assert_eq!(status.state, SNDRV_PCM_STATE_RUNNING);
+        assert_eq!(status.hw_ptr, 512);
+        assert_eq!(status.tstamp_sec, 7);
+        assert_eq!(status.tstamp_nsec, 123_456_789);
+        let ctl = child_audio.mmap_control.as_deref().expect("control survives");
+        assert_eq!(ctl.appl_ptr, 1536);
+        assert_eq!(ctl.avail_min, 1024);
+        // pcm_id is per-fd; the SAB registry it indexes is a global keyed
+        // by this id, so inheriting the id is enough — no per-fork copy.
+        assert_eq!(child_audio.pcm_id, 0);
+    }
+
+    #[test]
+    fn fork_inherits_alsa_control_state() {
+        use crate::ofd::AlsaControlFdState;
+        use crate::syscalls::VirtualDevice;
+
+        let mut proc = Process::new(1);
+        let host_handle = VirtualDevice::AlsaControl { card: 0 }.host_handle();
+        let ofd_idx = proc.ofd_table.create(
+            crate::ofd::FileType::CharDevice,
+            0,
+            host_handle,
+            b"/dev/snd/controlC0".to_vec(),
+        );
+        proc.ofd_table.get_mut(ofd_idx).unwrap().audio_ctl =
+            Some(alloc::boxed::Box::new(AlsaControlFdState { card: 0 }));
+        proc.fd_table
+            .alloc(crate::fd::OpenFileDescRef(ofd_idx), 0)
+            .unwrap();
+
+        let mut buf = vec![0u8; 64 * 1024];
+        let written = serialize_fork_state(&proc, &mut buf).unwrap();
+        let child = deserialize_fork_state(&buf[..written], 99).unwrap();
+
+        let child_ctl = child
+            .ofd_table
+            .get(ofd_idx)
+            .unwrap()
+            .audio_ctl()
+            .expect("child must inherit AlsaControlFdState");
+        assert_eq!(child_ctl.card, 0);
+    }
+
+    #[test]
+    fn exec_preserves_alsa_pcm_state() {
+        use crate::syscalls::VirtualDevice;
+        use wasm_posix_shared::audio::SNDRV_PCM_STATE_RUNNING;
+
+        let mut proc = Process::new(1);
+        let host_handle = VirtualDevice::AlsaPcm {
+            card: 0,
+            device: 0,
+            sub: 0,
+            kind: crate::ofd::PcmDir::Playback,
+        }
+        .host_handle();
+        let ofd_idx = proc.ofd_table.create(
+            crate::ofd::FileType::CharDevice,
+            0,
+            host_handle,
+            b"/dev/snd/pcmC0D0p".to_vec(),
+        );
+        proc.ofd_table.get_mut(ofd_idx).unwrap().audio =
+            Some(alloc::boxed::Box::new(populated_alsa_pcm_state()));
+        proc.fd_table
+            .alloc(crate::fd::OpenFileDescRef(ofd_idx), 0)
+            .unwrap();
+
+        let mut buf = vec![0u8; 64 * 1024];
+        let written = serialize_exec_state(&proc, &mut buf).unwrap();
+        let post = deserialize_exec_state(&buf[..written], proc.pid).unwrap();
+
+        // exec keeps the same process identity — the PCM state machine
+        // snapshot, hw/sw params, mmap pages, and pcm_id must all
+        // survive byte-for-byte.
+        let post_audio = post
+            .ofd_table
+            .get(ofd_idx)
+            .unwrap()
+            .audio()
+            .expect("exec must keep AlsaFdState");
+        assert_eq!(post_audio.state, SNDRV_PCM_STATE_RUNNING);
+        assert_eq!(post_audio.hw_params.as_deref().unwrap().rate, 48000);
+        assert_eq!(post_audio.mmap_status.as_deref().unwrap().hw_ptr, 512);
+        assert_eq!(post_audio.mmap_control.as_deref().unwrap().appl_ptr, 1536);
+    }
+
+    #[test]
+    fn fork_audio_none_round_trips() {
+        // An OFD without an audio sidecar (the common case for non-snd
+        // fds) must encode + decode losslessly. Catches a stray byte
+        // misread that would corrupt the wire stream for the next OFD.
+        let mut proc = Process::new(1);
+        let ofd_idx = proc.ofd_table.create(
+            crate::ofd::FileType::Regular,
+            0,
+            5,
+            b"/tmp/file".to_vec(),
+        );
+        proc.fd_table
+            .alloc(crate::fd::OpenFileDescRef(ofd_idx), 0)
+            .unwrap();
+
+        let mut buf = vec![0u8; 64 * 1024];
+        let written = serialize_fork_state(&proc, &mut buf).unwrap();
+        let child = deserialize_fork_state(&buf[..written], 99).unwrap();
+
+        let child_ofd = child.ofd_table.get(ofd_idx).unwrap();
+        assert!(child_ofd.audio.is_none());
+        assert!(child_ofd.audio_ctl.is_none());
     }
 }

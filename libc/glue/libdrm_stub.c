@@ -30,6 +30,7 @@
 #include <drm/drm_mode.h>
 #include <sys/ioctl.h>
 #include <errno.h>
+#include <poll.h>
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
@@ -341,7 +342,22 @@ int drmWaitVBlank(int fd, drmVBlankPtr vbl)
 
 int drmHandleEvent(int fd, drmEventContextPtr ctx)
 {
+    /* Wait for the kernel-side vblank pump to retire at least one
+     * queued PAGE_FLIP into the per-fd event_ring before reading.
+     * Real libdrm relies on Linux's blocking-mode read on /dev/dri/cardN
+     * to block until an event is available. Our kernel's sys_read on
+     * card0 returns 0 on an empty ring rather than parking the process
+     * (centralized mode has no SYS_READ EAGAIN-retry plumbing), so a
+     * straight read here would race the vblank tick: drmHandleEvent
+     * would return without dispatching, the caller's pending flip would
+     * stay queued, and the next drmModePageFlip would hit EBUSY. */
     char buffer[4096];
+    struct pollfd pfd = { .fd = fd, .events = POLLIN };
+    int pr;
+    do {
+        pr = poll(&pfd, 1, -1);
+    } while (pr < 0 && errno == EINTR);
+    if (pr < 0) return -errno;
     ssize_t n = read(fd, buffer, sizeof(buffer));
     if (n < 0) return -errno;
 

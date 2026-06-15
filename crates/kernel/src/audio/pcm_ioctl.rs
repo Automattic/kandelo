@@ -1,0 +1,1507 @@
+//! ALSA `/dev/snd/pcmC0D0p` ioctl dispatch.
+//!
+//! Implements the SNDRV_PCM_IOCTL_* surface that alsa-lib exercises
+//! during open / configure / playback startup:
+//!
+//! ```text
+//!   PVERSION     return the ALSA protocol version (alsa-lib bails if
+//!                this exceeds the runtime version)
+//!   INFO         describe the device (card / device / stream / name)
+//!   HW_REFINE    narrow a wildcard hw_params request to a single
+//!                concrete combination (S16_LE, 1..2 ch, 8000..48000 Hz,
+//!                period 64..4096 frames, buffer 256..16384 frames)
+//!   HW_PARAMS    commit a refined hw_params (OPEN/SETUP → SETUP)
+//!   HW_FREE      drop the committed hw/sw params (→ OPEN)
+//!   SW_PARAMS    cache the avail_min / thresholds / boundary
+//!   PREPARE      reset hw_ptr/appl_ptr (→ PREPARED)
+//!   START        begin streaming (PREPARED → RUNNING)
+//!   DROP         halt + return to SETUP
+//!   PAUSE        toggle RUNNING ↔ PAUSED based on argument
+//!   STATUS       snapshot state + pointers + monotonic timestamp
+//! ```
+//!
+//! State machine:
+//!
+//! ```text
+//!   OPEN  ──(HW_PARAMS)──▶ SETUP ──(PREPARE)──▶ PREPARED ──(START)──▶ RUNNING
+//!    ▲                       │                                          │  ▲
+//!    │                       │                                          │  │
+//!    └──(HW_FREE)─────────── ┘                          (PAUSE 1/0) ──▶ PAUSED
+//!                            ▲                                          │
+//!                            └──────────(DROP)──────────────────────────┘
+//! ```
+//!
+//! WRITEI_FRAMES, mmap, ctl ioctls, and the `kernel_audio_period_tick`
+//! producer all land in subsequent tasks (A4 / A5 / A6).
+
+use alloc::boxed::Box;
+use wasm_posix_shared::audio::*;
+use wasm_posix_shared::Errno;
+
+use crate::ofd::{AlsaFdState, HwParamsCache, SwParamsCache};
+use crate::process::{HostIO, Process};
+
+/// ALSA protocol version reported by `SNDRV_PCM_IOCTL_PVERSION`.
+///
+/// alsa-lib bails when the kernel's protocol version is *higher* than
+/// the runtime it was linked against; 13.0.0 is the floor that current
+/// alsa-lib (1.2.x) negotiates with.
+const SNDRV_PROTOCOL_VERSION: u32 = 0x000d_0000;
+
+// SND_PCM_INFO_* flags relevant to v1's playback surface.
+const SNDRV_PCM_INFO_MMAP: u32 = 0x0000_0001;
+const SNDRV_PCM_INFO_MMAP_VALID: u32 = 0x0000_0002;
+const SNDRV_PCM_INFO_INTERLEAVED: u32 = 0x0000_0100;
+const SNDRV_PCM_INFO_BLOCK_TRANSFER: u32 = 0x0000_0010;
+const SNDRV_PCM_INFO_PAUSE: u32 = 0x0000_0080;
+const SNDRV_PCM_CLASS_GENERIC: u32 = 0;
+
+// snd_pcm_hw_params mask indices — see Linux UAPI `enum snd_pcm_hw_param`.
+const PARAM_ACCESS: usize = 0;
+const PARAM_FORMAT: usize = 1;
+const PARAM_SUBFORMAT: usize = 2;
+
+// snd_pcm_hw_params interval indices.
+const PARAM_SAMPLE_BITS: usize = 0;
+const PARAM_FRAME_BITS: usize = 1;
+const PARAM_CHANNELS: usize = 2;
+const PARAM_RATE: usize = 3;
+const PARAM_PERIOD_SIZE: usize = 5;
+const PARAM_PERIODS: usize = 7;
+const PARAM_BUFFER_SIZE: usize = 9;
+
+const SNDRV_PCM_SUBFORMAT_STD: u32 = 0;
+
+// v1 capability bounds.
+const MIN_CHANNELS: u32 = 1;
+const MAX_CHANNELS: u32 = 2;
+const MIN_RATE: u32 = 8000;
+const MAX_RATE: u32 = 48000;
+const MIN_PERIOD_SIZE: u32 = 64;
+const MAX_PERIOD_SIZE: u32 = 4096;
+const MIN_BUFFER_SIZE: u32 = 256;
+const MAX_BUFFER_SIZE: u32 = 16384;
+const SAMPLE_BITS_S16_LE: u32 = 16;
+
+// --------------------------------------------------------------------
+// Byte-buffer helpers.
+// --------------------------------------------------------------------
+
+fn read_struct<T: Copy>(buf: &[u8]) -> Result<T, Errno> {
+    if buf.len() < core::mem::size_of::<T>() {
+        return Err(Errno::EINVAL);
+    }
+    Ok(unsafe { core::ptr::read_unaligned(buf.as_ptr() as *const T) })
+}
+
+fn write_struct<T: Copy>(buf: &mut [u8], value: &T) -> Result<(), Errno> {
+    if buf.len() < core::mem::size_of::<T>() {
+        return Err(Errno::EINVAL);
+    }
+    unsafe {
+        core::ptr::write_unaligned(buf.as_mut_ptr() as *mut T, *value);
+    }
+    Ok(())
+}
+
+fn read_u32(buf: &[u8]) -> Result<u32, Errno> {
+    if buf.len() < 4 {
+        return Err(Errno::EINVAL);
+    }
+    Ok(u32::from_le_bytes([buf[0], buf[1], buf[2], buf[3]]))
+}
+
+fn write_u32(buf: &mut [u8], value: u32) -> Result<(), Errno> {
+    if buf.len() < 4 {
+        return Err(Errno::EINVAL);
+    }
+    buf[..4].copy_from_slice(&value.to_le_bytes());
+    Ok(())
+}
+
+// --------------------------------------------------------------------
+// snd_mask helpers (each snd_mask is u32[8] inside hw_params.masks[64]).
+// --------------------------------------------------------------------
+
+const MASK_WORDS: usize = 8;
+
+fn mask_at(masks: &[u32; 64], idx: usize) -> &[u32] {
+    &masks[idx * MASK_WORDS..idx * MASK_WORDS + MASK_WORDS]
+}
+
+fn mask_at_mut(masks: &mut [u32; 64], idx: usize) -> &mut [u32] {
+    &mut masks[idx * MASK_WORDS..idx * MASK_WORDS + MASK_WORDS]
+}
+
+fn mask_is_empty(m: &[u32]) -> bool {
+    m.iter().all(|&w| w == 0)
+}
+
+/// Treat a fully-zero mask as a wildcard ("user did not constrain this
+/// dimension") and stamp the capability set in. After the intersection
+/// downstream, that becomes the v1-allowed set.
+fn fill_if_empty(m: &mut [u32], capability: &[u32; MASK_WORDS]) {
+    if mask_is_empty(m) {
+        m.copy_from_slice(capability);
+    }
+}
+
+fn intersect_with(m: &mut [u32], capability: &[u32; MASK_WORDS]) {
+    for (w, c) in m.iter_mut().zip(capability.iter()) {
+        *w &= *c;
+    }
+}
+
+fn capability_one(bit: u32) -> [u32; MASK_WORDS] {
+    let mut out = [0u32; MASK_WORDS];
+    let word = (bit / 32) as usize;
+    out[word] |= 1u32 << (bit % 32);
+    out
+}
+
+fn capability_two(a: u32, b: u32) -> [u32; MASK_WORDS] {
+    let mut out = [0u32; MASK_WORDS];
+    out[(a / 32) as usize] |= 1u32 << (a % 32);
+    out[(b / 32) as usize] |= 1u32 << (b % 32);
+    out
+}
+
+fn mask_first_set(m: &[u32]) -> Option<u32> {
+    for (i, &w) in m.iter().enumerate() {
+        if w != 0 {
+            return Some(i as u32 * 32 + w.trailing_zeros());
+        }
+    }
+    None
+}
+
+// --------------------------------------------------------------------
+// snd_interval helpers.
+// --------------------------------------------------------------------
+
+/// Clamp `interval` to `[min, max]` and narrow it to a single value
+/// (set both endpoints to the chosen value — the alsa-lib refine
+/// contract is "return one concrete combination").
+///
+/// Wildcard interpretation: a default-initialised `WpkSndInterval`
+/// (`min == 0 && max == 0`) is treated as "user hasn't constrained
+/// this", so we expand it to the capability range before clamping.
+fn refine_interval(
+    interval: &mut WpkSndInterval,
+    min: u32,
+    max: u32,
+) -> Result<u32, Errno> {
+    if interval.min == 0 && interval.max == 0 {
+        interval.min = min;
+        interval.max = max;
+    }
+    if interval.max == 0 || interval.max > max {
+        interval.max = max;
+    }
+    if interval.min < min {
+        interval.min = min;
+    }
+    if interval.min > interval.max {
+        return Err(Errno::EINVAL);
+    }
+    // Narrow to the lower bound. Deterministic + matches alsa-lib's
+    // common "prefer smaller buffer" preference for low-latency apps.
+    let chosen = interval.min;
+    interval.max = chosen;
+    interval.flags = 0;
+    Ok(chosen)
+}
+
+fn read_interval_single(interval: &WpkSndInterval) -> Result<u32, Errno> {
+    if interval.min == 0 {
+        return Err(Errno::EINVAL);
+    }
+    if interval.max != 0 && interval.max != interval.min {
+        return Err(Errno::EINVAL);
+    }
+    Ok(interval.min)
+}
+
+// --------------------------------------------------------------------
+// hw_params refine + extract.
+// --------------------------------------------------------------------
+
+/// Refine a wildcard / partially-constrained `hw_params` request against
+/// v1 capabilities. On success the struct is mutated in place to hold
+/// the single concrete combination the kernel commits to. EINVAL if no
+/// combination fits (e.g. user asked for S32_LE, which we don't ship).
+fn refine_hw_params(req: &mut WpkAlsaPcmHwParams) -> Result<(), Errno> {
+    // --- masks -------------------------------------------------------
+    let access_cap = capability_two(
+        SNDRV_PCM_ACCESS_MMAP_INTERLEAVED,
+        SNDRV_PCM_ACCESS_RW_INTERLEAVED,
+    );
+    let format_cap = capability_one(SNDRV_PCM_FORMAT_S16_LE);
+    let subformat_cap = capability_one(SNDRV_PCM_SUBFORMAT_STD);
+
+    {
+        let m = mask_at_mut(&mut req.masks, PARAM_ACCESS);
+        fill_if_empty(m, &access_cap);
+        intersect_with(m, &access_cap);
+        if mask_is_empty(m) {
+            return Err(Errno::EINVAL);
+        }
+    }
+    {
+        let m = mask_at_mut(&mut req.masks, PARAM_FORMAT);
+        fill_if_empty(m, &format_cap);
+        intersect_with(m, &format_cap);
+        if mask_is_empty(m) {
+            return Err(Errno::EINVAL);
+        }
+    }
+    {
+        let m = mask_at_mut(&mut req.masks, PARAM_SUBFORMAT);
+        fill_if_empty(m, &subformat_cap);
+        intersect_with(m, &subformat_cap);
+        if mask_is_empty(m) {
+            return Err(Errno::EINVAL);
+        }
+    }
+
+    // --- intervals ---------------------------------------------------
+    let channels = refine_interval(
+        &mut req.intervals[PARAM_CHANNELS],
+        MIN_CHANNELS,
+        MAX_CHANNELS,
+    )?;
+    let rate = refine_interval(
+        &mut req.intervals[PARAM_RATE],
+        MIN_RATE,
+        MAX_RATE,
+    )?;
+    let period_size = refine_interval(
+        &mut req.intervals[PARAM_PERIOD_SIZE],
+        MIN_PERIOD_SIZE,
+        MAX_PERIOD_SIZE,
+    )?;
+    let buffer_size = refine_interval(
+        &mut req.intervals[PARAM_BUFFER_SIZE],
+        MIN_BUFFER_SIZE,
+        MAX_BUFFER_SIZE,
+    )?;
+
+    // --- derived intervals ------------------------------------------
+    req.intervals[PARAM_SAMPLE_BITS] = WpkSndInterval {
+        min: SAMPLE_BITS_S16_LE,
+        max: SAMPLE_BITS_S16_LE,
+        flags: 0,
+    };
+    let frame_bits = SAMPLE_BITS_S16_LE * channels;
+    req.intervals[PARAM_FRAME_BITS] = WpkSndInterval {
+        min: frame_bits,
+        max: frame_bits,
+        flags: 0,
+    };
+    let periods = if period_size == 0 { 1 } else { buffer_size / period_size };
+    let periods = periods.max(1);
+    req.intervals[PARAM_PERIODS] = WpkSndInterval {
+        min: periods,
+        max: periods,
+        flags: 0,
+    };
+
+    req.rate_num = rate;
+    req.rate_den = 1;
+    req.msbits = SAMPLE_BITS_S16_LE;
+    req.info = SNDRV_PCM_INFO_MMAP
+        | SNDRV_PCM_INFO_MMAP_VALID
+        | SNDRV_PCM_INFO_INTERLEAVED
+        | SNDRV_PCM_INFO_BLOCK_TRANSFER
+        | SNDRV_PCM_INFO_PAUSE;
+    Ok(())
+}
+
+fn extract_access(req: &WpkAlsaPcmHwParams) -> Result<u32, Errno> {
+    mask_first_set(mask_at(&req.masks, PARAM_ACCESS)).ok_or(Errno::EINVAL)
+}
+
+fn extract_format(req: &WpkAlsaPcmHwParams) -> Result<u32, Errno> {
+    let bit = mask_first_set(mask_at(&req.masks, PARAM_FORMAT))
+        .ok_or(Errno::EINVAL)?;
+    if bit != SNDRV_PCM_FORMAT_S16_LE {
+        return Err(Errno::EINVAL);
+    }
+    Ok(bit)
+}
+
+fn extract_channels(req: &WpkAlsaPcmHwParams) -> Result<u32, Errno> {
+    let v = read_interval_single(&req.intervals[PARAM_CHANNELS])?;
+    if !(MIN_CHANNELS..=MAX_CHANNELS).contains(&v) {
+        return Err(Errno::EINVAL);
+    }
+    Ok(v)
+}
+
+fn extract_rate(req: &WpkAlsaPcmHwParams) -> Result<u32, Errno> {
+    let v = read_interval_single(&req.intervals[PARAM_RATE])?;
+    if !(MIN_RATE..=MAX_RATE).contains(&v) {
+        return Err(Errno::EINVAL);
+    }
+    Ok(v)
+}
+
+fn extract_period_size(req: &WpkAlsaPcmHwParams) -> Result<u64, Errno> {
+    let v = read_interval_single(&req.intervals[PARAM_PERIOD_SIZE])?;
+    if !(MIN_PERIOD_SIZE..=MAX_PERIOD_SIZE).contains(&v) {
+        return Err(Errno::EINVAL);
+    }
+    Ok(v as u64)
+}
+
+fn extract_buffer_size(req: &WpkAlsaPcmHwParams) -> Result<u64, Errno> {
+    let v = read_interval_single(&req.intervals[PARAM_BUFFER_SIZE])?;
+    if !(MIN_BUFFER_SIZE..=MAX_BUFFER_SIZE).contains(&v) {
+        return Err(Errno::EINVAL);
+    }
+    Ok(v as u64)
+}
+
+fn extract_periods(req: &WpkAlsaPcmHwParams) -> Result<u32, Errno> {
+    let v = read_interval_single(&req.intervals[PARAM_PERIODS])?;
+    if v == 0 {
+        return Err(Errno::EINVAL);
+    }
+    Ok(v)
+}
+
+// --------------------------------------------------------------------
+// OFD borrow helpers.
+// --------------------------------------------------------------------
+
+fn audio_mut<'a>(
+    proc: &'a mut Process,
+    ofd_idx: usize,
+) -> Result<&'a mut AlsaFdState, Errno> {
+    proc.ofd_table
+        .get_mut(ofd_idx)
+        .ok_or(Errno::EBADF)?
+        .audio_mut()
+        .ok_or(Errno::EBADFD)
+}
+
+fn audio_ref<'a>(
+    proc: &'a Process,
+    ofd_idx: usize,
+) -> Result<&'a AlsaFdState, Errno> {
+    proc.ofd_table
+        .get(ofd_idx)
+        .ok_or(Errno::EBADF)?
+        .audio()
+        .ok_or(Errno::EBADFD)
+}
+
+fn monotonic_secs_nsecs(host: &mut dyn HostIO) -> (i64, i64) {
+    host.host_clock_gettime(wasm_posix_shared::clock::CLOCK_MONOTONIC)
+        .unwrap_or((0, 0))
+}
+
+// --------------------------------------------------------------------
+// Dispatcher.
+// --------------------------------------------------------------------
+
+/// Entry point invoked by [`crate::syscalls::sys_ioctl`] when an ioctl
+/// targets an OFD with an attached [`AlsaFdState`] sidecar (i.e. the OFD
+/// was opened against `/dev/snd/pcmC0D0p`).
+pub fn handle_alsa_pcm_ioctl(
+    proc: &mut Process,
+    host: &mut dyn HostIO,
+    ofd_idx: usize,
+    request: u32,
+    buf: &mut [u8],
+) -> Result<(), Errno> {
+    match request {
+        SNDRV_PCM_IOCTL_PVERSION => write_u32(buf, SNDRV_PROTOCOL_VERSION),
+
+        SNDRV_PCM_IOCTL_INFO => {
+            let audio = audio_ref(proc, ofd_idx)?;
+            let mut info = WpkAlsaPcmInfo {
+                device: audio.device as u32,
+                subdevice: audio.sub as u32,
+                stream: SNDRV_PCM_STREAM_PLAYBACK as i32,
+                card: audio.card as i32,
+                dev_class: SNDRV_PCM_CLASS_GENERIC,
+                subdevices_count: 1,
+                subdevices_avail: 1,
+                ..Default::default()
+            };
+            copy_into_array(&mut info.id, b"wpk");
+            copy_into_array(&mut info.name, b"wpk virtual playback");
+            copy_into_array(&mut info.subname, b"subdevice #0");
+            write_struct(buf, &info)
+        }
+
+        SNDRV_PCM_IOCTL_HW_REFINE => {
+            let mut req: WpkAlsaPcmHwParams = read_struct(buf)?;
+            refine_hw_params(&mut req)?;
+            write_struct(buf, &req)
+        }
+
+        SNDRV_PCM_IOCTL_HW_PARAMS => {
+            let mut req: WpkAlsaPcmHwParams = read_struct(buf)?;
+            refine_hw_params(&mut req)?;
+            let cache = HwParamsCache {
+                format: extract_format(&req)?,
+                access: extract_access(&req)?,
+                channels: extract_channels(&req)?,
+                rate: extract_rate(&req)?,
+                period_size: extract_period_size(&req)?,
+                buffer_size: extract_buffer_size(&req)?,
+                periods: extract_periods(&req)?,
+            };
+            let audio = audio_mut(proc, ofd_idx)?;
+            if audio.state != SNDRV_PCM_STATE_OPEN
+                && audio.state != SNDRV_PCM_STATE_SETUP
+            {
+                return Err(Errno::EBADFD);
+            }
+            audio.hw_params = Some(Box::new(cache));
+            audio.state = SNDRV_PCM_STATE_SETUP;
+            if let Some(status) = audio.mmap_status.as_mut() {
+                status.state = SNDRV_PCM_STATE_SETUP;
+            }
+            write_struct(buf, &req)
+        }
+
+        SNDRV_PCM_IOCTL_HW_FREE => {
+            let audio = audio_mut(proc, ofd_idx)?;
+            audio.hw_params = None;
+            audio.sw_params = None;
+            audio.state = SNDRV_PCM_STATE_OPEN;
+            if let Some(status) = audio.mmap_status.as_mut() {
+                status.state = SNDRV_PCM_STATE_OPEN;
+                status.hw_ptr = 0;
+            }
+            if let Some(ctl) = audio.mmap_control.as_mut() {
+                ctl.appl_ptr = 0;
+            }
+            Ok(())
+        }
+
+        SNDRV_PCM_IOCTL_SW_PARAMS => {
+            let req: WpkAlsaPcmSwParams = read_struct(buf)?;
+            let audio = audio_mut(proc, ofd_idx)?;
+            if audio.hw_params.is_none() {
+                return Err(Errno::EBADFD);
+            }
+            audio.sw_params = Some(Box::new(SwParamsCache {
+                avail_min: req.avail_min,
+                start_threshold: req.start_threshold,
+                stop_threshold: req.stop_threshold,
+                boundary: req.boundary,
+            }));
+            Ok(())
+        }
+
+        SNDRV_PCM_IOCTL_PREPARE => {
+            let audio = audio_mut(proc, ofd_idx)?;
+            if audio.hw_params.is_none() {
+                return Err(Errno::EBADFD);
+            }
+            audio.state = SNDRV_PCM_STATE_PREPARED;
+            if let Some(status) = audio.mmap_status.as_mut() {
+                status.state = SNDRV_PCM_STATE_PREPARED;
+                status.hw_ptr = 0;
+            }
+            if let Some(ctl) = audio.mmap_control.as_mut() {
+                ctl.appl_ptr = 0;
+            }
+            Ok(())
+        }
+
+        SNDRV_PCM_IOCTL_START => {
+            let (sec, nsec) = monotonic_secs_nsecs(host);
+            let audio = audio_mut(proc, ofd_idx)?;
+            if audio.state != SNDRV_PCM_STATE_PREPARED {
+                return Err(Errno::EBADFD);
+            }
+            audio.state = SNDRV_PCM_STATE_RUNNING;
+            if let Some(status) = audio.mmap_status.as_mut() {
+                status.state = SNDRV_PCM_STATE_RUNNING;
+                status.tstamp_sec = sec;
+                status.tstamp_nsec = nsec;
+            }
+            Ok(())
+        }
+
+        SNDRV_PCM_IOCTL_DROP => {
+            let audio = audio_mut(proc, ofd_idx)?;
+            // Linux accepts DROP from RUNNING / PREPARED / PAUSED / XRUN.
+            // OPEN (no hw_params committed yet) is the only invalid source.
+            if audio.state == SNDRV_PCM_STATE_OPEN {
+                return Err(Errno::EBADFD);
+            }
+            audio.state = SNDRV_PCM_STATE_SETUP;
+            if let Some(status) = audio.mmap_status.as_mut() {
+                status.state = SNDRV_PCM_STATE_SETUP;
+            }
+            Ok(())
+        }
+
+        SNDRV_PCM_IOCTL_PAUSE => {
+            let value = read_u32(buf)?;
+            let audio = audio_mut(proc, ofd_idx)?;
+            let new_state = if value != 0 {
+                if audio.state != SNDRV_PCM_STATE_RUNNING {
+                    return Err(Errno::EBADFD);
+                }
+                SNDRV_PCM_STATE_PAUSED
+            } else {
+                if audio.state != SNDRV_PCM_STATE_PAUSED {
+                    return Err(Errno::EBADFD);
+                }
+                SNDRV_PCM_STATE_RUNNING
+            };
+            audio.state = new_state;
+            if let Some(status) = audio.mmap_status.as_mut() {
+                status.state = new_state;
+            }
+            Ok(())
+        }
+
+        SNDRV_PCM_IOCTL_STATUS => {
+            let (sec, nsec) = monotonic_secs_nsecs(host);
+            let audio = audio_ref(proc, ofd_idx)?;
+            let hw_ptr = audio.mmap_status.as_ref().map(|s| s.hw_ptr).unwrap_or(0);
+            let appl_ptr = audio.mmap_control.as_ref().map(|c| c.appl_ptr).unwrap_or(0);
+            let buffer_size = audio
+                .hw_params
+                .as_ref()
+                .map(|h| h.buffer_size as i64)
+                .unwrap_or(0);
+            let delay = appl_ptr - hw_ptr;
+            let avail = if buffer_size > 0 {
+                (buffer_size - delay).max(0) as u64
+            } else {
+                0
+            };
+            let status = WpkAlsaPcmStatus {
+                state: audio.state,
+                _pad0: 0,
+                trigger_tstamp_sec: 0,
+                trigger_tstamp_nsec: 0,
+                tstamp_sec: sec,
+                tstamp_nsec: nsec,
+                appl_ptr,
+                hw_ptr,
+                delay,
+                avail,
+                avail_max: buffer_size as u64,
+                overrange: 0,
+                suspended_state: 0,
+                audio_tstamp_data: 0,
+                audio_tstamp_sec: 0,
+                audio_tstamp_nsec: 0,
+                _reserved: [0u8; 16],
+            };
+            write_struct(buf, &status)
+        }
+
+        SNDRV_PCM_IOCTL_WRITEI_FRAMES => handle_writei(proc, host, ofd_idx, buf),
+
+        _ => Err(Errno::ENOTTY),
+    }
+}
+
+/// Plan for one `WRITEI_FRAMES` call. Computed under an immutable
+/// borrow of the OFD so the subsequent `proc_read_bytes` (which needs
+/// `&mut HostIO`) and the `appl_ptr` advance (which needs `&mut OFD`)
+/// don't fight the borrow checker.
+struct WriteiPlan {
+    pcm_id: u32,
+    channels: usize,
+    ring_frames: usize,
+    appl_frame_offset: usize,
+    to_write: usize,
+}
+
+/// `SNDRV_PCM_IOCTL_WRITEI_FRAMES` handler. The non-mmap data path:
+/// userspace hands us a pointer + frame count and the kernel copies
+/// the samples into the SAB-backed ring at `appl_ptr % ring_frames`.
+///
+/// Short writes are normal — when the ring is full (`avail == 0`),
+/// the call returns `result = 0` rather than blocking (v1 has no
+/// wait queue for audio; A6 wires `kernel_audio_period_tick` →
+/// POLLOUT wake which a future revision can use to park the caller).
+fn handle_writei(
+    proc: &mut Process,
+    host: &mut dyn HostIO,
+    ofd_idx: usize,
+    buf: &mut [u8],
+) -> Result<(), Errno> {
+    let mut req: WpkAlsaXferi = read_struct(buf)?;
+    let frames_req = req.frames as usize;
+    let pid = proc.pid as i32;
+
+    // ---------- stage 1: validate + plan ----------
+    let plan = {
+        let audio = audio_ref(proc, ofd_idx)?;
+        let hw = audio.hw_params.as_deref().ok_or(Errno::EBADFD)?;
+        if hw.format != SNDRV_PCM_FORMAT_S16_LE {
+            return Err(Errno::EINVAL);
+        }
+        if hw.channels == 0 {
+            return Err(Errno::EINVAL);
+        }
+        let channels = hw.channels as usize;
+        let bytes_per_frame = channels * core::mem::size_of::<i16>();
+
+        let slice = crate::audio::sab::lookup(audio.pcm_id).ok_or(Errno::ENODEV)?;
+        let ring_frames = slice.len / bytes_per_frame;
+        if ring_frames == 0 {
+            return Err(Errno::ENODEV);
+        }
+
+        let appl = audio
+            .mmap_control
+            .as_deref()
+            .ok_or(Errno::EBADFD)?
+            .appl_ptr;
+        let hw_ptr = audio
+            .mmap_status
+            .as_deref()
+            .ok_or(Errno::EBADFD)?
+            .hw_ptr;
+
+        let delay = appl - hw_ptr;
+        let avail = (ring_frames as i64 - delay).max(0) as usize;
+        let to_write = frames_req.min(avail);
+        let appl_frame_offset = appl.rem_euclid(ring_frames as i64) as usize;
+
+        WriteiPlan {
+            pcm_id: audio.pcm_id,
+            channels,
+            ring_frames,
+            appl_frame_offset,
+            to_write,
+        }
+    };
+
+    // ---------- stage 2: copy user → SAB ring ----------
+    if plan.to_write > 0 {
+        let bytes_per_frame = plan.channels * core::mem::size_of::<i16>();
+        let total_bytes = plan.to_write * bytes_per_frame;
+        let mut scratch: alloc::vec::Vec<u8> = alloc::vec![0u8; total_bytes];
+        let rc = host.proc_read_bytes(pid, req.buf as u32, &mut scratch);
+        if rc < 0 {
+            return Err(Errno::EFAULT);
+        }
+
+        // SAFETY: the host registered the SAB via `kernel_audio_init_sab`
+        // and the ring outlives this call. Within one syscall the
+        // kernel is the sole producer; the AudioWorklet only consumes
+        // bytes at offsets below `appl_ptr` per the alsa-lib protocol.
+        let ring = unsafe { crate::audio::sab::ring_mut_s16(plan.pcm_id) }
+            .ok_or(Errno::ENODEV)?;
+        for f in 0..plan.to_write {
+            let dst_frame = (plan.appl_frame_offset + f) % plan.ring_frames;
+            for c in 0..plan.channels {
+                let src_byte = (f * plan.channels + c) * 2;
+                let sample =
+                    i16::from_le_bytes([scratch[src_byte], scratch[src_byte + 1]]);
+                ring[dst_frame * plan.channels + c] = sample;
+            }
+        }
+    }
+
+    // ---------- stage 3: advance appl_ptr ----------
+    {
+        let audio = audio_mut(proc, ofd_idx)?;
+        if let Some(ctl) = audio.mmap_control.as_mut() {
+            ctl.appl_ptr += plan.to_write as i64;
+        }
+    }
+
+    // ---------- stage 4: stamp result ----------
+    req.result = plan.to_write as i64;
+    write_struct(buf, &req)
+}
+
+/// Copy `src` into `dst`, NUL-padding any remaining tail. Truncates
+/// `src` if it exceeds `dst.len()` (the trailing NUL is preserved by
+/// the cap, so alsa-lib's strlen-based readers still find the
+/// terminator).
+fn copy_into_array(dst: &mut [u8], src: &[u8]) {
+    let n = src.len().min(dst.len().saturating_sub(1));
+    dst[..n].copy_from_slice(&src[..n]);
+    for byte in &mut dst[n..] {
+        *byte = 0;
+    }
+}
+
+// --------------------------------------------------------------------
+// Tests.
+// --------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::ofd::{AlsaFdState, FileType, PcmDir};
+    use crate::process::Process;
+    use crate::process::test_host::NoopHost;
+    use crate::syscalls::VirtualDevice;
+
+    /// Build a freshly-opened OFD with an `AlsaFdState` sidecar attached
+    /// at the returned OFD index. Always populates mmap_status +
+    /// mmap_control so the state-machine arms exercise those branches.
+    /// (A4 wires those allocations via real mmap; for the dispatcher
+    /// tests we hand them in pre-populated.)
+    fn install_pcm(proc: &mut Process) -> usize {
+        let host_handle = VirtualDevice::AlsaPcm {
+            card: 0,
+            device: 0,
+            sub: 0,
+            kind: PcmDir::Playback,
+        }
+        .host_handle();
+        let idx = proc.ofd_table.create(
+            FileType::CharDevice,
+            0,
+            host_handle,
+            b"/dev/snd/pcmC0D0p".to_vec(),
+        );
+        let ofd = proc.ofd_table.get_mut(idx).expect("created ofd");
+        ofd.audio = Some(Box::new(AlsaFdState {
+            mmap_status: Some(Box::new(WpkAlsaPcmMmapStatus::default())),
+            mmap_control: Some(Box::new(WpkAlsaPcmMmapControl::default())),
+            ..AlsaFdState::default()
+        }));
+        idx
+    }
+
+    /// A wildcard hw_params: all-zero, mirroring what alsa-lib hands the
+    /// kernel after `snd_pcm_hw_params_any`.
+    fn wildcard_hw_params() -> WpkAlsaPcmHwParams {
+        WpkAlsaPcmHwParams::default()
+    }
+
+    fn refined_hw_params() -> WpkAlsaPcmHwParams {
+        let mut p = wildcard_hw_params();
+        refine_hw_params(&mut p).expect("refine wildcard");
+        p
+    }
+
+    fn run_ioctl(
+        proc: &mut Process,
+        host: &mut NoopHost,
+        ofd_idx: usize,
+        request: u32,
+        buf: &mut [u8],
+    ) -> Result<(), Errno> {
+        handle_alsa_pcm_ioctl(proc, host, ofd_idx, request, buf)
+    }
+
+    // --- PVERSION ---------------------------------------------------
+
+    #[test]
+    fn pcm_pversion_returns_alsa_v13() {
+        let mut proc = Process::new(1);
+        let mut host = NoopHost;
+        let idx = install_pcm(&mut proc);
+        let mut buf = [0u8; 4];
+        run_ioctl(&mut proc, &mut host, idx, SNDRV_PCM_IOCTL_PVERSION, &mut buf)
+            .expect("PVERSION");
+        assert_eq!(
+            u32::from_le_bytes(buf),
+            SNDRV_PROTOCOL_VERSION,
+            "PVERSION must report 0x000d_0000 — alsa-lib bails on higher",
+        );
+    }
+
+    // --- INFO -------------------------------------------------------
+
+    #[test]
+    fn pcm_info_returns_playback_stream_card0_device0() {
+        let mut proc = Process::new(1);
+        let mut host = NoopHost;
+        let idx = install_pcm(&mut proc);
+        let mut buf = [0u8; core::mem::size_of::<WpkAlsaPcmInfo>()];
+        run_ioctl(&mut proc, &mut host, idx, SNDRV_PCM_IOCTL_INFO, &mut buf)
+            .expect("INFO");
+        let info: WpkAlsaPcmInfo =
+            unsafe { core::ptr::read_unaligned(buf.as_ptr() as *const _) };
+        assert_eq!(info.card, 0);
+        assert_eq!(info.device, 0);
+        assert_eq!(info.subdevice, 0);
+        assert_eq!(info.stream, SNDRV_PCM_STREAM_PLAYBACK as i32);
+        assert!(info.name.starts_with(b"wpk virtual playback"));
+        assert_eq!(info.dev_class, SNDRV_PCM_CLASS_GENERIC);
+        assert_eq!(info.subdevices_count, 1);
+        assert_eq!(info.subdevices_avail, 1);
+    }
+
+    // --- HW_REFINE --------------------------------------------------
+
+    #[test]
+    fn pcm_hw_refine_clamps_unsupported_format_to_s16_le() {
+        // User requests S32_LE only; refine must reject.
+        let mut p = wildcard_hw_params();
+        let m = mask_at_mut(&mut p.masks, PARAM_FORMAT);
+        m.copy_from_slice(&capability_one(SNDRV_PCM_FORMAT_S32_LE));
+        let err = refine_hw_params(&mut p).expect_err("S32-only must EINVAL");
+        assert_eq!(err, Errno::EINVAL);
+    }
+
+    #[test]
+    fn pcm_hw_refine_wildcard_narrows_to_v1_defaults() {
+        let mut p = wildcard_hw_params();
+        refine_hw_params(&mut p).expect("wildcard refine");
+        let format = mask_first_set(mask_at(&p.masks, PARAM_FORMAT)).unwrap();
+        assert_eq!(format, SNDRV_PCM_FORMAT_S16_LE);
+        // Each interval narrowed to capability-min (min=min, max=min).
+        assert_eq!(p.intervals[PARAM_CHANNELS].min, MIN_CHANNELS);
+        assert_eq!(p.intervals[PARAM_CHANNELS].max, MIN_CHANNELS);
+        assert_eq!(p.intervals[PARAM_RATE].min, MIN_RATE);
+        assert_eq!(p.intervals[PARAM_RATE].max, MIN_RATE);
+        assert_eq!(p.intervals[PARAM_PERIOD_SIZE].min, MIN_PERIOD_SIZE);
+        assert_eq!(p.intervals[PARAM_BUFFER_SIZE].min, MIN_BUFFER_SIZE);
+        assert_eq!(p.intervals[PARAM_SAMPLE_BITS].min, SAMPLE_BITS_S16_LE);
+        assert_eq!(p.rate_num, MIN_RATE);
+        assert_eq!(p.rate_den, 1);
+    }
+
+    #[test]
+    fn pcm_hw_refine_user_constrained_rate_is_respected() {
+        let mut p = wildcard_hw_params();
+        p.intervals[PARAM_RATE] = WpkSndInterval {
+            min: 44100,
+            max: 44100,
+            flags: 0,
+        };
+        refine_hw_params(&mut p).expect("respect user rate");
+        assert_eq!(p.intervals[PARAM_RATE].min, 44100);
+        assert_eq!(p.intervals[PARAM_RATE].max, 44100);
+        assert_eq!(p.rate_num, 44100);
+    }
+
+    // --- HW_PARAMS --------------------------------------------------
+
+    #[test]
+    fn pcm_hw_params_transitions_open_to_setup() {
+        let mut proc = Process::new(1);
+        let mut host = NoopHost;
+        let idx = install_pcm(&mut proc);
+        let p = refined_hw_params();
+        let mut buf = struct_buf(&p);
+        run_ioctl(&mut proc, &mut host, idx, SNDRV_PCM_IOCTL_HW_PARAMS, &mut buf)
+            .expect("HW_PARAMS");
+        let st = audio_ref(&proc, idx).unwrap();
+        assert_eq!(st.state, SNDRV_PCM_STATE_SETUP);
+        let cache = st.hw_params.as_deref().expect("hw_params cached");
+        assert_eq!(cache.format, SNDRV_PCM_FORMAT_S16_LE);
+        assert_eq!(cache.rate, MIN_RATE);
+        assert_eq!(cache.channels, MIN_CHANNELS);
+        // mmap_status (defaulted to OPEN by AlsaFdState::default) should
+        // also flip — refresh keeps userspace consistent.
+        assert_eq!(
+            st.mmap_status.as_deref().unwrap().state,
+            SNDRV_PCM_STATE_SETUP,
+        );
+    }
+
+    #[test]
+    fn pcm_hw_params_without_format_returns_einval() {
+        // Build a "refined-looking" struct with a zero FORMAT mask —
+        // refine_hw_params (called inside HW_PARAMS) re-fills empties
+        // with the capability set, so we have to actively poison the
+        // format dimension to drive this. Set the format mask to a
+        // disallowed bit (S32_LE) so the intersection collapses to
+        // empty.
+        let mut proc = Process::new(1);
+        let mut host = NoopHost;
+        let idx = install_pcm(&mut proc);
+        let mut p = wildcard_hw_params();
+        let m = mask_at_mut(&mut p.masks, PARAM_FORMAT);
+        m.copy_from_slice(&capability_one(SNDRV_PCM_FORMAT_S32_LE));
+        let mut buf = struct_buf(&p);
+        let err = run_ioctl(
+            &mut proc,
+            &mut host,
+            idx,
+            SNDRV_PCM_IOCTL_HW_PARAMS,
+            &mut buf,
+        )
+        .expect_err("S32-only must EINVAL");
+        assert_eq!(err, Errno::EINVAL);
+        assert_eq!(audio_ref(&proc, idx).unwrap().state, SNDRV_PCM_STATE_OPEN);
+    }
+
+    #[test]
+    fn pcm_hw_free_returns_to_open() {
+        let mut proc = Process::new(1);
+        let mut host = NoopHost;
+        let idx = install_pcm(&mut proc);
+        commit_setup(&mut proc, &mut host, idx);
+        let mut buf = [];
+        run_ioctl(&mut proc, &mut host, idx, SNDRV_PCM_IOCTL_HW_FREE, &mut buf)
+            .expect("HW_FREE");
+        let st = audio_ref(&proc, idx).unwrap();
+        assert_eq!(st.state, SNDRV_PCM_STATE_OPEN);
+        assert!(st.hw_params.is_none());
+        assert!(st.sw_params.is_none());
+    }
+
+    // --- SW_PARAMS --------------------------------------------------
+
+    #[test]
+    fn pcm_sw_params_without_hw_params_returns_einval() {
+        let mut proc = Process::new(1);
+        let mut host = NoopHost;
+        let idx = install_pcm(&mut proc);
+        let sw = WpkAlsaPcmSwParams { avail_min: 256, ..Default::default() };
+        let mut buf = struct_buf(&sw);
+        let err = run_ioctl(
+            &mut proc,
+            &mut host,
+            idx,
+            SNDRV_PCM_IOCTL_SW_PARAMS,
+            &mut buf,
+        )
+        .expect_err("SW_PARAMS before HW_PARAMS must EBADFD");
+        assert_eq!(err, Errno::EBADFD);
+    }
+
+    #[test]
+    fn pcm_sw_params_caches_thresholds() {
+        let mut proc = Process::new(1);
+        let mut host = NoopHost;
+        let idx = install_pcm(&mut proc);
+        commit_setup(&mut proc, &mut host, idx);
+        let sw = WpkAlsaPcmSwParams {
+            avail_min: 512,
+            start_threshold: 1024,
+            stop_threshold: 4096,
+            boundary: 1 << 30,
+            ..Default::default()
+        };
+        let mut buf = struct_buf(&sw);
+        run_ioctl(&mut proc, &mut host, idx, SNDRV_PCM_IOCTL_SW_PARAMS, &mut buf)
+            .expect("SW_PARAMS");
+        let st = audio_ref(&proc, idx).unwrap();
+        let cache = st.sw_params.as_deref().unwrap();
+        assert_eq!(cache.avail_min, 512);
+        assert_eq!(cache.start_threshold, 1024);
+        assert_eq!(cache.stop_threshold, 4096);
+        assert_eq!(cache.boundary, 1 << 30);
+    }
+
+    // --- PREPARE / START / DROP / PAUSE -----------------------------
+
+    #[test]
+    fn pcm_prepare_after_hw_params_transitions_to_prepared() {
+        let mut proc = Process::new(1);
+        let mut host = NoopHost;
+        let idx = install_pcm(&mut proc);
+        commit_setup(&mut proc, &mut host, idx);
+        // Seed appl_ptr so PREPARE can reset it.
+        proc.ofd_table
+            .get_mut(idx)
+            .unwrap()
+            .audio_mut()
+            .unwrap()
+            .mmap_control
+            .as_mut()
+            .unwrap()
+            .appl_ptr = 1234;
+        let mut buf = [];
+        run_ioctl(&mut proc, &mut host, idx, SNDRV_PCM_IOCTL_PREPARE, &mut buf)
+            .expect("PREPARE");
+        let st = audio_ref(&proc, idx).unwrap();
+        assert_eq!(st.state, SNDRV_PCM_STATE_PREPARED);
+        assert_eq!(st.mmap_control.as_ref().unwrap().appl_ptr, 0);
+        assert_eq!(st.mmap_status.as_ref().unwrap().hw_ptr, 0);
+    }
+
+    #[test]
+    fn pcm_prepare_without_hw_params_returns_ebadfd() {
+        let mut proc = Process::new(1);
+        let mut host = NoopHost;
+        let idx = install_pcm(&mut proc);
+        let err = run_ioctl(
+            &mut proc,
+            &mut host,
+            idx,
+            SNDRV_PCM_IOCTL_PREPARE,
+            &mut [],
+        )
+        .expect_err("PREPARE in OPEN must EBADFD");
+        assert_eq!(err, Errno::EBADFD);
+    }
+
+    #[test]
+    fn pcm_start_from_prepared_transitions_to_running() {
+        let mut proc = Process::new(1);
+        let mut host = NoopHost;
+        let idx = install_pcm(&mut proc);
+        commit_setup(&mut proc, &mut host, idx);
+        run_ioctl(&mut proc, &mut host, idx, SNDRV_PCM_IOCTL_PREPARE, &mut [])
+            .unwrap();
+        run_ioctl(&mut proc, &mut host, idx, SNDRV_PCM_IOCTL_START, &mut [])
+            .expect("START");
+        let st = audio_ref(&proc, idx).unwrap();
+        assert_eq!(st.state, SNDRV_PCM_STATE_RUNNING);
+        let status = st.mmap_status.as_ref().unwrap();
+        assert_eq!(status.state, SNDRV_PCM_STATE_RUNNING);
+        // NoopHost's clock returns (0, 0); we only assert the start
+        // path stamped *something* via host_clock_gettime — the exact
+        // value depends on the host. Picking >= 0 verifies the call
+        // wasn't bypassed (uninitialised memory would be UB).
+        assert!(status.tstamp_sec >= 0);
+        assert!(status.tstamp_nsec >= 0);
+    }
+
+    #[test]
+    fn pcm_start_without_prepare_returns_ebadfd() {
+        let mut proc = Process::new(1);
+        let mut host = NoopHost;
+        let idx = install_pcm(&mut proc);
+        commit_setup(&mut proc, &mut host, idx);
+        // SETUP, not PREPARED — START must reject.
+        let err = run_ioctl(
+            &mut proc,
+            &mut host,
+            idx,
+            SNDRV_PCM_IOCTL_START,
+            &mut [],
+        )
+        .expect_err("START from SETUP must EBADFD");
+        assert_eq!(err, Errno::EBADFD);
+    }
+
+    #[test]
+    fn pcm_drop_from_running_transitions_to_setup() {
+        let mut proc = Process::new(1);
+        let mut host = NoopHost;
+        let idx = install_pcm(&mut proc);
+        commit_setup(&mut proc, &mut host, idx);
+        run_ioctl(&mut proc, &mut host, idx, SNDRV_PCM_IOCTL_PREPARE, &mut [])
+            .unwrap();
+        run_ioctl(&mut proc, &mut host, idx, SNDRV_PCM_IOCTL_START, &mut [])
+            .unwrap();
+        run_ioctl(&mut proc, &mut host, idx, SNDRV_PCM_IOCTL_DROP, &mut [])
+            .expect("DROP");
+        let st = audio_ref(&proc, idx).unwrap();
+        assert_eq!(st.state, SNDRV_PCM_STATE_SETUP);
+        assert_eq!(
+            st.mmap_status.as_ref().unwrap().state,
+            SNDRV_PCM_STATE_SETUP,
+        );
+    }
+
+    #[test]
+    fn pcm_drop_from_open_returns_ebadfd() {
+        let mut proc = Process::new(1);
+        let mut host = NoopHost;
+        let idx = install_pcm(&mut proc);
+        let err = run_ioctl(&mut proc, &mut host, idx, SNDRV_PCM_IOCTL_DROP, &mut [])
+            .expect_err("DROP from OPEN must EBADFD");
+        assert_eq!(err, Errno::EBADFD);
+    }
+
+    #[test]
+    fn pcm_pause_then_resume_round_trips() {
+        let mut proc = Process::new(1);
+        let mut host = NoopHost;
+        let idx = install_pcm(&mut proc);
+        commit_setup(&mut proc, &mut host, idx);
+        run_ioctl(&mut proc, &mut host, idx, SNDRV_PCM_IOCTL_PREPARE, &mut [])
+            .unwrap();
+        run_ioctl(&mut proc, &mut host, idx, SNDRV_PCM_IOCTL_START, &mut [])
+            .unwrap();
+        let mut buf = 1u32.to_le_bytes();
+        run_ioctl(
+            &mut proc,
+            &mut host,
+            idx,
+            SNDRV_PCM_IOCTL_PAUSE,
+            &mut buf,
+        )
+        .expect("PAUSE pause");
+        assert_eq!(audio_ref(&proc, idx).unwrap().state, SNDRV_PCM_STATE_PAUSED);
+        let mut buf = 0u32.to_le_bytes();
+        run_ioctl(
+            &mut proc,
+            &mut host,
+            idx,
+            SNDRV_PCM_IOCTL_PAUSE,
+            &mut buf,
+        )
+        .expect("PAUSE resume");
+        assert_eq!(
+            audio_ref(&proc, idx).unwrap().state,
+            SNDRV_PCM_STATE_RUNNING,
+        );
+    }
+
+    #[test]
+    fn pcm_pause_from_setup_returns_ebadfd() {
+        let mut proc = Process::new(1);
+        let mut host = NoopHost;
+        let idx = install_pcm(&mut proc);
+        commit_setup(&mut proc, &mut host, idx);
+        let mut buf = 1u32.to_le_bytes();
+        let err = run_ioctl(
+            &mut proc,
+            &mut host,
+            idx,
+            SNDRV_PCM_IOCTL_PAUSE,
+            &mut buf,
+        )
+        .expect_err("PAUSE from SETUP must EBADFD");
+        assert_eq!(err, Errno::EBADFD);
+    }
+
+    // --- STATUS -----------------------------------------------------
+
+    #[test]
+    fn pcm_status_reflects_appl_ptr_hw_ptr_delta() {
+        let mut proc = Process::new(1);
+        let mut host = NoopHost;
+        let idx = install_pcm(&mut proc);
+        commit_setup(&mut proc, &mut host, idx);
+        // Seed appl_ptr and hw_ptr to simulate a partially-consumed buffer.
+        {
+            let st = audio_mut(&mut proc, idx).unwrap();
+            st.mmap_control.as_mut().unwrap().appl_ptr = 1024;
+            st.mmap_status.as_mut().unwrap().hw_ptr = 256;
+        }
+        let mut buf = [0u8; core::mem::size_of::<WpkAlsaPcmStatus>()];
+        run_ioctl(&mut proc, &mut host, idx, SNDRV_PCM_IOCTL_STATUS, &mut buf)
+            .expect("STATUS");
+        let status: WpkAlsaPcmStatus =
+            unsafe { core::ptr::read_unaligned(buf.as_ptr() as *const _) };
+        assert_eq!(status.state, SNDRV_PCM_STATE_SETUP);
+        assert_eq!(status.appl_ptr, 1024);
+        assert_eq!(status.hw_ptr, 256);
+        assert_eq!(status.delay, 1024 - 256);
+        // buffer_size committed via wildcard refine == MIN_BUFFER_SIZE.
+        assert_eq!(status.avail_max, MIN_BUFFER_SIZE as u64);
+        assert!(status.tstamp_sec >= 0);
+        assert!(status.tstamp_nsec >= 0);
+    }
+
+    // --- WRITEI_FRAMES (A4) -----------------------------------------
+
+    /// Leak a fresh i16 ring sized to hold `frames * channels`
+    /// samples. The pointer is then registered with
+    /// [`crate::audio::sab`] and stays live for the test's lifetime.
+    fn install_sab_ring(pcm_id: u32, frames: usize, channels: usize) -> *mut i16 {
+        let total = frames * channels;
+        let vec = alloc::vec![0i16; total].into_boxed_slice();
+        let leaked: &'static mut [i16] = alloc::boxed::Box::leak(vec);
+        let base = leaked.as_mut_ptr();
+        let len_bytes = total * core::mem::size_of::<i16>();
+        crate::audio::sab::register(
+            pcm_id,
+            crate::audio::sab::SabSlice {
+                base: base as usize,
+                len: len_bytes,
+            },
+        )
+        .expect("sab register");
+        base
+    }
+
+    /// Read the ring back into an owned Vec for assertion. The caller
+    /// MUST still hold the SAB lock so no concurrent producer mutates
+    /// the leaked region.
+    fn read_ring(ptr: *mut i16, frames: usize, channels: usize) -> alloc::vec::Vec<i16> {
+        let total = frames * channels;
+        let mut out = alloc::vec![0i16; total];
+        unsafe {
+            core::ptr::copy_nonoverlapping(ptr, out.as_mut_ptr(), total);
+        }
+        out
+    }
+
+    /// Bytes of `count` interleaved S16-LE frames at `channels`, with
+    /// the i'th sample = `seed + i` (so we can verify the ordering
+    /// survives the copy + wrap). Seeded so the all-zero "no host
+    /// copy" path can't accidentally pass the assertion.
+    fn synth_frames(count: usize, channels: usize, seed: i16) -> alloc::vec::Vec<u8> {
+        let samples = count * channels;
+        let mut out = alloc::vec::Vec::with_capacity(samples * 2);
+        for i in 0..samples as i16 {
+            out.extend_from_slice(&(seed + i).to_le_bytes());
+        }
+        out
+    }
+
+    fn fresh_sab() -> std::sync::MutexGuard<'static, ()> {
+        let g = crate::audio::sab::TEST_SAB_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        crate::audio::sab::reset_table();
+        *crate::process::test_host::PROC_READ_SOURCE
+            .lock()
+            .unwrap_or_else(|e| e.into_inner()) = alloc::vec::Vec::new();
+        g
+    }
+
+    fn set_proc_read_source(bytes: alloc::vec::Vec<u8>) {
+        *crate::process::test_host::PROC_READ_SOURCE
+            .lock()
+            .unwrap_or_else(|e| e.into_inner()) = bytes;
+    }
+
+    #[test]
+    fn writei_in_open_state_returns_ebadfd() {
+        let _g = fresh_sab();
+        let mut proc = Process::new(1);
+        let mut host = NoopHost;
+        let idx = install_pcm(&mut proc);
+        // No HW_PARAMS commit → hw_params is None → WRITEI must EBADFD
+        // before the SAB lookup runs.
+        let xferi = WpkAlsaXferi {
+            result: 0,
+            buf: 0,
+            frames: 32,
+        };
+        let mut buf = struct_buf(&xferi);
+        let err = run_ioctl(
+            &mut proc,
+            &mut host,
+            idx,
+            SNDRV_PCM_IOCTL_WRITEI_FRAMES,
+            &mut buf,
+        )
+        .expect_err("WRITEI in OPEN must EBADFD");
+        assert_eq!(err, Errno::EBADFD);
+    }
+
+    #[test]
+    fn writei_with_unsupported_format_returns_einval() {
+        let _g = fresh_sab();
+        let mut proc = Process::new(1);
+        let mut host = NoopHost;
+        let idx = install_pcm(&mut proc);
+        commit_setup(&mut proc, &mut host, idx);
+        // Poison the committed format so the WRITEI guard fires
+        // before any SAB lookup or copy runs. The dispatcher's
+        // HW_PARAMS path can't produce this directly (extract_format
+        // gates on S16_LE) but a future XRUN-recovery path could.
+        audio_mut(&mut proc, idx)
+            .unwrap()
+            .hw_params
+            .as_mut()
+            .unwrap()
+            .format = SNDRV_PCM_FORMAT_S32_LE;
+        let xferi = WpkAlsaXferi { result: 0, buf: 0, frames: 16 };
+        let mut buf = struct_buf(&xferi);
+        let err = run_ioctl(
+            &mut proc,
+            &mut host,
+            idx,
+            SNDRV_PCM_IOCTL_WRITEI_FRAMES,
+            &mut buf,
+        )
+        .expect_err("non-S16_LE must EINVAL");
+        assert_eq!(err, Errno::EINVAL);
+    }
+
+    #[test]
+    fn writei_without_sab_registered_returns_enodev() {
+        let _g = fresh_sab();
+        let mut proc = Process::new(1);
+        let mut host = NoopHost;
+        let idx = install_pcm(&mut proc);
+        commit_setup(&mut proc, &mut host, idx);
+        // hw_params committed but SAB table empty (no
+        // kernel_audio_init_sab yet). WRITEI must surface ENODEV so
+        // a caller can tell "host hasn't wired audio yet" from
+        // "transport error".
+        let xferi = WpkAlsaXferi { result: 0, buf: 0, frames: 16 };
+        let mut buf = struct_buf(&xferi);
+        let err = run_ioctl(
+            &mut proc,
+            &mut host,
+            idx,
+            SNDRV_PCM_IOCTL_WRITEI_FRAMES,
+            &mut buf,
+        )
+        .expect_err("no SAB → ENODEV");
+        assert_eq!(err, Errno::ENODEV);
+    }
+
+    #[test]
+    fn writei_appends_frames_to_sab_ring() {
+        let _g = fresh_sab();
+        let mut proc = Process::new(1);
+        let mut host = NoopHost;
+        let idx = install_pcm(&mut proc);
+        commit_setup(&mut proc, &mut host, idx);
+        // Refined wildcard: channels=MIN(1), buffer_size=MIN(256).
+        let channels = MIN_CHANNELS as usize;
+        let ring_frames = MIN_BUFFER_SIZE as usize;
+        let ring_ptr = install_sab_ring(0, ring_frames, channels);
+        // Drive 8 frames of synthesised samples through the host
+        // bridge (seed=10 → samples 10,11,…,17).
+        let frames_to_write = 8usize;
+        set_proc_read_source(synth_frames(frames_to_write, channels, 10));
+        let xferi = WpkAlsaXferi {
+            result: 0,
+            // Any non-zero address works — NoopHost ignores it and
+            // copies from PROC_READ_SOURCE.
+            buf: 0x4000_0000,
+            frames: frames_to_write as u64,
+        };
+        let mut buf = struct_buf(&xferi);
+        run_ioctl(
+            &mut proc,
+            &mut host,
+            idx,
+            SNDRV_PCM_IOCTL_WRITEI_FRAMES,
+            &mut buf,
+        )
+        .expect("WRITEI");
+        let result: WpkAlsaXferi =
+            unsafe { core::ptr::read_unaligned(buf.as_ptr() as *const _) };
+        assert_eq!(result.result, frames_to_write as i64);
+        // appl_ptr advanced.
+        let appl =
+            audio_ref(&proc, idx).unwrap().mmap_control.as_ref().unwrap().appl_ptr;
+        assert_eq!(appl, frames_to_write as i64);
+        // Ring head holds the synthesised samples; tail is still 0.
+        let ring = read_ring(ring_ptr, ring_frames, channels);
+        for i in 0..frames_to_write {
+            assert_eq!(ring[i], 10 + i as i16, "frame {i}");
+        }
+        for i in frames_to_write..ring_frames {
+            assert_eq!(ring[i], 0, "tail must stay zero at {i}");
+        }
+    }
+
+    #[test]
+    fn writei_wraps_appl_ptr_at_buffer_boundary() {
+        let _g = fresh_sab();
+        let mut proc = Process::new(1);
+        let mut host = NoopHost;
+        let idx = install_pcm(&mut proc);
+        commit_setup(&mut proc, &mut host, idx);
+        let channels = MIN_CHANNELS as usize;
+        let ring_frames = MIN_BUFFER_SIZE as usize;
+        let ring_ptr = install_sab_ring(0, ring_frames, channels);
+        // Seed appl_ptr at ring_frames - 4 and hw_ptr at appl - 0 so
+        // there's effectively a full buffer of space ahead (we
+        // simulate the host having drained everything). Write 8
+        // frames — the first 4 land at positions [ring_frames - 4,
+        // ring_frames - 1] and the next 4 wrap to [0, 3].
+        {
+            let audio = audio_mut(&mut proc, idx).unwrap();
+            audio.mmap_control.as_mut().unwrap().appl_ptr = (ring_frames - 4) as i64;
+            audio.mmap_status.as_mut().unwrap().hw_ptr = (ring_frames - 4) as i64;
+        }
+        let frames_to_write = 8usize;
+        set_proc_read_source(synth_frames(frames_to_write, channels, 100));
+        let xferi = WpkAlsaXferi {
+            result: 0,
+            buf: 0x4000_0000,
+            frames: frames_to_write as u64,
+        };
+        let mut buf = struct_buf(&xferi);
+        run_ioctl(
+            &mut proc,
+            &mut host,
+            idx,
+            SNDRV_PCM_IOCTL_WRITEI_FRAMES,
+            &mut buf,
+        )
+        .expect("WRITEI wrap");
+        let result: WpkAlsaXferi =
+            unsafe { core::ptr::read_unaligned(buf.as_ptr() as *const _) };
+        assert_eq!(result.result, frames_to_write as i64);
+        // appl_ptr advances monotonically past the wrap boundary.
+        let appl =
+            audio_ref(&proc, idx).unwrap().mmap_control.as_ref().unwrap().appl_ptr;
+        assert_eq!(appl, (ring_frames - 4 + frames_to_write) as i64);
+        // First 4 frames at tail of ring.
+        let ring = read_ring(ring_ptr, ring_frames, channels);
+        for i in 0..4 {
+            assert_eq!(ring[ring_frames - 4 + i], 100 + i as i16);
+        }
+        // Next 4 frames at head of ring (wrap).
+        for i in 0..4 {
+            assert_eq!(ring[i], 100 + (4 + i) as i16);
+        }
+    }
+
+    #[test]
+    fn writei_when_ring_full_writes_zero_frames() {
+        let _g = fresh_sab();
+        let mut proc = Process::new(1);
+        let mut host = NoopHost;
+        let idx = install_pcm(&mut proc);
+        commit_setup(&mut proc, &mut host, idx);
+        let channels = MIN_CHANNELS as usize;
+        let ring_frames = MIN_BUFFER_SIZE as usize;
+        let _ring_ptr = install_sab_ring(0, ring_frames, channels);
+        // Saturate: appl_ptr is ring_frames ahead of hw_ptr → avail=0.
+        // v1 has no audio wait queue (A6 territory), so the call
+        // returns 0 frames written rather than blocking.
+        {
+            let audio = audio_mut(&mut proc, idx).unwrap();
+            audio.mmap_status.as_mut().unwrap().hw_ptr = 0;
+            audio.mmap_control.as_mut().unwrap().appl_ptr = ring_frames as i64;
+        }
+        let xferi = WpkAlsaXferi {
+            result: 0,
+            buf: 0x4000_0000,
+            frames: 64,
+        };
+        let mut buf = struct_buf(&xferi);
+        run_ioctl(
+            &mut proc,
+            &mut host,
+            idx,
+            SNDRV_PCM_IOCTL_WRITEI_FRAMES,
+            &mut buf,
+        )
+        .expect("WRITEI full ring is not an error");
+        let result: WpkAlsaXferi =
+            unsafe { core::ptr::read_unaligned(buf.as_ptr() as *const _) };
+        assert_eq!(result.result, 0);
+        // appl_ptr unchanged.
+        let appl =
+            audio_ref(&proc, idx).unwrap().mmap_control.as_ref().unwrap().appl_ptr;
+        assert_eq!(appl, ring_frames as i64);
+    }
+
+    #[test]
+    fn pcm_unknown_ioctl_returns_enotty() {
+        let mut proc = Process::new(1);
+        let mut host = NoopHost;
+        let idx = install_pcm(&mut proc);
+        let err = run_ioctl(&mut proc, &mut host, idx, 0xdead_beef, &mut [])
+            .expect_err("unknown ioctl must ENOTTY");
+        assert_eq!(err, Errno::ENOTTY);
+    }
+
+    // --- helpers ----------------------------------------------------
+
+    /// Drive PVERSION / INFO / wildcard HW_REFINE / HW_PARAMS so the
+    /// fd ends in SETUP with committed hw_params, ready for the
+    /// state-machine tests above.
+    fn commit_setup(
+        proc: &mut Process,
+        host: &mut NoopHost,
+        idx: usize,
+    ) {
+        let p = refined_hw_params();
+        let mut buf = struct_buf(&p);
+        run_ioctl(proc, host, idx, SNDRV_PCM_IOCTL_HW_PARAMS, &mut buf)
+            .expect("HW_PARAMS");
+    }
+
+    fn struct_buf<T: Copy>(value: &T) -> alloc::vec::Vec<u8> {
+        let mut buf = alloc::vec![0u8; core::mem::size_of::<T>()];
+        unsafe {
+            core::ptr::write_unaligned(buf.as_mut_ptr() as *mut T, *value);
+        }
+        buf
+    }
+}

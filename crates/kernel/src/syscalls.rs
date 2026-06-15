@@ -67,6 +67,22 @@ pub enum VirtualDevice {
     Dsp,     // /dev/dsp          host_handle = -7
     DriRenderD128, // /dev/dri/renderD128  host_handle = -8
     DriCard0,      // /dev/dri/card0       host_handle = -9
+    /// `/dev/input/event{0,1}`. `device = 0` → kbd (host_handle -10),
+    /// `device = 1` → ptr (host_handle -11). v1 exposes exactly these
+    /// two; `/dev/input/eventN` for N≥2 is not synthesised.
+    InputEvent { device: u8 },
+    /// `/dev/snd/controlC0` (host_handle = -12). v1 ships card 0 only.
+    AlsaControl { card: u8 },
+    /// `/dev/snd/pcmC0D0p` (host_handle = -13). v1 ships card 0 device 0
+    /// sub 0 playback only — `pcmC0D0c` (capture) is rejected at open
+    /// with `ENODEV`, so [`PcmDir::Capture`] never reaches a live
+    /// OFD via this constructor.
+    AlsaPcm {
+        card: u8,
+        device: u8,
+        sub: u8,
+        kind: crate::ofd::PcmDir,
+    },
 }
 
 impl VirtualDevice {
@@ -82,6 +98,17 @@ impl VirtualDevice {
             VirtualDevice::Dsp => -7,
             VirtualDevice::DriRenderD128 => -8,
             VirtualDevice::DriCard0 => -9,
+            VirtualDevice::InputEvent { device } => -10 - device as i64,
+            VirtualDevice::AlsaControl { card: 0 } => -12,
+            VirtualDevice::AlsaPcm {
+                card: 0,
+                device: 0,
+                sub: 0,
+                kind: crate::ofd::PcmDir::Playback,
+            } => -13,
+            // v1 only synthesises card 0 / device 0 / sub 0 playback;
+            // anything else would have failed at match_virtual_device.
+            VirtualDevice::AlsaControl { .. } | VirtualDevice::AlsaPcm { .. } => -1,
         }
     }
 
@@ -97,6 +124,15 @@ impl VirtualDevice {
             -7 => Some(VirtualDevice::Dsp),
             -8 => Some(VirtualDevice::DriRenderD128),
             -9 => Some(VirtualDevice::DriCard0),
+            -10 => Some(VirtualDevice::InputEvent { device: 0 }),
+            -11 => Some(VirtualDevice::InputEvent { device: 1 }),
+            -12 => Some(VirtualDevice::AlsaControl { card: 0 }),
+            -13 => Some(VirtualDevice::AlsaPcm {
+                card: 0,
+                device: 0,
+                sub: 0,
+                kind: crate::ofd::PcmDir::Playback,
+            }),
             _ => None,
         }
     }
@@ -113,6 +149,13 @@ impl VirtualDevice {
             VirtualDevice::Dsp => 7,
             VirtualDevice::DriRenderD128 => 8,
             VirtualDevice::DriCard0 => 9,
+            VirtualDevice::InputEvent { device } => 10 + device as u64,
+            VirtualDevice::AlsaControl { card } => 12 + card as u64,
+            VirtualDevice::AlsaPcm { card, device, sub, .. } => {
+                // Card-major then device-minor then sub. v1 only uses (0,0,0,Playback)
+                // so the formula's exactness past the first triple doesn't matter yet.
+                13 + (card as u64) * 256 + (device as u64) * 16 + (sub as u64)
+            }
         }
     }
 }
@@ -134,6 +177,30 @@ fn match_virtual_device(path: &[u8]) -> Option<VirtualDevice> {
         b"/dev/dsp" => Some(VirtualDevice::Dsp),
         b"/dev/dri/renderD128" => Some(VirtualDevice::DriRenderD128),
         b"/dev/dri/card0" => Some(VirtualDevice::DriCard0),
+        b"/dev/input/event0" => Some(VirtualDevice::InputEvent { device: 0 }),
+        b"/dev/input/event1" => Some(VirtualDevice::InputEvent { device: 1 }),
+        b"/dev/snd/controlC0" => Some(VirtualDevice::AlsaControl { card: 0 }),
+        b"/dev/snd/pcmC0D0p" => Some(VirtualDevice::AlsaPcm {
+            card: 0,
+            device: 0,
+            sub: 0,
+            kind: crate::ofd::PcmDir::Playback,
+        }),
+        _ => None,
+    }
+}
+
+/// Paths under synthetic device trees that the kernel deliberately
+/// refuses to open — distinct from "doesn't exist". Returns the errno
+/// the caller should propagate, or `None` to fall through to the
+/// regular [`match_virtual_device`] / on-disk path.
+///
+/// Used for `/dev/snd/pcmC0D0c` so the kernel reports `ENODEV`
+/// ("device exists but is disabled") instead of `ENOENT`, mirroring
+/// what alsa-lib expects when probing a capture-only direction.
+fn disabled_virtual_device(path: &[u8]) -> Option<Errno> {
+    match path {
+        b"/dev/snd/pcmC0D0c" => Some(Errno::ENODEV),
         _ => None,
     }
 }
@@ -566,6 +633,47 @@ fn install_dri_state_on_open(proc: &mut Process, ofd_idx: usize, dev: VirtualDev
     }
 }
 
+/// Install the evdev sidecar on a freshly-allocated OFD for a
+/// `/dev/input/event{0,1}` open. No-op for any other virtual device.
+fn install_input_state_on_open(proc: &mut Process, ofd_idx: usize, dev: VirtualDevice) {
+    if let VirtualDevice::InputEvent { device } = dev {
+        if let Some(ofd) = proc.ofd_table.get_mut(ofd_idx) {
+            ofd.input_state = Some(alloc::boxed::Box::new(crate::ofd::InputFdState {
+                device,
+                ..Default::default()
+            }));
+        }
+    }
+}
+
+/// Install the ALSA sidecar on a freshly-allocated OFD for an
+/// `/dev/snd/{pcmC0D0p,controlC0}` open. No-op for any other virtual
+/// device. The PCM and control variants land in two disjoint OFD
+/// fields (`audio` / `audio_ctl`) per [`crate::ofd::AlsaControlFdState`]'s
+/// rationale.
+fn install_audio_state_on_open(proc: &mut Process, ofd_idx: usize, dev: VirtualDevice) {
+    match dev {
+        VirtualDevice::AlsaPcm { card, device, sub, kind } => {
+            if let Some(ofd) = proc.ofd_table.get_mut(ofd_idx) {
+                ofd.audio = Some(alloc::boxed::Box::new(crate::ofd::AlsaFdState {
+                    card,
+                    device,
+                    sub,
+                    kind,
+                    ..Default::default()
+                }));
+            }
+        }
+        VirtualDevice::AlsaControl { card } => {
+            if let Some(ofd) = proc.ofd_table.get_mut(ofd_idx) {
+                ofd.audio_ctl =
+                    Some(alloc::boxed::Box::new(crate::ofd::AlsaControlFdState { card }));
+            }
+        }
+        _ => {}
+    }
+}
+
 /// Borrow the `DriFdState` hung off the OFD at `ofd_idx`, returning
 /// `EBADF` if the OFD doesn't have one or is a prime-bo. Used by
 /// renderD128- and card0-targeted ioctls that manipulate per-fd GEM
@@ -601,6 +709,26 @@ fn kms_state_mut(
     proc.ofd_table
         .get_mut(ofd_idx)
         .and_then(|o| o.kms_mut())
+        .ok_or(Errno::EBADF)
+}
+
+fn input_state(
+    proc: &Process,
+    ofd_idx: usize,
+) -> Result<&crate::ofd::InputFdState, Errno> {
+    proc.ofd_table
+        .get(ofd_idx)
+        .and_then(|o| o.input())
+        .ok_or(Errno::EBADF)
+}
+
+fn input_state_mut(
+    proc: &mut Process,
+    ofd_idx: usize,
+) -> Result<&mut crate::ofd::InputFdState, Errno> {
+    proc.ofd_table
+        .get_mut(ofd_idx)
+        .and_then(|o| o.input_mut())
         .ok_or(Errno::EBADF)
 }
 
@@ -1372,46 +1500,31 @@ fn handle_dri_card_ioctl(
                     return Err(Errno::EBUSY);
                 }
             }
-            // Best-effort stats: a clock-read failure leaves the flip
-            // queued and just skips the counter bump. The host reads
-            // the running totals via the kernel_kms_* exports.
-            let (tv_sec, tv_usec) = match host.host_clock_gettime(
+            // Best-effort commit stats: a clock-read failure leaves
+            // the flip queued and just skips the per-crtc counter
+            // bump. The host reads the running totals via the
+            // kernel_kms_* exports.
+            if let Ok((sec, nsec)) = host.host_clock_gettime(
                 wasm_posix_shared::clock::CLOCK_MONOTONIC,
             ) {
-                Ok((sec, nsec)) => {
-                    let now_us = (sec as u64)
-                        .wrapping_mul(1_000_000)
-                        + (nsec as u64) / 1000;
-                    crate::dri::record_kms_commit(req.crtc_id, now_us);
-                    (sec as u32, (nsec / 1000) as u32)
-                }
-                Err(_) => (0u32, 0u32),
-            };
-            let sequence = crate::dri::vblank_tick();
+                let now_us = (sec as u64).wrapping_mul(1_000_000)
+                    + (nsec as u64) / 1000;
+                crate::dri::record_kms_commit(req.crtc_id, now_us);
+            }
+            // Queue the flip but do NOT synthesize the completion
+            // event here. `dri::drain_pending_flips`, called from
+            // `kernel_vblank` on each host vblank tick (16.67 ms),
+            // retires every queued flip into the per-fd `event_ring`
+            // as a DRM_EVENT_FLIP_COMPLETE record stamped with the
+            // new sequence and host monotonic time. Result: libdrm's
+            // `drmModePageFlip → poll → drmHandleEvent` loop returns
+            // at monitor-refresh rate instead of ioctl rate.
             let kms_mut = kms_state_mut(proc, ofd_idx)?;
             kms_mut.pending_flips.push(crate::ofd::PendingFlip {
                 crtc_id: req.crtc_id,
                 fb_id: req.fb_id,
                 user_data: req.user_data,
             });
-            // v1 simplification: the host vblank pump exists only to
-            // refresh canvases + counters, so the test-bench can run
-            // PAGE_FLIP → drmHandleEvent without a real 60 Hz tick
-            // driving event delivery. Retire each queued flip into
-            // the per-fd event_ring as a DRM_EVENT_FLIP_COMPLETE
-            // record immediately, matching what a real DRM vblank IRQ
-            // would do before the next ioctl.
-            if let Some(flip) = kms_mut.pending_flips.pop() {
-                let mut record = [0u8; 32];
-                record[0..4].copy_from_slice(&2u32.to_le_bytes());
-                record[4..8].copy_from_slice(&32u32.to_le_bytes());
-                record[8..16].copy_from_slice(&flip.user_data.to_le_bytes());
-                record[16..20].copy_from_slice(&tv_sec.to_le_bytes());
-                record[20..24].copy_from_slice(&tv_usec.to_le_bytes());
-                record[24..28].copy_from_slice(&sequence.to_le_bytes());
-                record[28..32].copy_from_slice(&flip.crtc_id.to_le_bytes());
-                kms_mut.event_ring.extend(record.iter());
-            }
             Ok(())
         }
         DRM_IOCTL_WAIT_VBLANK => {
@@ -1431,6 +1544,122 @@ fn handle_dri_card_ioctl(
             Ok(())
         }
         _ => handle_dri_ioctl(proc, host, ofd_idx, request, buf),
+    }
+}
+
+/// `EVIOCG*` ioctl surface for `/dev/input/event{0,1}`. Unknown
+/// requests return `ENOTTY` (not `EINVAL`) so SDL2's evdev probe keeps
+/// walking instead of fataling on the first unsupported call.
+fn handle_input_ioctl(
+    proc: &mut Process,
+    ofd_idx: usize,
+    request: u32,
+    buf: &mut [u8],
+) -> Result<(), Errno> {
+    use wasm_posix_shared::input::*;
+
+    let dir = (request >> 30) & 0x3;
+    let magic = (request >> 8) & 0xff;
+    let nr = request & 0xff;
+    let size = ((request >> 16) & 0x3fff) as usize;
+
+    if magic != b'E' as u32 {
+        return Err(Errno::ENOTTY);
+    }
+
+    match nr {
+        0x01 if dir == 2 => {
+            if buf.len() < 4 {
+                return Err(Errno::EINVAL);
+            }
+            let version: u32 = 0x0001_0001;
+            buf[0..4].copy_from_slice(&version.to_le_bytes());
+            Ok(())
+        }
+        0x02 if dir == 2 => {
+            if buf.len() < core::mem::size_of::<WpkInputId>() {
+                return Err(Errno::EINVAL);
+            }
+            let device = input_state(proc, ofd_idx)?.device;
+            let id = WpkInputId {
+                bustype: BUS_VIRTUAL,
+                vendor: 0x1209,
+                product: if device == 0 { 0x0001 } else { 0x0002 },
+                version: 0x0001,
+            };
+            unsafe {
+                core::ptr::write_unaligned(buf.as_mut_ptr() as *mut WpkInputId, id);
+            }
+            Ok(())
+        }
+        n if n == EVIOCGNAME_NR && dir == 2 => {
+            let device = input_state(proc, ofd_idx)?.device;
+            let name: &[u8] = if device == 0 {
+                b"wpk virtual keyboard\0"
+            } else {
+                b"wpk virtual pointer\0"
+            };
+            let copy_len = name.len().min(size).min(buf.len());
+            buf[..copy_len].copy_from_slice(&name[..copy_len]);
+            Ok(())
+        }
+        n if (EVIOCGBIT_NR_BASE..EVIOCGBIT_NR_BASE + 32).contains(&n) && dir == 2 => {
+            let ev_type = (n - EVIOCGBIT_NR_BASE) as u16;
+            let device = input_state(proc, ofd_idx)?.device;
+            let len = size.min(buf.len());
+            let slice = &mut buf[..len];
+            for b in slice.iter_mut() {
+                *b = 0;
+            }
+            crate::input::populate_evbit(device, ev_type, slice);
+            Ok(())
+        }
+        n if (EVIOCGABS_NR_BASE..EVIOCGABS_NR_BASE + 64).contains(&n) && dir == 2 => {
+            if buf.len() < core::mem::size_of::<WpkInputAbsinfo>() {
+                return Err(Errno::EINVAL);
+            }
+            let axis = (n - EVIOCGABS_NR_BASE) as u16;
+            let device = input_state(proc, ofd_idx)?.device;
+            if device != 1 {
+                return Err(Errno::ENOTTY);
+            }
+            let (w, h) = crate::input::canvas_dims();
+            let abs = match axis {
+                ABS_X => WpkInputAbsinfo {
+                    value: 0,
+                    minimum: 0,
+                    maximum: (w as i32) - 1,
+                    fuzz: 0,
+                    flat: 0,
+                    resolution: 1,
+                },
+                ABS_Y => WpkInputAbsinfo {
+                    value: 0,
+                    minimum: 0,
+                    maximum: (h as i32) - 1,
+                    fuzz: 0,
+                    flat: 0,
+                    resolution: 1,
+                },
+                _ => return Err(Errno::ENOTTY),
+            };
+            unsafe {
+                core::ptr::write_unaligned(
+                    buf.as_mut_ptr() as *mut WpkInputAbsinfo,
+                    abs,
+                );
+            }
+            Ok(())
+        }
+        0x90 if dir == 1 => {
+            if buf.len() < 4 {
+                return Err(Errno::EINVAL);
+            }
+            let value = i32::from_le_bytes(buf[..4].try_into().unwrap());
+            input_state_mut(proc, ofd_idx)?.grabbed = value != 0;
+            Ok(())
+        }
+        _ => Err(Errno::ENOTTY),
     }
 }
 
@@ -1704,6 +1933,12 @@ pub fn sys_open(
         return Ok(fd);
     }
 
+    // Paths that exist in the synthetic tree but are deliberately
+    // disabled (e.g. /dev/snd/pcmC0D0c — v1 ships playback only).
+    if let Some(errno) = disabled_virtual_device(&resolved) {
+        return Err(errno);
+    }
+
     // Virtual device nodes — handle in-kernel, no host call
     if let Some(dev) = match_virtual_device(&resolved) {
         if dev == VirtualDevice::Fb0 {
@@ -1723,6 +1958,8 @@ pub fn sys_open(
             resolved,
         );
         install_dri_state_on_open(proc, ofd_idx, dev);
+        install_input_state_on_open(proc, ofd_idx, dev);
+        install_audio_state_on_open(proc, ofd_idx, dev);
         let fd_flags = oflags_to_fd_flags(oflags);
         let fd = proc.fd_table.alloc(OpenFileDescRef(ofd_idx), fd_flags)?;
         return Ok(fd);
@@ -2336,6 +2573,59 @@ pub fn sys_read(
                         | VirtualDevice::Fb0
                         | VirtualDevice::Dsp
                         | VirtualDevice::DriRenderD128 => 0,
+                        VirtualDevice::InputEvent { .. } => {
+                            use wasm_posix_shared::clock::CLOCK_MONOTONIC;
+                            use wasm_posix_shared::input::{
+                                EV_SYN, SYN_DROPPED, WpkInputEvent,
+                            };
+                            let usable = (buf.len() / 24) * 24;
+                            if usable == 0 {
+                                return Err(Errno::EINVAL);
+                            }
+                            let input = input_state_mut(proc, ofd_idx)?;
+                            // Blocking read returns Ok(0) (not park)
+                            // so the host can retry on a poll timer
+                            // — matches DriCard0.
+                            if input.event_ring.is_empty() && !input.dropped {
+                                if status_flags & O_NONBLOCK != 0 {
+                                    return Err(Errno::EAGAIN);
+                                }
+                                return Ok(0);
+                            }
+                            let mut written = 0;
+                            // Producer overflowed: prepend SYN_DROPPED
+                            // so userspace resyncs via EVIOCG* before
+                            // consuming the next real record.
+                            if input.dropped {
+                                let (sec, nsec) = host
+                                    .host_clock_gettime(CLOCK_MONOTONIC)
+                                    .unwrap_or((0, 0));
+                                let synth = WpkInputEvent {
+                                    tv_sec: sec,
+                                    tv_usec: (nsec / 1_000) as i32,
+                                    _pad: 0,
+                                    ev_type: EV_SYN,
+                                    code: SYN_DROPPED,
+                                    value: 0,
+                                };
+                                let bytes: [u8; 24] = unsafe {
+                                    core::mem::transmute(synth)
+                                };
+                                buf[..24].copy_from_slice(&bytes);
+                                written = 24;
+                                input.dropped = false;
+                            }
+                            while written + 24 <= usable
+                                && !input.event_ring.is_empty()
+                            {
+                                for i in 0..24 {
+                                    buf[written + i] =
+                                        input.event_ring.pop_front().unwrap();
+                                }
+                                written += 24;
+                            }
+                            written
+                        }
                         VirtualDevice::DriCard0 => {
                             // Drain queued DRM events (DRM_EVENT_FLIP_COMPLETE)
                             // into the caller buffer, one byte at a time so a
@@ -2377,6 +2667,12 @@ pub fn sys_read(
                             }
                             n
                         }
+                        // ALSA fds carry data via ioctl (WRITEI_FRAMES)
+                        // or the mmap data page, never user-space
+                        // read(). Return 0 so alsa-lib's defensive
+                        // probe reads observe EOF instead of EBADF;
+                        // A3+ refine this if a real consumer surfaces.
+                        VirtualDevice::AlsaPcm { .. } | VirtualDevice::AlsaControl { .. } => 0,
                     };
                     return Ok(n);
                 }
@@ -5787,6 +6083,20 @@ pub fn sys_mmap(
             });
             return Ok(addr_out);
         }
+
+        // /dev/snd/pcmC0D<p>p: alsa-lib calls mmap() three times right
+        // after HW_PARAMS, one each for status / control / data. The
+        // dispatcher in `audio::mmap` decodes the offset, lazily
+        // allocates the kernel-side status/control Boxes, and (for the
+        // DATA page) verifies a SAB was registered via
+        // `kernel_audio_init_sab`. The user-space pages themselves
+        // come from the generic `mmap_anonymous` allocator.
+        if ofd.audio.is_some() {
+            let ofd_idx = entry.ofd_ref.0;
+            return crate::audio::mmap::handle_alsa_pcm_mmap(
+                proc, ofd_idx, addr, len, prot, flags, offset,
+            );
+        }
     }
 
     // Allocate the region. Both anonymous and file-backed use the same
@@ -7656,6 +7966,93 @@ fn poll_check(proc: &mut Process, host: &mut dyn HostIO, fds: &mut [WasmPollFd])
                     if pollfd.events & POLLOUT != 0 {
                         revents |= POLLOUT;
                     }
+                } else if ofd.file_type == FileType::CharDevice
+                    && VirtualDevice::from_host_handle(ofd.host_handle)
+                        == Some(VirtualDevice::DriCard0)
+                {
+                    // /dev/dri/card0 gates POLLIN on the per-fd
+                    // `event_ring` actually holding a DRM event.
+                    // sys_read returns Ok(0) on an empty ring rather
+                    // than blocking, so reporting always-ready POLLIN
+                    // would race the vblank pump: poll → read → 0 →
+                    // drmHandleEvent reports a short read and fails.
+                    if pollfd.events & POLLIN != 0 {
+                        if let Some(kms) = ofd.kms() {
+                            if !kms.event_ring.is_empty() {
+                                revents |= POLLIN;
+                            }
+                        }
+                    }
+                    // card0 doesn't accept writes — never report POLLOUT.
+                } else if ofd.file_type == FileType::CharDevice
+                    && matches!(
+                        VirtualDevice::from_host_handle(ofd.host_handle),
+                        Some(VirtualDevice::InputEvent { .. })
+                    )
+                {
+                    // Gate POLLIN on the ring or the SYN_DROPPED latch:
+                    // always-ready would spin libinput against an empty
+                    // ring (sys_read returns Ok(0), not a record).
+                    if pollfd.events & POLLIN != 0 {
+                        if let Some(input) = ofd.input() {
+                            if !input.event_ring.is_empty() || input.dropped {
+                                revents |= POLLIN;
+                            }
+                        }
+                    }
+                } else if ofd.file_type == FileType::CharDevice
+                    && matches!(
+                        VirtualDevice::from_host_handle(ofd.host_handle),
+                        Some(VirtualDevice::AlsaPcm { .. })
+                    )
+                {
+                    // /dev/snd/pcmC0D<n>p — alsa-lib polls POLLOUT
+                    // waiting for ring space.
+                    //
+                    //   avail     = buffer_size - (appl_ptr - hw_ptr)
+                    //   ready iff   avail >= sw_params.avail_min
+                    //
+                    // hw_ptr / appl_ptr come from the kernel-side
+                    // mmap Boxes (A5); buffer_size / avail_min from
+                    // the HW/SW_PARAMS caches (A3). XRUN reflects as
+                    // POLLERR so alsa-lib's recovery path triggers a
+                    // PREPARE without spinning.
+                    //
+                    // v1 reports ready / not-ready only — kernel
+                    // doesn't park; userspace re-polls (same pattern
+                    // as every other AlsaPcm sibling in this match).
+                    if let Some(audio) = ofd.audio() {
+                        let buffer = audio
+                            .hw_params
+                            .as_ref()
+                            .map(|h| h.buffer_size as i64)
+                            .unwrap_or(0);
+                        let appl = audio
+                            .mmap_control
+                            .as_ref()
+                            .map(|c| c.appl_ptr)
+                            .unwrap_or(0);
+                        let hw_ptr = audio
+                            .mmap_status
+                            .as_ref()
+                            .map(|s| s.hw_ptr)
+                            .unwrap_or(0);
+                        let avail_min = audio
+                            .sw_params
+                            .as_ref()
+                            .map(|s| s.avail_min as i64)
+                            .unwrap_or(1);
+                        let avail = buffer - (appl - hw_ptr);
+                        if pollfd.events & POLLOUT != 0 && avail >= avail_min {
+                            revents |= POLLOUT;
+                        }
+                        if audio.state
+                            == wasm_posix_shared::audio::SNDRV_PCM_STATE_XRUN
+                        {
+                            revents |= POLLERR;
+                        }
+                    }
+                    // AlsaPcm is write-only — never report POLLIN.
                 } else {
                     // Regular files and char devices are always ready
                     if pollfd.events & POLLIN != 0 {
@@ -7945,6 +8342,12 @@ pub fn sys_openat(
         return Ok(fd);
     }
 
+    // Paths that exist in the synthetic tree but are deliberately
+    // disabled (e.g. /dev/snd/pcmC0D0c — v1 ships playback only).
+    if let Some(errno) = disabled_virtual_device(&resolved) {
+        return Err(errno);
+    }
+
     // Virtual device nodes — handle in-kernel, no host call
     if let Some(dev) = match_virtual_device(&resolved) {
         if dev == VirtualDevice::Fb0 {
@@ -7964,6 +8367,8 @@ pub fn sys_openat(
             resolved,
         );
         install_dri_state_on_open(proc, ofd_idx, dev);
+        install_input_state_on_open(proc, ofd_idx, dev);
+        install_audio_state_on_open(proc, ofd_idx, dev);
         let fd_flags = oflags_to_fd_flags(oflags);
         let fd = proc.fd_table.alloc(OpenFileDescRef(ofd_idx), fd_flags)?;
         return Ok(fd);
@@ -8527,6 +8932,33 @@ pub fn sys_ioctl(
             if dev == Some(VirtualDevice::DriCard0) {
                 return handle_dri_card_ioctl(proc, host, ofd_idx, request, buf);
             }
+        }
+    }
+
+    // --- /dev/input/event{0,1} ioctls — evdev EVIOCG* surface ---
+    {
+        let ofd = proc.ofd_table.get(ofd_idx).ok_or(Errno::EBADF)?;
+        if ofd.file_type == FileType::CharDevice {
+            if let Some(VirtualDevice::InputEvent { .. }) =
+                VirtualDevice::from_host_handle(ofd.host_handle)
+            {
+                return handle_input_ioctl(proc, ofd_idx, request, buf);
+            }
+        }
+    }
+
+    // --- /dev/snd/pcmC0D0p ioctls — ALSA SNDRV_PCM_* surface ---
+    {
+        let ofd = proc.ofd_table.get(ofd_idx).ok_or(Errno::EBADF)?;
+        if ofd.file_type == FileType::CharDevice
+            && matches!(
+                VirtualDevice::from_host_handle(ofd.host_handle),
+                Some(VirtualDevice::AlsaPcm { .. })
+            )
+        {
+            return crate::audio::pcm_ioctl::handle_alsa_pcm_ioctl(
+                proc, host, ofd_idx, request, buf,
+            );
         }
     }
 
@@ -13938,6 +14370,149 @@ mod tests {
         assert_eq!(pollfds[1].revents, 0);
     }
 
+    fn install_alsa_pcm_fd(
+        proc: &mut Process,
+        state: u32,
+        buffer_size: u64,
+        appl_ptr: i64,
+        hw_ptr: i64,
+        avail_min: u64,
+    ) -> i32 {
+        use crate::ofd::{AlsaFdState, FileType, HwParamsCache, PcmDir, SwParamsCache};
+        use alloc::boxed::Box;
+        use wasm_posix_shared::audio::{WpkAlsaPcmMmapControl, WpkAlsaPcmMmapStatus};
+
+        let host_handle = VirtualDevice::AlsaPcm {
+            card: 0,
+            device: 0,
+            sub: 0,
+            kind: PcmDir::Playback,
+        }
+        .host_handle();
+        let ofd_idx = proc.ofd_table.create(
+            FileType::CharDevice,
+            O_WRONLY,
+            host_handle,
+            b"/dev/snd/pcmC0D0p".to_vec(),
+        );
+        let ofd = proc.ofd_table.get_mut(ofd_idx).unwrap();
+        ofd.audio = Some(Box::new(AlsaFdState {
+            pcm_id: 0,
+            state,
+            hw_params: Some(Box::new(HwParamsCache {
+                buffer_size,
+                ..HwParamsCache::default()
+            })),
+            sw_params: Some(Box::new(SwParamsCache {
+                avail_min,
+                ..SwParamsCache::default()
+            })),
+            mmap_status: Some(Box::new(WpkAlsaPcmMmapStatus {
+                hw_ptr,
+                ..WpkAlsaPcmMmapStatus::default()
+            })),
+            mmap_control: Some(Box::new(WpkAlsaPcmMmapControl {
+                appl_ptr,
+                ..WpkAlsaPcmMmapControl::default()
+            })),
+            ..AlsaFdState::default()
+        }));
+        proc.fd_table
+            .alloc(OpenFileDescRef(ofd_idx), 0)
+            .expect("alloc fd")
+    }
+
+    #[test]
+    fn test_poll_alsa_pcm_pollout_ready_when_avail_above_threshold() {
+        use wasm_posix_shared::WasmPollFd;
+        use wasm_posix_shared::audio::SNDRV_PCM_STATE_RUNNING;
+        use wasm_posix_shared::poll::*;
+
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        // appl=2000, hw=1000, buffer=4096 → avail=3096 >= avail_min=1024 ⇒ ready.
+        let fd = install_alsa_pcm_fd(
+            &mut proc,
+            SNDRV_PCM_STATE_RUNNING,
+            4096,
+            2000,
+            1000,
+            1024,
+        );
+
+        let mut pollfd = WasmPollFd {
+            fd,
+            events: POLLOUT,
+            revents: 0,
+        };
+        let n =
+            sys_poll(&mut proc, &mut host, core::slice::from_mut(&mut pollfd), 0).unwrap();
+        assert_eq!(n, 1);
+        assert_ne!(pollfd.revents & POLLOUT, 0);
+        assert_eq!(pollfd.revents & POLLERR, 0);
+    }
+
+    #[test]
+    fn test_poll_alsa_pcm_pollout_not_ready_when_buffer_full() {
+        use wasm_posix_shared::WasmPollFd;
+        use wasm_posix_shared::audio::SNDRV_PCM_STATE_RUNNING;
+        use wasm_posix_shared::poll::*;
+
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        // appl=5000, hw=1000, buffer=4000 → avail=0 < avail_min=1 ⇒ not ready.
+        let fd = install_alsa_pcm_fd(
+            &mut proc,
+            SNDRV_PCM_STATE_RUNNING,
+            4000,
+            5000,
+            1000,
+            1,
+        );
+
+        let mut pollfd = WasmPollFd {
+            fd,
+            events: POLLOUT,
+            revents: 0,
+        };
+        let n =
+            sys_poll(&mut proc, &mut host, core::slice::from_mut(&mut pollfd), 0).unwrap();
+        // sys_poll returns EAGAIN in centralized mode; in this single-shot
+        // test we run with default mode (non-centralized + timeout=0) so
+        // poll_check returns 0 ready ⇒ sys_poll Ok(0).
+        assert_eq!(n, 0);
+        assert_eq!(pollfd.revents & POLLOUT, 0);
+    }
+
+    #[test]
+    fn test_poll_alsa_pcm_pollerr_set_on_xrun_state() {
+        use wasm_posix_shared::WasmPollFd;
+        use wasm_posix_shared::audio::SNDRV_PCM_STATE_XRUN;
+        use wasm_posix_shared::poll::*;
+
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        // XRUN — POLLERR latches regardless of avail.
+        let fd = install_alsa_pcm_fd(
+            &mut proc,
+            SNDRV_PCM_STATE_XRUN,
+            4096,
+            2000,
+            1000,
+            1024,
+        );
+
+        let mut pollfd = WasmPollFd {
+            fd,
+            events: POLLOUT,
+            revents: 0,
+        };
+        let n =
+            sys_poll(&mut proc, &mut host, core::slice::from_mut(&mut pollfd), 0).unwrap();
+        assert_eq!(n, 1);
+        assert_ne!(pollfd.revents & POLLERR, 0);
+    }
+
     #[test]
     fn test_lseek_seek_end_on_pipe() {
         let mut proc = Process::new(1);
@@ -17336,6 +17911,15 @@ mod tests {
             VirtualDevice::Dsp,
             VirtualDevice::DriRenderD128,
             VirtualDevice::DriCard0,
+            VirtualDevice::InputEvent { device: 0 },
+            VirtualDevice::InputEvent { device: 1 },
+            VirtualDevice::AlsaControl { card: 0 },
+            VirtualDevice::AlsaPcm {
+                card: 0,
+                device: 0,
+                sub: 0,
+                kind: crate::ofd::PcmDir::Playback,
+            },
         ] {
             assert_eq!(
                 VirtualDevice::from_host_handle(dev.host_handle()),
@@ -17344,7 +17928,8 @@ mod tests {
         }
         assert_eq!(VirtualDevice::from_host_handle(0), None);
         // First sentinel past the allocated range — must not roundtrip.
-        assert_eq!(VirtualDevice::from_host_handle(-10), None);
+        // -12 = AlsaControl{card:0}, -13 = AlsaPcm{0,0,0,Playback}.
+        assert_eq!(VirtualDevice::from_host_handle(-14), None);
     }
 
     // ===== Loopback socket tests =====
@@ -20282,8 +20867,6 @@ mod tests {
             match_virtual_device(b"/dev/input/mice"),
             Some(VirtualDevice::Mice)
         );
-        // No /dev/input/event0 — evdev is out of scope for v1.
-        assert_eq!(match_virtual_device(b"/dev/input/event0"), None);
     }
 
     #[test]
@@ -21444,22 +22027,39 @@ mod tests {
 
         let ofd_idx = proc.fd_table.get(fd).unwrap().ofd_ref.0;
         let kms = proc.ofd_table.get(ofd_idx).unwrap().kms().unwrap();
-        // The v1 PAGE_FLIP path drains synchronously into event_ring, so
-        // pending_flips is left empty and a 32-byte DRM_EVENT_FLIP_COMPLETE
-        // record sits in event_ring waiting for read(card0).
+        // Post-Q4: PAGE_FLIP only queues into `pending_flips`. The
+        // event_ring stays empty until the next vblank tick.
+        assert_eq!(kms.pending_flips.len(), 1);
+        assert!(kms.event_ring.is_empty());
+
+        // Simulate one vblank tick. `drain_pending_flips_for_process`
+        // is the per-process variant the global vblank pump invokes
+        // for every live process; calling it here keeps the test free
+        // of GLOBAL_PROCESS_TABLE side effects.
+        let seq = crate::dri::vblank_tick();
+        crate::dri::drain_pending_flips_for_process(&mut proc, seq, 0, 0);
+
+        let kms = proc.ofd_table.get(ofd_idx).unwrap().kms().unwrap();
         assert!(kms.pending_flips.is_empty());
         assert_eq!(kms.event_ring.len(), 32);
         let event: Vec<u8> = kms.event_ring.iter().copied().collect();
         assert_eq!(u32::from_le_bytes(event[0..4].try_into().unwrap()), 2);
         assert_eq!(u32::from_le_bytes(event[4..8].try_into().unwrap()), 32);
         assert_eq!(u64::from_le_bytes(event[8..16].try_into().unwrap()), 0x42);
+        assert_eq!(u32::from_le_bytes(event[24..28].try_into().unwrap()), seq);
         assert_eq!(u32::from_le_bytes(event[28..32].try_into().unwrap()), 1);
 
-        // A back-to-back second PAGE_FLIP succeeds (the previous flip
-        // already retired synchronously) and appends another 32-byte
-        // record to the event_ring.
+        // A back-to-back second PAGE_FLIP must wait for its own
+        // vblank tick. Reading event_ring still returns only the
+        // first event until the next drain runs.
         unsafe { core::ptr::write_unaligned(flipbuf.as_mut_ptr() as *mut WpkDrmModeCrtcPageFlip, flip) };
         sys_ioctl(&mut proc, &mut host, fd, DRM_IOCTL_MODE_PAGE_FLIP, &mut flipbuf).unwrap();
+        let kms = proc.ofd_table.get(ofd_idx).unwrap().kms().unwrap();
+        assert_eq!(kms.pending_flips.len(), 1);
+        assert_eq!(kms.event_ring.len(), 32);
+
+        let seq2 = crate::dri::vblank_tick();
+        crate::dri::drain_pending_flips_for_process(&mut proc, seq2, 0, 0);
         let kms = proc.ofd_table.get(ofd_idx).unwrap().kms().unwrap();
         assert!(kms.pending_flips.is_empty());
         assert_eq!(kms.event_ring.len(), 64);
@@ -22052,5 +22652,684 @@ mod tests {
         )
         .unwrap_err();
         assert_eq!(err2, Errno::EINVAL);
+    }
+
+    #[test]
+    fn match_virtual_device_recognizes_evdev_nodes() {
+        assert_eq!(
+            match_virtual_device(b"/dev/input/event0"),
+            Some(VirtualDevice::InputEvent { device: 0 })
+        );
+        assert_eq!(
+            match_virtual_device(b"/dev/input/event1"),
+            Some(VirtualDevice::InputEvent { device: 1 })
+        );
+        // event2+ deliberately not synthesised.
+        assert_eq!(match_virtual_device(b"/dev/input/event2"), None);
+        assert_eq!(match_virtual_device(b"/dev/input/event10"), None);
+    }
+
+    #[test]
+    fn open_event0_yields_input_state_with_device_zero() {
+        let mut proc = Process::new(101);
+        let mut host = MockHostIO::new();
+        let fd = sys_open(&mut proc, &mut host, b"/dev/input/event0", O_RDWR, 0).unwrap();
+        let entry = proc.fd_table.get(fd).unwrap();
+        let ofd = proc.ofd_table.get(entry.ofd_ref.0).unwrap();
+        let st = ofd.input().expect("input_state should be installed");
+        assert_eq!(st.device, 0);
+        assert!(!st.grabbed);
+        assert!(!st.dropped);
+        assert!(st.event_ring.is_empty());
+        // input + dri sidecars are disjoint state machines.
+        assert!(ofd.dri_state.is_none());
+    }
+
+    #[test]
+    fn open_event1_yields_input_state_with_device_one() {
+        let mut proc = Process::new(102);
+        let mut host = MockHostIO::new();
+        let fd = sys_open(&mut proc, &mut host, b"/dev/input/event1", O_RDWR, 0).unwrap();
+        let entry = proc.fd_table.get(fd).unwrap();
+        let st = proc
+            .ofd_table
+            .get(entry.ofd_ref.0)
+            .and_then(|o| o.input())
+            .expect("input_state should be installed");
+        assert_eq!(st.device, 1);
+    }
+
+    #[test]
+    fn open_event0_is_multi_process_no_busy() {
+        // Unlike /dev/fb0 + /dev/input/mice + /dev/dsp (single-owner),
+        // evdev nodes accept multiple opens — every process can
+        // attach its own ring.
+        let mut proc1 = Process::new(201);
+        let mut proc2 = Process::new(202);
+        let mut host = MockHostIO::new();
+        assert!(sys_open(&mut proc1, &mut host, b"/dev/input/event0", O_RDONLY, 0).is_ok());
+        assert!(sys_open(&mut proc2, &mut host, b"/dev/input/event0", O_RDONLY, 0).is_ok());
+    }
+
+    #[test]
+    fn open_nonexistent_event_path_returns_enoent() {
+        let mut proc = Process::new(301);
+        let mut host = MockHostIO::new();
+        let r = sys_open(&mut proc, &mut host, b"/dev/input/event2", O_RDONLY, 0);
+        assert!(r.is_err(), "/dev/input/event2 must NOT open as a virtual device");
+    }
+
+    #[test]
+    fn match_virtual_device_recognizes_alsa_paths() {
+        assert_eq!(
+            match_virtual_device(b"/dev/snd/controlC0"),
+            Some(VirtualDevice::AlsaControl { card: 0 })
+        );
+        assert_eq!(
+            match_virtual_device(b"/dev/snd/pcmC0D0p"),
+            Some(VirtualDevice::AlsaPcm {
+                card: 0,
+                device: 0,
+                sub: 0,
+                kind: crate::ofd::PcmDir::Playback,
+            })
+        );
+        // pcmC0D0c is "disabled", not "matched as a virtual device".
+        assert_eq!(match_virtual_device(b"/dev/snd/pcmC0D0c"), None);
+        // No additional cards/devices in v1.
+        assert_eq!(match_virtual_device(b"/dev/snd/controlC1"), None);
+        assert_eq!(match_virtual_device(b"/dev/snd/pcmC0D1p"), None);
+    }
+
+    #[test]
+    fn open_pcm_playback_yields_audio_state_in_open_state() {
+        use wasm_posix_shared::audio::SNDRV_PCM_STATE_OPEN;
+        let mut proc = Process::new(701);
+        let mut host = MockHostIO::new();
+        let fd = sys_open(&mut proc, &mut host, b"/dev/snd/pcmC0D0p", O_WRONLY, 0).unwrap();
+        let entry = proc.fd_table.get(fd).unwrap();
+        let ofd = proc.ofd_table.get(entry.ofd_ref.0).unwrap();
+        let st = ofd.audio().expect("audio sidecar should be installed");
+        assert_eq!(st.kind, crate::ofd::PcmDir::Playback);
+        assert_eq!(st.state, SNDRV_PCM_STATE_OPEN);
+        assert!(st.hw_params.is_none());
+        assert!(st.sw_params.is_none());
+        assert!(st.mmap_status.is_none());
+        assert!(st.mmap_control.is_none());
+        assert_eq!(st.pcm_id, 0);
+        // PCM and control sidecars are disjoint state machines.
+        assert!(ofd.audio_ctl().is_none());
+        assert!(ofd.dri_state.is_none());
+        assert!(ofd.input_state.is_none());
+    }
+
+    #[test]
+    fn open_control_yields_audio_ctl_state() {
+        let mut proc = Process::new(702);
+        let mut host = MockHostIO::new();
+        let fd = sys_open(&mut proc, &mut host, b"/dev/snd/controlC0", O_RDWR, 0).unwrap();
+        let entry = proc.fd_table.get(fd).unwrap();
+        let ofd = proc.ofd_table.get(entry.ofd_ref.0).unwrap();
+        let st = ofd.audio_ctl().expect("audio_ctl sidecar should be installed");
+        assert_eq!(st.card, 0);
+        // The PCM sidecar must NOT be populated for a control open.
+        assert!(ofd.audio().is_none());
+    }
+
+    #[test]
+    fn open_pcm_capture_returns_enodev() {
+        let mut proc = Process::new(703);
+        let mut host = MockHostIO::new();
+        let err = sys_open(&mut proc, &mut host, b"/dev/snd/pcmC0D0c", O_RDONLY, 0)
+            .expect_err("pcmC0D0c (capture) must not open in v1");
+        assert_eq!(err, Errno::ENODEV);
+    }
+
+    #[test]
+    fn open_pcm_is_multi_process_no_busy() {
+        // Unlike single-owner /dev/fb0 / /dev/dsp, ALSA PCM accepts
+        // multiple opens — every process attaches its own per-OFD
+        // state. (Cross-process arbitration is a future-plan concern.)
+        let mut proc1 = Process::new(704);
+        let mut proc2 = Process::new(705);
+        let mut host = MockHostIO::new();
+        assert!(sys_open(&mut proc1, &mut host, b"/dev/snd/pcmC0D0p", O_WRONLY, 0).is_ok());
+        assert!(sys_open(&mut proc2, &mut host, b"/dev/snd/pcmC0D0p", O_WRONLY, 0).is_ok());
+    }
+
+    #[test]
+    fn dup_inherits_audio_state_via_ofd_share() {
+        // Per-OFD audio state means dup-share works for free: two fds
+        // pointing at the same OFD see the same AlsaFdState. fork-time
+        // inheritance reuses this property once A7 wires audio fork
+        // serialisation.
+        use wasm_posix_shared::audio::SNDRV_PCM_STATE_SETUP;
+        let mut proc = Process::new(706);
+        let mut host = MockHostIO::new();
+        let fd = sys_open(&mut proc, &mut host, b"/dev/snd/pcmC0D0p", O_WRONLY, 0).unwrap();
+        let dup_fd = sys_dup(&mut proc, fd).unwrap();
+        assert_ne!(fd, dup_fd);
+
+        let dup_entry = proc.fd_table.get(dup_fd).unwrap();
+        let dup_ofd_idx = dup_entry.ofd_ref.0;
+        {
+            let st = proc
+                .ofd_table
+                .get_mut(dup_ofd_idx)
+                .and_then(|o| o.audio_mut())
+                .unwrap();
+            st.state = SNDRV_PCM_STATE_SETUP;
+        }
+
+        let orig_entry = proc.fd_table.get(fd).unwrap();
+        assert_eq!(orig_entry.ofd_ref.0, dup_ofd_idx);
+        let st = proc
+            .ofd_table
+            .get(orig_entry.ofd_ref.0)
+            .and_then(|o| o.audio())
+            .unwrap();
+        assert_eq!(st.state, SNDRV_PCM_STATE_SETUP);
+    }
+
+    #[test]
+    fn fresh_open_of_pcm_yields_distinct_audio_state() {
+        use wasm_posix_shared::audio::{SNDRV_PCM_STATE_OPEN, SNDRV_PCM_STATE_SETUP};
+        let mut proc = Process::new(707);
+        let mut host = MockHostIO::new();
+        let fd1 = sys_open(&mut proc, &mut host, b"/dev/snd/pcmC0D0p", O_WRONLY, 0).unwrap();
+        let fd2 = sys_open(&mut proc, &mut host, b"/dev/snd/pcmC0D0p", O_WRONLY, 0).unwrap();
+        let ofd1_idx = proc.fd_table.get(fd1).unwrap().ofd_ref.0;
+        let ofd2_idx = proc.fd_table.get(fd2).unwrap().ofd_ref.0;
+        assert_ne!(ofd1_idx, ofd2_idx);
+
+        proc.ofd_table.get_mut(ofd1_idx).unwrap().audio_mut().unwrap().state =
+            SNDRV_PCM_STATE_SETUP;
+        assert_eq!(
+            proc.ofd_table.get(ofd2_idx).and_then(|o| o.audio()).unwrap().state,
+            SNDRV_PCM_STATE_OPEN
+        );
+    }
+
+    #[test]
+    fn read_eventN_returns_zero_before_any_event() {
+        let mut proc = Process::new(401);
+        let mut host = MockHostIO::new();
+        let fd = sys_open(&mut proc, &mut host, b"/dev/input/event0", O_RDONLY, 0).unwrap();
+        let mut buf = [0u8; 24];
+        let n = sys_read(&mut proc, &mut host, fd, &mut buf).unwrap();
+        assert_eq!(n, 0);
+    }
+
+    const fn evioc(dir: u32, nr: u32, size: u32) -> u32 {
+        (dir << 30) | (size << 16) | ((b'E' as u32) << 8) | nr
+    }
+
+    fn open_evdev(pid: u32, path: &[u8]) -> (Process, MockHostIO, i32) {
+        let mut proc = Process::new(pid);
+        let mut host = MockHostIO::new();
+        let fd = sys_open(&mut proc, &mut host, path, O_RDWR, 0).unwrap();
+        (proc, host, fd)
+    }
+
+    #[test]
+    fn evioc_gversion_returns_010001() {
+        use wasm_posix_shared::input::EVIOCGVERSION;
+        let (mut proc, mut host, fd) = open_evdev(601, b"/dev/input/event0");
+        let mut buf = [0u8; 4];
+        sys_ioctl(&mut proc, &mut host, fd, EVIOCGVERSION, &mut buf).unwrap();
+        assert_eq!(u32::from_le_bytes(buf), 0x0001_0001);
+    }
+
+    #[test]
+    fn evioc_gid_keyboard_vs_pointer_differs_by_product() {
+        use wasm_posix_shared::input::{EVIOCGID, WpkInputId, BUS_VIRTUAL};
+        let (mut proc, mut host, kfd) = open_evdev(602, b"/dev/input/event0");
+        let pfd = sys_open(&mut proc, &mut host, b"/dev/input/event1", O_RDWR, 0).unwrap();
+        let mut kbuf = [0u8; core::mem::size_of::<WpkInputId>()];
+        sys_ioctl(&mut proc, &mut host, kfd, EVIOCGID, &mut kbuf).unwrap();
+        let kid: WpkInputId = unsafe { core::ptr::read_unaligned(kbuf.as_ptr() as *const _) };
+        let mut pbuf = [0u8; core::mem::size_of::<WpkInputId>()];
+        sys_ioctl(&mut proc, &mut host, pfd, EVIOCGID, &mut pbuf).unwrap();
+        let pid_: WpkInputId = unsafe { core::ptr::read_unaligned(pbuf.as_ptr() as *const _) };
+        assert_eq!(kid.bustype, BUS_VIRTUAL);
+        assert_eq!(pid_.bustype, BUS_VIRTUAL);
+        assert_eq!(kid.vendor, pid_.vendor, "vendor matches across devices");
+        assert_ne!(kid.product, pid_.product, "product distinguishes kbd vs ptr");
+        assert_eq!(kid.product, 0x0001);
+        assert_eq!(pid_.product, 0x0002);
+    }
+
+    #[test]
+    fn evioc_gname_event0_returns_keyboard_string() {
+        use wasm_posix_shared::input::EVIOCGNAME_NR;
+        let (mut proc, mut host, fd) = open_evdev(603, b"/dev/input/event0");
+        let mut buf = [0u8; 64];
+        let req = evioc(2, EVIOCGNAME_NR, buf.len() as u32);
+        sys_ioctl(&mut proc, &mut host, fd, req, &mut buf).unwrap();
+        let nul = buf.iter().position(|&b| b == 0).unwrap();
+        assert_eq!(&buf[..nul], b"wpk virtual keyboard");
+    }
+
+    #[test]
+    fn evioc_gname_event1_returns_pointer_string() {
+        use wasm_posix_shared::input::EVIOCGNAME_NR;
+        let (mut proc, mut host, fd) = open_evdev(604, b"/dev/input/event1");
+        let mut buf = [0u8; 64];
+        let req = evioc(2, EVIOCGNAME_NR, buf.len() as u32);
+        sys_ioctl(&mut proc, &mut host, fd, req, &mut buf).unwrap();
+        let nul = buf.iter().position(|&b| b == 0).unwrap();
+        assert_eq!(&buf[..nul], b"wpk virtual pointer");
+    }
+
+    #[test]
+    fn evioc_gname_truncates_to_caller_buffer() {
+        use wasm_posix_shared::input::EVIOCGNAME_NR;
+        let (mut proc, mut host, fd) = open_evdev(605, b"/dev/input/event0");
+        // "wpk virtual keyboard" is 20 chars; a 5-byte buffer fills with
+        // the prefix and no NUL terminator — caller handles the cut-off.
+        let mut buf = [0xffu8; 5];
+        let req = evioc(2, EVIOCGNAME_NR, buf.len() as u32);
+        sys_ioctl(&mut proc, &mut host, fd, req, &mut buf).unwrap();
+        assert_eq!(&buf, b"wpk v");
+    }
+
+    #[test]
+    fn evioc_gbit_keyboard_evtype_query_advertises_syn_and_key_only() {
+        use wasm_posix_shared::input::{EVIOCGBIT_NR_BASE, EV_KEY, EV_REL, EV_SYN};
+        let (mut proc, mut host, fd) = open_evdev(606, b"/dev/input/event0");
+        let mut buf = [0u8; 4];
+        let req = evioc(2, EVIOCGBIT_NR_BASE, buf.len() as u32);
+        sys_ioctl(&mut proc, &mut host, fd, req, &mut buf).unwrap();
+        assert_ne!(buf[0] & (1 << EV_SYN), 0);
+        assert_ne!(buf[0] & (1 << EV_KEY), 0);
+        assert_eq!(buf[0] & (1 << EV_REL), 0, "keyboard must not advertise EV_REL");
+    }
+
+    #[test]
+    fn evioc_gbit_pointer_evtype_query_adds_rel_and_abs() {
+        use wasm_posix_shared::input::{EVIOCGBIT_NR_BASE, EV_ABS, EV_REL};
+        let (mut proc, mut host, fd) = open_evdev(607, b"/dev/input/event1");
+        let mut buf = [0u8; 4];
+        let req = evioc(2, EVIOCGBIT_NR_BASE, buf.len() as u32);
+        sys_ioctl(&mut proc, &mut host, fd, req, &mut buf).unwrap();
+        assert_ne!(buf[0] & (1 << EV_REL), 0);
+        assert_ne!(buf[0] & (1 << EV_ABS), 0);
+    }
+
+    #[test]
+    fn evioc_gbit_keyboard_ev_key_lists_key_a() {
+        use wasm_posix_shared::input::{EVIOCGBIT_NR_BASE, EV_KEY, KEY_A};
+        let (mut proc, mut host, fd) = open_evdev(608, b"/dev/input/event0");
+        let mut buf = [0u8; 32];
+        let req = evioc(2, EVIOCGBIT_NR_BASE + EV_KEY as u32, buf.len() as u32);
+        sys_ioctl(&mut proc, &mut host, fd, req, &mut buf).unwrap();
+        let byte = (KEY_A >> 3) as usize;
+        assert_ne!(buf[byte] & (1 << (KEY_A & 7)), 0);
+    }
+
+    #[test]
+    fn evioc_gabs_keyboard_returns_enotty() {
+        use wasm_posix_shared::input::{EVIOCGABS_NR_BASE, ABS_X, WpkInputAbsinfo};
+        let (mut proc, mut host, fd) = open_evdev(609, b"/dev/input/event0");
+        let mut buf = [0u8; core::mem::size_of::<WpkInputAbsinfo>()];
+        let req = evioc(2, EVIOCGABS_NR_BASE + ABS_X as u32, buf.len() as u32);
+        let err = sys_ioctl(&mut proc, &mut host, fd, req, &mut buf).unwrap_err();
+        // ENOTTY (not EINVAL) — SDL2 greps the errno; EINVAL fatals it.
+        assert_eq!(err, Errno::ENOTTY);
+    }
+
+    #[test]
+    fn evioc_gabs_pointer_x_returns_canvas_width_minus_one() {
+        use wasm_posix_shared::input::{EVIOCGABS_NR_BASE, ABS_X, ABS_Y, WpkInputAbsinfo};
+        crate::input::set_canvas_dims(800, 600);
+        let (mut proc, mut host, fd) = open_evdev(610, b"/dev/input/event1");
+        let mut buf = [0u8; core::mem::size_of::<WpkInputAbsinfo>()];
+        let req_x = evioc(2, EVIOCGABS_NR_BASE + ABS_X as u32, buf.len() as u32);
+        sys_ioctl(&mut proc, &mut host, fd, req_x, &mut buf).unwrap();
+        let abs: WpkInputAbsinfo = unsafe { core::ptr::read_unaligned(buf.as_ptr() as *const _) };
+        assert_eq!(abs.maximum, 799);
+        assert_eq!(abs.resolution, 1);
+        assert_eq!(abs.minimum, 0);
+        let req_y = evioc(2, EVIOCGABS_NR_BASE + ABS_Y as u32, buf.len() as u32);
+        sys_ioctl(&mut proc, &mut host, fd, req_y, &mut buf).unwrap();
+        let aby: WpkInputAbsinfo = unsafe { core::ptr::read_unaligned(buf.as_ptr() as *const _) };
+        assert_eq!(aby.maximum, 599);
+        // Restore the default so other tests running in parallel see
+        // the boot value.
+        crate::input::set_canvas_dims(1280, 720);
+    }
+
+    #[test]
+    fn evioc_grab_sets_flag_then_release_clears_it() {
+        use wasm_posix_shared::input::EVIOCGRAB;
+        let (mut proc, mut host, fd) = open_evdev(611, b"/dev/input/event0");
+        let ofd_idx = proc.fd_table.get(fd).unwrap().ofd_ref.0;
+        let mut on = 1i32.to_le_bytes();
+        sys_ioctl(&mut proc, &mut host, fd, EVIOCGRAB, &mut on).unwrap();
+        assert!(proc.ofd_table.get(ofd_idx).unwrap().input().unwrap().grabbed);
+        let mut off = 0i32.to_le_bytes();
+        sys_ioctl(&mut proc, &mut host, fd, EVIOCGRAB, &mut off).unwrap();
+        assert!(!proc.ofd_table.get(ofd_idx).unwrap().input().unwrap().grabbed);
+    }
+
+    #[test]
+    fn evioc_grab_twice_from_same_fd_is_idempotent() {
+        use wasm_posix_shared::input::EVIOCGRAB;
+        let (mut proc, mut host, fd) = open_evdev(612, b"/dev/input/event0");
+        let mut on = 1i32.to_le_bytes();
+        sys_ioctl(&mut proc, &mut host, fd, EVIOCGRAB, &mut on).unwrap();
+        let mut on2 = 1i32.to_le_bytes();
+        sys_ioctl(&mut proc, &mut host, fd, EVIOCGRAB, &mut on2).unwrap();
+    }
+
+    #[test]
+    fn evioc_grab_release_without_prior_grab_is_a_noop() {
+        use wasm_posix_shared::input::EVIOCGRAB;
+        let (mut proc, mut host, fd) = open_evdev(613, b"/dev/input/event0");
+        let mut off = 0i32.to_le_bytes();
+        sys_ioctl(&mut proc, &mut host, fd, EVIOCGRAB, &mut off).unwrap();
+    }
+
+    #[test]
+    fn close_releases_grab_so_next_open_can_grab() {
+        use wasm_posix_shared::input::EVIOCGRAB;
+        let (mut proc, mut host, fd_a) = open_evdev(616, b"/dev/input/event0");
+        let idx_a = proc.fd_table.get(fd_a).unwrap().ofd_ref.0;
+        let mut on = 1i32.to_le_bytes();
+        sys_ioctl(&mut proc, &mut host, fd_a, EVIOCGRAB, &mut on).unwrap();
+        assert!(proc.ofd_table.get(idx_a).unwrap().input().unwrap().grabbed);
+
+        sys_close(&mut proc, &mut host, fd_a).unwrap();
+        assert!(proc.ofd_table.get(idx_a).is_none());
+
+        let fd_b = sys_open(
+            &mut proc,
+            &mut host,
+            b"/dev/input/event0",
+            O_RDWR,
+            0,
+        )
+        .unwrap();
+        let idx_b = proc.fd_table.get(fd_b).unwrap().ofd_ref.0;
+        let input = proc.ofd_table.get(idx_b).unwrap().input().unwrap();
+        assert!(input.event_ring.is_empty());
+        assert!(!input.dropped);
+        assert!(!input.grabbed);
+        let mut on2 = 1i32.to_le_bytes();
+        sys_ioctl(&mut proc, &mut host, fd_b, EVIOCGRAB, &mut on2).unwrap();
+        assert!(proc.ofd_table.get(idx_b).unwrap().input().unwrap().grabbed);
+    }
+
+    #[test]
+    fn fork_then_close_in_child_keeps_grab_on_parent() {
+        use wasm_posix_shared::input::{
+            EVIOCGRAB, EV_KEY, EV_SYN, KEY_A, SYN_REPORT,
+        };
+        let (mut parent, mut host, parent_fd) =
+            open_evdev(617, b"/dev/input/event0");
+        let ofd_idx = parent.fd_table.get(parent_fd).unwrap().ofd_ref.0;
+        let mut on = 1i32.to_le_bytes();
+        sys_ioctl(&mut parent, &mut host, parent_fd, EVIOCGRAB, &mut on)
+            .unwrap();
+        push_event_into_ofd(&mut parent, ofd_idx, EV_KEY, KEY_A, 1);
+        push_event_into_ofd(&mut parent, ofd_idx, EV_SYN, SYN_REPORT, 0);
+
+        let mut buf = alloc::vec![0u8; 64 * 1024];
+        let written =
+            crate::fork::serialize_fork_state(&parent, &mut buf).unwrap();
+        let mut child =
+            crate::fork::deserialize_fork_state(&buf[..written], 717).unwrap();
+
+        let child_input = child.ofd_table.get(ofd_idx).unwrap().input().unwrap();
+        assert_eq!(child_input.device, 0);
+        assert!(child_input.grabbed);
+        assert_eq!(child_input.event_ring.len(), 48);
+
+        sys_close(&mut child, &mut host, parent_fd).unwrap();
+        assert!(child.ofd_table.get(ofd_idx).is_none());
+
+        let parent_input =
+            parent.ofd_table.get(ofd_idx).unwrap().input().unwrap();
+        assert!(parent_input.grabbed);
+        assert_eq!(parent_input.event_ring.len(), 48);
+    }
+
+    #[test]
+    fn evioc_unknown_request_returns_enotty_not_einval() {
+        // SDL2's evdev probe greps the errno; EINVAL fatals it.
+        let (mut proc, mut host, fd) = open_evdev(614, b"/dev/input/event0");
+        let bogus = evioc(2, 0xfe, 0);
+        let mut buf = [0u8; 4];
+        let err = sys_ioctl(&mut proc, &mut host, fd, bogus, &mut buf).unwrap_err();
+        assert_eq!(err, Errno::ENOTTY);
+    }
+
+    #[test]
+    fn evioc_foreign_magic_on_evdev_fd_returns_enotty() {
+        // ENOTTY (not EINVAL) so probing loops keep moving past a
+        // foreign-subsystem ioctl issued on an evdev fd.
+        let (mut proc, mut host, fd) = open_evdev(615, b"/dev/input/event0");
+        let foreign = (2u32 << 30) | (4u32 << 16) | ((b'X' as u32) << 8) | 0x01;
+        let mut buf = [0u8; 4];
+        let err = sys_ioctl(&mut proc, &mut host, fd, foreign, &mut buf).unwrap_err();
+        assert_eq!(err, Errno::ENOTTY);
+    }
+
+    /// Inject one `WpkInputEvent` into an OFD's ring without going
+    /// through `dispatch::push_event` — avoids registering the test
+    /// process in GLOBAL_PROCESS_TABLE.
+    fn push_event_into_ofd(
+        proc: &mut Process,
+        ofd_idx: usize,
+        ev_type: u16,
+        code: u16,
+        value: i32,
+    ) {
+        use wasm_posix_shared::input::WpkInputEvent;
+        let input = proc
+            .ofd_table
+            .get_mut(ofd_idx)
+            .unwrap()
+            .input_mut()
+            .unwrap();
+        let ev = WpkInputEvent {
+            tv_sec: 0,
+            tv_usec: 0,
+            _pad: 0,
+            ev_type,
+            code,
+            value,
+        };
+        let bytes: [u8; 24] = unsafe { core::mem::transmute(ev) };
+        for b in bytes {
+            input.event_ring.push_back(b);
+        }
+    }
+
+    fn extract_record_at(
+        buf: &[u8],
+        off: usize,
+    ) -> wasm_posix_shared::input::WpkInputEvent {
+        unsafe {
+            core::ptr::read_unaligned(
+                buf.as_ptr().add(off) as *const wasm_posix_shared::input::WpkInputEvent,
+            )
+        }
+    }
+
+    #[test]
+    fn read_returns_einval_for_buffer_shorter_than_one_record() {
+        // Linux evdev rejects sub-record reads — partial returns would
+        // break the input_event boundary contract.
+        let (mut proc, mut host, fd) = open_evdev(701, b"/dev/input/event0");
+        let mut buf = [0u8; 12];
+        let err = sys_read(&mut proc, &mut host, fd, &mut buf).unwrap_err();
+        assert_eq!(err, Errno::EINVAL);
+    }
+
+    #[test]
+    fn read_drains_whole_records_from_ring() {
+        use wasm_posix_shared::input::{EV_KEY, EV_SYN, KEY_A, SYN_REPORT};
+        let (mut proc, mut host, fd) = open_evdev(702, b"/dev/input/event0");
+        let ofd_idx = proc.fd_table.get(fd).unwrap().ofd_ref.0;
+        push_event_into_ofd(&mut proc, ofd_idx, EV_KEY, KEY_A, 1);
+        push_event_into_ofd(&mut proc, ofd_idx, EV_SYN, SYN_REPORT, 0);
+        push_event_into_ofd(&mut proc, ofd_idx, EV_KEY, KEY_A, 0);
+        let mut buf = [0u8; 72];
+        let n = sys_read(&mut proc, &mut host, fd, &mut buf).unwrap();
+        assert_eq!(n, 72);
+        let r0 = extract_record_at(&buf, 0);
+        let r1 = extract_record_at(&buf, 24);
+        let r2 = extract_record_at(&buf, 48);
+        assert_eq!((r0.ev_type, r0.code, r0.value), (EV_KEY, KEY_A, 1));
+        assert_eq!((r1.ev_type, r1.code, r1.value), (EV_SYN, SYN_REPORT, 0));
+        assert_eq!((r2.ev_type, r2.code, r2.value), (EV_KEY, KEY_A, 0));
+        let input = proc.ofd_table.get(ofd_idx).unwrap().input().unwrap();
+        assert!(input.event_ring.is_empty());
+    }
+
+    #[test]
+    fn read_truncates_to_whole_record_boundary_and_leaves_remainder() {
+        use wasm_posix_shared::input::{EV_KEY, KEY_A};
+        let (mut proc, mut host, fd) = open_evdev(703, b"/dev/input/event0");
+        let ofd_idx = proc.fd_table.get(fd).unwrap().ofd_ref.0;
+        for v in 0..3 {
+            push_event_into_ofd(&mut proc, ofd_idx, EV_KEY, KEY_A, v);
+        }
+        // 50 floors to 48 (= 2 records); one stays in the ring.
+        let mut buf = [0u8; 50];
+        let n = sys_read(&mut proc, &mut host, fd, &mut buf).unwrap();
+        assert_eq!(n, 48);
+        let r0 = extract_record_at(&buf, 0);
+        let r1 = extract_record_at(&buf, 24);
+        assert_eq!(r0.value, 0);
+        assert_eq!(r1.value, 1);
+        let input = proc.ofd_table.get(ofd_idx).unwrap().input().unwrap();
+        assert_eq!(input.event_ring.len(), 24);
+        let mut buf2 = [0u8; 24];
+        let n2 = sys_read(&mut proc, &mut host, fd, &mut buf2).unwrap();
+        assert_eq!(n2, 24);
+        assert_eq!(extract_record_at(&buf2, 0).value, 2);
+    }
+
+    #[test]
+    fn read_with_dropped_flag_emits_syn_dropped_and_clears_flag() {
+        use wasm_posix_shared::input::{EV_SYN, SYN_DROPPED};
+        let (mut proc, mut host, fd) = open_evdev(704, b"/dev/input/event0");
+        let ofd_idx = proc.fd_table.get(fd).unwrap().ofd_ref.0;
+        proc.ofd_table
+            .get_mut(ofd_idx)
+            .unwrap()
+            .input_mut()
+            .unwrap()
+            .dropped = true;
+        let mut buf = [0u8; 24];
+        let n = sys_read(&mut proc, &mut host, fd, &mut buf).unwrap();
+        assert_eq!(n, 24);
+        let synth = extract_record_at(&buf, 0);
+        assert_eq!(synth.ev_type, EV_SYN);
+        assert_eq!(synth.code, SYN_DROPPED);
+        assert_eq!(synth.value, 0);
+        let input = proc.ofd_table.get(ofd_idx).unwrap().input().unwrap();
+        assert!(!input.dropped, "dropped flag must clear after SYN_DROPPED emit");
+    }
+
+    #[test]
+    fn read_after_overflow_emits_syn_dropped_then_real_records() {
+        use wasm_posix_shared::input::{EV_KEY, EV_SYN, KEY_A, SYN_DROPPED};
+        let (mut proc, mut host, fd) = open_evdev(705, b"/dev/input/event0");
+        let ofd_idx = proc.fd_table.get(fd).unwrap().ofd_ref.0;
+        push_event_into_ofd(&mut proc, ofd_idx, EV_KEY, KEY_A, 100);
+        push_event_into_ofd(&mut proc, ofd_idx, EV_KEY, KEY_A, 101);
+        // dispatch::push_event would latch `dropped` on a full ring —
+        // simulate that here without running the producer.
+        proc.ofd_table
+            .get_mut(ofd_idx)
+            .unwrap()
+            .input_mut()
+            .unwrap()
+            .dropped = true;
+        let mut buf = [0u8; 72];
+        let n = sys_read(&mut proc, &mut host, fd, &mut buf).unwrap();
+        assert_eq!(n, 72);
+        let synth = extract_record_at(&buf, 0);
+        assert_eq!((synth.ev_type, synth.code), (EV_SYN, SYN_DROPPED));
+        let r1 = extract_record_at(&buf, 24);
+        let r2 = extract_record_at(&buf, 48);
+        assert_eq!((r1.ev_type, r1.code, r1.value), (EV_KEY, KEY_A, 100));
+        assert_eq!((r2.ev_type, r2.code, r2.value), (EV_KEY, KEY_A, 101));
+        let input = proc.ofd_table.get(ofd_idx).unwrap().input().unwrap();
+        assert!(!input.dropped);
+        assert!(input.event_ring.is_empty());
+    }
+
+    #[test]
+    fn read_empty_ring_with_nonblock_returns_eagain() {
+        let mut proc = Process::new(706);
+        let mut host = MockHostIO::new();
+        let fd = sys_open(
+            &mut proc,
+            &mut host,
+            b"/dev/input/event0",
+            O_RDONLY | O_NONBLOCK,
+            0,
+        )
+        .unwrap();
+        let mut buf = [0u8; 24];
+        let err = sys_read(&mut proc, &mut host, fd, &mut buf).unwrap_err();
+        assert_eq!(err, Errno::EAGAIN);
+    }
+
+    #[test]
+    fn poll_pollin_idle_then_ready_after_event_pushed() {
+        use wasm_posix_shared::WasmPollFd;
+        use wasm_posix_shared::input::{EV_KEY, KEY_A};
+        use wasm_posix_shared::poll::POLLIN;
+        let (mut proc, mut host, fd) = open_evdev(707, b"/dev/input/event0");
+        let ofd_idx = proc.fd_table.get(fd).unwrap().ofd_ref.0;
+        let mut pollfd = WasmPollFd { fd, events: POLLIN, revents: 0 };
+        let n = sys_poll(&mut proc, &mut host, core::slice::from_mut(&mut pollfd), 0).unwrap();
+        assert_eq!(n, 0, "empty ring + no dropped latch → POLLIN idle");
+        assert_eq!(pollfd.revents, 0);
+        push_event_into_ofd(&mut proc, ofd_idx, EV_KEY, KEY_A, 1);
+        let mut pollfd = WasmPollFd { fd, events: POLLIN, revents: 0 };
+        let n = sys_poll(&mut proc, &mut host, core::slice::from_mut(&mut pollfd), 0).unwrap();
+        assert_eq!(n, 1);
+        assert_ne!(pollfd.revents & POLLIN, 0);
+    }
+
+    #[test]
+    fn poll_pollin_ready_when_only_dropped_flag_is_set() {
+        // The SYN_DROPPED marker alone is a readable 24-byte record;
+        // poll must fire even with an empty ring.
+        use wasm_posix_shared::WasmPollFd;
+        use wasm_posix_shared::poll::POLLIN;
+        let (mut proc, mut host, fd) = open_evdev(708, b"/dev/input/event0");
+        let ofd_idx = proc.fd_table.get(fd).unwrap().ofd_ref.0;
+        proc.ofd_table
+            .get_mut(ofd_idx)
+            .unwrap()
+            .input_mut()
+            .unwrap()
+            .dropped = true;
+        let mut pollfd = WasmPollFd { fd, events: POLLIN, revents: 0 };
+        let n = sys_poll(&mut proc, &mut host, core::slice::from_mut(&mut pollfd), 0).unwrap();
+        assert_eq!(n, 1);
+        assert_ne!(pollfd.revents & POLLIN, 0);
+    }
+
+    #[test]
+    fn poll_never_reports_pollout_for_evdev_fd() {
+        use wasm_posix_shared::WasmPollFd;
+        use wasm_posix_shared::poll::{POLLIN, POLLOUT};
+        let (mut proc, mut host, fd) = open_evdev(709, b"/dev/input/event0");
+        let mut pollfd = WasmPollFd {
+            fd,
+            events: POLLIN | POLLOUT,
+            revents: 0,
+        };
+        let n = sys_poll(&mut proc, &mut host, core::slice::from_mut(&mut pollfd), 0).unwrap();
+        assert_eq!(n, 0);
+        assert_eq!(pollfd.revents & POLLOUT, 0);
     }
 }

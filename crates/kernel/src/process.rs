@@ -1108,7 +1108,30 @@ pub(crate) mod test_host {
         }
         fn unbind_framebuffer(&mut self, _p: i32) {}
         fn fb_write(&mut self, _p: i32, _o: usize, _b: &[u8]) {}
+
+        /// Test-only hook: when [`PROC_READ_SOURCE`] holds a non-empty
+        /// buffer, copy it (up to `dst.len()`) into `dst`. Otherwise
+        /// behaves like the trait default (returns 0, leaves `dst`
+        /// untouched). Lets tests for kernel paths that copy user
+        /// memory (e.g. `WRITEI_FRAMES`) drive byte content without a
+        /// bespoke `HostIO` impl.
+        fn proc_read_bytes(&mut self, _pid: i32, _addr: u32, dst: &mut [u8]) -> i32 {
+            let src = PROC_READ_SOURCE.lock().unwrap_or_else(|e| e.into_inner());
+            let n = dst.len().min(src.len());
+            if n > 0 {
+                dst[..n].copy_from_slice(&src[..n]);
+            }
+            0
+        }
     }
+
+    /// Source buffer for [`NoopHost::proc_read_bytes`]. Empty by
+    /// default; tests that need to drive byte content into a kernel
+    /// path overwrite it under the relevant subsystem's serialization
+    /// lock (`audio::sab::TEST_SAB_LOCK`, etc.) and reset it back to
+    /// empty before releasing the lock.
+    pub static PROC_READ_SOURCE: std::sync::Mutex<alloc::vec::Vec<u8>> =
+        std::sync::Mutex::new(alloc::vec::Vec::new());
 }
 
 #[cfg(test)]

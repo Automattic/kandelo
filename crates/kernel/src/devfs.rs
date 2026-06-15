@@ -35,6 +35,8 @@ pub enum DevfsEntry {
     InputDir,
     /// /dev/dri
     DriDir,
+    /// /dev/snd
+    SndDir,
 }
 
 /// Match a resolved path to a devfs directory entry.
@@ -47,6 +49,7 @@ pub fn match_devfs_dir(path: &[u8]) -> Option<DevfsEntry> {
         b"/dev/fd" => Some(DevfsEntry::FdDir),
         b"/dev/input" => Some(DevfsEntry::InputDir),
         b"/dev/dri" => Some(DevfsEntry::DriDir),
+        b"/dev/snd" => Some(DevfsEntry::SndDir),
         _ => None,
     }
 }
@@ -178,11 +181,15 @@ fn dir_entries(proc: &crate::process::Process, entry: &DevfsEntry) -> Vec<(Vec<u
             entries.push((b"mqueue".into(), DT_DIR, devfs_ino(b"/dev/mqueue")));
             entries.push((b"input".into(), DT_DIR, devfs_ino(b"/dev/input")));
             entries.push((b"dri".into(), DT_DIR, devfs_ino(b"/dev/dri")));
+            entries.push((b"snd".into(), DT_DIR, devfs_ino(b"/dev/snd")));
         }
         DevfsEntry::InputDir => {
             // /dev/input/mice — Linux-compatible PS/2 mouse stream.
-            // No /dev/input/eventN evdev nodes yet (mousedev surface only).
             entries.push((b"mice".into(), DT_CHR, devfs_ino(b"/dev/input/mice")));
+            // /dev/input/event0 — keyboard evdev (plan 5).
+            // /dev/input/event1 — pointer evdev.
+            entries.push((b"event0".into(), DT_CHR, devfs_ino(b"/dev/input/event0")));
+            entries.push((b"event1".into(), DT_CHR, devfs_ino(b"/dev/input/event1")));
         }
         DevfsEntry::DriDir => {
             // /dev/dri/card0 — KMS / display side.
@@ -193,6 +200,14 @@ fn dir_entries(proc: &crate::process::Process, entry: &DevfsEntry) -> Vec<(Vec<u
                 DT_CHR,
                 devfs_ino(b"/dev/dri/renderD128"),
             ));
+        }
+        DevfsEntry::SndDir => {
+            // /dev/snd/controlC0 — ALSA control surface (plan 6).
+            // /dev/snd/pcmC0D0p — ALSA PCM playback (plan 6). Capture
+            // (`pcmC0D0c`) is deliberately not listed; opens for it
+            // get ENODEV from disabled_virtual_device.
+            entries.push((b"controlC0".into(), DT_CHR, devfs_ino(b"/dev/snd/controlC0")));
+            entries.push((b"pcmC0D0p".into(), DT_CHR, devfs_ino(b"/dev/snd/pcmC0D0p")));
         }
         DevfsEntry::PtsDir => {
             // List active PTY slaves
@@ -359,5 +374,52 @@ mod tests {
         // /dev/input itself stats as a directory.
         let st = match_devfs_stat(b"/dev/input", 0, 0).unwrap();
         assert_eq!(st.st_mode & 0o170000, S_IFDIR);
+    }
+
+    #[test]
+    fn snd_dir_is_listed_under_dev() {
+        let proc = crate::process::Process::new(1);
+        let entries = dir_entries(&proc, &DevfsEntry::Root);
+        let mut found = false;
+        for (name, dtype, _) in entries.iter() {
+            if name.as_slice() == b"snd" {
+                assert_eq!(*dtype, DT_DIR);
+                found = true;
+            }
+        }
+        assert!(found, "snd subdir missing from /dev listing");
+    }
+
+    #[test]
+    fn snd_dir_lists_controlc0_and_pcmc0d0p() {
+        let proc = crate::process::Process::new(1);
+        let entries = dir_entries(&proc, &DevfsEntry::SndDir);
+        let names: Vec<&[u8]> = entries.iter().map(|(n, _, _)| n.as_slice()).collect();
+        assert!(names.iter().any(|n| *n == b"controlC0"), "controlC0 missing: {:?}", names);
+        assert!(names.iter().any(|n| *n == b"pcmC0D0p"), "pcmC0D0p missing: {:?}", names);
+        // pcmC0D0c is deliberately NOT listed — v1 ships playback only.
+        assert!(!names.iter().any(|n| *n == b"pcmC0D0c"));
+        for (_, dtype, _) in entries.iter() {
+            assert_eq!(*dtype, DT_CHR);
+        }
+        // /dev/snd itself stats as a directory.
+        let st = match_devfs_stat(b"/dev/snd", 0, 0).unwrap();
+        assert_eq!(st.st_mode & 0o170000, S_IFDIR);
+    }
+
+    #[test]
+    fn event0_and_event1_listed_in_dev_input_dir() {
+        let proc = crate::process::Process::new(1);
+        let entries = dir_entries(&proc, &DevfsEntry::InputDir);
+        let names: Vec<&[u8]> = entries.iter().map(|(n, _, _)| n.as_slice()).collect();
+        assert!(names.iter().any(|n| *n == b"event0"), "event0 missing: {:?}", names);
+        assert!(names.iter().any(|n| *n == b"event1"), "event1 missing: {:?}", names);
+        // event2 deliberately NOT synthesised.
+        assert!(!names.iter().any(|n| *n == b"event2"));
+        for (name, dtype, _) in entries.iter() {
+            if name.as_slice() == b"event0" || name.as_slice() == b"event1" {
+                assert_eq!(*dtype, DT_CHR);
+            }
+        }
     }
 }

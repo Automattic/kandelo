@@ -15,6 +15,8 @@ import type {
   KernelToMainMessage,
 } from "./browser-kernel-protocol";
 import type { HttpRequest, HttpResponse } from "./networking/in-kernel-http";
+import type { InputSource } from "./input/input-source";
+import type { AudioDriver, AudioRing } from "./audio/audio-driver";
 
 export type { HttpRequest, HttpResponse };
 import kernelWasmUrl from "@kernel-wasm?url";
@@ -823,6 +825,169 @@ export class BrowserKernel {
    */
   injectMouseEvent(dx: number, dy: number, buttons: number): void {
     this.sendToKernel({ type: "mouse_inject", dx, dy, buttons });
+  }
+
+  /**
+   * Push one evdev record into the kernel's `/dev/input/event{0,1}`
+   * ring. `device` is 0 for the keyboard, 1 for the pointer; the
+   * other three fields mirror Linux `struct input_event`. Apps
+   * normally route through `attachInputSource` and never call this
+   * directly — exposed for tests + niche injection paths.
+   */
+  injectInputEvent(
+    device: 0 | 1,
+    ev_type: number,
+    code: number,
+    value: number,
+  ): void {
+    this.sendToKernel({
+      type: "input_event_inject",
+      device,
+      ev_type,
+      code,
+      value,
+    });
+  }
+
+  /**
+   * Tell the kernel the current host canvas dimensions so EVIOCGABS
+   * on `/dev/input/event1` reports `ABS_X.maximum = width - 1` and
+   * `ABS_Y.maximum = height - 1`. Call once at boot when the canvas
+   * is attached and again on any resize.
+   */
+  setInputCanvasDims(width: number, height: number): void {
+    this.sendToKernel({ type: "set_input_canvas_dims", width, height });
+  }
+
+  /**
+   * Wire an `InputSource` into the kernel: sets canvas dims, then
+   * starts the source with a dispatch callback that funnels each
+   * emitted record through `injectInputEvent`. Mirrors
+   * `NodeKernelHost.attachInputSource` — dual-host parity per
+   * CLAUDE.md §"Two hosts".
+   */
+  attachInputSource(
+    source: InputSource,
+    dims: { width: number; height: number },
+  ): void {
+    this.setInputCanvasDims(dims.width, dims.height);
+    source.start((ev) =>
+      this.injectInputEvent(ev.device, ev.ev_type, ev.code, ev.value),
+    );
+  }
+
+  /**
+   * Allocate a kernel-memory SAB ring for `pcmId` of `byteLen` bytes
+   * and bind it via `kernel_audio_init_sab`. Returns the ring window
+   * the host AudioDriver should view as `Int16Array(buffer, offset, …)`.
+   * Mirrors the Node-side method of the same name — dual-host parity
+   * per CLAUDE.md §"Two hosts".
+   */
+  async audioAllocRing(pcmId: number, byteLen: number): Promise<AudioRing> {
+    const requestId = this.nextRequestId++;
+    const result = await this.request(requestId, {
+      type: "audio_alloc_ring",
+      requestId,
+      pcmId,
+      byteLen,
+    });
+    return result as AudioRing;
+  }
+
+  /**
+   * Fire-and-forget period tick into the kernel. The
+   * `BrowserAudioDriver` invokes this from its worklet-message handler
+   * once per ALSA period boundary; the kernel advances
+   * `mmap_status.hw_ptr` and wakes any `POLLOUT` waiter parked on
+   * `/dev/snd/pcmC0D<pcmId>p`.
+   */
+  audioPeriodTick(pcmId: number, framesConsumed: number): void {
+    this.sendToKernel({
+      type: "audio_period_tick",
+      pcmId,
+      framesConsumed,
+    });
+  }
+
+  /**
+   * Read the current `mmap_control.appl_ptr` for any OFD bound to
+   * `pcmId`. Polled by `BrowserAudioDriver` to gate the worklet's
+   * `hwPtr` advance on producer progress. The async hop to the
+   * kernel worker resolves in ~1–5 ms; the driver polls every 10 ms.
+   */
+  async audioGetApplPtr(pcmId: number): Promise<number> {
+    const requestId = this.nextRequestId++;
+    const result = await this.request(requestId, {
+      type: "audio_get_appl_ptr",
+      requestId,
+      pcmId,
+    });
+    return result as number;
+  }
+
+  /**
+   * Wire an `AudioDriver` into the kernel: allocates a SAB ring,
+   * registers it, then starts the driver with a `kernelTick` callback
+   * that funnels each period boundary into `kernel_audio_period_tick`.
+   * Mirrors `NodeKernelHost.attachAudioDriver` — dual-host parity per
+   * CLAUDE.md §"Two hosts".
+   *
+   * On the browser the driver is a `BrowserAudioDriver` which spins up
+   * an `AudioContext` + `AudioWorkletNode` to pull samples on each
+   * quantum. The worklet posts `framesConsumed` back here per quantum;
+   * the driver accumulates to a period and ticks the kernel.
+   */
+  async attachAudioDriver(
+    driver: AudioDriver,
+    opts: {
+      pcmId?: number;
+      sampleRate?: number;
+      channels?: number;
+      periodFrames?: number;
+      ringBytes?: number;
+    } = {},
+  ): Promise<void> {
+    const pcmId = opts.pcmId ?? 0;
+    const sampleRate = opts.sampleRate ?? 48_000;
+    const channels = opts.channels ?? 2;
+    const periodFrames = opts.periodFrames ?? 1024;
+    const ringBytes = opts.ringBytes ?? 64 * 1024;
+    const ring = await this.audioAllocRing(pcmId, ringBytes);
+    // The browser driver wants a synchronous returns-number callback
+    // (no awaits inside the AudioWorklet `process()` call path) — but
+    // the kernel runs in a worker, so `audioGetApplPtr` is async. We
+    // cache the latest value here and refresh it on each invocation;
+    // returns the previous cached value while the next request is in
+    // flight. The cache always converges within one poll interval
+    // (10 ms) which is far below one ALSA period (~46 ms @ 22050 Hz),
+    // so the worklet sees fresh enough producer progress.
+    let cachedApplPtr = 0;
+    let inFlight = false;
+    const getApplPtr = (id: number): number => {
+      if (!inFlight) {
+        inFlight = true;
+        this.audioGetApplPtr(id)
+          .then((v) => {
+            cachedApplPtr = v;
+          })
+          .catch(() => {
+            /* swallow — keep last good value */
+          })
+          .finally(() => {
+            inFlight = false;
+          });
+      }
+      return cachedApplPtr;
+    };
+    await driver.start(
+      pcmId,
+      sampleRate,
+      channels,
+      periodFrames,
+      ring,
+      (id, frames) => this.audioPeriodTick(id, frames),
+      getApplPtr,
+    );
   }
 
   /**

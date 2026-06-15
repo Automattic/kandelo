@@ -1,6 +1,13 @@
 // Builds a LiveKernelHost over a real BrowserKernel for the Kandelo page.
 
 import { BrowserKernel } from "@host/browser-kernel-host";
+import { BrowserInputSource } from "../../../../../host/src/input/browser-input-source";
+import { BrowserAudioDriver } from "../../../../../host/src/audio/browser-audio-driver";
+import {
+  instrumentAudioDriver,
+  type InstrumentedAudioDriver,
+} from "../../../../../host/src/audio/instrumented-audio-driver";
+import wpkAudioWorkletUrl from "../../../../../host/src/audio/wpk-audio-worklet.js?url";
 import { ensureServiceWorkerReady } from "../../../lib/init/service-worker-bridge";
 import { setupServiceWorkerFetchBridge } from "../../../lib/init/sw-bridge-fetch";
 import { rewriteShellLazyFileUrls } from "../../../lib/init/shell-lazy-files";
@@ -83,6 +90,12 @@ const OPTIONAL_BINARY_URLS = {
     query: "?url", import: "default",
   }),
   ...import.meta.glob("../../../../../binaries/programs/wasm32/modeset.wasm", {
+    query: "?url", import: "default",
+  }),
+  ...import.meta.glob("../../../../../local-binaries/programs/wasm32/evdev_demo.wasm", {
+    query: "?url", import: "default",
+  }),
+  ...import.meta.glob("../../../../../binaries/programs/wasm32/evdev_demo.wasm", {
     query: "?url", import: "default",
   }),
 } as Record<string, () => Promise<string>>;
@@ -238,6 +251,8 @@ const LIVE_DEMO_IDS = [
   "wordpress-mariadb",
   "doom",
   "modeset",
+  "evdev",
+  "espeak",
 ] as const;
 
 type LiveDemoId = typeof LIVE_DEMO_IDS[number];
@@ -325,6 +340,12 @@ const LIVE_PROFILE_SPECS: Record<LiveDemoId, LiveProfileSpec> = {
     image: "shell",
     features: ["kms"],
   },
+  evdev: {
+    image: "shell",
+  },
+  espeak: {
+    image: "shell",
+  },
 };
 
 const DEMO_ALIASES: Record<string, LiveDemoId> = {
@@ -374,6 +395,23 @@ interface LiveProfile {
    * `framebufferTest` path for /dev/fb0 demos.
    */
   modesetDemo: boolean;
+  /**
+   * Stage `evdev_demo` into `/usr/local/bin`, attach a `BrowserInputSource`
+   * to the window so keyboard/pointer events flow into the kernel's
+   * `/dev/input/event{0,1}`, and run the binary from bash so its event
+   * log streams to the user's Shell pane. The C1 sysroot vendoring proof.
+   */
+  evdevDemo: boolean;
+  /**
+   * Attach a `BrowserAudioDriver` and spawn `espeak-ng "..."` from
+   * the booted shell. espeak-ng links against our patched pcaudiolib
+   * whose `create_audio_device_object` is wired to the kandelo
+   * backend (open /dev/snd/pcmC0D0p + WRITEI loop), so a single
+   * binary invocation produces audible synthesised speech without
+   * any host-side pipeline. The binary + data dir are baked into
+   * the shell VFS image via `populateEspeakRuntime`.
+   */
+  espeakDemo: boolean;
 }
 
 interface WebReadinessState {
@@ -669,6 +707,8 @@ function customVfsProfile(
     maxVfsByteLength: 256 * 1024 * 1024,
     framebufferTest: fb === "test",
     modesetDemo: false,
+    evdevDemo: false,
+    espeakDemo: false,
   };
 }
 
@@ -689,6 +729,8 @@ function profileFor(id: string, fb?: FbDemo): LiveProfile {
       init: software.init,
       framebufferTest: false,
       modesetDemo: false,
+      evdevDemo: false,
+      espeakDemo: false,
     };
   }
 
@@ -721,6 +763,8 @@ function profileFor(id: string, fb?: FbDemo): LiveProfile {
     },
     framebufferTest: fb === "test",
     modesetDemo: normalized === "modeset",
+    evdevDemo: normalized === "evdev",
+    espeakDemo: normalized === "espeak",
   };
 }
 
@@ -1237,6 +1281,82 @@ async function bootProfile(
         "../../../../../binaries/programs/wasm32/modeset.wasm",
       ], "modeset.wasm");
       void spawnLazy(kernel, "/usr/local/bin/modeset", modesetWasmUrl, ["modeset"], tick);
+    } else if (profile.espeakDemo) {
+      // espeak-ng + its data dir are baked into the shell VFS image
+      // (see populateEspeakRuntime in build-shell-vfs-image.ts), so
+      // no runtime binary staging is needed. The audio driver MUST be
+      // attached before the binary opens /dev/snd/pcmC0D0p — the
+      // WRITEI path returns EBADFD until the SAB ring is registered.
+      // espeak-ng emits at 22050 Hz mono (its internal synth rate);
+      // the worklet resamples to the AudioContext rate.
+      const kernelForEspeak = kernel;
+      void (async () => {
+        try {
+          tick("attaching audio driver...");
+          const audioDriver = createInstrumentedAudioDriver();
+          await kernelForEspeak.attachAudioDriver(audioDriver, {
+            pcmId: 0,
+            sampleRate: 22_050,
+            channels: 1,
+            periodFrames: 1024,
+            ringBytes: 64 * 1024,
+          });
+          tick("running espeak-ng...");
+          try {
+            await host.runShellCommand(
+              `/usr/bin/espeak-ng "Welcome to Kandelo, the WebAssembly POSIX kernel"`,
+            );
+            tick("espeak-ng exited");
+          } finally {
+            audioDriver.stop(0);
+          }
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : String(err);
+          tick(`espeak-ng failed: ${msg}`);
+        }
+      })();
+    } else if (profile.evdevDemo) {
+      // autoCommand can't run this: the InputSource must be attached
+      // before the binary starts polling /dev/input/event{0,1}, and
+      // the binary itself has to be staged into the VFS first.
+      const kernelForEvdev = kernel;
+      void (async () => {
+        try {
+          const evdevDemoWasmUrl = await optionalBinaryUrl([
+            "../../../../../local-binaries/programs/wasm32/evdev_demo.wasm",
+            "../../../../../binaries/programs/wasm32/evdev_demo.wasm",
+          ], "evdev_demo.wasm");
+          tick("staging evdev_demo binary...");
+          const bytes = await fetch(evdevDemoWasmUrl)
+            .then(failOn("evdev_demo.wasm"))
+            .then((r) => r.arrayBuffer());
+          ensureDirRecursive(kernelForEvdev.fs, "/usr/local/bin");
+          writeVfsBinary(
+            kernelForEvdev.fs,
+            "/usr/local/bin/evdev_demo",
+            new Uint8Array(bytes),
+            0o755,
+          );
+          tick("attaching input source...");
+          kernelForEvdev.attachInputSource(new BrowserInputSource(window), {
+            width: window.innerWidth,
+            height: window.innerHeight,
+          });
+          tick("running evdev_demo...");
+          // evdev_demo runs forever; runShellCommand resolves when the
+          // bash prompt reappears (it never will) or rejects after its
+          // internal 5-minute timeout. Both are expected — log neutrally.
+          await host.runShellCommand("/usr/local/bin/evdev_demo");
+          tick("evdev_demo exited");
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : String(err);
+          if (/timed out waiting for PTY prompt/.test(msg)) {
+            tick("evdev_demo running (long-tail; no further status updates)");
+          } else {
+            tick(`evdev_demo failed: ${msg}`);
+          }
+        }
+      })();
     } else if (presentation?.autoCommand) {
       tick("starting configured command from bash...");
       void host.runShellCommand(presentation.autoCommand).catch((err) => {
@@ -1259,6 +1379,23 @@ async function bootProfile(
     }
     throw err;
   }
+}
+
+/**
+ * Wraps `BrowserAudioDriver` so the per-period tick callback also
+ * bumps `window.__alsaFramesConsumed`. Playwright reads that counter
+ * to confirm the AudioWorklet is alive and the kernel is being
+ * ticked. The forwarding contract is exercised by
+ * `host/test/instrumented-audio-driver.test.ts`.
+ */
+function createInstrumentedAudioDriver(): InstrumentedAudioDriver {
+  return instrumentAudioDriver(
+    new BrowserAudioDriver(wpkAudioWorkletUrl),
+    (_frames, total) => {
+      (window as unknown as { __alsaFramesConsumed?: number })
+        .__alsaFramesConsumed = total;
+    },
+  );
 }
 
 function genericPresentationForProfile(profile: LiveProfile): DemoPresentation {

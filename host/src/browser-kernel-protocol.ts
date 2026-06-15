@@ -218,6 +218,35 @@ export interface MouseInjectMessage {
 }
 
 /**
+ * Main-thread → kernel-worker evdev injection. The main thread's
+ * `BrowserInputSource` translates DOM events to evdev records and
+ * forwards them here; the worker calls
+ * `CentralizedKernelWorker.injectInputEvent` which routes the record
+ * through the kernel's fan-out (`kernel_input_event` → `push_event`)
+ * to `/dev/input/event{0,1}` and wakes any blocked reader.
+ */
+export interface InputEventInjectMessage {
+  type: "input_event_inject";
+  device: 0 | 1;
+  ev_type: number;
+  code: number;
+  value: number;
+}
+
+/**
+ * Main-thread → kernel-worker canvas-dims update. Tells the kernel
+ * the current host canvas dimensions so EVIOCGABS on
+ * `/dev/input/event1` reports the right `ABS_X.maximum` /
+ * `ABS_Y.maximum`. Sent at boot once the canvas exists; resend on
+ * canvas resize.
+ */
+export interface SetInputCanvasDimsMessage {
+  type: "set_input_canvas_dims";
+  width: number;
+  height: number;
+}
+
+/**
  * Main-thread → kernel-worker audio drain request. The main thread's
  * AudioContext scheduler ticks every ~50 ms, asks the kernel ring for
  * up to `maxBytes` of PCM samples, and feeds them to a chained
@@ -229,6 +258,52 @@ export interface AudioDrainMessage {
   type: "audio_drain";
   requestId: number;
   maxBytes: number;
+}
+
+/**
+ * Main-thread → kernel-worker request to allocate a kernel-memory
+ * SAB ring for `pcmId` of `byteLen` bytes and bind it via
+ * `kernel_audio_init_sab`. The worker replies via `ResponseMessage`
+ * with `{ buffer, byteOffset, byteLength }` so the main-thread
+ * AudioDriver can mount an `Int16Array` view at the same offset.
+ * Mirrors the Node-side message of the same name — dual-host parity
+ * per CLAUDE.md §"Two hosts".
+ */
+export interface AudioAllocRingRequestMessage {
+  type: "audio_alloc_ring";
+  requestId: number;
+  pcmId: number;
+  byteLen: number;
+}
+
+/**
+ * Main-thread → kernel-worker period tick. The main-thread
+ * `BrowserAudioDriver` accumulates AudioWorklet quanta until one ALSA
+ * period's worth of frames is consumed, then sends this message. The
+ * worker calls `kernel_audio_period_tick` which advances
+ * `mmap_status.hw_ptr`, detects XRUN, and wakes any `POLLOUT` waiter
+ * parked on `/dev/snd/pcmC0D<pcmId>p`. Fire-and-forget.
+ */
+export interface AudioPeriodTickMessage {
+  type: "audio_period_tick";
+  pcmId: number;
+  framesConsumed: number;
+}
+
+/**
+ * Main-thread → kernel-worker request to read the current
+ * `mmap_control.appl_ptr` for any OFD bound to `pcmId`. The
+ * `BrowserAudioDriver` polls this on a 10 ms interval and forwards
+ * the result into the `wpk-pcm-pull` AudioWorklet so the worklet
+ * gates `hwPtr` advance on producer progress (silence past
+ * `appl_ptr`). The worker replies via `ResponseMessage` with a
+ * `number` (i64 truncated through `Number()` — within JS safe-int
+ * range for any realistic session). Returns 0 if no OFD is bound.
+ */
+export interface AudioGetApplPtrRequestMessage {
+  type: "audio_get_appl_ptr";
+  requestId: number;
+  pcmId: number;
 }
 
 export interface RegisterLazyArchivesMessage {
@@ -347,7 +422,12 @@ export type MainToKernelMessage =
   | RegisterLazyArchivesMessage
   | GetForkCountRequestMessage
   | MouseInjectMessage
+  | InputEventInjectMessage
+  | SetInputCanvasDimsMessage
   | AudioDrainMessage
+  | AudioAllocRingRequestMessage
+  | AudioPeriodTickMessage
+  | AudioGetApplPtrRequestMessage
   | EnumProcsRequestMessage
   | ReadProcMapsRequestMessage
   | SetSyscallTraceMessage
