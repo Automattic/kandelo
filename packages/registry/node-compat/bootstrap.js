@@ -15191,6 +15191,7 @@ const _builtinModules = {
             isMainThread: true,
             parentPort: null,
             workerData: null,
+            threadId: 0,
             Worker: class Worker {},
         },
     'cluster': cluster,
@@ -16257,6 +16258,9 @@ function _resolveFile(id, basedir) {
         return _resolveAsFileOrDirectory(norm, { allowExtensions: !id.endsWith('/') });
     }
 
+    const selfRef = _resolvePackageSelfReference(id, basedir);
+    if (selfRef) return selfRef;
+
     // Bare specifier: walk node_modules upward.
     let dir = basedir;
     while (true) {
@@ -16271,6 +16275,49 @@ function _resolveFile(id, basedir) {
     for (const globalPath of Module.globalPaths) {
         const resolved = _resolveAsFileOrDirectory(path.join(globalPath, id), { allowExtensions: !id.endsWith('/') });
         if (resolved) return resolved;
+    }
+    return null;
+}
+
+function _resolvePackageSelfReference(id, basedir) {
+    const firstSlash = id.indexOf('/');
+    const secondSlash = id.startsWith('@') && firstSlash >= 0 ? id.indexOf('/', firstSlash + 1) : -1;
+    const packageName = id.startsWith('@')
+        ? (secondSlash >= 0 ? id.slice(0, secondSlash) : id)
+        : (firstSlash >= 0 ? id.slice(0, firstSlash) : id);
+    if (!packageName) return null;
+    let dir = basedir;
+    while (dir && dir !== '/') {
+        const pkgJson = dir + '/package.json';
+        if (_isReg(pkgJson)) {
+            try {
+                const pkg = JSON.parse(std.loadFile(pkgJson));
+                if (!pkg || pkg.name !== packageName) return null;
+                const subpath = id === packageName ? '.' : '.' + id.slice(packageName.length);
+                if (typeof pkg.exports === 'string' && subpath === '.') {
+                    return _resolveAsFileOrDirectory(path.resolve(dir, pkg.exports));
+                }
+                if (pkg.exports && typeof pkg.exports === 'object') {
+                    const target = pkg.exports[subpath] || (subpath === '.' ? pkg.exports['.'] : null);
+                    if (typeof target === 'string') {
+                        return _resolveAsFileOrDirectory(path.resolve(dir, target));
+                    }
+                    if (target && typeof target === 'object') {
+                        const conditional = target.require || target.node || target.default;
+                        if (typeof conditional === 'string') {
+                            return _resolveAsFileOrDirectory(path.resolve(dir, conditional));
+                        }
+                    }
+                }
+                if (subpath === '.') return _resolvePackageMain(dir);
+                return _resolveAsFileOrDirectory(path.resolve(dir, subpath.slice(2)));
+            } catch {
+                return null;
+            }
+        }
+        const parent = path.dirname(dir);
+        if (parent === dir) break;
+        dir = parent;
     }
     return null;
 }
@@ -17164,7 +17211,8 @@ function _parseNodeCli(argv) {
                 state.argv = [process.execPath || rawArgv[0] || 'node', ...rest];
             } else if (rest.length > 0) {
                 state.mainScript = rest[0];
-                state.argv = [process.execPath || rawArgv[0] || 'node', ...rest];
+                const mainArg = path.isAbsolute(rest[0]) ? rest[0] : path.resolve(process.cwd(), rest[0]);
+                state.argv = [process.execPath || rawArgv[0] || 'node', mainArg, ...rest.slice(1)];
             }
             break;
         }
@@ -17304,8 +17352,13 @@ function _parseNodeCli(argv) {
             state.error = { status: 9, message: `bad option: ${arg}` };
             return state;
         }
+        if (state.evalSource !== null || state.print) {
+            state.argv = [process.execPath || rawArgv[0] || 'node', ...rawArgv.slice(i)];
+            break;
+        }
         state.mainScript = arg;
-        state.argv = [process.execPath || rawArgv[0] || 'node', ...rawArgv.slice(i)];
+        const mainArg = path.isAbsolute(arg) ? arg : path.resolve(process.cwd(), arg);
+        state.argv = [process.execPath || rawArgv[0] || 'node', mainArg, ...rawArgv.slice(i + 1)];
         break;
     }
 
@@ -17342,7 +17395,9 @@ function _findMainScriptArg(argv) {
 // so its top-level relative requires resolve against itself, matching Node's
 // per-file require semantics. For -e/-p/REPL (no script in argv), basedir
 // falls back to cwd.
-const _detectedMainScriptArg = _cliState.mainScript || _findMainScriptArg(process.argv);
+const _detectedMainScriptArg = _cliState.mainScript
+    ? (path.isAbsolute(_cliState.mainScript) ? _cliState.mainScript : path.resolve(process.cwd(), _cliState.mainScript))
+    : _findMainScriptArg(process.argv);
 _defineGlobal('require', _makeRequire(_detectedMainScriptArg || process.cwd() + '/repl'));
 
 // Node.js globals
@@ -18542,8 +18597,9 @@ _defineGlobal('console', _globalConsole);
 })();
 
 function _runCliPreloads() {
+    const preloadRequire = Module.createRequire(path.join(process.cwd(), '.kandelo-cli-preload.js'));
     for (const request of _cliState.preloads || []) {
-        require(request);
+        preloadRequire(request);
     }
 }
 

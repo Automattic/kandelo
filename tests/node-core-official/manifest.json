@@ -62,6 +62,12 @@
       "reason": "Legacy url.parse query handling."
     },
     {
+      "path": "test/parallel/test-bootstrap-modules.js",
+      "area": "bootstrap",
+      "expected": "SKIP",
+      "reason": "Checks Node/V8's exact internal bootstrap NativeModule and Internal Binding load inventory. Kandelo boots a shared compatibility layer on SpiderMonkey, so the exact internal pre-execution load list is outside the supported semantic boundary."
+    },
+    {
       "path": "test/parallel/test-repl-array-prototype-tempering.js",
       "area": "repl",
       "expected": "SKIP",

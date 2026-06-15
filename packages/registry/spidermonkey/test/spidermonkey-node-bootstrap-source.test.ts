@@ -3,6 +3,7 @@ import {
   mkdirSync,
   mkdtempSync,
   readFileSync,
+  realpathSync,
   rmSync,
   writeFileSync,
 } from "node:fs";
@@ -355,6 +356,46 @@ assert.strictEqual(__kandeloRunNodeEventLoop(), 0);
       stdout: "",
       stderr: "/usr/bin/node: --eval is not allowed in NODE_OPTIONS\n",
     });
+  });
+
+  it("runs CLI preload modules before the main script with package self references", () => {
+    const root = mkdtempSync(join(tmpdir(), "kandelo-node-preload-"));
+    try {
+      writeFileSync(join(root, "package.json"), JSON.stringify({ name: "self_ref", exports: "./index.js" }));
+      writeFileSync(join(root, "index.js"), "console.log('self-ref:' + __filename);");
+      writeFileSync(join(root, "preload.js"), "console.log('preload:' + JSON.stringify({ argv: process.argv, execArgv: process.execArgv }));");
+      writeFileSync(join(root, "main.js"), "console.log('main:' + JSON.stringify({ argv: process.argv, execArgv: process.execArgv }));");
+
+      const result = runBootstrapCli(
+        ["node", "-r", "./preload.js", "-r", "self_ref", "main.js", "alpha"],
+        { cwd: root },
+      );
+      expect(result.stderr).toBe("");
+      expect(result.status).toBe(0);
+      expect(result.stdout.trim().split("\n")).toEqual([
+        `preload:${JSON.stringify({ argv: ["/usr/bin/node", join(root, "main.js"), "alpha"], execArgv: ["-r", "./preload.js", "-r", "self_ref"] })}`,
+        `self-ref:${realpathSync(join(root, "index.js"))}`,
+        `main:${JSON.stringify({ argv: ["/usr/bin/node", join(root, "main.js"), "alpha"], execArgv: ["-r", "./preload.js", "-r", "self_ref"] })}`,
+      ]);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("runs CLI preloads before print-eval expressions", () => {
+    const root = mkdtempSync(join(tmpdir(), "kandelo-node-print-preload-"));
+    try {
+      writeFileSync(join(root, "preload.js"), "console.log('preload:' + JSON.stringify({ argv: process.argv, execArgv: process.execArgv }));");
+      const result = runBootstrapCli(["node", "-r", "./preload.js", "-pe", "1+1", "tail"], { cwd: root });
+      expect(result.stderr).toBe("");
+      expect(result.status).toBe(0);
+      expect(result.stdout.trim().split("\n")).toEqual([
+        `preload:${JSON.stringify({ argv: ["/usr/bin/node", "tail"], execArgv: ["-r", "./preload.js", "-pe", "1+1"] })}`,
+        "2",
+      ]);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 
   it("inserts the SpiderMonkey argument separator for Node child self-exec", () => {
