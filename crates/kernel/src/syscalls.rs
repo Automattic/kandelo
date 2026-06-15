@@ -6246,11 +6246,18 @@ fn is_supported_udp_bind_addr(addr: [u8; 4]) -> bool {
 }
 
 fn is_supported_udp_route_addr(addr: [u8; 4]) -> bool {
-    addr == [0, 0, 0, 0] || is_loopback_addr(addr) || is_virtual_network_addr(addr)
+    addr == [0, 0, 0, 0]
+        || is_loopback_addr(addr)
+        || is_virtual_network_addr(addr)
+        || is_ipv4_multicast_addr(addr)
 }
 
 fn is_virtual_network_addr(addr: [u8; 4]) -> bool {
     addr[0] == 10 && addr[1] == 88
+}
+
+fn is_ipv4_multicast_addr(addr: [u8; 4]) -> bool {
+    (224..=239).contains(&addr[0])
 }
 
 fn udp_canonical_dst_addr(dst_addr: [u8; 4]) -> [u8; 4] {
@@ -6269,6 +6276,26 @@ fn udp_route_local_addr(dst_addr: [u8; 4]) -> [u8; 4] {
         [127, 0, 0, 1]
     } else {
         [0, 0, 0, 0]
+    }
+}
+
+#[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
+pub(crate) fn ipv4_multicast_interface_from_index(ifindex: u32) -> Result<[u8; 4], Errno> {
+    match ifindex {
+        0 => Ok([0, 0, 0, 0]),
+        // Kandelo exposes a Linux-like loopback interface as index 1.
+        1 => Ok([127, 0, 0, 1]),
+        _ => Err(Errno::ENODEV),
+    }
+}
+
+fn ipv4_multicast_interface_matches(interface_addr: [u8; 4], src_addr: [u8; 4]) -> bool {
+    if interface_addr == [0, 0, 0, 0] {
+        true
+    } else if is_loopback_addr(interface_addr) {
+        is_loopback_addr(src_addr)
+    } else {
+        interface_addr == src_addr
     }
 }
 
@@ -6393,6 +6420,151 @@ fn udp_take_socket_error(proc: &mut Process, sock_idx: usize) -> Result<(), Errn
     Err(Errno::from_u32(err).unwrap_or(Errno::EIO))
 }
 
+fn ipv4_multicast_membership_mut(
+    sock: &mut crate::socket::SocketInfo,
+    group: [u8; 4],
+    interface_addr: [u8; 4],
+) -> &mut crate::socket::Ipv4MulticastMembership {
+    if let Some(idx) = sock
+        .ipv4_multicast_memberships
+        .iter()
+        .position(|m| m.group == group && m.interface_addr == interface_addr)
+    {
+        return &mut sock.ipv4_multicast_memberships[idx];
+    }
+    sock.ipv4_multicast_memberships
+        .push(crate::socket::Ipv4MulticastMembership {
+            group,
+            interface_addr,
+            any_source: false,
+            blocked_sources: Vec::new(),
+            included_sources: Vec::new(),
+        });
+    sock.ipv4_multicast_memberships
+        .last_mut()
+        .expect("membership was just pushed")
+}
+
+fn ipv4_multicast_leave_if_empty(sock: &mut crate::socket::SocketInfo, idx: usize) {
+    if let Some(m) = sock.ipv4_multicast_memberships.get(idx) {
+        if !m.any_source && m.included_sources.is_empty() {
+            sock.ipv4_multicast_memberships.remove(idx);
+        }
+    }
+}
+
+/// Apply an IPv4 multicast membership/source-filter socket option.
+///
+/// Kandelo models the POSIX/Linux observable contract for local UDP
+/// multicast: joining a group on loopback lets datagrams sent to that group
+/// and interface be received by sockets bound to the destination port, source
+/// filters suppress or include sources, and sends to groups with no local
+/// listeners still succeed like UDP datagrams.
+pub fn sys_setsockopt_ipv4_multicast(
+    proc: &mut Process,
+    fd: i32,
+    optname: u32,
+    group: [u8; 4],
+    interface_addr: [u8; 4],
+    source: Option<[u8; 4]>,
+) -> Result<(), Errno> {
+    use crate::socket::{SocketDomain, SocketType};
+    use wasm_posix_shared::socket::*;
+
+    if !is_ipv4_multicast_addr(group) {
+        return Err(Errno::EINVAL);
+    }
+
+    let entry = proc.fd_table.get(fd)?;
+    let ofd = proc.ofd_table.get(entry.ofd_ref.0).ok_or(Errno::EBADF)?;
+    if ofd.file_type != FileType::Socket {
+        return Err(Errno::ENOTSOCK);
+    }
+    let sock_idx = (-(ofd.host_handle + 1)) as usize;
+    let sock = proc.sockets.get_mut(sock_idx).ok_or(Errno::EBADF)?;
+    if sock.domain != SocketDomain::Inet || sock.sock_type != SocketType::Dgram {
+        return Err(Errno::ENOPROTOOPT);
+    }
+
+    match optname {
+        IP_ADD_MEMBERSHIP | MCAST_JOIN_GROUP => {
+            let membership = ipv4_multicast_membership_mut(sock, group, interface_addr);
+            membership.any_source = true;
+            sock.set_option(IPPROTO_IP, optname, 1);
+            Ok(())
+        }
+        IP_DROP_MEMBERSHIP | MCAST_LEAVE_GROUP => {
+            sock.ipv4_multicast_memberships
+                .retain(|m| !(m.group == group && m.interface_addr == interface_addr));
+            sock.set_option(IPPROTO_IP, optname, 1);
+            Ok(())
+        }
+        IP_BLOCK_SOURCE | MCAST_BLOCK_SOURCE => {
+            let source = source.ok_or(Errno::EINVAL)?;
+            let membership = ipv4_multicast_membership_mut(sock, group, interface_addr);
+            if !membership.blocked_sources.contains(&source) {
+                membership.blocked_sources.push(source);
+            }
+            sock.set_option(IPPROTO_IP, optname, 1);
+            Ok(())
+        }
+        IP_UNBLOCK_SOURCE | MCAST_UNBLOCK_SOURCE => {
+            let source = source.ok_or(Errno::EINVAL)?;
+            if let Some(membership) = sock
+                .ipv4_multicast_memberships
+                .iter_mut()
+                .find(|m| m.group == group && m.interface_addr == interface_addr)
+            {
+                membership.blocked_sources.retain(|s| *s != source);
+            }
+            sock.set_option(IPPROTO_IP, optname, 1);
+            Ok(())
+        }
+        IP_ADD_SOURCE_MEMBERSHIP | MCAST_JOIN_SOURCE_GROUP => {
+            let source = source.ok_or(Errno::EINVAL)?;
+            let membership = ipv4_multicast_membership_mut(sock, group, interface_addr);
+            if !membership.included_sources.contains(&source) {
+                membership.included_sources.push(source);
+            }
+            sock.set_option(IPPROTO_IP, optname, 1);
+            Ok(())
+        }
+        IP_DROP_SOURCE_MEMBERSHIP | MCAST_LEAVE_SOURCE_GROUP => {
+            let source = source.ok_or(Errno::EINVAL)?;
+            if let Some(idx) = sock
+                .ipv4_multicast_memberships
+                .iter()
+                .position(|m| m.group == group && m.interface_addr == interface_addr)
+            {
+                sock.ipv4_multicast_memberships[idx]
+                    .included_sources
+                    .retain(|s| *s != source);
+                ipv4_multicast_leave_if_empty(sock, idx);
+            }
+            sock.set_option(IPPROTO_IP, optname, 1);
+            Ok(())
+        }
+        _ => Err(Errno::ENOPROTOOPT),
+    }
+}
+
+fn udp_socket_accepts_multicast_datagram(
+    sock: &crate::socket::SocketInfo,
+    group: [u8; 4],
+    src_addr: [u8; 4],
+    src_port: u16,
+) -> bool {
+    if !udp_socket_accepts_datagram(sock, src_addr, src_port) {
+        return false;
+    }
+    sock.ipv4_multicast_memberships.iter().any(|membership| {
+        membership.group == group
+            && ipv4_multicast_interface_matches(membership.interface_addr, src_addr)
+            && ((membership.any_source && !membership.blocked_sources.contains(&src_addr))
+                || membership.included_sources.contains(&src_addr))
+    })
+}
+
 fn udp_purge_unaccepted_datagrams(proc: &mut Process, sock_idx: usize) -> Result<(), Errno> {
     let (peer_addr, peer_port, connected) = {
         let sock = proc.sockets.get(sock_idx).ok_or(Errno::EBADF)?;
@@ -6443,6 +6615,48 @@ fn udp_send_datagram(
         let sock = proc.sockets.get(sock_idx).ok_or(Errno::EBADF)?;
         (sock.bind_addr, sock.bind_port)
     };
+    let src_addr = if src_addr == [0, 0, 0, 0] && is_loopback_addr(dst_addr) {
+        udp_route_local_addr(dst_addr)
+    } else {
+        src_addr
+    };
+    if is_ipv4_multicast_addr(dst_addr) {
+        let datagram = Datagram {
+            data: buf.to_vec(),
+            src_addr,
+            src_addr6: [0; 16],
+            dst_addr,
+            dst_addr6: [0; 16],
+            src_port,
+            src_sock_idx: Some(sock_idx),
+            ipv6_tclass: 0,
+            src_pid: proc.pid,
+            src_uid: proc.uid,
+            src_gid: proc.gid,
+            ancillary_fds: Vec::new(),
+        };
+
+        let endpoints = crate::socket::udp_lookup(dst_addr, dst_port);
+        for endpoint in endpoints {
+            if endpoint.pid != proc.pid {
+                continue;
+            }
+            let accepts = proc
+                .sockets
+                .get(endpoint.sock_idx)
+                .map(|sock| {
+                    udp_socket_accepts_multicast_datagram(sock, dst_addr, src_addr, src_port)
+                })
+                .unwrap_or(false);
+            if !accepts {
+                continue;
+            }
+            if let Some(target) = proc.sockets.get_mut(endpoint.sock_idx) {
+                udp_queue_datagram(target, datagram.clone());
+            }
+        }
+        return Ok(buf.len());
+    }
     if !is_loopback_addr(dst_addr) {
         return match host.host_udp_send(&src_addr, src_port, &dst_addr, dst_port, buf) {
             Ok(n) => Ok(n),
@@ -7149,6 +7363,26 @@ pub fn sys_getsockopt(proc: &mut Process, fd: i32, level: u32, optname: u32) -> 
             // SO_RCVTIMEO/SO_SNDTIMEO handled by sys_getsockopt_timeout
             _ => Err(Errno::ENOPROTOOPT),
         },
+        IPPROTO_IP => match optname {
+            IP_TOS | IP_PKTINFO | IP_MTU_DISCOVER | IP_MULTICAST_IF | IP_MULTICAST_TTL
+            | IP_MULTICAST_LOOP | IP_MULTICAST_ALL | MCAST_JOIN_GROUP | MCAST_LEAVE_GROUP
+            | MCAST_BLOCK_SOURCE | MCAST_UNBLOCK_SOURCE | MCAST_JOIN_SOURCE_GROUP
+            | MCAST_LEAVE_SOURCE_GROUP => {
+                Ok(sock.get_option(level, optname).unwrap_or_else(|| match optname {
+                    IP_MULTICAST_TTL | IP_MULTICAST_LOOP => 1,
+                    _ => 0,
+                }))
+            }
+            IP_MTU => Ok(1500),
+            _ => Err(Errno::ENOPROTOOPT),
+        },
+        IPPROTO_IPV6 => match optname {
+            IPV6_MULTICAST_IF | IPV6_MULTICAST_HOPS | IPV6_MULTICAST_LOOP
+            | IPV6_RECVPKTINFO | IPV6_RECVTCLASS | IPV6_DONTFRAG | IPV6_TCLASS => {
+                Ok(sock.get_option(level, optname).unwrap_or(0))
+            }
+            _ => Err(Errno::ENOPROTOOPT),
+        },
         IPPROTO_TCP => match optname {
             TCP_NODELAY | TCP_CORK | TCP_KEEPIDLE | TCP_KEEPINTVL | TCP_KEEPCNT
             | TCP_DEFER_ACCEPT | TCP_QUICKACK | TCP_USER_TIMEOUT => {
@@ -7266,6 +7500,26 @@ pub fn sys_setsockopt(
                 Ok(())
             }
             // SO_RCVTIMEO/SO_SNDTIMEO handled by sys_setsockopt_timeout
+            _ => Err(Errno::ENOPROTOOPT),
+        },
+        IPPROTO_IP => match optname {
+            IP_TOS | IP_PKTINFO | IP_MTU_DISCOVER | IP_MULTICAST_IF | IP_MULTICAST_TTL
+            | IP_MULTICAST_LOOP | IP_MULTICAST_ALL | MCAST_JOIN_GROUP | MCAST_LEAVE_GROUP
+            | MCAST_BLOCK_SOURCE | MCAST_UNBLOCK_SOURCE | MCAST_JOIN_SOURCE_GROUP
+            | MCAST_LEAVE_SOURCE_GROUP => {
+                sock.set_option(level, optname, value);
+                Ok(())
+            }
+            IP_MTU => Err(Errno::ENOPROTOOPT),
+            _ => Err(Errno::ENOPROTOOPT),
+        },
+        IPPROTO_IPV6 => match optname {
+            IPV6_MULTICAST_IF | IPV6_MULTICAST_HOPS | IPV6_MULTICAST_LOOP
+            | IPV6_PKTINFO | IPV6_RECVPKTINFO | IPV6_RECVTCLASS | IPV6_DONTFRAG
+            | IPV6_TCLASS => {
+                sock.set_option(level, optname, value);
+                Ok(())
+            }
             _ => Err(Errno::ENOPROTOOPT),
         },
         IPPROTO_TCP => match optname {
@@ -18416,6 +18670,221 @@ mod tests {
         assert_eq!(&buf[..data_len], b"hello UDP");
         assert_eq!(addr_len, 16);
         assert_eq!(from_addr[0], 2); // AF_INET
+    }
+
+    #[test]
+    fn test_ipv4_multicast_loopback_membership_and_filters() {
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        use wasm_posix_shared::socket::*;
+
+        let recv_fd = sys_socket(&mut proc, &mut host, AF_INET, SOCK_DGRAM, 0).unwrap();
+        let mut bind_any = [0u8; 16];
+        bind_any[0] = 2;
+        sys_bind(&mut proc, &mut host, recv_fd, &bind_any).unwrap();
+        let mut gsa_buf = [0u8; 16];
+        sys_getsockname(&proc, recv_fd, &mut gsa_buf).unwrap();
+        let port = u16::from_be_bytes([gsa_buf[2], gsa_buf[3]]);
+
+        let send_fd = sys_socket(&mut proc, &mut host, AF_INET, SOCK_DGRAM, 0).unwrap();
+        let mut bind_loopback = [0u8; 16];
+        bind_loopback[0] = 2;
+        bind_loopback[4] = 127;
+        bind_loopback[7] = 1;
+        sys_bind(&mut proc, &mut host, send_fd, &bind_loopback).unwrap();
+
+        let group = [224, 0, 0, 23];
+        let lo = [127, 0, 0, 1];
+        sys_setsockopt_ipv4_multicast(
+            &mut proc,
+            recv_fd,
+            MCAST_JOIN_GROUP,
+            group,
+            lo,
+            None,
+        )
+        .unwrap();
+
+        let mut dest = [0u8; 16];
+        dest[0] = 2;
+        dest[2..4].copy_from_slice(&port.to_be_bytes());
+        dest[4..8].copy_from_slice(&group);
+        assert_eq!(
+            sys_sendto(&mut proc, &mut host, send_fd, b"initial", 0, &dest).unwrap(),
+            7
+        );
+
+        let mut buf = [0u8; 32];
+        let mut from = [0u8; 16];
+        let (n, _) =
+            sys_recvfrom(&mut proc, &mut host, recv_fd, &mut buf, 0, &mut from).unwrap();
+        assert_eq!(&buf[..n], b"initial");
+        assert_eq!(&from[4..8], &lo);
+
+        sys_setsockopt_ipv4_multicast(
+            &mut proc,
+            recv_fd,
+            MCAST_BLOCK_SOURCE,
+            group,
+            lo,
+            Some(lo),
+        )
+        .unwrap();
+        assert_eq!(
+            sys_sendto(&mut proc, &mut host, send_fd, b"blocked", 0, &dest).unwrap(),
+            7
+        );
+        let recv_idx = {
+            let entry = proc.fd_table.get(recv_fd).unwrap();
+            let ofd = proc.ofd_table.get(entry.ofd_ref.0).unwrap();
+            (-(ofd.host_handle + 1)) as usize
+        };
+        assert!(
+            proc.sockets
+                .get(recv_idx)
+                .unwrap()
+                .dgram_queue
+                .is_empty(),
+            "blocked multicast source should not enqueue a datagram"
+        );
+
+        sys_setsockopt_ipv4_multicast(
+            &mut proc,
+            recv_fd,
+            MCAST_UNBLOCK_SOURCE,
+            group,
+            lo,
+            Some(lo),
+        )
+        .unwrap();
+        assert_eq!(
+            sys_sendto(&mut proc, &mut host, send_fd, b"unblocked", 0, &dest).unwrap(),
+            9
+        );
+        let (n, _) =
+            sys_recvfrom(&mut proc, &mut host, recv_fd, &mut buf, 0, &mut from).unwrap();
+        assert_eq!(&buf[..n], b"unblocked");
+
+        sys_setsockopt_ipv4_multicast(
+            &mut proc,
+            recv_fd,
+            MCAST_LEAVE_GROUP,
+            group,
+            lo,
+            None,
+        )
+        .unwrap();
+        assert_eq!(
+            sys_sendto(&mut proc, &mut host, send_fd, b"ignored", 0, &dest).unwrap(),
+            7
+        );
+        assert!(
+            proc.sockets
+                .get(recv_idx)
+                .unwrap()
+                .dgram_queue
+                .is_empty(),
+            "leaving a multicast group should stop group delivery"
+        );
+    }
+
+    #[test]
+    fn test_ipv4_multicast_source_membership_and_interface_match() {
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        use wasm_posix_shared::socket::*;
+
+        let recv_fd = sys_socket(&mut proc, &mut host, AF_INET, SOCK_DGRAM, 0).unwrap();
+        let mut bind_any = [0u8; 16];
+        bind_any[0] = 2;
+        bind_any[2] = 0x45;
+        bind_any[3] = 0x67;
+        sys_bind(&mut proc, &mut host, recv_fd, &bind_any).unwrap();
+
+        let loop_sender = sys_socket(&mut proc, &mut host, AF_INET, SOCK_DGRAM, 0).unwrap();
+        let mut bind_loopback = [0u8; 16];
+        bind_loopback[0] = 2;
+        bind_loopback[4] = 127;
+        bind_loopback[7] = 1;
+        sys_bind(&mut proc, &mut host, loop_sender, &bind_loopback).unwrap();
+
+        let default_sender = sys_socket(&mut proc, &mut host, AF_INET, SOCK_DGRAM, 0).unwrap();
+        let group = [224, 0, 0, 23];
+        let lo = [127, 0, 0, 1];
+        sys_setsockopt_ipv4_multicast(
+            &mut proc,
+            recv_fd,
+            MCAST_JOIN_SOURCE_GROUP,
+            group,
+            lo,
+            Some(lo),
+        )
+        .unwrap();
+
+        let mut dest = [0u8; 16];
+        dest[0] = 2;
+        dest[2] = 0x45;
+        dest[3] = 0x67;
+        dest[4..8].copy_from_slice(&group);
+
+        // The receiver joined the group on loopback only. An unbound sender
+        // uses the default interface and must not satisfy that membership,
+        // but the UDP multicast send itself still succeeds.
+        assert_eq!(
+            sys_sendto(
+                &mut proc,
+                &mut host,
+                default_sender,
+                b"default-iface",
+                0,
+                &dest
+            )
+            .unwrap(),
+            13
+        );
+        let recv_idx = {
+            let entry = proc.fd_table.get(recv_fd).unwrap();
+            let ofd = proc.ofd_table.get(entry.ofd_ref.0).unwrap();
+            (-(ofd.host_handle + 1)) as usize
+        };
+        assert!(
+            proc.sockets
+                .get(recv_idx)
+                .unwrap()
+                .dgram_queue
+                .is_empty()
+        );
+
+        assert_eq!(
+            sys_sendto(&mut proc, &mut host, loop_sender, b"source-match", 0, &dest).unwrap(),
+            12
+        );
+        let mut buf = [0u8; 32];
+        let mut from = [0u8; 16];
+        let (n, _) =
+            sys_recvfrom(&mut proc, &mut host, recv_fd, &mut buf, 0, &mut from).unwrap();
+        assert_eq!(&buf[..n], b"source-match");
+
+        sys_setsockopt_ipv4_multicast(
+            &mut proc,
+            recv_fd,
+            MCAST_LEAVE_SOURCE_GROUP,
+            group,
+            lo,
+            Some(lo),
+        )
+        .unwrap();
+        assert_eq!(
+            sys_sendto(&mut proc, &mut host, loop_sender, b"left-source", 0, &dest).unwrap(),
+            11
+        );
+        assert!(
+            proc.sockets
+                .get(recv_idx)
+                .unwrap()
+                .dgram_queue
+                .is_empty()
+        );
     }
 
     #[test]
