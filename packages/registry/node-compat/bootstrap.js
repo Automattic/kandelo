@@ -60,52 +60,187 @@ if (typeof globalThis.TextDecoder === 'undefined') {
     // Array.prototype.join('') is unsafe — QJS-NG zeros leading parts when
     // joining many large 8-bit strings.
     const _CHUNK = 8192;
+    function _asU8(input) {
+        if (!input) return new Uint8Array(0);
+        return input instanceof Uint8Array ? input :
+               input instanceof ArrayBuffer ? new Uint8Array(input) :
+               new Uint8Array(input.buffer, input.byteOffset, input.byteLength);
+    }
+    function _appendCodePoint(chunk, code) {
+        if (code > 0xFFFF) {
+            code -= 0x10000;
+            chunk.push(0xD800 + (code >> 10), 0xDC00 + (code & 0x3FF));
+        } else {
+            chunk.push(code);
+        }
+    }
+    function _isWellFormedUtf8(bytes) {
+        let needed = 0;
+        let lower = 0x80;
+        let upper = 0xBF;
+        for (let i = 0; i < bytes.length; i++) {
+            const b = bytes[i];
+            if (needed === 0) {
+                if (b <= 0x7F) continue;
+                if (b >= 0xC2 && b <= 0xDF) { needed = 1; continue; }
+                if (b === 0xE0) { needed = 2; lower = 0xA0; upper = 0xBF; continue; }
+                if (b >= 0xE1 && b <= 0xEC) { needed = 2; continue; }
+                if (b === 0xED) { needed = 2; lower = 0x80; upper = 0x9F; continue; }
+                if (b >= 0xEE && b <= 0xEF) { needed = 2; continue; }
+                if (b === 0xF0) { needed = 3; lower = 0x90; upper = 0xBF; continue; }
+                if (b >= 0xF1 && b <= 0xF3) { needed = 3; continue; }
+                if (b === 0xF4) { needed = 3; lower = 0x80; upper = 0x8F; continue; }
+                return false;
+            }
+            if (b < lower || b > upper) return false;
+            lower = 0x80;
+            upper = 0xBF;
+            needed--;
+        }
+        return needed === 0;
+    }
+    function _decodeUtf8(bytes, final, fatal) {
+        let result = '';
+        let chunk = [];
+        let code = 0;
+        let needed = 0;
+        let seen = 0;
+        let lower = 0x80;
+        let upper = 0xBF;
+        let pending = [];
+
+        const flushChunk = () => {
+            if (chunk.length > 0) {
+                result += String.fromCharCode.apply(null, chunk);
+                chunk = [];
+            }
+        };
+        const fail = () => {
+            if (fatal) throw new TypeError('The encoded data was not valid UTF-8');
+            _appendCodePoint(chunk, 0xFFFD);
+            if (chunk.length >= _CHUNK) flushChunk();
+            code = 0;
+            needed = 0;
+            seen = 0;
+            lower = 0x80;
+            upper = 0xBF;
+            pending = [];
+        };
+
+        for (let i = 0; i < bytes.length; i++) {
+            const b = bytes[i];
+            if (needed === 0) {
+                if (b <= 0x7F) {
+                    chunk.push(b);
+                    if (chunk.length >= _CHUNK) flushChunk();
+                } else if (b >= 0xC2 && b <= 0xDF) {
+                    needed = 1;
+                    seen = 0;
+                    code = b & 0x1F;
+                    pending = [b];
+                } else if (b === 0xE0) {
+                    needed = 2;
+                    seen = 0;
+                    code = b & 0x0F;
+                    lower = 0xA0;
+                    upper = 0xBF;
+                    pending = [b];
+                } else if (b >= 0xE1 && b <= 0xEC) {
+                    needed = 2;
+                    seen = 0;
+                    code = b & 0x0F;
+                    pending = [b];
+                } else if (b === 0xED) {
+                    needed = 2;
+                    seen = 0;
+                    code = b & 0x0F;
+                    lower = 0x80;
+                    upper = 0x9F;
+                    pending = [b];
+                } else if (b >= 0xEE && b <= 0xEF) {
+                    needed = 2;
+                    seen = 0;
+                    code = b & 0x0F;
+                    pending = [b];
+                } else if (b === 0xF0) {
+                    needed = 3;
+                    seen = 0;
+                    code = b & 0x07;
+                    lower = 0x90;
+                    upper = 0xBF;
+                    pending = [b];
+                } else if (b >= 0xF1 && b <= 0xF3) {
+                    needed = 3;
+                    seen = 0;
+                    code = b & 0x07;
+                    pending = [b];
+                } else if (b === 0xF4) {
+                    needed = 3;
+                    seen = 0;
+                    code = b & 0x07;
+                    lower = 0x80;
+                    upper = 0x8F;
+                    pending = [b];
+                } else {
+                    fail();
+                }
+                continue;
+            }
+
+            if (b < lower || b > upper) {
+                fail();
+                i--;
+                continue;
+            }
+
+            lower = 0x80;
+            upper = 0xBF;
+            code = (code << 6) | (b & 0x3F);
+            seen++;
+            pending.push(b);
+            if (seen === needed) {
+                _appendCodePoint(chunk, code);
+                if (chunk.length >= _CHUNK) flushChunk();
+                code = 0;
+                needed = 0;
+                seen = 0;
+                pending = [];
+            }
+        }
+
+        if (needed !== 0) {
+            if (final) fail();
+            else return { text: result + (chunk.length > 0 ? String.fromCharCode.apply(null, chunk) : ''), pending: new Uint8Array(pending) };
+        }
+        flushChunk();
+        return { text: result, pending: new Uint8Array(0) };
+    }
     globalThis.TextDecoder = class TextDecoder {
-        constructor(encoding) {
+        constructor(encoding, options) {
             this._encoding = (encoding || 'utf-8').toLowerCase();
+            this._fatal = !!(options && options.fatal);
+            this._pending = new Uint8Array(0);
         }
         get encoding() { return this._encoding; }
         decode(input, options) {
-            if (!input) return '';
-            const bytes = input instanceof Uint8Array ? input :
-                          input instanceof ArrayBuffer ? new Uint8Array(input) :
-                          new Uint8Array(input.buffer, input.byteOffset, input.byteLength);
+            let bytes = _asU8(input);
+            const stream = !!(options && options.stream);
+            if (this._pending.length > 0) {
+                const combined = new Uint8Array(this._pending.length + bytes.length);
+                combined.set(this._pending, 0);
+                combined.set(bytes, this._pending.length);
+                bytes = combined;
+                this._pending = new Uint8Array(0);
+            }
+            if (bytes.length === 0 && !stream) return '';
             // Native UTF-8 → JS string in one pass. The JS fallback below
             // does the same but takes ~10 s on a 38 MB npm packument.
-            if (typeof _nodeNative.decodeUtf8 === 'function') {
+            if (!stream && !this._fatal && typeof _nodeNative.decodeUtf8 === 'function' && _isWellFormedUtf8(bytes)) {
                 return _nodeNative.decodeUtf8(bytes);
             }
-            let result = '';
-            let chunk = [];
-            let i = 0;
-            while (i < bytes.length) {
-                let code;
-                if (bytes[i] < 0x80) {
-                    code = bytes[i++];
-                } else if ((bytes[i] & 0xE0) === 0xC0) {
-                    code = ((bytes[i++] & 0x1F) << 6) | (bytes[i++] & 0x3F);
-                } else if ((bytes[i] & 0xF0) === 0xE0) {
-                    code = ((bytes[i++] & 0x0F) << 12) | ((bytes[i++] & 0x3F) << 6) | (bytes[i++] & 0x3F);
-                } else if ((bytes[i] & 0xF8) === 0xF0) {
-                    code = ((bytes[i++] & 0x07) << 18) | ((bytes[i++] & 0x3F) << 12) |
-                           ((bytes[i++] & 0x3F) << 6) | (bytes[i++] & 0x3F);
-                } else {
-                    code = 0xFFFD;
-                    i++;
-                }
-                if (code > 0xFFFF) {
-                    code -= 0x10000;
-                    chunk.push(0xD800 + (code >> 10), 0xDC00 + (code & 0x3FF));
-                } else {
-                    chunk.push(code);
-                }
-                if (chunk.length >= _CHUNK) {
-                    result += String.fromCharCode.apply(null, chunk);
-                    chunk = [];
-                }
-            }
-            if (chunk.length > 0) result += String.fromCharCode.apply(null, chunk);
-            return result;
+            const decoded = _decodeUtf8(bytes, !stream, this._fatal);
+            this._pending = stream ? decoded.pending : new Uint8Array(0);
+            return decoded.text;
         }
     };
 }
@@ -479,6 +614,48 @@ const events = (() => {
 const Buffer = (() => {
     const _encoder = new TextEncoder();
     const _decoder = new TextDecoder();
+    const _latin1ToString = (bytes, ascii) => {
+        let result = '';
+        let chunk = [];
+        for (let i = 0; i < bytes.length; i++) {
+            chunk.push(ascii ? (bytes[i] & 0x7F) : bytes[i]);
+            if (chunk.length >= 8192) {
+                result += String.fromCharCode.apply(null, chunk);
+                chunk = [];
+            }
+        }
+        if (chunk.length > 0) result += String.fromCharCode.apply(null, chunk);
+        return result;
+    };
+    const _utf16leToString = (bytes) => {
+        let result = '';
+        let chunk = [];
+        for (let i = 0; i + 1 < bytes.length; i += 2) {
+            chunk.push(bytes[i] | (bytes[i + 1] << 8));
+            if (chunk.length >= 8192) {
+                result += String.fromCharCode.apply(null, chunk);
+                chunk = [];
+            }
+        }
+        if (chunk.length > 0) result += String.fromCharCode.apply(null, chunk);
+        return result;
+    };
+    const _base64ToBytes = (value, url) => {
+        let str = String(value).replace(/\s+/g, '');
+        if (url) str = str.replace(/-/g, '+').replace(/_/g, '/');
+        while (str.length % 4 !== 0) str += '=';
+        const binary = atob(str);
+        const bytes = new Uint8Array(binary.length);
+        for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i) & 0xFF;
+        return bytes;
+    };
+    const _base64FromBytes = (bytes, url) => {
+        let binary = '';
+        for (let i = 0; i < bytes.length; i++) binary += String.fromCharCode(bytes[i]);
+        let out = btoa(binary);
+        if (url) out = out.replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/g, '');
+        return out;
+    };
 
     class Buffer extends Uint8Array {
         // Static factory methods
@@ -501,7 +678,7 @@ const Buffer = (() => {
 
         static from(value, encodingOrOffset, length) {
             if (typeof value === 'string') {
-                const encoding = encodingOrOffset || 'utf8';
+                const encoding = String(encodingOrOffset || 'utf8').toLowerCase();
                 if (encoding === 'hex') {
                     const bytes = [];
                     for (let i = 0; i < value.length; i += 2) {
@@ -510,12 +687,30 @@ const Buffer = (() => {
                     return new Buffer(bytes);
                 }
                 if (encoding === 'base64') {
-                    const binary = atob(value);
-                    const bytes = new Uint8Array(binary.length);
-                    for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
-                    return new Buffer(bytes.buffer);
+                    return new Buffer(_base64ToBytes(value, false));
                 }
-                // utf8 or ascii or latin1
+                if (encoding === 'base64url') {
+                    return new Buffer(_base64ToBytes(value, true));
+                }
+                if (encoding === 'latin1' || encoding === 'binary') {
+                    const bytes = new Uint8Array(value.length);
+                    for (let i = 0; i < value.length; i++) bytes[i] = value.charCodeAt(i) & 0xFF;
+                    return new Buffer(bytes);
+                }
+                if (encoding === 'ascii') {
+                    const bytes = new Uint8Array(value.length);
+                    for (let i = 0; i < value.length; i++) bytes[i] = value.charCodeAt(i) & 0x7F;
+                    return new Buffer(bytes);
+                }
+                if (encoding === 'ucs2' || encoding === 'ucs-2' || encoding === 'utf16le' || encoding === 'utf-16le') {
+                    const bytes = new Uint8Array(value.length * 2);
+                    for (let i = 0; i < value.length; i++) {
+                        const code = value.charCodeAt(i);
+                        bytes[i * 2] = code & 0xFF;
+                        bytes[i * 2 + 1] = code >> 8;
+                    }
+                    return new Buffer(bytes);
+                }
                 return new Buffer(_encoder.encode(value));
             }
             if (value instanceof ArrayBuffer || value instanceof SharedArrayBuffer) {
@@ -555,7 +750,7 @@ const Buffer = (() => {
 
         static isEncoding(encoding) {
             return ['utf8', 'utf-8', 'ascii', 'latin1', 'binary',
-                    'hex', 'base64', 'ucs2', 'ucs-2', 'utf16le', 'utf-16le']
+                    'hex', 'base64', 'base64url', 'ucs2', 'ucs-2', 'utf16le', 'utf-16le']
                    .includes(String(encoding).toLowerCase());
         }
 
@@ -589,9 +784,19 @@ const Buffer = (() => {
                 return hex;
             }
             if (encoding === 'base64') {
-                let binary = '';
-                for (let i = 0; i < slice.length; i++) binary += String.fromCharCode(slice[i]);
-                return btoa(binary);
+                return _base64FromBytes(slice, false);
+            }
+            if (encoding === 'base64url') {
+                return _base64FromBytes(slice, true);
+            }
+            if (encoding === 'latin1' || encoding === 'binary') {
+                return _latin1ToString(slice, false);
+            }
+            if (encoding === 'ascii') {
+                return _latin1ToString(slice, true);
+            }
+            if (encoding === 'ucs2' || encoding === 'ucs-2' || encoding === 'utf16le' || encoding === 'utf-16le') {
+                return _utf16leToString(slice);
             }
             return _decoder.decode(slice);
         }
@@ -2595,20 +2800,201 @@ const querystring = (() => {
 // ============================================================
 
 const string_decoder = (() => {
-    class StringDecoder {
-        constructor(encoding) {
-            this.encoding = (encoding || 'utf8').toLowerCase();
-            this._decoder = new TextDecoder(this.encoding === 'utf-8' ? 'utf-8' : this.encoding);
-        }
-        write(buf) {
-            if (typeof buf === 'string') return buf;
-            return this._decoder.decode(buf, { stream: true });
-        }
-        end(buf) {
-            if (buf) return this.write(buf);
-            return '';
+    function normalizeEncoding(encoding) {
+        if (encoding === undefined || encoding === null || encoding === '') return 'utf8';
+        const enc = String(encoding).toLowerCase();
+        switch (enc) {
+            case 'utf8':
+            case 'utf-8':
+                return 'utf8';
+            case 'ucs2':
+            case 'ucs-2':
+            case 'utf16le':
+            case 'utf-16le':
+                return 'utf16le';
+            case 'latin1':
+            case 'binary':
+                return 'latin1';
+            case 'ascii':
+            case 'hex':
+            case 'base64':
+            case 'base64url':
+                return enc;
+            default: {
+                const err = new TypeError(`Unknown encoding: ${encoding}`);
+                err.code = 'ERR_UNKNOWN_ENCODING';
+                throw err;
+            }
         }
     }
+
+    function toBufferView(buf) {
+        if (Buffer.isBuffer(buf)) return buf;
+        if (ArrayBuffer.isView(buf)) {
+            return Buffer.from(buf.buffer, buf.byteOffset, buf.byteLength);
+        }
+        const received = buf === null ? 'null' : typeof buf;
+        const err = new TypeError(
+            `The "buf" argument must be an instance of Buffer, TypedArray, or DataView. Received ${received}`
+        );
+        err.code = 'ERR_INVALID_ARG_TYPE';
+        throw err;
+    }
+
+    function updateLast(self, pending, total) {
+        const src = pending || [];
+        self._pending = Buffer.alloc(src.length);
+        self._pending.set(src);
+        self.lastChar.fill(0);
+        self.lastChar.set(self._pending.subarray(0, Math.min(self._pending.length, self.lastChar.length)));
+        self.lastTotal = total || 0;
+        self.lastNeed = total ? Math.max(0, total - self._pending.length) : 0;
+    }
+
+    function utf8CheckByte(byte) {
+        if (byte <= 0x7F) return 0;
+        if (byte >> 5 === 0x06) return 2;
+        if (byte >> 4 === 0x0E) return 3;
+        if (byte >> 3 === 0x1E) return 4;
+        return byte >> 6 === 0x02 ? -1 : -2;
+    }
+
+    function utf8IncompleteTail(buf) {
+        let j = buf.length - 1;
+        if (j < 0) return null;
+        let nb = utf8CheckByte(buf[j]);
+        if (nb >= 0) return nb > 1 ? { total: nb, pendingLength: 1 } : null;
+        if (--j < 0 || nb === -2) return null;
+        nb = utf8CheckByte(buf[j]);
+        if (nb >= 0) {
+            if (nb > 0) {
+                const need = nb - 2;
+                if (need > 0) return { total: nb, pendingLength: 2 };
+            }
+            return null;
+        }
+        if (--j < 0 || nb === -2) return null;
+        nb = utf8CheckByte(buf[j]);
+        if (nb >= 0) {
+            if (nb > 0 && nb !== 2) {
+                const need = nb - 3;
+                if (need > 0) return { total: nb, pendingLength: 3 };
+            }
+            return null;
+        }
+        return null;
+    }
+
+    function writeUtf8(self, buf) {
+        if (buf.length === 0) return '';
+        const input = self._pending.length > 0 ? Buffer.concat([self._pending, buf]) : buf;
+        const tail = utf8IncompleteTail(input);
+        const end = tail ? input.length - tail.pendingLength : input.length;
+        const out = end > 0 ? input.toString('utf8', 0, end) : '';
+        if (tail) updateLast(self, input.subarray(end), tail.total);
+        else updateLast(self, Buffer.alloc(0), 0);
+        return out;
+    }
+
+    function utf16FillLast(self, buf) {
+        const p = self.lastTotal - self.lastNeed;
+        const n = Math.min(self.lastNeed, buf.length);
+        buf.copy(self.lastChar, p, 0, n);
+        self.lastNeed -= n;
+        if (self.lastNeed === 0) {
+            const out = self.lastChar.toString('utf16le', 0, self.lastTotal);
+            updateLast(self, Buffer.alloc(0), 0);
+            return { out, used: n };
+        }
+        updateLast(self, self.lastChar.subarray(0, p + n), self.lastTotal);
+        return { out: '', used: n, incomplete: true };
+    }
+
+    function writeUtf16le(self, buf) {
+        if (buf.length === 0) return '';
+        let out = '';
+        let offset = 0;
+        if (self.lastNeed) {
+            const filled = utf16FillLast(self, buf);
+            if (filled.incomplete) return '';
+            out += filled.out;
+            offset = filled.used;
+        }
+        if (offset >= buf.length) return out;
+        const remaining = buf.subarray(offset);
+        if (remaining.length % 2 === 0) {
+            const text = remaining.toString('utf16le');
+            if (text.length > 0) {
+                const c = text.charCodeAt(text.length - 1);
+                if (c >= 0xD800 && c <= 0xDBFF) {
+                    const pending = remaining.subarray(remaining.length - 2);
+                    updateLast(self, pending, 4);
+                    return out + text.slice(0, -1);
+                }
+            }
+            updateLast(self, Buffer.alloc(0), 0);
+            return out + text;
+        }
+        updateLast(self, remaining.subarray(remaining.length - 1), 2);
+        return out + remaining.toString('utf16le', 0, remaining.length - 1);
+    }
+
+    function writeBase64Like(self, buf, url) {
+        if (buf.length === 0) return '';
+        const input = self._pending.length > 0 ? Buffer.concat([self._pending, buf]) : buf;
+        const n = input.length % 3;
+        const end = input.length - n;
+        const out = end > 0 ? input.toString(url ? 'base64url' : 'base64', 0, end) : '';
+        if (n > 0) updateLast(self, input.subarray(end), 3);
+        else updateLast(self, Buffer.alloc(0), 0);
+        return out;
+    }
+
+    function StringDecoder(encoding) {
+        if (this === undefined || this === null || this === globalThis) return new StringDecoder(encoding);
+        this.encoding = normalizeEncoding(encoding);
+        this.lastNeed = 0;
+        this.lastTotal = 0;
+        this.lastChar = Buffer.alloc(this.encoding === 'base64' || this.encoding === 'base64url' ? 3 : 4);
+        this._pending = Buffer.alloc(0);
+    }
+
+    StringDecoder.prototype.write = function write(buf) {
+        if (typeof buf === 'string') return buf;
+        buf = toBufferView(buf);
+        switch (this.encoding) {
+            case 'utf8':
+                return writeUtf8(this, buf);
+            case 'utf16le':
+                return writeUtf16le(this, buf);
+            case 'base64':
+                return writeBase64Like(this, buf, false);
+            case 'base64url':
+                return writeBase64Like(this, buf, true);
+            default:
+                return buf.toString(this.encoding);
+        }
+    };
+
+    StringDecoder.prototype.end = function end(buf) {
+        let out = '';
+        if (buf !== undefined) out = this.write(buf);
+        if (this.lastNeed) {
+            const pending = this._pending;
+            updateLast(this, Buffer.alloc(0), 0);
+            if (this.encoding === 'utf8') return out + pending.toString('utf8');
+            if (this.encoding === 'utf16le') return out + pending.toString('utf16le');
+            if (this.encoding === 'base64') return out + pending.toString('base64');
+            if (this.encoding === 'base64url') return out + pending.toString('base64url');
+        }
+        return out;
+    };
+
+    StringDecoder.prototype.text = function text(buf, offset) {
+        updateLast(this, Buffer.alloc(0), 0);
+        return this.write(toBufferView(buf).slice(offset));
+    };
+
     return { StringDecoder };
 })();
 
