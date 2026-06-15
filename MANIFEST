@@ -30,6 +30,9 @@
 /bin             d  0755  0  0
 /usr             d  0755  0  0
 /usr/bin         d  0755  0  0
+/usr/local       d  0755  0  0
+/usr/local/bin   d  0755  0  0
+/usr/local/lib   d  0755  0  0
 /usr/share       d  0755  0  0
 /usr/share/misc  d  0755  0  0
 
