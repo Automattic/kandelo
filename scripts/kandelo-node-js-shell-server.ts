@@ -155,6 +155,10 @@ function withTimeout<T>(promise: Promise<T>, timeoutMs: number): Promise<T> {
   ]);
 }
 
+function delay(ms: number): Promise<void> {
+  return new Promise((resolveDelay) => setTimeout(resolveDelay, ms));
+}
+
 async function main() {
   const jsPath = resolveJsWasm();
   const jsBytes = loadBytes(jsPath);
@@ -164,9 +168,11 @@ async function main() {
     : Math.min(MAX_PAGES, detectedMaxPages ?? MAX_PAGES);
   const activeRuns = new Map<number, ActiveRun>();
   const runPids = new Map<ActiveRun, Set<number>>();
+  const liveRuns = new Set<ActiveRun>();
   const pendingOutput = new Map<number, ActiveRun>();
   const pendingChildrenByParent = new Map<number, number[]>();
   const decoder = new TextDecoder();
+  let outputSequence = 0;
 
   function appendOutput(
     target: Map<number, ActiveRun>,
@@ -180,6 +186,20 @@ async function main() {
       target.set(pid, run);
     }
     run[stream] += decoder.decode(data);
+  }
+
+  function onlyLiveRun(): ActiveRun | undefined {
+    // Fast feature probes can emit stdout with currentHandlePid unset. Assign
+    // that orphan output only when there is no concurrent shell request.
+    return liveRuns.size === 1 ? liveRuns.values().next().value : undefined;
+  }
+
+  async function drainRunOutput(): Promise<void> {
+    for (;;) {
+      const before = outputSequence;
+      await delay(0);
+      if (outputSequence === before) return;
+    }
   }
 
   function attachRunPid(pid: number, run: ActiveRun) {
@@ -213,13 +233,19 @@ async function main() {
     maxPages,
     onStdout: (pid, data) => {
       const run = activeRuns.get(pid);
+      const orphanRun = pid === 0 ? onlyLiveRun() : undefined;
       if (run) run.stdout += decoder.decode(data);
+      else if (orphanRun) orphanRun.stdout += decoder.decode(data);
       else appendOutput(pendingOutput, pid, "stdout", data);
+      outputSequence++;
     },
     onStderr: (pid, data) => {
       const run = activeRuns.get(pid);
+      const orphanRun = pid === 0 ? onlyLiveRun() : undefined;
       if (run) run.stderr += decoder.decode(data);
+      else if (orphanRun) orphanRun.stderr += decoder.decode(data);
       else appendOutput(pendingOutput, pid, "stderr", data);
+      outputSequence++;
     },
     onProcessEvent: (event) => {
       if (event.kind === "spawn" && event.ppid !== undefined) {
@@ -254,6 +280,7 @@ async function main() {
   async function runShell(req: IncomingMessage, res: ServerResponse) {
     const run: ActiveRun = { stdout: "", stderr: "" };
     let pid: number | undefined;
+    liveRuns.add(run);
     try {
       const body = await readJsonBody(req);
       const argv = ["js", ...body.argv];
@@ -266,6 +293,7 @@ async function main() {
         },
       });
       const exitCode = await withTimeout(exit, body.timeoutMs ?? DEFAULT_TIMEOUT_MS);
+      await drainRunOutput();
       res.writeHead(200, { "content-type": "application/json" });
       res.end(JSON.stringify({
         exitCode,
@@ -285,6 +313,7 @@ async function main() {
         error: message.includes("TIMEOUT") ? "TIMEOUT" : message,
       }));
     } finally {
+      liveRuns.delete(run);
       const pids = runPids.get(run);
       if (pids) {
         for (const runPid of pids) {
