@@ -50,7 +50,10 @@ if source_root="$(find_source_root "$SOURCE_PARENT")"; then
   exit 0
 fi
 
-readarray -t source_info < <(python3 - "$PACKAGE_DIR/package.toml" "$PACKAGE_DIR/VERSION" <<'PY'
+source_info=()
+while IFS= read -r line; do
+  source_info+=("$line")
+done < <(python3 - "$PACKAGE_DIR/package.toml" "$PACKAGE_DIR/VERSION" <<'PY'
 from pathlib import Path
 import sys
 

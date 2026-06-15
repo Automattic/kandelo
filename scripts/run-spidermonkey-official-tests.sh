@@ -189,17 +189,38 @@ filter_kandelo_known_jstest_args() {
   FILTERED_JSTEST_ARGS=()
   KANDELO_KNOWN_SKIP_FILES=()
 
-  local arg file rel
-  for arg in "$@"; do
-    file="$SM_SOURCE/js/src/tests/$arg"
-    if [ -f "$file" ]; then
-      rel="$(kandelo_rel_jstest_path "$file")"
+  local selector normalized path child rel
+  for selector in "$@"; do
+    normalized="${selector%/}"
+    path="$SM_SOURCE/js/src/tests/$normalized"
+    if [ -f "$path" ]; then
+      rel="$(kandelo_rel_jstest_path "$path")"
       if kandelo_known_jstest_skip_reason "$host" "$rel" >/dev/null; then
-        KANDELO_KNOWN_SKIP_FILES+=("$file")
-        continue
+        KANDELO_KNOWN_SKIP_FILES+=("$path")
+      else
+        FILTERED_JSTEST_ARGS+=("$selector")
       fi
+    elif [ -d "$path" ]; then
+      local dir_filtered=()
+      local dir_known=()
+      while IFS= read -r -d '' child; do
+        rel="$(kandelo_rel_jstest_path "$child")"
+        if kandelo_known_jstest_skip_reason "$host" "$rel" >/dev/null; then
+          dir_known+=("$child")
+        else
+          dir_filtered+=("$rel")
+        fi
+      done < <(find "$path" -type f -name '*.js' ! -name 'shell.js' ! -name 'browser.js' ! -name 'template.js' ! -name 'user.js' ! -name 'js-test-driver-begin.js' ! -name 'js-test-driver-end.js' -print0 | sort -z)
+
+      if [ "${#dir_known[@]}" -gt 0 ]; then
+        KANDELO_KNOWN_SKIP_FILES+=("${dir_known[@]}")
+        FILTERED_JSTEST_ARGS+=("${dir_filtered[@]+"${dir_filtered[@]}"}")
+      else
+        FILTERED_JSTEST_ARGS+=("$selector")
+      fi
+    else
+      FILTERED_JSTEST_ARGS+=("$selector")
     fi
-    FILTERED_JSTEST_ARGS+=("$arg")
   done
 }
 
@@ -275,7 +296,7 @@ run_jstests() {
   fi
 
   echo "===== Official SpiderMonkey jstests on Kandelo $CURRENT_HOST host ====="
-  filter_kandelo_known_jstest_args "$CURRENT_HOST" "${args[@]}"
+  filter_kandelo_known_jstest_args "$CURRENT_HOST" "${args[@]+"${args[@]}"}"
   if [ "${#KANDELO_KNOWN_SKIP_FILES[@]}" -gt 0 ]; then
     kandelo_write_known_skip_entries jstests "$CURRENT_HOST" "${KANDELO_KNOWN_SKIP_FILES[@]}"
     if [ "${#FILTERED_JSTEST_ARGS[@]}" -eq 0 ]; then
