@@ -900,6 +900,7 @@ build_nethack_zip() {
 
 build_shell_vfs() {
     if ! has_shell_vfs; then
+        build_rootfs
         build_fbdoom
         step "Building Shell VFS image"
         bash "$REPO_ROOT/packages/registry/shell/build-shell.sh"
