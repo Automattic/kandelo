@@ -45,8 +45,14 @@ case "$ARCH" in
         ;;
 esac
 
-# Use Homebrew LLVM 21 toolchain (override via LLVM_BIN env)
-LLVM_BIN="${LLVM_BIN:-/opt/homebrew/opt/llvm/bin}"
+if [ -z "${LLVM_BIN:-}" ]; then
+    if [ -n "${LLVM_PREFIX:-}" ]; then
+        LLVM_BIN="$LLVM_PREFIX/bin"
+    else
+        echo "Error: LLVM_BIN is not set. Run scripts/dev-shell.sh or set LLVM_BIN/LLVM_PREFIX." >&2
+        exit 1
+    fi
+fi
 CC="$LLVM_BIN/clang"
 AR="$LLVM_BIN/llvm-ar"
 RANLIB="$LLVM_BIN/llvm-ranlib"
@@ -54,7 +60,7 @@ RANLIB="$LLVM_BIN/llvm-ranlib"
 # Verify toolchain exists
 for tool in "$CC" "$AR" "$RANLIB"; do
     if [ ! -x "$tool" ]; then
-        echo "Error: $tool not found. Install LLVM via: brew install llvm" >&2
+        echo "Error: $tool not found. Run scripts/dev-shell.sh or set LLVM_BIN/LLVM_PREFIX." >&2
         exit 1
     fi
 done

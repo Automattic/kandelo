@@ -31,12 +31,12 @@ if [ ! -f "$SYSROOT/lib/libc.a" ]; then
 fi
 
 if ! command -v flex &>/dev/null; then
-    echo "ERROR: flex not found. Install with: brew install flex" >&2
+    echo "ERROR: flex not found. Run through scripts/dev-shell.sh." >&2
     exit 1
 fi
 
 if ! command -v yacc &>/dev/null && ! command -v bison &>/dev/null; then
-    echo "ERROR: yacc/bison not found. Install with: brew install bison" >&2
+    echo "ERROR: yacc/bison not found. Run through scripts/dev-shell.sh." >&2
     exit 1
 fi
 
