@@ -2729,10 +2729,17 @@ events.EventEmitterAsyncResource = class EventEmitterAsyncResource extends event
 // Buffer class
 // ============================================================
 
+const _BUFFER_MAX_LENGTH = 0x7fffffff;
+const _BUFFER_MAX_STRING_LENGTH = 0x1fffffe8;
+const _bufferConstants = Object.freeze({
+    MAX_LENGTH: _BUFFER_MAX_LENGTH,
+    MAX_STRING_LENGTH: _BUFFER_MAX_STRING_LENGTH,
+});
+
 const Buffer = (() => {
     const _encoder = new TextEncoder();
     const _decoder = new TextDecoder();
-    const kMaxLength = Number.MAX_SAFE_INTEGER;
+    const kMaxLength = _BUFFER_MAX_LENGTH;
     const INSPECT_CUSTOM = Symbol.for('nodejs.util.inspect.custom');
     let inspectMaxBytes = 50;
     const UINT64_MAX = (1n << 64n) - 1n;
@@ -3743,7 +3750,8 @@ const nodeBuffer = (() => {
         isAscii: _bufferIsAscii,
         isUtf8: _bufferIsUtf8,
         kMaxLength: Buffer.kMaxLength,
-        constants: { MAX_LENGTH: Buffer.kMaxLength, MAX_STRING_LENGTH: 0x1fffffe8 },
+        kStringMaxLength: _BUFFER_MAX_STRING_LENGTH,
+        constants: _bufferConstants,
     };
     Object.defineProperty(mod, 'INSPECT_MAX_BYTES', {
         get() { return Buffer.INSPECT_MAX_BYTES; },

@@ -20,7 +20,7 @@ runs:
         github-token: ""
 
     - name: Cache Nix store + flake eval
-      uses: DeterminateSystems/magic-nix-cache-action@565684385bcd71bad329742eefe8d12f2e765b39 # v13
+      uses: DeterminateSystems/magic-nix-cache-action@908b263ff629f4cc17666315b7fd3ec127c6244d # v14
       with:
         use-gha-cache: false
         use-flakehub: false
@@ -36,7 +36,7 @@ runs:
         echo "toolchain-cache key: $KEY"
 
     - name: Cache musl sysroot + libc++
-      uses: actions/cache@v4
+      uses: actions/cache@v5
       id: cache
       with:
         path: |
@@ -78,7 +78,7 @@ runs:
           sysroot sysroot64 tools/bin/wasm-fork-instrument
 
     - name: Upload toolchain sysroots artifact
-      uses: actions/upload-artifact@v4
+      uses: actions/upload-artifact@v7
       with:
         name: toolchain-sysroots
         path: ${{ runner.temp }}/toolchain-sysroots.tar.zst

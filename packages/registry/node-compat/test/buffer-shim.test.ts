@@ -27,7 +27,7 @@ function loadBufferShim() {
   );
   const bufferSection = sliceBetween(
     bootstrap,
-    "const Buffer = (() => {",
+    "const _BUFFER_MAX_LENGTH =",
     "// ============================================================\n// process module",
   );
   const utilSection = sliceBetween(
