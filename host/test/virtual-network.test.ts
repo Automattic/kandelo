@@ -72,7 +72,7 @@ describe("LocalVirtualNetwork", () => {
     expect(client.connectStatus(1)).toBe(VIRTUAL_NETWORK_ERRNO.EHOSTUNREACH);
   });
 
-  it("wakes TCP peers with EOF and EPIPE when a machine detaches", () => {
+  it("wakes TCP peers with reset when a machine detaches", () => {
     const net = new LocalVirtualNetwork();
     const server = net.attachMachine({ id: "server", address: [10, 88, 0, 2] });
     const client = net.attachMachine({ id: "client", address: [10, 88, 0, 3] });
@@ -92,12 +92,46 @@ describe("LocalVirtualNetwork", () => {
     expect(revents & POLLIN).toBe(POLLIN);
     expect(revents & POLLOUT).toBe(0);
     expect(revents & POLLHUP).toBe(POLLHUP);
-    expect(client.recv(7, 16, 0)).toHaveLength(0);
+    try {
+      client.recv(7, 16, 0);
+      throw new Error("recv after detached peer unexpectedly succeeded");
+    } catch (error) {
+      expect((error as Error & { errno?: number }).errno).toBe(VIRTUAL_NETWORK_ERRNO.ECONNRESET);
+    }
     try {
       client.send(7, new TextEncoder().encode("after-detach"), 0);
       throw new Error("send after detached peer unexpectedly succeeded");
     } catch (error) {
-      expect((error as Error & { errno?: number }).errno).toBe(32);
+      expect((error as Error & { errno?: number }).errno).toBe(VIRTUAL_NETWORK_ERRNO.ECONNRESET);
+    }
+  });
+
+  it("models TCP close as orderly FIN before later reset", () => {
+    const net = new LocalVirtualNetwork();
+    const server = net.attachMachine({ id: "server", address: [10, 88, 0, 2] });
+    const client = net.attachMachine({ id: "client", address: [10, 88, 0, 3] });
+    let accepted: TcpConnectionPeer | null = null;
+
+    expect(server.listenTcp!("srv:1", new Uint8Array([10, 88, 0, 2]), 8080, {
+      accept(peer) {
+        accepted = peer;
+        return 0;
+      },
+    })).toBe(0);
+
+    client.connect(7, new Uint8Array([10, 88, 0, 2]), 8080);
+    expect(client.connectStatus(7)).toBe(0);
+    expect(accepted).not.toBeNull();
+
+    accepted!.close();
+
+    expect(client.recv(7, 16, 0)).toHaveLength(0);
+    expect(client.send(7, new TextEncoder().encode("after-fin"), 0)).toBe(9);
+    try {
+      client.send(7, new TextEncoder().encode("after-reset"), 0);
+      throw new Error("second send after closed peer unexpectedly succeeded");
+    } catch (error) {
+      expect((error as Error & { errno?: number }).errno).toBe(VIRTUAL_NETWORK_ERRNO.ECONNRESET);
     }
   });
 

@@ -52,6 +52,7 @@ class VirtualTcpPeer implements TcpConnectionPeer {
   private peer?: VirtualTcpPeer;
   private readClosed = false;
   private writeClosed = false;
+  private closed = false;
   private reset = false;
 
   pairWith(peer: VirtualTcpPeer): void {
@@ -73,6 +74,17 @@ class VirtualTcpPeer implements TcpConnectionPeer {
       const err = new Error("EPIPE") as Error & { errno?: number };
       err.errno = 32;
       throw err;
+    }
+    // A peer close(2) on TCP is an orderly FIN for its write side, not an
+    // immediate refusal of incoming data. Linux commonly lets the first write
+    // after observing peer EOF succeed and reports the resulting reset on a
+    // later operation. Preserve that POSIX-compatible TCP behavior by accepting
+    // and discarding data sent to a fully closed peer, then marking this side
+    // reset for subsequent operations. Explicit SHUT_RD remains EPIPE via the
+    // readClosed check above.
+    if (this.peer.closed) {
+      this.reset = true;
+      return data.length;
     }
     this.peer.enqueue(data.slice());
     return data.length;
@@ -128,7 +140,18 @@ class VirtualTcpPeer implements TcpConnectionPeer {
   }
 
   close(): void {
-    this.shutdown(2);
+    this.closed = true;
+    this.writeClosed = true;
+    this.recvBuf = new Uint8Array(0);
+  }
+
+  abort(): void {
+    this.closed = true;
+    this.readClosed = true;
+    this.writeClosed = true;
+    this.reset = true;
+    this.recvBuf = new Uint8Array(0);
+    this.peer?.resetPeer();
   }
 
   resetPeer(): void {
@@ -205,7 +228,7 @@ export class LocalVirtualNetwork {
     this.tcpListeners = this.tcpListeners.filter((l) => l.machineId !== machineId);
     this.udpEndpoints = this.udpEndpoints.filter((e) => e.machineId !== machineId);
     for (const peer of this.tcpPeersByMachine.get(machineId) ?? []) {
-      peer.close();
+      peer.abort();
     }
     this.tcpPeersByMachine.delete(machineId);
     backend.resetAllConnections();
@@ -450,7 +473,10 @@ export class VirtualNetworkBackend implements NetworkIO {
   }
 
   resetAllConnections(): void {
-    for (const conn of this.connections.values()) conn.close();
+    for (const conn of this.connections.values()) {
+      if (typeof conn.abort === "function") conn.abort();
+      else conn.close();
+    }
     this.connections.clear();
     this.connectErrors.clear();
   }
