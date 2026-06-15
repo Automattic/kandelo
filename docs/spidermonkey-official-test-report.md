@@ -51,6 +51,14 @@ long official jstest chunks. The BigInt Atomics `waitAsync` timeout remains
 outside this layer because the wasm32 64-bit atomics limitation is tracked with
 the Atomics classification work.
 
+The official runners also share a small stack-stress exclusion policy for
+tests that recurse through SpiderMonkey's wasm frames until the host worker's
+WebAssembly call stack is exhausted before the shell can report a guest
+`InternalError`. On the Node host this currently covers
+`non262/extensions/array-isArray-proxy-recursion.js` and
+`non262/regress/regress-311629.js`; the browser host keeps the same policy
+shape for its existing recursion outlier.
+
 ## Harness Shape
 
 The Node host path starts `scripts/kandelo-node-js-shell-server.ts`, which keeps
