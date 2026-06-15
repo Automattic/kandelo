@@ -265,6 +265,8 @@ has_programs() {
 has_nginx()         { pkg_has_output nginx nginx.wasm || [ -f "$REPO_ROOT/packages/registry/nginx/nginx.wasm" ]; }
 has_php()           { pkg_has_output php php.wasm || [ -f "$REPO_ROOT/packages/registry/php/php-src/sapi/cli/php" ]; }
 has_php_fpm()       { pkg_has_output php php-fpm.wasm || [ -f "$REPO_ROOT/packages/registry/php/php-src/sapi/fpm/php-fpm" ]; }
+has_php_opcache()   { pkg_has_output php opcache.so || [ -f "$REPO_ROOT/packages/registry/php/bin/opcache.so" ]; }
+has_php_bundle()    { has_php && has_php_fpm && has_php_opcache; }
 has_mariadb()       { pkg_has_output mariadb mariadbd.wasm || [ -f "$REPO_ROOT/packages/registry/mariadb/mariadb-install/bin/mariadbd.wasm" ]; }
 has_mariadb64()     { pkg_has_output mariadb mariadbd.wasm wasm64 || [ -f "$REPO_ROOT/packages/registry/mariadb/mariadb-install-64/bin/mariadbd.wasm" ]; }
 has_mariadb_vfs()   { pkg_has_output mariadb-vfs mariadb-vfs.vfs.zst; }
@@ -511,6 +513,18 @@ build_php_fpm() {
     fi
 }
 
+build_php_bundle() {
+    if has_php_bundle; then
+        info "PHP CLI/FPM/opcache"
+        return
+    fi
+    need_kernel
+    need_sdk
+    step "Building PHP CLI, PHP-FPM, and opcache"
+    bash "$REPO_ROOT/packages/registry/php/build-php.sh"
+    info "PHP CLI/FPM/opcache built"
+}
+
 build_mariadb() {
     if has_mariadb; then
         info "mariadb"
@@ -603,9 +617,14 @@ build_wp_vfs() {
         return
     fi
     build_shell_vfs
+    # Keep this list aligned with build-wp-vfs-image.ts and its opcache
+    # prewarm path so the direct wp-vfs target works on a clean checkout.
+    build_nginx
+    build_php_bundle
+    build_dinit
+    build_msmtpd
     # Source needed only if we have to build the VFS from scratch.
     build_wordpress
-    build_msmtpd
     step "Building WordPress VFS image"
     # Delegate to the package-system wrapper so install_local_binary
     # populates local-binaries/programs/wasm32/wordpress.vfs.zst (the path
