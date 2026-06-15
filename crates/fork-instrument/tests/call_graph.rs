@@ -389,6 +389,43 @@ fn passive_element_with_table_init_is_followed() {
 }
 
 #[test]
+fn dynamic_linker_indirect_call_is_conservative_fork_boundary() {
+    // A dlopen/dlsym-capable main module can have side-module functions
+    // inserted into its indirect function table by the host after static
+    // analysis. If such a side-module function calls fork(), the main-module
+    // frame above the call_indirect must be serializable even though the
+    // side-module target is not present in any static element segment.
+    let wat = r#"
+        (module
+          (import "kernel" "kernel_fork" (func $fork (result i32)))
+          (import "env" "__wasm_dlsym" (func $dlsym (param i32 i32 i32) (result i32)))
+          (type $side_fn_ty (func (result i32)))
+          (table $t 1 funcref)
+          (func $dispatch_side_callback (export "dispatch_side_callback") (result i32)
+            i32.const 0
+            call_indirect $t (type $side_fn_ty))
+          (func $parent_frame (export "parent_frame") (result i32)
+            call $dispatch_side_callback)
+          (func $ordinary (export "ordinary") (result i32)
+            i32.const 7))
+    "#;
+    let found = discover(wat);
+    assert!(
+        found.iter().any(|n| n == "dispatch_side_callback"),
+        "dynamic-linking call_indirect sites must be instrumented as potential \
+         side-module fork boundaries; got {found:?}"
+    );
+    assert!(
+        found.iter().any(|n| n == "parent_frame"),
+        "direct callers above a dynamic side-module dispatch must also be saved; got {found:?}"
+    );
+    assert!(
+        !found.iter().any(|n| n == "ordinary"),
+        "unrelated dynamic-linking functions without call_indirect should stay out; got {found:?}"
+    );
+}
+
+#[test]
 fn indirect_closure_allows_two_hops_but_does_not_cascade_forever() {
     // Models trampoline-shaped runtimes without allowing unbounded
     // same-table callback closure:
