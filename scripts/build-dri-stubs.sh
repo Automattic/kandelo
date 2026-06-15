@@ -46,8 +46,10 @@ CFLAGS=(
 )
 
 OUT_DIR="$SYSROOT/lib"
+PC_DIR="$OUT_DIR/pkgconfig"
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
+mkdir -p "$OUT_DIR" "$PC_DIR"
 
 echo "Building libdrm.a (libdrm_stub.c)..."
 "$CC" "${CFLAGS[@]}" -c "$GLUE_DIR/libdrm_stub.c" -o "$TMP/libdrm_stub.o"
@@ -59,3 +61,27 @@ echo "Building libgbm.a (libgbm_stub.c)..."
 
 echo "DRI stubs installed:"
 ls -la "$OUT_DIR/libdrm.a" "$OUT_DIR/libgbm.a"
+
+cat > "$PC_DIR/libdrm.pc" <<EOF
+prefix=$SYSROOT
+libdir=\${prefix}/lib
+includedir=\${prefix}/include
+
+Name: libdrm
+Description: Kandelo wasm DRI userspace shim
+Version: 1.0.0
+Libs: -L\${libdir} -ldrm
+Cflags: -I\${includedir}
+EOF
+
+cat > "$PC_DIR/gbm.pc" <<EOF
+prefix=$SYSROOT
+libdir=\${prefix}/lib
+includedir=\${prefix}/include
+
+Name: gbm
+Description: Kandelo wasm GBM userspace shim
+Version: 1.0.0
+Libs: -L\${libdir} -lgbm -ldrm
+Cflags: -I\${includedir}
+EOF
