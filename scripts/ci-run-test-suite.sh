@@ -38,12 +38,17 @@ case "$suite" in
         ;;
     browser)
         install_node_deps
-        ./run.sh prepare-browser
+        bash scripts/ci-check-browser-assets.sh
         (
             cd apps/browser-demos
             PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1 npm ci --no-audit --no-fund
-            npx playwright install chromium
-            npx playwright test --grep-invert "@slow" --project=chromium
+            if [ "$(uname -s)" = "Linux" ]; then
+                PATH="/usr/bin:/bin:$PATH" npx playwright install --with-deps chromium firefox
+            else
+                npx playwright install chromium firefox
+            fi
+            npx playwright test --grep-invert "@slow|@trap-signal" --project=chromium
+            npx playwright test wasm-trap-signal.spec.ts --project=chromium --project=firefox
         )
         ;;
     libc)

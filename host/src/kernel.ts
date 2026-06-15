@@ -2581,8 +2581,8 @@ export class WasmPosixKernel {
           return ok ? 0 : -11; // -EAGAIN
         }
         case WasmPosixKernel.F_SETLKW: {
-          this.sharedLockTable.setLockWait(pathHash, pid, lockType, start, len);
-          return 0;
+          const ok = this.sharedLockTable.setLock(pathHash, pid, lockType, start, len);
+          return ok ? 0 : -11; // -EAGAIN, kernel-worker retries blocking fcntl
         }
         default:
           return -22; // -EINVAL

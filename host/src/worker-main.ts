@@ -1,5 +1,5 @@
 /**
- * Centralized worker entry points.
+ * Kernel worker entry points.
  *
  * Programs compiled with channel_syscall.c run in Worker threads.
  * All syscalls go through a shared-memory channel to the
@@ -94,7 +94,7 @@ function buildKernelImports(
       return len;
     },
 
-    // Fork/exec state — not a fork child in centralized mode
+    // Fork/exec state — not a fork child.
     kernel_is_fork_child: (): number => 0,
     kernel_apply_fork_fd_actions: (): number => 0,
     kernel_get_fork_exec_path: (_buf: number | bigint, _max: number): number => 0,
@@ -1125,7 +1125,7 @@ export async function centralizedWorkerMain(
     port.postMessage({
       type: "error",
       pid: initData.pid,
-      message: `Centralized worker failed: ${errMsg}`,
+      message: `Kernel worker failed: ${errMsg}`,
     } satisfies WorkerToHostMessage);
   }
 }
@@ -1691,7 +1691,7 @@ export function patchWasmForThread(bytes: ArrayBuffer): ArrayBuffer {
 }
 
 /**
- * Thread worker entry point for centralized mode.
+ * Thread worker entry point.
  *
  * Threads share the parent process's Memory. This function:
  * 1. Instantiates the same Wasm module with shared memory (start section stripped)
@@ -1858,15 +1858,9 @@ export async function centralizedThreadWorkerMain(
       }
     }
 
-    // CLONE_CHILD_CLEARTID: write 0 to ctidPtr and futex-wake it
-    if (ctidPtr !== 0) {
-      const view = new DataView(memory.buffer);
-      view.setInt32(ctidPtr, 0, true);
-      const i32 = new Int32Array(memory.buffer);
-      Atomics.notify(i32, ctidPtr / 4, 1);
-    }
-
-    // Send SYS_EXIT through channel to notify kernel of thread exit
+    // Send SYS_EXIT through the channel. The kernel worker performs
+    // CLONE_CHILD_CLEARTID after it observes SYS_EXIT; doing it here would
+    // let pthread_join reclaim the stack while this Worker is still running.
     {
       const view = new DataView(memory.buffer);
       const base = channelOffset;

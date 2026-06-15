@@ -379,7 +379,7 @@ const [kernelBuf, vfsImageBuf] = await Promise.all([
 // Restore filesystem from image (single buffer copy — fast)
 const memfs = MemoryFileSystem.fromImage(
   new Uint8Array(vfsImageBuf),
-  { maxByteLength: 512 * 1024 * 1024 },  // allow growth
+  { maxByteLength: 512 * 1024 * 1024 },  // allow growth up to the image's filesystem max
 );
 
 // Create kernel with pre-populated filesystem
@@ -721,6 +721,32 @@ All build scripts are in `packages/registry/`. They serve as reference implement
 | zlib | `packages/registry/zlib/build-zlib.sh` | custom configure | Dependency for PHP |
 | libxml2 | `packages/registry/libxml2/build-libxml2.sh` | CMake | Dependency for PHP |
 | OpenSSL | `packages/registry/openssl/build-openssl.sh` | custom Configure | Dependency for PHP |
+
+## SQLite Official Project Tests
+
+SQLite's upstream `test/testrunner.tcl` permutations can be run through
+Kandelo with `scripts/run-sqlite-project-unit-tests.sh`. The wrapper runs the
+existing official test runner on the Node host, the browser host, or both, and
+writes per-host artifacts plus `combined-summary.md` under `test-runs/`.
+
+Build the Tcl and SQLite testfixture prerequisites first:
+
+```bash
+bash packages/registry/tcl/build-tcl.sh
+bash packages/registry/sqlite/build-testfixture.sh
+```
+
+Then run the harness:
+
+```bash
+scripts/run-sqlite-project-unit-tests.sh --host both --permutation full
+```
+
+Use `--explain` to ask SQLite's testrunner to print the planned jobs without
+starting a full permutation run. Browser runs launch the SQLite-only demo page
+through Vite with `KANDELO_BROWSER_DEMO_INPUTS=sqlite-test` and disable HMR
+with `KANDELO_BROWSER_TEST_NO_HMR=1` so long test runs do not churn on
+artifact writes.
 
 ## Troubleshooting
 

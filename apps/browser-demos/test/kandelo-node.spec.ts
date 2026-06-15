@@ -12,6 +12,18 @@ async function terminalText(page: Page): Promise<string> {
   return page.locator(".xterm-rows").first().evaluate((node) => node.textContent ?? "");
 }
 
+async function waitForReady(page: Page, timeout = 180_000) {
+  await expect
+    .poll(() => page.evaluate(() => document.body.innerText), { timeout })
+    .toContain("Ready");
+}
+
+async function waitForPrompt(page: Page, timeout = 120_000) {
+  await expect
+    .poll(() => terminalText(page), { timeout })
+    .toContain("spidermonkey-node$");
+}
+
 async function runTerminalCommand(
   page: Page,
   command: string,
@@ -47,11 +59,8 @@ test("@slow Kandelo Node demo installs cowsay with npm", async ({ page }) => {
 
   await gotoOrSkip(page, "/?demo=node");
   await page.waitForSelector("aside.kdemo", { timeout: 120_000 });
-  await page.getByRole("button", { name: "Runtime check" }).click();
-
-  await expect
-    .poll(() => page.evaluate(() => document.body.innerText), { timeout: 90_000 })
-    .toContain("worker 7");
+  await waitForReady(page, 240_000);
+  await waitForPrompt(page);
 
   const npmInstallCommand = [
     "rm -rf node_modules package-lock.json /tmp/.npm-cache /tmp/kandelo-npm.log /tmp/kandelo-cowsay.out",

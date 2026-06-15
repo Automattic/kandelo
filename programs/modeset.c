@@ -931,6 +931,14 @@ static void splat_dye(float u, float v, float r, float g, float b, float aspect,
     swap_rt(&dye);
 }
 
+static void demo_splat(float u, float v,
+                       float dx, float dy,
+                       float r, float g, float b,
+                       float aspect, float radius) {
+    splat_velocity(u, v, dx, dy, aspect, radius);
+    splat_dye(u, v, r, g, b, aspect, radius);
+}
+
 /* Direct translation of Pavel's applyBloom: prefilter dye into
  * bloom_rt → Gaussian-blur downsample chain (last → chain[0]..[n-1])
  * → additive upsample (chain[n-2]..[0]) → final intensity-scaled
@@ -1269,6 +1277,7 @@ int main(int argc, char **argv) {
     float aspect = (float)CANVAS_W / (float)CANVAS_H;
     /* Pavel's correctRadius: multiply by aspect when > 1. */
     float splat_radius = SPLAT_RADIUS_BASE * (aspect > 1.0f ? aspect : 1.0f);
+    float demo_seed_radius = splat_radius * 7.0f;
 
     int cursor_x = CANVAS_W / 2;
     int cursor_y = CANVAS_H / 2;
@@ -1297,6 +1306,16 @@ int main(int argc, char **argv) {
         g_dt = (float)dt_s;
 
         drain_mouse(mouse, &cursor_x, &cursor_y, &buttons, CANVAS_W, CANVAS_H);
+
+        if (frame == 0 || (buttons == 0 && (frame % 90) == 0)) {
+            float p = (float)((frame / 90) % 3);
+            demo_splat(0.25f + 0.12f * p, 0.36f + 0.08f * p,
+                       900.0f, 250.0f, 2.60f, 0.55f, 0.18f,
+                       aspect, demo_seed_radius);
+            demo_splat(0.72f - 0.10f * p, 0.62f - 0.06f * p,
+                       -720.0f, -340.0f, 0.18f, 1.20f, 2.80f,
+                       aspect, demo_seed_radius);
+        }
 
         /* Splat on drag (button held + motion). Pavel triggers from
          * `pointer.moved` while `pointer.down` — same effect. The

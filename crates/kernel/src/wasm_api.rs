@@ -1,22 +1,16 @@
 //! Wasm export layer -- FFI boundary that the TypeScript host calls.
 //!
-//! This module supports two operating modes:
-//!
-//! **Mode 0 (Traditional):** Each process Worker instantiates its own kernel.
-//! Syscalls go through 156 `kernel_*` exports. The Global Kernel Lock (GKL)
-//! serializes access when threads share the kernel. Process state lives in
-//! the global `PROCESS`.
-//!
-//! **Mode 1 (Centralized):** A single kernel instance manages all processes
-//! via `kernel_handle_channel`. Process state lives in `PROCESS_TABLE`.
-//! User programs use channel IPC (channel_syscall.c) instead of kernel imports.
-//! GKL is bypassed. The 156 `kernel_*` exports are unused.
+//! A single kernel instance manages all processes via `kernel_handle_channel`.
+//! Process state lives in `PROCESS_TABLE`. User programs use channel IPC
+//! (`channel_syscall.c`) instead of direct kernel imports. The direct
+//! `kernel_*` exports remain for compatibility with older host adapters and
+//! tests, but they also resolve process state through `PROCESS_TABLE`.
 //!
 //! This module declares:
 //! 1. Host function imports (functions the host must provide).
 //! 2. A `WasmHostIO` struct implementing the `HostIO` trait via those imports.
-//! 3. Global kernel state (`PROCESS` for mode=0, `PROCESS_TABLE` for mode=1).
-//! 4. Export functions: 156 `kernel_*` (mode=0) + channel/process-table (mode=1).
+//! 3. Process-table backed kernel state.
+//! 4. Export functions for syscall dispatch and process lifecycle.
 
 extern crate alloc;
 
@@ -1050,37 +1044,21 @@ impl HostIO for WasmHostIO {
 // 3. Global kernel state
 // ---------------------------------------------------------------------------
 
-use core::cell::UnsafeCell;
-use core::sync::atomic::{AtomicI32, Ordering};
-
-/// Wrapper to allow `UnsafeCell<Option<Process>>` in a `static`.
-struct GlobalProcess(UnsafeCell<Option<Process>>);
-
-/// SAFETY: Access is serialized by the GKL (Global Kernel Lock).
-unsafe impl Sync for GlobalProcess {}
-
-static PROCESS: GlobalProcess = GlobalProcess(UnsafeCell::new(None));
-
-// The centralized kernel's process table lives in `process_table.rs` so that
-// non-export modules can reach it. Aliased here for brevity.
+// The kernel's process table lives in `process_table.rs` so that non-export
+// modules can reach it. Aliased here for brevity.
 use crate::process_table::GLOBAL_PROCESS_TABLE as PROCESS_TABLE;
 
 // ---------------------------------------------------------------------------
 // 3b. Cross-process procfs helpers
 // ---------------------------------------------------------------------------
 // These functions are called from syscalls.rs during procfs operations.
-// SAFETY: Only called while inside kernel_handle_channel (GKL held or
-// centralized mode which is single-threaded).
+// SAFETY: Only called while inside kernel_handle_channel, where syscall
+// dispatch is serialized by the host.
 
 /// Get all active PIDs from the process table.
-/// Returns empty Vec in mode=0 (single-process).
 pub(crate) fn procfs_all_pids() -> Vec<u32> {
-    if crate::is_centralized_mode() {
-        let table = unsafe { &*PROCESS_TABLE.0.get() };
-        table.all_pids()
-    } else {
-        Vec::new()
-    }
+    let table = unsafe { &*PROCESS_TABLE.0.get() };
+    table.all_pids()
 }
 
 /// Generate procfs content for a foreign process (cross-process access).
@@ -1090,9 +1068,6 @@ pub(crate) fn procfs_generate_for_pid(
     pid: u32,
     entry: &crate::procfs::ProcfsEntry,
 ) -> Option<Vec<u8>> {
-    if !crate::is_centralized_mode() {
-        return None;
-    }
     let table = unsafe { &*PROCESS_TABLE.0.get() };
     let proc = table.get(pid)?;
     match entry {
@@ -1112,9 +1087,6 @@ pub(crate) fn procfs_readlink_for_pid(
     entry: &crate::procfs::ProcfsEntry,
     buf: &mut [u8],
 ) -> Option<usize> {
-    if !crate::is_centralized_mode() {
-        return None;
-    }
     let table = unsafe { &*PROCESS_TABLE.0.get() };
     let proc = table.get(pid)?;
     crate::procfs::procfs_readlink(proc, entry, buf).ok()
@@ -1127,9 +1099,6 @@ pub(crate) fn procfs_getdents64_for_pid(
     buf: &mut [u8],
     offset: i64,
 ) -> Option<(usize, i64, bool)> {
-    if !crate::is_centralized_mode() {
-        return None;
-    }
     let table = unsafe { &*PROCESS_TABLE.0.get() };
     let proc = table.get(pid)?;
     let pids = table.all_pids();
@@ -1137,120 +1106,54 @@ pub(crate) fn procfs_getdents64_for_pid(
 }
 
 // ---------------------------------------------------------------------------
-// 3a. Global Kernel Lock (GKL)
+// 3a. Compatibility guard
 // ---------------------------------------------------------------------------
 
-/// Global Kernel Lock — a futex-backed spinlock in shared linear memory.
-/// Every syscall acquires it on entry and releases on exit. This serializes
-/// all kernel access when multiple threads share the same Memory.
-///
-/// DEPRECATED: In centralized mode (mode=1), GKL is bypassed because the
-/// kernel services one syscall at a time from the JS event loop.
-/// GKL is only needed for mode=0 (traditional) where multiple threads
-/// in a process Worker share the kernel state.
-/// When mode=0 is fully removed, GKL and GklGuard can be deleted.
-static GKL: AtomicI32 = AtomicI32::new(0);
-
-#[cfg(any(target_arch = "wasm32", target_arch = "wasm64"))]
-fn gkl_addr() -> usize {
-    &GKL as *const AtomicI32 as usize
-}
-
-#[cfg(any(target_arch = "wasm32", target_arch = "wasm64"))]
-fn gkl_acquire() {
-    loop {
-        match GKL.compare_exchange_weak(0, 1, Ordering::Acquire, Ordering::Relaxed) {
-            Ok(_) => break,
-            Err(_) => {
-                // Block via futex until lock is released
-                unsafe {
-                    host_futex_wait(gkl_addr(), 1, 0xFFFFFFFF, 0xFFFFFFFF);
-                }
-            }
-        }
-    }
-}
-
-#[cfg(any(target_arch = "wasm32", target_arch = "wasm64"))]
-fn gkl_release() {
-    GKL.store(0, Ordering::Release);
-    unsafe {
-        host_futex_wake(gkl_addr(), 1);
-    }
-}
-
-#[cfg(not(any(target_arch = "wasm32", target_arch = "wasm64")))]
+/// Legacy direct exports still use a guard-shaped value so older wrapper code
+/// can keep the same control flow. Kernel execution is serialized by the host,
+/// so acquiring or dropping the guard does not take a secondary lock.
 fn gkl_acquire() {}
 
-#[cfg(not(any(target_arch = "wasm32", target_arch = "wasm64")))]
 fn gkl_release() {}
 
-/// RAII guard that releases the Global Kernel Lock on drop.
-/// Ensures GKL is released even on early returns or panics.
+/// RAII guard retained for direct-export compatibility.
 struct GklGuard;
 
 impl GklGuard {
     fn acquire() -> Self {
-        if !crate::is_centralized_mode() {
-            gkl_acquire();
-        }
+        gkl_acquire();
         GklGuard
     }
 }
 
 impl Drop for GklGuard {
     fn drop(&mut self) {
-        if !crate::is_centralized_mode() {
-            gkl_release();
-        }
+        gkl_release();
     }
 }
 
-/// Get a mutable reference to the global process, acquiring the GKL.
-/// Returns a GklGuard that releases the lock when dropped.
-///
-/// In mode 0 (traditional): uses the single global PROCESS.
-/// In mode 1 (centralized): looks up current_pid in PROCESS_TABLE.
+/// Get a mutable reference to the current process.
 ///
 /// SAFETY: Must only be called from kernel export functions.
 #[inline]
 unsafe fn get_process() -> (GklGuard, &'static mut Process) {
     let guard = GklGuard::acquire();
-    if crate::is_centralized_mode() {
-        let table = unsafe { &mut *PROCESS_TABLE.0.get() };
-        match table.current_process() {
-            Some(p) => (guard, p),
-            #[cfg(any(target_arch = "wasm32", target_arch = "wasm64"))]
-            None => core::hint::unreachable_unchecked(),
-            #[cfg(not(any(target_arch = "wasm32", target_arch = "wasm64")))]
-            None => panic!("no current process in table"),
-        }
-    } else {
-        let ptr = PROCESS.0.get();
-        match unsafe { &mut *ptr } {
-            Some(p) => (guard, p),
-            #[cfg(any(target_arch = "wasm32", target_arch = "wasm64"))]
-            None => core::hint::unreachable_unchecked(),
-            #[cfg(not(any(target_arch = "wasm32", target_arch = "wasm64")))]
-            None => panic!("kernel not initialized"),
-        }
+    let table = unsafe { &mut *PROCESS_TABLE.0.get() };
+    match table.current_process() {
+        Some(p) => (guard, p),
+        #[cfg(any(target_arch = "wasm32", target_arch = "wasm64"))]
+        None => core::hint::unreachable_unchecked(),
+        #[cfg(not(any(target_arch = "wasm32", target_arch = "wasm64")))]
+        None => panic!("no current process in table"),
     }
 }
 
 fn current_pid_eids() -> (u32, u32, u32) {
-    if crate::is_centralized_mode() {
-        let table = unsafe { &*PROCESS_TABLE.0.get() };
-        let pid = table.current_pid();
-        match table.get(pid) {
-            Some(p) => (pid, p.euid, p.egid),
-            None => (pid, 0, 0),
-        }
-    } else {
-        let proc = unsafe { &*PROCESS.0.get() };
-        match proc {
-            Some(p) => (p.pid, p.euid, p.egid),
-            None => (0, 0, 0),
-        }
+    let table = unsafe { &*PROCESS_TABLE.0.get() };
+    let pid = table.current_pid();
+    match table.get(pid) {
+        Some(p) => (pid, p.euid, p.egid),
+        None => (pid, 0, 0),
     }
 }
 
@@ -1291,72 +1194,34 @@ fn ensure_memory_covers(_end_addr: usize) {
 /// Check for and deliver pending signals before/after syscall.
 fn deliver_pending_signals(proc: &mut Process, host: &mut WasmHostIO) {
     use crate::signal::{DefaultAction, SignalHandler, default_action};
-    let centralized = crate::is_centralized_mode();
     let tid = crate::process_table::current_tid();
+    let _ = host;
     loop {
-        // In centralized mode, peek first so we can skip Handler signals
-        // (they'll be delivered by the glue code via kernel_dequeue_signal).
-        if centralized {
-            let deliverable = proc.deliverable_for(tid);
-            if deliverable == 0 {
-                break;
-            }
-            let signum = deliverable.trailing_zeros() + 1;
-            if signum >= wasm_posix_shared::signal::NSIG {
-                break;
-            }
-            let action = proc.signals.get_action(signum);
-            match action.handler {
-                SignalHandler::Handler(_) => break, // Leave for glue-side delivery
-                SignalHandler::Default => {
-                    let _ = dequeue_signal_for(proc, tid, signum);
-                    match default_action(signum) {
-                        DefaultAction::Terminate | DefaultAction::CoreDump => {
-                            proc.state = crate::process::ProcessState::Exited;
-                            proc.exit_status = 128 + signum as i32;
-                        }
-                        _ => {}
-                    }
-                }
-                SignalHandler::Ignore => {
-                    let _ = dequeue_signal_for(proc, tid, signum);
-                }
-            }
-        } else {
-            // Traditional mode: dequeue and handle all signals directly
-            let (signum, _si_value, _si_code) = match proc.signals.dequeue() {
-                Some(s) => s,
-                None => break,
-            };
-            if proc.state == crate::process::ProcessState::Exited {
-                break;
-            }
-            let action = proc.signals.get_action(signum);
-            match action.handler {
-                SignalHandler::Handler(idx) => {
-                    if host
-                        .host_call_signal_handler(idx, signum, action.flags)
-                        .is_err()
-                    {
-                        // Handler call failed — fall back to default action (POSIX).
-                        // The signal has already been dequeued, so we must handle it here.
-                        match default_action(signum) {
-                            DefaultAction::Terminate | DefaultAction::CoreDump => {
-                                proc.state = crate::process::ProcessState::Exited;
-                                proc.exit_status = 128 + signum as i32;
-                            }
-                            _ => {}
-                        }
-                    }
-                }
-                SignalHandler::Default => match default_action(signum) {
+        // Caught signals are delivered by the glue code via
+        // kernel_dequeue_signal; default and ignored signals are consumed here.
+        let deliverable = proc.deliverable_for(tid);
+        if deliverable == 0 {
+            break;
+        }
+        let signum = deliverable.trailing_zeros() + 1;
+        if signum >= wasm_posix_shared::signal::NSIG {
+            break;
+        }
+        let action = proc.signals.get_action(signum);
+        match action.handler {
+            SignalHandler::Handler(_) => break,
+            SignalHandler::Default => {
+                let _ = dequeue_signal_for(proc, tid, signum);
+                match default_action(signum) {
                     DefaultAction::Terminate | DefaultAction::CoreDump => {
                         proc.state = crate::process::ProcessState::Exited;
                         proc.exit_status = 128 + signum as i32;
                     }
                     _ => {}
-                },
-                SignalHandler::Ignore => {}
+                }
+            }
+            SignalHandler::Ignore => {
+                let _ = dequeue_signal_for(proc, tid, signum);
             }
         }
         if proc.state == crate::process::ProcessState::Exited {
@@ -1387,12 +1252,6 @@ pub extern "C" fn kernel_host_adapter_manifest_ptr() -> usize {
 #[unsafe(no_mangle)]
 pub extern "C" fn kernel_host_adapter_manifest_len() -> u32 {
     core::mem::size_of::<wasm_posix_shared::abi::HostAdapterManifest>() as u32
-}
-
-/// Set kernel operating mode. 0 = traditional, 1 = centralized.
-#[unsafe(no_mangle)]
-pub extern "C" fn kernel_set_mode(mode: u32) {
-    crate::set_kernel_mode(mode);
 }
 
 /// Allocate a scratch buffer from the kernel's own heap allocator.
@@ -1438,7 +1297,7 @@ pub extern "C" fn kernel_get_memory_pages() -> u32 {
     }
 }
 
-/// Create a new process in the process table (centralized mode).
+/// Create a new process in the process table.
 /// Returns 0 on success, -EEXIST if pid already exists.
 #[unsafe(no_mangle)]
 pub extern "C" fn kernel_create_process(pid: u32) -> i32 {
@@ -1508,7 +1367,36 @@ pub extern "C" fn kernel_set_brk_limit(pid: u32, brk_limit: usize) -> i32 {
     }
 }
 
-/// Set the working directory for a process (centralized mode).
+/// Reserve a host-owned dynamic control range in a process address space.
+/// Returns the byte address on success, or MAP_FAILED if the pid is missing
+/// or no suitably sized gap exists. The returned range is not a guest mmap
+/// mapping and cannot be released by munmap.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_reserve_host_region(pid: u32, len: usize) -> usize {
+    let table = unsafe { &mut *PROCESS_TABLE.0.get() };
+    if let Some(proc) = table.get_mut(pid) {
+        proc.memory.reserve_host_region(len)
+    } else {
+        wasm_posix_shared::mmap::MAP_FAILED
+    }
+}
+
+/// Reserve a host-owned dynamic control range at an exact address.
+/// Used by fork-from-pthread children to retain only the calling thread's
+/// copied TLS/fork-save/channel slot. Returns the byte address on success,
+/// or MAP_FAILED if the pid is missing or the range collides with guest
+/// brk/mmap state.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_reserve_host_region_at(pid: u32, addr: usize, len: usize) -> usize {
+    let table = unsafe { &mut *PROCESS_TABLE.0.get() };
+    if let Some(proc) = table.get_mut(pid) {
+        proc.memory.reserve_host_region_at(addr, len)
+    } else {
+        wasm_posix_shared::mmap::MAP_FAILED
+    }
+}
+
+/// Set the working directory for a process.
 /// Called by host to set the initial cwd before the process starts.
 /// Returns 0 on success, -ESRCH if pid not found.
 #[unsafe(no_mangle)]
@@ -1523,7 +1411,7 @@ pub extern "C" fn kernel_set_cwd(pid: u32, path_ptr: *const u8, path_len: u32) -
     }
 }
 
-/// Set a process's initial real/effective uid and gid (centralized mode).
+/// Set a process's initial real/effective uid and gid.
 /// The host calls this after creating the process but before user code starts.
 /// Pass `u32::MAX` for either uid or gid to leave that side unchanged.
 #[unsafe(no_mangle)]
@@ -1544,7 +1432,7 @@ pub extern "C" fn kernel_set_process_credentials(pid: u32, uid: u32, gid: u32) -
     }
 }
 
-/// Set the argv for a process (centralized mode).
+/// Set the argv for a process.
 /// The argv is a null-separated concatenation of arguments.
 /// Called by host to populate /proc/<pid>/cmdline.
 /// Returns 0 on success, -ESRCH if pid not found.
@@ -1638,14 +1526,14 @@ fn reap_process_and_cleanup(pid: u32) -> i32 {
     }
 }
 
-/// Remove a process from the process table (centralized mode).
+/// Remove a process from the process table.
 /// Returns 0 on success, -ESRCH if pid not found.
 #[unsafe(no_mangle)]
 pub extern "C" fn kernel_remove_process(pid: u32) -> i32 {
     remove_process_and_cleanup(pid)
 }
 
-/// Reap a wait-consumed process from the process table (centralized mode).
+/// Reap a wait-consumed process from the process table.
 /// Reaped process-group leaders are retained as limbo records while group
 /// members remain, so getpgid/setpgid can still resolve the leader.
 /// Returns 0 on success, -ESRCH if pid not found.
@@ -1654,7 +1542,7 @@ pub extern "C" fn kernel_reap_process(pid: u32) -> i32 {
     reap_process_and_cleanup(pid)
 }
 
-/// Fork a process in the process table (centralized mode).
+/// Fork a process in the process table.
 /// Clones parent's Process state and creates a child with `child_pid`.
 /// Returns 0 on success, negative errno on error.
 #[unsafe(no_mangle)]
@@ -1666,7 +1554,7 @@ pub extern "C" fn kernel_fork_process(parent_pid: u32, child_pid: u32) -> i32 {
     }
 }
 
-/// Non-forking `posix_spawn` (centralized mode). Parses the SYS_SPAWN
+/// Non-forking `posix_spawn`. Parses the SYS_SPAWN
 /// blob (already copied from caller memory into the kernel's address
 /// space by the host), allocates a child pid, builds the child Process
 /// with attrs and file actions applied, and inserts it into the
@@ -1724,7 +1612,7 @@ pub extern "C" fn kernel_get_fork_count(pid: u32) -> u64 {
     }
 }
 
-/// Check if a process is a fork child (centralized mode).
+/// Check if a process is a fork child.
 /// Returns 1 if fork child, 0 otherwise, -ESRCH if not found.
 #[unsafe(no_mangle)]
 pub extern "C" fn kernel_is_fork_child_pid(pid: u32) -> i32 {
@@ -1741,7 +1629,7 @@ pub extern "C" fn kernel_is_fork_child_pid(pid: u32) -> i32 {
     }
 }
 
-/// Clear the fork_child flag for a process (centralized mode).
+/// Clear the fork_child flag for a process.
 /// Called by the host after returning 0 to a fork child's SYS_FORK call.
 #[unsafe(no_mangle)]
 pub extern "C" fn kernel_clear_fork_child(pid: u32) -> i32 {
@@ -1755,7 +1643,7 @@ pub extern "C" fn kernel_clear_fork_child(pid: u32) -> i32 {
     }
 }
 
-/// Get process exit status (centralized mode).
+/// Get process exit status.
 /// Returns exit_status if process is exited, -1 if still alive, -ESRCH if not found.
 #[unsafe(no_mangle)]
 pub extern "C" fn kernel_get_process_exit_status(pid: u32) -> i32 {
@@ -1825,7 +1713,7 @@ pub extern "C" fn kernel_reap_exited_child(parent_pid: u32, child_pid: u32) -> i
     reap_process_and_cleanup(child_pid)
 }
 
-/// Check if a process has SA_NOCLDWAIT set for SIGCHLD (centralized mode).
+/// Check if a process has SA_NOCLDWAIT set for SIGCHLD.
 /// Returns 1 if SA_NOCLDWAIT is set, 0 if not, -ESRCH if process not found.
 #[unsafe(no_mangle)]
 pub extern "C" fn kernel_has_sa_nocldwait(pid: u32) -> i32 {
@@ -1847,10 +1735,10 @@ pub extern "C" fn kernel_has_sa_nocldwait(pid: u32) -> i32 {
     }
 }
 
-/// Reset signal mask for a process (centralized mode).
-/// In centralized mode, fork children re-execute _start, so they don't get
-/// musl's __restore_sigs after fork(). Clear the blocked mask so the child
-/// starts with no signals blocked, matching a fresh process.
+/// Reset signal mask for a process.
+/// Fork children re-execute _start, so they don't get musl's __restore_sigs
+/// after fork(). Clear the blocked mask so the child starts with no signals
+/// blocked, matching a fresh process.
 #[unsafe(no_mangle)]
 pub extern "C" fn kernel_reset_signal_mask(pid: u32) -> i32 {
     let table = unsafe { &mut *PROCESS_TABLE.0.get() };
@@ -1864,7 +1752,7 @@ pub extern "C" fn kernel_reset_signal_mask(pid: u32) -> i32 {
     }
 }
 
-/// Check if a signal is blocked for a process (centralized mode).
+/// Check if a signal is blocked for a process.
 /// Returns 1 if blocked by *every* thread of `pid` (i.e. no thread can
 /// currently receive it), 0 if at least one thread has it unblocked,
 /// -ESRCH if the process does not exist.
@@ -1931,7 +1819,7 @@ pub extern "C" fn kernel_thread_has_deliverable(pid: u32, tid: u32) -> i32 {
     }
 }
 
-/// Get fork exec path for a specific process (centralized mode).
+/// Get fork exec path for a specific process.
 /// Writes path to buf, returns bytes written, 0 if no exec path, -ESRCH if not found.
 #[unsafe(no_mangle)]
 pub extern "C" fn kernel_get_fork_exec_path_pid(pid: u32, buf_ptr: *mut u8, buf_len: u32) -> i32 {
@@ -1950,7 +1838,7 @@ pub extern "C" fn kernel_get_fork_exec_path_pid(pid: u32, buf_ptr: *mut u8, buf_
     }
 }
 
-/// Get the CWD for a specific process (centralized mode).
+/// Get the CWD for a specific process.
 /// Writes CWD to buf, returns bytes written, negative errno on error.
 #[unsafe(no_mangle)]
 pub extern "C" fn kernel_get_cwd(pid: u32, buf_ptr: *mut u8, buf_len: u32) -> i32 {
@@ -1966,7 +1854,7 @@ pub extern "C" fn kernel_get_cwd(pid: u32, buf_ptr: *mut u8, buf_len: u32) -> i3
     }
 }
 
-/// Get the file path for an fd in a specific process (centralized mode).
+/// Get the file path for an fd in a specific process.
 /// Used by the host to resolve fexecve fd paths.
 /// Writes path to buf, returns bytes written, negative errno on error.
 #[unsafe(no_mangle)]
@@ -2020,15 +1908,10 @@ pub extern "C" fn kernel_get_fd_path(pid: u32, fd: i32, buf_ptr: *mut u8, buf_le
 ///     [comm_len bytes]    -- process_name(proc) — basename of argv[0]
 ///     [cmdline_len bytes] -- null-separated argv (same shape as /proc/<pid>/cmdline)
 ///
-/// Returns total bytes written on success, -ENOSPC if the buffer is too
-/// small (the host can retry with a larger scratch alloc), or -EAGAIN if
-/// the kernel isn't in centralized mode (single-process kernels have no
-/// table to walk).
+/// Returns total bytes written on success or -ENOSPC if the buffer is too
+/// small (the host can retry with a larger scratch alloc).
 #[unsafe(no_mangle)]
 pub extern "C" fn kernel_enum_procs(out_ptr: *mut u8, out_len: u32) -> i32 {
-    if !crate::is_centralized_mode() {
-        return -(Errno::EAGAIN as i32);
-    }
     let table = unsafe { &*PROCESS_TABLE.0.get() };
     let pids = table.all_pids();
 
@@ -2100,13 +1983,9 @@ pub extern "C" fn kernel_enum_procs(out_ptr: *mut u8, out_len: u32) -> i32 {
 
 /// Write the contents of `/proc/<pid>/maps` (Linux-style smaps-ish text)
 /// into the host buffer. Returns bytes written, or `-ENOSPC` if the buffer
-/// is too small, `-ESRCH` if the pid doesn't exist, `-EAGAIN` if the kernel
-/// isn't in centralized mode.
+/// is too small, `-ESRCH` if the pid doesn't exist.
 #[unsafe(no_mangle)]
 pub extern "C" fn kernel_read_proc_maps(pid: u32, out_ptr: *mut u8, out_len: u32) -> i32 {
-    if !crate::is_centralized_mode() {
-        return -(Errno::EAGAIN as i32);
-    }
     let table = unsafe { &*PROCESS_TABLE.0.get() };
     let proc = match table.get(pid) {
         Some(p) => p,
@@ -2149,7 +2028,7 @@ fn process_name_bytes(proc: &crate::process::Process) -> Vec<u8> {
     }
 }
 
-/// Dequeue one pending Handler signal for a process (centralized mode).
+/// Dequeue one pending Handler signal for a process.
 /// Writes signal delivery info to `out_ptr` (24 bytes):
 ///   [0..4] signum (u32), [4..8] handler_index (u32), [8..12] sa_flags (u32),
 ///   [16..24] old_blocked_mask (u64)
@@ -2300,7 +2179,7 @@ fn dequeue_signal_for(
     (signum, si_value, si_code)
 }
 
-/// Handle exec semantics on a process in the process table (centralized mode).
+/// Handle exec semantics on a process in the process table.
 /// Serializes the process as exec state (closes CLOEXEC, resets handlers), then
 /// re-creates the process from that sanitized state.
 /// Returns 0 on success, negative errno on error.
@@ -2405,7 +2284,7 @@ pub extern "C" fn kernel_exec_setup(pid: u32) -> i32 {
     }
 }
 
-/// Handle a syscall via the channel protocol (centralized mode).
+/// Handle a syscall via the channel protocol.
 ///
 /// Reads the channel layout from kernel Memory at `offset`:
 ///   - syscall number at offset+4
@@ -2581,8 +2460,7 @@ fn dispatch_channel_syscall(nr: u32, args: &[i64; 6]) -> i32 {
             // SYS_GETPGID
             let (_gkl, proc) = unsafe { get_process() };
             let pid = a1 as u32;
-            // In centralized mode, support cross-process getpgid via ProcessTable
-            if pid != 0 && pid != proc.pid && crate::is_centralized_mode() {
+            if pid != 0 && pid != proc.pid {
                 let table = unsafe { &*PROCESS_TABLE.0.get() };
                 match table.get(pid) {
                     Some(target) => target.pgid as i32,
@@ -3213,8 +3091,7 @@ fn dispatch_channel_syscall(nr: u32, args: &[i64; 6]) -> i32 {
                     }
                     Err(e) => -(e as i32),
                 }
-            } else if crate::is_centralized_mode() {
-                // Cross-process setpgid in centralized mode
+            } else {
                 let new_pgid = if pgid == 0 { effective_pid } else { pgid };
                 let table = unsafe { &mut *PROCESS_TABLE.0.get() };
                 match table.get_mut(effective_pid) {
@@ -3239,16 +3116,13 @@ fn dispatch_channel_syscall(nr: u32, args: &[i64; 6]) -> i32 {
                     }
                     None => -(Errno::ESRCH as i32),
                 }
-            } else {
-                -(Errno::ESRCH as i32)
             }
         }
         91 => {
             // SYS_GETSID
             let (_gkl, proc) = unsafe { get_process() };
             let pid = a1 as u32;
-            // In centralized mode, support cross-process getsid via ProcessTable
-            if pid != 0 && pid != proc.pid && crate::is_centralized_mode() {
+            if pid != 0 && pid != proc.pid {
                 let table = unsafe { &*PROCESS_TABLE.0.get() };
                 match table.get(pid) {
                     Some(target) => target.sid as i32,
@@ -3872,7 +3746,7 @@ fn dispatch_channel_syscall(nr: u32, args: &[i64; 6]) -> i32 {
         257 => 0, // SYS_MEMBARRIER: no-op (single-threaded per process in Wasm)
         273 => 0, // SYS_SYNC: no-op (all I/O is synchronous to host)
         274 => 0, // SYS_SYNCFS: no-op
-        278 => 0, // SYS_MSYNC: no-op (MAP_PRIVATE changes are process-local, file-backed writes go through write())
+        278 => 0, // SYS_MSYNC: no-op (MAP_PRIVATE changes are private, file-backed writes go through write())
 
         // -- Process stubs --
         287 => 0, // SYS_PERSONALITY: return 0 (current personality, PER_LINUX)
@@ -4173,7 +4047,7 @@ fn dispatch_channel_syscall(nr: u32, args: &[i64; 6]) -> i32 {
 
         // ───── PTHREAD_PROCESS_SHARED primitives ─────
         // See crates/kernel/src/pshared.rs. Blocking ops return EAGAIN so
-        // the centralized-mode host retry loop re-invokes them.
+        // the host retry loop re-invokes them.
         400 => {
             // SYS_PSHARED_MUTEX_INIT: (mtype)
             let t = unsafe { crate::pshared::global_pshared_table() };
@@ -4579,9 +4453,9 @@ pub extern "C" fn kernel_mq_is_mqd(fd: i32) -> i32 {
 /// Initialize the kernel with a new process.
 #[unsafe(no_mangle)]
 pub extern "C" fn kernel_init(pid: u32) {
-    unsafe {
-        *PROCESS.0.get() = Some(Process::new(pid));
-    }
+    let table = unsafe { &mut *PROCESS_TABLE.0.get() };
+    table.processes.insert(pid, Process::new(pid));
+    table.set_current_pid(pid);
 }
 
 /// Serialize current process state for fork. Returns bytes written, or negative errno.
@@ -4601,9 +4475,9 @@ pub extern "C" fn kernel_init_from_fork(buf_ptr: *const u8, buf_len: u32, child_
     let buf = unsafe { core::slice::from_raw_parts(buf_ptr, buf_len as usize) };
     match crate::fork::deserialize_fork_state(buf, child_pid) {
         Ok(proc) => {
-            unsafe {
-                *PROCESS.0.get() = Some(proc);
-            }
+            let table = unsafe { &mut *PROCESS_TABLE.0.get() };
+            table.processes.insert(child_pid, proc);
+            table.set_current_pid(child_pid);
             0
         }
         Err(e) => -(e as i32),
@@ -4630,9 +4504,9 @@ pub extern "C" fn kernel_init_from_exec(buf_ptr: *const u8, buf_len: u32, pid: u
     let buf = unsafe { core::slice::from_raw_parts(buf_ptr, buf_len as usize) };
     match crate::fork::deserialize_exec_state(buf, pid) {
         Ok(proc) => {
-            unsafe {
-                *PROCESS.0.get() = Some(proc);
-            }
+            let table = unsafe { &mut *PROCESS_TABLE.0.get() };
+            table.processes.insert(pid, proc);
+            table.set_current_pid(pid);
             0
         }
         Err(e) => -(e as i32),
@@ -5602,9 +5476,6 @@ pub extern "C" fn kernel_getpgrp() -> u32 {
 /// (no current-process context needed). Returns pgid on success, or negative errno.
 #[unsafe(no_mangle)]
 pub extern "C" fn kernel_getpgid_direct(pid: u32) -> i32 {
-    if !crate::is_centralized_mode() {
-        return -(Errno::ENOSYS as i32);
-    }
     let table = unsafe { &*PROCESS_TABLE.0.get() };
     match table.get(pid) {
         Some(proc) => proc.pgid as i32,
@@ -5663,9 +5534,9 @@ fn kernel_kill_with_value(pid: i32, sig: u32, si_value: i32) -> i32 {
     let (_gkl, proc) = unsafe { get_process() };
     let mut host = WasmHostIO;
 
-    // In centralized mode, handle cross-process kill directly via ProcessTable.
+    // Handle cross-process kill directly via ProcessTable.
     let is_local = pid == proc.pid as i32 || pid == 0 || pid == -(proc.pgid as i32);
-    if !is_local && crate::is_centralized_mode() && pid > 0 {
+    if !is_local && pid > 0 {
         if sig >= NSIG && sig != 0 {
             deliver_pending_signals(proc, &mut host);
             return -(Errno::EINVAL as i32);
@@ -5690,8 +5561,8 @@ fn kernel_kill_with_value(pid: i32, sig: u32, si_value: i32) -> i32 {
         deliver_pending_signals(proc, &mut host);
         return result;
     }
-    // Centralized mode: kill(-pgid, sig) sends signal to all processes in group |pid|
-    if !is_local && crate::is_centralized_mode() && pid < -1 {
+    // kill(-pgid, sig) sends signal to all processes in group |pid|
+    if !is_local && pid < -1 {
         if sig >= NSIG && sig != 0 {
             deliver_pending_signals(proc, &mut host);
             return -(Errno::EINVAL as i32);
@@ -5735,8 +5606,7 @@ fn kernel_kill_with_value(pid: i32, sig: u32, si_value: i32) -> i32 {
         }
     }
 
-    // Local or traditional mode: use sys_kill (which uses raise, not raise_with_value)
-    // For local sigqueue, raise with value on the current process directly
+    // For local sigqueue, raise with value on the current process directly.
     if si_value != 0 && sig > 0 {
         proc.signals.raise_with_value(sig, si_value);
         deliver_pending_signals(proc, &mut host);
@@ -5792,7 +5662,7 @@ pub extern "C" fn kernel_sigaltstack(ss_ptr: *const u8, oss_ptr: *mut u8) -> i32
 }
 
 /// Validate a PID and caller's permission to query/modify its scheduling
-/// parameters (centralized mode).
+/// parameters.
 ///
 /// Returns 0 if PID is valid and the caller has permission (pid==0 means
 /// current process, always allowed). Returns -ESRCH if the target doesn't
@@ -5800,9 +5670,6 @@ pub extern "C" fn kernel_sigaltstack(ss_ptr: *const u8, oss_ptr: *mut u8) -> i32
 fn kernel_sched_validate_pid(pid: i32) -> i32 {
     if pid == 0 {
         return 0; // pid 0 means current process
-    }
-    if !crate::is_centralized_mode() {
-        return 0;
     }
     let (_gkl, caller) = unsafe { get_process() };
     let sender_euid = caller.euid;
@@ -5876,15 +5743,15 @@ pub extern "C" fn kernel_raise(sig: u32) -> i32 {
 /// - Unknown `tid` → `-ESRCH`.
 ///
 /// Cross-process `tkill` is not supported (returns `-ESRCH`); use `kill` or
-/// `tgkill` with the current process's `tgid` for process-local delivery.
+/// `tgkill` with the current process's `tgid` for current-process delivery.
 #[unsafe(no_mangle)]
 pub extern "C" fn kernel_tkill(tid: u32, sig: u32) -> i32 {
     kernel_tkill_with_value(tid, sig, 0, 0)
 }
 
 /// `tgkill(tgid, tid, sig)` — like `tkill` but verifies that `tid` belongs
-/// to the thread group identified by `tgid`. In our single-process-group
-/// threading model this reduces to the same check plus an outer PID match.
+/// to the thread group identified by `tgid`. In the current threading model,
+/// this reduces to the same check plus an outer PID match.
 #[unsafe(no_mangle)]
 pub extern "C" fn kernel_tgkill(tgid: u32, tid: u32, sig: u32) -> i32 {
     let (_gkl, proc) = unsafe { get_process() };
@@ -6544,11 +6411,8 @@ pub extern "C" fn kernel_sendmsg(fd: i32, msg_ptr: *const u8, flags: u32) -> i32
                     let sock_idx = (-(ofd.host_handle + 1)) as usize;
                     if let Some(sock) = proc.sockets.get(sock_idx) {
                         if let Some(send_idx) = sock.send_buf_idx {
-                            let pipe = if sock.global_pipes {
-                                unsafe { crate::pipe::global_pipe_table().get_mut(send_idx) }
-                            } else {
-                                proc.pipes.get_mut(send_idx).and_then(|p| p.as_mut())
-                            };
+                            let pipe =
+                                unsafe { crate::pipe::global_pipe_table().get_mut(send_idx) };
                             if let Some(pipe) = pipe {
                                 pipe.push_ancillary(ancillary_fds);
                             }
@@ -6743,7 +6607,7 @@ pub extern "C" fn kernel_recvmsg(fd: i32, msg_ptr: *mut u8, flags: u32) -> i32 {
     let mut ancillary_delivered = false;
     if result > 0 {
         let popped = 'pop: {
-            let (recv_idx, use_global) = {
+            let recv_idx = {
                 let fd_entry = match proc.fd_table.get(fd) {
                     Ok(e) => e,
                     _ => break 'pop None,
@@ -6754,7 +6618,7 @@ pub extern "C" fn kernel_recvmsg(fd: i32, msg_ptr: *mut u8, flags: u32) -> i32 {
                 };
                 let sock_idx = (-(ofd.host_handle + 1)) as usize;
                 match proc.sockets.get(sock_idx) {
-                    Some(s) => (s.recv_buf_idx, s.global_pipes),
+                    Some(s) => s.recv_buf_idx,
                     None => break 'pop None,
                 }
             };
@@ -6762,11 +6626,7 @@ pub extern "C" fn kernel_recvmsg(fd: i32, msg_ptr: *mut u8, flags: u32) -> i32 {
                 Some(i) => i,
                 None => break 'pop None,
             };
-            let pipe = if use_global {
-                unsafe { crate::pipe::global_pipe_table().get_mut(recv_idx) }
-            } else {
-                proc.pipes.get_mut(recv_idx).and_then(|p| p.as_mut())
-            };
+            let pipe = unsafe { crate::pipe::global_pipe_table().get_mut(recv_idx) };
             match pipe {
                 Some(p) => p.pop_ancillary(),
                 None => None,
@@ -7257,9 +7117,9 @@ pub extern "C" fn kernel_accept4(
 
 /// Connect to an address. Returns 0 on success, negative errno on error.
 ///
-/// In centralized mode, if the same-process loopback connect fails with
-/// ECONNREFUSED, searches ALL processes in the ProcessTable for a matching
-/// listener. This enables cross-process loopback (e.g. nginx → php-fpm).
+/// If the same-process loopback connect fails with ECONNREFUSED, searches
+/// all processes in the ProcessTable for a matching listener. This enables
+/// cross-process loopback (e.g. nginx -> php-fpm).
 #[unsafe(no_mangle)]
 pub extern "C" fn kernel_connect(fd: i32, addr_ptr: *const u8, addr_len: u32) -> i32 {
     let (_gkl, proc) = unsafe { get_process() };
@@ -7267,7 +7127,7 @@ pub extern "C" fn kernel_connect(fd: i32, addr_ptr: *const u8, addr_len: u32) ->
     let addr = unsafe { slice::from_raw_parts(addr_ptr, addr_len as usize) };
     let result = match syscalls::sys_connect(proc, &mut host, fd, addr) {
         Ok(()) => 0,
-        Err(Errno::ECONNREFUSED) if crate::is_centralized_mode() && addr_len >= 3 => {
+        Err(Errno::ECONNREFUSED) if addr_len >= 3 => {
             let family = u16::from_le_bytes([addr[0], addr[1]]);
             if family == 1 {
                 // AF_UNIX — try cross-process connect
@@ -7296,7 +7156,7 @@ pub extern "C" fn kernel_connect(fd: i32, addr_ptr: *const u8, addr_len: u32) ->
     result
 }
 
-/// Cross-process loopback TCP connect (centralized mode only).
+/// Cross-process loopback TCP connect.
 ///
 /// Searches all processes in the ProcessTable for a listening socket on the
 /// target port, then creates global pipe pairs to connect the two processes.
@@ -7429,7 +7289,7 @@ fn cross_process_loopback_connect(proc: &mut Process, fd: i32, addr: &[u8]) -> R
     Ok(())
 }
 
-/// Cross-process AF_UNIX connect (centralized mode only).
+/// Cross-process AF_UNIX connect.
 ///
 /// Looks up the target path in the global UnixSocketRegistry, then creates
 /// global pipe pairs to connect the client (current process) to the listener
@@ -9545,11 +9405,9 @@ pub extern "C" fn kernel_get_robust_list(_pid: u32, _head_ptr: usize, _len_ptr: 
 /// Removes the thread from the process's thread table.
 #[unsafe(no_mangle)]
 pub extern "C" fn kernel_thread_exit(pid: u32, tid: u32) -> i32 {
-    if crate::is_centralized_mode() {
-        let pt = unsafe { &mut *PROCESS_TABLE.0.get() };
-        if let Some(proc) = pt.get_mut(pid) {
-            proc.remove_thread(tid);
-        }
+    let pt = unsafe { &mut *PROCESS_TABLE.0.get() };
+    if let Some(proc) = pt.get_mut(pid) {
+        proc.remove_thread(tid);
     }
     0
 }
@@ -9809,29 +9667,20 @@ pub extern "C" fn kernel_inject_datagram(
 /// Read data from a pipe buffer into kernel memory.
 /// Returns number of bytes read, or negative errno.
 ///
-/// `pid == 0` is a sentinel meaning "use the global pipe table directly"
-/// (used by the host TCP bridge to access pipes injected via
-/// `kernel_inject_connection`, which live in the global table so any
-/// fork-shared listener's accepting process can use them).
+/// `pid` is ignored for ABI compatibility; `pipe_idx` addresses the global
+/// pipe table.
 #[unsafe(no_mangle)]
-pub extern "C" fn kernel_pipe_read(pid: u32, pipe_idx: u32, buf_ptr: *mut u8, buf_len: u32) -> i32 {
+pub extern "C" fn kernel_pipe_read(
+    _pid: u32,
+    pipe_idx: u32,
+    buf_ptr: *mut u8,
+    buf_len: u32,
+) -> i32 {
     let buf = unsafe { slice::from_raw_parts_mut(buf_ptr, buf_len as usize) };
-    if pid == 0 {
-        let pipe_table = unsafe { crate::pipe::global_pipe_table() };
-        let pipe = match pipe_table.get_mut(pipe_idx as usize) {
-            Some(p) => p,
-            None => return -(Errno::EBADF as i32),
-        };
-        return pipe.read(buf) as i32;
-    }
-    let table = unsafe { &mut *PROCESS_TABLE.0.get() };
-    let proc = match table.get_mut(pid) {
+    let pipe_table = unsafe { crate::pipe::global_pipe_table() };
+    let pipe = match pipe_table.get_mut(pipe_idx as usize) {
         Some(p) => p,
-        None => return -(Errno::ESRCH as i32),
-    };
-    let pipe = match proc.pipes.get_mut(pipe_idx as usize) {
-        Some(Some(p)) => p,
-        _ => return -(Errno::EBADF as i32),
+        None => return -(Errno::EBADF as i32),
     };
     pipe.read(buf) as i32
 }
@@ -9839,31 +9688,20 @@ pub extern "C" fn kernel_pipe_read(pid: u32, pipe_idx: u32, buf_ptr: *mut u8, bu
 /// Write data from kernel memory into a pipe buffer.
 /// Returns number of bytes written, or negative errno.
 ///
-/// `pid == 0` ⇒ use the global pipe table (see `kernel_pipe_read`).
+/// `pid` is ignored for ABI compatibility; `pipe_idx` addresses the global
+/// pipe table.
 #[unsafe(no_mangle)]
 pub extern "C" fn kernel_pipe_write(
-    pid: u32,
+    _pid: u32,
     pipe_idx: u32,
     buf_ptr: *const u8,
     buf_len: u32,
 ) -> i32 {
     let buf = unsafe { slice::from_raw_parts(buf_ptr, buf_len as usize) };
-    if pid == 0 {
-        let pipe_table = unsafe { crate::pipe::global_pipe_table() };
-        let pipe = match pipe_table.get_mut(pipe_idx as usize) {
-            Some(p) => p,
-            None => return -(Errno::EBADF as i32),
-        };
-        return pipe.write(buf) as i32;
-    }
-    let table = unsafe { &mut *PROCESS_TABLE.0.get() };
-    let proc = match table.get_mut(pid) {
+    let pipe_table = unsafe { crate::pipe::global_pipe_table() };
+    let pipe = match pipe_table.get_mut(pipe_idx as usize) {
         Some(p) => p,
-        None => return -(Errno::ESRCH as i32),
-    };
-    let pipe = match proc.pipes.get_mut(pipe_idx as usize) {
-        Some(Some(p)) => p,
-        _ => return -(Errno::EBADF as i32),
+        None => return -(Errno::EBADF as i32),
     };
     pipe.write(buf) as i32
 }
@@ -9871,91 +9709,48 @@ pub extern "C" fn kernel_pipe_write(
 /// Close the write end of a pipe buffer (signals EOF to the reader).
 /// Returns 0 on success, negative errno on error.
 ///
-/// `pid == 0` ⇒ use the global pipe table (see `kernel_pipe_read`).
+/// `pid` is ignored for ABI compatibility; `pipe_idx` addresses the global
+/// pipe table.
 #[unsafe(no_mangle)]
-pub extern "C" fn kernel_pipe_close_write(pid: u32, pipe_idx: u32) -> i32 {
-    if pid == 0 {
-        let pipe_table = unsafe { crate::pipe::global_pipe_table() };
-        let pipe = match pipe_table.get_mut(pipe_idx as usize) {
-            Some(p) => p,
-            None => return -(Errno::EBADF as i32),
-        };
-        pipe.close_write_end();
-        pipe_table.free_if_closed(pipe_idx as usize);
-        return 0;
-    }
-    let table = unsafe { &mut *PROCESS_TABLE.0.get() };
-    let proc = match table.get_mut(pid) {
+pub extern "C" fn kernel_pipe_close_write(_pid: u32, pipe_idx: u32) -> i32 {
+    let pipe_table = unsafe { crate::pipe::global_pipe_table() };
+    let pipe = match pipe_table.get_mut(pipe_idx as usize) {
         Some(p) => p,
-        None => return -(Errno::ESRCH as i32),
-    };
-    let pipe = match proc.pipes.get_mut(pipe_idx as usize) {
-        Some(Some(p)) => p,
-        _ => return -(Errno::EBADF as i32),
+        None => return -(Errno::EBADF as i32),
     };
     pipe.close_write_end();
-    // Free the buffer if both endpoints are now closed
-    if pipe.is_fully_closed() {
-        proc.pipes[pipe_idx as usize] = None;
-    }
+    pipe_table.free_if_closed(pipe_idx as usize);
     0
 }
 
 /// Close the read end of a pipe buffer (signals to the writer that nobody is reading).
 /// Returns 0 on success, negative errno on error.
 ///
-/// `pid == 0` ⇒ use the global pipe table (see `kernel_pipe_read`).
+/// `pid` is ignored for ABI compatibility; `pipe_idx` addresses the global
+/// pipe table.
 #[unsafe(no_mangle)]
-pub extern "C" fn kernel_pipe_close_read(pid: u32, pipe_idx: u32) -> i32 {
-    if pid == 0 {
-        let pipe_table = unsafe { crate::pipe::global_pipe_table() };
-        let pipe = match pipe_table.get_mut(pipe_idx as usize) {
-            Some(p) => p,
-            None => return -(Errno::EBADF as i32),
-        };
-        pipe.close_read_end();
-        pipe_table.free_if_closed(pipe_idx as usize);
-        return 0;
-    }
-    let table = unsafe { &mut *PROCESS_TABLE.0.get() };
-    let proc = match table.get_mut(pid) {
+pub extern "C" fn kernel_pipe_close_read(_pid: u32, pipe_idx: u32) -> i32 {
+    let pipe_table = unsafe { crate::pipe::global_pipe_table() };
+    let pipe = match pipe_table.get_mut(pipe_idx as usize) {
         Some(p) => p,
-        None => return -(Errno::ESRCH as i32),
-    };
-    let pipe = match proc.pipes.get_mut(pipe_idx as usize) {
-        Some(Some(p)) => p,
-        _ => return -(Errno::EBADF as i32),
+        None => return -(Errno::EBADF as i32),
     };
     pipe.close_read_end();
-    // Free the buffer if both endpoints are now closed
-    if pipe.is_fully_closed() {
-        proc.pipes[pipe_idx as usize] = None;
-    }
+    pipe_table.free_if_closed(pipe_idx as usize);
     0
 }
 
 /// Check if a pipe's write end is still open.
 /// Returns 1 if open, 0 if closed, negative errno on error.
 ///
-/// `pid == 0` ⇒ use the global pipe table (see `kernel_pipe_read`).
+/// `pid` is ignored for ABI compatibility; `pipe_idx` addresses the global
+/// pipe table.
 #[unsafe(no_mangle)]
-pub extern "C" fn kernel_pipe_is_write_open(pid: u32, pipe_idx: u32) -> i32 {
-    if pid == 0 {
-        let pipe_table = unsafe { crate::pipe::global_pipe_table() };
-        let pipe = match pipe_table.get(pipe_idx as usize) {
-            Some(p) => p,
-            None => return -(Errno::EBADF as i32),
-        };
-        return if pipe.is_write_end_open() { 1 } else { 0 };
-    }
-    let table = unsafe { &*PROCESS_TABLE.0.get() };
-    let proc = match table.get(pid) {
+pub extern "C" fn kernel_pipe_is_write_open(_pid: u32, pipe_idx: u32) -> i32 {
+    let pipe_table = unsafe { crate::pipe::global_pipe_table() };
+    let pipe = match pipe_table.get(pipe_idx as usize) {
         Some(p) => p,
-        None => return -(Errno::ESRCH as i32),
-    };
-    let pipe = match proc.pipes.get(pipe_idx as usize) {
-        Some(Some(p)) => p,
-        _ => return -(Errno::EBADF as i32),
+        None => return -(Errno::EBADF as i32),
     };
     if pipe.is_write_end_open() { 1 } else { 0 }
 }
@@ -9963,25 +9758,14 @@ pub extern "C" fn kernel_pipe_is_write_open(pid: u32, pipe_idx: u32) -> i32 {
 /// Check if a pipe's read end is still open.
 /// Returns 1 if open, 0 if closed, negative errno on error.
 ///
-/// `pid == 0` ⇒ use the global pipe table (see `kernel_pipe_read`).
+/// `pid` is ignored for ABI compatibility; `pipe_idx` addresses the global
+/// pipe table.
 #[unsafe(no_mangle)]
-pub extern "C" fn kernel_pipe_is_read_open(pid: u32, pipe_idx: u32) -> i32 {
-    if pid == 0 {
-        let pipe_table = unsafe { crate::pipe::global_pipe_table() };
-        let pipe = match pipe_table.get(pipe_idx as usize) {
-            Some(p) => p,
-            None => return -(Errno::EBADF as i32),
-        };
-        return if pipe.is_read_end_open() { 1 } else { 0 };
-    }
-    let table = unsafe { &*PROCESS_TABLE.0.get() };
-    let proc = match table.get(pid) {
+pub extern "C" fn kernel_pipe_is_read_open(_pid: u32, pipe_idx: u32) -> i32 {
+    let pipe_table = unsafe { crate::pipe::global_pipe_table() };
+    let pipe = match pipe_table.get(pipe_idx as usize) {
         Some(p) => p,
-        None => return -(Errno::ESRCH as i32),
-    };
-    let pipe = match proc.pipes.get(pipe_idx as usize) {
-        Some(Some(p)) => p,
-        _ => return -(Errno::EBADF as i32),
+        None => return -(Errno::EBADF as i32),
     };
     if pipe.is_read_end_open() { 1 } else { 0 }
 }

@@ -13,7 +13,7 @@ use wasm_posix_shared::seek::*;
 use wasm_posix_shared::{WasmFlock, WasmPollFd, WasmStat, WasmStatfs, WasmTimespec};
 
 use crate::fd::OpenFileDescRef;
-use crate::lock::FileLock;
+use crate::lock::{FileLock, LockTable};
 use crate::ofd::FileType;
 use crate::pipe::{DEFAULT_PIPE_CAPACITY, PipeBuffer};
 use crate::process::{HostIO, Process};
@@ -207,6 +207,11 @@ fn disabled_virtual_device(path: &[u8]) -> Option<Errno> {
 
 /// Sentinel host_handle for synthetic in-kernel files.
 const SYNTHETIC_FILE_HANDLE: i64 = -100;
+
+#[inline]
+fn fallback_lock_table(_proc: &mut Process) -> &mut LockTable {
+    unsafe { crate::lock::global_fallback_lock_table() }
+}
 
 /// Mozilla CA root bundle, vendored from <https://curl.se/ca/cacert.pem>.
 /// Served at `/etc/ssl/cert.pem` so OpenSSL's `SSL_CTX_set_default_verify_paths`
@@ -2117,18 +2122,17 @@ pub fn sys_close(proc: &mut Process, host: &mut dyn HostIO, fd: i32) -> Result<(
 
     // POSIX: closing any fd for a file releases all advisory locks on that file
     // held by this process, regardless of which fd acquired the lock.
-    if host_handle >= 0
+    let pid = proc.pid;
+    fallback_lock_table(proc).remove_for_handle(host_handle, pid);
+    let host_lock_cleanup = host_handle >= 0
         && file_type != FileType::Pipe
         && file_type != FileType::Socket
         && file_type != FileType::PtyMaster
         && file_type != FileType::PtySlave
-    {
-        proc.lock_table.remove_for_handle(host_handle, proc.pid);
-        // Also release in the shared (cross-process) lock table
-        if !path.is_empty() {
-            let mut dummy = [0u8; 24];
-            let _ = host.host_fcntl_lock(&path, proc.pid, F_SETLK, F_UNLCK, 0, 0, &mut dummy);
-        }
+        && !path.is_empty();
+    if host_lock_cleanup {
+        let mut dummy = [0u8; 24];
+        let _ = host.host_fcntl_lock(&path, pid, F_SETLK, F_UNLCK, 0, 0, &mut dummy);
     }
 
     let freed = proc.ofd_table.dec_ref(idx);
@@ -2138,6 +2142,12 @@ pub fn sys_close(proc: &mut Process, host: &mut dyn HostIO, fd: i32) -> Result<(
         // KMS master, and prime-bo cookies so close-time bo destroy is
         // observed before any FileType-specific release path runs.
         dri_release_ofd_state(proc.pid as i32, host, idx, dri_state_for_release);
+        let ofd_lock_owner = (idx as u32) | 0x80000000;
+        fallback_lock_table(proc).remove_for_handle(host_handle, ofd_lock_owner);
+        if host_lock_cleanup {
+            let mut dummy = [0u8; 24];
+            let _ = host.host_fcntl_lock(&path, ofd_lock_owner, F_SETLK, F_UNLCK, 0, 0, &mut dummy);
+        }
         match file_type {
             FileType::Pipe => {
                 if host_handle >= 0 {
@@ -2146,13 +2156,9 @@ pub fn sys_close(proc: &mut Process, host: &mut dyn HostIO, fd: i32) -> Result<(
                         let _ = host.host_close(host_handle);
                     }
                 } else {
-                    // Kernel-internal pipe
+                    // Kernel pipe
                     let pipe_idx = (-(host_handle + 1)) as usize;
-                    let pipe = if crate::is_centralized_mode() {
-                        unsafe { crate::pipe::global_pipe_table().get_mut(pipe_idx) }
-                    } else {
-                        proc.pipes.get_mut(pipe_idx).and_then(|p| p.as_mut())
-                    };
+                    let pipe = unsafe { crate::pipe::global_pipe_table().get_mut(pipe_idx) };
                     if let Some(pipe) = pipe {
                         let access_mode = status_flags & O_ACCMODE;
                         if access_mode == O_RDONLY {
@@ -2161,16 +2167,12 @@ pub fn sys_close(proc: &mut Process, host: &mut dyn HostIO, fd: i32) -> Result<(
                             pipe.close_write_end();
                         }
                         // Free pipe slot if both endpoints are closed
-                        if crate::is_centralized_mode() {
-                            unsafe { crate::pipe::global_pipe_table().free_if_closed(pipe_idx) };
-                        }
+                        unsafe { crate::pipe::global_pipe_table().free_if_closed(pipe_idx) };
                     }
                 }
             }
             FileType::Socket => {
                 let sock_idx = (-(host_handle + 1)) as usize;
-                let mut send_idx_to_free: Option<usize> = None;
-                let mut recv_idx_to_free: Option<usize> = None;
                 if let Some(sock) = proc.sockets.get(sock_idx) {
                     if sock.domain == crate::socket::SocketDomain::Inet
                         && sock.sock_type == crate::socket::SocketType::Dgram
@@ -2201,51 +2203,19 @@ pub fn sys_close(proc: &mut Process, host: &mut dyn HostIO, fd: i32) -> Result<(
                             crate::socket::shared_listener_backlog_table().dec_ref(shared_idx)
                         };
                     }
-                    let use_global = sock.global_pipes;
                     if let Some(send_idx) = sock.send_buf_idx {
-                        let pipe = if use_global {
-                            unsafe { crate::pipe::global_pipe_table().get_mut(send_idx) }
-                        } else {
-                            proc.pipes.get_mut(send_idx).and_then(|p| p.as_mut())
-                        };
+                        let pipe = unsafe { crate::pipe::global_pipe_table().get_mut(send_idx) };
                         if let Some(pipe) = pipe {
                             pipe.close_write_end();
-                            if use_global {
-                                unsafe {
-                                    crate::pipe::global_pipe_table().free_if_closed(send_idx)
-                                };
-                            } else if pipe.is_fully_closed() {
-                                send_idx_to_free = Some(send_idx);
-                            }
+                            unsafe { crate::pipe::global_pipe_table().free_if_closed(send_idx) };
                         }
                     }
                     if let Some(recv_idx) = sock.recv_buf_idx {
-                        let pipe = if use_global {
-                            unsafe { crate::pipe::global_pipe_table().get_mut(recv_idx) }
-                        } else {
-                            proc.pipes.get_mut(recv_idx).and_then(|p| p.as_mut())
-                        };
+                        let pipe = unsafe { crate::pipe::global_pipe_table().get_mut(recv_idx) };
                         if let Some(pipe) = pipe {
                             pipe.close_read_end();
-                            if use_global {
-                                unsafe {
-                                    crate::pipe::global_pipe_table().free_if_closed(recv_idx)
-                                };
-                            } else if pipe.is_fully_closed() {
-                                recv_idx_to_free = Some(recv_idx);
-                            }
+                            unsafe { crate::pipe::global_pipe_table().free_if_closed(recv_idx) };
                         }
-                    }
-                }
-                // Free fully-closed process-local pipe slots
-                if let Some(idx) = send_idx_to_free {
-                    if let Some(slot) = proc.pipes.get_mut(idx) {
-                        *slot = None;
-                    }
-                }
-                if let Some(idx) = recv_idx_to_free {
-                    if let Some(slot) = proc.pipes.get_mut(idx) {
-                        *slot = None;
                     }
                 }
                 proc.sockets.free(sock_idx);
@@ -2388,7 +2358,6 @@ pub fn sys_read(
     let host_handle = ofd.host_handle;
     let file_type = ofd.file_type;
     let status_flags = ofd.status_flags;
-
     match file_type {
         FileType::Pipe => {
             if host_handle >= 0 {
@@ -2396,16 +2365,11 @@ pub fn sys_read(
                 let n = host.host_read(host_handle, buf)?;
                 Ok(n)
             } else {
-                // Kernel-internal pipe
+                // Kernel pipe
                 let pipe_idx = (-(host_handle + 1)) as usize;
-                // First attempt: try to read from pipe (centralized uses global table)
                 {
-                    let pipe = if crate::is_centralized_mode() {
-                        unsafe { crate::pipe::global_pipe_table().get_mut(pipe_idx) }
-                    } else {
-                        proc.pipes.get_mut(pipe_idx).and_then(|p| p.as_mut())
-                    }
-                    .ok_or(Errno::EBADF)?;
+                    let pipe = unsafe { crate::pipe::global_pipe_table().get_mut(pipe_idx) }
+                        .ok_or(Errno::EBADF)?;
                     let n = pipe.read(buf);
                     if n > 0 {
                         return Ok(n);
@@ -2414,30 +2378,7 @@ pub fn sys_read(
                         return Ok(0); // EOF — write end closed
                     }
                 }
-                if status_flags & O_NONBLOCK != 0 || crate::is_centralized_mode() {
-                    return Err(Errno::EAGAIN);
-                }
-                // Non-centralized blocking loop (per-process pipes only)
-                loop {
-                    if proc.signals.deliverable() != 0 {
-                        if !proc.signals.should_restart() {
-                            return Err(Errno::EINTR);
-                        }
-                    }
-                    let _ = host.host_nanosleep(0, 1_000_000);
-                    let pipe = proc
-                        .pipes
-                        .get_mut(pipe_idx)
-                        .and_then(|p| p.as_mut())
-                        .ok_or(Errno::EBADF)?;
-                    let n = pipe.read(buf);
-                    if n > 0 {
-                        return Ok(n);
-                    }
-                    if !pipe.is_write_end_open() {
-                        return Ok(0);
-                    }
-                }
+                return Err(Errno::EAGAIN);
             }
         }
         FileType::Socket => {
@@ -2457,14 +2398,10 @@ pub fn sys_read(
                 SocketDomain::Inet | SocketDomain::Inet6 => {
                     // Loopback path: use pipe buffers if available
                     if let Some(recv_buf_idx) = sock.recv_buf_idx {
-                        let use_global = sock.global_pipes;
                         loop {
-                            let pipe = if use_global {
+                            let pipe =
                                 unsafe { crate::pipe::global_pipe_table().get_mut(recv_buf_idx) }
-                            } else {
-                                proc.pipes.get_mut(recv_buf_idx).and_then(|p| p.as_mut())
-                            }
-                            .ok_or(Errno::EBADF)?;
+                                    .ok_or(Errno::EBADF)?;
                             let n = pipe.read(buf);
                             if n > 0 {
                                 return Ok(n);
@@ -2472,15 +2409,7 @@ pub fn sys_read(
                             if !pipe.is_write_end_open() {
                                 return Ok(0);
                             }
-                            if status_flags & O_NONBLOCK != 0 || crate::is_centralized_mode() {
-                                return Err(Errno::EAGAIN);
-                            }
-                            if proc.signals.deliverable() != 0 {
-                                if !proc.signals.should_restart() {
-                                    return Err(Errno::EINTR);
-                                }
-                            }
-                            let _ = host.host_nanosleep(0, 1_000_000);
+                            return Err(Errno::EAGAIN);
                         }
                     }
                     // External path: delegate to host
@@ -2489,14 +2418,10 @@ pub fn sys_read(
                 }
                 SocketDomain::Unix => {
                     let recv_buf_idx = sock.recv_buf_idx.ok_or(Errno::ENOTCONN)?;
-                    let use_global = sock.global_pipes;
                     loop {
-                        let pipe = if use_global {
+                        let pipe =
                             unsafe { crate::pipe::global_pipe_table().get_mut(recv_buf_idx) }
-                        } else {
-                            proc.pipes.get_mut(recv_buf_idx).and_then(|p| p.as_mut())
-                        }
-                        .ok_or(Errno::EBADF)?;
+                                .ok_or(Errno::EBADF)?;
                         let n = pipe.read(buf);
                         if n > 0 {
                             return Ok(n);
@@ -2504,15 +2429,7 @@ pub fn sys_read(
                         if !pipe.is_write_end_open() {
                             return Ok(0); // EOF — peer closed
                         }
-                        if status_flags & O_NONBLOCK != 0 || crate::is_centralized_mode() {
-                            return Err(Errno::EAGAIN);
-                        }
-                        if proc.signals.deliverable() != 0 {
-                            if !proc.signals.should_restart() {
-                                return Err(Errno::EINTR);
-                            }
-                        }
-                        let _ = host.host_nanosleep(0, 1_000_000);
+                        return Err(Errno::EAGAIN);
                     }
                 }
             }
@@ -2533,24 +2450,7 @@ pub fn sys_read(
                 .and_then(|s| s.as_mut())
                 .ok_or(Errno::EBADF)?;
             if tfd.expirations == 0 {
-                if status_flags & O_NONBLOCK != 0 || crate::is_centralized_mode() {
-                    return Err(Errno::EAGAIN);
-                }
-                loop {
-                    if proc.signals.deliverable() != 0 && !proc.signals.should_restart() {
-                        return Err(Errno::EINTR);
-                    }
-                    let _ = host.host_nanosleep(0, 1_000_000);
-                    let (now_sec, now_nsec) = host.host_clock_gettime(0)?;
-                    if let Some(Some(tfd)) = proc.timerfds.get_mut(tfd_idx) {
-                        timerfd_compute_expirations(tfd, now_sec, now_nsec);
-                        if tfd.expirations > 0 {
-                            break;
-                        }
-                    } else {
-                        return Err(Errno::EBADF);
-                    }
-                }
+                return Err(Errno::EAGAIN);
             }
             let tfd = proc
                 .timerfds
@@ -2579,25 +2479,7 @@ pub fn sys_read(
             let pending = proc.signals.pending_mask();
             let matching = pending & mask;
             if matching == 0 {
-                if status_flags & O_NONBLOCK != 0 || crate::is_centralized_mode() {
-                    return Err(Errno::EAGAIN);
-                }
-                // Block until signal arrives (non-centralized only)
-                loop {
-                    if proc.signals.deliverable() != 0 && !proc.signals.should_restart() {
-                        return Err(Errno::EINTR);
-                    }
-                    let _ = host.host_nanosleep(0, 1_000_000);
-                    let mask2 = proc
-                        .signalfds
-                        .get(sfd_idx)
-                        .and_then(|s| s.as_ref())
-                        .ok_or(Errno::EBADF)?
-                        .mask;
-                    if proc.signals.pending_mask() & mask2 != 0 {
-                        break;
-                    }
-                }
+                return Err(Errno::EAGAIN);
             }
             // Re-read mask and find signal
             let mask = proc
@@ -2634,25 +2516,7 @@ pub fn sys_read(
                 .and_then(|s| s.as_mut())
                 .ok_or(Errno::EBADF)?;
             if efd.counter == 0 {
-                // Would block
-                if status_flags & O_NONBLOCK != 0 || crate::is_centralized_mode() {
-                    return Err(Errno::EAGAIN);
-                }
-                // Blocking mode: loop (non-centralized only)
-                loop {
-                    if proc.signals.deliverable() != 0 && !proc.signals.should_restart() {
-                        return Err(Errno::EINTR);
-                    }
-                    let _ = host.host_nanosleep(0, 1_000_000);
-                    let efd = proc
-                        .eventfds
-                        .get_mut(efd_idx)
-                        .and_then(|s| s.as_mut())
-                        .ok_or(Errno::EBADF)?;
-                    if efd.counter > 0 {
-                        break;
-                    }
-                }
+                return Err(Errno::EAGAIN);
             }
             let efd = proc
                 .eventfds
@@ -2680,11 +2544,7 @@ pub fn sys_read(
             if n > 0 {
                 return Ok(n);
             }
-            // No data available
-            if status_flags & O_NONBLOCK != 0 || crate::is_centralized_mode() {
-                return Err(Errno::EAGAIN);
-            }
-            Ok(0)
+            Err(Errno::EAGAIN)
         }
         FileType::PtySlave => {
             let pty_idx = host_handle as usize;
@@ -2696,11 +2556,7 @@ pub fn sys_read(
             if n > 0 {
                 return Ok(n);
             }
-            // No data available
-            if status_flags & O_NONBLOCK != 0 || crate::is_centralized_mode() {
-                return Err(Errno::EAGAIN);
-            }
-            Ok(0)
+            Err(Errno::EAGAIN)
         }
         _ => {
             // Virtual character devices — handle in-kernel
@@ -2847,12 +2703,7 @@ pub fn sys_read(
                         if n > 0 {
                             return Ok(n);
                         }
-                        // No complete line yet — in centralized mode return EAGAIN,
-                        // otherwise would loop (traditional blocking mode)
-                        if crate::is_centralized_mode() || status_flags & O_NONBLOCK != 0 {
-                            return Err(Errno::EAGAIN);
-                        }
-                        return Ok(0);
+                        return Err(Errno::EAGAIN);
                     }
                     // Non-canonical mode: pass through raw bytes from host
                     // VMIN/VTIME semantics are approximated
@@ -2959,17 +2810,12 @@ pub fn sys_write(
                 let n = host.host_write(host_handle, buf)?;
                 Ok(n)
             } else {
-                // Kernel-internal pipe
+                // Kernel pipe
                 const PIPE_BUF: usize = 4096;
                 let pipe_idx = (-(host_handle + 1)) as usize;
-                // First attempt: try to write to pipe (centralized uses global table)
                 {
-                    let pipe = if crate::is_centralized_mode() {
-                        unsafe { crate::pipe::global_pipe_table().get_mut(pipe_idx) }
-                    } else {
-                        proc.pipes.get_mut(pipe_idx).and_then(|p| p.as_mut())
-                    }
-                    .ok_or(Errno::EBADF)?;
+                    let pipe = unsafe { crate::pipe::global_pipe_table().get_mut(pipe_idx) }
+                        .ok_or(Errno::EBADF)?;
                     if !pipe.is_read_end_open() {
                         proc.signals.raise(wasm_posix_shared::signal::SIGPIPE);
                         return Err(Errno::EPIPE);
@@ -2984,34 +2830,7 @@ pub fn sys_write(
                         }
                     }
                 }
-                if status_flags & O_NONBLOCK != 0 || crate::is_centralized_mode() {
-                    return Err(Errno::EAGAIN);
-                }
-                // Non-centralized blocking loop (per-process pipes only)
-                loop {
-                    if proc.signals.deliverable() != 0 {
-                        if !proc.signals.should_restart() {
-                            return Err(Errno::EINTR);
-                        }
-                    }
-                    let _ = host.host_nanosleep(0, 1_000_000);
-                    let pipe = proc
-                        .pipes
-                        .get_mut(pipe_idx)
-                        .and_then(|p| p.as_mut())
-                        .ok_or(Errno::EBADF)?;
-                    if !pipe.is_read_end_open() {
-                        proc.signals.raise(wasm_posix_shared::signal::SIGPIPE);
-                        return Err(Errno::EPIPE);
-                    }
-                    if buf.len() <= PIPE_BUF && pipe.free_space() < buf.len() {
-                        continue; // Not enough space for atomic write
-                    }
-                    let n = pipe.write(buf);
-                    if n > 0 {
-                        return Ok(n);
-                    }
-                }
+                return Err(Errno::EAGAIN);
             }
         }
         FileType::Socket => {
@@ -3032,14 +2851,10 @@ pub fn sys_write(
                 SocketDomain::Inet | SocketDomain::Inet6 => {
                     // Loopback path: use pipe buffers if available
                     if let Some(send_buf_idx) = sock.send_buf_idx {
-                        let use_global = sock.global_pipes;
                         loop {
-                            let pipe = if use_global {
+                            let pipe =
                                 unsafe { crate::pipe::global_pipe_table().get_mut(send_buf_idx) }
-                            } else {
-                                proc.pipes.get_mut(send_buf_idx).and_then(|p| p.as_mut())
-                            }
-                            .ok_or(Errno::EBADF)?;
+                                    .ok_or(Errno::EBADF)?;
                             if !pipe.is_read_end_open() {
                                 proc.signals.raise(wasm_posix_shared::signal::SIGPIPE);
                                 return Err(Errno::EPIPE);
@@ -3048,15 +2863,7 @@ pub fn sys_write(
                             if n > 0 {
                                 return Ok(n);
                             }
-                            if status_flags & O_NONBLOCK != 0 || crate::is_centralized_mode() {
-                                return Err(Errno::EAGAIN);
-                            }
-                            if proc.signals.deliverable() != 0 {
-                                if !proc.signals.should_restart() {
-                                    return Err(Errno::EINTR);
-                                }
-                            }
-                            let _ = host.host_nanosleep(0, 1_000_000);
+                            return Err(Errno::EAGAIN);
                         }
                     }
                     // External path: delegate to host
@@ -3070,14 +2877,10 @@ pub fn sys_write(
                         return Ok(buf.len()); // bit-bucket for SOCK_DGRAM (syslog pattern)
                     }
                     let send_buf_idx = sock.send_buf_idx.ok_or(Errno::ENOTCONN)?;
-                    let use_global = sock.global_pipes;
                     loop {
-                        let pipe = if use_global {
+                        let pipe =
                             unsafe { crate::pipe::global_pipe_table().get_mut(send_buf_idx) }
-                        } else {
-                            proc.pipes.get_mut(send_buf_idx).and_then(|p| p.as_mut())
-                        }
-                        .ok_or(Errno::EBADF)?;
+                                .ok_or(Errno::EBADF)?;
                         if !pipe.is_read_end_open() {
                             proc.signals.raise(wasm_posix_shared::signal::SIGPIPE);
                             return Err(Errno::EPIPE);
@@ -3086,15 +2889,7 @@ pub fn sys_write(
                         if n > 0 {
                             return Ok(n);
                         }
-                        if status_flags & O_NONBLOCK != 0 || crate::is_centralized_mode() {
-                            return Err(Errno::EAGAIN);
-                        }
-                        if proc.signals.deliverable() != 0 {
-                            if !proc.signals.should_restart() {
-                                return Err(Errno::EINTR);
-                            }
-                        }
-                        let _ = host.host_nanosleep(0, 1_000_000);
+                        return Err(Errno::EAGAIN);
                     }
                 }
             }
@@ -3116,24 +2911,7 @@ pub fn sys_write(
                 .ok_or(Errno::EBADF)?;
             let max_val = u64::MAX - 1;
             if efd.counter > max_val - value {
-                // Would overflow — block or EAGAIN
-                if status_flags & O_NONBLOCK != 0 || crate::is_centralized_mode() {
-                    return Err(Errno::EAGAIN);
-                }
-                loop {
-                    if proc.signals.deliverable() != 0 && !proc.signals.should_restart() {
-                        return Err(Errno::EINTR);
-                    }
-                    let _ = host.host_nanosleep(0, 1_000_000);
-                    let efd = proc
-                        .eventfds
-                        .get_mut(efd_idx)
-                        .and_then(|s| s.as_mut())
-                        .ok_or(Errno::EBADF)?;
-                    if efd.counter <= max_val - value {
-                        break;
-                    }
-                }
+                return Err(Errno::EAGAIN);
             }
             let efd = proc
                 .eventfds
@@ -3248,7 +3026,7 @@ pub fn sys_write(
                     };
                 }
             }
-            // O_APPEND: seek to end before writing (POSIX atomicity guaranteed by centralized kernel)
+            // O_APPEND: seek to end before writing (POSIX atomicity guaranteed by serialized kernel syscalls)
             if status_flags & O_APPEND != 0 {
                 let end = host.host_seek(host_handle, 0, 2)?; // SEEK_END
                 if let Some(ofd) = proc.ofd_table.get_mut(ofd_idx) {
@@ -3887,14 +3665,8 @@ pub fn sys_pipe(proc: &mut Process) -> Result<(i32, i32), Errno> {
 
     let pipe = PipeBuffer::new(DEFAULT_PIPE_CAPACITY);
 
-    // Find or append a slot in the pipe table.
-    // Centralized mode: use global pipe table (shared across processes for fork).
-    // Non-centralized mode: use per-process pipe table (backward compat for tests).
-    let pipe_idx = if crate::is_centralized_mode() {
-        unsafe { crate::pipe::global_pipe_table().alloc(pipe) }
-    } else {
-        proc.alloc_pipe(pipe)
-    };
+    // Find or append a slot in the global pipe table.
+    let pipe_idx = unsafe { crate::pipe::global_pipe_table().alloc(pipe) };
 
     // Pipe handle is negative: -(pipe_idx + 1)
     let pipe_handle = -((pipe_idx as i64) + 1);
@@ -4199,8 +3971,15 @@ pub fn sys_fcntl_lock(
 
     let entry = proc.fd_table.get(fd)?;
     let ofd_idx = entry.ofd_ref.0;
-    let ofd = proc.ofd_table.get(ofd_idx).ok_or(Errno::EBADF)?;
-    let host_handle = ofd.host_handle;
+    let (host_handle, status_flags, offset, path) = {
+        let ofd = proc.ofd_table.get(ofd_idx).ok_or(Errno::EBADF)?;
+        (
+            ofd.host_handle,
+            ofd.status_flags,
+            ofd.offset,
+            ofd.path.clone(),
+        )
+    };
 
     // OFD locks use the OFD index as lock owner (not PID).
     // Map OFD and POSIX (5/6/7) commands to the internal lock constants (12/13/14).
@@ -4225,8 +4004,8 @@ pub fn sys_fcntl_lock(
 
     // Resolve start offset based on whence
     let start = match flock.l_whence {
-        0 => flock.l_start,              // SEEK_SET
-        1 => ofd.offset + flock.l_start, // SEEK_CUR
+        0 => flock.l_start,          // SEEK_SET
+        1 => offset + flock.l_start, // SEEK_CUR
         2 => {
             // SEEK_END: resolve relative to file size
             if host_handle >= 0 {
@@ -4244,10 +4023,10 @@ pub fn sys_fcntl_lock(
     let lock_type = flock.l_type as u32;
 
     // For host-backed files, delegate to the shared lock table via host import
-    if host_handle >= 0 && !ofd.path.is_empty() {
+    if host_handle >= 0 && !path.is_empty() {
         // Access mode check
         if base_cmd == F_SETLK || base_cmd == F_SETLKW {
-            let access_mode = ofd.status_flags & O_ACCMODE;
+            let access_mode = status_flags & O_ACCMODE;
             if lock_type == F_RDLCK && access_mode == O_WRONLY {
                 return Err(Errno::EBADF);
             }
@@ -4255,10 +4034,9 @@ pub fn sys_fcntl_lock(
                 return Err(Errno::EBADF);
             }
         }
-        let path = &ofd.path;
         let mut result_buf = [0u8; 24];
         host.host_fcntl_lock(
-            path,
+            &path,
             lock_owner,
             base_cmd,
             lock_type,
@@ -4285,10 +4063,11 @@ pub fn sys_fcntl_lock(
         return Ok(());
     }
 
-    // Fallback: use local lock_table for non-host files (pipes, etc.)
+    // Fallback: kernel-managed lock table for non-host files (pipes, etc.).
+    // The kernel-wide table lets different Process objects coordinate.
     match base_cmd {
         F_GETLK => {
-            match proc.lock_table.get_blocking_lock(
+            match fallback_lock_table(proc).get_blocking_lock(
                 host_handle,
                 lock_type,
                 start,
@@ -4310,7 +4089,7 @@ pub fn sys_fcntl_lock(
             Ok(())
         }
         F_SETLK | F_SETLKW => {
-            let access_mode = ofd.status_flags & O_ACCMODE;
+            let access_mode = status_flags & O_ACCMODE;
             if lock_type == F_RDLCK && access_mode == O_WRONLY {
                 return Err(Errno::EBADF);
             }
@@ -4325,30 +4104,24 @@ pub fn sys_fcntl_lock(
                     start,
                     len: flock.l_len,
                 };
-                proc.lock_table.set_lock(host_handle, lock);
+                fallback_lock_table(proc).set_lock(host_handle, lock);
                 return Ok(());
             }
 
-            if proc
-                .lock_table
+            if fallback_lock_table(proc)
                 .get_blocking_lock(host_handle, lock_type, start, flock.l_len, lock_owner)
                 .is_some()
             {
-                if base_cmd == F_SETLK {
-                    return Err(Errno::EAGAIN);
-                }
-                // F_SETLKW: in a single address space (Wasm), the caller owns
-                // all local locks, so a conflict is always a self-deadlock.
-                return Err(Errno::EDEADLK);
+                return Err(Errno::EAGAIN);
             }
 
             let lock = FileLock {
                 pid: lock_owner,
-                lock_type: lock_type,
+                lock_type,
                 start,
                 len: flock.l_len,
             };
-            proc.lock_table.set_lock(host_handle, lock);
+            fallback_lock_table(proc).set_lock(host_handle, lock);
             Ok(())
         }
         _ => Err(Errno::EINVAL),
@@ -5671,15 +5444,14 @@ pub fn sys_getitimer(
 /// rt_sigtimedwait -- wait for a signal from a specified set.
 ///
 /// Checks if any signal in `mask` is already pending and dequeues it.
-/// If `timeout_ms` >= 0, waits up to that many milliseconds for a signal.
-/// If `timeout_ms` < 0, waits indefinitely.
-/// Returns the signal number on success, or EAGAIN on timeout.
+/// Blocking waits are retried by the host; this returns EAGAIN when no
+/// matching signal is immediately pending.
 /// Returns (signum, si_value, si_code) on success.
 pub fn sys_sigtimedwait(
     proc: &mut Process,
-    host: &mut dyn HostIO,
+    _host: &mut dyn HostIO,
     mask: u64,
-    timeout_ms: i32,
+    _timeout_ms: i32,
 ) -> Result<(u32, i32, i32), Errno> {
     use wasm_posix_shared::signal::NSIG;
 
@@ -5720,25 +5492,6 @@ pub fn sys_sigtimedwait(
         }
     }
 
-    if timeout_ms == 0 || crate::is_centralized_mode() {
-        return Err(Errno::EAGAIN);
-    }
-
-    // Wait with 1ms sleep intervals, checking for signals
-    let iterations = if timeout_ms < 0 { i32::MAX } else { timeout_ms };
-    for _ in 0..iterations {
-        host.host_nanosleep(0, 1_000_000)?; // 1ms
-
-        let pending_in_mask = proc.pending_for(tid) & mask;
-        if pending_in_mask != 0 {
-            let signum = pending_in_mask.trailing_zeros() + 1;
-            if signum < NSIG {
-                let (si_value, si_code) = proc.signals.consume_one(signum);
-                return Ok((signum, si_value, si_code));
-            }
-        }
-    }
-
     Err(Errno::EAGAIN)
 }
 
@@ -5747,66 +5500,27 @@ pub fn sys_sigtimedwait(
 /// Atomically replaces the process's signal mask with `mask` (SIGKILL and SIGSTOP cannot
 /// be blocked), then blocks until a deliverable signal arrives. The original mask is
 /// restored before returning. Always returns Err(EINTR).
-pub fn sys_sigsuspend(proc: &mut Process, host: &mut dyn HostIO, mask: u64) -> Result<(), Errno> {
-    use wasm_posix_shared::signal::{NSIG, SIGKILL, SIGSTOP};
+pub fn sys_sigsuspend(proc: &mut Process, _host: &mut dyn HostIO, mask: u64) -> Result<(), Errno> {
+    use wasm_posix_shared::signal::{SIGKILL, SIGSTOP};
 
     let tid = crate::process_table::current_tid();
     let sig_guard = crate::signal::sig_bit(SIGKILL) | crate::signal::sig_bit(SIGSTOP);
     let new_mask = mask & !sig_guard;
 
-    // Centralized mode: keep sigsuspend mask active between EAGAIN retries.
-    // On first call, save old mask. On retries, the temp mask is already set.
-    if crate::is_centralized_mode() {
-        if proc.sigsuspend_saved_mask_for(tid).is_none() {
-            // First call: save old mask and install temporary mask
-            let old = proc.blocked_for(tid);
-            proc.set_sigsuspend_saved_mask_for(tid, Some(old));
-            proc.set_blocked_for(tid, new_mask);
-        }
-        // Check if any signals are deliverable with the sigsuspend mask
-        if proc.deliverable_for(tid) != 0 {
-            // Signal arrived — return EINTR but keep temp mask active so that
-            // dequeueSignalForDelivery picks the signal that woke sigsuspend
-            // (deliverable under the temp mask). The mask will be restored in
-            // kernel_dequeue_signal after the dequeue.
-            return Err(Errno::EINTR);
-        }
-        // No signal yet — keep temp mask active, return EAGAIN for async retry
-        return Err(Errno::EAGAIN);
+    // Keep the sigsuspend mask active between EAGAIN retries. On first call,
+    // save old mask. On retries, the temp mask is already set.
+    if proc.sigsuspend_saved_mask_for(tid).is_none() {
+        let old = proc.blocked_for(tid);
+        proc.set_sigsuspend_saved_mask_for(tid, Some(old));
+        proc.set_blocked_for(tid, new_mask);
     }
-
-    let old_mask = proc.blocked_for(tid);
-    proc.set_blocked_for(tid, new_mask);
-
-    // Check if any signals are already deliverable with new mask
     if proc.deliverable_for(tid) != 0 {
-        proc.set_blocked_for(tid, old_mask);
+        // Signal arrived — return EINTR but keep temp mask active so that
+        // dequeueSignalForDelivery picks the signal that woke sigsuspend.
+        // The mask will be restored in kernel_dequeue_signal after dequeue.
         return Err(Errno::EINTR);
     }
-
-    // Block until a deliverable signal arrives
-    loop {
-        let sig = match host.host_sigsuspend_wait() {
-            Ok(s) => s,
-            Err(_) => {
-                // Restore mask even on host error
-                proc.set_blocked_for(tid, old_mask);
-                return Err(Errno::EINTR);
-            }
-        };
-        if sig > 0 && sig < NSIG {
-            // Host reports a signal arrived — record it at the process level
-            // (shared-pending). Thread-targeted signals would already be in
-            // the thread's own pending queue.
-            proc.signals.raise(sig);
-        }
-        if proc.deliverable_for(tid) != 0 {
-            break;
-        }
-    }
-
-    proc.set_blocked_for(tid, old_mask);
-    Err(Errno::EINTR)
+    Err(Errno::EAGAIN)
 }
 
 /// pause -- suspend until a signal is delivered.
@@ -5929,7 +5643,8 @@ pub fn sys_exit(proc: &mut Process, host: &mut dyn HostIO, status: i32) {
     }
 
     // POSIX: all advisory locks held by the process are released on exit.
-    proc.lock_table.remove_all_for_pid(proc.pid);
+    let pid = proc.pid;
+    fallback_lock_table(proc).remove_all_for_pid(pid);
 
     proc.state = ProcessState::Exited;
     proc.exit_status = status;
@@ -5951,17 +5666,13 @@ pub fn sys_clock_gettime(
 /// Sleep for the specified duration.
 pub fn sys_nanosleep(
     _proc: &Process,
-    host: &mut dyn HostIO,
+    _host: &mut dyn HostIO,
     req: &WasmTimespec,
 ) -> Result<(), Errno> {
     if req.tv_sec < 0 || req.tv_nsec < 0 || req.tv_nsec >= 1_000_000_000 {
         return Err(Errno::EINVAL);
     }
-    // Centralized mode: return immediately, host handles the delay
-    if crate::is_centralized_mode() {
-        return Ok(());
-    }
-    host.host_nanosleep(req.tv_sec, req.tv_nsec)
+    Ok(())
 }
 
 /// Get clock resolution. Returns hardcoded values since Wasm doesn't
@@ -6015,30 +5726,18 @@ pub fn sys_clock_nanosleep(
             sec -= 1;
             nsec += 1_000_000_000;
         }
-        // Centralized mode: write relative delay to scratch and return
-        // immediately — the host reads it from CH_DATA and sets up setTimeout.
-        if crate::is_centralized_mode() {
-            let out = unsafe { core::slice::from_raw_parts_mut(req_ptr as *mut u8, 16) };
-            if sec < 0 {
-                // Past deadline — zero out so host sees delayMs=0
-                out[0..16].fill(0);
-            } else {
-                out[0..8].copy_from_slice(&sec.to_le_bytes());
-                out[8..16].copy_from_slice(&nsec.to_le_bytes());
-            }
-            return Ok(());
-        }
-        // Already past the deadline — return immediately
+        // Write relative delay to scratch and return immediately; the host
+        // reads it from CH_DATA and sets up the timer.
+        let out = unsafe { core::slice::from_raw_parts_mut(req_ptr as *mut u8, 16) };
         if sec < 0 {
-            return Ok(());
+            out[0..16].fill(0);
+        } else {
+            out[0..8].copy_from_slice(&sec.to_le_bytes());
+            out[8..16].copy_from_slice(&nsec.to_le_bytes());
         }
-        host.host_nanosleep(sec, nsec)
+        Ok(())
     } else {
-        // Centralized mode: return immediately, host handles the delay
-        if crate::is_centralized_mode() {
-            return Ok(());
-        }
-        host.host_nanosleep(req.tv_sec, req.tv_nsec)
+        Ok(())
     }
 }
 
@@ -6428,6 +6127,9 @@ pub fn sys_munmap(
     // POSIX: addresses in [addr, addr+len) must be within the valid address space.
     // Reject if the range overflows or extends beyond Wasm linear memory limits.
     if addr.checked_add(len).is_none() {
+        return Err(Errno::EINVAL);
+    }
+    if proc.memory.overlaps_host_reserved_region(addr, len) {
         return Err(Errno::EINVAL);
     }
 
@@ -7071,7 +6773,6 @@ pub fn sys_shutdown(
 
     let sock_idx = (-(ofd.host_handle + 1)) as usize;
     let sock = proc.sockets.get_mut(sock_idx).ok_or(Errno::EBADF)?;
-    let use_global = sock.global_pipes;
 
     match how {
         SHUT_RD => {
@@ -7080,11 +6781,7 @@ pub fn sys_shutdown(
         SHUT_WR => {
             sock.shut_wr = true;
             if let Some(send_idx) = sock.send_buf_idx {
-                let pipe = if use_global {
-                    unsafe { crate::pipe::global_pipe_table().get_mut(send_idx) }
-                } else {
-                    proc.pipes.get_mut(send_idx).and_then(|p| p.as_mut())
-                };
+                let pipe = unsafe { crate::pipe::global_pipe_table().get_mut(send_idx) };
                 if let Some(pipe) = pipe {
                     pipe.close_write_end();
                 }
@@ -7097,21 +6794,13 @@ pub fn sys_shutdown(
                 let _ = host.host_net_close(net_handle);
             }
             if let Some(send_idx) = sock.send_buf_idx {
-                let pipe = if use_global {
-                    unsafe { crate::pipe::global_pipe_table().get_mut(send_idx) }
-                } else {
-                    proc.pipes.get_mut(send_idx).and_then(|p| p.as_mut())
-                };
+                let pipe = unsafe { crate::pipe::global_pipe_table().get_mut(send_idx) };
                 if let Some(pipe) = pipe {
                     pipe.close_write_end();
                 }
             }
             if let Some(recv_idx) = sock.recv_buf_idx {
-                let pipe = if use_global {
-                    unsafe { crate::pipe::global_pipe_table().get_mut(recv_idx) }
-                } else {
-                    proc.pipes.get_mut(recv_idx).and_then(|p| p.as_mut())
-                };
+                let pipe = unsafe { crate::pipe::global_pipe_table().get_mut(recv_idx) };
                 if let Some(pipe) = pipe {
                     pipe.close_read_end();
                 }
@@ -7215,7 +6904,7 @@ pub fn sys_recv(
     flags: u32,
 ) -> Result<usize, Errno> {
     use crate::socket::{SocketDomain, SocketState, SocketType};
-    use wasm_posix_shared::socket::{MSG_DONTWAIT, MSG_OOB, MSG_PEEK};
+    use wasm_posix_shared::socket::{MSG_OOB, MSG_PEEK};
     const MSG_WAITALL: u32 = 0x100;
 
     let entry = proc.fd_table.get(fd)?;
@@ -7223,7 +6912,6 @@ pub fn sys_recv(
     if ofd.file_type != FileType::Socket {
         return Err(Errno::ENOTSOCK);
     }
-    let status_flags = ofd.status_flags;
     let sock_idx = (-(ofd.host_handle + 1)) as usize;
     let sock = proc.sockets.get(sock_idx).ok_or(Errno::EBADF)?;
     if sock.sock_type == SocketType::Dgram && sock.domain == SocketDomain::Inet {
@@ -7258,21 +6946,19 @@ pub fn sys_recv(
         _ => {
             // Pipe-backed recv path (AF_UNIX and loopback INET)
             let recv_buf_idx = sock.recv_buf_idx.ok_or(Errno::ENOTCONN)?;
-            let use_global = sock.global_pipes;
             let peek = flags & MSG_PEEK != 0;
-            let nonblock = (status_flags & O_NONBLOCK != 0)
-                || (flags & MSG_DONTWAIT != 0)
-                || crate::is_centralized_mode();
             let waitall = flags & MSG_WAITALL != 0 && !peek;
             let mut total = 0usize;
 
             loop {
-                let pipe = if use_global {
-                    unsafe { crate::pipe::global_pipe_table().get_mut(recv_buf_idx) }
-                } else {
-                    proc.pipes.get_mut(recv_buf_idx).and_then(|p| p.as_mut())
+                let pipe = unsafe { crate::pipe::global_pipe_table().get_mut(recv_buf_idx) }
+                    .ok_or(Errno::EBADF)?;
+                if waitall {
+                    let remaining = buf.len().saturating_sub(total);
+                    if pipe.available() < remaining && pipe.is_write_end_open() {
+                        return Err(Errno::EAGAIN);
+                    }
                 }
-                .ok_or(Errno::EBADF)?;
                 let n = if peek {
                     pipe.peek(&mut buf[total..])
                 } else {
@@ -7282,18 +6968,10 @@ pub fn sys_recv(
                 if total >= buf.len() || (total > 0 && !waitall) {
                     return Ok(total);
                 }
-                if n == 0 && !pipe.is_write_end_open() {
+                if !pipe.is_write_end_open() {
                     return Ok(total); // peer closed — return what we have
                 }
-                if nonblock {
-                    return Err(Errno::EAGAIN);
-                }
-                if proc.signals.deliverable() != 0 {
-                    if !proc.signals.should_restart() {
-                        return Err(Errno::EINTR);
-                    }
-                }
-                let _ = host.host_nanosleep(0, 1_000_000);
+                return Err(Errno::EAGAIN);
             }
         }
     }
@@ -7865,8 +7543,9 @@ pub fn sys_connect(
                 // Allocate two pipe buffers for bidirectional data:
                 //   pipe_a: client writes → server reads
                 //   pipe_b: server writes → client reads
-                let (pipe_a_idx, pipe_b_idx) =
-                    proc.alloc_pipe_pair(PipeBuffer::new(65536), PipeBuffer::new(65536));
+                let pipe_table = unsafe { crate::pipe::global_pipe_table() };
+                let pipe_a_idx = pipe_table.alloc(PipeBuffer::new(65536));
+                let pipe_b_idx = pipe_table.alloc(PipeBuffer::new(65536));
 
                 // Assign ephemeral port/addr to client if unbound
                 let client_sock = proc.sockets.get(sock_idx).ok_or(Errno::EBADF)?;
@@ -7901,6 +7580,7 @@ pub fn sys_connect(
                     .unwrap_or(0);
                 accepted_sock.peer_addr = client_addr;
                 accepted_sock.peer_port = client_port;
+                accepted_sock.global_pipes = true;
                 let accepted_idx = proc.sockets.alloc(accepted_sock);
 
                 // Push to listener's backlog
@@ -7916,6 +7596,7 @@ pub fn sys_connect(
                 client.peer_addr = ip;
                 client.peer_port = port;
                 client.peer_idx = Some(accepted_idx);
+                client.global_pipes = true;
                 if client.bind_port == 0 {
                     client.bind_port = client_port;
                     client.bind_addr = [127, 0, 0, 1];
@@ -8190,52 +7871,10 @@ pub fn sys_poll(
         return Ok(ready);
     }
 
-    // Centralized mode: return EAGAIN so the host JS can retry asynchronously.
-    // A deliverable signal on the retry path becomes EINTR — mirrors the
-    // traditional loop below, and lets the wasm process exit poll() to dispatch
-    // JS signal handlers instead of looping on EAGAIN forever.
-    if crate::is_centralized_mode() {
-        if proc.signals.deliverable() != 0 && !proc.signals.should_restart() {
-            return Err(Errno::EINTR);
-        }
-        return Err(Errno::EAGAIN);
+    if proc.signals.deliverable() != 0 && !proc.signals.should_restart() {
+        return Err(Errno::EINTR);
     }
-
-    // timeout_ms < 0 means wait indefinitely; > 0 means wait up to that many ms.
-    // Use polling loop with short sleeps (1ms intervals).
-    let deadline_ns: Option<u64> = if timeout_ms > 0 {
-        let (sec, nsec) = host.host_clock_gettime(1)?; // CLOCK_MONOTONIC
-        let now = sec as u64 * 1_000_000_000 + nsec as u64;
-        Some(now + (timeout_ms as u64) * 1_000_000)
-    } else {
-        None // infinite wait
-    };
-
-    loop {
-        // Check for pending signals — POSIX: poll is interruptible
-        if proc.signals.deliverable() != 0 {
-            if !proc.signals.should_restart() {
-                return Err(Errno::EINTR);
-            }
-        }
-
-        // Sleep 1ms
-        let _ = host.host_nanosleep(0, 1_000_000);
-
-        let ready = poll_check(proc, host, fds);
-        if ready > 0 {
-            return Ok(ready);
-        }
-
-        // Check deadline
-        if let Some(dl) = deadline_ns {
-            let (sec, nsec) = host.host_clock_gettime(1)?;
-            let now = sec as u64 * 1_000_000_000 + nsec as u64;
-            if now >= dl {
-                return Ok(0); // Timeout expired, nothing ready
-            }
-        }
-    }
+    Err(Errno::EAGAIN)
 }
 
 /// Single non-blocking pass checking fd readiness. Used by sys_poll's loop.
@@ -8462,13 +8101,9 @@ fn poll_check(proc: &mut Process, host: &mut dyn HostIO, fds: &mut [WasmPollFd])
                         revents |= POLLOUT;
                     }
                 } else {
-                    // Kernel-internal pipe
+                    // Kernel pipe
                     let pipe_idx = (-(ofd.host_handle + 1)) as usize;
-                    let pipe = if crate::is_centralized_mode() {
-                        unsafe { crate::pipe::global_pipe_table().get(pipe_idx) }
-                    } else {
-                        proc.pipes.get(pipe_idx).and_then(|p| p.as_ref())
-                    };
+                    let pipe = unsafe { crate::pipe::global_pipe_table().get(pipe_idx) };
                     if let Some(pipe) = pipe {
                         if pollfd.events & POLLIN != 0 && pipe.available() > 0 {
                             revents |= POLLIN;
@@ -8499,9 +8134,7 @@ fn poll_check(proc: &mut Process, host: &mut dyn HostIO, fds: &mut [WasmPollFd])
                     {
                         revents |= POLLIN;
                     }
-                    // Listening socket: POLLIN if backlog has pending connections
-                    // Check both the shared cross-process queue (AF_INET) and the
-                    // per-process backlog (AF_UNIX same-process).
+                    // Listening socket: POLLIN if backlog has pending connections.
                     if sock.state == SocketState::Listening {
                         let mut has_pending = !sock.listen_backlog.is_empty();
                         if !has_pending {
@@ -8542,11 +8175,7 @@ fn poll_check(proc: &mut Process, host: &mut dyn HostIO, fds: &mut [WasmPollFd])
                     }
                     // Check recv buffer for readability
                     if let Some(recv_idx) = sock.recv_buf_idx {
-                        let pipe_ref = if sock.global_pipes {
-                            unsafe { crate::pipe::global_pipe_table().get(recv_idx) }
-                        } else {
-                            proc.pipes.get(recv_idx).and_then(|p| p.as_ref())
-                        };
+                        let pipe_ref = unsafe { crate::pipe::global_pipe_table().get(recv_idx) };
                         if let Some(pipe) = pipe_ref {
                             if pollfd.events & POLLIN != 0 && pipe.available() > 0 {
                                 revents |= POLLIN;
@@ -8558,11 +8187,7 @@ fn poll_check(proc: &mut Process, host: &mut dyn HostIO, fds: &mut [WasmPollFd])
                     }
                     // Check send buffer for writability
                     if let Some(send_idx) = sock.send_buf_idx {
-                        let pipe_ref = if sock.global_pipes {
-                            unsafe { crate::pipe::global_pipe_table().get(send_idx) }
-                        } else {
-                            proc.pipes.get(send_idx).and_then(|p| p.as_ref())
-                        };
+                        let pipe_ref = unsafe { crate::pipe::global_pipe_table().get(send_idx) };
                         if let Some(pipe) = pipe_ref {
                             if pollfd.events & POLLOUT != 0 && pipe.free_space() > 0 {
                                 revents |= POLLOUT;
@@ -9171,11 +8796,7 @@ pub fn sys_ioctl(
             FileType::Pipe => {
                 if ofd.host_handle < 0 {
                     let pipe_idx = (-(ofd.host_handle + 1)) as usize;
-                    let pipe = if crate::is_centralized_mode() {
-                        unsafe { crate::pipe::global_pipe_table().get(pipe_idx) }
-                    } else {
-                        proc.pipes.get(pipe_idx).and_then(|p| p.as_ref())
-                    };
+                    let pipe = unsafe { crate::pipe::global_pipe_table().get(pipe_idx) };
                     pipe.map(|p| p.available() as i32).unwrap_or(0)
                 } else {
                     0
@@ -9186,9 +8807,7 @@ pub fn sys_ioctl(
                     let sock_idx = (-(ofd.host_handle + 1)) as usize;
                     if let Some(sock) = proc.sockets.get(sock_idx) {
                         if let Some(recv_idx) = sock.recv_buf_idx {
-                            proc.pipes
-                                .get(recv_idx)
-                                .and_then(|p| p.as_ref())
+                            unsafe { crate::pipe::global_pipe_table().get(recv_idx) }
                                 .map(|p| p.available() as i32)
                                 .unwrap_or(0)
                         } else {
@@ -9706,28 +9325,7 @@ pub fn sys_futex(
     let base_op = op & !(FUTEX_PRIVATE_FLAG | FUTEX_CLOCK_REALTIME);
 
     match base_op {
-        FUTEX_WAIT | FUTEX_WAIT_BITSET => {
-            // Centralized mode: return EAGAIN so host can wait asynchronously
-            if crate::is_centralized_mode() {
-                return Err(Errno::EAGAIN);
-            }
-            // timeout is a pointer to struct timespec in Wasm memory.
-            // Layout (wasm32 time64): { tv_sec: i64, padding: 0, tv_nsec: i32, padding: 0 } = 16 bytes
-            // For FUTEX_WAIT_BITSET, val3 is the bitmask (we ignore it, treat as full mask)
-            let timeout_ns: i64 = if timeout != 0 {
-                // Read timespec from Wasm memory (16 bytes for time64 layout)
-                let mem = unsafe { core::slice::from_raw_parts(timeout as *const u8, 16) };
-                let sec = i64::from_le_bytes([
-                    mem[0], mem[1], mem[2], mem[3], mem[4], mem[5], mem[6], mem[7],
-                ]);
-                // tv_nsec is a long (4 bytes on wasm32) at offset 8
-                let nsec = i32::from_le_bytes([mem[8], mem[9], mem[10], mem[11]]) as i64;
-                sec * 1_000_000_000 + nsec
-            } else {
-                -1 // infinite wait
-            };
-            host.host_futex_wait(uaddr, val, timeout_ns)
-        }
+        FUTEX_WAIT | FUTEX_WAIT_BITSET => Err(Errno::EAGAIN),
         FUTEX_WAKE | FUTEX_WAKE_BITSET => host.host_futex_wake(uaddr, val),
         FUTEX_REQUEUE => {
             // Wake val waiters on uaddr, requeue up to val2 waiters to uaddr2.
@@ -9763,18 +9361,16 @@ pub fn sys_futex(
 
 /// clone — spawn a new thread.
 ///
-/// In centralized mode: allocate a TID, store thread state, return TID.
-/// The host's handleClone will then spawn the actual thread Worker.
-///
-/// In traditional mode: delegate to host_clone.
+/// Allocates a TID, stores thread state, and returns the TID. The host's
+/// handleClone then spawns the actual thread Worker.
 pub fn sys_clone(
     proc: &mut Process,
-    host: &mut dyn HostIO,
-    fn_ptr: usize,
+    _host: &mut dyn HostIO,
+    _fn_ptr: usize,
     stack_ptr: usize,
     flags: u32,
-    arg: usize,
-    ptid_ptr: usize,
+    _arg: usize,
+    _ptid_ptr: usize,
     tls_ptr: usize,
     ctid_ptr: usize,
 ) -> Result<i32, Errno> {
@@ -9793,48 +9389,26 @@ pub fn sys_clone(
         return Err(Errno::ENOSYS);
     }
 
-    let tid = if crate::is_centralized_mode() {
-        // Centralized mode: allocate TID and store thread info in process.
-        // The host will spawn the actual thread Worker after we return.
-        let tid = proc.alloc_tid();
-        let effective_tls = if flags & CLONE_SETTLS != 0 {
-            tls_ptr
-        } else {
-            0
-        };
-        let effective_ctid = if flags & CLONE_CHILD_CLEARTID != 0 {
-            ctid_ptr
-        } else {
-            0
-        };
-        // POSIX: new threads inherit the creator's signal mask.
-        let caller_tid = crate::process_table::current_tid();
-        let inherited_blocked = proc.blocked_for(caller_tid);
-        let mut thread_info = ThreadInfo::new(tid, effective_ctid, stack_ptr, effective_tls);
-        thread_info.signals.blocked = inherited_blocked;
-        proc.add_thread(thread_info);
-        tid as i32
+    let tid = proc.alloc_tid();
+    let effective_tls = if flags & CLONE_SETTLS != 0 {
+        tls_ptr
     } else {
-        // Traditional mode: delegate to host
-        host.host_clone(fn_ptr, arg, stack_ptr, tls_ptr, ctid_ptr)?
+        0
     };
+    let effective_ctid = if flags & CLONE_CHILD_CLEARTID != 0 {
+        ctid_ptr
+    } else {
+        0
+    };
+    // POSIX: new threads inherit the creator's signal mask.
+    let caller_tid = crate::process_table::current_tid();
+    let inherited_blocked = proc.blocked_for(caller_tid);
+    let mut thread_info = ThreadInfo::new(tid, effective_ctid, stack_ptr, effective_tls);
+    thread_info.signals.blocked = inherited_blocked;
+    proc.add_thread(thread_info);
 
-    // Write TID to parent's tid pointer if CLONE_PARENT_SETTID.
-    // In centralized mode, ptid_ptr is in process memory (not kernel memory),
-    // so the host must handle this write instead.
-    if !crate::is_centralized_mode() && flags & CLONE_PARENT_SETTID != 0 && ptid_ptr != 0 {
-        #[cfg(any(target_arch = "wasm32", target_arch = "wasm64"))]
-        unsafe {
-            let ptr = ptid_ptr as *mut i32;
-            *ptr = tid;
-        }
-    }
-
-    // Write TID to child's tid pointer if CLONE_CHILD_SETTID
-    // (In centralized mode, the thread Worker will do this itself)
-    let _ = (flags, ctid_ptr); // suppress unused warnings
-
-    Ok(tid)
+    let _ = flags & CLONE_PARENT_SETTID;
+    Ok(tid as i32)
 }
 
 /// ppoll — poll with atomic signal mask swap.
@@ -9846,66 +9420,27 @@ pub fn sys_ppoll(
     timeout_ms: i32,
     mask: Option<u64>,
 ) -> Result<i32, Errno> {
-    // Centralized mode: use sigsuspend_saved_mask pattern for atomic mask swap.
-    // The mask stays swapped across EAGAIN retries so cross-process signals
-    // arriving between retries are caught on the next poll.
-    if crate::is_centralized_mode() {
-        let tid = crate::process_table::current_tid();
-        if let Some(new_mask) = mask {
-            use wasm_posix_shared::signal::{SIGKILL, SIGSTOP};
-            if proc.sigsuspend_saved_mask_for(tid).is_none() {
-                // First call: save original mask and install ppoll mask
-                proc.set_sigsuspend_saved_mask_for(tid, Some(proc.blocked_for(tid)));
-                let m =
-                    new_mask & !(crate::signal::sig_bit(SIGKILL) | crate::signal::sig_bit(SIGSTOP));
-                proc.set_blocked_for(tid, m);
-            }
-            // Check if any signals are deliverable with the ppoll mask
-            if proc.deliverable_for(tid) != 0 {
-                // Signal arrived — return EINTR. Keep temp mask active so
-                // kernel_dequeue_signal can deliver the signal and restore
-                // the original mask (via sigsuspend_saved_mask).
-                return Err(Errno::EINTR);
-            }
+    // Use the sigsuspend_saved_mask pattern for atomic mask swap. The mask
+    // stays swapped across EAGAIN retries so cross-process signals arriving
+    // between retries are caught on the next poll.
+    let tid = crate::process_table::current_tid();
+    if let Some(new_mask) = mask {
+        use wasm_posix_shared::signal::{SIGKILL, SIGSTOP};
+        if proc.sigsuspend_saved_mask_for(tid).is_none() {
+            proc.set_sigsuspend_saved_mask_for(tid, Some(proc.blocked_for(tid)));
+            let m = new_mask & !(crate::signal::sig_bit(SIGKILL) | crate::signal::sig_bit(SIGSTOP));
+            proc.set_blocked_for(tid, m);
         }
-
-        // Check fds (non-blocking) via sys_poll
-        let result = sys_poll(proc, host, fds, timeout_ms);
-        match result {
-            Err(Errno::EAGAIN) => {
-                // Still blocking — keep mask swapped for next retry
-                return Err(Errno::EAGAIN);
-            }
-            _ => {
-                // Poll completed (fds ready, timeout=0, or error).
-                // If signals became deliverable during the ppoll window,
-                // keep sigsuspend_saved_mask so kernel_dequeue_signal can
-                // deliver them with the ppoll mask active, then restore
-                // the original mask.  Otherwise restore immediately.
-                if proc.deliverable_for(tid) == 0 {
-                    if let Some(saved) = proc.take_sigsuspend_saved_mask_for(tid) {
-                        proc.set_blocked_for(tid, saved);
-                    }
-                }
-                return result;
-            }
+        if proc.deliverable_for(tid) != 0 {
+            return Err(Errno::EINTR);
         }
     }
-
-    // Non-centralized mode: simple save/restore around sys_poll
-    let old_mask = if let Some(new_mask) = mask {
-        let old = sys_sigprocmask(proc, SIG_SETMASK, new_mask)?;
-        Some(old)
-    } else {
-        None
-    };
-
     let result = sys_poll(proc, host, fds, timeout_ms);
-
-    if let Some(old) = old_mask {
-        let _ = sys_sigprocmask(proc, SIG_SETMASK, old);
+    if !matches!(result, Err(Errno::EAGAIN)) && proc.deliverable_for(tid) == 0 {
+        if let Some(saved) = proc.take_sigsuspend_saved_mask_for(tid) {
+            proc.set_blocked_for(tid, saved);
+        }
     }
-
     result
 }
 
@@ -9921,60 +9456,27 @@ pub fn sys_pselect6(
     timeout_ms: i32,
     mask: Option<u64>,
 ) -> Result<i32, Errno> {
-    // Centralized mode: use sigsuspend_saved_mask pattern for atomic mask swap.
-    // The mask stays swapped across EAGAIN retries so cross-process signals
-    // arriving between retries are caught on the next select.
-    if crate::is_centralized_mode() {
-        let tid = crate::process_table::current_tid();
-        if let Some(new_mask) = mask {
-            use wasm_posix_shared::signal::{SIGKILL, SIGSTOP};
-            if proc.sigsuspend_saved_mask_for(tid).is_none() {
-                // First call: save original mask and install pselect mask
-                proc.set_sigsuspend_saved_mask_for(tid, Some(proc.blocked_for(tid)));
-                let m =
-                    new_mask & !(crate::signal::sig_bit(SIGKILL) | crate::signal::sig_bit(SIGSTOP));
-                proc.set_blocked_for(tid, m);
-            }
-            // Check if any signals are deliverable with the pselect mask
-            if proc.deliverable_for(tid) != 0 {
-                return Err(Errno::EINTR);
-            }
+    // Use the sigsuspend_saved_mask pattern for atomic mask swap. The mask
+    // stays swapped across EAGAIN retries so cross-process signals arriving
+    // between retries are caught on the next select.
+    let tid = crate::process_table::current_tid();
+    if let Some(new_mask) = mask {
+        use wasm_posix_shared::signal::{SIGKILL, SIGSTOP};
+        if proc.sigsuspend_saved_mask_for(tid).is_none() {
+            proc.set_sigsuspend_saved_mask_for(tid, Some(proc.blocked_for(tid)));
+            let m = new_mask & !(crate::signal::sig_bit(SIGKILL) | crate::signal::sig_bit(SIGSTOP));
+            proc.set_blocked_for(tid, m);
         }
-
-        let result = sys_select(proc, host, nfds, readfds, writefds, exceptfds, timeout_ms);
-        match result {
-            Err(Errno::EAGAIN) => {
-                // Still blocking — keep mask swapped for next retry
-                return Err(Errno::EAGAIN);
-            }
-            _ => {
-                // Select completed — if signals became deliverable during
-                // the pselect window, keep sigsuspend_saved_mask so
-                // kernel_dequeue_signal can deliver them first.
-                if proc.deliverable_for(tid) == 0 {
-                    if let Some(saved) = proc.take_sigsuspend_saved_mask_for(tid) {
-                        proc.set_blocked_for(tid, saved);
-                    }
-                }
-                return result;
-            }
+        if proc.deliverable_for(tid) != 0 {
+            return Err(Errno::EINTR);
         }
     }
-
-    // Non-centralized mode: simple save/restore around sys_select
-    let old_mask = if let Some(new_mask) = mask {
-        let old = sys_sigprocmask(proc, SIG_SETMASK, new_mask)?;
-        Some(old)
-    } else {
-        None
-    };
-
     let result = sys_select(proc, host, nfds, readfds, writefds, exceptfds, timeout_ms);
-
-    if let Some(old) = old_mask {
-        let _ = sys_sigprocmask(proc, SIG_SETMASK, old);
+    if !matches!(result, Err(Errno::EAGAIN)) && proc.deliverable_for(tid) == 0 {
+        if let Some(saved) = proc.take_sigsuspend_saved_mask_for(tid) {
+            proc.set_blocked_for(tid, saved);
+        }
     }
-
     result
 }
 
@@ -11183,108 +10685,10 @@ pub fn sys_select(
     if ready > 0 || timeout_ms == 0 {
         return Ok(ready);
     }
-    // nfds=0 with no interested FDs but non-zero timeout: on Linux this
-    // blocks until a signal arrives (like sigsuspend). Fall through to
-    // EAGAIN/blocking path rather than returning immediately.
-
-    // Centralized mode: return EAGAIN so the host JS can retry asynchronously
-    if crate::is_centralized_mode() {
-        return Err(Errno::EAGAIN);
+    if proc.signals.deliverable() != 0 && !proc.signals.should_restart() {
+        return Err(Errno::EINTR);
     }
-
-    // Non-centralized mode: blocking poll loop
-    let deadline_ns: Option<u64> = if timeout_ms > 0 {
-        let (sec, nsec) = host.host_clock_gettime(1)?;
-        let now = sec as u64 * 1_000_000_000 + nsec as u64;
-        Some(now + (timeout_ms as u64) * 1_000_000)
-    } else {
-        None
-    };
-
-    loop {
-        if proc.signals.deliverable() != 0 {
-            if !proc.signals.should_restart() {
-                return Err(Errno::EINTR);
-            }
-        }
-
-        let _ = host.host_nanosleep(0, 1_000_000);
-
-        // Re-check readiness
-        ready = 0;
-        if let Some(ref mut s) = readfds {
-            s[..set_bytes].fill(0);
-        }
-        if let Some(ref mut s) = writefds {
-            s[..set_bytes].fill(0);
-        }
-        if let Some(ref mut s) = exceptfds {
-            s[..set_bytes].fill(0);
-        }
-
-        for fd in 0..nfds {
-            let byte = fd / 8;
-            let bit = fd % 8;
-            let want_read = (in_read_buf[byte] >> bit) & 1 != 0;
-            let want_write = (in_write_buf[byte] >> bit) & 1 != 0;
-            let want_except = (in_except_buf[byte] >> bit) & 1 != 0;
-            if !want_read && !want_write && !want_except {
-                continue;
-            }
-
-            let mut pollfd = WasmPollFd {
-                fd: fd as i32,
-                events: 0,
-                revents: 0,
-            };
-            if want_read {
-                pollfd.events |= POLLIN;
-            }
-            if want_write {
-                pollfd.events |= POLLOUT;
-            }
-            if want_except {
-                pollfd.events |= POLLPRI;
-            }
-            poll_check(proc, host, core::slice::from_mut(&mut pollfd));
-
-            let revents = pollfd.revents;
-            let mut counted = false;
-            if want_read && (revents & (POLLIN | POLLHUP | POLLERR)) != 0 {
-                if let Some(ref mut s) = readfds {
-                    s[byte] |= 1 << bit;
-                }
-                counted = true;
-            }
-            if want_write && (revents & (POLLOUT | POLLERR)) != 0 {
-                if let Some(ref mut s) = writefds {
-                    s[byte] |= 1 << bit;
-                }
-                counted = true;
-            }
-            if want_except && (revents & POLLPRI) != 0 {
-                if let Some(ref mut s) = exceptfds {
-                    s[byte] |= 1 << bit;
-                }
-                counted = true;
-            }
-            if counted {
-                ready += 1;
-            }
-        }
-
-        if ready > 0 {
-            return Ok(ready);
-        }
-
-        if let Some(dl) = deadline_ns {
-            let (sec, nsec) = host.host_clock_gettime(1)?;
-            let now = sec as u64 * 1_000_000_000 + nsec as u64;
-            if now >= dl {
-                return Ok(0);
-            }
-        }
-    }
+    Err(Errno::EAGAIN)
 }
 
 /// setuid -- set real and effective user ID.
@@ -13590,6 +12994,302 @@ mod tests {
         assert_eq!(result, Err(Errno::EBADF));
     }
 
+    fn fd_host_handle(proc: &Process, fd: i32) -> i64 {
+        let entry = proc.fd_table.get(fd).unwrap();
+        let ofd = proc.ofd_table.get(entry.ofd_ref.0).unwrap();
+        ofd.host_handle
+    }
+
+    #[test]
+    fn test_fcntl_setlk_fallback_conflict_reports_would_block() {
+        let _guard = enter_fallback_lock_test();
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        let (_read_fd, write_fd) = sys_pipe(&mut proc).unwrap();
+        let host_handle = fd_host_handle(&proc, write_fd);
+
+        unsafe { crate::lock::global_fallback_lock_table() }.set_lock(
+            host_handle,
+            FileLock {
+                pid: 2,
+                lock_type: F_WRLCK,
+                start: 0,
+                len: 100,
+            },
+        );
+
+        let mut flock = WasmFlock {
+            l_type: F_WRLCK as i16,
+            l_whence: 0,
+            _pad1: 0,
+            l_start: 0,
+            l_len: 100,
+            l_pid: 0,
+            _pad2: 0,
+        };
+        let result = sys_fcntl_lock(&mut proc, write_fd, F_SETLK, &mut flock, &mut host);
+        assert_eq!(result, Err(Errno::EAGAIN));
+    }
+
+    #[test]
+    fn test_fcntl_setlkw_fallback_conflict_uses_cooperative_retry() {
+        let _guard = enter_fallback_lock_test();
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        let (_read_fd, write_fd) = sys_pipe(&mut proc).unwrap();
+        let host_handle = fd_host_handle(&proc, write_fd);
+
+        unsafe { crate::lock::global_fallback_lock_table() }.set_lock(
+            host_handle,
+            FileLock {
+                pid: 2,
+                lock_type: F_WRLCK,
+                start: 0,
+                len: 100,
+            },
+        );
+
+        let mut flock = WasmFlock {
+            l_type: F_WRLCK as i16,
+            l_whence: 0,
+            _pad1: 0,
+            l_start: 0,
+            l_len: 100,
+            l_pid: 0,
+            _pad2: 0,
+        };
+        let result = sys_fcntl_lock(&mut proc, write_fd, F_SETLKW, &mut flock, &mut host);
+        assert_eq!(result, Err(Errno::EAGAIN));
+    }
+
+    struct FallbackLockTestGuard {
+        _guard: std::sync::MutexGuard<'static, ()>,
+    }
+
+    impl Drop for FallbackLockTestGuard {
+        fn drop(&mut self) {
+            unsafe { crate::lock::global_fallback_lock_table().clear() };
+        }
+    }
+
+    fn enter_fallback_lock_test() -> FallbackLockTestGuard {
+        let guard = crate::lock::FALLBACK_LOCK_TEST_LOCK.lock().unwrap();
+        unsafe { crate::lock::global_fallback_lock_table().clear() };
+        FallbackLockTestGuard { _guard: guard }
+    }
+
+    fn add_fallback_pipe_fd(proc: &mut Process, host_handle: i64, status_flags: u32) -> i32 {
+        let ofd_idx = proc.ofd_table.create(
+            FileType::Pipe,
+            status_flags,
+            host_handle,
+            b"/dev/pipe".to_vec(),
+        );
+        proc.fd_table.alloc(OpenFileDescRef(ofd_idx), 0).unwrap()
+    }
+
+    fn write_lock(start: i64, len: i64) -> WasmFlock {
+        WasmFlock {
+            l_type: F_WRLCK as i16,
+            l_whence: 0,
+            _pad1: 0,
+            l_start: start,
+            l_len: len,
+            l_pid: 0,
+            _pad2: 0,
+        }
+    }
+
+    #[test]
+    fn test_fcntl_getlk_fallback_conflict_reports_blocking_owner() {
+        let _guard = enter_fallback_lock_test();
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        let (_read_fd, write_fd) = sys_pipe(&mut proc).unwrap();
+        let host_handle = fd_host_handle(&proc, write_fd);
+
+        unsafe { crate::lock::global_fallback_lock_table() }.set_lock(
+            host_handle,
+            FileLock {
+                pid: 7,
+                lock_type: F_WRLCK,
+                start: 10,
+                len: 25,
+            },
+        );
+
+        let mut query = WasmFlock {
+            l_type: F_RDLCK as i16,
+            l_whence: 0,
+            _pad1: 0,
+            l_start: 20,
+            l_len: 5,
+            l_pid: 0,
+            _pad2: 0,
+        };
+        sys_fcntl_lock(&mut proc, write_fd, F_GETLK, &mut query, &mut host).unwrap();
+
+        assert_eq!(query.l_type as u32, F_WRLCK);
+        assert_eq!(query.l_pid, 7);
+        assert_eq!(query.l_start, 10);
+        assert_eq!(query.l_len, 25);
+        assert_eq!(query.l_whence, 0);
+    }
+
+    #[test]
+    fn test_fallback_locks_are_kernel_wide() {
+        let _guard = enter_fallback_lock_test();
+        let mut proc1 = Process::new(1);
+        let mut proc2 = Process::new(2);
+        let mut host = MockHostIO::new();
+        let shared_handle = -700;
+        let fd1 = add_fallback_pipe_fd(&mut proc1, shared_handle, O_RDWR);
+        let fd2 = add_fallback_pipe_fd(&mut proc2, shared_handle, O_RDWR);
+
+        let mut flock = write_lock(0, 100);
+        sys_fcntl_lock(&mut proc1, fd1, F_SETLK, &mut flock, &mut host).unwrap();
+
+        assert!(
+            proc1
+                .lock_table
+                .get_blocking_lock(shared_handle, F_WRLCK, 0, 100, 2)
+                .is_none(),
+            "kernel fallback locks must not be stored on proc1"
+        );
+        assert!(
+            proc2
+                .lock_table
+                .get_blocking_lock(shared_handle, F_WRLCK, 0, 100, 1)
+                .is_none(),
+            "kernel fallback locks must not be stored on proc2"
+        );
+
+        let mut conflict = write_lock(0, 100);
+        assert_eq!(
+            sys_fcntl_lock(&mut proc2, fd2, F_SETLK, &mut conflict, &mut host),
+            Err(Errno::EAGAIN)
+        );
+
+        let mut query = WasmFlock {
+            l_type: F_RDLCK as i16,
+            l_whence: 0,
+            _pad1: 0,
+            l_start: 50,
+            l_len: 10,
+            l_pid: 0,
+            _pad2: 0,
+        };
+        sys_fcntl_lock(&mut proc2, fd2, F_GETLK, &mut query, &mut host).unwrap();
+        assert_eq!(query.l_type as u32, F_WRLCK);
+        assert_eq!(query.l_pid, 1);
+        assert_eq!(query.l_start, 0);
+        assert_eq!(query.l_len, 100);
+
+        let mut unlock = WasmFlock {
+            l_type: F_UNLCK as i16,
+            l_whence: 0,
+            _pad1: 0,
+            l_start: 0,
+            l_len: 100,
+            l_pid: 0,
+            _pad2: 0,
+        };
+        sys_fcntl_lock(&mut proc1, fd1, F_SETLK, &mut unlock, &mut host).unwrap();
+        sys_fcntl_lock(&mut proc2, fd2, F_SETLK, &mut conflict, &mut host).unwrap();
+
+        assert!(
+            unsafe { crate::lock::global_fallback_lock_table() }
+                .get_blocking_lock(shared_handle, F_WRLCK, 0, 100, 1)
+                .is_some()
+        );
+    }
+
+    #[test]
+    fn test_flock_fallback_nonblocking_conflict_reports_would_block() {
+        let _guard = enter_fallback_lock_test();
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        let (_read_fd, write_fd) = sys_pipe(&mut proc).unwrap();
+        let host_handle = fd_host_handle(&proc, write_fd);
+
+        unsafe { crate::lock::global_fallback_lock_table() }.set_lock(
+            host_handle,
+            FileLock {
+                pid: 2,
+                lock_type: F_WRLCK,
+                start: 0,
+                len: 0,
+            },
+        );
+
+        assert_eq!(
+            sys_flock(&mut proc, write_fd, LOCK_EX | LOCK_NB, &mut host),
+            Err(Errno::EAGAIN)
+        );
+    }
+
+    #[test]
+    fn test_flock_blocking_fallback_conflict_uses_cooperative_retry() {
+        let _guard = enter_fallback_lock_test();
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        let host_handle = -701;
+        let write_fd = add_fallback_pipe_fd(&mut proc, host_handle, O_RDWR);
+
+        unsafe { crate::lock::global_fallback_lock_table() }.set_lock(
+            host_handle,
+            FileLock {
+                pid: 2,
+                lock_type: F_WRLCK,
+                start: 0,
+                len: 0,
+            },
+        );
+
+        let result = sys_flock(&mut proc, write_fd, LOCK_EX, &mut host);
+        assert_eq!(result, Err(Errno::EAGAIN));
+    }
+
+    #[test]
+    fn test_fcntl_setlkw_fallback_succeeds_after_unlock() {
+        let _guard = enter_fallback_lock_test();
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        let host_handle = -702;
+        let write_fd = add_fallback_pipe_fd(&mut proc, host_handle, O_RDWR);
+
+        unsafe { crate::lock::global_fallback_lock_table() }.set_lock(
+            host_handle,
+            FileLock {
+                pid: 2,
+                lock_type: F_WRLCK,
+                start: 0,
+                len: 100,
+            },
+        );
+
+        let mut flock = write_lock(0, 100);
+        let result = sys_fcntl_lock(&mut proc, write_fd, F_SETLKW, &mut flock, &mut host);
+        assert_eq!(result, Err(Errno::EAGAIN));
+
+        unsafe { crate::lock::global_fallback_lock_table() }.set_lock(
+            host_handle,
+            FileLock {
+                pid: 2,
+                lock_type: F_UNLCK,
+                start: 0,
+                len: 100,
+            },
+        );
+
+        sys_fcntl_lock(&mut proc, write_fd, F_SETLKW, &mut flock, &mut host).unwrap();
+        assert!(
+            unsafe { crate::lock::global_fallback_lock_table() }
+                .get_blocking_lock(host_handle, F_WRLCK, 0, 100, 2)
+                .is_some()
+        );
+    }
+
     #[test]
     fn test_close_releases_fcntl_locks() {
         let mut proc = Process::new(1);
@@ -13872,6 +13572,19 @@ mod tests {
         let mut host = MockHostIO::new();
         assert_eq!(
             sys_munmap(&mut proc, &mut host, 0x10000, 0),
+            Err(Errno::EINVAL)
+        );
+    }
+
+    #[test]
+    fn test_munmap_rejects_host_reserved_region() {
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        let addr = proc.memory.reserve_host_region(0x10000);
+        assert_ne!(addr, MAP_FAILED);
+
+        assert_eq!(
+            sys_munmap(&mut proc, &mut host, addr, 0x10000),
             Err(Errno::EINVAL)
         );
     }
@@ -15354,22 +15067,18 @@ mod tests {
     }
 
     #[test]
-    fn test_blocking_pipe_read_eintr_on_signal() {
+    fn test_blocking_pipe_read_returns_eagain_for_host_retry() {
         let mut proc = Process::new(1);
         let mut host = MockHostIO::new();
         let (read_fd, _write_fd) = sys_pipe(&mut proc).unwrap();
-        // Don't set O_NONBLOCK — default is blocking
-
-        // Raise a signal so the blocking read returns EINTR
-        proc.signals.raise(wasm_posix_shared::signal::SIGTERM);
 
         let mut buf = [0u8; 16];
         let result = sys_read(&mut proc, &mut host, read_fd, &mut buf);
-        assert_eq!(result, Err(Errno::EINTR));
+        assert_eq!(result, Err(Errno::EAGAIN));
     }
 
     #[test]
-    fn test_blocking_pipe_write_eintr_on_signal() {
+    fn test_blocking_pipe_write_returns_eagain_for_host_retry() {
         let mut proc = Process::new(1);
         let mut host = MockHostIO::new();
         let (_read_fd, write_fd) = sys_pipe(&mut proc).unwrap();
@@ -15377,13 +15086,9 @@ mod tests {
         let big = [0u8; 65536];
         let n = sys_write(&mut proc, &mut host, write_fd, &big).unwrap();
         assert_eq!(n, 65536);
-        // Don't set O_NONBLOCK — default is blocking
-
-        // Raise a signal so the blocking write returns EINTR
-        proc.signals.raise(wasm_posix_shared::signal::SIGTERM);
 
         let result = sys_write(&mut proc, &mut host, write_fd, b"x");
-        assert_eq!(result, Err(Errno::EINTR));
+        assert_eq!(result, Err(Errno::EAGAIN));
     }
 
     // ---- umask tests ----
@@ -16577,46 +16282,47 @@ mod tests {
     }
 
     #[test]
-    fn test_sigsuspend_restores_old_mask() {
+    fn test_sigsuspend_saves_old_mask_until_signal_dequeue() {
         let mut proc = Process::new(1);
         let mut host = MockHostIO::new();
         proc.signals.blocked = 0xFF;
         proc.signals.raise(2); // SIGINT pending
-        let _ = sys_sigsuspend(&mut proc, &mut host, 0);
-        assert_eq!(proc.signals.blocked, 0xFF);
+        let result = sys_sigsuspend(&mut proc, &mut host, 0);
+        let tid = crate::process_table::current_tid();
+        assert_eq!(result, Err(Errno::EINTR));
+        assert_eq!(proc.signals.blocked, 0);
+        assert_eq!(proc.sigsuspend_saved_mask_for(tid), Some(0xFF));
     }
 
     #[test]
-    fn test_sigsuspend_blocks_until_signal() {
+    fn test_sigsuspend_returns_eagain_for_host_retry() {
         let mut proc = Process::new(1);
         let mut host = MockHostIO::new();
-        host.sigsuspend_signal = 15; // SIGTERM
         let result = sys_sigsuspend(&mut proc, &mut host, 0);
-        assert_eq!(result, Err(Errno::EINTR));
-        assert!(proc.signals.is_pending(15));
+        assert_eq!(result, Err(Errno::EAGAIN));
     }
 
     #[test]
     fn test_sigsuspend_cannot_block_sigkill() {
         let mut proc = Process::new(1);
         let mut host = MockHostIO::new();
-        host.sigsuspend_signal = 9; // SIGKILL
         let mask = u64::MAX; // try to block everything
         let result = sys_sigsuspend(&mut proc, &mut host, mask);
-        assert_eq!(result, Err(Errno::EINTR));
-        assert!(proc.signals.is_pending(9));
+        assert_eq!(result, Err(Errno::EAGAIN));
+        assert_eq!(proc.signals.blocked & crate::signal::sig_bit(SIGKILL), 0);
+        assert_eq!(proc.signals.blocked & crate::signal::sig_bit(SIGSTOP), 0);
     }
 
     #[test]
-    fn test_sigsuspend_restores_mask_on_host_error() {
+    fn test_sigsuspend_saves_mask_for_host_retry() {
         let mut proc = Process::new(1);
         let mut host = MockHostIO::new();
         proc.signals.blocked = 0xFF;
-        host.sigsuspend_error = true;
         let result = sys_sigsuspend(&mut proc, &mut host, 0);
-        assert_eq!(result, Err(Errno::EINTR));
-        // Mask must be restored even when host returns error
-        assert_eq!(proc.signals.blocked, 0xFF);
+        let tid = crate::process_table::current_tid();
+        assert_eq!(result, Err(Errno::EAGAIN));
+        assert_eq!(proc.signals.blocked, 0);
+        assert_eq!(proc.sigsuspend_saved_mask_for(tid), Some(0xFF));
     }
 
     // ---- *at() syscalls with real dirfd ----
@@ -17307,7 +17013,6 @@ mod tests {
             proc.sockets.get(sock_idx).unwrap().accept_wake_idx.unwrap()
         };
 
-        crate::set_kernel_mode(1);
         let mut wake_buf = [0u8; 16];
         crate::wakeup::drain(&mut wake_buf, 8);
 
@@ -17315,7 +17020,6 @@ mod tests {
         sys_connect(&mut proc, &mut host, client_fd, &addr[..addrlen]).unwrap();
 
         let count = crate::wakeup::drain(&mut wake_buf, 8);
-        crate::set_kernel_mode(0);
         unsafe { crate::unix_socket::global_unix_socket_registry() }.unregister(&resolved);
 
         assert_eq!(count, 1);
@@ -18415,15 +18119,16 @@ mod tests {
     }
 
     #[test]
-    fn test_clone_non_centralized_delegates_to_host() {
+    fn test_clone_thread_allocates_kernel_thread() {
         let mut proc = Process::new(1);
         let mut host = MockHostIO::new();
         const CLONE_VM: u32 = 0x00000100;
         const CLONE_THREAD: u32 = 0x00010000;
         let flags = CLONE_VM | CLONE_THREAD;
-        // In non-centralized mode, host_clone returns -ENOSYS (mock)
         let result = sys_clone(&mut proc, &mut host, 0, 0x8000, flags, 0, 0, 0, 0);
-        assert_eq!(result, Err(Errno::ENOSYS));
+        let tid = result.expect("thread-style clone should allocate a tid");
+        assert!(tid > 0);
+        assert!(proc.get_thread(tid as u32).is_some());
     }
 
     #[test]

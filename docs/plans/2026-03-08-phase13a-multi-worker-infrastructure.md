@@ -4,7 +4,7 @@
 
 **Goal:** Create the infrastructure for running POSIX processes as separate worker threads, each with its own Wasm kernel instance, coordinated by a host-side ProcessManager.
 
-**Architecture:** A `ProcessManager` in the main thread manages a process table and spawns workers. Each worker loads the Wasm module, creates its own `WasmPosixKernel` + `NodePlatformIO`, initializes the kernel with its assigned PID, and communicates lifecycle events via `postMessage`. A `WorkerAdapter` interface abstracts over Node.js `worker_threads` and Web Workers. Phase 13a covers only the infrastructure and single-process spawn — fork, exec, waitpid, cross-process pipes, and signals come in later phases.
+**Architecture:** A `ProcessManager` in the main thread manages a process table and spawns workers. Each worker loads the Wasm module, creates its own `WasmPosixKernel` + `NodePlatformIO`, initializes the kernel with its assigned PID, and communicates lifecycle events via `postMessage`. A `WorkerAdapter` interface abstracts over Node.js `worker_threads` and Web Workers. Phase 13a covers only the initial spawn infrastructure — fork, exec, waitpid, cross-process pipes, and signals come in later phases.
 
 **Tech Stack:** TypeScript, Node.js `worker_threads`, vitest, tsup
 

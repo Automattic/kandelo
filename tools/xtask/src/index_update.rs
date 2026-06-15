@@ -8,12 +8,13 @@
 //! result back. The lock + GitHub-release sequence around it
 //! guarantees readers always see a consistent ledger.
 
-use std::path::PathBuf;
+use std::io::Read;
+use std::path::{Path, PathBuf};
 
 use sha2::{Digest, Sha256};
 
 use crate::index_toml::IndexToml;
-use crate::pkg_manifest::TargetArch;
+use crate::pkg_manifest::{DepsManifest, TargetArch};
 use crate::util::hex;
 
 /// Entry point for `xtask index-update <args...>`. Parses
@@ -89,6 +90,18 @@ pub fn run_index_update(args: &[String]) -> Result<(), String> {
             h.update(&bytes);
             let digest: [u8; 32] = h.finalize().into();
             let archive_sha256 = hex(&digest);
+            validate_cache_key_sha(cache_key_sha, "--cache-key-sha")?;
+            validate_archive_matches_entry(
+                archive_path,
+                archive_name,
+                &bytes,
+                package,
+                version,
+                revision,
+                arch,
+                idx.abi_version,
+                cache_key_sha,
+            )?;
 
             idx.update_entry_success(
                 package,
@@ -147,6 +160,143 @@ pub fn run_index_update(args: &[String]) -> Result<(), String> {
 
     std::fs::write(&parsed.index_path, idx.write())
         .map_err(|e| format!("write {}: {e}", parsed.index_path.display()))
+}
+
+struct ArchiveManifestInfo {
+    name: String,
+    version: String,
+    revision: u32,
+    target_arch: TargetArch,
+    abi_versions: Vec<u32>,
+    cache_key_sha: String,
+}
+
+fn validate_cache_key_sha(value: &str, flag: &str) -> Result<(), String> {
+    if value.len() != 64
+        || !value
+            .chars()
+            .all(|c| c.is_ascii_hexdigit() && !c.is_uppercase())
+    {
+        return Err(format!(
+            "{flag} must be a 64-char lowercase hex cache_key_sha, got {value:?}"
+        ));
+    }
+    Ok(())
+}
+
+fn validate_archive_matches_entry(
+    archive_path: &Path,
+    archive_name: &str,
+    bytes: &[u8],
+    package: &str,
+    version: &str,
+    revision: u32,
+    arch: TargetArch,
+    abi_version: u32,
+    cache_key_sha: &str,
+) -> Result<(), String> {
+    let path_file_name = archive_path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .ok_or_else(|| {
+            format!(
+                "archive {}: path has no UTF-8 filename to compare with --archive-name",
+                archive_path.display()
+            )
+        })?;
+    if path_file_name != archive_name {
+        return Err(format!(
+            "archive {}: filename {:?} does not match --archive-name {:?}",
+            archive_path.display(),
+            path_file_name,
+            archive_name
+        ));
+    }
+
+    let expected_suffix = format!("-{}.tar.zst", &cache_key_sha[..8]);
+    if !archive_name.ends_with(&expected_suffix) {
+        return Err(format!(
+            "archive {archive_name:?}: filename suffix does not match --cache-key-sha \
+             {cache_key_sha}; expected suffix {expected_suffix:?}"
+        ));
+    }
+
+    let info = read_archive_manifest_info(bytes)
+        .map_err(|e| format!("archive {}: {e}", archive_path.display()))?;
+    if info.name != package {
+        return Err(format!(
+            "archive {archive_name:?}: manifest name {:?} does not match --package {:?}",
+            info.name, package
+        ));
+    }
+    if info.version != version {
+        return Err(format!(
+            "archive {archive_name:?}: manifest version {:?} does not match --version {:?}",
+            info.version, version
+        ));
+    }
+    if info.revision != revision {
+        return Err(format!(
+            "archive {archive_name:?}: manifest revision {} does not match --revision {}",
+            info.revision, revision
+        ));
+    }
+    if info.target_arch != arch {
+        return Err(format!(
+            "archive {archive_name:?}: manifest target_arch {:?} does not match --arch {}",
+            info.target_arch,
+            arch.as_str()
+        ));
+    }
+    if !info.abi_versions.contains(&abi_version) {
+        return Err(format!(
+            "archive {archive_name:?}: manifest abi_versions {:?} does not include index ABI {}",
+            info.abi_versions, abi_version
+        ));
+    }
+    if info.cache_key_sha != cache_key_sha {
+        return Err(format!(
+            "archive {archive_name:?}: manifest cache_key_sha {} does not match \
+             --cache-key-sha {}",
+            info.cache_key_sha, cache_key_sha
+        ));
+    }
+    Ok(())
+}
+
+fn read_archive_manifest_info(bytes: &[u8]) -> Result<ArchiveManifestInfo, String> {
+    let decoder =
+        zstd::stream::read::Decoder::new(bytes).map_err(|e| format!("zstd decode: {e}"))?;
+    let mut tar = tar::Archive::new(decoder);
+    let entries = tar.entries().map_err(|e| format!("tar entries: {e}"))?;
+    for entry in entries {
+        let mut entry = entry.map_err(|e| format!("tar entry: {e}"))?;
+        let path = entry
+            .path()
+            .map_err(|e| format!("tar entry path: {e}"))?
+            .into_owned();
+        if path.as_path() != Path::new("manifest.toml") {
+            continue;
+        }
+        let mut text = String::new();
+        entry
+            .read_to_string(&mut text)
+            .map_err(|e| format!("read manifest.toml: {e}"))?;
+        let archived = DepsManifest::parse_archived(&text, PathBuf::from("/dev/null"))?;
+        let compat = archived
+            .compatibility
+            .as_ref()
+            .ok_or_else(|| "archived manifest missing [compatibility]".to_string())?;
+        return Ok(ArchiveManifestInfo {
+            name: archived.name.clone(),
+            version: archived.version.clone(),
+            revision: archived.revision,
+            target_arch: compat.target_arch,
+            abi_versions: compat.abi_versions.clone(),
+            cache_key_sha: compat.cache_key_sha.clone(),
+        });
+    }
+    Err("archive missing manifest.toml at the root".to_string())
 }
 
 struct ParsedArgs {
@@ -236,6 +386,66 @@ impl ParsedArgs {
 
 #[cfg(test)]
 mod tests {
+    fn write_test_archive(
+        path: &std::path::Path,
+        name: &str,
+        version: &str,
+        revision: u32,
+        abi: u32,
+        target_arch: &str,
+        cache_key_sha: &str,
+    ) {
+        use std::io::Write;
+
+        let manifest = format!(
+            r#"
+kind = "library"
+name = "{name}"
+version = "{version}"
+revision = {revision}
+
+[source]
+url = "file:///dev/null"
+sha256 = "{source_sha}"
+
+[license]
+spdx = "TestLicense"
+
+[outputs]
+libs = ["lib/lib{name}.a"]
+
+[compatibility]
+target_arch = "{target_arch}"
+abi_versions = [{abi}]
+cache_key_sha = "{cache_key_sha}"
+build_timestamp = "2026-05-13T00:00:00Z"
+build_host = "test-host"
+"#,
+            source_sha = "0".repeat(64),
+        );
+
+        let mut tar_bytes = Vec::new();
+        {
+            let mut builder = tar::Builder::new(&mut tar_bytes);
+            let mut header = tar::Header::new_gnu();
+            header.set_size(manifest.len() as u64);
+            header.set_mode(0o644);
+            header.set_cksum();
+            builder
+                .append_data(&mut header, "manifest.toml", manifest.as_bytes())
+                .unwrap();
+            builder.finish().unwrap();
+        }
+
+        let mut zst_bytes = Vec::new();
+        {
+            let mut encoder = zstd::stream::write::Encoder::new(&mut zst_bytes, 0).unwrap();
+            encoder.write_all(&tar_bytes).unwrap();
+            encoder.finish().unwrap();
+        }
+        std::fs::write(path, zst_bytes).unwrap();
+    }
+
     #[test]
     fn index_update_success_writes_entry_to_index() {
         use super::*;
@@ -255,7 +465,8 @@ mod tests {
         std::fs::write(&idx_path, empty.write()).unwrap();
 
         let archive_path = tmp.join("foo-1.0-rev1-abi8-wasm32-deadbeef.tar.zst");
-        std::fs::write(&archive_path, b"fake archive bytes").unwrap();
+        let cache_key = "deadbeef".repeat(8);
+        write_test_archive(&archive_path, "foo", "1.0", 1, 8, "wasm32", &cache_key);
 
         run_index_update(&[
             "--index-path".to_string(),
@@ -275,7 +486,7 @@ mod tests {
             "--archive-name".to_string(),
             "foo-1.0-rev1-abi8-wasm32-deadbeef.tar.zst".to_string(),
             "--cache-key-sha".to_string(),
-            "deadbeefcafebabe".to_string(),
+            cache_key.clone(),
             "--built-at".to_string(),
             "2026-05-13T00:00:00Z".to_string(),
             "--built-by".to_string(),
@@ -290,7 +501,7 @@ mod tests {
             entry.archive_url.as_deref(),
             Some("foo-1.0-rev1-abi8-wasm32-deadbeef.tar.zst")
         );
-        assert_eq!(entry.cache_key_sha.as_deref(), Some("deadbeefcafebabe"));
+        assert_eq!(entry.cache_key_sha.as_deref(), Some(cache_key.as_str()));
         assert_eq!(entry.built_at.as_deref(), Some("2026-05-13T00:00:00Z"));
         assert_eq!(entry.built_by.as_deref(), Some("https://example.com/run/1"));
 
@@ -299,10 +510,113 @@ mod tests {
         // Verify it's the sha256 of the staged bytes.
         use sha2::{Digest, Sha256};
         let mut h = Sha256::new();
-        h.update(b"fake archive bytes");
+        h.update(std::fs::read(&archive_path).unwrap());
         let expected_sha: [u8; 32] = h.finalize().into();
         let expected_hex: String = expected_sha.iter().map(|b| format!("{b:02x}")).collect();
         assert_eq!(entry.archive_sha256.as_deref(), Some(expected_hex.as_str()));
+    }
+
+    #[test]
+    fn index_update_rejects_archive_cache_key_mismatch() {
+        use super::*;
+        use crate::index_toml::IndexToml;
+
+        let tmp = std::env::temp_dir().join(format!(
+            "wpk-xtask-idx-update-key-mismatch-{}-{}",
+            std::process::id(),
+            line!()
+        ));
+        let _ = std::fs::remove_dir_all(&tmp);
+        std::fs::create_dir_all(&tmp).unwrap();
+
+        let idx_path = tmp.join("index.toml");
+        let empty = IndexToml::empty(8, "seeded".into(), "test-seed".into());
+        std::fs::write(&idx_path, empty.write()).unwrap();
+
+        let archive_path = tmp.join("foo-1.0-rev1-abi8-wasm32-deadbeef.tar.zst");
+        let requested_key = "deadbeef".repeat(8);
+        let archived_key = "cafebabe".repeat(8);
+        write_test_archive(&archive_path, "foo", "1.0", 1, 8, "wasm32", &archived_key);
+
+        let err = run_index_update(&[
+            "--index-path".to_string(),
+            idx_path.to_string_lossy().into_owned(),
+            "--package".to_string(),
+            "foo".to_string(),
+            "--version".to_string(),
+            "1.0".to_string(),
+            "--revision".to_string(),
+            "1".to_string(),
+            "--arch".to_string(),
+            "wasm32".to_string(),
+            "--status".to_string(),
+            "success".to_string(),
+            "--archive-path".to_string(),
+            archive_path.to_string_lossy().into_owned(),
+            "--archive-name".to_string(),
+            "foo-1.0-rev1-abi8-wasm32-deadbeef.tar.zst".to_string(),
+            "--cache-key-sha".to_string(),
+            requested_key,
+            "--built-at".to_string(),
+            "2026-05-13T00:00:00Z".to_string(),
+            "--built-by".to_string(),
+            "https://example.com/run/1".to_string(),
+        ])
+        .unwrap_err();
+
+        assert!(err.contains("manifest cache_key_sha"), "got: {err}");
+        assert!(err.contains("does not match --cache-key-sha"), "got: {err}");
+    }
+
+    #[test]
+    fn index_update_rejects_archive_path_name_mismatch() {
+        use super::*;
+        use crate::index_toml::IndexToml;
+
+        let tmp = std::env::temp_dir().join(format!(
+            "wpk-xtask-idx-update-name-mismatch-{}-{}",
+            std::process::id(),
+            line!()
+        ));
+        let _ = std::fs::remove_dir_all(&tmp);
+        std::fs::create_dir_all(&tmp).unwrap();
+
+        let idx_path = tmp.join("index.toml");
+        let empty = IndexToml::empty(8, "seeded".into(), "test-seed".into());
+        std::fs::write(&idx_path, empty.write()).unwrap();
+
+        let archive_path = tmp.join("foo-1.0-rev1-abi8-wasm32-deadbeef.tar.zst");
+        let cache_key = "deadbeef".repeat(8);
+        write_test_archive(&archive_path, "foo", "1.0", 1, 8, "wasm32", &cache_key);
+
+        let err = run_index_update(&[
+            "--index-path".to_string(),
+            idx_path.to_string_lossy().into_owned(),
+            "--package".to_string(),
+            "foo".to_string(),
+            "--version".to_string(),
+            "1.0".to_string(),
+            "--revision".to_string(),
+            "1".to_string(),
+            "--arch".to_string(),
+            "wasm32".to_string(),
+            "--status".to_string(),
+            "success".to_string(),
+            "--archive-path".to_string(),
+            archive_path.to_string_lossy().into_owned(),
+            "--archive-name".to_string(),
+            "other-1.0-rev1-abi8-wasm32-deadbeef.tar.zst".to_string(),
+            "--cache-key-sha".to_string(),
+            cache_key,
+            "--built-at".to_string(),
+            "2026-05-13T00:00:00Z".to_string(),
+            "--built-by".to_string(),
+            "https://example.com/run/1".to_string(),
+        ])
+        .unwrap_err();
+
+        assert!(err.contains("filename"), "got: {err}");
+        assert!(err.contains("does not match --archive-name"), "got: {err}");
     }
 
     #[test]
@@ -409,7 +723,8 @@ cache_key_sha = "oldkey"
         std::fs::write(&idx_path, stale).unwrap();
 
         let archive_path = tmp.join("new-1.0-rev1-abi13-wasm32-cafebabe.tar.zst");
-        std::fs::write(&archive_path, b"new archive bytes").unwrap();
+        let cache_key = "cafebabe".repeat(8);
+        write_test_archive(&archive_path, "new", "1.0", 1, 13, "wasm32", &cache_key);
 
         run_index_update(&[
             "--index-path".to_string(),
@@ -429,7 +744,7 @@ cache_key_sha = "oldkey"
             "--archive-name".to_string(),
             "new-1.0-rev1-abi13-wasm32-cafebabe.tar.zst".to_string(),
             "--cache-key-sha".to_string(),
-            "cafebabecafebabe".to_string(),
+            cache_key,
             "--expected-abi".to_string(),
             "13".to_string(),
             "--built-at".to_string(),
@@ -518,7 +833,8 @@ cache_key_sha = "oldkey"
         std::fs::write(&idx_path, empty.write()).unwrap();
 
         let archive_path = tmp.join("foo-1.0-rev1-abi42-wasm32-deadbeef.tar.zst");
-        std::fs::write(&archive_path, b"archive bytes").unwrap();
+        let cache_key = "deadbeef".repeat(8);
+        write_test_archive(&archive_path, "foo", "1.0", 1, 42, "wasm32", &cache_key);
 
         run_index_update(&[
             "--index-path".to_string(),
@@ -538,7 +854,7 @@ cache_key_sha = "oldkey"
             "--archive-name".to_string(),
             "foo-1.0-rev1-abi42-wasm32-deadbeef.tar.zst".to_string(),
             "--cache-key-sha".to_string(),
-            "deadbeefcafebabe".to_string(),
+            cache_key,
             "--expected-abi".to_string(),
             "42".to_string(),
             "--built-at".to_string(),
@@ -588,7 +904,8 @@ cache_key_sha = "oldkey"
         .unwrap();
 
         let archive_path = tmp.join("new-1.0-rev1-abi13-wasm32-cafebabe.tar.zst");
-        std::fs::write(&archive_path, b"new archive bytes").unwrap();
+        let cache_key = "cafebabe".repeat(8);
+        write_test_archive(&archive_path, "new", "1.0", 1, 13, "wasm32", &cache_key);
 
         let err = run_index_update(&[
             "--index-path".to_string(),
@@ -608,7 +925,7 @@ cache_key_sha = "oldkey"
             "--archive-name".to_string(),
             "new-1.0-rev1-abi13-wasm32-cafebabe.tar.zst".to_string(),
             "--cache-key-sha".to_string(),
-            "cafebabecafebabe".to_string(),
+            cache_key,
             "--built-at".to_string(),
             "2026-05-13T00:00:00Z".to_string(),
             "--built-by".to_string(),

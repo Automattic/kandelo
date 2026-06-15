@@ -51,7 +51,7 @@ const supportablePosixUtilities = [
   "yacc",
 ];
 
-const existingPackageUtilities = new Set(["awk", "cmp", "diff", "find", "xargs"]);
+const existingPackageUtilities = new Set(["awk", "cmp", "diff", "find", "tabs", "tput", "xargs"]);
 
 function quotedValues(text: string): string[] {
   return [...text.matchAll(/"([^"]+)"/g)].map((match) => match[1]);

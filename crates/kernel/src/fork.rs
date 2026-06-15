@@ -13,6 +13,7 @@
 //! - Program break (4 bytes): current brk value
 //! - Memory layout metadata (20 bytes): initial brk, max addr, brk limit,
 //!   mmap base, reserved prefix
+//! - Mmap mappings
 
 extern crate alloc;
 
@@ -2284,6 +2285,96 @@ mod tests {
             "child mmap at {:#x} overlaps parent mapping at {:#x}",
             a4,
             a3
+        );
+    }
+
+    #[test]
+    fn test_fork_from_main_treats_parent_pthread_slots_as_free_memory() {
+        use wasm_posix_shared::mmap::*;
+
+        let mut proc = Process::new(1);
+        let slot_len = 0x40000;
+        let first = proc.memory.reserve_host_region(slot_len);
+        let second = proc.memory.reserve_host_region(slot_len);
+        assert_ne!(first, wasm_posix_shared::mmap::MAP_FAILED);
+        assert_ne!(second, wasm_posix_shared::mmap::MAP_FAILED);
+        assert_eq!(proc.memory.reserved_regions().len(), 2);
+
+        let mut buf = vec![0u8; 64 * 1024];
+        let written = serialize_fork_state(&proc, &mut buf).unwrap();
+        let mut child = deserialize_fork_state(&buf[..written], 42).unwrap();
+
+        // POSIX fork resumes only the calling thread. Parent pthread slots
+        // are process-memory bytes in the child, not automatically-live host
+        // reservations. The host installs one exact caller-slot reservation
+        // separately for fork-from-pthread children.
+        assert!(child.memory.reserved_regions().is_empty());
+        assert!(child.memory.can_grow_at(first, slot_len));
+        assert!(child.memory.can_grow_at(second, slot_len));
+
+        let fixed_anon = MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED;
+        assert_eq!(
+            child
+                .memory
+                .mmap_anonymous(first, slot_len, PROT_READ | PROT_WRITE, fixed_anon),
+            first
+        );
+        assert_eq!(
+            child
+                .memory
+                .mmap_anonymous(second, slot_len, PROT_READ | PROT_WRITE, fixed_anon),
+            second
+        );
+    }
+
+    #[test]
+    fn test_fork_from_pthread_retains_only_caller_slot() {
+        use wasm_posix_shared::mmap::*;
+
+        let mut proc = Process::new(1);
+        let slot_len = 0x40000;
+        let first = proc.memory.reserve_host_region(slot_len);
+        let caller = proc.memory.reserve_host_region(slot_len);
+        let third = proc.memory.reserve_host_region(slot_len);
+        assert_ne!(first, MAP_FAILED);
+        assert_ne!(caller, MAP_FAILED);
+        assert_ne!(third, MAP_FAILED);
+        assert_eq!(proc.memory.reserved_regions().len(), 3);
+
+        let mut buf = vec![0u8; 64 * 1024];
+        let written = serialize_fork_state(&proc, &mut buf).unwrap();
+        let mut child = deserialize_fork_state(&buf[..written], 42).unwrap();
+
+        // `kernel_fork_process` does not inherit parent dynamic reservations.
+        // For fork-from-pthread, the host then retains only the caller slot
+        // with `kernel_reserve_host_region_at`.
+        assert!(child.memory.reserved_regions().is_empty());
+        assert_eq!(child.memory.reserve_host_region_at(caller, slot_len), caller);
+        assert_eq!(child.memory.reserved_regions().len(), 1);
+        assert!(child.memory.overlaps_host_reserved_region(caller, slot_len));
+
+        assert!(child.memory.can_grow_at(first, slot_len));
+        assert!(!child.memory.can_grow_at(caller, slot_len));
+        assert!(child.memory.can_grow_at(third, slot_len));
+
+        let fixed_anon = MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED;
+        assert_eq!(
+            child
+                .memory
+                .mmap_anonymous(caller, slot_len, PROT_READ | PROT_WRITE, fixed_anon),
+            MAP_FAILED
+        );
+        assert_eq!(
+            child
+                .memory
+                .mmap_anonymous(first, slot_len, PROT_READ | PROT_WRITE, fixed_anon),
+            first
+        );
+        assert_eq!(
+            child
+                .memory
+                .mmap_anonymous(third, slot_len, PROT_READ | PROT_WRITE, fixed_anon),
+            third
         );
     }
 

@@ -13,7 +13,7 @@ import { resolveBinary } from "../src/binary-resolver";
 import { NodePlatformIO } from "../src/platform/node";
 import { NodeWorkerAdapter } from "../src/worker-adapter";
 import { ThreadPageAllocator } from "../src/thread-allocator";
-import { detectPtrWidth, extractHeapBase } from "../src/constants";
+import { detectPtrWidth, extractHeapBase, PAGES_PER_THREAD, WASM_PAGE_SIZE } from "../src/constants";
 import {
   computeProcessMemoryLayout,
   createProcessMemory,
@@ -52,17 +52,21 @@ function createSharedProcessMemory(
 function threadAllocatorForLayout(
   layout: ProcessMemoryLayout,
   ptrWidth: 4 | 8,
+  reserveSlotStartPage?: () => number,
 ): ThreadPageAllocator {
   return new ThreadPageAllocator({
     firstBasePage: layout.firstThreadBasePage,
     maxPageExclusive: layout.threadArenaEndPage,
     ptrWidth,
+    reservedSlots: layout.threadSlotCount,
+    reserveSlotStartPage,
   });
 }
 
 function createFreshProcessMemory(
   programBytes: ArrayBuffer,
   ptrWidth: 4 | 8,
+  reserveSlotStartPage?: () => number,
 ): {
   memory: WebAssembly.Memory;
   layout: ProcessMemoryLayout;
@@ -80,7 +84,7 @@ function createFreshProcessMemory(
   return {
     memory,
     layout,
-    threadAllocator: threadAllocatorForLayout(layout, ptrWidth),
+    threadAllocator: threadAllocatorForLayout(layout, ptrWidth, reserveSlotStartPage),
   };
 }
 
@@ -132,6 +136,8 @@ export interface RunProgramOptions {
    *  only (NodeKernelHost.getForkCount); main-thread mode falls back to
    *  reading from the kernel instance directly. */
   captureForkCount?: boolean;
+  /** Use the canonical rootfs image in worker-thread mode. Defaults to true. */
+  useDefaultRootfs?: boolean;
 }
 
 export interface RunProgramResult {
@@ -147,7 +153,7 @@ export interface RunProgramResult {
 }
 
 /**
- * Run a Wasm program using the centralized kernel architecture.
+ * Run a Wasm program using the shared-kernel architecture.
  *
  * By default, spawns the kernel in a dedicated worker_thread for optimal
  * syscall throughput. Falls back to main-thread mode when `options.io` is
@@ -198,7 +204,7 @@ async function runInWorkerThread(options: RunProgramOptions): Promise<RunProgram
   const host = new NodeKernelHost({
     maxWorkers: 4,
     execPrograms,
-    rootfsImage: "default",
+    rootfsImage: options.useDefaultRootfs === false ? undefined : "default",
     enableTcpNetwork: options.enableTcpNetwork,
     onStdout: (_pid: number, data: Uint8Array) => {
       stdout += new TextDecoder().decode(data);
@@ -300,7 +306,7 @@ async function runOnMainThread(options: RunProgramOptions): Promise<RunProgramRe
     { maxWorkers: 4, dataBufferSize: 65536, useSharedMemory: true, enableSyscallLog: !!process.env.KERNEL_SYSCALL_LOG },
     io,
     {
-      onFork: async (parentPid, childPid, parentMemory) => {
+      onFork: async (parentPid, childPid, parentMemory, threadFork) => {
         const parentBuf = new Uint8Array(parentMemory.buffer);
         const parentPages = Math.ceil(parentBuf.byteLength / 65536);
         const childLayout = processLayouts.get(parentPid);
@@ -324,7 +330,9 @@ async function runOnMainThread(options: RunProgramOptions): Promise<RunProgramRe
         });
 
         const FORK_BUF_SIZE = FORK_SAVE_BUFFER_SIZE;
-        const forkBufAddr = childChannelOffset - FORK_BUF_SIZE;
+        const forkBufAddr = threadFork
+          ? threadFork.forkBufAddr
+          : childChannelOffset - FORK_BUF_SIZE;
 
         const parentProgram = processProgramBytes.get(parentPid) ?? programBytes;
 
@@ -337,6 +345,8 @@ async function runOnMainThread(options: RunProgramOptions): Promise<RunProgramRe
           channelOffset: childChannelOffset,
           isForkChild: true,
           forkBufAddr,
+          forkChildThreadFnPtr: threadFork?.fnPtr,
+          forkChildThreadArgPtr: threadFork?.argPtr,
           ptrWidth: parentPtrWidth,
         };
 
@@ -344,7 +354,14 @@ async function runOnMainThread(options: RunProgramOptions): Promise<RunProgramRe
         workers.set(childPid, childWorker);
         processProgramBytes.set(childPid, parentProgram);
         processLayouts.set(childPid, childLayout);
-        threadAllocators.set(childPid, threadAllocatorForLayout(childLayout, parentPtrWidth));
+        threadAllocators.set(childPid, threadAllocatorForLayout(
+          childLayout,
+          parentPtrWidth,
+          () => kernelWorker.reserveHostRegion(
+            childPid,
+            PAGES_PER_THREAD * WASM_PAGE_SIZE,
+          ) / WASM_PAGE_SIZE,
+        ));
         processPtrWidths.set(childPid, parentPtrWidth);
         childWorker.on("error", (err: Error) => {
           kernelWorker.unregisterProcess(childPid);
@@ -378,7 +395,14 @@ async function runOnMainThread(options: RunProgramOptions): Promise<RunProgramRe
           memory: newMemory,
           layout: newLayout,
           threadAllocator: newThreadAllocator,
-        } = createFreshProcessMemory(newProgramBytes, newPtrWidth);
+        } = createFreshProcessMemory(
+          newProgramBytes,
+          newPtrWidth,
+          () => kernelWorker.reserveHostRegion(
+            execPid,
+            PAGES_PER_THREAD * WASM_PAGE_SIZE,
+          ) / WASM_PAGE_SIZE,
+        );
         const newChannelOffset = newLayout.channelOffset;
 
         kernelWorker.registerProcess(execPid, newMemory, [newChannelOffset], {
@@ -418,7 +442,7 @@ async function runOnMainThread(options: RunProgramOptions): Promise<RunProgramRe
         if (!threadAllocator) throw new Error(`Unknown thread allocator for pid ${clonePid}`);
         const clonePtrWidth = processPtrWidths.get(clonePid) ?? ptrWidth;
         const alloc = threadAllocator.allocate(memory);
-        kernelWorker.addChannel(clonePid, alloc.channelOffset, tid);
+        kernelWorker.addChannel(clonePid, alloc.channelOffset, tid, fnPtr, argPtr);
 
         const threadInitData: CentralizedThreadInitMessage = {
           type: "centralized_thread_init",
@@ -497,7 +521,14 @@ async function runOnMainThread(options: RunProgramOptions): Promise<RunProgramRe
     memory,
     layout,
     threadAllocator,
-  } = createFreshProcessMemory(programBytes, ptrWidth);
+  } = createFreshProcessMemory(
+    programBytes,
+    ptrWidth,
+    () => kernelWorker.reserveHostRegion(
+      pid,
+      PAGES_PER_THREAD * WASM_PAGE_SIZE,
+    ) / WASM_PAGE_SIZE,
+  );
   const channelOffset = layout.channelOffset;
 
   kernelWorker.registerProcess(pid, memory, [channelOffset], {

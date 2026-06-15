@@ -1,9 +1,8 @@
-//! Process table for centralized kernel mode.
+//! Process table for the kernel.
 //!
-//! In centralized mode (mode=1), a single kernel instance manages multiple
-//! processes. The `ProcessTable` maps PIDs to `Process` structs, allowing
-//! the kernel to service syscalls for any process based on the PID passed
-//! via `kernel_handle_channel`.
+//! A single kernel instance manages all processes. The `ProcessTable` maps
+//! PIDs to `Process` structs, allowing the kernel to service syscalls for
+//! any process based on the PID passed via `kernel_handle_channel`.
 //!
 //! Operations:
 //! - `create_process` — create a new empty process
@@ -18,11 +17,14 @@ use alloc::vec::Vec;
 use core::cell::UnsafeCell;
 use core::sync::atomic::AtomicI32;
 
-use wasm_posix_shared::Errno;
 use wasm_posix_shared::flags::O_ACCMODE;
+use wasm_posix_shared::Errno;
 
 use crate::ofd::FileType;
 use crate::process::{Process, ProcessState};
+
+const INITIAL_FORK_STATE_BUFFER_LEN: usize = 64 * 1024;
+const MAX_FORK_STATE_BUFFER_LEN: usize = 4 * 1024 * 1024;
 
 /// Owning pid of `/dev/fb0`, or `-1` if no process holds it.
 ///
@@ -32,15 +34,15 @@ use crate::process::{Process, ProcessState};
 /// framebuffer region, or exits.
 pub static FB0_OWNER: AtomicI32 = AtomicI32::new(-1);
 
-/// Table of all processes managed by the centralized kernel.
+/// Table of all processes managed by the kernel.
 ///
-/// In centralized mode (mode=1), the kernel manages multiple processes.
 /// Each process is identified by its pid. The `current_pid` field tracks
 /// which process is currently being serviced (set by the JS host before
 /// calling `kernel_handle_channel`).
 pub struct ProcessTable {
     pub(crate) processes: BTreeMap<u32, Process>,
     current_pid: u32,
+    next_spawn_pid: u32,
     /// TID of the thread currently servicing a syscall. 0 means "main thread"
     /// (or unknown — callers that don't set this get main-thread semantics).
     /// The host sets this before each `kernel_handle_channel` when a thread
@@ -214,11 +216,32 @@ fn build_fork_pipe_replay(child: &Process) -> Vec<(i32, i32)> {
     pipe_fd_pairs.into_values().collect()
 }
 
+fn serialize_fork_state_with_growing_buffer(parent: &Process) -> Result<Vec<u8>, Errno> {
+    let mut len = INITIAL_FORK_STATE_BUFFER_LEN;
+
+    loop {
+        let mut buf = Vec::new();
+        buf.resize(len, 0u8);
+
+        match crate::fork::serialize_fork_state(parent, &mut buf) {
+            Ok(written) => {
+                buf.truncate(written);
+                return Ok(buf);
+            }
+            Err(Errno::ENOMEM) if len < MAX_FORK_STATE_BUFFER_LEN => {
+                len = len.saturating_mul(2).min(MAX_FORK_STATE_BUFFER_LEN);
+            }
+            Err(err) => return Err(err),
+        }
+    }
+}
+
 impl ProcessTable {
     pub const fn new() -> Self {
         ProcessTable {
             processes: BTreeMap::new(),
             current_pid: 0,
+            next_spawn_pid: 2,
             current_tid: 0,
         }
     }
@@ -414,6 +437,16 @@ impl ProcessTable {
         let pshared = unsafe { crate::pshared::global_pshared_table() };
         pshared.cleanup_process(pid);
 
+        // Release kernel fallback advisory locks. Host-backed locks are owned
+        // by the host shared lock table; fallback locks for non-host files are
+        // coordinated by the kernel.
+        let fallback_locks = unsafe { crate::lock::global_fallback_lock_table() };
+        fallback_locks.remove_all_for_pid(pid);
+        for (ofd_idx, ofd) in proc.ofd_table.iter() {
+            let ofd_lock_owner = (ofd_idx as u32) | 0x80000000;
+            fallback_locks.remove_for_handle(ofd.host_handle, ofd_lock_owner);
+        }
+
         if retain_limbo_leader && proc.pgid == pid && self.group_has_member(pid) {
             self.processes.insert(pid, Self::limbo_process_from(&proc));
         }
@@ -514,15 +547,13 @@ impl ProcessTable {
         if self.processes.contains_key(&child_pid) {
             return Err(Errno::EEXIST);
         }
-        let parent = self.processes.get(&parent_pid).ok_or(Errno::ESRCH)?;
-
-        // Serialize parent state into a temporary buffer
-        let mut buf = Vec::new();
-        buf.resize(64 * 1024, 0u8); // 64KB should be plenty
-        let written = crate::fork::serialize_fork_state(parent, &mut buf)?;
+        let serialized_parent = {
+            let parent = self.processes.get(&parent_pid).ok_or(Errno::ESRCH)?;
+            serialize_fork_state_with_growing_buffer(parent)?
+        };
 
         // Deserialize as child
-        let mut child = crate::fork::deserialize_fork_state(&buf[..written], child_pid)?;
+        let mut child = crate::fork::deserialize_fork_state(&serialized_parent, child_pid)?;
 
         // Bump cross-process refcounts on inherited fd state (host handles,
         // global pipes, PTYs, socket-pipes). Identical to spawn's needs —
@@ -538,8 +569,7 @@ impl ProcessTable {
 
         // Parent's fork-counter regression guardrail. The non-forking spawn
         // tests assert this stays put across a SYS_SPAWN, proving the new
-        // path doesn't fall back to fork. Re-borrow at the very end because
-        // earlier code held an immutable `&parent`.
+        // path doesn't fall back to fork.
         if let Some(parent) = self.processes.get_mut(&parent_pid) {
             parent.increment_fork_count();
         }
@@ -781,12 +811,18 @@ impl ProcessTable {
         Ok(())
     }
 
-    /// Smallest unused pid >= 2 (pid 1 is reserved for init).
-    fn allocate_spawn_pid(&self) -> u32 {
-        let mut pid = 2u32;
+    /// Next unused spawn pid >= 2 (pid 1 is reserved for init).
+    ///
+    /// Keep this monotonic instead of reusing the smallest recently-reaped pid.
+    /// The JS host can still be asynchronously terminating pthread workers for
+    /// the old process generation after waitpid reaps it; avoiding immediate
+    /// pid reuse prevents stale host cleanup from targeting the new child.
+    fn allocate_spawn_pid(&mut self) -> u32 {
+        let mut pid = self.next_spawn_pid.max(2);
         while self.processes.contains_key(&pid) {
             pid += 1;
         }
+        self.next_spawn_pid = pid.saturating_add(1).max(2);
         pid
     }
 
@@ -907,6 +943,21 @@ mod wait_tests {
     use super::*;
 
     #[test]
+    fn spawn_pid_allocation_does_not_reuse_reaped_pid() {
+        let mut table = ProcessTable::new();
+
+        let first_pid = table.allocate_spawn_pid();
+        table.processes.insert(first_pid, Process::new(first_pid));
+        table.processes.remove(&first_pid);
+
+        let second_pid = table.allocate_spawn_pid();
+        assert!(
+            second_pid > first_pid,
+            "spawn pid allocation must not immediately reuse a reaped pid"
+        );
+    }
+
+    #[test]
     fn reap_retains_group_leader_as_limbo_until_group_empties() {
         let mut table = ProcessTable::new();
         table.create_process(100).unwrap();
@@ -948,14 +999,14 @@ mod wait_tests {
 /// Global process table wrapper for static storage.
 pub struct GlobalProcessTable(pub UnsafeCell<ProcessTable>);
 
-/// SAFETY: Access is serialized — the centralized kernel services one syscall
-/// at a time from the JS event loop (no concurrent Wasm execution).
+/// SAFETY: Access is serialized — the kernel services one syscall at a time
+/// from the JS event loop (no concurrent Wasm execution).
 unsafe impl Sync for GlobalProcessTable {}
 
-/// Single global `ProcessTable` instance used by the centralized kernel.
-/// Lives here (rather than inside `wasm_api.rs`) so other modules can read
-/// the currently-serviced `pid`/`tid` without a back-reference through the
-/// export layer.
+/// Single global `ProcessTable` instance used by the kernel. Lives here
+/// (rather than inside `wasm_api.rs`) so other modules can read the
+/// currently-serviced `pid`/`tid` without a back-reference through the export
+/// layer.
 pub static GLOBAL_PROCESS_TABLE: GlobalProcessTable =
     GlobalProcessTable(UnsafeCell::new(ProcessTable::new()));
 
@@ -986,6 +1037,53 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn fork_process_grows_state_buffer_for_large_parent_state() {
+        const LARGE_FD_COUNT: usize = 80;
+        const LARGE_PATH_LEN: usize = 1024;
+
+        let mut table = ProcessTable::new();
+        table.create_process(100).unwrap();
+
+        let last_fd = {
+            let parent = table.processes.get_mut(&100).unwrap();
+            let mut last_fd = -1;
+
+            for _ in 0..LARGE_FD_COUNT {
+                let path = alloc::vec![b'x'; LARGE_PATH_LEN];
+                let ofd_ref = parent.ofd_table.create(FileType::MemFd, 0, -1, path);
+                last_fd = parent
+                    .fd_table
+                    .alloc(crate::fd::OpenFileDescRef(ofd_ref), 0)
+                    .unwrap();
+            }
+
+            last_fd
+        };
+
+        {
+            let parent = table.processes.get(&100).unwrap();
+            let mut old_limit_buf = alloc::vec![0u8; INITIAL_FORK_STATE_BUFFER_LEN];
+
+            assert_eq!(
+                crate::fork::serialize_fork_state(parent, &mut old_limit_buf),
+                Err(Errno::ENOMEM)
+            );
+        }
+
+        table
+            .fork_process(100, 101)
+            .expect("fork should grow its process-state buffer");
+
+        let child = table.processes.get(&101).unwrap();
+        let child_fd = child.fd_table.get(last_fd).unwrap();
+        let child_ofd = child.ofd_table.get(child_fd.ofd_ref.0).unwrap();
+
+        assert_eq!(child.ppid, 100);
+        assert_eq!(child_ofd.file_type, FileType::MemFd);
+        assert_eq!(child_ofd.path.len(), LARGE_PATH_LEN);
+    }
 
     #[test]
     fn poll_waitable_child_returns_exited_child_status() {
@@ -1052,5 +1150,72 @@ mod tests {
             table.poll_waitable_child(10, -30).unwrap(),
             Some((12, 1 << 8))
         );
+    }
+
+    #[test]
+    fn remove_process_releases_global_fallback_locks() {
+        let _guard = crate::lock::FALLBACK_LOCK_TEST_LOCK.lock().unwrap();
+        unsafe { crate::lock::global_fallback_lock_table().clear() };
+
+        let mut table = ProcessTable::new();
+        table.create_process(20).unwrap();
+        let proc = table.processes.get_mut(&20).unwrap();
+        let host_handle = -900;
+        let ofd_idx = proc.ofd_table.create(
+            FileType::Pipe,
+            wasm_posix_shared::flags::O_RDWR,
+            host_handle,
+            b"/dev/pipe".to_vec(),
+        );
+        proc.fd_table
+            .alloc(crate::fd::OpenFileDescRef(ofd_idx), 0)
+            .unwrap();
+
+        let ofd_owner = (ofd_idx as u32) | 0x80000000;
+        unsafe { crate::lock::global_fallback_lock_table() }.set_lock(
+            host_handle,
+            crate::lock::FileLock {
+                pid: 20,
+                lock_type: wasm_posix_shared::lock_type::F_WRLCK,
+                start: 0,
+                len: 100,
+            },
+        );
+        unsafe { crate::lock::global_fallback_lock_table() }.set_lock(
+            host_handle,
+            crate::lock::FileLock {
+                pid: ofd_owner,
+                lock_type: wasm_posix_shared::lock_type::F_WRLCK,
+                start: 200,
+                len: 100,
+            },
+        );
+
+        table.remove_process(20).expect("process removed");
+
+        let locks = unsafe { crate::lock::global_fallback_lock_table() };
+        assert!(
+            locks
+                .get_blocking_lock(
+                    host_handle,
+                    wasm_posix_shared::lock_type::F_WRLCK,
+                    0,
+                    100,
+                    99
+                )
+                .is_none()
+        );
+        assert!(
+            locks
+                .get_blocking_lock(
+                    host_handle,
+                    wasm_posix_shared::lock_type::F_WRLCK,
+                    200,
+                    100,
+                    99
+                )
+                .is_none()
+        );
+        locks.clear();
     }
 }

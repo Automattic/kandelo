@@ -1,5 +1,5 @@
 /*
- * channel_syscall.c — Channel-based syscall dispatch for centralized kernel.
+ * channel_syscall.c — Channel-based syscall dispatch for the shared kernel.
  *
  * Instead of importing kernel_* functions, this glue writes the syscall
  * number and arguments to a shared-memory channel, notifies the kernel
@@ -55,9 +55,9 @@ unsigned int __wasm_posix_user_abi_version(void) {
  * Exported process-memory declaration.
  *
  * The SDK sets WASM_POSIX_THREAD_SLOT_DECL when it can make an explicit
- * statement about pthread slot reservation. -1 means "use host default",
- * 0 means "reserve no pthread slots", and positive values request exactly
- * that many pthread slots in the process control slab.
+ * statement about the pthread concurrency limit. -1 means "use host
+ * default", 0 means "allow no pthreads", and positive values request
+ * exactly that many concurrent pthreads.
  */
 __attribute__((used))
 __attribute__((retain))
