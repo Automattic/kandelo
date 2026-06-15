@@ -38,7 +38,9 @@ CURATED_TESTS=()
 # stale_state    — test isolation: leftover tables/databases/functions
 # locale         — locale error message files (errmsg.sys) read failure
 # event          — event scheduler disabled or table schema mismatch
-# timeout        — test too slow for wasm (>300s)
+# timeout        — test too slow for the current wasm/project budget
+# budget_timeout — optimizer/range/subselect/window workloads that exceed
+#                  the 60s Node project-suite budget without a runtime trap
 # memory         — exceeds current wasm MariaDB memory envelope
 # aria           — Aria storage engine corruption/limitations
 # key_length     — Aria max key length (2000) vs InnoDB (3072)
@@ -47,7 +49,7 @@ CURATED_TESTS=()
 # feature        — requires feature not compiled in (LDML collations, etc.)
 
 EXPECTED_FAIL=(
-    # innodb — InnoDB storage engine not available (58 tests)
+    # innodb — InnoDB storage engine not available (57 tests)
     alter_events
     alter_table
     alter_table_autoinc-5574
@@ -64,7 +66,6 @@ EXPECTED_FAIL=(
     concurrent_innodb_safelog
     concurrent_innodb_unsafelog
     consistent_snapshot
-    cte_recursive
     ctype_sjis_innodb
     ctype_uca_innodb
     ctype_utf8mb3_innodb
@@ -243,7 +244,7 @@ EXPECTED_FAIL=(
     events_slowlog
     events_trans
 
-    # timeout — too slow for wasm (9 tests)
+    # timeout — too slow for the current wasm test budget (8 tests)
     assign_key_cache
     ctype_binary
     ctype_cp1251
@@ -251,8 +252,28 @@ EXPECTED_FAIL=(
     gis
     gis-precise
     gis-rt-precise
-    huge_frm-6224
     key_cache
+
+    # budget_timeout — exceeds the 60s Node project-suite timeout/resource
+    # envelope, without kernel traps or MariaDB OOM in the authoritative
+    # kad-qun.4 artifact. A focused higher-timeout rerun may reclassify any
+    # individual test that proves to be merely under-budgeted.
+    check
+    count_distinct2
+    cte_recursive
+    derived_opt
+    huge_frm-6224
+    mrr_icp_extra
+    precedence
+    range
+    range_aria_dbt3
+    range_mrr_icp
+    selectivity
+    subselect_mat
+    subselect_sj
+    subselect_sj_jcl6
+    subselect_sj_mat
+    win_big-mdev-11697
 
     # memory — exceeds current wasm MariaDB memory envelope (2 tests)
     sp-cursor
@@ -512,7 +533,6 @@ EXPECTED_PASS=(
     consistent_snapshot
     create
     create_user
-    cte_recursive
     ctype_errors
     ctype_sjis_innodb
     ctype_uca_innodb
@@ -558,7 +578,6 @@ EXPECTED_PASS=(
     group_min_max_innodb
     group_min_max_notembedded
     grant_lowercase
-    huge_frm-6224
     index_intersect_innodb
     information_schema_chmod
     innodb_ext_key

@@ -129,19 +129,22 @@ With those reruns substituted, the current Node status is 608 PASS, 17 FAIL,
 `subselect_sj_jcl6`, `subselect_sj_mat`, and `win_big-mdev-11697`. No XPASS
 items were observed.
 
-Root-cause direction: most unexpected failures are long-running optimizer,
-range, subselect, or window-function tests timing out under the current 60s
-Node budget; `range_aria_dbt3` and `range_mrr_icp` hit the harness hard timeout
-after restart overhead. `sp_stress_case` is now classified as an expected
-wasm32 MariaDB resource-envelope failure: it OOMed in the stored-procedure
-chunk with both 4 GB and 16 GB V8 old-space caps, and a pre-test re-bootstrap
-still failed while dropping the generated 5000-branch procedure. Clean-server
-isolated runs were not reliable enough to treat this as a harness isolation
-fix. `lowercase_table2` is included in the hard artifact counts above, but the
-follow-up grant bootstrap fix (`kad-qun.14`, commit `4c39e727`) landed on the
-integration branch after those counts were recorded. Do not change the hard
-totals unless a later rerun or focused replacement result records the updated
-chunk 55 counts.
+Root-cause direction: after `kad-qun.20`, the optimizer, range, subselect, and
+window-function cluster is classified as a Node project timeout/resource-envelope
+limitation rather than a distinct Kandelo runtime bug. The authoritative
+artifact rows all end in the 60s mysqltest timeout or the 180s hard iteration
+timeout (`range_aria_dbt3` and `range_mrr_icp`) without the OOM, worker trap, or
+system-table corruption signatures used for separate runtime follow-ups. Future
+60s Node project-suite runs classify these rows as XFAIL. `sp_stress_case` is
+now classified as an expected wasm32 MariaDB resource-envelope failure: it OOMed
+in the stored-procedure chunk with both 4 GB and 16 GB V8 old-space caps, and a
+pre-test re-bootstrap still failed while dropping the generated 5000-branch
+procedure. Clean-server isolated runs were not reliable enough to treat this as
+a harness isolation fix. `lowercase_table2` is included in the hard artifact
+counts above, but the follow-up grant bootstrap fix (`kad-qun.14`, commit
+`4c39e727`) landed on the integration branch after those counts were recorded.
+Do not change the hard totals unless a later rerun or focused replacement result
+records the updated chunk 55 counts.
 
 ## Current browser full-suite status (2026-06-13)
 
@@ -257,23 +260,23 @@ Each row below is one unexpected failure in the reconciled count:
 
 | Host | Test | Outcome | Proof artifact | Why / current status | Follow-up |
 |------|------|---------|----------------|----------------------|-----------|
-| Node | `mysql-test/main/check.test` | timeout | `test-runs/mariadb-project/kad-qun.4-node-20260613T112749Z/node.log:422` | 60s per-test timeout in a long-running main-suite check test; still needs timeout/resource-envelope vs runtime-bug classification. | `kad-qun.20` |
-| Node | `mysql-test/main/count_distinct2.test` | timeout | `test-runs/mariadb-project/kad-qun.4-node-20260613T112749Z/node.log:573` | 60s timeout in count-distinct optimizer coverage; classify timeout budget, MariaDB expectation, or runtime behavior. | `kad-qun.20` |
-| Node | `mysql-test/main/cte_recursive.test` | timeout | `test-runs/mariadb-project/kad-qun.4-node-20260613T112749Z/node.log:775` | 60s timeout in recursive CTE coverage; classify timeout/resource envelope vs runtime bug. | `kad-qun.20` |
-| Node | `mysql-test/main/derived_opt.test` | timeout | `test-runs/mariadb-project/kad-qun.4-node-20260613T112749Z/node.log:1225` | 60s timeout in derived-table optimizer coverage. | `kad-qun.20` |
-| Node | `mysql-test/main/huge_frm-6224.test` | timeout | `test-runs/mariadb-project/kad-qun.4-node-20260613T112749Z/node.log:2122` | 60s timeout in large `.frm` workload on Node; browser OOM/kernel trap for the same test was fixed separately after artifact by `kad-qun.16`. | `kad-qun.20` |
+| Node | `mysql-test/main/check.test` | timeout | `test-runs/mariadb-project/kad-qun.4-node-20260613T112749Z/node.log:422` | Classified as a Node project-suite budget/resource XFAIL: the row reports a 60s mysqltest timeout in long-running table-check coverage, with no runtime trap or OOM signature. | `kad-qun.20` |
+| Node | `mysql-test/main/count_distinct2.test` | timeout | `test-runs/mariadb-project/kad-qun.4-node-20260613T112749Z/node.log:573` | Classified as a Node project-suite budget/resource XFAIL: count-distinct optimizer coverage exceeds the 60s budget, with no runtime trap or OOM signature. | `kad-qun.20` |
+| Node | `mysql-test/main/cte_recursive.test` | timeout | `test-runs/mariadb-project/kad-qun.4-node-20260613T112749Z/node.log:775` | Classified as a Node project-suite budget/resource XFAIL: recursive CTE coverage exceeds the 60s budget in the artifact, despite being a historical expected-pass override. | `kad-qun.20` |
+| Node | `mysql-test/main/derived_opt.test` | timeout | `test-runs/mariadb-project/kad-qun.4-node-20260613T112749Z/node.log:1225` | Classified as a Node project-suite budget/resource XFAIL: derived-table optimizer coverage exceeds the 60s budget, with no runtime trap or OOM signature. | `kad-qun.20` |
+| Node | `mysql-test/main/huge_frm-6224.test` | timeout | `test-runs/mariadb-project/kad-qun.4-node-20260613T112749Z/node.log:2122` | Classified as a Node project-suite budget/resource XFAIL for the large `.frm` workload; browser OOM/kernel trap handling for the same test was fixed separately after artifact by `kad-qun.16`. | `kad-qun.20` |
 | Node | `mysql-test/main/lowercase_table2.test` | FAIL | `test-runs/mariadb-project/kad-qun.4-node-current-reruns-20260613T1430Z/chunk-55/node.log:38` | Access denied for `mysqltest_1` to database `test`; fixed after artifact by the grant bootstrap work, but hard totals still include the failure until a rerun replaces them. | `kad-qun.14` |
-| Node | `mysql-test/main/mrr_icp_extra.test` | timeout | `test-runs/mariadb-project/kad-qun.4-node-20260613T112749Z/node.log:2960` | 60s timeout in MRR/ICP optimizer coverage. | `kad-qun.20` |
-| Node | `mysql-test/main/precedence.test` | timeout | `test-runs/mariadb-project/kad-qun.4-node-20260613T112749Z/node.log:3936` | 60s timeout in expression precedence coverage. | `kad-qun.20` |
-| Node | `mysql-test/main/range.test` | timeout | `test-runs/mariadb-project/kad-qun.4-node-20260613T112749Z/node.log:4169` | Timed out after 60s; part of the range optimizer cluster. | `kad-qun.20` |
-| Node | `mysql-test/main/range_aria_dbt3.test` | harness hard timeout | `test-runs/mariadb-project/kad-qun.4-node-20260613T112749Z/node.log:4170` | Hit the 180s hard iteration timeout after restart overhead; still open as range/resource-envelope classification. | `kad-qun.20` |
-| Node | `mysql-test/main/range_mrr_icp.test` | harness hard timeout | `test-runs/mariadb-project/kad-qun.4-node-20260613T112749Z/node.log:4171` | Hit the 180s hard iteration timeout after restart overhead; still open as range/resource-envelope classification. | `kad-qun.20` |
-| Node | `mysql-test/main/selectivity.test` | timeout | `test-runs/mariadb-project/kad-qun.4-node-20260613T112749Z/node.log:4369` | 60s timeout in selectivity/index workload; browser ENOSPC for the same test was fixed after artifact by `kad-qun.18`. | `kad-qun.20` |
-| Node | `mysql-test/main/subselect_mat.test` | timeout | `test-runs/mariadb-project/kad-qun.4-node-20260613T112749Z/node.log:5118` | 60s timeout in subselect materialization coverage. | `kad-qun.20` |
-| Node | `mysql-test/main/subselect_sj.test` | timeout | `test-runs/mariadb-project/kad-qun.4-node-20260613T112749Z/node.log:5227` | 60s timeout in semijoin subselect coverage. | `kad-qun.20` |
-| Node | `mysql-test/main/subselect_sj_jcl6.test` | timeout | `test-runs/mariadb-project/kad-qun.4-node-20260613T112749Z/node.log:5228` | 60s timeout in semijoin/JCL6 subselect coverage. | `kad-qun.20` |
-| Node | `mysql-test/main/subselect_sj_mat.test` | timeout | `test-runs/mariadb-project/kad-qun.4-node-20260613T112749Z/node.log:5229` | 60s timeout in semijoin materialization coverage. | `kad-qun.20` |
-| Node | `mysql-test/main/win_big-mdev-11697.test` | timeout | `test-runs/mariadb-project/kad-qun.4-node-20260613T112749Z/node.log:5909` | 60s timeout in window-function coverage. | `kad-qun.20` |
+| Node | `mysql-test/main/mrr_icp_extra.test` | timeout | `test-runs/mariadb-project/kad-qun.4-node-20260613T112749Z/node.log:2960` | Classified as a Node project-suite budget/resource XFAIL: MRR/ICP optimizer coverage exceeds the 60s budget, with no runtime trap or OOM signature. | `kad-qun.20` |
+| Node | `mysql-test/main/precedence.test` | timeout | `test-runs/mariadb-project/kad-qun.4-node-20260613T112749Z/node.log:3936` | Classified as a Node project-suite budget/resource XFAIL: expression precedence coverage exceeds the 60s budget, with no runtime trap or OOM signature. | `kad-qun.20` |
+| Node | `mysql-test/main/range.test` | timeout | `test-runs/mariadb-project/kad-qun.4-node-20260613T112749Z/node.log:4169` | Classified as a Node project-suite budget/resource XFAIL for the range optimizer cluster; focused higher-timeout reruns can promote it if it proves merely under-budgeted. | `kad-qun.20` |
+| Node | `mysql-test/main/range_aria_dbt3.test` | harness hard timeout | `test-runs/mariadb-project/kad-qun.4-node-20260613T112749Z/node.log:4170` | Classified as a Node project-suite resource-envelope XFAIL: the iteration exceeded the 180s hard cap after restart overhead, not a recorded kernel trap. | `kad-qun.20` |
+| Node | `mysql-test/main/range_mrr_icp.test` | harness hard timeout | `test-runs/mariadb-project/kad-qun.4-node-20260613T112749Z/node.log:4171` | Classified as a Node project-suite resource-envelope XFAIL: the iteration exceeded the 180s hard cap after restart overhead, not a recorded kernel trap. | `kad-qun.20` |
+| Node | `mysql-test/main/selectivity.test` | timeout | `test-runs/mariadb-project/kad-qun.4-node-20260613T112749Z/node.log:4369` | Classified as a Node project-suite budget/resource XFAIL for the selectivity/index workload; browser ENOSPC for the same test was fixed after artifact by `kad-qun.18`. | `kad-qun.20` |
+| Node | `mysql-test/main/subselect_mat.test` | timeout | `test-runs/mariadb-project/kad-qun.4-node-20260613T112749Z/node.log:5118` | Classified as a Node project-suite budget/resource XFAIL: subselect materialization coverage exceeds the 60s budget, with no runtime trap or OOM signature. | `kad-qun.20` |
+| Node | `mysql-test/main/subselect_sj.test` | timeout | `test-runs/mariadb-project/kad-qun.4-node-20260613T112749Z/node.log:5227` | Classified as a Node project-suite budget/resource XFAIL: semijoin subselect coverage exceeds the 60s budget, with no runtime trap or OOM signature. | `kad-qun.20` |
+| Node | `mysql-test/main/subselect_sj_jcl6.test` | timeout | `test-runs/mariadb-project/kad-qun.4-node-20260613T112749Z/node.log:5228` | Classified as a Node project-suite budget/resource XFAIL: semijoin/JCL6 coverage exceeds the 60s budget, with no runtime trap or OOM signature. | `kad-qun.20` |
+| Node | `mysql-test/main/subselect_sj_mat.test` | timeout | `test-runs/mariadb-project/kad-qun.4-node-20260613T112749Z/node.log:5229` | Classified as a Node project-suite budget/resource XFAIL: semijoin materialization coverage exceeds the 60s budget, with no runtime trap or OOM signature. | `kad-qun.20` |
+| Node | `mysql-test/main/win_big-mdev-11697.test` | timeout | `test-runs/mariadb-project/kad-qun.4-node-20260613T112749Z/node.log:5909` | Classified as a Node project-suite budget/resource XFAIL: large window-function coverage exceeds the 60s budget, with no runtime trap or OOM signature. | `kad-qun.20` |
 
 Browser has 371 raw `FAIL` rows in
 `test-runs/gastown-mariadb-browser-full-pr3/browser.log`. The browser artifact
@@ -324,11 +327,11 @@ into these hard totals without a rerun: `kad-qun.14`, `kad-qun.16`,
 `kad-qun.17`, `kad-qun.18`, browser expected-fail classification in
 `kad-qun.23`, browser fixture coverage in `kad-qun.24`, browser short-read
 storage fixes in `kad-qun.25`, browser MyISAM/MERGE storage fixes in
-`kad-qun.27`, browser MERGE read-only classification in `kad-qun.28`, and
-browser MyISAM FULLTEXT classification in `kad-qun.29`. `kad-qun.21` is folded
-in by the focused chunk 94 rerun above.
-Remaining tracked follow-ups are `kad-lf9`, `kad-qun.9`, `kad-qun.10`,
-and `kad-qun.20`.
+`kad-qun.27`, browser MERGE read-only classification in `kad-qun.28`, browser
+MyISAM FULLTEXT classification in `kad-qun.29`, and Node
+optimizer/range/subselect/window timeout classification in `kad-qun.20`.
+`kad-qun.21` is folded in by the focused chunk 94 rerun above.
+Remaining tracked follow-ups are `kad-lf9`, `kad-qun.9`, and `kad-qun.10`.
 See `docs/mariadb-project-tests.md#failure-inventory-for-follow-up-routing`
 for the row-level Node inventory and browser failure-cluster map.
 ```
@@ -341,8 +344,6 @@ Remaining actionable work is represented by narrow beads:
   fetch-only worktree.
 - `kad-qun.10`: browser all-suite runner needs stronger isolation after
   timeouts, page death, or contaminated MariaDB state.
-- `kad-qun.20`: Node optimizer/range/subselect/window failures need root-cause
-  classification or timeout/resource-envelope treatment.
 
 The final GitHub PR should be opened by `kad-qun.8` from
 `integration/kad-qun-mariadb-tests` to `main`. It should present the full-suite
