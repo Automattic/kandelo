@@ -137,29 +137,59 @@ source tree pinned by the SpiderMonkey package manifest. The browser VFS builder
 uses the same source tree so absolute upstream test paths stay valid inside the
 guest filesystem.
 
-## Exhaustive Node jstests Result
+## Exhaustive Suite Status
 
-The `kad-165.4` Node host run of Mozilla's upstream `js/src/tests` jstest
-inventory is preserved under:
+The SpiderMonkey epic treats `jstests` as the supported official-suite signal.
+Official SpiderMonkey `jit-tests` are skipped for the epic because Kandelo's
+wasm32 SpiderMonkey package is built with `ac_add_options --disable-jit`, and
+the package README lists JIT and nested WebAssembly support outside current
+scope. The preserved jit-test attempts remain useful exploratory evidence, but
+they are not product pass/fail gates unless JIT support becomes a product goal.
+
+The authoritative Node `jstests` inventory is the merged latest row per chunk
+from the `kad-165.4` result segments under:
 
 ```text
 /Users/brandon/gt/kandelo/polecats/toast/kandelo/test-results/spidermonkey-official/
 ```
 
-Selecting the latest valid row for each chunk across the preserved run and
-resume segments gives 738 chunks, 50,503 passes, 1,932 known skips, and 237
-unexpected results. The superseded `resume9` bridge-state corruption tail is
-not part of those totals; `resume10-restart` superseded that tail with zero
-unexpected results for the restarted class-statement range.
+The corrupted `resume9` bridge-state tail is superseded by
+`kad-165.4-node-jstests-20260614T060645Z-resume10-restart`, which reran from
+`test262/language/statements/class/elements/_files#part-0002` through the end.
+Final selected totals are 738 chunks, 50,503 passes, 1,932 known skips, and 237
+unexpected results across 66 chunks. No selected latest log contains the
+superseded `RuntimeError: memory access out of bounds` cascade from `resume9`.
 
-The 237 unexpected results are classified as:
+The authoritative browser `jstests` outcome is `kad-165.7`: the full browser
+tail completed with four browser-only staging outliers, then those four were
+classified as browser known skips and rerun cleanly in
+`kad-165.7-browser-jstests-tail-skipfix-20260614T192700Z` with status sum 0,
+464 passes, 49 known skips, and 0 unexpected. Earlier browser BigInt Atomics
+failures are covered by `kad-165.12`; the final browser residual failure count
+for the supported `jstests` scope is 0.
 
-| Count | Classification | Tracking |
-| ---: | --- | --- |
-| 61 | wasm32 BigInt Atomics platform limitation: 60 `MOZ_CRASH("No 64-bit atomics")` rows plus the deterministic `test262/built-ins/Atomics/waitAsync/bigint/good-views.js` timeout | `kad-165.18` |
-| 16 | SpiderMonkey mozglue timezone/env interposer crashes in Node Date/Intl tests | `kad-crh` |
-| 2 | recursion stress tests that trip the Node kernel worker call stack | `kad-165.20` |
-| 158 | non-Atomics timeout/resource-envelope rows, split below | `kad-165.19` |
+### Failure Inventory
+
+| Count | Scope | Classification | Routed bead |
+| ---: | --- | --- | --- |
+| 158 | Node `jstests` non-Atomics timeouts | Host/runtime resource or timeout-budget cluster requiring narrower focused reruns. The full timeout set is tracked under `kad-165.19` and post-processed by the runner's exact-match resource envelope layer; the one Atomics timeout is counted with the Atomics row below. | `kad-165.19` |
+| 61 | Node `test262/built-ins/Atomics/*/bigint` | wasm32 platform limitation: SpiderMonkey traps with `MOZ_CRASH(No 64-bit atomics)` for 60 tests and times out in `waitAsync/bigint/good-views.js`. Browser BigInt Atomics were already known-skipped by `kad-165.12`. | `kad-165.18`, `kad-165.12` |
+| 16 | Node timezone/env jstests | SpiderMonkey package/runtime bug in Mozilla's `setenv`/`unsetenv` interposer path: 15 `non262/Date` tests plus `non262/Intl/DateTimeFormat/tz-environment-variable.js`. | `kad-crh` |
+| 2 | Node recursion-stress jstests | Kernel/host stack-resource failure: `non262/extensions/array-isArray-proxy-recursion.js` and `non262/regress/regress-311629.js` report `Kernel worker failed: Maximum call stack size exceeded`. | `kad-165.20`, related `kad-6wx` |
+
+Browser-only failures discovered during the full run were either fixed in the
+harness or explicitly classified before the clean tail rerun:
+
+- `test262/built-ins/Atomics/*/bigint`: known-skip for missing wasm32 64-bit
+  atomics (`kad-165.12`).
+- `non262/Promise/any-stack-overflow.js`: browser process-worker stack/resource
+  tracker (`kad-6wx`).
+- `non262/Intl/default-locale-shell.js`: browser default locale mismatch
+  tracker (`kad-2tp`).
+- `test262/staging/sm/expressions/{destructuring-pattern-parenthesized,
+  optional-chain-super-elem,optional-chain-tdz}.js` and
+  `test262/staging/sm/extensions/recursion.js`: browser known skips added by
+  `kad-165.7` before the final clean tail rerun.
 
 ### Node jstest Timeout Classification
 
@@ -233,7 +263,7 @@ unexpected. The deterministic rows above should be tracked as explicit
 SpiderMonkey resource/stress expected failures unless a later platform change
 makes them pass under the supported timeout budget.
 
-## Exhaustive Node jit-tests Result
+## Exploratory Node jit-tests Artifact
 
 The `kad-165.5` Node host run of the upstream `js/src/jit-test/tests` inventory
 is preserved under `test-runs/spidermonkey-official-node-jit-kad-165.5/`. It
@@ -248,7 +278,9 @@ results across 70 chunks. The dominant unexpected classes were 45,173
 `RuntimeError: memory access out of bounds` results, 174
 `MOZ_CRASH(No 64-bit atomics)` results, 34 timeouts, and 5 pthread slot-limit
 exhaustions. See the artifact README for the exact resume commands and largest
-failure chunks.
+failure chunks. Because the current package disables JIT, these results are
+classified as skipped/out of scope for the SpiderMonkey epic rather than routed
+as kernel/runtime failures.
 
 ## Current Limitations
 
