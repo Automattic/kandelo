@@ -2887,17 +2887,16 @@ pub fn sys_write(
                     ofd.offset = end;
                 }
             }
-            // RLIMIT_FSIZE: check if write would exceed file size limit
-            let fsize_limit = proc.rlimits[1][0]; // RLIMIT_FSIZE soft limit
-            if fsize_limit != u64::MAX {
+            // RLIMIT_FSIZE applies to regular-file growth, not stdout/stderr
+            // pipes, terminals, sockets, or character devices.
+            let writable_len = if file_type == FileType::Regular {
                 let current_offset = proc.ofd_table.get(ofd_idx).map_or(0, |o| o.offset);
-                let end_pos = current_offset as u64 + buf.len() as u64;
-                if end_pos > fsize_limit {
-                    proc.signals.raise(wasm_posix_shared::signal::SIGXFSZ);
-                    return Err(Errno::EFBIG);
-                }
-            }
-            let n = host.host_write(host_handle, buf)?;
+                let current_offset = current_offset.max(0) as u64;
+                fsize_limited_write_len(proc, current_offset, buf.len())?
+            } else {
+                buf.len()
+            };
+            let n = host.host_write(host_handle, &buf[..writable_len])?;
             if let Some(ofd) = proc.ofd_table.get_mut(ofd_idx) {
                 ofd.offset += n as i64;
             }
@@ -3157,6 +3156,30 @@ pub fn sys_pread(
     Ok(n)
 }
 
+/// Apply POSIX RLIMIT_FSIZE semantics to a regular-file write.
+///
+/// A write that starts before the soft file-size limit may complete partially
+/// up to the limit. Only a write with no byte available at the current offset
+/// fails with EFBIG and raises SIGXFSZ.
+fn fsize_limited_write_len(
+    proc: &mut Process,
+    offset: u64,
+    requested_len: usize,
+) -> Result<usize, Errno> {
+    if requested_len == 0 {
+        return Ok(0);
+    }
+    let fsize_limit = proc.rlimits[1][0]; // RLIMIT_FSIZE soft limit
+    if fsize_limit == u64::MAX {
+        return Ok(requested_len);
+    }
+    if offset >= fsize_limit {
+        proc.signals.raise(wasm_posix_shared::signal::SIGXFSZ);
+        return Err(Errno::EFBIG);
+    }
+    Ok(requested_len.min((fsize_limit - offset) as usize))
+}
+
 /// Write to a file descriptor at a given offset without modifying the file position.
 pub fn sys_pwrite(
     proc: &mut Process,
@@ -3192,10 +3215,16 @@ pub fn sys_pwrite(
     }
 
     let host_handle = ofd.host_handle;
+    let file_type = ofd.file_type;
+    let writable_len = if file_type == FileType::Regular {
+        fsize_limited_write_len(proc, offset as u64, buf.len())?
+    } else {
+        buf.len()
+    };
     let saved_offset = ofd.offset;
 
     host.host_seek(host_handle, offset, SEEK_SET)?;
-    let n = host.host_write(host_handle, buf)?;
+    let n = host.host_write(host_handle, &buf[..writable_len])?;
     host.host_seek(host_handle, saved_offset, SEEK_SET)?;
 
     Ok(n)
@@ -15963,12 +15992,59 @@ mod tests {
         let result = sys_write(&mut proc, &mut host, fd, &[1, 2, 3, 4, 5]);
         assert!(result.is_ok());
 
-        // Writing 10 more bytes should fail (end_pos=15 > 10) with EFBIG
+        // Writing 10 more bytes should short-write exactly up to the limit.
         let result = sys_write(&mut proc, &mut host, fd, &[0u8; 10]);
+        assert_eq!(result, Ok(5));
+
+        // No SIGXFSZ is generated for a partial write that made progress.
+        assert_eq!(proc.signals.deliverable(), 0);
+
+        // Once the offset is at the limit, no byte can be written; fail with
+        // EFBIG and raise SIGXFSZ.
+        let result = sys_write(&mut proc, &mut host, fd, &[0u8; 1]);
         assert_eq!(result, Err(Errno::EFBIG));
 
         // SIGXFSZ should have been raised
         assert_ne!(proc.signals.deliverable(), 0);
+    }
+
+    #[test]
+    fn test_pwrite_rlimit_fsize_short_write_then_efbig() {
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        let fd = sys_open(
+            &mut proc,
+            &mut host,
+            b"/tmp/fsize_pwrite_test",
+            O_WRONLY | O_CREAT,
+            0o644,
+        )
+        .unwrap();
+
+        sys_setrlimit(&mut proc, 1, 10, 10).unwrap(); // RLIMIT_FSIZE
+
+        assert_eq!(
+            sys_pwrite(&mut proc, &mut host, fd, b"abcdefghij", 5),
+            Ok(5)
+        );
+        assert_eq!(proc.signals.deliverable(), 0);
+
+        assert_eq!(
+            sys_pwrite(&mut proc, &mut host, fd, b"x", 10),
+            Err(Errno::EFBIG)
+        );
+        assert_ne!(proc.signals.deliverable(), 0);
+    }
+
+    #[test]
+    fn test_rlimit_fsize_does_not_limit_stdout_char_device() {
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+
+        sys_setrlimit(&mut proc, 1, 1, 1).unwrap(); // RLIMIT_FSIZE
+
+        assert_eq!(sys_write(&mut proc, &mut host, 1, b"abc"), Ok(3));
+        assert_eq!(proc.signals.deliverable(), 0);
     }
 
     #[test]
