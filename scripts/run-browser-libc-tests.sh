@@ -24,8 +24,6 @@ MATH_EXPECTED_FAIL=(acosh asinh erfc j0 jn jnf lgamma lgammaf lgammaf_r sinh tga
 
 FUNCTIONAL_EXPECTED_FAIL=(
     pthread_cancel
-    # fcntl: passes in browser (SIGABRT handling differs)
-    fcntl_debug
     tls_init
     popen
     spawn

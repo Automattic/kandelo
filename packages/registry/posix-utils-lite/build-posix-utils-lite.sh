@@ -13,7 +13,7 @@ SYSROOT="$REPO_ROOT/sysroot"
 UTILITIES=(
   ar asa cal cflow compress ctags cxref ed ex fuser gencat getconf gettext
   iconv ipcrm ipcs lex locale logger man more msgfmt ngettext nm patch pax
-  ps renice strings strip tabs tput uncompress uudecode uuencode what xgettext
+  ps renice strings strip uncompress uudecode uuencode what xgettext
   yacc
 )
 

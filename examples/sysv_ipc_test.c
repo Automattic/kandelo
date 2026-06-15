@@ -1,6 +1,6 @@
 /**
  * Test SysV IPC message queues, semaphores, and shared memory.
- * Single-process test to verify the IPC table is wired up.
+ * Basic smoke test to verify the IPC table is wired up.
  */
 #include <stdio.h>
 #include <string.h>

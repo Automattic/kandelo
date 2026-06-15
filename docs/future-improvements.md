@@ -65,46 +65,37 @@ Any follow-up should:
 
 ## Kernel — regressions
 
-### Multi-process nginx: injected connections don't reach fork workers
-The standalone nginx demo previously worked with `master_process on;
-worker_processes 2;` (kernel's listener-sharing-via-fork path delivered
-the injected TCP connection to a worker). That path appears to have
-regressed: with the same config, nginx accepts the connection
-(`sawWriteOpen=true` from the bridge) but never produces a response
-and the bridge times out after 60s. The standalone demo has been
-switched to single-process for now; LAMP/WordPress/nginx-php were
-already single-process and aren't affected.
-
-The bug is likely in either: (a) connection-injection target selection
-when the listener fd is shared across pids via `dup`-on-fork, or (b)
-nginx's worker not seeing the accepted connection in its event loop
-because the wakeup is delivered to the master.
-
-**Files:** `crates/kernel/src/socket.rs` (TCP listener accept queue),
-`host/src/browser-kernel-worker-entry.ts` (`handleHttpRequest` —
-how it picks a target listening pid).
-
 ### wasm64 musl: missing `__NR_pselect6_time64` alias forces select() through SYS_select
 `libc/musl-overlay/arch/wasm32posix/bits/syscall.h.in:109` defines `__NR_pselect6_time64 = __NR_pselect6`, so musl's `select.c` routes wasm32 through SYS_pselect6 (252). The wasm64 overlay omits that alias; musl falls through to `#ifdef SYS_select` and uses **SYS_select (103)** instead. The host gained a SYS_SELECT timeout-aware handler (kernel-worker.ts `handleSelect`) so this works correctly today, but as defense-in-depth the wasm64 overlay should mirror wasm32 — fewer code paths, single canonical entry point. Doing this requires rebuilding the cached wasm64 binaries (the libc.a baked into them changes), so it's a coordinated rebuild task.
 
 **Files:** `libc/musl-overlay/arch/wasm64posix/bits/syscall.h.in`
 
 ### Audit other PR #383 callers that may have missed the `GLOBAL_PIPE_PID` migration
-PR #383 (`fix(kernel): share AF_INET accept queue across fork — nginx multi-worker`, May 2026) moved injected-connection pipes to the kernel's GLOBAL pipe table. `kernel_pipe_{read,write,close_*,is_*_open}` now treat `pid == 0` as a sentinel meaning "use the global pipe table". The HTTP bridge in `host/src/browser-kernel-worker-entry.ts` and `NodeKernelHost` were updated; `apps/browser-demos/lib/mysql-client.ts` and `apps/browser-demos/lib/redis-client.ts` were missed and have since been fixed. **Audit any other call site that does `kernel.injectConnection(...)` and then `kernel.pipeRead/pipeWrite` with a non-zero pid** — they're broken in the same way (silent EBADF; greeting bytes never reach the browser-side reader). Currently visible: only the two demo clients that have already been fixed, but a future demo that reuses the inject-and-read pattern needs to know about the convention.
+PR #383 (`fix(kernel): share AF_INET accept queue across fork — nginx multi-worker`, May 2026) moved injected-connection pipes to the kernel's GLOBAL pipe table. `kernel_pipe_{read,write,close_*,is_*_open}` now treat `pid == 0` as a sentinel meaning "use the global pipe table". The HTTP bridge in `host/src/browser-kernel-worker-entry.ts` and `NodeKernelHost` were updated; `apps/browser-demos/lib/mysql-client.ts`, `apps/browser-demos/lib/redis-client.ts`, and the legacy `apps/browser-demos/lib/connection-pump.ts` helper have since been fixed. **Audit any future call site that does `kernel.injectConnection(...)` and then `kernel.pipeRead/pipeWrite` with a non-zero pid** — it will be broken in the same way (silent EBADF; bytes never reach the accepted worker).
 
 **Files:** `apps/browser-demos/lib/*-client.ts`, anything calling `BrowserKernel.injectConnection`. Convention: store `this.pid = 0` (or import `GLOBAL_PIPE_PID = 0`) for all pipe ops on injected pipes.
 
 ## Host runtime
 
-### Runtime tuning for default pthread slot reservation
+### Runtime tuning for the default pthread limit
 Kernel worker creation currently accepts `defaultThreadSlots`, and processes
 that declare `__wasm_posix_thread_slots = -1` use that boot-time default.
 The next step is a runtime control surface, likely under `/sys` or `/proc`,
-so an integration can tune the host default without rebuilding the SDK output
-or recreating the worker.
+so an integration can tune the host default pthread concurrency limit without
+rebuilding the SDK output or recreating the worker.
 
 **Files:** `host/src/browser-kernel-worker-entry.ts`,
 `host/src/node-kernel-worker-entry.ts`, `host/src/process-memory.ts`
+
+### Move pthread control channels to a separate Wasm control memory
+WebAssembly multi-memory can eventually split guest process memory from
+host/kernel communication memory. That would let pthread syscall channels,
+spill buffers, and fork-save scratch storage grow in a separate per-process
+control memory instead of being statically reserved in the guest process memory
+prefix. Safari/iOS Safari support is not sufficient for this to be the only
+browser ABI yet, so this remains future work with a single-memory fallback.
+
+**Plan:** `docs/plans/2026-06-04-pthread-control-memory-multimemory-plan.md`
 
 ### Use a tracked dlopen memory arena instead of one mmap per side module
 `host/src/worker-main.ts` currently allocates each dlopen side module's

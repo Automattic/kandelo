@@ -5,6 +5,18 @@ import { join } from "node:path";
 import { VirtualPlatformIO } from "../src/vfs/vfs";
 import { HostFileSystem } from "../src/vfs/host-fs";
 import { MemoryFileSystem } from "../src/vfs/memory-fs";
+import {
+  BLOCK_SIZE,
+  EMFILE,
+  FD_ENTRY_SIZE,
+  FD_TABLE_OFFSET,
+  MAX_FDS,
+  O_CREAT,
+  O_RDONLY,
+  O_RDWR,
+  O_TRUNC,
+  SFSError,
+} from "../src/vfs/sharedfs-vendor";
 import { NodeTimeProvider } from "../src/vfs/time";
 import type { FileSystemBackend, MountConfig } from "../src/vfs/types";
 import type { StatResult, StatfsResult } from "../src/types";
@@ -374,6 +386,63 @@ describe("MemoryFileSystem", () => {
     mfs.close(fd);
   });
 
+  it("opens more than the old 64-descriptor SharedFS table limit", () => {
+    expect(MAX_FDS).toBe(
+      Math.floor((BLOCK_SIZE - FD_TABLE_OFFSET) / FD_ENTRY_SIZE),
+    );
+    expect(MAX_FDS).toBeGreaterThan(64);
+
+    const sab = new SharedArrayBuffer(4 * 1024 * 1024);
+    const mfs = MemoryFileSystem.create(sab);
+    const createFd = mfs.open(
+      "/many-fds.txt",
+      O_CREAT | O_RDWR | O_TRUNC,
+      0o644,
+    );
+    mfs.close(createFd);
+
+    const fds: number[] = [];
+    try {
+      for (let i = 0; i < 65; i++) {
+        fds.push(mfs.open("/many-fds.txt", O_RDONLY, 0o644));
+      }
+      expect(new Set(fds).size).toBe(65);
+      expect(Math.max(...fds)).toBeGreaterThanOrEqual(64);
+    } finally {
+      for (const fd of fds) mfs.close(fd);
+    }
+  });
+
+  it("throws EMFILE when the derived SharedFS fd table is full", () => {
+    expect(MAX_FDS).toBeLessThanOrEqual(160);
+
+    const sab = new SharedArrayBuffer(4 * 1024 * 1024);
+    const mfs = MemoryFileSystem.create(sab);
+    const createFd = mfs.open(
+      "/fd-limit.txt",
+      O_CREAT | O_RDWR | O_TRUNC,
+      0o644,
+    );
+    mfs.close(createFd);
+
+    const fds: number[] = [];
+    let error: unknown;
+    try {
+      for (let i = 0; i < MAX_FDS; i++) {
+        fds.push(mfs.open("/fd-limit.txt", O_RDONLY, 0o644));
+      }
+      const unexpectedFd = mfs.open("/fd-limit.txt", O_RDONLY, 0o644);
+      fds.push(unexpectedFd);
+    } catch (err) {
+      error = err;
+    } finally {
+      for (const fd of fds) mfs.close(fd);
+    }
+
+    expect(error).toBeInstanceOf(SFSError);
+    expect((error as SFSError).code).toBe(EMFILE);
+  });
+
   it("creates and lists directories", () => {
     const sab = new SharedArrayBuffer(4 * 1024 * 1024);
     const mfs = MemoryFileSystem.create(sab);
@@ -446,6 +515,42 @@ describe("MemoryFileSystem", () => {
     expect(after.blocks).toBe(before.blocks);
     expect(after.bfree).toBeLessThan(before.bfree);
     expect(after.bavail).toBe(after.bfree);
+  });
+
+  it("statfs reports effective max capacity for growable filesystems", () => {
+    const initialBytes = 1 * 1024 * 1024;
+    const maxBytes = 8 * 1024 * 1024;
+    const sab = new SharedArrayBuffer(initialBytes, {
+      maxByteLength: maxBytes,
+    });
+    const mfs = MemoryFileSystem.create(sab, maxBytes);
+
+    const before = mfs.statfs("/");
+    expect(before.blocks * before.bsize).toBe(maxBytes);
+    expect(before.bfree).toBeGreaterThan(initialBytes / before.bsize);
+    expect(sab.byteLength).toBe(initialBytes);
+
+    const fd = mfs.open("/grow.bin", 0x0040 | 0x0002 | 0x0200, 0o644);
+    const data = new Uint8Array(initialBytes);
+    expect(mfs.write(fd, data, null, data.length)).toBe(data.length);
+    mfs.close(fd);
+
+    const after = mfs.statfs("/");
+    expect(sab.byteLength).toBeGreaterThan(initialBytes);
+    expect(after.blocks).toBe(before.blocks);
+    expect(after.blocks * after.bsize).toBe(maxBytes);
+    expect(after.bfree).toBeLessThan(before.bfree);
+    expect(after.bavail).toBe(after.bfree);
+  });
+
+  it("statfs does not report the internal default growth cap for non-growable buffers", () => {
+    const initialBytes = 1 * 1024 * 1024;
+    const sab = new SharedArrayBuffer(initialBytes);
+    const mfs = MemoryFileSystem.create(sab);
+    const stats = mfs.statfs("/");
+
+    expect(stats.blocks * stats.bsize).toBe(initialBytes);
+    expect(sab.maxByteLength).toBe(initialBytes);
   });
 });
 

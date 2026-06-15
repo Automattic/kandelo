@@ -58,6 +58,11 @@ export function builtinDemoGuide(profileId: string): DemoGuideConfig | null {
       return nginxGuide();
     case "nginx-php":
       return nginxPhpGuide();
+    case "wordpress":
+    case "wordpress-sqlite":
+    case "wordpress-mariadb":
+    case "lamp":
+      return wordpressGuide();
     default:
       return null;
   }
@@ -145,8 +150,7 @@ export function nodeGuide(): DemoGuideConfig {
     {
       title: "SpiderMonkey Node script",
       language: "sh",
-      initialText: `${nodeRuntimeScript}
-${nodeCowsayScript}`,
+      initialText: nodeCowsayScript,
     },
     {
       title: "Companion HTML",
@@ -203,6 +207,29 @@ export function nginxPhpGuide(): DemoGuideConfig {
       initialText: nginxPhpScript,
     },
   );
+}
+
+export function wordpressGuide(): DemoGuideConfig {
+  return {
+    title: "WordPress demo",
+    summary: "Open the preinstalled WordPress admin area using the demo credentials.",
+    groups: [
+      actionGroup("Admin", [
+        action(
+          "wp-admin-login",
+          "Log in as admin",
+          "Open wp-admin with the bundled admin account.",
+          "web.wordpressLogin",
+          JSON.stringify({
+            username: "admin",
+            password: "password",
+            loginPath: "/wp-login.php",
+            adminPath: "/wp-admin/",
+          }),
+        ),
+      ]),
+    ],
+  };
 }
 
 function action(

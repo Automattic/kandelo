@@ -1,5 +1,5 @@
 {
-  "abi_version": 14,
+  "abi_version": 15,
   "channel_buffers": {
     "data_offset": 72,
     "data_size": 65536,
@@ -113,7 +113,7 @@
   },
   "host_adapter": {
     "manifest": {
-      "abi_version": 14,
+      "abi_version": 15,
       "channel_data_offset": 72,
       "channel_data_size": 65536,
       "channel_header_size": 72,
@@ -183,6 +183,8 @@
       }
     ],
     "optional_kernel_exports": [
+      "kernel_reserve_host_region",
+      "kernel_reserve_host_region_at",
       "kernel_set_cwd",
       "kernel_set_max_addr",
       "kernel_set_mmap_base",
@@ -200,7 +202,6 @@
       "kernel_mark_process_signaled",
       "kernel_reap_exited_child",
       "kernel_remove_process",
-      "kernel_set_mode",
       "kernel_wait4_poll"
     ],
     "required_worker_features": 7,
@@ -1205,6 +1206,16 @@
     },
     {
       "kind": "func",
+      "name": "kernel_reserve_host_region",
+      "signature": "(i32,i32) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_reserve_host_region_at",
+      "signature": "(i32,i32,i32) -> (i32)"
+    },
+    {
+      "kind": "func",
       "name": "kernel_reset_signal_mask",
       "signature": "(i32) -> (i32)"
     },
@@ -1307,11 +1318,6 @@
       "kind": "func",
       "name": "kernel_set_mmap_base",
       "signature": "(i32,i32) -> (i32)"
-    },
-    {
-      "kind": "func",
-      "name": "kernel_set_mode",
-      "signature": "(i32) -> ()"
     },
     {
       "kind": "func",
@@ -2134,7 +2140,7 @@
     "defaults": {
       "initial_pages": 17,
       "max_pages": 16384,
-      "thread_slots": 16
+      "thread_slots": 1024
     },
     "fork_save_buffer_size": 16384,
     "legacy": {

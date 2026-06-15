@@ -64,6 +64,7 @@ import { CentralizedKernelWorker } from "./kernel-worker";
 import type {
   ForkFromThreadContext,
   ResolvedSpawnProgram,
+  SpawnProgramResolution,
 } from "./kernel-worker";
 import type { KernelPointer } from "./kernel";
 import { BrowserWorkerAdapter } from "./worker-adapter-browser";
@@ -78,14 +79,21 @@ import {
 import type { MountConfig } from "./vfs/types";
 import { TlsNetworkBackend } from "./networking/tls-network-backend";
 import { patchWasmForThread } from "./worker-main";
-import { detectPtrWidth, extractHeapBase } from "./constants";
+import { detectPtrWidth, extractHeapBase, isWasmModuleBytes } from "./constants";
+import { ThreadExitCoordinator } from "./thread-exit-coordinator";
+import {
+  classifiedSignalOrFallback,
+  classifiedTrapExitStatus,
+  signalExitStatus,
+  SIGSEGV,
+} from "./trap-signals";
 import type {
   CentralizedWorkerInitMessage,
   CentralizedThreadInitMessage,
   WorkerToHostMessage,
 } from "./worker-protocol";
 import { ThreadPageAllocator } from "./thread-allocator";
-import { CH_TOTAL_SIZE, DEFAULT_MAX_PAGES } from "./constants";
+import { CH_TOTAL_SIZE, DEFAULT_MAX_PAGES, PAGES_PER_THREAD } from "./constants";
 import {
   computeProcessMemoryLayout,
   createProcessMemory,
@@ -109,6 +117,7 @@ let io: VirtualPlatformIO;
 let maxPages: number = DEFAULT_MAX_PAGES;
 let defaultThreadSlots: number = DEFAULT_PROCESS_THREAD_SLOTS;
 let defaultEnv: string[] = [];
+const ENOEXEC = 8;
 
 // Process tracking
 interface ProcessInfo {
@@ -116,6 +125,7 @@ interface ProcessInfo {
   programBytes: ArrayBuffer;
   programModule?: WebAssembly.Module;
   worker: ReturnType<BrowserWorkerAdapter["createWorker"]>;
+  argv: string[];
   channelOffset: number;
   ptrWidth: 4 | 8;
   layout: ProcessMemoryLayout;
@@ -128,6 +138,7 @@ const processTeardowns = new Map<number, Promise<void>>();
 const workerTeardowns = new Set<Promise<void>>();
 const threadedProcessPids = new Set<number>();
 const THREADED_WORKER_TERMINATION_SETTLE_MS = 250;
+const NODE_PROCESS_WORKER_TERMINATION_SETTLE_MS = 2000;
 
 /**
  * Workers we deliberately terminated — exec, exit, top-level destroy. The
@@ -156,14 +167,17 @@ async function resolveExecutableForLaunch(
   path: string,
   argv: string[],
   depth = 0,
-): Promise<ResolvedSpawnProgram | null> {
+): Promise<ResolvedSpawnProgram | { errno: number } | null> {
   if (depth > MAX_SHEBANG_DEPTH) return null;
   await memfs.ensureMaterialized(path);
   const bytes = readFileFromFs(path);
   if (!bytes) return null;
 
   const shebang = parseShebang(bytes);
-  if (!shebang) return { programBytes: bytes, argv };
+  if (!shebang) {
+    if (!isWasmModuleBytes(bytes)) return { errno: ENOEXEC };
+    return { programBytes: bytes, argv };
+  }
 
   const scriptArgv = [
     shebang.interpreter,
@@ -185,9 +199,54 @@ interface ThreadWorkerInfo {
   termination?: Promise<void>;
 }
 const threadWorkers = new Map<number, ThreadWorkerInfo[]>();
+const threadExits = new ThreadExitCoordinator();
+const reportedNonzeroProcessExits = new Set<number>();
 
 function delay(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function basename(path: string): string {
+  const idx = path.lastIndexOf("/");
+  return idx >= 0 ? path.slice(idx + 1) : path;
+}
+
+function processWorkerTerminationSettleMs(argv: readonly string[] | undefined): number {
+  const name = basename(argv?.[0] ?? "");
+  // Chrome can still have SpiderMonkey Node's process Worker teardown in
+  // flight after worker.terminate() resolves. Launching another Node-mode
+  // process too quickly can make the second process trap in its wasm runtime.
+  return name === "node" || name === "spidermonkey-node" || name === "spidermonkey-node.wasm"
+    ? NODE_PROCESS_WORKER_TERMINATION_SETTLE_MS
+    : 0;
+}
+
+function reportNonzeroProcessExitDiagnostic(
+  pid: number,
+  status: number,
+  source: string,
+): void {
+  if (status === 0 || reportedNonzeroProcessExits.has(pid)) return;
+  reportedNonzeroProcessExits.add(pid);
+  const info = processes.get(pid);
+  const syscalls = kernelWorker.dumpLastSyscalls(pid) || "<none>";
+  const serviceLog = readServiceLogForProcess(info?.argv);
+  const diagnostic =
+    `[kernel-worker] nonzero process exit pid=${pid} status=${status} source=${source} argv=${JSON.stringify(info?.argv ?? [])}` +
+    (serviceLog ? `\n${serviceLog}` : "") +
+    `\n${syscalls}`;
+  console.warn(diagnostic);
+  post({ type: "stderr", pid, data: new TextEncoder().encode(`${diagnostic}\n`) });
+}
+
+function readServiceLogForProcess(argv: readonly string[] | undefined): string | null {
+  const name = basename(argv?.[0] ?? "");
+  const logPath = name === "nginx" ? "/var/log/nginx.log" : null;
+  if (!logPath) return null;
+  const bytes = readFileFromFs(logPath);
+  if (!bytes || bytes.byteLength === 0) return `${logPath}: <empty>`;
+  const text = new TextDecoder("utf-8", { fatal: false }).decode(bytes).trimEnd();
+  return `${logPath}:\n${text || "<empty>"}`;
 }
 
 async function waitForProcessTeardowns(): Promise<void> {
@@ -222,6 +281,7 @@ async function terminateThreadWorkers(pid: number): Promise<void> {
       t.termination ??
       terminateTrackedWorker(t.worker, THREADED_WORKER_TERMINATION_SETTLE_MS)
     );
+    threadExits.release(pid, t.channelOffset);
   }
 }
 const ptyByPid = new Map<number, number>();
@@ -276,19 +336,78 @@ function createSharedProcessMemory(
 function threadAllocatorForLayout(
   layout: ProcessMemoryLayout,
   ptrWidth: 4 | 8,
+  pid: number,
 ): ThreadPageAllocator {
   return new ThreadPageAllocator({
     firstSlotStartPage: layout.firstThreadSlotPage,
     maxPageExclusive: layout.threadArenaEndPage,
     ptrWidth,
     reservedSlots: layout.threadSlotCount,
+    reserveSlotStartPage: () =>
+      kernelWorker.reserveHostRegion(pid, PAGES_PER_THREAD * PAGE_SIZE) / PAGE_SIZE,
   });
 }
 
+interface ProcessMemoryAllocationContext {
+  operation: "spawn" | "exec" | "posix_spawn";
+  path?: string;
+  argv?: readonly string[];
+}
+
+function processMemoryAllocationDiagnostics(
+  pid: number,
+  ptrWidth: 4 | 8,
+  layout: ProcessMemoryLayout,
+  heapBase: bigint | number | null,
+  context?: ProcessMemoryAllocationContext,
+) {
+  let totalLiveBufferBytes = 0;
+  const liveProcesses = Array.from(processes.entries())
+    .sort(([a], [b]) => a - b)
+    .map(([livePid, info]) => {
+      const bufferBytes = info.memory.buffer.byteLength;
+      totalLiveBufferBytes += bufferBytes;
+      return {
+        pid: livePid,
+        argv: info.argv.slice(0, 8),
+        ptrWidth: info.ptrWidth,
+        currentPages: Math.ceil(bufferBytes / PAGE_SIZE),
+        maximumPages: info.layout.maximumPages,
+        bufferBytes,
+      };
+    });
+
+  return {
+    operation: context?.operation,
+    pid,
+    path: context?.path,
+    argv: context?.argv,
+    ptrWidth,
+    heapBase: heapBase == null ? null : heapBase.toString(),
+    requestedLayout: {
+      initialPages: layout.initialPages,
+      maximumPages: layout.maximumPages,
+      controlBase: layout.controlBase,
+      brkBase: layout.brkBase,
+      mmapBase: layout.mmapBase,
+      maxAddr: layout.maxAddr,
+      threadSlotCount: layout.threadSlotCount,
+      threadArenaEndPage: layout.threadArenaEndPage,
+    },
+    liveProcessCount: processes.size,
+    pendingProcessTeardowns: processTeardowns.size,
+    pendingWorkerTeardowns: workerTeardowns.size,
+    totalLiveBufferBytes,
+    liveProcesses,
+  };
+}
+
 function createFreshProcessMemory(
+  pid: number,
   programBytes: ArrayBuffer,
   ptrWidth: 4 | 8,
   processMaxPages = maxPages,
+  context?: ProcessMemoryAllocationContext,
 ): {
   memory: WebAssembly.Memory;
   layout: ProcessMemoryLayout;
@@ -302,12 +421,23 @@ function createFreshProcessMemory(
     programBytes,
     heapBase,
   });
-  const memory = createProcessMemory(ptrWidth, layout);
+  let memory: WebAssembly.Memory;
+  try {
+    memory = createProcessMemory(ptrWidth, layout);
+  } catch (e) {
+    console.error(
+      "[kernel-worker] process memory allocation failed",
+      JSON.stringify(
+        processMemoryAllocationDiagnostics(pid, ptrWidth, layout, heapBase, context),
+      ),
+    );
+    throw e;
+  }
   new Uint8Array(memory.buffer, layout.channelOffset, CH_TOTAL_SIZE).fill(0);
   return {
     memory,
     layout,
-    threadAllocator: threadAllocatorForLayout(layout, ptrWidth),
+    threadAllocator: threadAllocatorForLayout(layout, ptrWidth, pid),
   };
 }
 
@@ -499,6 +629,7 @@ async function handleInit(msg: Extract<MainToKernelMessage, { type: "init" }>) {
       onSpawn: handlePosixSpawn,
       onClone: (pid, tid, fnPtr, argPtr, stackPtr, tlsPtr, ctidPtr, memory) =>
         handleClone(pid, tid, fnPtr, argPtr, stackPtr, tlsPtr, ctidPtr, memory),
+      onThreadExit: (pid, _tid, channelOffset) => handleThreadExit(pid, channelOffset),
       onExit: (pid, exitStatus) => handleExit(pid, exitStatus),
     },
   );
@@ -614,16 +745,26 @@ async function handleSpawn(msg: Extract<MainToKernelMessage, { type: "spawn" }>)
       return;
     }
 
+    if (!isWasmModuleBytes(programBytes)) {
+      respondError(msg.requestId, "ENOEXEC: program is not a WebAssembly module");
+      return;
+    }
+
     // Pid: if the caller pre-picked one, honor it (legacy spawn() callers
     // still do); otherwise the worker is the source of truth and allocates.
     const pid = msg.pid ?? kernelWorker.allocatePid();
+    const path = msg.programPath ?? msg.argv[0];
     const pages = msg.maxPages ?? maxPages;
     const ptrWidth = detectPtrWidth(programBytes);
     const {
       memory,
       layout,
       threadAllocator,
-    } = createFreshProcessMemory(programBytes, ptrWidth, pages);
+    } = createFreshProcessMemory(pid, programBytes, ptrWidth, pages, {
+      operation: "spawn",
+      path,
+      argv: msg.argv,
+    });
     const channelOffset = layout.channelOffset;
 
     kernelWorker.registerProcess(pid, memory, [channelOffset], {
@@ -673,6 +814,7 @@ async function handleSpawn(msg: Extract<MainToKernelMessage, { type: "spawn" }>)
       memory,
       programBytes,
       worker,
+      argv: msg.argv,
       channelOffset,
       ptrWidth,
       layout,
@@ -711,7 +853,7 @@ function installProcessWorkerListeners(
   pid: number,
 ): void {
   let exited = false;
-  const finalize = (status: number, source: string) => {
+  const finalize = (status: number, source: string, crashSignum?: number) => {
     if (exited) return;
     exited = true;
     if (processes.get(pid)?.worker !== worker) return; // already replaced (e.g. by exec)
@@ -721,19 +863,21 @@ function installProcessWorkerListeners(
     } else {
       console.warn(message);
     }
-    handleExit(pid, status);
+    reportNonzeroProcessExitDiagnostic(pid, status, source);
+    handleExit(pid, status, crashSignum);
   };
 
-  // Status conventions match the Node host (PR #410):
-  //   139 = 128 + SIGSEGV (11) — uncaught wasm trap, worker died without
-  //         a SYS_exit_group. Matches a Linux child killed by SIGSEGV.
-  //   -1  — worker-main caught an instantiation/init error and posted
-  //         {type:"error"}. Same convention as Node-side handleSpawn.
+  // Status conventions match the Node host:
+  //   128+signal — classified Wasm trap, or generic SIGSEGV when a worker
+  //         dies without a trap reason. Matches Linux signal-death status.
+  //   -1  — worker-main caught an unclassified instantiation/init error
+  //         and posted {type:"error"}.
   //   m.status — worker-main posted {type:"exit"}, normal exit path.
   worker.on("error", (err: Error) => {
     if (intentionallyTerminated.has(worker as object)) return;
     console.error(`[kernel-worker] Worker error pid=${pid}:`, err.message);
-    finalize(128 + 11, "worker.onerror");
+    const signum = classifiedSignalOrFallback(err);
+    finalize(signalExitStatus(signum), "worker.onerror", signum);
   });
   worker.on("exit", (code: number) => {
     // BrowserWorkerHandle synthesizes an "exit" event when the underlying
@@ -747,14 +891,14 @@ function installProcessWorkerListeners(
     // finalized via the "error" handler above, so this is a no-op there.
     // If "exit" fires without a prior "error" (worker died via some path
     // we don't yet model), still treat it as a crash.
-    finalize(128 + 11, "worker exit event");
+    finalize(signalExitStatus(SIGSEGV), "worker exit event", SIGSEGV);
   });
   worker.on("message", (msg: unknown) => {
     const m = msg as { type?: string; message?: string; pid?: number; status?: number };
     if (m.type === "error") {
       console.error(`[kernel-worker] Process error pid=${pid}:`, m.message);
       // Forward to host stderr so the demo log shows the actual failure
-      // ("Centralized worker failed: …" with the wasm trap or
+      // ("Kernel worker failed: ..." with the wasm trap or
       // instantiation error). Without this, a process death in the
       // browser is invisible to the user — only console.error in the
       // kernel-worker scope, which most users don't open. Mirrors the
@@ -763,7 +907,8 @@ function installProcessWorkerListeners(
         `[process-worker] ${m.message ?? "unknown error"}\n`,
       );
       post({ type: "stderr", pid, data: errBytes });
-      finalize(-1, "worker-main error message");
+      const signum = classifiedSignalOrFallback(m.message);
+      finalize(classifiedTrapExitStatus(m.message) ?? -1, "worker-main error message", signum);
     } else if (m.type === "exit") {
       finalize(m.status ?? 0, "worker-main exit message");
     }
@@ -835,10 +980,11 @@ async function handleFork(
     programBytes: parentInfo.programBytes,
     programModule: parentInfo.programModule,
     worker: childWorker,
+    argv: parentInfo.argv,
     channelOffset: childChannelOffset,
     ptrWidth,
     layout: childLayout,
-    threadAllocator: threadAllocatorForLayout(childLayout, ptrWidth),
+    threadAllocator: threadAllocatorForLayout(childLayout, ptrWidth, childPid),
   });
 
   installProcessWorkerListeners(childWorker, childPid);
@@ -854,6 +1000,7 @@ async function handleExec(
 ): Promise<number> {
   const resolved = await resolveExecutableForLaunch(path, argv);
   if (!resolved) return -2; // ENOENT
+  if ("errno" in resolved) return -resolved.errno;
   const { programBytes: bytes, argv: launchArgv } = resolved;
 
   // Program found — run kernel exec setup
@@ -887,7 +1034,11 @@ async function handleExec(
     memory: newMemory,
     layout: newLayout,
     threadAllocator: newThreadAllocator,
-  } = createFreshProcessMemory(bytes, ptrWidth);
+  } = createFreshProcessMemory(pid, bytes, ptrWidth, maxPages, {
+    operation: "exec",
+    path,
+    argv: launchArgv,
+  });
   const newChannelOffset = newLayout.channelOffset;
 
   kernelWorker.registerProcess(pid, newMemory, [newChannelOffset], {
@@ -924,6 +1075,7 @@ async function handleExec(
     memory: newMemory,
     programBytes: bytes,
     worker: newWorker,
+    argv: launchArgv,
     channelOffset: newChannelOffset,
     ptrWidth,
     layout: newLayout,
@@ -968,7 +1120,7 @@ async function handleExec(
 async function handlePosixSpawnResolve(
   path: string,
   argv: string[],
-): Promise<ResolvedSpawnProgram | null> {
+): Promise<SpawnProgramResolution | null> {
   return resolveExecutableForLaunch(path, argv);
 }
 
@@ -992,7 +1144,11 @@ async function handlePosixSpawn(
     memory: newMemory,
     layout: newLayout,
     threadAllocator,
-  } = createFreshProcessMemory(programBytes, ptrWidth);
+  } = createFreshProcessMemory(childPid, programBytes, ptrWidth, maxPages, {
+    operation: "posix_spawn",
+    path: argv[0],
+    argv,
+  });
   const newChannelOffset = newLayout.channelOffset;
 
   // Kernel already created the child via kernel_spawn_process.
@@ -1023,6 +1179,7 @@ async function handlePosixSpawn(
     memory: newMemory,
     programBytes,
     worker: newWorker,
+    argv,
     channelOffset: newChannelOffset,
     ptrWidth,
     layout: newLayout,
@@ -1112,6 +1269,7 @@ async function handleClone(
     if (reclaimed) return;
     reclaimed = true;
     processInfo.threadAllocator.free(alloc.basePage);
+    threadExits.release(pid, alloc.channelOffset);
     const threads = threadWorkers.get(pid);
     if (threads) {
       const idx = threads.indexOf(threadEntry);
@@ -1127,6 +1285,7 @@ async function handleClone(
     }
     return threadEntry.termination;
   };
+  threadExits.register(pid, alloc.channelOffset, terminateThreadEntry);
 
   const failThread = (reason: string) => {
     const text = `[kernel-worker] pid=${pid} tid=${tid}: ${reason}\n`;
@@ -1154,21 +1313,38 @@ async function handleClone(
   return tid;
 }
 
-function handleExit(pid: number, exitStatus: number): void {
-  void finishProcessExit(pid, exitStatus);
+function handleThreadExit(pid: number, channelOffset: number): boolean {
+  return threadExits.requestExit(pid, channelOffset);
 }
 
-async function finishProcessExit(pid: number, exitStatus: number): Promise<void> {
+function signalFromExitStatus(exitStatus: number): number | null {
+  return exitStatus >= 128 ? (exitStatus - 128) & 0x7f : null;
+}
+
+function handleExit(pid: number, exitStatus: number, crashSignum?: number): void {
+  void finishProcessExit(pid, exitStatus, crashSignum);
+}
+
+async function finishProcessExit(
+  pid: number,
+  exitStatus: number,
+  crashSignum: number = signalFromExitStatus(exitStatus) ?? SIGSEGV,
+): Promise<void> {
   if (processTeardowns.has(pid)) return;
 
   const info = processes.get(pid);
-  const settleMs = threadedProcessPids.has(pid)
+  reportNonzeroProcessExitDiagnostic(pid, exitStatus, "kernel process exit");
+  const threadedSettleMs = threadedProcessPids.has(pid)
     ? THREADED_WORKER_TERMINATION_SETTLE_MS
     : 0;
+  const settleMs = Math.max(
+    threadedSettleMs,
+    processWorkerTerminationSettleMs(info?.argv),
+  );
   threadedProcessPids.delete(pid);
 
   const teardown = (async () => {
-    // Synthesize a SIGSEGV-style reap *before* `deactivateProcess` in
+    // Synthesize a signal-style reap *before* `deactivateProcess` in
     // case the worker died without sending SYS_EXIT_GROUP (uncaught
     // wasm trap -> onerror, worker-main `{type:"error"}` -> finalize(-1),
     // externally terminated Worker -> "exit" event). Without this, a
@@ -1177,7 +1353,7 @@ async function finishProcessExit(pid: number, exitStatus: number): Promise<void>
     // `hostReaped`: when the kernel already processed a clean
     // SYS_EXIT_GROUP for this pid, this is a no-op. Mirrors
     // `finalizeProcessWorker` in host/src/node-kernel-worker-entry.ts.
-    try { kernelWorker.notifyHostProcessCrashed(pid); } catch { /* best-effort */ }
+    try { kernelWorker.notifyHostProcessCrashed(pid, crashSignum); } catch { /* best-effort */ }
     // Check if this is a "top-level" process or a fork child
     // For now, always deactivate — the main thread tracks exit promises
     kernelWorker.deactivateProcess(pid);

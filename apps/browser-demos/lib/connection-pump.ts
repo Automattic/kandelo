@@ -7,27 +7,30 @@ import type { BrowserKernel } from "@host/browser-kernel-host";
 import type { HttpRequest, HttpResponse, HttpBridgeHost } from "./http-bridge";
 
 const encoder = new TextEncoder();
+// Injected TCP pipes are allocated in the kernel's global pipe table so any
+// fork worker that accepts the shared-listener connection can own them.
+const GLOBAL_PIPE_PID = 0;
 
 /**
  * Handle an incoming HTTP request by injecting it as a TCP connection
  * into the kernel's listening socket, pumping the request data through
  * the recv pipe, and reading the response from the send pipe.
  */
-export function handleHttpRequest(
+export async function handleHttpRequest(
   kernel: BrowserKernel,
   bridge: HttpBridgeHost,
   requestId: number,
   request: HttpRequest,
   listenerPort: number,
-): void {
-  const target = kernel.pickListenerTarget(listenerPort);
+): Promise<void> {
+  const target = await kernel.pickListenerTarget(listenerPort);
   if (!target) {
     console.error(`[connection-pump] No listener target for port ${listenerPort}`);
     bridge.error(requestId, "No listener target available");
     return;
   }
   console.log(`[connection-pump] target pid=${target.pid} fd=${target.fd} for port ${listenerPort}`);
-  const recvPipeIdx = kernel.injectConnection(
+  const recvPipeIdx = await kernel.injectConnection(
     target.pid,
     target.fd,
     [127, 0, 0, 1],
@@ -45,7 +48,7 @@ export function handleHttpRequest(
   const rawRequest = buildRawHttpRequest(request);
 
   // Write request data to recv pipe
-  const written = kernel.pipeWrite(target.pid, recvPipeIdx, rawRequest);
+  const written = await kernel.pipeWrite(GLOBAL_PIPE_PID, recvPipeIdx, rawRequest);
   if (written < rawRequest.length) {
     console.warn(
       `[connection-pump] Partial write: ${written}/${rawRequest.length}`,
@@ -62,7 +65,7 @@ export function handleHttpRequest(
 
   console.log(`[connection-pump] request written, pumping response pipe=${sendPipeIdx}`);
   // Start pumping response from send pipe
-  pumpResponse(kernel, bridge, requestId, target.pid, sendPipeIdx, recvPipeIdx);
+  pumpResponse(kernel, bridge, requestId, sendPipeIdx, recvPipeIdx);
 }
 
 /**
@@ -105,7 +108,6 @@ function pumpResponse(
   kernel: BrowserKernel,
   bridge: HttpBridgeHost,
   requestId: number,
-  pid: number,
   sendPipeIdx: number,
   recvPipeIdx: number,
 ): void {
@@ -113,8 +115,8 @@ function pumpResponse(
   let sawWriteOpen = false;
 
   let pumpCount = 0;
-  const pump = () => {
-    const data = kernel.pipeRead(pid, sendPipeIdx);
+  const pump = async () => {
+    const data = await kernel.pipeRead(GLOBAL_PIPE_PID, sendPipeIdx);
     if (data) {
       chunks.push(data);
       // Wake any process blocked writing to this pipe — our read freed
@@ -123,10 +125,10 @@ function pumpResponse(
       kernel.wakeBlockedWriters(sendPipeIdx);
     }
 
-    const writeOpen = kernel.pipeIsWriteOpen(pid, sendPipeIdx);
+    const writeOpen = await kernel.pipeIsWriteOpen(GLOBAL_PIPE_PID, sendPipeIdx);
     if (writeOpen && !sawWriteOpen) {
       sawWriteOpen = true;
-      console.log(`[pump ${requestId}] write end opened, pid=${pid} pipe=${sendPipeIdx}`);
+      console.log(`[pump ${requestId}] write end opened, pipe=${sendPipeIdx}`);
     }
     pumpCount++;
     if (pumpCount <= 5 || (pumpCount % 1000 === 0)) {
@@ -138,8 +140,8 @@ function pumpResponse(
     // end isn't associated with any process yet and appears closed.
     if (sawWriteOpen && !writeOpen && !data) {
       // Response complete — clean up both pipes
-      kernel.pipeCloseRead(pid, sendPipeIdx);
-      kernel.pipeCloseWrite(pid, recvPipeIdx);
+      kernel.pipeCloseRead(GLOBAL_PIPE_PID, sendPipeIdx);
+      kernel.pipeCloseWrite(GLOBAL_PIPE_PID, recvPipeIdx);
       const rawResponse = concatChunks(chunks);
       console.log(`[connection-pump] response complete, ${rawResponse.length} bytes`);
       const parsed = parseRawHttpResponse(rawResponse);
@@ -148,11 +150,11 @@ function pumpResponse(
     }
 
     // Keep pumping — use shorter delay when we got data
-    setTimeout(pump, data ? 0 : 2);
+    setTimeout(() => void pump(), data ? 0 : 2);
   };
 
   // Start pumping immediately
-  pump();
+  void pump();
 }
 
 function concatChunks(chunks: Uint8Array[]): Uint8Array {

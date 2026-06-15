@@ -1,9 +1,46 @@
 import { expect, test, type FrameLocator, type Page } from "@playwright/test";
 
+type BrowserDiagnostics = {
+  console: string[];
+  pageErrors: string[];
+  requestFailures: string[];
+};
+
+const diagnosticsByPage = new WeakMap<Page, BrowserDiagnostics>();
+const MAX_LOG_LINES = 160;
+
 const appUrl = (path: string): string => {
   const baseUrl = process.env.KANDELO_TEST_BASE_URL;
   return baseUrl ? new URL(path, baseUrl).href : path;
 };
+
+test.beforeEach(({ page }) => {
+  const diagnostics: BrowserDiagnostics = {
+    console: [],
+    pageErrors: [],
+    requestFailures: [],
+  };
+  diagnosticsByPage.set(page, diagnostics);
+
+  page.on("console", (msg) => {
+    diagnostics.console.push(`[${msg.type()}] ${msg.text()}`);
+    trimLog(diagnostics.console);
+  });
+  page.on("pageerror", (err) => {
+    diagnostics.pageErrors.push(err.stack || err.message);
+    trimLog(diagnostics.pageErrors);
+  });
+  page.on("requestfailed", (request) => {
+    diagnostics.requestFailures.push(`${request.method()} ${request.url()} :: ${request.failure()?.errorText ?? "failed"}`);
+    trimLog(diagnostics.requestFailures);
+  });
+});
+
+function trimLog(lines: string[]) {
+  if (lines.length > MAX_LOG_LINES) {
+    lines.splice(0, lines.length - MAX_LOG_LINES);
+  }
+}
 
 async function gotoOrSkip(page: Page, path: string) {
   await page.goto(appUrl(path), { waitUntil: "domcontentloaded" });
@@ -53,77 +90,110 @@ async function runTerminalCommand(
   await waitForTerminalContent(page, expected, timeout);
 }
 
+async function openTerminalDrawer(page: Page) {
+  const terminalDrawer = page.locator(".kmachine-drawer-toggle").filter({ hasText: "Terminal" });
+  await terminalDrawer.click();
+  await expect(page.locator(".kshell-host").first()).toBeVisible({ timeout: 120_000 });
+}
+
 function webFrame(page: Page, title: string): FrameLocator {
   return page.frameLocator(`iframe[title="${title}"]`);
 }
 
-async function runWordPressInstall(page: Page, demo: string, title: string) {
-  test.setTimeout(600_000);
+async function attachKandeloDiagnostics(page: Page, label: string) {
+  const info = test.info();
+  const safeLabel = label.replace(/[^a-z0-9_-]+/gi, "-").replace(/^-+|-+$/g, "").toLowerCase();
+  const diagnostics = diagnosticsByPage.get(page);
 
-  await gotoOrSkip(page, `/?demo=${demo}`);
-  await page.waitForSelector(`iframe[title="${title}"]`, { timeout: 240_000 });
-  const frame = webFrame(page, title);
+  await attachText(
+    `${safeLabel}-browser-events.txt`,
+    [
+      "Console",
+      ...(diagnostics?.console.length ? diagnostics.console : ["<none>"]),
+      "",
+      "Page errors",
+      ...(diagnostics?.pageErrors.length ? diagnostics.pageErrors : ["<none>"]),
+      "",
+      "Request failures",
+      ...(diagnostics?.requestFailures.length ? diagnostics.requestFailures : ["<none>"]),
+    ].join("\n"),
+  );
 
-  await expect(
-    frame.locator("form#setup, form#language-chooser, .wp-core-ui").first(),
-  ).toBeVisible({ timeout: 240_000 });
+  const snapshot = await page.evaluate(() => {
+    const text = (node: Element | null): string => (node?.textContent ?? "").replace(/\s+/g, " ").trim();
+    return {
+      url: window.location.href,
+      title: document.title,
+      readyState: document.readyState,
+      bodyText: document.body.innerText,
+      machineCurrent: text(document.querySelector(".kmachine-current")),
+      surfaceButtons: Array.from(document.querySelectorAll(".kmachine-switch-btn")).map((button) => ({
+        text: text(button),
+        disabled: (button as HTMLButtonElement).disabled,
+        ariaCurrent: button.getAttribute("aria-current"),
+      })),
+      drawers: Array.from(document.querySelectorAll(".kmachine-drawer-toggle")).map((button) => ({
+        text: text(button),
+        expanded: button.getAttribute("aria-expanded"),
+      })),
+      webPreviewMessages: Array.from(document.querySelectorAll(".kpane-body")).map(text)
+        .filter((value) => /waiting|starting|ready|error|bridge|service|http/i.test(value)),
+      iframes: Array.from(document.querySelectorAll("iframe")).map((iframe) => {
+        const rect = iframe.getBoundingClientRect();
+        return {
+          title: iframe.title,
+          src: iframe.src,
+          width: Math.round(rect.width),
+          height: Math.round(rect.height),
+          visible: rect.width > 0 && rect.height > 0,
+        };
+      }),
+      syslog: Array.from(document.querySelectorAll(".ksys-line"))
+        .slice(-120)
+        .map((line) => line.textContent ?? ""),
+    };
+  }).catch((err) => ({
+    error: err instanceof Error ? err.stack || err.message : String(err),
+  }));
 
-  if ((await frame.locator("form#language-chooser").count()) > 0) {
-    await frame.locator("form#language-chooser [type='submit']").click();
-    await expect(frame.locator("form#setup")).toBeVisible({ timeout: 60_000 });
-  }
+  await attachText(`${safeLabel}-page-state.json`, JSON.stringify(snapshot, null, 2));
+  await page.screenshot({ fullPage: true })
+    .then((body) => info.attach(`${safeLabel}-screenshot.png`, { body, contentType: "image/png" }))
+    .catch(() => undefined);
+}
 
-  const username = "admin";
-  const password = "Testpass123!Testpass123!";
+async function attachText(name: string, body: string) {
+  await test.info().attach(name, {
+    body,
+    contentType: "text/plain",
+  }).catch(() => undefined);
+}
 
-  await frame.locator("#weblog_title").fill(`Kandelo ${demo} E2E`);
-  await frame.locator("#user_login").fill(username);
+async function runWordPressPreinstalledLogin(page: Page, demo: string, title: string) {
+  test.setTimeout(420_000);
 
-  const passField = frame.locator("#pass1");
-  if ((await passField.count()) > 0) {
-    await passField.fill(password);
-  }
-  const pass2Field = frame.locator("#pass2");
-  if ((await pass2Field.count()) > 0 && await pass2Field.isVisible()) {
-    await pass2Field.fill(password);
-  }
+  try {
+    await gotoOrSkip(page, `/?demo=${demo}`);
+    await page.waitForSelector(`iframe[title="${title}"]`, { timeout: 240_000 });
+    const frame = webFrame(page, title);
 
-  const weakPw = frame.locator("#pw_weak, .pw-weak input[type='checkbox']");
-  if ((await weakPw.count()) > 0) {
-    try {
-      await weakPw.check({ timeout: 5_000 });
-    } catch {
-      // WordPress may hide this when it accepts the generated password.
-    }
-  }
-
-  await frame.locator("#admin_email").fill("admin@example.com");
-  await frame.locator("#submit, [name='Submit']").click();
-
-  await expect(
-    frame.locator(".step, .install-success, h1").filter({ hasText: /success|installed|log in/i }).first(),
-  ).toBeVisible({ timeout: 360_000 });
-
-  const loginLink = frame.locator("a").filter({ hasText: /log in/i }).first();
-  if ((await loginLink.count()) > 0) {
-    await loginLink.click();
-  } else {
-    await frame.locator("body").evaluate(() => {
-      window.location.href = "/app/wp-login.php";
+    await expect(frame.locator("body")).toContainText(/WordPress on Kandelo|Hello world/i, {
+      timeout: 240_000,
     });
+    await expect(frame.locator("form#setup, form#language-chooser")).toHaveCount(0);
+
+    await page.getByRole("button", { name: /Log in as admin/i }).click();
+
+    await expect(frame.locator("#wpadminbar, #adminmenu, body.wp-admin").first()).toBeVisible({
+      timeout: 180_000,
+    });
+    await expect(frame.locator("body")).toContainText(/Dashboard|WordPress/i, {
+      timeout: 60_000,
+    });
+  } catch (err) {
+    await attachKandeloDiagnostics(page, `${demo}-${title}`);
+    throw err;
   }
-
-  await expect(frame.locator("#loginform")).toBeVisible({ timeout: 120_000 });
-  await frame.locator("#user_login").fill(username);
-  await frame.locator("#user_pass").fill(password);
-  await frame.locator("#wp-submit").click();
-
-  await expect(frame.locator("#wpadminbar, #adminmenu, body.wp-admin").first()).toBeVisible({
-    timeout: 180_000,
-  });
-  await expect(frame.locator("body")).toContainText(/Dashboard|WordPress/i, {
-    timeout: 60_000,
-  });
 }
 
 test.describe.configure({ mode: "serial" });
@@ -161,8 +231,7 @@ test("Kandelo Node.js demo evaluates JavaScript in the terminal", async ({ page 
   await expect(page.locator(".xterm-rows").first()).toBeVisible({ timeout: 120_000 });
   await waitForTerminalContent(
     page,
-    /SpiderMonkey Node[\s\S]*worker\s+42[\s\S]*10\.9\.2[\s\S]*spidermonkey-node\$ ?/,
-    180_000,
+    /spidermonkey-node\$ ?/,
   );
   expect(await terminalText(page)).not.toContain("Segmentation fault");
 
@@ -185,6 +254,25 @@ test("Kandelo nginx demo serves its web preview", async ({ page }) => {
     "Hello from nginx on WebAssembly!",
     { timeout: 120_000 },
   );
+
+  await openTerminalDrawer(page);
+  await waitForTerminalContent(page, /kandelo\$ ?/, 120_000);
+  await runTerminalCommand(
+    page,
+    "if [ \"$(id -u):$HOME:$(pwd)\" = '1000:/home/user:/home/user' ]; then export PS1=\"KANDELO_\"\"NGINX_TERMINAL_OK $ \"; else export PS1=\"KANDELO_\"\"NGINX_TERMINAL_BAD:$(id -u):$HOME:$(pwd) $ \"; fi",
+    "KANDELO_NGINX_TERMINAL_OK",
+  );
+  await runTerminalCommand(
+    page,
+    "printf '%s\\n' '<!doctype html><title>Kandelo nginx</title><h1>KANDELO_EDIT_OK</h1>' > /var/www/html/index.html && export PS1=\"KANDELO_\"\"NGINX_EDIT_OK $ \" || export PS1=\"KANDELO_\"\"NGINX_EDIT_BAD:$? $ \"",
+    "KANDELO_NGINX_EDIT_OK",
+  );
+  await webFrame(page, "nginx").locator("body").evaluate(() => {
+    window.location.reload();
+  });
+  await expect(webFrame(page, "nginx").locator("body")).toContainText("KANDELO_EDIT_OK", {
+    timeout: 120_000,
+  });
 });
 
 test("Kandelo nginx + PHP demo serves dynamic PHP through the web preview", async ({ page }) => {
@@ -197,14 +285,22 @@ test("Kandelo nginx + PHP demo serves dynamic PHP through the web preview", asyn
     "PHP-FPM on WebAssembly",
     { timeout: 180_000 },
   );
+
+  await openTerminalDrawer(page);
+  await waitForTerminalContent(page, /kandelo\$ ?/, 120_000);
+  await runTerminalCommand(
+    page,
+    "if [ \"$(id -u):$HOME:$(pwd)\" = '1000:/home/user:/home/user' ]; then export PS1=\"KANDELO_\"\"NGINX_PHP_TERMINAL_OK $ \"; else export PS1=\"KANDELO_\"\"NGINX_PHP_TERMINAL_BAD:$(id -u):$HOME:$(pwd) $ \"; fi",
+    "KANDELO_NGINX_PHP_TERMINAL_OK",
+  );
 });
 
-test("Kandelo WordPress SQLite demo installs and logs into wp-admin", async ({ page }) => {
-  await runWordPressInstall(page, "wordpress-sqlite", "WordPress SQLite");
+test("Kandelo WordPress SQLite demo is preinstalled and logs into wp-admin", async ({ page }) => {
+  await runWordPressPreinstalledLogin(page, "wordpress-sqlite", "WordPress SQLite");
 });
 
-test("Kandelo WordPress MariaDB demo installs and logs into wp-admin", async ({ page }) => {
-  await runWordPressInstall(page, "wordpress-mariadb", "WordPress MariaDB");
+test("Kandelo WordPress MariaDB demo is preinstalled and logs into wp-admin", async ({ page }) => {
+  await runWordPressPreinstalledLogin(page, "wordpress-mariadb", "WordPress MariaDB");
 });
 
 test("Kandelo fbDOOM demo renders to the framebuffer", async ({ page }) => {

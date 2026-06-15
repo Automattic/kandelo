@@ -75,7 +75,7 @@ No privilege checking (no real privilege separation in Wasm).
 - Modify: `crates/kernel/src/wasm_api.rs` — add kernel_getrusage export
 
 **Implementation:**
-getrusage returns resource usage statistics. In our single-process Wasm environment, most values are zero. We can populate:
+getrusage returns resource usage statistics. The Wasm runtime currently has limited resource accounting, so most values are zero. We can populate:
 - ru_utime: delegate to host clock (CLOCK_MONOTONIC elapsed since process start)
 - ru_stime: 0 (no kernel time tracking)
 - All other fields: 0

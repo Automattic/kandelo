@@ -512,7 +512,16 @@ export class BrowserKernel {
   async spawnFromVfs(
     programPath: string,
     argv: string[],
-    options?: { env?: string[]; cwd?: string; uid?: number; gid?: number; pty?: boolean; stdin?: Uint8Array },
+    options?: {
+      env?: string[];
+      cwd?: string;
+      uid?: number;
+      gid?: number;
+      pty?: boolean;
+      stdin?: Uint8Array;
+      ptyCols?: number;
+      ptyRows?: number;
+    },
   ): Promise<{ pid: number; exit: Promise<number> }> {
     const requestId = this.nextRequestId++;
     const pid = await this.request(requestId, {
@@ -525,6 +534,8 @@ export class BrowserKernel {
       uid: options?.uid,
       gid: options?.gid,
       pty: options?.pty,
+      ptyCols: options?.ptyCols,
+      ptyRows: options?.ptyRows,
       stdin: options?.stdin,
       maxPages: this.maxPages,
     }) as number;
@@ -860,6 +871,12 @@ export class BrowserKernel {
       this.pendingPtyOutput.delete(pid);
       for (const chunk of pending) callback(chunk);
     }
+  }
+
+  /** Remove any registered or buffered PTY output for a process. */
+  clearPtyOutput(pid: number): void {
+    this.ptyOutputCallbacks.delete(pid);
+    this.pendingPtyOutput.delete(pid);
   }
 
   /** Terminate a specific process. */

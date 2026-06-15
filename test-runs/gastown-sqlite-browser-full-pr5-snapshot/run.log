@@ -1,0 +1,124 @@
+===== SQLite project unit tests on Kandelo browser host =====
+Permutation: full | Jobs: 2 | Results: test-runs/gastown-sqlite-browser-full-pr5-snapshot/browser
+===== SQLite official testrunner.tcl on Kandelo browser host =====
+Permutation: full | Jobs: 2
+Results dir: test-runs/gastown-sqlite-browser-full-pr5-snapshot/browser
+[vite]
+  VITE v8.0.16  ready in 260 ms
+
+[vite]   ➜  Local:   http://127.0.0.1:5200/
+[browser:navigation] http://127.0.0.1:5200/pages/sqlite-test/
+[browser] [sqlite-progress] 00:04 tcl(1/1393) r2 ETC 01:21:20
+[browser] [sqlite-progress] 00:10 tcl(2/1393) r2 ETC 01:50:17
+[browser] [sqlite-progress] 00:17 tcl(3/1393) f1 r2 ETC 02:09:06
+[browser] [sqlite-progress] 00:24 tcl(5/1393) f2 r2 ETC 01:49:18
+[browser] [sqlite-progress] 00:30 tcl(7/1393) f2 r2 ETC 01:37:51
+[browser] [sqlite-progress] 00:36 tcl(7/1393) f2 r2 ETC 01:57:42
+[browser] [sqlite-progress] 00:42 tcl(7/1393) f2 r2 ETC 02:17:34
+[browser] [sqlite-progress] 00:48 tcl(7/1393) f2 r2 ETC 02:37:26
+[browser] [sqlite-progress] 00:54 tcl(7/1393) f2 r2 ETC 02:57:18
+[browser] [sqlite-progress] 01:00 tcl(7/1393) f2 r2 ETC 03:17:11
+[browser] [sqlite-progress] 01:06 tcl(7/1393) f2 r2 ETC 03:37:04
+[browser] [sqlite-progress] 01:12 tcl(7/1393) f2 r2 ETC 03:56:55
+[browser] [sqlite-progress] 01:18 tcl(7/1393) f2 r2 ETC 04:16:44
+[browser] [sqlite-progress] 01:25 tcl(10/1393) f2 r2 ETC 03:15:33
+[browser] [sqlite-progress] 01:30 tcl(13/1393) f2 r2 ETC 02:38:59
+[browser] [sqlite-progress] 01:37 tcl(17/1393) f2 r2 ETC 02:10:34
+[browser] [sqlite-progress] 01:44 tcl(22/1393) f2 r2 ETC 01:48:25
+[browser] [sqlite-progress] 01:49 tcl(25/1393) f2 r2 ETC 01:39:46
+[browser] [sqlite-progress] 01:57 tcl(29/1393) f2 r2 ETC 01:31:27
+[browser] [sqlite-progress] 02:04 tcl(33/1393) f2 r2 ETC 01:25:03
+[browser] [sqlite-progress] 02:11 tcl(37/1393) f2 r2 ETC 01:19:48
+[browser] [sqlite-progress] 02:17 tcl(40/1393) f2 r2 ETC 01:17:26
+[browser] [sqlite-progress] 02:24 tcl(43/1393) f2 r2 ETC 01:15:18
+[browser] [sqlite-progress] 02:31 tcl(47/1393) f2 r2 ETC 01:12:02
+[browser] [sqlite-progress] 02:37 tcl(48/1393) f3 r2 ETC 01:13:17
+[browser] [sqlite-progress] 02:43 tcl(48/1393) f3 r2 ETC 01:16:05
+[browser] [sqlite-progress] 02:49 tcl(48/1393) f3 r2 ETC 01:18:53
+[browser] [sqlite-progress] 02:55 tcl(49/1393) f3 r2 ETC 01:19:58
+[browser] [sqlite-progress] 03:01 tcl(49/1393) f3 r2 ETC 01:22:43
+[browser] [sqlite-progress] 03:08 tcl(49/1393) f3 r2 ETC 01:25:42
+[browser] [sqlite-progress] 03:14 tcl(49/1393) f3 r2 ETC 01:28:48
+[browser] [sqlite-progress] 03:20 tcl(49/1393) f3 r2 ETC 01:31:36
+[browser] [sqlite-progress] 03:26 tcl(49/1393) f3 r2 ETC 01:34:21
+[browser] [sqlite-progress] 03:33 tcl(49/1393) f3 r2 ETC 01:37:21
+[browser] [sqlite-progress] 03:39 tcl(49/1393) f3 r2 ETC 01:40:09
+[browser] [sqlite-progress] 03:45 tcl(49/1393) f3 r2 ETC 01:42:54
+[browser] [sqlite-progress] 03:51 tcl(50/1393) f4 r2 ETC 01:43:37
+[browser] [sqlite-progress] 03:59 tcl(55/1393) f4 r2 ETC 01:36:55
+[browser] [sqlite-progress] 04:07 tcl(59/1393) f4 r2 ETC 01:32:59
+[browser] [sqlite-progress] 04:14 tcl(62/1393) f4 r2 ETC 01:30:42
+[browser] [sqlite-progress] 04:20 tcl(62/1393) f4 r2 ETC 01:33:00
+[browser] [sqlite-progress] 04:26 tcl(62/1393) f4 r2 ETC 01:35:18
+[browser] [sqlite-progress] 04:33 tcl(62/1393) f4 r2 ETC 01:37:32
+[browser] [sqlite-progress] 04:39 tcl(62/1393) f4 r2 ETC 01:39:48
+[browser] [sqlite-progress] 04:45 tcl(62/1393) f4 r2 ETC 01:42:05
+[browser] [sqlite-progress] 04:52 tcl(62/1393) f4 r2 ETC 01:44:18
+[browser] [sqlite-progress] 04:58 tcl(62/1393) f4 r2 ETC 01:46:33
+[browser] [sqlite-progress] 05:04 tcl(62/1393) f4 r2 ETC 01:48:46
+[browser] [sqlite-progress] 05:10 tcl(62/1393) f4 r2 ETC 01:51:00
+[browser] [sqlite-progress] 05:17 tcl(62/1393) f4 r2 ETC 01:53:20
+[browser] [sqlite-progress] 05:23 tcl(62/1393) f4 r2 ETC 01:55:39
+[browser] [sqlite-progress] 05:30 tcl(62/1393) f4 r2 ETC 01:57:54
+[browser] [sqlite-progress] 05:36 tcl(62/1393) f4 r2 ETC 02:00:10
+[browser] [sqlite-progress] 05:42 tcl(62/1393) f4 r2 ETC 02:02:20
+[browser] [sqlite-progress] 05:48 tcl(62/1393) f4 r2 ETC 02:04:31
+[browser] [sqlite-progress] 05:54 tcl(62/1393) f4 r2 ETC 02:06:41
+[browser] [sqlite-progress] 06:00 tcl(62/1393) f4 r2 ETC 02:08:50
+[browser:navigation] http://127.0.0.1:5200/pages/sqlite-test/
+[browser:close] page closed
+page.evaluate: Execution context was destroyed, most likely because of a navigation.
+    at main (/Users/brandon/gt/kandelo/polecats/capable/kandelo/scripts/browser-sqlite-official-runner.ts:182:27)
+===== SQLite official testrunner database summary =====
+SQLite official testrunner summary
+host=browser
+permutation=full
+jobs=2
+results_dir=test-runs/gastown-sqlite-browser-full-pr5-snapshot/browser
+
+total_jobs  done_jobs  failed_jobs  omitted_jobs  running_jobs  ready_jobs  total_cases  total_case_errors
+----------  ---------  -----------  ------------  ------------  ----------  -----------  -----------------
+1393        58         4            0             2             1329        20066        1004
+
+state    jobs  cases  case_errors
+-------  ----  -----  -----------
+done     58    15202  0
+failed   4     4864   1004
+ready    1329  0      0
+running  2     0      0
+
+Jobs by SQLite testrunner config:
+config  jobs  cases  case_errors
+------  ----  -----  -----------
+full    1393  20066  1004
+
+Failed, running, and omitted jobs:
+jobid  state    displaytype  displayname           cases  errors  ms
+-----  -------  -----------  --------------------  -----  ------  -----
+3      failed   tcl          test/sysfault.test    1360   2       8907
+4      failed   tcl          test/writecrash.test  20     1       7888
+48     failed   tcl          test/like.test        159    1       1747
+50     failed   tcl          test/savepoint6.test  3325   1000    56592
+63     running  tcl          test/walfault.test    0      0       0
+727    running  tcl          test/sort4.test       0      0       0
+===== Combined SQLite project unit test summary: test-runs/gastown-sqlite-browser-full-pr5-snapshot/combined-summary.md =====
+# SQLite Project Unit Tests on Kandelo
+
+Results root: `test-runs/gastown-sqlite-browser-full-pr5-snapshot`
+
+## Invocation
+
+- Permutation: `full`
+- Jobs per host: `2`
+- Timeout per host: `21600000` ms
+- Patterns/tests: full permutation default
+
+## Host summary
+
+| Host | Runner exit | Total jobs | Done | Failed | Omitted | Running | Ready | SQLite cases | Case errors | Current challenges |
+|------|-------------|------------|------|--------|---------|---------|-------|--------------|-------------|--------------------|
+| `browser` | 1 | 1393 | 58 | 4 | 0 | 2 | 1329 | 20066 | 1004 | failed:test/sysfault.test (1360 cases/2 errors); failed:test/writecrash.test (20 cases/1 errors); failed:test/like.test (159 cases/1 errors); failed:test/savepoint6.test (3325 cases/1000 errors); running:test/walfault.test (0 cases/0 errors) |
+
+## Artifacts
+
+- `browser`: `test-runs/gastown-sqlite-browser-full-pr5-snapshot/browser`

@@ -27,7 +27,7 @@ Currently stubbed (ENOSYS). Needs:
 3. **Program registry**: serve.ts provides a mapping from filesystem paths
    to .wasm binary bytes (e.g., `/bin/ls` → `coreutils-ls.wasm`).
 
-### Exec flow in centralized mode
+### Exec flow through the kernel
 
 ```
 Shell (fork child)                   Kernel Worker                Host (onExec)

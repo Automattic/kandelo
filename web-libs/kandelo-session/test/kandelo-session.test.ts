@@ -548,7 +548,10 @@ describe("Kandelo demo config", () => {
     expect(guide).toEqual(nodeGuide());
     expect(guide?.title).toBe("SpiderMonkey Node.js demo");
     expect(guide?.groups?.[0].actions.map((action) => action.id)).toContain("install-cowsay");
-    expect(builtinDemoGuide("wordpress-sqlite")).toBeNull();
+    expect(builtinDemoGuide("wordpress-sqlite")?.groups?.[0].actions[0]).toMatchObject({
+      id: "wp-admin-login",
+      kind: "web.wordpressLogin",
+    });
   });
 
   it("provides built-in presentation and assets for stale VFS images", () => {

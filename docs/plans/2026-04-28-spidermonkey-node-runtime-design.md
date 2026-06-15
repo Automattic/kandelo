@@ -10,7 +10,7 @@ This branch now has the first SpiderMonkey package:
 
 - `packages/registry/spidermonkey/package.toml` pins Firefox ESR `140.11.0esr` source and declares the standalone JS shell output as `js.wasm`.
 - `packages/registry/spidermonkey/build-spidermonkey.sh` downloads/verifies the ESR tarball, resolves `libcxx@21`, configures a wasm32 POSIX SpiderMonkey shell build with JIT disabled, then runs `wasm-opt` and `wasm-fork-instrument`.
-- `packages/registry/spidermonkey/test/spidermonkey.test.ts` covers `js -e` and modern JavaScript builtins under the centralized kernel harness.
+- `packages/registry/spidermonkey/test/spidermonkey.test.ts` covers `js -e` and modern JavaScript builtins under the kernel harness.
 
 The Node compatibility layer, vendored Node builtin modules, and SpiderMonkey JSAPI embedding are still not implemented. Next work should start that embedding on top of the working standalone engine package.
 
@@ -305,7 +305,7 @@ Phase 1 Node-runtime implementation should wait until the Phase 0 engine shell i
 - [x] **Gate 1.A — libcxx + libunwind landed.** `packages/registry/libcxx` provides libc++/libc++abi with libunwind bundled into `libc++abi.a`.
 - [x] **Gate 1.B — fork-from-catch (B1) shipped.** Covered by fork-instrument C-series tests.
 - [x] **Gate 1.C — fork-after-catch (test b) root-caused and fixed.** Covered by C-11 in `host/test/fork-instrument-coverage.test.ts`.
-- [x] **Gate 1.E — SpiderMonkey shell validates the real codebase.** `packages/registry/spidermonkey/bin/js.wasm` builds, is instrumented, and passes `packages/registry/spidermonkey/test/spidermonkey.test.ts` under the centralized kernel harness.
+- [x] **Gate 1.E — SpiderMonkey shell validates the real codebase.** `packages/registry/spidermonkey/bin/js.wasm` builds, is instrumented, and passes `packages/registry/spidermonkey/test/spidermonkey.test.ts` under the kernel harness.
 
 **Optional gate (deferred unless required):**
 

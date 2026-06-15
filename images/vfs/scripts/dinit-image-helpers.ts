@@ -11,7 +11,7 @@
  * target it can complete immediately and dinit will then stop the tree.
  */
 import { readFileSync, existsSync } from "node:fs";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import type { MemoryFileSystem } from "../../../host/src/vfs/memory-fs";
 import {
   writeVfsBinary,
@@ -67,6 +67,8 @@ export interface DinitService {
   restart?: boolean;
   /** Seconds to wait between restart attempts (default: dinit's). */
   restartDelay?: number;
+  /** Seconds before dinit cancels startup; 0 disables dinit's start timeout. */
+  startTimeout?: number;
   /** Where to log stdout/stderr (default: /var/log/<name>.log). */
   logfile?: string;
   /** Working directory for the command. */
@@ -97,6 +99,7 @@ function renderService(svc: DinitService): string {
   } else {
     lines.push("restart = false");
   }
+  if (svc.startTimeout !== undefined) lines.push(`start-timeout = ${svc.startTimeout}`);
   if (svc.logfile !== undefined) {
     lines.push(`logfile = ${svc.logfile}`);
   }
@@ -167,6 +170,65 @@ export interface AddDinitInitOptions {
    * the name (rare).
    */
   boot?: boolean | string;
+}
+
+export interface PathReadinessServiceOptions {
+  /** Service name; becomes /etc/dinit.d/<name>. */
+  name: string;
+  /** Filesystem path whose existence marks readiness. */
+  path: string;
+  /** Services that must be started before the readiness check runs. */
+  dependsOn?: string[];
+  /** Script path written into the image. Defaults under /usr/local/bin. */
+  scriptPath?: string;
+  /** Human-readable label used in timeout output. */
+  label?: string;
+  /** Maximum wait before the service fails. Defaults to 60 seconds. */
+  timeoutSeconds?: number;
+  /** Optional service logfile. Omitted by default, matching other quiet helpers. */
+  logfile?: string;
+}
+
+export function addPathReadinessService(
+  fs: MemoryFileSystem,
+  options: PathReadinessServiceOptions,
+): DinitService {
+  const scriptPath = options.scriptPath ?? `/usr/local/bin/${options.name}`;
+  const timeoutSeconds = options.timeoutSeconds ?? 60;
+  const label = options.label ?? options.name;
+
+  ensureDirRecursive(fs, dirname(scriptPath));
+  writeVfsFile(fs, scriptPath, `#!/bin/sh
+set -u
+
+path=${shellSingleQuote(options.path)}
+label=${shellSingleQuote(label)}
+i=0
+
+while [ "$i" -lt ${timeoutSeconds} ]; do
+    if [ -S "$path" ] || [ -e "$path" ]; then
+        exit 0
+    fi
+    sleep 1
+    i=$((i + 1))
+done
+
+echo "$label readiness timed out waiting for $path" >&2
+exit 1
+`, 0o755);
+
+  return {
+    name: options.name,
+    type: "scripted",
+    command: `/bin/sh ${scriptPath}`,
+    dependsOn: options.dependsOn,
+    logfile: options.logfile,
+    restart: false,
+  };
+}
+
+function shellSingleQuote(value: string): string {
+  return `'${value.replace(/'/g, "'\\''")}'`;
 }
 
 /**

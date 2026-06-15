@@ -1,6 +1,6 @@
 /**
- * Build a fully-bootable VFS image for the WordPress browser demo.
- * dinit (PID 1) brings up:
+ * Build a fully-bootable VFS image for the WordPress browser demo. The image
+ * starts from shell.vfs.zst, then dinit (PID 1) brings up:
  *
  *   wp-config-init (internal) + smtp-capture (process)
  *       → php-fpm (process) → nginx (process)
@@ -13,7 +13,7 @@
  */
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import { MemoryFileSystem } from "../../../host/src/vfs/memory-fs";
+import type { MemoryFileSystem } from "../../../host/src/vfs/memory-fs";
 import { resolveBinary, findRepoRoot } from "../../../host/src/binary-resolver";
 import {
   writeVfsFile,
@@ -34,6 +34,13 @@ import {
   smtpCaptureService,
   wordpressSmtpCaptureMuPlugin,
 } from "./smtp-capture-helpers";
+import { loadShellBaseFileSystem } from "./shell-vfs-build";
+import {
+  WORDPRESS_CONFIG_INIT_SCRIPT,
+  renderWordPressConfig,
+  wordpressConfigTemplate,
+} from "../../../apps/browser-demos/lib/init/wordpress-runtime-config";
+import { preinstallWordPressSqlite } from "./wordpress-preinstall";
 
 const REPO_ROOT = findRepoRoot();
 const BROWSER_DIR = join(REPO_ROOT, "apps", "browser-demos");
@@ -58,27 +65,14 @@ const SQLITE_DIR = ensureExtract({
 const NGINX_PATH = resolveBinary("programs/nginx.wasm");
 const PHP_FPM_PATH = resolveBinary("programs/php/php-fpm.wasm");
 const OPCACHE_SO_PATH = resolveBinary("programs/php/opcache.so");
-const DASH_PATH = resolveBinary("programs/dash.wasm");
-const COREUTILS_PATH = resolveBinary("programs/coreutils.wasm");
 const MSMTPD_PATH = resolveBinary("programs/msmtpd.wasm");
 const OUT_FILE = join(BROWSER_DIR, "public", "wordpress.vfs.zst");
 const PHP_FPM_WORKERS = 1;
 const PHP_FPM_UID = 65534;
 const PHP_FPM_GID = 65534;
+const WORDPRESS_IMAGE_MAX_BYTES = 256 * 1024 * 1024;
 
 // --- Service configs (reuse logic from init modules) ---
-
-function populateBootstrapShell(fs: MemoryFileSystem): void {
-  ensureDirRecursive(fs, "/bin");
-  ensureDirRecursive(fs, "/usr/bin");
-  writeVfsBinary(fs, "/bin/dash", new Uint8Array(readFileSync(DASH_PATH)));
-  writeVfsBinary(fs, "/bin/coreutils", new Uint8Array(readFileSync(COREUTILS_PATH)));
-  try { fs.symlink("/bin/dash", "/bin/sh"); } catch { /* exists */ }
-  for (const name of ["cat", "date", "mkdir", "mv"]) {
-    try { fs.symlink("/bin/coreutils", `/bin/${name}`); } catch { /* exists */ }
-    try { fs.symlink("/bin/coreutils", `/usr/bin/${name}`); } catch { /* exists */ }
-  }
-}
 
 function ensureWritableByPhpFpm(fs: MemoryFileSystem, path: string): void {
   ensureDirRecursive(fs, path);
@@ -337,78 +331,11 @@ function buildServices(): DinitService[] {
   ];
 }
 
-const WP_CONFIG_INIT_SCRIPT = `# wp-config.php is rendered into the VFS by the host before dinit starts.
-: "\${WP_APP_PATH:=/app}"
-: "\${WP_PROTO:=http}"
-echo "wp-config-init: APP_PATH=$WP_APP_PATH PROTO=$WP_PROTO"
-`;
-
-const WP_CONFIG_TEMPLATE_PHP = `<?php
-define('DB_NAME', 'wordpress');
-define('DB_USER', '');
-define('DB_PASSWORD', '');
-define('DB_HOST', '');
-define('DB_CHARSET', 'utf8');
-define('DB_COLLATE', '');
-
-define('DB_DIR', __DIR__ . '/wp-content/database/');
-define('DB_FILE', 'wordpress.db');
-
-define('AUTH_KEY',         'kandelo-dev');
-define('SECURE_AUTH_KEY',  'kandelo-dev');
-define('LOGGED_IN_KEY',    'kandelo-dev');
-define('NONCE_KEY',        'kandelo-dev');
-define('AUTH_SALT',        'kandelo-dev');
-define('SECURE_AUTH_SALT', 'kandelo-dev');
-define('LOGGED_IN_SALT',   'kandelo-dev');
-define('NONCE_SALT',       'kandelo-dev');
-
-$table_prefix = 'wp_';
-
-define('WP_DEBUG', true);
-define('WP_DEBUG_LOG', true);
-define('WP_DEBUG_DISPLAY', false);
-@ini_set('display_errors', '0');
-
-// Site URL includes app prefix — the service worker intercepts app/*
-// and strips it before sending to nginx. @@APP_PATH@@ and @@PROTO@@
-// are replaced at boot time by the wp-config-init dinit service.
-if (isset($_SERVER['HTTP_HOST'])) {
-    if ('@@PROTO@@' === 'https') { $_SERVER['HTTPS'] = 'on'; }
-    define('WP_HOME', '@@PROTO@@://' . $_SERVER['HTTP_HOST'] . '@@APP_PATH@@');
-    define('WP_SITEURL', '@@PROTO@@://' . $_SERVER['HTTP_HOST'] . '@@APP_PATH@@');
-}
-
-define('DISABLE_WP_CRON', true);
-
-if ( ! defined( 'ABSPATH' ) ) {
-    define( 'ABSPATH', __DIR__ . '/' );
-}
-
-require_once ABSPATH . 'wp-settings.php';
-`;
-
-function renderWpConfig(appPath: string, proto: string): string {
-  return WP_CONFIG_TEMPLATE_PHP
-    .replaceAll("@@APP_PATH@@", phpSingleQuotedContent(appPath))
-    .replaceAll("@@PROTO@@", phpSingleQuotedContent(proto));
-}
-
-function phpSingleQuotedContent(value: string): string {
-  return value.replace(/\\/g, "\\\\").replace(/'/g, "\\'");
-}
-
 // --- Main ---
 
 async function main() {
-  // 128 MiB initial, 256 MiB max growth. WordPress core + SQLite plugin
-  // is ~80 MiB. Worker entry then makes the SAB growable to 1 GiB at
-  // runtime (mariadbd's InnoDB log lessons).
-  const sab = new SharedArrayBuffer(128 * 1024 * 1024, { maxByteLength: 256 * 1024 * 1024 });
-  const fs = MemoryFileSystem.create(sab, 256 * 1024 * 1024);
-
-  console.log("Populating bootstrap shell...");
-  populateBootstrapShell(fs);
+  console.log("Loading shell base image...");
+  const fs = loadShellBaseFileSystem(WORDPRESS_IMAGE_MAX_BYTES);
 
   console.log("Populating WordPress service configs...");
   populateNginxConfig(fs);
@@ -424,9 +351,9 @@ async function main() {
   // Template + default wp-config. The browser host overwrites wp-config.php
   // with the current page prefix/protocol before dinit starts.
   ensureDirRecursive(fs, "/var/www/html");
-  writeVfsFile(fs, "/etc/wp-config-template.php", WP_CONFIG_TEMPLATE_PHP);
-  writeVfsFile(fs, "/etc/wp-config-init.sh", WP_CONFIG_INIT_SCRIPT);
-  writeVfsFile(fs, "/var/www/html/wp-config.php", renderWpConfig("/app", "http"));
+  writeVfsFile(fs, "/etc/wp-config-template.php", wordpressConfigTemplate("sqlite"));
+  writeVfsFile(fs, "/etc/wp-config-init.sh", WORDPRESS_CONFIG_INIT_SCRIPT);
+  writeVfsFile(fs, "/var/www/html/wp-config.php", renderWordPressConfig("sqlite", "/app", "http"));
 
   // WordPress-specific directories
   ensureWritableByPhpFpm(fs, "/var/www/html/wp-content/database");
@@ -468,6 +395,8 @@ async function main() {
   // dependencies ensure wp-config.php is finalized and SMTP is listening
   // before any FastCGI request.
   addDinitInit(fs, buildServices());
+
+  await preinstallWordPressSqlite(fs);
 
   // Prewarm opcache: compile the FPM router and every .php under the
   // document root into the file cache at /var/cache/opcache so the first

@@ -16,11 +16,11 @@ cd "$REPO_ROOT"
 # writer + fzstd; install both trees if missing.
 if [ ! -d host/node_modules ]; then
     echo "==> Installing host/ dependencies (needed by mkrootfs)..."
-    (cd host && npm install --prefer-offline --silent)
+    (cd host && npm ci --no-audit --no-fund --prefer-offline --silent)
 fi
 if [ ! -d tools/mkrootfs/node_modules ]; then
     echo "==> Installing tools/mkrootfs/ dependencies..."
-    (cd tools/mkrootfs && npm install --prefer-offline --silent)
+    (cd tools/mkrootfs && npm ci --no-audit --no-fund --prefer-offline --silent)
 fi
 
 OUT="host/wasm/rootfs.vfs"
