@@ -97,6 +97,7 @@ export class NodePlatformIO implements PlatformIO {
   ): number {
     const pos = offset ?? this.fdPositions.get(handle) ?? 0;
     const bytesWritten = fs.writeSync(handle, buffer, 0, length, pos);
+    if (bytesWritten > 0) this.metadata.noteNativeContentChange(fs.fstatSync(handle));
     if (offset === null) {
       this.fdPositions.set(handle, pos + bytesWritten);
     }
@@ -218,9 +219,24 @@ export class NodePlatformIO implements PlatformIO {
   }
 
   utimensat(path: string, atimeSec: number, atimeNsec: number, mtimeSec: number, mtimeNsec: number): void {
-    const atime = atimeSec + atimeNsec / 1e9;
-    const mtime = mtimeSec + mtimeNsec / 1e9;
-    fs.utimesSync(this.rewritePath(path), atime, mtime);
+    const nativePath = this.rewritePath(path);
+    if (atimeNsec === UTIME_OMIT && mtimeNsec === UTIME_OMIT) return;
+
+    const stat = fs.statSync(nativePath);
+    const current = this.metadata.toStatResult(stat);
+    const nowMs = Date.now();
+    const atimeMs = atimeNsec === UTIME_OMIT
+      ? current.atimeMs
+      : atimeNsec === UTIME_NOW
+        ? nowMs
+        : atimeSec * 1000 + Math.floor(atimeNsec / 1_000_000);
+    const mtimeMs = mtimeNsec === UTIME_OMIT
+      ? current.mtimeMs
+      : mtimeNsec === UTIME_NOW
+        ? nowMs
+        : mtimeSec * 1000 + Math.floor(mtimeNsec / 1_000_000);
+    fs.utimesSync(nativePath, atimeMs / 1000, mtimeMs / 1000);
+    this.metadata.utimens(stat, atimeMs, mtimeMs, fs.statSync(nativePath).ctimeMs);
   }
 
   opendir(path: string): number {
@@ -258,6 +274,7 @@ export class NodePlatformIO implements PlatformIO {
 
   ftruncate(handle: number, length: number): void {
     fs.ftruncateSync(handle, length);
+    this.metadata.noteNativeContentChange(fs.fstatSync(handle));
   }
 
   fsync(handle: number): void {
