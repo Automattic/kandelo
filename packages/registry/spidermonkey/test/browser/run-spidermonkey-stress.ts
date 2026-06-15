@@ -27,6 +27,10 @@ interface IterationResult {
 
 function stressSource(iteration: number): string {
   return [
+    "if (typeof setTimeZone !== 'function') throw new Error('setTimeZone unavailable');",
+    "setTimeZone('UTC');",
+    "setTimeZone('PST8PDT');",
+    "setTimeZone('UTC');",
     "var deadline = Date.now() + 50;",
     "while (Date.now() < deadline) {}",
     `print("stress-ok-${iteration}")`,
