@@ -427,6 +427,37 @@ assert.deepStrictEqual(Array.from(parsed.searchParams), [
     });
   });
 
+  it("loads CLI dotenv files before applying NODE_OPTIONS", () => {
+    const root = mkdtempSync(join(tmpdir(), "kandelo-node-dotenv-"));
+    try {
+      writeFileSync(
+        join(root, "node-options.env"),
+        [
+          "NODE_OPTIONS=\"--experimental-permission --allow-fs-read=*\"",
+          "NODE_NO_WARNINGS=1",
+        ].join("\n"),
+      );
+
+      const result = runBootstrapCli(
+        [
+          "--env-file",
+          "node-options.env",
+          "--eval",
+          "console.log(JSON.stringify({ warn: process.env.NODE_NO_WARNINGS, canRead: process.permission.has('fs.read', process.cwd()) }))",
+        ],
+        { cwd: root },
+      );
+
+      expect(result).toEqual({
+        status: 0,
+        stdout: "{\"warn\":\"1\",\"canRead\":true}\n",
+        stderr: "",
+      });
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it("runs CLI preload modules before the main script with package self references", () => {
     const root = mkdtempSync(join(tmpdir(), "kandelo-node-preload-"));
     try {
@@ -487,11 +518,32 @@ const cp = require("child_process");
 cp.spawnSync(process.execPath, ["--eval", "console.log(1)"], {
   stdio: ["pipe", "pipe", "inherit"],
 });
+cp.spawnSync(process.execPath, ["--env-file=.env", "--eval", "console.log(1)"], {
+  stdio: ["pipe", "pipe", "inherit"],
+});
+cp.spawnSync(process.execPath, ["--eval", "console.log(1)"], {
+  env: { ...process.env, BASIC: "existing" },
+  stdio: ["pipe", "pipe", "inherit"],
+});
+cp.spawnSync(process.execPath, ["--eval", "console.log(1)"], {
+  cwd: "/tmp/demo dir",
+  input: "stdin text",
+  env: { ...process.env, BASIC: "existing" },
+  stdio: ["pipe", "pipe", "pipe"],
+});
 cp.execSync(JSON.stringify(process.execPath) + " --print \\"40 + 2\\"", {
   stdio: ["pipe", "pipe", "inherit"],
 });
 assert(commands[0].includes("'--' '--eval'"), commands[0]);
-assert(commands[1].includes('"/usr/bin/node" -- --print "40 + 2"'), commands[1]);
+assert(commands[0].startsWith("{ export "), commands[0]);
+assert(commands[0].includes("export KANDELO_NODE_ARGV0='/usr/bin/node';"), commands[0]);
+assert(commands[0].includes("; '/usr/bin/node' '--' '--eval'"), commands[0]);
+assert(commands[1].includes("'--' '--env-file=.env' '--eval'"), commands[1]);
+assert(commands[2].includes("BASIC='existing'"), commands[2]);
+assert(!commands[2].includes("'env'"), commands[2]);
+assert(commands[3].startsWith("cd '/tmp/demo dir' && printf %s 'stdin text' | {"), commands[3]);
+assert(commands[3].includes("; '/usr/bin/node' '--' '--eval' 'console.log(1)'; } 2>"), commands[3]);
+assert(commands[4].includes('"/usr/bin/node" -- --print "40 + 2"'), commands[4]);
 `;
     const child = spawnSync(process.execPath, ["-"], {
       input: smoke,
