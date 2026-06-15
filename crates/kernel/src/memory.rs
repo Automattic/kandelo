@@ -133,9 +133,27 @@ impl MemoryManager {
             });
             hint
         } else {
-            // Find first gap in [mmap_base, max_addr) that fits aligned_len.
-            // Mappings are kept sorted by address.
-            match self.find_gap(aligned_len) {
+            // Without MAP_FIXED, POSIX treats a non-null address as a hint:
+            // the implementation may choose another address, but if the
+            // hinted page-aligned range is free and inside the normal mmap
+            // arena, using it preserves standard allocator expectations. In
+            // particular, allocators commonly try to extend a mapping by
+            // issuing mmap(old_end, delta, ...) without MAP_FIXED so the call
+            // fails safely instead of clobbering an occupied range.
+            let hinted_addr = if hint != 0
+                && hint & 0xFFFF == 0
+                && hint >= self.mmap_base.max(self.program_break)
+                && !self.overlaps_brk_heap(hint, aligned_len)
+                && self.can_grow_at(hint, aligned_len)
+            {
+                Some(hint)
+            } else {
+                None
+            };
+
+            // Otherwise find the first gap in [mmap_base, max_addr) that fits
+            // aligned_len. Mappings are kept sorted by address.
+            match hinted_addr.or_else(|| self.find_gap(aligned_len)) {
                 Some(a) => a,
                 None => return wasm_posix_shared::mmap::MAP_FAILED,
             }
@@ -648,6 +666,81 @@ mod tests {
             MAP_PRIVATE | MAP_ANONYMOUS,
         );
         assert_eq!(addr2, addr + 0x10000);
+    }
+
+    #[test]
+    fn test_mmap_gap_scan_merges_guest_and_reserved_regions() {
+        let mut mm = MemoryManager::new();
+        let rw = PROT_READ | PROT_WRITE;
+        let anon = MAP_PRIVATE | MAP_ANONYMOUS;
+        let base = MemoryManager::MMAP_BASE;
+
+        // Interleave a guest mapping and a host-reserved control range. The
+        // automatic mmap scan must consider both address-ordered streams and
+        // return the first real gap, not a range that is free in only one list.
+        assert_eq!(
+            mm.mmap_anonymous(base, 0x10000, rw, anon | MAP_FIXED),
+            base
+        );
+        assert_eq!(
+            mm.reserve_host_region_at(base + 0x10000, 0x10000),
+            base + 0x10000
+        );
+
+        let addr = mm.mmap_anonymous(0, 0x10000, rw, anon);
+        assert_eq!(addr, base + 0x20000);
+    }
+
+    #[test]
+    fn test_mmap_non_fixed_honors_free_address_hint() {
+        let mut mm = MemoryManager::new();
+        let rw = PROT_READ | PROT_WRITE;
+        let anon = MAP_PRIVATE | MAP_ANONYMOUS;
+        let base = MemoryManager::MMAP_BASE;
+
+        assert_eq!(mm.mmap_anonymous(base, 0x10000, rw, anon | MAP_FIXED), base);
+        assert_eq!(
+            mm.mmap_anonymous(base + 0x20000, 0x10000, rw, anon | MAP_FIXED),
+            base + 0x20000
+        );
+
+        // There is an earlier first-fit gap at base+0x10000, but a non-fixed
+        // hint at base+0x30000 is free. Prefer the usable hint instead of
+        // treating non-fixed hints as if they were NULL.
+        assert_eq!(
+            mm.mmap_anonymous(base + 0x30000, 0x10000, rw, anon),
+            base + 0x30000
+        );
+
+        // An occupied hint is only a hint; fall back to the ordinary first-fit
+        // address without replacing the existing mapping.
+        assert_eq!(
+            mm.mmap_anonymous(base + 0x20000, 0x10000, rw, anon),
+            base + 0x10000
+        );
+        assert!(mm.is_mapped(base + 0x20000));
+    }
+
+    #[test]
+    fn test_munmap_rounds_length_up_to_page() {
+        let mut mm = MemoryManager::new();
+        let rw = PROT_READ | PROT_WRITE;
+        let anon = MAP_PRIVATE | MAP_ANONYMOUS;
+
+        // SQLite sysfault.test allocates this size and later munmaps a
+        // different, still page-rounded length. Both must cover the same
+        // kernel mapping, otherwise a tiny tail fragment prevents reuse.
+        let requested_len = 0x1ea102e;
+        let munmap_len = 0x1ea2000;
+
+        let addr = mm.mmap_anonymous(0, requested_len, rw, anon);
+        assert_ne!(addr, MAP_FAILED);
+        assert!(mm.munmap(addr, munmap_len));
+        assert!(!mm.is_mapped(addr));
+        assert!(!mm.is_mapped(addr + munmap_len));
+
+        let reused = mm.mmap_anonymous(0, requested_len, rw, anon);
+        assert_eq!(reused, addr);
     }
 
     #[test]
