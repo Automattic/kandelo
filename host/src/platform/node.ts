@@ -128,6 +128,9 @@ export class NodePlatformIO implements PlatformIO {
       default:
         throw new Error(`Invalid whence value: ${whence}`);
     }
+    if (newPos < 0) {
+      throw makeFsError("EINVAL", "negative seek offset");
+    }
     this.fdPositions.set(handle, newPos);
     return newPos;
   }
