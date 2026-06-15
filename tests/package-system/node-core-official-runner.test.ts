@@ -1,10 +1,15 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   createIsolatedTests,
   destroyNodeHostBestEffort,
   envForRun,
+  nodeArgvForOfficialTest,
+  nodeExecProgramsForOfficialTest,
   terminateTimedOutNodeHostBestEffort,
+  writePrelude,
   type SelectedTest,
 } from "../../scripts/node-core-official-runner";
 
@@ -68,9 +73,15 @@ describe("node-core official runner isolation", () => {
     const previousNodeTestDir = process.env.NODE_TEST_DIR;
     const previousSerialId = process.env.TEST_SERIAL_ID;
     const previousThreadId = process.env.TEST_THREAD_ID;
+    const previousPath = process.env.PATH;
+    const previousNixFlags = process.env.NIX_CFLAGS_COMPILE;
+    const previousNpmCommand = process.env.npm_command;
     process.env.NODE_TEST_DIR = "/stale";
     process.env.TEST_SERIAL_ID = "0";
     process.env.TEST_THREAD_ID = "0";
+    process.env.PATH = "/custom/bin:/usr/bin";
+    process.env.NIX_CFLAGS_COMPILE = "x".repeat(10_000);
+    process.env.npm_command = "exec";
 
     try {
       const [isolated] = createIsolatedTests([
@@ -84,11 +95,92 @@ describe("node-core official runner isolation", () => {
       expect(browserEnv.get("NODE_TEST_DIR")).toBe(isolated.isolation.browserTestDir);
       expect(browserEnv.get("TEST_SERIAL_ID")).toBe("1");
       expect(browserEnv.get("TEST_THREAD_ID")).toBe("1");
+      expect(browserEnv.get("PATH")).toBe("/usr/bin:/bin");
+      expect(browserEnv.has("NIX_CFLAGS_COMPILE")).toBe(false);
+      expect(browserEnv.has("npm_command")).toBe(false);
     } finally {
       restoreEnv("NODE_TEST_DIR", previousNodeTestDir);
       restoreEnv("TEST_SERIAL_ID", previousSerialId);
       restoreEnv("TEST_THREAD_ID", previousThreadId);
+      restoreEnv("PATH", previousPath);
+      restoreEnv("NIX_CFLAGS_COMPILE", previousNixFlags);
+      restoreEnv("npm_command", previousNpmCommand);
     }
+  });
+
+  it("forwards official dotenv flags behind the SpiderMonkey argv separator", () => {
+    const root = mkdtempSync(join(tmpdir(), "kandelo-node-core-flags-"));
+    try {
+      const testPath = join(root, "test-dotenv-node-options.js");
+      writeFileSync(testPath, "// Flags: --env-file=.env --conditions demo\n");
+
+      expect(nodeArgvForOfficialTest("/prelude.js", "/test.js", testPath)).toEqual([
+        "node",
+        "--",
+        "--env-file=.env",
+        "/prelude.js",
+        "/test.js",
+      ]);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("uses the SpiderMonkey argv separator for official tests without flags", () => {
+    const root = mkdtempSync(join(tmpdir(), "kandelo-node-core-flags-"));
+    try {
+      const testPath = join(root, "test-plain.js");
+      writeFileSync(testPath, "console.log(process.argv[1]);\n");
+
+      expect(nodeArgvForOfficialTest("/prelude.js", "/test.js", testPath)).toEqual([
+        "node",
+        "--",
+        "/prelude.js",
+        "/test.js",
+      ]);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("generates a prelude that presents the official test as argv[1]", () => {
+    const root = mkdtempSync(join(tmpdir(), "kandelo-node-core-prelude-"));
+    try {
+      const preludePath = writePrelude(root);
+      const source = readFileSync(preludePath, "utf8");
+      expect(source).toContain("process.argv = [process.argv[0], testFile];");
+      expect(source).not.toContain("process.argv[1] = testFile;");
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("maps Node official self-exec and shell paths to wasm programs", () => {
+    expect(nodeExecProgramsForOfficialTest(
+      "/repo/node.wasm",
+      "/repo/sh.wasm",
+      "/repo/coreutils.wasm",
+    )).toEqual({
+      "node": "/repo/node.wasm",
+      "/bin/node": "/repo/node.wasm",
+      "/usr/bin/node": "/repo/node.wasm",
+      "/usr/local/bin/node": "/repo/node.wasm",
+      "sh": "/repo/sh.wasm",
+      "/bin/sh": "/repo/sh.wasm",
+      "/usr/bin/sh": "/repo/sh.wasm",
+      "env": "/repo/coreutils.wasm",
+      "/bin/env": "/repo/coreutils.wasm",
+      "/usr/bin/env": "/repo/coreutils.wasm",
+    });
+  });
+
+  it("keeps Node official shell and utility mappings optional", () => {
+    expect(nodeExecProgramsForOfficialTest("/repo/node.wasm", null, null)).toEqual({
+      "node": "/repo/node.wasm",
+      "/bin/node": "/repo/node.wasm",
+      "/usr/bin/node": "/repo/node.wasm",
+      "/usr/local/bin/node": "/repo/node.wasm",
+    });
   });
 });
 

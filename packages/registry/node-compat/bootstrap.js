@@ -3766,6 +3766,62 @@ const nodeBuffer = (() => {
 // process module
 // ============================================================
 
+const _permissionState = {
+    enabled: false,
+    fsRead: [],
+    fsWrite: [],
+};
+
+function _normalizePermissionReference(reference) {
+    if (reference === undefined || reference === null || reference === '') return process.cwd();
+    return path.isAbsolute(String(reference)) ? String(reference) : path.resolve(process.cwd(), String(reference));
+}
+
+function _permissionListAllows(list, reference) {
+    if (!Array.isArray(list) || list.length === 0) return false;
+    if (list.includes('*')) return true;
+    const normalized = _normalizePermissionReference(reference);
+    for (const entry of list) {
+        if (entry === '*') return true;
+        const allowed = _normalizePermissionReference(entry);
+        if (normalized === allowed || normalized.startsWith(allowed.endsWith('/') ? allowed : allowed + '/')) {
+            return true;
+        }
+    }
+    return false;
+}
+
+function _setPermissionAllowList(kind, value) {
+    _permissionState.enabled = true;
+    const list = String(value || '').split(',').map((entry) => entry.trim()).filter(Boolean);
+    if (kind === 'fs.read') _permissionState.fsRead = list;
+    if (kind === 'fs.write') _permissionState.fsWrite = list;
+}
+
+function _permissionHas(scope, reference) {
+    if (!_permissionState.enabled) return true;
+    if (scope === 'fs') {
+        return _permissionHas('fs.read', reference) && _permissionHas('fs.write', reference);
+    }
+    if (scope === 'fs.read') return _permissionListAllows(_permissionState.fsRead, reference);
+    if (scope === 'fs.write') return _permissionListAllows(_permissionState.fsWrite, reference);
+    return true;
+}
+
+function _makeAccessDeniedError(permission) {
+    const err = new Error('Access to this API has been restricted');
+    err.code = 'ERR_ACCESS_DENIED';
+    err.permission = permission;
+    const stack = err.stack || `${err.name}: ${err.message}`;
+    err.stack = `${stack}\n  code: 'ERR_ACCESS_DENIED'\n  permission: '${permission}'`;
+    return err;
+}
+
+function _assertFsWriteAllowed(targetPath) {
+    if (!_permissionState.enabled) return;
+    if (!_permissionHas('fs.write', targetPath)) throw _makeAccessDeniedError('FileSystemWrite');
+}
+
 const _activeResources = new Map();
 let _nextActiveResourceId = 1;
 
@@ -4132,7 +4188,8 @@ const process = (() => {
             has(scope, reference) {
                 _validateString(scope, 'scope');
                 if (reference !== undefined) _validateString(reference, 'reference');
-                return _knownPermissionScopes.has(scope);
+                if (!_knownPermissionScopes.has(scope)) return false;
+                return _permissionHas(scope, reference);
             },
         },
 
@@ -4824,6 +4881,7 @@ const fs = (() => {
         const isFd = typeof filepath === 'number';
         const p = isFd ? undefined : _pathToString(filepath);
         const flags = _flagsToMode(flag);
+        if (!isFd) _assertFsWriteAllowed(p);
         const fd = isFd ? filepath : os.open(p, flags, mode);
         if (fd < 0) _throwErrno(-fd, 'open', p);
 
@@ -4866,6 +4924,7 @@ const fs = (() => {
 
     function mkdirSync(dirpath, options) {
         const p = _pathToString(dirpath);
+        _assertFsWriteAllowed(p);
         const recursive = options && options.recursive;
         const mode = (options && options.mode) || 0o777;
 
@@ -4901,6 +4960,7 @@ const fs = (() => {
         const recursive = opts.recursive === true;
         const force = opts.force === true;
         const p = _pathToString(targetPath);
+        _assertFsWriteAllowed(p);
         const [st, statErr] = os.lstat(p);
         if (statErr !== 0) {
             if (force) return;
@@ -4929,6 +4989,7 @@ const fs = (() => {
 
     function unlinkSync(filepath) {
         const p = _pathToString(filepath);
+        _assertFsWriteAllowed(p);
         const err = os.remove(p);
         if (err !== 0) _throwErrno(-err, 'unlink', p);
     }
@@ -5034,6 +5095,9 @@ const fs = (() => {
         const p = _pathToString(filepath);
         const f = _flagsToMode(flags || 'r');
         const m = mode || 0o666;
+        if ((f & 3) !== os.O_RDONLY || (f & (os.O_CREAT | os.O_TRUNC | os.O_APPEND)) !== 0) {
+            _assertFsWriteAllowed(p);
+        }
         const fd = os.open(p, f, m);
         if (fd < 0) _throwErrno(-fd, 'open', p);
         return fd;
@@ -9685,16 +9749,36 @@ const child_process = (() => {
         return pairs;
     }
 
-    function envCommandPrefix(env, internalPairs) {
+    function isShellEnvName(key) {
+        return /^[A-Za-z_][A-Za-z0-9_]*$/.test(key);
+    }
+
+    function shellEnvAssignment(key, value) {
+        if (!isShellEnvName(key)) return null;
+        return `${key}=${shellQuote(value)}`;
+    }
+
+    function applyShellEnv(commandText, env, internalPairs) {
         const pairs = envValuePairs(env, internalPairs);
-        if (pairs.length === 0 && !env) return '';
-        const args = ['env'];
-        if (env) args.push('-i');
+        const assignments = [];
         for (const [key, value] of pairs) {
             if (key.includes('=')) continue;
-            args.push(`${key}=${value}`);
+            const assignment = shellEnvAssignment(key, value);
+            if (assignment) assignments.push(assignment);
         }
-        return args.map(shellQuote).join(' ') + ' ';
+        if (assignments.length === 0 && !env) return commandText;
+
+        const commands = [];
+        if (env) {
+            const unsetNames = [];
+            for (const key in process.env) {
+                if (isShellEnvName(key)) unsetNames.push(shellQuote(key));
+            }
+            if (unsetNames.length > 0) commands.push(`unset ${unsetNames.join(' ')}`);
+        }
+        for (const assignment of assignments) commands.push(`export ${assignment}`);
+        commands.push(commandText);
+        return `{ ${commands.join('; ')}; }`;
     }
 
     function normalizeStdio(stdio) {
@@ -9787,7 +9871,7 @@ const child_process = (() => {
             spawnargs = [file, ...argv];
         }
 
-        let shellCommand = envCommandPrefix(env, internalEnv) + commandText;
+        let shellCommand = applyShellEnv(commandText, env, internalEnv);
         if (opts.input !== undefined) {
             const input = Buffer.isBuffer(opts.input) ? opts.input.toString() : String(opts.input);
             shellCommand = `printf %s ${shellQuote(input)} | ${shellCommand}`;
@@ -9801,14 +9885,18 @@ const child_process = (() => {
         const opts = spec.options || {};
         const stdio = normalizeStdio(opts.stdio);
         const inheritStderr = stdio[2] === 'inherit';
-        const stderrPath = `/tmp/kandelo-child-process-${process.pid}-${Date.now()}-${nextTemp++}.stderr`;
-        const command = inheritStderr ? spec.shellCommand : `(${spec.shellCommand}) 2>${shellQuote(stderrPath)}`;
+        const tempId = nextTemp++;
+        const stderrPath = `/tmp/kandelo-child-process-${process.pid}-${Date.now()}-${tempId}.stderr`;
+        const scriptPath = `/tmp/kandelo-child-process-${process.pid}-${Date.now()}-${tempId}.sh`;
+        const command = inheritStderr ? spec.shellCommand : `${spec.shellCommand} 2>${shellQuote(stderrPath)}`;
+        const popenCommand = command.length > 4096 ? `/bin/sh ${shellQuote(scriptPath)}` : command;
         let stdout = '';
         let stderr = '';
         let status = 127;
         let f = null;
         try {
-            f = std.popen(command, 'r');
+            if (popenCommand !== command) fs.writeFileSync(scriptPath, `${command}\n`, 'utf8');
+            f = std.popen(popenCommand, 'r');
             if (!f) throw _makeNodeError(`spawn ${spec.file} ENOENT`, 'ENOENT', 2, 'spawn', spec.file);
             stdout = readPopen(f);
             status = f.close();
@@ -9821,6 +9909,7 @@ const child_process = (() => {
                 try { stderr = fs.readFileSync(stderrPath, 'utf8'); } catch (_) { stderr = ''; }
                 try { fs.unlinkSync(stderrPath); } catch (_) {}
             }
+            try { fs.unlinkSync(scriptPath); } catch (_) {}
         }
         const maxBuffer = opts.maxBuffer == null ? 1024 * 1024 : Number(opts.maxBuffer);
         if (maxBuffer >= 0 && (Buffer.byteLength(stdout) > maxBuffer || Buffer.byteLength(stderr) > maxBuffer)) {
@@ -16748,13 +16837,13 @@ function _nextAdapterTimerDelay() {
 function _handleTopLevelFailure(err) {
     try {
         if (!process._handleUncaughtException(err)) {
-            console.error(_formatThrownFailure(err));
+            _writeStderrSync(_formatThrownFailure(err) + '\n');
             process.exitCode = process.exitCode || 1;
             return false;
         }
         return true;
     } catch (handlerErr) {
-        console.error(_formatThrownFailure(handlerErr));
+        _writeStderrSync(_formatThrownFailure(handlerErr) + '\n');
         process.exitCode = process.exitCode || 1;
         return false;
     }
@@ -17175,6 +17264,91 @@ if (typeof execArgv !== 'undefined') {
     process.argv0 = envArgv0 || ((typeof argv0 !== 'undefined' && argv0) ? argv0 : (process.argv[0] || 'node'));
 }
 
+const _originalDotenvEnvKeys = new Set(Object.keys(process.env));
+const _dotenvManagedEnvKeys = new Set();
+
+function _isOriginalDotenvEnvKey(key) {
+    if (_originalDotenvEnvKeys.has(key)) return true;
+    if (_dotenvManagedEnvKeys.has(key)) return false;
+    const value = std.getenv(key);
+    if (value !== null && value !== undefined) {
+        _originalDotenvEnvKeys.add(key);
+        return true;
+    }
+    return false;
+}
+
+function _findDotenvAssignment(line) {
+    let rest = String(line || '').trimStart();
+    if (!rest || rest.startsWith('#')) return null;
+    if (rest.startsWith('export ')) rest = rest.slice(7).trimStart();
+    const eq = rest.indexOf('=');
+    if (eq < 0) return null;
+    const key = rest.slice(0, eq).trim();
+    if (!key) return null;
+    const rawValue = rest.slice(eq + 1);
+    return { key, rawValue };
+}
+
+function _parseDotenvSource(source) {
+    const entries = [];
+    const lines = String(source || '').replace(/\r\n?/g, '\n').split('\n');
+    for (let i = 0; i < lines.length; i++) {
+        const assignment = _findDotenvAssignment(lines[i]);
+        if (!assignment) continue;
+        const { key, rawValue } = assignment;
+        const trimmedStart = rawValue.trimStart();
+        const quote = trimmedStart[0];
+        if (quote === '"' || quote === "'" || quote === '`') {
+            let value = '';
+            let foundClosingQuote = false;
+            for (let j = i; j < lines.length; j++) {
+                const segment = j === i ? trimmedStart.slice(1) : lines[j];
+                const close = segment.indexOf(quote);
+                if (close >= 0) {
+                    value += segment.slice(0, close);
+                    foundClosingQuote = true;
+                    i = j;
+                    break;
+                }
+                value += segment;
+                if (j + 1 < lines.length) value += '\n';
+            }
+            if (foundClosingQuote) {
+                entries.push([key, quote === '"' ? value.replace(/\\n/g, '\n') : value]);
+                continue;
+            }
+        }
+        const hash = rawValue.indexOf('#');
+        const unquoted = hash >= 0 ? rawValue.slice(0, hash) : rawValue;
+        entries.push([key, unquoted.trim()]);
+    }
+    return entries;
+}
+
+function _writeStderrSync(text) {
+    try {
+        const bytes = new TextEncoder().encode(String(text));
+        os.write(2, bytes.buffer, bytes.byteOffset, bytes.byteLength);
+    } catch (_) {
+        try { process.stderr.write(String(text)); } catch (_) {}
+    }
+}
+
+function _loadDotenvFile(filename) {
+    const resolved = path.isAbsolute(filename) ? filename : path.resolve(process.cwd(), filename);
+    const source = std.loadFile(resolved);
+    if (source === null) {
+        _writeStderrSync(`${process.argv[0] || 'node'}: ${resolved}: not found\n`);
+        std.exit(9);
+    }
+    for (const [key, value] of _parseDotenvSource(source)) {
+        if (_isOriginalDotenvEnvKey(key)) continue;
+        process.env[key] = value;
+        _dotenvManagedEnvKeys.add(key);
+    }
+}
+
 function _splitNodeOptions(text) {
     const tokens = [];
     let current = '';
@@ -17257,6 +17431,8 @@ const _NODE_OPTIONS_ALLOWED_FLAGS = new Set([
 ]);
 
 const _NODE_OPTIONS_ALLOWED_VALUES = new Set([
+    '--allow-fs-read',
+    '--allow-fs-write',
     '--input-type',
     '--max-old-space-size',
     '--max-semi-space-size',
@@ -17316,6 +17492,42 @@ function _applyCliFlag(option, value) {
     else if (option === '--input-type') _cliOptionValues['--input-type'] = value || '';
     else if (option === '--use-strict') _cliOptionValues['--use-strict'] = true;
     else if (option === '--expose-internals' || option === '--expose_internals') _cliOptionValues['--expose-internals'] = true;
+    else if (option === '--experimental-permission') _permissionState.enabled = true;
+    else if (option === '--allow-fs-read') _setPermissionAllowList('fs.read', value);
+    else if (option === '--allow-fs-write') _setPermissionAllowList('fs.write', value);
+}
+
+function _loadNodeCliEnvFiles(rawArgv) {
+    for (let i = 1; i < rawArgv.length;) {
+        const arg = String(rawArgv[i]);
+        if (arg === '--') break;
+        const name = _optionName(arg);
+        if (name === '--env-file') {
+            const read = _readOptionValue(rawArgv, i, name);
+            const missing = _missingRequiredCliValue(arg, read);
+            if (missing) return { status: 9, message: missing };
+            _loadDotenvFile(read.value);
+            i = read.next;
+            continue;
+        }
+        if (arg === '--eval' || arg === '-e' || arg.startsWith('--eval=') ||
+            arg === '--print' || arg === '-p' || arg === '-pe' || arg === '-ep') {
+            break;
+        }
+        if (arg === '-r' || arg === '--require' || arg.startsWith('--require=') ||
+            _NODE_OPTIONS_ALLOWED_VALUES.has(name) || _CLI_ALLOWED_VALUES.has(name) ||
+            _CLI_TEST_ALLOWED_VALUES.has(name)) {
+            const read = _readOptionValue(rawArgv, i, name);
+            i = read.next;
+            continue;
+        }
+        if (arg.startsWith('-')) {
+            i++;
+            continue;
+        }
+        break;
+    }
+    return null;
 }
 
 function _parseNodeOptionsEnv(text) {
@@ -17360,8 +17572,11 @@ function _parseNodeOptionsEnv(text) {
 }
 
 function _parseNodeCli(argv) {
-    const envState = _parseNodeOptionsEnv(process.env.NODE_OPTIONS || '');
     const rawArgv = Array.isArray(argv) && argv.length > 0 ? argv.map(String) : ['node'];
+    const dotenvError = _loadNodeCliEnvFiles(rawArgv);
+    const envState = dotenvError
+        ? { preloads: [], error: dotenvError }
+        : _parseNodeOptionsEnv(process.env.NODE_OPTIONS || '');
     const state = {
         argv: [process.execPath || rawArgv[0] || 'node'],
         execArgv: [],
@@ -17425,6 +17640,17 @@ function _parseNodeCli(argv) {
             state.exit = { status: 0, stdout: `Usage: ${process.execPath} [options] [ script.js ] [arguments]\n` };
             return state;
         }
+        if (name === '--env-file') {
+            const read = _readOptionValue(rawArgv, i, name);
+            const missing = _missingRequiredCliValue(arg, read);
+            if (missing) {
+                state.error = { status: 9, message: missing };
+                return state;
+            }
+            state.execArgv.push(read.inline ? arg : arg, ...(!read.inline ? [read.value] : []));
+            i = read.next;
+            continue;
+        }
         if (arg === '--eval' || arg === '-e' || arg.startsWith('--eval=')) {
             const read = _readOptionValue(rawArgv, i, arg.startsWith('--eval=') ? '--eval' : arg);
             const missing = _missingRequiredCliValue(arg, read);
@@ -17482,13 +17708,26 @@ function _parseNodeCli(argv) {
             continue;
         }
         if (arg === '--experimental-permission') {
+            _applyCliFlag(arg);
             state.execArgv.push(arg);
             i++;
             continue;
         }
-        if (arg.startsWith('--allow-fs-read=') || arg.startsWith('--allow-fs-write=')) {
-            state.error = { status: 1, message: '--experimental-permission is required' };
-            return state;
+        if (name === '--allow-fs-read' || name === '--allow-fs-write') {
+            if (!_permissionState.enabled) {
+                state.error = { status: 1, message: '--experimental-permission is required' };
+                return state;
+            }
+            const read = _readOptionValue(rawArgv, i, name);
+            const missing = _missingRequiredCliValue(arg, read);
+            if (missing) {
+                state.error = { status: 9, message: missing };
+                return state;
+            }
+            _applyCliFlag(name, read.value);
+            state.execArgv.push(read.inline ? arg : arg, ...(!read.inline ? [read.value] : []));
+            i = read.next;
+            continue;
         }
         if (_CLI_ALLOWED_VALUES.has(name)) {
             const read = _readOptionValue(rawArgv, i, name);

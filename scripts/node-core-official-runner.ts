@@ -419,6 +419,16 @@ async function resolveRuntime(path?: string): Promise<string> {
   return resolved;
 }
 
+async function resolveShellRuntime(): Promise<string | null> {
+  const { tryResolveBinary } = await import("../host/src/binary-resolver");
+  return tryResolveBinary("programs/sh.wasm") ?? tryResolveBinary("programs/dash.wasm");
+}
+
+async function resolveCoreutilsRuntime(): Promise<string | null> {
+  const { tryResolveBinary } = await import("../host/src/binary-resolver");
+  return tryResolveBinary("programs/coreutils.wasm");
+}
+
 function makeResultsDir(options: Options): string {
   if (options.resultsDir) {
     mkdirSync(options.resultsDir, { recursive: true });
@@ -464,7 +474,7 @@ for (const name of disabledGlobals) {
   }
 }
 
-process.argv[1] = testFile;
+process.argv = [process.argv[0], testFile];
 process.env.NODE_SKIP_FLAG_CHECK = '1';
 process.env.NODE_DISABLE_COLORS = process.env.NODE_DISABLE_COLORS || '1';
 process.env.NODE_TEST_KNOWN_GLOBALS = process.env.NODE_TEST_KNOWN_GLOBALS || '0';
@@ -637,6 +647,57 @@ function safeName(path: string): string {
   return path.replace(/[^A-Za-z0-9_.-]+/g, "_").replace(/^_+|_+$/g, "");
 }
 
+function dotenvFlagsForOfficialTest(testPath: string): string[] {
+  const source = readFileSync(testPath, "utf8").slice(0, 1500);
+  const match = /^\/\/ Flags:\s+(.+)$/m.exec(source);
+  if (!match) return [];
+
+  const rawFlags = match[1].split(/\s+/).filter(Boolean);
+  const forwarded: string[] = [];
+  for (let i = 0; i < rawFlags.length; i++) {
+    const flag = rawFlags[i];
+    if (flag === "--env-file") {
+      const value = rawFlags[i + 1];
+      if (value) {
+        forwarded.push(flag, value);
+        i++;
+      }
+    } else if (flag.startsWith("--env-file=")) {
+      forwarded.push(flag);
+    }
+  }
+  return forwarded;
+}
+
+function nodeArgvForOfficialTest(preludePath: string, testPath: string, flagSourcePath = testPath): string[] {
+  const dotenvFlags = dotenvFlagsForOfficialTest(flagSourcePath);
+  return ["node", "--", ...dotenvFlags, preludePath, testPath];
+}
+
+function nodeExecProgramsForOfficialTest(
+  runtimePath: string,
+  shellPath?: string | null,
+  coreutilsPath?: string | null,
+): Record<string, string> {
+  const execPrograms: Record<string, string> = {
+    "node": runtimePath,
+    "/bin/node": runtimePath,
+    "/usr/bin/node": runtimePath,
+    "/usr/local/bin/node": runtimePath,
+  };
+  if (shellPath) {
+    execPrograms["sh"] = shellPath;
+    execPrograms["/bin/sh"] = shellPath;
+    execPrograms["/usr/bin/sh"] = shellPath;
+  }
+  if (coreutilsPath) {
+    execPrograms["env"] = coreutilsPath;
+    execPrograms["/bin/env"] = coreutilsPath;
+    execPrograms["/usr/bin/env"] = coreutilsPath;
+  }
+  return execPrograms;
+}
+
 function createIsolatedTests(tests: SelectedTest[], resultsDir: string): IsolatedTest[] {
   return tests.map((test, index) => {
     const serialId = String(index + 1);
@@ -654,11 +715,17 @@ function createIsolatedTests(tests: SelectedTest[], resultsDir: string): Isolate
   });
 }
 
+function officialTestPath(): string {
+  return "/usr/bin:/bin";
+}
+
 function envForRun(isolation?: TestIsolation): string[] {
-  const env = new Map(
-    Object.entries(process.env)
-      .filter((entry): entry is [string, string] => entry[1] !== undefined),
-  );
+  const env = new Map<string, string>();
+  for (const key of ["HOME", "USER", "LOGNAME", "TMPDIR", "TMP", "TEMP", "LANG", "LC_ALL", "LC_CTYPE"]) {
+    const value = process.env[key];
+    if (value !== undefined) env.set(key, value);
+  }
+  env.set("PATH", officialTestPath());
   env.set("NODE_SKIP_FLAG_CHECK", "1");
   env.set("NODE_DISABLE_COLORS", "1");
   env.set("NODE_TEST_KNOWN_GLOBALS", "0");
@@ -676,7 +743,10 @@ export {
   createIsolatedTests,
   destroyNodeHostBestEffort,
   envForRun,
+  nodeArgvForOfficialTest,
+  nodeExecProgramsForOfficialTest,
   terminateTimedOutNodeHostBestEffort,
+  writePrelude,
 };
 
 export type {
@@ -691,6 +761,8 @@ async function runNodeTest(
   preludePath: string,
   runtimePath: string,
   programBytes: ArrayBuffer,
+  shellPath: string | null,
+  coreutilsPath: string | null,
 ): Promise<RawRunResult> {
   const { test, isolation } = isolated;
   const { NodeKernelHost } = await import("../host/src/node-kernel-host");
@@ -706,12 +778,7 @@ async function runNodeTest(
 
   const host = new NodeKernelHost({
     maxWorkers: 4,
-    execPrograms: {
-      "node": runtimePath,
-      "/bin/node": runtimePath,
-      "/usr/bin/node": runtimePath,
-      "/usr/local/bin/node": runtimePath,
-    },
+    execPrograms: nodeExecProgramsForOfficialTest(runtimePath, shellPath, coreutilsPath),
     extraMounts: [
       { mountPoint: "/usr/bin", hostPath: nodeBinDir, readonly: true },
     ],
@@ -722,7 +789,7 @@ async function runNodeTest(
   try {
     mkdirSync(isolation.nodeTestDir, { recursive: true });
     await host.init();
-    const exitPromise = host.spawn(programBytes, ["node", preludePath, testPath], {
+    const exitPromise = host.spawn(programBytes, nodeArgvForOfficialTest(preludePath, testPath), {
       cwd: sourceDir,
       env: envForRun(isolation),
       onStarted: (startedPid) => { pid = startedPid; },
@@ -842,11 +909,11 @@ async function runBrowserTests(
                 },
                 {
                   wasmUrl: runtimeUrl,
-                  argv: [
-                    "node",
+                  argv: nodeArgvForOfficialTest(
                     "/node-v22.0.0/kandelo-node-core-prelude.js",
                     `/node-v22.0.0/${test.spec.path}`,
-                  ],
+                    testHostPath,
+                  ),
                   timeoutMs: test.timeoutMs,
                   dataFiles,
                   env: envForRun({
@@ -1309,11 +1376,13 @@ async function main(): Promise<void> {
     // No runtime binary is required to verify explicit support-boundary skips.
   } else if (options.host === "node") {
     runtimePath = await resolveRuntime(options.runtimePath);
+    const shellPath = await resolveShellRuntime();
+    const coreutilsPath = await resolveCoreutilsRuntime();
     const preludePath = writePrelude(resultsDir);
     const jobs = options.jobs ?? manifest.defaults?.jobs ?? 1;
     const programBytes = loadBytes(runtimePath);
     const nodeResults = await runWithConcurrency(isolatedRunnable, jobs, async (isolated) => {
-      const raw = await runNodeTest(isolated, source.dir, preludePath, runtimePath, programBytes);
+      const raw = await runNodeTest(isolated, source.dir, preludePath, runtimePath, programBytes, shellPath, coreutilsPath);
       return recordResult(isolated.test, options.host, raw, resultsDir);
     });
     recorded.push(...nodeResults);
