@@ -69,6 +69,10 @@ docs-site/.vitepress/dist/
 # Browser example build output
 apps/browser-demos/dist/
 
+# Long-running external suite logs. Harness summaries belong in PR/docs;
+# raw logs are local artifacts.
+/test-results/
+
 # Per-package source/build trees produced by packages/registry/*/build-*.sh.
 # These are recreated on every build (clone or untar+make).
 packages/registry/*/*-src/

@@ -1,0 +1,11 @@
+===== Official SpiderMonkey jit-tests on Kandelo node host =====
+TEST-PASS | js/src/jit-test/tests/Date/date-parse-telemetry.js | Success (code 0, args "") [0.3 s]
+TEST-PASS | js/src/jit-test/tests/Date/date-parse-telemetry.js | Success (code 0, args "--ion-eager --ion-offthread-compile=off --more-compartments") [0.3 s]
+TEST-PASS | js/src/jit-test/tests/Date/date-parse-telemetry.js | Success (code 0, args "--ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads") [0.3 s]
+TEST-PASS | js/src/jit-test/tests/Date/date-parse-telemetry.js | Success (code 0, args "--baseline-eager --write-protect-code=off") [0.4 s]
+TEST-PASS | js/src/jit-test/tests/Date/date-parse-telemetry.js | Success (code 0, args "--no-blinterp --no-baseline --no-ion --more-compartments") [0.4 s]
+TEST-PASS | js/src/jit-test/tests/Date/date-parse-telemetry.js | Success (code 0, args "--blinterp-eager") [0.4 s]
+PASSED ALL
+Result summary:
+Passed: 6
+Failed: 0

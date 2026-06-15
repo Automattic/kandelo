@@ -340,7 +340,6 @@ async function main() {
             `GIT_CONFIG_VALUE_${i}=${val}`,
         ]),
     ];
-
     // When stdin is not a terminal (piped or redirected), read all piped
     // data and set it as finite stdin so reads get the data then EOF.
     let stdinData: Uint8Array | undefined;

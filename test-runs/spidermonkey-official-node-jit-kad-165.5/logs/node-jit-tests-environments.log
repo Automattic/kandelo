@@ -1,0 +1,774 @@
+===== Official SpiderMonkey jit-tests on Kandelo node host =====
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - environments/1890252.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/environments/1890252.js | RuntimeError: memory access out of bounds (code 255, args "--more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - environments/1890252.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/environments/1890252.js | RuntimeError: memory access out of bounds (code 255, args "--more-compartments --ion-eager --ion-offthread-compile=off --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - environments/1890252.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/environments/1890252.js | RuntimeError: memory access out of bounds (code 255, args "--more-compartments --ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - environments/1890252.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/environments/1890252.js | RuntimeError: memory access out of bounds (code 255, args "--more-compartments --baseline-eager --write-protect-code=off") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - environments/1890252.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/environments/1890252.js | RuntimeError: memory access out of bounds (code 255, args "--more-compartments --no-blinterp --no-baseline --no-ion --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - environments/1890252.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/environments/1890252.js | RuntimeError: memory access out of bounds (code 255, args "--more-compartments --blinterp-eager") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - environments/bug1671563-strict.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/environments/bug1671563-strict.js | RuntimeError: memory access out of bounds (code 255, args "") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - environments/bug1671563-strict.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/environments/bug1671563-strict.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - environments/bug1671563-strict.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/environments/bug1671563-strict.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - environments/bug1671563-strict.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/environments/bug1671563-strict.js | RuntimeError: memory access out of bounds (code 255, args "--baseline-eager --write-protect-code=off") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - environments/bug1671563-strict.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/environments/bug1671563-strict.js | RuntimeError: memory access out of bounds (code 255, args "--no-blinterp --no-baseline --no-ion --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - environments/bug1671563-strict.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/environments/bug1671563-strict.js | RuntimeError: memory access out of bounds (code 255, args "--blinterp-eager") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - environments/bug1671563.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/environments/bug1671563.js | RuntimeError: memory access out of bounds (code 255, args "") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - environments/bug1671563.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/environments/bug1671563.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - environments/bug1671563.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/environments/bug1671563.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - environments/bug1671563.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/environments/bug1671563.js | RuntimeError: memory access out of bounds (code 255, args "--baseline-eager --write-protect-code=off") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - environments/bug1671563.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/environments/bug1671563.js | RuntimeError: memory access out of bounds (code 255, args "--no-blinterp --no-baseline --no-ion --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - environments/bug1671563.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/environments/bug1671563.js | RuntimeError: memory access out of bounds (code 255, args "--blinterp-eager") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - environments/bug1671762.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/environments/bug1671762.js | RuntimeError: memory access out of bounds (code 255, args "") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - environments/bug1671762.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/environments/bug1671762.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - environments/bug1671762.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/environments/bug1671762.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - environments/bug1671762.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/environments/bug1671762.js | RuntimeError: memory access out of bounds (code 255, args "--baseline-eager --write-protect-code=off") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - environments/bug1671762.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/environments/bug1671762.js | RuntimeError: memory access out of bounds (code 255, args "--no-blinterp --no-baseline --no-ion --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - environments/bug1671762.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/environments/bug1671762.js | RuntimeError: memory access out of bounds (code 255, args "--blinterp-eager") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - environments/bug1710089.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/environments/bug1710089.js | RuntimeError: memory access out of bounds (code 255, args "") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - environments/bug1710089.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/environments/bug1710089.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - environments/bug1710089.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/environments/bug1710089.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - environments/bug1710089.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/environments/bug1710089.js | RuntimeError: memory access out of bounds (code 255, args "--baseline-eager --write-protect-code=off") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - environments/bug1710089.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/environments/bug1710089.js | RuntimeError: memory access out of bounds (code 255, args "--no-blinterp --no-baseline --no-ion --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - environments/bug1710089.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/environments/bug1710089.js | RuntimeError: memory access out of bounds (code 255, args "--blinterp-eager") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - environments/bug1912715-1.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/environments/bug1912715-1.js | RuntimeError: memory access out of bounds (code 255, args "") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - environments/bug1912715-1.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/environments/bug1912715-1.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - environments/bug1912715-1.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/environments/bug1912715-1.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - environments/bug1912715-1.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/environments/bug1912715-1.js | RuntimeError: memory access out of bounds (code 255, args "--baseline-eager --write-protect-code=off") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - environments/bug1912715-1.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/environments/bug1912715-1.js | RuntimeError: memory access out of bounds (code 255, args "--no-blinterp --no-baseline --no-ion --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - environments/bug1912715-1.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/environments/bug1912715-1.js | RuntimeError: memory access out of bounds (code 255, args "--blinterp-eager") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - environments/bug1912715-2.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/environments/bug1912715-2.js | RuntimeError: memory access out of bounds (code 255, args "") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - environments/bug1912715-2.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/environments/bug1912715-2.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - environments/bug1912715-2.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/environments/bug1912715-2.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - environments/bug1912715-2.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/environments/bug1912715-2.js | RuntimeError: memory access out of bounds (code 255, args "--baseline-eager --write-protect-code=off") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - environments/bug1912715-2.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/environments/bug1912715-2.js | RuntimeError: memory access out of bounds (code 255, args "--no-blinterp --no-baseline --no-ion --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - environments/bug1912715-2.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/environments/bug1912715-2.js | RuntimeError: memory access out of bounds (code 255, args "--blinterp-eager") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - environments/bug1912715-3.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/environments/bug1912715-3.js | RuntimeError: memory access out of bounds (code 255, args "") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - environments/bug1912715-3.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/environments/bug1912715-3.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - environments/bug1912715-3.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/environments/bug1912715-3.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - environments/bug1912715-3.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/environments/bug1912715-3.js | RuntimeError: memory access out of bounds (code 255, args "--baseline-eager --write-protect-code=off") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - environments/bug1912715-3.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/environments/bug1912715-3.js | RuntimeError: memory access out of bounds (code 255, args "--no-blinterp --no-baseline --no-ion --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - environments/bug1912715-3.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/environments/bug1912715-3.js | RuntimeError: memory access out of bounds (code 255, args "--blinterp-eager") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - environments/delete-global-var.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/environments/delete-global-var.js | RuntimeError: memory access out of bounds (code 255, args "") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - environments/delete-global-var.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/environments/delete-global-var.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - environments/delete-global-var.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/environments/delete-global-var.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - environments/delete-global-var.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/environments/delete-global-var.js | RuntimeError: memory access out of bounds (code 255, args "--baseline-eager --write-protect-code=off") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - environments/delete-global-var.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/environments/delete-global-var.js | RuntimeError: memory access out of bounds (code 255, args "--no-blinterp --no-baseline --no-ion --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - environments/delete-global-var.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/environments/delete-global-var.js | RuntimeError: memory access out of bounds (code 255, args "--blinterp-eager") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - environments/evaluate_envChainObject.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/environments/evaluate_envChainObject.js | RuntimeError: memory access out of bounds (code 255, args "") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - environments/evaluate_envChainObject.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/environments/evaluate_envChainObject.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - environments/evaluate_envChainObject.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/environments/evaluate_envChainObject.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - environments/evaluate_envChainObject.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/environments/evaluate_envChainObject.js | RuntimeError: memory access out of bounds (code 255, args "--baseline-eager --write-protect-code=off") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - environments/evaluate_envChainObject.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/environments/evaluate_envChainObject.js | RuntimeError: memory access out of bounds (code 255, args "--no-blinterp --no-baseline --no-ion --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - environments/evaluate_envChainObject.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/environments/evaluate_envChainObject.js | RuntimeError: memory access out of bounds (code 255, args "--blinterp-eager") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - environments/lexical-shadows-global-var.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/environments/lexical-shadows-global-var.js | RuntimeError: memory access out of bounds (code 255, args "") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - environments/lexical-shadows-global-var.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/environments/lexical-shadows-global-var.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - environments/lexical-shadows-global-var.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/environments/lexical-shadows-global-var.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - environments/lexical-shadows-global-var.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/environments/lexical-shadows-global-var.js | RuntimeError: memory access out of bounds (code 255, args "--baseline-eager --write-protect-code=off") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - environments/lexical-shadows-global-var.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/environments/lexical-shadows-global-var.js | RuntimeError: memory access out of bounds (code 255, args "--no-blinterp --no-baseline --no-ion --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - environments/lexical-shadows-global-var.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/environments/lexical-shadows-global-var.js | RuntimeError: memory access out of bounds (code 255, args "--blinterp-eager") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - environments/replace-global-var-with-getter.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/environments/replace-global-var-with-getter.js | RuntimeError: memory access out of bounds (code 255, args "") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - environments/replace-global-var-with-getter.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/environments/replace-global-var-with-getter.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - environments/replace-global-var-with-getter.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/environments/replace-global-var-with-getter.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - environments/replace-global-var-with-getter.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/environments/replace-global-var-with-getter.js | RuntimeError: memory access out of bounds (code 255, args "--baseline-eager --write-protect-code=off") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - environments/replace-global-var-with-getter.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/environments/replace-global-var-with-getter.js | RuntimeError: memory access out of bounds (code 255, args "--no-blinterp --no-baseline --no-ion --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - environments/replace-global-var-with-getter.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/environments/replace-global-var-with-getter.js | RuntimeError: memory access out of bounds (code 255, args "--blinterp-eager") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - environments/shape-guard-for-extensible-global-lex-env-1.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/environments/shape-guard-for-extensible-global-lex-env-1.js | RuntimeError: memory access out of bounds (code 255, args "") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - environments/shape-guard-for-extensible-global-lex-env-1.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/environments/shape-guard-for-extensible-global-lex-env-1.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - environments/shape-guard-for-extensible-global-lex-env-1.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/environments/shape-guard-for-extensible-global-lex-env-1.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - environments/shape-guard-for-extensible-global-lex-env-1.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/environments/shape-guard-for-extensible-global-lex-env-1.js | RuntimeError: memory access out of bounds (code 255, args "--baseline-eager --write-protect-code=off") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - environments/shape-guard-for-extensible-global-lex-env-1.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/environments/shape-guard-for-extensible-global-lex-env-1.js | RuntimeError: memory access out of bounds (code 255, args "--no-blinterp --no-baseline --no-ion --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - environments/shape-guard-for-extensible-global-lex-env-1.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/environments/shape-guard-for-extensible-global-lex-env-1.js | RuntimeError: memory access out of bounds (code 255, args "--blinterp-eager") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - environments/shape-guard-for-extensible-global-lex-env-2.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/environments/shape-guard-for-extensible-global-lex-env-2.js | RuntimeError: memory access out of bounds (code 255, args "") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - environments/shape-guard-for-extensible-global-lex-env-2.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/environments/shape-guard-for-extensible-global-lex-env-2.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - environments/shape-guard-for-extensible-global-lex-env-2.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/environments/shape-guard-for-extensible-global-lex-env-2.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - environments/shape-guard-for-extensible-global-lex-env-2.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/environments/shape-guard-for-extensible-global-lex-env-2.js | RuntimeError: memory access out of bounds (code 255, args "--baseline-eager --write-protect-code=off") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - environments/shape-guard-for-extensible-global-lex-env-2.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/environments/shape-guard-for-extensible-global-lex-env-2.js | RuntimeError: memory access out of bounds (code 255, args "--no-blinterp --no-baseline --no-ion --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - environments/shape-guard-for-extensible-global-lex-env-2.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/environments/shape-guard-for-extensible-global-lex-env-2.js | RuntimeError: memory access out of bounds (code 255, args "--blinterp-eager") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - environments/shape-guard-for-extensible-global-lex-env-3.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/environments/shape-guard-for-extensible-global-lex-env-3.js | RuntimeError: memory access out of bounds (code 255, args "") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - environments/shape-guard-for-extensible-global-lex-env-3.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/environments/shape-guard-for-extensible-global-lex-env-3.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - environments/shape-guard-for-extensible-global-lex-env-3.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/environments/shape-guard-for-extensible-global-lex-env-3.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - environments/shape-guard-for-extensible-global-lex-env-3.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/environments/shape-guard-for-extensible-global-lex-env-3.js | RuntimeError: memory access out of bounds (code 255, args "--baseline-eager --write-protect-code=off") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - environments/shape-guard-for-extensible-global-lex-env-3.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/environments/shape-guard-for-extensible-global-lex-env-3.js | RuntimeError: memory access out of bounds (code 255, args "--no-blinterp --no-baseline --no-ion --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - environments/shape-guard-for-extensible-global-lex-env-3.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/environments/shape-guard-for-extensible-global-lex-env-3.js | RuntimeError: memory access out of bounds (code 255, args "--blinterp-eager") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - environments/strict-eval-bindings.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/environments/strict-eval-bindings.js | RuntimeError: memory access out of bounds (code 255, args "") [0.2 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - environments/strict-eval-bindings.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/environments/strict-eval-bindings.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - environments/strict-eval-bindings.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/environments/strict-eval-bindings.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - environments/strict-eval-bindings.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/environments/strict-eval-bindings.js | RuntimeError: memory access out of bounds (code 255, args "--baseline-eager --write-protect-code=off") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - environments/strict-eval-bindings.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/environments/strict-eval-bindings.js | RuntimeError: memory access out of bounds (code 255, args "--no-blinterp --no-baseline --no-ion --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - environments/strict-eval-bindings.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/environments/strict-eval-bindings.js | RuntimeError: memory access out of bounds (code 255, args "--blinterp-eager") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+FAILURES:
+    --more-compartments environments/1890252.js
+    --more-compartments --ion-eager --ion-offthread-compile=off --more-compartments environments/1890252.js
+    --more-compartments --ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads environments/1890252.js
+    --more-compartments --baseline-eager --write-protect-code=off environments/1890252.js
+    --more-compartments --no-blinterp --no-baseline --no-ion --more-compartments environments/1890252.js
+    --more-compartments --blinterp-eager environments/1890252.js
+    environments/bug1671563-strict.js
+    --ion-eager --ion-offthread-compile=off --more-compartments environments/bug1671563-strict.js
+    --ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads environments/bug1671563-strict.js
+    --baseline-eager --write-protect-code=off environments/bug1671563-strict.js
+    --no-blinterp --no-baseline --no-ion --more-compartments environments/bug1671563-strict.js
+    --blinterp-eager environments/bug1671563-strict.js
+    environments/bug1671563.js
+    --ion-eager --ion-offthread-compile=off --more-compartments environments/bug1671563.js
+    --ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads environments/bug1671563.js
+    --baseline-eager --write-protect-code=off environments/bug1671563.js
+    --no-blinterp --no-baseline --no-ion --more-compartments environments/bug1671563.js
+    --blinterp-eager environments/bug1671563.js
+    environments/bug1671762.js
+    --ion-eager --ion-offthread-compile=off --more-compartments environments/bug1671762.js
+    --ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads environments/bug1671762.js
+    --baseline-eager --write-protect-code=off environments/bug1671762.js
+    --no-blinterp --no-baseline --no-ion --more-compartments environments/bug1671762.js
+    --blinterp-eager environments/bug1671762.js
+    environments/bug1710089.js
+    --ion-eager --ion-offthread-compile=off --more-compartments environments/bug1710089.js
+    --ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads environments/bug1710089.js
+    --baseline-eager --write-protect-code=off environments/bug1710089.js
+    --no-blinterp --no-baseline --no-ion --more-compartments environments/bug1710089.js
+    --blinterp-eager environments/bug1710089.js
+    environments/bug1912715-1.js
+    --ion-eager --ion-offthread-compile=off --more-compartments environments/bug1912715-1.js
+    --ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads environments/bug1912715-1.js
+    --baseline-eager --write-protect-code=off environments/bug1912715-1.js
+    --no-blinterp --no-baseline --no-ion --more-compartments environments/bug1912715-1.js
+    --blinterp-eager environments/bug1912715-1.js
+    environments/bug1912715-2.js
+    --ion-eager --ion-offthread-compile=off --more-compartments environments/bug1912715-2.js
+    --ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads environments/bug1912715-2.js
+    --baseline-eager --write-protect-code=off environments/bug1912715-2.js
+    --no-blinterp --no-baseline --no-ion --more-compartments environments/bug1912715-2.js
+    --blinterp-eager environments/bug1912715-2.js
+    environments/bug1912715-3.js
+    --ion-eager --ion-offthread-compile=off --more-compartments environments/bug1912715-3.js
+    --ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads environments/bug1912715-3.js
+    --baseline-eager --write-protect-code=off environments/bug1912715-3.js
+    --no-blinterp --no-baseline --no-ion --more-compartments environments/bug1912715-3.js
+    --blinterp-eager environments/bug1912715-3.js
+    environments/delete-global-var.js
+    --ion-eager --ion-offthread-compile=off --more-compartments environments/delete-global-var.js
+    --ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads environments/delete-global-var.js
+    --baseline-eager --write-protect-code=off environments/delete-global-var.js
+    --no-blinterp --no-baseline --no-ion --more-compartments environments/delete-global-var.js
+    --blinterp-eager environments/delete-global-var.js
+    environments/evaluate_envChainObject.js
+    --ion-eager --ion-offthread-compile=off --more-compartments environments/evaluate_envChainObject.js
+    --ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads environments/evaluate_envChainObject.js
+    --baseline-eager --write-protect-code=off environments/evaluate_envChainObject.js
+    --no-blinterp --no-baseline --no-ion --more-compartments environments/evaluate_envChainObject.js
+    --blinterp-eager environments/evaluate_envChainObject.js
+    environments/lexical-shadows-global-var.js
+    --ion-eager --ion-offthread-compile=off --more-compartments environments/lexical-shadows-global-var.js
+    --ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads environments/lexical-shadows-global-var.js
+    --baseline-eager --write-protect-code=off environments/lexical-shadows-global-var.js
+    --no-blinterp --no-baseline --no-ion --more-compartments environments/lexical-shadows-global-var.js
+    --blinterp-eager environments/lexical-shadows-global-var.js
+    environments/replace-global-var-with-getter.js
+    --ion-eager --ion-offthread-compile=off --more-compartments environments/replace-global-var-with-getter.js
+    --ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads environments/replace-global-var-with-getter.js
+    --baseline-eager --write-protect-code=off environments/replace-global-var-with-getter.js
+    --no-blinterp --no-baseline --no-ion --more-compartments environments/replace-global-var-with-getter.js
+    --blinterp-eager environments/replace-global-var-with-getter.js
+    environments/shape-guard-for-extensible-global-lex-env-1.js
+    --ion-eager --ion-offthread-compile=off --more-compartments environments/shape-guard-for-extensible-global-lex-env-1.js
+    --ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads environments/shape-guard-for-extensible-global-lex-env-1.js
+    --baseline-eager --write-protect-code=off environments/shape-guard-for-extensible-global-lex-env-1.js
+    --no-blinterp --no-baseline --no-ion --more-compartments environments/shape-guard-for-extensible-global-lex-env-1.js
+    --blinterp-eager environments/shape-guard-for-extensible-global-lex-env-1.js
+    environments/shape-guard-for-extensible-global-lex-env-2.js
+    --ion-eager --ion-offthread-compile=off --more-compartments environments/shape-guard-for-extensible-global-lex-env-2.js
+    --ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads environments/shape-guard-for-extensible-global-lex-env-2.js
+    --baseline-eager --write-protect-code=off environments/shape-guard-for-extensible-global-lex-env-2.js
+    --no-blinterp --no-baseline --no-ion --more-compartments environments/shape-guard-for-extensible-global-lex-env-2.js
+    --blinterp-eager environments/shape-guard-for-extensible-global-lex-env-2.js
+    environments/shape-guard-for-extensible-global-lex-env-3.js
+    --ion-eager --ion-offthread-compile=off --more-compartments environments/shape-guard-for-extensible-global-lex-env-3.js
+    --ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads environments/shape-guard-for-extensible-global-lex-env-3.js
+    --baseline-eager --write-protect-code=off environments/shape-guard-for-extensible-global-lex-env-3.js
+    --no-blinterp --no-baseline --no-ion --more-compartments environments/shape-guard-for-extensible-global-lex-env-3.js
+    --blinterp-eager environments/shape-guard-for-extensible-global-lex-env-3.js
+    environments/strict-eval-bindings.js
+    --ion-eager --ion-offthread-compile=off --more-compartments environments/strict-eval-bindings.js
+    --ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads environments/strict-eval-bindings.js
+    --baseline-eager --write-protect-code=off environments/strict-eval-bindings.js
+    --no-blinterp --no-baseline --no-ion --more-compartments environments/strict-eval-bindings.js
+    --blinterp-eager environments/strict-eval-bindings.js
+TIMEOUTS:
+Result summary:
+Passed: 0
+Failed: 96
