@@ -5605,8 +5605,17 @@ pub fn sys_mremap(
     flags: u32,
 ) -> Result<usize, Errno> {
     const MREMAP_MAYMOVE: u32 = 1;
+    const SUPPORTED_FLAGS: u32 = MREMAP_MAYMOVE;
 
     if old_len == 0 || new_len == 0 {
+        return Err(Errno::EINVAL);
+    }
+    if flags & !SUPPORTED_FLAGS != 0 {
+        // The current wasm libc import ABI passes the Linux mremap syscall's
+        // first four arguments. MREMAP_FIXED requires the fifth new-address
+        // argument, and MREMAP_DONTUNMAP has Linux-specific aliasing semantics
+        // that the kernel does not implement. Reject unsupported flags
+        // explicitly instead of silently treating them as an ordinary remap.
         return Err(Errno::EINVAL);
     }
 
@@ -19852,6 +19861,29 @@ mod tests {
         // only on the host, and the addresses returned above don't back any
         // real bytes in this test process. The host-side copy is performed
         // in `host/src/kernel-worker.ts`'s SYS_MREMAP post-syscall fixup.
+    }
+
+    #[test]
+    fn test_mremap_rejects_unsupported_flags() {
+        let mut proc = Process::new(1);
+        use wasm_posix_shared::mmap::{MAP_ANONYMOUS, MAP_PRIVATE, PROT_READ, PROT_WRITE};
+        let addr = proc.memory.mmap_anonymous(
+            0,
+            0x10000,
+            PROT_READ | PROT_WRITE,
+            MAP_PRIVATE | MAP_ANONYMOUS,
+        );
+
+        // Linux MREMAP_FIXED requires the fifth syscall argument (new_addr),
+        // which the current wasm libc import ABI does not pass through. The
+        // kernel must reject it rather than accidentally treating the request
+        // as an in-place grow at old_addr.
+        assert_eq!(
+            sys_mremap(&mut proc, addr, 0x10000, 0x20000, 2).unwrap_err(),
+            Errno::EINVAL
+        );
+        assert!(proc.memory.is_mapped(addr));
+        assert!(!proc.memory.is_mapped(addr + 0x10000));
     }
 
     // ---- O_CLOFORK / FD_CLOFORK tests ----
