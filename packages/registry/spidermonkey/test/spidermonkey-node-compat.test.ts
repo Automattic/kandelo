@@ -364,7 +364,10 @@ describe.skipIf(!nodeWasm)("SpiderMonkey Node compatibility runtime", () => {
       "console.log('hello', process.arch, process.platform, process.version)",
     );
 
-    expect(result.exitCode).toBe(0);
+    expect(
+      result.exitCode,
+      `stdout:\n${result.stdout}\nstderr:\n${result.stderr}`,
+    ).toBe(0);
     expect(result.stdout.trim()).toBe("hello wasm32 linux v22.0.0");
   }, DEFAULT_TEST_TIMEOUT);
 

@@ -919,6 +919,7 @@
                 this._workerResourceId = 0;
                 this._messageMailbox = null;
                 this._messagePollTimer = null;
+                this._messageExitTimer = 0;
                 let source = String(filenameOrSource);
                 if (!options.eval) {
                     const loaded = std.loadFile(source);
@@ -1048,6 +1049,7 @@
             terminate() {
                 const code = this._workerExited ? 0 : 1;
                 clearSharedWorkerData();
+                this._clearMessageExitTimer();
                 if (!this._workerExited) {
                     if (typeof terminateWorkerThreads === 'function') {
                         try { terminateWorkerThreads(); } catch {}
@@ -1082,6 +1084,20 @@
                 workerMessagePollers.delete(this._messagePollTimer);
                 this._messagePollTimer = null;
             }
+            _scheduleMessageExit() {
+                if (!this._messageMailbox || this._messageExitTimer || this._workerExited) return;
+                this._messageExitTimer = os.setTimeout(() => {
+                    this._messageExitTimer = 0;
+                    if (this._workerExited) return;
+                    this._pollMessageMailbox();
+                    this._emitExit(0);
+                }, 1);
+            }
+            _clearMessageExitTimer() {
+                if (!this._messageExitTimer) return;
+                os.clearTimeout(this._messageExitTimer);
+                this._messageExitTimer = 0;
+            }
             _pollMessageMailbox() {
                 if (!this._messageMailbox || this._workerExited) return false;
                 const message = decodeWorkerMessage(this._messageMailbox);
@@ -1093,6 +1109,7 @@
                     } else {
                         deliver();
                     }
+                    this._scheduleMessageExit();
                     return true;
                 }
                 return false;
@@ -1102,6 +1119,7 @@
                 this._workerExited = true;
                 this._workerPublicPortRefed = false;
                 this._clearMessagePoll();
+                this._clearMessageExitTimer();
                 this._untrackWorkerResource();
                 destroyAsyncHandle(this._kandeloPublicPortResource);
                 this._kandeloPublicPortResource = null;

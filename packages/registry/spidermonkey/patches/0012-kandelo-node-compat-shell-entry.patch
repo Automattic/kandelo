@@ -2011,7 +2011,8 @@
  }
 
 @@ -6876,6 +7958,92 @@
-
+-
++
  int shell::sArgc;
  char** shell::sArgv;
 +
@@ -2100,7 +2101,8 @@
 +
 +  return ToBoolean(handledValue);
 +}
-
+-
++
  #ifndef __wasi__
  static const char sWasmCompileAndSerializeFlag[] =
 @@ -11703,6 +12864,10 @@
@@ -2115,7 +2117,8 @@
    }
 
 @@ -11796,7 +12961,19 @@
-
+-
++
        RootedValue rval(cx);
        if (!JS::Evaluate(cx, opts, srcBuf, &rval)) {
 -        return false;
@@ -2133,8 +2136,9 @@
 +          SetQuitting(cx, exitCode);
 +        }
 +      }
-
-      codeChunks.popFront();
+-
++
+     codeChunks.popFront();
 @@ -12321,6 +13493,12 @@
    int result;
 

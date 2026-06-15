@@ -498,7 +498,11 @@ process.features = Object.assign({
 }, process.features || {});
 
 if (!Array.isArray(process.execArgv)) process.execArgv = [];
-if (!process.execPath) process.execPath = '/usr/bin/node';
+if (process.env.KANDELO_NODE_CORE_EXEC_PATH) {
+  process.execPath = process.env.KANDELO_NODE_CORE_EXEC_PATH;
+} else if (!process.execPath) {
+  process.execPath = '/usr/bin/node';
+}
 
 const common = require(path.join(path.dirname(testFile), '..', 'common'));
 if (common && typeof common.allowGlobals === 'function') {
@@ -654,7 +658,7 @@ function createIsolatedTests(tests: SelectedTest[], resultsDir: string): Isolate
   });
 }
 
-function envForRun(isolation?: TestIsolation): string[] {
+function envForRun(isolation?: TestIsolation, execPath?: string): string[] {
   const env = new Map(
     Object.entries(process.env)
       .filter((entry): entry is [string, string] => entry[1] !== undefined),
@@ -668,6 +672,9 @@ function envForRun(isolation?: TestIsolation): string[] {
     env.set("NODE_TEST_DIR", isolation.nodeTestDir);
     env.set("TEST_SERIAL_ID", isolation.serialId);
     env.set("TEST_THREAD_ID", isolation.serialId);
+  }
+  if (execPath) {
+    env.set("KANDELO_NODE_CORE_EXEC_PATH", execPath);
   }
   return [...env.entries()].map(([key, value]) => `${key}=${value}`);
 }
@@ -700,7 +707,9 @@ async function runNodeTest(
   let pid: number | null = null;
   let timeout = false;
   const testPath = join(sourceDir, test.spec.path);
-  const nodeBinDir = join(isolation.nodeTestDir, "usr-bin");
+  const nodeBinDir = join(isolation.nodeTestDir, "node-bin");
+  const nodeBinMount = "/tmp/kandelo-node-bin";
+  const nodeExecPath = `${nodeBinMount}/node`;
   mkdirSync(nodeBinDir, { recursive: true });
   copyFileSync(runtimePath, join(nodeBinDir, "node"));
 
@@ -711,9 +720,10 @@ async function runNodeTest(
       "/bin/node": runtimePath,
       "/usr/bin/node": runtimePath,
       "/usr/local/bin/node": runtimePath,
+      [nodeExecPath]: runtimePath,
     },
     extraMounts: [
-      { mountPoint: "/usr/bin", hostPath: nodeBinDir, readonly: true },
+      { mountPoint: nodeBinMount, hostPath: nodeBinDir, readonly: true },
     ],
     onStdout: (_pid, data) => { stdout += textDecoder.decode(data); },
     onStderr: (_pid, data) => { stderr += textDecoder.decode(data); },
@@ -724,7 +734,7 @@ async function runNodeTest(
     await host.init();
     const exitPromise = host.spawn(programBytes, ["node", preludePath, testPath], {
       cwd: sourceDir,
-      env: envForRun(isolation),
+      env: envForRun(isolation, nodeExecPath),
       onStarted: (startedPid) => { pid = startedPid; },
     });
     const timeoutPromise = new Promise<"timeout">((resolveTimeout) => {
