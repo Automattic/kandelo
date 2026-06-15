@@ -329,6 +329,11 @@ export class HostFileSystem implements FileSystemBackend {
       default:
         throw new Error(`Invalid whence value: ${whence}`);
     }
+    if (newPos < 0) {
+      const err = new Error("EINVAL: negative seek offset") as Error & { code: string };
+      err.code = "EINVAL";
+      throw err;
+    }
     this.fdPositions.set(handle, newPos);
     return newPos;
   }
