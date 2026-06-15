@@ -1354,23 +1354,26 @@ async function finishProcessExit(
     // SYS_EXIT_GROUP for this pid, this is a no-op. Mirrors
     // `finalizeProcessWorker` in host/src/node-kernel-worker-entry.ts.
     try { kernelWorker.notifyHostProcessCrashed(pid, crashSignum); } catch { /* best-effort */ }
-    // Check if this is a "top-level" process or a fork child
-    // For now, always deactivate — the main thread tracks exit promises
+
+    // Keep the pid registered until the process worker is gone. musl's
+    // _Exit() loops on SYS_exit after SYS_exit_group returns; while worker
+    // termination is in flight those duplicate exits still need channel
+    // completions, otherwise the worker can park in Atomics.wait with no
+    // registered listener left to wake it.
+    await terminateThreadWorkers(pid);
+    if (info?.worker) {
+      await terminateTrackedWorker(info.worker, settleMs);
+    }
+
+    // Check if this is a "top-level" process or a fork child. For now,
+    // always deactivate after worker termination; the main thread tracks
+    // exit promises, and no further guest syscalls can arrive on this
+    // channel once the worker is gone.
     kernelWorker.deactivateProcess(pid);
 
     processes.delete(pid);
     threadModuleCache.delete(pid);
     ptyByPid.delete(pid);
-
-    // Terminate any surviving thread workers for this process; the main
-    // process worker exiting means their shared state (memory, fd table,
-    // signal mask) is gone. Browser `Worker.terminate()` is fire-and-forget,
-    // so threaded process exits get a short settle window before another
-    // process worker can be launched.
-    await terminateThreadWorkers(pid);
-    if (info?.worker) {
-      await terminateTrackedWorker(info.worker, settleMs);
-    }
   })();
   processTeardowns.set(pid, teardown);
 
