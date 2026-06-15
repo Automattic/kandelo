@@ -454,6 +454,63 @@ describe.skipIf(!nodeWasm)("SpiderMonkey Node compatibility runtime", () => {
     expect(result.exitCode).toBe(0);
   }, DEFAULT_TEST_TIMEOUT);
 
+  it("matches Node StringDecoder buffering and replacement semantics", async () => {
+    const result = await runNode(
+      [
+        "const assert = require('node:assert')",
+        "const { StringDecoder } = require('string_decoder')",
+        "const called = {}",
+        "StringDecoder.call(called)",
+        "assert.strictEqual(called.encoding, 'utf8')",
+        "assert.strictEqual(Buffer.from('ababc', 'ucs2').toString('ucs2'), 'ababc')",
+        "assert.strictEqual(Buffer.from([0x41, 0x80, 0xff]).toString('latin1'), 'A\\u0080\\u00ff')",
+        "assert.strictEqual(Buffer.from([0x41, 0x80, 0xff]).toString('ascii'), 'A\\u0000\\u007f')",
+        "let decoder = new StringDecoder('utf8')",
+        "assert.strictEqual(decoder.write(Buffer.from('C9B5A941', 'hex')), '\\u0275\\ufffdA')",
+        "assert.strictEqual(decoder.end(), '')",
+        "decoder = new StringDecoder('utf8')",
+        "assert.strictEqual(decoder.write(Buffer.from('E1', 'hex')), '')",
+        "assert.deepStrictEqual(Array.from(decoder.lastChar), [0xe1, 0, 0, 0])",
+        "assert.strictEqual(decoder.lastNeed, 2)",
+        "assert.strictEqual(decoder.lastTotal, 3)",
+        "assert.strictEqual(decoder.end(), '\\ufffd')",
+        "decoder = new StringDecoder('utf8')",
+        "assert.strictEqual(decoder.write(Buffer.from('f69b', 'hex')), '')",
+        "assert.strictEqual(decoder.write(Buffer.from('d1', 'hex')), '\\ufffd\\ufffd')",
+        "assert.strictEqual(decoder.end(), '\\ufffd')",
+        "decoder = new StringDecoder('utf8')",
+        "assert.strictEqual(decoder.write(Buffer.from('f4', 'hex')), '')",
+        "assert.strictEqual(decoder.write(Buffer.from('bde5', 'hex')), '\\ufffd\\ufffd')",
+        "assert.strictEqual(decoder.end(), '\\ufffd')",
+        "decoder = new StringDecoder('utf16le')",
+        "assert.strictEqual(decoder.write(Buffer.from('3DD8', 'hex')), '')",
+        "assert.strictEqual(decoder.write(Buffer.from('4D', 'hex')), '')",
+        "assert.strictEqual(decoder.write(Buffer.from('DC', 'hex')), '\\ud83d\\udc4d')",
+        "assert.strictEqual(decoder.end(), '')",
+        "decoder = new StringDecoder('utf16le')",
+        "assert.strictEqual(decoder.write(Buffer.from('3DD84D', 'hex')), '\\ud83d')",
+        "assert.strictEqual(decoder.end(), '')",
+        "decoder = new StringDecoder('base64')",
+        "assert.strictEqual(decoder.write(Buffer.from([0x61])), '')",
+        "assert.strictEqual(decoder.end(), 'YQ==')",
+        "decoder = new StringDecoder('base64')",
+        "assert.strictEqual(decoder.write(Buffer.from([0x61])), '')",
+        "assert.strictEqual(decoder.write(Buffer.from([0x62])), '')",
+        "assert.strictEqual(decoder.write(Buffer.from([0x63])), 'YWJj')",
+        "assert.strictEqual(decoder.end(), '')",
+        "decoder = new StringDecoder('base64url')",
+        "assert.strictEqual(decoder.write(Buffer.from([0x61, 0x61])), '')",
+        "assert.strictEqual(decoder.end(), 'YWE')",
+        "assert.strictEqual(Buffer.from([0x61, 0x62, 0x63]).toString('base64url'), 'YWJj')",
+        "console.log('string-decoder-ok')",
+      ].join("\n"),
+    );
+
+    expect(result.exitCode).toBe(0);
+    expect(result.stderr).toBe("");
+    expect(result.stdout.trim()).toBe("string-decoder-ok");
+  }, DEFAULT_TEST_TIMEOUT);
+
   it("matches Node querystring.stringify for nullish and primitive inputs", async () => {
     const result = await runNode(
       [

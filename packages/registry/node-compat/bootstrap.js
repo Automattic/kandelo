@@ -8867,132 +8867,200 @@ const querystring = (() => {
 
 const string_decoder = (() => {
     function normalizeEncoding(encoding) {
-        const enc = encoding === undefined ? 'utf8' : String(encoding).toLowerCase();
-        if (enc === 'utf-8') return 'utf8';
-        if (enc === 'ucs2' || enc === 'ucs-2') return 'utf16le';
-        if (enc === 'utf16le' || enc === 'utf-16le') return 'utf16le';
-        if (enc === 'latin1' || enc === 'binary' || enc === 'ascii' || enc === 'base64' || enc === 'hex') return enc;
-        if (enc === 'utf8') return enc;
-        const err = new TypeError(`Unknown encoding: ${encoding}`);
-        err.code = 'ERR_UNKNOWN_ENCODING';
+        if (encoding === undefined || encoding === null || encoding === '') return 'utf8';
+        const enc = String(encoding).toLowerCase();
+        switch (enc) {
+            case 'utf8':
+            case 'utf-8':
+                return 'utf8';
+            case 'ucs2':
+            case 'ucs-2':
+            case 'utf16le':
+            case 'utf-16le':
+                return 'utf16le';
+            case 'latin1':
+            case 'binary':
+                return 'latin1';
+            case 'ascii':
+            case 'hex':
+            case 'base64':
+            case 'base64url':
+                return enc;
+            default: {
+                const err = new TypeError(`Unknown encoding: ${encoding}`);
+                err.code = 'ERR_UNKNOWN_ENCODING';
+                throw err;
+            }
+        }
+    }
+
+    function toBufferView(buf) {
+        if (Buffer.isBuffer(buf)) return buf;
+        if (ArrayBuffer.isView(buf)) {
+            return Buffer.from(buf.buffer, buf.byteOffset, buf.byteLength);
+        }
+        const received = buf === null ? 'null' : typeof buf;
+        const err = new TypeError(
+            `The "buf" argument must be an instance of Buffer, TypedArray, or DataView. Received ${received}`
+        );
+        err.code = 'ERR_INVALID_ARG_TYPE';
         throw err;
     }
 
-    function toBytes(buf) {
-        if (buf instanceof Uint8Array) return buf;
-        if (buf instanceof ArrayBuffer) return new Uint8Array(buf);
-        if (ArrayBuffer.isView(buf)) return new Uint8Array(buf.buffer, buf.byteOffset, buf.byteLength);
-        throw _makeInvalidArgTypeError('buf', 'Buffer, TypedArray, or DataView', buf);
+    function updateLast(self, pending, total) {
+        const src = pending || [];
+        self._pending = Buffer.alloc(src.length);
+        self._pending.set(src);
+        self.lastChar.fill(0);
+        self.lastChar.set(self._pending.subarray(0, Math.min(self._pending.length, self.lastChar.length)));
+        self.lastTotal = total || 0;
+        self.lastNeed = total ? Math.max(0, total - self._pending.length) : 0;
     }
 
-    function concatBytes(a, b) {
-        if (!a || a.length === 0) return b;
-        const out = new Uint8Array(a.length + b.length);
-        out.set(a, 0);
-        out.set(b, a.length);
+    function utf8CheckByte(byte) {
+        if (byte <= 0x7F) return 0;
+        if (byte >> 5 === 0x06) return 2;
+        if (byte >> 4 === 0x0E) return 3;
+        if (byte >> 3 === 0x1E) return 4;
+        return byte >> 6 === 0x02 ? -1 : -2;
+    }
+
+    function utf8IncompleteTail(buf) {
+        let j = buf.length - 1;
+        if (j < 0) return null;
+        let nb = utf8CheckByte(buf[j]);
+        if (nb >= 0) return nb > 1 ? { total: nb, pendingLength: 1 } : null;
+        if (--j < 0 || nb === -2) return null;
+        nb = utf8CheckByte(buf[j]);
+        if (nb >= 0) {
+            if (nb > 0) {
+                const need = nb - 2;
+                if (need > 0) return { total: nb, pendingLength: 2 };
+            }
+            return null;
+        }
+        if (--j < 0 || nb === -2) return null;
+        nb = utf8CheckByte(buf[j]);
+        if (nb >= 0) {
+            if (nb > 0 && nb !== 2) {
+                const need = nb - 3;
+                if (need > 0) return { total: nb, pendingLength: 3 };
+            }
+            return null;
+        }
+        return null;
+    }
+
+    function writeUtf8(self, buf) {
+        if (buf.length === 0) return '';
+        const input = self._pending.length > 0 ? Buffer.concat([self._pending, buf]) : buf;
+        const tail = utf8IncompleteTail(input);
+        const end = tail ? input.length - tail.pendingLength : input.length;
+        const out = end > 0 ? input.toString('utf8', 0, end) : '';
+        if (tail) updateLast(self, input.subarray(end), tail.total);
+        else updateLast(self, Buffer.alloc(0), 0);
         return out;
     }
 
-    function utf8Tail(bytes) {
-        const len = bytes.length;
-        if (len === 0) return { cut: 0, pending: new Uint8Array(0), need: 0, total: 0 };
-        let cont = 0;
-        for (let i = len - 1; i >= 0 && cont < 3; i--) {
-            if ((bytes[i] & 0xc0) === 0x80) cont++;
-            else break;
+    function utf16FillLast(self, buf) {
+        const p = self.lastTotal - self.lastNeed;
+        const n = Math.min(self.lastNeed, buf.length);
+        buf.copy(self.lastChar, p, 0, n);
+        self.lastNeed -= n;
+        if (self.lastNeed === 0) {
+            const out = self.lastChar.toString('utf16le', 0, self.lastTotal);
+            updateLast(self, Buffer.alloc(0), 0);
+            return { out, used: n };
         }
-        const lead = len - cont - 1;
-        if (lead < 0) return { cut: len, pending: new Uint8Array(0), need: 0, total: 0 };
-        const b = bytes[lead];
-        let total = 0;
-        if (b >= 0xc2 && b <= 0xdf) total = 2;
-        else if (b >= 0xe0 && b <= 0xef) total = 3;
-        else if (b >= 0xf0 && b <= 0xf4) total = 4;
-        else return { cut: len, pending: new Uint8Array(0), need: 0, total: 0 };
-
-        const have = len - lead;
-        if (have >= total) return { cut: len, pending: new Uint8Array(0), need: 0, total: 0 };
-        if (have > 1) {
-            const c = bytes[lead + 1];
-            const ok =
-                (total === 2 && c >= 0x80 && c <= 0xbf) ||
-                (total === 3 && ((b === 0xe0 && c >= 0xa0 && c <= 0xbf) ||
-                    (b >= 0xe1 && b <= 0xec && c >= 0x80 && c <= 0xbf) ||
-                    (b === 0xed && c >= 0x80 && c <= 0x9f) ||
-                    (b >= 0xee && b <= 0xef && c >= 0x80 && c <= 0xbf))) ||
-                (total === 4 && ((b === 0xf0 && c >= 0x90 && c <= 0xbf) ||
-                    (b >= 0xf1 && b <= 0xf3 && c >= 0x80 && c <= 0xbf) ||
-                    (b === 0xf4 && c >= 0x80 && c <= 0x8f)));
-            if (!ok) return { cut: len, pending: new Uint8Array(0), need: 0, total: 0 };
-        }
-        return { cut: lead, pending: bytes.slice(lead), need: total - have, total };
+        updateLast(self, self.lastChar.subarray(0, p + n), self.lastTotal);
+        return { out: '', used: n, incomplete: true };
     }
 
-    function decodeUtf16le(bytes) {
+    function writeUtf16le(self, buf) {
+        if (buf.length === 0) return '';
         let out = '';
-        for (let i = 0; i + 1 < bytes.length; i += 2) {
-            out += String.fromCharCode(bytes[i] | (bytes[i + 1] << 8));
+        let offset = 0;
+        if (self.lastNeed) {
+            const filled = utf16FillLast(self, buf);
+            if (filled.incomplete) return '';
+            out += filled.out;
+            offset = filled.used;
         }
+        if (offset >= buf.length) return out;
+        const remaining = buf.subarray(offset);
+        if (remaining.length % 2 === 0) {
+            const text = remaining.toString('utf16le');
+            if (text.length > 0) {
+                const c = text.charCodeAt(text.length - 1);
+                if (c >= 0xD800 && c <= 0xDBFF) {
+                    const pending = remaining.subarray(remaining.length - 2);
+                    updateLast(self, pending, 4);
+                    return out + text.slice(0, -1);
+                }
+            }
+            updateLast(self, Buffer.alloc(0), 0);
+            return out + text;
+        }
+        updateLast(self, remaining.subarray(remaining.length - 1), 2);
+        return out + remaining.toString('utf16le', 0, remaining.length - 1);
+    }
+
+    function writeBase64Like(self, buf, url) {
+        if (buf.length === 0) return '';
+        const input = self._pending.length > 0 ? Buffer.concat([self._pending, buf]) : buf;
+        const n = input.length % 3;
+        const end = input.length - n;
+        const out = end > 0 ? input.toString(url ? 'base64url' : 'base64', 0, end) : '';
+        if (n > 0) updateLast(self, input.subarray(end), 3);
+        else updateLast(self, Buffer.alloc(0), 0);
         return out;
     }
 
     function StringDecoder(encoding) {
+        if (this === undefined || this === null || this === globalThis) return new StringDecoder(encoding);
         this.encoding = normalizeEncoding(encoding);
-        this.lastChar = Buffer.alloc(4);
         this.lastNeed = 0;
         this.lastTotal = 0;
-        this._pending = new Uint8Array(0);
-        this._decoder = this.encoding === 'utf8' ? new TextDecoder('utf-8') : null;
+        this.lastChar = Buffer.alloc(this.encoding === 'base64' || this.encoding === 'base64url' ? 3 : 4);
+        this._pending = Buffer.alloc(0);
     }
-
-    StringDecoder.prototype._setPending = function(pending, need, total) {
-        this._pending = pending;
-        this.lastChar.fill(0);
-        for (let i = 0; i < pending.length && i < 4; i++) this.lastChar[i] = pending[i];
-        this.lastNeed = need;
-        this.lastTotal = total;
-    };
 
     StringDecoder.prototype.write = function write(buf) {
         if (typeof buf === 'string') return buf;
-        const input = concatBytes(this._pending, toBytes(buf));
-        if (this.encoding === 'utf8') {
-            const tail = utf8Tail(input);
-            const complete = input.subarray(0, tail.cut);
-            this._setPending(tail.pending, tail.need, tail.total);
-            return complete.length ? this._decoder.decode(complete) : '';
+        buf = toBufferView(buf);
+        switch (this.encoding) {
+            case 'utf8':
+                return writeUtf8(this, buf);
+            case 'utf16le':
+                return writeUtf16le(this, buf);
+            case 'base64':
+                return writeBase64Like(this, buf, false);
+            case 'base64url':
+                return writeBase64Like(this, buf, true);
+            default:
+                return buf.toString(this.encoding);
         }
-        if (this.encoding === 'utf16le') {
-            let cut = input.length - (input.length % 2);
-            if (cut >= 2) {
-                const last = input[cut - 2] | (input[cut - 1] << 8);
-                if (last >= 0xd800 && last <= 0xdbff) cut -= 2;
-            }
-            const pending = input.slice(cut);
-            this._setPending(pending, pending.length ? 2 - pending.length : 0, pending.length ? 2 : 0);
-            return decodeUtf16le(input.subarray(0, cut));
-        }
-        const full = concatBytes(this._pending, input);
-        this._setPending(new Uint8Array(0), 0, 0);
-        return Buffer.from(full).toString(this.encoding);
     };
 
     StringDecoder.prototype.end = function end(buf) {
         let out = '';
         if (buf !== undefined) out = this.write(buf);
-        if (this._pending.length) {
-            if (this.encoding === 'utf8') out += this._decoder.decode(this._pending);
-            else if (this.encoding === 'utf16le') out += decodeUtf16le(this._pending);
-            else out += Buffer.from(this._pending).toString(this.encoding);
-            this._setPending(new Uint8Array(0), 0, 0);
+        if (this.lastNeed) {
+            const pending = this._pending;
+            updateLast(this, Buffer.alloc(0), 0);
+            if (this.encoding === 'utf8') return out + pending.toString('utf8');
+            if (this.encoding === 'utf16le') return out + pending.toString('utf16le');
+            if (this.encoding === 'base64') return out + pending.toString('base64');
+            if (this.encoding === 'base64url') return out + pending.toString('base64url');
         }
         return out;
     };
 
     StringDecoder.prototype.text = function text(buf, offset) {
-        this._setPending(new Uint8Array(0), 0, 0);
-        return this.write(toBytes(buf).subarray(offset));
-    }
+        updateLast(this, Buffer.alloc(0), 0);
+        return this.write(toBufferView(buf).slice(offset));
+    };
+
     return { StringDecoder };
 })();
 

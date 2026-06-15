@@ -241,6 +241,24 @@ test("Kandelo Node.js demo evaluates JavaScript in the terminal", async ({ page 
     "KANDELO_NODE_OK:42",
     180_000,
   );
+  await runTerminalCommand(
+    page,
+    [
+      "node -e \"",
+      "const assert=require('node:assert');",
+      "const{StringDecoder}=require('string_decoder');",
+      "let d=new StringDecoder('utf8');",
+      "assert.strictEqual(d.write(Buffer.from('C9B5A941','hex')),String.fromCharCode(0x0275,0xfffd,0x41));",
+      "assert.strictEqual(d.end(),'');",
+      "d=new StringDecoder('utf8');",
+      "assert.strictEqual(d.write(Buffer.from('E1','hex')),'');",
+      "assert.strictEqual(d.end(),String.fromCharCode(0xfffd));",
+      "console.log('KANDELO_STRING_DECODER_OK')",
+      "\"",
+    ].join(""),
+    "KANDELO_STRING_DECODER_OK",
+    180_000,
+  );
   expect(await terminalText(page)).not.toContain("Segmentation fault");
 });
 
