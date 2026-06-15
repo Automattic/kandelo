@@ -246,6 +246,68 @@ function normalizeOfficialPath(path: string): string {
   return path.replace(/\\/g, "/").replace(/^\/+/, "");
 }
 
+function splitOfficialFlags(value: string): string[] {
+  const words: string[] = [];
+  let current = "";
+  let quote = "";
+  let escaped = false;
+  for (const ch of value) {
+    if (escaped) {
+      current += ch;
+      escaped = false;
+      continue;
+    }
+    if (ch === "\\") {
+      escaped = true;
+      continue;
+    }
+    if (quote) {
+      if (ch === quote) quote = "";
+      else current += ch;
+      continue;
+    }
+    if (ch === '"' || ch === "'") {
+      quote = ch;
+      continue;
+    }
+    if (/\s/.test(ch)) {
+      if (current) {
+        words.push(current);
+        current = "";
+      }
+      continue;
+    }
+    current += ch;
+  }
+  if (escaped) current += "\\";
+  if (current) words.push(current);
+  return words;
+}
+
+function nodeFlagsForOfficialSource(source: string): string[] {
+  const flags: string[] = [];
+  for (const line of source.split(/\r?\n/)) {
+    const match = line.match(/^\s*\/\/\s*Flags:\s*(.*)$/);
+    if (!match) continue;
+    const words = splitOfficialFlags(match[1]);
+    for (let i = 0; i < words.length; i++) {
+      const word = words[i];
+      if (word === "--disable-proto") {
+        flags.push(word);
+        if (i + 1 < words.length) flags.push(words[++i]);
+      } else if (word.startsWith("--disable-proto=")) {
+        flags.push(word);
+      }
+    }
+  }
+  return flags;
+}
+
+function nodeFlagsForOfficialTest(sourceDir: string, test: SelectedTest): string[] {
+  const source = readFileSync(join(sourceDir, test.spec.path), "utf8");
+  return nodeFlagsForOfficialSource(source);
+}
+
 function selectManifestTests(manifest: Manifest, options: Options): SelectedTest[] {
   const defaultTimeoutMs = options.timeoutMs ?? manifest.defaults?.timeoutMs ?? 30_000;
   return manifest.tests
@@ -736,6 +798,7 @@ export {
   createIsolatedTests,
   destroyNodeHostBestEffort,
   envForRun,
+  nodeFlagsForOfficialSource,
   terminateTimedOutNodeHostBestEffort,
   writePrelude,
 };
@@ -763,6 +826,7 @@ async function runNodeTest(
   let timeout = false;
   const testPath = join(sourceDir, test.spec.path);
   const nodeBinDir = join(isolation.nodeTestDir, "usr-bin");
+  const nodeFlags = nodeFlagsForOfficialTest(sourceDir, test);
   mkdirSync(nodeBinDir, { recursive: true });
   copyFileSync(runtimePath, join(nodeBinDir, "node"));
 
@@ -789,7 +853,7 @@ async function runNodeTest(
   try {
     mkdirSync(isolation.nodeTestDir, { recursive: true });
     await host.init();
-    const exitPromise = host.spawn(programBytes, ["node", preludePath, testPath], {
+    const exitPromise = host.spawn(programBytes, ["node", ...nodeFlags, preludePath, testPath], {
       cwd: sourceDir,
       env: envForRun(isolation),
       onStarted: (startedPid) => { pid = startedPid; },
@@ -891,6 +955,7 @@ async function runBrowserTests(
           const { test, isolation } = isolatedTests[index];
           const started = Date.now();
           const testHostPath = join(sourceDir, test.spec.path);
+          const nodeFlags = nodeFlagsForOfficialTest(sourceDir, test);
           const dataFiles = [
             dataFileFromSourceUrl(sourceDir, testHostPath, `/node-v22.0.0/${test.spec.path}`),
             { path: isolation.browserMarkerPath, data: [], mode: 0o644 },
@@ -911,6 +976,7 @@ async function runBrowserTests(
                   wasmUrl: runtimeUrl,
                   argv: [
                     "node",
+                    ...nodeFlags,
                     "/node-v22.0.0/kandelo-node-core-prelude.js",
                     `/node-v22.0.0/${test.spec.path}`,
                   ],

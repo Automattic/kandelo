@@ -11,6 +11,7 @@ import { dirname, join } from "node:path";
 import { spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
+import vm from "node:vm";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const repoRoot = join(__dirname, "../../../..");
@@ -127,6 +128,32 @@ ${source}
   });
   expect(child.stderr).toBe("");
   expect(child.status).toBe(0);
+}
+
+function runBootstrapVmSmoke(source: string): void {
+  const context = vm.createContext({
+    atob,
+    btoa,
+    clearImmediate,
+    clearTimeout,
+    console,
+    DOMException,
+    evalInWorker() {},
+    queueMicrotask,
+    scriptArgs: ["node"],
+    setImmediate,
+    setTimeout,
+    structuredClone,
+    TextDecoder,
+    TextEncoder,
+    URL,
+    URLSearchParams,
+  });
+
+  vm.runInContext(generatedBootstrapSource(), context, {
+    filename: "kandelo-bootstrap.vm.js",
+  });
+  vm.runInContext(source, context, { filename: "kandelo-bootstrap-smoke.vm.js" });
 }
 
 function runBootstrapCli(args: string[], options: {
@@ -265,6 +292,17 @@ describe("SpiderMonkey Node bootstrap source", () => {
     expect(installIndex).toBeGreaterThan(eventGlobalIndex);
   });
 
+  it("starts when Web Event globals are installed by bootstrap", () => {
+    runBootstrapVmSmoke(`
+const assert = require("assert");
+const { MessageEvent } = require("internal/worker/io");
+const event = new MessageEvent("message", { data: 42 });
+assert(event instanceof Event);
+assert.strictEqual(event.data, 42);
+assert.strictEqual(typeof EventTarget, "function");
+`);
+  });
+
   it("drains eval-mode Node work through the generated event-loop hook", () => {
     runBootstrapSmoke(`
 const assert = require("assert");
@@ -382,6 +420,31 @@ assert.deepStrictEqual(Array.from(parsed.searchParams), [
       stderr: "",
     });
 
+    expect(
+      runBootstrapCli([
+        "--disable-proto=delete",
+        "--eval",
+        "console.log(Object.prototype.hasOwnProperty.call(Object.prototype, '__proto__'), Object.prototype.__proto__)",
+      ]),
+    ).toEqual({
+      status: 0,
+      stdout: "false undefined\n",
+      stderr: "",
+    });
+
+    expect(
+      runBootstrapCli([
+        "--disable-proto",
+        "throw",
+        "--eval",
+        "try { ({}).__proto__; } catch (err) { console.log(err.code) }",
+      ]),
+    ).toEqual({
+      status: 0,
+      stdout: "ERR_PROTO_ACCESS\n",
+      stderr: "",
+    });
+
     expect(runBootstrapCli(["--eval"])).toEqual({
       status: 9,
       stdout: "",
@@ -467,7 +530,7 @@ assert.deepStrictEqual(Array.from(parsed.searchParams), [
     }
   });
 
-  it("inserts the SpiderMonkey argument separator for Node child self-exec", () => {
+  it("preserves Node CLI flags for child self-exec", () => {
     const smoke = `
 globalThis.evalInWorker = function() {};
 const commands = [];
@@ -490,8 +553,10 @@ cp.spawnSync(process.execPath, ["--eval", "console.log(1)"], {
 cp.execSync(JSON.stringify(process.execPath) + " --print \\"40 + 2\\"", {
   stdio: ["pipe", "pipe", "inherit"],
 });
-assert(commands[0].includes("'--' '--eval'"), commands[0]);
-assert(commands[1].includes('"/usr/bin/node" -- --print "40 + 2"'), commands[1]);
+assert(commands[0].includes("'--eval'"), commands[0]);
+assert(!commands[0].includes("'--' '--eval'"), commands[0]);
+assert(commands[1].includes('"/usr/bin/node" --print "40 + 2"'), commands[1]);
+assert(!commands[1].includes('"/usr/bin/node" -- --print "40 + 2"'), commands[1]);
 `;
     const child = spawnSync(process.execPath, ["-"], {
       input: smoke,

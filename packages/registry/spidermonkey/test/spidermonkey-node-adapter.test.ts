@@ -1,4 +1,5 @@
 import { readFileSync } from "node:fs";
+import { EventEmitter } from "node:events";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import vm from "node:vm";
@@ -9,7 +10,7 @@ const adapterPath = join(__dirname, "../node-compat/adapter.js");
 const suffixPath = join(__dirname, "../node-compat/suffix.js");
 const adapterSource = `${readFileSync(adapterPath, "utf8")}\n${readFileSync(suffixPath, "utf8")}`;
 
-function runAdapter(globals: Record<string, unknown>): string[] {
+function runAdapterContext(globals: Record<string, unknown>): vm.Context {
   const context = vm.createContext({
     ArrayBuffer,
     console,
@@ -23,7 +24,11 @@ function runAdapter(globals: Record<string, unknown>): string[] {
   });
 
   vm.runInContext(adapterSource, context, { filename: adapterPath });
-  return context.execArgv as string[];
+  return context;
+}
+
+function runAdapter(globals: Record<string, unknown>): string[] {
+  return runAdapterContext(globals).execArgv as string[];
 }
 
 describe("SpiderMonkey Node adapter argv normalization", () => {
@@ -56,5 +61,57 @@ describe("SpiderMonkey Node adapter argv normalization", () => {
       "/node-v22.0.0/prelude.js",
       "/node-v22.0.0/test.js",
     ]);
+  });
+
+  it("uses raw shell argv when the shell filtered Node-only options", () => {
+    expect(runAdapter({
+      kandeloNodeRawArgv: ["node", "--disable-proto=throw", "-e", "void 0"],
+      scriptArgs: ["-e", "void 0"],
+    })).toEqual(["node", "--disable-proto=throw", "-e", "void 0"]);
+  });
+});
+
+describe("SpiderMonkey Node adapter worker preludes", () => {
+  it("propagates --disable-proto=throw into shell worker source", () => {
+    let workerSource = "";
+    const context = runAdapterContext({
+      evalInWorker(source: string) {
+        workerSource = source;
+      },
+    });
+    context.process = {
+      env: {},
+      execArgv: ["--disable-proto=throw"],
+    };
+    const workerThreads = context.__kandeloCreateWorkerThreads(
+      EventEmitter,
+      {},
+    ) as { Worker: new (source: string, options: { eval: true }) => EventEmitter };
+
+    new workerThreads.Worker("void 0;", { eval: true });
+
+    expect(workerSource).toContain('__kandeloDisableProtoMode = "throw"');
+    expect(workerSource).toContain('err.code = "ERR_PROTO_ACCESS"');
+  });
+
+  it("does not read --disable-proto from eval source text", () => {
+    let workerSource = "";
+    const context = runAdapterContext({
+      evalInWorker(source: string) {
+        workerSource = source;
+      },
+    });
+    context.process = {
+      env: {},
+      execArgv: ["-e", "--disable-proto=throw"],
+    };
+    const workerThreads = context.__kandeloCreateWorkerThreads(
+      EventEmitter,
+      {},
+    ) as { Worker: new (source: string, options: { eval: true }) => EventEmitter };
+
+    new workerThreads.Worker("void 0;", { eval: true });
+
+    expect(workerSource).toContain('__kandeloDisableProtoMode = ""');
   });
 });

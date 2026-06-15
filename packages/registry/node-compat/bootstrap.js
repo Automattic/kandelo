@@ -499,6 +499,48 @@ function _makeUnsupportedPlatformError(feature) {
     );
 }
 
+function _makeDisableProtoFlagError(message) {
+    const err = new Error(message);
+    err.code = 'ERR_INVALID_NODE_OPTIONS';
+    return err;
+}
+
+function _makeProtoAccessError() {
+    const err = new Error('Accessing Object.prototype.__proto__ has been disallowed with --disable-proto=throw');
+    err.code = 'ERR_PROTO_ACCESS';
+    return err;
+}
+
+function _normalizeDisableProtoMode(mode) {
+    if (mode === 'delete' || mode === 'throw') return mode;
+    if (mode === undefined || mode === '') {
+        throw _makeDisableProtoFlagError('--disable-proto requires an argument');
+    }
+    throw _makeDisableProtoFlagError('invalid mode passed to --disable-proto');
+}
+
+function _applyDisableProtoModeToObject(objectCtor, mode) {
+    if (!mode || !objectCtor || !objectCtor.prototype) return;
+    if (mode === 'delete') {
+        try { delete objectCtor.prototype.__proto__; } catch {}
+        return;
+    }
+    const throwProtoAccess = function() {
+        throw _makeProtoAccessError();
+    };
+    Object.defineProperty(objectCtor.prototype, '__proto__', {
+        get: throwProtoAccess,
+        set: throwProtoAccess,
+        enumerable: false,
+        configurable: true,
+    });
+}
+
+function _applyDisableProtoModeToGlobal(globalObject, mode) {
+    if (!mode || !globalObject) return;
+    _applyDisableProtoModeToObject(globalObject.Object, mode);
+}
+
 function _makeInvalidArgTypeError(name, expected, value) {
     let actual;
     if (value === null || value === undefined) {
@@ -9738,21 +9780,11 @@ const child_process = (() => {
     }
 
     function nodeSelfExecArgs(args) {
-        return args[0] === '--' ? args : ['--', ...args];
+        return args;
     }
 
     function rewriteNodeShellCommand(commandText) {
-        const text = String(commandText || '');
-        const match = text.match(/^(\s*(?:"[^"]+"|'[^']+'|[^\s]+))([\s\S]*)$/);
-        if (!match) return text;
-        let executable = match[1].trim();
-        if ((executable.startsWith('"') && executable.endsWith('"')) ||
-            (executable.startsWith("'") && executable.endsWith("'"))) {
-            executable = executable.slice(1, -1);
-        }
-        if (!isNodeLikeExecutable(executable)) return text;
-        if (/^\s*--(?:\s|$)/.test(match[2])) return text;
-        return match[1] + ' --' + match[2];
+        return String(commandText || '');
     }
 
     function makeSpawnError(file, args) {
@@ -10097,6 +10129,22 @@ const child_process = (() => {
     exec[kPromisify] = makePromisified(exec);
     execFile[kPromisify] = makePromisified(execFile);
 
+    function defaultForkExecArgv() {
+        const inherited = Array.isArray(process.execArgv) ? process.execArgv : [];
+        const filtered = [];
+        for (let i = 0; i < inherited.length; i++) {
+            const arg = String(inherited[i]);
+            if (arg === '-e' || arg === '--eval' || arg === '-p' ||
+                arg === '--print' || arg === '-pe' || arg === '-ep') {
+                i++;
+                continue;
+            }
+            if (arg.startsWith('--eval=') || arg.startsWith('--print=')) continue;
+            filtered.push(arg);
+        }
+        return filtered;
+    }
+
     function fork(modulePath, args, options) {
         _validateString(modulePath, 'modulePath');
         if (args === undefined) {
@@ -10110,7 +10158,7 @@ const child_process = (() => {
         }
         options = options || {};
         const execPath = options.execPath || process.execPath || 'node';
-        const execArgv = Array.isArray(options.execArgv) ? options.execArgv : process.execArgv || [];
+        const execArgv = Array.isArray(options.execArgv) ? options.execArgv : defaultForkExecArgv();
         const child = spawn(execPath, [...execArgv, modulePath, ...args], options);
         child.connected = false;
         child.channel = undefined;
@@ -12698,6 +12746,7 @@ const vm = (() => {
         for (const key of Reflect.ownKeys(sandbox)) {
             Object.defineProperty(cx, key, Object.getOwnPropertyDescriptor(sandbox, key));
         }
+        _applyDisableProtoModeToGlobal(cx, _disableProtoMode);
         const result = evalcx(String(code), cx);
         for (const key of Reflect.ownKeys(cx)) {
             if (initialKeys.has(key)) continue;
@@ -13276,50 +13325,18 @@ function _createInternalWorkerIo() {
         if (typeof globalThis.MessagePort === 'function' && value instanceof globalThis.MessagePort) return value;
         invalidPortProperty(name);
     }
-    const MessageEventBase = typeof internalEventTarget.Event === 'function'
-        ? internalEventTarget.Event
-        : class MessageEventBase {
-            constructor(type, init) {
-                if (arguments.length === 0 || typeof type === 'symbol') {
-                    throw _makeInvalidArgTypeError('type', 'string', type);
-                }
-                if (init !== undefined && init !== null && typeof init !== 'object') {
-                    throw _makeInvalidArgTypeError('options', 'object', init);
-                }
-                init = init || {};
-                this.type = String(type);
-                this.bubbles = !!init.bubbles;
-                this.cancelable = !!init.cancelable;
-                this.composed = !!init.composed;
-                this.defaultPrevented = false;
-                this.target = null;
-                this.currentTarget = null;
-                this.eventPhase = 0;
-                this.isTrusted = false;
-                this._cancelBubble = false;
-                this.timeStamp = Date.now();
-                this._passive = false;
-            }
-            get cancelBubble() { return this._cancelBubble; }
-            set cancelBubble(value) { this._cancelBubble = !!value; }
-            get srcElement() { return this.target; }
-            composedPath() {
-                return this.currentTarget ? [this.currentTarget] : [];
-            }
-            preventDefault() {
-                if (this.cancelable && !this._passive) this.defaultPrevented = true;
-            }
-            stopPropagation() { this.cancelBubble = true; }
-            stopImmediatePropagation() {
-                this.cancelBubble = true;
-                this._stopImmediate = true;
-            }
-            get returnValue() { return !this.defaultPrevented; }
-            set returnValue(value) { if (!value) this.preventDefault(); }
-        };
-    class MessageEvent extends MessageEventBase {
+    class MessageEvent {
         constructor(type, init) {
-            super(type, init);
+            const EventCtor = internalEventTarget.Event;
+            if (typeof EventCtor !== 'function') {
+                const err = new TypeError('Event is not available');
+                err.code = 'ERR_INVALID_STATE';
+                throw err;
+            }
+            if (Object.getPrototypeOf(MessageEvent.prototype) !== EventCtor.prototype) {
+                Object.setPrototypeOf(MessageEvent.prototype, EventCtor.prototype);
+            }
+            const event = Reflect.construct(EventCtor, [type, init], new.target);
             init = init || {};
             const data = Object.prototype.hasOwnProperty.call(init, 'data') && init.data !== undefined ? init.data : null;
             const origin = init.origin === undefined ? '' : String(init.origin);
@@ -13332,7 +13349,8 @@ function _createInternalWorkerIo() {
                 }
                 ports = Array.from(init.ports, (port, index) => validateMessagePort(port, `init.ports[${index}]`));
             }
-            MESSAGE_EVENT_STATE.set(this, { data, origin, lastEventId, source, ports });
+            MESSAGE_EVENT_STATE.set(event, { data, origin, lastEventId, source, ports });
+            return event;
         }
         get data() { return getMessageEventState(this).data; }
         get origin() { return getMessageEventState(this).origin; }
@@ -17511,6 +17529,7 @@ const _NODE_OPTIONS_ALLOWED_FLAGS = new Set([
 ]);
 
 const _NODE_OPTIONS_ALLOWED_VALUES = new Set([
+    '--disable-proto',
     '--input-type',
     '--max-old-space-size',
     '--max-semi-space-size',
@@ -17573,7 +17592,7 @@ function _applyCliFlag(option, value) {
 }
 
 function _parseNodeOptionsEnv(text) {
-    const state = { preloads: [], error: null };
+    const state = { preloads: [], disableProtoMode: '', error: null };
     const tokens = _splitNodeOptions(text);
     for (let i = 0; i < tokens.length;) {
         const arg = String(tokens[i]);
@@ -17603,7 +17622,11 @@ function _parseNodeOptionsEnv(text) {
                 state.error = { status: 9, message: read.error };
                 return state;
             }
-            _applyCliFlag(name, read.value);
+            if (name === '--disable-proto') {
+                state.disableProtoMode = _normalizeDisableProtoMode(read.value);
+            } else {
+                _applyCliFlag(name, read.value);
+            }
             i = read.next;
             continue;
         }
@@ -17625,6 +17648,7 @@ function _parseNodeCli(argv) {
         print: false,
         useStrict: false,
         test: false,
+        disableProtoMode: envState.disableProtoMode,
         error: envState.error,
         exit: null,
     };
@@ -17765,12 +17789,22 @@ function _parseNodeCli(argv) {
                     state.error = { status: 9, message: read.error };
                     return state;
                 }
-                _applyCliFlag(name, read.value);
+                if (name === '--disable-proto') {
+                    state.disableProtoMode = _normalizeDisableProtoMode(read.value);
+                } else {
+                    _applyCliFlag(name, read.value);
+                }
                 state.execArgv.push(arg, read.value);
                 i = read.next;
                 continue;
             }
-            _applyCliFlag(name, arg.includes('=') ? arg.slice(arg.indexOf('=') + 1) : undefined);
+            if (name === '--disable-proto') {
+                state.disableProtoMode = _normalizeDisableProtoMode(
+                    arg.includes('=') ? arg.slice(arg.indexOf('=') + 1) : undefined,
+                );
+            } else {
+                _applyCliFlag(name, arg.includes('=') ? arg.slice(arg.indexOf('=') + 1) : undefined);
+            }
             state.execArgv.push(arg);
             i++;
             continue;
@@ -17800,6 +17834,8 @@ function _parseNodeCli(argv) {
 const _cliState = _parseNodeCli(process.argv);
 process.argv = _cliState.argv;
 process.execArgv = _cliState.execArgv;
+const _disableProtoMode = _cliState.disableProtoMode || '';
+_applyDisableProtoModeToGlobal(globalThis, _disableProtoMode);
 
 function _findMainScriptArg(argv) {
     if (!argv || argv.length <= 1) return '';

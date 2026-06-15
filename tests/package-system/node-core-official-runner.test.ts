@@ -6,6 +6,7 @@ import {
   createIsolatedTests,
   destroyNodeHostBestEffort,
   envForRun,
+  nodeFlagsForOfficialSource,
   terminateTimedOutNodeHostBestEffort,
   writePrelude,
   type SelectedTest,
@@ -113,6 +114,22 @@ describe("node-core official runner prelude", () => {
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
+  });
+});
+
+describe("node-core official runner flags", () => {
+  it("extracts disable-proto flags from official test comments", () => {
+    expect(nodeFlagsForOfficialSource("// Flags: --disable-proto=delete\n")).toEqual([
+      "--disable-proto=delete",
+    ]);
+    expect(nodeFlagsForOfficialSource("// Flags: --disable-proto throw --expose-gc\n")).toEqual([
+      "--disable-proto",
+      "throw",
+    ]);
+  });
+
+  it("does not forward unrelated official flags", () => {
+    expect(nodeFlagsForOfficialSource("// Flags: --expose-gc --trace-warnings\n")).toEqual([]);
   });
 });
 

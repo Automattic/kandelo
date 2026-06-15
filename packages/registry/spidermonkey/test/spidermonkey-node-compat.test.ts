@@ -379,6 +379,86 @@ describe.skipIf(!nodeWasm)("SpiderMonkey Node compatibility runtime", () => {
     expect(result.stdout.trim()).toBe("v22.0.0");
   }, DEFAULT_TEST_TIMEOUT);
 
+  it("supports --disable-proto=delete in main, vm, and worker contexts", async () => {
+    const source = [
+      "const assert = require('assert')",
+      "const vm = require('vm')",
+      "const { Worker } = require('worker_threads')",
+      "assert(process.execArgv.includes('--disable-proto=delete'))",
+      "assert(!process.argv.includes('--disable-proto=delete'))",
+      "assert.strictEqual(Object.prototype.__proto__, undefined)",
+      "assert.strictEqual(Object.prototype.hasOwnProperty.call(Object.prototype, '__proto__'), false)",
+      "const ctxGlobal = vm.runInContext('this', vm.createContext())",
+      "assert.strictEqual(ctxGlobal.Object.prototype.__proto__, undefined)",
+      "assert.strictEqual(ctxGlobal.Object.prototype.hasOwnProperty.call(ctxGlobal.Object.prototype, '__proto__'), false)",
+      "const sab = new SharedArrayBuffer(8)",
+      "const view = new Int32Array(sab)",
+      "const worker = new Worker(\"const view = new Int32Array(workerData); let ok = 0; try { ok = Object.prototype.__proto__ === undefined && !Object.prototype.hasOwnProperty.call(Object.prototype, '__proto__') ? 1 : -1; } catch (_) { ok = -2; } Atomics.store(view, 0, ok); Atomics.store(view, 1, 1); Atomics.notify(view, 1);\", { eval: true, workerData: sab })",
+      "if (Atomics.load(view, 1) === 0) Atomics.wait(view, 1, 0, 10000)",
+      "assert.strictEqual(Atomics.load(view, 0), 1)",
+      "worker.terminate()",
+      "console.log('delete-ok')",
+    ].join("\n");
+    const result = await runCentralizedProgram({
+      programPath: nodeWasm!,
+      programModule: nodeModule,
+      argv: ["node", "--disable-proto=delete", "-e", source],
+      timeout: LONG_TIMEOUT,
+    });
+
+    expect(result.exitCode).toBe(0);
+    expect(result.stderr).toBe("");
+    expect(result.stdout.trim()).toBe("delete-ok");
+  }, LONG_TEST_TIMEOUT);
+
+  it("supports --disable-proto=throw in main, vm, and worker contexts", async () => {
+    const source = [
+      "const assert = require('assert')",
+      "const vm = require('vm')",
+      "const { Worker } = require('worker_threads')",
+      "assert(process.execArgv.includes('--disable-proto=throw'))",
+      "assert(!process.argv.includes('--disable-proto=throw'))",
+      "assert.strictEqual(Object.prototype.hasOwnProperty.call(Object.prototype, '__proto__'), true)",
+      "function expectProtoAccessThrows(fn) { assert.throws(fn, { code: 'ERR_PROTO_ACCESS' }) }",
+      "expectProtoAccessThrows(() => ({}).__proto__)",
+      "expectProtoAccessThrows(() => { ({}).__proto__ = {} })",
+      "const ctx = vm.createContext()",
+      "expectProtoAccessThrows(() => vm.runInContext('({}).__proto__', ctx))",
+      "expectProtoAccessThrows(() => vm.runInContext('({}).__proto__ = {}', ctx))",
+      "const sab = new SharedArrayBuffer(8)",
+      "const view = new Int32Array(sab)",
+      "const worker = new Worker(\"const view = new Int32Array(workerData); let ok = 0; try { ({}).__proto__; ok = -1; } catch (e) { ok = e && e.code === 'ERR_PROTO_ACCESS' ? 1 : -2; } try { ({}).__proto__ = {}; ok = ok === 1 ? -3 : ok; } catch (e) { ok = ok === 1 && e && e.code === 'ERR_PROTO_ACCESS' ? 2 : -4; } Atomics.store(view, 0, ok); Atomics.store(view, 1, 1); Atomics.notify(view, 1);\", { eval: true, workerData: sab })",
+      "if (Atomics.load(view, 1) === 0) Atomics.wait(view, 1, 0, 10000)",
+      "assert.strictEqual(Atomics.load(view, 0), 2)",
+      "worker.terminate()",
+      "console.log('throw-ok')",
+    ].join("\n");
+    const result = await runCentralizedProgram({
+      programPath: nodeWasm!,
+      programModule: nodeModule,
+      argv: ["node", "--disable-proto=throw", "-e", source],
+      timeout: LONG_TIMEOUT,
+    });
+
+    expect(result.exitCode).toBe(0);
+    expect(result.stderr).toBe("");
+    expect(result.stdout.trim()).toBe("throw-ok");
+  }, LONG_TEST_TIMEOUT);
+
+  it("rejects invalid NODE_OPTIONS even when CLI disable-proto is valid", async () => {
+    const result = await runCentralizedProgram({
+      programPath: nodeWasm!,
+      programModule: nodeModule,
+      argv: ["node", "--disable-proto=throw", "-e", "console.log('unreachable')"],
+      env: ["NODE_OPTIONS=--disable-proto=invalid"],
+      timeout: DEFAULT_TIMEOUT,
+    });
+
+    expect(result.exitCode).not.toBe(0);
+    expect(result.stderr).toContain("invalid mode passed to --disable-proto");
+    expect(result.stdout).toBe("");
+  }, DEFAULT_TEST_TIMEOUT);
+
   it("keeps compatibility helper globals out of global enumeration", async () => {
     const result = await runNode(
       [
@@ -1158,7 +1238,7 @@ describe.skipIf(!nodeWasm)("SpiderMonkey Node compatibility runtime", () => {
         "assert.deepStrictEqual(cluster.settings, {",
         "  args: ['two'],",
         "  exec: '/tmp/override.js',",
-        "  execArgv: [],",
+        "  execArgv: process.execArgv,",
         "  silent: false,",
         "  cwd: '/tmp',",
         "  serialization: 'advanced',",

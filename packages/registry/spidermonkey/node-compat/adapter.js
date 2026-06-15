@@ -902,6 +902,72 @@
                 try { joinWorkerThreads(); } catch {}
             }
         }
+        function splitNodeOptions(value) {
+            if (!value) return [];
+            const words = [];
+            let current = '';
+            let quote = '';
+            let escaped = false;
+            for (const ch of String(value)) {
+                if (escaped) {
+                    current += ch;
+                    escaped = false;
+                    continue;
+                }
+                if (ch === '\\') {
+                    escaped = true;
+                    continue;
+                }
+                if (quote) {
+                    if (ch === quote) quote = '';
+                    else current += ch;
+                    continue;
+                }
+                if (ch === '"' || ch === "'") {
+                    quote = ch;
+                    continue;
+                }
+                if (/\s/.test(ch)) {
+                    if (current) {
+                        words.push(current);
+                        current = '';
+                    }
+                    continue;
+                }
+                current += ch;
+            }
+            if (escaped) current += '\\';
+            if (current) words.push(current);
+            return words;
+        }
+        function disableProtoModeFromArgs(args) {
+            let mode = '';
+            for (let i = 0; i < args.length; i++) {
+                const arg = String(args[i] || '');
+                if (arg === '-e' || arg === '--eval' || arg === '-p' || arg === '--print') {
+                    i++;
+                } else if (arg.startsWith('--eval=') || arg.startsWith('--print=')) {
+                    continue;
+                } else if (arg === '--disable-proto') {
+                    const next = String(args[++i] || '');
+                    if (next === 'delete' || next === 'throw') mode = next;
+                } else if (arg.startsWith('--disable-proto=')) {
+                    const next = arg.slice('--disable-proto='.length);
+                    if (next === 'delete' || next === 'throw') mode = next;
+                }
+            }
+            return mode;
+        }
+        function currentDisableProtoMode() {
+            const proc = globalThis.process;
+            const envMode = proc && proc.env
+                ? disableProtoModeFromArgs(splitNodeOptions(proc.env.NODE_OPTIONS || ''))
+                : '';
+            const cliMode = proc && Array.isArray(proc.execArgv)
+                ? disableProtoModeFromArgs(proc.execArgv)
+                : '';
+            return cliMode || envMode;
+        }
         class Worker extends EventEmitter {
             constructor(filenameOrSource, options) {
                 super();
@@ -958,7 +1024,15 @@
                 }
                 this._messageMailbox = messageMailbox;
 
+                const disableProtoMode = currentDisableProtoMode();
                 const prelude = [
+                    'var __kandeloDisableProtoMode = ' + JSON.stringify(disableProtoMode) + ';',
+                    'if (__kandeloDisableProtoMode === "delete") {',
+                    '  try { delete Object.prototype.__proto__; } catch (_) {}',
+                    '} else if (__kandeloDisableProtoMode === "throw") {',
+                    '  var __kandeloProtoThrow = function() { var err = new Error("Accessing Object.prototype.__proto__ has been disallowed with --disable-proto=throw"); err.code = "ERR_PROTO_ACCESS"; throw err; };',
+                    '  Object.defineProperty(Object.prototype, "__proto__", { get: __kandeloProtoThrow, set: __kandeloProtoThrow, enumerable: false, configurable: true });',
+                    '}',
                     'Object.defineProperty(globalThis, "workerData", { value: ' + workerDataExpression + ', configurable: true, writable: true });',
                     'var __kandeloParentPort = null;',
                     'if (typeof getSharedObject === "function" && typeof SharedArrayBuffer === "function" && typeof Atomics === "object") {',
@@ -1198,4 +1272,7 @@
         }
     }
     defineAdapterGlobal('argv0', 'node');
-    defineAdapterGlobal('execArgv', entryPath ? ['node', entryPath, ...args] : ['node', ...args]);
+    const rawNodeArgv = typeof kandeloNodeRawArgv !== 'undefined'
+        ? Array.from(kandeloNodeRawArgv)
+        : null;
+    defineAdapterGlobal('execArgv', rawNodeArgv || (entryPath ? ['node', entryPath, ...args] : ['node', ...args]));
