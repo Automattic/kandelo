@@ -29,7 +29,9 @@ pub mod host_abi;
 /// 17: intentionally skipped during release coordination.
 /// 18: fork frame cursors are absolute save-buffer addresses, isolating
 ///     concurrent pthread unwind payloads.
-pub const ABI_VERSION: u32 = 18;
+/// 19: bridged TCP EPIPE delivery raises SIGPIPE unless the caller suppresses
+///     it, matching the signal contract of local stream writes.
+pub const ABI_VERSION: u32 = 19;
 
 /// Syscall numbers for the POSIX kernel interface.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
