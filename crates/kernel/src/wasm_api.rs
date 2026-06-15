@@ -6037,7 +6037,8 @@ pub extern "C" fn kernel_utimensat(
     result
 }
 
-/// Remap memory. Returns MAP_FAILED (-1 as u32) since Wasm doesn't support this.
+/// Remap memory. Supports in-place resize and MREMAP_MAYMOVE; unsupported
+/// Linux-specific flag combinations are rejected by sys_mremap with EINVAL.
 #[unsafe(no_mangle)]
 pub extern "C" fn kernel_mremap(
     old_addr: usize,
