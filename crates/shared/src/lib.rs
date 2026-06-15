@@ -564,6 +564,7 @@ pub mod socket {
     pub const SOCK_CLOEXEC: u32 = 0o2000000;
     pub const SOL_SOCKET: u32 = 1;
     pub const SCM_RIGHTS: u32 = 1;
+    pub const SCM_CREDENTIALS: u32 = 2;
     pub const SO_REUSEADDR: u32 = 2;
     pub const SO_ERROR: u32 = 4;
     pub const SO_KEEPALIVE: u32 = 9;
@@ -572,12 +573,16 @@ pub mod socket {
     pub const SO_TYPE: u32 = 3;
     pub const SO_DOMAIN: u32 = 39;
     pub const SO_ACCEPTCONN: u32 = 30;
+    pub const SO_REUSEPORT: u32 = 15;
+    pub const SO_PASSCRED: u32 = 16;
     pub const SHUT_RD: u32 = 0;
     pub const SHUT_WR: u32 = 1;
     pub const SHUT_RDWR: u32 = 2;
     pub const SO_BROADCAST: u32 = 6;
     pub const SO_LINGER: u32 = 13;
     pub const SO_BINDTODEVICE: u32 = 25;
+    pub const SO_ATTACH_REUSEPORT_CBPF: u32 = 51;
+    pub const SO_ZEROCOPY: u32 = 60;
     // time64 values used by musl on wasm32 (where __LONG_MAX == 0x7fffffff)
     pub const SO_RCVTIMEO: u32 = 66;
     pub const SO_SNDTIMEO: u32 = 67;
