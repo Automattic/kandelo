@@ -7295,6 +7295,50 @@ export class CentralizedKernelWorker {
   }
 
   /**
+   * Allocate a kernel-memory window for an ALSA PCM SAB ring of
+   * `byteLen` bytes and bind it to `pcmId`. Returns the kernel-memory
+   * `(byteOffset, byteLength)` pair plus the underlying kernel
+   * `SharedArrayBuffer`, so the host-thread AudioDriver can view it
+   * with `new Int16Array(buffer, byteOffset, byteLength / 2)`. Returns
+   * `null` if the kernel allocator declined.
+   */
+  audioInitRing(
+    pcmId: number,
+    byteLen: number,
+  ): {
+    buffer: SharedArrayBuffer | ArrayBuffer;
+    byteOffset: number;
+    byteLength: number;
+  } | null {
+    const base = this.kernel.audioAllocRing(byteLen);
+    if (base === 0) return null;
+    this.kernel.audioInitSab(pcmId, base, byteLen);
+    const buffer = this.kernel.getKernelMemoryBuffer();
+    if (!buffer) return null;
+    return { buffer, byteOffset: base, byteLength: byteLen };
+  }
+
+  /**
+   * Forward an audio period tick from the host AudioDriver into the
+   * kernel: advances `mmap_status.hw_ptr`, detects XRUN, wakes any
+   * process parked on `POLLOUT` against `/dev/snd/pcmC0D<pcmId>p`.
+   */
+  audioPeriodTick(pcmId: number, framesConsumed: number): void {
+    this.kernel.audioPeriodTick(pcmId, framesConsumed);
+    this.scheduleWakeBlockedRetries();
+  }
+
+  /**
+   * Return the current `mmap_control.appl_ptr` for any OFD bound to
+   * `pcmId`. The browser AudioDriver polls this each 10 ms and pushes
+   * the value into the AudioWorklet so the worklet gates `hwPtr`
+   * advance on producer progress.
+   */
+  audioGetApplPtr(pcmId: number): number {
+    return this.kernel.audioGetApplPtr(pcmId);
+  }
+
+  /**
    * ABI version the kernel advertised at startup via its
    * `__abi_version` export. Worker processes compare against this
    * and refuse to run programs built against an incompatible ABI.

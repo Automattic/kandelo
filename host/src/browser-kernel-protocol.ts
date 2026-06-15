@@ -260,6 +260,52 @@ export interface AudioDrainMessage {
   maxBytes: number;
 }
 
+/**
+ * Main-thread → kernel-worker request to allocate a kernel-memory
+ * SAB ring for `pcmId` of `byteLen` bytes and bind it via
+ * `kernel_audio_init_sab`. The worker replies via `ResponseMessage`
+ * with `{ buffer, byteOffset, byteLength }` so the main-thread
+ * AudioDriver can mount an `Int16Array` view at the same offset.
+ * Mirrors the Node-side message of the same name — dual-host parity
+ * per CLAUDE.md §"Two hosts".
+ */
+export interface AudioAllocRingRequestMessage {
+  type: "audio_alloc_ring";
+  requestId: number;
+  pcmId: number;
+  byteLen: number;
+}
+
+/**
+ * Main-thread → kernel-worker period tick. The main-thread
+ * `BrowserAudioDriver` accumulates AudioWorklet quanta until one ALSA
+ * period's worth of frames is consumed, then sends this message. The
+ * worker calls `kernel_audio_period_tick` which advances
+ * `mmap_status.hw_ptr`, detects XRUN, and wakes any `POLLOUT` waiter
+ * parked on `/dev/snd/pcmC0D<pcmId>p`. Fire-and-forget.
+ */
+export interface AudioPeriodTickMessage {
+  type: "audio_period_tick";
+  pcmId: number;
+  framesConsumed: number;
+}
+
+/**
+ * Main-thread → kernel-worker request to read the current
+ * `mmap_control.appl_ptr` for any OFD bound to `pcmId`. The
+ * `BrowserAudioDriver` polls this on a 10 ms interval and forwards
+ * the result into the `wpk-pcm-pull` AudioWorklet so the worklet
+ * gates `hwPtr` advance on producer progress (silence past
+ * `appl_ptr`). The worker replies via `ResponseMessage` with a
+ * `number` (i64 truncated through `Number()` — within JS safe-int
+ * range for any realistic session). Returns 0 if no OFD is bound.
+ */
+export interface AudioGetApplPtrRequestMessage {
+  type: "audio_get_appl_ptr";
+  requestId: number;
+  pcmId: number;
+}
+
 export interface RegisterLazyArchivesMessage {
   type: "register_lazy_archives";
   entries: Array<{
@@ -379,6 +425,9 @@ export type MainToKernelMessage =
   | InputEventInjectMessage
   | SetInputCanvasDimsMessage
   | AudioDrainMessage
+  | AudioAllocRingRequestMessage
+  | AudioPeriodTickMessage
+  | AudioGetApplPtrRequestMessage
   | EnumProcsRequestMessage
   | ReadProcMapsRequestMessage
   | SetSyscallTraceMessage

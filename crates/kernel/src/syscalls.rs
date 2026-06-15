@@ -71,6 +71,18 @@ pub enum VirtualDevice {
     /// `device = 1` → ptr (host_handle -11). v1 exposes exactly these
     /// two; `/dev/input/eventN` for N≥2 is not synthesised.
     InputEvent { device: u8 },
+    /// `/dev/snd/controlC0` (host_handle = -12). v1 ships card 0 only.
+    AlsaControl { card: u8 },
+    /// `/dev/snd/pcmC0D0p` (host_handle = -13). v1 ships card 0 device 0
+    /// sub 0 playback only — `pcmC0D0c` (capture) is rejected at open
+    /// with `ENODEV`, so [`PcmDir::Capture`] never reaches a live
+    /// OFD via this constructor.
+    AlsaPcm {
+        card: u8,
+        device: u8,
+        sub: u8,
+        kind: crate::ofd::PcmDir,
+    },
 }
 
 impl VirtualDevice {
@@ -87,6 +99,16 @@ impl VirtualDevice {
             VirtualDevice::DriRenderD128 => -8,
             VirtualDevice::DriCard0 => -9,
             VirtualDevice::InputEvent { device } => -10 - device as i64,
+            VirtualDevice::AlsaControl { card: 0 } => -12,
+            VirtualDevice::AlsaPcm {
+                card: 0,
+                device: 0,
+                sub: 0,
+                kind: crate::ofd::PcmDir::Playback,
+            } => -13,
+            // v1 only synthesises card 0 / device 0 / sub 0 playback;
+            // anything else would have failed at match_virtual_device.
+            VirtualDevice::AlsaControl { .. } | VirtualDevice::AlsaPcm { .. } => -1,
         }
     }
 
@@ -104,6 +126,13 @@ impl VirtualDevice {
             -9 => Some(VirtualDevice::DriCard0),
             -10 => Some(VirtualDevice::InputEvent { device: 0 }),
             -11 => Some(VirtualDevice::InputEvent { device: 1 }),
+            -12 => Some(VirtualDevice::AlsaControl { card: 0 }),
+            -13 => Some(VirtualDevice::AlsaPcm {
+                card: 0,
+                device: 0,
+                sub: 0,
+                kind: crate::ofd::PcmDir::Playback,
+            }),
             _ => None,
         }
     }
@@ -121,6 +150,12 @@ impl VirtualDevice {
             VirtualDevice::DriRenderD128 => 8,
             VirtualDevice::DriCard0 => 9,
             VirtualDevice::InputEvent { device } => 10 + device as u64,
+            VirtualDevice::AlsaControl { card } => 12 + card as u64,
+            VirtualDevice::AlsaPcm { card, device, sub, .. } => {
+                // Card-major then device-minor then sub. v1 only uses (0,0,0,Playback)
+                // so the formula's exactness past the first triple doesn't matter yet.
+                13 + (card as u64) * 256 + (device as u64) * 16 + (sub as u64)
+            }
         }
     }
 }
@@ -144,6 +179,28 @@ fn match_virtual_device(path: &[u8]) -> Option<VirtualDevice> {
         b"/dev/dri/card0" => Some(VirtualDevice::DriCard0),
         b"/dev/input/event0" => Some(VirtualDevice::InputEvent { device: 0 }),
         b"/dev/input/event1" => Some(VirtualDevice::InputEvent { device: 1 }),
+        b"/dev/snd/controlC0" => Some(VirtualDevice::AlsaControl { card: 0 }),
+        b"/dev/snd/pcmC0D0p" => Some(VirtualDevice::AlsaPcm {
+            card: 0,
+            device: 0,
+            sub: 0,
+            kind: crate::ofd::PcmDir::Playback,
+        }),
+        _ => None,
+    }
+}
+
+/// Paths under synthetic device trees that the kernel deliberately
+/// refuses to open — distinct from "doesn't exist". Returns the errno
+/// the caller should propagate, or `None` to fall through to the
+/// regular [`match_virtual_device`] / on-disk path.
+///
+/// Used for `/dev/snd/pcmC0D0c` so the kernel reports `ENODEV`
+/// ("device exists but is disabled") instead of `ENOENT`, mirroring
+/// what alsa-lib expects when probing a capture-only direction.
+fn disabled_virtual_device(path: &[u8]) -> Option<Errno> {
+    match path {
+        b"/dev/snd/pcmC0D0c" => Some(Errno::ENODEV),
         _ => None,
     }
 }
@@ -581,6 +638,34 @@ fn install_input_state_on_open(proc: &mut Process, ofd_idx: usize, dev: VirtualD
                 ..Default::default()
             }));
         }
+    }
+}
+
+/// Install the ALSA sidecar on a freshly-allocated OFD for an
+/// `/dev/snd/{pcmC0D0p,controlC0}` open. No-op for any other virtual
+/// device. The PCM and control variants land in two disjoint OFD
+/// fields (`audio` / `audio_ctl`) per [`crate::ofd::AlsaControlFdState`]'s
+/// rationale.
+fn install_audio_state_on_open(proc: &mut Process, ofd_idx: usize, dev: VirtualDevice) {
+    match dev {
+        VirtualDevice::AlsaPcm { card, device, sub, kind } => {
+            if let Some(ofd) = proc.ofd_table.get_mut(ofd_idx) {
+                ofd.audio = Some(alloc::boxed::Box::new(crate::ofd::AlsaFdState {
+                    card,
+                    device,
+                    sub,
+                    kind,
+                    ..Default::default()
+                }));
+            }
+        }
+        VirtualDevice::AlsaControl { card } => {
+            if let Some(ofd) = proc.ofd_table.get_mut(ofd_idx) {
+                ofd.audio_ctl =
+                    Some(alloc::boxed::Box::new(crate::ofd::AlsaControlFdState { card }));
+            }
+        }
+        _ => {}
     }
 }
 
@@ -1843,6 +1928,12 @@ pub fn sys_open(
         return Ok(fd);
     }
 
+    // Paths that exist in the synthetic tree but are deliberately
+    // disabled (e.g. /dev/snd/pcmC0D0c — v1 ships playback only).
+    if let Some(errno) = disabled_virtual_device(&resolved) {
+        return Err(errno);
+    }
+
     // Virtual device nodes — handle in-kernel, no host call
     if let Some(dev) = match_virtual_device(&resolved) {
         if dev == VirtualDevice::Fb0 {
@@ -1863,6 +1954,7 @@ pub fn sys_open(
         );
         install_dri_state_on_open(proc, ofd_idx, dev);
         install_input_state_on_open(proc, ofd_idx, dev);
+        install_audio_state_on_open(proc, ofd_idx, dev);
         let fd_flags = oflags_to_fd_flags(oflags);
         let fd = proc.fd_table.alloc(OpenFileDescRef(ofd_idx), fd_flags)?;
         return Ok(fd);
@@ -2719,6 +2811,12 @@ pub fn sys_read(
                             }
                             n
                         }
+                        // ALSA fds carry data via ioctl (WRITEI_FRAMES)
+                        // or the mmap data page, never user-space
+                        // read(). Return 0 so alsa-lib's defensive
+                        // probe reads observe EOF instead of EBADF;
+                        // A3+ refine this if a real consumer surfaces.
+                        VirtualDevice::AlsaPcm { .. } | VirtualDevice::AlsaControl { .. } => 0,
                     };
                     return Ok(n);
                 }
@@ -6286,6 +6384,20 @@ pub fn sys_mmap(
             });
             return Ok(addr_out);
         }
+
+        // /dev/snd/pcmC0D<p>p: alsa-lib calls mmap() three times right
+        // after HW_PARAMS, one each for status / control / data. The
+        // dispatcher in `audio::mmap` decodes the offset, lazily
+        // allocates the kernel-side status/control Boxes, and (for the
+        // DATA page) verifies a SAB was registered via
+        // `kernel_audio_init_sab`. The user-space pages themselves
+        // come from the generic `mmap_anonymous` allocator.
+        if ofd.audio.is_some() {
+            let ofd_idx = entry.ofd_ref.0;
+            return crate::audio::mmap::handle_alsa_pcm_mmap(
+                proc, ofd_idx, addr, len, prot, flags, offset,
+            );
+        }
     }
 
     // Allocate the region. Both anonymous and file-backed use the same
@@ -8249,6 +8361,59 @@ fn poll_check(proc: &mut Process, host: &mut dyn HostIO, fds: &mut [WasmPollFd])
                             }
                         }
                     }
+                } else if ofd.file_type == FileType::CharDevice
+                    && matches!(
+                        VirtualDevice::from_host_handle(ofd.host_handle),
+                        Some(VirtualDevice::AlsaPcm { .. })
+                    )
+                {
+                    // /dev/snd/pcmC0D<n>p — alsa-lib polls POLLOUT
+                    // waiting for ring space.
+                    //
+                    //   avail     = buffer_size - (appl_ptr - hw_ptr)
+                    //   ready iff   avail >= sw_params.avail_min
+                    //
+                    // hw_ptr / appl_ptr come from the kernel-side
+                    // mmap Boxes (A5); buffer_size / avail_min from
+                    // the HW/SW_PARAMS caches (A3). XRUN reflects as
+                    // POLLERR so alsa-lib's recovery path triggers a
+                    // PREPARE without spinning.
+                    //
+                    // v1 reports ready / not-ready only — kernel
+                    // doesn't park; userspace re-polls (same pattern
+                    // as every other AlsaPcm sibling in this match).
+                    if let Some(audio) = ofd.audio() {
+                        let buffer = audio
+                            .hw_params
+                            .as_ref()
+                            .map(|h| h.buffer_size as i64)
+                            .unwrap_or(0);
+                        let appl = audio
+                            .mmap_control
+                            .as_ref()
+                            .map(|c| c.appl_ptr)
+                            .unwrap_or(0);
+                        let hw_ptr = audio
+                            .mmap_status
+                            .as_ref()
+                            .map(|s| s.hw_ptr)
+                            .unwrap_or(0);
+                        let avail_min = audio
+                            .sw_params
+                            .as_ref()
+                            .map(|s| s.avail_min as i64)
+                            .unwrap_or(1);
+                        let avail = buffer - (appl - hw_ptr);
+                        if pollfd.events & POLLOUT != 0 && avail >= avail_min {
+                            revents |= POLLOUT;
+                        }
+                        if audio.state
+                            == wasm_posix_shared::audio::SNDRV_PCM_STATE_XRUN
+                        {
+                            revents |= POLLERR;
+                        }
+                    }
+                    // AlsaPcm is write-only — never report POLLIN.
                 } else {
                     // Regular files and char devices are always ready
                     if pollfd.events & POLLIN != 0 {
@@ -8552,6 +8717,12 @@ pub fn sys_openat(
         return Ok(fd);
     }
 
+    // Paths that exist in the synthetic tree but are deliberately
+    // disabled (e.g. /dev/snd/pcmC0D0c — v1 ships playback only).
+    if let Some(errno) = disabled_virtual_device(&resolved) {
+        return Err(errno);
+    }
+
     // Virtual device nodes — handle in-kernel, no host call
     if let Some(dev) = match_virtual_device(&resolved) {
         if dev == VirtualDevice::Fb0 {
@@ -8572,6 +8743,7 @@ pub fn sys_openat(
         );
         install_dri_state_on_open(proc, ofd_idx, dev);
         install_input_state_on_open(proc, ofd_idx, dev);
+        install_audio_state_on_open(proc, ofd_idx, dev);
         let fd_flags = oflags_to_fd_flags(oflags);
         let fd = proc.fd_table.alloc(OpenFileDescRef(ofd_idx), fd_flags)?;
         return Ok(fd);
@@ -9153,6 +9325,21 @@ pub fn sys_ioctl(
             {
                 return handle_input_ioctl(proc, ofd_idx, request, buf);
             }
+        }
+    }
+
+    // --- /dev/snd/pcmC0D0p ioctls — ALSA SNDRV_PCM_* surface ---
+    {
+        let ofd = proc.ofd_table.get(ofd_idx).ok_or(Errno::EBADF)?;
+        if ofd.file_type == FileType::CharDevice
+            && matches!(
+                VirtualDevice::from_host_handle(ofd.host_handle),
+                Some(VirtualDevice::AlsaPcm { .. })
+            )
+        {
+            return crate::audio::pcm_ioctl::handle_alsa_pcm_ioctl(
+                proc, host, ofd_idx, request, buf,
+            );
         }
     }
 
@@ -14470,6 +14657,149 @@ mod tests {
         assert_eq!(pollfds[1].revents, 0);
     }
 
+    fn install_alsa_pcm_fd(
+        proc: &mut Process,
+        state: u32,
+        buffer_size: u64,
+        appl_ptr: i64,
+        hw_ptr: i64,
+        avail_min: u64,
+    ) -> i32 {
+        use crate::ofd::{AlsaFdState, FileType, HwParamsCache, PcmDir, SwParamsCache};
+        use alloc::boxed::Box;
+        use wasm_posix_shared::audio::{WpkAlsaPcmMmapControl, WpkAlsaPcmMmapStatus};
+
+        let host_handle = VirtualDevice::AlsaPcm {
+            card: 0,
+            device: 0,
+            sub: 0,
+            kind: PcmDir::Playback,
+        }
+        .host_handle();
+        let ofd_idx = proc.ofd_table.create(
+            FileType::CharDevice,
+            O_WRONLY,
+            host_handle,
+            b"/dev/snd/pcmC0D0p".to_vec(),
+        );
+        let ofd = proc.ofd_table.get_mut(ofd_idx).unwrap();
+        ofd.audio = Some(Box::new(AlsaFdState {
+            pcm_id: 0,
+            state,
+            hw_params: Some(Box::new(HwParamsCache {
+                buffer_size,
+                ..HwParamsCache::default()
+            })),
+            sw_params: Some(Box::new(SwParamsCache {
+                avail_min,
+                ..SwParamsCache::default()
+            })),
+            mmap_status: Some(Box::new(WpkAlsaPcmMmapStatus {
+                hw_ptr,
+                ..WpkAlsaPcmMmapStatus::default()
+            })),
+            mmap_control: Some(Box::new(WpkAlsaPcmMmapControl {
+                appl_ptr,
+                ..WpkAlsaPcmMmapControl::default()
+            })),
+            ..AlsaFdState::default()
+        }));
+        proc.fd_table
+            .alloc(OpenFileDescRef(ofd_idx), 0)
+            .expect("alloc fd")
+    }
+
+    #[test]
+    fn test_poll_alsa_pcm_pollout_ready_when_avail_above_threshold() {
+        use wasm_posix_shared::WasmPollFd;
+        use wasm_posix_shared::audio::SNDRV_PCM_STATE_RUNNING;
+        use wasm_posix_shared::poll::*;
+
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        // appl=2000, hw=1000, buffer=4096 → avail=3096 >= avail_min=1024 ⇒ ready.
+        let fd = install_alsa_pcm_fd(
+            &mut proc,
+            SNDRV_PCM_STATE_RUNNING,
+            4096,
+            2000,
+            1000,
+            1024,
+        );
+
+        let mut pollfd = WasmPollFd {
+            fd,
+            events: POLLOUT,
+            revents: 0,
+        };
+        let n =
+            sys_poll(&mut proc, &mut host, core::slice::from_mut(&mut pollfd), 0).unwrap();
+        assert_eq!(n, 1);
+        assert_ne!(pollfd.revents & POLLOUT, 0);
+        assert_eq!(pollfd.revents & POLLERR, 0);
+    }
+
+    #[test]
+    fn test_poll_alsa_pcm_pollout_not_ready_when_buffer_full() {
+        use wasm_posix_shared::WasmPollFd;
+        use wasm_posix_shared::audio::SNDRV_PCM_STATE_RUNNING;
+        use wasm_posix_shared::poll::*;
+
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        // appl=5000, hw=1000, buffer=4000 → avail=0 < avail_min=1 ⇒ not ready.
+        let fd = install_alsa_pcm_fd(
+            &mut proc,
+            SNDRV_PCM_STATE_RUNNING,
+            4000,
+            5000,
+            1000,
+            1,
+        );
+
+        let mut pollfd = WasmPollFd {
+            fd,
+            events: POLLOUT,
+            revents: 0,
+        };
+        let n =
+            sys_poll(&mut proc, &mut host, core::slice::from_mut(&mut pollfd), 0).unwrap();
+        // sys_poll returns EAGAIN in centralized mode; in this single-shot
+        // test we run with default mode (non-centralized + timeout=0) so
+        // poll_check returns 0 ready ⇒ sys_poll Ok(0).
+        assert_eq!(n, 0);
+        assert_eq!(pollfd.revents & POLLOUT, 0);
+    }
+
+    #[test]
+    fn test_poll_alsa_pcm_pollerr_set_on_xrun_state() {
+        use wasm_posix_shared::WasmPollFd;
+        use wasm_posix_shared::audio::SNDRV_PCM_STATE_XRUN;
+        use wasm_posix_shared::poll::*;
+
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        // XRUN — POLLERR latches regardless of avail.
+        let fd = install_alsa_pcm_fd(
+            &mut proc,
+            SNDRV_PCM_STATE_XRUN,
+            4096,
+            2000,
+            1000,
+            1024,
+        );
+
+        let mut pollfd = WasmPollFd {
+            fd,
+            events: POLLOUT,
+            revents: 0,
+        };
+        let n =
+            sys_poll(&mut proc, &mut host, core::slice::from_mut(&mut pollfd), 0).unwrap();
+        assert_eq!(n, 1);
+        assert_ne!(pollfd.revents & POLLERR, 0);
+    }
+
     #[test]
     fn test_lseek_seek_end_on_pipe() {
         let mut proc = Process::new(1);
@@ -17879,6 +18209,13 @@ mod tests {
             VirtualDevice::DriCard0,
             VirtualDevice::InputEvent { device: 0 },
             VirtualDevice::InputEvent { device: 1 },
+            VirtualDevice::AlsaControl { card: 0 },
+            VirtualDevice::AlsaPcm {
+                card: 0,
+                device: 0,
+                sub: 0,
+                kind: crate::ofd::PcmDir::Playback,
+            },
         ] {
             assert_eq!(
                 VirtualDevice::from_host_handle(dev.host_handle()),
@@ -17887,8 +18224,8 @@ mod tests {
         }
         assert_eq!(VirtualDevice::from_host_handle(0), None);
         // First sentinel past the allocated range — must not roundtrip.
-        // -10 and -11 are now allocated for InputEvent{0,1}.
-        assert_eq!(VirtualDevice::from_host_handle(-12), None);
+        // -12 = AlsaControl{card:0}, -13 = AlsaPcm{0,0,0,Playback}.
+        assert_eq!(VirtualDevice::from_host_handle(-14), None);
     }
 
     // ===== Loopback socket tests =====
@@ -22675,6 +23012,137 @@ mod tests {
         let mut host = MockHostIO::new();
         let r = sys_open(&mut proc, &mut host, b"/dev/input/event2", O_RDONLY, 0);
         assert!(r.is_err(), "/dev/input/event2 must NOT open as a virtual device");
+    }
+
+    #[test]
+    fn match_virtual_device_recognizes_alsa_paths() {
+        assert_eq!(
+            match_virtual_device(b"/dev/snd/controlC0"),
+            Some(VirtualDevice::AlsaControl { card: 0 })
+        );
+        assert_eq!(
+            match_virtual_device(b"/dev/snd/pcmC0D0p"),
+            Some(VirtualDevice::AlsaPcm {
+                card: 0,
+                device: 0,
+                sub: 0,
+                kind: crate::ofd::PcmDir::Playback,
+            })
+        );
+        // pcmC0D0c is "disabled", not "matched as a virtual device".
+        assert_eq!(match_virtual_device(b"/dev/snd/pcmC0D0c"), None);
+        // No additional cards/devices in v1.
+        assert_eq!(match_virtual_device(b"/dev/snd/controlC1"), None);
+        assert_eq!(match_virtual_device(b"/dev/snd/pcmC0D1p"), None);
+    }
+
+    #[test]
+    fn open_pcm_playback_yields_audio_state_in_open_state() {
+        use wasm_posix_shared::audio::SNDRV_PCM_STATE_OPEN;
+        let mut proc = Process::new(701);
+        let mut host = MockHostIO::new();
+        let fd = sys_open(&mut proc, &mut host, b"/dev/snd/pcmC0D0p", O_WRONLY, 0).unwrap();
+        let entry = proc.fd_table.get(fd).unwrap();
+        let ofd = proc.ofd_table.get(entry.ofd_ref.0).unwrap();
+        let st = ofd.audio().expect("audio sidecar should be installed");
+        assert_eq!(st.kind, crate::ofd::PcmDir::Playback);
+        assert_eq!(st.state, SNDRV_PCM_STATE_OPEN);
+        assert!(st.hw_params.is_none());
+        assert!(st.sw_params.is_none());
+        assert!(st.mmap_status.is_none());
+        assert!(st.mmap_control.is_none());
+        assert_eq!(st.pcm_id, 0);
+        // PCM and control sidecars are disjoint state machines.
+        assert!(ofd.audio_ctl().is_none());
+        assert!(ofd.dri_state.is_none());
+        assert!(ofd.input_state.is_none());
+    }
+
+    #[test]
+    fn open_control_yields_audio_ctl_state() {
+        let mut proc = Process::new(702);
+        let mut host = MockHostIO::new();
+        let fd = sys_open(&mut proc, &mut host, b"/dev/snd/controlC0", O_RDWR, 0).unwrap();
+        let entry = proc.fd_table.get(fd).unwrap();
+        let ofd = proc.ofd_table.get(entry.ofd_ref.0).unwrap();
+        let st = ofd.audio_ctl().expect("audio_ctl sidecar should be installed");
+        assert_eq!(st.card, 0);
+        // The PCM sidecar must NOT be populated for a control open.
+        assert!(ofd.audio().is_none());
+    }
+
+    #[test]
+    fn open_pcm_capture_returns_enodev() {
+        let mut proc = Process::new(703);
+        let mut host = MockHostIO::new();
+        let err = sys_open(&mut proc, &mut host, b"/dev/snd/pcmC0D0c", O_RDONLY, 0)
+            .expect_err("pcmC0D0c (capture) must not open in v1");
+        assert_eq!(err, Errno::ENODEV);
+    }
+
+    #[test]
+    fn open_pcm_is_multi_process_no_busy() {
+        // Unlike single-owner /dev/fb0 / /dev/dsp, ALSA PCM accepts
+        // multiple opens — every process attaches its own per-OFD
+        // state. (Cross-process arbitration is a future-plan concern.)
+        let mut proc1 = Process::new(704);
+        let mut proc2 = Process::new(705);
+        let mut host = MockHostIO::new();
+        assert!(sys_open(&mut proc1, &mut host, b"/dev/snd/pcmC0D0p", O_WRONLY, 0).is_ok());
+        assert!(sys_open(&mut proc2, &mut host, b"/dev/snd/pcmC0D0p", O_WRONLY, 0).is_ok());
+    }
+
+    #[test]
+    fn dup_inherits_audio_state_via_ofd_share() {
+        // Per-OFD audio state means dup-share works for free: two fds
+        // pointing at the same OFD see the same AlsaFdState. fork-time
+        // inheritance reuses this property once A7 wires audio fork
+        // serialisation.
+        use wasm_posix_shared::audio::SNDRV_PCM_STATE_SETUP;
+        let mut proc = Process::new(706);
+        let mut host = MockHostIO::new();
+        let fd = sys_open(&mut proc, &mut host, b"/dev/snd/pcmC0D0p", O_WRONLY, 0).unwrap();
+        let dup_fd = sys_dup(&mut proc, fd).unwrap();
+        assert_ne!(fd, dup_fd);
+
+        let dup_entry = proc.fd_table.get(dup_fd).unwrap();
+        let dup_ofd_idx = dup_entry.ofd_ref.0;
+        {
+            let st = proc
+                .ofd_table
+                .get_mut(dup_ofd_idx)
+                .and_then(|o| o.audio_mut())
+                .unwrap();
+            st.state = SNDRV_PCM_STATE_SETUP;
+        }
+
+        let orig_entry = proc.fd_table.get(fd).unwrap();
+        assert_eq!(orig_entry.ofd_ref.0, dup_ofd_idx);
+        let st = proc
+            .ofd_table
+            .get(orig_entry.ofd_ref.0)
+            .and_then(|o| o.audio())
+            .unwrap();
+        assert_eq!(st.state, SNDRV_PCM_STATE_SETUP);
+    }
+
+    #[test]
+    fn fresh_open_of_pcm_yields_distinct_audio_state() {
+        use wasm_posix_shared::audio::{SNDRV_PCM_STATE_OPEN, SNDRV_PCM_STATE_SETUP};
+        let mut proc = Process::new(707);
+        let mut host = MockHostIO::new();
+        let fd1 = sys_open(&mut proc, &mut host, b"/dev/snd/pcmC0D0p", O_WRONLY, 0).unwrap();
+        let fd2 = sys_open(&mut proc, &mut host, b"/dev/snd/pcmC0D0p", O_WRONLY, 0).unwrap();
+        let ofd1_idx = proc.fd_table.get(fd1).unwrap().ofd_ref.0;
+        let ofd2_idx = proc.fd_table.get(fd2).unwrap().ofd_ref.0;
+        assert_ne!(ofd1_idx, ofd2_idx);
+
+        proc.ofd_table.get_mut(ofd1_idx).unwrap().audio_mut().unwrap().state =
+            SNDRV_PCM_STATE_SETUP;
+        assert_eq!(
+            proc.ofd_table.get(ofd2_idx).and_then(|o| o.audio()).unwrap().state,
+            SNDRV_PCM_STATE_OPEN
+        );
     }
 
     #[test]

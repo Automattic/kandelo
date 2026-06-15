@@ -206,6 +206,46 @@ export interface SetInputCanvasDimsMessage {
   height: number;
 }
 
+/**
+ * Main-thread → kernel-worker request to allocate a kernel-memory
+ * SAB ring for `pcmId` of `byteLen` bytes and bind it via
+ * `kernel_audio_init_sab`. The worker replies via `ResponseMessage`
+ * with `{ buffer, byteOffset, byteLength }` so the main-thread
+ * AudioDriver can mount an `Int16Array` view at the same offset.
+ */
+export interface AudioAllocRingRequestMessage {
+  type: "audio_alloc_ring";
+  requestId: number;
+  pcmId: number;
+  byteLen: number;
+}
+
+/**
+ * Main-thread → kernel-worker period tick. Routes to
+ * `CentralizedKernelWorker.audioPeriodTick` which calls
+ * `kernel_audio_period_tick` and wakes any `POLLOUT` waiter parked on
+ * `/dev/snd/pcmC0D<pcmId>p`. Fire-and-forget.
+ */
+export interface AudioPeriodTickMessage {
+  type: "audio_period_tick";
+  pcmId: number;
+  framesConsumed: number;
+}
+
+/**
+ * Main-thread → kernel-worker request to read the current
+ * `mmap_control.appl_ptr` for any OFD bound to `pcmId`. The browser
+ * driver polls this to gate the AudioWorklet's `hwPtr` advance on
+ * producer progress. The worker replies via `ResponseMessage` with a
+ * `number`. Kept on the Node side for dual-host parity even though
+ * `NodeAudioDriver` doesn't currently poll.
+ */
+export interface AudioGetApplPtrRequestMessage {
+  type: "audio_get_appl_ptr";
+  requestId: number;
+  pcmId: number;
+}
+
 export type MainToKernelMessage =
   | InitMessage
   | SpawnMessage
@@ -225,7 +265,10 @@ export type MainToKernelMessage =
   | KmsAttachCanvasMessage
   | KmsAttachStatsMessage
   | InputEventInjectMessage
-  | SetInputCanvasDimsMessage;
+  | SetInputCanvasDimsMessage
+  | AudioAllocRingRequestMessage
+  | AudioPeriodTickMessage
+  | AudioGetApplPtrRequestMessage;
 
 // ── Kernel Worker → Main Thread ──
 

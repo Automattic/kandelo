@@ -1661,6 +1661,21 @@ sw.onmessage = (e: MessageEvent) => {
     case "set_input_canvas_dims":
       kernelWorker.setInputCanvasDims(msg.width, msg.height);
       break;
+    case "audio_alloc_ring": {
+      const ring = kernelWorker.audioInitRing(msg.pcmId, msg.byteLen);
+      if (!ring) {
+        respondError(msg.requestId, "audio_alloc_ring: kernel allocator declined");
+      } else {
+        respond(msg.requestId, ring);
+      }
+      break;
+    }
+    case "audio_period_tick":
+      kernelWorker.audioPeriodTick(msg.pcmId, msg.framesConsumed);
+      break;
+    case "audio_get_appl_ptr":
+      respond(msg.requestId, kernelWorker.audioGetApplPtr(msg.pcmId));
+      break;
     default: {
       // Handle non-protocol messages (e.g., bridge port transfer)
       const raw = e.data as any;

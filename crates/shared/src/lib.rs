@@ -356,6 +356,7 @@ pub enum Errno {
     EBUSY = 16,
     EEXIST = 17,
     EXDEV = 18,
+    ENODEV = 19,
     ENOTDIR = 20,
     EISDIR = 21,
     EINVAL = 22,
@@ -378,6 +379,7 @@ pub enum Errno {
     EIDRM = 43,
     ENODATA = 61,
     EOVERFLOW = 75,
+    EBADFD = 77,
     ENOTSOCK = 88,
     EDESTADDRREQ = 89,
     EMSGSIZE = 90,
@@ -420,6 +422,7 @@ impl Errno {
             16 => Some(Errno::EBUSY),
             17 => Some(Errno::EEXIST),
             18 => Some(Errno::EXDEV),
+            19 => Some(Errno::ENODEV),
             20 => Some(Errno::ENOTDIR),
             21 => Some(Errno::EISDIR),
             22 => Some(Errno::EINVAL),
@@ -442,6 +445,7 @@ impl Errno {
             43 => Some(Errno::EIDRM),
             61 => Some(Errno::ENODATA),
             75 => Some(Errno::EOVERFLOW),
+            77 => Some(Errno::EBADFD),
             88 => Some(Errno::ENOTSOCK),
             89 => Some(Errno::EDESTADDRREQ),
             90 => Some(Errno::EMSGSIZE),
@@ -2747,6 +2751,256 @@ pub mod input {
     }
 }
 
+pub mod audio {
+    // --- PCM ioctl numbers ('A' magic, Linux UAPI verbatim) --------------
+
+    pub const SNDRV_PCM_IOCTL_PVERSION: u32 = 0x8004_4100;
+    pub const SNDRV_PCM_IOCTL_INFO: u32 = 0x8120_4101;
+    pub const SNDRV_PCM_IOCTL_HW_REFINE: u32 = 0xc260_4110;
+    pub const SNDRV_PCM_IOCTL_HW_PARAMS: u32 = 0xc260_4111;
+    pub const SNDRV_PCM_IOCTL_HW_FREE: u32 = 0x0000_4112;
+    pub const SNDRV_PCM_IOCTL_SW_PARAMS: u32 = 0xc088_4113;
+    pub const SNDRV_PCM_IOCTL_STATUS: u32 = 0x8080_4120;
+    pub const SNDRV_PCM_IOCTL_PREPARE: u32 = 0x0000_4140;
+    pub const SNDRV_PCM_IOCTL_START: u32 = 0x0000_4142;
+    pub const SNDRV_PCM_IOCTL_DROP: u32 = 0x0000_4143;
+    pub const SNDRV_PCM_IOCTL_PAUSE: u32 = 0x4004_4145;
+    pub const SNDRV_PCM_IOCTL_WRITEI_FRAMES: u32 = 0x4018_4150;
+
+    // --- PCM state constants ---------------------------------------------
+
+    pub const SNDRV_PCM_STATE_OPEN: u32 = 0;
+    pub const SNDRV_PCM_STATE_SETUP: u32 = 1;
+    pub const SNDRV_PCM_STATE_PREPARED: u32 = 2;
+    pub const SNDRV_PCM_STATE_RUNNING: u32 = 3;
+    pub const SNDRV_PCM_STATE_XRUN: u32 = 4;
+    pub const SNDRV_PCM_STATE_PAUSED: u32 = 6;
+
+    // --- PCM format constants (S16_LE is v1's only support) --------------
+
+    pub const SNDRV_PCM_FORMAT_S16_LE: u32 = 2;
+    pub const SNDRV_PCM_FORMAT_S32_LE: u32 = 10;
+    pub const SNDRV_PCM_FORMAT_FLOAT_LE: u32 = 14;
+
+    // --- PCM access constants --------------------------------------------
+
+    pub const SNDRV_PCM_ACCESS_MMAP_INTERLEAVED: u32 = 0;
+    pub const SNDRV_PCM_ACCESS_RW_INTERLEAVED: u32 = 3;
+
+    // --- PCM stream direction --------------------------------------------
+
+    pub const SNDRV_PCM_STREAM_PLAYBACK: u32 = 0;
+    pub const SNDRV_PCM_STREAM_CAPTURE: u32 = 1;
+
+    // --- MMAP offsets (passed to mmap(pcm_fd, ...) to select a page) ----
+
+    pub const SNDRV_PCM_MMAP_OFFSET_DATA: u64 = 0x0000_0000;
+    pub const SNDRV_PCM_MMAP_OFFSET_STATUS: u64 = 0x8000_0000;
+    pub const SNDRV_PCM_MMAP_OFFSET_CONTROL: u64 = 0x8100_0000;
+
+    /// `struct snd_interval` — value-range descriptor inside
+    /// `snd_pcm_hw_params.intervals[]`. Linux packs four flag bits
+    /// (openmin / openmax / integer / empty) into a trailing u32; we
+    /// store them as a plain u32 to match Linux's 12-byte UAPI size.
+    #[repr(C)]
+    #[derive(Clone, Copy, Default)]
+    pub struct WpkSndInterval {
+        pub min: u32,
+        pub max: u32,
+        /// Bit 0 = openmin, 1 = openmax, 2 = integer, 3 = empty.
+        pub flags: u32,
+    }
+
+    /// `struct snd_pcm_hw_params`. Layout-locked against Linux v6.10
+    /// `include/uapi/sound/asound.h`; `masks[64]` covers the 3 active +
+    /// 5 reserved snd_masks (each is u32[8]), `intervals[21]` covers
+    /// the 12 active + 9 reserved snd_intervals. Phase C's vendored
+    /// `<sound/asound.h>` mirrors this byte-for-byte.
+    #[repr(C)]
+    #[derive(Clone, Copy)]
+    pub struct WpkAlsaPcmHwParams {
+        pub flags: u32,
+        pub masks: [u32; 64],
+        pub intervals: [WpkSndInterval; 21],
+        pub rmask: u32,
+        pub cmask: u32,
+        pub info: u32,
+        pub msbits: u32,
+        pub rate_num: u32,
+        pub rate_den: u32,
+        pub fifo_size: u64,
+        pub reserved: [u8; 64],
+    }
+
+    impl Default for WpkAlsaPcmHwParams {
+        fn default() -> Self {
+            Self {
+                flags: 0,
+                masks: [0; 64],
+                intervals: [WpkSndInterval::default(); 21],
+                rmask: 0,
+                cmask: 0,
+                info: 0,
+                msbits: 0,
+                rate_num: 0,
+                rate_den: 0,
+                fifo_size: 0,
+                reserved: [0; 64],
+            }
+        }
+    }
+
+    /// `struct snd_pcm_sw_params`. Layout-locked against Linux v6.10.
+    #[repr(C)]
+    #[derive(Clone, Copy)]
+    pub struct WpkAlsaPcmSwParams {
+        pub tstamp_mode: u32,
+        pub period_step: u32,
+        pub sleep_min: u32,
+        pub _pad0: u32,
+        pub avail_min: u64,
+        pub xfer_align: u64,
+        pub start_threshold: u64,
+        pub stop_threshold: u64,
+        pub silence_threshold: u64,
+        pub silence_size: u64,
+        pub boundary: u64,
+        pub proto: u32,
+        pub tstamp_type: u32,
+        pub reserved: [u8; 56],
+    }
+
+    impl Default for WpkAlsaPcmSwParams {
+        fn default() -> Self {
+            Self {
+                tstamp_mode: 0,
+                period_step: 0,
+                sleep_min: 0,
+                _pad0: 0,
+                avail_min: 0,
+                xfer_align: 0,
+                start_threshold: 0,
+                stop_threshold: 0,
+                silence_threshold: 0,
+                silence_size: 0,
+                boundary: 0,
+                proto: 0,
+                tstamp_type: 0,
+                reserved: [0; 56],
+            }
+        }
+    }
+
+    /// `struct snd_pcm_status`. All timestamps stamped from
+    /// `CLOCK_MONOTONIC` so userspace can correlate audio underruns
+    /// with vblank + input timestamps.
+    #[repr(C)]
+    #[derive(Clone, Copy, Default)]
+    pub struct WpkAlsaPcmStatus {
+        pub state: u32,
+        pub _pad0: u32,
+        pub trigger_tstamp_sec: i64,
+        pub trigger_tstamp_nsec: i64,
+        pub tstamp_sec: i64,
+        pub tstamp_nsec: i64,
+        pub appl_ptr: i64,
+        pub hw_ptr: i64,
+        pub delay: i64,
+        pub avail: u64,
+        pub avail_max: u64,
+        pub overrange: u64,
+        pub suspended_state: u32,
+        pub audio_tstamp_data: u32,
+        pub audio_tstamp_sec: i64,
+        pub audio_tstamp_nsec: i64,
+        pub _reserved: [u8; 16],
+    }
+
+    /// `struct snd_pcm_info`. Returned by `SNDRV_PCM_IOCTL_INFO`.
+    #[repr(C)]
+    #[derive(Clone, Copy)]
+    pub struct WpkAlsaPcmInfo {
+        pub device: u32,
+        pub subdevice: u32,
+        pub stream: i32,
+        pub card: i32,
+        pub id: [u8; 64],
+        pub name: [u8; 80],
+        pub subname: [u8; 32],
+        pub dev_class: u32,
+        pub dev_subclass: u32,
+        pub subdevices_count: u32,
+        pub subdevices_avail: u32,
+        pub sync: [u8; 16],
+        pub reserved: [u8; 64],
+    }
+
+    impl Default for WpkAlsaPcmInfo {
+        fn default() -> Self {
+            Self {
+                device: 0,
+                subdevice: 0,
+                stream: 0,
+                card: 0,
+                id: [0; 64],
+                name: [0; 80],
+                subname: [0; 32],
+                dev_class: 0,
+                dev_subclass: 0,
+                subdevices_count: 0,
+                subdevices_avail: 0,
+                sync: [0; 16],
+                reserved: [0; 64],
+            }
+        }
+    }
+
+    /// `struct snd_pcm_mmap_status`. Kernel-writes, userspace-reads.
+    /// Mapped at `SNDRV_PCM_MMAP_OFFSET_STATUS`. Field offsets are
+    /// load-bearing — userspace reads `hw_ptr` via direct memory access
+    /// on the mapped page, not through an ioctl.
+    #[repr(C)]
+    #[derive(Clone, Copy, Default, Debug)]
+    pub struct WpkAlsaPcmMmapStatus {
+        pub state: u32,
+        pub _pad0: u32,
+        pub hw_ptr: i64,
+        pub tstamp_sec: i64,
+        pub tstamp_nsec: i64,
+        pub suspended_state: u32,
+        pub audio_tstamp_data: u32,
+        pub audio_tstamp_sec: i64,
+        pub audio_tstamp_nsec: i64,
+        pub _reserved_tail: [u8; 8],
+    }
+
+    /// `struct snd_pcm_mmap_control`. Userspace-writes, kernel-reads.
+    /// Mapped at `SNDRV_PCM_MMAP_OFFSET_CONTROL`.
+    #[repr(C)]
+    #[derive(Clone, Copy, Debug)]
+    pub struct WpkAlsaPcmMmapControl {
+        pub appl_ptr: i64,
+        pub avail_min: i64,
+        pub _reserved: [u8; 48],
+    }
+
+    impl Default for WpkAlsaPcmMmapControl {
+        fn default() -> Self {
+            Self { appl_ptr: 0, avail_min: 0, _reserved: [0; 48] }
+        }
+    }
+
+    /// `struct snd_xferi` — argument to `WRITEI_FRAMES` / `READI_FRAMES`.
+    #[repr(C)]
+    #[derive(Clone, Copy, Default)]
+    pub struct WpkAlsaXferi {
+        pub result: i64,
+        pub buf: u64,
+        pub frames: u64,
+    }
+
+}
+
 #[cfg(test)]
 mod dri_tests {
     use super::dri::*;
@@ -3004,4 +3258,78 @@ mod input_tests {
         assert_eq!(EVIOCGBIT_NR_BASE, 0x20);
         assert_eq!(EVIOCGABS_NR_BASE, 0x40);
     }
+}
+
+#[cfg(test)]
+mod audio_tests {
+    use super::audio::*;
+    use core::mem::size_of;
+
+    const fn ioc(dir: u32, magic: u32, nr: u32, size: u32) -> u32 {
+        (dir << 30) | (size << 16) | (magic << 8) | nr
+    }
+    const IOC_READ: u32 = 2;
+    const IOC_WRITE: u32 = 1;
+    const IOC_RW: u32 = 3;
+
+    #[test]
+    fn audio_struct_sizes_match_wasm32_repr_c() {
+        // These numbers lock the wasm32 `repr(C)` layout; Phase C's
+        // vendored `<sound/asound.h>` mirrors them byte-for-byte.
+        // HwParams = 608 follows Linux v6.10: snd_mask[8] (= u32[64])
+        // + snd_interval[21] (= 12 bytes each) + 6 u32s + the 4-byte
+        // trailing-u32 pad Rust inserts before fifo_size + reserved[64].
+        assert_eq!(size_of::<WpkSndInterval>(), 12);
+        assert_eq!(size_of::<WpkAlsaPcmHwParams>(), 608);
+        assert_eq!(size_of::<WpkAlsaPcmSwParams>(), 136);
+        assert_eq!(size_of::<WpkAlsaPcmStatus>(), 128);
+        assert_eq!(size_of::<WpkAlsaPcmInfo>(), 288);
+        assert_eq!(size_of::<WpkAlsaPcmMmapStatus>(), 64);
+        assert_eq!(size_of::<WpkAlsaPcmMmapControl>(), 64);
+        assert_eq!(size_of::<WpkAlsaXferi>(), 24);
+    }
+
+    #[test]
+    fn audio_mmap_status_field_offsets() {
+        // The mmap_status page is read by userspace via direct memory
+        // access — userspace polls hw_ptr without an ioctl round-trip.
+        let s = WpkAlsaPcmMmapStatus::default();
+        let base = (&s as *const _) as usize;
+        assert_eq!((&s.state as *const _ as usize) - base, 0);
+        assert_eq!((&s.hw_ptr as *const _ as usize) - base, 8);
+        assert_eq!((&s.tstamp_sec as *const _ as usize) - base, 16);
+    }
+
+    #[test]
+    fn audio_mmap_control_field_offsets() {
+        let c = WpkAlsaPcmMmapControl::default();
+        let base = (&c as *const _) as usize;
+        assert_eq!((&c.appl_ptr as *const _ as usize) - base, 0);
+        assert_eq!((&c.avail_min as *const _ as usize) - base, 8);
+    }
+
+    #[test]
+    fn pcm_ioctl_numbers_match_linux_uapi() {
+        assert_eq!(
+            SNDRV_PCM_IOCTL_PVERSION,
+            ioc(IOC_READ, 'A' as u32, 0x00, 4)
+        );
+        assert_eq!(
+            SNDRV_PCM_IOCTL_HW_PARAMS,
+            ioc(IOC_RW, 'A' as u32, 0x11, size_of::<WpkAlsaPcmHwParams>() as u32)
+        );
+        assert_eq!(
+            SNDRV_PCM_IOCTL_SW_PARAMS,
+            ioc(IOC_RW, 'A' as u32, 0x13, size_of::<WpkAlsaPcmSwParams>() as u32)
+        );
+        assert_eq!(
+            SNDRV_PCM_IOCTL_STATUS,
+            ioc(IOC_READ, 'A' as u32, 0x20, size_of::<WpkAlsaPcmStatus>() as u32)
+        );
+        assert_eq!(
+            SNDRV_PCM_IOCTL_WRITEI_FRAMES,
+            ioc(IOC_WRITE, 'A' as u32, 0x50, size_of::<WpkAlsaXferi>() as u32)
+        );
+    }
+
 }

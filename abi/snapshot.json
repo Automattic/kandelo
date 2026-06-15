@@ -285,8 +285,23 @@
     },
     {
       "kind": "func",
+      "name": "kernel_audio_get_appl_ptr",
+      "signature": "(i32) -> (i64)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_audio_init_sab",
+      "signature": "(i32,i64,i32) -> ()"
+    },
+    {
+      "kind": "func",
       "name": "kernel_audio_pending",
       "signature": "() -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_audio_period_tick",
+      "signature": "(i32,i32) -> ()"
     },
     {
       "kind": "func",

@@ -395,6 +395,82 @@ export class WasmPosixKernel {
     return fn ? fn() : 0;
   }
 
+  // ---------------------------------------------------------------------------
+  // /dev/snd/pcmC0D<n>p — host-fed PCM ring (ALSA)
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Allocate a `byteLen`-sized region inside kernel-visible memory for
+   * use as the ALSA PCM SAB ring. Returns the kernel-memory offset
+   * (suitable for `kernel_audio_init_sab`), or 0 if the kernel is not
+   * instantiated or the allocator declined. The region is never freed;
+   * callers should allocate one per `pcm_id` at boot and reuse.
+   */
+  audioAllocRing(byteLen: number): number {
+    const exports = this.instance?.exports as Record<string, unknown> | undefined;
+    const alloc = exports?.kernel_alloc_scratch as
+      | ((size: number) => bigint | number)
+      | undefined;
+    if (!alloc) return 0;
+    return Number(alloc(byteLen));
+  }
+
+  /**
+   * Bind a kernel-memory window as the SAB-backed PCM ring for
+   * `pcmId`. After this call, `SNDRV_PCM_IOCTL_WRITEI_FRAMES` lands
+   * frames into the ring and the host-side AudioDriver pulls them
+   * back out. Re-issuing for the same `pcmId` is a no-op kernel-side.
+   * Silently dropped if the kernel module is not instantiated yet.
+   */
+  audioInitSab(pcmId: number, base: number, len: number): void {
+    const fn = this.instance?.exports?.kernel_audio_init_sab as
+      | ((pcmId: number, base: bigint, len: number) => void)
+      | undefined;
+    if (!fn) return;
+    fn(pcmId, BigInt(base), len);
+  }
+
+  /**
+   * Tell the kernel the host-side driver consumed `framesConsumed`
+   * frames from the SAB ring. Advances `mmap_status.hw_ptr`, stamps
+   * the monotonic timestamp, detects XRUN, and wakes any process
+   * parked on `POLLOUT` for `/dev/snd/pcmC0D<pcmId>p`. Silently
+   * dropped if the kernel module is not instantiated yet.
+   */
+  audioPeriodTick(pcmId: number, framesConsumed: number): void {
+    const fn = this.instance?.exports?.kernel_audio_period_tick as
+      | ((pcmId: number, framesConsumed: number) => void)
+      | undefined;
+    if (!fn) return;
+    fn(pcmId, framesConsumed);
+  }
+
+  /**
+   * Return the current `mmap_control.appl_ptr` for any OFD bound to
+   * `pcmId` (max across matches; in practice ≤1 writer per PCM). The
+   * browser `AudioDriver` polls this and forwards the value into the
+   * `wpk-pcm-pull` AudioWorklet so the worklet emits silence past
+   * `appl_ptr` instead of racing ahead of the producer. 0 if the
+   * kernel module is not instantiated or no OFD is bound.
+   */
+  audioGetApplPtr(pcmId: number): number {
+    const fn = this.instance?.exports?.kernel_audio_get_appl_ptr as
+      | ((pcmId: number) => bigint)
+      | undefined;
+    if (!fn) return 0;
+    return Number(fn(pcmId));
+  }
+
+  /**
+   * Underlying kernel-memory `ArrayBuffer` (`SharedArrayBuffer` in the
+   * shared-memory build). Returned by reference so the AudioDriver and
+   * the kernel see the same bytes for the ALSA PCM ring window. Null
+   * if the kernel module is not instantiated yet.
+   */
+  getKernelMemoryBuffer(): SharedArrayBuffer | ArrayBuffer | null {
+    return (this.memory?.buffer as SharedArrayBuffer | ArrayBuffer) ?? null;
+  }
+
   registerSharedPipe(handle: number, sab: SharedArrayBuffer, end: "read" | "write"): void {
     this.sharedPipes.set(handle, { pipe: SharedPipeBuffer.fromSharedBuffer(sab), end });
   }

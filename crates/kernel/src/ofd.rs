@@ -226,6 +226,118 @@ pub struct InputFdState {
     pub dropped: bool,
 }
 
+/// PCM stream direction. v1 only ships [`PcmDir::Playback`]; opening
+/// `/dev/snd/pcmC0D0c` returns `ENODEV` rather than installing a
+/// [`PcmDir::Capture`] OFD. The variant is kept so the type signature
+/// of [`VirtualDevice::AlsaPcm`] survives v2 without ABI churn.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum PcmDir {
+    #[default]
+    Playback,
+    Capture,
+}
+
+/// HW_PARAMS cache — populated by `SNDRV_PCM_IOCTL_HW_PARAMS`, read by
+/// every subsequent ioctl. Stored as the narrowed concrete shape, not
+/// the wildcard `WpkAlsaPcmHwParams` reply, so the state machine
+/// doesn't have to re-walk the masks/intervals on every transition.
+#[derive(Default, Clone, Debug)]
+pub struct HwParamsCache {
+    /// `SNDRV_PCM_FORMAT_*`. v1: `S16_LE` only.
+    pub format: u32,
+    /// `SNDRV_PCM_ACCESS_*`. v1: `MMAP_INTERLEAVED` or `RW_INTERLEAVED`.
+    pub access: u32,
+    pub channels: u32,
+    pub rate: u32,
+    /// Frames per period.
+    pub period_size: u64,
+    /// Frames per ring buffer (= `period_size * periods`).
+    pub buffer_size: u64,
+    pub periods: u32,
+}
+
+/// SW_PARAMS cache — populated by `SNDRV_PCM_IOCTL_SW_PARAMS`.
+#[derive(Default, Clone, Debug)]
+pub struct SwParamsCache {
+    pub avail_min: u64,
+    pub start_threshold: u64,
+    pub stop_threshold: u64,
+    pub boundary: u64,
+}
+
+/// Per-fd state for `/dev/snd/pcmC0D0p` opens.
+///
+/// Disjoint from [`DriOfdState`] and [`InputFdState`] — audio fds
+/// carry no DRI bo state and no input ring state. Mirrors the
+/// "one `Option<Box<…>>` per device class" factoring [`InputFdState`]
+/// established for plan 5; plan 6 reuses the pattern so the OFD's
+/// non-audio cost is one pointer slot.
+///
+/// PCM state machine: `OPEN` → (`HW_PARAMS`) → `SETUP` → (`PREPARE`)
+/// → `PREPARED` → (`START`) → `RUNNING` → `XRUN` / `PAUSED`.
+/// `HW_FREE` returns to `OPEN`; `DROP` returns to `SETUP`.
+#[derive(Clone, Debug)]
+pub struct AlsaFdState {
+    pub card: u8,
+    pub device: u8,
+    pub sub: u8,
+    pub kind: PcmDir,
+
+    /// PCM state machine. `SNDRV_PCM_STATE_*` (see
+    /// `wasm_posix_shared::audio`).
+    pub state: u32,
+
+    /// HW_PARAMS cache; `None` until `HW_PARAMS` lands.
+    pub hw_params: Option<Box<HwParamsCache>>,
+
+    /// SW_PARAMS cache; `None` until `SW_PARAMS` lands. `HW_PARAMS`
+    /// is a prerequisite — `SW_PARAMS` against a `hw_params: None`
+    /// fd returns `EBADFD`.
+    pub sw_params: Option<Box<SwParamsCache>>,
+
+    /// `snd_pcm_mmap_status` page — kernel-writes, userspace-reads.
+    /// Allocated on first mmap(`SNDRV_PCM_MMAP_OFFSET_STATUS`).
+    pub mmap_status: Option<Box<wasm_posix_shared::audio::WpkAlsaPcmMmapStatus>>,
+
+    /// `snd_pcm_mmap_control` page — userspace-writes, kernel-reads.
+    /// Allocated on first mmap(`SNDRV_PCM_MMAP_OFFSET_CONTROL`).
+    pub mmap_control: Option<Box<wasm_posix_shared::audio::WpkAlsaPcmMmapControl>>,
+
+    /// Identifier into the host `audio::sab_table` for this PCM's
+    /// SAB-backed data ring. `0` until `kernel_audio_init_sab` runs.
+    pub pcm_id: u32,
+}
+
+impl Default for AlsaFdState {
+    fn default() -> Self {
+        AlsaFdState {
+            card: 0,
+            device: 0,
+            sub: 0,
+            kind: PcmDir::Playback,
+            state: wasm_posix_shared::audio::SNDRV_PCM_STATE_OPEN,
+            hw_params: None,
+            sw_params: None,
+            mmap_status: None,
+            mmap_control: None,
+            pcm_id: 0,
+        }
+    }
+}
+
+/// Per-fd state for `/dev/snd/controlC0` opens.
+///
+/// v1 `controlC0` is a read-only handle: `CARD_INFO` / `ELEM_LIST`
+/// serve from kernel globals, so per-fd state is just the card
+/// binding. Carried as a separate `Option<Box<…>>` rather than folded
+/// into [`AlsaFdState`] because a single OFD is never both a PCM and a
+/// control surface — opening `controlC0` and `pcmC0D0p` always
+/// produces two distinct fds.
+#[derive(Default, Clone, Debug)]
+pub struct AlsaControlFdState {
+    pub card: u8,
+}
+
 #[derive(Clone)]
 pub struct OpenFileDesc {
     pub file_type: FileType,
@@ -249,6 +361,13 @@ pub struct OpenFileDesc {
     /// [`InputFdState`]. Boxed so non-evdev OFDs pay only one pointer
     /// slot. Parallel to [`Self::dri_state`] (disjoint state machines).
     pub input_state: Option<Box<InputFdState>>,
+    /// ALSA PCM sidecar for `/dev/snd/pcmC0D0p` OFDs; see
+    /// [`AlsaFdState`]. Parallel to [`Self::input_state`].
+    pub audio: Option<Box<AlsaFdState>>,
+    /// ALSA control sidecar for `/dev/snd/controlC0` OFDs; see
+    /// [`AlsaControlFdState`]. Disjoint from [`Self::audio`] — a
+    /// single fd is never both a PCM and a control surface.
+    pub audio_ctl: Option<Box<AlsaControlFdState>>,
 }
 
 impl OpenFileDesc {
@@ -310,6 +429,25 @@ impl OpenFileDesc {
     pub fn input_mut(&mut self) -> Option<&mut InputFdState> {
         self.input_state.as_deref_mut()
     }
+
+    /// Borrow the `AlsaFdState` for `/dev/snd/pcmC0D0p` OFDs.
+    /// Returns `None` for any other OFD.
+    pub fn audio(&self) -> Option<&AlsaFdState> {
+        self.audio.as_deref()
+    }
+
+    pub fn audio_mut(&mut self) -> Option<&mut AlsaFdState> {
+        self.audio.as_deref_mut()
+    }
+
+    /// Borrow the `AlsaControlFdState` for `/dev/snd/controlC0` OFDs.
+    pub fn audio_ctl(&self) -> Option<&AlsaControlFdState> {
+        self.audio_ctl.as_deref()
+    }
+
+    pub fn audio_ctl_mut(&mut self) -> Option<&mut AlsaControlFdState> {
+        self.audio_ctl.as_deref_mut()
+    }
 }
 
 #[derive(Clone)]
@@ -346,6 +484,8 @@ impl OfdTable {
             dir_entry_offset: 0,
             dri_state: None,
             input_state: None,
+            audio: None,
+            audio_ctl: None,
         };
 
         // Search for a free (None) slot to reuse.
@@ -587,6 +727,8 @@ mod tests {
                 dir_entry_offset: 0,
                 dri_state: None,
                 input_state: None,
+                audio: None,
+                audio_ctl: None,
             });
         }
 
@@ -728,6 +870,58 @@ mod tests {
         // Lock the per-fd memory budget so it cannot drift silently.
         assert_eq!(INPUT_RING_MAX_RECORDS, 1024);
         assert_eq!(INPUT_RING_MAX_BYTES, 24 * 1024);
+    }
+
+    #[test]
+    fn ofd_default_has_no_audio_state() {
+        let mut table = OfdTable::new();
+        let idx = table.create(FileType::CharDevice, O_WRONLY, -13, b"/dev/snd/pcmC0D0p".to_vec());
+        let ofd = table.get(idx).unwrap();
+        assert!(ofd.audio.is_none());
+        assert!(ofd.audio_ctl.is_none());
+        assert!(ofd.audio().is_none());
+        assert!(ofd.audio_ctl().is_none());
+    }
+
+    #[test]
+    fn audio_accessors_route_to_attached_state() {
+        let mut table = OfdTable::new();
+        let idx = table.create(FileType::CharDevice, O_WRONLY, -13, b"/dev/snd/pcmC0D0p".to_vec());
+        table.get_mut(idx).unwrap().audio = Some(Box::new(AlsaFdState {
+            card: 0,
+            device: 0,
+            sub: 0,
+            kind: PcmDir::Playback,
+            ..Default::default()
+        }));
+
+        let st = table.get(idx).unwrap().audio().unwrap();
+        assert_eq!(st.kind, PcmDir::Playback);
+        assert_eq!(st.state, wasm_posix_shared::audio::SNDRV_PCM_STATE_OPEN);
+        assert!(st.hw_params.is_none());
+        assert!(st.sw_params.is_none());
+        assert_eq!(st.pcm_id, 0);
+
+        let st = table.get_mut(idx).unwrap().audio_mut().unwrap();
+        st.state = wasm_posix_shared::audio::SNDRV_PCM_STATE_SETUP;
+        assert_eq!(
+            table.get(idx).unwrap().audio().unwrap().state,
+            wasm_posix_shared::audio::SNDRV_PCM_STATE_SETUP
+        );
+    }
+
+    #[test]
+    fn audio_ctl_accessors_route_to_attached_state() {
+        let mut table = OfdTable::new();
+        let idx = table.create(FileType::CharDevice, O_RDWR, -12, b"/dev/snd/controlC0".to_vec());
+        table.get_mut(idx).unwrap().audio_ctl =
+            Some(Box::new(AlsaControlFdState { card: 0 }));
+
+        let st = table.get(idx).unwrap().audio_ctl().unwrap();
+        assert_eq!(st.card, 0);
+        // PCM and control sidecars are disjoint — installing audio_ctl
+        // must NOT also populate audio.
+        assert!(table.get(idx).unwrap().audio().is_none());
     }
 
     #[test]

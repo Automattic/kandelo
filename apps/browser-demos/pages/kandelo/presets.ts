@@ -139,4 +139,15 @@ export const PRESET_LIBRARY: Preset[] = [
     bootCommand: ["bash", "-l", "-i"],
     estimatedUrlBytes: 612,
   },
+  {
+    id: "espeak",
+    title: "ALSA - Espeak-NG",
+    summary: "The kernel speaks: espeak-ng synthesises text directly through libpcaudio's kandelo backend.",
+    base: SHELL_BASE,
+    packages: ["bash@local", "coreutils@local"],
+    accent: "#f48fb1",
+    glyph: "T",
+    bootCommand: ["bash", "-l", "-i"],
+    estimatedUrlBytes: 612,
+  },
 ];

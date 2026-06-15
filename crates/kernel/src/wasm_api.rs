@@ -3067,7 +3067,19 @@ fn dispatch_channel_syscall(nr: u32, args: &[i64; 6]) -> i32 {
         // Terminal
         70 => kernel_tcgetattr(a1, a2 as *mut u8, 256), // SYS_TCGETATTR
         71 => kernel_tcsetattr(a1, a2 as u32, a3 as *const u8, 256), // SYS_TCSETATTR
-        72 => kernel_ioctl(a1, a2 as u32, a3 as *mut u8, 256), // SYS_IOCTL
+        72 => {
+            // SYS_IOCTL. The ioctl request encodes its struct size in bits
+            // 16..30 per the Linux _IOC convention (`_IOC_SIZE`); we honour
+            // that so large args like SNDRV_PCM_IOCTL_HW_PARAMS (608 B) read
+            // their full struct out of user memory. Legacy ioctls that
+            // encode size = 0 (FIONBIO / FIONREAD / KDGKBTYPE / …) keep the
+            // historical 256-byte floor so their handlers can copy four to
+            // sixteen bytes without needing to know the exact width.
+            let request = a2 as u32;
+            let encoded = (request >> 16) & 0x3fff;
+            let len = encoded.max(256);
+            kernel_ioctl(a1, request, a3 as *mut u8, len)
+        }
 
         // File system
         79 => kernel_ftruncate(a1, args[1]), // SYS_FTRUNCATE: (fd, length)
@@ -10516,6 +10528,66 @@ pub extern "C" fn kernel_input_event(
 #[unsafe(no_mangle)]
 pub extern "C" fn kernel_set_input_canvas_dims(width: u32, height: u32) {
     crate::input::set_canvas_dims(width, height);
+}
+
+/// Bind a host-allocated SharedArrayBuffer to an ALSA PCM. `sab_base`
+/// is the kernel-visible byte address of the SAB-imported window and
+/// `sab_len` is its length. After this call,
+/// `SNDRV_PCM_IOCTL_WRITEI_FRAMES` against any fd opened on
+/// `/dev/snd/pcmC0D<pcm_id>p` lands frames into the SAB ring at
+/// `appl_ptr % ring_frames` and advances `mmap_control.appl_ptr`.
+///
+/// Errors (out-of-range `pcm_id`, already-registered slot) are
+/// swallowed: a second `kernel_audio_init_sab` for the same PCM is a
+/// no-op so the host can re-issue without un-registering first.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_audio_init_sab(pcm_id: u32, sab_base: u64, sab_len: u32) {
+    let _ = crate::audio::sab::register(
+        pcm_id,
+        crate::audio::sab::SabSlice {
+            base: sab_base as usize,
+            len: sab_len as usize,
+        },
+    );
+}
+
+/// Called by the host on every AudioWorklet quantum (browser) or
+/// `setInterval` tick (Node) after the host driver pulled
+/// `frames_consumed` frames from the SAB ring. Walks every open
+/// `/dev/snd/pcmC0D<pcm_id>p` OFD whose state is `STATE_RUNNING`,
+/// advances `mmap_status.hw_ptr`, stamps the monotonic timestamp,
+/// detects XRUN, and wakes POLLOUT waiters.
+///
+/// The timestamp is fetched once via [`WasmHostIO::host_clock_gettime`]
+/// and passed down so [`crate::audio::tick::tick`] stays testable
+/// without a `HostIO`.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_audio_period_tick(pcm_id: u32, frames_consumed: u32) {
+    let mut host = WasmHostIO;
+    let (tv_sec, tv_nsec) =
+        match host.host_clock_gettime(wasm_posix_shared::clock::CLOCK_MONOTONIC) {
+            Ok((sec, nsec)) => (sec, nsec),
+            Err(_) => (0i64, 0i64),
+        };
+    crate::audio::tick::tick(pcm_id, frames_consumed, tv_sec, tv_nsec);
+}
+
+/// Return the current `mmap_control.appl_ptr` for any OFD bound to
+/// `pcm_id` (the maximum across matching OFDs — in practice there is
+/// at most one writer per PCM). The host's `BrowserAudioDriver` polls
+/// this each AudioWorklet quantum and forwards the value into the
+/// worklet so it can gate `hwPtr` advance: the worklet emits silence
+/// past `appl_ptr` and only consumes ring positions userspace has
+/// actually written. Without this, the worklet's `hwPtr` drifts ahead
+/// of the kernel's appl_ptr during userspace setup latency and the
+/// first chunks of audio (e.g. espeak-ng's "Welcome to" preamble)
+/// land at ring offsets the worklet has already passed.
+///
+/// Returns 0 if no OFD is bound to this `pcm_id`. Additive ABI; no
+/// `ABI_VERSION` bump required (preserves existing exports).
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_audio_get_appl_ptr(pcm_id: u32) -> i64 {
+    crate::audio::tick::current_appl_ptr(pcm_id)
 }
 
 /// Number of successful page-flip commits on the given crtc.

@@ -27,6 +27,7 @@ import type {
 import type { ProcessSnapshot, SyscallTraceEvent } from "./kernel-worker";
 import type { HttpRequest, HttpResponse } from "./networking/in-kernel-http";
 import type { InputSource } from "./input/input-source";
+import type { AudioDriver, AudioRing } from "./audio/audio-driver";
 
 export type { HttpRequest, HttpResponse };
 
@@ -333,6 +334,109 @@ export class NodeKernelHost {
     this.setInputCanvasDims(dims.width, dims.height);
     source.start((ev) =>
       this.injectInputEvent(ev.device, ev.ev_type, ev.code, ev.value),
+    );
+  }
+
+  /**
+   * Allocate a kernel-memory SAB ring for `pcmId` of `byteLen` bytes
+   * and bind it via `kernel_audio_init_sab`. Returns the ring window
+   * the host AudioDriver should view as `Int16Array(buffer, offset, …)`.
+   * Mirrors the Browser-side method of the same name — dual-host
+   * parity per CLAUDE.md §"Two hosts".
+   */
+  async audioAllocRing(pcmId: number, byteLen: number): Promise<AudioRing> {
+    const requestId = this._nextRequestId++;
+    const result = await this.request(requestId, {
+      type: "audio_alloc_ring",
+      requestId,
+      pcmId,
+      byteLen,
+    });
+    return result as AudioRing;
+  }
+
+  /**
+   * Fire-and-forget period tick into the kernel. Used by the
+   * AudioDriver's `kernelTick` callback to advance `mmap_status.hw_ptr`
+   * and wake `POLLOUT` waiters parked on `/dev/snd/pcmC0D<pcmId>p`.
+   */
+  audioPeriodTick(pcmId: number, framesConsumed: number): void {
+    this.sendToWorker({
+      type: "audio_period_tick",
+      pcmId,
+      framesConsumed,
+    });
+  }
+
+  /**
+   * Read the current `mmap_control.appl_ptr` for any OFD bound to
+   * `pcmId`. Kept on the Node host for dual-host parity even though
+   * `NodeAudioDriver` does not currently poll — vitest specs and
+   * future Node-side drivers can use it.
+   */
+  async audioGetApplPtr(pcmId: number): Promise<number> {
+    const requestId = this._nextRequestId++;
+    const result = await this.request(requestId, {
+      type: "audio_get_appl_ptr",
+      requestId,
+      pcmId,
+    });
+    return result as number;
+  }
+
+  /**
+   * Wire an `AudioDriver` into the kernel: allocates a SAB ring,
+   * registers it, then starts the driver with a `kernelTick` callback
+   * that funnels each period boundary into `kernel_audio_period_tick`.
+   * Mirrors `BrowserKernel.attachAudioDriver` — dual-host parity per
+   * CLAUDE.md §"Two hosts".
+   *
+   * On the Node host the driver is typically a `NodeAudioDriver`
+   * (setInterval-driven dummy) so the init path is symmetric with the
+   * browser; tests can call `audioPeriodTick` directly afterwards.
+   */
+  async attachAudioDriver(
+    driver: AudioDriver,
+    opts: {
+      pcmId?: number;
+      sampleRate?: number;
+      channels?: number;
+      periodFrames?: number;
+      ringBytes?: number;
+    } = {},
+  ): Promise<void> {
+    const pcmId = opts.pcmId ?? 0;
+    const sampleRate = opts.sampleRate ?? 48_000;
+    const channels = opts.channels ?? 2;
+    const periodFrames = opts.periodFrames ?? 1024;
+    const ringBytes = opts.ringBytes ?? 64 * 1024;
+    const ring = await this.audioAllocRing(pcmId, ringBytes);
+    let cachedApplPtr = 0;
+    let inFlight = false;
+    const getApplPtr = (id: number): number => {
+      if (!inFlight) {
+        inFlight = true;
+        this.audioGetApplPtr(id)
+          .then((v) => {
+            cachedApplPtr = v;
+          })
+          .catch(() => {
+            /* swallow — keep last good value */
+          })
+          .finally(() => {
+            inFlight = false;
+          });
+      }
+      return cachedApplPtr;
+    };
+    await driver.start(
+      pcmId,
+      sampleRate,
+      channels,
+      periodFrames,
+      ring,
+      (id, frames) => this.audioPeriodTick(id, frames),
+      getApplPtr,
     );
   }
 
