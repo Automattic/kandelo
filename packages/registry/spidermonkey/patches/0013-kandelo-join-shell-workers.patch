@@ -1,9 +1,183 @@
 --- a/js/src/shell/js.cpp
 +++ b/js/src/shell/js.cpp
-@@ -5019,6 +5019,42 @@ static void KillWorkerThreads(JSContext* cx) {
+@@ -4585,15 +4585,25 @@ static bool EnsureGeckoProfilingStackInstalled(JSContext* cx) {
+   return true;
+ }
+
++struct WorkerThreadControl;
++
+ struct WorkerInput {
+   JSRuntime* parentRuntime;
+   UniqueTwoByteChars chars;
+   size_t length;
++  WorkerThreadControl* control;
+
+-  WorkerInput(JSRuntime* parentRuntime, UniqueTwoByteChars chars, size_t length)
+-      : parentRuntime(parentRuntime), chars(std::move(chars)), length(length) {}
++  WorkerInput(JSRuntime* parentRuntime, UniqueTwoByteChars chars, size_t length,
++              WorkerThreadControl* control)
++      : parentRuntime(parentRuntime),
++        chars(std::move(chars)),
++        length(length),
++        control(control) {}
+ };
+
++static void SetWorkerThreadContext(WorkerThreadControl* control, JSContext* cx);
++static void ClearWorkerThreadContext(WorkerThreadControl* control);
++
+ static void DestroyShellCompartmentPrivate(JS::GCContext* gcx,
+                                            JS::Compartment* compartment) {
+   auto priv = static_cast<ShellCompartmentPrivate*>(
+@@ -4608,17 +4618,24 @@ static constexpr size_t gWorkerStackSize = 2 * 128 * sizeof(size_t) * 1024;
+
+ static void WorkerMain(UniquePtr<WorkerInput> input) {
+   MOZ_ASSERT(input->parentRuntime);
++  WorkerThreadControl* control = input->control;
+
+   JSContext* cx = JS_NewContext(8L * 1024L * 1024L, input->parentRuntime);
+   if (!cx) {
++    ClearWorkerThreadContext(control);
+     return;
+   }
+   auto destroyContext = MakeScopeExit([cx] { JS_DestroyContext(cx); });
++  auto clearWorkerContext = MakeScopeExit([control] {
++    ClearWorkerThreadContext(control);
++  });
+
+   UniquePtr<ShellContext> sc =
+       MakeUnique<ShellContext>(cx, ShellContext::Worker);
+   if (!sc || !sc->registerWithCx(cx)) {
+     return;
+   }
++  JS_AddInterruptCallback(cx, ShellInterruptCallback);
++  SetWorkerThreadContext(control, cx);
+
+   if (!JS::InitSelfHostedCode(cx)) {
+@@ -4679,8 +4696,24 @@ static void WorkerMain(UniquePtr<WorkerInput> input) {
+ }
+
+ // Workers can spawn other workers, so we need a lock to access workerThreads.
+ static Mutex* workerThreadsLock = nullptr;
+-MOZ_RUNINIT static Vector<UniquePtr<js::Thread>, 0, SystemAllocPolicy>
++
++struct WorkerThreadControl {
++  JSContext* cx = nullptr;
++  bool finished = false;
++  ConditionVariable ready;
++};
++
++struct ShellWorkerThread {
++  UniquePtr<js::Thread> thread;
++  UniquePtr<WorkerThreadControl> control;
++
++  ShellWorkerThread(UniquePtr<js::Thread> thread,
++                    UniquePtr<WorkerThreadControl> control)
++      : thread(std::move(thread)), control(std::move(control)) {}
++};
++
++MOZ_RUNINIT static Vector<UniquePtr<ShellWorkerThread>, 0, SystemAllocPolicy>
+     workerThreads;
+
+ class MOZ_RAII AutoLockWorkerThreads : public LockGuard<Mutex> {
+@@ -4692,6 +4741,25 @@ class MOZ_RAII AutoLockWorkerThreads : public LockGuard<Mutex> {
+   }
+ };
+
++static void SetWorkerThreadContext(WorkerThreadControl* control, JSContext* cx) {
++  if (!workerThreadsLock || !control) {
++    return;
++  }
++  AutoLockWorkerThreads alwt;
++  control->cx = cx;
++  control->ready.notify_all();
++}
++
++static void ClearWorkerThreadContext(WorkerThreadControl* control) {
++  if (!workerThreadsLock || !control) {
++    return;
++  }
++  AutoLockWorkerThreads alwt;
++  control->cx = nullptr;
++  control->finished = true;
++  control->ready.notify_all();
++}
++
+ static bool EvalInWorker(JSContext* cx, unsigned argc, Value* vp) {
+   if (!CanUseExtraThreads()) {
+     JS_ReportErrorASCII(cx, "Can't create threads with --no-threads");
+@@ -4734,8 +4798,15 @@ static bool EvalInWorker(JSContext* cx, unsigned argc, Value* vp) {
+
+   CopyChars(chars.get(), *str);
+
++  auto control = js::MakeUnique<WorkerThreadControl>();
++  if (!control) {
++    ReportOutOfMemory(cx);
++    return false;
++  }
++
+   auto input = js::MakeUnique<WorkerInput>(JS_GetParentRuntime(cx),
+-                                           std::move(chars), str->length());
++                                           std::move(chars), str->length(),
++                                           control.get());
+   if (!input) {
+     ReportOutOfMemory(cx);
+     return false;
+@@ -4751,15 +4823,27 @@ static bool EvalInWorker(JSContext* cx, unsigned argc, Value* vp) {
+     }
+   }
+
+-  AutoLockWorkerThreads alwt;
+-  if (!workerThreads.append(std::move(thread))) {
++  auto worker = js::MakeUnique<ShellWorkerThread>(std::move(thread),
++                                                  std::move(control));
++  if (!worker) {
+     ReportOutOfMemory(cx);
+     thread->join();
+     return false;
+   }
+
+-  args.rval().setUndefined();
+-  return true;
++  {
++    AutoLockWorkerThreads alwt;
++    if (workerThreads.append(std::move(worker))) {
++      args.rval().setUndefined();
++      return true;
++    }
++  }
++
++  ReportOutOfMemory(cx);
++  if (worker) {
++    worker->thread->join();
++  }
++  return false;
+ }
+
+ static bool ShapeOf(JSContext* cx, unsigned argc, JS::Value* vp) {
+@@ -4922,16 +5007,16 @@ static void KillWorkerThreads(JSContext* cx) {
+     // We need to leave the AutoLockWorkerThreads scope before we call
+     // js::Thread::join, to avoid deadlocks when AutoLockWorkerThreads is
+     // used by the worker thread.
+-    UniquePtr<Thread> thread;
++    UniquePtr<ShellWorkerThread> worker;
+     {
+       AutoLockWorkerThreads alwt;
+       if (workerThreads.empty()) {
+         break;
+       }
+-      thread = std::move(workerThreads.back());
++      worker = std::move(workerThreads.back());
+       workerThreads.popBack();
+     }
+-    thread->join();
++    worker->thread->join();
+   }
+
+   workerThreads.clearAndFree();
+@@ -4940,6 +5026,90 @@ static void KillWorkerThreads(JSContext* cx) {
    workerThreadsLock = nullptr;
  }
- 
+
 +static void JoinShellWorkerThreadsForKandelo() {
 +  MOZ_ASSERT_IF(!CanUseExtraThreads(), workerThreads.empty());
 +
@@ -13,19 +187,55 @@
 +  }
 +
 +  while (true) {
-+    UniquePtr<Thread> thread;
++    UniquePtr<ShellWorkerThread> worker;
 +    {
 +      AutoLockWorkerThreads alwt;
 +      if (workerThreads.empty()) {
 +        break;
 +      }
-+      thread = std::move(workerThreads.back());
++      worker = std::move(workerThreads.back());
 +      workerThreads.popBack();
 +    }
-+    thread->join();
++    worker->thread->join();
 +  }
 +
 +  workerThreads.clearAndFree();
++}
++
++static void RequestShellWorkerTermination(UniqueLock<Mutex>& lock,
++                                          WorkerThreadControl* control) {
++  if (!control) {
++    return;
++  }
++
++  while (!control->finished && !control->cx) {
++    control->ready.wait(lock);
++  }
++
++  if (control->finished || !control->cx) {
++    return;
++  }
++
++  ShellContext* sc = GetShellContext(control->cx);
++  sc->serviceInterrupt = true;
++  js::StopDrainingJobQueue(control->cx);
++  JS_RequestInterruptCallback(control->cx);
++}
++
++static void RequestShellWorkerTerminationsForKandelo() {
++  if (!workerThreadsLock) {
++    return;
++  }
++
++  UniqueLock<Mutex> alwt(*workerThreadsLock);
++  for (const auto& worker : workerThreads) {
++    RequestShellWorkerTermination(alwt, worker->control.get());
++  }
++}
++
++static void TerminateShellWorkerThreadsForKandelo() {
++  RequestShellWorkerTerminationsForKandelo();
++  JoinShellWorkerThreadsForKandelo();
 +}
 +
 +static bool JoinWorkerThreads(JSContext* cx, unsigned argc, Value* vp) {
@@ -40,17 +250,34 @@
 +  return true;
 +}
 +
++static bool TerminateWorkerThreads(JSContext* cx, unsigned argc, Value* vp) {
++  CallArgs args = CallArgsFromVp(argc, vp);
++  if (args.length() != 0) {
++    JS_ReportErrorASCII(cx, "terminateWorkerThreads takes no arguments");
++    return false;
++  }
++
++  TerminateShellWorkerThreadsForKandelo();
++  args.rval().setUndefined();
++  return true;
++}
++
  static void CancelExecution(JSContext* cx) {
    ShellContext* sc = GetShellContext(cx);
    sc->serviceInterrupt = true;
-@@ -10122,6 +10158,11 @@ static const JSFunctionSpecWithHelp shell_functions[] = {
+@@ -9915,6 +10089,16 @@ static const JSFunctionSpecWithHelp shell_functions[] = {
  "evalInWorker(str)",
  "  Evaluate 'str' in a separate thread with its own runtime.\n"),
- 
+
 +    JS_FN_HELP("joinWorkerThreads", JoinWorkerThreads, 0, 0,
 +"joinWorkerThreads()",
 +"  Join all shell worker threads created by evalInWorker.\n"
 +"  This is intended for shell adapter teardown after workers finish.\n"),
++
++    JS_FN_HELP("terminateWorkerThreads", TerminateWorkerThreads, 0, 0,
++"terminateWorkerThreads()",
++"  Request termination for all shell worker threads created by evalInWorker,\n"
++"  then join them.\n"),
 +
      JS_FN_HELP("getSharedObject", GetSharedObject, 0, 0,
  "getSharedObject()",

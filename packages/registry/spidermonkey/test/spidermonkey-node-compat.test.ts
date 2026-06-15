@@ -1748,4 +1748,59 @@ describe.skipIf(!nodeWasm)("SpiderMonkey Node compatibility runtime", () => {
     expect(result.exitCode).toBe(0);
     expect(result.stdout.trim().split("\n")).toEqual(["42", "after-terminate"]);
   }, LONG_TEST_TIMEOUT);
+
+  it("lets finite worker_threads workers exit without explicit termination", async () => {
+    const result = await runNode(
+      [
+        "const { Worker } = require('worker_threads')",
+        "const worker = new Worker('globalThis.__workerDone = true;', { eval: true })",
+        "worker.once('online', () => console.log('online'))",
+        "worker.once('exit', (code) => console.log('exit', code))",
+      ].join("\n"),
+      LONG_TIMEOUT,
+    );
+
+    expect(result.exitCode).toBe(0);
+    expect(result.stdout.trim().split("\n")).toEqual(["online", "exit 0"]);
+  }, LONG_TEST_TIMEOUT);
+
+  it("terminates CPU-bound worker_threads workers", async () => {
+    const result = await runNode(
+      [
+        "const { Worker } = require('worker_threads')",
+        "const worker = new Worker('while(true);', { eval: true })",
+        "worker.once('exit', (code) => console.log('exit', code))",
+        "worker.once('online', () => worker.terminate().then((code) => console.log('terminated', code)))",
+      ].join("\n"),
+      LONG_TIMEOUT,
+    );
+
+    expect(result.exitCode).toBe(0);
+    expect(result.stdout.trim().split("\n")).toEqual(["exit 1", "terminated 1"]);
+  }, LONG_TEST_TIMEOUT);
+
+  it("terminates worker_threads workers stuck in the microtask queue", async () => {
+    const result = await runNode(
+      [
+        "const { Worker } = require('worker_threads')",
+        "const worker = new Worker(`",
+        "function loop() { Promise.resolve().then(loop); } loop();",
+        "require('worker_threads').parentPort.postMessage('up');",
+        "`, { eval: true })",
+        "worker.once('exit', (code) => console.log('exit', code))",
+        "worker.once('message', (message) => {",
+        "  console.log('message', message)",
+        "  setImmediate(() => worker.terminate().then((code) => console.log('terminated', code)))",
+        "})",
+      ].join("\n"),
+      LONG_TIMEOUT,
+    );
+
+    expect(result.exitCode).toBe(0);
+    expect(result.stdout.trim().split("\n")).toEqual([
+      "message up",
+      "exit 1",
+      "terminated 1",
+    ]);
+  }, LONG_TEST_TIMEOUT);
 });

@@ -36,6 +36,7 @@
     const nativeJsonParse = JSON.parse.bind(JSON);
     let nextTimerId = 1;
     const pendingTimers = new Map();
+    const workerMessagePollers = new Set();
 
     function encodeUtf8(value) {
         value = String(value);
@@ -267,6 +268,9 @@
         for (const [id] of dueIds) {
             if (runTimer(id)) ran++;
         }
+        for (const poll of Array.from(workerMessagePollers)) {
+            if (poll()) ran++;
+        }
         return ran;
     }
 
@@ -275,6 +279,9 @@
         const now = Date.now();
         for (const timer of pendingTimers.values()) {
             if (timer.due < next) next = timer.due;
+        }
+        if (workerMessagePollers.size > 0) {
+            return next === Infinity ? 1 : Math.min(1, Math.max(0, next - now));
         }
         return next === Infinity ? null : Math.max(0, next - now);
     }
@@ -287,10 +294,59 @@
         const markedUntransferable = new WeakSet();
         const broadcastChannels = new Map();
         let nextThreadId = 1;
+        const WORKER_MESSAGE_MAGIC = 0x4b574d31;
+        const WORKER_MESSAGE_HEADER_INTS = 3;
+        const WORKER_MESSAGE_MAX_BYTES = 4096;
+        const WORKER_MESSAGE_HEADER_BYTES = WORKER_MESSAGE_HEADER_INTS * 4;
 
         function defer(fn) {
             if (typeof queueMicrotask === 'function') queueMicrotask(fn);
             else Promise.resolve().then(fn);
+        }
+
+        function isSharedWorkerData(value) {
+            return value instanceof SharedArrayBuffer ||
+                (typeof WebAssembly === 'object' && WebAssembly.Memory && value instanceof WebAssembly.Memory);
+        }
+
+        function canUseWorkerMessageMailbox() {
+            return typeof SharedArrayBuffer === 'function' &&
+                typeof Atomics === 'object' &&
+                typeof setSharedObject === 'function';
+        }
+
+        function sourceNeedsWorkerMessageMailbox(source) {
+            return String(source).includes('parentPort');
+        }
+
+        function createWorkerMessageMailbox() {
+            const mailbox = new SharedArrayBuffer(WORKER_MESSAGE_HEADER_BYTES + WORKER_MESSAGE_MAX_BYTES);
+            const state = new Int32Array(mailbox, 0, WORKER_MESSAGE_HEADER_INTS);
+            Atomics.store(state, 0, 0);
+            Atomics.store(state, 1, 0);
+            Atomics.store(state, 2, WORKER_MESSAGE_MAGIC);
+            return mailbox;
+        }
+
+        function decodeWorkerMessage(mailbox) {
+            const state = new Int32Array(mailbox, 0, WORKER_MESSAGE_HEADER_INTS);
+            if (Atomics.load(state, 2) !== WORKER_MESSAGE_MAGIC || Atomics.load(state, 0) !== 1) {
+                return undefined;
+            }
+            const length = Math.max(0, Math.min(Atomics.load(state, 1), WORKER_MESSAGE_MAX_BYTES));
+            const bytes = new Uint8Array(mailbox, WORKER_MESSAGE_HEADER_BYTES, length);
+            let text = '';
+            if (decoder) {
+                text = decoder.decode(bytes);
+            } else {
+                for (let i = 0; i < bytes.length; i++) text += String.fromCharCode(bytes[i]);
+            }
+            Atomics.store(state, 0, 0);
+            try {
+                return JSON.parse(text);
+            } catch {
+                return text;
+            }
         }
 
         function makeCodedTypeError(message, code) {
@@ -860,6 +916,9 @@
                 this._kandeloPublicPortResource = createAsyncResource('MESSAGEPORT', {
                     hasRef: () => !this._workerDestroyed && this._workerPublicPortRefed,
                 });
+                this._workerResourceId = 0;
+                this._messageMailbox = null;
+                this._messagePollTimer = null;
                 let source = String(filenameOrSource);
                 if (!options.eval) {
                     const loaded = std.loadFile(source);
@@ -868,15 +927,17 @@
                 }
 
                 let workerDataExpression = 'undefined';
+                let messageMailbox = null;
+                let sharedObjectInstalled = false;
                 if (Object.prototype.hasOwnProperty.call(options, 'workerData')) {
                     const data = options.workerData;
                     assertCloneableForPort(null, data, Array.isArray(options.transferList) ? options.transferList : []);
-                    if (data instanceof SharedArrayBuffer ||
-                        (typeof WebAssembly === 'object' && WebAssembly.Memory && data instanceof WebAssembly.Memory)) {
+                    if (isSharedWorkerData(data)) {
                         if (typeof setSharedObject !== 'function') {
                             throw new Error('SpiderMonkey shared worker mailbox is unavailable');
                         }
                         setSharedObject(data);
+                        sharedObjectInstalled = true;
                         workerDataExpression = 'getSharedObject()';
                     } else {
                         try {
@@ -885,13 +946,55 @@
                             workerDataExpression = 'undefined';
                         }
                     }
-                } else if (typeof setSharedObject === 'function') {
+                }
+                if (!sharedObjectInstalled && sourceNeedsWorkerMessageMailbox(source) &&
+                    canUseWorkerMessageMailbox()) {
+                    messageMailbox = createWorkerMessageMailbox();
+                    setSharedObject(messageMailbox);
+                    sharedObjectInstalled = true;
+                }
+                if (!sharedObjectInstalled && typeof setSharedObject === 'function') {
                     setSharedObject(null);
                 }
+                this._messageMailbox = messageMailbox;
 
                 const prelude = [
                     'Object.defineProperty(globalThis, "workerData", { value: ' + workerDataExpression + ', configurable: true, writable: true });',
-                    'Object.defineProperty(globalThis, "parentPort", { value: null, configurable: true, writable: true });',
+                    'var __kandeloParentPort = null;',
+                    'if (typeof getSharedObject === "function" && typeof SharedArrayBuffer === "function" && typeof Atomics === "object") {',
+                    '  try {',
+                    '    var __kandeloWorkerMailbox = getSharedObject();',
+                    '    if (__kandeloWorkerMailbox instanceof SharedArrayBuffer) {',
+                    '      var __kandeloWorkerMessageState = new Int32Array(__kandeloWorkerMailbox, 0, ' + WORKER_MESSAGE_HEADER_INTS + ');',
+                    '      if (Atomics.load(__kandeloWorkerMessageState, 2) === ' + WORKER_MESSAGE_MAGIC + ') {',
+                    '        var __kandeloWorkerMessageBytes = new Uint8Array(__kandeloWorkerMailbox, ' + WORKER_MESSAGE_HEADER_BYTES + ', ' + WORKER_MESSAGE_MAX_BYTES + ');',
+                    '        __kandeloParentPort = {',
+                    '          postMessage: function(value) {',
+                    '            var text;',
+                    '            try { text = JSON.stringify(value); } catch (_) { text = String(value); }',
+                    '            if (text === undefined) text = "null";',
+                    '            var offset = 0;',
+                    '            for (var i = 0; i < text.length && offset < __kandeloWorkerMessageBytes.length; i++) {',
+                    '              var code = text.charCodeAt(i);',
+                    '              if (code >= 0xd800 && code <= 0xdbff && i + 1 < text.length) {',
+                    '                var low = text.charCodeAt(i + 1);',
+                    '                if (low >= 0xdc00 && low <= 0xdfff) { code = 0x10000 + ((code - 0xd800) << 10) + (low - 0xdc00); i++; }',
+                    '              }',
+                    '              if (code < 0x80) { __kandeloWorkerMessageBytes[offset++] = code; }',
+                    '              else if (code < 0x800 && offset + 1 < __kandeloWorkerMessageBytes.length) { __kandeloWorkerMessageBytes[offset++] = 0xc0 | (code >> 6); __kandeloWorkerMessageBytes[offset++] = 0x80 | (code & 0x3f); }',
+                    '              else if (code < 0x10000 && offset + 2 < __kandeloWorkerMessageBytes.length) { __kandeloWorkerMessageBytes[offset++] = 0xe0 | (code >> 12); __kandeloWorkerMessageBytes[offset++] = 0x80 | ((code >> 6) & 0x3f); __kandeloWorkerMessageBytes[offset++] = 0x80 | (code & 0x3f); }',
+                    '              else if (offset + 3 < __kandeloWorkerMessageBytes.length) { __kandeloWorkerMessageBytes[offset++] = 0xf0 | (code >> 18); __kandeloWorkerMessageBytes[offset++] = 0x80 | ((code >> 12) & 0x3f); __kandeloWorkerMessageBytes[offset++] = 0x80 | ((code >> 6) & 0x3f); __kandeloWorkerMessageBytes[offset++] = 0x80 | (code & 0x3f); }',
+                    '            }',
+                    '            Atomics.store(__kandeloWorkerMessageState, 1, offset);',
+                    '            Atomics.store(__kandeloWorkerMessageState, 0, 1);',
+                    '            Atomics.notify(__kandeloWorkerMessageState, 0);',
+                    '          }',
+                    '        };',
+                    '      }',
+                    '    }',
+                    '  } catch (_) {}',
+                    '}',
+                    'Object.defineProperty(globalThis, "parentPort", { value: __kandeloParentPort, configurable: true, writable: true });',
                     'var __kandeloAsyncHooks = {',
                     '  AsyncResource: class AsyncResource { runInAsyncScope(fn, thisArg, ...args) { return fn.apply(thisArg, args); } emitDestroy() { return this; } asyncId() { return 0; } triggerAsyncId() { return 0; } bind(fn) { return fn; } static bind(fn) { return fn; } },',
                     '  AsyncLocalStorage: class AsyncLocalStorage { run(store, fn, ...args) { this._store = store; try { return fn(...args); } finally { this._store = undefined; } } getStore() { return this._store; } enterWith(store) { this._store = store; } disable() { this._store = undefined; } },',
@@ -914,29 +1017,92 @@
                 if (typeof evalInWorker !== 'function') {
                     throw new Error('SpiderMonkey evalInWorker is unavailable');
                 }
-                evalInWorker(prelude + '\n(function(){\n' + source + '\n})();\n');
+                this._trackWorkerResource();
+                this._scheduleMessagePoll();
                 const defer = typeof queueMicrotask === 'function'
                     ? queueMicrotask
                     : (fn) => Promise.resolve().then(fn);
+                let workerStarted = false;
                 defer(() => {
+                    if (!workerStarted || this._workerExited) return;
                     this.emit('online');
-                    this._emitExit(0);
+                    if (!this._messageMailbox) this._emitExit(0);
                 });
+                try {
+                    evalInWorker(prelude + '\n(function(){\n' + source + '\n})();\n');
+                    workerStarted = true;
+                } catch (error) {
+                    this._workerExited = true;
+                    this._clearMessagePoll();
+                    this._untrackWorkerResource();
+                    destroyAsyncHandle(this._kandeloPublicPortResource);
+                    this._kandeloPublicPortResource = null;
+                    destroyAsyncResource(this);
+                    clearSharedWorkerData();
+                    throw error;
+                }
             }
             postMessage() {
                 throw unsupportedWorkerMessageApi('Worker.postMessage');
             }
             terminate() {
+                const code = this._workerExited ? 0 : 1;
                 clearSharedWorkerData();
-                joinShellWorkers();
+                if (!this._workerExited) {
+                    if (typeof terminateWorkerThreads === 'function') {
+                        try { terminateWorkerThreads(); } catch {}
+                    } else {
+                        joinShellWorkers();
+                    }
+                }
                 this.resourceLimits = {};
-                this._emitExit(0);
-                return Promise.resolve(0);
+                this._emitExit(code);
+                return Promise.resolve(code);
+            }
+            _trackWorkerResource() {
+                if (this._workerResourceId || this._workerExited || !this._workerRefed) return;
+                if (typeof _trackActiveResource === 'function') {
+                    this._workerResourceId = _trackActiveResource('Worker');
+                }
+            }
+            _untrackWorkerResource() {
+                if (!this._workerResourceId) return;
+                if (typeof _untrackActiveResource === 'function') {
+                    _untrackActiveResource(this._workerResourceId);
+                }
+                this._workerResourceId = 0;
+            }
+            _scheduleMessagePoll() {
+                if (!this._messageMailbox || this._messagePollTimer || this._workerExited) return;
+                this._messagePollTimer = () => this._pollMessageMailbox();
+                workerMessagePollers.add(this._messagePollTimer);
+            }
+            _clearMessagePoll() {
+                if (!this._messagePollTimer) return;
+                workerMessagePollers.delete(this._messagePollTimer);
+                this._messagePollTimer = null;
+            }
+            _pollMessageMailbox() {
+                if (!this._messageMailbox || this._workerExited) return false;
+                const message = decodeWorkerMessage(this._messageMailbox);
+                if (message !== undefined) {
+                    const deliver = () => this.emit('message', message);
+                    if (this._kandeloAsyncResource &&
+                        typeof this._kandeloAsyncResource.runInAsyncScope === 'function') {
+                        this._kandeloAsyncResource.runInAsyncScope(deliver, this);
+                    } else {
+                        deliver();
+                    }
+                    return true;
+                }
+                return false;
             }
             _emitExit(code) {
                 if (this._workerExited) return;
                 this._workerExited = true;
                 this._workerPublicPortRefed = false;
+                this._clearMessagePoll();
+                this._untrackWorkerResource();
                 destroyAsyncHandle(this._kandeloPublicPortResource);
                 this._kandeloPublicPortResource = null;
                 this.emit('exit', code);
@@ -949,6 +1115,7 @@
                 if (!this._workerDestroyed) {
                     this._workerRefed = true;
                     this._workerPublicPortRefed = true;
+                    this._trackWorkerResource();
                 }
                 return this;
             }
@@ -956,6 +1123,7 @@
                 if (!this._workerDestroyed) {
                     this._workerRefed = false;
                     this._workerPublicPortRefed = false;
+                    this._untrackWorkerResource();
                 }
                 return this;
             }

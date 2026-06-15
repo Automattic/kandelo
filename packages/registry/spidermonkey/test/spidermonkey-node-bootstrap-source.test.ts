@@ -89,7 +89,7 @@ const historicalMissingBuiltins = [
   "trace_events",
 ];
 
-function generatedBootstrapSource(): string {
+function generatedBootstrapSource(beforeBootstrap = ""): string {
   const adapter = readFileSync(
     join(repoRoot, "packages/registry/spidermonkey/node-compat/adapter.js"),
     "utf8",
@@ -105,13 +105,13 @@ function generatedBootstrapSource(): string {
     join(repoRoot, "packages/registry/spidermonkey/node-compat/suffix.js"),
     "utf8",
   );
-  return `${adapter}\n${bootstrap}\n${suffix}`;
+  return `${adapter}\n${beforeBootstrap}\n${bootstrap}\n${suffix}`;
 }
 
-function runBootstrapSmoke(source: string): void {
+function runBootstrapSmoke(source: string, prelude = ""): void {
   const smoke = `
 globalThis.evalInWorker = function() {};
-${generatedBootstrapSource()}
+${generatedBootstrapSource(prelude)}
 (async () => {
 ${source}
 })().catch((error) => {
@@ -262,6 +262,13 @@ describe("SpiderMonkey Node bootstrap source", () => {
     expect(placeholderIndex).toBeGreaterThan(factoryIndex);
     expect(eventGlobalIndex).toBeGreaterThan(placeholderIndex);
     expect(installIndex).toBeGreaterThan(eventGlobalIndex);
+  });
+
+  it("drains eval-mode Node work through the generated event-loop hook", () => {
+    runBootstrapSmoke(`
+const assert = require("assert");
+assert.strictEqual(__kandeloRunNodeEventLoop(), 0);
+`);
   });
 
   it("resolves the full-suite missing built-in and internal module surface", () => {
