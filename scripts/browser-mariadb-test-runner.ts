@@ -8,7 +8,7 @@
  *   npx tsx scripts/browser-mariadb-test-runner.ts [test1 test2 ...]
  *   npx tsx scripts/browser-mariadb-test-runner.ts --json
  */
-import { chromium, type Browser, type Page, type BrowserContext } from "playwright";
+import { chromium, type Browser, type BrowserContext, type Page } from "playwright";
 import { resolve } from "node:path";
 import { spawn, type ChildProcess } from "node:child_process";
 
@@ -22,11 +22,14 @@ const BOOT_TIMEOUT = 180_000; // MariaDB boot can take a while in browser
 
 interface TestResult {
   test: string;
-  status: "pass" | "fail" | "skip";
+  status: "pass" | "fail" | "skip" | "harness";
   time_ms: number;
   error?: string;
   stderr?: string;
   runtimeFailure?: string;
+  phase?: string;
+  affected_count?: number;
+  affected_tests?: string[];
 }
 
 let viteAlive = false;
@@ -156,11 +159,75 @@ async function waitForMariadbReady(page: Page, timeout = BOOT_TIMEOUT): Promise<
   }
 }
 
+function errorMessage(err: unknown): string {
+  if (err instanceof Error) return err.message;
+  return String(err);
+}
+
+function makeHarnessResult(
+  test: string,
+  phase: string,
+  message: string,
+  affectedTests: string[] = [],
+): TestResult {
+  return {
+    test,
+    status: "harness",
+    time_ms: 0,
+    error: message,
+    phase,
+    affected_count: affectedTests.length,
+    affected_tests: affectedTests.slice(0, 20),
+  };
+}
+
+function emitResult(result: TestResult, jsonOutput: boolean, index?: number, total?: number): void {
+  if (jsonOutput) {
+    console.log(JSON.stringify(result));
+    return;
+  }
+
+  const statusStr = result.status === "harness"
+    ? "HARNESS"
+    : result.error === "TIMEOUT"
+      ? "TIME"
+      : result.error
+        ? "ERROR"
+        : result.status === "pass"
+          ? "PASS"
+          : result.status === "skip"
+            ? "SKIP"
+            : "FAIL";
+  const prefix = index !== undefined && total !== undefined ? `[${index}/${total}] ` : "";
+  const suffix = result.affected_count ? `; affected=${result.affected_count}` : "";
+  process.stderr.write(
+    `${prefix}${statusStr} ${result.test} (${result.time_ms}ms)${result.error ? `: ${result.error}` : ""}${suffix}\n`,
+  );
+}
+
+function recordHarnessAbort(
+  results: TestResult[],
+  jsonOutput: boolean,
+  test: string,
+  phase: string,
+  message: string,
+  affectedTests: string[],
+): void {
+  const result = makeHarnessResult(test, phase, message, affectedTests);
+  results.push(result);
+  emitResult(result, jsonOutput);
+  process.exitCode = 1;
+}
+
 async function runTest(page: Page, testName: string, testTimeout: number): Promise<TestResult> {
   const start = performance.now();
   const browserErrorStart = browserConsoleErrors.length;
 
   try {
+    if (page.isClosed()) {
+      return makeHarnessResult(testName, "run", "page is already closed", [testName]);
+    }
+
     const result = await page.evaluate(
       async ({ name, timeout }) => {
         return await (window as any).__runMariadbTest(name, timeout);
@@ -173,7 +240,13 @@ async function runTest(page: Page, testName: string, testTimeout: number): Promi
     let status: "pass" | "fail" | "skip";
     if (result.exitCode === 0) status = "pass";
     else if (result.exitCode === 62) status = "skip";
-    else status = "fail";
+    else if (result.exitCode === -1 && result.stderr !== "TIMEOUT") {
+      return {
+        ...makeHarnessResult(testName, "run", result.stderr || "mysqltest did not produce a process exit code", [testName]),
+        time_ms: elapsed,
+        stderr: result.stderr || undefined,
+      };
+    } else status = "fail";
 
     let stderr = result.stderr || undefined;
     if (status === "fail") {
@@ -211,8 +284,8 @@ async function runTest(page: Page, testName: string, testTimeout: number): Promi
     const recentBrowserErrors = browserConsoleErrors.slice(browserErrorStart);
     const runtimeFailure = classifyRuntimeFailure(err.message || String(err), recentBrowserErrors);
     return {
+      ...makeHarnessResult(testName, "run", errorMessage(err), [testName]),
       test: testName,
-      status: "fail",
       time_ms: Math.round(performance.now() - start),
       error: runtimeFailure ?? (err.message || String(err)),
       runtimeFailure,
@@ -254,9 +327,9 @@ async function main() {
   let testTimeout = DEFAULT_TIMEOUT;
   let jsonOutput = false;
   const testNames: string[] = [];
-  const rebootAfterFail = process.env.MARIADB_BROWSER_REBOOT_AFTER_FAIL !== "0";
 
   let batchSize = 0; // 0 = no batching
+  let rebootAfterFail = process.env.MARIADB_BROWSER_REBOOT_AFTER_FAIL !== "0";
 
   for (let i = 0; i < args.length; i++) {
     if (args[i] === "--timeout" && args[i + 1]) {
@@ -267,18 +340,23 @@ async function main() {
     } else if (args[i] === "--batch" && args[i + 1]) {
       batchSize = parseInt(args[i + 1], 10);
       i++;
+    } else if (args[i] === "--no-reboot-after-fail") {
+      rebootAfterFail = false;
+    } else if (args[i] === "--reboot-after-fail") {
+      rebootAfterFail = true;
     } else if (!args[i].startsWith("--")) {
       testNames.push(args[i]);
     }
   }
 
   if (testNames.length === 0) {
-    console.error("Usage: npx tsx scripts/browser-mariadb-test-runner.ts [--json] [--timeout <ms>] test1 test2 ...");
+    console.error("Usage: npx tsx scripts/browser-mariadb-test-runner.ts [--json] [--timeout <ms>] [--no-reboot-after-fail] test1 test2 ...");
     process.exit(1);
   }
 
   if (!jsonOutput) {
     console.error(`Running ${testNames.length} MariaDB test(s) in browser...`);
+    console.error(`Reboot after timeout/harness isolation failure: ${rebootAfterFail ? "yes" : "no"}`);
   }
 
   let viteProc: ChildProcess | null = null;
@@ -345,13 +423,25 @@ async function main() {
     if (!jsonOutput) {
       console.error("Waiting for MariaDB to boot in browser...");
     }
-    await openReadyPage();
+    const results: TestResult[] = [];
+    try {
+      await openReadyPage();
+    } catch (err) {
+      recordHarnessAbort(
+        results,
+        jsonOutput,
+        "__boot",
+        "boot",
+        `MariaDB browser page did not become ready: ${errorMessage(err)}`,
+        testNames,
+      );
+      return;
+    }
     if (!jsonOutput) {
       console.error("MariaDB ready. Running tests...\n");
     }
 
     // Run each test
-    const results: TestResult[] = [];
     let testsSinceBoot = 0;
     for (let i = 0; i < testNames.length; i++) {
       // Batch reload: reload page every N tests to prevent state accumulation
@@ -362,37 +452,34 @@ async function main() {
         try {
           await openReadyPage();
           testsSinceBoot = 0;
-        } catch {
-          // If reload fails, abort remaining
-          for (let j = i; j < testNames.length; j++) {
-            const r: TestResult = { test: testNames[j], status: "fail", time_ms: 0, error: "server crashed" };
-            results.push(r);
-            if (jsonOutput) console.log(JSON.stringify(r));
-          }
+        } catch (err) {
+          recordHarnessAbort(
+            results,
+            jsonOutput,
+            testNames[i],
+            "batch-reload",
+            `MariaDB browser page did not become ready after batch reload: ${errorMessage(err)}`,
+            testNames.slice(i),
+          );
           break;
         }
       }
 
       const testName = testNames[i];
       const result = await runTest(page!, testName, testTimeout);
+      if (result.status === "harness") {
+        const affected = testNames.slice(i);
+        result.affected_count = affected.length;
+        result.affected_tests = affected.slice(0, 20);
+      }
       results.push(result);
       testsSinceBoot++;
 
-      if (jsonOutput) {
-        console.log(JSON.stringify(result));
-      } else {
-        const statusStr = result.error === "TIMEOUT"
-          ? "TIME"
-          : result.error
-            ? "ERROR"
-            : result.status === "pass"
-              ? "PASS"
-              : result.status === "skip"
-                ? "SKIP"
-                : `FAIL(${result.error || ""})`;
-        process.stderr.write(
-          `[${i + 1}/${testNames.length}] ${statusStr} ${testName} (${result.time_ms}ms)\n`,
-        );
+      emitResult(result, jsonOutput, i + 1, testNames.length);
+
+      if (result.status === "harness") {
+        process.exitCode = 1;
+        break;
       }
 
       // Detect timeout/hang — reload immediately, but only when there are
@@ -404,23 +491,40 @@ async function main() {
       const needsCleanReboot = failureRequiresCleanReboot(result);
       const isRuntimeFailure = result.runtimeFailure !== undefined;
       const shouldProbe = result.status === "fail" || isTimeout;
-      const needsReload = rebootAfterFail && hasMoreTests && (
-        needsCleanReboot || isRuntimeFailure || isTimeout || (shouldProbe && !(await isMariadbReady(page!)))
-      );
+      let needsReload = hasMoreTests && (needsCleanReboot || isRuntimeFailure || isTimeout);
+      if (!needsReload && hasMoreTests && shouldProbe) {
+        needsReload = !(await isMariadbReady(page!));
+      }
 
       if (needsReload) {
+        const remaining = testNames.slice(i + 1);
+        if (!rebootAfterFail) {
+          recordHarnessAbort(
+            results,
+            jsonOutput,
+            remaining[0] ?? "__harness",
+            isTimeout ? "timeout-isolation" : "readiness-isolation",
+            `MariaDB browser state is contaminated after ${testName}; aborting chunk because reboot-after-fail is disabled`,
+            remaining,
+          );
+          break;
+        }
+
         if (!jsonOutput) {
           process.stderr.write("  Rebooting MariaDB...\n");
         }
         try {
           await openReadyPage();
           testsSinceBoot = 0;
-        } catch {
-          for (let j = i + 1; j < testNames.length; j++) {
-            const r: TestResult = { test: testNames[j], status: "fail", time_ms: 0, error: "server crashed" };
-            results.push(r);
-            if (jsonOutput) console.log(JSON.stringify(r));
-          }
+        } catch (err) {
+          recordHarnessAbort(
+            results,
+            jsonOutput,
+            remaining[0] ?? "__harness",
+            isTimeout ? "timeout-reboot" : "readiness-reboot",
+            `MariaDB browser page did not become ready after isolating ${testName}: ${errorMessage(err)}`,
+            remaining,
+          );
           break;
         }
       }
@@ -431,11 +535,13 @@ async function main() {
       const pass = results.filter((r) => r.status === "pass").length;
       const fail = results.filter((r) => r.status === "fail").length;
       const skip = results.filter((r) => r.status === "skip").length;
+      const harness = results.filter((r) => r.status === "harness").length;
 
       console.error(`\n===== Browser MariaDB Test Results =====`);
       console.error(`PASS:    ${pass}`);
       console.error(`FAIL:    ${fail}`);
       console.error(`SKIP:    ${skip}`);
+      console.error(`HARNESS: ${harness}`);
       console.error(`TOTAL:   ${results.length}`);
     }
   } finally {

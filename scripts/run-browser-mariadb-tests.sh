@@ -408,6 +408,9 @@ while [ $# -gt 0 ]; do
             echo ""
             echo "Environment:"
             echo "  TEST_TIMEOUT    Per-test timeout in ms (default: 60000)"
+            echo "  MARIADB_BROWSER_REBOOT_AFTER_FAIL"
+            echo "                  Set to 0 to abort the current chunk after a timeout or"
+            echo "                  dead/contaminated page instead of rebooting and continuing."
             exit 0
             ;;
         *)  TEST_ARGS+=("$1"); shift ;;
@@ -495,6 +498,7 @@ FAIL=0
 XFAIL=0
 XPASS=0
 SKIP=0
+HARNESS=0
 TOTAL=0
 RESULTS=()
 
@@ -517,6 +521,7 @@ try:
     else:
         detail = error or stderr
     print(base64.b64encode(detail.encode()).decode())
+    print(d.get('affected_count', 0))
 except: pass
 " 2>/dev/null) || continue
 
@@ -524,6 +529,7 @@ except: pass
     status=$(echo "$parsed" | sed -n '2p')
     time_ms=$(echo "$parsed" | sed -n '3p')
     stderr_b64=$(echo "$parsed" | sed -n '4p')
+    affected_count=$(echo "$parsed" | sed -n '5p')
     stderr_summary=""
     if [ -n "$stderr_b64" ]; then
         stderr_summary=$(printf '%s' "$stderr_b64" | python3 -c "
@@ -537,6 +543,18 @@ except Exception:
     fi
 
     [ -z "$test_name" ] && continue
+
+    if [ "$status" = "harness" ]; then
+        suffix=""
+        if [ -n "$affected_count" ] && [ "$affected_count" != "0" ]; then
+            suffix=" (${affected_count} affected)"
+        fi
+        echo "HARNESS $test_name$suffix${stderr_summary:+: $stderr_summary}"
+        RESULTS+=("HARNESS $test_name")
+        HARNESS=$((HARNESS + 1))
+        continue
+    fi
+
     [[ "$test_name" == __* ]] && continue
 
     TOTAL=$((TOTAL + 1))
@@ -578,6 +596,12 @@ except Exception:
     esac
 done < "$RESULTS_FILE"
 
+if [ "$RUNNER_EXIT" -ne 0 ] && [ "$HARNESS" -eq 0 ] && [ "$TOTAL" -eq 0 ]; then
+    echo "HARNESS runner-exit: browser MariaDB runner exited with status $RUNNER_EXIT"
+    RESULTS+=("HARNESS runner-exit")
+    HARNESS=$((HARNESS + 1))
+fi
+
 # Summary
 echo ""
 echo "===== Results ====="
@@ -586,6 +610,7 @@ echo "FAIL:    $FAIL"
 echo "XFAIL:   $XFAIL"
 echo "XPASS:   $XPASS"
 echo "SKIP:    $SKIP"
+echo "HARNESS: $HARNESS"
 echo "TOTAL:   $TOTAL"
 echo ""
 
@@ -597,7 +622,7 @@ if [ "$TOTAL" -eq 0 ]; then
 fi
 
 # Show unexpected results
-for status_prefix in "FAIL " "XPASS"; do
+for status_prefix in "FAIL " "XPASS" "HARNESS "; do
     count=0
     for r in "${RESULTS[@]+"${RESULTS[@]}"}"; do
         [[ "$r" == "$status_prefix"* ]] && count=$((count + 1))
@@ -615,6 +640,6 @@ done
 # The browser runner exits non-zero whenever any raw mysqltest invocation fails,
 # including failures intentionally classified here as XFAIL. Treat the wrapper's
 # expected-failure classification as authoritative for shell status.
-if [ "$TOTAL" -eq 0 ] || [ $FAIL -gt 0 ] || [ $XPASS -gt 0 ]; then
+if [ "$TOTAL" -eq 0 ] || [ $FAIL -gt 0 ] || [ $XPASS -gt 0 ] || [ $HARNESS -gt 0 ]; then
     exit 1
 fi
