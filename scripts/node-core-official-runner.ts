@@ -246,6 +246,63 @@ function normalizeOfficialPath(path: string): string {
   return path.replace(/\\/g, "/").replace(/^\/+/, "");
 }
 
+function splitOfficialFlags(value: string): string[] {
+  const words: string[] = [];
+  let current = "";
+  let quote = "";
+  let escaped = false;
+  for (const ch of value) {
+    if (escaped) {
+      current += ch;
+      escaped = false;
+      continue;
+    }
+    if (ch === "\\") {
+      escaped = true;
+      continue;
+    }
+    if (quote) {
+      if (ch === quote) quote = "";
+      else current += ch;
+      continue;
+    }
+    if (ch === '"' || ch === "'") {
+      quote = ch;
+      continue;
+    }
+    if (/\s/.test(ch)) {
+      if (current) {
+        words.push(current);
+        current = "";
+      }
+      continue;
+    }
+    current += ch;
+  }
+  if (escaped) current += "\\";
+  if (current) words.push(current);
+  return words;
+}
+
+function nodeFlagsForOfficialSource(source: string): string[] {
+  const flags: string[] = [];
+  for (const line of source.split(/\r?\n/)) {
+    const match = line.match(/^\s*\/\/\s*Flags:\s*(.*)$/);
+    if (!match) continue;
+    const words = splitOfficialFlags(match[1]);
+    for (let i = 0; i < words.length; i++) {
+      const word = words[i];
+      if (word === "--disable-proto") {
+        flags.push(word);
+        if (i + 1 < words.length) flags.push(words[++i]);
+      } else if (word.startsWith("--disable-proto=")) {
+        flags.push(word);
+      }
+    }
+  }
+  return flags;
+}
+
 function selectManifestTests(manifest: Manifest, options: Options): SelectedTest[] {
   const defaultTimeoutMs = options.timeoutMs ?? manifest.defaults?.timeoutMs ?? 30_000;
   return manifest.tests
@@ -729,7 +786,9 @@ function dotenvFlagsForOfficialTest(testPath: string): string[] {
 
 function nodeArgvForOfficialTest(preludePath: string, testPath: string, flagSourcePath = testPath): string[] {
   const dotenvFlags = dotenvFlagsForOfficialTest(flagSourcePath);
-  return ["node", "--", ...dotenvFlags, preludePath, testPath];
+  const source = readFileSync(flagSourcePath, "utf8");
+  const nodeFlags = nodeFlagsForOfficialSource(source);
+  return ["node", ...dotenvFlags, ...nodeFlags, preludePath, testPath];
 }
 
 function nodeExecProgramsForOfficialTest(
@@ -810,6 +869,7 @@ export {
   envForRun,
   nodeArgvForOfficialTest,
   nodeExecProgramsForOfficialTest,
+  nodeFlagsForOfficialSource,
   terminateTimedOutNodeHostBestEffort,
   writePrelude,
 };

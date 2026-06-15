@@ -54,6 +54,13 @@ runtime wasm through an env-gated same-origin route. This avoids serializing the
 large source fixture tree and runtime wasm through Playwright's `page.evaluate`
 payload.
 
+The runner forwards upstream `// Flags:` entries only for compatibility flags
+the runtime understands today. `--disable-proto=delete` and
+`--disable-proto=throw` are passed on both Node and browser hosts, split out of
+`process.argv` into `process.execArgv`, and enforced by the SpiderMonkey
+Node-compatible bootstrap for the main realm, `node:vm` contexts, and shell
+worker startup.
+
 Artifacts are written under `test-runs/node-core-official-<host>-<mode>/` by
 default, or under `--results-dir`. Each run preserves `summary.txt`,
 `summary.json`, `results.ndjson`, `manifest.used.json`, and per-test

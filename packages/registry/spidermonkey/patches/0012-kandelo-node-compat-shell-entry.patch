@@ -1995,7 +1995,7 @@
  using mozilla::Variant;
 
  bool InitOptionParser(OptionParser& op);
-@@ -1415,9 +2493,13 @@
+@@ -1415,9 +2563,13 @@
 
      // Run tasks (only finalization registry clean tasks are possible).
      bool ranTasks = MaybeRunFinalizationRegistryCleanupTasks(cx);
@@ -2010,12 +2010,10 @@
    }
  }
 
-@@ -6876,6 +7958,92 @@
--
-+
+@@ -6913,6 +8065,126 @@
  int shell::sArgc;
  char** shell::sArgv;
-+
+
 +static bool IsKandeloNodeProgramName(const char* argv0) {
 +  if (!argv0 || !*argv0) {
 +    return false;
@@ -2029,6 +2027,40 @@
 +
 +static bool IsKandeloNodeMode() {
 +  return sArgc > 0 && sArgv && IsKandeloNodeProgramName(sArgv[0]);
++}
++
++static bool AppendKandeloNodeFilteredArgv(
++    Vector<char*, 16, js::SystemAllocPolicy>& filteredArgv, int argc,
++    char** argv) {
++  if (argc <= 0) {
++    return true;
++  }
++  return filteredArgv.append(argv[0]);
++}
++
++static bool DefineKandeloNodeRawArgv(JSContext* cx) {
++  RootedObject rawArgv(cx);
++  rawArgv = JS::NewArrayObject(cx, 0);
++  if (!rawArgv) {
++    return false;
++  }
++
++  if (!JS_DefineProperty(cx, cx->global(), "kandeloNodeRawArgv", rawArgv, 0)) {
++    return false;
++  }
++
++  for (int i = 0; i < sArgc; i++) {
++    UniqueChars argUtf8 = JS::EncodeNarrowToUtf8(cx, sArgv[i]);
++    if (!argUtf8) {
++      return false;
++    }
++    RootedString str(cx, NewStringCopyUTF8(cx, argUtf8.get()));
++    if (!str || !JS_DefineElement(cx, rawArgv, i, str, JSPROP_ENUMERATE)) {
++      return false;
++    }
++  }
++
++  return true;
 +}
 +
 +static bool RunKandeloNodeBootstrap(JSContext* cx) {
@@ -2101,24 +2133,28 @@
 +
 +  return ToBoolean(handledValue);
 +}
--
 +
  #ifndef __wasi__
  static const char sWasmCompileAndSerializeFlag[] =
-@@ -11703,6 +12864,10 @@
-
+     "--wasm-compile-and-serialize";
+@@ -11745,6 +13017,15 @@
    /* |scriptArgs| gets bound on the global before any code is run. */
    if (!BindScriptArgs(cx, op)) {
-+    return false;
+     return false;
 +  }
 +
-+  if (IsKandeloNodeMode() && !RunKandeloNodeBootstrap(cx)) {
-     return false;
++  if (IsKandeloNodeMode()) {
++    if (!DefineKandeloNodeRawArgv(cx)) {
++      return false;
++    }
++    if (!RunKandeloNodeBootstrap(cx)) {
++      return false;
++    }
    }
 
-@@ -11796,7 +12961,19 @@
--
-+
+  MultiStringRange filePaths = op->getMultiStringOption('f');
+@@ -11837,7 +13118,19 @@
+
        RootedValue rval(cx);
        if (!JS::Evaluate(cx, opts, srcBuf, &rval)) {
 -        return false;
@@ -2136,23 +2172,42 @@
 +          SetQuitting(cx, exitCode);
 +        }
 +      }
--
-+
-     codeChunks.popFront();
-@@ -12321,6 +13493,12 @@
-   int result;
+
+       codeChunks.popFront();
+@@ -12363,6 +13656,12 @@
 
    setlocale(LC_ALL, "");
-+
+
 +  if (IsKandeloNodeProgramName(argc > 0 ? argv[0] : nullptr) && argc == 2 &&
 +      (strcmp(argv[1], "--version") == 0 || strcmp(argv[1], "-v") == 0)) {
 +    puts("v22.0.0");
 +    return EXIT_SUCCESS;
 +  }
-
++
    // Special-case stdout and stderr. We bump their refcounts to prevent them
    // from getting closed and then having some printf fail somewhere.
-@@ -13315,6 +14493,8 @@
+   RCFile rcStdout(stdout);
+@@ -12384,7 +13683,18 @@
+     return EXIT_FAILURE;
+   }
+
+-  switch (op.parseArgs(argc, argv)) {
++  Vector<char*, 16, js::SystemAllocPolicy> kandeloNodeFilteredArgv;
++  int parseArgc = argc;
++  char** parseArgv = argv;
++  if (IsKandeloNodeProgramName(argc > 0 ? argv[0] : nullptr)) {
++    if (!AppendKandeloNodeFilteredArgv(kandeloNodeFilteredArgv, argc, argv)) {
++      return EXIT_FAILURE;
++    }
++    parseArgc = int(kandeloNodeFilteredArgv.length());
++    parseArgv = kandeloNodeFilteredArgv.begin();
++  }
++
++  switch (op.parseArgs(parseArgc, parseArgv)) {
+     case OptionParser::EarlyExit:
+       return EXIT_SUCCESS;
+     case OptionParser::ParseError:
+@@ -13356,6 +14666,8 @@
      } else {
        return OptionFailure("shared-memory", str);
      }

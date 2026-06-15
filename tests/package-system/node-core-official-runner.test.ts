@@ -8,6 +8,7 @@ import {
   envForRun,
   nodeArgvForOfficialTest,
   nodeExecProgramsForOfficialTest,
+  nodeFlagsForOfficialSource,
   terminateTimedOutNodeHostBestEffort,
   writePrelude,
   type SelectedTest,
@@ -124,7 +125,7 @@ describe("node-core official runner isolation", () => {
     }
   });
 
-  it("forwards official dotenv flags behind the SpiderMonkey argv separator", () => {
+  it("forwards official dotenv flags in raw Node argv order", () => {
     const root = mkdtempSync(join(tmpdir(), "kandelo-node-core-flags-"));
     try {
       const testPath = join(root, "test-dotenv-node-options.js");
@@ -132,7 +133,6 @@ describe("node-core official runner isolation", () => {
 
       expect(nodeArgvForOfficialTest("/prelude.js", "/test.js", testPath)).toEqual([
         "node",
-        "--",
         "--env-file=.env",
         "/prelude.js",
         "/test.js",
@@ -142,7 +142,7 @@ describe("node-core official runner isolation", () => {
     }
   });
 
-  it("uses the SpiderMonkey argv separator for official tests without flags", () => {
+  it("builds raw Node argv for official tests without flags", () => {
     const root = mkdtempSync(join(tmpdir(), "kandelo-node-core-flags-"));
     try {
       const testPath = join(root, "test-plain.js");
@@ -150,7 +150,24 @@ describe("node-core official runner isolation", () => {
 
       expect(nodeArgvForOfficialTest("/prelude.js", "/test.js", testPath)).toEqual([
         "node",
-        "--",
+        "/prelude.js",
+        "/test.js",
+      ]);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("forwards supported official Node flags in raw Node argv order", () => {
+    const root = mkdtempSync(join(tmpdir(), "kandelo-node-core-flags-"));
+    try {
+      const testPath = join(root, "test-disable-proto.js");
+      writeFileSync(testPath, "// Flags: --env-file=.env --disable-proto=throw --expose-gc\n");
+
+      expect(nodeArgvForOfficialTest("/prelude.js", "/test.js", testPath)).toEqual([
+        "node",
+        "--env-file=.env",
+        "--disable-proto=throw",
         "/prelude.js",
         "/test.js",
       ]);
@@ -199,6 +216,22 @@ describe("node-core official runner isolation", () => {
       "/usr/bin/node": "/repo/node.wasm",
       "/usr/local/bin/node": "/repo/node.wasm",
     });
+  });
+});
+
+describe("node-core official runner flags", () => {
+  it("extracts disable-proto flags from official test comments", () => {
+    expect(nodeFlagsForOfficialSource("// Flags: --disable-proto=delete\n")).toEqual([
+      "--disable-proto=delete",
+    ]);
+    expect(nodeFlagsForOfficialSource("// Flags: --disable-proto throw --expose-gc\n")).toEqual([
+      "--disable-proto",
+      "throw",
+    ]);
+  });
+
+  it("does not forward unrelated official flags", () => {
+    expect(nodeFlagsForOfficialSource("// Flags: --expose-gc --trace-warnings\n")).toEqual([]);
   });
 });
 
