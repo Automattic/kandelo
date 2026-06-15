@@ -7500,6 +7500,102 @@ pub extern "C" fn kernel_getsockopt(
         return result;
     }
 
+    // Handle struct linger (SO_LINGER).
+    if level == SOL_SOCKET && optname == SO_LINGER {
+        let result = match syscalls::sys_getsockopt_linger(proc, fd) {
+            Ok((l_onoff, l_linger)) => {
+                let avail = if !optlen_ptr.is_null() {
+                    unsafe { *optlen_ptr as usize }
+                } else {
+                    8
+                };
+                let write_len = avail.min(8);
+                let mut tmp = [0u8; 8];
+                tmp[0..4].copy_from_slice(&l_onoff.to_le_bytes());
+                tmp[4..8].copy_from_slice(&l_linger.to_le_bytes());
+                if write_len > 0 {
+                    let out = unsafe { slice::from_raw_parts_mut(optval_ptr, write_len) };
+                    out.copy_from_slice(&tmp[..write_len]);
+                }
+                if !optlen_ptr.is_null() {
+                    unsafe {
+                        *optlen_ptr = 8;
+                    }
+                }
+                0
+            }
+            Err(e) => -(e as i32),
+        };
+        let mut host = WasmHostIO;
+        deliver_pending_signals(proc, &mut host);
+        return result;
+    }
+
+    // Handle string-valued SO_BINDTODEVICE.
+    if level == SOL_SOCKET && optname == SO_BINDTODEVICE {
+        let result = match syscalls::sys_getsockopt_bindtodevice(proc, fd) {
+            Ok(name) => {
+                let needed = if name.is_empty() { 0 } else { name.len() + 1 };
+                let avail = if !optlen_ptr.is_null() {
+                    unsafe { *optlen_ptr as usize }
+                } else {
+                    needed
+                };
+                let write_len = avail.min(needed);
+                if write_len > 0 {
+                    let out = unsafe { slice::from_raw_parts_mut(optval_ptr, write_len) };
+                    let name_copy = write_len.min(name.len());
+                    out[..name_copy].copy_from_slice(&name[..name_copy]);
+                    if write_len > name_copy {
+                        out[name_copy] = 0;
+                    }
+                }
+                if !optlen_ptr.is_null() {
+                    unsafe {
+                        *optlen_ptr = needed as u32;
+                    }
+                }
+                0
+            }
+            Err(e) => -(e as i32),
+        };
+        let mut host = WasmHostIO;
+        deliver_pending_signals(proc, &mut host);
+        return result;
+    }
+
+    // Handle string-valued TCP_CONGESTION.
+    if level == IPPROTO_TCP && optname == TCP_CONGESTION {
+        let result = match syscalls::sys_getsockopt_tcp_congestion(proc, fd) {
+            Ok(name) => {
+                let avail = if !optlen_ptr.is_null() {
+                    unsafe { *optlen_ptr as usize }
+                } else {
+                    name.len() + 1
+                };
+                let write_len = avail.min(name.len() + 1);
+                if write_len > 0 {
+                    let out = unsafe { slice::from_raw_parts_mut(optval_ptr, write_len) };
+                    let name_copy = write_len.min(name.len());
+                    out[..name_copy].copy_from_slice(&name[..name_copy]);
+                    if write_len > name_copy {
+                        out[name_copy] = 0;
+                    }
+                }
+                if !optlen_ptr.is_null() {
+                    unsafe {
+                        *optlen_ptr = (name.len() + 1) as u32;
+                    }
+                }
+                0
+            }
+            Err(e) => -(e as i32),
+        };
+        let mut host = WasmHostIO;
+        deliver_pending_signals(proc, &mut host);
+        return result;
+    }
+
     // Handle struct timeval options (SO_RCVTIMEO, SO_SNDTIMEO)
     if level == SOL_SOCKET && (optname == SO_RCVTIMEO || optname == SO_SNDTIMEO) {
         let result = match syscalls::sys_getsockopt_timeout(proc, fd, optname) {
@@ -7575,6 +7671,59 @@ pub extern "C" fn kernel_setsockopt(
         }
         let timeout_us = (tv_sec as u64) * 1_000_000 + (tv_usec as u64);
         let result = match syscalls::sys_setsockopt_timeout(proc, fd, optname, timeout_us) {
+            Ok(()) => 0,
+            Err(e) => -(e as i32),
+        };
+        let mut host = WasmHostIO;
+        deliver_pending_signals(proc, &mut host);
+        return result;
+    }
+
+    // Handle struct linger (SO_LINGER).
+    if level == SOL_SOCKET && optname == SO_LINGER {
+        if optval_ptr.is_null() || optlen < 8 {
+            let mut host = WasmHostIO;
+            deliver_pending_signals(proc, &mut host);
+            return -(Errno::EINVAL as i32);
+        }
+        let buf = unsafe { slice::from_raw_parts(optval_ptr, 8) };
+        let l_onoff = i32::from_le_bytes(buf[0..4].try_into().unwrap());
+        let l_linger = i32::from_le_bytes(buf[4..8].try_into().unwrap());
+        let result = match syscalls::sys_setsockopt_linger(proc, fd, l_onoff, l_linger) {
+            Ok(()) => 0,
+            Err(e) => -(e as i32),
+        };
+        let mut host = WasmHostIO;
+        deliver_pending_signals(proc, &mut host);
+        return result;
+    }
+
+    // Handle string-valued SO_BINDTODEVICE.
+    if level == SOL_SOCKET && optname == SO_BINDTODEVICE {
+        if optval_ptr.is_null() {
+            let mut host = WasmHostIO;
+            deliver_pending_signals(proc, &mut host);
+            return -(Errno::EFAULT as i32);
+        }
+        let buf = unsafe { slice::from_raw_parts(optval_ptr, optlen as usize) };
+        let result = match syscalls::sys_setsockopt_bindtodevice(proc, fd, buf) {
+            Ok(()) => 0,
+            Err(e) => -(e as i32),
+        };
+        let mut host = WasmHostIO;
+        deliver_pending_signals(proc, &mut host);
+        return result;
+    }
+
+    // Handle string-valued TCP_CONGESTION.
+    if level == IPPROTO_TCP && optname == TCP_CONGESTION {
+        if optval_ptr.is_null() {
+            let mut host = WasmHostIO;
+            deliver_pending_signals(proc, &mut host);
+            return -(Errno::EFAULT as i32);
+        }
+        let buf = unsafe { slice::from_raw_parts(optval_ptr, optlen as usize) };
+        let result = match syscalls::sys_setsockopt_tcp_congestion(proc, fd, buf) {
             Ok(()) => 0,
             Err(e) => -(e as i32),
         };
