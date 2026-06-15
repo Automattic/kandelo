@@ -7583,6 +7583,114 @@ pub extern "C" fn kernel_setsockopt(
         return result;
     }
 
+    // Handle IPv4 multicast membership/source-filter options. These options
+    // carry struct ip_mreq/ip_mreq_source/group_req/group_source_req payloads,
+    // not plain integers, so the wrapper must parse the guest ABI buffer.
+    if level == IPPROTO_IP
+        && matches!(
+            optname,
+            IP_ADD_MEMBERSHIP
+                | IP_DROP_MEMBERSHIP
+                | IP_BLOCK_SOURCE
+                | IP_UNBLOCK_SOURCE
+                | IP_ADD_SOURCE_MEMBERSHIP
+                | IP_DROP_SOURCE_MEMBERSHIP
+                | MCAST_JOIN_GROUP
+                | MCAST_LEAVE_GROUP
+                | MCAST_BLOCK_SOURCE
+                | MCAST_UNBLOCK_SOURCE
+                | MCAST_JOIN_SOURCE_GROUP
+                | MCAST_LEAVE_SOURCE_GROUP
+        )
+    {
+        if optval_ptr.is_null() {
+            let mut host = WasmHostIO;
+            deliver_pending_signals(proc, &mut host);
+            return -(Errno::EFAULT as i32);
+        }
+        let buf = unsafe { slice::from_raw_parts(optval_ptr, optlen as usize) };
+
+        let parse_sockaddr_in_at = |offset: usize| -> Result<[u8; 4], Errno> {
+            if buf.len() < offset + 8 {
+                return Err(Errno::EINVAL);
+            }
+            let family = u16::from_le_bytes([buf[offset], buf[offset + 1]]);
+            if family as u32 != AF_INET {
+                return Err(Errno::EAFNOSUPPORT);
+            }
+            Ok([
+                buf[offset + 4],
+                buf[offset + 5],
+                buf[offset + 6],
+                buf[offset + 7],
+            ])
+        };
+
+        let parse_ifindex_at = |offset: usize| -> Result<[u8; 4], Errno> {
+            if buf.len() < offset + 4 {
+                return Err(Errno::EINVAL);
+            }
+            let ifindex = u32::from_le_bytes(buf[offset..offset + 4].try_into().unwrap());
+            syscalls::ipv4_multicast_interface_from_index(ifindex)
+        };
+
+        let parsed = (|| -> Result<([u8; 4], [u8; 4], Option<[u8; 4]>), Errno> {
+            match optname {
+                IP_ADD_MEMBERSHIP | IP_DROP_MEMBERSHIP => {
+                    if buf.len() < 8 {
+                        Err(Errno::EINVAL)
+                    } else {
+                        Ok((
+                            [buf[0], buf[1], buf[2], buf[3]],
+                            [buf[4], buf[5], buf[6], buf[7]],
+                            None,
+                        ))
+                    }
+                }
+                IP_BLOCK_SOURCE | IP_UNBLOCK_SOURCE | IP_ADD_SOURCE_MEMBERSHIP
+                | IP_DROP_SOURCE_MEMBERSHIP => {
+                    if buf.len() < 12 {
+                        Err(Errno::EINVAL)
+                    } else {
+                        Ok((
+                            [buf[0], buf[1], buf[2], buf[3]],
+                            [buf[4], buf[5], buf[6], buf[7]],
+                            Some([buf[8], buf[9], buf[10], buf[11]]),
+                        ))
+                    }
+                }
+                MCAST_JOIN_GROUP | MCAST_LEAVE_GROUP => Ok((
+                    parse_sockaddr_in_at(4)?,
+                    parse_ifindex_at(0)?,
+                    None,
+                )),
+                MCAST_BLOCK_SOURCE | MCAST_UNBLOCK_SOURCE | MCAST_JOIN_SOURCE_GROUP
+                | MCAST_LEAVE_SOURCE_GROUP => Ok((
+                    parse_sockaddr_in_at(4)?,
+                    parse_ifindex_at(0)?,
+                    Some(parse_sockaddr_in_at(132)?),
+                )),
+                _ => unreachable!(),
+            }
+        })();
+
+        let result = match parsed.and_then(|(group, interface_addr, source)| {
+            syscalls::sys_setsockopt_ipv4_multicast(
+                proc,
+                fd,
+                optname,
+                group,
+                interface_addr,
+                source,
+            )
+        }) {
+            Ok(()) => 0,
+            Err(e) => -(e as i32),
+        };
+        let mut host = WasmHostIO;
+        deliver_pending_signals(proc, &mut host);
+        return result;
+    }
     // Read first 4 bytes as u32 value (covers most int-valued options)
     let optval = if !optval_ptr.is_null() && optlen >= 4 {
         let buf = unsafe { slice::from_raw_parts(optval_ptr, 4) };
