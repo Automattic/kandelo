@@ -128,6 +128,50 @@ classified as browser known skips and rerun cleanly in
 failures are covered by `kad-165.12`; the final browser residual failure count
 for the supported `jstests` scope is 0.
 
+### Final Hard Counts for Epic PR
+
+Use the following hard counts in the epic PR body. They come from the final
+authoritative artifacts listed here, not from every preserved intermediate
+resume directory.
+
+| Host | Suite | Epic status | Authoritative artifact | Scope | PASS | SKIP / known-skip | FAIL / unexpected | Timeout / resource detail | Unsupported-scope detail |
+| --- | --- | --- | --- | --- | ---: | ---: | ---: | --- | --- |
+| Node | `jstests` | Supported final signal | `/Users/brandon/gt/kandelo/polecats/toast/kandelo/test-results/spidermonkey-official/kad-165.4-node-jstests-*`, with final tail replacement `kad-165.4-node-jstests-20260614T060645Z-resume10-restart` | 738 selected latest chunks | 50,503 | 1,932 | 237 | 159 timeout rows: 158 non-Atomics timeout/resource-envelope rows plus 1 BigInt Atomics `waitAsync` timeout. The remaining unexpected rows are 60 BigInt Atomics crashes, 16 mozglue timezone/env crashes, and 2 worker stack-resource failures. | None for supported `jstests`. |
+| Browser | `jstests` raw completed tail | Superseded by skipfix rerun for final status | `/Users/brandon/gt/kandelo/polecats/rictus/kandelo/test-results/spidermonkey-official/kad-165.7-browser-jstests-resume11-20260614T131756Z` | 373 tail chunks, from regexp through the end | 11,670 | 418 | 4 | Three browser-only staging expression timeouts plus one staging recursion stack/resource failure. | None for supported `jstests`; these four rows were reclassified before final status. |
+| Browser | `jstests` final replacement tail | Supported final signal for the corrected tail; residual supported failures 0 | `/Users/brandon/gt/kandelo/polecats/rictus/kandelo/test-results/spidermonkey-official/kad-165.7-browser-jstests-tail-skipfix-20260614T192700Z` | 22 tail chunks replacing the staging tail from `test262/staging/sm/expressions` onward | 464 | 49 | 0 | 0 timeout/resource failures in the corrected tail. | None for supported `jstests`. |
+| Node | `jit-tests` | SKIPPED / out of scope for the epic | `test-runs/spidermonkey-official-node-jit-kad-165.5/summary.tsv` | 70 chunks, 8,634 upstream jit-test files, effective `SPIDERMONKEY_OFFICIAL_JITFLAGS=all` | 10,371 exploratory passes | 0 | 45,386 exploratory unexpected results | Exploratory classes: 45,173 memory traps, 174 `MOZ_CRASH(No 64-bit atomics)`, 34 timeouts, and 5 pthread slot-limit exhaustions. | All official jit-tests are unsupported product scope while `packages/registry/spidermonkey/build-spidermonkey.sh` uses `--disable-jit`. Do not route these exploratory failures as epic blockers. |
+| Browser | `jit-tests` | SKIPPED / out of scope for the epic | `/Users/brandon/gt/kandelo/polecats/morsov/kandelo/test-results/spidermonkey-official/kad-165.8-browser-jit-tests-gc4-continuation-20260614T131641Z/SKIPPED.md` and `browser-jit-tests-gc#part-0004.log` | 8,634 upstream jit-test files in inventory; intentionally stopped mid-`gc#part-0004` after scope correction | No official final aggregate; partial exploratory log had 108 passes | No official final aggregate | No official final aggregate; partial exploratory log had 180 failures | Partial mid-chunk counts are evidence only. `summary.tsv` has only the header because the run was interrupted by scope correction. | All official browser jit-tests are unsupported product scope for the same JIT-disabled package reason. |
+
+Reproduction and resume command references:
+
+- Node `jstests`: initial exhaustive shape was
+  `scripts/run-spidermonkey-official-all.sh --host node --suite jstests --jobs 1 --no-slow`.
+  The authoritative replacement tail used
+  `SPIDERMONKEY_NODE_JS_SHELL_PORT=5412 scripts/run-spidermonkey-official-all.sh --host node --suite jstests --jobs 1 --no-slow --restart-bridge-per-chunk --start-at test262/language/statements/class/elements/_files#part-0002 --results-dir test-results/spidermonkey-official/kad-165.4-node-jstests-20260614T060645Z-resume10-restart`.
+- Browser `jstests`: resume/tail command shape was
+  `scripts/run-spidermonkey-official-all.sh --host browser --suite jstests --jobs 1 --no-slow --restart-bridge-per-chunk --start-at <chunk> --results-dir <dir>`.
+  The final corrected tail artifact is
+  `test-results/spidermonkey-official/kad-165.7-browser-jstests-tail-skipfix-20260614T192700Z`.
+- Node `jit-tests`: exploratory command was
+  `scripts/run-spidermonkey-official-all.sh --host node --suite jit-tests --jobs 1 --no-slow --results-dir test-results/spidermonkey-official/kad-165.5-node-jit-tests-20260613T021426Z`;
+  resumes used `--start-at atomics` and `--start-at jaeger`.
+- Browser `jit-tests`: final exploratory command before retirement was
+  `scripts/run-spidermonkey-official-all.sh --host browser --suite jit-tests --jobs 1 --no-slow --jitflags all --restart-bridge-per-chunk --start-at gc#part-0004 --results-dir test-results/spidermonkey-official/kad-165.8-browser-jit-tests-gc4-continuation-20260614T131641Z`.
+
+Excluded snapshots:
+
+- The Node `resume9` out-of-bounds cascade is excluded from final counts; the
+  `resume10` replacement reran from
+  `test262/language/statements/class/elements/_files#part-0002` through the
+  end and supersedes that corrupted tail.
+- The browser `resume11` four staging outliers are excluded from residual final
+  failure counts after the `tail-skipfix` rerun above. Earlier browser resume
+  summaries remain preserved as pre-fix/pre-classification evidence and should
+  not be rolled into a post-fix final aggregate.
+- Node and browser `jit-tests` are unsupported-scope evidence only. The current
+  SpiderMonkey package builds with `ac_add_options --disable-jit`, and the
+  package README documents JIT disabled / nested WebAssembly out of scope.
+
 ### Failure Inventory
 
 | Count | Scope | Classification | Routed bead |
