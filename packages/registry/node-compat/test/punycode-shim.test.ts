@@ -1,6 +1,7 @@
 import { readFileSync } from "node:fs";
-import { dirname, join } from "node:path";
+import path, { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import util from "node:util";
 import vm from "node:vm";
 import { describe, expect, it } from "vitest";
 
@@ -16,6 +17,50 @@ function loadPunycodeShim() {
   }
   const source = `${bootstrap.slice(start, end)}\npunycode;`;
   return vm.runInNewContext(source, {});
+}
+
+function loadRequireWithPunycodeBuiltin() {
+  const bootstrap = readFileSync(bootstrapPath, "utf8");
+  const start = bootstrap.indexOf("const _moduleCache = Object.create(null);");
+  const end = bootstrap.indexOf("function _nearestPackageType", start);
+  if (start === -1 || end === -1) {
+    throw new Error("could not locate node-compat module system");
+  }
+
+  const punycode = { marker: "punycode" };
+  const warnings: Array<{ message: string; type: string; code: string }> = [];
+  const processShim = {
+    env: {},
+    cwd: () => "/work",
+    emitWarning(message: string, type: string, code: string) {
+      warnings.push({ message, type, code });
+    },
+  };
+  const source = `
+const _builtinModules = { punycode };
+${bootstrap.slice(start, end)}
+({ require: _makeRequire('/work/main.js'), punycode, warnings });
+`;
+
+  return vm.runInNewContext(source, {
+    path: path.posix,
+    punycode,
+    warnings,
+    process: processShim,
+    std: { getenv: () => null, loadFile: () => null },
+    os: {
+      realpath: (p: string) => [p, 0],
+      stat: () => [null, 2],
+    },
+    util,
+    url: {},
+    _makeInvalidArgTypeError(name: string, expected: string, actual: unknown) {
+      return new TypeError(`${name} must be ${expected}; got ${typeof actual}`);
+    },
+    _makeInvalidArgValueError(name: string, value: unknown) {
+      return new TypeError(`${name} has invalid value ${String(value)}`);
+    },
+  });
 }
 
 describe("node-compat punycode shim", () => {
@@ -84,5 +129,21 @@ describe("node-compat punycode shim", () => {
     expect(punycode.ucs2.encode([97, 98, 99, 128169])).toBe("abc💩");
     expect(punycode.ucs2.encode([0xd800])).toBe("\ud800");
     expect(() => punycode.ucs2.encode([0x110000])).toThrow("Invalid code point 1114112");
+  });
+
+  it("emits the legacy DEP0040 warning once when required as a builtin", () => {
+    const loaded = loadRequireWithPunycodeBuiltin();
+
+    expect(loaded.require("punycode")).toBe(loaded.punycode);
+    expect(loaded.require("punycode")).toBe(loaded.punycode);
+    expect(loaded.require("node:punycode")).toBe(loaded.punycode);
+    expect(loaded.warnings).toEqual([
+      {
+        message:
+          "The `punycode` module is deprecated. Please use a userland alternative instead.",
+        type: "DeprecationWarning",
+        code: "DEP0040",
+      },
+    ]);
   });
 });

@@ -16408,6 +16408,17 @@ function _processBinding(name) {
 // under the bare builtin name, matching Node's CommonJS cache semantics.
 const _moduleCache = Object.create(null);
 let _mainModule = null;
+let _punycodeDeprecationWarningEmitted = false;
+
+function _emitPunycodeDeprecationWarning() {
+    if (_punycodeDeprecationWarningEmitted) return;
+    _punycodeDeprecationWarningEmitted = true;
+    process.emitWarning(
+        'The `punycode` module is deprecated. Please use a userland alternative instead.',
+        'DeprecationWarning',
+        'DEP0040',
+    );
+}
 
 function _emitModuleParentDeprecation() {
     process.emitWarning(
@@ -16762,6 +16773,7 @@ function _makeRequire(filename, parentModule) {
             if (!id.startsWith('node:') && _moduleCache[builtin.cacheKey]) {
                 return _moduleCache[builtin.cacheKey].exports;
             }
+            if (builtin.cacheKey === 'punycode') _emitPunycodeDeprecationWarning();
             return builtin.value;
         }
 
