@@ -7972,7 +7972,30 @@ const url = (() => {
         let text = toUSVString(value);
         if (text.startsWith('?')) text = text.slice(1);
         if (text === '') return '';
-        return '?' + encodeURI(text).replace(/#/g, '%23');
+        let out = '';
+        for (let i = 0; i < text.length; i++) {
+            const code = text.charCodeAt(i);
+            const ch = text[i];
+            if (ch === '%' && /^[0-9A-Fa-f]{2}$/.test(text.slice(i + 1, i + 3))) {
+                out += text.slice(i, i + 3);
+                i += 2;
+                continue;
+            }
+            let token = ch;
+            if (code >= 0xD800 && code <= 0xDBFF && i + 1 < text.length) {
+                const next = text.charCodeAt(i + 1);
+                if (next >= 0xDC00 && next <= 0xDFFF) token = text.slice(i, ++i + 1);
+            }
+            const cp = token.codePointAt(0);
+            if (ch === "'") {
+                out += '%27';
+            } else if (cp <= 0x20 || cp > 0x7E || ch === '"' || ch === '#' || ch === '<' || ch === '>') {
+                out += encodeURIComponent(token);
+            } else {
+                out += token;
+            }
+        }
+        return '?' + out;
     }
 
     function encodeHash(value) {

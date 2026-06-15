@@ -215,6 +215,61 @@ describe("node-compat URL shim", () => {
     );
   });
 
+  it("normalizes URLSearchParams values through USVString before form encoding", () => {
+    const values = [
+      "a",
+      1,
+      true,
+      undefined,
+      null,
+      "\uD83D",
+      "\uDE00",
+      "\uD83D\uDE00",
+      "\uDE00\uD83D",
+      {},
+    ];
+    const normalized = [
+      "a",
+      "1",
+      "true",
+      "undefined",
+      "null",
+      "\uFFFD",
+      "\uFFFD",
+      "\uD83D\uDE00",
+      "\uFFFD\uFFFD",
+      "[object Object]",
+    ];
+    const serialized = "a=a&a=1&a=true&a=undefined&a=null&a=%EF%BF%BD" +
+      "&a=%EF%BF%BD&a=%F0%9F%98%80&a=%EF%BF%BD%EF%BF%BD" +
+      "&a=%5Bobject+Object%5D";
+
+    const params = new URLSearchParams();
+    for (const value of values) params.append("a", value);
+    expect(String(params)).toBe(serialized);
+    expect(params.getAll("a")).toEqual(normalized);
+    expect(String(new URLSearchParams([["a", "\uD83D"]]))).toBe("a=%EF%BF%BD");
+    expect(String(new URLSearchParams({ a: "\uDE00" }))).toBe("a=%EF%BF%BD");
+
+    const url = new URL("http://example.org");
+    for (const value of values) url.searchParams.append("a", value);
+    expect(url.href).toBe(`http://example.org/?${serialized}`);
+    expect(url.searchParams.getAll("a")).toEqual(normalized);
+  });
+
+  it("parses assigned URL.search without double-encoding existing escapes", () => {
+    const url = new URL("http://example.org");
+    url.search = "my%20weird%20field=q1!2%22'w%245%267%2Fz8)%3F";
+
+    expect(url.search).toBe("?my%20weird%20field=q1!2%22%27w%245%267%2Fz8)%3F");
+    expect(String(url.searchParams)).toBe(
+      "my+weird+field=q1%212%22%27w%245%267%2Fz8%29%3F",
+    );
+    expect(Array.from(url.searchParams)).toEqual([
+      ["my weird field", "q1!2\"'w$5&7/z8)?"],
+    ]);
+  });
+
   it("keeps URLSearchParams mutations linked to their owning URL", () => {
     const url = new URL("http://example.org");
     url.searchParams.append("a", "a");

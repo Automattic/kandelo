@@ -2,7 +2,7 @@
 +++ b/js/src/shell/OSObject.cpp
 @@ -13,7 +13,11 @@
  #include "mozilla/TextUtils.h"
-
+ 
  #include <errno.h>
 +#include <fcntl.h>
 +#include <limits.h>
@@ -27,7 +27,7 @@
  #  include <unistd.h>
 @@ -36,6 +42,7 @@
  #include "jsfriendapi.h"
-
+ 
  #include "gc/GCContext.h"
 +#include "js/ArrayBuffer.h"
  #include "js/CharacterEncoding.h"
@@ -35,7 +35,7 @@
  #include "js/experimental/TypedData.h"  // JS_NewUint8Array
 @@ -591,9 +598,296 @@
    }
-
+ 
    args.rval().setUndefined();
 +  return true;
 +}
@@ -223,7 +223,7 @@
 +#endif
    return true;
  }
-
+ 
 +static bool osfile_readlink(JSContext* cx, unsigned argc, Value* vp) {
 +  CallArgs args = CallArgsFromVp(argc, vp);
 +
@@ -370,7 +370,7 @@
 +    JS_FN_HELP("utimes", osfile_utimes, 3, 0,
 +"utimes(path, atime, mtime)",
 +"  Change access and modification times. Returns 0 on success or -errno on failure."),
-
+ 
      JS_FN_HELP("redirect", osfile_redirectOutput, 1, 0,
  "redirect([path-or-object])",
 @@ -978,9 +1308,375 @@
@@ -428,7 +428,7 @@
 +  args.rval().setInt32(rc == 0 ? 0 : -errno);
    return true;
  }
-
+ 
 +static bool os_setenv(JSContext* cx, unsigned argc, Value* vp) {
 +  CallArgs args = CallArgsFromVp(argc, vp);
 +  if (args.length() != 2) {
@@ -747,7 +747,7 @@
 +}
 +
  #if !defined(XP_WIN)
-
+ 
  // There are two possible definitions of strerror_r floating around. The GNU
 @@ -1201,11 +1897,59 @@
      JS_FN_HELP("getenv", os_getenv, 1, 0,
@@ -757,7 +757,7 @@
 +    JS_FN_HELP("setenv", os_setenv, 2, 0,
 +"setenv(variable, value)",
 +"  Set an environment variable. Returns 0 on success or -errno on failure."),
-
+ 
 +    JS_FN_HELP("unsetenv", os_unsetenv, 1, 0,
 +"unsetenv(variable)",
 +"  Unset an environment variable. Returns 0 on success or -errno on failure."),
@@ -765,7 +765,7 @@
      JS_FN_HELP("getpid", os_getpid, 0, 0,
  "getpid()",
  "  Return the current process id."),
-
+ 
 +    JS_FN_HELP("getcwd", os_getcwd, 0, 0,
 +"getcwd()",
 +"  Return the current working directory."),
@@ -1993,10 +1993,10 @@
 +  return JS_DefineProperty(cx, cx->global(), "__kandeloNodeNative", native, 0);
 +}
  using mozilla::Variant;
-
+ 
  bool InitOptionParser(OptionParser& op);
 @@ -1415,9 +2493,13 @@
-
+ 
      // Run tasks (only finalization registry clean tasks are possible).
      bool ranTasks = MaybeRunFinalizationRegistryCleanupTasks(cx);
 -    if (!ranTasks) {
@@ -2009,9 +2009,9 @@
 +    }
    }
  }
-
-@@ -6876,6 +7958,85 @@
-
+ 
+@@ -6876,6 +7958,92 @@
+ 
  int shell::sArgc;
  char** shell::sArgv;
 +
@@ -2100,11 +2100,11 @@
 +
 +  return ToBoolean(handledValue);
 +}
-
+ 
  #ifndef __wasi__
  static const char sWasmCompileAndSerializeFlag[] =
 @@ -11703,6 +12864,10 @@
-
+ 
    /* |scriptArgs| gets bound on the global before any code is run. */
    if (!BindScriptArgs(cx, op)) {
 +    return false;
@@ -2113,9 +2113,9 @@
 +  if (IsKandeloNodeMode() && !RunKandeloNodeBootstrap(cx)) {
      return false;
    }
-
-@@ -11796,7 +12961,14 @@
-
+ 
+@@ -11796,7 +12961,19 @@
+ 
        RootedValue rval(cx);
        if (!JS::Evaluate(cx, opts, srcBuf, &rval)) {
 -        return false;
@@ -2133,11 +2133,11 @@
 +          SetQuitting(cx, exitCode);
 +        }
 +      }
-
+ 
       codeChunks.popFront();
 @@ -12321,6 +13493,12 @@
    int result;
-
+ 
    setlocale(LC_ALL, "");
 +
 +  if (IsKandeloNodeProgramName(argc > 0 ? argv[0] : nullptr) && argc == 2 &&
@@ -2145,7 +2145,7 @@
 +    puts("v22.0.0");
 +    return EXIT_SUCCESS;
 +  }
-
+ 
    // Special-case stdout and stderr. We bump their refcounts to prevent them
    // from getting closed and then having some printf fail somewhere.
 @@ -13315,6 +14493,8 @@
@@ -2155,5 +2155,5 @@
 +  } else if (IsKandeloNodeMode()) {
 +    enableSharedMemory = true;
    }
-
+ 
    reportWarnings = op.getBoolOption('w');
