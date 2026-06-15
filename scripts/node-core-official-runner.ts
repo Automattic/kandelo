@@ -419,6 +419,14 @@ async function resolveRuntime(path?: string): Promise<string> {
   return resolved;
 }
 
+async function resolveShellRuntime(): Promise<string | null> {
+  const { tryResolveBinary } = await import("../host/src/binary-resolver");
+  const resolved =
+    tryResolveBinary("programs/sh.wasm") ??
+    tryResolveBinary("programs/dash.wasm");
+  return resolved && existsSync(resolved) ? resolved : null;
+}
+
 function makeResultsDir(options: Options): string {
   if (options.resultsDir) {
     mkdirSync(options.resultsDir, { recursive: true });
@@ -501,6 +509,56 @@ if (!Array.isArray(process.execArgv)) process.execArgv = [];
 if (!process.execPath) process.execPath = '/usr/bin/node';
 
 const common = require(path.join(path.dirname(testFile), '..', 'common'));
+if (process.versions && process.versions.spidermonkey && common) {
+  const assert = require('assert');
+  const util = require('util');
+  const inspect = util.inspect;
+
+  if (typeof common.mustNotCall === 'function' && !common.mustNotCall.__kandeloSpiderMonkeyCallSite) {
+    const originalMustNotCall = common.mustNotCall;
+    function parseStackFrame(line) {
+      const match = String(line).match(/^(?:[^@]*)@(.+):(\\d+):(\\d+)$/);
+      if (!match) return null;
+      return { file: match[1], line: Number(match[2]) };
+    }
+    function callSiteFromStack(stack) {
+      const lines = String(stack || '').split('\\n');
+      for (const line of lines) {
+        const frame = parseStackFrame(line);
+        if (!frame) continue;
+        if (path.basename(frame.file) === 'kandelo-node-core-prelude.js') continue;
+        if (frame.file.endsWith('/test/common/index.js')) continue;
+        return frame.file + ':' + Math.max(1, frame.line - 1);
+      }
+      return '<unknown>:0';
+    }
+    function inspectMustNotCallArg(arg) {
+      const type = typeof arg;
+      if (arg === null || (type !== 'object' && type !== 'function')) {
+        return inspect(arg);
+      }
+      if (Array.isArray(arg)) {
+        return '[' + arg.map((item) => inspectMustNotCallArg(item)).join(', ') + ']';
+      }
+      return type === 'function' ? '[Function]' : '[Object]';
+    }
+    const patchedMustNotCall = function mustNotCall(msg) {
+      const callSite = callSiteFromStack(new Error().stack);
+      return function mustNotCall(...args) {
+        const argsInfo = args.length > 0 ?
+          '\\ncalled with arguments: ' + args.map((arg) => inspectMustNotCallArg(arg)).join(', ') : '';
+        throw new assert.AssertionError({
+          message: (msg || 'function should not have been called') + ' at ' + callSite + argsInfo,
+          operator: 'fail',
+        });
+      };
+    };
+    Object.defineProperty(patchedMustNotCall, '__kandeloSpiderMonkeyCallSite', { value: true });
+    common.mustNotCall = patchedMustNotCall;
+    common._kandeloOriginalMustNotCall = originalMustNotCall;
+  }
+
+}
 if (common && typeof common.allowGlobals === 'function') {
   const knownGlobalNames = [
     '__dirname',
@@ -655,10 +713,12 @@ function createIsolatedTests(tests: SelectedTest[], resultsDir: string): Isolate
 }
 
 function envForRun(isolation?: TestIsolation): string[] {
-  const env = new Map(
-    Object.entries(process.env)
-      .filter((entry): entry is [string, string] => entry[1] !== undefined),
-  );
+  const env = new Map<string, string>();
+  env.set("HOME", "/tmp");
+  env.set("PATH", "/usr/local/bin:/usr/bin:/bin");
+  env.set("TMPDIR", "/tmp");
+  env.set("TMP", "/tmp");
+  env.set("TEMP", "/tmp");
   env.set("NODE_SKIP_FLAG_CHECK", "1");
   env.set("NODE_DISABLE_COLORS", "1");
   env.set("NODE_TEST_KNOWN_GLOBALS", "0");
@@ -677,6 +737,7 @@ export {
   destroyNodeHostBestEffort,
   envForRun,
   terminateTimedOutNodeHostBestEffort,
+  writePrelude,
 };
 
 export type {
@@ -691,6 +752,7 @@ async function runNodeTest(
   preludePath: string,
   runtimePath: string,
   programBytes: ArrayBuffer,
+  shellRuntimePath: string | null,
 ): Promise<RawRunResult> {
   const { test, isolation } = isolated;
   const { NodeKernelHost } = await import("../host/src/node-kernel-host");
@@ -711,6 +773,11 @@ async function runNodeTest(
       "/bin/node": runtimePath,
       "/usr/bin/node": runtimePath,
       "/usr/local/bin/node": runtimePath,
+      ...(shellRuntimePath ? {
+        "sh": shellRuntimePath,
+        "/bin/sh": shellRuntimePath,
+        "/usr/bin/sh": shellRuntimePath,
+      } : {}),
     },
     extraMounts: [
       { mountPoint: "/usr/bin", hostPath: nodeBinDir, readonly: true },
@@ -1226,7 +1293,7 @@ function writeSummaries(
       cwd: process.cwd(),
     },
     guestEnvironment: envForRun().filter((entry) =>
-      /^(NODE_SKIP_FLAG_CHECK|NODE_DISABLE_COLORS|TERM|CI)=/.test(entry)
+      /^(HOME|PATH|TMPDIR|NODE_SKIP_FLAG_CHECK|NODE_DISABLE_COLORS|NODE_TEST_KNOWN_GLOBALS|TERM|CI)=/.test(entry)
     ),
     totals,
     byArea,
@@ -1311,9 +1378,10 @@ async function main(): Promise<void> {
     runtimePath = await resolveRuntime(options.runtimePath);
     const preludePath = writePrelude(resultsDir);
     const jobs = options.jobs ?? manifest.defaults?.jobs ?? 1;
+    const shellRuntimePath = await resolveShellRuntime();
     const programBytes = loadBytes(runtimePath);
     const nodeResults = await runWithConcurrency(isolatedRunnable, jobs, async (isolated) => {
-      const raw = await runNodeTest(isolated, source.dir, preludePath, runtimePath, programBytes);
+      const raw = await runNodeTest(isolated, source.dir, preludePath, runtimePath, programBytes, shellRuntimePath);
       return recordResult(isolated.test, options.host, raw, resultsDir);
     });
     recorded.push(...nodeResults);
