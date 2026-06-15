@@ -159,17 +159,48 @@ impl MemoryManager {
     /// Find the first gap in [mmap_base, max_addr) that can fit `needed` bytes.
     fn find_gap(&self, needed: usize) -> Option<usize> {
         let mut cursor = self.mmap_base.max(self.program_break);
-        let mut occupied: Vec<(usize, usize)> =
-            Vec::with_capacity(self.mappings.len() + self.reserved_regions.len());
-        occupied.extend(self.mappings.iter().map(|m| (m.addr, m.len)));
-        occupied.extend(self.reserved_regions.iter().map(|r| (r.addr, r.len)));
-        occupied.sort_by_key(|(addr, _)| *addr);
 
-        for (addr, len) in occupied {
+        // `mappings` and `reserved_regions` are both kept sorted by address.
+        // Walk them as two sorted streams instead of allocating and sorting a
+        // temporary combined vector for every automatic mmap. mmap-heavy
+        // allocators can issue thousands of mmap/munmap pairs during ordinary
+        // workload growth; gap selection remains the same first-fit policy but
+        // avoids O(n log n) transient work on the hot syscall path.
+        let mut mapping_idx = 0;
+        let mut reserved_idx = 0;
+        loop {
+            let next_mapping = self
+                .mappings
+                .get(mapping_idx)
+                .map(|m| (m.addr, m.len, true));
+            let next_reserved = self
+                .reserved_regions
+                .get(reserved_idx)
+                .map(|r| (r.addr, r.len, false));
+            let Some((addr, len, is_mapping)) = (match (next_mapping, next_reserved) {
+                (Some(mapping), Some(reserved)) => {
+                    if mapping.0 <= reserved.0 {
+                        Some(mapping)
+                    } else {
+                        Some(reserved)
+                    }
+                }
+                (Some(mapping), None) => Some(mapping),
+                (None, Some(reserved)) => Some(reserved),
+                (None, None) => None,
+            }) else {
+                break;
+            };
+
             if addr < cursor {
                 let end = addr.saturating_add(len);
                 if end > cursor {
                     cursor = end;
+                }
+                if is_mapping {
+                    mapping_idx += 1;
+                } else {
+                    reserved_idx += 1;
                 }
                 continue;
             }
@@ -182,6 +213,11 @@ impl MemoryManager {
             let end = addr.saturating_add(len);
             if end > cursor {
                 cursor = end;
+            }
+            if is_mapping {
+                mapping_idx += 1;
+            } else {
+                reserved_idx += 1;
             }
         }
         // Check gap after last mapping
@@ -648,6 +684,48 @@ mod tests {
             MAP_PRIVATE | MAP_ANONYMOUS,
         );
         assert_eq!(addr2, addr + 0x10000);
+    }
+
+    #[test]
+    fn test_mmap_gap_scan_merges_guest_and_reserved_regions() {
+        let mut mm = MemoryManager::new();
+        let rw = PROT_READ | PROT_WRITE;
+        let anon = MAP_PRIVATE | MAP_ANONYMOUS;
+        let base = MemoryManager::MMAP_BASE;
+
+        // Interleave a guest mapping and a host-reserved control range. The
+        // automatic mmap scan must consider both address-ordered streams and
+        // return the first real gap, not a range that is free in only one list.
+        assert_eq!(mm.mmap_anonymous(base, 0x10000, rw, anon | MAP_FIXED), base);
+        assert_eq!(
+            mm.reserve_host_region_at(base + 0x10000, 0x10000),
+            base + 0x10000
+        );
+
+        let addr = mm.mmap_anonymous(0, 0x10000, rw, anon);
+        assert_eq!(addr, base + 0x20000);
+    }
+
+    #[test]
+    fn test_munmap_rounds_length_up_to_page() {
+        let mut mm = MemoryManager::new();
+        let rw = PROT_READ | PROT_WRITE;
+        let anon = MAP_PRIVATE | MAP_ANONYMOUS;
+
+        // SQLite sysfault.test allocates this size and later munmaps a
+        // different, still page-rounded length. Both must cover the same
+        // kernel mapping, otherwise a tiny tail fragment prevents reuse.
+        let requested_len = 0x1ea102e;
+        let munmap_len = 0x1ea2000;
+
+        let addr = mm.mmap_anonymous(0, requested_len, rw, anon);
+        assert_ne!(addr, MAP_FAILED);
+        assert!(mm.munmap(addr, munmap_len));
+        assert!(!mm.is_mapped(addr));
+        assert!(!mm.is_mapped(addr + munmap_len));
+
+        let reused = mm.mmap_anonymous(0, requested_len, rw, anon);
+        assert_eq!(reused, addr);
     }
 
     #[test]
