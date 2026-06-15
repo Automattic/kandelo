@@ -91,7 +91,10 @@ const historicalMissingBuiltins = [
 ];
 
 function generatedBootstrapSource(
-  options: { withoutEventGlobalAfterAdapter?: boolean } = {},
+  options: {
+    beforeBootstrap?: string;
+    withoutEventGlobalAfterAdapter?: boolean;
+  } = {},
 ): string {
   const adapter = readFileSync(
     join(repoRoot, "packages/registry/spidermonkey/node-compat/adapter.js"),
@@ -108,19 +111,28 @@ function generatedBootstrapSource(
     join(repoRoot, "packages/registry/spidermonkey/node-compat/suffix.js"),
     "utf8",
   );
-  const preBootstrap = options.withoutEventGlobalAfterAdapter
+  const preBootstrap = (options.beforeBootstrap ?? "") + (options.withoutEventGlobalAfterAdapter
     ? "try { globalThis.Event = undefined; } catch {}\n"
-    : "";
+    : "");
   return `${adapter}\n${preBootstrap}${bootstrap}\n${suffix}`;
 }
 
 function runBootstrapSmoke(
   source: string,
+  preludeOrOptions: string | { withoutEventGlobal?: boolean } = "",
   options: { withoutEventGlobal?: boolean } = {},
 ): void {
+  const prelude = typeof preludeOrOptions === "string" ? preludeOrOptions : "";
+  const smokeOptions = typeof preludeOrOptions === "string"
+    ? options
+    : preludeOrOptions;
   const smoke = `
+${prelude}
 globalThis.evalInWorker = function() {};
-${generatedBootstrapSource({ withoutEventGlobalAfterAdapter: options.withoutEventGlobal })}
+${generatedBootstrapSource({
+  beforeBootstrap: prelude,
+  withoutEventGlobalAfterAdapter: smokeOptions.withoutEventGlobal,
+})}
 (async () => {
 ${source}
 })().catch((error) => {
@@ -1065,6 +1077,170 @@ assert(event instanceof Event);
 assert.strictEqual(event.type, "message");
 assert.strictEqual(event.data, 42);
 `, { withoutEventGlobal: true });
+  });
+
+  it("implements the public module source-map API surface", () => {
+    const root = mkdtempSync(join(tmpdir(), "kandelo-source-map-"));
+    const generatedPath = join(root, "generated.js");
+    const mapPath = join(root, "generated.map");
+    const throwerPath = join(root, "thrower.js");
+    const throwerMapPath = join(root, "thrower.map");
+    writeFileSync(
+      generatedPath,
+      `const value = 1;\nmodule.exports = value;\n//# sourceMappingURL=generated.map`,
+    );
+    writeFileSync(
+      mapPath,
+      JSON.stringify({
+        version: 3,
+        sources: ["original.js"],
+        names: [],
+        mappings: "AAAA;AACA",
+      }),
+    );
+    writeFileSync(
+      throwerPath,
+      `function branch() { throw Error("boom"); }\nbranch();\n//# sourceMappingURL=thrower.map`,
+    );
+    writeFileSync(
+      throwerMapPath,
+      JSON.stringify({
+        version: 3,
+        sources: ["thrower-original.js"],
+        names: [],
+        mappings: "AAAA;AACA",
+      }),
+    );
+    try {
+      runBootstrapSmoke(
+        `
+const assert = require("assert");
+const url = require("url");
+const { SourceMap, findSourceMap } = require("module");
+
+for (const invalidArg of [1, true, "foo"]) {
+  assert.throws(() => new SourceMap(invalidArg), { code: "ERR_INVALID_ARG_TYPE", name: "TypeError" });
+}
+for (const invalidArg of [undefined, null, 1, {}, () => {}]) {
+  assert.throws(() => process.setSourceMapsEnabled(invalidArg), { code: "ERR_INVALID_ARG_TYPE", name: "TypeError" });
+}
+assert.throws(() => process.setSourceMapsEnabled(undefined), /ERR_INVALID_ARG_TYPE/);
+process.setSourceMapsEnabled(true);
+process.setSourceMapsEnabled(false);
+
+const payload = { version: 3, sources: ["test.js"], names: [], mappings: "AAAA" };
+const lineLengths = [16, 23];
+const cloned = new SourceMap(payload, { lineLengths });
+assert.strictEqual(cloned.payload.mappings, payload.mappings);
+assert.notStrictEqual(cloned.payload, payload);
+assert.notStrictEqual(cloned.payload.sources, payload.sources);
+assert.deepStrictEqual(cloned.lineLengths, lineLengths);
+assert.notStrictEqual(cloned.lineLengths, lineLengths);
+
+function makeMinimalMap(column) {
+  return {
+    version: 3,
+    sources: ["test.js"],
+    names: [],
+    mappings: "AAA" + column,
+  };
+}
+for (const [column, expected] of Object.entries({
+  A: 0,
+  B: -2147483648,
+  C: 1,
+  D: -1,
+  "+/////D": 2147483647,
+  "//////D": -2147483647,
+})) {
+  assert.strictEqual(new SourceMap(makeMinimalMap(column)).findEntry(0, 0).originalColumn, expected);
+}
+
+const sorted = new SourceMap({
+  version: 3,
+  sources: ["test.js"],
+  names: [],
+  mappings: "UAAA,FAAE,FAAE",
+});
+assert.strictEqual(sorted.findEntry(0, 6).originalColumn, 4);
+assert.strictEqual(sorted.findEntry(0, 8).originalColumn, 2);
+assert.strictEqual(sorted.findEntry(0, 10).originalColumn, 0);
+
+const indexMap = new SourceMap({
+  version: 3,
+  sources: ["outer.js"],
+  sections: [{
+    offset: { line: 0, column: 0 },
+    map: { version: 3, sources: ["section.js"], names: [], mappings: "AAAA" },
+  }],
+});
+assert.strictEqual(indexMap.payload.sources[0], "outer.js");
+assert.strictEqual(indexMap.findEntry(0, 0).originalSource, "section.js");
+
+assert.strictEqual(findSourceMap(""), undefined);
+require(${JSON.stringify(generatedPath)});
+const sourceMap = findSourceMap(${JSON.stringify(generatedPath)});
+assert(sourceMap);
+assert.strictEqual(findSourceMap(url.pathToFileURL(${JSON.stringify(generatedPath)}).href), sourceMap);
+const entry = sourceMap.findEntry(0, 3);
+assert.strictEqual(entry.generatedLine, 0);
+assert.strictEqual(entry.generatedColumn, 0);
+assert(entry.originalSource.endsWith("/original.js"));
+assert.deepStrictEqual(sourceMap.findOrigin(1, 4), {
+  fileName: entry.originalSource,
+  lineNumber: 1,
+  columnNumber: 4,
+});
+assert.deepStrictEqual(sourceMap.findEntry(8, 0), {});
+assert(Array.isArray(sourceMap.lineLengths));
+assert(sourceMap.lineLengths.every((length) => typeof length === "number"));
+
+let callSite;
+Error.prepareStackTrace = (_error, trace) => {
+  callSite = trace[0];
+  return "prepared stack";
+};
+try {
+  require(${JSON.stringify(throwerPath)});
+} catch (error) {
+  assert.strictEqual(error.stack, "prepared stack");
+}
+assert(callSite);
+assert(callSite.getFileName().endsWith("/thrower.js"));
+assert.strictEqual(callSite.getLineNumber(), 1);
+const throwEntry = findSourceMap(callSite.getFileName()).findEntry(
+  callSite.getLineNumber() - 1,
+  callSite.getColumnNumber() - 1,
+);
+assert.strictEqual(throwEntry.generatedLine, 0);
+assert.strictEqual(throwEntry.generatedColumn, 0);
+assert.strictEqual(throwEntry.originalLine, 0);
+assert.strictEqual(typeof callSite.getLineNumber(), "number");
+assert.strictEqual(typeof callSite.getColumnNumber(), "number");
+	`,
+        `
+const hostFs = require("node:fs");
+globalThis.os = {
+  getcwd() { return ${JSON.stringify(root)}; },
+  file: {
+    readFile(path) { return hostFs.readFileSync(String(path), "utf8"); },
+    stat(path) {
+      const st = hostFs.statSync(String(path));
+      return { mode: st.isDirectory() ? 0o040000 : 0o100000 };
+    },
+    lstat(path) {
+      const st = hostFs.lstatSync(String(path));
+      return { mode: st.isDirectory() ? 0o040000 : 0o100000 };
+    },
+    realpath(path) { return hostFs.realpathSync(String(path)); },
+    listDir(path) { return hostFs.readdirSync(String(path)); },
+  },
+};
+`,
+      );
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 
   it("matches Node events listener bookkeeping and EventTarget helper semantics", () => {
