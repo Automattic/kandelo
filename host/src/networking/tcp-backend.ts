@@ -166,7 +166,17 @@ export class TcpNetworkBackend implements NetworkIO {
   close(handle: number): void {
     const conn = this.connections.get(handle);
     if (conn) {
-      conn.socket.destroy();
+      // POSIX close(2) on a normal TCP socket performs an orderly close
+      // (FIN after queued bytes) unless reset-style linger is configured.
+      // Destroying the Node socket here sends an abrupt reset shape, which
+      // breaks protocols that perform their own shutdown handshakes (TLS
+      // close_notify via SSL_shutdown, for example).
+      if (!conn.socket.destroyed) {
+        conn.socket.end();
+        conn.socket.setTimeout(1_000, () => {
+          if (!conn.socket.destroyed) conn.socket.destroy();
+        });
+      }
       this.connections.delete(handle);
     }
   }
