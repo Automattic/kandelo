@@ -106,6 +106,18 @@ pub struct UdpEndpoint {
     pub reuse_addr: bool,
 }
 
+/// IPv4 multicast group state for an AF_INET datagram socket.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Ipv4MulticastMembership {
+    pub group: [u8; 4],
+    /// Interface address used for matching local delivery. 0.0.0.0 means the
+    /// kernel default interface. 127.0.0.1 represents loopback.
+    pub interface_addr: [u8; 4],
+    pub any_source: bool,
+    pub blocked_sources: Vec<[u8; 4]>,
+    pub included_sources: Vec<[u8; 4]>,
+}
+
 struct UdpEndpointTable(UnsafeCell<Option<Vec<UdpEndpoint>>>);
 unsafe impl Sync for UdpEndpointTable {}
 
@@ -293,6 +305,11 @@ pub struct SocketInfo {
     pub accept_wake_idx: Option<u32>,
     /// Received UDP datagrams (for DGRAM sockets).
     pub dgram_queue: Vec<Datagram>,
+    /// Joined IPv4 multicast groups and source filters.
+    pub ipv4_multicast_memberships: Vec<Ipv4MulticastMembership>,
+    /// Received netlink datagrams. Netlink sockets are datagram-like and are
+    /// used by musl for route/interface enumeration.
+    pub netlink_queue: Vec<Vec<u8>>,
     /// Whether recv/send pipe indices refer to the global pipe table. Kept in
     /// serialized state for compatibility; runtime socket buffers are global.
     pub global_pipes: bool,
@@ -334,6 +351,8 @@ impl SocketInfo {
             shared_backlog_idx: None,
             accept_wake_idx: None,
             dgram_queue: Vec::new(),
+            ipv4_multicast_memberships: Vec::new(),
+            netlink_queue: Vec::new(),
             global_pipes: true,
             oob_byte: None,
             recv_timeout_us: 0,
@@ -409,6 +428,8 @@ impl Clone for SocketInfo {
             shared_backlog_idx: self.shared_backlog_idx,
             accept_wake_idx: self.accept_wake_idx,
             dgram_queue: Vec::new(), // consume-once: don't double-deliver
+            ipv4_multicast_memberships: self.ipv4_multicast_memberships.clone(),
+            netlink_queue: Vec::new(), // consume-once: don't double-deliver
             global_pipes: self.global_pipes,
             oob_byte: None, // consume-once: don't double-deliver
             recv_timeout_us: self.recv_timeout_us,
