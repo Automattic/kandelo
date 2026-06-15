@@ -4,11 +4,10 @@
 #
 # Always uses `nix develop --ignore-environment` so only flake.nix's
 # declared `packages` are visible. Builds fail immediately on a
-# missing dep rather than silently leaking a host tool from
-# /usr/bin or /opt/homebrew — that latent class of bug is exactly
-# what triggered PR #406 (force-rebuild's source-build path tripping
-# over /usr/bin/curl, /opt/homebrew/bin/python3, /usr/bin/perl, etc.
-# that the flake didn't declare).
+# missing dep rather than silently leaking a host tool from PATH.
+# That latent class of bug is exactly what triggered PR #406
+# (force-rebuild's source-build path tripping over undeclared host
+# curl, python, perl, etc. that the flake didn't declare).
 #
 # `--keep` preserves only the specific env vars CI workflows and
 # interactive use need. `HOME` is required because cargo/npm/git

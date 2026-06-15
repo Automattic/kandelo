@@ -108,20 +108,22 @@ Or use the Nix flake (see [Using Nix](#using-nix) below) and skip per-tool insta
 ## Using Nix
 
 A `flake.nix` provides a reproducible dev shell with the pinned Rust nightly,
-LLVM 21, Node 24, minimal Erlang 28, and the autotools/cmake/binaryen/wabt
-stack the build scripts need. With [Nix](https://nixos.org/download.html) installed
-(flakes enabled — Determinate Systems Nix has them on by default):
+Nix's LLVM 21 package set, Node 24, minimal Erlang 28, and the
+autotools/cmake/binaryen/wabt stack the build scripts need. With
+[Nix](https://nixos.org/download.html) installed (flakes enabled —
+Determinate Systems Nix has them on by default):
 
 ```bash
-nix develop                          # interactive shell
+scripts/dev-shell.sh bash            # interactive pure shell
 # or
-nix develop -c bash build.sh         # one-shot
+scripts/dev-shell.sh bash build.sh   # one-shot
 ```
 
-The `shellHook` exports `LLVM_BIN` / `LLVM_PREFIX` so the build scripts
-pick up the Nix-provided LLVM 21 instead of looking for a Homebrew install.
-The first `nix develop` downloads the toolchain (~10–15 min); subsequent
-entries are near-instant.
+The `shellHook` exports `LLVM_BIN` / `LLVM_PREFIX` / `LLVM_VERSION` so the
+build scripts pick up the Nix-provided LLVM toolchain. It also exports the
+LLVM source paths used to rebuild the repo's libcxx package reproducibly.
+The first shell entry downloads the toolchain (~10–15 min); subsequent entries
+are near-instant.
 
 ## Quick Start
 

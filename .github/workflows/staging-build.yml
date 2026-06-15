@@ -403,6 +403,9 @@ jobs:
           use-gha-cache: false
           use-flakehub: false
 
+      - name: Check libcxx LLVM version
+        run: bash scripts/dev-shell.sh bash scripts/check-libcxx-toolchain-version.sh
+
       - name: Compute cache key
         # Mirrors prepare-merge exactly so both workflows share one
         # sysroot cache. hashFiles() covers the inputs that affect the
@@ -440,8 +443,8 @@ jobs:
         # libcxx" step so a cache populated here is interchangeable with
         # what the legacy path produces. libcxx is resolved via the
         # package system (packages/registry/libcxx/) and symlinked into the
-        # sysroot; its build script handles the Nix-vs-Homebrew libc++
-        # header path difference internally.
+        # sysroot; its build script rebuilds only from the exact Nix LLVM
+        # source derivations exported by flake.nix.
         run: |
           bash scripts/dev-shell.sh bash scripts/build-musl.sh
           bash scripts/dev-shell.sh bash scripts/build-musl.sh --arch wasm64posix
