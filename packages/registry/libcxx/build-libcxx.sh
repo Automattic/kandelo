@@ -144,13 +144,19 @@ mkdir -p "$BUILD_DIR"
 # Assemble the monorepo-shaped source tree expected by runtimes/CMakeLists.txt
 # from exact Nix source derivations. Nix's libcxx source carries runtimes/,
 # libcxx/, libcxxabi/, and shared CMake support; libunwind is exposed as a
-# smaller separate source derivation. Symlinks keep the overlay cheap and avoid
-# cloning a second copy of llvm-project.
+# smaller separate source derivation. Keep runtimes/ itself as a real directory:
+# CMake checks siblings via runtimes/../libunwind, and if runtimes is a symlink
+# that `..` resolves inside the Nix libcxx source instead of this overlay tree.
 mkdir -p "$LLVM_SRC_DIR"
-for entry in cmake libc libcxx libcxxabi llvm runtimes third-party; do
+for entry in cmake libc libcxx libcxxabi llvm third-party; do
     if [ -e "$NIX_LIBCXX_SOURCE/$entry" ]; then
         ln -s "$NIX_LIBCXX_SOURCE/$entry" "$LLVM_SRC_DIR/$entry"
     fi
+done
+mkdir -p "$LLVM_SRC_DIR/runtimes"
+for entry in "$NIX_LIBCXX_SOURCE/runtimes"/*; do
+    [ -e "$entry" ] || continue
+    ln -s "$entry" "$LLVM_SRC_DIR/runtimes/$(basename "$entry")"
 done
 ln -s "$NIX_LIBUNWIND_SOURCE/libunwind" "$LLVM_SRC_DIR/libunwind"
 
