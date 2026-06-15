@@ -9542,6 +9542,24 @@ const child_process = (() => {
         return null;
     }
 
+    function nodeSelfExecArgs(args) {
+        return args[0] === '--' ? args : ['--', ...args];
+    }
+
+    function rewriteNodeShellCommand(commandText) {
+        const text = String(commandText || '');
+        const match = text.match(/^(\s*(?:"[^"]+"|'[^']+'|[^\s]+))([\s\S]*)$/);
+        if (!match) return text;
+        let executable = match[1].trim();
+        if ((executable.startsWith('"') && executable.endsWith('"')) ||
+            (executable.startsWith("'") && executable.endsWith("'"))) {
+            executable = executable.slice(1, -1);
+        }
+        if (!isNodeLikeExecutable(executable)) return text;
+        if (/^\s*--(?:\s|$)/.test(match[2])) return text;
+        return match[1] + ' --' + match[2];
+    }
+
     function makeSpawnError(file, args) {
         const err = _makeNodeError(`spawn ${file} ENOENT`, 'ENOENT', 2, `spawn ${file}`, file);
         err.spawnargs = args.slice();
@@ -9577,12 +9595,14 @@ const child_process = (() => {
         if (useShell) {
             const displayText = [file, ...argv].join(' ');
             commandText = [file, ...argv.map(shellQuote)].join(' ');
+            commandText = rewriteNodeShellCommand(commandText);
             spawnfile = typeof opts.shell === 'string' ? opts.shell : '/bin/sh';
             spawnargs = [spawnfile, '-c', displayText];
         } else {
             resolved = resolveExecutable(file, env);
             if (!resolved) return { error: makeSpawnError(file, argv), file, args: argv, options: opts, shell: false };
-            commandText = [shellQuote(resolved), ...argv.map(shellQuote)].join(' ');
+            const commandArgs = nodeLikeExecutable ? nodeSelfExecArgs(argv) : argv;
+            commandText = [shellQuote(resolved), ...commandArgs.map(shellQuote)].join(' ');
             spawnfile = file;
             spawnargs = [file, ...argv];
         }
@@ -11619,6 +11639,9 @@ function makeHttpModule({ connect, defaultPort, defaultProtocol }) {
             if (this._header || this.headersSent) {
                 throw makeHttpError('Cannot set headers after they are sent to the client', 'ERR_HTTP_HEADERS_SENT');
             }
+            return this._setHeaderInternal(name, value);
+        }
+        _setHeaderInternal(name, value) {
             name = validateHttpToken(name, 'Header name');
             validateHttpHeaderValue(name, value, 'header');
             const lk = String(name).toLowerCase();
@@ -11687,13 +11710,13 @@ function makeHttpModule({ connect, defaultPort, defaultProtocol }) {
             this._writableState.ended = true;
             this._writableState.finished = true;
             const body = Buffer.concat(this._bodyChunks);
-            if (!this.hasHeader('date') && this.sendDate) this.setHeader('Date', new Date().toUTCString());
-            if (!this.hasHeader('connection')) this.setHeader('Connection', 'close');
+            if (!this.hasHeader('date') && this.sendDate) this._setHeaderInternal('Date', new Date().toUTCString());
+            if (!this.hasHeader('connection')) this._setHeaderInternal('Connection', 'close');
             const status = this.statusCode | 0;
             const bodyAllowed = this.req.method !== 'HEAD'
                 && !((status >= 100 && status < 200) || status === 204 || status === 304);
             if (!this.hasHeader('content-length') && !this.hasHeader('transfer-encoding') && bodyAllowed) {
-                this.setHeader('Content-Length', String(body.length));
+                this._setHeaderInternal('Content-Length', String(body.length));
             }
             const statusMessage = this.statusMessage || STATUS_CODES[status] || '';
             let head = `HTTP/1.1 ${status} ${statusMessage}\r\n`;
@@ -12987,8 +13010,13 @@ const internalValidators = {
     validateUint32(value, name) { this.validateInteger(value, name); },
 };
 
+const _cliOptionValues = Object.create(null);
+
 const internalOptions = {
     getOptionValue(name) {
+        if (Object.prototype.hasOwnProperty.call(_cliOptionValues, name)) {
+            return _cliOptionValues[name];
+        }
         const bools = new Set([
             '--debug',
             '--expose-internals',
@@ -16867,6 +16895,372 @@ if (typeof execArgv !== 'undefined') {
     process.argv0 = envArgv0 || ((typeof argv0 !== 'undefined' && argv0) ? argv0 : (process.argv[0] || 'node'));
 }
 
+function _splitNodeOptions(text) {
+    const tokens = [];
+    let current = '';
+    let quote = '';
+    let escaped = false;
+    text = String(text || '');
+    for (let i = 0; i < text.length; i++) {
+        const ch = text[i];
+        if (escaped) {
+            current += ch;
+            escaped = false;
+            continue;
+        }
+        if (ch === '\\') {
+            escaped = true;
+            continue;
+        }
+        if (quote) {
+            if (ch === quote) quote = '';
+            else current += ch;
+            continue;
+        }
+        if (ch === '"' || ch === "'") {
+            quote = ch;
+            continue;
+        }
+        if (/\s/.test(ch)) {
+            if (current) {
+                tokens.push(current);
+                current = '';
+            }
+            continue;
+        }
+        current += ch;
+    }
+    if (escaped) current += '\\';
+    if (current) tokens.push(current);
+    return tokens;
+}
+
+const _NODE_OPTIONS_DISALLOWED = new Set([
+    '--version', '-v',
+    '--help', '-h',
+    '--eval', '-e',
+    '--print', '-p', '-pe', '-ep',
+    '--check', '-c',
+    '--interactive', '-i',
+    '--v8-options',
+    '--expose_internals',
+    '--expose-internals',
+    '--',
+    '--test',
+]);
+
+const _NODE_OPTIONS_ALLOWED_FLAGS = new Set([
+    '--abort_on-uncaught_exception',
+    '--disallow-code-generation-from-strings',
+    '--experimental-permission',
+    '--huge-max-old-generation-size',
+    '--interpreted-frames-native-stack',
+    '--jitless',
+    '--no-deprecation',
+    '--no-extra-info-on-fatal-exception',
+    '--no-warnings',
+    '--no_warnings',
+    '--pending-deprecation',
+    '--perf-basic-prof',
+    '--perf-basic-prof-only-functions',
+    '--perf-prof',
+    '--perf-prof-unwinding-info',
+    '--throw-deprecation',
+    '--trace-deprecation',
+    '--trace-events-enabled',
+    '--trace-sync-io',
+    '--trace-warnings',
+    '--track-heap-objects',
+    '--use-bundled-ca',
+    '--use-openssl-ca',
+    '--zero-fill-buffers',
+]);
+
+const _NODE_OPTIONS_ALLOWED_VALUES = new Set([
+    '--input-type',
+    '--max-old-space-size',
+    '--max-semi-space-size',
+    '--openssl-config',
+    '--redirect-warnings',
+    '--stack-trace-limit',
+    '--trace-event-categories',
+    '--trace-event-file-pattern',
+    '--unhandled-rejections',
+    '--v8-pool-size',
+]);
+
+const _CLI_ALLOWED_VALUES = new Set([
+    '--debug-port',
+    '--inspect-port',
+]);
+
+const _CLI_TEST_ALLOWED_VALUES = new Set([
+    '--test-concurrency',
+    '--test-reporter',
+    '--test-reporter-destination',
+    '--test-shard',
+    '--test-timeout',
+]);
+
+function _optionName(arg) {
+    const eq = String(arg).indexOf('=');
+    return eq >= 0 ? String(arg).slice(0, eq) : String(arg);
+}
+
+function _readOptionValue(args, index, option) {
+    const arg = String(args[index]);
+    const eq = arg.indexOf('=');
+    if (eq >= 0) return { value: arg.slice(eq + 1), next: index + 1, inline: true };
+    if (index + 1 >= args.length) return { error: `${option} requires an argument`, next: index + 1 };
+    return { value: String(args[index + 1]), next: index + 2, inline: false };
+}
+
+function _missingRequiredCliValue(arg, read) {
+    return read.error || (read.inline && read.value === '' ? `${arg} requires an argument` : '');
+}
+
+function _isAllowedNodeOptionWithInlineValue(name) {
+    for (const option of _NODE_OPTIONS_ALLOWED_VALUES) {
+        if (name === option || name.startsWith(option + '=')) return true;
+    }
+    return false;
+}
+
+function _applyCliFlag(option, value) {
+    if (option === '--no-deprecation') process.noDeprecation = true;
+    else if (option === '--throw-deprecation') process.throwDeprecation = true;
+    else if (option === '--trace-deprecation') process.traceDeprecation = true;
+    else if (option === '--no-warnings' || option === '--no_warnings') process.env.NODE_NO_WARNINGS = '1';
+    else if (option === '--redirect-warnings') _cliOptionValues['--redirect-warnings'] = value || '';
+    else if (option === '--unhandled-rejections') _cliOptionValues['--unhandled-rejections'] = value || '';
+    else if (option === '--input-type') _cliOptionValues['--input-type'] = value || '';
+    else if (option === '--use-strict') _cliOptionValues['--use-strict'] = true;
+    else if (option === '--expose-internals' || option === '--expose_internals') _cliOptionValues['--expose-internals'] = true;
+}
+
+function _parseNodeOptionsEnv(text) {
+    const state = { preloads: [], error: null };
+    const tokens = _splitNodeOptions(text);
+    for (let i = 0; i < tokens.length;) {
+        const arg = String(tokens[i]);
+        const name = _optionName(arg);
+        if (_NODE_OPTIONS_DISALLOWED.has(arg) || _NODE_OPTIONS_DISALLOWED.has(name)) {
+            state.error = { status: 9, message: `${arg} is not allowed in NODE_OPTIONS` };
+            return state;
+        }
+        if (name === '-r' || name === '--require') {
+            const read = _readOptionValue(tokens, i, name);
+            if (read.error) {
+                state.error = { status: 9, message: read.error };
+                return state;
+            }
+            state.preloads.push(read.value);
+            i = read.next;
+            continue;
+        }
+        if (_NODE_OPTIONS_ALLOWED_FLAGS.has(name)) {
+            _applyCliFlag(name);
+            i++;
+            continue;
+        }
+        if (_NODE_OPTIONS_ALLOWED_VALUES.has(name) || _isAllowedNodeOptionWithInlineValue(arg)) {
+            const read = _readOptionValue(tokens, i, name);
+            if (read.error) {
+                state.error = { status: 9, message: read.error };
+                return state;
+            }
+            _applyCliFlag(name, read.value);
+            i = read.next;
+            continue;
+        }
+        state.error = { status: 9, message: `${arg} is not allowed in NODE_OPTIONS` };
+        return state;
+    }
+    return state;
+}
+
+function _parseNodeCli(argv) {
+    const envState = _parseNodeOptionsEnv(process.env.NODE_OPTIONS || '');
+    const rawArgv = Array.isArray(argv) && argv.length > 0 ? argv.map(String) : ['node'];
+    const state = {
+        argv: [process.execPath || rawArgv[0] || 'node'],
+        execArgv: [],
+        preloads: envState.preloads.slice(),
+        mainScript: '',
+        evalSource: null,
+        print: false,
+        useStrict: false,
+        test: false,
+        error: envState.error,
+        exit: null,
+    };
+    if (state.error) return state;
+
+    for (let i = 1; i < rawArgv.length;) {
+        const arg = String(rawArgv[i]);
+        if (arg === '--') {
+            const rest = rawArgv.slice(i + 1);
+            if (state.evalSource !== null || state.print) {
+                state.argv = [process.execPath || rawArgv[0] || 'node', ...rest];
+            } else if (rest.length > 0) {
+                state.mainScript = rest[0];
+                state.argv = [process.execPath || rawArgv[0] || 'node', ...rest];
+            }
+            break;
+        }
+        const name = _optionName(arg);
+        if (arg === '--test') {
+            state.test = true;
+            state.execArgv.push(arg);
+            i++;
+            continue;
+        }
+        if (name.startsWith('--test-')) {
+            state.test = true;
+            if (_CLI_TEST_ALLOWED_VALUES.has(name)) {
+                const read = _readOptionValue(rawArgv, i, name);
+                const missing = _missingRequiredCliValue(arg, read);
+                if (missing) {
+                    state.error = { status: 9, message: missing };
+                    return state;
+                }
+                state.execArgv.push(read.inline ? arg : arg, ...(!read.inline ? [read.value] : []));
+                i = read.next;
+                continue;
+            }
+            state.execArgv.push(arg);
+            i++;
+            continue;
+        }
+        if (state.test) {
+            i++;
+            continue;
+        }
+        if (arg === '--version' || arg === '-v') {
+            state.exit = { status: 0, stdout: process.version + '\n' };
+            return state;
+        }
+        if (arg === '--help' || arg === '-h') {
+            state.exit = { status: 0, stdout: `Usage: ${process.execPath} [options] [ script.js ] [arguments]\n` };
+            return state;
+        }
+        if (arg === '--eval' || arg === '-e' || arg.startsWith('--eval=')) {
+            const read = _readOptionValue(rawArgv, i, arg.startsWith('--eval=') ? '--eval' : arg);
+            const missing = _missingRequiredCliValue(arg, read);
+            if (missing) {
+                state.error = { status: 9, message: missing };
+                return state;
+            }
+            state.evalSource = read.value;
+            state.execArgv.push(read.inline ? arg : arg, ...(!read.inline ? [read.value] : []));
+            i = read.next;
+            continue;
+        }
+        if (arg === '--print' || arg === '-p') {
+            state.print = true;
+            state.execArgv.push(arg);
+            if (i + 1 < rawArgv.length && rawArgv[i + 1] !== '-e' &&
+                rawArgv[i + 1] !== '--eval' && rawArgv[i + 1] !== '--') {
+                state.evalSource = String(rawArgv[i + 1]);
+                state.execArgv.push(state.evalSource);
+                i += 2;
+            } else {
+                i++;
+            }
+            continue;
+        }
+        if (arg === '-pe' || arg === '-ep') {
+            const read = _readOptionValue(rawArgv, i, arg);
+            if (read.error) {
+                state.error = { status: 9, message: read.error };
+                return state;
+            }
+            state.print = true;
+            state.evalSource = read.value;
+            state.execArgv.push(arg, read.value);
+            i = read.next;
+            continue;
+        }
+        if (arg === '-r' || arg === '--require' || arg.startsWith('--require=')) {
+            const name = arg.startsWith('--require=') ? '--require' : arg;
+            const read = _readOptionValue(rawArgv, i, name);
+            if (read.error) {
+                state.error = { status: 9, message: read.error };
+                return state;
+            }
+            state.preloads.push(read.value);
+            state.execArgv.push(read.inline ? arg : arg, ...(!read.inline ? [read.value] : []));
+            i = read.next;
+            continue;
+        }
+        if (arg === '--use-strict') {
+            state.useStrict = true;
+            _applyCliFlag(arg);
+            state.execArgv.push(arg);
+            i++;
+            continue;
+        }
+        if (arg === '--experimental-permission') {
+            state.execArgv.push(arg);
+            i++;
+            continue;
+        }
+        if (arg.startsWith('--allow-fs-read=') || arg.startsWith('--allow-fs-write=')) {
+            state.error = { status: 1, message: '--experimental-permission is required' };
+            return state;
+        }
+        if (_CLI_ALLOWED_VALUES.has(name)) {
+            const read = _readOptionValue(rawArgv, i, name);
+            const missing = _missingRequiredCliValue(arg, read) || (String(read.value).startsWith('-') ? `${name} requires an argument` : '');
+            if (missing) {
+                state.error = { status: 9, message: missing };
+                return state;
+            }
+            _cliOptionValues[name] = read.value;
+            state.execArgv.push(read.inline ? arg : arg, ...(!read.inline ? [read.value] : []));
+            i = read.next;
+            continue;
+        }
+        if (_NODE_OPTIONS_ALLOWED_FLAGS.has(name) || _NODE_OPTIONS_ALLOWED_VALUES.has(name) ||
+            _isAllowedNodeOptionWithInlineValue(arg) || name === '--expose-internals' ||
+            name === '--expose_internals' || name === '--input-type') {
+            if (_NODE_OPTIONS_ALLOWED_VALUES.has(name) && !arg.includes('=')) {
+                const read = _readOptionValue(rawArgv, i, name);
+                if (read.error) {
+                    state.error = { status: 9, message: read.error };
+                    return state;
+                }
+                _applyCliFlag(name, read.value);
+                state.execArgv.push(arg, read.value);
+                i = read.next;
+                continue;
+            }
+            _applyCliFlag(name, arg.includes('=') ? arg.slice(arg.indexOf('=') + 1) : undefined);
+            state.execArgv.push(arg);
+            i++;
+            continue;
+        }
+        if (arg.startsWith('-')) {
+            state.error = { status: 9, message: `bad option: ${arg}` };
+            return state;
+        }
+        state.mainScript = arg;
+        state.argv = [process.execPath || rawArgv[0] || 'node', ...rawArgv.slice(i)];
+        break;
+    }
+
+    if (state.test) {
+        state.argv = rawArgv;
+    } else if ((state.evalSource !== null || state.print) && state.argv.length === 1) {
+        state.argv = [process.execPath || rawArgv[0] || 'node'];
+    }
+    return state;
+}
+
+const _cliState = _parseNodeCli(process.argv);
+process.argv = _cliState.argv;
+process.execArgv = _cliState.execArgv;
+
 function _findMainScriptArg(argv) {
     if (!argv || argv.length <= 1) return '';
     for (let i = 1; i < argv.length; i++) {
@@ -16888,7 +17282,7 @@ function _findMainScriptArg(argv) {
 // so its top-level relative requires resolve against itself, matching Node's
 // per-file require semantics. For -e/-p/REPL (no script in argv), basedir
 // falls back to cwd.
-const _detectedMainScriptArg = _findMainScriptArg(process.argv);
+const _detectedMainScriptArg = _cliState.mainScript || _findMainScriptArg(process.argv);
 _defineGlobal('require', _makeRequire(_detectedMainScriptArg || process.cwd() + '/repl'));
 
 // Node.js globals
@@ -18087,7 +18481,77 @@ _defineGlobal('console', _globalConsole);
     }
 })();
 
+function _runCliPreloads() {
+    for (const request of _cliState.preloads || []) {
+        require(request);
+    }
+}
+
+function _runCliEval() {
+    _runCliPreloads();
+    const source = (_cliState.useStrict || _cliOptionValues['--use-strict'])
+        ? '"use strict";\n' + String(_cliState.evalSource || '')
+        : String(_cliState.evalSource || '');
+    const evalFilename = '[eval]';
+    const evalRequireBase = path.join(process.cwd(), evalFilename);
+    const evalModule = new Module(evalFilename, null);
+    evalModule.id = evalFilename;
+    evalModule.filename = evalFilename;
+    evalModule.paths = Module._nodeModulePaths(process.cwd());
+    evalModule.require = _makeRequire(evalRequireBase, evalModule);
+    let continueEventLoop = true;
+    try {
+        const body = _cliState.print
+            ? `return eval(${JSON.stringify(source)});`
+            : source;
+        const wrappedFn = _nodeNative.evalScriptAsFunction(
+            '(function (exports, require, module, __filename, __dirname) {\n' +
+                body +
+                '\n})',
+            evalFilename
+        );
+        const result = wrappedFn(evalModule.exports, evalModule.require, evalModule, evalFilename, '.');
+        evalModule.loaded = true;
+        if (_cliState.print) console.log(result);
+    } catch (err) {
+        continueEventLoop = _handleTopLevelFailure(err);
+    }
+    if (continueEventLoop) _drainEventLoopBeforeExit();
+    process.exit(process.exitCode || 0);
+}
+
+function _runCliEntry() {
+    if (_cliState.error) {
+        process.stderr.write(`${process.execPath}: ${_cliState.error.message}\n`);
+        process.exit(_cliState.error.status);
+    }
+    if (_cliState.exit) {
+        if (_cliState.exit.stdout) process.stdout.write(_cliState.exit.stdout);
+        if (_cliState.exit.stderr) process.stderr.write(_cliState.exit.stderr);
+        process.exit(_cliState.exit.status);
+    }
+    if (_cliState.test) {
+        _runCliPreloads();
+        _runNodeTestCliIfRequested();
+        return;
+    }
+    if (_cliState.evalSource !== null || _cliState.print) {
+        _runCliEval();
+        return;
+    }
+    if (_mainScriptPath) {
+        _runCliPreloads();
+        _runMainScriptIfPresent();
+        return;
+    }
+    if ((_cliState.preloads || []).length > 0) {
+        _runCliPreloads();
+        _drainEventLoopBeforeExit();
+        process.exit(process.exitCode || 0);
+    }
+}
+
 // Export for the C entry point to detect successful bootstrap
 _defineGlobal('__nodeBootstrapReady', true);
 
-_runMainScriptIfPresent();
+_runCliEntry();

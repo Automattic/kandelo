@@ -854,7 +854,7 @@
  #include "shell/OSObject.h"
  #include "shell/ShellModuleObjectWrapper.h"
  #include "shell/WasmTesting.h"
-@@ -236,6 +250,1070 @@
+@@ -236,6 +250,1140 @@
  using mozilla::TimeDuration;
  using mozilla::TimeStamp;
  using mozilla::Utf8Unit;
