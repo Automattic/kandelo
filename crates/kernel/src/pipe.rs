@@ -60,6 +60,12 @@ pub struct PipeBuffer {
     len: usize,
     read_count: u32,
     write_count: u32,
+    /// TCP close(2) is an orderly FIN on the socket's write side.  The peer may
+    /// still successfully write once after observing EOF before the reset is
+    /// reported on a later operation.  Pipe-backed TCP uses this bit to keep a
+    /// final synthetic read reference open, accept and discard one peer write,
+    /// then close the read end so subsequent writes see EPIPE.
+    orphaned_read_accept_once: bool,
     /// Index of this pipe in the PipeTable (for wakeup events).
     pipe_idx: u32,
     /// Ancillary data queue for SCM_RIGHTS FD passing.
@@ -79,6 +85,7 @@ impl PipeBuffer {
             len: 0,
             read_count: 1,
             write_count: 1,
+            orphaned_read_accept_once: false,
             pipe_idx: 0,
             ancillary_fds: VecDeque::new(),
         }
@@ -177,14 +184,51 @@ impl PipeBuffer {
 
     /// Close one read end of the pipe. Decrements the read reference count.
     pub fn close_read_end(&mut self) {
+        self.orphaned_read_accept_once = false;
         self.read_count = self.read_count.saturating_sub(1);
         // Read end closed → pipe became writable (writers get EPIPE/SIGPIPE)
         crate::wakeup::push(self.pipe_idx, crate::wakeup::WAKE_WRITABLE);
     }
 
+    /// Close a TCP read end with orderly-close semantics.
+    ///
+    /// If this is the last read reference, keep a synthetic reference open so
+    /// the peer's first post-FIN write can succeed locally and be discarded,
+    /// matching normal TCP behavior.  If there are still duplicated readers,
+    /// just drop this reference; another descriptor can still consume data.
+    pub fn close_read_end_graceful_once(&mut self) {
+        if self.read_count > 1 {
+            self.close_read_end();
+            return;
+        }
+        if self.read_count == 1 {
+            self.orphaned_read_accept_once = true;
+            crate::wakeup::push(self.pipe_idx, crate::wakeup::WAKE_WRITABLE);
+        }
+    }
+
+    /// Consume the synthetic graceful-close read reference, if present.
+    ///
+    /// The caller should return a successful write to userspace and discard the
+    /// bytes.  Later writes will observe the now-closed read end and fail with
+    /// EPIPE/SIGPIPE.
+    pub fn take_orphaned_read_accept_once(&mut self) -> bool {
+        if self.orphaned_read_accept_once && self.read_count > 0 {
+            self.orphaned_read_accept_once = false;
+            self.read_count = self.read_count.saturating_sub(1);
+            crate::wakeup::push(self.pipe_idx, crate::wakeup::WAKE_WRITABLE);
+            return true;
+        }
+        false
+    }
+
     /// Close one write end of the pipe. Decrements the write reference count.
     pub fn close_write_end(&mut self) {
         self.write_count = self.write_count.saturating_sub(1);
+        if self.write_count == 0 && self.orphaned_read_accept_once {
+            self.orphaned_read_accept_once = false;
+            self.read_count = 0;
+        }
         // Write end closed → pipe became readable (readers get EOF)
         crate::wakeup::push(self.pipe_idx, crate::wakeup::WAKE_READABLE);
     }

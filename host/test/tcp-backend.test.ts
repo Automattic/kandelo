@@ -94,4 +94,56 @@ describe("TcpNetworkBackend", () => {
 
     await expect(accepted).resolves.toEqual({ data: "hello", ended: true });
   });
+  it("allows a write after peer FIN until the reset is observed", async () => {
+    let acceptedSocket!: net.Socket;
+    let resolveAccepted!: () => void;
+    let resolveAfterFin!: (value: string) => void;
+    const accepted = new Promise<void>((resolve) => { resolveAccepted = resolve; });
+    const afterFin = new Promise<string>((resolve) => { resolveAfterFin = resolve; });
+    const chunks: Buffer[] = [];
+
+    const server = net.createServer({ allowHalfOpen: true }, (socket) => {
+      acceptedSocket = socket;
+      socket.on("data", (chunk) => {
+        chunks.push(chunk);
+        if (Buffer.concat(chunks).toString("utf8").includes("after-fin")) {
+          resolveAfterFin(Buffer.concat(chunks).toString("utf8"));
+        }
+      });
+      resolveAccepted();
+    });
+    servers.push(server);
+
+    await new Promise<void>((resolve, reject) => {
+      server.once("error", reject);
+      server.listen(0, "127.0.0.1", () => resolve());
+    });
+
+    const backend = new TcpNetworkBackend();
+    backend.connect(8, LOOPBACK, (server.address() as net.AddressInfo).port);
+    await waitForConnected(backend, 8);
+    await accepted;
+
+    expect(backend.send(8, new TextEncoder().encode("before-fin"), 0)).toBe(10);
+    acceptedSocket.end();
+
+    const deadline = Date.now() + 2_000;
+    for (;;) {
+      try {
+        const eof = backend.recv(8, 16, 0);
+        if (eof.length === 0) break;
+      } catch (error) {
+        if ((error as Error & { errno?: number }).errno !== 11) throw error;
+      }
+      if (Date.now() > deadline) throw new Error("recv EOF timed out");
+      await new Promise((resolve) => setTimeout(resolve, 5));
+    }
+
+    expect(backend.send(8, new TextEncoder().encode("after-fin"), 0)).toBe(9);
+    await expect(afterFin).resolves.toBe("before-finafter-fin");
+
+    backend.close(8);
+    acceptedSocket.destroy();
+  });
+
 });
