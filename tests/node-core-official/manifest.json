@@ -170,6 +170,12 @@
       "reason": "Requires transferring live MessagePorts and ArrayBuffers through workerData and then communicating over parentPort. Kandelo supports shared-memory workerData, not live MessagePort ownership in workers."
     },
     {
+      "path": "test/parallel/test-experimental-shared-value-conveyor.js",
+      "area": "experimental",
+      "expected": "SKIP",
+      "reason": "Requires V8's experimental --harmony-struct SharedArray object and worker_threads transfer semantics. Kandelo's SpiderMonkey-backed runtime supports SharedArrayBuffer, but does not implement V8 SharedArray or that experimental flag surface."
+    },
+    {
       "path": "test/parallel/test-coverage-with-inspector-disabled.js",
       "area": "v8_inspector",
       "expected": "SKIP",
