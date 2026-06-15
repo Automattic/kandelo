@@ -1,0 +1,32 @@
+kind = "program"
+name = "espeak-ng"
+version = "1.52.0.1"
+# Demo-impact session 41: vendor pcaudiolib + espeak-ng, route audio
+# through a new kandelo backend in pcaudiolib (open /dev/snd/pcmC0D0p
+# directly via the WRITEI loop from programs/alsa_demo.c), bundle a
+# minimal English-only data dir. Image installs the binary at
+# /usr/bin/espeak-ng and the data dir at /usr/share/espeak-ng-data,
+# matching CMAKE_INSTALL_PREFIX=/usr so libespeak-ng's PATH_ESPEAK_DATA
+# resolves correctly.
+kernel_abi = 7
+depends_on = []
+
+# Upstream is the espeak-ng master branch + pcaudiolib master. We
+# vendor both depth-1 under espeak-ng-src/ + pcaudiolib-src/ and
+# rebuild from there (mirrors the mariadb package's vendoring shape).
+# Source SHA is a placeholder until the matrix workflow pins a release
+# tarball — same convention as fbdoom.
+[source]
+url = "https://github.com/espeak-ng/espeak-ng"
+sha256 = "0000000000000000000000000000000000000000000000000000000000000000"
+
+[license]
+spdx = "GPL-3.0-or-later"
+url = "https://github.com/espeak-ng/espeak-ng/blob/master/COPYING"
+
+[build]
+script_path = "packages/registry/espeak-ng/build-espeak-ng.sh"
+
+[[outputs]]
+name = "espeak-ng"
+wasm = "espeak-ng.wasm"

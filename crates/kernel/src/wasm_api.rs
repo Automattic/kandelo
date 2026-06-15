@@ -13975,6 +13975,66 @@ pub extern "C" fn kernel_set_input_canvas_dims(width: u32, height: u32) {
     crate::input::set_canvas_dims(width, height);
 }
 
+/// Bind a host-allocated SharedArrayBuffer to an ALSA PCM. `sab_base`
+/// is the kernel-visible byte address of the SAB-imported window and
+/// `sab_len` is its length. After this call,
+/// `SNDRV_PCM_IOCTL_WRITEI_FRAMES` against any fd opened on
+/// `/dev/snd/pcmC0D<pcm_id>p` lands frames into the SAB ring at
+/// `appl_ptr % ring_frames` and advances `mmap_control.appl_ptr`.
+///
+/// Errors (out-of-range `pcm_id`, already-registered slot) are
+/// swallowed: a second `kernel_audio_init_sab` for the same PCM is a
+/// no-op so the host can re-issue without un-registering first.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_audio_init_sab(pcm_id: u32, sab_base: u64, sab_len: u32) {
+    let _ = crate::audio::sab::register(
+        pcm_id,
+        crate::audio::sab::SabSlice {
+            base: sab_base as usize,
+            len: sab_len as usize,
+        },
+    );
+}
+
+/// Called by the host on every AudioWorklet quantum (browser) or
+/// `setInterval` tick (Node) after the host driver pulled
+/// `frames_consumed` frames from the SAB ring. Walks every open
+/// `/dev/snd/pcmC0D<pcm_id>p` OFD whose state is `STATE_RUNNING`,
+/// advances `mmap_status.hw_ptr`, stamps the monotonic timestamp,
+/// detects XRUN, and wakes POLLOUT waiters.
+///
+/// The timestamp is fetched once via [`WasmHostIO::host_clock_gettime`]
+/// and passed down so [`crate::audio::tick::tick`] stays testable
+/// without a `HostIO`.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_audio_period_tick(pcm_id: u32, frames_consumed: u32) {
+    let mut host = WasmHostIO;
+    let (tv_sec, tv_nsec) =
+        match host.host_clock_gettime(wasm_posix_shared::clock::CLOCK_MONOTONIC) {
+            Ok((sec, nsec)) => (sec, nsec),
+            Err(_) => (0i64, 0i64),
+        };
+    crate::audio::tick::tick(pcm_id, frames_consumed, tv_sec, tv_nsec);
+}
+
+/// Return the current `mmap_control.appl_ptr` for any OFD bound to
+/// `pcm_id` (the maximum across matching OFDs — in practice there is
+/// at most one writer per PCM). The host's `BrowserAudioDriver` polls
+/// this each AudioWorklet quantum and forwards the value into the
+/// worklet so it can gate `hwPtr` advance: the worklet emits silence
+/// past `appl_ptr` and only consumes ring positions userspace has
+/// actually written. Without this, the worklet's `hwPtr` drifts ahead
+/// of the kernel's appl_ptr during userspace setup latency and the
+/// first chunks of audio (e.g. espeak-ng's "Welcome to" preamble)
+/// land at ring offsets the worklet has already passed.
+///
+/// Returns 0 if no OFD is bound to this `pcm_id`. Additive ABI; no
+/// `ABI_VERSION` bump required (preserves existing exports).
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_audio_get_appl_ptr(pcm_id: u32) -> i64 {
+    crate::audio::tick::current_appl_ptr(pcm_id)
+}
+
 /// Number of successful page-flip commits on the given crtc.
 ///
 /// Useful for the host-side stats UI ("how many frames has the
