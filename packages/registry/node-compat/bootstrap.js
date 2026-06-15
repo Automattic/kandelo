@@ -3771,6 +3771,13 @@ function _untrackActiveResource(id) {
     if (id) _activeResources.delete(id);
 }
 
+function _hasActiveResourceOfType(type) {
+    for (const resourceType of _activeResources.values()) {
+        if (resourceType === type) return true;
+    }
+    return false;
+}
+
 const process = (() => {
     const [cwd_val] = os.getcwd();
     let _cwd = cwd_val || '/';
@@ -11611,11 +11618,12 @@ function makeHttpModule({ connect, defaultPort, defaultProtocol }) {
             this.shouldKeepAlive = false;
             this._sendResponse = sendResponse;
             this._bodyChunks = [];
+            this._bodyStarted = false;
             this.assignSocket(req.socket);
         }
 
-        setHeader(name, value) {
-            if (this._header || this.headersSent) {
+        _setHeader(name, value, allowAfterBody) {
+            if (this._header || this.headersSent || (!allowAfterBody && this._bodyStarted)) {
                 throw makeHttpError('Cannot set headers after they are sent to the client', 'ERR_HTTP_HEADERS_SENT');
             }
             name = validateHttpToken(name, 'Header name');
@@ -11626,6 +11634,9 @@ function makeHttpModule({ connect, defaultPort, defaultProtocol }) {
             this[kOutHeaders][lk] = [name, this._headerValues[lk]];
             return this;
         }
+        setHeader(name, value) {
+            return this._setHeader(name, value, false);
+        }
         getHeader(name) { return this._headerValues[String(name).toLowerCase()]; }
         hasHeader(name) { return this.getHeader(name) !== undefined; }
         getHeaderNames() { return Object.keys(this._headerValues); }
@@ -11633,7 +11644,7 @@ function makeHttpModule({ connect, defaultPort, defaultProtocol }) {
             return Object.keys(this._headerValues).map((lk) => this._headerNames[lk] || lk);
         }
         removeHeader(name) {
-            if (this._header || this.headersSent) {
+            if (this._header || this.headersSent || this._bodyStarted) {
                 throw makeHttpError('Cannot remove headers after they are sent to the client', 'ERR_HTTP_HEADERS_SENT');
             }
             const lk = String(name).toLowerCase();
@@ -11663,8 +11674,11 @@ function makeHttpModule({ connect, defaultPort, defaultProtocol }) {
             return this;
         }
         write(chunk, encoding, cb) {
-            if (!this.headersSent) this.headersSent = true;
-            return super.write(chunk, encoding, cb);
+            if (typeof encoding === 'function') { cb = encoding; encoding = undefined; }
+            this._validateWriteChunk(chunk);
+            this._bodyStarted = true;
+            this._write(chunk, encoding, cb);
+            return true;
         }
         _write(chunk, encoding, cb) {
             const buf = (chunk instanceof Uint8Array) ? Buffer.from(chunk)
@@ -11686,13 +11700,13 @@ function makeHttpModule({ connect, defaultPort, defaultProtocol }) {
             this._writableState.ended = true;
             this._writableState.finished = true;
             const body = Buffer.concat(this._bodyChunks);
-            if (!this.hasHeader('date') && this.sendDate) this.setHeader('Date', new Date().toUTCString());
-            if (!this.hasHeader('connection')) this.setHeader('Connection', 'close');
+            if (!this.hasHeader('date') && this.sendDate) this._setHeader('Date', new Date().toUTCString(), true);
+            if (!this.hasHeader('connection')) this._setHeader('Connection', 'close', true);
             const status = this.statusCode | 0;
             const bodyAllowed = this.req.method !== 'HEAD'
                 && !((status >= 100 && status < 200) || status === 204 || status === 304);
             if (!this.hasHeader('content-length') && !this.hasHeader('transfer-encoding') && bodyAllowed) {
-                this.setHeader('Content-Length', String(body.length));
+                this._setHeader('Content-Length', String(body.length), true);
             }
             const statusMessage = this.statusMessage || STATUS_CODES[status] || '';
             let head = `HTTP/1.1 ${status} ${statusMessage}\r\n`;
@@ -13041,7 +13055,48 @@ function _createInternalWorkerIo() {
         if (typeof globalThis.MessagePort === 'function' && value instanceof globalThis.MessagePort) return value;
         invalidPortProperty(name);
     }
-    class MessageEvent extends internalEventTarget.Event {
+    const MessageEventBase = typeof internalEventTarget.Event === 'function'
+        ? internalEventTarget.Event
+        : class MessageEventBase {
+            constructor(type, init) {
+                if (arguments.length === 0 || typeof type === 'symbol') {
+                    throw _makeInvalidArgTypeError('type', 'string', type);
+                }
+                if (init !== undefined && init !== null && typeof init !== 'object') {
+                    throw _makeInvalidArgTypeError('options', 'object', init);
+                }
+                init = init || {};
+                this.type = String(type);
+                this.bubbles = !!init.bubbles;
+                this.cancelable = !!init.cancelable;
+                this.composed = !!init.composed;
+                this.defaultPrevented = false;
+                this.target = null;
+                this.currentTarget = null;
+                this.eventPhase = 0;
+                this.isTrusted = false;
+                this._cancelBubble = false;
+                this.timeStamp = Date.now();
+                this._passive = false;
+            }
+            get cancelBubble() { return this._cancelBubble; }
+            set cancelBubble(value) { this._cancelBubble = !!value; }
+            get srcElement() { return this.target; }
+            composedPath() {
+                return this.currentTarget ? [this.currentTarget] : [];
+            }
+            preventDefault() {
+                if (this.cancelable && !this._passive) this.defaultPrevented = true;
+            }
+            stopPropagation() { this.cancelBubble = true; }
+            stopImmediatePropagation() {
+                this.cancelBubble = true;
+                this._stopImmediate = true;
+            }
+            get returnValue() { return !this.defaultPrevented; }
+            set returnValue(value) { if (!value) this.preventDefault(); }
+        };
+    class MessageEvent extends MessageEventBase {
         constructor(type, init) {
             super(type, init);
             init = init || {};
@@ -15713,7 +15768,7 @@ function _drainEventLoopBeforeExit() {
     let spins = 0;
     while (!process._exiting) {
         _drainSpiderMonkeyJobs();
-        if (!timers._kandeloHasRefedHandles()) {
+        if (!timers._kandeloHasRefedHandles() && !_hasActiveResourceOfType('Worker')) {
             if (!emittedBeforeExit) {
                 emittedBeforeExit = true;
                 process.emit('beforeExit', process.exitCode || 0);
@@ -15852,6 +15907,11 @@ _defineGlobal('__kandeloRunCommonJsMain', function __kandeloRunCommonJsMain(file
     }
     const resolved = path.isAbsolute(filename) ? filename : path.resolve(process.cwd(), filename);
     _runCommonJsMain(resolved);
+});
+
+_defineGlobal('__kandeloRunNodeEventLoop', function __kandeloRunNodeEventLoop() {
+    _drainEventLoopBeforeExit();
+    return process.exitCode || 0;
 });
 
 // ============================================================

@@ -561,7 +561,7 @@ describe.skipIf(!nodeWasm)("SpiderMonkey Node compatibility parity", () => {
         }, 0, { input: 'callback' }, null, (err, value) => {
           assert.strictEqual(err, null);
           seen.push(['callback', value, store.getStore().phase]);
-          process.stdout.write(JSON.stringify(seen));
+          setImmediate(() => process.stdout.write(JSON.stringify(seen)));
         });
       `);
 
