@@ -86,6 +86,47 @@ LINK_POST_LIBS=(
     -Wl,--export=__abi_version
 )
 
+source_uses_gl_stubs() {
+    local dir src
+    for dir in "$REPO_ROOT/programs" "$REPO_ROOT/examples" "$REPO_ROOT/benchmarks/programs"; do
+        [ -d "$dir" ] || continue
+        for src in "$dir/"*.c; do
+            [ -f "$src" ] || continue
+            if grep -qE '^[[:space:]]*#[[:space:]]*include[[:space:]]*[<"](EGL|GLES[23]?)/' "$src"; then
+                return 0
+            fi
+        done
+    done
+    return 1
+}
+
+source_uses_dri_stubs() {
+    local src
+    for src in "$REPO_ROOT/programs/"*.c; do
+        [ -f "$src" ] || continue
+        if grep -qE '^[[:space:]]*#[[:space:]]*include[[:space:]]*[<"](gbm|xf86drm)' "$src"; then
+            return 0
+        fi
+    done
+    return 1
+}
+
+ensure_stub_archives() {
+    if source_uses_dri_stubs; then
+        if [ ! -f "$SYSROOT/lib/libdrm.a" ] || [ ! -f "$SYSROOT/lib/libgbm.a" ]; then
+            echo "==> Building DRI stubs..."
+            bash "$REPO_ROOT/scripts/build-dri-stubs.sh"
+        fi
+    fi
+
+    if source_uses_gl_stubs; then
+        if [ ! -f "$SYSROOT/lib/libEGL.a" ] || [ ! -f "$SYSROOT/lib/libGLESv2.a" ]; then
+            echo "==> Building GL stubs..."
+            bash "$REPO_ROOT/scripts/build-gles-stubs.sh"
+        fi
+    fi
+}
+
 # Fork support comes from wasm-fork-instrument. The tool auto-discovers
 # fork-path functions via call-graph analysis from `kernel.kernel_fork`;
 # no onlylist is needed.
@@ -183,6 +224,8 @@ if ls "$REPO_ROOT/programs/"*.cpp >/dev/null 2>&1; then
         ln -sfn "$LIBCXX_PREFIX/include/c++/v1" "$SYSROOT/include/c++/v1"
     fi
 fi
+
+ensure_stub_archives
 
 echo "Building user programs..."
 for src in "$REPO_ROOT/programs/"*.c; do
