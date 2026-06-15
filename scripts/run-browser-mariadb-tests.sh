@@ -216,6 +216,9 @@ BROWSER_EXPECTED_FAIL=(
     symlink
     temp_table_symlink
 
+    # wasm MariaDB resource envelope
+    sp_stress_case
+
     # Aria-only wasm build and upstream expected-result mismatches
     ctype_eucjpms
     ctype_like_range

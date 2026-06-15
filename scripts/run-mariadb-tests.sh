@@ -254,8 +254,9 @@ EXPECTED_FAIL=(
     huge_frm-6224
     key_cache
 
-    # memory — exceeds current wasm MariaDB memory envelope (1 test)
+    # memory — exceeds current wasm MariaDB memory envelope (2 tests)
     sp-cursor
+    sp_stress_case
 
     # aria — table corruption or I/O issues (6 tests)
     create
