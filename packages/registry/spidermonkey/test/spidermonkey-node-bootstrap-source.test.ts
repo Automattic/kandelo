@@ -272,6 +272,64 @@ assert.strictEqual(__kandeloRunNodeEventLoop(), 0);
 `);
   });
 
+  it("serializes URLSearchParams unpaired surrogates as replacement characters", () => {
+    runBootstrapSmoke(`
+const assert = require("assert");
+const url = require("url");
+const values = [
+  "a",
+  1,
+  true,
+  undefined,
+  null,
+  "\\uD83D",
+  "\\uDE00",
+  "\\uD83D\\uDE00",
+  "\\uDE00\\uD83D",
+  {},
+];
+const normalized = [
+  "a",
+  "1",
+  "true",
+  "undefined",
+  "null",
+  "\\uFFFD",
+  "\\uFFFD",
+  "\\uD83D\\uDE00",
+  "\\uFFFD\\uFFFD",
+  "[object Object]",
+];
+const serialized = "a=a&a=1&a=true&a=undefined&a=null&a=%EF%BF%BD" +
+  "&a=%EF%BF%BD&a=%F0%9F%98%80&a=%EF%BF%BD%EF%BF%BD" +
+  "&a=%5Bobject+Object%5D";
+
+for (const SearchParams of [URLSearchParams, url.URLSearchParams]) {
+  const params = new SearchParams();
+  for (const value of values) params.append("a", value);
+  assert.strictEqual(String(params), serialized);
+  assert.deepStrictEqual(params.getAll("a"), normalized);
+  assert.strictEqual(String(new SearchParams([["a", "\\uD83D"]])), "a=%EF%BF%BD");
+  assert.strictEqual(String(new SearchParams({ a: "\\uDE00" })), "a=%EF%BF%BD");
+}
+
+const parsed = new URL("http://example.org");
+for (const value of values) parsed.searchParams.append("a", value);
+assert.strictEqual(parsed.search, "?" + serialized);
+assert.strictEqual(parsed.href, "http://example.org/?" + serialized);
+assert.deepStrictEqual(parsed.searchParams.getAll("a"), normalized);
+
+parsed.search = "my%20weird%20field=q1!2%22'w%245%267%2Fz8)%3F";
+assert.strictEqual(
+  String(parsed.searchParams),
+  "my+weird+field=q1%212%22%27w%245%267%2Fz8%29%3F",
+);
+assert.deepStrictEqual(Array.from(parsed.searchParams), [
+  ["my weird field", "q1!2\\"'w$5&7/z8)?"],
+]);
+`);
+  });
+
   it("parses Node self-exec CLI options from scriptArgs", () => {
     expect(runBootstrapCli(["--eval", "console.log(123)"])).toEqual({
       status: 0,

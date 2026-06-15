@@ -2010,7 +2010,7 @@
    }
  }
 
-@@ -6876,6 +7958,85 @@
+@@ -6876,6 +7958,92 @@
 
  int shell::sArgc;
  char** shell::sArgv;
@@ -2114,7 +2114,7 @@
      return false;
    }
 
-@@ -11796,7 +12961,14 @@
+@@ -11796,7 +12961,19 @@
 
        RootedValue rval(cx);
        if (!JS::Evaluate(cx, opts, srcBuf, &rval)) {
