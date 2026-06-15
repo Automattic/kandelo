@@ -457,6 +457,43 @@ interface ProcessRegistration {
    * max_addr as channels are added; dynamic pthread control slots must not.
    */
   explicitMaxAddr: boolean;
+  /** True when the guest glue traps instead of returning on CH_ERROR. */
+  channelErrorTraps?: boolean;
+}
+
+interface SharedMmapFdStat {
+  key: string;
+  size: number;
+}
+
+interface SharedMmapBacking {
+  key: string;
+  path: string;
+  handle: number;
+  anonymous: boolean;
+  writable: boolean;
+  pages: Map<number, Uint8Array>;
+  dirtyPages: Set<number>;
+  refCount: number;
+  version: number;
+}
+
+interface SharedMmapMapping {
+  fd: number;
+  fileOffset: number;
+  len: number;
+  writable: boolean;
+  backingKey: string;
+  snapshot: Uint8Array;
+  version: number;
+}
+
+interface SysvShmMapping {
+  segId: number;
+  size: number;
+  readOnly: boolean;
+  snapshot: Uint8Array;
+  version: number;
 }
 
 interface RegisterProcessOptions {
@@ -791,12 +828,14 @@ export class CentralizedKernelWorker {
     recvPipeIdx: number;
     schedulePump: () => void;
   }>>();
-  /** Per-process MAP_SHARED file-backed mappings: pid → Map<addr, info> */
-  private sharedMappings = new Map<number, Map<number, {
-    fd: number;
-    fileOffset: number;
-    len: number;
-  }>>();
+  /** Per-process MAP_SHARED mappings: pid → Map<addr, info> */
+  private sharedMappings = new Map<number, Map<number, SharedMmapMapping>>();
+  /** Host page-cache entries backing MAP_SHARED mappings. */
+  private sharedMmapBackings = new Map<string, SharedMmapBacking>();
+  /** Cached process-fd to shared-mmap backing resolution. Negative entries avoid per-read fstat/path probes. */
+  private sharedMmapFdCache = new Map<string, { backingKey: string | null }>();
+  /** Monotonic id for anonymous MAP_SHARED backings. */
+  private nextAnonymousMmapBackingId = 1;
   /** Host-side mirror of epoll interest lists: "pid:epfd" → interests.
    *  Maintained by intercepting epoll_ctl results. Used by handleEpollPwait
    *  to convert epoll_pwait to poll without calling kernel_handle_channel
@@ -2123,6 +2162,10 @@ export class CentralizedKernelWorker {
       logEntry = this.formatSyscallEntry(channel, syscallNr, origArgs);
     }
 
+    this.synchronizeSharedMappingsForSyscallBoundary(channel, syscallNr);
+    this.synchronizeSysvShmMappingsForSyscallBoundary(channel);
+    this.flushSharedMappingsBeforeFileSyscall(channel, syscallNr, origArgs);
+
     // --- Intercept fork/exec/clone/exit before calling kernel ---
     // These syscalls need special async handling that can't go through
     // the blocking host_fork/host_exec imports.
@@ -2536,26 +2579,20 @@ export class CentralizedKernelWorker {
       console.error(`[BRK ALERT] pid=${channel.pid} brk returned 0x${(retVal >>> 0).toString(16)} — IN THREAD REGION!`);
     }
 
-    // --- File-backed mmap: populate mapped region with file data ---
+    // --- mmap backing: populate file mappings and track MAP_SHARED mappings ---
     if (syscallNr === SYS_MMAP && retVal > 0 && (retVal >>> 0) !== 0xffffffff) {
       const mmapFd = origArgs[4];
       const mmapFlags = origArgs[3] >>> 0;
-      if (mmapFd >= 0 && (mmapFlags & MAP_ANONYMOUS) === 0) {
-        this.populateMmapFromFile(channel, retVal >>> 0, origArgs);
-        // Track MAP_SHARED file-backed mappings for msync writeback
-        if (mmapFlags & MAP_SHARED) {
-          const pageOffset = origArgs[5] >>> 0;
-          let pidMap = this.sharedMappings.get(channel.pid);
-          if (!pidMap) {
-            pidMap = new Map();
-            this.sharedMappings.set(channel.pid, pidMap);
+      if (mmapFlags & MAP_SHARED) {
+        if (mmapFlags & MAP_ANONYMOUS) {
+          this.mapSharedAnonymousMmap(channel, retVal >>> 0, origArgs);
+        } else if (mmapFd >= 0) {
+          if (!this.mapSharedMmapFromFile(channel, retVal >>> 0, origArgs)) {
+            this.populateMmapFromFile(channel, retVal >>> 0, origArgs);
           }
-          pidMap.set(retVal >>> 0, {
-            fd: mmapFd,
-            fileOffset: pageOffset * 4096,
-            len: origArgs[1] >>> 0,
-          });
         }
+      } else if (mmapFd >= 0 && (mmapFlags & MAP_ANONYMOUS) === 0) {
+        this.populateMmapFromFile(channel, retVal >>> 0, origArgs);
       }
       // DRI bo mmap prime: the kernel's sys_mmap on /dev/dri/{render,card}
       // already called `host_gbm_bo_bind` to record metadata, but the
@@ -2569,6 +2606,7 @@ export class CentralizedKernelWorker {
         this.kernel.bos.primeBindFromSab(channel.pid, boId, channel.memory);
       }
     }
+    this.assertKernelStackStage("after mmap backing population", kernelStackTrace, channel, syscallNr, origArgs);
 
     // --- msync: flush MAP_SHARED regions back to file ---
     if (syscallNr === SYS_MSYNC && retVal === 0) {
@@ -2775,6 +2813,12 @@ export class CentralizedKernelWorker {
         outOffset += size;
         outOffset = (outOffset + 3) & ~3;
       }
+    }
+
+    if (options.syncSharedMappings !== false) {
+      const includeAnonymous = this.syscallSynchronizesAnonymousSharedMemory(syscallNr);
+      this.syncSharedMappingsFromProcess(channel, includeAnonymous);
+      this.refreshSharedMappingsToProcess(channel, includeAnonymous);
     }
 
     // Clear handling flag (channel is done — poller can pick it up for next syscall)
@@ -7189,6 +7233,407 @@ export class CentralizedKernelWorker {
     }
   }
 
+  private mapSharedMmapFromFile(
+    channel: ChannelInfo,
+    mmapAddr: number,
+    origArgs: number[],
+  ): boolean {
+    const fd = origArgs[4];
+    const mapLen = origArgs[1] >>> 0;
+    const pageOffset = origArgs[5] >>> 0;
+    const fileOffset = pageOffset * FILE_PAGE_SIZE;
+    const writable = (origArgs[2] & PROT_WRITE) !== 0;
+    if (mapLen === 0) return true;
+
+    const path = this.getFdPathForSharedMapping(channel, fd);
+    const stat = this.getFdStatForSharedMapping(channel, fd);
+    if (!path || !stat) return false;
+
+    const key = stat.key || `path:${path}`;
+    const backing = this.getOrCreateSharedMmapBacking(key, path, writable);
+    if (!backing) return false;
+
+    try {
+      this.ensureBackingRangeLoaded(backing, fileOffset, mapLen);
+    } catch {
+      return false;
+    }
+
+    const processMem = new Uint8Array(channel.memory.buffer);
+    if (mmapAddr + mapLen > processMem.length) return false;
+
+    const initial = this.readBackingRange(backing, fileOffset, mapLen);
+    processMem.set(initial, mmapAddr);
+
+    let pidMap = this.sharedMappings.get(channel.pid);
+    if (!pidMap) {
+      pidMap = new Map();
+      this.sharedMappings.set(channel.pid, pidMap);
+    }
+    backing.refCount++;
+    pidMap.set(mmapAddr, {
+      fd,
+      fileOffset,
+      len: mapLen,
+      writable,
+      backingKey: key,
+      snapshot: initial.slice(),
+      version: backing.version,
+    });
+    return true;
+  }
+
+  private mapSharedAnonymousMmap(
+    channel: ChannelInfo,
+    mmapAddr: number,
+    origArgs: number[],
+  ): boolean {
+    const mapLen = origArgs[1] >>> 0;
+    const writable = (origArgs[2] & PROT_WRITE) !== 0;
+    if (mapLen === 0) return true;
+
+    const processMem = new Uint8Array(channel.memory.buffer);
+    if (mmapAddr + mapLen > processMem.length) return false;
+
+    const key = `anon:${channel.pid}:${mmapAddr}:${this.nextAnonymousMmapBackingId++}`;
+    const backing: SharedMmapBacking = {
+      key,
+      path: "",
+      handle: -1,
+      anonymous: true,
+      writable,
+      pages: new Map(),
+      dirtyPages: new Set(),
+      refCount: 0,
+      version: 0,
+    };
+    this.sharedMmapBackings.set(key, backing);
+
+    const initial = processMem.slice(mmapAddr, mmapAddr + mapLen);
+    this.copyRangeToBacking(backing, 0, initial, false);
+
+    let pidMap = this.sharedMappings.get(channel.pid);
+    if (!pidMap) {
+      pidMap = new Map();
+      this.sharedMappings.set(channel.pid, pidMap);
+    }
+    backing.refCount++;
+    pidMap.set(mmapAddr, {
+      fd: -1,
+      fileOffset: 0,
+      len: mapLen,
+      writable,
+      backingKey: key,
+      snapshot: initial,
+      version: backing.version,
+    });
+    return true;
+  }
+
+  private getFdStatForSharedMapping(channel: ChannelInfo, fd: number): SharedMmapFdStat | null {
+    const handleChannel = this.kernelInstance!.exports.kernel_handle_channel as
+      (offset: KernelPointer, pid: number) => number;
+    const kernelView = new DataView(this.kernelMemory!.buffer, this.scratchOffset);
+    const statPtr = this.scratchOffset + CH_DATA;
+
+    kernelView.setUint32(CH_SYSCALL, SYS_FSTAT, true);
+    kernelView.setBigInt64(CH_ARGS + 0 * CH_ARG_SIZE, BigInt(fd), true);
+    kernelView.setBigInt64(CH_ARGS + 1 * CH_ARG_SIZE, BigInt(statPtr), true);
+    for (let i = 2; i < CH_ARGS_COUNT; i++) {
+      kernelView.setBigInt64(CH_ARGS + i * CH_ARG_SIZE, BigInt(0), true);
+    }
+
+    this.currentHandlePid = channel.pid;
+    this.bindKernelTidForChannel(channel);
+    try {
+      handleChannel(this.toKernelPtr(this.scratchOffset), channel.pid);
+    } catch {
+      return null;
+    } finally {
+      this.currentHandlePid = 0;
+    }
+
+    const retVal = Number(kernelView.getBigInt64(CH_RETURN, true));
+    const errVal = kernelView.getUint32(CH_ERRNO, true);
+    if (retVal !== 0 || errVal !== 0) return null;
+
+    const statView = new DataView(this.kernelMemory!.buffer, statPtr);
+    const dev = statView.getBigUint64(0, true);
+    const ino = statView.getBigUint64(8, true);
+    const size64 = statView.getBigUint64(32, true);
+    const size = size64 > BigInt(Number.MAX_SAFE_INTEGER)
+      ? Number.MAX_SAFE_INTEGER
+      : Number(size64);
+    const key = dev !== 0n || ino !== 0n ? `${dev.toString()}:${ino.toString()}` : "";
+    return { key, size };
+  }
+
+  private getFdPathForSharedMapping(channel: ChannelInfo, fd: number): string | null {
+    const getFdPath = this.kernelInstance!.exports.kernel_get_fd_path as
+      ((pid: number, fd: number, bufPtr: KernelPointer, bufLen: number) => number) | undefined;
+    if (!getFdPath) return null;
+
+    const bufPtr = this.scratchOffset + CH_DATA;
+    const maxLen = Math.min(4096, CH_DATA_SIZE);
+    const result = getFdPath(channel.pid, fd, this.toKernelPtr(bufPtr), maxLen);
+    if (result <= 0) return null;
+
+    const kernelBuf = new Uint8Array(this.kernelMemory!.buffer);
+    return new TextDecoder().decode(kernelBuf.slice(bufPtr, bufPtr + result));
+  }
+
+  private getOrCreateSharedMmapBacking(
+    key: string,
+    path: string,
+    writable: boolean,
+  ): SharedMmapBacking | null {
+    const existing = this.sharedMmapBackings.get(key);
+    if (existing) {
+      if (writable && !existing.writable) {
+        const upgraded = this.openSharedMmapBackingHandle(path, true);
+        if (upgraded === null) return null;
+        try {
+          this.io.close(existing.handle);
+        } catch {
+          // Keep going: the replacement handle is already open.
+        }
+        existing.handle = upgraded;
+        existing.writable = true;
+      }
+      return existing;
+    }
+
+    const handle = this.openSharedMmapBackingHandle(path, writable);
+    if (handle === null) return null;
+    const backing: SharedMmapBacking = {
+      key,
+      path,
+      handle,
+      anonymous: false,
+      writable,
+      pages: new Map(),
+      dirtyPages: new Set(),
+      refCount: 0,
+      version: 0,
+    };
+    this.sharedMmapBackings.set(key, backing);
+    this.invalidateSharedMmapFdCache();
+    return backing;
+  }
+
+  private openSharedMmapBackingHandle(path: string, writable: boolean): number | null {
+    try {
+      return this.io.open(path, writable ? O_RDWR : O_RDONLY, 0);
+    } catch {
+      return null;
+    }
+  }
+
+  private ensureBackingRangeLoaded(backing: SharedMmapBacking, offset: number, len: number): void {
+    if (len <= 0) return;
+    const firstPage = Math.floor(offset / FILE_PAGE_SIZE);
+    const lastPage = Math.floor((offset + len - 1) / FILE_PAGE_SIZE);
+    for (let page = firstPage; page <= lastPage; page++) {
+      this.ensureBackingPageLoaded(backing, page);
+    }
+  }
+
+  private ensureBackingPageLoaded(backing: SharedMmapBacking, page: number): Uint8Array {
+    const existing = backing.pages.get(page);
+    if (existing) return existing;
+    const data = this.readBackingPageFromFile(backing, page);
+    backing.pages.set(page, data);
+    return data;
+  }
+
+  private readBackingPageFromFile(backing: SharedMmapBacking, page: number): Uint8Array {
+    const data = new Uint8Array(FILE_PAGE_SIZE);
+    if (backing.handle < 0) {
+      return data;
+    }
+    try {
+      const bytesRead = this.io.read(
+        backing.handle,
+        data,
+        page * FILE_PAGE_SIZE,
+        FILE_PAGE_SIZE,
+      );
+      if (bytesRead > 0 && bytesRead < FILE_PAGE_SIZE) {
+        data.fill(0, bytesRead);
+      }
+    } catch {
+      // Sparse EOF or a transient host read error leaves the page zero-filled.
+    }
+    return data;
+  }
+
+  private readBackingRange(backing: SharedMmapBacking, offset: number, len: number): Uint8Array {
+    const out = new Uint8Array(len);
+    let copied = 0;
+    while (copied < len) {
+      const absolute = offset + copied;
+      const page = Math.floor(absolute / FILE_PAGE_SIZE);
+      const pageOffset = absolute % FILE_PAGE_SIZE;
+      const n = Math.min(FILE_PAGE_SIZE - pageOffset, len - copied);
+      const pageData = this.ensureBackingPageLoaded(backing, page);
+      out.set(pageData.subarray(pageOffset, pageOffset + n), copied);
+      copied += n;
+    }
+    return out;
+  }
+
+  private copyRangeToBacking(
+    backing: SharedMmapBacking,
+    offset: number,
+    bytes: Uint8Array,
+    markDirty: boolean,
+  ): void {
+    let copied = 0;
+    while (copied < bytes.length) {
+      const absolute = offset + copied;
+      const page = Math.floor(absolute / FILE_PAGE_SIZE);
+      const pageOffset = absolute % FILE_PAGE_SIZE;
+      const n = Math.min(FILE_PAGE_SIZE - pageOffset, bytes.length - copied);
+      const pageData = this.ensureBackingPageLoaded(backing, page);
+      pageData.set(bytes.subarray(copied, copied + n), pageOffset);
+      if (markDirty) {
+        backing.dirtyPages.add(page);
+      } else {
+        backing.dirtyPages.delete(page);
+      }
+      copied += n;
+    }
+  }
+
+  private rangeDiffersFromSnapshot(
+    processMem: Uint8Array,
+    memOffset: number,
+    snapshot: Uint8Array,
+    snapshotOffset: number,
+    len: number,
+  ): boolean {
+    const BufferCtor = (globalThis as { Buffer?: typeof Buffer }).Buffer;
+    if (BufferCtor?.compare && BufferCtor?.from) {
+      try {
+        const processView = BufferCtor.from(
+          processMem.buffer,
+          processMem.byteOffset + memOffset,
+          len,
+        );
+        const snapshotView = BufferCtor.from(
+          snapshot.buffer,
+          snapshot.byteOffset + snapshotOffset,
+          len,
+        );
+        return BufferCtor.compare(processView, snapshotView) !== 0;
+      } catch {
+        // Browser builds do not provide Buffer. Fall through to typed arrays.
+      }
+    }
+
+    const processByteOffset = processMem.byteOffset + memOffset;
+    const snapshotByteOffset = snapshot.byteOffset + snapshotOffset;
+    if (((processByteOffset | snapshotByteOffset | len) & 3) === 0) {
+      const processWords = new Uint32Array(processMem.buffer, processByteOffset, len / 4);
+      const snapshotWords = new Uint32Array(snapshot.buffer, snapshotByteOffset, len / 4);
+      for (let i = 0; i < processWords.length; i++) {
+        if (processWords[i] !== snapshotWords[i]) {
+          return true;
+        }
+      }
+      return false;
+    }
+
+    for (let i = 0; i < len; i++) {
+      if (processMem[memOffset + i] !== snapshot[snapshotOffset + i]) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  private synchronizeSharedMappingsForSyscallBoundary(channel: ChannelInfo, syscallNr: number): void {
+    const includeAnonymous = this.syscallSynchronizesAnonymousSharedMemory(syscallNr);
+    this.syncSharedMappingsFromProcess(channel, includeAnonymous);
+    this.refreshSharedMappingsToProcess(channel, includeAnonymous);
+  }
+
+  private syscallSynchronizesAnonymousSharedMemory(syscallNr: number): boolean {
+    return syscallNr === SYS_FORK
+      || syscallNr === SYS_VFORK
+      || syscallNr === SYS_CLONE
+      || syscallNr === SYS_EXIT
+      || syscallNr === SYS_EXIT_GROUP
+      || syscallNr === SYS_WAIT4
+      || syscallNr === SYS_WAITID
+      || syscallNr === SYS_FUTEX
+      || syscallNr === SYS_POLL
+      || syscallNr === SYS_PPOLL
+      || syscallNr === SYS_SELECT
+      || syscallNr === SYS_PSELECT6
+      || syscallNr === SYS_EPOLL_WAIT
+      || syscallNr === SYS_EPOLL_PWAIT
+      || syscallNr === SYS_RT_SIGTIMEDWAIT
+      || syscallNr === SYS_MSYNC
+      || syscallNr === SYS_MUNMAP
+      || syscallNr === SYS_MREMAP;
+  }
+
+  private syncSharedMappingsFromProcess(channel: ChannelInfo, includeAnonymous = true): void {
+    const pidMap = this.sharedMappings.get(channel.pid);
+    if (!pidMap || pidMap.size === 0) return;
+    const processMem = new Uint8Array(channel.memory.buffer);
+
+    for (const [mapAddr, mapping] of pidMap) {
+      if (!mapping.writable) continue;
+      const backing = this.sharedMmapBackings.get(mapping.backingKey);
+      if (!backing) continue;
+      if (backing.anonymous && !includeAnonymous) continue;
+      if (mapAddr + mapping.len > processMem.length) continue;
+
+      let changed = false;
+      for (let offset = 0; offset < mapping.len; offset += FILE_PAGE_SIZE) {
+        const n = Math.min(FILE_PAGE_SIZE, mapping.len - offset);
+        if (!this.rangeDiffersFromSnapshot(
+          processMem,
+          mapAddr + offset,
+          mapping.snapshot,
+          offset,
+          n,
+        )) {
+          continue;
+        }
+        const bytes = processMem.subarray(mapAddr + offset, mapAddr + offset + n);
+        this.copyRangeToBacking(backing, mapping.fileOffset + offset, bytes, true);
+        mapping.snapshot.set(bytes, offset);
+        changed = true;
+      }
+
+      if (changed) {
+        backing.version++;
+        mapping.version = backing.version;
+      }
+    }
+  }
+
+  private refreshSharedMappingsToProcess(channel: ChannelInfo, includeAnonymous = true): void {
+    const pidMap = this.sharedMappings.get(channel.pid);
+    if (!pidMap || pidMap.size === 0) return;
+    const processMem = new Uint8Array(channel.memory.buffer);
+
+    for (const [mapAddr, mapping] of pidMap) {
+      const backing = this.sharedMmapBackings.get(mapping.backingKey);
+      if (!backing || mapping.version === backing.version) continue;
+      if (backing.anonymous && !includeAnonymous) continue;
+      if (mapAddr + mapping.len > processMem.length) continue;
+
+      const latest = this.readBackingRange(backing, mapping.fileOffset, mapping.len);
+      processMem.set(latest, mapAddr);
+      mapping.snapshot = latest.slice();
+      mapping.version = backing.version;
+    }
+  }
+
   /**
    * Populate a file-backed mmap region by reading from the file fd via pread.
    * Called after the kernel allocates the anonymous region and the host zeroes it.
@@ -7340,6 +7785,300 @@ export class CentralizedKernelWorker {
       written += bytesWritten;
       if (bytesWritten < chunkSize) break;
     }
+  }
+
+  /**
+   * Flush MAP_SHARED regions that overlap the msync/munmap range.
+   */
+  private flushSharedMappings(channel: ChannelInfo, origArgs: number[]): void {
+    const syncAddr = origArgs[0] >>> 0;
+    const syncLen = origArgs[1] >>> 0;
+    const pidMap = this.sharedMappings.get(channel.pid);
+    if (!pidMap || pidMap.size === 0) return;
+
+    const syncEnd = syncAddr + syncLen;
+
+    for (const [mapAddr, mapping] of pidMap) {
+      if (!mapping.writable) continue;
+      const mapEnd = mapAddr + mapping.len;
+      // Check overlap
+      if (mapAddr >= syncEnd || mapEnd <= syncAddr) continue;
+
+      // Compute overlap region
+      const flushStart = Math.max(syncAddr, mapAddr);
+      const flushEnd = Math.min(syncEnd, mapEnd);
+      const flushLen = flushEnd - flushStart;
+      if (flushLen <= 0) continue;
+
+      const fileOffsetBase = mapping.fileOffset + (flushStart - mapAddr);
+      const backing = this.sharedMmapBackings.get(mapping.backingKey);
+      if (backing) {
+        this.flushBackingRange(backing, fileOffsetBase, flushLen);
+      }
+    }
+  }
+
+  private flushBackingRange(backing: SharedMmapBacking, offset: number, len: number): boolean {
+    if (len <= 0 || backing.dirtyPages.size === 0) return true;
+    if (backing.handle < 0) {
+      backing.dirtyPages.clear();
+      return true;
+    }
+    const end = offset + len;
+    let ok = true;
+
+    for (const page of Array.from(backing.dirtyPages).sort((a, b) => a - b)) {
+      const pageStart = page * FILE_PAGE_SIZE;
+      const pageEnd = pageStart + FILE_PAGE_SIZE;
+      if (pageStart >= end || pageEnd <= offset) continue;
+
+      const writeStart = Math.max(offset, pageStart);
+      const writeEnd = Math.min(end, pageEnd);
+      const pageData = this.ensureBackingPageLoaded(backing, page);
+      const source = pageData.subarray(writeStart - pageStart, writeEnd - pageStart);
+      if (!this.writeAllToBackingHandle(backing, source, writeStart)) {
+        ok = false;
+        continue;
+      }
+      if (writeStart <= pageStart && writeEnd >= pageEnd) {
+        backing.dirtyPages.delete(page);
+      }
+    }
+    return ok;
+  }
+
+  private writeAllToBackingHandle(
+    backing: SharedMmapBacking,
+    source: Uint8Array,
+    fileOffset: number,
+  ): boolean {
+    let written = 0;
+    while (written < source.length) {
+      try {
+        const n = this.io.write(
+          backing.handle,
+          source.subarray(written),
+          fileOffset + written,
+          source.length - written,
+        );
+        if (n <= 0) return false;
+        written += n;
+      } catch {
+        return false;
+      }
+    }
+    return true;
+  }
+
+  private flushSharedMappingsBeforeFileSyscall(
+    channel: ChannelInfo,
+    syscallNr: number,
+    origArgs: number[],
+  ): void {
+    if (syscallNr === SYS_SENDFILE) {
+      this.flushSharedBackingForFd(channel, origArgs[0]);
+      this.flushSharedBackingForFd(channel, origArgs[1]);
+      return;
+    }
+    if (!this.syscallTouchesFdStorageBeforeKernel(syscallNr)) return;
+    this.flushSharedBackingForFd(channel, origArgs[0]);
+  }
+
+  private flushSharedBackingForFd(channel: ChannelInfo, fd: number): void {
+    if (fd < 0) return;
+    const backing = this.findSharedBackingForFd(channel, fd);
+    if (backing && backing.dirtyPages.size > 0) {
+      this.flushBackingRange(backing, 0, Number.MAX_SAFE_INTEGER);
+    }
+  }
+
+  private syscallTouchesFdStorageBeforeKernel(syscallNr: number): boolean {
+    return syscallNr === SYS_READ
+      || syscallNr === SYS_PREAD
+      || syscallNr === SYS_READV
+      || syscallNr === SYS_PREADV
+      || syscallNr === SYS_WRITE
+      || syscallNr === SYS_PWRITE
+      || syscallNr === SYS_WRITEV
+      || syscallNr === SYS_PWRITEV
+      || syscallNr === SYS_FSYNC
+      || syscallNr === SYS_FDATASYNC
+      || syscallNr === SYS_FTRUNCATE
+      || syscallNr === SYS_CLOSE;
+  }
+
+  private handleSharedMappingsAfterFileSyscall(
+    channel: ChannelInfo,
+    syscallNr: number,
+    origArgs: number[],
+    retVal: number,
+    errVal: number,
+  ): void {
+    if (errVal !== 0) return;
+    if (syscallNr === SYS_CLOSE && retVal === 0) {
+      this.invalidateSharedMmapFdCache(channel.pid, origArgs[0]);
+      return;
+    }
+    if (syscallNr === SYS_DUP && retVal >= 0) {
+      this.invalidateSharedMmapFdCache(channel.pid, retVal);
+      return;
+    }
+    if ((syscallNr === SYS_DUP2 || syscallNr === SYS_DUP3) && retVal >= 0) {
+      this.invalidateSharedMmapFdCache(channel.pid, origArgs[1]);
+      return;
+    }
+    if (syscallNr === SYS_FCNTL && retVal >= 0) {
+      const cmd = origArgs[1] >>> 0;
+      if (cmd === F_DUPFD || cmd === F_DUPFD_CLOEXEC || cmd === F_DUPFD_CLOFORK) {
+        this.invalidateSharedMmapFdCache(channel.pid, retVal);
+        return;
+      }
+    }
+    if (syscallNr === SYS_PWRITE && retVal > 0) {
+      this.updateSharedBackingFromProcessBuffer(
+        channel,
+        origArgs[0],
+        origArgs[1] >>> 0,
+        retVal,
+        origArgs[3],
+      );
+      return;
+    }
+    if (syscallNr === SYS_WRITE && retVal > 0) {
+      this.reloadSharedBackingForFd(channel, origArgs[0]);
+      return;
+    }
+    if ((syscallNr === SYS_WRITEV || syscallNr === SYS_PWRITEV) && retVal > 0) {
+      this.reloadSharedBackingForFd(channel, origArgs[0]);
+      return;
+    }
+    if (syscallNr === SYS_SENDFILE && retVal > 0) {
+      this.reloadSharedBackingForFd(channel, origArgs[0]);
+      return;
+    }
+    if (syscallNr === SYS_FTRUNCATE && retVal === 0) {
+      this.reloadSharedBackingForFd(channel, origArgs[0]);
+    }
+  }
+
+  private syncSharedMappingsAfterDirectFileSyscall(
+    channel: ChannelInfo,
+    syscallNr: number,
+    origArgs: number[],
+    retVal: number,
+    errVal: number,
+  ): void {
+    this.handleSharedMappingsAfterFileSyscall(channel, syscallNr, origArgs, retVal, errVal);
+    this.syncSharedMappingsFromProcess(channel, false);
+    this.refreshSharedMappingsToProcess(channel, false);
+  }
+
+  private updateSharedBackingFromProcessBuffer(
+    channel: ChannelInfo,
+    fd: number,
+    ptr: number,
+    len: number,
+    fileOffset: number,
+  ): void {
+    if (len <= 0) return;
+    const backing = this.findSharedBackingForFd(channel, fd);
+    if (!backing) return;
+    const processMem = new Uint8Array(channel.memory.buffer);
+    if (ptr + len > processMem.length) {
+      this.reloadSharedBackingRange(backing, fileOffset, len);
+      return;
+    }
+    this.copyRangeToBacking(
+      backing,
+      fileOffset,
+      processMem.subarray(ptr, ptr + len),
+      false,
+    );
+    backing.version++;
+  }
+
+  private reloadSharedBackingForFd(channel: ChannelInfo, fd: number): void {
+    const backing = this.findSharedBackingForFd(channel, fd);
+    if (!backing) return;
+    const loadedPages = Array.from(backing.pages.keys());
+    if (loadedPages.length === 0) return;
+    for (const page of loadedPages) {
+      backing.pages.set(page, this.readBackingPageFromFile(backing, page));
+      backing.dirtyPages.delete(page);
+    }
+    backing.version++;
+  }
+
+  private reloadSharedBackingRange(backing: SharedMmapBacking, offset: number, len: number): void {
+    if (len <= 0) return;
+    const firstPage = Math.floor(offset / FILE_PAGE_SIZE);
+    const lastPage = Math.floor((offset + len - 1) / FILE_PAGE_SIZE);
+    let reloaded = false;
+    for (let page = firstPage; page <= lastPage; page++) {
+      if (!backing.pages.has(page)) continue;
+      backing.pages.set(page, this.readBackingPageFromFile(backing, page));
+      backing.dirtyPages.delete(page);
+      reloaded = true;
+    }
+    if (reloaded) backing.version++;
+  }
+
+  private findSharedBackingForFd(channel: ChannelInfo, fd: number): SharedMmapBacking | null {
+    if (this.sharedMmapBackings.size === 0) return null;
+    const cacheKey = this.sharedMmapFdCacheKey(channel.pid, fd);
+    const cached = this.sharedMmapFdCache.get(cacheKey);
+    if (cached) {
+      return cached.backingKey === null
+        ? null
+        : this.sharedMmapBackings.get(cached.backingKey) ?? null;
+    }
+
+    const stat = this.getFdStatForSharedMapping(channel, fd);
+    if (stat?.key) {
+      const backing = this.sharedMmapBackings.get(stat.key);
+      if (backing) {
+        this.sharedMmapFdCache.set(cacheKey, { backingKey: backing.key });
+        return backing;
+      }
+    }
+    const path = this.getFdPathForSharedMapping(channel, fd);
+    if (!path) {
+      this.sharedMmapFdCache.set(cacheKey, { backingKey: null });
+      return null;
+    }
+    const backing = this.sharedMmapBackings.get(`path:${path}`) ?? null;
+    this.sharedMmapFdCache.set(cacheKey, { backingKey: backing?.key ?? null });
+    return backing;
+  }
+
+  private sharedMmapFdCacheKey(pid: number, fd: number): string {
+    return `${pid}:${fd}`;
+  }
+
+  private invalidateSharedMmapFdCache(pid?: number, fd?: number): void {
+    if (pid === undefined || fd === undefined) {
+      this.sharedMmapFdCache.clear();
+      return;
+    }
+    this.sharedMmapFdCache.delete(this.sharedMmapFdCacheKey(pid, fd));
+  }
+
+  private releaseSharedMapping(mapping: SharedMmapMapping): void {
+    const backing = this.sharedMmapBackings.get(mapping.backingKey);
+    if (!backing) return;
+    backing.refCount = Math.max(0, backing.refCount - 1);
+    if (backing.refCount > 0) return;
+
+    this.flushBackingRange(backing, 0, Number.MAX_SAFE_INTEGER);
+    if (backing.handle >= 0) {
+      try {
+        this.io.close(backing.handle);
+      } catch {
+        // The kernel should not fail teardown because a host close raced.
+      }
+    }
+    this.sharedMmapBackings.delete(backing.key);
+    this.invalidateSharedMmapFdCache();
   }
 
   /**
