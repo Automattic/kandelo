@@ -70,11 +70,16 @@ Process Worker → SharedArrayBuffer channel → Atomics.notify
 
 ```
 Browser fetch → Service Worker intercepts
-→ MessagePort → Kernel Worker (connection pump)
+→ MessagePort → BrowserKernel.fetchInKernel() → Kernel Worker
 → kernel_inject_connection() → pipe write (raw HTTP)
 → nginx (Wasm) accepts, processes → pipe read (response)
 → MessagePort → Service Worker → browser Response
 ```
+
+Injected TCP pipes live in the kernel's global pipe table (`pid == 0` for
+`kernel_pipe_*` host calls), so a listener inherited across fork can accept the
+connection in any nginx worker. The standalone nginx image runs with
+`master_process on` and `worker_processes 2`.
 
 ## Capabilities
 

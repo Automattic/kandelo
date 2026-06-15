@@ -20,18 +20,20 @@ OUT_DIR_32="$REPO_ROOT/local-binaries/programs/wasm32"
 OUT_DIR_64="$REPO_ROOT/local-binaries/programs/wasm64"
 mkdir -p "$OUT_DIR_32" "$OUT_DIR_64"
 
-# Auto-detect LLVM (same logic as SDK / run-libc-tests.sh)
 find_llvm_bin() {
-    if [ -n "${LLVM_BIN:-}" ]; then echo "$LLVM_BIN"; return; fi
-    local brew_prefix
-    if brew_prefix=$(brew --prefix llvm 2>/dev/null) && [ -d "$brew_prefix/bin" ]; then
-        echo "$brew_prefix/bin"; return
+    if [ -n "${LLVM_BIN:-}" ] && [ -x "$LLVM_BIN/clang" ]; then
+        echo "$LLVM_BIN"
+        return
     fi
-    for v in 21 20 19 18 17 16 15; do
-        if [ -x "/usr/bin/clang-$v" ]; then echo "/usr/bin"; return; fi
-    done
-    if command -v clang >/dev/null 2>&1; then echo "$(dirname "$(command -v clang)")"; return; fi
-    echo "Error: LLVM/clang not found. Set LLVM_BIN or install LLVM." >&2
+    if [ -n "${LLVM_PREFIX:-}" ] && [ -x "$LLVM_PREFIX/bin/clang" ]; then
+        echo "$LLVM_PREFIX/bin"
+        return
+    fi
+    if command -v clang >/dev/null 2>&1; then
+        dirname "$(command -v clang)"
+        return
+    fi
+    echo "Error: LLVM/clang not found. Run scripts/dev-shell.sh or set LLVM_BIN/LLVM_PREFIX." >&2
     exit 1
 }
 
@@ -85,47 +87,6 @@ LINK_POST_LIBS=(
     -Wl,--export=__wasm_thread_init
     -Wl,--export=__abi_version
 )
-
-source_uses_gl_stubs() {
-    local dir src
-    for dir in "$REPO_ROOT/programs" "$REPO_ROOT/examples" "$REPO_ROOT/benchmarks/programs"; do
-        [ -d "$dir" ] || continue
-        for src in "$dir/"*.c; do
-            [ -f "$src" ] || continue
-            if grep -qE '^[[:space:]]*#[[:space:]]*include[[:space:]]*[<"](EGL|GLES[23]?)/' "$src"; then
-                return 0
-            fi
-        done
-    done
-    return 1
-}
-
-source_uses_dri_stubs() {
-    local src
-    for src in "$REPO_ROOT/programs/"*.c; do
-        [ -f "$src" ] || continue
-        if grep -qE '^[[:space:]]*#[[:space:]]*include[[:space:]]*[<"](gbm|xf86drm)' "$src"; then
-            return 0
-        fi
-    done
-    return 1
-}
-
-ensure_stub_archives() {
-    if source_uses_dri_stubs; then
-        if [ ! -f "$SYSROOT/lib/libdrm.a" ] || [ ! -f "$SYSROOT/lib/libgbm.a" ]; then
-            echo "==> Building DRI stubs..."
-            bash "$REPO_ROOT/scripts/build-dri-stubs.sh"
-        fi
-    fi
-
-    if source_uses_gl_stubs; then
-        if [ ! -f "$SYSROOT/lib/libEGL.a" ] || [ ! -f "$SYSROOT/lib/libGLESv2.a" ]; then
-            echo "==> Building GL stubs..."
-            bash "$REPO_ROOT/scripts/build-gles-stubs.sh"
-        fi
-    fi
-}
 
 # Fork support comes from wasm-fork-instrument. The tool auto-discovers
 # fork-path functions via call-graph analysis from `kernel.kernel_fork`;
@@ -224,8 +185,6 @@ if ls "$REPO_ROOT/programs/"*.cpp >/dev/null 2>&1; then
         ln -sfn "$LIBCXX_PREFIX/include/c++/v1" "$SYSROOT/include/c++/v1"
     fi
 fi
-
-ensure_stub_archives
 
 echo "Building user programs..."
 for src in "$REPO_ROOT/programs/"*.c; do

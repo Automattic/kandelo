@@ -25,6 +25,10 @@ runs:
         use-gha-cache: false
         use-flakehub: false
 
+    - name: Check libcxx LLVM version
+      shell: bash
+      run: bash scripts/dev-shell.sh bash scripts/check-libcxx-toolchain-version.sh
+
     - name: Compute cache key
       id: key
       shell: bash

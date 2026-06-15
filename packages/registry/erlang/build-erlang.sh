@@ -7,7 +7,7 @@ set -euo pipefail
 #   1. Host bootstrap: builds from source to generate bootstrap erlc
 #   2. Cross build: uses wasm32posix SDK toolchain
 #
-# Requires: host Erlang/OTP 28 in PATH (brew install erlang)
+# Requires: host Erlang/OTP 28 in PATH (provided by scripts/dev-shell.sh).
 #
 # Output: erlang-install/bin/beam.smp.wasm + OTP libraries
 
@@ -24,10 +24,6 @@ SYSROOT="$REPO_ROOT/sysroot"
 
 NPROC="$(sysctl -n hw.ncpu 2>/dev/null || nproc)"
 
-# Homebrew LLVM
-LLVM_PREFIX="${LLVM_PREFIX:-$(brew --prefix llvm 2>/dev/null || echo /opt/homebrew/opt/llvm)}"
-LLVM_CLANG="$LLVM_PREFIX/bin/clang"
-
 # --- Verify prerequisites ---
 if [ ! -f "$SYSROOT/lib/libc.a" ]; then
     echo "ERROR: sysroot not found. Run: bash build.sh" >&2
@@ -40,7 +36,7 @@ if ! command -v wasm32posix-cc &>/dev/null; then
 fi
 
 if ! command -v erl &>/dev/null; then
-    echo "ERROR: host Erlang not found. Install: brew install erlang" >&2
+    echo "ERROR: host Erlang not found. Run through scripts/dev-shell.sh." >&2
     exit 1
 fi
 
