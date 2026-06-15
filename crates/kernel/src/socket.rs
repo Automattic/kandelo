@@ -289,6 +289,15 @@ pub struct SocketInfo {
     pub host_net_handle: Option<i32>,
     /// Stored socket options as (level, optname, value) tuples.
     pub options: Vec<(u32, u32, u32)>,
+    /// SO_LINGER state. This is a structured option (`struct linger`), so it
+    /// is kept separately from integer-valued socket options.
+    pub linger_onoff: i32,
+    pub linger_seconds: i32,
+    /// SO_BINDTODEVICE binds a socket to a named virtual network interface.
+    pub bind_device: Option<Vec<u8>>,
+    /// TCP_CONGESTION algorithm name for this socket. Kandelo's virtual TCP
+    /// stack currently exposes the standard Linux default, "cubic".
+    pub tcp_congestion: Vec<u8>,
     /// Bound IPv4 address (for AF_INET sockets).
     pub bind_addr: [u8; 4],
     /// Bound IPv6 address (for AF_INET6 sockets).
@@ -352,6 +361,10 @@ impl SocketInfo {
             shut_wr: false,
             host_net_handle: None,
             options: Vec::new(),
+            linger_onoff: 0,
+            linger_seconds: 0,
+            bind_device: None,
+            tcp_congestion: b"cubic".to_vec(),
             bind_addr: [0; 4],
             bind_addr6: [0; 16],
             bind_port: 0,
@@ -429,6 +442,10 @@ impl Clone for SocketInfo {
             shut_wr: self.shut_wr,
             host_net_handle: self.host_net_handle,
             options: self.options.clone(),
+            linger_onoff: self.linger_onoff,
+            linger_seconds: self.linger_seconds,
+            bind_device: self.bind_device.clone(),
+            tcp_congestion: self.tcp_congestion.clone(),
             bind_addr: self.bind_addr,
             bind_addr6: self.bind_addr6,
             bind_port: self.bind_port,
