@@ -7705,7 +7705,7 @@ export class CentralizedKernelWorker {
     const net = this.netModule;
 
     const connections = new Set<import("net").Socket>();
-    const server = net.createServer((clientSocket) => {
+    const server = net.createServer({ allowHalfOpen: true }, (clientSocket) => {
       // Pick target via round-robin among registered processes for this port
       const target = this.pickListenerTarget(port);
       if (target) {

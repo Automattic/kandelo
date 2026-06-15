@@ -2092,6 +2092,13 @@ pub fn sys_close(proc: &mut Process, host: &mut dyn HostIO, fd: i32) -> Result<(
                             crate::socket::shared_listener_backlog_table().dec_ref(shared_idx)
                         };
                     }
+                    let graceful_tcp_read_close = matches!(
+                        (sock.domain, sock.sock_type),
+                        (
+                            crate::socket::SocketDomain::Inet | crate::socket::SocketDomain::Inet6,
+                            crate::socket::SocketType::Stream,
+                        )
+                    );
                     if let Some(send_idx) = sock.send_buf_idx {
                         let pipe = unsafe { crate::pipe::global_pipe_table().get_mut(send_idx) };
                         if let Some(pipe) = pipe {
@@ -2102,7 +2109,11 @@ pub fn sys_close(proc: &mut Process, host: &mut dyn HostIO, fd: i32) -> Result<(
                     if let Some(recv_idx) = sock.recv_buf_idx {
                         let pipe = unsafe { crate::pipe::global_pipe_table().get_mut(recv_idx) };
                         if let Some(pipe) = pipe {
-                            pipe.close_read_end();
+                            if graceful_tcp_read_close {
+                                pipe.close_read_end_graceful_once();
+                            } else {
+                                pipe.close_read_end();
+                            }
                             unsafe { crate::pipe::global_pipe_table().free_if_closed(recv_idx) };
                         }
                     }
@@ -2697,6 +2708,9 @@ pub fn sys_write(
                             let pipe =
                                 unsafe { crate::pipe::global_pipe_table().get_mut(send_buf_idx) }
                                     .ok_or(Errno::EBADF)?;
+                            if pipe.take_orphaned_read_accept_once() {
+                                return Ok(buf.len());
+                            }
                             if !pipe.is_read_end_open() {
                                 proc.signals.raise(wasm_posix_shared::signal::SIGPIPE);
                                 return Err(Errno::EPIPE);
@@ -7344,7 +7358,17 @@ pub fn sys_shutdown(
             if let Some(recv_idx) = sock.recv_buf_idx {
                 let pipe = unsafe { crate::pipe::global_pipe_table().get_mut(recv_idx) };
                 if let Some(pipe) = pipe {
-                    pipe.close_read_end();
+                    if matches!(
+                        (sock.domain, sock.sock_type),
+                        (
+                            crate::socket::SocketDomain::Inet | crate::socket::SocketDomain::Inet6,
+                            crate::socket::SocketType::Stream,
+                        )
+                    ) {
+                        pipe.close_read_end_graceful_once();
+                    } else {
+                        pipe.close_read_end();
+                    }
                 }
             }
         }
@@ -19418,6 +19442,52 @@ mod tests {
             ofd.status_flags & O_NONBLOCK,
             0,
             "accept() should leave the accepted OFD blocking",
+        );
+    }
+
+    #[test]
+    fn test_tcp_loopback_close_allows_one_post_fin_write() {
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        use wasm_posix_shared::socket::*;
+
+        let server_fd = sys_socket(&mut proc, &mut host, AF_INET, SOCK_STREAM, 0).unwrap();
+        let mut addr = [0u8; 16];
+        addr[0] = 2; // AF_INET
+        addr[2] = 0x23;
+        addr[3] = 0x9b; // port 9115
+        sys_bind(&mut proc, &mut host, server_fd, &addr).unwrap();
+        sys_listen(&mut proc, &mut host, server_fd, 5).unwrap();
+
+        let client_fd = sys_socket(&mut proc, &mut host, AF_INET, SOCK_STREAM, 0).unwrap();
+        let mut connect_addr = [0u8; 16];
+        connect_addr[0] = 2;
+        connect_addr[2] = 0x23;
+        connect_addr[3] = 0x9b;
+        connect_addr[4] = 127;
+        connect_addr[7] = 1;
+        sys_connect(&mut proc, &mut host, client_fd, &connect_addr).unwrap();
+        let accepted_fd = sys_accept(&mut proc, &mut host, server_fd).unwrap();
+
+        sys_write(&mut proc, &mut host, client_fd, b"request").unwrap();
+        let mut buf = [0u8; 16];
+        let n = sys_read(&mut proc, &mut host, accepted_fd, &mut buf).unwrap();
+        assert_eq!(&buf[..n], b"request");
+
+        sys_close(&mut proc, &mut host, accepted_fd).unwrap();
+        let eof = sys_read(&mut proc, &mut host, client_fd, &mut buf).unwrap();
+        assert_eq!(eof, 0);
+
+        // TCP close is an orderly FIN, not an immediate refusal of incoming
+        // data. A first write after observing peer EOF can succeed locally;
+        // the following write sees the reset/EPIPE.
+        assert_eq!(
+            sys_write(&mut proc, &mut host, client_fd, b"post-fin").unwrap(),
+            8
+        );
+        assert_eq!(
+            sys_write(&mut proc, &mut host, client_fd, b"again"),
+            Err(Errno::EPIPE)
         );
     }
 
