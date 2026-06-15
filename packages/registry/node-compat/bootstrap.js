@@ -476,6 +476,13 @@ const events = (() => {
 // Buffer class
 // ============================================================
 
+const _BUFFER_MAX_LENGTH = 0x7fffffff;
+const _BUFFER_MAX_STRING_LENGTH = 0x1fffffe8;
+const _bufferConstants = Object.freeze({
+    MAX_LENGTH: _BUFFER_MAX_LENGTH,
+    MAX_STRING_LENGTH: _BUFFER_MAX_STRING_LENGTH,
+});
+
 const Buffer = (() => {
     const _encoder = new TextEncoder();
     const _decoder = new TextDecoder();
@@ -3833,7 +3840,12 @@ const https = makeHttpModule({
 const _builtinModules = {
     'path': path,
     'events': events,
-    'buffer': { Buffer },
+    'buffer': {
+        Buffer,
+        constants: _bufferConstants,
+        kMaxLength: _BUFFER_MAX_LENGTH,
+        kStringMaxLength: _BUFFER_MAX_STRING_LENGTH,
+    },
     'fs': fs,
     'fs/promises': fs.promises,
     'os': nodeOs,

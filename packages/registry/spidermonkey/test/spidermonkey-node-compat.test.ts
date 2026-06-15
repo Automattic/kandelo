@@ -382,6 +382,21 @@ describe.skipIf(!nodeWasm)("SpiderMonkey Node compatibility runtime", () => {
     expect(result.stdout.trim()).toBe("node:5");
   }, DEFAULT_TEST_TIMEOUT);
 
+  it("aligns buffer.kMaxLength with the SpiderMonkey typed-array limit", async () => {
+    const result = await runNode(
+      [
+        "const assert = require('assert')",
+        "const { constants, kMaxLength } = require('buffer')",
+        "assert.strictEqual(kMaxLength, 0x7fffffff)",
+        "assert.strictEqual(constants.MAX_LENGTH, kMaxLength)",
+        "assert.throws(() => new Uint8Array(kMaxLength + 1))",
+      ].join(";"),
+    );
+
+    expect(result.stderr).toBe("");
+    expect(result.exitCode).toBe(0);
+  }, DEFAULT_TEST_TIMEOUT);
+
   it("resolves events.once for streams that replay cached events from on()", async () => {
     const result = await runNode(
       [
