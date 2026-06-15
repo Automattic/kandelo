@@ -1,0 +1,25 @@
+SQLite official testrunner summary
+host=node
+permutation=full
+jobs=2
+workdir=/tmp/kandelo-sqlite-official.eHaCqw
+results_dir=test-runs/gastown-sqlite-node-full-pr5/node
+
+total_jobs  done_jobs  failed_jobs  omitted_jobs  running_jobs  ready_jobs  total_cases  total_case_errors
+----------  ---------  -----------  ------------  ------------  ----------  -----------  -----------------
+1394        0          0            0             1             1393        0            0
+
+state    jobs  cases  case_errors
+-------  ----  -----  -----------
+ready    1393  0      0
+running  1     0      0
+
+Jobs by SQLite testrunner config:
+config  jobs  cases  case_errors
+------  ----  -----  -----------
+full    1394  0      0
+
+Failed, running, and omitted jobs:
+jobid  state    displaytype  displayname                       cases  errors  ms
+-----  -------  -----------  --------------------------------  -----  ------  --
+883    running  tcl          ext/fts5/test/fts5optimize2.test  0      0       0

@@ -83,9 +83,9 @@ Until one of those ships, this remains a fundamental wasm limitation. The kernel
 
 ## Current libc-test Results (2026-04-05)
 
-0 unexpected failures, 22 expected failures (XFAIL):
+0 unexpected failures, 20 expected failures (XFAIL):
 - 14 math precision (musl ULP issues)
 - 3 OOM behavior (malloc-brk-fail, malloc-oom, setenv-oom)
-- 3 threading (pthread_create-oom, raise-race, pthread_cond_wait-cancel_ignored)
+- 1 threading (pthread_create-oom)
 - 1 cancellation (pthread_cancel)
 - 1 dynamic TLS (tls_get_new-dtv)
