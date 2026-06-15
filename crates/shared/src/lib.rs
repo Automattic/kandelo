@@ -31,7 +31,9 @@ pub mod host_abi;
 ///     concurrent pthread unwind payloads.
 /// 19: bridged TCP EPIPE delivery raises SIGPIPE unless the caller suppresses
 ///     it, matching the signal contract of local stream writes.
-pub const ABI_VERSION: u32 = 19;
+/// 20: mremap rejects unsupported flag bits instead of silently accepting
+///     them under the existing syscall number.
+pub const ABI_VERSION: u32 = 20;
 
 /// Syscall numbers for the POSIX kernel interface.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
