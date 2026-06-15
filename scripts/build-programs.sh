@@ -54,6 +54,14 @@ CFLAGS=(
     -fno-trapping-math
     -mllvm -wasm-enable-sjlj
     -mllvm -wasm-use-legacy-eh=false
+    # Upstream libdrm installs public headers under `include/libdrm/`
+    # (matches the `--cflags` pkg-config flag). Programs `#include
+    # <xf86drm.h>` from there. `include/drm/` is the UAPI dir that
+    # xf86drm.h itself transitively pulls in via `#include <drm.h>`;
+    # both dirs must be on the search path or the upstream header
+    # fan-out doesn't resolve. Harmless when the dirs are absent.
+    -I"$SYSROOT/include/libdrm"
+    -I"$SYSROOT/include/drm"
 )
 
 LINK_PRE_LIBS=(
@@ -200,6 +208,14 @@ for src in "$REPO_ROOT/programs/"*.c; do
         libdrm-kms-smoke.c)
             build_program "$src" "$OUT_DIR_32" \
                 "$SYSROOT/lib/libdrm.a"
+            ;;
+        libinput_stub_smoke.c)
+            build_program "$src" "$OUT_DIR_32" \
+                "$SYSROOT/lib/libinput.a"
+            ;;
+        alsa_lib_smoke.c)
+            build_program "$src" "$OUT_DIR_32" \
+                "$SYSROOT/lib/libasound.a"
             ;;
         *)
             build_program "$src" "$OUT_DIR_32"

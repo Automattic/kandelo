@@ -472,7 +472,8 @@ fn render_ts_module() -> String {
     out.push_str("  | { type: \"cstring\" }\n");
     out.push_str("  | { type: \"arg\"; argIndex: number; multiplier?: number; add?: number }\n");
     out.push_str("  | { type: \"deref\"; argIndex: number }\n");
-    out.push_str("  | { type: \"fixed\"; size: number };\n\n");
+    out.push_str("  | { type: \"fixed\"; size: number }\n");
+    out.push_str("  | { type: \"ioctl_encoded\"; argIndex: number; floor: number };\n\n");
     out.push_str("export interface SyscallArgDesc {\n");
     out.push_str("  argIndex: number;\n");
     out.push_str("  direction: SyscallArgDirection;\n");
@@ -531,6 +532,9 @@ fn ts_syscall_arg_size(size: shared::host_abi::SyscallArgSize) -> String {
             format!("{{ type: \"deref\", argIndex: {arg_index} }}")
         }
         SyscallArgSize::Fixed { size } => format!("{{ type: \"fixed\", size: {size} }}"),
+        SyscallArgSize::IoctlEncoded { arg_index, floor } => format!(
+            "{{ type: \"ioctl_encoded\", argIndex: {arg_index}, floor: {floor} }}"
+        ),
     }
 }
 
@@ -1298,6 +1302,11 @@ fn syscall_arg_size_json(size: shared::host_abi::SyscallArgSize) -> Value {
         SyscallArgSize::Fixed { size } => {
             m.insert("type".into(), json!("fixed"));
             m.insert("size".into(), json!(size));
+        }
+        SyscallArgSize::IoctlEncoded { arg_index, floor } => {
+            m.insert("type".into(), json!("ioctl_encoded"));
+            m.insert("argIndex".into(), json!(arg_index));
+            m.insert("floor".into(), json!(floor));
         }
     }
     Value::Object(m.into_iter().collect())

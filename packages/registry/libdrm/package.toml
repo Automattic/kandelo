@@ -1,0 +1,46 @@
+# Per-library manifest for libdrm. See docs/package-management.md.
+#
+# This is the KMS-side subset of libdrm — only the four C files
+# (xf86drm.c, xf86drmMode.c, xf86drmHash.c, xf86drmRandom.c) plus
+# the include/drm/ and xf86drm{,Mode}.h headers SDL2's KMSDRM video
+# backend (`src/video/kmsdrm/SDL_kmsdrmvideo.c`) actually calls.
+#
+# We deliberately skip the GPU-specific subdirs (libdrm_amdgpu,
+# libdrm_radeon, libdrm_intel, libdrm_nouveau, libdrm_etnaviv,
+# libdrm_exynos, libdrm_freedreno, libdrm_omap, libdrm_tegra,
+# libdrm_vc4) — none of those run on the wasm32 kernel and they
+# pull in vendor-specific ioctl tables we don't ship.
+#
+# libdrm-KMS has no link-time deps. It wraps the kernel's KMS ioctl
+# surface (DRM_IOCTL_MODE_* from plan 4) through the standard
+# drmModeGetResources / drmModeAddFB2 / drmModePageFlip API SDL2
+# expects. No external libraries are required.
+
+kind = "library"
+
+name = "libdrm"
+version = "2.4.120"
+kernel_abi = 15
+depends_on = []
+
+[source]
+url = "https://dri.freedesktop.org/libdrm/libdrm-2.4.120.tar.xz"
+sha256 = "3bf55363f76c7250946441ab51d3a6cc0ae518055c0ff017324ab76cdefb327a"
+
+[license]
+spdx = "MIT"
+url = "https://gitlab.freedesktop.org/mesa/drm/-/blob/libdrm-2.4.120/README"
+
+[build]
+script_path = "packages/registry/libdrm/build-libdrm.sh"
+
+[outputs]
+# KMS-only subset; the per-vendor libdrm_* archives (libdrm_amdgpu.a
+# etc.) are deliberately not built.
+libs = ["lib/libdrm.a"]
+# UAPI headers live under include/drm/ (drm.h, drm_mode.h,
+# drm_fourcc.h); libdrm public headers live under include/libdrm/
+# (xf86drm.h, xf86drmMode.h). Consumers link with
+# `-I$prefix/include -I$prefix/include/libdrm` and
+# `#include <xf86drmMode.h>` matches upstream's pkg-config flags.
+headers = ["include/drm", "include/libdrm"]

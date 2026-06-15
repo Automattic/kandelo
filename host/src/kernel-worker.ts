@@ -2254,8 +2254,18 @@ export class CentralizedKernelWorker {
           if (derefPtr === 0) continue;
           size = processMem[derefPtr] | (processMem[derefPtr + 1] << 8)
                | (processMem[derefPtr + 2] << 16) | (processMem[derefPtr + 3] << 24);
-        } else {
+        } else if (desc.size.type === "ioctl_encoded") {
+          // Linux _IOC_SIZE convention: byte length is bits 16..29 of the
+          // arg (the ioctl request number), with a floor for legacy
+          // size = 0 ioctls (FIONBIO, KDGKBTYPE, etc.).
+          const req = origArgs[desc.size.argIndex] >>> 0;
+          const enc = (req >>> 16) & 0x3fff;
+          size = enc > desc.size.floor ? enc : desc.size.floor;
+        } else if (desc.size.type === "fixed") {
           size = desc.size.size;
+        } else {
+          // Should not reach here — exhaustive over the SyscallArgSizeSpec union.
+          size = 0;
         }
 
         if (size <= 0) continue;
@@ -2610,8 +2620,14 @@ export class CentralizedKernelWorker {
           if (derefPtr === 0) continue;
           size = processMem[derefPtr] | (processMem[derefPtr + 1] << 8)
                | (processMem[derefPtr + 2] << 16) | (processMem[derefPtr + 3] << 24);
-        } else {
+        } else if (desc.size.type === "ioctl_encoded") {
+          const req = origArgs[desc.size.argIndex] >>> 0;
+          const enc = (req >>> 16) & 0x3fff;
+          size = enc > desc.size.floor ? enc : desc.size.floor;
+        } else if (desc.size.type === "fixed") {
           size = desc.size.size;
+        } else {
+          size = 0;
         }
 
         if (size <= 0) continue;

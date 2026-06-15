@@ -1,0 +1,26 @@
+--- a/include/alsa-symbols.h
++++ b/include/alsa-symbols.h
+@@ -53,16 +53,15 @@
+ #define use_default_symbol_version(real, name, version) \
+ 		default_symbol_version(real, name, version)
+ #else
++/* wasm32-posix-kernel: wasm-ld does not implement ELF .weak/.set
++ * symbol aliasing. For the non-VERSIONED_SYMBOLS path (this static,
++ * non-PIC subset) collapse the macro into GCC's __attribute__((alias))
++ * — the unversioned name `name` becomes a weak alias of the
++ * INTERNAL-mangled real `real`. use_symbol_version (legacy compat)
++ * is a no-op since the subset exports one version per symbol. */
+ #define use_symbol_version(real, name, version) /* nothing */
+-#if defined(__alpha__) || defined(__mips__)
+ #define use_default_symbol_version(real, name, version) \
+-        __asm__ (".weak " ASM_NAME(#name)); \
+-        __asm__ (ASM_NAME(#name) " = " ASM_NAME(#real))
+-#else
+-#define use_default_symbol_version(real, name, version) \
+-	__asm__ (".weak " ASM_NAME(#name)); \
+-	__asm__ (".set " ASM_NAME(#name) "," ASM_NAME(#real))
++	extern __typeof(real) name __attribute__((weak, alias(#real)))
+ #endif
+-#endif
+ 
+ #endif /* __ALSA_SYMBOLS_H */

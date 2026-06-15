@@ -8962,6 +8962,15 @@ pub fn sys_ioctl(
         }
     }
 
+    // --- /dev/snd/controlC0 ioctls — minimum SNDRV_CTL_* surface
+    //     for alsa-lib's hw-plugin open path (PVERSION + PCM_PREFER_
+    //     SUBDEVICE). Other CTL requests fall through to ENOTTY.
+    if let Some(result) =
+        crate::audio::ctl_ioctl::handle_alsa_ctl_ioctl(proc, host, ofd_idx, request, buf)
+    {
+        return result;
+    }
+
     // --- Linux VT keyboard ioctls (KDGKBTYPE / KDGKBMODE / KDSKBMODE) ---
     //
     // fbDOOM (and other Linux-VT-targeted software) calls these on a

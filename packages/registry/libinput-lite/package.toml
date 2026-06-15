@@ -1,0 +1,41 @@
+# Per-library manifest for libinput-lite. See docs/package-management.md.
+#
+# In-tree no-op stub of the libinput API surface — NOT a vendored
+# upstream. Real libinput shells out to libudev to enumerate devices,
+# which the wasm32 kernel does not ship. SDL2 2.30 ships its own
+# direct evdev backend (plan 5) and uses libinput only as an optional
+# fallback when present; this stub exists so configure-time checks
+# for `<libinput.h>` find something, and so the eventual link step
+# resolves the (never-called) entry points to no-ops.
+#
+# `libinput_udev_create_context` returns NULL → consumers that
+# probe libinput first then fall back to direct evdev get the same
+# fallback path they would on a Linux system without udev.
+#
+# No upstream source is fetched; the build script compiles the
+# bundled `src/libinput_stub.c` directly. The `[source]` block
+# carries a sentinel URL + zero sha so the manifest schema parses
+# but no remote fetch is attempted (matches the posix-utils-lite
+# in-tree-only convention).
+
+kind = "library"
+
+name = "libinput-lite"
+version = "0.1.0"
+kernel_abi = 15
+depends_on = []
+
+[source]
+url = "https://example.invalid/libinput-lite-0.1.0.tar.gz"
+sha256 = "0000000000000000000000000000000000000000000000000000000000000000"
+
+[license]
+spdx = "MIT"
+url = "https://github.com/Automattic/kandelo/blob/main/packages/registry/libinput-lite/LICENSE"
+
+[build]
+script_path = "packages/registry/libinput-lite/build-libinput-lite.sh"
+
+[outputs]
+libs = ["lib/libinput.a"]
+headers = ["include/libinput.h"]

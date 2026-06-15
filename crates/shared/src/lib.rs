@@ -24,7 +24,15 @@ pub mod host_abi;
 ///     with a wasm-declared reserved thread-slot count.
 /// 15: remove the obsolete `kernel_set_mode` export; the kernel is always
 ///     the shared point of contact for all programs.
-pub const ABI_VERSION: u32 = 15;
+/// 16: SYS_IOCTL host-adapter marshalling now reads `_IOC_SIZE` from
+///     bits 16..29 of the request via `SyscallArgSize::IoctlEncoded
+///     { arg_index, floor }` (was a flat `Fixed { size: 256 }`), so the
+///     channel round-trips the full ioctl payload instead of truncating
+///     to 256 B. ALSA `WpkAlsaPcmSwParams` shrunk 136→104, `WpkAlsaXferi`
+///     24→12, and the `SNDRV_PCM_IOCTL_{SW_PARAMS, WRITEI_FRAMES}`
+///     request constants moved accordingly to match wasm32 musl
+///     `unsigned long = 4`.
+pub const ABI_VERSION: u32 = 16;
 
 /// Syscall numbers for the POSIX kernel interface.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -2761,16 +2769,16 @@ pub mod audio {
 
     pub const SNDRV_PCM_IOCTL_PVERSION: u32 = 0x8004_4100;
     pub const SNDRV_PCM_IOCTL_INFO: u32 = 0x8120_4101;
-    pub const SNDRV_PCM_IOCTL_HW_REFINE: u32 = 0xc260_4110;
-    pub const SNDRV_PCM_IOCTL_HW_PARAMS: u32 = 0xc260_4111;
+    pub const SNDRV_PCM_IOCTL_HW_REFINE: u32 = 0xc25c_4110;
+    pub const SNDRV_PCM_IOCTL_HW_PARAMS: u32 = 0xc25c_4111;
     pub const SNDRV_PCM_IOCTL_HW_FREE: u32 = 0x0000_4112;
-    pub const SNDRV_PCM_IOCTL_SW_PARAMS: u32 = 0xc088_4113;
+    pub const SNDRV_PCM_IOCTL_SW_PARAMS: u32 = 0xc068_4113;
     pub const SNDRV_PCM_IOCTL_STATUS: u32 = 0x8080_4120;
     pub const SNDRV_PCM_IOCTL_PREPARE: u32 = 0x0000_4140;
     pub const SNDRV_PCM_IOCTL_START: u32 = 0x0000_4142;
     pub const SNDRV_PCM_IOCTL_DROP: u32 = 0x0000_4143;
     pub const SNDRV_PCM_IOCTL_PAUSE: u32 = 0x4004_4145;
-    pub const SNDRV_PCM_IOCTL_WRITEI_FRAMES: u32 = 0x4018_4150;
+    pub const SNDRV_PCM_IOCTL_WRITEI_FRAMES: u32 = 0x400c_4150;
 
     // --- PCM state constants ---------------------------------------------
 
@@ -2819,8 +2827,17 @@ pub mod audio {
     /// `struct snd_pcm_hw_params`. Layout-locked against Linux v6.10
     /// `include/uapi/sound/asound.h`; `masks[64]` covers the 3 active +
     /// 5 reserved snd_masks (each is u32[8]), `intervals[21]` covers
-    /// the 12 active + 9 reserved snd_intervals. Phase C's vendored
-    /// `<sound/asound.h>` mirrors this byte-for-byte.
+    /// the 12 active + 9 reserved snd_intervals.
+    ///
+    /// `fifo_size` is `snd_pcm_uframes_t = unsigned long` in the Linux
+    /// UAPI. On wasm32 (the target this kernel runs on, AND that musl
+    /// compiles user-space against), `unsigned long` is 4 bytes — so
+    /// the marshalled struct is 604 bytes and the encoded `_IOWR`
+    /// sizes for `HW_REFINE` / `HW_PARAMS` end in `0x25c` (= 604),
+    /// matching what alsa-lib's `ioctl(fd, SNDRV_PCM_IOCTL_HW_REFINE,
+    /// ...)` actually emits when compiled with `wasm32posix-cc`.
+    /// Using `u64` here would inflate the size to 608 and the kernel
+    /// would reject the wasm32-userland ioctl number with ENOTTY.
     #[repr(C)]
     #[derive(Clone, Copy)]
     pub struct WpkAlsaPcmHwParams {
@@ -2833,7 +2850,7 @@ pub mod audio {
         pub msbits: u32,
         pub rate_num: u32,
         pub rate_den: u32,
-        pub fifo_size: u64,
+        pub fifo_size: u32,
         pub reserved: [u8; 64],
     }
 
@@ -2855,21 +2872,25 @@ pub mod audio {
         }
     }
 
-    /// `struct snd_pcm_sw_params`. Layout-locked against Linux v6.10.
+    /// `struct snd_pcm_sw_params`. Layout-locked against alsa-lib UAPI
+    /// **as compiled for wasm32 musl** (`snd_pcm_uframes_t` =
+    /// `unsigned long` = 4 bytes). Linux x86_64 has 8-byte uframes_t
+    /// (struct size 136); on wasm32 the same struct collapses to
+    /// 104 bytes with no leading `_pad0` because all fields are
+    /// 4-byte aligned end-to-end.
     #[repr(C)]
     #[derive(Clone, Copy)]
     pub struct WpkAlsaPcmSwParams {
         pub tstamp_mode: u32,
         pub period_step: u32,
         pub sleep_min: u32,
-        pub _pad0: u32,
-        pub avail_min: u64,
-        pub xfer_align: u64,
-        pub start_threshold: u64,
-        pub stop_threshold: u64,
-        pub silence_threshold: u64,
-        pub silence_size: u64,
-        pub boundary: u64,
+        pub avail_min: u32,
+        pub xfer_align: u32,
+        pub start_threshold: u32,
+        pub stop_threshold: u32,
+        pub silence_threshold: u32,
+        pub silence_size: u32,
+        pub boundary: u32,
         pub proto: u32,
         pub tstamp_type: u32,
         pub reserved: [u8; 56],
@@ -2881,7 +2902,6 @@ pub mod audio {
                 tstamp_mode: 0,
                 period_step: 0,
                 sleep_min: 0,
-                _pad0: 0,
                 avail_min: 0,
                 xfer_align: 0,
                 start_threshold: 0,
@@ -2899,6 +2919,19 @@ pub mod audio {
     /// `struct snd_pcm_status`. All timestamps stamped from
     /// `CLOCK_MONOTONIC` so userspace can correlate audio underruns
     /// with vblank + input timestamps.
+    ///
+    /// **WASM32 LAYOUT NOTE**: this struct's *size* (128 B) happens to
+    /// match the wasm32 layout of `struct snd_pcm_status` by
+    /// coincidence, but the *field offsets* differ — every
+    /// `snd_pcm_uframes_t` field (`appl_ptr`, `hw_ptr`, `delay`,
+    /// `avail`, `avail_max`, `overrange`) is 4 B on wasm32 (musl
+    /// `unsigned long` = 4) but is declared `i64`/`u64` here.
+    /// `SNDRV_PCM_IOCTL_STATUS` is therefore semantically wrong on the
+    /// wire; the smoke test does not exercise it. Fix before wiring
+    /// SDL2's `writei` path: split `trigger_tstamp`/`tstamp`/
+    /// `audio_tstamp`/`driver_tstamp` into `i64 sec` + `i32 nsec` +
+    /// 4 B pad triplets, shrink the uframes fields to `i32`/`u32`, and
+    /// regenerate the corresponding `__time_pad`/`reserved` bytes.
     #[repr(C)]
     #[derive(Clone, Copy, Default)]
     pub struct WpkAlsaPcmStatus {
@@ -2964,6 +2997,15 @@ pub mod audio {
     /// Mapped at `SNDRV_PCM_MMAP_OFFSET_STATUS`. Field offsets are
     /// load-bearing — userspace reads `hw_ptr` via direct memory access
     /// on the mapped page, not through an ioctl.
+    ///
+    /// **WASM32 LAYOUT NOTE**: alsa-lib on wasm32 (musl, `__SND_STRUCT_TIME64`
+    /// defined) expects `struct __snd_pcm_mmap_status64` with `hw_ptr`
+    /// as `unsigned long` = 4 B + 4 B `__pad_after_uframe`, and 16-byte
+    /// `__snd_timespec64` fields — total 56 B. This struct is currently
+    /// 64 B with `hw_ptr` as `i64`; the byte offsets do not match the
+    /// wasm32 layout. Userspace reads of `hw_ptr` are therefore wrong
+    /// once SDL2 audio mmap-poll path comes online. Fix concurrently
+    /// with `WpkAlsaPcmMmapControl`.
     #[repr(C)]
     #[derive(Clone, Copy, Default, Debug)]
     pub struct WpkAlsaPcmMmapStatus {
@@ -2981,6 +3023,14 @@ pub mod audio {
 
     /// `struct snd_pcm_mmap_control`. Userspace-writes, kernel-reads.
     /// Mapped at `SNDRV_PCM_MMAP_OFFSET_CONTROL`.
+    ///
+    /// **WASM32 LAYOUT NOTE**: alsa-lib on wasm32 expects
+    /// `struct __snd_pcm_mmap_control64` = 12 B (`appl_ptr: u32 +
+    /// 0 B pad + avail_min: u32 + 4 B __pad_after_uframe`). This
+    /// struct is currently 64 B with both fields as `i64` — userspace
+    /// writes to `appl_ptr` only land in the low 4 B; the high 4 B the
+    /// kernel reads stay zero. Fix concurrently with `WpkAlsaPcmMmapStatus`
+    /// before wiring SDL2 audio.
     #[repr(C)]
     #[derive(Clone, Copy, Debug)]
     pub struct WpkAlsaPcmMmapControl {
@@ -2996,12 +3046,15 @@ pub mod audio {
     }
 
     /// `struct snd_xferi` — argument to `WRITEI_FRAMES` / `READI_FRAMES`.
+    /// Wasm32 layout: `snd_pcm_sframes_t` = `signed long` = 4 B,
+    /// `void *` = 4 B, `snd_pcm_uframes_t` = `unsigned long` = 4 B.
+    /// Total 12 B (vs 24 B on x86_64).
     #[repr(C)]
     #[derive(Clone, Copy, Default)]
     pub struct WpkAlsaXferi {
-        pub result: i64,
-        pub buf: u64,
-        pub frames: u64,
+        pub result: i32,
+        pub buf: u32,
+        pub frames: u32,
     }
 
 }
@@ -3279,19 +3332,20 @@ mod audio_tests {
 
     #[test]
     fn audio_struct_sizes_match_wasm32_repr_c() {
-        // These numbers lock the wasm32 `repr(C)` layout; Phase C's
-        // vendored `<sound/asound.h>` mirrors them byte-for-byte.
-        // HwParams = 608 follows Linux v6.10: snd_mask[8] (= u32[64])
-        // + snd_interval[21] (= 12 bytes each) + 6 u32s + the 4-byte
-        // trailing-u32 pad Rust inserts before fifo_size + reserved[64].
+        // These numbers lock the wasm32 `repr(C)` layout.
+        // HwParams = 604 follows Linux v6.10 sized for wasm32:
+        //   4 (flags) + 256 (mask[64]=u32) + 252 (interval[21]=3xu32)
+        //   + 6*4 (rmask/cmask/info/msbits/rate_num/rate_den)
+        //   + 4 (fifo_size: snd_pcm_uframes_t = unsigned long, 4 B on
+        //     wasm32) + 64 (reserved) = 604.
         assert_eq!(size_of::<WpkSndInterval>(), 12);
-        assert_eq!(size_of::<WpkAlsaPcmHwParams>(), 608);
-        assert_eq!(size_of::<WpkAlsaPcmSwParams>(), 136);
+        assert_eq!(size_of::<WpkAlsaPcmHwParams>(), 604);
+        assert_eq!(size_of::<WpkAlsaPcmSwParams>(), 104);
         assert_eq!(size_of::<WpkAlsaPcmStatus>(), 128);
         assert_eq!(size_of::<WpkAlsaPcmInfo>(), 288);
         assert_eq!(size_of::<WpkAlsaPcmMmapStatus>(), 64);
         assert_eq!(size_of::<WpkAlsaPcmMmapControl>(), 64);
-        assert_eq!(size_of::<WpkAlsaXferi>(), 24);
+        assert_eq!(size_of::<WpkAlsaXferi>(), 12);
     }
 
     #[test]
