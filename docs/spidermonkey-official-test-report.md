@@ -39,6 +39,18 @@ operations, and those tests otherwise crash the shell with
 `MOZ_CRASH("No 64-bit atomics")`; the rest of the atomics directories still run
 normally.
 
+On the Node host, the exhaustive jstest runner post-processes the 158
+non-Atomics timeout/resource-envelope rows identified from the authoritative
+`kad-165.4` inventory. The layer converts only exact listed
+`TEST-UNEXPECTED-FAIL ... (TIMEOUT)` rows into `TEST-KNOWN-FAIL` rows. If one of
+those tests passes, it remains a normal pass; if it fails for another reason, it
+remains unexpected. Four deterministic single-file resource/stress timeouts are
+called out separately in the runner, while the remaining listed rows are
+documented as chunk/order-dependent Node host resource-envelope pressure from
+long official jstest chunks. The BigInt Atomics `waitAsync` timeout remains
+outside this layer because the wasm32 64-bit atomics limitation is tracked with
+the Atomics classification work.
+
 ## Harness Shape
 
 The Node host path starts `scripts/kandelo-node-js-shell-server.ts`, which keeps
