@@ -9,6 +9,13 @@ import * as std from 'qjs:std';
 import * as os from 'qjs:os';
 import * as _nodeNative from 'qjs:node';
 
+function _cwdPathFromOsResult(result) {
+    let value = result;
+    while (Array.isArray(value)) value = value[0];
+    if (value === undefined || value === null || value === '') return '/';
+    return typeof value === 'string' ? value : String(value);
+}
+
 // ============================================================
 // TextEncoder/TextDecoder polyfill for engines that do not provide it.
 // ============================================================
@@ -492,6 +499,17 @@ function _makeNodeError(message, code, errno, syscall, path) {
     return err;
 }
 
+function _makeSystemError(syscall, code, message, errno) {
+    const detail = message ? ` (${message})` : '';
+    const err = new Error(`A system error occurred: ${syscall} returned ${code}${detail}`);
+    err.name = 'SystemError';
+    err.code = 'ERR_SYSTEM_ERROR';
+    err.info = { code, errno, message, syscall };
+    if (errno !== undefined) err.errno = -Math.abs(errno);
+    err.syscall = syscall;
+    return err;
+}
+
 function _makeUnsupportedPlatformError(feature) {
     return _makeNodeError(
         `${feature} is not supported in Kandelo's SpiderMonkey Node compatibility runtime`,
@@ -618,8 +636,7 @@ const path = (() => {
     }
 
     function cwd() {
-        const result = os.getcwd();
-        return Array.isArray(result) ? result[0] : result;
+        return _cwdPathFromOsResult(os.getcwd());
     }
 
     function isPathSeparator(code) {
@@ -3843,9 +3860,9 @@ function _hasActiveResourceOfType(type) {
 }
 
 const process = (() => {
-    const [cwd_val] = os.getcwd();
-    let _cwd = cwd_val || '/';
+    let _cwd = _cwdPathFromOsResult(os.getcwd());
     const _env = {};
+    const _deletedEnv = new Set();
     let _uid = 0;
     let _gid = 0;
     let _euid = 0;
@@ -3873,24 +3890,30 @@ const process = (() => {
     const envProxy = new Proxy(_env, {
         get(target, prop) {
             if (typeof prop === 'symbol') return target[prop];
+            const key = String(prop);
             // Try live lookup for unknown keys
             if (!(prop in target)) {
-                const val = std.getenv(String(prop));
+                if (_deletedEnv.has(key)) return undefined;
+                const val = std.getenv(key);
                 if (val !== null && val !== undefined) {
-                    target[prop] = val;
+                    target[key] = val;
                     return val;
                 }
             }
             return target[prop];
         },
         set(target, prop, value) {
-            target[prop] = String(value);
-            std.setenv(String(prop), String(value));
+            const key = String(prop);
+            _deletedEnv.delete(key);
+            target[key] = String(value);
+            std.setenv(key, String(value));
             return true;
         },
         deleteProperty(target, prop) {
-            delete target[prop];
-            std.unsetenv(String(prop));
+            const key = String(prop);
+            _deletedEnv.add(key);
+            delete target[key];
+            std.unsetenv(key);
             return true;
         },
     });
@@ -4063,8 +4086,7 @@ const process = (() => {
         chdir(dir) {
             const err = os.chdir(dir);
             if (err !== 0) _throwErrno(err, 'chdir', dir);
-            const [newCwd] = os.getcwd();
-            _cwd = newCwd || dir;
+            _cwd = _cwdPathFromOsResult(os.getcwd()) || dir;
         },
 
         exit(code) {
@@ -5724,15 +5746,85 @@ const fs = (() => {
 // os module (Node.js)
 // ============================================================
 
+const NODE_OS_PRIORITY_CONSTANTS = {
+    PRIORITY_LOW: 19,
+    PRIORITY_BELOW_NORMAL: 10,
+    PRIORITY_NORMAL: 0,
+    PRIORITY_ABOVE_NORMAL: -7,
+    PRIORITY_HIGH: -14,
+    PRIORITY_HIGHEST: -20,
+};
+
+let _nodeOsPriority = NODE_OS_PRIORITY_CONSTANTS.PRIORITY_NORMAL;
+
+function _nodeOsEnvValue(name) {
+    const value = process.env && process.env[name];
+    return typeof value === 'string' && value.length > 0 ? value : undefined;
+}
+
+const _nodeOsBinding = {
+    getHomeDirectory(_ctx) {
+        return _nodeOsEnvValue('HOME') || '/root';
+    },
+    getPriority(pid) {
+        if (pid !== 0 && pid !== process.pid) {
+            throw _makeSystemError('uv_os_getpriority', 'ESRCH', 'no such process', 3);
+        }
+        return _nodeOsPriority;
+    },
+    setPriority(pid, priority) {
+        if (pid !== 0 && pid !== process.pid) {
+            throw _makeSystemError('uv_os_setpriority', 'ESRCH', 'no such process', 3);
+        }
+        _nodeOsPriority = priority;
+    },
+};
+
 const nodeOs = (() => {
-    const [cwd_val] = os.getcwd();
-    return {
+    const cwd_val = _cwdPathFromOsResult(os.getcwd());
+
+    function checked(fn) {
+        Object.defineProperty(fn, Symbol.toPrimitive, {
+            value() { return fn(); },
+            configurable: true,
+        });
+        return fn;
+    }
+
+    function stripPosixTrailingSlash(value) {
+        if (value.length <= 1 || value[value.length - 1] !== '/') return value;
+        return value.replace(/\/+$/, '') || '/';
+    }
+
+    function validatePid(pid) {
+        if (typeof pid !== 'number') throw _makeInvalidArgTypeError('pid', 'number', pid);
+        if (!Number.isFinite(pid) || !Number.isInteger(pid) || pid > 0xffffffff) {
+            const err = new RangeError(`The value of "pid" is out of range. Received ${pid}`);
+            err.code = 'ERR_OUT_OF_RANGE';
+            throw err;
+        }
+    }
+
+    function validatePriority(priority) {
+        if (typeof priority !== 'number') throw _makeInvalidArgTypeError('priority', 'number', priority);
+        if (!Number.isFinite(priority) || !Number.isInteger(priority) ||
+            priority < NODE_OS_PRIORITY_CONSTANTS.PRIORITY_HIGHEST ||
+            priority > NODE_OS_PRIORITY_CONSTANTS.PRIORITY_LOW) {
+            const err = new RangeError(`The value of "priority" is out of range. Received ${priority}`);
+            err.code = 'ERR_OUT_OF_RANGE';
+            throw err;
+        }
+    }
+
+    const mod = {
         EOL: '\n',
-        arch() { return 'wasm32'; },
-        platform() { return 'linux'; },
-        type() { return 'Linux'; },
-        release() { return '6.0.0-wasm'; },
-        hostname() {
+        arch: checked(function arch() { return 'wasm32'; }),
+        platform: checked(function platform() { return 'linux'; }),
+        type: checked(function type() { return 'Linux'; }),
+        release: checked(function release() { return '6.0.0-wasm'; }),
+        version: checked(function version() { return '#1 SMP Kandelo'; }),
+        machine: checked(function machine() { return 'wasm32'; }),
+        hostname: checked(function hostname() {
             try {
                 const f = std.open('/etc/hostname', 'r');
                 if (f) {
@@ -5742,25 +5834,80 @@ const nodeOs = (() => {
                 }
             } catch {}
             return 'localhost';
+        }),
+        homedir: checked(function homedir() {
+            const ctx = {};
+            const bindingHome = _nodeOsBinding.getHomeDirectory(ctx);
+            if (ctx.syscall || ctx.code || ctx.message) {
+                throw _makeSystemError(
+                    ctx.syscall || 'uv_os_homedir',
+                    ctx.code || 'UNKNOWN',
+                    ctx.message || '',
+                    ctx.errno,
+                );
+            }
+            return typeof bindingHome === 'string' && bindingHome.length > 0 ? bindingHome : '/root';
+        }),
+        tmpdir: checked(function tmpdir() {
+            return stripPosixTrailingSlash(_nodeOsEnvValue('TMPDIR') || _nodeOsEnvValue('TMP') || _nodeOsEnvValue('TEMP') || '/tmp');
+        }),
+        cpus() {
+            return [{
+                model: 'wasm32',
+                speed: 0,
+                times: { user: 0, nice: 0, sys: 0, idle: 0, irq: 0 },
+            }];
         },
-        homedir() { return std.getenv('HOME') || '/root'; },
-        tmpdir() { return std.getenv('TMPDIR') || '/tmp'; },
-        cpus() { return [{ model: 'wasm32', speed: 0, times: { user: 0, nice: 0, sys: 0, idle: 0, irq: 0 } }]; },
-        availableParallelism() { return 1; },
-        totalmem() { return 1073741824; }, // 1GB
-        freemem() { return 536870912; }, // 512MB
+        availableParallelism: checked(function availableParallelism() { return Math.max(1, mod.cpus().length); }),
+        totalmem: checked(function totalmem() { return 1073741824; }), // 1GB
+        freemem: checked(function freemem() { return 536870912; }), // 512MB
         loadavg() { return [0, 0, 0]; },
-        uptime() { return (Date.now() - _startTime) / 1000; },
-        networkInterfaces() { return {}; },
-        userInfo() {
+        uptime: checked(function uptime() { return (Date.now() - _startTime) / 1000; }),
+        networkInterfaces() {
             return {
-                uid: 0, gid: 0,
-                username: std.getenv('USER') || 'root',
-                homedir: std.getenv('HOME') || '/root',
-                shell: std.getenv('SHELL') || '/bin/sh',
+                lo: [{
+                    address: '127.0.0.1',
+                    netmask: '255.0.0.0',
+                    family: 'IPv4',
+                    mac: '00:00:00:00:00:00',
+                    internal: true,
+                    cidr: '127.0.0.1/8',
+                }],
             };
         },
-        endianness() { return 'LE'; },
+        userInfo(options) {
+            const encoding = options && options.encoding;
+            const username = _nodeOsEnvValue('USER') || 'root';
+            const home = _nodeOsEnvValue('HOME') || '/root';
+            const shell = _nodeOsEnvValue('SHELL') || '/bin/sh';
+            const encode = (value) => encoding === 'buffer' ? Buffer.from(value) : value;
+            return {
+                uid: 0,
+                gid: 0,
+                username: encode(username),
+                homedir: encode(home),
+                shell: encode(shell),
+            };
+        },
+        endianness: checked(function endianness() { return 'LE'; }),
+        getPriority(pid) {
+            const actualPid = pid === undefined ? 0 : pid;
+            validatePid(actualPid);
+            return _nodeOsBinding.getPriority(actualPid);
+        },
+        setPriority(pid, priority) {
+            let actualPid = pid;
+            let actualPriority = priority;
+            if (arguments.length === 1) {
+                actualPid = 0;
+                actualPriority = pid;
+            } else {
+                validatePid(actualPid);
+            }
+            validatePriority(actualPriority);
+            _nodeOsBinding.setPriority(actualPid, actualPriority);
+        },
+        devNull: '/dev/null',
         constants: {
             signals: {
                 SIGHUP: 1, SIGINT: 2, SIGQUIT: 3, SIGILL: 4,
@@ -5778,8 +5925,18 @@ const nodeOs = (() => {
                 EACCES: 13, EEXIST: 17, ENOTDIR: 20, EISDIR: 21,
                 EINVAL: 22,
             },
+            priority: NODE_OS_PRIORITY_CONSTANTS,
         },
     };
+
+    Object.defineProperty(mod, 'EOL', {
+        value: '\n',
+        writable: false,
+        enumerable: true,
+        configurable: true,
+    });
+
+    return mod;
 })();
 
 // ============================================================
@@ -9871,7 +10028,7 @@ const child_process = (() => {
             spawnargs = [spawnfile, '-c', displayText];
         } else {
             resolved = resolveExecutable(file, env);
-            if (!resolved) return { error: makeSpawnError(file, argv), file, args: argv, options: opts, shell: false };
+            if (!resolved) return { error: makeSpawnError(file, argv), file, args: argv, options: opts, shell: false, nodeLikeExecutable };
             const commandArgs = nodeLikeExecutable ? nodeSelfExecArgs(argv) : argv;
             commandText = [shellQuote(resolved), ...commandArgs.map(shellQuote)].join(' ');
             spawnfile = file;
@@ -9884,7 +10041,7 @@ const child_process = (() => {
             shellCommand = `printf %s ${shellQuote(input)} | ${shellCommand}`;
         }
         if (opts.cwd) shellCommand = `cd ${shellQuote(opts.cwd)} && ${shellCommand}`;
-        return { shellCommand, displayCommand: useShell ? spawnargs[2] : [file, ...argv].join(' '), file, args: argv, options: opts, spawnfile, spawnargs, resolved, shell: useShell };
+        return { shellCommand, displayCommand: useShell ? spawnargs[2] : [file, ...argv].join(' '), file, args: argv, options: opts, spawnfile, spawnargs, resolved, shell: useShell, nodeLikeExecutable };
     }
 
     function runBuiltCommand(spec) {
@@ -9951,6 +10108,26 @@ const child_process = (() => {
 
     function deferChildProcess(fn) {
         timers.setImmediate(fn);
+    }
+
+    function emitChildOutput(child, result, options) {
+        const stdio = normalizeStdio(options && options.stdio);
+        if (result.stdout) {
+            if (child.stdout) child.stdout.push(Buffer.from(result.stdout));
+            else if (stdio[1] === 'inherit') process.stdout.write(result.stdout);
+        }
+        if (result.stderr) {
+            if (child.stderr) child.stderr.push(Buffer.from(result.stderr));
+            else if (stdio[2] === 'inherit') process.stderr.write(result.stderr);
+        }
+    }
+
+    function shouldRunNodeLikeSpawnInProcess(spec) {
+        if (!spec.nodeLikeExecutable || spec.shell) return false;
+        for (const arg of spec.args || []) {
+            if (_optionName(arg) === '--env-file') return true;
+        }
+        return false;
     }
 
     class ChildProcess extends events.EventEmitter {
@@ -10048,14 +10225,19 @@ const child_process = (() => {
             child.emit('spawn');
             let result;
             try {
-                result = runBuiltCommand(spec);
+                if (shouldRunNodeLikeSpawnInProcess(spec)) {
+                    result = _runNodeLikeChildSync(spec.args, spec.options || {});
+                    if (!result) result = runBuiltCommand(spec);
+                    else result.signal = null;
+                } else {
+                    result = runBuiltCommand(spec);
+                }
             } catch (err) {
                 child.emit('error', err);
                 child._complete(1, null);
                 return;
             }
-            if (child.stdout && result.stdout) child.stdout.push(Buffer.from(result.stdout));
-            if (child.stderr && result.stderr) child.stderr.push(Buffer.from(result.stderr));
+            emitChildOutput(child, result, spec.options || options || {});
             child._complete(result.status, result.signal);
         });
         return child;
@@ -10064,6 +10246,22 @@ const child_process = (() => {
     function spawnSync(command, args, options) {
         if (args && !Array.isArray(args) && typeof args === 'object') { options = args; args = []; }
         const opts = normalizeOptions(options || {});
+        if (isNodeLikeExecutable(command)) {
+            const nodeResult = _runNodeLikeChildSync(normalizeArgs(args || [], 'args'), opts);
+            if (nodeResult) {
+                const stdout = encodeOutput(nodeResult.stdout || '', opts);
+                const stderr = encodeOutput(nodeResult.stderr || '', opts);
+                return {
+                    status: nodeResult.status,
+                    signal: null,
+                    error: undefined,
+                    stdout,
+                    stderr,
+                    output: [null, stdout, stderr],
+                    pid: nextPid++,
+                };
+            }
+        }
         const spec = buildCommand(command, args || [], opts, false);
         if (spec.error) {
             return { status: null, signal: null, error: spec.error, stdout: Buffer.alloc(0), stderr: Buffer.alloc(0), output: [null, Buffer.alloc(0), Buffer.alloc(0)], pid: undefined };
@@ -14368,6 +14566,9 @@ const internalTestBinding = {
                 crypto: {},
             };
         }
+        if (name === 'os') {
+            return _nodeOsBinding;
+        }
         if (name === 'block_list') {
             const AF_INET = 4;
             const AF_INET6 = 6;
@@ -16463,7 +16664,7 @@ function _processBinding(name) {
                 UV_UDP_REUSEADDR: 4,
                 dlopen: _nullProto({ RTLD_LAZY: 1, RTLD_NOW: 2, RTLD_GLOBAL: 256, RTLD_LOCAL: 0 }),
                 errno: _nullProto(nodeOs.constants.errno),
-                priority: _nullProto({ PRIORITY_LOW: 19, PRIORITY_BELOW_NORMAL: 10, PRIORITY_NORMAL: 0, PRIORITY_ABOVE_NORMAL: -7, PRIORITY_HIGH: -14, PRIORITY_HIGHEST: -20 }),
+                priority: _nullProto(NODE_OS_PRIORITY_CONSTANTS),
                 signals: _nullProto(nodeOs.constants.signals),
             }),
             trace: _nullProto({}),
@@ -17373,6 +17574,286 @@ function _runNodeTestCliIfRequested() {
     return true;
 }
 
+function _snapshotProcessEnv() {
+    const out = {};
+    for (const key in process.env) {
+        const value = process.env[key];
+        if (value !== undefined) out[key] = value;
+    }
+    return out;
+}
+
+function _restoreProcessEnv(snapshot) {
+    for (const key in process.env) {
+        if (!Object.prototype.hasOwnProperty.call(snapshot, key)) delete process.env[key];
+    }
+    for (const key in snapshot) process.env[key] = snapshot[key];
+}
+
+function _applyChildEnv(env) {
+    if (!env) return;
+    for (const key in process.env) {
+        if (!Object.prototype.hasOwnProperty.call(env, key)) delete process.env[key];
+    }
+    for (const key in env) {
+        const value = env[key];
+        if (value === undefined) delete process.env[key];
+        else process.env[key] = String(value);
+    }
+}
+
+function _outputChunkToString(data, encoding) {
+    if (data === undefined || data === null) return '';
+    if (typeof data === 'string') return data;
+    const enc = typeof encoding === 'string' ? encoding : undefined;
+    if (data instanceof Uint8Array) {
+        return Buffer.from(data.buffer, data.byteOffset, data.byteLength).toString(enc);
+    }
+    if (data instanceof ArrayBuffer) {
+        return Buffer.from(new Uint8Array(data)).toString(enc);
+    }
+    return String(data);
+}
+
+function _snapshotCliOptionValues() {
+    const snapshot = Object.create(null);
+    for (const key in _cliOptionValues) snapshot[key] = _cliOptionValues[key];
+    return snapshot;
+}
+
+function _restoreCliOptionValues(snapshot) {
+    for (const key in _cliOptionValues) delete _cliOptionValues[key];
+    for (const key in snapshot) _cliOptionValues[key] = snapshot[key];
+}
+
+function _snapshotPermissionState() {
+    return {
+        enabled: _permissionState.enabled,
+        fsRead: _permissionState.fsRead.slice(),
+        fsWrite: _permissionState.fsWrite.slice(),
+    };
+}
+
+function _restorePermissionState(snapshot) {
+    _permissionState.enabled = snapshot.enabled;
+    _permissionState.fsRead = snapshot.fsRead.slice();
+    _permissionState.fsWrite = snapshot.fsWrite.slice();
+}
+
+function _snapshotDotenvState() {
+    return {
+        original: Array.from(_originalDotenvEnvKeys),
+        managed: Array.from(_dotenvManagedEnvKeys),
+    };
+}
+
+function _replaceSetContents(set, values) {
+    set.clear();
+    for (const value of values) set.add(value);
+}
+
+function _restoreDotenvState(snapshot) {
+    _replaceSetContents(_originalDotenvEnvKeys, snapshot.original);
+    _replaceSetContents(_dotenvManagedEnvKeys, snapshot.managed);
+}
+
+function _resetDotenvStateForCurrentEnv() {
+    _replaceSetContents(_originalDotenvEnvKeys, Object.keys(process.env));
+    _dotenvManagedEnvKeys.clear();
+}
+
+function _runChildCliPreloads(cliState) {
+    for (const request of cliState.preloads || []) {
+        require(request);
+    }
+}
+
+let _stderrSyncWriteOverride = null;
+
+function _runNodeLikeChildSync(args, options) {
+    const savedArgv = process.argv.slice();
+    const savedArgv0 = process.argv0;
+    const savedExecArgv = process.execArgv.slice();
+    const savedExitCode = process.exitCode;
+    const savedExiting = process._exiting;
+    const savedMainModule = _mainModule;
+    const savedCwd = process.cwd();
+    const savedEnv = _snapshotProcessEnv();
+    const savedExit = process.exit;
+    const savedStdoutWrite = process.stdout.write;
+    const savedStderrWrite = process.stderr.write;
+    const savedStderrSyncWriteOverride = _stderrSyncWriteOverride;
+    const savedCliOptionValues = _snapshotCliOptionValues();
+    const savedPermissionState = _snapshotPermissionState();
+    const savedDotenvState = _snapshotDotenvState();
+    const savedProcessFlags = {
+        noDeprecation: process.noDeprecation,
+        throwDeprecation: process.throwDeprecation,
+        traceDeprecation: process.traceDeprecation,
+    };
+    const exitSignal = {};
+    let status = 0;
+    let stdout = '';
+    let stderr = '';
+    let cacheFilename = null;
+    let savedCacheEntry;
+    let hadCacheEntry = false;
+
+    process.exit = function childExit(code) {
+        process.exitCode = code !== undefined ? Number(code) || 0 : process.exitCode;
+        throw exitSignal;
+    };
+    process.stdout.write = function childStdoutWrite(data, encoding, cb) {
+        if (typeof encoding === 'function') { cb = encoding; encoding = undefined; }
+        stdout += _outputChunkToString(data, encoding);
+        if (cb) cb();
+        return true;
+    };
+    process.stderr.write = function childStderrWrite(data, encoding, cb) {
+        if (typeof encoding === 'function') { cb = encoding; encoding = undefined; }
+        stderr += _outputChunkToString(data, encoding);
+        if (cb) cb();
+        return true;
+    };
+    _stderrSyncWriteOverride = function childStderrSyncWrite(text) {
+        stderr += String(text);
+    };
+
+    try {
+        process.exitCode = 0;
+        process._exiting = false;
+        if (options && options.cwd !== undefined) {
+            if (typeof options.cwd !== 'string') throw _makeInvalidArgTypeError('options.cwd', 'string', options.cwd);
+            process.chdir(options.cwd);
+        }
+        _applyChildEnv(options && options.env);
+        _resetDotenvStateForCurrentEnv();
+
+        const childArgs = Array.isArray(args) ? args.map(String) : [];
+        const stdinSource = childArgs[0] === '-'
+            ? (options && options.input !== undefined
+                ? (Buffer.isBuffer(options.input) ? options.input.toString() : String(options.input))
+                : '')
+            : null;
+        const cliState = stdinSource === null
+            ? _parseNodeCli([process.execPath, ...childArgs])
+            : _parseNodeCli([process.execPath]);
+
+        if (cliState.error) {
+            stderr += `${process.execPath}: ${cliState.error.message}\n`;
+            status = cliState.error.status;
+            return { status, stdout, stderr };
+        }
+        if (cliState.exit) {
+            stdout += cliState.exit.stdout || '';
+            stderr += cliState.exit.stderr || '';
+            status = cliState.exit.status;
+            return { status, stdout, stderr };
+        }
+        if (cliState.test) return null;
+
+        process.argv = stdinSource === null
+            ? cliState.argv
+            : [process.execPath, ...childArgs.slice(1)];
+        process.argv0 = process.argv[0] || process.argv0;
+        process.execArgv = stdinSource === null ? cliState.execArgv.slice() : [];
+        _runChildCliPreloads(cliState);
+
+        if (stdinSource !== null || cliState.evalSource !== null || cliState.print) {
+            const filename = stdinSource !== null ? '[stdin]' : '[eval]';
+            const rawSource = stdinSource !== null ? stdinSource : String(cliState.evalSource || '');
+            const source = (cliState.useStrict || _cliOptionValues['--use-strict'])
+                ? '"use strict";\n' + rawSource
+                : rawSource;
+            const module = new Module(filename, null);
+            module.id = '.';
+            module.filename = filename;
+            module.paths = Module._nodeModulePaths(process.cwd());
+            module.require = _makeRequire(process.cwd() + '/eval', module);
+            const body = cliState.print
+                ? `return eval(${JSON.stringify(source)});`
+                : source;
+            const wrappedFn = _nodeNative.evalScriptAsFunction(
+                '(function (exports, require, module, __filename, __dirname) {\n' +
+                    body +
+                    '\n})',
+                filename,
+            );
+            const result = wrappedFn(module.exports, module.require, module, filename, process.cwd());
+            module.loaded = true;
+            if (cliState.print) console.log(result);
+        } else if (cliState.mainScript) {
+            const filename = path.isAbsolute(cliState.mainScript)
+                ? cliState.mainScript
+                : path.resolve(process.cwd(), cliState.mainScript);
+            cacheFilename = _moduleRealpath(filename);
+            savedCacheEntry = _moduleCache[cacheFilename];
+            hadCacheEntry = Object.prototype.hasOwnProperty.call(_moduleCache, cacheFilename);
+            const fileSource = std.loadFile(cacheFilename);
+            if (fileSource === null) {
+                const err = new Error(`Cannot find module '${cacheFilename}'`);
+                err.code = 'MODULE_NOT_FOUND';
+                throw err;
+            }
+            const dirname = path.dirname(cacheFilename);
+            const module = new Module(cacheFilename, null);
+            module.id = '.';
+            module.filename = cacheFilename;
+            module.paths = Module._nodeModulePaths(dirname);
+            _mainModule = module;
+            _moduleCache[cacheFilename] = module;
+            module.require = _makeRequire(cacheFilename, module);
+            const wrappedFn = _nodeNative.evalScriptAsFunction(
+                '(function (exports, require, module, __filename, __dirname) {\n' +
+                    _stripShebang(fileSource) +
+                    '\n})',
+                cacheFilename,
+            );
+            wrappedFn(module.exports, module.require, module, cacheFilename, dirname);
+            module.loaded = true;
+        } else {
+            // Preloads have already run; child `node` with no script exits
+            // cleanly when stdin has no source in this non-interactive runtime.
+        }
+        _drainEventLoopBeforeExit();
+        status = process.exitCode || 0;
+    } catch (err) {
+        if (err === exitSignal) {
+            status = process.exitCode || 0;
+        } else {
+            stderr = _formatThrownFailure(err) + '\n';
+            status = process.exitCode || 1;
+        }
+    } finally {
+        process.exit = savedExit;
+        process.stdout.write = savedStdoutWrite;
+        process.stderr.write = savedStderrWrite;
+        _stderrSyncWriteOverride = savedStderrSyncWriteOverride;
+        process.argv = savedArgv;
+        process.argv0 = savedArgv0;
+        process.execArgv = savedExecArgv;
+        process.exitCode = savedExitCode;
+        process._exiting = savedExiting;
+        _mainModule = savedMainModule;
+        try {
+            if (process.cwd() !== savedCwd) process.chdir(savedCwd);
+        } catch (_) {}
+        _restoreProcessEnv(savedEnv);
+        _restoreCliOptionValues(savedCliOptionValues);
+        _restorePermissionState(savedPermissionState);
+        _restoreDotenvState(savedDotenvState);
+        process.noDeprecation = savedProcessFlags.noDeprecation;
+        process.throwDeprecation = savedProcessFlags.throwDeprecation;
+        process.traceDeprecation = savedProcessFlags.traceDeprecation;
+        if (cacheFilename) {
+            if (hadCacheEntry) _moduleCache[cacheFilename] = savedCacheEntry;
+            else delete _moduleCache[cacheFilename];
+        }
+    }
+
+    return { status, stdout, stderr };
+}
+
 function _runCommonJsMain(filename, options = {}) {
     filename = _moduleRealpath(filename);
     const source = std.loadFile(filename);
@@ -17573,6 +18054,14 @@ function _parseDotenvSource(source) {
 }
 
 function _writeStderrSync(text) {
+    if (_stderrSyncWriteOverride) {
+        _stderrSyncWriteOverride(text);
+        return;
+    }
+    try {
+        process.stderr.write(String(text));
+        return;
+    } catch (_) {}
     try {
         const bytes = new TextEncoder().encode(String(text));
         os.write(2, bytes.buffer, bytes.byteOffset, bytes.byteLength);
@@ -17585,14 +18074,14 @@ function _loadDotenvFile(filename) {
     const resolved = path.isAbsolute(filename) ? filename : path.resolve(process.cwd(), filename);
     const source = std.loadFile(resolved);
     if (source === null) {
-        _writeStderrSync(`${process.argv[0] || 'node'}: ${resolved}: not found\n`);
-        std.exit(9);
+        return { status: 9, message: `${resolved}: not found` };
     }
     for (const [key, value] of _parseDotenvSource(source)) {
         if (_isOriginalDotenvEnvKey(key)) continue;
         process.env[key] = value;
         _dotenvManagedEnvKeys.add(key);
     }
+    return null;
 }
 
 function _splitNodeOptions(text) {
@@ -17752,7 +18241,8 @@ function _loadNodeCliEnvFiles(rawArgv) {
             const read = _readOptionValue(rawArgv, i, name);
             const missing = _missingRequiredCliValue(arg, read);
             if (missing) return { status: 9, message: missing };
-            _loadDotenvFile(read.value);
+            const loadError = _loadDotenvFile(read.value);
+            if (loadError) return loadError;
             i = read.next;
             continue;
         }

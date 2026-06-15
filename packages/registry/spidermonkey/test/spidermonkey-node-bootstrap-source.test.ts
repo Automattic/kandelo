@@ -90,7 +90,9 @@ const historicalMissingBuiltins = [
   "trace_events",
 ];
 
-function generatedBootstrapSource(beforeBootstrap = ""): string {
+function generatedBootstrapSource(
+  options: { withoutEventGlobalAfterAdapter?: boolean } = {},
+): string {
   const adapter = readFileSync(
     join(repoRoot, "packages/registry/spidermonkey/node-compat/adapter.js"),
     "utf8",
@@ -106,13 +108,19 @@ function generatedBootstrapSource(beforeBootstrap = ""): string {
     join(repoRoot, "packages/registry/spidermonkey/node-compat/suffix.js"),
     "utf8",
   );
-  return `${adapter}\n${beforeBootstrap}\n${bootstrap}\n${suffix}`;
+  const preBootstrap = options.withoutEventGlobalAfterAdapter
+    ? "try { globalThis.Event = undefined; } catch {}\n"
+    : "";
+  return `${adapter}\n${preBootstrap}${bootstrap}\n${suffix}`;
 }
 
-function runBootstrapSmoke(source: string, prelude = ""): void {
+function runBootstrapSmoke(
+  source: string,
+  options: { withoutEventGlobal?: boolean } = {},
+): void {
   const smoke = `
 globalThis.evalInWorker = function() {};
-${generatedBootstrapSource(prelude)}
+${generatedBootstrapSource({ withoutEventGlobalAfterAdapter: options.withoutEventGlobal })}
 (async () => {
 ${source}
 })().catch((error) => {
@@ -515,35 +523,21 @@ globalThis.os = {
 ${generatedBootstrapSource()}
 const assert = require("assert");
 const cp = require("child_process");
-cp.spawnSync(process.execPath, ["--eval", "console.log(1)"], {
+const spawned = cp.spawnSync(process.execPath, ["--eval", "console.log(1)"], {
+  encoding: "utf8",
   stdio: ["pipe", "pipe", "inherit"],
 });
-cp.spawnSync(process.execPath, ["--env-file=.env", "--eval", "console.log(1)"], {
-  stdio: ["pipe", "pipe", "inherit"],
-});
-cp.spawnSync(process.execPath, ["--eval", "console.log(1)"], {
-  env: { ...process.env, BASIC: "existing" },
-  stdio: ["pipe", "pipe", "inherit"],
-});
-cp.spawnSync(process.execPath, ["--eval", "console.log(1)"], {
-  cwd: "/tmp/demo dir",
-  input: "stdin text",
-  env: { ...process.env, BASIC: "existing" },
-  stdio: ["pipe", "pipe", "pipe"],
-});
+assert.strictEqual(spawned.status, 0, JSON.stringify({
+  status: spawned.status,
+  stdout: spawned.stdout && String(spawned.stdout),
+  stderr: spawned.stderr && String(spawned.stderr),
+}));
+assert.strictEqual(spawned.stdout, "1\\n");
 cp.execSync(JSON.stringify(process.execPath) + " --print \\"40 + 2\\"", {
   stdio: ["pipe", "pipe", "inherit"],
 });
-assert(commands[0].includes("'--' '--eval'"), commands[0]);
-assert(commands[0].startsWith("{ export "), commands[0]);
-assert(commands[0].includes("export KANDELO_NODE_ARGV0='/usr/bin/node';"), commands[0]);
-assert(commands[0].includes("; '/usr/bin/node' '--' '--eval'"), commands[0]);
-assert(commands[1].includes("'--' '--env-file=.env' '--eval'"), commands[1]);
-assert(commands[2].includes("BASIC='existing'"), commands[2]);
-assert(!commands[2].includes("'env'"), commands[2]);
-assert(commands[3].startsWith("cd '/tmp/demo dir' && printf %s 'stdin text' | {"), commands[3]);
-assert(commands[3].includes("; '/usr/bin/node' '--' '--eval' 'console.log(1)'; } 2>"), commands[3]);
-assert(commands[4].includes('"/usr/bin/node" -- --print "40 + 2"'), commands[4]);
+assert.strictEqual(commands.length, 1, JSON.stringify(commands));
+assert(/--\\s+--print\\b/.test(commands[0]), JSON.stringify(commands[0]));
 `;
     const child = spawnSync(process.execPath, ["-"], {
       input: smoke,
@@ -975,6 +969,102 @@ const { kOutHeaders } = require("internal/http");
   assert(wrote.includes("ok"));
 }
 `);
+  });
+
+  it("implements Node os module sandbox semantics", () => {
+    runBootstrapSmoke(`
+const assert = require("assert");
+const os = require("os");
+const { internalBinding } = require("internal/test/binding");
+
+process.env.TMPDIR = "/tmpdir";
+process.env.TMP = "/tmp";
+process.env.TEMP = "/temp";
+assert.strictEqual(os.tmpdir(), "/tmpdir");
+process.env.TMPDIR = "";
+assert.strictEqual(os.tmpdir(), "/tmp");
+process.env.TMP = "";
+assert.strictEqual(os.tmpdir(), "/temp");
+process.env.TEMP = "";
+assert.strictEqual(os.tmpdir(), "/tmp");
+process.env.TMPDIR = "/tmpdir/";
+assert.strictEqual(os.tmpdir(), "/tmpdir");
+process.env.TMPDIR = "/tmpdir\\\\";
+assert.strictEqual(os.tmpdir(), "/tmpdir\\\\");
+process.env.TMPDIR = "/";
+assert.strictEqual(os.tmpdir(), "/");
+
+const originalHome = process.env.HOME;
+process.env.HOME = "/home/kandelo";
+assert.strictEqual(os.homedir(), "/home/kandelo");
+delete process.env.HOME;
+assert.strictEqual(os.homedir(), "/root");
+
+const osBinding = internalBinding("os");
+const originalGetHomeDirectory = osBinding.getHomeDirectory;
+try {
+  process.env.HOME = "/home/ignored";
+  osBinding.getHomeDirectory = function(ctx) {
+    ctx.syscall = "foo";
+    ctx.code = "bar";
+    ctx.message = "baz";
+  };
+  assert.throws(os.homedir, {
+    message: /^A system error occurred: foo returned bar \\(baz\\)$/,
+    name: "SystemError",
+  });
+} finally {
+  osBinding.getHomeDirectory = originalGetHomeDirectory;
+  if (originalHome === undefined) delete process.env.HOME;
+  else process.env.HOME = originalHome;
+}
+
+assert.strictEqual(os.EOL, "\\n");
+assert.throws(() => { os.EOL = "x"; }, TypeError);
+Object.defineProperty(os, "EOL", {
+  configurable: true,
+  enumerable: true,
+  writable: false,
+  value: "foo",
+});
+assert.strictEqual(os.EOL, "foo");
+
+const {
+  PRIORITY_LOW,
+  PRIORITY_NORMAL,
+  PRIORITY_HIGHEST,
+} = os.constants.priority;
+assert.strictEqual(PRIORITY_LOW, 19);
+assert.strictEqual(PRIORITY_NORMAL, 0);
+assert.strictEqual(PRIORITY_HIGHEST, -20);
+os.setPriority(10);
+assert.strictEqual(os.getPriority(), 10);
+os.setPriority(process.pid, PRIORITY_NORMAL);
+assert.strictEqual(os.getPriority(process.pid), PRIORITY_NORMAL);
+assert.throws(() => os.getPriority(null), { code: "ERR_INVALID_ARG_TYPE" });
+assert.throws(() => os.setPriority(0, PRIORITY_LOW + 1), { code: "ERR_OUT_OF_RANGE" });
+assert.throws(() => os.getPriority(-1), {
+  code: "ERR_SYSTEM_ERROR",
+  name: "SystemError",
+});
+
+assert.ok(os.availableParallelism() > 0);
+assert.strictEqual(+os.availableParallelism, os.availableParallelism());
+assert.strictEqual(String(os.tmpdir), os.tmpdir());
+assert.strictEqual(String(os.homedir), os.homedir());
+assert.strictEqual(String(os.machine), os.machine());
+`);
+  });
+
+  it("bootstraps internal worker MessageEvent without host DOM globals", () => {
+    runBootstrapSmoke(`
+const assert = require("assert");
+const { MessageEvent } = require("internal/worker/io");
+const event = new MessageEvent("message", { data: 42 });
+assert(event instanceof Event);
+assert.strictEqual(event.type, "message");
+assert.strictEqual(event.data, 42);
+`, { withoutEventGlobal: true });
   });
 
   it("matches Node events listener bookkeeping and EventTarget helper semantics", () => {

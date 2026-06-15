@@ -67,6 +67,9 @@ describe("node-core official runner isolation", () => {
     expect(secondEnv.get("NODE_TEST_DIR")).toBe(isolated[1].isolation.nodeTestDir);
     expect(secondEnv.get("TEST_SERIAL_ID")).toBe("2");
     expect(secondEnv.get("TEST_THREAD_ID")).toBe("2");
+
+    const execEnv = envMap(envForRun(isolated[0].isolation, "/tmp/kandelo-node-bin/node"));
+    expect(execEnv.get("KANDELO_NODE_CORE_EXEC_PATH")).toBe("/tmp/kandelo-node-bin/node");
   });
 
   it("overrides inherited identity env and can target browser VFS roots", () => {
@@ -173,11 +176,13 @@ describe("node-core official runner isolation", () => {
       "/repo/node.wasm",
       "/repo/sh.wasm",
       "/repo/coreutils.wasm",
+      "/tmp/kandelo-node-bin/node",
     )).toEqual({
       "node": "/repo/node.wasm",
       "/bin/node": "/repo/node.wasm",
       "/usr/bin/node": "/repo/node.wasm",
       "/usr/local/bin/node": "/repo/node.wasm",
+      "/tmp/kandelo-node-bin/node": "/repo/node.wasm",
       "sh": "/repo/sh.wasm",
       "/bin/sh": "/repo/sh.wasm",
       "/usr/bin/sh": "/repo/sh.wasm",
