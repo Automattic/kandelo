@@ -9845,15 +9845,33 @@ pub fn sys_fpathconf(proc: &Process, fd: i32, name: i32) -> Result<i64, Errno> {
 
 fn pathconf_value(name: i32) -> Result<i64, Errno> {
     match name {
-        1 => Ok(14),   // _PC_LINK_MAX
-        2 => Ok(13),   // _PC_MAX_CANON
-        3 => Ok(255),  // _PC_MAX_INPUT
-        4 => Ok(255),  // _PC_NAME_MAX
-        5 => Ok(4096), // _PC_PATH_MAX
-        6 => Ok(4096), // _PC_PIPE_BUF
-        7 => Ok(1),    // _PC_CHOWN_RESTRICTED
-        8 => Ok(1),    // _PC_NO_TRUNC
-        9 => Ok(0),    // _PC_VDISABLE
+        // Keep these numbers in sync with libc's unistd.h _PC_* constants.
+        // pathconf(2)/fpathconf(2) are syscalls in this libc port, so the
+        // kernel cannot use Linux's libc fallback table for supported names.
+        0 => Ok(8),    // _PC_LINK_MAX / _POSIX_LINK_MAX
+        1 => Ok(255),  // _PC_MAX_CANON / _POSIX_MAX_CANON
+        2 => Ok(255),  // _PC_MAX_INPUT / _POSIX_MAX_INPUT
+        3 => Ok(255),  // _PC_NAME_MAX
+        4 => Ok(4096), // _PC_PATH_MAX
+        5 => Ok(4096), // _PC_PIPE_BUF
+        6 => Ok(1),    // _PC_CHOWN_RESTRICTED
+        7 => Ok(1),    // _PC_NO_TRUNC
+        8 => Ok(0),    // _PC_VDISABLE
+        9 => Ok(1),    // _PC_SYNC_IO
+        10 => Ok(0),   // _PC_ASYNC_IO (unsupported)
+        11 => Ok(0),   // _PC_PRIO_IO (unsupported)
+        12 => Ok(0),   // _PC_SOCK_MAXBUF (not applicable)
+        13 => Ok(64),  // _PC_FILESIZEBITS
+        14 => Ok(4096), // _PC_REC_INCR_XFER_SIZE
+        15 => Ok(4096), // _PC_REC_MAX_XFER_SIZE
+        16 => Ok(4096), // _PC_REC_MIN_XFER_SIZE
+        17 => Ok(4096), // _PC_REC_XFER_ALIGN
+        18 => Ok(4096), // _PC_ALLOC_SIZE_MIN
+        19 => Ok(4096), // _PC_SYMLINK_MAX
+        20 => Ok(1),    // _PC_2_SYMLINKS
+        21 => Ok(0),    // _PC_FALLOC (unsupported)
+        22 => Ok(255),  // _PC_TEXTDOMAIN_MAX
+        23 => Ok(1),    // _PC_TIMESTAMP_RESOLUTION (nanoseconds)
         _ => Err(Errno::EINVAL),
     }
 }
@@ -14721,12 +14739,17 @@ mod tests {
 
     #[test]
     fn test_pathconf_name_max() {
-        assert_eq!(sys_pathconf(b"/tmp/foo", 4), Ok(255)); // _PC_NAME_MAX
+        assert_eq!(sys_pathconf(b"/tmp/foo", 3), Ok(255)); // _PC_NAME_MAX
     }
 
     #[test]
     fn test_pathconf_pipe_buf() {
-        assert_eq!(sys_pathconf(b"/tmp/foo", 6), Ok(4096)); // _PC_PIPE_BUF
+        assert_eq!(sys_pathconf(b"/tmp/foo", 5), Ok(4096)); // _PC_PIPE_BUF
+    }
+
+    #[test]
+    fn test_pathconf_filesizebits() {
+        assert_eq!(sys_pathconf(b"/tmp/foo", 13), Ok(64)); // _PC_FILESIZEBITS
     }
 
     #[test]
@@ -14738,7 +14761,8 @@ mod tests {
     fn test_fpathconf_valid_fd() {
         let proc = Process::new(1);
         // fd 0 is pre-opened (stdin)
-        assert_eq!(sys_fpathconf(&proc, 0, 5), Ok(4096)); // _PC_PATH_MAX
+        assert_eq!(sys_fpathconf(&proc, 0, 4), Ok(4096)); // _PC_PATH_MAX
+        assert_eq!(sys_fpathconf(&proc, 0, 13), Ok(64)); // _PC_FILESIZEBITS
     }
 
     #[test]
