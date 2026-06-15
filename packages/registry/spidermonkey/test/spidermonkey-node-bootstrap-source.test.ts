@@ -271,6 +271,127 @@ assert.strictEqual(__kandeloRunNodeEventLoop(), 0);
 `);
   });
 
+  it("parses Node self-exec CLI options from scriptArgs", () => {
+    expect(runBootstrapCli(["--eval", "console.log(123)"])).toEqual({
+      status: 0,
+      stdout: "123\n",
+      stderr: "",
+    });
+
+    expect(
+      runBootstrapCli([
+        "--eval",
+        "console.log(require('path').basename('/tmp/demo.js'), module.id, __filename)",
+      ]),
+    ).toEqual({
+      status: 0,
+      stdout: "demo.js [eval] [eval]\n",
+      stderr: "",
+    });
+
+    expect(
+      runBootstrapCli([
+        "--print",
+        "process.argv.slice(1).join(',')",
+        "--",
+        "alpha",
+        "--",
+        "beta",
+      ]),
+    ).toEqual({
+      status: 0,
+      stdout: "alpha,--,beta\n",
+      stderr: "",
+    });
+
+    expect(
+      runBootstrapCli(["--use-strict", "-p", "process.execArgv"]),
+    ).toEqual({
+      status: 0,
+      stdout: "[ '--use-strict', '-p', 'process.execArgv' ]\n",
+      stderr: "",
+    });
+
+    expect(runBootstrapCli(["--eval"])).toEqual({
+      status: 9,
+      stdout: "",
+      stderr: "/usr/bin/node: --eval requires an argument\n",
+    });
+
+    expect(runBootstrapCli(["--eval="])).toEqual({
+      status: 9,
+      stdout: "",
+      stderr: "/usr/bin/node: --eval= requires an argument\n",
+    });
+
+    expect(runBootstrapCli(["--inspect-port="])).toEqual({
+      status: 9,
+      stdout: "",
+      stderr: "/usr/bin/node: --inspect-port= requires an argument\n",
+    });
+
+    expect(runBootstrapCli(["--bad-kandelo-option"])).toEqual({
+      status: 9,
+      stdout: "",
+      stderr: "/usr/bin/node: bad option: --bad-kandelo-option\n",
+    });
+
+    expect(
+      runBootstrapCli(
+        [
+          "--eval",
+          "console.log(require('internal/options').getOptionValue('--redirect-warnings'))",
+        ],
+        { env: { NODE_OPTIONS: "--redirect-warnings=foó" } },
+      ),
+    ).toEqual({
+      status: 0,
+      stdout: "foó\n",
+      stderr: "",
+    });
+
+    expect(runBootstrapCli([], { env: { NODE_OPTIONS: "--eval" } })).toEqual({
+      status: 9,
+      stdout: "",
+      stderr: "/usr/bin/node: --eval is not allowed in NODE_OPTIONS\n",
+    });
+  });
+
+  it("inserts the SpiderMonkey argument separator for Node child self-exec", () => {
+    const smoke = `
+globalThis.evalInWorker = function() {};
+const commands = [];
+globalThis.os = {
+  getenv() { return null; },
+  getpid() { return 1; },
+  getcwd() { return ["/work", 0]; },
+  chdir() { return 0; },
+  popenRead(command) {
+    commands.push(String(command));
+    return { output: "", status: 0 };
+  },
+};
+${generatedBootstrapSource()}
+const assert = require("assert");
+const cp = require("child_process");
+cp.spawnSync(process.execPath, ["--eval", "console.log(1)"], {
+  stdio: ["pipe", "pipe", "inherit"],
+});
+cp.execSync(JSON.stringify(process.execPath) + " --print \\"40 + 2\\"", {
+  stdio: ["pipe", "pipe", "inherit"],
+});
+assert(commands[0].includes("'--' '--eval'"), commands[0]);
+assert(commands[1].includes('"/usr/bin/node" -- --print "40 + 2"'), commands[1]);
+`;
+    const child = spawnSync(process.execPath, ["-"], {
+      input: smoke,
+      encoding: "utf8",
+      maxBuffer: 1024 * 1024,
+    });
+    expect(child.stderr).toBe("");
+    expect(child.status).toBe(0);
+  });
+
   it("resolves the full-suite missing built-in and internal module surface", () => {
     runBootstrapSmoke(`
 const names = ${JSON.stringify(historicalMissingBuiltins)};

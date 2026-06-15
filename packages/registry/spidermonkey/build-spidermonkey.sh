@@ -202,6 +202,12 @@ if [ -d "$PATCH_DIR" ]; then
         if patch -p1 -N --dry-run --silent -d "$SRC_DIR" < "$patch_file" >/dev/null 2>&1; then
             echo "==> Applying $(basename "$patch_file")..."
             patch -p1 -N -d "$SRC_DIR" < "$patch_file"
+        elif patch -p1 -R --dry-run --silent -d "$SRC_DIR" < "$patch_file" >/dev/null 2>&1; then
+            echo "==> $(basename "$patch_file") already applied."
+        else
+            echo "ERROR: could not apply $(basename "$patch_file") to $SRC_DIR." >&2
+            patch -p1 --dry-run -d "$SRC_DIR" < "$patch_file" >&2 || true
+            exit 1
         fi
     done
 fi

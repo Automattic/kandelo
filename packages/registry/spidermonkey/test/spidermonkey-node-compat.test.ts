@@ -770,6 +770,53 @@ describe.skipIf(!nodeWasm)("SpiderMonkey Node compatibility runtime", () => {
     expect(result.stdout.trim()).toBe("ok");
   }, DEFAULT_TEST_TIMEOUT);
 
+  it("runs Node self-exec CLI options through child_process with Node statuses", async () => {
+    const result = await runNode(
+      [
+        "const assert = require('node:assert')",
+        "const cp = require('node:child_process')",
+        "const fs = require('node:fs')",
+        "fs.writeFileSync('/usr/bin/node', '')",
+        "fs.writeFileSync('/tmp/kandelo-preload.js', \"console.log('A')\\n\")",
+        "let child = cp.spawnSync(process.execPath, ['--eval', 'console.log(123)'], { encoding: 'utf8' })",
+        "assert.strictEqual(child.status, 0)",
+        "assert.strictEqual(child.signal, null)",
+        "assert.strictEqual(child.stdout, '123\\n')",
+        "assert.strictEqual(child.stderr, '')",
+        "child = cp.spawnSync(process.execPath, ['--print', 'process.argv.slice(1).join(\\',\\')', '--', 'alpha', '--', 'beta'], { encoding: 'utf8' })",
+        "assert.strictEqual(child.status, 0)",
+        "assert.strictEqual(child.stdout, 'alpha,--,beta\\n')",
+        "child = cp.spawnSync(process.execPath, ['--use-strict', '-p', 'process.execArgv'], { encoding: 'utf8' })",
+        "assert.strictEqual(child.status, 0)",
+        "assert.strictEqual(child.stdout, \"[ '--use-strict', '-p', 'process.execArgv' ]\\n\")",
+        "child = cp.spawnSync(process.execPath, ['--eval'], { encoding: 'utf8' })",
+        "assert.strictEqual(child.status, 9)",
+        "assert.strictEqual(child.stderr.trim(), process.execPath + ': --eval requires an argument')",
+        "child = cp.spawnSync(process.execPath, ['--bad-kandelo-option'], { encoding: 'utf8' })",
+        "assert.strictEqual(child.status, 9)",
+        "assert.strictEqual(child.stderr.trim(), process.execPath + ': bad option: --bad-kandelo-option')",
+        "child = cp.spawnSync(process.execPath, ['-e', 'console.log(\\'B\\')'], {",
+        "  encoding: 'utf8',",
+        "  env: { ...process.env, NODE_OPTIONS: '-r /tmp/kandelo-preload.js --redirect-warnings=foó' },",
+        "})",
+        "assert.strictEqual(child.status, 0)",
+        "assert.strictEqual(child.stdout, 'A\\nB\\n')",
+        "child = cp.spawnSync(process.execPath, [], { encoding: 'utf8', env: { ...process.env, NODE_OPTIONS: '--eval' } })",
+        "assert.strictEqual(child.status, 9)",
+        "assert.strictEqual(child.stderr.trim(), process.execPath + ': --eval is not allowed in NODE_OPTIONS')",
+        "const shellOut = cp.execSync(JSON.stringify(process.execPath) + ' --print \"40 + 2\"', { encoding: 'utf8' })",
+        "assert.strictEqual(shellOut, '42\\n')",
+        "console.log('ok')",
+      ].join("\n"),
+      DEFAULT_TIMEOUT,
+      { execPrograms: new Map([["/usr/bin/node", nodeWasm!]]) },
+    );
+
+    expect(result.exitCode).toBe(0);
+    expect(result.stderr).toBe("");
+    expect(result.stdout.trim()).toBe("ok");
+  }, DEFAULT_TEST_TIMEOUT);
+
   it("exposes child_process.fork and documents unsupported cluster.fork semantics", async () => {
     const result = await runNode(
       [
