@@ -299,6 +299,7 @@ has_m4()            { pkg_has_output m4 m4.wasm || [ -f "$REPO_ROOT/packages/reg
 has_make()          { pkg_has_output make make.wasm || [ -f "$REPO_ROOT/packages/registry/make/bin/make.wasm" ]; }
 has_tar()           { pkg_has_output tar tar.wasm || [ -f "$REPO_ROOT/packages/registry/tar/bin/tar.wasm" ]; }
 has_curl()          { pkg_has_output curl curl.wasm || [ -f "$REPO_ROOT/packages/registry/curl/bin/curl.wasm" ]; }
+has_netcat()        { pkg_has_output netcat nc.wasm || [ -f "$REPO_ROOT/packages/registry/netcat/bin/nc.wasm" ]; }
 has_wget()          { pkg_has_output wget wget.wasm || [ -f "$REPO_ROOT/packages/registry/wget/bin/wget.wasm" ]; }
 has_gzip()          { pkg_has_output gzip gzip.wasm || [ -f "$REPO_ROOT/packages/registry/gzip/bin/gzip.wasm" ]; }
 has_bzip2()         { pkg_has_output bzip2 bzip2.wasm || [ -f "$REPO_ROOT/packages/registry/bzip2/bin/bzip2.wasm" ]; }
@@ -901,6 +902,21 @@ build_nethack_zip() {
 build_shell_vfs() {
     if ! has_shell_vfs; then
         build_rootfs
+        # shell-vfs-build.ts records lazy-file sizes for these demo tools.
+        build_less
+        build_tar
+        build_curl_cli
+        build_netcat
+        build_wget
+        build_git
+        build_gzip
+        build_bzip2
+        build_xz
+        build_zstd
+        build_zip
+        build_unzip
+        build_lsof
+        build_nano
         build_fbdoom
         step "Building Shell VFS image"
         bash "$REPO_ROOT/packages/registry/shell/build-shell.sh"
@@ -1159,6 +1175,18 @@ build_curl_cli() {
     step "Building curl (CLI)"
     bash "$REPO_ROOT/packages/registry/libcurl/build-libcurl.sh"
     info "curl built"
+}
+
+build_netcat() {
+    if has_netcat; then
+        info "netcat"
+        return
+    fi
+    need_kernel
+    need_sdk
+    step "Building netcat"
+    bash "$REPO_ROOT/packages/registry/netcat/build-netcat.sh"
+    info "netcat built"
 }
 
 build_wget() {
@@ -1546,6 +1574,7 @@ build_target() {
         make)       build_make ;;
         tar)        build_tar ;;
         curl-cli)   build_curl_cli ;;
+        netcat)     build_netcat ;;
         wget)       build_wget ;;
         gzip)       build_gzip ;;
         bzip2)      build_bzip2 ;;
@@ -1593,7 +1622,7 @@ BROWSER_FETCH_SKIP_PKGS=(spidermonkey node)
 # sysroot/sysroot64 are NOT listed: they're toolchain prerequisites for source
 # builds, and any `build_X` whose prebuilt is missing calls `need_sysroot`
 # lazily.
-BROWSER_DEPS=(kernel rootfs programs dash bash coreutils grep sed bc file less m4 make tar curl-cli wget gzip bzip2 xz zstd zip unzip nano lsof vim vim-zip nethack nethack-zip fbdoom git dinit msmtpd nginx nginx-vfs php php-fpm nginx-php-vfs mariadb mariadb-vfs mariadb-test mariadb64 mariadb64-vfs shell-vfs spidermonkey-node node node-vfs wp-vfs lamp-vfs)
+BROWSER_DEPS=(kernel rootfs programs dash bash coreutils grep sed bc file less m4 make tar curl-cli netcat wget gzip bzip2 xz zstd zip unzip nano lsof vim vim-zip nethack nethack-zip fbdoom git dinit msmtpd nginx nginx-vfs php php-fpm nginx-php-vfs mariadb mariadb-vfs mariadb-test mariadb64 mariadb64-vfs shell-vfs spidermonkey-node node node-vfs wp-vfs lamp-vfs)
 
 build_browser() {
     for t in "${BROWSER_DEPS[@]}"; do
@@ -1640,6 +1669,7 @@ build_all() {
     build_make
     build_tar
     build_curl_cli
+    build_netcat
     build_wget
     build_gzip
     build_bzip2
@@ -1793,7 +1823,8 @@ clean_target() {
             rm -f "$REPO_ROOT/apps/browser-demos/public/perl.vfs.zst"
             warn "Cleaned Perl VFS image" ;;
         shell-vfs)
-            rm -f "$REPO_ROOT/apps/browser-demos/public/shell.vfs.zst"
+            rm -f "$REPO_ROOT/apps/browser-demos/public/shell.vfs.zst" \
+                  "$REPO_ROOT/local-binaries/programs/wasm32/shell.vfs.zst"
             warn "Cleaned Shell VFS image" ;;
         node)
             rm -rf "$REPO_ROOT/packages/registry/spidermonkey-node/bin" \
@@ -1867,6 +1898,10 @@ clean_target() {
             rm -rf "$REPO_ROOT/packages/registry/curl/curl-src" \
                    "$REPO_ROOT/packages/registry/curl/bin"
             warn "Cleaned curl" ;;
+        netcat)
+            rm -rf "$REPO_ROOT/packages/registry/netcat/netcat-src" \
+                   "$REPO_ROOT/packages/registry/netcat/bin"
+            warn "Cleaned netcat" ;;
         wget)
             rm -rf "$REPO_ROOT/packages/registry/wget/wget-src" \
                    "$REPO_ROOT/packages/registry/wget/bin"
@@ -1981,7 +2016,7 @@ clean_target() {
                 clean_target "$t"
             done ;;
         all)
-            for t in kernel sysroot sysroot64 host rootfs programs dash bash coreutils grep sed bc file less m4 make tar curl-cli wget gzip bzip2 xz zstd zip unzip nano ncurses zlib openssl libcurl vim vim-zip git nginx php php-fpm mariadb mariadb-vfs mariadb64 mariadb64-vfs redis dinit msmtpd cpython python-vfs perl perl-vfs ruby shell-vfs node node-vfs wordpress wp-vfs lamp-vfs erlang erlang-vfs texlive texlive-vfs dlopen; do
+            for t in kernel sysroot sysroot64 host rootfs programs dash bash coreutils grep sed bc file less m4 make tar curl-cli netcat wget gzip bzip2 xz zstd zip unzip nano ncurses zlib openssl libcurl vim vim-zip git nginx php php-fpm mariadb mariadb-vfs mariadb64 mariadb64-vfs redis dinit msmtpd cpython python-vfs perl perl-vfs ruby shell-vfs node node-vfs wordpress wp-vfs lamp-vfs erlang erlang-vfs texlive texlive-vfs dlopen; do
                 clean_target "$t"
             done ;;
         *)  err "Unknown clean target: $target"; exit 1 ;;
@@ -2278,6 +2313,7 @@ cmd_list() {
     echo "  make        GNU make                               $(has_make && echo "${GREEN}✓${RESET}" || echo "${YELLOW}○${RESET}")"
     echo "  tar         GNU tar                                $(has_tar && echo "${GREEN}✓${RESET}" || echo "${YELLOW}○${RESET}")"
     echo "  curl-cli    curl CLI                               $(has_curl && echo "${GREEN}✓${RESET}" || echo "${YELLOW}○${RESET}")"
+    echo "  netcat      GNU netcat                             $(has_netcat && echo "${GREEN}✓${RESET}" || echo "${YELLOW}○${RESET}")"
     echo "  wget        GNU wget                               $(has_wget && echo "${GREEN}✓${RESET}" || echo "${YELLOW}○${RESET}")"
     echo "  gzip        gzip compression                       $(has_gzip && echo "${GREEN}✓${RESET}" || echo "${YELLOW}○${RESET}")"
     echo "  bzip2       bzip2 compression                      $(has_bzip2 && echo "${GREEN}✓${RESET}" || echo "${YELLOW}○${RESET}")"
