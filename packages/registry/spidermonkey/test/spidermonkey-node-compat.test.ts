@@ -384,7 +384,9 @@ describe.skipIf(!nodeWasm)("SpiderMonkey Node compatibility runtime", () => {
       [
         "const assert = require('assert')",
         "const leakCandidates = [",
+        "  '__kandeloFinalizeProcessExit',",
         "  '__kandeloRunDueTimers', '__kandeloNextTimerDelay', '__kandeloCreateWorkerThreads',",
+        "  '__kandeloAsyncHooksPromise',",
         "  'argv0', 'execArgv', 'TextEncoder', 'TextDecoder', 'btoa', 'atob',",
         "  'Blob', 'File', 'FormData', 'MessagePort', 'MessageChannel', 'BroadcastChannel',",
         "  'Event', 'EventTarget', 'MessageEvent', 'CloseEvent', 'ErrorEvent',",

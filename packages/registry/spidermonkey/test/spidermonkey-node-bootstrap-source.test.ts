@@ -272,6 +272,17 @@ assert.strictEqual(__kandeloRunNodeEventLoop(), 0);
 `);
   });
 
+  it("emits process exit diagnostics on natural SpiderMonkey completion", () => {
+    runBootstrapSmoke(`
+const assert = require("assert");
+const events = [];
+process.on("beforeExit", (code) => events.push(["beforeExit", code]));
+process.on("exit", (code) => events.push(["exit", code]));
+assert.strictEqual(__kandeloRunNodeEventLoop(), 0);
+assert.deepStrictEqual(events, [["beforeExit", 0], ["exit", 0]]);
+`);
+  });
+
   it("serializes URLSearchParams unpaired surrogates as replacement characters", () => {
     runBootstrapSmoke(`
 const assert = require("assert");
@@ -491,6 +502,14 @@ assert(commands[1].includes('"/usr/bin/node" -- --print "40 + 2"'), commands[1])
     expect(child.status).toBe(0);
   });
 
+  it("defers child_process async completion on the immediate turn", () => {
+    const source = generatedBootstrapSource();
+
+    expect(source).toContain("function deferChildProcess(fn)");
+    expect(source).toContain("timers.setImmediate(fn)");
+    expect(source).toContain("deferChildProcess(() => {");
+  });
+
   it("resolves the full-suite missing built-in and internal module surface", () => {
     runBootstrapSmoke(`
 const names = ${JSON.stringify(historicalMissingBuiltins)};
@@ -513,9 +532,11 @@ try {
   }
 }
 const hiddenGlobalNames = [
+  "__kandeloFinalizeProcessExit",
   "__kandeloRunDueTimers",
   "__kandeloNextTimerDelay",
   "__kandeloCreateWorkerThreads",
+  "__kandeloAsyncHooksPromise",
   "argv0",
   "execArgv",
   "TextEncoder",

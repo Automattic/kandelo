@@ -2605,7 +2605,7 @@ const async_hooks = (() => {
                 return { promise, resolve, reject };
             }
         };
-        globalThis.__kandeloAsyncHooksPromise = HookedPromise;
+        _defineGlobal('__kandeloAsyncHooksPromise', HookedPromise);
         globalThis.Promise = HookedPromise;
     }
 
@@ -3968,6 +3968,16 @@ const process = (() => {
 
     const proc = new Process();
 
+    function finalizeProcessExit(code) {
+        if (code !== undefined) proc.exitCode = code;
+        if (!proc._exiting) {
+            proc._exiting = true;
+            proc.emit('exit', proc.exitCode || 0);
+        }
+        return proc.exitCode || 0;
+    }
+    _defineGlobal('__kandeloFinalizeProcessExit', finalizeProcessExit);
+
     Object.assign(proc, {
         title: 'node',
         version: 'v22.0.0', // Compatibility target
@@ -4002,10 +4012,7 @@ const process = (() => {
         },
 
         exit(code) {
-            proc.exitCode = code !== undefined ? code : proc.exitCode;
-            proc._exiting = true;
-            proc.emit('exit', proc.exitCode);
-            std.exit(proc.exitCode);
+            std.exit(finalizeProcessExit(code));
         },
 
         abort() {
@@ -9688,8 +9695,16 @@ const child_process = (() => {
     function envCommandPrefix(env, internalPairs) {
         const pairs = envValuePairs(env, internalPairs);
         if (pairs.length === 0 && !env) return '';
+        if (!env) {
+            const exports = [];
+            for (const [key, value] of pairs) {
+                if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(key)) continue;
+                exports.push(`${key}=${shellQuote(value)}`);
+            }
+            return exports.length === 0 ? '' : 'export ' + exports.join(' ') + '; ';
+        }
         const args = ['env'];
-        if (env) args.push('-i');
+        args.push('-i');
         for (const [key, value] of pairs) {
             if (key.includes('=')) continue;
             args.push(`${key}=${value}`);
@@ -9853,6 +9868,10 @@ const child_process = (() => {
         return err;
     }
 
+    function deferChildProcess(fn) {
+        timers.setImmediate(fn);
+    }
+
     class ChildProcess extends events.EventEmitter {
         constructor() {
             super();
@@ -9907,7 +9926,7 @@ const child_process = (() => {
             this.spawnfile = options.file;
             this.spawnargs = [options.file, ...args];
             this._initStdio(options);
-            queueMicrotask(() => this.emit('spawn'));
+            deferChildProcess(() => this.emit('spawn'));
             return this;
         }
 
@@ -9939,7 +9958,7 @@ const child_process = (() => {
         child.spawnfile = spec.spawnfile || command;
         child.spawnargs = spec.spawnargs || [command, ...normalizeArgs(args || [], 'args')];
         child._initStdio(spec.options || options || {});
-        queueMicrotask(() => {
+        deferChildProcess(() => {
             if (spec.error) {
                 child.emit('error', spec.error);
                 child._complete(1, null);
@@ -10007,7 +10026,7 @@ const child_process = (() => {
         child.spawnfile = spec.spawnfile;
         child.spawnargs = spec.spawnargs;
         child._initStdio(opts);
-        queueMicrotask(() => {
+        deferChildProcess(() => {
             let err = null;
             let result = { status: 0, stdout: '', stderr: '', signal: null };
             try {
@@ -10037,7 +10056,7 @@ const child_process = (() => {
         child.spawnfile = spec.spawnfile || file;
         child.spawnargs = spec.spawnargs || [file, ...normalizeArgs(args || [], 'args')];
         child._initStdio(opts);
-        queueMicrotask(() => {
+        deferChildProcess(() => {
             let err = null;
             let result = { status: 0, stdout: '', stderr: '', signal: null };
             if (spec.error) {
@@ -17273,7 +17292,7 @@ function _runNodeTestCliIfRequested() {
     return true;
 }
 
-function _runCommonJsMain(filename) {
+function _runCommonJsMain(filename, options = {}) {
     filename = _moduleRealpath(filename);
     const source = std.loadFile(filename);
     if (source === null) {
@@ -17307,6 +17326,7 @@ function _runCommonJsMain(filename) {
         _runNodeTestQueueBeforeExit();
         _drainEventLoopBeforeExit();
     }
+    if (options.exit === false) return process.exitCode || 0;
     process.exit(process.exitCode || 0);
 }
 
@@ -17390,12 +17410,12 @@ _defineGlobal('__kandeloRunCommonJsMain', function __kandeloRunCommonJsMain(file
         throw _makeInvalidArgTypeError('filename', 'string', filename);
     }
     const resolved = path.isAbsolute(filename) ? filename : path.resolve(process.cwd(), filename);
-    _runCommonJsMain(resolved);
+    return _runCommonJsMain(resolved, { exit: false });
 });
 
 _defineGlobal('__kandeloRunNodeEventLoop', function __kandeloRunNodeEventLoop() {
     _drainEventLoopBeforeExit();
-    return process.exitCode || 0;
+    return __kandeloFinalizeProcessExit();
 });
 
 // ============================================================

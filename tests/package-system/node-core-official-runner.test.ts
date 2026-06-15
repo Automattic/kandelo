@@ -1,10 +1,13 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   createIsolatedTests,
   destroyNodeHostBestEffort,
   envForRun,
   terminateTimedOutNodeHostBestEffort,
+  writePrelude,
   type SelectedTest,
 } from "../../scripts/node-core-official-runner";
 
@@ -68,9 +71,11 @@ describe("node-core official runner isolation", () => {
     const previousNodeTestDir = process.env.NODE_TEST_DIR;
     const previousSerialId = process.env.TEST_SERIAL_ID;
     const previousThreadId = process.env.TEST_THREAD_ID;
+    const previousPath = process.env.PATH;
     process.env.NODE_TEST_DIR = "/stale";
     process.env.TEST_SERIAL_ID = "0";
     process.env.TEST_THREAD_ID = "0";
+    process.env.PATH = "/host/path/that/does/not/belong/in/guest";
 
     try {
       const [isolated] = createIsolatedTests([
@@ -84,10 +89,29 @@ describe("node-core official runner isolation", () => {
       expect(browserEnv.get("NODE_TEST_DIR")).toBe(isolated.isolation.browserTestDir);
       expect(browserEnv.get("TEST_SERIAL_ID")).toBe("1");
       expect(browserEnv.get("TEST_THREAD_ID")).toBe("1");
+      expect(browserEnv.get("PATH")).toBe("/usr/local/bin:/usr/bin:/bin");
+      expect(browserEnv.get("HOME")).toBe("/tmp");
+      expect(browserEnv.has("npm_execpath")).toBe(false);
     } finally {
       restoreEnv("NODE_TEST_DIR", previousNodeTestDir);
       restoreEnv("TEST_SERIAL_ID", previousSerialId);
       restoreEnv("TEST_THREAD_ID", previousThreadId);
+      restoreEnv("PATH", previousPath);
+    }
+  });
+});
+
+describe("node-core official runner prelude", () => {
+  it("installs SpiderMonkey shims for common helper diagnostics", () => {
+    const dir = mkdtempSync(join(tmpdir(), "kandelo-node-core-prelude-"));
+    try {
+      const prelude = readFileSync(writePrelude(dir), "utf8");
+
+      expect(prelude).toContain("__kandeloSpiderMonkeyCallSite");
+      expect(prelude).toContain("Math.max(1, frame.line - 1)");
+      expect(prelude).toContain("new assert.AssertionError");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
     }
   });
 });
