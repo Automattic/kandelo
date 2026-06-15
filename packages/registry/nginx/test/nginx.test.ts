@@ -47,6 +47,13 @@ function loadWasm(path: string): ArrayBuffer {
   return buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength);
 }
 
+function hostRootGroup(): string {
+  const groupFile = readFileSync("/etc/group", "utf8");
+  if (/^root:/m.test(groupFile)) return "root";
+  if (/^wheel:/m.test(groupFile)) return "wheel";
+  throw new Error("No root or wheel group found in /etc/group");
+}
+
 /** Send a raw HTTP request and return the full response. */
 function httpGet(
   port: number,
@@ -84,7 +91,12 @@ describe.skipIf(!nginxWasmPath)(
       const tmpDir = mkdtempSync(join(tmpdir(), "nginx-test-"));
       const testConf = join(tmpDir, "nginx.conf");
       const confTemplate = readFileSync(join(nginxPrefix, "nginx.conf"), "utf8");
-      writeFileSync(testConf, confTemplate.replace("listen 8080", `listen ${testPort}`));
+      writeFileSync(
+        testConf,
+        confTemplate
+          .replace(/^user\s+root;\n/m, `user root ${hostRootGroup()};\n`)
+          .replace("listen 8080", `listen ${testPort}`),
+      );
 
       const kernelBytes = loadWasm(resolveBinary("kernel.wasm"));
       const programBytes = loadWasm(nginxWasmPath!);

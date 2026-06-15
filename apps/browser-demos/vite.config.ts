@@ -395,10 +395,14 @@ function devCorsProxyMiddleware(): Plugin {
   };
 }
 
-const demoInputs = {
+const defaultDemoInputs = {
   main: path.resolve(__dirname, "index.html"),
   kandelo: path.resolve(__dirname, "pages/kandelo/index.html"),
   network: path.resolve(__dirname, "pages/network/index.html"),
+};
+
+const demoInputs = {
+  ...defaultDemoInputs,
   benchmark: path.resolve(__dirname, "pages/benchmark/index.html"),
   "git-test": path.resolve(__dirname, "pages/git-test/index.html"),
   "mariadb-test": path.resolve(__dirname, "pages/mariadb-test/index.html"),
@@ -412,19 +416,15 @@ const demoInputs = {
   // available third-party VFS builds without adding page inputs.
 };
 
-const defaultDemoInputNames = ["main", "kandelo", "network"] as const;
-
-function selectedDemoInputs(): Record<string, string> {
+function selectedDemoInputs(): typeof demoInputs | Record<string, string> {
   const requested = process.env.KANDELO_BROWSER_DEMO_INPUTS
     ?.split(",")
     .map((name) => name.trim())
     .filter(Boolean);
-  const names = requested && requested.length > 0
-    ? requested
-    : [...defaultDemoInputNames];
+  if (!requested || requested.length === 0) return defaultDemoInputs;
 
   const selected: Record<string, string> = {};
-  for (const name of names) {
+  for (const name of requested) {
     if (!(name in demoInputs)) {
       throw new Error(`Unknown KANDELO_BROWSER_DEMO_INPUTS entry: ${name}`);
     }
@@ -432,6 +432,8 @@ function selectedDemoInputs(): Record<string, string> {
   }
   return selected;
 }
+
+const disableBrowserTestHmr = process.env.KANDELO_BROWSER_TEST_NO_HMR === "1";
 
 export default defineConfig({
   base: process.env.VITE_BASE || "/",
@@ -454,6 +456,13 @@ export default defineConfig({
     host: "127.0.0.1",
     port: preferredLocalPort,
     headers: crossOriginIsolationHeaders,
+    hmr: disableBrowserTestHmr ? false : undefined,
+    watch: disableBrowserTestHmr ? {
+      ignored: [
+        "**/test-runs/**",
+        "**/host/dist/**",
+      ],
+    } : undefined,
     fs: {
       allow: [repoRoot],
     },

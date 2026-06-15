@@ -5,6 +5,46 @@ harness from PR #1. The harness lets Mozilla's upstream Python runners execute
 Kandelo's `js.wasm` through either the Node.js host or the browser host without
 requiring a native `js` executable.
 
+## Final Epic Status
+
+The supported official-test scope for this epic is Mozilla's
+`js/src/tests` jstest inventory on both Kandelo hosts. The current
+SpiderMonkey package builds wasm32 with `ac_add_options --disable-jit`, and the
+package README documents JIT disabled / nested WebAssembly out of scope, so
+`js/src/jit-test/tests` is not a product gate for this PR. `kad-165.9` also
+decided WPT jsshell is out of scope for this epic.
+
+| Host | Suite | Epic status | Result summary | Artifacts |
+| --- | --- | --- | --- | --- |
+| Node | jstests | Completed; residual unexpected rows classified | 738 selected chunks, 50,503 pass, 1,932 known skip, 237 historical unexpected rows. The 237 rows are classified as 61 wasm32 BigInt Atomics limitations, 158 non-Atomics timeout/resource rows, 2 stack-stress rows, and 16 mozglue timezone/env interposer crashes. | `/Users/brandon/gt/kandelo/polecats/toast/kandelo/test-results/spidermonkey-official/kad-165.4-node-jstests-*` |
+| Browser | jstests | Completed; final supported tail rerun is clean after known-skip fixes | The final long tail resume produced 373 rows with 11,670 pass, 418 known skip, and 4 unexpected staging rows. The follow-up tail-skipfix rerun from `test262/staging/sm/expressions` produced 22 rows with 464 pass, 49 known skip, and 0 unexpected. Earlier browser resume artifacts are preserved as raw pre-fix evidence, not a single clean post-fix aggregate. | `/Users/brandon/gt/kandelo/polecats/rictus/kandelo/test-results/spidermonkey-official/kad-165.7-browser-jstests-resume11-20260614T131756Z` and `.../kad-165.7-browser-jstests-tail-skipfix-20260614T192700Z` |
+| Node | jit-tests | Skipped for epic; exploratory artifact preserved | Exploratory run preserved 70 chunks, 10,371 pass, 0 known skip, and 45,386 unexpected rows under `--jitflags=all`. These failures are not a gate while the package is JIT-disabled. | `test-runs/spidermonkey-official-node-jit-kad-165.5/` |
+| Browser | jit-tests | Skipped for epic; partial exploratory artifact preserved | Stopped on the scope correction while `gc#part-0004` was in flight. The preserved chunk log recorded 108 pass and 180 fail; `summary.tsv` has only the header because the run was interrupted mid-chunk. | `/Users/brandon/gt/kandelo/polecats/morsov/kandelo/test-results/spidermonkey-official/kad-165.8-browser-jit-tests-gc4-continuation-20260614T131641Z` |
+
+Residual work is tracked rather than hidden:
+
+- `kad-crh`: SpiderMonkey mozglue timezone/env interposer crashes in Node
+  Date/Intl jstests. This is the one remaining package/runtime product bug
+  from the Node jstest inventory that is not resolved by known-skip policy in
+  this integration branch.
+- `kad-165.18`: Node and browser BigInt Atomics jstests are classified as a
+  wasm32 SpiderMonkey 64-bit atomics limitation while preserving non-BigInt
+  Atomics coverage.
+- `kad-165.21`: Node timeout/resource rows are explicitly classified instead
+  of left as an untriaged broad timeout bucket.
+- `kad-165.20`: Node recursion-stress rows are classified with the shared
+  SpiderMonkey stack/resource rationale.
+- `kad-6wx`: focused browser `non262/Promise/any-stack-overflow.js`
+  diagnostics remain tracked separately as a browser stack/resource-envelope
+  follow-up.
+- `kad-2tp`: focused browser `non262/Intl/default-locale-shell.js`
+  diagnostics remain tracked separately as a browser default-locale follow-up.
+
+The final epic PR (`kad-165.11`) should target `main` from
+`integration/kad-165-spidermonkey-tests`, cite this report, and state that
+official jstest coverage is the supported validation surface for this branch.
+It should not claim SpiderMonkey jit-tests or WPT jsshell are validated.
+
 ## Commands
 
 Smoke one small jstest and one small jit-test on both hosts:

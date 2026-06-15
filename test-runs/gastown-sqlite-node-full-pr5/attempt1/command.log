@@ -1,0 +1,50 @@
+started_at=2026-06-12T23:41:31Z
+kandelo dev shell — LLVM 21, Rust (pinned via rust-toolchain.toml), Node 24, Erlang 28 (minimal), SDK on PATH
+===== SQLite project unit tests on Kandelo node host =====
+Permutation: full | Jobs: 2 | Results: test-runs/gastown-sqlite-node-full-pr5/node
+===== SQLite official testrunner.tcl on Kandelo Node host =====
+Permutation: full | Jobs: 2 | Workdir: /tmp/kandelo-sqlite-official.odjgiR
+Results dir: test-runs/gastown-sqlite-node-full-pr5/node
+node:internal/modules/package_json_reader:301
+  throw new ERR_MODULE_NOT_FOUND(packageName, fileURLToPath(base), null);
+        ^
+
+Error [ERR_MODULE_NOT_FOUND]: Cannot find package 'tsx' imported from /Users/brandon/gt/kandelo/polecats/cheedo/kandelo/
+    at Object.getPackageJSONURL (node:internal/modules/package_json_reader:301:9)
+    at packageResolve (node:internal/modules/esm/resolve:764:81)
+    at moduleResolve (node:internal/modules/esm/resolve:855:18)
+    at defaultResolve (node:internal/modules/esm/resolve:988:11)
+    at #cachedDefaultResolve (node:internal/modules/esm/loader:697:20)
+    at #resolveAndMaybeBlockOnLoaderThread (node:internal/modules/esm/loader:714:38)
+    at ModuleLoader.resolveSync (node:internal/modules/esm/loader:746:52)
+    at #resolve (node:internal/modules/esm/loader:679:17)
+    at ModuleLoader.getOrCreateModuleJob (node:internal/modules/esm/loader:599:35)
+    at node:internal/modules/esm/loader:628:32 {
+  code: 'ERR_MODULE_NOT_FOUND'
+}
+
+Node.js v24.15.0
+===== Combined SQLite project unit test summary: test-runs/gastown-sqlite-node-full-pr5/combined-summary.md =====
+# SQLite Project Unit Tests on Kandelo
+
+Results root: `test-runs/gastown-sqlite-node-full-pr5`
+
+## Invocation
+
+- Permutation: `full`
+- Jobs per host: `2`
+- Timeout per host: `21600000` ms
+- Patterns/tests: full permutation default
+
+## Host summary
+
+| Host | Runner exit | Total jobs | Done | Failed | Omitted | Running | Ready | SQLite cases | Case errors | Current challenges |
+|------|-------------|------------|------|--------|---------|---------|-------|--------------|-------------|--------------------|
+| `node` | 1 | - | - | - | - | - | - | - | - | no testrunner.db |
+
+## Artifacts
+
+- `node`: `test-runs/gastown-sqlite-node-full-pr5/node`
+
+
+zsh:1: read-only variable: status
