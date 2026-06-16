@@ -191,6 +191,8 @@ const SYS_RECVMSG = ABI_SYSCALLS.Recvmsg;
 const SYS_ACCEPT = ABI_SYSCALLS.Accept;
 const SYS_ACCEPT4 = ABI_SYSCALLS.Accept4;
 const SYS_CONNECT = ABI_SYSCALLS.Connect;
+const SYS_TIMES = ABI_SYSCALLS.Times;
+const CLK_TCK = 100;
 
 const MSG_DONTWAIT = 0x0040;
 
@@ -2218,6 +2220,11 @@ export class CentralizedKernelWorker {
       return;
     }
 
+    if (syscallNr === SYS_TIMES) {
+      this.handleTimes(channel, origArgs, logging ? logEntry : undefined);
+      return;
+    }
+
     // --- Futex: must operate on process memory, not kernel memory ---
     // The kernel's host_futex_wake/wait imports use kernel memory, but futex
     // addresses are in process memory. Intercept here and handle directly.
@@ -4111,6 +4118,43 @@ export class CentralizedKernelWorker {
     }
 
     return false;
+  }
+
+  private handleTimes(channel: ChannelInfo, origArgs: number[], logEntry?: string): void {
+    const tmsPtr = origArgs[0];
+    const ptrWidth = this.getPtrWidth(channel.pid);
+    const structSize = ptrWidth === 8 ? 32 : 16;
+    const processMem = new Uint8Array(channel.memory.buffer);
+
+    if (tmsPtr !== 0) {
+      if (!Number.isInteger(tmsPtr) || tmsPtr < 0 || tmsPtr + structSize > processMem.length) {
+        if (logEntry) console.error(logEntry + " = -1 (EFAULT)");
+        this.completeChannel(channel, SYS_TIMES, origArgs, undefined, -1, EFAULT);
+        return;
+      }
+
+      // Kandelo does not yet account guest CPU time separately. Match the
+      // existing getrusage baseline by returning zero user/system ticks while
+      // still providing a valid tms struct.
+      const view = new DataView(channel.memory.buffer, tmsPtr, structSize);
+      if (ptrWidth === 8) {
+        for (let off = 0; off < structSize; off += 8) {
+          view.setBigInt64(off, 0n, true);
+        }
+      } else {
+        for (let off = 0; off < structSize; off += 4) {
+          view.setInt32(off, 0, true);
+        }
+      }
+    }
+
+    const nowMs = typeof performance !== "undefined" && typeof performance.now === "function"
+      ? performance.now()
+      : Date.now();
+    const ticks = Math.floor((nowMs * CLK_TCK) / 1000);
+    if (logEntry) console.error(logEntry + ` = ${ticks}`);
+    this.dequeueSignalForDelivery(channel);
+    this.completeChannel(channel, SYS_TIMES, origArgs, undefined, ticks, 0);
   }
 
   /**

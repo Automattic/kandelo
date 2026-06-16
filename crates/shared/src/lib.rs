@@ -1234,6 +1234,7 @@ pub mod abi {
         pub const SYS_STATX: u32 = 260;
         pub const SYS_SET_ROBUST_LIST: u32 = 261;
         pub const SYS_GET_ROBUST_LIST: u32 = 262;
+        pub const SYS_TIMES: u32 = 270;
         pub const SYS_MKNOD: u32 = 271;
         pub const SYS_MKNODAT: u32 = 272;
         pub const SYS_MSYNC: u32 = 278;
@@ -1397,6 +1398,10 @@ pub mod abi {
             AbiSyscallNumber {
                 name: "GetRobustList",
                 number: SYS_GET_ROBUST_LIST,
+            },
+            AbiSyscallNumber {
+                name: "Times",
+                number: SYS_TIMES,
             },
             AbiSyscallNumber {
                 name: "Mknod",
