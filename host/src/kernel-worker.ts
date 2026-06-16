@@ -4354,7 +4354,17 @@ export class CentralizedKernelWorker {
       }
     }
 
-    this.dequeueSignalForDelivery(channel);
+    const deliveredSignal = this.dequeueSignalForDelivery(channel);
+    const getExitStatus = this.kernelInstance!.exports
+      .kernel_get_process_exit_status as ((pid: number) => number) | undefined;
+    if (getExitStatus && getExitStatus(channel.pid) >= 128) {
+      this.handleProcessTerminated(channel);
+      return;
+    }
+    if (deliveredSignal > 0) {
+      this.completeChannel(channel, SYS_SELECT, origArgs, undefined, -1, EINTR_ERRNO);
+      return;
+    }
 
     // EAGAIN retry for blocking select. Mirrors handlePselect6.
     if (retVal === -1 && errVal === EAGAIN) {
@@ -4499,8 +4509,20 @@ export class CentralizedKernelWorker {
       }
     }
 
-    // Handle signal delivery
-    this.dequeueSignalForDelivery(channel);
+    // Handle signal delivery. POSIX select/pselect must return EINTR when a
+    // caught signal is delivered, even when the host-side retry loop would
+    // otherwise park the channel for EAGAIN readiness polling.
+    const deliveredSignal = this.dequeueSignalForDelivery(channel);
+    const getExitStatus = this.kernelInstance!.exports
+      .kernel_get_process_exit_status as ((pid: number) => number) | undefined;
+    if (getExitStatus && getExitStatus(channel.pid) >= 128) {
+      this.handleProcessTerminated(channel);
+      return;
+    }
+    if (deliveredSignal > 0) {
+      this.completeChannel(channel, SYS_PSELECT6, origArgs, undefined, -1, EINTR_ERRNO);
+      return;
+    }
 
     // Handle EAGAIN retry for blocking select
     if (retVal === -1 && errVal === EAGAIN) {
