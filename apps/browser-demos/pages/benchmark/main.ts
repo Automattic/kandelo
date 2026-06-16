@@ -724,18 +724,23 @@ async function runMariaDbWithEngine(engine: string, arch: MariaDbArch = "wasm32"
   try {
 
   const bootstrapStdin = new TextEncoder().encode(bootstrapSql);
-  bootstrapKernel.spawn(mariadbBytes, [
-    "mariadbd", "--no-defaults", "--bootstrap",
-    "--user=mysql",
-    "--datadir=/data", "--tmpdir=/data/tmp",
-    ...engineArgs,
-    "--skip-grant-tables",
-    "--key-buffer-size=1048576", "--table-open-cache=10",
-    "--sort-buffer-size=262144", "--skip-networking", "--log-warnings=0",
-  ], { stdin: bootstrapStdin });
+  const bootstrapStarted = new Promise<number>((resolve) => {
+    void bootstrapKernel.spawn(mariadbBytes, [
+      "mariadbd", "--no-defaults", "--bootstrap",
+      "--user=mysql",
+      "--datadir=/data", "--tmpdir=/data/tmp",
+      ...engineArgs,
+      "--skip-grant-tables",
+      "--key-buffer-size=1048576", "--table-open-cache=10",
+      "--sort-buffer-size=262144", "--skip-networking", "--log-warnings=0",
+    ], {
+      stdin: bootstrapStdin,
+      onStarted: resolve,
+    });
+  });
 
   // Wait for bootstrap stdin to be consumed
-  const bootstrapPid = (bootstrapKernel as any).nextPid - 1;
+  const bootstrapPid = await bootstrapStarted;
   for (let i = 0; i < 1200; i++) {
     try {
       const consumed = await bootstrapKernel.isStdinConsumed(bootstrapPid);

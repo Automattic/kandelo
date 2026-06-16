@@ -67,10 +67,9 @@ export interface SpawnMessage {
   requestId: number;
   /**
    * Optional. When omitted, the worker allocates a fresh pid via the
-   * kernel's allocator (which skips reserved pids like the virtual init).
-   * The assigned pid is returned in the response. The pid field exists for
-   * legacy callers (PtyTerminal.spawn, system-init) that still pre-pick;
-   * new code should leave it undefined.
+   * kernel's allocator (which skips reserved pids and live processes).
+   * The assigned pid is returned in the response. BrowserKernel leaves this
+   * unset for normal spawns so the worker remains the PID authority.
    */
   pid?: number;
   programPath?: string;

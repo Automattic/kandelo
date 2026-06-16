@@ -161,6 +161,12 @@ The "Boot pattern" column reflects how the demo enters the kernel:
 - **dinit + spawn** — dinit boots the supervised services; the page spawns transient binaries (e.g. mysqltest) via `kernel.spawn()`.
 - **legacy spawn** — main thread restores a `MemoryFileSystem`, page calls `kernel.spawn(programBytes, argv)` for each binary.
 
+The MariaDB browser mysql-test runner reports page death, failed post-timeout
+reboots, and disabled reboot-after-fail isolation as `HARNESS` results instead
+of classifying the remaining tests in that chunk as MariaDB failures. Set
+`MARIADB_BROWSER_REBOOT_AFTER_FAIL=0` only when the intended result is to abort
+the current chunk after the first contaminated or dead page.
+
 Run the browser app: `cd apps/browser-demos && npm run dev`, then open
 `http://127.0.0.1:5401/`.
 

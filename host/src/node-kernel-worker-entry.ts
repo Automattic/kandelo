@@ -18,12 +18,8 @@ import { readFileSync, existsSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { CentralizedKernelWorker } from "./kernel-worker";
-import type {
-  ForkFromThreadContext,
-  ResolvedSpawnProgram,
-  SpawnProgramResolution,
-} from "./kernel-worker";
+import { CentralizedKernelWorker, isFailedSpawnProgramResolution } from "./kernel-worker";
+import type { ForkFromThreadContext, SpawnProgramResolution } from "./kernel-worker";
 import { NodePlatformIO } from "./platform/node";
 import {
   VirtualPlatformIO,
@@ -42,6 +38,11 @@ import { ThreadPageAllocator } from "./thread-allocator";
 import { patchWasmForThread } from "./worker-main";
 import { ThreadExitCoordinator } from "./thread-exit-coordinator";
 import { detectPtrWidth, extractHeapBase, isWasmModuleBytes } from "./constants";
+import {
+  executableFormatFailure,
+  MAX_SHEBANG_DEPTH,
+  parseShebang,
+} from "./executable-format";
 import { CH_TOTAL_SIZE, DEFAULT_MAX_PAGES, PAGES_PER_THREAD, WASM_PAGE_SIZE } from "./constants";
 import {
   classifiedSignalOrFallback,
@@ -89,7 +90,6 @@ let rootfsMemfs: MemoryFileSystem | null = null;
 /** Per-boot scratch directory; cleaned up on `destroy`. Only set when the
  *  worker constructs a `VirtualPlatformIO` from the default mount spec. */
 let sessionDir: string | null = null;
-const ENOEXEC = 8;
 
 // Process tracking
 interface ProcessInfo {
@@ -451,33 +451,20 @@ async function resolveExec(path: string): Promise<ArrayBuffer | null> {
   });
 }
 
-const MAX_SHEBANG_DEPTH = 4;
-
-function parseShebang(bytes: ArrayBuffer): { interpreter: string; arg?: string } | null {
-  const view = new Uint8Array(bytes);
-  if (view.length < 2 || view[0] !== 0x23 || view[1] !== 0x21) return null;
-  let end = 2;
-  while (end < view.length && view[end] !== 0x0a && end < 4096) end++;
-  const line = new TextDecoder().decode(view.subarray(2, end)).replace(/\r$/, "").trim();
-  if (!line) return null;
-  const match = line.match(/^(\S+)(?:\s+(.*))?$/);
-  if (!match) return null;
-  return { interpreter: match[1], arg: match[2] };
-}
-
 async function resolveExecutableForLaunch(
   path: string,
   argv: string[],
   depth = 0,
-): Promise<ResolvedSpawnProgram | { errno: number } | null> {
-  if (depth > MAX_SHEBANG_DEPTH) return null;
+): Promise<SpawnProgramResolution | null> {
+  if (depth > MAX_SHEBANG_DEPTH) return executableFormatFailure(path, new ArrayBuffer(0));
   const bytes = await resolveExec(path);
   if (!bytes) return null;
 
   const shebang = parseShebang(bytes);
   if (!shebang) {
-    if (!isWasmModuleBytes(bytes)) return { errno: ENOEXEC };
-    return { programBytes: bytes, argv };
+    return isWasmModuleBytes(bytes)
+      ? { programBytes: bytes, argv }
+      : executableFormatFailure(path, bytes);
   }
 
   const scriptArgv = [
@@ -807,8 +794,9 @@ async function handleExec(
 ): Promise<number> {
   const resolved = await resolveExecutableForLaunch(path, argv);
   if (!resolved) return -2; // ENOENT
-  if ("errno" in resolved) return -resolved.errno;
-  const { programBytes, argv: launchArgv } = resolved;
+  if (isFailedSpawnProgramResolution(resolved)) return -resolved.errno;
+  const programBytes = resolved instanceof ArrayBuffer ? resolved : resolved.programBytes;
+  const launchArgv = resolved instanceof ArrayBuffer ? argv : resolved.argv;
 
   const newPtrWidth = detectPtrWidth(programBytes);
   const setupResult = kernelWorker.kernelExecSetup(pid);

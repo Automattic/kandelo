@@ -403,6 +403,7 @@ const defaultDemoInputs = {
 
 const demoInputs = {
   ...defaultDemoInputs,
+  "mariadb-test": path.resolve(__dirname, "pages/mariadb-test/index.html"),
   "sqlite-test": path.resolve(__dirname, "pages/sqlite-test/index.html"),
   // The perl, python, ruby, erlang, texlive, and redis package entries
   // are not bundled into this static build while their slow builds

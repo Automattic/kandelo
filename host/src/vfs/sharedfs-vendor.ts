@@ -13,6 +13,7 @@
  *   Inode bitmap blocks
  *   Block bitmap blocks
  *   Inode table blocks
+ *   Extended FD table blocks
  *   Data blocks
  */
 
@@ -29,9 +30,13 @@ export const INLINE_SYMLINK_SIZE = DIRECT_BLOCKS * 4; // 40
 export const ROOT_INO = 1;
 export const FD_TABLE_OFFSET = 256;
 export const FD_ENTRY_SIZE = 24;
-export const MAX_FDS = Math.floor(
+export const LEGACY_MAX_FDS = Math.floor(
   (BLOCK_SIZE - FD_TABLE_OFFSET) / FD_ENTRY_SIZE,
 );
+export const FD_TABLE_EXTENSION_BLOCKS = 8;
+export const MAX_FDS =
+  LEGACY_MAX_FDS +
+  Math.floor((FD_TABLE_EXTENSION_BLOCKS * BLOCK_SIZE) / FD_ENTRY_SIZE);
 
 export const MAGIC = 0x53464653; // "SFFS"
 export const VERSION = 1;
@@ -47,6 +52,7 @@ export const O_RDONLY = 0x0000;
 export const O_WRONLY = 0x0001;
 export const O_RDWR = 0x0002;
 export const O_CREAT = 0x0040;
+export const O_EXCL = 0x0080;
 export const O_TRUNC = 0x0200;
 export const O_APPEND = 0x0400;
 export const O_DIRECTORY = 0x010000;
@@ -94,6 +100,8 @@ const SB_GENERATION = 56;
 const SB_GLOBAL_LOCK = 60;
 const SB_MAX_SIZE_BLOCKS = 68;
 const SB_GROW_CHUNK_BLOCKS = 72;
+const SB_FD_TABLE_EXTENSION_START = 76;
+const SB_FD_TABLE_EXTENSION_BLOCKS = 80;
 
 // Inode field byte offsets (relative to inode start)
 const INO_LOCK_STATE = 0;
@@ -227,7 +235,8 @@ export class SharedFS {
     const inodeBitmapStart = 1;
     const blockBitmapStart = inodeBitmapStart + inodeBitmapBlocks;
     const inodeTableStart = blockBitmapStart + blockBitmapBlocks;
-    const dataStart = inodeTableStart + inodeTableBlocks;
+    const fdTableExtensionStart = inodeTableStart + inodeTableBlocks;
+    const dataStart = fdTableExtensionStart + FD_TABLE_EXTENSION_BLOCKS;
 
     if (dataStart >= totalBlocks) throw new SFSError(ENOSPC);
 
@@ -251,6 +260,8 @@ export class SharedFS {
     fs.w32(SB_INODE_TABLE_BLOCKS, inodeTableBlocks);
     fs.w32(SB_MAX_SIZE_BLOCKS, maxBlocks);
     fs.w32(SB_GROW_CHUNK_BLOCKS, 256);
+    fs.w32(SB_FD_TABLE_EXTENSION_START, fdTableExtensionStart);
+    fs.w32(SB_FD_TABLE_EXTENSION_BLOCKS, FD_TABLE_EXTENSION_BLOCKS);
 
     // Mark metadata blocks as used in block bitmap
     const bbStart = blockBitmapStart * BLOCK_SIZE;
@@ -310,6 +321,7 @@ export class SharedFS {
       throw new SFSError(EINVAL, "Bad version");
     if (fs.r32(SB_BLOCK_SIZE) !== BLOCK_SIZE)
       throw new SFSError(EINVAL, "Bad block size");
+    fs.ensureFdTableExtension();
     return fs;
   }
 
@@ -426,6 +438,45 @@ export class SharedFS {
       if (old === word) break;
     }
     Atomics.add(this.i32, SB_FREE_BLOCKS >> 2, 1);
+  }
+
+  private blockIsFree(blockNo: number): boolean {
+    const bbStart = this.r32(SB_BLOCK_BITMAP_START) * BLOCK_SIZE;
+    const idx = (bbStart >> 2) + (blockNo >> 5);
+    const bit = blockNo & 31;
+    return (Atomics.load(this.i32, idx) & (1 << bit)) === 0;
+  }
+
+  private markBlockUsed(blockNo: number): void {
+    const bbStart = this.r32(SB_BLOCK_BITMAP_START) * BLOCK_SIZE;
+    const idx = (bbStart >> 2) + (blockNo >> 5);
+    const bit = blockNo & 31;
+    Atomics.or(this.i32, idx, 1 << bit);
+  }
+
+  private reserveContiguousBlocks(blockCount: number): number {
+    const totalBlocks = this.r32(SB_TOTAL_BLOCKS);
+    let runStart = -1;
+    let runLength = 0;
+
+    for (let blockNo = 1; blockNo < totalBlocks; blockNo++) {
+      if (this.blockIsFree(blockNo)) {
+        if (runStart < 0) runStart = blockNo;
+        runLength++;
+        if (runLength === blockCount) break;
+      } else {
+        runStart = -1;
+        runLength = 0;
+      }
+    }
+
+    if (runStart < 0 || runLength < blockCount) return ENOSPC;
+
+    for (let blockNo = runStart; blockNo < runStart + blockCount; blockNo++) {
+      this.markBlockUsed(blockNo);
+    }
+    Atomics.sub(this.i32, SB_FREE_BLOCKS >> 2, blockCount);
+    return runStart;
   }
 
   // ── Growth ───────────────────────────────────────────────────────
@@ -796,6 +847,17 @@ export class SharedFS {
       this.w64(inoOff + INO_SIZE, newSize);
       return;
     }
+
+    const partialBlockBytes = newSize % BLOCK_SIZE;
+    if (partialBlockBytes !== 0) {
+      const fileBlock = Math.floor(newSize / BLOCK_SIZE);
+      const phys = this.inodeBlockMap(ino, fileBlock, false);
+      if (phys > 0) {
+        const start = phys * BLOCK_SIZE + partialBlockBytes;
+        this.u8.fill(0, start, phys * BLOCK_SIZE + BLOCK_SIZE);
+      }
+    }
+
     const keepBlocks = Math.ceil(newSize / BLOCK_SIZE);
     this.freeBlocksFrom(ino, keepBlocks);
     this.w64(inoOff + INO_SIZE, newSize);
@@ -1150,8 +1212,10 @@ export class SharedFS {
   // ── FD table ─────────────────────────────────────────────────────
 
   private fdAlloc(ino: number, flags: number, isDir: boolean): number {
-    for (let i = 0; i < MAX_FDS; i++) {
-      const base = FD_TABLE_OFFSET + i * FD_ENTRY_SIZE;
+    const capacity = this.fdCapacity();
+    for (let i = 0; i < capacity; i++) {
+      const base = this.fdEntryOffset(i);
+      if (base < 0) continue;
       const idx = base >> 2;
       const old = Atomics.compareExchange(this.i32, idx, 0, 1);
       if (old === 0) {
@@ -1165,6 +1229,64 @@ export class SharedFS {
     return EMFILE;
   }
 
+  private ensureFdTableExtension(): void {
+    if (
+      this.r32(SB_FD_TABLE_EXTENSION_START) !== 0 &&
+      this.r32(SB_FD_TABLE_EXTENSION_BLOCKS) !== 0
+    ) {
+      return;
+    }
+
+    this.sbLock();
+    try {
+      if (
+        this.r32(SB_FD_TABLE_EXTENSION_START) !== 0 &&
+        this.r32(SB_FD_TABLE_EXTENSION_BLOCKS) !== 0
+      ) {
+        return;
+      }
+
+      const start = this.reserveContiguousBlocks(FD_TABLE_EXTENSION_BLOCKS);
+      if (start < 0) return;
+
+      const startOffset = start * BLOCK_SIZE;
+      this.u8.fill(
+        0,
+        startOffset,
+        startOffset + FD_TABLE_EXTENSION_BLOCKS * BLOCK_SIZE,
+      );
+      this.w32(SB_FD_TABLE_EXTENSION_START, start);
+      this.w32(SB_FD_TABLE_EXTENSION_BLOCKS, FD_TABLE_EXTENSION_BLOCKS);
+    } finally {
+      this.sbUnlock();
+    }
+  }
+
+  private fdCapacity(): number {
+    const extensionBlocks = this.r32(SB_FD_TABLE_EXTENSION_BLOCKS);
+    return (
+      LEGACY_MAX_FDS +
+      Math.floor((extensionBlocks * BLOCK_SIZE) / FD_ENTRY_SIZE)
+    );
+  }
+
+  private fdEntryOffset(fd: number): number {
+    if (fd < LEGACY_MAX_FDS) {
+      return FD_TABLE_OFFSET + fd * FD_ENTRY_SIZE;
+    }
+
+    const extensionStart = this.r32(SB_FD_TABLE_EXTENSION_START);
+    const extensionBlocks = this.r32(SB_FD_TABLE_EXTENSION_BLOCKS);
+    if (extensionStart === 0 || extensionBlocks === 0) return -1;
+
+    const extensionFd = fd - LEGACY_MAX_FDS;
+    const extensionOffset = extensionFd * FD_ENTRY_SIZE;
+    if (extensionOffset + FD_ENTRY_SIZE > extensionBlocks * BLOCK_SIZE) {
+      return -1;
+    }
+    return extensionStart * BLOCK_SIZE + extensionOffset;
+  }
+
   private fdGet(
     fd: number,
   ): {
@@ -1174,8 +1296,9 @@ export class SharedFS {
     flags: number;
     isDir: boolean;
   } | null {
-    if (fd < 0 || fd >= MAX_FDS) return null;
-    const base = FD_TABLE_OFFSET + fd * FD_ENTRY_SIZE;
+    if (fd < 0 || fd >= this.fdCapacity()) return null;
+    const base = this.fdEntryOffset(fd);
+    if (base < 0) return null;
     const inUse = Atomics.load(this.i32, base >> 2);
     if (!inUse) return null;
     return {
@@ -1188,10 +1311,64 @@ export class SharedFS {
   }
 
   private fdFree(fd: number): void {
-    if (fd >= 0 && fd < MAX_FDS) {
-      const base = FD_TABLE_OFFSET + fd * FD_ENTRY_SIZE;
+    if (fd >= 0 && fd < this.fdCapacity()) {
+      const base = this.fdEntryOffset(fd);
+      if (base < 0) return;
       Atomics.store(this.i32, base >> 2, 0);
     }
+  }
+
+  private fdRefCountForInode(ino: number): number {
+    let count = 0;
+    const capacity = this.fdCapacity();
+    for (let fd = 0; fd < capacity; fd++) {
+      const entry = this.fdGet(fd);
+      if (entry?.ino === ino) count++;
+    }
+    return count;
+  }
+
+  private maybeFreeUnlinkedInode(ino: number): void {
+    const inoOff = this.inodeOffset(ino);
+    let shouldFree = false;
+
+    this.inodeWriteLock(ino);
+    try {
+      if (
+        this.r32(inoOff + INO_LINK_COUNT) === 0 &&
+        this.fdRefCountForInode(ino) === 0
+      ) {
+        this.inodeTruncate(ino, 0);
+        shouldFree = true;
+      }
+    } finally {
+      this.inodeWriteUnlock(ino);
+    }
+
+    if (shouldFree) this.inodeFree(ino);
+  }
+
+  private dropDirectoryLink(ino: number): void {
+    const inoOff = this.inodeOffset(ino);
+    let shouldFree = false;
+
+    this.inodeWriteLock(ino);
+    try {
+      const linkCount = this.r32(inoOff + INO_LINK_COUNT);
+      if (linkCount <= 1) {
+        this.w32(inoOff + INO_LINK_COUNT, 0);
+        if (this.fdRefCountForInode(ino) === 0) {
+          this.inodeTruncate(ino, 0);
+          shouldFree = true;
+        }
+      } else {
+        this.w32(inoOff + INO_LINK_COUNT, linkCount - 1);
+      }
+    } finally {
+      this.inodeWriteUnlock(ino);
+    }
+
+    if (shouldFree) this.inodeFree(ino);
   }
 
   // ── Build stat result from inode ─────────────────────────────────
@@ -1218,6 +1395,9 @@ export class SharedFS {
     const creating = (flags & O_CREAT) !== 0;
 
     let ino = this.pathResolve(path, true);
+    if (ino >= 0 && creating && (flags & O_EXCL) !== 0) {
+      throw new SFSError(EEXIST);
+    }
 
     if (ino < 0 && ino === ENOENT && creating) {
       // Create the file
@@ -1228,6 +1408,7 @@ export class SharedFS {
         const nameBytes = encoder.encode(name);
         const existing = this.dirLookup(parentIno, nameBytes);
         if (existing >= 0) {
+          if ((flags & O_EXCL) !== 0) throw new SFSError(EEXIST);
           ino = existing;
         } else {
           const newIno = this.inodeAlloc();
@@ -1281,7 +1462,7 @@ export class SharedFS {
 
     // If append, set offset to end
     if (flags & O_APPEND) {
-      const base = FD_TABLE_OFFSET + fd * FD_ENTRY_SIZE;
+      const base = this.fdEntryOffset(fd);
       this.w64(base + FD_OFFSET, this.r64(inoOff + INO_SIZE));
     }
 
@@ -1291,7 +1472,9 @@ export class SharedFS {
   close(fd: number): void {
     const entry = this.fdGet(fd);
     if (!entry) throw new SFSError(EBADF);
+    const ino = entry.ino;
     this.fdFree(fd);
+    this.maybeFreeUnlinkedInode(ino);
   }
 
   read(fd: number, buffer: Uint8Array): number {
@@ -1307,8 +1490,7 @@ export class SharedFS {
         buffer.length,
       );
       // Update offset
-      const base = FD_TABLE_OFFSET + fd * FD_ENTRY_SIZE;
-      this.w64(base + FD_OFFSET, entry.offset + nread);
+      this.w64(entry.base + FD_OFFSET, entry.offset + nread);
       return nread;
     } finally {
       this.inodeReadUnlock(entry.ino);
@@ -1337,8 +1519,7 @@ export class SharedFS {
         data.length,
       );
       // Update offset
-      const base = FD_TABLE_OFFSET + fd * FD_ENTRY_SIZE;
-      this.w64(base + FD_OFFSET, offset + nwritten);
+      this.w64(entry.base + FD_OFFSET, offset + nwritten);
       return nwritten;
     } finally {
       this.inodeWriteUnlock(entry.ino);
@@ -1364,8 +1545,7 @@ export class SharedFS {
 
     if (newOffset < 0) throw new SFSError(EINVAL);
 
-    const base = FD_TABLE_OFFSET + fd * FD_ENTRY_SIZE;
-    this.w64(base + FD_OFFSET, newOffset);
+    this.w64(entry.base + FD_OFFSET, newOffset);
     return newOffset;
   }
 
@@ -1433,17 +1613,7 @@ export class SharedFS {
       const rc = this.dirRemoveEntry(parentIno, nameBytes);
       if (rc < 0) throw new SFSError(rc);
 
-      this.inodeWriteLock(childIno);
-      const linkCount = this.r32(childOff + INO_LINK_COUNT);
-      if (linkCount <= 1) {
-        this.inodeTruncate(childIno, 0);
-        this.w32(childOff + INO_LINK_COUNT, 0);
-        this.inodeWriteUnlock(childIno);
-        this.inodeFree(childIno);
-      } else {
-        this.w32(childOff + INO_LINK_COUNT, linkCount - 1);
-        this.inodeWriteUnlock(childIno);
-      }
+      this.dropDirectoryLink(childIno);
     } finally {
       this.inodeWriteUnlock(parentIno);
     }
@@ -1469,16 +1639,13 @@ export class SharedFS {
 
       // Remove any existing entry at destination
       const existingIno = this.dirLookup(newParent, newNameBytes);
+      if (existingIno === srcIno) return;
       if (existingIno >= 0) {
         const existOff = this.inodeOffset(existingIno);
         const existMode = this.r32(existOff + INO_MODE);
         if ((existMode & S_IFMT) === S_IFDIR) throw new SFSError(EISDIR);
         this.dirRemoveEntry(newParent, newNameBytes);
-        this.inodeWriteLock(existingIno);
-        this.inodeTruncate(existingIno, 0);
-        this.w32(existOff + INO_LINK_COUNT, 0);
-        this.inodeWriteUnlock(existingIno);
-        this.inodeFree(existingIno);
+        this.dropDirectoryLink(existingIno);
       }
 
       // Add entry in new directory
@@ -1845,8 +2012,7 @@ export class SharedFS {
       // Advance offset — update both the SAB (persistent) and the local
       // snapshot so the while loop progresses past deleted entries (entIno=0).
       entry.offset = pos + recLen;
-      const base = FD_TABLE_OFFSET + dd * FD_ENTRY_SIZE;
-      this.w64(base + FD_OFFSET, pos + recLen);
+      this.w64(entry.base + FD_OFFSET, pos + recLen);
 
       if (entIno !== 0) {
         const nameStr = safeDecode(

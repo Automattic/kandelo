@@ -13,7 +13,7 @@
  */
 
 import { readFileSync, existsSync, statSync } from "fs";
-import { resolve, dirname, isAbsolute, relative } from "path";
+import { basename, resolve, dirname, isAbsolute, relative } from "path";
 import { NodeKernelHost } from "../host/src/node-kernel-host";
 import { tryResolveBinary } from "../host/src/binary-resolver";
 
@@ -24,6 +24,7 @@ const repoRoot = resolve(dirname(new URL(import.meta.url).pathname), "..");
 // need the path must handle null explicitly.
 const coreutilsWasm = tryResolveBinary("programs/coreutils.wasm");
 const dashWasm = tryResolveBinary("programs/dash.wasm");
+const shWasm = dashWasm ?? tryResolveBinary("programs/sh.wasm");
 const grepWasm = tryResolveBinary("programs/grep.wasm");
 const sedWasm = tryResolveBinary("programs/sed.wasm");
 const gitWasm = tryResolveBinary("programs/git/git.wasm");
@@ -77,8 +78,9 @@ const builtinPrograms: Record<string, string | null> = {
     "echo": echoWasm,
     "/bin/echo": echoWasm,
     "/usr/bin/echo": echoWasm,
-    "sh": dashWasm,
-    "/bin/sh": dashWasm,
+    "sh": shWasm,
+    "/bin/sh": shWasm,
+    "/usr/bin/sh": shWasm,
     "dash": dashWasm,
     "/bin/dash": dashWasm,
     "grep": grepWasm,
@@ -281,6 +283,21 @@ function resolveProgram(path: string): ArrayBuffer | null {
     const mapped = builtinPrograms[path];
     if (mapped) {
         return loadBytes(mapped);
+    }
+    if (isAbsolute(path)) {
+        const base = basename(path);
+        const mappedBasename = builtinPrograms[base];
+        const hostPathDirs = (process.env.PATH ?? "").split(":").filter(Boolean);
+        const isHostPathLookup = hostPathDirs.some((dir) => resolve(dir, base) === path);
+        if (mappedBasename && isHostPathLookup) {
+            return loadBytes(mappedBasename);
+        }
+    }
+    // execlp() searches the inherited host/dev-shell PATH. In CI that can
+    // resolve tools like gencat to /nix/store/.../bin/gencat; never load that
+    // host ELF as a guest program.
+    if (path.endsWith("/gencat")) {
+        return loadBytes(resolve(repoRoot, "examples/gencat.wasm"));
     }
     const kernelCwd = resolve(process.env.KERNEL_CWD || process.cwd());
     const candidates = [

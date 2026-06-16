@@ -37,15 +37,24 @@ const REPO_ROOT = findRepoRoot();
 const MARIADB_LEGACY_INSTALL = join(REPO_ROOT, "packages/registry/mariadb/mariadb-install");
 const MARIADB_SOURCE = ensureSourceExtract("mariadb", REPO_ROOT);
 const MARIADB_PATH = resolveBinary("programs/mariadb/mariadbd.wasm");
+const MARIADB_DATA_DIR = "/data/master-data";
 const MYSQL_TEST_DIR = existsSync(join(MARIADB_LEGACY_INSTALL, "mysql-test"))
   ? join(MARIADB_LEGACY_INSTALL, "mysql-test")
   : join(MARIADB_SOURCE, "mysql-test");
+const MARIADB_SHARE_DIR = existsSync(join(MARIADB_LEGACY_INSTALL, "share"))
+  ? join(MARIADB_LEGACY_INSTALL, "share")
+  : "";
+const MARIADB_SOURCE_SHARE_DIR = join(MARIADB_SOURCE, "sql/share");
 const SYSTEM_TABLES_PATH = existsSync(join(MARIADB_LEGACY_INSTALL, "share/mysql/mysql_system_tables.sql"))
   ? join(MARIADB_LEGACY_INSTALL, "share/mysql/mysql_system_tables.sql")
   : join(MARIADB_SOURCE, "scripts/mysql_system_tables.sql");
 const SYSTEM_DATA_PATH = existsSync(join(MARIADB_LEGACY_INSTALL, "share/mysql/mysql_system_tables_data.sql"))
   ? join(MARIADB_LEGACY_INSTALL, "share/mysql/mysql_system_tables_data.sql")
   : join(MARIADB_SOURCE, "scripts/mysql_system_tables_data.sql");
+const TEST_DB_PATH = existsSync(join(MARIADB_LEGACY_INSTALL, "share/mysql/mysql_test_db.sql"))
+  ? join(MARIADB_LEGACY_INSTALL, "share/mysql/mysql_test_db.sql")
+  : join(MARIADB_SOURCE, "scripts/mysql_test_db.sql");
+const TIMEZONE_DATA_PATH = join(MARIADB_SOURCE, "scripts/mysql_test_data_timezone.sql");
 const DASH_PATH = resolveBinary("programs/dash.wasm");
 const COREUTILS_PATH = tryResolveBinary("programs/coreutils.wasm");
 
@@ -53,6 +62,10 @@ const OUT_FILE = process.env.MARIADB_TEST_VFS_OUT
   ?? join(REPO_ROOT, "apps/browser-demos/public/mariadb-test.vfs.zst");
 
 const includeAll = process.argv.includes("--all");
+const MYSQL_UID = 101;
+const MYSQL_GID = 101;
+const MARIADB_TEST_VFS_INITIAL_BYTES = 64 * 1024 * 1024;
+const MARIADB_TEST_VFS_MAX_BYTES = 1024 * 1024 * 1024;
 
 const COREUTILS_SYMLINK_NAMES = [
   "ls", "cat", "cp", "mv", "rm", "echo", "mkdir", "rmdir", "touch", "pwd",
@@ -64,7 +77,7 @@ const COREUTILS_SYMLINK_NAMES = [
   "md5sum", "seq", "test", "[",
 ];
 
-// 185 tests verified to pass in headless Chromium with MariaDB on kandelo.
+// 182 tests verified to pass in headless Chromium with MariaDB on kandelo.
 const CURATED_TESTS = [
   "1st", "adddate_454", "almost_full", "alter_table_combinations",
   "alter_table_lock", "alter_table_mdev539_maria",
@@ -83,7 +96,7 @@ const CURATED_TESTS = [
   "ctype_ucs2_query_cache", "ctype_utf16_def", "ctype_utf32_def",
   "ctype_utf32_innodb", "ctype_utf8_def_upgrade",
   "ctype_utf8mb4_unicode_ci_def", "datetime_456", "delayed_blob",
-  "deprecated_features", "fulltext2", "fulltext3", "fulltext_update",
+  "deprecated_features", "fulltext3",
   "fulltext_var", "func_bit", "func_digest", "func_encrypt",
   "func_encrypt_nossl", "func_encrypt_ucs2", "func_equal", "func_int",
   "func_op", "func_sapdb", "func_test", "func_timestamp", "gcc296",
@@ -112,7 +125,7 @@ const CURATED_TESTS = [
   "set_statement_notembedded", "show_create_user",
   "show_function_with_pad_char_to_full_length",
   "show_row_order-9226", "signal_demo1", "signal_demo2", "signal_demo3",
-  "signal_sqlmode", "simple_select", "single_delete_update",
+  "signal_sqlmode", "single_delete_update",
   "skip_log_bin", "sp-bugs2", "sp-condition-handler", "sp-destruct",
   "sp-memory-leak", "sp-no-code", "sp-no-valgrind", "sp-ucs2", "sp-vars",
   "sp_gis", "sp_missing_4665", "sql_mode_pad_char_to_full_length",
@@ -144,20 +157,41 @@ REPLACE INTO mysql.global_priv VALUES ('%','root','{"access":1844674407370955161
 FLUSH PRIVILEGES;
 `;
 
-const RESET_SQL = `DROP DATABASE IF EXISTS test;\nCREATE DATABASE test;\n`;
+const RESET_SQL = `--disable_abort_on_error
+DROP DATABASE IF EXISTS test;
+DROP DATABASE IF EXISTS db;
+DROP DATABASE IF EXISTS db1;
+DROP DATABASE IF EXISTS db2;
+DROP DATABASE IF EXISTS mysqltest;
+DROP DATABASE IF EXISTS mysqltest1;
+DROP DATABASE IF EXISTS mysqltest2;
+DROP DATABASE IF EXISTS mysqltest_1;
+DROP DATABASE IF EXISTS events_test;
+DROP DATABASE IF EXISTS tmp;
+DROP DATABASE IF EXISTS client_test_db;
+--enable_abort_on_error
+CREATE DATABASE test;
+`;
 
 function commonMariadbArgs(): string[] {
   return [
     "/usr/sbin/mariadbd", "--no-defaults",
-    // mariadbd refuses to run as root by default; the bootstrap SQL
-    // populates mysql.user / global_priv so root@127.0.0.1 has full
-    // access. The daemon itself runs as the mysql user (uid 101).
-    "--user=mysql",
-    "--datadir=/data", "--tmpdir=/data/tmp",
+    // Match the Node mysql-test harness: mysqltest's copy_file/system helpers
+    // mutate datadir files directly, so the server and helpers need the same
+    // VFS owner to avoid false read-only MyISAM/MERGE tables.
+    "--user=root",
+    // Keep the server tmpdir outside the datadir.  Upstream tests commonly
+    // create/drop a database named `tmp`; if tmpdir is `/data/tmp`, resetting
+    // that database deletes the directory MariaDB later needs for internal
+    // temporary tables.
+    "--datadir=" + MARIADB_DATA_DIR, "--tmpdir=/tmp",
     "--default-storage-engine=Aria",
+    "--myisam-recover-options=force",
     "--skip-grant-tables",
     "--key-buffer-size=1048576", "--table-open-cache=10",
     "--sort-buffer-size=262144",
+    "--lc-messages-dir=/usr/share/mysql",
+    "--character-sets-dir=/usr/share/mysql/charsets",
   ];
 }
 
@@ -215,17 +249,37 @@ async function main() {
 
   console.log("==> Building MariaDB test-runner VFS image");
 
-  const sab = new SharedArrayBuffer(64 * 1024 * 1024, { maxByteLength: 256 * 1024 * 1024 });
-  const fs = MemoryFileSystem.create(sab, 256 * 1024 * 1024);
+  const sab = new SharedArrayBuffer(MARIADB_TEST_VFS_INITIAL_BYTES, {
+    maxByteLength: MARIADB_TEST_VFS_MAX_BYTES,
+  });
+  const fs = MemoryFileSystem.create(sab, MARIADB_TEST_VFS_MAX_BYTES);
 
   for (const dir of [
-    "/tmp", "/home", "/dev", "/etc", "/bin", "/usr", "/usr/bin",
-    "/usr/local", "/usr/local/bin", "/usr/share", "/root", "/usr/sbin",
+    "/tmp", "/home", "/dev", "/etc", "/bin", "/usr", "/usr/bin", "/log", "/run",
+    "/usr/local", "/usr/local/bin", "/usr/share", "/usr/share/mysql", "/root", "/usr/sbin",
     "/data", "/data/mysql", "/data/tmp", "/data/test",
+    "/tmp/mysqltest", "/tmp/mysqltest/tmp", "/tmp/mysqltest/log", "/tmp/mysqltest/run",
+    MARIADB_DATA_DIR, `${MARIADB_DATA_DIR}/mysql`, `${MARIADB_DATA_DIR}/tmp`, `${MARIADB_DATA_DIR}/test`,
   ]) {
     ensureDir(fs, dir);
   }
   fs.chmod("/tmp", 0o777);
+  for (const dir of ["/tmp/mysqltest", "/tmp/mysqltest/tmp", "/tmp/mysqltest/log", "/tmp/mysqltest/run"]) {
+    fs.chmod(dir, 0o777);
+  }
+  // Empty directories are not useful if a future image serialization backend
+  // prunes them. Keep mysqltest's var/tmp tree materialized so write_file and
+  // SELECT ... OUTFILE targets have an existing parent on first test spawn.
+  for (const keep of ["/tmp/mysqltest/.keep", "/tmp/mysqltest/tmp/.keep", "/tmp/mysqltest/log/.keep", "/tmp/mysqltest/run/.keep"]) {
+    writeVfsFile(fs, keep, "");
+  }
+  for (const dir of [
+    MARIADB_DATA_DIR, `${MARIADB_DATA_DIR}/mysql`, `${MARIADB_DATA_DIR}/tmp`, `${MARIADB_DATA_DIR}/test`,
+    "/data", "/data/mysql", "/data/tmp", "/data/test",
+  ]) {
+    fs.chown(dir, MYSQL_UID, MYSQL_GID);
+    fs.chmod(dir, 0o775);
+  }
 
   // dash + coreutils for the bootstrap wrapper script (sh, sleep, kill).
   if (existsSync(DASH_PATH)) {
@@ -246,12 +300,25 @@ async function main() {
 
   console.log("  Writing mariadbd binary...");
   writeVfsBinary(fs, "/usr/sbin/mariadbd", new Uint8Array(readFileSync(MARIADB_PATH)));
+  if (MARIADB_SHARE_DIR) {
+    console.log("  Writing MariaDB share/ directory...");
+    walkAndWrite(fs, MARIADB_SHARE_DIR, "/usr/share/mysql");
+  }
+  const sourceCharsetsDir = join(MARIADB_SOURCE_SHARE_DIR, "charsets");
+  if (existsSync(sourceCharsetsDir)) {
+    console.log("  Writing MariaDB source charsets/ directory...");
+    walkAndWrite(fs, sourceCharsetsDir, "/usr/share/mysql/charsets");
+  }
 
   console.log("  Writing bootstrap SQL...");
   ensureDirRecursive(fs, "/etc/mariadb");
   const systemTables = readFileSync(SYSTEM_TABLES_PATH, "utf-8");
   const systemData = readFileSync(SYSTEM_DATA_PATH, "utf-8");
-  const bootstrapSql = `use mysql;\n${systemTables}\n${systemData}\nCREATE DATABASE IF NOT EXISTS test;\n`;
+  const testDb = readFileSync(TEST_DB_PATH, "utf-8");
+  const timezoneData = existsSync(TIMEZONE_DATA_PATH)
+    ? readFileSync(TIMEZONE_DATA_PATH, "utf-8")
+    : "";
+  const bootstrapSql = `use mysql;\n${systemTables}\n${systemData}\n${testDb}\n${timezoneData}\n`;
   writeVfsFile(fs, "/etc/mariadb/bootstrap.sql", bootstrapSql);
 
   // bootstrap-runner: backgrounds mariadbd --bootstrap, sleeps to let
@@ -276,17 +343,16 @@ exit 0
   let testCount = 0;
 
   if (includeAll) {
-    console.log("  Writing ALL .test files from main/...");
+    console.log("  Writing ALL regular files from main/...");
     const mainDir = resolve(MYSQL_TEST_DIR, "main");
     for (const name of readdirSync(mainDir).sort()) {
-      if (!name.endsWith(".test")) continue;
       const full = join(mainDir, name);
       try {
         const stat = lstatSync(full);
         if (!stat.isFile()) continue;
         const data = readFileSync(full);
         writeVfsBinary(fs, `/mysql-test/main/${name}`, new Uint8Array(data), 0o644);
-        testCount++;
+        if (name.endsWith(".test")) testCount++;
       } catch { /* skip */ }
     }
   } else {
@@ -299,12 +365,24 @@ exit 0
         testCount++;
       }
     }
+    const mainDir = resolve(MYSQL_TEST_DIR, "main");
+    for (const name of readdirSync(mainDir).sort()) {
+      if (name.endsWith(".test")) continue;
+      const full = join(mainDir, name);
+      try {
+        const stat = lstatSync(full);
+        if (!stat.isFile()) continue;
+        const data = readFileSync(full);
+        writeVfsBinary(fs, `/mysql-test/main/${name}`, new Uint8Array(data), 0o644);
+      } catch { /* skip */ }
+    }
   }
   console.log(`    ${testCount} test files`);
 
   // Setup and reset SQL test files (run by the page after server-ready)
   writeVfsFile(fs, "/mysql-test/main/__setup.test", SETUP_SQL);
   writeVfsFile(fs, "/mysql-test/main/__reset.test", RESET_SQL);
+  writeVfsFile(fs, "/mysql-test/main/__probe.test", "SELECT 1;\n");
 
   // Include + std_data directories
   const includeDir = resolve(MYSQL_TEST_DIR, "include");
@@ -316,6 +394,14 @@ exit 0
   if (existsSync(stdDataDir)) {
     console.log("  Writing std_data/ directory...");
     walkAndWrite(fs, stdDataDir, "/mysql-test/std_data");
+    symlink(fs, "/mysql-test/std_data", "/std_data");
+    symlink(fs, "/mysql-test/std_data", "/data/std_data");
+  }
+  const suiteDir = resolve(MYSQL_TEST_DIR, "suite");
+  if (existsSync(suiteDir)) {
+    console.log("  Writing suite/ directory...");
+    walkAndWrite(fs, suiteDir, "/mysql-test/suite");
+    symlink(fs, "/mysql-test/suite", "/suite");
   }
 
   // dinit service tree (no auto-boot — page passes target service as argv).

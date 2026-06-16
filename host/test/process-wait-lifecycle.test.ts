@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { ABI_SYSCALLS } from "../src/generated/abi";
+import { ABI_SYSCALLS, CHANNEL_STATUS_PENDING } from "../src/generated/abi";
 import { CentralizedKernelWorker } from "../src/kernel-worker";
 
 const SIGCHLD = 17;
@@ -139,6 +139,50 @@ describe("Rust-owned process wait lifecycle", () => {
     expect(reapExitedChild).toHaveBeenCalledWith(7, 42);
     expect(worker.sendSignalToProcess).not.toHaveBeenCalled();
     expect(worker.wakeWaitingParent).not.toHaveBeenCalled();
+  });
+
+  it("kernel syscall traps terminate the process instead of completing the channel", () => {
+    const processMemory = createSharedMemory();
+    const channel = createChannel(42, processMemory);
+    channel.handling = true;
+    Atomics.store(channel.i32View, 0, CHANNEL_STATUS_PENDING);
+
+    const markProcessSignaled = vi.fn(() => 0);
+    const onExit = vi.fn();
+    const worker = createWorkerHarness({
+      kernel_mark_process_signaled: markProcessSignaled,
+      kernel_get_parent_pid: vi.fn(() => 7),
+      kernel_has_sa_nocldwait: vi.fn(() => 0),
+    });
+    worker.callbacks = { onExit };
+    worker.hostReaped = new Set();
+    worker.sharedMappings = new Map([[42, new Map()]]);
+    worker.socketTimeoutTimers = new Map();
+    worker.pendingCancels = new Set([0]);
+    worker.sendSignalToProcess = vi.fn();
+    worker.wakeWaitingParent = vi.fn();
+
+    const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      worker.handleFatalKernelTrap(
+        channel,
+        "test",
+        new Error("unreachable"),
+        ABI_SYSCALLS.Munmap,
+        [123, 4096],
+      );
+    } finally {
+      consoleError.mockRestore();
+    }
+
+    expect(markProcessSignaled).toHaveBeenCalledWith(42, 11);
+    expect(worker.sendSignalToProcess).toHaveBeenCalledWith(7, SIGCHLD);
+    expect(worker.wakeWaitingParent).toHaveBeenCalledWith(7);
+    expect(worker.sharedMappings.has(42)).toBe(false);
+    expect(onExit).toHaveBeenCalledWith(42, 139);
+    expect(channel.handling).toBe(false);
+    expect(worker.pendingCancels.has(0)).toBe(false);
+    expect(Atomics.load(channel.i32View, 0)).toBe(CHANNEL_STATUS_PENDING);
   });
 });
 

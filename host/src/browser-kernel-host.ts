@@ -126,22 +126,12 @@ export class BrowserKernel {
   private fsSab?: SharedArrayBuffer;
   private shmSab: SharedArrayBuffer;
   private maxPages: number;
-  /**
-   * @internal Legacy spawn() pre-allocates pids on the main thread. New
-   * code uses kernel.boot() which lets the worker allocate, making this
-   * counter irrelevant. Once all demos migrate to boot(), this goes away.
-   *
-   * Starts at 100 to skip the kernel's reserved range (virtual init at
-   * pid 1, future kernel threads). The architectural fix is in the spawn
-   * message protocol where pid is now optional and the worker is the
-   * authority.
-   */
-  nextPid = 100;
   private options: Required<
     Pick<BrowserKernelOptions, "maxWorkers" | "fsSize" | "env">
   > &
     BrowserKernelOptions;
   private exitResolvers = new Map<number, (status: number) => void>();
+  private pendingExitStatuses = new Map<number, number>();
   private pendingRequests = new Map<number, { resolve: (val: any) => void; reject: (err: Error) => void }>();
   private nextRequestId = 1;
   private ptyOutputCallbacks = new Map<number, (data: Uint8Array) => void>();
@@ -426,9 +416,7 @@ export class BrowserKernel {
       maxPages: this.maxPages,
     }) as number;
 
-    const exit = new Promise<number>((resolve) => {
-      this.exitResolvers.set(pid, resolve);
-    });
+    const exit = this.createExitPromise(pid);
 
     if (options.pty) {
       this.sendToKernel({ type: "register_pty_output", pid });
@@ -475,20 +463,17 @@ export class BrowserKernel {
       ptyRows?: number;
     },
   ): Promise<number> {
-    const pid = this.nextPid++;
     const requestId = this.nextRequestId++;
-
-    const exitPromise = new Promise<number>((resolve) => {
-      this.exitResolvers.set(pid, resolve);
-    });
 
     // Clone programBytes since it gets transferred (detached)
     const bytesToSend = programBytes.slice(0);
 
-    await this.request(requestId, {
+    const pid = await this.request(requestId, {
       type: "spawn",
       requestId,
-      pid,
+      // Let the kernel worker allocate userspace PIDs. The browser may have
+      // booted dinit/service children already, so a main-thread counter can
+      // collide with live kernel-owned processes.
       programBytes: bytesToSend,
       argv,
       env: this.mergeEnv(options?.env ?? this.options.env),
@@ -500,7 +485,9 @@ export class BrowserKernel {
       ptyRows: options?.ptyRows,
       stdin: options?.stdin,
       maxPages: this.maxPages,
-    }, [bytesToSend]);
+    }, [bytesToSend]) as number;
+
+    const exitPromise = this.createExitPromise(pid);
 
     // Register PTY output callback if pty was requested
     if (options?.pty) {
@@ -561,15 +548,24 @@ export class BrowserKernel {
       maxPages: this.maxPages,
     }) as number;
 
-    const exit = new Promise<number>((resolve) => {
-      this.exitResolvers.set(pid, resolve);
-    });
+    const exit = this.createExitPromise(pid);
 
     if (options?.pty) {
       this.sendToKernel({ type: "register_pty_output", pid });
     }
 
     return { pid, exit };
+  }
+
+  private createExitPromise(pid: number): Promise<number> {
+    if (this.pendingExitStatuses.has(pid)) {
+      const status = this.pendingExitStatuses.get(pid)!;
+      this.pendingExitStatuses.delete(pid);
+      return Promise.resolve(status);
+    }
+    return new Promise<number>((resolve) => {
+      this.exitResolvers.set(pid, resolve);
+    });
   }
 
   /**
@@ -964,6 +960,7 @@ export class BrowserKernel {
     });
     this.kernelWorkerHandle.terminate();
     this.exitResolvers.clear();
+    this.pendingExitStatuses.clear();
     this.pendingRequests.clear();
     this.ptyOutputCallbacks.clear();
     this.options.onHttpBridgePendingRequests?.(0);
@@ -1039,7 +1036,11 @@ export class BrowserKernel {
       case "exit": {
         const resolver = this.exitResolvers.get(msg.pid);
         this.exitResolvers.delete(msg.pid);
-        if (resolver) resolver(msg.status);
+        if (resolver) {
+          resolver(msg.status);
+        } else {
+          this.pendingExitStatuses.set(msg.pid, msg.status);
+        }
         this.options.onProcessEvent?.({ kind: "exit", pid: msg.pid, exitStatus: msg.status });
         break;
       }

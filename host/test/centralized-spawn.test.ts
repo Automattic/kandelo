@@ -50,6 +50,30 @@ describe("non-forking posix_spawn", () => {
     expect(result.forkCount).toBe(0n);
   });
 
+  it("returns ENOEXEC when posix_spawn resolves non-Wasm bytes", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "kandelo-invalid-spawn-"));
+    const invalidProgram = join(dir, "mysql");
+    writeFileSync(invalidProgram, new Uint8Array([0x69, 0x0e, 0x00, 0x00]));
+
+    try {
+      const result = await runCentralizedProgram({
+        programPath: spawnSmokeWasm,
+        argv: ["spawn-smoke", "/usr/bin/mysql"],
+        execPrograms: new Map([
+          ["/usr/bin/mysql", invalidProgram],
+        ]),
+        timeout: 30_000,
+      });
+
+      expect(result.exitCode).toBe(1);
+      expect(result.stderr).toContain("posix_spawn(/usr/bin/mysql): Exec format error");
+      expect(result.stderr).not.toContain("WebAssembly.compile");
+      expect(result.stderr).not.toContain("expected magic word");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it("covers spawnp / file actions / SETPGROUP", async () => {
     // spawn-coverage.c runs three subtests in one process — see its
     // header comment for the full matrix and the popen/system/addopen
