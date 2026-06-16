@@ -272,6 +272,26 @@ describe.each(backendFactories)("%s", (_name, makeCase) => {
   });
 });
 
+describe("HostFileSystem default virtual ownership", () => {
+  it("can present existing host-backed files as owned by a chosen guest uid/gid", () => {
+    const root = makeTempRoot("wasm-posix-host-fs-default-owner-");
+    const native = join(root, "owned-by-mount");
+    writeFileSync(native, "data");
+    const before = statSync(native);
+
+    const backend = new HostFileSystem(root, "/", { uid: 65534, gid: 65533 });
+    const virtual = backend.stat("/owned-by-mount");
+    expect(virtual.uid).toBe(65534);
+    expect(virtual.gid).toBe(65533);
+
+    backend.chown("/owned-by-mount", 1000, 1001);
+    const changed = backend.stat("/owned-by-mount");
+    expect(changed.uid).toBe(1000);
+    expect(changed.gid).toBe(1001);
+    expectNativeMetadataUnchanged(native, before);
+  });
+});
+
 describe("VirtualPlatformIO on Node host mounts", () => {
   it("routes metadata operations to HostFileSystem as VFS-only changes", () => {
     const root = makeTempRoot("wasm-posix-virtual-platform-vfs-only-");
