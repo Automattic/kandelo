@@ -210,7 +210,7 @@ export class TlsNetworkBackend implements NetworkIO {
   getaddrinfo(hostname: string): Uint8Array {
     const literalIp = parseNumericIpv4Hostname(hostname);
     if (literalIp) return literalIp;
-    validateSyntheticDnsHostname(hostname);
+    validateSyntheticDnsHostname(hostname, this.dnsAliases);
 
     const ip = this.syntheticIp(hostname);
     const ipStr = this.ipKey(ip);

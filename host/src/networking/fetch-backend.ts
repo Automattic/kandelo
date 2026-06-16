@@ -46,7 +46,10 @@ export function parseNumericIpv4Hostname(hostname: string): Uint8Array | null {
   ]);
 }
 
-export function validateSyntheticDnsHostname(hostname: string): void {
+export function validateSyntheticDnsHostname(
+  hostname: string,
+  aliases?: Record<string, string>,
+): void {
   // The browser backends synthesize addresses for DNS names and let fetch()
   // perform the real network lookup later. Do not synthesize addresses for
   // names that a POSIX resolver would reject before DNS, such as empty labels
@@ -59,6 +62,26 @@ export function validateSyntheticDnsHostname(hostname: string): void {
     if (label.length === 0 || label.length > 63) {
       throw nameNotFoundError(hostname);
     }
+  }
+
+  // Browser DNS is synthetic: there is no native getaddrinfo(3) API, so the
+  // HTTP/TLS backends can only safely mint addresses for names that may later
+  // be resolved by fetch() or by an explicit backend alias. Do not report
+  // success for names the resolver must know are absent. The special-use
+  // ".invalid" zone is reserved to never resolve, and unqualified names have
+  // no search domain in Kandelo's browser environment. Returning a synthetic
+  // address for those names makes POSIX applications block in connect/recv
+  // instead of getting the expected getaddrinfo failure.
+  if (aliases && Object.prototype.hasOwnProperty.call(aliases, absoluteName)) {
+    return;
+  }
+  const lowerName = absoluteName.toLowerCase();
+  if (aliases && Object.prototype.hasOwnProperty.call(aliases, lowerName)) {
+    return;
+  }
+  if (lowerName === "localhost") return;
+  if (!lowerName.includes(".") || lowerName === "invalid" || lowerName.endsWith(".invalid")) {
+    throw nameNotFoundError(hostname);
   }
 }
 
@@ -285,7 +308,7 @@ export class FetchNetworkBackend implements NetworkIO {
   getaddrinfo(hostname: string): Uint8Array {
     const literalIp = parseNumericIpv4Hostname(hostname);
     if (literalIp) return literalIp;
-    validateSyntheticDnsHostname(hostname);
+    validateSyntheticDnsHostname(hostname, this.options.hostAliases);
 
     // In the browser, return a synthetic IP.
     // The actual connection uses the Host header, not this IP.
