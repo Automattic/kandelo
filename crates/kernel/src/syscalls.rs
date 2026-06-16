@@ -4020,6 +4020,31 @@ fn match_pty_stat(resolved: &[u8], uid: u32, gid: u32) -> Option<WasmStat> {
     }
 }
 
+fn unix_socket_path_stat(
+    proc: &Process,
+    host: &mut dyn HostIO,
+    resolved: &[u8],
+    follow: bool,
+) -> Result<Option<WasmStat>, Errno> {
+    let registry = unsafe { crate::unix_socket::global_unix_socket_registry() };
+    if !registry.contains(resolved) {
+        return Ok(None);
+    }
+
+    // Filesystem-backed AF_UNIX sockets have ordinary path metadata. The
+    // socket registry tells Kandelo that the path should report S_IFSOCK, but
+    // uid/gid/mode/timestamps still come from the underlying VFS inode so
+    // chown(2), chmod(2), and stat(2) round-trip like a POSIX socket node.
+    check_search_path(proc, host, resolved)?;
+    let mut st = if follow {
+        host.host_stat(resolved)?
+    } else {
+        host.host_lstat(resolved)?
+    };
+    st.st_mode = wasm_posix_shared::mode::S_IFSOCK | (st.st_mode & 0o7777);
+    Ok(Some(st))
+}
+
 pub fn sys_stat(proc: &mut Process, host: &mut dyn HostIO, path: &[u8]) -> Result<WasmStat, Errno> {
     let resolved = resolve_path(path, &proc.cwd);
     if let Some(dev) = match_virtual_device(&resolved) {
@@ -4056,27 +4081,8 @@ pub fn sys_stat(proc: &mut Process, host: &mut dyn HostIO, path: &[u8]) -> Resul
     if let Some(st) = synthetic_file_stat(&resolved, proc.euid, proc.egid) {
         return Ok(st);
     }
-    // Check Unix socket registry
-    {
-        let registry = unsafe { crate::unix_socket::global_unix_socket_registry() };
-        if registry.contains(&resolved) {
-            return Ok(WasmStat {
-                st_dev: 0,
-                st_ino: 0x554E5800, // "UNX\0"
-                st_mode: wasm_posix_shared::mode::S_IFSOCK | 0o755,
-                st_nlink: 1,
-                st_uid: proc.euid,
-                st_gid: proc.egid,
-                st_size: 0,
-                st_atime_sec: 0,
-                st_atime_nsec: 0,
-                st_mtime_sec: 0,
-                st_mtime_nsec: 0,
-                st_ctime_sec: 0,
-                st_ctime_nsec: 0,
-                _pad: 0,
-            });
-        }
+    if let Some(st) = unix_socket_path_stat(proc, host, &resolved, true)? {
+        return Ok(st);
     }
     // VFS is the source of truth for ownership: host_stat already returns the
     // file's real uid/gid, so just propagate.
@@ -4124,27 +4130,8 @@ pub fn sys_lstat(
     if let Some(st) = synthetic_file_stat(&resolved, proc.euid, proc.egid) {
         return Ok(st);
     }
-    // Check Unix socket registry
-    {
-        let registry = unsafe { crate::unix_socket::global_unix_socket_registry() };
-        if registry.contains(&resolved) {
-            return Ok(WasmStat {
-                st_dev: 0,
-                st_ino: 0x554E5800, // "UNX\0"
-                st_mode: wasm_posix_shared::mode::S_IFSOCK | 0o755,
-                st_nlink: 1,
-                st_uid: proc.euid,
-                st_gid: proc.egid,
-                st_size: 0,
-                st_atime_sec: 0,
-                st_atime_nsec: 0,
-                st_mtime_sec: 0,
-                st_mtime_nsec: 0,
-                st_ctime_sec: 0,
-                st_ctime_nsec: 0,
-                _pad: 0,
-            });
-        }
+    if let Some(st) = unix_socket_path_stat(proc, host, &resolved, false)? {
+        return Ok(st);
     }
     // VFS is the source of truth for ownership: host_lstat already returns the
     // link's real uid/gid, so just propagate.
@@ -7108,7 +7095,16 @@ pub fn sys_bind(
             // rebased branch.)
             use wasm_posix_shared::flags::{O_CREAT, O_EXCL, O_WRONLY};
             check_open_permissions(proc, host, &resolved, O_CREAT | O_EXCL | O_WRONLY)?;
-            let h = match host.host_open(&resolved, O_CREAT | O_EXCL | O_WRONLY, 0o600) {
+            // Linux pathname sockets start with every permission bit enabled,
+            // filtered through the creating process's umask. The backing VFS
+            // inode owns these bits so later chmod/stat operations observe one
+            // authoritative value.
+            let socket_mode = 0o777 & !proc.umask;
+            let h = match host.host_open(
+                &resolved,
+                O_CREAT | O_EXCL | O_WRONLY,
+                socket_mode,
+            ) {
                 Ok(h) => h,
                 Err(Errno::EEXIST) => return Err(Errno::EADDRINUSE),
                 Err(e) => return Err(e),
@@ -8290,27 +8286,10 @@ pub fn sys_fstatat(
     if let Some(st) = synthetic_file_stat(&resolved, proc.euid, proc.egid) {
         return Ok(st);
     }
-    // Check Unix socket registry
+    if let Some(st) =
+        unix_socket_path_stat(proc, host, &resolved, flags & AT_SYMLINK_NOFOLLOW == 0)?
     {
-        let registry = unsafe { crate::unix_socket::global_unix_socket_registry() };
-        if registry.contains(&resolved) {
-            return Ok(WasmStat {
-                st_dev: 0,
-                st_ino: 0x554E5800, // "UNX\0"
-                st_mode: wasm_posix_shared::mode::S_IFSOCK | 0o755,
-                st_nlink: 1,
-                st_uid: proc.euid,
-                st_gid: proc.egid,
-                st_size: 0,
-                st_atime_sec: 0,
-                st_atime_nsec: 0,
-                st_mtime_sec: 0,
-                st_mtime_nsec: 0,
-                st_ctime_sec: 0,
-                st_ctime_nsec: 0,
-                _pad: 0,
-            });
-        }
+        return Ok(st);
     }
     // VFS is the source of truth for ownership: host_stat / host_lstat
     // already return the real uid/gid, so just propagate.
@@ -16789,10 +16768,21 @@ mod tests {
 
     #[test]
     fn test_stat_unix_socket_path() {
+        use wasm_posix_shared::flags::AT_FDCWD;
+        use wasm_posix_shared::mode::{S_IFMT, S_IFSOCK};
+
+        fn assert_socket_metadata(st: WasmStat, mode: u32, uid: u32, gid: u32) {
+            assert_eq!(st.st_mode & S_IFMT, S_IFSOCK);
+            assert_eq!(st.st_mode & 0o7777, mode);
+            assert_eq!(st.st_uid, uid);
+            assert_eq!(st.st_gid, gid);
+        }
+
         let _lock = UNIX_REGISTRY_LOCK.lock().unwrap();
         let mut proc = Process::new(1);
         let mut host = MockHostIO::new();
         proc.pid = 9020;
+        proc.umask = 0o027;
         let fd = sys_socket(&mut proc, &mut host, 1, 1, 0).unwrap();
         let mut addr = [0u8; 110];
         addr[0] = 1;
@@ -16800,10 +16790,44 @@ mod tests {
         addr[2..2 + path.len()].copy_from_slice(path);
         sys_bind(&mut proc, &mut host, fd, &addr[..2 + path.len() + 1]).unwrap();
 
-        let st = sys_stat(&mut proc, &mut host, b"/tmp/stat.sock").unwrap();
-        assert_eq!(
-            st.st_mode & wasm_posix_shared::mode::S_IFMT,
-            wasm_posix_shared::mode::S_IFSOCK
+        assert_socket_metadata(
+            sys_stat(&mut proc, &mut host, path).unwrap(),
+            0o750,
+            0,
+            0,
+        );
+        assert_socket_metadata(
+            sys_lstat(&mut proc, &mut host, path).unwrap(),
+            0o750,
+            0,
+            0,
+        );
+        assert_socket_metadata(
+            sys_fstatat(&mut proc, &mut host, AT_FDCWD, path, 0).unwrap(),
+            0o750,
+            0,
+            0,
+        );
+
+        sys_chmod(&mut proc, &mut host, path, 0o640).unwrap();
+        sys_chown(&mut proc, &mut host, b"/tmp/stat.sock", 1234, 5678).unwrap();
+        assert_socket_metadata(
+            sys_stat(&mut proc, &mut host, path).unwrap(),
+            0o640,
+            1234,
+            5678,
+        );
+        assert_socket_metadata(
+            sys_lstat(&mut proc, &mut host, path).unwrap(),
+            0o640,
+            1234,
+            5678,
+        );
+        assert_socket_metadata(
+            sys_fstatat(&mut proc, &mut host, AT_FDCWD, path, 0).unwrap(),
+            0o640,
+            1234,
+            5678,
         );
 
         // Cleanup
