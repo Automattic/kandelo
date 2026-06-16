@@ -245,6 +245,10 @@ for src in "$REPO_ROOT/programs/"*.c; do
             build_program "$src" "$OUT_DIR_32" \
                 "$SYSROOT/lib/libinput.a"
             ;;
+        gbm_surface_smoke.c)
+            build_program "$src" "$OUT_DIR_32" \
+                "$SYSROOT/lib/libgbm.a" "$SYSROOT/lib/libdrm.a"
+            ;;
         alsa_lib_smoke.c)
             build_program "$src" "$OUT_DIR_32" \
                 "$SYSROOT/lib/libasound.a"

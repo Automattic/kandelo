@@ -31,19 +31,12 @@
 #include <stdio.h>
 #include <stdlib.h>
 
-/* Public from the polling-audio patch; declared in SDL_audio.h only
- * when SDL_THREADS_DISABLED is defined.  On our wasm build it is, so
- * the symbol is in libSDL2.a — keep an extern fallback for the
- * header configurations that haven't picked it up yet. */
-extern void SDL_PumpAudioDevices(void);
-
-/* ----- audio: continuous 440 Hz sine generator ------------------- */
 static double g_audio_phase = 0.0;
 
 static void audio_cb(void *user, Uint8 *stream, int len) {
     (void) user;
     int16_t *out = (int16_t *) stream;
-    int frames = len / 4;  /* int16 stereo: 4 bytes per frame */
+    int frames = len / 4;
     for (int f = 0; f < frames; f++) {
         int16_t s = (int16_t) (sin(g_audio_phase) * 4000.0);
         out[f * 2 + 0] = s;
@@ -81,18 +74,14 @@ static GLuint compile_shader(GLenum type, const char *src) {
 }
 
 int main(void) {
-    /* Force the KMSDRM backend even if SDL2 later adds a different
-     * default — belt + suspenders. */
     setenv("SDL_VIDEODRIVER", "kmsdrm", 1);
     setenv("SDL_AUDIODRIVER", "alsa", 1);
     /* Without libudev, src/core/linux/SDL_evdev.c::SDL_EVDEV_Init
      * leaves the device list empty (its no-udev branch is a literal
-     * `TODO: scan like a caveman`).  The SDL_EVDEV_DEVICES env var
-     * (format: `<class>:<path>[,<class>:<path>…]`, class 2=keyboard,
-     * 1=mouse) is the upstream-blessed escape hatch.  We hard-code
-     * event0=keyboard + event1=mouse to match the kandelo kernel's
-     * two virtual input devices (input-evdev-smoke.test.ts §"Phase
-     * 1/2"). */
+     * `TODO: scan like a caveman`). SDL_EVDEV_DEVICES is the
+     * upstream-blessed escape hatch — class 2 = keyboard, class
+     * 1 = mouse — matching the kernel's two virtual input devices
+     * (host/test/input-evdev.test.ts). */
     setenv("SDL_EVDEV_DEVICES",
            "2:/dev/input/event0,1:/dev/input/event1", 1);
 
@@ -179,9 +168,8 @@ int main(void) {
             }
         }
 
-        /* Polling-audio: drive the registered audio device(s) once
-         * per frame.  When SDL_THREADS_DISABLED is set, this is the
-         * ONLY thing that pulls samples through the audio_cb. */
+        /* Polled mode: only this call pulls samples through audio_cb
+         * (see packages/registry/sdl2/patches/0002-polling-audio-eagain.patch). */
         SDL_PumpAudioDevices();
 
         float t = (float) (SDL_GetTicks() - start) / 1000.0f;

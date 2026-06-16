@@ -42,7 +42,7 @@ async function waitFor(
 
 describe("SDL2 demo — video + audio + input combined", () => {
   it.skipIf(!programBinary)(
-    "runs to the 5 s timeout, renders frames, exits cleanly",
+    "drives the SDL2 main loop end-to-end without crashing (5 s timeout exit)",
     async () => {
       const result = await runCentralizedProgram({
         programPath: programBinary!,
@@ -56,9 +56,10 @@ describe("SDL2 demo — video + audio + input combined", () => {
       expect(result.stdout).toContain("sdl2_demo: SDL_Init OK");
       expect(result.stdout).toMatch(/sdl2_demo: OK frames=\d+ elapsed=\d+ ms exit=timeout/);
       expect(result.stderr).not.toContain("FAIL:");
-      // 5 s budget — must have drawn at least one frame.  60 Hz target
-      // is aspirational; the wasm GLES2 encoder + KMSDRM page-flip
-      // path on Node.js is slower than the gate, so just require >0.
+      // `frames` is main-loop tick count, not rasterised frame count
+      // (GLES2 commands are encoded through the cmdbuf but the kernel-
+      // side canvas readback isn't asserted here). >0 proves the loop
+      // ran at least once.
       const m = result.stdout.match(/frames=(\d+)/);
       expect(m, `frames= not found in stdout: ${result.stdout}`).not.toBeNull();
       expect(Number(m![1])).toBeGreaterThan(0);
@@ -101,9 +102,6 @@ describe("SDL2 demo — video + audio + input combined", () => {
         await new Promise((r) => setTimeout(r, 250));
         host.injectInputEvent(0, EV_KEY, KEY_ESC, 1);
         host.injectInputEvent(0, EV_SYN, SYN_REPORT, 0);
-        // Release shortly after — well-behaved input streams pair
-        // press + release; a stuck-down ESC wouldn't change the
-        // outcome but matches reality.
         await new Promise((r) => setTimeout(r, 10));
         host.injectInputEvent(0, EV_KEY, KEY_ESC, 0);
         host.injectInputEvent(0, EV_SYN, SYN_REPORT, 0);

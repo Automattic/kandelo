@@ -25,9 +25,26 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = join(__dirname, "../..");
 const SYSROOT = join(REPO_ROOT, "sysroot");
 const GLUE_DIR = join(REPO_ROOT, "libc", "glue");
-const LLVM_BIN = process.env.LLVM_BIN || "/opt/homebrew/opt/llvm@21/bin";
-const CLANG = `${LLVM_BIN}/clang`;
-const WASM_LD = process.env.LLVM_BIN
+
+function discoverLlvmBin(): string | null {
+  if (process.env.LLVM_BIN) return process.env.LLVM_BIN;
+  // Homebrew-installed LLVM (the historical default for this test).
+  if (existsSync("/opt/homebrew/opt/llvm@21/bin/clang")) {
+    return "/opt/homebrew/opt/llvm@21/bin";
+  }
+  // Fall back to whatever clang is on PATH (Nix dev-shell ships LLVM 21
+  // under /nix/store/.../clang-wrapper-*/bin).
+  try {
+    const found = execSync("command -v clang || true", { encoding: "utf-8" }).trim();
+    if (found) return dirname(found);
+  } catch {
+    // Ignored — the test will skip below.
+  }
+  return null;
+}
+const LLVM_BIN = discoverLlvmBin();
+const CLANG = LLVM_BIN ? `${LLVM_BIN}/clang` : "";
+const WASM_LD = LLVM_BIN
   ? `${LLVM_BIN}/wasm-ld`
   : "/opt/homebrew/bin/wasm-ld";
 const FORK_INSTRUMENT = join(REPO_ROOT, "scripts", "run-wasm-fork-instrument.sh");
@@ -35,6 +52,7 @@ const FORK_INSTRUMENT = join(REPO_ROOT, "scripts", "run-wasm-fork-instrument.sh"
 const hasSysroot = existsSync(join(SYSROOT, "lib", "libc.a"));
 const hasKernel = existsSync(join(REPO_ROOT, "binaries", "kernel.wasm")) ||
   existsSync(join(REPO_ROOT, "local-binaries", "kernel.wasm"));
+const hasClang = LLVM_BIN !== null && existsSync(CLANG);
 
 const BUILD_DIR = join(tmpdir(), "wasm-fork-dlopen-replay-e2e");
 
@@ -112,7 +130,7 @@ function buildMainProgram(source: string, name: string): string {
   return wasmPath;
 }
 
-describe.skipIf(!hasSysroot || !hasKernel)("fork after dlopen end-to-end", () => {
+describe.skipIf(!hasSysroot || !hasKernel || !hasClang)("fork after dlopen end-to-end", () => {
   beforeAll(() => {
     mkdirSync(BUILD_DIR, { recursive: true });
   });

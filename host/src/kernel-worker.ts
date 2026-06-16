@@ -169,6 +169,16 @@ const SIOCGIFADDR = 0x8915;
 /** Ioctl syscall number */
 const SYS_IOCTL = ABI_SYSCALLS.Ioctl;
 
+/** Decode the user-buffer byte length for an `ioctl_encoded` arg spec.
+ *  Linux's `_IOC()` packs the size in bits 16..29 of the request word
+ *  (a 14-bit field). Legacy ioctls (FIONBIO, KDGKBTYPE, …) encode
+ *  size=0 — the floor exists to ensure callers can still pass a
+ *  small payload through. Exported for unit testing the boundary. */
+export function computeIoctlEncodedSize(req: number, floor: number): number {
+  const enc = ((req >>> 0) >>> 16) & 0x3fff;
+  return enc > floor ? enc : floor;
+}
+
 /** Syscall numbers for memory management */
 const SYS_MMAP = ABI_SYSCALLS.Mmap;
 const SYS_MUNMAP = ABI_SYSCALLS.Munmap;
@@ -2255,12 +2265,7 @@ export class CentralizedKernelWorker {
           size = processMem[derefPtr] | (processMem[derefPtr + 1] << 8)
                | (processMem[derefPtr + 2] << 16) | (processMem[derefPtr + 3] << 24);
         } else if (desc.size.type === "ioctl_encoded") {
-          // Linux _IOC_SIZE convention: byte length is bits 16..29 of the
-          // arg (the ioctl request number), with a floor for legacy
-          // size = 0 ioctls (FIONBIO, KDGKBTYPE, etc.).
-          const req = origArgs[desc.size.argIndex] >>> 0;
-          const enc = (req >>> 16) & 0x3fff;
-          size = enc > desc.size.floor ? enc : desc.size.floor;
+          size = computeIoctlEncodedSize(origArgs[desc.size.argIndex], desc.size.floor);
         } else if (desc.size.type === "fixed") {
           size = desc.size.size;
         } else {
@@ -2621,9 +2626,7 @@ export class CentralizedKernelWorker {
           size = processMem[derefPtr] | (processMem[derefPtr + 1] << 8)
                | (processMem[derefPtr + 2] << 16) | (processMem[derefPtr + 3] << 24);
         } else if (desc.size.type === "ioctl_encoded") {
-          const req = origArgs[desc.size.argIndex] >>> 0;
-          const enc = (req >>> 16) & 0x3fff;
-          size = enc > desc.size.floor ? enc : desc.size.floor;
+          size = computeIoctlEncodedSize(origArgs[desc.size.argIndex], desc.size.floor);
         } else if (desc.size.type === "fixed") {
           size = desc.size.size;
         } else {

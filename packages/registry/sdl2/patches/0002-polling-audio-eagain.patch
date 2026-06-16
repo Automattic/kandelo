@@ -36,7 +36,7 @@ SDL_audio.h + SDL_alsa_audio.c.
 
 --- a/src/audio/SDL_audio.c
 +++ b/src/audio/SDL_audio.c
-@@ -667,6 +667,77 @@
+@@ -667,6 +667,85 @@
  #ifdef SDL_AUDIO_DRIVER_ANDROID
  extern void Android_JNI_AudioSetThreadPriority(int, int);
  #endif
@@ -52,11 +52,19 @@ SDL_audio.h + SDL_alsa_audio.c.
 +static SDL_AudioDevice *wpk_polled_audio_devices[WPK_POLLED_AUDIO_MAX];
 +static int wpk_num_polled_audio_devices = 0;
 +
-+static void wpk_register_polled_audio_device(SDL_AudioDevice *device)
++static int wpk_register_polled_audio_device(SDL_AudioDevice *device)
 +{
-+    if (wpk_num_polled_audio_devices < WPK_POLLED_AUDIO_MAX) {
-+        wpk_polled_audio_devices[wpk_num_polled_audio_devices++] = device;
++    int i;
++    for (i = 0; i < wpk_num_polled_audio_devices; i++) {
++        if (wpk_polled_audio_devices[i] == device) return 0;
 +    }
++    if (wpk_num_polled_audio_devices >= WPK_POLLED_AUDIO_MAX) {
++        return SDL_SetError(
++            "polling-audio: more than %d concurrent devices not supported",
++            WPK_POLLED_AUDIO_MAX);
++    }
++    wpk_polled_audio_devices[wpk_num_polled_audio_devices++] = device;
++    return 0;
 +}
 +
 +static void wpk_unregister_polled_audio_device(SDL_AudioDevice *device)
@@ -127,7 +135,7 @@ SDL_audio.h + SDL_alsa_audio.c.
 
      if (device->thread != NULL) {
          SDL_WaitThread(device->thread, NULL);
-@@ -1539,6 +1616,14 @@
+@@ -1539,6 +1616,17 @@
 
      /* Start the audio thread if necessary */
      if (!current_audio.impl.ProvidesOwnCallbackThread) {
@@ -137,7 +145,10 @@ SDL_audio.h + SDL_alsa_audio.c.
 +         * via SDL_PumpAudioDevices() (also called transitively by
 +         * SDL_PumpEvents on platforms that wire it up). */
 +        current_audio.impl.ThreadInit(device);
-+        wpk_register_polled_audio_device(device);
++        if (wpk_register_polled_audio_device(device) < 0) {
++            close_audio_device(device);
++            return 0;
++        }
 +#else
          /* Start the audio thread */
          char threadname[64];

@@ -991,6 +991,49 @@ mod tests {
         assert_eq!(p.rate_num, 44100);
     }
 
+    #[test]
+    fn pcm_hw_refine_user_periods_min_is_honoured() {
+        // alsa-lib's set_periods_min(2) sends periods=[2,…] and expects
+        // the kernel to keep that floor across subsequent refines.
+        let mut p = wildcard_hw_params();
+        p.intervals[PARAM_PERIODS] = WpkSndInterval { min: 2, max: 0, flags: 0 };
+        refine_hw_params(&mut p).expect("respect user periods.min");
+        assert!(p.intervals[PARAM_PERIODS].min >= 2);
+    }
+
+    #[test]
+    fn pcm_hw_refine_empty_periods_intersection_returns_einval() {
+        // period=[4096,4096] + buffer=[256,256] derive periods=[0,0] (clamped
+        // to [1,1]); a user pin of periods=[8,8] cannot intersect with that.
+        let mut p = wildcard_hw_params();
+        p.intervals[PARAM_PERIOD_SIZE] = WpkSndInterval {
+            min: MAX_PERIOD_SIZE,
+            max: MAX_PERIOD_SIZE,
+            flags: 0,
+        };
+        p.intervals[PARAM_BUFFER_SIZE] = WpkSndInterval {
+            min: MIN_BUFFER_SIZE,
+            max: MIN_BUFFER_SIZE,
+            flags: 0,
+        };
+        p.intervals[PARAM_PERIODS] = WpkSndInterval { min: 8, max: 8, flags: 0 };
+        let err = refine_hw_params(&mut p).expect_err("empty intersection");
+        assert_eq!(err, Errno::EINVAL);
+    }
+
+    #[test]
+    fn pcm_hw_refine_eager_buffer_derivation_pins_to_product() {
+        // period and periods both pinned single-valued; refine should pin
+        // buffer = period * periods so HW_PARAMS' read_interval_single
+        // converges.
+        let mut p = wildcard_hw_params();
+        p.intervals[PARAM_PERIOD_SIZE] = WpkSndInterval { min: 256, max: 256, flags: 0 };
+        p.intervals[PARAM_PERIODS] = WpkSndInterval { min: 4, max: 4, flags: 0 };
+        refine_hw_params(&mut p).expect("eager buffer derivation");
+        assert_eq!(p.intervals[PARAM_BUFFER_SIZE].min, 1024);
+        assert_eq!(p.intervals[PARAM_BUFFER_SIZE].max, 1024);
+    }
+
     // --- HW_PARAMS --------------------------------------------------
 
     #[test]
