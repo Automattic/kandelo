@@ -97,6 +97,7 @@ const FORK_BUF_SIZE = FORK_SAVE_BUFFER_SIZE;
 
 /** Errno values */
 const EAGAIN = 11;
+const EINVAL = 22;
 const ETIMEDOUT = 110;
 const EINTR_ERRNO = 4;
 
@@ -500,6 +501,11 @@ export interface ForkFromThreadContext {
   slotLen: number;
 }
 
+export interface CloneStartGate {
+  tid: number;
+  start: () => void;
+}
+
 export interface ResolvedSpawnProgram {
   programBytes: ArrayBuffer;
   argv: string[];
@@ -594,7 +600,7 @@ export interface CentralizedKernelCallbacks {
    * Called when a process calls clone (thread creation). The callback should
    * spawn a thread Worker sharing the parent's Memory. Returns the TID.
    */
-  onClone?: (pid: number, tid: number, fnPtr: number, argPtr: number, stackPtr: number, tlsPtr: number, ctidPtr: number, memory: WebAssembly.Memory) => Promise<number>;
+  onClone?: (pid: number, tid: number, fnPtr: number, argPtr: number, stackPtr: number, tlsPtr: number, ctidPtr: number, memory: WebAssembly.Memory) => Promise<number | CloneStartGate>;
 
   /**
    * Called after a pthread channel reaches SYS_EXIT and the kernel worker has
@@ -610,9 +616,9 @@ export interface CentralizedKernelCallbacks {
   onExit?: (pid: number, exitStatus: number) => void;
 
   /**
-   * Called when a process calls exit_group (terminate all threads).
-   * The callback should forcefully terminate all thread workers for the process.
-   * Called BEFORE the process exit is processed.
+   * Called when a process calls exit_group (terminate all threads), after the
+   * kernel has recorded the process exit but before the exiting channel is
+   * woken. Hosts use this to mark thread Worker exits as intentional.
    */
   onExitGroup?: (pid: number) => void;
 }
@@ -1649,6 +1655,7 @@ export class CentralizedKernelWorker {
 
     if (tid !== undefined) {
       this.channelTids.set(`${pid}:${channelOffset}`, tid);
+      this.syscallRing.delete(channelOffset);
     }
     if (threadFnPtr !== undefined && threadArgPtr !== undefined) {
       this.threadForkContexts.set(`${pid}:${channelOffset}`, {
@@ -2074,6 +2081,16 @@ export class CentralizedKernelWorker {
       return;
     }
 
+    if (
+      (syscallNr === SYS_READ || syscallNr === SYS_PREAD ||
+        syscallNr === SYS_WRITE || syscallNr === SYS_PWRITE) &&
+      origArgs[2] < 0
+    ) {
+      if (logging) console.error(logEntry + " = -1 (EINVAL)");
+      this.completeChannel(channel, syscallNr, origArgs, undefined, -1, EINVAL);
+      return;
+    }
+
     // --- sendmsg/recvmsg: decompose msghdr from process memory ---
     if (syscallNr === SYS_SENDMSG) {
       this.handleSendmsg(channel, origArgs);
@@ -2348,26 +2365,6 @@ export class CentralizedKernelWorker {
     // WebAssembly.Memory here so the process can access the new addresses.
     if (retVal > 0) {
       this.ensureProcessMemoryCovers(channel.pid, channel.memory, syscallNr, retVal, origArgs);
-    }
-
-    // --- DEBUG: detect memory operations in legacy high control pages ---
-    const highControlFloor = this.highControlFloorForProcess(channel.pid);
-    if (syscallNr === SYS_MMAP && retVal > 0 && (retVal >>> 0) !== 0xffffffff) {
-      const mmapAddr = retVal >>> 0;
-      const mmapLen = origArgs[1] >>> 0;
-      if (highControlFloor !== null && mmapAddr + mmapLen > highControlFloor) {
-        console.error(`[MMAP ALERT] pid=${channel.pid} mmap returned 0x${mmapAddr.toString(16)} len=${mmapLen} — OVERLAPS THREAD REGION! args=[${origArgs.map(a => '0x' + (a >>> 0).toString(16)).join(',')}]`);
-      }
-    }
-    if (syscallNr === SYS_MREMAP && retVal > 0 && (retVal >>> 0) !== 0xffffffff) {
-      const mremapAddr = retVal >>> 0;
-      const mremapLen = origArgs[2] >>> 0;
-      if (highControlFloor !== null && mremapAddr + mremapLen > highControlFloor) {
-        console.error(`[MREMAP ALERT] pid=${channel.pid} mremap returned 0x${mremapAddr.toString(16)} len=${mremapLen} — OVERLAPS THREAD REGION!`);
-      }
-    }
-    if (highControlFloor !== null && syscallNr === SYS_BRK && retVal > highControlFloor) {
-      console.error(`[BRK ALERT] pid=${channel.pid} brk returned 0x${(retVal >>> 0).toString(16)} — IN THREAD REGION!`);
     }
 
     // --- File-backed mmap: populate mapped region with file data ---
@@ -6118,10 +6115,10 @@ export class CentralizedKernelWorker {
     if (ctidPtr !== 0) {
       this.threadCtidPtrs.set(`${channel.pid}:${tid}`, ctidPtr);
     }
-
     this.callbacks.onClone(
       channel.pid, tid, fnPtr, argPtr, stackPtr, tlsPtr, ctidPtr, channel.memory,
-    ).then((assignedTid) => {
+    ).then((cloneResult) => {
+      const assignedTid = typeof cloneResult === "number" ? cloneResult : cloneResult.tid;
       if (!this.processes.has(channel.pid)) {
         if (ctidPtr !== 0) {
           this.threadCtidPtrs.delete(`${channel.pid}:${tid}`);
@@ -6133,6 +6130,9 @@ export class CentralizedKernelWorker {
         this.threadCtidPtrs.set(`${channel.pid}:${assignedTid}`, ctidPtr);
       }
       this.completeChannel(channel, SYS_CLONE, origArgs, undefined, assignedTid, 0);
+      if (typeof cloneResult !== "number") {
+        cloneResult.start();
+      }
     }).catch((err) => {
       if (ctidPtr !== 0) {
         this.threadCtidPtrs.delete(`${channel.pid}:${tid}`);
@@ -6177,9 +6177,8 @@ export class CentralizedKernelWorker {
         const ctidPtr = this.threadCtidPtrs.get(ctidKey);
         if (ctidPtr && ctidPtr !== 0) {
           this.threadCtidPtrs.delete(ctidKey);
-          const procView = new DataView(channel.memory.buffer);
-          procView.setInt32(ctidPtr, 0, true);
           const i32View = new Int32Array(channel.memory.buffer);
+          Atomics.store(i32View, ctidPtr >>> 2, 0);
           Atomics.notify(i32View, ctidPtr >>> 2, 1);
         }
       }
@@ -6221,6 +6220,9 @@ export class CentralizedKernelWorker {
     // Main thread exit or exit_group: record exit status for waitpid,
     // queue SIGCHLD to parent, then notify the host callback.
     const exitingPid = channel.pid;
+    if (syscallNr === SYS_EXIT_GROUP) {
+      this.callbacks.onExitGroup?.(exitingPid);
+    }
     // Idempotency: this guard is shared with handleProcessTerminated so a
     // SYS_KILL that races a clean SYS_EXIT from the same process doesn't
     // produce two SIGCHLDs / two parent wake-ups. Cleared by
@@ -7238,20 +7240,6 @@ export class CentralizedKernelWorker {
       );
     }
     return n;
-  }
-
-  private highControlFloorForProcess(pid: number): number | null {
-    const registration = this.processes.get(pid);
-    if (!registration) return null;
-    if (registration.explicitMaxAddr) return null;
-    let floor: number | null = null;
-    for (const ch of registration.channels) {
-      const tlsPageAddr = ch.channelOffset - 2 * WASM_PAGE_SIZE;
-      if (tlsPageAddr >= PROCESS_MMAP_BASE) {
-        floor = floor === null ? tlsPageAddr : Math.min(floor, tlsPageAddr);
-      }
-    }
-    return floor;
   }
 
   /**

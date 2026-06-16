@@ -1981,7 +1981,6 @@ pub fn sys_pread(
     }
 
     let host_handle = ofd.host_handle;
-    let saved_offset = ofd.offset;
 
     if host_handle == SYNTHETIC_FILE_HANDLE {
         let data = synthetic_file_content(&ofd.path).ok_or(Errno::EBADF)?;
@@ -1994,13 +1993,7 @@ pub fn sys_pread(
         return Ok(n);
     }
 
-    // Seek to the requested offset, read, then restore.
-    // Single-threaded, so save/seek/read/restore is safe.
-    host.host_seek(host_handle, offset, SEEK_SET)?;
-    let n = host.host_read(host_handle, buf)?;
-    host.host_seek(host_handle, saved_offset, SEEK_SET)?;
-
-    Ok(n)
+    host.host_pread(host_handle, buf, offset)
 }
 
 /// Write to a file descriptor at a given offset without modifying the file position.
@@ -2038,13 +2031,8 @@ pub fn sys_pwrite(
     }
 
     let host_handle = ofd.host_handle;
-    let saved_offset = ofd.offset;
 
-    host.host_seek(host_handle, offset, SEEK_SET)?;
-    let n = host.host_write(host_handle, buf)?;
-    host.host_seek(host_handle, saved_offset, SEEK_SET)?;
-
-    Ok(n)
+    host.host_pwrite(host_handle, buf, offset)
 }
 
 /// preadv -- scatter-gather read at offset.
@@ -4348,6 +4336,11 @@ pub fn sys_exit(proc: &mut Process, host: &mut dyn HostIO, status: i32) {
 
     proc.state = ProcessState::Exited;
     proc.exit_status = status;
+}
+
+/// Terminate the process with signal-style wait status and normal exit cleanup.
+pub fn sys_signal_exit(proc: &mut Process, host: &mut dyn HostIO, signum: u32) {
+    sys_exit(proc, host, 128 + signum as i32);
 }
 
 /// Get the current time from the specified clock.
@@ -7708,16 +7701,29 @@ pub fn sys_prctl(proc: &mut Process, option: u32, _arg2: u32, buf: &mut [u8]) ->
     }
 }
 
-// Returns thread ID. Without threading, tid == pid.
-// Threading upgrade: return actual TID from thread table.
-pub fn sys_gettid(proc: &Process) -> i32 {
-    proc.pid as i32
+fn current_thread_id(proc: &Process) -> u32 {
+    let tid = crate::process_table::current_tid();
+    if proc.is_main_thread(tid) {
+        proc.pid
+    } else {
+        tid
+    }
 }
 
-// Stores tidptr for thread exit notification. Without threading, returns pid.
-// Threading upgrade: store tidptr per-thread; kernel writes 0 + futex-wakes on exit.
-pub fn sys_set_tid_address(proc: &Process) -> i32 {
-    proc.pid as i32
+// Returns the kernel thread ID for the currently serviced channel.
+pub fn sys_gettid(proc: &Process) -> i32 {
+    current_thread_id(proc) as i32
+}
+
+// Stores the caller's clear-TID address and returns the current thread ID.
+pub fn sys_set_tid_address(proc: &mut Process, tidptr: usize) -> i32 {
+    let tid = current_thread_id(proc);
+    if !proc.is_main_thread(tid) {
+        if let Some(thread) = proc.get_thread_mut(tid) {
+            thread.tidptr = tidptr;
+        }
+    }
+    tid as i32
 }
 
 // No-op — robust futex list tracking deferred until threading is implemented.
@@ -9775,6 +9781,11 @@ mod tests {
         handle_paths: std::collections::HashMap<i64, Vec<u8>>,
         missing_paths: std::collections::HashSet<Vec<u8>>,
         statfs_by_path: std::collections::HashMap<Vec<u8>, WasmStatfs>,
+        read_calls: usize,
+        write_calls: usize,
+        seek_calls: usize,
+        pread_calls: usize,
+        pwrite_calls: usize,
     }
 
     impl MockHostIO {
@@ -9793,6 +9804,11 @@ mod tests {
                 handle_paths: std::collections::HashMap::new(),
                 missing_paths: std::collections::HashSet::new(),
                 statfs_by_path: std::collections::HashMap::new(),
+                read_calls: 0,
+                write_calls: 0,
+                seek_calls: 0,
+                pread_calls: 0,
+                pwrite_calls: 0,
             }
         }
 
@@ -9856,6 +9872,7 @@ mod tests {
         }
 
         fn host_read(&mut self, _handle: i64, buf: &mut [u8]) -> Result<usize, Errno> {
+            self.read_calls += 1;
             let data = b"hello";
             let n = buf.len().min(data.len());
             buf[..n].copy_from_slice(&data[..n]);
@@ -9863,11 +9880,35 @@ mod tests {
         }
 
         fn host_write(&mut self, _handle: i64, buf: &[u8]) -> Result<usize, Errno> {
+            self.write_calls += 1;
             Ok(buf.len())
         }
 
         fn host_seek(&mut self, _handle: i64, _offset: i64, _whence: u32) -> Result<i64, Errno> {
+            self.seek_calls += 1;
             Ok(0)
+        }
+
+        fn host_pread(
+            &mut self,
+            _handle: i64,
+            buf: &mut [u8],
+            offset: i64,
+        ) -> Result<usize, Errno> {
+            self.pread_calls += 1;
+            let data = b"hello";
+            let start = offset as usize;
+            if start >= data.len() {
+                return Ok(0);
+            }
+            let n = buf.len().min(data.len() - start);
+            buf[..n].copy_from_slice(&data[start..start + n]);
+            Ok(n)
+        }
+
+        fn host_pwrite(&mut self, _handle: i64, buf: &[u8], _offset: i64) -> Result<usize, Errno> {
+            self.pwrite_calls += 1;
+            Ok(buf.len())
         }
 
         fn host_fstat(&mut self, handle: i64) -> Result<WasmStat, Errno> {
@@ -11057,6 +11098,26 @@ mod tests {
         assert_eq!(proc.exit_status, 42);
 
         // All fds should be closed - trying to read from fd should fail
+        let mut buf = [0u8; 10];
+        let result = sys_read(&mut proc, &mut host, fd, &mut buf);
+        assert_eq!(result, Err(Errno::EBADF));
+    }
+
+    #[test]
+    fn test_signal_exit_closes_fds_and_sets_signal_status() {
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+
+        let fd = sys_open(&mut proc, &mut host, b"/tmp/test", O_RDWR | O_CREAT, 0o644).unwrap();
+
+        sys_signal_exit(&mut proc, &mut host, wasm_posix_shared::signal::SIGABRT);
+
+        assert_eq!(proc.state, ProcessState::Exited);
+        assert_eq!(
+            proc.exit_status,
+            128 + wasm_posix_shared::signal::SIGABRT as i32
+        );
+
         let mut buf = [0u8; 10];
         let result = sys_read(&mut proc, &mut host, fd, &mut buf);
         assert_eq!(result, Err(Errno::EBADF));
@@ -12819,6 +12880,40 @@ mod tests {
             sys_pwrite(&mut proc, &mut host, fd, b"x", i64::MIN),
             Err(Errno::EINVAL)
         );
+    }
+
+    #[test]
+    fn test_pread_uses_positioned_host_io_without_seeking() {
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        let fd = sys_open(&mut proc, &mut host, b"/tmp/f", O_RDWR | O_CREAT, 0o644).unwrap();
+        let ofd_idx = proc.fd_table.get(fd).unwrap().ofd_ref.0;
+        proc.ofd_table.get_mut(ofd_idx).unwrap().offset = 77;
+
+        let mut buf = [0u8; 3];
+        assert_eq!(sys_pread(&mut proc, &mut host, fd, &mut buf, 1), Ok(3));
+
+        assert_eq!(&buf, b"ell");
+        assert_eq!(host.pread_calls, 1);
+        assert_eq!(host.read_calls, 0);
+        assert_eq!(host.seek_calls, 0);
+        assert_eq!(proc.ofd_table.get(ofd_idx).unwrap().offset, 77);
+    }
+
+    #[test]
+    fn test_pwrite_uses_positioned_host_io_without_seeking() {
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        let fd = sys_open(&mut proc, &mut host, b"/tmp/f", O_RDWR | O_CREAT, 0o644).unwrap();
+        let ofd_idx = proc.fd_table.get(fd).unwrap().ofd_ref.0;
+        proc.ofd_table.get_mut(ofd_idx).unwrap().offset = 88;
+
+        assert_eq!(sys_pwrite(&mut proc, &mut host, fd, b"xyz", 2), Ok(3));
+
+        assert_eq!(host.pwrite_calls, 1);
+        assert_eq!(host.write_calls, 0);
+        assert_eq!(host.seek_calls, 0);
+        assert_eq!(proc.ofd_table.get(ofd_idx).unwrap().offset, 88);
     }
 
     #[test]

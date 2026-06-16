@@ -267,7 +267,11 @@ impl MemoryManager {
         if len == 0 {
             return false;
         }
-        let unmap_end = addr.saturating_add(len);
+        let aligned_len = match len.checked_add(0xFFFF) {
+            Some(v) => v & !0xFFFF,
+            None => return false,
+        };
+        let unmap_end = addr.saturating_add(aligned_len);
         let mut found = false;
         let mut new_mappings: Vec<MappedRegion> = Vec::new();
 
@@ -566,6 +570,40 @@ mod tests {
         // munmap with the aligned length
         assert!(mm.munmap(addr, 0x10000));
         assert!(!mm.is_mapped(addr));
+    }
+
+    #[test]
+    fn test_munmap_rounds_partial_page_length() {
+        let mut mm = MemoryManager::new();
+        let addr = mm.mmap_anonymous(
+            0,
+            0x10000,
+            PROT_READ | PROT_WRITE,
+            MAP_PRIVATE | MAP_ANONYMOUS,
+        );
+        assert_ne!(addr, MAP_FAILED);
+
+        assert!(mm.munmap(addr, 0x8000));
+        assert!(!mm.is_mapped(addr));
+        assert!(!mm.is_mapped(addr + 0x8000));
+    }
+
+    #[test]
+    fn test_munmap_partial_page_middle_removes_whole_page() {
+        let mut mm = MemoryManager::new();
+        let addr = mm.mmap_anonymous(
+            0,
+            0x30000,
+            PROT_READ | PROT_WRITE,
+            MAP_PRIVATE | MAP_ANONYMOUS,
+        );
+        assert_ne!(addr, MAP_FAILED);
+
+        assert!(mm.munmap(addr + 0x10000, 0x8000));
+        assert!(mm.is_mapped(addr));
+        assert!(!mm.is_mapped(addr + 0x10000));
+        assert!(!mm.is_mapped(addr + 0x18000));
+        assert!(mm.is_mapped(addr + 0x20000));
     }
 
     #[test]

@@ -386,6 +386,67 @@ describe("MemoryFileSystem", () => {
     mfs.close(fd);
   });
 
+  it("does not restore a stale descriptor offset after positioned I/O", () => {
+    const sab = new SharedArrayBuffer(4 * 1024 * 1024);
+    const mfs = MemoryFileSystem.create(sab);
+    const fd = mfs.open("/positional.txt", O_CREAT | O_RDWR | O_TRUNC, 0o644);
+    const data = new TextEncoder().encode("0123456789");
+    mfs.write(fd, data, null, data.length);
+    mfs.seek(fd, 2, 0);
+
+    const sharedFs = (mfs as any).fs;
+    const originalRead = sharedFs.read.bind(sharedFs);
+    const originalPread = sharedFs.pread.bind(sharedFs);
+    const originalWrite = sharedFs.write.bind(sharedFs);
+    const originalPwrite = sharedFs.pwrite.bind(sharedFs);
+
+    sharedFs.read = (readFd: number, buffer: Uint8Array) => {
+      const n = originalRead(readFd, buffer);
+      if (readFd === fd) sharedFs.lseek(fd, 7, 0);
+      return n;
+    };
+    sharedFs.pread = (readFd: number, buffer: Uint8Array, offset: number) => {
+      const n = originalPread(readFd, buffer, offset);
+      if (readFd === fd) sharedFs.lseek(fd, 7, 0);
+      return n;
+    };
+
+    const readBuf = new Uint8Array(2);
+    expect(mfs.read(fd, readBuf, 4, readBuf.length)).toBe(2);
+    expect(new TextDecoder().decode(readBuf)).toBe("45");
+    expect(mfs.seek(fd, 0, 1)).toBe(7);
+
+    sharedFs.read = originalRead;
+    sharedFs.pread = originalPread;
+    mfs.seek(fd, 3, 0);
+
+    sharedFs.write = (writeFd: number, buffer: Uint8Array) => {
+      const n = originalWrite(writeFd, buffer);
+      if (writeFd === fd) sharedFs.lseek(fd, 8, 0);
+      return n;
+    };
+    sharedFs.pwrite = (
+      writeFd: number,
+      buffer: Uint8Array,
+      offset: number,
+    ) => {
+      const n = originalPwrite(writeFd, buffer, offset);
+      if (writeFd === fd) sharedFs.lseek(fd, 8, 0);
+      return n;
+    };
+
+    const patch = new TextEncoder().encode("xy");
+    expect(mfs.write(fd, patch, 5, patch.length)).toBe(2);
+    expect(mfs.seek(fd, 0, 1)).toBe(8);
+
+    sharedFs.write = originalWrite;
+    sharedFs.pwrite = originalPwrite;
+    const finalBuf = new Uint8Array(data.length);
+    expect(mfs.read(fd, finalBuf, 0, finalBuf.length)).toBe(data.length);
+    expect(new TextDecoder().decode(finalBuf)).toBe("01234xy789");
+    mfs.close(fd);
+  });
+
   it("opens more than the old 64-descriptor SharedFS table limit", () => {
     expect(MAX_FDS).toBe(
       Math.floor((BLOCK_SIZE - FD_TABLE_OFFSET) / FD_ENTRY_SIZE),
@@ -486,6 +547,81 @@ describe("MemoryFileSystem", () => {
     mfs.close(fd);
     mfs.unlink("/todelete.txt");
     expect(() => mfs.stat("/todelete.txt")).toThrow();
+  });
+
+  it("keeps unlinked open files alive until the last close", () => {
+    const sab = new SharedArrayBuffer(4 * 1024 * 1024);
+    const mfs = MemoryFileSystem.create(sab);
+    const enc = new TextEncoder();
+    const dec = new TextDecoder();
+
+    const fd = mfs.open("/temp.db", O_CREAT | O_RDWR | O_TRUNC, 0o600);
+    const original = enc.encode("sqlite-temp-content");
+    mfs.write(fd, original, null, original.length);
+
+    mfs.unlink("/temp.db");
+    expect(() => mfs.stat("/temp.db")).toThrow();
+
+    const replacementFd = mfs.open(
+      "/replacement.db",
+      O_CREAT | O_RDWR | O_TRUNC,
+      0o600,
+    );
+    const replacement = enc.encode("replacement");
+    mfs.write(replacementFd, replacement, null, replacement.length);
+
+    mfs.seek(fd, 0, 0);
+    const readBack = new Uint8Array(original.length);
+    expect(mfs.read(fd, readBack, null, readBack.length)).toBe(original.length);
+    expect(dec.decode(readBack)).toBe("sqlite-temp-content");
+
+    mfs.seek(fd, original.length, 0);
+    const suffix = enc.encode("-after-unlink");
+    mfs.write(fd, suffix, null, suffix.length);
+    expect(mfs.fstat(fd).size).toBe(original.length + suffix.length);
+
+    mfs.seek(replacementFd, 0, 0);
+    const replacementRead = new Uint8Array(replacement.length);
+    expect(
+      mfs.read(replacementFd, replacementRead, null, replacementRead.length),
+    ).toBe(replacement.length);
+    expect(dec.decode(replacementRead)).toBe("replacement");
+
+    mfs.close(replacementFd);
+    mfs.close(fd);
+    expect(() => mfs.stat("/temp.db")).toThrow();
+  });
+
+  it("keeps renamed-over open files alive until the last close", () => {
+    const sab = new SharedArrayBuffer(4 * 1024 * 1024);
+    const mfs = MemoryFileSystem.create(sab);
+    const enc = new TextEncoder();
+    const dec = new TextDecoder();
+
+    const destFd = mfs.open("/dest.db", O_CREAT | O_RDWR | O_TRUNC, 0o600);
+    const dest = enc.encode("open-destination");
+    mfs.write(destFd, dest, null, dest.length);
+
+    const srcFd = mfs.open("/src.db", O_CREAT | O_RDWR | O_TRUNC, 0o600);
+    const src = enc.encode("replacement-source");
+    mfs.write(srcFd, src, null, src.length);
+    mfs.close(srcFd);
+
+    mfs.rename("/src.db", "/dest.db");
+
+    mfs.seek(destFd, 0, 0);
+    const destRead = new Uint8Array(dest.length);
+    expect(mfs.read(destFd, destRead, null, destRead.length)).toBe(dest.length);
+    expect(dec.decode(destRead)).toBe("open-destination");
+
+    const newDestFd = mfs.open("/dest.db", O_RDONLY, 0);
+    const srcRead = new Uint8Array(src.length);
+    expect(mfs.read(newDestFd, srcRead, null, srcRead.length)).toBe(src.length);
+    expect(dec.decode(srcRead)).toBe("replacement-source");
+
+    mfs.close(newDestFd);
+    mfs.close(destFd);
+    expect(() => mfs.stat("/src.db")).toThrow();
   });
 
   it("ftruncate changes file size", () => {

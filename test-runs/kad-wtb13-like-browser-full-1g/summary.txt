@@ -1,0 +1,23 @@
+SQLite official testrunner summary
+host=browser
+permutation=full
+jobs=1
+results_dir=test-runs/kad-wtb13-like-browser-full-1g
+
+total_jobs  done_jobs  failed_jobs  omitted_jobs  running_jobs  ready_jobs  total_cases  total_case_errors
+----------  ---------  -----------  ------------  ------------  ----------  -----------  -----------------
+1           0          1            0             0             0           159          1
+
+state   jobs  cases  case_errors
+------  ----  -----  -----------
+failed  1     159    1
+
+Jobs by SQLite testrunner config:
+config  jobs  cases  case_errors
+------  ----  -----  -----------
+full    1     159    1
+
+Failed, running, and omitted jobs:
+jobid  state   displaytype  displayname     cases  errors  ms
+-----  ------  -----------  --------------  -----  ------  ----
+1      failed  tcl          test/like.test  159    1       1395

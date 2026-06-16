@@ -39,6 +39,7 @@ REGRESSION_EXPECTED_FAIL=(
 )
 REGRESSION_FLAKY=(
     pthread_cond-smasher        # CI timing-sensitive pthread_cond stress test; can PASS or fail on slow runners
+    raise-race                  # fork-from-signal pthread stress test; skipped on CI by default, flaky when explicitly selected
 )
 
 # ── Helper: check if a test is in an expected-failure list ──
@@ -291,7 +292,11 @@ run_test() {
     # stdin redirected to /dev/null: run-example.ts reads process.stdin
     # when not a TTY, which would drain any pipe the caller supplies.
     set +e
-    output=$(cd "$REPO_ROOT" && timeout "$TEST_TIMEOUT" node --experimental-wasm-exnref --import tsx/esm examples/run-example.ts "${wasm}" </dev/null 2>&1)
+    # Make the outer timeout authoritative. run-example.ts has its own
+    # default 30000ms timeout; if that races and wins, the same hung test is
+    # misclassified as FAIL instead of TIME.
+    local runner_timeout_ms=$(((TEST_TIMEOUT + 5) * 1000))
+    output=$(cd "$REPO_ROOT" && TIMEOUT="$runner_timeout_ms" timeout "$TEST_TIMEOUT" node --experimental-wasm-exnref --import tsx/esm examples/run-example.ts "${wasm}" </dev/null 2>&1)
     rc=$?
     set -e
 

@@ -42,6 +42,12 @@ export interface InitMessage {
    * the shell demo writes itself) are NOT overwritten.
    */
   rootfsImage?: Uint8Array;
+  /**
+   * Virtual exec path -> immutable program bytes. Mirrors the Node host's
+   * execPrograms resolver, but browser callers pass bytes instead of host
+   * filesystem paths.
+   */
+  execPrograms?: Record<string, ArrayBuffer>;
   shmSab: SharedArrayBuffer;
   workerEntryUrl: string;
   bridgePort?: MessagePort;

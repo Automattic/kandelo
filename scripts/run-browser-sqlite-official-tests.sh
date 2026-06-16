@@ -21,6 +21,11 @@ Options:
   --results-dir DIR   Copy testrunner.db/logs and summary files to DIR
   --explain           Ask testrunner.tcl to print planned work
   --help              Show this help
+
+Environment:
+  SQLITE_BROWSER_MAX_MEMORY_PAGES
+                      Browser Wasm process memory cap in 64KiB pages
+                      (default: 4096, 256MiB)
 EOF
 }
 
