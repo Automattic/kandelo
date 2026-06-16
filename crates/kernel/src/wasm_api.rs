@@ -2948,7 +2948,7 @@ fn dispatch_channel_syscall(nr: u32, args: &[i64; 6]) -> i32 {
         72 => {
             // SYS_IOCTL. The ioctl request encodes its struct size in bits
             // 16..30 per the Linux _IOC convention (`_IOC_SIZE`); we honour
-            // that so large args like SNDRV_PCM_IOCTL_HW_PARAMS (608 B) read
+            // that so large args like SNDRV_PCM_IOCTL_HW_PARAMS (604 B) read
             // their full struct out of user memory. Legacy ioctls that
             // encode size = 0 (FIONBIO / FIONREAD / KDGKBTYPE / …) keep the
             // historical 256-byte floor so their handlers can copy four to

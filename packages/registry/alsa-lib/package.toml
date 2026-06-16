@@ -1,0 +1,59 @@
+# Per-library manifest for alsa-lib. See docs/package-management.md.
+#
+# This is the PCM-hardware-direct subset of alsa-lib — only the .c
+# files SDL2's `audio/alsa/SDL_alsa_audio.c` (or any consumer using
+# `snd_pcm_open("default", …)` against a real card) needs. Upstream
+# is ~30k LoC with a full configuration-file parser, a plugin system
+# (dmix, softvol, route), the seq / timer / hwdep subsystems, and
+# iconv/locale machinery — none of which are useful on the wasm32
+# kernel where the only PCM endpoint is `/dev/snd/pcmC0D0p` (plan
+# 6, A2). The subset compiles only:
+#
+#   src/pcm/pcm.c            (snd_pcm_* dispatch front-end)
+#   src/pcm/pcm_hw.c         (DIRECT hw_open path → /dev/snd/pcmC0D*)
+#   src/pcm/pcm_misc.c       (format helpers, snd_pcm_format_*)
+#   src/pcm/pcm_params.c     (hw_params helpers, refine, atomic)
+#   src/pcm/pcm_mmap.c       (mmap-area helpers; non-mmap path uses these too)
+#   src/control/control.c    (snd_ctl_* dispatch front-end)
+#   src/control/control_hw.c (DIRECT control hw_open path)
+#   src/error.c              (snd_strerror)
+#   src/dlmisc.c             (plugin dlopen stub; configure with dlopen=no)
+#   src/conf_stubs.c         (in-tree: ENOTSUP for the snd_config_* API
+#                              the patched pcm.c no longer reaches but
+#                              other TUs still reference at link time)
+#
+# Patch `patches/0001-default-to-hw00.patch` rewrites the entry of
+# `snd_pcm_open_noupdate` to short-circuit `"default"` → `"hw:0,0"`
+# BEFORE any `snd_config_*` reference, so the conf_stubs.c stubs
+# never need to actually look anything up at runtime.
+#
+# alsa-lib's runtime dependency is just musl + our kernel's
+# SNDRV_PCM_IOCTL_* surface (crates/kernel/src/audio/pcm_ioctl.rs).
+# No external libraries are linked.
+
+kind = "library"
+
+name = "alsa-lib"
+version = "1.2.10"
+kernel_abi = 15
+depends_on = []
+
+[source]
+url = "https://www.alsa-project.org/files/pub/lib/alsa-lib-1.2.10.tar.bz2"
+sha256 = "c86a45a846331b1b0aa6e6be100be2a7aef92efd405cf6bac7eef8174baa920e"
+
+[license]
+spdx = "LGPL-2.1-or-later"
+url = "https://github.com/alsa-project/alsa-lib/blob/v1.2.10/COPYING"
+
+[build]
+script_path = "packages/registry/alsa-lib/build-alsa-lib.sh"
+
+[outputs]
+# PCM-hardware-direct subset; the per-plugin `libasound_module_*.so`
+# files upstream builds are deliberately not built — we link static
+# and have no dlopen.
+libs = ["lib/libasound.a"]
+# Public headers live under include/alsa/ (matching upstream's
+# pkg-config `-I${prefix}/include` + `#include <alsa/asoundlib.h>`).
+headers = ["include/alsa"]

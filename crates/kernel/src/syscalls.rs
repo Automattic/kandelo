@@ -8030,12 +8030,12 @@ fn poll_check(proc: &mut Process, host: &mut dyn HostIO, fds: &mut [WasmPollFd])
                         let appl = audio
                             .mmap_control
                             .as_ref()
-                            .map(|c| c.appl_ptr)
+                            .map(|c| c.appl_ptr as i64)
                             .unwrap_or(0);
                         let hw_ptr = audio
                             .mmap_status
                             .as_ref()
-                            .map(|s| s.hw_ptr)
+                            .map(|s| s.hw_ptr as i64)
                             .unwrap_or(0);
                         let avail_min = audio
                             .sw_params
@@ -8960,6 +8960,15 @@ pub fn sys_ioctl(
                 proc, host, ofd_idx, request, buf,
             );
         }
+    }
+
+    // --- /dev/snd/controlC0 ioctls — minimum SNDRV_CTL_* surface
+    //     for alsa-lib's hw-plugin open path (PVERSION + PCM_PREFER_
+    //     SUBDEVICE). Other CTL requests fall through to ENOTTY.
+    if let Some(result) =
+        crate::audio::ctl_ioctl::handle_alsa_ctl_ioctl(proc, host, ofd_idx, request, buf)
+    {
+        return result;
     }
 
     // --- Linux VT keyboard ioctls (KDGKBTYPE / KDGKBMODE / KDSKBMODE) ---
@@ -14374,8 +14383,8 @@ mod tests {
         proc: &mut Process,
         state: u32,
         buffer_size: u64,
-        appl_ptr: i64,
-        hw_ptr: i64,
+        appl_ptr: u32,
+        hw_ptr: u32,
         avail_min: u64,
     ) -> i32 {
         use crate::ofd::{AlsaFdState, FileType, HwParamsCache, PcmDir, SwParamsCache};

@@ -41,12 +41,22 @@ use wasm_posix_shared::Errno;
 use crate::ofd::{AlsaFdState, HwParamsCache, SwParamsCache};
 use crate::process::{HostIO, Process};
 
-/// ALSA protocol version reported by `SNDRV_PCM_IOCTL_PVERSION`.
+/// ALSA protocol version reported by `SNDRV_PCM_IOCTL_PVERSION` and
+/// `SNDRV_CTL_IOCTL_PVERSION` (`crate::audio::ctl_ioctl`).
 ///
-/// alsa-lib bails when the kernel's protocol version is *higher* than
-/// the runtime it was linked against; 13.0.0 is the floor that current
-/// alsa-lib (1.2.x) negotiates with.
-const SNDRV_PROTOCOL_VERSION: u32 = 0x000d_0000;
+/// alsa-lib's `SNDRV_PROTOCOL_INCOMPATIBLE` macro
+/// (`include/sound/uapi/asound.h:51`) requires the kernel's *major*
+/// and *minor* to both match the userspace's max-version exactly —
+/// it is NOT a "kernel must be equal-or-lower" check. PCM max in
+/// alsa-lib 1.2.x is `SNDRV_PCM_VERSION_MAX = 2.0.9`
+/// (`src/pcm/pcm_hw.c:123`); CTL max is `SNDRV_CTL_VERSION_MAX = 2.0.4`
+/// (`src/control/control_hw.c:50`). Reporting `2.0.4` satisfies
+/// both compat checks AND keeps alsa-lib's `snd_pcm_hw_open_fd` below
+/// the `>= 2.0.5` threshold that triggers `SNDRV_PCM_IOCTL_TSTAMP`
+/// and below the `>= 2.0.14` threshold that triggers
+/// `SNDRV_PCM_IOCTL_USER_PVERSION` — both of which the kernel does
+/// not implement and would fail with ENOTTY.
+pub const SNDRV_PROTOCOL_VERSION: u32 = 0x0002_0004;
 
 // SND_PCM_INFO_* flags relevant to v1's playback surface.
 const SNDRV_PCM_INFO_MMAP: u32 = 0x0000_0001;
@@ -179,9 +189,16 @@ fn mask_first_set(m: &[u32]) -> Option<u32> {
 // snd_interval helpers.
 // --------------------------------------------------------------------
 
-/// Clamp `interval` to `[min, max]` and narrow it to a single value
-/// (set both endpoints to the chosen value — the alsa-lib refine
-/// contract is "return one concrete combination").
+/// Clamp `interval` to `[min, max]` (intersection with v1 capability).
+///
+/// HW_REFINE semantics return a *range*, not a single value — alsa-lib
+/// userland needs the full legal range so `snd_pcm_hw_param_set_near`,
+/// `set_first`, etc. can narrow at their own discretion. The pinning to
+/// a single concrete value happens in user-space `snd_pcm_hw_params_choose()`,
+/// which calls HW_REFINE iteratively with one parameter constrained per
+/// call; the *committed* single-value struct then arrives at the kernel
+/// via SNDRV_PCM_IOCTL_HW_PARAMS, where [`read_interval_single`] enforces
+/// `min == max`.
 ///
 /// Wildcard interpretation: a default-initialised `WpkSndInterval`
 /// (`min == 0 && max == 0`) is treated as "user hasn't constrained
@@ -204,12 +221,8 @@ fn refine_interval(
     if interval.min > interval.max {
         return Err(Errno::EINVAL);
     }
-    // Narrow to the lower bound. Deterministic + matches alsa-lib's
-    // common "prefer smaller buffer" preference for low-latency apps.
-    let chosen = interval.min;
-    interval.max = chosen;
     interval.flags = 0;
-    Ok(chosen)
+    Ok(interval.min)
 }
 
 fn read_interval_single(interval: &WpkSndInterval) -> Result<u32, Errno> {
@@ -265,48 +278,101 @@ fn refine_hw_params(req: &mut WpkAlsaPcmHwParams) -> Result<(), Errno> {
     }
 
     // --- intervals ---------------------------------------------------
-    let channels = refine_interval(
+    refine_interval(
         &mut req.intervals[PARAM_CHANNELS],
         MIN_CHANNELS,
         MAX_CHANNELS,
     )?;
-    let rate = refine_interval(
+    refine_interval(
         &mut req.intervals[PARAM_RATE],
         MIN_RATE,
         MAX_RATE,
     )?;
-    let period_size = refine_interval(
+    refine_interval(
         &mut req.intervals[PARAM_PERIOD_SIZE],
         MIN_PERIOD_SIZE,
         MAX_PERIOD_SIZE,
     )?;
-    let buffer_size = refine_interval(
+    refine_interval(
         &mut req.intervals[PARAM_BUFFER_SIZE],
         MIN_BUFFER_SIZE,
         MAX_BUFFER_SIZE,
     )?;
 
     // --- derived intervals ------------------------------------------
+    //
+    // The single S16_LE format pins sample_bits to 16. frame_bits and
+    // periods are derived from primary intervals — return them as
+    // *ranges* so alsa-lib's `snd_pcm_hw_param_set_first` can keep
+    // narrowing them one at a time during `snd_pcm_hw_params_choose()`.
     req.intervals[PARAM_SAMPLE_BITS] = WpkSndInterval {
         min: SAMPLE_BITS_S16_LE,
         max: SAMPLE_BITS_S16_LE,
         flags: 0,
     };
-    let frame_bits = SAMPLE_BITS_S16_LE * channels;
+    let ch_min = req.intervals[PARAM_CHANNELS].min;
+    let ch_max = req.intervals[PARAM_CHANNELS].max;
     req.intervals[PARAM_FRAME_BITS] = WpkSndInterval {
-        min: frame_bits,
-        max: frame_bits,
+        min: SAMPLE_BITS_S16_LE * ch_min,
+        max: SAMPLE_BITS_S16_LE * ch_max,
         flags: 0,
     };
-    let periods = if period_size == 0 { 1 } else { buffer_size / period_size };
-    let periods = periods.max(1);
+    let period_min = req.intervals[PARAM_PERIOD_SIZE].min.max(1);
+    let period_max = req.intervals[PARAM_PERIOD_SIZE].max.max(1);
+    let buffer_min = req.intervals[PARAM_BUFFER_SIZE].min;
+    let buffer_max = req.intervals[PARAM_BUFFER_SIZE].max;
+    // periods = buffer/period; widest range = buffer_max/period_min,
+    // narrowest = buffer_min/period_max.
+    let mut periods_min = (buffer_min / period_max).max(1);
+    let mut periods_max = (buffer_max / period_min).max(1);
+    // Honour caller-supplied periods bounds. alsa-lib drives the
+    // hw_params handshake through repeated HW_REFINEs that tighten one
+    // interval at a time — set_periods_min(2) sends periods=[2,…] and
+    // expects the kernel to keep that floor. Without this intersection
+    // the next refine returns the buffer/period-derived [1,16] and
+    // alsa-lib sees its constraint dropped, causing
+    // snd_pcm_hw_params_choose() / snd_pcm_hw_params() to fail.
+    let user_periods_min = req.intervals[PARAM_PERIODS].min;
+    let user_periods_max = req.intervals[PARAM_PERIODS].max;
+    if user_periods_min > 0 {
+        periods_min = periods_min.max(user_periods_min);
+    }
+    if user_periods_max > 0 {
+        periods_max = periods_max.min(user_periods_max);
+    }
+    if periods_min > periods_max {
+        return Err(Errno::EINVAL);
+    }
     req.intervals[PARAM_PERIODS] = WpkSndInterval {
-        min: periods,
-        max: periods,
+        min: periods_min,
+        max: periods_max,
         flags: 0,
     };
 
-    req.rate_num = rate;
+    // When period_size and periods are both pinned to a single value,
+    // buffer_size is forced to their product. Pin it eagerly so the
+    // next HW_REFINE doesn't return a stale range and so HW_PARAMS'
+    // `read_interval_single` finds a single value. The chosen value
+    // must remain inside both the v1 cap and the caller's current
+    // buffer range (the latter guards against e.g. an explicit
+    // `set_buffer_size(4096)` colliding with `period_size * periods`).
+    if period_min == period_max && periods_min == periods_max {
+        let derived = (period_min as u64) * (periods_min as u64);
+        if derived >= MIN_BUFFER_SIZE as u64
+            && derived <= MAX_BUFFER_SIZE as u64
+            && derived >= buffer_min as u64
+            && derived <= buffer_max as u64
+        {
+            let d = derived as u32;
+            req.intervals[PARAM_BUFFER_SIZE] = WpkSndInterval {
+                min: d,
+                max: d,
+                flags: 0,
+            };
+        }
+    }
+
+    req.rate_num = req.intervals[PARAM_RATE].min;
     req.rate_den = 1;
     req.msbits = SAMPLE_BITS_S16_LE;
     req.info = SNDRV_PCM_INFO_MMAP
@@ -490,10 +556,10 @@ pub fn handle_alsa_pcm_ioctl(
                 return Err(Errno::EBADFD);
             }
             audio.sw_params = Some(Box::new(SwParamsCache {
-                avail_min: req.avail_min,
-                start_threshold: req.start_threshold,
-                stop_threshold: req.stop_threshold,
-                boundary: req.boundary,
+                avail_min: req.avail_min as u64,
+                start_threshold: req.start_threshold as u64,
+                stop_threshold: req.stop_threshold as u64,
+                boundary: req.boundary as u64,
             }));
             Ok(())
         }
@@ -524,7 +590,7 @@ pub fn handle_alsa_pcm_ioctl(
             if let Some(status) = audio.mmap_status.as_mut() {
                 status.state = SNDRV_PCM_STATE_RUNNING;
                 status.tstamp_sec = sec;
-                status.tstamp_nsec = nsec;
+                status.tstamp_nsec = nsec as i32;
             }
             Ok(())
         }
@@ -572,32 +638,43 @@ pub fn handle_alsa_pcm_ioctl(
             let buffer_size = audio
                 .hw_params
                 .as_ref()
-                .map(|h| h.buffer_size as i64)
+                .map(|h| h.buffer_size as u32)
                 .unwrap_or(0);
-            let delay = appl_ptr - hw_ptr;
+            // Compute via i64 so negative deltas (XRUN) and pointer
+            // wrap deltas larger than i32::MAX both fit before the
+            // i32/u32 saturation.
+            let delay_i64 = appl_ptr as i64 - hw_ptr as i64;
+            let delay = delay_i64.clamp(i32::MIN as i64, i32::MAX as i64) as i32;
             let avail = if buffer_size > 0 {
-                (buffer_size - delay).max(0) as u64
+                (buffer_size as i64 - delay_i64).max(0) as u32
             } else {
                 0
             };
             let status = WpkAlsaPcmStatus {
                 state: audio.state,
-                _pad0: 0,
+                _pad1: 0,
                 trigger_tstamp_sec: 0,
                 trigger_tstamp_nsec: 0,
+                _trigger_tstamp_pad: 0,
                 tstamp_sec: sec,
-                tstamp_nsec: nsec,
+                tstamp_nsec: nsec as i32,
+                _tstamp_pad: 0,
                 appl_ptr,
                 hw_ptr,
                 delay,
                 avail,
-                avail_max: buffer_size as u64,
+                avail_max: buffer_size,
                 overrange: 0,
                 suspended_state: 0,
                 audio_tstamp_data: 0,
                 audio_tstamp_sec: 0,
                 audio_tstamp_nsec: 0,
-                _reserved: [0u8; 16],
+                _audio_tstamp_pad: 0,
+                driver_tstamp_sec: 0,
+                driver_tstamp_nsec: 0,
+                _driver_tstamp_pad: 0,
+                audio_tstamp_accuracy: 0,
+                _reserved: [0u8; 20],
             };
             write_struct(buf, &status)
         }
@@ -668,10 +745,10 @@ fn handle_writei(
             .ok_or(Errno::EBADFD)?
             .hw_ptr;
 
-        let delay = appl - hw_ptr;
+        let delay = appl as i64 - hw_ptr as i64;
         let avail = (ring_frames as i64 - delay).max(0) as usize;
         let to_write = frames_req.min(avail);
-        let appl_frame_offset = appl.rem_euclid(ring_frames as i64) as usize;
+        let appl_frame_offset = (appl as usize) % ring_frames;
 
         WriteiPlan {
             pcm_id: audio.pcm_id,
@@ -687,7 +764,7 @@ fn handle_writei(
         let bytes_per_frame = plan.channels * core::mem::size_of::<i16>();
         let total_bytes = plan.to_write * bytes_per_frame;
         let mut scratch: alloc::vec::Vec<u8> = alloc::vec![0u8; total_bytes];
-        let rc = host.proc_read_bytes(pid, req.buf as u32, &mut scratch);
+        let rc = host.proc_read_bytes(pid, req.buf, &mut scratch);
         if rc < 0 {
             return Err(Errno::EFAULT);
         }
@@ -713,12 +790,12 @@ fn handle_writei(
     {
         let audio = audio_mut(proc, ofd_idx)?;
         if let Some(ctl) = audio.mmap_control.as_mut() {
-            ctl.appl_ptr += plan.to_write as i64;
+            ctl.appl_ptr = ctl.appl_ptr.wrapping_add(plan.to_write as u32);
         }
     }
 
     // ---------- stage 4: stamp result ----------
-    req.result = plan.to_write as i64;
+    req.result = plan.to_write as i32;
     write_struct(buf, &req)
 }
 
@@ -783,6 +860,33 @@ mod tests {
     fn refined_hw_params() -> WpkAlsaPcmHwParams {
         let mut p = wildcard_hw_params();
         refine_hw_params(&mut p).expect("refine wildcard");
+        // refine_hw_params returns RANGES (matching Linux semantics);
+        // alsa-lib's snd_pcm_hw_params_choose() then narrows to a single
+        // value via snd_pcm_hw_param_set_first. Mimic that here so unit
+        // tests can feed the refined struct straight into HW_PARAMS,
+        // which expects min == max via read_interval_single().
+        for ix in [
+            PARAM_CHANNELS,
+            PARAM_RATE,
+            PARAM_PERIOD_SIZE,
+            PARAM_BUFFER_SIZE,
+            PARAM_SAMPLE_BITS,
+            PARAM_FRAME_BITS,
+        ] {
+            p.intervals[ix].max = p.intervals[ix].min;
+        }
+        // periods must be self-consistent with buffer / period — pin to
+        // the derived single value rather than just `min` so the next
+        // refine_hw_params doesn't intersect a stale [1,1] against the
+        // derived [buffer/period, buffer/period] range and return EINVAL.
+        let buffer = p.intervals[PARAM_BUFFER_SIZE].min;
+        let period = p.intervals[PARAM_PERIOD_SIZE].min.max(1);
+        let periods = (buffer / period).max(1);
+        p.intervals[PARAM_PERIODS] = WpkSndInterval {
+            min: periods,
+            max: periods,
+            flags: 0,
+        };
         p
     }
 
@@ -799,7 +903,7 @@ mod tests {
     // --- PVERSION ---------------------------------------------------
 
     #[test]
-    fn pcm_pversion_returns_alsa_v13() {
+    fn pcm_pversion_matches_alsa_compat_window() {
         let mut proc = Process::new(1);
         let mut host = NoopHost;
         let idx = install_pcm(&mut proc);
@@ -809,7 +913,11 @@ mod tests {
         assert_eq!(
             u32::from_le_bytes(buf),
             SNDRV_PROTOCOL_VERSION,
-            "PVERSION must report 0x000d_0000 — alsa-lib bails on higher",
+            "PVERSION must report 0x0002_0004 — matches alsa-lib's \
+             SNDRV_PROTOCOL_INCOMPATIBLE major/minor check vs \
+             SNDRV_{{PCM,CTL}}_VERSION_MAX and stays below the \
+             conditional-ioctl thresholds (>=2.0.5 TSTAMP, \
+             >=2.0.14 USER_PVERSION)",
         );
     }
 
@@ -848,18 +956,22 @@ mod tests {
     }
 
     #[test]
-    fn pcm_hw_refine_wildcard_narrows_to_v1_defaults() {
+    fn pcm_hw_refine_wildcard_clamps_to_v1_range() {
         let mut p = wildcard_hw_params();
         refine_hw_params(&mut p).expect("wildcard refine");
         let format = mask_first_set(mask_at(&p.masks, PARAM_FORMAT)).unwrap();
         assert_eq!(format, SNDRV_PCM_FORMAT_S16_LE);
-        // Each interval narrowed to capability-min (min=min, max=min).
+        // refine_hw_params now leaves intervals as RANGES (matching
+        // Linux semantics — alsa-lib's snd_pcm_hw_params_choose() does
+        // the per-param narrowing after HW_REFINE returns).
         assert_eq!(p.intervals[PARAM_CHANNELS].min, MIN_CHANNELS);
-        assert_eq!(p.intervals[PARAM_CHANNELS].max, MIN_CHANNELS);
+        assert_eq!(p.intervals[PARAM_CHANNELS].max, MAX_CHANNELS);
         assert_eq!(p.intervals[PARAM_RATE].min, MIN_RATE);
-        assert_eq!(p.intervals[PARAM_RATE].max, MIN_RATE);
+        assert_eq!(p.intervals[PARAM_RATE].max, MAX_RATE);
         assert_eq!(p.intervals[PARAM_PERIOD_SIZE].min, MIN_PERIOD_SIZE);
+        assert_eq!(p.intervals[PARAM_PERIOD_SIZE].max, MAX_PERIOD_SIZE);
         assert_eq!(p.intervals[PARAM_BUFFER_SIZE].min, MIN_BUFFER_SIZE);
+        assert_eq!(p.intervals[PARAM_BUFFER_SIZE].max, MAX_BUFFER_SIZE);
         assert_eq!(p.intervals[PARAM_SAMPLE_BITS].min, SAMPLE_BITS_S16_LE);
         assert_eq!(p.rate_num, MIN_RATE);
         assert_eq!(p.rate_den, 1);
@@ -1180,7 +1292,7 @@ mod tests {
         assert_eq!(status.hw_ptr, 256);
         assert_eq!(status.delay, 1024 - 256);
         // buffer_size committed via wildcard refine == MIN_BUFFER_SIZE.
-        assert_eq!(status.avail_max, MIN_BUFFER_SIZE as u64);
+        assert_eq!(status.avail_max, MIN_BUFFER_SIZE as u32);
         assert!(status.tstamp_sec >= 0);
         assert!(status.tstamp_nsec >= 0);
     }
@@ -1348,7 +1460,7 @@ mod tests {
             // Any non-zero address works — NoopHost ignores it and
             // copies from PROC_READ_SOURCE.
             buf: 0x4000_0000,
-            frames: frames_to_write as u64,
+            frames: frames_to_write as u32,
         };
         let mut buf = struct_buf(&xferi);
         run_ioctl(
@@ -1361,11 +1473,11 @@ mod tests {
         .expect("WRITEI");
         let result: WpkAlsaXferi =
             unsafe { core::ptr::read_unaligned(buf.as_ptr() as *const _) };
-        assert_eq!(result.result, frames_to_write as i64);
+        assert_eq!(result.result, frames_to_write as i32);
         // appl_ptr advanced.
         let appl =
             audio_ref(&proc, idx).unwrap().mmap_control.as_ref().unwrap().appl_ptr;
-        assert_eq!(appl, frames_to_write as i64);
+        assert_eq!(appl, frames_to_write as u32);
         // Ring head holds the synthesised samples; tail is still 0.
         let ring = read_ring(ring_ptr, ring_frames, channels);
         for i in 0..frames_to_write {
@@ -1393,15 +1505,15 @@ mod tests {
         // ring_frames - 1] and the next 4 wrap to [0, 3].
         {
             let audio = audio_mut(&mut proc, idx).unwrap();
-            audio.mmap_control.as_mut().unwrap().appl_ptr = (ring_frames - 4) as i64;
-            audio.mmap_status.as_mut().unwrap().hw_ptr = (ring_frames - 4) as i64;
+            audio.mmap_control.as_mut().unwrap().appl_ptr = (ring_frames - 4) as u32;
+            audio.mmap_status.as_mut().unwrap().hw_ptr = (ring_frames - 4) as u32;
         }
         let frames_to_write = 8usize;
         set_proc_read_source(synth_frames(frames_to_write, channels, 100));
         let xferi = WpkAlsaXferi {
             result: 0,
             buf: 0x4000_0000,
-            frames: frames_to_write as u64,
+            frames: frames_to_write as u32,
         };
         let mut buf = struct_buf(&xferi);
         run_ioctl(
@@ -1414,11 +1526,11 @@ mod tests {
         .expect("WRITEI wrap");
         let result: WpkAlsaXferi =
             unsafe { core::ptr::read_unaligned(buf.as_ptr() as *const _) };
-        assert_eq!(result.result, frames_to_write as i64);
+        assert_eq!(result.result, frames_to_write as i32);
         // appl_ptr advances monotonically past the wrap boundary.
         let appl =
             audio_ref(&proc, idx).unwrap().mmap_control.as_ref().unwrap().appl_ptr;
-        assert_eq!(appl, (ring_frames - 4 + frames_to_write) as i64);
+        assert_eq!(appl, (ring_frames - 4 + frames_to_write) as u32);
         // First 4 frames at tail of ring.
         let ring = read_ring(ring_ptr, ring_frames, channels);
         for i in 0..4 {
@@ -1446,7 +1558,7 @@ mod tests {
         {
             let audio = audio_mut(&mut proc, idx).unwrap();
             audio.mmap_status.as_mut().unwrap().hw_ptr = 0;
-            audio.mmap_control.as_mut().unwrap().appl_ptr = ring_frames as i64;
+            audio.mmap_control.as_mut().unwrap().appl_ptr = ring_frames as u32;
         }
         let xferi = WpkAlsaXferi {
             result: 0,
@@ -1468,7 +1580,7 @@ mod tests {
         // appl_ptr unchanged.
         let appl =
             audio_ref(&proc, idx).unwrap().mmap_control.as_ref().unwrap().appl_ptr;
-        assert_eq!(appl, ring_frames as i64);
+        assert_eq!(appl, ring_frames as u32);
     }
 
     #[test]

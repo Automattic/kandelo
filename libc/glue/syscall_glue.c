@@ -843,11 +843,21 @@ static long __do_syscall(long n, long a1, long a2, long a3,
                                       TERMIOS_BUF_SIZE);
 
     /* ioctl — (fd, request, arg_ptr)
-     * kernel needs buf_len; provide generous hint */
-    case SYS_IOCTL:
-        return (long)kernel_ioctl((int32_t)a1, (uint32_t)a2,
+     *
+     * Bits 16..29 of `request` encode the struct size per the Linux
+     * _IOC_SIZE convention. For sized ioctls (e.g.
+     * SNDRV_PCM_IOCTL_HW_PARAMS at 604 B), use that size so the kernel
+     * sees the full struct. Legacy ioctls that encode size = 0
+     * (FIONBIO / FIONREAD / KDGKBTYPE / …) fall back to the 256-byte
+     * floor so their handlers can still copy a few bytes safely. */
+    case SYS_IOCTL: {
+        uint32_t req = (uint32_t)a2;
+        uint32_t enc = (req >> 16) & 0x3fff;
+        uint32_t blen = enc > IOCTL_BUF_SIZE ? enc : IOCTL_BUF_SIZE;
+        return (long)kernel_ioctl((int32_t)a1, req,
                                   (uint8_t *)(uintptr_t)a3,
-                                  IOCTL_BUF_SIZE);
+                                  blen);
+    }
 
     /* ============================================================== */
     /* Environment                                                     */
