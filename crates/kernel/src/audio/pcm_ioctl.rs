@@ -323,13 +323,54 @@ fn refine_hw_params(req: &mut WpkAlsaPcmHwParams) -> Result<(), Errno> {
     let buffer_max = req.intervals[PARAM_BUFFER_SIZE].max;
     // periods = buffer/period; widest range = buffer_max/period_min,
     // narrowest = buffer_min/period_max.
-    let periods_min = (buffer_min / period_max).max(1);
-    let periods_max = (buffer_max / period_min).max(1);
+    let mut periods_min = (buffer_min / period_max).max(1);
+    let mut periods_max = (buffer_max / period_min).max(1);
+    // Honour caller-supplied periods bounds. alsa-lib drives the
+    // hw_params handshake through repeated HW_REFINEs that tighten one
+    // interval at a time — set_periods_min(2) sends periods=[2,…] and
+    // expects the kernel to keep that floor. Without this intersection
+    // the next refine returns the buffer/period-derived [1,16] and
+    // alsa-lib sees its constraint dropped, causing
+    // snd_pcm_hw_params_choose() / snd_pcm_hw_params() to fail.
+    let user_periods_min = req.intervals[PARAM_PERIODS].min;
+    let user_periods_max = req.intervals[PARAM_PERIODS].max;
+    if user_periods_min > 0 {
+        periods_min = periods_min.max(user_periods_min);
+    }
+    if user_periods_max > 0 {
+        periods_max = periods_max.min(user_periods_max);
+    }
+    if periods_min > periods_max {
+        return Err(Errno::EINVAL);
+    }
     req.intervals[PARAM_PERIODS] = WpkSndInterval {
         min: periods_min,
         max: periods_max,
         flags: 0,
     };
+
+    // When period_size and periods are both pinned to a single value,
+    // buffer_size is forced to their product. Pin it eagerly so the
+    // next HW_REFINE doesn't return a stale range and so HW_PARAMS'
+    // `read_interval_single` finds a single value. The chosen value
+    // must remain inside both the v1 cap and the caller's current
+    // buffer range (the latter guards against e.g. an explicit
+    // `set_buffer_size(4096)` colliding with `period_size * periods`).
+    if period_min == period_max && periods_min == periods_max {
+        let derived = (period_min as u64) * (periods_min as u64);
+        if derived >= MIN_BUFFER_SIZE as u64
+            && derived <= MAX_BUFFER_SIZE as u64
+            && derived >= buffer_min as u64
+            && derived <= buffer_max as u64
+        {
+            let d = derived as u32;
+            req.intervals[PARAM_BUFFER_SIZE] = WpkSndInterval {
+                min: d,
+                max: d,
+                flags: 0,
+            };
+        }
+    }
 
     req.rate_num = req.intervals[PARAM_RATE].min;
     req.rate_den = 1;
@@ -829,12 +870,23 @@ mod tests {
             PARAM_RATE,
             PARAM_PERIOD_SIZE,
             PARAM_BUFFER_SIZE,
-            PARAM_PERIODS,
             PARAM_SAMPLE_BITS,
             PARAM_FRAME_BITS,
         ] {
             p.intervals[ix].max = p.intervals[ix].min;
         }
+        // periods must be self-consistent with buffer / period — pin to
+        // the derived single value rather than just `min` so the next
+        // refine_hw_params doesn't intersect a stale [1,1] against the
+        // derived [buffer/period, buffer/period] range and return EINVAL.
+        let buffer = p.intervals[PARAM_BUFFER_SIZE].min;
+        let period = p.intervals[PARAM_PERIOD_SIZE].min.max(1);
+        let periods = (buffer / period).max(1);
+        p.intervals[PARAM_PERIODS] = WpkSndInterval {
+            min: periods,
+            max: periods,
+            flags: 0,
+        };
         p
     }
 
