@@ -2687,10 +2687,10 @@ export class CentralizedKernelWorker {
    * info to the process channel. The glue code (channel_syscall.c) reads
    * this after the syscall returns and invokes the handler.
    */
-  private dequeueSignalForDelivery(channel: ChannelInfo): void {
+  private dequeueSignalForDelivery(channel: ChannelInfo): number {
     const dequeueSignal = this.kernelInstance!.exports
       .kernel_dequeue_signal as ((pid: number, outPtr: KernelPointer) => number) | undefined;
-    if (!dequeueSignal) return;
+    if (!dequeueSignal) return 0;
 
     // Use the signal area in kernel scratch as the output buffer
     const sigOutOffset = this.scratchOffset + CH_SIG_BASE;
@@ -2705,10 +2705,12 @@ export class CentralizedKernelWorker {
         kernelMem.subarray(sigOutOffset, sigOutOffset + 44),
         channel.channelOffset + CH_SIG_BASE,
       );
+      return sigResult;
     } else {
       // Clear entire signal delivery area in process channel (48 bytes)
       const sigStart = channel.channelOffset + CH_SIG_BASE;
       new Uint8Array(channel.memory.buffer, sigStart, 48).fill(0);
+      return 0;
     }
   }
 
@@ -2953,6 +2955,9 @@ export class CentralizedKernelWorker {
    * Used for thread exit where we need to unblock the worker.
    */
   private completeChannelRaw(channel: ChannelInfo, retVal: number, errVal: number): void {
+    this.syncSharedMappingsFromProcess(channel, true);
+    this.refreshSharedMappingsToProcess(channel);
+
     // Clear handling flag (channel is done — poller can pick it up for next syscall)
     channel.handling = false;
 
@@ -3675,6 +3680,12 @@ export class CentralizedKernelWorker {
   ): void {
     if (!this.processes.has(channel.pid)) return;
 
+    // EAGAIN-driven host waits park the process without normal syscall
+    // completion. Publish MAP_SHARED writes before parking so other processes
+    // observe standard shared-memory visibility while this thread blocks.
+    this.syncSharedMappingsFromProcess(channel, true);
+    this.refreshSharedMappingsToProcess(channel);
+
     // Futex wait: use Atomics.waitAsync on the target address in process memory
     if (syscallNr === SYS_FUTEX) {
       const futexOp = origArgs[1] & 0x7f; // mask out FUTEX_PRIVATE_FLAG
@@ -4065,6 +4076,13 @@ export class CentralizedKernelWorker {
     }
 
     if (delayMs > 0) {
+      // A host-delayed sleep parks the process without going through normal
+      // completeChannel(). Treat that park as a syscall boundary for
+      // MAP_SHARED: writes made before nanosleep/usleep must be visible to
+      // peer processes while this thread sleeps.
+      this.syncSharedMappingsFromProcess(channel, true);
+      this.refreshSharedMappingsToProcess(channel);
+
       const timer = setTimeout(() => {
         this.pendingSleeps.delete(channel.pid);
         if (this.processes.has(channel.pid)) {
@@ -4759,8 +4777,25 @@ export class CentralizedKernelWorker {
     const retVal = Number(kernelView.getBigInt64(CH_RETURN, true));
     const errVal = kernelView.getUint32(CH_ERRNO, true);
 
-    // Handle signal delivery
-    this.dequeueSignalForDelivery(channel);
+    // Handle signal delivery. This host-side epoll emulation calls the
+    // kernel's poll helper with timeout=0 and then decides whether to
+    // block/retry in TypeScript. POSIX still requires a caught signal to
+    // interrupt epoll_wait/epoll_pwait with EINTR so user code can run the
+    // handler before re-entering the wait. Without completing the channel
+    // here, a process with a queued handler signal can stay parked in the
+    // host retry loop indefinitely.
+    const deliveredSignal = this.dequeueSignalForDelivery(channel);
+    const getExitStatus = this.kernelInstance!.exports
+      .kernel_get_process_exit_status as ((pid: number) => number) | undefined;
+    if (getExitStatus && getExitStatus(channel.pid) >= 128) {
+      this.handleProcessTerminated(channel);
+      return;
+    }
+    if (deliveredSignal > 0) {
+      this.completeChannelRaw(channel, -EINTR_ERRNO, EINTR_ERRNO);
+      this.relistenChannel(channel);
+      return;
+    }
 
     // If poll returned error (not EAGAIN), propagate it
     if (retVal < 0 && errVal !== EAGAIN) {
@@ -7542,24 +7577,15 @@ export class CentralizedKernelWorker {
   }
 
   private syscallSynchronizesAnonymousSharedMemory(syscallNr: number): boolean {
-    return syscallNr === SYS_FORK
-      || syscallNr === SYS_VFORK
-      || syscallNr === SYS_CLONE
-      || syscallNr === SYS_EXIT
-      || syscallNr === SYS_EXIT_GROUP
-      || syscallNr === SYS_WAIT4
-      || syscallNr === SYS_WAITID
-      || syscallNr === SYS_FUTEX
-      || syscallNr === SYS_POLL
-      || syscallNr === SYS_PPOLL
-      || syscallNr === SYS_SELECT
-      || syscallNr === SYS_PSELECT6
-      || syscallNr === SYS_EPOLL_WAIT
-      || syscallNr === SYS_EPOLL_PWAIT
-      || syscallNr === SYS_RT_SIGTIMEDWAIT
-      || syscallNr === SYS_MSYNC
-      || syscallNr === SYS_MUNMAP
-      || syscallNr === SYS_MREMAP;
+    // Anonymous MAP_SHARED mappings are ordinary shared memory: writes made by
+    // a process before it enters the kernel must be visible to peers that
+    // subsequently enter the kernel. Centralized Kandelo processes use
+    // separate Wasm memories, so every syscall boundary for the *current*
+    // process is our coherence point. This intentionally does not scrape
+    // other live processes from a peer's syscall; doing so can publish
+    // mid-update shared-memory state that the writer has not synchronized.
+    void syscallNr;
+    return true;
   }
 
   private syncSharedMappingsFromProcess(channel: ChannelInfo, includeAnonymous = true): void {
@@ -7586,10 +7612,23 @@ export class CentralizedKernelWorker {
         )) {
           continue;
         }
-        const bytes = processMem.subarray(mapAddr + offset, mapAddr + offset + n);
-        this.copyRangeToBacking(backing, mapping.fileOffset + offset, bytes, true);
-        mapping.snapshot.set(bytes, offset);
-        changed = true;
+        // Copy only bytes this process actually changed relative to its last
+        // shared-memory snapshot. MAP_SHARED mappings can be modified by
+        // multiple processes between syscall boundaries. Copying an entire
+        // host page from one process when it changed only a small field would
+        // overwrite disjoint writes already published by another process with
+        // this process's stale view of that page.
+        if (this.copyChangedSharedMappingRanges(
+          backing,
+          processMem,
+          mapAddr + offset,
+          mapping.snapshot,
+          offset,
+          mapping.fileOffset + offset,
+          n,
+        )) {
+          changed = true;
+        }
       }
 
       if (changed) {
@@ -7597,6 +7636,50 @@ export class CentralizedKernelWorker {
         mapping.version = backing.version;
       }
     }
+  }
+
+  private copyChangedSharedMappingRanges(
+    backing: SharedMmapBacking,
+    processMem: Uint8Array,
+    processOffset: number,
+    snapshot: Uint8Array,
+    snapshotOffset: number,
+    backingOffset: number,
+    len: number,
+  ): boolean {
+    let changed = false;
+    let i = 0;
+    while (i < len) {
+      while (
+        i < len
+        && processMem[processOffset + i] === snapshot[snapshotOffset + i]
+      ) {
+        i++;
+      }
+      if (i >= len) break;
+
+      const runStart = i;
+      do {
+        i++;
+      } while (
+        i < len
+        && processMem[processOffset + i] !== snapshot[snapshotOffset + i]
+      );
+
+      const bytes = processMem.subarray(
+        processOffset + runStart,
+        processOffset + i,
+      );
+      this.copyRangeToBacking(
+        backing,
+        backingOffset + runStart,
+        bytes,
+        true,
+      );
+      snapshot.set(bytes, snapshotOffset + runStart);
+      changed = true;
+    }
+    return changed;
   }
 
   private refreshSharedMappingsToProcess(channel: ChannelInfo, includeAnonymous = true): void {
