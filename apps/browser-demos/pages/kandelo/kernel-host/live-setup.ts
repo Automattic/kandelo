@@ -79,12 +79,6 @@ const OPTIONAL_BINARY_URLS = {
   ...import.meta.glob("../../../../../binaries/programs/wasm32/fbtest.wasm", {
     query: "?url", import: "default",
   }),
-  ...import.meta.glob("../../../../../local-binaries/programs/wasm32/modeset.wasm", {
-    query: "?url", import: "default",
-  }),
-  ...import.meta.glob("../../../../../binaries/programs/wasm32/modeset.wasm", {
-    query: "?url", import: "default",
-  }),
 } as Record<string, () => Promise<string>>;
 
 async function optionalBinaryUrl(relPaths: string[], label: string): Promise<string> {
@@ -368,12 +362,6 @@ interface LiveProfile {
     };
   };
   framebufferTest: boolean;
-  /**
-   * Spawn the `modeset` binary on top of the booted shell so the Modeset
-   * pane has a process driving DRM master + PAGE_FLIP. Mirrors the
-   * `framebufferTest` path for /dev/fb0 demos.
-   */
-  modesetDemo: boolean;
 }
 
 interface WebReadinessState {
@@ -668,7 +656,6 @@ function customVfsProfile(
     includeNodeUtility: false,
     maxVfsByteLength: 256 * 1024 * 1024,
     framebufferTest: fb === "test",
-    modesetDemo: false,
   };
 }
 
@@ -688,7 +675,6 @@ function profileFor(id: string, fb?: FbDemo): LiveProfile {
       fallbackPresentation: software.presentation,
       init: software.init,
       framebufferTest: false,
-      modesetDemo: false,
     };
   }
 
@@ -720,7 +706,6 @@ function profileFor(id: string, fb?: FbDemo): LiveProfile {
       },
     },
     framebufferTest: fb === "test",
-    modesetDemo: normalized === "modeset",
   };
 }
 
@@ -1231,12 +1216,6 @@ async function bootProfile(
         "../../../../../binaries/programs/wasm32/fbtest.wasm",
       ], "fbtest.wasm");
       void spawnLazy(kernel, "/usr/local/bin/fbtest", fbtestWasmUrl, ["fbtest"], tick);
-    } else if (profile.modesetDemo) {
-      const modesetWasmUrl = await optionalBinaryUrl([
-        "../../../../../local-binaries/programs/wasm32/modeset.wasm",
-        "../../../../../binaries/programs/wasm32/modeset.wasm",
-      ], "modeset.wasm");
-      void spawnLazy(kernel, "/usr/local/bin/modeset", modesetWasmUrl, ["modeset"], tick);
     } else if (presentation?.autoCommand) {
       tick("starting configured command from bash...");
       void host.runShellCommand(presentation.autoCommand).catch((err) => {
@@ -1263,7 +1242,7 @@ async function bootProfile(
 
 function genericPresentationForProfile(profile: LiveProfile): DemoPresentation {
   if (profile.init?.web) return genericDemoPresentation("web");
-  if (profile.modesetDemo || profile.descriptor.runtime.features.includes("kms")) {
+  if (profile.descriptor.runtime.features.includes("kms")) {
     return genericDemoPresentation("kms");
   }
   if (profile.framebufferTest || profile.descriptor.runtime.features.includes("framebuffer")) {

@@ -604,6 +604,101 @@ fn kms_state_mut(
         .ok_or(Errno::EBADF)
 }
 
+fn ranges_overlap(a_addr: usize, a_len: usize, b_addr: usize, b_len: usize) -> bool {
+    let a_end = a_addr.saturating_add(a_len);
+    let b_end = b_addr.saturating_add(b_len);
+    a_addr < b_end && b_addr < a_end
+}
+
+fn dri_fd_has_bo_handle(dri: &crate::ofd::DriFdState, bo_id: crate::dri::BoId) -> bool {
+    dri.handles.values().any(|&candidate| candidate == bo_id)
+}
+
+fn clear_dri_fd_cmdbuf_in_range(
+    dri: &mut crate::ofd::DriFdState,
+    addr: usize,
+    len: usize,
+) -> bool {
+    let Some(gl) = dri.gl.as_mut() else {
+        return false;
+    };
+    let Some(cmdbuf) = gl.cmdbuf else {
+        return false;
+    };
+    if !ranges_overlap(addr, len, cmdbuf.addr, cmdbuf.len) {
+        return false;
+    }
+    gl.cmdbuf = None;
+    true
+}
+
+fn unbind_gl_cmdbufs_in_range(
+    proc: &mut Process,
+    host: &mut dyn HostIO,
+    addr: usize,
+    len: usize,
+) {
+    let mut released = false;
+    for (_ofd_idx, ofd) in proc.ofd_table.iter_mut() {
+        match ofd.dri_state.as_deref_mut() {
+            Some(crate::ofd::DriOfdState::RenderNode(dri)) => {
+                released |= clear_dri_fd_cmdbuf_in_range(dri, addr, len);
+            }
+            Some(crate::ofd::DriOfdState::Card { dri, .. }) => {
+                released |= clear_dri_fd_cmdbuf_in_range(dri, addr, len);
+            }
+            _ => {}
+        }
+    }
+    if released {
+        host.gl_unbind(proc.pid as i32);
+    }
+}
+
+fn release_process_dri_mappings(proc: &mut Process, host: &mut dyn HostIO) {
+    let pid = proc.pid as i32;
+    let bindings = core::mem::take(&mut proc.dri_bindings);
+    for b in bindings {
+        host.gbm_bo_unbind(pid, b.bo_id, b.addr, b.len);
+    }
+
+    let mut released_gl = false;
+    for (_ofd_idx, ofd) in proc.ofd_table.iter_mut() {
+        match ofd.dri_state.as_deref_mut() {
+            Some(crate::ofd::DriOfdState::RenderNode(dri)) => {
+                released_gl |= dri.gl.take().is_some();
+            }
+            Some(crate::ofd::DriOfdState::Card { dri, .. }) => {
+                released_gl |= dri.gl.take().is_some();
+            }
+            _ => {}
+        }
+    }
+    if released_gl {
+        host.gl_unbind(pid);
+    }
+}
+
+pub(crate) fn release_exec_image_state(proc: &mut Process, host: &mut dyn HostIO) {
+    // /dev/fb0 cleanup: exec wipes the binding. Tell the host before
+    // its memory snapshot of the process is invalidated, then drop the
+    // global ownership claim so the new image can re-acquire if it
+    // needs the device.
+    if proc.fb_binding.is_some() {
+        host.unbind_framebuffer(proc.pid as i32);
+        proc.fb_binding = None;
+        maybe_release_fb0(proc.pid);
+    }
+    // /dev/input/mice cleanup: exec also drops mouse ownership. The
+    // post-exec image starts with a clean queue — no stale packets from
+    // the parent program survive across exec.
+    maybe_release_mice(proc.pid);
+    // /dev/dsp cleanup: same — drop ownership and flush any queued PCM
+    // so a post-exec program doesn't hear the tail of its predecessor.
+    maybe_release_dsp(proc.pid);
+    release_process_dri_mappings(proc, host);
+}
+
 /// Release a per-fd handle (DESTROY_DUMB / GEM_CLOSE): drops the
 /// handle from the fd's namespace, decrefs the bo, and if the
 /// refcount hits zero asks the host to free the backing.
@@ -690,9 +785,10 @@ fn handle_dri_ioctl(
             // Allocate in registry first so we know the size/stride
             // before asking the host.
             let (bo_id, size, stride) = crate::dri::with_registry(|r| {
-                let bo = r.alloc(req.width, req.height, req.bpp);
-                (bo.id, bo.size, bo.stride)
-            });
+                r.try_alloc(req.width, req.height, req.bpp)
+                    .map(|bo| (bo.id, bo.size, bo.stride))
+            })
+            .ok_or(Errno::EINVAL)?;
             // Ask the host to back the bo with a SAB. Roll back the
             // registry allocation on host failure so the BoId space
             // doesn't leak.
@@ -1021,11 +1117,17 @@ fn handle_dri_ioctl(
                 if end > cmdbuf.len {
                     return Err(Errno::EINVAL);
                 }
-                cmdbuf.submit_seq = cmdbuf.submit_seq.wrapping_add(1);
                 offset = info.offset as usize;
                 length = info.length as usize;
             }
-            host.gl_submit(pid, offset, length);
+            let submit_rc = host.gl_submit(pid, offset, length);
+            if submit_rc < 0 {
+                return Err(Errno::from_u32((-submit_rc) as u32).unwrap_or(Errno::EIO));
+            }
+            let dri = dri_state_mut(proc, ofd_idx)?;
+            let gls = dri.gl.as_mut().ok_or(Errno::EINVAL)?;
+            let cmdbuf = gls.cmdbuf.as_mut().ok_or(Errno::EINVAL)?;
+            cmdbuf.submit_seq = cmdbuf.submit_seq.wrapping_add(1);
             Ok(())
         }
         gl::GLIO_PRESENT => {
@@ -1045,7 +1147,9 @@ fn handle_dri_ioctl(
             }
             let info: gl::GlQueryInfo =
                 unsafe { core::ptr::read_unaligned(buf.as_ptr() as *const _) };
-            if info.out_buf_len > gl::MAX_QUERY_OUT_LEN {
+            if info.in_buf_len > gl::MAX_QUERY_IN_LEN
+                || info.out_buf_len > gl::MAX_QUERY_OUT_LEN
+            {
                 return Err(Errno::EINVAL);
             }
             {
@@ -1462,6 +1566,9 @@ pub(crate) fn dri_release_ofd_state(
             release_bo(host, p.bo_id);
         }
         crate::ofd::DriOfdState::RenderNode(dri) => {
+            if dri.gl.is_some() {
+                host.gl_unbind(pid);
+            }
             for (_handle, bo_id) in dri.handles.into_iter() {
                 release_bo(host, bo_id);
             }
@@ -1483,6 +1590,9 @@ pub(crate) fn dri_release_ofd_state(
                 ofd_idx,
                 host,
             );
+            if dri.gl.is_some() {
+                host.gl_unbind(pid);
+            }
             for (_handle, bo_id) in dri.handles.into_iter() {
                 release_bo(host, bo_id);
             }
@@ -4947,27 +5057,11 @@ pub fn sys_execve(proc: &mut Process, host: &mut dyn HostIO, path: &[u8]) -> Res
     if path.is_empty() {
         return Err(Errno::ENOENT);
     }
-    // /dev/fb0 cleanup: exec wipes the binding. Tell the host before
-    // its memory snapshot of the process is invalidated, then drop the
-    // global ownership claim so the new image can re-acquire if it
-    // needs the device.
-    if proc.fb_binding.is_some() {
-        host.unbind_framebuffer(proc.pid as i32);
-        proc.fb_binding = None;
-        maybe_release_fb0(proc.pid);
-    }
-    // /dev/input/mice cleanup: exec also drops mouse ownership. The
-    // post-exec image starts with a clean queue — no stale packets from
-    // the parent program survive across exec.
-    maybe_release_mice(proc.pid);
-    // /dev/dsp cleanup: same — drop ownership and flush any queued PCM
-    // so a post-exec program doesn't hear the tail of its predecessor.
-    maybe_release_dsp(proc.pid);
-    // Resolve relative paths against process CWD so the host sees absolute paths.
-    // This is critical for posix_spawn with chdir file actions — the child's CWD
-    // may differ from the initial data directory the host knows about.
+    // Resolve and validate before tearing down mappings. POSIX exec
+    // failure must leave the current image intact.
     let resolved = crate::path::resolve_path(path, &proc.cwd);
     check_exec_path(proc, host, &resolved)?;
+    release_exec_image_state(proc, host);
     host.host_exec(&resolved)
 }
 
@@ -4993,12 +5087,14 @@ pub fn sys_execveat(
         }
         let exec_path = ofd.path.clone();
         check_exec_path(proc, host, &exec_path)?;
+        release_exec_image_state(proc, host);
         host.host_exec(&exec_path)
     } else if path.is_empty() {
         Err(Errno::ENOENT)
     } else if path[0] == b'/' {
         // Absolute path — ignore dirfd
         check_exec_path(proc, host, path)?;
+        release_exec_image_state(proc, host);
         host.host_exec(path)
     } else {
         // Relative path — resolve against dirfd or CWD
@@ -5013,6 +5109,7 @@ pub fn sys_execveat(
         };
         let resolved = crate::path::resolve_path(path, &base);
         check_exec_path(proc, host, &resolved)?;
+        release_exec_image_state(proc, host);
         host.host_exec(&resolved)
     }
 }
@@ -5331,6 +5428,8 @@ pub fn sys_sigprocmask(proc: &mut Process, how: u32, set: u64) -> Result<u64, Er
 
 /// Exit the process. Closes all fds and dir streams, sets state to Exited.
 pub fn sys_exit(proc: &mut Process, host: &mut dyn HostIO, status: i32) {
+    release_process_dri_mappings(proc, host);
+
     // Close all file descriptors
     let max_fd = 1024; // Use a reasonable upper bound
     for fd in 0..max_fd {
@@ -5753,9 +5852,23 @@ pub fn sys_mmap(
                 host.gl_bind(proc.pid as i32, addr_out, len);
                 return Ok(addr_out);
             }
-            let bo_id = ((offset as u64) >> 12) as crate::dri::BoId;
+            if (offset as u64) & 0xFFF != 0 {
+                return Err(Errno::EINVAL);
+            }
+            let bo_id_u64 = (offset as u64) >> 12;
+            if bo_id_u64 == 0 || bo_id_u64 > u32::MAX as u64 {
+                return Err(Errno::EINVAL);
+            }
+            let bo_id = bo_id_u64 as crate::dri::BoId;
             let bo_size = crate::dri::with_registry(|r| r.get(bo_id).map(|b| b.size))
                 .ok_or(Errno::EINVAL)?;
+            let has_local_handle = ofd
+                .dri()
+                .map(|dri| dri_fd_has_bo_handle(dri, bo_id))
+                .unwrap_or(false);
+            if !has_local_handle {
+                return Err(Errno::EACCES);
+            }
             // Accept either the raw bo size (matching what DRM_IOCTL_MODE_
             // CREATE_DUMB returned and what the libgbm stub + direct
             // mmap callers pass) or the wasm-page-aligned size some
@@ -5843,17 +5956,21 @@ pub fn sys_munmap(
         }
     }
 
-    // DRI bo cleanup: drop every binding fully covered by [addr, addr+len)
+    // GL cmdbuf cleanup: any munmap overlap invalidates the host's
+    // single cmdbuf view for this pid. The GL session itself may remain
+    // initialized, but it must mmap the cmdbuf again before submitting.
+    unbind_gl_cmdbufs_in_range(proc, host, addr, len);
+
+    // DRI bo cleanup: drop every binding overlapped by [addr, addr+len)
     // and tell the host so it stops mirroring the region before the
-    // wasm pages return to the anonymous pool. Partial munmap of a
-    // bo binding is unsupported (libgbm always pairs map/unmap with
-    // matching geometry, mirroring fb0 semantics).
+    // wasm pages return to the anonymous pool. Partial munmap of a bo
+    // binding invalidates the whole host binding; callers that keep a
+    // remaining fragment must mmap the bo again before expecting
+    // host-side synchronization.
     let pid = proc.pid as i32;
-    let unmap_end = addr.saturating_add(len);
     let mut released: alloc::vec::Vec<crate::process::DriBoBinding> = alloc::vec::Vec::new();
     proc.dri_bindings.retain(|b| {
-        let b_end = b.addr.saturating_add(b.len);
-        if addr <= b.addr && unmap_end >= b_end {
+        if ranges_overlap(addr, len, b.addr, b.len) {
             released.push(*b);
             false
         } else {
@@ -10923,9 +11040,14 @@ mod tests {
         gbm_bo_bind_calls: Vec<(i32, u32, usize, usize)>,
         /// Recorded `(pid, bo_id, addr, len)` for every `gbm_bo_unbind` call.
         gbm_bo_unbind_calls: Vec<(i32, u32, usize, usize)>,
+        /// Recorded pid for every `gl_unbind` call.
+        gl_unbind_calls: Vec<i32>,
         /// Override for `gbm_bo_bind`'s return value (0 = success, negative
         /// = errno). Defaults to 0.
         gbm_bo_bind_rc: i32,
+        /// Override for `gl_submit`'s return value (0 = success, negative
+        /// = errno). Defaults to 0.
+        gl_submit_rc: i32,
     }
 
     impl MockHostIO {
@@ -10946,7 +11068,9 @@ mod tests {
                 statfs_by_path: std::collections::HashMap::new(),
                 gbm_bo_bind_calls: Vec::new(),
                 gbm_bo_unbind_calls: Vec::new(),
+                gl_unbind_calls: Vec::new(),
                 gbm_bo_bind_rc: 0,
+                gl_submit_rc: 0,
             }
         }
 
@@ -11413,6 +11537,12 @@ mod tests {
         }
         fn gbm_bo_unbind(&mut self, pid: i32, bo_id: u32, addr: usize, len: usize) {
             self.gbm_bo_unbind_calls.push((pid, bo_id, addr, len));
+        }
+        fn gl_unbind(&mut self, pid: i32) {
+            self.gl_unbind_calls.push(pid);
+        }
+        fn gl_submit(&mut self, _pid: i32, _offset: usize, _length: usize) -> i32 {
+            self.gl_submit_rc
         }
     }
 
@@ -21740,6 +21870,36 @@ mod tests {
     }
 
     #[test]
+    fn mmap_dri_requires_bo_handle_on_same_ofd() {
+        use wasm_posix_shared::mmap::{MAP_SHARED, PROT_READ, PROT_WRITE};
+        let _g = crate::dri::bo::TEST_REGISTRY_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        crate::dri::bo::reset_registry();
+
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        let (_owner_fd, offset, _size) = dri_alloc_dumb_for_mmap(&mut proc, &mut host, 64, 64);
+        let other_fd = sys_open(&mut proc, &mut host, b"/dev/dri/renderD128", O_RDWR, 0).unwrap();
+        let aligned_len = (64usize * 64 * 4 + 0xFFFF) & !0xFFFF;
+
+        let err = sys_mmap(
+            &mut proc,
+            &mut host,
+            0,
+            aligned_len,
+            PROT_READ | PROT_WRITE,
+            MAP_SHARED,
+            other_fd,
+            offset as i64,
+        )
+        .unwrap_err();
+        assert_eq!(err, Errno::EACCES);
+        assert!(host.gbm_bo_bind_calls.is_empty());
+        assert!(proc.dri_bindings.is_empty());
+    }
+
+    #[test]
     fn mmap_dri_rolls_back_when_host_bind_fails() {
         use wasm_posix_shared::mmap::{MAP_SHARED, PROT_READ, PROT_WRITE};
         let _g = crate::dri::bo::TEST_REGISTRY_LOCK
@@ -21802,6 +21962,40 @@ mod tests {
         assert_eq!(proc.dri_bindings.len(), 1);
 
         sys_munmap(&mut proc, &mut host, addr, aligned_len).unwrap();
+        assert!(proc.dri_bindings.is_empty());
+        assert_eq!(
+            host.gbm_bo_unbind_calls,
+            vec![(proc.pid as i32, bo_id, addr, aligned_len)]
+        );
+    }
+
+    #[test]
+    fn partial_munmap_dri_unbinds_host_and_clears_binding() {
+        use wasm_posix_shared::mmap::{MAP_SHARED, PROT_READ, PROT_WRITE};
+        let _g = crate::dri::bo::TEST_REGISTRY_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        crate::dri::bo::reset_registry();
+
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        let (fd, offset, _size) = dri_alloc_dumb_for_mmap(&mut proc, &mut host, 256, 256);
+        let aligned_len = (256usize * 256 * 4 + 0xFFFF) & !0xFFFF;
+
+        let addr = sys_mmap(
+            &mut proc,
+            &mut host,
+            0,
+            aligned_len,
+            PROT_READ | PROT_WRITE,
+            MAP_SHARED,
+            fd,
+            offset as i64,
+        )
+        .unwrap();
+        let bo_id = (offset >> 12) as u32;
+
+        sys_munmap(&mut proc, &mut host, addr + 0x10000, 0x10000).unwrap();
         assert!(proc.dri_bindings.is_empty());
         assert_eq!(
             host.gbm_bo_unbind_calls,
@@ -21994,6 +22188,43 @@ mod tests {
     }
 
     #[test]
+    fn glio_submit_returns_host_errno_without_bumping_sequence() {
+        use wasm_posix_shared::gl;
+        use wasm_posix_shared::mmap::{MAP_SHARED, PROT_READ, PROT_WRITE};
+
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        let fd = sys_open(&mut proc, &mut host, b"/dev/dri/renderD128", O_RDWR, 0).unwrap();
+        let mut ver_buf = [0u8; 4];
+        ver_buf.copy_from_slice(&gl::OP_VERSION.to_le_bytes());
+        sys_ioctl(&mut proc, &mut host, fd, gl::GLIO_INIT, &mut ver_buf).unwrap();
+        sys_mmap(
+            &mut proc,
+            &mut host,
+            0,
+            gl::CMDBUF_LEN,
+            PROT_READ | PROT_WRITE,
+            MAP_SHARED,
+            fd,
+            0,
+        )
+        .unwrap();
+
+        host.gl_submit_rc = -(Errno::EINVAL as i32);
+        let info = gl::GlSubmitInfo { offset: 0, length: 64 };
+        let mut buf = [0u8; core::mem::size_of::<gl::GlSubmitInfo>()];
+        unsafe { core::ptr::write_unaligned(buf.as_mut_ptr() as *mut gl::GlSubmitInfo, info) };
+        assert_eq!(
+            sys_ioctl(&mut proc, &mut host, fd, gl::GLIO_SUBMIT, &mut buf).unwrap_err(),
+            Errno::EINVAL,
+        );
+
+        let ofd_idx = proc.fd_table.get(fd).unwrap().ofd_ref.0;
+        let gls = proc.ofd_table.get(ofd_idx).unwrap().dri().unwrap().gl.as_ref().unwrap();
+        assert_eq!(gls.cmdbuf.unwrap().submit_seq, 0);
+    }
+
+    #[test]
     fn glio_cmdbuf_mmap_validates_length_and_records_binding() {
         use wasm_posix_shared::gl;
         use wasm_posix_shared::mmap::{MAP_FAILED, MAP_SHARED, PROT_READ, PROT_WRITE};
@@ -22052,5 +22283,191 @@ mod tests {
         )
         .unwrap_err();
         assert_eq!(err2, Errno::EINVAL);
+    }
+
+    #[test]
+    fn munmap_gl_cmdbuf_unbinds_host_and_clears_binding() {
+        use wasm_posix_shared::gl;
+        use wasm_posix_shared::mmap::{MAP_SHARED, PROT_READ, PROT_WRITE};
+
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        let fd = sys_open(&mut proc, &mut host, b"/dev/dri/renderD128", O_RDWR, 0).unwrap();
+        let mut ver_buf = [0u8; 4];
+        ver_buf.copy_from_slice(&gl::OP_VERSION.to_le_bytes());
+        sys_ioctl(&mut proc, &mut host, fd, gl::GLIO_INIT, &mut ver_buf).unwrap();
+        let addr = sys_mmap(
+            &mut proc,
+            &mut host,
+            0,
+            gl::CMDBUF_LEN,
+            PROT_READ | PROT_WRITE,
+            MAP_SHARED,
+            fd,
+            0,
+        )
+        .unwrap();
+
+        sys_munmap(&mut proc, &mut host, addr + 0x10000, 0x10000).unwrap();
+        let ofd_idx = proc.fd_table.get(fd).unwrap().ofd_ref.0;
+        let gls = proc.ofd_table.get(ofd_idx).unwrap().dri().unwrap().gl.as_ref().unwrap();
+        assert!(gls.cmdbuf.is_none());
+        assert_eq!(host.gl_unbind_calls, vec![proc.pid as i32]);
+    }
+
+    #[test]
+    fn close_dri_fd_with_gl_state_unbinds_host() {
+        use wasm_posix_shared::gl;
+        use wasm_posix_shared::mmap::{MAP_SHARED, PROT_READ, PROT_WRITE};
+
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        let fd = sys_open(&mut proc, &mut host, b"/dev/dri/renderD128", O_RDWR, 0).unwrap();
+        let mut ver_buf = [0u8; 4];
+        ver_buf.copy_from_slice(&gl::OP_VERSION.to_le_bytes());
+        sys_ioctl(&mut proc, &mut host, fd, gl::GLIO_INIT, &mut ver_buf).unwrap();
+        sys_mmap(
+            &mut proc,
+            &mut host,
+            0,
+            gl::CMDBUF_LEN,
+            PROT_READ | PROT_WRITE,
+            MAP_SHARED,
+            fd,
+            0,
+        )
+        .unwrap();
+
+        sys_close(&mut proc, &mut host, fd).unwrap();
+        assert_eq!(host.gl_unbind_calls, vec![proc.pid as i32]);
+    }
+
+    #[test]
+    fn execve_releases_dri_bo_and_gl_mappings() {
+        use wasm_posix_shared::gl;
+        use wasm_posix_shared::mmap::{MAP_SHARED, PROT_READ, PROT_WRITE};
+        let _g = crate::dri::bo::TEST_REGISTRY_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        crate::dri::bo::reset_registry();
+
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        let (bo_fd, offset, _size) = dri_alloc_dumb_for_mmap(&mut proc, &mut host, 64, 64);
+        let bo_len = (64usize * 64 * 4 + 0xFFFF) & !0xFFFF;
+        let bo_addr = sys_mmap(
+            &mut proc,
+            &mut host,
+            0,
+            bo_len,
+            PROT_READ | PROT_WRITE,
+            MAP_SHARED,
+            bo_fd,
+            offset as i64,
+        )
+        .unwrap();
+
+        let gl_fd = sys_open(&mut proc, &mut host, b"/dev/dri/renderD128", O_RDWR, 0).unwrap();
+        let mut ver_buf = [0u8; 4];
+        ver_buf.copy_from_slice(&gl::OP_VERSION.to_le_bytes());
+        sys_ioctl(&mut proc, &mut host, gl_fd, gl::GLIO_INIT, &mut ver_buf).unwrap();
+        sys_mmap(
+            &mut proc,
+            &mut host,
+            0,
+            gl::CMDBUF_LEN,
+            PROT_READ | PROT_WRITE,
+            MAP_SHARED,
+            gl_fd,
+            0,
+        )
+        .unwrap();
+
+        sys_execve(&mut proc, &mut host, b"/bin/sh").unwrap();
+        let bo_id = (offset >> 12) as u32;
+        assert!(proc.dri_bindings.is_empty());
+        assert_eq!(
+            host.gbm_bo_unbind_calls,
+            vec![(proc.pid as i32, bo_id, bo_addr, bo_len)]
+        );
+        assert_eq!(host.gl_unbind_calls, vec![proc.pid as i32]);
+        let ofd_idx = proc.fd_table.get(gl_fd).unwrap().ofd_ref.0;
+        assert!(proc.ofd_table.get(ofd_idx).unwrap().dri().unwrap().gl.is_none());
+    }
+
+    #[test]
+    fn exit_releases_dri_bo_and_gl_mappings_before_fd_cleanup() {
+        use wasm_posix_shared::gl;
+        use wasm_posix_shared::mmap::{MAP_SHARED, PROT_READ, PROT_WRITE};
+        let _g = crate::dri::bo::TEST_REGISTRY_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        crate::dri::bo::reset_registry();
+
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        let (bo_fd, offset, _size) = dri_alloc_dumb_for_mmap(&mut proc, &mut host, 64, 64);
+        let bo_len = (64usize * 64 * 4 + 0xFFFF) & !0xFFFF;
+        let bo_addr = sys_mmap(
+            &mut proc,
+            &mut host,
+            0,
+            bo_len,
+            PROT_READ | PROT_WRITE,
+            MAP_SHARED,
+            bo_fd,
+            offset as i64,
+        )
+        .unwrap();
+
+        let gl_fd = sys_open(&mut proc, &mut host, b"/dev/dri/renderD128", O_RDWR, 0).unwrap();
+        let mut ver_buf = [0u8; 4];
+        ver_buf.copy_from_slice(&gl::OP_VERSION.to_le_bytes());
+        sys_ioctl(&mut proc, &mut host, gl_fd, gl::GLIO_INIT, &mut ver_buf).unwrap();
+        sys_mmap(
+            &mut proc,
+            &mut host,
+            0,
+            gl::CMDBUF_LEN,
+            PROT_READ | PROT_WRITE,
+            MAP_SHARED,
+            gl_fd,
+            0,
+        )
+        .unwrap();
+
+        sys_exit(&mut proc, &mut host, 0);
+        let bo_id = (offset >> 12) as u32;
+        assert!(proc.dri_bindings.is_empty());
+        assert_eq!(
+            host.gbm_bo_unbind_calls,
+            vec![(proc.pid as i32, bo_id, bo_addr, bo_len)]
+        );
+        assert_eq!(host.gl_unbind_calls, vec![proc.pid as i32]);
+    }
+
+    #[test]
+    fn glio_query_rejects_unbounded_input_len() {
+        use wasm_posix_shared::gl;
+
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        let fd = sys_open(&mut proc, &mut host, b"/dev/dri/renderD128", O_RDWR, 0).unwrap();
+        let mut ver_buf = [0u8; 4];
+        ver_buf.copy_from_slice(&gl::OP_VERSION.to_le_bytes());
+        sys_ioctl(&mut proc, &mut host, fd, gl::GLIO_INIT, &mut ver_buf).unwrap();
+
+        let info = gl::GlQueryInfo {
+            op: gl::QOP_GET_STRING,
+            in_buf_len: gl::MAX_QUERY_IN_LEN + 1,
+            out_buf_len: 4,
+            ..Default::default()
+        };
+        let mut buf = [0u8; core::mem::size_of::<gl::GlQueryInfo>()];
+        unsafe { core::ptr::write_unaligned(buf.as_mut_ptr() as *mut gl::GlQueryInfo, info) };
+        assert_eq!(
+            sys_ioctl(&mut proc, &mut host, fd, gl::GLIO_QUERY, &mut buf).unwrap_err(),
+            Errno::EINVAL,
+        );
     }
 }

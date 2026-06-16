@@ -21,7 +21,7 @@ import { FramebufferRegistry } from "./framebuffer/registry";
 import { GbmBoRegistry } from "./dri/registry";
 import { KmsRegistry } from "./dri/kms-registry";
 import { GlContextRegistry } from "./webgl/registry";
-import { decodeAndDispatch } from "./webgl/bridge";
+import { decodeAndDispatch, validateCommandBuffer } from "./webgl/bridge";
 import { runGlQuery } from "./webgl/query";
 import { SubmitQueue } from "./webgl/submit-queue";
 import { GlMuxer } from "./webgl/muxer";
@@ -38,6 +38,57 @@ function bufferSourceToArrayBuffer(source: BufferSource): ArrayBuffer {
   const copy = new Uint8Array(view.byteLength);
   copy.set(view);
   return copy.buffer;
+}
+
+const DEFAULT_KMS_MODE_WIDTH = 1920;
+const DEFAULT_KMS_MODE_HEIGHT = 1080;
+const DEFAULT_KMS_REFRESH_HZ = 60;
+
+function kmsModeInfoBytes(
+  width?: number,
+  height?: number,
+  refreshHz = DEFAULT_KMS_REFRESH_HZ,
+): Uint8Array {
+  const w = clampModeDim(width, DEFAULT_KMS_MODE_WIDTH);
+  const h = clampModeDim(height, DEFAULT_KMS_MODE_HEIGHT);
+  const hsyncStart = clampU16(w + 16);
+  const hsyncEnd = clampU16(w + 48);
+  const htotal = clampU16(w + 160);
+  const vsyncStart = clampU16(h + 3);
+  const vsyncEnd = clampU16(h + 8);
+  const vtotal = clampU16(h + 45);
+  const clock = Math.max(1, Math.min(0xffffffff, Math.round(htotal * vtotal * refreshHz / 1000)));
+  const out = new Uint8Array(68);
+  const dv = new DataView(out.buffer);
+  dv.setUint32(0, clock, true);
+  dv.setUint16(4, w, true);
+  dv.setUint16(6, hsyncStart, true);
+  dv.setUint16(8, hsyncEnd, true);
+  dv.setUint16(10, htotal, true);
+  dv.setUint16(12, 0, true);
+  dv.setUint16(14, h, true);
+  dv.setUint16(16, vsyncStart, true);
+  dv.setUint16(18, vsyncEnd, true);
+  dv.setUint16(20, vtotal, true);
+  dv.setUint16(22, 0, true);
+  dv.setUint32(24, refreshHz, true);
+  dv.setUint32(28, 0, true);
+  // DRM_MODE_TYPE_DRIVER | DRM_MODE_TYPE_PREFERRED
+  dv.setUint32(32, 0x1 | 0x8, true);
+  const name = `${w}x${h}`;
+  for (let i = 0; i < Math.min(name.length, 31); i++) {
+    out[36 + i] = name.charCodeAt(i) & 0xff;
+  }
+  return out;
+}
+
+function clampModeDim(value: number | undefined, fallback: number): number {
+  if (value === undefined || !Number.isFinite(value) || value < 1) return fallback;
+  return clampU16(Math.trunc(value));
+}
+
+function clampU16(value: number): number {
+  return Math.max(1, Math.min(0xffff, Math.trunc(value)));
 }
 
 /**
@@ -810,13 +861,13 @@ export class WasmPosixKernel {
         },
         host_gl_submit: (
           pid: number, offset: bigint, length: bigint,
-        ): void => {
+        ): number => {
           const b = this.gl.get(pid);
-          if (!b) return;
-          if (!b.forward && !b.gl) return;
+          if (!b) return -5; // EIO: kernel/host GL state diverged.
+          if (!b.forward && !b.gl) return 0;
           if (!b.cmdbufView) {
             const memory = this.callbacks.getProcessMemory?.(pid);
-            if (!memory) return;
+            if (!memory) return -5; // EIO
             try {
               b.cmdbufView = new Uint8Array(
                 memory.buffer,
@@ -824,20 +875,23 @@ export class WasmPosixKernel {
                 b.cmdbufLen,
               );
             } catch {
-              return;
+              return -5; // EIO
             }
           }
           if (b.forward) {
             const off = Number(offset);
-            b.forward.onSubmit(b.cmdbufView.slice(off, off + Number(length)));
-            return;
+            const len = Number(length);
+            const rc = validateCommandBuffer(b.cmdbufView, off, len);
+            if (rc < 0) return rc;
+            b.forward.onSubmit(b.cmdbufView.slice(off, off + len));
+            return 0;
           }
           this.gl_submit_queue.enqueue(b, {
             memorySab: b.cmdbufView.buffer as ArrayBufferLike,
             off: Number(offset),
             len: Number(length),
           });
-          drainSubmitQueue(
+          return drainSubmitQueue(
             this.gl_submit_queue,
             (bb) => {
               if (!bb.gl) return null;
@@ -908,8 +962,12 @@ export class WasmPosixKernel {
             return -14;
           }
         },
-        host_kms_mode_info: (_connector_id: number, out_ptr: bigint): void => {
-          this.writeKernelBytes(Number(out_ptr), new Uint8Array(68));
+        host_kms_mode_info: (connector_id: number, out_ptr: bigint): void => {
+          const canvas = this.callbacks.getKmsCanvas?.(connector_id);
+          this.writeKernelBytes(
+            Number(out_ptr),
+            kmsModeInfoBytes(canvas?.width, canvas?.height),
+          );
         },
         host_kms_addfb: (
           _pid: number,

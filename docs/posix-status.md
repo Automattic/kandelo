@@ -211,6 +211,18 @@ Kandelo uses a single kernel Wasm instance that holds a `ProcessTable` and serve
 | `getdents()` (legacy) | Full | Delegates to getdents64. |
 | `name_to_handle_at()` / `open_by_handle_at()` | Stub | Returns ENOSYS. |
 
+## Linux-Compatible Device Extensions
+
+These interfaces are intentionally Linux-shaped rather than POSIX. They live
+in the kernel because they are device and process-lifecycle contracts, not demo
+shortcuts.
+
+| Interface | Status | Notes |
+|-----------|--------|-------|
+| `/dev/dri/renderD128` | Partial | Render-node subset for `libdrm`, GBM, EGL, and GLES. GEM handles are fd-local. BO mmap offsets must come from `DRM_IOCTL_MODE_MAP_DUMB` on the same open file description. GLIO command buffers live in process memory and are unbound on `munmap`, `exec`, `exit`, and final fd close. |
+| `/dev/dri/card0` | Partial | Single virtual KMS device with one connector, encoder, and CRTC. Supports dumb buffers, `ADDFB2`/`RMFB`, DRM master, `SET_CRTC`, `PAGE_FLIP`, vblank event reads, and host-provided mode info for the attached KMS canvas. Multi-head, real display probing, PRIME dma-buf fds, and hardware acceleration are out of scope for v1. |
+| Sysroot graphics libraries | Partial | `scripts/build-musl.sh` builds `libdrm.a`, `libgbm.a`, `libEGL.a`, and `libGLESv2.a` into `sysroot/lib` with pkg-config files. Packages consume these via `wasm32posix-pkg-config`; the libraries are not standalone package outputs. |
+
 ## Socket Operations
 
 | Function | Status | Notes |

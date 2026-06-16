@@ -22,20 +22,21 @@ import type { GlMuxer } from "./muxer.js";
 import type { SubmitQueue } from "./submit-queue.js";
 
 export type GlMuxerFor = (b: GlBinding) => GlMuxer | null;
-export type GlDispatch = (b: GlBinding, off: number, len: number) => void;
+export type GlDispatch = (b: GlBinding, off: number, len: number) => number | void;
 
 export function drainSubmitQueue(
   queue: SubmitQueue,
   muxerFor: GlMuxerFor,
   dispatch: GlDispatch,
-): void {
+): number {
   while (true) {
     const entry = queue.pickNext();
-    if (!entry) return;
+    if (!entry) return 0;
     const frame = entry.frames.shift()!;
     const mux = muxerFor(entry.binding);
     if (mux) mux.switchTo(entry.binding);
-    dispatch(entry.binding, frame.off, frame.len);
+    const rc = dispatch(entry.binding, frame.off, frame.len);
     queue.releaseIfEmpty(entry);
+    if (typeof rc === "number" && rc < 0) return rc;
   }
 }

@@ -1849,16 +1849,17 @@ pub mod gl {
     /// `kind` value for an off-screen pbuffer surface (Phase C).
     pub const WPK_SURFACE_PBUFFER: u32 = 2;
 
-    /// Upper bound on `GlQueryInfo.out_buf_len`. The kernel allocates a
-    /// scratch buffer of this size before forwarding the query to the
-    /// host; capping prevents a malicious wasm process from passing
-    /// `0xFFFFFFFE` and OOMing the kernel worker.
+    /// Upper bound on `GlQueryInfo.in_buf_len` / `out_buf_len`. The
+    /// kernel allocates scratch buffers of these sizes before forwarding
+    /// the query to the host; capping prevents a malicious wasm process
+    /// from passing `0xFFFFFFFE` and OOMing the kernel worker.
     ///
     /// 64 KiB comfortably fits every realistic sync-query output: shader
     /// info logs (typically ~1 KB), program info logs, `glGetString`
     /// results, framebuffer-completeness, and `glReadPixels` of a 64×64
     /// RGBA thumbnail (16 KB). Demos that need to read back a full
     /// framebuffer should do it in tiles.
+    pub const MAX_QUERY_IN_LEN: u32 = 64 * 1024;
     pub const MAX_QUERY_OUT_LEN: u32 = 64 * 1024;
 
     // --- cmdbuf opcodes (mirrored in host/src/webgl/ops.ts) ----------------

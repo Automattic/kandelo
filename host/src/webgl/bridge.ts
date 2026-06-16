@@ -14,11 +14,9 @@
  * counter; OP_GEN_BUFFERS / OP_CREATE_SHADER / etc. tell the host
  * which name to allocate.
  *
- * Unknown opcodes throw — surface decode bugs loudly during
- * development rather than silently skipping. The matching guarantee
- * with the kernel's `OP_VERSION` exchange (Task A6's `GLIO_INIT`
- * handler) catches table drift at first contact, so reaching the
- * `default` arm always means a TLV-decode bug, not a version skew.
+ * Unknown or malformed opcodes are rejected as guest input. The bridge
+ * returns a negative errno so `GLIO_SUBMIT` can fail like any other
+ * ioctl-style device operation instead of hiding the failure in host code.
  */
 import type { GlBinding } from "./registry.js";
 import * as O from "./ops.js";
@@ -30,22 +28,183 @@ import {
   GL_UNPACK_ALIGNMENT,
 } from "./shadow.js";
 
+export const GL_SUBMIT_OK = 0;
+export const GL_SUBMIT_EIO = -5;
+export const GL_SUBMIT_EINVAL = -22;
+
 export function decodeAndDispatch(
   b: GlBinding,
   offset: number,
   length: number,
-): void {
-  if (!b.cmdbufView || !b.gl) return;
-  const buf = b.cmdbufView;
+): number {
+  if (!b.cmdbufView || !b.gl) return GL_SUBMIT_OK;
+  return walkCommandBuffer(b.cmdbufView, offset, length, (payload, op) => {
+    try {
+      dispatch(b.gl!, b, payload, 0, op);
+      return GL_SUBMIT_OK;
+    } catch {
+      return GL_SUBMIT_EIO;
+    }
+  });
+}
+
+export function validateCommandBuffer(
+  buf: Uint8Array,
+  offset: number,
+  length: number,
+): number {
+  return walkCommandBuffer(buf, offset, length, () => GL_SUBMIT_OK);
+}
+
+function walkCommandBuffer(
+  buf: Uint8Array,
+  offset: number,
+  length: number,
+  visit: (payload: DataView, op: number) => number,
+): number {
+  if (!isSafeSpan(offset, length, buf.byteLength)) return GL_SUBMIT_EINVAL;
   const view = new DataView(buf.buffer, buf.byteOffset + offset, length);
-  const gl = b.gl;
   let p = 0;
   while (p < length) {
+    if (length - p < 4) return GL_SUBMIT_EINVAL;
     const op = view.getUint16(p, true);
     const payloadLen = view.getUint16(p + 2, true);
-    p += 4;
-    dispatch(gl, b, view, p, op);
-    p += payloadLen;
+    const payloadStart = p + 4;
+    const payloadEnd = payloadStart + payloadLen;
+    if (payloadEnd > length) return GL_SUBMIT_EINVAL;
+    const payload = new DataView(
+      view.buffer,
+      view.byteOffset + payloadStart,
+      payloadLen,
+    );
+    if (!validPayload(op, payload)) return GL_SUBMIT_EINVAL;
+    const rc = visit(payload, op);
+    if (rc !== GL_SUBMIT_OK) return rc;
+    p = payloadEnd;
+  }
+  return GL_SUBMIT_OK;
+}
+
+function isSafeSpan(offset: number, length: number, limit: number): boolean {
+  return Number.isSafeInteger(offset)
+    && Number.isSafeInteger(length)
+    && offset >= 0
+    && length >= 0
+    && offset <= limit
+    && length <= limit - offset;
+}
+
+function exact(v: DataView, len: number): boolean {
+  return v.byteLength === len;
+}
+
+function u32ArrayPayload(v: DataView): boolean {
+  if (v.byteLength < 4) return false;
+  const n = v.getUint32(0, true);
+  return v.byteLength === 4 + n * 4;
+}
+
+function tailBytesPayload(v: DataView, headerLen: number, lenOffset: number): boolean {
+  if (v.byteLength < lenOffset + 4) return false;
+  const dataLen = v.getUint32(lenOffset, true);
+  return v.byteLength === headerLen + dataLen;
+}
+
+function countedFloatPayload(
+  v: DataView,
+  headerLen: number,
+  countOffset: number,
+  floatsPerCount: number,
+): boolean {
+  if (v.byteLength < countOffset + 4 || v.byteOffset % 4 !== 0) return false;
+  const count = v.getUint32(countOffset, true);
+  return v.byteLength === headerLen + count * floatsPerCount * 4;
+}
+
+function validPayload(op: number, v: DataView): boolean {
+  switch (op) {
+    case O.OP_CLEAR:
+    case O.OP_ENABLE:
+    case O.OP_DISABLE:
+    case O.OP_DEPTH_FUNC:
+    case O.OP_CULL_FACE:
+    case O.OP_FRONT_FACE:
+    case O.OP_LINE_WIDTH:
+    case O.OP_ACTIVE_TEXTURE:
+    case O.OP_GENERATE_MIPMAP:
+    case O.OP_COMPILE_SHADER:
+    case O.OP_DELETE_SHADER:
+    case O.OP_CREATE_PROGRAM:
+    case O.OP_LINK_PROGRAM:
+    case O.OP_USE_PROGRAM:
+    case O.OP_DELETE_PROGRAM:
+    case O.OP_ENABLE_VERTEX_ATTRIB_ARRAY:
+    case O.OP_DISABLE_VERTEX_ATTRIB_ARRAY:
+    case O.OP_BIND_VERTEX_ARRAY:
+      return exact(v, 4);
+
+    case O.OP_BLEND_FUNC:
+    case O.OP_PIXEL_STOREI:
+    case O.OP_BIND_BUFFER:
+    case O.OP_BIND_TEXTURE:
+    case O.OP_CREATE_SHADER:
+    case O.OP_ATTACH_SHADER:
+    case O.OP_UNIFORM1I:
+    case O.OP_UNIFORM1F:
+    case O.OP_BIND_FRAMEBUFFER:
+    case O.OP_BIND_RENDERBUFFER:
+      return exact(v, 8);
+
+    case O.OP_TEX_PARAMETERI:
+    case O.OP_UNIFORM2F:
+    case O.OP_DRAW_ARRAYS:
+      return exact(v, 12);
+
+    case O.OP_CLEAR_COLOR:
+    case O.OP_VIEWPORT:
+    case O.OP_SCISSOR:
+    case O.OP_UNIFORM3F:
+    case O.OP_DRAW_ELEMENTS:
+    case O.OP_RENDERBUFFER_STORAGE:
+    case O.OP_FRAMEBUFFER_RENDERBUFFER:
+      return exact(v, 16);
+
+    case O.OP_UNIFORM4F:
+    case O.OP_FRAMEBUFFER_TEXTURE_2D:
+      return exact(v, 20);
+
+    case O.OP_VERTEX_ATTRIB_POINTER:
+      return exact(v, 24);
+
+    case O.OP_GEN_BUFFERS:
+    case O.OP_DELETE_BUFFERS:
+    case O.OP_GEN_TEXTURES:
+    case O.OP_DELETE_TEXTURES:
+    case O.OP_GEN_VERTEX_ARRAYS:
+    case O.OP_DELETE_VERTEX_ARRAYS:
+    case O.OP_GEN_FRAMEBUFFERS:
+    case O.OP_GEN_RENDERBUFFERS:
+      return u32ArrayPayload(v);
+
+    case O.OP_BUFFER_DATA:
+      return tailBytesPayload(v, 12, 4);
+    case O.OP_BUFFER_SUB_DATA:
+      return tailBytesPayload(v, 12, 8);
+    case O.OP_TEX_IMAGE_2D:
+    case O.OP_TEX_SUB_IMAGE_2D:
+      return tailBytesPayload(v, 36, 32);
+    case O.OP_SHADER_SOURCE:
+      return tailBytesPayload(v, 8, 4);
+    case O.OP_BIND_ATTRIB_LOCATION:
+      return tailBytesPayload(v, 12, 8);
+
+    case O.OP_UNIFORM_MATRIX4FV:
+      return countedFloatPayload(v, 12, 4, 16);
+    case O.OP_UNIFORM4FV:
+      return countedFloatPayload(v, 8, 4, 4);
+
+    default:
+      return false;
   }
 }
 

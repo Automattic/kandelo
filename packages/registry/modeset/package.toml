@@ -1,0 +1,21 @@
+kind = "program"
+name = "modeset"
+version = "0.1.0"
+kernel_abi = 15
+depends_on = []
+arches = ["wasm32"]
+
+[source]
+url = "https://github.com/brandonpayton/kandelo"
+sha256 = "0000000000000000000000000000000000000000000000000000000000000000"
+
+[license]
+spdx = "GPL-2.0-or-later"
+url = "https://github.com/brandonpayton/kandelo/blob/main/COPYING"
+
+[build]
+script_path = "packages/registry/modeset/build-modeset.sh"
+
+[[outputs]]
+name = "modeset"
+wasm = "modeset.wasm"

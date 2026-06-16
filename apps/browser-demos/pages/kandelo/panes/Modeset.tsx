@@ -221,17 +221,7 @@ export const Modeset: React.FC<ModesetProps> = ({ dragProps, onCollapse, onMaxim
         onMaximize={onMaximize}
         isMax={isMax}
         right={
-          <span style={{
-            fontFamily: "var(--k-font-mono)",
-            fontSize: 10,
-            color: hasFrame ? "var(--k-accent)" : "var(--k-text-faint)",
-            padding: "2px 6px",
-            borderRadius: 3,
-            border: "1px solid var(--k-border)",
-            textTransform: "uppercase",
-            letterSpacing: "0.04em",
-            fontWeight: 600,
-          }}>
+          <span className="kmodeset-status" data-ready={hasFrame ? "true" : "false"}>
             {hasFrame
               ? `${stats.width}×${stats.height} · ${stats.commitCount} flips · ${stats.lastFrameUs}µs`
               : "waiting for PAGE_FLIP"}
@@ -247,57 +237,22 @@ export const Modeset: React.FC<ModesetProps> = ({ dragProps, onCollapse, onMaxim
         padding: 0,
         position: "relative",
       }}>
-        <div style={{
-          flex: 1,
-          minHeight: 0,
-          display: "flex",
-          alignItems: "center",
-          justifyContent: "center",
-          padding: 0,
-          position: "relative",
-        }}>
+        <div className="kmodeset-stage">
           <canvas
             ref={canvasRef}
-            style={{
-              width: "100%",
-              height: "auto",
-              maxHeight: "100%",
-              imageRendering: "pixelated",
-              background: "var(--k-fb-bg)",
-              display: showCanvas ? "block" : "none",
-            }}
+            className="kmodeset-canvas"
+            style={{ display: showCanvas ? "block" : "none" }}
           />
           {showCanvas && !hasFrame && (
-            <div style={{
-              position: "absolute",
-              inset: 0,
-              display: "flex",
-              alignItems: "center",
-              justifyContent: "center",
-              fontFamily: "var(--k-font-mono)",
-              fontSize: 11,
-              color: "color-mix(in oklch, var(--k-fb-text) 60%, transparent)",
-              pointerEvents: "none",
-              textAlign: "center",
-              padding: 24,
-            }}>
-              Waiting for a process to drmModePageFlip on CRTC {crtcId}.<br />
-              Run <code>modeset</code> from the shell.
+            <div className="kmodeset-waiting" role="status" aria-live="polite">
+              <div className="kmodeset-waiting-line">Waiting for PAGE_FLIP on CRTC {crtcId}</div>
+              <div className="kmodeset-waiting-line kmodeset-waiting-secondary">
+                Run <code>modeset</code> from the shell.
+              </div>
             </div>
           )}
           {(error || status !== "running") && (
-            <div style={{
-              position: "absolute",
-              inset: 0,
-              display: "flex",
-              alignItems: "center",
-              justifyContent: "center",
-              fontFamily: "var(--k-font-mono)",
-              fontSize: 11,
-              color: "color-mix(in oklch, var(--k-fb-text) 60%, transparent)",
-              textAlign: "center",
-              padding: 24,
-            }}>
+            <div className="kmodeset-waiting" role="status" aria-live="polite">
               {error
                 ? <>attachKmsDisplay failed: {error}</>
                 : <>Waiting for the kernel to reach 'running'.</>}

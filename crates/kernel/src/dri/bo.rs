@@ -53,14 +53,16 @@ impl BoRegistry {
         }
     }
 
-    pub fn alloc(&mut self, width: u32, height: u32, bpp: u32) -> &mut GbmBo {
+    pub fn try_alloc(&mut self, width: u32, height: u32, bpp: u32) -> Option<&mut GbmBo> {
         let id = self.next_id;
-        self.next_id += 1;
         // Stride rounded up to a 4-byte boundary so every row is
         // u32-aligned (matches Mesa's `gbm_bo_get_stride` for the
         // equivalent dumb buffer).
-        let stride = ((width * bpp).div_ceil(8) + 3) & !3;
-        let size = (stride as u64) * (height as u64);
+        let bits_per_row = width.checked_mul(bpp)?;
+        let bytes_per_row = bits_per_row.checked_add(7)? / 8;
+        let stride = bytes_per_row.checked_add(3)? & !3;
+        let size = (stride as u64).checked_mul(height as u64)?;
+        self.next_id = self.next_id.checked_add(1)?;
         let bo = GbmBo {
             id,
             stride,
@@ -69,7 +71,12 @@ impl BoRegistry {
             prime_cookie: None,
         };
         self.map.insert(id, bo);
-        self.map.get_mut(&id).unwrap()
+        Some(self.map.get_mut(&id).unwrap())
+    }
+
+    pub fn alloc(&mut self, width: u32, height: u32, bpp: u32) -> &mut GbmBo {
+        self.try_alloc(width, height, bpp)
+            .expect("GBM bo dimensions must fit in registry arithmetic")
     }
 
     pub fn get(&self, id: BoId) -> Option<&GbmBo> {
@@ -235,6 +242,18 @@ mod tests {
             assert_eq!(bo2.stride, 20);
             let id2 = bo2.id;
             r.decref(id2);
+        });
+    }
+
+    #[test]
+    fn try_alloc_rejects_overflow_without_consuming_id() {
+        let _g = fresh();
+        with_registry(|r| {
+            let before = r.next_id;
+            assert!(r.try_alloc(u32::MAX, 1, 32).is_none());
+            assert_eq!(r.next_id, before);
+            assert!(r.try_alloc(64, 64, 32).is_some());
+            assert_eq!(r.next_id, before + 1);
         });
     }
 

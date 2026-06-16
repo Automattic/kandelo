@@ -119,4 +119,17 @@ describe("drainSubmitQueue", () => {
     drainSubmitQueue(q, () => null, vi.fn<GlDispatch>());
     expect(q.isEmpty()).toBe(true);
   });
+
+  it("returns the first dispatch error and leaves later frames queued", () => {
+    const q = new SubmitQueue();
+    q.enqueue(mkBinding(10), mkFrame(1));
+    q.enqueue(mkBinding(11), mkFrame(2));
+
+    const dispatch = vi.fn<GlDispatch>().mockReturnValueOnce(-22);
+    const rc = drainSubmitQueue(q, () => null, dispatch);
+
+    expect(rc).toBe(-22);
+    expect(dispatch).toHaveBeenCalledOnce();
+    expect(q.isEmpty()).toBe(false);
+  });
 });

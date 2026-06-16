@@ -273,9 +273,12 @@ pub trait HostIO {
 
     /// Decode and dispatch one cmdbuf submit. `offset` / `length` are
     /// within the bound cmdbuf region (validated by the kernel against
-    /// `shared::gl::CMDBUF_LEN`).
+    /// `shared::gl::CMDBUF_LEN`). Returns 0 on success, or a negative
+    /// errno when the host rejects the command stream or cannot dispatch it.
     #[allow(unused_variables)]
-    fn gl_submit(&mut self, pid: i32, offset: usize, length: usize) {}
+    fn gl_submit(&mut self, pid: i32, offset: usize, length: usize) -> i32 {
+        0
+    }
 
     /// Flush any pending GL work and signal "frame ready". v1 no-op
     /// (canvas presents on the next RAF); kept as a hook for future

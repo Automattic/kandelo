@@ -1,5 +1,8 @@
 import { describe, expect, it } from "vitest";
-import { decodeAndDispatch } from "../src/webgl/bridge.js";
+import {
+  decodeAndDispatch,
+  GL_SUBMIT_EINVAL,
+} from "../src/webgl/bridge.js";
 import { runGlQuery } from "../src/webgl/query.js";
 import * as O from "../src/webgl/ops.js";
 import { GlContextRegistry } from "../src/webgl/registry.js";
@@ -337,13 +340,44 @@ describe("cmdbuf decoder — TLV walker", () => {
     expect(gl.log[0]).toEqual(["drawArrays", [0x0004, 0, 3]]);
   });
 
-  it("unknown opcode throws to surface decode bugs loudly", () => {
+  it("unknown opcode returns EINVAL without throwing", () => {
     const gl = new RecordingGl();
     const { b } = setupBinding(gl);
     const t = new Tlv(b.cmdbufView!.buffer);
     const h = t.op(0xCAFE, 4);
     t.view.setUint32(h.p, 0, true);
-    expect(() => decodeAndDispatch(b, 0, t.p)).toThrow(/unknown op 0xcafe/);
+    expect(decodeAndDispatch(b, 0, t.p)).toBe(GL_SUBMIT_EINVAL);
+    expect(gl.log).toEqual([]);
+  });
+
+  it("truncated TLV header returns EINVAL", () => {
+    const gl = new RecordingGl();
+    const { b } = setupBinding(gl);
+    expect(decodeAndDispatch(b, 0, 3)).toBe(GL_SUBMIT_EINVAL);
+    expect(gl.log).toEqual([]);
+  });
+
+  it("overlong payload returns EINVAL", () => {
+    const gl = new RecordingGl();
+    const { b } = setupBinding(gl);
+    const view = new DataView(b.cmdbufView!.buffer);
+    view.setUint16(0, O.OP_CLEAR, true);
+    view.setUint16(2, 4, true);
+    view.setUint32(4, 0x4000, true);
+    expect(decodeAndDispatch(b, 0, 7)).toBe(GL_SUBMIT_EINVAL);
+    expect(gl.log).toEqual([]);
+  });
+
+  it("short array payload returns EINVAL before partial dispatch", () => {
+    const gl = new RecordingGl();
+    const { b } = setupBinding(gl);
+    const t = new Tlv(b.cmdbufView!.buffer);
+    const h = t.op(O.OP_GEN_BUFFERS, 8);
+    t.view.setUint32(h.p, 2, true);
+    t.view.setUint32(h.p + 4, 10, true);
+    expect(decodeAndDispatch(b, 0, t.p)).toBe(GL_SUBMIT_EINVAL);
+    expect(gl.log).toEqual([]);
+    expect(b.buffers.size).toBe(0);
   });
 
   it("submit with no live context is a silent no-op", () => {
