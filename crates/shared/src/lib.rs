@@ -31,7 +31,14 @@ pub mod host_abi;
 ///     to 256 B. ALSA `WpkAlsaPcmSwParams` shrunk 136→104, `WpkAlsaXferi`
 ///     24→12, and the `SNDRV_PCM_IOCTL_{SW_PARAMS, WRITEI_FRAMES}`
 ///     request constants moved accordingly to match wasm32 musl
-///     `unsigned long = 4`.
+///     `unsigned long = 4`. The same `unsigned long = 4` rule applies
+///     to the remaining audio structs: `WpkAlsaPcmStatus` keeps its
+///     128 B size but its field offsets shift (uframes shrink i64→u32,
+///     timespecs become i64 sec + i32 nsec + 4 B pad, two new fields:
+///     `driver_tstamp` + `audio_tstamp_accuracy`). `WpkAlsaPcmMmapStatus`
+///     shrinks 64→56 (mapped at MMAP_OFFSET_STATUS_NEW =
+///     `__snd_pcm_mmap_status64`). `WpkAlsaPcmMmapControl` shrinks
+///     64→12 (= `__snd_pcm_mmap_control64`).
 pub const ABI_VERSION: u32 = 16;
 
 /// Syscall numbers for the POSIX kernel interface.
@@ -2916,42 +2923,45 @@ pub mod audio {
         }
     }
 
-    /// `struct snd_pcm_status`. All timestamps stamped from
-    /// `CLOCK_MONOTONIC` so userspace can correlate audio underruns
-    /// with vblank + input timestamps.
+    /// `struct snd_pcm_status` laid out for wasm32 (musl `unsigned long`
+    /// = 4 B → `snd_pcm_uframes_t` = `u32`). Field offsets match the
+    /// upstream alsa-lib UAPI when compiled for wasm32 with
+    /// `__SND_STRUCT_TIME64` defined (which musl always does on
+    /// 32-bit-long targets with 64-bit time_t). Total: 128 B.
     ///
-    /// **WASM32 LAYOUT NOTE**: this struct's *size* (128 B) happens to
-    /// match the wasm32 layout of `struct snd_pcm_status` by
-    /// coincidence, but the *field offsets* differ — every
-    /// `snd_pcm_uframes_t` field (`appl_ptr`, `hw_ptr`, `delay`,
-    /// `avail`, `avail_max`, `overrange`) is 4 B on wasm32 (musl
-    /// `unsigned long` = 4) but is declared `i64`/`u64` here.
-    /// `SNDRV_PCM_IOCTL_STATUS` is therefore semantically wrong on the
-    /// wire; the smoke test does not exercise it. Fix before wiring
-    /// SDL2's `writei` path: split `trigger_tstamp`/`tstamp`/
-    /// `audio_tstamp`/`driver_tstamp` into `i64 sec` + `i32 nsec` +
-    /// 4 B pad triplets, shrink the uframes fields to `i32`/`u32`, and
-    /// regenerate the corresponding `__time_pad`/`reserved` bytes.
+    /// Each `timespec` is encoded as `i64 tv_sec + i32 tv_nsec + 4 B pad`
+    /// — `__alignof__(long long) = 8` on wasm32, so the i32 nsec gets a
+    /// trailing 4 B alignment slot before the next i64 field.
+    ///
+    /// All timestamps stamped from `CLOCK_MONOTONIC` so userspace can
+    /// correlate audio underruns with vblank + input timestamps.
     #[repr(C)]
     #[derive(Clone, Copy, Default)]
     pub struct WpkAlsaPcmStatus {
         pub state: u32,
-        pub _pad0: u32,
+        pub _pad1: u32,
         pub trigger_tstamp_sec: i64,
-        pub trigger_tstamp_nsec: i64,
+        pub trigger_tstamp_nsec: i32,
+        pub _trigger_tstamp_pad: u32,
         pub tstamp_sec: i64,
-        pub tstamp_nsec: i64,
-        pub appl_ptr: i64,
-        pub hw_ptr: i64,
-        pub delay: i64,
-        pub avail: u64,
-        pub avail_max: u64,
-        pub overrange: u64,
+        pub tstamp_nsec: i32,
+        pub _tstamp_pad: u32,
+        pub appl_ptr: u32,
+        pub hw_ptr: u32,
+        pub delay: i32,
+        pub avail: u32,
+        pub avail_max: u32,
+        pub overrange: u32,
         pub suspended_state: u32,
         pub audio_tstamp_data: u32,
         pub audio_tstamp_sec: i64,
-        pub audio_tstamp_nsec: i64,
-        pub _reserved: [u8; 16],
+        pub audio_tstamp_nsec: i32,
+        pub _audio_tstamp_pad: u32,
+        pub driver_tstamp_sec: i64,
+        pub driver_tstamp_nsec: i32,
+        pub _driver_tstamp_pad: u32,
+        pub audio_tstamp_accuracy: u32,
+        pub _reserved: [u8; 20],
     }
 
     /// `struct snd_pcm_info`. Returned by `SNDRV_PCM_IOCTL_INFO`.
@@ -2993,56 +3003,44 @@ pub mod audio {
         }
     }
 
-    /// `struct snd_pcm_mmap_status`. Kernel-writes, userspace-reads.
-    /// Mapped at `SNDRV_PCM_MMAP_OFFSET_STATUS`. Field offsets are
-    /// load-bearing — userspace reads `hw_ptr` via direct memory access
-    /// on the mapped page, not through an ioctl.
+    /// `struct __snd_pcm_mmap_status64` laid out for wasm32 (musl,
+    /// `__SND_STRUCT_TIME64` defined). Kernel-writes, userspace-reads.
+    /// Mapped at `SNDRV_PCM_MMAP_OFFSET_STATUS` (= STATUS_NEW). Field
+    /// offsets are load-bearing — userspace reads `hw_ptr` via direct
+    /// memory access on the mapped page, not through an ioctl.
     ///
-    /// **WASM32 LAYOUT NOTE**: alsa-lib on wasm32 (musl, `__SND_STRUCT_TIME64`
-    /// defined) expects `struct __snd_pcm_mmap_status64` with `hw_ptr`
-    /// as `unsigned long` = 4 B + 4 B `__pad_after_uframe`, and 16-byte
-    /// `__snd_timespec64` fields — total 56 B. This struct is currently
-    /// 64 B with `hw_ptr` as `i64`; the byte offsets do not match the
-    /// wasm32 layout. Userspace reads of `hw_ptr` are therefore wrong
-    /// once SDL2 audio mmap-poll path comes online. Fix concurrently
-    /// with `WpkAlsaPcmMmapControl`.
+    /// Layout (LE wasm32):
+    /// `state @ 0, _pad1 @ 4, hw_ptr (u32) @ 8, _pad_after_hw_ptr @ 12,
+    /// tstamp (i64+i32+pad = 16 B) @ 16, suspended_state @ 32, _pad3 @ 36,
+    /// audio_tstamp (16 B) @ 40`. Total 56 B.
     #[repr(C)]
     #[derive(Clone, Copy, Default, Debug)]
     pub struct WpkAlsaPcmMmapStatus {
         pub state: u32,
-        pub _pad0: u32,
-        pub hw_ptr: i64,
+        pub _pad1: u32,
+        pub hw_ptr: u32,
+        pub _pad_after_hw_ptr: u32,
         pub tstamp_sec: i64,
-        pub tstamp_nsec: i64,
+        pub tstamp_nsec: i32,
+        pub _tstamp_pad: u32,
         pub suspended_state: u32,
-        pub audio_tstamp_data: u32,
+        pub _pad3: u32,
         pub audio_tstamp_sec: i64,
-        pub audio_tstamp_nsec: i64,
-        pub _reserved_tail: [u8; 8],
+        pub audio_tstamp_nsec: i32,
+        pub _audio_tstamp_pad: u32,
     }
 
-    /// `struct snd_pcm_mmap_control`. Userspace-writes, kernel-reads.
-    /// Mapped at `SNDRV_PCM_MMAP_OFFSET_CONTROL`.
-    ///
-    /// **WASM32 LAYOUT NOTE**: alsa-lib on wasm32 expects
-    /// `struct __snd_pcm_mmap_control64` = 12 B (`appl_ptr: u32 +
-    /// 0 B pad + avail_min: u32 + 4 B __pad_after_uframe`). This
-    /// struct is currently 64 B with both fields as `i64` — userspace
-    /// writes to `appl_ptr` only land in the low 4 B; the high 4 B the
-    /// kernel reads stay zero. Fix concurrently with `WpkAlsaPcmMmapStatus`
-    /// before wiring SDL2 audio.
+    /// `struct __snd_pcm_mmap_control64` laid out for wasm32.
+    /// Userspace-writes, kernel-reads. Mapped at
+    /// `SNDRV_PCM_MMAP_OFFSET_CONTROL` (= CONTROL_NEW). Total 12 B.
+    /// `_pad_after` is the upstream `__pad_after_uframe` slot at the
+    /// tail.
     #[repr(C)]
-    #[derive(Clone, Copy, Debug)]
+    #[derive(Clone, Copy, Default, Debug)]
     pub struct WpkAlsaPcmMmapControl {
-        pub appl_ptr: i64,
-        pub avail_min: i64,
-        pub _reserved: [u8; 48],
-    }
-
-    impl Default for WpkAlsaPcmMmapControl {
-        fn default() -> Self {
-            Self { appl_ptr: 0, avail_min: 0, _reserved: [0; 48] }
-        }
+        pub appl_ptr: u32,
+        pub avail_min: u32,
+        pub _pad_after: u32,
     }
 
     /// `struct snd_xferi` — argument to `WRITEI_FRAMES` / `READI_FRAMES`.
@@ -3343,9 +3341,26 @@ mod audio_tests {
         assert_eq!(size_of::<WpkAlsaPcmSwParams>(), 104);
         assert_eq!(size_of::<WpkAlsaPcmStatus>(), 128);
         assert_eq!(size_of::<WpkAlsaPcmInfo>(), 288);
-        assert_eq!(size_of::<WpkAlsaPcmMmapStatus>(), 64);
-        assert_eq!(size_of::<WpkAlsaPcmMmapControl>(), 64);
+        assert_eq!(size_of::<WpkAlsaPcmMmapStatus>(), 56);
+        assert_eq!(size_of::<WpkAlsaPcmMmapControl>(), 12);
         assert_eq!(size_of::<WpkAlsaXferi>(), 12);
+    }
+
+    #[test]
+    fn audio_pcm_status_field_offsets() {
+        let s = WpkAlsaPcmStatus::default();
+        let base = (&s as *const _) as usize;
+        assert_eq!((&s.state as *const _ as usize) - base, 0);
+        assert_eq!((&s.trigger_tstamp_sec as *const _ as usize) - base, 8);
+        assert_eq!((&s.tstamp_sec as *const _ as usize) - base, 24);
+        assert_eq!((&s.appl_ptr as *const _ as usize) - base, 40);
+        assert_eq!((&s.hw_ptr as *const _ as usize) - base, 44);
+        assert_eq!((&s.delay as *const _ as usize) - base, 48);
+        assert_eq!((&s.avail as *const _ as usize) - base, 52);
+        assert_eq!((&s.suspended_state as *const _ as usize) - base, 64);
+        assert_eq!((&s.audio_tstamp_sec as *const _ as usize) - base, 72);
+        assert_eq!((&s.driver_tstamp_sec as *const _ as usize) - base, 88);
+        assert_eq!((&s.audio_tstamp_accuracy as *const _ as usize) - base, 104);
     }
 
     #[test]
@@ -3357,6 +3372,8 @@ mod audio_tests {
         assert_eq!((&s.state as *const _ as usize) - base, 0);
         assert_eq!((&s.hw_ptr as *const _ as usize) - base, 8);
         assert_eq!((&s.tstamp_sec as *const _ as usize) - base, 16);
+        assert_eq!((&s.suspended_state as *const _ as usize) - base, 32);
+        assert_eq!((&s.audio_tstamp_sec as *const _ as usize) - base, 40);
     }
 
     #[test]
@@ -3364,7 +3381,7 @@ mod audio_tests {
         let c = WpkAlsaPcmMmapControl::default();
         let base = (&c as *const _) as usize;
         assert_eq!((&c.appl_ptr as *const _ as usize) - base, 0);
-        assert_eq!((&c.avail_min as *const _ as usize) - base, 8);
+        assert_eq!((&c.avail_min as *const _ as usize) - base, 4);
     }
 
     #[test]

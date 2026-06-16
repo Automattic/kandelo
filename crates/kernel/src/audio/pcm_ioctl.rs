@@ -549,7 +549,7 @@ pub fn handle_alsa_pcm_ioctl(
             if let Some(status) = audio.mmap_status.as_mut() {
                 status.state = SNDRV_PCM_STATE_RUNNING;
                 status.tstamp_sec = sec;
-                status.tstamp_nsec = nsec;
+                status.tstamp_nsec = nsec as i32;
             }
             Ok(())
         }
@@ -597,32 +597,43 @@ pub fn handle_alsa_pcm_ioctl(
             let buffer_size = audio
                 .hw_params
                 .as_ref()
-                .map(|h| h.buffer_size as i64)
+                .map(|h| h.buffer_size as u32)
                 .unwrap_or(0);
-            let delay = appl_ptr - hw_ptr;
+            // Compute via i64 so negative deltas (XRUN) and pointer
+            // wrap deltas larger than i32::MAX both fit before the
+            // i32/u32 saturation.
+            let delay_i64 = appl_ptr as i64 - hw_ptr as i64;
+            let delay = delay_i64.clamp(i32::MIN as i64, i32::MAX as i64) as i32;
             let avail = if buffer_size > 0 {
-                (buffer_size - delay).max(0) as u64
+                (buffer_size as i64 - delay_i64).max(0) as u32
             } else {
                 0
             };
             let status = WpkAlsaPcmStatus {
                 state: audio.state,
-                _pad0: 0,
+                _pad1: 0,
                 trigger_tstamp_sec: 0,
                 trigger_tstamp_nsec: 0,
+                _trigger_tstamp_pad: 0,
                 tstamp_sec: sec,
-                tstamp_nsec: nsec,
+                tstamp_nsec: nsec as i32,
+                _tstamp_pad: 0,
                 appl_ptr,
                 hw_ptr,
                 delay,
                 avail,
-                avail_max: buffer_size as u64,
+                avail_max: buffer_size,
                 overrange: 0,
                 suspended_state: 0,
                 audio_tstamp_data: 0,
                 audio_tstamp_sec: 0,
                 audio_tstamp_nsec: 0,
-                _reserved: [0u8; 16],
+                _audio_tstamp_pad: 0,
+                driver_tstamp_sec: 0,
+                driver_tstamp_nsec: 0,
+                _driver_tstamp_pad: 0,
+                audio_tstamp_accuracy: 0,
+                _reserved: [0u8; 20],
             };
             write_struct(buf, &status)
         }
@@ -693,10 +704,10 @@ fn handle_writei(
             .ok_or(Errno::EBADFD)?
             .hw_ptr;
 
-        let delay = appl - hw_ptr;
+        let delay = appl as i64 - hw_ptr as i64;
         let avail = (ring_frames as i64 - delay).max(0) as usize;
         let to_write = frames_req.min(avail);
-        let appl_frame_offset = appl.rem_euclid(ring_frames as i64) as usize;
+        let appl_frame_offset = (appl as usize) % ring_frames;
 
         WriteiPlan {
             pcm_id: audio.pcm_id,
@@ -738,7 +749,7 @@ fn handle_writei(
     {
         let audio = audio_mut(proc, ofd_idx)?;
         if let Some(ctl) = audio.mmap_control.as_mut() {
-            ctl.appl_ptr += plan.to_write as i64;
+            ctl.appl_ptr = ctl.appl_ptr.wrapping_add(plan.to_write as u32);
         }
     }
 
@@ -1229,7 +1240,7 @@ mod tests {
         assert_eq!(status.hw_ptr, 256);
         assert_eq!(status.delay, 1024 - 256);
         // buffer_size committed via wildcard refine == MIN_BUFFER_SIZE.
-        assert_eq!(status.avail_max, MIN_BUFFER_SIZE as u64);
+        assert_eq!(status.avail_max, MIN_BUFFER_SIZE as u32);
         assert!(status.tstamp_sec >= 0);
         assert!(status.tstamp_nsec >= 0);
     }
@@ -1414,7 +1425,7 @@ mod tests {
         // appl_ptr advanced.
         let appl =
             audio_ref(&proc, idx).unwrap().mmap_control.as_ref().unwrap().appl_ptr;
-        assert_eq!(appl, frames_to_write as i64);
+        assert_eq!(appl, frames_to_write as u32);
         // Ring head holds the synthesised samples; tail is still 0.
         let ring = read_ring(ring_ptr, ring_frames, channels);
         for i in 0..frames_to_write {
@@ -1442,8 +1453,8 @@ mod tests {
         // ring_frames - 1] and the next 4 wrap to [0, 3].
         {
             let audio = audio_mut(&mut proc, idx).unwrap();
-            audio.mmap_control.as_mut().unwrap().appl_ptr = (ring_frames - 4) as i64;
-            audio.mmap_status.as_mut().unwrap().hw_ptr = (ring_frames - 4) as i64;
+            audio.mmap_control.as_mut().unwrap().appl_ptr = (ring_frames - 4) as u32;
+            audio.mmap_status.as_mut().unwrap().hw_ptr = (ring_frames - 4) as u32;
         }
         let frames_to_write = 8usize;
         set_proc_read_source(synth_frames(frames_to_write, channels, 100));
@@ -1467,7 +1478,7 @@ mod tests {
         // appl_ptr advances monotonically past the wrap boundary.
         let appl =
             audio_ref(&proc, idx).unwrap().mmap_control.as_ref().unwrap().appl_ptr;
-        assert_eq!(appl, (ring_frames - 4 + frames_to_write) as i64);
+        assert_eq!(appl, (ring_frames - 4 + frames_to_write) as u32);
         // First 4 frames at tail of ring.
         let ring = read_ring(ring_ptr, ring_frames, channels);
         for i in 0..4 {
@@ -1495,7 +1506,7 @@ mod tests {
         {
             let audio = audio_mut(&mut proc, idx).unwrap();
             audio.mmap_status.as_mut().unwrap().hw_ptr = 0;
-            audio.mmap_control.as_mut().unwrap().appl_ptr = ring_frames as i64;
+            audio.mmap_control.as_mut().unwrap().appl_ptr = ring_frames as u32;
         }
         let xferi = WpkAlsaXferi {
             result: 0,
@@ -1517,7 +1528,7 @@ mod tests {
         // appl_ptr unchanged.
         let appl =
             audio_ref(&proc, idx).unwrap().mmap_control.as_ref().unwrap().appl_ptr;
-        assert_eq!(appl, ring_frames as i64);
+        assert_eq!(appl, ring_frames as u32);
     }
 
     #[test]

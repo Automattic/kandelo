@@ -41,7 +41,7 @@ use crate::audio::wait;
 /// worklet can gate `hwPtr` advance on producer progress (silence
 /// past `appl_ptr`). Returns 0 when no OFD is bound.
 pub fn current_appl_ptr(pcm_id: u32) -> i64 {
-    let mut result: i64 = 0;
+    let mut result: u32 = 0;
     crate::process_table::with_processes(|procs| {
         for proc in procs {
             for (_idx, ofd) in proc.ofd_table.iter_mut() {
@@ -57,7 +57,7 @@ pub fn current_appl_ptr(pcm_id: u32) -> i64 {
             }
         }
     });
-    result
+    result as i64
 }
 
 pub fn tick(pcm_id: u32, frames_consumed: u32, tv_sec: i64, tv_nsec: i64) {
@@ -73,9 +73,9 @@ pub fn tick(pcm_id: u32, frames_consumed: u32, tv_sec: i64, tv_nsec: i64) {
                     continue;
                 }
                 if let Some(status) = audio.mmap_status.as_mut() {
-                    status.hw_ptr = status.hw_ptr.saturating_add(frames_consumed as i64);
+                    status.hw_ptr = status.hw_ptr.wrapping_add(frames_consumed);
                     status.tstamp_sec = tv_sec;
-                    status.tstamp_nsec = tv_nsec;
+                    status.tstamp_nsec = tv_nsec as i32;
                     let new_hw_ptr = status.hw_ptr;
                     // `status` borrow ends here so `audio.mmap_control`
                     // and `audio.state` can be touched mutably.
