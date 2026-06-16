@@ -192,6 +192,38 @@ if ls "$REPO_ROOT/programs/"*.cpp >/dev/null 2>&1; then
     fi
 fi
 
+# Resolve SDL2 and symlink its outputs (and its deps' outputs) into
+# the sysroot if there are any sdl2_*_smoke.c or sdl2_demo.c programs
+# to build. We re-resolve + re-symlink on every run because SDL2 has
+# transitive deps (alsa-lib, libdrm, libinput-lite) whose cache dirs
+# shift independently when their `build.toml.revision` bumps. The
+# previous fast-path guarded on `libSDL2.a` only, so a dep bump
+# produced a fresh sdl2 cache while the sysroot symlinks for
+# libasound.a / libdrm.a / libinput.a stayed pointing at the
+# pre-bump caches — programs then linked against stale dep archives.
+# See docs/plans/2026-06-16-dri-kandelo-port-handoff-54.md §B4.
+# The resolver is idempotent + cached, so re-running it is cheap when
+# nothing changed.
+if ls "$REPO_ROOT"/programs/sdl2_*.c >/dev/null 2>&1; then
+    echo "==> Resolving sdl2 (and deps) for SDL2 programs..."
+    HOST_TRIPLE="$(rustc -vV | awk '/^host/ {print $2}')"
+    (cd "$REPO_ROOT" && cargo run -p xtask --target "$HOST_TRIPLE" --quiet -- build-deps resolve sdl2 >/dev/null)
+    SDL2_PREFIX="$(cd "$REPO_ROOT" && cargo run -p xtask --target "$HOST_TRIPLE" --quiet -- build-deps path sdl2)"
+    ALSA_PREFIX="$(cd "$REPO_ROOT" && cargo run -p xtask --target "$HOST_TRIPLE" --quiet -- build-deps path alsa-lib)"
+    LIBDRM_PREFIX_SDL2="$(cd "$REPO_ROOT" && cargo run -p xtask --target "$HOST_TRIPLE" --quiet -- build-deps path libdrm)"
+    LIBINPUT_PREFIX="$(cd "$REPO_ROOT" && cargo run -p xtask --target "$HOST_TRIPLE" --quiet -- build-deps path libinput-lite)"
+
+    ln -sfn "$SDL2_PREFIX/lib/libSDL2.a"       "$SYSROOT/lib/libSDL2.a"
+    ln -sfn "$ALSA_PREFIX/lib/libasound.a"     "$SYSROOT/lib/libasound.a"
+    ln -sfn "$LIBDRM_PREFIX_SDL2/lib/libdrm.a" "$SYSROOT/lib/libdrm.a"
+    ln -sfn "$LIBINPUT_PREFIX/lib/libinput.a"  "$SYSROOT/lib/libinput.a"
+
+    mkdir -p "$SYSROOT/include/SDL2"
+    for h in "$SDL2_PREFIX/include/SDL2"/*.h; do
+        ln -sfn "$h" "$SYSROOT/include/SDL2/$(basename "$h")"
+    done
+fi
+
 echo "Building user programs..."
 for src in "$REPO_ROOT/programs/"*.c; do
     [ -f "$src" ] || continue
@@ -216,6 +248,35 @@ for src in "$REPO_ROOT/programs/"*.c; do
         alsa_lib_smoke.c)
             build_program "$src" "$OUT_DIR_32" \
                 "$SYSROOT/lib/libasound.a"
+            ;;
+        sdl2_kmsdrm_smoke.c)
+            # SDL2 KMSDRM backend links statically against libdrm + libgbm.
+            # Audio + evdev objects are present in libSDL2.a too but the
+            # smoke calls SDL_Init(SDL_INIT_VIDEO) only, so the audio /
+            # input archives don't need to be on the link line.
+            build_program "$src" "$OUT_DIR_32" \
+                "$SYSROOT/lib/libSDL2.a" \
+                "$SYSROOT/lib/libgbm.a" "$SYSROOT/lib/libdrm.a"
+            ;;
+        sdl2_alsa_smoke.c)
+            build_program "$src" "$OUT_DIR_32" \
+                "$SYSROOT/lib/libSDL2.a" \
+                "$SYSROOT/lib/libasound.a" \
+                "$SYSROOT/lib/libgbm.a" "$SYSROOT/lib/libdrm.a"
+            ;;
+        sdl2_evdev_smoke.c)
+            build_program "$src" "$OUT_DIR_32" \
+                "$SYSROOT/lib/libSDL2.a" \
+                "$SYSROOT/lib/libinput.a" \
+                "$SYSROOT/lib/libgbm.a" "$SYSROOT/lib/libdrm.a"
+            ;;
+        sdl2_demo.c)
+            # Phase C demo — links the full SDL2 + dependency set.
+            build_program "$src" "$OUT_DIR_32" \
+                "$SYSROOT/lib/libSDL2.a" \
+                "$SYSROOT/lib/libasound.a" \
+                "$SYSROOT/lib/libinput.a" \
+                "$SYSROOT/lib/libgbm.a" "$SYSROOT/lib/libdrm.a"
             ;;
         *)
             build_program "$src" "$OUT_DIR_32"

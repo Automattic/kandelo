@@ -19,7 +19,7 @@ import { SharedPipeBuffer } from "./shared-pipe-buffer";
 import { SharedLockTable } from "./shared-lock-table";
 import { FramebufferRegistry } from "./framebuffer/registry";
 import { GbmBoRegistry } from "./dri/registry";
-import { KmsRegistry } from "./dri/kms-registry";
+import { KmsRegistry, buildVirtualConnectorMode } from "./dri/kms-registry";
 import { GlContextRegistry } from "./webgl/registry";
 import { decodeAndDispatch } from "./webgl/bridge";
 import { runGlQuery } from "./webgl/query";
@@ -1021,8 +1021,11 @@ export class WasmPosixKernel {
             return -14;
           }
         },
-        host_kms_mode_info: (_connector_id: number, out_ptr: bigint): void => {
-          this.writeKernelBytes(Number(out_ptr), new Uint8Array(68));
+        host_kms_mode_info: (connector_id: number, out_ptr: bigint): void => {
+          this.writeKernelBytes(
+            Number(out_ptr),
+            buildVirtualConnectorMode(connector_id),
+          );
         },
         host_kms_addfb: (
           _pid: number,

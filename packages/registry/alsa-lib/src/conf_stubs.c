@@ -233,6 +233,45 @@ int snd_async_handler_get_signo(snd_async_handler_t *handler)
 	return -ENOSYS;
 }
 
+/* snd_device_name_* — alsa-lib's namehint API. Used by SDL2's ALSA
+ * audio backend during SDL_Init(SDL_INIT_AUDIO) to enumerate available
+ * PCM devices. Our PCM-hardware-direct subset advertises exactly one
+ * device ("default" → /dev/snd/pcmC0D0p); the namehint enumeration
+ * surface adds nothing on top of that. Return an empty hint list so
+ * SDL2's enumeration loop iterates zero times and falls through to
+ * its hard-coded "default" path.
+ *
+ * Contract per upstream alsa-lib:
+ *   snd_device_name_hint(card, iface, void ***hints):
+ *     On success, *hints is a NULL-terminated array of opaque hint
+ *     pointers. The caller iterates until *hints[i] == NULL, then
+ *     frees via snd_device_name_free_hint. An empty list (one-element
+ *     array containing only NULL) means "no hints — no devices".
+ */
+static void *_wpk_namehint_empty[1] = { NULL };
+
+int snd_device_name_hint(int card, const char *iface, void ***hints)
+{
+	(void) card;
+	(void) iface;
+	if (hints)
+		*hints = _wpk_namehint_empty;
+	return 0;
+}
+
+int snd_device_name_free_hint(void **hints)
+{
+	(void) hints;
+	return 0;
+}
+
+char *snd_device_name_get_hint(const void *hint, const char *id)
+{
+	(void) hint;
+	(void) id;
+	return NULL;
+}
+
 /* page_align / page_size / page_ptr — defined in conf.c, used by
  * src/pcm/pcm_hw.c's mmap fallback path (map_status_data /
  * map_control_data) and by pcm_mmap.c. conf.c isn't compiled in this
