@@ -232,6 +232,38 @@ echo "==> Building libgbm static archive..."
 "$AR" rcs "$SYSROOT/lib/libgbm.a" "$SYSROOT/lib/libgbm_stub.o"
 
 # ---------------------------------------------------------------
+# 11b. Build libEGL + libGLESv2 static archives (in-tree stubs).
+#      Implementation: libc/glue/libegl_stub.c + libglesv2_stub.c.
+#      Shared header:  libc/glue/gl_abi.h.
+#      Consumers (SDL2 KMSDRM, the gltri demo) link
+#      `-lEGL -lGLESv2`; both archives talk to the kernel through
+#      the GLIO_* ioctls on /dev/dri/renderD128 and share state via
+#      the three accessor functions in gl_abi.h (resolved at link
+#      time when both archives are pulled in).
+#      In-tree-stub approach mirrors libgbm above; the alternative
+#      of three out-of-tree packages (libegl-stub / libgles2-stub /
+#      libgbm-extended) was rejected as needless ceremony for code
+#      that's already first-party in libc/glue/.
+# ---------------------------------------------------------------
+echo "==> Building libEGL static archive..."
+"$CC" --target=$TARGET -O2 \
+    -matomics -mbulk-memory \
+    -I"$SYSROOT/include" \
+    -I"$REPO_ROOT/libc/glue" \
+    -c "$REPO_ROOT/libc/glue/libegl_stub.c" \
+    -o "$SYSROOT/lib/libegl_stub.o"
+"$AR" rcs "$SYSROOT/lib/libEGL.a" "$SYSROOT/lib/libegl_stub.o"
+
+echo "==> Building libGLESv2 static archive..."
+"$CC" --target=$TARGET -O2 \
+    -matomics -mbulk-memory \
+    -I"$SYSROOT/include" \
+    -I"$REPO_ROOT/libc/glue" \
+    -c "$REPO_ROOT/libc/glue/libglesv2_stub.c" \
+    -o "$SYSROOT/lib/libglesv2_stub.o"
+"$AR" rcs "$SYSROOT/lib/libGLESv2.a" "$SYSROOT/lib/libglesv2_stub.o"
+
+# ---------------------------------------------------------------
 # 12. Install libinput-lite (in-tree no-op stub).
 #     Recipe at packages/registry/libinput-lite/. SDL2 2.30's
 #     configure probes for <libinput.h>; the stub satisfies the
