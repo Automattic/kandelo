@@ -137,6 +137,17 @@ cd "$BUILD_DIR"
 # `-DDYNAPI_NEEDS_DLOPEN`: with --disable-loadso, HAVE_DLOPEN stays
 # undefined, so SDL_dynapi.h flips `SDL_DYNAMIC_API` to 0 — required
 # because src/dynapi/SDL_dynapi.c has no wasm32 platform branch.
+#
+# `-DSDL_VIDEO_STATIC_ANGLE=1`: forces src/video/SDL_egl.c's LOAD_FUNC
+# macro down the static-link branch so `_this->egl_data->eglFoo`
+# resolves to the libEGL.a symbol directly instead of going through
+# SDL_LoadFunction(egl_dll_handle, ...). With --disable-loadso our
+# SDL_LoadObject is a stub that returns NULL, so the dlopen-driven
+# path errors out with "Could not initialize OpenGL / GLES library"
+# before any window can be created. ANGLE in the macro name is
+# misleading — it just means "EGL symbols are linked in, not loaded
+# at runtime"; matches the path the Vita / WinRT static-EGL builds
+# take.
 ac_cv_func_feenableexcept=no \
 ac_cv_func_pthread_setname_np=no \
 ac_cv_func_clock_nanosleep=no \
@@ -169,7 +180,7 @@ CC=wasm32posix-cc \
 AR=wasm32posix-ar \
 RANLIB=wasm32posix-ranlib \
 NM=wasm32posix-nm \
-CPPFLAGS="-I$LIBDRM_PREFIX/include -I$LIBDRM_PREFIX/include/libdrm -I$LIBDRM_PREFIX/include/drm -I$ALSA_PREFIX/include -I$LIBINPUT_PREFIX/include -DDYNAPI_NEEDS_DLOPEN -include $SCRIPT_DIR/src/sdl2-evdev-shim.h" \
+CPPFLAGS="-I$LIBDRM_PREFIX/include -I$LIBDRM_PREFIX/include/libdrm -I$LIBDRM_PREFIX/include/drm -I$ALSA_PREFIX/include -I$LIBINPUT_PREFIX/include -DDYNAPI_NEEDS_DLOPEN -DSDL_VIDEO_STATIC_ANGLE=1 -include $SCRIPT_DIR/src/sdl2-evdev-shim.h" \
 LDFLAGS="-L$LIBDRM_PREFIX/lib -L$ALSA_PREFIX/lib -L$LIBINPUT_PREFIX/lib" \
 "$SRC_DIR/configure" \
     --host=wasm32-unknown-linux-musl \
