@@ -33,7 +33,7 @@ fi
 # Step 3: WordPress VFS image
 if ! "$REPO_ROOT/scripts/resolve-binary.sh" programs/wordpress.vfs.zst >/dev/null 2>&1; then
     echo "--- Building WordPress VFS image ---"
-    bash "$REPO_ROOT/packages/registry/wordpress/build-wordpress.sh"
+    bash "$REPO_ROOT/run.sh" build wp-vfs
 else
     echo "--- WordPress VFS image: OK ---"
 fi
