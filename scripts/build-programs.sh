@@ -58,10 +58,17 @@ CFLAGS=(
     -mllvm -wasm-use-legacy-eh=false
 )
 
-LINK_FLAGS=(
+LINK_PRE_LIBS=(
     "$GLUE_DIR/channel_syscall.c"
     "$GLUE_DIR/compiler_rt.c"
     "$SYSROOT/lib/crt1.o"
+)
+
+# libc.a + linker flags. Per-program extra archives (libdrm.a, libgbm.a,
+# libEGL.a, libGLESv2.a) are spliced BEFORE libc.a so the stubs'
+# internal references (mmap, ioctl, calloc, …) resolve in a single
+# linker pass.
+LINK_POST_LIBS=(
     "$SYSROOT/lib/libc.a"
     -Wl,--entry=_start
     -Wl,--export=_start
@@ -90,12 +97,34 @@ FORK_INSTRUMENT="$REPO_ROOT/scripts/run-wasm-fork-instrument.sh"
 build_program() {
     local src="$1"
     local out_dir="$2"
+    shift 2
+    local extra_libs=("$@")
     local name
     name=$(basename "$src" .c)
     local wasm="$out_dir/${name}.wasm"
 
+    # Auto-append GL stubs when the source pulls in EGL/GLES headers.
+    # Static linking won't pick symbols out of libEGL.a / libGLESv2.a
+    # unless the program references them, so this is a no-op for
+    # non-GL programs even if the archives are appended.
+    if grep -qE '^[[:space:]]*#[[:space:]]*include[[:space:]]*[<"](EGL|GLES[23]?)/' "$src" 2>/dev/null; then
+        if [ -f "$SYSROOT/lib/libEGL.a" ] && [ -f "$SYSROOT/lib/libGLESv2.a" ]; then
+            extra_libs+=("$SYSROOT/lib/libEGL.a" "$SYSROOT/lib/libGLESv2.a")
+        else
+            echo "  Skipping $name: GL archives missing — run scripts/build-gles-stubs.sh." >&2
+            return 0
+        fi
+    fi
+
     echo "  Compiling $name..."
-    "$CC" "${CFLAGS[@]}" "$src" "${LINK_FLAGS[@]}" -o "$wasm"
+    # Bash 3.2 (macOS system bash) under `set -u` treats expansion of
+    # an empty array as unbound; the `${arr[@]+...}` guard suppresses
+    # that when extra_libs is empty.
+    "$CC" "${CFLAGS[@]}" "$src" \
+        "${LINK_PRE_LIBS[@]}" \
+        ${extra_libs[@]+"${extra_libs[@]}"} \
+        "${LINK_POST_LIBS[@]}" \
+        -o "$wasm"
 
     # Apply fork instrumentation if the program uses fork. The tool is a
     # no-op for modules without `kernel.kernel_fork`, so it's safe to run
@@ -162,7 +191,22 @@ for src in "$REPO_ROOT/programs/"*.c; do
     [ -f "$src" ] || continue
     # Skip hello64.c — built separately with wasm64 toolchain below
     [ "$(basename "$src")" = "hello64.c" ] && continue
-    build_program "$src" "$OUT_DIR_32"
+    # DRI programs link against the libdrm / libgbm shims
+    # (sysroot/lib/libdrm.a, libgbm.a). EGL/GLES2 stubs are picked up
+    # by build_program's header-based auto-detection.
+    case "$(basename "$src")" in
+        modeset.c|dri-modeset.c|dumb_roundtrip.c)
+            build_program "$src" "$OUT_DIR_32" \
+                "$SYSROOT/lib/libgbm.a" "$SYSROOT/lib/libdrm.a"
+            ;;
+        libdrm-kms-smoke.c)
+            build_program "$src" "$OUT_DIR_32" \
+                "$SYSROOT/lib/libdrm.a"
+            ;;
+        *)
+            build_program "$src" "$OUT_DIR_32"
+            ;;
+    esac
 done
 
 for src in "$REPO_ROOT/programs/"*.cpp; do

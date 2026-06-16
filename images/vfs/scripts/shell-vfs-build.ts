@@ -157,19 +157,10 @@ function populateSystem(fs: MemoryFileSystem): void {
   ]) {
     ensureDirRecursive(fs, dir);
   }
-  fs.chmod("/tmp", 0o777);
+  fs.chmod("/tmp", 0o1777);
   fs.chmod("/root", 0o700);
   fs.chown("/home/user", 1000, 1000);
-  fs.chown("/home/.nethack", 1000, 1000);
-  fs.chmod("/home/.nethack", 0o777);
-
-  // NetHack getlock() calls link(filename, lockname) on an empty marker
-  // file named `perm` in VAR_PLAYGROUND. With USE_FCNTL it opens the
-  // marker read/write before locking it, so the non-root demo user needs
-  // write access to this pre-created file.
-  writeVfsFile(fs, "/home/.nethack/perm", "");
-  fs.chown("/home/.nethack/perm", 1000, 1000);
-  fs.chmod("/home/.nethack/perm", 0o666);
+  populateNetHackPlayground(fs);
 
   // /etc/services — required for getservbyname/getservbyport calls in
   // nginx/php-fpm/MariaDB. Harmless in Shell-only builds.
@@ -229,17 +220,16 @@ function populateSystem(fs: MemoryFileSystem): void {
 
 function populateShellOverlay(fs: MemoryFileSystem): void {
   for (const dir of [
-    "/usr/local", "/usr/local/bin", "/usr/share/file", "/dev", "/usr/sbin",
-    "/home/.nethack",
+    "/bin", "/usr", "/usr/bin", "/usr/local", "/usr/local/bin",
+    "/usr/share", "/usr/share/file", "/etc", "/root", "/tmp", "/home",
+    "/home/user", "/dev", "/usr/sbin", "/home/.nethack",
   ]) {
     ensureDirRecursive(fs, dir);
   }
-  fs.chown("/home/.nethack", 1000, 1000);
-  fs.chmod("/home/.nethack", 0o777);
-
-  writeVfsFile(fs, "/home/.nethack/perm", "");
-  fs.chown("/home/.nethack/perm", 1000, 1000);
-  fs.chmod("/home/.nethack/perm", 0o666);
+  fs.chmod("/tmp", 0o1777);
+  fs.chmod("/root", 0o700);
+  fs.chown("/home/user", 1000, 1000);
+  populateNetHackPlayground(fs);
 
   const gitconfig = [
     "[maintenance]",
@@ -265,6 +255,27 @@ function populateShellOverlay(fs: MemoryFileSystem): void {
     "",
   ].join("\n");
   writeVfsFile(fs, "/etc/profile", profile);
+
+  // A rootfs artifact may provide the lazy binary inodes without the
+  // user-facing aliases the shell demo expects. Recreate the aliases
+  // here so shell.vfs stays self-contained even as rootfs stays minimal.
+  populateCoreutilsSymlinks(fs);
+  populateGrepSedSymlinks(fs);
+  populateBaseExtendedSymlinks(fs);
+  populateDemoExtendedSymlinks(fs);
+}
+
+function populateNetHackPlayground(fs: MemoryFileSystem): void {
+  fs.chown("/home/.nethack", 1000, 1000);
+  fs.chmod("/home/.nethack", 0o777);
+
+  // NetHack expects VAR_PLAYGROUND to contain the lock marker and score
+  // database before read-only score-listing commands such as `nethack -s`.
+  for (const file of ["/home/.nethack/perm", "/home/.nethack/record"]) {
+    writeVfsFile(fs, file, "");
+    fs.chown(file, 1000, 1000);
+    fs.chmod(file, 0o666);
+  }
 }
 
 // ── Shell binaries ──────────────────────────────────────────────

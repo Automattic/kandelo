@@ -278,7 +278,11 @@ export const MachineView: React.FC<MachineViewProps> = ({
         <div className="kmachine-primary">
           {shouldMountDemoSurface && (
             <PrimarySurfaceSlot active={activePrimary === demoSurface}>
-              <Display ref={displayRef} autoFocus={activePrimary === demoSurface} />
+              <Display
+                ref={displayRef}
+                autoFocus={activePrimary === demoSurface}
+                surface={demoSurface ?? undefined}
+              />
             </PrimarySurfaceSlot>
           )}
           {activePrimary === "terminal" && canUseTerminal && (
@@ -473,6 +477,7 @@ function surfaceLabel(surface: PrimarySurface): string {
     case "terminal": return "Terminal";
     case "framebuffer": return "Framebuffer";
     case "web": return "Web Preview";
+    case "kms": return "Modeset";
     case "syslog": return "System Internals";
   }
 }
@@ -486,7 +491,9 @@ function resolvePrimary(
 }
 
 function resolveDemoSurface(preferences: readonly PrimarySurface[]): PrimarySurface | null {
-  return preferences.find((surface) => surface === "web" || surface === "framebuffer") ?? null;
+  return preferences.find((surface) =>
+    surface === "web" || surface === "framebuffer" || surface === "kms",
+  ) ?? null;
 }
 
 function isSurfaceAvailable(surface: PrimarySurface, availability: SurfaceAvailability): boolean {

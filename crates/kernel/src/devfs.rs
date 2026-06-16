@@ -33,6 +33,8 @@ pub enum DevfsEntry {
     FdDir,
     /// /dev/input
     InputDir,
+    /// /dev/dri
+    DriDir,
 }
 
 /// Match a resolved path to a devfs directory entry.
@@ -44,6 +46,7 @@ pub fn match_devfs_dir(path: &[u8]) -> Option<DevfsEntry> {
         b"/dev/mqueue" => Some(DevfsEntry::MqueueDir),
         b"/dev/fd" => Some(DevfsEntry::FdDir),
         b"/dev/input" => Some(DevfsEntry::InputDir),
+        b"/dev/dri" => Some(DevfsEntry::DriDir),
         _ => None,
     }
 }
@@ -174,11 +177,22 @@ fn dir_entries(proc: &crate::process::Process, entry: &DevfsEntry) -> Vec<(Vec<u
             entries.push((b"shm".into(), DT_DIR, devfs_ino(b"/dev/shm")));
             entries.push((b"mqueue".into(), DT_DIR, devfs_ino(b"/dev/mqueue")));
             entries.push((b"input".into(), DT_DIR, devfs_ino(b"/dev/input")));
+            entries.push((b"dri".into(), DT_DIR, devfs_ino(b"/dev/dri")));
         }
         DevfsEntry::InputDir => {
             // /dev/input/mice — Linux-compatible PS/2 mouse stream.
             // No /dev/input/eventN evdev nodes yet (mousedev surface only).
             entries.push((b"mice".into(), DT_CHR, devfs_ino(b"/dev/input/mice")));
+        }
+        DevfsEntry::DriDir => {
+            // /dev/dri/card0 — KMS / display side.
+            // /dev/dri/renderD128 — render / GPU side.
+            entries.push((b"card0".into(), DT_CHR, devfs_ino(b"/dev/dri/card0")));
+            entries.push((
+                b"renderD128".into(),
+                DT_CHR,
+                devfs_ino(b"/dev/dri/renderD128"),
+            ));
         }
         DevfsEntry::PtsDir => {
             // List active PTY slaves
@@ -300,6 +314,34 @@ mod tests {
             }
         }
         assert!(found, "dsp missing from /dev listing");
+    }
+
+    #[test]
+    fn dri_dir_is_listed_under_dev() {
+        let proc = crate::process::Process::new(1);
+        let entries = dir_entries(&proc, &DevfsEntry::Root);
+        let mut found = false;
+        for (name, dtype, _) in entries.iter() {
+            if name.as_slice() == b"dri" {
+                assert_eq!(*dtype, DT_DIR);
+                found = true;
+            }
+        }
+        assert!(found, "dri subdir missing from /dev listing");
+    }
+
+    #[test]
+    fn dri_dir_lists_card0_and_renderd128() {
+        let proc = crate::process::Process::new(1);
+        let entries = dir_entries(&proc, &DevfsEntry::DriDir);
+        let names: Vec<&[u8]> = entries.iter().map(|(n, _, _)| n.as_slice()).collect();
+        assert!(names.iter().any(|n| *n == b"card0"));
+        assert!(names.iter().any(|n| *n == b"renderD128"));
+        for (_, dtype, _) in entries.iter() {
+            assert_eq!(*dtype, DT_CHR);
+        }
+        let st = match_devfs_stat(b"/dev/dri", 0, 0).unwrap();
+        assert_eq!(st.st_mode & 0o170000, S_IFDIR);
     }
 
     #[test]

@@ -53,6 +53,7 @@ if [ -z "${LLVM_BIN:-}" ]; then
         exit 1
     fi
 fi
+export LLVM_BIN
 CC="$LLVM_BIN/clang"
 AR="$LLVM_BIN/llvm-ar"
 RANLIB="$LLVM_BIN/llvm-ranlib"
@@ -192,6 +193,15 @@ echo "==> Building sigsetjmp helpers..."
 # ---------------------------------------------------------------
 echo "==> Installing override headers..."
 bash "$REPO_ROOT/scripts/install-overlay-headers.sh" "$SYSROOT"
+
+# ---------------------------------------------------------------
+# 10. Build platform graphics/DRI stub libraries
+# ---------------------------------------------------------------
+if [ "$ARCH" = "wasm32posix" ]; then
+    echo "==> Building platform graphics stubs..."
+    bash "$REPO_ROOT/scripts/build-dri-stubs.sh"
+    bash "$REPO_ROOT/scripts/build-gles-stubs.sh"
+fi
 
 echo ""
 echo "==> musl build complete!"

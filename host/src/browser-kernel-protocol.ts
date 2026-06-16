@@ -300,6 +300,30 @@ export interface HttpRequestMessage {
   timeoutMs?: number;
 }
 
+/** Register an `OffscreenCanvas` as the scanout target for a KMS CRTC.
+ *  The kernel-worker's vblank pump blits the CRTC's bound framebuffer
+ *  into this canvas at 60 Hz. The canvas MUST be transferred (the
+ *  `transfer` array contains it) — the browser would otherwise refuse
+ *  to hand off control. Optional `stats` SAB receives blit/page-flip
+ *  telemetry. */
+export interface KmsAttachCanvasMessage {
+  type: "kms_attach_canvas";
+  crtcId: number;
+  canvas: OffscreenCanvas;
+  stats?: SharedArrayBuffer;
+  opts?: { mode?: "auto" | "2d" | "webgl2" };
+}
+
+/** Register a stats SAB for a CRTC without binding a scanout canvas. The
+ *  vblank pump still writes kernel-side `commit_count` / `last_frame_us`
+ *  into slots 5/6. Used by GL-rendered demos that present via WebGL
+ *  rather than the 2D blit path. */
+export interface KmsAttachStatsMessage {
+  type: "kms_attach_stats";
+  crtcId: number;
+  stats: SharedArrayBuffer;
+}
+
 export type MainToKernelMessage =
   | InitMessage
   | SpawnMessage
@@ -329,7 +353,9 @@ export type MainToKernelMessage =
   | ReadProcMapsRequestMessage
   | SetSyscallTraceMessage
   | DrainSyscallTraceMessage
-  | HttpRequestMessage;
+  | HttpRequestMessage
+  | KmsAttachCanvasMessage
+  | KmsAttachStatsMessage;
 
 // ── Kernel Worker → Main Thread ──
 

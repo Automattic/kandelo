@@ -85,6 +85,8 @@ export function builtinDemoPresentation(profileId: string): DemoPresentation | n
         ...genericDemoPresentation("framebuffer"),
         autoCommand: DOOM_COMMAND,
       };
+    case "modeset":
+      return genericDemoPresentation("kms");
     default:
       return null;
   }

@@ -24,7 +24,13 @@ export default defineConfig({
   projects: [
     {
       name: "chromium",
-      use: { browserName: "chromium" },
+      // Use the `chromium` channel (new headless mode) instead of
+      // the default chromium-headless-shell. New-headless supports
+      // WebGL2 on transferred OffscreenCanvases inside Web Workers,
+      // which the modeset KMS pane relies on; the legacy headless
+      // shell silently returns null for getContext("webgl2") on the
+      // worker side.
+      use: { browserName: "chromium", channel: "chromium" },
     },
     {
       name: "firefox",

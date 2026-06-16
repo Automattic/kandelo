@@ -367,6 +367,26 @@ discouraged for multi-worktree development because the global
 symlink it creates routes every shell to a single worktree's
 source.
 
+### Sysroot libraries are not packages
+
+Some APIs are part of the Kandelo sysroot rather than the package graph. The
+DRI/EGL/GLES shims (`libdrm.a`, `libgbm.a`, `libEGL.a`, `libGLESv2.a`) are
+built by `scripts/build-musl.sh` and exposed through
+`wasm32posix-pkg-config`; they are not outputs of the `kernel` package and
+should not be modeled as standalone package dependencies.
+
+A package that depends on those libraries should:
+
+1. Source `sdk/activate.sh` and set `WASM_POSIX_SYSROOT` to the active worktree
+   sysroot, as other package build scripts do.
+2. Link with `wasm32posix-pkg-config --cflags/--libs` for `libdrm`, `gbm`,
+   `egl`, and/or `glesv2`.
+3. Declare only the consumer artifact in `[[outputs]]`.
+4. Add the relevant sysroot/glue inputs (`libc/glue/lib*_stub.c`,
+   `libc/glue/gl_abi.h`, `scripts/build-musl.sh`, `scripts/build-dri-stubs.sh`,
+   `scripts/build-gles-stubs.sh`) to `build.toml.inputs` so cache keys move
+   when the sysroot implementation changes.
+
 ## Migrating a consumer to the cache
 
 When converting a `build-<prog>.sh` from "call the prerequisite

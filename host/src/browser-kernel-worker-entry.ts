@@ -1860,6 +1860,12 @@ sw.onmessage = (e: MessageEvent) => {
       }
       break;
     }
+    case "kms_attach_canvas":
+      kernelWorker.attachKmsCanvas(msg.crtcId, msg.canvas, msg.stats, msg.opts);
+      break;
+    case "kms_attach_stats":
+      kernelWorker.attachKmsStats(msg.crtcId, msg.stats);
+      break;
     default: {
       // Handle non-protocol messages (e.g., bridge port transfer)
       const raw = e.data as any;

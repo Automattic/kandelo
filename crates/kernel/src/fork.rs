@@ -33,7 +33,10 @@ use crate::terminal::{NCCS, TerminalState, WinSize};
 
 const FORK_MAGIC: u32 = 0x464F524B; // "FORK"
 const EXEC_MAGIC: u32 = 0x45584543; // "EXEC"
-const FORK_VERSION: u32 = 8;
+// v9 adds the per-OFD DRI sidecar block: a u8 variant tag followed by
+// `DriFdState` / `KmsFdState` / `PrimeBoState` payload as appropriate.
+// See `write_dri_state` / `read_dri_state` below.
+const FORK_VERSION: u32 = 9;
 
 // Bounds for deserialization to prevent OOM from malformed buffers.
 const MAX_FDS: u32 = 65536;
@@ -265,6 +268,202 @@ fn u32_to_file_type(v: u32) -> Result<FileType, Errno> {
     }
 }
 
+// ── DRI sidecar encoding ────────────────────────────────────────────────────
+//
+// Each OFD carries a one-byte variant tag (`DRI_TAG_*`) plus the bytes
+// for the variant's payload. Bo refcount accounting moves entirely into
+// the deserialize side: every bo id we restore on a handle, fb, or
+// PrimeBo state gets an extra `with_registry(|r| r.incref(_))` so the
+// child's eventual close-path decrefs are balanced.
+
+const DRI_TAG_NONE: u8 = 0;
+const DRI_TAG_RENDER_NODE: u8 = 1;
+const DRI_TAG_CARD: u8 = 2;
+const DRI_TAG_PRIME_BO: u8 = 3;
+
+fn write_dri_fd_state(
+    w: &mut Writer<'_>,
+    dri: &crate::ofd::DriFdState,
+) -> Result<(), Errno> {
+    w.write_u32(dri.handles.len() as u32)?;
+    for (handle, bo_id) in &dri.handles {
+        w.write_u32(*handle)?;
+        w.write_u32(*bo_id)?;
+    }
+    w.write_u32(dri.next_handle)?;
+    Ok(())
+}
+
+fn write_kms_fd_state(
+    w: &mut Writer<'_>,
+    kms: &crate::ofd::KmsFdState,
+    preserve_master: bool,
+) -> Result<(), Errno> {
+    // Master is a singleton; only the exec path may preserve it
+    // (the wasm image swaps but the process keeps its KMS lease).
+    // Fork always writes 0 — the child must SET_MASTER itself.
+    w.write_u8(if preserve_master && kms.holds_master {
+        1
+    } else {
+        0
+    })?;
+    w.write_u32(kms.fbs.len() as u32)?;
+    for (fb_id, fb) in &kms.fbs {
+        w.write_u32(*fb_id)?;
+        w.write_u32(fb.bo_id)?;
+        w.write_u32(fb.width)?;
+        w.write_u32(fb.height)?;
+        w.write_u32(fb.pixel_format)?;
+        w.write_u32(fb.stride)?;
+    }
+    w.write_u32(kms.next_fb_id)?;
+    w.write_u32(kms.pending_flips.len() as u32)?;
+    for flip in &kms.pending_flips {
+        w.write_u32(flip.crtc_id)?;
+        w.write_u32(flip.fb_id)?;
+        w.write_u64(flip.user_data)?;
+    }
+    Ok(())
+}
+
+fn write_dri_state(
+    w: &mut Writer<'_>,
+    state: Option<&crate::ofd::DriOfdState>,
+    preserve_master: bool,
+) -> Result<(), Errno> {
+    use crate::ofd::DriOfdState;
+    match state {
+        None => w.write_u8(DRI_TAG_NONE),
+        Some(DriOfdState::RenderNode(d)) => {
+            w.write_u8(DRI_TAG_RENDER_NODE)?;
+            write_dri_fd_state(w, d)
+        }
+        Some(DriOfdState::Card { dri, kms }) => {
+            w.write_u8(DRI_TAG_CARD)?;
+            write_dri_fd_state(w, dri)?;
+            write_kms_fd_state(w, kms, preserve_master)
+        }
+        Some(DriOfdState::PrimeBo(p)) => {
+            w.write_u8(DRI_TAG_PRIME_BO)?;
+            w.write_u32(p.bo_id)?;
+            w.write_u64(p.cookie)
+        }
+    }
+}
+
+/// Read a `DriFdState` from the wire and incref every referenced bo
+/// in the global registry so the new OFD has its own refcount. The
+/// caller may still drop the entire OFD if the surrounding deserialize
+/// fails; the trail of increfs is harmless in that case (the OFD's
+/// eventual close-path decref balances it).
+fn read_dri_fd_state(r: &mut Reader<'_>) -> Result<crate::ofd::DriFdState, Errno> {
+    use alloc::collections::BTreeMap;
+    let handle_count = r.read_u32()? as usize;
+    if handle_count > 65536 {
+        return Err(Errno::EINVAL);
+    }
+    let mut handles: BTreeMap<u32, crate::dri::BoId> = BTreeMap::new();
+    for _ in 0..handle_count {
+        let handle = r.read_u32()?;
+        let bo_id = r.read_u32()?;
+        crate::dri::with_registry(|reg| {
+            reg.incref(bo_id);
+        });
+        handles.insert(handle, bo_id);
+    }
+    let next_handle = r.read_u32()?;
+    Ok(crate::ofd::DriFdState {
+        handles,
+        next_handle,
+        gl: None,
+    })
+}
+
+fn read_kms_fd_state(r: &mut Reader<'_>) -> Result<crate::ofd::KmsFdState, Errno> {
+    use alloc::collections::{BTreeMap, VecDeque};
+    let holds_master = r.read_u8()? != 0;
+    let fb_count = r.read_u32()? as usize;
+    if fb_count > 65536 {
+        return Err(Errno::EINVAL);
+    }
+    let mut fbs: BTreeMap<u32, crate::ofd::KmsFb> = BTreeMap::new();
+    for _ in 0..fb_count {
+        let fb_id = r.read_u32()?;
+        let bo_id = r.read_u32()?;
+        let width = r.read_u32()?;
+        let height = r.read_u32()?;
+        let pixel_format = r.read_u32()?;
+        let stride = r.read_u32()?;
+        crate::dri::with_registry(|reg| {
+            reg.incref(bo_id);
+        });
+        fbs.insert(
+            fb_id,
+            crate::ofd::KmsFb {
+                bo_id,
+                width,
+                height,
+                pixel_format,
+                stride,
+            },
+        );
+    }
+    let next_fb_id = r.read_u32()?;
+    let pending_count = r.read_u32()? as usize;
+    if pending_count > 65536 {
+        return Err(Errno::EINVAL);
+    }
+    let mut pending_flips = Vec::with_capacity(pending_count);
+    for _ in 0..pending_count {
+        let crtc_id = r.read_u32()?;
+        let fb_id = r.read_u32()?;
+        let user_data = r.read_u64()?;
+        pending_flips.push(crate::ofd::PendingFlip {
+            crtc_id,
+            fb_id,
+            user_data,
+        });
+    }
+    Ok(crate::ofd::KmsFdState {
+        holds_master,
+        fbs,
+        next_fb_id,
+        pending_flips,
+        event_ring: VecDeque::new(),
+    })
+}
+
+fn read_dri_state(
+    r: &mut Reader<'_>,
+) -> Result<Option<alloc::boxed::Box<crate::ofd::DriOfdState>>, Errno> {
+    use crate::ofd::{DriOfdState, PrimeBoState};
+    let tag = r.read_u8()?;
+    Ok(match tag {
+        DRI_TAG_NONE => None,
+        DRI_TAG_RENDER_NODE => {
+            let d = read_dri_fd_state(r)?;
+            Some(alloc::boxed::Box::new(DriOfdState::RenderNode(d)))
+        }
+        DRI_TAG_CARD => {
+            let dri = read_dri_fd_state(r)?;
+            let kms = read_kms_fd_state(r)?;
+            Some(alloc::boxed::Box::new(DriOfdState::Card { dri, kms }))
+        }
+        DRI_TAG_PRIME_BO => {
+            let bo_id = r.read_u32()?;
+            let cookie = r.read_u64()?;
+            crate::dri::with_registry(|reg| {
+                reg.incref(bo_id);
+            });
+            Some(alloc::boxed::Box::new(DriOfdState::PrimeBo(PrimeBoState {
+                bo_id,
+                cookie,
+            })))
+        }
+        _ => return Err(Errno::EINVAL),
+    })
+}
+
 // ── SignalHandler encoding ──────────────────────────────────────────────────
 
 fn handler_to_u32(h: SignalHandler) -> u32 {
@@ -356,6 +555,9 @@ pub fn serialize_fork_state(proc: &Process, buf: &mut [u8]) -> Result<usize, Err
         w.write_u32(ofd.ref_count)?;
         w.write_u32(ofd.path.len() as u32)?;
         w.write_bytes(&ofd.path)?;
+        // DRI sidecar — `preserve_master = false` because the master
+        // lease must drop on fork (only one process may hold it).
+        write_dri_state(&mut w, ofd.dri_state.as_deref(), false)?;
     }
 
     // ── Environment ──
@@ -656,6 +858,7 @@ pub fn deserialize_fork_state(buf: &[u8], child_pid: u32) -> Result<Process, Err
         while ofd_entries.len() <= index {
             ofd_entries.push(None);
         }
+        let dri_state = read_dri_state(&mut r)?;
         ofd_entries[index] = Some(OpenFileDesc {
             file_type,
             status_flags,
@@ -667,6 +870,7 @@ pub fn deserialize_fork_state(buf: &[u8], child_pid: u32) -> Result<Process, Err
             dir_host_handle: -1,
             dir_synth_state: 0,
             dir_entry_offset: 0,
+            dri_state,
         });
     }
     let ofd_table = OfdTable::from_raw(ofd_entries);
@@ -1017,6 +1221,12 @@ pub fn deserialize_fork_state(buf: &[u8], child_pid: u32) -> Result<Process, Err
         // registered as a host display target. fbDOOM doesn't fork
         // mid-game; documented limitation in the design doc.
         fb_binding: None,
+        // DRI bo bindings are per-process host state (the host points
+        // each bo's SAB slice at the binding's wasm `addr`). After
+        // fork, the child's memory is freshly cloned and the host
+        // has not been told where to mirror anything; the child must
+        // re-mmap to re-establish bindings, mirroring `fb_binding`.
+        dri_bindings: Vec::new(),
         fork_count: 0,
     })
 }
@@ -1113,6 +1323,10 @@ pub fn serialize_exec_state(proc: &Process, buf: &mut [u8]) -> Result<usize, Err
         w.write_u32(ofd.ref_count)?;
         w.write_u32(ofd.path.len() as u32)?;
         w.write_bytes(&ofd.path)?;
+        // DRI sidecar — `preserve_master = true` because exec keeps
+        // the same process identity and any inherited card0 OFD
+        // legitimately retains its KMS lease across the image swap.
+        write_dri_state(&mut w, ofd.dri_state.as_deref(), true)?;
     }
 
     // ── Environment ──
@@ -1255,6 +1469,7 @@ pub fn deserialize_exec_state(buf: &[u8], pid: u32) -> Result<Process, Errno> {
         while ofd_entries.len() <= index {
             ofd_entries.push(None);
         }
+        let dri_state = read_dri_state(&mut r)?;
         ofd_entries[index] = Some(OpenFileDesc {
             file_type,
             status_flags,
@@ -1266,6 +1481,7 @@ pub fn deserialize_exec_state(buf: &[u8], pid: u32) -> Result<Process, Errno> {
             dir_host_handle: -1,
             dir_synth_state: 0,
             dir_entry_offset: 0,
+            dri_state,
         });
     }
     let ofd_table = OfdTable::from_raw(ofd_entries);
@@ -1409,6 +1625,9 @@ pub fn deserialize_exec_state(buf: &[u8], pid: u32) -> Result<Process, Errno> {
         // exec wipes any prior framebuffer binding — the new program
         // must open and mmap /dev/fb0 itself.
         fb_binding: None,
+        // exec replaces the address space, so every DRI bo binding
+        // is gone — the new image must re-mmap.
+        dri_bindings: Vec::new(),
         // The fork counter exists as a kernel-side regression guardrail.
         // Resetting on exec keeps semantics simple: the next spawn-from-this-pid
         // test starts from a clean slate. The plan's regression check inspects
@@ -1975,5 +2194,264 @@ mod tests {
         let pos = w.pos;
         let result = deserialize_fork_state(&buf[..pos], 42);
         assert!(result.is_err());
+    }
+
+    // ── DRI fork inheritance tests ─────────────────────────────────────────
+
+    fn install_render_node_ofd_with_handles(
+        proc: &mut Process,
+        path: &[u8],
+        host_handle: i64,
+        handles: &[(u32, crate::dri::BoId)],
+    ) -> usize {
+        use crate::ofd::{DriFdState, DriOfdState};
+        let ofd_idx =
+            proc.ofd_table
+                .create(crate::ofd::FileType::CharDevice, 0, host_handle, path.to_vec());
+        let mut dri = DriFdState::default();
+        for &(h, bo) in handles {
+            dri.handles.insert(h, bo);
+        }
+        dri.next_handle = handles.iter().map(|(h, _)| *h).max().unwrap_or(0) + 1;
+        proc.ofd_table.get_mut(ofd_idx).unwrap().dri_state =
+            Some(alloc::boxed::Box::new(DriOfdState::RenderNode(dri)));
+        proc.fd_table
+            .alloc(crate::fd::OpenFileDescRef(ofd_idx), 0)
+            .unwrap();
+        ofd_idx
+    }
+
+    #[test]
+    fn fork_preserves_render_node_handles_and_increfs_bos() {
+        let _g = crate::dri::bo::TEST_REGISTRY_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        crate::dri::bo::reset_registry();
+        let bo_a = crate::dri::with_registry(|r| r.alloc(64, 64, 32).id);
+        let bo_b = crate::dri::with_registry(|r| r.alloc(32, 32, 32).id);
+        // refcount = 1 each from `alloc`.
+
+        let mut proc = Process::new(1);
+        let ofd_idx = install_render_node_ofd_with_handles(
+            &mut proc,
+            b"/dev/dri/renderD128",
+            -8,
+            &[(1, bo_a), (2, bo_b)],
+        );
+
+        let mut buf = vec![0u8; 64 * 1024];
+        let written = serialize_fork_state(&proc, &mut buf).unwrap();
+        let child = deserialize_fork_state(&buf[..written], 99).unwrap();
+
+        // Both bos now have refcount = 2 (parent + child).
+        for &bo in &[bo_a, bo_b] {
+            assert_eq!(
+                crate::dri::with_registry(|r| r.get(bo).map(|b| b.refcount)),
+                Some(2),
+                "bo {bo} should be incref'd to 2"
+            );
+        }
+
+        // Child OFD carries the cloned handle map.
+        let child_ofd = child.ofd_table.get(ofd_idx).unwrap();
+        let child_dri = child_ofd.dri().unwrap();
+        assert_eq!(child_dri.handles.get(&1).copied(), Some(bo_a));
+        assert_eq!(child_dri.handles.get(&2).copied(), Some(bo_b));
+        assert_eq!(child_dri.next_handle, 3);
+
+        // Clean up: decref the two extra references so we don't pollute
+        // the registry for sibling tests.
+        crate::dri::with_registry(|r| {
+            r.decref(bo_a);
+            r.decref(bo_b);
+            r.decref(bo_a);
+            r.decref(bo_b);
+        });
+    }
+
+    #[test]
+    fn fork_clears_kms_master_in_child() {
+        use crate::ofd::{DriFdState, DriOfdState, KmsFdState};
+        let _g = crate::dri::bo::TEST_REGISTRY_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        crate::dri::bo::reset_registry();
+
+        let mut proc = Process::new(1);
+        let ofd_idx = proc.ofd_table.create(
+            crate::ofd::FileType::CharDevice,
+            0,
+            -9,
+            b"/dev/dri/card0".to_vec(),
+        );
+        let kms = KmsFdState {
+            holds_master: true,
+            ..Default::default()
+        };
+        proc.ofd_table.get_mut(ofd_idx).unwrap().dri_state =
+            Some(alloc::boxed::Box::new(DriOfdState::Card {
+                dri: DriFdState::default(),
+                kms,
+            }));
+        proc.fd_table
+            .alloc(crate::fd::OpenFileDescRef(ofd_idx), 0)
+            .unwrap();
+
+        let mut buf = vec![0u8; 64 * 1024];
+        let written = serialize_fork_state(&proc, &mut buf).unwrap();
+        let child = deserialize_fork_state(&buf[..written], 99).unwrap();
+
+        let child_kms = child.ofd_table.get(ofd_idx).unwrap().kms().unwrap();
+        assert!(
+            !child_kms.holds_master,
+            "fork child must not inherit KMS master"
+        );
+    }
+
+    #[test]
+    fn fork_preserves_card_fbs_and_increfs_bos() {
+        use crate::ofd::{DriFdState, DriOfdState, KmsFb, KmsFdState};
+        let _g = crate::dri::bo::TEST_REGISTRY_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        crate::dri::bo::reset_registry();
+        let bo = crate::dri::with_registry(|r| r.alloc(64, 64, 32).id);
+
+        let mut proc = Process::new(1);
+        let ofd_idx = proc.ofd_table.create(
+            crate::ofd::FileType::CharDevice,
+            0,
+            -9,
+            b"/dev/dri/card0".to_vec(),
+        );
+        let mut kms = KmsFdState::default();
+        kms.fbs.insert(
+            42,
+            KmsFb {
+                bo_id: bo,
+                width: 64,
+                height: 64,
+                pixel_format: 0x34325241, // AR24
+                stride: 64 * 4,
+            },
+        );
+        kms.next_fb_id = 43;
+        proc.ofd_table.get_mut(ofd_idx).unwrap().dri_state =
+            Some(alloc::boxed::Box::new(DriOfdState::Card {
+                dri: DriFdState::default(),
+                kms,
+            }));
+        proc.fd_table
+            .alloc(crate::fd::OpenFileDescRef(ofd_idx), 0)
+            .unwrap();
+
+        let mut buf = vec![0u8; 64 * 1024];
+        let written = serialize_fork_state(&proc, &mut buf).unwrap();
+        let child = deserialize_fork_state(&buf[..written], 99).unwrap();
+
+        let child_kms = child.ofd_table.get(ofd_idx).unwrap().kms().unwrap();
+        let fb = child_kms.fbs.get(&42).expect("fb 42 cloned");
+        assert_eq!(fb.bo_id, bo);
+        assert_eq!(fb.width, 64);
+        assert_eq!(child_kms.next_fb_id, 43);
+
+        // Fb held an incref on the bo + handle slot (none here) → child
+        // adds one more ref for its inherited fb slot. Parent's
+        // outstanding refs: 1 (alloc) + 0 (no handle in parent) +
+        // 0 (we didn't set up an MODE_ADDFB2 path that bumps this in
+        // the helper). Child's outstanding refs: 1 from the fb in
+        // its kms.fbs.
+        assert_eq!(
+            crate::dri::with_registry(|r| r.get(bo).map(|b| b.refcount)),
+            Some(2),
+            "child's inherited fb must hold its own refcount on the bo"
+        );
+
+        crate::dri::with_registry(|r| {
+            r.decref(bo);
+            r.decref(bo);
+        });
+    }
+
+    #[test]
+    fn fork_preserves_prime_bo_state_and_increfs() {
+        use crate::ofd::{DriOfdState, PrimeBoState};
+        let _g = crate::dri::bo::TEST_REGISTRY_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        crate::dri::bo::reset_registry();
+        let bo = crate::dri::with_registry(|r| r.alloc(64, 64, 32).id);
+        let cookie = crate::dri::with_registry(|r| r.ensure_prime_cookie(bo).unwrap());
+
+        let mut proc = Process::new(1);
+        let ofd_idx = proc.ofd_table.create(
+            crate::ofd::FileType::Regular,
+            0,
+            -200,
+            alloc::format!("/dev/dri/prime-{bo}-{cookie:x}")
+                .into_bytes(),
+        );
+        proc.ofd_table.get_mut(ofd_idx).unwrap().dri_state = Some(
+            alloc::boxed::Box::new(DriOfdState::PrimeBo(PrimeBoState { bo_id: bo, cookie })),
+        );
+        proc.fd_table
+            .alloc(crate::fd::OpenFileDescRef(ofd_idx), 0)
+            .unwrap();
+
+        let mut buf = vec![0u8; 64 * 1024];
+        let written = serialize_fork_state(&proc, &mut buf).unwrap();
+        let child = deserialize_fork_state(&buf[..written], 99).unwrap();
+
+        let child_p = child.ofd_table.get(ofd_idx).unwrap().prime_bo().unwrap();
+        assert_eq!(child_p.bo_id, bo);
+        assert_eq!(child_p.cookie, cookie);
+        assert_eq!(
+            crate::dri::with_registry(|r| r.get(bo).map(|b| b.refcount)),
+            Some(2)
+        );
+
+        crate::dri::with_registry(|r| {
+            r.decref(bo);
+            r.decref(bo);
+        });
+    }
+
+    #[test]
+    fn exec_preserves_kms_master_when_inherited() {
+        use crate::ofd::{DriFdState, DriOfdState, KmsFdState};
+        let _g = crate::dri::bo::TEST_REGISTRY_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        crate::dri::bo::reset_registry();
+
+        let mut proc = Process::new(1);
+        let ofd_idx = proc.ofd_table.create(
+            crate::ofd::FileType::CharDevice,
+            0,
+            -9,
+            b"/dev/dri/card0".to_vec(),
+        );
+        let kms = KmsFdState {
+            holds_master: true,
+            ..Default::default()
+        };
+        proc.ofd_table.get_mut(ofd_idx).unwrap().dri_state =
+            Some(alloc::boxed::Box::new(DriOfdState::Card {
+                dri: DriFdState::default(),
+                kms,
+            }));
+        proc.fd_table
+            .alloc(crate::fd::OpenFileDescRef(ofd_idx), 0)
+            .unwrap();
+
+        let mut buf = vec![0u8; 64 * 1024];
+        let written = serialize_exec_state(&proc, &mut buf).unwrap();
+        let post = deserialize_exec_state(&buf[..written], proc.pid).unwrap();
+
+        let post_kms = post.ofd_table.get(ofd_idx).unwrap().kms().unwrap();
+        assert!(
+            post_kms.holds_master,
+            "exec keeps the same process identity; KMS master should survive"
+        );
     }
 }
