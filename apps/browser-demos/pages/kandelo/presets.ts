@@ -117,4 +117,15 @@ export const PRESET_LIBRARY: Preset[] = [
     bootCommand: ["/usr/games/fbdoom"],
     estimatedUrlBytes: 1018,
   },
+  {
+    id: "modeset",
+    title: "DRM/KMS fluid sim",
+    summary: "Pavel-style EGL/GLES fluid simulation presented through /dev/dri/card0 page flips.",
+    base: SHELL_BASE,
+    packages: ["modeset@local", "bash@local", "coreutils@local"],
+    accent: "#4f8fd6",
+    glyph: "K",
+    bootCommand: ["/usr/local/bin/modeset"],
+    estimatedUrlBytes: 612,
+  },
 ];

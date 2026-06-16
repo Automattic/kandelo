@@ -7,7 +7,11 @@
  * clients (MySQL, Redis) via async pipe operations.
  */
 
-import { MemoryFileSystem, type LazyFileEntry } from "./vfs/memory-fs";
+import {
+  MemoryFileSystem,
+  type LazyDownloadEvent,
+  type LazyFileEntry,
+} from "./vfs/memory-fs";
 import { FramebufferRegistry } from "./framebuffer/registry";
 import type { ProcessSnapshot, SyscallTraceEvent } from "./kernel-worker";
 import type {
@@ -46,6 +50,10 @@ export interface BrowserKernelOptions {
   onStderr?: (data: Uint8Array) => void;
   /** Called when a process requests a TCP listener (for service worker bridging) */
   onListenTcp?: (pid: number, fd: number, port: number) => void;
+  /** Called when the service-worker HTTP bridge gains or completes preview requests. */
+  onHttpBridgePendingRequests?: (count: number) => void;
+  /** Called as lazy VFS files or archives are fetched on demand. */
+  onLazyDownload?: (event: LazyDownloadEvent) => void;
   /** Called when a process is spawned, execs a new program, or exits.
    *  Used by Inspector-style UIs to refresh their process table without
    *  polling. Source feeds:
@@ -148,6 +156,8 @@ export class BrowserKernel {
    * happens when `boot()` is awaited (process is running) before
    * PtyTerminal calls onPtyOutput. Drained when a callback registers. */
   private pendingPtyOutput = new Map<number, Uint8Array[]>();
+  private lazyDownloadListeners = new Set<(event: LazyDownloadEvent) => void>();
+  private offMemfsLazyDownloads: (() => void) | null = null;
 
   constructor(options: BrowserKernelOptions = {}) {
     this.maxPages = options.maxMemoryPages ?? DEFAULT_MAX_PAGES;
@@ -182,7 +192,11 @@ export class BrowserKernel {
     } else {
       const fsSize = this.options.fsSize;
       const maxFsSize = this.options.maxFsSize ?? fsSize * 4;
-      this.fsSab = new SharedArrayBuffer(fsSize, { maxByteLength: maxFsSize });
+      const SharedArrayBufferCtor = SharedArrayBuffer as new (
+        byteLength: number,
+        options?: { maxByteLength?: number },
+      ) => SharedArrayBuffer;
+      this.fsSab = new SharedArrayBufferCtor(fsSize, { maxByteLength: maxFsSize });
       this.memfs = MemoryFileSystem.create(this.fsSab, maxFsSize);
 
       // Create standard directories. The legacy SAB path starts from a
@@ -196,6 +210,12 @@ export class BrowserKernel {
       this.memfs.mkdir("/root", 0o700);
       this.memfs.mkdir("/dev", 0o755);
       this.memfs.mkdir("/etc", 0o755);
+    }
+
+    if (this.memfs) {
+      this.offMemfsLazyDownloads = this.memfs.subscribeLazyDownloads((event) => {
+        this.emitLazyDownload(event);
+      });
     }
   }
 
@@ -317,6 +337,7 @@ export class BrowserKernel {
         reject(err);
       }
       this.pendingRequests.clear();
+      this.options.onHttpBridgePendingRequests?.(0);
     };
 
     await new Promise<void>((resolve, reject) => {
@@ -626,6 +647,14 @@ export class BrowserKernel {
     };
   }
 
+  /** Subscribe to lazy VFS file/archive download progress. */
+  subscribeLazyDownloads(cb: (event: LazyDownloadEvent) => void): () => void {
+    this.lazyDownloadListeners.add(cb);
+    return () => {
+      this.lazyDownloadListeners.delete(cb);
+    };
+  }
+
   private syscallListeners = new Set<(event: SyscallTraceEvent) => void>();
   private syscallPollTimer: ReturnType<typeof setInterval> | null = null;
 
@@ -775,9 +804,10 @@ export class BrowserKernel {
    * to the kernel worker so it can materialize on demand via sync XHR.
    */
   registerLazyFiles(entries: Array<{ path: string; url: string; size: number; mode?: number }>): void {
+    const fs = this.fs;
     const lazyEntries: LazyFileEntry[] = [];
     for (const e of entries) {
-      const ino = this.memfs.registerLazyFile(e.path, e.url, e.size, e.mode);
+      const ino = fs.registerLazyFile(e.path, e.url, e.size, e.mode);
       lazyEntries.push({ ino, path: e.path, url: e.url, size: e.size });
     }
     this.sendToKernel({ type: "register_lazy_files", entries: lazyEntries });
@@ -792,7 +822,7 @@ export class BrowserKernel {
    * or not lazy.
    */
   async ensureMaterialized(path: string): Promise<boolean> {
-    return this.memfs.ensureMaterialized(path);
+    return this.fs.ensureMaterialized(path);
   }
 
   /** Append data to a process's stdin buffer. */
@@ -823,6 +853,37 @@ export class BrowserKernel {
    */
   injectMouseEvent(dx: number, dy: number, buttons: number): void {
     this.sendToKernel({ type: "mouse_inject", dx, dy, buttons });
+  }
+
+  /**
+   * Hand an `OffscreenCanvas` to the kernel worker as the scanout
+   * target for KMS CRTC `crtcId`. The worker's vblank pump blits the
+   * CRTC's currently-bound framebuffer into this canvas at 60 Hz.
+   *
+   * `canvas` is transferred — the main thread loses control of it.
+   * Pass `stats` to receive blit + page-flip telemetry (see
+   * `attachKmsStats` for the slot layout).
+   */
+  kmsAttachCanvas(
+    crtcId: number,
+    canvas: OffscreenCanvas,
+    stats?: SharedArrayBuffer,
+    opts?: { mode?: "auto" | "2d" | "webgl2" },
+  ): void {
+    this.sendToKernel(
+      { type: "kms_attach_canvas", crtcId, canvas, stats, opts },
+      [canvas],
+    );
+  }
+
+  /**
+   * Register a stats SAB for KMS CRTC `crtcId` without binding a
+   * scanout canvas. The worker still writes `commit_count` and
+   * `last_frame_us` into slots 5/6 each vblank tick. Used by demos
+   * that render through WebGL rather than the 2D blit path.
+   */
+  kmsAttachStats(crtcId: number, stats: SharedArrayBuffer): void {
+    this.sendToKernel({ type: "kms_attach_stats", crtcId, stats });
   }
 
   /**
@@ -905,6 +966,10 @@ export class BrowserKernel {
     this.exitResolvers.clear();
     this.pendingRequests.clear();
     this.ptyOutputCallbacks.clear();
+    this.options.onHttpBridgePendingRequests?.(0);
+    this.offMemfsLazyDownloads?.();
+    this.offMemfsLazyDownloads = null;
+    this.lazyDownloadListeners.clear();
   }
 
   // ── Private helpers ──
@@ -950,6 +1015,13 @@ export class BrowserKernel {
     });
   }
 
+  private emitLazyDownload(event: LazyDownloadEvent): void {
+    try { this.options.onLazyDownload?.(event); } catch { /* host callbacks should not break delivery */ }
+    for (const cb of this.lazyDownloadListeners) {
+      try { cb(event); } catch { /* listener errors don't break the loop */ }
+    }
+  }
+
   private handleWorkerMessage(msg: KernelToMainMessage): void {
     switch (msg.type) {
       case "response": {
@@ -979,6 +1051,9 @@ export class BrowserKernel {
         this.options.onProcessEvent?.({ kind: msg.kind, pid: msg.pid, ppid: msg.ppid });
         break;
       }
+      case "http_bridge_pending":
+        this.options.onHttpBridgePendingRequests?.(msg.count);
+        break;
       case "stdout":
         this.options.onStdout?.(msg.data);
         break;
@@ -1027,6 +1102,9 @@ export class BrowserKernel {
         break;
       case "fb_write":
         this.framebuffers.fbWrite(msg.pid, msg.offset, msg.bytes);
+        break;
+      case "lazy_download":
+        this.emitLazyDownload(msg.event);
         break;
     }
   }

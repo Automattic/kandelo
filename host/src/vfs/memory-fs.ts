@@ -16,6 +16,24 @@ export interface LazyFileEntry {
   size: number;
 }
 
+export type LazyDownloadKind = "file" | "archive";
+export type LazyDownloadStatus = "started" | "progress" | "complete" | "error";
+
+export interface LazyDownloadEvent {
+  id: string;
+  kind: LazyDownloadKind;
+  status: LazyDownloadStatus;
+  url: string;
+  path?: string;
+  mountPrefix?: string;
+  loadedBytes: number;
+  totalBytes?: number;
+  error?: string;
+  t: number;
+}
+
+export type LazyDownloadListener = (event: LazyDownloadEvent) => void;
+
 /** Per-file metadata for a file inside a lazy archive. */
 export interface LazyArchiveFileEntry {
   ino: number;
@@ -227,6 +245,28 @@ function sectionOffsetAfterArchives(
   return { lazyLen, archiveOffset, metadataOffset };
 }
 
+function monotonicNow(): number {
+  return typeof performance !== "undefined" ? performance.now() : Date.now();
+}
+
+function parseContentLength(headers: Headers | undefined): number | undefined {
+  const raw = headers?.get("content-length");
+  if (!raw) return undefined;
+  const value = Number(raw);
+  return Number.isFinite(value) && value >= 0 ? value : undefined;
+}
+
+function concatChunks(chunks: Uint8Array[], total: number): Uint8Array {
+  if (chunks.length === 1) return chunks[0];
+  const out = new Uint8Array(total);
+  let offset = 0;
+  for (const chunk of chunks) {
+    out.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  return out;
+}
+
 export class MemoryFileSystem implements FileSystemBackend {
   private fs: SharedFS;
   private imageMetadata: VfsImageMetadata | null;
@@ -236,6 +276,7 @@ export class MemoryFileSystem implements FileSystemBackend {
   private lazyArchiveGroups: LazyArchiveGroup[] = [];
   /** Fast lookup: inode → group it belongs to. Cleared per-group after materialization. */
   private lazyArchiveInodes = new Map<number, LazyArchiveGroup>();
+  private lazyDownloadListeners = new Set<LazyDownloadListener>();
 
   private constructor(fs: SharedFS, metadata: VfsImageMetadata | null = null) {
     this.fs = fs;
@@ -315,6 +356,112 @@ export class MemoryFileSystem implements FileSystemBackend {
   /** Set or clear image-level metadata for the next saveImage() call. */
   setImageMetadata(metadata: VfsImageMetadata | null): void {
     this.imageMetadata = metadata === null ? null : validateMetadata(metadata);
+  }
+
+  subscribeLazyDownloads(listener: LazyDownloadListener): () => void {
+    this.lazyDownloadListeners.add(listener);
+    return () => this.lazyDownloadListeners.delete(listener);
+  }
+
+  private emitLazyDownload(event: Omit<LazyDownloadEvent, "t">): void {
+    if (this.lazyDownloadListeners.size === 0) return;
+    const stamped: LazyDownloadEvent = { ...event, t: monotonicNow() };
+    for (const listener of this.lazyDownloadListeners) {
+      try { listener(stamped); } catch { /* listener errors must not break VFS I/O */ }
+    }
+  }
+
+  private async fetchLazyBytes(
+    details: {
+      id: string;
+      kind: LazyDownloadKind;
+      url: string;
+      path?: string;
+      mountPrefix?: string;
+      fallbackTotalBytes?: number;
+    },
+  ): Promise<Uint8Array> {
+    let loadedBytes = 0;
+    let totalBytes = details.fallbackTotalBytes;
+    const base = {
+      id: details.id,
+      kind: details.kind,
+      url: details.url,
+      path: details.path,
+      mountPrefix: details.mountPrefix,
+    };
+
+    this.emitLazyDownload({
+      ...base,
+      status: "started",
+      loadedBytes,
+      totalBytes,
+    });
+
+    try {
+      const resp = await fetch(details.url);
+      if (!resp.ok) {
+        throw new Error(`HTTP ${resp.status}`);
+      }
+
+      totalBytes = parseContentLength(resp.headers) ?? totalBytes;
+      if (!resp.body) {
+        const data = new Uint8Array(await resp.arrayBuffer());
+        loadedBytes = data.byteLength;
+        this.emitLazyDownload({
+          ...base,
+          status: "progress",
+          loadedBytes,
+          totalBytes: totalBytes ?? loadedBytes,
+        });
+        this.emitLazyDownload({
+          ...base,
+          status: "complete",
+          loadedBytes,
+          totalBytes: totalBytes ?? loadedBytes,
+        });
+        return data;
+      }
+
+      const reader = resp.body.getReader();
+      const chunks: Uint8Array[] = [];
+      try {
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          if (!value) continue;
+          chunks.push(value);
+          loadedBytes += value.byteLength;
+          this.emitLazyDownload({
+            ...base,
+            status: "progress",
+            loadedBytes,
+            totalBytes,
+          });
+        }
+      } finally {
+        reader.releaseLock();
+      }
+
+      const data = concatChunks(chunks, loadedBytes);
+      this.emitLazyDownload({
+        ...base,
+        status: "complete",
+        loadedBytes,
+        totalBytes: totalBytes ?? loadedBytes,
+      });
+      return data;
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      this.emitLazyDownload({
+        ...base,
+        status: "error",
+        loadedBytes,
+        totalBytes,
+        error: message,
+      });
+      throw err;
+    }
   }
 
   /**
@@ -509,11 +656,13 @@ export class MemoryFileSystem implements FileSystemBackend {
       const st = this.fs.stat(path); // follows symlinks
       const entry = this.lazyFiles.get(st.ino);
       if (entry) {
-        const resp = await fetch(entry.url);
-        if (!resp.ok) {
-          throw new Error(`Failed to fetch lazy file ${entry.path}: HTTP ${resp.status}`);
-        }
-        const data = new Uint8Array(await resp.arrayBuffer());
+        const data = await this.fetchLazyBytes({
+          id: `file:${st.ino}`,
+          kind: "file",
+          url: entry.url,
+          path: entry.path,
+          fallbackTotalBytes: entry.size,
+        });
         const fd = this.fs.open(entry.path, 0o1101, 0o755); // O_WRONLY | O_CREAT | O_TRUNC
         this.fs.write(fd, data);
         this.fs.close(fd);
@@ -539,11 +688,12 @@ export class MemoryFileSystem implements FileSystemBackend {
   async ensureArchiveMaterialized(group: LazyArchiveGroup): Promise<void> {
     if (group.materialized) return;
 
-    const resp = await fetch(group.url);
-    if (!resp.ok) {
-      throw new Error(`Failed to fetch archive ${group.url}: HTTP ${resp.status}`);
-    }
-    const zipData = new Uint8Array(await resp.arrayBuffer());
+    const zipData = await this.fetchLazyBytes({
+      id: `archive:${group.mountPrefix}:${group.url}`,
+      kind: "archive",
+      url: group.url,
+      mountPrefix: group.mountPrefix,
+    });
 
     const { parseZipCentralDirectory, extractZipEntry } = await import("./zip");
     const zipEntries = parseZipCentralDirectory(zipData);

@@ -82,6 +82,22 @@ export interface KernelSyscallEvent {
   args: [number, number, number, number, number, number];
 }
 
+export type LazyDownloadKind = "file" | "archive";
+export type LazyDownloadStatus = "started" | "progress" | "complete" | "error";
+
+export interface LazyDownloadEvent {
+  id: string;
+  kind: LazyDownloadKind;
+  status: LazyDownloadStatus;
+  url: string;
+  path?: string;
+  mountPrefix?: string;
+  loadedBytes: number;
+  totalBytes?: number;
+  error?: string;
+  t: number;
+}
+
 export interface KernelLike {
   /** Sequential pid counter exposed by BrowserKernel. */
   readonly nextPid: number;
@@ -107,6 +123,28 @@ export interface KernelLike {
    */
   injectMouseEvent?(dx: number, dy: number, buttons: number): void;
   /**
+   * Hand an `OffscreenCanvas` to the kernel worker as the scanout
+   * target for KMS CRTC `crtcId`. Optional `stats` SAB receives
+   * blit + page-flip telemetry. `opts.mode` declares how the canvas
+   * is painted (see `CentralizedKernelWorker.attachKmsCanvas`):
+   * `"auto"` (default) defers context acquisition to whichever path
+   * arrives first; `"2d"` opts into the legacy CPU-blit pump; `"webgl2"`
+   * tells the pump the canvas is GL-owned so it stays hands-off and
+   * lets a libdrm/libgbm/EGL program (e.g. modeset.c) claim it.
+   */
+  kmsAttachCanvas?(
+    crtcId: number,
+    canvas: OffscreenCanvas,
+    stats?: SharedArrayBuffer,
+    opts?: { mode?: "auto" | "2d" | "webgl2" },
+  ): void;
+  /**
+   * Register a stats SAB for `crtcId` without binding a scanout
+   * canvas. Used by WebGL-rendered demos that want page-flip
+   * telemetry without a 2D blit.
+   */
+  kmsAttachStats?(crtcId: number, stats: SharedArrayBuffer): void;
+  /**
    * Drain PCM bytes buffered in `/dev/dsp` for browser playback.
    */
   drainAudio?(maxBytes: number): Promise<{
@@ -121,6 +159,11 @@ export interface KernelLike {
    * when nobody's watching.
    */
   subscribeSyscalls?(cb: (event: KernelSyscallEvent) => void): () => void;
+  /**
+   * Subscribe to lazy VFS file/archive downloads. The worker emits these
+   * when it materializes content on first exec/open.
+   */
+  subscribeLazyDownloads?(cb: (event: LazyDownloadEvent) => void): () => void;
   spawn(
     programBytes: ArrayBuffer,
     argv: string[],
@@ -284,6 +327,37 @@ export interface AudioOutputHandle {
   getState(): AudioContextState | "unavailable";
 }
 
+/**
+ * Handle returned by `attachKmsDisplay`. The wrapped canvas is wired up
+ * as the scanout target for a KMS CRTC; whatever wasm process holds
+ * DRM master and commits page-flips drives the pixels.
+ *
+ * Stats slots (Int32Array view over the SAB the handle owns):
+ *   0: frame count (host pump, monotonic)
+ *   1: last blit timestamp (ms, performance.now() | 0)
+ *   2: current scanout width
+ *   3: current scanout height
+ *   4: last blit µs
+ *   5: kernel-side PAGE_FLIP commit count
+ *   6: kernel-side last frame µs (clock at PAGE_FLIP completion)
+ */
+export interface KmsDisplayHandle {
+  /** CRTC the canvas is bound to (matches what the wasm process passes
+   *  to `drmModePageFlip(crtc_id, …)`). */
+  readonly crtcId: number;
+  /** Int32Array view over the stats SAB. Slots above. */
+  readonly stats: Int32Array;
+  /** Inject one PS/2-style mouse event into the kernel's
+   *  `/dev/input/mice`. The renderer (e.g. modeset.c → Pavel's fluid sim)
+   *  reads cursor + button state from there. Deltas use the same
+   *  convention as `KernelHost.injectMouseEvent` (positive X right,
+   *  positive Y up). `buttons` uses PS/2 bits: bit0=left, bit1=right,
+   *  bit2=middle. No-op when the wrapped kernel lacks mouse injection. */
+  sendMouseEvent(dx: number, dy: number, buttons: number): void;
+  /** Detach the canvas. Subsequent vblank ticks no-op for this CRTC. */
+  close(): void;
+}
+
 export type WebPreviewStatus = "starting" | "running" | "error";
 
 export interface WebPreviewState {
@@ -291,11 +365,12 @@ export interface WebPreviewState {
   url: string;
   status: WebPreviewStatus;
   message?: string;
+  pendingRequests?: number;
 }
 
 // ── Presentation intent ──────────────────────────────────────────────────
 
-export type PrimarySurface = "syslog" | "terminal" | "framebuffer" | "web";
+export type PrimarySurface = "syslog" | "terminal" | "framebuffer" | "web" | "kms";
 
 export type SurfaceAvailability = Record<PrimarySurface, boolean>;
 
@@ -457,6 +532,10 @@ export interface KernelHost {
   subscribeDmesg(cb: (line: DmesgLine) => void): () => void;
   dmesgHistory(): DmesgLine[];
 
+  // Lazy VFS materialization progress
+  subscribeLazyDownloads(cb: (event: LazyDownloadEvent) => void): () => void;
+  lazyDownloadHistory(): LazyDownloadEvent[];
+
   // Process lifecycle — fires on spawn/exec/exit. Inspector tabs use this
   // to refetch enumProcs / readMemMap instead of polling on a timer.
   subscribeProcessEvents(cb: (event: ProcessEvent) => void): () => void;
@@ -483,6 +562,20 @@ export interface KernelHost {
   // that the embedder uses to forward keyboard, mouse, and audio device
   // traffic for the bound process.
   attachFramebuffer(canvas: HTMLCanvasElement): FramebufferHandle;
+
+  // KMS display — registers a canvas as the scanout target for a
+  // DRM CRTC. `opts.mode` (default "webgl2") selects how the canvas
+  // is painted: "webgl2" hands ownership to the libdrm/libgbm/EGL
+  // path (modeset.c etc.); "2d" keeps the legacy CPU-blit pump that
+  // copies the kernel's scanout BO into the canvas at 60 Hz; "auto"
+  // defers the choice to whichever path arrives first. Returns null
+  // when the wrapped kernel does not yet expose `kmsAttachCanvas`
+  // (older ABI, Node host without an OffscreenCanvas polyfill, etc.).
+  attachKmsDisplay(
+    canvas: HTMLCanvasElement,
+    crtcId?: number,
+    opts?: { mode?: "auto" | "2d" | "webgl2" },
+  ): KmsDisplayHandle | null;
 
   // web preview — service demos can expose an HTTP bridge endpoint.
   getWebPreview(): WebPreviewState | null;
@@ -519,6 +612,10 @@ class ListenerSet<T> {
   size(): number {
     return this.listeners.size;
   }
+}
+
+function clampPendingRequestCount(count: number): number {
+  return Number.isFinite(count) ? Math.max(0, Math.floor(count)) : 0;
 }
 
 function ptyBufferEndsWithPrompt(buffer: string): boolean {
@@ -562,6 +659,10 @@ function waitForPtyReadiness(
     replayingHistory = false;
     if (includeHistory && ptyBufferEndsWithPrompt(buffer)) finish();
   });
+}
+
+function nowMs(): number {
+  return typeof performance !== "undefined" ? performance.now() : Date.now();
 }
 
 // ── LiveKernelHost — wraps the real host runtime in host/src/ ──────────────
@@ -642,6 +743,7 @@ const DEFAULT_SURFACE_AVAILABILITY: SurfaceAvailability = {
   terminal: false,
   framebuffer: false,
   web: false,
+  kms: false,
 };
 
 const NOT_IMPLEMENTED = (m: string) =>
@@ -658,6 +760,10 @@ export class LiveKernelHost implements KernelHost {
   private dmesgRing: DmesgLine[] = [];
   private dmesgListeners = new ListenerSet<DmesgLine>();
   private dmesgCapacity = 4096;
+  private lazyDownloadRing: LazyDownloadEvent[] = [];
+  private lazyDownloadCurrent = new Map<string, LazyDownloadEvent>();
+  private lazyDownloadListeners = new ListenerSet<LazyDownloadEvent>();
+  private lazyDownloadCapacity = 512;
   private processListeners = new ListenerSet<ProcessEvent>();
   private webPreviewListeners = new ListenerSet<WebPreviewState | null>();
   private presentationListeners = new ListenerSet<DemoPresentation>();
@@ -673,6 +779,7 @@ export class LiveKernelHost implements KernelHost {
   private demoGuide: DemoGuideConfig | null = null;
   private surfaceAvailability: SurfaceAvailability = { ...DEFAULT_SURFACE_AVAILABILITY };
   private offFramebufferAvailability: (() => void) | null = null;
+  private offLazyDownloads: (() => void) | null = null;
 
   private kernel?: KernelLike;
   private shell?: NonNullable<LiveKernelHostOptions["shell"]>;
@@ -690,26 +797,42 @@ export class LiveKernelHost implements KernelHost {
    * the PTY slave, not a host-side stdin buffer.
    */
   private shellPids = new Map<number, string>();
+  /**
+   * KMS display handles keyed by their canvas DOM node. React 18 StrictMode
+   * double-invokes effects, and `transferControlToOffscreen()` may only run
+   * once per canvas, so attachKmsDisplay memoizes the handle here. A WeakMap
+   * lets the handle drop naturally when the canvas itself is GC'd.
+   */
+  private kmsHandles = new WeakMap<HTMLCanvasElement, KmsDisplayHandle>();
 
   constructor(opts: LiveKernelHostOptions = {}) {
     this._status = opts.status ?? "idle";
     this._descriptor = opts.descriptor ?? DEFAULT_DESCRIPTOR;
     this.presentation = opts.presentation ?? DEFAULT_PRESENTATION;
-    this.kernel = opts.kernel;
+    this.kernel = undefined;
     this.shell = opts.shell;
     this.applyBootDescriptorImpl = opts.applyBootDescriptor;
     this.galleryItems = opts.galleryItems ?? [];
-    this.refreshTerminalAvailability();
-    this.refreshFramebufferAvailability();
+    if (opts.kernel) {
+      this.attachKernel(opts.kernel);
+    } else {
+      this.refreshTerminalAvailability();
+      this.refreshFramebufferAvailability();
+    }
     this.refreshWebAvailability();
+    this.refreshKmsAvailability();
   }
 
   // ── owner-facing wiring helpers ──────────────────────────────────────────
 
   /** Replace the wrapped KernelLike. Used after `boot` resolves. */
   attachKernel(kernel: KernelLike): void {
+    this.cancelLazyDownloads("kernel replaced");
+    this.clearLazyDownloadHistory();
     this.offFramebufferAvailability?.();
     this.offFramebufferAvailability = null;
+    this.offLazyDownloads?.();
+    this.offLazyDownloads = null;
     this.kernel = kernel;
     this.ptySessions.clear();
     this.ptyCommandQueues.clear();
@@ -719,21 +842,31 @@ export class LiveKernelHost implements KernelHost {
         this.refreshFramebufferAvailability();
       });
     }
+    if (kernel.subscribeLazyDownloads) {
+      this.offLazyDownloads = kernel.subscribeLazyDownloads((event) => {
+        this.emitLazyDownloadEvent(event);
+      });
+    }
     this.refreshTerminalAvailability();
     this.refreshFramebufferAvailability();
+    this.refreshKmsAvailability();
   }
 
   /** Clear the wrapped kernel after a failed boot without changing status. */
   detachKernel(): void {
+    this.cancelLazyDownloads("kernel detached");
+    this.clearLazyDownloadHistory();
     this.offFramebufferAvailability?.();
     this.offFramebufferAvailability = null;
+    this.offLazyDownloads?.();
+    this.offLazyDownloads = null;
     this.kernel = undefined;
     this.ptySessions.clear();
     this.ptyCommandQueues.clear();
     this.shellPids.clear();
     this.refreshTerminalAvailability();
     this.refreshFramebufferAvailability();
-    this.setSurfaceAvailability({ web: false });
+    this.setSurfaceAvailability({ web: false, kms: false });
     this.setDemoGuide(null);
   }
 
@@ -818,6 +951,40 @@ export class LiveKernelHost implements KernelHost {
     this.processListeners.emit(event);
   }
 
+  /** Emit lazy VFS materialization progress from the wrapped kernel. */
+  emitLazyDownloadEvent(event: LazyDownloadEvent): void {
+    const copy = { ...event };
+    if (copy.status === "complete" || copy.status === "error") {
+      this.lazyDownloadCurrent.delete(copy.id);
+    } else {
+      this.lazyDownloadCurrent.set(copy.id, copy);
+    }
+    this.lazyDownloadRing.push(copy);
+    if (this.lazyDownloadRing.length > this.lazyDownloadCapacity) {
+      this.lazyDownloadRing.splice(0, this.lazyDownloadRing.length - this.lazyDownloadCapacity);
+    }
+    this.lazyDownloadListeners.emit(copy);
+  }
+
+  private cancelLazyDownloads(reason: string): void {
+    if (this.lazyDownloadCurrent.size === 0) return;
+    const active = Array.from(this.lazyDownloadCurrent.values());
+    this.lazyDownloadCurrent.clear();
+    for (const event of active) {
+      this.emitLazyDownloadEvent({
+        ...event,
+        status: "error",
+        error: reason,
+        t: nowMs(),
+      });
+    }
+  }
+
+  private clearLazyDownloadHistory(): void {
+    this.lazyDownloadRing = [];
+    this.lazyDownloadCurrent.clear();
+  }
+
   /** Push a dmesg line into the ring and fan out to subscribers. */
   pushDmesg(line: DmesgLine): void {
     this.dmesgRing.push(line);
@@ -837,9 +1004,28 @@ export class LiveKernelHost implements KernelHost {
   }
 
   setWebPreview(state: WebPreviewState | null): void {
-    this.webPreview = state ? { ...state } : null;
+    if (!state) {
+      this.webPreview = null;
+      this.webPreviewListeners.emit(this.getWebPreview());
+      this.refreshWebAvailability();
+      return;
+    }
+    this.webPreview = {
+      ...state,
+      pendingRequests: clampPendingRequestCount(
+        state.pendingRequests ?? this.webPreview?.pendingRequests ?? 0,
+      ),
+    };
     this.webPreviewListeners.emit(this.getWebPreview());
     this.refreshWebAvailability();
+  }
+
+  setWebPreviewPendingRequests(count: number): void {
+    if (!this.webPreview) return;
+    const pendingRequests = clampPendingRequestCount(count);
+    if ((this.webPreview.pendingRequests ?? 0) === pendingRequests) return;
+    this.webPreview = { ...this.webPreview, pendingRequests };
+    this.webPreviewListeners.emit(this.getWebPreview());
   }
 
   private setSurfaceAvailability(patch: Partial<SurfaceAvailability>): void {
@@ -848,7 +1034,8 @@ export class LiveKernelHost implements KernelHost {
       next.syslog === this.surfaceAvailability.syslog &&
       next.terminal === this.surfaceAvailability.terminal &&
       next.framebuffer === this.surfaceAvailability.framebuffer &&
-      next.web === this.surfaceAvailability.web
+      next.web === this.surfaceAvailability.web &&
+      next.kms === this.surfaceAvailability.kms
     ) {
       return;
     }
@@ -870,6 +1057,18 @@ export class LiveKernelHost implements KernelHost {
 
   private refreshWebAvailability(): void {
     this.setSurfaceAvailability({ web: this.webPreview?.status === "running" });
+  }
+
+  /**
+   * KMS surface is treated as "available" once the wrapped kernel exposes
+   * `kmsAttachCanvas`. The kernel-side CRTC always advertises one CRTC, so
+   * there is no separate per-CRTC availability event; the Modeset pane
+   * surfaces "waiting for PAGE_FLIP" until a process binds DRM master.
+   */
+  private refreshKmsAvailability(): void {
+    this.setSurfaceAvailability({
+      kms: Boolean(this.kernel?.kmsAttachCanvas),
+    });
   }
 
   // ── KernelHost: status ───────────────────────────────────────────────────
@@ -898,9 +1097,12 @@ export class LiveKernelHost implements KernelHost {
 
   async halt(): Promise<void> {
     this.setStatus("halted");
+    this.cancelLazyDownloads("kernel halted");
     this.offFramebufferAvailability?.();
     this.offFramebufferAvailability = null;
-    this.setSurfaceAvailability({ terminal: false, framebuffer: false, web: false });
+    this.offLazyDownloads?.();
+    this.offLazyDownloads = null;
+    this.setSurfaceAvailability({ terminal: false, framebuffer: false, web: false, kms: false });
     this.setDemoGuide(null);
     await this.kernel?.destroy?.();
   }
@@ -917,6 +1119,14 @@ export class LiveKernelHost implements KernelHost {
 
   dmesgHistory(): DmesgLine[] {
     return this.dmesgRing.slice();
+  }
+
+  subscribeLazyDownloads(cb: (event: LazyDownloadEvent) => void): () => void {
+    return this.lazyDownloadListeners.add(cb);
+  }
+
+  lazyDownloadHistory(): LazyDownloadEvent[] {
+    return this.lazyDownloadRing.slice();
   }
 
   subscribeProcessEvents(cb: (event: ProcessEvent) => void): () => void {
@@ -1423,6 +1633,45 @@ export class LiveKernelHost implements KernelHost {
         setBoundPid(null);
       },
     };
+  }
+
+  // ── KernelHost: KMS display ──────────────────────────────────────────────
+
+  attachKmsDisplay(
+    canvas: HTMLCanvasElement,
+    crtcId: number = 1,
+    opts: { mode?: "auto" | "2d" | "webgl2" } = { mode: "webgl2" },
+  ): KmsDisplayHandle | null {
+    if (!this.kernel?.kmsAttachCanvas) return null;
+    if (typeof canvas.transferControlToOffscreen !== "function") return null;
+    // React 18 StrictMode double-invokes effects: mount → cleanup → mount,
+    // and the second mount hits this method again on the same DOM canvas.
+    // `transferControlToOffscreen()` can only be called once per canvas, so
+    // memoize the handle here. The cached handle keeps the original
+    // statsSab/OffscreenCanvas alive across the StrictMode unmount.
+    const cached = this.kmsHandles.get(canvas);
+    if (cached) return cached;
+    // 7 i32 slots × 4 bytes = 28 bytes; align to 64 so atomics are happy.
+    const statsSab = new SharedArrayBuffer(64);
+    const stats = new Int32Array(statsSab);
+    const offscreen = canvas.transferControlToOffscreen();
+    this.kernel.kmsAttachCanvas(crtcId, offscreen, statsSab, opts);
+    const kernel = this.kernel;
+    const handle: KmsDisplayHandle = {
+      crtcId,
+      stats,
+      sendMouseEvent: (dx, dy, buttons) => {
+        kernel.injectMouseEvent?.(dx, dy, buttons);
+      },
+      close: () => {
+        // The worker auto-stops the pump tick for unused CRTCs on the
+        // next teardown; there's no explicit detach API yet. Closing
+        // the handle just drops the local view so callers can drop
+        // their reference.
+      },
+    };
+    this.kmsHandles.set(canvas, handle);
+    return handle;
   }
 
   getWebPreview(): WebPreviewState | null {
