@@ -73,7 +73,18 @@ Service Worker ──MessagePort──> Kernel Worker       │
   Modules created by an external embedder without registered bytes retain the
   native reflection fallback.
 - **Exec reads from filesystem**: Like a real OS, `exec()` reads binaries from the kernel-side `MemoryFileSystem`. Programs are baked into the VFS image at build time (or written by the page in the legacy path before spawning). Symlinks are used for multicall binaries (e.g., coreutils).
-- **dinit for service supervision**: Multi-process demos (nginx, redis, mariadb, nginx-php, wordpress, lamp, mariadb-test) bake `/sbin/dinit` and per-service files under `/etc/dinit.d/` into the VFS image via `addDinitInit()` (`images/vfs/scripts/dinit-image-helpers.ts`). dinit is the first user process, not PID 1. It reaps its directly supervised children and handles `depends-on` ordering and bootstrap-then-daemon chains. Synthetic PID 1 has no wait loop, so Kandelo does not yet reap children reparented to it. Page code waits for service-ready via `onListenTcp` (port-bind) callbacks, then starts driving the demo over kernel-loopback TCP or the HTTP bridge.
+- **dinit for service supervision**: Multi-process demos (nginx, redis,
+  mariadb, nginx-php, wordpress, lamp, mariadb-test) bake `/sbin/dinit` and
+  per-service files under `/etc/dinit.d/` into the VFS image via
+  `addDinitInit()` (`images/vfs/scripts/dinit-image-helpers.ts`). dinit is the
+  first user process, not PID 1. It reaps its directly supervised children and
+  handles `depends-on` ordering and bootstrap-then-daemon chains. Synthetic
+  PID 1 has no wait loop, so Kandelo does not yet reap children reparented to
+  it. Page code waits for service-ready via `onListenTcp` (port-bind)
+  callbacks, then starts driving the demo over kernel-loopback TCP or the HTTP
+  bridge. The corresponding Node demo commands resolve and authenticate the
+  same VFS artifacts, apply only per-run configuration such as a listen port,
+  and start image-owned dinit through `NodeKernelHost.spawnFromVfs()`.
 - **Connection pump in kernel worker**: HTTP↔TCP bridge runs inside the kernel worker with synchronous pipe I/O (direct Wasm export calls). Service worker transfers a MessagePort to the kernel worker for HTTP request delivery.
 - **App clients on main thread**: MySQL and Redis wire protocol clients stay on the main thread and use async pipe operations via the message protocol.
 - **Rust-owned advisory locks**: the browser host does not hold advisory-lock
