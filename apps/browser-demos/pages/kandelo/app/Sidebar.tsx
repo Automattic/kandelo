@@ -4,7 +4,7 @@ import * as React from "react";
 import markUrl from "../assets/kandelo-mark.png";
 
 export type ViewId = "machine" | "gallery" | "config" | "internals" | "browse" | "share" | "export";
-export type InternalsTab = "syslog" | "procs" | "vfs" | "config" | "syscalls";
+export type InternalsTab = "syslog" | "procs" | "vfs" | "lazy-load" | "config" | "syscalls";
 
 interface NavItem {
   id: ViewId;

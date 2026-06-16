@@ -82,6 +82,22 @@ export interface KernelSyscallEvent {
   args: [number, number, number, number, number, number];
 }
 
+export type LazyDownloadKind = "file" | "archive";
+export type LazyDownloadStatus = "started" | "progress" | "complete" | "error";
+
+export interface LazyDownloadEvent {
+  id: string;
+  kind: LazyDownloadKind;
+  status: LazyDownloadStatus;
+  url: string;
+  path?: string;
+  mountPrefix?: string;
+  loadedBytes: number;
+  totalBytes?: number;
+  error?: string;
+  t: number;
+}
+
 export interface KernelLike {
   /** Sequential pid counter exposed by BrowserKernel. */
   readonly nextPid: number;
@@ -121,6 +137,11 @@ export interface KernelLike {
    * when nobody's watching.
    */
   subscribeSyscalls?(cb: (event: KernelSyscallEvent) => void): () => void;
+  /**
+   * Subscribe to lazy VFS file/archive downloads. The worker emits these
+   * when it materializes content on first exec/open.
+   */
+  subscribeLazyDownloads?(cb: (event: LazyDownloadEvent) => void): () => void;
   spawn(
     programBytes: ArrayBuffer,
     argv: string[],
@@ -458,6 +479,10 @@ export interface KernelHost {
   subscribeDmesg(cb: (line: DmesgLine) => void): () => void;
   dmesgHistory(): DmesgLine[];
 
+  // Lazy VFS materialization progress
+  subscribeLazyDownloads(cb: (event: LazyDownloadEvent) => void): () => void;
+  lazyDownloadHistory(): LazyDownloadEvent[];
+
   // Process lifecycle — fires on spawn/exec/exit. Inspector tabs use this
   // to refetch enumProcs / readMemMap instead of polling on a timer.
   subscribeProcessEvents(cb: (event: ProcessEvent) => void): () => void;
@@ -569,6 +594,10 @@ function waitForPtyReadiness(
   });
 }
 
+function nowMs(): number {
+  return typeof performance !== "undefined" ? performance.now() : Date.now();
+}
+
 // ── LiveKernelHost — wraps the real host runtime in host/src/ ──────────────
 //
 // LiveKernelHost owns the UI-facing session state: status, descriptor,
@@ -663,6 +692,10 @@ export class LiveKernelHost implements KernelHost {
   private dmesgRing: DmesgLine[] = [];
   private dmesgListeners = new ListenerSet<DmesgLine>();
   private dmesgCapacity = 4096;
+  private lazyDownloadRing: LazyDownloadEvent[] = [];
+  private lazyDownloadCurrent = new Map<string, LazyDownloadEvent>();
+  private lazyDownloadListeners = new ListenerSet<LazyDownloadEvent>();
+  private lazyDownloadCapacity = 512;
   private processListeners = new ListenerSet<ProcessEvent>();
   private webPreviewListeners = new ListenerSet<WebPreviewState | null>();
   private presentationListeners = new ListenerSet<DemoPresentation>();
@@ -678,6 +711,7 @@ export class LiveKernelHost implements KernelHost {
   private demoGuide: DemoGuideConfig | null = null;
   private surfaceAvailability: SurfaceAvailability = { ...DEFAULT_SURFACE_AVAILABILITY };
   private offFramebufferAvailability: (() => void) | null = null;
+  private offLazyDownloads: (() => void) | null = null;
 
   private kernel?: KernelLike;
   private shell?: NonNullable<LiveKernelHostOptions["shell"]>;
@@ -700,12 +734,16 @@ export class LiveKernelHost implements KernelHost {
     this._status = opts.status ?? "idle";
     this._descriptor = opts.descriptor ?? DEFAULT_DESCRIPTOR;
     this.presentation = opts.presentation ?? DEFAULT_PRESENTATION;
-    this.kernel = opts.kernel;
+    this.kernel = undefined;
     this.shell = opts.shell;
     this.applyBootDescriptorImpl = opts.applyBootDescriptor;
     this.galleryItems = opts.galleryItems ?? [];
-    this.refreshTerminalAvailability();
-    this.refreshFramebufferAvailability();
+    if (opts.kernel) {
+      this.attachKernel(opts.kernel);
+    } else {
+      this.refreshTerminalAvailability();
+      this.refreshFramebufferAvailability();
+    }
     this.refreshWebAvailability();
   }
 
@@ -713,8 +751,12 @@ export class LiveKernelHost implements KernelHost {
 
   /** Replace the wrapped KernelLike. Used after `boot` resolves. */
   attachKernel(kernel: KernelLike): void {
+    this.cancelLazyDownloads("kernel replaced");
+    this.clearLazyDownloadHistory();
     this.offFramebufferAvailability?.();
     this.offFramebufferAvailability = null;
+    this.offLazyDownloads?.();
+    this.offLazyDownloads = null;
     this.kernel = kernel;
     this.ptySessions.clear();
     this.ptyCommandQueues.clear();
@@ -724,14 +766,23 @@ export class LiveKernelHost implements KernelHost {
         this.refreshFramebufferAvailability();
       });
     }
+    if (kernel.subscribeLazyDownloads) {
+      this.offLazyDownloads = kernel.subscribeLazyDownloads((event) => {
+        this.emitLazyDownloadEvent(event);
+      });
+    }
     this.refreshTerminalAvailability();
     this.refreshFramebufferAvailability();
   }
 
   /** Clear the wrapped kernel after a failed boot without changing status. */
   detachKernel(): void {
+    this.cancelLazyDownloads("kernel detached");
+    this.clearLazyDownloadHistory();
     this.offFramebufferAvailability?.();
     this.offFramebufferAvailability = null;
+    this.offLazyDownloads?.();
+    this.offLazyDownloads = null;
     this.kernel = undefined;
     this.ptySessions.clear();
     this.ptyCommandQueues.clear();
@@ -821,6 +872,40 @@ export class LiveKernelHost implements KernelHost {
    */
   emitProcessEvent(event: ProcessEvent): void {
     this.processListeners.emit(event);
+  }
+
+  /** Emit lazy VFS materialization progress from the wrapped kernel. */
+  emitLazyDownloadEvent(event: LazyDownloadEvent): void {
+    const copy = { ...event };
+    if (copy.status === "complete" || copy.status === "error") {
+      this.lazyDownloadCurrent.delete(copy.id);
+    } else {
+      this.lazyDownloadCurrent.set(copy.id, copy);
+    }
+    this.lazyDownloadRing.push(copy);
+    if (this.lazyDownloadRing.length > this.lazyDownloadCapacity) {
+      this.lazyDownloadRing.splice(0, this.lazyDownloadRing.length - this.lazyDownloadCapacity);
+    }
+    this.lazyDownloadListeners.emit(copy);
+  }
+
+  private cancelLazyDownloads(reason: string): void {
+    if (this.lazyDownloadCurrent.size === 0) return;
+    const active = Array.from(this.lazyDownloadCurrent.values());
+    this.lazyDownloadCurrent.clear();
+    for (const event of active) {
+      this.emitLazyDownloadEvent({
+        ...event,
+        status: "error",
+        error: reason,
+        t: nowMs(),
+      });
+    }
+  }
+
+  private clearLazyDownloadHistory(): void {
+    this.lazyDownloadRing = [];
+    this.lazyDownloadCurrent.clear();
   }
 
   /** Push a dmesg line into the ring and fan out to subscribers. */
@@ -922,8 +1007,11 @@ export class LiveKernelHost implements KernelHost {
 
   async halt(): Promise<void> {
     this.setStatus("halted");
+    this.cancelLazyDownloads("kernel halted");
     this.offFramebufferAvailability?.();
     this.offFramebufferAvailability = null;
+    this.offLazyDownloads?.();
+    this.offLazyDownloads = null;
     this.setSurfaceAvailability({ terminal: false, framebuffer: false, web: false });
     this.setDemoGuide(null);
     await this.kernel?.destroy?.();
@@ -941,6 +1029,14 @@ export class LiveKernelHost implements KernelHost {
 
   dmesgHistory(): DmesgLine[] {
     return this.dmesgRing.slice();
+  }
+
+  subscribeLazyDownloads(cb: (event: LazyDownloadEvent) => void): () => void {
+    return this.lazyDownloadListeners.add(cb);
+  }
+
+  lazyDownloadHistory(): LazyDownloadEvent[] {
+    return this.lazyDownloadRing.slice();
   }
 
   subscribeProcessEvents(cb: (event: ProcessEvent) => void): () => void {

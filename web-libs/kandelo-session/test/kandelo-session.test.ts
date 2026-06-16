@@ -3,6 +3,7 @@ import {
   LiveKernelHost,
   type BootDescriptor,
   type FileSystemLike,
+  type LazyDownloadEvent,
   type MachineStatus,
   type ProcessEvent,
 } from "../src/kernel-host";
@@ -203,6 +204,75 @@ describe("LiveKernelHost: process events", () => {
     host.emitProcessEvent({ kind: "spawn", pid: 1 });
     expect(a).not.toHaveBeenCalled();
     expect(b).toHaveBeenCalledOnce();
+  });
+});
+
+describe("LiveKernelHost: lazy download events", () => {
+  it("fans out kernel lazy download events and records history", () => {
+    let kernelCb: ((event: LazyDownloadEvent) => void) | null = null;
+    const offKernel = vi.fn();
+    const host = new LiveKernelHost({
+      kernel: {
+        fs: makeFs({ "/etc/passwd": "" }),
+        nextPid: 1,
+        subscribeLazyDownloads(cb: (event: LazyDownloadEvent) => void) {
+          kernelCb = cb;
+          return offKernel;
+        },
+      } as any,
+    });
+    const seen: LazyDownloadEvent[] = [];
+    host.subscribeLazyDownloads((event) => seen.push(event));
+
+    const event: LazyDownloadEvent = {
+      id: "file:7",
+      kind: "file",
+      status: "progress",
+      url: "/assets/node.wasm",
+      path: "/usr/bin/node",
+      loadedBytes: 512,
+      totalBytes: 1024,
+      t: 10,
+    };
+    kernelCb?.(event);
+
+    expect(seen).toEqual([event]);
+    expect(host.lazyDownloadHistory()).toEqual([event]);
+    host.detachKernel();
+    expect(offKernel).toHaveBeenCalledOnce();
+  });
+
+  it("clears lazy download history when the kernel is replaced", () => {
+    let kernelCb: ((event: LazyDownloadEvent) => void) | null = null;
+    const host = new LiveKernelHost({
+      kernel: {
+        fs: makeFs({ "/etc/passwd": "" }),
+        nextPid: 1,
+        subscribeLazyDownloads(cb: (event: LazyDownloadEvent) => void) {
+          kernelCb = cb;
+          return vi.fn();
+        },
+      } as any,
+    });
+
+    kernelCb?.({
+      id: "file:7",
+      kind: "file",
+      status: "complete",
+      url: "/assets/curl.wasm",
+      path: "/usr/bin/curl",
+      loadedBytes: 1024,
+      totalBytes: 1024,
+      t: 10,
+    });
+    expect(host.lazyDownloadHistory()).toHaveLength(1);
+
+    host.attachKernel({
+      fs: makeFs({ "/etc/passwd": "" }),
+      nextPid: 1,
+    } as any);
+
+    expect(host.lazyDownloadHistory()).toEqual([]);
   });
 });
 

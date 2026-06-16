@@ -592,6 +592,9 @@ async function handleInit(msg: Extract<MainToKernelMessage, { type: "init" }>) {
   } else {
     throw new Error("init: vfsImage or fsSab required");
   }
+  memfs.subscribeLazyDownloads((event) => {
+    post({ type: "lazy_download", event });
+  });
   io = new VirtualPlatformIO(mounts, new BrowserTimeProvider());
 
   // Create TLS-MITM network backend. Programs do real TLS handshakes via

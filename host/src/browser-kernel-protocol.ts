@@ -8,6 +8,7 @@ import type {
   HttpRequest,
   HttpResponse,
 } from "./networking/in-kernel-http";
+import type { LazyDownloadEvent } from "./vfs/memory-fs";
 
 export type { HttpRequest, HttpResponse };
 
@@ -453,6 +454,11 @@ export interface HttpBridgePendingMessage {
   count: number;
 }
 
+export interface LazyDownloadMessage {
+  type: "lazy_download";
+  event: LazyDownloadEvent;
+}
+
 export type KernelToMainMessage =
   | ReadyMessage
   | InitErrorMessage
@@ -467,4 +473,5 @@ export type KernelToMainMessage =
   | FbRebindMemoryMessage
   | FbWriteMessage
   | ProcEventMessage
-  | HttpBridgePendingMessage;
+  | HttpBridgePendingMessage
+  | LazyDownloadMessage;
