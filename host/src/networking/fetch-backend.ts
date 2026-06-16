@@ -1,5 +1,8 @@
 import type { NetworkIO } from "../types";
-import { parseNumericIpv4Hostname, validateDnsHostname } from "./hostname";
+import {
+  parseNumericIpv4Hostname,
+  validateSyntheticDnsHostname,
+} from "./hostname";
 
 /** Error with errno property for EAGAIN propagation to the kernel host imports. */
 export class EagainError extends Error {
@@ -230,7 +233,7 @@ export class FetchNetworkBackend implements NetworkIO {
   getaddrinfo(hostname: string): Uint8Array {
     const literalIp = parseNumericIpv4Hostname(hostname);
     if (literalIp) return literalIp;
-    validateDnsHostname(hostname);
+    validateSyntheticDnsHostname(hostname, this.options.hostAliases);
 
     // In the browser, return a synthetic IP.
     // The actual connection uses the Host header, not this IP.
