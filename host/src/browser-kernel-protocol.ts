@@ -8,6 +8,7 @@ import type {
   HttpRequest,
   HttpResponse,
 } from "./networking/in-kernel-http";
+import type { LazyDownloadEvent } from "./vfs/memory-fs";
 
 export type { HttpRequest, HttpResponse };
 
@@ -470,6 +471,20 @@ export interface ProcEventMessage {
   ppid?: number;
 }
 
+/**
+ * Number of service-worker preview requests currently being served through
+ * the transferred HTTP bridge.
+ */
+export interface HttpBridgePendingMessage {
+  type: "http_bridge_pending";
+  count: number;
+}
+
+export interface LazyDownloadMessage {
+  type: "lazy_download";
+  event: LazyDownloadEvent;
+}
+
 export type KernelToMainMessage =
   | ReadyMessage
   | InitErrorMessage
@@ -483,4 +498,6 @@ export type KernelToMainMessage =
   | FbUnbindMessage
   | FbRebindMemoryMessage
   | FbWriteMessage
-  | ProcEventMessage;
+  | ProcEventMessage
+  | HttpBridgePendingMessage
+  | LazyDownloadMessage;

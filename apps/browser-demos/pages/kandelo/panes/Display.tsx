@@ -51,6 +51,8 @@ const WebPreviewPane = React.forwardRef<DisplayHandle, FramebufferProps & {
   const [draftPath, setDraftPath] = React.useState("/");
   const [iframeSrc, setIframeSrc] = React.useState(() => buildPreviewUrl(preview.url, "/"));
   const ready = preview.status === "running";
+  const pendingRequests = preview.pendingRequests ?? 0;
+  const hasPendingRequests = ready && pendingRequests > 0;
   const iframeRef = React.useRef<HTMLIFrameElement | null>(null);
 
   React.useEffect(() => {
@@ -208,6 +210,10 @@ const WebPreviewPane = React.forwardRef<DisplayHandle, FramebufferProps & {
                 aria-label="Preview URL path"
               />
               <button className="kweb-urlbar-go" type="submit">Go</button>
+              <RequestIndicator
+                active={hasPendingRequests}
+                pendingRequests={pendingRequests}
+              />
             </form>
             <iframe
               ref={iframeRef}
@@ -249,6 +255,25 @@ const WebPreviewPane = React.forwardRef<DisplayHandle, FramebufferProps & {
 });
 
 WebPreviewPane.displayName = "WebPreviewPane";
+
+const RequestIndicator: React.FC<{
+  active: boolean;
+  pendingRequests: number;
+}> = ({ active, pendingRequests }) => (
+  <span
+    className={`kweb-request-indicator${active ? " active" : ""}`}
+    role={active ? "status" : undefined}
+    aria-hidden={!active}
+    aria-label={active
+      ? `${pendingRequests} pending preview ${pendingRequests === 1 ? "request" : "requests"}`
+      : undefined}
+    title={active
+      ? `${pendingRequests} pending ${pendingRequests === 1 ? "request" : "requests"}`
+      : undefined}
+  >
+    <span className="kweb-request-spinner" />
+  </span>
+);
 
 function buildPreviewUrl(base: string, path: string): string {
   if (base === "about:blank") return base;
