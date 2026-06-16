@@ -88,7 +88,15 @@ export interface NodeKernelHostOptions {
    *     to a VFS-only world yet.
    */
   rootfsImage?: "default" | ArrayBuffer | Uint8Array;
-  extraMounts?: Array<{ mountPoint: string; hostPath: string; readonly?: boolean }>;
+  extraMounts?: Array<{
+    mountPoint: string;
+    hostPath: string;
+    readonly?: boolean;
+    /** Virtual owner for existing host-backed mount entries. Defaults to root. */
+    uid?: number;
+    /** Virtual group for existing host-backed mount entries. Defaults to root. */
+    gid?: number;
+  }>;
 }
 
 export interface SpawnOptions {
