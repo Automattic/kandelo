@@ -90,16 +90,21 @@ export class HostFileSystem implements FileSystemBackend {
   private fdPositions = new Map<number, number>();
   private dirHandles = new Map<number, fs.Dir>();
   private nextDirHandle = 1;
-  private metadata = new NativeMetadataOverlay();
+  private metadata: NativeMetadataOverlay;
   private dirPathCache = new Map<string, string>();
   private readonly maxDirPathCacheEntries = 4096;
 
-  constructor(rootPath: string, guestMountPoint = "/") {
+  constructor(
+    rootPath: string,
+    guestMountPoint = "/",
+    options: { uid?: number; gid?: number } = {},
+  ) {
     const resolvedRoot = nodePath.resolve(rootPath);
     this.rootPath = fs.existsSync(resolvedRoot)
       ? fs.realpathSync(resolvedRoot)
       : resolvedRoot;
     this.guestMountPoint = this.normalizeGuestMountPoint(guestMountPoint);
+    this.metadata = new NativeMetadataOverlay(options.uid ?? 0, options.gid ?? 0);
   }
 
   /**
