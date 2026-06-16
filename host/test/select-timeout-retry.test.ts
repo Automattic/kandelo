@@ -140,6 +140,52 @@ describe("centralized select/pselect timeout retries", () => {
     expect(worker.pendingPollRetries.size).toBe(0);
   });
 
+  it("interrupts host-side pselect6 retry when a handler signal is pending", () => {
+    const kernelMemory = createSharedMemory();
+    const processMemory = createSharedMemory();
+    const scratchOffset = 128;
+    const handleChannel = vi.fn(() => {
+      const kernelView = new DataView(kernelMemory.buffer, scratchOffset);
+      kernelView.setBigInt64(CH_RETURN, -1n, true);
+      kernelView.setUint32(CH_ERRNO, 11, true);
+      return 0;
+    });
+    const worker = createWorkerHarness({
+      kernel_handle_channel: handleChannel,
+      kernel_get_process_exit_status: () => 0,
+    });
+    worker.kernelMemory = kernelMemory;
+    worker.scratchOffset = scratchOffset;
+    worker.dequeueSignalForDelivery = vi.fn(() => 10);
+
+    const channel = createChannel(42, processMemory);
+    worker.processes = new Map([
+      [42, { pid: 42, memory: processMemory, channels: [channel], ptrWidth: 4 }],
+    ]);
+    worker.activeChannels = [channel];
+
+    const readfdsPtr = 1024;
+    const tsPtr = 2048;
+    const processView = new DataView(processMemory.buffer);
+    processView.setUint8(readfdsPtr, 1);
+    processView.setBigInt64(tsPtr, 1n, true);
+    processView.setBigInt64(tsPtr + 8, 0n, true);
+
+    const origArgs = [1, readfdsPtr, 0, 0, tsPtr, 0];
+    worker.handlePselect6(channel, origArgs);
+
+    expect(worker.dequeueSignalForDelivery).toHaveBeenCalledWith(channel);
+    expect(worker.completeChannel).toHaveBeenCalledWith(
+      channel,
+      expect.any(Number),
+      origArgs,
+      undefined,
+      -1,
+      4,
+    );
+    expect(worker.pendingSelectRetries.size).toBe(0);
+  });
+
   it("merges disjoint MAP_SHARED writes from live processes", () => {
     const worker = createWorkerHarness({});
     const mem1 = createSharedMemory();
