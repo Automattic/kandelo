@@ -272,11 +272,17 @@ for src in "$REPO_ROOT/programs/"*.c; do
             ;;
         sdl2_demo.c)
             # Phase C demo — links the full SDL2 + dependency set.
+            # libEGL / libGLESv2 are appended explicitly because the
+            # demo includes <SDL2/SDL_opengles2.h>, which transitively
+            # pulls <GLES2/gl2.h> but doesn't show up in
+            # build_program's top-level grep that auto-adds the GL
+            # stubs for direct EGL/GLES includes.
             build_program "$src" "$OUT_DIR_32" \
                 "$SYSROOT/lib/libSDL2.a" \
                 "$SYSROOT/lib/libasound.a" \
                 "$SYSROOT/lib/libinput.a" \
-                "$SYSROOT/lib/libgbm.a" "$SYSROOT/lib/libdrm.a"
+                "$SYSROOT/lib/libgbm.a" "$SYSROOT/lib/libdrm.a" \
+                "$SYSROOT/lib/libEGL.a" "$SYSROOT/lib/libGLESv2.a"
             ;;
         *)
             build_program "$src" "$OUT_DIR_32"
