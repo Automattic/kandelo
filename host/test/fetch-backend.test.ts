@@ -89,7 +89,7 @@ describe("FetchNetworkBackend", () => {
   });
 
   describe("getaddrinfo", () => {
-    it("returns a 4-byte address for any hostname", () => {
+    it("returns a 4-byte address for DNS names that can be deferred to fetch", () => {
       const backend = new FetchNetworkBackend();
       const addr = backend.getaddrinfo("example.com");
       expect(addr.length).toBe(4);
@@ -124,6 +124,19 @@ describe("FetchNetworkBackend", () => {
       expect(backend.getaddrinfo("example.com.")).toHaveLength(4);
       expect(() => backend.getaddrinfo(".toto.toto.toto")).toThrow("ENOENT");
       expect(() => backend.getaddrinfo(`www.${"x".repeat(100)}.com`)).toThrow("ENOENT");
+    });
+
+    it("rejects names the browser resolver cannot truthfully synthesize", () => {
+      const backend = new FetchNetworkBackend();
+      expect(() => backend.getaddrinfo("dummy-host-name")).toThrow("ENOENT");
+      expect(() => backend.getaddrinfo("totes.invalid")).toThrow("ENOENT");
+    });
+
+    it("allows explicitly aliased unqualified names", () => {
+      const backend = new FetchNetworkBackend({
+        hostAliases: { registry: "registry.npmjs.org" },
+      });
+      expect(backend.getaddrinfo("registry").length).toBe(4);
     });
   });
 
@@ -215,6 +228,19 @@ describe("TlsNetworkBackend HTTP proxy path", () => {
       expect(backend.getaddrinfo("example.com.")).toHaveLength(4);
       expect(() => backend.getaddrinfo(".toto.toto.toto")).toThrow("ENOENT");
       expect(() => backend.getaddrinfo(`www.${"x".repeat(100)}.com`)).toThrow("ENOENT");
+    });
+
+    it("rejects special-use invalid and unqualified names", () => {
+      const backend = new TlsNetworkBackend();
+      expect(() => backend.getaddrinfo("dummy-host-name")).toThrow("ENOENT");
+      expect(() => backend.getaddrinfo("totes.invalid")).toThrow("ENOENT");
+    });
+
+    it("allows explicitly aliased unqualified names", () => {
+      const backend = new TlsNetworkBackend({
+        dnsAliases: { registry: "https://registry.npmjs.org" },
+      });
+      expect(backend.getaddrinfo("registry").length).toBe(4);
     });
   });
 
