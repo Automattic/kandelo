@@ -1842,6 +1842,13 @@ There are two consumption patterns for VFS images, depending on whether the demo
 
 Build scripts are in `images/vfs/scripts/` and share common helpers (`vfs-image-helpers.ts` for VFS write primitives, `dinit-image-helpers.ts` for the dinit binary + standard rootfs files + service-file rendering). To build all VFS images, use the per-demo scripts above or the convenience targets in `run.sh` (e.g., `./run.sh build python-vfs`). The repaired Python and Erlang recipes remain disabled legacy compatibility paths: staging does not publish them, and they are not Homebrew distribution units.
 
+The Node counterparts for the service-supervised demos consume these same
+images. They authenticate imported lazy-tree seals, apply transient runtime
+configuration to a private restored image, give the resulting root filesystem
+to `NodeKernelHost`, and start `/sbin/dinit` with `spawnFromVfs()`. They do not
+reconstruct the browser service graph by launching loose package binaries from
+the host filesystem.
+
 **Binary format:**
 
 `MemoryFileSystem.saveImage()` returns the raw VFS image below. The image

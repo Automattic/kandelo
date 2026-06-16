@@ -29,23 +29,15 @@ else
     echo "--- SDK tools: OK ---"
 fi
 
-# Step 3: nginx binary
-if ! "$REPO_ROOT/scripts/resolve-binary.sh" programs/nginx.wasm >/dev/null 2>&1; then
-    echo "--- Building nginx ---"
-    bash "$REPO_ROOT/packages/registry/nginx/build-nginx-local.sh"
+# Step 3: nginx + PHP-FPM service VFS image
+if ! "$REPO_ROOT/scripts/resolve-binary.sh" programs/nginx-php-vfs.vfs.zst >/dev/null 2>&1; then
+    echo "--- Building nginx + PHP-FPM VFS image ---"
+    bash "$REPO_ROOT/run.sh" build nginx-php-vfs
 else
-    echo "--- nginx.wasm: OK ---"
+    echo "--- nginx + PHP-FPM VFS image: OK ---"
 fi
 
-# Step 4: PHP-FPM binary (builds sqlite, zlib, openssl, libxml2 as needed)
-if ! "$REPO_ROOT/scripts/resolve-binary.sh" programs/php/php-fpm.wasm >/dev/null 2>&1; then
-    echo "--- Building PHP-FPM + dependencies ---"
-    bash "$REPO_ROOT/packages/registry/php/build-php.sh"
-else
-    echo "--- php-fpm.wasm: OK ---"
-fi
-
-# Step 5: Host dependencies
+# Step 4: Host dependencies
 if [ ! -d "$REPO_ROOT/node_modules" ]; then
     echo "--- Installing host dependencies ---"
     cd "$REPO_ROOT" && npm install && cd "$REPO_ROOT"

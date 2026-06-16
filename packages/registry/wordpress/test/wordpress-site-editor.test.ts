@@ -8,15 +8,13 @@
  *
  * Requires:
  *   0. KANDELO_WORDPRESS_SITE_EDITOR_E2E=1
- *   1. PHP binary: packages/registry/php/php-src/sapi/cli/php
- *   2. WordPress files: packages/registry/wordpress/wordpress/
- *   3. Kernel wasm: host/wasm/kandelo-kernel.wasm
- *   4. Playwright browsers: npx playwright install chromium
+ *   1. WordPress service VFS image: programs/wordpress.vfs.zst
+ *   2. Kernel wasm: host/wasm/kandelo-kernel.wasm
+ *   3. Playwright browsers: npx playwright install chromium
  */
 
 import { describe, it, expect, afterAll } from "vitest";
-import { existsSync, unlinkSync, mkdirSync, writeFileSync } from "node:fs";
-import { execSync } from "node:child_process";
+import { existsSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { spawn, type ChildProcess } from "node:child_process";
@@ -26,25 +24,23 @@ import { tryResolveBinary } from "../../../../host/src/binary-resolver";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const repoRoot = join(__dirname, "../../../..");
-const phpBinaryPath = tryResolveBinary("programs/php/php.wasm");
 const kernelWasmPath = tryResolveBinary("kernel.wasm");
-const wpDir = join(repoRoot, "packages/registry/wordpress/wordpress");
-const dbPath = join(wpDir, "wp-content/database/wordpress.db");
+const wpVfsPath = tryResolveBinary("programs/wordpress.vfs.zst")
+  ?? (existsSync(join(repoRoot, "apps/browser-demos/public/wordpress.vfs.zst"))
+    ? join(repoRoot, "apps/browser-demos/public/wordpress.vfs.zst")
+    : null);
 
-const PHP_AVAILABLE = !!phpBinaryPath;
-const WP_AVAILABLE = existsSync(join(wpDir, "wp-settings.php"));
 const KERNEL_AVAILABLE = !!kernelWasmPath;
+const WP_VFS_AVAILABLE = !!wpVfsPath;
 const E2E_ENABLED = process.env.KANDELO_WORDPRESS_SITE_EDITOR_E2E === "1";
 
 const SKIP_REASON = !E2E_ENABLED
   ? "set KANDELO_WORDPRESS_SITE_EDITOR_E2E=1 to run the heavyweight browser E2E"
-  : !PHP_AVAILABLE
-    ? "PHP binary not built"
-    : !WP_AVAILABLE
-      ? "WordPress not downloaded (run packages/registry/wordpress/setup.sh)"
-      : !KERNEL_AVAILABLE
-        ? "Kernel wasm not built (run bash build.sh)"
-        : "";
+  : !WP_VFS_AVAILABLE
+    ? "WordPress VFS image not built (run ./run.sh build wp-vfs)"
+    : !KERNEL_AVAILABLE
+      ? "Kernel wasm not built (run bash build.sh)"
+      : "";
 
 const ADMIN_USER = "admin";
 const ADMIN_PASS = "X9#kQ2!vLm@pR7$w";
@@ -81,7 +77,7 @@ async function startServer(port: number): Promise<ChildProcess> {
   proc.stderr?.on("data", (d) => { output += d.toString(); });
   proc.stdout?.on("data", (d) => { output += d.toString(); });
 
-  // Wait for PHP's built-in server startup message
+  // Wait for the dinit/nginx/PHP-FPM service stack to be ready.
   await new Promise<void>((resolve, reject) => {
     const timeout = setTimeout(() => {
       reject(new Error(
@@ -90,7 +86,7 @@ async function startServer(port: number): Promise<ChildProcess> {
     }, 120_000);
 
     const check = (data: Buffer) => {
-      if (/Development Server.*started/i.test(data.toString())) {
+      if (/WordPress running behind nginx \+ php-fpm/i.test(data.toString())) {
         clearTimeout(timeout);
         resolve();
       }
@@ -129,12 +125,9 @@ function killServer(proc: ChildProcess): void {
 }
 
 /**
- * Install WordPress by sending a POST and monitoring the database file.
- *
- * PHP's built-in server is single-threaded. The install POST blocks the
- * server while creating database tables. We can't wait for the response
- * to complete (PHP hangs after wp_install), so we monitor the DB file
- * directly and abort once install is confirmed.
+ * Install WordPress by sending the normal install POST. The VFS-backed
+ * service demo uses nginx + PHP-FPM workers, so the request can complete
+ * normally; no host-side database polling or server restart is needed.
  */
 async function installWordPress(baseUrl: string): Promise<void> {
   const body = new URLSearchParams({
@@ -147,51 +140,16 @@ async function installWordPress(baseUrl: string): Promise<void> {
     Submit: "Install WordPress",
   });
 
-  // Fire the install POST (don't wait for response — it hangs)
-  const controller = new AbortController();
-  fetch(`${baseUrl}/wp-admin/install.php?step=2`, {
+  const resp = await fetch(`${baseUrl}/wp-admin/install.php?step=2`, {
     method: "POST",
     headers: { "Content-Type": "application/x-www-form-urlencoded" },
     body: body.toString(),
-    signal: controller.signal,
-  }).catch(() => {});
-
-  // Monitor the database file until WordPress tables + admin user exist
-  const requiredTables = [
-    "wp_options", "wp_users", "wp_posts", "wp_comments",
-    "wp_terms", "wp_term_taxonomy", "wp_term_relationships",
-  ];
-
-  const deadline = Date.now() + 600_000; // 10 minutes
-  while (Date.now() < deadline) {
-    if (existsSync(dbPath)) {
-      try {
-        const tables = execSync(
-          `sqlite3 "${dbPath}" ".tables"`,
-          { encoding: "utf-8", timeout: 5000 },
-        );
-        const hasAll = requiredTables.every((t) => tables.includes(t));
-        if (hasAll) {
-          const users = execSync(
-            `sqlite3 "${dbPath}" "SELECT user_login FROM wp_users LIMIT 1;"`,
-            { encoding: "utf-8", timeout: 5000 },
-          );
-          if (users.includes(ADMIN_USER)) {
-            // Update siteurl/home to match current server URL
-            execSync(
-              `sqlite3 "${dbPath}" "UPDATE wp_options SET option_value='${baseUrl}' WHERE option_name IN ('siteurl','home');"`,
-              { timeout: 5000 },
-            );
-            controller.abort();
-            return;
-          }
-        }
-      } catch { /* DB might be locked */ }
-    }
-    await new Promise((r) => setTimeout(r, 2000));
+    signal: AbortSignal.timeout(600_000),
+  });
+  const text = await resp.text();
+  if (resp.status < 200 || resp.status >= 400) {
+    throw new Error(`WordPress install failed with HTTP ${resp.status}: ${text.slice(0, 1000)}`);
   }
-  controller.abort();
-  throw new Error("WordPress install did not complete within 10 minutes");
 }
 
 /** Dismiss the WP 6.7+ welcome guide modal if it appears. */
@@ -245,40 +203,15 @@ describe.skipIf(!!SKIP_REASON)("WordPress Site Editor E2E", () => {
     const port = await getRandomPort();
     const baseUrl = `http://127.0.0.1:${port}`;
 
-    // Fresh database
-    if (existsSync(dbPath)) {
-      unlinkSync(dbPath);
-    }
-
-    // Create mu-plugin to disable operations that hang in Wasm
-    const muPluginsDir = join(wpDir, "wp-content/mu-plugins");
-    mkdirSync(muPluginsDir, { recursive: true });
-    writeFileSync(
-      join(muPluginsDir, "wasm-optimizations.php"),
-      "<?php\n" +
-      "add_filter('pre_wp_mail', '__return_false');\n" +
-      "add_filter('pre_http_request', function($pre, $args, $url) {\n" +
-      "    return new WP_Error('http_disabled', 'HTTP requests disabled in Wasm');\n" +
-      "}, 10, 3);\n" +
-      "if (!defined('DISABLE_WP_CRON')) define('DISABLE_WP_CRON', true);\n" +
-      "if (!defined('DISALLOW_FILE_MODS')) define('DISALLOW_FILE_MODS', true);\n",
-    );
-
     // Start server
     serverProc = await startServer(port);
 
-    // Install WordPress (monitors DB file, then aborts the hanging POST)
+    // Install WordPress through the service stack.
     await installWordPress(baseUrl);
 
-    // The server is still blocked on the install POST. Restart it.
-    killServer(serverProc);
-    await new Promise((r) => setTimeout(r, 2000));
-    serverProc = await startServer(port);
-
     // Login via fetch to get auth cookies. We avoid using Playwright for
-    // login because the browser's dashboard subrequests (CSS, JS, AJAX)
-    // would block PHP's single-threaded built-in server, preventing
-    // subsequent page loads until all subrequests complete.
+    // login so the test can inject cookies and navigate straight to the
+    // editor page.
     const loginResp = await fetch(`${baseUrl}/wp-login.php`, {
       method: "POST",
       headers: { "Content-Type": "application/x-www-form-urlencoded" },
