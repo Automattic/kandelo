@@ -1,99 +1,71 @@
 #!/usr/bin/env node --experimental-strip-types
 /**
- * WordPress HTTP Server — serves WordPress via PHP's built-in server
- * running on kandelo with real TCP connections bridged in.
+ * WordPress service demo — boots the WordPress VFS on the Node host.
+ *
+ * dinit starts wp-config-init, SMTP capture, PHP-FPM, and nginx from the
+ * baked /etc/dinit.d service tree. This intentionally mirrors the browser
+ * demo instead of using PHP's built-in development server.
  *
  * Usage:
- *   node --experimental-strip-types packages/registry/wordpress/demo/serve.ts [port]
- *
- * Requires:
- *   1. PHP binary: packages/registry/php/php-src/sapi/cli/php
- *      (build with: cd packages/registry/php && bash build.sh)
- *   2. WordPress files: packages/registry/wordpress/wordpress/
- *      (download with: bash packages/registry/wordpress/setup.sh)
+ *   npx tsx packages/registry/wordpress/demo/serve.ts [port]
  */
 
-import { readFileSync, existsSync } from "node:fs";
-import { join, dirname } from "node:path";
-import { fileURLToPath } from "node:url";
-import { NodeKernelHost } from "../../../../host/src/node-kernel-host.ts";
-import { tryResolveBinary } from "../../../../host/src/binary-resolver.ts";
-
-const __dirname = dirname(fileURLToPath(import.meta.url));
-const repoRoot = join(__dirname, "../../../..");
-const phpBinaryPath =
-  tryResolveBinary("programs/php/php.wasm") ??
-  join(repoRoot, "packages/registry/php/php-src/sapi/cli/php");
-const wpDir = join(__dirname, "..", "wordpress");
-const routerScript = join(__dirname, "router.php");
-
-const port = parseInt(process.argv[2] || "3000", 10);
-
-// Validate prerequisites
-if (!existsSync(phpBinaryPath)) {
-  console.error("Error: PHP binary not found. Build with: cd packages/registry/php && bash build.sh");
-  process.exit(1);
-}
-if (!existsSync(join(wpDir, "wp-settings.php"))) {
-  console.error("Error: WordPress not found. Run: bash packages/registry/wordpress/setup.sh");
-  process.exit(1);
-}
-
-function loadFile(path: string): ArrayBuffer {
-  const buf = readFileSync(path);
-  return buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength);
-}
+import {
+  bootDinitServiceVfs,
+  configureWordPressRuntime,
+  finishWhenDinitExits,
+  installSignalHandlers,
+  trackDinitExit,
+  waitForHttp,
+} from "../../service-vfs-demo";
 
 async function main() {
-  const programBytes = loadFile(phpBinaryPath);
+  const port = parsePort(process.argv[2] ?? "3000");
 
-  const host = new NodeKernelHost({
-    maxWorkers: 4,
-    onStdout: (_pid, data) => process.stdout.write(data),
-    onStderr: (_pid, data) => process.stderr.write(data),
+  console.log("Booting WordPress VFS with dinit...");
+  const { host, exitPromise } = await bootDinitServiceVfs({
+    image: {
+      relPath: "programs/wordpress.vfs.zst",
+      publicFile: "wordpress.vfs.zst",
+      buildHint: "bash images/vfs/scripts/build-wp-vfs-image.sh",
+    },
+    target: "nginx",
+    maxWorkers: 12,
+    maxPages: 4096,
+    configure: (fs) => configureWordPressRuntime(fs, {
+      port,
+      freshSqliteDatabase: true,
+      phpFpmWorkers: 6,
+    }),
+    env: [
+      "HOME=/root",
+      "TERM=xterm-256color",
+      "PATH=/usr/local/bin:/usr/bin:/bin:/sbin:/usr/sbin",
+      "WP_APP_PATH=/",
+      "WP_PROTO=http",
+    ],
   });
 
-  await host.init();
+  installSignalHandlers(host);
+  const dinitExited = trackDinitExit(exitPromise);
 
-  console.log(`WordPress server starting on http://localhost:${port}`);
-  console.log("Waiting for PHP built-in server to initialize...");
+  console.log(`Waiting for WordPress on http://localhost:${port}/...`);
+  await waitForHttp(`http://localhost:${port}/`, 180_000, dinitExited);
 
-  // Load opcache as a Zend extension so the cli-server SAPI caches
-  // parsed bytecode across requests instead of re-parsing every .php
-  // file on every hit (~50 files for WordPress install per page).
-  // opcache.so is a third [[outputs]] entry in packages/registry/php/
-  // package.toml; the resolver places it at programs/php/opcache.so
-  // alongside php.wasm. Pass that directory as `extension_dir`.
-  const opcachePath = tryResolveBinary("programs/php/opcache.so");
-  const enableOpcache = process.env.NO_OPCACHE !== "1" && opcachePath !== null;
-  const opcacheArgs = enableOpcache ? [
-    "-d", `extension_dir=${dirname(opcachePath!)}`,
-    "-d", "zend_extension=opcache",
-    "-d", "opcache.enable=1",
-    "-d", "opcache.enable_cli=1",
-    "-d", "opcache.memory_consumption=128",
-    "-d", "opcache.validate_timestamps=0",
-  ] : [];
-  if (!enableOpcache && process.env.NO_OPCACHE !== "1") {
-    console.warn("WARN: opcache.so not found via resolver — running without opcache");
+  console.log("\nWordPress running behind nginx + php-fpm!");
+  console.log(`  Homepage:  curl http://localhost:${port}/`);
+  console.log(`  Admin:     http://localhost:${port}/wp-admin/`);
+  console.log("\nPress Ctrl+C to stop.");
+
+  await finishWhenDinitExits(host, exitPromise);
+}
+
+function parsePort(value: string): number {
+  const port = Number(value);
+  if (!Number.isInteger(port) || port <= 0 || port > 65535) {
+    throw new Error(`Invalid port: ${value}`);
   }
-  const exitPromise = host.spawn(programBytes, [
-    "php",
-    ...opcacheArgs,
-    "-S", `0.0.0.0:${port}`, "-t", wpDir, routerScript,
-  ], {
-    env: ["HOME=/tmp", "TMPDIR=/tmp"],
-  });
-
-  process.on("SIGINT", async () => {
-    console.log("\nShutting down...");
-    await host.destroy().catch(() => {});
-    process.exit(0);
-  });
-
-  const status = await exitPromise;
-  await host.destroy().catch(() => {});
-  process.exit(status);
+  return port;
 }
 
 main().catch((err) => {

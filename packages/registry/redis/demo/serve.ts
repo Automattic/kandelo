@@ -1,9 +1,8 @@
 /**
- * serve.ts — Run redis-server.wasm on the kandelo.
+ * serve.ts — Run the Redis service VFS on the Node host.
  *
- * Starts Redis 7.2 with 3 background threads (close_file, aof_fsync, lazy_free).
- * The kernel automatically bridges real TCP connections into the
- * kernel's pipe-backed sockets when redis calls listen().
+ * dinit starts redis-server from /etc/dinit.d/redis, matching the
+ * browser service demo.
  *
  * Usage:
  *   npx tsx packages/registry/redis/demo/serve.ts [port]
@@ -11,79 +10,57 @@
  * Then: redis-cli -p 6379 SET hello world
  */
 
-import { readFileSync, existsSync, mkdirSync } from "fs";
-import { resolve, dirname } from "path";
-import { NodeKernelHost } from "../../../../host/src/node-kernel-host";
-
-const scriptDir = dirname(new URL(import.meta.url).pathname);
-const repoRoot = resolve(scriptDir, "../../../..");
-
-function loadBytes(path: string): ArrayBuffer {
-    const buf = readFileSync(path);
-    return buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength);
-}
+import {
+  bootDinitServiceVfs,
+  finishWhenDinitExits,
+  installSignalHandlers,
+  rewriteDinitServiceCommand,
+  trackDinitExit,
+  waitForTcp,
+} from "../../service-vfs-demo";
 
 async function main() {
-    const port = process.argv[2] || "6379";
+  const port = parsePort(process.argv[2] ?? "6379");
 
-    const redisWasm = resolve(repoRoot, "packages/registry/redis/bin/redis-server.wasm");
-    if (!existsSync(redisWasm)) {
-        console.error("redis-server.wasm not found. Run: bash packages/registry/redis/build-redis.sh");
-        process.exit(1);
-    }
+  console.log("Booting Redis VFS with dinit...");
+  const { host, exitPromise } = await bootDinitServiceVfs({
+    image: {
+      relPath: "programs/redis-vfs.vfs.zst",
+      publicFile: "redis.vfs.zst",
+      buildHint: "bash images/vfs/scripts/build-redis-vfs-image.sh",
+    },
+    target: "redis",
+    maxWorkers: 8,
+    configure: (fs) => {
+      rewriteDinitServiceCommand(fs, "redis", (command) =>
+        command.replace(/--port\s+\d+/, `--port ${port}`),
+      );
+    },
+  });
 
-    const redisBytes = loadBytes(redisWasm);
+  installSignalHandlers(host);
+  const dinitExited = trackDinitExit(exitPromise);
 
-    // Create data directory for Redis persistence
-    const dataDir = resolve(scriptDir, "data");
-    mkdirSync(dataDir, { recursive: true });
+  console.log(`Waiting for Redis on 127.0.0.1:${port}...`);
+  await waitForTcp(port, 120_000, dinitExited);
 
-    const host = new NodeKernelHost({
-        maxWorkers: 8,
-        onStdout: (_pid, data) => process.stdout.write(data),
-        onStderr: (_pid, data) => process.stderr.write(data),
-    });
+  console.log("\nRedis running under dinit.");
+  console.log(`  redis-cli -p ${port} SET hello world`);
+  console.log(`  redis-cli -p ${port} GET hello`);
+  console.log("\nPress Ctrl+C to stop.");
 
-    await host.init();
+  await finishWhenDinitExits(host, exitPromise);
+}
 
-    console.log(`Starting Redis 7.2 on port ${port}...`);
-    console.log(`Data directory: ${dataDir}`);
-    console.log(`  redis-cli -p ${port} SET hello world`);
-    console.log(`  redis-cli -p ${port} GET hello`);
-    console.log("Press Ctrl+C to stop.\n");
-
-    const exitPromise = host.spawn(redisBytes, [
-        "redis-server",
-        "--port", port,
-        "--bind", "0.0.0.0",
-        "--dir", dataDir,
-        "--save", "",         // Disable RDB snapshots
-        "--appendonly", "no", // Disable AOF
-        "--loglevel", "notice",
-        "--daemonize", "no",
-        "--databases", "16",
-        "--io-threads", "1",  // Single I/O thread
-    ], {
-        env: [
-            "HOME=/tmp",
-            "PATH=/usr/local/bin:/usr/bin:/bin",
-        ],
-        cwd: dataDir,
-    });
-
-    // Handle Ctrl+C gracefully
-    process.on("SIGINT", async () => {
-        console.log("\nShutting down Redis...");
-        await host.destroy().catch(() => {});
-        process.exit(0);
-    });
-
-    const status = await exitPromise;
-    await host.destroy().catch(() => {});
-    process.exit(status);
+function parsePort(value: string): number {
+  const port = Number(value);
+  if (!Number.isInteger(port) || port <= 0 || port > 65535) {
+    throw new Error(`Invalid port: ${value}`);
+  }
+  return port;
 }
 
 main().catch((e) => {
-    console.error(e);
-    process.exit(1);
+  console.error(e);
+  process.exit(1);
 });

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 #
 # Build (if needed) and run the full LAMP stack on kandelo.
-# MariaDB + PHP-FPM + nginx + WordPress, all as Wasm processes.
+# MariaDB + PHP-FPM + nginx + WordPress, supervised by dinit in a VFS image.
 #
 # Usage:
 #   bash packages/registry/lamp/demo/run.sh [port]
@@ -30,40 +30,15 @@ else
     echo "--- SDK tools: OK ---"
 fi
 
-# Step 3: MariaDB
-if ! "$REPO_ROOT/scripts/resolve-binary.sh" programs/mariadb/mariadbd.wasm >/dev/null 2>&1 \
-   && [ ! -f "$REPO_ROOT/packages/registry/mariadb/mariadb-install/bin/mariadbd.wasm" ]; then
-    echo "--- Building MariaDB ---"
-    bash "$REPO_ROOT/packages/registry/mariadb/build-mariadb.sh"
+# Step 3: LAMP service VFS image
+if ! "$REPO_ROOT/scripts/resolve-binary.sh" programs/lamp.vfs.zst >/dev/null 2>&1; then
+    echo "--- Building LAMP VFS image ---"
+    bash "$REPO_ROOT/run.sh" build lamp-vfs
 else
-    echo "--- MariaDB: OK ---"
+    echo "--- LAMP VFS image: OK ---"
 fi
 
-# Step 4: nginx
-if ! "$REPO_ROOT/scripts/resolve-binary.sh" programs/nginx.wasm >/dev/null 2>&1; then
-    echo "--- Building nginx ---"
-    bash "$REPO_ROOT/packages/registry/nginx/build-nginx-local.sh"
-else
-    echo "--- nginx.wasm: OK ---"
-fi
-
-# Step 5: PHP-FPM (builds sqlite, zlib, openssl, libxml2 as needed)
-if ! "$REPO_ROOT/scripts/resolve-binary.sh" programs/php/php-fpm.wasm >/dev/null 2>&1; then
-    echo "--- Building PHP-FPM + dependencies ---"
-    bash "$REPO_ROOT/packages/registry/php/build-php.sh"
-else
-    echo "--- php-fpm.wasm: OK ---"
-fi
-
-# Step 6: WordPress + wp-config.php for MySQL
-if [ ! -f "$SCRIPT_DIR/wordpress/wp-settings.php" ]; then
-    echo "--- Setting up WordPress ---"
-    bash "$SCRIPT_DIR/setup.sh"
-else
-    echo "--- WordPress: OK ---"
-fi
-
-# Step 7: Host dependencies
+# Step 4: Host dependencies
 if [ ! -d "$REPO_ROOT/node_modules" ]; then
     echo "--- Installing host dependencies ---"
     cd "$REPO_ROOT" && npm install && cd "$REPO_ROOT"

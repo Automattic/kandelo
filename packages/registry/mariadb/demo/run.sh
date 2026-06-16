@@ -3,7 +3,7 @@
 # Build (if needed) and run MariaDB on kandelo.
 #
 # Usage:
-#   bash packages/registry/mariadb/demo/run.sh [port]
+#   bash packages/registry/mariadb/demo/run.sh [--innodb] [--wasm64]
 #
 set -euo pipefail
 
@@ -29,13 +29,20 @@ else
     echo "--- SDK tools: OK ---"
 fi
 
-# Step 3: MariaDB binary
-if ! "$REPO_ROOT/scripts/resolve-binary.sh" programs/mariadb/mariadbd.wasm >/dev/null 2>&1 \
-   && [ ! -f "$REPO_ROOT/packages/registry/mariadb/mariadb-install/bin/mariadbd.wasm" ]; then
-    echo "--- Building MariaDB ---"
-    bash "$REPO_ROOT/packages/registry/mariadb/build-mariadb.sh"
+# Step 3: MariaDB service VFS image
+if printf '%s\n' "$@" | grep -qx -- "--wasm64"; then
+    vfs_target="mariadb64-vfs"
+    vfs_rel="programs/wasm64/mariadb-vfs.vfs.zst"
 else
-    echo "--- MariaDB: OK ---"
+    vfs_target="mariadb-vfs"
+    vfs_rel="programs/mariadb-vfs.vfs.zst"
+fi
+
+if ! "$REPO_ROOT/scripts/resolve-binary.sh" "$vfs_rel" >/dev/null 2>&1; then
+    echo "--- Building MariaDB VFS image ---"
+    bash "$REPO_ROOT/run.sh" build "$vfs_target"
+else
+    echo "--- MariaDB VFS image: OK ---"
 fi
 
 # Step 4: Host dependencies
