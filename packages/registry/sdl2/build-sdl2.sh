@@ -49,15 +49,15 @@ if ! command -v wasm32posix-cc &>/dev/null; then
     exit 1
 fi
 
-# --- Resolve link-time deps from the registry ---
-# alsa-lib + libdrm + libinput-lite expose their static archives
-# under $WASM_POSIX_DEP_OUT_DIR/lib and headers under
-# $WASM_POSIX_DEP_OUT_DIR/include. Each resolve installs into the
-# shared cache and prints the install path on stdout.
-echo "==> Resolving link-time deps..."
-LIBDRM_PREFIX="$(cd "$REPO_ROOT" && cargo run -p xtask --quiet -- build-deps resolve libdrm >/dev/null && cargo run -p xtask --quiet -- build-deps path libdrm)"
-ALSA_PREFIX="$(cd "$REPO_ROOT"  && cargo run -p xtask --quiet -- build-deps resolve alsa-lib >/dev/null && cargo run -p xtask --quiet -- build-deps path alsa-lib)"
-LIBINPUT_PREFIX="$(cd "$REPO_ROOT" && cargo run -p xtask --quiet -- build-deps resolve libinput-lite >/dev/null && cargo run -p xtask --quiet -- build-deps path libinput-lite)"
+# --- Link-time deps from the resolver ---
+# The dep-resolver topologically builds libdrm + alsa-lib +
+# libinput-lite first and passes each install root via
+# `WASM_POSIX_DEP_<NAME>_DIR`. Headers live under <prefix>/include,
+# archives under <prefix>/lib — matching the canonical pattern in
+# other registry build scripts (see git/build-git.sh, libcurl/, etc.).
+LIBDRM_PREFIX="${WASM_POSIX_DEP_LIBDRM_DIR:?WASM_POSIX_DEP_LIBDRM_DIR not set (must be invoked via cargo xtask build-deps resolve sdl2)}"
+ALSA_PREFIX="${WASM_POSIX_DEP_ALSA_LIB_DIR:?WASM_POSIX_DEP_ALSA_LIB_DIR not set (must be invoked via cargo xtask build-deps resolve sdl2)}"
+LIBINPUT_PREFIX="${WASM_POSIX_DEP_LIBINPUT_LITE_DIR:?WASM_POSIX_DEP_LIBINPUT_LITE_DIR not set (must be invoked via cargo xtask build-deps resolve sdl2)}"
 
 # --- Fetch + verify source ---
 if [ ! -d "$SRC_DIR" ]; then
@@ -113,6 +113,30 @@ cd "$BUILD_DIR"
 #   --disable-joystick / --haptic /
 #     --sensor / --power / --filesystem   — none of these have a
 #                                           wasm32 backend in v1.
+# Configure overrides for the wasm32 sysroot. Per CLAUDE.md
+# "Cross-Compilation and Configure Scripts": autoconf checks that
+# detect host-side functions must be force-no'd when the wasm sysroot
+# lacks the symbol or header.
+#
+#   sysctlbyname    - link-test succeeds (weak/undef-tolerant) but
+#                     <sys/sysctl.h> is not in the sysroot.
+#   {alsa,kmsdrm}-shared    - dlopen is unavailable; libraries link
+#                     statically into libSDL2.a.
+#   alsatest        - acinclude/alsa.m4 link-tests `-lasound -lm -ldl
+#                     -lpthread`; the synthetic test program produces a
+#                     wasm-ld output that wasm-validate rejects ("parse
+#                     exception"). Skipping this stage is safe — we've
+#                     verified libasound.a is in the install dir.
+#
+# PKG_CHECK_MODULES pre-set vars: libdrm + gbm don't ship .pc files in
+# our wasm sysroot, but SDL2 only consults pkg-config to populate
+# CFLAGS/LIBS — providing them up-front via `LIBDRM_CFLAGS` /
+# `LIBDRM_LIBS` / `LIBGBM_CFLAGS` / `LIBGBM_LIBS` short-circuits the
+# pkg-config path (see acinclude/pkg.m4 `_PKG_CONFIG` first branch).
+#
+# `-DDYNAPI_NEEDS_DLOPEN`: with --disable-loadso, HAVE_DLOPEN stays
+# undefined, so SDL_dynapi.h flips `SDL_DYNAMIC_API` to 0 — required
+# because src/dynapi/SDL_dynapi.c has no wasm32 platform branch.
 ac_cv_func_feenableexcept=no \
 ac_cv_func_pthread_setname_np=no \
 ac_cv_func_clock_nanosleep=no \
@@ -120,21 +144,45 @@ ac_cv_func_getpriority=no \
 ac_cv_func_setpriority=no \
 ac_cv_func_mprotect=no \
 ac_cv_func_posix_madvise=no \
+ac_cv_func_sysctlbyname=no \
+ac_cv_func__strrev=no \
+ac_cv_func__strupr=no \
+ac_cv_func__strlwr=no \
+ac_cv_func_itoa=no \
+ac_cv_func__ltoa=no \
+ac_cv_func__uitoa=no \
+ac_cv_func__ultoa=no \
+ac_cv_func__i64toa=no \
+ac_cv_func__ui64toa=no \
+ac_cv_func__wcsdup=no \
+ac_cv_func__wcsicmp=no \
+ac_cv_func__wcsnicmp=no \
+ac_cv_func__stricmp=no \
+ac_cv_func__strnicmp=no \
+ac_cv_func_elf_aux_info=no \
+ac_cv_func_getauxval=no \
+LIBDRM_CFLAGS="-I$LIBDRM_PREFIX/include -I$LIBDRM_PREFIX/include/libdrm -I$LIBDRM_PREFIX/include/drm" \
+LIBDRM_LIBS="-L$LIBDRM_PREFIX/lib -ldrm" \
+LIBGBM_CFLAGS="-I${WASM_POSIX_SYSROOT:-$REPO_ROOT/sysroot}/include" \
+LIBGBM_LIBS="-lgbm" \
 CC=wasm32posix-cc \
-CPPFLAGS="-I$LIBDRM_PREFIX/include -I$LIBDRM_PREFIX/include/libdrm -I$ALSA_PREFIX/include -I$LIBINPUT_PREFIX/include" \
+AR=wasm32posix-ar \
+RANLIB=wasm32posix-ranlib \
+NM=wasm32posix-nm \
+CPPFLAGS="-I$LIBDRM_PREFIX/include -I$LIBDRM_PREFIX/include/libdrm -I$LIBDRM_PREFIX/include/drm -I$ALSA_PREFIX/include -I$LIBINPUT_PREFIX/include -DDYNAPI_NEEDS_DLOPEN -include $SCRIPT_DIR/src/sdl2-evdev-shim.h" \
 LDFLAGS="-L$LIBDRM_PREFIX/lib -L$ALSA_PREFIX/lib -L$LIBINPUT_PREFIX/lib" \
 "$SRC_DIR/configure" \
-    --host=wasm32-unknown-none \
+    --host=wasm32-unknown-linux-musl \
     --prefix="$INSTALL_DIR" \
     --enable-static --disable-shared \
     \
-    --enable-video --enable-video-kmsdrm \
+    --enable-video --enable-video-kmsdrm --disable-kmsdrm-shared \
     --disable-video-x11 --disable-video-wayland \
     --disable-video-vivante --disable-video-cocoa \
     --disable-video-directfb --disable-video-offscreen \
     --enable-video-opengl --enable-video-opengles2 \
     \
-    --enable-audio --enable-alsa --disable-alsa-shared \
+    --enable-audio --enable-alsa --disable-alsa-shared --disable-alsatest \
     --disable-pulseaudio --disable-jack --disable-pipewire \
     --disable-sndio --disable-oss --disable-arts --disable-esd \
     --disable-nas --disable-fusionsound \
@@ -145,11 +193,9 @@ LDFLAGS="-L$LIBDRM_PREFIX/lib -L$ALSA_PREFIX/lib -L$LIBINPUT_PREFIX/lib" \
     --disable-haptic --disable-joystick --disable-sensor \
     --disable-power --disable-filesystem --disable-loadso \
     --disable-render --disable-render-d3d \
-    --disable-test --disable-rpath \
+    --disable-rpath \
     \
-    --disable-pthreads --disable-pthread-sem \
-    \
-    -Wno-error
+    --disable-pthreads --disable-pthread-sem
 
 echo "==> Compiling SDL2..."
 make -j"$(getconf _NPROCESSORS_ONLN 2>/dev/null || echo 4)" V=1
