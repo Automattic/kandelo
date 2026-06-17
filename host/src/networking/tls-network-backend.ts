@@ -26,6 +26,12 @@ import {
   type GeneratedCertificate,
 } from "../../../packages/registry/openssl/src/tls/certificates";
 
+const POLLIN = 0x0001;
+const POLLOUT = 0x0004;
+const POLLERR = 0x0008;
+const POLLHUP = 0x0010;
+const MSG_PEEK = 0x0002;
+
 // ------------------------------------------------------------------ types
 
 interface HttpConnectionState {
@@ -138,6 +144,17 @@ function formatHttpResponse(
   result.set(headerBytes);
   result.set(bodyBytes, headerBytes.length);
   return result;
+}
+
+function headersFromRawHeaderString(rawHeaders: string): Headers {
+  const headers = new Headers();
+  for (const line of rawHeaders.split(/\r?\n/)) {
+    if (!line) continue;
+    const colon = line.indexOf(":");
+    if (colon <= 0) continue;
+    headers.append(line.slice(0, colon).trim(), line.slice(colon + 1).trim());
+  }
+  return headers;
 }
 
 function corsProxyFetchUrl(corsProxyUrl: string, targetUrl: string): string {
@@ -278,14 +295,14 @@ export class TlsNetworkBackend implements NetworkIO {
     return this.httpSend(conn, data);
   }
 
-  recv(handle: number, maxLen: number, _flags: number): Uint8Array {
+  recv(handle: number, maxLen: number, flags: number): Uint8Array {
     const conn = this.connections.get(handle);
     if (!conn) throw new Error("ENOTCONN");
 
     if (conn.kind === "tls") {
-      return this.tlsRecv(conn, maxLen);
+      return this.tlsRecv(conn, maxLen, flags);
     }
-    return this.httpRecv(conn, maxLen);
+    return this.httpRecv(conn, maxLen, flags);
   }
 
   close(handle: number): void {
@@ -425,14 +442,16 @@ export class TlsNetworkBackend implements NetworkIO {
     return data.length;
   }
 
-  private tlsRecv(conn: TlsConnectionState, maxLen: number): Uint8Array {
+  private tlsRecv(conn: TlsConnectionState, maxLen: number, flags: number): Uint8Array {
     if (conn.error) throw conn.error;
 
     // Check if we have encrypted data buffered from the TLS engine
     if (conn.clientDownstreamBuf.length > 0) {
       const n = Math.min(maxLen, conn.clientDownstreamBuf.length);
       const result = conn.clientDownstreamBuf.slice(0, n);
-      conn.clientDownstreamBuf = conn.clientDownstreamBuf.subarray(n);
+      if ((flags & MSG_PEEK) === 0) {
+        conn.clientDownstreamBuf = conn.clientDownstreamBuf.subarray(n);
+      }
       return result;
     }
 
@@ -575,6 +594,32 @@ export class TlsNetworkBackend implements NetworkIO {
     const fetchBody: Uint8Array<ArrayBuffer> | undefined =
       body && body.length > 0 ? new Uint8Array(body) as Uint8Array<ArrayBuffer> : undefined;
 
+    const isWindowContext = typeof document !== "undefined";
+    if (typeof XMLHttpRequest !== "undefined" && !isWindowContext) {
+      try {
+        const xhr = new XMLHttpRequest();
+        xhr.open(method, url, false);
+        xhr.responseType = "arraybuffer";
+        for (const [key, value] of fetchHeaders) {
+          xhr.setRequestHeader(key, value);
+        }
+        xhr.send(fetchBody);
+        conn.responseBuf = formatHttpResponse(
+          xhr.status,
+          xhr.statusText,
+          headersFromRawHeaderString(xhr.getAllResponseHeaders()),
+          xhr.response ?? new ArrayBuffer(0),
+        );
+        conn.fetchDone = true;
+        conn.sendBuf = new Uint8Array(0);
+        return data.length;
+      } catch {
+        // Fall through to fetch when synchronous XHR is unavailable or rejected
+        // by the current browser context. Dedicated workers use the blocking
+        // path to match POSIX socket reads; other contexts retain async fetch.
+      }
+    }
+
     const doFetch = async () => {
       try {
         const response = await fetch(url, {
@@ -623,7 +668,7 @@ export class TlsNetworkBackend implements NetworkIO {
     return data.length;
   }
 
-  private httpRecv(conn: HttpConnectionState, maxLen: number): Uint8Array {
+  private httpRecv(conn: HttpConnectionState, maxLen: number, flags: number): Uint8Array {
     if (!conn.fetchDone) {
       throw new EagainError();
     }
@@ -639,8 +684,48 @@ export class TlsNetworkBackend implements NetworkIO {
     if (len === 0) return new Uint8Array(0);
 
     const result = conn.responseBuf.slice(conn.responseOffset, conn.responseOffset + len);
-    conn.responseOffset += len;
+    if ((flags & MSG_PEEK) === 0) {
+      conn.responseOffset += len;
+    }
     return result;
+  }
+
+  poll(handle: number, events: number): number {
+    const conn = this.connections.get(handle);
+    if (!conn) throw Object.assign(new Error("ENOTCONN"), { errno: 107 });
+
+    let revents = 0;
+    if ((events & POLLOUT) !== 0 && (conn.kind === "http" || !conn.closed)) {
+      revents |= POLLOUT;
+    }
+
+    if (conn.kind === "http") {
+      if (conn.fetchError) return revents | POLLERR;
+      if (
+        (events & POLLIN) !== 0 &&
+        conn.responseBuf &&
+        conn.responseOffset < conn.responseBuf.length
+      ) {
+        revents |= POLLIN;
+      }
+      if (
+        conn.fetchDone &&
+        conn.responseBuf &&
+        conn.responseOffset >= conn.responseBuf.length
+      ) {
+        revents |= POLLHUP;
+      }
+      return revents;
+    }
+
+    if (conn.error) return revents | POLLERR;
+    if ((events & POLLIN) !== 0 && conn.clientDownstreamBuf.length > 0) {
+      revents |= POLLIN;
+    }
+    if (conn.closed && conn.clientDownstreamBuf.length === 0) {
+      revents |= POLLHUP;
+    }
+    return revents;
   }
 
   // ---- Utilities ----
