@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { mkdtempSync, writeFileSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -475,6 +475,37 @@ describe("MemoryFileSystem", () => {
     const st = mfs.fstat(fd);
     expect(st.size).toBe(5);
     mfs.close(fd);
+  });
+
+  it("updates mtime and ctime after file writes and truncates", () => {
+    const now = vi.spyOn(Date, "now");
+    try {
+      const sab = new SharedArrayBuffer(4 * 1024 * 1024);
+      now.mockReturnValue(1_000);
+      const mfs = MemoryFileSystem.create(sab);
+      const O_CREAT = 0x0040,
+        O_RDWR = 0x0002,
+        O_TRUNC = 0x0200;
+      const fd = mfs.open("/timestamps.txt", O_CREAT | O_RDWR | O_TRUNC, 0o644);
+      const initial = mfs.fstat(fd);
+
+      now.mockReturnValue(5_000);
+      mfs.write(fd, new TextEncoder().encode("abc"), null, 3);
+      const afterWrite = mfs.fstat(fd);
+      expect(afterWrite.mtimeMs).toBe(5_000);
+      expect(afterWrite.ctimeMs).toBe(5_000);
+      expect(afterWrite.mtimeMs).toBeGreaterThan(initial.mtimeMs);
+
+      now.mockReturnValue(9_000);
+      mfs.ftruncate(fd, 1);
+      const afterTruncate = mfs.fstat(fd);
+      expect(afterTruncate.mtimeMs).toBe(9_000);
+      expect(afterTruncate.ctimeMs).toBe(9_000);
+      expect(afterTruncate.mtimeMs).toBeGreaterThan(afterWrite.mtimeMs);
+      mfs.close(fd);
+    } finally {
+      now.mockRestore();
+    }
   });
 
   it("unlink removes a file", () => {
