@@ -4,6 +4,8 @@ on:
   pull_request:
     paths:
       - ".github/workflows/browser-demos-ci.yml"
+      - ".github/actions/fetch-submodules/**"
+      - ".gitmodules"
       - "package.json"
       - "package-lock.json"
       - "apps/browser-demos/**"
@@ -17,6 +19,8 @@ on:
     branches: [main]
     paths:
       - ".github/workflows/browser-demos-ci.yml"
+      - ".github/actions/fetch-submodules/**"
+      - ".gitmodules"
       - "package.json"
       - "package-lock.json"
       - "apps/browser-demos/**"
@@ -36,6 +40,11 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6.0.2
+
+      - name: Fetch musl submodule
+        uses: ./.github/actions/fetch-submodules
+        with:
+          submodules: libc/musl
 
       - uses: actions/setup-node@v6
         with:
