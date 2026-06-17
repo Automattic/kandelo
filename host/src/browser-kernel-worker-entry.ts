@@ -1127,6 +1127,13 @@ async function handleExec(
   if (!resolved) return -2; // ENOENT
   if ("errno" in resolved) return -resolved.errno;
   const { programBytes: bytes, argv: launchArgv } = resolved;
+  let programModule: WebAssembly.Module;
+  try {
+    programModule = await WebAssembly.compile(bytes);
+  } catch (e) {
+    if (e instanceof WebAssembly.CompileError) return -8; // ENOEXEC
+    throw e;
+  }
 
   // Program found — run kernel exec setup
   const setupResult = kernelWorker.kernelExecSetup(pid);
@@ -1155,6 +1162,7 @@ async function handleExec(
   // Create fresh memory sized for the new binary's arch (exec across
   // wasm32↔wasm64 replaces the process image — memory type must match).
   const ptrWidth = detectPtrWidth(bytes);
+  const channelErrorTraps = programSupportsChannelErrorTrap(bytes, programModule);
   const {
     memory: newMemory,
     layout: newLayout,
@@ -1184,6 +1192,7 @@ async function handleExec(
     pid,
     ppid: 0,
     programBytes: bytes,
+    programModule,
     memory: newMemory,
     channelOffset: newChannelOffset,
     argv: launchArgv,
@@ -1200,6 +1209,7 @@ async function handleExec(
   processes.set(pid, {
     memory: newMemory,
     programBytes: bytes,
+    programModule,
     worker: newWorker,
     argv: launchArgv,
     channelOffset: newChannelOffset,
@@ -1264,8 +1274,16 @@ async function handlePosixSpawn(
   await waitForProcessTeardowns();
 
   post({ type: "proc_event", kind: "spawn", pid: childPid });
+  let programModule: WebAssembly.Module;
+  try {
+    programModule = await WebAssembly.compile(programBytes);
+  } catch (e) {
+    if (e instanceof WebAssembly.CompileError) return -8; // ENOEXEC
+    throw e;
+  }
 
   const ptrWidth = detectPtrWidth(programBytes);
+  const channelErrorTraps = programSupportsChannelErrorTrap(programBytes, programModule);
   const {
     memory: newMemory,
     layout: newLayout,
@@ -1293,6 +1311,7 @@ async function handlePosixSpawn(
     pid: childPid,
     ppid: 0,
     programBytes,
+    programModule,
     memory: newMemory,
     channelOffset: newChannelOffset,
     argv,
@@ -1306,6 +1325,7 @@ async function handlePosixSpawn(
   processes.set(childPid, {
     memory: newMemory,
     programBytes,
+    programModule,
     worker: newWorker,
     argv,
     channelOffset: newChannelOffset,

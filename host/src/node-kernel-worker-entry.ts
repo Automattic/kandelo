@@ -829,6 +829,13 @@ async function handleExec(
   if (!resolved) return -2; // ENOENT
   if ("errno" in resolved) return -resolved.errno;
   const { programBytes, argv: launchArgv } = resolved;
+  let programModule: WebAssembly.Module;
+  try {
+    programModule = await getCompiledProgramModule(programBytes);
+  } catch (e) {
+    if (e instanceof WebAssembly.CompileError) return -8; // ENOEXEC
+    throw e;
+  }
 
   const newPtrWidth = detectPtrWidth(programBytes);
   const setupResult = kernelWorker.kernelExecSetup(pid);
@@ -870,6 +877,7 @@ async function handleExec(
     pid,
     ppid: 0,
     programBytes,
+    programModule,
     memory: newMemory,
     channelOffset: newChannelOffset,
     argv: launchArgv,
@@ -882,6 +890,7 @@ async function handleExec(
   processes.set(pid, {
     memory: newMemory,
     programBytes,
+    programModule,
     worker: newWorker,
     channelOffset: newChannelOffset,
     ptrWidth: newPtrWidth,
@@ -955,6 +964,13 @@ async function handlePosixSpawn(
   envp: string[],
 ): Promise<number> {
   post({ type: "proc_event", kind: "spawn", pid: childPid });
+  let programModule: WebAssembly.Module;
+  try {
+    programModule = await getCompiledProgramModule(programBytes);
+  } catch (e) {
+    if (e instanceof WebAssembly.CompileError) return -8; // ENOEXEC
+    throw e;
+  }
 
   const ptrWidth = detectPtrWidth(programBytes);
   const {
@@ -981,6 +997,7 @@ async function handlePosixSpawn(
     pid: childPid,
     ppid: 0,
     programBytes,
+    programModule,
     memory,
     channelOffset,
     argv,
@@ -993,6 +1010,7 @@ async function handlePosixSpawn(
   processes.set(childPid, {
     memory,
     programBytes,
+    programModule,
     worker: newWorker,
     channelOffset,
     ptrWidth,
