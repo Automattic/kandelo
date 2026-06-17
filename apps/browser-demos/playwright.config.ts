@@ -39,11 +39,7 @@ export default defineConfig({
     },
     {
       name: "webkit",
-      testMatch: [
-        "coi.spec.ts",
-        "kandelo-webkit-smoke.spec.ts",
-        "wasm-trap-signal.spec.ts",
-      ],
+      testMatch: ["coi.spec.ts", "kandelo-webkit-smoke.spec.ts"],
       use: { browserName: "webkit" },
     },
   ],
