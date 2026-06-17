@@ -14,6 +14,8 @@ describe("SIOCGIFCONF / SIOCGIFHWADDR", () => {
     // Should find one interface named "eth0"
     expect(result.stdout).toContain("interfaces: 1");
     expect(result.stdout).toContain("name: eth0");
+    expect(result.stdout).toContain("index: 1");
+    expect(result.stdout).toContain("index-name: eth0");
 
     // MAC should be locally-administered and non-zero
     expect(result.stdout).toContain("locally-administered: yes");
