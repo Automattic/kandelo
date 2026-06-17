@@ -210,9 +210,14 @@ const SIGALRM = 14;
 const SIGKILL = 9;
 
 /** Network ioctl request codes */
+const SIOCGIFNAME = 0x8910;
 const SIOCGIFCONF = 0x8912;
 const SIOCGIFHWADDR = 0x8927;
 const SIOCGIFADDR = 0x8915;
+const SIOCGIFINDEX = 0x8933;
+const VIRTUAL_IFACE_NAME = "eth0";
+const VIRTUAL_IFACE_INDEX = 1;
+const ENODEV = 19;
 
 /** Ioctl syscall number */
 const SYS_IOCTL = ABI_SYSCALLS.Ioctl;
@@ -3057,7 +3062,7 @@ export class CentralizedKernelWorker {
       return;
     }
 
-    // --- ioctl: intercept network interface ioctls (SIOCGIFCONF, SIOCGIFHWADDR) ---
+    // --- ioctl: intercept network interface ioctls ---
     // These require host-side handling because:
     //   SIOCGIFCONF: struct ifconf contains a pointer to a process-memory buffer
     //   SIOCGIFHWADDR: returns the virtual MAC address for this kernel instance
@@ -3067,12 +3072,20 @@ export class CentralizedKernelWorker {
         this.handleIoctlIfconf(channel, origArgs);
         return;
       }
+      if (request === SIOCGIFNAME) {
+        this.handleIoctlIfname(channel, origArgs);
+        return;
+      }
       if (request === SIOCGIFHWADDR) {
         this.handleIoctlIfhwaddr(channel, origArgs);
         return;
       }
       if (request === SIOCGIFADDR) {
         this.handleIoctlIfaddr(channel, origArgs);
+        return;
+      }
+      if (request === SIOCGIFINDEX) {
+        this.handleIoctlIfindex(channel, origArgs);
         return;
       }
     }
@@ -6165,8 +6178,8 @@ export class CentralizedKernelWorker {
   }
 
   // ---- Network interface ioctl host-side handlers ----
-  // The kernel has a single virtual network interface ("eth0") with a random
-  // MAC address generated per kernel instance.
+  // The kernel has a single virtual network interface ("eth0") at ifindex 1
+  // with a random MAC address generated per kernel instance.
 
   /**
    * Handle SIOCGIFCONF: enumerate network interfaces.
@@ -6196,8 +6209,8 @@ export class CentralizedKernelWorker {
     const SIZEOF_IFREQ = 32;
 
     if (ifcLen >= SIZEOF_IFREQ && ifcBuf !== 0) {
-      // Write one ifreq entry for "eth0" into process memory at ifc_buf
-      const nameBytes = new TextEncoder().encode("eth0");
+      // Write one ifreq entry for the virtual interface into process memory at ifc_buf
+      const nameBytes = new TextEncoder().encode(VIRTUAL_IFACE_NAME);
       processMem.set(nameBytes, ifcBuf);
       processMem.fill(0, ifcBuf + nameBytes.length, ifcBuf + 16); // pad ifr_name
 
@@ -6215,6 +6228,30 @@ export class CentralizedKernelWorker {
       // No space or null buffer
       processView.setInt32(ifconfPtr, 0, true);
     }
+
+    this.completeChannelRaw(channel, 0, 0);
+    this.relistenChannel(channel);
+  }
+
+  /**
+   * Handle SIOCGIFNAME: map an interface index to its name.
+   * struct ifreq at arg[2]: ifr_name[16] + union; ifr_ifindex lives at +16.
+   */
+  private handleIoctlIfname(channel: ChannelInfo, origArgs: number[]): void {
+    const processView = new DataView(channel.memory.buffer);
+    const processMem = new Uint8Array(channel.memory.buffer);
+    const ifreqPtr = origArgs[2];
+    const ifindex = processView.getInt32(ifreqPtr + 16, true);
+
+    if (ifindex !== VIRTUAL_IFACE_INDEX) {
+      this.completeChannelRaw(channel, -ENODEV, ENODEV);
+      this.relistenChannel(channel);
+      return;
+    }
+
+    const nameBytes = new TextEncoder().encode(VIRTUAL_IFACE_NAME);
+    processMem.set(nameBytes, ifreqPtr);
+    processMem.fill(0, ifreqPtr + nameBytes.length, ifreqPtr + 16);
 
     this.completeChannelRaw(channel, 0, 0);
     this.relistenChannel(channel);
@@ -6258,6 +6295,33 @@ export class CentralizedKernelWorker {
     processMem[ifreqPtr + 21] = 0;
     processMem[ifreqPtr + 22] = 0;
     processMem[ifreqPtr + 23] = 1;
+
+    this.completeChannelRaw(channel, 0, 0);
+    this.relistenChannel(channel);
+  }
+
+  /**
+   * Handle SIOCGIFINDEX: map an interface name to its index.
+   * struct ifreq at arg[2]: ifr_name[16] + union; ifr_ifindex lives at +16.
+   */
+  private handleIoctlIfindex(channel: ChannelInfo, origArgs: number[]): void {
+    const processView = new DataView(channel.memory.buffer);
+    const processMem = new Uint8Array(channel.memory.buffer);
+    const ifreqPtr = origArgs[2];
+    const nul = processMem.indexOf(0, ifreqPtr);
+    const end = nul >= ifreqPtr && nul < ifreqPtr + 16 ? nul : ifreqPtr + 16;
+    // Browser TextDecoder rejects SharedArrayBuffer-backed views. Copy the
+    // guest ifr_name bytes before decoding; ioctl handlers must work for
+    // process memories backed by SAB.
+    const name = new TextDecoder().decode(new Uint8Array(processMem.subarray(ifreqPtr, end)));
+
+    if (name !== VIRTUAL_IFACE_NAME) {
+      this.completeChannelRaw(channel, -ENODEV, ENODEV);
+      this.relistenChannel(channel);
+      return;
+    }
+
+    processView.setInt32(ifreqPtr + 16, VIRTUAL_IFACE_INDEX, true);
 
     this.completeChannelRaw(channel, 0, 0);
     this.relistenChannel(channel);
