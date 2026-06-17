@@ -8,6 +8,7 @@ const POLLIN = 0x0001;
 const POLLOUT = 0x0004;
 const POLLERR = 0x0008;
 const POLLHUP = 0x0010;
+const MSG_PEEK = 0x0002;
 
 /**
  * Map a Node.js network error code to a POSIX errno value.
@@ -138,7 +139,7 @@ export class TcpNetworkBackend implements NetworkIO {
     return data.length;
   }
 
-  recv(handle: number, maxLen: number, _flags: number): Uint8Array {
+  recv(handle: number, maxLen: number, flags: number): Uint8Array {
     const conn = this.connections.get(handle);
     if (!conn) throw new Error("ENOTCONN");
     if (conn.error) throw conn.error;
@@ -150,7 +151,9 @@ export class TcpNetworkBackend implements NetworkIO {
         conn.recvBuf.byteOffset,
         len,
       );
-      conn.recvBuf = conn.recvBuf.subarray(len);
+      if ((flags & MSG_PEEK) === 0) {
+        conn.recvBuf = conn.recvBuf.subarray(len);
+      }
       return result;
     }
 

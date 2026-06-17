@@ -698,6 +698,7 @@ async function handleInit(msg: Extract<MainToKernelMessage, { type: "init" }>) {
   // production, keeping the browser networking path identical across modes.
   const tlsBackend = new TlsNetworkBackend({
     dnsAliases: msg.config.dnsAliases,
+    corsProxyUrl: msg.config.corsProxyUrl,
   });
   await tlsBackend.init();
   io.network = tlsBackend;
