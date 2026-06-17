@@ -47,6 +47,7 @@ export const O_RDONLY = 0x0000;
 export const O_WRONLY = 0x0001;
 export const O_RDWR = 0x0002;
 export const O_CREAT = 0x0040;
+export const O_EXCL = 0x0080;
 export const O_TRUNC = 0x0200;
 export const O_APPEND = 0x0400;
 export const O_DIRECTORY = 0x010000;
@@ -1248,6 +1249,13 @@ export class SharedFS {
   open(path: string, flags: number, createMode: number = 0o644): number {
     const accMode = flags & O_ACCMODE;
     const creating = (flags & O_CREAT) !== 0;
+    const exclusive = (flags & O_EXCL) !== 0;
+
+    if (creating && exclusive) {
+      const existing = this.pathResolve(path, false);
+      if (existing >= 0) throw new SFSError(EEXIST);
+      if (existing !== ENOENT) throw new SFSError(existing);
+    }
 
     let ino = this.pathResolve(path, true);
 
@@ -1260,6 +1268,7 @@ export class SharedFS {
         const nameBytes = encoder.encode(name);
         const existing = this.dirLookup(parentIno, nameBytes);
         if (existing >= 0) {
+          if (exclusive) throw new SFSError(EEXIST);
           ino = existing;
         } else {
           const newIno = this.inodeAlloc();
