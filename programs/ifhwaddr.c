@@ -33,6 +33,12 @@ int main(void) {
 
     for (i = 0; i < n; i++) {
         printf("name: %s\n", ifr[i].ifr_name);
+        unsigned index = if_nametoindex(ifr[i].ifr_name);
+        printf("index: %u\n", index);
+        if (index != 0) {
+            char name[IF_NAMESIZE];
+            printf("index-name: %s\n", if_indextoname(index, name) ? name : "(null)");
+        }
 
         if (ioctl(fd, SIOCGIFHWADDR, &ifr[i]) < 0) {
             perror("SIOCGIFHWADDR");
