@@ -509,6 +509,42 @@ describe("MemoryFileSystem", () => {
     expect(entries).toContain("file.txt");
   });
 
+  it("reports raw inode numbers that remain representable after inode reuse", () => {
+    const sab = new SharedArrayBuffer(4 * 1024 * 1024);
+    const mfs = MemoryFileSystem.create(sab);
+    const O_CREAT = 0x0040,
+      O_RDWR = 0x0002,
+      O_TRUNC = 0x0200;
+
+    // SharedFS tracks an internal generation counter for reused inode slots.
+    // POSIX st_ino does not need to include that generation, and exposing it
+    // can overflow 32-bit guest language APIs while tools like ls(1) print the
+    // full kernel value.
+    for (let i = 0; i < 2_100; i++) {
+      const fd = mfs.open("/reuse.txt", O_CREAT | O_RDWR | O_TRUNC, 0o644);
+      mfs.close(fd);
+      mfs.unlink("/reuse.txt");
+    }
+
+    const fd = mfs.open("/reuse.txt", O_CREAT | O_RDWR | O_TRUNC, 0o644);
+    const stat = mfs.fstat(fd);
+    expect(stat.ino).toBeGreaterThan(0);
+    expect(stat.ino).toBeLessThanOrEqual(0x7fffffff);
+
+    const dh = mfs.opendir("/");
+    let entry;
+    let dirIno: number | null = null;
+    while ((entry = mfs.readdir(dh)) !== null) {
+      if (entry.name === "reuse.txt") {
+        dirIno = entry.ino;
+        break;
+      }
+    }
+    mfs.closedir(dh);
+    expect(dirIno).toBe(stat.ino);
+    mfs.close(fd);
+  });
+
   it("honors O_CREAT|O_EXCL by failing when the final path already exists", () => {
     const sab = new SharedArrayBuffer(4 * 1024 * 1024);
     const mfs = MemoryFileSystem.create(sab);
