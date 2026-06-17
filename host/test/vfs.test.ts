@@ -509,6 +509,28 @@ describe("MemoryFileSystem", () => {
     expect(entries).toContain("file.txt");
   });
 
+  it("honors O_CREAT|O_EXCL by failing when the final path already exists", () => {
+    const sab = new SharedArrayBuffer(4 * 1024 * 1024);
+    const mfs = MemoryFileSystem.create(sab);
+    const O_WRONLY = 0x0001,
+      O_CREAT = 0x0040,
+      O_EXCL = 0x0080;
+
+    const fd = mfs.open("/exclusive.txt", O_WRONLY | O_CREAT | O_EXCL, 0o600);
+    mfs.close(fd);
+
+    expect(() =>
+      mfs.open("/exclusive.txt", O_WRONLY | O_CREAT | O_EXCL, 0o600),
+    ).toThrow(/File exists/);
+
+    // POSIX open(O_CREAT|O_EXCL) must fail with EEXIST when the final path is
+    // a symbolic link, even if the symlink points at an existing regular file.
+    mfs.symlink("/exclusive.txt", "/exclusive-link.txt");
+    expect(() =>
+      mfs.open("/exclusive-link.txt", O_WRONLY | O_CREAT | O_EXCL, 0o600),
+    ).toThrow(/File exists/);
+  });
+
   it("stat returns correct size after writing", () => {
     const sab = new SharedArrayBuffer(4 * 1024 * 1024);
     const mfs = MemoryFileSystem.create(sab);
