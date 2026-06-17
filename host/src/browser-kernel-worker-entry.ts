@@ -1150,11 +1150,12 @@ async function handleExec(
   if (!resolved) return -2; // ENOENT
   if ("errno" in resolved) return -resolved.errno;
   const { programBytes: bytes, argv: launchArgv } = resolved;
-
+  let programModule: WebAssembly.Module;
   try {
-    await WebAssembly.compile(bytes);
-  } catch {
-    return -8; // ENOEXEC: reject malformed modules before changing old state
+    programModule = await WebAssembly.compile(bytes);
+  } catch (e) {
+    if (e instanceof WebAssembly.CompileError) return -8; // ENOEXEC
+    throw e;
   }
   const declaredAbi = extractAbiVersion(bytes);
   if (declaredAbi !== null && declaredAbi !== kernelWorker.getKernelAbiVersion()) {
@@ -1233,6 +1234,7 @@ async function handleExec(
       pid,
       ppid: 0,
       programBytes: bytes,
+      programModule,
       memory: newMemory,
       channelOffset: newChannelOffset,
       argv: launchArgv,
@@ -1260,6 +1262,7 @@ async function handleExec(
     processes.set(pid, {
       memory: newMemory,
       programBytes: bytes,
+      programModule,
       worker: replacementWorker,
       argv: launchArgv,
       channelOffset: newChannelOffset,
@@ -1353,11 +1356,17 @@ async function handlePosixSpawn(
 ): Promise<number> {
   await waitForProcessTeardowns();
 
-  // The child can receive a group-directed signal while the browser waits for
-  // an unrelated teardown. Keep the successful spawn and kernel-owned zombie,
-  // but never install a Worker for a process that has already terminated.
-  if (!kernelWorker.shouldLaunchPendingChild(childPid)) return 0;
+  let programModule: WebAssembly.Module;
+  try {
+    programModule = await WebAssembly.compile(programBytes);
+  } catch (e) {
+    if (e instanceof WebAssembly.CompileError) return -8; // ENOEXEC
+    throw e;
+  }
 
+  // Compilation and unrelated teardown waits yield to the event loop. Keep a
+  // successfully created zombie, but never resurrect it with a new Worker.
+  if (!kernelWorker.shouldLaunchPendingChild(childPid)) return 0;
   post({ type: "proc_event", kind: "spawn", pid: childPid });
 
   const ptrWidth = detectPtrWidth(programBytes);
@@ -1386,6 +1395,7 @@ async function handlePosixSpawn(
     pid: childPid,
     ppid: 0,
     programBytes,
+    programModule,
     memory: newMemory,
     channelOffset: newChannelOffset,
     argv,
@@ -1399,6 +1409,7 @@ async function handlePosixSpawn(
   processes.set(childPid, {
     memory: newMemory,
     programBytes,
+    programModule,
     worker: newWorker,
     argv,
     channelOffset: newChannelOffset,
