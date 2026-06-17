@@ -74,6 +74,10 @@ export interface BrowserKernelOptions {
   syscallLogPtrWidth?: 4 | 8;
   /** Forwarded to TlsNetworkBackendOptions.dnsAliases. */
   dnsAliases?: Record<string, string>;
+  /** Forwarded to TlsNetworkBackendOptions.corsProxyUrl. Browser pages that
+   *  are not controlled by Kandelo's service worker can use this to route
+   *  guest outbound HTTP(S) through a same-origin proxy. */
+  corsProxyUrl?: string;
 }
 
 /** Options for {@link BrowserKernel.boot}. */
@@ -295,6 +299,7 @@ export class BrowserKernel {
           enableSyscallLog: this.options.enableSyscallLog,
           syscallLogPtrWidth: this.options.syscallLogPtrWidth,
           dnsAliases: this.options.dnsAliases,
+          corsProxyUrl: this.options.corsProxyUrl,
         },
       };
       this.kernelWorkerHandle.postMessage(initMsg, [transferBuf]);

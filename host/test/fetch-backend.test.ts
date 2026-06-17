@@ -4,6 +4,7 @@ import { TlsNetworkBackend, type TlsMitmConnection } from "../src/networking/tls
 
 const encoder = new TextEncoder();
 const decoder = new TextDecoder();
+const MSG_PEEK = 0x0002;
 
 afterEach(() => {
   vi.restoreAllMocks();
@@ -81,6 +82,18 @@ class LoopbackMitmTls implements TlsMitmConnection {
 
   async TLSHandshake(): Promise<void> {}
   async close(): Promise<void> {}
+}
+
+async function waitForReadable(
+  backend: Pick<TlsNetworkBackend, "poll">,
+  handle: number,
+): Promise<void> {
+  const deadline = Date.now() + 1_000;
+  while (Date.now() < deadline) {
+    if ((backend.poll(handle, 0x0001) & 0x0001) !== 0) return;
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  }
+  throw new Error("timed out waiting for readable poll");
 }
 
 describe("FetchNetworkBackend", () => {
@@ -179,6 +192,32 @@ describe("FetchNetworkBackend", () => {
       backend.connect(1, new Uint8Array([93, 184, 216, 34]), 80);
       expect(backend.poll(1, 0x0004 | 0x0008)).toBe(0x0004);
     });
+  });
+
+  it("honors MSG_PEEK without consuming buffered response bytes", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response("hello")));
+    const backend = new FetchNetworkBackend();
+    const addr = backend.getaddrinfo("example.com");
+    backend.connect(1, addr, 80);
+    backend.send(
+      1,
+      encoder.encode("GET / HTTP/1.1\r\nHost: example.com\r\n\r\n"),
+      0,
+    );
+
+    const first = decoder.decode(await recvWhenReady(backend, 1));
+    expect(first).toContain("hello");
+
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response("world")));
+    backend.send(
+      1,
+      encoder.encode("GET /2 HTTP/1.1\r\nHost: example.com\r\n\r\n"),
+      0,
+    );
+    await waitForReadable(backend, 1);
+    const peeked = decoder.decode(backend.recv(1, 4, MSG_PEEK));
+    const consumed = decoder.decode(backend.recv(1, 4, 0));
+    expect(peeked).toBe(consumed);
   });
 
   describe("hostAliases", () => {
@@ -292,6 +331,28 @@ describe("TlsNetworkBackend HTTP proxy path", () => {
     expect(response.toLowerCase()).not.toContain("content-length: 999");
     expect(response.toLowerCase()).not.toContain("content-encoding");
     expect(response.toLowerCase()).not.toContain("connection: close");
+  });
+
+  it("honors MSG_PEEK without consuming HTTP response bytes", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response("peek-body")));
+    const backend = new TlsNetworkBackend();
+    const addr = backend.getaddrinfo("proxy.local");
+    backend.connect(1, addr, 80);
+
+    sendGet(backend, 1, "/peek");
+    await recvWhenReady(backend, 1);
+
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response("second-body")));
+    sendGet(backend, 1, "/peek2");
+    await recvWhenReady(backend, 1);
+
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response("third-body")));
+    sendGet(backend, 1, "/peek3");
+    const peeked = decoder.decode((await recvWhenReady({
+      recv: (handle, maxLen) => backend.recv(handle, maxLen, MSG_PEEK),
+    }, 1)).subarray(0, 8));
+    const consumed = decoder.decode(backend.recv(1, 8, 0));
+    expect(peeked).toBe(consumed);
   });
 });
 
