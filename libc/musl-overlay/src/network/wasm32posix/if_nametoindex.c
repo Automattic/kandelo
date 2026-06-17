@@ -3,6 +3,6 @@
 
 unsigned if_nametoindex(const char *name)
 {
-	if (!strcmp(name, "lo")) return 1;
+	if (!strcmp(name, "eth0")) return 1;
 	return 0;
 }

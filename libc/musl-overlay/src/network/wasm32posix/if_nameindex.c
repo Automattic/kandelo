@@ -4,11 +4,11 @@
 
 struct if_nameindex *if_nameindex(void)
 {
-	/* Return a synthetic loopback interface */
+	/* Return the kernel's synthetic virtual network interface. */
 	struct if_nameindex *idx = malloc(2 * sizeof(*idx));
 	if (!idx) return 0;
 	idx[0].if_index = 1;
-	idx[0].if_name = strdup("lo");
+	idx[0].if_name = strdup("eth0");
 	if (!idx[0].if_name) {
 		free(idx);
 		return 0;
