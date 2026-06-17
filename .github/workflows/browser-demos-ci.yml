@@ -4,6 +4,8 @@ on:
   pull_request:
     paths:
       - ".github/workflows/browser-demos-ci.yml"
+      - "package.json"
+      - "package-lock.json"
       - "apps/browser-demos/**"
       - "host/package.json"
       - "host/package-lock.json"
@@ -15,6 +17,8 @@ on:
     branches: [main]
     paths:
       - ".github/workflows/browser-demos-ci.yml"
+      - "package.json"
+      - "package-lock.json"
       - "apps/browser-demos/**"
       - "host/package.json"
       - "host/package-lock.json"
@@ -28,7 +32,7 @@ permissions:
 
 jobs:
   coi:
-    name: COI smoke
+    name: Browser demo smoke
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6.0.2
@@ -38,8 +42,12 @@ jobs:
           node-version: "22"
           cache: "npm"
           cache-dependency-path: |
+            package-lock.json
             apps/browser-demos/package-lock.json
             host/package-lock.json
+
+      - name: Install root dependencies
+        run: npm ci --no-audit --no-fund
 
       - name: Install browser demo dependencies
         working-directory: apps/browser-demos
@@ -53,6 +61,20 @@ jobs:
         working-directory: host
         run: npm run typecheck
 
+      - name: Install Nix
+        uses: DeterminateSystems/nix-installer-action@ef8a148080ab6020fd15196c2084a2eea5ff2d25 # v22
+        with:
+          github-token: ""
+
+      - name: Cache Nix store + flake eval
+        uses: DeterminateSystems/magic-nix-cache-action@908b263ff629f4cc17666315b7fd3ec127c6244d # v14
+        with:
+          use-gha-cache: false
+          use-flakehub: false
+
+      - name: Prepare browser demo assets
+        run: bash scripts/dev-shell.sh ./run.sh --fetch-only prepare-browser
+
       - name: Install Playwright browsers
         working-directory: apps/browser-demos
         run: npx playwright install --with-deps chromium firefox webkit
@@ -64,3 +86,6 @@ jobs:
             --project=chromium \
             --project=firefox \
             --project=webkit
+          npx playwright test test/kandelo-webkit-smoke.spec.ts \
+            --project=webkit \
+            --grep "Kandelo shell demo boots"

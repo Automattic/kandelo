@@ -119,6 +119,15 @@ let defaultThreadSlots: number = DEFAULT_PROCESS_THREAD_SLOTS;
 let defaultEnv: string[] = [];
 const ENOEXEC = 8;
 
+type LazyRegistrationMessage = Extract<
+  MainToKernelMessage,
+  { type: "register_lazy_files" | "register_lazy_archives" }
+>;
+
+let initReady = false;
+let initFailure: string | null = null;
+const pendingLazyRegistrationMessages: LazyRegistrationMessage[] = [];
+
 // Process tracking
 interface ProcessInfo {
   memory: WebAssembly.Memory;
@@ -337,6 +346,77 @@ function respondError(requestId: number, error: string) {
   post({ type: "response", requestId, result: null, error });
 }
 
+function respondIfRequested(
+  msg: { requestId?: number },
+  result: unknown,
+): void {
+  if (typeof msg.requestId === "number") {
+    respond(msg.requestId, result);
+  }
+}
+
+function respondErrorIfRequested(
+  msg: { requestId?: number },
+  error: string,
+): void {
+  if (typeof msg.requestId === "number") {
+    respondError(msg.requestId, error);
+  }
+}
+
+function reportWorkerProtocolError(message: string): void {
+  console.error(`[kernel-worker] ${message}`);
+  post({
+    type: "stderr",
+    pid: 0,
+    data: new TextEncoder().encode(`[kernel-worker] ${message}\n`),
+  });
+}
+
+function applyLazyRegistration(msg: LazyRegistrationMessage): void {
+  if (msg.type === "register_lazy_files") {
+    memfs.importLazyEntries(msg.entries);
+  } else {
+    memfs.importLazyArchiveEntries(msg.entries);
+  }
+  respondIfRequested(msg, true);
+}
+
+function failPendingLazyRegistrations(error: string): void {
+  const pending = pendingLazyRegistrationMessages.splice(0);
+  for (const msg of pending) {
+    respondErrorIfRequested(msg, error);
+  }
+}
+
+function flushPendingLazyRegistrations(): void {
+  const pending = pendingLazyRegistrationMessages.splice(0);
+  for (const msg of pending) {
+    applyLazyRegistration(msg);
+  }
+}
+
+function handleLazyRegistration(msg: LazyRegistrationMessage): void {
+  if (initFailure) {
+    respondErrorIfRequested(msg, initFailure);
+    reportWorkerProtocolError(
+      `${msg.type} rejected because kernel worker init failed: ${initFailure}`,
+    );
+    return;
+  }
+  if (!initReady) {
+    pendingLazyRegistrationMessages.push(msg);
+    return;
+  }
+  try {
+    applyLazyRegistration(msg);
+  } catch (err) {
+    const error = formatError(err);
+    respondErrorIfRequested(msg, error);
+    reportWorkerProtocolError(`${msg.type} failed: ${error}`);
+  }
+}
+
 function createSharedProcessMemory(
   ptrWidth: 4 | 8,
   initialPages: number,
@@ -536,6 +616,8 @@ function resolveLazyUrl(base: string, url: string): string {
 // ── Init ──
 
 async function handleInit(msg: Extract<MainToKernelMessage, { type: "init" }>) {
+  initReady = false;
+  initFailure = null;
   maxPages = msg.config.maxMemoryPages;
   defaultThreadSlots = msg.config.defaultThreadSlots ?? DEFAULT_PROCESS_THREAD_SLOTS;
   defaultEnv = msg.config.env;
@@ -747,6 +829,9 @@ async function handleInit(msg: Extract<MainToKernelMessage, { type: "init" }>) {
     bridgePort = msg.bridgePort;
     resetBridgePendingRequests();
   }
+
+  initReady = true;
+  flushPendingLazyRegistrations();
 
   post({ type: "ready" });
 }
@@ -1598,6 +1683,9 @@ async function handleDestroy(msg: Extract<MainToKernelMessage, { type: "destroy"
   threadedProcessPids.clear();
   ptyByPid.clear();
   await waitForProcessTeardowns();
+  initReady = false;
+  initFailure = "kernel worker destroyed";
+  failPendingLazyRegistrations(initFailure);
   respond(msg.requestId, true);
 }
 
@@ -1789,6 +1877,9 @@ sw.onmessage = (e: MessageEvent) => {
     case "init":
       void handleInit(msg).catch((err) => {
         const error = formatError(err);
+        initReady = false;
+        initFailure = error;
+        failPendingLazyRegistrations(error);
         console.error("[kernel-worker] init failed:", err);
         post({ type: "init_error", error });
       });
@@ -1812,8 +1903,8 @@ sw.onmessage = (e: MessageEvent) => {
     case "pick_listener_target": handlePickListenerTarget(msg); break;
     case "http_request": handleHttpRequestMessage(msg); break;
     case "destroy": void handleDestroy(msg); break;
-    case "register_lazy_files": memfs.importLazyEntries(msg.entries); break;
-    case "register_lazy_archives": memfs.importLazyArchiveEntries(msg.entries); break;
+    case "register_lazy_files": handleLazyRegistration(msg); break;
+    case "register_lazy_archives": handleLazyRegistration(msg); break;
     case "get_fork_count": {
       // Round-trip access to the kernel's per-process fork counter for
       // tests asserting SYS_SPAWN didn't fall back to fork. Mirrors the

@@ -201,6 +201,7 @@ export interface RegisterPtyOutputMessage {
 
 export interface RegisterLazyFilesMessage {
   type: "register_lazy_files";
+  requestId?: number;
   entries: Array<{ ino: number; path: string; url: string; size: number }>;
 }
 
@@ -234,6 +235,7 @@ export interface AudioDrainMessage {
 
 export interface RegisterLazyArchivesMessage {
   type: "register_lazy_archives";
+  requestId?: number;
   entries: Array<{
     url: string;
     mountPrefix: string;

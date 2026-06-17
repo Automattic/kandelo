@@ -266,11 +266,21 @@ export class BrowserKernel {
     // can materialize image-backed files on first exec.
     const lazyEntries = this.memfs!.exportLazyEntries();
     if (lazyEntries.length > 0) {
-      this.sendToKernel({ type: "register_lazy_files", entries: lazyEntries });
+      const requestId = this.nextRequestId++;
+      await this.request(requestId, {
+        type: "register_lazy_files",
+        requestId,
+        entries: lazyEntries,
+      });
     }
     const archiveEntries = this.memfs!.exportLazyArchiveEntries();
     if (archiveEntries.length > 0) {
-      this.sendToKernel({ type: "register_lazy_archives", entries: archiveEntries });
+      const requestId = this.nextRequestId++;
+      await this.request(requestId, {
+        type: "register_lazy_archives",
+        requestId,
+        entries: archiveEntries,
+      });
     }
   }
 
@@ -810,7 +820,14 @@ export class BrowserKernel {
       const ino = fs.registerLazyFile(e.path, e.url, e.size, e.mode);
       lazyEntries.push({ ino, path: e.path, url: e.url, size: e.size });
     }
-    this.sendToKernel({ type: "register_lazy_files", entries: lazyEntries });
+    const requestId = this.nextRequestId++;
+    void this.request(requestId, {
+      type: "register_lazy_files",
+      requestId,
+      entries: lazyEntries,
+    }).catch((err) => {
+      console.error("[BrowserKernel] Failed to register lazy VFS files:", err);
+    });
   }
 
   /**
