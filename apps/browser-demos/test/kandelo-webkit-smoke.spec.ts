@@ -5,8 +5,38 @@ const appUrl = (path: string): string => {
   return baseUrl ? new URL(path, baseUrl).href : path;
 };
 
+const absoluteAppUrl = (path: string): string => {
+  const baseUrl =
+    process.env.KANDELO_TEST_BASE_URL ??
+    `http://127.0.0.1:${process.env.KANDELO_PLAYWRIGHT_PORT ?? "5401"}`;
+  return new URL(path, baseUrl).href;
+};
+
+async function warmAppRoute(path: string): Promise<void> {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 30_000);
+  try {
+    const response = await fetch(absoluteAppUrl(path), {
+      signal: controller.signal,
+      headers: { "User-Agent": "kandelo-playwright-webkit-warmup" },
+    });
+    await response.arrayBuffer();
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
 async function gotoOrSkip(page: Page, path: string) {
-  await page.goto(appUrl(path), { waitUntil: "domcontentloaded" });
+  await warmAppRoute(path);
+  try {
+    await page.goto(appUrl(path), { waitUntil: "domcontentloaded" });
+  } catch (err) {
+    if (!String(err).includes("WebKit encountered an internal error")) {
+      throw err;
+    }
+    await page.waitForTimeout(1_000);
+    await page.goto(appUrl(path), { waitUntil: "domcontentloaded" });
+  }
   await page.waitForTimeout(2_000);
   if (await page.locator("vite-error-overlay").count()) {
     test.skip(true, "Required binary not built - Vite import error");
