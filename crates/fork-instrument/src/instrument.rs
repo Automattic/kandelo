@@ -209,6 +209,12 @@ struct CallSiteInfo {
     loc: InstrLocId,
 }
 
+#[derive(Debug, Clone, Copy)]
+struct CatchStateLocals {
+    catch_region_id: LocalId,
+    exnref_slot: LocalId,
+}
+
 #[allow(clippy::too_many_arguments)]
 fn instrument_one_function(
     module: &mut Module,
@@ -410,8 +416,14 @@ fn instrument_one_function_switch(
     // Allocate per-function synthetic locals.
     let call_idx_local = module.locals.add(ValType::I32);
     let frame_ptr_local = module.locals.add(runtime.buf_type);
-    let catch_region_id_local = module.locals.add(ValType::I32);
-    let exnref_slot_local = module.locals.add(ValType::I32);
+    let catch_state_locals = if catch_plan.is_empty() && b1_slots.is_empty() {
+        None
+    } else {
+        Some(CatchStateLocals {
+            catch_region_id: module.locals.add(ValType::I32),
+            exnref_slot: module.locals.add(ValType::I32),
+        })
+    };
 
     // Per-call arg-spill locals. Allocating them up front — before any
     // IR mutation — lets the frame layout see them as user-visible
@@ -491,12 +503,14 @@ fn instrument_one_function_switch(
     // try_table body. Phase 6 covers catch_ref / catch_all_ref.
     // B1 Stage 2 (Task 2.3) extends the same stub with a plain-catch
     // dispatch when `b1_slots` lists arms for the region.
-    if aux_tables.exnref.is_some() {
+    if !catch_plan.is_empty() && aux_tables.exnref.is_some() {
+        let catch_state =
+            catch_state_locals.expect("exnref catch plan requires catch-state locals");
         inject_rewind_throw_stubs(
             module,
             func_id,
             runtime,
-            catch_region_id_local,
+            catch_state.catch_region_id,
             aux_tables,
             catch_plan,
             b1_slots,
@@ -547,8 +561,7 @@ fn instrument_one_function_switch(
         ptr_ty,
         frame_ptr_local,
         call_idx_local,
-        catch_region_id_local,
-        exnref_slot_local,
+        catch_state_locals,
         &locals_with_offsets,
         ref_plan,
         aux_tables,
@@ -566,8 +579,7 @@ fn instrument_one_function_switch(
         &catch_handlers,
         runtime.state_global,
         call_idx_local,
-        catch_region_id_local,
-        exnref_slot_local,
+        catch_state_locals,
     );
 
     // Postamble lives outside $unwind_save, in the entry block, right
@@ -581,8 +593,7 @@ fn instrument_one_function_switch(
         ptr_ty,
         frame_ptr_local,
         call_idx_local,
-        catch_region_id_local,
-        exnref_slot_local,
+        catch_state_locals,
         &locals_with_offsets,
         ref_plan,
         aux_tables,
@@ -628,15 +639,19 @@ fn instrument_one_function_switch(
     // captures intercept plain catch dispatch so the operand tuple
     // can be saved at unwind time. Runs AFTER Phase 6 so it finds
     // try_tables at their post-Phase-6 locations.
-    apply_plain_catch_handlers(
-        module,
-        func_id,
-        runtime,
-        catch_region_id_local,
-        b1_slots,
-        catch_plan,
-        &catch_handlers,
-    );
+    if let Some(catch_state) = catch_state_locals {
+        apply_plain_catch_handlers(
+            module,
+            func_id,
+            runtime,
+            catch_state.catch_region_id,
+            b1_slots,
+            catch_plan,
+            &catch_handlers,
+        );
+    } else {
+        debug_assert!(b1_slots.is_empty());
+    }
 }
 
 // ----------------------------------------------------------------------
@@ -2017,8 +2032,7 @@ fn populate_dispatch_structure(
     catch_handlers: &[CatchHandlerInfo],
     state_global: GlobalId,
     call_idx_local: LocalId,
-    catch_region_id_local: LocalId,
-    exnref_slot_local: LocalId,
+    catch_state_locals: Option<CatchStateLocals>,
 ) {
     let n_calls = call_sites.len();
 
@@ -2049,8 +2063,7 @@ fn populate_dispatch_structure(
         catch_handlers,
         state_global,
         call_idx_local,
-        catch_region_id_local,
-        exnref_slot_local,
+        catch_state_locals,
     );
 }
 
@@ -2073,8 +2086,7 @@ fn emit_dispatch_node(
     catch_handlers: &[CatchHandlerInfo],
     state_global: GlobalId,
     call_idx_local: LocalId,
-    catch_region_id_local: LocalId,
-    exnref_slot_local: LocalId,
+    catch_state_locals: Option<CatchStateLocals>,
 ) {
     match node {
         DispatchTree::Leaf { start, end } => emit_leaf_dispatch(
@@ -2092,8 +2104,7 @@ fn emit_dispatch_node(
             catch_handlers,
             state_global,
             call_idx_local,
-            catch_region_id_local,
-            exnref_slot_local,
+            catch_state_locals,
         ),
         DispatchTree::Internal {
             children,
@@ -2113,8 +2124,7 @@ fn emit_dispatch_node(
             catch_handlers,
             state_global,
             call_idx_local,
-            catch_region_id_local,
-            exnref_slot_local,
+            catch_state_locals,
         ),
     }
 }
@@ -2153,8 +2163,7 @@ fn emit_internal_dispatch(
     catch_handlers: &[CatchHandlerInfo],
     state_global: GlobalId,
     call_idx_local: LocalId,
-    catch_region_id_local: LocalId,
-    exnref_slot_local: LocalId,
+    catch_state_locals: Option<CatchStateLocals>,
 ) {
     let b = children.len();
     debug_assert!(b >= 2, "internal dispatch node must have >= 2 children");
@@ -2209,8 +2218,7 @@ fn emit_internal_dispatch(
             catch_handlers,
             state_global,
             call_idx_local,
-            catch_region_id_local,
-            exnref_slot_local,
+            catch_state_locals,
         );
     }
 
@@ -2232,8 +2240,7 @@ fn emit_internal_dispatch(
         catch_handlers,
         state_global,
         call_idx_local,
-        catch_region_id_local,
-        exnref_slot_local,
+        catch_state_locals,
     );
 }
 
@@ -2259,8 +2266,7 @@ fn emit_leaf_dispatch(
     catch_handlers: &[CatchHandlerInfo],
     state_global: GlobalId,
     call_idx_local: LocalId,
-    catch_region_id_local: LocalId,
-    exnref_slot_local: LocalId,
+    catch_state_locals: Option<CatchStateLocals>,
 ) {
     debug_assert!(
         leaf_end > leaf_start,
@@ -2312,8 +2318,7 @@ fn emit_leaf_dispatch(
             catch_handlers,
             state_global,
             call_idx_local,
-            catch_region_id_local,
-            exnref_slot_local,
+            catch_state_locals,
             function_unwind_save,
         );
         {
@@ -2343,8 +2348,7 @@ fn emit_leaf_dispatch(
         catch_handlers,
         state_global,
         call_idx_local,
-        catch_region_id_local,
-        exnref_slot_local,
+        catch_state_locals,
         function_unwind_save,
     );
     if is_last_leaf {
@@ -2391,26 +2395,27 @@ fn emit_phase_6e_writes(
     local: &mut LocalFunction,
     seq_id: InstrSeqId,
     catch_handlers: &[CatchHandlerInfo],
-    catch_region_id_local: LocalId,
-    exnref_slot_local: LocalId,
+    catch_state_locals: Option<CatchStateLocals>,
 ) {
     if catch_handlers.is_empty() {
         return;
     }
+    let catch_state =
+        catch_state_locals.expect("catch handlers require catch-state locals");
     {
         let s = &mut local.block_mut(seq_id).instrs;
         push_instr(s, Instr::Const(Const { value: Value::I32(0) }));
         push_instr(
             s,
             Instr::LocalSet(LocalSet {
-                local: catch_region_id_local,
+                local: catch_state.catch_region_id,
             }),
         );
         push_instr(s, Instr::Const(Const { value: Value::I32(0) }));
         push_instr(
             s,
             Instr::LocalSet(LocalSet {
-                local: exnref_slot_local,
+                local: catch_state.exnref_slot,
             }),
         );
     }
@@ -2429,7 +2434,7 @@ fn emit_phase_6e_writes(
             push_instr(
                 s,
                 Instr::LocalSet(LocalSet {
-                    local: catch_region_id_local,
+                    local: catch_state.catch_region_id,
                 }),
             );
             push_instr(
@@ -2441,7 +2446,7 @@ fn emit_phase_6e_writes(
             push_instr(
                 s,
                 Instr::LocalSet(LocalSet {
-                    local: exnref_slot_local,
+                    local: catch_state.exnref_slot,
                 }),
             );
         }
@@ -2475,8 +2480,7 @@ fn populate_preamble_then(
     ptr_ty: ValType,
     frame_ptr_local: LocalId,
     call_idx_local: LocalId,
-    catch_region_id_local: LocalId,
-    exnref_slot_local: LocalId,
+    catch_state_locals: Option<CatchStateLocals>,
     locals_with_offsets: &[(LocalId, ValType, u32)],
     ref_plan: &[RefLocalSlot],
     aux_tables: &AuxTables,
@@ -2511,24 +2515,26 @@ fn populate_preamble_then(
     push_instr(s, load_i32(memory, CALL_INDEX_OFFSET));
     push_instr(s, Instr::LocalSet(LocalSet { local: call_idx_local }));
 
-    // catch_region_id_local / exnref_slot_local
-    push_instr(s, Instr::LocalGet(LocalGet { local: frame_ptr_local }));
-    push_instr(s, load_i32(memory, CATCH_REGION_OFFSET));
-    push_instr(
-        s,
-        Instr::LocalSet(LocalSet {
-            local: catch_region_id_local,
-        }),
-    );
+    if let Some(catch_state) = catch_state_locals {
+        // catch_region_id_local / exnref_slot_local
+        push_instr(s, Instr::LocalGet(LocalGet { local: frame_ptr_local }));
+        push_instr(s, load_i32(memory, CATCH_REGION_OFFSET));
+        push_instr(
+            s,
+            Instr::LocalSet(LocalSet {
+                local: catch_state.catch_region_id,
+            }),
+        );
 
-    push_instr(s, Instr::LocalGet(LocalGet { local: frame_ptr_local }));
-    push_instr(s, load_i32(memory, EXNREF_SLOT_OFFSET));
-    push_instr(
-        s,
-        Instr::LocalSet(LocalSet {
-            local: exnref_slot_local,
-        }),
-    );
+        push_instr(s, Instr::LocalGet(LocalGet { local: frame_ptr_local }));
+        push_instr(s, load_i32(memory, EXNREF_SLOT_OFFSET));
+        push_instr(
+            s,
+            Instr::LocalSet(LocalSet {
+                local: catch_state.exnref_slot,
+            }),
+        );
+    }
 
     // Restore scalar user locals (includes arg-spill locals).
     for &(lid, ty, off) in locals_with_offsets {
@@ -2561,8 +2567,7 @@ fn populate_postamble(
     ptr_ty: ValType,
     frame_ptr_local: LocalId,
     call_idx_local: LocalId,
-    catch_region_id_local: LocalId,
-    exnref_slot_local: LocalId,
+    catch_state_locals: Option<CatchStateLocals>,
     locals_with_offsets: &[(LocalId, ValType, u32)],
     ref_plan: &[RefLocalSlot],
     aux_tables: &AuxTables,
@@ -2615,34 +2620,42 @@ fn populate_postamble(
     );
     push_instr(out, store_i32(memory, CALL_INDEX_OFFSET));
 
-    // frame[8] = catch_region_id_local
+    // frame[8] = catch_region_id (or 0 for functions without catch-state).
     push_instr(
         out,
         Instr::LocalGet(LocalGet {
             local: frame_ptr_local,
         }),
     );
-    push_instr(
-        out,
-        Instr::LocalGet(LocalGet {
-            local: catch_region_id_local,
-        }),
-    );
+    if let Some(catch_state) = catch_state_locals {
+        push_instr(
+            out,
+            Instr::LocalGet(LocalGet {
+                local: catch_state.catch_region_id,
+            }),
+        );
+    } else {
+        push_instr(out, Instr::Const(Const { value: Value::I32(0) }));
+    }
     push_instr(out, store_i32(memory, CATCH_REGION_OFFSET));
 
-    // frame[12] = exnref_slot_local
+    // frame[12] = exnref_slot (or 0 for functions without catch-state).
     push_instr(
         out,
         Instr::LocalGet(LocalGet {
             local: frame_ptr_local,
         }),
     );
-    push_instr(
-        out,
-        Instr::LocalGet(LocalGet {
-            local: exnref_slot_local,
-        }),
-    );
+    if let Some(catch_state) = catch_state_locals {
+        push_instr(
+            out,
+            Instr::LocalGet(LocalGet {
+                local: catch_state.exnref_slot,
+            }),
+        );
+    } else {
+        push_instr(out, Instr::Const(Const { value: Value::I32(0) }));
+    }
     push_instr(out, store_i32(memory, EXNREF_SLOT_OFFSET));
 
     // Save scalar user + arg-spill locals
@@ -2727,8 +2740,7 @@ fn emit_post_call_via_local(
     catch_handlers: &[CatchHandlerInfo],
     state_global: GlobalId,
     call_idx_local: LocalId,
-    catch_region_id_local: LocalId,
-    exnref_slot_local: LocalId,
+    catch_state_locals: Option<CatchStateLocals>,
     unwind_save: InstrSeqId,
 ) {
     // Reload carryovers (deepest first), then args (deepest first).
@@ -2756,8 +2768,7 @@ fn emit_post_call_via_local(
         local,
         seq_id,
         catch_handlers,
-        catch_region_id_local,
-        exnref_slot_local,
+        catch_state_locals,
     );
 
     let s = &mut local.block_mut(seq_id).instrs;
@@ -5545,8 +5556,14 @@ fn instrument_one_function_nested_switch(
     // Synthetic locals.
     let call_idx_local = module.locals.add(ValType::I32);
     let frame_ptr_local = module.locals.add(runtime.buf_type);
-    let catch_region_id_local = module.locals.add(ValType::I32);
-    let exnref_slot_local = module.locals.add(ValType::I32);
+    let catch_state_locals = if catch_plan.is_empty() && b1_slots.is_empty() {
+        None
+    } else {
+        Some(CatchStateLocals {
+            catch_region_id: module.locals.add(ValType::I32),
+            exnref_slot: module.locals.add(ValType::I32),
+        })
+    };
     // Tmp i32 used by the IfElse cond rewrite to swap stack order
     // (preserve original cond while computing force_flag and
     // is_rewind without touching the operand stack).
@@ -5715,12 +5732,14 @@ fn instrument_one_function_nested_switch(
     // without fork-path calls — preserves the exnref serialization
     // path). Extended by B1 Stage 2 Task 2.3 with plain-catch arm
     // dispatch when `b1_slots` lists arms for the region.
-    if aux_tables.exnref.is_some() {
+    if !catch_plan.is_empty() && aux_tables.exnref.is_some() {
+        let catch_state =
+            catch_state_locals.expect("exnref catch plan requires catch-state locals");
         inject_rewind_throw_stubs(
             module,
             func_id,
             runtime,
-            catch_region_id_local,
+            catch_state.catch_region_id,
             aux_tables,
             catch_plan,
             b1_slots,
@@ -5750,8 +5769,7 @@ fn instrument_one_function_nested_switch(
         ptr_ty,
         frame_ptr_local,
         call_idx_local,
-        catch_region_id_local,
-        exnref_slot_local,
+        catch_state_locals,
         &locals_with_offsets,
         ref_plan,
         aux_tables,
@@ -5809,8 +5827,7 @@ fn instrument_one_function_nested_switch(
             runtime.state_global,
             call_idx_local,
             cond_swap_local,
-            catch_region_id_local,
-            exnref_slot_local,
+            catch_state_locals,
             unwind_save,
             body_params,
         );
@@ -5837,8 +5854,7 @@ fn instrument_one_function_nested_switch(
         runtime.state_global,
         call_idx_local,
         cond_swap_local,
-        catch_region_id_local,
-        exnref_slot_local,
+        catch_state_locals,
         unwind_save,
         &result_types,
     );
@@ -5852,8 +5868,7 @@ fn instrument_one_function_nested_switch(
         ptr_ty,
         frame_ptr_local,
         call_idx_local,
-        catch_region_id_local,
-        exnref_slot_local,
+        catch_state_locals,
         &locals_with_offsets,
         ref_plan,
         aux_tables,
@@ -5897,15 +5912,19 @@ fn instrument_one_function_nested_switch(
 
     // Stage 2 (B1) plain-catch capture-block emission. Runs AFTER
     // Phase 6 so it sees post-Phase-6 try_table locations.
-    apply_plain_catch_handlers(
-        module,
-        func_id,
-        runtime,
-        catch_region_id_local,
-        b1_slots,
-        catch_plan,
-        &catch_handlers,
-    );
+    if let Some(catch_state) = catch_state_locals {
+        apply_plain_catch_handlers(
+            module,
+            func_id,
+            runtime,
+            catch_state.catch_region_id,
+            b1_slots,
+            catch_plan,
+            &catch_handlers,
+        );
+    } else {
+        debug_assert!(b1_slots.is_empty());
+    }
 }
 
 /// At the end of a chunk that precedes a landing (inside the POST_K
@@ -6012,8 +6031,7 @@ fn transform_region_seq(
     state_global: GlobalId,
     call_idx_local: LocalId,
     cond_swap_local: LocalId,
-    catch_region_id_local: LocalId,
-    exnref_slot_local: LocalId,
+    catch_state_locals: Option<CatchStateLocals>,
     unwind_save: InstrSeqId,
     // Sub-commit 2.6c: this seq's declared type-params (only set for
     // multi-value Block/Loop/TryTable bodies). Pre-spilled at body
@@ -6093,8 +6111,7 @@ fn transform_region_seq(
         state_global,
         call_idx_local,
         cond_swap_local,
-        catch_region_id_local,
-        exnref_slot_local,
+        catch_state_locals,
         unwind_save,
         false, // don't append `return` at end
     );
@@ -6130,8 +6147,7 @@ fn transform_entry_region(
     state_global: GlobalId,
     call_idx_local: LocalId,
     cond_swap_local: LocalId,
-    catch_region_id_local: LocalId,
-    exnref_slot_local: LocalId,
+    catch_state_locals: Option<CatchStateLocals>,
     unwind_save: InstrSeqId,
     _result_types: &[ValType],
 ) {
@@ -6186,8 +6202,7 @@ fn transform_entry_region(
         state_global,
         call_idx_local,
         cond_swap_local,
-        catch_region_id_local,
-        exnref_slot_local,
+        catch_state_locals,
         unwind_save,
         true, // append `return` for normal-path exit
     );
@@ -6463,8 +6478,7 @@ fn populate_region_dispatch_structure(
     state_global: GlobalId,
     call_idx_local: LocalId,
     cond_swap_local: LocalId,
-    catch_region_id_local: LocalId,
-    exnref_slot_local: LocalId,
+    catch_state_locals: Option<CatchStateLocals>,
     unwind_save: InstrSeqId,
     append_return: bool,
 ) {
@@ -6519,8 +6533,7 @@ fn populate_region_dispatch_structure(
             state_global,
             call_idx_local,
             cond_swap_local,
-            catch_region_id_local,
-            exnref_slot_local,
+            catch_state_locals,
             unwind_save,
         );
         {
@@ -6555,8 +6568,7 @@ fn populate_region_dispatch_structure(
         state_global,
         call_idx_local,
         cond_swap_local,
-        catch_region_id_local,
-        exnref_slot_local,
+        catch_state_locals,
         unwind_save,
     );
     {
@@ -6582,8 +6594,7 @@ fn emit_post_landing(
     state_global: GlobalId,
     call_idx_local: LocalId,
     cond_swap_local: LocalId,
-    catch_region_id_local: LocalId,
-    exnref_slot_local: LocalId,
+    catch_state_locals: Option<CatchStateLocals>,
     unwind_save: InstrSeqId,
 ) {
     match &landing.kind {
@@ -6619,8 +6630,7 @@ fn emit_post_landing(
                 local,
                 seq_id,
                 catch_handlers,
-                catch_region_id_local,
-                exnref_slot_local,
+                catch_state_locals,
             );
             let s = &mut local.block_mut(seq_id).instrs;
             push_instr(s, Instr::Const(Const { value: Value::I32(*call_idx as i32) }));

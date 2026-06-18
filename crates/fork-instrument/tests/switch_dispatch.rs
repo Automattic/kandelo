@@ -265,6 +265,35 @@ fn posix_spawn_class_shadow_stack_not_duplicated() {
     );
 }
 
+#[test]
+fn no_catch_switch_dispatch_omits_catch_state_locals() {
+    let wat = r#"
+        (module
+          (import "kernel" "kernel_fork" (func $kernel_fork (result i32)))
+          (memory (export "memory") 1)
+          (func $caller (export "caller") (result i32)
+            (local $x i32)
+            i32.const 7
+            local.set $x
+            call $kernel_fork
+            local.get $x
+            i32.add))
+    "#;
+    let input = wat::parse_str(wat).expect("wat parse");
+    let output = instrument(&input, &Options::default()).expect("instrument");
+    validate(&output);
+
+    let printed = wasmprinter::print_bytes(&output).expect("wasmprinter");
+    let caller = extract_function_text(&printed, "caller");
+    let locals = declared_scalar_local_count(&caller);
+    assert_eq!(
+        locals, 3,
+        "no-catch fork path should declare only the original local plus \
+         call_idx and frame_ptr; unconditional catch metadata locals would \
+         raise this to 5:\n{caller}"
+    );
+}
+
 // -- Helper predicates ----------------------------------------------
 
 fn find_func(module: &Module, name: &str) -> FunctionId {
@@ -281,6 +310,46 @@ fn local_func(module: &Module, id: FunctionId) -> &LocalFunction {
         FunctionKind::Local(l) => l,
         _ => panic!("not a local function: {name:?}", name = module.funcs.get(id).name),
     }
+}
+
+fn extract_function_text<'a>(printed: &'a str, name: &str) -> String {
+    let needle = format!("(func ${name} ");
+    let start = printed
+        .find(&needle)
+        .unwrap_or_else(|| panic!("function ${name} not found in:\n{printed}"));
+    let mut depth = 0i32;
+    let mut end = start;
+    for (i, c) in printed[start..].char_indices() {
+        match c {
+            '(' => depth += 1,
+            ')' => {
+                depth -= 1;
+                if depth == 0 {
+                    end = start + i + 1;
+                    break;
+                }
+            }
+            _ => {}
+        }
+    }
+    printed[start..end].to_string()
+}
+
+fn declared_scalar_local_count(func_text: &str) -> usize {
+    func_text
+        .lines()
+        .filter_map(|line| {
+            let trimmed = line.trim_start();
+            trimmed
+                .strip_prefix("(local ")
+                .and_then(|rest| rest.strip_suffix(')'))
+        })
+        .map(|rest| {
+            rest.split_whitespace()
+                .filter(|tok| matches!(*tok, "i32" | "i64" | "f32" | "f64" | "v128"))
+                .count()
+        })
+        .sum()
 }
 
 fn find_import_func(module: &Module, qualified: &str) -> FunctionId {

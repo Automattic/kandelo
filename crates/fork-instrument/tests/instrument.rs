@@ -872,12 +872,6 @@ fn preamble_then_loads_frame_header_and_call_idx() {
             InstrKind::LocalGet,  // frame_ptr
             InstrKind::Other,     // Load call_idx from frame+4
             InstrKind::LocalSet,  // $call_idx_local
-            InstrKind::LocalGet,  // frame_ptr
-            InstrKind::Other,     // Load catch_region_id from frame+8
-            InstrKind::LocalSet,  // $catch_region_id_local
-            InstrKind::LocalGet,  // frame_ptr
-            InstrKind::Other,     // Load exnref_slot from frame+12
-            InstrKind::LocalSet,  // $exnref_slot_local
         ],
     );
 }
@@ -903,10 +897,10 @@ fn postamble_writes_frame_header_and_bumps_current_pos() {
         InstrKind::LocalGet,
         InstrKind::Other, // Store call_index
         InstrKind::LocalGet,
-        InstrKind::LocalGet,
+        InstrKind::Const,
         InstrKind::Other, // Store catch_region_id
         InstrKind::LocalGet,
-        InstrKind::LocalGet,
+        InstrKind::Const,
         InstrKind::Other, // Store exnref_slot
         InstrKind::GlobalGet,
         InstrKind::LocalGet,
