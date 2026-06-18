@@ -71,12 +71,12 @@ case "$suite" in
                 run_timed 30m "Install Playwright browsers" \
                     npx playwright install chromium firefox webkit
             fi
+            run_timed 10m "Run WebKit lazy VFS contract" \
+                npx playwright test browser-kernel-webkit.spec.ts --project=webkit
             run_timed 20m "Run Chromium browser smoke suite" \
                 npx playwright test --grep-invert "@slow|@trap-signal" --project=chromium
             run_timed 10m "Run trap-signal browser smoke suite" \
                 npx playwright test wasm-trap-signal.spec.ts --project=chromium --project=firefox
-            run_timed 10m "Run WebKit lazy VFS contract" \
-                npx playwright test browser-kernel-webkit.spec.ts --project=webkit
         )
         ;;
     libc)
