@@ -30,7 +30,7 @@ async function syslogText(page: Page): Promise<string> {
   return lines.join("\n");
 }
 
-test("Kandelo sdl2 demo boots, runs, exits clean", async ({ page }) => {
+test("Kandelo sdl2 demo (Phase 4: editor left + plasma right, ESC-quits)", async ({ page }) => {
   test.setTimeout(120_000);
 
   await gotoOrSkip(page, "/?demo=sdl2");
@@ -40,37 +40,67 @@ test("Kandelo sdl2 demo boots, runs, exits clean", async ({ page }) => {
     .poll(() => syslogText(page), { timeout: 90_000 })
     .toMatch(/running sdl2/);
 
-  // Capture the KMSDRM canvas mid-run — the demo exits after 5 s and
-  // the Demo surface is hidden once the process has reaped, so these
-  // gates have to fire before "sdl2 exited" appears. Guards against a
-  // silent shader-compile / viewport-zero / framebuffer failure that
-  // would still print "OK frames=… exit=timeout" but leave the canvas
-  // blank.
   await openSurface(page, "Demo");
   const canvas = page.locator(".kmachine-primary-slot:not(.is-hidden) canvas").first();
   await expect(canvas).toBeVisible({ timeout: 10_000 });
-  // Sample the canvas across the run and assert (a) every frame
-  // encodes well above the blank-canvas baseline (1920×1080 dark-gray
-  // PNG ≈ 3.2 KiB) and (b) the byteLengths SPAN a meaningful range —
-  // the fragment shader oscillates color via sin(u_t) (period ≈
-  // π/2 s) and the vertex shader rotates the quad continuously, so
-  // PNG-compressed frame sizes from a working render vary by a few
-  // hundred bytes over a 3 s window. A blank-canvas regression (no
-  // shader bound, zero viewport, GL submits dropped, …) yields five
-  // identical PNGs and fails the spread gate. The single byteLength
-  // gate the predecessor session shipped (> 2 000) was a false
-  // positive: a uninitialised canvas still encodes to ~3 KiB.
-  const sizes: number[] = [];
-  for (let i = 0; i < 5; i++) {
-    await page.waitForTimeout(600);
-    const shot = await canvas.screenshot();
-    sizes.push(shot.byteLength);
+
+  /* The Modeset pane uses transferControlToOffscreen (see
+   * apps/browser-demos/pages/kandelo/panes/Modeset.tsx), which makes
+   * in-page drawImage(canvas, 0, 0) + getImageData unreliable on the
+   * placeholder canvas, and canvas.screenshot() returns the CSS
+   * bounding box (including letterbox background) at a size that
+   * differs from the canvas backing buffer. Use PNG byteLength
+   * variance instead:
+   *   - Full-frame: an animating plasma on the right pane compresses
+   *     to different sizes across frames; a static (or blank) canvas
+   *     does not.
+   *   - Left-half clip: text glyph rendering produces a much larger
+   *     PNG than a flat-gray clear. If the editor never drew, the
+   *     left half compresses to ~1-2 KB; with text it lands well
+   *     above 3 KB even with cursor blink off. */
+  const fullSizes: number[] = [];
+  const leftSizes: number[] = [];
+  const bb = await canvas.boundingBox();
+  if (!bb) throw new Error("canvas bounding box unavailable");
+  const leftClip = {
+    x: bb.x,
+    y: bb.y,
+    width: Math.floor(bb.width / 2),
+    height: bb.height,
+  };
+  for (let i = 0; i < 6; i++) {
+    await page.waitForTimeout(500);
+    const full = await canvas.screenshot();
+    const left = await page.screenshot({ clip: leftClip });
+    fullSizes.push(full.byteLength);
+    leftSizes.push(left.byteLength);
   }
-  for (const sz of sizes) {
-    expect(sz, `canvas frame too small: ${sizes.join(",")}`).toBeGreaterThan(3_500);
+  for (const sz of fullSizes) {
+    expect(
+      sz,
+      `canvas frame too small (blank?); fullSizes=${fullSizes.join(",")}`,
+    ).toBeGreaterThan(3_500);
   }
-  const spread = Math.max(...sizes) - Math.min(...sizes);
-  expect(spread, `canvas not animating: sizes=${sizes.join(",")}`).toBeGreaterThan(400);
+  const spread = Math.max(...fullSizes) - Math.min(...fullSizes);
+  expect(
+    spread,
+    `right pane not animating; fullSizes=${fullSizes.join(",")}`,
+  ).toBeGreaterThan(400);
+  /* Left half should be much bigger than a flat-gray PNG because
+   * Inconsolata glyphs add high-frequency detail. A flat-color
+   * rectangle of this size compresses to a few hundred bytes; with
+   * baked text we expect >3 KB consistently. */
+  for (const sz of leftSizes) {
+    expect(
+      sz,
+      `left pane has no editor content; leftSizes=${leftSizes.join(",")}`,
+    ).toBeGreaterThan(3_000);
+  }
+
+  /* ESC is the only exit path. Click body to take focus off the
+   * canvas, then dispatch Escape to BrowserInputSource → SDL_evdev. */
+  await page.locator("body").click({ position: { x: 5, y: 5 } });
+  await page.keyboard.press("Escape");
 
   await openSurface(page, "Internals");
   await expect
@@ -82,5 +112,5 @@ test("Kandelo sdl2 demo boots, runs, exits clean", async ({ page }) => {
   await openSurface(page, "Terminal");
   await expect
     .poll(() => terminalText(page), { timeout: 30_000 })
-    .toMatch(/sdl2: OK frames=\d+ elapsed=\d+ ms exit=timeout/);
+    .toMatch(/sdl2: OK frames=\d+ elapsed=\d+ ms exit=esc/);
 });

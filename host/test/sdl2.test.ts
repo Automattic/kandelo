@@ -1,23 +1,30 @@
 /**
- * End-to-end gate for the SDL2 playground binary at its Phase 0
- * shape (still the original Phase C2 5 s spinning-quad + 440 Hz tone
- * + ESC demo before the playground phases land). Runs
- * `programs/sdl2.wasm` (KMSDRM video + ALSA audio + evdev input)
- * inside the centralised kernel under NodeKernelHost; asserts both
- * the 5 s timeout path and the ESC-quits-early path.
- *
- * The ESC variant uses `NodeKernelHost.injectInputEvent` to push a
- * KEY_ESC press + SYN_REPORT roughly 1.5 s into the run — the same
- * shape `BrowserInputSource` emits. Asserts the demo exits with
- * code 0 noticeably before the 5 s timeout and labels its exit as
- * "esc", proving the evdev→SDL_KEYDOWN→main-loop pump cycle
- * actually closes the loop.
+ * End-to-end gate for the SDL2 playground binary at its Phase 4 shape
+ * (viewport-split with a live editor on the left pane, VFS-loaded user
+ * shader on the right pane, 250 ms debounced auto-recompile on every
+ * keystroke, Ctrl+S writes /home/shaders/image/current.frag, no
+ * self-timeout). Runs `programs/sdl2.wasm` (KMSDRM video + ALSA audio
+ * + evdev input) inside the centralised kernel under NodeKernelHost;
+ * asserts:
+ *   - the ESC-quits path still works,
+ *   - the shader-source resolution chain still falls through to the
+ *     built-in PLASMA_SRC fallback under NodeKernelHost (no VFS
+ *     staging),
+ *   - the editor module loads the source on init and emits the
+ *     `sdl2: editor loaded N chars` diagnostic,
+ *   - the font atlas bake completes (`sdl2: text-atlas baked=...`),
+ *   - injecting a typing keystroke triggers the debounced
+ *     auto-recompile path (`sdl2: editor recompile ...`),
+ *   - F5 keydown still surfaces the "user file not readable" path.
+ * Visual gates for the plasma drift and the editor text rendering
+ * live in the Playwright spec — Node has no real GL context, so
+ * `host_gl_query` returns -1 and the renderer's WARN-on-status-zero
+ * stash fires (non-fatal) for every program.
  */
 import { describe, expect, it } from "vitest";
 import { readFileSync } from "node:fs";
 import { NodeKernelHost } from "../src/node-kernel-host";
 import { tryResolveBinary } from "../src/binary-resolver";
-import { runCentralizedProgram } from "./centralized-test-helper";
 
 const programBinary = tryResolveBinary("programs/sdl2.wasm");
 
@@ -25,6 +32,8 @@ const EV_SYN = 0x00;
 const EV_KEY = 0x01;
 const SYN_REPORT = 0x00;
 const KEY_ESC = 1;
+const KEY_F5 = 63;
+const KEY_A = 30;  /* linux/input-event-codes.h: typing 'a' */
 
 async function waitFor(
   stdoutRef: { value: string },
@@ -42,35 +51,9 @@ async function waitFor(
   );
 }
 
-describe("SDL2 playground — video + audio + input combined", () => {
+describe("SDL2 playground — editor + VFS + auto-recompile (Phase 4)", () => {
   it.skipIf(!programBinary)(
-    "drives the SDL2 main loop end-to-end without crashing (5 s timeout exit)",
-    async () => {
-      const result = await runCentralizedProgram({
-        programPath: programBinary!,
-        argv: ["sdl2"],
-        timeout: 15_000,
-      });
-      expect(
-        result.exitCode,
-        `stdout=${result.stdout} stderr=${result.stderr}`,
-      ).toBe(0);
-      expect(result.stdout).toContain("sdl2: SDL_Init OK");
-      expect(result.stdout).toMatch(/sdl2: OK frames=\d+ elapsed=\d+ ms exit=timeout/);
-      expect(result.stderr).not.toContain("FAIL:");
-      // `frames` is main-loop tick count, not rasterised frame count
-      // (GLES2 commands are encoded through the cmdbuf but the kernel-
-      // side canvas readback isn't asserted here). >0 proves the loop
-      // ran at least once.
-      const m = result.stdout.match(/frames=(\d+)/);
-      expect(m, `frames= not found in stdout: ${result.stdout}`).not.toBeNull();
-      expect(Number(m![1])).toBeGreaterThan(0);
-    },
-    20_000,
-  );
-
-  it.skipIf(!programBinary)(
-    "exits early on ESC keydown injected via evdev",
+    "loads the editor, bakes the atlas, debounces recompile on type, exits on ESC",
     async () => {
       const fileBuf = readFileSync(programBinary!);
       const programBytes = fileBuf.buffer.slice(
@@ -91,17 +74,37 @@ describe("SDL2 playground — video + audio + input combined", () => {
 
       try {
         await host.init();
-        host.setInputCanvasDims(320, 240);
+        host.setInputCanvasDims(1280, 720);
 
         const exitPromise = host.spawn(programBytes, ["sdl2"]);
 
-        // Wait until SDL2 has finished init — that's the earliest
-        // point an evdev event will be picked up by SDL_PumpEvents.
         await waitFor(stdout, "sdl2: SDL_Init OK", 10_000);
 
-        // Give the main loop a few iterations so the audio device is
-        // open and the first frame has flipped, then inject ESC.
-        await new Promise((r) => setTimeout(r, 250));
+        /* Wait long enough for the editor and atlas init to log,
+         * then inject:
+         *   1. a typing key (KEY_A) so the debounce timer arms,
+         *   2. F5 to exercise the "user file missing" branch,
+         *   3. ESC to quit.
+         * The 300 ms gap after KEY_A guarantees the
+         * AUTO_RECOMPILE_DEBOUNCE_MS=250 deadline fires inside the
+         * main loop before ESC tears the process down. */
+        await waitFor(stdout, "sdl2: editor loaded", 5_000);
+        await waitFor(stdout, "sdl2: text-atlas baked", 5_000);
+
+        host.injectInputEvent(0, EV_KEY, KEY_A, 1);
+        host.injectInputEvent(0, EV_SYN, SYN_REPORT, 0);
+        await new Promise((r) => setTimeout(r, 10));
+        host.injectInputEvent(0, EV_KEY, KEY_A, 0);
+        host.injectInputEvent(0, EV_SYN, SYN_REPORT, 0);
+        await new Promise((r) => setTimeout(r, 300));
+
+        host.injectInputEvent(0, EV_KEY, KEY_F5, 1);
+        host.injectInputEvent(0, EV_SYN, SYN_REPORT, 0);
+        await new Promise((r) => setTimeout(r, 10));
+        host.injectInputEvent(0, EV_KEY, KEY_F5, 0);
+        host.injectInputEvent(0, EV_SYN, SYN_REPORT, 0);
+        await new Promise((r) => setTimeout(r, 100));
+
         host.injectInputEvent(0, EV_KEY, KEY_ESC, 1);
         host.injectInputEvent(0, EV_SYN, SYN_REPORT, 0);
         await new Promise((r) => setTimeout(r, 10));
@@ -126,12 +129,28 @@ describe("SDL2 playground — video + audio + input combined", () => {
           exitCode,
           `stdout=${stdout.value} stderr=${stderr.value}`,
         ).toBe(0);
+        expect(stdout.value).toContain("sdl2: SDL_Init OK");
         expect(stdout.value).toMatch(/sdl2: OK frames=\d+ elapsed=\d+ ms exit=esc/);
-        const m = stdout.value.match(/elapsed=(\d+) ms/);
-        expect(m, `elapsed= not found in stdout: ${stdout.value}`).not.toBeNull();
-        // Should have quit well under the 5 000 ms timeout — give a
-        // 3 500 ms upper bound to swallow Node.js/runner jitter.
-        expect(Number(m![1])).toBeLessThan(3_500);
+        expect(stderr.value).not.toContain("FAIL:");
+        /* NodeKernelHost's rootfs has neither current.frag nor the
+         * staged preset, so the source chain must fall through to the
+         * built-in fallback. The Playwright path stages the preset
+         * and exercises the VFS leg. */
+        expect(stdout.value).toContain("sdl2: shader-source=builtin-plasma");
+        /* Editor + atlas init signals. */
+        expect(stdout.value).toMatch(/sdl2: editor loaded \d+ chars/);
+        expect(stdout.value).toMatch(/sdl2: text-atlas baked=-?\d+/);
+        /* Typing fires the debounced auto-recompile path. */
+        expect(stdout.value).toMatch(/sdl2: editor recompile/);
+        /* F5 against a missing user file must surface as a WARN, not
+         * a crash: the binary stays alive long enough for ESC. */
+        expect(stderr.value).toMatch(
+          /WARN: F5: \/home\/shaders\/image\/current\.frag not readable/,
+        );
+        /* frames>0 proves the main loop ran at least one render pass. */
+        const m = stdout.value.match(/frames=(\d+)/);
+        expect(m, `frames= not found in stdout: ${stdout.value}`).not.toBeNull();
+        expect(Number(m![1])).toBeGreaterThan(0);
       } finally {
         await host.destroy();
       }

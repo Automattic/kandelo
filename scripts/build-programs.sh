@@ -296,6 +296,37 @@ done
 # transitively pulls <GLES2/gl2.h> but the per-file grep in
 # build_program only catches direct top-level EGL/GLES includes).
 if ls "$REPO_ROOT"/programs/sdl2/*.c >/dev/null 2>&1; then
+    # Regenerate the Inconsolata TTF→C byte-array header if missing or
+    # older than the .ttf. The .h is git-ignored; the .ttf is the
+    # source of truth (see programs/sdl2/third_party/NOTICE.md).
+    sdl2_ttf="$REPO_ROOT/programs/sdl2/third_party/Inconsolata-Regular.ttf"
+    sdl2_ttf_h="$REPO_ROOT/programs/sdl2/third_party/inconsolata_ttf.h"
+    if [ -f "$sdl2_ttf" ]; then
+        if [ ! -f "$sdl2_ttf_h" ] || [ "$sdl2_ttf" -nt "$sdl2_ttf_h" ]; then
+            echo "  Regenerating inconsolata_ttf.h from $(basename "$sdl2_ttf")..."
+            python3 - "$sdl2_ttf" "$sdl2_ttf_h" <<'PY'
+import sys, pathlib
+src = pathlib.Path(sys.argv[1]).read_bytes()
+dst = pathlib.Path(sys.argv[2])
+# 16 bytes per line keeps each token whole and the file ~6× the .ttf
+# size — well under what clang chokes on.
+PER_LINE = 16
+lines = [
+    ",".join(f"0x{b:02x}" for b in src[i:i + PER_LINE])
+    for i in range(0, len(src), PER_LINE)
+]
+dst.write_text(
+    "/* Auto-generated from Inconsolata-Regular.ttf by "
+    "scripts/build-programs.sh. */\n"
+    "/* See programs/sdl2/third_party/NOTICE.md for license. */\n"
+    "#pragma once\n"
+    f"static const unsigned char inconsolata_ttf[] = {{\n"
+    + ",\n".join(lines) + "\n};\n"
+    f"static const unsigned int inconsolata_ttf_len = {len(src)};\n"
+)
+PY
+        fi
+    fi
     sdl2_sources=("$REPO_ROOT"/programs/sdl2/*.c)
     sdl2_wasm="$OUT_DIR_32/sdl2.wasm"
     echo "  Compiling sdl2 (multi-source: ${#sdl2_sources[@]} file(s))..."

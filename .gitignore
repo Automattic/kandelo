@@ -131,3 +131,8 @@ benchmarks/wasm/
 
 # Phase C: per-package PR overlay (CI-generated; merged over package.toml at parse time).
 packages/registry/*/package.pr.toml
+
+# SDL2 playground: auto-generated TTF→C-byte-array header.
+# Regenerated from programs/sdl2/third_party/Inconsolata-Regular.ttf by
+# scripts/build-programs.sh on every build.
+programs/sdl2/third_party/inconsolata_ttf.h

@@ -74,6 +74,7 @@ import lampVfsUrl from "@binaries/programs/wasm32/lamp.vfs.zst?url";
 import dinitWasmUrl from "@binaries/programs/wasm32/dinit/dinit.wasm?url";
 import dashWasmUrl from "@binaries/programs/wasm32/dash.wasm?url";
 import bashWasmUrl from "@binaries/programs/wasm32/bash.wasm?url";
+import sdl2PlasmaFragSrc from "../../../../../programs/sdl2/presets/image/plasma.frag?raw";
 
 const DEFAULT_SOFTWARE_MANIFEST_URLS = [
   `https://github.com/brandonpayton/kandelo-software/releases/download/binaries-abi-v${ABI_VERSION}/gallery.json`,
@@ -1294,11 +1295,39 @@ async function bootProfile(
             new Uint8Array(bytes),
             0o755,
           );
+          // Phase 3 shader-source chain: the playground reads
+          //   1. /home/shaders/image/current.frag   (user-editable)
+          //   2. /usr/share/shaders/image/plasma.frag   (preset)
+          //   3. built-in PLASMA_SRC fallback
+          // Stage (2) so the browser path exercises the VFS leg, and
+          // mkdir (1)'s parent so the user can drop a current.frag
+          // via terminal/host VFS without first creating dirs.
+          tick("staging shader preset...");
+          ensureDirRecursive(kernelForSdl2.fs, "/usr/share/shaders/image");
+          ensureDirRecursive(kernelForSdl2.fs, "/home/shaders/image");
+          writeVfsFile(
+            kernelForSdl2.fs,
+            "/usr/share/shaders/image/plasma.frag",
+            sdl2PlasmaFragSrc,
+          );
           tick("attaching input source...");
-          kernelForSdl2.attachInputSource(new BrowserInputSource(window), {
-            width: window.innerWidth,
-            height: window.innerHeight,
-          });
+          // Keyboard goes through BrowserInputSource (ESC, typing → evdev
+          // event0). The POINTER is owned by the Modeset pane, which
+          // feeds framebuffer-positioned pointer events into evdev event1
+          // via `sendPointerAbs` — so we disable this source's pointer
+          // feed (its window-relative coordinates would fight the pane's
+          // correct one). The dims set EVIOCGABS's ABS_X/Y.maximum; SDL
+          // treats event1 as a relative mouse (it advertises REL_X/Y) and
+          // clamps the cursor to the window rather than this range, but we
+          // still pass the framebuffer size (1920×1080, matching
+          // host/src/dri/kms-registry.ts and the Modeset canvas) so any
+          // ABS-aware consumer sees sane bounds.
+          const SDL2_FB_W = 1920;
+          const SDL2_FB_H = 1080;
+          kernelForSdl2.attachInputSource(
+            new BrowserInputSource(window, { pointer: false }),
+            { width: SDL2_FB_W, height: SDL2_FB_H },
+          );
           tick("attaching audio driver...");
           audioDriver = createInstrumentedAudioDriver();
           await kernelForSdl2.attachAudioDriver(audioDriver, {
