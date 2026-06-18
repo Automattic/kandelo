@@ -246,6 +246,23 @@ export interface AudioGetApplPtrRequestMessage {
   pcmId: number;
 }
 
+/**
+ * Read-only probes paired with `audio_get_appl_ptr` for host-side
+ * instrumentation; kept on the Node side for dual-host parity even
+ * though `NodeAudioDriver` doesn't currently poll them.
+ */
+export interface AudioGetHwPtrRequestMessage {
+  type: "audio_get_hw_ptr";
+  requestId: number;
+  pcmId: number;
+}
+
+export interface AudioGetStateRequestMessage {
+  type: "audio_get_state";
+  requestId: number;
+  pcmId: number;
+}
+
 export type MainToKernelMessage =
   | InitMessage
   | SpawnMessage
@@ -268,7 +285,9 @@ export type MainToKernelMessage =
   | SetInputCanvasDimsMessage
   | AudioAllocRingRequestMessage
   | AudioPeriodTickMessage
-  | AudioGetApplPtrRequestMessage;
+  | AudioGetApplPtrRequestMessage
+  | AudioGetHwPtrRequestMessage
+  | AudioGetStateRequestMessage;
 
 // ── Kernel Worker → Main Thread ──
 

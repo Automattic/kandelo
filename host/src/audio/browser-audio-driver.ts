@@ -18,7 +18,11 @@
  * just forwards it into the worklet's `processorOptions`.
  */
 
-import type { AudioDriver, AudioRing } from "./audio-driver.js";
+import type {
+  AudioApplPtrSab,
+  AudioDriver,
+  AudioRing,
+} from "./audio-driver.js";
 
 /** Public for tests: URL the worklet processor is registered at.
  * Apps embedding this driver are expected to host the worklet js at
@@ -39,17 +43,16 @@ interface PcmContext {
    * the AudioContext — without this, the last word of a phrase gets
    * truncated. */
   totalFramesConsumed: number;
-  /** Latest `appl_ptr` posted to the worklet (also the producer
-   * upper-bound — when `totalFramesConsumed` reaches `lastApplPtr`,
-   * playback has caught up). */
+  /** Latest `appl_ptr` observed at `stop()` time, used by the drain
+   * math (legacy poll path also writes this on every interval tick). */
   lastApplPtr: number;
   kernelTick: (pcmId: number, frames: number) => void;
   getApplPtr: (pcmId: number) => number;
-  /** Poll handle that pushes the latest `appl_ptr` into the worklet so
-   * the worklet emits silence past producer progress instead of racing
-   * ahead during userspace setup latency (e.g. espeak-ng's data-file
-   * load before its first WRITEI). */
-  applPtrPollHandle: ReturnType<typeof setInterval>;
+  /** Legacy poll handle (10 ms `setInterval` pushing `appl_ptr` into
+   * the worklet via `postMessage`). Armed only when no
+   * `applPtrSab` is bound — with the SAB in place the worklet reads
+   * the value directly via `Atomics.load` and this stays `null`. */
+  applPtrPollHandle: ReturnType<typeof setInterval> | null;
 }
 
 export class BrowserAudioDriver implements AudioDriver {
@@ -65,6 +68,7 @@ export class BrowserAudioDriver implements AudioDriver {
     ring: AudioRing,
     kernelTick: (pcmId: number, framesConsumed: number) => void,
     getApplPtr: (pcmId: number) => number,
+    applPtrSab?: AudioApplPtrSab,
   ): Promise<void> {
     if (this.contexts.has(pcmId)) return;
 
@@ -79,19 +83,17 @@ export class BrowserAudioDriver implements AudioDriver {
         byteOffset: ring.byteOffset,
         byteLength: ring.byteLength,
         channels,
+        // SAB-backed `appl_ptr` mirror — the kernel writes the live
+        // producer pointer here on every WRITEI; the worklet reads it
+        // via `Atomics.load(int32, 0)` on every quantum with no
+        // postMessage / poll latency. Missing fields fall back to the
+        // legacy 10 ms poll path armed below.
+        applPtrBuffer: applPtrSab?.buffer,
+        applPtrByteOffset: applPtrSab?.byteOffset,
       },
     });
     worklet.connect(audioCtx.destination);
 
-    // Poll appl_ptr on a 10 ms interval and push to the worklet. The
-    // worklet uses it to gate `hwPtr` advance so it never advances
-    // past producer progress — without this, the worklet's local
-    // `hwPtr` ticks at AudioContext rate from the moment the node
-    // connects (~5 ms after this call), and any userspace setup
-    // latency before the first WRITEI (espeak-ng spends ~500 ms
-    // loading data files before its first synth chunk lands) becomes
-    // a chunk of the head audio buried at ring offsets the worklet
-    // has already passed.
     const ctx: PcmContext = {
       audioCtx,
       worklet,
@@ -104,15 +106,26 @@ export class BrowserAudioDriver implements AudioDriver {
       lastApplPtr: 0,
       kernelTick,
       getApplPtr,
-      // Filled in below — declared before setInterval so the callback
-      // can reference `ctx` without a temporal-dead-zone error.
-      applPtrPollHandle: 0 as unknown as ReturnType<typeof setInterval>,
+      applPtrPollHandle: null,
     };
-    ctx.applPtrPollHandle = setInterval(() => {
-      const applPtr = getApplPtr(pcmId);
-      ctx.lastApplPtr = applPtr;
-      worklet.port.postMessage({ applPtr });
-    }, 10);
+    if (!applPtrSab) {
+      // Legacy path: 10 ms poll → `postMessage(applPtr)` to the
+      // worklet. Only used when the host hasn't bound an `applPtrSab`
+      // (older tests, or hosts that opted out). The new SAB path is
+      // zero-latency and is the default in `BrowserKernel`. Without
+      // gating here, the worklet's local `hwPtr` ticks at
+      // AudioContext rate from the moment the node connects (~5 ms
+      // after this call), and any userspace setup latency before the
+      // first WRITEI (espeak-ng spends ~500 ms loading data files
+      // before its first synth chunk lands) becomes a chunk of the
+      // head audio buried at ring offsets the worklet has already
+      // passed.
+      ctx.applPtrPollHandle = setInterval(() => {
+        const applPtr = getApplPtr(pcmId);
+        ctx.lastApplPtr = applPtr;
+        worklet.port.postMessage({ applPtr });
+      }, 10);
+    }
     worklet.port.onmessage = (
       e: MessageEvent<{ framesConsumed?: number }>,
     ) => {
@@ -143,11 +156,13 @@ export class BrowserAudioDriver implements AudioDriver {
     const ctx = this.contexts.get(pcmId);
     if (!ctx) return;
     this.contexts.delete(pcmId);
-    // Stop pushing applPtr into the worklet; the worklet keeps the
-    // last value we sent and plays out to it. We still need to read
-    // applPtr from the kernel a few more times to confirm the
-    // producer is done, then wait for the consumer to catch up.
-    clearInterval(ctx.applPtrPollHandle);
+    // Stop pushing applPtr into the worklet (legacy poll path).
+    // Under the SAB-backed path this is a no-op — the kernel stopped
+    // mirroring `appl_ptr` once the producer drained, so the
+    // worklet's next Atomics.load returns the same value.
+    if (ctx.applPtrPollHandle !== null) {
+      clearInterval(ctx.applPtrPollHandle);
+    }
 
     const finalApplPtr = ctx.getApplPtr(pcmId);
     if (finalApplPtr > ctx.lastApplPtr) {

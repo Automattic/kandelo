@@ -15,7 +15,7 @@
  * path — SDL_OpenAudioDevice is *not* called here; SDL2's audio
  * subsystem only spawns SDL_CreateThread when a device is opened.
  * The actual SDL_OpenAudioDevice + write-loop is exercised by the
- * sdl2_demo program once open-arch #1 lands.
+ * sdl2 playground binary once open-arch #1 lands.
  *
  * Used by host/test/sdl2-alsa-smoke.test.ts.
  */

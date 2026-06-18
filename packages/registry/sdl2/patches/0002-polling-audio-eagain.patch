@@ -34,9 +34,17 @@ devil's-advocate (2026-06-29-sdl2-port-plan.md §"audio thread
 resolution: option (b)"). ~115 LoC added across SDL_audio.c +
 SDL_audio.h + SDL_alsa_audio.c.
 
+Fix-B addition (kandelo handoff-5, 2026-06-17): query writei headroom
+via `wpk_alsa_writei_has_space` BEFORE calling the application's
+audio callback inside SDL_RunAudioOnce_Polled. The callback advances
+application-side phase state; without this gate, calling it on every
+pump regardless of EAGAIN produces audible discontinuities at the
+EAGAIN rate (~13 per second at 60 Hz vsync with samples=1024, since
+60 × 1024 = 61 440 frames produced/s vs 48 000 frames drained/s).
+
 --- a/src/audio/SDL_audio.c
 +++ b/src/audio/SDL_audio.c
-@@ -667,6 +667,85 @@
+@@ -667,6 +667,100 @@
  #ifdef SDL_AUDIO_DRIVER_ANDROID
  extern void Android_JNI_AudioSetThreadPriority(int, int);
  #endif
@@ -87,6 +95,21 @@ SDL_audio.h + SDL_alsa_audio.c.
 +    if (SDL_AtomicGet(&device->shutdown)) return;
 +    if (!SDL_AtomicGet(&device->enabled)) return;
 +    if (device->iscapture) return; /* capture not supported in polled mode */
++
++#ifdef SDL_AUDIO_DRIVER_ALSA
++    /* Fix-B (kandelo handoff-5): query writei headroom BEFORE
++     * invoking the application callback. The callback advances
++     * application audio state (phase counters, sample-position
++     * cursors). Calling it when writei would return EAGAIN discards
++     * the generated samples but leaves the application-side state
++     * advanced — producing audible discontinuities at the EAGAIN
++     * rate. With this gate, the callback only runs when the ring has
++     * room, so every generated sample reaches the hardware. */
++    {
++        extern int wpk_alsa_writei_has_space(SDL_AudioDevice *);
++        if (!wpk_alsa_writei_has_space(device)) return;
++    }
++#endif
 +
 +    data_len = device->callbackspec.size;
 +    if (!device->stream) {
@@ -183,6 +206,48 @@ SDL_audio.h + SDL_alsa_audio.c.
              }
              status = ALSA_snd_pcm_recover(this->hidden->pcm_handle, status, 0);
              if (status < 0) {
+@@ -398,6 +403,41 @@
+     }
+ }
+
++#if SDL_THREADS_DISABLED
++/* Polled-mode helper: returns 1 if the ring has room for at least
++ * `device->spec.samples` frames, 0 otherwise. Called from
++ * SDL_audio.c::SDL_RunAudioOnce_Polled to gate the application
++ * callback (fix-B / kandelo handoff-5). Without this gate, audio_cb
++ * would be invoked on every pump and advance application-side phase
++ * state even when the subsequent writei returns EAGAIN — the
++ * generated samples are then discarded, producing audible
++ * discontinuities at the EAGAIN rate.
++ *
++ * Read avail via SNDRV_PCM_IOCTL_STATUS rather than
++ * snd_pcm_avail_update: under the wasm32-posix-kernel mmap path,
++ * the mmap'd status/control pages are anonymous and disconnected
++ * from the kernel's hw_ptr/appl_ptr — snd_pcm_avail_update would
++ * read zeros and return buffer_size every call, defeating the
++ * gate. IOCTL_STATUS goes through the kernel which computes
++ * `avail = buffer - (appl - hw)` from authoritative pointers
++ * (crates/kernel/src/audio/pcm_ioctl.rs::SNDRV_PCM_IOCTL_STATUS).
++ * Cost is one ioctl per pump (~60 Hz) — negligible. */
++int wpk_alsa_writei_has_space(SDL_AudioDevice *device)
++{
++    snd_pcm_status_t *status;
++    snd_pcm_uframes_t avail;
++    if (device->hidden == NULL || device->hidden->pcm_handle == NULL) {
++        return 1;
++    }
++    snd_pcm_status_alloca(&status);
++    if (snd_pcm_status(device->hidden->pcm_handle, status) < 0) {
++        return 1; /* let writei surface the error */
++    }
++    avail = snd_pcm_status_get_avail(status);
++    return ((Uint32)avail >= device->spec.samples) ? 1 : 0;
++}
++#endif
++
+ static Uint8 *ALSA_GetDeviceBuf(_THIS)
+ {
+     return this->hidden->mixbuf;
 --- a/include/SDL_audio.h
 +++ b/include/SDL_audio.h
 @@ -1118,6 +1118,21 @@

@@ -1,10 +1,9 @@
 /*
- * programs/sdl2_demo.c — combined SDL2 video + audio + input demo.
- *
- * Plan 7 §C1 (docs/plans/2026-06-29-sdl2-port-plan.md). A 320×240
- * spinning OpenGL ES 2.0 quad rendered via SDL2's KMSDRM backend, a
- * continuous 440 Hz tone via SDL2's ALSA backend, ESC exits via
- * SDL2's evdev backend.
+ * programs/sdl2/main.c — entry point for the SDL2 playground binary
+ * (`sdl2.wasm`, installed at /usr/local/bin/sdl2). At Phase 0 it is
+ * still the original 5 s spinning-quad + 440 Hz tone + ESC demo from
+ * Plan 7 §C1; phases 1–9 of the GLSL playground plan grow it into a
+ * split-pane live editor.
  *
  * Single-threaded under SDL_THREADS_DISABLED: SDL2's audio callback
  * normally runs on a SDL_CreateThread worker, but with threads off
@@ -17,12 +16,13 @@
  *   - 5 s timeout (`SDL_GetTicks() - start >= 5000`); OR
  *   - ESC keydown delivered by the evdev backend.
  *
- * Build wiring lives in scripts/build-programs.sh (sdl2_demo.c
- * case).  The linker pulls in libSDL2.a + libasound.a + libinput.a +
- * libgbm.a + libdrm.a + libEGL.a + libGLESv2.a; libEGL/libGLESv2 are
- * explicit because the SDL_opengles2 header bundle transitively
- * pulls <GLES2/gl2.h> but the auto-detector only matches direct
- * top-level EGL/GLES includes.
+ * Build wiring lives in scripts/build-programs.sh — the post-loop
+ * `build_sdl2_app` block globs every .c under programs/sdl2/ and
+ * links to sdl2.wasm. The linker pulls in libSDL2.a + libasound.a +
+ * libinput.a + libgbm.a + libdrm.a + libEGL.a + libGLESv2.a;
+ * libEGL/libGLESv2 are explicit because the SDL_opengles2 header
+ * bundle transitively pulls <GLES2/gl2.h> but the auto-detector only
+ * matches direct top-level EGL/GLES includes.
  */
 
 #include <SDL2/SDL.h>
@@ -89,12 +89,12 @@ int main(void) {
         fprintf(stderr, "FAIL: SDL_Init: %s\n", SDL_GetError());
         return 1;
     }
-    printf("sdl2_demo: SDL_Init OK (video=%s, audio=%s)\n",
+    printf("sdl2: SDL_Init OK (video=%s, audio=%s)\n",
            SDL_GetCurrentVideoDriver() ? SDL_GetCurrentVideoDriver() : "(none)",
            SDL_GetCurrentAudioDriver() ? SDL_GetCurrentAudioDriver() : "(none)");
 
     SDL_Window *win = SDL_CreateWindow(
-        "sdl2_demo", SDL_WINDOWPOS_UNDEFINED, SDL_WINDOWPOS_UNDEFINED,
+        "sdl2", SDL_WINDOWPOS_UNDEFINED, SDL_WINDOWPOS_UNDEFINED,
         320, 240, SDL_WINDOW_OPENGL);
     if (!win) {
         fprintf(stderr, "FAIL: SDL_CreateWindow: %s\n", SDL_GetError());
@@ -194,7 +194,7 @@ int main(void) {
     SDL_DestroyWindow(win);
     SDL_Quit();
 
-    printf("sdl2_demo: OK frames=%d elapsed=%u ms exit=%s\n",
+    printf("sdl2: OK frames=%d elapsed=%u ms exit=%s\n",
            frames, (unsigned) elapsed, reason);
     return 0;
 }

@@ -291,6 +291,21 @@
     },
     {
       "kind": "func",
+      "name": "kernel_audio_get_hw_ptr",
+      "signature": "(i32) -> (i64)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_audio_get_state",
+      "signature": "(i32) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_audio_init_appl_ptr_sab",
+      "signature": "(i32,i64) -> ()"
+    },
+    {
+      "kind": "func",
       "name": "kernel_audio_init_sab",
       "signature": "(i32,i64,i32) -> ()"
     },

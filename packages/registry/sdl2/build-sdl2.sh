@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 #
 # Build SDL2 (libSDL2.a) — KMSDRM + ALSA + evdev backends only — for
-# wasm32-posix-kernel. The kandelo demos (sdl2_demo + future
-# `sysroot(sdl2-demo)` work) call into the standard SDL2 API
+# wasm32-posix-kernel. The kandelo demos (the sdl2 playground binary
+# + future `sysroot(sdl2-demo)` work) call into the standard SDL2 API
 # (SDL_Init, SDL_CreateWindow, SDL_OpenAudio, SDL_PumpEvents) and
 # fan out through:
 #

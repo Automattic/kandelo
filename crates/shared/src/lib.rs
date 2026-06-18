@@ -2264,6 +2264,12 @@ pub mod dri {
     /// `_IOWR('d', 0xa7, drm_mode_get_connector)`.
     pub const DRM_IOCTL_MODE_GETCONNECTOR: u32 = 0xc050_64a7;
 
+    /// `_IOWR('d', 0xae, drm_mode_fb_cmd)` — legacy single-plane add-fb.
+    /// SDL2's KMSDRM backend (`KMSDRM_FBFromBO`) still uses this older
+    /// API even on modern kernels; ADDFB2 is the preferred path for
+    /// new code.
+    pub const DRM_IOCTL_MODE_ADDFB: u32 = 0xc01c_64ae;
+
     /// `_IOWR('d', 0xaf, u32)` — drop fb id.
     pub const DRM_IOCTL_MODE_RMFB: u32 = 0xc004_64af;
 
@@ -2375,6 +2381,22 @@ pub mod dri {
         pub possible_crtcs: u32,    // 12   out
         pub possible_clones: u32,   // 16   out
                                     // total: 20
+    }
+
+    /// `struct drm_mode_fb_cmd`. 28 bytes — legacy single-plane ADDFB.
+    /// `(depth, bpp)` encodes the pixel format the way the original
+    /// DRM API did before fourcc became canonical.
+    #[repr(C)]
+    #[derive(Clone, Copy, Default)]
+    pub struct WpkDrmModeFbCmd {
+        pub fb_id: u32,       // 0    out
+        pub width: u32,       // 4    in
+        pub height: u32,      // 8    in
+        pub pitch: u32,       // 12   in
+        pub bpp: u32,         // 16   in
+        pub depth: u32,       // 20   in
+        pub handle: u32,      // 24   in
+                              // total: 28
     }
 
     /// `struct drm_mode_fb_cmd2`. 104 bytes — `[u64; 4] modifier` aligns
@@ -2781,6 +2803,7 @@ pub mod audio {
     pub const SNDRV_PCM_IOCTL_HW_FREE: u32 = 0x0000_4112;
     pub const SNDRV_PCM_IOCTL_SW_PARAMS: u32 = 0xc068_4113;
     pub const SNDRV_PCM_IOCTL_STATUS: u32 = 0x8080_4120;
+    pub const SNDRV_PCM_IOCTL_HWSYNC: u32 = 0x0000_4122;
     pub const SNDRV_PCM_IOCTL_PREPARE: u32 = 0x0000_4140;
     pub const SNDRV_PCM_IOCTL_START: u32 = 0x0000_4142;
     pub const SNDRV_PCM_IOCTL_DROP: u32 = 0x0000_4143;
@@ -3134,6 +3157,7 @@ mod dri_tests {
         assert_eq!(size_of::<WpkDrmModeGetCrtc>(), 104);
         assert_eq!(size_of::<WpkDrmModeGetConnector>(), 80);
         assert_eq!(size_of::<WpkDrmModeGetEncoder>(), 20);
+        assert_eq!(size_of::<WpkDrmModeFbCmd>(), 28);
         assert_eq!(size_of::<WpkDrmModeFbCmd2>(), 104);
         assert_eq!(size_of::<WpkDrmModeCrtcPageFlip>(), 24);
         assert_eq!(size_of::<WpkDrmEventVblank>(), 32);
@@ -3160,6 +3184,8 @@ mod dri_tests {
             ioc(iowr, 'd' as u32, 0xa6, size_of::<WpkDrmModeGetEncoder>() as u32));
         assert_eq!(DRM_IOCTL_MODE_GETCONNECTOR,
             ioc(iowr, 'd' as u32, 0xa7, size_of::<WpkDrmModeGetConnector>() as u32));
+        assert_eq!(DRM_IOCTL_MODE_ADDFB,
+            ioc(iowr, 'd' as u32, 0xae, size_of::<WpkDrmModeFbCmd>() as u32));
         assert_eq!(DRM_IOCTL_MODE_RMFB,
             ioc(iowr, 'd' as u32, 0xaf, 4));
         assert_eq!(DRM_IOCTL_MODE_PAGE_FLIP,
@@ -3401,6 +3427,10 @@ mod audio_tests {
         assert_eq!(
             SNDRV_PCM_IOCTL_STATUS,
             ioc(IOC_READ, 'A' as u32, 0x20, size_of::<WpkAlsaPcmStatus>() as u32)
+        );
+        assert_eq!(
+            SNDRV_PCM_IOCTL_HWSYNC,
+            ioc(0, 'A' as u32, 0x22, 0)
         );
         assert_eq!(
             SNDRV_PCM_IOCTL_WRITEI_FRAMES,

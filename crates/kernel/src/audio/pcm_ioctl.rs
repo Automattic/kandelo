@@ -630,6 +630,19 @@ pub fn handle_alsa_pcm_ioctl(
             Ok(())
         }
 
+        SNDRV_PCM_IOCTL_HWSYNC => {
+            // alsa-lib calls this before reading mmap_status to force
+            // the driver to refresh hw_ptr. In our model, the period
+            // tick (`tick.rs::tick`) keeps `mmap_status.hw_ptr` in
+            // lockstep with the worklet's consumption, so HWSYNC has
+            // nothing to do — just succeed. Returning ENOTTY here
+            // (the default) makes `snd_pcm_avail()` fail with -25,
+            // which silently propagates as "no headroom" through any
+            // caller using the avail path.
+            let _ = audio_ref(proc, ofd_idx)?;
+            Ok(())
+        }
+
         SNDRV_PCM_IOCTL_STATUS => {
             let (sec, nsec) = monotonic_secs_nsecs(host);
             let audio = audio_ref(proc, ofd_idx)?;
@@ -701,10 +714,17 @@ struct WriteiPlan {
 /// userspace hands us a pointer + frame count and the kernel copies
 /// the samples into the SAB-backed ring at `appl_ptr % ring_frames`.
 ///
-/// Short writes are normal — when the ring is full (`avail == 0`),
-/// the call returns `result = 0` rather than blocking (v1 has no
-/// wait queue for audio; A6 wires `kernel_audio_period_tick` →
-/// POLLOUT wake which a future revision can use to park the caller).
+/// When the ring is full (`avail == 0`) on a non-zero request, the
+/// call returns `EAGAIN` rather than blocking — v1 has no audio
+/// wait queue (A6 territory) so the caller is expected to poll
+/// (POLLOUT) or retry on a tick. Returning EAGAIN — instead of the
+/// old "result = 0" — matches what SDL2's polling-audio patch
+/// (packages/registry/sdl2/patches/0002-polling-audio-eagain.patch)
+/// and other non-blocking ALSA writers expect when `snd_pcm_open`
+/// was called with `SND_PCM_NONBLOCK`. Blocking-mode callers that
+/// don't separately wait for POLLOUT will see EAGAIN as a transient
+/// error and retry, which is the same outcome they'd get from a
+/// real Linux kernel under heavy contention.
 fn handle_writei(
     proc: &mut Process,
     host: &mut dyn HostIO,
@@ -750,6 +770,12 @@ fn handle_writei(
         let to_write = frames_req.min(avail);
         let appl_frame_offset = (appl as usize) % ring_frames;
 
+        // Full ring + non-zero request → EAGAIN. A zero-frame request
+        // is a valid no-op and still succeeds with result=0.
+        if frames_req > 0 && to_write == 0 {
+            return Err(Errno::EAGAIN);
+        }
+
         WriteiPlan {
             pcm_id: audio.pcm_id,
             channels,
@@ -791,6 +817,38 @@ fn handle_writei(
         let audio = audio_mut(proc, ofd_idx)?;
         if let Some(ctl) = audio.mmap_control.as_mut() {
             ctl.appl_ptr = ctl.appl_ptr.wrapping_add(plan.to_write as u32);
+            // Mirror the new producer pointer into the SAB-backed
+            // `appl_ptr` slot so the AudioWorklet sees it without
+            // the 10 ms `getApplPtr` poll → `postMessage` chain.
+            // No-op when no host has registered a slot — the legacy
+            // poll path still works for that case.
+            crate::audio::sab::publish_appl_ptr(plan.pcm_id, ctl.appl_ptr);
+        }
+    }
+
+    // ---------- stage 3.5: auto-start if start_threshold reached ----------
+    // Linux's WRITEI handler auto-transitions PREPARED→RUNNING once
+    // (appl_ptr - hw_ptr) >= sw_params.start_threshold. alsa-lib's
+    // pcm_hw sets `own_state_check=1` (skipping the userspace bad-state
+    // check on writei) and its non-mmap writei path never inspects
+    // start_threshold itself — both Linux and the application rely on
+    // the kernel doing it here. Without this, devices opened with
+    // start_threshold=1 (SDL2's setting) stay PREPARED forever, the
+    // period tick skips them, and writei stalls EAGAIN once the ring
+    // fills (~341 ms of audio at 48 kHz × stereo × s16, ring=64 KiB).
+    {
+        let audio = audio_mut(proc, ofd_idx)?;
+        if audio.state == SNDRV_PCM_STATE_PREPARED {
+            let appl = audio.mmap_control.as_ref().map(|c| c.appl_ptr).unwrap_or(0);
+            let hw = audio.mmap_status.as_ref().map(|s| s.hw_ptr).unwrap_or(0);
+            let queued = appl.wrapping_sub(hw) as u64;
+            let threshold = audio.sw_params.as_ref().map(|s| s.start_threshold).unwrap_or(1);
+            if queued >= threshold {
+                audio.state = SNDRV_PCM_STATE_RUNNING;
+                if let Some(status) = audio.mmap_status.as_mut() {
+                    status.state = SNDRV_PCM_STATE_RUNNING;
+                }
+            }
         }
     }
 
@@ -1586,7 +1644,7 @@ mod tests {
     }
 
     #[test]
-    fn writei_when_ring_full_writes_zero_frames() {
+    fn writei_when_ring_full_returns_eagain() {
         let _g = fresh_sab();
         let mut proc = Process::new(1);
         let mut host = NoopHost;
@@ -1596,8 +1654,10 @@ mod tests {
         let ring_frames = MIN_BUFFER_SIZE as usize;
         let _ring_ptr = install_sab_ring(0, ring_frames, channels);
         // Saturate: appl_ptr is ring_frames ahead of hw_ptr → avail=0.
-        // v1 has no audio wait queue (A6 territory), so the call
-        // returns 0 frames written rather than blocking.
+        // v1 has no audio wait queue (A6 territory). With a non-zero
+        // request and zero room, the call returns EAGAIN so the
+        // userspace SDL2/ALSA polling path can early-exit instead of
+        // spinning on a "result=0" successful no-op.
         {
             let audio = audio_mut(&mut proc, idx).unwrap();
             audio.mmap_status.as_mut().unwrap().hw_ptr = 0;
@@ -1609,6 +1669,72 @@ mod tests {
             frames: 64,
         };
         let mut buf = struct_buf(&xferi);
+        let err = run_ioctl(
+            &mut proc,
+            &mut host,
+            idx,
+            SNDRV_PCM_IOCTL_WRITEI_FRAMES,
+            &mut buf,
+        )
+        .expect_err("WRITEI on full ring must return EAGAIN");
+        assert_eq!(err, Errno::EAGAIN);
+        // appl_ptr unchanged.
+        let appl =
+            audio_ref(&proc, idx).unwrap().mmap_control.as_ref().unwrap().appl_ptr;
+        assert_eq!(appl, ring_frames as u32);
+    }
+
+    #[test]
+    fn writei_in_prepared_state_auto_starts_at_threshold() {
+        // alsa-lib's pcm_hw plugin sets `own_state_check=1` and its
+        // non-mmap writei never inspects `sw_params.start_threshold`
+        // itself — both Linux and the application rely on the kernel
+        // to auto-transition PREPARED→RUNNING once enough frames are
+        // queued. SDL2 in particular sets start_threshold=1 and never
+        // issues SNDRV_PCM_IOCTL_START explicitly. Without auto-start
+        // the period tick (which gates on STATE_RUNNING) skips the
+        // OFD, hw_ptr never advances, writei stalls EAGAIN once the
+        // ring fills, and audio cuts after one ring's playback.
+        let _g = fresh_sab();
+        let mut proc = Process::new(1);
+        let mut host = NoopHost;
+        let idx = install_pcm(&mut proc);
+        commit_setup(&mut proc, &mut host, idx);
+        // PREPARE moves SETUP → PREPARED.
+        run_ioctl(&mut proc, &mut host, idx, SNDRV_PCM_IOCTL_PREPARE, &mut [])
+            .expect("PREPARE");
+        // SW_PARAMS with SDL2's start_threshold=1.
+        let sw = WpkAlsaPcmSwParams {
+            avail_min: 1,
+            start_threshold: 1,
+            stop_threshold: 1 << 20,
+            boundary: 1 << 30,
+            ..Default::default()
+        };
+        let mut sw_buf = struct_buf(&sw);
+        run_ioctl(
+            &mut proc,
+            &mut host,
+            idx,
+            SNDRV_PCM_IOCTL_SW_PARAMS,
+            &mut sw_buf,
+        )
+        .expect("SW_PARAMS");
+        assert_eq!(
+            audio_ref(&proc, idx).unwrap().state,
+            SNDRV_PCM_STATE_PREPARED,
+            "must still be PREPARED before writei",
+        );
+        let channels = MIN_CHANNELS as usize;
+        let ring_frames = MIN_BUFFER_SIZE as usize;
+        let _ring_ptr = install_sab_ring(0, ring_frames, channels);
+        set_proc_read_source(synth_frames(4, channels, 1));
+        let xferi = WpkAlsaXferi {
+            result: 0,
+            buf: 0x4000_0000,
+            frames: 4,
+        };
+        let mut buf = struct_buf(&xferi);
         run_ioctl(
             &mut proc,
             &mut host,
@@ -1616,14 +1742,130 @@ mod tests {
             SNDRV_PCM_IOCTL_WRITEI_FRAMES,
             &mut buf,
         )
-        .expect("WRITEI full ring is not an error");
-        let result: WpkAlsaXferi =
-            unsafe { core::ptr::read_unaligned(buf.as_ptr() as *const _) };
-        assert_eq!(result.result, 0);
-        // appl_ptr unchanged.
+        .expect("WRITEI");
+        let st = audio_ref(&proc, idx).unwrap();
+        assert_eq!(
+            st.state, SNDRV_PCM_STATE_RUNNING,
+            "writei with queued >= start_threshold must auto-start",
+        );
+        assert_eq!(
+            st.mmap_status.as_ref().unwrap().state,
+            SNDRV_PCM_STATE_RUNNING,
+            "mmap_status.state must mirror so user-page readers see RUNNING",
+        );
+    }
+
+    #[test]
+    fn writei_below_threshold_stays_prepared() {
+        // Counterpart to the auto-start test: if the queued depth is
+        // still below start_threshold, the kernel must keep the state
+        // at PREPARED so the application can decide when to commit
+        // (e.g. an explicit snd_pcm_start, or another writei that
+        // crosses the threshold).
+        let _g = fresh_sab();
+        let mut proc = Process::new(1);
+        let mut host = NoopHost;
+        let idx = install_pcm(&mut proc);
+        commit_setup(&mut proc, &mut host, idx);
+        run_ioctl(&mut proc, &mut host, idx, SNDRV_PCM_IOCTL_PREPARE, &mut [])
+            .expect("PREPARE");
+        let sw = WpkAlsaPcmSwParams {
+            avail_min: 1,
+            start_threshold: 1024,
+            stop_threshold: 1 << 20,
+            boundary: 1 << 30,
+            ..Default::default()
+        };
+        let mut sw_buf = struct_buf(&sw);
+        run_ioctl(&mut proc, &mut host, idx, SNDRV_PCM_IOCTL_SW_PARAMS, &mut sw_buf)
+            .expect("SW_PARAMS");
+        let channels = MIN_CHANNELS as usize;
+        let ring_frames = MIN_BUFFER_SIZE as usize;
+        let _ring_ptr = install_sab_ring(0, ring_frames, channels);
+        set_proc_read_source(synth_frames(4, channels, 1));
+        let xferi = WpkAlsaXferi { result: 0, buf: 0x4000_0000, frames: 4 };
+        let mut buf = struct_buf(&xferi);
+        run_ioctl(
+            &mut proc,
+            &mut host,
+            idx,
+            SNDRV_PCM_IOCTL_WRITEI_FRAMES,
+            &mut buf,
+        )
+        .expect("WRITEI");
+        assert_eq!(
+            audio_ref(&proc, idx).unwrap().state,
+            SNDRV_PCM_STATE_PREPARED,
+            "queued=4 < start_threshold=1024 must NOT auto-start",
+        );
+    }
+
+    #[test]
+    fn writei_publishes_appl_ptr_to_sab_mirror_when_registered() {
+        // When the host has called `kernel_audio_init_appl_ptr_sab`,
+        // every WRITEI must mirror the new `appl_ptr` value into the
+        // 4-byte SAB slot. The AudioWorklet reads from there directly
+        // via `Atomics.load`, eliminating the 10 ms `getApplPtr` poll
+        // → `postMessage` chain that caused the §C silence emissions.
+        let _g = fresh_sab();
+        let mut proc = Process::new(1);
+        let mut host = NoopHost;
+        let idx = install_pcm(&mut proc);
+        commit_setup(&mut proc, &mut host, idx);
+        let channels = MIN_CHANNELS as usize;
+        let ring_frames = MIN_BUFFER_SIZE as usize;
+        let _ring_ptr = install_sab_ring(0, ring_frames, channels);
+        let slot: u32 = 0;
+        let slot_addr = &slot as *const u32 as usize;
+        crate::audio::sab::register_appl_ptr(0, slot_addr)
+            .expect("register appl_ptr slot");
+        set_proc_read_source(synth_frames(8, channels, 1));
+        let xferi = WpkAlsaXferi { result: 0, buf: 0x4000_0000, frames: 8 };
+        let mut buf = struct_buf(&xferi);
+        run_ioctl(
+            &mut proc,
+            &mut host,
+            idx,
+            SNDRV_PCM_IOCTL_WRITEI_FRAMES,
+            &mut buf,
+        )
+        .expect("WRITEI");
+        let mirrored = unsafe { core::ptr::read_volatile(slot_addr as *const u32) };
+        assert_eq!(
+            mirrored, 8,
+            "writei must publish the new appl_ptr into the SAB mirror",
+        );
         let appl =
             audio_ref(&proc, idx).unwrap().mmap_control.as_ref().unwrap().appl_ptr;
-        assert_eq!(appl, ring_frames as u32);
+        assert_eq!(mirrored, appl, "mirror must match mmap_control.appl_ptr");
+    }
+
+    #[test]
+    fn writei_without_appl_ptr_sab_does_not_panic() {
+        // Legacy host (no `kernel_audio_init_appl_ptr_sab` call) must
+        // keep working — `publish_appl_ptr` is a silent no-op when no
+        // slot is registered. The `getApplPtr` polled path remains the
+        // fallback in that case.
+        let _g = fresh_sab();
+        let mut proc = Process::new(1);
+        let mut host = NoopHost;
+        let idx = install_pcm(&mut proc);
+        commit_setup(&mut proc, &mut host, idx);
+        let channels = MIN_CHANNELS as usize;
+        let ring_frames = MIN_BUFFER_SIZE as usize;
+        let _ring_ptr = install_sab_ring(0, ring_frames, channels);
+        // Explicitly do NOT call register_appl_ptr.
+        set_proc_read_source(synth_frames(4, channels, 1));
+        let xferi = WpkAlsaXferi { result: 0, buf: 0x4000_0000, frames: 4 };
+        let mut buf = struct_buf(&xferi);
+        run_ioctl(
+            &mut proc,
+            &mut host,
+            idx,
+            SNDRV_PCM_IOCTL_WRITEI_FRAMES,
+            &mut buf,
+        )
+        .expect("WRITEI must succeed without an appl_ptr SAB slot");
     }
 
     #[test]

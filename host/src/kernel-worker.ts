@@ -862,6 +862,10 @@ export class CentralizedKernelWorker {
       // pid has no canvas bound yet; the kernel-worker's KMS registry
       // is the single source of truth for `crtc_id → OffscreenCanvas`.
       getKmsCanvas: (crtcId: number) => this.kmsCanvases.get(crtcId),
+      firstKmsCanvasCrtc: () => {
+        for (const id of this.kmsCanvases.keys()) return id;
+        return undefined;
+      },
       markKmsCanvasGlOwned: (crtcId: number) => {
         this.kmsContextMode.set(crtcId, "webgl2");
       },
@@ -3544,6 +3548,18 @@ export class CentralizedKernelWorker {
     origArgs: number[],
   ): void {
     if (!this.processes.has(channel.pid)) return;
+
+    // ioctl EAGAIN is a non-blocking transient error (e.g. ALSA WRITEI
+    // on a full PCM ring) — propagate it to userspace instead of
+    // entering the default retry loop. The blocking-retry path would
+    // re-fire the ioctl forever while SDL2's polled-audio loop sits
+    // suspended waiting for SDL_PumpAudioDevices to return; SDL2's own
+    // EAGAIN branch (packages/registry/sdl2/patches/
+    // 0002-polling-audio-eagain.patch) is what must see the errno.
+    if (syscallNr === SYS_IOCTL) {
+      this.completeChannel(channel, syscallNr, origArgs, SYSCALL_ARGS[syscallNr], -1, EAGAIN);
+      return;
+    }
 
     // Futex wait: use Atomics.waitAsync on the target address in process memory
     if (syscallNr === SYS_FUTEX) {
@@ -7486,6 +7502,30 @@ export class CentralizedKernelWorker {
   }
 
   /**
+   * Allocate a 4-byte slot inside kernel-visible memory for the
+   * SAB-backed `appl_ptr` mirror, bind it for `pcmId`, and return its
+   * `(buffer, byteOffset)` window so the AudioWorklet can view it as
+   * `new Int32Array(buffer, byteOffset, 1)`. Returns `null` if the
+   * kernel allocator declined. See `BrowserKernelHost.attachAudioDriver`
+   * for the producer (kernel mirrors on every WRITEI) / consumer
+   * (worklet reads via `Atomics.load`) wiring — this replaces the
+   * 10 ms `getApplPtr` poll that caused the §C jitter.
+   */
+  audioInitApplPtrSab(
+    pcmId: number,
+  ): { buffer: SharedArrayBuffer | ArrayBuffer; byteOffset: number } | null {
+    // 4-byte aligned: `kernel_alloc_scratch` returns 8-byte-aligned
+    // addresses (it's the kernel's bump allocator), so this works
+    // for an `Int32Array` view without extra padding.
+    const base = this.kernel.audioAllocRing(4);
+    if (base === 0) return null;
+    this.kernel.audioInitApplPtrSab(pcmId, base);
+    const buffer = this.kernel.getKernelMemoryBuffer();
+    if (!buffer) return null;
+    return { buffer, byteOffset: base };
+  }
+
+  /**
    * Forward an audio period tick from the host AudioDriver into the
    * kernel: advances `mmap_status.hw_ptr`, detects XRUN, wakes any
    * process parked on `POLLOUT` against `/dev/snd/pcmC0D<pcmId>p`.
@@ -7503,6 +7543,20 @@ export class CentralizedKernelWorker {
    */
   audioGetApplPtr(pcmId: number): number {
     return this.kernel.audioGetApplPtr(pcmId);
+  }
+
+  /**
+   * Read-only probes for host-side audio instrumentation: `hw_ptr`
+   * advance rate confirms the period-tick feedback loop is running;
+   * `state` exposes PREPARED → RUNNING → XRUN transitions so mid-
+   * playback stalls can be diagnosed.
+   */
+  audioGetHwPtr(pcmId: number): number {
+    return this.kernel.audioGetHwPtr(pcmId);
+  }
+
+  audioGetState(pcmId: number): number {
+    return this.kernel.audioGetState(pcmId);
   }
 
   /**
@@ -8619,6 +8673,15 @@ export class CentralizedKernelWorker {
     const vblankFn = this.kernelInstance?.exports.kernel_vblank as
       (() => void) | undefined;
     vblankFn?.();
+    // kernel_vblank just drained any pending page-flips into each open
+    // card0 fd's `event_ring`. Wake blocked DRM poll() callers now
+    // instead of letting them spin on the 50 ms generic safety-net
+    // retry — without this hook the C-side frame loop is capped at
+    // ~20 fps (1/50 ms) even though we tick at 60 Hz, and demos lag
+    // visibly unless something else (mouse input, etc.) triggers a
+    // wake. Same broad-wake mechanism as `injectMouseEvent`; coalesced
+    // and no-op when no retries are pending.
+    this.scheduleWakeBlockedRetries();
     // 2D-blit path. Runs only for CRTCs the embedder explicitly opted
     // into `mode: "2d"`. The pump never touches the canvas in "auto"
     // or "webgl2" mode — touching it with `getContext("2d")` would

@@ -1,14 +1,16 @@
 /**
- * Phase C2 end-to-end gate for the combined SDL2 demo.  Runs
- * `programs/sdl2_demo.wasm` (KMSDRM video + ALSA audio + evdev input)
+ * End-to-end gate for the SDL2 playground binary at its Phase 0
+ * shape (still the original Phase C2 5 s spinning-quad + 440 Hz tone
+ * + ESC demo before the playground phases land). Runs
+ * `programs/sdl2.wasm` (KMSDRM video + ALSA audio + evdev input)
  * inside the centralised kernel under NodeKernelHost; asserts both
  * the 5 s timeout path and the ESC-quits-early path.
  *
  * The ESC variant uses `NodeKernelHost.injectInputEvent` to push a
  * KEY_ESC press + SYN_REPORT roughly 1.5 s into the run — the same
- * shape `BrowserInputSource` will emit at Phase C3.  Asserts the demo
- * exits with code 0 noticeably before the 5 s timeout and labels its
- * exit as "esc", proving the evdev→SDL_KEYDOWN→main-loop pump cycle
+ * shape `BrowserInputSource` emits. Asserts the demo exits with
+ * code 0 noticeably before the 5 s timeout and labels its exit as
+ * "esc", proving the evdev→SDL_KEYDOWN→main-loop pump cycle
  * actually closes the loop.
  */
 import { describe, expect, it } from "vitest";
@@ -17,7 +19,7 @@ import { NodeKernelHost } from "../src/node-kernel-host";
 import { tryResolveBinary } from "../src/binary-resolver";
 import { runCentralizedProgram } from "./centralized-test-helper";
 
-const programBinary = tryResolveBinary("programs/sdl2_demo.wasm");
+const programBinary = tryResolveBinary("programs/sdl2.wasm");
 
 const EV_SYN = 0x00;
 const EV_KEY = 0x01;
@@ -40,21 +42,21 @@ async function waitFor(
   );
 }
 
-describe("SDL2 demo — video + audio + input combined", () => {
+describe("SDL2 playground — video + audio + input combined", () => {
   it.skipIf(!programBinary)(
     "drives the SDL2 main loop end-to-end without crashing (5 s timeout exit)",
     async () => {
       const result = await runCentralizedProgram({
         programPath: programBinary!,
-        argv: ["sdl2_demo"],
+        argv: ["sdl2"],
         timeout: 15_000,
       });
       expect(
         result.exitCode,
         `stdout=${result.stdout} stderr=${result.stderr}`,
       ).toBe(0);
-      expect(result.stdout).toContain("sdl2_demo: SDL_Init OK");
-      expect(result.stdout).toMatch(/sdl2_demo: OK frames=\d+ elapsed=\d+ ms exit=timeout/);
+      expect(result.stdout).toContain("sdl2: SDL_Init OK");
+      expect(result.stdout).toMatch(/sdl2: OK frames=\d+ elapsed=\d+ ms exit=timeout/);
       expect(result.stderr).not.toContain("FAIL:");
       // `frames` is main-loop tick count, not rasterised frame count
       // (GLES2 commands are encoded through the cmdbuf but the kernel-
@@ -91,11 +93,11 @@ describe("SDL2 demo — video + audio + input combined", () => {
         await host.init();
         host.setInputCanvasDims(320, 240);
 
-        const exitPromise = host.spawn(programBytes, ["sdl2_demo"]);
+        const exitPromise = host.spawn(programBytes, ["sdl2"]);
 
         // Wait until SDL2 has finished init — that's the earliest
         // point an evdev event will be picked up by SDL_PumpEvents.
-        await waitFor(stdout, "sdl2_demo: SDL_Init OK", 10_000);
+        await waitFor(stdout, "sdl2: SDL_Init OK", 10_000);
 
         // Give the main loop a few iterations so the audio device is
         // open and the first frame has flipped, then inject ESC.
@@ -124,7 +126,7 @@ describe("SDL2 demo — video + audio + input combined", () => {
           exitCode,
           `stdout=${stdout.value} stderr=${stderr.value}`,
         ).toBe(0);
-        expect(stdout.value).toMatch(/sdl2_demo: OK frames=\d+ elapsed=\d+ ms exit=esc/);
+        expect(stdout.value).toMatch(/sdl2: OK frames=\d+ elapsed=\d+ ms exit=esc/);
         const m = stdout.value.match(/elapsed=(\d+) ms/);
         expect(m, `elapsed= not found in stdout: ${stdout.value}`).not.toBeNull();
         // Should have quit well under the 5 000 ms timeout — give a

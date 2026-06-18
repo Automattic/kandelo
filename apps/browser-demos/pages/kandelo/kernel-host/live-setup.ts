@@ -92,10 +92,10 @@ const OPTIONAL_BINARY_URLS = {
   ...import.meta.glob("../../../../../binaries/programs/wasm32/modeset.wasm", {
     query: "?url", import: "default",
   }),
-  ...import.meta.glob("../../../../../local-binaries/programs/wasm32/evdev_demo.wasm", {
+  ...import.meta.glob("../../../../../local-binaries/programs/wasm32/sdl2.wasm", {
     query: "?url", import: "default",
   }),
-  ...import.meta.glob("../../../../../binaries/programs/wasm32/evdev_demo.wasm", {
+  ...import.meta.glob("../../../../../binaries/programs/wasm32/sdl2.wasm", {
     query: "?url", import: "default",
   }),
 } as Record<string, () => Promise<string>>;
@@ -251,8 +251,7 @@ const LIVE_DEMO_IDS = [
   "wordpress-mariadb",
   "doom",
   "modeset",
-  "evdev",
-  "espeak",
+  "sdl2",
 ] as const;
 
 type LiveDemoId = typeof LIVE_DEMO_IDS[number];
@@ -340,11 +339,9 @@ const LIVE_PROFILE_SPECS: Record<LiveDemoId, LiveProfileSpec> = {
     image: "shell",
     features: ["kms"],
   },
-  evdev: {
+  sdl2: {
     image: "shell",
-  },
-  espeak: {
-    image: "shell",
+    features: ["kms"],
   },
 };
 
@@ -396,22 +393,15 @@ interface LiveProfile {
    */
   modesetDemo: boolean;
   /**
-   * Stage `evdev_demo` into `/usr/local/bin`, attach a `BrowserInputSource`
-   * to the window so keyboard/pointer events flow into the kernel's
-   * `/dev/input/event{0,1}`, and run the binary from bash so its event
-   * log streams to the user's Shell pane. The C1 sysroot vendoring proof.
+   * Stage the SDL2 playground binary at `/usr/local/bin/sdl2`,
+   * attach a `BrowserInputSource` + `BrowserAudioDriver`, then run
+   * it from bash. The binary opens /dev/dri/card0 (KMS) for video,
+   * ALSA for audio, and /dev/input/event{0,1} for ESC; the Modeset
+   * pane picks up PAGE_FLIP. At Phase 0 the binary still self-exits
+   * after 5 s (or earlier on ESC); future playground phases turn it
+   * into the long-running split-pane editor.
    */
-  evdevDemo: boolean;
-  /**
-   * Attach a `BrowserAudioDriver` and spawn `espeak-ng "..."` from
-   * the booted shell. espeak-ng links against our patched pcaudiolib
-   * whose `create_audio_device_object` is wired to the kandelo
-   * backend (open /dev/snd/pcmC0D0p + WRITEI loop), so a single
-   * binary invocation produces audible synthesised speech without
-   * any host-side pipeline. The binary + data dir are baked into
-   * the shell VFS image via `populateEspeakRuntime`.
-   */
-  espeakDemo: boolean;
+  sdl2Demo: boolean;
 }
 
 interface WebReadinessState {
@@ -707,8 +697,7 @@ function customVfsProfile(
     maxVfsByteLength: 256 * 1024 * 1024,
     framebufferTest: fb === "test",
     modesetDemo: false,
-    evdevDemo: false,
-    espeakDemo: false,
+    sdl2Demo: false,
   };
 }
 
@@ -729,8 +718,7 @@ function profileFor(id: string, fb?: FbDemo): LiveProfile {
       init: software.init,
       framebufferTest: false,
       modesetDemo: false,
-      evdevDemo: false,
-      espeakDemo: false,
+      sdl2Demo: false,
     };
   }
 
@@ -763,8 +751,7 @@ function profileFor(id: string, fb?: FbDemo): LiveProfile {
     },
     framebufferTest: fb === "test",
     modesetDemo: normalized === "modeset",
-    evdevDemo: normalized === "evdev",
-    espeakDemo: normalized === "espeak",
+    sdl2Demo: normalized === "sdl2",
   };
 }
 
@@ -1281,80 +1268,54 @@ async function bootProfile(
         "../../../../../binaries/programs/wasm32/modeset.wasm",
       ], "modeset.wasm");
       void spawnLazy(kernel, "/usr/local/bin/modeset", modesetWasmUrl, ["modeset"], tick);
-    } else if (profile.espeakDemo) {
-      // espeak-ng + its data dir are baked into the shell VFS image
-      // (see populateEspeakRuntime in build-shell-vfs-image.ts), so
-      // no runtime binary staging is needed. The audio driver MUST be
-      // attached before the binary opens /dev/snd/pcmC0D0p — the
-      // WRITEI path returns EBADFD until the SAB ring is registered.
-      // espeak-ng emits at 22050 Hz mono (its internal synth rate);
-      // the worklet resamples to the AudioContext rate.
-      const kernelForEspeak = kernel;
+    } else if (profile.sdl2Demo) {
+      // The SDL2 playground binary needs the input source attached
+      // so ESC reaches SDL_evdev, the audio driver attached so its
+      // 440 Hz tone is audible, and the binary staged into the VFS
+      // before bash runs it. At Phase 0 the demo self-terminates
+      // after ~5 s (or earlier on ESC); the Modeset pane picks up
+      // PAGE_FLIP via the kernel's KMS canvas bridge.
+      const kernelForSdl2 = kernel;
       void (async () => {
+        let audioDriver: InstrumentedAudioDriver | null = null;
         try {
-          tick("attaching audio driver...");
-          const audioDriver = createInstrumentedAudioDriver();
-          await kernelForEspeak.attachAudioDriver(audioDriver, {
-            pcmId: 0,
-            sampleRate: 22_050,
-            channels: 1,
-            periodFrames: 1024,
-            ringBytes: 64 * 1024,
-          });
-          tick("running espeak-ng...");
-          try {
-            await host.runShellCommand(
-              `/usr/bin/espeak-ng "Welcome to Kandelo, the WebAssembly POSIX kernel"`,
-            );
-            tick("espeak-ng exited");
-          } finally {
-            audioDriver.stop(0);
-          }
-        } catch (err) {
-          const msg = err instanceof Error ? err.message : String(err);
-          tick(`espeak-ng failed: ${msg}`);
-        }
-      })();
-    } else if (profile.evdevDemo) {
-      // autoCommand can't run this: the InputSource must be attached
-      // before the binary starts polling /dev/input/event{0,1}, and
-      // the binary itself has to be staged into the VFS first.
-      const kernelForEvdev = kernel;
-      void (async () => {
-        try {
-          const evdevDemoWasmUrl = await optionalBinaryUrl([
-            "../../../../../local-binaries/programs/wasm32/evdev_demo.wasm",
-            "../../../../../binaries/programs/wasm32/evdev_demo.wasm",
-          ], "evdev_demo.wasm");
-          tick("staging evdev_demo binary...");
-          const bytes = await fetch(evdevDemoWasmUrl)
-            .then(failOn("evdev_demo.wasm"))
+          const sdl2WasmUrl = await optionalBinaryUrl([
+            "../../../../../local-binaries/programs/wasm32/sdl2.wasm",
+            "../../../../../binaries/programs/wasm32/sdl2.wasm",
+          ], "sdl2.wasm");
+          tick("staging sdl2 binary...");
+          const bytes = await fetch(sdl2WasmUrl)
+            .then(failOn("sdl2.wasm"))
             .then((r) => r.arrayBuffer());
-          ensureDirRecursive(kernelForEvdev.fs, "/usr/local/bin");
+          ensureDirRecursive(kernelForSdl2.fs, "/usr/local/bin");
           writeVfsBinary(
-            kernelForEvdev.fs,
-            "/usr/local/bin/evdev_demo",
+            kernelForSdl2.fs,
+            "/usr/local/bin/sdl2",
             new Uint8Array(bytes),
             0o755,
           );
           tick("attaching input source...");
-          kernelForEvdev.attachInputSource(new BrowserInputSource(window), {
+          kernelForSdl2.attachInputSource(new BrowserInputSource(window), {
             width: window.innerWidth,
             height: window.innerHeight,
           });
-          tick("running evdev_demo...");
-          // evdev_demo runs forever; runShellCommand resolves when the
-          // bash prompt reappears (it never will) or rejects after its
-          // internal 5-minute timeout. Both are expected — log neutrally.
-          await host.runShellCommand("/usr/local/bin/evdev_demo");
-          tick("evdev_demo exited");
+          tick("attaching audio driver...");
+          audioDriver = createInstrumentedAudioDriver();
+          await kernelForSdl2.attachAudioDriver(audioDriver, {
+            pcmId: 0,
+            sampleRate: 48_000,
+            channels: 2,
+            periodFrames: 1024,
+            ringBytes: 64 * 1024,
+          });
+          tick("running sdl2...");
+          await host.runShellCommand("/usr/local/bin/sdl2");
+          tick("sdl2 exited");
         } catch (err) {
           const msg = err instanceof Error ? err.message : String(err);
-          if (/timed out waiting for PTY prompt/.test(msg)) {
-            tick("evdev_demo running (long-tail; no further status updates)");
-          } else {
-            tick(`evdev_demo failed: ${msg}`);
-          }
+          tick(`sdl2 failed: ${msg}`);
+        } finally {
+          audioDriver?.stop(0);
         }
       })();
     } else if (presentation?.autoCommand) {
@@ -1400,7 +1361,11 @@ function createInstrumentedAudioDriver(): InstrumentedAudioDriver {
 
 function genericPresentationForProfile(profile: LiveProfile): DemoPresentation {
   if (profile.init?.web) return genericDemoPresentation("web");
-  if (profile.modesetDemo || profile.descriptor.runtime.features.includes("kms")) {
+  if (
+    profile.modesetDemo
+    || profile.sdl2Demo
+    || profile.descriptor.runtime.features.includes("kms")
+  ) {
     return genericDemoPresentation("kms");
   }
   if (profile.framebufferTest || profile.descriptor.runtime.features.includes("framebuffer")) {
@@ -1948,10 +1913,13 @@ function liveDemoIdForVfsImageUrl(vfsUrl: string): LiveDemoId | null {
 
   const matches = LIVE_DEMO_IDS.filter((id) => baseUrl === profileVfsBaseUrl(id));
   if (matches.length === 1) return matches[0];
-  // Multiple presets share the shell VFS image (doom, modeset). When the URL
-  // doesn't pin one via the hash, fall back to the shell preset so the
-  // ambiguous shell-image link doesn't auto-launch a demo binary.
-  return matches.find((id) => id !== "doom" && id !== "modeset") ?? null;
+  // Multiple presets share the shell VFS image (doom, modeset, sdl2).
+  // When the URL doesn't pin one via the hash, fall back to the shell
+  // preset so the ambiguous shell-image link doesn't auto-launch a
+  // demo binary.
+  return matches.find((id) =>
+    id !== "doom" && id !== "modeset" && id !== "sdl2",
+  ) ?? null;
 }
 
 function profileVfsBaseUrl(id: LiveDemoId): string {

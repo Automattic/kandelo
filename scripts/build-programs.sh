@@ -193,18 +193,20 @@ if ls "$REPO_ROOT/programs/"*.cpp >/dev/null 2>&1; then
 fi
 
 # Resolve SDL2 and symlink its outputs (and its deps' outputs) into
-# the sysroot if there are any sdl2_*_smoke.c or sdl2_demo.c programs
-# to build. We re-resolve + re-symlink on every run because SDL2 has
-# transitive deps (alsa-lib, libdrm, libinput-lite) whose cache dirs
-# shift independently when their `build.toml.revision` bumps. The
-# previous fast-path guarded on `libSDL2.a` only, so a dep bump
-# produced a fresh sdl2 cache while the sysroot symlinks for
-# libasound.a / libdrm.a / libinput.a stayed pointing at the
-# pre-bump caches — programs then linked against stale dep archives.
+# the sysroot if there are any sdl2_*_smoke.c programs or any source
+# under programs/sdl2/ to build. We re-resolve + re-symlink on every
+# run because SDL2 has transitive deps (alsa-lib, libdrm,
+# libinput-lite) whose cache dirs shift independently when their
+# `build.toml.revision` bumps. The previous fast-path guarded on
+# `libSDL2.a` only, so a dep bump produced a fresh sdl2 cache while
+# the sysroot symlinks for libasound.a / libdrm.a / libinput.a stayed
+# pointing at the pre-bump caches — programs then linked against
+# stale dep archives.
 # See docs/plans/2026-06-16-dri-kandelo-port-handoff-54.md §B4.
 # The resolver is idempotent + cached, so re-running it is cheap when
 # nothing changed.
-if ls "$REPO_ROOT"/programs/sdl2_*.c >/dev/null 2>&1; then
+if ls "$REPO_ROOT"/programs/sdl2_*.c >/dev/null 2>&1 \
+        || ls "$REPO_ROOT"/programs/sdl2/*.c >/dev/null 2>&1; then
     echo "==> Resolving sdl2 (and deps) for SDL2 programs..."
     HOST_TRIPLE="$(rustc -vV | awk '/^host/ {print $2}')"
     (cd "$REPO_ROOT" && cargo run -p xtask --target "$HOST_TRIPLE" --quiet -- build-deps resolve sdl2 >/dev/null)
@@ -274,20 +276,6 @@ for src in "$REPO_ROOT/programs/"*.c; do
                 "$SYSROOT/lib/libinput.a" \
                 "$SYSROOT/lib/libgbm.a" "$SYSROOT/lib/libdrm.a"
             ;;
-        sdl2_demo.c)
-            # Phase C demo — links the full SDL2 + dependency set.
-            # libEGL / libGLESv2 are appended explicitly because the
-            # demo includes <SDL2/SDL_opengles2.h>, which transitively
-            # pulls <GLES2/gl2.h> but doesn't show up in
-            # build_program's top-level grep that auto-adds the GL
-            # stubs for direct EGL/GLES includes.
-            build_program "$src" "$OUT_DIR_32" \
-                "$SYSROOT/lib/libSDL2.a" \
-                "$SYSROOT/lib/libasound.a" \
-                "$SYSROOT/lib/libinput.a" \
-                "$SYSROOT/lib/libgbm.a" "$SYSROOT/lib/libdrm.a" \
-                "$SYSROOT/lib/libEGL.a" "$SYSROOT/lib/libGLESv2.a"
-            ;;
         *)
             build_program "$src" "$OUT_DIR_32"
             ;;
@@ -298,6 +286,31 @@ for src in "$REPO_ROOT/programs/"*.cpp; do
     [ -f "$src" ] || continue
     build_cpp_program "$src" "$OUT_DIR_32"
 done
+
+# SDL2 playground app — every .c under programs/sdl2/ links into the
+# single sdl2.wasm binary. Multi-source clang invocation: clang
+# accepts the sources together with the libc/glue prelude and the
+# full SDL2 + dependency archive set, then we run fork-instrument on
+# the result. Link set: libSDL2 + libasound + libinput + libgbm +
+# libdrm plus libEGL / libGLESv2 (the SDL_opengles2 header bundle
+# transitively pulls <GLES2/gl2.h> but the per-file grep in
+# build_program only catches direct top-level EGL/GLES includes).
+if ls "$REPO_ROOT"/programs/sdl2/*.c >/dev/null 2>&1; then
+    sdl2_sources=("$REPO_ROOT"/programs/sdl2/*.c)
+    sdl2_wasm="$OUT_DIR_32/sdl2.wasm"
+    echo "  Compiling sdl2 (multi-source: ${#sdl2_sources[@]} file(s))..."
+    "$CC" "${CFLAGS[@]}" "${sdl2_sources[@]}" \
+        "${LINK_PRE_LIBS[@]}" \
+        "$SYSROOT/lib/libSDL2.a" \
+        "$SYSROOT/lib/libasound.a" \
+        "$SYSROOT/lib/libinput.a" \
+        "$SYSROOT/lib/libgbm.a" "$SYSROOT/lib/libdrm.a" \
+        "$SYSROOT/lib/libEGL.a" "$SYSROOT/lib/libGLESv2.a" \
+        "${LINK_POST_LIBS[@]}" \
+        -o "$sdl2_wasm"
+    "$FORK_INSTRUMENT" "$sdl2_wasm" -o "$sdl2_wasm.instr"
+    mv "$sdl2_wasm.instr" "$sdl2_wasm"
+fi
 
 echo "Building example programs..."
 for src in "$REPO_ROOT/examples/"*.c; do

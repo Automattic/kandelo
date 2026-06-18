@@ -20,6 +20,19 @@ export interface AudioRing {
   byteLength: number;
 }
 
+/** 4-byte SAB slot inside kernel-visible memory holding the live
+ * `mmap_control.appl_ptr` for one PCM. The kernel writes it on every
+ * `WRITEI_FRAMES`; the AudioWorklet reads it via `Atomics.load` so it
+ * sees fresh producer progress on every quantum (no `setInterval` +
+ * `postMessage` round-trip — that combination caused ~12 % silence
+ * emission and the §C jitter in handoff-3). Optional for backward
+ * compatibility with hosts that don't bind one; the worklet falls back
+ * to the legacy `postMessage(applPtr)` path in that case. */
+export interface AudioApplPtrSab {
+  buffer: SharedArrayBuffer | ArrayBuffer;
+  byteOffset: number;
+}
+
 export interface AudioDriver {
   /** Begin pulling frames from the SAB ring registered for `pcmId`.
    * `kernelTick` is the bound `kernel.exports.kernel_audio_period_tick`
@@ -34,13 +47,19 @@ export interface AudioDriver {
     periodFrames: number,
     ring: AudioRing,
     kernelTick: (pcmId: number, framesConsumed: number) => void,
-    /** Bound `kernel.exports.kernel_audio_get_appl_ptr` proxy. The
-     * browser driver polls this each AudioWorklet quantum and forwards
-     * the value into the worklet so it can gate `hwPtr` advance —
-     * silence past `appl_ptr`, advance only over written ring
-     * positions. Headless drivers (NodeAudioDriver) accept this for
+    /** Bound `kernel.exports.kernel_audio_get_appl_ptr` proxy. With a
+     * SAB-backed `applPtrSab` in place this is only used by `stop()`
+     * to compute the final drain delta; absent that, the browser
+     * driver falls back to the legacy 10 ms poll → `postMessage`
+     * chain. Headless drivers (NodeAudioDriver) accept this for
      * dual-host signature parity and ignore the value. */
     getApplPtr: (pcmId: number) => number,
+    /** SAB slot the kernel mirrors `appl_ptr` into on every
+     * `WRITEI_FRAMES`. When present, the browser worklet reads from
+     * this slot directly via `Atomics.load` — zero-latency producer
+     * progress, eliminating the 10 ms poll round-trip. Optional;
+     * absence falls back to the legacy `getApplPtr` poll path. */
+    applPtrSab?: AudioApplPtrSab,
   ): Promise<void>;
 
   /** Stop pulling; tear down audio context / clear timers. Idempotent. */

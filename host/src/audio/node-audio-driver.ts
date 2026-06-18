@@ -12,7 +12,11 @@
  * symmetric per CLAUDE.md §"Two hosts".
  */
 
-import type { AudioDriver, AudioRing } from "./audio-driver.js";
+import type {
+  AudioApplPtrSab,
+  AudioDriver,
+  AudioRing,
+} from "./audio-driver.js";
 
 interface PcmTimer {
   intervalHandle: ReturnType<typeof setInterval>;
@@ -34,6 +38,7 @@ export class NodeAudioDriver implements AudioDriver {
     // hw_ptr advance is what `kernelTick` drives. Kept in the signature
     // for dual-host parity per `AudioDriver`.
     _getApplPtr: (pcmId: number) => number,
+    _applPtrSab?: AudioApplPtrSab,
   ): Promise<void> {
     if (this.timers.has(pcmId)) return;
     const intervalMs = (periodFrames * 1000) / sampleRate;

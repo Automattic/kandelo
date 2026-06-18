@@ -14,7 +14,7 @@
  * Window creation is deliberately skipped: gbm_surface_create needs
  * the GL stubs (libegl-stub + libgles2-stub + libgbm-extended) that
  * land in the same PR. This smoke test runs the link + init path; the
- * sdl2_demo program runs the create-window + page-flip path.
+ * sdl2 playground binary runs the create-window + page-flip path.
  *
  * Used by host/test/sdl2-kmsdrm-smoke.test.ts.
  */
