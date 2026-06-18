@@ -623,6 +623,22 @@ describe("MemoryFileSystem", () => {
     expect(() => mfs.stat("/todelete.txt")).toThrow();
   });
 
+  it("rejects unlink paths with a trailing slash on non-directories", () => {
+    const sab = new SharedArrayBuffer(4 * 1024 * 1024);
+    const mfs = MemoryFileSystem.create(sab);
+    const O_CREAT = 0x0040,
+      O_WRONLY = 0x0001;
+
+    const fd = mfs.open("/file.txt", O_CREAT | O_WRONLY, 0o644);
+    mfs.close(fd);
+    mfs.symlink("/file.txt", "/link.txt");
+
+    expect(() => mfs.unlink("/file.txt/")).toThrow(/Not a directory/);
+    expect(() => mfs.unlink("/link.txt/")).toThrow(/Not a directory/);
+    expect(mfs.stat("/file.txt").mode & 0xf000).toBe(0x8000);
+    expect(mfs.readlink("/link.txt")).toBe("/file.txt");
+  });
+
   it("rejects rename source paths that require a non-directory to be a directory", () => {
     const sab = new SharedArrayBuffer(4 * 1024 * 1024);
     const mfs = MemoryFileSystem.create(sab);
