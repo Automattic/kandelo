@@ -858,11 +858,7 @@ fn postamble_writes_frame_header_and_bumps_current_pos() {
         InstrKind::GlobalGet,
         InstrKind::Other, // Load current frame
         InstrKind::Const,
-        InstrKind::Other, // Store catch_region_id
-        InstrKind::GlobalGet,
-        InstrKind::Other, // Load current frame
-        InstrKind::Const,
-        InstrKind::Other, // Store exnref_slot
+        InstrKind::Other, // Store packed zero catch_region_id + exnref_slot
         InstrKind::GlobalGet,
         InstrKind::GlobalGet,
         InstrKind::Other, // Load current frame
@@ -872,6 +868,45 @@ fn postamble_writes_frame_header_and_bumps_current_pos() {
         InstrKind::Const, // default return value
     ];
     assert_eq!(postamble, expected);
+}
+
+#[test]
+fn no_catch_postamble_packs_zero_catch_header_fields() {
+    let bytes = instrument_wat(FIXTURE_DIRECT_CALLER);
+    validate(&bytes);
+
+    let printed = wasmprinter::print_bytes(&bytes).expect("wasmprinter");
+    let caller_section = extract_function_text(&printed, "caller");
+    assert!(
+        caller_section.contains("i64.store offset=8"),
+        "no-catch postamble should pack catch_region_id/exnref_slot zeroes:\n{caller_section}",
+    );
+    assert!(
+        !(caller_section.contains("i32.store offset=8")
+            && caller_section.contains("i32.store offset=12")),
+        "no-catch postamble should not emit separate zero stores:\n{caller_section}",
+    );
+}
+
+#[test]
+fn catch_capable_postamble_keeps_dynamic_catch_header_stores() {
+    let bytes = instrument_wat(FIXTURE_FORK_IN_TRY_BODY);
+    validate(&bytes);
+
+    let printed = wasmprinter::print_bytes(&bytes).expect("wasmprinter");
+    let caller_section = extract_function_text(&printed, "caller");
+    assert!(
+        caller_section.contains("i32.store offset=8"),
+        "catch-capable postamble must store dynamic catch_region_id:\n{caller_section}",
+    );
+    assert!(
+        caller_section.contains("i32.store offset=12"),
+        "catch-capable postamble must store dynamic exnref_slot:\n{caller_section}",
+    );
+    assert!(
+        !caller_section.contains("i64.store offset=8"),
+        "catch-capable postamble must not replace dynamic fields with a packed zero store:\n{caller_section}",
+    );
 }
 
 #[test]
@@ -913,15 +948,15 @@ fn postamble_serializes_user_scalar_locals() {
     let postamble = &kinds[postamble_start..];
 
     // Postamble with one user local:
-    //   5 current-frame pointer loads + 5 stores (func_index,
-    //   catch_region_id, exnref_slot, user_x, new current_pos) = 10 Others.
+    //   4 current-frame pointer loads + 4 stores (func_index,
+    //   packed zero catch fields, user_x, new current_pos) = 8 Others.
     let other_count = postamble
         .iter()
         .filter(|k| matches!(k, InstrKind::Other))
         .count();
     assert_eq!(
-        other_count, 10,
-        "postamble should have 5 frame loads + 5 stores (header 3 + user 1 + bump 1): {postamble:?}",
+        other_count, 8,
+        "postamble should have 4 frame loads + 4 stores (header 2 + user 1 + bump 1): {postamble:?}",
     );
 }
 
