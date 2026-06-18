@@ -775,21 +775,36 @@ algorithm in `crates/fork-instrument/src/call_graph.rs`:
 1. Seed set `S` = { the imported `kernel.kernel_fork` function }.
 2. **Direct reverse closure.** For every newly discovered callee `g`, add
    every local function that directly calls `g`.
-3. **Indirect reverse closure.** If `g` appears in a function table, add
-   every local function that performs `call_indirect` with a structurally
-   matching function type.
+3. **Indirect reverse closure.** If `g` can be dispatched from a function
+   table, add every local function that performs `call_indirect` or
+   `return_call_indirect` against the same table with a structurally matching
+   function type.
 4. Repeat steps 2–3 until the worklist is empty.
 
 The output is a function-set `S` that gets instrumented. All other functions
 pass through unmodified.
 
-The indirect-call step is conservative — a table-addressable fork-path target
-pulls in every same-signature indirect caller. This is enough for registered
-callback paths such as signal handlers, pthread cleanup handlers, `atexit`
-handlers, and qsort-style comparators in the current libc output. The broader
-"instrument every address-taken function" rule from the original C3 plan was
-not needed for this PR and was not added; K-01, K-02, K-04, and K-07 cover the
-current behavior.
+The indirect-call step is a may-analysis, but it is slot-sensitive when the
+Wasm proves enough facts. Active element segments with constant offsets
+populate known table slots. A `call_indirect` whose table index is a literal
+`i32.const` or a folded constant `i32.add`/`i32.sub` expression can dispatch
+only to that slot, so a same-signature fork-path target in a different slot
+does not pull in the caller. Dynamic indexes remain conservative: if the table
+contains a matching fork-path target anywhere, the caller stays in `S`.
+
+Unknown table state also remains conservative. Passive segments count only for
+tables that can receive them via `table.init`; because the destination range is
+not modeled, their functions are table-wide. Declared segments do not populate
+a table. Dynamic table writes (`table.set`, `table.fill`, `table.grow`) make
+the table unknown, so any matching-signature fork-path target may be reachable.
+`table.copy` propagates known and unknown source-table state to the
+destination.
+
+This is enough for registered callback paths such as signal handlers, pthread
+cleanup handlers, `atexit` handlers, and qsort-style comparators in the current
+libc output. The broader "instrument every address-taken function" rule from
+the original C3 plan was not needed for this PR and was not added; K-01, K-02,
+K-04, and K-07 cover the current behavior.
 
 ## Guarantees and non-guarantees
 
