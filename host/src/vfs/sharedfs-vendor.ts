@@ -1750,12 +1750,6 @@ export class SharedFS {
     const fd = this.fdAlloc(ino, flags, false);
     if (fd < 0) throw new SFSError(fd);
 
-    // If append, set offset to end
-    if (flags & O_APPEND) {
-      const base = FD_TABLE_OFFSET + fd * FD_ENTRY_SIZE;
-      this.w64(base + FD_OFFSET, this.r64(inoOff + INO_SIZE));
-    }
-
     return fd;
   }
 
@@ -1769,6 +1763,9 @@ export class SharedFS {
   read(fd: number, buffer: Uint8Array): number {
     const entry = this.fdGet(fd);
     if (!entry) throw new SFSError(EBADF);
+    const inoOff = this.inodeOffset(entry.ino);
+    const mode = this.r32(inoOff + INO_MODE);
+    if ((mode & S_IFMT) === S_IFDIR) throw new SFSError(EISDIR);
 
     this.inodeReadLock(entry.ino);
     try {
