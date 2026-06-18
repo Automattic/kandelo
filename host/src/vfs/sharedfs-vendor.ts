@@ -190,6 +190,7 @@ export class SFSError extends Error {
 
 const encoder = new TextEncoder();
 const decoder = new TextDecoder();
+const DOTDOT_BYTES = encoder.encode("..");
 
 /**
  * Safely decode a Uint8Array that may be backed by SharedArrayBuffer.
@@ -1471,6 +1472,77 @@ export class SharedFS {
     return ENOENT;
   }
 
+  private dirReplaceEntryIno(
+    dirIno: number,
+    name: Uint8Array,
+    childIno: number,
+  ): number {
+    const index = this.getDirIndex(dirIno);
+    if (typeof index === "number") return index;
+    if (index) {
+      const key = this.dirNameKey(name);
+      const entry = index.entries.get(key);
+
+      if (
+        entry &&
+        this.r32(entry.abs) === entry.ino &&
+        this.view.getUint16(entry.abs + 4, true) === entry.recLen &&
+        this.view.getUint16(entry.abs + 6, true) === entry.nameLen &&
+        this.dirEntryNameMatches(entry.abs, name)
+      ) {
+        this.w32(entry.abs, childIno);
+        entry.ino = childIno;
+        return 0;
+      }
+
+      if (entry) index.entries.delete(key);
+      // Fall through to the linear scan below if the cached slot was stale.
+    }
+
+    const inoOff = this.inodeOffset(dirIno);
+    const dirSize = this.r64(inoOff + INO_SIZE);
+    let pos = 0;
+
+    while (pos < dirSize) {
+      const fileBlock = Math.floor(pos / BLOCK_SIZE);
+      const blockOff = pos % BLOCK_SIZE;
+      const phys = this.inodeBlockMap(dirIno, fileBlock, false);
+      if (phys <= 0) return EIO;
+
+      const blockBase = phys * BLOCK_SIZE;
+      let remain = dirSize - pos;
+      if (remain > BLOCK_SIZE - blockOff) remain = BLOCK_SIZE - blockOff;
+
+      let off = blockOff;
+      while (off < blockOff + remain) {
+        const abs = blockBase + off;
+        const entIno = this.r32(abs);
+        const recLen = this.view.getUint16(abs + 4, true);
+        const entNameLen = this.view.getUint16(abs + 6, true);
+
+        if (recLen === 0) return EIO;
+
+        if (entIno !== 0 && entNameLen === name.length) {
+          let match = true;
+          for (let i = 0; i < name.length; i++) {
+            if (this.u8[abs + DIRENT_HEADER_SIZE + i] !== name[i]) {
+              match = false;
+              break;
+            }
+          }
+          if (match) {
+            this.w32(abs, childIno);
+            this.updateDirIndexAdd(dirIno, name, childIno, abs, recLen);
+            return 0;
+          }
+        }
+        off += recLen;
+      }
+      pos += remain;
+    }
+    return ENOENT;
+  }
+
   private dirIsEmpty(dirIno: number): boolean {
     const inoOff = this.inodeOffset(dirIno);
     const dirSize = this.r64(inoOff + INO_SIZE);
@@ -1516,6 +1588,21 @@ export class SharedFS {
       }
       pos += remain;
     }
+    return true;
+  }
+
+  private dirIsAncestor(ancestorIno: number, dirIno: number): boolean {
+    let cur = dirIno;
+
+    for (let depth = 0; depth < MAX_SYMLINK_HOPS * 1024; depth++) {
+      if (cur === ancestorIno) return true;
+      if (cur === ROOT_INO) return false;
+
+      const parent = this.dirLookup(cur, DOTDOT_BYTES);
+      if (parent < 0 || parent === cur) return false;
+      cur = parent;
+    }
+
     return true;
   }
 
@@ -1935,6 +2022,8 @@ export class SharedFS {
       this.pathResolveParent(newPath);
     const oldNameBytes = encoder.encode(oldName);
     const newNameBytes = encoder.encode(newName);
+    const oldRequiresDirectory = oldPath.length > 1 && oldPath.endsWith("/");
+    const newRequiresDirectory = newPath.length > 1 && newPath.endsWith("/");
 
     // Lock both parents (consistent order to avoid deadlock)
     const first = Math.min(oldParent, newParent);
@@ -1945,25 +2034,63 @@ export class SharedFS {
     try {
       const srcIno = this.dirLookup(oldParent, oldNameBytes);
       if (srcIno < 0) throw new SFSError(srcIno);
+      const srcOff = this.inodeOffset(srcIno);
+      const srcMode = this.r32(srcOff + INO_MODE);
+      const srcType = srcMode & S_IFMT;
+
+      if (
+        (oldRequiresDirectory || newRequiresDirectory) &&
+        srcType !== S_IFDIR
+      ) {
+        throw new SFSError(ENOTDIR);
+      }
+
+      if (srcType === S_IFDIR && this.dirIsAncestor(srcIno, newParent)) {
+        throw new SFSError(EINVAL);
+      }
 
       // Remove any existing entry at destination
       const existingIno = this.dirLookup(newParent, newNameBytes);
+      let removedExistingDirectory = false;
       if (existingIno >= 0) {
         if (existingIno === srcIno) {
           return;
         }
         const existOff = this.inodeOffset(existingIno);
         const existMode = this.r32(existOff + INO_MODE);
-        if ((existMode & S_IFMT) === S_IFDIR) throw new SFSError(EISDIR);
-        this.dirRemoveEntry(newParent, newNameBytes);
-        let shouldFreeExisting = false;
-        this.inodeWriteLock(existingIno);
-        try {
-          shouldFreeExisting = this.inodeDropLinkRefLocked(existingIno);
-        } finally {
-          this.inodeWriteUnlock(existingIno);
+        const existType = existMode & S_IFMT;
+
+        if (srcType === S_IFDIR) {
+          if (existType !== S_IFDIR) throw new SFSError(ENOTDIR);
+
+          let shouldFreeExisting = false;
+          this.inodeWriteLock(existingIno);
+          try {
+            if (!this.dirIsEmpty(existingIno)) throw new SFSError(ENOTEMPTY);
+            const rc = this.dirRemoveEntry(newParent, newNameBytes);
+            if (rc < 0) throw new SFSError(rc);
+            shouldFreeExisting = this.inodeOrphanLocked(existingIno);
+          } finally {
+            this.inodeWriteUnlock(existingIno);
+          }
+          if (shouldFreeExisting) this.inodeFree(existingIno);
+          removedExistingDirectory = true;
+        } else {
+          if (existType === S_IFDIR) {
+            throw new SFSError(newRequiresDirectory ? ENOTDIR : EISDIR);
+          }
+
+          const rc = this.dirRemoveEntry(newParent, newNameBytes);
+          if (rc < 0) throw new SFSError(rc);
+          let shouldFreeExisting = false;
+          this.inodeWriteLock(existingIno);
+          try {
+            shouldFreeExisting = this.inodeDropLinkRefLocked(existingIno);
+          } finally {
+            this.inodeWriteUnlock(existingIno);
+          }
+          if (shouldFreeExisting) this.inodeFree(existingIno);
         }
-        if (shouldFreeExisting) this.inodeFree(existingIno);
       }
 
       // Add entry in new directory
@@ -1974,21 +2101,45 @@ export class SharedFS {
       this.dirRemoveEntry(oldParent, oldNameBytes);
 
       // Update link counts for directory renames
-      const srcOff = this.inodeOffset(srcIno);
-      const srcMode = this.r32(srcOff + INO_MODE);
-      if (
-        (srcMode & S_IFMT) === S_IFDIR &&
-        oldParent !== newParent
-      ) {
-        const oldPOff = this.inodeOffset(oldParent);
-        this.w32(
-          oldPOff + INO_LINK_COUNT,
-          this.r32(oldPOff + INO_LINK_COUNT) - 1,
-        );
+      if (srcType === S_IFDIR) {
+        if (oldParent !== newParent) {
+          const oldPOff = this.inodeOffset(oldParent);
+          this.w32(
+            oldPOff + INO_LINK_COUNT,
+            this.r32(oldPOff + INO_LINK_COUNT) - 1,
+          );
+          const newPOff = this.inodeOffset(newParent);
+          this.w32(
+            newPOff + INO_LINK_COUNT,
+            this.r32(newPOff + INO_LINK_COUNT) + 1,
+          );
+
+          this.inodeWriteLock(srcIno);
+          try {
+            const dotdotRc = this.dirReplaceEntryIno(
+              srcIno,
+              DOTDOT_BYTES,
+              newParent,
+            );
+            if (dotdotRc < 0) throw new SFSError(dotdotRc);
+            this.w64(srcOff + INO_CTIME, Date.now());
+          } finally {
+            this.inodeWriteUnlock(srcIno);
+          }
+        }
+
+        if (removedExistingDirectory) {
+          const newPOff = this.inodeOffset(newParent);
+          this.w32(
+            newPOff + INO_LINK_COUNT,
+            this.r32(newPOff + INO_LINK_COUNT) - 1,
+          );
+        }
+      } else if (removedExistingDirectory) {
         const newPOff = this.inodeOffset(newParent);
         this.w32(
           newPOff + INO_LINK_COUNT,
-          this.r32(newPOff + INO_LINK_COUNT) + 1,
+          this.r32(newPOff + INO_LINK_COUNT) - 1,
         );
       }
     } finally {

@@ -623,6 +623,99 @@ describe("MemoryFileSystem", () => {
     expect(() => mfs.stat("/todelete.txt")).toThrow();
   });
 
+  it("rejects rename source paths that require a non-directory to be a directory", () => {
+    const sab = new SharedArrayBuffer(4 * 1024 * 1024);
+    const mfs = MemoryFileSystem.create(sab);
+    const O_CREAT = 0x0040,
+      O_WRONLY = 0x0001;
+
+    const fd = mfs.open("/file.txt", O_CREAT | O_WRONLY, 0o644);
+    mfs.close(fd);
+
+    expect(() => mfs.rename("/file.txt/", "/renamed.txt")).toThrow(
+      /Not a directory/,
+    );
+    expect(mfs.stat("/file.txt").size).toBe(0);
+    expect(() => mfs.stat("/renamed.txt")).toThrow(/No such file/);
+  });
+
+  it("preserves POSIX type checks when renaming directories onto existing paths", () => {
+    const sab = new SharedArrayBuffer(4 * 1024 * 1024);
+    const mfs = MemoryFileSystem.create(sab);
+    const O_CREAT = 0x0040,
+      O_WRONLY = 0x0001;
+
+    mfs.mkdir("/dir", 0o755);
+    const fd = mfs.open("/file.txt", O_CREAT | O_WRONLY, 0o644);
+    mfs.close(fd);
+    mfs.symlink("/file.txt", "/link.txt");
+
+    expect(() => mfs.rename("/dir", "/file.txt")).toThrow(/Not a directory/);
+    expect(() => mfs.rename("/dir", "/link.txt")).toThrow(/Not a directory/);
+
+    expect(mfs.stat("/dir").mode & 0xf000).toBe(0x4000);
+    expect(mfs.stat("/file.txt").mode & 0xf000).toBe(0x8000);
+    expect(mfs.readlink("/link.txt")).toBe("/file.txt");
+  });
+
+  it("renames directories over empty directories and updates dot-dot", () => {
+    const sab = new SharedArrayBuffer(4 * 1024 * 1024);
+    const mfs = MemoryFileSystem.create(sab);
+    const O_CREAT = 0x0040,
+      O_WRONLY = 0x0001;
+
+    mfs.mkdir("/old-parent", 0o755);
+    mfs.mkdir("/new-parent", 0o755);
+    mfs.mkdir("/old-parent/child", 0o755);
+    const siblingFd = mfs.open(
+      "/new-parent/sibling.txt",
+      O_CREAT | O_WRONLY,
+      0o644,
+    );
+    mfs.close(siblingFd);
+
+    mfs.rename("/old-parent/child", "/new-parent/child");
+    expect(mfs.stat("/new-parent/child/../sibling.txt").mode & 0xf000).toBe(
+      0x8000,
+    );
+
+    mfs.mkdir("/empty-dest", 0o755);
+    mfs.rename("/new-parent/child", "/empty-dest");
+    expect(mfs.stat("/empty-dest").mode & 0xf000).toBe(0x4000);
+    expect(() => mfs.stat("/new-parent/child")).toThrow(/No such file/);
+  });
+
+  it("keeps an unlinked open file alive until close", () => {
+    const sab = new SharedArrayBuffer(4 * 1024 * 1024);
+    const mfs = MemoryFileSystem.create(sab);
+    const O_CREAT = 0x0040,
+      O_RDWR = 0x0002,
+      O_TRUNC = 0x0200;
+
+    const oldFd = mfs.open("/open.txt", O_CREAT | O_RDWR | O_TRUNC, 0o644);
+    const oldData = new TextEncoder().encode("old");
+    mfs.write(oldFd, oldData, null, oldData.length);
+    mfs.unlink("/open.txt");
+    expect(() => mfs.stat("/open.txt")).toThrow();
+
+    const newFd = mfs.open("/open.txt", O_CREAT | O_RDWR | O_TRUNC, 0o644);
+    const newData = new TextEncoder().encode("newer");
+    mfs.write(newFd, newData, null, newData.length);
+
+    mfs.seek(oldFd, 0, 0);
+    const oldBuf = new Uint8Array(8);
+    const oldRead = mfs.read(oldFd, oldBuf, null, oldBuf.length);
+    expect(new TextDecoder().decode(oldBuf.subarray(0, oldRead))).toBe("old");
+
+    mfs.seek(newFd, 0, 0);
+    const newBuf = new Uint8Array(8);
+    const newRead = mfs.read(newFd, newBuf, null, newBuf.length);
+    expect(new TextDecoder().decode(newBuf.subarray(0, newRead))).toBe("newer");
+
+    mfs.close(oldFd);
+    mfs.close(newFd);
+  });
+
   it("ftruncate changes file size", () => {
     const sab = new SharedArrayBuffer(4 * 1024 * 1024);
     const mfs = MemoryFileSystem.create(sab);
