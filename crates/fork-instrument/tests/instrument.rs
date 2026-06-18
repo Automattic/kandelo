@@ -629,8 +629,8 @@ fn non_fork_call_remains_bare_in_chunk_0() {
 #[test]
 fn call_site_post_sequence_sets_call_idx_and_checks_unwinding() {
     // For each fork-path call site, the post-call sequence is:
-    //   <call>, Const(K), LocalSet($call_idx),
-    //   GlobalGet(state), Const(UNWINDING), Binop(eq), BrIf($unwind_save).
+    //   <call>, GlobalGet(state), Const(UNWINDING), Binop(eq),
+    //   IfElse(then: frame.call_index = K; br $unwind_save).
     let bytes = instrument_wat(FIXTURE_DIRECT_CALLER);
     validate(&bytes);
     let module = Module::from_buffer(&bytes).unwrap();
@@ -638,21 +638,17 @@ fn call_site_post_sequence_sets_call_idx_and_checks_unwinding() {
     let unwind_save = entry_wrapper_seq(&module, caller);
 
     // $unwind_save body (one call case):
-    //   Block($POST_0),
-    //   Call($fork), Const(0), LocalSet, GlobalGet, Const, Binop, BrIf,
-    //   Return
+    //   Block($POST_0), Call($fork), GlobalGet, Const, Binop, IfElse, Return
     let kinds = seq_kinds(&module, caller, unwind_save);
     assert_eq!(
         kinds,
         vec![
             InstrKind::Block,     // $POST_0
             InstrKind::Call,      // the fork call
-            InstrKind::Const,     // call_idx = 0
-            InstrKind::LocalSet,  // $call_idx_local
             InstrKind::GlobalGet, // state
             InstrKind::Const,     // UNWINDING
             InstrKind::Binop,     // i32.eq
-            InstrKind::BrIf,      // $unwind_save
+            InstrKind::IfElse,    // then stores frame.call_index and branches
             InstrKind::Return,    // normal-path exit
         ],
     );
@@ -671,7 +667,7 @@ fn call_with_args_spills_and_reloads_through_locals() {
     //   $unwind_save:
     //     Block($POST_0),
     //     <reload i32 arg>, <reload f64 arg>, Call,
-    //     Const(0), LocalSet($call_idx), GlobalGet, Const, Binop, BrIf,
+    //     GlobalGet, Const, Binop, IfElse,
     //     Return
     //   $POST_0:
     //     Block($dispatch_normal),
@@ -711,32 +707,7 @@ fn two_calls_assign_sequential_call_idx() {
     let _unwind_save = entry_wrapper_seq(&module, caller);
     let f = local_func(&module, caller);
 
-    // Extract every `i32.const N` immediately before a `local.set`
-    // that targets the call_idx local. The call_idx local is the
-    // same one referenced by every site.
-    //
-    // Start by finding the br_table — its input LocalGet names the
-    // call_idx local.
-    let mut call_idx_local: Option<walrus::LocalId> = None;
-    walk_all(f, f.entry_block(), &mut |seq, instr| {
-        if call_idx_local.is_some() {
-            return;
-        }
-        if matches!(instr, Instr::BrTable(_)) {
-            // Previous instr in same seq is LocalGet(call_idx).
-            let seq_instrs = &f.block(seq).instrs;
-            for i in 0..seq_instrs.len() {
-                if matches!(seq_instrs[i].0, Instr::BrTable(_)) && i > 0 {
-                    if let Instr::LocalGet(lg) = &seq_instrs[i - 1].0 {
-                        call_idx_local = Some(lg.local);
-                    }
-                }
-            }
-        }
-    });
-    let call_idx_local = call_idx_local.expect("call_idx local discoverable from br_table");
-
-    // Now count Const values immediately preceding LocalSet(call_idx).
+    // Count Const values immediately preceding stores to frame.call_index.
     fn walk_seqs<F: FnMut(InstrSeqId)>(
         f: &LocalFunction,
         seq: InstrSeqId,
@@ -754,8 +725,8 @@ fn two_calls_assign_sequential_call_idx() {
     walk_seqs(f, f.entry_block(), &mut |seq| {
         let instrs = &f.block(seq).instrs;
         for i in 1..instrs.len() {
-            if let Instr::LocalSet(ls) = &instrs[i].0 {
-                if ls.local == call_idx_local {
+            if let Instr::Store(store) = &instrs[i].0 {
+                if store.arg.offset == 4 {
                     if let Instr::Const(c) = &instrs[i - 1].0 {
                         if let ir::Value::I32(v) = c.value {
                             idxs.push(v);
@@ -787,7 +758,7 @@ fn call_indirect_spills_table_index_as_top_arg() {
     // $unwind_save:
     //   Block($POST_0),
     //   <reload table index>, CallIndirect,
-    //   Const(0), LocalSet, GlobalGet, Const, Binop, BrIf,
+    //   GlobalGet, Const, Binop, IfElse,
     //   Return
     let kinds = seq_kinds(&module, caller, unwind_save);
     assert_eq!(
@@ -796,12 +767,10 @@ fn call_indirect_spills_table_index_as_top_arg() {
             InstrKind::Block,
             InstrKind::LocalGet,     // reload i32 table index
             InstrKind::CallIndirect, // indirect call
-            InstrKind::Const,        // call_idx = 0
-            InstrKind::LocalSet,     // $call_idx_local
             InstrKind::GlobalGet,
             InstrKind::Const,
             InstrKind::Binop,
-            InstrKind::BrIf,
+            InstrKind::IfElse,
             InstrKind::Return,
         ],
     );
@@ -851,7 +820,7 @@ fn preamble_starts_with_rewinding_state_check() {
 }
 
 #[test]
-fn preamble_then_loads_frame_header_and_call_idx() {
+fn preamble_then_moves_cursor_to_current_frame() {
     let bytes = instrument_wat(FIXTURE_DIRECT_CALLER);
     let module = Module::from_buffer(&bytes).unwrap();
     let caller = func_by_name(&module, "caller");
@@ -861,17 +830,12 @@ fn preamble_then_loads_frame_header_and_call_idx() {
     assert_eq!(
         kinds,
         vec![
-            InstrKind::GlobalGet, // buf
+            InstrKind::GlobalGet, // buf store address
+            InstrKind::GlobalGet, // buf load address
             InstrKind::Other,     // Load current_pos
             InstrKind::Const,     // frame_size
-            InstrKind::Binop,     // sub
-            InstrKind::LocalSet,  // $frame_ptr
-            InstrKind::GlobalGet, // buf
-            InstrKind::LocalGet,  // frame_ptr
-            InstrKind::Other,     // Store new current_pos
-            InstrKind::LocalGet,  // frame_ptr
-            InstrKind::Other,     // Load call_idx from frame+4
-            InstrKind::LocalSet,  // $call_idx_local
+            InstrKind::Binop,     // sub to current frame base
+            InstrKind::Other,     // Store new current_pos/current frame
         ],
     );
 }
@@ -887,23 +851,21 @@ fn postamble_writes_frame_header_and_bumps_current_pos() {
     let postamble: Vec<InstrKind> = kinds[postamble_start..].to_vec();
 
     let expected = vec![
-        InstrKind::GlobalGet, // buf
-        InstrKind::Other,     // Load current_pos
-        InstrKind::LocalSet,  // $frame_ptr
-        InstrKind::LocalGet,
+        InstrKind::GlobalGet,
+        InstrKind::Other, // Load current frame
         InstrKind::Const,
         InstrKind::Other, // Store func_index
-        InstrKind::LocalGet,
-        InstrKind::LocalGet,
-        InstrKind::Other, // Store call_index
-        InstrKind::LocalGet,
+        InstrKind::GlobalGet,
+        InstrKind::Other, // Load current frame
         InstrKind::Const,
         InstrKind::Other, // Store catch_region_id
-        InstrKind::LocalGet,
+        InstrKind::GlobalGet,
+        InstrKind::Other, // Load current frame
         InstrKind::Const,
         InstrKind::Other, // Store exnref_slot
         InstrKind::GlobalGet,
-        InstrKind::LocalGet,
+        InstrKind::GlobalGet,
+        InstrKind::Other, // Load current frame
         InstrKind::Const,
         InstrKind::Binop,
         InstrKind::Other, // Store new current_pos
@@ -921,13 +883,19 @@ fn user_scalar_locals_are_saved_and_restored_in_frame() {
     let caller = func_by_name(&module, "caller");
     let (preamble_then, _, _) = entry_preamble_and_postamble(&module, caller);
 
-    // With one i32 user local, preamble-then should end with a
-    // LocalGet(frame_ptr) / Load / LocalSet(user local) trio.
+    // With one i32 user local, preamble-then should end by loading
+    // the current frame pointer, loading the scalar, and setting the
+    // user local.
     let kinds = seq_kinds(&module, caller, preamble_then);
-    let tail: Vec<_> = kinds.iter().copied().rev().take(3).collect();
+    let tail: Vec<_> = kinds.iter().copied().rev().take(4).collect();
     assert_eq!(
         tail,
-        vec![InstrKind::LocalSet, InstrKind::Other, InstrKind::LocalGet],
+        vec![
+            InstrKind::LocalSet,
+            InstrKind::Other,
+            InstrKind::Other,
+            InstrKind::GlobalGet,
+        ],
         "preamble-then must restore the i32 user local: {kinds:?}",
     );
 }
@@ -945,15 +913,15 @@ fn postamble_serializes_user_scalar_locals() {
     let postamble = &kinds[postamble_start..];
 
     // Postamble with one user local:
-    //   1 Load (current_pos) + 6 Stores (func_index, call_index,
-    //   catch_region_id, exnref_slot, user_x, new current_pos) = 7 Others.
+    //   5 current-frame pointer loads + 5 stores (func_index,
+    //   catch_region_id, exnref_slot, user_x, new current_pos) = 10 Others.
     let other_count = postamble
         .iter()
         .filter(|k| matches!(k, InstrKind::Other))
         .count();
     assert_eq!(
-        other_count, 7,
-        "postamble should have 1 Load + 6 Stores (header 4 + user 1 + bump 1): {postamble:?}",
+        other_count, 10,
+        "postamble should have 5 frame loads + 5 stores (header 3 + user 1 + bump 1): {postamble:?}",
     );
 }
 

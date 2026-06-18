@@ -324,34 +324,36 @@ After instrumentation (abridged):
   ;; [1] Preamble: if REWINDING, load our frame and jump to matching call.
   (if (i32.eq (global.get $_wpk_fork_state) (i32.const 2 (; REWINDING ;)))
     (then
-      ;; Load frame header + locals from buf; set $call_idx_local.
+      ;; Move current_pos back to this frame, then restore frame fields
+      ;; and locals. call_index remains in the frame header.
       ...))
 
-  ;; [2] Body wrapper: runs on NORMAL, and on REWINDING only when
-  ;;     call_idx matches the target call site.
+  ;; [2] Body wrapper: runs on NORMAL; on REWINDING, dispatch jumps to
+  ;;     the matching post-call site using frame.call_index.
   (block $unwind_save
-    (if (i32.or
-          (i32.eq (global.get $_wpk_fork_state) (i32.const 0 (; NORMAL ;)))
-          (i32.and
-            (i32.eq (global.get $_wpk_fork_state) (i32.const 2 (; REWINDING ;)))
-            (i32.eq (local.get $call_idx_local) (i32.const 0))))
+    (block $POST_0
+      (block $dispatch_normal
+        (if (i32.eq (global.get $_wpk_fork_state) (i32.const 2 (; REWINDING ;)))
+          (then
+            ;; Load frame.call_index from *(buf + 0) + 4.
+            ...
+            (br_table $POST_0 $unwind_save))))
+      ;; chunk 0 would run here on NORMAL only.
+    )
+    ;; [3] Wrapped call site.
+    call $fork
+    ;; [4] Post-call unwind check: if callee returned in UNWINDING,
+    ;;     write frame.call_index and jump to postamble.
+    (if (i32.eq (global.get $_wpk_fork_state) (i32.const 1 (; UNWINDING ;)))
       (then
-        ;; [3] Wrapped call site.
-        call $fork
-        (local.set $call_idx_local (i32.const 0))
-        ;; [4] Post-call unwind check: if callee returned in UNWINDING
-        ;;     state, skip the rest of the body and jump to postamble.
-        (br_if $unwind_save
-          (i32.eq (global.get $_wpk_fork_state) (i32.const 1 (; UNWINDING ;))))
-      )
-      (else
-        ;; Supply default values for the call's result types so the
-        ;; wrapper typechecks; never reached on NORMAL.
-        (i32.const 0)))
+        ;; *( *(buf + 0) + 4 ) = 0
+        ...
+        (br $unwind_save)))
     (return))
 
-  ;; [5] Postamble: write frame header, serialize locals, bump current_pos,
-  ;;     then return a default value for the function's result type.
+  ;; [5] Postamble: write remaining frame header fields, serialize locals,
+  ;;     bump current_pos, then return a default value for the function's
+  ;;     result type.
   ...
   (return (i32.const 0)))
 ```
@@ -360,19 +362,21 @@ Numbered callouts:
 
 1. **Preamble (Phase 4d).** Every instrumented function opens with a state
    test. Under `REWINDING`, the preamble reads `current_pos`, locates the
-   frame at `current_pos - frame_size`, loads the header into synthetic
-   locals, and deserializes each scalar user local.
+   frame at `current_pos - frame_size`, stores that frame base back into
+   `*(buf + 0)`, and deserializes each scalar user local. Dispatch reads
+   `call_index` directly from that active frame header.
 2. **Body wrapper (Phase 4b/4c).** The original body is wrapped in a `$unwind_save`
-   block. The if-gate condition lets the body run under `NORMAL`, and also
-   under `REWINDING` when the per-function `$call_idx_local` matches the
-   index baked into this call site.
+   block. On `REWINDING`, a `br_table` keyed by `frame.call_index` jumps to
+   the selected post-call landing. On `NORMAL`, dispatch falls through and
+   executes the original chunks.
 3. **Wrapped call site (Phase 4c).** The original call is kept intact. After
-   the call returns, the tool writes `call_index` into `$call_idx_local`.
-4. **Unwind bridge (Phase 4c/4d).** A `br_if $unwind_save` checks the state
-   global. If the callee began unwinding, control jumps past the rest of the
-   body directly to the postamble.
-5. **Postamble (Phase 4d).** Emits the frame header (func_index, call_index,
-   catch_region_id, exnref_slot), writes each scalar user local, bumps
+   the call returns in `UNWINDING`, the tool writes the call site's
+   `call_index` to `frame[+4]`.
+4. **Unwind bridge (Phase 4c/4d).** The unwind-only branch writes
+   `frame.call_index` and exits `$unwind_save`. If the callee did not begin
+   unwinding, execution continues normally.
+5. **Postamble (Phase 4d).** Emits the remaining frame header fields
+   (func_index, catch_region_id, exnref_slot), writes each scalar user local, bumps
    `*(buf + 0)` by the frame size, and returns a default value of the
    function's result type. Callers see the default on the unwind path but
    discard it because their own postamble runs next.
@@ -441,8 +445,8 @@ Numbered callouts:
 - **6e — Call-site region writes.** Any call site inside the handler
   observes `$in_catch_K == 1` and writes the active region's id and exnref
   slot into `$catch_region_id_local` / `$exnref_slot_local` before the
-  `br_if $unwind_save`, so the frame carries the handler identity into the
-  save buffer.
+  unwind-only call-index store and `$unwind_save` branch, so the frame
+  carries the handler identity into the save buffer.
 
 ### (c) Indirect fork through `call_indirect`
 
@@ -470,8 +474,10 @@ before the `call_indirect`.
       (then
         (local.get $arg_idx_0)    ;; [3b] restore arg before call
         (call_indirect (type $sig))
-        (local.set $call_idx_local (i32.const 0))
-        (br_if $unwind_save (<unwinding check>)))
+        (if (<unwinding check>)
+          (then
+            ;; frame.call_index = 0
+            (br $unwind_save))))
       (else
         (i32.const 0)))           ;; default i32 for the call's result
     (return))
