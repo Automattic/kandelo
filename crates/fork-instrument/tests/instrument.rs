@@ -271,6 +271,31 @@ const FIXTURE_CALL_WITH_ARGS: &str = r#"
       (memory 1))
 "#;
 
+const FIXTURE_CALL_WITH_LOAD_ARG: &str = r#"
+    (module
+      (import "kernel" "kernel_fork" (func $fork (result i32)))
+      (func $leaf (param i32) (result i32)
+        call $fork)
+      (func $caller_with_load_arg (export "caller_with_load_arg") (result i32)
+        i32.const 0
+        i32.load
+        call $leaf)
+      (memory 1))
+"#;
+
+const FIXTURE_CALL_WITH_I64_SHIFT_ARG: &str = r#"
+    (module
+      (import "kernel" "kernel_fork" (func $fork (result i32)))
+      (func $leaf (param i64) (result i32)
+        call $fork)
+      (func $caller_with_i64_shift_arg (export "caller_with_i64_shift_arg") (result i32)
+        i64.const 1
+        i64.const 2
+        i64.shl
+        call $leaf)
+      (memory 1))
+"#;
+
 const FIXTURE_TWO_CALLS: &str = r#"
     (module
       (import "kernel" "kernel_fork" (func $fork (result i32)))
@@ -655,7 +680,7 @@ fn call_site_post_sequence_sets_call_idx_and_checks_unwinding() {
 }
 
 #[test]
-fn call_with_args_spills_and_reloads_through_locals() {
+fn call_with_pure_args_replays_tail_without_spill_locals() {
     let bytes = instrument_wat(FIXTURE_CALL_WITH_ARGS);
     validate(&bytes);
     let module = Module::from_buffer(&bytes).unwrap();
@@ -666,20 +691,20 @@ fn call_with_args_spills_and_reloads_through_locals() {
     // Structure after rewrite:
     //   $unwind_save:
     //     Block($POST_0),
-    //     <reload i32 arg>, <reload f64 arg>, Call,
+    //     <replay pure i32/f64 constants>, Call,
     //     GlobalGet, Const, Binop, IfElse,
     //     Return
     //   $POST_0:
     //     Block($dispatch_normal),
-    //     <chunk 0: i32.const 7, f64.const 2.5>,
-    //     <spill f64 arg>, <spill i32 arg>   ;; top-of-stack first
+    //     ;; pure tail removed from the NORMAL chunk
     //
-    // Whether the chunk's spill count is >= 2 and the unwind_save
-    // reloads are >= 2 LocalGets before the call is the shape check.
+    // NORMAL and REWIND both reach the same post-call sequence, so
+    // replaying the pure tail here preserves the call arguments without
+    // adding frame-backed arg locals.
     let unwind_kinds = seq_kinds(&module, caller, unwind_save);
     assert_eq!(unwind_kinds[0], InstrKind::Block);
-    assert_eq!(unwind_kinds[1], InstrKind::LocalGet, "reload arg 0");
-    assert_eq!(unwind_kinds[2], InstrKind::LocalGet, "reload arg 1");
+    assert_eq!(unwind_kinds[1], InstrKind::Const, "replay arg 0");
+    assert_eq!(unwind_kinds[2], InstrKind::Const, "replay arg 1");
     assert_eq!(unwind_kinds[3], InstrKind::Call);
 
     // Find $POST_0 — it's the inner Block of $unwind_save.
@@ -689,12 +714,67 @@ fn call_with_args_spills_and_reloads_through_locals() {
         _ => panic!("expected Block"),
     };
     let post_0_kinds = seq_kinds(&module, caller, post_0);
-    // Should end with 2 LocalSets (spills).
-    let last_two: Vec<_> = post_0_kinds.iter().rev().take(2).copied().collect();
     assert_eq!(
-        last_two,
-        vec![InstrKind::LocalSet, InstrKind::LocalSet],
-        "chunk 0 tail must spill two args: {post_0_kinds:?}",
+        post_0_kinds,
+        vec![InstrKind::Block],
+        "chunk 0 pure arg tail must be removed instead of spilled: {post_0_kinds:?}",
+    );
+}
+
+#[test]
+fn call_with_non_pure_arg_falls_back_to_spill_local() {
+    let bytes = instrument_wat(FIXTURE_CALL_WITH_LOAD_ARG);
+    validate(&bytes);
+    let module = Module::from_buffer(&bytes).unwrap();
+
+    let caller = func_by_name(&module, "caller_with_load_arg");
+    let unwind_save = entry_wrapper_seq(&module, caller);
+    let unwind_kinds = seq_kinds(&module, caller, unwind_save);
+    assert_eq!(unwind_kinds[0], InstrKind::Block);
+    assert_eq!(
+        unwind_kinds[1],
+        InstrKind::LocalGet,
+        "load-produced arg must reload from fallback spill local",
+    );
+    assert_eq!(unwind_kinds[2], InstrKind::Call);
+
+    let f = local_func(&module, caller);
+    let post_0 = match f.block(unwind_save).instrs[0].0 {
+        Instr::Block(ir::Block { seq }) => seq,
+        _ => panic!("expected Block"),
+    };
+    let post_0_kinds = seq_kinds(&module, caller, post_0);
+    assert_eq!(
+        *post_0_kinds.last().unwrap(),
+        InstrKind::LocalSet,
+        "unsupported load arg must still spill at the NORMAL chunk tail: {post_0_kinds:?}",
+    );
+}
+
+#[test]
+fn call_with_i64_shift_arg_replays_shift_tail() {
+    let bytes = instrument_wat(FIXTURE_CALL_WITH_I64_SHIFT_ARG);
+    validate(&bytes);
+    let module = Module::from_buffer(&bytes).unwrap();
+
+    let caller = func_by_name(&module, "caller_with_i64_shift_arg");
+    let unwind_save = entry_wrapper_seq(&module, caller);
+    let unwind_kinds = seq_kinds(&module, caller, unwind_save);
+    assert_eq!(unwind_kinds[0], InstrKind::Block);
+    assert_eq!(unwind_kinds[1], InstrKind::Const);
+    assert_eq!(unwind_kinds[2], InstrKind::Const);
+    assert_eq!(unwind_kinds[3], InstrKind::Binop);
+    assert_eq!(unwind_kinds[4], InstrKind::Call);
+
+    let f = local_func(&module, caller);
+    let post_0 = match f.block(unwind_save).instrs[0].0 {
+        Instr::Block(ir::Block { seq }) => seq,
+        _ => panic!("expected Block"),
+    };
+    assert_eq!(
+        seq_kinds(&module, caller, post_0),
+        vec![InstrKind::Block],
+        "pure i64 shift arg tail must be removed instead of spilled",
     );
 }
 
@@ -746,7 +826,7 @@ fn two_calls_assign_sequential_call_idx() {
 }
 
 #[test]
-fn call_indirect_spills_table_index_as_top_arg() {
+fn call_indirect_replays_pure_table_index_arg() {
     let bytes = instrument_wat(FIXTURE_INDIRECT);
     validate(&bytes);
     let module = Module::from_buffer(&bytes).unwrap();
@@ -757,7 +837,7 @@ fn call_indirect_spills_table_index_as_top_arg() {
 
     // $unwind_save:
     //   Block($POST_0),
-    //   <reload table index>, CallIndirect,
+    //   <replay table index>, CallIndirect,
     //   GlobalGet, Const, Binop, IfElse,
     //   Return
     let kinds = seq_kinds(&module, caller, unwind_save);
@@ -765,7 +845,7 @@ fn call_indirect_spills_table_index_as_top_arg() {
         kinds,
         vec![
             InstrKind::Block,
-            InstrKind::LocalGet,     // reload i32 table index
+            InstrKind::Const,        // replay i32 table index
             InstrKind::CallIndirect, // indirect call
             InstrKind::GlobalGet,
             InstrKind::Const,
@@ -775,16 +855,17 @@ fn call_indirect_spills_table_index_as_top_arg() {
         ],
     );
 
-    // $POST_0 ends with a single LocalSet (spill the i32 index).
+    // The pure table-index tail is removed from $POST_0 rather than
+    // spilled into a frame-backed local.
     let post_0 = match f.block(unwind_save).instrs[0].0 {
         Instr::Block(ir::Block { seq }) => seq,
         _ => panic!("expected Block"),
     };
     let post_0_kinds = seq_kinds(&module, caller, post_0);
     assert_eq!(
-        *post_0_kinds.last().unwrap(),
-        InstrKind::LocalSet,
-        "chunk 0 tail must spill the i32 table index: {post_0_kinds:?}",
+        post_0_kinds,
+        vec![InstrKind::Block],
+        "pure table-index tail must be removed from chunk 0: {post_0_kinds:?}",
     );
 }
 

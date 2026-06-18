@@ -411,7 +411,7 @@ fn instrument_one_function_switch(
     );
 
     // Partition the body at top-level fork-path call sites.
-    let (chunks, call_sites) = partition_body(&original_body, fork_path, module);
+    let (mut chunks, call_sites) = partition_body(&original_body, fork_path, module);
     let n_calls = call_sites.len();
 
     // Allocate per-function synthetic locals.
@@ -424,25 +424,33 @@ fn instrument_one_function_switch(
         })
     };
 
-    // Per-call arg-spill locals. Allocating them up front — before any
-    // IR mutation — lets the frame layout see them as user-visible
-    // scalar locals. Fork-path calls with ref-typed args are rejected
-    // up front (MVP limitation).
-    let mut arg_spills: Vec<Vec<LocalId>> = Vec::with_capacity(n_calls);
-    for cs in &call_sites {
-        let arg_types = call_arg_types(module, cs);
-        for ty in &arg_types {
-            if !is_scalar(*ty) {
-                let name = func_name(module, func_id);
-                panic!(
-                    "fork-instrument: function `{name}` has a fork-path call with a ref-typed \
+    // Per-call argument materialization. The default is the existing
+    // spill-local path; a conservative pure scalar suffix can instead
+    // be replayed after POST_K and needs no frame-backed arg locals.
+    let pending_arg_materializations: Vec<PendingCallArgMaterialization> = call_sites
+        .iter()
+        .enumerate()
+        .map(|(site_idx, cs)| {
+            let arg_types = call_arg_types(module, cs);
+            for ty in &arg_types {
+                if !is_scalar(*ty) {
+                    let name = func_name(module, func_id);
+                    panic!(
+                        "fork-instrument: function `{name}` has a fork-path call with a ref-typed \
                      argument ({ty:?}). Ref-typed call arguments need aux-table spilling, \
                      which the MVP switch-dispatch transform does not yet support.",
-                );
+                    );
+                }
             }
-        }
-        let spills: Vec<LocalId> = arg_types.iter().map(|&ty| module.locals.add(ty)).collect();
-        arg_spills.push(spills);
+            plan_call_arg_materialization(module, &chunks[site_idx], arg_types)
+        })
+        .collect();
+    let arg_materializations: Vec<CallArgMaterialization> = pending_arg_materializations
+        .into_iter()
+        .map(|pending| allocate_call_arg_materialization(module, pending))
+        .collect();
+    for (site_idx, materialization) in arg_materializations.iter().enumerate() {
+        truncate_materialized_tail(&mut chunks[site_idx], materialization.tail_len());
     }
 
     // Sub-commit 2.4c: per-call operand-stack carryovers (computed
@@ -466,12 +474,16 @@ fn instrument_one_function_switch(
     }
 
     // Combined scalar locals for the frame (user locals first, then
-    // per-call arg spills in call order, then per-call carryover spills
-    // in call order — added 2.4c).
+    // frame-backed per-call arg spills in call order, then per-call
+    // carryover spills in call order — added 2.4c).
     let mut frame_scalars: Vec<(LocalId, ValType)> = user_scalar_locals.clone();
     for (site_idx, cs) in call_sites.iter().enumerate() {
         let arg_types = call_arg_types(module, cs);
-        for (&lid, &ty) in arg_spills[site_idx].iter().zip(arg_types.iter()) {
+        for (&lid, &ty) in arg_materializations[site_idx]
+            .spill_locals()
+            .iter()
+            .zip(arg_types.iter())
+        {
             frame_scalars.push((lid, ty));
         }
     }
@@ -571,7 +583,7 @@ fn instrument_one_function_switch(
         &post_seqs,
         &chunks,
         &call_sites,
-        &arg_spills,
+        &arg_materializations,
         &carryover_spills,
         &catch_handlers,
         runtime,
@@ -1707,6 +1719,217 @@ fn call_arg_types(module: &Module, cs: &CallSiteInfo) -> Vec<ValType> {
     arg_types
 }
 
+#[derive(Debug, Clone)]
+enum PendingCallArgMaterialization {
+    Spill {
+        arg_types: Vec<ValType>,
+    },
+    PureTail {
+        tail: Vec<(Instr, InstrLocId)>,
+        tail_len: usize,
+    },
+}
+
+#[derive(Debug, Clone)]
+enum CallArgMaterialization {
+    Spill {
+        locals: Vec<LocalId>,
+    },
+    PureTail {
+        tail: Vec<(Instr, InstrLocId)>,
+        tail_len: usize,
+    },
+}
+
+impl CallArgMaterialization {
+    fn spill_locals(&self) -> &[LocalId] {
+        match self {
+            Self::Spill { locals } => locals,
+            Self::PureTail { .. } => &[],
+        }
+    }
+
+    fn tail_len(&self) -> usize {
+        match self {
+            Self::Spill { .. } => 0,
+            Self::PureTail { tail_len, .. } => *tail_len,
+        }
+    }
+}
+
+fn plan_call_arg_materialization(
+    module: &Module,
+    chunk: &[(Instr, InstrLocId)],
+    arg_types: Vec<ValType>,
+) -> PendingCallArgMaterialization {
+    if let Some((tail_len, tail)) = split_pure_scalar_tail(module, chunk, &arg_types) {
+        PendingCallArgMaterialization::PureTail { tail, tail_len }
+    } else {
+        PendingCallArgMaterialization::Spill { arg_types }
+    }
+}
+
+fn allocate_call_arg_materialization(
+    module: &mut Module,
+    pending: PendingCallArgMaterialization,
+) -> CallArgMaterialization {
+    match pending {
+        PendingCallArgMaterialization::Spill { arg_types } => {
+            let locals = arg_types.iter().map(|&ty| module.locals.add(ty)).collect();
+            CallArgMaterialization::Spill { locals }
+        }
+        PendingCallArgMaterialization::PureTail { tail, tail_len } => {
+            CallArgMaterialization::PureTail { tail, tail_len }
+        }
+    }
+}
+
+fn truncate_materialized_tail(chunk: &mut Vec<(Instr, InstrLocId)>, tail_len: usize) {
+    if tail_len == 0 {
+        return;
+    }
+    debug_assert!(chunk.len() >= tail_len);
+    chunk.truncate(chunk.len() - tail_len);
+}
+
+fn split_pure_scalar_tail(
+    module: &Module,
+    chunk: &[(Instr, InstrLocId)],
+    expected_outputs: &[ValType],
+) -> Option<(usize, Vec<(Instr, InstrLocId)>)> {
+    if expected_outputs.is_empty() {
+        return None;
+    }
+
+    for start in 0..chunk.len() {
+        let tail = &chunk[start..];
+        if let Some(outputs) = pure_scalar_tail_outputs(module, tail) {
+            if outputs == expected_outputs {
+                return Some((tail.len(), tail.to_vec()));
+            }
+        }
+    }
+
+    None
+}
+
+fn pure_scalar_tail_outputs(module: &Module, tail: &[(Instr, InstrLocId)]) -> Option<Vec<ValType>> {
+    let mut stack: Vec<ValType> = Vec::new();
+    for (instr, _) in tail {
+        match instr {
+            Instr::Const(c) => stack.push(pure_const_type(c)?),
+            Instr::LocalGet(LocalGet { local }) => {
+                let ty = module.locals.get(*local).ty();
+                if !is_scalar(ty) {
+                    return None;
+                }
+                stack.push(ty);
+            }
+            Instr::Unop(u) => {
+                let (input, output) = pure_unop_signature(u.op)?;
+                pop_exact_types(&mut stack, &[input])?;
+                stack.push(output);
+            }
+            Instr::Binop(b) => {
+                let (lhs, rhs, output) = pure_binop_signature(b.op)?;
+                pop_exact_types(&mut stack, &[lhs, rhs])?;
+                stack.push(output);
+            }
+            _ => return None,
+        }
+    }
+    Some(stack)
+}
+
+fn pure_const_type(c: &Const) -> Option<ValType> {
+    match c.value {
+        Value::I32(_) => Some(ValType::I32),
+        Value::I64(_) => Some(ValType::I64),
+        Value::F32(_) => Some(ValType::F32),
+        Value::F64(_) => Some(ValType::F64),
+        Value::V128(_) => None,
+    }
+}
+
+fn pop_exact_types(stack: &mut Vec<ValType>, expected: &[ValType]) -> Option<()> {
+    if stack.len() < expected.len() {
+        return None;
+    }
+    let start = stack.len() - expected.len();
+    if &stack[start..] != expected {
+        return None;
+    }
+    stack.truncate(start);
+    Some(())
+}
+
+fn pure_unop_signature(op: UnaryOp) -> Option<(ValType, ValType)> {
+    match op {
+        UnaryOp::I32Eqz | UnaryOp::I32Clz | UnaryOp::I32Ctz | UnaryOp::I32Popcnt => {
+            Some((ValType::I32, ValType::I32))
+        }
+        UnaryOp::I64Eqz => Some((ValType::I64, ValType::I32)),
+        UnaryOp::I64Clz | UnaryOp::I64Ctz | UnaryOp::I64Popcnt => {
+            Some((ValType::I64, ValType::I64))
+        }
+        UnaryOp::I32WrapI64 => Some((ValType::I64, ValType::I32)),
+        UnaryOp::I64ExtendSI32 | UnaryOp::I64ExtendUI32 => Some((ValType::I32, ValType::I64)),
+        UnaryOp::I32Extend8S | UnaryOp::I32Extend16S => Some((ValType::I32, ValType::I32)),
+        UnaryOp::I64Extend8S | UnaryOp::I64Extend16S | UnaryOp::I64Extend32S => {
+            Some((ValType::I64, ValType::I64))
+        }
+        _ => None,
+    }
+}
+
+fn pure_binop_signature(op: BinaryOp) -> Option<(ValType, ValType, ValType)> {
+    match op {
+        BinaryOp::I32Eq
+        | BinaryOp::I32Ne
+        | BinaryOp::I32LtS
+        | BinaryOp::I32LtU
+        | BinaryOp::I32GtS
+        | BinaryOp::I32GtU
+        | BinaryOp::I32LeS
+        | BinaryOp::I32LeU
+        | BinaryOp::I32GeS
+        | BinaryOp::I32GeU => Some((ValType::I32, ValType::I32, ValType::I32)),
+        BinaryOp::I64Eq
+        | BinaryOp::I64Ne
+        | BinaryOp::I64LtS
+        | BinaryOp::I64LtU
+        | BinaryOp::I64GtS
+        | BinaryOp::I64GtU
+        | BinaryOp::I64LeS
+        | BinaryOp::I64LeU
+        | BinaryOp::I64GeS
+        | BinaryOp::I64GeU => Some((ValType::I64, ValType::I64, ValType::I32)),
+        BinaryOp::I32Add
+        | BinaryOp::I32Sub
+        | BinaryOp::I32Mul
+        | BinaryOp::I32And
+        | BinaryOp::I32Or
+        | BinaryOp::I32Xor
+        | BinaryOp::I32Shl
+        | BinaryOp::I32ShrS
+        | BinaryOp::I32ShrU
+        | BinaryOp::I32Rotl
+        | BinaryOp::I32Rotr => Some((ValType::I32, ValType::I32, ValType::I32)),
+        BinaryOp::I64Add
+        | BinaryOp::I64Sub
+        | BinaryOp::I64Mul
+        | BinaryOp::I64And
+        | BinaryOp::I64Or
+        | BinaryOp::I64Xor
+        | BinaryOp::I64Shl
+        | BinaryOp::I64ShrS
+        | BinaryOp::I64ShrU
+        | BinaryOp::I64Rotl
+        | BinaryOp::I64Rotr => Some((ValType::I64, ValType::I64, ValType::I64)),
+        _ => None,
+    }
+}
+
 // ----------------------------------------------------------------------
 // Dispatch-structure emission
 // ----------------------------------------------------------------------
@@ -2025,7 +2248,7 @@ fn populate_dispatch_structure(
     post_seqs: &[InstrSeqId],
     chunks: &[Vec<(Instr, InstrLocId)>],
     call_sites: &[CallSiteInfo],
-    arg_spills: &[Vec<LocalId>],
+    arg_materializations: &[CallArgMaterialization],
     carryover_spills: &[Vec<LocalId>],
     catch_handlers: &[CatchHandlerInfo],
     runtime: &Runtime,
@@ -2057,7 +2280,7 @@ fn populate_dispatch_structure(
         post_seqs,
         chunks,
         call_sites,
-        arg_spills,
+        arg_materializations,
         carryover_spills,
         catch_handlers,
         runtime,
@@ -2081,7 +2304,7 @@ fn emit_dispatch_node(
     post_seqs: &[InstrSeqId],
     chunks: &[Vec<(Instr, InstrLocId)>],
     call_sites: &[CallSiteInfo],
-    arg_spills: &[Vec<LocalId>],
+    arg_materializations: &[CallArgMaterialization],
     carryover_spills: &[Vec<LocalId>],
     catch_handlers: &[CatchHandlerInfo],
     runtime: &Runtime,
@@ -2100,7 +2323,7 @@ fn emit_dispatch_node(
             post_seqs,
             chunks,
             call_sites,
-            arg_spills,
+            arg_materializations,
             carryover_spills,
             catch_handlers,
             runtime,
@@ -2121,7 +2344,7 @@ fn emit_dispatch_node(
             post_seqs,
             chunks,
             call_sites,
-            arg_spills,
+            arg_materializations,
             carryover_spills,
             catch_handlers,
             runtime,
@@ -2161,7 +2384,7 @@ fn emit_internal_dispatch(
     post_seqs: &[InstrSeqId],
     chunks: &[Vec<(Instr, InstrLocId)>],
     call_sites: &[CallSiteInfo],
-    arg_spills: &[Vec<LocalId>],
+    arg_materializations: &[CallArgMaterialization],
     carryover_spills: &[Vec<LocalId>],
     catch_handlers: &[CatchHandlerInfo],
     runtime: &Runtime,
@@ -2207,7 +2430,12 @@ fn emit_internal_dispatch(
     for k in 1..b {
         {
             let s = &mut local.block_mut(child_seqs[k]).instrs;
-            push_instr(s, Instr::Block(Block { seq: child_seqs[k - 1] }));
+            push_instr(
+                s,
+                Instr::Block(Block {
+                    seq: child_seqs[k - 1],
+                }),
+            );
         }
         emit_dispatch_node(
             local,
@@ -2218,7 +2446,7 @@ fn emit_internal_dispatch(
             post_seqs,
             chunks,
             call_sites,
-            arg_spills,
+            arg_materializations,
             carryover_spills,
             catch_handlers,
             runtime,
@@ -2230,7 +2458,12 @@ fn emit_internal_dispatch(
 
     {
         let s = &mut local.block_mut(exit_seq).instrs;
-        push_instr(s, Instr::Block(Block { seq: child_seqs[b - 1] }));
+        push_instr(
+            s,
+            Instr::Block(Block {
+                seq: child_seqs[b - 1],
+            }),
+        );
     }
     emit_dispatch_node(
         local,
@@ -2241,7 +2474,7 @@ fn emit_internal_dispatch(
         post_seqs,
         chunks,
         call_sites,
-        arg_spills,
+        arg_materializations,
         carryover_spills,
         catch_handlers,
         runtime,
@@ -2268,7 +2501,7 @@ fn emit_leaf_dispatch(
     post_seqs: &[InstrSeqId],
     chunks: &[Vec<(Instr, InstrLocId)>],
     call_sites: &[CallSiteInfo],
-    arg_spills: &[Vec<LocalId>],
+    arg_materializations: &[CallArgMaterialization],
     carryover_spills: &[Vec<LocalId>],
     catch_handlers: &[CatchHandlerInfo],
     runtime: &Runtime,
@@ -2303,26 +2536,40 @@ fn emit_leaf_dispatch(
     // the chunk's side effects twice on NORMAL fall-through.
     {
         let s = &mut local.block_mut(post_seqs[leaf_start]).instrs;
-        push_instr(s, Instr::Block(Block { seq: dispatch_normal }));
+        push_instr(
+            s,
+            Instr::Block(Block {
+                seq: dispatch_normal,
+            }),
+        );
         if leaf_start == 0 {
             for (instr, loc) in &chunks[leaf_start] {
                 s.push((instr.clone(), *loc));
             }
-            emit_spill_args(s, &arg_spills[leaf_start], &carryover_spills[leaf_start]);
+            emit_spill_call_tail(
+                s,
+                &arg_materializations[leaf_start],
+                &carryover_spills[leaf_start],
+            );
         }
     }
 
     for k in (leaf_start + 1)..leaf_end {
         {
             let s = &mut local.block_mut(post_seqs[k]).instrs;
-            push_instr(s, Instr::Block(Block { seq: post_seqs[k - 1] }));
+            push_instr(
+                s,
+                Instr::Block(Block {
+                    seq: post_seqs[k - 1],
+                }),
+            );
         }
         emit_post_call_via_local(
             local,
             post_seqs[k],
             &call_sites[k - 1],
             k - 1,
-            &arg_spills[k - 1],
+            &arg_materializations[k - 1],
             &carryover_spills[k - 1],
             catch_handlers,
             runtime,
@@ -2336,7 +2583,7 @@ fn emit_leaf_dispatch(
             for (instr, loc) in &chunks[k] {
                 s.push((instr.clone(), *loc));
             }
-            emit_spill_args(s, &arg_spills[k], &carryover_spills[k]);
+            emit_spill_call_tail(s, &arg_materializations[k], &carryover_spills[k]);
         }
     }
 
@@ -2346,14 +2593,19 @@ fn emit_leaf_dispatch(
     // sig `()->()` and would otherwise fail wasm validation.
     {
         let s = &mut local.block_mut(exit_seq).instrs;
-        push_instr(s, Instr::Block(Block { seq: post_seqs[leaf_end - 1] }));
+        push_instr(
+            s,
+            Instr::Block(Block {
+                seq: post_seqs[leaf_end - 1],
+            }),
+        );
     }
     emit_post_call_via_local(
         local,
         exit_seq,
         &call_sites[leaf_end - 1],
         leaf_end - 1,
-        &arg_spills[leaf_end - 1],
+        &arg_materializations[leaf_end - 1],
         &carryover_spills[leaf_end - 1],
         catch_handlers,
         runtime,
@@ -2373,7 +2625,11 @@ fn emit_leaf_dispatch(
         for (instr, loc) in &chunks[leaf_end] {
             s.push((instr.clone(), *loc));
         }
-        emit_spill_args(s, &arg_spills[leaf_end], &carryover_spills[leaf_end]);
+        emit_spill_call_tail(
+            s,
+            &arg_materializations[leaf_end],
+            &carryover_spills[leaf_end],
+        );
     }
 }
 
@@ -2386,16 +2642,36 @@ fn emit_leaf_dispatch(
 /// arg_0, ..., arg_{m-1}]` (bottom-to-top). After popping all args,
 /// we keep popping into `carryovers` (also reverse-order), so
 /// `carryovers[0]` ends up holding the deepest carryover slot.
-fn emit_spill_args(
-    out: &mut Vec<(Instr, InstrLocId)>,
-    spills: &[LocalId],
-    carryovers: &[LocalId],
-) {
+fn emit_spill_args(out: &mut Vec<(Instr, InstrLocId)>, spills: &[LocalId], carryovers: &[LocalId]) {
     for &local in spills.iter().rev() {
         push_instr(out, Instr::LocalSet(LocalSet { local }));
     }
     for &local in carryovers.iter().rev() {
         push_instr(out, Instr::LocalSet(LocalSet { local }));
+    }
+}
+
+fn emit_spill_call_tail(
+    out: &mut Vec<(Instr, InstrLocId)>,
+    arg_materialization: &CallArgMaterialization,
+    carryovers: &[LocalId],
+) {
+    emit_spill_args(out, arg_materialization.spill_locals(), carryovers);
+}
+
+fn emit_materialized_call_args(
+    out: &mut Vec<(Instr, InstrLocId)>,
+    arg_materialization: &CallArgMaterialization,
+) {
+    match arg_materialization {
+        CallArgMaterialization::Spill { locals } => {
+            for &l in locals.iter() {
+                push_instr(out, Instr::LocalGet(LocalGet { local: l }));
+            }
+        }
+        CallArgMaterialization::PureTail { tail, .. } => {
+            out.extend(tail.iter().cloned());
+        }
     }
 }
 
@@ -2411,18 +2687,27 @@ fn emit_phase_6e_writes(
     if catch_handlers.is_empty() {
         return;
     }
-    let catch_state =
-        catch_state_locals.expect("catch handlers require catch-state locals");
+    let catch_state = catch_state_locals.expect("catch handlers require catch-state locals");
     {
         let s = &mut local.block_mut(seq_id).instrs;
-        push_instr(s, Instr::Const(Const { value: Value::I32(0) }));
+        push_instr(
+            s,
+            Instr::Const(Const {
+                value: Value::I32(0),
+            }),
+        );
         push_instr(
             s,
             Instr::LocalSet(LocalSet {
                 local: catch_state.catch_region_id,
             }),
         );
-        push_instr(s, Instr::Const(Const { value: Value::I32(0) }));
+        push_instr(
+            s,
+            Instr::Const(Const {
+                value: Value::I32(0),
+            }),
+        );
         push_instr(
             s,
             Instr::LocalSet(LocalSet {
@@ -2732,7 +3017,7 @@ fn emit_post_call_via_local(
     seq_id: InstrSeqId,
     call: &CallSiteInfo,
     call_idx: usize,
-    spills: &[LocalId],
+    arg_materialization: &CallArgMaterialization,
     carryovers: &[LocalId],
     catch_handlers: &[CatchHandlerInfo],
     runtime: &Runtime,
@@ -2749,9 +3034,7 @@ fn emit_post_call_via_local(
         for &l in carryovers.iter() {
             push_instr(s, Instr::LocalGet(LocalGet { local: l }));
         }
-        for &l in spills.iter() {
-            push_instr(s, Instr::LocalGet(LocalGet { local: l }));
-        }
+        emit_materialized_call_args(s, arg_materialization);
         let call_instr = match call.target {
             CallTarget::Direct(func) => Instr::Call(Call { func }),
             CallTarget::Indirect { table } => Instr::CallIndirect(CallIndirect {
@@ -2762,12 +3045,7 @@ fn emit_post_call_via_local(
         s.push((call_instr, call.loc));
     }
 
-    emit_phase_6e_writes(
-        local,
-        seq_id,
-        catch_handlers,
-        catch_state_locals,
-    );
+    emit_phase_6e_writes(local, seq_id, catch_handlers, catch_state_locals);
 
     emit_call_index_store_and_unwind_branch(
         local,
@@ -5383,10 +5661,13 @@ fn discover_calls_and_regions(
         }
         let lo = *call_idxs.first().unwrap();
         let hi = *call_idxs.last().unwrap();
-        regions.insert(seq_id, RegionInfo {
-            range_lo: lo,
-            range_hi: hi,
-        });
+        regions.insert(
+            seq_id,
+            RegionInfo {
+                range_lo: lo,
+                range_hi: hi,
+            },
+        );
     }
     (sites, regions)
 }
@@ -5486,29 +5767,85 @@ fn instrument_one_function_nested_switch(
         // by virtue of being in fork_path. Bail out to existing
         // top-level switch-dispatch (which handles n_calls==0 cleanly).
         instrument_one_function_switch(
-            module, func_id, runtime, fork_path, func_ordinal,
-            aux_tables, ref_plan, catch_plan, b1_slots,
+            module,
+            func_id,
+            runtime,
+            fork_path,
+            func_ordinal,
+            aux_tables,
+            ref_plan,
+            catch_plan,
+            b1_slots,
         );
         return;
     }
 
-    // Allocate per-call arg-spill locals up front so they can join the
-    // function's scalar frame.
-    let mut arg_spills: HashMap<u32, Vec<LocalId>> = HashMap::new();
-    for site in &sites {
-        let arg_types = nested_call_arg_types(module, site);
-        for &ty in &arg_types {
-            if !is_scalar(ty) {
-                let name = func_name(module, func_id);
-                panic!(
-                    "fork-instrument: function `{name}` has a nested fork-path call \
+    // Compute, for each fork-bearing seq, the call_idxs of its DIRECT
+    // fork-path calls (ordered by DFS, == order in `sites`). Used by
+    // argument materialization, the carryover pre-pass, and the
+    // transform loops below.
+    let direct_idxs_per_seq: HashMap<InstrSeqId, Vec<u32>> = {
+        let mut m: HashMap<InstrSeqId, Vec<u32>> = HashMap::new();
+        for site in &sites {
+            m.entry(site.seq_id).or_default().push(site.call_idx);
+        }
+        m
+    };
+
+    // Plan per-call argument materialization before allocating the
+    // frame. Pure scalar argument tails are replayed after POST_K;
+    // all other shapes keep the existing frame-backed spill locals.
+    let mut pending_arg_materializations: HashMap<u32, PendingCallArgMaterialization> =
+        HashMap::new();
+    {
+        let local_ro = match &module.funcs.get(func_id).kind {
+            FunctionKind::Local(l) => l,
+            _ => panic!("expected local function"),
+        };
+        let empty_idxs: Vec<u32> = Vec::new();
+        for &seq_id in direct_idxs_per_seq.keys() {
+            let direct = direct_idxs_per_seq.get(&seq_id).unwrap_or(&empty_idxs);
+            let original = &local_ro.block(seq_id).instrs;
+            let (chunks, landings) =
+                partition_region_instrs(local_ro, original, direct, &regions, fork_path);
+            for (landing_idx, landing) in landings.iter().enumerate() {
+                let LandingKind::DirectCall { call_idx } = &landing.kind else {
+                    continue;
+                };
+                let call_idx = *call_idx;
+                let site = sites
+                    .iter()
+                    .find(|site| site.call_idx == call_idx)
+                    .expect("call_idx must have a discovered site");
+                let arg_types = nested_call_arg_types(module, site);
+                for &ty in &arg_types {
+                    if !is_scalar(ty) {
+                        let name = func_name(module, func_id);
+                        panic!(
+                            "fork-instrument: function `{name}` has a nested fork-path call \
                      with a ref-typed argument ({ty:?}). Aux-table arg spilling \
                      is not yet supported in the nested per-block transform."
+                        );
+                    }
+                }
+                pending_arg_materializations.insert(
+                    call_idx,
+                    plan_call_arg_materialization(module, &chunks[landing_idx], arg_types),
                 );
             }
         }
-        let spills: Vec<LocalId> = arg_types.iter().map(|&ty| module.locals.add(ty)).collect();
-        arg_spills.insert(site.call_idx, spills);
+    }
+    let mut arg_materializations: HashMap<u32, CallArgMaterialization> = HashMap::new();
+    for site in &sites {
+        let pending = pending_arg_materializations
+            .remove(&site.call_idx)
+            .unwrap_or_else(|| PendingCallArgMaterialization::Spill {
+                arg_types: nested_call_arg_types(module, site),
+            });
+        arg_materializations.insert(
+            site.call_idx,
+            allocate_call_arg_materialization(module, pending),
+        );
     }
 
     // Sub-commit 2.5b: per-call operand-stack carryovers at direct
@@ -5533,18 +5870,22 @@ fn instrument_one_function_nested_switch(
             .get(&site.call_idx)
             .map(Vec::as_slice)
             .unwrap_or(&[]);
-        let spills: Vec<LocalId> =
-            cr_types.iter().map(|&ty| module.locals.add(ty)).collect();
+        let spills: Vec<LocalId> = cr_types.iter().map(|&ty| module.locals.add(ty)).collect();
         carryover_spills.insert(site.call_idx, spills);
     }
 
     // Combined scalar locals for the function frame: existing user
-    // scalars + per-call arg-spill locals (in call_idx order) + per-
-    // call carryover-spill locals (in call_idx order; sub-commit 2.5b).
+    // scalars + frame-backed per-call arg-spill locals (in call_idx
+    // order) + per-call carryover-spill locals (in call_idx order;
+    // sub-commit 2.5b).
     let mut frame_scalars: Vec<(LocalId, ValType)> = user_scalar_locals.clone();
     for site in &sites {
         let arg_types = nested_call_arg_types(module, site);
-        for (&lid, &ty) in arg_spills[&site.call_idx].iter().zip(arg_types.iter()) {
+        for (&lid, &ty) in arg_materializations[&site.call_idx]
+            .spill_locals()
+            .iter()
+            .zip(arg_types.iter())
+        {
             frame_scalars.push((lid, ty));
         }
     }
@@ -5572,17 +5913,6 @@ fn instrument_one_function_nested_switch(
     // is_rewind without touching the operand stack).
     let cond_swap_local = module.locals.add(ValType::I32);
 
-    // Compute, for each fork-bearing seq, the call_idxs of its DIRECT
-    // fork-path calls (ordered by DFS, == order in `sites`). Used by
-    // both the carryover pre-pass and the transform loops below.
-    let direct_idxs_per_seq: HashMap<InstrSeqId, Vec<u32>> = {
-        let mut m: HashMap<InstrSeqId, Vec<u32>> = HashMap::new();
-        for site in &sites {
-            m.entry(site.seq_id).or_default().push(site.call_idx);
-        }
-        m
-    };
-
     // Pre-pass: walk each fork-bearing seq, identify its
     // SubRegion-with-1-i32-carryover landings, and pre-allocate spill
     // locals (+ tmp_result_local for blocks producing 1 i32). The
@@ -5603,7 +5933,7 @@ fn instrument_one_function_nested_switch(
         let empty_idxs: Vec<u32> = Vec::new();
         // Snapshot needed seq+landing data first (immutable borrow),
         // then allocate locals (mutable borrow).
-        let mut to_allocate: Vec<(InstrSeqId, usize, Vec<ValType>)> = Vec::new();
+        let mut pending_plans: Vec<(InstrSeqId, usize, PendingCarryoverPlan)> = Vec::new();
         for &seq_id in regions.keys() {
             let direct = direct_idxs_per_seq.get(&seq_id).unwrap_or(&empty_idxs);
             // Sub-commit 2.6a: typed analyser captures per-landing
@@ -5617,41 +5947,44 @@ fn instrument_one_function_nested_switch(
                 module, local_ro, seq_id, fork_path, direct, &regions,
             )
             .unwrap_or_default();
-            // Walk seq_id's instructions to find SubRegion landing
-            // positions in order, then pair them with spill_types
-            // entries.
-            let mut landing_idx = 0usize;
-            let mut direct_cursor = 0usize;
-            for (instr, _) in &local_ro.block(seq_id).instrs {
-                let is_fork_landing = match instr {
-                    Instr::Call(c) => fork_path.contains(&c.func),
-                    Instr::CallIndirect(_) => true,
-                    _ => false,
+            let original = &local_ro.block(seq_id).instrs;
+            let (chunks, landings) =
+                partition_region_instrs(local_ro, original, direct, &regions, fork_path);
+            for (landing_idx, landing) in landings.iter().enumerate() {
+                let Some(types) = spill_types.get(landing_idx) else {
+                    continue;
                 };
-                if is_fork_landing && direct_cursor < direct.len() {
-                    direct_cursor += 1;
-                    landing_idx += 1;
+                if types.is_empty() {
                     continue;
                 }
-                let is_subregion = match instr {
-                    Instr::Block(_)
-                    | Instr::Loop(_)
-                    | Instr::TryTable(_)
-                    | Instr::Try(_)
-                    | Instr::IfElse(_) => nested_seqs(instr)
-                        .iter()
-                        .any(|s| regions.contains_key(s)),
-                    _ => false,
+                let pure_allowed = match &landing.kind {
+                    LandingKind::SubRegionIfElse { .. } => types.len() == 1,
+                    LandingKind::SubRegion { .. } => true,
+                    LandingKind::DirectCall { .. } => false,
                 };
-                if is_subregion {
-                    if landing_idx < spill_types.len() {
-                        let types = &spill_types[landing_idx];
-                        if !types.is_empty() {
-                            to_allocate.push((seq_id, landing_idx, types.clone()));
-                        }
+                if pure_allowed {
+                    if let Some((tail_len, tail)) =
+                        split_pure_scalar_tail(module, &chunks[landing_idx], types)
+                    {
+                        pending_plans.push((
+                            seq_id,
+                            landing_idx,
+                            PendingCarryoverPlan::PureTail {
+                                tail,
+                                tail_len,
+                                types: types.clone(),
+                            },
+                        ));
+                        continue;
                     }
-                    landing_idx += 1;
                 }
+                pending_plans.push((
+                    seq_id,
+                    landing_idx,
+                    PendingCarryoverPlan::Spill {
+                        types: types.clone(),
+                    },
+                ));
             }
         }
         // Now allocate. Sub-commit 2.6a: per-landing Vec of typed
@@ -5660,17 +5993,28 @@ fn instrument_one_function_nested_switch(
         // tmp_result_local is no longer needed — the push-before
         // emission order leaves any extra carryover beneath the
         // SubRegion's result automatically.
-        for (seq_id, landing_idx, types) in to_allocate {
-            let mut spill_locals: Vec<(LocalId, ValType)> = Vec::with_capacity(types.len());
-            for &ty in &types {
-                let lid = module.locals.add(ty);
-                frame_scalars.push((lid, ty));
-                spill_locals.push((lid, ty));
-            }
-            carryover_plans.insert(
-                (seq_id, landing_idx),
-                CarryoverPlan { spill_locals },
-            );
+        for (seq_id, landing_idx, pending) in pending_plans {
+            let plan = match pending {
+                PendingCarryoverPlan::Spill { types } => {
+                    let mut spill_locals: Vec<(LocalId, ValType)> = Vec::with_capacity(types.len());
+                    for &ty in &types {
+                        let lid = module.locals.add(ty);
+                        frame_scalars.push((lid, ty));
+                        spill_locals.push((lid, ty));
+                    }
+                    CarryoverPlan::Spill { spill_locals }
+                }
+                PendingCarryoverPlan::PureTail {
+                    tail,
+                    tail_len,
+                    types,
+                } => CarryoverPlan::PureTail {
+                    tail,
+                    tail_len,
+                    types,
+                },
+            };
+            carryover_plans.insert((seq_id, landing_idx), plan);
         }
     }
 
@@ -5796,11 +6140,8 @@ fn instrument_one_function_nested_switch(
     // Process all fork-bearing seqs except the entry (entry handled
     // specially with preamble/postamble + unwind_save). Order:
     // bottom-up (deepest first).
-    let mut non_entry_regions: Vec<InstrSeqId> = regions
-        .keys()
-        .copied()
-        .filter(|&s| s != entry_id)
-        .collect();
+    let mut non_entry_regions: Vec<InstrSeqId> =
+        regions.keys().copied().filter(|&s| s != entry_id).collect();
     // Sort by depth (deepest first). Walrus doesn't expose depth
     // directly, so compute via parent-seq walk.
     let depth_map = compute_seq_depths(local, entry_id);
@@ -5821,7 +6162,7 @@ fn instrument_one_function_nested_switch(
             &regions,
             &sites,
             fork_path,
-            &arg_spills,
+            &arg_materializations,
             &carryover_spills,
             &carryover_plans,
             &catch_handlers,
@@ -5849,7 +6190,7 @@ fn instrument_one_function_nested_switch(
         &regions,
         &sites,
         fork_path,
-        &arg_spills,
+        &arg_materializations,
         &carryover_spills,
         &carryover_plans,
         &catch_handlers,
@@ -5892,13 +6233,22 @@ fn instrument_one_function_nested_switch(
     let entry_seq = &mut local.block_mut(entry_id).instrs;
     push_instr(
         entry_seq,
-        Instr::GlobalGet(GlobalGet { global: runtime.state_global }),
+        Instr::GlobalGet(GlobalGet {
+            global: runtime.state_global,
+        }),
     );
     push_instr(
         entry_seq,
-        Instr::Const(Const { value: Value::I32(runtime::STATE_REWINDING) }),
+        Instr::Const(Const {
+            value: Value::I32(runtime::STATE_REWINDING),
+        }),
     );
-    push_instr(entry_seq, Instr::Binop(Binop { op: BinaryOp::I32Eq }));
+    push_instr(
+        entry_seq,
+        Instr::Binop(Binop {
+            op: BinaryOp::I32Eq,
+        }),
+    );
     push_instr(
         entry_seq,
         Instr::IfElse(IfElse {
@@ -5942,7 +6292,7 @@ fn instrument_one_function_nested_switch(
 fn emit_chunk_tail_for_landing(
     out: &mut Vec<(Instr, InstrLocId)>,
     landing: &LandingInfo,
-    arg_spills: &HashMap<u32, Vec<LocalId>>,
+    arg_materializations: &HashMap<u32, CallArgMaterialization>,
     carryover_spills: &HashMap<u32, Vec<LocalId>>,
     cond_swap_local: LocalId,
 ) {
@@ -5957,15 +6307,22 @@ fn emit_chunk_tail_for_landing(
             // is treated as no-carryover.
             let empty: Vec<LocalId> = Vec::new();
             let cr = carryover_spills.get(call_idx).unwrap_or(&empty);
-            emit_spill_args(out, &arg_spills[call_idx], cr);
+            emit_spill_call_tail(out, &arg_materializations[call_idx], cr);
         }
         LandingKind::SubRegionIfElse { .. } => {
             if let Some(plan) = &landing.carryover {
-                for (l, _ty) in plan.spill_locals.iter().rev() {
-                    push_instr(out, Instr::LocalSet(LocalSet { local: *l }));
+                if let CarryoverPlan::Spill { spill_locals } = plan {
+                    for (l, _ty) in spill_locals.iter().rev() {
+                        push_instr(out, Instr::LocalSet(LocalSet { local: *l }));
+                    }
                 }
             } else {
-                push_instr(out, Instr::LocalSet(LocalSet { local: cond_swap_local }));
+                push_instr(
+                    out,
+                    Instr::LocalSet(LocalSet {
+                        local: cond_swap_local,
+                    }),
+                );
             }
         }
         LandingKind::SubRegion { .. } => {
@@ -5977,8 +6334,10 @@ fn emit_chunk_tail_for_landing(
             // first so spill_locals[0] receives the deepest slot.
             // After this, POST_K body's net stack effect is 0 → 0.
             if let Some(plan) = &landing.carryover {
-                for (l, _ty) in plan.spill_locals.iter().rev() {
-                    push_instr(out, Instr::LocalSet(LocalSet { local: *l }));
+                if let CarryoverPlan::Spill { spill_locals } = plan {
+                    for (l, _ty) in spill_locals.iter().rev() {
+                        push_instr(out, Instr::LocalSet(LocalSet { local: *l }));
+                    }
                 }
             }
         }
@@ -6025,7 +6384,7 @@ fn transform_region_seq(
     regions: &HashMap<InstrSeqId, RegionInfo>,
     sites: &[NestedCallSite],
     fork_path: &HashSet<FunctionId>,
-    arg_spills: &HashMap<u32, Vec<LocalId>>,
+    arg_materializations: &HashMap<u32, CallArgMaterialization>,
     carryover_spills: &HashMap<u32, Vec<LocalId>>,
     carryover_plans: &HashMap<(InstrSeqId, usize), CarryoverPlan>,
     catch_handlers: &[CatchHandlerInfo],
@@ -6042,11 +6401,15 @@ fn transform_region_seq(
     body_param_locals: &[(LocalId, ValType)],
 ) {
     // Take the original instrs of this region.
-    let original: Vec<(Instr, InstrLocId)> =
-        std::mem::take(&mut local.block_mut(seq_id).instrs);
+    let original: Vec<(Instr, InstrLocId)> = std::mem::take(&mut local.block_mut(seq_id).instrs);
 
-    let (mut chunks, mut landings) =
-        partition_region_instrs(local, &original, direct_idxs_at_this_seq, regions, fork_path);
+    let (mut chunks, mut landings) = partition_region_instrs(
+        local,
+        &original,
+        direct_idxs_at_this_seq,
+        regions,
+        fork_path,
+    );
 
     // Sub-commit 2.6c: if this seq has body params, prepend LocalGets
     // to chunks[0] so the params are restored onto POST_0's local
@@ -6055,7 +6418,10 @@ fn transform_region_seq(
     if !body_param_locals.is_empty() && !chunks.is_empty() {
         let mut prefix: Vec<(Instr, InstrLocId)> = Vec::with_capacity(body_param_locals.len());
         for (lid, _ty) in body_param_locals.iter() {
-            prefix.push((Instr::LocalGet(LocalGet { local: *lid }), InstrLocId::default()));
+            prefix.push((
+                Instr::LocalGet(LocalGet { local: *lid }),
+                InstrLocId::default(),
+            ));
         }
         prefix.extend(std::mem::take(&mut chunks[0]));
         chunks[0] = prefix;
@@ -6066,6 +6432,7 @@ fn transform_region_seq(
             landing.carryover = Some(plan.clone());
         }
     }
+    apply_landing_materializations_to_chunks(&mut chunks, &landings, arg_materializations);
 
     let n_landings = landings.len();
     if n_landings == 0 {
@@ -6079,7 +6446,12 @@ fn transform_region_seq(
 
     // Allocate POST seqs for each landing + dispatch seq.
     let post_seqs: Vec<InstrSeqId> = (0..n_landings)
-        .map(|_| local.builder_mut().dangling_instr_seq(InstrSeqType::Simple(None)).id())
+        .map(|_| {
+            local
+                .builder_mut()
+                .dangling_instr_seq(InstrSeqType::Simple(None))
+                .id()
+        })
         .collect();
     let dispatch_seq = local
         .builder_mut()
@@ -6108,7 +6480,7 @@ fn transform_region_seq(
         &chunks,
         &landings,
         sites,
-        arg_spills,
+        arg_materializations,
         carryover_spills,
         catch_handlers,
         runtime,
@@ -6127,7 +6499,10 @@ fn transform_region_seq(
     if !body_param_locals.is_empty() {
         let mut preamble: Vec<(Instr, InstrLocId)> = Vec::with_capacity(body_param_locals.len());
         for (lid, _ty) in body_param_locals.iter().rev() {
-            preamble.push((Instr::LocalSet(LocalSet { local: *lid }), InstrLocId::default()));
+            preamble.push((
+                Instr::LocalSet(LocalSet { local: *lid }),
+                InstrLocId::default(),
+            ));
         }
         let s = &mut local.block_mut(seq_id).instrs;
         preamble.extend(std::mem::take(s));
@@ -6144,7 +6519,7 @@ fn transform_entry_region(
     regions: &HashMap<InstrSeqId, RegionInfo>,
     sites: &[NestedCallSite],
     fork_path: &HashSet<FunctionId>,
-    arg_spills: &HashMap<u32, Vec<LocalId>>,
+    arg_materializations: &HashMap<u32, CallArgMaterialization>,
     carryover_spills: &HashMap<u32, Vec<LocalId>>,
     carryover_plans: &HashMap<(InstrSeqId, usize), CarryoverPlan>,
     catch_handlers: &[CatchHandlerInfo],
@@ -6156,24 +6531,39 @@ fn transform_entry_region(
     unwind_save: InstrSeqId,
     _result_types: &[ValType],
 ) {
-    let original: Vec<(Instr, InstrLocId)> =
-        std::mem::take(&mut local.block_mut(seq_id).instrs);
+    let original: Vec<(Instr, InstrLocId)> = std::mem::take(&mut local.block_mut(seq_id).instrs);
 
-    let (chunks, mut landings) =
-        partition_region_instrs(local, &original, direct_idxs_at_this_seq, regions, fork_path);
+    let (mut chunks, mut landings) = partition_region_instrs(
+        local,
+        &original,
+        direct_idxs_at_this_seq,
+        regions,
+        fork_path,
+    );
     for (li, landing) in landings.iter_mut().enumerate() {
         if let Some(plan) = carryover_plans.get(&(seq_id, li)) {
             landing.carryover = Some(plan.clone());
         }
     }
+    apply_landing_materializations_to_chunks(&mut chunks, &landings, arg_materializations);
 
     let n_landings = landings.len();
 
     let post_seqs: Vec<InstrSeqId> = (0..n_landings)
-        .map(|_| local.builder_mut().dangling_instr_seq(InstrSeqType::Simple(None)).id())
+        .map(|_| {
+            local
+                .builder_mut()
+                .dangling_instr_seq(InstrSeqType::Simple(None))
+                .id()
+        })
         .collect();
     let dispatch_seq = if n_landings > 0 {
-        Some(local.builder_mut().dangling_instr_seq(InstrSeqType::Simple(None)).id())
+        Some(
+            local
+                .builder_mut()
+                .dangling_instr_seq(InstrSeqType::Simple(None))
+                .id(),
+        )
     } else {
         None
     };
@@ -6202,7 +6592,7 @@ fn transform_entry_region(
         &chunks,
         &landings,
         sites,
-        arg_spills,
+        arg_materializations,
         carryover_spills,
         catch_handlers,
         runtime,
@@ -6217,9 +6607,14 @@ fn transform_entry_region(
 
 #[derive(Debug, Clone)]
 enum LandingKind {
-    DirectCall { call_idx: u32 },
+    DirectCall {
+        call_idx: u32,
+    },
     /// Block/Loop/TryTable: just preserved verbatim.
-    SubRegion { range_lo: u32, range_hi: u32 },
+    SubRegion {
+        range_lo: u32,
+        range_hi: u32,
+    },
     /// IfElse landing: needs a cond rewrite so REWIND lands in the
     /// branch that contains the active call_idx. We require the
     /// caller to supply both branch ranges; either may be empty
@@ -6255,11 +6650,39 @@ enum LandingKind {
 /// SubRegion consumes the top params, leaving any extra carryover
 /// beneath whatever result it pushes — no juggling tmp local needed.
 #[derive(Debug, Clone)]
-struct CarryoverPlan {
-    /// Spill locals, one per spilled value. Ordered deepest-first
-    /// (i.e., `spill_locals[0]` is the value that was at the bottom
-    /// of the spilled stack region; `spill_locals.last()` was on top).
-    spill_locals: Vec<(LocalId, ValType)>,
+enum CarryoverPlan {
+    Spill {
+        /// Spill locals, one per spilled value. Ordered deepest-first
+        /// (i.e., `spill_locals[0]` is the value that was at the bottom
+        /// of the spilled stack region; `spill_locals.last()` was on top).
+        spill_locals: Vec<(LocalId, ValType)>,
+    },
+    PureTail {
+        /// Pure scalar suffix removed from the NORMAL chunk and replayed
+        /// at the landing. The suffix must produce `types` from an empty
+        /// stack and may contain only constants, local.get, and whitelisted
+        /// non-trapping scalar numeric ops.
+        tail: Vec<(Instr, InstrLocId)>,
+        tail_len: usize,
+        types: Vec<ValType>,
+    },
+}
+
+#[derive(Debug, Clone)]
+enum PendingCarryoverPlan {
+    Spill {
+        types: Vec<ValType>,
+    },
+    PureTail {
+        tail: Vec<(Instr, InstrLocId)>,
+        tail_len: usize,
+        types: Vec<ValType>,
+    },
+}
+
+enum IfElseCondSource<'a> {
+    Local(LocalId),
+    PureTail(&'a [(Instr, InstrLocId)]),
 }
 
 #[derive(Debug, Clone)]
@@ -6272,6 +6695,25 @@ struct LandingInfo {
     /// Set on a SubRegion landing whose preceding chunk has a 1-i32
     /// stack carryover. None for landings without carryover.
     carryover: Option<CarryoverPlan>,
+}
+
+fn apply_landing_materializations_to_chunks(
+    chunks: &mut [Vec<(Instr, InstrLocId)>],
+    landings: &[LandingInfo],
+    arg_materializations: &HashMap<u32, CallArgMaterialization>,
+) {
+    for (landing_idx, landing) in landings.iter().enumerate() {
+        let tail_len = match &landing.kind {
+            LandingKind::DirectCall { call_idx } => arg_materializations[call_idx].tail_len(),
+            LandingKind::SubRegion { .. } | LandingKind::SubRegionIfElse { .. } => {
+                match &landing.carryover {
+                    Some(CarryoverPlan::PureTail { tail_len, .. }) => *tail_len,
+                    _ => 0,
+                }
+            }
+        };
+        truncate_materialized_tail(&mut chunks[landing_idx], tail_len);
+    }
 }
 
 /// Partition `original` instrs at landings:
@@ -6459,15 +6901,30 @@ fn populate_region_dispatch(
     }
 
     let s = &mut local.block_mut(dispatch_seq).instrs;
-    push_instr(s, Instr::GlobalGet(GlobalGet { global: runtime.state_global }));
     push_instr(
         s,
-        Instr::Const(Const { value: Value::I32(runtime::STATE_REWINDING) }),
+        Instr::GlobalGet(GlobalGet {
+            global: runtime.state_global,
+        }),
     );
-    push_instr(s, Instr::Binop(Binop { op: BinaryOp::I32Eq }));
     push_instr(
         s,
-        Instr::IfElse(IfElse { consequent: if_then, alternative: if_else }),
+        Instr::Const(Const {
+            value: Value::I32(runtime::STATE_REWINDING),
+        }),
+    );
+    push_instr(
+        s,
+        Instr::Binop(Binop {
+            op: BinaryOp::I32Eq,
+        }),
+    );
+    push_instr(
+        s,
+        Instr::IfElse(IfElse {
+            consequent: if_then,
+            alternative: if_else,
+        }),
     );
 }
 
@@ -6480,7 +6937,7 @@ fn populate_region_dispatch_structure(
     chunks: &[Vec<(Instr, InstrLocId)>],
     landings: &[LandingInfo],
     sites: &[NestedCallSite],
-    arg_spills: &HashMap<u32, Vec<LocalId>>,
+    arg_materializations: &HashMap<u32, CallArgMaterialization>,
     carryover_spills: &HashMap<u32, Vec<LocalId>>,
     catch_handlers: &[CatchHandlerInfo],
     runtime: &Runtime,
@@ -6518,7 +6975,7 @@ fn populate_region_dispatch_structure(
         emit_chunk_tail_for_landing(
             s,
             &landings[0],
-            arg_spills,
+            arg_materializations,
             carryover_spills,
             cond_swap_local,
         );
@@ -6529,14 +6986,19 @@ fn populate_region_dispatch_structure(
     for k in 1..n_landings {
         {
             let s = &mut local.block_mut(post_seqs[k]).instrs;
-            push_instr(s, Instr::Block(Block { seq: post_seqs[k - 1] }));
+            push_instr(
+                s,
+                Instr::Block(Block {
+                    seq: post_seqs[k - 1],
+                }),
+            );
         }
         emit_post_landing(
             local,
             post_seqs[k],
             &landings[k - 1],
             sites,
-            arg_spills,
+            arg_materializations,
             carryover_spills,
             catch_handlers,
             runtime,
@@ -6554,7 +7016,7 @@ fn populate_region_dispatch_structure(
             emit_chunk_tail_for_landing(
                 s,
                 &landings[k],
-                arg_spills,
+                arg_materializations,
                 carryover_spills,
                 cond_swap_local,
             );
@@ -6565,14 +7027,19 @@ fn populate_region_dispatch_structure(
     //   [Block($POST_{n-1}), <post-(n-1) sequence>, chunk n, return?]
     {
         let s = &mut local.block_mut(outer_seq).instrs;
-        push_instr(s, Instr::Block(Block { seq: post_seqs[n_landings - 1] }));
+        push_instr(
+            s,
+            Instr::Block(Block {
+                seq: post_seqs[n_landings - 1],
+            }),
+        );
     }
     emit_post_landing(
         local,
         outer_seq,
         &landings[n_landings - 1],
         sites,
-        arg_spills,
+        arg_materializations,
         carryover_spills,
         catch_handlers,
         runtime,
@@ -6599,7 +7066,7 @@ fn emit_post_landing(
     seq_id: InstrSeqId,
     landing: &LandingInfo,
     sites: &[NestedCallSite],
-    arg_spills: &HashMap<u32, Vec<LocalId>>,
+    arg_materializations: &HashMap<u32, CallArgMaterialization>,
     carryover_spills: &HashMap<u32, Vec<LocalId>>,
     catch_handlers: &[CatchHandlerInfo],
     runtime: &Runtime,
@@ -6611,8 +7078,10 @@ fn emit_post_landing(
 ) {
     match &landing.kind {
         LandingKind::DirectCall { call_idx } => {
-            let site = sites.iter().find(|s| s.call_idx == *call_idx).expect("site");
-            let spills = &arg_spills[call_idx];
+            let site = sites
+                .iter()
+                .find(|s| s.call_idx == *call_idx)
+                .expect("site");
             // Sub-commit 2.5b: reload carryovers FIRST (deepest →
             // top), then args. The call pops only its args, leaving
             // the carryovers + result on the stack — matching the
@@ -6625,9 +7094,7 @@ fn emit_post_landing(
                 for &l in carryovers.iter() {
                     push_instr(s, Instr::LocalGet(LocalGet { local: l }));
                 }
-                for &l in spills.iter() {
-                    push_instr(s, Instr::LocalGet(LocalGet { local: l }));
-                }
+                emit_materialized_call_args(s, &arg_materializations[call_idx]);
                 let call_instr = match site.target {
                     NestedTarget::Direct(func) => Instr::Call(Call { func }),
                     NestedTarget::Indirect { table } => Instr::CallIndirect(CallIndirect {
@@ -6638,12 +7105,7 @@ fn emit_post_landing(
                 s.push((call_instr, site.loc));
             }
             // Phase 6e + call_idx frame write + UNWIND branch.
-            emit_phase_6e_writes(
-                local,
-                seq_id,
-                catch_handlers,
-                catch_state_locals,
-            );
+            emit_phase_6e_writes(local, seq_id, catch_handlers, catch_state_locals);
             emit_call_index_store_and_unwind_branch(
                 local,
                 seq_id,
@@ -6661,7 +7123,9 @@ fn emit_post_landing(
             // POST_J_ENTER's close, then fall through into the
             // enclosing instr unconditionally — since the body always
             // enters via fall-through, no cond rewrite is needed.
-            let (instr, loc) = landing.sub_region_instr.clone()
+            let (instr, loc) = landing
+                .sub_region_instr
+                .clone()
                 .expect("SubRegion landing must have its enclosing instr stashed");
 
             // Sub-commit 2.6a: push spill_locals BEFORE the SubRegion
@@ -6681,8 +7145,15 @@ fn emit_post_landing(
             // pre-2.6a post-emission with tmp_result juggle.
             let s = &mut local.block_mut(seq_id).instrs;
             if let Some(plan) = &landing.carryover {
-                for (l, _ty) in plan.spill_locals.iter() {
-                    push_instr(s, Instr::LocalGet(LocalGet { local: *l }));
+                match plan {
+                    CarryoverPlan::Spill { spill_locals } => {
+                        for (l, _ty) in spill_locals.iter() {
+                            push_instr(s, Instr::LocalGet(LocalGet { local: *l }));
+                        }
+                    }
+                    CarryoverPlan::PureTail { tail, .. } => {
+                        s.extend(tail.iter().cloned());
+                    }
                 }
             }
             s.push((instr, loc));
@@ -6707,55 +7178,125 @@ fn emit_post_landing(
             // The wasm `select` instruction pops 3 values [val1, val2,
             // cond] and pushes (cond ? val1 : val2). We arrange:
             //   val1 = force_flag, val2 = orig_cond, cond = is_rewind.
-            let (instr, loc) = landing.sub_region_instr.clone()
+            let (instr, loc) = landing
+                .sub_region_instr
+                .clone()
                 .expect("SubRegionIfElse landing must have its enclosing instr stashed");
 
             let s = &mut local.block_mut(seq_id).instrs;
-            let cond_local = if let Some(plan) = &landing.carryover {
-                let (cond_local, _ty) = plan
-                    .spill_locals
-                    .last()
-                    .copied()
-                    .expect("IfElse spill plan must include the condition");
-                for (l, _ty) in plan.spill_locals.iter().take(plan.spill_locals.len() - 1) {
-                    push_instr(s, Instr::LocalGet(LocalGet { local: *l }));
+            let cond_source = match &landing.carryover {
+                Some(CarryoverPlan::Spill { spill_locals }) => {
+                    let (cond_local, _ty) = spill_locals
+                        .last()
+                        .copied()
+                        .expect("IfElse spill plan must include the condition");
+                    for (l, _ty) in spill_locals.iter().take(spill_locals.len() - 1) {
+                        push_instr(s, Instr::LocalGet(LocalGet { local: *l }));
+                    }
+                    IfElseCondSource::Local(cond_local)
                 }
-                cond_local
-            } else {
-                cond_swap_local
+                Some(CarryoverPlan::PureTail { tail, types, .. }) => {
+                    debug_assert_eq!(
+                        types.as_slice(),
+                        &[ValType::I32],
+                        "pure IfElse cond materialization only supports condition-only i32 tails"
+                    );
+                    IfElseCondSource::PureTail(tail)
+                }
+                None => IfElseCondSource::Local(cond_swap_local),
             };
             // Push force_flag.
             match (then_range, else_range) {
                 (Some(_), None) => {
-                    push_instr(s, Instr::Const(Const { value: Value::I32(1) }));
+                    push_instr(
+                        s,
+                        Instr::Const(Const {
+                            value: Value::I32(1),
+                        }),
+                    );
                 }
                 (None, Some(_)) => {
-                    push_instr(s, Instr::Const(Const { value: Value::I32(0) }));
+                    push_instr(
+                        s,
+                        Instr::Const(Const {
+                            value: Value::I32(0),
+                        }),
+                    );
                 }
                 (Some((tlo, thi)), Some(_)) => {
                     // Both branches have fork calls. Use range
                     // membership on THEN's range.
                     push_current_call_index(s, runtime, memory, ptr_ty);
-                    push_instr(s, Instr::Const(Const { value: Value::I32(*tlo as i32) }));
-                    push_instr(s, Instr::Binop(Binop { op: BinaryOp::I32GeS }));
+                    push_instr(
+                        s,
+                        Instr::Const(Const {
+                            value: Value::I32(*tlo as i32),
+                        }),
+                    );
+                    push_instr(
+                        s,
+                        Instr::Binop(Binop {
+                            op: BinaryOp::I32GeS,
+                        }),
+                    );
                     push_current_call_index(s, runtime, memory, ptr_ty);
-                    push_instr(s, Instr::Const(Const { value: Value::I32(*thi as i32) }));
-                    push_instr(s, Instr::Binop(Binop { op: BinaryOp::I32LeS }));
-                    push_instr(s, Instr::Binop(Binop { op: BinaryOp::I32And }));
+                    push_instr(
+                        s,
+                        Instr::Const(Const {
+                            value: Value::I32(*thi as i32),
+                        }),
+                    );
+                    push_instr(
+                        s,
+                        Instr::Binop(Binop {
+                            op: BinaryOp::I32LeS,
+                        }),
+                    );
+                    push_instr(
+                        s,
+                        Instr::Binop(Binop {
+                            op: BinaryOp::I32And,
+                        }),
+                    );
                 }
                 (None, None) => {
-                    push_instr(s, Instr::Const(Const { value: Value::I32(0) }));
+                    push_instr(
+                        s,
+                        Instr::Const(Const {
+                            value: Value::I32(0),
+                        }),
+                    );
                 }
             }
-            // Push orig_cond from the spill local.
-            push_instr(s, Instr::LocalGet(LocalGet { local: cond_local }));
+            // Push orig_cond from either the spill local or the pure
+            // scalar tail removed from the NORMAL chunk.
+            match cond_source {
+                IfElseCondSource::Local(cond_local) => {
+                    push_instr(s, Instr::LocalGet(LocalGet { local: cond_local }));
+                }
+                IfElseCondSource::PureTail(tail) => {
+                    s.extend(tail.iter().cloned());
+                }
+            }
             // Push is_rewind.
-            push_instr(s, Instr::GlobalGet(GlobalGet { global: runtime.state_global }));
             push_instr(
                 s,
-                Instr::Const(Const { value: Value::I32(runtime::STATE_REWINDING) }),
+                Instr::GlobalGet(GlobalGet {
+                    global: runtime.state_global,
+                }),
             );
-            push_instr(s, Instr::Binop(Binop { op: BinaryOp::I32Eq }));
+            push_instr(
+                s,
+                Instr::Const(Const {
+                    value: Value::I32(runtime::STATE_REWINDING),
+                }),
+            );
+            push_instr(
+                s,
+                Instr::Binop(Binop {
+                    op: BinaryOp::I32Eq,
+                }),
+            );
             push_instr(s, Instr::Select(walrus::ir::Select { ty: None }));
             // Original IfElse with rewritten cond on the stack.
             s.push((instr, loc));

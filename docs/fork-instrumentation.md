@@ -227,8 +227,8 @@ tool per-function based on call-site topology:
 
 | Scheme                       | When picked                                                                                                                                                                                                                                                                                                                       | How REWIND reaches the resumed call                                                                                                                                                                                            |
 |------------------------------|-----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
-| switch-dispatch (top-level)  | Every fork-path call lives at the function's top level. Top-level operand-stack carryovers (values pushed before the call's args and consumed after — common in LLVM `*(sp+K) = call(...)` patterns) are absorbed via per-call spill locals (sub-commit 2.4c).                                                                    | A top-level `br_table`, gated by `state == REWINDING`, jumps directly to the matching `$POST_K` label. The chunks between calls run only on the NORMAL fall-through path; carryover spill locals are reloaded in the post-call. |
-| switch-dispatch (nested)     | Some fork-path calls live inside `Block` / `IfElse` / `Loop` / `TryTable` bodies. Sub-commits 2.5/2.6 made this scheme cover: direct-call carryovers at any nesting depth (2.5c), nested-Loop-with-carryover (2.5c side benefit), multi-value-params SubRegion bodies via body-input-param prespill (2.6c).                       | Cascading `POST_K` blocks plus a per-region `br_table` route REWIND through each enclosing instruction's own dispatch — see [Nested per-block switch-dispatch](#nested-per-block-switch-dispatch). For multi-value-params bodies, the body's input params are pre-spilled at body entry and reloaded inside POST_0 to bridge the `Simple(None)` POST_K typing. |
+| switch-dispatch (top-level)  | Every fork-path call lives at the function's top level. Top-level operand-stack carryovers (values pushed before the call's args and consumed after — common in LLVM `*(sp+K) = call(...)` patterns) are absorbed via per-call spill locals (sub-commit 2.4c). Pure scalar call-argument tails can be replayed instead of spilled. | A top-level `br_table`, gated by `state == REWINDING`, jumps directly to the matching `$POST_K` label. The chunks between calls run only on the NORMAL fall-through path; carryover spill locals are reloaded in the post-call, followed by spilled or replayed call args. |
+| switch-dispatch (nested)     | Some fork-path calls live inside `Block` / `IfElse` / `Loop` / `TryTable` bodies. Sub-commits 2.5/2.6 made this scheme cover: direct-call carryovers at any nesting depth (2.5c), nested-Loop-with-carryover (2.5c side benefit), multi-value-params SubRegion bodies via body-input-param prespill (2.6c). Pure scalar direct-call args and condition-only `IfElse` carryovers can be replayed instead of spilled. | Cascading `POST_K` blocks plus a per-region `br_table` route REWIND through each enclosing instruction's own dispatch — see [Nested per-block switch-dispatch](#nested-per-block-switch-dispatch). For multi-value-params bodies, the body's input params are pre-spilled at body entry and reloaded inside POST_0 to bridge the `Simple(None)` POST_K typing. |
 
 A third path — **guard-dispatch** — existed before commits 3-4 of the
 fork-instrument mega-PR (2026-05-14). It wrapped each fork-path call site
@@ -540,7 +540,7 @@ a sub-region landing. Sub-regions then dispatch internally via their own
 
 The standard top-level `POST_K` block has type `Simple(None)` (0 → 0).
 That's incompatible with an `IfElse` landing because the chunk preceding
-the IfElse has to leave the original cond on the stack. The fix:
+the IfElse has to leave the original cond on the stack. The default fix:
 
 - At the end of the chunk inside `POST_K`, spill the original cond into a
   freshly-allocated i32 local, `cond_swap_local`.
@@ -573,6 +573,13 @@ contains the active call_idx, regardless of `orig_cond`. This avoids
 re-evaluating the original cond expression during REWIND — important when
 that expression has side effects or reads state that may diverge between
 parent NORMAL and child/parent REWIND.
+
+When the original condition is produced by a pure scalar suffix such as
+`local.get $depth; i32.eqz`, the suffix is removed from the NORMAL chunk and
+replayed in the post-landing sequence instead of allocating `cond_swap_local`
+or a frame-backed carryover local. If the condition is not pure, or if an
+`IfElse` landing also needs extra carryover values below the condition, the
+spill-local path above remains the fallback.
 
 ### 3. Carryover-spilling at SubRegion + DirectCall landings
 
@@ -637,6 +644,26 @@ runs), reload them via prepended `local.get`s. On NORMAL flow the body
 params are saved and reloaded; on REWIND the dispatch br_tables past
 chunks[0], so the LocalGets are skipped — exactly the cases where the
 params would otherwise be needed.
+
+### 4. Pure scalar materialization
+
+Before allocating call-argument or sub-region carryover locals, the transform
+checks whether the values at the landing are produced by a suffix that can be
+replayed from an empty stack. The whitelist is deliberately small:
+
+- scalar constants and scalar `local.get`;
+- non-trapping i32/i64 unary ops such as `eqz`, `clz`, `ctz`, `popcnt`, and
+  integer extends;
+- non-trapping i32/i64 binary arithmetic, bit operations, shifts, rotates, and
+  integer comparisons.
+
+The whitelist excludes calls, memory/table operations, globals, reference
+operations, integer div/rem, floating-point operators, `local.set`/`local.tee`,
+and any instruction that needs stack input from before the suffix. Unsupported
+or type-mismatched suffixes fall back to the existing spill-local path. This
+keeps REWIND behavior tied to the same post-call/post-landing sequence while
+avoiding frame locals for common compiler shapes like recursive
+`walk(depth - 1)` arguments and `eqz(depth)` branch conditions.
 
 **Function-level analyser gate.** When `walk_seq_for_carryovers` or
 `compute_nested_carryover_types` encounters a producer whose pushed type
@@ -896,11 +923,12 @@ inspected, not current PR output.
 To distinguish top-level switch-dispatch from nested switch-dispatch,
 look inside the enclosing instructions: nested switch-dispatch emits the
 same `if (state == REWINDING) ... br_table ...` shape inside any
-fork-bearing `block` / `loop` / `if` / `try_table`, plus a
-`local.set $cond_swap_local` at the end of the chunk preceding any IfElse
-landing and a `select` rewriting that IfElse's cond afterwards. Top-level
-switch-dispatch has only the function-level dispatch and never touches a
-sub-region's body.
+fork-bearing `block` / `loop` / `if` / `try_table`, plus a `select`
+rewriting any fork-bearing IfElse's condition afterwards. Impure IfElse
+conditions also show a `local.set $cond_swap_local` at the end of the
+preceding chunk; pure condition suffixes are replayed at the post-landing
+instead. Top-level switch-dispatch has only the function-level dispatch and
+never touches a sub-region's body.
 
 Carryover-spilling at a SubRegion landing shows up as a pair of fresh
 i32 locals (recorded in the function's frame): the chunk inside `POST_K`
@@ -910,9 +938,10 @@ enclosing instr returns an i32, a brief juggle through `tmp_result_local`).
 
 Nested switch-dispatch coverage lives in
 `tests/switch_dispatch.rs::nested_fork_call_uses_per_block_switch_dispatch`
-and the carryover-spilling fixtures alongside it. Add new regressions there
-or in `host/test/fork-instrument-coverage.test.ts` depending on whether the
-bug is a tool-level transform issue or an end-to-end host/runtime issue.
+and the carryover-spilling / pure-materialization fixtures alongside it. Add
+new regressions there or in `host/test/fork-instrument-coverage.test.ts`
+depending on whether the bug is a tool-level transform issue or an end-to-end
+host/runtime issue.
 
 ### Running tests
 
