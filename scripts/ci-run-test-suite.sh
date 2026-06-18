@@ -66,10 +66,10 @@ case "$suite" in
             if [ "$(uname -s)" = "Linux" ]; then
                 run_timed 30m "Install Playwright browsers" \
                     env PATH="/usr/bin:/bin:$PATH" \
-                    npx playwright install --with-deps chromium firefox webkit
+                    npx playwright install --with-deps chromium firefox
             else
                 run_timed 30m "Install Playwright browsers" \
-                    npx playwright install chromium firefox webkit
+                    npx playwright install chromium firefox
             fi
             run_timed 20m "Run Chromium browser smoke suite" \
                 npx playwright test --grep-invert "@slow|@trap-signal" --project=chromium
