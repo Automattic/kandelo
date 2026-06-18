@@ -75,10 +75,8 @@ case "$suite" in
                 npx playwright test --grep-invert "@slow|@trap-signal" --project=chromium
             run_timed 10m "Run trap-signal browser smoke suite" \
                 npx playwright test wasm-trap-signal.spec.ts --project=chromium --project=firefox
-            run_timed 10m "Run WebKit shell smoke suite" \
-                npx playwright test kandelo-webkit-smoke.spec.ts \
-                --project=webkit \
-                --grep "Kandelo shell demo boots"
+            run_timed 10m "Run WebKit lazy VFS contract" \
+                npx playwright test browser-kernel-webkit.spec.ts --project=webkit
         )
         ;;
     libc)

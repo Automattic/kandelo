@@ -39,7 +39,7 @@ export default defineConfig({
     },
     {
       name: "webkit",
-      testMatch: ["coi.spec.ts", "kandelo-webkit-smoke.spec.ts"],
+      testMatch: ["browser-kernel-webkit.spec.ts", "coi.spec.ts"],
       use: { browserName: "webkit" },
     },
   ],
