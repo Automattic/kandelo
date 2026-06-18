@@ -64,6 +64,8 @@ jobs:
             --project=chromium \
             --project=firefox \
             --project=webkit
+          npx playwright test test/browser-kernel-webkit.spec.ts \
+            --project=webkit
           npx playwright test test/wasm-trap-signal.spec.ts \
             --project=chromium \
             --project=firefox

@@ -18,6 +18,7 @@ import type {
   MainToKernelMessage,
   KernelToMainMessage,
 } from "./browser-kernel-protocol";
+import { registerLazyVfsMetadata } from "./browser-kernel-lazy-registration";
 import type { HttpRequest, HttpResponse } from "./networking/in-kernel-http";
 
 export type { HttpRequest, HttpResponse };
@@ -262,26 +263,13 @@ export class BrowserKernel {
       rootfsImage: new Uint8Array(rootfsVfsBuf),
     });
 
-    // Forward any lazy metadata from a pre-loaded VFS image so the worker
-    // can materialize image-backed files on first exec.
-    const lazyEntries = this.memfs!.exportLazyEntries();
-    if (lazyEntries.length > 0) {
+    await registerLazyVfsMetadata(this.memfs!, async (message) => {
       const requestId = this.nextRequestId++;
       await this.request(requestId, {
-        type: "register_lazy_files",
+        ...message,
         requestId,
-        entries: lazyEntries,
       });
-    }
-    const archiveEntries = this.memfs!.exportLazyArchiveEntries();
-    if (archiveEntries.length > 0) {
-      const requestId = this.nextRequestId++;
-      await this.request(requestId, {
-        type: "register_lazy_archives",
-        requestId,
-        entries: archiveEntries,
-      });
-    }
+    });
   }
 
   /**
