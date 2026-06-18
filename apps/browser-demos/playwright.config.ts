@@ -34,12 +34,10 @@ export default defineConfig({
     },
     {
       name: "firefox",
-      testMatch: ["coi.spec.ts", "wasm-trap-signal.spec.ts"],
       use: { browserName: "firefox" },
     },
     {
       name: "webkit",
-      testMatch: ["browser-kernel-webkit.spec.ts", "coi.spec.ts"],
       use: { browserName: "webkit" },
     },
   ],

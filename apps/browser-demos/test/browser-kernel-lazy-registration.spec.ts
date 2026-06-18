@@ -12,12 +12,10 @@ const memoryFsModulePath = resolve(
   "../../../host/src/vfs/memory-fs.ts",
 );
 
-test("WebKit BrowserKernel init waits for lazy VFS registration acknowledgement", async ({
-  browserName,
+test("BrowserKernel init waits for lazy VFS registration acknowledgement", async ({
   page,
   baseURL,
 }) => {
-  test.skip(browserName !== "webkit", "WebKit-only browser host contract");
   expect(baseURL).toBeTruthy();
 
   const lazyRegistrationModuleUrl = new URL(`/@fs/${lazyRegistrationModulePath}`, baseURL).href;

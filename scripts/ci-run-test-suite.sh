@@ -66,15 +66,20 @@ case "$suite" in
             if [ "$(uname -s)" = "Linux" ]; then
                 run_timed 30m "Install Playwright browsers" \
                     env PATH="/usr/bin:/bin:$PATH" \
-                    npx playwright install --with-deps chromium firefox
+                    npx playwright install --with-deps chromium firefox webkit
             else
                 run_timed 30m "Install Playwright browsers" \
-                    npx playwright install chromium firefox
+                    npx playwright install chromium firefox webkit
             fi
-            run_timed 20m "Run Chromium browser smoke suite" \
-                npx playwright test --grep-invert "@slow|@trap-signal" --project=chromium
-            run_timed 10m "Run trap-signal browser smoke suite" \
-                npx playwright test wasm-trap-signal.spec.ts --project=chromium --project=firefox
+            run_timed 20m "Run Chromium browser demo smoke suite" \
+                npx playwright test --grep-invert "@slow|@trap-signal" \
+                    --project=chromium
+            run_timed 10m "Run cross-browser contract smoke suite" \
+                npx playwright test \
+                    test/coi.spec.ts \
+                    test/browser-kernel-lazy-registration.spec.ts \
+                    test/wasm-trap-signal.spec.ts \
+                    --project=chromium --project=firefox --project=webkit
         )
         ;;
     libc)
