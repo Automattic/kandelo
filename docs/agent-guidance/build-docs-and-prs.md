@@ -48,6 +48,15 @@ project capability being changed or protected. Describe the mechanical edits
 after that purpose is clear. A reader should understand why the change matters
 before learning which files, tools, or implementation steps changed.
 
+For nontrivial runtime, ABI-adjacent, generated-code, package-artifact, or
+measurement-sensitive work, the commit body and PR description or maintainer
+comment should explain the problem, implementation, measured or observed
+effect, validation, skipped suites, and remaining risk. When reporting
+before/after numeric results, use a compact table instead of prose-only
+bullets, and include the run context needed to compare the numbers honestly
+(for example host, engine version, benchmark source, and whether rows came from
+the same run or from historical bead notes).
+
 Documentation is part of the platform contract. If a change adds, removes,
 completes, limits, or changes user-visible behavior, API behavior, platform
 semantics, package behavior, build behavior, browser behavior, ABI behavior, or
