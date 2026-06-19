@@ -92,8 +92,19 @@ pub struct Datagram {
     pub data: Vec<u8>,
     pub src_addr: [u8; 4],
     pub src_addr6: [u8; 16],
+    pub dst_addr: [u8; 4],
+    pub dst_addr6: [u8; 16],
     pub src_port: u16,
     pub src_sock_idx: Option<usize>,
+    /// IPv6 traffic class associated with this datagram.
+    pub ipv6_tclass: u32,
+    /// Sender credentials captured when the datagram was queued. AF_UNIX
+    /// SO_PASSCRED reports these with SCM_CREDENTIALS.
+    pub src_pid: u32,
+    pub src_uid: u32,
+    pub src_gid: u32,
+    /// Ancillary file descriptors sent with this datagram via SCM_RIGHTS.
+    pub ancillary_fds: Vec<crate::pipe::InFlightFd>,
 }
 
 /// One AF_INET UDP endpoint bound in the in-kernel virtual network.

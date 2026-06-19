@@ -6674,8 +6674,15 @@ fn udp_send_datagram(
         data: buf.to_vec(),
         src_addr,
         src_addr6: [0; 16],
+        dst_addr,
+        dst_addr6: [0; 16],
         src_port,
         src_sock_idx: Some(sock_idx),
+        ipv6_tclass: 0,
+        src_pid: proc.pid,
+        src_uid: proc.uid,
+        src_gid: proc.gid,
+        ancillary_fds: Vec::new(),
     };
 
     let mut delivered = false;
@@ -6729,8 +6736,15 @@ fn unix_dgram_send_to_sock(
         data: buf.to_vec(),
         src_addr: [0; 4],
         src_addr6: [0; 16],
+        dst_addr: [0; 4],
+        dst_addr6: [0; 16],
         src_port: 0,
         src_sock_idx: Some(src_sock_idx),
+        ipv6_tclass: 0,
+        src_pid: proc.pid,
+        src_uid: proc.uid,
+        src_gid: proc.gid,
+        ancillary_fds: Vec::new(),
     };
     let target = proc.sockets.get_mut(dst_sock_idx).ok_or(Errno::ECONNREFUSED)?;
     udp_queue_datagram(target, datagram);
@@ -6886,8 +6900,15 @@ fn udp6_send_datagram(
         data: buf.to_vec(),
         src_addr: [0; 4],
         src_addr6: src_addr,
+        dst_addr: [0; 4],
+        dst_addr6: dst_addr,
         src_port,
         src_sock_idx: Some(sock_idx),
+        ipv6_tclass: 0,
+        src_pid: proc.pid,
+        src_uid: proc.uid,
+        src_gid: proc.gid,
+        ancillary_fds: Vec::new(),
     };
 
     let mut delivered = false;
@@ -6937,8 +6958,15 @@ pub fn inject_udp_datagram_into(
         data: data.to_vec(),
         src_addr,
         src_addr6: [0; 16],
+        dst_addr,
+        dst_addr6: [0; 16],
         src_port,
         src_sock_idx: None,
+        ipv6_tclass: 0,
+        src_pid: 0,
+        src_uid: 0,
+        src_gid: 0,
+        ancillary_fds: Vec::new(),
     };
     let endpoints = crate::socket::udp_lookup(dst_addr, dst_port);
     for endpoint in endpoints {
