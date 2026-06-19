@@ -46,6 +46,19 @@ let testfixtureBytes: ArrayBuffer | null = null;
 let sqlite3Bytes: ArrayBuffer | null = null;
 
 const DEFAULT_SQLITE_MAX_MEMORY_PAGES = 4096;
+const SQLITE_TESTRUNNER_PATH = "/sqlite/test/testrunner.tcl";
+
+function kandeloTestrunnerPlatformPrelude(): string {
+  return [
+    "# Kandelo's Tcl build reports a target OS name that SQLite's",
+    "# testrunner.tcl does not classify. Present a Unix-like platform to",
+    "# the upstream runner and use its OpenBSD branch so generated helper",
+    "# scripts run with sh instead of bash.",
+    "set ::tcl_platform(os) OpenBSD",
+    "set ::tcl_platform(platform) unix",
+    "",
+  ].join("\n");
+}
 
 function sqliteMaxMemoryPages(): number {
   const raw = import.meta.env.VITE_SQLITE_BROWSER_MAX_MEMORY_PAGES;
@@ -152,7 +165,26 @@ function createFs(): MemoryFileSystem {
   try {
     fs.chmod("/sqlite/testdir", 0o777);
   } catch {}
+  installKandeloTestrunnerPlatformOverride(fs);
   return fs;
+}
+
+function installKandeloTestrunnerPlatformOverride(fs: MemoryFileSystem): void {
+  const originalRunner = new TextDecoder().decode(readVfsFile(fs, SQLITE_TESTRUNNER_PATH));
+  writeVfsFile(
+    fs,
+    SQLITE_TESTRUNNER_PATH,
+    `${kandeloTestrunnerPlatformPrelude()}${originalRunner}`,
+    0o644,
+  );
+  writeVfsFile(fs, "/sqlite/kandelo-testrunner.tcl", [
+    "# Stable Kandelo entrypoint for scripts/run-browser-sqlite-official-tests.sh.",
+    "# The upstream runner file is patched in-place so child config jobs that",
+    "# exec [info script] keep the same platform override.",
+    "set argv0 test/testrunner.tcl",
+    "source $argv0",
+    "",
+  ].join("\n"), 0o644);
 }
 
 function sqliteSyscallLogPtrWidth(): 4 | 8 | undefined {
@@ -210,15 +242,6 @@ async function init() {
       })).catch(() => {});
     };
     const artifactTimer = window.setInterval(publishArtifactSnapshot, 5000);
-    if (argv[1] === "kandelo-testrunner.tcl") {
-      writeVfsFile(fs, "/sqlite/kandelo-testrunner.tcl", [
-        "set ::tcl_platform(os) OpenBSD",
-        "set ::tcl_platform(platform) unix",
-        "set argv0 test/testrunner.tcl",
-        "source $argv0",
-        "",
-      ].join("\n"), 0o644);
-    }
     const kernel = new BrowserKernel({
       memfs: fs,
       maxWorkers: 4,

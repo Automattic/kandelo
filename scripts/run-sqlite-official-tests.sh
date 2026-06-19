@@ -273,14 +273,26 @@ cp "$SQLITE3" "$WORKDIR/sqlite3"
 cp "$SQLITE3" "$WORKDIR/sqlite3.wasm"
 chmod a+rx "$WORKDIR/testfixture" "$WORKDIR/testfixture.wasm" "$WORKDIR/sqlite3" "$WORKDIR/sqlite3.wasm"
 
-RUNNER_TCL="$WORKDIR/kandelo-testrunner.tcl"
-cat > "$RUNNER_TCL" <<'TCL'
+UPSTREAM_RUNNER_TCL="$WORKDIR/test/testrunner.tcl"
+PATCHED_RUNNER_TCL="$WORKDIR/test/testrunner.tcl.kandelo"
+cat > "$PATCHED_RUNNER_TCL" <<'TCL'
 # Kandelo's Tcl build reports a target OS name that SQLite's testrunner.tcl
 # does not classify. Present a Unix-like platform to the upstream runner and
 # use its OpenBSD branch so generated helper scripts run with sh instead of
 # bash.
 set ::tcl_platform(os) OpenBSD
 set ::tcl_platform(platform) unix
+
+TCL
+cat "$UPSTREAM_RUNNER_TCL" >> "$PATCHED_RUNNER_TCL"
+mv "$PATCHED_RUNNER_TCL" "$UPSTREAM_RUNNER_TCL"
+chmod a+r "$UPSTREAM_RUNNER_TCL"
+
+RUNNER_TCL="$WORKDIR/kandelo-testrunner.tcl"
+cat > "$RUNNER_TCL" <<'TCL'
+# Stable Kandelo entrypoint for scripts/run-sqlite-official-tests.sh. The
+# upstream runner file is patched in-place so child config jobs that exec
+# [info script] keep the same platform override.
 set argv0 test/testrunner.tcl
 source $argv0
 TCL
