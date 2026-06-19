@@ -285,7 +285,11 @@ impl MemoryManager {
         if len == 0 {
             return false;
         }
-        let unmap_end = addr.saturating_add(len);
+        let aligned_len = match len.checked_add(0xFFFF) {
+            Some(v) => v & !0xFFFF,
+            None => return false,
+        };
+        let unmap_end = addr.saturating_add(aligned_len);
         let mut found = false;
         let mut new_mappings: Vec<MappedRegion> = Vec::new();
 

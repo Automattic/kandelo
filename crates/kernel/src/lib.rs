@@ -78,6 +78,29 @@ pub fn current_time_secs() -> i64 {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Kernel mode flag
+// ---------------------------------------------------------------------------
+
+use core::sync::atomic::{AtomicU32, Ordering};
+
+/// Kernel operating mode.
+///
+/// - Mode 0 (default): Traditional per-process kernel. Blocking syscalls spin
+///   or delegate to the host.
+/// - Mode 1: Centralized kernel. Blocking syscalls return EAGAIN immediately
+///   so the host JS event loop can handle waiting asynchronously.
+static KERNEL_MODE: AtomicU32 = AtomicU32::new(0);
+
+#[inline]
+pub fn is_centralized_mode() -> bool {
+    KERNEL_MODE.load(Ordering::Relaxed) != 0
+}
+
+pub fn set_kernel_mode(mode: u32) {
+    KERNEL_MODE.store(mode, Ordering::Relaxed);
+}
+
 #[cfg(any(target_arch = "wasm32", target_arch = "wasm64"))]
 mod wasm {
     use core::alloc::{GlobalAlloc, Layout};

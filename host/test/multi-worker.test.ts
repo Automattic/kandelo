@@ -81,6 +81,9 @@ describe("CentralizedKernelWorker Process Management", () => {
       cleanupPendingSelectRetries: vi.fn(),
       cleanupUdpBindings: vi.fn(),
       cleanupTcpListeners: vi.fn(),
+      sharedMappings: new Map(),
+      sharedMmapBackings: new Map(),
+      shmMappings: new Map(),
       hostReaped: new Set([pid]),
     }) as CentralizedKernelWorker;
 

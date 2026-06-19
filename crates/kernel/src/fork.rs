@@ -45,6 +45,8 @@ const MAX_ENV_VARS: u32 = 65536;
 const MAX_ARGV: u32 = 65536;
 const MAX_PATH_LEN: usize = 1048576; // 1 MiB
 const MAX_STRING_LEN: usize = 1048576; // 1 MiB
+const INITIAL_EXEC_STATE_BUFFER_LEN: usize = 64 * 1024;
+const MAX_EXEC_STATE_BUFFER_LEN: usize = 4 * 1024 * 1024;
 
 // ── Writer helper ───────────────────────────────────────────────────────────
 
@@ -1502,6 +1504,26 @@ pub fn serialize_exec_state(proc: &Process, buf: &mut [u8]) -> Result<usize, Err
     Ok(w.pos)
 }
 
+pub fn serialize_exec_state_with_growing_buffer(proc: &Process) -> Result<Vec<u8>, Errno> {
+    let mut len = INITIAL_EXEC_STATE_BUFFER_LEN;
+
+    loop {
+        let mut buf = Vec::new();
+        buf.resize(len, 0u8);
+
+        match serialize_exec_state(proc, &mut buf) {
+            Ok(written) => {
+                buf.truncate(written);
+                return Ok(buf);
+            }
+            Err(Errno::ENOMEM) if len < MAX_EXEC_STATE_BUFFER_LEN => {
+                len = len.saturating_mul(2).min(MAX_EXEC_STATE_BUFFER_LEN);
+            }
+            Err(err) => return Err(err),
+        }
+    }
+}
+
 // ── Exec Deserialize ────────────────────────────────────────────────────────
 
 /// Deserialize process state from an exec buffer.
@@ -1929,6 +1951,31 @@ mod tests {
         assert_eq!(restored.pid, 1);
         assert_eq!(restored.ppid, 0); // default ppid
         assert_eq!(restored.signals.pending, 0);
+    }
+
+    #[test]
+    fn test_exec_state_grows_for_large_environment() {
+        let mut proc = Process::new(1);
+        proc.environ.clear();
+        for i in 0..1200 {
+            let mut var = b"KDE_LONG_ENV_".to_vec();
+            var.extend_from_slice(i.to_string().as_bytes());
+            var.push(b'=');
+            var.extend(core::iter::repeat(b'x').take(80));
+            proc.environ.push(var);
+        }
+
+        let mut old_limit_buf = vec![0u8; 64 * 1024];
+        assert_eq!(
+            serialize_exec_state(&proc, &mut old_limit_buf),
+            Err(Errno::ENOMEM),
+        );
+
+        let serialized = serialize_exec_state_with_growing_buffer(&proc).unwrap();
+        assert!(serialized.len() > 64 * 1024);
+
+        let restored = deserialize_exec_state(&serialized, 1).unwrap();
+        assert_eq!(restored.environ, proc.environ);
     }
 
     #[test]

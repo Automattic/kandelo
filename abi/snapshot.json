@@ -1,5 +1,5 @@
 {
-  "abi_version": 15,
+  "abi_version": 16,
   "channel_buffers": {
     "data_offset": 72,
     "data_size": 65536,
@@ -113,7 +113,7 @@
   },
   "host_adapter": {
     "manifest": {
-      "abi_version": 15,
+      "abi_version": 16,
       "channel_data_offset": 72,
       "channel_data_size": 65536,
       "channel_header_size": 72,
@@ -946,11 +946,6 @@
     },
     {
       "kind": "func",
-      "name": "kernel_mark_process_exited",
-      "signature": "(i32,i32) -> (i32)"
-    },
-    {
-      "kind": "func",
       "name": "kernel_mark_process_signaled",
       "signature": "(i32,i32) -> (i32)"
     },
@@ -1097,7 +1092,7 @@
     {
       "kind": "func",
       "name": "kernel_preadv",
-      "signature": "(i32,i32,i32,i64) -> (i32)"
+      "signature": "(i32,i32,i32,i32,i32) -> (i32)"
     },
     {
       "kind": "func",
@@ -1137,7 +1132,7 @@
     {
       "kind": "func",
       "name": "kernel_pwritev",
-      "signature": "(i32,i32,i32,i64) -> (i32)"
+      "signature": "(i32,i32,i32,i32,i32) -> (i32)"
     },
     {
       "kind": "func",

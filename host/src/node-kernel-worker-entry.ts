@@ -15,6 +15,7 @@
  */
 import { parentPort } from "node:worker_threads";
 import { readFileSync, existsSync, mkdtempSync, rmSync } from "node:fs";
+import { createHash } from "node:crypto";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -105,6 +106,8 @@ interface ProcessInfo {
 const processes = new Map<number, ProcessInfo>();
 const processTeardowns = new Map<number, Promise<void>>();
 const reportedExits = new Set<number>();
+const compiledProgramModules = new Map<string, Promise<WebAssembly.Module>>();
+const MAX_COMPILED_PROGRAM_MODULES = 16;
 
 // Workers terminated by the kernel-worker entry itself (handleExit /
 // handleExec / handleTerminate). The crash safety-net listener checks
@@ -354,6 +357,28 @@ function bufferToArrayBuffer(bytes: Uint8Array): ArrayBuffer {
   const out = new ArrayBuffer(bytes.byteLength);
   new Uint8Array(out).set(bytes);
   return out;
+}
+
+function programModuleCacheKey(programBytes: ArrayBuffer): string {
+  const bytes = new Uint8Array(programBytes);
+  return `${bytes.byteLength}:${createHash("sha256").update(bytes).digest("hex")}`;
+}
+
+async function getCompiledProgramModule(
+  programBytes: ArrayBuffer,
+): Promise<WebAssembly.Module> {
+  const key = programModuleCacheKey(programBytes);
+  let promise = compiledProgramModules.get(key);
+  if (!promise) {
+    promise = WebAssembly.compile(programBytes);
+    compiledProgramModules.set(key, promise);
+    promise.catch(() => compiledProgramModules.delete(key));
+    if (compiledProgramModules.size > MAX_COMPILED_PROGRAM_MODULES) {
+      const oldest = compiledProgramModules.keys().next().value;
+      if (oldest) compiledProgramModules.delete(oldest);
+    }
+  }
+  return promise;
 }
 
 function resolveExecLocal(path: string): ArrayBuffer | null {
@@ -755,6 +780,7 @@ async function handleFork(
     maxAddr: childLayout.maxAddr,
     mmapBase: childLayout.mmapBase,
   });
+  kernelWorker.inheritProcessSharedMappings(parentPid, childPid);
 
   const FORK_BUF_SIZE = FORK_SAVE_BUFFER_SIZE;
   const forkBufAddr = threadFork

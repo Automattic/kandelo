@@ -2318,16 +2318,15 @@ pub extern "C" fn kernel_exec_setup(pid: u32) -> i32 {
         None => return -(Errno::ESRCH as i32),
     };
 
-    // Serialize as exec state (signal handler reset, etc.)
+    // Serialize as exec state (signal handler reset, etc.).
     // CLOEXEC fds were already closed above, so serialization just preserves what's left.
-    let mut buf = alloc::vec![0u8; 64 * 1024];
-    let written = match crate::fork::serialize_exec_state(proc, &mut buf) {
-        Ok(n) => n,
+    let buf = match crate::fork::serialize_exec_state_with_growing_buffer(proc) {
+        Ok(buf) => buf,
         Err(e) => return -(e as i32),
     };
 
     // Deserialize back to replace the process with exec-sanitized version
-    match crate::fork::deserialize_exec_state(&buf[..written], pid) {
+    match crate::fork::deserialize_exec_state(&buf, pid) {
         Ok(new_proc) => {
             table.get_mut(pid).map(|p| {
                 *p = new_proc;

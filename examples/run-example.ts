@@ -24,6 +24,8 @@ const repoRoot = resolve(dirname(new URL(import.meta.url).pathname), "..");
 // need the path must handle null explicitly.
 const coreutilsWasm = tryResolveBinary("programs/coreutils.wasm");
 const dashWasm = tryResolveBinary("programs/dash.wasm");
+const shWasm = tryResolveBinary("programs/sh.wasm");
+const shellWasm = dashWasm ?? shWasm;
 const grepWasm = tryResolveBinary("programs/grep.wasm");
 const sedWasm = tryResolveBinary("programs/sed.wasm");
 const gitWasm = tryResolveBinary("programs/git/git.wasm");
@@ -77,8 +79,8 @@ const builtinPrograms: Record<string, string | null> = {
     "echo": echoWasm,
     "/bin/echo": echoWasm,
     "/usr/bin/echo": echoWasm,
-    "sh": dashWasm,
-    "/bin/sh": dashWasm,
+    "sh": shellWasm,
+    "/bin/sh": shellWasm,
     "dash": dashWasm,
     "/bin/dash": dashWasm,
     "grep": grepWasm,
