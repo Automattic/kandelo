@@ -97,10 +97,20 @@ WebAssembly call stack is exhausted before the shell can report a guest
 `InternalError`. On the Node host this currently covers
 `non262/extensions/array-isArray-proxy-recursion.js` and
 `non262/regress/regress-311629.js`; on the browser host it covers
-`non262/Promise/any-stack-overflow.js` and
-`test262/staging/sm/extensions/recursion.js`. Focused browser directory
-selectors such as `non262/Promise/` expand around an exact known-skipped file
-and still run the rest of the directory.
+`non262/Promise/any-stack-overflow.js`,
+`test262/staging/sm/extensions/recursion.js`, the exact browser extension
+recursion files listed in `scripts/spidermonkey-known-skips.sh`, and these
+`non262/regress` stack-stress files:
+
+- `regress-96526-002.js`
+- `regress-329530.js`
+- `regress-192414.js`
+- `regress-234389.js`
+- `regress-311629.js`
+- `regress-152646.js`
+
+Focused browser directory selectors such as `non262/Promise/` expand around an
+exact known-skipped file and still run the rest of the directory.
 
 ## Harness Shape
 
@@ -231,6 +241,9 @@ harness or explicitly classified before the clean tail rerun:
   atomics (`kad-165.12`).
 - `non262/Promise/any-stack-overflow.js`: browser process-worker stack/resource
   tracker (`kad-6wx`).
+- `non262/regress/{regress-96526-002,regress-329530,regress-192414,
+  regress-234389,regress-311629,regress-152646}.js`: browser process-worker
+  stack/resource cluster found during PR #697 follow-up validation (`kd-ymw`).
 - `non262/Intl/default-locale-shell.js`: browser default locale mismatch
   tracker (`kad-2tp`).
 - `test262/staging/sm/expressions/{destructuring-pattern-parenthesized,
