@@ -133,6 +133,11 @@ if ! grep -q '#include <stdint.h>' "$SRC_DIR/wasm/machine.c"; then
     rm -f "$SRC_DIR/wasm/machine.c.bak"
 fi
 
+if ! grep -q 'kandelo_require_libraries_state' "$SRC_DIR/ruby.c"; then
+    echo "==> Patching ruby.c: keeping command-line -r preload roots visible..."
+    patch -d "$SRC_DIR" -p1 < "$SCRIPT_DIR/patches/kandelo-require-libraries-roots.patch"
+fi
+
 
 # ─── Phase 1: Build host-native Ruby ─────────────────────────────────
 if [ ! -x "$HOST_BUILD_DIR/miniruby" ]; then
@@ -708,7 +713,11 @@ elif [ -f miniruby ]; then
     cp miniruby "$BIN_DIR/ruby.wasm"
 fi
 
+ROOT_SPILL="$REPO_ROOT/scripts/run-wasm-local-root-spill.sh"
 FORK_INSTRUMENT="$REPO_ROOT/scripts/run-wasm-fork-instrument.sh"
+echo "==> Applying wasm-local-root-spill to ruby.wasm..."
+"$ROOT_SPILL" --profile ruby "$BIN_DIR/ruby.wasm" -o "$BIN_DIR/ruby.wasm.roots"
+mv "$BIN_DIR/ruby.wasm.roots" "$BIN_DIR/ruby.wasm"
 echo "==> Applying wasm-fork-instrument to ruby.wasm..."
 "$FORK_INSTRUMENT" "$BIN_DIR/ruby.wasm" -o "$BIN_DIR/ruby.wasm.instr"
 mv "$BIN_DIR/ruby.wasm.instr" "$BIN_DIR/ruby.wasm"

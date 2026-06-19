@@ -1,0 +1,103 @@
+diff --git a/ruby.c b/ruby.c
+--- a/ruby.c
++++ b/ruby.c
+@@ -780,0 +781,41 @@ add_modules(VALUE *req_list, const char *mod)
++#if defined(RUBY_KANDELO_POSIX)
++struct kandelo_require_libraries_state {
++    VALUE *req_list;
++    VALUE list;
++    VALUE self;
++    VALUE feature;
++    ID require;
++    rb_encoding *extenc;
++};
++
++static VALUE
++kandelo_require_libraries_body(VALUE arg)
++{
++    struct kandelo_require_libraries_state *state =
++        (struct kandelo_require_libraries_state *)arg;
++
++    while (state->list && RARRAY_LEN(state->list) > 0) {
++        state->feature = rb_ary_shift(state->list);
++        rb_enc_associate(state->feature, state->extenc);
++        RBASIC_SET_CLASS_RAW(state->feature, rb_cString);
++        OBJ_FREEZE(state->feature);
++        rb_funcallv(state->self, state->require, 1, &state->feature);
++        state->feature = Qnil;
++    }
++    *state->req_list = 0;
++    return Qnil;
++}
++
++static VALUE
++kandelo_require_libraries_ensure(VALUE arg)
++{
++    struct kandelo_require_libraries_state *state =
++        (struct kandelo_require_libraries_state *)arg;
++
++    rb_gc_unregister_address(&state->feature);
++    rb_gc_unregister_address(&state->self);
++    rb_gc_unregister_address(&state->list);
++    return Qnil;
++}
++#endif
++
+@@ -782,18 +823,39 @@
+-static void
+-require_libraries(VALUE *req_list)
+-{
+-    VALUE list = *req_list;
+-    VALUE self = rb_vm_top_self();
+-    ID require;
+-    rb_encoding *extenc = rb_default_external_encoding();
+-
+-    CONST_ID(require, "require");
+-    while (list && RARRAY_LEN(list) > 0) {
+-        VALUE feature = rb_ary_shift(list);
+-        rb_enc_associate(feature, extenc);
+-        RBASIC_SET_CLASS_RAW(feature, rb_cString);
+-        OBJ_FREEZE(feature);
+-        rb_funcallv(self, require, 1, &feature);
+-    }
+-    *req_list = 0;
+-}
++static void
++require_libraries(VALUE *req_list)
++{
++#if defined(RUBY_KANDELO_POSIX)
++    struct kandelo_require_libraries_state state = {0};
++    ID require;
++
++    state.req_list = req_list;
++    state.list = Qnil;
++    state.self = Qnil;
++    state.feature = Qnil;
++    rb_gc_register_address(&state.list);
++    rb_gc_register_address(&state.self);
++    rb_gc_register_address(&state.feature);
++
++    state.list = *req_list;
++    state.self = rb_vm_top_self();
++    state.extenc = rb_default_external_encoding();
++    CONST_ID(require, "require");
++    state.require = require;
++    rb_ensure(kandelo_require_libraries_body, (VALUE)&state,
++              kandelo_require_libraries_ensure, (VALUE)&state);
++#else
++    VALUE list = *req_list;
++    VALUE self = rb_vm_top_self();
++    ID require;
++    rb_encoding *extenc = rb_default_external_encoding();
++
++    CONST_ID(require, "require");
++    while (list && RARRAY_LEN(list) > 0) {
++        VALUE feature = rb_ary_shift(list);
++        rb_enc_associate(feature, extenc);
++        RBASIC_SET_CLASS_RAW(feature, rb_cString);
++        OBJ_FREEZE(feature);
++        rb_funcallv(self, require, 1, &feature);
++    }
++    *req_list = 0;
++#endif
++}
