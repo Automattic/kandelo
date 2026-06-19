@@ -216,6 +216,234 @@ p.write_text(s)
 PY
 fi
 
+# The cooperative VM interrupt above preserves normal max_execution_time
+# behavior, but it cannot asynchronously interrupt a CPU-bound Wasm function.
+# If PHP first regains control after both max_execution_time and hard_timeout
+# elapsed, report the native hard-timeout diagnostic that upstream emits from
+# its signal handler.
+if [ -f Zend/zend_execute_API.c ] \
+   && ! grep -q "wasm-vm-interrupt-hard-timeout patch applied" Zend/zend_execute_API.c; then
+    python3 - <<'PY'
+from pathlib import Path
+
+p = Path("Zend/zend_execute_API.c")
+s = p.read_text()
+
+def replace_once(old: str, new: str, label: str) -> None:
+    global s
+    if old not in s:
+        raise SystemExit(f"Zend hard-timeout patch: could not find {label}")
+    s = s.replace(old, new, 1)
+
+if '#include "zend_hrtime.h"' not in s:
+    replace_once(
+        '#include "zend_call_stack.h"\n',
+        '#include "zend_call_stack.h"\n'
+        '#if defined(__wasm32__) || defined(__wasm64__)\n'
+        '#include "zend_hrtime.h"\n'
+        '#endif\n',
+        "zend_call_stack include",
+    )
+
+replace_once(
+    "static void zend_set_timeout_ex(zend_long seconds, bool reset_signals);\n"
+    "#if defined(__wasm32__) || defined(__wasm64__)\n"
+    "extern void __wasm_posix_vm_interrupt_after(void *timed_out, void *vm_interrupt, zend_long seconds);\n"
+    "#endif\n"
+    "/* wasm-vm-interrupt-timer patch applied */\n",
+    "static void zend_set_timeout_ex(zend_long seconds, bool reset_signals);\n"
+    "#if defined(__wasm32__) || defined(__wasm64__)\n"
+    "extern void __wasm_posix_vm_interrupt_after(void *timed_out, void *vm_interrupt, zend_long seconds);\n"
+    "\n"
+    "static zend_hrtime_t zend_wasm_timeout_deadline = 0;\n"
+    "static zend_hrtime_t zend_wasm_hard_timeout_deadline = 0;\n"
+    "\n"
+    "#define ZEND_WASM_HRTIME_MAX ((zend_hrtime_t) -1)\n"
+    "#define ZEND_WASM_INTERRUPT_EARLY_NS UINT64_C(100000000)\n"
+    "\n"
+    "static zend_always_inline zend_hrtime_t zend_wasm_timeout_seconds_to_ns(zend_long seconds)\n"
+    "{\n"
+    "\tif (seconds <= 0) {\n"
+    "\t\treturn 0;\n"
+    "\t}\n"
+    "\tif ((zend_hrtime_t) seconds > ZEND_WASM_HRTIME_MAX / (zend_hrtime_t) ZEND_NANO_IN_SEC) {\n"
+    "\t\treturn ZEND_WASM_HRTIME_MAX;\n"
+    "\t}\n"
+    "\treturn (zend_hrtime_t) seconds * (zend_hrtime_t) ZEND_NANO_IN_SEC;\n"
+    "}\n"
+    "\n"
+    "static zend_always_inline zend_hrtime_t zend_wasm_deadline_after(zend_hrtime_t now, zend_hrtime_t delay_ns)\n"
+    "{\n"
+    "\tif (delay_ns > ZEND_WASM_HRTIME_MAX - now) {\n"
+    "\t\treturn ZEND_WASM_HRTIME_MAX;\n"
+    "\t}\n"
+    "\treturn now + delay_ns;\n"
+    "}\n"
+    "\n"
+    "static zend_always_inline void zend_wasm_clear_timeout_deadlines(void)\n"
+    "{\n"
+    "\tzend_wasm_timeout_deadline = 0;\n"
+    "\tzend_wasm_hard_timeout_deadline = 0;\n"
+    "}\n"
+    "\n"
+    "static zend_always_inline void zend_wasm_record_timeout_deadline(zend_long seconds)\n"
+    "{\n"
+    "\tzend_hrtime_t now = zend_hrtime();\n"
+    "\tzend_hrtime_t timeout_ns = zend_wasm_timeout_seconds_to_ns(seconds);\n"
+    "\tzend_wasm_timeout_deadline = zend_wasm_deadline_after(now, timeout_ns);\n"
+    "\tif (EG(hard_timeout) > 0) {\n"
+    "\t\tzend_hrtime_t hard_ns = zend_wasm_timeout_seconds_to_ns(EG(hard_timeout));\n"
+    "\t\tzend_wasm_hard_timeout_deadline = zend_wasm_deadline_after(zend_wasm_timeout_deadline, hard_ns);\n"
+    "\t} else {\n"
+    "\t\tzend_wasm_hard_timeout_deadline = 0;\n"
+    "\t}\n"
+    "}\n"
+    "\n"
+    "static zend_always_inline void zend_wasm_arm_hard_timeout(zend_long seconds)\n"
+    "{\n"
+    "\tzend_hrtime_t now = zend_hrtime();\n"
+    "\tzend_hrtime_t hard_ns = zend_wasm_timeout_seconds_to_ns(seconds);\n"
+    "\tzend_wasm_timeout_deadline = 0;\n"
+    "\tzend_wasm_hard_timeout_deadline = zend_wasm_deadline_after(now, hard_ns);\n"
+    "}\n"
+    "\n"
+    "static zend_always_inline bool zend_wasm_hard_timeout_expired(void)\n"
+    "{\n"
+    "\tzend_hrtime_t now;\n"
+    "\tif (EG(hard_timeout) <= 0 || zend_wasm_hard_timeout_deadline == 0) {\n"
+    "\t\treturn false;\n"
+    "\t}\n"
+    "\tnow = zend_hrtime();\n"
+    "\treturn now >= zend_wasm_hard_timeout_deadline\n"
+    "\t\t|| zend_wasm_hard_timeout_deadline - now <= ZEND_WASM_INTERRUPT_EARLY_NS;\n"
+    "}\n"
+    "\n"
+    "static ZEND_COLD void zend_wasm_hard_timeout_exit(void)\n"
+    "{\n"
+    "\tconst char *error_filename = NULL;\n"
+    "\tuint32_t error_lineno = 0;\n"
+    "\tchar log_buffer[2048];\n"
+    "\tint output_len = 0;\n"
+    "\n"
+    "\tif (zend_is_compiling()) {\n"
+    "\t\terror_filename = ZSTR_VAL(zend_get_compiled_filename());\n"
+    "\t\terror_lineno = zend_get_compiled_lineno();\n"
+    "\t} else if (zend_is_executing()) {\n"
+    "\t\terror_filename = zend_get_executed_filename();\n"
+    "\t\tif (error_filename[0] == '[') {\n"
+    "\t\t\terror_filename = NULL;\n"
+    "\t\t\terror_lineno = 0;\n"
+    "\t\t} else {\n"
+    "\t\t\terror_lineno = zend_get_executed_lineno();\n"
+    "\t\t}\n"
+    "\t}\n"
+    "\tif (!error_filename) {\n"
+    "\t\terror_filename = \"Unknown\";\n"
+    "\t}\n"
+    "\n"
+    "\toutput_len = snprintf(log_buffer, sizeof(log_buffer), \"\\nFatal error: Maximum execution time of \" ZEND_LONG_FMT \"+\" ZEND_LONG_FMT \" seconds exceeded (terminated) in %s on line %d\\n\", EG(timeout_seconds), EG(hard_timeout), error_filename, error_lineno);\n"
+    "\tif (output_len > 0) {\n"
+    "\t\tzend_quiet_write(2, log_buffer, MIN(output_len, sizeof(log_buffer)));\n"
+    "\t}\n"
+    "\t_exit(124);\n"
+    "}\n"
+    "#endif\n"
+    "/* wasm-vm-interrupt-hard-timeout patch applied */\n",
+    "wasm timeout declaration",
+)
+
+replace_once(
+    "#elif defined(ZEND_MAX_EXECUTION_TIMERS)\n"
+    "# if defined(__wasm32__) || defined(__wasm64__)\n"
+    "\t/*\n"
+    "\t * Schedule the cooperative Wasm VM interrupt only for the normal\n"
+    "\t * timeout phase (or for seconds=0 cancellation). PHP's native\n"
+    "\t * ZEND_MAX_EXECUTION_TIMERS path sets EG(timed_out) before arming\n"
+    "\t * hard_timeout, and that hard timeout must continue to be enforced\n"
+    "\t * by the POSIX timer signal path so PHP reports n+hard seconds and\n"
+    "\t * exits like a normal POSIX build.\n"
+    "\t */\n"
+    "\tif (seconds <= 0 || !zend_atomic_bool_load_ex(&EG(timed_out))) {\n"
+    "\t\t__wasm_posix_vm_interrupt_after(&EG(timed_out), &EG(vm_interrupt), seconds);\n"
+    "\t}\n"
+    "# endif\n"
+    "\tzend_max_execution_timer_settime(seconds);\n",
+    "#elif defined(ZEND_MAX_EXECUTION_TIMERS)\n"
+    "# if defined(__wasm32__) || defined(__wasm64__)\n"
+    "\t/*\n"
+    "\t * Host-side timers set Zend's cooperative VM interrupt flags. They\n"
+    "\t * cannot asynchronously unwind an already-running Wasm function, so keep\n"
+    "\t * absolute deadlines here and report the native hard-timeout diagnostic\n"
+    "\t * if PHP first regains control after max_execution_time+hard_timeout.\n"
+    "\t */\n"
+    "\tif (seconds <= 0) {\n"
+    "\t\tzend_wasm_clear_timeout_deadlines();\n"
+    "\t\t__wasm_posix_vm_interrupt_after(&EG(timed_out), &EG(vm_interrupt), seconds);\n"
+    "\t} else if (!zend_atomic_bool_load_ex(&EG(timed_out))) {\n"
+    "\t\tzend_wasm_record_timeout_deadline(seconds);\n"
+    "\t\t__wasm_posix_vm_interrupt_after(&EG(timed_out), &EG(vm_interrupt), seconds);\n"
+    "\t}\n"
+    "# endif\n"
+    "\tzend_max_execution_timer_settime(seconds);\n",
+    "wasm timeout scheduling",
+)
+
+replace_once(
+    "#else\n"
+    "\tzend_atomic_bool_store_ex(&EG(timed_out), false);\n"
+    "\tzend_set_timeout_ex(0, 1);\n"
+    "# if defined(__wasm32__) || defined(__wasm64__)\n"
+    "\t/*\n"
+    "\t * When the cooperative Wasm VM interrupt observes the soft timeout\n"
+    "\t * before the POSIX signal is delivered, the disarm above prevents PHP's\n"
+    "\t * native signal handler from arming hard_timeout. Re-arm the cooperative\n"
+    "\t * interrupt for the shutdown hard-timeout window so runaway shutdown\n"
+    "\t * handlers terminate like they do on a POSIX build.\n"
+    "\t */\n"
+    "\tif (EG(hard_timeout) > 0) {\n"
+    "\t\t__wasm_posix_vm_interrupt_after(&EG(timed_out), &EG(vm_interrupt), EG(hard_timeout));\n"
+    "\t\tEG(hard_timeout) = 0;\n"
+    "\t}\n"
+    "# endif\n"
+    "#endif\n\n"
+    "\tzend_error_noreturn(E_ERROR, \"Maximum execution time of \" ZEND_LONG_FMT \" second%s exceeded\", EG(timeout_seconds), EG(timeout_seconds) == 1 ? \"\" : \"s\");\n",
+    "#else\n"
+    "# if defined(__wasm32__) || defined(__wasm64__)\n"
+    "\tif (zend_wasm_hard_timeout_expired()) {\n"
+    "\t\tzend_wasm_hard_timeout_exit();\n"
+    "\t}\n"
+    "# endif\n"
+    "\tzend_atomic_bool_store_ex(&EG(timed_out), false);\n"
+    "\tzend_set_timeout_ex(0, 1);\n"
+    "# if defined(__wasm32__) || defined(__wasm64__)\n"
+    "\tif (EG(hard_timeout) > 0) {\n"
+    "\t\tzend_wasm_arm_hard_timeout(EG(hard_timeout));\n"
+    "\t\t__wasm_posix_vm_interrupt_after(&EG(timed_out), &EG(vm_interrupt), EG(hard_timeout));\n"
+    "\t}\n"
+    "# endif\n"
+    "#endif\n\n"
+    "\tzend_error_noreturn(E_ERROR, \"Maximum execution time of \" ZEND_LONG_FMT \" second%s exceeded\", EG(timeout_seconds), EG(timeout_seconds) == 1 ? \"\" : \"s\");\n",
+    "wasm zend_timeout body",
+)
+
+replace_once(
+    "#elif ZEND_MAX_EXECUTION_TIMERS\n"
+    "\tzend_max_execution_timer_settime(0);\n"
+    "#elif defined(HAVE_SETITIMER)\n",
+    "#elif ZEND_MAX_EXECUTION_TIMERS\n"
+    "\tzend_max_execution_timer_settime(0);\n"
+    "# if defined(__wasm32__) || defined(__wasm64__)\n"
+    "\tzend_wasm_clear_timeout_deadlines();\n"
+    "\t__wasm_posix_vm_interrupt_after(&EG(timed_out), &EG(vm_interrupt), 0);\n"
+    "# endif\n"
+    "#elif defined(HAVE_SETITIMER)\n",
+    "zend_unset_timeout max execution timer body",
+)
+
+p.write_text(s)
+PY
+fi
+
 # opcache's MAP_ANON shared-memory probe is an AC_RUN_IFELSE that fails
 # under cross-compilation; the fallback only sets have_shm_mmap_anon=yes
 # for *linux* hosts (configure ext/opcache/config.m4). Without this
