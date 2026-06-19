@@ -221,6 +221,9 @@ fn serialize_fork_state_with_growing_buffer(parent: &Process) -> Result<Vec<u8>,
 
     loop {
         let mut buf = Vec::new();
+        if buf.try_reserve_exact(len).is_err() {
+            return Err(Errno::ENOMEM);
+        }
         buf.resize(len, 0u8);
 
         match crate::fork::serialize_fork_state(parent, &mut buf) {

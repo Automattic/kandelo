@@ -4505,7 +4505,7 @@ pub fn sys_mremap(
     if aligned_new <= aligned_old {
         if aligned_new < aligned_old {
             proc.memory
-                .munmap(old_addr + aligned_new, aligned_old - aligned_new);
+                .munmap(old_addr + aligned_new, aligned_old - aligned_new)?;
         }
         return Ok(old_addr);
     }
@@ -4535,7 +4535,7 @@ pub fn sys_mremap(
         if new_addr == wasm_posix_shared::mmap::MAP_FAILED {
             return Err(Errno::ENOMEM);
         }
-        proc.memory.munmap(old_addr, aligned_old);
+        proc.memory.munmap(old_addr, aligned_old)?;
         return Ok(new_addr);
     }
 
@@ -4748,7 +4748,7 @@ pub fn sys_munmap(
 
     // Linux munmap succeeds (returns 0) even if no mappings overlap the range,
     // as long as the address is valid and page-aligned.
-    proc.memory.munmap(addr, len);
+    proc.memory.munmap(addr, len)?;
     Ok(())
 }
 
