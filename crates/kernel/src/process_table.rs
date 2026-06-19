@@ -949,7 +949,7 @@ mod wait_tests {
         let mut table = ProcessTable::new();
 
         let first_pid = table.allocate_spawn_pid();
-        table.processes.insert(first_pid, Process::new_boxed(first_pid));
+        table.processes.insert(first_pid, *Process::new_boxed(first_pid));
         table.processes.remove(&first_pid);
 
         let second_pid = table.allocate_spawn_pid();
