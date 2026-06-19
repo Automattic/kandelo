@@ -1234,6 +1234,129 @@ pub fn deserialize_fork_state(buf: &[u8], child_pid: u32) -> Result<Process, Err
     })
 }
 
+#[inline(never)]
+fn read_fork_socket_table(r: &mut Reader<'_>) -> Result<SocketTable, Errno> {
+    let mut sockets = SocketTable::new();
+    if r.remaining() < 8 {
+        return Ok(sockets);
+    }
+
+    use crate::socket::{SocketDomain, SocketInfo, SocketState, SocketType};
+    let _total_slots = r.read_u32()? as usize;
+    let sock_count = r.read_u32()? as usize;
+    for _ in 0..sock_count {
+        let idx = r.read_u32()? as usize;
+        let domain = match r.read_u32()? {
+            0 => SocketDomain::Unix,
+            1 => SocketDomain::Inet,
+            2 => SocketDomain::Inet6,
+            3 => SocketDomain::Netlink,
+            _ => return Err(Errno::EINVAL),
+        };
+        let sock_type = match r.read_u32()? {
+            0 => SocketType::Stream,
+            1 => SocketType::Dgram,
+            _ => return Err(Errno::EINVAL),
+        };
+        let protocol = r.read_u32()?;
+        let state = match r.read_u32()? {
+            0 => SocketState::Unbound,
+            1 => SocketState::Bound,
+            2 => SocketState::Listening,
+            3 => SocketState::Connected,
+            4 => SocketState::Closed,
+            _ => return Err(Errno::EINVAL),
+        };
+        let peer_idx_raw = r.read_u32()?;
+        let peer_idx = if peer_idx_raw == 0xFFFFFFFF {
+            None
+        } else {
+            Some(peer_idx_raw as usize)
+        };
+        let recv_raw = r.read_u32()?;
+        let recv_buf_idx = if recv_raw == 0xFFFFFFFF {
+            None
+        } else {
+            Some(recv_raw as usize)
+        };
+        let send_raw = r.read_u32()?;
+        let send_buf_idx = if send_raw == 0xFFFFFFFF {
+            None
+        } else {
+            Some(send_raw as usize)
+        };
+        let shut_rd = r.read_u32()? != 0;
+        let shut_wr = r.read_u32()? != 0;
+        let host_handle_raw = r.read_u32()?;
+        let host_net_handle = if host_handle_raw == 0xFFFFFFFF {
+            None
+        } else {
+            Some(host_handle_raw as i32)
+        };
+
+        let opt_count = r.read_u32()? as usize;
+        let mut options = Vec::new();
+        for _ in 0..opt_count {
+            let level = r.read_u32()?;
+            let optname = r.read_u32()?;
+            let value = r.read_u32()?;
+            options.push((level, optname, value));
+        }
+
+        let mut bind_addr = [0u8; 4];
+        bind_addr.copy_from_slice(r.read_bytes(4)?);
+        let bind_port = r.read_u32()? as u16;
+        let mut peer_addr = [0u8; 4];
+        peer_addr.copy_from_slice(r.read_bytes(4)?);
+        let peer_port = r.read_u32()? as u16;
+
+        let backlog_count = r.read_u32()? as usize;
+        for _ in 0..backlog_count {
+            let _ = r.read_u32()?;
+        }
+
+        let mut sock = SocketInfo::new(domain, sock_type, protocol);
+        sock.state = state;
+        sock.peer_idx = peer_idx;
+        sock.recv_buf_idx = recv_buf_idx;
+        sock.send_buf_idx = send_buf_idx;
+        sock.shut_rd = shut_rd;
+        sock.shut_wr = shut_wr;
+        sock.host_net_handle = host_net_handle;
+        sock.options = options;
+        sock.bind_addr = bind_addr;
+        sock.bind_port = bind_port;
+        sock.peer_addr = peer_addr;
+        sock.peer_port = peer_port;
+        sock.global_pipes = r.read_u32()? != 0;
+
+        let shared_backlog_raw = r.read_u32()?;
+        sock.shared_backlog_idx = if shared_backlog_raw == 0xFFFFFFFF {
+            None
+        } else {
+            Some(shared_backlog_raw as usize)
+        };
+
+        if r.remaining() >= 4 {
+            let bind_path_len = r.read_u32()?;
+            if bind_path_len != 0xFFFFFFFF {
+                sock.bind_path = Some(r.read_bytes(bind_path_len as usize)?.to_vec());
+            }
+        }
+        if r.remaining() >= 4 {
+            let accept_wake_raw = r.read_u32()?;
+            sock.accept_wake_idx = if accept_wake_raw == 0xFFFFFFFF {
+                None
+            } else {
+                Some(accept_wake_raw)
+            };
+        }
+        sockets.insert_at(idx, sock);
+    }
+
+    Ok(sockets)
+}
+
 // ── Exec Serialize ──────────────────────────────────────────────────────────
 
 /// Serialize the process state into a binary buffer for exec.
