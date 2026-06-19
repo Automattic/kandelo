@@ -1,6 +1,6 @@
 extern crate alloc;
 
-use alloc::vec::Vec;
+use alloc::{boxed::Box, vec::Vec};
 use wasm_posix_shared::{Errno, WasmStat, WasmStatfs};
 
 use crate::fd::FdTable;
@@ -601,6 +601,17 @@ impl Process {
     /// - OFD 1 = stdout (CharDevice, O_WRONLY, host_handle=1)
     /// - OFD 2 = stderr (CharDevice, O_WRONLY, host_handle=2)
     pub fn new(pid: u32) -> Self {
+        *Self::new_boxed(pid)
+    }
+
+    /// Heap-allocate a new process record for call sites that should avoid
+    /// keeping a `Process` value in their own stack frame.
+    #[inline(never)]
+    pub fn new_boxed(pid: u32) -> Box<Self> {
+        Box::new(Self::new_value(pid))
+    }
+
+    fn new_value(pid: u32) -> Self {
         use crate::ofd::FileType;
         use wasm_posix_shared::flags::{O_RDONLY, O_WRONLY};
 
