@@ -1368,11 +1368,6 @@ class NodePhpRunner implements PhpRunner {
             `TEST_PHP_SRCDIR=/php-src`,
             `TEST_PHP_EXECUTABLE=${this.virtualPhpPath}`,
             `TEST_PHP_EXECUTABLE_ESCAPED=${shellEscape(this.virtualPhpPath)}`,
-            // Kandelo's PHP build reports PHP_BINARY as an empty string.
-            // php-src helpers such as ServerClientTestCase.inc build worker
-            // commands as "PHP_BINARY TEST_PHP_EXTRA_ARGS ..."; supplying the
-            // executable here makes those generic helpers spawn PHP workers.
-            `TEST_PHP_EXTRA_ARGS=${this.virtualPhpPath}`,
             ...opts.env,
           ],
           stdin,
