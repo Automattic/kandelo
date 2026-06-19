@@ -24,7 +24,9 @@ pub mod host_abi;
 ///     with a wasm-declared reserved thread-slot count.
 /// 15: remove the obsolete `kernel_set_mode` export; the kernel is always
 ///     the shared point of contact for all programs.
-pub const ABI_VERSION: u32 = 15;
+/// 16: remove the obsolete `kernel_mark_process_exited` export and split
+///     `kernel_preadv`/`kernel_pwritev` offsets into explicit lo/hi i32 args.
+pub const ABI_VERSION: u32 = 16;
 
 /// Syscall numbers for the POSIX kernel interface.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

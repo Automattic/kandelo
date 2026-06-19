@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
-import { mkdtempSync, writeFileSync, readFileSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, writeFileSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { VirtualPlatformIO } from "../src/vfs/vfs";
@@ -356,8 +356,14 @@ describe("HostFileSystem path traversal", () => {
   });
 
   it("rejects paths with embedded .. sequences", () => {
-    const hfs = new HostFileSystem("/tmp/sandbox");
-    expect(() => hfs.stat("/subdir/../../etc/passwd")).toThrow("EACCES");
+    const root = mkdtempSync(join(tmpdir(), "kandelo-vfs-"));
+    try {
+      mkdirSync(join(root, "subdir"));
+      const hfs = new HostFileSystem(root);
+      expect(() => hfs.stat("/subdir/../../etc/passwd")).toThrow("EACCES");
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 });
 

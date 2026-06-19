@@ -6,6 +6,7 @@ describe("SIOCGIFCONF / SIOCGIFHWADDR", () => {
   it("returns a virtual MAC address via ioctl", async () => {
     const result = await runCentralizedProgram({
       programPath: resolveBinary("programs/ifhwaddr.wasm"),
+      useDefaultRootfs: false,
       timeout: 10_000,
     });
 
