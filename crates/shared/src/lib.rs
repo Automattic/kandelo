@@ -360,6 +360,7 @@ pub enum Errno {
     EBUSY = 16,
     EEXIST = 17,
     EXDEV = 18,
+    ENODEV = 19,
     ENOTDIR = 20,
     EISDIR = 21,
     EINVAL = 22,
@@ -424,6 +425,7 @@ impl Errno {
             16 => Some(Errno::EBUSY),
             17 => Some(Errno::EEXIST),
             18 => Some(Errno::EXDEV),
+            19 => Some(Errno::ENODEV),
             20 => Some(Errno::ENOTDIR),
             21 => Some(Errno::EISDIR),
             22 => Some(Errno::EINVAL),
@@ -579,6 +581,7 @@ pub mod socket {
     // time64 values used by musl on wasm32 (where __LONG_MAX == 0x7fffffff)
     pub const SO_RCVTIMEO: u32 = 66;
     pub const SO_SNDTIMEO: u32 = 67;
+    pub const IPPROTO_IP: u32 = 0;
     pub const IPPROTO_TCP: u32 = 6;
     pub const IPPROTO_UDP: u32 = 17;
     pub const IPPROTO_IPV6: u32 = 41;
