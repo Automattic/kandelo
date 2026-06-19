@@ -21,16 +21,19 @@ SYSROOT="$REPO_ROOT/sysroot"
 GLUE_DIR="$REPO_ROOT/libc/glue"
 
 find_llvm_bin() {
-    if [ -n "${LLVM_BIN:-}" ]; then echo "$LLVM_BIN"; return; fi
-    local brew_prefix
-    if brew_prefix=$(brew --prefix llvm 2>/dev/null) && [ -d "$brew_prefix/bin" ]; then
-        echo "$brew_prefix/bin"; return
+    if [ -n "${LLVM_BIN:-}" ] && [ -x "$LLVM_BIN/clang" ]; then
+        echo "$LLVM_BIN"
+        return
     fi
-    for v in 21 20 19 18 17 16 15; do
-        if [ -x "/usr/bin/clang-$v" ]; then echo "/usr/bin"; return; fi
-    done
-    if command -v clang >/dev/null 2>&1; then echo "$(dirname "$(command -v clang)")"; return; fi
-    echo "Error: LLVM/clang not found. Set LLVM_BIN or install LLVM." >&2
+    if [ -n "${LLVM_PREFIX:-}" ] && [ -x "$LLVM_PREFIX/bin/clang" ]; then
+        echo "$LLVM_PREFIX/bin"
+        return
+    fi
+    if command -v clang >/dev/null 2>&1; then
+        dirname "$(command -v clang)"
+        return
+    fi
+    echo "Error: LLVM/clang not found. Run scripts/dev-shell.sh or set LLVM_BIN/LLVM_PREFIX." >&2
     exit 1
 }
 

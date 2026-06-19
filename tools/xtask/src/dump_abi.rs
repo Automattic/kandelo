@@ -882,7 +882,16 @@ fn channel_signal_area() -> Value {
 }
 
 fn marshalled_structs() -> Value {
+    use shared::dri::{
+        WpkDrmBindForeignTexture, WpkDrmEventVblank, WpkDrmGemClose, WpkDrmGetCap,
+        WpkDrmGpuBoCreate, WpkDrmModeCardRes, WpkDrmModeCreateDumb,
+        WpkDrmModeCrtcPageFlip, WpkDrmModeDestroyDumb, WpkDrmModeFbCmd2,
+        WpkDrmModeGetConnector, WpkDrmModeGetCrtc, WpkDrmModeGetEncoder,
+        WpkDrmModeMapDumb, WpkDrmModeModeinfo, WpkDrmPrimeHandle, WpkDrmVersion,
+        WpkDrmWaitVblankReply, WpkDrmWaitVblankRequest,
+    };
     use shared::fbdev::{FbBitfield, FbFixScreenInfo, FbVarScreenInfo};
+    use shared::gl::{GlContextAttrs, GlQueryInfo, GlSubmitInfo, GlSurfaceAttrs};
     use shared::{WasmDirent, WasmFlock, WasmPollFd, WasmStat, WasmStatfs, WasmTimespec};
 
     let mut structs: JsonMap = BTreeMap::new();
@@ -1016,6 +1025,245 @@ fn marshalled_structs() -> Value {
             capabilities,
             reserved,
             _pad_to_80,
+        }),
+    );
+    structs.insert(
+        "GlSubmitInfo".into(),
+        struct_layout!(GlSubmitInfo { offset, length }),
+    );
+    structs.insert(
+        "GlContextAttrs".into(),
+        struct_layout!(GlContextAttrs {
+            client_version,
+            reserved
+        }),
+    );
+    structs.insert(
+        "GlSurfaceAttrs".into(),
+        struct_layout!(GlSurfaceAttrs {
+            kind,
+            width,
+            height,
+            config_id,
+            reserved
+        }),
+    );
+    structs.insert(
+        "GlQueryInfo".into(),
+        struct_layout!(GlQueryInfo {
+            op,
+            in_buf_ptr,
+            in_buf_len,
+            out_buf_ptr,
+            out_buf_len,
+            reserved
+        }),
+    );
+    structs.insert(
+        "WpkDrmModeCreateDumb".into(),
+        struct_layout!(WpkDrmModeCreateDumb {
+            height,
+            width,
+            bpp,
+            flags,
+            handle,
+            pitch,
+            size
+        }),
+    );
+    structs.insert(
+        "WpkDrmModeMapDumb".into(),
+        struct_layout!(WpkDrmModeMapDumb {
+            handle,
+            pad,
+            offset
+        }),
+    );
+    structs.insert(
+        "WpkDrmModeDestroyDumb".into(),
+        struct_layout!(WpkDrmModeDestroyDumb { handle }),
+    );
+    structs.insert(
+        "WpkDrmGemClose".into(),
+        struct_layout!(WpkDrmGemClose { handle, pad }),
+    );
+    structs.insert(
+        "WpkDrmPrimeHandle".into(),
+        struct_layout!(WpkDrmPrimeHandle {
+            handle,
+            flags,
+            fd
+        }),
+    );
+    structs.insert(
+        "WpkDrmGetCap".into(),
+        struct_layout!(WpkDrmGetCap { capability, value }),
+    );
+    structs.insert(
+        "WpkDrmVersion".into(),
+        struct_layout!(WpkDrmVersion {
+            version_major,
+            version_minor,
+            version_patchlevel,
+            name_len,
+            name_ptr,
+            date_len,
+            date_ptr,
+            desc_len,
+            desc_ptr
+        }),
+    );
+    structs.insert(
+        "WpkDrmGpuBoCreate".into(),
+        struct_layout!(WpkDrmGpuBoCreate {
+            width,
+            height,
+            format,
+            usage
+        }),
+    );
+    structs.insert(
+        "WpkDrmBindForeignTexture".into(),
+        struct_layout!(WpkDrmBindForeignTexture {
+            bo_handle,
+            gl_target,
+            ctx_id,
+            gl_texture_id
+        }),
+    );
+    structs.insert(
+        "WpkDrmModeCardRes".into(),
+        struct_layout!(WpkDrmModeCardRes {
+            fb_id_ptr,
+            crtc_id_ptr,
+            connector_id_ptr,
+            encoder_id_ptr,
+            count_fbs,
+            count_crtcs,
+            count_connectors,
+            count_encoders,
+            min_width,
+            max_width,
+            min_height,
+            max_height
+        }),
+    );
+    structs.insert(
+        "WpkDrmModeModeinfo".into(),
+        struct_layout!(WpkDrmModeModeinfo {
+            clock,
+            hdisplay,
+            hsync_start,
+            hsync_end,
+            htotal,
+            hskew,
+            vdisplay,
+            vsync_start,
+            vsync_end,
+            vtotal,
+            vscan,
+            vrefresh,
+            flags,
+            mode_type,
+            name
+        }),
+    );
+    structs.insert(
+        "WpkDrmModeGetCrtc".into(),
+        struct_layout!(WpkDrmModeGetCrtc {
+            set_connectors_ptr,
+            count_connectors,
+            crtc_id,
+            fb_id,
+            x,
+            y,
+            gamma_size,
+            mode_valid,
+            mode
+        }),
+    );
+    structs.insert(
+        "WpkDrmModeGetConnector".into(),
+        struct_layout!(WpkDrmModeGetConnector {
+            encoders_ptr,
+            modes_ptr,
+            props_ptr,
+            prop_values_ptr,
+            count_modes,
+            count_props,
+            count_encoders,
+            encoder_id,
+            connector_id,
+            connector_type,
+            connector_type_id,
+            connection,
+            mm_width,
+            mm_height,
+            subpixel,
+            pad
+        }),
+    );
+    structs.insert(
+        "WpkDrmModeGetEncoder".into(),
+        struct_layout!(WpkDrmModeGetEncoder {
+            encoder_id,
+            encoder_type,
+            crtc_id,
+            possible_crtcs,
+            possible_clones
+        }),
+    );
+    structs.insert(
+        "WpkDrmModeFbCmd2".into(),
+        struct_layout!(WpkDrmModeFbCmd2 {
+            fb_id,
+            width,
+            height,
+            pixel_format,
+            flags,
+            handles,
+            pitches,
+            offsets,
+            modifier
+        }),
+    );
+    structs.insert(
+        "WpkDrmModeCrtcPageFlip".into(),
+        struct_layout!(WpkDrmModeCrtcPageFlip {
+            crtc_id,
+            fb_id,
+            flags,
+            reserved,
+            user_data
+        }),
+    );
+    structs.insert(
+        "WpkDrmEventVblank".into(),
+        struct_layout!(WpkDrmEventVblank {
+            ev_type,
+            length,
+            user_data,
+            tv_sec,
+            tv_usec,
+            sequence,
+            crtc_id
+        }),
+    );
+    structs.insert(
+        "WpkDrmWaitVblankRequest".into(),
+        struct_layout!(WpkDrmWaitVblankRequest {
+            req_type,
+            sequence,
+            signal
+        }),
+    );
+    structs.insert(
+        "WpkDrmWaitVblankReply".into(),
+        struct_layout!(WpkDrmWaitVblankReply {
+            rep_type,
+            sequence,
+            tv_sec,
+            tv_usec
         }),
     );
 

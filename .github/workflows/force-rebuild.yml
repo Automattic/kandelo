@@ -374,6 +374,9 @@ jobs:
           use-gha-cache: false
           use-flakehub: false
 
+      - name: Check libcxx LLVM version
+        run: bash scripts/dev-shell.sh bash scripts/check-libcxx-toolchain-version.sh
+
       - name: Compute cache key
         # Mirrors `prepare-merge.yml` / `staging-build.yml`'s formula
         # exactly so a hit on either workflow's cache warms this one.

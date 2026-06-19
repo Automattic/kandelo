@@ -155,6 +155,21 @@ describe.skipIf(!jsWasm)("SpiderMonkey js shell", () => {
     ]);
   }, DEFAULT_TEST_TIMEOUT);
 
+  it("updates the shell timezone without aborting in mozglue interposers", async () => {
+    const result = await runJs([
+      "if (typeof setTimeZone !== 'function') throw new Error('setTimeZone unavailable')",
+      "setTimeZone('UTC')",
+      "var utcOffset = new Date(0).getTimezoneOffset()",
+      "setTimeZone('PST8PDT')",
+      "var pacificOffset = new Date(0).getTimezoneOffset()",
+      "setTimeZone('UTC')",
+      "print(utcOffset + ',' + pacificOffset)",
+    ].join("\n"));
+
+    expect(result.exitCode).toBe(0);
+    expect(result.stdout.trim()).toBe("0,480");
+  }, DEFAULT_TEST_TIMEOUT);
+
   it("supports SharedArrayBuffer, Atomics, and shell workers", async () => {
     const result = await runJs([
       "var sab = new SharedArrayBuffer(16)",

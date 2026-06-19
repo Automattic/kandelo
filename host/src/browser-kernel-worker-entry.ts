@@ -119,6 +119,15 @@ let defaultThreadSlots: number = DEFAULT_PROCESS_THREAD_SLOTS;
 let defaultEnv: string[] = [];
 const ENOEXEC = 8;
 
+type LazyRegistrationMessage = Extract<
+  MainToKernelMessage,
+  { type: "register_lazy_files" | "register_lazy_archives" }
+>;
+
+let initReady = false;
+let initFailure: string | null = null;
+const pendingLazyRegistrationMessages: LazyRegistrationMessage[] = [];
+
 // Process tracking
 interface ProcessInfo {
   memory: WebAssembly.Memory;
@@ -293,9 +302,33 @@ let kernelMemory: WebAssembly.Memory | null = null;
 // HTTP bridge port (transferred from main thread → service worker comms)
 let bridgePort: MessagePort | null = null;
 let bridgeTargetPort: number | null = null; // The specific HTTP port to route bridge requests to
+let nextBridgeActivityId = 1;
+const activeBridgeRequests = new Set<number>();
 
 function post(msg: KernelToMainMessage, transfer?: Transferable[]) {
   (globalThis as any).postMessage(msg, transfer ?? []);
+}
+
+function reportBridgePendingRequests(): void {
+  post({ type: "http_bridge_pending", count: activeBridgeRequests.size });
+}
+
+function beginBridgeRequest(): number {
+  const activityId = nextBridgeActivityId++;
+  activeBridgeRequests.add(activityId);
+  reportBridgePendingRequests();
+  return activityId;
+}
+
+function endBridgeRequest(activityId: number): void {
+  if (!activeBridgeRequests.delete(activityId)) return;
+  reportBridgePendingRequests();
+}
+
+function resetBridgePendingRequests(): void {
+  if (activeBridgeRequests.size === 0) return;
+  activeBridgeRequests.clear();
+  reportBridgePendingRequests();
 }
 
 function formatError(err: unknown): string {
@@ -311,6 +344,77 @@ function respond(requestId: number, result: unknown) {
 
 function respondError(requestId: number, error: string) {
   post({ type: "response", requestId, result: null, error });
+}
+
+function respondIfRequested(
+  msg: { requestId?: number },
+  result: unknown,
+): void {
+  if (typeof msg.requestId === "number") {
+    respond(msg.requestId, result);
+  }
+}
+
+function respondErrorIfRequested(
+  msg: { requestId?: number },
+  error: string,
+): void {
+  if (typeof msg.requestId === "number") {
+    respondError(msg.requestId, error);
+  }
+}
+
+function reportWorkerProtocolError(message: string): void {
+  console.error(`[kernel-worker] ${message}`);
+  post({
+    type: "stderr",
+    pid: 0,
+    data: new TextEncoder().encode(`[kernel-worker] ${message}\n`),
+  });
+}
+
+function applyLazyRegistration(msg: LazyRegistrationMessage): void {
+  if (msg.type === "register_lazy_files") {
+    memfs.importLazyEntries(msg.entries);
+  } else {
+    memfs.importLazyArchiveEntries(msg.entries);
+  }
+  respondIfRequested(msg, true);
+}
+
+function failPendingLazyRegistrations(error: string): void {
+  const pending = pendingLazyRegistrationMessages.splice(0);
+  for (const msg of pending) {
+    respondErrorIfRequested(msg, error);
+  }
+}
+
+function flushPendingLazyRegistrations(): void {
+  const pending = pendingLazyRegistrationMessages.splice(0);
+  for (const msg of pending) {
+    applyLazyRegistration(msg);
+  }
+}
+
+function handleLazyRegistration(msg: LazyRegistrationMessage): void {
+  if (initFailure) {
+    respondErrorIfRequested(msg, initFailure);
+    reportWorkerProtocolError(
+      `${msg.type} rejected because kernel worker init failed: ${initFailure}`,
+    );
+    return;
+  }
+  if (!initReady) {
+    pendingLazyRegistrationMessages.push(msg);
+    return;
+  }
+  try {
+    applyLazyRegistration(msg);
+  } catch (err) {
+    const error = formatError(err);
+    respondErrorIfRequested(msg, error);
+    reportWorkerProtocolError(`${msg.type} failed: ${error}`);
+  }
 }
 
 function createSharedProcessMemory(
@@ -512,6 +616,8 @@ function resolveLazyUrl(base: string, url: string): string {
 // ── Init ──
 
 async function handleInit(msg: Extract<MainToKernelMessage, { type: "init" }>) {
+  initReady = false;
+  initFailure = null;
   maxPages = msg.config.maxMemoryPages;
   defaultThreadSlots = msg.config.defaultThreadSlots ?? DEFAULT_PROCESS_THREAD_SLOTS;
   defaultEnv = msg.config.env;
@@ -568,6 +674,9 @@ async function handleInit(msg: Extract<MainToKernelMessage, { type: "init" }>) {
   } else {
     throw new Error("init: vfsImage or fsSab required");
   }
+  memfs.subscribeLazyDownloads((event) => {
+    post({ type: "lazy_download", event });
+  });
   io = new VirtualPlatformIO(mounts, new BrowserTimeProvider());
 
   // Create TLS-MITM network backend. Programs do real TLS handshakes via
@@ -718,7 +827,11 @@ async function handleInit(msg: Extract<MainToKernelMessage, { type: "init" }>) {
   // Accept bridge port for HTTP request handling
   if (msg.bridgePort) {
     bridgePort = msg.bridgePort;
+    resetBridgePendingRequests();
   }
+
+  initReady = true;
+  flushPendingLazyRegistrations();
 
   post({ type: "ready" });
 }
@@ -1354,23 +1467,26 @@ async function finishProcessExit(
     // SYS_EXIT_GROUP for this pid, this is a no-op. Mirrors
     // `finalizeProcessWorker` in host/src/node-kernel-worker-entry.ts.
     try { kernelWorker.notifyHostProcessCrashed(pid, crashSignum); } catch { /* best-effort */ }
-    // Check if this is a "top-level" process or a fork child
-    // For now, always deactivate — the main thread tracks exit promises
+
+    // Keep the pid registered until the process worker is gone. musl's
+    // _Exit() loops on SYS_exit after SYS_exit_group returns; while worker
+    // termination is in flight those duplicate exits still need channel
+    // completions, otherwise the worker can park in Atomics.wait with no
+    // registered listener left to wake it.
+    await terminateThreadWorkers(pid);
+    if (info?.worker) {
+      await terminateTrackedWorker(info.worker, settleMs);
+    }
+
+    // Check if this is a "top-level" process or a fork child. For now,
+    // always deactivate after worker termination; the main thread tracks
+    // exit promises, and no further guest syscalls can arrive on this
+    // channel once the worker is gone.
     kernelWorker.deactivateProcess(pid);
 
     processes.delete(pid);
     threadModuleCache.delete(pid);
     ptyByPid.delete(pid);
-
-    // Terminate any surviving thread workers for this process; the main
-    // process worker exiting means their shared state (memory, fd table,
-    // signal mask) is gone. Browser `Worker.terminate()` is fire-and-forget,
-    // so threaded process exits get a short settle window before another
-    // process worker can be launched.
-    await terminateThreadWorkers(pid);
-    if (info?.worker) {
-      await terminateTrackedWorker(info.worker, settleMs);
-    }
   })();
   processTeardowns.set(pid, teardown);
 
@@ -1567,6 +1683,9 @@ async function handleDestroy(msg: Extract<MainToKernelMessage, { type: "destroy"
   threadedProcessPids.clear();
   ptyByPid.clear();
   await waitForProcessTeardowns();
+  initReady = false;
+  initFailure = "kernel worker destroyed";
+  failPendingLazyRegistrations(initFailure);
   respond(msg.requestId, true);
 }
 
@@ -1634,30 +1753,32 @@ function handleRegisterPtyOutput(msg: Extract<MainToKernelMessage, { type: "regi
 
 async function handleHttpRequest(requestId: number, request: any) {
   if (!kernelInstance || !bridgePort) return;
+  const portRef = bridgePort;
+  const activityId = beginBridgeRequest();
   const url = request.url || "?";
 
-  // Resolve the port to dispatch to. The SW bridge configures one
-  // bridgeTargetPort per page; if not set, fall back to the first
-  // registered listener (matches earlier behavior).
-  let port = bridgeTargetPort;
-  if (port == null) {
-    const ports: number[] = Array.from(
-      (kernelWorker as any).tcpListenerTargets?.keys() ?? [],
-    );
-    port = ports[0] ?? null;
-  }
-  if (port == null) {
-    console.warn(`[bridge] no listener target for req#${requestId} ${url}`);
-    bridgePort.postMessage({
-      type: "http-error",
-      requestId,
-      error: "No listener target available",
-    });
-    return;
-  }
-
-  console.log(`[bridge] req#${requestId} ${request.method} ${url} → port=${port}`);
   try {
+    // Resolve the port to dispatch to. The SW bridge configures one
+    // bridgeTargetPort per page; if not set, fall back to the first
+    // registered listener (matches earlier behavior).
+    let port = bridgeTargetPort;
+    if (port == null) {
+      const ports: number[] = Array.from(
+        (kernelWorker as any).tcpListenerTargets?.keys() ?? [],
+      );
+      port = ports[0] ?? null;
+    }
+    if (port == null) {
+      console.warn(`[bridge] no listener target for req#${requestId} ${url}`);
+      portRef.postMessage({
+        type: "http-error",
+        requestId,
+        error: "No listener target available",
+      });
+      return;
+    }
+
+    console.debug(`[bridge] req#${requestId} ${request.method} ${url} -> port=${port}`);
     const response = await kernelWorker.sendHttpRequest(
       port,
       {
@@ -1668,7 +1789,7 @@ async function handleHttpRequest(requestId: number, request: any) {
       },
       { debugLabel: `req#${requestId}` },
     );
-    bridgePort.postMessage({
+    portRef.postMessage({
       type: "http-response",
       requestId,
       status: response.status,
@@ -1677,11 +1798,13 @@ async function handleHttpRequest(requestId: number, request: any) {
     });
   } catch (e) {
     console.warn(`[bridge] req#${requestId} ${url} failed:`, e);
-    bridgePort.postMessage({
+    portRef.postMessage({
       type: "http-error",
       requestId,
       error: e instanceof Error ? e.message : String(e),
     });
+  } finally {
+    endBridgeRequest(activityId);
   }
 }
 
@@ -1754,6 +1877,9 @@ sw.onmessage = (e: MessageEvent) => {
     case "init":
       void handleInit(msg).catch((err) => {
         const error = formatError(err);
+        initReady = false;
+        initFailure = error;
+        failPendingLazyRegistrations(error);
         console.error("[kernel-worker] init failed:", err);
         post({ type: "init_error", error });
       });
@@ -1777,8 +1903,8 @@ sw.onmessage = (e: MessageEvent) => {
     case "pick_listener_target": handlePickListenerTarget(msg); break;
     case "http_request": handleHttpRequestMessage(msg); break;
     case "destroy": void handleDestroy(msg); break;
-    case "register_lazy_files": memfs.importLazyEntries(msg.entries); break;
-    case "register_lazy_archives": memfs.importLazyArchiveEntries(msg.entries); break;
+    case "register_lazy_files": handleLazyRegistration(msg); break;
+    case "register_lazy_archives": handleLazyRegistration(msg); break;
     case "get_fork_count": {
       // Round-trip access to the kernel's per-process fork counter for
       // tests asserting SYS_SPAWN didn't fall back to fork. Mirrors the
@@ -1825,6 +1951,12 @@ sw.onmessage = (e: MessageEvent) => {
       }
       break;
     }
+    case "kms_attach_canvas":
+      kernelWorker.attachKmsCanvas(msg.crtcId, msg.canvas, msg.stats, msg.opts);
+      break;
+    case "kms_attach_stats":
+      kernelWorker.attachKmsStats(msg.crtcId, msg.stats);
+      break;
     default: {
       // Handle non-protocol messages (e.g., bridge port transfer)
       const raw = e.data as any;
@@ -1864,6 +1996,7 @@ sw.onmessage = (e: MessageEvent) => {
         (globalThis as { __sysprof?: boolean }).__sysprof = false;
       } else if (raw?.type === "set_bridge_port" && raw.bridgePort) {
         bridgePort = raw.bridgePort;
+        resetBridgePendingRequests();
         if (typeof raw.httpPort === "number") {
           bridgeTargetPort = raw.httpPort;
         }

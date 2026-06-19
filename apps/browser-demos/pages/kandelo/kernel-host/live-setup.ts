@@ -231,6 +231,7 @@ const LIVE_DEMO_IDS = [
   "wordpress-sqlite",
   "wordpress-mariadb",
   "doom",
+  "modeset",
 ] as const;
 
 type LiveDemoId = typeof LIVE_DEMO_IDS[number];
@@ -313,6 +314,10 @@ const LIVE_PROFILE_SPECS: Record<LiveDemoId, LiveProfileSpec> = {
   doom: {
     image: "shell",
     features: ["framebuffer"],
+  },
+  modeset: {
+    image: "shell",
+    features: ["kms"],
   },
 };
 
@@ -1102,6 +1107,9 @@ async function bootProfile(
       onStdout: (data) => recordProcessOutput(data, "stdout"),
       onStderr: (data) => recordProcessOutput(data, "stderr"),
       onProcessEvent: (event) => { if (isCurrent()) host.emitProcessEvent(event); },
+      onHttpBridgePendingRequests: (count) => {
+        if (isCurrent()) host.setWebPreviewPendingRequests(count);
+      },
       onListenTcp: (pid, _fd, port) => {
         if (!isCurrent()) return;
         seenPorts.add(port);
@@ -1142,6 +1150,9 @@ async function bootProfile(
         await setupServiceWorkerFetchBridge(SW_URL, APP_PREFIX, kernel, HTTP_PORT, {
           timeoutMs: 90_000,
           debugLog: (line) => tick(line),
+          onPendingRequests: (count) => {
+            if (isCurrent()) host.setWebPreviewPendingRequests(count);
+          },
         });
         assertCurrent();
         bridgeSent = true;
@@ -1237,6 +1248,9 @@ async function bootProfile(
 
 function genericPresentationForProfile(profile: LiveProfile): DemoPresentation {
   if (profile.init?.web) return genericDemoPresentation("web");
+  if (profile.descriptor.runtime.features.includes("kms")) {
+    return genericDemoPresentation("kms");
+  }
   if (profile.framebufferTest || profile.descriptor.runtime.features.includes("framebuffer")) {
     return genericDemoPresentation("framebuffer");
   }
@@ -1782,7 +1796,10 @@ function liveDemoIdForVfsImageUrl(vfsUrl: string): LiveDemoId | null {
 
   const matches = LIVE_DEMO_IDS.filter((id) => baseUrl === profileVfsBaseUrl(id));
   if (matches.length === 1) return matches[0];
-  return matches.find((id) => id !== "doom") ?? null;
+  // Multiple presets share the shell VFS image (doom, modeset). When the URL
+  // doesn't pin one via the hash, fall back to the shell preset so the
+  // ambiguous shell-image link doesn't auto-launch a demo binary.
+  return matches.find((id) => id !== "doom" && id !== "modeset") ?? null;
 }
 
 function profileVfsBaseUrl(id: LiveDemoId): string {

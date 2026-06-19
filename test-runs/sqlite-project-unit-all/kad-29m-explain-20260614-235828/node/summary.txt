@@ -1,0 +1,45 @@
+SQLite official testrunner summary
+host=node
+permutation=all
+jobs=1
+workdir=/tmp/kandelo-sqlite-official.H7mTIT
+results_dir=test-runs/sqlite-project-unit-all/kad-29m-explain-20260614-235828/node
+
+total_jobs  done_jobs  failed_jobs  omitted_jobs  running_jobs  ready_jobs  total_cases  total_case_errors
+----------  ---------  -----------  ------------  ------------  ----------  -----------  -----------------
+10353       0          0            0             0             10353       0            0
+
+state  jobs   cases  case_errors
+-----  -----  -----  -----------
+ready  10353  0      0
+
+Jobs by SQLite testrunner config:
+config                    jobs  cases  case_errors
+------------------------  ----  -----  -----------
+full                      1394  0      0
+autovacuum_ioerr          1     0      0
+exclusive                 5     0      0
+fullmutex                 12    0      0
+inmemory_journal          1237  0      0
+journaltest               1146  0      0
+memsubsys1                1307  0      0
+memsubsys2                1308  0      0
+mmap                      1202  0      0
+multithread               13    0      0
+no_journal                9     0      0
+no_journal_error          2     0      0
+no_mutex_try              1309  0      0
+no_optimization           36    0      0
+onefile                   8     0      0
+pcache0                   13    0      0
+pcache10                  13    0      0
+pcache100                 13    0      0
+pcache50                  13    0      0
+pcache90                  13    0      0
+persistent_journal        9     0      0
+persistent_journal_error  2     0      0
+prepare                   1199  0      0
+singlethread              12    0      0
+utf16                     77    0      0
+
+Failed, running, and omitted jobs:

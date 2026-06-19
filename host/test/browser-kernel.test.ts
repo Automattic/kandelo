@@ -79,6 +79,16 @@ async function loadBrowserKernel() {
   return mod.BrowserKernel as typeof import("../src/browser-kernel-host").BrowserKernel;
 }
 
+async function makeRootfsImageBuffer(): Promise<ArrayBuffer> {
+  const { MemoryFileSystem } = await import("../src/vfs/memory-fs");
+  const fs = MemoryFileSystem.create(new SharedArrayBuffer(1024 * 1024));
+  const image = await fs.saveImage();
+  return image.buffer.slice(
+    image.byteOffset,
+    image.byteOffset + image.byteLength,
+  ) as ArrayBuffer;
+}
+
 describe("BrowserKernel", () => {
   beforeEach(() => {
     MockWorker.instances = [];
@@ -143,6 +153,69 @@ describe("BrowserKernel", () => {
     expect(exitResolved).toBeNull();
     w.simulateMessage({ type: "exit", pid: 100, status: 7 });
     expect(await exit).toBe(7);
+  });
+
+  it("init() waits for lazy VFS registration to be acknowledged", async () => {
+    const { MemoryFileSystem } = await import("../src/vfs/memory-fs");
+    const BrowserKernel = await loadBrowserKernel();
+    const rootfsImage = await makeRootfsImageBuffer();
+    vi.stubGlobal("fetch", vi.fn(async () => ({
+      arrayBuffer: async () => rootfsImage,
+    })));
+
+    const memfs = MemoryFileSystem.create(new SharedArrayBuffer(1024 * 1024));
+    memfs.registerLazyFile("/bin/lazy", "/assets/lazy.wasm", 123);
+    const kernel = new BrowserKernel({ memfs });
+    const initPromise = kernel.init(new ArrayBuffer(8));
+    let resolved = false;
+    void initPromise.then(() => { resolved = true; });
+
+    await new Promise((r) => setTimeout(r, 0));
+    const w = MockWorker.instances[0]!;
+    expect(w.lastMessage("init")).toBeDefined();
+    w.simulateMessage({ type: "ready" });
+    await new Promise((r) => setTimeout(r, 0));
+
+    const lazy = w.lastMessage("register_lazy_files");
+    expect(lazy).toBeDefined();
+    expect(typeof lazy.requestId).toBe("number");
+    expect(lazy.entries).toMatchObject([
+      { path: "/bin/lazy", url: "/assets/lazy.wasm", size: 123 },
+    ]);
+    expect(resolved).toBe(false);
+
+    w.simulateMessage({ type: "response", requestId: lazy.requestId, result: true });
+    await initPromise;
+    expect(resolved).toBe(true);
+  });
+
+  it("init() rejects when lazy VFS registration fails", async () => {
+    const { MemoryFileSystem } = await import("../src/vfs/memory-fs");
+    const BrowserKernel = await loadBrowserKernel();
+    const rootfsImage = await makeRootfsImageBuffer();
+    vi.stubGlobal("fetch", vi.fn(async () => ({
+      arrayBuffer: async () => rootfsImage,
+    })));
+
+    const memfs = MemoryFileSystem.create(new SharedArrayBuffer(1024 * 1024));
+    memfs.registerLazyFile("/bin/lazy", "/assets/lazy.wasm", 123);
+    const kernel = new BrowserKernel({ memfs });
+    const initPromise = kernel.init(new ArrayBuffer(8));
+
+    await new Promise((r) => setTimeout(r, 0));
+    const w = MockWorker.instances[0]!;
+    w.simulateMessage({ type: "ready" });
+    await new Promise((r) => setTimeout(r, 0));
+
+    const lazy = w.lastMessage("register_lazy_files");
+    w.simulateMessage({
+      type: "response",
+      requestId: lazy.requestId,
+      result: null,
+      error: "lazy metadata unavailable",
+    });
+
+    await expect(initPromise).rejects.toThrow(/lazy metadata unavailable/);
   });
 
   describe("fetchInKernel", () => {

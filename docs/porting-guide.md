@@ -56,7 +56,12 @@ for the full transform and ABI.
 
 **Thread support**: Programs that create threads (MariaDB, Redis) work via the kernel's `clone()` syscall. No special compilation flags needed, but the host runner must implement the `onClone` callback.
 
-**C++ and libc++**: For C++ programs, include libc++ headers from your LLVM installation. Set `_LIBCPP_HAS_MUSL_LIBC=1` and `_LIBCPP_HAS_THREAD_API_PTHREAD=1` in a `__config_site` header. See `packages/registry/mariadb/build-mariadb.sh` for a complete example.
+**C++ and libc++**: For C++ programs, depend on the `libcxx` package and
+compile against its resolved headers and libraries, normally symlinked into
+the Kandelo sysroot by the consuming package build script. Do not copy libc++
+headers from an arbitrary host LLVM install; the libcxx package generates and
+ships a version-matched header tree with its `libc++.a` and `libc++abi.a`.
+See `packages/registry/mariadb/build-mariadb.sh` for a complete example.
 
 ### Step 3: Test it
 
@@ -751,6 +756,13 @@ artifact writes.
 ## Troubleshooting
 
 **"sysroot not found"**: Run `bash scripts/build-musl.sh` first.
+
+**Graphics shim libraries missing**: Programs using DRM/KMS/GBM/EGL/GLES link
+against sysroot libraries built by `scripts/build-musl.sh`. Rebuild the sysroot
+with `scripts/dev-shell.sh bash scripts/build-musl.sh`, then use
+`wasm32posix-pkg-config --cflags --libs libdrm gbm egl glesv2` from the package
+build script. Do not vendor these libraries into the package archive; package
+the resulting program or VFS image instead.
 
 **"kandelo-kernel.wasm not found"**: Run `bash build.sh` first.
 

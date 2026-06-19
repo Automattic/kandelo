@@ -70,11 +70,16 @@ Process Worker → SharedArrayBuffer channel → Atomics.notify
 
 ```
 Browser fetch → Service Worker intercepts
-→ MessagePort → Kernel Worker (connection pump)
+→ MessagePort → BrowserKernel.fetchInKernel() → Kernel Worker
 → kernel_inject_connection() → pipe write (raw HTTP)
 → nginx (Wasm) accepts, processes → pipe read (response)
 → MessagePort → Service Worker → browser Response
 ```
+
+Injected TCP pipes live in the kernel's global pipe table (`pid == 0` for
+`kernel_pipe_*` host calls), so a listener inherited across fork can accept the
+connection in any nginx worker. The standalone nginx image runs with
+`master_process on` and `worker_processes 2`.
 
 ## Capabilities
 
@@ -231,6 +236,13 @@ the Kandelo app does not carry demo-specific presentation fallbacks.
 Any extra files needed by an image-declared `autoCommand` can be declared in
 `assets`; the loader stages those paths generically and hash-verifies them when
 `sha256` is provided.
+
+KMS demos use the same metadata path. A profile can set
+`runningPrimary` to include `"kms"` and provide an `autoCommand` such as
+`/usr/local/bin/modeset`; the VFS image must contain that executable. The
+Kandelo app attaches the KMS canvas through the generic KMS surface plumbing,
+then runs the image-declared command. Do not add browser-loader branches that
+import or spawn a specific `modeset.wasm` file.
 
 Images can also declare an optional `guide`. When `guide` is absent, Kandelo
 does not render a demo panel; this is the intended shape for demos where the
