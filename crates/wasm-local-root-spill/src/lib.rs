@@ -104,11 +104,19 @@ fn spill_function(
     memory: MemoryId,
     spill_set: SpillSet,
 ) -> Result<()> {
+    let entry = {
+        let local = local_func(module, func_id)?;
+        let entry = local.entry_block();
+        if !seq_contains_call(local, entry) {
+            return Ok(());
+        }
+        entry
+    };
+
     let mut plan = {
         let local = local_func(module, func_id)?;
         plan_spills(module, local, spill_set)
     };
-    let entry = local_func(module, func_id)?.entry_block();
 
     if spill_set != SpillSet::ParamsOnly {
         rewrite_operand_stack_roots_in_seq(module, func_id, entry, &mut plan)

@@ -511,6 +511,8 @@ SITE_EOF
     # We use --host=wasm32-unknown-wasi to trigger this.
     # WASI_SDK_PATH must be set (Ruby errors if missing) but we override
     # CC/AR/RANLIB/NM so it's only used for the existence check.
+    # Ruby parser/compiler paths are stack-heavy, and local-root spilling
+    # adds small linear-stack frames to preserve VALUE visibility for GC.
     CONFIG_SITE="$CONFIG_SITE" \
     WASI_SDK_PATH="$SYSROOT" \
     CC=wasm32posix-cc \
@@ -523,7 +525,7 @@ SITE_EOF
     PKG_CONFIG_PATH="$ZLIB_PREFIX/lib/pkgconfig" \
     CFLAGS="-O2 -D_WASI_EMULATED_SIGNAL -D_WASI_EMULATED_PROCESS_CLOCKS" \
     CPPFLAGS="-I$ZLIB_PREFIX/include" \
-    LDFLAGS="-L$ZLIB_PREFIX/lib" \
+    LDFLAGS="-L$ZLIB_PREFIX/lib -Wl,-z,stack-size=1048576" \
     "$SRC_DIR/configure" \
         --host=wasm32-unknown-wasi \
         --build="$(uname -m)-apple-darwin" \

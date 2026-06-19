@@ -128,8 +128,10 @@ fn fixture(func: &str) -> String {
 fn seeds_param_and_mirrors_set_and_tee() {
     let wat = fixture(
         r#"
+        (func $alloc)
         (func $main (export "main") (param $p i32) (result i32)
           (local $x i32)
+          call $alloc
           local.get $p
           local.set $x
           local.get $x
@@ -152,7 +154,9 @@ fn seeds_param_and_mirrors_set_and_tee() {
 fn fallthrough_result_validates_with_stack_pointer_restore() {
     let wat = fixture(
         r#"
+        (func $alloc)
         (func $main (export "main") (param $p i32) (result i32)
+          call $alloc
           local.get $p)
         "#,
     );
@@ -166,7 +170,9 @@ fn fallthrough_result_validates_with_stack_pointer_restore() {
 fn multi_value_return_validates() {
     let wat = fixture(
         r#"
+        (func $alloc)
         (func $main (export "main") (param $p i32) (result i32 i64)
+          call $alloc
           local.get $p
           i64.const 7
           return)
@@ -183,6 +189,23 @@ fn non_i32_locals_are_not_spilled() {
         (func $main (export "main") (param $p i64) (result i64)
           (local $x f64)
           local.get $p)
+        "#,
+    );
+    let bytes = spill_wat(&wat);
+    validate(&bytes);
+    let module = module(&bytes);
+    assert_eq!(count_stack_pointer_sets(&module, "main"), 0);
+}
+
+#[test]
+fn leaf_functions_are_not_spilled() {
+    let wat = fixture(
+        r#"
+        (func $main (export "main") (param $p i32) (result i32)
+          (local $x i32)
+          local.get $p
+          local.set $x
+          local.get $x)
         "#,
     );
     let bytes = spill_wat(&wat);
@@ -266,8 +289,10 @@ fn spills_outer_i32_carryover_before_call_bearing_block() {
 fn diagnostic_params_only_excludes_non_arg_locals() {
     let wat = fixture(
         r#"
+        (func $alloc)
         (func $main (export "main") (param $p i32) (result i32)
           (local $x i32)
+          call $alloc
           local.get $p
           local.set $x
           local.get $x)
@@ -308,7 +333,9 @@ fn diagnostic_params_and_operands_excludes_ordinary_locals() {
 fn restores_stack_pointer_before_branch_return() {
     let wat = fixture(
         r#"
+        (func $alloc)
         (func $main (export "main") (param $p i32) (result i32)
+          call $alloc
           block
             local.get $p
             br 1
@@ -330,7 +357,9 @@ fn restores_stack_pointer_before_uncaught_throw() {
           (memory (export "memory") 1)
           (global $__stack_pointer (export "__stack_pointer") (mut i32) (i32.const 65536))
           (tag $e (param i32))
+          (func $alloc)
           (func $main (export "main") (param $p i32)
+            call $alloc
             local.get $p
             throw $e))
     "#;
