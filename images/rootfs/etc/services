@@ -8,8 +8,11 @@ ftp		21/tcp
 ssh		22/tcp
 telnet		23/tcp
 smtp		25/tcp		mail
+nicname		43/tcp		whois
 domain		53/tcp
 domain		53/udp
+gopher		70/tcp
+finger		79/tcp
 http		80/tcp		www
 pop3		110/tcp		pop-3
 nntp		119/tcp		readnews untp

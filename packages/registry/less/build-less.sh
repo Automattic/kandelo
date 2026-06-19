@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Build less 661 for wasm32-posix-kernel.
+# Build less for wasm32-posix-kernel.
 #
 # Uses the SDK's wasm32posix-configure wrapper for cross-compilation.
 # Output: packages/registry/less/bin/less.wasm
@@ -11,7 +11,7 @@ set -euo pipefail
 # returns "not found" — less then falls back to hardcoded ANSI sequences.
 # We also provide a minimal termcap.h header.
 
-LESS_VERSION="${LESS_VERSION:-661}"
+LESS_VERSION="${LESS_VERSION:-668}"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
 SRC_DIR="$SCRIPT_DIR/less-src"
@@ -47,8 +47,28 @@ fi
 if [ ! -d "$SRC_DIR" ]; then
     echo "==> Downloading less $LESS_VERSION..."
     TARBALL="less-${LESS_VERSION}.tar.gz"
-    URL="https://www.greenwoodsoftware.com/less/${TARBALL}"
-    curl --retry 10 --retry-delay 5 --retry-max-time 300 --retry-all-errors -fsSL "$URL" -o "/tmp/$TARBALL"
+    DOWNLOAD_URLS=(
+        "https://www.greenwoodsoftware.com/less/${TARBALL}"
+        "https://ftp.gnu.org/gnu/less/${TARBALL}"
+    )
+    for URL in "${DOWNLOAD_URLS[@]}"; do
+        if curl \
+            --connect-timeout 20 \
+            --retry 3 \
+            --retry-delay 5 \
+            --retry-max-time 120 \
+            --retry-all-errors \
+            -fsSL "$URL" \
+            -o "/tmp/$TARBALL"
+        then
+            break
+        fi
+        rm -f "/tmp/$TARBALL"
+    done
+    if [ ! -f "/tmp/$TARBALL" ]; then
+        echo "ERROR: failed to download $TARBALL from all configured mirrors" >&2
+        exit 1
+    fi
     mkdir -p "$SRC_DIR"
     tar xzf "/tmp/$TARBALL" -C "$SRC_DIR" --strip-components=1
     rm "/tmp/$TARBALL"

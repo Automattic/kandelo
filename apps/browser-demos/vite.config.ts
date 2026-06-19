@@ -2,7 +2,12 @@ import { fileURLToPath } from "url";
 import path from "path";
 import fs from "fs";
 import { execSync } from "child_process";
-import { defineConfig, type Plugin, type PreviewServer, type ViteDevServer } from "vite";
+import {
+  defineConfig,
+  type Plugin,
+  type PreviewServer,
+  type ViteDevServer,
+} from "vite";
 import react from "@vitejs/plugin-react";
 import { tryResolveBinary } from "../../host/src/binary-resolver";
 
@@ -39,7 +44,10 @@ function devCorsProxyFetchUrlForBase(base: string): string {
   return `${devCorsProxyPathForBase(base)}?url=`;
 }
 
-function injectCorsProxyUrlPlaceholder(content: string, corsProxyUrl: string): string {
+function injectCorsProxyUrlPlaceholder(
+  content: string,
+  corsProxyUrl: string,
+): string {
   return content.replace('"__CORS_PROXY_URL__"', JSON.stringify(corsProxyUrl));
 }
 
@@ -75,7 +83,7 @@ function resolveKernelArtifactsAlias(): Plugin {
         const fetched = path.resolve(repoRoot, "binaries/kernel.wasm");
         this.error(
           "kernel.wasm not found, or every candidate is stale. Run `bash build.sh` from the repo root.\n" +
-          `  Looked at: ${local}\n  Looked at: ${fetched}`
+            `  Looked at: ${local}\n  Looked at: ${fetched}`,
         );
       }
       if (pathPart === ROOTFS) {
@@ -91,7 +99,7 @@ function resolveKernelArtifactsAlias(): Plugin {
         }
         this.error(
           "rootfs.vfs not found. Run `bash build.sh` from the repo root, or fetch/build the rootfs package.\n" +
-          candidates.map((file) => `  Looked at: ${file}`).join("\n")
+            candidates.map((file) => `  Looked at: ${file}`).join("\n"),
         );
       }
       return null;
@@ -145,8 +153,8 @@ function resolveBinariesAlias(): Plugin {
       const fetched = path.resolve(repoRoot, "binaries", rest);
       this.error(
         `@binaries: ${rest} not found, or every candidate is stale. ` +
-        `Looked at:\n  ${local}\n  ${fetched}\n` +
-        `Run \`./run.sh fetch\` to install release archives, or build the artifact locally.`
+          `Looked at:\n  ${local}\n  ${fetched}\n` +
+          `Run \`./run.sh fetch\` to install release archives, or build the artifact locally.`,
       );
     },
   };
@@ -197,9 +205,7 @@ function injectGitRevision(): Plugin {
           encoding: "utf-8",
         }).trim();
         // Convert git@github.com:user/repo.git or https://github.com/user/repo.git
-        const match = remoteUrl.match(
-          /github\.com[:/](.+?)(?:\.git)?$/
-        );
+        const match = remoteUrl.match(/github\.com[:/](.+?)(?:\.git)?$/);
         const repoPath = match ? match[1] : "brandonpayton/kandelo";
         const fullRev = execSync("git rev-parse HEAD", {
           cwd: repoRoot,
@@ -290,7 +296,8 @@ function injectCorsProxyUrl(): Plugin {
     name: "inject-cors-proxy-url",
     configResolved(config) {
       base = config.base;
-      servedCorsProxyUrl = configuredCorsProxyUrl() || devCorsProxyFetchUrlForBase(base);
+      servedCorsProxyUrl =
+        configuredCorsProxyUrl() || devCorsProxyFetchUrlForBase(base);
       outputCorsProxyUrl = buildCorsProxyUrl();
     },
     configureServer(server) {
@@ -404,6 +411,7 @@ const defaultDemoInputs = {
 const demoInputs = {
   ...defaultDemoInputs,
   "sqlite-test": path.resolve(__dirname, "pages/sqlite-test/index.html"),
+  "php-test": path.resolve(__dirname, "pages/php-test/index.html"),
   // The perl, python, ruby, erlang, texlive, and redis package entries
   // are not bundled into this static build while their slow builds
   // live in kandelo-software. The root gallery fetches that
@@ -480,10 +488,13 @@ export default defineConfig({
   },
   worker: {
     format: "es",
-    plugins: () => [
-      resolveKernelArtifactsAlias(),
-      resolveBinariesAlias(),
-    ],
+    plugins: () => [resolveKernelArtifactsAlias(), resolveBinariesAlias()],
   },
-  assetsInclude: ["**/*.wasm", "**/*.sql", "**/*.vfs", "**/*.vfs.zst", "**/*.zip"],
+  assetsInclude: [
+    "**/*.wasm",
+    "**/*.sql",
+    "**/*.vfs",
+    "**/*.vfs.zst",
+    "**/*.zip",
+  ],
 });
