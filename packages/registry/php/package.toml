@@ -1,8 +1,8 @@
 kind = "program"
 name = "php"
-version = "8.3.2"
+version = "8.3.15"
 kernel_abi = 7
-depends_on = ["zlib@1.3.1", "openssl@3.3.2", "sqlite@3.49.1", "libxml2@2.13.8"]
+depends_on = ["zlib@1.3.1", "openssl@3.3.2", "sqlite@3.49.1", "libxml2@2.13.8", "libiconv@1.17"]
 # wasm32 only. PHP previously declared wasm64 too (per
 # memory/wasm64-build-policy.md), but no demo actually consumes
 # `programs/wasm64/php/...` — only mariadb needs the 4 GB address
@@ -13,8 +13,8 @@ depends_on = ["zlib@1.3.1", "openssl@3.3.2", "sqlite@3.49.1", "libxml2@2.13.8"]
 arches = ["wasm32"]
 
 [source]
-url = "https://www.php.net/distributions/php-8.3.2.tar.xz"
-sha256 = "4ffa3e44afc9c590e28dc0d2d31fc61f0139f8b335f11880a121b9f9b9f0634e"
+url = "https://www.php.net/distributions/php-8.3.15.tar.gz"
+sha256 = "67073c3c9c56c86461e0715d9e1806af5ddffe8e6e2eb9781f7923bbb5bd67fa"
 
 [license]
 spdx = "PHP-3.01"
@@ -48,3 +48,17 @@ wasm = "php-fpm.wasm"
 [[outputs]]
 name = "opcache"
 wasm = "opcache.so"
+
+# Phar ships as a normal shared PHP extension. PHPT tests and real
+# applications can opt in with the standard `extension=phar.so` mechanism
+# instead of relying on a test-only static module or harness special case.
+[[outputs]]
+name = "phar"
+wasm = "phar.so"
+
+# zend_test is php-src's own engine-test extension. It is not loaded by
+# default, but is available to PHPTs and callers that explicitly request
+# `extension=zend_test.so`.
+[[outputs]]
+name = "zend_test"
+wasm = "zend_test.so"
