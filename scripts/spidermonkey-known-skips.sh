@@ -54,7 +54,10 @@ kandelo_known_jstest_skip_reason() {
       non262/extensions/array-isArray-proxy-recursion.js|\
       non262/extensions/String-methods-infinite-recursion.js|\
       non262/extensions/regress-355497.js|\
-      non262/extensions/regress-192465.js)
+      non262/extensions/regress-192465.js|\
+      non262/object/setPrototypeOf-cycle.js|\
+      non262/operators/instanceof-bound-function-recursion.js|\
+      non262/regress/regress-256501.js)
         printf '%s\n' "browser process-worker stack stress: recursive SpiderMonkey wasm frames currently exceed the supported browser worker stack envelope before the shell can report the guest recursion error"
         return 0
         ;;
