@@ -1,0 +1,10 @@
+--- a/mozglue/moz.build
++++ b/mozglue/moz.build
+@@ -13,7 +13,7 @@ if CONFIG["MOZ_WIDGET_TOOLKIT"] == "android":
+     DIRS += ["android"]
+ 
+-if CONFIG["OS_ARCH"] == "Linux" and not CONFIG["FUZZING_SNAPSHOT"]:
++if CONFIG["OS_ARCH"] == "Linux" and CONFIG["TARGET_CPU"] not in ("wasm32", "wasm64") and not CONFIG["FUZZING_SNAPSHOT"]:
+     DIRS += ["interposers"]
+ 
+ DIRS += [
