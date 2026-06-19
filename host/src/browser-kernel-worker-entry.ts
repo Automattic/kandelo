@@ -281,7 +281,6 @@ function reportNonzeroProcessExitDiagnostic(
     (serviceLog ? `\n${serviceLog}` : "") +
     `\n${syscalls}`;
   console.warn(diagnostic);
-  post({ type: "stderr", pid, data: new TextEncoder().encode(`${diagnostic}\n`) });
 }
 
 function readServiceLogForProcess(argv: readonly string[] | undefined): string | null {

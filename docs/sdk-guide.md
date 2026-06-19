@@ -162,7 +162,8 @@ wasm32posix-cc -shared -fPIC plugin.c -o plugin.so
 -Wl,--import-memory                # Memory provided by host
 -Wl,--shared-memory                # Enable SharedArrayBuffer
 -Wl,--max-memory=1073741824        # 1GB max memory
--Wl,--global-base=1114112          # Data segment start
+-Wl,--global-base=<base>           # Data segment start; defaults to 1114112
+                                   # and is raised for larger -z stack-size
 -Wl,--allow-undefined              # Host imports are resolved at load time
 -Wl,--export-table                 # Export function table (for dlopen)
 -Wl,--export=__stack_pointer       # Required for fork/thread support

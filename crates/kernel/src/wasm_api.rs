@@ -9552,10 +9552,50 @@ pub extern "C" fn kernel_getitimer(which: u32, curr_ptr: *mut u8) -> i32 {
 // POSIX timers (timer_create / timer_settime / timer_gettime / etc.)
 // ---------------------------------------------------------------------------
 
-/// SIGEV_SIGNAL = 0, SIGEV_NONE = 1.
+/// SIGEV_SIGNAL = 0, SIGEV_NONE = 1, SIGEV_THREAD_ID = 4.
 const SIGEV_SIGNAL: u32 = 0;
+const SIGEV_NONE: u32 = 1;
+const SIGEV_THREAD_ID: u32 = 4;
 /// TIMER_ABSTIME flag for timer_settime.
 const TIMER_ABSTIME: i32 = 1;
+
+fn timer_clock_to_host_clock(clock_id: u32) -> Option<u32> {
+    use wasm_posix_shared::clock::*;
+    match clock_id {
+        CLOCK_REALTIME | CLOCK_MONOTONIC => Some(clock_id),
+        CLOCK_BOOTTIME => Some(CLOCK_MONOTONIC),
+        _ => None,
+    }
+}
+
+fn timer_notify_supported(sigev_notify: u32) -> bool {
+    matches!(sigev_notify, SIGEV_SIGNAL | SIGEV_NONE | SIGEV_THREAD_ID)
+}
+
+#[cfg(test)]
+mod posix_timer_tests {
+    use super::*;
+    use wasm_posix_shared::clock::*;
+
+    #[test]
+    fn boottime_timers_use_monotonic_host_clock() {
+        assert_eq!(timer_clock_to_host_clock(CLOCK_BOOTTIME), Some(CLOCK_MONOTONIC));
+    }
+
+    #[test]
+    fn timer_create_rejects_unsupported_clock_ids() {
+        assert_eq!(timer_clock_to_host_clock(CLOCK_THREAD_CPUTIME_ID), None);
+        assert_eq!(timer_clock_to_host_clock(99), None);
+    }
+
+    #[test]
+    fn timer_create_accepts_thread_id_notification() {
+        assert!(timer_notify_supported(SIGEV_SIGNAL));
+        assert!(timer_notify_supported(SIGEV_NONE));
+        assert!(timer_notify_supported(SIGEV_THREAD_ID));
+        assert!(!timer_notify_supported(2));
+    }
+}
 
 /// timer_create(clock_id, sigevent_ptr, timerid_ptr)
 /// musl sends ksigevent = {sigev_value(i32), sigev_signo(i32), sigev_notify(i32), sigev_tid(i32)} = 16 bytes.
@@ -9570,19 +9610,27 @@ pub extern "C" fn kernel_timer_create(
 
     let (_gkl, proc) = unsafe { get_process() };
 
+    let host_clock_id = match timer_clock_to_host_clock(clock_id) {
+        Some(id) => id,
+        None => return -(Errno::EINVAL as i32),
+    };
+
     // Parse sigevent (default: SIGEV_SIGNAL with SIGALRM)
-    let (sigev_signo, sigev_value, sigev_notify) = if sevp_ptr.is_null() {
-        (14u32, 0i32, SIGEV_SIGNAL) // default: SIGALRM
+    let (sigev_signo, sigev_value, sigev_notify, sigev_tid) = if sevp_ptr.is_null() {
+        (14u32, 0i32, SIGEV_SIGNAL, 0u32) // default: SIGALRM
     } else {
         let buf = unsafe { slice::from_raw_parts(sevp_ptr, 16) };
         let value = i32::from_le_bytes(buf[0..4].try_into().unwrap());
         let signo = i32::from_le_bytes(buf[4..8].try_into().unwrap()) as u32;
         let notify = i32::from_le_bytes(buf[8..12].try_into().unwrap()) as u32;
-        (signo, value, notify)
+        let tid = i32::from_le_bytes(buf[12..16].try_into().unwrap()) as u32;
+        (signo, value, notify, tid)
     };
 
-    // Only SIGEV_SIGNAL and SIGEV_NONE are supported
-    if sigev_notify != SIGEV_SIGNAL && sigev_notify != 1 {
+    if !timer_notify_supported(sigev_notify) {
+        return -(Errno::EINVAL as i32);
+    }
+    if sigev_notify == SIGEV_THREAD_ID && !proc.is_main_thread(sigev_tid) {
         return -(Errno::EINVAL as i32);
     }
 
@@ -9606,7 +9654,7 @@ pub extern "C" fn kernel_timer_create(
     };
 
     proc.posix_timers[timer_id] = Some(PosixTimerState {
-        clock_id,
+        clock_id: host_clock_id,
         sigev_signo,
         sigev_value,
         interval_sec: 0,
