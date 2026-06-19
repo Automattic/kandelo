@@ -269,7 +269,7 @@ while [ "$offset" -lt "$total" ]; do
     --timeout "$timeout_ms" \
     --host-reset-interval "$host_reset_interval" \
     --allow-unsupported \
-    "${extra_args[@]}" \
+    ${extra_args[@]+"${extra_args[@]}"} \
     --json \
     > "$jsonl" 2> "$stderr"
   status=$?
