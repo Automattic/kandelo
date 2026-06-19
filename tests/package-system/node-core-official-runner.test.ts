@@ -1,9 +1,10 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   createIsolatedTests,
+  dataFileFromSourceUrl,
   destroyNodeHostBestEffort,
   envForRun,
   nodeArgvForOfficialTest,
@@ -216,6 +217,57 @@ describe("node-core official runner isolation", () => {
       "/usr/bin/node": "/repo/node.wasm",
       "/usr/local/bin/node": "/repo/node.wasm",
     });
+  });
+});
+
+describe("node-core official runner browser data files", () => {
+  it("can mount the selected browser test eagerly from the source route", () => {
+    const root = mkdtempSync(join(tmpdir(), "kandelo-node-core-browser-data-"));
+    try {
+      const sourceDir = join(root, "node-v22.0.0");
+      const parallelDir = join(sourceDir, "test", "parallel");
+      mkdirSync(parallelDir, { recursive: true });
+      const hostPath = join(parallelDir, "test-kandelo-sentinel.js");
+      writeFileSync(hostPath, "throw new Error('sentinel');\n");
+
+      expect(dataFileFromSourceUrl(
+        sourceDir,
+        hostPath,
+        "/node-v22.0.0/test/parallel/test-kandelo-sentinel.js",
+        { lazy: false },
+      )).toEqual({
+        path: "/node-v22.0.0/test/parallel/test-kandelo-sentinel.js",
+        url: "/__kandelo_node_core_official__/source/test/parallel/test-kandelo-sentinel.js",
+        mode: 0o644,
+      });
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("keeps shared browser fixture files lazy by default", () => {
+    const root = mkdtempSync(join(tmpdir(), "kandelo-node-core-browser-data-"));
+    try {
+      const sourceDir = join(root, "node-v22.0.0");
+      const commonDir = join(sourceDir, "test", "common");
+      mkdirSync(commonDir, { recursive: true });
+      const hostPath = join(commonDir, "index.js");
+      writeFileSync(hostPath, "module.exports = {};\n");
+
+      expect(dataFileFromSourceUrl(
+        sourceDir,
+        hostPath,
+        "/node-v22.0.0/test/common/index.js",
+      )).toEqual({
+        path: "/node-v22.0.0/test/common/index.js",
+        url: "/__kandelo_node_core_official__/source/test/common/index.js",
+        lazy: true,
+        size: 21,
+        mode: 0o644,
+      });
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 });
 

@@ -865,6 +865,7 @@ function envForRun(isolation?: TestIsolation, execPath?: string): string[] {
 
 export {
   createIsolatedTests,
+  dataFileFromSourceUrl,
   destroyNodeHostBestEffort,
   envForRun,
   nodeArgvForOfficialTest,
@@ -1020,7 +1021,7 @@ async function runBrowserTests(
           const started = Date.now();
           const testHostPath = join(sourceDir, test.spec.path);
           const dataFiles = [
-            dataFileFromSourceUrl(sourceDir, testHostPath, `/node-v22.0.0/${test.spec.path}`),
+            dataFileFromSourceUrl(sourceDir, testHostPath, `/node-v22.0.0/${test.spec.path}`, { lazy: false }),
             { path: isolation.browserMarkerPath, data: [], mode: 0o644 },
             { path: "/usr/bin/node", useWasmBytes: true, mode: 0o755 },
           ];
@@ -1170,14 +1171,23 @@ function collectBrowserDataFiles(sourceDir: string, preludePath: string): Browse
   return files;
 }
 
-function dataFileFromSourceUrl(sourceDir: string, hostPath: string, vfsPath: string): BrowserDataFile {
-  return {
+function dataFileFromSourceUrl(
+  sourceDir: string,
+  hostPath: string,
+  vfsPath: string,
+  options: { lazy?: boolean } = {},
+): BrowserDataFile {
+  const lazy = options.lazy ?? true;
+  const file: BrowserDataFile = {
     path: vfsPath,
     url: nodeCoreOfficialUrl("source", relative(sourceDir, hostPath)),
-    lazy: true,
-    size: statSync(hostPath).size,
     mode: 0o644,
   };
+  if (lazy) {
+    file.lazy = true;
+    file.size = statSync(hostPath).size;
+  }
+  return file;
 }
 
 function dataFileFromResultsData(hostPath: string, vfsPath: string): BrowserDataFile {

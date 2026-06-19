@@ -52,7 +52,10 @@ Browser runs start the Vite test-runner page with `KANDELO_BROWSER_DEMO_INPUTS`
 set to `test-runner` and serve the pinned Node source, generated prelude, and
 runtime wasm through an env-gated same-origin route. This avoids serializing the
 large source fixture tree and runtime wasm through Playwright's `page.evaluate`
-payload.
+payload. The selected `test/parallel/test-*.js` file is fetched eagerly into the
+browser VFS before the runtime starts so browser pass/fail/output reporting proves
+the test body actually executed; shared `test/common`, `test/fixtures`, and `lib`
+files remain lazy URL-backed data files.
 
 The runner forwards upstream `// Flags:` entries only for compatibility flags
 the runtime understands today. `--disable-proto=delete` and
@@ -121,6 +124,12 @@ commands, artifact paths, root-cause grouping, and follow-up beads.
 buckets into module-specific follow-up beads. See
 `docs/plans/2026-06-14-node-core-semantic-mismatch-triage-kad-nct23.md` for the
 fix bead breakdown.
+
+`kd-ei6` restored browser sentinel authority for PR #693 by eager-mounting the
+selected browser test file. A throwing sentinel now reports `FAIL` with stderr,
+and a printing sentinel now reports `PASS` with stdout on both Node and browser
+hosts. Re-run the browser full suite before treating any broad browser pass count
+as current.
 
 `kad-nct.24` breaks the original 13 Node-host timeout artifacts into specific
 runtime-progress bugs, long-running rows, and a runner cleanup blocker. See
