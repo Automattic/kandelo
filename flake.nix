@@ -88,7 +88,8 @@
             #            mkconfig, cpython itself, file's
             #            magic-build, etc.
             #   flex/bison — bash, m4, mariadb (yacc-style parsers)
-            #   xz     — extracting .tar.xz tarballs (sed, m4, …)
+            #   bzip2/xz — xtask/package extraction links libbz2/liblzma
+            #            for .tar.bz2/.tar.xz source archives.
             #   patch  — applying *.patch files (mariadb, ruby)
             #   gh     — only used by stage-pr-staging release lookup
             pkgs.curl
@@ -96,6 +97,7 @@
             pkgs.python3
             pkgs.flex
             pkgs.bison
+            pkgs.bzip2
             pkgs.xz
             pkgs.gnupatch
             pkgs.gh
