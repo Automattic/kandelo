@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { mkdtempSync, writeFileSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -932,5 +932,15 @@ describe("NodeTimeProvider", () => {
     const ns1 = BigInt(t1.sec) * 1_000_000_000n + BigInt(t1.nsec);
     const ns2 = BigInt(t2.sec) * 1_000_000_000n + BigInt(t2.nsec);
     expect(ns2).toBeGreaterThanOrEqual(ns1);
+  });
+
+  it("treats CLOCK_BOOTTIME as monotonic-equivalent", () => {
+    const tp = new NodeTimeProvider();
+    const monotonic = tp.clockGettime(1);
+    const boottime = tp.clockGettime(7);
+    const monotonicNs = BigInt(monotonic.sec) * 1_000_000_000n + BigInt(monotonic.nsec);
+    const boottimeNs = BigInt(boottime.sec) * 1_000_000_000n + BigInt(boottime.nsec);
+    expect(boottimeNs).toBeGreaterThanOrEqual(monotonicNs);
+    expect(boottimeNs - monotonicNs).toBeLessThan(100_000_000n);
   });
 });

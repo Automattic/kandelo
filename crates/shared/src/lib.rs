@@ -900,6 +900,7 @@ pub mod clock {
     pub const CLOCK_MONOTONIC: u32 = 1;
     pub const CLOCK_PROCESS_CPUTIME_ID: u32 = 2;
     pub const CLOCK_THREAD_CPUTIME_ID: u32 = 3;
+    pub const CLOCK_BOOTTIME: u32 = 7;
 }
 
 /// Timespec structure for the Wasm POSIX interface.

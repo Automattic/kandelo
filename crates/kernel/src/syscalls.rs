@@ -5576,12 +5576,11 @@ pub fn sys_nanosleep(
 pub fn sys_clock_getres(_proc: &Process, clock_id: u32) -> Result<WasmTimespec, Errno> {
     use wasm_posix_shared::clock::*;
     match clock_id {
-        CLOCK_REALTIME | CLOCK_MONOTONIC | CLOCK_PROCESS_CPUTIME_ID | CLOCK_THREAD_CPUTIME_ID => {
-            Ok(WasmTimespec {
-                tv_sec: 0,
-                tv_nsec: 1_000_000,
-            }) // 1ms
-        }
+        CLOCK_REALTIME | CLOCK_MONOTONIC | CLOCK_PROCESS_CPUTIME_ID | CLOCK_THREAD_CPUTIME_ID
+        | CLOCK_BOOTTIME => Ok(WasmTimespec {
+            tv_sec: 0,
+            tv_nsec: 1_000_000,
+        }), // 1ms
         id if (id & 7) == 2 => {
             // Per-process CPU clock: clock_getcpuclockid encodes as (-pid-1)*8 + 2
             Ok(WasmTimespec {
@@ -5605,7 +5604,7 @@ pub fn sys_clock_nanosleep(
 ) -> Result<(), Errno> {
     use wasm_posix_shared::clock::*;
     // Validate clock_id
-    if clock_id != CLOCK_REALTIME && clock_id != CLOCK_MONOTONIC {
+    if clock_id != CLOCK_REALTIME && clock_id != CLOCK_MONOTONIC && clock_id != CLOCK_BOOTTIME {
         return Err(Errno::EINVAL);
     }
     // Validate timespec

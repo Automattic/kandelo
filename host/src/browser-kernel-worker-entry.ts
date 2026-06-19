@@ -160,8 +160,11 @@ interface ProcessInfo {
 const processes = new Map<number, ProcessInfo>();
 const processTeardowns = new Map<ProcessInfo["worker"], Promise<void>>();
 interface VmInterruptTimer {
-  timer: ReturnType<typeof setTimeout>;
+  timer?: ReturnType<typeof setTimeout>;
   process: ProcessInfo;
+  deadlineMs: number;
+  timedOutPtr: number;
+  vmInterruptPtr: number;
 }
 const vmInterruptTimers = new Map<number, VmInterruptTimer>();
 // Includes standalone thread-worker teardown promises that may outlive the
@@ -241,8 +244,24 @@ const reportedNonzeroProcessExits = new Set<number>();
 
 function clearVmInterruptTimer(pid: number): void {
   const entry = vmInterruptTimers.get(pid);
-  if (entry) clearTimeout(entry.timer);
+  if (entry?.timer !== undefined) clearTimeout(entry.timer);
   vmInterruptTimers.delete(pid);
+}
+
+function scheduleVmInterruptTimer(pid: number, entry: VmInterruptTimer): void {
+  if (vmInterruptTimers.get(pid) !== entry || processes.get(pid) !== entry.process) return;
+  const remainingMs = entry.deadlineMs - performance.now();
+  if (remainingMs <= 0) {
+    vmInterruptTimers.delete(pid);
+    const flags = new Uint8Array(entry.process.memory.buffer);
+    Atomics.store(flags, entry.timedOutPtr, 1);
+    Atomics.store(flags, entry.vmInterruptPtr, 1);
+    return;
+  }
+  entry.timer = setTimeout(() => {
+    entry.timer = undefined;
+    scheduleVmInterruptTimer(pid, entry);
+  }, Math.min(0x7fffffff, Math.max(1, remainingMs)));
 }
 
 function handleVmInterruptTimer(msg: {
@@ -255,26 +274,27 @@ function handleVmInterruptTimer(msg: {
   if (!(msg.seconds > 0)) return;
   const process = processes.get(msg.pid);
   if (!process || !Number.isFinite(msg.seconds)) return;
-  const requestedDelayMs = msg.seconds * 1000;
+  const flags = new Uint8Array(process.memory.buffer);
+  if (
+    !Number.isSafeInteger(msg.timedOutPtr) ||
+    msg.timedOutPtr < 0 ||
+    msg.timedOutPtr >= flags.length ||
+    !Number.isSafeInteger(msg.vmInterruptPtr) ||
+    msg.vmInterruptPtr < 0 ||
+    msg.vmInterruptPtr >= flags.length
+  ) return;
   // The process worker can be stuck in a CPU-bound Wasm loop, so a timer in
   // that worker cannot set cooperative runtime interrupt flags. Run the timer
   // from this kernel worker instead; the process memory is shared, matching
   // the Node host's VM-interrupt timer path.
-  const delayMs = Math.min(0x7fffffff, Math.max(1, requestedDelayMs - 100));
-  const timer = setTimeout(() => {
-    const active = vmInterruptTimers.get(msg.pid);
-    if (!active || active.timer !== timer) return;
-    vmInterruptTimers.delete(msg.pid);
-    if (processes.get(msg.pid) !== process) return;
-    const flags = new Uint8Array(process.memory.buffer);
-    if (Number.isSafeInteger(msg.timedOutPtr) && msg.timedOutPtr >= 0 && msg.timedOutPtr < flags.length) {
-      Atomics.store(flags, msg.timedOutPtr, 1);
-    }
-    if (Number.isSafeInteger(msg.vmInterruptPtr) && msg.vmInterruptPtr >= 0 && msg.vmInterruptPtr < flags.length) {
-      Atomics.store(flags, msg.vmInterruptPtr, 1);
-    }
-  }, delayMs);
-  vmInterruptTimers.set(msg.pid, { timer, process });
+  const entry: VmInterruptTimer = {
+    process,
+    deadlineMs: performance.now() + msg.seconds * 1000,
+    timedOutPtr: msg.timedOutPtr,
+    vmInterruptPtr: msg.vmInterruptPtr,
+  };
+  vmInterruptTimers.set(msg.pid, entry);
+  scheduleVmInterruptTimer(msg.pid, entry);
 }
 
 function delay(ms: number): Promise<void> {
@@ -311,7 +331,6 @@ function reportNonzeroProcessExitDiagnostic(
     (serviceLog ? `\n${serviceLog}` : "") +
     `\n${syscalls}`;
   console.warn(diagnostic);
-  post({ type: "stderr", pid, data: new TextEncoder().encode(`${diagnostic}\n`) });
 }
 
 function readServiceLogForProcess(argv: readonly string[] | undefined): string | null {
@@ -1897,7 +1916,9 @@ async function handleDestroy(msg: Extract<MainToKernelMessage, { type: "destroy"
       );
     }
   }
-  for (const entry of vmInterruptTimers.values()) clearTimeout(entry.timer);
+  for (const entry of vmInterruptTimers.values()) {
+    if (entry.timer !== undefined) clearTimeout(entry.timer);
+  }
   vmInterruptTimers.clear();
   processes.clear();
   threadModuleCache.clear();

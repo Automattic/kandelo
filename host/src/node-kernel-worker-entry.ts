@@ -127,6 +127,14 @@ interface ProcessInfo {
 }
 const processes = new Map<number, ProcessInfo>();
 const processTeardowns = new Map<ProcessInfo["worker"], Promise<void>>();
+interface VmInterruptTimer {
+  timer?: ReturnType<typeof setTimeout>;
+  process: ProcessInfo;
+  deadlineMs: number;
+  timedOutPtr: number;
+  vmInterruptPtr: number;
+}
+const vmInterruptTimers = new Map<number, VmInterruptTimer>();
 const reportedExits = new Set<number>();
 
 // Workers terminated by the kernel-worker entry itself (handleExit /
@@ -207,6 +215,57 @@ function reportProcessExit(pid: number, status: number): void {
   post({ type: "exit", pid, status });
 }
 
+function clearVmInterruptTimer(pid: number): void {
+  const entry = vmInterruptTimers.get(pid);
+  if (entry?.timer !== undefined) clearTimeout(entry.timer);
+  vmInterruptTimers.delete(pid);
+}
+
+function scheduleVmInterruptTimer(pid: number, entry: VmInterruptTimer): void {
+  if (vmInterruptTimers.get(pid) !== entry || processes.get(pid) !== entry.process) return;
+  const remainingMs = entry.deadlineMs - performance.now();
+  if (remainingMs <= 0) {
+    vmInterruptTimers.delete(pid);
+    const flags = new Uint8Array(entry.process.memory.buffer);
+    Atomics.store(flags, entry.timedOutPtr, 1);
+    Atomics.store(flags, entry.vmInterruptPtr, 1);
+    return;
+  }
+  entry.timer = setTimeout(() => {
+    entry.timer = undefined;
+    scheduleVmInterruptTimer(pid, entry);
+  }, Math.min(0x7fffffff, Math.max(1, remainingMs)));
+}
+
+function handleVmInterruptTimer(msg: {
+  pid: number;
+  timedOutPtr: number;
+  vmInterruptPtr: number;
+  seconds: number;
+}, process: ProcessInfo): void {
+  if (processes.get(msg.pid) !== process) return;
+  clearVmInterruptTimer(msg.pid);
+  if (!(msg.seconds > 0)) return;
+  if (!Number.isFinite(msg.seconds)) return;
+  const flags = new Uint8Array(process.memory.buffer);
+  if (
+    !Number.isSafeInteger(msg.timedOutPtr) ||
+    msg.timedOutPtr < 0 ||
+    msg.timedOutPtr >= flags.length ||
+    !Number.isSafeInteger(msg.vmInterruptPtr) ||
+    msg.vmInterruptPtr < 0 ||
+    msg.vmInterruptPtr >= flags.length
+  ) return;
+  const entry: VmInterruptTimer = {
+    process,
+    deadlineMs: performance.now() + msg.seconds * 1000,
+    timedOutPtr: msg.timedOutPtr,
+    vmInterruptPtr: msg.vmInterruptPtr,
+  };
+  vmInterruptTimers.set(msg.pid, entry);
+  scheduleVmInterruptTimer(msg.pid, entry);
+}
+
 function signalFromExitStatus(exitStatus: number): number | null {
   return exitStatus >= 128 ? (exitStatus - 128) & 0x7f : null;
 }
@@ -244,6 +303,7 @@ async function finalizeProcessWorker(
   if (intentionallyTerminated.has(worker as object)) return;
   const cur = processes.get(pid);
   if (!cur || cur.worker !== worker) return;
+  clearVmInterruptTimer(pid);
 
   // Synthesize a signal-style reap *before* `deactivateProcess` in
   // case the worker died without sending SYS_EXIT_GROUP (uncaught
@@ -781,7 +841,7 @@ function handleSpawn(msg: SpawnMessage) {
     // — so surface them to stderr and synthesize an exit so the host's
     // exitResolver fires with a non-zero status.
     worker.on("message", (raw: unknown) => {
-      const m = raw as { type: string; pid?: number; message?: string; status?: number };
+      const m = raw as WorkerToHostMessage;
       if (m.type === "error" && m.pid === pid) {
         finalizeProcessWorkerError(pid, worker, m.message);
       } else if (m.type === "exit" && m.pid === pid) {
@@ -790,6 +850,9 @@ function handleSpawn(msg: SpawnMessage) {
         // the kernel didn't process a SYS_exit_group first, the kernel
         // still has the process registered and host.spawn() would hang.
         void finalizeProcessWorker(pid, worker, m.status ?? 0);
+      } else if (m.type === "vm_interrupt_timer" && m.pid === pid) {
+        const process = processes.get(pid);
+        if (process?.worker === worker) handleVmInterruptTimer(m, process);
       }
     });
 
@@ -884,11 +947,14 @@ async function handleFork(
   childWorker.on("error", (err: Error) => finalizeUnexpectedWorkerError(childPid, childWorker, "worker error", err));
 
   childWorker.on("message", (raw: unknown) => {
-    const m = raw as { type: string; pid?: number; message?: string; status?: number };
+    const m = raw as WorkerToHostMessage;
     if (m.type === "error" && m.pid === childPid) {
       finalizeProcessWorkerError(childPid, childWorker, m.message);
     } else if (m.type === "exit" && m.pid === childPid) {
       void finalizeProcessWorker(childPid, childWorker, m.status ?? 0);
+    } else if (m.type === "vm_interrupt_timer" && m.pid === childPid) {
+      const process = processes.get(childPid);
+      if (process?.worker === childWorker) handleVmInterruptTimer(m, process);
     }
   });
 
@@ -951,6 +1017,7 @@ async function handleExec(
   try {
     const setupResult = kernelWorker.kernelExecSetup(pid, callerTid);
     if (setupResult < 0) return setupResult;
+    clearVmInterruptTimer(pid);
 
     // From this point onward the old image cannot resume. Invalidate its
     // channels and async continuations immediately, before any other
@@ -1027,11 +1094,14 @@ async function handleExec(
     // uncaught wasm traps) so the host learns the process died — same
     // wiring as handleSpawn.
     replacementWorker.on("message", (raw: unknown) => {
-      const m = raw as { type: string; pid?: number; message?: string; status?: number };
+      const m = raw as WorkerToHostMessage;
       if (m.type === "error" && m.pid === pid) {
         finalizeProcessWorkerError(pid, replacementWorker!, m.message);
       } else if (m.type === "exit" && m.pid === pid) {
         void finalizeProcessWorker(pid, replacementWorker!, m.status ?? 0);
+      } else if (m.type === "vm_interrupt_timer" && m.pid === pid) {
+        const process = processes.get(pid);
+        if (process?.worker === replacementWorker) handleVmInterruptTimer(m, process);
       }
     });
 
@@ -1180,11 +1250,14 @@ async function handlePosixSpawn(
   newWorker.on("error", (err: Error) => finalizeUnexpectedWorkerError(childPid, newWorker, "spawn worker error", err));
 
   newWorker.on("message", (raw: unknown) => {
-    const m = raw as { type: string; pid?: number; message?: string; status?: number };
+    const m = raw as WorkerToHostMessage;
     if (m.type === "error" && m.pid === childPid) {
       finalizeProcessWorkerError(childPid, newWorker, m.message);
     } else if (m.type === "exit" && m.pid === childPid) {
       void finalizeProcessWorker(childPid, newWorker, m.status ?? 0);
+    } else if (m.type === "vm_interrupt_timer" && m.pid === childPid) {
+      const process = processes.get(childPid);
+      if (process?.worker === newWorker) handleVmInterruptTimer(m, process);
     }
   });
 
@@ -1334,6 +1407,10 @@ async function handleClone(
       void terminateThreadEntry();
     } else if (m.type === "error") {
       failThread(m.message);
+    } else if (m.type === "vm_interrupt_timer") {
+      if (isCurrentThreadGeneration() && m.pid === pid) {
+        handleVmInterruptTimer(m, processInfo);
+      }
     }
   });
   threadWorker.on("error", (err: Error) => failThread(`worker error: ${err.message ?? err}`));
@@ -1357,6 +1434,7 @@ async function finishProcessExit(
   if (!expectedWorker) return;
   const info = processes.get(pid);
   if (!info || info.worker !== expectedWorker) return;
+  clearVmInterruptTimer(pid);
 
   const existingTeardown = processTeardowns.get(expectedWorker);
   if (existingTeardown) {
@@ -1404,6 +1482,7 @@ async function finishProcessExit(
 
 async function handleTerminate(msg: TerminateProcessMessage) {
   const pid = msg.pid;
+  clearVmInterruptTimer(pid);
 
   // Terminate thread workers
   const threads = threadWorkers.get(pid);
@@ -1472,6 +1551,7 @@ async function handleDestroy(msg: { requestId: number }) {
 
   const processEntries = [...processes.entries()];
   for (const [pid, info] of processEntries) {
+    clearVmInterruptTimer(pid);
     await terminateThreadWorkers(pid);
     await terminateTrackedWorker(info.worker);
     try { kernelWorker.unregisterProcess(pid); } catch {}
@@ -1487,6 +1567,10 @@ async function handleDestroy(msg: { requestId: number }) {
     }
   }
   processes.clear();
+  for (const entry of vmInterruptTimers.values()) {
+    if (entry.timer !== undefined) clearTimeout(entry.timer);
+  }
+  vmInterruptTimers.clear();
   processTeardowns.clear();
   reportedExits.clear();
   threadModuleCache.clear();
