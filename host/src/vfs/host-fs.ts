@@ -86,31 +86,170 @@ export function nativeStatfs(path: string): StatfsResult {
 
 export class HostFileSystem implements FileSystemBackend {
   private rootPath: string;
+  private guestMountPoint: string;
   private fdPositions = new Map<number, number>();
   private dirHandles = new Map<number, fs.Dir>();
   private nextDirHandle = 1;
   private metadata = new NativeMetadataOverlay();
+  private dirPathCache = new Map<string, string>();
+  private readonly maxDirPathCacheEntries = 4096;
 
-  constructor(rootPath: string) {
-    this.rootPath = nodePath.resolve(rootPath);
+  constructor(rootPath: string, guestMountPoint = "/") {
+    const resolvedRoot = nodePath.resolve(rootPath);
+    this.rootPath = fs.existsSync(resolvedRoot)
+      ? fs.realpathSync(resolvedRoot)
+      : resolvedRoot;
+    this.guestMountPoint = this.normalizeGuestMountPoint(guestMountPoint);
   }
 
   /**
-   * Resolve a mount-relative path to an absolute host path,
-   * ensuring it stays within `rootPath`.
+   * Resolve a mount-relative guest path to an absolute host path, ensuring it
+   * stays within `rootPath`.
+   *
+   * This intentionally resolves components one at a time instead of using
+   * `path.resolve()`. POSIX pathname resolution must look up an intermediate
+   * component before a following `..` can step back out of it:
+   * `existing/missing/../file` fails with ENOENT because `missing` is looked
+   * up as a directory first. Lexical normalization would incorrectly collapse
+   * that to `existing/file`.
+   *
+   * Native symlink targets are stored as guest strings. When following a
+   * symlink whose target is absolute and still inside this mount, translate it
+   * back to a mount-relative path before continuing. This preserves readlink(2)
+   * output while allowing stat/open/chmod to follow absolute in-guest links.
    */
-  private safePath(relative: string): string {
-    const resolved = nodePath.resolve(
-      this.rootPath,
-      relative.replace(/^\//, ""),
-    );
-    if (
-      resolved !== this.rootPath &&
-      !resolved.startsWith(this.rootPath + nodePath.sep)
-    ) {
+  private safePath(relative: string, followFinal = true): string {
+    const hadTrailingSlash = relative.length > 1 && /\/+$/.test(relative);
+    const originalParts = this.pathParts(relative);
+    let current = this.rootPath;
+    let pending = [...originalParts];
+    let processed: string[] = [];
+    let symlinkDepth = 0;
+    let cacheable = !originalParts.includes("..");
+
+    if (cacheable) {
+      for (let i = originalParts.length; i > 0; i--) {
+        const cached = this.dirPathCache.get(originalParts.slice(0, i).join("/"));
+        if (cached === undefined) continue;
+        current = cached;
+        pending = originalParts.slice(i);
+        processed = originalParts.slice(0, i);
+        break;
+      }
+    }
+
+    while (pending.length > 0) {
+      const part = pending.shift()!;
+      if (part === ".") continue;
+      if (part === "..") {
+        cacheable = false;
+        if (current === this.rootPath) {
+          throw new Error("EACCES: path traversal blocked");
+        }
+        current = nodePath.dirname(current);
+        processed.pop();
+        continue;
+      }
+
+      const candidate = nodePath.join(current, part);
+      const isFinal = pending.length === 0;
+      const shouldFollow = !isFinal || followFinal;
+
+      let lst: fs.Stats | null = null;
+      try {
+        lst = fs.lstatSync(candidate);
+      } catch (err: any) {
+        if (isFinal && err?.code === "ENOENT") {
+          current = candidate;
+          break;
+        }
+        throw err;
+      }
+
+      if (shouldFollow && lst.isSymbolicLink()) {
+        cacheable = false;
+        if (++symlinkDepth > 40) throw new Error("ELOOP: too many symbolic links");
+        const target = fs.readlinkSync(candidate, "utf8");
+        if (target.startsWith("/")) {
+          const mountRelative = this.guestAbsoluteToMountRelative(target);
+          if (mountRelative === null) {
+            throw new Error("EACCES: absolute symlink target escapes mount");
+          }
+          current = this.rootPath;
+          pending = [...this.pathParts(mountRelative), ...pending];
+        } else {
+          pending = [...this.pathParts(target), ...pending];
+        }
+        continue;
+      }
+
+      if (!isFinal && !lst.isDirectory()) {
+        throw new Error("ENOTDIR: not a directory");
+      }
+
+      if (!isFinal) {
+        current = fs.realpathSync(candidate);
+        this.assertWithinRoot(current);
+        processed.push(part);
+        if (cacheable) this.setCachedDirPath(processed, current);
+      } else {
+        current = candidate;
+      }
+    }
+
+    if (hadTrailingSlash && current !== this.rootPath && !current.endsWith(nodePath.sep)) {
+      // Keep a final separator for native fs calls. POSIX requires a
+      // trailing slash to resolve the preceding component as a directory; the
+      // native call then returns ENOTDIR for regular files while still
+      // permitting operations such as mkdir("new-dir/").
+      current += nodePath.sep;
+    }
+    this.assertWithinRoot(current);
+    return current;
+  }
+
+  private setCachedDirPath(parts: string[], nativePath: string): void {
+    if (parts.length === 0) return;
+    this.dirPathCache.set(parts.join("/"), nativePath);
+    if (this.dirPathCache.size > this.maxDirPathCacheEntries) {
+      const oldest = this.dirPathCache.keys().next().value;
+      if (oldest !== undefined) this.dirPathCache.delete(oldest);
+    }
+  }
+
+  private clearDirPathCache(): void {
+    this.dirPathCache.clear();
+  }
+
+  private normalizeGuestMountPoint(mountPoint: string): string {
+    if (!mountPoint.startsWith("/")) mountPoint = `/${mountPoint}`;
+    return mountPoint !== "/" && mountPoint.endsWith("/")
+      ? mountPoint.slice(0, -1)
+      : mountPoint;
+  }
+
+  private pathParts(path: string): string[] {
+    return path
+      .replace(/^\/+/, "")
+      .split("/")
+      .filter((part) => part.length > 0 && part !== ".");
+  }
+
+  private guestAbsoluteToMountRelative(path: string): string | null {
+    if (this.guestMountPoint === "/") return path;
+    if (path === this.guestMountPoint) return "/";
+    if (path.startsWith(`${this.guestMountPoint}/`)) {
+      return path.slice(this.guestMountPoint.length) || "/";
+    }
+    return null;
+  }
+
+  private assertWithinRoot(path: string): void {
+    const rel = nodePath.relative(this.rootPath, path);
+    if (rel === "") return;
+    if (rel.startsWith("..") || nodePath.isAbsolute(rel)) {
       throw new Error("EACCES: path traversal blocked");
     }
-    return resolved;
   }
 
   private toStatResult(s: fs.Stats): StatResult {
@@ -127,7 +266,7 @@ export class HostFileSystem implements FileSystemBackend {
   // ── File handle operations ───────────────────────────────────
 
   open(path: string, flags: number, mode: number): number {
-    const nativePath = this.safePath(path);
+    const nativePath = this.safePath(path, (flags & 0o400000) === 0);
     const created = (flags & 0o100) !== 0 && !fs.existsSync(nativePath);
     const fd = fs.openSync(nativePath, translateOpenFlags(flags), mode);
     if (created) this.metadata.chmod(fs.fstatSync(fd), mode);
@@ -217,7 +356,7 @@ export class HostFileSystem implements FileSystemBackend {
   }
 
   lstat(path: string): StatResult {
-    return this.toStatResult(fs.lstatSync(this.safePath(path)));
+    return this.toStatResult(fs.lstatSync(this.safePath(path, false)));
   }
 
   statfs(path: string): StatfsResult {
@@ -231,26 +370,29 @@ export class HostFileSystem implements FileSystemBackend {
   }
 
   rmdir(path: string): void {
-    const nativePath = this.safePath(path);
+    const nativePath = this.safePath(path, false);
     const stat = fs.lstatSync(nativePath);
     fs.rmdirSync(nativePath);
+    this.clearDirPathCache();
     this.metadata.forget(stat);
   }
 
   unlink(path: string): void {
-    const nativePath = this.safePath(path);
+    const nativePath = this.safePath(path, false);
     const stat = fs.lstatSync(nativePath);
     fs.unlinkSync(nativePath);
+    if (stat.isSymbolicLink()) this.clearDirPathCache();
     if (stat.nlink <= 1) this.metadata.forget(stat);
   }
 
   rename(oldPath: string, newPath: string): void {
-    const nativeNewPath = this.safePath(newPath);
+    const nativeNewPath = this.safePath(newPath, false);
     let replaced: fs.Stats | undefined;
     try {
       replaced = fs.lstatSync(nativeNewPath);
     } catch {}
-    fs.renameSync(this.safePath(oldPath), nativeNewPath);
+    fs.renameSync(this.safePath(oldPath, false), nativeNewPath);
+    this.clearDirPathCache();
     if (replaced !== undefined && replaced.nlink <= 1) this.metadata.forget(replaced);
   }
 
@@ -259,11 +401,11 @@ export class HostFileSystem implements FileSystemBackend {
   }
 
   symlink(target: string, path: string): void {
-    fs.symlinkSync(target, this.safePath(path));
+    fs.symlinkSync(target, this.safePath(path, false));
   }
 
   readlink(path: string): string {
-    return fs.readlinkSync(this.safePath(path), "utf8");
+    return fs.readlinkSync(this.safePath(path, false), "utf8");
   }
 
   chmod(path: string, mode: number): void {
