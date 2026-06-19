@@ -27,8 +27,9 @@
 import { describe, it, expect } from "vitest";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { runCentralizedProgram } from "./centralized-test-helper";
+import { NodeKernelHost } from "../src/node-kernel-host";
 import { signalExitStatus, SIGFPE, SIGILL, SIGSEGV } from "../src/trap-signals";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -41,6 +42,21 @@ const programsBuilt = existsSync(wasmTrapBin) &&
   existsSync(oobTrapBin) &&
   existsSync(divzeroTrapBin) &&
   existsSync(abortBin);
+
+function loadWasm(path: string): ArrayBuffer {
+  const bytes = readFileSync(path);
+  return bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength);
+}
+
+function withTimeout<T>(promise: Promise<T>, label: string, timeoutMs = 5000): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<T>((_, reject) => {
+    timer = setTimeout(() => reject(new Error(`${label} timed out`)), timeoutMs);
+  });
+  return Promise.race([promise, timeout]).finally(() => {
+    if (timer !== undefined) clearTimeout(timer);
+  });
+}
 
 describe.skipIf(!programsBuilt)("wasm trap → host exit (regression)", () => {
   it("__builtin_trap() in user code: spawn() resolves promptly, no hang", async () => {
@@ -113,4 +129,35 @@ describe.skipIf(!programsBuilt)("wasm trap → host exit (regression)", () => {
     expect([signalExitStatus(SIGILL), 134]).toContain(exitCode);
     expect(elapsed).toBeLessThan(3000);
   }, 8_000);
+
+  it("same Node host can launch again immediately after an OOB trap", async () => {
+    let stdout = "";
+    let stderr = "";
+    const decode = (data: Uint8Array) => new TextDecoder().decode(data);
+    const host = new NodeKernelHost({
+      rootfsImage: undefined,
+      onStdout: (_pid, data) => { stdout += decode(data); },
+      onStderr: (_pid, data) => { stderr += decode(data); },
+    });
+
+    await host.init();
+    try {
+      const trapStatus = await withTimeout(
+        host.spawn(loadWasm(oobTrapBin), ["oob_trap_test"]),
+        "OOB trap spawn",
+      );
+      const divzeroStatus = await withTimeout(
+        host.spawn(loadWasm(divzeroTrapBin), ["divzero_trap_test"]),
+        "post-trap spawn",
+      );
+
+      expect(trapStatus).toBe(signalExitStatus(SIGSEGV));
+      expect(divzeroStatus).toBe(signalExitStatus(SIGFPE));
+      expect(stderr).toContain("before-oob");
+      expect(stderr).toContain("before-divzero");
+      expect(stdout).toBe("");
+    } finally {
+      await host.destroy();
+    }
+  }, 12_000);
 });

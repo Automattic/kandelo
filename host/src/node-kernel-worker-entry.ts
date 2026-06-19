@@ -98,6 +98,7 @@ interface ProcessInfo {
   programBytes: ArrayBuffer;
   programModule?: WebAssembly.Module;
   worker: ReturnType<NodeWorkerAdapter["createWorker"]>;
+  argv: string[];
   channelOffset: number;
   ptrWidth: 4 | 8;
   layout: ProcessMemoryLayout;
@@ -106,6 +107,9 @@ interface ProcessInfo {
 const processes = new Map<number, ProcessInfo>();
 const processTeardowns = new Map<number, Promise<void>>();
 const exitGroupPids = new Set<number>();
+// Includes standalone worker teardown promises that may outlive the process
+// map entry they came from.
+const workerTeardowns = new Set<Promise<void>>();
 const reportedExits = new Set<number>();
 
 // Workers terminated by the kernel-worker entry itself (handleExit /
@@ -162,9 +166,27 @@ const threadExits = new ThreadExitCoordinator();
 
 async function terminateTrackedWorker(
   worker: ReturnType<NodeWorkerAdapter["createWorker"]>,
+  settleMs = 0,
 ): Promise<void> {
   intentionallyTerminated.add(worker as object);
-  await worker.terminate().catch(() => {});
+  const teardown = (async () => {
+    await worker.terminate().catch(() => {});
+    if (settleMs > 0) {
+      await new Promise((resolve) => setTimeout(resolve, settleMs));
+    }
+  })();
+  workerTeardowns.add(teardown);
+  void teardown.finally(() => workerTeardowns.delete(teardown));
+  await teardown;
+}
+
+async function waitForProcessTeardowns(): Promise<void> {
+  while (processTeardowns.size > 0 || workerTeardowns.size > 0) {
+    await Promise.allSettled([
+      ...processTeardowns.values(),
+      ...workerTeardowns,
+    ]);
+  }
 }
 
 async function terminateThreadWorkers(pid: number): Promise<void> {
@@ -326,10 +348,66 @@ function threadAllocatorForLayout(
   });
 }
 
+interface ProcessMemoryAllocationContext {
+  operation: "spawn" | "exec" | "posix_spawn";
+  path?: string;
+  argv?: readonly string[];
+}
+
+function processMemoryAllocationDiagnostics(
+  pid: number,
+  ptrWidth: 4 | 8,
+  layout: ProcessMemoryLayout,
+  heapBase: bigint | number | null,
+  context?: ProcessMemoryAllocationContext,
+) {
+  let totalLiveBufferBytes = 0;
+  const liveProcesses = Array.from(processes.entries())
+    .sort(([a], [b]) => a - b)
+    .map(([livePid, info]) => {
+      const bufferBytes = info.memory.buffer.byteLength;
+      totalLiveBufferBytes += bufferBytes;
+      return {
+        pid: livePid,
+        argv: info.argv.slice(0, 8),
+        ptrWidth: info.ptrWidth,
+        currentPages: Math.ceil(bufferBytes / WASM_PAGE_SIZE),
+        maximumPages: info.layout.maximumPages,
+        bufferBytes,
+      };
+    });
+
+  return {
+    operation: context?.operation,
+    pid,
+    path: context?.path,
+    argv: context?.argv,
+    ptrWidth,
+    heapBase: heapBase == null ? null : heapBase.toString(),
+    requestedLayout: {
+      initialPages: layout.initialPages,
+      maximumPages: layout.maximumPages,
+      controlBase: layout.controlBase,
+      brkBase: layout.brkBase,
+      mmapBase: layout.mmapBase,
+      maxAddr: layout.maxAddr,
+      threadSlotCount: layout.threadSlotCount,
+      threadArenaEndPage: layout.threadArenaEndPage,
+    },
+    liveProcessCount: processes.size,
+    pendingProcessTeardowns: processTeardowns.size,
+    pendingWorkerTeardowns: workerTeardowns.size,
+    totalLiveBufferBytes,
+    liveProcesses,
+  };
+}
+
 function createFreshProcessMemory(
   pid: number,
   programBytes: ArrayBuffer,
   ptrWidth: 4 | 8,
+  processMaxPages = maxPages,
+  context?: ProcessMemoryAllocationContext,
 ): {
   memory: WebAssembly.Memory;
   layout: ProcessMemoryLayout;
@@ -337,13 +415,24 @@ function createFreshProcessMemory(
 } {
   const heapBase = extractHeapBase(programBytes);
   const layout = computeProcessMemoryLayout({
-    maxPages,
+    maxPages: processMaxPages,
     defaultThreadSlots,
     ptrWidth,
     programBytes,
     heapBase,
   });
-  const memory = createProcessMemory(ptrWidth, layout);
+  let memory: WebAssembly.Memory;
+  try {
+    memory = createProcessMemory(ptrWidth, layout);
+  } catch (e) {
+    console.error(
+      "[kernel-worker] process memory allocation failed",
+      JSON.stringify(
+        processMemoryAllocationDiagnostics(pid, ptrWidth, layout, heapBase, context),
+      ),
+    );
+    throw e;
+  }
   new Uint8Array(memory.buffer, layout.channelOffset, CH_TOTAL_SIZE).fill(0);
   return {
     memory,
@@ -606,8 +695,10 @@ async function handleInit(msg: InitMessage) {
 
 // --- Spawn ---
 
-function handleSpawn(msg: SpawnMessage) {
+async function handleSpawn(msg: SpawnMessage) {
   try {
+    await waitForProcessTeardowns();
+
     // Allocate PID internally — skip any PIDs already occupied by fork children
     while (processes.has(nextSpawnPid)) {
       nextSpawnPid++;
@@ -624,7 +715,11 @@ function handleSpawn(msg: SpawnMessage) {
       memory,
       layout,
       threadAllocator,
-    } = createFreshProcessMemory(pid, msg.programBytes, ptrWidth);
+    } = createFreshProcessMemory(pid, msg.programBytes, ptrWidth, maxPages, {
+      operation: "spawn",
+      path: msg.argv[0],
+      argv: msg.argv,
+    });
     const channelOffset = layout.channelOffset;
 
     kernelWorker.registerProcess(pid, memory, [channelOffset], {
@@ -682,6 +777,7 @@ function handleSpawn(msg: SpawnMessage) {
       programBytes: msg.programBytes,
       programModule: msg.programModule,
       worker,
+      argv: msg.argv,
       channelOffset,
       ptrWidth,
       layout,
@@ -724,6 +820,8 @@ async function handleFork(
   parentMemory: WebAssembly.Memory,
   threadFork?: ForkFromThreadContext,
 ): Promise<number[]> {
+  await waitForProcessTeardowns();
+
   const parentInfo = processes.get(parentPid);
   const parentProgram = parentInfo?.programBytes;
   if (!parentProgram) throw new Error(`Unknown parent pid ${parentPid}`);
@@ -780,6 +878,7 @@ async function handleFork(
     programBytes: parentProgram,
     programModule: parentInfo.programModule,
     worker: childWorker,
+    argv: parentInfo.argv,
     channelOffset: childChannelOffset,
     ptrWidth,
     layout: childLayout,
@@ -829,7 +928,11 @@ async function handleExec(
     memory: newMemory,
     layout: newLayout,
     threadAllocator: newThreadAllocator,
-  } = createFreshProcessMemory(pid, programBytes, newPtrWidth);
+  } = createFreshProcessMemory(pid, programBytes, newPtrWidth, maxPages, {
+    operation: "exec",
+    path,
+    argv: launchArgv,
+  });
   const newChannelOffset = newLayout.channelOffset;
 
   kernelWorker.registerProcess(pid, newMemory, [newChannelOffset], {
@@ -865,6 +968,7 @@ async function handleExec(
     memory: newMemory,
     programBytes,
     worker: newWorker,
+    argv: launchArgv,
     channelOffset: newChannelOffset,
     ptrWidth: newPtrWidth,
     layout: newLayout,
@@ -936,6 +1040,8 @@ async function handlePosixSpawn(
   argv: string[],
   envp: string[],
 ): Promise<number> {
+  await waitForProcessTeardowns();
+
   post({ type: "proc_event", kind: "spawn", pid: childPid });
 
   const ptrWidth = detectPtrWidth(programBytes);
@@ -943,7 +1049,11 @@ async function handlePosixSpawn(
     memory,
     layout,
     threadAllocator,
-  } = createFreshProcessMemory(childPid, programBytes, ptrWidth);
+  } = createFreshProcessMemory(childPid, programBytes, ptrWidth, maxPages, {
+    operation: "posix_spawn",
+    path: argv[0],
+    argv,
+  });
   const channelOffset = layout.channelOffset;
 
   // The kernel already created the child Process via kernel_spawn_process,
@@ -974,6 +1084,7 @@ async function handlePosixSpawn(
     memory,
     programBytes,
     worker: newWorker,
+    argv,
     channelOffset,
     ptrWidth,
     layout,
@@ -1217,8 +1328,7 @@ async function handleTerminate(msg: TerminateProcessMessage) {
   const threads = threadWorkers.get(pid);
   if (threads) {
     for (const t of threads) {
-      intentionallyTerminated.add(t.worker as object);
-      await t.worker.terminate().catch(() => {});
+      await (t.termination ?? terminateTrackedWorker(t.worker));
       try {
         kernelWorker.notifyThreadExit(pid, t.tid);
         kernelWorker.removeChannel(pid, t.channelOffset);
@@ -1252,16 +1362,15 @@ async function handleDestroy(msg: { requestId: number }) {
     await terminateTrackedWorker(info.worker);
     try { kernelWorker.unregisterProcess(pid); } catch {}
   }
-  await Promise.allSettled([...processTeardowns.values()]);
   // Process workers can still have pthread/JS-worker children. Terminate
   // them explicitly before clearing the map so destroy does not leave worker
   // threads keeping the Vitest fork alive.
   for (const threads of threadWorkers.values()) {
     for (const t of threads) {
-      intentionallyTerminated.add(t.worker as object);
-      t.worker.terminate().catch(() => {});
+      await (t.termination ?? terminateTrackedWorker(t.worker));
     }
   }
+  await waitForProcessTeardowns();
   processes.clear();
   processTeardowns.clear();
   reportedExits.clear();
@@ -1309,7 +1418,7 @@ port.on("message", (msg: MainToKernelMessage) => {
       handleInit(msg);
       break;
     case "spawn":
-      handleSpawn(msg);
+      void handleSpawn(msg);
       break;
     case "append_stdin_data":
       kernelWorker.appendStdinData(msg.pid, msg.data);
