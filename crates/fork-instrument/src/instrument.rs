@@ -2638,32 +2638,33 @@ fn populate_postamble(
     );
     push_instr(out, store_i32(memory, FUNC_INDEX_OFFSET));
 
+    // frame[8] = catch_region_id (or 0 for functions without catch-state).
+    push_current_frame_ptr(out, runtime, memory, ptr_ty);
     if let Some(catch_state) = catch_state_locals {
-        // frame[8] = dynamic catch_region_id for catch-capable functions.
-        push_current_frame_ptr(out, runtime, memory, ptr_ty);
         push_instr(
             out,
             Instr::LocalGet(LocalGet {
                 local: catch_state.catch_region_id,
             }),
         );
-        push_instr(out, store_i32(memory, CATCH_REGION_OFFSET));
+    } else {
+        push_instr(out, Instr::Const(Const { value: Value::I32(0) }));
+    }
+    push_instr(out, store_i32(memory, CATCH_REGION_OFFSET));
 
-        // frame[12] = dynamic exnref_slot for catch-capable functions.
-        push_current_frame_ptr(out, runtime, memory, ptr_ty);
+    // frame[12] = exnref_slot (or 0 for functions without catch-state).
+    push_current_frame_ptr(out, runtime, memory, ptr_ty);
+    if let Some(catch_state) = catch_state_locals {
         push_instr(
             out,
             Instr::LocalGet(LocalGet {
                 local: catch_state.exnref_slot,
             }),
         );
-        push_instr(out, store_i32(memory, EXNREF_SLOT_OFFSET));
     } else {
-        // frame[8..16] = zero catch_region_id + exnref_slot.
-        push_current_frame_ptr(out, runtime, memory, ptr_ty);
-        push_instr(out, Instr::Const(Const { value: Value::I64(0) }));
-        push_instr(out, store_scalar(memory, ValType::I64, CATCH_REGION_OFFSET));
+        push_instr(out, Instr::Const(Const { value: Value::I32(0) }));
     }
+    push_instr(out, store_i32(memory, EXNREF_SLOT_OFFSET));
 
     // Save scalar user + arg-spill locals
     for &(lid, ty, off) in locals_with_offsets {
