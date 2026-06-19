@@ -285,9 +285,16 @@ pub fn generate_stat(proc: &Process) -> Vec<u8> {
     // pid (comm) state ppid pgrp session tty_nr tpgid flags
     // minflt cminflt majflt cmajflt utime stime cutime cstime
     // priority nice num_threads itrealvalue starttime vsize rss ...
+    //
+    // Keep both scheduling fields distinct.  Several user-space tools (ps,
+    // procps-compatible libraries, PHP's proc_nice() tests) read the nice
+    // value from field 19; field 18 is the scheduler priority.  Kandelo does
+    // not have a host CPU scheduler, but exposing the stored POSIX nice value
+    // in the Linux-compatible procfs slot is observable process metadata.
+    let priority = 20 + proc.nice;
     let line = format!(
-        "{} ({}) {} {} {} {} 0 0 0 0 0 0 0 0 0 0 {} 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0\n",
-        proc.pid, name, state, proc.ppid, proc.pgid, proc.sid, proc.nice,
+        "{} ({}) {} {} {} {} 0 0 0 0 0 0 0 0 0 0 0 {} {} 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0\n",
+        proc.pid, name, state, proc.ppid, proc.pgid, proc.sid, priority, proc.nice,
     );
     line.into_bytes()
 }
@@ -439,6 +446,7 @@ pub fn procfs_stat(entry: &ProcfsEntry, content_size: u64, follow_symlinks: bool
             st_ctime_sec: 0,
             st_ctime_nsec: 0,
             _pad: 0,
+            ..WasmStat::default()
         };
     }
 
@@ -459,6 +467,7 @@ pub fn procfs_stat(entry: &ProcfsEntry, content_size: u64, follow_symlinks: bool
             st_ctime_sec: 0,
             st_ctime_nsec: 0,
             _pad: 0,
+            ..WasmStat::default()
         };
     }
 
@@ -479,6 +488,7 @@ pub fn procfs_stat(entry: &ProcfsEntry, content_size: u64, follow_symlinks: bool
         st_ctime_sec: 0,
         st_ctime_nsec: 0,
         _pad: 0,
+        ..WasmStat::default()
     }
 }
 
@@ -655,6 +665,21 @@ fn validate_pid(proc: &Process, pid: u32) -> Result<(), Errno> {
         }
     }
     Err(Errno::ENOENT)
+}
+
+/// Validate that a parsed procfs entry names an existing process.
+///
+/// Path parsing alone is not existence: Linux procfs only exposes
+/// `/proc/<pid>/...` while that pid has a process-table entry. Callers that
+/// service metadata-only operations (stat/access/chdir) must perform the same
+/// validation as `procfs_open`, otherwise probes such as
+/// `test -r /proc/123/stat` incorrectly succeed for already-reaped pids.
+pub fn validate_entry(proc: &Process, entry: &ProcfsEntry) -> Result<(), Errno> {
+    let pid = entry_pid(entry);
+    if pid != 0 {
+        validate_pid(proc, pid)?;
+    }
+    Ok(())
 }
 
 /// Allocate a procfs buffer slot, reusing freed slots.
@@ -1046,7 +1071,10 @@ mod tests {
         let stat = generate_stat(&proc);
         let stat_str = core::str::from_utf8(&stat).unwrap();
         assert!(stat_str.starts_with("42 (test_program) R 1 42 1"));
-        assert!(stat_str.contains(" 5 ")); // nice value
+        let after_comm = stat_str.split(") ").nth(1).unwrap();
+        let mut fields = after_comm.split_whitespace();
+        assert_eq!(fields.nth(15).unwrap(), "25"); // field 18: scheduler priority
+        assert_eq!(fields.next().unwrap(), "5"); // field 19: nice value
     }
 
     #[test]
