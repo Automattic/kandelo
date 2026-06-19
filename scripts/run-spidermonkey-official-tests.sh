@@ -112,6 +112,34 @@ while [ $# -gt 0 ]; do
   esac
 done
 
+is_positive_integer() {
+  case "$1" in
+    ''|*[!0-9]*)
+      return 1
+      ;;
+    *)
+      [ "$1" -gt 0 ]
+      ;;
+  esac
+}
+
+guard_browser_jobs() {
+  if ! is_positive_integer "$JOBS"; then
+    echo "ERROR: --jobs must be a positive integer" >&2
+    exit 2
+  fi
+  case "$HOST" in
+    browser|both)
+      if [ "$JOBS" -gt 1 ] && [ "${SPIDERMONKEY_ALLOW_BROWSER_MULTIWORKER_SINGLE_BRIDGE:-0}" != "1" ]; then
+        echo "ERROR: browser --jobs $JOBS through one bridge is non-authoritative; use scripts/run-spidermonkey-browser-sharded.sh for multi-lane browser parallelism." >&2
+        exit 2
+      fi
+      ;;
+  esac
+}
+
+guard_browser_jobs
+
 ensure_kernel() {
   if "$REPO_ROOT/scripts/resolve-binary.sh" kernel.wasm >/dev/null 2>&1; then
     return 0
@@ -239,6 +267,30 @@ filter_kandelo_known_jstest_args() {
   done
 }
 
+stop_shell_bridge_pid() {
+  local pid="$1" name="$2" timeout killer_pid
+  timeout="${SPIDERMONKEY_SHELL_BRIDGE_SHUTDOWN_TIMEOUT_SECONDS:-15}"
+  [ -n "$pid" ] || return 0
+
+  if ! kill -0 "$pid" 2>/dev/null; then
+    wait "$pid" 2>/dev/null || true
+    return 0
+  fi
+
+  kill "$pid" 2>/dev/null || true
+  (
+    sleep "$timeout"
+    if kill -0 "$pid" 2>/dev/null; then
+      echo "WARNING: $name did not exit after ${timeout}s; sending SIGKILL" >&2
+      kill -KILL "$pid" 2>/dev/null || true
+    fi
+  ) &
+  killer_pid=$!
+  wait "$pid" 2>/dev/null || true
+  kill "$killer_pid" 2>/dev/null || true
+  wait "$killer_pid" 2>/dev/null || true
+}
+
 start_browser_shell_bridge() {
   local port="${SPIDERMONKEY_BROWSER_JS_SHELL_PORT:-5312}"
   export SPIDERMONKEY_BROWSER_JS_SHELL_PORT="$port"
@@ -263,9 +315,8 @@ start_browser_shell_bridge() {
 }
 
 stop_browser_shell_bridge() {
-  if [ -n "$BROWSER_SERVER_PID" ]; then
-    kill "$BROWSER_SERVER_PID" 2>/dev/null || true
-    wait "$BROWSER_SERVER_PID" 2>/dev/null || true
+  if [ -n "${BROWSER_SERVER_PID:-}" ]; then
+    stop_shell_bridge_pid "$BROWSER_SERVER_PID" "browser js shell bridge"
     BROWSER_SERVER_PID=""
   fi
 }
@@ -293,9 +344,8 @@ start_node_shell_bridge() {
 }
 
 stop_node_shell_bridge() {
-  if [ -n "$NODE_SERVER_PID" ]; then
-    kill "$NODE_SERVER_PID" 2>/dev/null || true
-    wait "$NODE_SERVER_PID" 2>/dev/null || true
+  if [ -n "${NODE_SERVER_PID:-}" ]; then
+    stop_shell_bridge_pid "$NODE_SERVER_PID" "node js shell bridge"
     NODE_SERVER_PID=""
   fi
   unset SPIDERMONKEY_NODE_JS_SHELL_URL

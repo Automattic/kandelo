@@ -33,6 +33,7 @@ JIT_CHUNK_SIZE="${SPIDERMONKEY_OFFICIAL_JIT_CHUNK_SIZE:-500}"
 START_AT="${SPIDERMONKEY_OFFICIAL_START_AT:-}"
 STARTED=0
 RESTART_BRIDGE_PER_CHUNK="${SPIDERMONKEY_OFFICIAL_RESTART_BRIDGE_PER_CHUNK:-0}"
+CHUNK_LIST="${SPIDERMONKEY_OFFICIAL_CHUNK_LIST:-}"
 JS_SHELL_WRAPPER="$NODE_WRAPPER"
 NODE_SERVER_PID=""
 BROWSER_SERVER_PID=""
@@ -229,6 +230,7 @@ Options:
   --no-slow                      Use upstream defaults and skip tests marked slow
   --results-dir DIR              Directory for logs and summaries
   --start-at CHUNK               Skip chunks until CHUNK, suite/CHUNK, or host/suite/CHUNK
+  --chunk-list FILE              Run only listed chunks, one chunk, suite/chunk, or host/suite/chunk per line
   --restart-bridge-per-chunk     Restart the host bridge before each chunk
   --fail-fast                    Stop after the first failing chunk
   --help                         Show this help
@@ -285,6 +287,10 @@ while [ $# -gt 0 ]; do
       START_AT="${2:-}"
       shift 2
       ;;
+    --chunk-list)
+      CHUNK_LIST="${2:-}"
+      shift 2
+      ;;
     --restart-bridge-per-chunk)
       RESTART_BRIDGE_PER_CHUNK=1
       shift
@@ -303,6 +309,39 @@ while [ $# -gt 0 ]; do
       ;;
   esac
 done
+
+is_positive_integer() {
+  case "$1" in
+    ''|*[!0-9]*)
+      return 1
+      ;;
+    *)
+      [ "$1" -gt 0 ]
+      ;;
+  esac
+}
+
+guard_browser_jobs() {
+  if ! is_positive_integer "$JOBS"; then
+    echo "ERROR: --jobs must be a positive integer" >&2
+    exit 2
+  fi
+  case "$HOST" in
+    browser|both)
+      if [ "$JOBS" -gt 1 ] && [ "${SPIDERMONKEY_ALLOW_BROWSER_MULTIWORKER_SINGLE_BRIDGE:-0}" != "1" ]; then
+        echo "ERROR: browser --jobs $JOBS through one bridge is non-authoritative; use scripts/run-spidermonkey-browser-sharded.sh for multi-lane browser parallelism." >&2
+        exit 2
+      fi
+      ;;
+  esac
+}
+
+guard_browser_jobs
+
+if [ -n "$CHUNK_LIST" ] && [ ! -f "$CHUNK_LIST" ]; then
+  echo "ERROR: --chunk-list file not found: $CHUNK_LIST" >&2
+  exit 2
+fi
 
 ensure_kernel() {
   if "$REPO_ROOT/scripts/resolve-binary.sh" kernel.wasm >/dev/null 2>&1; then
@@ -385,7 +424,7 @@ export SPIDERMONKEY_SOURCE_DIR="$SM_SOURCE"
 chmod +x "$NODE_WRAPPER" "$BROWSER_WRAPPER"
 mkdir -p "$RESULTS_DIR"
 SUMMARY="$RESULTS_DIR/summary.tsv"
-printf 'host\tsuite\tchunk\tstatus\tpass\tknown_skip\tunexpected\tlog\n' > "$SUMMARY"
+printf 'host\tsuite\tchunk\tstatus\tpass\tknown_skip\tunexpected\telapsed_seconds\tqueue_seconds\tguest_seconds\tstart\tend\tlog\n' > "$SUMMARY"
 INVENTORY="$RESULTS_DIR/inventory.tsv"
 
 safe_name() {
@@ -404,12 +443,18 @@ record_result() {
   local chunk="$3"
   local status="$4"
   local log="$5"
+  local start="${6:-}"
+  local end="${7:-}"
+  local elapsed="${8:-0}"
+  local queue_seconds="${9:-0}"
+  local guest_seconds="${10:-$elapsed}"
   local pass known unexpected
   pass="$(count_pattern 'TEST-PASS' "$log")"
   known="$(count_pattern 'TEST-KNOWN-FAIL' "$log")"
   unexpected="$(count_pattern 'TEST-UNEXPECTED' "$log")"
-  printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
-    "$host" "$suite" "$chunk" "$status" "$pass" "$known" "$unexpected" "$log" \
+  printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+    "$host" "$suite" "$chunk" "$status" "$pass" "$known" "$unexpected" \
+    "$elapsed" "$queue_seconds" "$guest_seconds" "$start" "$end" "$log" \
     | tee -a "$SUMMARY"
 }
 
@@ -565,6 +610,11 @@ should_skip_chunk() {
   local host="$1"
   local suite="$2"
   local chunk="$3"
+  if [ -n "$CHUNK_LIST" ] &&
+      ! grep -Ev '^[[:space:]]*($|#)' "$CHUNK_LIST" |
+        grep -Fxq -e "$chunk" -e "$suite/$chunk" -e "$host/$suite/$chunk"; then
+    return 0
+  fi
   if [ -z "$START_AT" ] || [ "$STARTED" = "1" ]; then
     return 1
   fi
@@ -576,6 +626,37 @@ should_skip_chunk() {
   fi
   echo "Skipping $host $suite $chunk before --start-at $START_AT" | tee -a "$RESULTS_DIR/progress.log"
   return 0
+}
+
+is_platform_crash_log() {
+  local log="$1"
+  grep -Eiq \
+    'RuntimeError: unreachable|memory access out of bounds|Maximum call stack size exceeded|deadlock|unreaped|ABI mismatch|VFS .*mismatch|missing artifact|spidermonkey-test\.vfs\.zst not found' \
+    "$log" 2>/dev/null
+}
+
+stop_shell_bridge_pid() {
+  local pid="$1" name="$2" timeout killer_pid
+  timeout="${SPIDERMONKEY_SHELL_BRIDGE_SHUTDOWN_TIMEOUT_SECONDS:-15}"
+  [ -n "$pid" ] || return 0
+
+  if ! kill -0 "$pid" 2>/dev/null; then
+    wait "$pid" 2>/dev/null || true
+    return 0
+  fi
+
+  kill "$pid" 2>/dev/null || true
+  (
+    sleep "$timeout"
+    if kill -0 "$pid" 2>/dev/null; then
+      echo "WARNING: $name did not exit after ${timeout}s; sending SIGKILL" >&2
+      kill -KILL "$pid" 2>/dev/null || true
+    fi
+  ) &
+  killer_pid=$!
+  wait "$pid" 2>/dev/null || true
+  kill "$killer_pid" 2>/dev/null || true
+  wait "$killer_pid" 2>/dev/null || true
 }
 
 start_node_shell_bridge() {
@@ -601,9 +682,8 @@ start_node_shell_bridge() {
 }
 
 stop_node_shell_bridge() {
-  if [ -n "$NODE_SERVER_PID" ]; then
-    kill "$NODE_SERVER_PID" 2>/dev/null || true
-    wait "$NODE_SERVER_PID" 2>/dev/null || true
+  if [ -n "${NODE_SERVER_PID:-}" ]; then
+    stop_shell_bridge_pid "$NODE_SERVER_PID" "node js shell bridge"
     NODE_SERVER_PID=""
   fi
   unset SPIDERMONKEY_NODE_JS_SHELL_URL
@@ -633,9 +713,8 @@ start_browser_shell_bridge() {
 }
 
 stop_browser_shell_bridge() {
-  if [ -n "$BROWSER_SERVER_PID" ]; then
-    kill "$BROWSER_SERVER_PID" 2>/dev/null || true
-    wait "$BROWSER_SERVER_PID" 2>/dev/null || true
+  if [ -n "${BROWSER_SERVER_PID:-}" ]; then
+    stop_shell_bridge_pid "$BROWSER_SERVER_PID" "browser js shell bridge"
     BROWSER_SERVER_PID=""
   fi
 }
@@ -708,6 +787,7 @@ run_chunk() {
   shift 3
   local log="$RESULTS_DIR/$(safe_name "$host-$suite-$chunk").log"
   local known_skip_files=("${NEXT_KNOWN_SKIP_FILES[@]+"${NEXT_KNOWN_SKIP_FILES[@]}"}")
+  local start end start_epoch end_epoch elapsed
   NEXT_KNOWN_SKIP_FILES=()
 
   if should_skip_chunk "$host" "$suite" "$chunk"; then
@@ -715,7 +795,9 @@ run_chunk() {
   fi
   restart_shell_bridge_for_chunk "$host"
 
-  echo "===== $(date -u +%FT%TZ) $host $suite $chunk =====" | tee -a "$RESULTS_DIR/progress.log"
+  start="$(date -u +%FT%TZ)"
+  start_epoch="$(date +%s)"
+  echo "===== $start $host $suite $chunk =====" | tee -a "$RESULTS_DIR/progress.log"
   set +e
   if [ "${#known_skip_files[@]}" -gt 0 ]; then
     write_known_skip_entries "$suite" "${known_skip_files[@]}" > "$log"
@@ -725,6 +807,9 @@ run_chunk() {
   fi
   local status=$?
   set -e
+  end="$(date -u +%FT%TZ)"
+  end_epoch="$(date +%s)"
+  elapsed=$((end_epoch - start_epoch))
 
   if classify_kandelo_node_jstest_expected_resource_timeouts "$host" "$suite" "$log"; then
     if ! grep -q 'TEST-UNEXPECTED' "$log" && ! grep -q '^Terminated:' "$log"; then
@@ -732,7 +817,11 @@ run_chunk() {
     fi
   fi
 
-  record_result "$host" "$suite" "$chunk" "$status" "$log"
+  record_result "$host" "$suite" "$chunk" "$status" "$log" "$start" "$end" "$elapsed" 0 "$elapsed"
+  if is_platform_crash_log "$log"; then
+    echo "Stopping after platform-crash signature in $host/$suite/$chunk" >&2
+    exit 86
+  fi
   if [ "$status" -ne 0 ] && [ "$CONTINUE" = "0" ]; then
     echo "Stopping after failing chunk $host/$suite/$chunk" >&2
     exit "$status"
@@ -745,14 +834,17 @@ record_known_skip_only_chunk() {
   local chunk="$3"
   shift 3
   local log="$RESULTS_DIR/$(safe_name "$host-$suite-$chunk").log"
+  local start end
 
   if should_skip_chunk "$host" "$suite" "$chunk"; then
     return 0
   fi
 
-  echo "===== $(date -u +%FT%TZ) $host $suite $chunk =====" | tee -a "$RESULTS_DIR/progress.log"
+  start="$(date -u +%FT%TZ)"
+  echo "===== $start $host $suite $chunk =====" | tee -a "$RESULTS_DIR/progress.log"
   write_known_skip_entries "$suite" "$@" > "$log"
-  record_result "$host" "$suite" "$chunk" 0 "$log"
+  end="$(date -u +%FT%TZ)"
+  record_result "$host" "$suite" "$chunk" 0 "$log" "$start" "$end" 0 0 0
 }
 
 run_upstream_chunk() {
@@ -809,7 +901,9 @@ run_jstest_empty_chunk() {
     return 0
   fi
   printf 'No runnable jstests in %s; only harness helper files were present.\n' "$chunk" > "$log"
-  record_result "$host" jstests "$chunk" 0 "$log"
+  local now
+  now="$(date -u +%FT%TZ)"
+  record_result "$host" jstests "$chunk" 0 "$log" "$now" "$now" 0 0 0
 }
 
 run_jstest_selector_group() {
@@ -844,6 +938,75 @@ run_jstest_file_groups() {
     index=$((index + JSTEST_CHUNK_SIZE))
     part=$((part + 1))
   done
+}
+
+read_selected_chunks() {
+  local host="$1"
+  local suite="$2"
+  local entry
+  SELECTED_CHUNKS=()
+
+  while IFS= read -r entry || [ -n "$entry" ]; do
+    entry="$(printf '%s' "$entry" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')"
+    case "$entry" in
+      ""|\#*) continue ;;
+      "$host/$suite/"*) SELECTED_CHUNKS+=("${entry#"$host/$suite/"}") ;;
+      "$suite/"*) SELECTED_CHUNKS+=("${entry#"$suite/"}") ;;
+      node/*|browser/*|jstests/*|jit-tests/*) continue ;;
+      *) SELECTED_CHUNKS+=("$entry") ;;
+    esac
+  done < "$CHUNK_LIST"
+}
+
+run_jstest_chunk_direct() {
+  local host="$1"
+  local chunk="$2"
+  local base="$chunk"
+  local part=""
+  local dir dir_chunk path child start_index selectors=() group=()
+
+  if [[ "$base" == *#part-* ]]; then
+    part="${base##*#part-}"
+    base="${base%#part-*}"
+  fi
+
+  if [[ "$base" == */_files ]]; then
+    dir_chunk="${base%/_files}"
+    dir="$SM_SOURCE/js/src/tests/$dir_chunk"
+    if [ ! -d "$dir" ]; then
+      echo "ERROR: selected jstest _files chunk directory not found: $chunk" >&2
+      return 2
+    fi
+    while IFS= read -r -d '' child; do
+      selectors+=("${child#$SM_SOURCE/js/src/tests/}")
+    done < <(find "$dir" -mindepth 1 -maxdepth 1 -type f -name '*.js' ! -name 'shell.js' ! -name 'browser.js' ! -name 'template.js' ! -name 'user.js' ! -name 'js-test-driver-begin.js' ! -name 'js-test-driver-end.js' -print0 | sort -z)
+    if [ -n "$part" ]; then
+      start_index=$(( (10#$part - 1) * JSTEST_CHUNK_SIZE ))
+      group=("${selectors[@]:$start_index:$JSTEST_CHUNK_SIZE}")
+      run_jstest_selector_group "$host" "$chunk" "${group[@]}"
+    else
+      run_jstest_file_groups "$host" "$base" "${selectors[@]}"
+    fi
+    return 0
+  fi
+
+  if [ -n "$part" ]; then
+    echo "ERROR: selected jstest part chunk is not an _files chunk: $chunk" >&2
+    return 2
+  fi
+
+  path="$SM_SOURCE/js/src/tests/$base"
+  if [ -f "$path" ]; then
+    run_jstest_selector_group "$host" "$chunk" "$base"
+    return 0
+  fi
+  if [ -d "$path" ]; then
+    run_jstest_dir_recursive "$host" "$path" "$chunk"
+    return 0
+  fi
+
+  echo "ERROR: selected jstest chunk not found: $chunk" >&2
+  return 2
 }
 
 run_jstest_dir_recursive() {
@@ -902,7 +1065,15 @@ run_jstest_dir_recursive() {
 
 run_jstests_for_host() {
   local host="$1"
-  local dir
+  local dir chunk
+  if [ -n "$CHUNK_LIST" ]; then
+    read_selected_chunks "$host" jstests
+    for chunk in "${SELECTED_CHUNKS[@]+"${SELECTED_CHUNKS[@]}"}"; do
+      run_jstest_chunk_direct "$host" "$chunk"
+    done
+    return 0
+  fi
+
   for dir in "$SM_SOURCE/js/src/tests"/*/; do
     [ -d "$dir" ] || continue
     if has_runnable_jstest_files "$dir"; then

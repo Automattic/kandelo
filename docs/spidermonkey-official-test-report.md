@@ -66,10 +66,28 @@ Run the exhaustive chunked harness:
 scripts/run-spidermonkey-official-all.sh --host node --suite jstests --jobs 1 --no-slow
 ```
 
+Run browser jstests with independent browser lanes:
+
+```bash
+scripts/run-spidermonkey-browser-sharded.sh --suite jstests --lanes 2 --no-slow
+```
+
 The exhaustive runner writes `inventory.tsv`, `summary.tsv`, per-chunk logs, and
 `progress.log` under `test-results/spidermonkey-official/` by default. Use
 `--results-dir DIR` to put artifacts somewhere else, and `--start-at CHUNK` to
 resume after an interrupted run.
+
+Browser `--jobs N` with `N > 1` through `run-spidermonkey-official-tests.sh` or
+`run-spidermonkey-official-all.sh` is refused because one browser bridge still
+serializes all `/run` requests through one page. The sharded runner is the
+authoritative browser parallelism path: each lane runs upstream `jstests.py`
+with `--worker-count 1`, unique Vite and bridge ports, a lane-local result
+directory, and a lane-local chunk list. It writes `inventory.json`,
+`shard-plan.json`, `progress.jsonl`, merged `summary.tsv`, `summary.jsonl`,
+`failures.tsv`, `known-skips.tsv`, and `merge-audit.json`. The merge audit is
+required evidence for no duplicate and no missing planned chunks. Timing columns
+separate `queue_seconds` from `guest_seconds`; Stage 1 browser lanes have
+`queue_seconds=0` because there is one upstream worker per lane.
 
 On Node and browser hosts, the exhaustive runner classifies BigInt Atomics
 jstest coverage as known skips: `test262/built-ins/Atomics/*/bigint`. On the

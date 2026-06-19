@@ -434,9 +434,11 @@ function selectedDemoInputs(): typeof demoInputs | Record<string, string> {
 }
 
 const disableBrowserTestHmr = process.env.KANDELO_BROWSER_TEST_NO_HMR === "1";
+const browserTestViteCacheDir = process.env.KANDELO_BROWSER_TEST_VITE_CACHE_DIR?.trim();
 
 export default defineConfig({
   base: process.env.VITE_BASE || "/",
+  cacheDir: browserTestViteCacheDir || undefined,
   resolve: {
     alias: {
       "@host": path.resolve(repoRoot, "host/src"),
