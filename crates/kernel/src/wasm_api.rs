@@ -9596,6 +9596,32 @@ pub extern "C" fn kernel_getitimer(which: u32, curr_ptr: *mut u8) -> i32 {
 /// TIMER_ABSTIME flag for timer_settime.
 const TIMER_ABSTIME: i32 = 1;
 
+fn timer_clock_to_host_clock(clock_id: u32) -> Option<u32> {
+    use wasm_posix_shared::clock::*;
+    match clock_id {
+        CLOCK_REALTIME | CLOCK_MONOTONIC => Some(clock_id),
+        CLOCK_BOOTTIME => Some(CLOCK_MONOTONIC),
+        _ => None,
+    }
+}
+
+#[cfg(test)]
+mod posix_timer_tests {
+    use super::*;
+    use wasm_posix_shared::clock::*;
+
+    #[test]
+    fn boottime_timers_use_monotonic_host_clock() {
+        assert_eq!(timer_clock_to_host_clock(CLOCK_BOOTTIME), Some(CLOCK_MONOTONIC));
+    }
+
+    #[test]
+    fn timer_create_rejects_unsupported_clock_ids() {
+        assert_eq!(timer_clock_to_host_clock(CLOCK_THREAD_CPUTIME_ID), None);
+        assert_eq!(timer_clock_to_host_clock(99), None);
+    }
+}
+
 /// timer_create(clock_id, sigevent_ptr, timerid_ptr)
 /// musl sends ksigevent = {sigev_value(i32), sigev_signo(i32), sigev_notify(i32), sigev_tid(i32)} = 16 bytes.
 /// Returns 0 on success, negative errno.
@@ -9608,6 +9634,11 @@ pub extern "C" fn kernel_timer_create(
     use crate::process::PosixTimerState;
 
     let (_gkl, proc) = unsafe { get_process() };
+
+    let host_clock_id = match timer_clock_to_host_clock(clock_id) {
+        Some(id) => id,
+        None => return -(Errno::EINVAL as i32),
+    };
 
     // Parse sigevent (default: SIGEV_SIGNAL with SIGALRM)
     let (sigev_signo, sigev_value, sigev_notify) = if sevp_ptr.is_null() {
@@ -9645,7 +9676,7 @@ pub extern "C" fn kernel_timer_create(
     };
 
     proc.posix_timers[timer_id] = Some(PosixTimerState {
-        clock_id,
+        clock_id: host_clock_id,
         sigev_signo,
         sigev_value,
         interval_sec: 0,
