@@ -18,10 +18,22 @@ import type { HttpRequest, HttpResponse } from "./networking/in-kernel-http";
 
 export type { HttpRequest, HttpResponse };
 import kernelWasmUrl from "@kernel-wasm?url";
-import rootfsVfsUrl from "@rootfs-vfs?url";
 import workerEntryUrl from "./worker-entry-browser.ts?worker&url";
 import kernelWorkerEntryUrl from "./browser-kernel-worker-entry.ts?worker&url";
 import { DEFAULT_MAX_PAGES } from "./constants";
+
+async function fetchRootfsVfsImage(): Promise<Uint8Array> {
+  const { default: rootfsVfsUrl } = await import("./browser-rootfs-vfs-url");
+  const response = await fetch(rootfsVfsUrl);
+  if (!response.ok) {
+    throw new Error(
+      `rootfs.vfs not found (${response.status}). Run \`bash build.sh\` from the repo root, ` +
+      "or fetch/build the rootfs package.",
+    );
+  }
+  const buf = await response.arrayBuffer();
+  return new Uint8Array(buf);
+}
 
 export interface BrowserKernelOptions {
   /** Maximum concurrent workers (default: 4) */
@@ -219,17 +231,17 @@ export class BrowserKernel {
     // the demo's SAB-backed memfs. Synthetic in-kernel content for those
     // paths was removed in PR 4/5 — without this overlay programs that
     // call getpwnam/gethostbyname fail on legacy-SAB demos.
-    const [wasmBytes, rootfsVfsBuf] = await Promise.all([
+    const [wasmBytes, rootfsImage] = await Promise.all([
       kernelWasmBytes
         ? Promise.resolve(kernelWasmBytes)
         : fetch(kernelWasmUrl).then((r) => r.arrayBuffer()),
-      fetch(rootfsVfsUrl).then((r) => r.arrayBuffer()),
+      fetchRootfsVfsImage(),
     ]);
 
     await this.bootWorker({
       kernelWasmBytes: wasmBytes,
       fsSab: this.fsSab!,
-      rootfsImage: new Uint8Array(rootfsVfsBuf),
+      rootfsImage,
     });
 
     // Forward any lazy metadata from a pre-loaded VFS image so the worker
@@ -266,9 +278,7 @@ export class BrowserKernel {
         ? Promise.resolve(options.kernelWasm)
         : fetch(kernelWasmUrl).then((r) => r.arrayBuffer()),
       options.vfsImage === "default"
-        ? fetch(rootfsVfsUrl)
-            .then((r) => r.arrayBuffer())
-            .then((b) => new Uint8Array(b))
+        ? fetchRootfsVfsImage()
         : Promise.resolve(options.vfsImage),
     ]);
 

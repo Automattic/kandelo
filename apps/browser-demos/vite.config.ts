@@ -51,7 +51,10 @@ function injectCorsProxyUrlPlaceholder(content: string, corsProxyUrl: string): s
  *   2. `<repoRoot>/binaries/kernel.wasm` — populated by `./run.sh fetch`.
  *
  * `@rootfs-vfs` resolves to `<repoRoot>/host/wasm/rootfs.vfs` (built by
- * mkrootfs during `bash build.sh`).
+ * mkrootfs during `bash build.sh`) when that artifact exists. If it does not,
+ * the alias resolves to a missing-runtime URL so kernel-owned VFS pages that
+ * never fetch rootfs.vfs can still serve/build; legacy init/default-rootfs
+ * callers fail when they actually fetch it.
  *
  * Resolution is deferred until import time so pages that don't consume
  * these aliases can run without a kernel build present. Pages that do
@@ -60,6 +63,7 @@ function injectCorsProxyUrlPlaceholder(content: string, corsProxyUrl: string): s
 function resolveKernelArtifactsAlias(): Plugin {
   const KERNEL = "@kernel-wasm";
   const ROOTFS = "@rootfs-vfs";
+  const MISSING_ROOTFS_VFS_URL_ID = "\0kandelo-missing-rootfs-vfs-url";
   return {
     name: "resolve-kernel-artifacts-alias",
     enforce: "pre",
@@ -89,10 +93,13 @@ function resolveKernelArtifactsAlias(): Plugin {
         for (const file of candidates) {
           if (fs.existsSync(file)) return file + query;
         }
-        this.error(
-          "rootfs.vfs not found. Run `bash build.sh` from the repo root, or fetch/build the rootfs package.\n" +
-          candidates.map((file) => `  Looked at: ${file}`).join("\n")
-        );
+        return MISSING_ROOTFS_VFS_URL_ID;
+      }
+      return null;
+    },
+    load(id) {
+      if (id === MISSING_ROOTFS_VFS_URL_ID) {
+        return 'export default "/__kandelo_missing_rootfs.vfs";';
       }
       return null;
     },

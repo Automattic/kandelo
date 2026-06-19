@@ -396,6 +396,15 @@ async function main() {
 
         context = await browser!.newContext();
         const nextPage = await context.newPage();
+        let bootSettled = false;
+        let rejectFatalBootFailure: ((err: Error) => void) | null = null;
+        const fatalBootFailure = new Promise<never>((_, reject) => {
+          rejectFatalBootFailure = reject;
+        });
+        const failBoot = (message: string) => {
+          recordBrowserConsoleError(message);
+          if (!bootSettled) rejectFatalBootFailure?.(new Error(message));
+        };
 
         // Forward browser console errors for debugging
         nextPage.on("console", (msg) => {
@@ -403,12 +412,26 @@ async function main() {
             recordBrowserConsoleError(msg.text());
           }
         });
+        nextPage.on("pageerror", (err) => {
+          failBoot(`page error while booting MariaDB test page: ${err.message}`);
+        });
+        nextPage.on("requestfailed", (request) => {
+          const failure = request.failure()?.errorText;
+          failBoot(`request failed while booting MariaDB test page: ${request.url()}${failure ? ` (${failure})` : ""}`);
+        });
+        nextPage.on("response", (response) => {
+          if (response.status() >= 500) {
+            failBoot(`HTTP ${response.status()} while booting MariaDB test page: ${response.url()}`);
+          }
+        });
 
         try {
-          await waitForMariadbReady(nextPage);
+          await Promise.race([waitForMariadbReady(nextPage), fatalBootFailure]);
+          bootSettled = true;
           page = nextPage;
           return nextPage;
         } catch (err) {
+          bootSettled = true;
           lastErr = err;
           if (!jsonOutput && attempt < 3) {
             process.stderr.write(`  Browser MariaDB boot failed; retrying (${attempt}/3)...\n`);
