@@ -72,4 +72,11 @@ describe('buildClangArgs', () => {
     expect(args).toContain('-DWASM_POSIX_THREAD_SLOT_DECL=2');
     expect(args).not.toContain('--kandelo-thread-slots=2');
   });
+
+  it('raises global base when a link requests a larger wasm stack', () => {
+    const args = buildClangArgs(['foo.c', '-o', 'foo.wasm', '-Wl,-z,stack-size=4194304'], toolchain);
+    expect(args).toContain('-Wl,-z,stack-size=4194304');
+    expect(args).toContain('-Wl,--global-base=4259840');
+    expect(args).not.toContain('-Wl,--global-base=1114112');
+  });
 });

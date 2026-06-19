@@ -2,10 +2,13 @@ import { describe, it, expect } from 'vitest';
 import {
   COMPILE_FLAGS,
   filterArgs,
+  globalBaseForStackSize,
   inferThreadSlotDeclaration,
   LINK_FLAGS,
+  linkFlags,
   needsLinking,
   parseArgs,
+  requestedWasmStackSize,
   THREAD_SLOT_NONE,
   THREAD_SLOT_USE_HOST_DEFAULT,
 } from '../src/lib/flags.ts';
@@ -159,6 +162,34 @@ describe('LINK_FLAGS', () => {
     expect(LINK_FLAGS).toContain('-Wl,--entry=_start');
     expect(LINK_FLAGS).toContain('-Wl,--import-memory');
     expect(LINK_FLAGS).toContain('-Wl,--shared-memory');
+  });
+
+  it('keeps the default global base for default-sized stacks', () => {
+    expect(globalBaseForStackSize(null)).toBe(1114112);
+    expect(globalBaseForStackSize(1048576)).toBe(1114112);
+    expect(linkFlags('wasm32')).toContain('-Wl,--global-base=1114112');
+  });
+
+  it('raises the global base for larger wasm stack reservations', () => {
+    expect(globalBaseForStackSize(4194304)).toBe(4259840);
+    expect(linkFlags('wasm32', { stackSizeBytes: 4194304 }))
+      .toContain('-Wl,--global-base=4259840');
+  });
+});
+
+describe('requestedWasmStackSize', () => {
+  it('detects wasm-ld stack-size flags passed through clang', () => {
+    expect(requestedWasmStackSize(['-Wl,-z,stack-size=4194304'])).toBe(4194304);
+    expect(requestedWasmStackSize(['-Xlinker', '-z', '-Xlinker', 'stack-size=2097152']))
+      .toBe(2097152);
+    expect(requestedWasmStackSize(['-Wl,--stack-size=3145728'])).toBe(3145728);
+  });
+
+  it('returns the largest stack-size request if repeated', () => {
+    expect(requestedWasmStackSize([
+      '-Wl,-z,stack-size=1048576',
+      '-Wl,-z,stack-size=4194304',
+    ])).toBe(4194304);
   });
 });
 

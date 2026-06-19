@@ -20,7 +20,75 @@ export function compileFlags(arch: WasmArch): string[] {
   ];
 }
 
-export function linkFlags(arch: WasmArch): string[] {
+const WASM_PAGE_SIZE = 65536;
+const DEFAULT_GLOBAL_BASE = 1114112;
+
+export interface LinkFlagOptions {
+  stackSizeBytes?: number | null;
+}
+
+function alignUp(value: number, alignment: number): number {
+  return Math.ceil(value / alignment) * alignment;
+}
+
+export function globalBaseForStackSize(stackSizeBytes: number | null | undefined): number {
+  if (stackSizeBytes === null || stackSizeBytes === undefined) return DEFAULT_GLOBAL_BASE;
+  if (!Number.isSafeInteger(stackSizeBytes) || stackSizeBytes < 0) return DEFAULT_GLOBAL_BASE;
+  const stackWithGuard = alignUp(stackSizeBytes + WASM_PAGE_SIZE, WASM_PAGE_SIZE);
+  return Math.max(DEFAULT_GLOBAL_BASE, stackWithGuard);
+}
+
+function parseStackSizeToken(token: string): number | null {
+  const match = /^(?:--)?stack-size=(\d+)$/.exec(token);
+  if (!match) return null;
+  const parsed = Number(match[1]);
+  if (!Number.isSafeInteger(parsed) || parsed < 0) return null;
+  return parsed;
+}
+
+export function requestedWasmStackSize(args: string[]): number | null {
+  const linkerArgs: string[] = [];
+
+  for (let i = 0; i < args.length; i++) {
+    const arg = args[i];
+    if (arg.startsWith('-Wl,')) {
+      linkerArgs.push(...arg.slice('-Wl,'.length).split(','));
+    } else if (arg === '-Xlinker' && i + 1 < args.length) {
+      i++;
+      linkerArgs.push(args[i]);
+    } else if (arg.startsWith('-Xlinker=')) {
+      linkerArgs.push(arg.slice('-Xlinker='.length));
+    } else if (arg === '-z' || arg.startsWith('--stack-size=')) {
+      linkerArgs.push(arg);
+    } else if (/^stack-size(?:=|$)/.test(arg)) {
+      linkerArgs.push(arg);
+    }
+  }
+
+  let requested: number | null = null;
+  for (let i = 0; i < linkerArgs.length; i++) {
+    const token = linkerArgs[i];
+    const parsed = parseStackSizeToken(token);
+    if (parsed !== null) {
+      requested = Math.max(requested ?? 0, parsed);
+      continue;
+    }
+    if (token === 'stack-size' && i + 1 < linkerArgs.length) {
+      const value = linkerArgs[i + 1];
+      if (/^\d+$/.test(value)) {
+        const parsedValue = Number(value);
+        if (Number.isSafeInteger(parsedValue)) {
+          requested = Math.max(requested ?? 0, parsedValue);
+        }
+      }
+    }
+  }
+
+  return requested;
+}
+
+export function linkFlags(arch: WasmArch, options: LinkFlagOptions = {}): string[] {
+  const globalBase = globalBaseForStackSize(options.stackSizeBytes);
   return [
     '-nostdlib',
     '-Wl,--entry=_start',
@@ -30,7 +98,7 @@ export function linkFlags(arch: WasmArch): string[] {
     '-Wl,--shared-memory',
     '-Wl,--max-memory=1073741824',
     '-Wl,--allow-undefined',
-    '-Wl,--global-base=1114112',
+    `-Wl,--global-base=${globalBase}`,
     '-Wl,--table-base=3',
     '-Wl,--export-table',
     '-Wl,--growable-table',

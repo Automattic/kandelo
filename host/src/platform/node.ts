@@ -299,8 +299,8 @@ export class NodePlatformIO implements PlatformIO {
       const elapsed = ns - this._startNs;
       return { sec: Number(elapsed / 1000000000n), nsec: Number(elapsed % 1000000000n) };
     }
-    if (clockId === 1) {
-      // CLOCK_MONOTONIC
+    if (clockId === 1 || clockId === 7) {
+      // CLOCK_MONOTONIC / CLOCK_BOOTTIME
       return { sec: Number(ns / 1000000000n), nsec: Number(ns % 1000000000n) };
     }
     // CLOCK_REALTIME — use hrtime + epoch offset for nanosecond resolution

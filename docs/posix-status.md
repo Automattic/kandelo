@@ -253,7 +253,7 @@ shortcuts.
 |----------|--------|-------|
 | `time()` | Full | Wrapper around clock_gettime(CLOCK_REALTIME). Returns seconds since epoch. |
 | `gettimeofday()` | Full | Wrapper around clock_gettime(CLOCK_REALTIME). Returns (sec, usec) pair. |
-| `clock_gettime()` | Full | Host-delegated. CLOCK_REALTIME and CLOCK_MONOTONIC supported. Node.js uses Date.now() and process.hrtime.bigint(). |
+| `clock_gettime()` | Full | Host-delegated. CLOCK_REALTIME, CLOCK_MONOTONIC, CLOCK_PROCESS_CPUTIME_ID, CLOCK_THREAD_CPUTIME_ID, and CLOCK_BOOTTIME supported. CLOCK_BOOTTIME is monotonic-equivalent because Kandelo hosts cannot observe suspend time. Node.js uses Date.now() and process.hrtime.bigint(); browsers use Date.now() and performance.now(). |
 | `nanosleep()` | Partial | Host-delegated. Node.js uses Atomics.wait with timeout. Browser support requires a worker context that can block with Atomics.wait. Validates tv_sec >= 0 and tv_nsec < 1e9. |
 | `usleep()` | Full | Converts microseconds to sec+nsec, delegates to host_nanosleep. |
 | `clock_settime()` | Stub | Returns EPERM. Cannot set system clock from Wasm. |
@@ -287,7 +287,7 @@ shortcuts.
 | `inotify_init()` / `inotify_init1()` | Stub | Returns ENOSYS. |
 | `inotify_add_watch()` / `inotify_rm_watch()` | Stub | Returns EBADF. |
 | `fanotify_init()` / `fanotify_mark()` | Stub | Returns ENOSYS. |
-| `timer_create()` | Full | CLOCK_REALTIME and CLOCK_MONOTONIC. SIGEV_SIGNAL delivery with si_value. Per-process timer table (max 32). |
+| `timer_create()` | Partial | CLOCK_REALTIME, CLOCK_MONOTONIC, and CLOCK_BOOTTIME. CLOCK_BOOTTIME is monotonic-equivalent. SIGEV_SIGNAL, SIGEV_NONE, and current-main-thread SIGEV_THREAD_ID are supported; SIGEV_THREAD is not supported. Per-process timer table (max 32). |
 | `timer_settime()` / `timer_gettime()` | Full | Absolute (TIMER_ABSTIME) and relative time. Interval timers with automatic rearming. Host setTimeout-based delivery. |
 | `timer_getoverrun()` | Full | Tracks overrun count when signal is still pending at next interval fire. Reset on successful signal delivery. |
 | `timer_delete()` | Full | Cancels timer and removes from per-process table. |
