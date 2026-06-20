@@ -1,5 +1,5 @@
 #!/usr/bin/env tsx
-import { createServer, type IncomingMessage, type Server } from "node:http";
+import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import { spawn, type ChildProcess } from "node:child_process";
 import { existsSync } from "node:fs";
 import { join } from "node:path";
@@ -16,6 +16,7 @@ const SERVER_HOST = "127.0.0.1";
 const SERVER_PORT = Number(process.env.SPIDERMONKEY_BROWSER_JS_SHELL_PORT ?? 5312);
 const DEFAULT_TIMEOUT_MS = Number(process.env.SPIDERMONKEY_WRAPPER_TIMEOUT_MS ?? 600_000);
 const SHUTDOWN_TIMEOUT_MS = Number(process.env.SPIDERMONKEY_BROWSER_JS_SHELL_SHUTDOWN_TIMEOUT_MS ?? 10_000);
+const ABANDONED_REQUEST_CLOSE_TIMEOUT_MS = Number(process.env.SPIDERMONKEY_BROWSER_JS_SHELL_ABANDONED_CLOSE_TIMEOUT_MS ?? 1_000);
 
 interface RunRequest {
   argv: string[];
@@ -33,6 +34,18 @@ interface RunResult {
   guestTimeoutRetries?: number;
   memoryPressureRetries?: number;
   wasmOobRetries?: number;
+}
+
+class ClientAbortError extends Error {
+  constructor() {
+    super("client disconnected");
+    this.name = "ClientAbortError";
+  }
+}
+
+interface RequestAbortState {
+  signal: AbortSignal;
+  cleanup: () => void;
 }
 
 function readPageEvaluateRetries(): number {
@@ -116,8 +129,37 @@ function withTimeout<T>(promise: Promise<T>, timeoutMs: number): Promise<T> {
   });
 }
 
+function withTimeoutOrAbort<T>(
+  promise: Promise<T>,
+  timeoutMs: number,
+  signal: AbortSignal,
+): Promise<T> {
+  return new Promise<T>((resolvePromise, reject) => {
+    if (signal.aborted) {
+      reject(new ClientAbortError());
+      return;
+    }
+    const onAbort = () => reject(new ClientAbortError());
+    const timer = setTimeout(() => reject(new Error("TIMEOUT")), timeoutMs);
+    signal.addEventListener("abort", onAbort, { once: true });
+    promise.then(resolvePromise, reject).finally(() => {
+      clearTimeout(timer);
+      signal.removeEventListener("abort", onAbort);
+    });
+  });
+}
+
 function delay(ms: number): Promise<void> {
   return new Promise((resolveDelay) => setTimeout(resolveDelay, ms));
+}
+
+function isClientAbort(err: unknown): boolean {
+  return err instanceof ClientAbortError ||
+    (err instanceof Error && err.name === "ClientAbortError");
+}
+
+function throwIfClientAborted(signal: AbortSignal): void {
+  if (signal.aborted) throw new ClientAbortError();
 }
 
 function childExited(proc: ChildProcess): boolean {
@@ -198,6 +240,22 @@ async function shutdown(): Promise<void> {
     }
   })();
   return shutdownPromise;
+}
+
+async function closePageContext(page: Page, reason: string, timeoutMs = SHUTDOWN_TIMEOUT_MS): Promise<void> {
+  let timedOut = false;
+  const timeout = delay(timeoutMs).then(() => {
+    timedOut = true;
+  });
+  await Promise.race([
+    page.context().close().catch((err: any) => {
+      console.error(`[browser js shell bridge] page context close failed after ${reason}: ${err?.message || String(err)}`);
+    }),
+    timeout,
+  ]);
+  if (timedOut) {
+    console.error(`[browser js shell bridge] page context close timed out after ${reason}`);
+  }
 }
 
 function installShutdownHandlers(): void {
@@ -311,18 +369,45 @@ async function openPage(browser: Browser): Promise<Page> {
   return page;
 }
 
-function readJsonBody(req: IncomingMessage): Promise<RunRequest> {
+function createRequestAbortState(req: IncomingMessage, res: ServerResponse): RequestAbortState {
+  const controller = new AbortController();
+  const abort = () => {
+    if (!controller.signal.aborted) controller.abort();
+  };
+  req.once("aborted", abort);
+  res.once("close", () => {
+    if (!res.writableEnded) abort();
+  });
+  return {
+    signal: controller.signal,
+    cleanup: () => {
+      req.off("aborted", abort);
+    },
+  };
+}
+
+function readJsonBody(req: IncomingMessage, signal: AbortSignal): Promise<RunRequest> {
   return new Promise((resolve, reject) => {
+    if (signal.aborted) {
+      reject(new ClientAbortError());
+      return;
+    }
     const chunks: Buffer[] = [];
+    const onAbort = () => reject(new ClientAbortError());
+    signal.addEventListener("abort", onAbort, { once: true });
     req.on("data", (chunk: Buffer) => chunks.push(chunk));
     req.on("end", () => {
+      signal.removeEventListener("abort", onAbort);
       try {
         resolve(JSON.parse(Buffer.concat(chunks).toString("utf8")));
       } catch (err) {
         reject(err);
       }
     });
-    req.on("error", reject);
+    req.on("error", (err) => {
+      signal.removeEventListener("abort", onAbort);
+      reject(err);
+    });
   });
 }
 
@@ -350,9 +435,9 @@ async function main() {
   let runsSincePageOpen = 0;
   let queue = Promise.resolve();
 
-  async function reopenPage(reason: string): Promise<void> {
+  async function reopenPage(reason: string, closeTimeoutMs = SHUTDOWN_TIMEOUT_MS): Promise<void> {
     console.error(`[browser js shell bridge] reopening page after ${reason}`);
-    await page.context().close().catch(() => {});
+    await closePageContext(page, reason, closeTimeoutMs);
     page = await openPage(browserInstance!);
     runsSincePageOpen = 0;
   }
@@ -363,7 +448,7 @@ async function main() {
     await reopenPage(`${runsSincePageOpen} shell invocations`);
   }
 
-  async function runInPage(body: RunRequest): Promise<RunResult> {
+  async function runInPage(body: RunRequest, signal: AbortSignal): Promise<RunResult> {
     const startedAt = Date.now();
     const timeoutMs = requestTimeoutMs(body);
     let pageRetries = 0;
@@ -371,7 +456,9 @@ async function main() {
     let memoryPressureRetries = 0;
     let wasmOobRetries = 0;
     for (;;) {
+      throwIfClientAborted(signal);
       await recyclePageIfNeeded();
+      throwIfClientAborted(signal);
       runsSincePageOpen++;
       const evaluation = page.evaluate(
         (request) => (window as any).__runSpiderMonkeyScript(request),
@@ -380,7 +467,7 @@ async function main() {
       evaluation.catch(() => {});
 
       try {
-        const result = await withTimeout(evaluation, timeoutMs);
+        const result = await withTimeoutOrAbort(evaluation, timeoutMs, signal);
         if (isGuestTimeoutResult(result)) {
           await reopenPage(`guest timeout result (${guestTimeoutRetries}/${GUEST_TIMEOUT_RETRIES})`);
           if (guestTimeoutRetries < GUEST_TIMEOUT_RETRIES) {
@@ -414,6 +501,15 @@ async function main() {
         if (wasmOobRetries > 0) result.wasmOobRetries = wasmOobRetries;
         return result;
       } catch (err: any) {
+        if (isClientAbort(err)) {
+          await reopenPage(
+            "client disconnect during shell invocation",
+            ABANDONED_REQUEST_CLOSE_TIMEOUT_MS,
+          ).catch((reopenErr: any) => {
+            console.error(`[browser js shell bridge] failed to reset page after client disconnect: ${reopenErr?.message || String(reopenErr)}`);
+          });
+          throw err;
+        }
         const message = err?.message || String(err);
         if (message.includes("TIMEOUT")) {
           await reopenPage(
@@ -460,25 +556,37 @@ async function main() {
       return;
     }
 
+    const requestAbort = createRequestAbortState(req, res);
     queue = queue.then(async () => {
       try {
-        const body = await readJsonBody(req);
-        const result = await runInPage(body);
-        res.writeHead(200, { "content-type": "application/json" });
-        res.end(JSON.stringify(result));
+        const body = await readJsonBody(req, requestAbort.signal);
+        throwIfClientAborted(requestAbort.signal);
+        const result = await runInPage(body, requestAbort.signal);
+        if (!requestAbort.signal.aborted && !res.destroyed) {
+          res.writeHead(200, { "content-type": "application/json" });
+          res.end(JSON.stringify(result));
+        }
       } catch (err: any) {
+        if (isClientAbort(err)) {
+          console.error("[browser js shell bridge] dropped abandoned shell request after client disconnect");
+          return;
+        }
         const message = err?.message || String(err);
         if (isPageContextLoss(message)) {
           await reopenPage(`unrecovered Playwright error: ${message}`).catch(() => {});
         }
-        res.writeHead(200, { "content-type": "application/json" });
-        res.end(JSON.stringify({
-          exitCode: -1,
-          stdout: "",
-          stderr: "",
-          error: message,
-          durationMs: 0,
-        }));
+        if (!requestAbort.signal.aborted && !res.destroyed) {
+          res.writeHead(200, { "content-type": "application/json" });
+          res.end(JSON.stringify({
+            exitCode: -1,
+            stdout: "",
+            stderr: "",
+            error: message,
+            durationMs: 0,
+          }));
+        }
+      } finally {
+        requestAbort.cleanup();
       }
     });
   });

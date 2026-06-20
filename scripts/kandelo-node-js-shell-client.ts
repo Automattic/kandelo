@@ -7,6 +7,9 @@ if (!endpoint) {
 }
 
 const timeoutMs = Number(process.env.SPIDERMONKEY_WRAPPER_TIMEOUT_MS ?? 600_000);
+const requestTimeoutMs = timeoutMs + Number(process.env.SPIDERMONKEY_WRAPPER_CLIENT_GRACE_MS ?? 5_000);
+const controller = new AbortController();
+const timer = setTimeout(() => controller.abort(), requestTimeoutMs);
 let response;
 try {
   response = await fetch(endpoint, {
@@ -20,10 +23,17 @@ try {
         .map(([key, value]) => `${key}=${value}`),
       timeoutMs,
     }),
+    signal: controller.signal,
   });
 } catch (err: any) {
+  if (err?.name === "AbortError") {
+    console.error(`node js shell bridge request timed out after ${requestTimeoutMs}ms`);
+    process.exit(1);
+  }
   console.error(`node js shell bridge request failed: ${err?.message || String(err)}`);
   process.exit(1);
+} finally {
+  clearTimeout(timer);
 }
 
 if (!response.ok) {
