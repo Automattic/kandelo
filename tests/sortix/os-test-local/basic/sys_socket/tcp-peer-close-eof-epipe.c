@@ -1,4 +1,4 @@
-/* Test TCP peer close EOF and MSG_NOSIGNAL EPIPE behavior. */
+/* Test TCP peer close EOF and eventual MSG_NOSIGNAL EPIPE behavior. */
 
 #include <sys/socket.h>
 
@@ -34,10 +34,19 @@ int main(void)
 
 	const char payload[] = "after-close";
 	amount = send(client_fd, payload, sizeof(payload), MSG_NOSIGNAL);
+	if ( amount < 0 )
+		err(1, "first send after peer close");
+
+	/*
+	 * TCP close is an orderly FIN.  A write after observing peer EOF can
+	 * succeed locally; the reset/broken-pipe condition is reported on a later
+	 * operation.
+	 */
+	amount = send(client_fd, payload, sizeof(payload), MSG_NOSIGNAL);
 	if ( amount >= 0 )
-		errx(1, "send after peer close unexpectedly succeeded");
+		errx(1, "second send after peer close unexpectedly succeeded");
 	if ( errno != EPIPE && errno != ECONNRESET )
-		err(1, "send after peer close");
+		err(1, "second send after peer close");
 
 	if ( close(client_fd) < 0 )
 		err(1, "close client");
