@@ -24,7 +24,9 @@ pub mod host_abi;
 ///     with a wasm-declared reserved thread-slot count.
 /// 15: remove the obsolete `kernel_set_mode` export; the kernel is always
 ///     the shared point of contact for all programs.
-pub const ABI_VERSION: u32 = 15;
+/// 16: add stopped-child wait4 polling/default-signal host exports and
+///     CLOCK_BOOTTIME timer compatibility for php-pcntl runtime artifacts.
+pub const ABI_VERSION: u32 = 16;
 
 /// Syscall numbers for the POSIX kernel interface.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -851,6 +853,7 @@ pub mod clock {
     pub const CLOCK_MONOTONIC: u32 = 1;
     pub const CLOCK_PROCESS_CPUTIME_ID: u32 = 2;
     pub const CLOCK_THREAD_CPUTIME_ID: u32 = 3;
+    pub const CLOCK_BOOTTIME: u32 = 7;
 }
 
 /// Timespec structure for the Wasm POSIX interface.
