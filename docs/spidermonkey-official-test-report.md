@@ -157,11 +157,16 @@ page, and retries the invocation once by default. Set
 The bridge also recycles the browser page every 25 shell invocations by default
 to release Chromium WebAssembly address space used by exited process workers.
 Set `SPIDERMONKEY_BROWSER_JS_SHELL_RECYCLE_INTERVAL=0` to disable periodic
-recycling or another positive integer to tune it. If a shell invocation reports
-`WebAssembly.Memory(): could not allocate memory`, the bridge treats that as
-browser memory pressure, opens a fresh page context, and retries the invocation
-once by default. Set `SPIDERMONKEY_BROWSER_JS_SHELL_MEMORY_RETRIES=0` to disable
-that retry.
+page recycling or another positive integer to tune it. The bridge also restarts
+the Chromium browser process every 100 shell invocations by default; set
+`SPIDERMONKEY_BROWSER_JS_SHELL_BROWSER_RECYCLE_INTERVAL=0` to disable that
+process recycle or another positive integer to tune it. If a shell invocation
+reports browser WebAssembly memory pressure, the bridge restarts Chromium and
+retries the invocation once by default. Set
+`SPIDERMONKEY_BROWSER_JS_SHELL_MEMORY_RETRIES=0` to disable that retry. If an
+exited kernel worker reports `RuntimeError: memory access out of bounds`, the
+bridge also restarts Chromium and retries once by default; set
+`SPIDERMONKEY_BROWSER_JS_SHELL_WASM_OOB_RETRIES=0` to disable that retry.
 
 If a browser process worker reports `RuntimeError: memory access out of bounds`
 with a SIGSEGV-style exit status, the bridge can reopen the page and retry the

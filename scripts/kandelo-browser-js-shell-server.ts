@@ -73,12 +73,28 @@ function readPageRecycleInterval(): number {
   return Number.isFinite(value) && value >= 0 ? Math.floor(value) : 25;
 }
 
+function readBrowserRecycleInterval(): number {
+  const value = Number(process.env.SPIDERMONKEY_BROWSER_JS_SHELL_BROWSER_RECYCLE_INTERVAL ?? 100);
+  return Number.isFinite(value) && value >= 0 ? Math.floor(value) : 100;
+}
+
 const PAGE_EVALUATE_RETRIES = readPageEvaluateRetries();
 const GUEST_TIMEOUT_RETRIES = readGuestTimeoutRetries();
 const MEMORY_PRESSURE_RETRIES = readMemoryPressureRetries();
 const WASM_OOB_RETRIES = readWasmOobRetries();
 const PAGE_RECYCLE_INTERVAL = readPageRecycleInterval();
 const WASM_TRAP_SIGSEGV_EXIT_STATUS = 128 + 11;
+const BROWSER_RECYCLE_INTERVAL = readBrowserRecycleInterval();
+
+console.error(
+  `[browser js shell bridge] config ` +
+  `page_recycle_interval=${PAGE_RECYCLE_INTERVAL} ` +
+  `browser_recycle_interval=${BROWSER_RECYCLE_INTERVAL} ` +
+  `page_retries=${PAGE_EVALUATE_RETRIES} ` +
+  `timeout_retries=${GUEST_TIMEOUT_RETRIES} ` +
+  `memory_retries=${MEMORY_PRESSURE_RETRIES} ` +
+  `wasm_oob_retries=${WASM_OOB_RETRIES}`,
+);
 
 let viteProcess: ChildProcess | null = null;
 let browserInstance: Browser | null = null;
@@ -346,6 +362,12 @@ async function listenServer(server: Server): Promise<void> {
   });
 }
 
+async function launchBrowser(): Promise<Browser> {
+  return chromium.launch({
+    args: ["--enable-features=SharedArrayBuffer"],
+  });
+}
+
 async function openPage(browser: Browser): Promise<Page> {
   const context = await browser.newContext();
   const page = await context.newPage();
@@ -428,11 +450,10 @@ async function main() {
   }
 
   viteProcess = await startViteServer();
-  browserInstance = await chromium.launch({
-    args: ["--enable-features=SharedArrayBuffer"],
-  });
+  browserInstance = await launchBrowser();
   let page = await openPage(browserInstance);
   let runsSincePageOpen = 0;
+  let runsSinceBrowserOpen = 0;
   let queue = Promise.resolve();
 
   async function reopenPage(reason: string, closeTimeoutMs = SHUTDOWN_TIMEOUT_MS): Promise<void> {
@@ -440,6 +461,24 @@ async function main() {
     await closePageContext(page, reason, closeTimeoutMs);
     page = await openPage(browserInstance!);
     runsSincePageOpen = 0;
+  }
+
+  async function restartBrowser(reason: string): Promise<void> {
+    console.error(`[browser js shell bridge] restarting browser after ${reason}`);
+    await page.context().close().catch(() => {});
+    await browserInstance?.close().catch((err: any) => {
+      console.error(`[browser js shell bridge] browser close before restart failed: ${err?.message || String(err)}`);
+    });
+    browserInstance = await launchBrowser();
+    page = await openPage(browserInstance);
+    runsSincePageOpen = 0;
+    runsSinceBrowserOpen = 0;
+  }
+
+  async function recycleBrowserIfNeeded(): Promise<void> {
+    if (BROWSER_RECYCLE_INTERVAL === 0) return;
+    if (runsSinceBrowserOpen < BROWSER_RECYCLE_INTERVAL) return;
+    await restartBrowser(`${runsSinceBrowserOpen} shell invocations`);
   }
 
   async function recyclePageIfNeeded(): Promise<void> {
@@ -457,9 +496,11 @@ async function main() {
     let wasmOobRetries = 0;
     for (;;) {
       throwIfClientAborted(signal);
+      await recycleBrowserIfNeeded();
       await recyclePageIfNeeded();
       throwIfClientAborted(signal);
       runsSincePageOpen++;
+      runsSinceBrowserOpen++;
       const evaluation = page.evaluate(
         (request) => (window as any).__runSpiderMonkeyScript(request),
         { argv: body.argv, timeoutMs: body.timeoutMs },
@@ -476,7 +517,7 @@ async function main() {
           }
         }
         if (isBrowserMemoryPressureResult(result)) {
-          await reopenPage(
+          await restartBrowser(
             `browser WebAssembly memory pressure ` +
             `(${memoryPressureRetries}/${MEMORY_PRESSURE_RETRIES})`,
           );
@@ -486,7 +527,7 @@ async function main() {
           }
         }
         if (isWasmOobTrapResult(result)) {
-          await reopenPage(
+          await restartBrowser(
             `browser WebAssembly OOB trap ` +
             `(${wasmOobRetries}/${WASM_OOB_RETRIES})`,
           );
