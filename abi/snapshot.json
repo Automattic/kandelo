@@ -1,5 +1,5 @@
 {
-  "abi_version": 15,
+  "abi_version": 16,
   "channel_buffers": {
     "data_offset": 72,
     "data_size": 65536,
@@ -113,7 +113,7 @@
   },
   "host_adapter": {
     "manifest": {
-      "abi_version": 15,
+      "abi_version": 16,
       "channel_data_offset": 72,
       "channel_data_size": 65536,
       "channel_header_size": 72,
@@ -377,6 +377,11 @@
     {
       "kind": "func",
       "name": "kernel_create_process",
+      "signature": "(i32) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_deliver_pending_default_signals",
       "signature": "(i32) -> (i32)"
     },
     {
@@ -1633,6 +1638,11 @@
       "kind": "func",
       "name": "kernel_wait4_poll",
       "signature": "(i32,i32,i32) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_wait4_poll_with_options",
+      "signature": "(i32,i32,i32,i32) -> (i32)"
     },
     {
       "kind": "func",

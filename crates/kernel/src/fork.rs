@@ -281,10 +281,7 @@ const DRI_TAG_RENDER_NODE: u8 = 1;
 const DRI_TAG_CARD: u8 = 2;
 const DRI_TAG_PRIME_BO: u8 = 3;
 
-fn write_dri_fd_state(
-    w: &mut Writer<'_>,
-    dri: &crate::ofd::DriFdState,
-) -> Result<(), Errno> {
+fn write_dri_fd_state(w: &mut Writer<'_>, dri: &crate::ofd::DriFdState) -> Result<(), Errno> {
     w.write_u32(dri.handles.len() as u32)?;
     for (handle, bo_id) in &dri.handles {
         w.write_u32(*handle)?;
@@ -1176,6 +1173,8 @@ pub fn deserialize_fork_state(buf: &[u8], child_pid: u32) -> Result<Process, Err
         is_session_leader: false,
         state: ProcessState::Running,
         exit_status: 0,
+        stop_signal: 0,
+        stop_reported: false,
         fd_table,
         ofd_table,
         lock_table: LockTable::new(),
@@ -1583,6 +1582,8 @@ pub fn deserialize_exec_state(buf: &[u8], pid: u32) -> Result<Process, Errno> {
         is_session_leader,
         state: ProcessState::Running,
         exit_status: 0,
+        stop_signal: 0,
+        stop_reported: false,
         fd_table,
         ofd_table,
         lock_table: LockTable::new(),
@@ -2040,7 +2041,10 @@ mod tests {
         // For fork-from-pthread, the host then retains only the caller slot
         // with `kernel_reserve_host_region_at`.
         assert!(child.memory.reserved_regions().is_empty());
-        assert_eq!(child.memory.reserve_host_region_at(caller, slot_len), caller);
+        assert_eq!(
+            child.memory.reserve_host_region_at(caller, slot_len),
+            caller
+        );
         assert_eq!(child.memory.reserved_regions().len(), 1);
         assert!(child.memory.overlaps_host_reserved_region(caller, slot_len));
 
@@ -2205,9 +2209,12 @@ mod tests {
         handles: &[(u32, crate::dri::BoId)],
     ) -> usize {
         use crate::ofd::{DriFdState, DriOfdState};
-        let ofd_idx =
-            proc.ofd_table
-                .create(crate::ofd::FileType::CharDevice, 0, host_handle, path.to_vec());
+        let ofd_idx = proc.ofd_table.create(
+            crate::ofd::FileType::CharDevice,
+            0,
+            host_handle,
+            path.to_vec(),
+        );
         let mut dri = DriFdState::default();
         for &(h, bo) in handles {
             dri.handles.insert(h, bo);
@@ -2388,12 +2395,13 @@ mod tests {
             crate::ofd::FileType::Regular,
             0,
             -200,
-            alloc::format!("/dev/dri/prime-{bo}-{cookie:x}")
-                .into_bytes(),
+            alloc::format!("/dev/dri/prime-{bo}-{cookie:x}").into_bytes(),
         );
-        proc.ofd_table.get_mut(ofd_idx).unwrap().dri_state = Some(
-            alloc::boxed::Box::new(DriOfdState::PrimeBo(PrimeBoState { bo_id: bo, cookie })),
-        );
+        proc.ofd_table.get_mut(ofd_idx).unwrap().dri_state =
+            Some(alloc::boxed::Box::new(DriOfdState::PrimeBo(PrimeBoState {
+                bo_id: bo,
+                cookie,
+            })));
         proc.fd_table
             .alloc(crate::fd::OpenFileDescRef(ofd_idx), 0)
             .unwrap();

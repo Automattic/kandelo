@@ -4,6 +4,9 @@ import { CentralizedKernelWorker } from "../src/kernel-worker";
 
 const SIGCHLD = 17;
 const WNOHANG = 1;
+const WUNTRACED = 2;
+const SIGSTOP = 19;
+const PROCESS_STATE_STOPPED = -2;
 
 describe("Rust-owned process wait lifecycle", () => {
   it("wait4 consumes Rust-selected zombies and writes the Rust wait status", () => {
@@ -77,6 +80,47 @@ describe("Rust-owned process wait lifecycle", () => {
     );
   });
 
+  it("wait4 reports stopped children for WUNTRACED without reaping and writes rusage", () => {
+    const kernelMemory = createSharedMemory();
+    const processMemory = createSharedMemory();
+    const statusPtr = 256;
+    const rusagePtr = 512;
+    new Uint8Array(processMemory.buffer, rusagePtr, 144).fill(0xaa);
+    const stoppedStatus = (SIGSTOP << 8) | 0x7f;
+    const wait4PollWithOptions = vi.fn((
+      _parentPid: number,
+      _targetPid: number,
+      _options: number,
+      statusPtr: number | bigint,
+    ) => {
+      new DataView(kernelMemory.buffer).setInt32(Number(statusPtr), stoppedStatus, true);
+      return 42;
+    });
+    const reapExitedChild = vi.fn(() => 0);
+    const worker = createWorkerHarness({
+      kernel_wait4_poll_with_options: wait4PollWithOptions,
+      kernel_reap_exited_child: reapExitedChild,
+    });
+    worker.kernelMemory = kernelMemory;
+    worker.scratchOffset = 128;
+    worker.completeWaitpid = vi.fn();
+
+    worker.handleWaitpid(createChannel(7, processMemory), [-1, statusPtr, WUNTRACED, rusagePtr]);
+
+    expect(wait4PollWithOptions).toHaveBeenCalledWith(7, -1, WUNTRACED, 128);
+    expect(reapExitedChild).not.toHaveBeenCalled();
+    expect(new DataView(processMemory.buffer).getInt32(statusPtr, true)).toBe(stoppedStatus);
+    expect(Array.from(new Uint8Array(processMemory.buffer, rusagePtr, 144))).toEqual(
+      Array(144).fill(0),
+    );
+    expect(worker.completeWaitpid).toHaveBeenCalledWith(
+      expect.any(Object),
+      [-1, statusPtr, WUNTRACED, rusagePtr],
+      42,
+      0,
+    );
+  });
+
   it("wait4 passes a bigint status pointer for wasm64 kernels", () => {
     const wait4Poll = vi.fn(() => 0);
     const worker = createWorkerHarness({ kernel_wait4_poll: wait4Poll }, 8);
@@ -140,6 +184,119 @@ describe("Rust-owned process wait lifecycle", () => {
     expect(worker.sendSignalToProcess).not.toHaveBeenCalled();
     expect(worker.wakeWaitingParent).not.toHaveBeenCalled();
   });
+
+  it("SIGCONT resumes a parked stopped syscall with its stored result", () => {
+    const worker = createWorkerHarness({
+      kernel_get_process_exit_status: vi.fn(() => -1),
+      kernel_dequeue_signal: vi.fn(() => 0),
+    });
+    const channel = createChannel(42, createSharedMemory());
+    worker.stoppedChannels = new Map([
+      [42, {
+        kind: "complete",
+        channel,
+        syscallNr: ABI_SYSCALLS.Kill,
+        origArgs: [42, SIGSTOP, 0, 0, 0, 0],
+        argDescs: undefined,
+        retVal: 0,
+        errVal: 0,
+      }],
+    ]);
+    worker.completeChannel = vi.fn();
+
+    worker.resumeStoppedProcess(42);
+
+    expect(worker.stoppedChannels.has(42)).toBe(false);
+    expect(worker.completeChannel).toHaveBeenCalledWith(
+      channel,
+      ABI_SYSCALLS.Kill,
+      [42, SIGSTOP, 0, 0, 0, 0],
+      undefined,
+      0,
+      0,
+    );
+  });
+
+  it("exit parks as a retry when pending SIGSTOP is delivered before exit", () => {
+    const kernelHandleChannel = vi.fn();
+    const worker = createWorkerHarness({
+      kernel_deliver_pending_default_signals: vi.fn(() => -2),
+      kernel_get_parent_pid: vi.fn(() => 7),
+      kernel_handle_channel: kernelHandleChannel,
+    });
+    const channel = createChannel(42, createSharedMemory());
+    worker.processes = new Map([[42, { channels: [channel] }]]);
+    worker.sendSignalToProcess = vi.fn();
+    worker.wakeWaitingParent = vi.fn();
+
+    worker.handleExit(channel, ABI_SYSCALLS.ExitGroup, [42, 0, 0, 0, 0, 0]);
+
+    expect(kernelHandleChannel).not.toHaveBeenCalled();
+    expect(worker.stoppedChannels.get(42)).toEqual({ kind: "retry", channel });
+    expect(channel.handling).toBe(true);
+    expect(worker.sendSignalToProcess).toHaveBeenCalledWith(7, SIGCHLD);
+    expect(worker.wakeWaitingParent).toHaveBeenCalledWith(7);
+  });
+
+  it("SIGCONT resumes a retry-style stopped syscall by retrying it", () => {
+    const worker = createWorkerHarness({
+      kernel_get_process_exit_status: vi.fn(() => -1),
+    });
+    const channel = createChannel(42, createSharedMemory());
+    worker.stoppedChannels = new Map([[42, { kind: "retry", channel }]]);
+    worker.retrySyscall = vi.fn();
+
+    worker.resumeStoppedProcess(42);
+
+    expect(worker.stoppedChannels.has(42)).toBe(false);
+    expect(worker.retrySyscall).toHaveBeenCalledWith(channel);
+  });
+
+  it("guest SIGCONT resumes parked children whose kernel state is running", () => {
+    const worker = createWorkerHarness({
+      kernel_get_process_exit_status: vi.fn((pid: number) =>
+        pid === 42 ? -1 : PROCESS_STATE_STOPPED,
+      ),
+      kernel_dequeue_signal: vi.fn(() => 0),
+    });
+    const resumedChannel = createChannel(42, createSharedMemory());
+    const stillStoppedChannel = createChannel(43, createSharedMemory());
+    worker.stoppedChannels = new Map([
+      [42, {
+        kind: "complete",
+        channel: resumedChannel,
+        syscallNr: ABI_SYSCALLS.Kill,
+        origArgs: [42, SIGSTOP, 0, 0, 0, 0],
+        argDescs: undefined,
+        retVal: 0,
+        errVal: 0,
+      }],
+      [43, {
+        kind: "complete",
+        channel: stillStoppedChannel,
+        syscallNr: ABI_SYSCALLS.Kill,
+        origArgs: [43, SIGSTOP, 0, 0, 0, 0],
+        argDescs: undefined,
+        retVal: 0,
+        errVal: 0,
+      }],
+    ]);
+    worker.completeChannel = vi.fn();
+
+    worker.resumeContinuedStoppedProcesses(0);
+
+    expect(worker.stoppedChannels.has(42)).toBe(false);
+    expect(worker.stoppedChannels.has(43)).toBe(true);
+    expect(worker.completeChannel).toHaveBeenCalledTimes(1);
+    expect(worker.completeChannel).toHaveBeenCalledWith(
+      resumedChannel,
+      ABI_SYSCALLS.Kill,
+      [42, SIGSTOP, 0, 0, 0, 0],
+      undefined,
+      0,
+      0,
+    );
+  });
 });
 
 function createWorkerHarness(exports: Record<string, unknown>, kernelPtrWidth: 4 | 8 = 4): any {
@@ -153,13 +310,15 @@ function createWorkerHarness(exports: Record<string, unknown>, kernelPtrWidth: 4
     kernelInstance: { exports },
     kernelMemory: createSharedMemory(),
     scratchOffset: 128,
+    stoppedChannels: new Map(),
+    channelTids: new Map(),
   });
 }
 
 function createSharedMemory(): WebAssembly.Memory {
   return new WebAssembly.Memory({
-    initial: 1,
-    maximum: 1,
+    initial: 2,
+    maximum: 2,
     shared: true,
   });
 }

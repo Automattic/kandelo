@@ -1194,6 +1194,7 @@ fn ensure_memory_covers(_end_addr: usize) {
 /// Check for and deliver pending signals before/after syscall.
 fn deliver_pending_signals(proc: &mut Process, host: &mut WasmHostIO) {
     use crate::signal::{DefaultAction, SignalHandler, default_action};
+    use wasm_posix_shared::signal::SIGCONT;
     let tid = crate::process_table::current_tid();
     let _ = host;
     loop {
@@ -1207,6 +1208,11 @@ fn deliver_pending_signals(proc: &mut Process, host: &mut WasmHostIO) {
         if signum >= wasm_posix_shared::signal::NSIG {
             break;
         }
+        if signum == SIGCONT && proc.state == crate::process::ProcessState::Stopped {
+            proc.state = crate::process::ProcessState::Running;
+            proc.stop_signal = 0;
+            proc.stop_reported = false;
+        }
         let action = proc.signals.get_action(signum);
         match action.handler {
             SignalHandler::Handler(_) => break,
@@ -1217,6 +1223,16 @@ fn deliver_pending_signals(proc: &mut Process, host: &mut WasmHostIO) {
                         proc.state = crate::process::ProcessState::Exited;
                         proc.exit_status = 128 + signum as i32;
                     }
+                    DefaultAction::Stop => {
+                        proc.state = crate::process::ProcessState::Stopped;
+                        proc.stop_signal = signum;
+                        proc.stop_reported = false;
+                    }
+                    DefaultAction::Continue => {
+                        proc.state = crate::process::ProcessState::Running;
+                        proc.stop_signal = 0;
+                        proc.stop_reported = false;
+                    }
                     _ => {}
                 }
             }
@@ -1224,7 +1240,9 @@ fn deliver_pending_signals(proc: &mut Process, host: &mut WasmHostIO) {
                 let _ = dequeue_signal_for(proc, tid, signum);
             }
         }
-        if proc.state == crate::process::ProcessState::Exited {
+        if proc.state == crate::process::ProcessState::Exited
+            || proc.state == crate::process::ProcessState::Stopped
+        {
             break;
         }
     }
@@ -1644,14 +1662,36 @@ pub extern "C" fn kernel_clear_fork_child(pid: u32) -> i32 {
 }
 
 /// Get process exit status.
-/// Returns exit_status if process is exited, -1 if still alive, -ESRCH if not found.
+/// Returns exit_status if process is exited, -2 if stopped, -1 if running,
+/// or -ESRCH if not found.
 #[unsafe(no_mangle)]
 pub extern "C" fn kernel_get_process_exit_status(pid: u32) -> i32 {
     let table = unsafe { &*PROCESS_TABLE.0.get() };
     match table.get(pid) {
         Some(proc) if proc.state == crate::process::ProcessState::Exited => proc.exit_status,
+        Some(proc) if proc.state == crate::process::ProcessState::Stopped => -2,
         Some(_) => -1,
         None => -(Errno::ESRCH as i32),
+    }
+}
+
+/// Deliver pending default-disposition signals for a process without
+/// dequeuing handler signals. Returns the same status convention as
+/// `kernel_get_process_exit_status`.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_deliver_pending_default_signals(pid: u32) -> i32 {
+    let table = unsafe { &mut *PROCESS_TABLE.0.get() };
+    table.set_current_pid(pid);
+    let proc = match table.get_mut(pid) {
+        Some(proc) => proc,
+        None => return -(Errno::ESRCH as i32),
+    };
+    let mut host = WasmHostIO;
+    deliver_pending_signals(proc, &mut host);
+    match proc.state {
+        crate::process::ProcessState::Exited => proc.exit_status,
+        crate::process::ProcessState::Stopped => -2,
+        _ => -1,
     }
 }
 
@@ -1687,6 +1727,32 @@ pub extern "C" fn kernel_mark_process_signaled(pid: u32, signum: u32) -> i32 {
 pub extern "C" fn kernel_wait4_poll(parent_pid: u32, target_pid: i32, status_ptr: *mut i32) -> i32 {
     let table = unsafe { &*PROCESS_TABLE.0.get() };
     match table.poll_waitable_child(parent_pid, target_pid) {
+        Ok(Some((child_pid, wait_status))) => {
+            if !status_ptr.is_null() {
+                unsafe {
+                    *status_ptr = wait_status;
+                }
+            }
+            child_pid as i32
+        }
+        Ok(None) => 0,
+        Err(e) => -(e as i32),
+    }
+}
+
+/// Poll for a waitable child using wait4-style options.
+///
+/// This preserves `kernel_wait4_poll`'s exit-only ABI while giving the host a
+/// way to ask Rust to select stopped children for WUNTRACED.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_wait4_poll_with_options(
+    parent_pid: u32,
+    target_pid: i32,
+    options: u32,
+    status_ptr: *mut i32,
+) -> i32 {
+    let table = unsafe { &mut *PROCESS_TABLE.0.get() };
+    match table.poll_waitable_child_with_options(parent_pid, target_pid, options) {
         Ok(Some((child_pid, wait_status))) => {
             if !status_ptr.is_null() {
                 unsafe {
@@ -2037,6 +2103,7 @@ fn process_name_bytes(proc: &crate::process::Process) -> Vec<u8> {
 #[unsafe(no_mangle)]
 pub extern "C" fn kernel_dequeue_signal(pid: u32, out_ptr: *mut u8) -> i32 {
     use crate::signal::{SignalHandler, sig_bit};
+    use wasm_posix_shared::signal::SIGCONT;
     let tid = crate::process_table::current_tid();
     let table = unsafe { &mut *PROCESS_TABLE.0.get() };
     let proc = match table.get_mut(pid) {
@@ -2056,6 +2123,11 @@ pub extern "C" fn kernel_dequeue_signal(pid: u32, out_ptr: *mut u8) -> i32 {
         let signum = deliverable.trailing_zeros() + 1;
         if signum >= wasm_posix_shared::signal::NSIG {
             return 0;
+        }
+        if signum == SIGCONT && proc.state == crate::process::ProcessState::Stopped {
+            proc.state = crate::process::ProcessState::Running;
+            proc.stop_signal = 0;
+            proc.stop_reported = false;
         }
         let action = proc.signals.get_action(signum);
         match action.handler {
@@ -2124,6 +2196,18 @@ pub extern "C" fn kernel_dequeue_signal(pid: u32, out_ptr: *mut u8) -> i32 {
                         proc.state = crate::process::ProcessState::Exited;
                         proc.exit_status = 128 + signum as i32;
                         return 0;
+                    }
+                    DefaultAction::Stop => {
+                        proc.state = crate::process::ProcessState::Stopped;
+                        proc.stop_signal = signum;
+                        proc.stop_reported = false;
+                        return 0;
+                    }
+                    DefaultAction::Continue => {
+                        proc.state = crate::process::ProcessState::Running;
+                        proc.stop_signal = 0;
+                        proc.stop_reported = false;
+                        continue;
                     }
                     _ => continue,
                 }
@@ -6670,14 +6754,14 @@ pub extern "C" fn kernel_recvmsg(fd: i32, msg_ptr: *mut u8, flags: u32) -> i32 {
     result
 }
 
-/// wait4 — wait for child process. Writes status to wstatus_ptr, ignores rusage.
+/// wait4 — wait for child process. Writes status and a zeroed rusage struct.
 /// Returns child pid on success, negative errno on error.
 #[unsafe(no_mangle)]
 pub extern "C" fn kernel_wait4(
     pid: i32,
     wstatus_ptr: *mut i32,
     options: u32,
-    _rusage_ptr: *mut u8,
+    rusage_ptr: *mut u8,
 ) -> i32 {
     let (_gkl, proc) = unsafe { get_process() };
     let mut host = WasmHostIO;
@@ -6686,6 +6770,11 @@ pub extern "C" fn kernel_wait4(
             if !wstatus_ptr.is_null() {
                 unsafe {
                     *wstatus_ptr = status;
+                }
+            }
+            if !rusage_ptr.is_null() {
+                unsafe {
+                    slice::from_raw_parts_mut(rusage_ptr, 144).fill(0);
                 }
             }
             child_pid
@@ -8971,10 +9060,50 @@ pub extern "C" fn kernel_getitimer(which: u32, curr_ptr: *mut u8) -> i32 {
 // POSIX timers (timer_create / timer_settime / timer_gettime / etc.)
 // ---------------------------------------------------------------------------
 
-/// SIGEV_SIGNAL = 0, SIGEV_NONE = 1.
+/// SIGEV_SIGNAL = 0, SIGEV_NONE = 1, SIGEV_THREAD_ID = 4.
 const SIGEV_SIGNAL: u32 = 0;
+const SIGEV_NONE: u32 = 1;
+const SIGEV_THREAD_ID: u32 = 4;
 /// TIMER_ABSTIME flag for timer_settime.
 const TIMER_ABSTIME: i32 = 1;
+
+fn timer_clock_to_host_clock(clock_id: u32) -> Option<u32> {
+    use wasm_posix_shared::clock::*;
+    match clock_id {
+        CLOCK_REALTIME | CLOCK_MONOTONIC => Some(clock_id),
+        CLOCK_BOOTTIME => Some(CLOCK_MONOTONIC),
+        _ => None,
+    }
+}
+
+fn timer_notify_supported(sigev_notify: u32) -> bool {
+    matches!(sigev_notify, SIGEV_SIGNAL | SIGEV_NONE | SIGEV_THREAD_ID)
+}
+
+#[cfg(test)]
+mod posix_timer_tests {
+    use super::*;
+    use wasm_posix_shared::clock::*;
+
+    #[test]
+    fn boottime_timers_use_monotonic_host_clock() {
+        assert_eq!(timer_clock_to_host_clock(CLOCK_BOOTTIME), Some(CLOCK_MONOTONIC));
+    }
+
+    #[test]
+    fn timer_create_rejects_unsupported_clock_ids() {
+        assert_eq!(timer_clock_to_host_clock(CLOCK_THREAD_CPUTIME_ID), None);
+        assert_eq!(timer_clock_to_host_clock(99), None);
+    }
+
+    #[test]
+    fn timer_create_accepts_thread_id_notification() {
+        assert!(timer_notify_supported(SIGEV_SIGNAL));
+        assert!(timer_notify_supported(SIGEV_NONE));
+        assert!(timer_notify_supported(SIGEV_THREAD_ID));
+        assert!(!timer_notify_supported(2));
+    }
+}
 
 /// timer_create(clock_id, sigevent_ptr, timerid_ptr)
 /// musl sends ksigevent = {sigev_value(i32), sigev_signo(i32), sigev_notify(i32), sigev_tid(i32)} = 16 bytes.
@@ -8989,19 +9118,27 @@ pub extern "C" fn kernel_timer_create(
 
     let (_gkl, proc) = unsafe { get_process() };
 
+    let host_clock_id = match timer_clock_to_host_clock(clock_id) {
+        Some(id) => id,
+        None => return -(Errno::EINVAL as i32),
+    };
+
     // Parse sigevent (default: SIGEV_SIGNAL with SIGALRM)
-    let (sigev_signo, sigev_value, sigev_notify) = if sevp_ptr.is_null() {
-        (14u32, 0i32, SIGEV_SIGNAL) // default: SIGALRM
+    let (sigev_signo, sigev_value, sigev_notify, sigev_tid) = if sevp_ptr.is_null() {
+        (14u32, 0i32, SIGEV_SIGNAL, 0u32) // default: SIGALRM
     } else {
         let buf = unsafe { slice::from_raw_parts(sevp_ptr, 16) };
         let value = i32::from_le_bytes(buf[0..4].try_into().unwrap());
         let signo = i32::from_le_bytes(buf[4..8].try_into().unwrap()) as u32;
         let notify = i32::from_le_bytes(buf[8..12].try_into().unwrap()) as u32;
-        (signo, value, notify)
+        let tid = i32::from_le_bytes(buf[12..16].try_into().unwrap()) as u32;
+        (signo, value, notify, tid)
     };
 
-    // Only SIGEV_SIGNAL and SIGEV_NONE are supported
-    if sigev_notify != SIGEV_SIGNAL && sigev_notify != 1 {
+    if !timer_notify_supported(sigev_notify) {
+        return -(Errno::EINVAL as i32);
+    }
+    if sigev_notify == SIGEV_THREAD_ID && !proc.is_main_thread(sigev_tid) {
         return -(Errno::EINVAL as i32);
     }
 
@@ -9025,7 +9162,7 @@ pub extern "C" fn kernel_timer_create(
     };
 
     proc.posix_timers[timer_id] = Some(PosixTimerState {
-        clock_id,
+        clock_id: host_clock_id,
         sigev_signo,
         sigev_value,
         interval_sec: 0,
