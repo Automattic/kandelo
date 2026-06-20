@@ -752,6 +752,13 @@ artifact writes.
 
 **"sysroot not found"**: Run `bash scripts/build-musl.sh` first.
 
+**Graphics shim libraries missing**: Programs using DRM/KMS/GBM/EGL/GLES link
+against sysroot libraries built by `scripts/build-musl.sh`. Rebuild the sysroot
+with `scripts/dev-shell.sh bash scripts/build-musl.sh`, then use
+`wasm32posix-pkg-config --cflags --libs libdrm gbm egl glesv2` from the package
+build script. Do not vendor these libraries into the package archive; package
+the resulting program or VFS image instead.
+
 **"kandelo-kernel.wasm not found"**: Run `bash build.sh` first.
 
 **Fork fails or the host rejects `asyncify_*` exports**: Rebuild the program

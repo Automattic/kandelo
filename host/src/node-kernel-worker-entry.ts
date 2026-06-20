@@ -1340,5 +1340,11 @@ port.on("message", (msg: MainToKernelMessage) => {
     case "http_request":
       handleHttpRequest(msg);
       break;
+    case "kms_attach_canvas":
+      kernelWorker.attachKmsCanvas(msg.crtcId, msg.canvas, msg.stats, msg.opts);
+      break;
+    case "kms_attach_stats":
+      kernelWorker.attachKmsStats(msg.crtcId, msg.stats);
+      break;
   }
 });

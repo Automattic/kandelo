@@ -271,6 +271,32 @@ export class NodeKernelHost {
   }
 
   /**
+   * Hand an `OffscreenCanvas` to the kernel worker as the scanout
+   * target for KMS CRTC `crtcId`. Mirrors `BrowserKernel.kmsAttachCanvas`.
+   *
+   * Under Node, `OffscreenCanvas` is only available when the host wires
+   * a polyfill (none ships with kandelo). Without one, the worker's
+   * `attachKmsCanvas` is a no-op and only `kmsAttachStats` is useful.
+   */
+  kmsAttachCanvas(
+    crtcId: number,
+    canvas: OffscreenCanvas,
+    stats?: SharedArrayBuffer,
+    opts?: { mode?: "auto" | "2d" | "webgl2" },
+  ): void {
+    this.sendToWorker({ type: "kms_attach_canvas", crtcId, canvas, stats, opts });
+  }
+
+  /**
+   * Register a stats SAB for KMS CRTC `crtcId` without binding a
+   * scanout canvas. The worker still writes `commit_count` and
+   * `last_frame_us` into slots 5/6 each vblank tick.
+   */
+  kmsAttachStats(crtcId: number, stats: SharedArrayBuffer): void {
+    this.sendToWorker({ type: "kms_attach_stats", crtcId, stats });
+  }
+
+  /**
    * Send an HTTP request to a server running inside the kernel and return
    * the parsed response. Bypasses real TCP by using the kernel's injected
    * connection path directly. Prototype API.

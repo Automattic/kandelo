@@ -212,12 +212,12 @@ test("Kandelo shell demo runs bash, vim, and NetHack", async ({ page }) => {
   );
   await runTerminalCommand(
     page,
-    "if vim --version | head -1 | grep -q 'VIM - Vi IMproved'; then export PS1='KANDELO_''VIM_OK $ '; else export PS1='KANDELO_''VIM_FAIL $ '; fi",
+    "vim --version >/tmp/kandelo-vim.out 2>&1; vim_version=$(</tmp/kandelo-vim.out); if [[ \"$vim_version\" == *'VIM - Vi IMproved'* ]]; then export PS1='KANDELO_''VIM_OK $ '; else export PS1='KANDELO_''VIM_FAIL $ '; fi",
     "KANDELO_VIM_OK",
   );
   await runTerminalCommand(
     page,
-    "touch /home/.nethack/record; nethack -s all >/tmp/kandelo-nethack.out 2>&1; status=$?; if grep -q 'Cannot open record file' /tmp/kandelo-nethack.out; then export PS1=\"KANDELO_\"\"NETHACK_BAD:$status $ \"; else export PS1=\"KANDELO_\"\"NETHACK_OK:$status $ \"; fi",
+    "touch /home/.nethack/record; nethack -s all >/tmp/kandelo-nethack.out 2>&1; status=$?; nethack_out=$(</tmp/kandelo-nethack.out); if [[ \"$nethack_out\" == *'Cannot open record file'* ]]; then export PS1=\"KANDELO_\"\"NETHACK_BAD:$status $ \"; else export PS1=\"KANDELO_\"\"NETHACK_OK:$status $ \"; fi",
     "KANDELO_NETHACK_OK:0",
     180_000,
   );

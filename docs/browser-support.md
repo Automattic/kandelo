@@ -240,6 +240,13 @@ Any extra files needed by an image-declared `autoCommand` can be declared in
 `assets`; the loader stages those paths generically and hash-verifies them when
 `sha256` is provided.
 
+KMS demos use the same metadata path. A profile can set
+`runningPrimary` to include `"kms"` and provide an `autoCommand` such as
+`/usr/local/bin/modeset`; the VFS image must contain that executable. The
+Kandelo app attaches the KMS canvas through the generic KMS surface plumbing,
+then runs the image-declared command. Do not add browser-loader branches that
+import or spawn a specific `modeset.wasm` file.
+
 Images can also declare an optional `guide`. When `guide` is absent, Kandelo
 does not render a demo panel; this is the intended shape for demos where the
 primary surface is enough, such as WordPress and Doom. A guide can contain
