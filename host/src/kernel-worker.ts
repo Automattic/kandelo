@@ -6122,6 +6122,13 @@ export class CentralizedKernelWorker {
     }
 
     // Call the async fork handler to spawn child Worker
+    // A process may be the only current observer of a large shared-memory
+    // backing before fork (OPcache's arena is the common case). Normal syscall
+    // boundaries can skip single-observer publishes, but fork creates another
+    // observer and SysV segments may later be observed by new shmat callers.
+    this.syncSharedMappingsFromProcess(channel, true, { force: true });
+    this.syncSysvShmMappingsFromProcess(channel, { force: true });
+
     this.callbacks.onFork(parentPid, childPid, channel.memory, threadFork).then((childChannelOffsets) => {
       if (!this.processes.has(parentPid)) return;
 
@@ -7810,7 +7817,11 @@ export class CentralizedKernelWorker {
     return true;
   }
 
-  private syncSharedMappingsFromProcess(channel: ChannelInfo, includeAnonymous = true): void {
+  private syncSharedMappingsFromProcess(
+    channel: ChannelInfo,
+    includeAnonymous = true,
+    options: { force?: boolean } = {},
+  ): void {
     const pidMap = this.sharedMappings.get(channel.pid);
     if (!pidMap || pidMap.size === 0) return;
     const processMem = new Uint8Array(channel.memory.buffer);
@@ -7820,6 +7831,14 @@ export class CentralizedKernelWorker {
       const backing = this.sharedMmapBackings.get(mapping.backingKey);
       if (!backing) continue;
       if (backing.anonymous && !includeAnonymous) continue;
+      if (
+        !options.force
+        && backing.anonymous
+        && backing.refCount <= 1
+        && mapping.version === backing.version
+      ) {
+        continue;
+      }
       if (mapAddr + mapping.len > processMem.length) continue;
 
       let changed = false;
@@ -8361,7 +8380,7 @@ export class CentralizedKernelWorker {
         channelOffset: 0,
         i32View: new Int32Array(registration.memory.buffer, 0, 1),
         consecutiveSyscalls: 0,
-      });
+      }, true, { force: true });
     }
 
     const pidMap = this.sharedMappings.get(pid);
@@ -8413,14 +8432,50 @@ export class CentralizedKernelWorker {
     this.refreshSysvShmMappingsToProcess(channel);
   }
 
-  private syncSysvShmMappingsFromProcess(channel: ChannelInfo): void {
+  private syncSysvShmMappingsFromProcess(
+    channel: ChannelInfo,
+    options: { force?: boolean } = {},
+  ): void {
     const pidMap = this.shmMappings.get(channel.pid);
     if (!pidMap || pidMap.size === 0) return;
     const processMem = new Uint8Array(channel.memory.buffer);
     this.setKernelCurrentPid(channel.pid);
 
     for (const [mapAddr, mapping] of pidMap) {
+      const segmentVersion = this.shmSegmentVersions.get(mapping.segId) ?? 0;
+      if (
+        !options.force
+        && mapping.version === segmentVersion
+        && !this.hasPeerSysvShmMapping(channel.pid, mapAddr, mapping.segId)
+      ) {
+        continue;
+      }
       this.syncSysvShmMappingFromProcess(processMem, mapAddr, mapping);
+    }
+  }
+
+  private hasPeerSysvShmMapping(pid: number, mapAddr: number, segId: number): boolean {
+    for (const [otherPid, pidMap] of this.shmMappings) {
+      for (const [otherAddr, otherMapping] of pidMap) {
+        if (otherMapping.segId !== segId) continue;
+        if (otherPid === pid && otherAddr === mapAddr) continue;
+        return true;
+      }
+    }
+    return false;
+  }
+
+  private syncSysvShmSegmentFromMappedProcesses(segId: number): void {
+    for (const [pid, pidMap] of this.shmMappings) {
+      const registration = this.processes.get(pid);
+      if (!registration) continue;
+      const processMem = new Uint8Array(registration.memory.buffer);
+      this.setKernelCurrentPid(pid);
+      for (const [mapAddr, mapping] of pidMap) {
+        if (mapping.segId === segId) {
+          this.syncSysvShmMappingFromProcess(processMem, mapAddr, mapping);
+        }
+      }
     }
   }
 
@@ -8525,7 +8580,7 @@ export class CentralizedKernelWorker {
         channelOffset: 0,
         i32View: new Int32Array(registration.memory.buffer, 0, 1),
         consecutiveSyscalls: 0,
-      });
+      }, { force: true });
     }
 
     this.setKernelCurrentPid(pid);
@@ -9658,6 +9713,12 @@ export class CentralizedKernelWorker {
     const [shmid, _shmaddr, _flags] = args;
 
     // Set current pid for kernel_ipc_* exports
+    this.setKernelCurrentPid(channel.pid);
+
+    // If this segment already has a host-side attachment, publish any
+    // single-observer writes before the new attachment reads its initial
+    // bytes from the kernel's segment backing.
+    this.syncSysvShmSegmentFromMappedProcesses(shmid);
     this.setKernelCurrentPid(channel.pid);
 
     const kernelShmat = this.kernelInstance!.exports.kernel_ipc_shmat as (shmid: number, shmaddr: number, flags: number) => number;

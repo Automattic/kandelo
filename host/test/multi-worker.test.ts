@@ -402,6 +402,10 @@ describe("CentralizedKernelWorker Process Management", () => {
       threadForkContexts: new Map(),
       tcpListenerTargets: new Map(),
       epollInterests: new Map(),
+      sharedMappings: new Map(),
+      sharedMmapBackings: new Map(),
+      shmMappings: new Map(),
+      shmSegmentVersions: new Map(),
       inheritSharedMappings: vi.fn(),
       completeChannel,
       kernelInstance: {
@@ -409,6 +413,7 @@ describe("CentralizedKernelWorker Process Management", () => {
           kernel_fork_process: kernelForkProcess,
           kernel_clear_fork_child: vi.fn(() => 0),
           kernel_reset_signal_mask: vi.fn(() => 0),
+          kernel_set_current_pid: vi.fn(),
         },
       },
     });
