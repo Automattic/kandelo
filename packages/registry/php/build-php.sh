@@ -444,6 +444,120 @@ p.write_text(s)
 PY
 fi
 
+# PHP's DBA extension keeps an in-process lock guard because some platforms
+# allow same-process read/write opens that the extension wants to reject. For
+# DB-lock mode, upstream replaces info->path with the stream's opened_path only
+# after the first guard check. On wasm-posix this means a later relative-path
+# open can miss an already-open canonical-path handle and report "Read during
+# write: allowed" for the built-in flatfile/inifile handlers. Repeat the guard
+# after DB-lock path canonicalization, before taking the stream lock.
+if [ -f ext/dba/dba.c ] \
+   && ! grep -q "wasm-dba-db-lock-path-conflict patch applied" ext/dba/dba.c; then
+    python3 - <<'PY'
+from pathlib import Path
+
+p = Path("ext/dba/dba.c")
+s = p.read_text()
+
+find_func = '''static dba_info *php_dba_find(const zend_string *path)
+{
+\tzend_resource *le;
+\tdba_info *info;
+\tzend_long numitems, i;
+
+\tnumitems = zend_hash_next_free_element(&EG(regular_list));
+\tfor (i=1; i<numitems; i++) {
+\t\tif ((le = zend_hash_index_find_ptr(&EG(regular_list), i)) == NULL) {
+\t\t\tcontinue;
+\t\t}
+\t\tif (le->type == le_db || le->type == le_pdb) {
+\t\t\tinfo = (dba_info *)(le->ptr);
+\t\t\tif (zend_string_equals(path, info->path)) {
+\t\t\t\treturn (dba_info *)(le->ptr);
+\t\t\t}
+\t\t}
+\t}
+
+\treturn NULL;
+}
+/* }}} */
+'''
+
+helper = find_func + '''
+
+static bool php_dba_lock_conflicts(const dba_info *info, int lock_mode)
+{
+\tdba_info *other;
+
+\tif ((other = php_dba_find(info->path)) == NULL) {
+\t\treturn false;
+\t}
+
+\treturn ( (lock_mode&LOCK_EX)        && (other->lock.mode&(LOCK_EX|LOCK_SH)) )
+\t    || ( (other->lock.mode&LOCK_EX) && (lock_mode&(LOCK_EX|LOCK_SH))        );
+}
+/* wasm-dba-db-lock-path-conflict patch applied */
+'''
+
+if find_func not in s:
+    raise SystemExit("DBA lock patch: could not find php_dba_find")
+s = s.replace(find_func, helper, 1)
+
+s = s.replace(
+    "\tdba_info *info, *other;\n",
+    "\tdba_info *info;\n",
+    1,
+)
+
+old_check = '''\tif (hptr->flags & DBA_LOCK_ALL) {
+\t\tif ((other = php_dba_find(info->path)) != NULL) {
+\t\t\tif (   ( (lock_mode&LOCK_EX)        && (other->lock.mode&(LOCK_EX|LOCK_SH)) )
+\t\t\t    || ( (other->lock.mode&LOCK_EX) && (lock_mode&(LOCK_EX|LOCK_SH))        )
+\t\t\t   ) {
+\t\t\t\terror = "Unable to establish lock (database file already open)"; /* force failure exit */
+\t\t\t}
+\t\t}
+\t}
+'''
+
+new_check = '''\tif ((hptr->flags & DBA_LOCK_ALL) && php_dba_lock_conflicts(info, lock_mode)) {
+\t\terror = "Unable to establish lock (database file already open)"; /* force failure exit */
+\t}
+'''
+
+if old_check not in s:
+    raise SystemExit("DBA lock patch: could not find initial conflict check")
+s = s.replace(old_check, new_check, 1)
+
+old_after_stream_open = '''\t\tif (!info->lock.fp) {
+\t\t\tdba_close(info);
+\t\t\t/* stream operation already wrote an error message */
+\t\t\tFREE_PERSISTENT_RESOURCE_KEY();
+\t\t\tRETURN_FALSE;
+\t\t}
+\t\tif (!error && !php_stream_supports_lock(info->lock.fp)) {
+'''
+
+new_after_stream_open = '''\t\tif (!info->lock.fp) {
+\t\t\tdba_close(info);
+\t\t\t/* stream operation already wrote an error message */
+\t\t\tFREE_PERSISTENT_RESOURCE_KEY();
+\t\t\tRETURN_FALSE;
+\t\t}
+\t\tif (!error && is_db_lock && (hptr->flags & DBA_LOCK_ALL) && php_dba_lock_conflicts(info, lock_mode)) {
+\t\t\terror = "Unable to establish lock (database file already open)"; /* force failure exit */
+\t\t}
+\t\tif (!error && !php_stream_supports_lock(info->lock.fp)) {
+'''
+
+if old_after_stream_open not in s:
+    raise SystemExit("DBA lock patch: could not find post-stream-open lock block")
+s = s.replace(old_after_stream_open, new_after_stream_open, 1)
+
+p.write_text(s)
+PY
+fi
+
 # opcache's MAP_ANON shared-memory probe is an AC_RUN_IFELSE that fails
 # under cross-compilation; the fallback only sets have_shm_mmap_anon=yes
 # for *linux* hosts (configure ext/opcache/config.m4). Without this
