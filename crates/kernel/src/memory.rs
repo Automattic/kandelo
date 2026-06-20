@@ -269,41 +269,52 @@ impl MemoryManager {
         }
         let unmap_end = addr.saturating_add(len);
         let mut found = false;
-        let mut new_mappings: Vec<MappedRegion> = Vec::new();
 
-        for m in self.mappings.drain(..) {
-            let m_end = m.addr.saturating_add(m.len);
+        let mut i = 0;
+        while i < self.mappings.len() {
+            let m_addr = self.mappings[i].addr;
+            let m_len = self.mappings[i].len;
+            let m_end = m_addr.saturating_add(m_len);
 
-            // No overlap — keep as is
-            if m_end <= addr || m.addr >= unmap_end {
-                new_mappings.push(m);
+            if m_end <= addr {
+                i += 1;
                 continue;
             }
-
+            if m_addr >= unmap_end {
+                break;
+            }
             found = true;
 
-            // Left remnant: mapping starts before unmap region
-            if m.addr < addr {
-                new_mappings.push(MappedRegion {
-                    addr: m.addr,
-                    len: addr - m.addr,
-                    prot: m.prot,
-                    flags: m.flags,
-                });
-            }
+            let has_left = m_addr < addr;
+            let has_right = m_end > unmap_end;
 
-            // Right remnant: mapping extends past unmap region
-            if m_end > unmap_end {
-                new_mappings.push(MappedRegion {
-                    addr: unmap_end,
-                    len: m_end - unmap_end,
-                    prot: m.prot,
-                    flags: m.flags,
-                });
+            match (has_left, has_right) {
+                (false, false) => {
+                    self.mappings.remove(i);
+                }
+                (true, false) => {
+                    self.mappings[i].len = addr - m_addr;
+                    i += 1;
+                }
+                (false, true) => {
+                    self.mappings[i].addr = unmap_end;
+                    self.mappings[i].len = m_end - unmap_end;
+                    break;
+                }
+                (true, true) => {
+                    let right = MappedRegion {
+                        addr: unmap_end,
+                        len: m_end - unmap_end,
+                        prot: self.mappings[i].prot,
+                        flags: self.mappings[i].flags,
+                    };
+                    self.mappings[i].len = addr - m_addr;
+                    self.mappings.insert(i + 1, right);
+                    break;
+                }
             }
         }
 
-        self.mappings = new_mappings;
         found
     }
 
@@ -648,6 +659,38 @@ mod tests {
             MAP_PRIVATE | MAP_ANONYMOUS,
         );
         assert_eq!(addr2, addr + 0x10000);
+    }
+
+    #[test]
+    fn test_munmap_does_not_rebuild_mapping_vec_for_middle_removal() {
+        let mut mm = MemoryManager::new();
+        mm.mappings.reserve(16);
+        let first = mm.mmap_anonymous(
+            0,
+            0x10000,
+            PROT_READ | PROT_WRITE,
+            MAP_PRIVATE | MAP_ANONYMOUS,
+        );
+        let second = mm.mmap_anonymous(
+            0,
+            0x10000,
+            PROT_READ | PROT_WRITE,
+            MAP_PRIVATE | MAP_ANONYMOUS,
+        );
+        let third = mm.mmap_anonymous(
+            0,
+            0x10000,
+            PROT_READ | PROT_WRITE,
+            MAP_PRIVATE | MAP_ANONYMOUS,
+        );
+        let capacity_before = mm.mappings.capacity();
+
+        assert!(mm.munmap(second, 0x10000));
+
+        assert_eq!(mm.mappings.capacity(), capacity_before);
+        assert_eq!(mm.mappings.len(), 2);
+        assert_eq!(mm.mappings[0].addr, first);
+        assert_eq!(mm.mappings[1].addr, third);
     }
 
     #[test]
