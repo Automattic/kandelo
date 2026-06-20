@@ -77,6 +77,7 @@ function loadBufferShim() {
       Buffer: typeof Buffer;
       SlowBuffer(size?: unknown): Buffer;
       INSPECT_MAX_BYTES: number;
+      constants: { MAX_STRING_LENGTH: number };
       isAscii(input: unknown): boolean;
       isUtf8(input: unknown): boolean;
     };
@@ -99,6 +100,31 @@ describe("node-compat Buffer shim", () => {
     );
     expect(Buffer.from("T \x80W\xffFu", "base64").toString("ascii")).toBe("Man");
     expect(Buffer.from("=bad".repeat(10), "base64").length).toBe(0);
+  });
+
+  it("throws ERR_STRING_TOO_LONG before decoding oversized strings", () => {
+    const max = nodeBuffer.constants.MAX_STRING_LENGTH;
+    const oversized = (length: number) => ({
+      length,
+      subarray() {
+        throw new Error("oversized toString should fail before slicing");
+      },
+    });
+    const expected = {
+      code: "ERR_STRING_TOO_LONG",
+      name: "Error",
+      message: `Cannot create a string longer than 0x${max.toString(16)} characters`,
+    };
+
+    expect(() => Buffer.prototype.toString.call(oversized(max + 1) as Buffer)).toThrow(
+      expect.objectContaining(expected),
+    );
+    expect(() => Buffer.prototype.toString.call(oversized(Math.floor(max / 2) + 1) as Buffer, "hex")).toThrow(
+      expect.objectContaining(expected),
+    );
+    expect(() => Buffer.prototype.toString.call(oversized(Math.floor(max / 4) * 3 + 1) as Buffer, "base64")).toThrow(
+      expect.objectContaining(expected),
+    );
   });
 
   it("matches Node ASCII decoding and bad hex truncation", () => {

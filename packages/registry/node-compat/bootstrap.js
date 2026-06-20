@@ -2830,6 +2830,30 @@ const Buffer = (() => {
         return err;
     }
 
+    function _stringTooLongError() {
+        const err = new Error(`Cannot create a string longer than 0x${_BUFFER_MAX_STRING_LENGTH.toString(16)} characters`);
+        err.code = 'ERR_STRING_TOO_LONG';
+        return err;
+    }
+
+    function _decodedStringLength(byteLength, encoding) {
+        if (encoding === 'hex') return byteLength * 2;
+        if (encoding === 'base64') return Math.ceil(byteLength / 3) * 4;
+        if (encoding === 'base64url') {
+            const full = Math.floor(byteLength / 3) * 4;
+            const rem = byteLength % 3;
+            return full + (rem === 0 ? 0 : rem + 1);
+        }
+        if (encoding === 'ucs2' || encoding === 'utf16le') return Math.floor(byteLength / 2);
+        return byteLength;
+    }
+
+    function _checkDecodedStringLength(byteLength, encoding) {
+        if (_decodedStringLength(byteLength, encoding) > _BUFFER_MAX_STRING_LENGTH) {
+            throw _stringTooLongError();
+        }
+    }
+
     function _bufferOutOfBoundsError(name) {
         const err = new RangeError(`"${name}" is outside of buffer bounds`);
         err.code = 'ERR_BUFFER_OUT_OF_BOUNDS';
@@ -3352,6 +3376,7 @@ const Buffer = (() => {
             start = _clampIndex(start, this.length, 0);
             end = _clampIndex(end, this.length, this.length);
             if (end <= start) return '';
+            _checkDecodedStringLength(end - start, encoding);
             const slice = this.subarray(start, end);
 
             if (encoding === 'hex') {
