@@ -153,6 +153,17 @@ fn fallback_lock_table(_proc: &mut Process) -> &mut LockTable {
 /// manually via `packages/registry/openssl/fetch-cacert.sh`.
 const CACERT_PEM: &[u8] = include_bytes!("../../../packages/registry/openssl/cacert.pem");
 
+/// Minimal OpenSSL provider/config bootstrap.
+///
+/// The OpenSSL build used by wasm programs has `--openssldir=/etc/ssl`.
+/// OpenSSL attempts to load this file during context setup. A missing config
+/// leaves errors on the OpenSSL error queue and can make otherwise valid TLS
+/// server setup fail before the handshake. Programs also rely on the default
+/// request stanza for ordinary key/CSR generation when they do not pass an
+/// application-specific config. Providing the standard path is a platform
+/// baseline, just like `/etc/ssl/cert.pem` above.
+const OPENSSL_CNF: &[u8] = include_bytes!("openssl.cnf");
+
 /// Return static content for synthetic files that are not owned by rootfs.vfs.
 ///
 /// Keep NSS-style files (`/etc/passwd`, `/etc/group`, `/etc/hosts`, etc.) in
@@ -162,6 +173,7 @@ const CACERT_PEM: &[u8] = include_bytes!("../../../packages/registry/openssl/cac
 fn synthetic_file_content(path: &[u8]) -> Option<&'static [u8]> {
     match path {
         b"/etc/mtab" => Some(crate::procfs::MOUNTS_CONTENT),
+        b"/etc/ssl/openssl.cnf" => Some(OPENSSL_CNF),
         b"/etc/ssl/cert.pem" => Some(CACERT_PEM),
         _ => None,
     }
@@ -19887,6 +19899,34 @@ mod tests {
         let st = sys_stat(&mut proc, &mut host, b"/etc/mtab").unwrap();
         assert_eq!(st.st_mode & S_IFMT, S_IFREG);
         assert_eq!(st.st_size as usize, crate::procfs::MOUNTS_CONTENT.len());
+
+        sys_close(&mut proc, &mut host, fd).unwrap();
+    }
+
+    #[test]
+    fn test_synthetic_openssl_config_open_read() {
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+
+        let fd = sys_open(
+            &mut proc,
+            &mut host,
+            b"/etc/ssl/openssl.cnf",
+            O_RDONLY,
+            0,
+        )
+        .unwrap();
+        let mut buf = [0u8; 512];
+        let n = sys_read(&mut proc, &mut host, fd, &mut buf).unwrap();
+        let content = core::str::from_utf8(&buf[..n]).unwrap();
+        assert!(content.contains("openssl_conf = openssl_init"));
+        assert!(content.contains("[openssl_init]"));
+        assert!(content.contains("default_bits = 2048"));
+        assert!(content.contains("[v3_ca]"));
+
+        let st = sys_stat(&mut proc, &mut host, b"/etc/ssl/openssl.cnf").unwrap();
+        assert_eq!(st.st_mode & S_IFMT, S_IFREG);
+        assert_eq!(st.st_size as usize, OPENSSL_CNF.len());
 
         sys_close(&mut proc, &mut host, fd).unwrap();
     }
