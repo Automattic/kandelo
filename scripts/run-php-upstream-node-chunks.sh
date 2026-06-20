@@ -251,7 +251,7 @@ while [ "$offset" -lt "$total" ]; do
     --jobs "$jobs" \
     --timeout "$timeout_ms" \
     --host-reset-interval "$host_reset_interval" \
-    "${extra_args[@]}" \
+    ${extra_args[@]+"${extra_args[@]}"} \
     --json \
     > "$jsonl" 2> "$stderr"
   status=$?

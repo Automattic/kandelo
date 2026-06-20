@@ -316,7 +316,8 @@ Each process has a WebAssembly linear memory (shared, up to 1GB by default). The
 ```
 Address           Region
 0x00000000        Wasm data segment (globals, static data)
-0x00110000        Global base (--global-base=1114112)
+0x00110000        Default global base (--global-base=1114112; raised by
+                  the SDK when larger linker stack reservations require it)
 __heap_base       First linker-free byte exported by the program
 control_base      Host-owned low control slab
                   - main page 0: fork-save/scratch

@@ -11,6 +11,8 @@ interface VirtualMetadata {
   mode?: number;
   uid?: number;
   gid?: number;
+  atimeMs?: number;
+  mtimeMs?: number;
   ctimeMs?: number;
 }
 
@@ -24,6 +26,11 @@ interface VirtualMetadata {
 export class NativeMetadataOverlay {
   private readonly entries = new Map<string, VirtualMetadata>();
 
+  constructor(
+    private readonly defaultUid = 0,
+    private readonly defaultGid = 0,
+  ) {}
+
   toStatResult(s: Stats): StatResult {
     const metadata = this.entries.get(this.key(s));
     return {
@@ -33,12 +40,14 @@ export class NativeMetadataOverlay {
         ? s.mode
         : (s.mode & ~MODE_CHANGE_MASK) | (metadata.mode & MODE_CHANGE_MASK),
       nlink: s.nlink,
-      uid: metadata?.uid ?? 0,
-      gid: metadata?.gid ?? 0,
+      uid: metadata?.uid ?? this.defaultUid,
+      gid: metadata?.gid ?? this.defaultGid,
       size: s.size,
-      atimeMs: s.atimeMs,
-      mtimeMs: s.mtimeMs,
-      ctimeMs: metadata?.ctimeMs ?? s.ctimeMs,
+      atimeMs: metadata?.atimeMs ?? s.atimeMs,
+      mtimeMs: metadata?.mtimeMs ?? s.mtimeMs,
+      ctimeMs: metadata?.ctimeMs === undefined
+        ? s.ctimeMs
+        : Math.max(metadata.ctimeMs, s.ctimeMs),
     };
   }
 
@@ -53,6 +62,20 @@ export class NativeMetadataOverlay {
     if (uid !== UID_GID_UNCHANGED) metadata.uid = uid;
     if (gid !== UID_GID_UNCHANGED) metadata.gid = gid;
     metadata.ctimeMs = Date.now();
+  }
+
+  utimens(s: Stats, atimeMs: number, mtimeMs: number, ctimeMs = Date.now()): void {
+    const metadata = this.metadataFor(s);
+    metadata.atimeMs = atimeMs;
+    metadata.mtimeMs = mtimeMs;
+    metadata.ctimeMs = Math.max(metadata.ctimeMs ?? 0, ctimeMs);
+  }
+
+  noteNativeContentChange(s: Stats): void {
+    const metadata = this.entries.get(this.key(s));
+    if (metadata === undefined) return;
+    delete metadata.atimeMs;
+    delete metadata.mtimeMs;
   }
 
   forget(s: Stats): void {

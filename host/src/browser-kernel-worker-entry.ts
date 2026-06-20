@@ -142,6 +142,7 @@ interface ProcessInfo {
 }
 const processes = new Map<number, ProcessInfo>();
 const processTeardowns = new Map<number, Promise<void>>();
+const vmInterruptTimers = new Map<number, ReturnType<typeof setTimeout>>();
 // Includes standalone thread-worker teardown promises that may outlive the
 // process map entry they came from.
 const workerTeardowns = new Set<Promise<void>>();
@@ -211,6 +212,41 @@ const threadWorkers = new Map<number, ThreadWorkerInfo[]>();
 const threadExits = new ThreadExitCoordinator();
 const reportedNonzeroProcessExits = new Set<number>();
 
+function clearVmInterruptTimer(pid: number): void {
+  const timer = vmInterruptTimers.get(pid);
+  if (timer) clearTimeout(timer);
+  vmInterruptTimers.delete(pid);
+}
+
+function handleVmInterruptTimer(msg: {
+  pid: number;
+  timedOutPtr: number;
+  vmInterruptPtr: number;
+  seconds: number;
+}): void {
+  clearVmInterruptTimer(msg.pid);
+  if (!(msg.seconds > 0)) return;
+  const requestedDelayMs = Math.min(msg.seconds, 999999999) * 1000;
+  // The process worker can be stuck in a CPU-bound Wasm loop, so a timer in
+  // that worker cannot set cooperative runtime interrupt flags. Run the timer
+  // from this kernel worker instead; the process memory is shared, matching
+  // the Node host's VM-interrupt timer path.
+  const delayMs = Math.max(1, requestedDelayMs - 100);
+  const timer = setTimeout(() => {
+    vmInterruptTimers.delete(msg.pid);
+    const info = processes.get(msg.pid);
+    if (!info) return;
+    const flags = new Uint8Array(info.memory.buffer);
+    if (msg.timedOutPtr >= 0 && msg.timedOutPtr < flags.length) {
+      Atomics.store(flags, msg.timedOutPtr, 1);
+    }
+    if (msg.vmInterruptPtr >= 0 && msg.vmInterruptPtr < flags.length) {
+      Atomics.store(flags, msg.vmInterruptPtr, 1);
+    }
+  }, delayMs);
+  vmInterruptTimers.set(msg.pid, timer);
+}
+
 function delay(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
@@ -245,7 +281,6 @@ function reportNonzeroProcessExitDiagnostic(
     (serviceLog ? `\n${serviceLog}` : "") +
     `\n${syscalls}`;
   console.warn(diagnostic);
-  post({ type: "stderr", pid, data: new TextEncoder().encode(`${diagnostic}\n`) });
 }
 
 function readServiceLogForProcess(argv: readonly string[] | undefined): string | null {
@@ -686,6 +721,7 @@ async function handleInit(msg: Extract<MainToKernelMessage, { type: "init" }>) {
   // production, keeping the browser networking path identical across modes.
   const tlsBackend = new TlsNetworkBackend({
     dnsAliases: msg.config.dnsAliases,
+    corsProxyUrl: msg.config.corsProxyUrl,
   });
   await tlsBackend.init();
   io.network = tlsBackend;
@@ -1013,7 +1049,7 @@ function installProcessWorkerListeners(
     finalize(signalExitStatus(SIGSEGV), "worker exit event", SIGSEGV);
   });
   worker.on("message", (msg: unknown) => {
-    const m = msg as { type?: string; message?: string; pid?: number; status?: number };
+    const m = msg as WorkerToHostMessage;
     if (m.type === "error") {
       console.error(`[kernel-worker] Process error pid=${pid}:`, m.message);
       // Forward to host stderr so the demo log shows the actual failure
@@ -1030,6 +1066,8 @@ function installProcessWorkerListeners(
       finalize(classifiedTrapExitStatus(m.message) ?? -1, "worker-main error message", signum);
     } else if (m.type === "exit") {
       finalize(m.status ?? 0, "worker-main exit message");
+    } else if (m.type === "vm_interrupt_timer") {
+      handleVmInterruptTimer(m);
     }
   });
 }
@@ -1122,6 +1160,13 @@ async function handleExec(
   if (!resolved) return -2; // ENOENT
   if ("errno" in resolved) return -resolved.errno;
   const { programBytes: bytes, argv: launchArgv } = resolved;
+  let programModule: WebAssembly.Module;
+  try {
+    programModule = await WebAssembly.compile(bytes);
+  } catch (e) {
+    if (e instanceof WebAssembly.CompileError) return -8; // ENOEXEC
+    throw e;
+  }
 
   // Program found — run kernel exec setup
   const setupResult = kernelWorker.kernelExecSetup(pid);
@@ -1135,6 +1180,7 @@ async function handleExec(
   // crash detector and tear down the kernel's view of the still-alive
   // (post-exec) process.
   const oldInfo = processes.get(pid);
+  clearVmInterruptTimer(pid);
   if (oldInfo?.worker) {
     intentionallyTerminated.add(oldInfo.worker as object);
     await oldInfo.worker.terminate().catch(() => {});
@@ -1178,6 +1224,7 @@ async function handleExec(
     pid,
     ppid: 0,
     programBytes: bytes,
+    programModule,
     memory: newMemory,
     channelOffset: newChannelOffset,
     argv: launchArgv,
@@ -1194,6 +1241,7 @@ async function handleExec(
   processes.set(pid, {
     memory: newMemory,
     programBytes: bytes,
+    programModule,
     worker: newWorker,
     argv: launchArgv,
     channelOffset: newChannelOffset,
@@ -1258,6 +1306,13 @@ async function handlePosixSpawn(
   await waitForProcessTeardowns();
 
   post({ type: "proc_event", kind: "spawn", pid: childPid });
+  let programModule: WebAssembly.Module;
+  try {
+    programModule = await WebAssembly.compile(programBytes);
+  } catch (e) {
+    if (e instanceof WebAssembly.CompileError) return -8; // ENOEXEC
+    throw e;
+  }
 
   const ptrWidth = detectPtrWidth(programBytes);
   const {
@@ -1285,6 +1340,7 @@ async function handlePosixSpawn(
     pid: childPid,
     ppid: 0,
     programBytes,
+    programModule,
     memory: newMemory,
     channelOffset: newChannelOffset,
     argv,
@@ -1298,6 +1354,7 @@ async function handlePosixSpawn(
   processes.set(childPid, {
     memory: newMemory,
     programBytes,
+    programModule,
     worker: newWorker,
     argv,
     channelOffset: newChannelOffset,
@@ -1423,6 +1480,8 @@ async function handleClone(
       // worker-main posted {type:"error"} — instantiation failure, top-level
       // throw, etc. Without this the parent's pthread_join blocks forever.
       failThread((m as { message?: string }).message ?? "thread error");
+    } else if (m.type === "vm_interrupt_timer") {
+      handleVmInterruptTimer(m);
     }
   });
   threadWorker.on("error", (err: Error) => {
@@ -1450,6 +1509,7 @@ async function finishProcessExit(
   exitStatus: number,
   crashSignum: number = signalFromExitStatus(exitStatus) ?? SIGSEGV,
 ): Promise<void> {
+  clearVmInterruptTimer(pid);
   if (processTeardowns.has(pid)) return;
 
   const info = processes.get(pid);
@@ -1510,6 +1570,7 @@ async function finishProcessExit(
 
 async function handleTerminateProcess(msg: Extract<MainToKernelMessage, { type: "terminate_process" }>) {
   const pid = msg.pid;
+  clearVmInterruptTimer(pid);
 
   // Terminate thread workers
   const threads = threadWorkers.get(pid);
@@ -1684,6 +1745,8 @@ async function handleDestroy(msg: Extract<MainToKernelMessage, { type: "destroy"
       );
     }
   }
+  for (const timer of vmInterruptTimers.values()) clearTimeout(timer);
+  vmInterruptTimers.clear();
   processes.clear();
   threadModuleCache.clear();
   threadWorkers.clear();

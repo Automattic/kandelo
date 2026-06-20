@@ -469,6 +469,64 @@ describe("MemoryFileSystem", () => {
     expect(entries).toContain("file.txt");
   });
 
+  it("reports raw inode numbers that remain representable after inode reuse", () => {
+    const sab = new SharedArrayBuffer(4 * 1024 * 1024);
+    const mfs = MemoryFileSystem.create(sab);
+    const O_CREAT = 0x0040,
+      O_RDWR = 0x0002,
+      O_TRUNC = 0x0200;
+
+    // SharedFS tracks an internal generation counter for reused inode slots.
+    // POSIX st_ino does not need to include that generation, and exposing it
+    // can overflow 32-bit guest language APIs while tools like ls(1) print the
+    // full kernel value.
+    for (let i = 0; i < 2_100; i++) {
+      const fd = mfs.open("/reuse.txt", O_CREAT | O_RDWR | O_TRUNC, 0o644);
+      mfs.close(fd);
+      mfs.unlink("/reuse.txt");
+    }
+
+    const fd = mfs.open("/reuse.txt", O_CREAT | O_RDWR | O_TRUNC, 0o644);
+    const stat = mfs.fstat(fd);
+    expect(stat.ino).toBeGreaterThan(0);
+    expect(stat.ino).toBeLessThanOrEqual(0x7fffffff);
+
+    const dh = mfs.opendir("/");
+    let entry;
+    let dirIno: number | null = null;
+    while ((entry = mfs.readdir(dh)) !== null) {
+      if (entry.name === "reuse.txt") {
+        dirIno = entry.ino;
+        break;
+      }
+    }
+    mfs.closedir(dh);
+    expect(dirIno).toBe(stat.ino);
+    mfs.close(fd);
+  });
+
+  it("honors O_CREAT|O_EXCL by failing when the final path already exists", () => {
+    const sab = new SharedArrayBuffer(4 * 1024 * 1024);
+    const mfs = MemoryFileSystem.create(sab);
+    const O_WRONLY = 0x0001,
+      O_CREAT = 0x0040,
+      O_EXCL = 0x0080;
+
+    const fd = mfs.open("/exclusive.txt", O_WRONLY | O_CREAT | O_EXCL, 0o600);
+    mfs.close(fd);
+
+    expect(() =>
+      mfs.open("/exclusive.txt", O_WRONLY | O_CREAT | O_EXCL, 0o600),
+    ).toThrow(/File exists/);
+
+    // POSIX open(O_CREAT|O_EXCL) must fail with EEXIST when the final path is
+    // a symbolic link, even if the symlink points at an existing regular file.
+    mfs.symlink("/exclusive.txt", "/exclusive-link.txt");
+    expect(() =>
+      mfs.open("/exclusive-link.txt", O_WRONLY | O_CREAT | O_EXCL, 0o600),
+    ).toThrow(/File exists/);
+  });
+
   it("stat returns correct size after writing", () => {
     const sab = new SharedArrayBuffer(4 * 1024 * 1024);
     const mfs = MemoryFileSystem.create(sab);
@@ -483,6 +541,37 @@ describe("MemoryFileSystem", () => {
     mfs.close(fd);
   });
 
+  it("updates mtime and ctime after file writes and truncates", () => {
+    const now = vi.spyOn(Date, "now");
+    try {
+      const sab = new SharedArrayBuffer(4 * 1024 * 1024);
+      now.mockReturnValue(1_000);
+      const mfs = MemoryFileSystem.create(sab);
+      const O_CREAT = 0x0040,
+        O_RDWR = 0x0002,
+        O_TRUNC = 0x0200;
+      const fd = mfs.open("/timestamps.txt", O_CREAT | O_RDWR | O_TRUNC, 0o644);
+      const initial = mfs.fstat(fd);
+
+      now.mockReturnValue(5_000);
+      mfs.write(fd, new TextEncoder().encode("abc"), null, 3);
+      const afterWrite = mfs.fstat(fd);
+      expect(afterWrite.mtimeMs).toBe(5_000);
+      expect(afterWrite.ctimeMs).toBe(5_000);
+      expect(afterWrite.mtimeMs).toBeGreaterThan(initial.mtimeMs);
+
+      now.mockReturnValue(9_000);
+      mfs.ftruncate(fd, 1);
+      const afterTruncate = mfs.fstat(fd);
+      expect(afterTruncate.mtimeMs).toBe(9_000);
+      expect(afterTruncate.ctimeMs).toBe(9_000);
+      expect(afterTruncate.mtimeMs).toBeGreaterThan(afterWrite.mtimeMs);
+      mfs.close(fd);
+    } finally {
+      now.mockRestore();
+    }
+  });
+
   it("unlink removes a file", () => {
     const sab = new SharedArrayBuffer(4 * 1024 * 1024);
     const mfs = MemoryFileSystem.create(sab);
@@ -492,6 +581,115 @@ describe("MemoryFileSystem", () => {
     mfs.close(fd);
     mfs.unlink("/todelete.txt");
     expect(() => mfs.stat("/todelete.txt")).toThrow();
+  });
+
+  it("rejects unlink paths with a trailing slash on non-directories", () => {
+    const sab = new SharedArrayBuffer(4 * 1024 * 1024);
+    const mfs = MemoryFileSystem.create(sab);
+    const O_CREAT = 0x0040,
+      O_WRONLY = 0x0001;
+
+    const fd = mfs.open("/file.txt", O_CREAT | O_WRONLY, 0o644);
+    mfs.close(fd);
+    mfs.symlink("/file.txt", "/link.txt");
+
+    expect(() => mfs.unlink("/file.txt/")).toThrow(/Not a directory/);
+    expect(() => mfs.unlink("/link.txt/")).toThrow(/Not a directory/);
+    expect(mfs.stat("/file.txt").mode & 0xf000).toBe(0x8000);
+    expect(mfs.readlink("/link.txt")).toBe("/file.txt");
+  });
+
+  it("rejects rename source paths that require a non-directory to be a directory", () => {
+    const sab = new SharedArrayBuffer(4 * 1024 * 1024);
+    const mfs = MemoryFileSystem.create(sab);
+    const O_CREAT = 0x0040,
+      O_WRONLY = 0x0001;
+
+    const fd = mfs.open("/file.txt", O_CREAT | O_WRONLY, 0o644);
+    mfs.close(fd);
+
+    expect(() => mfs.rename("/file.txt/", "/renamed.txt")).toThrow(
+      /Not a directory/,
+    );
+    expect(mfs.stat("/file.txt").size).toBe(0);
+    expect(() => mfs.stat("/renamed.txt")).toThrow(/No such file/);
+  });
+
+  it("preserves POSIX type checks when renaming directories onto existing paths", () => {
+    const sab = new SharedArrayBuffer(4 * 1024 * 1024);
+    const mfs = MemoryFileSystem.create(sab);
+    const O_CREAT = 0x0040,
+      O_WRONLY = 0x0001;
+
+    mfs.mkdir("/dir", 0o755);
+    const fd = mfs.open("/file.txt", O_CREAT | O_WRONLY, 0o644);
+    mfs.close(fd);
+    mfs.symlink("/file.txt", "/link.txt");
+
+    expect(() => mfs.rename("/dir", "/file.txt")).toThrow(/Not a directory/);
+    expect(() => mfs.rename("/dir", "/link.txt")).toThrow(/Not a directory/);
+
+    expect(mfs.stat("/dir").mode & 0xf000).toBe(0x4000);
+    expect(mfs.stat("/file.txt").mode & 0xf000).toBe(0x8000);
+    expect(mfs.readlink("/link.txt")).toBe("/file.txt");
+  });
+
+  it("renames directories over empty directories and updates dot-dot", () => {
+    const sab = new SharedArrayBuffer(4 * 1024 * 1024);
+    const mfs = MemoryFileSystem.create(sab);
+    const O_CREAT = 0x0040,
+      O_WRONLY = 0x0001;
+
+    mfs.mkdir("/old-parent", 0o755);
+    mfs.mkdir("/new-parent", 0o755);
+    mfs.mkdir("/old-parent/child", 0o755);
+    const siblingFd = mfs.open(
+      "/new-parent/sibling.txt",
+      O_CREAT | O_WRONLY,
+      0o644,
+    );
+    mfs.close(siblingFd);
+
+    mfs.rename("/old-parent/child", "/new-parent/child");
+    expect(mfs.stat("/new-parent/child/../sibling.txt").mode & 0xf000).toBe(
+      0x8000,
+    );
+
+    mfs.mkdir("/empty-dest", 0o755);
+    mfs.rename("/new-parent/child", "/empty-dest");
+    expect(mfs.stat("/empty-dest").mode & 0xf000).toBe(0x4000);
+    expect(() => mfs.stat("/new-parent/child")).toThrow(/No such file/);
+  });
+
+  it("keeps an unlinked open file alive until close", () => {
+    const sab = new SharedArrayBuffer(4 * 1024 * 1024);
+    const mfs = MemoryFileSystem.create(sab);
+    const O_CREAT = 0x0040,
+      O_RDWR = 0x0002,
+      O_TRUNC = 0x0200;
+
+    const oldFd = mfs.open("/open.txt", O_CREAT | O_RDWR | O_TRUNC, 0o644);
+    const oldData = new TextEncoder().encode("old");
+    mfs.write(oldFd, oldData, null, oldData.length);
+    mfs.unlink("/open.txt");
+    expect(() => mfs.stat("/open.txt")).toThrow();
+
+    const newFd = mfs.open("/open.txt", O_CREAT | O_RDWR | O_TRUNC, 0o644);
+    const newData = new TextEncoder().encode("newer");
+    mfs.write(newFd, newData, null, newData.length);
+
+    mfs.seek(oldFd, 0, 0);
+    const oldBuf = new Uint8Array(8);
+    const oldRead = mfs.read(oldFd, oldBuf, null, oldBuf.length);
+    expect(new TextDecoder().decode(oldBuf.subarray(0, oldRead))).toBe("old");
+
+    mfs.seek(newFd, 0, 0);
+    const newBuf = new Uint8Array(8);
+    const newRead = mfs.read(newFd, newBuf, null, newBuf.length);
+    expect(new TextDecoder().decode(newBuf.subarray(0, newRead))).toBe("newer");
+
+    mfs.close(oldFd);
+    mfs.close(newFd);
   });
 
   it("ftruncate changes file size", () => {
@@ -694,5 +892,15 @@ describe("NodeTimeProvider", () => {
     const ns1 = BigInt(t1.sec) * 1_000_000_000n + BigInt(t1.nsec);
     const ns2 = BigInt(t2.sec) * 1_000_000_000n + BigInt(t2.nsec);
     expect(ns2).toBeGreaterThanOrEqual(ns1);
+  });
+
+  it("treats CLOCK_BOOTTIME as monotonic-equivalent", () => {
+    const tp = new NodeTimeProvider();
+    const monotonic = tp.clockGettime(1);
+    const boottime = tp.clockGettime(7);
+    const monotonicNs = BigInt(monotonic.sec) * 1_000_000_000n + BigInt(monotonic.nsec);
+    const boottimeNs = BigInt(boottime.sec) * 1_000_000_000n + BigInt(boottime.nsec);
+    expect(boottimeNs).toBeGreaterThanOrEqual(monotonicNs);
+    expect(boottimeNs - monotonicNs).toBeLessThan(100_000_000n);
   });
 });

@@ -31,6 +31,70 @@ function buildSharedLib(source: string, name: string): Uint8Array {
   return new Uint8Array(readFileSync(soPath));
 }
 
+function encodeVarUint(value: number): number[] {
+  const bytes: number[] = [];
+  do {
+    let byte = value & 0x7f;
+    value >>>= 7;
+    if (value !== 0) byte |= 0x80;
+    bytes.push(byte);
+  } while (value !== 0);
+  return bytes;
+}
+
+function wasmString(value: string): number[] {
+  const bytes = [...new TextEncoder().encode(value)];
+  return [...encodeVarUint(bytes.length), ...bytes];
+}
+
+function wasmSection(id: number, payload: number[]): number[] {
+  return [id, ...encodeVarUint(payload.length), ...payload];
+}
+
+function buildLongjmpThrowingSideModule(): Uint8Array {
+  const dylink = [
+    ...wasmString("dylink.0"),
+    1, 4, // WASM_DYLINK_MEM_INFO subsection, four zero LEB fields.
+    0, 0, 0, 0,
+  ];
+  const type = [
+    2,
+    0x60, 1, 0x7f, 0, // tag type: (i32) -> ()
+    0x60, 0, 0,       // exported throwLongjmp type: () -> ()
+  ];
+  const imports = [
+    1,
+    ...wasmString("env"),
+    ...wasmString("__c_longjmp"),
+    4, 0, 0, // external kind tag, attribute 0, type index 0
+  ];
+  const functions = [1, 1]; // one function using type index 1
+  const exports = [
+    1,
+    ...wasmString("throwLongjmp"),
+    0, 0, // function export, function index 0
+  ];
+  const code = [
+    1,
+    6, // body size
+    0, // local decl count
+    0x41, 7, // i32.const 7
+    0x08, 0, // throw imported tag 0
+    0x0b,
+  ];
+
+  return new Uint8Array([
+    0x00, 0x61, 0x73, 0x6d,
+    0x01, 0x00, 0x00, 0x00,
+    ...wasmSection(0, dylink),
+    ...wasmSection(1, type),
+    ...wasmSection(2, imports),
+    ...wasmSection(3, functions),
+    ...wasmSection(7, exports),
+    ...wasmSection(10, code),
+  ]);
+}
+
 describe.skipIf(!hasCompiler())("dylink.0 parser", () => {
   it("parses a simple shared library", () => {
     const wasmBytes = buildSharedLib(
@@ -71,6 +135,40 @@ describe.skipIf(!hasCompiler())("dylink.0 parser", () => {
 
   it("returns null for non-Wasm data", () => {
     expect(parseDylinkSection(new Uint8Array([1, 2, 3]))).toBeNull();
+  });
+});
+
+describe.skipIf(typeof (WebAssembly as any).Tag !== "function")("shared wasm SjLj tag imports", () => {
+  it("uses the process-wide __c_longjmp tag for side modules", () => {
+    const Tag = (WebAssembly as any).Tag;
+    const wasmException = (WebAssembly as any).Exception;
+    const longjmpTag = new Tag({ parameters: ["i32"] }) as WebAssembly.ExportValue;
+    const memory = new WebAssembly.Memory({ initial: 1, maximum: 100, shared: true });
+    const table = new WebAssembly.Table({ initial: 1, element: "anyfunc" });
+    const stackPointer = new WebAssembly.Global(
+      { value: "i32", mutable: true },
+      65536,
+    );
+
+    const lib = loadSharedLibrarySync("libthrows-longjmp.so", buildLongjmpThrowingSideModule(), {
+      memory,
+      table,
+      stackPointer,
+      heapPointer: { value: 1024 },
+      globalSymbols: new Map(),
+      got: new Map(),
+      loadedLibraries: new Map(),
+      longjmpTag,
+    });
+
+    try {
+      (lib.exports.throwLongjmp as Function)();
+      expect.unreachable("throwLongjmp should throw the imported __c_longjmp tag");
+    } catch (error) {
+      expect(error).toBeInstanceOf(wasmException);
+      expect((error as any).is(longjmpTag)).toBe(true);
+      expect((error as any).getArg(longjmpTag, 0)).toBe(7);
+    }
   });
 });
 

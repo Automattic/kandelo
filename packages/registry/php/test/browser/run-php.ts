@@ -43,7 +43,7 @@ async function runPhp(
     new SharedArrayBuffer(16 * 1024 * 1024, { maxByteLength: 64 * 1024 * 1024 }),
     64 * 1024 * 1024,
   );
-  for (const dir of ["/tmp", "/root", "/dev"]) ensureDir(memfs, dir);
+  for (const dir of ["/tmp", "/root", "/home", "/dev"]) ensureDir(memfs, dir);
   memfs.chmod("/tmp", 0o777);
   memfs.chmod("/root", 0o700);
   ensureDirRecursive(memfs, "/usr/local/bin");

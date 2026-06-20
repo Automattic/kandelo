@@ -18,10 +18,10 @@
 use std::collections::HashSet;
 
 use fork_instrument::runtime::names as runtime_names;
-use fork_instrument::{Options, instrument};
+use fork_instrument::{instrument, Options};
 use walrus::{
-    ExportItem, FunctionId, FunctionKind, LocalFunction, Module,
     ir::{self, Instr, InstrSeqId},
+    ExportItem, FunctionId, FunctionKind, LocalFunction, Module,
 };
 
 // --- Helpers ----------------------------------------------------------
@@ -41,6 +41,49 @@ fn validate(bytes: &[u8]) {
     validator.validate_all(bytes).expect("valid wasm");
 }
 
+fn insert_leading_dylink_section(mut wasm: Vec<u8>) -> Vec<u8> {
+    // Minimal dylink.0 section with WASM_DYLINK_MEM_INFO
+    // {memorySize=0, memoryAlign=0, tableSize=0, tableAlign=0}.
+    let dylink = [
+        0x00, // custom section
+        0x0f, // payload size
+        0x08, b'd', b'y', b'l', b'i', b'n', b'k', b'.', b'0', 0x01, // WASM_DYLINK_MEM_INFO
+        0x04, // subsection payload size
+        0x00, 0x00, 0x00, 0x00,
+    ];
+    wasm.splice(8..8, dylink);
+    wasm
+}
+
+fn first_custom_section_name(bytes: &[u8]) -> Option<String> {
+    let mut offset = 8usize;
+    if bytes.get(offset).copied()? != 0 {
+        return None;
+    }
+    offset += 1;
+    let _section_size = read_var_u32(bytes, &mut offset)?;
+    let name_len = read_var_u32(bytes, &mut offset)? as usize;
+    let name = bytes.get(offset..offset + name_len)?;
+    Some(String::from_utf8_lossy(name).into_owned())
+}
+
+fn read_var_u32(bytes: &[u8], offset: &mut usize) -> Option<u32> {
+    let mut result = 0u32;
+    let mut shift = 0u32;
+    loop {
+        let byte = *bytes.get(*offset)?;
+        *offset += 1;
+        result |= u32::from(byte & 0x7f) << shift;
+        if byte & 0x80 == 0 {
+            return Some(result);
+        }
+        shift += 7;
+        if shift >= 35 {
+            return None;
+        }
+    }
+}
+
 fn func_by_name(module: &Module, name: &str) -> FunctionId {
     module
         .funcs
@@ -55,6 +98,34 @@ fn local_func(module: &Module, id: FunctionId) -> &LocalFunction {
         FunctionKind::Local(l) => l,
         _ => panic!("function is not local"),
     }
+}
+
+#[test]
+fn preserves_leading_dylink_section_for_side_modules() {
+    let input = insert_leading_dylink_section(parse_wat(
+        r#"
+        (module
+          (import "env" "fork" (func $fork (result i32)))
+          (memory (import "env" "memory") 1)
+          (func $call_fork (export "call_fork") (result i32)
+            (call $fork)))
+        "#,
+    ));
+
+    let output = instrument(
+        &input,
+        &Options {
+            entry_import: "env.fork".into(),
+        },
+    )
+    .expect("instrument side module");
+
+    validate(&output);
+    assert_eq!(
+        first_custom_section_name(&output).as_deref(),
+        Some("dylink.0"),
+        "dynamic-linking side modules must keep dylink.0 as the first section",
+    );
 }
 
 fn entry_instr_kinds(module: &Module, id: FunctionId) -> Vec<InstrKind> {

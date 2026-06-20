@@ -204,6 +204,7 @@ function buildDlopenImports(
   getStackPointer: () => WebAssembly.Global | undefined,
   getInstance: () => WebAssembly.Instance | undefined,
   ptrWidth: 4 | 8,
+  longjmpTag?: WebAssembly.ExportValue,
 ): DlopenSupport {
   let linker: DynamicLinker | null = null;
   const loadedLibraries = new Map<string, LoadedSharedLibrary>();
@@ -275,6 +276,7 @@ function buildDlopenImports(
     ]);
     const globalSymbols = new Map<string, Function | WebAssembly.Global>();
     const inst = getInstance();
+    const mainLongjmpTag = inst?.exports.__c_longjmp;
     if (inst) {
       for (const [name, exp] of Object.entries(inst.exports)) {
         if (RESERVED.has(name)) continue;
@@ -292,6 +294,7 @@ function buildDlopenImports(
       globalSymbols,
       got: new Map(),
       loadedLibraries,
+      longjmpTag: mainLongjmpTag ?? longjmpTag,
       sideModuleFork: {
         setActiveFork: (state) => {
           activeSideFork = state;
@@ -512,6 +515,15 @@ function buildDlopenImports(
   return { imports, replayDlopens, completeSideModuleForkUnwind, beginSideModuleForkRewind };
 }
 
+function createLongjmpTag(): WebAssembly.ExportValue | undefined {
+  const Tag = (
+    WebAssembly as typeof WebAssembly & {
+      Tag?: new (descriptor: { parameters: string[] }) => WebAssembly.ExportValue;
+    }
+  ).Tag;
+  return Tag ? new Tag({ parameters: ["i32"] }) : undefined;
+}
+
 /**
  * Build import object for a Wasm module, stubbing unresolved imports.
  */
@@ -523,6 +535,12 @@ function buildImportObject(
   dlopenImports?: Record<string, WebAssembly.ExportValue>,
   getInstance?: () => WebAssembly.Instance | undefined,
   ptrWidth: 4 | 8 = 4,
+  postVmInterruptTimer?: (
+    timedOutPtr: number,
+    vmInterruptPtr: number,
+    seconds: number,
+  ) => void,
+  longjmpTag?: WebAssembly.ExportValue,
 ): WebAssembly.Imports {
   const envImports: Record<string, WebAssembly.ExportValue> = { memory };
   /** Convert wasm64 BigInt pointer to number (safe since addresses < 4GB) */
@@ -544,19 +562,32 @@ function buildImportObject(
 
   // llvm/lld ≥22 emit __c_longjmp as a tag import for setjmp users; instantiation fails silently without it.
   if (moduleImports.some(i => i.module === "env" && i.name === "__c_longjmp" && (i.kind as string) === "tag")) {
-    const Tag = (
-      WebAssembly as typeof WebAssembly & {
-        Tag?: new (descriptor: { parameters: string[] }) => WebAssembly.ExportValue;
-      }
-    ).Tag;
-    if (Tag) {
-      envImports.__c_longjmp = new Tag({ parameters: ["i32"] });
+    const tag = longjmpTag ?? createLongjmpTag();
+    if (tag) {
+      envImports.__c_longjmp = tag;
     }
   }
 
   // Add dlopen imports if provided
   if (dlopenImports) {
     Object.assign(envImports, dlopenImports);
+  }
+
+  if (
+    moduleImports.some(
+      (i) =>
+        i.module === "env" &&
+        i.name === "__wasm_posix_vm_interrupt_after" &&
+        i.kind === "function",
+    )
+  ) {
+    envImports.__wasm_posix_vm_interrupt_after = (
+      timedOutPtr: number | bigint,
+      vmInterruptPtr: number | bigint,
+      seconds: number | bigint,
+    ): void => {
+      postVmInterruptTimer?.(n(timedOutPtr), n(vmInterruptPtr), n(seconds));
+    };
   }
 
   // C++ operator new/delete fallbacks — delegate to the wasm instance's malloc/free.
@@ -957,6 +988,7 @@ export async function centralizedWorkerMain(
     // Fork state — captured by kernel_fork closure
     let forkResult = 0;
     const forkBufAddr = channelOffset - FORK_BUF_SIZE;
+    const processLongjmpTag = createLongjmpTag();
 
     if (hasForkInstrumentation) {
       // Override kernel_fork with fork-instrumentation-aware version.
@@ -991,9 +1023,20 @@ export async function centralizedWorkerMain(
         () => processInstance?.exports.__stack_pointer as WebAssembly.Global | undefined,
         () => processInstance ?? undefined,
         ptrWidth,
+        processLongjmpTag,
       );
       const importObject = buildImportObject(module, memory, kernelImports, channelOffset, dlopenSupport.imports,
-        () => processInstance ?? undefined, ptrWidth);
+        () => processInstance ?? undefined, ptrWidth,
+        (timedOutPtr, vmInterruptPtr, seconds) => {
+          port.postMessage({
+            type: "vm_interrupt_timer",
+            pid,
+            timedOutPtr,
+            vmInterruptPtr,
+            seconds,
+          } satisfies WorkerToHostMessage);
+        },
+        processLongjmpTag);
       const instance = await WebAssembly.instantiate(module, importObject);
       processInstance = instance;
       verifyProgramAbi(programBytes, initData.kernelAbiVersion, pid);
@@ -1144,9 +1187,20 @@ export async function centralizedWorkerMain(
         () => processInstance?.exports.__stack_pointer as WebAssembly.Global | undefined,
         () => processInstance ?? undefined,
         ptrWidth,
+        processLongjmpTag,
       );
       const importObject = buildImportObject(module, memory, kernelImports, channelOffset, dlopenSupport.imports,
-        () => processInstance ?? undefined, ptrWidth);
+        () => processInstance ?? undefined, ptrWidth,
+        (timedOutPtr, vmInterruptPtr, seconds) => {
+          port.postMessage({
+            type: "vm_interrupt_timer",
+            pid,
+            timedOutPtr,
+            vmInterruptPtr,
+            seconds,
+          } satisfies WorkerToHostMessage);
+        },
+        processLongjmpTag);
       const instance = await WebAssembly.instantiate(module, importObject);
       processInstance = instance;
       verifyProgramAbi(programBytes, initData.kernelAbiVersion, pid);
@@ -1833,7 +1887,16 @@ export async function centralizedThreadWorkerMain(
       };
     }
     const importObject = buildImportObject(module, memory, kernelImports, channelOffset, undefined,
-      () => threadInstance, ptrWidth);
+      () => threadInstance, ptrWidth,
+      (timedOutPtr, vmInterruptPtr, seconds) => {
+        port.postMessage({
+          type: "vm_interrupt_timer",
+          pid,
+          timedOutPtr,
+          vmInterruptPtr,
+          seconds,
+        } satisfies WorkerToHostMessage);
+      });
     const instance = new WebAssembly.Instance(module, importObject);
     threadInstance = instance;
 

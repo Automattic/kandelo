@@ -13,7 +13,9 @@
 use anyhow::{Context, Result};
 use clap::Parser;
 use std::fs;
-use std::path::PathBuf;
+#[cfg(unix)]
+use std::os::unix::fs::PermissionsExt;
+use std::path::{Path, PathBuf};
 
 use fork_instrument::{Options, analyze, instrument};
 
@@ -71,7 +73,28 @@ fn main() -> Result<()> {
 
     fs::write(output_path, &output)
         .with_context(|| format!("writing output: {}", output_path.display()))?;
+    preserve_input_permissions(&cli.input, output_path)?;
 
+    Ok(())
+}
+
+#[cfg(unix)]
+fn preserve_input_permissions(input_path: &Path, output_path: &Path) -> Result<()> {
+    let input_mode = fs::metadata(input_path)
+        .with_context(|| format!("stat input for permissions: {}", input_path.display()))?
+        .permissions()
+        .mode();
+    let mut output_permissions = fs::metadata(output_path)
+        .with_context(|| format!("stat output for permissions: {}", output_path.display()))?
+        .permissions();
+    output_permissions.set_mode(input_mode);
+    fs::set_permissions(output_path, output_permissions)
+        .with_context(|| format!("setting output permissions: {}", output_path.display()))?;
+    Ok(())
+}
+
+#[cfg(not(unix))]
+fn preserve_input_permissions(_input_path: &Path, _output_path: &Path) -> Result<()> {
     Ok(())
 }
 
