@@ -864,6 +864,7 @@ function envForRun(isolation?: TestIsolation, execPath?: string): string[] {
 }
 
 export {
+  collectBrowserDataFiles,
   createIsolatedTests,
   dataFileFromSourceUrl,
   destroyNodeHostBestEffort,
@@ -1165,7 +1166,12 @@ function collectBrowserDataFiles(sourceDir: string, preludePath: string): Browse
   for (const relDir of ["test/common", "test/fixtures", "lib"]) {
     const absDir = join(sourceDir, relDir);
     for (const file of walkFiles(absDir)) {
-      files.push(dataFileFromSourceUrl(sourceDir, file, `/node-v22.0.0/${relative(sourceDir, file).replace(/\\/g, "/")}`));
+      files.push(dataFileFromSourceUrl(
+        sourceDir,
+        file,
+        `/node-v22.0.0/${relative(sourceDir, file).replace(/\\/g, "/")}`,
+        { lazy: relDir !== "test/common" },
+      ));
     }
   }
   return files;

@@ -3,6 +3,7 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "nod
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
+  collectBrowserDataFiles,
   createIsolatedTests,
   dataFileFromSourceUrl,
   destroyNodeHostBestEffort,
@@ -245,22 +246,65 @@ describe("node-core official runner browser data files", () => {
     }
   });
 
-  it("keeps shared browser fixture files lazy by default", () => {
+  it("keeps browser fixture URL files lazy by default", () => {
     const root = mkdtempSync(join(tmpdir(), "kandelo-node-core-browser-data-"));
     try {
       const sourceDir = join(root, "node-v22.0.0");
-      const commonDir = join(sourceDir, "test", "common");
-      mkdirSync(commonDir, { recursive: true });
-      const hostPath = join(commonDir, "index.js");
-      writeFileSync(hostPath, "module.exports = {};\n");
+      const fixturesDir = join(sourceDir, "test", "fixtures");
+      mkdirSync(fixturesDir, { recursive: true });
+      const hostPath = join(fixturesDir, "fixture.txt");
+      writeFileSync(hostPath, "fixture data\n");
 
       expect(dataFileFromSourceUrl(
         sourceDir,
         hostPath,
-        "/node-v22.0.0/test/common/index.js",
+        "/node-v22.0.0/test/fixtures/fixture.txt",
       )).toEqual({
+        path: "/node-v22.0.0/test/fixtures/fixture.txt",
+        url: "/__kandelo_node_core_official__/source/test/fixtures/fixture.txt",
+        lazy: true,
+        size: 13,
+        mode: 0o644,
+      });
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("eagerly mounts upstream test/common while keeping fixtures and lib lazy", () => {
+    const root = mkdtempSync(join(tmpdir(), "kandelo-node-core-browser-data-"));
+    try {
+      const sourceDir = join(root, "node-v22.0.0");
+      const preludePath = join(root, "prelude.js");
+      const commonPath = join(sourceDir, "test", "common", "index.js");
+      const fixturePath = join(sourceDir, "test", "fixtures", "fixture.txt");
+      const libPath = join(sourceDir, "lib", "internal", "util.js");
+      mkdirSync(join(sourceDir, "test", "common"), { recursive: true });
+      mkdirSync(join(sourceDir, "test", "fixtures"), { recursive: true });
+      mkdirSync(join(sourceDir, "lib", "internal"), { recursive: true });
+      writeFileSync(preludePath, "prelude();\n");
+      writeFileSync(commonPath, "module.exports = { mustCall: () => {} };\n");
+      writeFileSync(fixturePath, "fixture data\n");
+      writeFileSync(libPath, "module.exports = {};\n");
+
+      const files = collectBrowserDataFiles(sourceDir, preludePath);
+      const byPath = new Map(files.map((file) => [file.path, file]));
+
+      expect(byPath.get("/node-v22.0.0/test/common/index.js")).toEqual({
         path: "/node-v22.0.0/test/common/index.js",
         url: "/__kandelo_node_core_official__/source/test/common/index.js",
+        mode: 0o644,
+      });
+      expect(byPath.get("/node-v22.0.0/test/fixtures/fixture.txt")).toEqual({
+        path: "/node-v22.0.0/test/fixtures/fixture.txt",
+        url: "/__kandelo_node_core_official__/source/test/fixtures/fixture.txt",
+        lazy: true,
+        size: 13,
+        mode: 0o644,
+      });
+      expect(byPath.get("/node-v22.0.0/lib/internal/util.js")).toEqual({
+        path: "/node-v22.0.0/lib/internal/util.js",
+        url: "/__kandelo_node_core_official__/source/lib/internal/util.js",
         lazy: true,
         size: 21,
         mode: 0o644,

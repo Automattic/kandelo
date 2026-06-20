@@ -52,10 +52,11 @@ Browser runs start the Vite test-runner page with `KANDELO_BROWSER_DEMO_INPUTS`
 set to `test-runner` and serve the pinned Node source, generated prelude, and
 runtime wasm through an env-gated same-origin route. This avoids serializing the
 large source fixture tree and runtime wasm through Playwright's `page.evaluate`
-payload. The selected `test/parallel/test-*.js` file is fetched eagerly into the
-browser VFS before the runtime starts so browser pass/fail/output reporting proves
-the test body actually executed; shared `test/common`, `test/fixtures`, and `lib`
-files remain lazy URL-backed data files.
+payload. The selected `test/parallel/test-*.js` file and upstream `test/common`
+helper tree are fetched eagerly into the browser VFS before the runtime starts so
+browser pass/fail/output reporting proves the test body executed against real
+official helper bytes; bulky shared `test/fixtures` and `lib` files remain lazy
+URL-backed data files.
 
 The runner forwards upstream `// Flags:` entries only for compatibility flags
 the runtime understands today. `--disable-proto=delete` and
