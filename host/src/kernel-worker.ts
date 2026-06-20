@@ -798,6 +798,8 @@ export class CentralizedKernelWorker {
     /** Date.now() deadline for finite-timeout poll/ppoll retries, or -1. */
     deadline?: number;
   }>();
+  /** Absolute finite poll/ppoll deadlines that must survive EAGAIN retry wakes. */
+  private pollRetryDeadlines = new Map<number, number>();
   /** Pending pselect6/select retries — keyed by channelOffset for per-thread tracking */
   private pendingSelectRetries = new Map<number, {
     timer: any;  // setTimeout or setImmediate handle
@@ -2873,6 +2875,9 @@ export class CentralizedKernelWorker {
 
     // Cancel any pending socket timeout timer for this channel
     this.clearSocketTimeout(channel);
+    if (syscallNr === SYS_POLL || syscallNr === SYS_PPOLL) {
+      this.pollRetryDeadlines.delete(channel.channelOffset);
+    }
 
     // Drain PTY output buffers before notifying the process — slave writes
     // produce data in the PTY output_buf that needs to reach the host (xterm.js).
@@ -3232,6 +3237,7 @@ export class CentralizedKernelWorker {
       if (entry.channel.pid === pid) {
         if (entry.timer) clearTimeout(entry.timer);
         this.pendingPollRetries.delete(key);
+        this.pollRetryDeadlines.delete(key);
       }
     }
   }
@@ -3806,6 +3812,7 @@ export class CentralizedKernelWorker {
         }
       }
       if (timeoutMs === 0) {
+        this.pollRetryDeadlines.delete(channel.channelOffset);
         this.completeChannel(channel, syscallNr, origArgs, SYSCALL_ARGS[syscallNr], 0, 0);
         return;
       }
@@ -3837,12 +3844,29 @@ export class CentralizedKernelWorker {
         return;
       }
 
-      const deadline = timeoutMs > 0 ? Date.now() + timeoutMs : -1;
+      const retryKey = channel.channelOffset;
+      let deadline = -1;
+      if (timeoutMs > 0) {
+        const now = Date.now();
+        const existingDeadline = this.pollRetryDeadlines.get(retryKey);
+        deadline = existingDeadline ?? (now + timeoutMs);
+        if (deadline <= now) {
+          this.pollRetryDeadlines.delete(retryKey);
+          this.completeChannel(channel, syscallNr, origArgs, SYSCALL_ARGS[syscallNr], 0, 0);
+          return;
+        }
+        if (existingDeadline === undefined) {
+          this.pollRetryDeadlines.set(retryKey, deadline);
+        }
+      } else {
+        this.pollRetryDeadlines.delete(retryKey);
+      }
       const retryFn = () => {
-        this.pendingPollRetries.delete(channel.channelOffset);
+        this.pendingPollRetries.delete(retryKey);
         if (!this.processes.has(channel.pid)) return;
         // Check deadline for finite timeout
         if (deadline > 0 && Date.now() >= deadline) {
+          this.pollRetryDeadlines.delete(retryKey);
           this.completeChannel(channel, syscallNr, origArgs, SYSCALL_ARGS[syscallNr], 0, 0);
           return;
         }
