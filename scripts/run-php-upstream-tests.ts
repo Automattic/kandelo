@@ -1715,12 +1715,34 @@ class BrowserPhpRunner implements PhpRunner {
     for (let attempt = 0; attempt < 2; attempt++) {
       const start = performance.now();
       try {
-        return await this.page.evaluate(
+        const evaluatePromise = this.page.evaluate(
           async ({ request }) => (window as any).__runPhpScript(request),
           { request },
         );
+        void evaluatePromise.catch(() => {});
+        return await withTimeout(
+          evaluatePromise,
+          opts.timeoutMs + 10_000,
+          "browser PHPT run",
+        );
       } catch (err: any) {
         const message = err?.message || String(err);
+        const timedOut = /browser PHPT run timed out/.test(message);
+        if (timedOut) {
+          await this.page
+            ?.context()
+            .close()
+            .catch(() => {});
+          this.page = null;
+          await this.reloadPage().catch(() => {});
+          return {
+            exitCode: -1,
+            stdout: "",
+            stderr: "",
+            error: "TIMEOUT",
+            durationMs: Math.round(performance.now() - start),
+          };
+        }
         const recoverable =
           /Execution context was destroyed|Target page, context or browser has been closed|Navigation failed/i.test(
             message,
