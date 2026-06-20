@@ -3,7 +3,7 @@
  * multiple PHP-Wasm processes sharing a SharedLockTable.
  *
  * Requires the PHP wasm binary at ../php-src/sapi/cli/php,
- * recompiled with channel_syscall.c.
+ * recompiled with channel_syscall.c for centralized mode.
  * Skipped if the binary is not present.
  */
 
