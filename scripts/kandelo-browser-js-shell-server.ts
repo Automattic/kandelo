@@ -32,6 +32,7 @@ interface RunResult {
   bridgeRetries?: number;
   guestTimeoutRetries?: number;
   memoryPressureRetries?: number;
+  wasmOobRetries?: number;
 }
 
 function readPageEvaluateRetries(): number {
@@ -49,6 +50,11 @@ function readMemoryPressureRetries(): number {
   return Number.isFinite(value) && value >= 0 ? Math.floor(value) : 1;
 }
 
+function readWasmOobRetries(): number {
+  const value = Number(process.env.SPIDERMONKEY_BROWSER_JS_SHELL_WASM_OOB_RETRIES ?? 0);
+  return Number.isFinite(value) && value >= 0 ? Math.floor(value) : 0;
+}
+
 function readPageRecycleInterval(): number {
   const value = Number(process.env.SPIDERMONKEY_BROWSER_JS_SHELL_RECYCLE_INTERVAL ?? 25);
   return Number.isFinite(value) && value >= 0 ? Math.floor(value) : 25;
@@ -57,7 +63,9 @@ function readPageRecycleInterval(): number {
 const PAGE_EVALUATE_RETRIES = readPageEvaluateRetries();
 const GUEST_TIMEOUT_RETRIES = readGuestTimeoutRetries();
 const MEMORY_PRESSURE_RETRIES = readMemoryPressureRetries();
+const WASM_OOB_RETRIES = readWasmOobRetries();
 const PAGE_RECYCLE_INTERVAL = readPageRecycleInterval();
+const WASM_TRAP_SIGSEGV_EXIT_STATUS = 128 + 11;
 
 let viteProcess: ChildProcess | null = null;
 let browserInstance: Browser | null = null;
@@ -79,6 +87,21 @@ function isBrowserMemoryPressureMessage(message: string | undefined): boolean {
 function isBrowserMemoryPressureResult(result: RunResult): boolean {
   return isBrowserMemoryPressureMessage(result.error) ||
     (result.exitCode < 0 && isBrowserMemoryPressureMessage(result.stderr));
+}
+
+function isWasmOobTrapMessage(message: string | undefined): boolean {
+  return /memory access out of bounds/i.test(message ?? "");
+}
+
+function isWasmOobTrapResult(result: RunResult): boolean {
+  if (
+    result.exitCode !== WASM_TRAP_SIGSEGV_EXIT_STATUS &&
+    result.exitCode >= 0
+  ) {
+    return false;
+  }
+  return isWasmOobTrapMessage(result.error) ||
+    isWasmOobTrapMessage(result.stderr);
 }
 
 function requestTimeoutMs(body: RunRequest): number {
@@ -346,6 +369,7 @@ async function main() {
     let pageRetries = 0;
     let guestTimeoutRetries = 0;
     let memoryPressureRetries = 0;
+    let wasmOobRetries = 0;
     for (;;) {
       await recyclePageIfNeeded();
       runsSincePageOpen++;
@@ -374,9 +398,20 @@ async function main() {
             continue;
           }
         }
+        if (isWasmOobTrapResult(result)) {
+          await reopenPage(
+            `browser WebAssembly OOB trap ` +
+            `(${wasmOobRetries}/${WASM_OOB_RETRIES})`,
+          );
+          if (wasmOobRetries < WASM_OOB_RETRIES) {
+            wasmOobRetries++;
+            continue;
+          }
+        }
         if (pageRetries > 0) result.bridgeRetries = pageRetries;
         if (guestTimeoutRetries > 0) result.guestTimeoutRetries = guestTimeoutRetries;
         if (memoryPressureRetries > 0) result.memoryPressureRetries = memoryPressureRetries;
+        if (wasmOobRetries > 0) result.wasmOobRetries = wasmOobRetries;
         return result;
       } catch (err: any) {
         const message = err?.message || String(err);
@@ -398,6 +433,7 @@ async function main() {
             ...(pageRetries > 0 ? { bridgeRetries: pageRetries } : {}),
             ...(guestTimeoutRetries > 0 ? { guestTimeoutRetries } : {}),
             ...(memoryPressureRetries > 0 ? { memoryPressureRetries } : {}),
+            ...(wasmOobRetries > 0 ? { wasmOobRetries } : {}),
           };
         }
 

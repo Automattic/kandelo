@@ -163,6 +163,13 @@ browser memory pressure, opens a fresh page context, and retries the invocation
 once by default. Set `SPIDERMONKEY_BROWSER_JS_SHELL_MEMORY_RETRIES=0` to disable
 that retry.
 
+If a browser process worker reports `RuntimeError: memory access out of bounds`
+with a SIGSEGV-style exit status, the bridge can reopen the page and retry the
+same invocation with `SPIDERMONKEY_BROWSER_JS_SHELL_WASM_OOB_RETRIES=N`. The
+default is `0` so deterministic guest crashes remain visible unless a test run
+explicitly opts into treating isolated browser OOB traps as retryable bridge
+state.
+
 `scripts/ensure-spidermonkey-source.sh` locates or downloads the Firefox ESR
 source tree pinned by the SpiderMonkey package manifest. The browser VFS builder
 uses the same source tree so absolute upstream test paths stay valid inside the
