@@ -276,10 +276,10 @@ pub struct SocketInfo {
     /// Used by AF_UNIX same-process sys_connect, which pre-allocates the
     /// accepted SocketInfo and pushes its index here.
     pub listen_backlog: Vec<usize>,
-    /// Index into the global SHARED_LISTENER_BACKLOG_TABLE for AF_INET
-    /// listening sockets. Set by sys_listen for INET sockets so all
-    /// fork-inherited copies of the listener share a single accept queue.
-    /// `None` for AF_UNIX or before listen() is called.
+    /// Index into the global SHARED_LISTENER_BACKLOG_TABLE for stream
+    /// listening sockets whose accept queue must be shared by inherited fds.
+    /// Set by sys_listen so all fork/spawn-inherited copies of the listener
+    /// pull from one accept queue. `None` before listen() is called.
     pub shared_backlog_idx: Option<usize>,
     /// Host-visible wake token for listener readiness. Assigned by listen()
     /// and cloned across fork/spawn so every inherited listener fd waits on
@@ -361,21 +361,20 @@ impl SocketInfo {
 /// state. POSIX-wise these are properties of the underlying connection
 /// (one OOB byte per socket; one queue of pending datagrams; one queue
 /// of pending AF_UNIX same-process pre-accepted connections), but our
-/// per-process SocketInfo can't truly share — duplicating them would let
-/// both parent and child consume the "same" data.
+/// per-process SocketInfo can't truly share — duplicating inline per-process
+/// queues would let both parent and child consume the "same" data.
 ///
 /// Discarded in the child:
 ///   * `dgram_queue` — buffered UDP datagrams.
 ///   * `oob_byte` — pending TCP out-of-band byte.
-///   * `listen_backlog` — pre-accepted AF_UNIX same-process connections.
+///   * `listen_backlog` — legacy per-process pre-accepted connections.
 ///     Indices reference other entries in this process's SocketTable; if
 ///     both parent and child kept them, both could `accept()` the same
-///     pending connection. After fork/spawn, the parent retains them;
-///     child gets fresh state. New connections that arrive post-fork are
-///     added to whichever process the connecting peer wires up to.
+///     pending connection. New stream listeners use `shared_backlog_idx`
+///     so inherited fds share one accept queue instead.
 ///
 /// Everything else is value-cloned. `host_net_handle` and
-/// `shared_backlog_idx` are still inherited; the cross-process refcount
+/// `shared_backlog_idx` is still inherited; the cross-process refcount
 /// bumps for those live in `process_table::bump_inherited_resource_refcounts`.
 impl Clone for SocketInfo {
     fn clone(&self) -> Self {
@@ -469,17 +468,12 @@ impl SocketTable {
 
 // ── Shared listener backlog (cross-process accept queue) ──
 //
-// In real Linux, a listening socket inherited via fork() shares a single
-// accept queue across parent and children — any process can accept a
-// pending connection. Our SocketInfo lives in per-process tables, so a
-// naive fork+accept model would give each process its own backlog. To
-// match POSIX semantics for AF_INET listeners (the typical fork-server
-// pattern: nginx master + workers), we keep the actual pending queue
-// in this global table and reference it by index from each forked
-// SocketInfo copy.
-//
-// AF_UNIX same-process listeners still use the inline `listen_backlog`
-// field (sys_connect pre-allocates the accepted SocketInfo there).
+// In real POSIX kernels, a listening socket inherited via fork()/spawn shares
+// a single accept queue across parent and children — any process holding that
+// fd can accept a pending connection. Our SocketInfo lives in per-process
+// tables, so a naive clone would give each process its own backlog. We keep
+// the actual pending queue in this global table and reference it by index from
+// each inherited SocketInfo copy.
 
 /// A pending TCP connection waiting in a shared accept queue.
 pub struct PendingConnection {
