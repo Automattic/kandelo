@@ -7079,8 +7079,7 @@ pub extern "C" fn kernel_accept4(
                                         addrlen_buf.copy_from_slice(&2u32.to_le_bytes());
                                     }
                                 }
-                                _ => {
-                                    // Existing AF_INET logic
+                                crate::socket::SocketDomain::Inet => {
                                     let mut sa = [0u8; 16];
                                     sa[0] = 2; // AF_INET
                                     let port_be = sock.peer_port.to_be_bytes();
@@ -7095,6 +7094,19 @@ pub extern "C" fn kernel_accept4(
                                         unsafe { slice::from_raw_parts_mut(addr_ptr, n) };
                                     addr_buf.copy_from_slice(&sa[..n]);
                                     addrlen_buf.copy_from_slice(&16u32.to_le_bytes());
+                                }
+                                crate::socket::SocketDomain::Inet6 => {
+                                    let mut sa = [0u8; 28];
+                                    sa[0] = 10; // AF_INET6
+                                    let port_be = sock.peer_port.to_be_bytes();
+                                    sa[2] = port_be[0];
+                                    sa[3] = port_be[1];
+                                    sa[8..24].copy_from_slice(&sock.peer_addr6);
+                                    let n = max_len.min(28);
+                                    let addr_buf =
+                                        unsafe { slice::from_raw_parts_mut(addr_ptr, n) };
+                                    addr_buf.copy_from_slice(&sa[..n]);
+                                    addrlen_buf.copy_from_slice(&28u32.to_le_bytes());
                                 }
                             }
                         }
@@ -7300,14 +7312,21 @@ fn cross_process_unix_connect(proc: &mut Process, fd: i32, addr: &[u8]) -> Resul
         return Err(Errno::EINVAL);
     }
     let path_bytes = &addr[2..];
-    let path_end = path_bytes
-        .iter()
-        .position(|&b| b == 0)
-        .unwrap_or(path_bytes.len());
-    if path_end == 0 {
-        return Err(Errno::ECONNREFUSED);
-    }
-    let resolved = crate::path::resolve_path(&path_bytes[..path_end], &proc.cwd);
+    let resolved = if path_bytes.first().copied() == Some(0) {
+        if path_bytes.len() < 2 {
+            return Err(Errno::ECONNREFUSED);
+        }
+        path_bytes.to_vec()
+    } else {
+        let path_end = path_bytes
+            .iter()
+            .position(|&b| b == 0)
+            .unwrap_or(path_bytes.len());
+        if path_end == 0 {
+            return Err(Errno::ECONNREFUSED);
+        }
+        crate::path::resolve_path(&path_bytes[..path_end], &proc.cwd)
+    };
 
     // Look up in global registry
     let registry = unsafe { crate::unix_socket::global_unix_socket_registry() };
@@ -7455,6 +7474,102 @@ pub extern "C" fn kernel_getsockopt(
         return result;
     }
 
+    // Handle struct linger (SO_LINGER).
+    if level == SOL_SOCKET && optname == SO_LINGER {
+        let result = match syscalls::sys_getsockopt_linger(proc, fd) {
+            Ok((l_onoff, l_linger)) => {
+                let avail = if !optlen_ptr.is_null() {
+                    unsafe { *optlen_ptr as usize }
+                } else {
+                    8
+                };
+                let write_len = avail.min(8);
+                let mut tmp = [0u8; 8];
+                tmp[0..4].copy_from_slice(&l_onoff.to_le_bytes());
+                tmp[4..8].copy_from_slice(&l_linger.to_le_bytes());
+                if write_len > 0 {
+                    let out = unsafe { slice::from_raw_parts_mut(optval_ptr, write_len) };
+                    out.copy_from_slice(&tmp[..write_len]);
+                }
+                if !optlen_ptr.is_null() {
+                    unsafe {
+                        *optlen_ptr = 8;
+                    }
+                }
+                0
+            }
+            Err(e) => -(e as i32),
+        };
+        let mut host = WasmHostIO;
+        deliver_pending_signals(proc, &mut host);
+        return result;
+    }
+
+    // Handle string-valued SO_BINDTODEVICE.
+    if level == SOL_SOCKET && optname == SO_BINDTODEVICE {
+        let result = match syscalls::sys_getsockopt_bindtodevice(proc, fd) {
+            Ok(name) => {
+                let needed = if name.is_empty() { 0 } else { name.len() + 1 };
+                let avail = if !optlen_ptr.is_null() {
+                    unsafe { *optlen_ptr as usize }
+                } else {
+                    needed
+                };
+                let write_len = avail.min(needed);
+                if write_len > 0 {
+                    let out = unsafe { slice::from_raw_parts_mut(optval_ptr, write_len) };
+                    let name_copy = write_len.min(name.len());
+                    out[..name_copy].copy_from_slice(&name[..name_copy]);
+                    if write_len > name_copy {
+                        out[name_copy] = 0;
+                    }
+                }
+                if !optlen_ptr.is_null() {
+                    unsafe {
+                        *optlen_ptr = needed as u32;
+                    }
+                }
+                0
+            }
+            Err(e) => -(e as i32),
+        };
+        let mut host = WasmHostIO;
+        deliver_pending_signals(proc, &mut host);
+        return result;
+    }
+
+    // Handle string-valued TCP_CONGESTION.
+    if level == IPPROTO_TCP && optname == TCP_CONGESTION {
+        let result = match syscalls::sys_getsockopt_tcp_congestion(proc, fd) {
+            Ok(name) => {
+                let avail = if !optlen_ptr.is_null() {
+                    unsafe { *optlen_ptr as usize }
+                } else {
+                    name.len() + 1
+                };
+                let write_len = avail.min(name.len() + 1);
+                if write_len > 0 {
+                    let out = unsafe { slice::from_raw_parts_mut(optval_ptr, write_len) };
+                    let name_copy = write_len.min(name.len());
+                    out[..name_copy].copy_from_slice(&name[..name_copy]);
+                    if write_len > name_copy {
+                        out[name_copy] = 0;
+                    }
+                }
+                if !optlen_ptr.is_null() {
+                    unsafe {
+                        *optlen_ptr = (name.len() + 1) as u32;
+                    }
+                }
+                0
+            }
+            Err(e) => -(e as i32),
+        };
+        let mut host = WasmHostIO;
+        deliver_pending_signals(proc, &mut host);
+        return result;
+    }
+
     // Handle struct timeval options (SO_RCVTIMEO, SO_SNDTIMEO)
     if level == SOL_SOCKET && (optname == SO_RCVTIMEO || optname == SO_SNDTIMEO) {
         let result = match syscalls::sys_getsockopt_timeout(proc, fd, optname) {
@@ -7538,6 +7653,167 @@ pub extern "C" fn kernel_setsockopt(
         return result;
     }
 
+    // Handle struct linger (SO_LINGER).
+    if level == SOL_SOCKET && optname == SO_LINGER {
+        if optval_ptr.is_null() || optlen < 8 {
+            let mut host = WasmHostIO;
+            deliver_pending_signals(proc, &mut host);
+            return -(Errno::EINVAL as i32);
+        }
+        let buf = unsafe { slice::from_raw_parts(optval_ptr, 8) };
+        let l_onoff = i32::from_le_bytes(buf[0..4].try_into().unwrap());
+        let l_linger = i32::from_le_bytes(buf[4..8].try_into().unwrap());
+        let result = match syscalls::sys_setsockopt_linger(proc, fd, l_onoff, l_linger) {
+            Ok(()) => 0,
+            Err(e) => -(e as i32),
+        };
+        let mut host = WasmHostIO;
+        deliver_pending_signals(proc, &mut host);
+        return result;
+    }
+
+    // Handle string-valued SO_BINDTODEVICE.
+    if level == SOL_SOCKET && optname == SO_BINDTODEVICE {
+        if optval_ptr.is_null() {
+            let mut host = WasmHostIO;
+            deliver_pending_signals(proc, &mut host);
+            return -(Errno::EFAULT as i32);
+        }
+        let buf = unsafe { slice::from_raw_parts(optval_ptr, optlen as usize) };
+        let result = match syscalls::sys_setsockopt_bindtodevice(proc, fd, buf) {
+            Ok(()) => 0,
+            Err(e) => -(e as i32),
+        };
+        let mut host = WasmHostIO;
+        deliver_pending_signals(proc, &mut host);
+        return result;
+    }
+
+    // Handle string-valued TCP_CONGESTION.
+    if level == IPPROTO_TCP && optname == TCP_CONGESTION {
+        if optval_ptr.is_null() {
+            let mut host = WasmHostIO;
+            deliver_pending_signals(proc, &mut host);
+            return -(Errno::EFAULT as i32);
+        }
+        let buf = unsafe { slice::from_raw_parts(optval_ptr, optlen as usize) };
+        let result = match syscalls::sys_setsockopt_tcp_congestion(proc, fd, buf) {
+            Ok(()) => 0,
+            Err(e) => -(e as i32),
+        };
+        let mut host = WasmHostIO;
+        deliver_pending_signals(proc, &mut host);
+        return result;
+    }
+
+    // Handle IPv4 multicast membership/source-filter options. These options
+    // carry struct ip_mreq/ip_mreq_source/group_req/group_source_req payloads,
+    // not plain integers, so the wrapper must parse the guest ABI buffer.
+    if level == IPPROTO_IP
+        && matches!(
+            optname,
+            IP_ADD_MEMBERSHIP
+                | IP_DROP_MEMBERSHIP
+                | IP_BLOCK_SOURCE
+                | IP_UNBLOCK_SOURCE
+                | IP_ADD_SOURCE_MEMBERSHIP
+                | IP_DROP_SOURCE_MEMBERSHIP
+                | MCAST_JOIN_GROUP
+                | MCAST_LEAVE_GROUP
+                | MCAST_BLOCK_SOURCE
+                | MCAST_UNBLOCK_SOURCE
+                | MCAST_JOIN_SOURCE_GROUP
+                | MCAST_LEAVE_SOURCE_GROUP
+        )
+    {
+        if optval_ptr.is_null() {
+            let mut host = WasmHostIO;
+            deliver_pending_signals(proc, &mut host);
+            return -(Errno::EFAULT as i32);
+        }
+        let buf = unsafe { slice::from_raw_parts(optval_ptr, optlen as usize) };
+
+        let parse_sockaddr_in_at = |offset: usize| -> Result<[u8; 4], Errno> {
+            if buf.len() < offset + 8 {
+                return Err(Errno::EINVAL);
+            }
+            let family = u16::from_le_bytes([buf[offset], buf[offset + 1]]);
+            if family as u32 != AF_INET {
+                return Err(Errno::EAFNOSUPPORT);
+            }
+            Ok([
+                buf[offset + 4],
+                buf[offset + 5],
+                buf[offset + 6],
+                buf[offset + 7],
+            ])
+        };
+
+        let parse_ifindex_at = |offset: usize| -> Result<[u8; 4], Errno> {
+            if buf.len() < offset + 4 {
+                return Err(Errno::EINVAL);
+            }
+            let ifindex = u32::from_le_bytes(buf[offset..offset + 4].try_into().unwrap());
+            syscalls::ipv4_multicast_interface_from_index(ifindex)
+        };
+
+        let parsed = (|| -> Result<([u8; 4], [u8; 4], Option<[u8; 4]>), Errno> {
+            match optname {
+                IP_ADD_MEMBERSHIP | IP_DROP_MEMBERSHIP => {
+                    if buf.len() < 8 {
+                        Err(Errno::EINVAL)
+                    } else {
+                        Ok((
+                            [buf[0], buf[1], buf[2], buf[3]],
+                            [buf[4], buf[5], buf[6], buf[7]],
+                            None,
+                        ))
+                    }
+                }
+                IP_BLOCK_SOURCE | IP_UNBLOCK_SOURCE | IP_ADD_SOURCE_MEMBERSHIP
+                | IP_DROP_SOURCE_MEMBERSHIP => {
+                    if buf.len() < 12 {
+                        Err(Errno::EINVAL)
+                    } else {
+                        Ok((
+                            [buf[0], buf[1], buf[2], buf[3]],
+                            [buf[4], buf[5], buf[6], buf[7]],
+                            Some([buf[8], buf[9], buf[10], buf[11]]),
+                        ))
+                    }
+                }
+                MCAST_JOIN_GROUP | MCAST_LEAVE_GROUP => Ok((
+                    parse_sockaddr_in_at(4)?,
+                    parse_ifindex_at(0)?,
+                    None,
+                )),
+                MCAST_BLOCK_SOURCE | MCAST_UNBLOCK_SOURCE | MCAST_JOIN_SOURCE_GROUP
+                | MCAST_LEAVE_SOURCE_GROUP => Ok((
+                    parse_sockaddr_in_at(4)?,
+                    parse_ifindex_at(0)?,
+                    Some(parse_sockaddr_in_at(132)?),
+                )),
+                _ => unreachable!(),
+            }
+        })();
+
+        let result = match parsed.and_then(|(group, interface_addr, source)| {
+            syscalls::sys_setsockopt_ipv4_multicast(
+                proc,
+                fd,
+                optname,
+                group,
+                interface_addr,
+                source,
+            )
+        }) {
+            Ok(()) => 0,
+            Err(e) => -(e as i32),
+        };
+        let mut host = WasmHostIO;
+        deliver_pending_signals(proc, &mut host);
+        return result;
+    }
     // Read first 4 bytes as u32 value (covers most int-valued options)
     let optval = if !optval_ptr.is_null() && optlen >= 4 {
         let buf = unsafe { slice::from_raw_parts(optval_ptr, 4) };

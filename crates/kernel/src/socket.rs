@@ -91,7 +91,20 @@ pub enum SocketState {
 pub struct Datagram {
     pub data: Vec<u8>,
     pub src_addr: [u8; 4],
+    pub src_addr6: [u8; 16],
+    pub dst_addr: [u8; 4],
+    pub dst_addr6: [u8; 16],
     pub src_port: u16,
+    pub src_sock_idx: Option<usize>,
+    /// IPv6 traffic class associated with this datagram.
+    pub ipv6_tclass: u32,
+    /// Sender credentials captured when the datagram was queued. AF_UNIX
+    /// SO_PASSCRED reports these with SCM_CREDENTIALS.
+    pub src_pid: u32,
+    pub src_uid: u32,
+    pub src_gid: u32,
+    /// Ancillary file descriptors sent with this datagram via SCM_RIGHTS.
+    pub ancillary_fds: Vec<crate::pipe::InFlightFd>,
 }
 
 /// One AF_INET UDP endpoint bound in the in-kernel virtual network.
@@ -102,6 +115,18 @@ pub struct UdpEndpoint {
     pub addr: [u8; 4],
     pub port: u16,
     pub reuse_addr: bool,
+}
+
+/// IPv4 multicast group state for an AF_INET datagram socket.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Ipv4MulticastMembership {
+    pub group: [u8; 4],
+    /// Interface address used for matching local delivery. 0.0.0.0 means the
+    /// kernel default interface. 127.0.0.1 represents loopback.
+    pub interface_addr: [u8; 4],
+    pub any_source: bool,
+    pub blocked_sources: Vec<[u8; 4]>,
+    pub included_sources: Vec<[u8; 4]>,
 }
 
 struct UdpEndpointTable(UnsafeCell<Option<Vec<UdpEndpoint>>>);
@@ -264,12 +289,25 @@ pub struct SocketInfo {
     pub host_net_handle: Option<i32>,
     /// Stored socket options as (level, optname, value) tuples.
     pub options: Vec<(u32, u32, u32)>,
+    /// SO_LINGER state. This is a structured option (`struct linger`), so it
+    /// is kept separately from integer-valued socket options.
+    pub linger_onoff: i32,
+    pub linger_seconds: i32,
+    /// SO_BINDTODEVICE binds a socket to a named virtual network interface.
+    pub bind_device: Option<Vec<u8>>,
+    /// TCP_CONGESTION algorithm name for this socket. Kandelo's virtual TCP
+    /// stack currently exposes the standard Linux default, "cubic".
+    pub tcp_congestion: Vec<u8>,
     /// Bound IPv4 address (for AF_INET sockets).
     pub bind_addr: [u8; 4],
+    /// Bound IPv6 address (for AF_INET6 sockets).
+    pub bind_addr6: [u8; 16],
     /// Bound port (for AF_INET sockets).
     pub bind_port: u16,
     /// Peer IPv4 address (for connected AF_INET sockets).
     pub peer_addr: [u8; 4],
+    /// Peer IPv6 address (for connected AF_INET6 sockets).
+    pub peer_addr6: [u8; 16],
     /// Peer port (for connected AF_INET sockets).
     pub peer_port: u16,
     /// Pending connection socket indices (for listening sockets).
@@ -287,6 +325,11 @@ pub struct SocketInfo {
     pub accept_wake_idx: Option<u32>,
     /// Received UDP datagrams (for DGRAM sockets).
     pub dgram_queue: Vec<Datagram>,
+    /// Joined IPv4 multicast groups and source filters.
+    pub ipv4_multicast_memberships: Vec<Ipv4MulticastMembership>,
+    /// Received netlink datagrams. Netlink sockets are datagram-like and are
+    /// used by musl for route/interface enumeration.
+    pub netlink_queue: Vec<Vec<u8>>,
     /// Whether recv/send pipe indices refer to the global pipe table. Kept in
     /// serialized state for compatibility; runtime socket buffers are global.
     pub global_pipes: bool,
@@ -318,14 +361,22 @@ impl SocketInfo {
             shut_wr: false,
             host_net_handle: None,
             options: Vec::new(),
+            linger_onoff: 0,
+            linger_seconds: 0,
+            bind_device: None,
+            tcp_congestion: b"cubic".to_vec(),
             bind_addr: [0; 4],
+            bind_addr6: [0; 16],
             bind_port: 0,
             peer_addr: [0; 4],
+            peer_addr6: [0; 16],
             peer_port: 0,
             listen_backlog: Vec::new(),
             shared_backlog_idx: None,
             accept_wake_idx: None,
             dgram_queue: Vec::new(),
+            ipv4_multicast_memberships: Vec::new(),
+            netlink_queue: Vec::new(),
             global_pipes: true,
             oob_byte: None,
             recv_timeout_us: 0,
@@ -391,14 +442,22 @@ impl Clone for SocketInfo {
             shut_wr: self.shut_wr,
             host_net_handle: self.host_net_handle,
             options: self.options.clone(),
+            linger_onoff: self.linger_onoff,
+            linger_seconds: self.linger_seconds,
+            bind_device: self.bind_device.clone(),
+            tcp_congestion: self.tcp_congestion.clone(),
             bind_addr: self.bind_addr,
+            bind_addr6: self.bind_addr6,
             bind_port: self.bind_port,
             peer_addr: self.peer_addr,
+            peer_addr6: self.peer_addr6,
             peer_port: self.peer_port,
             listen_backlog: Vec::new(), // consume-once: don't double-accept
             shared_backlog_idx: self.shared_backlog_idx,
             accept_wake_idx: self.accept_wake_idx,
             dgram_queue: Vec::new(), // consume-once: don't double-deliver
+            ipv4_multicast_memberships: self.ipv4_multicast_memberships.clone(),
+            netlink_queue: Vec::new(), // consume-once: don't double-deliver
             global_pipes: self.global_pipes,
             oob_byte: None, // consume-once: don't double-deliver
             recv_timeout_us: self.recv_timeout_us,

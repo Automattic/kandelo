@@ -65,6 +65,24 @@ describe("FetchNetworkBackend", () => {
       const addr2 = backend.getaddrinfo("example.com");
       expect(addr1).toEqual(addr2);
     });
+
+    it("returns numeric IPv4 literals without synthesizing a DNS address", () => {
+      const backend = new FetchNetworkBackend();
+      expect(Array.from(backend.getaddrinfo("127.0.0.1"))).toEqual([127, 0, 0, 1]);
+      expect(Array.from(backend.getaddrinfo("1.2.3"))).toEqual([1, 2, 0, 3]);
+    });
+
+    it("rejects malformed numeric IPv4 literals", () => {
+      const backend = new FetchNetworkBackend();
+      expect(() => backend.getaddrinfo("9999.9999.9999.9999")).toThrow("ENOENT");
+      expect(() => backend.getaddrinfo("1.2.3.256")).toThrow("ENOENT");
+    });
+
+    it("rejects syntactically invalid DNS names", () => {
+      const backend = new FetchNetworkBackend();
+      expect(() => backend.getaddrinfo(".toto.toto.toto")).toThrow("ENOENT");
+      expect(() => backend.getaddrinfo(`www.${"x".repeat(100)}.com`)).toThrow("ENOENT");
+    });
   });
 
   describe("connect", () => {
@@ -133,6 +151,26 @@ describe("FetchNetworkBackend", () => {
 });
 
 describe("TlsNetworkBackend HTTP proxy path", () => {
+  describe("getaddrinfo", () => {
+    it("returns numeric IPv4 literals without synthesizing a DNS address", () => {
+      const backend = new TlsNetworkBackend();
+      expect(Array.from(backend.getaddrinfo("127.0.0.1"))).toEqual([127, 0, 0, 1]);
+      expect(Array.from(backend.getaddrinfo("1.2.3"))).toEqual([1, 2, 0, 3]);
+    });
+
+    it("rejects malformed numeric IPv4 literals", () => {
+      const backend = new TlsNetworkBackend();
+      expect(() => backend.getaddrinfo("9999.9999.9999.9999")).toThrow("ENOENT");
+      expect(() => backend.getaddrinfo("1.2.3.256")).toThrow("ENOENT");
+    });
+
+    it("rejects syntactically invalid DNS names", () => {
+      const backend = new TlsNetworkBackend();
+      expect(() => backend.getaddrinfo(".toto.toto.toto")).toThrow("ENOENT");
+      expect(() => backend.getaddrinfo(`www.${"x".repeat(100)}.com`)).toThrow("ENOENT");
+    });
+  });
+
   it("resets response state for keep-alive HTTP requests", async () => {
     let resolveSecond!: (response: Response) => void;
     const secondResponse = new Promise<Response>((resolve) => {
