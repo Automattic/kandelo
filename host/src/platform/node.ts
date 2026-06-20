@@ -13,6 +13,15 @@ import type { PlatformIO, StatResult, StatfsResult } from "../types";
 import { nativeStatfs, translateOpenFlags } from "../vfs/host-fs";
 import { NativeMetadataOverlay } from "./native-metadata";
 
+const UTIME_NOW = 0x3fffffff;
+const UTIME_OMIT = 0x3ffffffe;
+
+function makeFsError(code: string, message: string): Error & { code: string } {
+  const err = new Error(`${code}: ${message}`) as Error & { code: string };
+  err.code = code;
+  return err;
+}
+
 export class NodePlatformIO implements PlatformIO {
   private dirHandles = new Map<number, fs.Dir>();
   private nextDirHandle = 1;

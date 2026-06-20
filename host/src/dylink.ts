@@ -6,6 +6,8 @@
  * https://github.com/WebAssembly/tool-conventions/blob/main/DynamicLinking.md
  */
 
+import { FORK_SAVE_BUFFER_SIZE } from "./process-memory";
+
 // dylink.0 sub-section types
 const WASM_DYLINK_MEM_INFO = 1;
 const WASM_DYLINK_NEEDED = 2;
@@ -15,6 +17,14 @@ const WASM_DYLINK_IMPORT_INFO = 4;
 // Export/import flags
 const WASM_DYLINK_FLAG_TLS = 0x01;
 const WASM_DYLINK_FLAG_WEAK = 0x02;
+
+const WPK_FORK_EXPORTS = [
+  "wpk_fork_unwind_begin",
+  "wpk_fork_unwind_end",
+  "wpk_fork_rewind_begin",
+  "wpk_fork_rewind_end",
+  "wpk_fork_state",
+] as const;
 
 export interface DylinkMetadata {
   /** Bytes of linear memory this module needs */
@@ -170,6 +180,21 @@ export interface LoadedSharedLibrary {
   metadata: DylinkMetadata;
   /** Path/name of the library */
   name: string;
+  /** Fork save buffer for side modules that can call fork via env.fork. */
+  forkBufAddr?: number;
+}
+
+export interface SideModuleForkState {
+  name: string;
+  instance: WebAssembly.Instance;
+  forkBufAddr: number;
+}
+
+export interface SideModuleForkSupport {
+  /** Mark the side module whose stack is currently unwinding for fork(). */
+  setActiveFork: (state: SideModuleForkState) => void;
+  /** Clear an active side-module fork after rewind reaches env.fork again. */
+  clearActiveFork: (state: SideModuleForkState) => void;
 }
 
 /**
@@ -193,6 +218,8 @@ export interface DylinkReplayOptions {
    *  the memcpy'd data section encode (memoryBase + offset); using any
    *  other base corrupts pointers. */
   memoryBase: number;
+  /** Side-module fork save buffer copied from the parent, if any. */
+  forkBufAddr?: number;
 }
 
 /**
@@ -215,6 +242,8 @@ export interface LoadSharedLibraryOptions {
   got: Map<string, WebAssembly.Global>;
   /** Already-loaded libraries for dedup and dependency resolution */
   loadedLibraries: Map<string, LoadedSharedLibrary>;
+  /** Multi-module fork support for side modules loaded into this process. */
+  sideModuleFork?: SideModuleForkSupport;
   /** Callback to locate and read a library file by name (async version) */
   resolveLibrary?: (name: string) => Promise<Uint8Array | null>;
   /** Callback to locate and read a library file by name (sync version) */
@@ -345,6 +374,72 @@ function instantiateSharedLibrary(
     ? new (WebAssembly as any).Tag({ parameters: ["i32"] })
     : undefined;
 
+  const module = new WebAssembly.Module(wasmBytes as unknown as BufferSource);
+  const moduleImports = WebAssembly.Module.imports(module);
+  const moduleExports = WebAssembly.Module.exports(module);
+  const importsFork = moduleImports.some((imp) =>
+    imp.module === "env" && imp.name === "fork" && imp.kind === "function"
+  );
+  const hasCompleteForkInstrumentation =
+    WPK_FORK_EXPORTS.every((name) =>
+      moduleExports.some((exp) => exp.kind === "function" && exp.name === name),
+    );
+  const hasAnyForkInstrumentation =
+    WPK_FORK_EXPORTS.some((name) =>
+      moduleExports.some((exp) => exp.kind === "function" && exp.name === name),
+    );
+  if (hasAnyForkInstrumentation && !hasCompleteForkInstrumentation) {
+    const missing = WPK_FORK_EXPORTS.filter((name) =>
+      !moduleExports.some((exp) => exp.kind === "function" && exp.name === name),
+    );
+    throw new Error(`${name}: incomplete wasm-fork-instrument exports; missing ${missing.join(", ")}`);
+  }
+
+  const sideForkBufAddr = importsFork && hasCompleteForkInstrumentation && options.sideModuleFork
+    ? (replay?.forkBufAddr
+      ?? options.allocateMemory?.(FORK_SAVE_BUFFER_SIZE, 16)
+      ?? 0)
+    : 0;
+  let instance: WebAssembly.Instance | null = null;
+  let sideForkState: SideModuleForkState | null = null;
+
+  const sideModuleForkImport = (): number => {
+    if (!options.sideModuleFork || sideForkBufAddr === 0 || !instance) {
+      throw new Error(
+        `${name}: env.fork reached without complete side-module fork support; ` +
+          "rebuild the side module with wasm-fork-instrument --entry env.fork",
+      );
+    }
+
+    const mainFork = options.globalSymbols.get("fork");
+    if (typeof mainFork !== "function") {
+      throw new Error(`${name}: env.fork could not resolve main module fork`);
+    }
+
+    const state = (instance.exports.wpk_fork_state as () => number)();
+    if (state === 2) {
+      (instance.exports.wpk_fork_rewind_end as () => void)();
+      const result = Number((mainFork as () => number)());
+      if (sideForkState) {
+        options.sideModuleFork.clearActiveFork(sideForkState);
+        sideForkState = null;
+      }
+      return result;
+    }
+
+    (instance.exports.wpk_fork_unwind_begin as (addr: number) => void)(sideForkBufAddr);
+    sideForkState = { name, instance, forkBufAddr: sideForkBufAddr };
+    options.sideModuleFork.setActiveFork(sideForkState);
+    return Number((mainFork as () => number)());
+  };
+
+  const uninstrumentedSideModuleForkImport = (): number => {
+    throw new Error(
+      `${name}: env.fork reached from an uninstrumented side module. ` +
+        "Rebuild the side module with wasm-fork-instrument --entry env.fork.",
+    );
+  };
+
   // Construct imports
   const imports: WebAssembly.Imports = {
     env: new Proxy({} as Record<string, WebAssembly.ImportValue>, {
@@ -356,6 +451,13 @@ function instantiateSharedLibrary(
           case "__table_base": return tableBaseGlobal;
           case "__stack_pointer": return options.stackPointer;
           case "__c_longjmp": return longjmpTag;
+          case "fork":
+            if (importsFork && options.sideModuleFork) {
+              return hasCompleteForkInstrumentation
+                ? sideModuleForkImport
+                : uninstrumentedSideModuleForkImport;
+            }
+            break;
         }
         const sym = options.globalSymbols.get(prop);
         if (sym !== undefined) return sym;
@@ -364,6 +466,7 @@ function instantiateSharedLibrary(
       has(_target, prop: string) {
         if (["memory", "__indirect_function_table", "__memory_base",
              "__table_base", "__stack_pointer", "__c_longjmp"].includes(prop)) return true;
+        if (prop === "fork" && importsFork && options.sideModuleFork) return true;
         return options.globalSymbols.has(prop);
       },
     }),
@@ -379,9 +482,8 @@ function instantiateSharedLibrary(
     }),
   };
 
-  // Compile and instantiate synchronously
-  const module = new WebAssembly.Module(wasmBytes as unknown as BufferSource);
-  const instance = new WebAssembly.Instance(module, imports);
+  // Instantiate synchronously
+  instance = new WebAssembly.Instance(module, imports);
 
   // Relocate exports: data address globals need memoryBase added
   const relocatedExports: Record<string, WebAssembly.ExportValue> = {};
@@ -448,6 +550,7 @@ function instantiateSharedLibrary(
     exports: relocatedExports,
     metadata,
     name,
+    forkBufAddr: sideForkBufAddr || undefined,
   };
 
   options.loadedLibraries.set(name, loaded);

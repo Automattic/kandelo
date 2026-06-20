@@ -348,6 +348,14 @@ const MAX_INDIRECT_DEPTH: u8 = 2;
 pub fn reaching_closure(module: &Module, seed: FunctionId) -> HashSet<FunctionId> {
     let profiles = profile_functions(module);
     let table_targets = table_targets(module, &profiles);
+    let has_dynamic_linker_imports = module.imports.iter().any(|import| {
+        import.module == "env"
+            && matches!(import.kind, ImportKind::Function(_))
+            && matches!(
+                import.name.as_str(),
+                "__wasm_dlopen" | "__wasm_dlsym" | "__wasm_dlclose" | "__wasm_dlerror"
+            )
+    });
 
     // Reverse direct-call graph: `callee -> set of callers`.
     let mut reverse_direct: HashMap<FunctionId, HashSet<FunctionId>> = HashMap::new();
@@ -408,6 +416,22 @@ pub fn reaching_closure(module: &Module, seed: FunctionId) -> HashSet<FunctionId
             best_indirect_depth.insert(func, indirect_depth);
             result.insert(func);
             worklist.push_back((func, indirect_depth));
+        }
+    }
+
+    if has_dynamic_linker_imports {
+        let dynamic_indirect_roots: Vec<FunctionId> = profiles
+            .iter()
+            .filter_map(|(caller, profile)| (!profile.indirect.is_empty()).then_some(*caller))
+            .collect();
+        for caller in dynamic_indirect_roots {
+            enqueue(
+                caller,
+                1,
+                &mut best_indirect_depth,
+                &mut result,
+                &mut worklist,
+            );
         }
     }
 

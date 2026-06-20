@@ -45,6 +45,8 @@ const MAX_ENV_VARS: u32 = 65536;
 const MAX_ARGV: u32 = 65536;
 const MAX_PATH_LEN: usize = 1048576; // 1 MiB
 const MAX_STRING_LEN: usize = 1048576; // 1 MiB
+const INITIAL_EXEC_STATE_BUFFER_LEN: usize = 64 * 1024;
+const MAX_EXEC_STATE_BUFFER_LEN: usize = 4 * 1024 * 1024;
 
 // ── Writer helper ───────────────────────────────────────────────────────────
 
@@ -1176,6 +1178,7 @@ pub fn deserialize_fork_state(buf: &[u8], child_pid: u32) -> Result<Process, Err
         is_session_leader: false,
         state: ProcessState::Running,
         exit_status: 0,
+        exit_signal: 0,
         fd_table,
         ofd_table,
         lock_table: LockTable::new(),
@@ -1229,6 +1232,129 @@ pub fn deserialize_fork_state(buf: &[u8], child_pid: u32) -> Result<Process, Err
         dri_bindings: Vec::new(),
         fork_count: 0,
     })
+}
+
+#[inline(never)]
+fn read_fork_socket_table(r: &mut Reader<'_>) -> Result<SocketTable, Errno> {
+    let mut sockets = SocketTable::new();
+    if r.remaining() < 8 {
+        return Ok(sockets);
+    }
+
+    use crate::socket::{SocketDomain, SocketInfo, SocketState, SocketType};
+    let _total_slots = r.read_u32()? as usize;
+    let sock_count = r.read_u32()? as usize;
+    for _ in 0..sock_count {
+        let idx = r.read_u32()? as usize;
+        let domain = match r.read_u32()? {
+            0 => SocketDomain::Unix,
+            1 => SocketDomain::Inet,
+            2 => SocketDomain::Inet6,
+            3 => SocketDomain::Netlink,
+            _ => return Err(Errno::EINVAL),
+        };
+        let sock_type = match r.read_u32()? {
+            0 => SocketType::Stream,
+            1 => SocketType::Dgram,
+            _ => return Err(Errno::EINVAL),
+        };
+        let protocol = r.read_u32()?;
+        let state = match r.read_u32()? {
+            0 => SocketState::Unbound,
+            1 => SocketState::Bound,
+            2 => SocketState::Listening,
+            3 => SocketState::Connected,
+            4 => SocketState::Closed,
+            _ => return Err(Errno::EINVAL),
+        };
+        let peer_idx_raw = r.read_u32()?;
+        let peer_idx = if peer_idx_raw == 0xFFFFFFFF {
+            None
+        } else {
+            Some(peer_idx_raw as usize)
+        };
+        let recv_raw = r.read_u32()?;
+        let recv_buf_idx = if recv_raw == 0xFFFFFFFF {
+            None
+        } else {
+            Some(recv_raw as usize)
+        };
+        let send_raw = r.read_u32()?;
+        let send_buf_idx = if send_raw == 0xFFFFFFFF {
+            None
+        } else {
+            Some(send_raw as usize)
+        };
+        let shut_rd = r.read_u32()? != 0;
+        let shut_wr = r.read_u32()? != 0;
+        let host_handle_raw = r.read_u32()?;
+        let host_net_handle = if host_handle_raw == 0xFFFFFFFF {
+            None
+        } else {
+            Some(host_handle_raw as i32)
+        };
+
+        let opt_count = r.read_u32()? as usize;
+        let mut options = Vec::new();
+        for _ in 0..opt_count {
+            let level = r.read_u32()?;
+            let optname = r.read_u32()?;
+            let value = r.read_u32()?;
+            options.push((level, optname, value));
+        }
+
+        let mut bind_addr = [0u8; 4];
+        bind_addr.copy_from_slice(r.read_bytes(4)?);
+        let bind_port = r.read_u32()? as u16;
+        let mut peer_addr = [0u8; 4];
+        peer_addr.copy_from_slice(r.read_bytes(4)?);
+        let peer_port = r.read_u32()? as u16;
+
+        let backlog_count = r.read_u32()? as usize;
+        for _ in 0..backlog_count {
+            let _ = r.read_u32()?;
+        }
+
+        let mut sock = SocketInfo::new(domain, sock_type, protocol);
+        sock.state = state;
+        sock.peer_idx = peer_idx;
+        sock.recv_buf_idx = recv_buf_idx;
+        sock.send_buf_idx = send_buf_idx;
+        sock.shut_rd = shut_rd;
+        sock.shut_wr = shut_wr;
+        sock.host_net_handle = host_net_handle;
+        sock.options = options;
+        sock.bind_addr = bind_addr;
+        sock.bind_port = bind_port;
+        sock.peer_addr = peer_addr;
+        sock.peer_port = peer_port;
+        sock.global_pipes = r.read_u32()? != 0;
+
+        let shared_backlog_raw = r.read_u32()?;
+        sock.shared_backlog_idx = if shared_backlog_raw == 0xFFFFFFFF {
+            None
+        } else {
+            Some(shared_backlog_raw as usize)
+        };
+
+        if r.remaining() >= 4 {
+            let bind_path_len = r.read_u32()?;
+            if bind_path_len != 0xFFFFFFFF {
+                sock.bind_path = Some(r.read_bytes(bind_path_len as usize)?.to_vec());
+            }
+        }
+        if r.remaining() >= 4 {
+            let accept_wake_raw = r.read_u32()?;
+            sock.accept_wake_idx = if accept_wake_raw == 0xFFFFFFFF {
+                None
+            } else {
+                Some(accept_wake_raw)
+            };
+        }
+        sockets.insert_at(idx, sock);
+    }
+
+    Ok(sockets)
 }
 
 // ── Exec Serialize ──────────────────────────────────────────────────────────
@@ -1376,6 +1502,26 @@ pub fn serialize_exec_state(proc: &Process, buf: &mut [u8]) -> Result<usize, Err
     w.patch_u32(total_size_offset, total);
 
     Ok(w.pos)
+}
+
+pub fn serialize_exec_state_with_growing_buffer(proc: &Process) -> Result<Vec<u8>, Errno> {
+    let mut len = INITIAL_EXEC_STATE_BUFFER_LEN;
+
+    loop {
+        let mut buf = Vec::new();
+        buf.resize(len, 0u8);
+
+        match serialize_exec_state(proc, &mut buf) {
+            Ok(written) => {
+                buf.truncate(written);
+                return Ok(buf);
+            }
+            Err(Errno::ENOMEM) if len < MAX_EXEC_STATE_BUFFER_LEN => {
+                len = len.saturating_mul(2).min(MAX_EXEC_STATE_BUFFER_LEN);
+            }
+            Err(err) => return Err(err),
+        }
+    }
 }
 
 // ── Exec Deserialize ────────────────────────────────────────────────────────
@@ -1583,6 +1729,7 @@ pub fn deserialize_exec_state(buf: &[u8], pid: u32) -> Result<Process, Errno> {
         is_session_leader,
         state: ProcessState::Running,
         exit_status: 0,
+        exit_signal: 0,
         fd_table,
         ofd_table,
         lock_table: LockTable::new(),
@@ -1804,6 +1951,31 @@ mod tests {
         assert_eq!(restored.pid, 1);
         assert_eq!(restored.ppid, 0); // default ppid
         assert_eq!(restored.signals.pending, 0);
+    }
+
+    #[test]
+    fn test_exec_state_grows_for_large_environment() {
+        let mut proc = Process::new(1);
+        proc.environ.clear();
+        for i in 0..1200 {
+            let mut var = b"KDE_LONG_ENV_".to_vec();
+            var.extend_from_slice(i.to_string().as_bytes());
+            var.push(b'=');
+            var.extend(core::iter::repeat(b'x').take(80));
+            proc.environ.push(var);
+        }
+
+        let mut old_limit_buf = vec![0u8; 64 * 1024];
+        assert_eq!(
+            serialize_exec_state(&proc, &mut old_limit_buf),
+            Err(Errno::ENOMEM),
+        );
+
+        let serialized = serialize_exec_state_with_growing_buffer(&proc).unwrap();
+        assert!(serialized.len() > 64 * 1024);
+
+        let restored = deserialize_exec_state(&serialized, 1).unwrap();
+        assert_eq!(restored.environ, proc.environ);
     }
 
     #[test]

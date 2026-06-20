@@ -1188,6 +1188,19 @@ fn ensure_memory_covers(_end_addr: usize) {
     // No-op on non-Wasm targets (tests)
 }
 
+fn terminate_process_by_signal(
+    proc: &mut crate::process::Process,
+    host: &mut WasmHostIO,
+    signum: u32,
+) {
+    proc.sigsuspend_saved_mask = None;
+    for t in proc.threads.iter_mut() {
+        t.signals.sigsuspend_saved_mask = None;
+    }
+    crate::syscalls::sys_exit(proc, host, 0);
+    proc.exit_signal = signum & 0x7f;
+}
+
 // 3c. Signal delivery at syscall boundaries
 // ---------------------------------------------------------------------------
 
@@ -1195,7 +1208,6 @@ fn ensure_memory_covers(_end_addr: usize) {
 fn deliver_pending_signals(proc: &mut Process, host: &mut WasmHostIO) {
     use crate::signal::{DefaultAction, SignalHandler, default_action};
     let tid = crate::process_table::current_tid();
-    let _ = host;
     loop {
         // Caught signals are delivered by the glue code via
         // kernel_dequeue_signal; default and ignored signals are consumed here.
@@ -1214,8 +1226,7 @@ fn deliver_pending_signals(proc: &mut Process, host: &mut WasmHostIO) {
                 let _ = dequeue_signal_for(proc, tid, signum);
                 match default_action(signum) {
                     DefaultAction::Terminate | DefaultAction::CoreDump => {
-                        proc.state = crate::process::ProcessState::Exited;
-                        proc.exit_status = 128 + signum as i32;
+                        terminate_process_by_signal(proc, host, signum);
                     }
                     _ => {}
                 }
@@ -1460,16 +1471,48 @@ pub extern "C" fn kernel_set_process_argv(pid: u32, data_ptr: *const u8, data_le
 /// Returns 0 on success, -ESRCH if pid not found.
 #[unsafe(no_mangle)]
 pub extern "C" fn kernel_set_stdin_pipe(pid: u32) -> i32 {
+    kernel_set_stdio_pipe(pid, 0)
+}
+
+/// Mark one of a process's standard descriptors as a host-backed pipe.
+///
+/// Hosts use this when they connect stdin/stdout/stderr to capture pipes
+/// rather than a terminal. The descriptor continues to use its existing
+/// host handle (0, 1, or 2), so reads and writes still delegate to the host
+/// stdio callbacks, but POSIX-visible metadata changes from character device
+/// to FIFO: isatty() returns ENOTTY and fstat() reports S_IFIFO.
+/// Returns 0 on success, -EINVAL for non-stdio fds, -ESRCH if pid not found.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_set_stdio_pipe(pid: u32, fd: i32) -> i32 {
+    if !(0..=2).contains(&fd) {
+        return -(Errno::EINVAL as i32);
+    }
     let table = unsafe { &mut *PROCESS_TABLE.0.get() };
     if let Some(proc) = table.get_mut(pid) {
-        // Change OFD 0 (stdin) from CharDevice to Pipe
-        if let Some(ofd) = proc.ofd_table.get_mut(0) {
-            ofd.file_type = crate::ofd::FileType::Pipe;
+        if let Ok(entry) = proc.fd_table.get(fd) {
+            let ofd_idx = entry.ofd_ref.0;
+            if let Some(ofd) = proc.ofd_table.get_mut(ofd_idx) {
+                ofd.host_handle = fd as i64;
+                ofd.path = match fd {
+                    0 => b"/dev/stdin".to_vec(),
+                    1 => b"/dev/stdout".to_vec(),
+                    _ => b"/dev/stderr".to_vec(),
+                };
+                ofd.file_type = crate::ofd::FileType::Pipe;
+            }
+        } else {
+            return -(Errno::EBADF as i32);
         }
         0
     } else {
         -(Errno::ESRCH as i32)
     }
+}
+
+/// Backwards-compatible alias for older host code.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_set_fd_pipe(pid: u32, fd: i32) -> i32 {
+    kernel_set_stdio_pipe(pid, fd)
 }
 
 fn finish_removed_process(pid: u32, result: crate::process_table::RemoveProcessResult) {
@@ -1643,13 +1686,21 @@ pub extern "C" fn kernel_clear_fork_child(pid: u32) -> i32 {
     }
 }
 
-/// Get process exit status.
-/// Returns exit_status if process is exited, -1 if still alive, -ESRCH if not found.
+/// Get process exit status (centralized mode).
+/// Returns the shell-style status used by host-side kill scans: normal exit
+/// code for regular exits, 128+signal for signal termination, -1 if still
+/// alive, or -ESRCH if not found.
 #[unsafe(no_mangle)]
 pub extern "C" fn kernel_get_process_exit_status(pid: u32) -> i32 {
     let table = unsafe { &*PROCESS_TABLE.0.get() };
     match table.get(pid) {
-        Some(proc) if proc.state == crate::process::ProcessState::Exited => proc.exit_status,
+        Some(proc) if proc.state == crate::process::ProcessState::Exited => {
+            if proc.exit_signal != 0 {
+                128 + proc.exit_signal as i32
+            } else {
+                proc.exit_status
+            }
+        }
         Some(_) => -1,
         None => -(Errno::ESRCH as i32),
     }
@@ -2116,13 +2167,8 @@ pub extern "C" fn kernel_dequeue_signal(pid: u32, out_ptr: *mut u8) -> i32 {
                 let _ = dequeue_signal_for(proc, tid, signum);
                 match default_action(signum) {
                     DefaultAction::Terminate | DefaultAction::CoreDump => {
-                        // Process is dying; clear sigsuspend state
-                        proc.sigsuspend_saved_mask = None;
-                        for t in proc.threads.iter_mut() {
-                            t.signals.sigsuspend_saved_mask = None;
-                        }
-                        proc.state = crate::process::ProcessState::Exited;
-                        proc.exit_status = 128 + signum as i32;
+                        let mut host = WasmHostIO;
+                        terminate_process_by_signal(proc, &mut host, signum);
                         return 0;
                     }
                     _ => continue,
@@ -2272,16 +2318,15 @@ pub extern "C" fn kernel_exec_setup(pid: u32) -> i32 {
         None => return -(Errno::ESRCH as i32),
     };
 
-    // Serialize as exec state (signal handler reset, etc.)
+    // Serialize as exec state (signal handler reset, etc.).
     // CLOEXEC fds were already closed above, so serialization just preserves what's left.
-    let mut buf = alloc::vec![0u8; 64 * 1024];
-    let written = match crate::fork::serialize_exec_state(proc, &mut buf) {
-        Ok(n) => n,
+    let buf = match crate::fork::serialize_exec_state_with_growing_buffer(proc) {
+        Ok(buf) => buf,
         Err(e) => return -(e as i32),
     };
 
     // Deserialize back to replace the process with exec-sanitized version
-    match crate::fork::deserialize_exec_state(&buf[..written], pid) {
+    match crate::fork::deserialize_exec_state(&buf, pid) {
         Ok(new_proc) => {
             table.get_mut(pid).map(|p| {
                 *p = new_proc;
@@ -6930,7 +6975,8 @@ pub extern "C" fn kernel_exit(status: i32) -> ! {
         if unsafe { host_is_thread_worker() } != 0 {
             // Thread exit: don't destroy shared process state (FDs, pipes, etc.).
             // Just set exit status and return — the glue will trap via unreachable.
-            proc.exit_status = status;
+            proc.exit_status = status & 0xff;
+            proc.exit_signal = 0;
             // Drop GKL guard before trapping
         } else {
             let mut host = WasmHostIO;
@@ -7134,6 +7180,28 @@ pub extern "C" fn kernel_connect(fd: i32, addr_ptr: *const u8, addr_len: u32) ->
     let (_gkl, proc) = unsafe { get_process() };
     let mut host = WasmHostIO;
     let addr = unsafe { slice::from_raw_parts(addr_ptr, addr_len as usize) };
+    if crate::is_centralized_mode() && addr_len >= 28 {
+        let family = u16::from_le_bytes([addr[0], addr[1]]);
+        if family == 10 {
+            let mut ip6 = [0u8; 16];
+            ip6.copy_from_slice(&addr[8..24]);
+            if crate::syscalls::is_loopback_addr6(ip6)
+                || crate::syscalls::is_unspecified_addr6(ip6)
+            {
+                match cross_process_loopback_connect6(proc, fd, addr) {
+                    Ok(()) => {
+                        deliver_pending_signals(proc, &mut host);
+                        return 0;
+                    }
+                    Err(Errno::ECONNREFUSED) => {}
+                    Err(e) => {
+                        deliver_pending_signals(proc, &mut host);
+                        return -(e as i32);
+                    }
+                }
+            }
+        }
+    }
     let result = match syscalls::sys_connect(proc, &mut host, fd, addr) {
         Ok(()) => 0,
         Err(Errno::ECONNREFUSED) if addr_len >= 3 => {
@@ -7214,7 +7282,10 @@ fn cross_process_loopback_connect(proc: &mut Process, fd: i32, addr: &[u8]) -> R
                 if s.state == SocketState::Listening
                     && s.bind_port == port
                     && s.sock_type == SocketType::Stream
-                    && (s.bind_addr == [0, 0, 0, 0] || s.bind_addr == [127, 0, 0, 1])
+                    && ((s.domain == crate::socket::SocketDomain::Inet
+                        && (s.bind_addr == [0, 0, 0, 0] || s.bind_addr == [127, 0, 0, 1]))
+                        || (s.domain == crate::socket::SocketDomain::Inet6
+                            && crate::syscalls::is_unspecified_addr6(s.bind_addr6)))
                 {
                     listener_pid = Some(pid);
                     listener_sock_idx = Some(idx);
@@ -7283,6 +7354,7 @@ fn cross_process_loopback_connect(proc: &mut Process, fd: i32, addr: &[u8]) -> R
 
     let pc = crate::socket::PendingConnection {
         peer_addr: client_addr,
+        peer_addr6: None,
         peer_port: client_port,
         recv_pipe_idx: pipe_a_idx, // server reads client's writes
         send_pipe_idx: pipe_b_idx, // server writes to client's reads
@@ -7298,7 +7370,136 @@ fn cross_process_loopback_connect(proc: &mut Process, fd: i32, addr: &[u8]) -> R
     Ok(())
 }
 
-/// Cross-process AF_UNIX connect.
+/// Cross-process loopback TCP connect for AF_INET6 (centralized mode only).
+///
+/// Searches all processes for a matching AF_INET6 listener and queues a
+/// pending connection carrying the real IPv6 peer address. This avoids routing
+/// guest ::1 connections through the host IPv4 bridge, where they are
+/// indistinguishable from IPv4 clients and get reported to acceptors as the
+/// wrong peer address.
+fn cross_process_loopback_connect6(proc: &mut Process, fd: i32, addr: &[u8]) -> Result<(), Errno> {
+    use crate::pipe::PipeBuffer;
+    use crate::socket::{SocketDomain, SocketState, SocketType};
+
+    if addr.len() < 28 {
+        return Err(Errno::EINVAL);
+    }
+    let port = u16::from_be_bytes([addr[2], addr[3]]);
+    let mut ip6 = [0u8; 16];
+    ip6.copy_from_slice(&addr[8..24]);
+    let dst_ip6 = if crate::syscalls::is_unspecified_addr6(ip6) {
+        crate::syscalls::loopback_addr6()
+    } else {
+        ip6
+    };
+
+    let entry = proc.fd_table.get(fd)?;
+    let ofd = proc.ofd_table.get(entry.ofd_ref.0).ok_or(Errno::EBADF)?;
+    let sock_idx = (-(ofd.host_handle + 1)) as usize;
+
+    {
+        let sock = proc.sockets.get(sock_idx).ok_or(Errno::EBADF)?;
+        if sock.sock_type == SocketType::Dgram {
+            return Err(Errno::ECONNREFUSED);
+        }
+        if sock.sock_type != SocketType::Stream || sock.domain != SocketDomain::Inet6 {
+            return Err(Errno::EOPNOTSUPP);
+        }
+    }
+
+    let table = unsafe { &mut *PROCESS_TABLE.0.get() };
+    let my_pid = proc.pid;
+    let mut listener_pid: Option<u32> = None;
+    let mut listener_sock_idx: Option<usize> = None;
+
+    for (&pid, target_proc) in table.processes.iter().rev() {
+        if pid == my_pid {
+            continue;
+        }
+        for idx in 0..target_proc.sockets.len() {
+            if let Some(s) = target_proc.sockets.get(idx) {
+                if s.domain == SocketDomain::Inet6
+                    && s.state == SocketState::Listening
+                    && s.bind_port == port
+                    && s.sock_type == SocketType::Stream
+                    && (crate::syscalls::is_unspecified_addr6(s.bind_addr6)
+                        || s.bind_addr6 == dst_ip6)
+                {
+                    listener_pid = Some(pid);
+                    listener_sock_idx = Some(idx);
+                    break;
+                }
+            }
+        }
+        if listener_pid.is_some() {
+            break;
+        }
+    }
+
+    let listener_pid = listener_pid.ok_or(Errno::ECONNREFUSED)?;
+    let listener_sock_idx = listener_sock_idx.ok_or(Errno::ECONNREFUSED)?;
+
+    let pipe_table = unsafe { crate::pipe::global_pipe_table() };
+    let pipe_a_idx = pipe_table.alloc(PipeBuffer::new(65536));
+    let pipe_b_idx = pipe_table.alloc(PipeBuffer::new(65536));
+
+    let proc = table.get_mut(my_pid).ok_or(Errno::ESRCH)?;
+    let client_sock = proc.sockets.get(sock_idx).ok_or(Errno::EBADF)?;
+    let client_addr6 = if crate::syscalls::is_unspecified_addr6(client_sock.bind_addr6) {
+        crate::syscalls::loopback_addr6()
+    } else {
+        client_sock.bind_addr6
+    };
+    let mut client_port = client_sock.bind_port;
+    if client_port == 0 {
+        client_port = proc.next_ephemeral_port;
+        proc.next_ephemeral_port = proc.next_ephemeral_port.wrapping_add(1);
+        if proc.next_ephemeral_port == 0 {
+            proc.next_ephemeral_port = 49152;
+        }
+    }
+
+    let client = proc.sockets.get_mut(sock_idx).ok_or(Errno::EBADF)?;
+    client.send_buf_idx = Some(pipe_a_idx);
+    client.recv_buf_idx = Some(pipe_b_idx);
+    client.state = SocketState::Connected;
+    client.peer_addr6 = dst_ip6;
+    client.peer_port = port;
+    client.global_pipes = true;
+    if client.bind_port == 0 {
+        client.bind_port = client_port;
+        client.bind_addr6 = client_addr6;
+    }
+
+    let listener_proc = table.get_mut(listener_pid).ok_or(Errno::ESRCH)?;
+    let listener_sock = listener_proc
+        .sockets
+        .get(listener_sock_idx)
+        .ok_or(Errno::ECONNREFUSED)?;
+    let shared_idx = listener_sock
+        .shared_backlog_idx
+        .ok_or(Errno::ECONNREFUSED)?;
+    let accept_wake_idx = listener_sock.accept_wake_idx;
+
+    let pc = crate::socket::PendingConnection {
+        peer_addr: [0, 0, 0, 0],
+        peer_addr6: Some(client_addr6),
+        peer_port: client_port,
+        recv_pipe_idx: pipe_a_idx,
+        send_pipe_idx: pipe_b_idx,
+    };
+    if !unsafe { crate::socket::shared_listener_backlog_table().push(shared_idx, pc) } {
+        return Err(Errno::ECONNREFUSED);
+    }
+
+    if let Some(idx) = accept_wake_idx {
+        crate::wakeup::push_accept(idx);
+    }
+
+    Ok(())
+}
+
+/// Cross-process AF_UNIX connect (centralized mode only).
 ///
 /// Looks up the target path in the global UnixSocketRegistry, then creates
 /// global pipe pairs to connect the client (current process) to the listener
@@ -7358,21 +7559,41 @@ fn cross_process_unix_connect(proc: &mut Process, fd: i32, addr: &[u8]) -> Resul
         return Err(Errno::ECONNREFUSED);
     }
 
-    // Create accepted socket in the listener's process
-    let mut accepted_sock = SocketInfo::new(SocketDomain::Unix, SocketType::Stream, 0);
-    accepted_sock.state = SocketState::Connected;
-    accepted_sock.recv_buf_idx = Some(pipe_a_idx);
-    accepted_sock.send_buf_idx = Some(pipe_b_idx);
-    accepted_sock.global_pipes = true;
-    let accepted_idx = listener_proc.sockets.alloc(accepted_sock);
-
-    // Push to listener's backlog
+    // Queue the connection on the listener's shared accept queue when
+    // available. POSIX listener fds inherited across fork/spawn share the same
+    // underlying socket queue, so the accepted socket must be materialized in
+    // whichever process actually calls accept().
     let listener = listener_proc
         .sockets
-        .get_mut(listener_sock_idx)
+        .get(listener_sock_idx)
         .ok_or(Errno::EBADF)?;
-    listener.listen_backlog.push(accepted_idx);
     let accept_wake_idx = listener.accept_wake_idx;
+    if let Some(shared_idx) = listener.shared_backlog_idx {
+        let pc = crate::socket::PendingConnection {
+            peer_addr: [0, 0, 0, 0],
+            peer_addr6: None,
+            peer_port: 0,
+            recv_pipe_idx: pipe_a_idx,
+            send_pipe_idx: pipe_b_idx,
+        };
+        if !unsafe { crate::socket::shared_listener_backlog_table().push(shared_idx, pc) } {
+            return Err(Errno::ECONNREFUSED);
+        }
+    } else {
+        // Legacy fallback for listeners without a shared queue.
+        let mut accepted_sock = SocketInfo::new(SocketDomain::Unix, SocketType::Stream, 0);
+        accepted_sock.state = SocketState::Connected;
+        accepted_sock.recv_buf_idx = Some(pipe_a_idx);
+        accepted_sock.send_buf_idx = Some(pipe_b_idx);
+        accepted_sock.global_pipes = true;
+        let accepted_idx = listener_proc.sockets.alloc(accepted_sock);
+
+        let listener = listener_proc
+            .sockets
+            .get_mut(listener_sock_idx)
+            .ok_or(Errno::EBADF)?;
+        listener.listen_backlog.push(accepted_idx);
+    }
 
     // Set up client socket (in current process)
     let client_proc = table.get_mut(my_pid).ok_or(Errno::ESRCH)?;
@@ -9871,6 +10092,7 @@ pub extern "C" fn kernel_inject_connection(
             peer_addr_c as u8,
             peer_addr_d as u8,
         ],
+        peer_addr6: None,
         peer_port: peer_port as u16,
         recv_pipe_idx,
         send_pipe_idx,

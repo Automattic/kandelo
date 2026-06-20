@@ -544,6 +544,10 @@ impl SocketTable {
 /// A pending TCP connection waiting in a shared accept queue.
 pub struct PendingConnection {
     pub peer_addr: [u8; 4],
+    /// IPv6 peer address when this pending connection originated from an
+    /// AF_INET6 client. `None` on an AF_INET6 listener means the peer was an
+    /// IPv4 client and must be exposed as an IPv4-mapped IPv6 address.
+    pub peer_addr6: Option<[u8; 16]>,
     pub peer_port: u16,
     /// Recv pipe index (in the global pipe table). Host writes incoming
     /// TCP data here; the accepting process reads from it.

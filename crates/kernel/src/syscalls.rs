@@ -5452,7 +5452,8 @@ pub fn sys_exit(proc: &mut Process, host: &mut dyn HostIO, status: i32) {
     fallback_lock_table(proc).remove_all_for_pid(pid);
 
     proc.state = ProcessState::Exited;
-    proc.exit_status = status;
+    proc.exit_status = status & 0xff;
+    proc.exit_signal = 0;
 }
 
 /// Get the current time from the specified clock.
@@ -6215,11 +6216,21 @@ fn is_loopback_addr(addr: [u8; 4]) -> bool {
     addr[0] == 127
 }
 
-fn is_loopback_addr6(addr: [u8; 16]) -> bool {
+pub(crate) fn is_loopback_addr6(addr: [u8; 16]) -> bool {
     addr == [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1]
 }
 
-fn is_unspecified_addr6(addr: [u8; 16]) -> bool {
+pub(crate) fn loopback_addr6() -> [u8; 16] {
+    [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1]
+}
+
+pub(crate) fn ipv4_mapped_addr6(addr: [u8; 4]) -> [u8; 16] {
+    [
+        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0xff, 0xff, addr[0], addr[1], addr[2], addr[3],
+    ]
+}
+
+pub(crate) fn is_unspecified_addr6(addr: [u8; 16]) -> bool {
     addr == [0; 16]
 }
 
@@ -8016,10 +8027,26 @@ pub fn sys_accept(proc: &mut Process, _host: &mut dyn HostIO, fd: i32) -> Result
             accepted.state = SocketState::Connected;
             accepted.recv_buf_idx = Some(pc.recv_pipe_idx);
             accepted.send_buf_idx = Some(pc.send_pipe_idx);
-            accepted.bind_addr = bind_addr;
-            accepted.bind_port = bind_port;
-            accepted.peer_addr = pc.peer_addr;
-            accepted.peer_port = pc.peer_port;
+            match domain {
+                SocketDomain::Inet => {
+                    accepted.bind_addr = bind_addr;
+                    accepted.bind_port = bind_port;
+                    accepted.peer_addr = pc.peer_addr;
+                    accepted.peer_port = pc.peer_port;
+                }
+                SocketDomain::Inet6 => {
+                    accepted.bind_addr6 = bind_addr6;
+                    accepted.bind_port = bind_port;
+                    accepted.peer_addr6 = pc
+                        .peer_addr6
+                        .unwrap_or_else(|| ipv4_mapped_addr6(pc.peer_addr));
+                    accepted.peer_port = pc.peer_port;
+                }
+                SocketDomain::Unix => {
+                    accepted.bind_path = bind_path;
+                }
+                SocketDomain::Netlink => return Err(Errno::EOPNOTSUPP),
+            }
             accepted.global_pipes = true;
             let accepted_sock_idx = proc.sockets.alloc(accepted);
             let host_handle = -((accepted_sock_idx as i64) + 1);
@@ -8164,8 +8191,13 @@ pub fn sys_connect(
                 if sock.sock_type != SocketType::Stream {
                     return Err(Errno::EOPNOTSUPP);
                 }
-                let (ip6, port) = parse_sockaddr_in6(addr)?;
-                if !(is_loopback_addr6(ip6) || is_unspecified_addr6(ip6)) {
+                let (raw_ip6, port) = parse_sockaddr_in6(addr)?;
+                let ip6 = if is_unspecified_addr6(raw_ip6) {
+                    loopback_addr6()
+                } else {
+                    raw_ip6
+                };
+                if !is_loopback_addr6(ip6) {
                     return Err(Errno::EADDRNOTAVAIL);
                 }
 
@@ -8188,61 +8220,100 @@ pub fn sys_connect(
                         }
                     }
                 }
-                let listener_idx = listener_idx.ok_or(Errno::ECONNREFUSED)?;
+                if let Some(listener_idx) = listener_idx {
+                    let (pipe_a_idx, pipe_b_idx) =
+                        proc.alloc_pipe_pair(PipeBuffer::new(65536), PipeBuffer::new(65536));
 
-                let (pipe_a_idx, pipe_b_idx) =
-                    proc.alloc_pipe_pair(PipeBuffer::new(65536), PipeBuffer::new(65536));
+                    let client_sock = proc.sockets.get(sock_idx).ok_or(Errno::EBADF)?;
+                    let client_addr6 = if is_unspecified_addr6(client_sock.bind_addr6) {
+                        loopback_addr6()
+                    } else {
+                        client_sock.bind_addr6
+                    };
+                    let mut client_port = client_sock.bind_port;
+                    if client_port == 0 {
+                        client_port = proc.next_ephemeral_port;
+                        proc.next_ephemeral_port = proc.next_ephemeral_port.wrapping_add(1);
+                        if proc.next_ephemeral_port == 0 {
+                            proc.next_ephemeral_port = 49152;
+                        }
+                    }
 
-                let client_sock = proc.sockets.get(sock_idx).ok_or(Errno::EBADF)?;
-                let client_addr6 = if is_unspecified_addr6(client_sock.bind_addr6) {
-                    [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1]
-                } else {
-                    client_sock.bind_addr6
-                };
-                let mut client_port = client_sock.bind_port;
-                if client_port == 0 {
-                    client_port = proc.next_ephemeral_port;
-                    proc.next_ephemeral_port = proc.next_ephemeral_port.wrapping_add(1);
-                    if proc.next_ephemeral_port == 0 {
-                        proc.next_ephemeral_port = 49152;
+                    let listener = proc.sockets.get(listener_idx).ok_or(Errno::EBADF)?;
+                    let mut accepted_sock = SocketInfo::new(SocketDomain::Inet6, SocketType::Stream, 0);
+                    accepted_sock.state = SocketState::Connected;
+                    accepted_sock.recv_buf_idx = Some(pipe_a_idx);
+                    accepted_sock.send_buf_idx = Some(pipe_b_idx);
+                    accepted_sock.bind_addr6 = listener.bind_addr6;
+                    accepted_sock.bind_port = listener.bind_port;
+                    accepted_sock.peer_addr6 = client_addr6;
+                    accepted_sock.peer_port = client_port;
+                    let accepted_idx = proc.sockets.alloc(accepted_sock);
+
+                    let listener = proc.sockets.get_mut(listener_idx).ok_or(Errno::EBADF)?;
+                    listener.listen_backlog.push(accepted_idx);
+                    let accept_wake_idx = listener.accept_wake_idx;
+
+                    let client = proc.sockets.get_mut(sock_idx).ok_or(Errno::EBADF)?;
+                    client.send_buf_idx = Some(pipe_a_idx);
+                    client.recv_buf_idx = Some(pipe_b_idx);
+                    client.state = SocketState::Connected;
+                    client.peer_addr6 = ip6;
+                    client.peer_port = port;
+                    client.peer_idx = Some(accepted_idx);
+                    if client.bind_port == 0 {
+                        client.bind_port = client_port;
+                        client.bind_addr6 = loopback_addr6();
+                    }
+
+                    let accepted = proc.sockets.get_mut(accepted_idx).ok_or(Errno::EBADF)?;
+                    accepted.peer_idx = Some(sock_idx);
+
+                    if let Some(idx) = accept_wake_idx {
+                        crate::wakeup::push_accept(idx);
+                    }
+
+                    return Ok(());
+                }
+
+                let net_handle = sock_idx as i32;
+                if sock.state != SocketState::Connecting {
+                    host.host_net_connect(net_handle, &[127, 0, 0, 1], port)?;
+                    let client_sock = proc.sockets.get(sock_idx).ok_or(Errno::EBADF)?;
+                    let mut client_port = client_sock.bind_port;
+                    if client_port == 0 {
+                        client_port = proc.next_ephemeral_port;
+                        proc.next_ephemeral_port = proc.next_ephemeral_port.wrapping_add(1);
+                        if proc.next_ephemeral_port == 0 {
+                            proc.next_ephemeral_port = 49152;
+                        }
+                    }
+                    let client = proc.sockets.get_mut(sock_idx).ok_or(Errno::EBADF)?;
+                    client.state = SocketState::Connecting;
+                    client.host_net_handle = Some(net_handle);
+                    if client.bind_port == 0 {
+                        client.bind_port = client_port;
+                        client.bind_addr6 = loopback_addr6();
                     }
                 }
-
-                let listener = proc.sockets.get(listener_idx).ok_or(Errno::EBADF)?;
-                let mut accepted_sock = SocketInfo::new(SocketDomain::Inet6, SocketType::Stream, 0);
-                accepted_sock.state = SocketState::Connected;
-                accepted_sock.recv_buf_idx = Some(pipe_a_idx);
-                accepted_sock.send_buf_idx = Some(pipe_b_idx);
-                accepted_sock.bind_addr6 = listener.bind_addr6;
-                accepted_sock.bind_port = listener.bind_port;
-                accepted_sock.peer_addr6 = client_addr6;
-                accepted_sock.peer_port = client_port;
-                let accepted_idx = proc.sockets.alloc(accepted_sock);
-
-                let listener = proc.sockets.get_mut(listener_idx).ok_or(Errno::EBADF)?;
-                listener.listen_backlog.push(accepted_idx);
-                let accept_wake_idx = listener.accept_wake_idx;
-
-                let client = proc.sockets.get_mut(sock_idx).ok_or(Errno::EBADF)?;
-                client.send_buf_idx = Some(pipe_a_idx);
-                client.recv_buf_idx = Some(pipe_b_idx);
-                client.state = SocketState::Connected;
-                client.peer_addr6 = ip6;
-                client.peer_port = port;
-                client.peer_idx = Some(accepted_idx);
-                if client.bind_port == 0 {
-                    client.bind_port = client_port;
-                    client.bind_addr6 = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1];
-                }
-
-                let accepted = proc.sockets.get_mut(accepted_idx).ok_or(Errno::EBADF)?;
-                accepted.peer_idx = Some(sock_idx);
-
-                if let Some(idx) = accept_wake_idx {
-                    crate::wakeup::push_accept(idx);
-                }
-
-                return Ok(());
+                return match host.host_net_connect_status(net_handle) {
+                    Ok(()) => {
+                        let client = proc.sockets.get_mut(sock_idx).ok_or(Errno::EBADF)?;
+                        client.state = SocketState::Connected;
+                        client.host_net_handle = Some(net_handle);
+                        client.peer_addr6 = ip6;
+                        client.peer_port = port;
+                        client.connect_error = 0;
+                        Ok(())
+                    }
+                    Err(Errno::EAGAIN) => Err(Errno::EAGAIN),
+                    Err(e) => {
+                        let client = proc.sockets.get_mut(sock_idx).ok_or(Errno::EBADF)?;
+                        client.state = SocketState::Closed;
+                        client.connect_error = e as u32;
+                        Err(e)
+                    }
+                };
             }
 
             // Parse sockaddr_in: family(2) + port(2 big-endian) + addr(4)
@@ -8477,33 +8548,55 @@ pub fn sys_connect(
             let pipe_a_idx = pipe_table.alloc(PipeBuffer::new(65536));
             let pipe_b_idx = pipe_table.alloc(PipeBuffer::new(65536));
 
-            // Create accepted socket (server side)
-            let mut accepted_sock = SocketInfo::new(SocketDomain::Unix, SocketType::Stream, 0);
-            accepted_sock.state = SocketState::Connected;
-            accepted_sock.recv_buf_idx = Some(pipe_a_idx); // reads client's writes
-            accepted_sock.send_buf_idx = Some(pipe_b_idx); // writes to client's reads
-            accepted_sock.global_pipes = true;
-            let accepted_idx = proc.sockets.alloc(accepted_sock);
-
-            // Push to listener's backlog
             let listener = proc
                 .sockets
-                .get_mut(listener_sock_idx)
+                .get(listener_sock_idx)
                 .ok_or(Errno::EBADF)?;
-            listener.listen_backlog.push(accepted_idx);
             let accept_wake_idx = listener.accept_wake_idx;
 
-            // Set up client socket
-            let client = proc.sockets.get_mut(sock_idx).ok_or(Errno::EBADF)?;
-            client.send_buf_idx = Some(pipe_a_idx); // writes to pipe_a (server's reads)
-            client.recv_buf_idx = Some(pipe_b_idx); // reads from pipe_b (server's writes)
-            client.state = SocketState::Connected;
-            client.peer_idx = Some(accepted_idx);
-            client.global_pipes = true;
+            if let Some(shared_idx) = listener.shared_backlog_idx {
+                let pc = crate::socket::PendingConnection {
+                    peer_addr: [0, 0, 0, 0],
+                    peer_addr6: None,
+                    peer_port: 0,
+                    recv_pipe_idx: pipe_a_idx, // server reads client's writes
+                    send_pipe_idx: pipe_b_idx, // server writes to client's reads
+                };
+                if !unsafe { crate::socket::shared_listener_backlog_table().push(shared_idx, pc) }
+                {
+                    return Err(Errno::ECONNREFUSED);
+                }
+                let client = proc.sockets.get_mut(sock_idx).ok_or(Errno::EBADF)?;
+                client.send_buf_idx = Some(pipe_a_idx);
+                client.recv_buf_idx = Some(pipe_b_idx);
+                client.state = SocketState::Connected;
+                client.global_pipes = true;
+            } else {
+                // Legacy fallback for listeners without a shared queue.
+                let mut accepted_sock =
+                    SocketInfo::new(SocketDomain::Unix, SocketType::Stream, 0);
+                accepted_sock.state = SocketState::Connected;
+                accepted_sock.recv_buf_idx = Some(pipe_a_idx);
+                accepted_sock.send_buf_idx = Some(pipe_b_idx);
+                accepted_sock.global_pipes = true;
+                let accepted_idx = proc.sockets.alloc(accepted_sock);
 
-            // Set peer_idx on accepted socket
-            let accepted = proc.sockets.get_mut(accepted_idx).ok_or(Errno::EBADF)?;
-            accepted.peer_idx = Some(sock_idx);
+                let listener = proc
+                    .sockets
+                    .get_mut(listener_sock_idx)
+                    .ok_or(Errno::EBADF)?;
+                listener.listen_backlog.push(accepted_idx);
+
+                let client = proc.sockets.get_mut(sock_idx).ok_or(Errno::EBADF)?;
+                client.send_buf_idx = Some(pipe_a_idx);
+                client.recv_buf_idx = Some(pipe_b_idx);
+                client.state = SocketState::Connected;
+                client.peer_idx = Some(accepted_idx);
+                client.global_pipes = true;
+
+                let accepted = proc.sockets.get_mut(accepted_idx).ok_or(Errno::EBADF)?;
+                accepted.peer_idx = Some(sock_idx);
+            }
 
             if let Some(idx) = accept_wake_idx {
                 crate::wakeup::push_accept(idx);
@@ -19082,6 +19175,123 @@ mod tests {
             sys_connect(&mut proc, &mut host, client_fd, &refused).unwrap_err(),
             Errno::ECONNREFUSED,
         );
+    }
+
+    #[test]
+    fn test_inet6_accept_reports_ipv4_mapped_and_native_ipv6_peers() {
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        use crate::pipe::PipeBuffer;
+        use wasm_posix_shared::socket::*;
+
+        let fd = sys_socket(&mut proc, &mut host, AF_INET6, SOCK_STREAM, 0).unwrap();
+        let mut addr = [0u8; 28];
+        addr[0] = 10; // AF_INET6
+        addr[2] = 0x19;
+        addr[3] = 0x46; // port 6470
+        // Bind to :: so the listener is dual-stack. IPv4 peers accepted on an
+        // AF_INET6 socket are observed through getpeername(2) as
+        // IPv4-mapped IPv6 addresses; native IPv6 peers remain native.
+        sys_bind(&mut proc, &mut host, fd, &addr).unwrap();
+        sys_listen(&mut proc, &mut host, fd, 5).unwrap();
+
+        let listener_entry = proc.fd_table.get(fd).unwrap();
+        let listener_ofd = proc.ofd_table.get(listener_entry.ofd_ref.0).unwrap();
+        let listener_idx = (-(listener_ofd.host_handle + 1)) as usize;
+        let shared_idx = proc
+            .sockets
+            .get(listener_idx)
+            .unwrap()
+            .shared_backlog_idx
+            .unwrap();
+
+        let pipe_table = unsafe { crate::pipe::global_pipe_table() };
+        let (recv4, send4) =
+            pipe_table.alloc_pair(PipeBuffer::new(1024), PipeBuffer::new(1024));
+        unsafe { crate::socket::shared_listener_backlog_table() }.push(
+            shared_idx,
+            crate::socket::PendingConnection {
+                peer_addr: [127, 0, 0, 1],
+                peer_addr6: None,
+                peer_port: 50000,
+                recv_pipe_idx: recv4,
+                send_pipe_idx: send4,
+            },
+        );
+        let accepted4_fd = sys_accept(&mut proc, &mut host, fd).unwrap();
+        let accepted4_entry = proc.fd_table.get(accepted4_fd).unwrap();
+        let accepted4_ofd = proc.ofd_table.get(accepted4_entry.ofd_ref.0).unwrap();
+        let accepted4_idx = (-(accepted4_ofd.host_handle + 1)) as usize;
+        assert_eq!(
+            proc.sockets.get(accepted4_idx).unwrap().peer_addr6,
+            ipv4_mapped_addr6([127, 0, 0, 1]),
+        );
+
+        let (recv6, send6) =
+            pipe_table.alloc_pair(PipeBuffer::new(1024), PipeBuffer::new(1024));
+        unsafe { crate::socket::shared_listener_backlog_table() }.push(
+            shared_idx,
+            crate::socket::PendingConnection {
+                peer_addr: [0, 0, 0, 0],
+                peer_addr6: Some(loopback_addr6()),
+                peer_port: 50001,
+                recv_pipe_idx: recv6,
+                send_pipe_idx: send6,
+            },
+        );
+        let accepted6_fd = sys_accept(&mut proc, &mut host, fd).unwrap();
+        let accepted6_entry = proc.fd_table.get(accepted6_fd).unwrap();
+        let accepted6_ofd = proc.ofd_table.get(accepted6_entry.ofd_ref.0).unwrap();
+        let accepted6_idx = (-(accepted6_ofd.host_handle + 1)) as usize;
+        assert_eq!(proc.sockets.get(accepted6_idx).unwrap().peer_addr6, loopback_addr6());
+    }
+
+    #[test]
+    fn test_inet6_loopback_listen_registers_host_transport() {
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        use wasm_posix_shared::socket::*;
+
+        let fd = sys_socket(&mut proc, &mut host, AF_INET6, SOCK_STREAM, 0).unwrap();
+        let mut addr = [0u8; 28];
+        addr[0] = 10; // AF_INET6
+        addr[2] = 0x19;
+        addr[3] = 0x44; // port 6468
+        addr[23] = 1; // ::1
+
+        sys_bind(&mut proc, &mut host, fd, &addr).unwrap();
+        sys_listen(&mut proc, &mut host, fd, 5).unwrap();
+
+        assert_eq!(host.net_listen_calls, vec![(fd, 6468, [127, 0, 0, 1])]);
+    }
+
+    #[test]
+    fn test_inet6_loopback_cross_process_connect_uses_host_transport() {
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        host.net_connect_result = Ok(());
+        host.net_connect_status_result = Ok(());
+        use wasm_posix_shared::socket::*;
+
+        let fd = sys_socket(&mut proc, &mut host, AF_INET6, SOCK_STREAM, 0).unwrap();
+        let mut addr = [0u8; 28];
+        addr[0] = 10; // AF_INET6
+        addr[2] = 0x19;
+        addr[3] = 0x45; // port 6469
+        addr[23] = 1; // ::1
+
+        sys_connect(&mut proc, &mut host, fd, &addr).unwrap();
+
+        assert_eq!(host.net_connect_calls, vec![(0, vec![127, 0, 0, 1], 6469)]);
+        let entry = proc.fd_table.get(fd).unwrap();
+        let ofd = proc.ofd_table.get(entry.ofd_ref.0).unwrap();
+        let sock_idx = (-(ofd.host_handle + 1)) as usize;
+        let sock = proc.sockets.get(sock_idx).unwrap();
+        assert_eq!(sock.state, crate::socket::SocketState::Connected);
+        assert_eq!(sock.peer_addr6, loopback_addr6());
+        assert_eq!(sock.peer_port, 6469);
+        assert_eq!(sock.bind_addr6, loopback_addr6());
+        assert_ne!(sock.bind_port, 0);
     }
 
     // ── Threading tests ──────────────────────────────────────────────

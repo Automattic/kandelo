@@ -903,9 +903,15 @@ async function handleSpawn(msg: Extract<MainToKernelMessage, { type: "spawn" }>)
       if (msg.ptyCols != null && msg.ptyRows != null) {
         kernelWorker.ptySetWinsize(ptyIdx, msg.ptyRows, msg.ptyCols);
       }
-    } else if (msg.stdin) {
-      const stdinData = msg.stdin instanceof Uint8Array ? msg.stdin : new Uint8Array(msg.stdin);
-      kernelWorker.setStdinData(pid, stdinData);
+    } else {
+      if (msg.pipeStdio) {
+        kernelWorker.setStdioPipes(pid, msg.pipeStdio);
+      }
+      if (msg.stdin) {
+        const stdinData =
+          msg.stdin instanceof Uint8Array ? msg.stdin : new Uint8Array(msg.stdin);
+        kernelWorker.setStdinData(pid, stdinData);
+      }
     }
 
     const initData: CentralizedWorkerInitMessage = {
@@ -1066,6 +1072,7 @@ async function handleFork(
     maxAddr: childLayout.maxAddr,
     mmapBase: childLayout.mmapBase,
   });
+  kernelWorker.inheritProcessSharedMappings(parentPid, childPid);
 
   const forkBufAddr = threadFork
     ? threadFork.forkBufAddr
