@@ -265,6 +265,113 @@ fn posix_spawn_class_shadow_stack_not_duplicated() {
     );
 }
 
+#[test]
+fn no_catch_switch_dispatch_omits_frame_header_state_locals() {
+    let wat = r#"
+        (module
+          (import "kernel" "kernel_fork" (func $kernel_fork (result i32)))
+          (memory (export "memory") 1)
+          (func $caller (export "caller") (result i32)
+            (local $x i32)
+            i32.const 7
+            local.set $x
+            call $kernel_fork
+            local.get $x
+            i32.add))
+    "#;
+    let input = wat::parse_str(wat).expect("wat parse");
+    let output = instrument(&input, &Options::default()).expect("instrument");
+    validate(&output);
+
+    let printed = wasmprinter::print_bytes(&output).expect("wasmprinter");
+    let caller = extract_function_text(&printed, "caller");
+    let locals = declared_scalar_local_count(&caller);
+    assert_eq!(
+        locals, 1,
+        "no-catch top-level fork path should declare only the original local; \
+         call_idx and frame_ptr are loaded from the frame header, and \
+         unconditional catch metadata locals would raise this count:\n{caller}"
+    );
+    assert!(
+        caller.contains("i32.store offset=4"),
+        "unwind call site must still write frame.call_index before the shared postamble:\n{caller}"
+    );
+}
+
+#[test]
+fn top_level_indirect_switch_dispatch_omits_frame_header_state_locals() {
+    let wat = r#"
+        (module
+          (import "kernel" "kernel_fork" (func $kernel_fork (result i32)))
+          (type $sig (func (result i32)))
+          (table 1 funcref)
+          (elem (i32.const 0) $leaf)
+          (memory (export "memory") 1)
+          (func $leaf (type $sig)
+            call $kernel_fork)
+          (func $caller (export "caller") (result i32)
+            i32.const 0
+            call_indirect (type $sig)))
+    "#;
+    let input = wat::parse_str(wat).expect("wat parse");
+    let output = instrument(&input, &Options::default()).expect("instrument");
+    validate(&output);
+
+    let printed = wasmprinter::print_bytes(&output).expect("wasmprinter");
+    let caller = extract_function_text(&printed, "caller");
+    let locals = declared_scalar_local_count(&caller);
+    assert_eq!(
+        locals, 1,
+        "top-level indirect call should only need the table-index arg spill; \
+         frame_ptr and call_idx must not be declared locals:\n{caller}"
+    );
+}
+
+#[test]
+fn nested_direct_switch_dispatch_omits_frame_header_state_locals() {
+    let wat = include_str!("fixtures/switch_dispatch/nested_fork_call.wat");
+    let input = wat::parse_str(wat).expect("wat parse");
+    let output = instrument(&input, &Options::default()).expect("instrument");
+    validate(&output);
+
+    let printed = wasmprinter::print_bytes(&output).expect("wasmprinter");
+    let main = extract_function_text(&printed, "main");
+    let locals = declared_scalar_local_count(&main);
+    assert_eq!(
+        locals, 2,
+        "nested block dispatch should retain only the two source locals; \
+         frame_ptr and call_idx must not be declared locals:\n{main}"
+    );
+}
+
+#[test]
+fn nested_if_else_dispatch_omits_frame_header_state_locals() {
+    let wat = r#"
+        (module
+          (import "kernel" "kernel_fork" (func $kernel_fork (result i32)))
+          (memory (export "memory") 1)
+          (func $main (export "_start") (param $which i32) (result i32)
+            local.get $which
+            if (result i32)
+              call $kernel_fork
+            else
+              call $kernel_fork
+            end))
+    "#;
+    let input = wat::parse_str(wat).expect("wat parse");
+    let output = instrument(&input, &Options::default()).expect("instrument");
+    validate(&output);
+
+    let printed = wasmprinter::print_bytes(&output).expect("wasmprinter");
+    let main = extract_function_text(&printed, "main");
+    let locals = declared_scalar_local_count(&main);
+    assert_eq!(
+        locals, 1,
+        "nested if/else dispatch should retain only cond_swap; params are not \
+         declared locals, and frame_ptr/call_idx must be loaded from the frame:\n{main}"
+    );
+}
+
 // -- Helper predicates ----------------------------------------------
 
 fn find_func(module: &Module, name: &str) -> FunctionId {
@@ -281,6 +388,46 @@ fn local_func(module: &Module, id: FunctionId) -> &LocalFunction {
         FunctionKind::Local(l) => l,
         _ => panic!("not a local function: {name:?}", name = module.funcs.get(id).name),
     }
+}
+
+fn extract_function_text<'a>(printed: &'a str, name: &str) -> String {
+    let needle = format!("(func ${name} ");
+    let start = printed
+        .find(&needle)
+        .unwrap_or_else(|| panic!("function ${name} not found in:\n{printed}"));
+    let mut depth = 0i32;
+    let mut end = start;
+    for (i, c) in printed[start..].char_indices() {
+        match c {
+            '(' => depth += 1,
+            ')' => {
+                depth -= 1;
+                if depth == 0 {
+                    end = start + i + 1;
+                    break;
+                }
+            }
+            _ => {}
+        }
+    }
+    printed[start..end].to_string()
+}
+
+fn declared_scalar_local_count(func_text: &str) -> usize {
+    func_text
+        .lines()
+        .filter_map(|line| {
+            let trimmed = line.trim_start();
+            trimmed
+                .strip_prefix("(local ")
+                .and_then(|rest| rest.strip_suffix(')'))
+        })
+        .map(|rest| {
+            rest.split_whitespace()
+                .filter(|tok| matches!(*tok, "i32" | "i64" | "f32" | "f64" | "v128"))
+                .count()
+        })
+        .sum()
 }
 
 fn find_import_func(module: &Module, qualified: &str) -> FunctionId {

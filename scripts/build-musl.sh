@@ -61,7 +61,7 @@ RANLIB="$LLVM_BIN/llvm-ranlib"
 # Verify toolchain exists
 for tool in "$CC" "$AR" "$RANLIB"; do
     if [ ! -x "$tool" ]; then
-        echo "Error: $tool not found. Install LLVM via: brew install llvm" >&2
+        echo "Error: $tool not found. Run scripts/dev-shell.sh or set LLVM_BIN/LLVM_PREFIX." >&2
         exit 1
     fi
 done

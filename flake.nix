@@ -26,16 +26,15 @@
         rustToolchain = pkgs.rust-bin.fromRustupToolchainFile ./rust-toolchain.toml;
 
         llvmPkg = pkgs.llvmPackages_21;
+        llvmVersion = llvmPkg.llvm.version;
 
         # Combined tree so LLVM_PREFIX/bin contains clang + llvm-* + wasm-ld,
-        # and LLVM_PREFIX/include/c++/v1 contains libc++ headers — matching
-        # the layout the build scripts expect from a Homebrew LLVM install.
-        # libcxx.dev carries the standard-library headers (iostream, cstring,
-        # etc.) — without the .dev output, only the runtime modules at
-        # share/libc++/v1 are present and C++ source builds fail with
-        # "'cstring' file not found".
+        # and LLVM_PREFIX/include/c++/v1 contains libc++ headers for generic
+        # SDK consumers. The libcxx package itself builds from the exact
+        # Nix-provided source paths exported below, not from these installed
+        # headers.
         llvmTree = pkgs.symlinkJoin {
-          name = "llvm-21-tree";
+          name = "llvm-${llvmVersion}-tree";
           paths = [
             llvmPkg.clang-unwrapped
             llvmPkg.llvm
@@ -179,7 +178,9 @@
             export PATH="${rustToolchain}/bin:$PATH"
             export LLVM_BIN=${llvmTree}/bin
             export LLVM_PREFIX=${llvmTree}
-            export LLVM_VERSION=21
+            export LLVM_VERSION=${llvmVersion}
+            export WASM_POSIX_LLVM_LIBCXX_SOURCE=${llvmPkg.libcxx.src}
+            export WASM_POSIX_LLVM_LIBUNWIND_SOURCE=${llvmPkg.libunwind.src}
             # CA bundle for HTTPS — pure-shell strips the user's
             # SSL_CERT_FILE; without an explicit re-export, every
             # `curl https://…` returns exit 77 ("Problem with the
@@ -209,7 +210,7 @@
               esac
             fi
             unset __repo_root
-            echo "kandelo dev shell — LLVM 21, Rust (pinned via rust-toolchain.toml), Node 24, Erlang 28 (minimal), SDK on PATH"
+            echo "kandelo dev shell — LLVM ${llvmVersion}, Rust (pinned via rust-toolchain.toml), Node 24, Erlang 28 (minimal), SDK on PATH"
           '';
         };
       });

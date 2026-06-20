@@ -21,6 +21,13 @@ export type {
 } from "./worker-protocol";
 export { VirtualPlatformIO } from "./vfs/vfs";
 export { MemoryFileSystem } from "./vfs/memory-fs";
+export type {
+  LazyDownloadEvent,
+  LazyDownloadKind,
+  LazyDownloadListener,
+  LazyDownloadStatus,
+  LazyFileEntry,
+} from "./vfs/memory-fs";
 export { DeviceFileSystem } from "./vfs/device-fs";
 export { OpfsFileSystem } from "./vfs/opfs";
 export { BrowserTimeProvider } from "./vfs/time";

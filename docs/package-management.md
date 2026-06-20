@@ -334,6 +334,15 @@ that doesn't respect them cannot be cached safely.
 | `WASM_POSIX_DEP_SOURCE_SHA256` | Expected sha256 of the downloaded tarball. Scripts **must** verify after download — the resolver does not fetch. |
 | `WASM_POSIX_DEP_<UPPER>_DIR` | For each *direct* dep, the resolved path to that dep's build output. `<UPPER>` is the dep name upper-cased, with `-` → `_` (e.g. `zlib-ng` → `ZLIB_NG`). Transitive deps are not surfaced — scripts that need them should declare them in `depends_on`. |
 
+The libcxx package is intentionally stricter than ordinary source-fetching
+packages. It builds the C++ standard library from the exact LLVM source
+derivations exported by `flake.nix` (`WASM_POSIX_LLVM_LIBCXX_SOURCE` and
+`WASM_POSIX_LLVM_LIBUNWIND_SOURCE`) and hard-fails if `LLVM_VERSION`,
+`clang --version`, and `packages/registry/libcxx/package.toml` disagree.
+That Nix-only restriction applies to rebuilding the repo's libcxx package
+from source; it does not restrict normal SDK users compiling against a
+published sysroot/libc++ artifact.
+
 After the script exits 0, the resolver verifies every path in
 `outputs.{libs,headers,pkgconfig}` exists under `$WASM_POSIX_DEP_OUT_DIR`.
 A missing output fails the build (and the temp dir is cleaned up,

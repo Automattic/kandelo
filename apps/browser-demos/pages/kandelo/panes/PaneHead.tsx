@@ -41,11 +41,13 @@ export const PaneHead: React.FC<PaneHeadProps> = ({
       {icon}
       <div className="kpane-head-title">{title}</div>
       {tabs && (
-        <div style={{ display: "flex", gap: 2, marginLeft: "auto" }}>
+        <div role="tablist" style={{ display: "flex", gap: 2, marginLeft: "auto" }}>
           {tabs.map((t) => (
             <button
               key={t.id}
               type="button"
+              role="tab"
+              aria-selected={t.id === activeTab}
               aria-current={t.id === activeTab}
               onClick={() => onTab?.(t.id)}
               style={{

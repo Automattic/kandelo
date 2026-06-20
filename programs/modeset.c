@@ -1307,13 +1307,12 @@ int main(int argc, char **argv) {
 
         drain_mouse(mouse, &cursor_x, &cursor_y, &buttons, CANVAS_W, CANVAS_H);
 
-        if (frame == 0 || (buttons == 0 && (frame % 90) == 0)) {
-            float p = (float)((frame / 90) % 3);
-            demo_splat(0.25f + 0.12f * p, 0.36f + 0.08f * p,
-                       900.0f, 250.0f, 2.60f, 0.55f, 0.18f,
+        if (frame == 0) {
+            demo_splat(0.25f, 0.36f,
+                       900.0f, 250.0f, 2.80f, 0.05f, 0.05f,
                        aspect, demo_seed_radius);
-            demo_splat(0.72f - 0.10f * p, 0.62f - 0.06f * p,
-                       -720.0f, -340.0f, 0.18f, 1.20f, 2.80f,
+            demo_splat(0.72f, 0.62f,
+                       -720.0f, -340.0f, 0.05f, 0.05f, 2.80f,
                        aspect, demo_seed_radius);
         }
 
