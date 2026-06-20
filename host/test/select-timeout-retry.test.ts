@@ -64,6 +64,45 @@ describe("centralized select/pselect timeout retries", () => {
     );
   });
 
+  it("preserves a finite poll deadline across retry wakes", () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(0);
+
+    const processMemory = createSharedMemory();
+    const worker = createWorkerHarness({});
+    const channel = createChannel(42, processMemory);
+    worker.processes = new Map([
+      [42, { pid: 42, memory: processMemory, channels: [channel], ptrWidth: 4 }],
+    ]);
+    worker.activeChannels = [channel];
+
+    const origArgs = [1024, 1, 10];
+    worker.retrySyscall = vi.fn(() => {
+      worker.handleBlockingRetry(channel, ABI_SYSCALLS.Poll, origArgs);
+    });
+
+    worker.handleBlockingRetry(channel, ABI_SYSCALLS.Poll, origArgs);
+    expect(worker.completeChannel).not.toHaveBeenCalled();
+
+    vi.advanceTimersByTime(5);
+    worker.wakeAllBlockedRetries();
+    expect(worker.completeChannel).not.toHaveBeenCalled();
+
+    vi.advanceTimersByTime(4);
+    expect(worker.completeChannel).not.toHaveBeenCalled();
+
+    vi.advanceTimersByTime(1);
+    expect(worker.completeChannel).toHaveBeenCalledWith(
+      channel,
+      ABI_SYSCALLS.Poll,
+      origArgs,
+      expect.anything(),
+      0,
+      0,
+    );
+    expect(worker.pollRetryDeadlines.size).toBe(0);
+  });
+
   it("interrupts host-side epoll_pwait emulation when a handler signal is pending", () => {
     const kernelMemory = createSharedMemory();
     const processMemory = createSharedMemory();
@@ -179,6 +218,7 @@ function createWorkerHarness(exports: Record<string, unknown>): any {
     posixTimers: new Map(),
     pendingSleeps: new Map(),
     pendingPollRetries: new Map(),
+    pollRetryDeadlines: new Map(),
     pendingSelectRetries: new Map(),
     pendingPipeReaders: new Map(),
     pendingPipeWriters: new Map(),
