@@ -65,6 +65,7 @@ pub enum SocketDomain {
     Unix,
     Inet,
     Inet6,
+    Netlink,
 }
 
 /// Socket type.
@@ -375,7 +376,6 @@ impl SocketInfo {
             shared_backlog_idx: None,
             accept_wake_idx: None,
             dgram_queue: Vec::new(),
-            global_pipes: true,
             ipv4_multicast_memberships: Vec::new(),
             netlink_queue: Vec::new(),
             global_pipes: true,
@@ -418,6 +418,7 @@ impl SocketInfo {
 ///
 /// Discarded in the child:
 ///   * `dgram_queue` — buffered UDP datagrams.
+///   * `netlink_queue` — buffered netlink replies.
 ///   * `oob_byte` — pending TCP out-of-band byte.
 ///   * `listen_backlog` — pre-accepted AF_UNIX same-process connections.
 ///     Indices reference other entries in this process's SocketTable; if

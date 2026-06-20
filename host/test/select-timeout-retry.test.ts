@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
+  ABI_SYSCALLS,
   CH_ERRNO,
   CH_RETURN,
 } from "../src/generated/abi";
@@ -140,6 +141,110 @@ describe("centralized select/pselect timeout retries", () => {
     expect(worker.pendingPollRetries.size).toBe(0);
   });
 
+  it("interrupts host-side pselect6 retry when a handler signal is pending", () => {
+    const kernelMemory = createSharedMemory();
+    const processMemory = createSharedMemory();
+    const scratchOffset = 128;
+    const handleChannel = vi.fn(() => {
+      const kernelView = new DataView(kernelMemory.buffer, scratchOffset);
+      kernelView.setBigInt64(CH_RETURN, -1n, true);
+      kernelView.setUint32(CH_ERRNO, 11, true);
+      return 0;
+    });
+    const worker = createWorkerHarness({
+      kernel_handle_channel: handleChannel,
+      kernel_get_process_exit_status: () => 0,
+    });
+    worker.kernelMemory = kernelMemory;
+    worker.scratchOffset = scratchOffset;
+    worker.dequeueSignalForDelivery = vi.fn(() => 10);
+
+    const channel = createChannel(42, processMemory);
+    worker.processes = new Map([
+      [42, { pid: 42, memory: processMemory, channels: [channel], ptrWidth: 4 }],
+    ]);
+    worker.activeChannels = [channel];
+
+    const readfdsPtr = 1024;
+    const tsPtr = 2048;
+    const processView = new DataView(processMemory.buffer);
+    processView.setUint8(readfdsPtr, 1);
+    processView.setBigInt64(tsPtr, 1n, true);
+    processView.setBigInt64(tsPtr + 8, 0n, true);
+
+    const origArgs = [1, readfdsPtr, 0, 0, tsPtr, 0];
+    worker.handlePselect6(channel, origArgs);
+
+    expect(worker.dequeueSignalForDelivery).toHaveBeenCalledWith(channel);
+    expect(worker.completeChannel).toHaveBeenCalledWith(
+      channel,
+      expect.any(Number),
+      origArgs,
+      undefined,
+      -1,
+      4,
+    );
+    expect(worker.pendingSelectRetries.size).toBe(0);
+  });
+
+  it("does not truncate multi-kilobyte exec environment strings", () => {
+    const worker = createWorkerHarness({});
+    const processMemory = createSharedMemory();
+    const mem = new Uint8Array(processMemory.buffer);
+    const view = new DataView(processMemory.buffer);
+    const arrayPtr = 1024;
+    const stringPtr = 4096;
+    const value = `FPM_SOCKETS=${"x".repeat(9000)}`;
+    mem.set(new TextEncoder().encode(value), stringPtr);
+    mem[stringPtr + value.length] = 0;
+    view.setUint32(arrayPtr, stringPtr, true);
+    view.setUint32(arrayPtr + 4, 0, true);
+
+    expect(worker.readStringArrayFromProcess(mem, arrayPtr, 4)).toEqual([value]);
+  });
+
+  it("implements times(2) with ptr-width aware tms output", () => {
+    const worker = createWorkerHarness({});
+    const processMemory = createSharedMemory();
+    const processView = new DataView(processMemory.buffer);
+    const channel = createChannel(42, processMemory);
+    worker.processes = new Map([
+      [42, { pid: 42, memory: processMemory, channels: [channel], ptrWidth: 4 }],
+    ]);
+    worker.activeChannels = [channel];
+
+    const tms32 = 1024;
+    worker.handleTimes(channel, [tms32, 0, 0, 0, 0, 0]);
+
+    expect(worker.completeChannel).toHaveBeenCalledWith(
+      channel,
+      ABI_SYSCALLS.Times,
+      [tms32, 0, 0, 0, 0, 0],
+      undefined,
+      expect.any(Number),
+      0,
+    );
+    for (let off = 0; off < 16; off += 4) {
+      expect(processView.getInt32(tms32 + off, true)).toBe(0);
+    }
+
+    const worker64 = createWorkerHarness({});
+    const processMemory64 = createSharedMemory();
+    const processView64 = new DataView(processMemory64.buffer);
+    const channel64 = createChannel(43, processMemory64);
+    worker64.processes = new Map([
+      [43, { pid: 43, memory: processMemory64, channels: [channel64], ptrWidth: 8 }],
+    ]);
+    worker64.activeChannels = [channel64];
+
+    const tms64 = 2048;
+    worker64.handleTimes(channel64, [tms64, 0, 0, 0, 0, 0]);
+
+    for (let off = 0; off < 32; off += 8) {
+      expect(processView64.getBigInt64(tms64 + off, true)).toBe(0n);
+    }
+  });
+
   it("merges disjoint MAP_SHARED writes from live processes", () => {
     const worker = createWorkerHarness({});
     const mem1 = createSharedMemory();
@@ -236,6 +341,16 @@ function createWorkerHarness(exports: Record<string, unknown>): any {
     dequeueSignalForDelivery: vi.fn(),
     bindKernelTidForChannel: vi.fn(),
     assertKernelStackContext: vi.fn(),
+    assertKernelStackStage: vi.fn(),
+    assertKernelStackBaseline: vi.fn(),
+    isKernelStackTraceEnabled: vi.fn(() => false),
+    synchronizeSharedMappingsForSyscallBoundary: vi.fn(),
+    synchronizeSysvShmMappingsForSyscallBoundary: vi.fn(),
+    flushSharedMappingsBeforeFileSyscall: vi.fn(),
+    handleSharedMappingsAfterFileSyscall: vi.fn(),
+    toKernelPtr(value: number | bigint): number {
+      return Number(value);
+    },
   });
 }
 
