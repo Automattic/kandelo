@@ -98,6 +98,18 @@
       "reason": "Tiny timers API smoke case."
     },
     {
+      "path": "test/parallel/test-async-hooks-recursive-stack-runInAsyncScope.js",
+      "area": "async_hooks",
+      "expected": "PASS",
+      "reason": "Node-host SpiderMonkey runtime passes the official 1000-level AsyncResource recursion check.",
+      "hosts": {
+        "browser": {
+          "expected": "SKIP",
+          "reason": "Browser SpiderMonkey-in-Wasm process workers exhaust the browser WebAssembly call stack on this synthetic 1000-level synchronous AsyncResource.runInAsyncScope recursion. This is a browser worker stack-capacity support boundary; Node-host Kandelo passes the same test."
+        }
+      }
+    },
+    {
       "path": "test/parallel/test-worker-broadcastchannel.js",
       "area": "worker_threads",
       "expected": "SKIP",

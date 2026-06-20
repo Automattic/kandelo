@@ -82,6 +82,13 @@ tests as `SKIP`: they require streaming `child_process` stdio connected to a
 separately executing interactive REPL child, while Kandelo's Node compatibility
 layer currently implements buffered popen-style child output.
 
+The manifest also records `test-async-hooks-recursive-stack-runInAsyncScope.js`
+as a browser-only `SKIP`: the Node host passes the official 1000-level
+`AsyncResource.runInAsyncScope()` recursion check, but the browser host exhausts
+the WebAssembly call stack inside the SpiderMonkey-in-Wasm process worker before
+the test can complete. Treat this as a browser worker stack-capacity boundary,
+not an expected Node test-level `RangeError`.
+
 ## SpiderMonkey VM Boundary
 
 Kandelo's `node:vm` shim is backed by SpiderMonkey globals, not V8 isolates.
