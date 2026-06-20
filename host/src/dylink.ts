@@ -244,6 +244,8 @@ export interface LoadSharedLibraryOptions {
   loadedLibraries: Map<string, LoadedSharedLibrary>;
   /** Multi-module fork support for side modules loaded into this process. */
   sideModuleFork?: SideModuleForkSupport;
+  /** Process-wide wasm SjLj tag for env.__c_longjmp, shared with the main module. */
+  longjmpTag?: WebAssembly.ExportValue;
   /** Callback to locate and read a library file by name (async version) */
   resolveLibrary?: (name: string) => Promise<Uint8Array | null>;
   /** Callback to locate and read a library file by name (sync version) */
@@ -365,14 +367,13 @@ function instantiateSharedLibrary(
   };
 
   // Tag imported by side modules compiled with clang's wasm SjLj lowering
-  // (`-mllvm -wasm-enable-sjlj`). The host doesn't actually catch these — the
-  // main process either has its own __c_longjmp tag (LLVM 22) or doesn't use
-  // SjLj (LLVM 21). A stub Tag lets the side module's import type-check and
-  // instantiate; behavior at throw time is undefined but the side module
-  // typically never throws this tag itself.
-  const longjmpTag = (typeof (WebAssembly as any).Tag === "function")
+  // (`-mllvm -wasm-enable-sjlj`). Wasm exception matching compares tag identity,
+  // so side modules loaded into a process must share the main module's tag.
+  // Standalone linker tests and embedders without a main-module tag still get a
+  // local fallback so tag-importing side modules can instantiate.
+  const longjmpTag = options.longjmpTag ?? ((typeof (WebAssembly as any).Tag === "function")
     ? new (WebAssembly as any).Tag({ parameters: ["i32"] })
-    : undefined;
+    : undefined);
 
   const module = new WebAssembly.Module(wasmBytes as unknown as BufferSource);
   const moduleImports = WebAssembly.Module.imports(module);
