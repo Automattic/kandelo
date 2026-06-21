@@ -83,6 +83,8 @@ write_sqlite_report() {
     return
   fi
 
+  sqlite3 "$db" "PRAGMA wal_checkpoint(TRUNCATE);" >/dev/null 2>&1 || true
+
   if ! sqlite3 "$db" "SELECT 1 FROM sqlite_master WHERE type='table' AND name='jobs' LIMIT 1;" | grep -qx 1; then
     {
       echo "SQLite official testrunner summary"

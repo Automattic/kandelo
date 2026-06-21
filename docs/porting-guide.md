@@ -752,6 +752,25 @@ each short-lived SQLite testfixture worker. Override with
 `SQLITE_BROWSER_MAX_MEMORY_PAGES=<pages>` when investigating memory-sensitive
 SQLite cases.
 
+For long or parallel audit runs, use the supervised lane wrapper so current
+state and outcome lists remain authoritative:
+
+```bash
+scripts/run-sqlite-project-unit-supervised.py \
+  --host browser \
+  --permutation all \
+  --results-root test-runs/sqlite-project-unit-supervised/browser-wave \
+  --lane shard-001:5500:select1.test
+```
+
+Each supervised lane receives its own result directory, `TMPDIR`, process
+group, and browser Vite port. The supervisor writes `current-run.json`
+atomically, records launch commands and PIDs, and folds only terminal
+`testrunner.db` jobs into durable passed, failed, skipped, and incomplete
+outcome lists under `outcome-lists/`. Browser lanes require the exact requested
+Vite port instead of falling forward to another port, and periodically export
+SQLite artifact snapshots while the run is active.
+
 ## Troubleshooting
 
 **"sysroot not found"**: Run `bash scripts/build-musl.sh` first.

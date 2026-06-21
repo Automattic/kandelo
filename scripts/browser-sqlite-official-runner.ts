@@ -10,6 +10,7 @@ const BROWSER_DIR = resolve(REPO_ROOT, "apps/browser-demos");
 const VFS_IMAGE = resolve(BROWSER_DIR, "public/sqlite-test.vfs.zst");
 const VITE_HOST = "127.0.0.1";
 const VITE_BASE_PORT = Number(process.env.SQLITE_TEST_VITE_PORT ?? 5200);
+const VITE_REQUIRE_BASE_PORT = process.env.SQLITE_TEST_VITE_REQUIRE_BASE_PORT === "1";
 const SQLITE_TEST_UID = Number(process.env.SQLITE_TEST_UID ?? 1000);
 const SQLITE_TEST_GID = Number(process.env.SQLITE_TEST_GID ?? 1000);
 const SQLITE_BROWSER_MAX_MEMORY_PAGES = process.env.SQLITE_BROWSER_MAX_MEMORY_PAGES ?? "4096";
@@ -46,6 +47,10 @@ function isPortAvailable(port: number): Promise<boolean> {
 }
 
 async function findVitePort(): Promise<number> {
+  if (VITE_REQUIRE_BASE_PORT) {
+    if (await isPortAvailable(VITE_BASE_PORT)) return VITE_BASE_PORT;
+    throw new Error(`Requested Vite port ${VITE_BASE_PORT} is not available`);
+  }
   for (let port = VITE_BASE_PORT; port < VITE_BASE_PORT + 50; port++) {
     if (await isPortAvailable(port)) return port;
   }
@@ -110,6 +115,17 @@ function writeArtifacts(resultsDir: string, artifacts: BrowserArtifact[] | undef
   }
 }
 
+function writeArtifactSnapshotMetadata(resultsDir: string, snapshot: BrowserArtifactSnapshot): void {
+  if (!resultsDir) return;
+  mkdirSync(resultsDir, { recursive: true });
+  writeFileSync(resolve(resultsDir, "artifact-snapshot.json"), `${JSON.stringify({
+    writtenAt: new Date().toISOString(),
+    durationMs: snapshot.durationMs,
+    artifactCount: snapshot.artifacts?.length ?? 0,
+    artifactPaths: snapshot.artifacts?.map((artifact) => artifact.path) ?? [],
+  }, null, 2)}\n`);
+}
+
 async function main() {
   const argv = process.argv.slice(2);
   let timeoutMs = 600_000;
@@ -145,12 +161,18 @@ async function main() {
   let latestArtifacts: BrowserArtifact[] | undefined;
   try {
     const vitePort = await findVitePort();
+    if (resultsDir) {
+      mkdirSync(resultsDir, { recursive: true });
+      writeFileSync(resolve(resultsDir, "vite-port.txt"), `${vitePort}\n`);
+    }
     vite = await startViteServer(vitePort);
     browser = await chromium.launch({ args: ["--enable-features=SharedArrayBuffer"] });
     const context = await browser.newContext();
     const page = await context.newPage();
     await page.exposeFunction("__sqliteArtifactSnapshot", (snapshot: BrowserArtifactSnapshot) => {
       if (snapshot.artifacts?.length) latestArtifacts = snapshot.artifacts;
+      writeArtifacts(resultsDir, snapshot.artifacts);
+      writeArtifactSnapshotMetadata(resultsDir, snapshot);
     });
     page.on("console", (msg) => {
       if (msg.text().startsWith("[sqlite-progress]")) {

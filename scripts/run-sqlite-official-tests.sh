@@ -153,7 +153,8 @@ write_sqlite_report() {
   fi
 
   mkdir -p "$RESULTS_DIR"
-  for artifact in testrunner.db testrunner.log testrunner_build.log; do
+  sqlite3 "$db" "PRAGMA wal_checkpoint(TRUNCATE);" >/dev/null 2>&1 || true
+  for artifact in testrunner.db testrunner.db-wal testrunner.db-shm testrunner.db-journal testrunner.log testrunner_build.log; do
     if [ -f "$WORKDIR/$artifact" ]; then
       cp "$WORKDIR/$artifact" "$RESULTS_DIR/$artifact"
     fi
