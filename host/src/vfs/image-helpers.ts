@@ -51,3 +51,22 @@ export function ensureDirRecursive(fs: MemoryFileSystem, path: string): void {
 export function symlink(fs: MemoryFileSystem, target: string, path: string): void {
   try { fs.symlink(target, path); } catch { /* exists */ }
 }
+
+export interface PosixShellInstallOptions {
+  mode?: number;
+}
+
+/** Install dash as the VFS image's POSIX /bin/sh provider. */
+export function installPosixShell(
+  fs: MemoryFileSystem,
+  dashBytes: Uint8Array,
+  options: PosixShellInstallOptions = {},
+): void {
+  ensureDirRecursive(fs, "/bin");
+  ensureDirRecursive(fs, "/usr/bin");
+
+  writeVfsBinary(fs, "/bin/dash", dashBytes, options.mode ?? 0o755);
+  symlink(fs, "/bin/dash", "/bin/sh");
+  symlink(fs, "/bin/dash", "/usr/bin/dash");
+  symlink(fs, "/bin/dash", "/usr/bin/sh");
+}
