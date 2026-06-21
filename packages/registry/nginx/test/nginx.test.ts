@@ -220,9 +220,40 @@ describe.skipIf(!nginxWasmPath)(
         expect(resp).toContain("Server: nginx");
         expect(resp).toContain("Hello from nginx on WebAssembly!");
 
+        // Browser service-worker requests use this in-kernel injection path:
+        // kernel_inject_connection() plus global pipe-table reads/writes.
+        // Keep it covered with nginx's master_process on + worker_processes 2.
+        const injectedResp = await kw.sendHttpRequest(
+          testPort,
+          {
+            method: "GET",
+            url: "/",
+            headers: { Host: "localhost" },
+            body: null,
+          },
+          { timeoutMs: 15_000 },
+        );
+        expect(injectedResp.status).toBe(200);
+        expect(injectedResp.headers.Server).toContain("nginx");
+        expect(new TextDecoder().decode(injectedResp.body)).toContain(
+          "Hello from nginx on WebAssembly!",
+        );
+
         // Request a non-existent path → 404
         const resp404 = await httpGet(testPort, "/nonexistent", 15_000);
         expect(resp404).toContain("404");
+
+        const injected404 = await kw.sendHttpRequest(
+          testPort,
+          {
+            method: "GET",
+            url: "/nonexistent",
+            headers: { Host: "localhost" },
+            body: null,
+          },
+          { timeoutMs: 15_000 },
+        );
+        expect(injected404.status).toBe(404);
       } finally {
         // Tear down all workers
         for (const [pid, w] of workers) {

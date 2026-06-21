@@ -164,9 +164,10 @@ const DEMO_HOME = "/home/user";
 const NODE_WORKDIR = "/work";
 const DINITCTL_PATH = "/sbin/dinitctl";
 const DINITCTL_SOCKET_PATH = "/tmp/dinitctl";
-const DINIT_STARTING_POLL_INTERVAL_MS = 350;
+const DINIT_STARTING_POLL_INTERVAL_MS = 2_000;
 const DINIT_STARTING_POLL_TIMEOUT_MS = 180_000;
 const DINITCTL_LIST_TIMEOUT_MS = 2_000;
+const DINIT_STARTING_POLL_FAILURE_LIMIT = 3;
 
 class BootSuperseded extends Error {
   constructor() {
@@ -230,6 +231,7 @@ const LIVE_DEMO_IDS = [
   "wordpress-sqlite",
   "wordpress-mariadb",
   "doom",
+  "modeset",
 ] as const;
 
 type LiveDemoId = typeof LIVE_DEMO_IDS[number];
@@ -294,7 +296,7 @@ const LIVE_PROFILE_SPECS: Record<LiveDemoId, LiveProfileSpec> = {
     // MariaDB's Aria recovery can grow beyond the 4096-page cap used by
     // lighter PHP presets.
     memoryPages: 16384,
-    maxVfsByteLength: 512 * 1024 * 1024,
+    maxVfsByteLength: 768 * 1024 * 1024,
     network: true,
     init: {
       argv: DINIT_NGINX_ARGV,
@@ -312,6 +314,10 @@ const LIVE_PROFILE_SPECS: Record<LiveDemoId, LiveProfileSpec> = {
   doom: {
     image: "shell",
     features: ["framebuffer"],
+  },
+  modeset: {
+    image: "shell",
+    features: ["kms"],
   },
 };
 
@@ -723,14 +729,10 @@ function shellIdentityForProfile(profile: LiveProfile, boot?: BootDescriptor["bo
   gid: number;
 } {
   let identity: { env: string[]; cwd: string; uid: number; gid: number };
-  if (profile.software?.shellEnv) {
-    identity = profile.init || profile.software.shellEnv === SERVICE_ENV
-      ? { env: profile.software.shellEnv, cwd: ROOT_HOME, uid: ROOT_UID, gid: ROOT_GID }
-      : { env: profile.software.shellEnv, cwd: DEMO_HOME, uid: DEMO_UID, gid: DEMO_GID };
-  } else if (profile.shell === "node") {
+  if (profile.shell === "node") {
     identity = { env: shellEnvFor(profile.shell), cwd: shellCwdFor(profile.shell), uid: DEMO_UID, gid: DEMO_GID };
-  } else if (profile.init) {
-    identity = { env: SERVICE_ENV, cwd: ROOT_HOME, uid: ROOT_UID, gid: ROOT_GID };
+  } else if (profile.software?.shellEnv && profile.software.shellEnv !== SERVICE_ENV) {
+    identity = { env: profile.software.shellEnv, cwd: DEMO_HOME, uid: DEMO_UID, gid: DEMO_GID };
   } else {
     identity = { env: shellEnvFor(profile.shell), cwd: shellCwdFor(profile.shell), uid: DEMO_UID, gid: DEMO_GID };
   }
@@ -880,13 +882,21 @@ function startDinitStartingPoller(options: {
   let stopped = false;
   void (async () => {
     const deadline = Date.now() + DINIT_STARTING_POLL_TIMEOUT_MS;
+    let failures = 0;
     while (!stopped && options.isCurrent() && Date.now() < deadline) {
       if (options.shouldStop?.()) break;
       if (!vfsPathExists(options.memfs, DINITCTL_SOCKET_PATH)) {
         await delay(DINIT_STARTING_POLL_INTERVAL_MS);
         continue;
       }
-      const output = await readDinitctlList(options.kernel).catch(() => null);
+      let output: string | null = null;
+      try {
+        output = await readDinitctlList(options.kernel);
+        failures = 0;
+      } catch {
+        failures += 1;
+        if (failures >= DINIT_STARTING_POLL_FAILURE_LIMIT) break;
+      }
       if (stopped || !options.isCurrent()) break;
       if (output !== null) options.tracker.emitStartingFromList(output);
       await delay(DINIT_STARTING_POLL_INTERVAL_MS);
@@ -1036,7 +1046,6 @@ async function bootProfile(
   ) {
     writeVfsFile(memfs, "/etc/php-fpm.conf", PATCHED_PHP_FPM_CONF);
     ensureDirRecursive(memfs, "/var/cache/opcache");
-    stripDinitServiceLogfiles(memfs, dinitServicesForProfile(profile.id));
   }
   if (profile.id === "wordpress-sqlite") {
     patchWordPressRuntimeConfig(memfs, "sqlite");
@@ -1098,6 +1107,9 @@ async function bootProfile(
       onStdout: (data) => recordProcessOutput(data, "stdout"),
       onStderr: (data) => recordProcessOutput(data, "stderr"),
       onProcessEvent: (event) => { if (isCurrent()) host.emitProcessEvent(event); },
+      onHttpBridgePendingRequests: (count) => {
+        if (isCurrent()) host.setWebPreviewPendingRequests(count);
+      },
       onListenTcp: (pid, _fd, port) => {
         if (!isCurrent()) return;
         seenPorts.add(port);
@@ -1115,8 +1127,9 @@ async function bootProfile(
     stageSoftwareBinaries(kernel, softwareBinaries);
     assertCurrent();
     host.attachKernel(kernel);
-    const shellIdentity = shellIdentityForProfile(profile, effectiveBoot);
+    const shellIdentity = shellIdentityForProfile(profile, profile.init ? undefined : effectiveBoot);
     host.setDefaultShell({
+      programPath: "/bin/bash",
       programBytes: bashBytes,
       argv: ["bash", "-l", "-i"],
       env: shellIdentity.env,
@@ -1137,6 +1150,9 @@ async function bootProfile(
         await setupServiceWorkerFetchBridge(SW_URL, APP_PREFIX, kernel, HTTP_PORT, {
           timeoutMs: 90_000,
           debugLog: (line) => tick(line),
+          onPendingRequests: (count) => {
+            if (isCurrent()) host.setWebPreviewPendingRequests(count);
+          },
         });
         assertCurrent();
         bridgeSent = true;
@@ -1232,6 +1248,9 @@ async function bootProfile(
 
 function genericPresentationForProfile(profile: LiveProfile): DemoPresentation {
   if (profile.init?.web) return genericDemoPresentation("web");
+  if (profile.descriptor.runtime.features.includes("kms")) {
+    return genericDemoPresentation("kms");
+  }
   if (profile.framebufferTest || profile.descriptor.runtime.features.includes("framebuffer")) {
     return genericDemoPresentation("framebuffer");
   }
@@ -1303,29 +1322,6 @@ function patchWordPressRuntimeConfig(
     "/var/www/html/wp-content/mu-plugins/kandelo-url.php",
     WORDPRESS_URL_MU_PLUGIN,
   );
-}
-
-function dinitServicesForProfile(profileId: string): string[] {
-  switch (profileId) {
-    case "wordpress-mariadb":
-      return ["mariadb", MARIADB_READY_SERVICE, "wp-config-init", "php-fpm", "nginx"];
-    case "wordpress-sqlite":
-      return ["wp-config-init", "php-fpm", "nginx"];
-    case "nginx-php":
-      return ["php-fpm", "nginx"];
-    default:
-      return [];
-  }
-}
-
-function stripDinitServiceLogfiles(fs: MemoryFileSystem, serviceNames: string[]): void {
-  for (const serviceName of serviceNames) {
-    const path = `/etc/dinit.d/${serviceName}`;
-    const conf = readOptionalVfsText(fs, path);
-    if (conf === null) continue;
-    const patched = conf.replace(/^logfile\s*=.*(?:\r?\n|$)/gm, "");
-    if (patched !== conf) writeVfsFile(fs, path, patched);
-  }
 }
 
 function patchMariaDbUnixSocketConfig(fs: MemoryFileSystem): void {
@@ -1800,7 +1796,10 @@ function liveDemoIdForVfsImageUrl(vfsUrl: string): LiveDemoId | null {
 
   const matches = LIVE_DEMO_IDS.filter((id) => baseUrl === profileVfsBaseUrl(id));
   if (matches.length === 1) return matches[0];
-  return matches.find((id) => id !== "doom") ?? null;
+  // Multiple presets share the shell VFS image (doom, modeset). When the URL
+  // doesn't pin one via the hash, fall back to the shell preset so the
+  // ambiguous shell-image link doesn't auto-launch a demo binary.
+  return matches.find((id) => id !== "doom" && id !== "modeset") ?? null;
 }
 
 function profileVfsBaseUrl(id: LiveDemoId): string {

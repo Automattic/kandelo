@@ -3,16 +3,23 @@
 // During boot the machine shows syslog as the primary surface. Once the demo
 // reaches the useful state, the primary surface follows the active profile:
 // web preview for service demos, framebuffer for Doom, terminal for shell-like
-// demos. Terminal and internals stay available as drawers.
+// demos. Terminal is exposed after boot; internals stay available as a drawer.
 
 import * as React from "react";
-import { useDemoGuide, usePresentation, useStatus, useSurfaceAvailability, useWebPreview } from "../kernel-host/react";
+import {
+  useDemoGuide,
+  useLazyDownloads,
+  usePresentation,
+  useStatus,
+  useSurfaceAvailability,
+  useWebPreview,
+} from "../kernel-host/react";
 import { Inspector } from "../panes/Inspector";
 import { Display, type DisplayHandle, type WordPressLoginOptions } from "../panes/Display";
 import { Shell, type ShellTerminal } from "../panes/Shell";
 import { DemoGuide } from "../panes/DemoGuide";
 import type { DemoActionConfig } from "../../../../../web-libs/kandelo-session/src/demo-config";
-import type { PrimarySurface, SurfaceAvailability } from "../../../../../web-libs/kandelo-session/src/kernel-host";
+import type { LazyDownloadEvent, PrimarySurface, SurfaceAvailability } from "../../../../../web-libs/kandelo-session/src/kernel-host";
 
 const DEMO_GUIDE_DEFAULT_WIDTH = 300;
 const DEMO_GUIDE_MIN_WIDTH = 220;
@@ -47,6 +54,7 @@ export const MachineView: React.FC<MachineViewProps> = ({
     web: rawAvailability.web && webPreview?.status === "running",
   }), [rawAvailability, webPreview?.status]);
   const demoGuide = useDemoGuide();
+  const lazyDownloads = useLazyDownloads();
   const rootRef = React.useRef<HTMLDivElement>(null);
   const displayRef = React.useRef<DisplayHandle | null>(null);
   const [activePrimary, setActivePrimary] = React.useState<PrimarySurface>(presentation.bootPrimary);
@@ -57,6 +65,7 @@ export const MachineView: React.FC<MachineViewProps> = ({
   const [internalsDrawerHeight, setInternalsDrawerHeight] = React.useState(320);
   const [demoGuideWidth, setDemoGuideWidth] = React.useState(DEMO_GUIDE_DEFAULT_WIDTH);
   const previousAvailability = React.useRef(availability);
+  const canUseTerminal = status === "running" && availability.terminal;
 
   const defaultPrimary = React.useMemo<PrimarySurface>(() => {
     if (status !== "running") {
@@ -97,6 +106,10 @@ export const MachineView: React.FC<MachineViewProps> = ({
     setTerminalOpen(false);
     setInternalsOpen(false);
   }, [presentation.runningPrimary, presentation.autoCommand]);
+
+  React.useEffect(() => {
+    if (!canUseTerminal) setTerminalOpen(false);
+  }, [canUseTerminal]);
 
   const choosePrimary = (surface: PrimarySurface) => {
     if (status !== "running" && surface !== "syslog") return;
@@ -240,7 +253,7 @@ export const MachineView: React.FC<MachineViewProps> = ({
           />
           <SurfaceButton
             active={activePrimary === "terminal"}
-            disabled={status !== "running" || !availability.terminal}
+            disabled={!canUseTerminal}
             onClick={() => choosePrimary("terminal")}
             label="Terminal"
           />
@@ -250,7 +263,10 @@ export const MachineView: React.FC<MachineViewProps> = ({
             label="Internals"
           />
         </div>
-        <div className="kmachine-current">{primaryLabel}</div>
+        <div className="kmachine-current">
+          <LazyDownloadIndicator downloads={lazyDownloads} />
+          <span className="kmachine-current-label">{primaryLabel}</span>
+        </div>
       </div>
 
       <div
@@ -262,10 +278,14 @@ export const MachineView: React.FC<MachineViewProps> = ({
         <div className="kmachine-primary">
           {shouldMountDemoSurface && (
             <PrimarySurfaceSlot active={activePrimary === demoSurface}>
-              <Display ref={displayRef} autoFocus={activePrimary === demoSurface} />
+              <Display
+                ref={displayRef}
+                autoFocus={activePrimary === demoSurface}
+                surface={demoSurface ?? undefined}
+              />
             </PrimarySurfaceSlot>
           )}
-          {activePrimary === "terminal" && (
+          {activePrimary === "terminal" && canUseTerminal && (
             <PrimarySurfaceSlot active>
               <Shell autoFocus {...shellProps} />
             </PrimarySurfaceSlot>
@@ -286,14 +306,14 @@ export const MachineView: React.FC<MachineViewProps> = ({
         {showDemoGuide && (
           <DemoGuide
             onOpenTerminal={() => {
-              setTerminalOpen(true);
+              if (canUseTerminal) setTerminalOpen(true);
             }}
             onRunWebAction={runWebAction}
           />
         )}
       </div>
 
-      {activePrimary !== "terminal" && (
+      {activePrimary !== "terminal" && canUseTerminal && (
         <MachineDrawer
           title="Terminal"
           open={terminalOpen}
@@ -374,7 +394,7 @@ const SurfaceButton: React.FC<{
     disabled={disabled}
     onClick={onClick}
   >
-    {label}
+    <span className="kmachine-switch-label">{label}</span>
   </button>
 );
 
@@ -386,6 +406,37 @@ const PrimarySurfaceSlot: React.FC<{
     {children}
   </div>
 );
+
+const LazyDownloadIndicator: React.FC<{
+  downloads: LazyDownloadEvent[];
+}> = ({ downloads }) => {
+  if (downloads.length === 0) return null;
+  const current = downloads[0];
+  const pct = current.totalBytes && current.totalBytes > 0
+    ? Math.min(100, Math.max(0, (current.loadedBytes / current.totalBytes) * 100))
+    : null;
+  const title = `${downloadStatusVerb(current)} ${downloadLabel(current)} (${humanBytes(current.loadedBytes)}${
+    current.totalBytes ? ` / ${humanBytes(current.totalBytes)}` : ""
+  })`;
+  const label = downloadLabel(current);
+  const progressLabel = downloadProgressLabel(current, pct);
+
+  return (
+    <span
+      className={`kmachine-download kmachine-download-${current.status}`}
+      title={current.error ? `${title}: ${current.error}` : title}
+      aria-live="polite"
+      aria-label={current.error ? `${title}: ${current.error}` : title}
+    >
+      <span className="kmachine-download-label" aria-hidden="true">{label}</span>
+      <span className="kmachine-download-pct" aria-hidden="true">{progressLabel}</span>
+      {downloads.length > 1 && <span className="kmachine-download-count">+{downloads.length - 1}</span>}
+      <span className={`kmachine-download-bar${pct === null ? " indeterminate" : ""}`} aria-hidden="true">
+        <span style={{ width: pct === null ? "44%" : `${pct}%` }} />
+      </span>
+    </span>
+  );
+};
 
 const MachineDrawer: React.FC<{
   title: string;
@@ -426,6 +477,7 @@ function surfaceLabel(surface: PrimarySurface): string {
     case "terminal": return "Terminal";
     case "framebuffer": return "Framebuffer";
     case "web": return "Web Preview";
+    case "kms": return "Modeset";
     case "syslog": return "System Internals";
   }
 }
@@ -439,7 +491,9 @@ function resolvePrimary(
 }
 
 function resolveDemoSurface(preferences: readonly PrimarySurface[]): PrimarySurface | null {
-  return preferences.find((surface) => surface === "web" || surface === "framebuffer") ?? null;
+  return preferences.find((surface) =>
+    surface === "web" || surface === "framebuffer" || surface === "kms",
+  ) ?? null;
 }
 
 function isSurfaceAvailable(surface: PrimarySurface, availability: SurfaceAvailability): boolean {
@@ -448,4 +502,34 @@ function isSurfaceAvailable(surface: PrimarySurface, availability: SurfaceAvaila
 
 function clamp(value: number, min: number, max: number): number {
   return Math.min(Math.max(value, min), max);
+}
+
+function downloadStatusVerb(event: LazyDownloadEvent): string {
+  switch (event.status) {
+    case "complete": return "Downloaded";
+    case "error": return "Failed";
+    default: return "Downloading";
+  }
+}
+
+function downloadLabel(event: LazyDownloadEvent): string {
+  const raw = event.kind === "archive"
+    ? event.url
+    : event.path ?? event.mountPrefix ?? event.url;
+  const clean = raw.split(/[?#]/, 1)[0].replace(/\/+$/, "");
+  return clean.split("/").pop() || event.kind;
+}
+
+function downloadProgressLabel(event: LazyDownloadEvent, pct: number | null): string {
+  if (event.status === "complete") return "OK";
+  if (event.status === "error") return "ERR";
+  return pct === null ? "..." : `${Math.round(pct)}%`;
+}
+
+function humanBytes(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`;
+  const kib = bytes / 1024;
+  if (kib < 1024) return `${kib.toFixed(kib < 10 ? 1 : 0)} KiB`;
+  const mib = kib / 1024;
+  return `${mib.toFixed(mib < 10 ? 1 : 0)} MiB`;
 }

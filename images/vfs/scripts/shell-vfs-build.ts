@@ -1,19 +1,16 @@
 /**
  * Shared VFS-image populator for the Shell environment.
  *
- * Encapsulates everything build-shell-vfs-image.ts used to do inline so
- * the WordPress (SQLite) and LAMP demo builders can stand up the same
- * shell layout — shell-specific config plus optional bash/coreutils/grep/sed
- * and extended utilities — on top of which demos layer nginx/php-fpm
- * (+ MariaDB) and the WordPress tree.
+ * Encapsulates everything build-shell-vfs-image.ts used to do inline and
+ * exposes a loader for service demos that layer nginx/php-fpm (+ MariaDB)
+ * and application files on top of the already-built shell.vfs.zst image.
  *
- * The flag that distinguishes Shell from WP/LAMP usage is `eagerBinaries`.
- * Shell uses `false`: the canonical rootfs provides base utility lazy stubs,
- * then shell.vfs.zst overlays demo lazy stubs and lazy archives. Utility
- * bytes are fetched on first exec.
- * WP/LAMP use `true`: every tool binary is baked into the image, because those
- * demos run in `kernelOwnedFs: true` mode where the main thread has no
- * VFS to lazy-register against.
+ * The shell image uses `eagerBinaries: false`: the canonical rootfs provides
+ * base utility lazy stubs, then shell.vfs.zst overlays demo lazy stubs and
+ * lazy archives. Utility bytes are fetched on first exec.
+ * Historical standalone service images used `true`: every tool binary was
+ * baked into the image. Builtin Kandelo service demos now use shell.vfs.zst as
+ * their base image and keep its lazy metadata intact.
  */
 import { execFileSync } from "node:child_process";
 import { readFileSync, existsSync, statSync } from "node:fs";
@@ -72,6 +69,21 @@ export function resolveVfsArtifact(relPath: string, depName?: string): string {
   return resolveBinary(relPath);
 }
 
+export function loadShellBaseFileSystem(maxByteLength: number): MemoryFileSystem {
+  const shellImagePath = resolveVfsArtifact("programs/shell.vfs.zst", "shell");
+  const shellImage = new Uint8Array(readFileSync(shellImagePath));
+  const fs = MemoryFileSystem.fromImage(shellImage, { maxByteLength });
+  const stats = fs.statfs("/");
+  const effectiveMaxByteLength = stats.blocks * stats.bsize;
+  if (effectiveMaxByteLength >= maxByteLength) return fs;
+
+  console.log(
+    `Rebasing shell base VFS capacity from ${Math.round(effectiveMaxByteLength / 1024 / 1024)} MiB ` +
+      `to ${Math.round(maxByteLength / 1024 / 1024)} MiB...`,
+  );
+  return fs.rebaseToNewFileSystem(maxByteLength);
+}
+
 export interface ShellVfsOptions {
   /**
    * When true, every tool binary (bash, coreutils, grep, sed, bc, file,
@@ -93,9 +105,9 @@ export interface ShellVfsOptions {
 }
 
 /**
- * Populate `fs` with the canonical Shell environment. Called from
- * build-shell-vfs-image.ts (`eagerBinaries: false`) and from
- * build-wp-vfs-image.ts / build-lamp-vfs-image.ts (`eagerBinaries: true`).
+ * Populate `fs` with the canonical Shell environment. Called by the shell VFS
+ * builder itself; service-image builders should prefer
+ * `loadShellBaseFileSystem()` so they inherit the exact shell.vfs.zst artifact.
  *
  * Order is load-bearing: lazy archive metadata must be written before
  * extended symlinks point at their (lazy-stub) targets — the symlink
@@ -145,19 +157,10 @@ function populateSystem(fs: MemoryFileSystem): void {
   ]) {
     ensureDirRecursive(fs, dir);
   }
-  fs.chmod("/tmp", 0o777);
+  fs.chmod("/tmp", 0o1777);
   fs.chmod("/root", 0o700);
   fs.chown("/home/user", 1000, 1000);
-  fs.chown("/home/.nethack", 1000, 1000);
-  fs.chmod("/home/.nethack", 0o777);
-
-  // NetHack getlock() calls link(filename, lockname) on an empty marker
-  // file named `perm` in VAR_PLAYGROUND. With USE_FCNTL it opens the
-  // marker read/write before locking it, so the non-root demo user needs
-  // write access to this pre-created file.
-  writeVfsFile(fs, "/home/.nethack/perm", "");
-  fs.chown("/home/.nethack/perm", 1000, 1000);
-  fs.chmod("/home/.nethack/perm", 0o666);
+  populateNetHackPlayground(fs);
 
   // /etc/services — required for getservbyname/getservbyport calls in
   // nginx/php-fpm/MariaDB. Harmless in Shell-only builds.
@@ -217,17 +220,16 @@ function populateSystem(fs: MemoryFileSystem): void {
 
 function populateShellOverlay(fs: MemoryFileSystem): void {
   for (const dir of [
-    "/usr/local", "/usr/local/bin", "/usr/share/file", "/dev", "/usr/sbin",
-    "/home/.nethack",
+    "/bin", "/usr", "/usr/bin", "/usr/local", "/usr/local/bin",
+    "/usr/share", "/usr/share/file", "/etc", "/root", "/tmp", "/home",
+    "/home/user", "/dev", "/usr/sbin", "/home/.nethack",
   ]) {
     ensureDirRecursive(fs, dir);
   }
-  fs.chown("/home/.nethack", 1000, 1000);
-  fs.chmod("/home/.nethack", 0o777);
-
-  writeVfsFile(fs, "/home/.nethack/perm", "");
-  fs.chown("/home/.nethack/perm", 1000, 1000);
-  fs.chmod("/home/.nethack/perm", 0o666);
+  fs.chmod("/tmp", 0o1777);
+  fs.chmod("/root", 0o700);
+  fs.chown("/home/user", 1000, 1000);
+  populateNetHackPlayground(fs);
 
   const gitconfig = [
     "[maintenance]",
@@ -253,6 +255,27 @@ function populateShellOverlay(fs: MemoryFileSystem): void {
     "",
   ].join("\n");
   writeVfsFile(fs, "/etc/profile", profile);
+
+  // A rootfs artifact may provide the lazy binary inodes without the
+  // user-facing aliases the shell demo expects. Recreate the aliases
+  // here so shell.vfs stays self-contained even as rootfs stays minimal.
+  populateCoreutilsSymlinks(fs);
+  populateGrepSedSymlinks(fs);
+  populateBaseExtendedSymlinks(fs);
+  populateDemoExtendedSymlinks(fs);
+}
+
+function populateNetHackPlayground(fs: MemoryFileSystem): void {
+  fs.chown("/home/.nethack", 1000, 1000);
+  fs.chmod("/home/.nethack", 0o777);
+
+  // NetHack expects VAR_PLAYGROUND to contain the lock marker and score
+  // database before read-only score-listing commands such as `nethack -s`.
+  for (const file of ["/home/.nethack/perm", "/home/.nethack/record"]) {
+    writeVfsFile(fs, file, "");
+    fs.chown(file, 1000, 1000);
+    fs.chmod(file, 0o666);
+  }
 }
 
 // ── Shell binaries ──────────────────────────────────────────────

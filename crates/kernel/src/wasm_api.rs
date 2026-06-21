@@ -178,6 +178,47 @@ unsafe extern "C" {
     );
     fn host_unbind_framebuffer(pid: i32);
     fn host_fb_write(pid: i32, offset: usize, src: *const u8, len: usize);
+    fn host_gbm_bo_create(
+        pid: i32,
+        bo_id: u32,
+        size: u64,
+        width: u32,
+        height: u32,
+        stride: u32,
+    ) -> i32;
+    fn host_gbm_bo_destroy(pid: i32, bo_id: u32);
+    fn host_gbm_bo_bind(pid: i32, bo_id: u32, addr: usize, len: usize) -> i32;
+    fn host_gbm_bo_unbind(pid: i32, bo_id: u32, addr: usize, len: usize);
+    fn host_gl_bind(pid: i32, addr: usize, len: usize);
+    fn host_gl_unbind(pid: i32);
+    fn host_gl_create_context(pid: i32, ctx_id: u32, attrs_ptr: *const u8, attrs_len: usize);
+    fn host_gl_destroy_context(pid: i32, ctx_id: u32);
+    fn host_gl_create_surface(pid: i32, surface_id: u32, attrs_ptr: *const u8, attrs_len: usize);
+    fn host_gl_destroy_surface(pid: i32, surface_id: u32);
+    fn host_gl_make_current(pid: i32, ctx_id: u32, surface_id: u32);
+    fn host_gl_submit(pid: i32, offset: usize, length: usize) -> i32;
+    fn host_gl_present(pid: i32);
+    fn host_gl_query(
+        pid: i32, op: u32,
+        in_ptr: *const u8, in_len: usize,
+        out_ptr: *mut u8, out_len: usize,
+    ) -> i32;
+    fn host_kms_set_master(pid: i32);
+    fn host_kms_drop_master(pid: i32);
+    fn host_proc_write_bytes(pid: i32, addr: u32, src_ptr: *const u8, len: u32) -> i32;
+    fn host_proc_read_bytes(pid: i32, addr: u32, dst_ptr: *mut u8, len: u32) -> i32;
+    fn host_kms_mode_info(connector_id: u32, out_ptr: *mut u8);
+    fn host_kms_addfb(
+        pid: i32,
+        fb_id: u32,
+        bo_id: u32,
+        width: u32,
+        height: u32,
+        pixel_format: u32,
+        pitch: u32,
+    ) -> i32;
+    fn host_kms_rmfb(pid: i32, fb_id: u32);
+    fn host_kms_set_fb(pid: i32, crtc_id: u32, fb_id: u32);
 }
 
 // ---------------------------------------------------------------------------
@@ -931,6 +972,122 @@ impl HostIO for WasmHostIO {
 
     fn fb_write(&mut self, pid: i32, offset: usize, bytes: &[u8]) {
         unsafe { host_fb_write(pid, offset, bytes.as_ptr(), bytes.len()) }
+    }
+
+    fn gbm_bo_create(
+        &mut self,
+        pid: i32,
+        bo_id: u32,
+        size: u64,
+        width: u32,
+        height: u32,
+        stride: u32,
+    ) -> i32 {
+        unsafe { host_gbm_bo_create(pid, bo_id, size, width, height, stride) }
+    }
+
+    fn gbm_bo_destroy(&mut self, pid: i32, bo_id: u32) {
+        unsafe { host_gbm_bo_destroy(pid, bo_id) }
+    }
+
+    fn gbm_bo_bind(&mut self, pid: i32, bo_id: u32, addr: usize, len: usize) -> i32 {
+        unsafe { host_gbm_bo_bind(pid, bo_id, addr, len) }
+    }
+
+    fn gbm_bo_unbind(&mut self, pid: i32, bo_id: u32, addr: usize, len: usize) {
+        unsafe { host_gbm_bo_unbind(pid, bo_id, addr, len) }
+    }
+
+    fn gl_bind(&mut self, pid: i32, addr: usize, len: usize) {
+        unsafe { host_gl_bind(pid, addr, len) }
+    }
+
+    fn gl_unbind(&mut self, pid: i32) {
+        unsafe { host_gl_unbind(pid) }
+    }
+
+    fn gl_create_context(&mut self, pid: i32, ctx_id: u32, attrs: &[u8]) {
+        unsafe { host_gl_create_context(pid, ctx_id, attrs.as_ptr(), attrs.len()) }
+    }
+
+    fn gl_destroy_context(&mut self, pid: i32, ctx_id: u32) {
+        unsafe { host_gl_destroy_context(pid, ctx_id) }
+    }
+
+    fn gl_create_surface(&mut self, pid: i32, surface_id: u32, attrs: &[u8]) {
+        unsafe { host_gl_create_surface(pid, surface_id, attrs.as_ptr(), attrs.len()) }
+    }
+
+    fn gl_destroy_surface(&mut self, pid: i32, surface_id: u32) {
+        unsafe { host_gl_destroy_surface(pid, surface_id) }
+    }
+
+    fn gl_make_current(&mut self, pid: i32, ctx_id: u32, surface_id: u32) {
+        unsafe { host_gl_make_current(pid, ctx_id, surface_id) }
+    }
+
+    fn gl_submit(&mut self, pid: i32, offset: usize, length: usize) -> i32 {
+        unsafe { host_gl_submit(pid, offset, length) }
+    }
+
+    fn gl_present(&mut self, pid: i32) {
+        unsafe { host_gl_present(pid) }
+    }
+
+    fn gl_query(&mut self, pid: i32, op: u32, input: &[u8], out: &mut [u8]) -> i32 {
+        unsafe {
+            host_gl_query(
+                pid, op,
+                input.as_ptr(), input.len(),
+                out.as_mut_ptr(), out.len(),
+            )
+        }
+    }
+
+    fn kms_set_master(&mut self, pid: i32) {
+        unsafe { host_kms_set_master(pid) }
+    }
+
+    fn kms_drop_master(&mut self, pid: i32) {
+        unsafe { host_kms_drop_master(pid) }
+    }
+
+    fn proc_write_bytes(&mut self, pid: i32, addr: u32, src: &[u8]) -> i32 {
+        unsafe { host_proc_write_bytes(pid, addr, src.as_ptr(), src.len() as u32) }
+    }
+
+    fn proc_read_bytes(&mut self, pid: i32, addr: u32, dst: &mut [u8]) -> i32 {
+        unsafe { host_proc_read_bytes(pid, addr, dst.as_mut_ptr(), dst.len() as u32) }
+    }
+
+    fn kms_mode_info(
+        &mut self,
+        connector_id: u32,
+    ) -> wasm_posix_shared::dri::WpkDrmModeModeinfo {
+        let mut info = wasm_posix_shared::dri::WpkDrmModeModeinfo::default();
+        unsafe { host_kms_mode_info(connector_id, &mut info as *mut _ as *mut u8) }
+        info
+    }
+
+    fn kms_addfb(
+        &mut self,
+        pid: i32,
+        fb_id: u32,
+        bo_id: u32,
+        width: u32,
+        height: u32,
+        pixel_format: u32,
+        pitch: u32,
+    ) -> i32 {
+        unsafe { host_kms_addfb(pid, fb_id, bo_id, width, height, pixel_format, pitch) }
+    }
+
+    fn kms_rmfb(&mut self, pid: i32, fb_id: u32) {
+        unsafe { host_kms_rmfb(pid, fb_id) }
+    }
+
+    fn kms_set_fb(&mut self, pid: i32, crtc_id: u32, fb_id: u32) {
+        unsafe { host_kms_set_fb(pid, crtc_id, fb_id) }
     }
 }
 
@@ -2157,6 +2314,15 @@ pub extern "C" fn kernel_exec_setup(pid: u32) -> i32 {
         }
     }
 
+    {
+        let proc = match table.get_mut(pid) {
+            Some(p) => p,
+            None => return -(Errno::ESRCH as i32),
+        };
+        let mut host = WasmHostIO;
+        syscalls::release_exec_image_state(proc, &mut host);
+    }
+
     // Re-borrow after fd action scope ends
     let proc = match table.get(pid) {
         Some(p) => p,
@@ -2726,18 +2892,36 @@ fn dispatch_channel_syscall(nr: u32, args: &[i64; 6]) -> i32 {
         46 => {
             // SYS_MMAP: (addr, len, prot, flags, fd, pgoffset)
             // musl sends page offset (off / 4096) as a6.
-            // Convert to byte offset for kernel_mmap (lo, hi).
+            // Call sys_mmap directly so the errno reaches the channel
+            // dispatcher — going through kernel_mmap would squash every
+            // Errno variant to MAP_FAILED (usize::MAX), and `as i32`
+            // turns that into -1, which the dispatcher interprets as
+            // -EPERM.
             let pgoff = a6 as u32;
-            let byte_off = (pgoff as u64) << 12; // * 4096
-            kernel_mmap(
+            let byte_off = ((pgoff as u64) << 12) as i64;
+            let (_gkl, proc) = unsafe { get_process() };
+            let mut host = WasmHostIO;
+            let result = match syscalls::sys_mmap(
+                proc,
+                &mut host,
                 a1 as usize,
                 a2 as usize,
                 a3 as u32,
                 a4 as u32,
                 a5,
-                byte_off as u32,
-                (byte_off >> 32) as i32,
-            ) as i32
+                byte_off,
+            ) {
+                Ok(addr) => {
+                    if a3 as u32 != 0 {
+                        let end = addr.saturating_add(a2 as usize);
+                        ensure_memory_covers(end);
+                    }
+                    addr as i32
+                }
+                Err(e) => -(e as i32),
+            };
+            deliver_pending_signals(proc, &mut host);
+            result
         }
         47 => kernel_munmap(a1 as usize, a2 as usize), // SYS_MUNMAP
         48 => kernel_brk(a1 as usize) as i32,          // SYS_BRK
@@ -7722,11 +7906,11 @@ pub extern "C" fn kernel_tcsetattr(fd: i32, action: u32, buf_ptr: *const u8, buf
 pub extern "C" fn kernel_ioctl(fd: i32, request: u32, buf_ptr: *mut u8, buf_len: u32) -> i32 {
     let (_gkl, proc) = unsafe { get_process() };
     let buf = unsafe { core::slice::from_raw_parts_mut(buf_ptr, buf_len as usize) };
-    let result = match syscalls::sys_ioctl(proc, fd, request, buf) {
+    let mut host = WasmHostIO;
+    let result = match syscalls::sys_ioctl(proc, &mut host, fd, request, buf) {
         Ok(()) => 0,
         Err(e) => -(e as i32),
     };
-    let mut host = WasmHostIO;
     deliver_pending_signals(proc, &mut host);
     result
 }
@@ -10126,4 +10310,37 @@ pub extern "C" fn kernel_drain_wakeup_events(
 ) -> u32 {
     let out = unsafe { slice::from_raw_parts_mut(out_ptr, out_len as usize) };
     crate::wakeup::drain(out, max_events)
+}
+
+// ---------------------------------------------------------------------------
+// DRI / KMS
+// ---------------------------------------------------------------------------
+
+/// Tick the global vblank sequence counter and return the new value.
+///
+/// The host runs this on a 16.67 ms RAF / setInterval pump in the
+/// kernel worker; user programs that posted `DRM_IOCTL_WAIT_VBLANK`
+/// observe the new sequence on the next syscall round-trip.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_vblank() -> u32 {
+    crate::dri::vblank_tick()
+}
+
+/// Number of successful page-flip commits on the given crtc.
+///
+/// Useful for the host-side stats UI ("how many frames has the
+/// compositor produced since boot"). Today only `crtc_id == 1` is
+/// tracked; any other value returns 0.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_kms_commit_count(crtc_id: u32) -> u64 {
+    crate::dri::kms_commit_count(crtc_id)
+}
+
+/// Microseconds between the two most recent successful page-flip
+/// commits on the given crtc. Returns 0 if fewer than two flips have
+/// landed. Lets the host expose a real wasm-side frame rate without
+/// having to sample its own clock.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_kms_last_frame_us(crtc_id: u32) -> u64 {
+    crate::dri::kms_last_frame_us(crtc_id)
 }

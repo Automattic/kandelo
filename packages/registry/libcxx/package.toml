@@ -1,9 +1,9 @@
 # Per-library manifest for libc++ and libc++abi. See docs/package-management.md.
 #
 # This package replaces the in-tree scripts/build-libcxx.sh.
-# It builds libc++.a and libc++abi.a from the LLVM monorepo
-# (release/${version}.x branch via sparse checkout) and installs the
-# libc++ v1 headers from the host LLVM toolchain.
+# It builds libc++.a and libc++abi.a from the exact Nix-provided LLVM
+# source derivations exported by flake.nix, and installs the generated
+# libc++ v1 header tree from that same build.
 #
 # As of revision 2, LLVM libunwind is built alongside libcxx + libcxxabi
 # and statically linked into libc++abi.a (LIBCXXABI_USE_LLVM_UNWINDER +
@@ -16,23 +16,20 @@
 kind = "library"
 
 name = "libcxx"
-# LLVM major version. The build script clones release/<MAJOR>.x
-# and compiles libcxx + libcxxabi from that branch.
-version = "21"
+# Exact LLVM version from flake.nix's llvmPackages_21. The build script
+# refuses to run if this drifts from LLVM_VERSION or clang --version.
+version = "21.1.7"
 kernel_abi = 7
 depends_on = []
 # Both wasm32 (everyone) and wasm64 (MariaDB, PHP) currently
 # need libcxx, so we opt into both.
 arches = ["wasm32", "wasm64"]
 
-# Source: the upstream LLVM project. The build script clones
-# sparse against release/${VERSION}.x; we don't pin a tarball
-# because LLVM's release artifacts don't ship the granular
-# source-only archive we want. The schema requires sha256 to be
-# 64-char lowercase hex; we record all-zeros to denote "not a
-# tarball" — fetch integrity is delegated to the git branch ref
-# instead. (cargo xtask build-deps's tarball-verifier never runs
-# on this manifest; the build script does its own clone.)
+# Source: flake.nix's pinned nixpkgs LLVM source derivations
+# (llvmPackages_21.libcxx.src + llvmPackages_21.libunwind.src).
+# The schema requires a URL + sha256; this manifest's build script
+# does not fetch this URL directly, so the all-zero hash denotes
+# "source provided by Nix".
 [source]
 url = "https://github.com/llvm/llvm-project.git"
 sha256 = "0000000000000000000000000000000000000000000000000000000000000000"

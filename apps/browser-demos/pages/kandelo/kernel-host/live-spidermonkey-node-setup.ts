@@ -348,6 +348,7 @@ async function boot(
     host.setPresentation(SPIDERMONKEY_NODE_PRESENTATION);
     host.setDemoGuide(spiderMonkeyNodeGuide());
     host.setDefaultShell({
+      programPath: "/bin/bash",
       programBytes: bashBytes,
       argv: ["bash", "-l", "-i"],
       env: SHELL_ENV,

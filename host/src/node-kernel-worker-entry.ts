@@ -1291,17 +1291,21 @@ async function finishProcessExit(pid: number, exitStatus: number): Promise<void>
   const info = processes.get(pid);
 
   const teardown = (async () => {
-    // Deactivate process (zombie until reaped or destroy)
+    // Keep the pid registered until the process worker is gone. musl's
+    // _Exit() loops on SYS_exit after SYS_exit_group returns; while worker
+    // termination is in flight those duplicate exits still need channel
+    // completions, otherwise the worker can park in Atomics.wait with no
+    // registered listener left to wake it.
+    await terminateThreadWorkers(pid);
+    if (info?.worker) await terminateTrackedWorker(info.worker);
+
+    // Deactivate process (zombie until reaped or destroy) after worker
+    // termination so no further guest syscalls can arrive on its channel.
     kernelWorker.deactivateProcess(pid);
 
     processes.delete(pid);
     threadModuleCache.delete(pid);
     ptyByPid.delete(pid);
-
-    // Terminate any surviving thread workers for this process; the main
-    // process worker exiting means their shared state is gone.
-    await terminateThreadWorkers(pid);
-    if (info?.worker) await terminateTrackedWorker(info.worker);
   })();
   processTeardowns.set(pid, teardown);
 
@@ -1511,6 +1515,12 @@ port.on("message", (msg: MainToKernelMessage) => {
     }
     case "http_request":
       handleHttpRequest(msg);
+      break;
+    case "kms_attach_canvas":
+      kernelWorker.attachKmsCanvas(msg.crtcId, msg.canvas, msg.stats, msg.opts);
+      break;
+    case "kms_attach_stats":
+      kernelWorker.attachKmsStats(msg.crtcId, msg.stats);
       break;
   }
 });

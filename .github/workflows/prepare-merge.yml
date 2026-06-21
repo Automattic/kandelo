@@ -1514,6 +1514,16 @@ jobs:
         run: |
           bash scripts/dev-shell.sh bash scripts/ci-run-test-suite.sh "$SUITE"
 
+      - name: Upload browser test artifacts
+        if: failure() && steps.suite.outputs.skip != 'true' && matrix.suite == 'browser'
+        uses: actions/upload-artifact@v4
+        with:
+          name: browser-test-artifacts
+          path: |
+            apps/browser-demos/test-results
+          if-no-files-found: ignore
+          retention-days: 7
+
   test-gate:
     needs: [test-gate-prepare, test-suite]
     if: |

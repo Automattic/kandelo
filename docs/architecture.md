@@ -641,6 +641,42 @@ The remaining methods (`pipeRead`/`pipeWrite`, `injectConnection`, stdin/PTY rou
 
 **Service Worker** (`apps/browser-demos/public/service-worker.js`): Dual-mode file that acts as both a page bootstrap script (registers itself, enables cross-origin isolation) and a service worker (adds COOP/COEP headers, handles HTTP bridge routing).
 
+### Linux-compatible graphics devices
+
+Kandelo exposes a small Linux-shaped graphics stack through virtual character
+devices:
+
+- `/dev/dri/renderD128` accepts the render-node subset used by `libdrm`,
+  `libgbm`, EGL, and GLES userspace shims.
+- `/dev/dri/card0` adds the KMS subset used for one virtual connector, encoder,
+  CRTC, dumb buffers, framebuffer objects, `SET_MASTER`, `SET_CRTC`, and
+  `PAGE_FLIP` events.
+- `/dev/fb0` remains the simpler framebuffer path for software that writes a
+  linear BGRA buffer directly.
+
+The kernel owns the device ABI, fd-local GEM handles, DRM-master ownership,
+KMS framebuffer refcounts, BO mmap authorization, and process lifecycle
+cleanup. User programs cannot mmap an arbitrary BO id: the mmap offset must
+come from `DRM_IOCTL_MODE_MAP_DUMB` on the same open file description. On
+`munmap`, `exec`, `exit`, or final fd close, the kernel unbinds BO and GL
+memory from the host before those Wasm memory ranges can be reused.
+
+Pixel and GL execution are host responsibilities. The TypeScript host keeps
+GBM BO metadata/SAB snapshots, KMS scanout state, and WebGL contexts. GLIO
+command buffers live in the user process's Wasm memory; `libGLESv2.a` appends
+TLV commands, the kernel validates the submitted range, and the host decodes
+the commands against a browser `WebGL2RenderingContext` or a test double in
+Node.js. The kernel does not contain GL rendering code.
+
+The user-space libraries are sysroot libraries, not kernel build outputs:
+`scripts/build-musl.sh` installs the headers and builds `sysroot/lib/libdrm.a`,
+`libgbm.a`, `libEGL.a`, and `libGLESv2.a`, plus matching pkg-config files.
+Packages that depend on these APIs link through `wasm32posix-pkg-config` and
+declare their resulting program artifacts as packages. The `modeset` demo is
+one such package: its VFS image installs `/usr/local/bin/modeset`, and
+`/etc/kandelo/demo.json` selects the KMS surface and `autoCommand` that starts
+it. The browser loader stays generic; it does not special-case `modeset.wasm`.
+
 ## Performance Architecture
 
 ### The dedicated worker thread is the optimization

@@ -2,6 +2,8 @@ import * as React from "react";
 import { useWebPreview } from "../kernel-host/react";
 import { PaneHead } from "./PaneHead";
 import { Framebuffer, type FramebufferProps } from "./Framebuffer";
+import { Modeset } from "./Modeset";
+import type { PrimarySurface } from "../../../../../web-libs/kandelo-session/src/kernel-host";
 
 const ICON = (
   <svg width="13" height="13" viewBox="0 0 13 13" fill="none" stroke="currentColor" strokeWidth="1.4">
@@ -21,8 +23,21 @@ export interface DisplayHandle {
   loginToWordPress(options: WordPressLoginOptions): Promise<void>;
 }
 
-export const Display = React.forwardRef<DisplayHandle, FramebufferProps>((props, ref) => {
+export interface DisplayProps extends FramebufferProps {
+  /**
+   * Which demo surface the parent decided to mount. The mount is one of
+   * "framebuffer" | "web" | "kms" -- Display routes to the matching pane.
+   * Defaults to legacy behavior (web if a preview exists, otherwise
+   * framebuffer) for callers that don't yet pass a surface.
+   */
+  surface?: PrimarySurface;
+}
+
+export const Display = React.forwardRef<DisplayHandle, DisplayProps>(({ surface, ...props }, ref) => {
   const preview = useWebPreview();
+  if (surface === "kms") return <Modeset {...props} />;
+  if (surface === "framebuffer") return <Framebuffer {...props} />;
+  if (surface === "web" && preview) return <WebPreviewPane ref={ref} preview={preview} {...props} />;
   if (!preview) return <Framebuffer {...props} />;
   return <WebPreviewPane ref={ref} preview={preview} {...props} />;
 });
@@ -36,6 +51,8 @@ const WebPreviewPane = React.forwardRef<DisplayHandle, FramebufferProps & {
   const [draftPath, setDraftPath] = React.useState("/");
   const [iframeSrc, setIframeSrc] = React.useState(() => buildPreviewUrl(preview.url, "/"));
   const ready = preview.status === "running";
+  const pendingRequests = preview.pendingRequests ?? 0;
+  const hasPendingRequests = ready && pendingRequests > 0;
   const iframeRef = React.useRef<HTMLIFrameElement | null>(null);
 
   React.useEffect(() => {
@@ -193,6 +210,10 @@ const WebPreviewPane = React.forwardRef<DisplayHandle, FramebufferProps & {
                 aria-label="Preview URL path"
               />
               <button className="kweb-urlbar-go" type="submit">Go</button>
+              <RequestIndicator
+                active={hasPendingRequests}
+                pendingRequests={pendingRequests}
+              />
             </form>
             <iframe
               ref={iframeRef}
@@ -234,6 +255,25 @@ const WebPreviewPane = React.forwardRef<DisplayHandle, FramebufferProps & {
 });
 
 WebPreviewPane.displayName = "WebPreviewPane";
+
+const RequestIndicator: React.FC<{
+  active: boolean;
+  pendingRequests: number;
+}> = ({ active, pendingRequests }) => (
+  <span
+    className={`kweb-request-indicator${active ? " active" : ""}`}
+    role={active ? "status" : undefined}
+    aria-hidden={!active}
+    aria-label={active
+      ? `${pendingRequests} pending preview ${pendingRequests === 1 ? "request" : "requests"}`
+      : undefined}
+    title={active
+      ? `${pendingRequests} pending ${pendingRequests === 1 ? "request" : "requests"}`
+      : undefined}
+  >
+    <span className="kweb-request-spinner" />
+  </span>
+);
 
 function buildPreviewUrl(base: string, path: string): string {
   if (base === "about:blank") return base;

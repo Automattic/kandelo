@@ -19,6 +19,7 @@ import { populateShellEnvironment, resolveVfsArtifact } from "./shell-vfs-build"
 import {
   externalAsset,
   framebufferPresentation,
+  type DemoPresentationConfig,
   terminalPresentation,
   writeKandeloDemoConfig,
 } from "./kandelo-demo-config";
@@ -50,6 +51,8 @@ async function main() {
 
   console.log("Populating Doom runtime...");
   populateDoomRuntime(fs);
+  console.log("Populating modeset runtime...");
+  populateModesetRuntime(fs);
   writeKandeloDemoConfig(fs, {
     version: 1,
     profiles: {
@@ -69,6 +72,9 @@ async function main() {
           }),
         ],
       },
+      modeset: {
+        presentation: kmsPresentation("/usr/local/bin/modeset"),
+      },
     },
   });
 
@@ -83,4 +89,19 @@ main().catch((err) => {
 function populateDoomRuntime(fs: MemoryFileSystem): void {
   const fbdoomBytes = readFileSync(resolveVfsArtifact("programs/fbdoom.wasm", "fbdoom"));
   writeVfsBinary(fs, "/usr/local/bin/fbdoom", new Uint8Array(fbdoomBytes), 0o755);
+}
+
+function populateModesetRuntime(fs: MemoryFileSystem): void {
+  const modesetBytes = readFileSync(resolveVfsArtifact("programs/modeset.wasm", "modeset"));
+  writeVfsBinary(fs, "/usr/local/bin/modeset", new Uint8Array(modesetBytes), 0o755);
+}
+
+function kmsPresentation(autoCommand: string): DemoPresentationConfig {
+  return {
+    bootPrimary: "syslog",
+    runningPrimary: ["kms", "terminal", "syslog"],
+    terminalAccess: "drawer",
+    internalsAccess: "drawer",
+    autoCommand,
+  };
 }

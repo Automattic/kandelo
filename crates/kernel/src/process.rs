@@ -227,6 +227,145 @@ pub trait HostIO {
     /// copy into. Geometry/format come from a prior `bind_framebuffer`
     /// call with `addr=0, len=0` (the sentinel "write-based binding").
     fn fb_write(&mut self, pid: i32, offset: usize, bytes: &[u8]);
+    // --- DRI v2 buffer-sharing surface (renderD128 GBM) -----------------
+    //
+    // Default impls return `-ENOSYS as i32` / no-op so existing test
+    // mocks need no boilerplate. Concrete production hosts (Node +
+    // Browser) override these with their wasm-import bindings.
+
+    /// Allocate host-side SAB backing for a freshly-created bo. Called
+    /// once per `DRM_IOCTL_MODE_CREATE_DUMB`. Returns ≥ 0 on success,
+    /// negative errno on failure.
+    #[allow(unused_variables)]
+    fn gbm_bo_create(
+        &mut self,
+        pid: i32,
+        bo_id: u32,
+        size: u64,
+        width: u32,
+        height: u32,
+        stride: u32,
+    ) -> i32 {
+        -(Errno::ENOSYS as i32)
+    }
+
+    /// Free host-side SAB backing for a bo whose refcount has reached
+    /// zero. Idempotent: calling on an unknown `bo_id` is a no-op.
+    #[allow(unused_variables)]
+    fn gbm_bo_destroy(&mut self, pid: i32, bo_id: u32) {}
+
+    /// Bind a bo's SAB slice into a process's wasm `Memory` at `addr`
+    /// for `len` bytes. Called from the mmap path once
+    /// `mmap_anonymous` has reserved the wasm pages. After this
+    /// returns, writes to `[addr, addr+len)` go directly to the SAB.
+    /// Returns 0 on success, negative errno on failure.
+    #[allow(unused_variables)]
+    fn gbm_bo_bind(&mut self, pid: i32, bo_id: u32, addr: usize, len: usize) -> i32 {
+        -(Errno::ENOSYS as i32)
+    }
+
+    /// Unbind a prior `gbm_bo_bind` — called from munmap /
+    /// process-exit before the wasm pages are returned to the
+    /// anonymous pool.
+    #[allow(unused_variables)]
+    fn gbm_bo_unbind(&mut self, pid: i32, bo_id: u32, addr: usize, len: usize) {}
+
+    /// Notify the host that process `pid` has mapped its GL cmdbuf at the
+    /// given offset within its wasm `Memory`. Length is always
+    /// `shared::gl::CMDBUF_LEN` in v1.
+    #[allow(unused_variables)]
+    fn gl_bind(&mut self, pid: i32, addr: usize, len: usize) {}
+
+    /// Notify the host that the GL cmdbuf for `pid` is gone (`munmap`,
+    /// process exit, or exec). Idempotent.
+    #[allow(unused_variables)]
+    fn gl_unbind(&mut self, pid: i32) {}
+
+    /// Allocate a host-side WebGL context. `ctx_id` is the per-fd id chosen
+    /// by the kernel; `attrs` is a marshalled `shared::gl::GlContextAttrs`.
+    #[allow(unused_variables)]
+    fn gl_create_context(&mut self, pid: i32, ctx_id: u32, attrs: &[u8]) {}
+
+    #[allow(unused_variables)]
+    fn gl_destroy_context(&mut self, pid: i32, ctx_id: u32) {}
+
+    /// Allocate a host-side surface (default canvas or pbuffer). `attrs`
+    /// is a marshalled `shared::gl::GlSurfaceAttrs`.
+    #[allow(unused_variables)]
+    fn gl_create_surface(&mut self, pid: i32, surface_id: u32, attrs: &[u8]) {}
+
+    #[allow(unused_variables)]
+    fn gl_destroy_surface(&mut self, pid: i32, surface_id: u32) {}
+
+    /// Bind ctx + surface as the current rendering target for `pid`.
+    #[allow(unused_variables)]
+    fn gl_make_current(&mut self, pid: i32, ctx_id: u32, surface_id: u32) {}
+
+    /// Decode and dispatch one cmdbuf submit. `offset` / `length` are
+    /// within the bound cmdbuf region (validated by the kernel against
+    /// `shared::gl::CMDBUF_LEN`). Returns 0 on success, or a negative
+    /// errno when the host rejects the command stream or cannot dispatch it.
+    #[allow(unused_variables)]
+    fn gl_submit(&mut self, pid: i32, offset: usize, length: usize) -> i32 {
+        0
+    }
+
+    /// Flush any pending GL work and signal "frame ready". v1 no-op
+    /// (canvas presents on the next RAF); kept as a hook for future
+    /// fence/sync work.
+    #[allow(unused_variables)]
+    fn gl_present(&mut self, pid: i32) {}
+
+    /// Synchronous GL query (`glGetError`, `glReadPixels`, etc.).
+    /// Returns bytes written into `out`, or negative errno on failure.
+    #[allow(unused_variables)]
+    fn gl_query(&mut self, pid: i32, op: u32, input: &[u8], out: &mut [u8]) -> i32 {
+        -(Errno::ENOSYS as i32)
+    }
+
+    #[allow(unused_variables)]
+    fn kms_set_master(&mut self, pid: i32) {}
+
+    #[allow(unused_variables)]
+    fn kms_drop_master(&mut self, pid: i32) {}
+
+    #[allow(unused_variables)]
+    fn proc_write_bytes(&mut self, pid: i32, addr: u32, src: &[u8]) -> i32 {
+        0
+    }
+
+    /// Copy `dst.len()` bytes from the wasm process at `pid`'s linear
+    /// memory at `addr` into the kernel-side scratch `dst`. Returns 0 on
+    /// success, negative errno on failure.
+    #[allow(unused_variables)]
+    fn proc_read_bytes(&mut self, pid: i32, addr: u32, dst: &mut [u8]) -> i32 {
+        0
+    }
+
+    #[allow(unused_variables)]
+    fn kms_mode_info(&mut self, connector_id: u32) -> wasm_posix_shared::dri::WpkDrmModeModeinfo {
+        wasm_posix_shared::dri::WpkDrmModeModeinfo::default()
+    }
+
+    #[allow(unused_variables)]
+    fn kms_addfb(
+        &mut self,
+        pid: i32,
+        fb_id: u32,
+        bo_id: u32,
+        width: u32,
+        height: u32,
+        pixel_format: u32,
+        pitch: u32,
+    ) -> i32 {
+        0
+    }
+
+    #[allow(unused_variables)]
+    fn kms_rmfb(&mut self, pid: i32, fb_id: u32) {}
+
+    #[allow(unused_variables)]
+    fn kms_set_fb(&mut self, pid: i32, crtc_id: u32, fb_id: u32) {}
 }
 
 /// Process lifecycle state.
@@ -255,6 +394,22 @@ pub struct FbBinding {
     pub stride: u32,
     /// Pixel format tag (reserved; currently always 0 = BGRA32).
     pub fmt: u32,
+}
+
+/// Per-process binding tracking the live mmap of a DRI buffer object.
+///
+/// Recorded by `sys_mmap` on a `/dev/dri/{card0,renderD128}` fd whose
+/// `MODE_MAP_DUMB` offset decodes to `bo_id`. `sys_munmap` consults
+/// this list so it can call [`HostIO::gbm_bo_unbind`] before the wasm
+/// pages are returned to the anonymous pool.
+#[derive(Debug, Clone, Copy)]
+pub struct DriBoBinding {
+    /// Start address in the process's wasm `Memory`.
+    pub addr: usize,
+    /// Length in bytes (aligned to wasm page).
+    pub len: usize,
+    /// Bo currently bound at `[addr, addr+len)`.
+    pub bo_id: crate::dri::BoId,
 }
 
 /// Per-thread state within a process.
@@ -454,6 +609,10 @@ pub struct Process {
     /// Live mmap of `/dev/fb0`, if any. `Some` between successful
     /// `mmap` and the matching `munmap`/process-exit/exec.
     pub fb_binding: Option<FbBinding>,
+    /// Active mmaps of DRI buffer objects. Each entry pairs a wasm
+    /// memory region with the bo currently bound there so `sys_munmap`
+    /// can issue the matching [`HostIO::gbm_bo_unbind`].
+    pub dri_bindings: Vec<DriBoBinding>,
     /// Counts how many times this process has called fork() (parent side, on success).
     /// Read-only from outside the kernel via `kernel_get_fork_count`.
     /// Used as a regression guardrail by the spawn test suite to confirm
@@ -538,6 +697,7 @@ impl Process {
             procfs_bufs: Vec::new(),
             has_exec: false,
             fb_binding: None,
+            dri_bindings: Vec::new(),
             fork_count: 0,
         }
     }

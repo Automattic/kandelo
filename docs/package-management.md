@@ -334,6 +334,15 @@ that doesn't respect them cannot be cached safely.
 | `WASM_POSIX_DEP_SOURCE_SHA256` | Expected sha256 of the downloaded tarball. Scripts **must** verify after download — the resolver does not fetch. |
 | `WASM_POSIX_DEP_<UPPER>_DIR` | For each *direct* dep, the resolved path to that dep's build output. `<UPPER>` is the dep name upper-cased, with `-` → `_` (e.g. `zlib-ng` → `ZLIB_NG`). Transitive deps are not surfaced — scripts that need them should declare them in `depends_on`. |
 
+The libcxx package is intentionally stricter than ordinary source-fetching
+packages. It builds the C++ standard library from the exact LLVM source
+derivations exported by `flake.nix` (`WASM_POSIX_LLVM_LIBCXX_SOURCE` and
+`WASM_POSIX_LLVM_LIBUNWIND_SOURCE`) and hard-fails if `LLVM_VERSION`,
+`clang --version`, and `packages/registry/libcxx/package.toml` disagree.
+That Nix-only restriction applies to rebuilding the repo's libcxx package
+from source; it does not restrict normal SDK users compiling against a
+published sysroot/libc++ artifact.
+
 After the script exits 0, the resolver verifies every path in
 `outputs.{libs,headers,pkgconfig}` exists under `$WASM_POSIX_DEP_OUT_DIR`.
 A missing output fails the build (and the temp dir is cleaned up,
@@ -357,6 +366,26 @@ env var is absent). `npm link` is now optional, and intentionally
 discouraged for multi-worktree development because the global
 symlink it creates routes every shell to a single worktree's
 source.
+
+### Sysroot libraries are not packages
+
+Some APIs are part of the Kandelo sysroot rather than the package graph. The
+DRI/EGL/GLES shims (`libdrm.a`, `libgbm.a`, `libEGL.a`, `libGLESv2.a`) are
+built by `scripts/build-musl.sh` and exposed through
+`wasm32posix-pkg-config`; they are not outputs of the `kernel` package and
+should not be modeled as standalone package dependencies.
+
+A package that depends on those libraries should:
+
+1. Source `sdk/activate.sh` and set `WASM_POSIX_SYSROOT` to the active worktree
+   sysroot, as other package build scripts do.
+2. Link with `wasm32posix-pkg-config --cflags/--libs` for `libdrm`, `gbm`,
+   `egl`, and/or `glesv2`.
+3. Declare only the consumer artifact in `[[outputs]]`.
+4. Add the relevant sysroot/glue inputs (`libc/glue/lib*_stub.c`,
+   `libc/glue/gl_abi.h`, `scripts/build-musl.sh`, `scripts/build-dri-stubs.sh`,
+   `scripts/build-gles-stubs.sh`) to `build.toml.inputs` so cache keys move
+   when the sysroot implementation changes.
 
 ## Migrating a consumer to the cache
 
