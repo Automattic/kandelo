@@ -80,6 +80,7 @@ class Supervisor:
         self.lanes = lanes
         self.results_root = Path(args.results_root).resolve()
         self.current_run = Path(args.current_run).resolve() if args.current_run else self.results_root / "current-run.json"
+        self.tmp_root = Path(args.tmp_root).resolve() if args.tmp_root else self.results_root / "tmp"
         self.outcome_dir = self.results_root / "outcome-lists"
         self.summary_json = self.results_root / "summary.json"
         self.summary_md = self.results_root / "summary.md"
@@ -102,7 +103,7 @@ class Supervisor:
             )
         for index, lane in enumerate(self.lanes, start=1):
             lane.run_dir = self.results_root / "runs" / lane.name
-            lane.tmp_dir = lane.run_dir / "tmp"
+            lane.tmp_dir = self.tmp_root / lane.name
             lane.command_log = lane.run_dir / "command.log"
             lane.run_dir.mkdir(parents=True, exist_ok=True)
             lane.tmp_dir.mkdir(parents=True, exist_ok=True)
@@ -547,6 +548,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument("--timeout-ms", type=int, default=600_000)
     parser.add_argument("--results-root", default=str(REPO_ROOT / "test-runs/sqlite-project-unit-supervised" / datetime.now().strftime("%Y%m%d-%H%M%S")))
     parser.add_argument("--current-run", default="", help="current-run.json path (default: <results-root>/current-run.json)")
+    parser.add_argument("--tmp-root", default="", help="short temporary root for lane TMPDIR values")
     parser.add_argument("--manifest", default="", help="TSV with lane, port, patterns columns")
     parser.add_argument("--lane", action="append", type=parse_lane, help="lane as NAME:PORT:PATTERN[,PATTERN...]")
     parser.add_argument("--base-port", type=int, default=5200)
