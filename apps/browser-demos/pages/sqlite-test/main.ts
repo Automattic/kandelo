@@ -171,10 +171,17 @@ function createFs(): MemoryFileSystem {
 
 function installKandeloTestrunnerPlatformOverride(fs: MemoryFileSystem): void {
   const originalRunner = new TextDecoder().decode(readVfsFile(fs, SQLITE_TESTRUNNER_PATH));
+  const runner = originalRunner.replace(
+    "trdb eval {PRAGMA journal_mode=WAL;}",
+    "trdb eval {PRAGMA journal_mode=DELETE;}",
+  );
+  if (runner === originalRunner) {
+    throw new Error("SQLite testrunner journal-mode patch did not apply");
+  }
   writeVfsFile(
     fs,
     SQLITE_TESTRUNNER_PATH,
-    `${kandeloTestrunnerPlatformPrelude()}${originalRunner}`,
+    `${kandeloTestrunnerPlatformPrelude()}${runner}`,
     0o644,
   );
   writeVfsFile(fs, "/sqlite/kandelo-testrunner.tcl", [

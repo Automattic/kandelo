@@ -65,6 +65,11 @@ SQLITE_CFLAGS="-O2 \
     -DSQLITE_ENABLE_JSON1 \
     -DSQLITE_ENABLE_MATH_FUNCTIONS"
 
+# The CLI shell recurses through process_input() for nested .read files.
+# wasm-ld's default 64KiB shadow stack traps in browser before SQLite reaches
+# its own MAX_INPUT_NESTING guard in shell4.test.
+SQLITE_CLI_LDFLAGS="-Wl,-z,stack-size=1048576"
+
 # --- Compile library ---
 echo "==> Compiling SQLite for Wasm..."
 # shellcheck disable=SC2086
@@ -100,6 +105,7 @@ if [ "$BUILD_CLI" = "1" ]; then
     # shellcheck disable=SC2086
     wasm32posix-cc $SQLITE_CFLAGS \
         "$SRC_DIR/shell.c" "$SRC_DIR/sqlite3.c" \
+        $SQLITE_CLI_LDFLAGS \
         -o "$INSTALL_DIR/bin/sqlite3.wasm" -lm
 
     source "$REPO_ROOT/scripts/install-local-binary.sh"
