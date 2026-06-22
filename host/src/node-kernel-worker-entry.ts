@@ -501,11 +501,12 @@ function buildVirtualPlatformIO(
   rootfsImage: ArrayBuffer,
   extraMounts?: Array<{ mountPoint: string; hostPath: string; readonly?: boolean }>,
 ): VirtualPlatformIO {
-  sessionDir = mkdtempSync(join(tmpdir(), "wasm-posix-session-"));
+  const bootSessionDir = mkdtempSync(join(tmpdir(), "wasm-posix-session-"));
+  sessionDir = bootSessionDir;
   const specMounts = resolveForNode(
     DEFAULT_MOUNT_SPEC,
     new Uint8Array(rootfsImage),
-    sessionDir,
+    bootSessionDir,
   );
   const shmSab = new SharedArrayBuffer(16 * 1024 * 1024);
   const shmfs = MemoryFileSystem.create(shmSab);

@@ -472,13 +472,11 @@ function buildImportObject(
 
   // llvm/lld ≥22 emit __c_longjmp as a tag import for setjmp users; instantiation fails silently without it.
   if (moduleImports.some(i => i.module === "env" && i.name === "__c_longjmp" && (i.kind as string) === "tag")) {
-    const Tag = (
-      WebAssembly as typeof WebAssembly & {
-        Tag?: new (descriptor: { parameters: string[] }) => WebAssembly.ExportValue;
-      }
-    ).Tag;
+    const Tag = (WebAssembly as typeof WebAssembly & {
+      Tag?: new (descriptor: { parameters: string[] }) => WebAssembly.Tag;
+    }).Tag;
     if (Tag) {
-      envImports.__c_longjmp = new Tag({ parameters: ["i32"] });
+      envImports.__c_longjmp = new Tag({ parameters: ["i32"] }) as unknown as WebAssembly.ExportValue;
     }
   }
 

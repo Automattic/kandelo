@@ -810,7 +810,7 @@ export class CentralizedKernelWorker {
   private ptyOutputCallbacks = new Map<number, (data: Uint8Array) => void>();
 
   /** Virtual MAC address for this kernel instance (locally administered, unicast) */
-  private virtualMacAddress: Uint8Array;
+  private virtualMacAddress: Uint8Array<ArrayBuffer>;
 
   /** KMS presenter: OffscreenCanvas per CRTC for the vblank pump to blit
    *  the bound framebuffer into. Populated via `attachKmsCanvas`. */
