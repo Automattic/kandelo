@@ -122,8 +122,8 @@
     "tsup": "^8.0.0",
     "tsx": "^4.21.0",
     "typedoc": "^0.28.18",
-    "typescript": "^5.4.0",
-    "vitest": "^3.0.0"
+    "typescript": "^6.0.3",
+    "vitest": "^4.1.9"
   },
   "dependencies": {
     "fflate": "^0.8.2",
