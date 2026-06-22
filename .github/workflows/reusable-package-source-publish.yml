@@ -32,12 +32,12 @@ jobs:
     timeout-minutes: 1440
     steps:
       - name: Checkout package source
-        uses: actions/checkout@v6.0.2
+        uses: actions/checkout@v6.0.3
         with:
           path: package-source
 
       - name: Checkout Kandelo
-        uses: actions/checkout@v6.0.2
+        uses: actions/checkout@v6.0.3
         with:
           repository: ${{ inputs.kandelo-repository }}
           ref: ${{ inputs.kandelo-ref }}
