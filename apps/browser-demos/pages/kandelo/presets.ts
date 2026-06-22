@@ -130,8 +130,8 @@ export const PRESET_LIBRARY: Preset[] = [
   },
   {
     id: "sdl2",
-    title: "SDL2 demo",
-    summary: "320×240 SDL2 demo: spinning GLES2 quad on /dev/dri/card0, 440 Hz ALSA tone, ESC quits via evdev. Runs for 5 s.",
+    title: "SDL2 GLSL playground",
+    summary: "SDL2 GLSL shader playground: a live-coding editor (left) beside a GLES2 fragment shader rendered on a 1920×1080 /dev/dri/card0 surface (right), auto-recompiling 250 ms after you stop typing. F1/F2 switch between the image and sound shader, Ctrl+L cycles presets, Ctrl+S persists, ESC quits.",
     base: SHELL_BASE,
     packages: ["bash@local", "coreutils@local"],
     accent: "#9c27b0",

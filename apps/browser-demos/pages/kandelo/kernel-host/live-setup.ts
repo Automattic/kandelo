@@ -75,6 +75,13 @@ import dinitWasmUrl from "@binaries/programs/wasm32/dinit/dinit.wasm?url";
 import dashWasmUrl from "@binaries/programs/wasm32/dash.wasm?url";
 import bashWasmUrl from "@binaries/programs/wasm32/bash.wasm?url";
 import sdl2PlasmaFragSrc from "../../../../../programs/sdl2/presets/image/plasma.frag?raw";
+import sdl2AudioBarsFragSrc from "../../../../../programs/sdl2/presets/image/audio_bars.frag?raw";
+import sdl2TunnelwispFragSrc from "../../../../../programs/sdl2/presets/image/tunnelwisp.frag?raw";
+import sdl2SoundSineFragSrc from "../../../../../programs/sdl2/presets/sound/sine.frag?raw";
+import sdl2SoundTunnelwispFragSrc from "../../../../../programs/sdl2/presets/sound/tunnelwisp.frag?raw";
+import sdl2SoundFmBellFragSrc from "../../../../../programs/sdl2/presets/sound/fm_bell.frag?raw";
+import sdl2SoundNoiseSweepFragSrc from "../../../../../programs/sdl2/presets/sound/noise_sweep.frag?raw";
+import sdl2SoundChordFragSrc from "../../../../../programs/sdl2/presets/sound/chord.frag?raw";
 
 const DEFAULT_SOFTWARE_MANIFEST_URLS = [
   `https://github.com/brandonpayton/kandelo-software/releases/download/binaries-abi-v${ABI_VERSION}/gallery.json`,
@@ -397,10 +404,10 @@ interface LiveProfile {
    * Stage the SDL2 playground binary at `/usr/local/bin/sdl2`,
    * attach a `BrowserInputSource` + `BrowserAudioDriver`, then run
    * it from bash. The binary opens /dev/dri/card0 (KMS) for video,
-   * ALSA for audio, and /dev/input/event{0,1} for ESC; the Modeset
-   * pane picks up PAGE_FLIP. At Phase 0 the binary still self-exits
-   * after 5 s (or earlier on ESC); future playground phases turn it
-   * into the long-running split-pane editor.
+   * ALSA for audio, and /dev/input/event{0,1} for keyboard; the
+   * Modeset pane picks up PAGE_FLIP. It is the long-running
+   * split-pane GLSL editor — a code pane that live-recompiles a
+   * fragment shader rendered alongside it — and runs until ESC quits.
    */
   sdl2Demo: boolean;
 }
@@ -1302,7 +1309,7 @@ async function bootProfile(
           // Stage (2) so the browser path exercises the VFS leg, and
           // mkdir (1)'s parent so the user can drop a current.frag
           // via terminal/host VFS without first creating dirs.
-          tick("staging shader preset...");
+          tick("staging shader presets...");
           ensureDirRecursive(kernelForSdl2.fs, "/usr/share/shaders/image");
           ensureDirRecursive(kernelForSdl2.fs, "/home/shaders/image");
           writeVfsFile(
@@ -1310,13 +1317,66 @@ async function bootProfile(
             "/usr/share/shaders/image/plasma.frag",
             sdl2PlasmaFragSrc,
           );
+          // Phase 5 FFT-bars preset: visualizes the iAudio spectrum
+          // uploaded each frame from the chip synth. Stage it so the
+          // user can load it from the editor.
+          writeVfsFile(
+            kernelForSdl2.fs,
+            "/usr/share/shaders/image/audio_bars.frag",
+            sdl2AudioBarsFragSrc,
+          );
+          // Phase 7 boot default: "Trailing the Twinkling Tunnelwisp"
+          // (CC0, ported from shadertoy.com/view/WfcGWj). main.c's image
+          // preset leg resolves this instead of plasma, so it is what the
+          // user sees on first boot, paired with the Tunnelwisp track
+          // staged below.
+          writeVfsFile(
+            kernelForSdl2.fs,
+            "/usr/share/shaders/image/tunnelwisp.frag",
+            sdl2TunnelwispFragSrc,
+          );
+          // Phase 6 sound-shader presets: mainSound bodies rendered to an
+          // FBO, read back, and played through ALSA (F2 in the playground
+          // switches the editor to the sound shader). Phase 7's
+          // tunnelwisp.frag is the boot default sound source (activated
+          // immediately, not on first F2); the others are loadable presets.
+          ensureDirRecursive(kernelForSdl2.fs, "/usr/share/shaders/sound");
+          ensureDirRecursive(kernelForSdl2.fs, "/home/shaders/sound");
+          writeVfsFile(
+            kernelForSdl2.fs,
+            "/usr/share/shaders/sound/tunnelwisp.frag",
+            sdl2SoundTunnelwispFragSrc,
+          );
+          writeVfsFile(
+            kernelForSdl2.fs,
+            "/usr/share/shaders/sound/sine.frag",
+            sdl2SoundSineFragSrc,
+          );
+          writeVfsFile(
+            kernelForSdl2.fs,
+            "/usr/share/shaders/sound/fm_bell.frag",
+            sdl2SoundFmBellFragSrc,
+          );
+          writeVfsFile(
+            kernelForSdl2.fs,
+            "/usr/share/shaders/sound/noise_sweep.frag",
+            sdl2SoundNoiseSweepFragSrc,
+          );
+          writeVfsFile(
+            kernelForSdl2.fs,
+            "/usr/share/shaders/sound/chord.frag",
+            sdl2SoundChordFragSrc,
+          );
           tick("attaching input source...");
           // Keyboard goes through BrowserInputSource (ESC, typing → evdev
           // event0). The POINTER is owned by the Modeset pane, which
           // feeds framebuffer-positioned pointer events into evdev event1
           // via `sendPointerAbs` — so we disable this source's pointer
           // feed (its window-relative coordinates would fight the pane's
-          // correct one). The dims set EVIOCGABS's ABS_X/Y.maximum; SDL
+          // correct one). We keep WHEEL enabled (wheel: true): REL_WHEEL
+          // carries no absolute coordinates, so it doesn't fight the pane,
+          // and it drives the editor's mouse-scroll (SDL_MOUSEWHEEL).
+          // The dims set EVIOCGABS's ABS_X/Y.maximum; SDL
           // treats event1 as a relative mouse (it advertises REL_X/Y) and
           // clamps the cursor to the window rather than this range, but we
           // still pass the framebuffer size (1920×1080, matching
@@ -1325,7 +1385,7 @@ async function bootProfile(
           const SDL2_FB_W = 1920;
           const SDL2_FB_H = 1080;
           kernelForSdl2.attachInputSource(
-            new BrowserInputSource(window, { pointer: false }),
+            new BrowserInputSource(window, { pointer: false, wheel: true }),
             { width: SDL2_FB_W, height: SDL2_FB_H },
           );
           tick("attaching audio driver...");

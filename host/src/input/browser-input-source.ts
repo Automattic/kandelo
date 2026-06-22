@@ -36,15 +36,20 @@ export class BrowserInputSource implements InputSource {
 
   /**
    * @param target  Event source to bind to (defaults to `window`).
-   * @param opts.pointer  When `false`, the pointer/wheel handlers are
-   *   not bound — only keyboard events reach evdev. Used when another
-   *   surface owns the pointer feed (e.g. the kandelo Modeset pane
-   *   injects framebuffer-absolute coordinates into `/dev/input/event1`
-   *   itself, and a second window-relative feed here would fight it).
+   * @param opts.pointer  When `false`, the pointer-motion/button handlers
+   *   are not bound. Used when another surface owns the pointer feed (e.g.
+   *   the kandelo Modeset pane injects framebuffer-absolute coordinates
+   *   into `/dev/input/event1` itself, and a second window-relative feed
+   *   here would fight it).
+   * @param opts.wheel  Overrides whether the wheel handler is bound.
+   *   Defaults to following `pointer`. Wheel events are `REL_WHEEL` and do
+   *   NOT carry absolute coordinates, so they don't conflict with a pane
+   *   that owns absolute positioning — `{ pointer: false, wheel: true }`
+   *   lets that pane keep the pointer while the wheel still scrolls.
    */
   constructor(
     private target: EventTarget = window,
-    private opts: { pointer?: boolean } = {},
+    private opts: { pointer?: boolean; wheel?: boolean } = {},
   ) {}
 
   start(dispatch: (ev: InputEvent) => void): void {
@@ -55,6 +60,8 @@ export class BrowserInputSource implements InputSource {
       this.bind("pointermove", this.onPointerMove);
       this.bind("pointerdown", this.onPointerDown);
       this.bind("pointerup", this.onPointerUp);
+    }
+    if (this.opts.wheel ?? this.opts.pointer !== false) {
       this.bind("wheel", this.onWheel);
     }
     // `pointerlockchange` only fires on document, never on window — so

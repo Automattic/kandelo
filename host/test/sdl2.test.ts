@@ -1,25 +1,17 @@
 /**
- * End-to-end gate for the SDL2 playground binary at its Phase 4 shape
- * (viewport-split with a live editor on the left pane, VFS-loaded user
- * shader on the right pane, 250 ms debounced auto-recompile on every
- * keystroke, Ctrl+S writes /home/shaders/image/current.frag, no
- * self-timeout). Runs `programs/sdl2.wasm` (KMSDRM video + ALSA audio
- * + evdev input) inside the centralised kernel under NodeKernelHost;
- * asserts:
- *   - the ESC-quits path still works,
- *   - the shader-source resolution chain still falls through to the
- *     built-in PLASMA_SRC fallback under NodeKernelHost (no VFS
- *     staging),
- *   - the editor module loads the source on init and emits the
- *     `sdl2: editor loaded N chars` diagnostic,
- *   - the font atlas bake completes (`sdl2: text-atlas baked=...`),
- *   - injecting a typing keystroke triggers the debounced
- *     auto-recompile path (`sdl2: editor recompile ...`),
- *   - F5 keydown still surfaces the "user file not readable" path.
- * Visual gates for the plasma drift and the editor text rendering
- * live in the Playwright spec — Node has no real GL context, so
- * `host_gl_query` returns -1 and the renderer's WARN-on-status-zero
- * stash fires (non-fatal) for every program.
+ * End-to-end gate for `programs/sdl2.wasm` (KMSDRM video + ALSA audio +
+ * evdev input) run inside the centralised kernel under NodeKernelHost.
+ * It drives the binary with injected input events and asserts on the
+ * stdout breadcrumbs each subsystem emits — see the inline expectations
+ * below for the exact behaviors covered (source-resolution fallback,
+ * editor + atlas init, debounced recompile, F5 reload, synth + FFT
+ * upload, mute, sound-shader render, wheel scroll, preset cycle).
+ *
+ * Node has no real GL context, so host_gl_query returns -1: shader
+ * compiles take the headless "empty info log" branch and sound readback
+ * is all-zero (audible=0). Visual/audible gates live in the Playwright
+ * spec; the pure editor logic has its own native unit test in
+ * host/test/sdl2-editor-unit.test.ts.
  */
 import { describe, expect, it } from "vitest";
 import { readFileSync } from "node:fs";
@@ -30,10 +22,16 @@ const programBinary = tryResolveBinary("programs/sdl2.wasm");
 
 const EV_SYN = 0x00;
 const EV_KEY = 0x01;
+const EV_REL = 0x02;
+const REL_WHEEL = 0x08; /* mouse-wheel notch on /dev/input/event1 */
 const SYN_REPORT = 0x00;
 const KEY_ESC = 1;
 const KEY_F5 = 63;
 const KEY_A = 30;  /* linux/input-event-codes.h: typing 'a' */
+const KEY_LEFTCTRL = 29;
+const KEY_M = 50;  /* Ctrl+M toggles audio mute */
+const KEY_F2 = 60; /* F2 switches the editor to the sound shader */
+const KEY_L = 38;  /* Ctrl+L cycles to the next shader preset */
 
 async function waitFor(
   stdoutRef: { value: string },
@@ -51,7 +49,7 @@ async function waitFor(
   );
 }
 
-describe("SDL2 playground — editor + VFS + auto-recompile (Phase 4)", () => {
+describe("SDL2 playground — editor + audio + sound-shader end-to-end", () => {
   it.skipIf(!programBinary)(
     "loads the editor, bakes the atlas, debounces recompile on type, exits on ESC",
     async () => {
@@ -105,6 +103,51 @@ describe("SDL2 playground — editor + VFS + auto-recompile (Phase 4)", () => {
         host.injectInputEvent(0, EV_SYN, SYN_REPORT, 0);
         await new Promise((r) => setTimeout(r, 100));
 
+        /* Ctrl+M toggles the audio mute. Hold LeftCtrl, tap M, release. */
+        host.injectInputEvent(0, EV_KEY, KEY_LEFTCTRL, 1);
+        host.injectInputEvent(0, EV_SYN, SYN_REPORT, 0);
+        host.injectInputEvent(0, EV_KEY, KEY_M, 1);
+        host.injectInputEvent(0, EV_SYN, SYN_REPORT, 0);
+        await new Promise((r) => setTimeout(r, 10));
+        host.injectInputEvent(0, EV_KEY, KEY_M, 0);
+        host.injectInputEvent(0, EV_SYN, SYN_REPORT, 0);
+        host.injectInputEvent(0, EV_KEY, KEY_LEFTCTRL, 0);
+        host.injectInputEvent(0, EV_SYN, SYN_REPORT, 0);
+        await new Promise((r) => setTimeout(r, 100));
+
+        /* Phase 6: F2 switches to the sound shader, which compiles +
+         * renders + reads back the FBO. Under headless Node GL the
+         * readback is all-zero, so it reports audible=0 and audio falls
+         * back to the synth — but the mode switch and render path run. */
+        host.injectInputEvent(0, EV_KEY, KEY_F2, 1);
+        host.injectInputEvent(0, EV_SYN, SYN_REPORT, 0);
+        await new Promise((r) => setTimeout(r, 10));
+        host.injectInputEvent(0, EV_KEY, KEY_F2, 0);
+        host.injectInputEvent(0, EV_SYN, SYN_REPORT, 0);
+        await new Promise((r) => setTimeout(r, 150));
+
+        /* Mouse-wheel scroll on /dev/input/event1: SDL turns REL_WHEEL
+         * into SDL_MOUSEWHEEL, and (pointer defaults to the editor pane at
+         * x=0) main.c scrolls the editor and logs the notch count. */
+        host.injectInputEvent(1, EV_REL, REL_WHEEL, -1);
+        host.injectInputEvent(1, EV_SYN, SYN_REPORT, 0);
+        await new Promise((r) => setTimeout(r, 50));
+
+        /* Ctrl+L exercises the preset-cycle path (readdir of
+         * /usr/share/shaders/<mode>). The NodeKernelHost rootfs stages no
+         * preset files, so this must surface the graceful "list empty"
+         * branch rather than crashing or hanging. */
+        host.injectInputEvent(0, EV_KEY, KEY_LEFTCTRL, 1);
+        host.injectInputEvent(0, EV_SYN, SYN_REPORT, 0);
+        host.injectInputEvent(0, EV_KEY, KEY_L, 1);
+        host.injectInputEvent(0, EV_SYN, SYN_REPORT, 0);
+        await new Promise((r) => setTimeout(r, 10));
+        host.injectInputEvent(0, EV_KEY, KEY_L, 0);
+        host.injectInputEvent(0, EV_SYN, SYN_REPORT, 0);
+        host.injectInputEvent(0, EV_KEY, KEY_LEFTCTRL, 0);
+        host.injectInputEvent(0, EV_SYN, SYN_REPORT, 0);
+        await new Promise((r) => setTimeout(r, 50));
+
         host.injectInputEvent(0, EV_KEY, KEY_ESC, 1);
         host.injectInputEvent(0, EV_SYN, SYN_REPORT, 0);
         await new Promise((r) => setTimeout(r, 10));
@@ -142,6 +185,28 @@ describe("SDL2 playground — editor + VFS + auto-recompile (Phase 4)", () => {
         expect(stdout.value).toMatch(/sdl2: text-atlas baked=-?\d+/);
         /* Typing fires the debounced auto-recompile path. */
         expect(stdout.value).toMatch(/sdl2: editor recompile/);
+        /* Phase 5: the chip synth initializes against the granted audio
+         * spec, and the per-frame FFT spectrum upload (iAudio) runs even
+         * under the headless Node GL stub. */
+        expect(stdout.value).toMatch(/sdl2: audio synth rate=\d+ ch=\d+/);
+        expect(stdout.value).toMatch(/sdl2: audio spectrum uploaded bins=128/);
+        /* Ctrl+M toggled the mute. */
+        expect(stdout.value).toContain("sdl2: audio muted");
+        /* Phase 6: the sound-shader pipeline initialized, and F2 switched
+         * to sound mode and ran a render+readback dispatch. The track is
+         * rendered as multiple time-tiles (Phase 7); under the headless GL
+         * stub every tile's readback is silent (audible=0). */
+        expect(stdout.value).toMatch(/sdl2: sound-shader init fbo=\d+x\d+ tiles=\d+/);
+        expect(stdout.value).toMatch(/sdl2: sound-source=builtin-sine/);
+        expect(stdout.value).toContain("sdl2: edit-mode=sound");
+        expect(stdout.value).toMatch(
+          /sdl2: sound-shader render frames=\d+ tiles=\d+ audible=\d/,
+        );
+        /* Mouse-wheel scroll: REL_WHEEL on event1 reaches the editor. */
+        expect(stdout.value).toMatch(/sdl2: editor scroll wheel=-?\d+/);
+        /* Ctrl+L ran the preset-cycle path. With no staged presets in the
+         * Node rootfs it reports the empty list; with presets it loads one. */
+        expect(stdout.value).toMatch(/sdl2: preset (load=|list empty)/);
         /* F5 against a missing user file must surface as a WARN, not
          * a crash: the binary stays alive long enough for ESC. */
         expect(stderr.value).toMatch(

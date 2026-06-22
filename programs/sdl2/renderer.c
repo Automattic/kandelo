@@ -74,9 +74,7 @@ static int g_screen_h = 720;
 static char g_last_error[4096];
 static int  g_error_visible = 0;
 
-const char *renderer_last_error(void) { return g_last_error; }
 void renderer_set_error_visible(int v) { g_error_visible = v ? 1 : 0; }
-int  renderer_error_visible(void) { return g_error_visible; }
 
 /* ----- shared compile helper ------------------------------------- */
 
@@ -138,10 +136,11 @@ static const char *USER_VS_SRC =
     "attribute vec2 a_pos;\n"
     "void main() { gl_Position = vec4(a_pos, 0.0, 1.0); }\n";
 
-/* GLSL ES 1.0 wrapper around the user's `mainImage`. iAudio is
- * declared even though Phase 4 doesn't bind it — unused uniforms
- * drop out of the linked program, so the slot costs nothing and
- * Phase 5 can wire FFT data in without revising the template. */
+/* GLSL ES 1.0 wrapper around the user's `mainImage`. `iAudio` is a
+ * 128×1 GL_LUMINANCE texture holding the live FFT magnitude spectrum
+ * (see audio.c). Shaders that don't sample it link fine — the uniform
+ * just drops out and renderer_draw_user_shader's location check skips
+ * the bind. */
 static const char *USER_FRAG_PREFIX =
     "#version 100\n"
     "precision highp float;\n"
@@ -160,6 +159,29 @@ static const char *USER_FRAG_SUFFIX =
     "  gl_FragColor = c;\n"
     "}\n";
 
+/* Parse the GLSL info log for the 1-indexed source line of the first
+ * error — ANGLE/Mesa format "ERROR: 0:<line>: ..." — and map it back to
+ * the user's editor coordinates by subtracting the template prefix's line
+ * count (the wrapper lines the user never sees). Returns the 1-indexed
+ * user line, or -1 if the log has no parseable line or the error sits in
+ * the template prefix itself. */
+static int parse_error_line(const char *log, const char *prefix) {
+    const char *p = strstr(log, "0:");
+    if (!p) return -1;
+    p += 2;
+    if (*p < '0' || *p > '9') return -1;
+    int combined = 0;
+    while (*p >= '0' && *p <= '9') combined = combined * 10 + (*p++ - '0');
+    int prefix_lines = 0;
+    for (const char *q = prefix; *q; q++) if (*q == '\n') prefix_lines++;
+    int user_line = combined - prefix_lines;
+    return user_line >= 1 ? user_line : -1;
+}
+
+int renderer_last_error_line(void) {
+    return parse_error_line(g_last_error, USER_FRAG_PREFIX);
+}
+
 static GLuint g_user_prog        = 0;
 static GLuint g_user_vbo         = 0;
 static GLint  g_user_a_pos       = -1;
@@ -169,6 +191,12 @@ static GLint  g_user_u_iTime     = -1;
 static GLint  g_user_u_iTimeDt   = -1;
 static GLint  g_user_u_iMouse    = -1;
 static GLint  g_user_u_iFrame    = -1;
+static GLint  g_user_u_iAudio    = -1;
+
+/* The FFT spectrum texture sampled by `iAudio`. Created lazily on the
+ * first renderer_set_audio_spectrum so headless test runs (no audio
+ * uploads) never allocate it. */
+static GLuint g_audio_tex = 0;
 
 static void user_rebind_uniforms(void) {
     g_user_a_pos       = glGetAttribLocation (g_user_prog, "a_pos");
@@ -178,6 +206,7 @@ static void user_rebind_uniforms(void) {
     g_user_u_iTimeDt   = glGetUniformLocation(g_user_prog, "iTimeDelta");
     g_user_u_iMouse    = glGetUniformLocation(g_user_prog, "iMouse");
     g_user_u_iFrame    = glGetUniformLocation(g_user_prog, "iFrame");
+    g_user_u_iAudio    = glGetUniformLocation(g_user_prog, "iAudio");
 }
 
 int renderer_recompile_user_shader(const char *user_src) {
@@ -208,6 +237,27 @@ int renderer_recompile_user_shader(const char *user_src) {
     return 0;
 }
 
+void renderer_set_audio_spectrum(const unsigned char *bins, int n) {
+    if (!bins || n <= 0) return;
+    if (!g_audio_tex) {
+        glGenTextures(1, &g_audio_tex);
+        glBindTexture(GL_TEXTURE_2D, g_audio_tex);
+        /* LINEAR so the 128 bins read as smooth bars; clamp so the edge
+         * texels don't wrap. */
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    } else {
+        glBindTexture(GL_TEXTURE_2D, g_audio_tex);
+    }
+    glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
+    /* One-row (n×1) GL_LUMINANCE texture — 128 bytes, far under the
+     * OP_TEX_IMAGE_2D single-call payload cap. */
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_LUMINANCE,
+                 n, 1, 0, GL_LUMINANCE, GL_UNSIGNED_BYTE, bins);
+}
+
 void renderer_draw_user_shader(int vp_x, int vp_y, int vp_w, int vp_h,
                                float t, float dt,
                                float mouse_x, float mouse_y, int frame) {
@@ -230,6 +280,14 @@ void renderer_draw_user_shader(int vp_x, int vp_y, int vp_w, int vp_h,
     if (g_user_u_iMouse    >= 0) glUniform2f(g_user_u_iMouse,
                                              mouse_x, mouse_y);
     if (g_user_u_iFrame    >= 0) glUniform1i(g_user_u_iFrame, frame);
+    /* Bind the FFT texture to unit 0 for the iAudio sampler. The text
+     * program also uses unit 0, but each draw rebinds its own texture, so
+     * sharing the unit is safe. */
+    if (g_user_u_iAudio >= 0 && g_audio_tex) {
+        glActiveTexture(GL_TEXTURE0);
+        glBindTexture(GL_TEXTURE_2D, g_audio_tex);
+        glUniform1i(g_user_u_iAudio, 0);
+    }
     glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
 }
 
@@ -340,13 +398,6 @@ static void text_bind_pointers(void) {
     }
 }
 
-/* Tracked blend state. The libGLESv2 stub doesn't expose glIsEnabled
- * (no host-side OP_IS_ENABLED handler, and synchronous readback would
- * be a roundtrip through the kernel for every call), so renderer.c
- * owns the "is blend on?" bit itself and pushes glEnable/Disable +
- * glBlendFunc around the draws that need it. */
-static int g_blend_enabled = 0;
-
 void renderer_fill_rect(int x, int y, int w, int h,
                         float r, float g, float b, float a) {
     if (!g_text_prog || w <= 0 || h <= 0) return;
@@ -360,10 +411,10 @@ void renderer_fill_rect(int x, int y, int w, int h,
     glBindBuffer(GL_ARRAY_BUFFER, g_text_vbo);
     glBufferData(GL_ARRAY_BUFFER, sizeof verts, verts, GL_STREAM_DRAW);
     text_bind_pointers();
-    if (!g_blend_enabled) glEnable(GL_BLEND);
+    glEnable(GL_BLEND);
     glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
     glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
-    if (!g_blend_enabled) glDisable(GL_BLEND);
+    glDisable(GL_BLEND);
 }
 
 int renderer_draw_text(int x, int y, const char *s, size_t n,
@@ -421,7 +472,6 @@ int renderer_draw_textz(int x, int y, const char *s,
 
 int renderer_text_advance(void)    { return g_glyph_advance ? g_glyph_advance : 9; }
 int renderer_text_line_height(void){ return TEXT_LINE_STRIDE; }
-int renderer_text_ascent(void)     { return g_glyph_ascent ? g_glyph_ascent : 14; }
 
 /* ===== init / shutdown ========================================== */
 
@@ -497,10 +547,9 @@ static void build_text_program(void) {
 
 static void build_font_atlas(void) {
     /* Bake the printable ASCII subset of Inconsolata into an
-     * ATLAS_W×ATLAS_H GL_LUMINANCE texture. stbtt_BakeFontBitmap
-     * returns >0 on success (bottom y of the last row used) or a
-     * negative value if it ran out of space; the chosen height fits
-     * 95 glyphs into 512×512 with room to spare. */
+     * ATLAS_W×ATLAS_H GL_LUMINANCE texture. stbtt_PackFontRange returns
+     * non-zero on success; the 28 px range fits the 95 glyphs into
+     * 256×240 (under the single-upload payload cap, see above). */
     unsigned char *pixels = (unsigned char *) calloc(ATLAS_W * ATLAS_H, 1);
     if (!pixels) {
         fprintf(stderr, "WARN: text atlas: out of memory\n");
@@ -583,4 +632,5 @@ void renderer_shutdown(void) {
     if (g_text_vbo)   { glDeleteBuffers(1, &g_text_vbo);  g_text_vbo  = 0; }
     if (g_white_tex)  { glDeleteTextures(1, &g_white_tex); g_white_tex = 0; }
     if (g_atlas_tex)  { glDeleteTextures(1, &g_atlas_tex); g_atlas_tex = 0; }
+    if (g_audio_tex)  { glDeleteTextures(1, &g_audio_tex); g_audio_tex = 0; }
 }

@@ -297,8 +297,13 @@ export const Modeset: React.FC<ModesetProps> = ({ dragProps, onCollapse, onMaxim
               textAlign: "center",
               padding: 24,
             }}>
-              Waiting for a process to drmModePageFlip on CRTC {crtcId}.<br />
-              Run <code>modeset</code> from the shell.
+              {/* Single child so the flex container centers one inline-flow
+                  block — otherwise each text node / <code> becomes its own
+                  flex item and the line breaks scatter. */}
+              <div>
+                Waiting for a process to drmModePageFlip on CRTC {crtcId}.<br />
+                Run <code>modeset</code> from the shell.
+              </div>
             </div>
           )}
           {(error || status !== "running") && (
@@ -314,9 +319,11 @@ export const Modeset: React.FC<ModesetProps> = ({ dragProps, onCollapse, onMaxim
               textAlign: "center",
               padding: 24,
             }}>
-              {error
-                ? <>attachKmsDisplay failed: {error}</>
-                : <>Waiting for the kernel to reach 'running'.</>}
+              <div>
+                {error
+                  ? <>attachKmsDisplay failed: {error}</>
+                  : <>Waiting for the kernel to reach 'running'.</>}
+              </div>
             </div>
           )}
         </div>
