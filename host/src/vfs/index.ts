@@ -21,4 +21,8 @@ export {
   resolveForBrowser,
 } from "./default-mounts";
 export type { MountSpec, BrowserResolverOptions } from "./default-mounts";
-export { resolveForNode } from "./default-mounts-node";
+export {
+  resolveForNode,
+  scaffoldExtraMountPoints,
+} from "./default-mounts-node";
+export type { ExtraMountScaffold } from "./default-mounts-node";
