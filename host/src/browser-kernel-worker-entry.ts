@@ -1852,6 +1852,24 @@ sw.onmessage = (e: MessageEvent) => {
     case "audio_get_appl_ptr":
       respond(msg.requestId, kernelWorker.audioGetApplPtr(msg.pcmId));
       break;
+    case "audio_get_hw_ptr":
+      respond(msg.requestId, kernelWorker.audioGetHwPtr(msg.pcmId));
+      break;
+    case "audio_get_state":
+      respond(msg.requestId, kernelWorker.audioGetState(msg.pcmId));
+      break;
+    case "audio_alloc_appl_ptr_sab": {
+      const slot = kernelWorker.audioInitApplPtrSab(msg.pcmId);
+      if (!slot) {
+        respondError(
+          msg.requestId,
+          "audio_alloc_appl_ptr_sab: kernel allocator declined",
+        );
+      } else {
+        respond(msg.requestId, slot);
+      }
+      break;
+    }
     default: {
       // Handle non-protocol messages (e.g., bridge port transfer)
       const raw = e.data as any;

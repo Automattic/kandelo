@@ -143,9 +143,20 @@ export const Modeset: React.FC<ModesetProps> = ({ dragProps, onCollapse, onMaxim
       prevCanvasX = canvasX;
       prevCanvasY = canvasY;
     };
+    // Absolute-position pointer feed for evdev consumers (SDL2's
+    // KMSDRM backend reads `/dev/input/event1`, which the PS/2
+    // `sendMouseEvent` path above does NOT reach). `toCanvasCoords`
+    // already maps the OS pointer into framebuffer pixels (0..canvas
+    // .width), exactly the range SDL expects after we set the kernel's
+    // ABS_X/Y.maximum to the framebuffer size. modeset.c ignores
+    // event1 (it reads PS/2 /dev/input/mice), so feeding both is safe.
+    const sendAbs = (canvasX: number, canvasY: number) => {
+      handleRef.current?.sendPointerAbs(canvasX, canvasY, buttons);
+    };
     const onMouseEnter = (e: MouseEvent) => {
       const c = toCanvasCoords(e.clientX, e.clientY);
       handlePointerAt(c.x, c.y);
+      sendAbs(c.x, c.y);
     };
     const onMouseLeave = () => {
       prevCanvasX = null;
@@ -154,20 +165,25 @@ export const Modeset: React.FC<ModesetProps> = ({ dragProps, onCollapse, onMaxim
     const onMouseMove = (e: MouseEvent) => {
       const c = toCanvasCoords(e.clientX, e.clientY);
       handlePointerAt(c.x, c.y);
+      sendAbs(c.x, c.y);
     };
     const onMouseDown = (e: MouseEvent) => {
       const bit = buttonBit(e.button);
       if (bit === 0) return;
       e.preventDefault();
       buttons |= bit;
+      const c = toCanvasCoords(e.clientX, e.clientY);
       handleRef.current?.sendMouseEvent(0, 0, buttons);
+      sendAbs(c.x, c.y);
     };
     const onMouseUp = (e: MouseEvent) => {
       const bit = buttonBit(e.button);
       if (bit === 0) return;
       e.preventDefault();
       buttons &= ~bit;
+      const c = toCanvasCoords(e.clientX, e.clientY);
       handleRef.current?.sendMouseEvent(0, 0, buttons);
+      sendAbs(c.x, c.y);
     };
     const onContextMenu = (e: Event) => e.preventDefault();
     canvas.addEventListener("mouseenter", onMouseEnter);
@@ -262,7 +278,7 @@ export const Modeset: React.FC<ModesetProps> = ({ dragProps, onCollapse, onMaxim
               width: "100%",
               height: "auto",
               maxHeight: "100%",
-              imageRendering: "pixelated",
+              imageRendering: "auto",
               background: "var(--k-fb-bg)",
               display: showCanvas ? "block" : "none",
             }}
@@ -281,8 +297,13 @@ export const Modeset: React.FC<ModesetProps> = ({ dragProps, onCollapse, onMaxim
               textAlign: "center",
               padding: 24,
             }}>
-              Waiting for a process to drmModePageFlip on CRTC {crtcId}.<br />
-              Run <code>modeset</code> from the shell.
+              {/* Single child so the flex container centers one inline-flow
+                  block — otherwise each text node / <code> becomes its own
+                  flex item and the line breaks scatter. */}
+              <div>
+                Waiting for a process to drmModePageFlip on CRTC {crtcId}.<br />
+                Run <code>modeset</code> from the shell.
+              </div>
             </div>
           )}
           {(error || status !== "running") && (
@@ -298,9 +319,11 @@ export const Modeset: React.FC<ModesetProps> = ({ dragProps, onCollapse, onMaxim
               textAlign: "center",
               padding: 24,
             }}>
-              {error
-                ? <>attachKmsDisplay failed: {error}</>
-                : <>Waiting for the kernel to reach 'running'.</>}
+              <div>
+                {error
+                  ? <>attachKmsDisplay failed: {error}</>
+                  : <>Waiting for the kernel to reach 'running'.</>}
+              </div>
             </div>
           )}
         </div>

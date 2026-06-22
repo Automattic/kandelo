@@ -1,17 +1,27 @@
 /*
  * Subset of <sound/asound.h> matching what crates/shared/src/lib.rs::audio
- * marshals. Mirrors Linux UAPI v6.10 `include/uapi/sound/asound.h` for the
- * fields kandelo's v1 ALSA surface implements:
+ * marshals on **wasm32** (musl `unsigned long` = 4 B, `__SND_STRUCT_TIME64`
+ * defined). Mirrors upstream alsa-lib UAPI for the fields kandelo's v1
+ * ALSA surface implements:
  *
  *   ioctls    PVERSION INFO HW_REFINE HW_PARAMS HW_FREE SW_PARAMS STATUS
  *             PREPARE START DROP PAUSE WRITEI_FRAMES (PCM)
  *             PVERSION CARD_INFO ELEM_LIST (control)
  *
- *   structs   snd_pcm_hw_params (608B) snd_pcm_sw_params (136B)
+ *   structs (wasm32 sizes)
+ *             snd_pcm_hw_params (604B) snd_pcm_sw_params (104B)
  *             snd_pcm_status (128B) snd_pcm_info (288B)
- *             snd_pcm_mmap_status (64B) snd_pcm_mmap_control (64B)
- *             snd_xferi (24B) snd_ctl_card_info (256B)
+ *             snd_pcm_mmap_status (56B) snd_pcm_mmap_control (12B)
+ *             snd_xferi (12B) snd_ctl_card_info (256B)
  *             snd_ctl_elem_id (64B) snd_ctl_elem_list (80B)
+ *
+ * NOTE: at sysroot-build time, `scripts/build-musl.sh` rm -rf's
+ * `$SYSROOT/include/sound/` and symlinks alsa-lib's vendored upstream
+ * UAPI in its place. This in-tree header is therefore not what
+ * user-space programs compile against; it's an authoring reference
+ * documenting which fields the kernel marshals. The layouts here must
+ * match alsa-lib's upstream `<sound/uapi/asound.h>` when that file is
+ * compiled with `wasm32posix-cc`.
  *
  * Capture, the sequencer, the timer, mixers beyond CARD_INFO/ELEM_LIST,
  * FLOAT_LE/S32_LE formats, and async signal delivery are all omitted —
@@ -28,8 +38,9 @@
 extern "C" {
 #endif
 
-typedef uint64_t snd_pcm_uframes_t;
-typedef int64_t  snd_pcm_sframes_t;
+/* wasm32 musl: `unsigned long` = 4 B, so snd_pcm_uframes_t = u32. */
+typedef uint32_t snd_pcm_uframes_t;
+typedef int32_t  snd_pcm_sframes_t;
 
 /* --- PCM state ------------------------------------------------------- */
 
@@ -135,7 +146,7 @@ struct snd_interval {
     uint32_t flags;
 };
 
-/* --- snd_pcm_hw_params (608 bytes on wasm32) ------------------------- */
+/* --- snd_pcm_hw_params (604 bytes on wasm32) ------------------------- */
 
 struct snd_pcm_hw_params {
     uint32_t            flags;
@@ -147,49 +158,59 @@ struct snd_pcm_hw_params {
     uint32_t            msbits;
     uint32_t            rate_num;
     uint32_t            rate_den;
-    uint64_t            fifo_size;
+    uint32_t            fifo_size;           /* snd_pcm_uframes_t */
     uint8_t             reserved[64];
 };
 
-/* --- snd_pcm_sw_params (136 bytes) ----------------------------------- */
+/* --- snd_pcm_sw_params (104 bytes on wasm32) ------------------------- */
 
 struct snd_pcm_sw_params {
     uint32_t tstamp_mode;
     uint32_t period_step;
     uint32_t sleep_min;
-    uint32_t _pad0;
-    uint64_t avail_min;
-    uint64_t xfer_align;
-    uint64_t start_threshold;
-    uint64_t stop_threshold;
-    uint64_t silence_threshold;
-    uint64_t silence_size;
-    uint64_t boundary;
+    uint32_t avail_min;                 /* snd_pcm_uframes_t */
+    uint32_t xfer_align;
+    uint32_t start_threshold;
+    uint32_t stop_threshold;
+    uint32_t silence_threshold;
+    uint32_t silence_size;
+    uint32_t boundary;
     uint32_t proto;
     uint32_t tstamp_type;
     uint8_t  reserved[56];
 };
 
-/* --- snd_pcm_status (128 bytes) -------------------------------------- */
+/* --- snd_pcm_status (128 bytes on wasm32) ---------------------------- *
+ * timespec on wasm32 musl: { int64_t tv_sec; int32_t tv_nsec; } + 4 B
+ * trailing pad so the next i64 field is 8-aligned (`__alignof__(long
+ * long) = 8`). Each timespec slot is therefore i64 sec + i32 nsec +
+ * 4 B pad = 16 B. */
 
 struct snd_pcm_status {
     uint32_t state;
-    uint32_t _pad0;
+    uint32_t _pad1;                     /* __time_pad */
     int64_t  trigger_tstamp_sec;
-    int64_t  trigger_tstamp_nsec;
+    int32_t  trigger_tstamp_nsec;
+    uint32_t _trigger_tstamp_pad;
     int64_t  tstamp_sec;
-    int64_t  tstamp_nsec;
-    int64_t  appl_ptr;
-    int64_t  hw_ptr;
-    int64_t  delay;
-    uint64_t avail;
-    uint64_t avail_max;
-    uint64_t overrange;
+    int32_t  tstamp_nsec;
+    uint32_t _tstamp_pad;
+    uint32_t appl_ptr;                  /* snd_pcm_uframes_t */
+    uint32_t hw_ptr;
+    int32_t  delay;                     /* snd_pcm_sframes_t */
+    uint32_t avail;
+    uint32_t avail_max;
+    uint32_t overrange;
     uint32_t suspended_state;
     uint32_t audio_tstamp_data;
     int64_t  audio_tstamp_sec;
-    int64_t  audio_tstamp_nsec;
-    uint8_t  reserved[16];
+    int32_t  audio_tstamp_nsec;
+    uint32_t _audio_tstamp_pad;
+    int64_t  driver_tstamp_sec;
+    int32_t  driver_tstamp_nsec;
+    uint32_t _driver_tstamp_pad;
+    uint32_t audio_tstamp_accuracy;
+    uint8_t  reserved[20];
 };
 
 /* --- snd_pcm_info (288 bytes) ---------------------------------------- */
@@ -210,35 +231,40 @@ struct snd_pcm_info {
     uint8_t  reserved[64];
 };
 
-/* --- snd_pcm_mmap_status (64B) — kernel-writes, userspace-reads ------ */
+/* --- snd_pcm_mmap_status64 (56B on wasm32) — kernel-writes, userspace-reads.
+ * Mapped at SNDRV_PCM_MMAP_OFFSET_STATUS_NEW. */
 
 struct snd_pcm_mmap_status {
     uint32_t state;
-    uint32_t _pad0;
-    int64_t  hw_ptr;
+    uint32_t _pad1;                     /* 64-bit alignment */
+    uint32_t hw_ptr;                    /* snd_pcm_uframes_t */
+    uint32_t _pad_after_hw_ptr;
     int64_t  tstamp_sec;
-    int64_t  tstamp_nsec;
+    int32_t  tstamp_nsec;
+    uint32_t _tstamp_pad;
     uint32_t suspended_state;
-    uint32_t audio_tstamp_data;
+    uint32_t _pad3;
     int64_t  audio_tstamp_sec;
-    int64_t  audio_tstamp_nsec;
-    uint8_t  reserved[8];
+    int32_t  audio_tstamp_nsec;
+    uint32_t _audio_tstamp_pad;
 };
 
-/* --- snd_pcm_mmap_control (64B) — userspace-writes, kernel-reads ----- */
+/* --- snd_pcm_mmap_control64 (12B on wasm32) — userspace-writes,
+ * kernel-reads. Mapped at SNDRV_PCM_MMAP_OFFSET_CONTROL_NEW. */
 
 struct snd_pcm_mmap_control {
-    int64_t appl_ptr;
-    int64_t avail_min;
-    uint8_t reserved[48];
+    uint32_t appl_ptr;
+    uint32_t avail_min;
+    uint32_t _pad_after;                /* __pad_after_uframe */
 };
 
-/* --- snd_xferi (24B) — argument to WRITEI_FRAMES/READI_FRAMES -------- */
+/* --- snd_xferi (12B on wasm32) — argument to WRITEI_FRAMES/READI_FRAMES.
+ * snd_pcm_sframes_t = signed long = 4 B; void* = 4 B; snd_pcm_uframes_t = 4 B. */
 
 struct snd_xferi {
-    int64_t  result;
-    uint64_t buf;
-    uint64_t frames;
+    int32_t  result;
+    uint32_t buf;
+    uint32_t frames;
 };
 
 /* --- snd_ctl_card_info (256B) ---------------------------------------- */

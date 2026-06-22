@@ -1,0 +1,30 @@
+--- a/include/sound/type_compat.h
++++ b/include/sound/type_compat.h
+@@ -20,7 +20,11 @@
+ #define __cpu_to_le16 LE_16(x)
+ #define __cpu_to_be16 BE_16(x)
+ #else
++#if defined(__wasm__) || defined(__wasm32__) || defined(__wasm64__)
++#include <endian.h>
++#else
+ #include <sys/endian.h>
++#endif
+ #if __BYTE_ORDER == __LITTLE_ENDIAN
+ #define __cpu_to_le32(x) (x)
+ #define __cpu_to_be32(x) bswap_32(x)
+--- a/include/sound/uapi/asound.h
++++ b/include/sound/uapi/asound.h
+@@ -28,8 +28,13 @@
+ #include <linux/types.h>
+ #include <asm/byteorder.h>
+ #else
++#if defined(__wasm__) || defined(__wasm32__) || defined(__wasm64__)
++#include <endian.h>
++#include <sys/ioctl.h>
++#else
+ #include <sys/endian.h>
+ #include <sys/ioctl.h>
++#endif
+ #endif
+
+ #include <stdlib.h>

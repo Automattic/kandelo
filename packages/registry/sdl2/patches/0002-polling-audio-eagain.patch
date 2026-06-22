@@ -1,0 +1,274 @@
+From: kandelo wasm32 port <kandelo@local>
+Subject: [PATCH] audio: polling path for SDL_THREADS_DISABLED + ALSA EAGAIN early-return
+
+SDL2 2.30's `SDL_OpenAudio_Internal` (in src/audio/SDL_audio.c)
+unconditionally calls `SDL_CreateThreadInternal(SDL_RunAudio, ...)`
+and bails on NULL — with `--disable-pthreads` the generic SDL_thread
+backend always returns NULL from `SDL_SYS_CreateThread`, so audio
+device opens fail with "Couldn't create audio thread."
+
+On wasm32 (and any other future SDL_THREADS_DISABLED platform), gate
+the thread-creation block: when threads are disabled, call
+`impl.ThreadInit(device)` synchronously, register the device for
+polling in a small static array, and return device->id. Expose
+`SDL_PumpAudioDevices()` (public API, gated on SDL_THREADS_DISABLED)
+that drives one iteration of the audio loop per registered device —
+fills the buffer from the callback then calls `impl.PlayDevice`.
+Application main loops call this each frame. There is no
+`WaitDevice` call in the polled path: it returns to the caller after
+one buffer, the kernel's per-quantum ALSA tick advances `hw_ptr`
+independently, and the next pump finds ring space and writes the
+next buffer.
+
+In src/audio/alsa/SDL_alsa_audio.c::ALSA_PlayDevice, treat -EAGAIN
+from `snd_pcm_writei` as "ring full, try again next pump" — return
+early instead of `SDL_Delay(1); continue;`. The previous spin-and-
+retry path was correct for thread-driven audio (the dedicated thread
+can afford to block) but deadlocks the polled path: the single-
+threaded main loop has nothing else to do while we're spinning on
+EAGAIN, the kernel never gets to advance the PCM tick, and the ring
+stays full forever.
+
+Resolution of plan 7 open-architecture #1 — option (b) per plan 9's
+devil's-advocate (2026-06-29-sdl2-port-plan.md §"audio thread
+resolution: option (b)"). ~115 LoC added across SDL_audio.c +
+SDL_audio.h + SDL_alsa_audio.c.
+
+Fix-B addition (kandelo handoff-5, 2026-06-17): query writei headroom
+via `wpk_alsa_writei_has_space` BEFORE calling the application's
+audio callback inside SDL_RunAudioOnce_Polled. The callback advances
+application-side phase state; without this gate, calling it on every
+pump regardless of EAGAIN produces audible discontinuities at the
+EAGAIN rate (~13 per second at 60 Hz vsync with samples=1024, since
+60 × 1024 = 61 440 frames produced/s vs 48 000 frames drained/s).
+
+--- a/src/audio/SDL_audio.c
++++ b/src/audio/SDL_audio.c
+@@ -667,6 +667,100 @@
+ #ifdef SDL_AUDIO_DRIVER_ANDROID
+ extern void Android_JNI_AudioSetThreadPriority(int, int);
+ #endif
++
++#if SDL_THREADS_DISABLED
++/* --- polling-audio patch (kandelo wasm32): begin ---
++ * Register devices opened in single-threaded polled mode here and
++ * iterate them from SDL_PumpAudioDevices(). The audio loop body
++ * lives in SDL_RunAudioOnce_Polled(); it mirrors SDL_RunAudio's
++ * direct-write path (no SDL_AudioStream conversion) and returns
++ * after one buffer instead of blocking on WaitDevice. */
++#define WPK_POLLED_AUDIO_MAX 8
++static SDL_AudioDevice *wpk_polled_audio_devices[WPK_POLLED_AUDIO_MAX];
++static int wpk_num_polled_audio_devices = 0;
++
++static int wpk_register_polled_audio_device(SDL_AudioDevice *device)
++{
++    int i;
++    for (i = 0; i < wpk_num_polled_audio_devices; i++) {
++        if (wpk_polled_audio_devices[i] == device) return 0;
++    }
++    if (wpk_num_polled_audio_devices >= WPK_POLLED_AUDIO_MAX) {
++        return SDL_SetError(
++            "polling-audio: more than %d concurrent devices not supported",
++            WPK_POLLED_AUDIO_MAX);
++    }
++    wpk_polled_audio_devices[wpk_num_polled_audio_devices++] = device;
++    return 0;
++}
++
++static void wpk_unregister_polled_audio_device(SDL_AudioDevice *device)
++{
++    int i;
++    for (i = 0; i < wpk_num_polled_audio_devices; i++) {
++        if (wpk_polled_audio_devices[i] == device) {
++            wpk_polled_audio_devices[i] =
++                wpk_polled_audio_devices[--wpk_num_polled_audio_devices];
++            return;
++        }
++    }
++}
++
++static void SDL_RunAudioOnce_Polled(SDL_AudioDevice *device)
++{
++    Uint8 *data = NULL;
++    int data_len;
++
++    if (SDL_AtomicGet(&device->shutdown)) return;
++    if (!SDL_AtomicGet(&device->enabled)) return;
++    if (device->iscapture) return; /* capture not supported in polled mode */
++
++#ifdef SDL_AUDIO_DRIVER_ALSA
++    /* Fix-B (kandelo handoff-5): query writei headroom BEFORE
++     * invoking the application callback. The callback advances
++     * application audio state (phase counters, sample-position
++     * cursors). Calling it when writei would return EAGAIN discards
++     * the generated samples but leaves the application-side state
++     * advanced — producing audible discontinuities at the EAGAIN
++     * rate. With this gate, the callback only runs when the ring has
++     * room, so every generated sample reaches the hardware. */
++    {
++        extern int wpk_alsa_writei_has_space(SDL_AudioDevice *);
++        if (!wpk_alsa_writei_has_space(device)) return;
++    }
++#endif
++
++    data_len = device->callbackspec.size;
++    if (!device->stream) {
++        data = current_audio.impl.GetDeviceBuf(device);
++    }
++    if (data == NULL) {
++        data = device->work_buffer;
++    }
++
++    SDL_LockMutex(device->mixer_lock);
++    if (SDL_AtomicGet(&device->paused)) {
++        SDL_memset(data, device->callbackspec.silence, data_len);
++    } else {
++        device->callbackspec.callback(device->callbackspec.userdata,
++                                      data, data_len);
++    }
++    SDL_UnlockMutex(device->mixer_lock);
++
++    if (data != device->work_buffer) {
++        current_audio.impl.PlayDevice(device);
++    }
++}
++
++void SDL_PumpAudioDevices(void)
++{
++    int i;
++    for (i = 0; i < wpk_num_polled_audio_devices; i++) {
++        SDL_RunAudioOnce_Polled(wpk_polled_audio_devices[i]);
++    }
++}
++/* --- polling-audio patch: end --- */
++#endif /* SDL_THREADS_DISABLED */
+
+ /* The general mixing thread function */
+ static int SDLCALL SDL_RunAudio(void *userdata)
+@@ -1201,6 +1272,12 @@
+     SDL_AtomicSet(&device->shutdown, 1);
+     SDL_AtomicSet(&device->enabled, 0);
+     current_audio.impl.UnlockDevice(device);
++
++#if SDL_THREADS_DISABLED
++    /* Polled-mode counterpart to the thread teardown below. */
++    wpk_unregister_polled_audio_device(device);
++    current_audio.impl.ThreadDeinit(device);
++#endif
+
+     if (device->thread != NULL) {
+         SDL_WaitThread(device->thread, NULL);
+@@ -1539,6 +1616,17 @@
+
+     /* Start the audio thread if necessary */
+     if (!current_audio.impl.ProvidesOwnCallbackThread) {
++#if SDL_THREADS_DISABLED
++        /* No threads on this platform — register the device for
++         * single-threaded polled mode. The application drives audio
++         * via SDL_PumpAudioDevices() (also called transitively by
++         * SDL_PumpEvents on platforms that wire it up). */
++        current_audio.impl.ThreadInit(device);
++        if (wpk_register_polled_audio_device(device) < 0) {
++            close_audio_device(device);
++            return 0;
++        }
++#else
+         /* Start the audio thread */
+         char threadname[64];
+         AudioThreadStartupData startup_data;
+@@ -1563,6 +1648,7 @@
+
+         SDL_SemWait(startup_data.startup_semaphore);
+         SDL_DestroySemaphore(startup_data.startup_semaphore);
++#endif /* SDL_THREADS_DISABLED */
+     }
+
+     return device->id;
+--- a/src/audio/alsa/SDL_alsa_audio.c
++++ b/src/audio/alsa/SDL_alsa_audio.c
+@@ -371,10 +371,15 @@
+
+         if (status < 0) {
+             if (status == -EAGAIN) {
+-                /* Apparently snd_pcm_recover() doesn't handle this case -
+-                   does it assume snd_pcm_wait() above? */
+-                SDL_Delay(1);
+-                continue;
++                /* Ring is full. Under the wasm32 polled-audio path
++                 * (SDL_THREADS_DISABLED) the kernel's per-quantum tick
++                 * advances `hw_ptr` only between SDL_PumpAudioDevices()
++                 * calls. Spinning on SDL_Delay(1) here deadlocks the
++                 * single-threaded main loop. Return early; the next
++                 * pump finds space and writes the next buffer. The
++                 * thread-driven path (SDL_RunAudio) is unaffected — it
++                 * re-enters this function via its outer while loop. */
++                return;
+             }
+             status = ALSA_snd_pcm_recover(this->hidden->pcm_handle, status, 0);
+             if (status < 0) {
+@@ -398,6 +403,41 @@
+     }
+ }
+
++#if SDL_THREADS_DISABLED
++/* Polled-mode helper: returns 1 if the ring has room for at least
++ * `device->spec.samples` frames, 0 otherwise. Called from
++ * SDL_audio.c::SDL_RunAudioOnce_Polled to gate the application
++ * callback (fix-B / kandelo handoff-5). Without this gate, audio_cb
++ * would be invoked on every pump and advance application-side phase
++ * state even when the subsequent writei returns EAGAIN — the
++ * generated samples are then discarded, producing audible
++ * discontinuities at the EAGAIN rate.
++ *
++ * Read avail via SNDRV_PCM_IOCTL_STATUS rather than
++ * snd_pcm_avail_update: under the wasm32-posix-kernel mmap path,
++ * the mmap'd status/control pages are anonymous and disconnected
++ * from the kernel's hw_ptr/appl_ptr — snd_pcm_avail_update would
++ * read zeros and return buffer_size every call, defeating the
++ * gate. IOCTL_STATUS goes through the kernel which computes
++ * `avail = buffer - (appl - hw)` from authoritative pointers
++ * (crates/kernel/src/audio/pcm_ioctl.rs::SNDRV_PCM_IOCTL_STATUS).
++ * Cost is one ioctl per pump (~60 Hz) — negligible. */
++int wpk_alsa_writei_has_space(SDL_AudioDevice *device)
++{
++    snd_pcm_status_t *status;
++    snd_pcm_uframes_t avail;
++    if (device->hidden == NULL || device->hidden->pcm_handle == NULL) {
++        return 1;
++    }
++    snd_pcm_status_alloca(&status);
++    if (snd_pcm_status(device->hidden->pcm_handle, status) < 0) {
++        return 1; /* let writei surface the error */
++    }
++    avail = snd_pcm_status_get_avail(status);
++    return ((Uint32)avail >= device->spec.samples) ? 1 : 0;
++}
++#endif
++
+ static Uint8 *ALSA_GetDeviceBuf(_THIS)
+ {
+     return this->hidden->mixbuf;
+--- a/include/SDL_audio.h
++++ b/include/SDL_audio.h
+@@ -1118,6 +1118,21 @@
+  */
+ extern DECLSPEC void SDLCALL SDL_FreeAudioStream(SDL_AudioStream *stream);
+
++/**
++ * Drive one iteration of the audio loop for each device opened in
++ * single-threaded polled mode.
++ *
++ * Available only when SDL2 is compiled with SDL_THREADS_DISABLED
++ * (wasm32-posix-kernel and other no-pthread platforms). The
++ * application's main loop calls this once per frame so the audio
++ * callback can produce the next buffer. The ALSA backend's
++ * snd_pcm_writei is non-blocking on EAGAIN — if the kernel's ring
++ * is full, the call is a no-op and the next pump retries.
++ *
++ * \since This function is available since SDL 2.30.0 (kandelo wasm32 port).
++ */
++extern DECLSPEC void SDLCALL SDL_PumpAudioDevices(void);
++
+ #define SDL_MIX_MAXVOLUME 128
+
+ /**

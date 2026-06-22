@@ -2948,7 +2948,7 @@ fn dispatch_channel_syscall(nr: u32, args: &[i64; 6]) -> i32 {
         72 => {
             // SYS_IOCTL. The ioctl request encodes its struct size in bits
             // 16..30 per the Linux _IOC convention (`_IOC_SIZE`); we honour
-            // that so large args like SNDRV_PCM_IOCTL_HW_PARAMS (608 B) read
+            // that so large args like SNDRV_PCM_IOCTL_HW_PARAMS (604 B) read
             // their full struct out of user memory. Legacy ioctls that
             // encode size = 0 (FIONBIO / FIONREAD / KDGKBTYPE / …) keep the
             // historical 256-byte floor so their handlers can copy four to
@@ -10335,6 +10335,26 @@ pub extern "C" fn kernel_audio_init_sab(pcm_id: u32, sab_base: u64, sab_len: u32
     );
 }
 
+/// Bind a host-allocated 4-byte slot inside kernel-visible memory
+/// where the kernel mirrors `mmap_control.appl_ptr` after every
+/// `WRITEI_FRAMES`. The host then views that slot as
+/// `Int32Array(buffer, byteOffset, 1)` from the AudioWorklet and reads
+/// the latest producer pointer via `Atomics.load(view, 0)` — replacing
+/// the `setInterval(10 ms)` → `kernel_audio_get_appl_ptr` →
+/// `postMessage` poll chain whose cumulative latency (~12 % silence
+/// emission) was the root cause of the §C jitter (see
+/// `docs/plans/2026-06-17-sdl2-browser-rendering-handoff-3.md`).
+///
+/// `sab_base` is the kernel-visible byte address of the slot (must be
+/// 4-byte-aligned). Errors are swallowed: a second
+/// `kernel_audio_init_appl_ptr_sab` for the same PCM is a no-op so the
+/// host can re-issue without un-registering first. Additive ABI; no
+/// `ABI_VERSION` bump.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_audio_init_appl_ptr_sab(pcm_id: u32, sab_base: u64) {
+    let _ = crate::audio::sab::register_appl_ptr(pcm_id, sab_base as usize);
+}
+
 /// Called by the host on every AudioWorklet quantum (browser) or
 /// `setInterval` tick (Node) after the host driver pulled
 /// `frames_consumed` frames from the SAB ring. Walks every open
@@ -10372,6 +10392,26 @@ pub extern "C" fn kernel_audio_period_tick(pcm_id: u32, frames_consumed: u32) {
 #[unsafe(no_mangle)]
 pub extern "C" fn kernel_audio_get_appl_ptr(pcm_id: u32) -> i64 {
     crate::audio::tick::current_appl_ptr(pcm_id)
+}
+
+/// Read-only probe for the kernel's `mmap_status.hw_ptr` on `pcm_id`.
+/// Host-side audio instrumentation (see `BrowserAudioDriver`'s probe
+/// hook) polls this alongside `kernel_audio_get_appl_ptr` and
+/// `kernel_audio_get_state` to diagnose stalls in the period-tick
+/// feedback loop. Returns 0 when no OFD is bound. Additive ABI; no
+/// `ABI_VERSION` bump.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_audio_get_hw_ptr(pcm_id: u32) -> i64 {
+    crate::audio::tick::current_hw_ptr(pcm_id)
+}
+
+/// Read-only probe for the kernel-side `state` (SNDRV_PCM_STATE_*) on
+/// `pcm_id`. Host-side instrumentation watches for the PREPARED →
+/// RUNNING → XRUN transition. Returns `SNDRV_PCM_STATE_OPEN` (0) when
+/// no OFD is bound. Additive ABI; no `ABI_VERSION` bump.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_audio_get_state(pcm_id: u32) -> u32 {
+    crate::audio::tick::current_state(pcm_id)
 }
 
 /// Number of successful page-flip commits on the given crtc.

@@ -30,12 +30,21 @@ const installDir = join(repoRoot, "packages/registry/erlang/erlang-install");
 const hasErlang = !!beamBinary && existsSync(installDir);
 
 function runErlang(evalExpr: string, timeoutMs = 30_000): string {
-  const result = execFileSync("npx", ["tsx", serveScript, "-eval", evalExpr], {
-    cwd: repoRoot,
-    timeout: timeoutMs,
-    encoding: "utf-8",
-    stdio: ["pipe", "pipe", "pipe"],
-  });
+  // erlang.wasm is compiled with -fwasm-exceptions, which emits the
+  // `exn` value type. Node 24 keeps the wasm-exnref proposal behind a
+  // flag, and NODE_OPTIONS doesn't accept --experimental-* flags, so
+  // the spawned subprocess must receive it directly. The kernel
+  // worker_thread that serve.ts spins up inherits process.execArgv.
+  const result = execFileSync(
+    process.execPath,
+    ["--experimental-wasm-exnref", "--import", "tsx", serveScript, "-eval", evalExpr],
+    {
+      cwd: repoRoot,
+      timeout: timeoutMs,
+      encoding: "utf-8",
+      stdio: ["pipe", "pipe", "pipe"],
+    },
+  );
   return result;
 }
 

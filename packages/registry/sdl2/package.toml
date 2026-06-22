@@ -1,0 +1,66 @@
+# Per-library manifest for SDL2. See docs/package-management.md.
+#
+# Vendors SDL2 2.30.0 (libsdl-org/SDL release-2.30.0) for the
+# wasm32-posix-kernel target. We restrict the backend matrix at
+# configure time to:
+#
+#   * video  → KMSDRM (consumes libdrm-KMS + plan 4's ioctl surface)
+#   * audio  → ALSA   (consumes alsa-lib + plan 6's PCM surface)
+#   * input  → evdev  (consumes plan 5's /dev/input/event[0-31])
+#
+# Everything else SDL2 ships (X11, Wayland, PulseAudio, JACK,
+# PipeWire, libudev, libusb, joystick, haptic, sensor, power,
+# filesystem, dlopen-based plugins, threads) is disabled — none of
+# those subsystems have a wasm32 backend in this kernel.
+#
+# `disable-pthreads`: musl on wasm32 doesn't expose pthread_create
+# (returns ENOSYS); SDL2's built-in SDL_thread emulation runs
+# everything single-threaded, which the polling-audio patch
+# (open-arch #1) explicitly relies on.
+#
+# Link-time dependencies (resolved through the build-deps graph):
+#   libdrm        — KMSDRM video backend imports
+#   alsa-lib      — ALSA audio backend imports
+#   libinput-lite — present so SDL2's evdev path falls through the
+#                   libinput detection without re-scanning udev;
+#                   every entry returns NULL/0.
+#   (GL stack)    — libegl-stub + libgles2-stub + libgbm-extended
+#                   (planned alongside this PR; SDL2 KMSDRM needs
+#                   gbm_surface_*). The single-PR scope bundles
+#                   stubs so SDL2 LINKS + RUNS but draws nothing;
+#                   real GL renderer is plan-2 follow-up.
+#
+# B2 (cross-compile) will populate the source.sha256 once the first
+# successful build run is captured. Leaving blank for now lets the
+# build script run on machines that don't have the tarball cached
+# and prints a warning.
+
+kind = "library"
+
+name = "sdl2"
+version = "2.30.0"
+kernel_abi = 16
+# B5 wires deps via the resolver graph; the build script
+# `build-sdl2.sh` calls `cargo xtask build-deps resolve <dep>`
+# at the start of each iteration.
+depends_on = ["libdrm@2.4.120", "alsa-lib@1.2.10", "libinput-lite@0.1.0"]
+
+[source]
+url = "https://github.com/libsdl-org/SDL/releases/download/release-2.30.0/SDL2-2.30.0.tar.gz"
+sha256 = "36e2e41557e0fa4a1519315c0f5958a87ccb27e25c51776beb6f1239526447b0"
+
+[license]
+spdx = "Zlib"
+url = "https://github.com/libsdl-org/SDL/blob/release-2.30.0/LICENSE.txt"
+
+[build]
+script_path = "packages/registry/sdl2/build-sdl2.sh"
+
+[outputs]
+# Static-only build (no dlopen on wasm32). Upstream SDL2 also ships
+# libSDL2main.a as a small main()-shim helper; the kandelo demos
+# don't use SDL_main, so leave it out of the export set.
+libs = ["lib/libSDL2.a"]
+# Public headers live under include/SDL2/; consumers use
+# `#include <SDL2/SDL.h>` matching upstream's pkg-config flags.
+headers = ["include/SDL2"]

@@ -1,0 +1,7 @@
+script_path = "packages/registry/alsa-lib/build-alsa-lib.sh"
+repo_url    = "https://github.com/Automattic/kandelo.git"
+commit      = "d1b1156e8d166d1fd596806d4ecd000b15241cac"
+revision    = 5
+
+[binary]
+index_url = "https://github.com/Automattic/kandelo/releases/download/binaries-abi-v{abi}/index.toml"

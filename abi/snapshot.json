@@ -1,5 +1,5 @@
 {
-  "abi_version": 15,
+  "abi_version": 16,
   "channel_buffers": {
     "data_offset": 72,
     "data_size": 65536,
@@ -113,7 +113,7 @@
   },
   "host_adapter": {
     "manifest": {
-      "abi_version": 15,
+      "abi_version": 16,
       "channel_data_offset": 72,
       "channel_data_size": 65536,
       "channel_header_size": 72,
@@ -288,6 +288,21 @@
       "kind": "func",
       "name": "kernel_audio_get_appl_ptr",
       "signature": "(i32) -> (i64)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_audio_get_hw_ptr",
+      "signature": "(i32) -> (i64)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_audio_get_state",
+      "signature": "(i32) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_audio_init_appl_ptr_sab",
+      "signature": "(i32,i64) -> ()"
     },
     {
       "kind": "func",
@@ -3532,8 +3547,9 @@
         "argIndex": 2,
         "direction": "inout",
         "size": {
-          "size": 256,
-          "type": "fixed"
+          "argIndex": 1,
+          "floor": 256,
+          "type": "ioctl_encoded"
         }
       }
     ],
