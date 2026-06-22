@@ -13,6 +13,7 @@ import { MemoryFileSystem } from "../../../host/src/vfs/memory-fs";
 import {
   ensureDir,
   ensureDirRecursive,
+  installPosixShell,
   writeVfsBinary,
   symlink,
 } from "../../../host/src/vfs/image-helpers";
@@ -43,9 +44,13 @@ function checkPrereqs(): void {
   if (!existsSync(SQLITE3)) missing.push(`sqlite3.wasm missing at ${SQLITE3}`);
   if (!existsSync(join(SQLITE_FULL, "test"))) missing.push(`SQLite full source missing at ${SQLITE_FULL}`);
   if (!existsSync(TCL_LIBRARY)) missing.push(`Tcl runtime library missing at ${TCL_LIBRARY}`);
+  if (!DASH_PATH || !existsSync(DASH_PATH)) missing.push("dash.wasm missing from binary resolver");
   if (missing.length > 0) {
     throw new Error(
       `${missing.join("\n")}\n\nRun:\n` +
+      "  scripts/fetch-binaries.sh --fetch-only\n" +
+      "or:\n" +
+      "  bash packages/registry/dash/build-dash.sh\n" +
       "  bash packages/registry/tcl/build-tcl.sh\n" +
       "  bash packages/registry/sqlite/build-sqlite.sh\n" +
       "  bash packages/registry/sqlite/build-testfixture.sh",
@@ -73,11 +78,7 @@ async function main() {
   writeVfsBinary(fs, "/usr/bin/sqlite3", new Uint8Array(readFileSync(SQLITE3)));
   symlink(fs, "/usr/bin/sqlite3", "/bin/sqlite3");
 
-  if (DASH_PATH && existsSync(DASH_PATH)) {
-    writeVfsBinary(fs, "/bin/dash", new Uint8Array(readFileSync(DASH_PATH)));
-    symlink(fs, "/bin/dash", "/bin/sh");
-    symlink(fs, "/bin/dash", "/usr/bin/sh");
-  }
+  installPosixShell(fs, new Uint8Array(readFileSync(DASH_PATH!)));
   if (COREUTILS_PATH && existsSync(COREUTILS_PATH)) {
     writeVfsBinary(fs, "/bin/coreutils", new Uint8Array(readFileSync(COREUTILS_PATH)));
     for (const name of COREUTILS_SYMLINK_NAMES) {
