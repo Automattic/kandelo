@@ -138,6 +138,8 @@ export interface RunProgramOptions {
   captureForkCount?: boolean;
   /** Use the canonical rootfs image in worker-thread mode. Defaults to true. */
   useDefaultRootfs?: boolean;
+  /** Additional host directories to mount into the worker-thread VFS. */
+  extraMounts?: Array<{ mountPoint: string; hostPath: string; readonly?: boolean }>;
 }
 
 export interface RunProgramResult {
@@ -205,6 +207,7 @@ async function runInWorkerThread(options: RunProgramOptions): Promise<RunProgram
     maxWorkers: 4,
     execPrograms,
     rootfsImage: options.useDefaultRootfs === false ? undefined : "default",
+    extraMounts: options.extraMounts,
     enableTcpNetwork: options.enableTcpNetwork,
     onStdout: (_pid: number, data: Uint8Array) => {
       stdout += new TextDecoder().decode(data);

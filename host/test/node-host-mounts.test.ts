@@ -19,11 +19,13 @@
  */
 
 import { describe, it, expect } from "vitest";
-import { readFileSync, existsSync } from "node:fs";
+import { mkdtempSync, readFileSync, existsSync, rmSync, writeFileSync, mkdirSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { runCentralizedProgram } from "./centralized-test-helper";
 import { NodePlatformIO } from "../src/platform/node";
+import { tryResolveBinary } from "../src/binary-resolver";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const repoRoot = join(__dirname, "../..");
@@ -32,7 +34,9 @@ const rootfsImage = join(repoRoot, "host/wasm/rootfs.vfs");
 const servicesSource = join(repoRoot, "images/rootfs/etc/services");
 
 const haveProbe = existsSync(probeWasm);
-const haveRootfs = existsSync(rootfsImage);
+const haveRootfs = existsSync(rootfsImage) ||
+  tryResolveBinary("rootfs.vfs") !== null ||
+  tryResolveBinary("programs/rootfs.vfs") !== null;
 
 describe.skipIf(!haveProbe || !haveRootfs)("node-host default mount setup", () => {
   it("stat + read /etc/services from the mounted rootfs image", async () => {
@@ -97,6 +101,38 @@ describe.skipIf(!haveProbe || !haveRootfs)("node-host default mount setup", () =
       // If somehow it succeeded, it must NOT match the rootfs image
       // (which is what the default-mount path would have returned).
       expect(result.stdout).not.toContain(`ROOTFS size=${expected.length}`);
+    }
+  });
+
+  it("makes nested extra host mounts reachable through rootfs parent traversal", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "wasm-posix-extra-mount-"));
+    const helperDir = join(tempDir, "kandelo");
+    mkdirSync(helperDir, { recursive: true });
+    writeFileSync(join(helperDir, "npm-runner.js"), "extra-mount-visible\n");
+
+    try {
+      const result = await runCentralizedProgram({
+        programPath: probeWasm,
+        argv: [
+          "mount_probe_test",
+          "rootfs",
+          "/usr/local/lib/kandelo/npm-runner.js",
+        ],
+        extraMounts: [
+          {
+            mountPoint: "/usr/local/lib/kandelo",
+            hostPath: helperDir,
+            readonly: true,
+          },
+        ],
+        timeout: 10_000,
+      });
+
+      expect(result.exitCode, result.stderr).toBe(0);
+      expect(result.stdout).toContain("ROOTFS size=20");
+      expect(result.stdout).toContain("head=65787472612d6d6f756e742d76697369");
+    } finally {
+      rmSync(tempDir, { recursive: true, force: true });
     }
   });
 });

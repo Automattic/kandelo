@@ -16,6 +16,65 @@ import {
   type MountSpec,
 } from "./default-mounts";
 
+const S_IFMT = 0o170000;
+const S_IFDIR = 0o040000;
+
+export interface ExtraMountScaffold {
+  mountPoint: string;
+}
+
+function normalizeScaffoldPath(path: string): string {
+  if (typeof path !== "string" || path.length === 0 || !path.startsWith("/")) {
+    throw new Error(`extra mount point must be absolute: ${path}`);
+  }
+  const normalized = path === "/" ? "/" : path.replace(/\/+$/, "");
+  const segments = normalized.split("/");
+  for (const segment of segments) {
+    if (segment === "." || segment === "..") {
+      throw new Error(`extra mount point contains "${segment}" segment: ${path}`);
+    }
+  }
+  return normalized || "/";
+}
+
+function ensureImageDir(fs: MemoryFileSystem, path: string): void {
+  try {
+    fs.mkdir(path, 0o755);
+    return;
+  } catch {
+    const st = fs.stat(path);
+    if ((st.mode & S_IFMT) !== S_IFDIR) {
+      throw new Error(`extra mount scaffold exists but is not a directory: ${path}`);
+    }
+  }
+}
+
+/**
+ * Create in-image directory placeholders for host-provided extra mounts.
+ *
+ * The mount router can route `/a/b/mount/file` directly to an extra backend,
+ * but guest libc path traversal still probes parent components such as
+ * `/a` and `/a/b` through the root image. These placeholders make nested
+ * extra mounts reachable without requiring every published rootfs artifact
+ * to predeclare every possible host mount parent.
+ */
+export function scaffoldExtraMountPoints(
+  rootfs: MemoryFileSystem,
+  extraMounts: readonly ExtraMountScaffold[] = [],
+): void {
+  for (const mount of extraMounts) {
+    const mountPoint = normalizeScaffoldPath(mount.mountPoint);
+    if (mountPoint === "/") continue;
+
+    const parts = mountPoint.split("/").filter(Boolean);
+    let current = "";
+    for (const part of parts) {
+      current += "/" + part;
+      ensureImageDir(rootfs, current);
+    }
+  }
+}
+
 /**
  * Materialise `spec` for the Node host. Image mounts get a fresh
  * `MemoryFileSystem.fromImage(rootfsImage)`; scratch mounts get a

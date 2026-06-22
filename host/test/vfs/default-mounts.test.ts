@@ -9,7 +9,10 @@ import {
   resolveForBrowser,
   type MountSpec,
 } from "../../src/vfs/default-mounts";
-import { resolveForNode } from "../../src/vfs/default-mounts-node";
+import {
+  resolveForNode,
+  scaffoldExtraMountPoints,
+} from "../../src/vfs/default-mounts-node";
 
 const O_RDONLY = 0x0000;
 const O_WRONLY = 0x0001;
@@ -172,6 +175,22 @@ describe("resolveForNode", () => {
     const group = new TextDecoder().decode(readMountFile(root.backend, "/etc/group"));
     expect(group).toContain("nogroup:x:65534:");
     expect(group).toContain("nobody:x:65534:");
+  });
+
+  it("can scaffold parent directories for nested extra mount points", () => {
+    const mounts = resolveForNode(DEFAULT_MOUNT_SPEC, image, sessionDir);
+    const root = mounts.find((m) => m.mountPoint === "/")!.backend as MemoryFileSystem;
+
+    expect(() => root.stat("/usr/local")).toThrow();
+    scaffoldExtraMountPoints(root, [
+      { mountPoint: "/usr/local/lib/kandelo" },
+    ]);
+
+    for (const path of ["/usr", "/usr/local", "/usr/local/lib", "/usr/local/lib/kandelo"]) {
+      const st = root.stat(path);
+      expect(st.mode & 0o170000, path).toBe(0o040000);
+      expect(st.mode & 0o777, path).toBe(0o755);
+    }
   });
 
   it("throws on duplicate mount paths", () => {
