@@ -1,0 +1,152 @@
+{
+  "all_counts": {
+    "browser_source_failed_list": "/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-c5i-sqlite-all-full-throttle-run/test-runs/sqlite-tcl-all/kd-c5i-all-20260622T015540Z/browser-current-outcome-lists-20260622T032900Z/failed-jobs.tsv",
+    "browser_source_failed_rows_with_cannot_determine_platform": 8073,
+    "combined_rows_read": 20719,
+    "config_variant_failed_jobs": 17932,
+    "node_config_failed_rows": 8959,
+    "node_failed_rows_with_cannot_determine_platform": 8959,
+    "ordinary_full_failed_jobs": 661,
+    "paused_incomplete_jobs": 3
+  },
+  "all_paused_summary": {
+    "browser": {
+      "fail": 9586,
+      "incomplete": 0,
+      "pass": 780,
+      "skip": 0,
+      "total": 10366
+    },
+    "classification": "paused_by_user_scope_change",
+    "combined": {
+      "completed": 20716,
+      "fail": 18593,
+      "incomplete": 3,
+      "pass": 2123,
+      "skip": 0,
+      "total_selected": 20719
+    },
+    "combined_outcome_lists": {
+      "failed": "/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-c5i-sqlite-all-full-throttle-run/test-runs/sqlite-tcl-all/kd-c5i-all-20260622T015540Z/continuation-wave31-direct-root-20260623T0051Z/wave31-paused-reconciliation-20260623T0100Z/combined-current-outcome-lists/failed-jobs.tsv",
+      "incomplete": "/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-c5i-sqlite-all-full-throttle-run/test-runs/sqlite-tcl-all/kd-c5i-all-20260622T015540Z/continuation-wave31-direct-root-20260623T0051Z/wave31-paused-reconciliation-20260623T0100Z/combined-current-outcome-lists/incomplete-jobs.tsv",
+      "passed": "/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-c5i-sqlite-all-full-throttle-run/test-runs/sqlite-tcl-all/kd-c5i-all-20260622T015540Z/continuation-wave31-direct-root-20260623T0051Z/wave31-paused-reconciliation-20260623T0100Z/combined-current-outcome-lists/passed-jobs.tsv",
+      "skipped": "/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-c5i-sqlite-all-full-throttle-run/test-runs/sqlite-tcl-all/kd-c5i-all-20260622T015540Z/continuation-wave31-direct-root-20260623T0051Z/wave31-paused-reconciliation-20260623T0100Z/combined-current-outcome-lists/skipped-jobs.tsv"
+    },
+    "generated_at": "2026-06-23T00:58:40Z",
+    "node": {
+      "fail": 9007,
+      "incomplete": 3,
+      "pass": 1343,
+      "skip": 0,
+      "total": 10353
+    },
+    "pause_root": "/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-c5i-sqlite-all-full-throttle-run/test-runs/sqlite-tcl-all/kd-c5i-all-20260622T015540Z/continuation-wave31-direct-root-20260623T0051Z/pause-harvest-20260623T0057Z",
+    "reconciliation_root": "/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-c5i-sqlite-all-full-throttle-run/test-runs/sqlite-tcl-all/kd-c5i-all-20260622T015540Z/continuation-wave31-direct-root-20260623T0051Z/wave31-paused-reconciliation-20260623T0100Z",
+    "source_reconciliation_root": "/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-c5i-sqlite-all-full-throttle-run/test-runs/sqlite-tcl-all/kd-c5i-all-20260622T015540Z/continuation-wave30-direct-20260623T0047Z/wave30-final-reconciliation-20260623T0050Z",
+    "stopped_sessions": "/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-c5i-sqlite-all-full-throttle-run/test-runs/sqlite-tcl-all/kd-c5i-all-20260622T015540Z/continuation-wave31-direct-root-20260623T0051Z/wave31-paused-reconciliation-20260623T0100Z/stopped-sessions.tsv",
+    "terminal_delta": {
+      "fail": 0,
+      "incomplete": 3,
+      "note": "wave31 was interrupted by user scope change before terminal rows; three running jobs preserved as paused incomplete",
+      "pass": 0,
+      "rows": 0,
+      "skip": 0
+    },
+    "wave_root": "/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-c5i-sqlite-all-full-throttle-run/test-runs/sqlite-tcl-all/kd-c5i-all-20260622T015540Z/continuation-wave31-direct-root-20260623T0051Z"
+  },
+  "bead": "kd-7sm",
+  "commands": {
+    "kd-c5i_browser_initial_command": "#!/usr/bin/env bash\nset -o pipefail\ncd \"/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-c5i-sqlite-all-full-throttle-run\"\nTMPDIR=/private/tmp/kd-c5i-browser-all-tmux-20260622T015540Z SQLITE_TEST_VITE_PORT=6420 bash scripts/run-sqlite-project-unit-tests.sh --host browser --permutation all --jobs 4 --timeout-ms 86400000 --results-root \"/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-c5i-sqlite-all-full-throttle-run/test-runs/sqlite-tcl-all/kd-c5i-all-20260622T015540Z/browser-all-tmux\" > \"/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-c5i-sqlite-all-full-throttle-run/test-runs/sqlite-tcl-all/kd-c5i-all-20260622T015540Z/browser-all-tmux/run.log\" 2>&1\nstatus=$?\nprintf \"%s\\n\" \"$status\" > \"/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-c5i-sqlite-all-full-throttle-run/test-runs/sqlite-tcl-all/kd-c5i-all-20260622T015540Z/browser-all-tmux/exit-status\"\nexit \"$status\"\n",
+    "kd-c5i_node_initial_command": "#!/usr/bin/env bash\nset -o pipefail\ncd \"/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-c5i-sqlite-all-full-throttle-run\"\nTMPDIR=/private/tmp/kd-c5i-node-all-tmux-20260622T015540Z bash scripts/run-sqlite-project-unit-tests.sh --host node --permutation all --jobs 8 --timeout-ms 86400000 --results-root \"/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-c5i-sqlite-all-full-throttle-run/test-runs/sqlite-tcl-all/kd-c5i-all-20260622T015540Z/node-all-tmux\" > \"/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-c5i-sqlite-all-full-throttle-run/test-runs/sqlite-tcl-all/kd-c5i-all-20260622T015540Z/node-all-tmux/run.log\" 2>&1\nstatus=$?\nprintf \"%s\\n\" \"$status\" > \"/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-c5i-sqlite-all-full-throttle-run/test-runs/sqlite-tcl-all/kd-c5i-all-20260622T015540Z/node-all-tmux/exit-status\"\nexit \"$status\"\n",
+    "kd-nbh.4.1_final_report": "/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-nbh.4.1-sqlite-safe-boundary-continuation/test-runs/sqlite-project-unit-supervised/kd-nbh.4.1-rerun-browser-rootfs-20260621T110111Z/final-report.md",
+    "kd-nbh.4_launch_supervisor": "#!/usr/bin/env bash\nset -euo pipefail\ncd \"/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-nbh.4-sqlite-crash-recovery-fullsuite-rerun\"\nexec scripts/dev-shell.sh python3 scripts/run-sqlite-project-unit-supervised.py \\\n  --bead-id kd-nbh.4 \\\n  --host browser \\\n  --permutation full \\\n  --jobs 1 \\\n  --timeout-ms 3600000 \\\n  --manifest \"/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-nbh.4-sqlite-crash-recovery-fullsuite-rerun/test-runs/sqlite-project-unit-supervised/kd-nbh.4-fullsuite-browser-20260621T043619Z/full-manifest.tsv\" \\\n  --max-parallel 8 \\\n  --results-root \"/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-nbh.4-sqlite-crash-recovery-fullsuite-rerun/test-runs/sqlite-project-unit-supervised/kd-nbh.4-fullsuite-browser-20260621T043619Z\" \\\n  --current-run \"/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-nbh.4-sqlite-crash-recovery-fullsuite-rerun/test-runs/sqlite-project-unit-supervised/kd-nbh.4-fullsuite-browser-20260621T043619Z/current-run.json\" \\\n  --tmp-root \"/tmp/kd-nbh4-20260621T043619Z\" \\\n  --shell-timeout-seconds 7200 \\\n  --stale-log-seconds 900 \\\n  --stale-db-done-seconds 3600 \\\n  --poll-interval 5 \\\n  --no-dev-shell\n"
+  },
+  "diagnosis": "setup_harness_defect_found_and_fixed",
+  "generated_at": "2026-06-23T01:07:51Z",
+  "output_artifacts": {
+    "comparison_summary_json": "/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-7sm-sqlite-all-high-failure-diagnosis/test-runs/sqlite-tcl-all-high-failure-diagnosis/kd-7sm-20260623T010557Z/comparison-summary.json",
+    "comparison_tables": "/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-7sm-sqlite-all-high-failure-diagnosis/test-runs/sqlite-tcl-all-high-failure-diagnosis/kd-7sm-20260623T010557Z/comparison-tables",
+    "diagnosis_report": "/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-7sm-sqlite-all-high-failure-diagnosis/test-runs/sqlite-tcl-all-high-failure-diagnosis/kd-7sm-20260623T010557Z/diagnosis.md",
+    "restart_source_lists": "/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-7sm-sqlite-all-high-failure-diagnosis/test-runs/sqlite-tcl-all-high-failure-diagnosis/kd-7sm-20260623T010557Z/restart-source-lists"
+  },
+  "prior_full_counts": {
+    "kd-d7q-browser-full-tail:fail": 2,
+    "kd-d7q-browser-full-tail:pass": 1,
+    "kd-nbh.4-browser-full:fail": 2,
+    "kd-nbh.4-browser-full:incomplete": 228,
+    "kd-nbh.4-browser-full:pass": 22,
+    "kd-nbh.4.1-browser-full-continuation:fail": 1,
+    "kd-nbh.4.1-browser-full-continuation:incomplete": 100,
+    "kd-nbh.4.1-browser-full-continuation:pass": 94
+  },
+  "root_cause": "Kandelo platform override was only in kandelo-testrunner.tcl. SQLite all-mode config jobs invoke test/testrunner.tcl directly, so child jobs saw the raw Tcl OS and failed in upstream platform classification with \"cannot determine platform!\". Focused validation also exposed Node all-mode child-runner setup defects: all-mode generated commands needed paths relative to testdirN, a guest sh was required, and sh run.sh hung while inline sh -c of the same content passed.",
+  "restart_policy": {
+    "broad_all_relaunch": "blocked_until_mayor_or_user_resumes_full_throttle",
+    "primary_restart_lists": [
+      "/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-7sm-sqlite-all-high-failure-diagnosis/test-runs/sqlite-tcl-all-high-failure-diagnosis/kd-7sm-20260623T010557Z/restart-source-lists/platform-shim-invalidated-displaynames.tsv",
+      "/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-7sm-sqlite-all-high-failure-diagnosis/test-runs/sqlite-tcl-all-high-failure-diagnosis/kd-7sm-20260623T010557Z/restart-source-lists/platform-shim-invalidated-selector-patterns.tsv"
+    ],
+    "preserve_separate_triage": "/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-7sm-sqlite-all-high-failure-diagnosis/test-runs/sqlite-tcl-all-high-failure-diagnosis/kd-7sm-20260623T010557Z/restart-source-lists/ordinary-full-failures-preserve-for-triage.tsv",
+    "paused_incomplete": "/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-7sm-sqlite-all-high-failure-diagnosis/test-runs/sqlite-tcl-all-high-failure-diagnosis/kd-7sm-20260623T010557Z/restart-source-lists/paused-incomplete-jobs.tsv"
+  },
+  "selected_artifacts": {
+    "browser_source_platform_list": "/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-c5i-sqlite-all-full-throttle-run/test-runs/sqlite-tcl-all/kd-c5i-all-20260622T015540Z/browser-current-outcome-lists-20260622T032900Z/failed-jobs.tsv",
+    "kd-d7q_final_report": "/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-d7q-sqlite-full-tail/test-runs/sqlite-project-unit-supervised/kd-d7q-final-accounting-20260621T224023Z/final-accounting-report.md",
+    "kd-nbh.4.1_final_report": "/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-nbh.4.1-sqlite-safe-boundary-continuation/test-runs/sqlite-project-unit-supervised/kd-nbh.4.1-rerun-browser-rootfs-20260621T110111Z/final-report.md",
+    "kd-nbh.4_final_report": "/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-nbh.4-sqlite-crash-recovery-fullsuite-rerun/test-runs/sqlite-project-unit-supervised/kd-nbh.4-fullsuite-browser-20260621T043619Z/final-audit-report.md",
+    "node_sample_platform_log": "/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-c5i-sqlite-all-full-throttle-run/test-runs/sqlite-tcl-all/kd-c5i-all-20260622T015540Z/continuation-wave4-20260622T065630Z/node-canonical/shards/shard-02/batches/002-fullmutex/testrunner.log",
+    "paused_complete_failure_list": "/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-c5i-sqlite-all-full-throttle-run/test-runs/sqlite-tcl-all/kd-c5i-all-20260622T015540Z/continuation-wave31-direct-root-20260623T0051Z/wave31-paused-reconciliation-20260623T0100Z/complete-failure-list.tsv",
+    "paused_reconciliation_summary": "/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-c5i-sqlite-all-full-throttle-run/test-runs/sqlite-tcl-all/kd-c5i-all-20260622T015540Z/continuation-wave31-direct-root-20260623T0051Z/wave31-paused-reconciliation-20260623T0100Z/summary.json"
+  },
+  "validation": {
+    "node_focused_all_selector": {
+      "command": "scripts/dev-shell.sh bash -lc 'scripts/run-sqlite-project-unit-tests.sh --host node --permutation all --jobs 1 --timeout-ms 60000 --results-root test-runs/sqlite-tcl-all-high-failure-diagnosis/kd-7sm-20260623T010557Z/focused-validation/node-fullmutex-select1-after-inline-launch-fix --fail-fast \"^fullmutex select1.test$\"'",
+      "result": {
+        "runner_exit": 0,
+        "jobs_total": 1,
+        "jobs_done": 1,
+        "jobs_failed": 0,
+        "jobs_omitted": 0,
+        "jobs_running": 0,
+        "sqlite_cases": 192,
+        "case_errors": 0
+      },
+      "artifacts": {
+        "combined_summary": "/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-7sm-sqlite-all-high-failure-diagnosis/test-runs/sqlite-tcl-all-high-failure-diagnosis/kd-7sm-20260623T010557Z/focused-validation/node-fullmutex-select1-after-inline-launch-fix/combined-summary.md",
+        "node_summary": "/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-7sm-sqlite-all-high-failure-diagnosis/test-runs/sqlite-tcl-all-high-failure-diagnosis/kd-7sm-20260623T010557Z/focused-validation/node-fullmutex-select1-after-inline-launch-fix/node/summary.txt",
+        "testrunner_db": "/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-7sm-sqlite-all-high-failure-diagnosis/test-runs/sqlite-tcl-all-high-failure-diagnosis/kd-7sm-20260623T010557Z/focused-validation/node-fullmutex-select1-after-inline-launch-fix/node/testrunner.db",
+        "passed_jobs": "/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-7sm-sqlite-all-high-failure-diagnosis/test-runs/sqlite-tcl-all-high-failure-diagnosis/kd-7sm-20260623T010557Z/focused-validation/node-fullmutex-select1-after-inline-launch-fix/outcome-lists/passed-jobs.tsv",
+        "failed_jobs": "/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-7sm-sqlite-all-high-failure-diagnosis/test-runs/sqlite-tcl-all-high-failure-diagnosis/kd-7sm-20260623T010557Z/focused-validation/node-fullmutex-select1-after-inline-launch-fix/outcome-lists/failed-jobs.tsv",
+        "skipped_jobs": "/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-7sm-sqlite-all-high-failure-diagnosis/test-runs/sqlite-tcl-all-high-failure-diagnosis/kd-7sm-20260623T010557Z/focused-validation/node-fullmutex-select1-after-inline-launch-fix/outcome-lists/skipped-jobs.tsv"
+      }
+    },
+    "browser_focused_all_selector": {
+      "command": "scripts/dev-shell.sh bash -lc 'scripts/run-sqlite-project-unit-tests.sh --host browser --permutation all --jobs 1 --timeout-ms 120000 --results-root test-runs/sqlite-tcl-all-high-failure-diagnosis/kd-7sm-20260623T010557Z/focused-validation/browser-fullmutex-select1-after-inline-launch-fix --fail-fast \"^fullmutex select1.test$\"'",
+      "result": "blocked_before_sqlite_page_ready",
+      "blocker": "Vite could not resolve @rootfs-vfs because rootfs.vfs is missing in this worktree; no browser SQLite job result was produced.",
+      "artifact": "/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-7sm-sqlite-all-high-failure-diagnosis/test-runs/sqlite-tcl-all-high-failure-diagnosis/kd-7sm-20260623T010557Z/focused-validation/browser-fullmutex-select1-after-inline-launch-fix/browser/summary.txt",
+      "blocker_artifact": "/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-7sm-sqlite-all-high-failure-diagnosis/test-runs/sqlite-tcl-all-high-failure-diagnosis/kd-7sm-20260623T010557Z/focused-validation/browser-fullmutex-select1-after-inline-launch-fix/browser/blocker-rootfs-vfs.txt"
+    },
+    "browser_source_syntax": {
+      "command": "scripts/dev-shell.sh bash -lc 'cd apps/browser-demos && npx esbuild pages/sqlite-test/main.ts --bundle --format=esm --platform=browser --external:@host/* --external:@kernel-wasm?url --outfile=/tmp/kd-7sm-sqlite-test-main.js'",
+      "result": "passed"
+    },
+    "browser_typecheck": {
+      "command": "scripts/dev-shell.sh bash -lc 'cd apps/browser-demos && npx tsc --noEmit'",
+      "result": "blocked_by_preexisting_unrelated_project_type_errors"
+    },
+    "abi_check": {
+      "command": "scripts/dev-shell.sh bash scripts/check-abi-version.sh",
+      "result": "passed"
+    },
+    "host_vitest": {
+      "command": "scripts/dev-shell.sh bash -lc 'cd host && npx vitest run'",
+      "result": {
+        "passed": 572,
+        "failed": 25,
+        "skipped": 199
+      },
+      "failure_reason": "missing binary artifacts such as kernel.wasm, programs/wasm64/hello64.wasm, and programs/fork-exec.wasm"
+    }
+  }
+}

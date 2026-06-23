@@ -12,6 +12,7 @@ SQLITE_FULL="$REPO_ROOT/packages/registry/sqlite/sqlite-full-src"
 TCL_INSTALL="$REPO_ROOT/packages/registry/tcl/tcl-install"
 TESTFIXTURE="$REPO_ROOT/packages/registry/sqlite/bin/testfixture.wasm"
 SQLITE3="$REPO_ROOT/packages/registry/sqlite/sqlite-install/bin/sqlite3.wasm"
+GUEST_SHELL="${SQLITE_TEST_SHELL:-}"
 
 HOST="node"
 PERMUTATION="full"
@@ -128,6 +129,31 @@ if [ ! -f "$TESTFIXTURE" ] || [ ! -f "$SQLITE3" ] || [ ! -d "$SQLITE_FULL/test" 
   echo "Run:" >&2
   echo "  bash packages/registry/tcl/build-tcl.sh" >&2
   echo "  bash packages/registry/sqlite/build-testfixture.sh" >&2
+  exit 1
+fi
+
+if [ -z "$GUEST_SHELL" ]; then
+  for candidate in \
+    "$REPO_ROOT/local-binaries/programs/wasm32/sh.wasm" \
+    "$REPO_ROOT/local-binaries/programs/sh.wasm" \
+    "$REPO_ROOT/local-binaries/programs/wasm32/dash.wasm" \
+    "$REPO_ROOT/local-binaries/programs/dash.wasm" \
+    "$REPO_ROOT/binaries/programs/wasm32/sh.wasm" \
+    "$REPO_ROOT/binaries/programs/sh.wasm" \
+    "$REPO_ROOT/binaries/programs/wasm32/dash.wasm" \
+    "$REPO_ROOT/binaries/programs/dash.wasm" \
+    "$REPO_ROOT/packages/registry/dash/bin/dash.wasm"
+  do
+    if [ -f "$candidate" ]; then
+      GUEST_SHELL="$candidate"
+      break
+    fi
+  done
+fi
+
+if [ "$PERMUTATION" = "all" ] && [ -z "$GUEST_SHELL" ]; then
+  echo "ERROR: SQLite all-mode config jobs require a guest /bin/sh-compatible shell." >&2
+  echo "Build or fetch dash/sh, or set SQLITE_TEST_SHELL=/path/to/sh.wasm." >&2
   exit 1
 fi
 
@@ -248,6 +274,103 @@ write_sqlite_report() {
   cat "$report"
 }
 
+patch_sqlite_testrunner_platform() {
+  local runner="$1"
+  local tmp
+
+  if grep -q "Kandelo platform shim for child testrunner jobs" "$runner"; then
+    return
+  fi
+
+  tmp="${runner}.kandelo-platform.$$"
+  awk '
+    NR == 4 {
+      print ""
+      print "# Kandelo platform shim for child testrunner jobs."
+      print "# SQLite all-mode reruns config variants by invoking this file directly,"
+      print "# so the platform override has to live in the copied runner as well as"
+      print "# the initial kandelo-testrunner.tcl wrapper."
+      print "set ::tcl_platform(os) OpenBSD"
+      print "set ::tcl_platform(platform) unix"
+    }
+    { print }
+  ' "$runner" > "$tmp"
+  mv "$tmp" "$runner"
+  chmod a+r "$runner"
+}
+
+patch_sqlite_testrunner_guest_paths() {
+  local runner="$1"
+  local tmp
+
+  if grep -q "Kandelo guest path shim for all-mode child jobs" "$runner"; then
+    return
+  fi
+
+  tmp="${runner}.kandelo-paths.$$"
+  awk '
+    {
+      print
+      if (!inserted && $0 == "cd $dir") {
+        print ""
+        print "# Kandelo guest path shim for all-mode child jobs."
+        print "# testrunner.tcl builds child run.sh files from host-normalized paths;"
+        print "# convert workdir-local paths back to paths relative to each testdirN"
+        print "# directory, because SQLite runs the script after cd-ing into it."
+        print "proc kandelo_guest_path {path} {"
+        print "  set normalized [file normalize $path]"
+        print "  set topdir [file normalize [file dirname $::testdir]]"
+        print "  set exe [file normalize [info nameofexec]]"
+        print "  set script [file normalize [info script]]"
+        print "  if {[string equal $normalized $exe]} { return \"../testfixture.wasm\" }"
+        print "  if {[string equal $normalized $script]} { return \"../test/testrunner.tcl\" }"
+        print "  if {[string equal $normalized $topdir]} { return \"..\" }"
+        print "  set prefix \"${topdir}/\""
+        print "  if {[string first $prefix $normalized] == 0} {"
+        print "    return \"../[string range $normalized [string length $prefix] end]\""
+        print "  }"
+        print "  return $path"
+        print "}"
+        print "set ::kandelo_inline_run_sh 1"
+        inserted = 1
+      } else if ($0 == "    set displayname [string map [list $topdir/ {}] $f]") {
+        print "    set testfixture_guest [kandelo_guest_path $testfixture]"
+        print "    set testrunner_tcl_guest [kandelo_guest_path $testrunner_tcl]"
+        print "    set f_guest [kandelo_guest_path $f]"
+      }
+    }
+  ' "$runner" > "$tmp"
+  mv "$tmp" "$runner"
+
+  tmp="${runner}.kandelo-paths-subst.$$"
+  awk '
+    $0 == "      set cmd \"$testfixture $f\"" {
+      print "      set cmd \"$testfixture_guest $f_guest\""
+      next
+    }
+    $0 == "      set cmd \"$testfixture $testrunner_tcl $config $f\"" {
+      print "      set cmd \"$testfixture_guest $testrunner_tcl_guest $config $f_guest\""
+      next
+    }
+    $0 == "    set set_tmp_dir \"export SQLITE_TMPDIR=\\\"[file normalize $dir]\\\"\"" {
+      print "    set set_tmp_dir \"export SQLITE_TMPDIR=.\""
+      next
+    }
+    $0 == "    set fd [open \"|$TRG(runcmd) 2>@1\" r]" {
+      print "    if {[info exists ::kandelo_inline_run_sh] && $::kandelo_inline_run_sh} {"
+      print "      set inline_cmd \"$set_tmp_dir\\n$job(cmd)\""
+      print "      set fd [open \"|sh -c [list $inline_cmd] 2>@1\" r]"
+      print "    } else {"
+      print "      set fd [open \"|$TRG(runcmd) 2>@1\" r]"
+      print "    }"
+      next
+    }
+    { print }
+  ' "$runner" > "$tmp"
+  mv "$tmp" "$runner"
+  chmod a+r "$runner"
+}
+
 cleanup() {
   if [ "$KEEP_WORKDIR" = "1" ]; then
     echo "Keeping SQLite official workdir: $WORKDIR"
@@ -272,6 +395,13 @@ cp "$TESTFIXTURE" "$WORKDIR/testfixture.wasm"
 cp "$SQLITE3" "$WORKDIR/sqlite3"
 cp "$SQLITE3" "$WORKDIR/sqlite3.wasm"
 chmod a+rx "$WORKDIR/testfixture" "$WORKDIR/testfixture.wasm" "$WORKDIR/sqlite3" "$WORKDIR/sqlite3.wasm"
+if [ -n "$GUEST_SHELL" ]; then
+  cp "$GUEST_SHELL" "$WORKDIR/sh"
+  cp "$GUEST_SHELL" "$WORKDIR/sh.wasm"
+  chmod a+rx "$WORKDIR/sh" "$WORKDIR/sh.wasm"
+fi
+patch_sqlite_testrunner_platform "$WORKDIR/test/testrunner.tcl"
+patch_sqlite_testrunner_guest_paths "$WORKDIR/test/testrunner.tcl"
 
 RUNNER_TCL="$WORKDIR/kandelo-testrunner.tcl"
 cat > "$RUNNER_TCL" <<'TCL'
@@ -302,12 +432,13 @@ echo "Results dir: $RESULTS_DIR"
 set +e
 TCL_LIBRARY="$TCL_INSTALL/lib/tcl8.6" \
 KERNEL_CWD="$WORKDIR" \
+KERNEL_PATH="$WORKDIR:${KERNEL_PATH:-/usr/local/bin:/usr/bin:/bin}" \
 KERNEL_UID="${SQLITE_TEST_UID:-1000}" \
 KERNEL_GID="${SQLITE_TEST_GID:-1000}" \
 TIMEOUT="$TIMEOUT_MS" \
 node --experimental-wasm-exnref --import tsx/esm \
   "$REPO_ROOT/examples/run-example.ts" \
-  "$TESTFIXTURE" \
+  "$WORKDIR/testfixture.wasm" \
   "${ARGS[@]}"
 status=$?
 set -e

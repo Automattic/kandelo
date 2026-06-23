@@ -1,0 +1,21 @@
+SQLite official testrunner summary
+host=node
+permutation=all
+jobs=1
+workdir=/tmp/kandelo-sqlite-official.PJqUvN
+results_dir=test-runs/sqlite-tcl-all-high-failure-diagnosis/kd-7sm-20260623T010557Z/focused-validation/node-fullmutex-select1-after-inline-launch-fix/node
+
+total_jobs  done_jobs  failed_jobs  omitted_jobs  running_jobs  ready_jobs  total_cases  total_case_errors
+----------  ---------  -----------  ------------  ------------  ----------  -----------  -----------------
+1           1          0            0             0             0           192          0
+
+state  jobs  cases  case_errors
+-----  ----  -----  -----------
+done   1     192    0
+
+Jobs by SQLite testrunner config:
+config     jobs  cases  case_errors
+---------  ----  -----  -----------
+fullmutex  1     192    0
+
+Failed, running, and omitted jobs:
