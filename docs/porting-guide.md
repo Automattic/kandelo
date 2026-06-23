@@ -741,6 +741,10 @@ bash packages/registry/tcl/build-tcl.sh
 bash packages/registry/sqlite/build-testfixture.sh
 ```
 
+Kandelo's SQLite builds set `SQLITE_MAX_COMPOUND_SELECT=50` by default. The
+upstream default of 500 recursive compound-select terms overflows the Wasm host
+call stack under V8 before SQLite can return its intended limit error.
+
 Then run the harness:
 
 ```bash

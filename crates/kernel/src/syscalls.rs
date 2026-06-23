@@ -5923,6 +5923,10 @@ pub fn sys_munmap(
     if len == 0 {
         return Err(Errno::EINVAL);
     }
+    let len = match len.checked_add(0xFFFF) {
+        Some(v) => v & !0xFFFF,
+        None => return Err(Errno::EINVAL),
+    };
     // POSIX: addr must be page-aligned (Wasm page = 64KB).
     if addr & 0xFFFF != 0 {
         return Err(Errno::EINVAL);
@@ -13228,6 +13232,17 @@ mod tests {
         let mut host = MockHostIO::new();
         let addr = sys_mmap(&mut proc, &mut host, 0, 4096, 3, 0x22, -1, 0).unwrap();
         sys_munmap(&mut proc, &mut host, addr, 0x10000).unwrap();
+    }
+
+    #[test]
+    fn test_munmap_rounds_length_up_to_wasm_page() {
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        let addr = sys_mmap(&mut proc, &mut host, 0, 0x30000, 3, 0x22, -1, 0).unwrap();
+
+        sys_munmap(&mut proc, &mut host, addr, 0x29000).unwrap();
+
+        assert!(!proc.memory.is_mapped(addr + 0x29000));
     }
 
     #[test]
