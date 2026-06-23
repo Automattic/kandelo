@@ -18,10 +18,10 @@
 use std::collections::HashSet;
 
 use fork_instrument::runtime::names as runtime_names;
-use fork_instrument::{Options, instrument};
+use fork_instrument::{instrument, Options};
 use walrus::{
-    ExportItem, FunctionId, FunctionKind, LocalFunction, Module,
     ir::{self, Instr, InstrSeqId},
+    ExportItem, FunctionId, FunctionKind, LocalFunction, Module,
 };
 
 // --- Helpers ----------------------------------------------------------
@@ -152,11 +152,7 @@ fn nested_of(instr: &Instr) -> Vec<InstrSeqId> {
 }
 
 /// Invoke `visit` for every instruction reachable from `seq`.
-fn walk_all<F: FnMut(InstrSeqId, &Instr)>(
-    f: &LocalFunction,
-    seq: InstrSeqId,
-    visit: &mut F,
-) {
+fn walk_all<F: FnMut(InstrSeqId, &Instr)>(f: &LocalFunction, seq: InstrSeqId, visit: &mut F) {
     for (instr, _) in &f.block(seq).instrs {
         visit(seq, instr);
         for child in nested_of(instr) {
@@ -267,6 +263,31 @@ const FIXTURE_CALL_WITH_ARGS: &str = r#"
       (func $caller_with_args (export "caller_with_args") (result i32)
         i32.const 7
         f64.const 2.5
+        call $leaf)
+      (memory 1))
+"#;
+
+const FIXTURE_CALL_WITH_LOAD_ARG: &str = r#"
+    (module
+      (import "kernel" "kernel_fork" (func $fork (result i32)))
+      (func $leaf (param i32) (result i32)
+        call $fork)
+      (func $caller_with_load_arg (export "caller_with_load_arg") (result i32)
+        i32.const 0
+        i32.load
+        call $leaf)
+      (memory 1))
+"#;
+
+const FIXTURE_CALL_WITH_I64_SHIFT_ARG: &str = r#"
+    (module
+      (import "kernel" "kernel_fork" (func $fork (result i32)))
+      (func $leaf (param i64) (result i32)
+        call $fork)
+      (func $caller_with_i64_shift_arg (export "caller_with_i64_shift_arg") (result i32)
+        i64.const 1
+        i64.const 2
+        i64.shl
         call $leaf)
       (memory 1))
 "#;
@@ -504,8 +525,8 @@ fn instrument_functions_returns_rewritten_set() {
     let bytes = wat::parse_str(FIXTURE_TRANSITIVE).unwrap();
     let mut module = Module::from_buffer(&bytes).unwrap();
 
-    let seed = call_graph::find_import_func(&module, "kernel.kernel_fork")
-        .expect("seed import present");
+    let seed =
+        call_graph::find_import_func(&module, "kernel.kernel_fork").expect("seed import present");
     let fork_path = call_graph::reaching_closure(&module, seed);
     let runtime = inject_runtime(&mut module, 0);
     let b1_plan = B1ScratchPlan::default();
@@ -609,17 +630,13 @@ fn non_fork_call_remains_bare_in_chunk_0() {
     // is preserved verbatim).
     let helper = func_by_name(&module, "helper");
     let mut helper_calls = 0usize;
-    walk_all(
-        local_func(&module, caller),
-        unwind_save,
-        &mut |_, instr| {
-            if let Instr::Call(c) = instr {
-                if c.func == helper {
-                    helper_calls += 1;
-                }
+    walk_all(local_func(&module, caller), unwind_save, &mut |_, instr| {
+        if let Instr::Call(c) = instr {
+            if c.func == helper {
+                helper_calls += 1;
             }
-        },
-    );
+        }
+    });
     assert_eq!(
         helper_calls, 1,
         "non-fork-path helper call should survive verbatim (once)",
@@ -655,7 +672,7 @@ fn call_site_post_sequence_sets_call_idx_and_checks_unwinding() {
 }
 
 #[test]
-fn call_with_args_spills_and_reloads_through_locals() {
+fn call_with_pure_args_replays_tail_without_spill_locals() {
     let bytes = instrument_wat(FIXTURE_CALL_WITH_ARGS);
     validate(&bytes);
     let module = Module::from_buffer(&bytes).unwrap();
@@ -666,20 +683,20 @@ fn call_with_args_spills_and_reloads_through_locals() {
     // Structure after rewrite:
     //   $unwind_save:
     //     Block($POST_0),
-    //     <reload i32 arg>, <reload f64 arg>, Call,
+    //     <replay pure i32/f64 constants>, Call,
     //     GlobalGet, Const, Binop, IfElse,
     //     Return
     //   $POST_0:
     //     Block($dispatch_normal),
-    //     <chunk 0: i32.const 7, f64.const 2.5>,
-    //     <spill f64 arg>, <spill i32 arg>   ;; top-of-stack first
+    //     ;; pure tail removed from the NORMAL chunk
     //
-    // Whether the chunk's spill count is >= 2 and the unwind_save
-    // reloads are >= 2 LocalGets before the call is the shape check.
+    // NORMAL and REWIND both reach the same post-call sequence, so
+    // replaying the pure tail here preserves the call arguments without
+    // adding frame-backed arg locals.
     let unwind_kinds = seq_kinds(&module, caller, unwind_save);
     assert_eq!(unwind_kinds[0], InstrKind::Block);
-    assert_eq!(unwind_kinds[1], InstrKind::LocalGet, "reload arg 0");
-    assert_eq!(unwind_kinds[2], InstrKind::LocalGet, "reload arg 1");
+    assert_eq!(unwind_kinds[1], InstrKind::Const, "replay arg 0");
+    assert_eq!(unwind_kinds[2], InstrKind::Const, "replay arg 1");
     assert_eq!(unwind_kinds[3], InstrKind::Call);
 
     // Find $POST_0 — it's the inner Block of $unwind_save.
@@ -689,12 +706,67 @@ fn call_with_args_spills_and_reloads_through_locals() {
         _ => panic!("expected Block"),
     };
     let post_0_kinds = seq_kinds(&module, caller, post_0);
-    // Should end with 2 LocalSets (spills).
-    let last_two: Vec<_> = post_0_kinds.iter().rev().take(2).copied().collect();
     assert_eq!(
-        last_two,
-        vec![InstrKind::LocalSet, InstrKind::LocalSet],
-        "chunk 0 tail must spill two args: {post_0_kinds:?}",
+        post_0_kinds,
+        vec![InstrKind::Block],
+        "chunk 0 pure arg tail must be removed instead of spilled: {post_0_kinds:?}",
+    );
+}
+
+#[test]
+fn call_with_non_pure_arg_falls_back_to_spill_local() {
+    let bytes = instrument_wat(FIXTURE_CALL_WITH_LOAD_ARG);
+    validate(&bytes);
+    let module = Module::from_buffer(&bytes).unwrap();
+
+    let caller = func_by_name(&module, "caller_with_load_arg");
+    let unwind_save = entry_wrapper_seq(&module, caller);
+    let unwind_kinds = seq_kinds(&module, caller, unwind_save);
+    assert_eq!(unwind_kinds[0], InstrKind::Block);
+    assert_eq!(
+        unwind_kinds[1],
+        InstrKind::LocalGet,
+        "load-produced arg must reload from fallback spill local",
+    );
+    assert_eq!(unwind_kinds[2], InstrKind::Call);
+
+    let f = local_func(&module, caller);
+    let post_0 = match f.block(unwind_save).instrs[0].0 {
+        Instr::Block(ir::Block { seq }) => seq,
+        _ => panic!("expected Block"),
+    };
+    let post_0_kinds = seq_kinds(&module, caller, post_0);
+    assert_eq!(
+        *post_0_kinds.last().unwrap(),
+        InstrKind::LocalSet,
+        "unsupported load arg must still spill at the NORMAL chunk tail: {post_0_kinds:?}",
+    );
+}
+
+#[test]
+fn call_with_i64_shift_arg_replays_shift_tail() {
+    let bytes = instrument_wat(FIXTURE_CALL_WITH_I64_SHIFT_ARG);
+    validate(&bytes);
+    let module = Module::from_buffer(&bytes).unwrap();
+
+    let caller = func_by_name(&module, "caller_with_i64_shift_arg");
+    let unwind_save = entry_wrapper_seq(&module, caller);
+    let unwind_kinds = seq_kinds(&module, caller, unwind_save);
+    assert_eq!(unwind_kinds[0], InstrKind::Block);
+    assert_eq!(unwind_kinds[1], InstrKind::Const);
+    assert_eq!(unwind_kinds[2], InstrKind::Const);
+    assert_eq!(unwind_kinds[3], InstrKind::Binop);
+    assert_eq!(unwind_kinds[4], InstrKind::Call);
+
+    let f = local_func(&module, caller);
+    let post_0 = match f.block(unwind_save).instrs[0].0 {
+        Instr::Block(ir::Block { seq }) => seq,
+        _ => panic!("expected Block"),
+    };
+    assert_eq!(
+        seq_kinds(&module, caller, post_0),
+        vec![InstrKind::Block],
+        "pure i64 shift arg tail must be removed instead of spilled",
     );
 }
 
@@ -708,11 +780,7 @@ fn two_calls_assign_sequential_call_idx() {
     let f = local_func(&module, caller);
 
     // Count Const values immediately preceding stores to frame.call_index.
-    fn walk_seqs<F: FnMut(InstrSeqId)>(
-        f: &LocalFunction,
-        seq: InstrSeqId,
-        visit: &mut F,
-    ) {
+    fn walk_seqs<F: FnMut(InstrSeqId)>(f: &LocalFunction, seq: InstrSeqId, visit: &mut F) {
         visit(seq);
         for (instr, _) in &f.block(seq).instrs {
             for child in nested_of(instr) {
@@ -746,7 +814,7 @@ fn two_calls_assign_sequential_call_idx() {
 }
 
 #[test]
-fn call_indirect_spills_table_index_as_top_arg() {
+fn call_indirect_replays_pure_table_index_arg() {
     let bytes = instrument_wat(FIXTURE_INDIRECT);
     validate(&bytes);
     let module = Module::from_buffer(&bytes).unwrap();
@@ -757,7 +825,7 @@ fn call_indirect_spills_table_index_as_top_arg() {
 
     // $unwind_save:
     //   Block($POST_0),
-    //   <reload table index>, CallIndirect,
+    //   <replay table index>, CallIndirect,
     //   GlobalGet, Const, Binop, IfElse,
     //   Return
     let kinds = seq_kinds(&module, caller, unwind_save);
@@ -765,7 +833,7 @@ fn call_indirect_spills_table_index_as_top_arg() {
         kinds,
         vec![
             InstrKind::Block,
-            InstrKind::LocalGet,     // reload i32 table index
+            InstrKind::Const,        // replay i32 table index
             InstrKind::CallIndirect, // indirect call
             InstrKind::GlobalGet,
             InstrKind::Const,
@@ -775,16 +843,17 @@ fn call_indirect_spills_table_index_as_top_arg() {
         ],
     );
 
-    // $POST_0 ends with a single LocalSet (spill the i32 index).
+    // The pure table-index tail is removed from $POST_0 rather than
+    // spilled into a frame-backed local.
     let post_0 = match f.block(unwind_save).instrs[0].0 {
         Instr::Block(ir::Block { seq }) => seq,
         _ => panic!("expected Block"),
     };
     let post_0_kinds = seq_kinds(&module, caller, post_0);
     assert_eq!(
-        *post_0_kinds.last().unwrap(),
-        InstrKind::LocalSet,
-        "chunk 0 tail must spill the i32 table index: {post_0_kinds:?}",
+        post_0_kinds,
+        vec![InstrKind::Block],
+        "pure table-index tail must be removed from chunk 0: {post_0_kinds:?}",
     );
 }
 
@@ -858,11 +927,7 @@ fn postamble_writes_frame_header_and_bumps_current_pos() {
         InstrKind::GlobalGet,
         InstrKind::Other, // Load current frame
         InstrKind::Const,
-        InstrKind::Other, // Store zero catch_region_id
-        InstrKind::GlobalGet,
-        InstrKind::Other, // Load current frame
-        InstrKind::Const,
-        InstrKind::Other, // Store zero exnref_slot
+        InstrKind::Other, // Store packed zero catch_region_id + exnref_slot
         InstrKind::GlobalGet,
         InstrKind::GlobalGet,
         InstrKind::Other, // Load current frame
@@ -875,23 +940,20 @@ fn postamble_writes_frame_header_and_bumps_current_pos() {
 }
 
 #[test]
-fn no_catch_postamble_keeps_32_bit_zero_catch_header_stores() {
+fn no_catch_postamble_packs_zero_catch_header_fields() {
     let bytes = instrument_wat(FIXTURE_DIRECT_CALLER);
     validate(&bytes);
 
     let printed = wasmprinter::print_bytes(&bytes).expect("wasmprinter");
     let caller_section = extract_function_text(&printed, "caller");
     assert!(
-        caller_section.contains("i32.store offset=8"),
-        "no-catch postamble should store zero catch_region_id as i32:\n{caller_section}",
+        caller_section.contains("i64.store offset=8"),
+        "no-catch postamble should pack catch_region_id/exnref_slot zeroes:\n{caller_section}",
     );
     assert!(
-        caller_section.contains("i32.store offset=12"),
-        "no-catch postamble should store zero exnref_slot as i32:\n{caller_section}",
-    );
-    assert!(
-        !caller_section.contains("i64.store offset=8"),
-        "no-catch postamble must avoid packing catch header fields into i64.store:\n{caller_section}",
+        !(caller_section.contains("i32.store offset=8")
+            && caller_section.contains("i32.store offset=12")),
+        "no-catch postamble should not emit separate zero stores:\n{caller_section}",
     );
 }
 
@@ -955,15 +1017,15 @@ fn postamble_serializes_user_scalar_locals() {
     let postamble = &kinds[postamble_start..];
 
     // Postamble with one user local:
-    //   5 current-frame pointer loads + 5 stores (func_index,
-    //   two zero catch fields, user_x, new current_pos) = 10 Others.
+    //   4 current-frame pointer loads + 4 stores (func_index,
+    //   packed zero catch fields, user_x, new current_pos) = 8 Others.
     let other_count = postamble
         .iter()
         .filter(|k| matches!(k, InstrKind::Other))
         .count();
     assert_eq!(
-        other_count, 10,
-        "postamble should have 5 frame loads + 5 stores (header 3 + user 1 + bump 1): {postamble:?}",
+        other_count, 8,
+        "postamble should have 4 frame loads + 4 stores (header 2 + user 1 + bump 1): {postamble:?}",
     );
 }
 
@@ -975,7 +1037,11 @@ fn postamble_emits_defaults_for_each_result_type() {
 
     let caller = func_by_name(&module, "caller");
     let kinds = entry_instr_kinds(&module, caller);
-    let trailing_consts = kinds.iter().rev().take_while(|k| **k == InstrKind::Const).count();
+    let trailing_consts = kinds
+        .iter()
+        .rev()
+        .take_while(|k| **k == InstrKind::Const)
+        .count();
     assert_eq!(
         trailing_consts, 2,
         "postamble should emit one Const per result type: {kinds:?}",
@@ -1435,10 +1501,10 @@ fn catch_ref_clause_is_rewritten_with_capture_block() {
     });
     let try_table = try_table.expect("try_table should still exist after 6d");
 
-    let retargeted = try_table.catches.iter().any(|c| matches!(
-        c,
-        ir::TryTableCatch::CatchRef { .. }
-    ));
+    let retargeted = try_table
+        .catches
+        .iter()
+        .any(|c| matches!(c, ir::TryTableCatch::CatchRef { .. }));
     assert!(
         retargeted,
         "try_table should still have a CatchRef clause: {:?}",
@@ -1482,7 +1548,10 @@ fn plain_catch_only_try_table_is_not_6d_rewritten() {
     let try_table = try_table.expect("try_table should still exist");
 
     assert!(
-        try_table.catches.iter().all(|c| matches!(c, ir::TryTableCatch::Catch { .. })),
+        try_table
+            .catches
+            .iter()
+            .all(|c| matches!(c, ir::TryTableCatch::Catch { .. })),
         "plain-catch-only try_tables should not be retargeted by Phase 6d",
     );
 }
@@ -2073,7 +2142,6 @@ fn collect_try_tables(f: &LocalFunction) -> Vec<ir::TryTable> {
     });
     out
 }
-
 
 #[test]
 fn b1_stage_2_plain_catch_arm_retargets_to_capture_block() {
