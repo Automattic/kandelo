@@ -18,6 +18,7 @@ import type {
   MainToKernelMessage,
   KernelToMainMessage,
 } from "./browser-kernel-protocol";
+import { registerLazyVfsMetadata } from "./browser-kernel-lazy-registration";
 import type { HttpRequest, HttpResponse } from "./networking/in-kernel-http";
 
 export type { HttpRequest, HttpResponse };
@@ -262,16 +263,13 @@ export class BrowserKernel {
       rootfsImage: new Uint8Array(rootfsVfsBuf),
     });
 
-    // Forward any lazy metadata from a pre-loaded VFS image so the worker
-    // can materialize image-backed files on first exec.
-    const lazyEntries = this.memfs!.exportLazyEntries();
-    if (lazyEntries.length > 0) {
-      this.sendToKernel({ type: "register_lazy_files", entries: lazyEntries });
-    }
-    const archiveEntries = this.memfs!.exportLazyArchiveEntries();
-    if (archiveEntries.length > 0) {
-      this.sendToKernel({ type: "register_lazy_archives", entries: archiveEntries });
-    }
+    await registerLazyVfsMetadata(this.memfs!, async (message) => {
+      const requestId = this.nextRequestId++;
+      await this.request(requestId, {
+        ...message,
+        requestId,
+      });
+    });
   }
 
   /**
@@ -810,7 +808,14 @@ export class BrowserKernel {
       const ino = fs.registerLazyFile(e.path, e.url, e.size, e.mode);
       lazyEntries.push({ ino, path: e.path, url: e.url, size: e.size });
     }
-    this.sendToKernel({ type: "register_lazy_files", entries: lazyEntries });
+    const requestId = this.nextRequestId++;
+    void this.request(requestId, {
+      type: "register_lazy_files",
+      requestId,
+      entries: lazyEntries,
+    }).catch((err) => {
+      console.error("[BrowserKernel] Failed to register lazy VFS files:", err);
+    });
   }
 
   /**

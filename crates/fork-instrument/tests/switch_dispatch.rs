@@ -9,8 +9,8 @@
 //! - **posix_spawn-class**: code between call sites must NOT re-execute,
 //!   including shadow-stack manipulation.
 
-use fork_instrument::{Options, instrument};
-use walrus::{FunctionId, FunctionKind, ImportKind, LocalFunction, Module, ir::*};
+use fork_instrument::{instrument, Options};
+use walrus::{ir::*, FunctionId, FunctionKind, ImportKind, LocalFunction, Module};
 
 fn validate(bytes: &[u8]) {
     let mut validator =
@@ -431,7 +431,10 @@ fn find_func(module: &Module, name: &str) -> FunctionId {
 fn local_func(module: &Module, id: FunctionId) -> &LocalFunction {
     match &module.funcs.get(id).kind {
         FunctionKind::Local(l) => l,
-        _ => panic!("not a local function: {name:?}", name = module.funcs.get(id).name),
+        _ => panic!(
+            "not a local function: {name:?}",
+            name = module.funcs.get(id).name
+        ),
     }
 }
 

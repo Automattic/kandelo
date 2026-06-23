@@ -22,6 +22,27 @@ install_node_deps() {
     )
 }
 
+run_timed() {
+    local limit="$1"
+    local label="$2"
+    shift 2
+
+    echo "::group::$label"
+    set +e
+    if command -v timeout >/dev/null 2>&1; then
+        timeout --kill-after=30s "$limit" "$@"
+    else
+        "$@"
+    fi
+    local status=$?
+    set -e
+    if [ "$status" -ne 0 ]; then
+        echo "::error::$label failed with status $status"
+    fi
+    echo "::endgroup::"
+    return "$status"
+}
+
 case "$suite" in
     cargo-kernel)
         HOST_TARGET="$(host_target)"
@@ -43,12 +64,22 @@ case "$suite" in
             cd apps/browser-demos
             PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1 npm ci --no-audit --no-fund
             if [ "$(uname -s)" = "Linux" ]; then
-                PATH="/usr/bin:/bin:$PATH" npx playwright install --with-deps chromium firefox
+                run_timed 30m "Install Playwright browsers" \
+                    env PATH="/usr/bin:/bin:$PATH" \
+                    npx playwright install --with-deps chromium firefox webkit
             else
-                npx playwright install chromium firefox
+                run_timed 30m "Install Playwright browsers" \
+                    npx playwright install chromium firefox webkit
             fi
-            npx playwright test --grep-invert "@slow|@trap-signal" --project=chromium
-            npx playwright test wasm-trap-signal.spec.ts --project=chromium --project=firefox
+            run_timed 20m "Run Chromium browser demo smoke suite" \
+                npx playwright test --grep-invert "@slow|@trap-signal" \
+                    --project=chromium
+            run_timed 10m "Run cross-browser contract smoke suite" \
+                npx playwright test \
+                    test/coi.spec.ts \
+                    test/browser-kernel-lazy-registration.spec.ts \
+                    test/wasm-trap-signal.spec.ts \
+                    --project=chromium --project=firefox --project=webkit
         )
         ;;
     libc)

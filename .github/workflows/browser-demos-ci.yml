@@ -60,7 +60,10 @@ jobs:
       - name: Run browser smoke tests
         working-directory: apps/browser-demos
         run: |
-          npx playwright test test/coi.spec.ts test/wasm-trap-signal.spec.ts \
+          npx playwright test \
+            test/coi.spec.ts \
+            test/browser-kernel-lazy-registration.spec.ts \
+            test/wasm-trap-signal.spec.ts \
             --project=chromium \
             --project=firefox \
             --project=webkit
