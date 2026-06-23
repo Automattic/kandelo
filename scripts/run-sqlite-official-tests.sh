@@ -197,7 +197,7 @@ write_outcome_lists() {
             coalesce(span, 0) AS ms,
             'testrunner.db' AS source
        FROM jobs
-      WHERE state = 'done'
+      WHERE state = 'done' AND coalesce(nerr, 0) = 0
       ORDER BY jobid;" > "$out/passed-jobs.tsv"
 
   sqlite3 -header -separator $'\t' "$db" \
@@ -207,7 +207,7 @@ write_outcome_lists() {
             coalesce(span, 0) AS ms,
             'testrunner.db' AS source
        FROM jobs
-      WHERE state = 'failed'
+      WHERE state = 'failed' OR (state = 'done' AND coalesce(nerr, 0) > 0)
       ORDER BY jobid;" > "$out/failed-jobs.tsv"
 
   sqlite3 -header -separator $'\t' "$db" \
@@ -237,10 +237,10 @@ write_outcome_lists() {
       ORDER BY state, jobid;" > "$out/incomplete-jobs.tsv"
 
   sqlite3 -header -separator $'\t' "$db" \
-    "SELECT sum(state='done') AS passed_jobs,
-            sum(state='failed') AS failed_jobs,
-            sum(state='omit') AS skipped_jobs,
-            sum(state IN ('running','ready')) AS incomplete_jobs,
+    "SELECT coalesce(sum(state='done' AND coalesce(nerr, 0)=0), 0) AS passed_jobs,
+            coalesce(sum(state='failed' OR (state='done' AND coalesce(nerr, 0)>0)), 0) AS failed_jobs,
+            coalesce(sum(state='omit'), 0) AS skipped_jobs,
+            coalesce(sum(state IN ('running','ready')), 0) AS incomplete_jobs,
             'testrunner.db' AS source
        FROM jobs;" > "$out/counts.tsv"
 }
@@ -345,6 +345,7 @@ write_sqlite_report() {
               coalesce(nerr, 0) AS errors, coalesce(span, 0) AS ms
          FROM jobs
         WHERE state IN ('failed', 'running', 'omit')
+           OR (state='done' AND coalesce(nerr, 0)>0)
         ORDER BY state, jobid;"
   } > "$report"
 
@@ -353,6 +354,7 @@ write_sqlite_report() {
             coalesce(nerr, 0) AS errors, coalesce(span, 0) AS ms
       FROM jobs
       WHERE state IN ('failed', 'running', 'omit')
+         OR (state='done' AND coalesce(nerr, 0)>0)
       ORDER BY state, jobid;" > "$failures"
 
   echo "===== SQLite official testrunner database summary ====="
@@ -417,6 +419,7 @@ patch_sqlite_testrunner_guest_paths() {
         print "  return $path"
         print "}"
         print "set ::kandelo_inline_run_sh 1"
+        print "set ::kandelo_chunk_pipe_output 1"
         inserted = 1
       } else if ($0 == "    set displayname [string map [list $topdir/ {}] $f]") {
         print "    set testfixture_guest [kandelo_guest_path $testfixture]"
@@ -450,10 +453,46 @@ patch_sqlite_testrunner_guest_paths() {
       print "    }"
       next
     }
+    $0 == "    set rc [catch { gets $fd line } res]" {
+      print "    if {[info exists ::kandelo_chunk_pipe_output] && $::kandelo_chunk_pipe_output} {"
+      print "      set rc [catch { read $fd 4096 } res]"
+      print "      if {$rc} {"
+      print "        puts \"ERROR $res\""
+      print "      }"
+      print "      if {!$rc && [string length $res] > 0} {"
+      print "        append O($iJob) $res"
+      print "      }"
+      print "    } else {"
+      print "      set rc [catch { gets $fd line } res]"
+      next
+    }
+    $0 == "    if {$res>=0} {" {
+      print "    if {![info exists ::kandelo_chunk_pipe_output] || !$::kandelo_chunk_pipe_output} {"
+      print "      if {$res>=0} {"
+      next
+    }
+    $0 == "      append O($iJob) \"$line\\n\"" {
+      print
+      print "      }"
+      print "    }"
+      next
+    }
     { print }
   ' "$runner" > "$tmp"
   mv "$tmp" "$runner"
   chmod a+r "$runner"
+
+  for required in \
+    'set ::kandelo_inline_run_sh 1' \
+    'set ::kandelo_chunk_pipe_output 1' \
+    'set fd [open "|sh -c [list $inline_cmd] 2>@1" r]' \
+    'set rc [catch { read $fd 4096 } res]'
+  do
+    if ! grep -Fq "$required" "$runner"; then
+      echo "ERROR: failed to patch SQLite testrunner.tcl for Kandelo all-mode jobs: missing $required" >&2
+      exit 1
+    fi
+  done
 }
 
 cleanup() {
