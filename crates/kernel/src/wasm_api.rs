@@ -9378,21 +9378,21 @@ pub extern "C" fn kernel_getaddrinfo(
 }
 
 // ---------------------------------------------------------------------------
-// Thread identity stubs (pre-threading)
+// Thread identity
 // ---------------------------------------------------------------------------
 
-/// gettid — returns pid (tid == pid until threading is implemented).
+/// gettid — returns pid for the main thread or the host-bound worker TID.
 #[unsafe(no_mangle)]
 pub extern "C" fn kernel_gettid() -> i32 {
     let (_gkl, proc) = unsafe { get_process() };
     syscalls::sys_gettid(proc)
 }
 
-/// set_tid_address — STUB: ignores tidptr, returns pid.
+/// set_tid_address — stores the calling worker thread's clear-TID pointer.
 #[unsafe(no_mangle)]
-pub extern "C" fn kernel_set_tid_address(_tidptr: usize) -> i32 {
+pub extern "C" fn kernel_set_tid_address(tidptr: usize) -> i32 {
     let (_gkl, proc) = unsafe { get_process() };
-    syscalls::sys_set_tid_address(proc)
+    syscalls::sys_set_tid_address(proc, tidptr)
 }
 
 /// set_robust_list — stores the robust list head pointer (no-op for now).

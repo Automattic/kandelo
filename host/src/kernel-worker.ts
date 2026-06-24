@@ -298,6 +298,8 @@ export interface SyscallTraceEvent {
   nr: number;
   /** Raw arg values as the wasm program saw them. 6 entries, undefined slots are 0. */
   args: [number, number, number, number, number, number];
+  /** Human-readable syscall entry, including decoded pointer arguments when available. */
+  decoded?: string;
 }
 
 /**
@@ -1852,6 +1854,23 @@ export class CentralizedKernelWorker {
     return new TextDecoder("utf-8", { fatal: false }).decode(copy);
   }
 
+  private formatPollFds(memory: WebAssembly.Memory, ptr: number, nfds: number): string {
+    if (ptr === 0 || nfds <= 0) return "";
+    const view = new DataView(memory.buffer);
+    const entries: string[] = [];
+    const capped = Math.min(nfds, 8);
+    for (let i = 0; i < capped; i++) {
+      const off = ptr + i * 8;
+      if (off + 8 > view.byteLength) break;
+      const fd = view.getInt32(off, true);
+      const events = view.getInt16(off + 4, true);
+      const revents = view.getInt16(off + 6, true);
+      entries.push(`{fd:${fd},events:0x${(events & 0xffff).toString(16)},revents:0x${(revents & 0xffff).toString(16)}}`);
+    }
+    if (nfds > capped) entries.push("...");
+    return entries.join(",");
+  }
+
   /** Format a syscall for logging, decoding path/string args from process memory */
   private formatSyscallEntry(channel: ChannelInfo, syscallNr: number, args: number[]): string {
     const name = SYSCALL_NAMES[syscallNr] ?? `syscall_${syscallNr}`;
@@ -1909,7 +1928,7 @@ export class CentralizedKernelWorker {
         return `[${pid}${tidSuffix}] clone(0x${(args[0] >>> 0).toString(16)})`;
       case ABI_SYSCALLS.Exit: return `[${pid}${tidSuffix}] exit(${args[0]})`;
       case ABI_SYSCALLS.Poll: // poll(fds, nfds, timeout)
-        return `[${pid}${tidSuffix}] poll(${args[1]}, ${args[2]})`;
+        return `[${pid}${tidSuffix}] poll(${args[1]}, ${args[2]}, [${this.formatPollFds(channel.memory, args[0], args[1])}])`;
       case ABI_SYSCALLS.Ioctl: // ioctl(fd, cmd, arg)
         return `[${pid}${tidSuffix}] ioctl(${args[0]}, 0x${(args[1] >>> 0).toString(16)})`;
       default:
@@ -1992,6 +2011,7 @@ export class CentralizedKernelWorker {
           origArgs[0] ?? 0, origArgs[1] ?? 0, origArgs[2] ?? 0,
           origArgs[3] ?? 0, origArgs[4] ?? 0, origArgs[5] ?? 0,
         ],
+        decoded: this.formatSyscallEntry(channel, syscallNr, origArgs),
       });
     }
 
@@ -6224,31 +6244,7 @@ export class CentralizedKernelWorker {
       // Thread exit: find TID, notify kernel, remove channel, complete to unblock
       const tidKey = `${channel.pid}:${channel.channelOffset}`;
       const tid = this.channelTids.get(tidKey) ?? 0;
-      if (tid > 0) {
-        this.channelTids.delete(tidKey);
-        this.threadForkContexts.delete(tidKey);
-      }
-
-      // CLONE_CHILD_CLEARTID: write 0 to ctidPtr and futex-wake it.
-      // This is normally done by the Linux kernel on thread exit; we must
-      // do it here because the thread worker never returns from __pthread_exit
-      // (it loops on SYS_EXIT).
-      if (tid > 0) {
-        const ctidKey = `${channel.pid}:${tid}`;
-        const ctidPtr = this.threadCtidPtrs.get(ctidKey);
-        if (ctidPtr && ctidPtr !== 0) {
-          this.threadCtidPtrs.delete(ctidKey);
-          const procView = new DataView(channel.memory.buffer);
-          procView.setInt32(ctidPtr, 0, true);
-          const i32View = new Int32Array(channel.memory.buffer);
-          Atomics.notify(i32View, ctidPtr >>> 2, 1);
-        }
-      }
-
-      if (tid > 0) {
-        this.notifyThreadExit(channel.pid, tid);
-      }
-      this.removeChannel(channel.pid, channel.channelOffset);
+      if (tid > 0) this.finalizeThreadExit(channel.pid, tid, channel.channelOffset);
       const hostWillTerminateThread = tid > 0 &&
         this.callbacks.onThreadExit?.(channel.pid, tid, channel.channelOffset) === true;
       if (hostWillTerminateThread) {
@@ -6827,6 +6823,36 @@ export class CentralizedKernelWorker {
     if (threadExit) {
       threadExit(pid, tid);
     }
+  }
+
+  /**
+   * Complete kernel-side cleanup for a thread whose worker has stopped.
+   * Normal pthread exit reaches this from SYS_EXIT. Crash paths use the same
+   * cleanup so pthread_join waiters do not stay blocked on CLONE_CHILD_CLEARTID.
+   */
+  finalizeThreadExit(pid: number, tid: number, channelOffset: number): void {
+    const tidKey = `${pid}:${channelOffset}`;
+    this.channelTids.delete(tidKey);
+    this.threadForkContexts.delete(tidKey);
+
+    const ctidKey = `${pid}:${tid}`;
+    const ctidPtr = this.threadCtidPtrs.get(ctidKey);
+    if (ctidPtr && ctidPtr !== 0) {
+      this.threadCtidPtrs.delete(ctidKey);
+      const channel = this.activeChannels.find(
+        (ch) => ch.pid === pid && ch.channelOffset === channelOffset,
+      );
+      const memory = channel?.memory ?? this.processes.get(pid)?.memory;
+      if (memory) {
+        const procView = new DataView(memory.buffer);
+        procView.setInt32(ctidPtr, 0, true);
+        const i32View = new Int32Array(memory.buffer);
+        Atomics.notify(i32View, ctidPtr >>> 2, 1);
+      }
+    }
+
+    this.notifyThreadExit(pid, tid);
+    this.removeChannel(pid, channelOffset);
   }
 
   /**
