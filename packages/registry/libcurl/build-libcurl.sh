@@ -182,6 +182,13 @@ if [ ! -f Makefile ]; then
     ZLIB_FLAGS=()
     if [ -n "$ZLIB_PREFIX" ]; then
         ZLIB_FLAGS+=(--with-zlib="$ZLIB_PREFIX")
+        # curl 8.11.1's autoconf libz probes declare gzread/inflateEnd
+        # with old K&R-style signatures. That links to invalid wasm with
+        # the current SDK even though a correctly declared zlib program
+        # links cleanly, so cache the cross result once the resolver has
+        # provided an explicit zlib package path.
+        export ac_cv_lib_z_gzread=yes
+        export ac_cv_lib_z_inflateEnd=yes
         echo "==> zlib found at $ZLIB_PREFIX"
     else
         ZLIB_FLAGS+=(--without-zlib)
