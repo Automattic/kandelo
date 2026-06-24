@@ -9,7 +9,7 @@ use wasm_local_root_spill::{Options, spill};
 #[command(
     name = "wasm-local-root-spill",
     about = "Spill wasm locals into linear memory for conservative GC root visibility",
-    long_about = None,
+    long_about = "Rewrite a supported wasm32 runtime binary so conservative stack-scanning GCs can see selected scalar roots that would otherwise live only in Wasm locals or operand-stack carryovers. The first production profile is `ruby`; unsupported profiles and root widths fail loudly."
 )]
 struct Cli {
     /// Input wasm file to rewrite.

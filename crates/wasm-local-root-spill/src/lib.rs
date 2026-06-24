@@ -1,11 +1,18 @@
 //! Conservative Wasm local-root spilling for runtimes such as CRuby.
 //!
-//! Stage 2 is intentionally narrow. It materializes i32 params and locals into
-//! a linear-stack spill frame so a conservative GC that scans stack memory can
-//! see values otherwise held only in optimized Wasm locals. It also materializes
-//! typed i32 operand-stack carryovers before calls and call-bearing structured
-//! regions. Unanalyzable carryovers fail loudly instead of producing a partial
-//! root set.
+//! CRuby's conservative GC expects live `VALUE` roots to be visible in stack
+//! memory. Optimized Wasm locals and operand-stack values are not memory bytes,
+//! so a Ruby `VALUE` can be live across an allocating call while still being
+//! invisible to Ruby's scanner. The `ruby` profile mirrors wasm32 `i32` locals
+//! and selected operand-stack carryovers into a small frame reserved from
+//! `__stack_pointer`.
+//!
+//! This is not a general root-map generator. The implementation is intentionally
+//! narrow, package-build scoped, and fail-loud: unsupported profiles, memory64,
+//! unknown operand-stack carryovers, and ref-typed carryovers are rejected or
+//! left out of scope instead of producing a partial root set. See the crate
+//! README for the Ruby 4 rationale, applicability to other runtimes, and known
+//! gaps.
 
 use std::{
     collections::{HashMap, HashSet},
