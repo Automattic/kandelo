@@ -1732,7 +1732,16 @@ export async function centralizedThreadWorkerMain(
     const forkBufAddr = channelOffset - FORK_BUF_SIZE;
     let forkResult = 0;
 
-    const kernelImports = buildKernelImports(memory, channelOffset);
+    let kernelThreadExitStatus: number | null = null;
+    const kernelImports = buildKernelImports(
+      memory,
+      channelOffset,
+      undefined,
+      undefined,
+      (status) => {
+        kernelThreadExitStatus = status;
+      },
+    );
     if (hasForkInstrumentation) {
       kernelImports.kernel_fork = (): number => {
         if (!threadInstance) return -38; // ENOSYS
@@ -1817,12 +1826,12 @@ export async function centralizedThreadWorkerMain(
           const raw = threadFn(threadArg);
           result = Number(raw);
         } catch (e) {
-          if (e instanceof Error && e.message.includes("unreachable")) {
-            result = 0;
-            break;
-          }
-          if (e instanceof Error && e.message.includes("null function or function signature mismatch")) {
-            result = 0;
+          if (
+            e instanceof Error &&
+            e.message.includes("unreachable") &&
+            kernelThreadExitStatus !== null
+          ) {
+            result = kernelThreadExitStatus;
             break;
           }
           throw e;
@@ -1846,12 +1855,12 @@ export async function centralizedThreadWorkerMain(
         const raw = threadFn(threadArg);
         result = Number(raw);
       } catch (e) {
-        if (e instanceof Error && e.message.includes("unreachable")) {
-          // Thread exited via kernel_exit → unreachable trap
-          result = 0;
-        } else if (e instanceof Error && e.message.includes("null function or function signature mismatch")) {
-          // call_indirect type mismatch — treat as thread crash but don't abort
-          result = 0;
+        if (
+          e instanceof Error &&
+          e.message.includes("unreachable") &&
+          kernelThreadExitStatus !== null
+        ) {
+          result = kernelThreadExitStatus;
         } else {
           throw e;
         }

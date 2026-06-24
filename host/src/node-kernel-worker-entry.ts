@@ -49,6 +49,7 @@ import {
   signalExitStatus,
   SIGSEGV,
 } from "./trap-signals";
+import { threadWorkerFailureDisposition } from "./thread-worker-disposition";
 import {
   computeProcessMemoryLayout,
   createProcessMemory,
@@ -251,14 +252,6 @@ function unexpectedWorkerCrashDisposition(reason: unknown): {
 } {
   const signum = classifiedSignalOrFallback(reason);
   return { exitStatus: signalExitStatus(signum), signum };
-}
-
-function threadWorkerCrashDisposition(reason: unknown): {
-  exitStatus: number;
-  signum: number;
-} {
-  const signum = classifiedSignalOrFallback(reason);
-  return { exitStatus: classifiedTrapExitStatus(reason) ?? signalExitStatus(signum), signum };
 }
 
 function finalizeProcessWorkerError(
@@ -1094,11 +1087,13 @@ async function handleClone(
   const failThread = (reason: string) => {
     const text = `[kernel-worker] pid=${pid} tid=${tid}: ${reason}\n`;
     post({ type: "stderr", pid, data: new TextEncoder().encode(text) });
-    const { exitStatus, signum } = threadWorkerCrashDisposition(reason);
-    try { kernelWorker.notifyHostProcessCrashed(pid, signum); } catch { /* best-effort */ }
+    const disposition = threadWorkerFailureDisposition(reason);
     kernelWorker.finalizeThreadExit(pid, tid, alloc.channelOffset);
     void terminateThreadEntry();
-    void finishProcessExit(pid, exitStatus);
+    if (disposition.kind === "guest-fatal-trap") {
+      try { kernelWorker.notifyHostProcessCrashed(pid, disposition.signum); } catch { /* best-effort */ }
+      void finishProcessExit(pid, disposition.exitStatus);
+    }
   };
   threadWorker.on("message", (msg: unknown) => {
     const m = msg as WorkerToHostMessage;
