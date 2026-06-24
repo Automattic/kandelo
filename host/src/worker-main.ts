@@ -1878,10 +1878,13 @@ export async function centralizedThreadWorkerMain(
       tid,
     } satisfies WorkerToHostMessage);
   } catch (err) {
+    const message = err instanceof Error
+      ? `${err.message}\n${err.stack ?? ""}`
+      : String(err);
     port.postMessage({
-      type: "thread_exit",
+      type: "error",
       pid,
-      tid,
+      message: `Thread worker failed: ${message}`,
     } satisfies WorkerToHostMessage);
   }
 }

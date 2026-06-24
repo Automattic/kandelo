@@ -255,6 +255,14 @@ function unexpectedWorkerCrashDisposition(reason: unknown): {
   return { exitStatus: signalExitStatus(signum), signum };
 }
 
+function threadWorkerCrashDisposition(reason: unknown): {
+  exitStatus: number;
+  signum: number;
+} {
+  const signum = classifiedSignalOrFallback(reason);
+  return { exitStatus: classifiedTrapExitStatus(reason) ?? signalExitStatus(signum), signum };
+}
+
 function finalizeProcessWorkerError(
   pid: number,
   worker: ReturnType<NodeWorkerAdapter["createWorker"]>,
@@ -1119,9 +1127,11 @@ async function handleClone(
   const failThread = (reason: string) => {
     const text = `[kernel-worker] pid=${pid} tid=${tid}: ${reason}\n`;
     post({ type: "stderr", pid, data: new TextEncoder().encode(text) });
-    kernelWorker.notifyThreadExit(pid, tid);
-    kernelWorker.removeChannel(pid, alloc.channelOffset);
+    const { exitStatus, signum } = threadWorkerCrashDisposition(reason);
+    try { kernelWorker.notifyHostProcessCrashed(pid, signum); } catch { /* best-effort */ }
+    kernelWorker.finalizeThreadExit(pid, tid, alloc.channelOffset);
     void terminateThreadEntry();
+    void finishProcessExit(pid, exitStatus);
   };
   threadWorker.on("message", (msg: unknown) => {
     const m = msg as WorkerToHostMessage;

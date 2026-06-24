@@ -46,6 +46,7 @@ const TRAP_PATTERNS: TrapPattern[] = [
       /out-of-bounds memory/i,
       /index out of bounds.*memory/i,
       /memory out of bounds/i,
+      /unaligned accesses?/i,
     ],
   },
   {

@@ -20,6 +20,12 @@ describe("Wasm trap signal classification", () => {
       category: "memory",
       signum: SIGSEGV,
     });
+    expect(
+      classifyWasmCrashSignal("RuntimeError: operation does not support unaligned accesses"),
+    ).toMatchObject({
+      category: "memory",
+      signum: SIGSEGV,
+    });
     expect(classifyWasmCrashSignal("RangeError: Maximum call stack size exceeded")).toMatchObject({
       category: "stack",
       signum: SIGSEGV,

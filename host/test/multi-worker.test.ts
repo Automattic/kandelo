@@ -178,8 +178,51 @@ describe("CentralizedKernelWorker Process Management", () => {
     expect(channel.handling).toBe(false);
   });
 
-  it("registers pthread clear-TID before the host clone callback can complete", async () => {
+  it("clears pthread child TID when forced thread cleanup skips guest SYS_EXIT", () => {
     const pid = 125;
+    const mainChannelOffset = WASM_PAGE_SIZE;
+    const threadChannelOffset = 2 * WASM_PAGE_SIZE;
+    const tid = 79;
+    const ctidPtr = 0x00040000;
+    const memory = new WebAssembly.Memory({
+      initial: 16,
+      maximum: 16,
+      shared: true,
+    });
+    const channel = {
+      pid,
+      channelOffset: threadChannelOffset,
+      memory,
+      i32View: new Int32Array(memory.buffer, threadChannelOffset),
+      consecutiveSyscalls: 0,
+    };
+    new DataView(memory.buffer).setInt32(ctidPtr, tid, true);
+
+    const kw = Object.assign(Object.create(CentralizedKernelWorker.prototype), {
+      processes: new Map([
+        [pid, { memory, channels: [{ channelOffset: mainChannelOffset }, channel] }],
+      ]),
+      activeChannels: [channel],
+      channelTids: new Map([[`${pid}:${threadChannelOffset}`, tid]]),
+      threadForkContexts: new Map([
+        [`${pid}:${threadChannelOffset}`, { fnPtr: 1, argPtr: 2 }],
+      ]),
+      threadCtidPtrs: new Map([[`${pid}:${tid}`, ctidPtr]]),
+      notifyThreadExit: vi.fn(),
+    }) as CentralizedKernelWorker;
+
+    kw.finalizeThreadExit(pid, tid, threadChannelOffset);
+
+    expect(new DataView(memory.buffer).getInt32(ctidPtr, true)).toBe(0);
+    expect((kw as any).threadCtidPtrs.has(`${pid}:${tid}`)).toBe(false);
+    expect((kw as any).channelTids.has(`${pid}:${threadChannelOffset}`)).toBe(false);
+    expect((kw as any).threadForkContexts.has(`${pid}:${threadChannelOffset}`)).toBe(false);
+    expect((kw as any).activeChannels).toEqual([]);
+    expect((kw as any).notifyThreadExit).toHaveBeenCalledWith(pid, tid);
+  });
+
+  it("registers pthread clear-TID before the host clone callback can complete", async () => {
+    const pid = 126;
     const mainChannelOffset = WASM_PAGE_SIZE;
     const tid = 79;
     const stackPtr = 0x00800000;

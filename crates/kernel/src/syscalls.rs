@@ -8968,16 +8968,31 @@ pub fn sys_prctl(proc: &mut Process, option: u32, _arg2: u32, buf: &mut [u8]) ->
     }
 }
 
-// Returns thread ID. Without threading, tid == pid.
-// Threading upgrade: return actual TID from thread table.
+// Returns the Linux TID for the currently-servicing thread. The host sets
+// current_tid before dispatching each thread channel; tid 0 means main thread.
 pub fn sys_gettid(proc: &Process) -> i32 {
-    proc.pid as i32
+    let tid = crate::process_table::current_tid();
+    if proc.is_main_thread(tid) {
+        proc.pid as i32
+    } else {
+        tid as i32
+    }
 }
 
-// Stores tidptr for thread exit notification. Without threading, returns pid.
-// Threading upgrade: store tidptr per-thread; kernel writes 0 + futex-wakes on exit.
-pub fn sys_set_tid_address(proc: &Process) -> i32 {
-    proc.pid as i32
+// Stores the calling thread's clear-TID pointer for bookkeeping and returns
+// the calling TID, matching Linux set_tid_address(2). Host-side thread exit
+// already performs the actual clear-and-futex-wake using clone's ctid pointer;
+// keeping this value current lets threaded runtimes observe correct identity.
+pub fn sys_set_tid_address(proc: &mut Process, tidptr: usize) -> i32 {
+    let tid = crate::process_table::current_tid();
+    if proc.is_main_thread(tid) {
+        proc.pid as i32
+    } else {
+        if let Some(thread) = proc.get_thread_mut(tid) {
+            thread.tidptr = tidptr;
+        }
+        tid as i32
+    }
 }
 
 // No-op — robust futex list tracking deferred until threading is implemented.
@@ -10950,6 +10965,13 @@ mod tests {
     /// The registry uses UnsafeCell internally and is not thread-safe, so tests
     /// that call sys_bind/sys_connect for AF_UNIX must hold this lock.
     static UNIX_REGISTRY_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    static THREAD_IDENTITY_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    fn set_test_current_tid(tid: u32) {
+        unsafe {
+            (*crate::process_table::GLOBAL_PROCESS_TABLE.0.get()).set_current_tid(tid);
+        }
+    }
 
     fn test_path_is_dir(path: &[u8]) -> bool {
         path.ends_with(b"/")
@@ -17674,6 +17696,33 @@ mod tests {
         let tid = result.expect("thread-style clone should allocate a tid");
         assert!(tid > 0);
         assert!(proc.get_thread(tid as u32).is_some());
+    }
+
+    #[test]
+    fn test_gettid_returns_pid_for_main_thread() {
+        let _guard = THREAD_IDENTITY_LOCK.lock().unwrap();
+        set_test_current_tid(0);
+        let proc = Process::new(77);
+
+        assert_eq!(sys_gettid(&proc), 77);
+
+        set_test_current_tid(0);
+    }
+
+    #[test]
+    fn test_gettid_and_set_tid_address_use_current_worker_tid() {
+        use crate::process::ThreadInfo;
+
+        let _guard = THREAD_IDENTITY_LOCK.lock().unwrap();
+        let mut proc = Process::new(100);
+        proc.add_thread(ThreadInfo::new(101, 0, 0, 0));
+        set_test_current_tid(101);
+
+        assert_eq!(sys_gettid(&proc), 101);
+        assert_eq!(sys_set_tid_address(&mut proc, 0xbeef), 101);
+        assert_eq!(proc.get_thread(101).unwrap().tidptr, 0xbeef);
+
+        set_test_current_tid(0);
     }
 
     #[test]
