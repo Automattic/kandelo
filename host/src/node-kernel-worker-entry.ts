@@ -654,9 +654,12 @@ function handleSpawn(msg: SpawnMessage) {
       kernelWorker.onPtyOutput(ptyIdx, (data: Uint8Array) => {
         post({ type: "pty_output", pid, data });
       });
-    } else if (msg.stdin) {
-      const stdinData = msg.stdin instanceof Uint8Array ? msg.stdin : new Uint8Array(msg.stdin);
-      kernelWorker.setStdinData(pid, stdinData);
+    } else {
+      kernelWorker.setStdioPipes(pid);
+      if (msg.stdin) {
+        const stdinData = msg.stdin instanceof Uint8Array ? msg.stdin : new Uint8Array(msg.stdin);
+        kernelWorker.setStdinData(pid, stdinData);
+      }
     }
 
     const initData: CentralizedWorkerInitMessage = {

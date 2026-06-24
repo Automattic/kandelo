@@ -672,6 +672,38 @@ impl Process {
         }
     }
 
+    /// Mark one of the pre-opened stdio descriptors as a host-backed pipe.
+    ///
+    /// Fresh processes start with host-backed `CharDevice` descriptors so the
+    /// kernel can still be used in legacy terminal-like configurations. Host
+    /// runtimes that capture stdio without allocating a PTY call this before
+    /// user code runs so `isatty()` and terminal ioctls report non-terminal
+    /// pipe semantics while reads and writes continue to delegate to host
+    /// handles 0, 1, and 2.
+    pub fn mark_stdio_fd_as_pipe(&mut self, fd: i32) {
+        if !(0..=2).contains(&fd) {
+            return;
+        }
+
+        let ofd_idx = match self.fd_table.get(fd) {
+            Ok(entry) => entry.ofd_ref.0,
+            Err(_) => return,
+        };
+
+        if let Some(ofd) = self.ofd_table.get_mut(ofd_idx) {
+            if (0..=2).contains(&ofd.host_handle) {
+                ofd.file_type = crate::ofd::FileType::Pipe;
+            }
+        }
+    }
+
+    /// Mark stdin, stdout, and stderr as host-backed pipes.
+    pub fn mark_stdio_as_pipes(&mut self) {
+        for fd in 0..=2 {
+            self.mark_stdio_fd_as_pipe(fd);
+        }
+    }
+
     /// Returns how many times this process has successfully forked (parent side).
     pub fn fork_count(&self) -> u64 {
         self.fork_count
@@ -1117,12 +1149,27 @@ pub(crate) mod test_host {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ofd::FileType;
     use crate::pipe::PipeBuffer;
 
     #[test]
     fn fork_count_starts_at_zero() {
         let proc = Process::new(1);
         assert_eq!(proc.fork_count(), 0);
+    }
+
+    #[test]
+    fn mark_stdio_as_pipes_reclassifies_preopened_stdio() {
+        let mut proc = Process::new(1);
+
+        proc.mark_stdio_as_pipes();
+
+        for fd in 0..=2 {
+            let entry = proc.fd_table.get(fd).expect("stdio fd");
+            let ofd = proc.ofd_table.get(entry.ofd_ref.0).expect("stdio ofd");
+            assert_eq!(ofd.file_type, FileType::Pipe);
+            assert_eq!(ofd.host_handle, fd as i64);
+        }
     }
 
     #[test]
