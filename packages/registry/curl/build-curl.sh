@@ -9,8 +9,10 @@
 #
 # When invoked under `xtask build-deps resolve curl`:
 #   - WASM_POSIX_DEP_OUT_DIR is set to curl's scratch dir.
-#   - libcurl's build script's `install_local_binary curl` writes to
-#     local-binaries/programs/curl.wasm AND $WASM_POSIX_DEP_OUT_DIR/curl.wasm.
+#   - Direct zlib/openssl dependencies are surfaced to the delegated
+#     libcurl build script so the standalone CLI gets HTTPS and --compressed.
+#   - libcurl's build script writes the produced CLI to
+#     $WASM_POSIX_DEP_OUT_DIR/curl.wasm.
 #   - validate_outputs for the curl manifest finds curl.wasm at OUT_DIR.
 
 set -euo pipefail
