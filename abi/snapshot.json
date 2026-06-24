@@ -1351,6 +1351,11 @@
     },
     {
       "kind": "func",
+      "name": "kernel_set_stdio_pipes",
+      "signature": "(i32) -> (i32)"
+    },
+    {
+      "kind": "func",
       "name": "kernel_set_tid_address",
       "signature": "(i32) -> (i32)"
     },

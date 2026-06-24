@@ -1462,10 +1462,23 @@ pub extern "C" fn kernel_set_process_argv(pid: u32, data_ptr: *const u8, data_le
 pub extern "C" fn kernel_set_stdin_pipe(pid: u32) -> i32 {
     let table = unsafe { &mut *PROCESS_TABLE.0.get() };
     if let Some(proc) = table.get_mut(pid) {
-        // Change OFD 0 (stdin) from CharDevice to Pipe
-        if let Some(ofd) = proc.ofd_table.get_mut(0) {
-            ofd.file_type = crate::ofd::FileType::Pipe;
-        }
+        proc.mark_stdio_fd_as_pipe(0);
+        0
+    } else {
+        -(Errno::ESRCH as i32)
+    }
+}
+
+/// Mark a process's stdin/stdout/stderr (fds 0, 1, 2) as host-backed pipes.
+/// This is applied by host runtimes for non-PTY captured stdio so `isatty()`
+/// and terminal ioctls report non-terminal semantics while host read/write
+/// handles 0/1/2 still back the streams.
+/// Returns 0 on success, -ESRCH if pid not found.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_set_stdio_pipes(pid: u32) -> i32 {
+    let table = unsafe { &mut *PROCESS_TABLE.0.get() };
+    if let Some(proc) = table.get_mut(pid) {
+        proc.mark_stdio_as_pipes();
         0
     } else {
         -(Errno::ESRCH as i32)
