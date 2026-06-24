@@ -185,6 +185,13 @@ Browser demos use pre-built **VFS images** — binary snapshots of a `MemoryFile
 1. **Build time**: A TypeScript build script creates a `MemoryFileSystem`, writes files/dirs/symlinks into it, and calls `saveImage()` to produce a zstd-compressed `.vfs.zst` file. Empty regions of the SharedFS allocator compress to nearly nothing, so a 32 MB filesystem with a few MB of real content typically ships as a 1–3 MB download. If the image should grow or report a larger `df` capacity at runtime, build it with `MemoryFileSystem.create(sab, permittedMaxBytes)` so the filesystem metadata is sized for that capacity.
 2. **Runtime**: The demo page fetches the `.vfs.zst` file, calls `MemoryFileSystem.fromImage(imageBytes, { maxByteLength })` (which auto-detects zstd magic and decompresses transparently), and passes the resulting filesystem to `BrowserKernel({ memfs })`. `maxByteLength` makes the restored `SharedArrayBuffer` growable; it does not raise the filesystem maximum beyond the image's superblock limit.
 
+Images that run scripts, Tcl `open "|..."`, `system()`, `popen()`, or other
+shell-mediated execution paths must include a real POSIX shell provider at
+`/bin/sh` and `/usr/bin/sh`. Use `installPosixShell()` from
+`host/src/vfs/image-helpers.ts` in image builders so the image contains dash and
+the standard shell symlinks; do not let the builder silently emit an image that
+will fail later at `execve("/bin/sh")`.
+
 ```typescript
 // Typical demo pattern
 const [kernelBuf, vfsImageBuf] = await Promise.all([

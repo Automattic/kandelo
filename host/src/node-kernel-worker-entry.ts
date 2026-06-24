@@ -33,6 +33,7 @@ import {
   HostFileSystem,
   MemoryFileSystem,
   resolveForNode,
+  scaffoldExtraMountPoints,
 } from "./vfs";
 import type { MountConfig } from "./vfs/types";
 import { TcpNetworkBackend } from "./networking/tcp-backend";
@@ -515,16 +516,18 @@ function buildVirtualPlatformIO(
     backend: new HostFileSystem(m.hostPath),
     readonly: m.readonly,
   }));
+  const rootMount = specMounts.find((m) => m.mountPoint === "/");
+  const rootBackend = rootMount?.backend instanceof MemoryFileSystem
+    ? rootMount.backend
+    : null;
+  if (rootBackend) scaffoldExtraMountPoints(rootBackend, extraMounts);
   const mounts = [
     { mountPoint: "/dev/shm", backend: shmfs },
     { mountPoint: "/dev", backend: new DeviceFileSystem() },
     ...specMounts,
     ...extras,
   ];
-  const rootMount = mounts.find((m) => m.mountPoint === "/");
-  rootfsMemfs = rootMount?.backend instanceof MemoryFileSystem
-    ? rootMount.backend
-    : null;
+  rootfsMemfs = rootBackend;
   return new VirtualPlatformIO(mounts, new NodeTimeProvider());
 }
 
