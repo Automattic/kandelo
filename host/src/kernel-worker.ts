@@ -1186,6 +1186,21 @@ export class CentralizedKernelWorker {
   }
 
   /**
+   * Mark stdin/stdout/stderr as captured pipes for non-PTY processes.
+   */
+  setStdioPipes(pid: number): void {
+    const kernelSetStdioPipes = this.kernelInstance!.exports.kernel_set_stdio_pipes as
+      ((pid: number) => number) | undefined;
+    if (!kernelSetStdioPipes) {
+      throw new Error("Kernel missing kernel_set_stdio_pipes export");
+    }
+    const rc = kernelSetStdioPipes(pid);
+    if (rc < 0) {
+      throw new Error(`kernel_set_stdio_pipes failed: errno ${-rc}`);
+    }
+  }
+
+  /**
    * Set stdout/stderr capture callbacks on the underlying kernel instance.
    * Must be called after construction but works at any time.
    */
