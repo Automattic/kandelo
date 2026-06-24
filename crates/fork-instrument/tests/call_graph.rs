@@ -4,7 +4,7 @@
 //! exactly which functions should be reported as reaching the
 //! `kernel.kernel_fork` import through direct calls.
 
-use fork_instrument::{analyze, Options};
+use fork_instrument::{Options, analyze};
 use std::collections::HashSet;
 
 fn discover(wat_src: &str) -> HashSet<String> {
@@ -389,6 +389,168 @@ fn passive_element_with_table_init_is_followed() {
 }
 
 #[test]
+fn constant_slot_pointing_to_safe_target_excludes_indirect_caller() {
+    // Both functions have the same signature and inhabit the same table.
+    // The caller indexes slot 0, which can only dispatch to $safe_target,
+    // so $calls_safe_slot must not be treated as reaching $fork_target.
+    let wat = r#"
+        (module
+          (import "kernel" "kernel_fork" (func $fork (result i32)))
+          (type $ft (func (result i32)))
+          (table 2 funcref)
+          (elem (i32.const 0) $safe_target $fork_target)
+          (func $safe_target (export "safe_target") (result i32)
+            i32.const 0)
+          (func $fork_target (export "fork_target") (result i32)
+            call $fork)
+          (func $calls_safe_slot (export "calls_safe_slot") (result i32)
+            i32.const 0
+            call_indirect (type $ft)))
+    "#;
+    let found = discover(wat);
+    assert!(found.iter().any(|n| n == "fork_target"));
+    assert!(
+        !found.iter().any(|n| n == "calls_safe_slot"),
+        "literal index 0 cannot dispatch to the fork target in slot 1; got {found:?}"
+    );
+}
+
+#[test]
+fn constant_slot_pointing_to_fork_target_includes_indirect_caller() {
+    // The precise slot model must still include a caller when its literal
+    // index points at the fork-reaching table entry.
+    let wat = r#"
+        (module
+          (import "kernel" "kernel_fork" (func $fork (result i32)))
+          (type $ft (func (result i32)))
+          (table 2 funcref)
+          (elem (i32.const 0) $safe_target $fork_target)
+          (func $safe_target (result i32)
+            i32.const 0)
+          (func $fork_target (export "fork_target") (result i32)
+            call $fork)
+          (func $calls_fork_slot (export "calls_fork_slot") (result i32)
+            i32.const 1
+            call_indirect (type $ft)))
+    "#;
+    let found = discover(wat);
+    assert!(found.iter().any(|n| n == "fork_target"));
+    assert!(
+        found.iter().any(|n| n == "calls_fork_slot"),
+        "literal index 1 dispatches to the fork target; got {found:?}"
+    );
+}
+
+#[test]
+fn constant_index_folded_from_i32_add_uses_slot_model() {
+    // The index proof is intentionally tiny, but folding adjacent constants
+    // avoids losing precision for common lowered arithmetic.
+    let wat = r#"
+        (module
+          (import "kernel" "kernel_fork" (func $fork (result i32)))
+          (type $ft (func (result i32)))
+          (table 3 funcref)
+          (elem (i32.const 0) $safe_a $safe_b $fork_target)
+          (func $safe_a (result i32)
+            i32.const 0)
+          (func $safe_b (result i32)
+            i32.const 1)
+          (func $fork_target (export "fork_target") (result i32)
+            call $fork)
+          (func $calls_folded_safe_slot (export "calls_folded_safe_slot") (result i32)
+            i32.const 0
+            i32.const 1
+            i32.add
+            call_indirect (type $ft)))
+    "#;
+    let found = discover(wat);
+    assert!(found.iter().any(|n| n == "fork_target"));
+    assert!(
+        !found.iter().any(|n| n == "calls_folded_safe_slot"),
+        "folded index 1 points at a safe slot, not the fork target in slot 2; got {found:?}"
+    );
+}
+
+#[test]
+fn unknown_index_against_table_with_fork_target_includes_indirect_caller() {
+    // A local value could be any in-bounds table index, so this remains
+    // conservative even when the table contents are slot-known.
+    let wat = r#"
+        (module
+          (import "kernel" "kernel_fork" (func $fork (result i32)))
+          (type $ft (func (result i32)))
+          (table 2 funcref)
+          (elem (i32.const 0) $safe_target $fork_target)
+          (func $safe_target (result i32)
+            i32.const 0)
+          (func $fork_target (export "fork_target") (result i32)
+            call $fork)
+          (func $calls_unknown_index (export "calls_unknown_index") (param i32) (result i32)
+            local.get 0
+            call_indirect (type $ft)))
+    "#;
+    let found = discover(wat);
+    assert!(found.iter().any(|n| n == "fork_target"));
+    assert!(
+        found.iter().any(|n| n == "calls_unknown_index"),
+        "dynamic table index must stay conservative; got {found:?}"
+    );
+}
+
+#[test]
+fn dynamic_table_write_preserves_conservative_indirect_inclusion() {
+    // table.set may rewrite slot 0 before the indirect call. Until the
+    // analyser has ordered table-write proofs, the whole table is unknown.
+    let wat = r#"
+        (module
+          (import "kernel" "kernel_fork" (func $fork (result i32)))
+          (type $ft (func (result i32)))
+          (table 2 funcref)
+          (elem (i32.const 0) $safe_target $fork_target)
+          (func $safe_target (result i32)
+            i32.const 0)
+          (func $fork_target (export "fork_target") (result i32)
+            call $fork)
+          (func $rewrite_table
+            i32.const 0
+            ref.func $fork_target
+            table.set 0)
+          (func $calls_slot_zero (export "calls_slot_zero") (result i32)
+            i32.const 0
+            call_indirect (type $ft)))
+    "#;
+    let found = discover(wat);
+    assert!(found.iter().any(|n| n == "fork_target"));
+    assert!(
+        found.iter().any(|n| n == "calls_slot_zero"),
+        "dynamic table writes keep literal indexes conservative; got {found:?}"
+    );
+}
+
+#[test]
+fn return_call_and_return_call_indirect_follow_reachability_rules() {
+    // Tail-call variants must be graph-equivalent to ordinary calls.
+    let wat = r#"
+        (module
+          (import "kernel" "kernel_fork" (func $fork (result i32)))
+          (type $ft (func (result i32)))
+          (table 1 funcref)
+          (elem (i32.const 0) $tail_indirect_target)
+          (func $tail_direct (export "tail_direct") (result i32)
+            return_call $fork)
+          (func $tail_indirect_target (export "tail_indirect_target") (result i32)
+            call $fork)
+          (func $calls_tail_indirect (export "calls_tail_indirect") (result i32)
+            i32.const 0
+            return_call_indirect (type $ft)))
+    "#;
+    let found = discover(wat);
+    for name in ["tail_direct", "tail_indirect_target", "calls_tail_indirect"] {
+        assert!(found.iter().any(|n| n == name), "missing {name}: {found:?}");
+    }
+}
+
+#[test]
 fn indirect_closure_allows_two_hops_but_does_not_cascade_forever() {
     // Models trampoline-shaped runtimes without allowing unbounded
     // same-table callback closure:
@@ -397,10 +559,9 @@ fn indirect_closure_allows_two_hops_but_does_not_cascade_forever() {
     //   $hop2 call_indirect -> $hop1              (depth 2)
     //   $false_positive call_indirect -> $hop2    (depth 3; excluded)
     //
-    // The third edge is also a slot-level false positive: the fixture's
-    // constant index dispatches to $safe_hop2_target, not $hop2. The
-    // call graph is not a full value-flow analyser, so the depth bound is
-    // the resource-safety guard that stops this kind of cascade.
+    // The third edge uses a dynamic index and could dispatch to $hop2.
+    // The unchanged depth bound is the resource-safety guard that stops
+    // this kind of cascade.
     let wat = r#"
         (module
           (import "kernel" "kernel_fork" (func $fork (result i32)))
@@ -428,8 +589,8 @@ fn indirect_closure_allows_two_hops_but_does_not_cascade_forever() {
           (func $safe_hop2_target (result f32)
             f32.const 0)
 
-          (func $false_positive (export "false_positive") (result f32)
-            i32.const 3
+          (func $false_positive (export "false_positive") (param i32) (result f32)
+            local.get 0
             call_indirect (type $hop2_ty)))
     "#;
     let found = discover(wat);

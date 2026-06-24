@@ -771,7 +771,7 @@ through `scripts/run-wasm-fork-instrument.sh`. Fork-using programs must export
 the complete `wpk_fork_*` set. Legacy Asyncify artifacts are intentionally not
 accepted. See [fork-instrumentation.md](fork-instrumentation.md).
 
-**"Maximum call stack size exceeded" in browser**: The program's fork-path closure (as discovered by `wasm-fork-instrument`) is large. This is rare — the tool instruments only fork-reachable functions, not the whole module. If it happens, check whether `call_indirect` is pulling in a much broader closure than expected (the indirect-call closure is conservative; signatures alone determine reach).
+**"Maximum call stack size exceeded" in browser**: The program's fork-path closure (as discovered by `wasm-fork-instrument --discover-only`) is large. This is rare — the tool instruments only fork-reachable functions, not the whole module. If it happens, check whether `call_indirect` is pulling in a much broader closure than expected. Literal table indexes are checked against active element slots, but dynamic indexes, passive `table.init`, and dynamic table writes remain conservative.
 
 **Process hangs on read**: The fd might be in blocking mode waiting for data. Check that writers are properly closing their end of the pipe.
 

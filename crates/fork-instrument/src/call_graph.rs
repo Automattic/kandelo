@@ -11,11 +11,12 @@
 use std::collections::{HashMap, HashSet, VecDeque};
 
 use walrus::ir::{
-    dfs_in_order, Call, CallIndirect, ReturnCall, ReturnCallIndirect, TableCopy, TableFill,
-    TableGrow, TableInit, TableSet, Visitor,
+    self, dfs_in_order, BinaryOp, Call, Instr, InstrLocId, InstrSeqId, ReturnCall, TableCopy,
+    TableFill, TableGrow, TableInit, TableSet, Visitor,
 };
 use walrus::{
-    ElementId, ElementItems, ElementKind, FunctionId, ImportKind, Module, TableId, TypeId,
+    ConstExpr, ElementId, ElementItems, ElementKind, FunctionId, ImportKind, LocalFunction, Module,
+    TableId, TypeId,
 };
 
 /// Look up a function by its qualified import name (e.g.
@@ -38,7 +39,6 @@ pub fn find_import_func(module: &Module, qualified_name: &str) -> Option<Functio
 #[derive(Default)]
 struct CollectCalls {
     direct: HashSet<FunctionId>,
-    indirect: HashSet<IndirectCall>,
     table_inits: Vec<(ElementId, TableId)>,
     table_copies: Vec<(TableId, TableId)>,
     dynamic_table_writes: HashSet<TableId>,
@@ -51,20 +51,6 @@ impl<'a> Visitor<'a> for CollectCalls {
 
     fn visit_return_call(&mut self, instr: &ReturnCall) {
         self.direct.insert(instr.func);
-    }
-
-    fn visit_call_indirect(&mut self, instr: &CallIndirect) {
-        self.indirect.insert(IndirectCall {
-            table: instr.table,
-            ty: instr.ty,
-        });
-    }
-
-    fn visit_return_call_indirect(&mut self, instr: &ReturnCallIndirect) {
-        self.indirect.insert(IndirectCall {
-            table: instr.table,
-            ty: instr.ty,
-        });
     }
 
     fn visit_table_init(&mut self, instr: &TableInit) {
@@ -103,11 +89,12 @@ fn profile_functions(module: &Module) -> HashMap<FunctionId, FuncProfile> {
     for (id, func) in module.funcs.iter_local() {
         let mut collector = CollectCalls::default();
         dfs_in_order(&mut collector, func, func.entry_block());
+        let indirect = collect_indirect_calls(func);
         profiles.insert(
             id,
             FuncProfile {
                 direct: collector.direct,
-                indirect: collector.indirect,
+                indirect,
                 table_inits: collector.table_inits,
                 table_copies: collector.table_copies,
                 dynamic_table_writes: collector.dynamic_table_writes,
@@ -154,6 +141,105 @@ pub fn direct_reaching_closure(module: &Module, seed: FunctionId) -> HashSet<Fun
 struct IndirectCall {
     table: TableId,
     ty: TypeId,
+    index: IndexProof,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+enum IndexProof {
+    Const(i32),
+    Unknown,
+}
+
+fn collect_indirect_calls(func: &LocalFunction) -> HashSet<IndirectCall> {
+    let mut calls = HashSet::new();
+    collect_indirect_calls_seq(func, func.entry_block(), &mut calls);
+    calls
+}
+
+fn collect_indirect_calls_seq(
+    func: &LocalFunction,
+    seq_id: InstrSeqId,
+    calls: &mut HashSet<IndirectCall>,
+) {
+    let instrs = &func.block(seq_id).instrs;
+    for (idx, (instr, _)) in instrs.iter().enumerate() {
+        match instr {
+            Instr::CallIndirect(call) => {
+                calls.insert(IndirectCall {
+                    table: call.table,
+                    ty: call.ty,
+                    index: infer_call_indirect_index(&instrs[..idx]),
+                });
+            }
+            Instr::ReturnCallIndirect(call) => {
+                calls.insert(IndirectCall {
+                    table: call.table,
+                    ty: call.ty,
+                    index: infer_call_indirect_index(&instrs[..idx]),
+                });
+            }
+            Instr::Block(ir::Block { seq }) | Instr::Loop(ir::Loop { seq }) => {
+                collect_indirect_calls_seq(func, *seq, calls);
+            }
+            Instr::IfElse(ir::IfElse {
+                consequent,
+                alternative,
+            }) => {
+                collect_indirect_calls_seq(func, *consequent, calls);
+                collect_indirect_calls_seq(func, *alternative, calls);
+            }
+            Instr::TryTable(ir::TryTable { seq, .. }) => {
+                collect_indirect_calls_seq(func, *seq, calls);
+            }
+            Instr::Try(ir::Try { seq, catches }) => {
+                collect_indirect_calls_seq(func, *seq, calls);
+                for catch in catches {
+                    match catch {
+                        ir::LegacyCatch::Catch { handler, .. }
+                        | ir::LegacyCatch::CatchAll { handler } => {
+                            collect_indirect_calls_seq(func, *handler, calls);
+                        }
+                        ir::LegacyCatch::Delegate { .. } => {}
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+fn infer_call_indirect_index(prefix: &[(Instr, InstrLocId)]) -> IndexProof {
+    infer_i32_expr(prefix, prefix.len())
+        .map(|(proof, _)| proof)
+        .unwrap_or(IndexProof::Unknown)
+}
+
+fn infer_i32_expr(instrs: &[(Instr, InstrLocId)], end: usize) -> Option<(IndexProof, usize)> {
+    if end == 0 {
+        return None;
+    }
+
+    let idx = end - 1;
+    match &instrs[idx].0 {
+        Instr::Const(ir::Const {
+            value: ir::Value::I32(value),
+        }) => Some((IndexProof::Const(*value), idx)),
+        Instr::Binop(ir::Binop { op }) if matches!(op, BinaryOp::I32Add | BinaryOp::I32Sub) => {
+            let (rhs, rhs_start) = infer_i32_expr(instrs, idx)?;
+            let (lhs, lhs_start) = infer_i32_expr(instrs, rhs_start)?;
+            let proof = match (lhs, rhs, op) {
+                (IndexProof::Const(a), IndexProof::Const(b), BinaryOp::I32Add) => {
+                    IndexProof::Const(a.wrapping_add(b))
+                }
+                (IndexProof::Const(a), IndexProof::Const(b), BinaryOp::I32Sub) => {
+                    IndexProof::Const(a.wrapping_sub(b))
+                }
+                _ => IndexProof::Unknown,
+            };
+            Some((proof, lhs_start))
+        }
+        _ => Some((IndexProof::Unknown, idx)),
+    }
 }
 
 /// Extract concrete function references from an element segment's item list.
@@ -179,6 +265,35 @@ fn element_functions(items: &ElementItems) -> HashSet<FunctionId> {
     result
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ElementItemRef {
+    Func(FunctionId),
+    Null,
+    Unknown,
+}
+
+fn element_item_refs(items: &ElementItems) -> Vec<ElementItemRef> {
+    match items {
+        ElementItems::Functions(ids) => ids.iter().copied().map(ElementItemRef::Func).collect(),
+        ElementItems::Expressions(_ref_ty, init_exprs) => {
+            init_exprs.iter().map(const_expr_ref).collect()
+        }
+    }
+}
+
+fn const_expr_ref(expr: &ConstExpr) -> ElementItemRef {
+    match expr {
+        ConstExpr::RefFunc(f) => ElementItemRef::Func(*f),
+        ConstExpr::RefNull(_) => ElementItemRef::Null,
+        ConstExpr::Extended(ops) if ops.len() == 1 => match ops[0] {
+            walrus::ConstOp::RefFunc(f) => ElementItemRef::Func(f),
+            walrus::ConstOp::RefNull(_) => ElementItemRef::Null,
+            _ => ElementItemRef::Unknown,
+        },
+        _ => ElementItemRef::Unknown,
+    }
+}
+
 fn const_expr_functions(expr: &walrus::ConstExpr) -> HashSet<FunctionId> {
     let mut result = HashSet::new();
     match expr {
@@ -201,17 +316,119 @@ fn const_expr_functions(expr: &walrus::ConstExpr) -> HashSet<FunctionId> {
 
 #[derive(Default)]
 struct TableTargets {
-    funcs_by_table: HashMap<TableId, HashSet<FunctionId>>,
+    known_slots: HashMap<TableId, HashMap<u32, HashSet<FunctionId>>>,
+    known_slot_funcs: HashMap<TableId, HashSet<FunctionId>>,
+    unknown_slots: HashMap<TableId, HashSet<u32>>,
+    known_table_funcs: HashMap<TableId, HashSet<FunctionId>>,
     unknown_tables: HashSet<TableId>,
 }
 
 impl TableTargets {
-    fn table_can_contain(&self, table: TableId, func: FunctionId) -> bool {
-        self.unknown_tables.contains(&table)
-            || self
-                .funcs_by_table
-                .get(&table)
-                .is_some_and(|funcs| funcs.contains(&func))
+    fn table_can_dispatch(&self, call: IndirectCall, func: FunctionId) -> bool {
+        if self.unknown_tables.contains(&call.table) {
+            return true;
+        }
+
+        match call.index {
+            IndexProof::Const(index) => {
+                let slot = index as u32;
+                self.known_slots
+                    .get(&call.table)
+                    .and_then(|slots| slots.get(&slot))
+                    .is_some_and(|funcs| funcs.contains(&func))
+                    || self
+                        .unknown_slots
+                        .get(&call.table)
+                        .is_some_and(|slots| slots.contains(&slot))
+                    || self
+                        .known_table_funcs
+                        .get(&call.table)
+                        .is_some_and(|funcs| funcs.contains(&func))
+            }
+            IndexProof::Unknown => {
+                self.known_slot_funcs
+                    .get(&call.table)
+                    .is_some_and(|funcs| funcs.contains(&func))
+                    || self
+                        .unknown_slots
+                        .get(&call.table)
+                        .is_some_and(|slots| !slots.is_empty())
+                    || self
+                        .known_table_funcs
+                        .get(&call.table)
+                        .is_some_and(|funcs| funcs.contains(&func))
+            }
+        }
+    }
+
+    fn add_slot_func(&mut self, table: TableId, slot: u32, func: FunctionId) {
+        self.known_slots
+            .entry(table)
+            .or_default()
+            .entry(slot)
+            .or_default()
+            .insert(func);
+        self.known_slot_funcs.entry(table).or_default().insert(func);
+    }
+
+    fn add_unknown_slot(&mut self, table: TableId, slot: u32) {
+        self.unknown_slots.entry(table).or_default().insert(slot);
+    }
+
+    fn add_table_func(&mut self, table: TableId, func: FunctionId) {
+        self.known_table_funcs
+            .entry(table)
+            .or_default()
+            .insert(func);
+    }
+
+    fn add_table_funcs(&mut self, table: TableId, funcs: impl IntoIterator<Item = FunctionId>) {
+        self.known_table_funcs
+            .entry(table)
+            .or_default()
+            .extend(funcs);
+    }
+
+    fn table_funcs_from_any_slot(&self, table: TableId) -> HashSet<FunctionId> {
+        self.known_slot_funcs
+            .get(&table)
+            .cloned()
+            .unwrap_or_default()
+    }
+}
+
+fn const_expr_i32(expr: &ConstExpr) -> Option<i32> {
+    match expr {
+        ConstExpr::Value(walrus::ir::Value::I32(value)) => Some(*value),
+        ConstExpr::Extended(ops) => {
+            let mut stack = Vec::new();
+            for op in ops {
+                match op {
+                    walrus::ConstOp::I32Const(value) => stack.push(*value),
+                    walrus::ConstOp::I32Add => {
+                        let rhs = stack.pop()?;
+                        let lhs = stack.pop()?;
+                        stack.push(lhs.wrapping_add(rhs));
+                    }
+                    walrus::ConstOp::I32Sub => {
+                        let rhs = stack.pop()?;
+                        let lhs = stack.pop()?;
+                        stack.push(lhs.wrapping_sub(rhs));
+                    }
+                    walrus::ConstOp::I32Mul => {
+                        let rhs = stack.pop()?;
+                        let lhs = stack.pop()?;
+                        stack.push(lhs.wrapping_mul(rhs));
+                    }
+                    _ => return None,
+                }
+            }
+            match stack.as_slice() {
+                [value] => Some(*value),
+                _ => None,
+            }
+        }
+        _ => None,
     }
 }
 
@@ -245,35 +462,45 @@ fn table_targets(module: &Module, profiles: &HashMap<FunctionId, FuncProfile>) -
 
     for table in module.tables.iter() {
         if let Some(init) = &table.init {
-            targets
-                .funcs_by_table
-                .entry(table.id())
-                .or_default()
-                .extend(const_expr_functions(init));
+            targets.add_table_funcs(table.id(), const_expr_functions(init));
         }
     }
 
     for elem in module.elements.iter() {
-        let funcs = element_functions(&elem.items);
-        if funcs.is_empty() {
-            continue;
-        }
+        let items = element_item_refs(&elem.items);
         match &elem.kind {
-            ElementKind::Active { table, .. } => {
-                targets
-                    .funcs_by_table
-                    .entry(*table)
-                    .or_default()
-                    .extend(funcs);
+            ElementKind::Active { table, offset } => {
+                let Some(base_slot) = const_expr_i32(offset).map(|n| n as u32) else {
+                    targets.add_table_funcs(*table, element_functions(&elem.items));
+                    if items.iter().any(|item| *item == ElementItemRef::Unknown) {
+                        targets.unknown_tables.insert(*table);
+                    }
+                    continue;
+                };
+                for (idx, item) in items.iter().enumerate() {
+                    let Some(slot) = base_slot.checked_add(idx as u32) else {
+                        targets.unknown_tables.insert(*table);
+                        continue;
+                    };
+                    match item {
+                        ElementItemRef::Func(func) => targets.add_slot_func(*table, slot, *func),
+                        ElementItemRef::Null => {}
+                        ElementItemRef::Unknown => targets.add_unknown_slot(*table, slot),
+                    }
+                }
             }
             ElementKind::Passive => {
                 if let Some(tables) = passive_table_inits.get(&elem.id()) {
                     for &table in tables {
-                        targets
-                            .funcs_by_table
-                            .entry(table)
-                            .or_default()
-                            .extend(funcs.iter().copied());
+                        for item in &items {
+                            match item {
+                                ElementItemRef::Func(func) => targets.add_table_func(table, *func),
+                                ElementItemRef::Null => {}
+                                ElementItemRef::Unknown => {
+                                    targets.unknown_tables.insert(table);
+                                }
+                            }
+                        }
                     }
                 }
             }
@@ -289,14 +516,28 @@ fn table_targets(module: &Module, profiles: &HashMap<FunctionId, FuncProfile>) -
                 changed = true;
             }
 
-            let Some(src_funcs) = targets.funcs_by_table.get(&src).cloned() else {
-                continue;
-            };
-            let dst_funcs = targets.funcs_by_table.entry(dst).or_default();
-            let old_len = dst_funcs.len();
-            dst_funcs.extend(src_funcs);
-            if dst_funcs.len() != old_len {
+            if targets
+                .unknown_slots
+                .get(&src)
+                .is_some_and(|slots| !slots.is_empty())
+                && targets.unknown_tables.insert(dst)
+            {
                 changed = true;
+            }
+
+            let mut src_funcs = targets
+                .known_table_funcs
+                .get(&src)
+                .cloned()
+                .unwrap_or_default();
+            src_funcs.extend(targets.table_funcs_from_any_slot(src));
+            if !src_funcs.is_empty() {
+                let dst_funcs = targets.known_table_funcs.entry(dst).or_default();
+                let old_len = dst_funcs.len();
+                dst_funcs.extend(src_funcs);
+                if dst_funcs.len() != old_len {
+                    changed = true;
+                }
             }
         }
     }
@@ -431,7 +672,7 @@ pub fn reaching_closure(module: &Module, seed: FunctionId) -> HashSet<FunctionId
         if indirect_depth < MAX_INDIRECT_DEPTH {
             let g_ty = function_type_id(module, g);
             for &(indirect, caller) in &indirect_callers {
-                if table_targets.table_can_contain(indirect.table, g)
+                if table_targets.table_can_dispatch(indirect, g)
                     && types_match(module, indirect.ty, g_ty)
                 {
                     enqueue(
