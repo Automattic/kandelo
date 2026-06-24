@@ -11,6 +11,10 @@ program invokes the tool after linking. Asyncify is not an active implementation
 path: do not use `wasm-opt --asyncify`, do not accept `asyncify_*` exports, and
 do not add Asyncify compatibility fallbacks. This document is the
 living reference for the tool's behavior, exported ABI, and save-buffer format.
+Some conservative-GC package builds run an additional local-root visibility
+pass before fork instrumentation. That pass is not part of the fork ABI; see
+[`crates/wasm-local-root-spill/README.md`](../crates/wasm-local-root-spill/README.md)
+for its Ruby-focused rationale, risk profile, and extension limits.
 For motivation, tradeoffs, and the rollout plan that led here, read
 [`plans/2026-04-20-fork-instrumentation-design.md`](plans/2026-04-20-fork-instrumentation-design.md);
 for the post-rollout switch-dispatch redesign and non-fork-path-call gating

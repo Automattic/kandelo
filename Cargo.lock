@@ -1636,6 +1636,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "wasm-local-root-spill"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "clap",
+ "walrus",
+ "wasmparser 0.247.0",
+ "wasmprinter",
+ "wat",
+]
+
+[[package]]
 name = "wasm-metadata"
 version = "0.244.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
