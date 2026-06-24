@@ -184,6 +184,10 @@ if ! grep -q 'Kandelo initializes Ruby stack roots' "$SRC_DIR/thread_none.c"; th
     perl -0pi -e 's/#if defined\(RUBY_KANDELO_POSIX\)\n    th->ec->machine.stack_start = \(VALUE \*\)ruby_kandelo_stack_start;\n#elif defined\(__wasm__\) && !defined\(__EMSCRIPTEN__\)\n    th->ec->machine.stack_start = \(VALUE \*\)rb_wasm_stack_get_base\(\);\n#endif/#if defined(RUBY_KANDELO_POSIX)\n    \/* Kandelo initializes Ruby stack roots from RUBY_INIT_STACK. *\/\n    th->ec->machine.stack_start = (VALUE *)local_in_parent_frame;\n    th->ec->machine.stack_maxsize = 0;\n#elif defined(__wasm__) \&\& !defined(__EMSCRIPTEN__)\n    th->ec->machine.stack_start = (VALUE *)rb_wasm_stack_get_base();\n#endif/' "$SRC_DIR/thread_none.c"
     perl -0pi -e 's/#if defined\(__wasm__\) && !defined\(__EMSCRIPTEN__\)\n    th->ec->machine.stack_start = \(VALUE \*\)rb_wasm_stack_get_base\(\);\n#endif/#if defined(RUBY_KANDELO_POSIX)\n    \/* Kandelo initializes Ruby stack roots from RUBY_INIT_STACK. *\/\n    th->ec->machine.stack_start = (VALUE *)local_in_parent_frame;\n    th->ec->machine.stack_maxsize = 0;\n#elif defined(__wasm__) \&\& !defined(__EMSCRIPTEN__)\n    th->ec->machine.stack_start = (VALUE *)rb_wasm_stack_get_base();\n#endif/' "$SRC_DIR/thread_none.c"
 fi
+if ! grep -q 'Kandelo initializes pthread Ruby stack roots' "$SRC_DIR/thread_pthread.c"; then
+    echo "==> Patching thread_pthread.c: Kandelo stack base without nonportable pthread stack APIs..."
+    perl -0pi -e 's/#else\n        rb_raise\(rb_eNotImpError, "ruby engine can initialize only in the main thread"\);\n#endif/#elif defined(RUBY_KANDELO_POSIX)\n        \/* Kandelo initializes pthread Ruby stack roots from the native thread frame. *\/\n        th->ec->machine.stack_start = (VALUE *)local_in_parent_frame;\n        th->ec->machine.stack_maxsize = 0;\n#else\n        rb_raise(rb_eNotImpError, "ruby engine can initialize only in the main thread");\n#endif/' "$SRC_DIR/thread_pthread.c"
+fi
 
 if ! grep -q 'Kandelo cross build has rb_reg_onig_match' "$SRC_DIR/ext/strscan/strscan.c"; then
     echo "==> Patching strscan.c: avoid strict-prototype mkmf false negative..."
@@ -573,15 +577,25 @@ ac_cv_func_sigwait=yes
 ac_cv_func_sigtimedwait=yes
 ac_cv_func_sigwaitinfo=yes
 
-# ─── Functions we DON'T have ────────────────────────────────────────
-ac_cv_func_pthread_create=no
-ac_cv_func_pthread_attr_setinheritsched=no
-ac_cv_func_pthread_attr_init=no
+# ─── Pthread and functions we DON'T have ────────────────────────────
+# Kandelo implements pthread_create via clone() and host thread workers.
+# Keep higher-level pthread feature probes conservative, but use Ruby's real
+# pthread backend instead of thread_none so Thread.new and Process.detach work.
+ac_cv_func_pthread_create=yes
+ac_cv_func_pthread_attr_setinheritsched=yes
+ac_cv_func_pthread_attr_init=yes
 ac_cv_func_pthread_condattr_setclock=no
 ac_cv_func_pthread_getcpuclockid=no
 ac_cv_func_pthread_setname_np=no
+ac_cv_func_pthread_set_name_np=no
 ac_cv_func_pthread_getattr_np=no
+ac_cv_func_pthread_attr_get_np=no
 ac_cv_func_pthread_attr_getstack=no
+ac_cv_func_pthread_get_stackaddr_np=no
+ac_cv_func_pthread_get_stacksize_np=no
+ac_cv_func_thr_stksegment=no
+ac_cv_func_pthread_stackseg_np=no
+ac_cv_func_pthread_getthrds_np=no
 ac_cv_func_sem_open=no
 ac_cv_func_sem_close=no
 ac_cv_func_sem_unlink=no
@@ -806,7 +820,7 @@ SITE_EOF
         --build="$(uname -m)-apple-darwin" \
         --prefix="/usr" \
         --with-baseruby="$BASERUBY_WRAPPER" \
-        --with-thread=none \
+        --with-thread=pthread \
         --with-coroutine=kandelo \
         --with-parser=parse.y \
         --disable-shared \
@@ -875,11 +889,13 @@ content = re.sub(
 # Force-disable functions/features not available in wasm32-posix
 disable = {
     'HAVE_DLOPEN', 'HAVE_DYNAMIC_LOADING',
-    'HAVE_PTHREAD_CREATE',
-    'HAVE_PTHREAD_ATTR_SETINHERITSCHED', 'HAVE_PTHREAD_ATTR_INIT',
     'HAVE_PTHREAD_CONDATTR_SETCLOCK', 'HAVE_PTHREAD_GETCPUCLOCKID',
-    'HAVE_PTHREAD_SETNAME_NP', 'HAVE_PTHREAD_GETATTR_NP',
-    'HAVE_PTHREAD_ATTR_GETSTACK', 'HAVE_PTHREAD_NP_H',
+    'HAVE_PTHREAD_SETNAME_NP', 'HAVE_PTHREAD_SET_NAME_NP',
+    'HAVE_PTHREAD_GETATTR_NP',
+    'HAVE_PTHREAD_ATTR_GET_NP', 'HAVE_PTHREAD_ATTR_GETSTACK',
+    'HAVE_PTHREAD_GET_STACKADDR_NP', 'HAVE_PTHREAD_GET_STACKSIZE_NP',
+    'HAVE_THR_STKSEGMENT', 'HAVE_PTHREAD_STACKSEG_NP',
+    'HAVE_PTHREAD_GETTHRDS_NP', 'HAVE_PTHREAD_NP_H',
     'HAVE_SEM_OPEN', 'HAVE_SEM_CLOSE', 'HAVE_SEM_UNLINK',
     'HAVE_SEM_INIT', 'HAVE_SEM_DESTROY', 'HAVE_SEM_WAIT',
     'HAVE_SEM_TRYWAIT', 'HAVE_SEM_POST', 'HAVE_SEM_GETVALUE',
@@ -947,6 +963,19 @@ for name in disable:
     if new_content != content:
         disabled += 1
         content = new_content
+
+content = re.sub(
+    r'^#define SET_CURRENT_THREAD_NAME\\(name\\)\\b.*$',
+    '/* #undef SET_CURRENT_THREAD_NAME */',
+    content,
+    flags=re.MULTILINE,
+)
+content = re.sub(
+    r'^#define SET_ANOTHER_THREAD_NAME\\(thid,name\\)\\b.*$',
+    '/* #undef SET_ANOTHER_THREAD_NAME */',
+    content,
+    flags=re.MULTILINE,
+)
 
 with open('$CONFIG_H', 'w') as f:
     f.write(content)
