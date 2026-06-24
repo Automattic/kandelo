@@ -64,7 +64,7 @@ export class SharedLockTable {
     this.view = new Int32Array(sab);
   }
 
-  static create(capacity: number = 256): SharedLockTable {
+  static create(capacity: number = 4096): SharedLockTable {
     const byteLen = HEADER_BYTES + capacity * ENTRY_INTS * 4;
     const sab = new SharedArrayBuffer(byteLen);
     const table = new SharedLockTable(sab);
