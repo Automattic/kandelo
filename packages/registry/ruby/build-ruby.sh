@@ -149,6 +149,13 @@ thread_sched_atfork(struct rb_thread_sched *sched)\
     rm -f "$SRC_DIR/thread_none.c.bak"
 fi
 
+# Ruby's fork path takes a fork lock even when configured with --with-thread=none.
+# In the single-threaded thread_none backend these hooks must be no-ops.
+if ! grep -q 'rb_thread_acquire_fork_lock' "$SRC_DIR/thread_none.c"; then
+    echo "==> Patching thread_none.c: adding fork lock no-op stubs..."
+    perl -0pi -e 's/\nvoid\nrb_thread_sched_init/\nvoid\nrb_thread_acquire_fork_lock(void)\n{\n}\n\nvoid\nrb_thread_release_fork_lock(void)\n{\n}\n\nvoid\nrb_thread_reset_fork_lock(void)\n{\n}\n\nvoid\nrb_thread_sched_init/' "$SRC_DIR/thread_none.c"
+fi
+
 # wasm/machine.c: missing <stdint.h> for uint8_t
 if ! grep -q '#include <stdint.h>' "$SRC_DIR/wasm/machine.c"; then
     echo "==> Patching wasm/machine.c: adding #include <stdint.h>..."
@@ -186,6 +193,116 @@ fi
 if ! grep -q 'Kandelo cross build has json parser Ruby APIs' "$SRC_DIR/ext/json/parser/parser.c"; then
     echo "==> Patching json/parser.c: avoid strict-prototype mkmf false negatives..."
     perl -0pi -e 's|#include "\.\./json\.h"|#include "../json.h"\n#if defined(RUBY_KANDELO_POSIX)\n/* Kandelo cross build has json parser Ruby APIs; mkmf probes them with conflicting prototypes. */\n# if !defined(HAVE_RB_HASH_BULK_INSERT)\n#  define HAVE_RB_HASH_BULK_INSERT 1\n# endif\n# if !defined(HAVE_RB_STR_TO_INTERNED_STR)\n#  define HAVE_RB_STR_TO_INTERNED_STR 1\n# endif\n#endif\n/* Kandelo cross build has json parser Ruby APIs. */|' "$SRC_DIR/ext/json/parser/parser.c"
+fi
+
+if grep -q 'Kandelo wasm32-posix socket dependencies' "$SRC_DIR/ext/socket/extconf.rb" && grep -q 'HAVE_GETPEEREID' "$SRC_DIR/ext/socket/extconf.rb"; then
+    echo "==> Repairing socket extconf Kandelo branch: avoid unavailable getpeereid..."
+    perl -0pi -e 's/\n    -DHAVE_GETPEEREID=1//' "$SRC_DIR/ext/socket/extconf.rb"
+fi
+if ! grep -q 'Kandelo wasm32-posix socket dependencies' "$SRC_DIR/ext/socket/extconf.rb"; then
+    echo "==> Patching socket extconf: avoid link-based mkmf false negatives..."
+    SOCKET_EXTCONF_TMP="$(mktemp)"
+    awk '
+      BEGIN { inserted = 0 }
+      $0 == "require '\''mkmf'\''" && inserted == 0 {
+        print
+        print ""
+        print "if ENV[\"WASM_POSIX_CROSS_COMPILE\"] == \"1\""
+        print "  # Kandelo wasm32-posix socket dependencies are available in the sysroot,"
+        print "  # but link-based mkmf probes can fail on duplicate static libc glue."
+        print "  $INCFLAGS << \" -I$(topdir) -I$(top_srcdir)\""
+        print "  $defs.concat %w["
+        print "    -DHAVE_SYS_UIO_H=1"
+        print "    -DHAVE_NETINET_TCP_H=1"
+        print "    -DHAVE_NETINET_UDP_H=1"
+        print "    -DHAVE_ARPA_INET_H=1"
+        print "    -DHAVE_IFADDRS_H=1"
+        print "    -DHAVE_SYS_IOCTL_H=1"
+        print "    -DHAVE_NET_IF_H=1"
+        print "    -DHAVE_SYS_PARAM_H=1"
+        print "    -DHAVE_SYS_UN_H=1"
+        print "    -DHAVE_TYPE_SOCKLEN_T=1"
+        print "    -DHAVE_TYPE_STRUCT_SOCKADDR_UN=1"
+        print "    -DHAVE_TYPE_STRUCT_SOCKADDR_STORAGE=1"
+        print "    -DHAVE_TYPE_STRUCT_ADDRINFO=1"
+        print "    -DHAVE_TYPE_STRUCT_IN_PKTINFO=1"
+        print "    -DHAVE_STRUCT_IN_PKTINFO_IPI_SPEC_DST=1"
+        print "    -DHAVE_TYPE_STRUCT_IN6_PKTINFO=1"
+        print "    -DHAVE_TYPE_STRUCT_IP_MREQ=1"
+        print "    -DHAVE_TYPE_STRUCT_IP_MREQN=1"
+        print "    -DHAVE_TYPE_STRUCT_IPV6_MREQ=1"
+        print "    -DHAVE_TYPE_STRUCT_TCP_INFO=1"
+        print "    -DHAVE_SENDMSG=1"
+        print "    -DHAVE_RECVMSG=1"
+        print "    -DHAVE_FREEADDRINFO=1"
+        print "    -DHAVE_GAI_STRERROR=1"
+        print "    -DGAI_STRERROR_CONST=1"
+        print "    -DHAVE_ACCEPT4=1"
+        print "    -DHAVE_INET_NTOP=1"
+        print "    -DHAVE_INET_PTON=1"
+        print "    -DHAVE_GETSERVBYPORT=1"
+        print "    -DHAVE_GETIFADDRS=1"
+        print "    -DHAVE_IF_INDEXTONAME=1"
+        print "    -DHAVE_IF_NAMETOINDEX=1"
+        print "    -DHAVE_SOCKETPAIR=1"
+        print "    -DHAVE_GETHOSTNAME=1"
+        print "    -DHAVE_GETNAMEINFO=1"
+        print "    -DHAVE_GETADDRINFO=1"
+        print "    -DENABLE_IPV6=1"
+        print "    -DINET6=1"
+        print "    -DRSTRING_SOCKLEN=(socklen_t)RSTRING_LEN"
+        print "  ]"
+        print "  $objs = %w["
+        print "    init constants basicsocket socket ipsocket tcpsocket tcpserver sockssocket"
+        print "    udpsocket unixsocket unixserver option ancdata raddrinfo ifaddr"
+        print "  ].map { |obj| \"#{obj}.#{$OBJEXT}\" }"
+        print "  $distcleanfiles << \"constants.h\" << \"constdefs.*\""
+        print "  $VPATH << '\''$(topdir)'\'' << '\''$(top_srcdir)'\''"
+        print "  create_makefile(\"socket\")"
+        print "else"
+        inserted = 1
+        next
+      }
+      { print }
+      END {
+        if (inserted == 1) {
+          print ""
+          print "end"
+        }
+      }
+    ' "$SRC_DIR/ext/socket/extconf.rb" > "$SOCKET_EXTCONF_TMP"
+    mv "$SOCKET_EXTCONF_TMP" "$SRC_DIR/ext/socket/extconf.rb"
+fi
+if grep -q 'Kandelo wasm32-posix socket dependencies' "$SRC_DIR/ext/socket/extconf.rb" && ! grep -q 'HAVE_NETPACKET_PACKET_H' "$SRC_DIR/ext/socket/extconf.rb"; then
+    echo "==> Repairing socket extconf Kandelo branch: add packet socket headers..."
+    perl -0pi -e 's/(\n    -DHAVE_ARPA_INET_H=1\n)/$1    -DHAVE_NETPACKET_PACKET_H=1\n    -DHAVE_NET_ETHERNET_H=1\n/' "$SRC_DIR/ext/socket/extconf.rb"
+fi
+
+if ! grep -q 'Kandelo wasm32-posix uses Unix98 PTY APIs' "$SRC_DIR/ext/pty/extconf.rb"; then
+    echo "==> Patching pty extconf: force Unix98 PTY probes for Kandelo cross builds..."
+    perl -0pi -e 's|require '\''mkmf'\''|require '\''mkmf'\''\n\nif ENV["WASM_POSIX_CROSS_COMPILE"] == "1"\n  # Kandelo wasm32-posix uses Unix98 PTY APIs; mkmf cannot infer these\n  # reliably while cross-compiling and otherwise falls through to _getpty.\n  have_header("termios.h")\n  have_header("sys/ioctl.h")\n  \$defs << "-DHAVE_POSIX_OPENPT=1"\n  \$defs << "-DHAVE_PTSNAME_R=1"\n  \$defs << "-DHAVE_SETSID=1"\n  \$defs << "-DHAVE_UNISTD_H=1"\n  create_makefile("pty")\nelse|' "$SRC_DIR/ext/pty/extconf.rb"
+    printf '\nend\n' >> "$SRC_DIR/ext/pty/extconf.rb"
+elif grep -q '^[[:space:]]*<< "-DHAVE_POSIX_OPENPT=1"' "$SRC_DIR/ext/pty/extconf.rb"; then
+    echo "==> Repairing pty extconf Kandelo probe definitions..."
+    perl -0pi -e 's/^[[:space:]]*<< "-DHAVE_POSIX_OPENPT=1"/  \$defs << "-DHAVE_POSIX_OPENPT=1"/mg; s/^[[:space:]]*<< "-DHAVE_PTSNAME_R=1"/  \$defs << "-DHAVE_PTSNAME_R=1"/mg' "$SRC_DIR/ext/pty/extconf.rb"
+elif grep -q 'create_makefile("pty")' "$SRC_DIR/ext/pty/extconf.rb" && grep -q '^[[:space:]]*exit$' "$SRC_DIR/ext/pty/extconf.rb"; then
+    echo "==> Repairing pty extconf Kandelo branch: avoid SystemExit dummy makefile..."
+    perl -0pi -e 's/^\s*exit\nend\n\n\$INCFLAGS/else\n\n\$INCFLAGS/m' "$SRC_DIR/ext/pty/extconf.rb"
+    printf '\nend\n' >> "$SRC_DIR/ext/pty/extconf.rb"
+fi
+if grep -q 'Kandelo wasm32-posix uses Unix98 PTY APIs' "$SRC_DIR/ext/pty/extconf.rb" && ! grep -q 'HAVE_SETSID' "$SRC_DIR/ext/pty/extconf.rb"; then
+    echo "==> Repairing pty extconf Kandelo branch: add session/unistd definitions..."
+    perl -0pi -e 's/(\$defs << "-DHAVE_PTSNAME_R=1"\n)/$1  \$defs << "-DHAVE_SETSID=1"\n  \$defs << "-DHAVE_UNISTD_H=1"\n/' "$SRC_DIR/ext/pty/extconf.rb"
+fi
+if grep -q 'Kandelo wasm32-posix uses Unix98 PTY APIs' "$SRC_DIR/ext/pty/extconf.rb"; then
+    echo "==> Repairing pty extconf Kandelo branch: add Ruby internal include path..."
+    perl -0pi -e 's/(\$defs << "-DHAVE_UNISTD_H=1"\n)(?!  \$INCFLAGS << " -I\$\((?:topdir|top_srcdir)\))/$1  \$INCFLAGS << " -I\$(topdir) -I\$(top_srcdir)"\n/' "$SRC_DIR/ext/pty/extconf.rb"
+fi
+
+if ! grep -q 'Kandelo wasm32-posix has io/console dependencies' "$SRC_DIR/ext/io/console/extconf.rb"; then
+    echo "==> Patching io/console extconf: avoid link-based mkmf false negatives..."
+    perl -0pi -e 's|require '\''mkmf'\''|require '\''mkmf'\''\n\nif ENV["WASM_POSIX_CROSS_COMPILE"] == "1"\n  # Kandelo wasm32-posix has io/console dependencies in the sysroot and Ruby\n  # static core, but link-based mkmf probes can fail on duplicate libc glue.\n  have_header("termios.h")\n  have_header("sys/ioctl.h")\n  \$defs << "-DHAVE_RB_SYSERR_FAIL_STR=1"\n  \$defs << "-DHAVE_RB_INTERNED_STR_CSTR=1"\n  \$defs << "-DHAVE_RB_IO_PATH=1"\n  \$defs << "-DHAVE_RB_IO_DESCRIPTOR=1"\n  \$defs << "-DHAVE_RB_IO_GET_WRITE_IO=1"\n  \$defs << "-DHAVE_RB_IO_CLOSED_P=1"\n  \$defs << "-DHAVE_RB_IO_OPEN_DESCRIPTOR=1"\n  \$defs << "-DHAVE_RB_RACTOR_LOCAL_STORAGE_VALUE_NEWKEY=1"\n  \$defs << "-DHAVE_CFMAKERAW=1"\n  \$defs << "-DHAVE_TTYNAME_R=1"\n  create_makefile("io/console")\nelse|' "$SRC_DIR/ext/io/console/extconf.rb"
+    printf '\nend\n' >> "$SRC_DIR/ext/io/console/extconf.rb"
 fi
 
 for uri_common in \
@@ -365,6 +482,7 @@ ac_cv_func_ftruncate=yes
 ac_cv_func_truncate=yes
 ac_cv_func_lseek=yes
 ac_cv_func_select=yes
+ac_cv_func_select_large_fdset=no
 ac_cv_func_poll=yes
 ac_cv_func_getcwd=yes
 ac_cv_func_chdir=yes
@@ -703,8 +821,8 @@ SITE_EOF
         --without-fiddle \
         --without-readline \
         --with-static-linked-ext \
-        --with-ext=stringio,zlib,monitor,psych,digest,digest/md5,digest/sha1,digest/sha2,json,json/parser,json/generator,strscan,date \
-        --with-out-ext=openssl,fiddle,readline,io/console,pty,syslog,etc,nkf,bigdecimal \
+        --with-ext=stringio,zlib,monitor,psych,digest,digest/md5,digest/sha1,digest/sha2,json,json/parser,json/generator,strscan,date,etc,fcntl,io/console,pty,socket \
+        --with-out-ext=openssl,fiddle,readline,syslog,nkf,bigdecimal \
         2>&1 | tail -50
 
     echo "==> Configure complete."
@@ -874,6 +992,7 @@ EXECEOF
 fi
 
 echo "==> Building Ruby (wasm32)..."
+export WASM_POSIX_CROSS_COMPILE=1
 RUBY_MAKE_ARGS=(
     -j"$(sysctl -n hw.ncpu 2>/dev/null || nproc)"
 )
@@ -887,8 +1006,8 @@ if [ ! -f exts.mk ]; then
     exit 1
 fi
 
-STATIC_EXTINITS="date_core digest digest/md5 digest/sha1 digest/sha2 json/ext/generator json/ext/parser monitor psych stringio strscan zlib"
-STATIC_EXTOBJS="ext/extinit.o ext/date/date_core.a ext/digest/digest.a ext/digest/md5/md5.a ext/digest/sha1/sha1.a ext/digest/sha2/sha2.a ext/json/generator/generator.a ext/json/parser/parser.a ext/monitor/monitor.a ext/psych/psych.a ext/stringio/stringio.a ext/strscan/strscan.a ext/zlib/zlib.a"
+STATIC_EXTINITS="date_core digest digest/md5 digest/sha1 digest/sha2 etc fcntl io/console json/ext/generator json/ext/parser monitor psych pty socket stringio strscan zlib"
+STATIC_EXTOBJS="ext/extinit.o ext/date/date_core.a ext/digest/digest.a ext/digest/md5/md5.a ext/digest/sha1/sha1.a ext/digest/sha2/sha2.a ext/etc/etc.a ext/fcntl/fcntl.a ext/io/console/console.a ext/json/generator/generator.a ext/json/parser/parser.a ext/monitor/monitor.a ext/psych/psych.a ext/pty/pty.a ext/socket/socket.a ext/stringio/stringio.a ext/strscan/strscan.a ext/zlib/zlib.a"
 STATIC_ENCOBJS="enc/encinit.o enc/libenc.a enc/libtrans.a"
 STATIC_EXTLIBS="-lyaml -lz"
 STATIC_LINK_PATHS="-L. -L$SYSROOT/lib -L$ZLIB_PREFIX/lib"
@@ -948,7 +1067,7 @@ make install \
 if [ -d "$CROSS_BUILD_DIR/.ext/common" ]; then
     cp -R "$CROSS_BUILD_DIR/.ext/common"/. "$RUBY_LIB_DIR"/
 fi
-for ext_lib_dir in "$SRC_DIR/ext/monitor/lib"; do
+for ext_lib_dir in "$SRC_DIR/ext/monitor/lib" "$SRC_DIR/ext/socket/lib"; do
     if [ -d "$ext_lib_dir" ]; then
         cp -R "$ext_lib_dir"/. "$RUBY_LIB_DIR"/
     fi
@@ -964,12 +1083,32 @@ if [ ! -d "$RUBY_LIB_DIR/rubygems" ]; then
     echo "ERROR: Ruby runtime tree is missing rubygems at $RUBY_LIB_DIR/rubygems" >&2
     exit 1
 fi
+mkdir -p "$INSTALL_DIR/usr/bin"
+cat >"$INSTALL_DIR/usr/bin/gem" <<'EOF'
+#!/usr/bin/env ruby
+require "rubygems/gem_runner"
+Gem::GemRunner.new.run(ARGV)
+EOF
+cat >"$INSTALL_DIR/usr/bin/bundle" <<'EOF'
+#!/usr/bin/env ruby
+require "bundler/friendly_errors"
+Bundler.with_friendly_errors do
+  require "bundler/cli"
+  Bundler::CLI.start(ARGV, debug: true)
+end
+EOF
+cat >"$INSTALL_DIR/usr/bin/bundler" <<'EOF'
+#!/usr/bin/env ruby
+load File.expand_path("bundle", __dir__)
+EOF
+chmod 755 "$INSTALL_DIR/usr/bin/gem" "$INSTALL_DIR/usr/bin/bundle" "$INSTALL_DIR/usr/bin/bundler"
 
 rm -f "$RUNTIME_ZIP"
 RUNTIME_STAGE="$(mktemp -d)"
 trap 'rm -rf "$RUNTIME_STAGE"' EXIT
 mkdir -p "$RUNTIME_STAGE/usr/lib"
 cp -R "$INSTALL_DIR/usr/lib/ruby" "$RUNTIME_STAGE/usr/lib/ruby"
+cp -R "$INSTALL_DIR/usr/bin" "$RUNTIME_STAGE/usr/bin"
 (cd "$RUNTIME_STAGE" && zip -r -q "$RUNTIME_ZIP" usr)
 echo "==> Ruby runtime archive: $RUNTIME_ZIP"
 
