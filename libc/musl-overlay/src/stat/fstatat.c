@@ -93,7 +93,7 @@ static int fstatat_statx(int fd, const char *restrict path, struct stat *restric
 static int fstatat_kstat(int fd, const char *restrict path, struct stat *restrict st, int flag)
 {
 	int ret;
-	struct kstat kst;
+	struct kstat kst = {0};
 
 	if (flag==AT_EMPTY_PATH && fd>=0 && !*path) {
 		ret = __syscall(SYS_fstat, fd, &kst);
