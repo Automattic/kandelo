@@ -308,6 +308,7 @@ fell back to fork.
 6. Thread starts executing the given function pointer with the given argument
 
 Threads share memory with the parent (CLONE_VM) but have their own channel, fork-save scratch page, and TLS/control page.
+The libc clone shim passes an ABI-aligned wasm32 stack pointer to the host while keeping the pthread start argument intact; thread workers therefore enter C code with the 16-byte stack alignment LLVM expects for 64-bit varargs and formatted I/O.
 
 ## Memory Layout
 
