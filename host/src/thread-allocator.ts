@@ -6,6 +6,8 @@ import {
   PROCESS_MEMORY_THREAD_SLOT_TLS_PAGE,
 } from "./generated/abi";
 
+const DYNAMIC_SLOT_REUSE_QUARANTINE = 1024;
+
 export interface ThreadAllocation {
   /** Start page of the pthread slot. */
   slotStartPage: number;
@@ -102,10 +104,25 @@ export class ThreadPageAllocator {
     }
 
     let slotStartPage: number;
-    if (this.freePages.length > 0) {
+    // Dynamically reserved slots get a bounded quarantine before reuse:
+    // browser Worker termination is not a strong enough fence for immediate
+    // stale writes from a pthread blocked in Wasm, but pthread-heavy programs
+    // can create thousands of short-lived threads and still need bounded
+    // process address-space use. Fixed legacy arenas cannot grow, so they
+    // retain the older free-list reuse behavior.
+    if (!this.reserveSlotStartPage && this.freePages.length > 0) {
       slotStartPage = this.freePages.pop()!;
     } else if (this.reserveSlotStartPage) {
-      slotStartPage = this.reserveSlotStartPage();
+      if (this.freePages.length > DYNAMIC_SLOT_REUSE_QUARANTINE) {
+        slotStartPage = this.freePages.shift()!;
+      } else {
+        try {
+          slotStartPage = this.reserveSlotStartPage();
+        } catch (err) {
+          if (this.freePages.length === 0) throw err;
+          slotStartPage = this.freePages.shift()!;
+        }
+      }
     } else {
       slotStartPage = this.nextPage;
       if (this.direction === "up") {

@@ -58,6 +58,8 @@ const MAP_PRIVATE_ANONYMOUS = 0x22;
 type KernelImports = Record<string, WebAssembly.ExportValue> & {
   kernel_exit: (status: number) => void;
   kernel_fork: (...args: unknown[]) => number;
+  kernel_gettid: () => number;
+  kernel_set_tid_address: (tidPtr: number | bigint) => number;
 };
 
 function buildKernelImports(
@@ -66,6 +68,7 @@ function buildKernelImports(
   argv?: string[],
   envVars?: string[],
   onKernelExit?: (status: number) => void,
+  currentTid = 0,
 ): KernelImports {
   const _argv = argv || [];
   const _envVars = envVars || [];
@@ -102,6 +105,8 @@ function buildKernelImports(
     kernel_get_fork_exec_argv: (_index: number, _buf: number | bigint, _max: number): number => 0,
     kernel_push_argv: (_ptr: number | bigint, _len: number): void => {},
     kernel_clear_fork_exec: (): number => 0,
+    kernel_gettid: (): number => currentTid,
+    kernel_set_tid_address: (_tidPtr: number | bigint): number => currentTid,
 
     // Exec dispatches through channel
     kernel_execve: (_pathPtr: number | bigint): number => -38, // ENOSYS
@@ -114,7 +119,7 @@ function buildKernelImports(
       view.setBigInt64(base + CH_ARGS, BigInt(status), true);
       const i32 = new Int32Array(memory.buffer);
       Atomics.store(i32, (base + CH_STATUS) / 4, CHANNEL_STATUS_PENDING);
-      Atomics.notify(i32, (base + CH_STATUS) / 4, 1);
+      Atomics.notify(i32, (base + CH_STATUS) / 4);
       // Wait for complete, then trap
       while (Atomics.wait(i32, (base + CH_STATUS) / 4, CHANNEL_STATUS_PENDING) === "ok") { /* */ }
       Atomics.store(i32, (base + CH_STATUS) / 4, CHANNEL_STATUS_IDLE);
@@ -133,14 +138,17 @@ function buildKernelImports(
       view.setBigInt64(base + CH_ARGS + 2 * CH_ARG_SIZE, BigInt(ptidPtr), true);
       view.setBigInt64(base + CH_ARGS + 3 * CH_ARG_SIZE, BigInt(tlsPtr), true);
       view.setBigInt64(base + CH_ARGS + 4 * CH_ARG_SIZE, BigInt(ctidPtr), true);
-      view.setBigInt64(base + CH_ARGS + 5 * CH_ARG_SIZE, 0n, true);
-      // Write fn_ptr and arg_ptr to CH_DATA area for handleClone
+      const packedStart = (BigInt(n(fnPtr)) << 32n) | BigInt(n(arg) >>> 0);
+      view.setBigInt64(base + CH_ARGS + 5 * CH_ARG_SIZE, packedStart, true);
+      // Keep writing the legacy CH_DATA payload for older hosts, but the
+      // CentralizedKernelWorker reads the packed sixth arg so kernel-side
+      // use of CH_DATA cannot corrupt pthread start routing.
       view.setUint32(base + CH_DATA, n(fnPtr), true);
       view.setUint32(base + CH_DATA + 4, n(arg), true);
 
       const i32 = new Int32Array(memory.buffer);
       Atomics.store(i32, (base + CH_STATUS) / 4, CHANNEL_STATUS_PENDING);
-      Atomics.notify(i32, (base + CH_STATUS) / 4, 1);
+      Atomics.notify(i32, (base + CH_STATUS) / 4);
       while (Atomics.wait(i32, (base + CH_STATUS) / 4, CHANNEL_STATUS_PENDING) === "ok") { /* */ }
 
       const result = Number(view.getBigInt64(base + CH_RETURN, true));
@@ -160,7 +168,7 @@ function buildKernelImports(
 
       const i32 = new Int32Array(memory.buffer);
       Atomics.store(i32, (base + CH_STATUS) / 4, CHANNEL_STATUS_PENDING);
-      Atomics.notify(i32, (base + CH_STATUS) / 4, 1);
+      Atomics.notify(i32, (base + CH_STATUS) / 4);
       while (Atomics.wait(i32, (base + CH_STATUS) / 4, CHANNEL_STATUS_PENDING) === "ok") { /* */ }
 
       const result = Number(view.getBigInt64(base + CH_RETURN, true));
@@ -235,7 +243,7 @@ function buildDlopenImports(
 
     const i32 = new Int32Array(memory.buffer);
     Atomics.store(i32, (base + CH_STATUS) / 4, CHANNEL_STATUS_PENDING);
-    Atomics.notify(i32, (base + CH_STATUS) / 4, 1);
+    Atomics.notify(i32, (base + CH_STATUS) / 4);
     while (Atomics.wait(i32, (base + CH_STATUS) / 4, CHANNEL_STATUS_PENDING) === "ok") { /* wait for mmap */ }
 
     const result = Number(view.getBigInt64(base + CH_RETURN, true));
@@ -874,6 +882,7 @@ export async function centralizedWorkerMain(
       initData.argv || [],
       initData.env || [],
       (status) => { kernelExitStatus = status; },
+      pid,
     );
 
     // Check if the module has complete wpk_fork_* instrumentation exports,
@@ -1334,7 +1343,7 @@ function sendForkSyscall(memory: WebAssembly.Memory, channelOffset: number): num
 
   const i32 = new Int32Array(memory.buffer);
   Atomics.store(i32, (channelOffset + CH_STATUS) / 4, CHANNEL_STATUS_PENDING);
-  Atomics.notify(i32, (channelOffset + CH_STATUS) / 4, 1);
+  Atomics.notify(i32, (channelOffset + CH_STATUS) / 4);
   while (Atomics.wait(i32, (channelOffset + CH_STATUS) / 4, CHANNEL_STATUS_PENDING) === "ok") { /* */ }
 
   const result = Number(view.getBigInt64(channelOffset + CH_RETURN, true));
@@ -1731,8 +1740,16 @@ export async function centralizedThreadWorkerMain(
     const hasForkInstrumentation = hasCompleteForkInstrumentation(moduleExports, pid);
     const forkBufAddr = channelOffset - FORK_BUF_SIZE;
     let forkResult = 0;
+    let kernelExitStatus: number | null = null;
 
-    const kernelImports = buildKernelImports(memory, channelOffset);
+    const kernelImports = buildKernelImports(
+      memory,
+      channelOffset,
+      undefined,
+      undefined,
+      (status) => { kernelExitStatus = status; },
+      tid,
+    );
     if (hasForkInstrumentation) {
       kernelImports.kernel_fork = (): number => {
         if (!threadInstance) return -38; // ENOSYS
@@ -1817,12 +1834,12 @@ export async function centralizedThreadWorkerMain(
           const raw = threadFn(threadArg);
           result = Number(raw);
         } catch (e) {
-          if (e instanceof Error && e.message.includes("unreachable")) {
-            result = 0;
-            break;
-          }
-          if (e instanceof Error && e.message.includes("null function or function signature mismatch")) {
-            result = 0;
+          if (
+            e instanceof Error &&
+            e.message.includes("unreachable") &&
+            kernelExitStatus !== null
+          ) {
+            result = kernelExitStatus;
             break;
           }
           throw e;
@@ -1846,12 +1863,12 @@ export async function centralizedThreadWorkerMain(
         const raw = threadFn(threadArg);
         result = Number(raw);
       } catch (e) {
-        if (e instanceof Error && e.message.includes("unreachable")) {
-          // Thread exited via kernel_exit → unreachable trap
-          result = 0;
-        } else if (e instanceof Error && e.message.includes("null function or function signature mismatch")) {
-          // call_indirect type mismatch — treat as thread crash but don't abort
-          result = 0;
+        if (
+          e instanceof Error &&
+          e.message.includes("unreachable") &&
+          kernelExitStatus !== null
+        ) {
+          result = kernelExitStatus;
         } else {
           throw e;
         }
@@ -1868,7 +1885,7 @@ export async function centralizedThreadWorkerMain(
       view.setInt32(base + CH_ARGS, result ?? 0, true);
       const i32 = new Int32Array(memory.buffer);
       Atomics.store(i32, (base + CH_STATUS) / 4, CHANNEL_STATUS_PENDING);
-      Atomics.notify(i32, (base + CH_STATUS) / 4, 1);
+      Atomics.notify(i32, (base + CH_STATUS) / 4);
       // Wait for kernel to process the exit
       while (Atomics.wait(i32, (base + CH_STATUS) / 4, CHANNEL_STATUS_PENDING) === "ok") { /* */ }
       Atomics.store(i32, (base + CH_STATUS) / 4, CHANNEL_STATUS_IDLE);
@@ -1880,10 +1897,13 @@ export async function centralizedThreadWorkerMain(
       tid,
     } satisfies WorkerToHostMessage);
   } catch (err) {
+    const message = err instanceof Error
+      ? (err.stack || err.message)
+      : String(err);
     port.postMessage({
-      type: "thread_exit",
+      type: "error",
       pid,
-      tid,
+      message: `thread worker pid=${pid} tid=${tid} failed: ${message}`,
     } satisfies WorkerToHostMessage);
   }
 }

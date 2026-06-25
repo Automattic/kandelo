@@ -80,7 +80,7 @@ import type { MountConfig } from "./vfs/types";
 import { TlsNetworkBackend } from "./networking/tls-network-backend";
 import { patchWasmForThread } from "./worker-main";
 import { detectPtrWidth, extractHeapBase, isWasmModuleBytes } from "./constants";
-import { ThreadExitCoordinator } from "./thread-exit-coordinator";
+import { ThreadExitCoordinator, type ThreadExitCompletion } from "./thread-exit-coordinator";
 import {
   classifiedSignalOrFallback,
   classifiedTrapExitStatus,
@@ -210,6 +210,7 @@ interface ThreadWorkerInfo {
 const threadWorkers = new Map<number, ThreadWorkerInfo[]>();
 const threadExits = new ThreadExitCoordinator();
 const reportedNonzeroProcessExits = new Set<number>();
+const PTHREAD_DETACH_STATE_EXITED = 0;
 
 function delay(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -270,10 +271,15 @@ async function waitForProcessTeardowns(): Promise<void> {
 async function terminateTrackedWorker(
   worker: ReturnType<BrowserWorkerAdapter["createWorker"]>,
   settleMs = 0,
+  options: { immediate?: boolean } = {},
 ): Promise<void> {
   intentionallyTerminated.add(worker as object);
   const teardown = (async () => {
-    await worker.terminate().catch(() => {});
+    if (options.immediate && worker.terminateImmediately) {
+      await worker.terminateImmediately().catch(() => {});
+    } else {
+      await worker.terminate().catch(() => {});
+    }
     if (settleMs > 0) await delay(settleMs);
   })();
   workerTeardowns.add(teardown);
@@ -738,7 +744,8 @@ async function handleInit(msg: Extract<MainToKernelMessage, { type: "init" }>) {
       onSpawn: handlePosixSpawn,
       onClone: (pid, tid, fnPtr, argPtr, stackPtr, tlsPtr, ctidPtr, memory) =>
         handleClone(pid, tid, fnPtr, argPtr, stackPtr, tlsPtr, ctidPtr, memory),
-      onThreadExit: (pid, _tid, channelOffset) => handleThreadExit(pid, channelOffset),
+      onThreadExit: (pid, _tid, channelOffset, completion) =>
+        handleThreadExit(pid, channelOffset, completion),
       onExit: (pid, exitStatus) => handleExit(pid, exitStatus),
     },
   );
@@ -751,6 +758,11 @@ async function handleInit(msg: Extract<MainToKernelMessage, { type: "init" }>) {
   // ~8x throughput vs batch-1 while still yielding frequently enough for
   // pump timers, message handlers, and rendering to interleave.
   (kernelWorker as any).relistenBatchSize = 8;
+  // Browser worker thread-channel offsets are recycled aggressively by
+  // pthread-heavy programs. A stale waitAsync listener can consume a one-shot
+  // guest notify before the live listener sees it; this low-frequency scan
+  // recovers any channel left PENDING by that missed wake.
+  kernelWorker.eventDrivenMissedWakeScanIntervalMs = 10;
 
   // Inject stdout/stderr/listen callbacks
   const kw = kernelWorker as any;
@@ -1346,7 +1358,7 @@ async function handleClone(
   // Register fnPtr/argPtr so handleFork can route a fork() from this
   // thread back through its entry point. Mirrors handleClone in
   // host/src/node-kernel-worker-entry.ts.
-  kernelWorker.addChannel(pid, alloc.channelOffset, tid, fnPtr, argPtr);
+  kernelWorker.addChannel(pid, alloc.channelOffset, tid, fnPtr, argPtr, stackPtr, tlsPtr);
 
   const threadInitData: CentralizedThreadInitMessage = {
     type: "centralized_thread_init",
@@ -1389,12 +1401,43 @@ async function handleClone(
       if (idx >= 0) threads.splice(idx, 1);
     }
   };
-  const terminateThreadEntry = (): Promise<void> => {
+  let pendingCompletion: ThreadExitCompletion = {};
+  let completionApplied = false;
+  const applyThreadExitCompletion = (): void => {
+    if (completionApplied) return;
+    const { clearTidFutexAddr, joinFutexAddr } = pendingCompletion;
+    if (clearTidFutexAddr === undefined && joinFutexAddr === undefined) return;
+    completionApplied = true;
+    const i32 = new Int32Array(memory.buffer);
+    if (clearTidFutexAddr !== undefined) {
+      if (Atomics.load(i32, clearTidFutexAddr >>> 2) === tid) {
+        Atomics.store(i32, clearTidFutexAddr >>> 2, 0);
+        kernelWorker.wakeProcessFutex(memory, clearTidFutexAddr, -1);
+      }
+    }
+    if (joinFutexAddr !== undefined) {
+      Atomics.store(i32, joinFutexAddr >>> 2, PTHREAD_DETACH_STATE_EXITED);
+      kernelWorker.wakeProcessFutex(memory, joinFutexAddr, -1);
+    }
+  };
+  const terminateThreadEntry = (completion?: ThreadExitCompletion): Promise<void> => {
+    if (completion) {
+      pendingCompletion = {
+        ...pendingCompletion,
+        ...completion,
+      };
+    }
     if (!threadEntry.termination) {
-      threadEntry.termination = terminateTrackedWorker(
-        threadWorker,
-        THREADED_WORKER_TERMINATION_SETTLE_MS,
-      ).finally(reclaimThread);
+      threadEntry.termination = (async () => {
+        await terminateTrackedWorker(
+          threadWorker,
+          0,
+          { immediate: true },
+        );
+        applyThreadExitCompletion();
+      })().finally(reclaimThread);
+    } else if (completion) {
+      void threadEntry.termination.then(applyThreadExitCompletion);
     }
     return threadEntry.termination;
   };
@@ -1426,8 +1469,12 @@ async function handleClone(
   return tid;
 }
 
-function handleThreadExit(pid: number, channelOffset: number): boolean {
-  return threadExits.requestExit(pid, channelOffset);
+function handleThreadExit(
+  pid: number,
+  channelOffset: number,
+  completion?: ThreadExitCompletion,
+): boolean {
+  return threadExits.requestExit(pid, channelOffset, completion);
 }
 
 function signalFromExitStatus(exitStatus: number): number | null {
