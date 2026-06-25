@@ -53,7 +53,7 @@ Kandelo uses a single kernel Wasm instance that holds a `ProcessTable` and serve
 | `writev()` | Full | Gather write. Iterates over iovec array calling sys_write for each buffer. Stops on short write. |
 | `fstat()` | Partial | Host-delegated for regular files. Pipe returns S_IFIFO | 0o600. Guest libc synthesizes `st_blksize` and `st_blocks` when the kernel stat ABI leaves them zero. |
 | `ftruncate()` | Partial | Host-delegated for regular files with write access. Validates length >= 0. Rejects non-regular fds. |
-| `fsync()` | Partial | Host-delegated for regular files. Rejects non-regular fds (pipes, sockets). |
+| `fsync()` | Partial | Host-delegated for regular files. Directory fds are accepted as a best-effort no-op for journal-directory syncs. Rejects pipes and sockets. |
 | `fdatasync()` | Partial | Alias for fsync(). No metadata distinction in Wasm environment. |
 | `truncate()` | Partial | Path-based. Opens file O_WRONLY, calls ftruncate, closes. |
 | `fchmod()` | Partial | Regular files and directories update VFS metadata. Rejects pipes/sockets. Node host-backed files never receive native mode changes after creation. |

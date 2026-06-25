@@ -9940,12 +9940,15 @@ pub fn sys_fsync(proc: &mut Process, host: &mut dyn HostIO, fd: i32) -> Result<(
     let ofd_idx = entry.ofd_ref.0;
     let ofd = proc.ofd_table.get(ofd_idx).ok_or(Errno::EBADF)?;
 
-    // Must be a regular file
-    if ofd.file_type != FileType::Regular {
-        return Err(Errno::EINVAL);
+    // SQLite and other durable-update code fsync containing directories after
+    // creating or deleting journal files. Kandelo hosts do not currently expose
+    // a portable directory flush operation, so accept directory fsync as a
+    // best-effort no-op instead of turning it into a user-visible I/O error.
+    match ofd.file_type {
+        FileType::Regular => host.host_fsync(ofd.host_handle),
+        FileType::Directory => Ok(()),
+        _ => Err(Errno::EINVAL),
     }
-
-    host.host_fsync(ofd.host_handle)
 }
 
 /// truncate -- truncate a file to a specified length (path-based).
@@ -14871,6 +14874,15 @@ mod tests {
             0o644,
         )
         .unwrap();
+        let result = sys_fsync(&mut proc, &mut host, fd);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_fsync_directory_ok() {
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        let fd = sys_open(&mut proc, &mut host, b"/tmp", O_RDONLY | O_DIRECTORY, 0).unwrap();
         let result = sys_fsync(&mut proc, &mut host, fd);
         assert!(result.is_ok());
     }
