@@ -13,10 +13,11 @@ import { MemoryFileSystem } from "../../../host/src/vfs/memory-fs";
 import {
   ensureDir,
   ensureDirRecursive,
+  writeVfsFile,
   writeVfsBinary,
   symlink,
 } from "../../../host/src/vfs/image-helpers";
-import { findRepoRoot, tryResolveBinary } from "../../../host/src/binary-resolver";
+import { findRepoRoot, resolveBinary, tryResolveBinary } from "../../../host/src/binary-resolver";
 import { saveImage, walkAndWrite } from "./vfs-image-helpers";
 
 const REPO_ROOT = findRepoRoot();
@@ -26,7 +27,6 @@ const SQLITE_FULL = join(SQLITE_DIR, "sqlite-full-src");
 const TCL_LIBRARY = join(TCL_DIR, "tcl-install/lib/tcl8.6");
 const TESTFIXTURE = join(SQLITE_DIR, "bin/testfixture.wasm");
 const SQLITE3 = join(SQLITE_DIR, "sqlite-install/bin/sqlite3.wasm");
-const DASH_PATH = tryResolveBinary("programs/dash.wasm");
 const COREUTILS_PATH = tryResolveBinary("programs/coreutils.wasm");
 const OUT_FILE = process.env.SQLITE_TEST_VFS_OUT
   ?? join(REPO_ROOT, "apps/browser-demos/public/sqlite-test.vfs.zst");
@@ -37,24 +37,50 @@ const COREUTILS_SYMLINK_NAMES = [
   "sort", "tail", "tee", "test", "touch", "tr", "true", "uname", "wc", "[",
 ];
 
-function checkPrereqs(): void {
+const KANDELO_TESTRUNNER_PLATFORM_SHIM = [
+  "# Kandelo's Tcl target OS name is not classified by SQLite's upstream",
+  "# testrunner.tcl. Force the normal Unix-like branch before upstream",
+  "# chooses make/run script commands.",
+  "set ::tcl_platform(os) OpenBSD",
+  "set ::tcl_platform(platform) unix",
+  "",
+].join("\n");
+
+function kandeloTestrunnerSource(upstream: string): string {
+  const needle = "set dir [pwd]\n";
+  if (!upstream.includes(needle)) {
+    throw new Error("SQLite testrunner.tcl no longer has the expected platform insertion point");
+  }
+  return upstream.replace(needle, `${KANDELO_TESTRUNNER_PLATFORM_SHIM}${needle}`);
+}
+
+function checkPrereqs(): { dashPath: string } {
   const missing: string[] = [];
   if (!existsSync(TESTFIXTURE)) missing.push(`testfixture.wasm missing at ${TESTFIXTURE}`);
   if (!existsSync(SQLITE3)) missing.push(`sqlite3.wasm missing at ${SQLITE3}`);
   if (!existsSync(join(SQLITE_FULL, "test"))) missing.push(`SQLite full source missing at ${SQLITE_FULL}`);
   if (!existsSync(TCL_LIBRARY)) missing.push(`Tcl runtime library missing at ${TCL_LIBRARY}`);
+  let dashPath = "";
+  try {
+    dashPath = resolveBinary("programs/dash.wasm");
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    missing.push(`dash.wasm missing for /bin/sh and /usr/bin/sh:\n${message}`);
+  }
   if (missing.length > 0) {
     throw new Error(
       `${missing.join("\n")}\n\nRun:\n` +
       "  bash packages/registry/tcl/build-tcl.sh\n" +
       "  bash packages/registry/sqlite/build-sqlite.sh\n" +
-      "  bash packages/registry/sqlite/build-testfixture.sh",
+      "  bash packages/registry/sqlite/build-testfixture.sh\n" +
+      "  cargo run -p xtask -- build-deps resolve dash --arch wasm32 --binaries-dir binaries",
     );
   }
+  return { dashPath };
 }
 
 async function main() {
-  checkPrereqs();
+  const { dashPath } = checkPrereqs();
 
   console.log("==> Building SQLite upstream-test VFS image");
   const sab = new SharedArrayBuffer(64 * 1024 * 1024, { maxByteLength: 512 * 1024 * 1024 });
@@ -73,11 +99,10 @@ async function main() {
   writeVfsBinary(fs, "/usr/bin/sqlite3", new Uint8Array(readFileSync(SQLITE3)));
   symlink(fs, "/usr/bin/sqlite3", "/bin/sqlite3");
 
-  if (DASH_PATH && existsSync(DASH_PATH)) {
-    writeVfsBinary(fs, "/bin/dash", new Uint8Array(readFileSync(DASH_PATH)));
-    symlink(fs, "/bin/dash", "/bin/sh");
-    symlink(fs, "/bin/dash", "/usr/bin/sh");
-  }
+  writeVfsBinary(fs, "/bin/dash", new Uint8Array(readFileSync(dashPath)));
+  symlink(fs, "/bin/dash", "/bin/sh");
+  symlink(fs, "/bin/dash", "/usr/bin/dash");
+  symlink(fs, "/bin/dash", "/usr/bin/sh");
   if (COREUTILS_PATH && existsSync(COREUTILS_PATH)) {
     writeVfsBinary(fs, "/bin/coreutils", new Uint8Array(readFileSync(COREUTILS_PATH)));
     for (const name of COREUTILS_SYMLINK_NAMES) {
@@ -101,6 +126,10 @@ async function main() {
       rel.endsWith(".a"),
   });
   console.log(`    ${count} source/test files`);
+
+  const upstreamTestrunner = readFileSync(join(SQLITE_FULL, "test", "testrunner.tcl"), "utf8");
+  writeVfsFile(fs, "/sqlite/test/kandelo-upstream-testrunner.tcl", upstreamTestrunner, 0o644);
+  writeVfsFile(fs, "/sqlite/test/testrunner.tcl", kandeloTestrunnerSource(upstreamTestrunner), 0o644);
 
   symlink(fs, "/usr/bin/testfixture", "/sqlite/testfixture");
   symlink(fs, "/usr/bin/testfixture", "/sqlite/testfixture.wasm");

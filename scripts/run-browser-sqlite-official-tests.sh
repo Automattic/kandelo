@@ -15,7 +15,7 @@ usage() {
 Usage: $0 [OPTIONS] [pattern-or-test ...]
 
 Options:
-  --permutation NAME  veryquick, full, or all (default: full)
+  --permutation NAME  veryquick, full, mmap, or all (default: full)
   --jobs N            testrunner.tcl --jobs value (default: 1)
   --timeout-ms N      Browser command timeout (default: 600000)
   --results-dir DIR   Copy testrunner.db/logs and summary files to DIR
@@ -29,7 +29,7 @@ while [ $# -gt 0 ]; do
     --permutation)
       PERMUTATION="${2:-}"
       case "$PERMUTATION" in
-        veryquick|full|all) ;;
+        veryquick|full|mmap|all) ;;
         *)
           echo "ERROR: unsupported permutation: $PERMUTATION" >&2
           exit 1

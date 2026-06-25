@@ -5,7 +5,7 @@ set -euo pipefail
 #
 # The existing run-sqlite-upstream-tests.sh runner executes each Tcl script
 # directly once. This wrapper invokes SQLite's upstream testrunner.tcl so
-# official permutations such as veryquick, full, and all can be attempted.
+# official permutations such as veryquick, full, mmap, and all can be attempted.
 
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 SQLITE_FULL="$REPO_ROOT/packages/registry/sqlite/sqlite-full-src"
@@ -28,7 +28,7 @@ Usage: $0 [OPTIONS] [pattern-or-test ...]
 
 Options:
   --host node|browser       Host to run on (default: node)
-  --permutation NAME        veryquick, full, or all (default: full)
+  --permutation NAME        veryquick, full, mmap, or all (default: full)
   --jobs N                  testrunner.tcl --jobs value (default: 1)
   --timeout-ms N            Outer Kandelo process timeout (default: 600000)
   --results-dir DIR         Copy testrunner.db/logs and summary files to DIR
@@ -61,7 +61,7 @@ while [ $# -gt 0 ]; do
     --permutation)
       PERMUTATION="${2:-}"
       case "$PERMUTATION" in
-        veryquick|full|all) ;;
+        veryquick|full|mmap|all) ;;
         release|mdevtest|sdevtest)
           echo "ERROR: $PERMUTATION requires host-side rebuilds/fuzz binaries and is not a Kandelo guest permutation yet." >&2
           exit 2
@@ -272,6 +272,28 @@ cp "$TESTFIXTURE" "$WORKDIR/testfixture.wasm"
 cp "$SQLITE3" "$WORKDIR/sqlite3"
 cp "$SQLITE3" "$WORKDIR/sqlite3.wasm"
 chmod a+rx "$WORKDIR/testfixture" "$WORKDIR/testfixture.wasm" "$WORKDIR/sqlite3" "$WORKDIR/sqlite3.wasm"
+
+cp "$WORKDIR/test/testrunner.tcl" "$WORKDIR/test/kandelo-upstream-testrunner.tcl"
+python3 - "$WORKDIR/test/kandelo-upstream-testrunner.tcl" "$WORKDIR/test/testrunner.tcl" <<'PY'
+import sys
+from pathlib import Path
+
+upstream_path = Path(sys.argv[1])
+out_path = Path(sys.argv[2])
+upstream = upstream_path.read_text(encoding="utf-8")
+needle = "set dir [pwd]\n"
+shim = """# Kandelo's Tcl target OS name is not classified by SQLite's upstream
+# testrunner.tcl. Force the normal Unix-like branch before upstream
+# chooses make/run script commands.
+set ::tcl_platform(os) OpenBSD
+set ::tcl_platform(platform) unix
+
+"""
+if needle not in upstream:
+    raise SystemExit("SQLite testrunner.tcl no longer has the expected platform insertion point")
+out_path.write_text(upstream.replace(needle, shim + needle), encoding="utf-8")
+PY
+chmod a+r "$WORKDIR/test/testrunner.tcl" "$WORKDIR/test/kandelo-upstream-testrunner.tcl"
 
 RUNNER_TCL="$WORKDIR/kandelo-testrunner.tcl"
 cat > "$RUNNER_TCL" <<'TCL'
