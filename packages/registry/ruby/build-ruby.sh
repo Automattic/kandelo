@@ -164,6 +164,58 @@ if ! grep -q '#include <stdint.h>' "$SRC_DIR/wasm/machine.c"; then
     rm -f "$SRC_DIR/wasm/machine.c.bak"
 fi
 
+# Ruby's ivar inline caches pack shape id + attr index into uint64_t fields
+# inside GC-managed objects that are only VALUE-aligned on wasm32. Wasm allows
+# ordinary unaligned loads/stores, but 64-bit atomics trap unless the address is
+# 8-byte aligned. Use Ruby's non-atomic fallback semantics for this cache on
+# Kandelo and load/store bytewise so the compiler cannot reintroduce an
+# alignment-sensitive atomic access.
+if ! grep -q 'Kandelo avoids unaligned 64-bit wasm atomics' "$SRC_DIR/ruby_atomic.h"; then
+    echo "==> Patching ruby_atomic.h: avoid unaligned 64-bit wasm atomics..."
+    python3 - "$SRC_DIR/ruby_atomic.h" <<'PY'
+import sys
+
+path = sys.argv[1]
+content = open(path, "r", encoding="utf-8").read()
+
+load_old = """#if defined(HAVE_GCC_ATOMIC_BUILTINS_64)
+    return __atomic_load_n(value, __ATOMIC_RELAXED);
+"""
+load_new = """#if defined(RUBY_KANDELO_POSIX)
+    /* Kandelo avoids unaligned 64-bit wasm atomics for Ruby inline caches. */
+    uint64_t val = 0;
+    const volatile unsigned char *bytes = (const volatile unsigned char *)value;
+    for (unsigned int i = 0; i < sizeof(val); i++) {
+        val |= ((uint64_t)bytes[i]) << (i * 8);
+    }
+    return val;
+#elif defined(HAVE_GCC_ATOMIC_BUILTINS_64)
+    return __atomic_load_n(value, __ATOMIC_RELAXED);
+"""
+store_old = """#if defined(HAVE_GCC_ATOMIC_BUILTINS_64)
+    __atomic_store_n(address, value, __ATOMIC_RELAXED);
+"""
+store_new = """#if defined(RUBY_KANDELO_POSIX)
+    /* Kandelo avoids unaligned 64-bit wasm atomics for Ruby inline caches. */
+    volatile unsigned char *bytes = (volatile unsigned char *)address;
+    for (unsigned int i = 0; i < sizeof(value); i++) {
+        bytes[i] = (unsigned char)(value >> (i * 8));
+    }
+#elif defined(HAVE_GCC_ATOMIC_BUILTINS_64)
+    __atomic_store_n(address, value, __ATOMIC_RELAXED);
+"""
+
+if load_old not in content:
+    raise SystemExit("ruby_atomic.h load pattern not found")
+if store_old not in content:
+    raise SystemExit("ruby_atomic.h store pattern not found")
+
+content = content.replace(load_old, load_new, 1)
+content = content.replace(store_old, store_new, 1)
+open(path, "w", encoding="utf-8").write(content)
+PY
+fi
+
 # Ruby's generic non-Emscripten wasm path assumes its own Asyncify runtime
 # imports. Kandelo uses the normal SDK/libc runtime instead, so keep wasm-only
 # sizing/platform decisions but route setjmp, VM exception handling, stack
