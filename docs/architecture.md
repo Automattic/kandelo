@@ -173,6 +173,13 @@ Key host components:
 | NodeWorkerAdapter | `worker-adapter.ts` | Creates Node.js worker_threads |
 | BrowserWorkerAdapter | `worker-adapter-browser.ts` | Creates Web Workers |
 
+`NodeWorkerAdapter` prefers the compiled worker entry distributed with the
+host package. In a source checkout without `host/dist`, it bundles the
+TypeScript entry once per adapter and reuses that temporary module for later
+process workers; if bundling is unavailable, it falls back to the `tsx`
+loader. Browser worker entries are bundled by the browser build and do not use
+this Node-only source fallback.
+
 Kernel module instantiation snapshots the caller's exact intrinsic
 `ArrayBuffer`, typed-array, or `DataView` byte window before inspecting it.
 Pointer-width detection and `WebAssembly.compile` consume that same detached
