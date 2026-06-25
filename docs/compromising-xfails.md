@@ -125,7 +125,7 @@ And a matching `/etc/group`. Low-risk change — pure userspace + VFS.
 
 **Status (landed in this PR):** Per-thread `blocked` / `pending` / `rt_queue` now live on `ThreadInfo`. `kernel_set_current_tid` lets `sigprocmask`, `sigsuspend`, `ppoll`, `pselect6`, `sigtimedwait` operate on the calling thread's state. `tkill`/`tgkill` write into the target thread's directed pending queue rather than the shared process queue. `ABI_VERSION` bumped to 4 (new kernel exports — see `abi/snapshot.json`).
 
-**Closed tests:** libc-test `regression/raise-race` (previously flakey XFAIL; now passes — timing-slow so it can appear as `TIME` on heavily-loaded runs, still acceptable per `CLAUDE.md`), sortix `signal/pthread_kill`, sortix `basic/aio/aio_fsync`, sortix `basic/aio/aio_read`, sortix `basic/aio/aio_error` (after `sys_pread` / `sys_pwrite` reject negative offsets with `EINVAL`, 2026-04-22 — the test's `aio_write(offset=-9000)` used to surface the host's seek error as `EIO`).
+**Closed tests:** libc-test `regression/raise-race` (previously flakey XFAIL; now passes on fast dev hosts and is reported as `FLAKE-TIME` if the local 30 s harness timeout is exceeded), sortix `signal/pthread_kill`, sortix `basic/aio/aio_fsync`, sortix `basic/aio/aio_read`, sortix `basic/aio/aio_error` (after `sys_pread` / `sys_pwrite` reject negative offsets with `EINVAL`, 2026-04-22 — the test's `aio_write(offset=-9000)` used to surface the host's seek error as `EIO`).
 
 The original gap analysis (preserved below for the historical record) matches what was landed.
 

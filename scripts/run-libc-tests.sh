@@ -39,6 +39,7 @@ REGRESSION_EXPECTED_FAIL=(
 )
 REGRESSION_FLAKY=(
     pthread_cond-smasher        # CI timing-sensitive pthread_cond stress test; can PASS or fail on slow runners
+    raise-race                  # signal/fork stress test; PASSes on fast dev hosts but can exceed local 30s timeout
 )
 
 # ── Helper: check if a test is in an expected-failure list ──
@@ -250,6 +251,20 @@ build_example_program() {
         -o "$wasm" 2>/tmp/libc-test-build-err.txt
 }
 
+ensure_dash_program() {
+    local rel="programs/wasm32/dash.wasm"
+    if [ -f "$REPO_ROOT/local-binaries/$rel" ] || [ -f "$REPO_ROOT/binaries/$rel" ]; then
+        return 0
+    fi
+
+    echo "Resolving dash for libc-test /bin/sh support..."
+    local host_triple
+    host_triple="$(rustc -vV | awk '/^host/ {print $2}')"
+    (cd "$REPO_ROOT" && cargo run -p xtask --target "$host_triple" --quiet -- build-deps resolve dash --arch wasm32 --binaries-dir "$REPO_ROOT/local-binaries")
+
+    [ -f "$REPO_ROOT/local-binaries/$rel" ] || [ -f "$REPO_ROOT/binaries/$rel" ]
+}
+
 # ── Run a single test ───────────────────────────────────────
 
 run_test() {
@@ -385,6 +400,10 @@ if ! build_example_program echo; then
     err=$(head -5 /tmp/libc-test-build-err.txt 2>/dev/null || echo "(no error output)")
     echo "Error: failed to build examples/echo.wasm" >&2
     echo "$err" | head -3 | sed 's/^/  /' >&2
+    exit 1
+fi
+if ! ensure_dash_program; then
+    echo "Error: failed to resolve dash.wasm for libc-test /bin/sh support" >&2
     exit 1
 fi
 
