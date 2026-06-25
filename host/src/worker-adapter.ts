@@ -98,9 +98,11 @@ export class MockWorkerAdapter implements WorkerAdapter {
 // --- Node.js implementation ---
 
 import { Worker, type WorkerOptions } from "node:worker_threads";
-import { pathToFileURL } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { createRequire } from "node:module";
-import { existsSync } from "node:fs";
+import { existsSync, mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { NODE_WORKER_INIT_BY_MESSAGE } from "./node-worker-initialization";
 
 // Wasm guest stacks consume the embedding worker's native stack when engines
@@ -176,6 +178,7 @@ export function nodeWorkerInitialization(
 export class NodeWorkerAdapter implements WorkerAdapter {
   private entryUrl: URL;
   private _compiledEntry: URL | false | undefined;
+  private _bundledSourceEntry: URL | false | undefined;
   private readonly initializeByMessage: boolean;
 
   constructor(entryUrl?: URL) {
@@ -237,6 +240,56 @@ export class NodeWorkerAdapter implements WorkerAdapter {
     return new NodeWorkerHandle(worker);
   }
 
+  /**
+   * Source checkouts often run without host/dist/*.js. Avoid spawning a fresh
+   * tsx loader for every guest process; Homebrew can launch hundreds of short
+   * lived workers and the per-worker loader path can stall under that churn.
+   * Browser workers already pass through the browser build's bundling path;
+   * this fallback is specific to Node.js running directly from source.
+   */
+  private resolveBundledSourceEntry(): URL | null {
+    if (this._bundledSourceEntry !== undefined) {
+      return this._bundledSourceEntry || null;
+    }
+    if (
+      this.entryUrl.protocol !== "file:" ||
+      !this.entryUrl.pathname.endsWith(".ts")
+    ) {
+      this._bundledSourceEntry = false;
+      return null;
+    }
+
+    let outdir: string | undefined;
+    try {
+      const require = createRequire(currentModuleUrl());
+      const esbuild = require("esbuild") as {
+        buildSync: (options: Record<string, unknown>) => void;
+      };
+      outdir = mkdtempSync(join(tmpdir(), "kandelo-worker-entry-"));
+      const outfile = join(outdir, "worker-entry.mjs");
+      esbuild.buildSync({
+        entryPoints: [fileURLToPath(this.entryUrl)],
+        bundle: true,
+        platform: "node",
+        format: "esm",
+        target: "es2022",
+        outfile,
+        sourcemap: "inline",
+        logLevel: "silent",
+      });
+      this._bundledSourceEntry = pathToFileURL(outfile);
+      return this._bundledSourceEntry;
+    } catch {
+      // WHY: a failed source bundle intentionally falls back to tsx, but the
+      // abandoned output directory otherwise accumulates across host retries.
+      if (outdir !== undefined) {
+        rmSync(outdir, { recursive: true, force: true });
+      }
+      this._bundledSourceEntry = false;
+      return null;
+    }
+  }
+
   createWorker(workerData: unknown): WorkerHandle {
     const initialization = nodeWorkerInitialization(
       workerData,
@@ -244,7 +297,8 @@ export class NodeWorkerAdapter implements WorkerAdapter {
     );
     // Try the compiled JS entry first (much faster startup — avoids tsx
     // bootstrap which takes >500ms with 10+ concurrent workers).
-    const compiledEntry = this.resolveCompiledEntry();
+    const compiledEntry =
+      this.resolveCompiledEntry() ?? this.resolveBundledSourceEntry();
     if (compiledEntry) {
       const worker = new Worker(
         compiledEntry,
