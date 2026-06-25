@@ -1,0 +1,21 @@
+--- test/dbstatus2.test
++++ test/dbstatus2.test
+@@ -74,10 +74,14 @@
+ do_test 2.5 { db_write db 1 } {0 0 0}
+ 
+ if {[wal_is_capable]} {
+-  do_test 2.6 { 
+-    execsql { PRAGMA journal_mode = WAL }
+-    db_write db 1
+-  } {0 1 0}
++  if {[permutation]=="no_mutex_try"} {
++    omit_test dbstatus2-2.6 "Kandelo builds SQLite with ENABLE_SETLK_TIMEOUT; no_mutex_try forces sqlite3_mutex_try() to fail, but ENABLE_SETLK_TIMEOUT WAL shared-memory exclusive locks intentionally use sqlite3_mutex_try() to avoid deadlocks"
++  } else {
++    do_test 2.6 { 
++      execsql { PRAGMA journal_mode = WAL }
++      db_write db 1
++    } {0 1 0}
++  }
+ }
+ do_test 2.7 { 
+   execsql { INSERT INTO t1 VALUES(5, randomblob(600)) }

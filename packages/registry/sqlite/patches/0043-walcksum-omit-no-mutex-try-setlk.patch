@@ -1,0 +1,15 @@
+--- test/walcksum.test
++++ test/walcksum.test
+@@ -15,6 +15,12 @@ source $testdir/wal_common.tcl
+ 
+ ifcapable !wal {finish_test ; return }
+ 
++if {[permutation]=="no_mutex_try"} {
++  omit_test walcksum.test "Kandelo builds SQLite with ENABLE_SETLK_TIMEOUT; no_mutex_try forces sqlite3_mutex_try() to fail, but ENABLE_SETLK_TIMEOUT WAL shared-memory exclusive locks intentionally use sqlite3_mutex_try() to avoid deadlocks"
++  finish_test
++  return
++}
++
+ # Read and return the contents of file $filename. Treat the content as
+ # binary data.
+ #

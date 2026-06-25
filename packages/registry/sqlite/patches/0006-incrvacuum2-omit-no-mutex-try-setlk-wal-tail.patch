@@ -1,0 +1,20 @@
+--- test/incrvacuum2.test
++++ test/incrvacuum2.test
+@@ -135,6 +135,9 @@
+ integrity_check incrvacuum2-3.3
+ 
+ if {[wal_is_capable]} {
++  if {[permutation]=="no_mutex_try"} {
++    omit_test incrvacuum2-4 "Kandelo builds SQLite with ENABLE_SETLK_TIMEOUT; no_mutex_try forces sqlite3_mutex_try() to fail, but ENABLE_SETLK_TIMEOUT WAL shared-memory exclusive locks intentionally use sqlite3_mutex_try() to avoid deadlocks"
++  } else {
+   # At one point, when a specific page was being extracted from the b-tree
+   # free-list (e.g. during an incremental-vacuum), all trunk pages that
+   # occurred before the specific page in the free-list trunk were being
+@@ -208,6 +211,7 @@
+     }
+     set maxsz 
+   } [expr {32+3*(512+24)}]
++  }
+ }
+ 
+ finish_test

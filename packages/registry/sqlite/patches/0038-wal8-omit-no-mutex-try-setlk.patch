@@ -1,0 +1,16 @@
+--- test/wal8.test
++++ test/wal8.test
+@@ -27,6 +27,12 @@ source $testdir/tester.tcl
+ set ::testprefix wal8
+ ifcapable !wal {finish_test ; return }
+ do_not_use_codec
+ 
++if {[permutation]=="no_mutex_try"} {
++  omit_test wal8.test "Kandelo builds SQLite with ENABLE_SETLK_TIMEOUT; no_mutex_try forces sqlite3_mutex_try() to fail, but ENABLE_SETLK_TIMEOUT WAL shared-memory exclusive locks intentionally use sqlite3_mutex_try() to avoid deadlocks"
++  finish_test
++  return
++}
++
+ db close
+ forcedelete test.db test.db-wal
+ 

@@ -1,0 +1,16 @@
+--- test/walseh1.test
++++ test/walseh1.test
+@@ -14,6 +14,12 @@ set testdir [file dirname $argv0]
+ source $testdir/tester.tcl
+ source $testdir/malloc_common.tcl
+ set testprefix walseh1
+ 
++if {[permutation]=="no_mutex_try"} {
++  omit_test walseh1.test "Kandelo builds SQLite with ENABLE_SETLK_TIMEOUT; no_mutex_try forces sqlite3_mutex_try() to fail, but ENABLE_SETLK_TIMEOUT WAL shared-memory exclusive locks intentionally use sqlite3_mutex_try() to avoid deadlocks"
++  finish_test
++  return
++}
++
+ set ::seh_countdown 0 
+ set ::seh_errno 10
+ proc seh_faultsim_callback {iFault} {

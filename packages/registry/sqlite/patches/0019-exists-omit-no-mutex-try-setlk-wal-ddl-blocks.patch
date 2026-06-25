@@ -1,0 +1,203 @@
+--- test/exists.test
++++ test/exists.test
+@@ -22,103 +22,120 @@
+   if {![wal_is_capable] && $jm=="wal"} continue
+ 
+   set testprefix exists-$jm
++  set no_mutex_try_setlk_wal [expr {[permutation]=="no_mutex_try" && $jm=="wal"}]
++  set no_mutex_try_setlk_reason "Kandelo builds SQLite with ENABLE_SETLK_TIMEOUT; no_mutex_try forces sqlite3_mutex_try() to fail, but ENABLE_SETLK_TIMEOUT WAL shared-memory exclusive locks intentionally use sqlite3_mutex_try() to avoid deadlocks"
+ 
+   # This block of tests is targeted at CREATE XXX IF NOT EXISTS statements.
+   #
+-  do_multiclient_test tn {
++  if {$no_mutex_try_setlk_wal} {
++    foreach tn {
++      1.1.1.1 1.1.1.2 1.1.2 1.1.3 1.4
++      1.2.1.1 1.2.1.2 1.2.2 1.2.3 2.4
++    } {
++      omit_test exists-wal-$tn $no_mutex_try_setlk_reason
++    }
++  } else {
++    do_multiclient_test tn {
+ 
+-    # TABLE objects.
+-    #
+-    do_test 1.$tn.1.1 {
+-      if {$jm == "wal"} { sql2 { PRAGMA journal_mode = WAL } }
+-      sql2 { CREATE TABLE t1(x) }
+-      sql1 { CREATE TABLE IF NOT EXISTS t1(a, b) }
+-      sql2 { DROP TABLE t1 }
+-      sql1 { CREATE TABLE IF NOT EXISTS t1(a, b) }
+-      sql2 { SELECT name FROM sqlite_master WHERE type = 'table' }
+-    } {t1}
++      # TABLE objects.
++      #
++      do_test 1.$tn.1.1 {
++        if {$jm == "wal"} { sql2 { PRAGMA journal_mode = WAL } }
++        sql2 { CREATE TABLE t1(x) }
++        sql1 { CREATE TABLE IF NOT EXISTS t1(a, b) }
++        sql2 { DROP TABLE t1 }
++        sql1 { CREATE TABLE IF NOT EXISTS t1(a, b) }
++        sql2 { SELECT name FROM sqlite_master WHERE type = 'table' }
++      } {t1}
+ 
+-    do_test 1.$tn.1.2 {
+-      sql2 { CREATE TABLE t2(x) }
+-      sql1 { CREATE TABLE IF NOT EXISTS t2 AS SELECT * FROM t1 }
+-      sql2 { DROP TABLE t2 }
+-      sql1 { CREATE TABLE IF NOT EXISTS t2 AS SELECT * FROM t1 }
+-      sql2 { SELECT name FROM sqlite_master WHERE type = 'table' }
+-    } {t1 t2}
++      do_test 1.$tn.1.2 {
++        sql2 { CREATE TABLE t2(x) }
++        sql1 { CREATE TABLE IF NOT EXISTS t2 AS SELECT * FROM t1 }
++        sql2 { DROP TABLE t2 }
++        sql1 { CREATE TABLE IF NOT EXISTS t2 AS SELECT * FROM t1 }
++        sql2 { SELECT name FROM sqlite_master WHERE type = 'table' }
++      } {t1 t2}
+ 
+ 
+-    # INDEX objects.
+-    #
+-    do_test 1.$tn.2 {
+-      sql2 { CREATE INDEX i1 ON t1(a) }
+-      sql1 { CREATE INDEX IF NOT EXISTS i1 ON t1(a, b) }
+-      sql2 { DROP INDEX i1 }
+-      sql1 { CREATE INDEX IF NOT EXISTS i1 ON t1(a, b) }
+-      sql2 { SELECT name FROM sqlite_master WHERE type = 'index' }
+-    } {i1}
++      # INDEX objects.
++      #
++      do_test 1.$tn.2 {
++        sql2 { CREATE INDEX i1 ON t1(a) }
++        sql1 { CREATE INDEX IF NOT EXISTS i1 ON t1(a, b) }
++        sql2 { DROP INDEX i1 }
++        sql1 { CREATE INDEX IF NOT EXISTS i1 ON t1(a, b) }
++        sql2 { SELECT name FROM sqlite_master WHERE type = 'index' }
++      } {i1}
+ 
+-    # VIEW objects.
+-    #
+-    do_test 1.$tn.3 {
+-      sql2 { CREATE VIEW v1 AS SELECT * FROM t1 }
+-      sql1 { CREATE VIEW IF NOT EXISTS v1 AS SELECT * FROM t1 }
+-      sql2 { DROP VIEW v1 }
+-      sql1 { CREATE VIEW IF NOT EXISTS v1 AS SELECT * FROM t1 }
+-      sql2 { SELECT name FROM sqlite_master WHERE type = 'view' }
+-    } {v1}
++      # VIEW objects.
++      #
++      do_test 1.$tn.3 {
++        sql2 { CREATE VIEW v1 AS SELECT * FROM t1 }
++        sql1 { CREATE VIEW IF NOT EXISTS v1 AS SELECT * FROM t1 }
++        sql2 { DROP VIEW v1 }
++        sql1 { CREATE VIEW IF NOT EXISTS v1 AS SELECT * FROM t1 }
++        sql2 { SELECT name FROM sqlite_master WHERE type = 'view' }
++      } {v1}
+ 
+-    # TRIGGER objects.
+-    #
+-    do_test $tn.4 {
+-      sql2 { CREATE TRIGGER tr1 AFTER INSERT ON t1 BEGIN SELECT 1; END }
+-  sql1 { CREATE TRIGGER IF NOT EXISTS tr1 AFTER INSERT ON t1 BEGIN SELECT 1; END }
+-      sql2 { DROP TRIGGER tr1 }
+-  sql1 { CREATE TRIGGER IF NOT EXISTS tr1 AFTER INSERT ON t1 BEGIN SELECT 1; END }
+-      sql2 { SELECT name FROM sqlite_master WHERE type = 'trigger' }
+-    } {tr1}
++      # TRIGGER objects.
++      #
++      do_test $tn.4 {
++        sql2 { CREATE TRIGGER tr1 AFTER INSERT ON t1 BEGIN SELECT 1; END }
++    sql1 { CREATE TRIGGER IF NOT EXISTS tr1 AFTER INSERT ON t1 BEGIN SELECT 1; END }
++        sql2 { DROP TRIGGER tr1 }
++    sql1 { CREATE TRIGGER IF NOT EXISTS tr1 AFTER INSERT ON t1 BEGIN SELECT 1; END }
++        sql2 { SELECT name FROM sqlite_master WHERE type = 'trigger' }
++      } {tr1}
++    }
+   }
+ 
+   # This block of tests is targeted at DROP XXX IF EXISTS statements.
+   #
+-  do_multiclient_test tn {
++  if {$no_mutex_try_setlk_wal} {
++    foreach tn {2.1.1 2.1.2 2.1.3 2.1.4 2.2.1 2.2.2 2.2.3 2.2.4} {
++      omit_test exists-wal-$tn $no_mutex_try_setlk_reason
++    }
++  } else {
++    do_multiclient_test tn {
+ 
+-    # TABLE objects.
+-    #
+-    do_test 2.$tn.1 {
+-      if {$jm == "wal"} { sql1 { PRAGMA journal_mode = WAL } }
+-      sql1 { DROP TABLE IF EXISTS t1 }
+-      sql2 { CREATE TABLE t1(x) }
+-      sql1 { DROP TABLE IF EXISTS t1 }
+-      sql2 { SELECT name FROM sqlite_master WHERE type = 'table' }
+-    } {}
++      # TABLE objects.
++      #
++      do_test 2.$tn.1 {
++        if {$jm == "wal"} { sql1 { PRAGMA journal_mode = WAL } }
++        sql1 { DROP TABLE IF EXISTS t1 }
++        sql2 { CREATE TABLE t1(x) }
++        sql1 { DROP TABLE IF EXISTS t1 }
++        sql2 { SELECT name FROM sqlite_master WHERE type = 'table' }
++      } {}
+ 
+-    # INDEX objects.
+-    #
+-    do_test 2.$tn.2 {
+-      sql1 { CREATE TABLE t2(x) }
+-      sql1 { DROP INDEX IF EXISTS i2 }
+-      sql2 { CREATE INDEX i2 ON t2(x) }
+-      sql1 { DROP INDEX IF EXISTS i2 }
+-      sql2 { SELECT name FROM sqlite_master WHERE type = 'index' }
+-    } {}
++      # INDEX objects.
++      #
++      do_test 2.$tn.2 {
++        sql1 { CREATE TABLE t2(x) }
++        sql1 { DROP INDEX IF EXISTS i2 }
++        sql2 { CREATE INDEX i2 ON t2(x) }
++        sql1 { DROP INDEX IF EXISTS i2 }
++        sql2 { SELECT name FROM sqlite_master WHERE type = 'index' }
++      } {}
+ 
+-    # VIEW objects.
+-    #
+-    do_test 2.$tn.3 {
+-      sql1 { DROP VIEW IF EXISTS v1 }
+-      sql2 { CREATE VIEW v1 AS SELECT * FROM t2 }
+-      sql1 { DROP VIEW IF EXISTS v1 }
+-      sql2 { SELECT name FROM sqlite_master WHERE type = 'view' }
+-    } {}
++      # VIEW objects.
++      #
++      do_test 2.$tn.3 {
++        sql1 { DROP VIEW IF EXISTS v1 }
++        sql2 { CREATE VIEW v1 AS SELECT * FROM t2 }
++        sql1 { DROP VIEW IF EXISTS v1 }
++        sql2 { SELECT name FROM sqlite_master WHERE type = 'view' }
++      } {}
+ 
+-    # TRIGGER objects.
+-    #
+-    do_test 2.$tn.4 {
+-      sql1 { DROP TRIGGER IF EXISTS tr1 }
+-      sql2 { CREATE TRIGGER tr1 AFTER INSERT ON t2 BEGIN SELECT 1; END }
+-      sql1 { DROP TRIGGER IF EXISTS tr1 }
+-      sql2 { SELECT name FROM sqlite_master WHERE type = 'trigger' }
+-    } {}
++      # TRIGGER objects.
++      #
++      do_test 2.$tn.4 {
++        sql1 { DROP TRIGGER IF EXISTS tr1 }
++        sql2 { CREATE TRIGGER tr1 AFTER INSERT ON t2 BEGIN SELECT 1; END }
++        sql1 { DROP TRIGGER IF EXISTS tr1 }
++        sql2 { SELECT name FROM sqlite_master WHERE type = 'trigger' }
++      } {}
++    }
+   }
+ 
+   # This block of tests is targeted at DROP XXX IF EXISTS statements with

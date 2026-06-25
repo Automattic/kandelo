@@ -1,0 +1,92 @@
+--- ext/recover/recover1.test
++++ ext/recover/recover1.test
+@@ -275,46 +275,53 @@
+ 
+ #-------------------------------------------------------------------------
+ reset_db
+-do_test 16.1 {
+-  execsql { PRAGMA journal_mode = wal }
+-  execsql {
+-    CREATE TABLE t1(x);
+-    INSERT INTO t1 VALUES(1), (2), (3);
++set no_mutex_try_setlk_reason "Kandelo builds SQLite with ENABLE_SETLK_TIMEOUT; no_mutex_try forces sqlite3_mutex_try() to fail, but ENABLE_SETLK_TIMEOUT WAL shared-memory exclusive locks intentionally use sqlite3_mutex_try() to avoid deadlocks"
++if {[permutation]=="no_mutex_try"} {
++  foreach tn {16.1 16.2 16.3 16.4 16.5 16.6 16.7 16.8 16.9} {
++    omit_test recover1-$tn $no_mutex_try_setlk_reason
+   }
+-} {}
+-do_test 16.2 {
+-  set R [sqlite3_recover_init db main test.db2]
+-  $R run
+-  $R finish
+-} {}
+-do_execsql_test 16.3 {
+-  SELECT * FROM t1;
+-} {1 2 3}
++} else {
++  do_test 16.1 {
++    execsql { PRAGMA journal_mode = wal }
++    execsql {
++      CREATE TABLE t1(x);
++      INSERT INTO t1 VALUES(1), (2), (3);
++    }
++  } {}
++  do_test 16.2 {
++    set R [sqlite3_recover_init db main test.db2]
++    $R run
++    $R finish
++  } {}
++  do_execsql_test 16.3 {
++    SELECT * FROM t1;
++  } {1 2 3}
+ 
+-do_execsql_test 16.4 {
+-  BEGIN;
++  do_execsql_test 16.4 {
++    BEGIN;
++      SELECT * FROM t1;
++  } {1 2 3}
++  do_test 16.5 {
++    set R [sqlite3_recover_init db main test.db2]
++    $R run
++    list [catch { $R finish } msg] $msg
++  } {1 {cannot start a transaction within a transaction}}
++  do_execsql_test 16.6 {
+     SELECT * FROM t1;
+-} {1 2 3}
+-do_test 16.5 {
+-  set R [sqlite3_recover_init db main test.db2]
+-  $R run
+-  list [catch { $R finish } msg] $msg
+-} {1 {cannot start a transaction within a transaction}}
+-do_execsql_test 16.6 {
+-  SELECT * FROM t1;
+-} {1 2 3}
+-do_execsql_test 16.7 {
+-  INSERT INTO t1 VALUES(4);
++  } {1 2 3}
++  do_execsql_test 16.7 {
++    INSERT INTO t1 VALUES(4);
++  }
++  do_test 16.8 {
++    set R [sqlite3_recover_init db main test.db2]
++    $R run
++    list [catch { $R finish } msg] $msg
++  } {1 {cannot start a transaction within a transaction}}
++  do_execsql_test 16.9 {
++    SELECT * FROM t1;
++    COMMIT;
++  } {1 2 3 4}
+ }
+-do_test 16.8 {
+-  set R [sqlite3_recover_init db main test.db2]
+-  $R run
+-  list [catch { $R finish } msg] $msg
+-} {1 {cannot start a transaction within a transaction}}
+-do_execsql_test 16.9 {
+-  SELECT * FROM t1;
+-  COMMIT;
+-} {1 2 3 4}
+ 
+ #-------------------------------------------------------------------------
+ reset_db

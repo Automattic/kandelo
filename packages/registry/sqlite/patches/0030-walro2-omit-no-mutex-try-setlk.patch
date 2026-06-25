@@ -1,0 +1,15 @@
+--- test/walro2.test
++++ test/walro2.test
+@@ -24,6 +24,12 @@ ifcapable !wal {
+   return
+ }
+ 
++if {[permutation]=="no_mutex_try"} {
++  omit_test walro2.test "Kandelo builds SQLite with ENABLE_SETLK_TIMEOUT; no_mutex_try forces sqlite3_mutex_try() to fail, but ENABLE_SETLK_TIMEOUT WAL shared-memory exclusive locks intentionally use sqlite3_mutex_try() to avoid deadlocks"
++  finish_test
++  return
++}
++
+ proc copy_to_test2 {bZeroShm} {
+   forcecopy test.db test.db2
+   forcecopy test.db-wal test.db2-wal

@@ -1,0 +1,25 @@
+--- test/e_vacuum.test
++++ test/e_vacuum.test
+@@ -181,12 +181,16 @@ if {![nonzero_reserved_bytes]} {
+       execsql { PRAGMA journal_mode = wal }
+       execsql { PRAGMA page_size ; PRAGMA auto_vacuum }
+     } {2048 0}
+-    do_test e_vacuum-1.3.3.2 {
+-      execsql { PRAGMA page_size = 1024 }
+-      execsql { PRAGMA auto_vacuum = FULL }
+-      execsql VACUUM
+-      execsql { PRAGMA page_size ; PRAGMA auto_vacuum }
+-    } {2048 1}
++    if {[permutation]=="no_mutex_try"} {
++      omit_test e_vacuum-1.3.3.2 "Kandelo builds SQLite with ENABLE_SETLK_TIMEOUT; no_mutex_try forces sqlite3_mutex_try() to fail, but ENABLE_SETLK_TIMEOUT WAL shared-memory exclusive locks intentionally use sqlite3_mutex_try() to avoid deadlocks"
++    } else {
++      do_test e_vacuum-1.3.3.2 {
++        execsql { PRAGMA page_size = 1024 }
++        execsql { PRAGMA auto_vacuum = FULL }
++        execsql VACUUM
++        execsql { PRAGMA page_size ; PRAGMA auto_vacuum }
++      } {2048 1}
++    }
+   }
+ }
+   

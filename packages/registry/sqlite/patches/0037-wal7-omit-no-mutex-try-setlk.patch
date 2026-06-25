@@ -1,0 +1,15 @@
+--- test/wal7.test
++++ test/wal7.test
+@@ -16,6 +16,12 @@ set testdir [file dirname $argv0]
+ source $testdir/tester.tcl
+ ifcapable !wal {finish_test ; return }
+ 
++if {[permutation]=="no_mutex_try"} {
++  omit_test wal7.test "Kandelo builds SQLite with ENABLE_SETLK_TIMEOUT; no_mutex_try forces sqlite3_mutex_try() to fail, but ENABLE_SETLK_TIMEOUT WAL shared-memory exclusive locks intentionally use sqlite3_mutex_try() to avoid deadlocks"
++  finish_test
++  return
++}
++
+ # Case 1:  No size limit.  Journal can get large.
+ #
+ do_test wal7-1.0 {

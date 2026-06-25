@@ -1,0 +1,117 @@
+--- test/e_wal.test
++++ test/e_wal.test
+@@ -140,46 +140,52 @@
+   execsql { PRAGMA journal_mode = WAL }
+   db close
+ } {}
+-do_test 3.1 {
+-  sqlite3 db test.db
+-  execsql { SELECT * FROM t1 }
+-  list [file exists test.db-shm] [file exists test.db-wal]
+-} {1 1}
+-
+ # EVIDENCE-OF: R-13779-07711 As long as exactly one connection is using
+ # a shared-memory wal-index, the locking mode can be changed freely
+ # between NORMAL and EXCLUSIVE.
+ #
+-do_execsql_test 3.2.1 {
+-  PRAGMA locking_mode = EXCLUSIVE;
+-  PRAGMA locking_mode = NORMAL;
+-  PRAGMA locking_mode = EXCLUSIVE;
+-  INSERT INTO t1 VALUES(5, 6);
+-} {exclusive normal exclusive}
+-do_test 3.2.2 {
+-  sqlite3 db2 test.db
+-  catchsql { SELECT * FROM t1 } db2
+-} {1 {database is locked}}
++if {[permutation]=="no_mutex_try"} {
++  omit_test e_wal-3.1 "Kandelo builds SQLite with ENABLE_SETLK_TIMEOUT; no_mutex_try forces sqlite3_mutex_try() to fail, but ENABLE_SETLK_TIMEOUT WAL shared-memory exclusive locks intentionally use sqlite3_mutex_try() to avoid deadlocks"
++  omit_test e_wal-3.2 "Kandelo builds SQLite with ENABLE_SETLK_TIMEOUT; no_mutex_try forces sqlite3_mutex_try() to fail, but ENABLE_SETLK_TIMEOUT WAL shared-memory exclusive locks intentionally use sqlite3_mutex_try() to avoid deadlocks"
++  sqlite3 db test.db
++} else {
++  do_test 3.1 {
++    sqlite3 db test.db
++    execsql { SELECT * FROM t1 }
++    list [file exists test.db-shm] [file exists test.db-wal]
++  } {1 1}
+ 
+-# EVIDENCE-OF: R-10993-11647 It is only when the shared-memory wal-index
+-# is omitted, when the locking mode is EXCLUSIVE prior to the first
+-# WAL-mode database access, that the locking mode is stuck in EXCLUSIVE.
+-#
+-do_execsql_test 3.2.3 {
+-  PRAGMA locking_mode = NORMAL;
+-  SELECT * FROM t1;
+-} {normal 1 2 3 4 5 6}
+-do_test 3.2.4 {
+-  catchsql { SELECT * FROM t1 } db2
+-} {0 {1 2 3 4 5 6}}
++  do_execsql_test 3.2.1 {
++    PRAGMA locking_mode = EXCLUSIVE;
++    PRAGMA locking_mode = NORMAL;
++    PRAGMA locking_mode = EXCLUSIVE;
++    INSERT INTO t1 VALUES(5, 6);
++  } {exclusive normal exclusive}
++  do_test 3.2.2 {
++    sqlite3 db2 test.db
++    catchsql { SELECT * FROM t1 } db2
++  } {1 {database is locked}}
+ 
+-do_catchsql_test 3.2.5 {
+-  PRAGMA locking_mode = EXCLUSIVE;
+-  INSERT INTO t1 VALUES(7, 8);
+-} {1 {database is locked}}
++  # EVIDENCE-OF: R-10993-11647 It is only when the shared-memory wal-index
++  # is omitted, when the locking mode is EXCLUSIVE prior to the first
++  # WAL-mode database access, that the locking mode is stuck in EXCLUSIVE.
++  #
++  do_execsql_test 3.2.3 {
++    PRAGMA locking_mode = NORMAL;
++    SELECT * FROM t1;
++  } {normal 1 2 3 4 5 6}
++  do_test 3.2.4 {
++    catchsql { SELECT * FROM t1 } db2
++  } {0 {1 2 3 4 5 6}}
+ 
+-db2 close
++  do_catchsql_test 3.2.5 {
++    PRAGMA locking_mode = EXCLUSIVE;
++    INSERT INTO t1 VALUES(7, 8);
++  } {1 {database is locked}}
+ 
++  db2 close
++}
++
+ # EVIDENCE-OF: R-46197-42811 This means that the underlying VFS must
+ # support the "version 2" shared-memory.
+ #
+@@ -217,15 +223,20 @@
+ # EVIDENCE-OF: R-02535-05811 One can explicitly change out of WAL mode
+ # using a pragma such as this: PRAGMA journal_mode=DELETE;
+ #
+-do_execsql_test 4.2.1 { INSERT INTO t1 VALUES(1, 1); } {}
+-do_test 4.2.2 { file exists test.db-wal } {1}
+-do_execsql_test 4.2.3 { PRAGMA journal_mode = delete } {delete}
+-do_test 4.2.4 { file exists test.db-wal } {0}
++if {[permutation]=="no_mutex_try"} {
++  omit_test e_wal-4.2 "Kandelo builds SQLite with ENABLE_SETLK_TIMEOUT; no_mutex_try forces sqlite3_mutex_try() to fail, but ENABLE_SETLK_TIMEOUT WAL shared-memory exclusive locks intentionally use sqlite3_mutex_try() to avoid deadlocks"
++  omit_test e_wal-4.3 "Kandelo builds SQLite with ENABLE_SETLK_TIMEOUT; no_mutex_try forces sqlite3_mutex_try() to fail, but ENABLE_SETLK_TIMEOUT WAL shared-memory exclusive locks intentionally use sqlite3_mutex_try() to avoid deadlocks"
++} else {
++  do_execsql_test 4.2.1 { INSERT INTO t1 VALUES(1, 1); } {}
++  do_test 4.2.2 { file exists test.db-wal } {1}
++  do_execsql_test 4.2.3 { PRAGMA journal_mode = delete } {delete}
++  do_test 4.2.4 { file exists test.db-wal } {0}
+ 
+-# EVIDENCE-OF: R-60175-02388 Deliberately changing out of WAL mode
+-# changes the database file format version numbers back to 1 so that
+-# older versions of SQLite can once again access the database file.
+-#
+-do_test 4.3 { hexio_read test.db 18 2 } {0101}
++  # EVIDENCE-OF: R-60175-02388 Deliberately changing out of WAL mode
++  # changes the database file format version numbers back to 1 so that
++  # older versions of SQLite can once again access the database file.
++  #
++  do_test 4.3 { hexio_read test.db 18 2 } {0101}
++}
+ 
+ finish_test

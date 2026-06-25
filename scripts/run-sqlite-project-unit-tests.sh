@@ -172,6 +172,7 @@ def q1(cur, sql):
 def summarize_text_report(host: str, status: int, reason: str):
     host_dir = results_root / host
     report_path = host_dir / "summary.txt"
+    skipped_cases_path = host_dir / "outcome-lists" / "skipped-cases.tsv"
     summary = {
         "host": host,
         "status": status,
@@ -183,8 +184,11 @@ def summarize_text_report(host: str, status: int, reason: str):
         "ready": None,
         "cases": None,
         "case_errors": None,
+        "skipped_cases": None,
         "notable": reason,
     }
+    if skipped_cases_path.exists():
+        summary["skipped_cases"] = max(0, sum(1 for _ in skipped_cases_path.open(encoding="utf-8", errors="replace")) - 1)
     if not report_path.exists():
         return summary
     lines = report_path.read_text(encoding="utf-8", errors="replace").splitlines()
@@ -223,6 +227,7 @@ def summarize_text_report(host: str, status: int, reason: str):
 def summarize_db(host: str, status: int):
     host_dir = results_root / host
     db_path = host_dir / "testrunner.db"
+    skipped_cases_path = host_dir / "outcome-lists" / "skipped-cases.tsv"
     summary = {
         "host": host,
         "status": status,
@@ -234,8 +239,11 @@ def summarize_db(host: str, status: int):
         "ready": None,
         "cases": None,
         "case_errors": None,
+        "skipped_cases": None,
         "notable": "",
     }
+    if skipped_cases_path.exists():
+        summary["skipped_cases"] = max(0, sum(1 for _ in skipped_cases_path.open(encoding="utf-8", errors="replace")) - 1)
     if not db_path.exists():
         return summarize_text_report(host, status, "no testrunner.db")
     try:
@@ -297,20 +305,29 @@ with report.open("w", encoding="utf-8") as f:
     else:
         f.write("- Patterns/tests: full permutation default\n")
     f.write("\n## Host summary\n\n")
-    f.write("| Host | Runner exit | Total jobs | Done | Failed | Omitted | Running | Ready | SQLite cases | Case errors | Current challenges |\n")
-    f.write("|------|-------------|------------|------|--------|---------|---------|-------|--------------|-------------|--------------------|\n")
+    f.write("| Host | Runner exit | Total jobs | Done | Failed | Omitted jobs | Skipped cases | Running | Ready | SQLite cases | Case errors | Current challenges |\n")
+    f.write("|------|-------------|------------|------|--------|--------------|---------------|---------|-------|--------------|-------------|--------------------|\n")
     for s in summaries:
         def cell(key):
             value = s[key]
             return "-" if value is None else str(value)
         f.write(
             f"| `{s['host']}` | {s['status']} | {cell('total')} | {cell('done')} | "
-            f"{cell('failed')} | {cell('omit')} | {cell('running')} | {cell('ready')} | "
+            f"{cell('failed')} | {cell('omit')} | {cell('skipped_cases')} | {cell('running')} | {cell('ready')} | "
             f"{cell('cases')} | {cell('case_errors')} | {s['notable'] or '-'} |\n"
         )
     f.write("\n## Artifacts\n\n")
     for host, _status in hosts:
-        f.write(f"- `{host}`: `{results_root / host}`\n")
+        host_dir = results_root / host
+        outcome_dir = host_dir / "outcome-lists"
+        f.write(f"- `{host}`: `{host_dir}`\n")
+        f.write(f"  - summary: `{host_dir / 'summary.txt'}`\n")
+        f.write(f"  - failures: `{host_dir / 'failures.tsv'}`\n")
+        f.write(f"  - passed jobs: `{outcome_dir / 'passed-jobs.tsv'}`\n")
+        f.write(f"  - failed jobs: `{outcome_dir / 'failed-jobs.tsv'}`\n")
+        f.write(f"  - skipped jobs: `{outcome_dir / 'skipped-jobs.tsv'}`\n")
+        f.write(f"  - skipped cases: `{outcome_dir / 'skipped-cases.tsv'}`\n")
+        f.write(f"  - incomplete jobs: `{outcome_dir / 'incomplete-jobs.tsv'}`\n")
     f.write("\n")
 
 print(f"===== Combined SQLite project unit test summary: {report} =====")

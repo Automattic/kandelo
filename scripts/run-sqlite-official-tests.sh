@@ -178,6 +178,7 @@ write_unavailable_outcome_lists() {
   printf 'jobid\tstate\tdisplaytype\tdisplayname\tcases\terrors\tms\tsource\n' > "$out/failed-jobs.tsv"
   printf 'jobid\tstate\tdisplaytype\tdisplayname\tcases\terrors\tms\treason\tsource\n' > "$out/skipped-jobs.tsv"
   printf 'jobid\tstate\tdisplaytype\tdisplayname\tcases\terrors\tms\treason\tsource\n' > "$out/incomplete-jobs.tsv"
+  printf 'jobid\tdisplaytype\tdisplayname\tcase\treason\n' > "$out/skipped-cases.tsv"
   printf '\tunavailable\t\t\t0\t0\t0\t%s\trunner\n' "$reason" >> "$out/incomplete-jobs.tsv"
   {
     printf 'passed_jobs\tfailed_jobs\tskipped_jobs\tincomplete_jobs\tnote\n'
@@ -243,12 +244,33 @@ write_outcome_lists() {
             coalesce(sum(state IN ('running','ready')), 0) AS incomplete_jobs,
             'testrunner.db' AS source
        FROM jobs;" > "$out/counts.tsv"
+
+  python3 - "$db" "$out/skipped-cases.tsv" <<'PY'
+import csv
+import re
+import sqlite3
+import sys
+
+db_path, out_path = sys.argv[1], sys.argv[2]
+line_re = re.compile(r"^\.\s+(\S+)\s+(.+)$")
+with sqlite3.connect(db_path) as con, open(out_path, "w", newline="", encoding="utf-8") as out:
+    writer = csv.writer(out, delimiter="\t")
+    writer.writerow(["jobid", "displaytype", "displayname", "case", "reason"])
+    for jobid, displaytype, displayname, output in con.execute(
+        "SELECT jobid, displaytype, displayname, coalesce(output, '') FROM jobs ORDER BY jobid"
+    ):
+        for line in output.splitlines():
+            match = line_re.match(line)
+            if match:
+                writer.writerow([jobid, displaytype, displayname, match.group(1), match.group(2)])
+PY
 }
 
 write_sqlite_report() {
   local db="$WORKDIR/testrunner.db"
   local report="$RESULTS_DIR/summary.txt"
   local failures="$RESULTS_DIR/failures.tsv"
+  local outcome_dir="$RESULTS_DIR/outcome-lists"
   if [ ! -f "$db" ]; then
     echo "No testrunner.db was created at $db" > "$report"
     write_unavailable_outcome_lists "No testrunner.db was created at $db."
@@ -318,6 +340,9 @@ write_sqlite_report() {
          FROM jobs
         GROUP BY state
         ORDER BY state;"
+    echo
+    echo "Skipped SQLite subcases with reasons:"
+    awk 'NR > 1 { count++ } END { print count + 0 }' "$outcome_dir/skipped-cases.tsv"
     echo
     echo "Jobs by SQLite testrunner config:"
     sqlite3 -header -column "$db" \

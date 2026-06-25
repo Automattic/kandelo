@@ -1,0 +1,15 @@
+--- test/walbig.test
++++ test/walbig.test
+@@ -31,6 +31,12 @@ ifcapable !lfs {
+   return
+ }
+ 
++if {[permutation]=="no_mutex_try"} {
++  omit_test walbig.test "Kandelo builds SQLite with ENABLE_SETLK_TIMEOUT; no_mutex_try forces sqlite3_mutex_try() to fail, but ENABLE_SETLK_TIMEOUT WAL shared-memory exclusive locks intentionally use sqlite3_mutex_try() to avoid deadlocks"
++  finish_test
++  return
++}
++
+ set a_string_counter 1
+ proc a_string {n} {
+   incr ::a_string_counter

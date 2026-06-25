@@ -1,0 +1,15 @@
+--- test/walro.test
++++ test/walro.test
+@@ -29,6 +29,12 @@ ifcapable !wal {
+   return
+ }
+ 
++if {[permutation]=="no_mutex_try"} {
++  omit_test walro.test "Kandelo builds SQLite with ENABLE_SETLK_TIMEOUT; no_mutex_try forces sqlite3_mutex_try() to fail, but ENABLE_SETLK_TIMEOUT WAL shared-memory exclusive locks intentionally use sqlite3_mutex_try() to avoid deadlocks"
++  finish_test
++  return
++}
++
+ do_multiclient_test tn {
+   
+   # Close all connections and delete the database.

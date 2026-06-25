@@ -1,0 +1,15 @@
+--- test/tkt-5d863f876e.test
++++ test/tkt-5d863f876e.test
+@@ -19,6 +19,12 @@ source $testdir/lock_common.tcl
+ set ::testprefix tkt-5d863f876e
+ if {![wal_is_capable]} {finish_test ; return }
+ 
++if {[permutation]=="no_mutex_try"} {
++  omit_test tkt-5d863f876e.test "Kandelo builds SQLite with ENABLE_SETLK_TIMEOUT; no_mutex_try forces sqlite3_mutex_try() to fail, but ENABLE_SETLK_TIMEOUT WAL shared-memory exclusive locks intentionally use sqlite3_mutex_try() to avoid deadlocks"
++  finish_test
++  return
++}
++
+ do_multiclient_test tn {
+   do_test $tn.1 {
+     sql1 {

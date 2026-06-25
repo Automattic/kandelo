@@ -1,0 +1,70 @@
+--- test/walvfs.test
++++ test/walvfs.test
+@@ -76,34 +76,40 @@
+ #-------------------------------------------------------------------------
+ # Test that "PRAGMA journal_size_limit" works in wal mode.
+ #
+-reset_db
+-do_execsql_test 2.0 {
+-  PRAGMA journal_size_limit = 10000;
+-  CREATE TABLE t1(x);
+-  PRAGMA journal_mode = wal;
+-  WITH s(i) AS (
+-    SELECT 1 UNION ALL SELECT i+1 FROM s LIMIT 20
+-  )
+-  INSERT INTO t1 SELECT randomblob(750) FROM s;
+-} {10000 wal}
+-do_test 2.1 {
+-  expr [file size test.db-wal]>12000
+-} {1}
+-do_test 2.2 {
+-  execsql {
+-    PRAGMA wal_checkpoint;
+-    INSERT INTO t1 VALUES(randomblob(750));
++if {[permutation]=="no_mutex_try"} {
++  foreach tn {0 1 2 3} {
++    omit_test walvfs-2.$tn "Kandelo builds SQLite with ENABLE_SETLK_TIMEOUT; no_mutex_try forces sqlite3_mutex_try() to fail, but ENABLE_SETLK_TIMEOUT WAL shared-memory exclusive locks intentionally use sqlite3_mutex_try() to avoid deadlocks"
+   }
+-  file size test.db-wal
+-} {10000}
+-do_test 2.3 {
+-  execsql {
+-    PRAGMA journal_size_limit = 8000;
+-    PRAGMA wal_checkpoint;
+-    INSERT INTO t1 VALUES(randomblob(750));
+-  }
+-  file size test.db-wal
+-} {8000}
++} else {
++  reset_db
++  do_execsql_test 2.0 {
++    PRAGMA journal_size_limit = 10000;
++    CREATE TABLE t1(x);
++    PRAGMA journal_mode = wal;
++    WITH s(i) AS (
++      SELECT 1 UNION ALL SELECT i+1 FROM s LIMIT 20
++    )
++    INSERT INTO t1 SELECT randomblob(750) FROM s;
++  } {10000 wal}
++  do_test 2.1 {
++    expr [file size test.db-wal]>12000
++  } {1}
++  do_test 2.2 {
++    execsql {
++      PRAGMA wal_checkpoint;
++      INSERT INTO t1 VALUES(randomblob(750));
++    }
++    file size test.db-wal
++  } {10000}
++  do_test 2.3 {
++    execsql {
++      PRAGMA journal_size_limit = 8000;
++      PRAGMA wal_checkpoint;
++      INSERT INTO t1 VALUES(randomblob(750));
++    }
++    file size test.db-wal
++  } {8000}
++}
+ 
+ #-------------------------------------------------------------------------
+ # Test that a checkpoint may be interrupted using sqlite3_interrupt().
