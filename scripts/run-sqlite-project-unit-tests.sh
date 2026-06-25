@@ -24,7 +24,7 @@ Usage: $0 [OPTIONS] [pattern-or-test ...]
 
 Options:
   --host node|browser|both  Host(s) to run (default: both)
-  --permutation NAME        SQLite testrunner permutation: veryquick, full, all (default: full)
+  --permutation NAME        SQLite testrunner permutation: veryquick, full, mmap, all (default: full)
   --jobs N                  testrunner.tcl --jobs value for each host (default: 1)
   --timeout-ms N            Per-host outer timeout in milliseconds (default: 600000)
   --results-root DIR        Root directory for per-host artifacts and combined summary
@@ -55,7 +55,7 @@ while [ $# -gt 0 ]; do
     --permutation)
       PERMUTATION="${2:-}"
       case "$PERMUTATION" in
-        veryquick|full|all) ;;
+        veryquick|full|mmap|all) ;;
         *) echo "ERROR: unsupported permutation: $PERMUTATION" >&2; exit 1 ;;
       esac
       shift 2
