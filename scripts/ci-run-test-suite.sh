@@ -6,7 +6,7 @@ cd "$REPO_ROOT"
 
 suite="${1:-}"
 if [ -z "$suite" ]; then
-    echo "usage: $0 <cargo-kernel|fork-instrument|vitest|browser|libc|posix|sortix>" >&2
+    echo "usage: $0 <cargo-kernel|fork-instrument|vitest|browser|libc|posix|sortix|abi>" >&2
     exit 2
 fi
 
@@ -93,6 +93,9 @@ case "$suite" in
     sortix)
         install_node_deps
         bash scripts/run-sortix-tests.sh --all
+        ;;
+    abi)
+        bash scripts/check-abi-version.sh
         ;;
     *)
         echo "unknown CI test suite: $suite" >&2
