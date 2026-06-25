@@ -299,6 +299,39 @@ For local browser artifacts, force a rebuild with `./run.sh rebuild <target>`.
 
 VFS images are `.gitignore`d and must be built locally. The `run.sh` script handles this automatically (e.g., `./run.sh browser` builds any missing VFS images before starting the dev server).
 
+### Browser verification with package cache drift
+
+`./run.sh browser` prepares the complete browser asset set before starting
+Vite. It first fetches published package archives, then source-builds any
+required artifact whose archive is missing or whose `cache_key_sha` does not
+match the current checkout. Branches that change package cache-key inputs, such
+as libc glue, musl overlays, SDK inputs, package manifests, build scripts, or
+their transitive dependencies, can therefore spend the first browser run inside
+package source builds before Vite starts.
+
+For bounded branch verification, use a package index that was built from the
+same branch:
+
+```bash
+bash scripts/dev-shell.sh ./run.sh --pr-staging --fetch-only prepare-browser
+bash scripts/dev-shell.sh ./run.sh --pr-staging browser --host 127.0.0.1 --port 5401 --strictPort
+```
+
+The first command materializes the PR staging archives and fails fast if any
+required archive is still missing or stale. After it succeeds, the second
+command should reach Vite without source-building package dependencies.
+
+Before a PR staging index exists, use the long source-build path deliberately
+and do not wrap it in a short browser-server timeout:
+
+```bash
+bash scripts/dev-shell.sh ./run.sh prepare-browser
+bash scripts/dev-shell.sh ./run.sh browser --host 127.0.0.1 --port 5401 --strictPort
+```
+
+The first command warms the resolver cache and `local-binaries/` for the
+current checkout. Re-run it after changes that affect package cache keys.
+
 ### Building VFS images
 
 Each build script requires the corresponding software to be compiled first (e.g., `build-cpython.sh` before `build-python-vfs-image.sh`). The `run.sh` script orchestrates this:
