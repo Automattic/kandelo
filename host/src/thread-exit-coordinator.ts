@@ -1,4 +1,9 @@
-export type ThreadTerminator = () => Promise<void>;
+export interface ThreadExitCompletion {
+  joinFutexAddr?: number;
+  clearTidFutexAddr?: number;
+}
+
+export type ThreadTerminator = (completion?: ThreadExitCompletion) => Promise<void>;
 
 /**
  * Coordinates pthread SYS_exit notifications with host Worker termination.
@@ -10,13 +15,15 @@ export type ThreadTerminator = () => Promise<void>;
  */
 export class ThreadExitCoordinator {
   private terminators = new Map<string, ThreadTerminator>();
-  private pendingExits = new Set<string>();
+  private pendingExits = new Map<string, ThreadExitCompletion | undefined>();
 
   register(pid: number, channelOffset: number, terminate: ThreadTerminator): void {
     const key = this.key(pid, channelOffset);
     this.terminators.set(key, terminate);
-    if (this.pendingExits.delete(key)) {
-      void terminate();
+    if (this.pendingExits.has(key)) {
+      const completion = this.pendingExits.get(key);
+      this.pendingExits.delete(key);
+      void terminate(completion);
     }
   }
 
@@ -26,14 +33,18 @@ export class ThreadExitCoordinator {
     this.pendingExits.delete(key);
   }
 
-  requestExit(pid: number, channelOffset: number): boolean {
+  requestExit(
+    pid: number,
+    channelOffset: number,
+    completion?: ThreadExitCompletion,
+  ): boolean {
     const key = this.key(pid, channelOffset);
     const terminate = this.terminators.get(key);
     if (!terminate) {
-      this.pendingExits.add(key);
+      this.pendingExits.set(key, completion);
       return true;
     }
-    void terminate();
+    void terminate(completion);
     return true;
   }
 

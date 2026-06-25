@@ -158,7 +158,7 @@ describe("ThreadPageAllocator", () => {
     expect(() => alloc.allocate(mem)).toThrow(/pthread slot limit exhausted/);
   });
 
-  it("reuses dynamic slots without reserving a new host range", () => {
+  it("does not immediately recycle dynamically reserved slots after free", () => {
     let nextPage = 128;
     let reservations = 0;
     const alloc = new ThreadPageAllocator({
@@ -178,10 +178,37 @@ describe("ThreadPageAllocator", () => {
     const t2 = alloc.allocate(mem);
     alloc.free(t1.slotStartPage);
 
+    const t3 = alloc.allocate(mem);
+
+    expect(t3.slotStartPage).toBe(128 + 2 * PAGES_PER_THREAD);
+    expect(t2.slotStartPage).toBe(128 + PAGES_PER_THREAD);
+    expect(reservations).toBe(3);
+  });
+
+  it("recycles dynamically reserved slots after the quarantine bound", () => {
+    let nextPage = 128;
+    let reservations = 0;
+    const alloc = new ThreadPageAllocator({
+      firstSlotStartPage: FIRST_THREAD_SLOT_PAGE,
+      maxPageExclusive: FIRST_THREAD_SLOT_PAGE,
+      reservedSlots: 1,
+      reserveSlotStartPage: () => {
+        reservations++;
+        const page = nextPage;
+        nextPage += PAGES_PER_THREAD;
+        return page;
+      },
+    });
+    const mem = new WebAssembly.Memory({ initial: FIRST_THREAD_SLOT_PAGE, maximum: 8192, shared: true });
+
+    for (let i = 0; i < 1025; i++) {
+      const t = alloc.allocate(mem);
+      alloc.free(t.slotStartPage);
+    }
+
     const reused = alloc.allocate(mem);
 
-    expect(reused.slotStartPage).toBe(t1.slotStartPage);
-    expect(t2.slotStartPage).toBe(128 + PAGES_PER_THREAD);
-    expect(reservations).toBe(2);
+    expect(reused.slotStartPage).toBe(128);
+    expect(reservations).toBe(1025);
   });
 });

@@ -5,6 +5,7 @@ export interface WorkerHandle {
   on(event: "exit", handler: (code: number) => void): void;
   off(event: string, handler: (...args: unknown[]) => void): void;
   terminate(): Promise<number>;
+  terminateImmediately?(): Promise<number>;
 }
 
 export interface WorkerAdapter {
@@ -64,6 +65,10 @@ export class MockWorkerHandle implements WorkerHandle {
 
   async terminate(): Promise<number> {
     return 0;
+  }
+
+  async terminateImmediately(): Promise<number> {
+    return this.terminate();
   }
 
   // --- Test helpers ---
@@ -206,5 +211,9 @@ class NodeWorkerHandle implements WorkerHandle {
 
   async terminate(): Promise<number> {
     return this.worker.terminate();
+  }
+
+  async terminateImmediately(): Promise<number> {
+    return this.terminate();
   }
 }
