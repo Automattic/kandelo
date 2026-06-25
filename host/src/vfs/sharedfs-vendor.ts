@@ -1194,6 +1194,48 @@ export class SharedFS {
     }
   }
 
+  private inodeHasOpenFd(ino: number, exceptFd = -1): boolean {
+    for (let fd = 0; fd < MAX_FDS; fd++) {
+      if (fd === exceptFd) continue;
+      const base = FD_TABLE_OFFSET + fd * FD_ENTRY_SIZE;
+      const inUse = Atomics.load(this.i32, base >> 2);
+      if (inUse && this.r32(base + FD_INO) === ino) return true;
+    }
+    return false;
+  }
+
+  /**
+   * Free an unlinked inode once no file descriptor references it.
+   *
+   * Caller must hold this inode's write lock. Keeping link_count=0 inodes
+   * alive while open preserves POSIX unlink semantics for temp files: the
+   * path disappears immediately, but existing fds continue to read/write
+   * the same file until the last close.
+   */
+  private freeUnlinkedInodeIfUnused(ino: number, exceptFd = -1): void {
+    const off = this.inodeOffset(ino);
+    if (this.r32(off + INO_LINK_COUNT) !== 0) return;
+    if (this.inodeHasOpenFd(ino, exceptFd)) return;
+    this.inodeTruncate(ino, 0);
+    this.inodeFree(ino);
+  }
+
+  private dropInodeLink(ino: number): void {
+    this.inodeWriteLock(ino);
+    try {
+      const off = this.inodeOffset(ino);
+      const linkCount = this.r32(off + INO_LINK_COUNT);
+      if (linkCount <= 1) {
+        this.w32(off + INO_LINK_COUNT, 0);
+        this.freeUnlinkedInodeIfUnused(ino);
+      } else {
+        this.w32(off + INO_LINK_COUNT, linkCount - 1);
+      }
+    } finally {
+      this.inodeWriteUnlock(ino);
+    }
+  }
+
   // ── Build stat result from inode ─────────────────────────────────
 
   private buildStat(ino: number): StatResult {
@@ -1291,7 +1333,13 @@ export class SharedFS {
   close(fd: number): void {
     const entry = this.fdGet(fd);
     if (!entry) throw new SFSError(EBADF);
-    this.fdFree(fd);
+    this.inodeWriteLock(entry.ino);
+    try {
+      this.fdFree(fd);
+      this.freeUnlinkedInodeIfUnused(entry.ino, fd);
+    } finally {
+      this.inodeWriteUnlock(entry.ino);
+    }
   }
 
   read(fd: number, buffer: Uint8Array): number {
@@ -1433,17 +1481,7 @@ export class SharedFS {
       const rc = this.dirRemoveEntry(parentIno, nameBytes);
       if (rc < 0) throw new SFSError(rc);
 
-      this.inodeWriteLock(childIno);
-      const linkCount = this.r32(childOff + INO_LINK_COUNT);
-      if (linkCount <= 1) {
-        this.inodeTruncate(childIno, 0);
-        this.w32(childOff + INO_LINK_COUNT, 0);
-        this.inodeWriteUnlock(childIno);
-        this.inodeFree(childIno);
-      } else {
-        this.w32(childOff + INO_LINK_COUNT, linkCount - 1);
-        this.inodeWriteUnlock(childIno);
-      }
+      this.dropInodeLink(childIno);
     } finally {
       this.inodeWriteUnlock(parentIno);
     }
@@ -1474,11 +1512,7 @@ export class SharedFS {
         const existMode = this.r32(existOff + INO_MODE);
         if ((existMode & S_IFMT) === S_IFDIR) throw new SFSError(EISDIR);
         this.dirRemoveEntry(newParent, newNameBytes);
-        this.inodeWriteLock(existingIno);
-        this.inodeTruncate(existingIno, 0);
-        this.w32(existOff + INO_LINK_COUNT, 0);
-        this.inodeWriteUnlock(existingIno);
-        this.inodeFree(existingIno);
+        this.dropInodeLink(existingIno);
       }
 
       // Add entry in new directory
