@@ -175,6 +175,9 @@ const SYS_MUNMAP = ABI_SYSCALLS.Munmap;
 const SYS_BRK = ABI_SYSCALLS.Brk;
 const SYS_MREMAP = ABI_SYSCALLS.Mremap;
 const SYS_MSYNC = ABI_SYSCALLS.Msync;
+const PTHREAD_DETACH_STATE_EXITING = 1;
+const PTHREAD_DETACH_STATE_OFFSET_WASM32 = 0x20;
+const PTHREAD_DETACH_STATE_OFFSET_WASM64 = 0x38;
 const SYS_WRITE = ABI_SYSCALLS.Write;
 const SYS_READ = ABI_SYSCALLS.Read;
 const SYS_PREAD = ABI_SYSCALLS.Pread;
@@ -435,11 +438,17 @@ interface ChannelInfo {
   channelOffset: number;
   /** Int32Array view for Atomics operations */
   i32View: Int32Array;
+  /**
+   * Set once this exact channel object has been removed from its process.
+   * Thread channel offsets can be reused; stale waitAsync callbacks must not
+   * re-listen on an old channel just because a process with the same pid lives.
+   */
+  closed?: boolean;
   /** @deprecated Kept for compat — no longer used after relistenChannel simplification. */
   consecutiveSyscalls: number;
   /** True while this channel is being handled by handleSyscall or an async
-   *  retry/sleep/fork/exec path. Prevents the poller from re-entering a
-   *  channel that is already in flight. Only used when usePolling=true. */
+   *  retry/sleep/fork/exec path. Prevents polling or missed-wake recovery
+   *  from re-entering a channel that is already in flight. */
   handling?: boolean;
 }
 
@@ -560,7 +569,8 @@ export interface CentralizedKernelCallbacks {
    *
    * `threadFork` is set when the parent issued the fork() syscall from a
    * thread spawned via pthread_create (i.e. on a channel registered
-   * through `addChannel(pid, offset, tid, fnPtr, argPtr)` with tid > 0).
+   * through `addChannel(pid, offset, tid, fnPtr, argPtr, stackPtr, tlsPtr)`
+   * with tid > 0).
    * The host must:
    *   - use the thread's `forkBufAddr` (not the main channel's) for the
    *     child's rewind so the saved frames + saved __tls_base /
@@ -628,12 +638,18 @@ export interface CentralizedKernelCallbacks {
   onClone?: (pid: number, tid: number, fnPtr: number, argPtr: number, stackPtr: number, tlsPtr: number, ctidPtr: number, memory: WebAssembly.Memory) => Promise<number>;
 
   /**
-   * Called after a pthread channel reaches SYS_EXIT and the kernel worker has
-   * performed the musl clear-TID wake used by pthread joiners. Return true when
-   * the host will terminate the backing Worker, so the syscall channel should
-   * not be completed back into guest code.
+   * Called after a pthread channel reaches SYS_EXIT. Return true when the host
+   * will terminate the backing Worker, so the syscall channel should not be
+   * completed back into guest code. Hosts that terminate the Worker must apply
+   * the supplied futex completions after termination, when the wasm thread can
+   * no longer race with pthread_join() stack reuse or thread-list-lock release.
    */
-  onThreadExit?: (pid: number, tid: number, channelOffset: number) => boolean;
+  onThreadExit?: (
+    pid: number,
+    tid: number,
+    channelOffset: number,
+    completion?: { joinFutexAddr?: number; clearTidFutexAddr?: number },
+  ) => boolean;
 
   /**
    * Called when a process exits.
@@ -695,6 +711,7 @@ export class CentralizedKernelWorker {
    * `removeChannel` and the thread-exit path.
    */
   private threadForkContexts = new Map<string, { fnPtr: number; argPtr: number }>();
+  private threadExitContexts = new Map<string, { tlsPtr: number }>();
   /** Tracks the pid currently being serviced by kernel_handle_channel */
   private currentHandlePid = 0;
   /**
@@ -715,6 +732,123 @@ export class CentralizedKernelWorker {
     const setTid = this.kernelInstance?.exports.kernel_set_current_tid as
       ((tid: number) => void) | undefined;
     if (setTid) setTid(tid);
+  }
+
+  private isChannelRegistered(channel: ChannelInfo): boolean {
+    if (channel.closed) return false;
+    const registration = this.processes.get(channel.pid);
+    return registration?.channels.includes(channel) === true;
+  }
+
+  private closeRegisteredChannels(pid: number): void {
+    const registration = this.processes.get(pid);
+    if (!registration) return;
+    const channels = Array.isArray(registration.channels) ? registration.channels : [];
+    for (const channel of channels) {
+      channel.closed = true;
+      channel.handling = false;
+      this.cancelPendingFutexWait(channel);
+      this.wakeChannelListeners(channel);
+    }
+  }
+
+  private cancelPendingFutexWait(channel: ChannelInfo): void {
+    const entry = this.pendingFutexWaits.get(channel);
+    if (!entry) return;
+    this.pendingFutexWaits.delete(channel);
+    if (entry.timer !== undefined) clearTimeout(entry.timer);
+  }
+
+  private completePendingFutexWait(
+    channel: ChannelInfo,
+    retVal: number,
+    errVal: number,
+  ): boolean {
+    const entry = this.pendingFutexWaits.get(channel);
+    if (!entry) return false;
+    this.pendingFutexWaits.delete(channel);
+    if (entry.timer !== undefined) clearTimeout(entry.timer);
+    if (!this.isChannelRegistered(channel)) return false;
+    this.completeChannelRaw(channel, retVal, errVal);
+    channel.consecutiveSyscalls = 0;
+    this.relistenChannel(channel);
+    return true;
+  }
+
+  private wakePendingFutexWaits(
+    memory: WebAssembly.Memory,
+    futexIndex: number,
+    count: number,
+  ): number {
+    let remaining = count < 0 ? Number.POSITIVE_INFINITY : count;
+    let woken = 0;
+    for (const entry of [...this.pendingFutexWaits.values()]) {
+      if (remaining <= 0) break;
+      if (entry.channel.memory !== memory || entry.futexIndex !== futexIndex) continue;
+      if (this.completePendingFutexWait(entry.channel, 0, 0)) {
+        woken++;
+        remaining--;
+      }
+    }
+    return woken;
+  }
+
+  wakeProcessFutex(memory: WebAssembly.Memory, futexAddr: number, count = -1): number {
+    const index = futexAddr >>> 2;
+    const hostWoken = this.wakePendingFutexWaits(memory, index, count);
+    const i32View = new Int32Array(memory.buffer);
+    const rawWoken = count < 0
+      ? Atomics.notify(i32View, index)
+      : Atomics.notify(i32View, index, Math.max(0, count - hostWoken));
+    return hostWoken + rawWoken;
+  }
+
+  private wakeChannelListeners(channel: ChannelInfo): void {
+    try {
+      const i32View = new Int32Array(channel.memory.buffer, channel.channelOffset);
+      Atomics.notify(i32View, CH_STATUS / 4);
+    } catch {
+      // Best-effort cleanup for stale waitAsync listeners during teardown.
+    }
+  }
+
+  private resetChannelPage(
+    memory: WebAssembly.Memory,
+    channelOffset: number,
+    ptrWidth: 4 | 8 = 4,
+  ): void {
+    growMemoryToCover(memory, channelOffset + CH_TOTAL_SIZE, ptrWidth);
+    new Uint8Array(memory.buffer, channelOffset, CH_TOTAL_SIZE).fill(0);
+  }
+
+  private dispatchPendingChannel(channel: ChannelInfo, defer = false): boolean {
+    if (!this.isChannelRegistered(channel) || channel.handling) return false;
+
+    const i32View = new Int32Array(channel.memory.buffer, channel.channelOffset);
+    channel.i32View = i32View;
+    if (Atomics.load(i32View, CH_STATUS / 4) !== CH_PENDING) return false;
+
+    channel.handling = true;
+    const dispatch = () => {
+      if (!this.isChannelRegistered(channel)) {
+        channel.handling = false;
+        return;
+      }
+      const currentView = new Int32Array(channel.memory.buffer, channel.channelOffset);
+      channel.i32View = currentView;
+      if (Atomics.load(currentView, CH_STATUS / 4) !== CH_PENDING) {
+        channel.handling = false;
+        return;
+      }
+      this.handleSyscall(channel);
+    };
+
+    if (defer) {
+      setImmediate(dispatch);
+    } else {
+      dispatch();
+    }
+    return true;
   }
   /** Alarm timers per process: pid → NodeJS.Timeout */
   private alarmTimers = new Map<number, ReturnType<typeof setTimeout>>();
@@ -805,11 +939,16 @@ export class CentralizedKernelWorker {
    * to complete the syscall with ETIMEDOUT. Cleared when the operation
    * completes before the timeout. */
   private socketTimeoutTimers = new Map<ChannelInfo, ReturnType<typeof setTimeout>>();
-  /** Pending futex waits: channelOffset → { futexAddr, futexIndex }.
-   * Tracked so SYS_THREAD_CANCEL can force-wake a futex-blocked thread
-   * by firing Atomics.notify on the address it is waiting on. The waitAsync
-   * Promise in handleFutex then resolves and writes the channel result. */
-  private pendingFutexWaits = new Map<number, { channel: ChannelInfo; futexIndex: number }>();
+  /** Pending futex waits keyed by the exact channel object.
+   * Futex waits are host-managed instead of left as raw Atomics.waitAsync
+   * promises so removed/recycled thread channels cannot leave stale waiters
+   * that consume a later one-shot FUTEX_WAKE. Channel offsets alone are not
+   * unique across process memories, so object identity is part of the fence. */
+  private pendingFutexWaits = new Map<ChannelInfo, {
+    channel: ChannelInfo;
+    futexIndex: number;
+    timer?: ReturnType<typeof setTimeout>;
+  }>();
   /** Channel offsets with a cancellation request pending. Set by
    * SYS_THREAD_CANCEL.  Checked at the entry of every blocking syscall
    * path (futex wait, pipe retry, poll retry) so a cancel that arrives
@@ -1225,6 +1364,7 @@ export class CentralizedKernelWorker {
       for (const channel of channels) {
         this.listenOnChannel(channel);
       }
+      this.scheduleMissedWakeScan();
     }
   }
 
@@ -1539,6 +1679,8 @@ export class CentralizedKernelWorker {
     const registration = this.processes.get(pid);
     if (!registration) return;
 
+    this.closeRegisteredChannels(pid);
+
     // Remove channels from active list
     this.activeChannels = this.activeChannels.filter((ch) => ch.pid !== pid);
 
@@ -1580,6 +1722,9 @@ export class CentralizedKernelWorker {
     // Stop poller if no more processes
     if (this.usePolling && this.processes.size === 0) {
       this.stopPolling();
+    }
+    if (!this.usePolling && this.activeChannels.length === 0) {
+      this.stopMissedWakeScan();
     }
 
     // Clean up PTY state
@@ -1626,6 +1771,7 @@ export class CentralizedKernelWorker {
   }
 
   deactivateProcess(pid: number): void {
+    this.closeRegisteredChannels(pid);
     this.activeChannels = this.activeChannels.filter((ch) => ch.pid !== pid);
     this.processes.delete(pid);
     this.stdinFinite.delete(pid);
@@ -1662,6 +1808,9 @@ export class CentralizedKernelWorker {
     // pid is later reused for a fresh fork+register, the new process
     // gets its own reaping decision.
     this.hostReaped.delete(pid);
+    if (!this.usePolling && this.activeChannels.length === 0) {
+      this.stopMissedWakeScan();
+    }
   }
 
   /**
@@ -1680,6 +1829,8 @@ export class CentralizedKernelWorker {
    * Does NOT cancel timers (POSIX: timers are preserved across exec).
    */
   prepareProcessForExec(pid: number): void {
+    this.closeRegisteredChannels(pid);
+
     // Remove channels from active list (stops listening on old memory)
     this.activeChannels = this.activeChannels.filter((ch) => ch.pid !== pid);
 
@@ -1697,6 +1848,9 @@ export class CentralizedKernelWorker {
 
     // Remove process registration (new one will be added by registerProcess)
     this.processes.delete(pid);
+    if (!this.usePolling && this.activeChannels.length === 0) {
+      this.stopMissedWakeScan();
+    }
   }
 
   /**
@@ -1721,9 +1875,13 @@ export class CentralizedKernelWorker {
     tid?: number,
     threadFnPtr?: number,
     threadArgPtr?: number,
+    threadStackPtr?: number,
+    threadTlsPtr?: number,
   ): void {
     const registration = this.processes.get(pid);
     if (!registration) throw new Error(`Process ${pid} not registered`);
+
+    this.resetChannelPage(registration.memory, channelOffset, registration.ptrWidth ?? 4);
 
     const channel: ChannelInfo = {
       pid,
@@ -1745,6 +1903,11 @@ export class CentralizedKernelWorker {
         argPtr: threadArgPtr,
       });
     }
+    if (threadStackPtr !== undefined && threadTlsPtr !== undefined) {
+      this.threadExitContexts.set(`${pid}:${channelOffset}`, {
+        tlsPtr: threadTlsPtr,
+      });
+    }
 
     // Lower the kernel's mmap ceiling only for legacy high-address thread
     // control pages. Compact process memories reserve thread pages before the
@@ -1761,6 +1924,7 @@ export class CentralizedKernelWorker {
     // In polling mode, the poller picks up new channels automatically.
     if (!this.usePolling) {
       this.listenOnChannel(channel);
+      this.scheduleMissedWakeScan();
     }
   }
 
@@ -1770,6 +1934,20 @@ export class CentralizedKernelWorker {
   removeChannel(pid: number, channelOffset: number): void {
     const registration = this.processes.get(pid);
     if (!registration) return;
+    const tid = this.channelTids.get(`${pid}:${channelOffset}`) ?? 0;
+    if (tid > 0) {
+      this.threadCtidPtrs.delete(`${pid}:${tid}`);
+    }
+    this.threadExitContexts.delete(`${pid}:${channelOffset}`);
+
+    for (const channel of registration.channels) {
+      if (channel.channelOffset === channelOffset) {
+        channel.closed = true;
+        channel.handling = false;
+        this.cancelPendingFutexWait(channel);
+        this.wakeChannelListeners(channel);
+      }
+    }
 
     registration.channels = registration.channels.filter(
       (ch) => ch.channelOffset !== channelOffset,
@@ -1786,6 +1964,8 @@ export class CentralizedKernelWorker {
    * When the process sets status to PENDING, we handle the syscall.
    */
   private listenOnChannel(channel: ChannelInfo): void {
+    if (!this.isChannelRegistered(channel)) return;
+
     // Re-create Int32Array view in case memory was grown
     const i32View = new Int32Array(channel.memory.buffer, channel.channelOffset);
     channel.i32View = i32View;
@@ -1796,19 +1976,11 @@ export class CentralizedKernelWorker {
     const currentStatus = Atomics.load(i32View, statusIndex);
 
     if (currentStatus === CH_PENDING) {
-      // Handle the syscall. In browser mode (relistenBatchSize=1), defer via
-      // setImmediate so that Atomics.waitAsync microtask resolutions don't
-      // create tight chains that starve the event loop. In Node.js (default
-      // batchSize=64), handle immediately for throughput.
-      if (this.relistenBatchSize <= 1) {
-        setImmediate(() => {
-          if (this.processes.has(channel.pid)) {
-            this.handleSyscall(channel);
-          }
-        });
-      } else {
-        this.handleSyscall(channel);
-      }
+      // In browser mode (relistenBatchSize=1), defer via setImmediate so that
+      // Atomics.waitAsync microtask resolutions don't create tight chains that
+      // starve the event loop. In Node.js (default batchSize=64), handle
+      // immediately for throughput.
+      this.dispatchPendingChannel(channel, this.relistenBatchSize <= 1);
       return;
     }
 
@@ -1820,8 +1992,9 @@ export class CentralizedKernelWorker {
 
     if (waitResult.async) {
       waitResult.value.then(() => {
-        // Check if still registered
-        if (!this.processes.has(channel.pid)) return;
+        // Check if this exact channel object is still registered. Thread
+        // channel offsets can be reused after pthread exit.
+        if (!this.isChannelRegistered(channel)) return;
         // Status changed — re-enter to check new value
         this.listenOnChannel(channel);
       });
@@ -1991,10 +2164,12 @@ export class CentralizedKernelWorker {
   }
 
   private handleSyscall(channel: ChannelInfo): void {
+    if (!this.isChannelRegistered(channel)) return;
+
     try {
       if (PROFILING) {
-        const pv = new DataView(channel.memory.buffer, channel.channelOffset);
-        const nr = pv.getUint32(CH_SYSCALL, true);
+        const i32View = new Int32Array(channel.memory.buffer, channel.channelOffset);
+        const nr = Atomics.load(i32View, CH_SYSCALL / 4) >>> 0;
         const start = performance.now();
         this._handleSyscallInner(channel);
         const elapsed = performance.now() - start;
@@ -2020,7 +2195,8 @@ export class CentralizedKernelWorker {
     const processView = new DataView(channel.memory.buffer, channel.channelOffset);
 
     // Read syscall number and args from process channel
-    const syscallNr = processView.getUint32(CH_SYSCALL, true);
+    const i32View = new Int32Array(channel.memory.buffer, channel.channelOffset);
+    const syscallNr = Atomics.load(i32View, CH_SYSCALL / 4) >>> 0;
     const origArgs: number[] = [];
     for (let i = 0; i < CH_ARGS_COUNT; i++) {
       origArgs.push(Number(processView.getBigInt64(CH_ARGS + i * CH_ARG_SIZE, true)));
@@ -2739,7 +2915,7 @@ export class CentralizedKernelWorker {
     // Set status to COMPLETE and notify process
     const i32View = new Int32Array(channel.memory.buffer, channel.channelOffset);
     Atomics.store(i32View, CH_STATUS / 4, CH_COMPLETE);
-    Atomics.notify(i32View, CH_STATUS / 4, 1);
+    Atomics.notify(i32View, CH_STATUS / 4);
 
 
     // Drain kernel wakeup events and process targeted wakeups.
@@ -2787,6 +2963,15 @@ export class CentralizedKernelWorker {
   private pollMC: MessageChannel | null = null;
   private pollScheduled = false;
   private pollLastYield = 0;
+  /**
+   * Browser workers use event-driven Atomics.waitAsync listeners, but stale
+   * listeners on recycled thread-channel offsets can consume the one-shot
+   * guest notify. Set this to a positive interval to scan active channels for
+   * PENDING syscalls and recover those missed wakes. Node leaves this disabled
+   * so it keeps the lower-overhead pure waitAsync path.
+   */
+  eventDrivenMissedWakeScanIntervalMs = 0;
+  private missedWakeScanTimer: ReturnType<typeof setTimeout> | null = null;
 
   /** Start the channel poller. Called automatically when usePolling=true
    *  and a process is registered. */
@@ -2804,6 +2989,36 @@ export class CentralizedKernelWorker {
       this.pollMC.port1.close();
       this.pollMC = null;
       this.pollScheduled = false;
+    }
+  }
+
+  private scheduleMissedWakeScan(): void {
+    if (this.usePolling || this.eventDrivenMissedWakeScanIntervalMs <= 0) return;
+    if (this.missedWakeScanTimer !== null || this.activeChannels.length === 0) return;
+    this.missedWakeScanTimer = setTimeout(
+      () => this.missedWakeScanTick(),
+      this.eventDrivenMissedWakeScanIntervalMs,
+    );
+  }
+
+  private stopMissedWakeScan(): void {
+    if (this.missedWakeScanTimer === null) return;
+    clearTimeout(this.missedWakeScanTimer);
+    this.missedWakeScanTimer = null;
+  }
+
+  private missedWakeScanTick(): void {
+    this.missedWakeScanTimer = null;
+    if (this.usePolling || this.eventDrivenMissedWakeScanIntervalMs <= 0) return;
+    if (this.activeChannels.length === 0) return;
+
+    const channels = this.activeChannels.slice();
+    for (const channel of channels) {
+      this.dispatchPendingChannel(channel);
+    }
+
+    if (this.activeChannels.length > 0) {
+      this.scheduleMissedWakeScan();
     }
   }
 
@@ -2833,14 +3048,8 @@ export class CentralizedKernelWorker {
     // Snapshot to handle mutations during iteration (addChannel/removeChannel)
     const channels = this.activeChannels.slice();
     for (const channel of channels) {
-      if (channel.handling) continue;
-      // Re-create view in case memory was grown
-      const i32View = new Int32Array(channel.memory.buffer, channel.channelOffset);
-      channel.i32View = i32View;
-      if (Atomics.load(i32View, 0) === CH_PENDING) {
-        channel.handling = true;
-        this.handleSyscall(channel);
-      }
+      if (!this.isChannelRegistered(channel)) continue;
+      this.dispatchPendingChannel(channel);
     }
 
     this.schedulePoll();
@@ -2849,16 +3058,21 @@ export class CentralizedKernelWorker {
   private relistenChannel(channel: ChannelInfo): void {
     // Clear handling flag so the poller can pick up this channel again
     channel.handling = false;
-    if (!this.processes.has(channel.pid)) return;
+    if (!this.isChannelRegistered(channel)) return;
     // In polling mode, don't re-listen — the poller will pick up the next syscall
     if (this.usePolling) return;
     this.relistenCount++;
     const useImmediate = this.relistenCount >= this.relistenBatchSize;
+    const listen = () => {
+      if (this.isChannelRegistered(channel)) {
+        this.listenOnChannel(channel);
+      }
+    };
     if (useImmediate) {
       this.relistenCount = 0;
-      setImmediate(() => this.listenOnChannel(channel));
+      setImmediate(listen);
     } else {
-      queueMicrotask(() => this.listenOnChannel(channel));
+      queueMicrotask(listen);
     }
   }
 
@@ -2884,7 +3098,7 @@ export class CentralizedKernelWorker {
 
     const i32View = new Int32Array(channel.memory.buffer, channel.channelOffset);
     Atomics.store(i32View, CH_STATUS / 4, CH_COMPLETE);
-    Atomics.notify(i32View, CH_STATUS / 4, 1);
+    Atomics.notify(i32View, CH_STATUS / 4);
   }
 
   private abandonChannel(channel: ChannelInfo): void {
@@ -3453,12 +3667,10 @@ export class CentralizedKernelWorker {
     // retry timer, etc.) avoids racing against the handler's own
     // completion path — we never write the channel directly here.
 
-    // 1) Futex wait — Atomics.notify wakes the in-flight waitAsync, which
-    //    calls complete() and completeChannelRaw naturally.
-    const futexEntry = this.pendingFutexWaits.get(target.channelOffset);
+    // 1) Futex wait — complete the host-managed pending wait directly.
+    const futexEntry = this.pendingFutexWaits.get(target);
     if (futexEntry) {
-      const tgtMemView = new Int32Array(target.memory.buffer);
-      Atomics.notify(tgtMemView, futexEntry.futexIndex, 1);
+      this.completePendingFutexWait(target, 0, 0);
       return;
     }
 
@@ -3931,6 +4143,8 @@ export class CentralizedKernelWorker {
    * args still in the process channel.
    */
   private retrySyscall(channel: ChannelInfo): void {
+    if (!this.isChannelRegistered(channel)) return;
+
     // Check if the process was killed by a signal while blocking.
     // This handles cases like sigsuspend + cross-process SIGABRT where
     // deliver_pending_signals marks the target as Exited.
@@ -3946,6 +4160,7 @@ export class CentralizedKernelWorker {
 
     // The process channel still has the original args (we never wrote a response).
     // Just re-handle it.
+    channel.handling = true;
     this.handleSyscall(channel);
   }
 
@@ -6222,11 +6437,18 @@ export class CentralizedKernelWorker {
       procView.setInt32(ptidPtr, tid, true);
     }
 
-    // Read fnPtr and argPtr from the channel's CH_DATA area (written by kernel_clone stub)
-    // These are always written as u32 by the glue (even on wasm64, table indices are i32)
+    // The clone import packs the pthread start function and argument into the
+    // otherwise-unused sixth syscall arg. Older glue also wrote them to CH_DATA,
+    // but CH_DATA is a general syscall scratch buffer and can be clobbered while
+    // kernel_handle_channel processes SYS_clone.
+    const packedStart = BigInt.asUintN(64, BigInt(origArgs[5] ?? 0));
     const processView = new DataView(channel.memory.buffer, channel.channelOffset);
-    const fnPtr = processView.getUint32(CH_DATA, true);
-    const argPtr = processView.getUint32(CH_DATA + 4, true);
+    const fnPtr = packedStart !== 0n
+      ? Number((packedStart >> 32n) & 0xffffffffn)
+      : processView.getUint32(CH_DATA, true);
+    const argPtr = packedStart !== 0n
+      ? Number(packedStart & 0xffffffffn)
+      : processView.getUint32(CH_DATA + 4, true);
     const stackPtr = origArgs[1];
     const tlsPtr = origArgs[3];
     const ctidPtr = origArgs[4];
@@ -6236,7 +6458,6 @@ export class CentralizedKernelWorker {
     if (ctidPtr !== 0) {
       this.threadCtidPtrs.set(`${channel.pid}:${tid}`, ctidPtr);
     }
-
     this.callbacks.onClone(
       channel.pid, tid, fnPtr, argPtr, stackPtr, tlsPtr, ctidPtr, channel.memory,
     ).then((assignedTid) => {
@@ -6281,13 +6502,66 @@ export class CentralizedKernelWorker {
       // Thread exit: find TID, notify kernel, remove channel, complete to unblock
       const tidKey = `${channel.pid}:${channel.channelOffset}`;
       const tid = this.channelTids.get(tidKey) ?? 0;
-      if (tid > 0) this.finalizeThreadExit(channel.pid, tid, channel.channelOffset);
-      const hostWillTerminateThread = tid > 0 &&
-        this.callbacks.onThreadExit?.(channel.pid, tid, channel.channelOffset) === true;
+      const exitCtx = this.threadExitContexts?.get(tidKey);
+      let joinFutexAddr: number | undefined;
+      let clearTidFutexAddr: number | undefined;
+      if (tid > 0 && exitCtx) {
+        const ptrWidth = registration?.ptrWidth ?? 4;
+        const detachStateAddr = exitCtx.tlsPtr + (
+          ptrWidth === 8
+            ? PTHREAD_DETACH_STATE_OFFSET_WASM64
+            : PTHREAD_DETACH_STATE_OFFSET_WASM32
+        );
+        const i32View = new Int32Array(channel.memory.buffer);
+        const detachState = Atomics.load(i32View, detachStateAddr >>> 2);
+        if (detachState === PTHREAD_DETACH_STATE_EXITING) {
+          joinFutexAddr = detachStateAddr;
+        }
+      }
+      if (tid > 0) {
+        const ctidKey = `${channel.pid}:${tid}`;
+        const ctidPtr = this.threadCtidPtrs.get(ctidKey);
+        if (ctidPtr && ctidPtr !== 0) {
+          clearTidFutexAddr = ctidPtr;
+        }
+        this.threadCtidPtrs.delete(ctidKey);
+      }
+      if (tid > 0) {
+        this.channelTids.delete(tidKey);
+        this.threadForkContexts.delete(tidKey);
+        this.threadExitContexts?.delete(tidKey);
+      }
+
+      if (tid > 0) {
+        this.notifyThreadExit(channel.pid, tid);
+      }
+      this.removeChannel(channel.pid, channel.channelOffset);
+      const completion =
+        joinFutexAddr !== undefined || clearTidFutexAddr !== undefined
+          ? { joinFutexAddr, clearTidFutexAddr }
+          : undefined;
+      const hostWillTerminateThread = tid > 0 && (
+        completion === undefined
+          ? this.callbacks.onThreadExit?.(channel.pid, tid, channel.channelOffset)
+          : this.callbacks.onThreadExit?.(channel.pid, tid, channel.channelOffset, completion)
+      ) === true;
       if (hostWillTerminateThread) {
         this.abandonChannel(channel);
       } else {
         // Back-compatibility for embedders that have not wired onThreadExit.
+        if (clearTidFutexAddr !== undefined) {
+          const procView = new DataView(channel.memory.buffer);
+          const i32View = new Int32Array(channel.memory.buffer);
+          if (Atomics.load(i32View, clearTidFutexAddr >>> 2) === tid) {
+            procView.setInt32(clearTidFutexAddr, 0, true);
+            this.wakeProcessFutex(channel.memory, clearTidFutexAddr, -1);
+          }
+        }
+        if (joinFutexAddr !== undefined) {
+          const i32View = new Int32Array(channel.memory.buffer);
+          Atomics.store(i32View, joinFutexAddr >>> 2, 0);
+          this.wakeProcessFutex(channel.memory, joinFutexAddr, -1);
+        }
         this.completeChannelRaw(channel, 0, 0);
       }
       return;
@@ -6704,8 +6978,8 @@ export class CentralizedKernelWorker {
    * implement the futex ops here.
    *
    * FUTEX_WAIT: compare-and-block. If the value at addr matches expected,
-   * use Atomics.waitAsync to wait for a change, then return 0. If it doesn't
-   * match, return -EAGAIN.
+   * keep a host-managed pending wait until a matching FUTEX_WAKE completes it.
+   * If it doesn't match, return -EAGAIN.
    *
    * FUTEX_WAKE: wake up to `val` waiters on addr. Returns number woken.
    */
@@ -6750,7 +7024,6 @@ export class CentralizedKernelWorker {
         this.relistenChannel(channel);
         return;
       }
-
       // Read timeout from origArgs[3] (pointer to struct timespec in process memory).
       // Layout: { int64 tv_sec; int64 tv_nsec } — 16 bytes, relative timeout.
       let timeoutMs: number | undefined;
@@ -6773,49 +7046,24 @@ export class CentralizedKernelWorker {
         if (timeoutMs > 2147483647) timeoutMs = 2147483647;
       }
 
-      // Value matches — wait asynchronously for it to change
-      const waitResult = Atomics.waitAsync(i32View, index, val);
-      if (waitResult.async) {
-        let settled = false;
-        let timer: ReturnType<typeof setTimeout> | undefined;
-
-        const complete = (retVal: number, errVal: number) => {
-          if (settled) return;
-          settled = true;
-          if (timer !== undefined) clearTimeout(timer);
-          this.pendingFutexWaits.delete(channel.channelOffset);
-          if (!this.processes.has(channel.pid)) return;
-          this.completeChannelRaw(channel, retVal, errVal);
-          channel.consecutiveSyscalls = 0; // genuinely blocked — reset
-          this.relistenChannel(channel);
-        };
-
-        // Track the wait so SYS_THREAD_CANCEL can force-wake this channel
-        // by firing Atomics.notify on the futex address. The waitAsync
-        // Promise resolves naturally and complete() runs above.
-        this.pendingFutexWaits.set(channel.channelOffset, { channel, futexIndex: index });
-
-        waitResult.value.then(() => {
-          complete(0, 0);
-        });
-
-        if (timeoutMs !== undefined) {
-          timer = setTimeout(() => {
-            // Wake ourselves to break out of the Atomics.waitAsync
-            Atomics.notify(i32View, index, 1);
-            complete(-ETIMEDOUT, ETIMEDOUT);
-          }, timeoutMs);
-        }
-      } else {
-        // Already changed — return 0
-        this.completeChannelRaw(channel, 0, 0);
-        this.relistenChannel(channel);
+      const entry: {
+        channel: ChannelInfo;
+        futexIndex: number;
+        timer?: ReturnType<typeof setTimeout>;
+      } = { channel, futexIndex: index };
+      if (timeoutMs !== undefined) {
+        entry.timer = setTimeout(() => {
+          this.completePendingFutexWait(channel, -ETIMEDOUT, ETIMEDOUT);
+        }, timeoutMs);
       }
+      this.pendingFutexWaits.set(channel, entry);
       return;
     }
 
     if (baseOp === FUTEX_WAKE || baseOp === FUTEX_WAKE_BITSET) {
-      const woken = Atomics.notify(i32View, index, val);
+      const hostWoken = this.wakePendingFutexWaits(channel.memory, index, val);
+      const rawWoken = Atomics.notify(i32View, index, Math.max(0, val - hostWoken));
+      const woken = hostWoken + rawWoken;
       this.completeChannelRaw(channel, woken, 0);
       this.relistenChannel(channel);
       return;
@@ -6825,7 +7073,10 @@ export class CentralizedKernelWorker {
       // Wake val waiters on uaddr, can't truly requeue with Atomics,
       // so wake val + val2 on uaddr.
       const val2 = origArgs[3]; // timeout param repurposed as val2
-      const woken = Atomics.notify(i32View, index, val + val2);
+      const count = val + val2;
+      const hostWoken = this.wakePendingFutexWaits(channel.memory, index, count);
+      const rawWoken = Atomics.notify(i32View, index, Math.max(0, count - hostWoken));
+      const woken = hostWoken + rawWoken;
       this.completeChannelRaw(channel, woken, 0);
       this.relistenChannel(channel);
       return;
@@ -6837,8 +7088,11 @@ export class CentralizedKernelWorker {
       const val2 = origArgs[3];
       const uaddr2 = origArgs[4];
       const index2 = uaddr2 >>> 2;
-      let woken = Atomics.notify(i32View, index, val);
-      woken += Atomics.notify(i32View, index2, val2);
+      const hostWoken = this.wakePendingFutexWaits(channel.memory, index, val);
+      const rawWoken = Atomics.notify(i32View, index, Math.max(0, val - hostWoken));
+      const hostWoken2 = this.wakePendingFutexWaits(channel.memory, index2, val2);
+      const rawWoken2 = Atomics.notify(i32View, index2, Math.max(0, val2 - hostWoken2));
+      const woken = hostWoken + rawWoken + hostWoken2 + rawWoken2;
       this.completeChannelRaw(channel, woken, 0);
       this.relistenChannel(channel);
       return;

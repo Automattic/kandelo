@@ -322,7 +322,8 @@ static long __do_syscall(long n, long long a1, long long a2, long long a3,
      * the global for the atomic operations below.
      * Args are written as i64 — on wasm32, long long values are sign-extended
      * from 32-bit long; on wasm64, they are native 64-bit. */
-    *(int32_t *)(uintptr_t)(base + CH_SYSCALL) = (int32_t)n;
+    __c11_atomic_store((_Atomic int32_t *)(uintptr_t)(base + CH_SYSCALL),
+                       (int32_t)n, __ATOMIC_SEQ_CST);
     *(int64_t *)(uintptr_t)(base + CH_ARGS + 0 * CH_ARG_SIZE) = (int64_t)a1;
     *(int64_t *)(uintptr_t)(base + CH_ARGS + 1 * CH_ARG_SIZE) = (int64_t)a2;
     *(int64_t *)(uintptr_t)(base + CH_ARGS + 2 * CH_ARG_SIZE) = (int64_t)a3;

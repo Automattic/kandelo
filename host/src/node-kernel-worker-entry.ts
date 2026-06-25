@@ -40,7 +40,7 @@ import { findRepoRoot } from "./binary-resolver";
 import { NodeWorkerAdapter } from "./worker-adapter";
 import { ThreadPageAllocator } from "./thread-allocator";
 import { patchWasmForThread } from "./worker-main";
-import { ThreadExitCoordinator } from "./thread-exit-coordinator";
+import { ThreadExitCoordinator, type ThreadExitCompletion } from "./thread-exit-coordinator";
 import { detectPtrWidth, extractHeapBase, isWasmModuleBytes } from "./constants";
 import { CH_TOTAL_SIZE, DEFAULT_MAX_PAGES, PAGES_PER_THREAD, WASM_PAGE_SIZE } from "./constants";
 import {
@@ -160,6 +160,7 @@ interface ThreadWorkerInfo {
 }
 const threadWorkers = new Map<number, ThreadWorkerInfo[]>();
 const threadExits = new ThreadExitCoordinator();
+const PTHREAD_DETACH_STATE_EXITED = 0;
 
 async function terminateTrackedWorker(
   worker: ReturnType<NodeWorkerAdapter["createWorker"]>,
@@ -619,7 +620,8 @@ async function handleInit(msg: InitMessage) {
       onResolveSpawn: handlePosixSpawnResolve,
       onSpawn: handlePosixSpawn,
       onClone: handleClone,
-      onThreadExit: (pid, _tid, channelOffset) => handleThreadExit(pid, channelOffset),
+      onThreadExit: (pid, _tid, channelOffset, completion) =>
+        handleThreadExit(pid, channelOffset, completion),
       onExit: handleExit,
     },
   );
@@ -1069,7 +1071,7 @@ async function handleClone(
   // Register fnPtr/argPtr so that handleFork can route a fork() from
   // this thread back through its entry point (see ForkFromThreadContext
   // in kernel-worker.ts).
-  kernelWorker.addChannel(pid, alloc.channelOffset, tid, fnPtr, argPtr);
+  kernelWorker.addChannel(pid, alloc.channelOffset, tid, fnPtr, argPtr, stackPtr, tlsPtr);
 
   const threadInitData: CentralizedThreadInitMessage = {
     type: "centralized_thread_init",
@@ -1112,9 +1114,39 @@ async function handleClone(
       if (idx >= 0) threads.splice(idx, 1);
     }
   };
-  const terminateThreadEntry = (): Promise<void> => {
+  let pendingCompletion: ThreadExitCompletion = {};
+  let completionApplied = false;
+  const applyThreadExitCompletion = (): void => {
+    if (completionApplied) return;
+    const { clearTidFutexAddr, joinFutexAddr } = pendingCompletion;
+    if (clearTidFutexAddr === undefined && joinFutexAddr === undefined) return;
+    completionApplied = true;
+    const i32 = new Int32Array(memory.buffer);
+    if (clearTidFutexAddr !== undefined) {
+      if (Atomics.load(i32, clearTidFutexAddr >>> 2) === tid) {
+        Atomics.store(i32, clearTidFutexAddr >>> 2, 0);
+        kernelWorker.wakeProcessFutex(memory, clearTidFutexAddr, -1);
+      }
+    }
+    if (joinFutexAddr !== undefined) {
+      Atomics.store(i32, joinFutexAddr >>> 2, PTHREAD_DETACH_STATE_EXITED);
+      kernelWorker.wakeProcessFutex(memory, joinFutexAddr, -1);
+    }
+  };
+  const terminateThreadEntry = (completion?: ThreadExitCompletion): Promise<void> => {
+    if (completion) {
+      pendingCompletion = {
+        ...pendingCompletion,
+        ...completion,
+      };
+    }
     if (!threadEntry.termination) {
-      threadEntry.termination = terminateTrackedWorker(threadWorker).finally(reclaimThread);
+      threadEntry.termination = (async () => {
+        await terminateTrackedWorker(threadWorker);
+        applyThreadExitCompletion();
+      })().finally(reclaimThread);
+    } else if (completion) {
+      void threadEntry.termination.then(applyThreadExitCompletion);
     }
     return threadEntry.termination;
   };
@@ -1144,8 +1176,12 @@ async function handleClone(
   return tid;
 }
 
-function handleThreadExit(pid: number, channelOffset: number): boolean {
-  return threadExits.requestExit(pid, channelOffset);
+function handleThreadExit(
+  pid: number,
+  channelOffset: number,
+  completion?: ThreadExitCompletion,
+): boolean {
+  return threadExits.requestExit(pid, channelOffset, completion);
 }
 
 function handleExit(pid: number, exitStatus: number): void {

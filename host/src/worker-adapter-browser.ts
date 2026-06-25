@@ -86,6 +86,12 @@ class BrowserWorkerHandle implements WorkerHandle {
     return this.terminationPromise;
   }
 
+  async terminateImmediately(): Promise<number> {
+    if (this.terminationPromise) return this.terminationPromise;
+    this.terminationPromise = this.forceTerminateOnce();
+    return this.terminationPromise;
+  }
+
   private async terminateOnce(): Promise<number> {
     if (!this.terminated) {
       let acked = false;
@@ -108,6 +114,17 @@ class BrowserWorkerHandle implements WorkerHandle {
       }
     }
 
+    this.worker.terminate();
+    if (!this.terminated) {
+      this.terminated = true;
+      for (const h of this.handlers.get("exit") ?? []) h(0);
+    }
+    return 0;
+  }
+
+  private async forceTerminateOnce(): Promise<number> {
+    this.shutdownAckResolver?.();
+    this.shutdownAckResolver = null;
     this.worker.terminate();
     if (!this.terminated) {
       this.terminated = true;

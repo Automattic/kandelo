@@ -444,7 +444,7 @@ async function runOnMainThread(options: RunProgramOptions): Promise<RunProgramRe
         if (!threadAllocator) throw new Error(`Unknown thread allocator for pid ${clonePid}`);
         const clonePtrWidth = processPtrWidths.get(clonePid) ?? ptrWidth;
         const alloc = threadAllocator.allocate(memory);
-        kernelWorker.addChannel(clonePid, alloc.channelOffset, tid, fnPtr, argPtr);
+        kernelWorker.addChannel(clonePid, alloc.channelOffset, tid, fnPtr, argPtr, stackPtr, tlsPtr);
 
         const threadInitData: CentralizedThreadInitMessage = {
           type: "centralized_thread_init",
