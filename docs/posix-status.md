@@ -51,7 +51,7 @@ Kandelo uses a single kernel Wasm instance that holds a `ProcessTable` and serve
 | `pipe2()` | Full | Like pipe with O_NONBLOCK and O_CLOEXEC flag support. |
 | `readv()` | Full | Scatter read. Iterates over iovec array calling sys_read for each buffer. Stops on short read or EOF. |
 | `writev()` | Full | Gather write. Iterates over iovec array calling sys_write for each buffer. Stops on short write. |
-| `fstat()` | Partial | Host-delegated for regular files. Pipe returns S_IFIFO | 0o600. Full struct stat populated. |
+| `fstat()` | Partial | Host-delegated for regular files. Pipe returns S_IFIFO | 0o600. Guest libc synthesizes `st_blksize` and `st_blocks` when the kernel stat ABI leaves them zero. |
 | `ftruncate()` | Partial | Host-delegated for regular files with write access. Validates length >= 0. Rejects non-regular fds. |
 | `fsync()` | Partial | Host-delegated for regular files. Rejects non-regular fds (pipes, sockets). |
 | `fdatasync()` | Partial | Alias for fsync(). No metadata distinction in Wasm environment. |
