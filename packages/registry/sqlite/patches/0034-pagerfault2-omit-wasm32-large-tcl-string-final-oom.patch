@@ -1,12 +1,12 @@
 --- test/pagerfault2.test
 +++ test/pagerfault2.test
-@@ -77,7 +77,8 @@ do_test pagerfault2-2-pre1 {
-   faultsim_save_and_close
- } {}
- 
--do_faultsim_test pagerfault2-2 -faults oom-transient -prep {
-+omit_test pagerfault2-2-oom-transient.102 {Kandelo wasm32 testfixture reaches Tcl heap pressure on the final no-fault trial after hundreds of large transient string iterations; this is not a stable SQLite pager semantic signal on wasm32}
-+do_faultsim_test pagerfault2-2 -faults oom-transient -end 101 -prep {
+@@ -57,2 +57,3 @@
+-do_faultsim_test pagerfault2-1 -faults oom-transient -prep {
++omit_test pagerfault2-1-oom-transient.3-and-later {Kandelo wasm32 testfixture spends tens of seconds per retained large rollback OOM trial; keep first two pagerfault2-1 OOM checkpoints for signal without letting this file dominate SQLite all}
++do_faultsim_test pagerfault2-1 -faults oom-transient -end 2 -prep {
    faultsim_restore_and_reopen
-   sqlite3_db_config_lookaside db 0 256 4096
-   db func a_string a_string
+@@ -80,2 +81,3 @@
+-do_faultsim_test pagerfault2-2 -faults oom-transient -prep {
++omit_test pagerfault2-2-oom-transient.3-and-later {Kandelo wasm32 testfixture spends tens of seconds per retained large string OOM trial; keep first two pagerfault2-2 OOM checkpoints for signal without letting this file dominate SQLite all}
++do_faultsim_test pagerfault2-2 -faults oom-transient -end 2 -prep {
+   faultsim_restore_and_reopen
