@@ -17,14 +17,15 @@ use alloc::vec::Vec;
 use core::cell::UnsafeCell;
 use core::sync::atomic::AtomicI32;
 
-use wasm_posix_shared::flags::O_ACCMODE;
 use wasm_posix_shared::Errno;
+use wasm_posix_shared::flags::O_ACCMODE;
 
 use crate::ofd::FileType;
 use crate::process::{Process, ProcessState};
 
 const INITIAL_FORK_STATE_BUFFER_LEN: usize = 64 * 1024;
 const MAX_FORK_STATE_BUFFER_LEN: usize = 4 * 1024 * 1024;
+const WUNTRACED: u32 = 2;
 
 /// Owning pid of `/dev/fb0`, or `-1` if no process holds it.
 ///
@@ -859,6 +860,32 @@ impl ProcessTable {
         let proc = self.processes.get_mut(&pid).ok_or(Errno::ESRCH)?;
         proc.state = ProcessState::Exited;
         proc.exit_status = 128 + signum as i32;
+        proc.stop_signal = 0;
+        proc.stop_reported = false;
+        Ok(())
+    }
+
+    /// Mark a process as stopped by a default stop-action signal.
+    pub fn mark_process_stopped(&mut self, pid: u32, signum: u32) -> Result<(), Errno> {
+        let proc = self.processes.get_mut(&pid).ok_or(Errno::ESRCH)?;
+        if proc.state == ProcessState::Exited || proc.state == ProcessState::Limbo {
+            return Ok(());
+        }
+        proc.state = ProcessState::Stopped;
+        proc.stop_signal = signum;
+        proc.stop_reported = false;
+        Ok(())
+    }
+
+    /// Resume a process stopped by SIGSTOP/SIGTSTP. A future stop must be
+    /// reported separately, so clear the previous stop bookkeeping.
+    pub fn continue_process(&mut self, pid: u32) -> Result<(), Errno> {
+        let proc = self.processes.get_mut(&pid).ok_or(Errno::ESRCH)?;
+        if proc.state == ProcessState::Stopped {
+            proc.state = ProcessState::Running;
+            proc.stop_signal = 0;
+            proc.stop_reported = false;
+        }
         Ok(())
     }
 
@@ -874,14 +901,44 @@ impl ProcessTable {
         parent_pid: u32,
         target_pid: i32,
     ) -> Result<Option<(u32, i32)>, Errno> {
+        self.poll_waitable_child_inner(parent_pid, target_pid, 0)
+    }
+
+    /// Poll with wait4-style options. Stopped children are waitable only when
+    /// WUNTRACED is present, and the current stopped state is reported once.
+    pub fn poll_waitable_child_with_options(
+        &mut self,
+        parent_pid: u32,
+        target_pid: i32,
+        options: u32,
+    ) -> Result<Option<(u32, i32)>, Errno> {
+        let result = self.poll_waitable_child_inner(parent_pid, target_pid, options)?;
+        if let Some((child_pid, wait_status)) = result {
+            if Self::wait_status_is_stopped(wait_status) {
+                if let Some(child) = self.processes.get_mut(&child_pid) {
+                    child.stop_reported = true;
+                }
+            }
+        }
+        Ok(result)
+    }
+
+    fn poll_waitable_child_inner(
+        &self,
+        parent_pid: u32,
+        target_pid: i32,
+        options: u32,
+    ) -> Result<Option<(u32, i32)>, Errno> {
         let parent = self.processes.get(&parent_pid).ok_or(Errno::ESRCH)?;
+        let parent_pgid = parent.pgid;
         let mut saw_matching_child = false;
+        let mut stopped_child: Option<(u32, u32)> = None;
 
         for (&child_pid, child) in &self.processes {
             if child.ppid != parent_pid {
                 continue;
             }
-            if !Self::child_matches_wait_target(child_pid, child, target_pid, parent.pgid) {
+            if !Self::child_matches_wait_target(child_pid, child, target_pid, parent_pgid) {
                 continue;
             }
             saw_matching_child = true;
@@ -891,6 +948,20 @@ impl ProcessTable {
                     Self::wait_status_from_exit_status(child.exit_status),
                 )));
             }
+            if (options & WUNTRACED) != 0
+                && child.state == ProcessState::Stopped
+                && !child.stop_reported
+            {
+                stopped_child = Some((child_pid, child.stop_signal));
+                break;
+            }
+        }
+
+        if let Some((child_pid, stop_signal)) = stopped_child {
+            return Ok(Some((
+                child_pid,
+                Self::wait_status_from_stop_signal(stop_signal),
+            )));
         }
 
         if saw_matching_child {
@@ -935,6 +1006,14 @@ impl ProcessTable {
         } else {
             (exit_status & 0xff) << 8
         }
+    }
+
+    fn wait_status_from_stop_signal(signum: u32) -> i32 {
+        ((signum as i32) << 8) | 0x7f
+    }
+
+    fn wait_status_is_stopped(wait_status: i32) -> bool {
+        (wait_status & 0xff) == 0x7f
     }
 }
 
@@ -1098,6 +1177,41 @@ mod tests {
         table.processes.get_mut(&11).unwrap().ppid = 10;
 
         assert_eq!(table.poll_waitable_child(10, 11).unwrap(), Some((11, 15)));
+    }
+
+    #[test]
+    fn poll_waitable_child_reports_stopped_child_only_with_wuntraced() {
+        let mut table = ProcessTable::new();
+        table.create_process(10).unwrap();
+        table.create_process(11).unwrap();
+        table.processes.get_mut(&11).unwrap().ppid = 10;
+        table.mark_process_stopped(11, 19).unwrap();
+
+        assert_eq!(table.poll_waitable_child(10, 11).unwrap(), None);
+        assert_eq!(
+            table
+                .poll_waitable_child_with_options(10, 11, WUNTRACED)
+                .unwrap(),
+            Some((11, (19 << 8) | 0x7f))
+        );
+        assert_eq!(
+            table
+                .poll_waitable_child_with_options(10, 11, WUNTRACED)
+                .unwrap(),
+            None
+        );
+        assert_eq!(table.get(11).unwrap().state, ProcessState::Stopped);
+
+        table.continue_process(11).unwrap();
+        assert_eq!(table.get(11).unwrap().state, ProcessState::Running);
+
+        table.mark_process_stopped(11, 20).unwrap();
+        assert_eq!(
+            table
+                .poll_waitable_child_with_options(10, 11, WUNTRACED)
+                .unwrap(),
+            Some((11, (20 << 8) | 0x7f))
+        );
     }
 
     #[test]

@@ -342,6 +342,7 @@ pub trait HostIO {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ProcessState {
     Running,
+    Stopped,
     Exited,
     /// Reaped process-group leader retained only as a pgid/session identity
     /// placeholder while live or zombie members remain in the group.
@@ -512,6 +513,11 @@ pub struct Process {
     pub is_session_leader: bool,
     pub state: ProcessState,
     pub exit_status: i32,
+    /// Signal that most recently stopped this process. Meaningful only while
+    /// `state == ProcessState::Stopped`.
+    pub stop_signal: u32,
+    /// True after wait4/waitpid has reported the current stopped state.
+    pub stop_reported: bool,
     pub fd_table: FdTable,
     pub ofd_table: OfdTable,
     pub lock_table: LockTable,
@@ -627,6 +633,8 @@ impl Process {
             is_session_leader: false,
             state: ProcessState::Running,
             exit_status: 0,
+            stop_signal: 0,
+            stop_reported: false,
             fd_table,
             ofd_table,
             lock_table: LockTable::new(),

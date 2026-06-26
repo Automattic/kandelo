@@ -148,6 +148,9 @@ const WNOHANG = 1;
 const WNOWAIT = 0x1000000;
 const WEXITED = 4;
 
+const PROCESS_STATE_STOPPED = -2;
+const WAIT_STATUS_STOPPED = 0x7f;
+
 /** waitid idtype */
 const P_ALL = 0;
 const P_PID = 1;
@@ -156,9 +159,11 @@ const P_PGID = 2;
 /** CLD_* codes for siginfo_t */
 const CLD_EXITED = 1;
 const CLD_KILLED = 2;
+const CLD_STOPPED = 5;
 
 /** SIGCHLD */
 const SIGCHLD = 17;
+const SIGCONT = 18;
 const SIGALRM = 14;
 
 /** Network ioctl request codes */
@@ -471,9 +476,24 @@ interface RegisterProcessOptions {
 }
 
 type WaitPollResult =
-  | { kind: "exited"; childPid: number; waitStatus: number }
+  | { kind: "waitable"; childPid: number; waitStatus: number; shouldReap: boolean }
   | { kind: "running" }
   | { kind: "error"; errno: number };
+
+type StoppedChannelCompletion =
+  | {
+      kind: "complete";
+      channel: ChannelInfo;
+      syscallNr: number;
+      origArgs: number[];
+      argDescs: SyscallArgDesc[] | undefined;
+      retVal: number;
+      errVal: number;
+    }
+  | {
+      kind: "retry";
+      channel: ChannelInfo;
+    };
 
 /**
  * Context describing a fork() initiated from a non-main thread. Set on
@@ -712,6 +732,8 @@ export class CentralizedKernelWorker {
     options: number;
     syscallNr: number;
   }> = [];
+  /** Processes stopped after completing a syscall but before returning to guest code. */
+  private stoppedChannels = new Map<number, StoppedChannelCompletion>();
   /** Cached kernel memory typed array view (invalidated on memory.grow) */
   private cachedKernelMem: Uint8Array | null = null;
   private cachedKernelBuffer: ArrayBuffer | null = null;
@@ -1075,6 +1097,7 @@ export class CentralizedKernelWorker {
     // since nextChildPid is monotonic, but defensive), the new process
     // hasn't been reaped yet.
     this.hostReaped.delete(pid);
+    this.stoppedChannels.delete(pid);
 
     // Create process in kernel's process table (skip if already created, e.g. by fork)
     if (!options?.skipKernelCreate) {
@@ -1520,6 +1543,7 @@ export class CentralizedKernelWorker {
     this.removeFromKernelProcessTable(pid);
 
     this.processes.delete(pid);
+    this.stoppedChannels.delete(pid);
     this.stdinFinite.delete(pid);
     this.stdinBuffers.delete(pid);
 
@@ -1725,6 +1749,10 @@ export class CentralizedKernelWorker {
     );
     this.channelTids.delete(`${pid}:${channelOffset}`);
     this.threadForkContexts.delete(`${pid}:${channelOffset}`);
+    const stopped = this.stoppedChannels.get(pid);
+    if (stopped?.channel.channelOffset === channelOffset) {
+      this.stoppedChannels.delete(pid);
+    }
   }
 
   /**
@@ -2454,14 +2482,14 @@ export class CentralizedKernelWorker {
     // If deliver_pending_signals marked this process as Exited (e.g., abort()
     // raises SIGABRT with default action Terminate), don't complete the channel.
     // Instead, record signal-death wait status and terminate the worker.
-    const getExitStatus = this.kernelInstance!.exports
-      .kernel_get_process_exit_status as ((pid: number) => number) | undefined;
-    if (getExitStatus) {
-      const exitStatus = getExitStatus(channel.pid);
-      if (exitStatus >= 128) {
-        this.handleProcessTerminated(channel);
-        return;
-      }
+    const processStatus = this.getProcessExitStatus(channel.pid);
+    if (processStatus >= 128) {
+      this.handleProcessTerminated(channel);
+      return;
+    }
+    if (processStatus === PROCESS_STATE_STOPPED) {
+      this.parkStoppedProcess(channel, syscallNr, origArgs, argDescs, retVal, errVal);
+      return;
     }
 
     // --- POSIX mqueue notification ---
@@ -2518,6 +2546,9 @@ export class CentralizedKernelWorker {
     //       a `kill` of a sleeping child can leave the parent blocked even
     //       though Rust has marked the child as an Exited zombie.
     if (errVal === 0 && syscallNr === SYS_KILL) {
+      if ((origArgs[1] >>> 0) === SIGCONT) {
+        this.resumeContinuedStoppedProcesses(origArgs[0] | 0);
+      }
       this.scheduleWakeBlockedRetries();
       this.reapKilledProcessesAfterSyscall();
     }
@@ -3862,14 +3893,14 @@ export class CentralizedKernelWorker {
     // Check if the process was killed by a signal while blocking.
     // This handles cases like sigsuspend + cross-process SIGABRT where
     // deliver_pending_signals marks the target as Exited.
-    const getExitStatus = this.kernelInstance!.exports
-      .kernel_get_process_exit_status as ((pid: number) => number) | undefined;
-    if (getExitStatus) {
-      const exitStatus = getExitStatus(channel.pid);
-      if (exitStatus >= 128) {
-        this.handleProcessTerminated(channel);
-        return;
-      }
+    const processStatus = this.getProcessExitStatus(channel.pid);
+    if (processStatus >= 128) {
+      this.handleProcessTerminated(channel);
+      return;
+    }
+    if (processStatus === PROCESS_STATE_STOPPED) {
+      this.parkStoppedProcessRetry(channel);
+      return;
     }
 
     // The process channel still has the original args (we never wrote a response).
@@ -3933,6 +3964,23 @@ export class CentralizedKernelWorker {
   ): void {
     // Check if a signal became pending during the sleep
     this.dequeueSignalForDelivery(channel);
+
+    const processStatus = this.getProcessExitStatus(channel.pid);
+    if (processStatus === PROCESS_STATE_STOPPED) {
+      this.parkStoppedProcess(
+        channel,
+        syscallNr,
+        origArgs,
+        SYSCALL_ARGS[syscallNr],
+        retVal,
+        errVal,
+      );
+      return;
+    }
+    if (processStatus >= 128) {
+      this.handleProcessTerminated(channel);
+      return;
+    }
 
     // If a signal was dequeued, return EINTR instead of success
     const processView = new DataView(channel.memory.buffer, channel.channelOffset);
@@ -6205,6 +6253,16 @@ export class CentralizedKernelWorker {
     const isMainChannel = registration && registration.channels.length > 0 &&
       registration.channels[0].channelOffset === channel.channelOffset;
 
+    const signalStatus = this.deliverPendingDefaultSignals(channel);
+    if (signalStatus >= 128) {
+      this.handleProcessTerminated(channel);
+      return;
+    }
+    if (signalStatus === PROCESS_STATE_STOPPED) {
+      this.parkStoppedProcessRetry(channel);
+      return;
+    }
+
     if (syscallNr === SYS_EXIT && !isMainChannel) {
       // Thread exit: find TID, notify kernel, remove channel, complete to unblock
       const tidKey = `${channel.pid}:${channel.channelOffset}`;
@@ -6280,6 +6338,7 @@ export class CentralizedKernelWorker {
       return;
     }
     this.hostReaped.add(exitingPid);
+    this.stoppedChannels.delete(exitingPid);
     this.notifyParentOfExitedProcess(exitingPid);
 
     // Complete the channel so the worker unblocks from Atomics.wait().
@@ -6311,6 +6370,7 @@ export class CentralizedKernelWorker {
     // but defensive) starts fresh.
     if (this.hostReaped.has(exitingPid)) return;
     this.hostReaped.add(exitingPid);
+    this.stoppedChannels.delete(exitingPid);
     this.notifyParentOfExitedProcess(exitingPid);
 
     // Clean up per-process state
@@ -6356,6 +6416,7 @@ export class CentralizedKernelWorker {
       ((pid: number, signum: number) => number) | undefined;
     if (markSignaled && markSignaled(pid, signum) < 0) return;
     this.hostReaped.add(pid);
+    this.stoppedChannels.delete(pid);
     this.notifyParentOfExitedProcess(pid);
     this.sharedMappings.delete(pid);
   }
@@ -6413,14 +6474,17 @@ export class CentralizedKernelWorker {
     const options = origArgs[2] >>> 0;
     const parentPid = channel.pid;
 
-    const poll = this.pollWaitableChild(parentPid, targetPid);
+    const poll = this.pollWaitableChild(parentPid, targetPid, options);
     if (poll.kind === "error") {
       this.completeWaitpid(channel, origArgs, -1, poll.errno);
       return;
     }
-    if (poll.kind === "exited") {
-      this.consumeExitedChild(parentPid, poll.childPid);
+    if (poll.kind === "waitable") {
+      if (poll.shouldReap) {
+        this.consumeExitedChild(parentPid, poll.childPid);
+      }
       this.writeWaitStatus(channel, wstatusPtr, poll.waitStatus);
+      this.writeWaitRusage(channel, origArgs[3]);
       this.completeWaitpid(channel, origArgs, poll.childPid, 0);
       return;
     }
@@ -6442,17 +6506,32 @@ export class CentralizedKernelWorker {
     });
   }
 
-  private pollWaitableChild(parentPid: number, targetPid: number): WaitPollResult {
-    const waitPoll = this.kernelInstance!.exports.kernel_wait4_poll as
-      (parentPid: number, targetPid: number, statusPtr: KernelPointer) => number;
-    const result = waitPoll(parentPid, targetPid, this.toKernelPtr(this.scratchOffset!));
+  private pollWaitableChild(parentPid: number, targetPid: number, options = 0): WaitPollResult {
+    const statusPtr = this.toKernelPtr(this.scratchOffset!);
+    const waitPollWithOptions = this.kernelInstance!.exports.kernel_wait4_poll_with_options as
+      ((parentPid: number, targetPid: number, options: number, statusPtr: KernelPointer) => number) | undefined;
+    const result = waitPollWithOptions
+      ? waitPollWithOptions(parentPid, targetPid, options >>> 0, statusPtr)
+      : (this.kernelInstance!.exports.kernel_wait4_poll as
+          (parentPid: number, targetPid: number, statusPtr: KernelPointer) => number)(
+            parentPid, targetPid, statusPtr,
+          );
     if (result > 0) {
       const waitStatus = new DataView(this.kernelMemory!.buffer)
         .getInt32(this.scratchOffset!, true);
-      return { kind: "exited", childPid: result, waitStatus };
+      return {
+        kind: "waitable",
+        childPid: result,
+        waitStatus,
+        shouldReap: !this.isStoppedWaitStatus(waitStatus),
+      };
     }
     if (result === 0) return { kind: "running" };
     return { kind: "error", errno: (-result) >>> 0 };
+  }
+
+  private isStoppedWaitStatus(waitStatus: number): boolean {
+    return (waitStatus & 0xff) === WAIT_STATUS_STOPPED;
   }
 
   private getParentPid(pid: number): number | undefined {
@@ -6484,11 +6563,98 @@ export class CentralizedKernelWorker {
     this.wakeWaitingParent(parentPid);
   }
 
+  private notifyParentOfStoppedProcess(pid: number): void {
+    const parentPid = this.getParentPid(pid);
+    if (parentPid === undefined) return;
+
+    this.sendSignalToProcess(parentPid, SIGCHLD);
+    this.wakeWaitingParent(parentPid);
+  }
+
   /** Write wait status to the wstatus pointer in process memory. */
   private writeWaitStatus(channel: ChannelInfo, wstatusPtr: number, waitStatus: number): void {
     if (wstatusPtr !== 0) {
       const procView = new DataView(channel.memory.buffer);
       procView.setInt32(wstatusPtr, waitStatus, true);
+    }
+  }
+
+  private writeWaitRusage(channel: ChannelInfo, rusagePtr: number): void {
+    if (rusagePtr === 0) return;
+    new Uint8Array(channel.memory.buffer, rusagePtr, 144).fill(0);
+  }
+
+  private getProcessExitStatus(pid: number): number {
+    const getExitStatus = this.kernelInstance?.exports
+      .kernel_get_process_exit_status as ((pid: number) => number) | undefined;
+    return getExitStatus ? getExitStatus(pid) : -1;
+  }
+
+  private deliverPendingDefaultSignals(channel: ChannelInfo): number {
+    const deliverPendingDefaultSignals = this.kernelInstance?.exports
+      .kernel_deliver_pending_default_signals as ((pid: number) => number) | undefined;
+    if (!deliverPendingDefaultSignals) return this.getProcessExitStatus(channel.pid);
+    this.bindKernelTidForChannel(channel);
+    return deliverPendingDefaultSignals(channel.pid);
+  }
+
+  private parkStoppedProcessRetry(channel: ChannelInfo): void {
+    this.stoppedChannels.set(channel.pid, { kind: "retry", channel });
+    channel.handling = true;
+    this.notifyParentOfStoppedProcess(channel.pid);
+  }
+
+  private parkStoppedProcess(
+    channel: ChannelInfo,
+    syscallNr: number,
+    origArgs: number[],
+    argDescs: SyscallArgDesc[] | undefined,
+    retVal: number,
+    errVal: number,
+  ): void {
+    this.stoppedChannels.set(channel.pid, {
+      kind: "complete",
+      channel,
+      syscallNr,
+      origArgs,
+      argDescs,
+      retVal,
+      errVal,
+    });
+    channel.handling = true;
+    this.notifyParentOfStoppedProcess(channel.pid);
+  }
+
+  private resumeStoppedProcess(pid: number): void {
+    const stopped = this.stoppedChannels.get(pid);
+    if (!stopped) return;
+    if (this.getProcessExitStatus(pid) === PROCESS_STATE_STOPPED) return;
+    this.stoppedChannels.delete(pid);
+    if (stopped.kind === "retry") {
+      this.retrySyscall(stopped.channel);
+      return;
+    }
+    this.dequeueSignalForDelivery(stopped.channel);
+    this.completeChannel(
+      stopped.channel,
+      stopped.syscallNr,
+      stopped.origArgs,
+      stopped.argDescs,
+      stopped.retVal,
+      stopped.errVal,
+    );
+  }
+
+  private resumeContinuedStoppedProcesses(targetPid: number): void {
+    if (targetPid > 0) {
+      this.resumeStoppedProcess(targetPid);
+      return;
+    }
+
+    for (const stoppedPid of [...this.stoppedChannels.keys()]) {
+      if (this.getProcessExitStatus(stoppedPid) !== PROCESS_STATE_STOPPED) {
+        this.resumeStoppedProcess(stoppedPid);
+      }
     }
   }
 
@@ -6509,13 +6675,13 @@ export class CentralizedKernelWorker {
     for (let i = 0; i < this.waitingForChild.length; i++) {
       const waiter = this.waitingForChild[i];
       if (waiter.parentPid !== parentPid) continue;
-      const waiterPoll = this.pollWaitableChild(waiter.parentPid, waiter.pid);
-      if (waiterPoll.kind !== "exited") continue;
+      const waiterPoll = this.pollWaitableChild(waiter.parentPid, waiter.pid, waiter.options);
+      if (waiterPoll.kind !== "waitable") continue;
       idx = i;
       poll = waiterPoll;
       break;
     }
-    if (idx === -1 || poll?.kind !== "exited") return;
+    if (idx === -1 || poll?.kind !== "waitable") return;
 
     const waiter = this.waitingForChild[idx];
     this.waitingForChild.splice(idx, 1);
@@ -6523,15 +6689,18 @@ export class CentralizedKernelWorker {
     if (waiter.syscallNr === SYS_WAITID) {
       // waitid: write siginfo_t, optionally consume zombie
       this.writeSignalInfo(waiter.channel, waiter.origArgs[2], poll.childPid, poll.waitStatus);
-      if (!(waiter.options & WNOWAIT)) {
+      if (poll.shouldReap && !(waiter.options & WNOWAIT)) {
         this.consumeExitedChild(parentPid, poll.childPid);
       }
       this.dequeueSignalForDelivery(waiter.channel);
       this.completeChannel(waiter.channel, SYS_WAITID, waiter.origArgs, undefined, 0, 0);
     } else {
-      // wait4: write wstatus, consume zombie
-      this.consumeExitedChild(parentPid, poll.childPid);
+      // wait4: write wstatus; consume only exited/signaled children.
+      if (poll.shouldReap) {
+        this.consumeExitedChild(parentPid, poll.childPid);
+      }
       this.writeWaitStatus(waiter.channel, waiter.origArgs[1], poll.waitStatus);
+      this.writeWaitRusage(waiter.channel, waiter.origArgs[3]);
       this.completeWaitpid(waiter.channel, waiter.origArgs, poll.childPid, 0);
     }
   }
@@ -6548,7 +6717,7 @@ export class CentralizedKernelWorker {
       // Only re-check waiters targeting a specific process group (pid < -1 or pid == 0)
       if (waiter.pid > 0 || waiter.pid === -1) continue;
 
-      const poll = this.pollWaitableChild(waiter.parentPid, waiter.pid);
+      const poll = this.pollWaitableChild(waiter.parentPid, waiter.pid, waiter.options);
       if (poll.kind === "error") {
         // No more matching children — wake with ECHILD
         this.waitingForChild.splice(i, 1);
@@ -6576,14 +6745,14 @@ export class CentralizedKernelWorker {
     const parentPid = channel.pid;
     const waitPid = this.waitidToWaitPid(idtype, id);
 
-    const poll = this.pollWaitableChild(parentPid, waitPid);
+    const poll = this.pollWaitableChild(parentPid, waitPid, options);
     if (poll.kind === "error") {
       this.completeChannel(channel, SYS_WAITID, origArgs, undefined, -1, poll.errno);
       return;
     }
-    if (poll.kind === "exited") {
+    if (poll.kind === "waitable") {
       this.writeSignalInfo(channel, siginfoPtr, poll.childPid, poll.waitStatus);
-      if (!(options & WNOWAIT)) {
+      if (poll.shouldReap && !(options & WNOWAIT)) {
         this.consumeExitedChild(parentPid, poll.childPid);
       }
       this.completeChannel(channel, SYS_WAITID, origArgs, undefined, 0, 0);
@@ -6631,17 +6800,22 @@ export class CentralizedKernelWorker {
       procView.setInt32(siginfoPtr + i, 0, true);
     }
 
-    const signaled = (waitStatus & 0x7f) !== 0;
+    const stopped = this.isStoppedWaitStatus(waitStatus);
+    const signaled = !stopped && (waitStatus & 0x7f) !== 0;
     procView.setInt32(siginfoPtr + 0, SIGCHLD, true);  // si_signo
     procView.setInt32(siginfoPtr + 4, 0, true);         // si_errno
-    if (signaled) {
+    if (stopped) {
+      procView.setInt32(siginfoPtr + 8, CLD_STOPPED, true); // si_code
+    } else if (signaled) {
       procView.setInt32(siginfoPtr + 8, CLD_KILLED, true); // si_code
     } else {
       procView.setInt32(siginfoPtr + 8, CLD_EXITED, true); // si_code
     }
     procView.setInt32(siginfoPtr + 12, childPid, true);  // si_pid
     procView.setInt32(siginfoPtr + 16, 1000, true);      // si_uid
-    if (signaled) {
+    if (stopped) {
+      procView.setInt32(siginfoPtr + 20, (waitStatus >> 8) & 0xff, true); // si_status = stop signal
+    } else if (signaled) {
       procView.setInt32(siginfoPtr + 20, waitStatus & 0x7f, true); // si_status = signal number
     } else {
       procView.setInt32(siginfoPtr + 20, (waitStatus >> 8) & 0xff, true); // si_status = exit code
@@ -6852,6 +7026,13 @@ export class CentralizedKernelWorker {
       console.error(`[sendSignalToProcess] kernel threw for pid=${targetPid} sig=${signum}: ${err}`);
     } finally {
       this.currentHandlePid = 0;
+    }
+
+    const processStatus = this.getProcessExitStatus(targetPid);
+    if (signum === SIGCONT && processStatus !== PROCESS_STATE_STOPPED) {
+      this.resumeStoppedProcess(targetPid);
+    } else if (processStatus === PROCESS_STATE_STOPPED && this.stoppedChannels.has(targetPid)) {
+      this.notifyParentOfStoppedProcess(targetPid);
     }
 
     // Check if the signal is deliverable (not blocked by the process)
