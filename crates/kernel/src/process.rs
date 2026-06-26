@@ -745,26 +745,6 @@ impl Process {
         }
     }
 
-    /// Mark one pre-opened stdio descriptor as a host-backed pipe.
-    /// New host-created processes should be created with explicit stdio
-    /// wiring instead; this remains for the older stdin-buffer export.
-    pub fn mark_stdio_fd_as_pipe(&mut self, fd: i32) {
-        if !(0..=2).contains(&fd) {
-            return;
-        }
-
-        let ofd_idx = match self.fd_table.get(fd) {
-            Ok(entry) => entry.ofd_ref.0,
-            Err(_) => return,
-        };
-
-        if let Some(ofd) = self.ofd_table.get_mut(ofd_idx) {
-            if (0..=2).contains(&ofd.host_handle) {
-                ofd.file_type = crate::ofd::FileType::Pipe;
-            }
-        }
-    }
-
     /// Returns how many times this process has successfully forked (parent side).
     pub fn fork_count(&self) -> u64 {
         self.fork_count

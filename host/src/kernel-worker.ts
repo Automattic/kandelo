@@ -1219,12 +1219,6 @@ export class CentralizedKernelWorker {
   setStdinData(pid: number, data: Uint8Array): void {
     this.stdinBuffers.set(pid, { data, offset: 0 });
     this.stdinFinite.add(pid); // EOF after data is consumed
-    // Mark stdin as a pipe so terminal echo is disabled and isatty(0) = false
-    const kernelSetStdinPipe = this.kernelInstance!.exports.kernel_set_stdin_pipe as
-      ((pid: number) => number) | undefined;
-    if (kernelSetStdinPipe) {
-      kernelSetStdinPipe(pid);
-    }
   }
 
   /**

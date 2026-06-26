@@ -1489,21 +1489,6 @@ pub extern "C" fn kernel_set_process_argv(pid: u32, data_ptr: *const u8, data_le
     }
 }
 
-/// Mark a process's stdin (fd 0) as a pipe.
-/// New host-created processes should be created with explicit stdio wiring;
-/// this export remains for callers that attach buffered stdin after creation.
-/// Returns 0 on success, -ESRCH if pid not found.
-#[unsafe(no_mangle)]
-pub extern "C" fn kernel_set_stdin_pipe(pid: u32) -> i32 {
-    let table = unsafe { &mut *PROCESS_TABLE.0.get() };
-    if let Some(proc) = table.get_mut(pid) {
-        proc.mark_stdio_fd_as_pipe(0);
-        0
-    } else {
-        -(Errno::ESRCH as i32)
-    }
-}
-
 fn finish_removed_process(pid: u32, result: crate::process_table::RemoveProcessResult) {
     use core::sync::atomic::Ordering;
 

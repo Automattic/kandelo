@@ -24,6 +24,8 @@ pub mod host_abi;
 ///     with a wasm-declared reserved thread-slot count.
 /// 15: remove the obsolete `kernel_set_mode` export; the kernel is always
 ///     the shared point of contact for all programs.
+/// 16: process creation takes explicit stdio descriptor kinds and removes the
+///     post-creation stdin pipe mutation export.
 pub const ABI_VERSION: u32 = 16;
 
 /// Syscall numbers for the POSIX kernel interface.
