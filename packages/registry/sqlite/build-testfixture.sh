@@ -21,6 +21,7 @@ SQLITE_FULL="$SCRIPT_DIR/sqlite-full-src"
 ZLIB_INSTALL="$SCRIPT_DIR/../zlib/zlib-install"
 BUILD_DIR="$SCRIPT_DIR/testfixture-build"
 SQLITE_VERSION="${SQLITE_VERSION:-3.49.1}"
+SQLITE_JSON_MAX_DEPTH="${SQLITE_JSON_MAX_DEPTH:-100}"
 
 sqlite_packed_version() {
     local major minor patch
@@ -64,6 +65,24 @@ if [ ! -d "$SQLITE_FULL/src" ]; then
     rm -rf "$TMP_DIR" "$TMP_ZIP"
 fi
 
+PATCH_DIR="$SCRIPT_DIR/patches"
+if [ -d "$PATCH_DIR" ]; then
+    echo "==> Applying SQLite testfixture patches..."
+    for patch_file in "$PATCH_DIR"/*.patch; do
+        [ -f "$patch_file" ] || continue
+        patch_name="$(basename "$patch_file")"
+        if patch -p0 -N --dry-run --silent -d "$SQLITE_FULL" < "$patch_file" >/dev/null 2>&1; then
+            echo "  Applying $patch_name..."
+            patch -p0 -N -d "$SQLITE_FULL" < "$patch_file"
+        elif patch -p0 -R --dry-run --silent -d "$SQLITE_FULL" < "$patch_file" >/dev/null 2>&1; then
+            echo "  $patch_name already applied"
+        else
+            echo "ERROR: $patch_name does not apply cleanly" >&2
+            exit 1
+        fi
+    done
+fi
+
 export WASM_POSIX_SYSROOT="$SYSROOT"
 
 # --- Generate required headers ---
@@ -95,6 +114,7 @@ CFLAGS=(
     -DSQLITE_THREADSAFE=1
     -DSQLITE_NO_SYNC=1
     -DSQLITE_ENABLE_SETLK_TIMEOUT=2
+    -DSQLITE_JSON_MAX_DEPTH="$SQLITE_JSON_MAX_DEPTH"
     -DHAVE_PREAD=1
     -DHAVE_PWRITE=1
     -DSQLITE_OMIT_LOAD_EXTENSION

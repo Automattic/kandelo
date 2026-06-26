@@ -741,6 +741,13 @@ bash packages/registry/tcl/build-tcl.sh
 bash packages/registry/sqlite/build-testfixture.sh
 ```
 
+Kandelo builds SQLite and the upstream `testfixture` with
+`SQLITE_JSON_MAX_DEPTH=100`. SQLite's default JSON depth limit is higher, but
+current browser wasm engines can exhaust their call stack before deeply nested
+JSON tests reach SQLite's own limit. The testfixture patch set exposes the
+compiled JSON limit to Tcl so `json101.test` checks Kandelo's configured limit
+instead of assuming the upstream default.
+
 Then run the harness:
 
 ```bash
