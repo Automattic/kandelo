@@ -306,6 +306,17 @@ function guestEnv(): string[] {
     return [...inherited, `PATH=${kernelPath}`];
 }
 
+function parseKernelCredential(name: "KERNEL_UID" | "KERNEL_GID"): number | undefined {
+    const raw = process.env[name];
+    if (raw === undefined || raw === "") return undefined;
+
+    const value = Number(raw);
+    if (!Number.isInteger(value) || value < 0 || value > 0xffffffff) {
+        throw new Error(`${name} must be an unsigned 32-bit integer`);
+    }
+    return value;
+}
+
 async function main() {
     const name = process.argv[2];
     if (!name) {
@@ -370,6 +381,8 @@ async function main() {
             ...gitEnv,
         ],
         cwd: process.env.KERNEL_CWD || process.cwd(),
+        uid: parseKernelCredential("KERNEL_UID"),
+        gid: parseKernelCredential("KERNEL_GID"),
         stdin: stdinData,
     });
 
