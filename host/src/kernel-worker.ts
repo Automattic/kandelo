@@ -460,6 +460,8 @@ interface RegisterProcessOptions {
   skipKernelCreate?: boolean;
   argv?: string[];
   ptrWidth?: 4 | 8;
+  /** Required for new kernel Process creation; ignored when skipKernelCreate is true. */
+  stdio?: RegisterProcessStdio;
   /** Initial program break after any host-owned low control pages. */
   brkBase?: number;
   /** Lower bound for automatic mmap allocation. */
@@ -468,6 +470,33 @@ interface RegisterProcessOptions {
   maxAddr?: number;
   /** brk ceiling below host-owned control pages. */
   brkLimit?: number;
+}
+
+type RegisterProcessStdioKind = "pipe" | "terminal";
+
+interface RegisterProcessStdio {
+  stdin: RegisterProcessStdioKind;
+  stdout: RegisterProcessStdioKind;
+  stderr: RegisterProcessStdioKind;
+}
+
+export const CAPTURED_STDIO: RegisterProcessStdio = {
+  stdin: "pipe",
+  stdout: "pipe",
+  stderr: "pipe",
+};
+
+export const TERMINAL_STDIO: RegisterProcessStdio = {
+  stdin: "terminal",
+  stdout: "terminal",
+  stderr: "terminal",
+};
+
+function encodeStdioKind(kind: RegisterProcessStdioKind): number {
+  switch (kind) {
+    case "pipe": return 0;
+    case "terminal": return 1;
+  }
 }
 
 type WaitPollResult =
@@ -1078,8 +1107,21 @@ export class CentralizedKernelWorker {
 
     // Create process in kernel's process table (skip if already created, e.g. by fork)
     if (!options?.skipKernelCreate) {
-      const createProcess = this.kernelInstance!.exports.kernel_create_process as (pid: number) => number;
-      const result = createProcess(pid);
+      const stdio = options?.stdio;
+      if (!stdio) {
+        throw new Error("registerProcess requires explicit stdio when creating a kernel process");
+      }
+      const createProcess = this.kernelInstance!.exports.kernel_create_process_with_stdio as
+        ((pid: number, stdinKind: number, stdoutKind: number, stderrKind: number) => number) | undefined;
+      if (!createProcess) {
+        throw new Error("Kernel missing kernel_create_process_with_stdio export");
+      }
+      const result = createProcess(
+        pid,
+        encodeStdioKind(stdio.stdin),
+        encodeStdioKind(stdio.stdout),
+        encodeStdioKind(stdio.stderr),
+      );
       if (result < 0) {
         throw new Error(`Failed to create process ${pid}: errno ${-result}`);
       }
@@ -1182,21 +1224,6 @@ export class CentralizedKernelWorker {
       ((pid: number) => number) | undefined;
     if (kernelSetStdinPipe) {
       kernelSetStdinPipe(pid);
-    }
-  }
-
-  /**
-   * Mark stdin/stdout/stderr as captured pipes for non-PTY processes.
-   */
-  setStdioPipes(pid: number): void {
-    const kernelSetStdioPipes = this.kernelInstance!.exports.kernel_set_stdio_pipes as
-      ((pid: number) => number) | undefined;
-    if (!kernelSetStdioPipes) {
-      throw new Error("Kernel missing kernel_set_stdio_pipes export");
-    }
-    const rc = kernelSetStdioPipes(pid);
-    if (rc < 0) {
-      throw new Error(`kernel_set_stdio_pipes failed: errno ${-rc}`);
     }
   }
 

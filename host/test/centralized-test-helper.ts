@@ -8,7 +8,7 @@
 import { readFileSync, existsSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
-import { CentralizedKernelWorker } from "../src/kernel-worker";
+import { CAPTURED_STDIO, CentralizedKernelWorker } from "../src/kernel-worker";
 import { resolveBinary } from "../src/binary-resolver";
 import { NodePlatformIO } from "../src/platform/node";
 import { NodeWorkerAdapter } from "../src/worker-adapter";
@@ -538,6 +538,7 @@ async function runOnMainThread(options: RunProgramOptions): Promise<RunProgramRe
     brkBase: layout.brkBase,
     mmapBase: layout.mmapBase,
     maxAddr: layout.maxAddr,
+    stdio: CAPTURED_STDIO,
   });
   processProgramBytes.set(pid, programBytes);
   processLayouts.set(pid, layout);

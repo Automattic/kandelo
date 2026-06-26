@@ -21,7 +21,7 @@ import { describe, it, expect } from "vitest";
 import { existsSync, readFileSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
-import { CentralizedKernelWorker } from "../src/kernel-worker";
+import { CAPTURED_STDIO, CentralizedKernelWorker } from "../src/kernel-worker";
 import { NodePlatformIO } from "../src/platform/node";
 import { NodeWorkerAdapter } from "../src/worker-adapter";
 import { detectPtrWidth } from "../src/constants";
@@ -102,7 +102,7 @@ describe.skipIf(!existsSync(audiotestBinary))("audio integration", () => {
     memory.grow(MAX_PAGES - 17);
     new Uint8Array(memory.buffer, channelOffset, CH_TOTAL_SIZE).fill(0);
 
-    kernel.registerProcess(pid, memory, [channelOffset], { ptrWidth });
+    kernel.registerProcess(pid, memory, [channelOffset], { ptrWidth, stdio: CAPTURED_STDIO });
 
     const initData: CentralizedWorkerInitMessage = {
       type: "centralized_init",
