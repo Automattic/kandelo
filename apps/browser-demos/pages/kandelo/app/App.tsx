@@ -1,47 +1,75 @@
-// Top-level Kandelo app. View router (sidebar item → main panel content);
-// holds the per-session UI state (current view, inspector tab, share dialog
-// open).
-//
-// Today only the 'machine' surface is wired. Other views show a placeholder
-// while their components are built.
+// Top-level Kandelo app. The machine remains the primary canvas; the dock
+// switches machine views and opens exploratory panes for gallery, config,
+// sharing, and new machine setup.
 
 import * as React from "react";
-import { useKernelHost, useStatus } from "../kernel-host/react";
-import { Sidebar, type ViewId, type InternalsTab } from "./Sidebar";
-import { MachineView } from "../views/MachineView";
+import { useKernelHost } from "../kernel-host/react";
+import { Dock, DockPane, type DockPaneId, type DockViewId } from "./Dock";
+import { NewMachinePane } from "./NewMachinePane";
+import { MachineView, useMachineSurfaceController } from "../views/MachineView";
 import { Gallery, descriptorFromGalleryItem } from "../views/Gallery";
 import { Config } from "../views/Config";
 import { EmptyState } from "../views/EmptyState";
-import { ShareDialog } from "../dialogs/ShareDialog";
+import { SharePanel } from "../dialogs/ShareDialog";
 import { createShellTerminal, type ShellTerminal } from "../panes/Shell";
 import { navigateToGalleryItemUrl } from "../url-state";
 import type { BootDescriptor, GalleryItem } from "../../../../../web-libs/kandelo-session/src/kernel-host";
 
+type InternalsTab = "syslog" | "procs" | "vfs" | "lazy-load" | "config" | "syscalls";
+
+const PANE_META: Record<DockPaneId, { title: string; subtitle: string }> = {
+  new: {
+    title: "New machine",
+    subtitle: "Start from a preset, open a Kandelo URL, or review image import boundaries.",
+  },
+  gallery: {
+    title: "Gallery",
+    subtitle: "Published Kandelo systems and local demo images.",
+  },
+  config: {
+    title: "This machine",
+    subtitle: "Edit the current boot descriptor through KernelHost.",
+  },
+  share: {
+    title: "Share and export",
+    subtitle: "Create a Kandelo URL and check what state it can carry.",
+  },
+};
+
 export const App: React.FC = () => {
   const host = useKernelHost();
-  const status = useStatus();
+  const surface = useMachineSurfaceController();
 
-  const [view, setView] = React.useState<ViewId>("machine");
+  const [dockPane, setDockPane] = React.useState<DockPaneId | null>(null);
   const [internalsTab, setInternalsTab] = React.useState<InternalsTab>("syslog");
+  const [shareTarget, setShareTarget] = React.useState<BootDescriptor | null>(null);
   const [terminals, setTerminals] = React.useState<ShellTerminal[]>(() => [createShellTerminal(1)]);
   const [activeTerminalId, setActiveTerminalId] = React.useState("tty-1");
   const nextTerminalIndex = React.useRef(2);
-  /**
-   * Share dialog state. `null` = closed; `true` = sharing the running
-   * machine; a BootDescriptor = sharing a gallery preset that hasn't been
-   * applied yet (e.g. user clicked the share icon on a gallery card).
-   */
-  const [shareTarget, setShareTarget] = React.useState<true | BootDescriptor | null>(null);
 
   const desc = host.getBootDescriptor();
 
-  const onNav = (id: ViewId) => {
-    if (id === "share") {
-      setShareTarget(true);
-      return;
-    }
-    setView(id);
-  };
+  const closeDockPane = React.useCallback(() => {
+    setDockPane(null);
+    setShareTarget(null);
+  }, []);
+
+  const selectDockPane = React.useCallback((pane: DockPaneId | null) => {
+    setShareTarget(null);
+    setDockPane((current) => current === pane ? null : pane);
+  }, []);
+
+  const selectMachineView = React.useCallback((view: DockViewId) => {
+    setShareTarget(null);
+    setDockPane(null);
+    surface.chooseView(view);
+  }, [surface]);
+
+  const applyDescriptor = React.useCallback((d: BootDescriptor) => {
+    void host.applyBootDescriptor(d).then(closeDockPane).catch((err) => {
+      console.warn("applyBootDescriptor failed:", err);
+    });
+  }, [host, closeDockPane]);
 
   const onLaunchGalleryItem = React.useCallback((item: GalleryItem) => {
     if (item.vfsImageUrl) {
@@ -50,14 +78,14 @@ export const App: React.FC = () => {
     }
 
     const next = descriptorFromGalleryItem(item, host.getBootDescriptor());
-    setView("machine");
-    void host.applyBootDescriptor(next).catch((err) => {
+    void host.applyBootDescriptor(next).then(closeDockPane).catch((err) => {
       console.warn("applyBootDescriptor failed:", err);
     });
-  }, [host]);
+  }, [host, closeDockPane]);
 
   const onShareGalleryItem = React.useCallback((item: GalleryItem) => {
     setShareTarget(descriptorFromGalleryItem(item, host.getBootDescriptor()));
+    setDockPane("share");
   }, [host]);
 
   const onAddTerminal = React.useCallback(() => {
@@ -66,33 +94,21 @@ export const App: React.FC = () => {
     setActiveTerminalId(terminal.id);
   }, []);
 
-  const isMachineView = view === "machine" || view === "internals";
-  const isEmpty = isMachineView && status === "idle";
-  const flushMain = view === "gallery" || view === "browse" || view === "export" || view === "config" || isEmpty;
-
-  const onApplyPastedDescriptor = React.useCallback((d: BootDescriptor) => {
-    void host.applyBootDescriptor(d).catch((err) => {
-      console.warn("applyBootDescriptor failed:", err);
-    });
-  }, [host]);
+  const isEmpty = surface.status === "idle";
+  const meta = dockPane ? PANE_META[dockPane] : null;
 
   return (
-    <div className="kapp">
-      <Sidebar
-        view={view}
-        onNav={onNav}
-      />
-
-      <main className={"kmain" + (flushMain ? " kmain-flush" : "")}>
+    <div className="kapp kdocked-app">
+      <main className={`kmain kdocked-main${isEmpty ? " kmain-flush" : ""}`}>
         {isEmpty ? (
           <EmptyState
             onLaunchItem={onLaunchGalleryItem}
-            onBrowseAll={() => setView("gallery")}
-            onApplyDescriptor={onApplyPastedDescriptor}
+            onBrowseAll={() => setDockPane("gallery")}
+            onApplyDescriptor={applyDescriptor}
           />
-        ) : isMachineView ? (
+        ) : (
           <MachineView
-            focusInternals={view === "internals"}
+            surface={surface}
             internalsTab={internalsTab}
             onInternalsTab={(t) => setInternalsTab(t as InternalsTab)}
             terminals={terminals}
@@ -100,56 +116,57 @@ export const App: React.FC = () => {
             onActiveTerminalId={setActiveTerminalId}
             onAddTerminal={onAddTerminal}
           />
-        ) : view === "gallery" ? (
-          <Gallery onLaunch={onLaunchGalleryItem} onShare={onShareGalleryItem} />
-        ) : view === "config" ? (
-          <Config onApplied={() => setView("machine")} />
-        ) : (
-          <PlaceholderView view={view} />
         )}
       </main>
 
-      {shareTarget && (
-        <ShareDialog
-          descriptor={shareTarget === true ? undefined : shareTarget}
-          presetId={shareTarget === true ? desc.id : shareTarget.id}
-          onClose={() => setShareTarget(null)}
-        />
+      {dockPane && meta && (
+        <DockPane
+          pane={dockPane}
+          title={meta.title}
+          subtitle={meta.subtitle}
+          onClose={closeDockPane}
+        >
+          {dockPane === "new" && (
+            <NewMachinePane
+              onLaunchItem={onLaunchGalleryItem}
+              onBrowseAll={() => setDockPane("gallery")}
+              onApplyDescriptor={applyDescriptor}
+            />
+          )}
+          {dockPane === "gallery" && (
+            <Gallery
+              compact
+              onLaunch={onLaunchGalleryItem}
+              onShare={onShareGalleryItem}
+            />
+          )}
+          {dockPane === "config" && (
+            <Config onApplied={closeDockPane} />
+          )}
+          {dockPane === "share" && (
+            <SharePanel
+              embedded
+              descriptor={shareTarget ?? undefined}
+              presetId={shareTarget ? shareTarget.id : desc.id}
+              onClose={closeDockPane}
+            />
+          )}
+        </DockPane>
       )}
-    </div>
-  );
-};
 
-const PlaceholderView: React.FC<{ view: ViewId }> = ({ view }) => {
-  const label =
-    view === "gallery" ? "Gallery"
-    : view === "browse" ? "Browse Systems"
-    : view === "config" ? "System Config"
-    : view === "export" ? "Export VFS"
-    : "View";
-  return (
-    <div style={{
-      flex: 1,
-      display: "flex",
-      flexDirection: "column",
-      alignItems: "center",
-      justifyContent: "center",
-      gap: 12,
-      color: "var(--k-text-faint)",
-      padding: 32,
-      textAlign: "center",
-    }}>
-      <div style={{
-        fontSize: 28,
-        fontWeight: 700,
-        letterSpacing: "-0.02em",
-        color: "var(--k-text)",
-      }}>{label}</div>
-      <div style={{ fontSize: 14, maxWidth: 480, color: "var(--k-text-muted)" }}>
-        This surface is in the implementation order but not built yet. The
-        Sidebar/LiveURLBar/MachineView chassis comes first; this view is
-        wired once the chassis is signed off.
-      </div>
+      <Dock
+        activePane={dockPane}
+        activeView={isEmpty ? null : surface.activeView}
+        status={surface.status}
+        machineTitle={desc.title}
+        viewDisabled={{
+          demo: !surface.canOpenDemo,
+          terminal: !surface.canUseTerminal,
+          internals: !surface.canUseInternals,
+        }}
+        onSelectPane={selectDockPane}
+        onSelectView={selectMachineView}
+      />
     </div>
   );
 };
