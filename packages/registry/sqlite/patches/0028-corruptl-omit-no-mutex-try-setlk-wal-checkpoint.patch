@@ -1,0 +1,77 @@
+--- test/corruptL.test
++++ test/corruptL.test
+@@ -1311,37 +1311,43 @@
+ # of the database and wal file.
+ #
+ if {[wal_is_capable]} {
+-  reset_db
+-  do_execsql_test 17.0 {
+-    CREATE TABLE t1(o INTEGER PRIMARY KEY, t UNIQUE);
+-    INSERT INTO t1(t) VALUES(randomblob(123));
+-    INSERT INTO t1(t) SELECT randomblob(123) FROM t1;
+-    INSERT INTO t1(t) SELECT randomblob(123) FROM t1;
+-    INSERT INTO t1(t) SELECT randomblob(123) FROM t1;
+-    INSERT INTO t1(t) SELECT randomblob(123) FROM t1;
+-    INSERT INTO t1(t) SELECT randomblob(123) FROM t1;
+-    INSERT INTO t1(t) SELECT randomblob(123) FROM t1;
+-    INSERT INTO t1(t) SELECT randomblob(123) FROM t1;
+-    INSERT INTO t1(t) SELECT randomblob(123) FROM t1;
+-    INSERT INTO t1(t) SELECT randomblob(123) FROM t1;
+-  
+-    PRAGMA journal_mode = wal;
+-    INSERT INTO t1 VALUES(-1, 'b');
+-  } {wal}
+-  
+-  do_test 17.1 {
+-    set fd [open test.db r+]
+-    chan truncate $fd 2048
+-    file size test.db
+-  } {2048}
+-  
+-  do_catchsql_test 17.2 {
+-    PRAGMA wal_checkpoint
+-  } {1 {database disk image is malformed}}
+-  
+-  do_test 17.3 {
+-    close $fd
+-  } {}
++  if {[permutation]=="no_mutex_try"} {
++    foreach tn {0 1 2 3} {
++      omit_test corruptL-17.$tn "Kandelo builds SQLite with ENABLE_SETLK_TIMEOUT; no_mutex_try forces sqlite3_mutex_try() to fail, but ENABLE_SETLK_TIMEOUT WAL shared-memory exclusive locks intentionally use sqlite3_mutex_try() to avoid deadlocks"
++    }
++  } else {
++    reset_db
++    do_execsql_test 17.0 {
++      CREATE TABLE t1(o INTEGER PRIMARY KEY, t UNIQUE);
++      INSERT INTO t1(t) VALUES(randomblob(123));
++      INSERT INTO t1(t) SELECT randomblob(123) FROM t1;
++      INSERT INTO t1(t) SELECT randomblob(123) FROM t1;
++      INSERT INTO t1(t) SELECT randomblob(123) FROM t1;
++      INSERT INTO t1(t) SELECT randomblob(123) FROM t1;
++      INSERT INTO t1(t) SELECT randomblob(123) FROM t1;
++      INSERT INTO t1(t) SELECT randomblob(123) FROM t1;
++      INSERT INTO t1(t) SELECT randomblob(123) FROM t1;
++      INSERT INTO t1(t) SELECT randomblob(123) FROM t1;
++      INSERT INTO t1(t) SELECT randomblob(123) FROM t1;
++    
++      PRAGMA journal_mode = wal;
++      INSERT INTO t1 VALUES(-1, 'b');
++    } {wal}
++    
++    do_test 17.1 {
++      set fd [open test.db r+]
++      chan truncate $fd 2048
++      file size test.db
++    } {2048}
++    
++    do_catchsql_test 17.2 {
++      PRAGMA wal_checkpoint
++    } {1 {database disk image is malformed}}
++    
++    do_test 17.3 {
++      close $fd
++    } {}
++  }
+ }
+ 
+ #-------------------------------------------------------------------------

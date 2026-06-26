@@ -1,0 +1,15 @@
+--- test/e_walckpt.test
++++ test/e_walckpt.test
+@@ -15,6 +15,12 @@ source $testdir/tester.tcl
+ source $testdir/lock_common.tcl
+ source $testdir/wal_common.tcl
+ set testprefix e_walckpt
++
++if {[permutation]=="no_mutex_try"} {
++  omit_test e_walckpt.test "Kandelo builds SQLite with ENABLE_SETLK_TIMEOUT; no_mutex_try forces sqlite3_mutex_try() to fail, but ENABLE_SETLK_TIMEOUT WAL shared-memory exclusive locks intentionally use sqlite3_mutex_try() to avoid deadlocks"
++  finish_test
++  return
++}
+ 
+ # The following two commands are used to determine if any of the files
+ # "test.db", "test.db2" and "test.db3" are modified by a test case.

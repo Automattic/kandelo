@@ -1,0 +1,15 @@
+--- test/tkt-313723c356.test
++++ test/tkt-313723c356.test
+@@ -18,6 +18,12 @@ source $testdir/malloc_common.tcl
+ 
+ if {![wal_is_capable]} { finish_test ; return }
+ 
++if {[permutation]=="no_mutex_try"} {
++  omit_test tkt-313723c356.test "Kandelo builds SQLite with ENABLE_SETLK_TIMEOUT; no_mutex_try forces sqlite3_mutex_try() to fail, but ENABLE_SETLK_TIMEOUT WAL shared-memory exclusive locks intentionally use sqlite3_mutex_try() to avoid deadlocks"
++  finish_test
++  return
++}
++
+ do_execsql_test tkt-313723c356.1 {
+   PRAGMA page_size = 1024;
+   PRAGMA journal_mode = WAL;

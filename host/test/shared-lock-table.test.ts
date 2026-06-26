@@ -67,6 +67,17 @@ describe("SharedLockTable", () => {
     expect(blocker).toBeNull();
   });
 
+  it("has enough default capacity for SQLite manydb-style write locks", () => {
+    const table = SharedLockTable.create();
+
+    for (let i = 0; i < 300; i++) {
+      const pathHash = SharedLockTable.hashPath(`/tmp/sqlite-manydb-${i}.db`);
+      expect(table.setLock(pathHash, 1, 0, 0n, 1n)).toBe(true);
+      expect(table.setLock(pathHash, 1, 1, 1n, 1n)).toBe(true);
+      expect(table.setLock(pathHash, 1, 0, 2n, 510n)).toBe(true);
+    }
+  });
+
   it("should handle zero-length (to EOF) locks", () => {
     const table = SharedLockTable.create();
     table.setLock(100, 1, 1, 100n, 0n); // write lock from 100 to EOF

@@ -92,7 +92,8 @@ impl MemoryManager {
     }
 
     /// Restore mmap mappings from fork (used by deserialize_fork_state).
-    pub fn set_mappings(&mut self, mappings: Vec<MappedRegion>) {
+    pub fn set_mappings(&mut self, mut mappings: Vec<MappedRegion>) {
+        mappings.sort_by_key(|m| m.addr);
         self.mappings = mappings;
     }
 
@@ -159,31 +160,44 @@ impl MemoryManager {
     /// Find the first gap in [mmap_base, max_addr) that can fit `needed` bytes.
     fn find_gap(&self, needed: usize) -> Option<usize> {
         let mut cursor = self.mmap_base.max(self.program_break);
-        let mut occupied: Vec<(usize, usize)> =
-            Vec::with_capacity(self.mappings.len() + self.reserved_regions.len());
-        occupied.extend(self.mappings.iter().map(|m| (m.addr, m.len)));
-        occupied.extend(self.reserved_regions.iter().map(|r| (r.addr, r.len)));
-        occupied.sort_by_key(|(addr, _)| *addr);
+        let mut mapping_idx = 0;
+        let mut reserved_idx = 0;
 
-        for (addr, len) in occupied {
-            if addr < cursor {
-                let end = addr.saturating_add(len);
-                if end > cursor {
-                    cursor = end;
+        while mapping_idx < self.mappings.len() || reserved_idx < self.reserved_regions.len() {
+            let next_mapping = self.mappings.get(mapping_idx).map(|m| (m.addr, m.len));
+            let next_reserved = self
+                .reserved_regions
+                .get(reserved_idx)
+                .map(|r| (r.addr, r.len));
+            let (addr, len, is_mapping) = match (next_mapping, next_reserved) {
+                (Some(mapping), Some(reserved)) => {
+                    if mapping.0 <= reserved.0 {
+                        (mapping.0, mapping.1, true)
+                    } else {
+                        (reserved.0, reserved.1, false)
+                    }
                 }
-                continue;
+                (Some(mapping), None) => (mapping.0, mapping.1, true),
+                (None, Some(reserved)) => (reserved.0, reserved.1, false),
+                (None, None) => break,
+            };
+
+            if is_mapping {
+                mapping_idx += 1;
+            } else {
+                reserved_idx += 1;
             }
-            if addr >= cursor {
-                let gap = addr - cursor;
-                if gap >= needed {
-                    return Some(cursor);
-                }
+
+            if addr >= cursor && addr - cursor >= needed {
+                return Some(cursor);
             }
+
             let end = addr.saturating_add(len);
             if end > cursor {
                 cursor = end;
             }
         }
+
         // Check gap after last mapping
         if cursor.saturating_add(needed) <= self.max_addr {
             Some(cursor)
@@ -267,43 +281,64 @@ impl MemoryManager {
         if len == 0 {
             return false;
         }
-        let unmap_end = addr.saturating_add(len);
+        let len = match len.checked_add(0xFFFF) {
+            Some(v) => v & !0xFFFF,
+            None => return false,
+        };
+        let unmap_end = match addr.checked_add(len) {
+            Some(end) => end,
+            None => return false,
+        };
         let mut found = false;
-        let mut new_mappings: Vec<MappedRegion> = Vec::new();
+        let mut i = 0;
 
-        for m in self.mappings.drain(..) {
+        while i < self.mappings.len() {
+            let m = self.mappings[i].clone();
             let m_end = m.addr.saturating_add(m.len);
 
             // No overlap — keep as is
             if m_end <= addr || m.addr >= unmap_end {
-                new_mappings.push(m);
+                i += 1;
                 continue;
             }
 
             found = true;
+            let left_len = if m.addr < addr { addr - m.addr } else { 0 };
+            let right_len = if m_end > unmap_end {
+                m_end - unmap_end
+            } else {
+                0
+            };
 
-            // Left remnant: mapping starts before unmap region
-            if m.addr < addr {
-                new_mappings.push(MappedRegion {
-                    addr: m.addr,
-                    len: addr - m.addr,
-                    prot: m.prot,
-                    flags: m.flags,
-                });
-            }
-
-            // Right remnant: mapping extends past unmap region
-            if m_end > unmap_end {
-                new_mappings.push(MappedRegion {
-                    addr: unmap_end,
-                    len: m_end - unmap_end,
-                    prot: m.prot,
-                    flags: m.flags,
-                });
+            match (left_len > 0, right_len > 0) {
+                (false, false) => {
+                    self.mappings.remove(i);
+                }
+                (true, false) => {
+                    self.mappings[i].len = left_len;
+                    i += 1;
+                }
+                (false, true) => {
+                    self.mappings[i].addr = unmap_end;
+                    self.mappings[i].len = right_len;
+                    i += 1;
+                }
+                (true, true) => {
+                    self.mappings[i].len = left_len;
+                    self.mappings.insert(
+                        i + 1,
+                        MappedRegion {
+                            addr: unmap_end,
+                            len: right_len,
+                            prot: m.prot,
+                            flags: m.flags,
+                        },
+                    );
+                    i += 2;
+                }
             }
         }
 
-        self.mappings = new_mappings;
         found
     }
 
@@ -519,13 +554,14 @@ impl MemoryManager {
 
     /// Extend an existing mapping at `addr` from `old_len` to `new_len`.
     /// The caller must ensure the space is free (via `can_grow_at`).
-    pub fn extend_mapping(&mut self, addr: usize, old_len: usize, new_len: usize) {
-        for m in &mut self.mappings {
-            if m.addr == addr && m.len == old_len {
-                m.len = new_len;
-                return;
+    pub fn extend_mapping(&mut self, addr: usize, old_len: usize, new_len: usize) -> bool {
+        for mapping in &mut self.mappings {
+            if mapping.addr == addr && mapping.len == old_len {
+                mapping.len = new_len;
+                return true;
             }
         }
+        false
     }
 }
 
@@ -559,6 +595,67 @@ mod tests {
     }
 
     #[test]
+    fn test_adjacent_compatible_mmaps_preserve_boundaries() {
+        let mut mm = MemoryManager::new();
+        let rw = PROT_READ | PROT_WRITE;
+        let anon = MAP_PRIVATE | MAP_ANONYMOUS;
+
+        let addr1 = mm.mmap_anonymous(0, 0x10000, rw, anon);
+        let addr2 = mm.mmap_anonymous(0, 0x20000, rw, anon);
+
+        assert_eq!(addr2, addr1 + 0x10000);
+        assert_eq!(mm.mappings.len(), 2);
+        assert_eq!(mm.mappings[0].addr, addr1);
+        assert_eq!(mm.mappings[0].len, 0x10000);
+        assert_eq!(mm.mappings[1].addr, addr2);
+        assert_eq!(mm.mappings[1].len, 0x20000);
+    }
+
+    #[test]
+    fn test_find_gap_respects_reserved_regions_without_temp_vec() {
+        let mut mm = MemoryManager::new();
+        let rw = PROT_READ | PROT_WRITE;
+        let anon = MAP_PRIVATE | MAP_ANONYMOUS;
+        let base = MemoryManager::MMAP_BASE;
+
+        let first = mm.mmap_anonymous(0, 0x10000, rw, anon);
+        assert_eq!(first, base);
+        assert_eq!(
+            mm.reserve_host_region_at(base + 0x10000, 0x10000),
+            base + 0x10000
+        );
+
+        let second = mm.mmap_anonymous(0, 0x10000, rw, anon);
+        assert_eq!(second, base + 0x20000);
+    }
+
+    #[test]
+    fn test_set_mappings_restores_sorted_gap_invariant() {
+        let mut mm = MemoryManager::new();
+        let rw = PROT_READ | PROT_WRITE;
+        let anon = MAP_PRIVATE | MAP_ANONYMOUS;
+        let base = MemoryManager::MMAP_BASE;
+
+        mm.set_mappings(vec![
+            MappedRegion {
+                addr: base + 0x20000,
+                len: 0x10000,
+                prot: rw,
+                flags: anon,
+            },
+            MappedRegion {
+                addr: base,
+                len: 0x10000,
+                prot: rw,
+                flags: anon,
+            },
+        ]);
+
+        let addr = mm.mmap_anonymous(0, 0x10000, rw, anon);
+        assert_eq!(addr, base + 0x10000);
+    }
+
+    #[test]
     fn test_munmap() {
         let mut mm = MemoryManager::new();
         let addr = mm.mmap_anonymous(0, 4096, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS);
@@ -566,6 +663,20 @@ mod tests {
         // munmap with the aligned length
         assert!(mm.munmap(addr, 0x10000));
         assert!(!mm.is_mapped(addr));
+    }
+
+    #[test]
+    fn test_munmap_rounds_length_up_to_page() {
+        let mut mm = MemoryManager::new();
+        let addr = mm.mmap_anonymous(
+            0,
+            0x30000,
+            PROT_READ | PROT_WRITE,
+            MAP_PRIVATE | MAP_ANONYMOUS,
+        );
+
+        assert!(mm.munmap(addr, 0x29000));
+        assert_eq!(mm.mappings.len(), 0);
     }
 
     #[test]
@@ -1035,7 +1146,7 @@ mod tests {
         let rw = PROT_READ | PROT_WRITE;
         let anon = MAP_PRIVATE | MAP_ANONYMOUS;
         let addr = mm.mmap_anonymous(0, 0x10000, rw, anon);
-        mm.extend_mapping(addr, 0x10000, 0x20000);
+        assert!(mm.extend_mapping(addr, 0x10000, 0x20000));
         assert!(mm.is_mapped(addr + 0x10000)); // extended area is now mapped
     }
 

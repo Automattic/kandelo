@@ -1,0 +1,77 @@
+--- test/memdb1.test
++++ test/memdb1.test
+@@ -233,38 +233,42 @@
+ # dbsqlfuzz  0a13dfb474d4f2f11a48a2ea57075c96fb456dd7
+ #
+ if {[wal_is_capable]} {
+-  reset_db
+-  do_execsql_test 800 {
+-    PRAGMA auto_vacuum = 0;
+-    PRAGMA page_size = 8192;
+-    PRAGMA journal_mode = wal;
+-    CREATE TABLE t1(x, y);
+-    INSERT INTO t1 VALUES(1, 2);
+-    CREATE TABLE t2(x, y);
+-  } {wal}
+-  db close
+-  
+-  set fd [open test.db]
+-  fconfigure $fd -translation binary
+-  set data [read $fd [expr 20*1024]]
+-  close $fd
+-  
+-  sqlite3 db ""
+-  db deserialize $data
+-  
+-  do_execsql_test 810 {
+-    PRAGMA locking_mode = exclusive;
+-    SELECT * FROM t1
+-  } {exclusive 1 2}
+-  
+-  do_execsql_test 820 {
+-    INSERT INTO t1 VALUES(3, 4);
+-    SELECT * FROM t1;
+-  } {1 2 3 4}
+-  
+-  do_catchsql_test 830 {
+-    PRAGMA wal_checkpoint;
+-  } {1 {database disk image is malformed}}
++  if {[permutation]=="no_mutex_try"} {
++    omit_test memdb1-800 "Kandelo builds SQLite with ENABLE_SETLK_TIMEOUT; no_mutex_try forces sqlite3_mutex_try() to fail, but ENABLE_SETLK_TIMEOUT WAL shared-memory exclusive locks intentionally use sqlite3_mutex_try() to avoid deadlocks"
++  } else {
++    reset_db
++    do_execsql_test 800 {
++      PRAGMA auto_vacuum = 0;
++      PRAGMA page_size = 8192;
++      PRAGMA journal_mode = wal;
++      CREATE TABLE t1(x, y);
++      INSERT INTO t1 VALUES(1, 2);
++      CREATE TABLE t2(x, y);
++    } {wal}
++    db close
++    
++    set fd [open test.db]
++    fconfigure $fd -translation binary
++    set data [read $fd [expr 20*1024]]
++    close $fd
++    
++    sqlite3 db ""
++    db deserialize $data
++    
++    do_execsql_test 810 {
++      PRAGMA locking_mode = exclusive;
++      SELECT * FROM t1
++    } {exclusive 1 2}
++    
++    do_execsql_test 820 {
++      INSERT INTO t1 VALUES(3, 4);
++      SELECT * FROM t1;
++    } {1 2 3 4}
++    
++    do_catchsql_test 830 {
++      PRAGMA wal_checkpoint;
++    } {1 {database disk image is malformed}}
++  }
+ }
+ 
+ # 2024-01-20

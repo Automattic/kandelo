@@ -1,0 +1,16 @@
+--- test/waloverwrite.test
++++ test/waloverwrite.test
+@@ -19,6 +19,12 @@ source $testdir/wal_common.tcl
+ set testprefix waloverwrite
+ 
+ ifcapable !wal {finish_test ; return }
+ 
++if {[permutation]=="no_mutex_try"} {
++  omit_test waloverwrite.test "Kandelo builds SQLite with ENABLE_SETLK_TIMEOUT; no_mutex_try forces sqlite3_mutex_try() to fail, but ENABLE_SETLK_TIMEOUT WAL shared-memory exclusive locks intentionally use sqlite3_mutex_try() to avoid deadlocks"
++  finish_test
++  return
++}
++
+ # Simple test:
+ #
+ # Test cases *.1 - *.6:

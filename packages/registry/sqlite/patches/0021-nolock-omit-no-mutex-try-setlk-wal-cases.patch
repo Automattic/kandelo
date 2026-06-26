@@ -1,0 +1,47 @@
+--- test/nolock.test
++++ test/nolock.test
+@@ -199,22 +199,28 @@
+   } {delete youngling}
+   db close
+   
+-  do_test nolock-4.2 {
+-    forcedelete test.db
+-    sqlite3 db test.db
+-    db eval {
+-      PRAGMA journal_mode=WAL;
+-      CREATE TABLE t1(x);
+-      INSERT INTO t1 VALUES('catbird');
+-      SELECT * FROM t1;
+-    }
+-  } {wal catbird}
+-  do_test nolock-4.3 {
+-    db close
+-    sqlite3 db file:test.db?nolock=1 -uri 1
+-    set rc [catch {db eval {SELECT * FROM t1}} msg]
+-    lappend rc $msg
+-  } {1 {unable to open database file}}
++  if {[permutation]=="no_mutex_try"} {
++    set no_mutex_try_setlk_reason "Kandelo builds SQLite with ENABLE_SETLK_TIMEOUT; no_mutex_try forces sqlite3_mutex_try() to fail, but ENABLE_SETLK_TIMEOUT WAL shared-memory exclusive locks intentionally use sqlite3_mutex_try() to avoid deadlocks"
++    omit_test nolock-4.2 $no_mutex_try_setlk_reason
++    omit_test nolock-4.3 $no_mutex_try_setlk_reason
++  } else {
++    do_test nolock-4.2 {
++      forcedelete test.db
++      sqlite3 db test.db
++      db eval {
++        PRAGMA journal_mode=WAL;
++        CREATE TABLE t1(x);
++        INSERT INTO t1 VALUES('catbird');
++        SELECT * FROM t1;
++      }
++    } {wal catbird}
++    do_test nolock-4.3 {
++      db close
++      sqlite3 db file:test.db?nolock=1 -uri 1
++      set rc [catch {db eval {SELECT * FROM t1}} msg]
++      lappend rc $msg
++    } {1 {unable to open database file}}
++  }
+ }
+ 
+ finish_test

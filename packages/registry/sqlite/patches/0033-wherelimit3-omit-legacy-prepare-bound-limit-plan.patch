@@ -1,0 +1,25 @@
+--- test/wherelimit3.test
++++ test/wherelimit3.test
+@@ -42,12 +42,16 @@
+ }
+ 
+ set N [expr 5]
+-do_eqp_test 1.3 {
+-  SELECT * FROM t1 WHERE a>=100 AND a<300 ORDER BY b LIMIT $::N;
+-} {
+-  QUERY PLAN
+-  |--SEARCH t1 USING INDEX t1a (a>? AND a<?)
+-  `--USE TEMP B-TREE FOR ORDER BY
++if {[permutation]=="prepare"} {
++  omit_test wherelimit3-1.3 {legacy sqlite3_prepare() cannot reprepare after Tcl-bound LIMIT variables are resolved; the planner treats LIMIT as unknown and chooses the unbounded ORDER BY index plan}
++} else {
++  do_eqp_test 1.3 {
++    SELECT * FROM t1 WHERE a>=100 AND a<300 ORDER BY b LIMIT $::N;
++  } {
++    QUERY PLAN
++    |--SEARCH t1 USING INDEX t1a (a>? AND a<?)
++    `--USE TEMP B-TREE FOR ORDER BY
++  }
+ }
+ 
+ ifcapable stat4 {

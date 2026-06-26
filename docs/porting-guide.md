@@ -741,6 +741,35 @@ bash packages/registry/tcl/build-tcl.sh
 bash packages/registry/sqlite/build-testfixture.sh
 ```
 
+Kandelo builds SQLite with `SQLITE_MAX_COMPOUND_SELECT=50` and
+`SQLITE_MAX_EXPR_DEPTH=100` for both the shipped library and upstream
+testfixture. The default SQLite limits are higher, but current browser wasm
+engines exhaust their call stack before SQLite's 200-deep recursive SQL tests
+complete at those depths. The shipped SQLite CLI also enables
+`SQLITE_ENABLE_DBPAGE_VTAB` so upstream `.recover` tests exercise the same
+recover support as `testfixture`. The `all` permutation's synthetic
+`no_mutex_try` suite omits `walpersist.test`, `walprotocol2.test`,
+`walshared.test`, `walro2.test`, `wal5.test`, `e_walhook.test`, `waloverwrite.test`, `walsetlk.test`,
+`e_walckpt.test`, `nockpt.test`, `external_reader.test`, the WAL-backed `sqlite_dbpage` block
+`dbpage-100` through `dbpage-270` plus the dependent `dbpage-630` and `dbpage-640` cases,
+the WAL DDL existence blocks
+`exists-wal-1.*` and `exists-wal-2.*`, the WAL-only tail of
+`incrvacuum2.test`, the WAL pass `incrvacuum3-2.1.*`, the WAL file-allocation
+block `fallocate-2.*`, the attached-database `no_mutex_try` transaction
+cases `attach4-1.3` and `attach4-1.4`, the attached-database WAL block
+`attach4-1.5` through `attach4-1.8`, the WAL busy/checkpoint blocks `busy2-1.2.*` and `busy2-2.*`,
+the WAL checkpoint corruption block `corruptL-17.*`, the WAL setup case
+`dbstatus2-2.6`, the WAL journal-size block `walvfs-2.*`, the shared-memory WAL blocks `e_wal-3.1`, `e_wal-3.2`, `e_wal-4.2`, `e_wal-4.3`, `pragma3-400`,
+`exclusive-7.1`, `e_vacuum-1.3.3.2`, `pager1-20.3`, `pager1-21`, `pager1-28.1`, `pager1-28.2`,
+and `pager1-35`, the WAL `nolock-4.2` and dependent `nolock-4.3` cases, and
+the WAL delete-database case pairs
+`delete_db-1.2`, `delete_db-1.4`, `delete_db-2.2`, and `delete_db-2.4`, plus
+the WAL serialization block `memdb1-800` and the WAL recovery block
+`recover1-16.*` for
+`SQLITE_ENABLE_SETLK_TIMEOUT` builds because that upstream WAL locking mode
+intentionally calls `sqlite3_mutex_try()` to avoid deadlocks, while the
+permutation forces every `sqlite3_mutex_try()` call to fail.
+
 Then run the harness:
 
 ```bash

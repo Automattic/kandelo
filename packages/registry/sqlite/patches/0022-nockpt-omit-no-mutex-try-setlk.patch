@@ -1,0 +1,15 @@
+--- test/nockpt.test
++++ test/nockpt.test
+@@ -25,6 +25,12 @@ if {[permutation]=="journaltest" || [permutation]=="inmemory_journal"} {
+ }
+ 
+ set testprefix nockpt
++
++if {[permutation]=="no_mutex_try"} {
++  omit_test nockpt.test "Kandelo builds SQLite with ENABLE_SETLK_TIMEOUT; no_mutex_try forces sqlite3_mutex_try() to fail, but ENABLE_SETLK_TIMEOUT WAL shared-memory exclusive locks intentionally use sqlite3_mutex_try() to avoid deadlocks"
++  finish_test
++  return
++}
+ 
+ do_execsql_test 1.0 {
+   PRAGMA auto_vacuum=OFF;

@@ -1,0 +1,15 @@
+--- test/walprotocol2.test
++++ test/walprotocol2.test
+@@ -19,6 +19,12 @@ ifcapable !wal {finish_test ; return }
+ 
+ set testprefix walprotocol2
+ 
++if {[permutation]=="no_mutex_try"} {
++  omit_test walprotocol2.test "Kandelo builds SQLite with ENABLE_SETLK_TIMEOUT; no_mutex_try forces sqlite3_mutex_try() to fail, but ENABLE_SETLK_TIMEOUT WAL shared-memory exclusive locks intentionally use sqlite3_mutex_try() to avoid deadlocks"
++  finish_test
++  return
++}
++
+ #-------------------------------------------------------------------------
+ # When recovering the contents of a WAL file, a process obtains the WRITER
+ # lock, then locks all other bytes before commencing recovery. If it fails

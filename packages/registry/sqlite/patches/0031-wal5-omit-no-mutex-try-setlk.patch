@@ -1,0 +1,15 @@
+--- test/wal5.test
++++ test/wal5.test
+@@ -21,6 +21,12 @@
+ do_not_use_codec
+ 
+ set testprefix wal5
++
++if {[permutation]=="no_mutex_try"} {
++  omit_test wal5.test "Kandelo builds SQLite with ENABLE_SETLK_TIMEOUT; no_mutex_try forces sqlite3_mutex_try() to fail, but ENABLE_SETLK_TIMEOUT WAL shared-memory exclusive locks intentionally use sqlite3_mutex_try() to avoid deadlocks"
++  finish_test
++  return
++}
+ 
+ proc db_page_count  {{file test.db}} { expr [file size $file] / 1024 }
+ proc wal_page_count {{file test.db}} { wal_frame_count ${file}-wal 1024 }

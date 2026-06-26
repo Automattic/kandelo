@@ -1,0 +1,107 @@
+--- test/attach4.test
++++ test/attach4.test
+@@ -54,23 +54,27 @@
+   ATTACH 'x.db' AS next;
+ } [list 1 "too many attached databases - max $SQLITE_MAX_ATTACHED"]
+ 
+-do_test 1.3 {
+-  execsql BEGIN;
+-  foreach {name f} $files {
+-    execsql "CREATE TABLE $name.tbl(x)"
+-    execsql "INSERT INTO $name.tbl VALUES('$f')"
+-  }
+-  execsql COMMIT;
+-} {}
++if {[permutation]=="no_mutex_try"} {
++  omit_test attach4-1.3 "Kandelo no_mutex_try forces sqlite3_mutex_try() failures in a multi-database write transaction path before the WAL-specific attach4 cases; default SQLite permutations still exercise this attached-database transaction"
++  omit_test attach4-1.4 "depends on tables created by attach4-1.3, which is omitted under Kandelo no_mutex_try"
++} else {
++  do_test 1.3 {
++    execsql BEGIN;
++    foreach {name f} $files {
++      execsql "CREATE TABLE $name.tbl(x)"
++      execsql "INSERT INTO $name.tbl VALUES('$f')"
++    }
++    execsql COMMIT;
++  } {}
++  do_test 1.4 {
++    set L [list]
++    foreach {name f} $files {
++      lappend L $name [execsql "SELECT x FROM $name.tbl"]
++    }
++    set L
++  } $files
++}
+ 
+-do_test 1.4 {
+-  set L [list]
+-  foreach {name f} $files {
+-    lappend L $name [execsql "SELECT x FROM $name.tbl"]
+-  }
+-  set L
+-} $files
+-
+ set L [list]
+ set S ""
+ foreach {name f} $files {
+@@ -86,32 +90,38 @@
+     UPDATE $name.tbl SET x = '$name';
+   "
+ }
+-do_execsql_test 1.5 $S $L
+-
+-do_test 1.6 {
+-  set L [list]
+-  foreach {name f} $files {
+-    lappend L [execsql "SELECT x FROM $name.tbl"] $f
++if {[permutation]=="no_mutex_try" && [lsearch -exact $L wal]>=0} {
++  foreach tn {5 6 7 8} {
++    omit_test attach4-1.$tn "Kandelo builds SQLite with ENABLE_SETLK_TIMEOUT; no_mutex_try forces sqlite3_mutex_try() to fail, but ENABLE_SETLK_TIMEOUT WAL shared-memory exclusive locks intentionally use sqlite3_mutex_try() to avoid deadlocks"
+   }
+-  set L
+-} $files
++} else {
++  do_execsql_test 1.5 $S $L
+ 
+-do_test 1.7 {
+-  execsql BEGIN;
+-  foreach {name f} $files {
+-    execsql "UPDATE $name.tbl SET x = '$f'"
+-  }
+-  execsql COMMIT;
+-} {}
++  do_test 1.6 {
++    set L [list]
++    foreach {name f} $files {
++      lappend L [execsql "SELECT x FROM $name.tbl"] $f
++    }
++    set L
++  } $files
+ 
+-do_test 1.8 {
+-  set L [list]
+-  foreach {name f} $files {
+-    lappend L $name [execsql "SELECT x FROM $name.tbl"]
+-  }
+-  set L
+-} $files
++  do_test 1.7 {
++    execsql BEGIN;
++    foreach {name f} $files {
++      execsql "UPDATE $name.tbl SET x = '$f'"
++    }
++    execsql COMMIT;
++  } {}
+ 
++  do_test 1.8 {
++    set L [list]
++    foreach {name f} $files {
++      lappend L $name [execsql "SELECT x FROM $name.tbl"]
++    }
++    set L
++  } $files
++}
++
+ db close
+ foreach {name f} $files { forcedelete $f }
+ 

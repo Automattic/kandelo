@@ -1,0 +1,15 @@
+--- test/fallocate.test
++++ test/fallocate.test
+@@ -89,7 +89,11 @@ set skipwaltests [expr {
+ }]
+ ifcapable !wal { set skipwaltests 1 }
+ 
+-if {!$skipwaltests} {
++if {[permutation]=="no_mutex_try" && !$skipwaltests} {
++  foreach tn {1 2 3 4 5 6 7 8} {
++    omit_test fallocate-2.$tn "Kandelo builds SQLite with ENABLE_SETLK_TIMEOUT; no_mutex_try forces sqlite3_mutex_try() to fail, but ENABLE_SETLK_TIMEOUT WAL shared-memory exclusive locks intentionally use sqlite3_mutex_try() to avoid deadlocks"
++  }
++} elseif {!$skipwaltests} {
+   db close
+   forcedelete test.db
+   sqlite3 db test.db

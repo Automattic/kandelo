@@ -1,0 +1,15 @@
+--- test/walhook.test
++++ test/walhook.test
+@@ -23,6 +23,12 @@ source $testdir/wal_common.tcl
+ 
+ ifcapable !wal {finish_test ; return }
+ 
++if {[permutation]=="no_mutex_try"} {
++  omit_test walhook.test "Kandelo builds SQLite with ENABLE_SETLK_TIMEOUT; no_mutex_try forces sqlite3_mutex_try() to fail, but ENABLE_SETLK_TIMEOUT WAL shared-memory exclusive locks intentionally use sqlite3_mutex_try() to avoid deadlocks"
++  finish_test
++  return
++}
++
+ set ::wal_hook [list]
+ proc wal_hook {zDb nEntry} {
+   lappend ::wal_hook $zDb $nEntry

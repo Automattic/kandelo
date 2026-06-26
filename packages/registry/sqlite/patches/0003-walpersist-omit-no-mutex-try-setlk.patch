@@ -1,0 +1,15 @@
+--- test/walpersist.test
++++ test/walpersist.test
+@@ -21,6 +21,12 @@ ifcapable !wal {
+   return
+ }
+ 
++if {[permutation]=="no_mutex_try"} {
++  omit_test walpersist.test "Kandelo builds SQLite with ENABLE_SETLK_TIMEOUT; no_mutex_try forces sqlite3_mutex_try() to fail, but ENABLE_SETLK_TIMEOUT WAL shared-memory exclusive locks intentionally use sqlite3_mutex_try() to avoid deadlocks"
++  finish_test
++  return
++}
++
+ do_test walpersist-1.0 {
+   db eval {
+     PRAGMA journal_mode=WAL;

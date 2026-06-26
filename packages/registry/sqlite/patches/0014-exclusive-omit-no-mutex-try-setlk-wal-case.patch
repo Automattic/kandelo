@@ -1,0 +1,43 @@
+--- test/exclusive.test
++++ test/exclusive.test
+@@ -517,21 +517,25 @@
+   # shared-memory file. So, while it is able to switch the db file to
+   # journal_mode=WAL when locking_mode=EXCLUSIVE, it can no longer access
+   # it once the locking_mode is changed back to NORMAL.
+-  do_test exclusive-7.1 {
+-    db close
+-    forcedelete test.db test.db-journal test.db-wal
+-    sqlite3 db test.db
+-    # The following sequence of pragmas would trigger an assert()
+-    # associated with Pager.changeCountDone inside of assert_pager_state(),
+-    # prior to the fix.
+-    db eval {
+-      PRAGMA locking_mode = EXCLUSIVE;
+-      PRAGMA journal_mode = WAL;
+-      PRAGMA locking_mode = NORMAL;
+-      PRAGMA user_version;
+-      PRAGMA journal_mode = DELETE;
+-    }
+-  } {exclusive wal normal 0 delete}
++  if {[permutation]=="no_mutex_try"} {
++    omit_test exclusive-7.1 "Kandelo builds SQLite with ENABLE_SETLK_TIMEOUT; no_mutex_try forces sqlite3_mutex_try() to fail, but ENABLE_SETLK_TIMEOUT WAL shared-memory exclusive locks intentionally use sqlite3_mutex_try() to avoid deadlocks"
++  } else {
++    do_test exclusive-7.1 {
++      db close
++      forcedelete test.db test.db-journal test.db-wal
++      sqlite3 db test.db
++      # The following sequence of pragmas would trigger an assert()
++      # associated with Pager.changeCountDone inside of assert_pager_state(),
++      # prior to the fix.
++      db eval {
++        PRAGMA locking_mode = EXCLUSIVE;
++        PRAGMA journal_mode = WAL;
++        PRAGMA locking_mode = NORMAL;
++        PRAGMA user_version;
++        PRAGMA journal_mode = DELETE;
++      }
++    } {exclusive wal normal 0 delete}
++  }
+ }
+  
+ 

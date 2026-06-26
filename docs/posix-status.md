@@ -51,9 +51,9 @@ Kandelo uses a single kernel Wasm instance that holds a `ProcessTable` and serve
 | `pipe2()` | Full | Like pipe with O_NONBLOCK and O_CLOEXEC flag support. |
 | `readv()` | Full | Scatter read. Iterates over iovec array calling sys_read for each buffer. Stops on short read or EOF. |
 | `writev()` | Full | Gather write. Iterates over iovec array calling sys_write for each buffer. Stops on short write. |
-| `fstat()` | Partial | Host-delegated for regular files. Pipe returns S_IFIFO | 0o600. Full struct stat populated. |
+| `fstat()` | Partial | Host-delegated for regular files. Pipe returns S_IFIFO | 0o600. Guest libc synthesizes `st_blksize` and `st_blocks` when the kernel stat ABI leaves them zero. |
 | `ftruncate()` | Partial | Host-delegated for regular files with write access. Validates length >= 0. Rejects non-regular fds. |
-| `fsync()` | Partial | Host-delegated for regular files. Rejects non-regular fds (pipes, sockets). |
+| `fsync()` | Partial | Host-delegated for regular files. Directory fds are accepted as a best-effort no-op for journal-directory syncs. Rejects pipes and sockets. |
 | `fdatasync()` | Partial | Alias for fsync(). No metadata distinction in Wasm environment. |
 | `truncate()` | Partial | Path-based. Opens file O_WRONLY, calls ftruncate, closes. |
 | `fchmod()` | Partial | Regular files and directories update VFS metadata. Rejects pipes/sockets. Node host-backed files never receive native mode changes after creation. |
@@ -124,7 +124,7 @@ Kandelo uses a single kernel Wasm instance that holds a `ProcessTable` and serve
 | `vfork()` | Full | Alias for fork(). |
 | `posix_spawn()` | Full | **Non-forking implementation** (this kernel's invention; no Linux equivalent). Glue issues `SYS_SPAWN` (500) with a marshalled blob (argv + envp + file actions + spawn attrs). Host parses the blob, calls `kernel_spawn_process` to allocate a child pid + build the child Process descriptor, then invokes `onSpawn` to launch a fresh Worker. No fork, no `wpk_fork_*` rewind, no exec replay. Supports POSIX_SPAWN_SETSID / SETPGROUP / SETSIGMASK / SETSIGDEF and FDOP_OPEN / CLOSE / DUP2 / CHDIR / FCHDIR. SIG_IGN dispositions persist across the implicit exec; custom handlers reset to SIG_DFL (POSIX exec semantics). Regression-guarded: `kernel_get_fork_count` exposes a per-process counter the test suite asserts is unchanged across SYS_SPAWN. See `docs/plans/2026-05-04-non-forking-posix-spawn-design.md`. |
 | `posix_spawnp()` | Full | PATH search lives in libc (`libc/musl-overlay/src/process/wasm32posix/posix_spawnp.c`); resolves the absolute path then delegates to `posix_spawn()`. Empty PATH entries treated as `.`; defers EACCES per `__execvpe` policy. |
-| `clone()` | Partial | Thread-style clone (CLONE_VM\|CLONE_THREAD) supported. The kernel allocates the TID, and the host spawns a thread Worker sharing the parent's Memory. |
+| `clone()` | Partial | Thread-style clone (CLONE_VM\|CLONE_THREAD) supported. The kernel allocates the TID, and the host spawns a thread Worker sharing the parent's Memory. The libc clone shim gives the worker an ABI-aligned wasm32 stack pointer while preserving the pthread start argument, so thread entry satisfies LLVM's 16-byte stack alignment expectation for 64-bit varargs and formatted I/O. |
 | `personality()` | Stub | Returns 0 (PER_LINUX). |
 | `unshare()` / `setns()` | Stub | Returns EPERM. No namespace support. |
 | `ptrace()` | Stub | Returns ENOSYS. |

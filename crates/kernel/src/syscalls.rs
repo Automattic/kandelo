@@ -5617,9 +5617,10 @@ pub fn sys_mremap(
     let extra = aligned_new - aligned_old;
     let grow_start = old_addr + aligned_old;
     if proc.memory.can_grow_at(grow_start, extra) {
-        proc.memory
-            .extend_mapping(old_addr, aligned_old, aligned_new);
-        return Ok(old_addr);
+        if proc.memory.extend_mapping(old_addr, aligned_old, aligned_new) {
+            return Ok(old_addr);
+        }
+        return Err(Errno::EINVAL);
     }
 
     // MREMAP_MAYMOVE: allocate a new mapping and free the old one.
@@ -5923,6 +5924,10 @@ pub fn sys_munmap(
     if len == 0 {
         return Err(Errno::EINVAL);
     }
+    let len = match len.checked_add(0xFFFF) {
+        Some(v) => v & !0xFFFF,
+        None => return Err(Errno::EINVAL),
+    };
     // POSIX: addr must be page-aligned (Wasm page = 64KB).
     if addr & 0xFFFF != 0 {
         return Err(Errno::EINVAL);
@@ -9936,12 +9941,15 @@ pub fn sys_fsync(proc: &mut Process, host: &mut dyn HostIO, fd: i32) -> Result<(
     let ofd_idx = entry.ofd_ref.0;
     let ofd = proc.ofd_table.get(ofd_idx).ok_or(Errno::EBADF)?;
 
-    // Must be a regular file
-    if ofd.file_type != FileType::Regular {
-        return Err(Errno::EINVAL);
+    // SQLite and other durable-update code fsync containing directories after
+    // creating or deleting journal files. Kandelo hosts do not currently expose
+    // a portable directory flush operation, so accept directory fsync as a
+    // best-effort no-op instead of turning it into a user-visible I/O error.
+    match ofd.file_type {
+        FileType::Regular => host.host_fsync(ofd.host_handle),
+        FileType::Directory => Ok(()),
+        _ => Err(Errno::EINVAL),
     }
-
-    host.host_fsync(ofd.host_handle)
 }
 
 /// truncate -- truncate a file to a specified length (path-based).
@@ -13231,6 +13239,17 @@ mod tests {
     }
 
     #[test]
+    fn test_munmap_rounds_length_up_to_wasm_page() {
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        let addr = sys_mmap(&mut proc, &mut host, 0, 0x30000, 3, 0x22, -1, 0).unwrap();
+
+        sys_munmap(&mut proc, &mut host, addr, 0x29000).unwrap();
+
+        assert!(!proc.memory.is_mapped(addr + 0x29000));
+    }
+
+    #[test]
     fn test_munmap_invalid_address_minus_one() {
         // munmap((void*)-1, 1) — address 0xFFFFFFFF is not page-aligned, should return EINVAL
         let mut proc = Process::new(1);
@@ -14856,6 +14875,15 @@ mod tests {
             0o644,
         )
         .unwrap();
+        let result = sys_fsync(&mut proc, &mut host, fd);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_fsync_directory_ok() {
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        let fd = sys_open(&mut proc, &mut host, b"/tmp", O_RDONLY | O_DIRECTORY, 0).unwrap();
         let result = sys_fsync(&mut proc, &mut host, fd);
         assert!(result.is_ok());
     }
@@ -19659,6 +19687,38 @@ mod tests {
         let new_addr = sys_mremap(&mut proc, addr, 0x10000, 0x20000, 0).unwrap();
         assert_eq!(new_addr, addr);
         assert!(proc.memory.is_mapped(addr + 0x10000));
+    }
+
+    #[test]
+    fn test_mremap_grow_after_adjacent_mapping_preserves_extended_range() {
+        let mut proc = Process::new(1);
+        use wasm_posix_shared::mmap::{MAP_ANONYMOUS, MAP_PRIVATE, PROT_READ, PROT_WRITE};
+
+        let first = proc.memory.mmap_anonymous(
+            0,
+            0x30000,
+            PROT_READ | PROT_WRITE,
+            MAP_PRIVATE | MAP_ANONYMOUS,
+        );
+        let target = proc.memory.mmap_anonymous(
+            0,
+            0x30000,
+            PROT_READ | PROT_WRITE,
+            MAP_PRIVATE | MAP_ANONYMOUS,
+        );
+        assert_eq!(target, first + 0x30000);
+
+        let new_addr = sys_mremap(&mut proc, target, 0x30000, 0x50000, 0).unwrap();
+        assert_eq!(new_addr, target);
+        assert!(proc.memory.is_mapped(target + 0x40000));
+
+        let next = proc.memory.mmap_anonymous(
+            0,
+            0x10000,
+            PROT_READ | PROT_WRITE,
+            MAP_PRIVATE | MAP_ANONYMOUS,
+        );
+        assert_eq!(next, target + 0x50000);
     }
 
     #[test]

@@ -1,0 +1,15 @@
+--- test/wal64k.test
++++ test/wal64k.test
+@@ -23,6 +23,12 @@ if {$tcl_platform(platform) != "unix"} {
+   return
+ }
+ 
++if {[permutation]=="no_mutex_try"} {
++  omit_test wal64k.test "Kandelo builds SQLite with ENABLE_SETLK_TIMEOUT; no_mutex_try forces sqlite3_mutex_try() to fail, but ENABLE_SETLK_TIMEOUT WAL shared-memory exclusive locks intentionally use sqlite3_mutex_try() to avoid deadlocks"
++  finish_test
++  return
++}
++
+ db close
+ test_syscall pagesize 65536
+ sqlite3 db test.db

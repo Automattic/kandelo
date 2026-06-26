@@ -1,0 +1,25 @@
+--- test/incrvacuum3.test
++++ test/incrvacuum3.test
+@@ -69,10 +69,22 @@ proc check_on_disk {} {
+ 
+ # Run these tests once in rollback journal mode, and once in wal mode.
+ #
++set no_mutex_try_setlk_reason "Kandelo builds SQLite with ENABLE_SETLK_TIMEOUT; no_mutex_try forces sqlite3_mutex_try() to fail, but ENABLE_SETLK_TIMEOUT WAL shared-memory exclusive locks intentionally use sqlite3_mutex_try() to avoid deadlocks"
+ foreach {T jrnl_mode} {
+   1 delete
+   2 wal
+ } {
++  if {[permutation]=="no_mutex_try" && $jrnl_mode=="wal"} {
++    foreach tn {1 2 3 4 5 6 7 8} {
++      foreach suffix {1 2 3} {
++        omit_test incrvacuum3-$T.1.$tn.$suffix $no_mutex_try_setlk_reason
++      }
++    }
++    omit_test incrvacuum3-$T.1.x.1 $no_mutex_try_setlk_reason
++    omit_test incrvacuum3-$T.1.x.2 $no_mutex_try_setlk_reason
++    continue
++  }
++
+   catch { db close }
+   forcedelete test.db test.db-journal test.db-wal
+   sqlite3 db test.db

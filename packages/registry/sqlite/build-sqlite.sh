@@ -22,6 +22,8 @@ INSTALL_DIR="${WASM_POSIX_DEP_OUT_DIR:-$SCRIPT_DIR/sqlite-install}"
 # Legacy default URL uses the packed version form (3.49.1 → 3490100).
 SOURCE_URL="${WASM_POSIX_DEP_SOURCE_URL:-https://www.sqlite.org/2025/sqlite-amalgamation-3490100.zip}"
 SOURCE_SHA256="${WASM_POSIX_DEP_SOURCE_SHA256:-}"
+SQLITE_MAX_COMPOUND_SELECT="${SQLITE_MAX_COMPOUND_SELECT:-50}"
+SQLITE_MAX_EXPR_DEPTH="${SQLITE_MAX_EXPR_DEPTH:-100}"
 
 # CLI is a consumer artifact, not a library. Skip it when invoked via
 # the resolver — it would waste cache space and the consumer-side
@@ -54,14 +56,20 @@ if [ ! -d "$SRC_DIR/sqlite3.c" ] && [ ! -f "$SRC_DIR/sqlite3.c" ]; then
     rm "$TARBALL"
 fi
 
+# Browser and Node wasm engines cannot run SQLite's default recursive SQL
+# limits without exhausting the engine call stack. Keep the shipped library
+# aligned with the official testfixture's Kandelo-supported limits.
 SQLITE_CFLAGS="-O2 \
     -DSQLITE_OMIT_LOAD_EXTENSION \
     -DSQLITE_THREADSAFE=1 \
     -DSQLITE_DEFAULT_SYNCHRONOUS=0 \
     -DSQLITE_ENABLE_SETLK_TIMEOUT=2 \
+    -DSQLITE_MAX_COMPOUND_SELECT=$SQLITE_MAX_COMPOUND_SELECT \
+    -DSQLITE_MAX_EXPR_DEPTH=$SQLITE_MAX_EXPR_DEPTH \
     -DHAVE_PREAD=1 \
     -DHAVE_PWRITE=1 \
     -DSQLITE_ENABLE_FTS5 \
+    -DSQLITE_ENABLE_DBPAGE_VTAB \
     -DSQLITE_ENABLE_JSON1 \
     -DSQLITE_ENABLE_MATH_FUNCTIONS"
 

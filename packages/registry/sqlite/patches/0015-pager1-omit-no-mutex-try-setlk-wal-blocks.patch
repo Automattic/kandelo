@@ -1,0 +1,209 @@
+--- test/pager1.test
++++ test/pager1.test
+@@ -2066,32 +2066,36 @@
+ } {}
+ 
+ ifcapable wal {
+-  do_test pager1-20.3.1 {
+-    faultsim_delete_and_reopen
+-    db func a_string a_string
+-    execsql {
+-      PRAGMA cache_size = 10;
+-      PRAGMA journal_mode = wal;
+-      BEGIN;
+-        CREATE TABLE t1(x);
+-        CREATE TABLE t2(y);
+-        INSERT INTO t1 VALUES(a_string(800));
+-        INSERT INTO t1 SELECT a_string(800) FROM t1;         /*   2 */
+-        INSERT INTO t1 SELECT a_string(800) FROM t1;         /*   4 */
+-        INSERT INTO t1 SELECT a_string(800) FROM t1;         /*   8 */
+-        INSERT INTO t1 SELECT a_string(800) FROM t1;         /*  16 */
+-        INSERT INTO t1 SELECT a_string(800) FROM t1;         /*  32 */
+-      COMMIT;
+-    }
+-  } {wal}
+-  do_test pager1-20.3.2 {
+-    execsql {
+-      BEGIN;
+-      INSERT INTO t2 VALUES('xxxx');
+-    }
+-    recursive_select 32 t1
+-    execsql COMMIT
+-  } {}
++  if {[permutation]=="no_mutex_try"} {
++    omit_test pager1-20.3 "Kandelo builds SQLite with ENABLE_SETLK_TIMEOUT; no_mutex_try forces sqlite3_mutex_try() to fail, but ENABLE_SETLK_TIMEOUT WAL shared-memory exclusive locks intentionally use sqlite3_mutex_try() to avoid deadlocks"
++  } else {
++    do_test pager1-20.3.1 {
++      faultsim_delete_and_reopen
++      db func a_string a_string
++      execsql {
++        PRAGMA cache_size = 10;
++        PRAGMA journal_mode = wal;
++        BEGIN;
++          CREATE TABLE t1(x);
++          CREATE TABLE t2(y);
++          INSERT INTO t1 VALUES(a_string(800));
++          INSERT INTO t1 SELECT a_string(800) FROM t1;         /*   2 */
++          INSERT INTO t1 SELECT a_string(800) FROM t1;         /*   4 */
++          INSERT INTO t1 SELECT a_string(800) FROM t1;         /*   8 */
++          INSERT INTO t1 SELECT a_string(800) FROM t1;         /*  16 */
++          INSERT INTO t1 SELECT a_string(800) FROM t1;         /*  32 */
++        COMMIT;
++      }
++    } {wal}
++    do_test pager1-20.3.2 {
++      execsql {
++        BEGIN;
++        INSERT INTO t2 VALUES('xxxx');
++      }
++      recursive_select 32 t1
++      execsql COMMIT
++    } {}
++  }
+ }
+ 
+ #-------------------------------------------------------------------------
+@@ -2101,28 +2105,32 @@
+ #   pager1-21.2.*: The VFS does not provide xShmXXX() methods.
+ #
+ ifcapable wal {
+-  do_test pager1-21.0 {
+-    faultsim_delete_and_reopen
+-    execsql {
+-      PRAGMA journal_mode = WAL;
+-      CREATE TABLE ko(c DEFAULT 'abc', b DEFAULT 'def');
+-      INSERT INTO ko DEFAULT VALUES;
+-    }
+-  } {wal}
+-  do_test pager1-21.1 {
+-    testvfs tv -noshm 1
+-    sqlite3 db2 test.db -vfs tv
+-    catchsql { SELECT * FROM ko } db2
+-  } {1 {unable to open database file}}
+-  db2 close
+-  tv delete
+-  do_test pager1-21.2 {
+-    testvfs tv -iversion 1
+-    sqlite3 db2 test.db -vfs tv
+-    catchsql { SELECT * FROM ko } db2
+-  } {1 {unable to open database file}}
+-  db2 close
+-  tv delete
++  if {[permutation]=="no_mutex_try"} {
++    omit_test pager1-21 "Kandelo builds SQLite with ENABLE_SETLK_TIMEOUT; no_mutex_try forces sqlite3_mutex_try() to fail, but ENABLE_SETLK_TIMEOUT WAL shared-memory exclusive locks intentionally use sqlite3_mutex_try() to avoid deadlocks"
++  } else {
++    do_test pager1-21.0 {
++      faultsim_delete_and_reopen
++      execsql {
++        PRAGMA journal_mode = WAL;
++        CREATE TABLE ko(c DEFAULT 'abc', b DEFAULT 'def');
++        INSERT INTO ko DEFAULT VALUES;
++      }
++    } {wal}
++    do_test pager1-21.1 {
++      testvfs tv -noshm 1
++      sqlite3 db2 test.db -vfs tv
++      catchsql { SELECT * FROM ko } db2
++    } {1 {unable to open database file}}
++    db2 close
++    tv delete
++    do_test pager1-21.2 {
++      testvfs tv -iversion 1
++      sqlite3 db2 test.db -vfs tv
++      catchsql { SELECT * FROM ko } db2
++    } {1 {unable to open database file}}
++    db2 close
++    tv delete
++  }
+ }
+ 
+ #-------------------------------------------------------------------------
+@@ -2406,24 +2414,29 @@
+ #
+ catch { db close }
+ ifcapable wal {
+-  do_multiclient_test tn {
+-    do_test pager1-28.$tn.1 {
+-      sql1 { 
+-        PRAGMA journal_mode = WAL;
+-        CREATE TABLE t1(a, b);
+-        INSERT INTO t1 VALUES('a', 'b');
+-      }
+-    } {wal}
+-    do_test pager1-28.$tn.2 { sql2 { SELECT * FROM t1 } } {a b}
++  if {[permutation]=="no_mutex_try"} {
++    omit_test pager1-28.1 "Kandelo builds SQLite with ENABLE_SETLK_TIMEOUT; no_mutex_try forces sqlite3_mutex_try() to fail, but ENABLE_SETLK_TIMEOUT WAL shared-memory exclusive locks intentionally use sqlite3_mutex_try() to avoid deadlocks"
++    omit_test pager1-28.2 "Kandelo builds SQLite with ENABLE_SETLK_TIMEOUT; no_mutex_try forces sqlite3_mutex_try() to fail, but ENABLE_SETLK_TIMEOUT WAL shared-memory exclusive locks intentionally use sqlite3_mutex_try() to avoid deadlocks"
++  } else {
++    do_multiclient_test tn {
++      do_test pager1-28.$tn.1 {
++        sql1 { 
++          PRAGMA journal_mode = WAL;
++          CREATE TABLE t1(a, b);
++          INSERT INTO t1 VALUES('a', 'b');
++        }
++      } {wal}
++      do_test pager1-28.$tn.2 { sql2 { SELECT * FROM t1 } } {a b}
+ 
+-    do_test pager1-28.$tn.3 { sql1 { PRAGMA locking_mode=exclusive } } {exclusive}
+-    do_test pager1-28.$tn.4 { 
+-      csql1 { BEGIN; INSERT INTO t1 VALUES('c', 'd'); }
+-    } {1 {database is locked}}
+-    code2 { db2 close ; sqlite3 db2 test.db }
+-    do_test pager1-28.$tn.4 { 
+-      sql1 { INSERT INTO t1 VALUES('c', 'd'); COMMIT }
+-    } {}
++      do_test pager1-28.$tn.3 { sql1 { PRAGMA locking_mode=exclusive } } {exclusive}
++      do_test pager1-28.$tn.4 { 
++        csql1 { BEGIN; INSERT INTO t1 VALUES('c', 'd'); }
++      } {1 {database is locked}}
++      code2 { db2 close ; sqlite3 db2 test.db }
++      do_test pager1-28.$tn.4 { 
++        sql1 { INSERT INTO t1 VALUES('c', 'd'); COMMIT }
++      } {}
++    }
+   }
+ }
+ 
+@@ -2665,23 +2678,27 @@
+ #-------------------------------------------------------------------------
+ #
+ reset_db
+-do_test 35 {
+-  sqlite3 db test.db
++if {[permutation]=="no_mutex_try"} {
++  omit_test pager1-35 "Kandelo builds SQLite with ENABLE_SETLK_TIMEOUT; no_mutex_try forces sqlite3_mutex_try() to fail, but ENABLE_SETLK_TIMEOUT WAL shared-memory exclusive locks intentionally use sqlite3_mutex_try() to avoid deadlocks"
++} else {
++  do_test 35 {
++    sqlite3 db test.db
+ 
+-  execsql {
+-    CREATE TABLE t1(x, y);
+-    PRAGMA journal_mode = WAL;
+-    INSERT INTO t1 VALUES(1, 2);
+-  }
++    execsql {
++      CREATE TABLE t1(x, y);
++      PRAGMA journal_mode = WAL;
++      INSERT INTO t1 VALUES(1, 2);
++    }
+ 
+-  execsql {
+-    BEGIN;
+-      CREATE TABLE t2(a, b);
+-  }
++    execsql {
++      BEGIN;
++        CREATE TABLE t2(a, b);
++    }
+ 
+-  hexio_write test.db-shm [expr 16*1024] [string repeat 0055 8192]
+-  catchsql ROLLBACK
+-} {0 {}}
++    hexio_write test.db-shm [expr 16*1024] [string repeat 0055 8192]
++    catchsql ROLLBACK
++  } {0 {}}
++}
+ 
+ do_multiclient_test tn {
+   sql1 {

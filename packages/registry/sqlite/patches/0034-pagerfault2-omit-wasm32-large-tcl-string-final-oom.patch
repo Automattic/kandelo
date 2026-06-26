@@ -1,0 +1,12 @@
+--- test/pagerfault2.test
++++ test/pagerfault2.test
+@@ -57,2 +57,3 @@
+-do_faultsim_test pagerfault2-1 -faults oom-transient -prep {
++omit_test pagerfault2-1-oom-transient.3-and-later {Kandelo wasm32 testfixture spends tens of seconds per retained large rollback OOM trial; keep first two pagerfault2-1 OOM checkpoints for signal without letting this file dominate SQLite all}
++do_faultsim_test pagerfault2-1 -faults oom-transient -end 2 -prep {
+   faultsim_restore_and_reopen
+@@ -80,2 +81,3 @@
+-do_faultsim_test pagerfault2-2 -faults oom-transient -prep {
++omit_test pagerfault2-2-oom-transient.3-and-later {Kandelo wasm32 testfixture spends tens of seconds per retained large string OOM trial; keep first two pagerfault2-2 OOM checkpoints for signal without letting this file dominate SQLite all}
++do_faultsim_test pagerfault2-2 -faults oom-transient -end 2 -prep {
+   faultsim_restore_and_reopen

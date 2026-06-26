@@ -69,12 +69,111 @@ if [ -z "$RESULTS_DIR" ]; then
 fi
 mkdir -p "$RESULTS_DIR"
 
+write_unavailable_outcome_lists() {
+  local reason="$1"
+  local out="$RESULTS_DIR/outcome-lists"
+
+  mkdir -p "$out"
+  printf 'jobid\tstate\tdisplaytype\tdisplayname\tcases\terrors\tms\tsource\n' > "$out/passed-jobs.tsv"
+  printf 'jobid\tstate\tdisplaytype\tdisplayname\tcases\terrors\tms\tsource\n' > "$out/failed-jobs.tsv"
+  printf 'jobid\tstate\tdisplaytype\tdisplayname\tcases\terrors\tms\treason\tsource\n' > "$out/skipped-jobs.tsv"
+  printf 'jobid\tstate\tdisplaytype\tdisplayname\tcases\terrors\tms\treason\tsource\n' > "$out/incomplete-jobs.tsv"
+  printf 'jobid\tdisplaytype\tdisplayname\tcase\treason\n' > "$out/skipped-cases.tsv"
+  printf '\tunavailable\t\t\t0\t0\t0\t%s\trunner\n' "$reason" >> "$out/incomplete-jobs.tsv"
+  {
+    printf 'passed_jobs\tfailed_jobs\tskipped_jobs\tincomplete_jobs\tnote\n'
+    printf '0\t0\t0\t1\t%s\n' "$reason"
+  } > "$out/counts.tsv"
+}
+
+write_outcome_lists() {
+  local db="$1"
+  local out="$RESULTS_DIR/outcome-lists"
+
+  mkdir -p "$out"
+  sqlite3 -header -separator $'\t' "$db" \
+    "SELECT jobid, state, displaytype, displayname,
+            coalesce(ntest, 0) AS cases,
+            coalesce(nerr, 0) AS errors,
+            coalesce(span, 0) AS ms,
+            'testrunner.db' AS source
+       FROM jobs
+      WHERE state = 'done'
+      ORDER BY jobid;" > "$out/passed-jobs.tsv"
+
+  sqlite3 -header -separator $'\t' "$db" \
+    "SELECT jobid, state, displaytype, displayname,
+            coalesce(ntest, 0) AS cases,
+            coalesce(nerr, 0) AS errors,
+            coalesce(span, 0) AS ms,
+            'testrunner.db' AS source
+       FROM jobs
+      WHERE state = 'failed'
+      ORDER BY jobid;" > "$out/failed-jobs.tsv"
+
+  sqlite3 -header -separator $'\t' "$db" \
+    "SELECT jobid, state, displaytype, displayname,
+            coalesce(ntest, 0) AS cases,
+            coalesce(nerr, 0) AS errors,
+            coalesce(span, 0) AS ms,
+            'runner omitted' AS reason,
+            'testrunner.db' AS source
+       FROM jobs
+      WHERE state = 'omit'
+      ORDER BY jobid;" > "$out/skipped-jobs.tsv"
+
+  sqlite3 -header -separator $'\t' "$db" \
+    "SELECT jobid, state, displaytype, displayname,
+            coalesce(ntest, 0) AS cases,
+            coalesce(nerr, 0) AS errors,
+            coalesce(span, 0) AS ms,
+            CASE state
+              WHEN 'running' THEN 'runner exited before job completed'
+              WHEN 'ready' THEN 'not started before runner exit'
+              ELSE 'not completed before runner exit'
+            END AS reason,
+            'testrunner.db' AS source
+       FROM jobs
+      WHERE state IN ('running', 'ready')
+      ORDER BY state, jobid;" > "$out/incomplete-jobs.tsv"
+
+  sqlite3 -header -separator $'\t' "$db" \
+    "SELECT sum(state='done') AS passed_jobs,
+            sum(state='failed') AS failed_jobs,
+            sum(state='omit') AS skipped_jobs,
+            sum(state IN ('running','ready')) AS incomplete_jobs,
+            'testrunner.db' AS source
+       FROM jobs;" > "$out/counts.tsv"
+
+  python3 - "$db" "$out/skipped-cases.tsv" <<'PY'
+import csv
+import re
+import sqlite3
+import sys
+
+db_path, out_path = sys.argv[1], sys.argv[2]
+line_re = re.compile(r"^\.\s+(\S+)\s+(.+)$")
+with sqlite3.connect(db_path) as con, open(out_path, "w", newline="", encoding="utf-8") as out:
+    writer = csv.writer(out, delimiter="\t")
+    writer.writerow(["jobid", "displaytype", "displayname", "case", "reason"])
+    for jobid, displaytype, displayname, output in con.execute(
+        "SELECT jobid, displaytype, displayname, coalesce(output, '') FROM jobs ORDER BY jobid"
+    ):
+        for line in output.splitlines():
+            match = line_re.match(line)
+            if match:
+                writer.writerow([jobid, displaytype, displayname, match.group(1), match.group(2)])
+PY
+}
+
 write_sqlite_report() {
   local db="$RESULTS_DIR/testrunner.db"
   local report="$RESULTS_DIR/summary.txt"
   local failures="$RESULTS_DIR/failures.tsv"
+  local outcome_dir="$RESULTS_DIR/outcome-lists"
   if [ ! -f "$db" ]; then
     echo "No testrunner.db was created at $db" > "$report"
+    write_unavailable_outcome_lists "No testrunner.db was created at $db."
     return
   fi
 
@@ -93,10 +192,13 @@ write_sqlite_report() {
       find "$RESULTS_DIR" -maxdepth 1 -type f -name 'testrunner.*' -print | sort
     } > "$report"
     : > "$failures"
+    write_unavailable_outcome_lists "No usable jobs table was found in $db."
     echo "===== SQLite official testrunner database summary ====="
     cat "$report"
     return
   fi
+
+  write_outcome_lists "$db"
 
   {
     echo "SQLite official testrunner summary"
@@ -124,6 +226,9 @@ write_sqlite_report() {
          FROM jobs
         GROUP BY state
         ORDER BY state;"
+    echo
+    echo "Skipped SQLite subcases with reasons:"
+    awk 'NR > 1 { count++ } END { print count + 0 }' "$outcome_dir/skipped-cases.tsv"
     echo
     echo "Jobs by SQLite testrunner config:"
     sqlite3 -header -column "$db" \

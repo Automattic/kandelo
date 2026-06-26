@@ -108,6 +108,24 @@ function writeArtifacts(resultsDir: string, artifacts: BrowserArtifact[] | undef
   }
 }
 
+function withTimeout<T>(promise: Promise<T>, timeoutMs: number, label: string): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => {
+      reject(new Error(`${label} timed out after ${timeoutMs} ms`));
+    }, timeoutMs);
+  });
+
+  promise.catch(() => {
+    // The browser is closed after timeout. Keep the eventual rejection from
+    // surfacing as an unhandled rejection after Promise.race has moved on.
+  });
+
+  return Promise.race([promise, timeout]).finally(() => {
+    if (timer) clearTimeout(timer);
+  });
+}
+
 async function main() {
   const argv = process.argv.slice(2);
   let timeoutMs = 600_000;
@@ -140,7 +158,20 @@ async function main() {
 
   let vite: ChildProcess | null = null;
   let browser: Browser | null = null;
-  let latestArtifacts: BrowserArtifact[] | undefined;
+  const latestArtifacts = new Map<string, { artifact: BrowserArtifact; durationMs: number }>();
+  const rememberArtifacts = (artifacts: BrowserArtifact[] | undefined, durationMs: number): void => {
+    if (!artifacts) return;
+    for (const artifact of artifacts) {
+      const existing = latestArtifacts.get(artifact.path);
+      if (!existing || durationMs >= existing.durationMs) {
+        latestArtifacts.set(artifact.path, { artifact, durationMs });
+      }
+    }
+  };
+  const mergedArtifacts = (): BrowserArtifact[] | undefined => {
+    const artifacts = [...latestArtifacts.values()].map((entry) => entry.artifact);
+    return artifacts.length > 0 ? artifacts : undefined;
+  };
   try {
     const vitePort = await findVitePort();
     vite = await startViteServer(vitePort);
@@ -148,7 +179,7 @@ async function main() {
     const context = await browser.newContext();
     const page = await context.newPage();
     await page.exposeFunction("__sqliteArtifactSnapshot", (snapshot: BrowserArtifactSnapshot) => {
-      if (snapshot.artifacts?.length) latestArtifacts = snapshot.artifacts;
+      rememberArtifacts(snapshot.artifacts, snapshot.durationMs);
     });
     page.on("console", (msg) => {
       if (msg.text().startsWith("[sqlite-progress]")) {
@@ -179,15 +210,26 @@ async function main() {
     await page.waitForFunction(() => (window as any).__sqliteTestReady === true, {}, { timeout: 180_000 });
     let result: BrowserSqliteResult;
     try {
-      result = await page.evaluate(
+      const evaluateRun = page.evaluate(
         ({ command, timeoutMs, uid, gid }) => (window as any).__runSqliteCommand(command, timeoutMs, { uid, gid }),
         { command, timeoutMs, uid: SQLITE_TEST_UID, gid: SQLITE_TEST_GID },
       );
+      result = await withTimeout(
+        evaluateRun,
+        timeoutMs + 10_000,
+        "Browser SQLite command",
+      );
     } catch (err) {
-      writeArtifacts(resultsDir, latestArtifacts);
+      writeArtifacts(resultsDir, mergedArtifacts());
       throw err;
     }
-    if (!result.artifacts && latestArtifacts) result.artifacts = latestArtifacts;
+    const preservedArtifacts = mergedArtifacts();
+    if (preservedArtifacts) {
+      const finalArtifacts = new Map<string, BrowserArtifact>();
+      for (const artifact of result.artifacts ?? []) finalArtifacts.set(artifact.path, artifact);
+      for (const artifact of preservedArtifacts) finalArtifacts.set(artifact.path, artifact);
+      result.artifacts = [...finalArtifacts.values()];
+    }
     writeArtifacts(resultsDir, result.artifacts);
     if (result.stdout) process.stdout.write(result.stdout);
     if (result.stderr) process.stderr.write(result.stderr);

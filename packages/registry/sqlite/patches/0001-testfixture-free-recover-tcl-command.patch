@@ -1,0 +1,54 @@
+--- ext/recover/test_recover.c
++++ ext/recover/test_recover.c
+@@ -26,6 +26,21 @@
+   Tcl_Obj *pScript;
+ };
+ 
++static void testRecoverDelete(void *clientData){
++  TestRecover *pTest = (TestRecover*)clientData;
++  if( pTest ){
++    if( pTest->p ){
++      sqlite3_recover_finish(pTest->p);
++      pTest->p = 0;
++    }
++    if( pTest->pScript ){
++      Tcl_DecrRefCount(pTest->pScript);
++      pTest->pScript = 0;
++    }
++    ckfree((char*)pTest);
++  }
++}
++
+ static int xSqlCallback(void *pSqlArg, const char *zSql){
+   TestRecover *p = (TestRecover*)pSqlArg;
+   Tcl_Obj *pEval = 0;
+@@ -194,7 +209,9 @@
+         Tcl_SetObjResult(interp, Tcl_NewStringObj(zErr, -1));
+       }
+       res2 = sqlite3_recover_finish(pTest->p);
++      pTest->p = 0;
+       assert( res2==res );
++      Tcl_DeleteCommand(interp, Tcl_GetString(objv[0]));
+       if( res ) return TCL_ERROR;
+       break;
+     }
+@@ -236,6 +253,9 @@
+   if( zDb[0]=='\0' ) zDb = 0;
+ 
+   pNew = (TestRecover*)ckalloc(sizeof(TestRecover));
++  pNew->p = 0;
++  pNew->interp = 0;
++  pNew->pScript = 0;
+   if( bSql==0 ){
+     zUri = Tcl_GetString(objv[3]);
+     pNew->p = sqlite3_recover_init(db, zDb, zUri);
+@@ -247,7 +267,8 @@
+   }
+ 
+   sprintf(zCmd, "sqlite_recover%d", iTestRecoverCmd++);
+-  Tcl_CreateObjCommand(interp, zCmd, testRecoverCmd, (void*)pNew, 0);
++  Tcl_CreateObjCommand(interp, zCmd, testRecoverCmd, (void*)pNew,
++      testRecoverDelete);
+ 
+   Tcl_SetObjResult(interp, Tcl_NewStringObj(zCmd, -1));
+   return TCL_OK;

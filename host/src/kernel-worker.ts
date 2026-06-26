@@ -2629,9 +2629,13 @@ export class CentralizedKernelWorker {
           }
           let copySize = size;
           if (desc.direction === "out" && desc.size.type === "arg") {
-            // For read/recv-like syscalls, retVal is bytes read — limit copy to actual data
+            // For read/recv/getdents-like syscalls, retVal is bytes produced.
+            // A successful EOF returns 0 and must not copy the zero-filled
+            // scratch buffer back over the caller's destination.
             const copyRetvalAdd = desc.copyRetvalAdd ?? 0;
-            if (retVal > 0 && retVal + copyRetvalAdd < size) {
+            if (retVal <= 0) {
+              copySize = Math.min(copyRetvalAdd, size);
+            } else if (retVal + copyRetvalAdd < size) {
               copySize = retVal + copyRetvalAdd;
             }
           }

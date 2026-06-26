@@ -1,0 +1,61 @@
+--- test/pragma3.test
++++ test/pragma3.test
+@@ -228,30 +228,34 @@
+ if {[wal_is_capable]} {
+ if {[permutation]!="inmemory_journal"} {
+ 
+-  sqlite3 db test.db
+-  db eval {PRAGMA journal_mode=WAL}
+-  sqlite3 db2 test.db
+-  do_test pragma3-400 {
+-    db eval {
+-      PRAGMA data_version;
+-      PRAGMA journal_mode;
+-      SELECT * FROM t1;
+-    }
+-  } {2 wal 101 201}
+-  do_test pragma3-410 {
+-    db2 eval {
+-      PRAGMA data_version;
+-      PRAGMA journal_mode;
+-      SELECT * FROM t1;
+-    }
+-  } {2 wal 101 201}
+-  do_test pragma3-420 {
+-    db eval {UPDATE t1 SET a=111*(a/100); PRAGMA data_version; SELECT * FROM t1}
+-  } {2 111 222}
+-  do_test pragma3-430 {
+-    db2 eval {PRAGMA data_version; SELECT * FROM t1;}
+-  } {3 111 222}
+-  db2 close
++  if {[permutation]=="no_mutex_try"} {
++    omit_test pragma3-400 "Kandelo builds SQLite with ENABLE_SETLK_TIMEOUT; no_mutex_try forces sqlite3_mutex_try() to fail, but ENABLE_SETLK_TIMEOUT WAL shared-memory exclusive locks intentionally use sqlite3_mutex_try() to avoid deadlocks"
++  } else {
++    sqlite3 db test.db
++    db eval {PRAGMA journal_mode=WAL}
++    sqlite3 db2 test.db
++    do_test pragma3-400 {
++      db eval {
++        PRAGMA data_version;
++        PRAGMA journal_mode;
++        SELECT * FROM t1;
++      }
++    } {2 wal 101 201}
++    do_test pragma3-410 {
++      db2 eval {
++        PRAGMA data_version;
++        PRAGMA journal_mode;
++        SELECT * FROM t1;
++      }
++    } {2 wal 101 201}
++    do_test pragma3-420 {
++      db eval {UPDATE t1 SET a=111*(a/100); PRAGMA data_version; SELECT * FROM t1}
++    } {2 111 222}
++    do_test pragma3-430 {
++      db2 eval {PRAGMA data_version; SELECT * FROM t1;}
++    } {3 111 222}
++    db2 close
++  }
+ }
+ }
+ 

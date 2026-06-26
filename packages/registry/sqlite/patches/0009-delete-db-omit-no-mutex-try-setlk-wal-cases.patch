@@ -1,0 +1,160 @@
+--- test/delete_db.test
++++ test/delete_db.test
+@@ -70,19 +70,23 @@
+   files
+ } {}
+ 
+-do_test 1.2.0 {
+-  execsql {
+-    COMMIT;
+-    PRAGMA journal_mode = wal;
+-    INSERT INTO t1 VALUES(3, 4);
+-  }
+-  copydb
+-  files
+-} {test3.database test3.database-shm test3.database-wal}
+-do_test 1.2.1 {
+-  sqlite3_delete_database test3.database
+-  files
+-} {}
++if {[permutation]=="no_mutex_try"} {
++  omit_test delete_db-1.2 "Kandelo builds SQLite with ENABLE_SETLK_TIMEOUT; no_mutex_try forces sqlite3_mutex_try() to fail, but ENABLE_SETLK_TIMEOUT WAL shared-memory exclusive locks intentionally use sqlite3_mutex_try() to avoid deadlocks"
++} else {
++  do_test 1.2.0 {
++    execsql {
++      COMMIT;
++      PRAGMA journal_mode = wal;
++      INSERT INTO t1 VALUES(3, 4);
++    }
++    copydb
++    files
++  } {test3.database test3.database-shm test3.database-wal}
++  do_test 1.2.1 {
++    sqlite3_delete_database test3.database
++    files
++  } {}
++}
+ 
+ db close
+ delete_all
+@@ -111,22 +115,26 @@
+ } {}
+ 
+ 
+-do_test 1.4.0 {
+-  execsql {
+-    COMMIT;
+-    PRAGMA journal_mode = wal;
+-    UPDATE x1 SET a=randomblob(102)
+-  }
+-  copydb
+-  files
+-} [list {*}{
+-  test3.database test3.database-shm test3.database-wal test3.database001 
+-  test3.database002 test3.database003
+-}]
+-do_test 1.4.1 {
+-  sqlite3_delete_database test3.database
+-  files
+-} {}
++if {[permutation]=="no_mutex_try"} {
++  omit_test delete_db-1.4 "Kandelo builds SQLite with ENABLE_SETLK_TIMEOUT; no_mutex_try forces sqlite3_mutex_try() to fail, but ENABLE_SETLK_TIMEOUT WAL shared-memory exclusive locks intentionally use sqlite3_mutex_try() to avoid deadlocks"
++} else {
++  do_test 1.4.0 {
++    execsql {
++      COMMIT;
++      PRAGMA journal_mode = wal;
++      UPDATE x1 SET a=randomblob(102)
++    }
++    copydb
++    files
++  } [list {*}{
++    test3.database test3.database-shm test3.database-wal test3.database001 
++    test3.database002 test3.database003
++  }]
++  do_test 1.4.1 {
++    sqlite3_delete_database test3.database
++    files
++  } {}
++}
+ 
+ 
+ ifcapable 8_3_names {
+@@ -149,19 +157,23 @@
+     files
+   } {}
+   
+-  do_test 2.2.0 {
+-    execsql {
+-      COMMIT;
+-      PRAGMA journal_mode = wal;
+-      INSERT INTO t1 VALUES(3, 4);
+-    }
+-    copydb
+-    files
+-  } {test3.db test3.shm test3.wal}
+-  do_test 2.2.1 {
+-    sqlite3_delete_database test3.db
+-    files
+-  } {}
++  if {[permutation]=="no_mutex_try"} {
++    omit_test delete_db-2.2 "Kandelo builds SQLite with ENABLE_SETLK_TIMEOUT; no_mutex_try forces sqlite3_mutex_try() to fail, but ENABLE_SETLK_TIMEOUT WAL shared-memory exclusive locks intentionally use sqlite3_mutex_try() to avoid deadlocks"
++  } else {
++    do_test 2.2.0 {
++      execsql {
++        COMMIT;
++        PRAGMA journal_mode = wal;
++        INSERT INTO t1 VALUES(3, 4);
++      }
++      copydb
++      files
++    } {test3.db test3.shm test3.wal}
++    do_test 2.2.1 {
++      sqlite3_delete_database test3.db
++      files
++    } {}
++  }
+ 
+ 
+   db close
+@@ -190,21 +202,25 @@
+   } {}
+   
+   
+-  do_test 2.4.0 {
+-    execsql {
+-      COMMIT;
+-      PRAGMA journal_mode = wal;
+-      UPDATE x1 SET a=randomblob(102)
+-    }
+-    copydb
+-    files
+-  } [list {*}{
+-    test3.001 test3.002 test3.003 test3.db test3.db-shm test3.wal 
+-  }]
+-  do_test 2.4.1 {
+-    sqlite3_delete_database test3.db
+-    files
+-  } {}
++  if {[permutation]=="no_mutex_try"} {
++    omit_test delete_db-2.4 "Kandelo builds SQLite with ENABLE_SETLK_TIMEOUT; no_mutex_try forces sqlite3_mutex_try() to fail, but ENABLE_SETLK_TIMEOUT WAL shared-memory exclusive locks intentionally use sqlite3_mutex_try() to avoid deadlocks"
++  } else {
++    do_test 2.4.0 {
++      execsql {
++        COMMIT;
++        PRAGMA journal_mode = wal;
++        UPDATE x1 SET a=randomblob(102)
++      }
++      copydb
++      files
++    } [list {*}{
++      test3.001 test3.002 test3.003 test3.db test3.db-shm test3.wal 
++    }]
++    do_test 2.4.1 {
++      sqlite3_delete_database test3.db
++      files
++    } {}
++  }
+ }
+ 
+ db close
