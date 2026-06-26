@@ -772,6 +772,9 @@ the WAL serialization block `memdb1-800` and the WAL recovery block
 `SQLITE_ENABLE_SETLK_TIMEOUT` builds because that upstream WAL locking mode
 intentionally calls `sqlite3_mutex_try()` to avoid deadlocks, while the
 permutation forces every `sqlite3_mutex_try()` call to fail.
+The patch set also omits the `misc1-10.*` 100-term AND-chain stress block when
+the compiled expression-depth cap is 100 or lower, matching Kandelo's shipped
+SQLite limit.
 
 Then run the harness:
 
