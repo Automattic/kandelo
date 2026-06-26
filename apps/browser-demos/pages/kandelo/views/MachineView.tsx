@@ -19,32 +19,40 @@ import { Display, type DisplayHandle, type WordPressLoginOptions } from "../pane
 import { Shell, type ShellTerminal } from "../panes/Shell";
 import { DemoGuide } from "../panes/DemoGuide";
 import type { DemoActionConfig } from "../../../../../web-libs/kandelo-session/src/demo-config";
-import type { LazyDownloadEvent, PrimarySurface, SurfaceAvailability } from "../../../../../web-libs/kandelo-session/src/kernel-host";
+import type {
+  DemoPresentation,
+  LazyDownloadEvent,
+  MachineStatus,
+  PrimarySurface,
+  SurfaceAvailability,
+} from "../../../../../web-libs/kandelo-session/src/kernel-host";
 
 const DEMO_GUIDE_DEFAULT_WIDTH = 300;
 const DEMO_GUIDE_MIN_WIDTH = 220;
 const DEMO_GUIDE_MAX_WIDTH = 480;
 const DEMO_GUIDE_PRIMARY_MIN_WIDTH = 480;
 
-export interface MachineViewProps {
-  focusInternals?: boolean;
-  internalsTab: string;
-  onInternalsTab: (id: string) => void;
-  terminals: ShellTerminal[];
-  activeTerminalId: string;
-  onActiveTerminalId: (id: string) => void;
-  onAddTerminal: () => void;
+export type MachineSurfaceView = "demo" | "terminal" | "internals";
+
+export interface MachineSurfaceController {
+  status: MachineStatus;
+  presentation: DemoPresentation;
+  availability: SurfaceAvailability;
+  activePrimary: PrimarySurface;
+  activeView: MachineSurfaceView;
+  primaryLabel: string;
+  demoSurface: PrimarySurface | null;
+  canOpenDemo: boolean;
+  canUseTerminal: boolean;
+  canUseInternals: boolean;
+  shouldMountDemoSurface: boolean;
+  choosePrimary: (surface: PrimarySurface) => void;
+  chooseView: (view: MachineSurfaceView) => void;
+  followDemoSurface: () => void;
+  focusInternals: () => void;
 }
 
-export const MachineView: React.FC<MachineViewProps> = ({
-  focusInternals = false,
-  internalsTab,
-  onInternalsTab,
-  terminals,
-  activeTerminalId,
-  onActiveTerminalId,
-  onAddTerminal,
-}) => {
+export function useMachineSurfaceController(): MachineSurfaceController {
   const status = useStatus();
   const presentation = usePresentation();
   const rawAvailability = useSurfaceAvailability();
@@ -53,17 +61,8 @@ export const MachineView: React.FC<MachineViewProps> = ({
     ...rawAvailability,
     web: rawAvailability.web && webPreview?.status === "running",
   }), [rawAvailability, webPreview?.status]);
-  const demoGuide = useDemoGuide();
-  const lazyDownloads = useLazyDownloads();
-  const rootRef = React.useRef<HTMLDivElement>(null);
-  const displayRef = React.useRef<DisplayHandle | null>(null);
   const [activePrimary, setActivePrimary] = React.useState<PrimarySurface>(presentation.bootPrimary);
   const [primaryMode, setPrimaryMode] = React.useState<"following-demo" | "pinned">("following-demo");
-  const [terminalOpen, setTerminalOpen] = React.useState(false);
-  const [internalsOpen, setInternalsOpen] = React.useState(false);
-  const [terminalDrawerHeight, setTerminalDrawerHeight] = React.useState(320);
-  const [internalsDrawerHeight, setInternalsDrawerHeight] = React.useState(320);
-  const [demoGuideWidth, setDemoGuideWidth] = React.useState(DEMO_GUIDE_DEFAULT_WIDTH);
   const previousAvailability = React.useRef(availability);
   const canUseTerminal = status === "running" && availability.terminal;
 
@@ -96,52 +95,20 @@ export const MachineView: React.FC<MachineViewProps> = ({
   }, [activePrimary, availability, presentation.runningPrimary, status]);
 
   React.useEffect(() => {
-    if (!focusInternals) return;
-    setActivePrimary("syslog");
-    setPrimaryMode("pinned");
-  }, [focusInternals, internalsTab]);
-
-  React.useEffect(() => {
     setPrimaryMode("following-demo");
-    setTerminalOpen(false);
-    setInternalsOpen(false);
   }, [presentation.runningPrimary, presentation.autoCommand]);
 
-  React.useEffect(() => {
-    if (!canUseTerminal) setTerminalOpen(false);
-  }, [canUseTerminal]);
-
-  const choosePrimary = (surface: PrimarySurface) => {
+  const choosePrimary = React.useCallback((surface: PrimarySurface) => {
     if (status !== "running" && surface !== "syslog") return;
     if (!isSurfaceAvailable(surface, availability)) return;
     setActivePrimary(surface);
     setPrimaryMode(surface === defaultPrimary ? "following-demo" : "pinned");
-  };
+  }, [availability, defaultPrimary, status]);
 
-  const primaryLabel = surfaceLabel(activePrimary);
-  const demoSurface = resolveDemoSurface(presentation.runningPrimary);
-
-  const runWebAction = React.useCallback(async (action: DemoActionConfig): Promise<string | void> => {
-    if (action.kind === "web.wordpressLogin") {
-      if (demoSurface) {
-        setActivePrimary(demoSurface);
-        setPrimaryMode("following-demo");
-      }
-      const preview = displayRef.current;
-      if (!preview) throw new Error("Web preview is not available");
-      await preview.loginToWordPress(parseWordPressLoginPayload(action.payload));
-      return "Logged into WordPress";
-    }
-    throw new Error(`Unsupported web action: ${action.kind}`);
-  }, [demoSurface]);
-
-  const shellProps = {
-    terminals,
-    activeTerminalId,
-    onActiveTerminalId,
-    onAddTerminal,
-  };
-
+  const demoSurface = React.useMemo(
+    () => resolveDemoSurface(presentation.runningPrimary),
+    [presentation.runningPrimary],
+  );
   const canOpenDemo =
     demoSurface !== null &&
     isSurfaceAvailable(demoSurface, availability) &&
@@ -150,6 +117,119 @@ export const MachineView: React.FC<MachineViewProps> = ({
     demoSurface !== null &&
     status === "running" &&
     isSurfaceAvailable(demoSurface, availability);
+  const canUseInternals = status !== "idle" && isSurfaceAvailable("syslog", availability);
+
+  const chooseView = React.useCallback((view: MachineSurfaceView) => {
+    if (view === "demo") {
+      if (demoSurface) choosePrimary(demoSurface);
+      return;
+    }
+    choosePrimary(view === "terminal" ? "terminal" : "syslog");
+  }, [choosePrimary, demoSurface]);
+
+  const followDemoSurface = React.useCallback(() => {
+    if (!demoSurface) return;
+    setActivePrimary(demoSurface);
+    setPrimaryMode("following-demo");
+  }, [demoSurface]);
+
+  const focusInternals = React.useCallback(() => {
+    setActivePrimary("syslog");
+    setPrimaryMode("pinned");
+  }, []);
+
+  const activeView: MachineSurfaceView =
+    activePrimary === "terminal"
+      ? "terminal"
+      : activePrimary === "syslog"
+        ? "internals"
+        : "demo";
+
+  return {
+    status,
+    presentation,
+    availability,
+    activePrimary,
+    activeView,
+    primaryLabel: surfaceLabel(activePrimary),
+    demoSurface,
+    canOpenDemo,
+    canUseTerminal,
+    canUseInternals,
+    shouldMountDemoSurface,
+    choosePrimary,
+    chooseView,
+    followDemoSurface,
+    focusInternals,
+  };
+}
+
+export interface MachineViewProps {
+  surface: MachineSurfaceController;
+  internalsTab: string;
+  onInternalsTab: (id: string) => void;
+  terminals: ShellTerminal[];
+  activeTerminalId: string;
+  onActiveTerminalId: (id: string) => void;
+  onAddTerminal: () => void;
+}
+
+export const MachineView: React.FC<MachineViewProps> = ({
+  surface,
+  internalsTab,
+  onInternalsTab,
+  terminals,
+  activeTerminalId,
+  onActiveTerminalId,
+  onAddTerminal,
+}) => {
+  const demoGuide = useDemoGuide();
+  const lazyDownloads = useLazyDownloads();
+  const rootRef = React.useRef<HTMLDivElement>(null);
+  const displayRef = React.useRef<DisplayHandle | null>(null);
+  const [terminalOpen, setTerminalOpen] = React.useState(false);
+  const [internalsOpen, setInternalsOpen] = React.useState(false);
+  const [terminalDrawerHeight, setTerminalDrawerHeight] = React.useState(320);
+  const [internalsDrawerHeight, setInternalsDrawerHeight] = React.useState(320);
+  const [demoGuideWidth, setDemoGuideWidth] = React.useState(DEMO_GUIDE_DEFAULT_WIDTH);
+  const {
+    status,
+    presentation,
+    activePrimary,
+    primaryLabel,
+    demoSurface,
+    canUseTerminal,
+    shouldMountDemoSurface,
+    followDemoSurface,
+  } = surface;
+
+  React.useEffect(() => {
+    setTerminalOpen(false);
+    setInternalsOpen(false);
+  }, [presentation.runningPrimary, presentation.autoCommand]);
+
+  React.useEffect(() => {
+    if (!canUseTerminal) setTerminalOpen(false);
+  }, [canUseTerminal]);
+
+  const runWebAction = React.useCallback(async (action: DemoActionConfig): Promise<string | void> => {
+    if (action.kind === "web.wordpressLogin") {
+      followDemoSurface();
+      const preview = displayRef.current;
+      if (!preview) throw new Error("Web preview is not available");
+      await preview.loginToWordPress(parseWordPressLoginPayload(action.payload));
+      return "Logged into WordPress";
+    }
+    throw new Error(`Unsupported web action: ${action.kind}`);
+  }, [followDemoSurface]);
+
+  const shellProps = {
+    terminals,
+    activeTerminalId,
+    onActiveTerminalId,
+    onAddTerminal,
+  };
+
   const showDemoGuide = demoGuide !== null;
 
   const beginDrawerResize = (
@@ -241,33 +321,12 @@ export const MachineView: React.FC<MachineViewProps> = ({
 
   return (
     <div className="kmachine" ref={rootRef}>
-      <div className="kmachine-toolbar">
-        <div className="kmachine-switch" role="tablist" aria-label="Machine surfaces">
-          <SurfaceButton
-            active={demoSurface !== null && activePrimary === demoSurface}
-            disabled={!canOpenDemo}
-            onClick={() => {
-              if (demoSurface) choosePrimary(demoSurface);
-            }}
-            label="Demo"
-          />
-          <SurfaceButton
-            active={activePrimary === "terminal"}
-            disabled={!canUseTerminal}
-            onClick={() => choosePrimary("terminal")}
-            label="Terminal"
-          />
-          <SurfaceButton
-            active={activePrimary === "syslog"}
-            onClick={() => choosePrimary("syslog")}
-            label="Internals"
-          />
-        </div>
-        <div className="kmachine-current">
+      {lazyDownloads.length > 0 && (
+        <div className="kmachine-statusline">
           <LazyDownloadIndicator downloads={lazyDownloads} />
           <span className="kmachine-current-label">{primaryLabel}</span>
         </div>
-      </div>
+      )}
 
       <div
         className={`kmachine-workspace${showDemoGuide ? "" : " no-demo-guide"}`}
@@ -380,23 +439,6 @@ function parseWordPressLoginPayload(payload: string): WordPressLoginOptions {
     adminPath: typeof value.adminPath === "string" ? value.adminPath : "/wp-admin/",
   };
 }
-
-const SurfaceButton: React.FC<{
-  label: string;
-  active: boolean;
-  disabled?: boolean;
-  onClick: () => void;
-}> = ({ label, active, disabled, onClick }) => (
-  <button
-    type="button"
-    className="kmachine-switch-btn"
-    aria-current={active}
-    disabled={disabled}
-    onClick={onClick}
-  >
-    <span className="kmachine-switch-label">{label}</span>
-  </button>
-);
 
 const PrimarySurfaceSlot: React.FC<{
   active: boolean;

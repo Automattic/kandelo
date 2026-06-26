@@ -267,6 +267,704 @@
   padding: 0;
   gap: 0;
 }
+.kdocked-main {
+  padding-bottom: 98px;
+}
+.kdocked-main.kmain-flush {
+  padding-bottom: 98px;
+}
+
+/* ── Exploratory dock ──────────────────────────────────────────────────── */
+
+.kdock-shell {
+  --kdock-notch-w: 84px;
+  position: fixed;
+  left: var(--kdock-center, 50%);
+  bottom: 0;
+  z-index: 1000;
+  transform: translateX(-50%);
+  display: flex;
+  flex-direction: column;
+  width: max-content;
+  max-width: calc(100vw - 24px);
+  border: 1px solid color-mix(in oklch, var(--k-border) 78%, transparent);
+  border-bottom: 0;
+  border-radius: 14px 14px 0 0;
+  background: color-mix(in oklch, var(--k-surface) 92%, transparent);
+  box-shadow:
+    0 1px 0 color-mix(in oklch, white 70%, transparent) inset,
+    0 -16px 45px rgba(55, 42, 19, 0.18),
+    0 -4px 12px rgba(55, 42, 19, 0.12);
+  backdrop-filter: blur(18px);
+  -webkit-backdrop-filter: blur(18px);
+  clip-path: inset(0 round 14px 14px 0 0);
+  transition:
+    transform 0.24s cubic-bezier(0.22, 1, 0.36, 1),
+    clip-path 0.24s cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.kdock-shell.kdock-collapsed {
+  clip-path: inset(0 calc(50% - var(--kdock-notch-w) / 2) 0 calc(50% - var(--kdock-notch-w) / 2) round 14px 14px 0 0);
+  transform: translateX(-50%) translateY(var(--kdock-body-h, 72px));
+}
+
+.kdock-shell.kdock-dragging {
+  transition: clip-path 0.24s cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.kdock-header {
+  width: 100%;
+  height: 24px;
+  border: 0;
+  border-radius: 14px 14px 0 0;
+  background: transparent;
+  color: var(--k-text-faint);
+  cursor: grab;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  transition: color 0.12s;
+}
+
+.kdock-header:hover,
+.kdock-header:focus-visible {
+  color: var(--k-text);
+}
+
+.kdock-header:active,
+.kdock-shell.kdock-dragging .kdock-header {
+  cursor: grabbing;
+}
+
+.kdock-header:focus-visible {
+  outline: 2px solid var(--k-accent);
+  outline-offset: -3px;
+}
+
+.kdock-header svg {
+  width: 18px;
+  height: 18px;
+  fill: none;
+  stroke: currentColor;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-width: 2;
+  transition: transform 0.24s cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.kdock-shell.kdock-collapsed .kdock-header svg {
+  transform: rotate(180deg);
+}
+
+.kdock-body {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  max-width: 100%;
+  min-width: 0;
+  padding: 6px;
+  box-sizing: border-box;
+}
+
+.kdock-body[aria-hidden="true"] {
+  pointer-events: none;
+}
+
+.kdock-status {
+  min-width: 172px;
+  max-width: 240px;
+  height: 48px;
+  border: 1px solid var(--k-border);
+  border-radius: 10px;
+  background: color-mix(in oklch, var(--k-surface-sunk) 70%, transparent);
+  color: var(--k-text);
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding: 0 12px;
+  font: inherit;
+  text-align: left;
+}
+
+.kdock-status img {
+  width: 24px;
+  height: auto;
+  display: block;
+}
+
+.kdock-status-text {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  min-width: 0;
+  color: var(--k-text-muted);
+  font-size: 10px;
+  font-weight: 750;
+  letter-spacing: 0.06em;
+  line-height: 1.1;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+
+.kdock-status-copy {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.kdock-status-title {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--k-text);
+  font-size: 12px;
+  font-weight: 760;
+  letter-spacing: 0;
+  line-height: 1.15;
+}
+
+.kdock-status-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: currentColor;
+  flex-shrink: 0;
+}
+
+.kdock-status-text[data-status="running"] {
+  color: var(--k-ok);
+}
+
+.kdock-status-text[data-status="booting"] {
+  color: var(--k-warn);
+}
+
+.kdock-status-text[data-status="error"] {
+  color: var(--k-err);
+}
+
+.kdock-status-text[data-status="idle"],
+.kdock-status-text[data-status="halted"] {
+  color: var(--k-text-faint);
+}
+
+.kdock {
+  display: flex;
+  align-items: stretch;
+  gap: 4px;
+  min-width: 0;
+}
+
+.kdock-section {
+  display: flex;
+  align-items: stretch;
+  gap: 4px;
+  min-width: max-content;
+  flex: 0 0 auto;
+}
+
+.kdock-separator {
+  width: 1px;
+  align-self: stretch;
+  margin: 8px 8px;
+  border-radius: 999px;
+  background: color-mix(in oklch, var(--k-border-strong) 72%, transparent);
+  flex: 0 0 auto;
+}
+
+.kdock-item {
+  min-width: 66px;
+  height: 48px;
+  border: 0;
+  border-radius: 10px;
+  background: transparent;
+  color: var(--k-text-muted);
+  cursor: pointer;
+  display: inline-flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 3px;
+  padding: 6px 9px;
+  font: inherit;
+  transition: background 0.12s, color 0.12s, transform 0.12s;
+}
+
+.kdock-item:hover:not(:disabled) {
+  background: color-mix(in oklch, var(--k-text) 7%, transparent);
+  color: var(--k-text);
+  transform: translateY(-1px);
+}
+
+.kdock-item:disabled {
+  cursor: not-allowed;
+  opacity: 0.42;
+}
+
+.kdock-item[aria-current="true"] {
+  background: color-mix(in oklch, var(--k-accent) 16%, var(--k-surface));
+  color: var(--k-accent);
+}
+
+.kdock-item[aria-current="true"]:disabled {
+  opacity: 0.62;
+}
+
+.kdock-icon {
+  width: 18px;
+  height: 18px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.kdock-icon svg {
+  width: 18px;
+  height: 18px;
+}
+
+.kdock-label {
+  width: 100%;
+  max-width: 64px;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  text-align: center;
+  font-size: 10.5px;
+  font-weight: 720;
+  letter-spacing: 0;
+}
+
+.kdock-pane {
+  position: fixed;
+  left: 50%;
+  bottom: 100px;
+  z-index: 990;
+  width: min(980px, calc(100vw - 28px));
+  height: min(720px, calc(100dvh - 128px));
+  transform: translateX(-50%);
+  display: flex;
+  flex-direction: column;
+  border: 1px solid var(--k-border);
+  border-radius: 14px;
+  background: var(--k-surface);
+  box-shadow:
+    0 1px 0 color-mix(in oklch, white 68%, transparent) inset,
+    0 24px 70px rgba(55, 42, 19, 0.28),
+    0 4px 14px rgba(55, 42, 19, 0.16);
+  overflow: hidden;
+  animation: kdock-pane-in 0.16s ease-out;
+}
+
+.kdock-pane-new {
+  width: min(860px, calc(100vw - 28px));
+  height: min(620px, calc(100dvh - 116px));
+}
+
+.kdock-pane-share {
+  width: min(720px, calc(100vw - 28px));
+  height: min(640px, calc(100dvh - 116px));
+}
+
+.kdock-pane-internals {
+  width: min(1060px, calc(100vw - 28px));
+  height: min(680px, calc(100dvh - 116px));
+}
+
+.kdock-pane-header {
+  flex-shrink: 0;
+  padding: 18px 22px 12px;
+  border-bottom: 1px solid var(--k-border);
+  background:
+    linear-gradient(180deg, color-mix(in oklch, var(--k-surface) 92%, white), var(--k-surface));
+}
+
+.kdock-pane-title-row {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+}
+
+.kdock-pane-title-row h2 {
+  flex: 1;
+  min-width: 0;
+  margin: 0;
+  color: var(--k-text);
+  font-size: 26px;
+  font-weight: 780;
+  letter-spacing: 0;
+  line-height: 1.1;
+}
+
+.kdock-pane-header p {
+  max-width: 760px;
+  margin: 6px 0 0;
+  color: var(--k-text-muted);
+  font-size: 13px;
+  line-height: 1.45;
+}
+
+.kdock-pane-close {
+  width: 30px;
+  height: 30px;
+  border: 1px solid var(--k-border);
+  border-radius: 8px;
+  background: var(--k-surface);
+  color: var(--k-text-muted);
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.kdock-pane-close:hover {
+  color: var(--k-text);
+  border-color: var(--k-border-strong);
+  background: var(--k-surface-alt);
+}
+
+.kdock-pane-body {
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  overflow: hidden;
+}
+
+.kdock-pane .kgallery,
+.kdock-pane .kcfg {
+  flex: 1;
+  background: var(--k-surface);
+}
+
+.kdock-pane .kgallery {
+  padding-top: 18px;
+}
+
+.kdock-pane .kcfg {
+  padding: 18px 24px 0;
+}
+
+.kdock-pane .kcfg-title,
+.kdock-pane .kcfg-sub {
+  display: none;
+}
+
+.kdock-pane .kcfg-foot {
+  margin-left: -24px;
+  margin-right: -24px;
+  padding-left: 24px;
+  padding-right: 24px;
+}
+
+.kdock-pane .kpane {
+  flex: 1;
+  border-radius: 0;
+  box-shadow: none;
+}
+
+.kshare-embedded {
+  width: 100%;
+  max-height: none;
+  flex: 1;
+  border-radius: 0;
+  box-shadow: none;
+}
+
+.kshare-embedded .kshare-body {
+  padding: 18px 24px;
+}
+
+.kshare-embedded .kshare-actions {
+  padding: 12px 24px;
+}
+
+/* ── New machine pane ──────────────────────────────────────────────────── */
+
+.knew {
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  overflow: auto;
+  padding: 20px 24px 24px;
+  background: var(--k-surface);
+}
+
+.knew-tabs {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px;
+  border: 1px solid var(--k-border);
+  border-radius: var(--k-radius);
+  background: var(--k-surface-sunk);
+}
+
+.knew-tab {
+  min-height: 34px;
+  flex: 1 1 0;
+  min-width: 0;
+  border: 0;
+  border-radius: var(--k-radius-sm);
+  background: transparent;
+  color: var(--k-text-muted);
+  cursor: pointer;
+  font: inherit;
+  font-size: 12px;
+  font-weight: 740;
+  letter-spacing: 0;
+}
+
+.knew-tab:hover {
+  background: color-mix(in oklch, var(--k-text) 6%, transparent);
+  color: var(--k-text);
+}
+
+.knew-tab[aria-selected="true"] {
+  background: var(--k-surface);
+  color: var(--k-accent);
+  box-shadow: 0 1px 0 color-mix(in oklch, white 70%, transparent) inset;
+}
+
+.knew-panel,
+.knew-section {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  border: 1px solid var(--k-border);
+  border-radius: var(--k-radius);
+  background: color-mix(in oklch, var(--k-bg) 64%, var(--k-surface));
+  padding: 14px;
+}
+
+.knew-section-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.knew-panel h3,
+.knew-section h3 {
+  margin: 0;
+  color: var(--k-text);
+  font-size: 14px;
+  font-weight: 720;
+  letter-spacing: 0;
+  line-height: 1.2;
+}
+
+.knew-panel p,
+.knew-section p {
+  max-width: 620px;
+  margin: 4px 0 0;
+  color: var(--k-text-muted);
+  font-size: 12.5px;
+  line-height: 1.45;
+}
+
+.knew-link {
+  flex-shrink: 0;
+  border: 1px solid var(--k-border);
+  border-radius: var(--k-radius-sm);
+  background: var(--k-surface);
+  color: var(--k-accent);
+  cursor: pointer;
+  font: inherit;
+  font-size: 12px;
+  font-weight: 700;
+  padding: 6px 10px;
+}
+
+.knew-link:hover {
+  border-color: var(--k-border-strong);
+  background: var(--k-surface-alt);
+}
+
+.knew-presets {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 8px;
+}
+
+.knew-preset {
+  min-width: 0;
+  min-height: 68px;
+  display: grid;
+  grid-template-columns: 38px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 10px;
+  border: 1px solid var(--k-border);
+  border-radius: var(--k-radius-sm);
+  background: var(--k-surface);
+  color: var(--k-text);
+  cursor: pointer;
+  padding: 9px;
+  text-align: left;
+  font: inherit;
+}
+
+.knew-preset:hover {
+  border-color: var(--k-border-strong);
+  background: var(--k-surface-alt);
+}
+
+.knew-preset-glyph {
+  width: 34px;
+  height: 34px;
+  border-radius: var(--k-radius-sm);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: #fff;
+  font-family: var(--k-font-mono);
+  font-size: 13px;
+  font-weight: 800;
+  letter-spacing: 0;
+}
+
+.knew-preset-copy {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.knew-preset-title {
+  overflow: hidden;
+  color: var(--k-text);
+  font-size: 13px;
+  font-weight: 700;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.knew-preset-sub {
+  overflow: hidden;
+  color: var(--k-text-muted);
+  font-size: 11.5px;
+  line-height: 1.35;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.knew-preset-meta {
+  border-left: 1px solid var(--k-border);
+  color: var(--k-text-faint);
+  font-family: var(--k-font-mono);
+  font-size: 10px;
+  padding-left: 9px;
+  white-space: nowrap;
+}
+
+.knew-empty {
+  padding: 16px;
+  color: var(--k-text-faint);
+  font-family: var(--k-font-mono);
+  font-size: 12px;
+}
+
+.knew-url-row {
+  display: flex;
+  gap: 8px;
+}
+
+.knew-input {
+  flex: 1;
+  min-width: 0;
+  border: 1px solid var(--k-border);
+  border-radius: var(--k-radius-sm);
+  background: var(--k-surface-sunk);
+  color: var(--k-text);
+  font: inherit;
+  font-family: var(--k-font-mono);
+  font-size: 12px;
+  outline: none;
+  padding: 8px 10px;
+}
+
+.knew-input:focus {
+  border-color: var(--k-accent);
+  background: var(--k-surface);
+}
+
+.knew-primary {
+  flex-shrink: 0;
+  border: 1px solid var(--k-accent);
+  border-radius: var(--k-radius-sm);
+  background: var(--k-accent);
+  color: #fff;
+  cursor: pointer;
+  font: inherit;
+  font-size: 12px;
+  font-weight: 700;
+  padding: 0 12px;
+}
+
+.knew-primary:hover {
+  border-color: var(--k-accent-fire);
+  background: var(--k-accent-fire);
+}
+
+.knew-error {
+  color: var(--k-err);
+  font-family: var(--k-font-mono);
+  font-size: 11.5px;
+}
+
+.knew-boundary {
+  border-style: dashed;
+  background: color-mix(in oklch, var(--k-info) 7%, var(--k-surface));
+}
+
+.knew-note {
+  border: 1px solid color-mix(in oklch, var(--k-info) 28%, var(--k-border));
+  border-radius: var(--k-radius-sm);
+  background: color-mix(in oklch, var(--k-info) 8%, var(--k-surface));
+  color: var(--k-text-muted);
+  font-size: 12px;
+  line-height: 1.5;
+  padding: 10px 12px;
+}
+
+.knew-boundary-list {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.knew-boundary-list > div {
+  min-width: 0;
+  border: 1px solid var(--k-border);
+  border-radius: var(--k-radius-sm);
+  background: var(--k-surface);
+  padding: 10px 12px;
+}
+
+.knew-boundary-list span {
+  display: block;
+  margin-bottom: 4px;
+  color: var(--k-text-faint);
+  font-size: 10px;
+  font-weight: 750;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.knew-boundary-list strong {
+  color: var(--k-text);
+  font-size: 12.5px;
+  font-weight: 700;
+  line-height: 1.35;
+}
 
 .kurl {
   display: flex;
@@ -402,6 +1100,15 @@
   display: flex;
   flex-direction: column;
   gap: 8px;
+}
+
+.kmachine-statusline {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  min-height: 24px;
+  flex-shrink: 0;
 }
 
 .kmachine-toolbar {
@@ -1902,6 +2609,43 @@
   overflow: auto;
   min-height: 0;
 }
+
+.kshare-summary {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.kshare-summary-card {
+  min-width: 0;
+  border: 1px solid var(--k-border);
+  border-radius: var(--k-radius-sm);
+  background: color-mix(in oklch, var(--k-bg) 60%, var(--k-surface));
+  padding: 10px 12px;
+}
+
+.kshare-summary-k {
+  color: var(--k-text-faint);
+  font-size: 10px;
+  font-weight: 760;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.kshare-summary-v {
+  margin-top: 4px;
+  color: var(--k-text);
+  font-size: 13px;
+  font-weight: 720;
+}
+
+.kshare-summary-card p {
+  margin: 5px 0 0;
+  color: var(--k-text-muted);
+  font-size: 11.5px;
+  line-height: 1.4;
+}
+
 .kshare-sect-lbl {
   font-size: 10.5px;
   font-weight: 700;
@@ -2607,7 +3351,156 @@
   line-height: 1.4;
 }
 
+@media (max-width: 860px) {
+  .kdock-shell {
+    left: 0;
+    right: 0;
+    bottom: 0;
+    width: auto;
+    max-width: none;
+    border-radius: 14px 14px 0 0;
+    transform: none;
+    clip-path: none;
+  }
+
+  .kdock-shell.kdock-collapsed {
+    clip-path: none;
+    transform: translateY(var(--kdock-body-h, 72px));
+  }
+
+  .kdock-header {
+    border-radius: 14px 14px 0 0;
+    cursor: pointer;
+  }
+
+  .kdock-shell.kdock-dragging .kdock-header,
+  .kdock-header:active {
+    cursor: pointer;
+  }
+
+  .kdock-body {
+    width: 100%;
+    padding: 6px 10px calc(6px + env(safe-area-inset-bottom, 0px));
+  }
+
+  .kdock-status {
+    min-width: 58px;
+    max-width: 58px;
+    justify-content: center;
+    padding: 8px;
+  }
+
+  .kdock-status-copy {
+    display: none;
+  }
+
+  .kdock {
+    flex: 1;
+    overflow-x: auto;
+    scrollbar-width: none;
+  }
+
+  .kdock::-webkit-scrollbar {
+    display: none;
+  }
+
+  .kdock-item {
+    flex: 0 0 62px;
+  }
+
+  .kdock-pane {
+    bottom: 96px;
+    width: calc(100vw - 20px);
+    height: min(720px, calc(100dvh - 118px));
+  }
+
+  .kdock-pane-header {
+    padding: 20px 20px 12px;
+  }
+
+  .kdock-pane-title-row h2 {
+    font-size: 24px;
+  }
+
+  .knew,
+  .kdock-pane .kgallery,
+  .kdock-pane .kcfg,
+  .kshare-embedded .kshare-body {
+    padding-left: 16px;
+    padding-right: 16px;
+  }
+
+  .kdock-pane .kcfg-foot,
+  .kshare-embedded .kshare-actions {
+    padding-left: 16px;
+    padding-right: 16px;
+  }
+
+  .kdock-pane .kcfg-foot {
+    margin-left: -16px;
+    margin-right: -16px;
+  }
+
+  .knew-url-row {
+    flex-direction: column;
+  }
+
+  .knew-primary {
+    min-height: 34px;
+  }
+
+  .kshare-modes {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .kshare-summary,
+  .knew-boundary-list {
+    grid-template-columns: 1fr;
+  }
+}
+
+@media (max-width: 560px) {
+  .kdock {
+    padding: 5px;
+  }
+
+  .kdock-item {
+    flex-basis: 62px;
+    padding-left: 6px;
+    padding-right: 6px;
+  }
+
+  .kdock-label {
+    font-size: 10px;
+  }
+
+  .kdock-pane {
+    bottom: 86px;
+    width: calc(100vw - 16px);
+    height: calc(100dvh - 94px);
+  }
+
+  .knew-presets {
+    grid-template-columns: 1fr;
+  }
+
+  .kshare-modes {
+    grid-template-columns: 1fr;
+  }
+}
+
 /* ── Animations ─────────────────────────────────────────────────────────── */
+
+@keyframes kdock-pane-in {
+  from {
+    opacity: 0;
+    transform: translateX(-50%) translateY(12px) scale(0.985);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(-50%) translateY(0) scale(1);
+  }
+}
 
 @keyframes k-pulse {
   0%, 100% { opacity: 0.55; }

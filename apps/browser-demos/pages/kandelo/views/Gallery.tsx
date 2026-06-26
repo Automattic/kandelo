@@ -14,9 +14,10 @@ import type {
 export interface GalleryProps {
   onLaunch: (item: GalleryItem) => void;
   onShare?: (item: GalleryItem) => void;
+  compact?: boolean;
 }
 
-export const Gallery: React.FC<GalleryProps> = ({ onLaunch, onShare }) => {
+export const Gallery: React.FC<GalleryProps> = ({ onLaunch, onShare, compact = false }) => {
   const [q, setQ] = React.useState("");
   const { items, loading } = useGalleryItems("presets");
 
@@ -27,7 +28,7 @@ export const Gallery: React.FC<GalleryProps> = ({ onLaunch, onShare }) => {
   return (
     <div className="kgallery">
       <div className="kgal-hdr">
-        <h1 className="kgal-title">Gallery</h1>
+        {!compact && <h1 className="kgal-title">Gallery</h1>}
         <div className="kgal-tools">
           <div className="kgal-search">
             <svg width="13" height="13" viewBox="0 0 13 13" fill="none" stroke="currentColor" strokeWidth="1.5" style={{ color: "var(--k-text-faint)" }}>
