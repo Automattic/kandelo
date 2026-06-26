@@ -741,11 +741,14 @@ bash packages/registry/tcl/build-tcl.sh
 bash packages/registry/sqlite/build-testfixture.sh
 ```
 
-Kandelo builds SQLite with `SQLITE_MAX_COMPOUND_SELECT=50` and
-`SQLITE_MAX_EXPR_DEPTH=100` for both the shipped library and upstream
-testfixture. The default SQLite limits are higher, but current browser wasm
-engines exhaust their call stack before SQLite's 200-deep recursive SQL tests
-complete at those depths. The shipped SQLite CLI also enables
+Kandelo builds SQLite with `SQLITE_MAX_COMPOUND_SELECT=50`,
+`SQLITE_MAX_EXPR_DEPTH=100`, and `SQLITE_JSON_MAX_DEPTH=100` for both the
+shipped library and upstream testfixture. The default SQLite limits are higher,
+but current browser wasm engines exhaust their call stack before SQLite's
+recursive SQL and deeply nested JSON tests complete at those depths. The
+testfixture patch set exposes the compiled JSON limit to Tcl so `json101.test`
+checks Kandelo's configured limit instead of assuming the upstream default. The
+shipped SQLite CLI also enables
 `SQLITE_ENABLE_DBPAGE_VTAB` so upstream `.recover` tests exercise the same
 recover support as `testfixture`. The `all` permutation's synthetic
 `no_mutex_try` suite omits `walpersist.test`, `walprotocol2.test`,
