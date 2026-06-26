@@ -36,6 +36,10 @@ function currentModuleDir(): string {
 
 const MODULE_DIR = currentModuleDir();
 const DESTROY_REQUEST_TIMEOUT_MS = 2_000;
+const DEFAULT_SSL_ENV = [
+  "SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt",
+  "SSL_CERT_DIR=/etc/ssl/certs",
+] as const;
 
 export interface NodeKernelHostOptions {
   /** Maximum concurrent workers (default: 4) */
@@ -209,7 +213,7 @@ export class NodeKernelHost {
       // Node's dedicated kernel worker compiles/caches fork and pthread modules
       // internally where it can pass them across a single worker boundary.
       argv,
-      env: options?.env,
+      env: mergeEnv(options?.env ?? []),
       cwd: options?.cwd,
       uid: options?.uid,
       gid: options?.gid,
@@ -537,6 +541,17 @@ export class NodeKernelHost {
 }
 
 // ── Module-level helpers ──
+
+function mergeEnv(env: string[]): string[] {
+  const result = [...env];
+  for (const entry of DEFAULT_SSL_ENV) {
+    const key = entry.split("=", 1)[0];
+    if (!result.some((existing) => existing.startsWith(`${key}=`))) {
+      result.push(entry);
+    }
+  }
+  return result;
+}
 
 function loadKernelWasm(): ArrayBuffer {
   const buf = readFileSync(resolveBinary("kernel.wasm"));
