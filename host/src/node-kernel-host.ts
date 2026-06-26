@@ -98,6 +98,8 @@ export interface SpawnOptions {
   uid?: number;
   /** Initial real/effective group ID for the process. */
   gid?: number;
+  /** Finite stdin buffer. If omitted for a non-PTY spawn without onStarted,
+   * stdin defaults to an immediate EOF. */
   stdin?: Uint8Array;
   /** Optional pre-compiled module for the supplied program bytes. */
   programModule?: WebAssembly.Module;
@@ -108,7 +110,8 @@ export interface SpawnOptions {
   ptyRows?: number;
   /** Limit heap growth to protect thread channel pages */
   maxAddr?: number;
-  /** Called after the process has been created and started */
+  /** Called after the process has been created and started. When this is set
+   * and no stdin buffer is supplied, stdin remains open for appendStdinData(). */
   onStarted?: (pid: number) => void | Promise<void>;
 }
 
@@ -201,6 +204,9 @@ export class NodeKernelHost {
   ): Promise<number> {
     const requestId = this._nextRequestId++;
     const spawnStartedBeforeExitSequence = this.exitSequence;
+    const stdin =
+      options?.stdin ??
+      (!options?.pty && !options?.onStarted ? new Uint8Array() : undefined);
 
     const pid = await this.request(requestId, {
       type: "spawn",
@@ -220,7 +226,7 @@ export class NodeKernelHost {
       pty: options?.pty,
       ptyCols: options?.ptyCols,
       ptyRows: options?.ptyRows,
-      stdin: options?.stdin,
+      stdin,
       maxAddr: options?.maxAddr,
     }) as number;
 

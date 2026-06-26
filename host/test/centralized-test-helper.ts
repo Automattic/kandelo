@@ -195,6 +195,8 @@ async function runInWorkerThread(options: RunProgramOptions): Promise<RunProgram
     stdinData = options.stdinBytes;
   } else if (options.stdin != null) {
     stdinData = new TextEncoder().encode(options.stdin);
+  } else if (!options.onStarted) {
+    stdinData = new Uint8Array();
   }
 
   // Default to mount-based VFS (rootfs.vfs at /, scratch dirs at /tmp etc.).
