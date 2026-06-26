@@ -626,6 +626,50 @@ is_expected_fail() {
     return 1
 }
 
+outcome_path_for_status() {
+    local status="$1"
+    case "$status" in
+        PASS)  echo "$MARIADB_OUTCOME_DIR/passed-tests.tsv" ;;
+        FAIL)  echo "$MARIADB_OUTCOME_DIR/failed-tests.tsv" ;;
+        XFAIL) echo "$MARIADB_OUTCOME_DIR/xfail-tests.tsv" ;;
+        XPASS) echo "$MARIADB_OUTCOME_DIR/xpass-tests.tsv" ;;
+        SKIP)  echo "$MARIADB_OUTCOME_DIR/skipped-tests.tsv" ;;
+        *)     return 1 ;;
+    esac
+}
+
+sanitize_tsv_field() {
+    local value="$1"
+    value=${value//$'\t'/ }
+    value=${value//$'\r'/ }
+    value=${value//$'\n'/ }
+    printf '%s' "$value"
+}
+
+init_outcome_lists() {
+    MARIADB_OUTCOME_DIR="${MARIADB_OUTCOME_DIR:-}"
+    [ -n "$MARIADB_OUTCOME_DIR" ] || return 0
+    mkdir -p "$MARIADB_OUTCOME_DIR"
+    local status path
+    for status in PASS FAIL XFAIL XPASS SKIP; do
+        path="$(outcome_path_for_status "$status")"
+        if [ ! -e "$path" ]; then
+            printf 'status\ttest\tdetail\n' > "$path"
+        fi
+    done
+}
+
+record_outcome() {
+    local status="$1" test_name="$2" detail="${3:-}"
+    [ -n "${MARIADB_OUTCOME_DIR:-}" ] || return 0
+    local path
+    path="$(outcome_path_for_status "$status")" || return 0
+    printf '%s\t%s\t%s\n' \
+        "$status" \
+        "$(sanitize_tsv_field "$test_name")" \
+        "$(sanitize_tsv_field "$detail")" >> "$path"
+}
+
 # ── Verify prerequisites ──────────────────────────────────
 
 check_prereqs() {
@@ -691,6 +735,7 @@ while [ $# -gt 0 ]; do
     esac
 done
 
+init_outcome_lists
 check_prereqs
 
 if $LIST_MODE; then
@@ -790,15 +835,18 @@ except Exception:
             if $is_xfail; then
                 echo "XPASS $test_name"
                 RESULTS+=("XPASS $test_name")
+                record_outcome XPASS "$test_name"
                 XPASS=$((XPASS + 1))
             else
                 RESULTS+=("PASS  $test_name")
+                record_outcome PASS "$test_name"
                 PASS=$((PASS + 1))
             fi
             ;;
         fail)
             if $is_xfail; then
                 RESULTS+=("XFAIL $test_name")
+                record_outcome XFAIL "$test_name" "$stderr_summary"
                 XFAIL=$((XFAIL + 1))
             else
                 if [ -n "$stderr_summary" ]; then
@@ -807,11 +855,13 @@ except Exception:
                     echo "FAIL  $test_name (${time_ms}ms)"
                 fi
                 RESULTS+=("FAIL  $test_name")
+                record_outcome FAIL "$test_name" "$stderr_summary"
                 FAIL=$((FAIL + 1))
             fi
             ;;
         skip)
             RESULTS+=("SKIP  $test_name")
+            record_outcome SKIP "$test_name" "$stderr_summary"
             SKIP=$((SKIP + 1))
             ;;
     esac
@@ -839,12 +889,12 @@ fi
 # Show unexpected results
 for status_prefix in "FAIL " "XPASS"; do
     count=0
-    for r in "${RESULTS[@]}"; do
+    for r in "${RESULTS[@]+"${RESULTS[@]}"}"; do
         [[ "$r" == "$status_prefix"* ]] && count=$((count + 1))
     done
     if [ $count -gt 0 ]; then
         echo "── ${status_prefix%% *} ($count) ──"
-        for r in "${RESULTS[@]}"; do
+        for r in "${RESULTS[@]+"${RESULTS[@]}"}"; do
             [[ "$r" == "$status_prefix"* ]] && echo "  $r"
         done
         echo ""
@@ -872,7 +922,7 @@ if $REPORT_MODE; then
 
         for status_prefix in "FAIL " "XPASS"; do
             count=0
-            for r in "${RESULTS[@]}"; do
+            for r in "${RESULTS[@]+"${RESULTS[@]}"}"; do
                 [[ "$r" == "$status_prefix"* ]] && count=$((count + 1))
             done
             if [ $count -gt 0 ]; then
@@ -883,7 +933,7 @@ if $REPORT_MODE; then
                 echo ""
                 echo "| Test |"
                 echo "|------|"
-                for r in "${RESULTS[@]}"; do
+                for r in "${RESULTS[@]+"${RESULTS[@]}"}"; do
                     if [[ "$r" == "$status_prefix"* ]]; then
                         local_test="${r#* }"
                         echo "| \`$local_test\` |"

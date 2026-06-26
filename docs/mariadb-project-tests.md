@@ -42,8 +42,18 @@ Each run emits:
 
 - `<host>.log` — complete underlying harness output.
 - `<host>.exit` — host harness exit code.
+- `outcome-lists/<host>/passed-tests.tsv` — classified passing rows.
+- `outcome-lists/<host>/failed-tests.tsv` — unexpected failure rows with the
+  available stderr/error summary in the `detail` column.
+- `outcome-lists/<host>/skipped-tests.tsv` — skipped rows with the available
+  skip reason or stderr summary in the `detail` column.
+- `outcome-lists/<host>/xfail-tests.tsv` — expected-failure rows with the
+  available stderr/error summary in the `detail` column.
+- `outcome-lists/<host>/xpass-tests.tsv` — expected-failure rows that
+  unexpectedly passed.
 - `summary.md` — markdown table for PR descriptions.
-- `summary.json` — same counts for scripts.
+- `summary.json` — same counts for scripts, including absolute paths to the
+  outcome-list artifacts.
 
 For the Node host, the wrapper assigns a fresh `MARIADB_TEST_DATA_DIR` under the
 results directory for each chunk (or for the single non-chunked run). The lower

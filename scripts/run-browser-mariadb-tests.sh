@@ -358,6 +358,51 @@ is_expected_fail() {
     return 1
 }
 
+outcome_path_for_status() {
+    local status="$1"
+    case "$status" in
+        PASS)    echo "$MARIADB_OUTCOME_DIR/passed-tests.tsv" ;;
+        FAIL)    echo "$MARIADB_OUTCOME_DIR/failed-tests.tsv" ;;
+        XFAIL)   echo "$MARIADB_OUTCOME_DIR/xfail-tests.tsv" ;;
+        XPASS)   echo "$MARIADB_OUTCOME_DIR/xpass-tests.tsv" ;;
+        SKIP)    echo "$MARIADB_OUTCOME_DIR/skipped-tests.tsv" ;;
+        HARNESS) echo "$MARIADB_OUTCOME_DIR/harness-tests.tsv" ;;
+        *)       return 1 ;;
+    esac
+}
+
+sanitize_tsv_field() {
+    local value="$1"
+    value=${value//$'\t'/ }
+    value=${value//$'\r'/ }
+    value=${value//$'\n'/ }
+    printf '%s' "$value"
+}
+
+init_outcome_lists() {
+    MARIADB_OUTCOME_DIR="${MARIADB_OUTCOME_DIR:-}"
+    [ -n "$MARIADB_OUTCOME_DIR" ] || return 0
+    mkdir -p "$MARIADB_OUTCOME_DIR"
+    local status path
+    for status in PASS FAIL XFAIL XPASS SKIP HARNESS; do
+        path="$(outcome_path_for_status "$status")"
+        if [ ! -e "$path" ]; then
+            printf 'status\ttest\tdetail\n' > "$path"
+        fi
+    done
+}
+
+record_outcome() {
+    local status="$1" test_name="$2" detail="${3:-}"
+    [ -n "${MARIADB_OUTCOME_DIR:-}" ] || return 0
+    local path
+    path="$(outcome_path_for_status "$status")" || return 0
+    printf '%s\t%s\t%s\n' \
+        "$status" \
+        "$(sanitize_tsv_field "$test_name")" \
+        "$(sanitize_tsv_field "$detail")" >> "$path"
+}
+
 check_prereqs() {
     local missing=0
 
@@ -420,6 +465,7 @@ while [ $# -gt 0 ]; do
     esac
 done
 
+init_outcome_lists
 check_prereqs
 
 discover_all_tests() {
@@ -554,6 +600,7 @@ except Exception:
         fi
         echo "HARNESS $test_name$suffix${stderr_summary:+: $stderr_summary}"
         RESULTS+=("HARNESS $test_name")
+        record_outcome HARNESS "$test_name" "$stderr_summary"
         HARNESS=$((HARNESS + 1))
         continue
     fi
@@ -572,15 +619,18 @@ except Exception:
             if $is_xfail; then
                 echo "XPASS $test_name"
                 RESULTS+=("XPASS $test_name")
+                record_outcome XPASS "$test_name"
                 XPASS=$((XPASS + 1))
             else
                 RESULTS+=("PASS  $test_name")
+                record_outcome PASS "$test_name"
                 PASS=$((PASS + 1))
             fi
             ;;
         fail)
             if $is_xfail; then
                 RESULTS+=("XFAIL $test_name")
+                record_outcome XFAIL "$test_name" "$stderr_summary"
                 XFAIL=$((XFAIL + 1))
             else
                 if [ -n "$stderr_summary" ]; then
@@ -589,11 +639,13 @@ except Exception:
                     echo "FAIL  $test_name (${time_ms}ms)"
                 fi
                 RESULTS+=("FAIL  $test_name")
+                record_outcome FAIL "$test_name" "$stderr_summary"
                 FAIL=$((FAIL + 1))
             fi
             ;;
         skip)
             RESULTS+=("SKIP  $test_name")
+            record_outcome SKIP "$test_name" "$stderr_summary"
             SKIP=$((SKIP + 1))
             ;;
     esac
@@ -602,6 +654,7 @@ done < "$RESULTS_FILE"
 if [ "$RUNNER_EXIT" -ne 0 ] && [ "$HARNESS" -eq 0 ] && [ "$TOTAL" -eq 0 ]; then
     echo "HARNESS runner-exit: browser MariaDB runner exited with status $RUNNER_EXIT"
     RESULTS+=("HARNESS runner-exit")
+    record_outcome HARNESS "runner-exit" "browser MariaDB runner exited with status $RUNNER_EXIT"
     HARNESS=$((HARNESS + 1))
 fi
 
@@ -632,7 +685,7 @@ for status_prefix in "FAIL " "XPASS" "HARNESS "; do
     done
     if [ $count -gt 0 ]; then
         echo "── ${status_prefix%% *} ($count) ──"
-        for r in "${RESULTS[@]}"; do
+        for r in "${RESULTS[@]+"${RESULTS[@]}"}"; do
             [[ "$r" == "$status_prefix"* ]] && echo "  $r"
         done
         echo ""

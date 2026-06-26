@@ -77,6 +77,38 @@ extract_count() {
   awk -v label="$label" '$1 == label":" { value += $2 } END { print value + 0 }' "$log"
 }
 
+outcome_dir_for_host() {
+  local host="$1"
+  echo "$RESULTS_DIR/outcome-lists/$host"
+}
+
+outcome_file_for() {
+  local host="$1" status="$2"
+  local dir
+  dir="$(outcome_dir_for_host "$host")"
+  case "$status" in
+    pass)    echo "$dir/passed-tests.tsv" ;;
+    fail)    echo "$dir/failed-tests.tsv" ;;
+    xfail)   echo "$dir/xfail-tests.tsv" ;;
+    xpass)   echo "$dir/xpass-tests.tsv" ;;
+    skip)    echo "$dir/skipped-tests.tsv" ;;
+    harness) echo "$dir/harness-tests.tsv" ;;
+    *)       return 1 ;;
+  esac
+}
+
+init_host_outcome_lists() {
+  local host="$1"
+  local dir status path
+  dir="$(outcome_dir_for_host "$host")"
+  rm -rf "$dir"
+  mkdir -p "$dir"
+  for status in pass fail xfail xpass skip harness; do
+    path="$(outcome_file_for "$host" "$status")"
+    printf 'status\ttest\tdetail\n' > "$path"
+  done
+}
+
 discover_all_tests() {
   local main_dir="$REPO_ROOT/packages/registry/mariadb/mariadb-install/mysql-test/main"
   if [ ! -d "$main_dir" ]; then
@@ -119,6 +151,14 @@ write_summary() {
       fi
     done
     echo ""
+    echo "## Outcome Lists"
+    echo ""
+    echo "| Host | PASS | FAIL | XFAIL | XPASS | SKIP | HARNESS |"
+    echo "|------|------|------|-------|-------|------|---------|"
+    for h in "${HOSTS[@]}"; do
+      echo "| $h | \`$(outcome_file_for "$h" pass)\` | \`$(outcome_file_for "$h" fail)\` | \`$(outcome_file_for "$h" xfail)\` | \`$(outcome_file_for "$h" xpass)\` | \`$(outcome_file_for "$h" skip)\` | \`$(outcome_file_for "$h" harness)\` |"
+    done
+    echo ""
     echo "Overall exit: $exit_code"
   } > "$summary_md"
 
@@ -133,7 +173,7 @@ write_summary() {
       [ "$first" -eq 1 ] || echo ","
       first=0
       if [ -f "$log" ]; then
-        printf '    "%s": {"pass": %s, "fail": %s, "xfail": %s, "xpass": %s, "skip": %s, "total": %s, "exit": %s, "log": "%s"}' \
+        printf '    "%s": {"pass": %s, "fail": %s, "xfail": %s, "xpass": %s, "skip": %s, "total": %s, "exit": %s, "log": "%s",' \
           "$h" \
           "$(extract_count PASS "$log")" \
           "$(extract_count FAIL "$log")" \
@@ -143,8 +183,26 @@ write_summary() {
           "$(extract_count TOTAL "$log")" \
           "$(cat "$RESULTS_DIR/$h.exit")" \
           "$RESULTS_DIR/$h.log"
+        echo ""
+        printf '      "outcome_lists": {"passed": "%s", "failed": "%s", "xfail": "%s", "xpass": "%s", "skipped": "%s", "harness": "%s"}' \
+          "$(outcome_file_for "$h" pass)" \
+          "$(outcome_file_for "$h" fail)" \
+          "$(outcome_file_for "$h" xfail)" \
+          "$(outcome_file_for "$h" xpass)" \
+          "$(outcome_file_for "$h" skip)" \
+          "$(outcome_file_for "$h" harness)"
+        printf '    }'
       else
-        printf '    "%s": {"pass": 0, "fail": 0, "xfail": 0, "xpass": 0, "skip": 0, "total": 0, "exit": null, "log": "%s"}' "$h" "$RESULTS_DIR/$h.log"
+        printf '    "%s": {"pass": 0, "fail": 0, "xfail": 0, "xpass": 0, "skip": 0, "total": 0, "exit": null, "log": "%s",' "$h" "$RESULTS_DIR/$h.log"
+        echo ""
+        printf '      "outcome_lists": {"passed": "%s", "failed": "%s", "xfail": "%s", "xpass": "%s", "skipped": "%s", "harness": "%s"}' \
+          "$(outcome_file_for "$h" pass)" \
+          "$(outcome_file_for "$h" fail)" \
+          "$(outcome_file_for "$h" xfail)" \
+          "$(outcome_file_for "$h" xpass)" \
+          "$(outcome_file_for "$h" skip)" \
+          "$(outcome_file_for "$h" harness)"
+        printf '    }'
       fi
     done
     echo ""
@@ -172,6 +230,7 @@ run_host() {
   local h="$1"
   local log="$RESULTS_DIR/$h.log"
   : > "$log"
+  init_host_outcome_lists "$h"
 
   echo "===== MariaDB project tests: $h =====" | tee -a "$log"
   echo "Results: $log" | tee -a "$log"
@@ -200,7 +259,9 @@ run_host() {
         local chunk_data_dir="$RESULTS_DIR/node-test-data/chunk-$chunk"
         rm -rf "$chunk_data_dir"
         mkdir -p "$chunk_data_dir"
-        cmd=(env "MARIADB_TEST_DATA_DIR=$chunk_data_dir" "${cmd[@]}")
+        cmd=(env "MARIADB_TEST_DATA_DIR=$chunk_data_dir" "MARIADB_OUTCOME_DIR=$(outcome_dir_for_host "$h")" "${cmd[@]}")
+      else
+        cmd=(env "MARIADB_OUTCOME_DIR=$(outcome_dir_for_host "$h")" "${cmd[@]}")
       fi
       echo "" | tee -a "$log"
       echo "===== Chunk $chunk: tests $((start + 1))-$((start + ${#chunk_tests[@]})) of $total =====" | tee -a "$log"
@@ -217,7 +278,9 @@ run_host() {
       local host_data_dir="$RESULTS_DIR/node-test-data/full"
       rm -rf "$host_data_dir"
       mkdir -p "$host_data_dir"
-      cmd=(env "MARIADB_TEST_DATA_DIR=$host_data_dir" "${cmd[@]}")
+      cmd=(env "MARIADB_TEST_DATA_DIR=$host_data_dir" "MARIADB_OUTCOME_DIR=$(outcome_dir_for_host "$h")" "${cmd[@]}")
+    else
+      cmd=(env "MARIADB_OUTCOME_DIR=$(outcome_dir_for_host "$h")" "${cmd[@]}")
     fi
     echo "Command: TEST_TIMEOUT=${TIMEOUT_MS:-<default>} ${cmd[*]}" | tee -a "$log"
     if ! run_command_logged "$log" "${cmd[@]}"; then
