@@ -5617,9 +5617,10 @@ pub fn sys_mremap(
     let extra = aligned_new - aligned_old;
     let grow_start = old_addr + aligned_old;
     if proc.memory.can_grow_at(grow_start, extra) {
-        proc.memory
-            .extend_mapping(old_addr, aligned_old, aligned_new);
-        return Ok(old_addr);
+        if proc.memory.extend_mapping(old_addr, aligned_old, aligned_new) {
+            return Ok(old_addr);
+        }
+        return Err(Errno::EINVAL);
     }
 
     // MREMAP_MAYMOVE: allocate a new mapping and free the old one.
@@ -19686,6 +19687,38 @@ mod tests {
         let new_addr = sys_mremap(&mut proc, addr, 0x10000, 0x20000, 0).unwrap();
         assert_eq!(new_addr, addr);
         assert!(proc.memory.is_mapped(addr + 0x10000));
+    }
+
+    #[test]
+    fn test_mremap_grow_after_adjacent_mapping_preserves_extended_range() {
+        let mut proc = Process::new(1);
+        use wasm_posix_shared::mmap::{MAP_ANONYMOUS, MAP_PRIVATE, PROT_READ, PROT_WRITE};
+
+        let first = proc.memory.mmap_anonymous(
+            0,
+            0x30000,
+            PROT_READ | PROT_WRITE,
+            MAP_PRIVATE | MAP_ANONYMOUS,
+        );
+        let target = proc.memory.mmap_anonymous(
+            0,
+            0x30000,
+            PROT_READ | PROT_WRITE,
+            MAP_PRIVATE | MAP_ANONYMOUS,
+        );
+        assert_eq!(target, first + 0x30000);
+
+        let new_addr = sys_mremap(&mut proc, target, 0x30000, 0x50000, 0).unwrap();
+        assert_eq!(new_addr, target);
+        assert!(proc.memory.is_mapped(target + 0x40000));
+
+        let next = proc.memory.mmap_anonymous(
+            0,
+            0x10000,
+            PROT_READ | PROT_WRITE,
+            MAP_PRIVATE | MAP_ANONYMOUS,
+        );
+        assert_eq!(next, target + 0x50000);
     }
 
     #[test]

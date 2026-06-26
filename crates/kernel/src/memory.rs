@@ -95,7 +95,6 @@ impl MemoryManager {
     pub fn set_mappings(&mut self, mut mappings: Vec<MappedRegion>) {
         mappings.sort_by_key(|m| m.addr);
         self.mappings = mappings;
-        self.coalesce_all();
     }
 
     /// Allocate an anonymous mapping. Returns the base address.
@@ -154,7 +153,6 @@ impl MemoryManager {
                 flags,
             },
         );
-        self.coalesce_around(pos);
 
         addr
     }
@@ -341,9 +339,6 @@ impl MemoryManager {
             }
         }
 
-        if found && !self.mappings.is_empty() {
-            self.coalesce_all();
-        }
         found
     }
 
@@ -559,54 +554,14 @@ impl MemoryManager {
 
     /// Extend an existing mapping at `addr` from `old_len` to `new_len`.
     /// The caller must ensure the space is free (via `can_grow_at`).
-    pub fn extend_mapping(&mut self, addr: usize, old_len: usize, new_len: usize) {
-        for i in 0..self.mappings.len() {
-            if self.mappings[i].addr == addr && self.mappings[i].len == old_len {
-                self.mappings[i].len = new_len;
-                self.coalesce_around(i);
-                return;
+    pub fn extend_mapping(&mut self, addr: usize, old_len: usize, new_len: usize) -> bool {
+        for mapping in &mut self.mappings {
+            if mapping.addr == addr && mapping.len == old_len {
+                mapping.len = new_len;
+                return true;
             }
         }
-    }
-
-    fn can_coalesce(left: &MappedRegion, right: &MappedRegion) -> bool {
-        left.prot == right.prot
-            && left.flags == right.flags
-            && left.addr.checked_add(left.len) == Some(right.addr)
-    }
-
-    fn coalesce_around(&mut self, mut idx: usize) {
-        if idx >= self.mappings.len() {
-            return;
-        }
-
-        if idx > 0 && Self::can_coalesce(&self.mappings[idx - 1], &self.mappings[idx]) {
-            let len = self.mappings[idx].len;
-            self.mappings[idx - 1].len = self.mappings[idx - 1].len.saturating_add(len);
-            self.mappings.remove(idx);
-            idx -= 1;
-        }
-
-        while idx + 1 < self.mappings.len()
-            && Self::can_coalesce(&self.mappings[idx], &self.mappings[idx + 1])
-        {
-            let len = self.mappings[idx + 1].len;
-            self.mappings[idx].len = self.mappings[idx].len.saturating_add(len);
-            self.mappings.remove(idx + 1);
-        }
-    }
-
-    fn coalesce_all(&mut self) {
-        let mut i = 0;
-        while i + 1 < self.mappings.len() {
-            if Self::can_coalesce(&self.mappings[i], &self.mappings[i + 1]) {
-                let len = self.mappings[i + 1].len;
-                self.mappings[i].len = self.mappings[i].len.saturating_add(len);
-                self.mappings.remove(i + 1);
-            } else {
-                i += 1;
-            }
-        }
+        false
     }
 }
 
@@ -640,7 +595,7 @@ mod tests {
     }
 
     #[test]
-    fn test_adjacent_compatible_mmaps_coalesce() {
+    fn test_adjacent_compatible_mmaps_preserve_boundaries() {
         let mut mm = MemoryManager::new();
         let rw = PROT_READ | PROT_WRITE;
         let anon = MAP_PRIVATE | MAP_ANONYMOUS;
@@ -649,9 +604,11 @@ mod tests {
         let addr2 = mm.mmap_anonymous(0, 0x20000, rw, anon);
 
         assert_eq!(addr2, addr1 + 0x10000);
-        assert_eq!(mm.mappings.len(), 1);
+        assert_eq!(mm.mappings.len(), 2);
         assert_eq!(mm.mappings[0].addr, addr1);
-        assert_eq!(mm.mappings[0].len, 0x30000);
+        assert_eq!(mm.mappings[0].len, 0x10000);
+        assert_eq!(mm.mappings[1].addr, addr2);
+        assert_eq!(mm.mappings[1].len, 0x20000);
     }
 
     #[test]
@@ -1189,7 +1146,7 @@ mod tests {
         let rw = PROT_READ | PROT_WRITE;
         let anon = MAP_PRIVATE | MAP_ANONYMOUS;
         let addr = mm.mmap_anonymous(0, 0x10000, rw, anon);
-        mm.extend_mapping(addr, 0x10000, 0x20000);
+        assert!(mm.extend_mapping(addr, 0x10000, 0x20000));
         assert!(mm.is_mapped(addr + 0x10000)); // extended area is now mapped
     }
 
