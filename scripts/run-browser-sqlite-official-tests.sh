@@ -166,6 +166,106 @@ with sqlite3.connect(db_path) as con, open(out_path, "w", newline="", encoding="
 PY
 }
 
+repair_testrunner_db_from_log() {
+  local db="$1"
+  local log="$RESULTS_DIR/testrunner.log"
+  local report="$RESULTS_DIR/testrunner-db-repair.tsv"
+
+  if [ ! -f "$log" ]; then
+    return
+  fi
+
+  python3 - "$db" "$log" "$report" <<'PY'
+import re
+import sqlite3
+import sys
+import time
+from pathlib import Path
+
+db_path = Path(sys.argv[1])
+log_path = Path(sys.argv[2])
+report_path = Path(sys.argv[3])
+
+log = log_path.read_text(encoding="utf-8", errors="replace")
+header_re = re.compile(r"^### (?P<name>.+?) (?P<ms>\d+)ms \((?P<state>done|failed)\)\s*$", re.MULTILINE)
+summary_re = re.compile(r"\b(?P<errors>\d+) errors out of (?P<tests>\d+) tests(?: on (?P<platform>[^\n]+))?")
+version_re = re.compile(r"\bSQLite \d\d\d\d-\d\d-\d\d \d\d:\d\d:\d\d [0-9a-fA-F]+")
+
+blocks = {}
+headers = list(header_re.finditer(log))
+for i, match in enumerate(headers):
+    body_start = match.end()
+    body_end = headers[i + 1].start() if i + 1 < len(headers) else len(log)
+    body = log[body_start:body_end].strip()
+    blocks[match.group("name")] = {
+        "state": match.group("state"),
+        "span": int(match.group("ms")),
+        "output": body,
+    }
+
+repaired = []
+now_ms = int(time.time() * 1000)
+with sqlite3.connect(db_path) as con:
+    rows = con.execute(
+        """
+        SELECT jobid, state, displayname, starttime
+          FROM jobs
+         WHERE state IN ('running', 'ready')
+            OR ntest IS NULL
+            OR nerr IS NULL
+        """
+    ).fetchall()
+    for jobid, state, displayname, starttime in rows:
+        block = blocks.get(displayname)
+        if not block:
+            continue
+        summary = summary_re.search(block["output"])
+        if not summary:
+            continue
+        version = version_re.search(block["output"])
+        span = block["span"]
+        endtime = int(starttime or now_ms) + span
+        nerr = int(summary.group("errors"))
+        ntest = int(summary.group("tests"))
+        platform = (summary.group("platform") or "").strip() or None
+        svers = version.group(0) if version else None
+        con.execute(
+            """
+            UPDATE jobs
+               SET output = ?,
+                   state = ?,
+                   endtime = ?,
+                   span = ?,
+                   ntest = ?,
+                   nerr = ?,
+                   svers = ?,
+                   pltfm = ?
+             WHERE jobid = ?
+            """,
+            (block["output"], block["state"], endtime, span, ntest, nerr, svers, platform, jobid),
+        )
+        repaired.append((jobid, state, block["state"], displayname, ntest, nerr, span))
+
+    if repaired:
+        con.execute(
+            "UPDATE config SET value = (SELECT coalesce(sum(nerr), 0) FROM jobs) WHERE name = 'nfail'"
+        )
+        con.execute(
+            "UPDATE config SET value = (SELECT coalesce(sum(ntest), 0) FROM jobs) WHERE name = 'ntest'"
+        )
+        con.execute(
+            "REPLACE INTO config VALUES('end', (SELECT coalesce(max(endtime), ?) FROM jobs))",
+            (now_ms,),
+        )
+        con.commit()
+
+with report_path.open("w", encoding="utf-8") as f:
+    f.write("jobid\told_state\tnew_state\tdisplayname\tcases\terrors\tms\n")
+    for row in repaired:
+        f.write("\t".join(str(value) for value in row) + "\n")
+PY
+}
+
 write_sqlite_report() {
   local db="$RESULTS_DIR/testrunner.db"
   local report="$RESULTS_DIR/summary.txt"
@@ -198,6 +298,7 @@ write_sqlite_report() {
     return
   fi
 
+  repair_testrunner_db_from_log "$db"
   write_outcome_lists "$db"
 
   {
