@@ -27,9 +27,17 @@ int __clone(int (*fn)(void *), void *stack, int flags, void *arg, ...)
     int *ctid = __builtin_va_arg(ap, int *);
     __builtin_va_end(ap);
 
+    /*
+     * LLVM's wasm32 ABI assumes a 16-byte aligned __stack_pointer at function
+     * entry, and 64-bit varargs in pthread workers break if the host starts
+     * them from musl's uintptr_t-aligned start_args pointer. Keep arg pointing
+     * at start_args, but give the host an ABI-aligned stack top.
+     */
+    uintptr_t stack_aligned = (uintptr_t)stack & ~(uintptr_t)15;
+
     return kernel_clone(
         (uint32_t)(uintptr_t)fn,
-        (uint32_t)(uintptr_t)stack,
+        (uint32_t)stack_aligned,
         (uint32_t)flags,
         (uint32_t)(uintptr_t)arg,
         (uint32_t)(uintptr_t)ptid,
