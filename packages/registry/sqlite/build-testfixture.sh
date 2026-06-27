@@ -24,6 +24,7 @@ SQLITE_VERSION="${SQLITE_VERSION:-3.49.1}"
 SQLITE_MAX_COMPOUND_SELECT="${SQLITE_MAX_COMPOUND_SELECT:-50}"
 SQLITE_MAX_EXPR_DEPTH="${SQLITE_MAX_EXPR_DEPTH:-100}"
 SQLITE_JSON_MAX_DEPTH="${SQLITE_JSON_MAX_DEPTH:-100}"
+SQLITE_MAX_TRIGGER_DEPTH="${SQLITE_MAX_TRIGGER_DEPTH:-50}"
 
 sqlite_packed_version() {
     local major minor patch
@@ -121,6 +122,7 @@ CFLAGS=(
     -DSQLITE_MAX_COMPOUND_SELECT="$SQLITE_MAX_COMPOUND_SELECT"
     -DSQLITE_MAX_EXPR_DEPTH="$SQLITE_MAX_EXPR_DEPTH"
     -DSQLITE_JSON_MAX_DEPTH="$SQLITE_JSON_MAX_DEPTH"
+    -DSQLITE_MAX_TRIGGER_DEPTH="$SQLITE_MAX_TRIGGER_DEPTH"
     -DHAVE_PREAD=1
     -DHAVE_PWRITE=1
     -DSQLITE_OMIT_LOAD_EXTENSION
@@ -159,8 +161,9 @@ CFLAGS=(
     -I"$ZLIB_INSTALL/include"
 )
 
-# e_fkey.test intentionally builds a max-depth trigger recursion chain. The
-# wasm-ld default 64 KiB shadow stack is too small for that upstream test.
+# e_fkey.test intentionally builds a max-depth trigger recursion chain. Keep
+# SQLite's trigger recursion cap low enough for Wasm engines, and still give
+# the testfixture more shadow stack than the wasm-ld default 64 KiB.
 # Keep this below the SDK's fixed --global-base while that layout is hardcoded.
 TESTFIXTURE_LDFLAGS=(
     -Wl,-z,stack-size=1048576
