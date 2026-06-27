@@ -4,7 +4,7 @@
 // setNextChildPid, and fork flow.
 import { describe, it, expect, vi } from "vitest";
 import { readFileSync } from "node:fs";
-import { CentralizedKernelWorker } from "../src/kernel-worker";
+import { CAPTURED_STDIO, CentralizedKernelWorker } from "../src/kernel-worker";
 import { resolveBinary } from "../src/binary-resolver";
 import { NodePlatformIO } from "../src/platform/node";
 import { SharedLockTable } from "../src/shared-lock-table";
@@ -54,6 +54,7 @@ function registerProcess(
     brkBase: entry.layout.brkBase,
     mmapBase: entry.layout.mmapBase,
     maxAddr: entry.layout.maxAddr,
+    stdio: CAPTURED_STDIO,
   });
 }
 
@@ -264,7 +265,7 @@ describe("CentralizedKernelWorker Process Management", () => {
       },
       kernelInstance: {
         exports: {
-          kernel_create_process: vi.fn(() => 0),
+          kernel_create_process_with_stdio: vi.fn(() => 0),
           kernel_set_brk_base: vi.fn(() => 0),
           kernel_set_mmap_base: vi.fn(() => 0),
           kernel_set_max_addr: setMaxAddr,
@@ -283,11 +284,36 @@ describe("CentralizedKernelWorker Process Management", () => {
       brkBase: 4 * WASM_PAGE_SIZE,
       mmapBase: 4 * WASM_PAGE_SIZE,
       maxAddr,
+      stdio: CAPTURED_STDIO,
     });
     kw.addChannel(321, highThreadChannelOffset, 7);
 
     expect(setMaxAddr).toHaveBeenCalledTimes(1);
     expect(setMaxAddr).toHaveBeenCalledWith(321, maxAddr);
+  });
+
+  it("requires explicit stdio when creating a kernel process", () => {
+    const kw = Object.assign(Object.create(CentralizedKernelWorker.prototype), {
+      initialized: true,
+      hostReaped: new Set(),
+      processes: new Map(),
+      activeChannels: [],
+      usePolling: true,
+      kernelInstance: {
+        exports: {
+          kernel_create_process_with_stdio: vi.fn(() => 0),
+        },
+      },
+    }) as CentralizedKernelWorker;
+    const memory = new WebAssembly.Memory({
+      initial: 16,
+      maximum: 16,
+      shared: true,
+    });
+
+    expect(() => kw.registerProcess(900, memory, [4 * WASM_PAGE_SIZE])).toThrow(
+      "registerProcess requires explicit stdio",
+    );
   });
 
   it("should register and unregister processes", async () => {

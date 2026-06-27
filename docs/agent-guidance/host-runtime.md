@@ -30,6 +30,12 @@ thread exit, crash, syscall trace, PTY, framebuffer, audio, network, VFS, and
 service-worker messages must have symmetric request, response, error, and
 cleanup behavior. A missing message handler is a platform bug.
 
+Stdio descriptor type is chosen when the process is created. Hosts that launch
+without a PTY must create fds 0, 1, and 2 as pipe-backed descriptors so
+`isatty()` and terminal ioctls observe non-terminal semantics; hosts that
+allocate a PTY must create terminal descriptors and then attach the PTY before
+user code runs. Do not create terminal-like stdio and repair it later.
+
 Failure must surface. Wasm traps, worker crashes, failed exec/spawn, missing
 binaries, ABI mismatches, service-worker failures, blocked retries, and process
 exits must become observable errors, exit statuses, or logs through the normal

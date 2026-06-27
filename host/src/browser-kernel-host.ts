@@ -408,6 +408,7 @@ export class BrowserKernel {
     options: BrowserKernelBootOptions,
   ): Promise<{ pid: number; exit: Promise<number> }> {
     const requestId = this.nextRequestId++;
+    const stdin = options.stdin ?? (!options.pty ? new Uint8Array() : undefined);
 
     const pid = await this.request(requestId, {
       type: "spawn",
@@ -420,7 +421,7 @@ export class BrowserKernel {
       uid: options.uid,
       gid: options.gid,
       pty: options.pty,
-      stdin: options.stdin,
+      stdin,
       maxPages: this.maxPages,
     }) as number;
 
@@ -475,6 +476,9 @@ export class BrowserKernel {
   ): Promise<number> {
     const pid = this.nextPid++;
     const requestId = this.nextRequestId++;
+    const stdin =
+      options?.stdin ??
+      (!options?.pty && !options?.onStarted ? new Uint8Array() : undefined);
 
     const exitPromise = new Promise<number>((resolve) => {
       this.exitResolvers.set(pid, resolve);
@@ -496,7 +500,7 @@ export class BrowserKernel {
       pty: options?.pty,
       ptyCols: options?.ptyCols,
       ptyRows: options?.ptyRows,
-      stdin: options?.stdin,
+      stdin,
       maxPages: this.maxPages,
     }, [bytesToSend]);
 
