@@ -5,6 +5,26 @@ import { resolveBinary } from "../src/binary-resolver";
 import { NodePlatformIO } from "../src/platform/node";
 
 describe("CentralizedKernelWorker", () => {
+  it("drains queued PTY output when a listener registers", () => {
+    const encoder = new TextEncoder();
+    const decoder = new TextDecoder();
+    const queued = [
+      encoder.encode("spidermonkey-node$ "),
+      encoder.encode("ready\n"),
+    ];
+    const received: string[] = [];
+    const kernelWorker = Object.assign(Object.create(CentralizedKernelWorker.prototype), {
+      ptyOutputCallbacks: new Map<number, (data: Uint8Array) => void>(),
+      ptyMasterRead: () => queued.shift() ?? null,
+    }) as CentralizedKernelWorker;
+
+    kernelWorker.onPtyOutput(3, (data) => {
+      received.push(decoder.decode(data));
+    });
+
+    expect(received).toEqual(["spidermonkey-node$ ", "ready\n"]);
+  });
+
   it("should initialize the kernel from wasm bytes", async () => {
     const wasmBytes = readFileSync(resolveBinary("kernel.wasm"));
 

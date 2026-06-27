@@ -1319,6 +1319,7 @@ export class CentralizedKernelWorker {
    */
   onPtyOutput(ptyIdx: number, callback: (data: Uint8Array) => void): void {
     this.ptyOutputCallbacks.set(ptyIdx, callback);
+    this.drainPtyOutput(ptyIdx);
   }
 
   /**
