@@ -1,0 +1,61 @@
+--- test/randexpr1.test
++++ test/randexpr1.test
+@@ -25,8 +25,49 @@
+ ifcapable !compound {
+   finish_test
+   return
+ }
+-
++if {$SQLITE_MAX_EXPR_DEPTH>0 && $SQLITE_MAX_EXPR_DEPTH<=100} {
++  set randexpr1_expr_depth_omits {
++    randexpr-2.284
++    randexpr-2.285
++    randexpr-2.497
++    randexpr-2.498
++    randexpr-2.499
++    randexpr-2.590
++    randexpr-2.591
++    randexpr-2.1101
++    randexpr-2.1102
++    randexpr-2.1103
++    randexpr-2.1315
++    randexpr-2.1316
++    randexpr-2.1317
++    randexpr-2.1969
++    randexpr-2.1970
++    randexpr-2.1971
++    randexpr-2.2078
++    randexpr-2.2079
++    randexpr-2.2082
++    randexpr-2.2083
++    randexpr-2.2597
++    randexpr-2.2598
++    randexpr-2.2599
++  }
++
++  rename do_test randexpr1_orig_do_test
++  proc do_test {name cmd expected} {
++    fix_testname name
++    if {[lsearch -exact $::randexpr1_expr_depth_omits $name]>=0} {
++      set omittedName $name
++      if {[info exists ::G(perm:prefix)]} {
++        set omittedName "$::G(perm:prefix)$omittedName"
++      }
++      omit_test $omittedName "requires generated expression trees above Kandelo's SQLITE_MAX_EXPR_DEPTH=$::SQLITE_MAX_EXPR_DEPTH browser-safe build limit"
++      return
++    }
++    uplevel 1 [list randexpr1_orig_do_test $name $cmd $expected]
++  }
++}
++
+ # Create test data
+ #
+ do_test randexpr1-1.1 {
+@@ -7837,1 +7878,7 @@
++if {[info commands randexpr1_orig_do_test] ne ""} {
++  rename do_test {}
++  rename randexpr1_orig_do_test do_test
++  unset randexpr1_expr_depth_omits
++}
++
+ finish_test
