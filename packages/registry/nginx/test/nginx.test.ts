@@ -10,7 +10,7 @@ import { join, dirname } from "node:path";
 import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
 import { createConnection, createServer } from "node:net";
-import { CentralizedKernelWorker } from "../../../../host/src/kernel-worker";
+import { CAPTURED_STDIO, CentralizedKernelWorker } from "../../../../host/src/kernel-worker";
 import { resolveBinary, tryResolveBinary } from "../../../../host/src/binary-resolver";
 import { NodePlatformIO } from "../../../../host/src/platform/node";
 import { NodeWorkerAdapter } from "../../../../host/src/worker-adapter";
@@ -179,7 +179,7 @@ describe.skipIf(!nginxWasmPath)(
       // `kill(1, ...)` / EPERM semantics), so the test runs nginx at
       // PID 100 with workers spawned at 101+. The actual PID nginx
       // sees doesn't matter to its operation.
-      kw.registerProcess(100, memory, [channelOffset]);
+      kw.registerProcess(100, memory, [channelOffset], { stdio: CAPTURED_STDIO });
       kw.setCwd(100, nginxPrefix);
       kw.setNextChildPid(101);
 

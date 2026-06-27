@@ -16,7 +16,7 @@
 import { readFileSync, existsSync, mkdirSync, readdirSync, writeFileSync } from "fs";
 import { resolve, dirname } from "path";
 import { createConnection, createServer, type Socket } from "net";
-import { CentralizedKernelWorker } from "../../../../host/src/kernel-worker";
+import { CAPTURED_STDIO, CentralizedKernelWorker } from "../../../../host/src/kernel-worker";
 import { NodePlatformIO } from "../../../../host/src/platform/node";
 import { NodeWorkerAdapter } from "../../../../host/src/worker-adapter";
 import { patchWasmForThread } from "../../../../host/src/worker-main";
@@ -724,7 +724,7 @@ async function runBootstrap(
     new Uint8Array(memory.buffer, channelOffset, CH_TOTAL_SIZE).fill(0);
 
     const pid = 1;
-    kernelWorker.registerProcess(pid, memory, [channelOffset]);
+    kernelWorker.registerProcess(pid, memory, [channelOffset], { stdio: CAPTURED_STDIO });
     kernelWorker.setCwd(pid, dataDir);
     kernelWorker.setNextChildPid(2);
 
@@ -801,7 +801,7 @@ function startServer(
     new Uint8Array(memory.buffer, channelOffset, CH_TOTAL_SIZE).fill(0);
 
     const pid = 1;
-    kernelWorker.registerProcess(pid, memory, [channelOffset]);
+    kernelWorker.registerProcess(pid, memory, [channelOffset], { stdio: CAPTURED_STDIO });
     kernelWorker.setCwd(pid, dataDir);
     kernelWorker.setNextChildPid(2);
 
@@ -852,7 +852,7 @@ async function runMysqlTest(
     memory.grow(CLIENT_MAX_PAGES - 17);
     new Uint8Array(memory.buffer, channelOffset, CH_TOTAL_SIZE).fill(0);
 
-    kernelWorker.registerProcess(pid, memory, [channelOffset]);
+    kernelWorker.registerProcess(pid, memory, [channelOffset], { stdio: CAPTURED_STDIO });
     kernelWorker.setCwd(pid, mysqlTestDir);
 
     // Setup/reset operations use "mysql" database; real tests use "test"
