@@ -614,6 +614,14 @@ class ListenerSet<T> {
   }
 }
 
+interface LivePtySession {
+  pid: number;
+  generation: number;
+  dataListeners: ListenerSet<Uint8Array>;
+  history: Uint8Array[];
+  closed: boolean;
+}
+
 function clampPendingRequestCount(count: number): number {
   return Number.isFinite(count) ? Math.max(0, Math.floor(count)) : 0;
 }
@@ -786,12 +794,7 @@ export class LiveKernelHost implements KernelHost {
 
   private kernel?: KernelLike;
   private shell?: NonNullable<LiveKernelHostOptions["shell"]>;
-  private ptySessions = new Map<string, {
-    pid: number;
-    dataListeners: ListenerSet<Uint8Array>;
-    history: Uint8Array[];
-    closed: boolean;
-  }>();
+  private ptySessions = new Map<string, LivePtySession>();
   private ptyCommandQueues = new Map<string, Promise<void>>();
   /**
    * Active PTY shell pids keyed by pid. Used by attachFramebuffer to route
@@ -1160,6 +1163,13 @@ export class LiveKernelHost implements KernelHost {
     const sessionKey = path || "/dev/pts/0";
 
     let session = this.ptySessions.get(sessionKey);
+    if (session && !session.closed && !(await this.isPtySessionAlive(session.pid))) {
+      this.shellPids.delete(session.pid);
+      session.pid = 0;
+      session.history.length = 0;
+      session.closed = true;
+    }
+
     if (!session || session.closed) {
       let pid: number;
       let exitPromise: Promise<number>;
@@ -1192,26 +1202,36 @@ export class LiveKernelHost implements KernelHost {
       }
       this.shellPids.set(pid, sessionKey);
 
-      const dataListeners = new ListenerSet<Uint8Array>();
-      const newSession = {
-        pid,
-        dataListeners,
-        history: [] as Uint8Array[],
-        closed: false,
-      };
-      session = newSession;
+      if (session) {
+        session.pid = pid;
+        session.generation++;
+        session.closed = false;
+        session.history.length = 0;
+      } else {
+        session = {
+          pid,
+          generation: 0,
+          dataListeners: new ListenerSet<Uint8Array>(),
+          history: [],
+          closed: false,
+        };
+      }
+      const activeSession = session;
+      const generation = activeSession.generation;
       this.ptySessions.set(sessionKey, session);
       kernel.onPtyOutput(pid, (data) => {
+        if (this.ptySessions.get(sessionKey) !== activeSession) return;
+        if (activeSession.closed || activeSession.generation !== generation) return;
         const copy = data.slice();
-        newSession.history.push(copy);
-        if (newSession.history.length > 2048) newSession.history.shift();
-        dataListeners.emit(copy);
+        activeSession.history.push(copy);
+        if (activeSession.history.length > 2048) activeSession.history.shift();
+        activeSession.dataListeners.emit(copy);
       });
       void exitPromise.finally(() => {
-        newSession.closed = true;
-        if (this.ptySessions.get(sessionKey) === newSession) {
-          this.ptySessions.delete(sessionKey);
-        }
+        if (this.ptySessions.get(sessionKey) !== activeSession) return;
+        if (activeSession.generation !== generation) return;
+        activeSession.closed = true;
+        activeSession.pid = 0;
         this.shellPids.delete(pid);
       });
     }
@@ -1219,9 +1239,7 @@ export class LiveKernelHost implements KernelHost {
     if (!session) {
       throw new Error("LiveKernelHost.attachPty: failed to create PTY session.");
     }
-    const pid = session.pid;
-    const dataListeners = session.dataListeners;
-    kernel.ptyResize(pid, opts.rows, opts.cols);
+    kernel.ptyResize(session.pid, opts.rows, opts.cols);
 
     const encoder = new TextEncoder();
     let closed = false;
@@ -1230,15 +1248,17 @@ export class LiveKernelHost implements KernelHost {
       write: (bytes) => {
         if (closed) return;
         const buf = typeof bytes === "string" ? encoder.encode(bytes) : bytes;
-        kernel.ptyWrite(pid, buf);
+        if (!session || session.closed) return;
+        kernel.ptyWrite(session.pid, buf);
       },
       onData: (cb) => {
         for (const chunk of session.history) cb(chunk);
-        return dataListeners.add(cb);
+        return session.dataListeners.add(cb);
       },
       resize: (cols, rows) => {
         if (closed) return;
-        kernel.ptyResize(pid, rows, cols);
+        if (!session || session.closed) return;
+        kernel.ptyResize(session.pid, rows, cols);
       },
       close: () => {
         if (closed) return;
@@ -1247,6 +1267,17 @@ export class LiveKernelHost implements KernelHost {
         // persists across drawer open/close so users keep command history.
       },
     };
+  }
+
+  private async isPtySessionAlive(pid: number): Promise<boolean> {
+    if (pid <= 0 || this.kernel?.enumProcs === undefined) return true;
+    try {
+      const procs = await this.kernel.enumProcs();
+      if (procs.length === 0) return true;
+      return procs.some((proc) => proc.pid === pid);
+    } catch {
+      return true;
+    }
   }
 
   // ── KernelHost: VFS ──────────────────────────────────────────────────────

@@ -352,6 +352,134 @@ describe("LiveKernelHost: shell command queue", () => {
     await command;
     expect(completed).toBe(true);
   });
+
+  it("respawns stale PTY sessions without disconnecting existing listeners", async () => {
+    const encoder = new TextEncoder();
+    const decoder = new TextDecoder();
+    const callbacks = new Map<number, (data: Uint8Array) => void>();
+    const livePids = new Set<number>();
+    const writes: number[] = [];
+    let nextPid = 1;
+
+    const host = new LiveKernelHost({
+      kernel: {
+        fs: makeFs({ "/etc/passwd": "" }),
+        nextPid: 1,
+        spawnFromVfs: async () => {
+          const pid = nextPid++;
+          livePids.add(pid);
+          return { pid, exit: new Promise<number>(() => {}) };
+        },
+        enumProcs: async () => [
+          { pid: 99, ppid: 0, uid: 0, gid: 0, vsizeBytes: 1024, state: "S", comm: "dinit", cmdline: "dinit" },
+          ...Array.from(livePids).map((pid) => ({
+            pid,
+            ppid: 99,
+            uid: 1000,
+            gid: 1000,
+            vsizeBytes: 1024,
+            state: "S",
+            comm: "bash",
+            cmdline: "bash -l -i",
+          })),
+        ],
+        onPtyOutput(pid: number, callback: (data: Uint8Array) => void) {
+          callbacks.set(pid, callback);
+          callback(encoder.encode(`spawned:${pid}\nkandelo$ `));
+        },
+        ptyResize() {},
+        ptyWrite(pid: number, data: Uint8Array) {
+          writes.push(pid);
+          callbacks.get(pid)?.(encoder.encode(`write:${pid}:${decoder.decode(data)}kandelo$ `));
+        },
+      } as any,
+    });
+    host.setDefaultShell({
+      programPath: "/bin/bash",
+      programBytes: new ArrayBuffer(0),
+      argv: ["bash", "-l", "-i"],
+      env: ["PS1=kandelo$ "],
+      cwd: "/home/user",
+    });
+
+    const firstHandle = await host.attachPty("/dev/pts/0", { cols: 80, rows: 24 });
+    let seen = "";
+    firstHandle.onData((bytes) => {
+      seen += decoder.decode(bytes);
+    });
+    expect(seen).toContain("spawned:1");
+
+    livePids.delete(1);
+    const secondHandle = await host.attachPty("/dev/pts/0", { cols: 80, rows: 24 });
+    secondHandle.write("echo second\n");
+    expect(writes).toEqual([2]);
+    expect(seen).toContain("spawned:2");
+    expect(seen).toContain("write:2:echo second");
+
+    firstHandle.write("echo first\n");
+    expect(writes).toEqual([2, 2]);
+    expect(seen).toContain("write:2:echo first");
+  });
+
+  it("keeps PTY listeners connected when an exited shell respawns", async () => {
+    const encoder = new TextEncoder();
+    const decoder = new TextDecoder();
+    const callbacks = new Map<number, (data: Uint8Array) => void>();
+    const exitResolvers = new Map<number, (status: number) => void>();
+    const writes: number[] = [];
+    let nextPid = 1;
+
+    const host = new LiveKernelHost({
+      kernel: {
+        fs: makeFs({ "/etc/passwd": "" }),
+        nextPid: 1,
+        spawnFromVfs: async () => {
+          const pid = nextPid++;
+          const exit = new Promise<number>((resolve) => {
+            exitResolvers.set(pid, resolve);
+          });
+          return { pid, exit };
+        },
+        onPtyOutput(pid: number, callback: (data: Uint8Array) => void) {
+          callbacks.set(pid, callback);
+          callback(encoder.encode(`spawned:${pid}\nkandelo$ `));
+        },
+        ptyResize() {},
+        ptyWrite(pid: number, data: Uint8Array) {
+          writes.push(pid);
+          callbacks.get(pid)?.(encoder.encode(`write:${pid}:${decoder.decode(data)}kandelo$ `));
+        },
+      } as any,
+    });
+    host.setDefaultShell({
+      programPath: "/bin/bash",
+      programBytes: new ArrayBuffer(0),
+      argv: ["bash", "-l", "-i"],
+      env: ["PS1=kandelo$ "],
+      cwd: "/home/user",
+    });
+
+    const firstHandle = await host.attachPty("/dev/pts/0", { cols: 80, rows: 24 });
+    let seen = "";
+    firstHandle.onData((bytes) => {
+      seen += decoder.decode(bytes);
+    });
+    expect(seen).toContain("spawned:1");
+
+    exitResolvers.get(1)?.(0);
+    await Promise.resolve();
+    await Promise.resolve();
+
+    const secondHandle = await host.attachPty("/dev/pts/0", { cols: 80, rows: 24 });
+    secondHandle.write("echo after-exit\n");
+    expect(writes).toEqual([2]);
+    expect(seen).toContain("spawned:2");
+    expect(seen).toContain("write:2:echo after-exit");
+
+    firstHandle.write("echo old-handle\n");
+    expect(writes).toEqual([2, 2]);
+    expect(seen).toContain("write:2:echo old-handle");
+  });
 });
 
 describe("LiveKernelHost: descriptor", () => {
