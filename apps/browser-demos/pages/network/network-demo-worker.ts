@@ -1,4 +1,4 @@
-import { CentralizedKernelWorker } from "@host/kernel-worker";
+import { CAPTURED_STDIO, CentralizedKernelWorker } from "@host/kernel-worker";
 import { BrowserWorkerAdapter } from "@host/worker-adapter-browser";
 import { detectPtrWidth, extractHeapBase } from "@host/constants";
 import { LocalVirtualNetwork } from "@host/networking/virtual-network";
@@ -250,6 +250,7 @@ async function runProgram(
   kernelWorker.registerProcess(pid, memory, [channelOffset], {
     argv: options.argv,
     ptrWidth,
+    stdio: CAPTURED_STDIO,
   });
   const initialHeapBase = extractHeapBase(options.programBytes);
   if (initialHeapBase !== null) kernelWorker.setBrkBase(pid, initialHeapBase);

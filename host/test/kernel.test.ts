@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
 import { readFileSync } from "node:fs";
-import { CentralizedKernelWorker } from "../src/kernel-worker";
+import { CAPTURED_STDIO, CentralizedKernelWorker } from "../src/kernel-worker";
 import { resolveBinary } from "../src/binary-resolver";
 import { NodePlatformIO } from "../src/platform/node";
 
@@ -31,7 +31,7 @@ describe("CentralizedKernelWorker", () => {
     memory.grow(256 - 17);
 
     // PID 1 is reserved for the virtual init process; use PIDs >= 100.
-    kernelWorker.registerProcess(100, memory, [channelOffset]);
+    kernelWorker.registerProcess(100, memory, [channelOffset], { stdio: CAPTURED_STDIO });
 
     // Unregister to clean up
     kernelWorker.unregisterProcess(100);

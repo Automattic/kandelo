@@ -18,7 +18,7 @@ import { readFileSync, existsSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { CentralizedKernelWorker } from "./kernel-worker";
+import { CAPTURED_STDIO, CentralizedKernelWorker, TERMINAL_STDIO } from "./kernel-worker";
 import type {
   ForkFromThreadContext,
   ResolvedSpawnProgram,
@@ -666,6 +666,7 @@ function handleSpawn(msg: SpawnMessage) {
       brkBase: layout.brkBase,
       mmapBase: layout.mmapBase,
       maxAddr: layout.maxAddr,
+      stdio: msg.pty ? TERMINAL_STDIO : CAPTURED_STDIO,
     });
 
     if (msg.cwd) {
@@ -690,9 +691,11 @@ function handleSpawn(msg: SpawnMessage) {
       kernelWorker.onPtyOutput(ptyIdx, (data: Uint8Array) => {
         post({ type: "pty_output", pid, data });
       });
-    } else if (msg.stdin) {
-      const stdinData = msg.stdin instanceof Uint8Array ? msg.stdin : new Uint8Array(msg.stdin);
-      kernelWorker.setStdinData(pid, stdinData);
+    } else {
+      if (msg.stdin) {
+        const stdinData = msg.stdin instanceof Uint8Array ? msg.stdin : new Uint8Array(msg.stdin);
+        kernelWorker.setStdinData(pid, stdinData);
+      }
     }
 
     const initData: CentralizedWorkerInitMessage = {

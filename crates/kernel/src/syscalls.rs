@@ -10946,6 +10946,10 @@ mod tests {
     use wasm_posix_shared::mode::{S_IFDIR, S_IFLNK, S_IFMT, S_IFREG};
     use wasm_posix_shared::poll::{POLLIN, POLLOUT};
 
+    fn terminal_process(pid: u32) -> Process {
+        Process::new_with_stdio(pid, crate::process::StdioConfig::terminal())
+    }
+
     /// Mutex to serialize tests that access the global Unix socket registry.
     /// The registry uses UnsafeCell internally and is not thread-safe, so tests
     /// that call sys_bind/sys_connect for AF_UNIX must hold this lock.
@@ -13102,7 +13106,7 @@ mod tests {
 
     #[test]
     fn test_isatty_stdin() {
-        let proc = Process::new(1);
+        let proc = terminal_process(1);
         assert_eq!(sys_isatty(&proc, 0), Ok(1));
     }
 
@@ -14190,7 +14194,7 @@ mod tests {
     fn test_openat_dirfd_enotdir() {
         let mut proc = Process::new(1);
         let mut host = MockHostIO::new();
-        // fd 0 is stdin (CharDevice, not Directory)
+        // fd 0 is stdin pipe by default, not Directory.
         let result = sys_openat(&mut proc, &mut host, 0, b"relative", O_RDONLY, 0);
         assert_eq!(result, Err(Errno::ENOTDIR));
     }
@@ -14315,7 +14319,7 @@ mod tests {
 
     #[test]
     fn test_tcgetattr_returns_terminal_state() {
-        let mut proc = Process::new(1);
+        let mut proc = terminal_process(1);
         let mut buf = [0u8; 60];
         let result = sys_tcgetattr(&mut proc, 0, &mut buf);
         assert!(result.is_ok());
@@ -14336,7 +14340,7 @@ mod tests {
 
     #[test]
     fn test_tcsetattr_modifies_terminal_state() {
-        let mut proc = Process::new(1);
+        let mut proc = terminal_process(1);
         let mut buf = [0u8; 60];
         sys_tcgetattr(&mut proc, 0, &mut buf).unwrap();
         // Clear ECHO in c_lflag (4th u32, bytes 12-15)
@@ -14355,7 +14359,7 @@ mod tests {
 
     #[test]
     fn test_ioctl_tiocgwinsz() {
-        let mut proc = Process::new(1);
+        let mut proc = terminal_process(1);
         let mut host = MockHostIO::new();
         let mut buf = [0u8; 8];
         let result = sys_ioctl(&mut proc, &mut host, 0, 0x5413, &mut buf); // TIOCGWINSZ
@@ -14368,7 +14372,7 @@ mod tests {
 
     #[test]
     fn test_ioctl_tiocswinsz() {
-        let mut proc = Process::new(1);
+        let mut proc = terminal_process(1);
         let mut host = MockHostIO::new();
         let mut buf = [0u8; 8];
         buf[0..2].copy_from_slice(&120u16.to_le_bytes()); // rows
@@ -14451,7 +14455,7 @@ mod tests {
 
     #[test]
     fn test_ioctl_fionread_regular() {
-        let mut proc = Process::new(1);
+        let mut proc = terminal_process(1);
         let mut host = MockHostIO::new();
         // FIONREAD on a CharDevice returns 0
         let mut buf = [0u8; 4];
@@ -18597,11 +18601,11 @@ mod tests {
 
     #[test]
     fn test_tiocgpgrp_tiocspgrp() {
-        let mut proc = Process::new(1);
+        let mut proc = terminal_process(1);
         let mut host = MockHostIO::new();
         let mut buf = [0u8; 4];
 
-        // TIOCGPGRP on stdin (fd 0, which is a CharDevice)
+        // TIOCGPGRP on terminal stdin.
         sys_ioctl(&mut proc, &mut host, 0, 0x540F, &mut buf).unwrap();
         let pgid = i32::from_le_bytes(buf);
         assert_eq!(pgid, 1); // default foreground_pgid
