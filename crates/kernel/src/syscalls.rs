@@ -8968,8 +8968,13 @@ pub fn sys_prctl(proc: &mut Process, option: u32, _arg2: u32, buf: &mut [u8]) ->
     }
 }
 
-// Returns the Linux TID for the currently-servicing thread. The host sets
-// current_tid before dispatching each thread channel; tid 0 means main thread.
+// Return the kernel/libc thread id for the currently-serviced POSIX thread.
+//
+// The host selects the syscall mailbox by channelOffset first, then binds the
+// corresponding TID in process_table::current_tid before entering the kernel.
+// That TID is what musl's gettid-based pthread implementation observes. A
+// current_tid of 0 is the host/kernel sentinel for the process main thread, so
+// the syscall returns the process pid for main-thread callers.
 pub fn sys_gettid(proc: &Process) -> i32 {
     let tid = crate::process_table::current_tid();
     if proc.is_main_thread(tid) {
@@ -8979,10 +8984,15 @@ pub fn sys_gettid(proc: &Process) -> i32 {
     }
 }
 
-// Stores the calling thread's clear-TID pointer for bookkeeping and returns
-// the calling TID, matching Linux set_tid_address(2). Host-side thread exit
-// already performs the actual clear-and-futex-wake using clone's ctid pointer;
-// keeping this value current lets threaded runtimes observe correct identity.
+// Store the calling thread's clear-TID pointer for bookkeeping and return the
+// calling TID.
+//
+// set_tid_address is a Linux-derived syscall ABI that musl uses to implement
+// POSIX pthreads; supporting it here is not a Linux-compatibility goal. The
+// value must be associated with the current TID, not just the channel offset,
+// so pthread joiners and threaded runtimes observe the correct thread identity.
+// Host-side thread exit already performs the actual clear-and-futex-wake using
+// clone's ctid pointer.
 pub fn sys_set_tid_address(proc: &mut Process, tidptr: usize) -> i32 {
     let tid = crate::process_table::current_tid();
     if proc.is_main_thread(tid) {
@@ -9100,7 +9110,9 @@ pub fn sys_clone(
     } else {
         0
     };
-    // POSIX: new threads inherit the creator's signal mask.
+    // POSIX: new threads inherit the creator's signal mask. The creator is
+    // identified by current_tid because clone arrives through the caller's
+    // channel mailbox but the kernel stores masks by TID.
     let caller_tid = crate::process_table::current_tid();
     let inherited_blocked = proc.blocked_for(caller_tid);
     let mut thread_info = ThreadInfo::new(tid, effective_ctid, stack_ptr, effective_tls);

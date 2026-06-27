@@ -600,9 +600,9 @@ export interface CentralizedKernelCallbacks {
 
   /**
    * Called after a pthread channel reaches SYS_EXIT and the kernel worker has
-   * performed the Linux CLONE_CHILD_CLEARTID wake. Return true when the host
-   * will terminate the backing Worker, so the syscall channel should not be
-   * completed back into guest code.
+   * performed the musl clear-TID wake used by pthread joiners. Return true when
+   * the host will terminate the backing Worker, so the syscall channel should
+   * not be completed back into guest code.
    */
   onThreadExit?: (pid: number, tid: number, channelOffset: number) => boolean;
 
@@ -643,7 +643,18 @@ export class CentralizedKernelWorker {
     }
     return this.nextChildPid++;
   }
-  /** Maps "pid:channelOffset" to TID for tracking thread channels */
+  /**
+   * Maps a pthread syscall mailbox to its kernel/libc thread id.
+   *
+   * Each pthread gets a distinct `channelOffset` range inside the process
+   * WebAssembly.Memory/SharedArrayBuffer. That offset identifies the host-side
+   * transport mailbox; it is enough for the host to find the pending syscall,
+   * but it is not the POSIX thread identity the Rust kernel exposes to musl.
+   * Before entering `kernel_handle_channel`, the host uses this map to bind the
+   * selected mailbox to the current TID so gettid, set_tid_address, per-thread
+   * signal masks, directed signals, and thread cleanup apply to the right
+   * pthread.
+   */
   private channelTids = new Map<string, number>();
   /**
    * Per-thread-channel fork context: the pthread_create entry point and
@@ -658,13 +669,17 @@ export class CentralizedKernelWorker {
   /** Tracks the pid currently being serviced by kernel_handle_channel */
   private currentHandlePid = 0;
   /**
-   * Bind the kernel's view of "which thread is executing this syscall" to
-   * the calling channel. Must be called immediately before every
-   * `kernel_handle_channel` invocation that originates from user code — the
-   * kernel consults this to route per-thread signal state (pthread_sigmask,
-   * pthread_kill pending, sigsuspend per-thread mask swap). `tid = 0` means
-   * "main thread" and is the default for channels without a tracked TID
-   * (e.g. the main process worker).
+   * Bind the kernel's view of "which thread is executing this syscall" to the
+   * already-selected channel. The channel offset is the transport identity; TID
+   * is the guest-visible pthread identity used by the kernel/libc ABI.
+   *
+   * This ambient current-TID value is correct while this host serializes calls
+   * into one kernel instance. If kernel dispatch ever becomes concurrent or
+   * reentrant for the same instance, this must move into the syscall header or
+   * become an explicit `kernel_handle_channel` argument.
+   *
+   * `tid = 0` means "main thread" and is the default for channels without a
+   * tracked TID, such as the main process worker.
    */
   private bindKernelTidForChannel(channel: ChannelInfo): void {
     const tid = this.channelTids.get(`${channel.pid}:${channel.channelOffset}`) ?? 0;
@@ -6814,6 +6829,10 @@ export class CentralizedKernelWorker {
    * Complete kernel-side cleanup for a thread whose worker has stopped.
    * Normal pthread exit reaches this from SYS_EXIT. Crash paths use the same
    * cleanup so pthread_join waiters do not stay blocked on CLONE_CHILD_CLEARTID.
+   *
+   * Both identifiers matter: `channelOffset` removes the host mailbox/fork
+   * context, while `tid` addresses the kernel/libc thread state and clear-TID
+   * futex word used by joiners.
    */
   finalizeThreadExit(pid: number, tid: number, channelOffset: number): void {
     const tidKey = `${pid}:${channelOffset}`;

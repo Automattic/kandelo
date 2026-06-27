@@ -43,10 +43,17 @@ pub struct ProcessTable {
     pub(crate) processes: BTreeMap<u32, Process>,
     current_pid: u32,
     next_spawn_pid: u32,
-    /// TID of the thread currently servicing a syscall. 0 means "main thread"
-    /// (or unknown — callers that don't set this get main-thread semantics).
-    /// The host sets this before each `kernel_handle_channel` when a thread
-    /// worker is the caller.
+    /// Kernel/libc thread id for the syscall currently being serviced.
+    ///
+    /// The host already selected a syscall channel by its `channelOffset`; this
+    /// field supplies the POSIX thread identity that cannot be inferred from the
+    /// `kernel_handle_channel(pid)` call. `0` means "main thread" and is also
+    /// the fallback for callers that do not bind a pthread TID.
+    ///
+    /// This is ambient dispatch context for the current serialized kernel call.
+    /// If a single kernel instance ever services channels concurrently or
+    /// reentrantly, the TID should move into the syscall header or be passed as
+    /// an explicit `kernel_handle_channel` argument.
     current_tid: u32,
 }
 
@@ -517,15 +524,17 @@ impl ProcessTable {
         self.current_pid
     }
 
-    /// Set the current thread id. 0 means "main thread" and is the default.
-    /// The host must call this before `kernel_handle_channel` for any syscall
-    /// originating from a non-main thread so that per-thread signal state is
-    /// consulted correctly.
+    /// Set the current kernel/libc thread id for the next serialized dispatch.
+    ///
+    /// The host calls this after selecting a pthread channel and before
+    /// `kernel_handle_channel` so gettid, set_tid_address, pthread signal masks,
+    /// directed signal delivery, and clear-TID cleanup all refer to the calling
+    /// thread. `0` means "main thread" and is the default.
     pub fn set_current_tid(&mut self, tid: u32) {
         self.current_tid = tid;
     }
 
-    /// Get the current thread id (0 for main thread).
+    /// Get the current kernel/libc thread id (0 for main thread).
     pub fn current_tid(&self) -> u32 {
         self.current_tid
     }
@@ -1010,7 +1019,7 @@ unsafe impl Sync for GlobalProcessTable {}
 pub static GLOBAL_PROCESS_TABLE: GlobalProcessTable =
     GlobalProcessTable(UnsafeCell::new(ProcessTable::new()));
 
-/// Read the currently-serviced thread id (0 = main thread).
+/// Read the currently-serviced kernel/libc thread id (0 = main thread).
 #[inline]
 pub fn current_tid() -> u32 {
     unsafe { (*GLOBAL_PROCESS_TABLE.0.get()).current_tid() }
