@@ -95,6 +95,19 @@ function collectArtifacts(fs: MemoryFileSystem): SqliteTestResult["artifacts"] {
   return artifacts.length > 0 ? artifacts : undefined;
 }
 
+const hostnameShim = [
+  "#!/bin/sh",
+  "printf '%s\\n' kandelo-browser",
+  "",
+].join("\n");
+
+function installBrowserHostShims(fs: MemoryFileSystem): void {
+  // SQLite's tester.tcl probes the host name with `exec hostname`. Browser
+  // test VFS images are self-contained, so provide a deterministic command.
+  writeVfsFile(fs, "/usr/bin/hostname", hostnameShim, 0o755);
+  writeVfsFile(fs, "/bin/hostname", hostnameShim, 0o755);
+}
+
 const testrunnerPlatformShim = [
   "# Kandelo platform shim for child testrunner jobs.",
   "# SQLite all-mode reruns config variants by invoking test/testrunner.tcl",
@@ -197,6 +210,7 @@ function createFs(): MemoryFileSystem {
   try {
     fs.chmod("/sqlite/testdir", 0o777);
   } catch {}
+  installBrowserHostShims(fs);
   return fs;
 }
 

@@ -13,6 +13,7 @@ import { MemoryFileSystem } from "../../../host/src/vfs/memory-fs";
 import {
   ensureDir,
   ensureDirRecursive,
+  writeVfsFile,
   writeVfsBinary,
   symlink,
 } from "../../../host/src/vfs/image-helpers";
@@ -36,6 +37,11 @@ const COREUTILS_SYMLINK_NAMES = [
   "head", "ln", "ls", "mkdir", "mv", "pwd", "rm", "rmdir", "sed", "sleep",
   "sort", "tail", "tee", "test", "touch", "tr", "true", "uname", "wc", "[",
 ];
+const HOSTNAME_SHIM = [
+  "#!/bin/sh",
+  "printf '%s\\n' kandelo-browser",
+  "",
+].join("\n");
 
 function checkPrereqs(): void {
   const missing: string[] = [];
@@ -85,6 +91,8 @@ async function main() {
       symlink(fs, "/bin/coreutils", `/usr/bin/${name}`);
     }
   }
+  writeVfsFile(fs, "/bin/hostname", HOSTNAME_SHIM, 0o755);
+  writeVfsFile(fs, "/usr/bin/hostname", HOSTNAME_SHIM, 0o755);
 
   console.log("  Writing Tcl runtime...");
   walkAndWrite(fs, TCL_LIBRARY, "/usr/lib/tcl8.6");
