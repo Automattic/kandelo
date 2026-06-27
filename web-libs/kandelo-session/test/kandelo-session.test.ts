@@ -303,6 +303,57 @@ describe("LiveKernelHost: process listing", () => {
   });
 });
 
+describe("LiveKernelHost: shell command queue", () => {
+  it("does not treat heredoc continuation prompts as command completion", async () => {
+    const encoder = new TextEncoder();
+    let onOutput: ((data: Uint8Array) => void) | null = null;
+    let releaseFinalPrompt!: () => void;
+    const finalPrompt = new Promise<void>((resolve) => {
+      releaseFinalPrompt = resolve;
+    });
+
+    const host = new LiveKernelHost({
+      kernel: {
+        fs: makeFs({ "/etc/passwd": "" }),
+        nextPid: 1,
+        spawnFromVfs: async () => ({ pid: 1, exit: new Promise<number>(() => {}) }),
+        onPtyOutput(_pid: number, callback: (data: Uint8Array) => void) {
+          onOutput = callback;
+          callback(encoder.encode("kandelo$ "));
+        },
+        ptyResize() {},
+        ptyWrite(_pid: number, _data: Uint8Array) {
+          onOutput?.(encoder.encode("cat > /tmp/k <<'EOF'\n> echo ok\n> "));
+          void finalPrompt.then(() => {
+            onOutput?.(encoder.encode("EOF\nok\nkandelo$ "));
+          });
+        },
+      } as any,
+    });
+    host.setDefaultShell({
+      programPath: "/bin/bash",
+      programBytes: new ArrayBuffer(0),
+      argv: ["bash", "-l", "-i"],
+      env: ["PS1=kandelo$ "],
+      cwd: "/home/user",
+    });
+
+    let completed = false;
+    const command = host.runShellCommand("cat > /tmp/k <<'EOF'\necho ok\nEOF");
+    void command.then(() => {
+      completed = true;
+    });
+
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(completed).toBe(false);
+
+    releaseFinalPrompt();
+    await command;
+    expect(completed).toBe(true);
+  });
+});
+
 describe("LiveKernelHost: descriptor", () => {
   it("getBootDescriptor returns a deep clone — callers can't mutate internal state", () => {
     const host = new LiveKernelHost({ descriptor: DUMMY_DESCRIPTOR });

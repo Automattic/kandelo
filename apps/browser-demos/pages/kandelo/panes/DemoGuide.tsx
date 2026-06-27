@@ -179,10 +179,9 @@ function actionMap(guide: DemoGuideConfig | null): Map<string, DemoActionConfig>
 
 function scriptToShellCommand(script: string): string {
   const delimiter = pickDelimiter(script);
-  return `cat > /tmp/kandelo-demo-action.sh <<'${delimiter}'
+  return `cat > /tmp/kandelo-demo-action.sh <<'${delimiter}' && bash /tmp/kandelo-demo-action.sh
 ${script}
-${delimiter}
-bash /tmp/kandelo-demo-action.sh`;
+${delimiter}`;
 }
 
 function pickDelimiter(script: string): string {

@@ -622,7 +622,10 @@ function ptyBufferEndsWithPrompt(buffer: string): boolean {
   const plain = buffer
     .replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, "")
     .replace(/\r/g, "\n");
-  return /(?:^|\n)(?:[^\n]*[$#] |> )$/.test(plain);
+  // Do not treat the shell continuation prompt (`> `) as ready. The demo
+  // guide sends heredocs through this path, and PS2 appears before the command
+  // has finished.
+  return /(?:^|\n)[^\n]*[$#] $/.test(plain);
 }
 
 function waitForPtyReadiness(
