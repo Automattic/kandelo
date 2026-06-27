@@ -742,10 +742,12 @@ bash packages/registry/sqlite/build-testfixture.sh
 ```
 
 Kandelo builds SQLite with `SQLITE_MAX_COMPOUND_SELECT=50`,
-`SQLITE_MAX_EXPR_DEPTH=100`, and `SQLITE_JSON_MAX_DEPTH=100` for both the
-shipped library and upstream testfixture. The default SQLite limits are higher,
-but current browser wasm engines exhaust their call stack before SQLite's
-recursive SQL and deeply nested JSON tests complete at those depths. The
+`SQLITE_MAX_EXPR_DEPTH=100`, `SQLITE_JSON_MAX_DEPTH=100`, and
+`SQLITE_MAX_TRIGGER_DEPTH=50` for both the shipped library and upstream
+testfixture. The default SQLite limits are higher, but current browser and Node
+wasm engines exhaust their call stack before SQLite's recursive SQL, deeply
+nested JSON, and maximum-depth trigger/foreign-key action tests complete at
+those depths. The
 testfixture patch set exposes the compiled JSON limit to Tcl so `json101.test`
 checks Kandelo's configured limit instead of assuming the upstream default. The
 shipped SQLite CLI also enables
@@ -775,7 +777,9 @@ permutation forces every `sqlite3_mutex_try()` call to fail.
 The patch set also omits the `misc1-10.*` 100-term AND-chain stress block and
 the `randexpr1.test` generated cases that exceed the compiled expression-depth
 cap when `SQLITE_MAX_EXPR_DEPTH` is 100 or lower, matching Kandelo's shipped
-SQLite limit.
+SQLite limit. It also keeps `sqllimits1.test` SQL-length filler comment-only so
+that the SQL-length limit check does not trip the lower expression-depth limit
+first.
 
 Then run the harness:
 

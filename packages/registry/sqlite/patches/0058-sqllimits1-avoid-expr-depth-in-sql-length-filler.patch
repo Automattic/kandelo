@@ -1,0 +1,22 @@
+--- test/sqllimits1.test
++++ test/sqllimits1.test
+@@ -429,8 +429,7 @@ do_test sqllimits1-6.1 {
+   sqlite3_limit db SQLITE_LIMIT_SQL_LENGTH 50000
+   set sql "SELECT 1 WHERE 1==1"
+   set tail " /* A comment to take up space in order to make the string\
+-                longer without increasing the expression depth */\
+-                AND   1  ==  1"
++                longer without increasing the expression depth */ "
+   set N [expr {(50000 / [string length $tail])+1}]
+   append sql [string repeat $tail $N]
+   catchsql $sql
+@@ -439,8 +438,7 @@ do_test sqllimits1-6.3 {
+   sqlite3_limit db SQLITE_LIMIT_SQL_LENGTH 50000
+   set sql "SELECT 1 WHERE 1==1"
+   set tail " /* A comment to take up space in order to make the string\
+-                longer without increasing the expression depth */\
+-                AND   1  ==  1"
++                longer without increasing the expression depth */ "
+   set N [expr {(50000 / [string length $tail])+1}]
+   append sql [string repeat $tail $N]
+   set nbytes [string length $sql]
