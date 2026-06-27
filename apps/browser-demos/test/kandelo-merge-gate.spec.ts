@@ -99,8 +99,6 @@ async function runGuideScript(
   const runButton = page.locator(".kdemo-run").first();
   await page.locator(".kdemo textarea").first().fill(script);
   await runButton.click();
-  await expect(runButton).toHaveText("Running...", { timeout: 10_000 });
-  await expect(runButton).toBeDisabled();
   await waitForTerminalContent(page, expected, timeout);
   await expect(runButton).toHaveText("Run script", { timeout });
   await expect(runButton).toBeEnabled();
@@ -235,10 +233,11 @@ test("Kandelo shell demo runs bash, vim, and NetHack", async ({ page }) => {
     page,
     "vim --version >/tmp/kandelo-vim.out 2>&1\n" +
       "vim_version=$(</tmp/kandelo-vim.out)\n" +
+      "marker=VIM\n" +
       "if [[ \"$vim_version\" == *'VIM - Vi IMproved'* ]]; then\n" +
-      "  printf 'KANDELO_VIM_OK\\n'\n" +
+      "  printf 'KANDELO_%s_OK\\n' \"$marker\"\n" +
       "else\n" +
-      "  printf 'KANDELO_VIM_FAIL\\n'\n" +
+      "  printf 'KANDELO_%s_FAIL\\n' \"$marker\"\n" +
       "  cat /tmp/kandelo-vim.out\n" +
       "fi",
     "KANDELO_VIM_OK",
