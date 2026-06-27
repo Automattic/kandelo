@@ -626,22 +626,29 @@ function clampPendingRequestCount(count: number): number {
   return Number.isFinite(count) ? Math.max(0, Math.floor(count)) : 0;
 }
 
-function ptyBufferEndsWithPrompt(buffer: string): boolean {
+function ptyBufferEndsWithPrompt(buffer: string, prompt: string | null = null): boolean {
   const plain = buffer
     .replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, "")
     .replace(/\r/g, "\n");
+  if (prompt) return plain.endsWith(prompt);
   // Do not treat the shell continuation prompt (`> `) as ready. The demo
   // guide sends heredocs through this path, and PS2 appears before the command
   // has finished.
   return /(?:^|\n)[^\n]*[$#] $/.test(plain);
 }
 
+function shellPrompt(shell: NonNullable<LiveKernelHostOptions["shell"]>): string | null {
+  const ps1 = shell.env?.find((entry) => entry.startsWith("PS1="));
+  return ps1 ? ps1.slice("PS1=".length) : null;
+}
+
 function waitForPtyReadiness(
   pty: PtyHandle,
-  opts: { includeHistory?: boolean; timeoutMs?: number } = {},
+  opts: { includeHistory?: boolean; timeoutMs?: number; prompt?: string | null } = {},
 ): Promise<void> {
   const includeHistory = opts.includeHistory ?? true;
   const timeoutMs = opts.timeoutMs ?? 1200;
+  const prompt = opts.prompt ?? null;
   return new Promise((resolve, reject) => {
     let done = false;
     let buffer = "";
@@ -665,10 +672,10 @@ function waitForPtyReadiness(
     off = pty.onData((bytes) => {
       if (!includeHistory && replayingHistory) return;
       buffer += decoder.decode(bytes, { stream: true });
-      if (ptyBufferEndsWithPrompt(buffer)) finish();
+      if (ptyBufferEndsWithPrompt(buffer, prompt)) finish();
     });
     replayingHistory = false;
-    if (includeHistory && ptyBufferEndsWithPrompt(buffer)) finish();
+    if (includeHistory && ptyBufferEndsWithPrompt(buffer, prompt)) finish();
   });
 }
 
@@ -795,6 +802,7 @@ export class LiveKernelHost implements KernelHost {
   private kernel?: KernelLike;
   private shell?: NonNullable<LiveKernelHostOptions["shell"]>;
   private ptySessions = new Map<string, LivePtySession>();
+  private ptyAttachPromises = new Map<string, Promise<LivePtySession>>();
   private ptyCommandQueues = new Map<string, Promise<void>>();
   /**
    * Active PTY shell pids keyed by pid. Used by attachFramebuffer to route
@@ -841,6 +849,7 @@ export class LiveKernelHost implements KernelHost {
     this.offLazyDownloads = null;
     this.kernel = kernel;
     this.ptySessions.clear();
+    this.ptyAttachPromises.clear();
     this.ptyCommandQueues.clear();
     this.shellPids.clear();
     if (kernel.framebuffers) {
@@ -868,6 +877,7 @@ export class LiveKernelHost implements KernelHost {
     this.offLazyDownloads = null;
     this.kernel = undefined;
     this.ptySessions.clear();
+    this.ptyAttachPromises.clear();
     this.ptyCommandQueues.clear();
     this.shellPids.clear();
     this.refreshTerminalAvailability();
@@ -925,10 +935,12 @@ export class LiveKernelHost implements KernelHost {
     try {
       await previousCommandDone.catch(() => {});
       const pty = await this.attachPty(sessionKey, { cols: 100, rows: 30 });
-      await waitForPtyReadiness(pty, { includeHistory: true, timeoutMs: 1200 }).catch(() => {});
+      const prompt = this.shell ? shellPrompt(this.shell) : null;
+      await waitForPtyReadiness(pty, { includeHistory: true, timeoutMs: 1200, prompt }).catch(() => {});
       const completion = waitForPtyReadiness(pty, {
         includeHistory: false,
         timeoutMs: 300_000,
+        prompt,
       });
       void completion.then(resolveCommandDone, rejectCommandDone);
       pty.write(command.endsWith("\n") ? command : `${command}\n`);
@@ -1161,7 +1173,64 @@ export class LiveKernelHost implements KernelHost {
     const kernel = this.kernel;
     const shell = this.shell;
     const sessionKey = path || "/dev/pts/0";
+    const session = await this.withPtyAttachLock(sessionKey, () =>
+      this.ensurePtySession(sessionKey, kernel, shell, opts),
+    );
 
+    kernel.ptyResize(session.pid, opts.rows, opts.cols);
+
+    const encoder = new TextEncoder();
+    let closed = false;
+
+    return {
+      write: (bytes) => {
+        if (closed) return;
+        const buf = typeof bytes === "string" ? encoder.encode(bytes) : bytes;
+        if (session.closed) return;
+        kernel.ptyWrite(session.pid, buf);
+      },
+      onData: (cb) => {
+        for (const chunk of session.history) cb(chunk);
+        return session.dataListeners.add(cb);
+      },
+      resize: (cols, rows) => {
+        if (closed) return;
+        if (session.closed) return;
+        kernel.ptyResize(session.pid, rows, cols);
+      },
+      close: () => {
+        if (closed) return;
+        closed = true;
+        // Detach this UI handle only. The PTY-backed shell intentionally
+        // persists across drawer open/close so users keep command history.
+      },
+    };
+  }
+
+  private async withPtyAttachLock(
+    sessionKey: string,
+    ensureSession: () => Promise<LivePtySession>,
+  ): Promise<LivePtySession> {
+    const previous = this.ptyAttachPromises.get(sessionKey);
+    const current = (previous ?? Promise.resolve())
+      .catch(() => undefined)
+      .then(ensureSession);
+    this.ptyAttachPromises.set(sessionKey, current);
+    try {
+      return await current;
+    } finally {
+      if (this.ptyAttachPromises.get(sessionKey) === current) {
+        this.ptyAttachPromises.delete(sessionKey);
+      }
+    }
+  }
+
+  private async ensurePtySession(
+    sessionKey: string,
+    kernel: KernelLike,
+    shell: NonNullable<LiveKernelHostOptions["shell"]>,
+    opts: { cols: number; rows: number },
+  ): Promise<LivePtySession> {
     let session = this.ptySessions.get(sessionKey);
     if (session && !session.closed && !(await this.isPtySessionAlive(session.pid))) {
       this.shellPids.delete(session.pid);
@@ -1239,34 +1308,7 @@ export class LiveKernelHost implements KernelHost {
     if (!session) {
       throw new Error("LiveKernelHost.attachPty: failed to create PTY session.");
     }
-    kernel.ptyResize(session.pid, opts.rows, opts.cols);
-
-    const encoder = new TextEncoder();
-    let closed = false;
-
-    return {
-      write: (bytes) => {
-        if (closed) return;
-        const buf = typeof bytes === "string" ? encoder.encode(bytes) : bytes;
-        if (!session || session.closed) return;
-        kernel.ptyWrite(session.pid, buf);
-      },
-      onData: (cb) => {
-        for (const chunk of session.history) cb(chunk);
-        return session.dataListeners.add(cb);
-      },
-      resize: (cols, rows) => {
-        if (closed) return;
-        if (!session || session.closed) return;
-        kernel.ptyResize(session.pid, rows, cols);
-      },
-      close: () => {
-        if (closed) return;
-        closed = true;
-        // Detach this UI handle only. The PTY-backed shell intentionally
-        // persists across drawer open/close so users keep command history.
-      },
-    };
+    return session;
   }
 
   private async isPtySessionAlive(pid: number): Promise<boolean> {

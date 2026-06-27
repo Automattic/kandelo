@@ -353,6 +353,118 @@ describe("LiveKernelHost: shell command queue", () => {
     expect(completed).toBe(true);
   });
 
+  it("does not treat echoed dollar-looking input as shell readiness", async () => {
+    const encoder = new TextEncoder();
+    let onOutput: ((data: Uint8Array) => void) | null = null;
+    let releaseFinalPrompt!: () => void;
+    const finalPrompt = new Promise<void>((resolve) => {
+      releaseFinalPrompt = resolve;
+    });
+
+    const host = new LiveKernelHost({
+      kernel: {
+        fs: makeFs({ "/etc/passwd": "" }),
+        nextPid: 1,
+        spawnFromVfs: async () => ({ pid: 1, exit: new Promise<number>(() => {}) }),
+        onPtyOutput(_pid: number, callback: (data: Uint8Array) => void) {
+          onOutput = callback;
+          callback(encoder.encode("kandelo$ "));
+        },
+        ptyResize() {},
+        ptyWrite(_pid: number, _data: Uint8Array) {
+          onOutput?.(encoder.encode("printf 'literal$ '\n"));
+          void finalPrompt.then(() => {
+            onOutput?.(encoder.encode("literal$ \nkandelo$ "));
+          });
+        },
+      } as any,
+    });
+    host.setDefaultShell({
+      programPath: "/bin/bash",
+      programBytes: new ArrayBuffer(0),
+      argv: ["bash", "-l", "-i"],
+      env: ["PS1=kandelo$ "],
+      cwd: "/home/user",
+    });
+
+    let completed = false;
+    const command = host.runShellCommand("printf 'literal$ '");
+    void command.then(() => {
+      completed = true;
+    });
+
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(completed).toBe(false);
+
+    releaseFinalPrompt();
+    await command;
+    expect(completed).toBe(true);
+  });
+
+  it("serializes concurrent PTY attaches for the same terminal session", async () => {
+    const encoder = new TextEncoder();
+    const decoder = new TextDecoder();
+    const callbacks = new Map<number, (data: Uint8Array) => void>();
+    const writes: Array<{ pid: number; text: string }> = [];
+    let releaseSpawn!: () => void;
+    const spawnGate = new Promise<void>((resolve) => {
+      releaseSpawn = resolve;
+    });
+    let spawnCalls = 0;
+    let nextPid = 1;
+
+    const host = new LiveKernelHost({
+      kernel: {
+        fs: makeFs({ "/etc/passwd": "" }),
+        nextPid: 1,
+        spawnFromVfs: async () => {
+          spawnCalls++;
+          await spawnGate;
+          const pid = nextPid++;
+          return { pid, exit: new Promise<number>(() => {}) };
+        },
+        onPtyOutput(pid: number, callback: (data: Uint8Array) => void) {
+          callbacks.set(pid, callback);
+          callback(encoder.encode(`spawned:${pid}\nkandelo$ `));
+        },
+        ptyResize() {},
+        ptyWrite(pid: number, data: Uint8Array) {
+          const text = decoder.decode(data);
+          writes.push({ pid, text });
+          callbacks.get(pid)?.(encoder.encode(`${text}done\nkandelo$ `));
+        },
+      } as any,
+    });
+    host.setDefaultShell({
+      programPath: "/bin/bash",
+      programBytes: new ArrayBuffer(0),
+      argv: ["bash", "-l", "-i"],
+      env: ["PS1=kandelo$ "],
+      cwd: "/home/user",
+    });
+
+    const visibleAttach = host.attachPty("/dev/pts/0", { cols: 80, rows: 24 });
+    await Promise.resolve();
+    const guideCommand = host.runShellCommand("printf guide-visible");
+    await Promise.resolve();
+    expect(spawnCalls).toBe(1);
+
+    releaseSpawn();
+    const visiblePty = await visibleAttach;
+    await guideCommand;
+
+    let visibleText = "";
+    visiblePty.onData((bytes) => {
+      visibleText += decoder.decode(bytes);
+    });
+    expect(spawnCalls).toBe(1);
+    expect(writes).toEqual([{ pid: 1, text: "printf guide-visible\n" }]);
+    expect(visibleText).toContain("spawned:1");
+    expect(visibleText).toContain("printf guide-visible");
+    expect(visibleText).toContain("done");
+  });
+
   it("respawns stale PTY sessions without disconnecting existing listeners", async () => {
     const encoder = new TextEncoder();
     const decoder = new TextDecoder();

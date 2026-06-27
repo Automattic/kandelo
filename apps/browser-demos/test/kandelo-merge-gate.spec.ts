@@ -99,6 +99,8 @@ async function runGuideScript(
   const runButton = page.locator(".kdemo-run").first();
   await page.locator(".kdemo textarea").first().fill(script);
   await runButton.click();
+  await expect(runButton).toHaveText("Running...", { timeout: 10_000 });
+  await expect(runButton).toBeDisabled();
   await waitForTerminalContent(page, expected, timeout);
   await expect(runButton).toHaveText("Run script", { timeout });
   await expect(runButton).toBeEnabled();
