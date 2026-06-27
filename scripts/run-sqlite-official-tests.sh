@@ -248,6 +248,38 @@ write_sqlite_report() {
   cat "$report"
 }
 
+install_kandelo_testrunner_shim() {
+  local target="$1"
+  local tmp="$target.kandelo-shim"
+
+  if grep -q 'kandelo_testrunner_platform_shim' "$target"; then
+    return
+  fi
+
+  awk '
+    {
+      print
+      if (!done && $0 == "exec tclsh \"$0\" \"$@\"") {
+        print ""
+        print "# Kandelo platform shim: the wasm Tcl build reports a target OS name"
+        print "# that SQLite testrunner.tcl does not classify. Keep the shim inside"
+        print "# the staged upstream runner so nested config jobs inherit it too."
+        print "if {![info exists ::kandelo_testrunner_platform_shim]} {"
+        print "  set ::kandelo_testrunner_platform_shim 1"
+        print "  set ::tcl_platform(os) OpenBSD"
+        print "  set ::tcl_platform(platform) unix"
+        print "}"
+        done = 1
+      }
+    }
+    END {
+      if (!done) exit 42
+    }
+  ' "$target" > "$tmp"
+  mv "$tmp" "$target"
+  chmod a+r "$target"
+}
+
 cleanup() {
   if [ "$KEEP_WORKDIR" = "1" ]; then
     echo "Keeping SQLite official workdir: $WORKDIR"
@@ -267,6 +299,7 @@ chmod -R a+rX "$WORKDIR"
 chmod 0777 "$WORKDIR"
 mkdir -p "$WORKDIR/testdir"
 chmod 0777 "$WORKDIR/testdir"
+install_kandelo_testrunner_shim "$WORKDIR/test/testrunner.tcl"
 cp "$TESTFIXTURE" "$WORKDIR/testfixture"
 cp "$TESTFIXTURE" "$WORKDIR/testfixture.wasm"
 cp "$SQLITE3" "$WORKDIR/sqlite3"
