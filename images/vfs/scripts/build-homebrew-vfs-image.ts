@@ -20,6 +20,7 @@ import {
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { buildHomebrewVfs } from "../../../host/src/homebrew-vfs-builder";
+import { fetchHomebrewBottleBytes } from "../../../host/src/homebrew-vfs-fetch";
 import {
   planHomebrewVfs,
   type HomebrewBottleArch,
@@ -231,13 +232,7 @@ async function loadBottleBytes(
     );
   }
 
-  const response = await fetch(pkg.url);
-  if (!response.ok) {
-    throw new Error(
-      `fetch ${pkg.url} for package ${pkg.name}@${pkg.version} failed: HTTP ${response.status}`,
-    );
-  }
-  const bytes = new Uint8Array(await response.arrayBuffer());
+  const bytes = await fetchHomebrewBottleBytes(pkg.url);
   if (cachePath) {
     mkdirSync(dirname(cachePath), { recursive: true });
     writeFileSync(cachePath, bytes);
