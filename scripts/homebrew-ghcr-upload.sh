@@ -83,6 +83,8 @@ OWNER_LOWER="$(lower "$OWNER")"
 REPO_LOWER="$(lower "$REPO")"
 BOTTLE_SHA="$(sha256_file "$BOTTLE")"
 BOTTLE_BYTES="$(wc -c <"$BOTTLE" | tr -d '[:space:]')"
+BOTTLE_DIR="$(cd "$(dirname "$BOTTLE")" && pwd)"
+BOTTLE_BASENAME="$(basename "$BOTTLE")"
 SHA_PREFIX="${BOTTLE_SHA:0:12}"
 IMAGE_REPOSITORY="ghcr.io/${OWNER_LOWER}/${REPO_LOWER}/${FORMULA}"
 IMAGE_TAG="${RELEASE_TAG}-${ARCH}-${SHA_PREFIX}"
@@ -99,14 +101,17 @@ if [ "$DRY_RUN" != "1" ]; then
   fi
   printf '%s\n' "$GH_TOKEN" |
     oras login ghcr.io -u "${GITHUB_ACTOR:-github-actions}" --password-stdin >/dev/null
-  oras push \
-    "${IMAGE_REPOSITORY}:${IMAGE_TAG}" \
-    "${BOTTLE}:application/vnd.homebrew.bottle.layer.v1+gzip" \
-    --annotation "org.opencontainers.image.source=https://github.com/${TAP_REPOSITORY}" \
-    --annotation "org.opencontainers.image.revision=${GITHUB_SHA:-unknown}" \
-    --annotation "dev.kandelo.homebrew.formula=${FORMULA}" \
-    --annotation "dev.kandelo.homebrew.arch=${ARCH}" \
-    --annotation "dev.kandelo.homebrew.release_tag=${RELEASE_TAG}"
+  (
+    cd "$BOTTLE_DIR"
+    oras push \
+      "${IMAGE_REPOSITORY}:${IMAGE_TAG}" \
+      "${BOTTLE_BASENAME}:application/vnd.homebrew.bottle.layer.v1+gzip" \
+      --annotation "org.opencontainers.image.source=https://github.com/${TAP_REPOSITORY}" \
+      --annotation "org.opencontainers.image.revision=${GITHUB_SHA:-unknown}" \
+      --annotation "dev.kandelo.homebrew.formula=${FORMULA}" \
+      --annotation "dev.kandelo.homebrew.arch=${ARCH}" \
+      --annotation "dev.kandelo.homebrew.release_tag=${RELEASE_TAG}"
+  )
 else
   echo "homebrew-ghcr-upload.sh: dry-run, not pushing ${IMAGE_REPOSITORY}:${IMAGE_TAG}"
 fi

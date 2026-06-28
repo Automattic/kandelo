@@ -64,6 +64,39 @@ assert_upload_dry_run() {
   esac
 }
 
+assert_upload_push_uses_relative_layer_path() {
+  local bottle="$TMPDIR/hello.bottle.tar.gz"
+  local out="$TMPDIR/upload.env"
+  local bin="$TMPDIR/bin"
+  local log="$TMPDIR/oras.log"
+  printf 'bottle-bytes' >"$bottle"
+  mkdir -p "$bin"
+  cat >"$bin/oras" <<'EOF'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >>"$ORAS_LOG"
+case "${1:-}" in
+  login) cat >/dev/null ;;
+  push) ;;
+  *) exit 2 ;;
+esac
+EOF
+  chmod +x "$bin/oras"
+  ORAS_LOG="$log" GH_TOKEN="test-token" GITHUB_ACTOR="test-actor" PATH="$bin:$PATH" \
+    bash "$REPO_ROOT/scripts/homebrew-ghcr-upload.sh" \
+      --tap-repository Automattic/kandelo-homebrew \
+      --formula hello \
+      --arch wasm32 \
+      --release-tag bottles-abi-v15 \
+      --bottle "$bottle" \
+      --out-env "$out" >/dev/null
+  grep -F "push ghcr.io/automattic/kandelo-homebrew/hello:bottles-abi-v15-wasm32-" "$log" >/dev/null ||
+    fail "oras push was not invoked"
+  grep -F "hello.bottle.tar.gz:application/vnd.homebrew.bottle.layer.v1+gzip" "$log" >/dev/null ||
+    fail "oras push did not use relative bottle layer path"
+  ! grep -F "$bottle:application/vnd.homebrew.bottle.layer.v1+gzip" "$log" >/dev/null ||
+    fail "oras push used an absolute bottle layer path"
+}
+
 assert_failure_preserves_metadata() {
   local tap="$TMPDIR/failure-tap"
   make_tap "$tap"
@@ -86,6 +119,7 @@ assert_failure_preserves_metadata() {
 
 assert_matrix
 assert_upload_dry_run
+assert_upload_push_uses_relative_layer_path
 assert_failure_preserves_metadata
 
 echo "test-homebrew-publish-workflow.sh: ok"
