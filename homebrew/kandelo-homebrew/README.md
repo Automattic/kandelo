@@ -20,6 +20,8 @@ Kandelo/
   formula/<formula>.json
   link/<formula>-<version>-rebuild<N>-<arch>.json
   reports/<formula>-<version>-rebuild<N>-<arch>.provenance.json
+  reports/failures/<timestamp>-<formula>-<arch>.json
+  reports/rollbacks/<timestamp>-<formula>-<arch>.json
 ```
 
 This template currently contains:
@@ -46,6 +48,16 @@ sidecars into the tap, publishes browser gallery assets only after a successful
 browser smoke, and records failed attempts under
 `Kandelo/reports/failures/` without replacing the last-green
 `Kandelo/metadata.json`.
+
+Manual rebuilds, repair-only metadata regeneration, and rollback reporting are
+handled by `.github/workflows/reusable-homebrew-bottle-maintenance.yml`.
+Rebuild mode can skip formula/arch pairs whose current successful metadata
+already carries the expected cache key, unless the caller sets `force`.
+Repair-only mode bypasses bottle build and upload and expects the trusted
+sidecar command to regenerate metadata from existing bottle evidence. Rollback
+mode records a report under `Kandelo/reports/rollbacks/` while preserving
+last-green metadata; package deletion is exceptional and must be documented with
+both the deleted package URL and the operational reason.
 
 Sidecar generation from produced bottle bytes is a separate handoff: the
 workflow requires a trusted `sidecar-command` to populate

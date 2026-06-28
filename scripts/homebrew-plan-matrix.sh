@@ -5,13 +5,21 @@ set -euo pipefail
 TAP_ROOT=""
 FORMULAE="all"
 ARCHES="wasm32"
+METADATA_PATH=""
+EXPECTED_CACHE_KEYS=""
+FORCE=0
 
 usage() {
   cat >&2 <<'EOF'
-usage: scripts/homebrew-plan-matrix.sh --tap-root <tap-root> [--formulae <list|all>] [--arches <list>]
+usage: scripts/homebrew-plan-matrix.sh --tap-root <tap-root> [--formulae <list|all>] [--arches <list>] [--metadata <path>] [--expected-cache-keys <path>] [--force]
 
 Lists may be comma, space, or newline separated. Output is a JSON array of
 {"formula": "...", "arch": "..."} entries.
+
+When --expected-cache-keys is provided, entries whose current successful tap
+metadata already carries the expected cache key are skipped unless --force is
+set. The expected cache-key JSON may be either {"formula":"sha"} or
+{"formula":{"wasm32":"sha","wasm64":"sha"}}.
 EOF
 }
 
@@ -20,6 +28,9 @@ while [ "$#" -gt 0 ]; do
     --tap-root) TAP_ROOT="${2:-}"; shift 2 ;;
     --formulae) FORMULAE="${2:-}"; shift 2 ;;
     --arches) ARCHES="${2:-}"; shift 2 ;;
+    --metadata) METADATA_PATH="${2:-}"; shift 2 ;;
+    --expected-cache-keys) EXPECTED_CACHE_KEYS="${2:-}"; shift 2 ;;
+    --force) FORCE=1; shift ;;
     -h|--help) usage; exit 0 ;;
     *) echo "homebrew-plan-matrix.sh: unknown flag $1" >&2; usage; exit 2 ;;
   esac
@@ -32,6 +43,13 @@ fi
 
 if [ ! -d "$TAP_ROOT/Formula" ]; then
   echo "homebrew-plan-matrix.sh: $TAP_ROOT/Formula is not a directory" >&2
+  exit 2
+fi
+if [ -z "$METADATA_PATH" ]; then
+  METADATA_PATH="$TAP_ROOT/Kandelo/metadata.json"
+fi
+if [ -n "$EXPECTED_CACHE_KEYS" ] && [ ! -f "$EXPECTED_CACHE_KEYS" ]; then
+  echo "homebrew-plan-matrix.sh: expected cache-key file does not exist: $EXPECTED_CACHE_KEYS" >&2
   exit 2
 fi
 
@@ -86,7 +104,7 @@ while IFS= read -r arch; do
   fi
 done <"$arch_list"
 
-{
+matrix_candidates="$({
   while IFS= read -r formula; do
     while IFS= read -r arch; do
       printf '%s\t%s\n' "$formula" "$arch"
@@ -95,4 +113,53 @@ done <"$arch_list"
 } | jq -Rsc -c '
   split("\n")[:-1]
   | map(split("\t") | {formula: .[0], arch: .[1]})
-'
+')"
+
+metadata_json="null"
+expected_json="null"
+force_json="false"
+
+if [ -n "$EXPECTED_CACHE_KEYS" ] && [ -f "$METADATA_PATH" ]; then
+  metadata_json="$(jq -c . "$METADATA_PATH")"
+fi
+if [ -n "$EXPECTED_CACHE_KEYS" ]; then
+  expected_json="$(jq -c . "$EXPECTED_CACHE_KEYS")"
+fi
+if [ "$FORCE" = "1" ]; then
+  force_json="true"
+fi
+
+jq -c \
+  --argjson metadata "$metadata_json" \
+  --argjson expected "$expected_json" \
+  --argjson force "$force_json" '
+  def expected_key($formula; $arch):
+    if $expected == null then
+      null
+    elif (($expected[$formula]? | type) == "string") then
+      $expected[$formula]
+    elif (($expected[$formula]? | type) == "object") and (($expected[$formula][$arch]? | type) == "string") then
+      $expected[$formula][$arch]
+    else
+      null
+    end;
+
+  def current_key($formula; $arch):
+    if $metadata == null then
+      null
+    else
+      [
+        ($metadata.packages // [])[]?
+        | select(.name == $formula)
+        | (.bottles // [])[]?
+        | select(.arch == $arch and ((.status // "success") == "success"))
+        | .cache_key_sha // empty
+      ][0] // null
+    end;
+
+  map(select(
+    $force or
+    (expected_key(.formula; .arch) == null) or
+    (current_key(.formula; .arch) != expected_key(.formula; .arch))
+  ))
+' <<<"$matrix_candidates"

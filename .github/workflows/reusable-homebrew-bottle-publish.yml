@@ -30,6 +30,15 @@ on:
       sidecar-command:
         type: string
         default: "bash scripts/homebrew-generate-sidecars-from-env.sh"
+      expected-cache-keys:
+        type: string
+        default: ""
+      force:
+        type: boolean
+        default: false
+      repair-only:
+        type: boolean
+        default: false
       dry-run:
         type: boolean
         default: false
@@ -103,12 +112,26 @@ jobs:
       - name: Plan formula matrix
         id: matrix
         shell: bash
+        env:
+          EXPECTED_CACHE_KEYS_JSON: ${{ inputs.expected-cache-keys }}
+          FORCE_REBUILD: ${{ inputs.force }}
         run: |
           set -euo pipefail
+          expected_args=()
+          if [ -n "$EXPECTED_CACHE_KEYS_JSON" ]; then
+            expected_file="$RUNNER_TEMP/homebrew-expected-cache-keys.json"
+            printf '%s\n' "$EXPECTED_CACHE_KEYS_JSON" >"$expected_file"
+            jq empty "$expected_file"
+            expected_args+=(--expected-cache-keys "$expected_file")
+          fi
+          if [ "$FORCE_REBUILD" = "true" ]; then
+            expected_args+=(--force)
+          fi
           matrix="$(bash kandelo/scripts/homebrew-plan-matrix.sh \
             --tap-root "$GITHUB_WORKSPACE/tap" \
             --formulae '${{ inputs.formulae }}' \
-            --arches '${{ inputs.arches }}')"
+            --arches '${{ inputs.arches }}' \
+            "${expected_args[@]}")"
           echo "matrix=$matrix" >> "$GITHUB_OUTPUT"
           echo "$matrix" | jq .
 
@@ -250,6 +273,7 @@ jobs:
           KANDELO_HOMEBREW_TAP_REPOSITORY: ${{ inputs.tap-repository }}
           KANDELO_HOMEBREW_DRY_RUN: ${{ inputs.dry-run }}
           KANDELO_HOMEBREW_SIDECAR_COMMAND: ${{ inputs.sidecar-command }}
+          KANDELO_HOMEBREW_REPAIR_ONLY: ${{ inputs.repair-only }}
         run: |
           set -euo pipefail
           error_file="$RUNNER_TEMP/homebrew-publish-error.txt"
@@ -259,34 +283,43 @@ jobs:
             sidecar_root="$RUNNER_TEMP/homebrew-sidecars"
             mkdir -p "$bottle_out" "$sidecar_root"
 
-            bottle_root_url="${{ needs.plan.outputs.bottle-root-prefix }}"
             cd "$GITHUB_WORKSPACE/kandelo"
-            bash scripts/dev-shell.sh bash scripts/homebrew-bottle-build.sh \
-              --tap-root "$GITHUB_WORKSPACE/tap" \
-              --tap-repository "$KANDELO_HOMEBREW_TAP_REPOSITORY" \
-              --formula "$KANDELO_HOMEBREW_FORMULA" \
-              --arch "$KANDELO_HOMEBREW_ARCH" \
-              --out "$bottle_out" \
-              --bottle-root-url "$bottle_root_url"
 
-            # shellcheck disable=SC1091
-            . "$bottle_out/build.env"
+            if [ "$KANDELO_HOMEBREW_REPAIR_ONLY" = "true" ]; then
+              BOTTLE_ARCHIVE=""
+              BOTTLE_JSON=""
+              BOTTLE_URL=""
+              BOTTLE_SHA256=""
+              BOTTLE_BYTES=""
+            else
+              bottle_root_url="${{ needs.plan.outputs.bottle-root-prefix }}"
+              bash scripts/dev-shell.sh bash scripts/homebrew-bottle-build.sh \
+                --tap-root "$GITHUB_WORKSPACE/tap" \
+                --tap-repository "$KANDELO_HOMEBREW_TAP_REPOSITORY" \
+                --formula "$KANDELO_HOMEBREW_FORMULA" \
+                --arch "$KANDELO_HOMEBREW_ARCH" \
+                --out "$bottle_out" \
+                --bottle-root-url "$bottle_root_url"
 
-            upload_env="$RUNNER_TEMP/homebrew-upload.env"
-            upload_args=(
-              --tap-repository "$KANDELO_HOMEBREW_TAP_REPOSITORY"
-              --formula "$KANDELO_HOMEBREW_FORMULA"
-              --arch "$KANDELO_HOMEBREW_ARCH"
-              --release-tag "$KANDELO_HOMEBREW_RELEASE_TAG"
-              --bottle "$BOTTLE_ARCHIVE"
-              --out-env "$upload_env"
-            )
-            if [ "$KANDELO_HOMEBREW_DRY_RUN" = "true" ]; then
-              upload_args+=(--dry-run)
+              # shellcheck disable=SC1091
+              . "$bottle_out/build.env"
+
+              upload_env="$RUNNER_TEMP/homebrew-upload.env"
+              upload_args=(
+                --tap-repository "$KANDELO_HOMEBREW_TAP_REPOSITORY"
+                --formula "$KANDELO_HOMEBREW_FORMULA"
+                --arch "$KANDELO_HOMEBREW_ARCH"
+                --release-tag "$KANDELO_HOMEBREW_RELEASE_TAG"
+                --bottle "$BOTTLE_ARCHIVE"
+                --out-env "$upload_env"
+              )
+              if [ "$KANDELO_HOMEBREW_DRY_RUN" = "true" ]; then
+                upload_args+=(--dry-run)
+              fi
+              bash scripts/dev-shell.sh bash scripts/homebrew-ghcr-upload.sh "${upload_args[@]}"
+              # shellcheck disable=SC1090
+              . "$upload_env"
             fi
-            bash scripts/dev-shell.sh bash scripts/homebrew-ghcr-upload.sh "${upload_args[@]}"
-            # shellcheck disable=SC1090
-            . "$upload_env"
 
             sidecar_script="$RUNNER_TEMP/kandelo-homebrew-sidecars.sh"
             printf '%s\n' "$KANDELO_HOMEBREW_SIDECAR_COMMAND" >"$sidecar_script"
@@ -297,6 +330,8 @@ jobs:
             chmod +x "$sidecar_script"
             export KANDELO_HOMEBREW_TAP_ROOT="$GITHUB_WORKSPACE/tap"
             export KANDELO_HOMEBREW_SIDECAR_ROOT="$sidecar_root"
+            export KANDELO_HOMEBREW_REPAIR_ONLY
+            export KANDELO_HOMEBREW_PREVIOUS_METADATA="$GITHUB_WORKSPACE/tap/Kandelo/metadata.json"
             export KANDELO_HOMEBREW_BOTTLE_ARCHIVE="$BOTTLE_ARCHIVE"
             export KANDELO_HOMEBREW_BOTTLE_JSON="$BOTTLE_JSON"
             export KANDELO_HOMEBREW_BOTTLE_URL="$BOTTLE_URL"
@@ -385,6 +420,9 @@ jobs:
               --release-tag "$KANDELO_HOMEBREW_RELEASE_TAG"
               --status success
             )
+            if [ "$KANDELO_HOMEBREW_REPAIR_ONLY" = "true" ]; then
+              publish_args+=(--repair-only)
+            fi
             if [ "$KANDELO_HOMEBREW_DRY_RUN" = "true" ]; then
               publish_args+=(--dry-run --no-lock)
             fi

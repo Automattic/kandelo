@@ -43,6 +43,27 @@ When a current bottle is `failed`, `pending`, or `building`,
 `--previous-metadata` provides the last-green fallback. The fallback is copied
 only for the same ABI, package, version, rebuild, and arch.
 
+## Maintenance Workflows
+
+The reusable maintenance workflow supports three operator paths:
+
+- `rebuild` builds and uploads replacement bottles, then publishes generated
+  sidecars through the same validator and tap commit path as normal publish.
+  When expected cache keys are supplied, formula/arch pairs whose current
+  successful metadata already matches are skipped unless `force` is set.
+- `repair-only` skips bottle build and upload. The trusted sidecar command gets
+  `KANDELO_HOMEBREW_REPAIR_ONLY=true` and
+  `KANDELO_HOMEBREW_PREVIOUS_METADATA` so it can regenerate sidecars from
+  existing bottle evidence without changing bottle bytes.
+- `rollback` records the rollback under `Kandelo/reports/rollbacks/` without
+  replacing `Kandelo/metadata.json`. If a rollback publishes a non-success
+  metadata payload, it must preserve the previous successful bottle as
+  last-green fallback metadata.
+
+Package deletion is not normal rollback. Delete a GHCR/Homebrew package object
+only for legal, security, or retention emergencies, and record the deleted URL
+plus the reason in the rollback report.
+
 ## Validation Split
 
 JSON Schema validates object shape, required fields, enum values, scalar

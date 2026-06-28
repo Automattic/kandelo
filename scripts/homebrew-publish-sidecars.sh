@@ -11,18 +11,24 @@ ARCH=""
 RELEASE_TAG=""
 STATUS=""
 ERROR_TEXT=""
+REASON_TEXT=""
+ROLLBACK_REF=""
+DELETED_PACKAGE_URL=""
+DELETION_REASON=""
+REPAIR_ONLY=0
 DRY_RUN=0
 NO_LOCK=0
 
 usage() {
   cat >&2 <<'EOF'
-usage: scripts/homebrew-publish-sidecars.sh --tap-root <tap-root> --formula <name> --arch <wasm32|wasm64> --release-tag <tag> --status <success|failed> [--sidecar-root <dir>] [--error <text>] [--dry-run] [--no-lock]
+usage: scripts/homebrew-publish-sidecars.sh --tap-root <tap-root> --formula <name> --arch <wasm32|wasm64> --release-tag <tag> --status <success|failed|rollback> [--sidecar-root <dir>] [--error <text>] [--reason <text>] [--rollback-ref <ref>] [--deleted-package-url <url> --deletion-reason <text>] [--repair-only] [--dry-run] [--no-lock]
 
 Success publishes a generated sidecar payload from --sidecar-root into the tap
-and validates it with xtask homebrew-validate. Failed attempts either publish a
-validated failed sidecar payload or, when --sidecar-root is absent, write an
-attempt report under Kandelo/reports/failures while leaving metadata.json
-untouched so last-green metadata is preserved.
+and validates it with xtask homebrew-validate. Failed and rollback attempts
+either publish a validated non-success sidecar payload or, when --sidecar-root
+is absent, write an attempt report under Kandelo/reports while leaving
+metadata.json untouched so last-green metadata is preserved. Package deletion is
+exceptional and must include both --deleted-package-url and --deletion-reason.
 EOF
 }
 
@@ -36,6 +42,11 @@ while [ "$#" -gt 0 ]; do
     --release-tag) RELEASE_TAG="${2:-}"; shift 2 ;;
     --status) STATUS="${2:-}"; shift 2 ;;
     --error) ERROR_TEXT="${2:-}"; shift 2 ;;
+    --reason) REASON_TEXT="${2:-}"; shift 2 ;;
+    --rollback-ref) ROLLBACK_REF="${2:-}"; shift 2 ;;
+    --deleted-package-url) DELETED_PACKAGE_URL="${2:-}"; shift 2 ;;
+    --deletion-reason) DELETION_REASON="${2:-}"; shift 2 ;;
+    --repair-only) REPAIR_ONLY=1; shift ;;
     --dry-run) DRY_RUN=1; shift ;;
     --no-lock) NO_LOCK=1; shift ;;
     -h|--help) usage; exit 0 ;;
@@ -66,9 +77,25 @@ case "$ARCH" in
   *) echo "homebrew-publish-sidecars.sh: invalid arch: $ARCH" >&2; exit 2 ;;
 esac
 case "$STATUS" in
-  success|failed) ;;
-  *) echo "homebrew-publish-sidecars.sh: --status must be success or failed" >&2; exit 2 ;;
+  success|failed|rollback) ;;
+  *) echo "homebrew-publish-sidecars.sh: --status must be success, failed, or rollback" >&2; exit 2 ;;
 esac
+if [ "$REPAIR_ONLY" = "1" ] && [ "$STATUS" != "success" ]; then
+  echo "homebrew-publish-sidecars.sh: --repair-only is only valid with --status success" >&2
+  exit 2
+fi
+if [ "$STATUS" = "rollback" ] && [ -z "$REASON_TEXT" ]; then
+  echo "homebrew-publish-sidecars.sh: --reason is required for rollback" >&2
+  exit 2
+fi
+if [ -n "$DELETED_PACKAGE_URL" ] && [ -z "$DELETION_REASON" ]; then
+  echo "homebrew-publish-sidecars.sh: --deletion-reason is required when --deleted-package-url is set" >&2
+  exit 2
+fi
+if [ -n "$DELETION_REASON" ] && [ -z "$DELETED_PACKAGE_URL" ]; then
+  echo "homebrew-publish-sidecars.sh: --deleted-package-url is required when --deletion-reason is set" >&2
+  exit 2
+fi
 if [ ! -d "$TAP_ROOT/.git" ]; then
   echo "homebrew-publish-sidecars.sh: tap root must be a git checkout: $TAP_ROOT" >&2
   exit 2
@@ -158,7 +185,7 @@ copy_payload() {
   fi
 }
 
-guard_failed_payload_preserves_last_green() {
+guard_non_success_payload_preserves_last_green() {
   local current="$TAP_ROOT/Kandelo/metadata.json"
   local incoming="$SIDECAR_ROOT/Kandelo/metadata.json"
   [ -f "$current" ] || return 0
@@ -174,7 +201,9 @@ guard_failed_payload_preserves_last_green() {
     . as $pair
     | (bottle($pair[0])) as $current
     | (bottle($pair[1])) as $incoming
-    | if (($incoming.status // "") == "failed" and ($current.status // "") == "success") then
+    | if (($incoming.status // "") == "" or ($incoming.status // "") == "success") then
+        false
+      elif (($current.status // "") == "success") then
         (($incoming.fallback_url // "") == ($current.url // "")) and
         (($incoming.fallback_sha256 // "") == ($current.sha256 // "")) and
         (($incoming.fallback_bytes // 0) == ($current.bytes // -1)) and
@@ -184,7 +213,7 @@ guard_failed_payload_preserves_last_green() {
         true
       end
   ' <(jq -s '.' "$current" "$incoming") >/dev/null || {
-    echo "homebrew-publish-sidecars.sh: failed payload would drop last-green metadata for $FORMULA/$ARCH" >&2
+    echo "homebrew-publish-sidecars.sh: non-success payload is missing a non-success status or would drop last-green metadata for $FORMULA/$ARCH" >&2
     exit 1
   }
 }
@@ -221,6 +250,47 @@ write_failure_report() {
   echo "homebrew-publish-sidecars.sh: wrote failure report $report_path"
 }
 
+write_rollback_report() {
+  local now run_url report_dir report_path
+  now="$(date -u +%FT%TZ)"
+  run_url="${GITHUB_SERVER_URL:-https://github.com}/${GITHUB_REPOSITORY:-unknown/repository}/actions/runs/${GITHUB_RUN_ID:-local}"
+  report_dir="$TAP_ROOT/Kandelo/reports/rollbacks"
+  report_path="$report_dir/${now//[:]/-}-${FORMULA}-${ARCH}.json"
+  mkdir -p "$report_dir"
+  jq -n \
+    --arg schema "1" \
+    --arg formula "$FORMULA" \
+    --arg arch "$ARCH" \
+    --arg release_tag "$RELEASE_TAG" \
+    --arg status "rollback" \
+    --arg attempted_at "$now" \
+    --arg attempted_by "$run_url" \
+    --arg kandelo_commit "${GITHUB_SHA:-unknown}" \
+    --arg reason "$REASON_TEXT" \
+    --arg rollback_ref "$ROLLBACK_REF" \
+    --arg deleted_package_url "$DELETED_PACKAGE_URL" \
+    --arg deletion_reason "$DELETION_REASON" \
+    '{
+      schema: ($schema | tonumber),
+      formula: $formula,
+      arch: $arch,
+      release_tag: $release_tag,
+      status: $status,
+      attempted_at: $attempted_at,
+      attempted_by: $attempted_by,
+      kandelo_commit: $kandelo_commit,
+      reason: $reason,
+      rollback_ref: (if $rollback_ref == "" then null else $rollback_ref end),
+      package_deletion: {
+        performed: ($deleted_package_url != ""),
+        policy: "exceptional; only for legal, security, or package-retention emergencies",
+        url: (if $deleted_package_url == "" then null else $deleted_package_url end),
+        reason: (if $deletion_reason == "" then null else $deletion_reason end)
+      }
+    }' >"$report_path"
+  echo "homebrew-publish-sidecars.sh: wrote rollback report $report_path"
+}
+
 acquire_lock
 trap release_lock EXIT
 refresh_tap
@@ -229,17 +299,32 @@ case "$STATUS" in
   success)
     copy_payload
     run_validator
-    commit_and_push "homebrew: publish ${FORMULA} ${ARCH} bottle sidecars"
+    if [ "$REPAIR_ONLY" = "1" ]; then
+      commit_and_push "homebrew: repair ${FORMULA} ${ARCH} bottle sidecars"
+    else
+      commit_and_push "homebrew: publish ${FORMULA} ${ARCH} bottle sidecars"
+    fi
     ;;
   failed)
     if [ -n "$SIDECAR_ROOT" ] && [ -f "$SIDECAR_ROOT/Kandelo/metadata.json" ]; then
-      guard_failed_payload_preserves_last_green
+      guard_non_success_payload_preserves_last_green
       copy_payload
       run_validator
       commit_and_push "homebrew: record ${FORMULA} ${ARCH} bottle failure"
     else
       write_failure_report
       commit_and_push "homebrew: record ${FORMULA} ${ARCH} bottle failure"
+    fi
+    ;;
+  rollback)
+    if [ -n "$SIDECAR_ROOT" ] && [ -f "$SIDECAR_ROOT/Kandelo/metadata.json" ]; then
+      guard_non_success_payload_preserves_last_green
+      copy_payload
+      run_validator
+      commit_and_push "homebrew: rollback ${FORMULA} ${ARCH} bottle metadata"
+    else
+      write_rollback_report
+      commit_and_push "homebrew: record ${FORMULA} ${ARCH} bottle rollback"
     fi
     ;;
 esac

@@ -88,6 +88,15 @@ bottle bytes to GHCR, and commits generated `Kandelo/` sidecars back to the tap.
 Failures are recorded as attempt reports without replacing last-green
 `Kandelo/metadata.json`.
 
+The maintenance entry point is
+`.github/workflows/reusable-homebrew-bottle-maintenance.yml`. It delegates
+manual rebuild and repair-only work to the publish workflow, using
+`scripts/homebrew-plan-matrix.sh` to skip unchanged expected cache keys unless
+`force` is set. Rollback mode records a rollback report through
+`scripts/homebrew-publish-sidecars.sh --status rollback` and preserves
+last-green metadata by default. Package deletion is exceptional; when it
+happens, the rollback report must name the deleted package URL and reason.
+
 Sidecar generation is intentionally a command handoff so the generator can
 evolve with the bottle/link/provenance contract:
 
