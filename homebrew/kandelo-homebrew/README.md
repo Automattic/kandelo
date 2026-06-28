@@ -28,6 +28,8 @@ This template currently contains:
 - `hello` example metadata for schema and validator development.
 - an `xtask homebrew-sidecars` generator that converts produced bottle bytes
   and workflow evidence into the expected sidecar files.
+- a shared host `planHomebrewVfs()` metadata planner for Node and browser VFS
+  tooling.
 
 The reusable trusted publisher lives in the main Kandelo repository at
 `.github/workflows/reusable-homebrew-bottle-publish.yml`. It is meant to be

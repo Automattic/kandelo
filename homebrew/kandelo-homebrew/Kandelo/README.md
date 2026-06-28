@@ -69,6 +69,21 @@ The validator checks the current sidecar JSON, link-manifest consistency,
 provenance reports, and fallback link references. It does not fetch bottle
 bytes or evaluate Formula Ruby.
 
+## VFS Planning
+
+Host VFS tooling plans a Homebrew-prefix image with
+`planHomebrewVfs(metadata, options)` from the host package. The planner is
+shared by Node and browser callers. It consumes parsed `Kandelo/metadata.json`
+and a caller-provided link-manifest loader, resolves requested packages plus
+their dependency closure in dependency-first order, and rejects bad ABI,
+unsupported arch, cache-key drift, missing packages, dependency cycles, unsafe
+paths, and link-manifest bottle URL/sha/byte/cache-key drift before any bottle
+bytes are extracted.
+
+For `failed`, `pending`, or `building` bottle entries, the planner uses the
+complete last-green fallback fields when available. Without a complete fallback,
+the package is not plannable for a VFS image.
+
 `provenance_json.sha256` is a normalized self-hash: compute the sha256 of the
 pretty-printed provenance document after replacing
 `/metadata/provenance_json/sha256` with 64 zeroes. The generator and validator
