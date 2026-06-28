@@ -23,7 +23,7 @@ Kandelo/
 
 This template currently contains:
 
-- placeholder `Formula/` guidance;
+- `Formula/hello.rb`, the first Kandelo Homebrew formula scaffold;
 - JSON Schemas for the Kandelo sidecar metadata contract;
 - `hello` example metadata for schema and validator development.
 - an `xtask homebrew-sidecars` generator that converts produced bottle bytes

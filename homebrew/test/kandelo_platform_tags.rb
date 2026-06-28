@@ -7,6 +7,8 @@ if overlay && !overlay.empty?
 
   load File.join(overlay, "hardware.rb")
   load File.join(overlay, "utils/bottles.rb")
+  mac_bottles = File.join(overlay, "extend/os/mac/utils/bottles.rb")
+  load mac_bottles if File.exist?(mac_bottles)
 else
   require "hardware"
   require "utils/bottles"
@@ -42,6 +44,10 @@ assert_tag_round_trip(:wasm64_kandelo, :wasm64)
 
 wasm32_tag = Utils::Bottles::Tag.new(system: :kandelo, arch: :wasm32)
 wasm64_tag = Utils::Bottles::Tag.new(system: :kandelo, arch: :wasm64)
+
+ENV["HOMEBREW_KANDELO_BOTTLE_TAG"] = "wasm32_kandelo"
+assert_equal(wasm32_tag, Utils::Bottles.tag, "env-selected current tag")
+ENV.delete("HOMEBREW_KANDELO_BOTTLE_TAG")
 
 spec = BottleSpecification.new
 spec.sha256 cellar: :any_skip_relocation,

@@ -29,7 +29,7 @@ on:
         default: ""
       sidecar-command:
         type: string
-        default: ""
+        default: "bash scripts/homebrew-generate-sidecars-from-env.sh"
       dry-run:
         type: boolean
         default: false
@@ -190,6 +190,17 @@ jobs:
           cd kandelo
           bash scripts/dev-shell.sh true
 
+      - name: Install JavaScript dependencies for formula tests
+        shell: bash
+        run: |
+          cd kandelo
+          bash scripts/dev-shell.sh bash -c '
+            set -euo pipefail
+            PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1 npm ci --no-audit --no-fund
+            cd host
+            PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1 npm ci --no-audit --no-fund
+          '
+
       - name: Build, upload, and publish sidecars
         id: publish
         continue-on-error: true
@@ -211,10 +222,11 @@ jobs:
             sidecar_root="$RUNNER_TEMP/homebrew-sidecars"
             mkdir -p "$bottle_out" "$sidecar_root"
 
-            bottle_root_url="${{ needs.plan.outputs.bottle-root-prefix }}/${KANDELO_HOMEBREW_FORMULA}/blobs/sha256"
+            bottle_root_url="${{ needs.plan.outputs.bottle-root-prefix }}"
             cd "$GITHUB_WORKSPACE/kandelo"
             bash scripts/dev-shell.sh bash scripts/homebrew-bottle-build.sh \
               --tap-root "$GITHUB_WORKSPACE/tap" \
+              --tap-repository "$KANDELO_HOMEBREW_TAP_REPOSITORY" \
               --formula "$KANDELO_HOMEBREW_FORMULA" \
               --arch "$KANDELO_HOMEBREW_ARCH" \
               --out "$bottle_out" \
@@ -242,7 +254,7 @@ jobs:
             sidecar_script="$RUNNER_TEMP/kandelo-homebrew-sidecars.sh"
             printf '%s\n' "$KANDELO_HOMEBREW_SIDECAR_COMMAND" >"$sidecar_script"
             if [ ! -s "$sidecar_script" ]; then
-              echo "::error::sidecar-command is required until the kd-8ho.6 sidecar generator lands"
+              echo "::error::sidecar-command must generate Kandelo/Homebrew sidecars"
               exit 2
             fi
             chmod +x "$sidecar_script"

@@ -3,6 +3,7 @@
 set -euo pipefail
 
 TAP_ROOT=""
+TAP_REPOSITORY="${KANDELO_HOMEBREW_TAP_REPOSITORY:-Automattic/kandelo-homebrew}"
 FORMULA=""
 ARCH=""
 OUT_DIR=""
@@ -10,17 +11,20 @@ BOTTLE_ROOT_URL=""
 
 usage() {
   cat >&2 <<'EOF'
-usage: scripts/homebrew-bottle-build.sh --tap-root <tap-root> --formula <name> --arch <wasm32|wasm64> --out <dir> --bottle-root-url <url>
+usage: scripts/homebrew-bottle-build.sh --tap-root <tap-root> [--tap-repository <owner/repo>] --formula <name> --arch <wasm32|wasm64> --out <dir> --bottle-root-url <url>
 
 This script is intended to run inside scripts/dev-shell.sh. It invokes the
 absolute Homebrew executable named by HOMEBREW_BREW_FILE, avoiding host PATH
 leakage while still using the Homebrew installation provided by the workflow.
+The Homebrew checkout is patched in a temporary worktree so Kandelo wasm bottle
+tags are generated without mutating a developer's host Homebrew checkout.
 EOF
 }
 
 while [ "$#" -gt 0 ]; do
   case "$1" in
     --tap-root) TAP_ROOT="${2:-}"; shift 2 ;;
+    --tap-repository) TAP_REPOSITORY="${2:-}"; shift 2 ;;
     --formula) FORMULA="${2:-}"; shift 2 ;;
     --arch) ARCH="${2:-}"; shift 2 ;;
     --out) OUT_DIR="${2:-}"; shift 2 ;;
@@ -39,11 +43,16 @@ require() {
 }
 
 require tap-root "$TAP_ROOT"
+require tap-repository "$TAP_REPOSITORY"
 require formula "$FORMULA"
 require arch "$ARCH"
 require out "$OUT_DIR"
 require bottle-root-url "$BOTTLE_ROOT_URL"
 
+if ! [[ "$TAP_REPOSITORY" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]]; then
+  echo "homebrew-bottle-build.sh: invalid tap repository: $TAP_REPOSITORY" >&2
+  exit 2
+fi
 if ! [[ "$FORMULA" =~ ^[a-z0-9][a-z0-9._-]*$ ]]; then
   echo "homebrew-bottle-build.sh: invalid formula name: $FORMULA" >&2
   exit 2
@@ -53,6 +62,10 @@ case "$ARCH" in
   wasm32|wasm64) ;;
   *) echo "homebrew-bottle-build.sh: invalid arch: $ARCH" >&2; exit 2 ;;
 esac
+
+TAP_ROOT="$(cd "$TAP_ROOT" && pwd)"
+mkdir -p "$OUT_DIR"
+OUT_DIR="$(cd "$OUT_DIR" && pwd)"
 
 FORMULA_PATH="$TAP_ROOT/Formula/$FORMULA.rb"
 if [ ! -f "$FORMULA_PATH" ]; then
@@ -69,9 +82,31 @@ if [ -z "$BREW_BIN" ] || [ ! -x "$BREW_BIN" ]; then
   exit 2
 fi
 
+KANDELO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+PATCH_FILE="$KANDELO_ROOT/homebrew/patches/0001-add-kandelo-wasm-bottle-tags.patch"
 mkdir -p "$OUT_DIR/bottles"
 WORK_DIR="$(mktemp -d)"
-trap 'rm -rf "$WORK_DIR"' EXIT
+BREW_REPO=""
+BREW_OVERLAY=""
+
+cleanup() {
+  if [ -n "$BREW_REPO" ] && [ -n "$BREW_OVERLAY" ] && [ -d "$BREW_OVERLAY" ]; then
+    git -C "$BREW_REPO" worktree remove --force "$BREW_OVERLAY" >/dev/null 2>&1 || rm -rf "$BREW_OVERLAY"
+  fi
+  rm -rf "$WORK_DIR"
+}
+trap cleanup EXIT
+
+BREW_REPO="$("$BREW_BIN" --repository)"
+if [ -f "$PATCH_FILE" ] && git -C "$BREW_REPO" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+  git -C "$BREW_REPO" apply --check "$PATCH_FILE"
+  BREW_OVERLAY="$WORK_DIR/homebrew-overlay"
+  git -C "$BREW_REPO" worktree add --detach "$BREW_OVERLAY" HEAD >/dev/null
+  git -C "$BREW_OVERLAY" apply --whitespace=nowarn "$PATCH_FILE"
+  BREW_BIN="$BREW_OVERLAY/bin/brew"
+fi
+
+TAP_NAME="$(printf '%s' "$TAP_REPOSITORY" | tr '[:upper:]' '[:lower:]')"
 
 export HOMEBREW_NO_AUTO_UPDATE="${HOMEBREW_NO_AUTO_UPDATE:-1}"
 export HOMEBREW_NO_INSTALL_CLEANUP="${HOMEBREW_NO_INSTALL_CLEANUP:-1}"
@@ -79,11 +114,21 @@ export HOMEBREW_NO_ANALYTICS="${HOMEBREW_NO_ANALYTICS:-1}"
 export HOMEBREW_DEVELOPER="${HOMEBREW_DEVELOPER:-1}"
 export KANDELO_HOMEBREW_ARCH="$ARCH"
 export KANDELO_HOMEBREW_BOTTLE_TAG="${ARCH}_kandelo"
+export KANDELO_HOMEBREW_KANDELO_ROOT="$KANDELO_ROOT"
+export HOMEBREW_KANDELO_ARCH="$ARCH"
+export HOMEBREW_KANDELO_BOTTLE_TAG="${ARCH}_kandelo"
+export HOMEBREW_KANDELO_ROOT="$KANDELO_ROOT"
+export HOMEBREW_KANDELO_NODE="$(command -v node)"
+export HOMEBREW_KANDELO_LLVM_BIN="${LLVM_BIN:-${WASM_POSIX_LLVM_DIR:-}}"
+
+"$BREW_BIN" tap "$TAP_NAME" "$TAP_ROOT"
+FORMULA_REF="$TAP_NAME/$FORMULA"
 
 (
   cd "$WORK_DIR"
-  "$BREW_BIN" install --build-bottle --formula "$FORMULA_PATH"
-  "$BREW_BIN" bottle --json --no-rebuild --root-url "$BOTTLE_ROOT_URL" "$FORMULA_PATH"
+  "$BREW_BIN" install --build-bottle --formula "$FORMULA_REF"
+  "$BREW_BIN" test "$FORMULA_REF"
+  "$BREW_BIN" bottle --json --no-rebuild --root-url "$BOTTLE_ROOT_URL" "$FORMULA_REF"
 )
 
 mapfile -t bottle_jsons < <(find "$WORK_DIR" -maxdepth 1 -type f -name '*.bottle.json' -print | sort)
@@ -103,6 +148,11 @@ cp "${bottle_archives[0]}" "$OUT_DIR/bottles/"
 
 BOTTLE_JSON="$OUT_DIR/bottles/$(basename "${bottle_jsons[0]}")"
 BOTTLE_ARCHIVE="$OUT_DIR/bottles/$(basename "${bottle_archives[0]}")"
+
+(
+  cd "$TAP_ROOT"
+  "$BREW_BIN" bottle --merge --write --no-commit "$BOTTLE_JSON"
+)
 
 {
   printf 'FORMULA=%q\n' "$FORMULA"

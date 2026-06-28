@@ -12,6 +12,7 @@ else
 fi
 OVERLAY_ROOT="$RUN_ROOT/homebrew-overlay"
 
+mkdir -p "$OVERLAY_ROOT/Library/Homebrew/extend/os/mac/utils"
 mkdir -p "$OVERLAY_ROOT/Library/Homebrew/utils"
 
 if git -C "$BREW_REPO" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
@@ -21,6 +22,8 @@ else
 fi
 
 cp "$BREW_REPO/Library/Homebrew/hardware.rb" "$OVERLAY_ROOT/Library/Homebrew/hardware.rb"
+cp "$BREW_REPO/Library/Homebrew/extend/os/mac/utils/bottles.rb" \
+  "$OVERLAY_ROOT/Library/Homebrew/extend/os/mac/utils/bottles.rb"
 cp "$BREW_REPO/Library/Homebrew/utils/bottles.rb" "$OVERLAY_ROOT/Library/Homebrew/utils/bottles.rb"
 
 (cd "$OVERLAY_ROOT" && git apply --whitespace=nowarn "$PATCH_FILE")

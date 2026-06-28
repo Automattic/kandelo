@@ -51,3 +51,43 @@ The verifier applies the patch to a temporary source overlay, reloads the
 relevant Homebrew Ruby classes from that overlay, and asserts that
 `wasm32_kandelo` and `wasm64_kandelo` round-trip through
 `Utils::Bottles::Tag` and `BottleSpecification`.
+
+The trusted bottle script applies the patch to a temporary Homebrew worktree and
+sets `HOMEBREW_KANDELO_BOTTLE_TAG` to `wasm32_kandelo` or `wasm64_kandelo`
+before invoking `brew bottle`. Formula code should use `HOMEBREW_KANDELO_*`
+variables for values that must survive Homebrew's environment handling:
+
+```text
+HOMEBREW_KANDELO_ROOT
+HOMEBREW_KANDELO_ARCH
+HOMEBREW_KANDELO_NODE
+HOMEBREW_KANDELO_LLVM_BIN
+```
+
+The workflow-facing sidecar and publication scripts continue to use
+`KANDELO_HOMEBREW_*` variables outside Formula Ruby.
+
+## First Bottle Path
+
+`homebrew/kandelo-homebrew/` is a main-repo scaffold for the future
+`Automattic/kandelo-homebrew` tap. Local validation can copy that scaffold into
+a temporary git checkout, run `scripts/homebrew-bottle-build.sh`, and then run
+the dry-run upload and sidecar generation scripts against the resulting bottle
+bytes.
+
+The reusable workflow installs root and host npm dependencies before bottle
+builds because the first `hello` formula test boots the produced Wasm with:
+
+```bash
+node --experimental-wasm-exnref --import tsx/esm examples/run-example.ts
+```
+
+Sidecar provenance must use schema-compatible validation outcome lists. For the
+first `hello` bottle, `bottle_build` and `node_smoke` are success lists,
+`homebrew_audit` is skipped unless the real tap gate runs it, and
+`browser_smoke` is skipped until the browser follow-up lands.
+
+As of this implementation, `Automattic/kandelo-homebrew` must exist before the
+trusted publish workflow can satisfy publication. If the repo is missing,
+local bottle bytes, bottle blocks, and sidecars are only evidence; they do not
+complete the publication requirement.
