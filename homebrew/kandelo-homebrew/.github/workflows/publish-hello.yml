@@ -1,0 +1,52 @@
+name: Publish hello bottle
+
+on:
+  workflow_dispatch:
+    inputs:
+      formulae:
+        description: Formulae to publish.
+        required: true
+        default: hello
+        type: string
+      arches:
+        description: Architectures to publish.
+        required: true
+        default: wasm32
+        type: string
+      kandelo-ref:
+        description: Kandelo ref containing the trusted publisher implementation.
+        required: true
+        default: gascity/kd-8ho/kd-8ho.5-hello-bottle
+        type: string
+      release-tag:
+        description: Bottle release tag. Empty derives bottles-abi-v<N>.
+        required: false
+        default: ""
+        type: string
+      dry-run:
+        description: Build and validate without pushing GHCR or tap sidecars.
+        required: true
+        default: false
+        type: boolean
+
+permissions:
+  contents: write
+  packages: write
+  actions: read
+
+jobs:
+  publish:
+    uses: Automattic/kandelo/.github/workflows/reusable-homebrew-bottle-publish.yml@gascity/kd-8ho/kd-8ho.5-hello-bottle
+    permissions:
+      contents: write
+      packages: write
+      actions: read
+    with:
+      kandelo-repository: Automattic/kandelo
+      kandelo-ref: ${{ inputs.kandelo-ref }}
+      tap-repository: Automattic/kandelo-homebrew
+      tap-ref: main
+      formulae: ${{ inputs.formulae }}
+      arches: ${{ inputs.arches }}
+      release-tag: ${{ inputs.release-tag }}
+      dry-run: ${{ inputs.dry-run }}

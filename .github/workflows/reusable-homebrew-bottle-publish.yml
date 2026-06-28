@@ -190,6 +190,30 @@ jobs:
           cd kandelo
           bash scripts/dev-shell.sh true
 
+      - name: Build Kandelo sysroot
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd kandelo
+          git config --global url."https://github.com/".insteadOf "git@github.com:"
+          git config submodule.musl.url "https://github.com/ifduyue/musl.git"
+          fetched=0
+          for attempt in 1 2 3; do
+            if timeout 180s git submodule update --init --depth 1 libc/musl; then
+              fetched=1
+              break
+            fi
+            echo "::warning::libc/musl fetch failed (attempt ${attempt}/3)"
+            rm -f .git/index.lock
+            find .git/modules -type f -name '*.lock' -delete 2>/dev/null || true
+            sleep 10
+          done
+          if [ "$fetched" != "1" ]; then
+            echo "::error::failed to fetch libc/musl"
+            exit 1
+          fi
+          bash scripts/dev-shell.sh bash scripts/build-musl.sh
+
       - name: Install JavaScript dependencies for formula tests
         shell: bash
         run: |
