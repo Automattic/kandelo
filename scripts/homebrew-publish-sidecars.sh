@@ -116,6 +116,12 @@ commit_and_push() {
     echo "homebrew-publish-sidecars.sh: tap already up to date"
     return 0
   fi
+  if ! git -C "$TAP_ROOT" config user.name >/dev/null; then
+    git -C "$TAP_ROOT" config user.name "github-actions[bot]"
+  fi
+  if ! git -C "$TAP_ROOT" config user.email >/dev/null; then
+    git -C "$TAP_ROOT" config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+  fi
   git -C "$TAP_ROOT" add Formula Kandelo
   git -C "$TAP_ROOT" commit -m "$message"
   if [ "$DRY_RUN" = "1" ]; then

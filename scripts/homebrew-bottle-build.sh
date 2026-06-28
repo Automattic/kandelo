@@ -124,9 +124,31 @@ export HOMEBREW_KANDELO_LLVM_BIN="${LLVM_BIN:-${WASM_POSIX_LLVM_DIR:-}}"
 "$BREW_BIN" tap "$TAP_NAME" "$TAP_ROOT"
 FORMULA_REF="$TAP_NAME/$FORMULA"
 
+brew_install_build_bottle() {
+  local attempt status log
+  status=1
+  for attempt in 1 2 3; do
+    log="$WORK_DIR/brew-install-attempt-${attempt}.log"
+    set +e
+    "$BREW_BIN" install --build-bottle --formula "$FORMULA_REF" 2> >(tee "$log" >&2)
+    status=$?
+    set -e
+    if [ "$status" -eq 0 ]; then
+      return 0
+    fi
+    if [ "$attempt" -lt 3 ] && grep -Eq 'has already locked .*\.incomplete' "$log"; then
+      echo "homebrew-bottle-build.sh: brew install hit a Homebrew download lock; retrying attempt $((attempt + 1))/3" >&2
+      sleep $((attempt * 20))
+      continue
+    fi
+    return "$status"
+  done
+  return "$status"
+}
+
 (
   cd "$WORK_DIR"
-  "$BREW_BIN" install --build-bottle --formula "$FORMULA_REF"
+  brew_install_build_bottle
   "$BREW_BIN" test "$FORMULA_REF"
   "$BREW_BIN" bottle --json --no-rebuild --root-url "$BOTTLE_ROOT_URL" "$FORMULA_REF"
 )

@@ -151,8 +151,13 @@ jobs:
         run: |
           set -euo pipefail
           brew_bin="$(command -v brew)"
+          homebrew_cache="$RUNNER_TEMP/homebrew-cache-${{ matrix.formula }}-${{ matrix.arch }}"
+          homebrew_temp="$RUNNER_TEMP/homebrew-temp-${{ matrix.formula }}-${{ matrix.arch }}"
+          mkdir -p "$homebrew_cache" "$homebrew_temp"
           {
             echo "HOMEBREW_BREW_FILE=$brew_bin"
+            echo "HOMEBREW_CACHE=$homebrew_cache"
+            echo "HOMEBREW_TEMP=$homebrew_temp"
             echo "HOMEBREW_NO_AUTO_UPDATE=1"
             echo "HOMEBREW_NO_INSTALL_CLEANUP=1"
             echo "HOMEBREW_NO_ANALYTICS=1"
