@@ -30,6 +30,9 @@ This template currently contains:
   and workflow evidence into the expected sidecar files.
 - a shared host `planHomebrewVfs()` metadata planner for Node and browser VFS
   tooling.
+- a Node-side `build-homebrew-vfs-image.ts` builder that verifies bottle bytes,
+  pours/link-manifests them into a Homebrew prefix, and emits precomposed VFS
+  images plus build reports.
 
 The reusable trusted publisher lives in the main Kandelo repository at
 `.github/workflows/reusable-homebrew-bottle-publish.yml`. It is meant to be

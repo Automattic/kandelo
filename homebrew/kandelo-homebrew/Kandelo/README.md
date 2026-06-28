@@ -84,6 +84,40 @@ For `failed`, `pending`, or `building` bottle entries, the planner uses the
 complete last-green fallback fields when available. Without a complete fallback,
 the package is not plannable for a VFS image.
 
+## VFS Image Building
+
+Build a precomposed Homebrew-prefix image from generated sidecars and verified
+bottle bytes with:
+
+```bash
+npx tsx images/vfs/scripts/build-homebrew-vfs-image.ts \
+  --metadata /path/to/kandelo-homebrew/Kandelo/metadata.json \
+  --tap-root /path/to/kandelo-homebrew \
+  --package hello \
+  --arch wasm32 \
+  --runtime node \
+  --out target/homebrew-hello.vfs.zst \
+  --report target/homebrew-hello.vfs-report.json
+```
+
+The builder consumes only `metadata.json`, link manifests, and bottle tarballs.
+It does not evaluate Formula Ruby. It verifies the selected bottle byte count
+and sha256, rejects unsafe or unsupported tar entries, stages files under the
+declared keg, validates receipts, applies the link manifest under the declared
+prefix, writes `/etc/kandelo/homebrew-vfs.json`, saves a `.vfs.zst`, and emits a
+JSON report beside the image.
+
+Link and receipt paths starting with `Cellar/` are interpreted relative to the
+Homebrew prefix. Other link and receipt paths are interpreted relative to the
+staged keg. Bottle payload entries under `bottle.payload_root` map to the keg;
+fixture entries that are already `Cellar/...` map to the prefix. This keeps the
+checked-in example shape and generated sidecar fixture shape unambiguous.
+
+The report records whether each package used a current `success` bottle or a
+last-green `fallback`. A successful report is build evidence for the precomposed
+image only; Node and browser runtime support still require their own smoke
+tests before publishing gallery or user-facing claims.
+
 `provenance_json.sha256` is a normalized self-hash: compute the sha256 of the
 pretty-printed provenance document after replacing
 `/metadata/provenance_json/sha256` with 64 zeroes. The generator and validator

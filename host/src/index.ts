@@ -60,6 +60,16 @@ export type {
   HomebrewVfsPlan,
   HomebrewVfsPlanOptions,
 } from "./homebrew-vfs-planner";
+export {
+  HomebrewVfsBuildError,
+  buildHomebrewVfs,
+} from "./homebrew-vfs-builder";
+export type {
+  HomebrewVfsBuildOptions,
+  HomebrewVfsBuildReport,
+  HomebrewVfsBuildResult,
+  HomebrewVfsPackageReport,
+} from "./homebrew-vfs-builder";
 export { parseDylinkSection, loadSharedLibrary, loadSharedLibrarySync, DynamicLinker } from "./dylink";
 export type { DylinkMetadata, LoadedSharedLibrary, LoadSharedLibraryOptions } from "./dylink";
 export { WASM_PAGE_SIZE, CH_TOTAL_SIZE, DEFAULT_MAX_PAGES, PAGES_PER_THREAD } from "./constants";
