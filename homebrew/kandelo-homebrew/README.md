@@ -1,0 +1,32 @@
+# Kandelo Homebrew Tap Template
+
+This directory is a reviewable template for the future
+`Automattic/kandelo-homebrew` tap. It lives in the main Kandelo repository so
+schema, validator, workflow, and VFS-builder work can be reviewed before the
+real tap repository exists.
+
+This is not a user-facing Homebrew tap yet. Do not document `brew tap` or
+`brew install` commands from this scaffold until the real tap, bottle tag
+support, publish workflow, and Node/browser validation have landed.
+
+Expected future tap shape:
+
+```text
+Formula/
+  <formula>.rb
+Kandelo/
+  metadata.json
+  formula/<formula>.json
+  link/<formula>-<version>-rebuild<N>-<arch>.json
+  reports/<formula>-<version>-rebuild<N>-<arch>.provenance.json
+```
+
+This template currently contains:
+
+- placeholder `Formula/` guidance;
+- JSON Schemas for the Kandelo sidecar metadata contract;
+- `hello` example metadata for schema and validator development.
+
+Homebrew formula and bottle metadata remain the contract consumed by `brew`.
+Kandelo sidecar metadata is the bounded contract consumed by host VFS tooling,
+Node validation, browser/gallery gates, and publication audits.

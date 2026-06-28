@@ -48,6 +48,8 @@ mod build_deps;
 mod build_index;
 mod bundle_program;
 mod dump_abi;
+#[cfg(test)]
+mod homebrew_schema;
 mod host_tool_probe;
 mod index_toml;
 mod index_update;

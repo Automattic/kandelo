@@ -1,0 +1,50 @@
+{
+  "schema": 1,
+  "tap_repository": "Automattic/kandelo-homebrew",
+  "tap_name": "automattic/kandelo-homebrew",
+  "tap_commit": "1111111111111111111111111111111111111111",
+  "kandelo_repository": "Automattic/kandelo",
+  "kandelo_commit": "2222222222222222222222222222222222222222",
+  "kandelo_abi": 15,
+  "release_tag": "bottles-abi-v15",
+  "generated_at": "2026-06-27T00:00:00Z",
+  "generator": "kandelo-homebrew-publish 1",
+  "packages": [
+    {
+      "name": "hello",
+      "full_name": "automattic/kandelo-homebrew/hello",
+      "version": "2.12.1",
+      "formula_revision": 0,
+      "bottle_rebuild": 0,
+      "formula_path": "Formula/hello.rb",
+      "formula_metadata": "Kandelo/formula/hello.json",
+      "dependencies": [],
+      "bottles": [
+        {
+          "arch": "wasm32",
+          "bottle_tag": "wasm32_kandelo",
+          "kandelo_abi": 15,
+          "cellar": "/home/linuxbrew/.linuxbrew/Cellar",
+          "prefix": "/home/linuxbrew/.linuxbrew",
+          "url": "https://example.invalid/kandelo-homebrew/hello-2.12.1-rebuild0-wasm32_kandelo.bottle.tar.gz",
+          "sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "bytes": 12345,
+          "cache_key_sha": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+          "link_manifest": "Kandelo/link/hello-2.12.1-rebuild0-wasm32.json",
+          "runtime_support": ["node"],
+          "browser_compatible": false,
+          "fork_instrumentation": "not-required",
+          "status": "success",
+          "built_by": "https://example.invalid/Automattic/kandelo-homebrew/actions/runs/1",
+          "built_from": {
+            "kandelo_repository": "Automattic/kandelo",
+            "kandelo_commit": "2222222222222222222222222222222222222222",
+            "tap_repository": "Automattic/kandelo-homebrew",
+            "tap_commit": "1111111111111111111111111111111111111111",
+            "formula_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+          }
+        }
+      ]
+    }
+  ]
+}
