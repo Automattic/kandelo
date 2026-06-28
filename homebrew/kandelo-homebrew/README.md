@@ -27,6 +27,19 @@ This template currently contains:
 - JSON Schemas for the Kandelo sidecar metadata contract;
 - `hello` example metadata for schema and validator development.
 
+The reusable trusted publisher lives in the main Kandelo repository at
+`.github/workflows/reusable-homebrew-bottle-publish.yml`. It is meant to be
+called by the future tap repository after its formulae exist. The workflow
+builds selected formula bottles through `scripts/dev-shell.sh`, uploads bottle
+bytes to the GHCR/Homebrew blob URL shape, publishes generated `Kandelo/`
+sidecars into the tap, and records failed attempts under
+`Kandelo/reports/failures/` without replacing the last-green
+`Kandelo/metadata.json`.
+
+Sidecar generation from produced bottle bytes is a separate handoff: the
+workflow requires a trusted `sidecar-command` to populate
+`$KANDELO_HOMEBREW_SIDECAR_ROOT` before sidecars are published and validated.
+
 Homebrew formula and bottle metadata remain the contract consumed by `brew`.
 Kandelo sidecar metadata is the bounded contract consumed by host VFS tooling,
 Node validation, browser/gallery gates, and publication audits.

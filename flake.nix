@@ -99,6 +99,10 @@
             pkgs.xz
             pkgs.gnupatch
             pkgs.gh
+            # oras - used by the trusted Homebrew bottle publish workflow
+            # to push bottle bytes to GitHub Packages / GHCR while keeping
+            # the actual `brew` executable outside PATH leakage.
+            pkgs.oras
             # rsync — build-vim-zip.sh / build-shell-vfs-image.sh
             #   use it to copy vim's runtime tree.
             # jq    — fetch-binaries / verify-release / publish-release

@@ -59,6 +59,25 @@ The validator checks JSON Schema shape and semantic consistency between
 `metadata.json`, formula sidecars, and link manifests. It does not fetch bottle
 bytes or evaluate Formula Ruby.
 
+## Homebrew trusted bottle workflow
+
+The reusable workflow
+`.github/workflows/reusable-homebrew-bottle-publish.yml` is the trusted CI
+entry point for the future `Automattic/kandelo-homebrew` tap. It accepts a
+selected formula/arch matrix, builds bottles via `scripts/dev-shell.sh`, uploads
+bottle bytes to GHCR, and commits generated `Kandelo/` sidecars back to the tap.
+Failures are recorded as attempt reports without replacing last-green
+`Kandelo/metadata.json`.
+
+Sidecar generation is intentionally a command handoff so the generator can
+evolve with the bottle/link/provenance contract:
+
+```bash
+KANDELO_HOMEBREW_SIDECAR_ROOT=/tmp/sidecars \
+KANDELO_HOMEBREW_TAP_ROOT=/tmp/kandelo-homebrew \
+cargo xtask homebrew-validate --tap-root /tmp/kandelo-homebrew
+```
+
 ### Why not `forced-target` in `Cargo.toml`?
 
 Cargo's `forced-target` would in theory pin a single package's target
