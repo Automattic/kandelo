@@ -122,6 +122,22 @@ export HOMEBREW_KANDELO_LLVM_BIN="${LLVM_BIN:-${WASM_POSIX_LLVM_DIR:-}}"
 
 "$BREW_BIN" tap "$TAP_NAME" "$TAP_ROOT"
 FORMULA_REF="$TAP_NAME/$FORMULA"
+TAPPED_TAP_ROOT="$("$BREW_BIN" --repository "$TAP_NAME")"
+TAPPED_FORMULA_PATH="$TAPPED_TAP_ROOT/Formula/$FORMULA.rb"
+
+same_file() {
+  [ -e "$1" ] && [ -e "$2" ] && [ "$1" -ef "$2" ]
+}
+
+formula_has_bottle_tag() {
+  local formula_path="$1"
+  [ -f "$formula_path" ] && grep -Eq "${BOTTLE_TAG}: \"[0-9a-f]{64}\"" "$formula_path"
+}
+
+if ! same_file "$FORMULA_PATH" "$TAPPED_FORMULA_PATH"; then
+  mkdir -p "$(dirname "$TAPPED_FORMULA_PATH")"
+  cp "$FORMULA_PATH" "$TAPPED_FORMULA_PATH"
+fi
 
 brew_install_build_bottle() {
   local attempt status log
@@ -178,6 +194,19 @@ BOTTLE_ARCHIVE="$OUT_DIR/bottles/$(basename "${bottle_archives[0]}")"
   KANDELO_HOMEBREW_BOTTLE_TAG="$BOTTLE_TAG" \
     "$BREW_BIN" bottle --merge --write --no-commit "$BOTTLE_JSON"
 )
+
+if [ ! -f "$TAPPED_FORMULA_PATH" ]; then
+  echo "homebrew-bottle-build.sh: merged formula not found: $TAPPED_FORMULA_PATH" >&2
+  exit 1
+fi
+if formula_has_bottle_tag "$FORMULA_PATH"; then
+  :
+elif formula_has_bottle_tag "$TAPPED_FORMULA_PATH"; then
+  cp "$TAPPED_FORMULA_PATH" "$FORMULA_PATH"
+else
+  echo "homebrew-bottle-build.sh: bottle merge did not write $BOTTLE_TAG to $FORMULA_PATH" >&2
+  exit 1
+fi
 
 {
   printf 'FORMULA=%q\n' "$FORMULA"
