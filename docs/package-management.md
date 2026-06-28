@@ -39,6 +39,7 @@ Most readers want one of these. Detailed sections follow further down.
 | Republish a stale archive | Dispatch `.github/workflows/force-rebuild.yml` with the comma-separated package list (or `all`). |
 | Bump a package's revision number | Edit `revision = N` in its `build.toml` (NOT `package.toml` — revision moved to the project-view file during the binary-resolution-via-index-ledger migration). Invalidates the cache for that package. Only bump when output bytes legitimately change. |
 | Understand the release flow | [docs/binary-releases.md](binary-releases.md). |
+| Work on Homebrew bottle publishing | [docs/homebrew-publishing.md](homebrew-publishing.md) - Kandelo bottle tags, carried Homebrew patch, and verifier. |
 | Publish packages from another repository | [docs/package-sources.md](package-sources.md) — package-source layout, reusable workflow, and browser-gallery contract. |
 | Trace an ABI mismatch | [docs/abi-versioning.md](abi-versioning.md). |
 | See what's missing | [docs/package-management-future-work.md](package-management-future-work.md). |
