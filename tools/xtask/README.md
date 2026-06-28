@@ -13,6 +13,7 @@ Repo-local build/release utilities. Subcommands:
 - `compute-cache-key-sha` — print one package's cache-key sha to stdout.
 - `set-build-commit` — stamp `[build].commit` in a `package.toml`.
 - `set-package-binary` — update `[binary.<arch>]` in a `package.toml`.
+- `homebrew-sidecars` — generate Kandelo/Homebrew sidecars from bottle bytes.
 - `homebrew-validate` — validate Kandelo/Homebrew tap sidecar metadata.
 
 ## Always build/test xtask with `--target <host>`
@@ -38,7 +39,24 @@ cargo test  -p xtask --target x86_64-unknown-linux-gnu
 
 Discover your host triple with `rustc -vV | awk '/host/ {print $2}'`.
 
-## Homebrew metadata validation
+## Homebrew metadata generation and validation
+
+Generate sidecars for a tap checkout from a workflow-produced manifest:
+
+```bash
+cargo xtask homebrew-sidecars \
+  --tap-root /path/to/kandelo-homebrew \
+  --input /path/to/sidecars-input.json \
+  --previous-metadata /path/to/previous/Kandelo/metadata.json
+```
+
+`bottle_file` paths in the input manifest are resolved relative to the input
+manifest. The generator reads those produced bottle bytes directly, computes
+`sha256` and `bytes`, writes `Kandelo/metadata.json`,
+`Kandelo/formula/<name>.json`, `Kandelo/link/...json`, and
+`Kandelo/reports/...provenance.json`, and copies last-green fallback fields
+from `--previous-metadata` when a current bottle is `failed`, `pending`, or
+`building`.
 
 Validate the generated Kandelo sidecar metadata in a Homebrew tap checkout:
 
@@ -56,8 +74,9 @@ cargo xtask homebrew-validate \
 ```
 
 The validator checks JSON Schema shape and semantic consistency between
-`metadata.json`, formula sidecars, and link manifests. It does not fetch bottle
-bytes or evaluate Formula Ruby.
+`metadata.json`, formula sidecars, link manifests, provenance reports, and
+last-green fallback links. It does not fetch bottle bytes or evaluate Formula
+Ruby.
 
 ## Homebrew trusted bottle workflow
 

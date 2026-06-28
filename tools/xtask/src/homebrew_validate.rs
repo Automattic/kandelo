@@ -15,8 +15,8 @@ pub fn run(args: Vec<String>) -> Result<(), String> {
     let report = validate(&options)?;
     if report.errors.is_empty() {
         println!(
-            "homebrew-validate: ok (packages={}, bottles={}, link_manifests={})",
-            report.packages, report.bottles, report.link_manifests
+            "homebrew-validate: ok (packages={}, bottles={}, link_manifests={}, provenance_reports={})",
+            report.packages, report.bottles, report.link_manifests, report.provenance_reports
         );
         Ok(())
     } else {
@@ -87,12 +87,14 @@ struct ValidationReport {
     packages: usize,
     bottles: usize,
     link_manifests: usize,
+    provenance_reports: usize,
 }
 
 struct Schemas {
     metadata: JSONSchema,
     formula: JSONSchema,
     link_manifest: JSONSchema,
+    provenance: JSONSchema,
 }
 
 impl Schemas {
@@ -101,6 +103,7 @@ impl Schemas {
             metadata: compile_schema("metadata")?,
             formula: compile_schema("formula")?,
             link_manifest: compile_schema("link-manifest")?,
+            provenance: compile_schema("provenance")?,
         })
     }
 }
@@ -346,6 +349,9 @@ impl Validator<'_> {
 
             if string_at(bottle, "/status") == Some("success") {
                 self.validate_success_link_manifest(&bottle_label, package, bottle);
+                self.validate_success_provenance_report(&bottle_label, package, bottle, metadata);
+            } else {
+                self.validate_fallback_link_manifest(&bottle_label, bottle);
             }
         }
 
@@ -438,6 +444,145 @@ impl Validator<'_> {
         self.validate_guest_paths(label, &link);
         self.validate_links(label, &link);
         self.validate_receipts(label, &link);
+    }
+
+    fn validate_success_provenance_report(
+        &mut self,
+        label: &str,
+        package: &Value,
+        bottle: &Value,
+        metadata: &Value,
+    ) {
+        let Some(path) = provenance_report_path(package, bottle) else {
+            return;
+        };
+        let provenance = match self.load_tap_json(label, Some(&path)) {
+            Some(value) => value,
+            None => return,
+        };
+        self.report.provenance_reports += 1;
+        let schema_errors = collect_schema_errors(&self.schemas.provenance, &provenance);
+        self.add_schema_errors(label, schema_errors);
+
+        for (provenance_ptr, package_ptr) in [
+            ("/subject/package", "/name"),
+            ("/subject/version", "/version"),
+            ("/subject/bottle_rebuild", "/bottle_rebuild"),
+            ("/formula/path", "/formula_path"),
+        ] {
+            if provenance.pointer(provenance_ptr) != package.pointer(package_ptr) {
+                self.err(format!(
+                    "{label}: provenance {provenance_ptr} does not match package {package_ptr}"
+                ));
+            }
+        }
+        for (provenance_ptr, bottle_ptr) in [
+            ("/subject/arch", "/arch"),
+            ("/subject/kandelo_abi", "/kandelo_abi"),
+            ("/bottle/url", "/url"),
+            ("/bottle/sha256", "/sha256"),
+            ("/bottle/bytes", "/bytes"),
+            ("/bottle/cache_key_sha", "/cache_key_sha"),
+            ("/bottle/bottle_tag", "/bottle_tag"),
+            ("/bottle/cellar", "/cellar"),
+            ("/bottle/prefix", "/prefix"),
+        ] {
+            if provenance.pointer(provenance_ptr) != bottle.pointer(bottle_ptr) {
+                self.err(format!(
+                    "{label}: provenance {provenance_ptr} does not match metadata {bottle_ptr}"
+                ));
+            }
+        }
+        for (provenance_ptr, metadata_ptr) in [
+            ("/repositories/kandelo_repository", "/kandelo_repository"),
+            ("/repositories/kandelo_commit", "/kandelo_commit"),
+            ("/repositories/tap_repository", "/tap_repository"),
+            ("/repositories/tap_commit", "/tap_commit"),
+        ] {
+            if provenance.pointer(provenance_ptr) != metadata.pointer(metadata_ptr) {
+                self.err(format!(
+                    "{label}: provenance {provenance_ptr} does not match metadata {metadata_ptr}"
+                ));
+            }
+        }
+
+        if let Some(formula_path) = string_at(package, "/formula_path") {
+            let expected = self
+                .resolve_tap_path(label, formula_path)
+                .and_then(|path| sha256_file(&path).ok());
+            if expected.as_deref() != string_at(&provenance, "/formula/sha256") {
+                self.err(format!(
+                    "{label}: provenance /formula/sha256 does not match formula_path hash"
+                ));
+            }
+        }
+
+        for (metadata_ptr, rel) in [
+            ("/metadata/metadata_json", DEFAULT_METADATA_REL.to_string()),
+            (
+                "/metadata/formula_json",
+                string_at(package, "/formula_metadata")
+                    .unwrap_or("")
+                    .to_string(),
+            ),
+            (
+                "/metadata/link_manifest_json",
+                string_at(bottle, "/link_manifest")
+                    .unwrap_or("")
+                    .to_string(),
+            ),
+            ("/metadata/provenance_json", path),
+        ] {
+            self.validate_metadata_hash(label, &provenance, metadata_ptr, &rel);
+        }
+    }
+
+    fn validate_metadata_hash(
+        &mut self,
+        label: &str,
+        provenance: &Value,
+        metadata_ptr: &str,
+        expected_rel: &str,
+    ) {
+        let Some(entry) = provenance.pointer(metadata_ptr) else {
+            return;
+        };
+        if string_at(entry, "/path") != Some(expected_rel) {
+            self.err(format!(
+                "{label}: provenance {metadata_ptr}/path does not match {expected_rel:?}"
+            ));
+            return;
+        }
+        let expected_hash = if metadata_ptr == "/metadata/provenance_json" {
+            provenance_normalized_sha256(provenance)
+        } else {
+            self.resolve_tap_path(label, expected_rel)
+                .and_then(|path| sha256_file(&path).ok())
+        };
+        match (string_at(entry, "/sha256"), expected_hash) {
+            (Some(recorded), Some(actual)) if recorded != actual => self.err(format!(
+                "{label}: provenance {metadata_ptr}/sha256 {recorded:?} does not match actual {actual}"
+            )),
+            (None, _) => {}
+            (_, None) => self.err(format!(
+                "{label}: cannot hash provenance metadata target {expected_rel:?}"
+            )),
+            _ => {}
+        }
+    }
+
+    fn validate_fallback_link_manifest(&mut self, label: &str, bottle: &Value) {
+        let Some(rel) = string_at(bottle, "/fallback_link_manifest") else {
+            return;
+        };
+        let Some(path) = self.resolve_tap_path(label, rel) else {
+            return;
+        };
+        if !path.is_file() {
+            self.err(format!(
+                "{label}: fallback_link_manifest {rel:?} does not exist"
+            ));
+        }
     }
 
     fn validate_guest_paths(&mut self, label: &str, link: &Value) {
@@ -561,6 +706,28 @@ fn sha256_file(path: &Path) -> Result<String, String> {
     Ok(format!("{:x}", hasher.finalize()))
 }
 
+fn provenance_normalized_sha256(provenance: &Value) -> Option<String> {
+    let mut normalized = provenance.clone();
+    *normalized.pointer_mut("/metadata/provenance_json/sha256")? = Value::String(
+        "0000000000000000000000000000000000000000000000000000000000000000".to_string(),
+    );
+    let mut text = serde_json::to_string_pretty(&normalized).ok()?;
+    text.push('\n');
+    let mut hasher = Sha256::new();
+    hasher.update(text.as_bytes());
+    Some(format!("{:x}", hasher.finalize()))
+}
+
+fn provenance_report_path(package: &Value, bottle: &Value) -> Option<String> {
+    Some(format!(
+        "Kandelo/reports/{}-{}-rebuild{}-{}.provenance.json",
+        string_at(package, "/name")?,
+        string_at(package, "/version")?,
+        u64_at(package, "/bottle_rebuild")?,
+        string_at(bottle, "/arch")?
+    ))
+}
+
 fn parse_release_abi(tag: Option<&str>) -> Option<u64> {
     tag?.strip_prefix("bottles-abi-v")?.parse().ok()
 }
@@ -643,6 +810,7 @@ mod tests {
         metadata: Value,
         formula: Value,
         link: Value,
+        provenance: Value,
     }
 
     impl Fixture {
@@ -665,6 +833,9 @@ mod tests {
             let link = load_repo_json(
                 "homebrew/kandelo-homebrew/Kandelo/examples/link/hello-2.12.1-rebuild0-wasm32.json",
             );
+            let provenance = load_repo_json(
+                "homebrew/kandelo-homebrew/Kandelo/examples/reports/hello-2.12.1-rebuild0-wasm32.provenance.json",
+            );
 
             set(
                 &mut metadata,
@@ -683,6 +854,7 @@ mod tests {
                 metadata,
                 formula,
                 link,
+                provenance,
             };
             fixture.write();
             fixture
@@ -699,6 +871,49 @@ mod tests {
                     .tap_root
                     .join("Kandelo/link/hello-2.12.1-rebuild0-wasm32.json"),
                 &self.link,
+            );
+
+            let mut provenance = self.provenance.clone();
+            let formula_sha = sha256_file(&self.tap_root.join("Formula/hello.rb")).unwrap();
+            set(&mut provenance, "/formula/sha256", json!(formula_sha));
+            set(
+                &mut provenance,
+                "/metadata/metadata_json/sha256",
+                json!(sha256_file(&self.tap_root.join("Kandelo/metadata.json")).unwrap()),
+            );
+            set(
+                &mut provenance,
+                "/metadata/formula_json/sha256",
+                json!(sha256_file(&self.tap_root.join("Kandelo/formula/hello.json")).unwrap()),
+            );
+            set(
+                &mut provenance,
+                "/metadata/link_manifest_json/sha256",
+                json!(
+                    sha256_file(
+                        &self
+                            .tap_root
+                            .join("Kandelo/link/hello-2.12.1-rebuild0-wasm32.json")
+                    )
+                    .unwrap()
+                ),
+            );
+            set(
+                &mut provenance,
+                "/metadata/provenance_json/sha256",
+                json!("0000000000000000000000000000000000000000000000000000000000000000"),
+            );
+            let provenance_sha = provenance_normalized_sha256(&provenance).unwrap();
+            set(
+                &mut provenance,
+                "/metadata/provenance_json/sha256",
+                json!(provenance_sha),
+            );
+            write_json(
+                &self
+                    .tap_root
+                    .join("Kandelo/reports/hello-2.12.1-rebuild0-wasm32.provenance.json"),
+                &provenance,
             );
         }
 
@@ -723,6 +938,7 @@ mod tests {
         assert_eq!(report.packages, 1);
         assert_eq!(report.bottles, 1);
         assert_eq!(report.link_manifests, 1);
+        assert_eq!(report.provenance_reports, 1);
     }
 
     #[test]

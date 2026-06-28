@@ -112,6 +112,7 @@
           "enum": ["success", "failed", "pending", "building"]
         },
         "built_by": { "$ref": "#/$defs/httpsUrl" },
+        "built_at": { "type": "string", "format": "date-time" },
         "built_from": { "$ref": "#/$defs/builtFrom" },
         "error": { "type": "string", "minLength": 1 },
         "last_attempt": { "type": "string", "format": "date-time" },

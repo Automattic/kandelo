@@ -130,6 +130,7 @@
     },
     "metadata": {
       "type": "object",
+      "description": "Hashes of generated JSON files. provenance_json.sha256 is the sha256 of this provenance document after replacing /metadata/provenance_json/sha256 with 64 zeroes; this avoids an impossible self-referential hash.",
       "additionalProperties": false,
       "required": [
         "metadata_json",
