@@ -33,13 +33,16 @@ This template currently contains:
 - a Node-side `build-homebrew-vfs-image.ts` builder that verifies bottle bytes,
   pours/link-manifests them into a Homebrew prefix, and emits precomposed VFS
   images plus build reports.
+- a browser-gallery gate for wasm32 `hello` that boots the published
+  Homebrew-derived VFS image before marking it browser-compatible.
 
 The reusable trusted publisher lives in the main Kandelo repository at
 `.github/workflows/reusable-homebrew-bottle-publish.yml`. It is meant to be
 called by the future tap repository after its formulae exist. The workflow
 builds selected formula bottles through `scripts/dev-shell.sh`, uploads bottle
 bytes to the GHCR/Homebrew blob URL shape, publishes generated `Kandelo/`
-sidecars into the tap, and records failed attempts under
+sidecars into the tap, publishes browser gallery assets only after a successful
+browser smoke, and records failed attempts under
 `Kandelo/reports/failures/` without replacing the last-green
 `Kandelo/metadata.json`.
 

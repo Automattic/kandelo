@@ -118,6 +118,34 @@ last-green `fallback`. A successful report is build evidence for the precomposed
 image only; Node and browser runtime support still require their own smoke
 tests before publishing gallery or user-facing claims.
 
+## Browser Gallery Assets
+
+The trusted publisher may expose a Homebrew-built image to the browser gallery
+only after the wasm32 bottle has browser validation evidence. For `hello`, the
+workflow builds the VFS image, serves it from the browser demo, boots it with
+Playwright Chromium, and runs:
+
+```bash
+/home/linuxbrew/.linuxbrew/bin/hello --version
+```
+
+On success, sidecars record `runtime_support = ["node", "browser"]` and
+`browser_compatible = true`; otherwise the bottle remains Node-only. Gallery
+assets are generated with:
+
+```bash
+scripts/homebrew-create-browser-gallery.sh \
+  --metadata /path/to/kandelo-homebrew/Kandelo/metadata.json \
+  --image target/homebrew-hello.vfs.zst \
+  --report target/homebrew-hello.vfs-report.json \
+  --out target/homebrew-gallery \
+  --formula hello
+```
+
+The script writes `gallery.json`, `index.toml`, and a `.tar.zst` archive whose
+payload is the browser-smoked VFS image. It refuses metadata where the wasm32
+bottle is not `status = "success"` and `browser_compatible = true`.
+
 `provenance_json.sha256` is a normalized self-hash: compute the sha256 of the
 pretty-printed provenance document after replacing
 `/metadata/provenance_json/sha256` with 64 zeroes. The generator and validator

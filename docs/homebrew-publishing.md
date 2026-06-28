@@ -83,9 +83,28 @@ node --experimental-wasm-exnref --import tsx/esm examples/run-example.ts
 ```
 
 Sidecar provenance must use schema-compatible validation outcome lists. For the
-first `hello` bottle, `bottle_build` and `node_smoke` are success lists,
-`homebrew_audit` is skipped unless the real tap gate runs it, and
-`browser_smoke` is skipped until the browser follow-up lands.
+first `hello` bottle, `bottle_build` and `node_smoke` are success lists, and
+`homebrew_audit` is skipped unless the real tap gate runs it. The wasm32
+`hello` publish path additionally builds a precomposed Homebrew VFS image,
+boots it in Chromium through the browser UI, runs `hello --version`, and only
+then marks the bottle `browser_compatible = true`.
+
+The browser gate publishes package-source-style gallery assets only after that
+smoke passes:
+
+```bash
+scripts/homebrew-create-browser-gallery.sh \
+  --metadata /path/to/Kandelo/metadata.json \
+  --image /path/to/homebrew-hello.vfs.zst \
+  --report /path/to/homebrew-hello.vfs-report.json \
+  --out /path/to/gallery \
+  --formula hello
+```
+
+The generated `gallery.json`, `index.toml`, and archive are uploaded to the
+same `bottles-abi-v<N>` tap release. `scripts/validate-software-gallery.mjs`
+rejects gallery entries unless every listed package has wasm32 success
+metadata, an `archive_url`, and `browser_compatible = true`.
 
 As of this implementation, `Automattic/kandelo-homebrew` must exist before the
 trusted publish workflow can satisfy publication. If the repo is missing,

@@ -108,6 +108,89 @@ for dep in package_toml.get("depends_on", []):
         deps.append({"name": dep})
 
 version = str(bottle_formula["pkg_version"])
+browser_smoke_status = os.environ.get("KANDELO_HOMEBREW_BROWSER_SMOKE_STATUS", "skipped")
+if browser_smoke_status not in {"success", "skipped"}:
+    raise SystemExit(f"invalid KANDELO_HOMEBREW_BROWSER_SMOKE_STATUS={browser_smoke_status!r}")
+browser_compatible = browser_smoke_status == "success"
+if browser_compatible and arch != "wasm32":
+    raise SystemExit("browser smoke can only mark wasm32 bottles browser-compatible")
+runtime_support = ["node", "browser"] if browser_compatible else ["node"]
+
+browser_smoke_outcome = {
+    "name": "browser_smoke",
+    "status": "skipped",
+    "passed": [],
+    "failed": [],
+    "skipped": ["browser_compatible is false for this bottle"],
+    "skip_reason": "No successful browser VFS smoke was recorded for this bottle.",
+}
+vfs_image_outcome = {
+    "name": "homebrew_vfs_image",
+    "status": "skipped",
+    "passed": [],
+    "failed": [],
+    "skipped": ["precomposed browser VFS image was not built"],
+    "skip_reason": "Browser-compatible gallery publication requires kd-8ho.10 browser smoke.",
+}
+gallery_outcome = {
+    "name": "browser_gallery",
+    "status": "skipped",
+    "passed": [],
+    "failed": [],
+    "skipped": ["browser gallery assets were not generated"],
+    "skip_reason": "Gallery assets require a successful browser VFS smoke.",
+}
+if browser_compatible:
+    vfs_image = os.environ.get("KANDELO_HOMEBREW_VFS_IMAGE", "")
+    vfs_report = os.environ.get("KANDELO_HOMEBREW_VFS_REPORT", "")
+    gallery_root = os.environ.get("KANDELO_HOMEBREW_GALLERY_ROOT", "")
+    browser_url = os.environ.get("KANDELO_HOMEBREW_BROWSER_SMOKE_URL", "")
+    browser_command = os.environ.get(
+        "KANDELO_HOMEBREW_BROWSER_SMOKE_COMMAND",
+        "/home/linuxbrew/.linuxbrew/bin/hello --version",
+    )
+    missing = [
+        name for name, value in [
+            ("KANDELO_HOMEBREW_VFS_IMAGE", vfs_image),
+            ("KANDELO_HOMEBREW_VFS_REPORT", vfs_report),
+            ("KANDELO_HOMEBREW_GALLERY_ROOT", gallery_root),
+            ("KANDELO_HOMEBREW_BROWSER_SMOKE_URL", browser_url),
+        ] if not value
+    ]
+    if missing:
+        raise SystemExit("browser smoke success is missing env: " + ", ".join(missing))
+    browser_smoke_outcome = {
+        "name": "browser_smoke",
+        "status": "success",
+        "passed": [
+            f"Playwright chromium launched {browser_url}",
+            f"terminal command passed: {browser_command}",
+        ],
+        "failed": [],
+        "skipped": [],
+    }
+    vfs_image_outcome = {
+        "name": "homebrew_vfs_image",
+        "status": "success",
+        "passed": [
+            f"built {vfs_image}",
+            f"wrote report {vfs_report}",
+        ],
+        "failed": [],
+        "skipped": [],
+    }
+    gallery_outcome = {
+        "name": "browser_gallery",
+        "status": "success",
+        "passed": [
+            f"generated {gallery_root}/gallery.json",
+            f"generated {gallery_root}/index.toml",
+            "scripts/validate-software-gallery.mjs accepted generated gallery assets",
+        ],
+        "failed": [],
+        "skipped": [],
+    }
+
 manifest = {
     "schema": 1,
     "tap_repository": os.environ["KANDELO_HOMEBREW_TAP_REPOSITORY"],
@@ -134,8 +217,8 @@ manifest = {
                     "bottle_tag": tag_name,
                     "cellar": "/home/linuxbrew/.linuxbrew/Cellar",
                     "prefix": "/home/linuxbrew/.linuxbrew",
-                    "runtime_support": ["node"],
-                    "browser_compatible": False,
+                    "runtime_support": runtime_support,
+                    "browser_compatible": browser_compatible,
                     "fork_instrumentation": "not-required",
                     "status": "success",
                     "built_by": os.environ["RUN_URL"],
@@ -201,14 +284,9 @@ manifest = {
                                 "failed": [],
                                 "skipped": [],
                             },
-                            {
-                                "name": "browser_smoke",
-                                "status": "skipped",
-                                "passed": [],
-                                "failed": [],
-                                "skipped": ["browser_compatible is false for this bottle"],
-                                "skip_reason": "Browser hello VFS smoke belongs to follow-up kd-8ho.10.",
-                            },
+                            vfs_image_outcome,
+                            browser_smoke_outcome,
+                            gallery_outcome,
                         ],
                     },
                 }
