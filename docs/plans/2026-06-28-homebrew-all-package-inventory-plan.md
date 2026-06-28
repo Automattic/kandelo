@@ -6,57 +6,90 @@ Tracked work:
 
 - `kd-1mr` - Port all current Kandelo packages to Homebrew.
 - `kd-5yd` - Inventory packages and plan Homebrew migration waves.
-- Blocker: `kd-8ho` remains the active Homebrew publishing foundation convoy.
+- Publication blocker: `kd-8ho` remains the active Homebrew publishing
+  foundation convoy. Planning can proceed; package bottle publication must not
+  start until `kd-8ho` closes or Brandon explicitly overrides.
 
-This plan was produced from the `kd-5yd` worktree at `f4339836e` with the
-current registry state under `packages/registry/`. It is intentionally a design
-and inventory artifact. It does not publish bottles, edit package recipes, or
-create implementation wave beads before the `kd-8ho` foundation gate closes or
-an explicit override is recorded.
+This plan was revised from the `kd-5yd` worktree after Brandon settled the
+Homebrew-all direction: Homebrew should replace `packages/registry` if possible,
+Formulae should become the package source of truth, GitHub Packages should store
+the bottle artifacts through the GHCR/OCI namespace, and package status should
+remain visible even when builds or tests fail.
+
+This remains a planning and inventory artifact. It does not publish bottles,
+edit package recipes, move registry files, or create implementation wave beads.
 
 ## Problem Statement
 
-Kandelo has a package registry with libraries, programs, source trees, internal
-platform artifacts, and composite VFS/browser images. The current Homebrew
-foundation work proves a first bottle path and defines generated sidecar
-metadata, provenance, VFS planning, and bottle pour/link behavior. The next
-stage is not simply "run every package in CI": package types, dependency order,
-browser/runtime claims, source and license audit state, ABI compatibility, and
-CI/GHCR capacity all differ.
+Kandelo currently owns package recipes and publish state in
+`packages/registry/<name>/{package.toml,build.toml}`. That registry describes
+libraries, programs, source resources, internal platform artifacts, precomposed
+VFS images, and composite runtime packages. The desired end state is to move
+the package index, dependency graph, source/build/install/test behavior, and
+package discovery to a Homebrew tap where Formulae are authoritative.
 
-The work needs a durable package inventory and a migration sequence that:
+The migration must therefore answer a harder question than "can every current
+registry entry be bottled?": it must prove whether Homebrew can replace
+`packages/registry` entirely while preserving Kandelo's package, ABI, host
+runtime, VFS, and user-visible failure contracts.
 
-- covers every current `packages/registry/` entry;
-- preserves the split between `package.toml` recipe data and `build.toml`
-  project publish state;
-- keeps `build.toml.revision` as output-byte cache invalidation, not progress
-  tracking;
-- gives Node and browser hosts equal consideration when a package exposes
-  runtime behavior;
-- makes unsupported, stale, or platform-internal entries visible instead of
-  forcing them through a formula shape that misrepresents them;
-- stages work so trusted tap/GHCR publication and Actions capacity are not
+The design needs to:
+
+- cover every current `packages/registry/` entry, including support directories
+  that are not publishable packages today;
+- define a temporary bridge from existing manifests to Formulae without making
+  the bridge the long-term source of truth;
+- keep Formula DSL authoritative for dependency, build, install, and test
+  behavior needed by `brew install`;
+- keep Kandelo sidecars additive: index/provenance/gallery/status metadata must
+  not be required for ordinary Homebrew install semantics;
+- store bottle blobs in GitHub Packages, using GHCR/OCI naming as the storage
+  mechanism for Homebrew bottle artifacts;
+- keep failed, deferred, partial, and unavailable packages visible in the
+  Homebrew-backed package index with concrete reasons and evidence;
+- require both Node and browser host compatibility for Kandelo wasm packages;
+  host-specific failures are defects or temporary status failures, not accepted
+  package support tiers;
+- support full upstream test execution and detailed outcome artifacts while
+  keeping upstream full-test pass status out of the default bottle gate;
+- make ABI version visible as artifact compatibility identity, rebuild status,
+  and failure diagnosis, without forcing ABI details into normal install UX;
+- use upstream Homebrew as directly as possible, ideally with only the target
+  architecture support needed for Kandelo wasm bottles;
+- stage work so trusted tap/GitHub Packages publication and CI capacity are not
   overloaded by one all-at-once matrix.
 
 ## Non-Goals
 
-- Do not begin package bottle publication while `kd-8ho` is still in progress.
-- Do not evaluate Formula Ruby in Kandelo VFS builders.
-- Do not replace the existing Kandelo binary release/index-ledger resolver in
-  this migration; Homebrew bottles are an additional publish surface.
-- Do not hide package, runtime, VFS, libc, syscall, or host defects with
+- Do not begin bottle publication while `kd-8ho` is in progress.
+- Do not keep `packages/registry` as the intended permanent package recipe
+  database if Homebrew replacement succeeds.
+- Do not require Kandelo sidecars for `brew install`; sidecars are additive
+  Kandelo metadata for provenance, package index status, gallery availability,
+  precomposed VFS planning, ABI diagnosis, and test results.
+- Do not design optional Node-only or browser-only packages. A package may be
+  temporarily marked failing on one host, but the target support contract is
+  both hosts.
+- Do not make complete upstream test success the default bottle publication
+  gate. Bottle availability requires build/install plus required Node/browser
+  smoke; upstream test status remains visible as pass, fail, partial, skipped,
+  incomplete, or unavailable.
+- Do not hide package, runtime, VFS, libc, syscall, or kernel defects with
   formula-specific shortcuts.
-- Do not claim browser compatibility from a Node-only bottle or VFS smoke.
-- Do not rename package IDs during migration unless a specific formula collision
-  or Homebrew constraint requires it and is recorded.
+- Do not patch Homebrew dependency resolution, install behavior, or Formula DSL
+  semantics unless upstream Homebrew cannot be made to express the needed
+  Kandelo wasm target boundary.
+- Do not rename package IDs during migration unless a specific Formula
+  collision or Homebrew constraint requires it and is recorded.
 
 ## Current Inventory Summary
 
-Registry scan results:
+Registry scan results from the current `kd-5yd` worktree:
 
 - 72 directories contain a valid `package.toml`.
 - 2 directories under `packages/registry/` do not contain `package.toml`:
-  `node-compat` and `npm`. They are support data, not publishable packages.
+  `node-compat` and `npm`. They are support data today, not publishable
+  packages.
 - Package kinds: 64 `program`, 7 `library`, 1 `source`.
 - Architectures: 65 packages are `wasm32`; 7 packages declare both `wasm32`
   and `wasm64`.
@@ -65,198 +98,250 @@ Registry scan results:
   entry: `kernel-test-programs`, `pcre2-source`, and `sqlite-cli`.
 - Current `ABI_VERSION` is 16. Manifest `kernel_abi` values are not current:
   64 packages say 7, one says 13, two say 14, two say 15, and three omit it.
-  The first migration wave must settle whether this field remains authoritative
-  for Homebrew formula generation or is recomputed from build evidence.
+
+The stale `kernel_abi` values are not just cleanup. ABI must become artifact
+compatibility identity in the Homebrew-backed model: bottle names, sidecar
+status, fallback selection, rebuild progress, and failure messages must make it
+clear whether a package is unavailable because of ABI coverage versus package,
+source, build, runtime, host, or test failure.
+
+## Target Package Model
+
+Formulae become source of truth:
+
+- Formulae own source, dependencies, build/install/test behavior, and the normal
+  Homebrew package identity.
+- The temporary migration bridge may generate Formulae from
+  `packages/registry`, but the bridge is scaffolding. It should be deleted
+  after tap Formulae and supporting Homebrew tooling can replace it.
+- `packages/registry` disappears entirely if the replacement succeeds. Any
+  registry role that cannot move must be identified as a blocker or explicit
+  non-Homebrew artifact.
+
+Sidecars remain additive:
+
+- Kandelo sidecars record provenance, ABI, status, outcome lists, host smoke,
+  upstream test artifacts, gallery availability, precomposed VFS image inputs,
+  and package-index diagnostics.
+- Sidecars may be required by Kandelo's browser/gallery/VFS tooling, but not by
+  ordinary `brew install` behavior.
+- Failed or deferred packages stay in sidecar/index metadata with reason,
+  status, attempted run, host coverage, fallback if any, and next action.
+
+Artifact storage:
+
+- Use GitHub Packages as the product surface for bottle storage.
+- Use the GHCR/OCI package namespace as the underlying storage mechanism when
+  Homebrew bottle publishing uses container-style blobs.
+- Keep package names, architecture, ABI, Formula revision, bottle rebuild,
+  cache key, sha256, byte count, tap commit, Kandelo commit, and CI run URL in
+  the sidecar/provenance record.
+
+Host support:
+
+- Node and browser are required hosts for Kandelo wasm packages.
+- Browser compatibility is not a separate package tier. It is evidence that the
+  same package works in the browser host through the normal Kandelo runtime.
+- A host failure should appear as status, not disappear from discovery.
 
 ## Users And Operator Workflows
 
 Maintainer inventory workflow:
 
-1. Parse `packages/registry/*/package.toml` and `build.toml`.
-2. Validate source URL, sha256, license, outputs, build script path, revision,
-   binary index, declared arches, and dependency graph.
-3. Classify each entry as library, standalone program, heavy runtime/service,
-   composite VFS/browser image, source resource, or platform/internal artifact.
-4. Record package-specific blockers before bottle work, rather than letting
-   publish CI discover them one package at a time.
+1. Parse current registry manifests and build state.
+2. Classify every entry as Formula-ready, Formula-needs-fix, source/helper,
+   internal/non-package, precomposed VFS image, composite runtime package, or
+   blocked.
+3. Generate or hand-author initial Formulae through the temporary bridge.
+4. Validate that the Formula captures source, dependencies, build, install, and
+   test behavior that had been split across `package.toml`, `build.toml`, and
+   package build scripts.
+5. Record any role that cannot move out of `packages/registry`.
 
 Trusted publish workflow after `kd-8ho` closes:
 
-1. Generate formula files in `Automattic/kandelo-homebrew` with package IDs
-   matching registry names.
-2. Build bottles in dependency-sized batches.
-3. Generate Kandelo sidecars, link manifests, and provenance reports from CI
-   evidence and local bottle bytes.
-4. Run `cargo xtask homebrew-validate` over the tap checkout.
-5. Publish bottles to GHCR and sidecars to the tap/release only after validator
-   success.
-6. For packages that expose runtime behavior, build a precomposed Homebrew VFS
-   image and run Node smoke first, then browser smoke before setting or
-   documenting `browser_compatible = true`.
+1. Build bottles from Formulae in trusted CI.
+2. Store bottle blobs in GitHub Packages/GHCR.
+3. Generate additive Kandelo sidecars and provenance from CI evidence and local
+   bottle bytes.
+4. Run the Homebrew sidecar/schema validator.
+5. Run required Node and browser smoke for packages before marking host
+   compatibility green.
+6. Run complete upstream tests when supported by the Formula/test harness and
+   publish detailed status artifacts. Do not block default bottle availability
+   on full upstream suite success.
+7. Keep failures visible with package/setup/runtime/platform/test categories
+   and exact reasons.
 
 Debugging workflow:
 
-1. Treat failures as package/setup/runtime categories in the report:
-   source/hash/license, formula generation, build script, dependency bottle,
-   fork instrumentation, VFS pour/link, Node runtime, browser runtime, or
-   platform defect.
-2. Preserve last-green fallback metadata visibly when sidecars use fallback.
-3. Keep failed bottles in metadata with exact error and run evidence; do not
-   remove failed package state from the inventory to make the release look
-   green.
+1. A failed package entry should say whether the failure is in source
+   acquisition, Formula generation, Homebrew build, dependency bottle,
+   install/link, fork instrumentation, precomposed VFS image materialization,
+   Node smoke, browser smoke, upstream tests, or Kandelo platform behavior.
+2. Last-green fallback metadata should be visible whenever fallback is used.
+3. A package should remain discoverable as failing, deferred, unavailable, or
+   partial instead of disappearing from the index.
 
 ## Architecture And Data Flow
 
-The migration should layer on the `kd-8ho` foundation contracts:
+The migration should converge on this model:
 
 ```text
-packages/registry/<name>/{package.toml,build.toml}
-        |
-        v
-registry inventory + formula input generator
+temporary registry bridge
+  reads packages/registry while it still exists
         |
         v
 Automattic/kandelo-homebrew
-  Formula/<name>.rb
-  Kandelo/metadata.json
-  Kandelo/formula/<name>.json
-  Kandelo/link/<name>-<version>-rebuild<N>-<arch>.json
-  Kandelo/reports/<name>-<version>-rebuild<N>-<arch>.provenance.json
+  Formula/<name>.rb                  source of truth
+  Kandelo/metadata.json              additive index/status
+  Kandelo/formula/<name>.json        additive formula summary
+  Kandelo/link/<name>-...json        additive VFS pour/link plan
+  Kandelo/reports/<name>-...json     provenance, host, test outcomes
         |
         v
-cargo xtask homebrew-validate
+trusted Homebrew bottle workflow
         |
         v
-Homebrew bottle bytes in GHCR + sidecar metadata
+GitHub Packages / GHCR bottle blobs
         |
         v
-planHomebrewVfs() and build-homebrew-vfs-image.ts
+Homebrew install path
         |
         v
-Node runtime smoke, browser runtime smoke, gallery/user documentation
+Kandelo Node smoke + browser smoke
+        |
+        v
+optional complete upstream tests with published outcome artifacts
+        |
+        v
+precomposed VFS images and composite runtime packages when needed
 ```
 
 The VFS planner remains shared by Node and browser callers. The bottle
-pour/link builder remains Node-side build tooling that consumes only generated
-JSON and verified bottle bytes; browser support comes from consuming a
-precomposed `.vfs.zst` image, not from browser-side bottle extraction.
+pour/link builder remains Node-side build tooling that consumes generated JSON
+and verified bottle bytes. Browser support comes from a browser host consuming a
+precomposed `.vfs.zst` image and running the package through the normal Kandelo
+runtime path, not from browser-side bottle extraction.
 
 ### Naming
 
 Use the existing tap repository `Automattic/kandelo-homebrew`. Formula filenames
-and sidecar package IDs should match the registry package name exactly, for
-example `Formula/zlib.rb` and `Kandelo/formula/zlib.json`. Operators should use
-tap-qualified formula references for names that collide with upstream Homebrew
-core formulae. Do not prefix every formula with `kandelo-`; the sidecar
-contracts and dependency graph are clearer when the package ID remains the
-registry ID.
+and sidecar package IDs should match current registry package names where
+possible, for example `Formula/zlib.rb` and `Kandelo/formula/zlib.json`.
+Operators should use tap-qualified Formula references for names that collide
+with upstream Homebrew core Formulae.
 
-Formula metadata should still record the tap-qualified full name emitted by the
-final `kd-8ho` tap workflow. If Homebrew tap naming mechanics require a
-different user-facing qualifier for `Automattic/kandelo-homebrew`, keep the
-registry package ID stable and update only the generated `full_name`.
+Do not prefix every Formula with `kandelo-` unless Homebrew mechanics force the
+issue. Keeping package IDs stable preserves the dependency graph and makes the
+registry removal path easier to audit.
 
 ## Package Inventory And Disposition
 
 | Package | Kind | Arches | Direct deps | Homebrew disposition |
 |---|---|---|---:|---|
-| `bash` | program | wasm32 | 1 | Program formula candidate; bottle in a dependency wave with CLI smoke. |
-| `bc` | program | wasm32 | 0 | Program formula candidate; bottle in a dependency wave with CLI smoke. |
-| `bzip2` | program | wasm32 | 0 | Program formula candidate; bottle in a dependency wave with CLI smoke. |
-| `coreutils` | program | wasm32 | 0 | Program formula candidate; bottle in a dependency wave with CLI smoke. |
-| `cpython` | program | wasm32 | 1 | Heavy runtime formula; bottle after direct libs and require focused runtime smoke. |
-| `curl` | program | wasm32 | 3 | Program formula candidate; bottle after `libcurl`, `zlib`, and `openssl`. |
-| `dash` | program | wasm32 | 0 | Program formula candidate; bottle in a dependency wave with CLI smoke. |
-| `diffutils` | program | wasm32 | 0 | Program formula candidate; bottle in a dependency wave with CLI smoke. |
-| `dinit` | program | wasm32 | 1 | Program formula candidate; bottle after `libcxx`; required by service VFS images. |
-| `erlang` | program | wasm32 | 0 | Heavy runtime formula; bottle with VM startup smoke before `erlang-vfs`. |
-| `erlang-vfs` | program | wasm32 | 1 | Composite VFS formula; requires Node and browser image smoke. |
-| `fbdoom` | program | wasm32 | 0 | Program formula candidate; smoke framebuffer/audio/input separately from basic exec. |
-| `file` | program | wasm32 | 0 | Program formula candidate; bottle in a dependency wave with CLI smoke. |
-| `findutils` | program | wasm32 | 0 | Program formula candidate; bottle in a dependency wave with CLI smoke. |
-| `gawk` | program | wasm32 | 0 | Program formula candidate; bottle in a dependency wave with CLI smoke. |
-| `git` | program | wasm32 | 0 | Program formula candidate; smoke local repository operations, not network success only. |
-| `grep` | program | wasm32 | 0 | Program formula candidate; bottle in a dependency wave with CLI smoke. |
-| `gzip` | program | wasm32 | 0 | Program formula candidate; bottle in a dependency wave with CLI smoke. |
-| `kandelo-sdk` | program | wasm32 | 1 | Platform/internal artifact; decide tap ownership before bottle work. |
-| `kernel` | program | wasm32 | 0 | Platform/internal artifact; decide tap ownership before bottle work. |
-| `kernel-test-programs` | program | wasm32 | 0 | Manifest-incomplete internal test bundle; keep out of bottle waves until ownership is decided. |
-| `lamp` | program | wasm32 | 6 | Composite service VFS formula; requires Node and browser service smoke. |
-| `less` | program | wasm32 | 0 | Program formula candidate; bottle in a dependency wave with CLI smoke. |
-| `libcurl` | library | wasm32 | 2 | Library formula candidate; bottle after `zlib` and `openssl`. |
-| `libcxx` | library | wasm32, wasm64 | 0 | Library formula candidate; bottle early and verify Nix-only source discipline. |
-| `libpng` | library | wasm32 | 1 | Library formula candidate; bottle after `zlib`. |
-| `libxml2` | library | wasm32, wasm64 | 1 | Library formula candidate; bottle after `zlib`. |
-| `lsof` | program | wasm32 | 0 | Program formula candidate; smoke output against Kandelo `/proc` expectations. |
-| `m4` | program | wasm32 | 0 | Program formula candidate; bottle in a dependency wave with CLI smoke. |
-| `make` | program | wasm32 | 0 | Program formula candidate; smoke a small Makefile build. |
-| `mariadb` | program | wasm32, wasm64 | 2 | Heavy service/runtime formula; bottle one arch at a time with Aria/InnoDB smoke. |
-| `mariadb-test` | program | wasm32 | 3 | Composite test VFS formula; keep behind `mariadb`, `dash`, and `dinit` smoke. |
-| `mariadb-vfs` | program | wasm32, wasm64 | 3 | Composite service VFS formula; Node/browser smoke must cover selected storage engines. |
-| `modeset` | program | wasm32 | 0 | Program formula candidate; browser smoke must include framebuffer path before user claim. |
-| `msmtpd` | program | wasm32 | 0 | Program formula candidate; service smoke should exercise SMTP capture. |
-| `nano` | program | wasm32 | 0 | Program formula candidate; PTY smoke should cover startup and exit. |
-| `ncurses` | program | wasm32 | 0 | Hybrid program/library package; formula must preserve both terminal utilities and link-time artifacts. |
-| `netcat` | program | wasm32 | 0 | Program formula candidate; smoke TCP and UDP loopback. |
-| `nethack` | program | wasm32 | 1 | Program formula candidate; bottle after `ncurses`, smoke startup. |
-| `nethack-browser-bundle` | program | wasm32 | 1 | Composite browser bundle; browser smoke must verify lazy/runtime assets. |
-| `nginx` | program | wasm32 | 0 | Service formula; smoke with dinit/service-worker HTTP path in composite wave. |
-| `node` | program | wasm32 | 1 | Heavy runtime formula backed by SpiderMonkey; smoke REPL and package runtime paths. |
-| `node-compat` | registry directory | - | - | Inventory exception: support data only; not a publishable package until manifest ownership is defined. |
-| `node-vfs` | program | wasm32 | 2 | Composite VFS formula; browser smoke must verify npm/runtime assets. |
-| `npm` | registry directory | - | - | Inventory exception: support fetch data only; not a publishable package until manifest ownership is defined. |
-| `openssl` | library | wasm32, wasm64 | 0 | Library formula candidate; bottle early and keep source/license evidence audit-ready. |
-| `pcre2-source` | source | wasm32 | 0 | Source resource for MariaDB; keep as source-only sidecar unless a real formula need appears. |
-| `perl` | program | wasm32 | 0 | Heavy runtime formula; smoke interpreter, module load, and VFS image consumer. |
-| `perl-vfs` | program | wasm32 | 1 | Composite VFS formula; requires Node and browser image smoke. |
-| `php` | program | wasm32 | 4 | Heavy runtime formula; smoke CLI, PHP-FPM path, SQLite, OpenSSL, zlib, and XML extensions. |
-| `posix-utils-lite` | program | wasm32 | 0 | Program formula candidate; broad multi-output CLI smoke. |
-| `python-vfs` | program | wasm32 | 1 | Composite VFS formula; requires Node and browser REPL/script smoke. |
-| `redis` | program | wasm32 | 0 | Service formula; smoke TCP server and background-thread behavior. |
-| `rootfs` | program | wasm32 | 14 | Composite base image; build after leaf CLI tools and smoke shell path in Node/browser. |
-| `ruby` | program | wasm32 | 1 | Heavy runtime formula; use existing Homebrew runtime-extension support as a focused smoke target. |
-| `sed` | program | wasm32 | 0 | Program formula candidate; bottle in a dependency wave with CLI smoke. |
-| `shell` | program | wasm32 | 19 | Composite shell image; build after rootfs and interactive tools, then Node/browser shell smoke. |
-| `spidermonkey` | program | wasm32 | 3 | Heavy runtime formula; isolate build capacity and smoke JS shell before Node wrapper. |
-| `spidermonkey-node` | program | wasm32 | 1 | Dependent program formula; bottle after `spidermonkey`, smoke Node-compatible entrypoint. |
-| `sqlite` | library | wasm32, wasm64 | 0 | Library formula candidate; bottle early and keep separate from SQLite test harness convoy results. |
-| `sqlite-cli` | program | wasm32 | 0 | Manifest-incomplete package; add build/publish ownership or exclude from bottle waves. |
-| `tar` | program | wasm32 | 0 | Program formula candidate; bottle in a dependency wave with CLI smoke. |
-| `tcl` | program | wasm32 | 0 | Program formula candidate; smoke interpreter startup and representative script. |
-| `texlive` | program | wasm32 | 2 | Heavy runtime/data formula; likely needs size/quota gating before bottle publication. |
-| `unzip` | program | wasm32 | 0 | Program formula candidate; bottle in a dependency wave with CLI smoke. |
-| `userspace` | program | wasm32 | 0 | Platform/internal artifact; decide tap ownership before bottle work. |
-| `vim` | program | wasm32 | 0 | Program formula candidate; runtime tree/lazy archive implications must be explicit. |
-| `vim-browser-bundle` | program | wasm32 | 1 | Composite browser bundle; browser smoke must verify lazy/runtime assets. |
-| `wget` | program | wasm32 | 0 | Program formula candidate; smoke HTTPS/network behavior without hiding host limits. |
-| `wordpress` | program | wasm32 | 5 | Composite service VFS formula; requires Node and browser HTTP/admin smoke. |
-| `xz` | program | wasm32 | 0 | Program formula candidate; bottle in a dependency wave with CLI smoke. |
-| `zip` | program | wasm32 | 0 | Program formula candidate; bottle in a dependency wave with CLI smoke. |
-| `zlib` | library | wasm32, wasm64 | 0 | Library formula candidate; bottle first as the smallest dependency root. |
-| `zstd` | program | wasm32 | 0 | Program formula candidate; bottle in a dependency wave with CLI smoke. |
+| `bash` | program | wasm32 | 1 | Formula candidate; requires build/install plus Node/browser shell smoke and upstream test status when available. |
+| `bc` | program | wasm32 | 0 | Formula candidate; small CLI wave with smoke and upstream test status. |
+| `bzip2` | program | wasm32 | 0 | Formula candidate; small CLI wave with compression/decompression smoke. |
+| `coreutils` | program | wasm32 | 0 | Formula candidate; multi-output CLI package with representative command smoke and upstream test status. |
+| `cpython` | program | wasm32 | 1 | Heavy runtime Formula; requires interpreter/module smoke on Node and browser plus upstream test harness status. |
+| `curl` | program | wasm32 | 3 | Formula candidate after `libcurl`, `zlib`, and `openssl`; network smoke must not hide host limits. |
+| `dash` | program | wasm32 | 0 | Formula candidate; shell semantics smoke and upstream tests are important because many packages depend on shell behavior. |
+| `diffutils` | program | wasm32 | 0 | Formula candidate; multi-output CLI smoke. |
+| `dinit` | program | wasm32 | 1 | Formula candidate after `libcxx`; required by composite runtime packages. |
+| `erlang` | program | wasm32 | 0 | Heavy runtime Formula; VM startup and representative concurrency smoke on both hosts. |
+| `erlang-vfs` | program | wasm32 | 1 | Precomposed VFS image/composite runtime package; depends on `erlang` Formula evidence. |
+| `fbdoom` | program | wasm32 | 0 | Formula candidate; framebuffer/audio/input evidence required before compatibility claim. |
+| `file` | program | wasm32 | 0 | Formula candidate; CLI smoke against known files. |
+| `findutils` | program | wasm32 | 0 | Formula candidate; multi-output CLI smoke. |
+| `gawk` | program | wasm32 | 0 | Formula candidate; interpreter smoke and upstream test status. |
+| `git` | program | wasm32 | 0 | Formula candidate; smoke local repository operations, not network success only. |
+| `grep` | program | wasm32 | 0 | Formula candidate; CLI smoke and upstream test status. |
+| `gzip` | program | wasm32 | 0 | Formula candidate; compression/decompression smoke. |
+| `kandelo-sdk` | program | wasm32 | 1 | Platform/internal artifact; decide whether it becomes a Formula or remains outside the replacement model. |
+| `kernel` | program | wasm32 | 0 | Platform/internal artifact; decide whether Homebrew should own it or binary releases remain authoritative. |
+| `kernel-test-programs` | program | wasm32 | 0 | Manifest-incomplete internal test bundle; classify before registry removal. |
+| `lamp` | program | wasm32 | 6 | Composite runtime package/precomposed VFS image; requires service smoke on Node and browser. |
+| `less` | program | wasm32 | 0 | Formula candidate; PTY smoke. |
+| `libcurl` | library | wasm32 | 2 | Library Formula after `zlib` and `openssl`; dependency-root status should remain visible. |
+| `libcxx` | library | wasm32, wasm64 | 0 | Library Formula; verify Nix/source discipline and both declared architectures. |
+| `libpng` | library | wasm32 | 1 | Library Formula after `zlib`; smoke through a consumer if upstream tests are not useful alone. |
+| `libxml2` | library | wasm32, wasm64 | 1 | Library Formula after `zlib`; both host compatibility through consumers. |
+| `lsof` | program | wasm32 | 0 | Formula candidate; smoke output against Kandelo `/proc` expectations. |
+| `m4` | program | wasm32 | 0 | Formula candidate; CLI smoke. |
+| `make` | program | wasm32 | 0 | Formula candidate; smoke a small Makefile build. |
+| `mariadb` | program | wasm32, wasm64 | 2 | Heavy service/runtime Formula; Aria/InnoDB smoke and upstream test status remain visible. |
+| `mariadb-test` | program | wasm32 | 3 | Composite runtime package for test execution; depends on `mariadb`, `dash`, and `dinit`. |
+| `mariadb-vfs` | program | wasm32, wasm64 | 3 | Precomposed VFS image/composite runtime package; Node/browser service smoke required. |
+| `modeset` | program | wasm32 | 0 | Formula candidate; framebuffer path must be validated on browser and Node where applicable. |
+| `msmtpd` | program | wasm32 | 0 | Formula candidate; service smoke should exercise SMTP capture. |
+| `nano` | program | wasm32 | 0 | Formula candidate; PTY startup/edit/exit smoke. |
+| `ncurses` | program | wasm32 | 0 | Hybrid program/library Formula; must preserve terminal utilities and link-time artifacts. |
+| `netcat` | program | wasm32 | 0 | Formula candidate; TCP and UDP loopback smoke. |
+| `nethack` | program | wasm32 | 1 | Formula candidate after `ncurses`; terminal startup smoke. |
+| `nethack-browser-bundle` | program | wasm32 | 1 | Composite runtime package/precomposed VFS image; package must still satisfy both-host policy. |
+| `nginx` | program | wasm32 | 0 | Service Formula; smoke with dinit/service-worker path in composite package wave. |
+| `node` | program | wasm32 | 1 | Heavy runtime Formula backed by SpiderMonkey; Node-compatible entrypoint smoke on both Kandelo hosts. |
+| `node-compat` | registry directory | - | - | Support data only today; move under owning Formula/tooling or make an explicit helper package. |
+| `node-vfs` | program | wasm32 | 2 | Precomposed VFS image/composite runtime package; npm/runtime assets and both hosts required. |
+| `npm` | registry directory | - | - | Support fetch data only today; fold into `node`/`node-vfs` Formula ownership or classify helper. |
+| `openssl` | library | wasm32, wasm64 | 0 | Library Formula; source/license/provenance and both arch status are critical. |
+| `pcre2-source` | source | wasm32 | 0 | Source/helper package for MariaDB; decide whether Homebrew Formula, resource, or vendored source is correct. |
+| `perl` | program | wasm32 | 0 | Heavy runtime Formula; interpreter/module smoke and upstream test status. |
+| `perl-vfs` | program | wasm32 | 1 | Precomposed VFS image/composite runtime package; depends on `perl`. |
+| `php` | program | wasm32 | 4 | Heavy runtime Formula; smoke CLI, PHP-FPM path, SQLite, OpenSSL, zlib, and XML extensions. |
+| `posix-utils-lite` | program | wasm32 | 0 | Formula candidate; broad multi-output CLI smoke. |
+| `python-vfs` | program | wasm32 | 1 | Precomposed VFS image/composite runtime package; depends on `cpython`. |
+| `redis` | program | wasm32 | 0 | Service Formula; TCP server and background-thread smoke. |
+| `rootfs` | program | wasm32 | 14 | Composite runtime package/precomposed VFS image; depends on leaf CLI package status. |
+| `ruby` | program | wasm32 | 1 | Heavy runtime Formula; existing Homebrew runtime-extension support is a focused smoke target. |
+| `sed` | program | wasm32 | 0 | Formula candidate; CLI smoke. |
+| `shell` | program | wasm32 | 19 | Composite runtime package/precomposed VFS image; depends on rootfs and interactive tools. |
+| `spidermonkey` | program | wasm32 | 3 | Heavy runtime Formula; isolate build capacity and smoke JS shell before Node wrapper. |
+| `spidermonkey-node` | program | wasm32 | 1 | Dependent Formula after `spidermonkey`; Node-compatible entrypoint smoke. |
+| `sqlite` | library | wasm32, wasm64 | 0 | Library Formula; keep upstream SQLite test status visible separately from bottle gate. |
+| `sqlite-cli` | program | wasm32 | 0 | Manifest-incomplete package; revive as Formula or remove/exclude before registry deletion. |
+| `tar` | program | wasm32 | 0 | Formula candidate; archive create/extract smoke. |
+| `tcl` | program | wasm32 | 0 | Formula candidate; interpreter startup and representative script smoke. |
+| `texlive` | program | wasm32 | 2 | Heavy runtime/data Formula; size/quota and upstream test strategy required. |
+| `unzip` | program | wasm32 | 0 | Formula candidate; archive extraction smoke. |
+| `userspace` | program | wasm32 | 0 | Platform/internal artifact; decide Homebrew ownership versus existing release path. |
+| `vim` | program | wasm32 | 0 | Formula candidate; runtime tree/lazy archive implications must be explicit. |
+| `vim-browser-bundle` | program | wasm32 | 1 | Composite runtime package/precomposed VFS image; package must still satisfy both-host policy. |
+| `wget` | program | wasm32 | 0 | Formula candidate; HTTPS/network behavior without hiding host limits. |
+| `wordpress` | program | wasm32 | 5 | Composite runtime package/precomposed VFS image; HTTP/admin/service smoke required. |
+| `xz` | program | wasm32 | 0 | Formula candidate; compression/decompression smoke. |
+| `zip` | program | wasm32 | 0 | Formula candidate; archive create/list smoke. |
+| `zlib` | library | wasm32, wasm64 | 0 | Library Formula; first dependency-root candidate. |
+| `zstd` | program | wasm32 | 0 | Formula candidate; compression/decompression smoke. |
 
 ## Migration Waves
 
-These are dispatch waves, not necessarily one PR each. Each wave should become
-one or more child beads after `kd-8ho` closes. Large waves should be split by
-CI capacity and reviewability.
+These are dispatch waves, not necessarily one PR each. Bottle publication stays
+gated on `kd-8ho`; planning, Formula authoring strategy, bridge design, and
+child-bead creation can proceed.
 
-### Wave 0: Foundation Close And Registry Hygiene
+### Wave 0: Replacement Contract And Bridge Hygiene
 
-Gate: `kd-8ho` closed, or explicit override.
+Gate: planning is active now; publication still requires `kd-8ho`.
 
 Work:
 
-- Reconcile `kernel_abi` policy against current ABI 16 before generating
-  formula metadata.
-- Decide `node-compat` and `npm` ownership: move them out of
-  `packages/registry/`, add manifests, or record them as support-only.
+- Define the Homebrew replacement contract: Formulae authoritative, sidecars
+  additive, package failures visible, and `packages/registry` temporary.
+- Define ABI artifact identity for Formula sidecars, bottle names, fallbacks,
+  rebuild progress, and user-facing failure reasons.
+- Define the package status schema for build/install smoke, Node smoke, browser
+  smoke, full upstream tests, known failures, skipped cases, incomplete cases,
+  artifacts, and host results.
+- Decide `node-compat` and `npm` ownership: move under owning Formula/tooling,
+  add helper Formulae, or remove from registry scope.
 - Decide `kernel-test-programs`, `sqlite-cli`, `pcre2-source`, `kernel`,
-  `userspace`, and `kandelo-sdk` tap ownership before publication.
-- Add a generated inventory check that fails when a registry directory is not
-  classified.
+  `userspace`, and `kandelo-sdk` Homebrew ownership before registry removal.
+- Add a generated inventory/check mode that fails when a registry directory is
+  not classified.
 
-### Wave 1: Library Roots And Hybrid Inputs
+### Wave 1: Dependency Roots And Hybrid Inputs
 
 Packages:
 
@@ -266,10 +351,10 @@ Packages:
 Rationale:
 
 - They unblock most dependent packages.
-- Seven packages already declare `wasm64` support; publish `wasm32` first unless
-  the `kd-8ho` matrix capacity proves `wasm64` is cheap enough to include.
-- `ncurses` is a hybrid program/library package and needs explicit link-path
-  validation.
+- Seven packages already declare `wasm64` support; arch policy belongs in the
+  sidecar/status model and should be visible per arch.
+- `ncurses` is a hybrid program/library package and needs explicit Formula
+  modeling for both executable outputs and link-time artifacts.
 
 ### Wave 2: Small Leaf CLI Programs
 
@@ -282,11 +367,13 @@ Packages:
 
 Rationale:
 
-- Most have no direct registry dependencies and can be batched by build time.
-- Use simple CLI smoke tests, but route device/network/framebuffer packages to
-  package-specific runtime smokes where relevant.
+- Most have no direct registry dependencies and can validate Formula
+  generation, GitHub Packages bottle storage, sidecar status, and smoke result
+  publishing without the heavy runtime risk.
+- Device, network, terminal, and framebuffer packages still need appropriate
+  Node/browser smoke.
 
-### Wave 3: Dependent Programs And Language Runtimes
+### Wave 3: Dependent Programs And Heavy Runtimes
 
 Packages:
 
@@ -296,12 +383,13 @@ Packages:
 
 Rationale:
 
-- These depend on wave 1/2 artifacts or have high build/runtime risk.
+- These depend on wave 1/2 artifacts or carry high build/runtime risk.
 - Heavy packages should run as separate child beads or very small batches.
-- Runtime smoke must use normal Kandelo exec/service paths, not formula-specific
-  wrappers.
+- Runtime smoke must use normal Kandelo exec/service paths and both hosts.
+- Full upstream test support is required as status, but not as the default
+  bottle availability gate.
 
-### Wave 4: Base And Language VFS Images
+### Wave 4: Base And Language Composite Runtime Packages
 
 Packages:
 
@@ -310,12 +398,12 @@ Packages:
 
 Rationale:
 
-- These validate that bottle sidecars can be poured/linked into useful VFS
-  images.
-- Node smoke is required first; browser smoke is required before any gallery or
-  user-facing compatibility claim.
+- These validate that bottle sidecars can be poured/linked into useful
+  precomposed VFS images.
+- They are composite runtime packages, not browser-only packages; they must
+  satisfy the same Node/browser policy as all Kandelo packages.
 
-### Wave 5: Service And Application VFS Images
+### Wave 5: Service And Application Composite Runtime Packages
 
 Packages:
 
@@ -324,46 +412,62 @@ Packages:
 Rationale:
 
 - These combine dinit, service-worker HTTP, loopback networking, databases,
-  PHP/WordPress, mail capture, and browser state. They should wait until
-  smaller VFS images prove the Homebrew prefix and sidecar contracts.
-- Treat MariaDB storage engine failures as package/runtime/platform findings,
-  not as reasons to hide or skip formula evidence.
+  PHP/WordPress, mail capture, and browser state.
+- MariaDB storage engine or service failures should remain visible as package,
+  setup, runtime, test, host, or platform failures, not hidden from discovery.
 
-## CI, GHCR, And Capacity Expectations
+## CI, GitHub Packages, And Capacity Expectations
 
-- Keep the first real wave small: at most one dependency-root batch plus one
-  composite smoke package until GHCR upload and sidecar validator behavior is
+- Use GitHub Packages as the named product surface and GHCR/OCI as the storage
+  namespace/mechanism for bottle blobs.
+- Keep the first real publication wave small until tap permissions, package
+  permissions, sidecar validation, and GitHub Packages upload behavior are
   boring.
-- Split heavy packages so one timeout does not starve the entire formula
-  matrix.
-- Publish sidecars and bottles only from trusted workflows with `contents` and
-  package permissions proven by `kd-8ho`.
-- Record pass/fail/skip outcome lists for any test-related migration wave.
-- Prefer retrying network/source downloads inside package build scripts only
-  where the existing package contract already does so; do not add Homebrew-only
-  retry behavior that changes package semantics.
-- Keep each bottle report tied to tap commit, Kandelo commit, ABI, formula
-  revision, bottle rebuild, source status, cache key, sha256, byte count, and
-  validation run URL.
+- Split heavy packages so one timeout does not starve the whole Formula matrix.
+- Publish sidecars and bottles only from trusted workflows with permissions
+  proven by `kd-8ho`.
+- Record pass/fail/skip/incomplete outcome lists for required smoke and
+  upstream test runs.
+- Keep package failures visible in the Homebrew-backed index with specific
+  reasons and next action.
+- Prefer fixing package build scripts or Kandelo platform gaps over
+  Homebrew-only retry/skip behavior.
 
-## Test Plan
+## Test And Outcome Plan
 
-Per formula:
+Default bottle availability gate:
 
-- Parse and validate `package.toml` and `build.toml`.
-- Verify source URL, source sha256, license field, direct deps, declared
-  outputs, build script path, revision, and arch list.
-- Generate Formula Ruby plus Kandelo sidecars from package metadata; do not
-  hand-edit generated sidecars.
-- Run Homebrew formula syntax/audit checks selected by `kd-8ho`.
-- Build bottle in trusted CI.
-- Run `cargo xtask homebrew-validate --tap-root <tap>`.
-- Verify GHCR manifest and bottle sha/bytes match sidecar metadata.
-- For every runtime package, build a Homebrew-prefix VFS image with
-  `build-homebrew-vfs-image.ts` and save the JSON report.
-- Run Node smoke for the image.
-- Run browser smoke before setting `browser_compatible = true` or exposing a
-  gallery/user claim.
+- Formula parses and passes selected Homebrew syntax/audit checks.
+- Bottle builds and installs through upstream Homebrew semantics plus the
+  minimal Kandelo target-architecture support.
+- Sidecar/provenance validates.
+- Required Node smoke passes.
+- Required browser smoke passes.
+
+Complete upstream test support:
+
+- Each Formula should define, or explicitly defer with reason, how to run the
+  package's complete upstream test set under Kandelo.
+- Upstream test success is not a default bottle gate.
+- Upstream test status should be published as metadata so users and
+  contributors can see correctness beyond installability.
+
+Reusable outcome schema:
+
+- Package name, version, Formula revision, bottle rebuild, arch, ABI, host,
+  Kandelo commit, tap commit, run URL, start/end time.
+- Build/install result: pass, fail, deferred, unavailable.
+- Node smoke result and browser smoke result, each with pass/fail/skip counts
+  and specific failures.
+- Upstream test result: pass, fail, partial, skipped, incomplete, unavailable.
+- Counts for passed, failed, skipped, expected-fail, timeout, unsupported, and
+  incomplete cases.
+- Complete failure list with suite, case, command, exit status, signal/timeout,
+  log/artifact path, and first relevant error.
+- Skip reasons, known-failure references, host-specific notes, and whether the
+  failure is package/setup/runtime/platform/test-infra.
+- Artifact pointers for logs, summaries, raw harness output, sidecars, bottle
+  reports, and precomposed VFS image reports.
 
 Package-specific smoke examples:
 
@@ -371,19 +475,18 @@ Package-specific smoke examples:
   status.
 - Shell/rootfs: `dash`, `bash`, PATH lookup, pipes, command substitution,
   `system()`/`popen()` consumers where relevant.
-- Network tools: loopback TCP/UDP, HTTP/HTTPS where host limits permit.
+- Network tools: loopback TCP/UDP and HTTP/HTTPS where host boundaries permit.
 - Services: dinit startup, port bind, request/response, clean shutdown.
 - Language runtimes: interpreter startup, standard library/module load, zlib or
   OpenSSL extension where declared.
-- VFS images: `/etc/kandelo/homebrew-vfs.json`, demo metadata, selected
-  executable paths, and Node/browser boot.
+- Precomposed VFS images: `/etc/kandelo/homebrew-vfs.json`, demo metadata,
+  selected executable paths, and Node/browser boot.
 
 Broader gates:
 
 - If a migration PR changes package build scripts, resolver behavior, VFS
   builder behavior, host runtime, or browser app behavior, select validation
-  from `CLAUDE.md` and `docs/agent-guidance/validation.md`. Do not claim full
-  gate success unless the full gate commands were run and reported.
+  from `CLAUDE.md` and `docs/agent-guidance/validation.md`.
 - If ABI-facing behavior changes, update `ABI_VERSION` and `abi/snapshot.json`
   according to the ABI contract.
 
@@ -391,119 +494,197 @@ Broader gates:
 
 After the foundation docs in `kd-8ho.11` land, add or update:
 
-- Homebrew tap operating docs: formula generation, sidecar generation,
-  validator, bottle rebuild, rollback, and failure triage.
-- Package authoring docs: how a registry package maps to a Homebrew formula,
-  how to declare browser compatibility evidence, and how to avoid
-  formula-specific workarounds.
-- Browser/user docs: how gallery availability follows sidecar/index state and
-  why browser support requires browser smoke.
-- Package management docs: clarify the relation between Kandelo binary releases
-  and Homebrew bottles, including when each surface should be used.
+- Homebrew tap operating docs: Formula authoring, sidecar generation,
+  validator, bottle rebuild, rollback, failure triage, and GitHub Packages
+  storage.
+- Package authoring docs: how Formulae replace `packages/registry`, how to keep
+  Homebrew patching minimal, and how to avoid Formula-specific workarounds.
+- Package status docs: failure visibility, deferred/unavailable states, ABI
+  compatibility identity, and upstream test outcome artifacts.
+- Browser/user docs: how package discovery and gallery availability follow
+  sidecar/index state and why browser support requires browser smoke.
+- Migration docs: when the temporary registry bridge can be removed.
 
 ## Alternatives Considered
 
+Keep Homebrew as a parallel export path:
+
+- Rejected by direction. Homebrew should replace `packages/registry` if
+  possible. Any remaining registry role must be explicitly justified.
+
+Make sidecars authoritative for install behavior:
+
+- Rejected. Formula DSL should remain authoritative for Homebrew install.
+  Sidecars are additive Kandelo metadata.
+
+Allow Node-only or browser-only package tiers:
+
+- Rejected. Both hosts are required product surfaces. A host-specific failure is
+  status to publish and work to prioritize, not an acceptable package tier.
+
+Gate every bottle on complete upstream tests:
+
+- Rejected as the default because it would hide useful installable packages
+  behind long-running or currently failing upstream suites. Full upstream test
+  support and status are required; success is not the default bottle gate.
+
 All-at-once matrix:
 
-- Rejected for first migration because 72 packages plus wasm64 variants and
-  VFS images would make failures hard to classify and could overload Actions or
-  GHCR. It also encourages hiding package-specific failures to get a green
-  matrix.
+- Rejected for first migration because 72 packages plus wasm64 variants,
+  precomposed VFS images, and composite runtime packages would make failures
+  hard to classify and could overload Actions or GitHub Packages.
 
-Prefix every formula with `kandelo-`:
+Prefix every Formula with `kandelo-`:
 
-- Rejected for now. It avoids core formula name ambiguity, but breaks the
-  direct relationship between registry IDs, sidecar package IDs, and dependency
-  graph names. Tap-qualified formula references are sufficient unless real
-  Homebrew mechanics prove otherwise.
+- Rejected for now. Tap-qualified Formula references should handle name
+  ambiguity while preserving current package IDs and dependency graph clarity.
 
-Publish only composite VFS images:
-
-- Rejected because it would skip reusable dependency bottles and make failures
-  harder to diagnose. Libraries and standalone programs should prove the base
-  bottle/link path before VFS images consume it.
-
-Treat source-only and internal artifacts as normal formulas:
+Treat source-only and internal artifacts as normal Formulae:
 
 - Rejected until ownership is decided. `pcre2-source`, platform artifacts, and
-  manifest-incomplete entries need explicit contracts; forcing them into a
-  formula shape risks publishing misleading artifacts.
+  manifest-incomplete entries need explicit contracts before registry removal.
 
 ## Risks And Mitigations
 
-Stale ABI metadata:
+Registry replacement stalls halfway:
 
-- Risk: formulas or sidecars could imply ABI 16 compatibility while manifests
-  still say older `kernel_abi` values.
-- Mitigation: make ABI policy a Wave 0 blocker and derive publish ABI from
-  build evidence and sidecar metadata, not stale fields.
+- Risk: Formulae and registry manifests could diverge if both remain active too
+  long.
+- Mitigation: make the bridge temporary, define deletion criteria, and block
+  long-term duplicate source-of-truth behavior.
 
-Formula-specific shortcuts:
+ABI confusion:
 
-- Risk: package maintainers may patch around Kandelo runtime gaps to make a
-  bottle green.
-- Mitigation: require failure classification and package/platform ownership in
-  each bead; do not patch packages for ordinary POSIX gaps.
+- Risk: users or operators cannot tell whether a package is unavailable because
+  of ABI rebuild state or a package/runtime failure.
+- Mitigation: make ABI explicit in artifact identity, sidecars, fallback
+  metadata, and failure reasons while keeping normal install UX quiet.
+
+Homebrew patch drift:
+
+- Risk: Kandelo-specific Homebrew patches could fork dependency/install
+  semantics and make Formulae less portable.
+- Mitigation: keep patches minimal and target architecture support first; treat
+  dependency/install/DSL patches as design warnings.
 
 Browser parity drift:
 
-- Risk: Node VFS smoke passes while browser boot, SharedArrayBuffer, service
+- Risk: Node smoke passes while browser boot, SharedArrayBuffer, service
   worker, OPFS, or UI loading fails.
-- Mitigation: keep `browser_compatible` false until browser smoke passes; make
-  browser smoke a separate required signal for user-facing claims.
+- Mitigation: require browser smoke for package compatibility status; publish
+  host-specific failures visibly.
+
+Failed package invisibility:
+
+- Risk: removing failed/deferred packages from discovery hides work and
+  discourages community help.
+- Mitigation: keep failed/deferred/unavailable entries visible with reasons,
+  artifacts, and next actions.
 
 License/source distribution:
 
 - Risk: GPL or mixed-license packages need audit-ready source provenance and
   possibly sibling source archives.
-- Mitigation: preserve source URL/sha/license in sidecars and create follow-up
-  work for sibling source archives before public user-facing expansion if legal
-  review requires it.
+- Mitigation: preserve source URL/sha/license in Formulae and sidecars and add
+  source-distribution follow-up before broad public expansion if required.
 
-CI/GHCR quota:
+CI and GitHub Packages quota:
 
 - Risk: large packages like SpiderMonkey, MariaDB, TexLive, PHP, Ruby, and
-  VFS images can consume runner time, storage, and registry quota quickly.
+  precomposed VFS images can consume runner time, storage, and package quota.
 - Mitigation: split heavy packages into separate beads, record byte sizes, and
-  avoid all-at-once dispatch until capacity is measured.
+  avoid all-at-once publication until capacity is measured.
 
-Name collisions:
+## Proposed Migration Child Beads
 
-- Risk: formula names like `zlib`, `curl`, `bash`, and `sqlite` collide with
-  Homebrew core names.
-- Mitigation: require tap-qualified references in docs and reports; revisit
-  prefixing only if Homebrew tooling cannot keep ambiguity contained.
+Create these under `kd-1mr` after this plan is accepted. Bottle publication
+steps in these beads should depend on `kd-8ho` closure, especially browser smoke
+and operations docs, unless Brandon explicitly overrides.
+
+1. `[homebrew-all] Define Homebrew replacement contract and registry bridge`
+   - Scope: Formulae as source of truth, sidecars additive, bridge deletion
+     criteria, package ID/naming policy, minimal Homebrew patch policy.
+   - Depends on: `kd-5yd` revised plan.
+   - Blocks: all Formula port waves.
+
+2. `[homebrew-all] Define package status and upstream test outcome schema`
+   - Scope: build/install status, Node/browser smoke status, complete upstream
+     test support, pass/fail/skip/incomplete counts, failure lists, skip
+     reasons, known failures, host results, artifacts, ABI identity.
+   - Depends on: `kd-5yd` revised plan; align with `kd-8ho` sidecar schemas.
+   - Blocks: status publication for all waves; bottle publication can only
+     proceed without it by explicit override.
+
+3. `[homebrew-all] Classify registry exceptions and platform artifacts`
+   - Scope: `node-compat`, `npm`, `kernel-test-programs`, `sqlite-cli`,
+     `pcre2-source`, `kernel`, `userspace`, `kandelo-sdk`.
+   - Depends on: replacement contract bead.
+   - Blocks: registry deletion plan and any wave that needs those artifacts.
+
+4. `[homebrew-all] Port dependency-root Formulae`
+   - Scope: `zlib`, `openssl`, `sqlite`, `libcxx`, `libxml2`, `libpng`,
+     `libcurl`, `ncurses`.
+   - Depends on: replacement contract, status schema, `kd-8ho` publication
+     foundation for actual bottle publication.
+   - Blocks: dependent runtimes and composite runtime packages.
+
+5. `[homebrew-all] Port small leaf CLI Formulae`
+   - Scope: `bc`, `bzip2`, `coreutils`, `dash`, `diffutils`, `fbdoom`, `file`,
+     `findutils`, `gawk`, `git`, `grep`, `gzip`, `less`, `lsof`, `m4`, `make`,
+     `modeset`, `msmtpd`, `nano`, `netcat`, `posix-utils-lite`, `sed`, `tar`,
+     `tcl`, `unzip`, `vim`, `wget`, `xz`, `zip`, `zstd`.
+   - Depends on: replacement contract, status schema, `kd-8ho` publication
+     foundation for actual bottle publication.
+   - Blocks: `rootfs`, `shell`, and service composite runtime packages.
+
+6. `[homebrew-all] Port heavy runtimes and dependent programs`
+   - Scope: `bash`, `curl`, `dinit`, `nethack`, `cpython`, `perl`, `ruby`,
+     `php`, `erlang`, `redis`, `nginx`, `spidermonkey`, `spidermonkey-node`,
+     `node`, `mariadb`, `texlive`.
+   - Depends on: dependency-root Formulae, small leaf Formulae where direct
+     runtime deps require them, status schema, `kd-8ho` publication foundation.
+   - Blocks: language/service composite runtime packages.
+
+7. `[homebrew-all] Port precomposed VFS images and composite runtime packages`
+   - Scope: `rootfs`, `shell`, `python-vfs`, `perl-vfs`, `erlang-vfs`,
+     `vim-browser-bundle`, `nethack-browser-bundle`, `node-vfs`,
+     `mariadb-vfs`, `mariadb-test`, `lamp`, `wordpress`.
+   - Depends on: relevant dependency-root, small CLI, and heavy runtime beads;
+     `kd-8ho` VFS builder/smoke/docs foundation for publication.
+   - Blocks: gallery/user-facing Homebrew package claims.
+
+These seven beads are intentionally coarse. Split only when a package group is
+too large for CI capacity or review, or when a blocker is isolated to a package
+that should not stall unrelated packages.
 
 ## Implementation Sequence
 
-1. Close or explicitly override `kd-8ho`.
-2. Create Wave 0 hygiene beads for ABI policy, registry exceptions, internal
-   artifact ownership, and inventory lint.
-3. Create Wave 1 child beads for library roots and hybrid `ncurses`.
-4. Create Wave 2 child beads in small CLI batches with smoke definitions.
-5. Create Wave 3 child beads for heavy runtime/service packages, one or two per
-   bead depending on build time.
-6. Create Wave 4 child beads for base/language VFS images with Node and browser
-   smoke gates.
-7. Create Wave 5 child beads for service/application VFS images.
-8. After each wave, update the inventory status and record package failures as
-   package/setup/runtime/platform, with follow-up beads for blockers.
+1. Accept this revised plan and create the seven proposed child beads.
+2. Complete `kd-8ho` foundation before any package bottle publication.
+3. Implement the replacement contract and package status schema.
+4. Classify registry exceptions and platform artifacts.
+5. Port dependency roots and small leaf CLI Formulae in parallel where capacity
+   allows.
+6. Port heavy runtimes and dependent programs in small batches.
+7. Port precomposed VFS images and composite runtime packages.
+8. Remove `packages/registry` only after Formulae, sidecars, Homebrew tooling,
+   tests, docs, and fallback operations cover every accepted registry role.
 
 ## Open Questions
 
-- Should `kernel_abi` remain a manually maintained package manifest field, or
-  should Homebrew sidecars derive ABI exclusively from build evidence?
+- Which exact Homebrew target-architecture patch is required, and can it stay
+  isolated from dependency resolution, install behavior, and Formula semantics?
+- Which `packages/registry` roles cannot move to Formulae and why?
 - Should platform artifacts (`kernel`, `userspace`, `kandelo-sdk`,
-  `kernel-test-programs`) live in the Homebrew tap, the existing binary release,
+  `kernel-test-programs`) live in the Homebrew tap, existing binary releases,
   or both?
-- Should `pcre2-source` get a source-only formula, remain an internal source
-  sidecar for MariaDB, or move to a package-source contract?
-- Should `sqlite-cli` be revived with a build script or removed/excluded from
-  publish waves?
-- What storage quota and retention policy should GHCR use for large bottle and
-  VFS image histories?
-- What is the legal/source-distribution requirement for GPL-family packages in
-  the Homebrew bottle path?
-- Which smoke results are sufficient to mark each package
-  `browser_compatible`, especially for packages with device, network, service
-  worker, or framebuffer behavior?
+- Should `pcre2-source` become a Formula resource, a helper Formula, or a
+  MariaDB Formula resource?
+- Should `sqlite-cli` be revived with a Formula or removed from the accepted
+  package set?
+- What GitHub Packages retention and quota policy should apply to large bottle
+  and precomposed VFS image histories?
+- What source-distribution requirements apply to GPL-family packages in the
+  GitHub Packages bottle path?
+- Which smoke commands are sufficient to mark each package compatible on both
+  Node and browser hosts?
