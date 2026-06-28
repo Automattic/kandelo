@@ -107,16 +107,15 @@ if [ -f "$PATCH_FILE" ] && git -C "$BREW_REPO" rev-parse --is-inside-work-tree >
 fi
 
 TAP_NAME="$(printf '%s' "$TAP_REPOSITORY" | tr '[:upper:]' '[:lower:]')"
+BOTTLE_TAG="${ARCH}_kandelo"
 
 export HOMEBREW_NO_AUTO_UPDATE="${HOMEBREW_NO_AUTO_UPDATE:-1}"
 export HOMEBREW_NO_INSTALL_CLEANUP="${HOMEBREW_NO_INSTALL_CLEANUP:-1}"
 export HOMEBREW_NO_ANALYTICS="${HOMEBREW_NO_ANALYTICS:-1}"
 export HOMEBREW_DEVELOPER="${HOMEBREW_DEVELOPER:-1}"
 export KANDELO_HOMEBREW_ARCH="$ARCH"
-export KANDELO_HOMEBREW_BOTTLE_TAG="${ARCH}_kandelo"
 export KANDELO_HOMEBREW_KANDELO_ROOT="$KANDELO_ROOT"
 export HOMEBREW_KANDELO_ARCH="$ARCH"
-export HOMEBREW_KANDELO_BOTTLE_TAG="${ARCH}_kandelo"
 export HOMEBREW_KANDELO_ROOT="$KANDELO_ROOT"
 export HOMEBREW_KANDELO_NODE="$(command -v node)"
 export HOMEBREW_KANDELO_LLVM_BIN="${LLVM_BIN:-${WASM_POSIX_LLVM_DIR:-}}"
@@ -150,7 +149,9 @@ brew_install_build_bottle() {
   cd "$WORK_DIR"
   brew_install_build_bottle
   "$BREW_BIN" test "$FORMULA_REF"
-  "$BREW_BIN" bottle --json --no-rebuild --root-url "$BOTTLE_ROOT_URL" "$FORMULA_REF"
+  HOMEBREW_KANDELO_BOTTLE_TAG="$BOTTLE_TAG" \
+  KANDELO_HOMEBREW_BOTTLE_TAG="$BOTTLE_TAG" \
+    "$BREW_BIN" bottle --json --no-rebuild --root-url "$BOTTLE_ROOT_URL" "$FORMULA_REF"
 )
 
 mapfile -t bottle_jsons < <(find "$WORK_DIR" -maxdepth 1 -type f -name '*.bottle.json' -print | sort)
@@ -173,7 +174,9 @@ BOTTLE_ARCHIVE="$OUT_DIR/bottles/$(basename "${bottle_archives[0]}")"
 
 (
   cd "$TAP_ROOT"
-  "$BREW_BIN" bottle --merge --write --no-commit "$BOTTLE_JSON"
+  HOMEBREW_KANDELO_BOTTLE_TAG="$BOTTLE_TAG" \
+  KANDELO_HOMEBREW_BOTTLE_TAG="$BOTTLE_TAG" \
+    "$BREW_BIN" bottle --merge --write --no-commit "$BOTTLE_JSON"
 )
 
 {
