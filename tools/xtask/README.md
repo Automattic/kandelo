@@ -13,6 +13,7 @@ Repo-local build/release utilities. Subcommands:
 - `compute-cache-key-sha` — print one package's cache-key sha to stdout.
 - `set-build-commit` — stamp `[build].commit` in a `package.toml`.
 - `set-package-binary` — update `[binary.<arch>]` in a `package.toml`.
+- `homebrew-validate` — validate Kandelo/Homebrew tap sidecar metadata.
 
 ## Always build/test xtask with `--target <host>`
 
@@ -36,6 +37,27 @@ cargo test  -p xtask --target x86_64-unknown-linux-gnu
 ```
 
 Discover your host triple with `rustc -vV | awk '/host/ {print $2}'`.
+
+## Homebrew metadata validation
+
+Validate the generated Kandelo sidecar metadata in a Homebrew tap checkout:
+
+```bash
+cargo xtask homebrew-validate --tap-root /path/to/kandelo-homebrew
+```
+
+For a nonstandard metadata location, pass `--metadata` as either an absolute
+path or a tap-root-relative path:
+
+```bash
+cargo xtask homebrew-validate \
+  --tap-root /path/to/kandelo-homebrew \
+  --metadata Kandelo/metadata.json
+```
+
+The validator checks JSON Schema shape and semantic consistency between
+`metadata.json`, formula sidecars, and link manifests. It does not fetch bottle
+bytes or evaluate Formula Ruby.
 
 ### Why not `forced-target` in `Cargo.toml`?
 

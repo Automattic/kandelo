@@ -37,4 +37,11 @@ The semantic validator must still check cross-file and artifact facts:
 - link sources exist inside the verified bottle payload;
 - bottle sha256, cache key, metadata sha, and provenance fields agree.
 
-Those semantic checks are the handoff to the validator implementation bead.
+Run the repo-local validator against a generated tap checkout:
+
+```bash
+cargo xtask homebrew-validate --tap-root /path/to/kandelo-homebrew
+```
+
+The validator checks the current sidecar JSON and link-manifest consistency. It
+does not fetch bottle bytes or evaluate Formula Ruby.
