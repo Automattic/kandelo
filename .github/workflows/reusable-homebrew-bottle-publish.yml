@@ -219,6 +219,12 @@ jobs:
           fi
           bash scripts/dev-shell.sh bash scripts/build-musl.sh
 
+      - name: Build Kandelo kernel
+        shell: bash
+        run: |
+          cd kandelo
+          bash scripts/dev-shell.sh bash packages/registry/kernel/build-kernel.sh
+
       - name: Install JavaScript dependencies for formula tests
         shell: bash
         run: |
