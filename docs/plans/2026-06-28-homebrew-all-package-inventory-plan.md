@@ -6,9 +6,10 @@ Tracked work:
 
 - `kd-1mr` - Port all current Kandelo packages to Homebrew.
 - `kd-5yd` - Inventory packages and plan Homebrew migration waves.
-- Publication blocker: `kd-8ho` remains the active Homebrew publishing
-  foundation convoy. Planning can proceed; package bottle publication must not
-  start until `kd-8ho` closes or Brandon explicitly overrides.
+- Publication blocker: `kd-8ho` remains the Homebrew publishing foundation
+  convoy and is currently blocked on `kd-pndh`, the PR #785 final-disposition
+  gate. Planning can proceed; package bottle publication must not start until
+  `kd-8ho` closes or Brandon explicitly overrides.
 
 This plan was revised from the `kd-5yd` worktree after Brandon settled the
 Homebrew-all direction: Homebrew should replace `packages/registry` if possible,
@@ -61,7 +62,7 @@ The design needs to:
 
 ## Non-Goals
 
-- Do not begin bottle publication while `kd-8ho` is in progress.
+- Do not begin bottle publication while `kd-8ho` remains open or blocked.
 - Do not keep `packages/registry` as the intended permanent package recipe
   database if Homebrew replacement succeeds.
 - Do not require Kandelo sidecars for `brew install`; sidecars are additive
