@@ -1,8 +1,8 @@
 # Formula Directory
 
-The real `Automattic/kandelo-homebrew` tap will place Homebrew formulae here.
-This main-repo scaffold includes `hello.rb` so the first wasm32 bottle path can
-be reviewed and exercised before the real tap repository exists.
+The `Automattic/kandelo-homebrew` tap places Homebrew formulae here. This
+main-repo scaffold includes `hello.rb` so formula, bottle, sidecar, and smoke
+logic can be reviewed alongside the Kandelo implementation that consumes it.
 
 Formulae should use normal Homebrew DSL, including `depends_on`, `bottle do`,
 `revision`, `rebuild`, and `test do`, while any Kandelo-specific VFS planning

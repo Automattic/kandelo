@@ -1,15 +1,16 @@
 # Kandelo Homebrew Tap Template
 
-This directory is a reviewable template for the future
+This directory is a reviewable template and test fixture for the
 `Automattic/kandelo-homebrew` tap. It lives in the main Kandelo repository so
-schema, validator, workflow, and VFS-builder work can be reviewed before the
-real tap repository exists.
+schema, validator, workflow, sidecar, and VFS-builder changes can be reviewed
+with the implementation that consumes them.
 
-This is not a user-facing Homebrew tap yet. Do not document `brew tap` or
-`brew install` commands from this scaffold until the real tap, bottle tag
-support, publish workflow, and Node/browser validation have landed.
+The live generated tap state belongs in `Automattic/kandelo-homebrew`, not in
+this checked-in fixture. Do not document user-facing `brew tap` or
+`brew install` commands from this scaffold until guest Homebrew install has
+been validated through Kandelo.
 
-Expected future tap shape:
+Tap shape:
 
 ```text
 Formula/
@@ -38,7 +39,7 @@ This template currently contains:
 
 The reusable trusted publisher lives in the main Kandelo repository at
 `.github/workflows/reusable-homebrew-bottle-publish.yml`. It is meant to be
-called by the future tap repository after its formulae exist. The workflow
+called by the tap repository after its formulae exist. The workflow
 builds selected formula bottles through `scripts/dev-shell.sh`, uploads bottle
 bytes to the GHCR/Homebrew blob URL shape, publishes generated `Kandelo/`
 sidecars into the tap, publishes browser gallery assets only after a successful

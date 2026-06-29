@@ -1,9 +1,9 @@
 # Kandelo Sidecar Metadata
 
-The future tap will generate this directory from trusted publish workflows.
-Checked-in files make metadata reviewable in the tap commit, and the same
-payload should be uploaded to a tap release named `bottles-abi-v<N>` for stable
-automation fetches.
+Trusted publish workflows generate this directory in the
+`Automattic/kandelo-homebrew` tap. Checked-in files make metadata reviewable in
+the tap commit, and the same payload should be uploaded to a tap release named
+`bottles-abi-v<N>` for stable automation fetches.
 
 ## Files
 
@@ -13,9 +13,9 @@ formula.schema.json
 link-manifest.schema.json
 provenance.schema.json
 
-metadata.json                                      # generated in the real tap
-formula/<name>.json                               # generated in the real tap
-link/<name>-<version>-rebuild<N>-<arch>.json      # generated in the real tap
+metadata.json                                      # generated tap state
+formula/<name>.json                               # generated tap state
+link/<name>-<version>-rebuild<N>-<arch>.json      # generated tap state
 reports/<name>-<version>-rebuild<N>-<arch>.provenance.json
 ```
 

@@ -318,11 +318,14 @@ cross-origin-isolated page. In practice, third-party image hosts should
 serve the file with CORS or compatible cross-origin resource policy
 headers.
 
-Homebrew browser-gallery assets use the same package-source contract. The
-trusted publisher writes a precomposed `.vfs.zst` into a package-source-shaped
-archive only after the published wasm32 Homebrew bottle has been poured into a
-VFS image and booted by the browser smoke. Bottles without that smoke remain
-Node-only and must keep `browser_compatible = false`.
+Homebrew browser-gallery assets use the same package-source contract only for
+the browser-launchable VFS image. The actual Homebrew bottle remains owned by
+the tap formula, GHCR bottle URL, and `Kandelo/` sidecars described in
+[docs/homebrew-publishing.md](homebrew-publishing.md). The trusted publisher
+writes a precomposed `.vfs.zst` into a package-source-shaped archive only after
+the published wasm32 Homebrew bottle has been poured into a VFS image and
+booted by the browser smoke. Bottles without that smoke remain Node-only and
+must keep `browser_compatible = false`.
 
 ## Agent Checklist
 
