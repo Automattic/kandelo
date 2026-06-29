@@ -488,6 +488,71 @@ describe("MemoryFileSystem", () => {
     expect(() => mfs.stat("/todelete.txt")).toThrow();
   });
 
+  it("keeps unlinked open files readable until close", () => {
+    const sab = new SharedArrayBuffer(4 * 1024 * 1024);
+    const mfs = MemoryFileSystem.create(sab);
+    const data = new TextEncoder().encode("open temp payload");
+    const replacement = new TextEncoder().encode("replacement");
+
+    const fd = mfs.open("/temp-delete.txt", O_CREAT | O_RDWR | O_TRUNC, 0o644);
+    mfs.write(fd, data, null, data.length);
+    mfs.unlink("/temp-delete.txt");
+    expect(() => mfs.stat("/temp-delete.txt")).toThrow();
+
+    const replacementFd = mfs.open(
+      "/replacement.txt",
+      O_CREAT | O_RDWR | O_TRUNC,
+      0o644,
+    );
+    mfs.write(replacementFd, replacement, null, replacement.length);
+    mfs.close(replacementFd);
+
+    const buf = new Uint8Array(64);
+    const nread = mfs.read(fd, buf, 0, buf.length);
+    expect(new TextDecoder().decode(buf.subarray(0, nread))).toBe(
+      "open temp payload",
+    );
+
+    mfs.close(fd);
+  });
+
+  it("keeps renamed-over open files readable until close", () => {
+    const sab = new SharedArrayBuffer(4 * 1024 * 1024);
+    const mfs = MemoryFileSystem.create(sab);
+    const oldData = new TextEncoder().encode("old target");
+    const newData = new TextEncoder().encode("new target");
+
+    const targetFd = mfs.open("/target.txt", O_CREAT | O_RDWR | O_TRUNC, 0o644);
+    mfs.write(targetFd, oldData, null, oldData.length);
+
+    const sourceFd = mfs.open("/source.txt", O_CREAT | O_RDWR | O_TRUNC, 0o644);
+    mfs.write(sourceFd, newData, null, newData.length);
+    mfs.close(sourceFd);
+
+    mfs.rename("/source.txt", "/target.txt");
+
+    const openBuf = new Uint8Array(64);
+    const openRead = mfs.read(targetFd, openBuf, 0, openBuf.length);
+    expect(new TextDecoder().decode(openBuf.subarray(0, openRead))).toBe(
+      "old target",
+    );
+
+    const replacedFd = mfs.open("/target.txt", O_RDONLY, 0o644);
+    const replacedBuf = new Uint8Array(64);
+    const replacedRead = mfs.read(
+      replacedFd,
+      replacedBuf,
+      null,
+      replacedBuf.length,
+    );
+    expect(
+      new TextDecoder().decode(replacedBuf.subarray(0, replacedRead)),
+    ).toBe("new target");
+
+    mfs.close(replacedFd);
+    mfs.close(targetFd);
+  });
+
   it("ftruncate changes file size", () => {
     const sab = new SharedArrayBuffer(4 * 1024 * 1024);
     const mfs = MemoryFileSystem.create(sab);
