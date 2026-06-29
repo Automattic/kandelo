@@ -7,6 +7,7 @@ import { spawnSync } from "node:child_process";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const repoRoot = join(__dirname, "..", "..");
+const hostRoot = join(repoRoot, "host");
 const runExample = join(repoRoot, "examples", "run-example.ts");
 const spawnSmokeWasm = join(repoRoot, "examples", "spawn-smoke.wasm");
 
@@ -28,7 +29,7 @@ describe("run-example exec resolver", () => {
           nativeLikeBinary,
         ],
         {
-          cwd: repoRoot,
+          cwd: hostRoot,
           env: {
             ...process.env,
             KERNEL_CWD: repoRoot,
