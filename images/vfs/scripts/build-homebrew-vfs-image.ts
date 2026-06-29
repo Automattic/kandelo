@@ -20,6 +20,7 @@ import {
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { buildHomebrewVfs } from "../../../host/src/homebrew-vfs-builder";
+import { fetchHomebrewBottleBytes } from "../../../host/src/homebrew-vfs-fetch";
 import {
   planHomebrewVfs,
   type HomebrewBottleArch,
@@ -231,70 +232,12 @@ async function loadBottleBytes(
     );
   }
 
-  const response = await fetchWithRegistryAuth(pkg.url);
-  if (!response.ok) {
-    throw new Error(
-      `fetch ${pkg.url} for package ${pkg.name}@${pkg.version} failed: HTTP ${response.status}`,
-    );
-  }
-  const bytes = new Uint8Array(await response.arrayBuffer());
+  const bytes = await fetchHomebrewBottleBytes(pkg.url);
   if (cachePath) {
     mkdirSync(dirname(cachePath), { recursive: true });
     writeFileSync(cachePath, bytes);
   }
   return bytes;
-}
-
-async function fetchWithRegistryAuth(url: string): Promise<Response> {
-  const response = await fetch(url);
-  if (response.status !== 401) return response;
-
-  const challenge = response.headers.get("www-authenticate");
-  const tokenUrl = registryTokenUrl(challenge);
-  if (!tokenUrl) return response;
-
-  const headers: Record<string, string> = {};
-  const basic = registryBasicAuthHeader();
-  if (basic) headers.Authorization = basic;
-
-  const tokenResponse = await fetch(tokenUrl, { headers });
-  if (!tokenResponse.ok) return response;
-  const tokenBody = await tokenResponse.json() as { token?: string; access_token?: string };
-  const token = tokenBody.token ?? tokenBody.access_token;
-  if (!token) return response;
-
-  return fetch(url, {
-    headers: {
-      Authorization: `Bearer ${token}`,
-    },
-  });
-}
-
-function registryTokenUrl(challenge: string | null): string | null {
-  if (!challenge?.startsWith("Bearer ")) return null;
-  const fields = new Map<string, string>();
-  for (const part of challenge.slice("Bearer ".length).split(",")) {
-    const eq = part.indexOf("=");
-    if (eq < 0) continue;
-    const key = part.slice(0, eq).trim();
-    const value = part.slice(eq + 1).trim().replace(/^"|"$/g, "");
-    if (key) fields.set(key, value);
-  }
-  const realm = fields.get("realm");
-  if (!realm) return null;
-  const url = new URL(realm);
-  for (const key of ["service", "scope"]) {
-    const value = fields.get(key);
-    if (value) url.searchParams.set(key, value);
-  }
-  return url.href;
-}
-
-function registryBasicAuthHeader(): string | null {
-  const token = process.env.GHCR_TOKEN ?? process.env.GITHUB_TOKEN ?? process.env.GH_TOKEN;
-  const user = process.env.GITHUB_ACTOR ?? process.env.GHCR_USER ?? "x-access-token";
-  if (!token) return null;
-  return `Basic ${Buffer.from(`${user}:${token}`).toString("base64")}`;
 }
 
 function usage(message?: string, code = 2): never {

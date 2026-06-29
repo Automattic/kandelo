@@ -67,6 +67,12 @@ HOMEBREW_KANDELO_LLVM_BIN
 The workflow-facing sidecar and publication scripts continue to use
 `KANDELO_HOMEBREW_*` variables outside Formula Ruby.
 
+Published GHCR bottle blob URLs use the OCI registry API and may return a
+Bearer challenge before serving bytes, even for public packages. Kandelo's
+Homebrew VFS image builder follows that `WWW-Authenticate` challenge and
+retries the blob request with the advertised token; public bottle materializers
+do not need a GitHub token just to read public GHCR blobs.
+
 ## First Bottle Path
 
 `homebrew/kandelo-homebrew/` is a main-repo scaffold for the future
