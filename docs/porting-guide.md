@@ -707,6 +707,49 @@ hardcoding it.
   their paths via `WASM_POSIX_DEP_<NAME>_DIR` / `_SRC_DIR`. Hidden
   source-tree reads break on clean force-rebuild runs.
 
+## Homebrew Formula Authoring
+
+Homebrew formulae are a second publication surface for already-ported Kandelo
+software. Keep the portable package recipe and build script in
+`packages/registry/<name>/`; put Homebrew-specific formula state in the
+`Automattic/kandelo-homebrew` tap. The main repository's
+`homebrew/kandelo-homebrew/` directory is a template and fixture for that tap
+shape.
+
+Formulae should use normal Homebrew DSL and call the normal Kandelo build path:
+
+- build through the worktree-local SDK, usually by invoking the package's
+  existing `packages/registry/<name>/build-*.sh` script;
+- keep cross-compile truth in the package build script with explicit
+  `ac_cv_*` cache variables when upstream `configure` would otherwise detect
+  host features;
+- install the produced Wasm files into the Homebrew keg, not into Kandelo's
+  resolver cache;
+- put `test do` coverage through Kandelo, for example by running the produced
+  Wasm with `examples/run-example.ts`, not by executing it as a host binary;
+- leave VFS link plans, browser compatibility, provenance, and validation
+  evidence to generated `Kandelo/` sidecars.
+
+Formula Ruby should use `HOMEBREW_KANDELO_*` environment variables for values
+that must pass through Homebrew's environment handling:
+
+```text
+HOMEBREW_KANDELO_ROOT
+HOMEBREW_KANDELO_ARCH
+HOMEBREW_KANDELO_NODE
+HOMEBREW_KANDELO_LLVM_BIN
+```
+
+Workflow scripts outside Formula Ruby use `KANDELO_HOMEBREW_*` variables. See
+[docs/homebrew-publishing.md](homebrew-publishing.md) for the trusted publish,
+sidecar, VFS builder, Node smoke, and browser smoke contract.
+
+Do not document user-facing `brew tap` or guest `brew install` steps for a
+formula until that guest install path has been validated through Kandelo. A
+published bottle plus a successful Node VFS smoke proves the bottle can be
+poured into a precomposed image; browser support additionally requires the
+browser smoke and `browser_compatible = true` metadata.
+
 ## Existing Build Scripts
 
 All build scripts are in `packages/registry/`. They serve as reference implementations:

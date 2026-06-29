@@ -23,6 +23,14 @@ for the resolver behavior, schema, and build-script contract.
 For third-party repositories that publish their own package archives,
 see [docs/package-sources.md](package-sources.md).
 
+Homebrew bottles use a separate publication model. Bottle tarballs are
+Homebrew-native artifacts published through the `Automattic/kandelo-homebrew`
+tap and GHCR/Homebrew bottle URL shape; Kandelo-specific sidecars, provenance,
+and optional browser gallery assets publish to the tap's `bottles-abi-v<N>`
+release. They do not appear in the main repository's `binaries-abi-v<N>`
+`index.toml` ledger. See [docs/homebrew-publishing.md](homebrew-publishing.md)
+for formula authoring and operations.
+
 ## Producer side: the matrix flow
 
 Every staging-build run (PR push or `workflow_dispatch`) follows the
@@ -110,6 +118,17 @@ asset's bytes never change. Different inputs → different filename.
 
 PR-staging releases use `pr-<NNN>-staging` (also mutable, but
 ephemeral — closed PRs leave them as historical curios).
+
+Homebrew tap releases use:
+
+```text
+bottles-abi-v<ABI_VERSION>
+```
+
+Those releases carry Kandelo/Homebrew sidecars, provenance reports, and
+browser-gallery assets. They are intentionally separate from package archive
+releases because Homebrew bottle selection is governed by Formula metadata and
+Homebrew bottle tags, not by Kandelo's package resolver.
 
 The ABI version appears in the tag because a release is tied to a
 specific kernel ABI. Programs from `binaries-abi-v10` cannot run
