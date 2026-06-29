@@ -260,7 +260,13 @@ fi
 # Configure nginx
 # =============================================================================
 
-if [ ! -f Makefile ]; then
+if [ ! -f objs/Makefile ]; then
+    if [ -f Makefile ] || [ -d objs ]; then
+        echo "==> Cleaning incomplete nginx configure output..."
+        rm -f Makefile
+        rm -rf objs
+    fi
+
     echo "==> Configuring nginx for Wasm..."
 
     # nginx's configure expects CC to be the compiler command
@@ -332,6 +338,15 @@ if [ ! -f Makefile ]; then
 #define NGX_HAVE_MAP_ANON  1
 #endif
 CONFIG_EOF
+fi
+
+if [ ! -f objs/Makefile ]; then
+    echo "ERROR: nginx configure did not produce objs/Makefile" >&2
+    if [ -f objs/autoconf.err ]; then
+        echo "==> objs/autoconf.err" >&2
+        tail -n 120 objs/autoconf.err >&2
+    fi
+    exit 1
 fi
 
 # =============================================================================

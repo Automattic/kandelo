@@ -1841,12 +1841,13 @@ async function loadKandeloSoftwareGalleryItems(): Promise<GalleryItem[]> {
 }
 
 async function loadSoftwareGalleryItemsFromManifest(manifestUrl: string): Promise<GalleryItem[]> {
-  const manifestText = await fetchTextNoStore(manifestUrl);
+  const resolvedManifestUrl = new URL(manifestUrl, location.href).href;
+  const manifestText = await fetchTextNoStore(resolvedManifestUrl);
   const manifest = JSON.parse(manifestText) as SoftwareGalleryManifest;
-  const sourceId = sourceIdForManifest(manifest, manifestUrl);
+  const sourceId = sourceIdForManifest(manifest, resolvedManifestUrl);
   const indexUrl = manifest.index_url
-    ? new URL(manifest.index_url, manifestUrl).href
-    : new URL("index.toml", manifestUrl).href;
+    ? new URL(manifest.index_url, resolvedManifestUrl).href
+    : new URL("index.toml", resolvedManifestUrl).href;
   const index = parseIndexToml(await fetchTextNoStore(indexUrl));
   if (index.abiVersion !== undefined && index.abiVersion !== ABI_VERSION) {
     console.warn(

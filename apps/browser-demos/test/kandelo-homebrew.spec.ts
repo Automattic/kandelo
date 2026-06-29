@@ -1,14 +1,14 @@
 import { expect, test, type Page } from "@playwright/test";
+import { mkdir, rm, writeFile } from "node:fs/promises";
 import { ABI_VERSION } from "../../../host/src/generated/abi";
 
-const MANIFEST_URL = "https://example.test/homebrew/gallery.json";
-const INDEX_URL = "https://example.test/homebrew/index.toml";
-const ARCHIVE_URL = "https://example.test/homebrew/hello-homebrew-vfs.tar.zst";
+const FIXTURE_BASE_PATH = "/__kandelo-homebrew-test";
+const FIXTURE_ROOT = new URL("../public/__kandelo-homebrew-test/", import.meta.url);
 
-type RouteHits = {
-  manifest: number;
-  index: number;
-  archive: number;
+type FixtureEntry = {
+  id: string;
+  title: string;
+  browserCompatible: boolean;
 };
 
 const appUrl = (path: string): string => {
@@ -30,12 +30,6 @@ async function openGallery(page: Page) {
   await expect(page.locator(".kgal-card").filter({ hasText: "Bare shell" })).toBeVisible({
     timeout: 90_000,
   });
-}
-
-async function waitForReady(page: Page, timeout = 180_000) {
-  await expect
-    .poll(() => page.evaluate(() => document.body.innerText), { timeout })
-    .toContain("Ready");
 }
 
 async function terminalText(page: Page): Promise<string> {
@@ -72,77 +66,66 @@ async function runTerminalCommand(
   await waitForTerminalContent(page, expected, timeout);
 }
 
-async function routeHomebrewGallery(page: Page, browserCompatible: boolean): Promise<RouteHits> {
-  const hits: RouteHits = { manifest: 0, index: 0, archive: 0 };
-  await page.route(MANIFEST_URL, async (route) => {
-    hits.manifest += 1;
-    await route.fulfill({
-      contentType: "application/json",
-      headers: corsHeaders(),
-      body: JSON.stringify({
-        source_id: "kandelo-homebrew",
-        index_url: INDEX_URL,
-        entries: [{
-          id: "hello-homebrew-vfs",
-          title: "GNU hello Homebrew VFS",
-          description: "GNU hello poured from a Homebrew bottle.",
-          packages: [{ name: "hello-homebrew-vfs", version: "2.12.3" }],
-        }],
-      }),
-    });
-  });
-  await page.route(INDEX_URL, async (route) => {
-    hits.index += 1;
-    await route.fulfill({
-      contentType: "text/plain",
-      headers: corsHeaders(),
-      body: `abi_version = ${ABI_VERSION}
+async function writeHomebrewGalleryFixture(
+  name: string,
+  entries: FixtureEntry[],
+): Promise<string> {
+  const fixtureDir = new URL(`${name}/`, FIXTURE_ROOT);
+  await mkdir(fixtureDir, { recursive: true });
+  await writeFile(new URL("gallery.json", fixtureDir), JSON.stringify({
+    source_id: "kandelo-homebrew",
+    index_url: "index.toml",
+    entries: entries.map((entry) => ({
+      id: entry.id,
+      title: entry.title,
+      description: "GNU hello poured from a Homebrew bottle.",
+      packages: [{ name: packageNameForEntry(entry), version: "2.12.3" }],
+    })),
+  }), "utf8");
+  await writeFile(new URL("index.toml", fixtureDir), `abi_version = ${ABI_VERSION}
 
-[[packages]]
-name = "hello-homebrew-vfs"
+${entries.map((entry) => `[[packages]]
+name = "${packageNameForEntry(entry)}"
 version = "2.12.3"
 
 [packages.binary.wasm32]
 status = "success"
-archive_url = "${ARCHIVE_URL}"
+archive_url = "${FIXTURE_BASE_PATH}/${name}/${packageNameForEntry(entry)}.tar.zst"
 archive_sha256 = "0000000000000000000000000000000000000000000000000000000000000000"
 cache_key_sha = "1111111111111111111111111111111111111111111111111111111111111111"
-browser_compatible = ${browserCompatible ? "true" : "false"}
-`,
-    });
-  });
-  await page.route(ARCHIVE_URL, async (route) => {
-    hits.archive += 1;
-    await route.fulfill({
-      status: 404,
-      contentType: "text/plain",
-      headers: corsHeaders(),
-      body: "archive intentionally absent",
-    });
-  });
-  return hits;
+browser_compatible = ${entry.browserCompatible ? "true" : "false"}
+`).join("\n")}
+`, "utf8");
+  return `${FIXTURE_BASE_PATH}/${name}/gallery.json`;
 }
 
-function corsHeaders(): Record<string, string> {
-  return {
-    "access-control-allow-origin": "*",
-    "cross-origin-resource-policy": "cross-origin",
-  };
+function packageNameForEntry(entry: FixtureEntry): string {
+  return `hello-homebrew-${entry.id}`;
 }
+
+test.afterAll(async () => {
+  await rm(FIXTURE_ROOT, { recursive: true, force: true });
+});
 
 test("software gallery hides wasm32 entries without browser-compatible metadata", async ({ page }) => {
-  const hits = await routeHomebrewGallery(page, false);
-  await gotoOrSkip(page, `/?softwareManifest=${encodeURIComponent(MANIFEST_URL)}`);
-  await expect.poll(() => hits.index, { timeout: 90_000 }).toBeGreaterThan(0);
+  const manifestPath = await writeHomebrewGalleryFixture("nonbrowser", [
+    { id: "hello-vfs", title: "GNU hello Homebrew VFS", browserCompatible: false },
+    { id: "hello-sentinel", title: "GNU hello Browser Sentinel", browserCompatible: true },
+  ]);
+  await gotoOrSkip(page, `/?softwareManifest=${encodeURIComponent(manifestPath)}`);
   await openGallery(page);
 
+  await expect(page.locator(".kgal-card").filter({ hasText: "GNU hello Browser Sentinel" })).toBeVisible({
+    timeout: 90_000,
+  });
   await expect(page.locator(".kgal-card").filter({ hasText: "GNU hello Homebrew VFS" })).toHaveCount(0);
 });
 
 test("browser-compatible gallery archive launch failures are visible", async ({ page }) => {
-  const hits = await routeHomebrewGallery(page, true);
-  await gotoOrSkip(page, `/?softwareManifest=${encodeURIComponent(MANIFEST_URL)}`);
-  await expect.poll(() => hits.index, { timeout: 90_000 }).toBeGreaterThan(0);
+  const manifestPath = await writeHomebrewGalleryFixture("browser", [
+    { id: "hello-vfs", title: "GNU hello Homebrew VFS", browserCompatible: true },
+  ]);
+  await gotoOrSkip(page, `/?softwareManifest=${encodeURIComponent(manifestPath)}`);
   await openGallery(page);
 
   const card = page.locator(".kgal-card").filter({ hasText: "GNU hello Homebrew VFS" });
@@ -154,7 +137,6 @@ test("browser-compatible gallery archive launch failures are visible", async ({ 
   });
   await expect(page.getByText(/404|artifact|archive/i).first()).toBeVisible();
   await expect(page.getByText(/third-party gallery entry/i)).toBeVisible();
-  expect(hits.archive).toBeGreaterThan(0);
 });
 
 test("Homebrew hello VFS image boots in browser and runs hello --version", async ({ page }) => {
@@ -163,8 +145,8 @@ test("Homebrew hello VFS image boots in browser and runs hello --version", async
   test.setTimeout(360_000);
 
   await gotoOrSkip(page, `/?vfs=${encodeURIComponent(vfsUrl!)}`);
-  await waitForReady(page, 240_000);
   await expect(page.locator(".xterm-rows").first()).toBeVisible({ timeout: 120_000 });
+  await waitForTerminalContent(page, /kandelo\$\s*$/, 240_000);
 
   await runTerminalCommand(
     page,
