@@ -1,15 +1,22 @@
 # Homebrew All Packages Inventory And Migration Plan
 
 Date: 2026-06-28
+Last updated: 2026-06-29
 
 Tracked work:
 
 - `kd-1mr` - Port all current Kandelo packages to Homebrew.
 - `kd-5yd` - Inventory packages and plan Homebrew migration waves.
-- Publication blocker: `kd-8ho` remains the Homebrew publishing foundation
-  convoy and is currently blocked on `kd-pndh`, the PR #785 final-disposition
-  gate. Planning can proceed; package bottle publication must not start until
-  `kd-8ho` closes or Brandon explicitly overrides.
+- Foundation status: `kd-8ho` is closed. PR #785 merged the trusted Homebrew
+  publishing foundation into `origin/main`, `Automattic/kandelo-homebrew` is
+  initialized, the first `hello` wasm32 bottle was published through trusted
+  CI, and `kd-uqyg` closed with the decision to keep Kandelo's custom GHCR
+  upload adapter for now while continuing to reuse upstream Homebrew
+  build/test/bottle/merge commands.
+- Current package-wave state: `kd-1mr.1` has already ported and verified
+  `zlib` Homebrew bottles locally for wasm32 and wasm64. Use `hello` and
+  `zlib` as reference evidence for the next pilot, not as future planning
+  blockers.
 
 This plan was revised from the `kd-5yd` worktree after Brandon settled the
 Homebrew-all direction: Homebrew should replace `packages/registry` if possible,
@@ -18,7 +25,10 @@ the bottle artifacts through the GHCR/OCI namespace, and package status should
 remain visible even when builds or tests fail.
 
 This remains a planning and inventory artifact. It does not publish bottles,
-edit package recipes, move registry files, or create implementation wave beads.
+edit package recipes, or move registry files. It records the minimal next
+package-wave bead to create after the foundation and zlib proof, while leaving
+future broad waves uncreated until the pilot exposes real capacity and
+correctness facts.
 
 ## Problem Statement
 
@@ -62,7 +72,10 @@ The design needs to:
 
 ## Non-Goals
 
-- Do not begin bottle publication while `kd-8ho` remains open or blocked.
+- Do not start broad or all-package bottle publication from this design bead.
+  `kd-8ho` is closed, but each package wave still needs its own bead, managed
+  worktree, trusted workflow evidence when publishing, sidecar/provenance
+  validation, and Node/browser smoke accounting.
 - Do not keep `packages/registry` as the intended permanent package recipe
   database if Homebrew replacement succeeds.
 - Do not require Kandelo sidecars for `brew install`; sidecars are additive
@@ -85,20 +98,27 @@ The design needs to:
 
 ## Current Inventory Summary
 
-Registry scan results from the current `kd-5yd` worktree:
+Registry scan results from the merged `kd-5yd` worktree after `origin/main`
+PR #785:
 
-- 72 directories contain a valid `package.toml`.
+- 73 directories contain a valid `package.toml`.
 - 2 directories under `packages/registry/` do not contain `package.toml`:
   `node-compat` and `npm`. They are support data today, not publishable
   packages.
-- Package kinds: 64 `program`, 7 `library`, 1 `source`.
-- Architectures: 65 packages are `wasm32`; 7 packages declare both `wasm32`
+- Package kinds: 65 `program`, 7 `library`, 1 `source`.
+- Architectures: 66 packages are `wasm32`; 7 packages declare both `wasm32`
   and `wasm64`.
 - No package manifest was missing a source sha256 or SPDX license field.
 - Three manifests have no build script, `build.toml.revision`, or binary index
   entry: `kernel-test-programs`, `pcre2-source`, and `sqlite-cli`.
 - Current `ABI_VERSION` is 16. Manifest `kernel_abi` values are not current:
-  64 packages say 7, one says 13, two say 14, two say 15, and three omit it.
+  64 packages say 7, one says 13, two say 14, two say 15, one says 16
+  (`hello`), and three omit it.
+- Current Homebrew evidence is uneven by design: `hello` is the trusted
+  wasm32 bottle publication reference from `kd-8ho`; `zlib` is the first
+  dependency-root Formula proof from `kd-1mr.1`, verified locally for wasm32
+  and wasm64 with sidecars and host-gate cleanup, but not trusted-published as
+  part of that bead.
 
 The stale `kernel_abi` values are not just cleanup. ABI must become artifact
 compatibility identity in the Homebrew-backed model: bottle names, sidecar
@@ -159,7 +179,7 @@ Maintainer inventory workflow:
    package build scripts.
 5. Record any role that cannot move out of `packages/registry`.
 
-Trusted publish workflow after `kd-8ho` closes:
+Trusted publish workflow now that `kd-8ho` is closed:
 
 1. Build bottles from Formulae in trusted CI.
 2. Store bottle blobs in GitHub Packages/GHCR.
@@ -259,6 +279,7 @@ registry removal path easier to audit.
 | `git` | program | wasm32 | 0 | Formula candidate; smoke local repository operations, not network success only. |
 | `grep` | program | wasm32 | 0 | Formula candidate; CLI smoke and upstream test status. |
 | `gzip` | program | wasm32 | 0 | Formula candidate; compression/decompression smoke. |
+| `hello` | program | wasm32 | 0 | Already the first trusted wasm32 bottle reference; keep as control package for schema, sidecar, Node/browser smoke, and publication regression checks. |
 | `kandelo-sdk` | program | wasm32 | 1 | Platform/internal artifact; decide whether it becomes a Formula or remains outside the replacement model. |
 | `kernel` | program | wasm32 | 0 | Platform/internal artifact; decide whether Homebrew should own it or binary releases remain authoritative. |
 | `kernel-test-programs` | program | wasm32 | 0 | Manifest-incomplete internal test bundle; classify before registry removal. |
@@ -313,18 +334,22 @@ registry removal path easier to audit.
 | `wordpress` | program | wasm32 | 5 | Composite runtime package/precomposed VFS image; HTTP/admin/service smoke required. |
 | `xz` | program | wasm32 | 0 | Formula candidate; compression/decompression smoke. |
 | `zip` | program | wasm32 | 0 | Formula candidate; archive create/list smoke. |
-| `zlib` | library | wasm32, wasm64 | 0 | Library Formula; first dependency-root candidate. |
+| `zlib` | library | wasm32, wasm64 | 0 | First dependency-root Formula proof completed in `kd-1mr.1`; use its wasm32/wasm64 evidence and remaining limitations to shape the next pilot. |
 | `zstd` | program | wasm32 | 0 | Formula candidate; compression/decompression smoke. |
 
 ## Migration Waves
 
-These are dispatch waves, not necessarily one PR each. Bottle publication stays
-gated on `kd-8ho`; planning, Formula authoring strategy, bridge design, and
-child-bead creation can proceed.
+These are dispatch waves, not necessarily one PR each. `kd-8ho` and `kd-uqyg`
+are no longer gates, and `zlib` has already proved the first dependency-root
+path. The next step should be a small pilot that exercises one more
+dependency-root package plus a couple of small leaf programs before broad waves
+are created.
 
 ### Wave 0: Replacement Contract And Bridge Hygiene
 
-Gate: planning is active now; publication still requires `kd-8ho`.
+Gate: no longer blocked on `kd-8ho`, but broad publication waits for pilot
+evidence. `kd-c6p` is the existing docs bead for the registry-replacement
+model and should wake after this inventory plan is closed.
 
 Work:
 
@@ -346,7 +371,7 @@ Work:
 
 Packages:
 
-- `zlib`, `openssl`, `sqlite`, `libcxx`, `libxml2`, `libpng`, `libcurl`,
+- `openssl`, `sqlite`, `libcxx`, `libxml2`, `libpng`, `libcurl`,
   `ncurses`.
 
 Rationale:
@@ -356,6 +381,8 @@ Rationale:
   sidecar/status model and should be visible per arch.
 - `ncurses` is a hybrid program/library package and needs explicit Formula
   modeling for both executable outputs and link-time artifacts.
+- `zlib` is removed from future dependency-root scope because `kd-1mr.1`
+  already completed its local Homebrew Formula and bottle verification.
 
 ### Wave 2: Small Leaf CLI Programs
 
@@ -531,7 +558,7 @@ Gate every bottle on complete upstream tests:
 
 All-at-once matrix:
 
-- Rejected for first migration because 72 packages plus wasm64 variants,
+- Rejected for first migration because 73 packages plus wasm64 variants,
   precomposed VFS images, and composite runtime packages would make failures
   hard to classify and could overload Actions or GitHub Packages.
 
@@ -598,83 +625,64 @@ CI and GitHub Packages quota:
 
 ## Proposed Migration Child Beads
 
-Create these under `kd-1mr` after this plan is accepted. Bottle publication
-steps in these beads should depend on `kd-8ho` closure, especially browser smoke
-and operations docs, unless Brandon explicitly overrides.
+Do not create the old seven broad beads now. The live convoy already has
+`kd-1mr.1` closed for `zlib`, `kd-1mr.1.1` closed for its host-gate blocker,
+and `kd-c6p` open for registry-replacement documentation after this plan. The
+minimal next work is one implementation pilot plus the existing docs bead.
 
-1. `[homebrew-all] Define Homebrew replacement contract and registry bridge`
-   - Scope: Formulae as source of truth, sidecars additive, bridge deletion
-     criteria, package ID/naming policy, minimal Homebrew patch policy.
-   - Depends on: `kd-5yd` revised plan.
-   - Blocks: all Formula port waves.
+1. Existing: `kd-c6p` - `[homebrew-all] Document Homebrew registry replacement
+   model`
+   - Scope: authoritative docs for Formulae as source of truth, sidecars as
+     additive metadata, failure visibility, ABI identity, Node/browser support,
+     upstream test outcome artifacts, and registry removal.
+   - Next action: wake after `kd-5yd` closes. Do not create another docs bead
+     for the same model.
 
-2. `[homebrew-all] Define package status and upstream test outcome schema`
-   - Scope: build/install status, Node/browser smoke status, complete upstream
-     test support, pass/fail/skip/incomplete counts, failure lists, skip
-     reasons, known failures, host results, artifacts, ABI identity.
-   - Depends on: `kd-5yd` revised plan; align with `kd-8ho` sidecar schemas.
-   - Blocks: status publication for all waves; bottle publication can only
-     proceed without it by explicit override.
+2. Created: `kd-1mr.2` - `[homebrew-all] Port sqlite, bzip2, and xz
+   Homebrew pilot`
+   - Scope: `sqlite` as the next dependency-root and upstream-test-status
+     package, plus `bzip2` and `xz` as small leaf CLI packages that exercise
+     program install/smoke behavior without heavy runtime risk.
+   - Use `hello` trusted-publication evidence and `zlib` local wasm32/wasm64
+     evidence as controls.
+   - Required evidence: Formula syntax and Homebrew bottle build/test results,
+     sidecar/provenance validation, required Node smoke, required browser smoke
+     or explicit host-failure status, complete pass/fail/skip/incomplete
+     outcome lists for substantive package and upstream-test runs, and clear
+     distinction between local dry-run evidence and trusted GHCR/tap
+     publication.
+   - Implement only the bridge/status/tooling gaps needed for these packages.
+     If the pilot exposes reusable schema or bridge work that cannot fit
+     cleanly, create one focused blocker/follow-up bead from that evidence.
+   - Blocks creation of broad dependency-root, small-CLI, heavy-runtime, and
+     composite-runtime waves.
 
-3. `[homebrew-all] Classify registry exceptions and platform artifacts`
-   - Scope: `node-compat`, `npm`, `kernel-test-programs`, `sqlite-cli`,
-     `pcre2-source`, `kernel`, `userspace`, `kandelo-sdk`.
-   - Depends on: replacement contract bead.
-   - Blocks: registry deletion plan and any wave that needs those artifacts.
-
-4. `[homebrew-all] Port dependency-root Formulae`
-   - Scope: `zlib`, `openssl`, `sqlite`, `libcxx`, `libxml2`, `libpng`,
-     `libcurl`, `ncurses`.
-   - Depends on: replacement contract, status schema, `kd-8ho` publication
-     foundation for actual bottle publication.
-   - Blocks: dependent runtimes and composite runtime packages.
-
-5. `[homebrew-all] Port small leaf CLI Formulae`
-   - Scope: `bc`, `bzip2`, `coreutils`, `dash`, `diffutils`, `fbdoom`, `file`,
-     `findutils`, `gawk`, `git`, `grep`, `gzip`, `less`, `lsof`, `m4`, `make`,
-     `modeset`, `msmtpd`, `nano`, `netcat`, `posix-utils-lite`, `sed`, `tar`,
-     `tcl`, `unzip`, `vim`, `wget`, `xz`, `zip`, `zstd`.
-   - Depends on: replacement contract, status schema, `kd-8ho` publication
-     foundation for actual bottle publication.
-   - Blocks: `rootfs`, `shell`, and service composite runtime packages.
-
-6. `[homebrew-all] Port heavy runtimes and dependent programs`
-   - Scope: `bash`, `curl`, `dinit`, `nethack`, `cpython`, `perl`, `ruby`,
-     `php`, `erlang`, `redis`, `nginx`, `spidermonkey`, `spidermonkey-node`,
-     `node`, `mariadb`, `texlive`.
-   - Depends on: dependency-root Formulae, small leaf Formulae where direct
-     runtime deps require them, status schema, `kd-8ho` publication foundation.
-   - Blocks: language/service composite runtime packages.
-
-7. `[homebrew-all] Port precomposed VFS images and composite runtime packages`
-   - Scope: `rootfs`, `shell`, `python-vfs`, `perl-vfs`, `erlang-vfs`,
-     `vim-browser-bundle`, `nethack-browser-bundle`, `node-vfs`,
-     `mariadb-vfs`, `mariadb-test`, `lamp`, `wordpress`.
-   - Depends on: relevant dependency-root, small CLI, and heavy runtime beads;
-     `kd-8ho` VFS builder/smoke/docs foundation for publication.
-   - Blocks: gallery/user-facing Homebrew package claims.
-
-These seven beads are intentionally coarse. Split only when a package group is
-too large for CI capacity or review, or when a blocker is isolated to a package
-that should not stall unrelated packages.
+After this pilot reports actual capacity and failure modes, create the next
+specific package bead from evidence. Do not pre-create broad runtime or
+composite package beads merely because they appear in the inventory.
 
 ## Implementation Sequence
 
-1. Accept this revised plan and create the seven proposed child beads.
-2. Complete `kd-8ho` foundation before any package bottle publication.
-3. Implement the replacement contract and package status schema.
-4. Classify registry exceptions and platform artifacts.
-5. Port dependency roots and small leaf CLI Formulae in parallel where capacity
-   allows.
-6. Port heavy runtimes and dependent programs in small batches.
-7. Port precomposed VFS images and composite runtime packages.
+1. Close `kd-5yd` after recording this refreshed plan, review gauntlet, and the
+   created pilot bead.
+2. Wake `kd-c6p` for registry-replacement reference documentation.
+3. Run the sqlite/bzip2/xz pilot from its own managed worktree and branch.
+4. Use the pilot's evidence to decide whether the next bead should be another
+   dependency-root package, a small CLI batch, a schema/bridge blocker, or a
+   package-specific runtime blocker.
+5. Classify registry exceptions and platform artifacts before attempting
+   registry deletion, but do not block the pilot on deletion planning.
+6. Port heavy runtimes and dependent programs only after dependency-root and
+   small CLI evidence is boring enough to split by capacity rather than guess.
+7. Port precomposed VFS images and composite runtime packages after their
+   component Formulae have sidecars and Node/browser status.
 8. Remove `packages/registry` only after Formulae, sidecars, Homebrew tooling,
    tests, docs, and fallback operations cover every accepted registry role.
 
 ## Open Questions
 
-- Which exact Homebrew target-architecture patch is required, and can it stay
-  isolated from dependency resolution, install behavior, and Formula semantics?
+- Should Kandelo upstream `wasm32_kandelo` and `wasm64_kandelo` support into
+  Homebrew, or continue carrying the current minimal architecture-tag patch?
 - Which `packages/registry` roles cannot move to Formulae and why?
 - Should platform artifacts (`kernel`, `userspace`, `kandelo-sdk`,
   `kernel-test-programs`) live in the Homebrew tap, existing binary releases,
