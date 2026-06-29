@@ -151,14 +151,14 @@ jobs:
       actions: read
     steps:
       - name: Checkout tap
-        uses: actions/checkout@v6.0.2
+        uses: actions/checkout@v7.0.0
         with:
           repository: ${{ inputs.tap-repository }}
           ref: ${{ inputs.tap-ref }}
           path: tap
 
       - name: Checkout Kandelo workflow source
-        uses: actions/checkout@v6.0.2
+        uses: actions/checkout@v7.0.0
         with:
           repository: ${{ inputs.kandelo-repository }}
           ref: ${{ inputs.kandelo-ref }}
