@@ -1900,7 +1900,7 @@ export async function centralizedThreadWorkerMain(
     port.postMessage({
       type: "error",
       pid,
-      message: `thread worker pid=${pid} tid=${tid} failed: ${message}`,
+      message: `Thread worker failed: pid=${pid} tid=${tid}: ${message}`,
     } satisfies WorkerToHostMessage);
   }
 }

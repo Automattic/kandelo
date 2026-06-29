@@ -208,6 +208,8 @@ describe("CentralizedKernelWorker Process Management", () => {
       threadForkContexts: new Map([
         [`${pid}:${threadChannelOffset}`, { fnPtr: 1, argPtr: 2 }],
       ]),
+      threadExitContexts: new Map(),
+      pendingFutexWaits: new Map(),
       threadCtidPtrs: new Map([[`${pid}:${tid}`, ctidPtr]]),
       notifyThreadExit: vi.fn(),
     }) as CentralizedKernelWorker;
