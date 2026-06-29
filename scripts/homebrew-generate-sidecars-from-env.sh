@@ -58,7 +58,15 @@ CACHE_KEY_SHA="$(
 )"
 
 SDK_FINGERPRINT="$(shasum -a 256 "$KANDELO_ROOT/sdk/activate.sh" | awk '{print $1}')"
-SYSROOT_FINGERPRINT="$(shasum -a 256 "$KANDELO_ROOT/sysroot/lib/libc.a" | awk '{print $1}')"
+case "$KANDELO_HOMEBREW_ARCH" in
+  wasm64) SYSROOT_LIBC="$KANDELO_ROOT/sysroot64/lib/libc.a" ;;
+  *) SYSROOT_LIBC="$KANDELO_ROOT/sysroot/lib/libc.a" ;;
+esac
+if [ ! -f "$SYSROOT_LIBC" ]; then
+  echo "homebrew-generate-sidecars-from-env.sh: sysroot libc not found: $SYSROOT_LIBC" >&2
+  exit 2
+fi
+SYSROOT_FINGERPRINT="$(shasum -a 256 "$SYSROOT_LIBC" | awk '{print $1}')"
 BREW_VERSION="$("${HOMEBREW_BREW_FILE:-brew}" --version | head -n 1)"
 TAP_COMMIT="$(git -C "$KANDELO_HOMEBREW_TAP_ROOT" rev-parse HEAD)"
 KANDELO_COMMIT="$(git -C "$KANDELO_ROOT" rev-parse HEAD)"
@@ -107,7 +115,27 @@ for dep in package_toml.get("depends_on", []):
     else:
         deps.append({"name": dep})
 
+def package_output_links(package_toml, formula):
+    outputs = package_toml.get("outputs", {})
+    links = []
+    if isinstance(outputs, dict):
+        for key in ("libs", "headers", "pkgconfig"):
+            for rel in outputs.get(key, []):
+                links.append({"type": "file", "source": rel, "target": rel})
+        return links
+
+    if isinstance(outputs, list):
+        for output in outputs:
+            name = output.get("name", formula)
+            if "wasm" in output:
+                links.append({"type": "symlink", "source": f"bin/{name}", "target": f"bin/{name}"})
+        return links
+
+    raise SystemExit(f"unsupported outputs shape for {formula}: {type(outputs).__name__}")
+
+
 version = str(bottle_formula["pkg_version"])
+links = package_output_links(package_toml, formula)
 manifest = {
     "schema": 1,
     "tap_repository": os.environ["KANDELO_HOMEBREW_TAP_REPOSITORY"],
@@ -144,9 +172,7 @@ manifest = {
                     "url": os.environ["KANDELO_HOMEBREW_BOTTLE_URL"],
                     "cache_key_sha": os.environ["CACHE_KEY_SHA"],
                     "payload_root": f"{formula}/{version}",
-                    "links": [
-                        {"type": "symlink", "source": f"bin/{formula}", "target": f"bin/{formula}"}
-                    ],
+                    "links": links,
                     "receipts": [f".brew/{formula}.rb", "INSTALL_RECEIPT.json"],
                     "env": {"PATH_prepend": ["bin"]},
                     "build": {
@@ -177,8 +203,8 @@ manifest = {
                                 "status": "skipped",
                                 "passed": [],
                                 "failed": [],
-                                "skipped": ["brew audit was not part of kd-8ho.5 local verification"],
-                                "skip_reason": "kd-8ho.5 validates the first bottle build and sidecars; tap audit can run in the real tap publication gate.",
+                                "skipped": [f"brew audit was not part of the {formula} bottle build step"],
+                                "skip_reason": "Homebrew audit is not part of this bottle publish step; run it in a dedicated tap audit gate.",
                             },
                             {
                                 "name": "bottle_build",
@@ -196,7 +222,7 @@ manifest = {
                                 "name": "node_smoke",
                                 "status": "success",
                                 "passed": [
-                                    "Formula test ran hello --version through node --import tsx/esm examples/run-example.ts"
+                                    f"brew test completed for {formula} with Kandelo Node smoke enabled"
                                 ],
                                 "failed": [],
                                 "skipped": [],
@@ -206,8 +232,8 @@ manifest = {
                                 "status": "skipped",
                                 "passed": [],
                                 "failed": [],
-                                "skipped": ["browser_compatible is false for this bottle"],
-                                "skip_reason": "Browser hello VFS smoke belongs to follow-up kd-8ho.10.",
+                                "skipped": [f"browser_compatible is false for {formula} {arch} bottle"],
+                                "skip_reason": "Browser VFS smoke is recorded by package-specific browser validation, not this bottle build step.",
                             },
                         ],
                     },
