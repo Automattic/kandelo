@@ -14,6 +14,9 @@
 import type { MountConfig } from "./types";
 import { MemoryFileSystem } from "./memory-fs";
 
+const S_IFMT = 0xf000;
+const S_IFDIR = 0x4000;
+
 export interface MountSpec {
   /** Absolute VFS mount point (e.g., "/etc"). No trailing slash except "/". */
   path: string;
@@ -109,6 +112,48 @@ export function normalizeLegacyRootfs(fs: MemoryFileSystem): void {
   const group = readTextFile(fs, "/etc/group");
   if (group !== null && !/^nobody:/m.test(group)) {
     writeTextFile(fs, "/etc/group", `${group.replace(/\n?$/, "\n")}nobody:x:65534:\n`);
+  }
+}
+
+function normalizeMountPoint(path: string): string {
+  return path === "/" ? path : path.replace(/\/+$/, "");
+}
+
+function isDirectoryMode(mode: number): boolean {
+  return (mode & S_IFMT) === S_IFDIR;
+}
+
+/**
+ * Ensure mount points below image-missing directories are reachable.
+ *
+ * The kernel checks search permissions on every parent component before
+ * opening or statting a final path. Runtime mounts such as
+ * `/usr/local/lib/kandelo` therefore need `/usr/local` and
+ * `/usr/local/lib` to exist in the root image even though the mounted
+ * backend owns the final mount point itself.
+ */
+export function ensureMountParentDirectories(
+  rootfs: MemoryFileSystem,
+  mountPoints: readonly string[],
+): void {
+  for (const mountPoint of mountPoints) {
+    const normalized = normalizeMountPoint(mountPoint);
+    if (normalized === "/" || !normalized.startsWith("/")) continue;
+
+    const segments = normalized.split("/").filter(Boolean);
+    let current = "";
+    for (let i = 0; i < segments.length - 1; i++) {
+      const segment = segments[i];
+      if (segment === "." || segment === "..") break;
+
+      current += `/${segment}`;
+      try {
+        const st = rootfs.stat(current);
+        if (!isDirectoryMode(st.mode)) break;
+      } catch {
+        rootfs.mkdir(current, 0o755);
+      }
+    }
   }
 }
 
