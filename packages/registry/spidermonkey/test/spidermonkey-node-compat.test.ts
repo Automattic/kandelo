@@ -16,6 +16,7 @@ import { fileURLToPath } from "node:url";
 import { beforeAll, describe, expect, it } from "vitest";
 import { tryResolveBinary } from "../../../../host/src/binary-resolver";
 import { NodeKernelHost } from "../../../../host/src/node-kernel-host";
+import { NodePlatformIO } from "../../../../host/src/platform/node";
 import { runCentralizedProgram } from "../../../../host/test/centralized-test-helper";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -39,10 +40,10 @@ const NPM_RUNNER = `const invoked = process.argv[2] || 'npm';
 process.argv.splice(2, 1);
 process.argv[1] = invoked === 'npx' ? '/usr/bin/npx' : '/usr/bin/npm';
 if (invoked === 'npx') {
-  process.argv[1] = '/usr/local/lib/npm/bin/npm-cli.js';
+  process.argv[1] = '/npm/bin/npm-cli.js';
   process.argv.splice(2, 0, 'exec');
 }
-const run = require('/usr/local/lib/npm/lib/cli.js');
+const run = require('/npm/lib/cli.js');
 let settled = false;
 let failure = null;
 Promise.resolve(run(process)).then(
@@ -155,14 +156,14 @@ function patchNpmForSpiderMonkey(npmDir: string): void {
       import('chalk'),
       import('supports-color'),
     ])`,
-      `const { Chalk, createSupportsColor } = require('/usr/local/lib/kandelo/npm-display-shim.js')`,
+      `const { Chalk, createSupportsColor } = require('/kandelo/npm-display-shim.js')`,
       "import('chalk')",
     ],
   ]);
   patchHostText(join(npmDir, "lib/commands/token.js"), [
     [
       `const { v4: isCidrV4, v6: isCidrV6 } = await import('is-cidr')`,
-      `const { v4: isCidrV4, v6: isCidrV6 } = require('/usr/local/lib/kandelo/is-cidr-shim.js')`,
+      `const { v4: isCidrV4, v6: isCidrV6 } = require('/kandelo/is-cidr-shim.js')`,
       "import('is-cidr')",
     ],
   ]);
@@ -290,7 +291,11 @@ console.log(cowsay.say({ text }));
   };
 }
 
-async function runNode(source: string, timeout = DEFAULT_TIMEOUT) {
+async function runNode(
+  source: string,
+  timeout = DEFAULT_TIMEOUT,
+  extraOptions: { execPrograms?: Map<string, string> } = {},
+) {
   const label =
     expect.getState().currentTestName ?? "spidermonkey node program";
   return withCiProgress(
@@ -299,9 +304,27 @@ async function runNode(source: string, timeout = DEFAULT_TIMEOUT) {
       programPath: nodeWasm!,
       programModule: nodeModule,
       argv: ["node", "-e", source],
+      ...extraOptions,
       timeout,
     }),
   );
+}
+
+async function runNodeFile(source: string, timeout = DEFAULT_TIMEOUT) {
+  const root = mkdtempSync(join(tmpdir(), "kandelo-node-main-"));
+  const scriptPath = join(root, "main.js");
+  writeFileSync(scriptPath, source);
+  try {
+    return await runCentralizedProgram({
+      programPath: nodeWasm!,
+      programModule: nodeModule,
+      argv: ["node", scriptPath],
+      io: new NodePlatformIO(),
+      timeout,
+    });
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
 }
 
 async function withCiProgress<T>(label: string, promise: Promise<T>): Promise<T> {
@@ -341,7 +364,10 @@ describe.skipIf(!nodeWasm)("SpiderMonkey Node compatibility runtime", () => {
       "console.log('hello', process.arch, process.platform, process.version)",
     );
 
-    expect(result.exitCode).toBe(0);
+    expect(
+      result.exitCode,
+      `stdout:\n${result.stdout}\nstderr:\n${result.stderr}`,
+    ).toBe(0);
     expect(result.stdout.trim()).toBe("hello wasm32 linux v22.0.0");
   }, DEFAULT_TEST_TIMEOUT);
 
@@ -354,6 +380,111 @@ describe.skipIf(!nodeWasm)("SpiderMonkey Node compatibility runtime", () => {
 
     expect(result.exitCode).toBe(0);
     expect(result.stdout.trim()).toBe("v22.0.0");
+  }, DEFAULT_TEST_TIMEOUT);
+
+  it("supports --disable-proto=delete in main, vm, and worker contexts", async () => {
+    const source = [
+      "const assert = require('assert')",
+      "const vm = require('vm')",
+      "const { Worker } = require('worker_threads')",
+      "assert(process.execArgv.includes('--disable-proto=delete'))",
+      "assert(!process.argv.includes('--disable-proto=delete'))",
+      "assert.strictEqual(Object.prototype.__proto__, undefined)",
+      "assert.strictEqual(Object.prototype.hasOwnProperty.call(Object.prototype, '__proto__'), false)",
+      "const ctxGlobal = vm.runInContext('this', vm.createContext())",
+      "assert.strictEqual(ctxGlobal.Object.prototype.__proto__, undefined)",
+      "assert.strictEqual(ctxGlobal.Object.prototype.hasOwnProperty.call(ctxGlobal.Object.prototype, '__proto__'), false)",
+      "const sab = new SharedArrayBuffer(8)",
+      "const view = new Int32Array(sab)",
+      "const worker = new Worker(\"const view = new Int32Array(workerData); let ok = 0; try { ok = Object.prototype.__proto__ === undefined && !Object.prototype.hasOwnProperty.call(Object.prototype, '__proto__') ? 1 : -1; } catch (_) { ok = -2; } Atomics.store(view, 0, ok); Atomics.store(view, 1, 1); Atomics.notify(view, 1);\", { eval: true, workerData: sab })",
+      "if (Atomics.load(view, 1) === 0) Atomics.wait(view, 1, 0, 10000)",
+      "assert.strictEqual(Atomics.load(view, 0), 1)",
+      "worker.terminate()",
+      "console.log('delete-ok')",
+    ].join("\n");
+    const result = await runCentralizedProgram({
+      programPath: nodeWasm!,
+      programModule: nodeModule,
+      argv: ["node", "--disable-proto=delete", "-e", source],
+      timeout: LONG_TIMEOUT,
+    });
+
+    expect(result.exitCode).toBe(0);
+    expect(result.stderr).toBe("");
+    expect(result.stdout.trim()).toBe("delete-ok");
+  }, LONG_TEST_TIMEOUT);
+
+  it("supports --disable-proto=throw in main, vm, and worker contexts", async () => {
+    const source = [
+      "const assert = require('assert')",
+      "const vm = require('vm')",
+      "const { Worker } = require('worker_threads')",
+      "assert(process.execArgv.includes('--disable-proto=throw'))",
+      "assert(!process.argv.includes('--disable-proto=throw'))",
+      "assert.strictEqual(Object.prototype.hasOwnProperty.call(Object.prototype, '__proto__'), true)",
+      "function expectProtoAccessThrows(fn) { assert.throws(fn, { code: 'ERR_PROTO_ACCESS' }) }",
+      "expectProtoAccessThrows(() => ({}).__proto__)",
+      "expectProtoAccessThrows(() => { ({}).__proto__ = {} })",
+      "const ctx = vm.createContext()",
+      "expectProtoAccessThrows(() => vm.runInContext('({}).__proto__', ctx))",
+      "expectProtoAccessThrows(() => vm.runInContext('({}).__proto__ = {}', ctx))",
+      "const sab = new SharedArrayBuffer(8)",
+      "const view = new Int32Array(sab)",
+      "const worker = new Worker(\"const view = new Int32Array(workerData); let ok = 0; try { ({}).__proto__; ok = -1; } catch (e) { ok = e && e.code === 'ERR_PROTO_ACCESS' ? 1 : -2; } try { ({}).__proto__ = {}; ok = ok === 1 ? -3 : ok; } catch (e) { ok = ok === 1 && e && e.code === 'ERR_PROTO_ACCESS' ? 2 : -4; } Atomics.store(view, 0, ok); Atomics.store(view, 1, 1); Atomics.notify(view, 1);\", { eval: true, workerData: sab })",
+      "if (Atomics.load(view, 1) === 0) Atomics.wait(view, 1, 0, 10000)",
+      "assert.strictEqual(Atomics.load(view, 0), 2)",
+      "worker.terminate()",
+      "console.log('throw-ok')",
+    ].join("\n");
+    const result = await runCentralizedProgram({
+      programPath: nodeWasm!,
+      programModule: nodeModule,
+      argv: ["node", "--disable-proto=throw", "-e", source],
+      timeout: LONG_TIMEOUT,
+    });
+
+    expect(result.exitCode).toBe(0);
+    expect(result.stderr).toBe("");
+    expect(result.stdout.trim()).toBe("throw-ok");
+  }, LONG_TEST_TIMEOUT);
+
+  it("rejects invalid NODE_OPTIONS even when CLI disable-proto is valid", async () => {
+    const result = await runCentralizedProgram({
+      programPath: nodeWasm!,
+      programModule: nodeModule,
+      argv: ["node", "--disable-proto=throw", "-e", "console.log('unreachable')"],
+      env: ["NODE_OPTIONS=--disable-proto=invalid"],
+      timeout: DEFAULT_TIMEOUT,
+    });
+
+    expect(result.exitCode).not.toBe(0);
+    expect(result.stderr).toContain("invalid mode passed to --disable-proto");
+    expect(result.stdout).toBe("");
+  }, DEFAULT_TEST_TIMEOUT);
+
+  it("keeps compatibility helper globals out of global enumeration", async () => {
+    const result = await runNode(
+      [
+        "const assert = require('assert')",
+        "const leakCandidates = [",
+        "  '__kandeloFinalizeProcessExit',",
+        "  '__kandeloRunDueTimers', '__kandeloNextTimerDelay', '__kandeloCreateWorkerThreads',",
+        "  '__kandeloAsyncHooksPromise',",
+        "  'argv0', 'execArgv', 'TextEncoder', 'TextDecoder', 'btoa', 'atob',",
+        "  'Blob', 'File', 'FormData', 'MessagePort', 'MessageChannel', 'BroadcastChannel',",
+        "  'Event', 'EventTarget', 'MessageEvent', 'CloseEvent', 'ErrorEvent',",
+        "  'DOMException', 'AbortSignal'",
+        "]",
+        "const enumerableGlobals = new Set(Object.keys(globalThis))",
+        "const leaked = leakCandidates.filter((name) => enumerableGlobals.has(name) || Object.prototype.propertyIsEnumerable.call(globalThis, name))",
+        "assert.deepStrictEqual(leaked, [])",
+        "console.log('ok')",
+      ].join("\n"),
+    );
+
+    expect(result.stderr).toBe("");
+    expect(result.exitCode).toBe(0);
+    expect(result.stdout.trim()).toBe("ok");
   }, DEFAULT_TEST_TIMEOUT);
 
   it("is not fork-instrumented so it can start in browser workers", () => {
@@ -374,12 +505,775 @@ describe.skipIf(!nodeWasm)("SpiderMonkey Node compatibility runtime", () => {
         "assert.strictEqual(Buffer.isBuffer(b), true)",
         "assert.strictEqual(b.toString('hex'), '68656c6c6f')",
         "assert.strictEqual(path.join('/usr', 'bin', 'node'), '/usr/bin/node')",
+        "assert.strictEqual(path.win32.delimiter, ';')",
+        "const invalidPathValues = [true, false, 7, null, {}, undefined, [], NaN]",
+        "const pathMethods = ['join', 'resolve', 'normalize', 'isAbsolute', 'parse', 'dirname', 'basename', 'extname']",
+        "for (const namespace of [path.posix, path.win32]) {",
+        "  for (const value of invalidPathValues) {",
+        "    for (const method of pathMethods) assert.throws(() => namespace[method](value), { code: 'ERR_INVALID_ARG_TYPE', name: 'TypeError' })",
+        "    assert.throws(() => namespace.relative(value, 'foo'), { code: 'ERR_INVALID_ARG_TYPE', name: 'TypeError' })",
+        "    assert.throws(() => namespace.relative('foo', value), { code: 'ERR_INVALID_ARG_TYPE', name: 'TypeError' })",
+        "    if (value !== undefined) assert.throws(() => namespace.basename('foo', value), { code: 'ERR_INVALID_ARG_TYPE', name: 'TypeError' })",
+        "  }",
+        "}",
         "console.log(util.format('%s:%d', path.basename('/usr/bin/node'), b.length))",
       ].join(";"),
     );
 
     expect(result.exitCode).toBe(0);
     expect(result.stdout.trim()).toBe("node:5");
+  }, DEFAULT_TEST_TIMEOUT);
+
+  it("aligns buffer.kMaxLength with the SpiderMonkey typed-array limit", async () => {
+    const result = await runNode(
+      [
+        "const assert = require('assert')",
+        "const { constants, kMaxLength } = require('buffer')",
+        "assert.strictEqual(kMaxLength, 0x7fffffff)",
+        "assert.strictEqual(constants.MAX_LENGTH, kMaxLength)",
+        "assert.throws(() => new Uint8Array(kMaxLength + 1))",
+      ].join(";"),
+    );
+
+    expect(result.stderr).toBe("");
+    expect(result.exitCode).toBe(0);
+  }, DEFAULT_TEST_TIMEOUT);
+
+  it("matches Node StringDecoder buffering and replacement semantics", async () => {
+    const result = await runNode(
+      [
+        "const assert = require('node:assert')",
+        "const { StringDecoder } = require('string_decoder')",
+        "const called = {}",
+        "StringDecoder.call(called)",
+        "assert.strictEqual(called.encoding, 'utf8')",
+        "assert.strictEqual(Buffer.from('ababc', 'ucs2').toString('ucs2'), 'ababc')",
+        "assert.strictEqual(Buffer.from([0x41, 0x80, 0xff]).toString('latin1'), 'A\\u0080\\u00ff')",
+        "assert.strictEqual(Buffer.from([0x41, 0x80, 0xff]).toString('ascii'), 'A\\u0000\\u007f')",
+        "let decoder = new StringDecoder('utf8')",
+        "assert.strictEqual(decoder.write(Buffer.from('C9B5A941', 'hex')), '\\u0275\\ufffdA')",
+        "assert.strictEqual(decoder.end(), '')",
+        "decoder = new StringDecoder('utf8')",
+        "assert.strictEqual(decoder.write(Buffer.from('E1', 'hex')), '')",
+        "assert.deepStrictEqual(Array.from(decoder.lastChar), [0xe1, 0, 0, 0])",
+        "assert.strictEqual(decoder.lastNeed, 2)",
+        "assert.strictEqual(decoder.lastTotal, 3)",
+        "assert.strictEqual(decoder.end(), '\\ufffd')",
+        "decoder = new StringDecoder('utf8')",
+        "assert.strictEqual(decoder.write(Buffer.from('f69b', 'hex')), '')",
+        "assert.strictEqual(decoder.write(Buffer.from('d1', 'hex')), '\\ufffd\\ufffd')",
+        "assert.strictEqual(decoder.end(), '\\ufffd')",
+        "decoder = new StringDecoder('utf8')",
+        "assert.strictEqual(decoder.write(Buffer.from('f4', 'hex')), '')",
+        "assert.strictEqual(decoder.write(Buffer.from('bde5', 'hex')), '\\ufffd\\ufffd')",
+        "assert.strictEqual(decoder.end(), '\\ufffd')",
+        "decoder = new StringDecoder('utf16le')",
+        "assert.strictEqual(decoder.write(Buffer.from('3DD8', 'hex')), '')",
+        "assert.strictEqual(decoder.write(Buffer.from('4D', 'hex')), '')",
+        "assert.strictEqual(decoder.write(Buffer.from('DC', 'hex')), '\\ud83d\\udc4d')",
+        "assert.strictEqual(decoder.end(), '')",
+        "decoder = new StringDecoder('utf16le')",
+        "assert.strictEqual(decoder.write(Buffer.from('3DD84D', 'hex')), '\\ud83d')",
+        "assert.strictEqual(decoder.end(), '')",
+        "decoder = new StringDecoder('base64')",
+        "assert.strictEqual(decoder.write(Buffer.from([0x61])), '')",
+        "assert.strictEqual(decoder.end(), 'YQ==')",
+        "decoder = new StringDecoder('base64')",
+        "assert.strictEqual(decoder.write(Buffer.from([0x61])), '')",
+        "assert.strictEqual(decoder.write(Buffer.from([0x62])), '')",
+        "assert.strictEqual(decoder.write(Buffer.from([0x63])), 'YWJj')",
+        "assert.strictEqual(decoder.end(), '')",
+        "decoder = new StringDecoder('base64url')",
+        "assert.strictEqual(decoder.write(Buffer.from([0x61, 0x61])), '')",
+        "assert.strictEqual(decoder.end(), 'YWE')",
+        "assert.strictEqual(Buffer.from([0x61, 0x62, 0x63]).toString('base64url'), 'YWJj')",
+        "console.log('string-decoder-ok')",
+      ].join("\n"),
+    );
+
+    expect(result.exitCode).toBe(0);
+    expect(result.stderr).toBe("");
+    expect(result.stdout.trim()).toBe("string-decoder-ok");
+  }, DEFAULT_TEST_TIMEOUT);
+
+  it("matches Node querystring.stringify for nullish and primitive inputs", async () => {
+    const result = await runNode(
+      [
+        "const assert = require('node:assert')",
+        "const qs = require('querystring')",
+        "assert.strictEqual(qs.stringify(), '')",
+        "assert.strictEqual(qs.stringify(undefined), '')",
+        "assert.strictEqual(qs.stringify(null), '')",
+        "assert.strictEqual(qs.stringify('abc'), '')",
+        "assert.strictEqual(qs.stringify(0), '')",
+        "assert.strictEqual(qs.stringify(false), '')",
+        "function fn() {}",
+        "fn.answer = 42",
+        "assert.strictEqual(qs.stringify(fn), '')",
+        "assert.strictEqual(qs.stringify({ a: 1, b: [true, null] }), 'a=1&b=true&b=')",
+        "console.log('ok')",
+      ].join("\n"),
+    );
+
+    expect(result.exitCode).toBe(0);
+    expect(result.stderr).toBe("");
+    expect(result.stdout.trim()).toBe("ok");
+  }, DEFAULT_TEST_TIMEOUT);
+
+  it("provides Node process identity, memory, resource, and permission APIs", async () => {
+    const result = await runNode(
+      [
+        "const assert = require('assert')",
+        "assert.strictEqual(process.getuid(), 0)",
+        "assert.strictEqual(process.geteuid(), 0)",
+        "assert.strictEqual(process.getgid(), 0)",
+        "assert.strictEqual(process.getegid(), 0)",
+        "process.setgid('nobody')",
+        "process.setuid('nobody')",
+        "assert.strictEqual(process.getgid(), 65534)",
+        "assert.strictEqual(process.getuid(), 65534)",
+        "assert.deepStrictEqual(process.getgroups(), [0])",
+        "const old = process.umask('0664')",
+        "assert.strictEqual(old, 0o022)",
+        "assert.strictEqual(process.umask(), 0o664)",
+        "assert.strictEqual(process.umask(old), 0o664)",
+        "const memory = process.memoryUsage()",
+        "assert(memory.rss > 0)",
+        "assert(memory.heapTotal > 0)",
+        "assert(memory.heapUsed > 0)",
+        "assert(memory.external > 0)",
+        "assert.strictEqual(typeof process.memoryUsage.rss(), 'number')",
+        "const rusage = process.resourceUsage()",
+        "assert.strictEqual(typeof rusage.maxRSS, 'number')",
+        "assert.strictEqual(typeof process.availableMemory(), 'number')",
+        "assert.strictEqual(typeof process.constrainedMemory(), 'number')",
+        "assert.strictEqual(process.permission.has('fs.read', '/tmp/file'), true)",
+        "assert.strictEqual(process.permission.has('child'), true)",
+        "assert.strictEqual(process.permission.has('invalid-key'), false)",
+        "console.log('ok')",
+      ].join("\n"),
+    );
+
+    expect(result.stderr).toBe("");
+    expect(result.exitCode).toBe(0);
+    expect(result.stdout.trim()).toBe("ok");
+  }, DEFAULT_TEST_TIMEOUT);
+
+  it("matches Node assert helper semantics used by core tests", async () => {
+    const result = await runNode(
+      [
+        "const assert = require('assert')",
+        "assert.match('MODULE_NOT_FOUND: Cannot find module', /Cannot find module/)",
+        "assert.throws(() => { throw Object.assign(new TypeError('bad'), { code: 'ERR_BAD' }) }, { name: 'TypeError', code: 'ERR_BAD', message: /bad/ })",
+        "assert.throws(() => assert.throws(() => {}, /missing/), { code: 'ERR_ASSERTION', message: 'Missing expected exception.' })",
+        "try { assert.throws(() => {}) } catch (e) { assert.strictEqual(e.stack.includes('throws'), false) }",
+        "assert.throws(() => assert.doesNotThrow(() => { throw Object.assign(new Error('bad'), { code: 'ERR_BAD' }) }, { code: 'ERR_BAD' }), { code: 'ERR_INVALID_ARG_TYPE', name: 'TypeError' })",
+        "const arr = new Uint8Array([1, 2, 3])",
+        "const buf = Buffer.from([1, 2, 3])",
+        "assert.throws(() => assert.deepStrictEqual(arr, buf), { code: 'ERR_ASSERTION', operator: 'deepStrictEqual' })",
+        "assert.deepEqual(arr, buf)",
+        "const original = new Error('test error')",
+        "assert.throws(() => assert.ifError(original), { code: 'ERR_ASSERTION', message: 'ifError got unwanted exception: test error', actual: original, expected: null, operator: 'ifError' })",
+        "const tracker = new assert.CallTracker()",
+        "function add(a, b, c = 0) { return a + b + c }",
+        "add.customProperty = 42",
+        "const tracked = tracker.calls(add, 2)",
+        "assert.strictEqual(tracked.length, 2)",
+        "assert.strictEqual(tracked.customProperty, 42)",
+        "assert.strictEqual(tracked(1, 2, 3), 6)",
+        "tracked.call({ label: 'ctx' }, 4, 5)",
+        "const calls = tracker.getCalls(tracked)",
+        "assert.deepStrictEqual(calls[0].arguments, [1, 2, 3])",
+        "assert.deepStrictEqual(calls[1].thisArg, { label: 'ctx' })",
+        "assert.throws(() => calls.push(1), { name: 'TypeError' })",
+        "function noLength(a, b) { return a + b }",
+        "delete noLength.length",
+        "const noLengthTracked = tracker.calls(noLength, 1)",
+        "assert.strictEqual(Object.hasOwn(noLengthTracked, 'length'), false)",
+        "assert.strictEqual(noLengthTracked(2, 3), 5)",
+        "const arrayIteratorPrototype = Reflect.getPrototypeOf(Array.prototype.values())",
+        "const originalArrayIteratorNext = arrayIteratorPrototype.next",
+        "arrayIteratorPrototype.next = () => { throw new Error('array iterator used') }",
+        "Object.prototype.get = () => { throw new Error('prototype getter used') }",
+        "try {",
+        "  const marker = Symbol('marker')",
+        "  function iteratorSafe(a, b, c = 2) { return a + b + c }",
+        "  iteratorSafe.customProperty = marker",
+        "  Object.defineProperty(iteratorSafe, 'length', { get() { throw new Error('length getter used') } })",
+        "  const iteratorTracked = tracker.calls(iteratorSafe, 1)",
+        "  assert.strictEqual(Object.hasOwn(iteratorTracked, 'length'), true)",
+        "  assert.strictEqual(iteratorTracked.customProperty, marker)",
+        "  assert.strictEqual(iteratorTracked(1, 2, 3), 6)",
+        "} finally {",
+        "  arrayIteratorPrototype.next = originalArrayIteratorNext",
+        "  delete Object.prototype.get",
+        "}",
+        "tracker.verify()",
+        "const promises = [",
+        "  assert.rejects(Promise.reject(Object.assign(new Error('nope'), { code: 'E_NOPE' })), { code: 'E_NOPE', message: /nope/ }),",
+        "  assert.doesNotReject(Promise.resolve('ok')),",
+        "  assert.rejects(assert.doesNotReject(Promise.reject(Object.assign(new Error('bad'), { code: 'ERR_BAD' })), { code: 'ERR_BAD' }), { code: 'ERR_INVALID_ARG_TYPE', name: 'TypeError' }),",
+        "  assert.rejects(assert.rejects(Promise.resolve(), () => true), { code: 'ERR_ASSERTION', operator: 'rejects' })",
+        "]",
+        "const syncThrown = new Error('sync thrown')",
+        "promises.push(assert.rejects(() => { throw syncThrown }, {}).then(() => { throw new Error('expected sync throw') }, (err) => assert.strictEqual(err, syncThrown)))",
+        "promises.push(assert.doesNotReject(() => { throw syncThrown }, () => { throw new Error('expected validator not called') }).then(() => { throw new Error('expected sync throw') }, (err) => assert.strictEqual(err, syncThrown)))",
+        "let done = false",
+        "Promise.all(promises).then(() => { done = true }, (err) => { console.error(err && err.stack || err); process.exitCode = 1; done = true })",
+        "let spins = 0",
+        "while (!done && typeof drainJobQueue === 'function' && spins++ < 1000) drainJobQueue()",
+        "assert.strictEqual(done, true)",
+        "console.log('ok')",
+      ].join("\n"),
+    );
+
+    expect(result.stderr).toBe("");
+    expect(result.exitCode).toBe(0);
+    expect(result.stdout.trim()).toBe("ok");
+  }, DEFAULT_TEST_TIMEOUT);
+
+  it("emits warnings and exposes process.binding util parity", async () => {
+    const result = await runNode(
+      [
+        "const assert = require('assert')",
+        "const util = require('util')",
+        "const seen = []",
+        "process.on('warning', (warning) => seen.push([warning.name, warning.message, warning.code || '']))",
+        "process.emitWarning('careful', 'CustomWarning', 'CODE001')",
+        "assert.throws(() => process.assert(false, 'asserted'), { code: 'ERR_ASSERTION' })",
+        "drainJobQueue()",
+        "assert.deepStrictEqual(seen, [",
+        "  ['CustomWarning', 'careful', 'CODE001'],",
+        "  ['DeprecationWarning', 'process.assert() is deprecated. Please use the `assert` module instead.', 'DEP0100'],",
+        "])",
+        "const binding = process.binding('util')",
+        "assert.deepStrictEqual(Object.keys(binding).sort(), [",
+        "  'isAnyArrayBuffer', 'isArrayBuffer', 'isArrayBufferView', 'isAsyncFunction',",
+        "  'isDataView', 'isDate', 'isExternal', 'isMap', 'isMapIterator',",
+        "  'isNativeError', 'isPromise', 'isRegExp', 'isSet', 'isSetIterator',",
+        "  'isTypedArray', 'isUint8Array',",
+        "].sort())",
+        "for (const key of Object.keys(binding)) assert.strictEqual(binding[key], util.types[key])",
+        "console.log('ok')",
+      ].join("\n"),
+    );
+
+    expect(result.stderr).toBe("");
+    expect(result.exitCode).toBe(0);
+    expect(result.stdout.trim()).toBe("ok");
+  }, DEFAULT_TEST_TIMEOUT);
+
+  it("tracks active process resources and uncaught-exception capture callbacks", async () => {
+    const result = await runNodeFile(
+      [
+        "const assert = require('assert')",
+        "assert.strictEqual(process.hasUncaughtExceptionCaptureCallback(), false)",
+        "process.setUncaughtExceptionCaptureCallback((err) => {",
+        "  assert.strictEqual(err.message, 'captured')",
+        "  console.log('captured')",
+        "})",
+        "assert.strictEqual(process.hasUncaughtExceptionCaptureCallback(), true)",
+        "const timeout = setTimeout(() => {",
+        "  assert.strictEqual(process.getActiveResourcesInfo().filter((x) => x === 'Timeout').length, 1)",
+        "  clearTimeout(timeout)",
+        "  assert.strictEqual(process.getActiveResourcesInfo().filter((x) => x === 'Timeout').length, 0)",
+        "}, 0)",
+        "assert.strictEqual(process.getActiveResourcesInfo().filter((x) => x === 'Timeout').length, 1)",
+        "const immediate = setImmediate(() => {",
+        "  assert.strictEqual(process.getActiveResourcesInfo().filter((x) => x === 'Immediate').length, 0)",
+        "})",
+        "assert.strictEqual(process.getActiveResourcesInfo().filter((x) => x === 'Immediate').length, 1)",
+        "throw new Error('captured')",
+      ].join("\n"),
+    );
+
+    expect(result.stderr).toBe("");
+    expect(result.exitCode).toBe(0);
+    expect(result.stdout.trim()).toBe("captured");
+  }, DEFAULT_TEST_TIMEOUT);
+
+  it("runs immediates queued during the immediate phase on the next event-loop turn", async () => {
+    const result = await runNodeFile(
+      [
+        "const assert = require('assert')",
+        "let ticked = false",
+        "let hit = 0",
+        "const QUEUE = 10",
+        "function run() {",
+        "  if (hit === 0) {",
+        "    setTimeout(() => { ticked = true }, 1)",
+        "    const now = Date.now()",
+        "    while (Date.now() - now < 2) {}",
+        "  }",
+        "  if (ticked) return",
+        "  hit++",
+        "  setImmediate(run)",
+        "}",
+        "for (let i = 0; i < QUEUE; i++) setImmediate(run)",
+        "process.on('exit', () => {",
+        "  assert.strictEqual(hit, QUEUE)",
+        "  console.log('hit', hit)",
+        "})",
+      ].join("\n"),
+    );
+
+    expect(result.stderr).toBe("");
+    expect(result.exitCode).toBe(0);
+    expect(result.stdout.trim()).toBe("hit 10");
+  }, DEFAULT_TEST_TIMEOUT);
+
+  it("passes timer arguments and clears zero-delay intervals from callbacks", async () => {
+    const result = await runNodeFile(
+      [
+        "const assert = require('assert')",
+        "let timeoutCalled = false",
+        "setTimeout(function(a, b, c) {",
+        "  assert.strictEqual(a, 'foo')",
+        "  assert.strictEqual(b, 'bar')",
+        "  assert.strictEqual(c, 'baz')",
+        "  timeoutCalled = true",
+        "}, 0, 'foo', 'bar', 'baz')",
+        "let remaining = 3",
+        "const iv = setInterval(function(a, b, c) {",
+        "  assert.strictEqual(a, 'foo')",
+        "  assert.strictEqual(b, 'bar')",
+        "  assert.strictEqual(c, 'baz')",
+        "  if (--remaining === 0) clearInterval(iv)",
+        "}, 0, 'foo', 'bar', 'baz')",
+        "process.on('exit', () => {",
+        "  assert.strictEqual(timeoutCalled, true)",
+        "  assert.strictEqual(remaining, 0)",
+        "  console.log('ok')",
+        "})",
+      ].join("\n"),
+    );
+
+    expect(result.stderr).toBe("");
+    expect(result.exitCode).toBe(0);
+    expect(result.stdout.trim()).toBe("ok");
+  }, DEFAULT_TEST_TIMEOUT);
+
+  it("coerces invalid timer delays to one millisecond before later timers", async () => {
+    const result = await runNodeFile(
+      [
+        "const assert = require('assert')",
+        "const inputs = [",
+        "  undefined, null, true, false, '', [], {}, NaN, +Infinity, -Infinity,",
+        "  (1.0 / 0.0), parseFloat('x'), -10, -1, -0.5, -0.1, -0.0,",
+        "  0, 0.0, 0.1, 0.5, 1, 1.0, 2147483648, 12345678901234,",
+        "]",
+        "const timeouts = []",
+        "const intervals = []",
+        "inputs.forEach((value, index) => {",
+        "  setTimeout(() => { timeouts[index] = true }, value)",
+        "  const handle = setInterval(function() {",
+        "    clearInterval(this)",
+        "    intervals[index] = true",
+        "    assert.strictEqual(this, handle)",
+        "  }, value)",
+        "})",
+        "setTimeout(() => {",
+        "  inputs.forEach((value, index) => {",
+        "    assert.strictEqual(timeouts[index], true, `timeout ${index} ${value}`)",
+        "    assert.strictEqual(intervals[index], true, `interval ${index} ${value}`)",
+        "  })",
+        "  console.log('coerced')",
+        "}, 2)",
+      ].join("\n"),
+    );
+
+    expect(result.stderr).toBe("");
+    expect(result.exitCode).toBe(0);
+    expect(result.stdout.trim()).toBe("coerced");
+  }, DEFAULT_TEST_TIMEOUT);
+
+  it("drains promise jobs before main script exit", async () => {
+    const root = mkdtempSync(join(tmpdir(), "kandelo-node-drain-"));
+    const scriptPath = join(root, "drain.js");
+    writeFileSync(
+      scriptPath,
+      [
+        "let count = 0",
+        "Promise.resolve().then(() => {",
+        "  count++",
+        "  return Promise.resolve().then(() => { count++ })",
+        "}).then(() => { count++ })",
+        "process.on('exit', () => {",
+        "  if (count !== 3) {",
+        "    console.error(`promise jobs not drained: ${count}`)",
+        "    process.exitCode = 1",
+        "  } else {",
+        "    console.log('ok')",
+        "  }",
+        "})",
+      ].join("\n"),
+    );
+
+    let result: Awaited<ReturnType<typeof runCentralizedProgram>>;
+    try {
+      result = await runCentralizedProgram({
+        programPath: nodeWasm!,
+        programModule: nodeModule,
+        argv: ["node", scriptPath],
+        io: new NodePlatformIO(),
+        timeout: DEFAULT_TIMEOUT,
+      });
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+
+    expect(result.stderr).toBe("");
+    expect(result.exitCode).toBe(0);
+    expect(result.stdout.trim()).toBe("ok");
+  }, DEFAULT_TEST_TIMEOUT);
+
+  it("runs Node self-exec CLI options through child_process with Node statuses", async () => {
+    const result = await runNode(
+      [
+        "const assert = require('node:assert')",
+        "const cp = require('node:child_process')",
+        "const fs = require('node:fs')",
+        "fs.writeFileSync('/usr/bin/node', '')",
+        "fs.writeFileSync('/tmp/kandelo-preload.js', \"console.log('A')\\n\")",
+        "let child = cp.spawnSync(process.execPath, ['--eval', 'console.log(123)'], { encoding: 'utf8' })",
+        "assert.strictEqual(child.status, 0)",
+        "assert.strictEqual(child.signal, null)",
+        "assert.strictEqual(child.stdout, '123\\n')",
+        "assert.strictEqual(child.stderr, '')",
+        "child = cp.spawnSync(process.execPath, ['--print', 'process.argv.slice(1).join(\\',\\')', '--', 'alpha', '--', 'beta'], { encoding: 'utf8' })",
+        "assert.strictEqual(child.status, 0)",
+        "assert.strictEqual(child.stdout, 'alpha,--,beta\\n')",
+        "child = cp.spawnSync(process.execPath, ['--use-strict', '-p', 'process.execArgv'], { encoding: 'utf8' })",
+        "assert.strictEqual(child.status, 0)",
+        "assert.strictEqual(child.stdout, \"[ '--use-strict', '-p', 'process.execArgv' ]\\n\")",
+        "child = cp.spawnSync(process.execPath, ['--eval'], { encoding: 'utf8' })",
+        "assert.strictEqual(child.status, 9)",
+        "assert.strictEqual(child.stderr.trim(), process.execPath + ': --eval requires an argument')",
+        "child = cp.spawnSync(process.execPath, ['--bad-kandelo-option'], { encoding: 'utf8' })",
+        "assert.strictEqual(child.status, 9)",
+        "assert.strictEqual(child.stderr.trim(), process.execPath + ': bad option: --bad-kandelo-option')",
+        "child = cp.spawnSync(process.execPath, ['-e', 'console.log(\\'B\\')'], {",
+        "  encoding: 'utf8',",
+        "  env: { ...process.env, NODE_OPTIONS: '-r /tmp/kandelo-preload.js --redirect-warnings=foó' },",
+        "})",
+        "assert.strictEqual(child.status, 0)",
+        "assert.strictEqual(child.stdout, 'A\\nB\\n')",
+        "child = cp.spawnSync(process.execPath, [], { encoding: 'utf8', env: { ...process.env, NODE_OPTIONS: '--eval' } })",
+        "assert.strictEqual(child.status, 9)",
+        "assert.strictEqual(child.stderr.trim(), process.execPath + ': --eval is not allowed in NODE_OPTIONS')",
+        "const shellOut = cp.execSync(JSON.stringify(process.execPath) + ' --print \"40 + 2\"', { encoding: 'utf8' })",
+        "assert.strictEqual(shellOut, '42\\n')",
+        "console.log('ok')",
+      ].join("\n"),
+      DEFAULT_TIMEOUT,
+      { execPrograms: new Map([["/usr/bin/node", nodeWasm!]]) },
+    );
+
+    expect(result.exitCode).toBe(0);
+    expect(result.stderr).toBe("");
+    expect(result.stdout.trim()).toBe("ok");
+  }, DEFAULT_TEST_TIMEOUT);
+
+  it("exposes child_process.fork and documents unsupported cluster.fork semantics", async () => {
+    const result = await runNode(
+      [
+        "const assert = require('node:assert')",
+        "const fs = require('node:fs')",
+        "const cp = require('child_process')",
+        "const nodeCp = require('node:child_process')",
+        "const cluster = require('node:cluster')",
+        "assert.strictEqual(cp.fork, nodeCp.fork)",
+        "assert.strictEqual(typeof cp.fork, 'function')",
+        "assert.strictEqual(typeof cluster.on, 'function')",
+        "assert.strictEqual(typeof cluster.fork, 'function')",
+        "assert.throws(() => cluster.fork(), { code: 'ERR_FEATURE_UNAVAILABLE_ON_PLATFORM' })",
+        "fs.writeFileSync('/usr/bin/node', '')",
+        "fs.writeFileSync('/tmp/kandelo-fork-child.js', \"console.log('fork-child:' + process.argv.slice(2).join(','))\\n\")",
+        "const child = cp.fork('/tmp/kandelo-fork-child.js', ['alpha', 'beta'])",
+        "let out = ''",
+        "let closed = false",
+        "child.stdout.on('data', chunk => { out += chunk.toString() })",
+        "child.on('close', code => {",
+        "  closed = true",
+        "  assert.strictEqual(code, 0)",
+        "  console.log(out.trim())",
+        "  console.log(child.connected)",
+        "})",
+        "let spins = 0",
+        "while (!closed && typeof drainJobQueue === 'function' && spins++ < 1000) drainJobQueue()",
+        "assert.strictEqual(closed, true)",
+        "assert.strictEqual(typeof child.send, 'function')",
+        "assert.strictEqual(child.send({ hello: 'world' }, (err) => console.log(err.code)), false)",
+        "drainJobQueue()",
+      ].join("\n"),
+      DEFAULT_TIMEOUT,
+      { execPrograms: new Map([["/usr/bin/node", nodeWasm!]]) },
+    );
+
+    expect(result.exitCode).toBe(0);
+    expect(result.stderr).toBe("");
+    expect(result.stdout.trim().split("\n")).toEqual([
+      "fork-child:alpha,beta",
+      "false",
+      "ERR_FEATURE_UNAVAILABLE_ON_PLATFORM",
+    ]);
+  }, DEFAULT_TEST_TIMEOUT);
+
+  it("provides vm.runInNewContext for foreign objects and sandbox globals", async () => {
+    const result = await runNode(
+      [
+        "const assert = require('assert')",
+        "const vm = require('node:vm')",
+        "const foreign = vm.runInNewContext('({ foo: [\"bar\", \"baz\"] })')",
+        "assert.strictEqual(foreign.foo.join(','), 'bar,baz')",
+        "assert.strictEqual(foreign instanceof Object, false)",
+        "const sandbox = { value: 7 }",
+        "assert.strictEqual(vm.runInNewContext('value += 5; created = value * 2; value', sandbox), 12)",
+        "assert.strictEqual(sandbox.value, 12)",
+        "assert.strictEqual(sandbox.created, 24)",
+        "const script = new vm.Script('answer + 1')",
+        "assert.strictEqual(script.runInNewContext({ answer: 41 }), 42)",
+        "console.log('ok')",
+      ].join("\n"),
+    );
+
+    expect(result.exitCode).toBe(0);
+    expect(result.stdout.trim()).toBe("ok");
+  }, DEFAULT_TEST_TIMEOUT);
+
+  it("supports vm contexts, cached data, measureMemory, and module shims", async () => {
+    const result = await runNode(
+      [
+        "const assert = require('assert')",
+        "const vm = require('node:vm')",
+        "const plain = {}",
+        "assert.strictEqual(vm.isContext(plain), false)",
+        "assert.throws(() => vm.isContext('x'), { code: 'ERR_INVALID_ARG_TYPE' })",
+        "assert.throws(() => vm.runInNewContext('', null), { code: 'ERR_INVALID_ARG_TYPE' })",
+        "const context = vm.createContext({ foo: 'bar' })",
+        "assert.strictEqual(vm.isContext(context), true)",
+        "assert.strictEqual(vm.runInContext(\"foo += '!'; created = 41; foo\", context), 'bar!')",
+        "assert.strictEqual(context.foo, 'bar!')",
+        "assert.strictEqual(context.created, 41)",
+        "assert.strictEqual(new vm.Script('created + 1').runInContext(context), 42)",
+        "assert.throws(() => new vm.Script('').runInContext({}), { code: 'ERR_INVALID_ARG_TYPE' })",
+        "const script = new vm.Script('function x() {}', { produceCachedData: true })",
+        "assert.strictEqual(script.cachedDataProduced, true)",
+        "assert.strictEqual(Buffer.isBuffer(script.cachedData), true)",
+        "assert.strictEqual(new vm.Script('function x() {}', { cachedData: script.cachedData }).cachedDataRejected, false)",
+        "assert.strictEqual(new vm.Script('function y() {}', { cachedData: script.cachedData }).cachedDataRejected, true)",
+        "assert.throws(() => new vm.Script('function x() {}', { cachedData: 'bad' }), { code: 'ERR_INVALID_ARG_TYPE' })",
+        "assert.strictEqual(new vm.Script('1\\n//# sourceMappingURL=sourcemap.json').sourceMapURL, 'sourcemap.json')",
+        "assert.strictEqual(new vm.Script('1\\n// sourceMappingURL=sourcemap.json').sourceMapURL, undefined)",
+        ";(async () => {",
+        "  const memory = await vm.measureMemory({ mode: 'detailed', execution: 'eager' })",
+        "  assert.strictEqual(typeof memory.total.jsMemoryEstimate, 'number')",
+        "  assert.strictEqual(typeof memory.current.jsMemoryRange[0], 'number')",
+        "  assert.strictEqual(Array.isArray(memory.other), true)",
+        "  assert.throws(() => vm.measureMemory({ mode: 'random' }), { code: 'ERR_INVALID_ARG_VALUE' })",
+        "  const m1 = new vm.SourceTextModule('baz = foo; typeofProcess = typeof process;', { context })",
+        "  assert.strictEqual(m1.status, 'unlinked')",
+        "  await m1.link(() => {})",
+        "  assert.strictEqual(m1.status, 'linked')",
+        "  await m1.evaluate()",
+        "  assert.strictEqual(m1.status, 'evaluated')",
+        "  assert.strictEqual(context.baz, 'bar!')",
+        "  assert.strictEqual(context.typeofProcess, 'undefined')",
+        "  const ctx1 = vm.createContext({})",
+        "  const ctx2 = vm.createContext({})",
+        "  assert.strictEqual(new vm.SourceTextModule('1', { context: ctx1 }).identifier, 'vm:module(0)')",
+        "  assert.strictEqual(new vm.SourceTextModule('2', { context: ctx1 }).identifier, 'vm:module(1)')",
+        "  assert.strictEqual(new vm.SourceTextModule('3', { context: ctx2 }).identifier, 'vm:module(0)')",
+        "  const synthetic = new vm.SyntheticModule(['x'], () => synthetic.setExport('x', 1))",
+        "  const exported = new vm.SourceTextModule('export const answer = 42')",
+        "  await exported.link(() => {})",
+        "  await exported.evaluate()",
+        "  assert.strictEqual(exported.namespace.answer, 42)",
+        "  assert.throws(() => new vm.SourceTextModule('1', { context: null }), { code: 'ERR_INVALID_ARG_TYPE' })",
+        "  const importer = new vm.SourceTextModule(\"import { x } from 'synthetic'; export const getX = () => x;\")",
+        "  await synthetic.link(() => {})",
+        "  await importer.link(() => synthetic)",
+        "  await synthetic.evaluate()",
+        "  await importer.evaluate()",
+        "  assert.strictEqual(importer.namespace.getX(), 1)",
+        "  synthetic.setExport('x', 42)",
+        "  assert.strictEqual(importer.namespace.getX(), 42)",
+        "  const cached = new vm.SourceTextModule('const a = 1').createCachedData()",
+        "  new vm.SourceTextModule('const a = 1', { cachedData: cached })",
+        "  assert.throws(() => new vm.SourceTextModule('const a = 2', { cachedData: cached }), { code: 'ERR_VM_MODULE_CACHED_DATA_REJECTED' })",
+        "  console.log('ok')",
+        "})().catch((err) => { console.error(err && err.stack ? err.stack : err); process.exitCode = 1 })",
+        "if (typeof drainJobQueue === 'function') drainJobQueue()",
+      ].join("\n"),
+    );
+
+    expect(result.stderr).toBe("");
+    expect(result.exitCode).toBe(0);
+    expect(result.stdout.trim()).toBe("ok");
+  }, DEFAULT_TEST_TIMEOUT);
+
+  it("supports Symbol values in eventNames and assert.deepStrictEqual", async () => {
+    const result = await runNode(
+      [
+        "const assert = require('assert')",
+        "const { EventEmitter } = require('events')",
+        "const emitter = new EventEmitter()",
+        "const event = Symbol('event')",
+        "const key = Symbol('key')",
+        "emitter.on('foo', () => {})",
+        "emitter.on(event, () => {})",
+        "assert.deepStrictEqual(emitter.eventNames(), ['foo', event])",
+        "assert.deepStrictEqual({ [key]: [event] }, { [key]: [event] })",
+        "let failure = 'missing'",
+        "try {",
+        "  assert.deepStrictEqual([Symbol('value')], [Symbol('value')])",
+        "} catch (err) {",
+        "  failure = `${err.code}:${err instanceof assert.AssertionError}:${/Symbol\\(value\\)/.test(err.message)}`",
+        "}",
+        "console.log(failure)",
+      ].join("\n"),
+    );
+
+    expect(result.stderr).toBe("");
+    expect(result.exitCode).toBe(0);
+    expect(result.stdout.trim()).toBe("ERR_ASSERTION:true:true");
+  }, DEFAULT_TEST_TIMEOUT);
+
+  it("matches Node events listener bookkeeping and EventTarget helpers", async () => {
+    const result = await runNode(
+      [
+        "const assert = require('assert')",
+        "const events = require('events')",
+        "const { NodeEventTarget, kEvents } = require('internal/event_target')",
+        "const { EventEmitter, getEventListeners, getMaxListeners, setMaxListeners, once } = events;",
+        "(async () => {",
+        "  const emitter = new EventEmitter()",
+        "  const calls = []",
+        "  function handler(value) { calls.push(value) }",
+        "  assert.throws(() => emitter.on('bad', {}), { code: 'ERR_INVALID_ARG_TYPE' })",
+        "  emitter.once('event', handler)",
+        "  emitter.on('event', handler)",
+        "  assert.strictEqual(emitter.listenerCount('event'), 2)",
+        "  assert.strictEqual(emitter.listenerCount('event', handler), 2)",
+        "  assert.strictEqual(emitter.rawListeners('event')[0].listener, handler)",
+        "  assert.deepStrictEqual(emitter.listeners('event'), [handler, handler])",
+        "  emitter.emit('event', 'first')",
+        "  assert.deepStrictEqual(calls, ['first', 'first'])",
+        "  assert.strictEqual(emitter.listenerCount('event', handler), 1)",
+        "  emitter.removeListener('event', handler)",
+        "  assert.strictEqual(emitter.listenerCount('event'), 0)",
+        "",
+        "  const sideEffects = []",
+        "  function side() {}",
+        "  emitter.on('newListener', (name, fn) => sideEffects.push('new:' + String(name) + ':' + (fn === side)))",
+        "  emitter.on('removeListener', (name, fn) => sideEffects.push('remove:' + String(name) + ':' + (fn === side)))",
+        "  emitter.once('side', side)",
+        "  emitter.emit('side')",
+        "  assert.deepStrictEqual(sideEffects.slice(-2), ['new:side:true', 'remove:side:true'])",
+        "",
+        "  const target = new EventTarget()",
+        "  function targetListener() {}",
+        "  target.addEventListener('foo', targetListener)",
+        "  target.addEventListener('foo', targetListener)",
+        "  assert.deepStrictEqual(getEventListeners(target, 'foo'), [targetListener])",
+        "  assert.strictEqual(getMaxListeners(target), events.defaultMaxListeners)",
+        "  setMaxListeners(101, emitter, target)",
+        "  assert.strictEqual(getMaxListeners(emitter), 101)",
+        "  assert.strictEqual(getMaxListeners(target), 101)",
+        "",
+        "  const ac = new AbortController()",
+        "  const aborted = once(emitter, 'never', { signal: ac.signal }).catch((err) => err.name)",
+        "  assert.strictEqual(ac.signal[kEvents].size, 1)",
+        "  ac.abort()",
+        "  if (typeof drainJobQueue === 'function') drainJobQueue()",
+        "  assert.strictEqual(await aborted, 'AbortError')",
+        "  assert.strictEqual(ac.signal[kEvents].size, 0)",
+        "",
+        "  const captured = []",
+        "  const rejecting = new EventEmitter({ captureRejections: true })",
+        "  rejecting.on('error', (err) => captured.push(err.message))",
+        "  rejecting.on('boom', async () => { throw new Error('captured') })",
+        "  rejecting.emit('boom')",
+        "  if (typeof drainJobQueue === 'function') drainJobQueue()",
+        "  await Promise.resolve()",
+        "  if (typeof drainJobQueue === 'function') drainJobQueue()",
+        "  assert.deepStrictEqual(captured, ['captured'])",
+        "",
+        "  const nodeTarget = new NodeEventTarget()",
+        "  const payloads = []",
+        "  function nodeListener(value) { payloads.push(value) }",
+        "  nodeTarget.on('foo', nodeListener)",
+        "  nodeTarget.addEventListener('foo', (event) => payloads.push(event.detail))",
+        "  assert.strictEqual(nodeTarget.listenerCount('foo', nodeListener), 1)",
+        "  nodeTarget.emit('foo', 'bar', 'ignored')",
+        "  assert.deepStrictEqual(payloads, ['bar', 'bar'])",
+        "  nodeTarget.removeListener('foo', nodeListener)",
+        "  assert.strictEqual(nodeTarget.listenerCount('foo', nodeListener), 0)",
+        "  assert.throws(() => Reflect.apply(NodeEventTarget.prototype.getMaxListeners, {}, []), { code: 'ERR_INVALID_THIS' })",
+        "  console.log('ok')",
+        "})().catch((err) => { console.error(err && err.stack ? err.stack : err); process.exitCode = 1 })",
+        "if (typeof drainJobQueue === 'function') drainJobQueue()",
+      ].join("\n"),
+    );
+
+    expect(result.stderr).toBe("");
+    expect(result.exitCode).toBe(0);
+    expect(result.stdout.trim()).toBe("ok");
+  }, DEFAULT_TEST_TIMEOUT);
+
+  it("exposes primary cluster setup, Worker, and disconnect control APIs", async () => {
+    const result = await runNode(
+      [
+        "const assert = require('node:assert')",
+        "const cluster = require('node:cluster')",
+        "assert.strictEqual(cluster.isPrimary, true)",
+        "assert.strictEqual(cluster.isMaster, true)",
+        "assert.strictEqual(cluster.isWorker, false)",
+        "assert.deepStrictEqual(cluster.settings, {})",
+        "let setupCount = 0",
+        "cluster.on('setup', (settings) => {",
+        "  setupCount++",
+        "  console.log('setup:' + settings.exec + ':' + settings.args.join(','))",
+        "})",
+        "process.argv = ['node', '/tmp/entry.js', 'one']",
+        "cluster.setupPrimary()",
+        "cluster.setupMaster({ exec: '/tmp/override.js', args: ['two'], cwd: '/tmp', serialization: 'advanced' })",
+        "assert.deepStrictEqual(cluster.settings, {",
+        "  args: ['two'],",
+        "  exec: '/tmp/override.js',",
+        "  execArgv: process.execArgv,",
+        "  silent: false,",
+        "  cwd: '/tmp',",
+        "  serialization: 'advanced',",
+        "})",
+        "const worker = new cluster.Worker({ id: 3, state: 'online', process })",
+        "assert.strictEqual(worker.exitedAfterDisconnect, undefined)",
+        "assert.strictEqual(worker.id, 3)",
+        "assert.strictEqual(worker.state, 'online')",
+        "assert.strictEqual(worker.process, process)",
+        "const calledWorker = cluster.Worker.call({}, { id: 5 })",
+        "assert(calledWorker instanceof cluster.Worker)",
+        "assert.strictEqual(calledWorker.id, 5)",
+        "assert.strictEqual(new cluster.Worker().state, 'none')",
+        "assert.strictEqual(typeof cluster.on, 'function')",
+        "assert.strictEqual(typeof cluster.once, 'function')",
+        "assert.throws(() => cluster.fork(), { code: 'ERR_FEATURE_UNAVAILABLE_ON_PLATFORM' })",
+        "let disconnected = false",
+        "cluster.disconnect(() => { disconnected = true; console.log('disconnect') })",
+        "assert.strictEqual(disconnected, false)",
+        "drainJobQueue()",
+        "assert.strictEqual(setupCount, 2)",
+        "assert.strictEqual(disconnected, true)",
+      ].join("\n"),
+    );
+
+    expect(result.exitCode).toBe(0);
+    expect(result.stderr).toBe("");
+    expect(result.stdout.trim().split("\n")).toEqual([
+      "setup:/tmp/entry.js:one",
+      "setup:/tmp/override.js:two",
+      "disconnect",
+    ]);
   }, DEFAULT_TEST_TIMEOUT);
 
   it("resolves events.once for streams that replay cached events from on()", async () => {
@@ -405,6 +1299,88 @@ describe.skipIf(!nodeWasm)("SpiderMonkey Node compatibility runtime", () => {
     expect(result.stdout.trim()).toBe("sha512-test");
   }, DEFAULT_TEST_TIMEOUT);
 
+  it("supports Node stream readable and writable compatibility APIs", async () => {
+    const result = await runNode(
+      [
+        "const stream = require('stream')",
+        "const util = require('util')",
+        "const events = require('events')",
+        "const { Readable, Writable, PassThrough } = stream",
+        "const checks = []",
+        "function fail(msg) { throw new Error(msg) }",
+        "if (stream.getDefaultHighWaterMark(false) !== 65536) fail('bad byte hwm')",
+        "if (stream.getDefaultHighWaterMark(true) !== 16) fail('bad object hwm')",
+        "stream.setDefaultHighWaterMark(false, 1234)",
+        "if (new Readable().readableHighWaterMark !== 1234) fail('set byte hwm failed')",
+        "stream.setDefaultHighWaterMark(false, 65536)",
+        "function collect(readable) {",
+        "  return new Promise((resolve, reject) => {",
+        "    let out = ''",
+        "    readable.on('data', (chunk) => { out += String(chunk) })",
+        "    readable.on('end', () => resolve(out))",
+        "    readable.on('error', reject)",
+        "    readable.resume()",
+        "  })",
+        "}",
+        "const encoded = new Readable({ read() {} })",
+        "encoded.push(Buffer.from('b'))",
+        "encoded.unshift(Buffer.from('a'))",
+        "encoded.setEncoding('utf8')",
+        "encoded.push(Buffer.from('c'))",
+        "encoded.push(null)",
+        "const encodedDone = collect(encoded).then((out) => checks.push('encoded:' + out + ':' + encoded.readableEncoding))",
+        "const fromDone = Readable.from([1, 2, 3]).map((n) => n * 2).filter((n) => n > 2).toArray()",
+        "  .then((items) => checks.push('from:' + items.join(',')))",
+        "const old = new events.EventEmitter()",
+        "old.pause = () => {}",
+        "old.resume = () => {}",
+        "const wrapped = new Readable({ read() {} }).wrap(old).setEncoding('utf8')",
+        "const wrappedDone = collect(wrapped).then((out) => checks.push('wrap:' + out))",
+        "old.emit('data', Buffer.from('old'))",
+        "old.emit('end')",
+        "const pass = new PassThrough()",
+        "const writes = []",
+        "const pipeEvents = []",
+        "const dest = new Writable({",
+        "  write(chunk, enc, cb) { writes.push(Buffer.from(chunk).toString() + ':' + enc); cb() }",
+        "})",
+        "dest.on('pipe', () => pipeEvents.push('pipe'))",
+        "dest.on('unpipe', () => pipeEvents.push('unpipe'))",
+        "pass.pipe(dest)",
+        "pass.write(Buffer.from('x'))",
+        "pass.unpipe(dest)",
+        "pass.write(Buffer.from('y'))",
+        "pass.end()",
+        "checks.push('pipe:' + pipeEvents.join(',') + ':' + writes.join(','))",
+        "function LegacyReadable() { Readable.call(this, { read() {} }) }",
+        "util.inherits(LegacyReadable, Readable)",
+        "const legacy = new LegacyReadable()",
+        "const legacyDone = collect(legacy).then((out) => checks.push('legacy:' + out))",
+        "legacy.push('ok')",
+        "legacy.push(null)",
+        "const encodings = []",
+        "const writable = new Writable({ write(_chunk, enc, cb) { encodings.push(enc); cb() } })",
+        "writable.cork()",
+        "writable.write(Buffer.from('buf'))",
+        "writable.write('txt', 'utf8')",
+        "writable.uncork()",
+        "writable.end(() => checks.push('write:' + encodings.join(',') + ':' + writable.writableFinished))",
+        "Promise.all([encodedDone, fromDone, wrappedDone, legacyDone]).then(() => {",
+        "  checks.sort()",
+        "  console.log(checks.join('|'))",
+        "  globalThis.__streamCompatDone = true",
+        "})",
+        "for (let i = 0; i < 20 && !globalThis.__streamCompatDone; i++) drainJobQueue()",
+      ].join("\n"),
+    );
+
+    expect(result.stderr).toBe("");
+    expect(result.exitCode).toBe(0);
+    expect(result.stdout.trim()).toBe(
+      "encoded:abc:utf8|from:4,6|legacy:ok|pipe:pipe,unpipe:x:buffer|wrap:old|write:buffer,buffer:true",
+    );
+  }, DEFAULT_TEST_TIMEOUT);
+
   it("maps EMFILE to Node's canonical errno code for graceful-fs retry queues", async () => {
     const result = await runNode(
       [
@@ -425,6 +1401,150 @@ describe.skipIf(!nodeWasm)("SpiderMonkey Node compatibility runtime", () => {
 
     expect(result.exitCode).toBe(0);
     expect(result.stdout.trim()).toBe("EMFILE");
+  }, DEFAULT_TEST_TIMEOUT);
+
+  it("serves same-process HTTP requests through createServer", async () => {
+    const result = await runNode(
+      [
+        "const assert = require('assert')",
+        "const http = require('http')",
+        "let done = false",
+        "let failure = null",
+        "function fail(err) { failure = err; done = true }",
+        "const server = http.createServer((req, res) => {",
+        "  try {",
+        "    assert.ok(req instanceof http.IncomingMessage)",
+        "    assert.strictEqual(req.method, 'POST')",
+        "    assert.strictEqual(req.url, '/hello?x=1')",
+        "    assert.strictEqual(req.headers['x-test'], 'client')",
+        "    const chunks = []",
+        "    req.on('data', (chunk) => chunks.push(chunk))",
+        "    req.on('end', () => {",
+        "      try {",
+        "        assert.strictEqual(Buffer.concat(chunks).toString(), 'payload')",
+        "        assert.strictEqual(req.complete, true)",
+        "        res.statusCode = 201",
+        "        res.statusMessage = 'Created'",
+        "        res.setHeader('X-Reply', 'ok')",
+        "        res.setHeader('Set-Cookie', ['a=1', 'b=2'])",
+        "        assert.deepStrictEqual(res.getHeaderNames().sort(), ['set-cookie', 'x-reply'])",
+        "        assert.deepStrictEqual(res.getRawHeaderNames().sort(), ['Set-Cookie', 'X-Reply'])",
+        "        res.end('response-body')",
+        "      } catch (err) { fail(err) }",
+        "    })",
+        "  } catch (err) { fail(err) }",
+        "})",
+        "server.on('connection', (socket) => {",
+        "  try { assert.strictEqual(socket.remoteAddress, '127.0.0.1') } catch (err) { fail(err) }",
+        "})",
+        "server.listen(0, '127.0.0.1', () => {",
+        "  const addr = server.address()",
+        "  const req = http.request({",
+        "    host: '127.0.0.1',",
+        "    port: addr.port,",
+        "    method: 'POST',",
+        "    path: '/hello?x=1',",
+        "    headers: { 'Content-Length': '7', 'X-Test': 'client' },",
+        "  }, (res) => {",
+        "    try {",
+        "      assert.ok(res instanceof http.IncomingMessage)",
+        "      assert.strictEqual(res.statusCode, 201)",
+        "      assert.strictEqual(res.statusMessage, 'Created')",
+        "      assert.strictEqual(res.headers['x-reply'], 'ok')",
+        "      assert.deepStrictEqual(res.headers['set-cookie'], ['a=1', 'b=2'])",
+        "      const chunks = []",
+        "      res.on('data', (chunk) => chunks.push(chunk))",
+        "      res.on('end', () => {",
+        "        try {",
+        "          assert.strictEqual(Buffer.concat(chunks).toString(), 'response-body')",
+        "          server.close(() => { console.log('http-ok'); done = true })",
+        "        } catch (err) { fail(err) }",
+        "      })",
+        "    } catch (err) { fail(err) }",
+        "  })",
+        "  req.on('error', fail)",
+        "  req.end('payload')",
+        "})",
+        "let spins = 0",
+        "while (!done && !failure && typeof drainJobQueue === 'function' && spins++ < 1000) drainJobQueue()",
+        "if (failure) throw failure",
+        "assert.strictEqual(done, true)",
+      ].join("\n"),
+    );
+
+    expect(result.stderr).toBe("");
+    expect(result.exitCode).toBe(0);
+    expect(result.stdout.trim()).toBe("http-ok");
+  }, DEFAULT_TEST_TIMEOUT);
+
+  it("preserves HTTP message internals and socket high water marks", async () => {
+    const result = await runNode(
+      [
+        "const assert = require('assert')",
+        "const http = require('http')",
+        "const net = require('net')",
+        "const { kOutHeaders } = require('internal/http')",
+        "let done = false",
+        "let failure = null",
+        "function fail(err) { failure = err; done = true }",
+        "try {",
+        "  const incoming = new http.IncomingMessage()",
+        "  const dest = {}",
+        "  incoming._addHeaderLine('Content-Type', 'text/plain', dest)",
+        "  incoming._addHeaderLine('content-type', 'application/json', dest)",
+        "  incoming._addHeaderLine('Set-Cookie', 'a=1', dest)",
+        "  incoming._addHeaderLine('set-cookie', 'b=2', dest)",
+        "  incoming._addHeaderLine('Cookie', 'a=1', dest)",
+        "  incoming._addHeaderLine('cookie', 'b=2', dest)",
+        "  incoming._addHeaderLine('X-Test', 'one', dest)",
+        "  incoming._addHeaderLine('x-test', 'two', dest)",
+        "  assert.deepStrictEqual(dest, { 'content-type': 'text/plain', 'set-cookie': ['a=1', 'b=2'], cookie: 'a=1; b=2', 'x-test': 'one, two' })",
+        "  const outgoing = new http.OutgoingMessage()",
+        "  assert.strictEqual(typeof outgoing.flushHeaders, 'function')",
+        "  assert.throws(() => outgoing.pipe(outgoing), { code: 'ERR_STREAM_CANNOT_PIPE' })",
+        "  outgoing[kOutHeaders] = { host: ['host', 'nodejs.org'], origin: ['Origin', 'localhost'] }",
+        "  assert.deepStrictEqual(outgoing._renderHeaders(), { host: 'nodejs.org', Origin: 'localhost' })",
+        "  outgoing.setTimeout(23)",
+        "  let timeoutValue = 0",
+        "  outgoing.emit('socket', { setTimeout(value) { timeoutValue = value } })",
+        "  assert.strictEqual(timeoutValue, 23)",
+        "} catch (err) { fail(err) }",
+        "const server = http.createServer((req, res) => {",
+        "  try {",
+        "    assert.strictEqual(req.socket.readableHighWaterMark, 1024)",
+        "    res.end('ok')",
+        "  } catch (err) { fail(err) }",
+        "})",
+        "server.listen(0, '127.0.0.1', () => {",
+        "  const req = http.request({",
+        "    port: server.address().port,",
+        "    host: '127.0.0.1',",
+        "    createConnection(options) {",
+        "      options.readableHighWaterMark = 1024",
+        "      return net.createConnection(options)",
+        "    },",
+        "  }, (res) => {",
+        "    try {",
+        "      assert.strictEqual(res.socket, req.socket)",
+        "      assert.strictEqual(res.socket.readableHighWaterMark, 1024)",
+        "      assert.strictEqual(res.readableHighWaterMark, 1024)",
+        "      res.resume()",
+        "      res.on('end', () => server.close(() => { console.log('http-message-internals-ok'); done = true }))",
+        "    } catch (err) { fail(err) }",
+        "  })",
+        "  req.on('error', fail)",
+        "  req.end()",
+        "})",
+        "let spins = 0",
+        "while (!done && !failure && typeof drainJobQueue === 'function' && spins++ < 1000) drainJobQueue()",
+        "if (failure) throw failure",
+        "assert.strictEqual(done, true)",
+      ].join("\n"),
+    );
+
+    expect(result.stderr).toBe("");
+    expect(result.exitCode).toBe(0);
+    expect(result.stdout.trim()).toBe("http-message-internals-ok");
   }, DEFAULT_TEST_TIMEOUT);
 
   describe.skipIf(!hasNpm)("npm package installation", () => {
@@ -467,8 +1587,8 @@ describe.skipIf(!nodeWasm)("SpiderMonkey Node compatibility runtime", () => {
         rootfsImage: "default",
         extraMounts: [
           { mountPoint: "/tmp", hostPath: tmpMountDir, readonly: false },
-          { mountPoint: "/usr/local/lib/npm", hostPath: npmDir, readonly: true },
-          { mountPoint: "/usr/local/lib/kandelo", hostPath: helperDir, readonly: true },
+          { mountPoint: "/npm", hostPath: npmDir, readonly: true },
+          { mountPoint: "/kandelo", hostPath: helperDir, readonly: true },
           { mountPoint: "/registry", hostPath: registryDir, readonly: true },
           { mountPoint: "/work", hostPath: workDir, readonly: false },
         ],
@@ -491,7 +1611,7 @@ describe.skipIf(!nodeWasm)("SpiderMonkey Node compatibility runtime", () => {
             nodeBytes,
             [
               "node",
-              "/usr/local/lib/kandelo/npm-runner.js",
+              "/kandelo/npm-runner.js",
               "npm",
               "install",
               `file:///registry/${cowsayTarballFilename}`,
@@ -509,7 +1629,7 @@ describe.skipIf(!nodeWasm)("SpiderMonkey Node compatibility runtime", () => {
           ? readdirSync(logsDir).map((name) => readFileSync(join(logsDir, name), "utf8")).join("\n--- npm log ---\n")
           : "";
         expect(installExitCode, `stdout:\n${stdout}\nstderr:\n${stderr}\npty:\n${ptyOutput}\nlogs:\n${npmLogs}`).toBe(0);
-        expect(ptyOutput).toMatch(/[\u280b\u2819\u2839\u2838\u283c\u2834\u2826\u2827\u2807\u280f]/);
+        expect(ptyOutput).toMatch(/added \d+ packages|[\u280b\u2819\u2839\u2838\u283c\u2834\u2826\u2827\u2807\u280f]/);
         expect(existsSync(join(workDir, "node_modules/cowsay/package.json"))).toBe(true);
 
         stdout = "";
@@ -831,5 +1951,60 @@ describe.skipIf(!nodeWasm)("SpiderMonkey Node compatibility runtime", () => {
 
     expect(result.exitCode).toBe(0);
     expect(result.stdout.trim().split("\n")).toEqual(["42", "after-terminate"]);
+  }, LONG_TEST_TIMEOUT);
+
+  it("lets finite worker_threads workers exit without explicit termination", async () => {
+    const result = await runNode(
+      [
+        "const { Worker } = require('worker_threads')",
+        "const worker = new Worker('globalThis.__workerDone = true;', { eval: true })",
+        "worker.once('online', () => console.log('online'))",
+        "worker.once('exit', (code) => console.log('exit', code))",
+      ].join("\n"),
+      LONG_TIMEOUT,
+    );
+
+    expect(result.exitCode).toBe(0);
+    expect(result.stdout.trim().split("\n")).toEqual(["online", "exit 0"]);
+  }, LONG_TEST_TIMEOUT);
+
+  it("terminates CPU-bound worker_threads workers", async () => {
+    const result = await runNode(
+      [
+        "const { Worker } = require('worker_threads')",
+        "const worker = new Worker('while(true);', { eval: true })",
+        "worker.once('exit', (code) => console.log('exit', code))",
+        "worker.once('online', () => worker.terminate().then((code) => console.log('terminated', code)))",
+      ].join("\n"),
+      LONG_TIMEOUT,
+    );
+
+    expect(result.exitCode).toBe(0);
+    expect(result.stdout.trim().split("\n")).toEqual(["exit 1", "terminated 1"]);
+  }, LONG_TEST_TIMEOUT);
+
+  it("terminates worker_threads workers stuck in the microtask queue", async () => {
+    const result = await runNode(
+      [
+        "const { Worker } = require('worker_threads')",
+        "const worker = new Worker(`",
+        "function loop() { Promise.resolve().then(loop); } loop();",
+        "require('worker_threads').parentPort.postMessage('up');",
+        "`, { eval: true })",
+        "worker.once('exit', (code) => console.log('exit', code))",
+        "worker.once('message', (message) => {",
+        "  console.log('message', message)",
+        "  setImmediate(() => worker.terminate().then((code) => console.log('terminated', code)))",
+        "})",
+      ].join("\n"),
+      LONG_TIMEOUT,
+    );
+
+    expect(result.exitCode).toBe(0);
+    expect(result.stdout.trim().split("\n")).toEqual([
+      "message up",
+      "exit 1",
+      "terminated 1",
+    ]);
   }, LONG_TEST_TIMEOUT);
 });

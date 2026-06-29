@@ -1,0 +1,22 @@
+AssertionError: undefined === { O_RDONLY: 0, O_WRONLY: 1, O_RDWR: 2, O_CREAT: 64, O_EXCL: 128, O_TRUNC: 512, O_APPEND: 1024, O_DIRECTORY: 65536, O_NOFOLLOW: 131072, S_IFMT: 61440, S_IFREG: 32768, S_IFDIR: 16384, S_IFCHR: 8192, S_IFBLK: 24576, S_IFIFO: 4096, S_IFLNK: 40960, S_IFSOCK: 49152, S_IRWXU: 448, S_IRUSR: 256, S_IWUSR: 128, S_IXUSR: 64, S_IRWXG: 56, S_IRGRP: 32, S_IWGRP: 16, S_IXGRP: 8, S_IRWXO: 7, S_IROTH: 4, S_IWOTH: 2, S_IXOTH: 1, F_OK: 0, R_OK: 4, W_OK: 2, X_OK: 1, COPYFILE_EXCL: 1, COPYFILE_FICLONE: 2 }
+AssertionError@kandelo:spidermonkey-node-bootstrap:2648:13
+_assert.strictEqual@kandelo:spidermonkey-node-bootstrap:2680:19
+@/Users/brandon/gt/kandelo/polecats/capable/kandelo/.cache/node-core-official/node-v22.0.0/test/parallel/test-fs-promises-exists.js:10:8
+require@kandelo:spidermonkey-node-bootstrap:5300:22
+@/Users/brandon/gt/kandelo/polecats/capable/kandelo/test-runs/node-core-official-node-full-kad-nct17/kandelo-node-core-prelude.js:45:8
+_runEsmMain@kandelo:spidermonkey-node-bootstrap:5443:21
+_runMainScriptIfPresent@kandelo:spidermonkey-node-bootstrap:5471:20
+@kandelo:spidermonkey-node-bootstrap:6158:1
+@kandelo:spidermonkey-node-bootstrap:6159:3
+
+kandelo:spidermonkey-node-bootstrap:2648:13 AssertionError: Unexpected global(s) found: __kandeloRunDueTimers, __kandeloNextTimerDelay, __kandeloCreateWorkerThreads, argv0, execArgv, TextEncoder, TextDecoder, btoa, atob, Blob, File, FormData, MessagePort, MessageChannel, BroadcastChannel, Event, EventTarget, MessageEvent, CloseEvent, ErrorEvent, DOMException, AbortSignal
+Stack:
+  AssertionError@kandelo:spidermonkey-node-bootstrap:2648:13
+  _assert.fail@kandelo:spidermonkey-node-bootstrap:2711:15
+  @/Users/brandon/gt/kandelo/polecats/capable/kandelo/.cache/node-core-official/node-v22.0.0/test/common/index.js:401:14
+  emit@kandelo:spidermonkey-node-bootstrap:800:20
+  exit@kandelo:spidermonkey-node-bootstrap:1304:18
+  _runEsmMain@kandelo:spidermonkey-node-bootstrap:5459:13
+  _runMainScriptIfPresent@kandelo:spidermonkey-node-bootstrap:5471:20
+  @kandelo:spidermonkey-node-bootstrap:6158:1
+  @kandelo:spidermonkey-node-bootstrap:6159:3

@@ -854,7 +854,7 @@
  #include "shell/OSObject.h"
  #include "shell/ShellModuleObjectWrapper.h"
  #include "shell/WasmTesting.h"
-@@ -236,6 +250,1070 @@
+@@ -236,6 +250,1140 @@
  using mozilla::TimeDuration;
  using mozilla::TimeStamp;
  using mozilla::Utf8Unit;
@@ -1160,6 +1160,9 @@
 +struct KandeloZlibState {
 +  z_stream stream{};
 +  bool deflate = false;
++  bool multistream = false;
++  bool resetBeforeNextInput = false;
++  int windowBits = 0;
 +};
 +
 +static void KandeloZlibDestroy(KandeloZlibState* state) {
@@ -1188,6 +1191,14 @@
 +static bool KandeloZlibRun(JSContext* cx, KandeloZlibState* state,
 +                           const uint8_t* input, size_t inputLen, bool finish,
 +                           MutableHandleValue rval) {
++  if (state->resetBeforeNextInput && inputLen > 0) {
++    int rc = inflateReset2(&state->stream, state->windowBits);
++    if (rc != Z_OK) {
++      JS_ReportErrorASCII(cx, "zlib reset failed");
++      return false;
++    }
++    state->resetBeforeNextInput = false;
++  }
 +  state->stream.next_in = const_cast<Bytef*>(input);
 +  state->stream.avail_in = uInt(inputLen);
 +  const int flush = finish ? Z_FINISH : Z_NO_FLUSH;
@@ -1200,7 +1211,20 @@
 +                            : inflate(&state->stream, flush);
 +    size_t produced = sizeof(chunk) - state->stream.avail_out;
 +    out.insert(out.end(), chunk, chunk + produced);
-+    if (rc == Z_STREAM_END) break;
++    if (rc == Z_STREAM_END) {
++      if (state->multistream) {
++        if (state->stream.avail_in > 0) {
++          rc = inflateReset2(&state->stream, state->windowBits);
++          if (rc != Z_OK) {
++            JS_ReportErrorASCII(cx, "zlib reset failed");
++            return false;
++          }
++          continue;
++        }
++        state->resetBeforeNextInput = true;
++      }
++      break;
++    }
 +    if (rc == Z_BUF_ERROR && state->stream.avail_in == 0 && produced == 0) break;
 +    if (rc != Z_OK) {
 +      JS_ReportErrorASCII(cx, "%s", state->stream.msg ? state->stream.msg : "zlib error");
@@ -1263,6 +1287,8 @@
 +    return false;
 +  }
 +  state->deflate = deflateMode;
++  state->windowBits = windowBits;
++  state->multistream = !deflateMode && (windowBits == 31 || windowBits == 47);
 +  int rc = deflateMode
 +               ? deflateInit2(&state->stream, level, Z_DEFLATED, windowBits, 8,
 +                              Z_DEFAULT_STRATEGY)
@@ -1320,6 +1346,25 @@
 +  return KandeloMakeZlib(cx, false, 31, 0, args.rval());
 +}
 +
++static bool KandeloNativeCreateUnzip(JSContext* cx, unsigned argc, Value* vp) {
++  CallArgs args = CallArgsFromVp(argc, vp);
++  return KandeloMakeZlib(cx, false, 47, 0, args.rval());
++}
++
++static bool KandeloNativeCreateDeflateRaw(JSContext* cx, unsigned argc,
++                                          Value* vp) {
++  CallArgs args = CallArgsFromVp(argc, vp);
++  int level = args.length() ? KandeloNormalizeZlibLevel(cx, args[0])
++                            : Z_DEFAULT_COMPRESSION;
++  return KandeloMakeZlib(cx, true, -15, level, args.rval());
++}
++
++static bool KandeloNativeCreateInflateRaw(JSContext* cx, unsigned argc,
++                                          Value* vp) {
++  CallArgs args = CallArgsFromVp(argc, vp);
++  return KandeloMakeZlib(cx, false, -15, 0, args.rval());
++}
++
 +static bool KandeloZlibOneShot(JSContext* cx, const CallArgs& args,
 +                               bool deflateMode, int windowBits, int level) {
 +  if (args.length() < 1) {
@@ -1362,6 +1407,25 @@
 +static bool KandeloNativeGunzipSync(JSContext* cx, unsigned argc, Value* vp) {
 +  CallArgs args = CallArgsFromVp(argc, vp);
 +  return KandeloZlibOneShot(cx, args, false, 31, 0);
++}
++
++static bool KandeloNativeUnzipSync(JSContext* cx, unsigned argc, Value* vp) {
++  CallArgs args = CallArgsFromVp(argc, vp);
++  return KandeloZlibOneShot(cx, args, false, 47, 0);
++}
++
++static bool KandeloNativeDeflateRawSync(JSContext* cx, unsigned argc,
++                                        Value* vp) {
++  CallArgs args = CallArgsFromVp(argc, vp);
++  int level = args.length() >= 2 ? KandeloNormalizeZlibLevel(cx, args[1])
++                                 : Z_DEFAULT_COMPRESSION;
++  return KandeloZlibOneShot(cx, args, true, -15, level);
++}
++
++static bool KandeloNativeInflateRawSync(JSContext* cx, unsigned argc,
++                                        Value* vp) {
++  CallArgs args = CallArgsFromVp(argc, vp);
++  return KandeloZlibOneShot(cx, args, false, -15, 0);
 +}
 +
 +static int KandeloResolveHost(const char* host, struct in_addr* out) {
@@ -1903,10 +1967,16 @@
 +      JS_FN("createInflate", KandeloNativeCreateInflate, 0, 0),
 +      JS_FN("createGzip", KandeloNativeCreateGzip, 1, 0),
 +      JS_FN("createGunzip", KandeloNativeCreateGunzip, 0, 0),
++      JS_FN("createUnzip", KandeloNativeCreateUnzip, 0, 0),
++      JS_FN("createDeflateRaw", KandeloNativeCreateDeflateRaw, 1, 0),
++      JS_FN("createInflateRaw", KandeloNativeCreateInflateRaw, 0, 0),
 +      JS_FN("deflateSync", KandeloNativeDeflateSync, 2, 0),
 +      JS_FN("inflateSync", KandeloNativeInflateSync, 1, 0),
 +      JS_FN("gzipSync", KandeloNativeGzipSync, 2, 0),
 +      JS_FN("gunzipSync", KandeloNativeGunzipSync, 1, 0),
++      JS_FN("unzipSync", KandeloNativeUnzipSync, 1, 0),
++      JS_FN("deflateRawSync", KandeloNativeDeflateRawSync, 2, 0),
++      JS_FN("inflateRawSync", KandeloNativeInflateRawSync, 1, 0),
 +      JS_FN("socketConnect", KandeloNativeSocketConnect, 2, 0),
 +      JS_FN("socketRead", KandeloNativeSocketRead, 2, 0),
 +      JS_FN("socketWrite", KandeloNativeSocketWrite, 2, 0),
@@ -1925,7 +1995,7 @@
  using mozilla::Variant;
 
  bool InitOptionParser(OptionParser& op);
-@@ -1415,9 +2493,13 @@
+@@ -1415,9 +2563,13 @@
 
      // Run tasks (only finalization registry clean tasks are possible).
      bool ranTasks = MaybeRunFinalizationRegistryCleanupTasks(cx);
@@ -1940,11 +2010,10 @@
    }
  }
 
-@@ -6876,7 +7958,43 @@
-
+@@ -6913,6 +8065,126 @@
  int shell::sArgc;
  char** shell::sArgv;
-+
+
 +static bool IsKandeloNodeProgramName(const char* argv0) {
 +  if (!argv0 || !*argv0) {
 +    return false;
@@ -1955,9 +2024,43 @@
 +         strcmp(base, "spidermonkey-node") == 0 ||
 +         strcmp(base, "spidermonkey-node.wasm") == 0;
 +}
-
++
 +static bool IsKandeloNodeMode() {
 +  return sArgc > 0 && sArgv && IsKandeloNodeProgramName(sArgv[0]);
++}
++
++static bool AppendKandeloNodeFilteredArgv(
++    Vector<char*, 16, js::SystemAllocPolicy>& filteredArgv, int argc,
++    char** argv) {
++  if (argc <= 0) {
++    return true;
++  }
++  return filteredArgv.append(argv[0]);
++}
++
++static bool DefineKandeloNodeRawArgv(JSContext* cx) {
++  RootedObject rawArgv(cx);
++  rawArgv = JS::NewArrayObject(cx, 0);
++  if (!rawArgv) {
++    return false;
++  }
++
++  if (!JS_DefineProperty(cx, cx->global(), "kandeloNodeRawArgv", rawArgv, 0)) {
++    return false;
++  }
++
++  for (int i = 0; i < sArgc; i++) {
++    UniqueChars argUtf8 = JS::EncodeNarrowToUtf8(cx, sArgv[i]);
++    if (!argUtf8) {
++      return false;
++    }
++    RootedString str(cx, NewStringCopyUTF8(cx, argUtf8.get()));
++    if (!str || !JS_DefineElement(cx, rawArgv, i, str, JSPROP_ENUMERATE)) {
++      return false;
++    }
++  }
++
++  return true;
 +}
 +
 +static bool RunKandeloNodeBootstrap(JSContext* cx) {
@@ -1981,34 +2084,130 @@
 +  return JS::Evaluate(cx, opts, srcBuf, &rval);
 +}
 +
- #ifndef __wasi__
- static const char sWasmCompileAndSerializeFlag[] =
-     "--wasm-compile-and-serialize";
-@@ -11703,6 +12821,10 @@
-
-   /* |scriptArgs| gets bound on the global before any code is run. */
-   if (!BindScriptArgs(cx, op)) {
++static bool RunKandeloNodeEventLoop(JSContext* cx, int32_t* exitCode) {
++  *exitCode = 0;
++  RootedObject global(cx, cx->global());
++  RootedValue hook(cx);
++  if (!JS_GetProperty(cx, global, "__kandeloRunNodeEventLoop", &hook)) {
++    return false;
++  }
++  if (!hook.isObject() || !IsCallable(hook)) {
++    return true;
++  }
++
++  RootedValue rval(cx);
++  if (!JS_CallFunctionValue(cx, global, hook, JS::HandleValueArray::empty(),
++                            &rval)) {
++    return false;
++  }
++  if (rval.isUndefined() || rval.isNull()) {
++    return true;
++  }
++  return ToInt32(cx, rval, exitCode);
++}
++
++static bool MaybeHandleKandeloNodeUncaughtException(JSContext* cx) {
++  if (!IsKandeloNodeMode() || !JS_IsExceptionPending(cx)) {
 +    return false;
 +  }
 +
-+  if (IsKandeloNodeMode() && !RunKandeloNodeBootstrap(cx)) {
++  RootedValue exception(cx);
++  if (!JS_GetPendingException(cx, &exception)) {
++    return false;
++  }
++  JS_ClearPendingException(cx);
++
++  RootedObject global(cx, cx->global());
++  RootedValue processValue(cx);
++  if (!JS_GetProperty(cx, global, "process", &processValue) ||
++      !processValue.isObject()) {
++    return false;
++  }
++
++  RootedObject processObject(cx, &processValue.toObject());
++  RootedValue handledValue(cx);
++  if (!JS_CallFunctionName(cx, processObject, "_handleUncaughtException",
++                           HandleValueArray(exception), &handledValue)) {
++    return false;
++  }
++
++  return ToBoolean(handledValue);
++}
++
+ #ifndef __wasi__
+ static const char sWasmCompileAndSerializeFlag[] =
+     "--wasm-compile-and-serialize";
+@@ -11745,6 +13017,15 @@
+   /* |scriptArgs| gets bound on the global before any code is run. */
+   if (!BindScriptArgs(cx, op)) {
      return false;
++  }
++
++  if (IsKandeloNodeMode()) {
++    if (!DefineKandeloNodeRawArgv(cx)) {
++      return false;
++    }
++    if (!RunKandeloNodeBootstrap(cx)) {
++      return false;
++    }
    }
 
-@@ -12321,6 +13443,12 @@
-   int result;
+  MultiStringRange filePaths = op->getMultiStringOption('f');
+@@ -11837,7 +13118,19 @@
+
+       RootedValue rval(cx);
+       if (!JS::Evaluate(cx, opts, srcBuf, &rval)) {
+-        return false;
++        if (!MaybeHandleKandeloNodeUncaughtException(cx)) {
++          return false;
++        }
+       }
++      if (IsKandeloNodeMode()) {
++        int32_t exitCode = 0;
++        if (!RunKandeloNodeEventLoop(cx, &exitCode)) {
++          if (!MaybeHandleKandeloNodeUncaughtException(cx)) {
++            return false;
++          }
++        } else {
++          SetQuitting(cx, exitCode);
++        }
++      }
+
+       codeChunks.popFront();
+@@ -12363,6 +13656,12 @@
 
    setlocale(LC_ALL, "");
-+
+
 +  if (IsKandeloNodeProgramName(argc > 0 ? argv[0] : nullptr) && argc == 2 &&
 +      (strcmp(argv[1], "--version") == 0 || strcmp(argv[1], "-v") == 0)) {
 +    puts("v22.0.0");
 +    return EXIT_SUCCESS;
 +  }
-
++
    // Special-case stdout and stderr. We bump their refcounts to prevent them
    // from getting closed and then having some printf fail somewhere.
-@@ -13315,6 +14443,8 @@
+   RCFile rcStdout(stdout);
+@@ -12384,7 +13683,18 @@
+     return EXIT_FAILURE;
+   }
+
+-  switch (op.parseArgs(argc, argv)) {
++  Vector<char*, 16, js::SystemAllocPolicy> kandeloNodeFilteredArgv;
++  int parseArgc = argc;
++  char** parseArgv = argv;
++  if (IsKandeloNodeProgramName(argc > 0 ? argv[0] : nullptr)) {
++    if (!AppendKandeloNodeFilteredArgv(kandeloNodeFilteredArgv, argc, argv)) {
++      return EXIT_FAILURE;
++    }
++    parseArgc = int(kandeloNodeFilteredArgv.length());
++    parseArgv = kandeloNodeFilteredArgv.begin();
++  }
++
++  switch (op.parseArgs(parseArgc, parseArgv)) {
+     case OptionParser::EarlyExit:
+       return EXIT_SUCCESS;
+     case OptionParser::ParseError:
+@@ -13356,6 +14666,8 @@
      } else {
        return OptionFailure("shared-memory", str);
      }

@@ -1,0 +1,6 @@
+[vite:stdout]
+  VITE v8.0.16  ready in 707 ms
+
+[vite:stdout]   ➜  Local:   http://127.0.0.1:5199/
+[console:debug] [vite] connecting...
+[console:debug] [vite] connected.

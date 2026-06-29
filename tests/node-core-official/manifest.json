@@ -1,0 +1,1187 @@
+{
+  "source": {
+    "repo": "https://github.com/nodejs/node.git",
+    "tag": "v22.0.0",
+    "tagObject": "ec49bec48284ab642db1d109d917c6ae3b695c13",
+    "commit": "12fb157f79da8c094a54bc99370994941c28c235",
+    "sparsePaths": [
+      "test/parallel",
+      "test/common",
+      "test/fixtures",
+      "lib"
+    ]
+  },
+  "defaults": {
+    "timeoutMs": 30000,
+    "jobs": 1
+  },
+  "tests": [
+    {
+      "path": "test/parallel/test-path.js",
+      "area": "path",
+      "expected": "PASS",
+      "smoke": true,
+      "reason": "Small public path-module coverage with no native addon dependency."
+    },
+    {
+      "path": "test/parallel/test-querystring.js",
+      "area": "querystring",
+      "expected": "PASS",
+      "smoke": true,
+      "reason": "Pure JavaScript querystring compatibility surface."
+    },
+    {
+      "path": "test/parallel/test-events-list.js",
+      "area": "events",
+      "expected": "PASS",
+      "smoke": true,
+      "reason": "Basic EventEmitter public API coverage."
+    },
+    {
+      "path": "test/parallel/test-buffer-alloc.js",
+      "area": "buffer",
+      "expected": "PASS",
+      "reason": "Representative Buffer allocation and encoding behavior."
+    },
+    {
+      "path": "test/parallel/test-string-decoder.js",
+      "area": "string_decoder",
+      "expected": "PASS",
+      "reason": "Pure JavaScript string_decoder behavior."
+    },
+    {
+      "path": "test/parallel/test-whatwg-url-custom-searchparams.js",
+      "area": "url",
+      "expected": "PASS",
+      "reason": "WHATWG URLSearchParams public API behavior."
+    },
+    {
+      "path": "test/parallel/test-url-parse-query.js",
+      "area": "url",
+      "expected": "PASS",
+      "reason": "Legacy url.parse query handling."
+    },
+    {
+      "path": "test/parallel/test-bootstrap-modules.js",
+      "area": "bootstrap",
+      "expected": "SKIP",
+      "reason": "Checks Node/V8's exact internal bootstrap NativeModule and Internal Binding load inventory. Kandelo boots a shared compatibility layer on SpiderMonkey, so the exact internal pre-execution load list is outside the supported semantic boundary."
+    },
+    {
+      "path": "test/parallel/test-repl-array-prototype-tempering.js",
+      "area": "repl",
+      "expected": "SKIP",
+      "reason": "Requires streaming child_process stdio connected to a separately executing `node --interactive` REPL child. Kandelo's Node compatibility layer currently supports buffered popen-style child output, not interactive child stdin/stdout."
+    },
+    {
+      "path": "test/parallel/test-repl-unsafe-array-iteration.js",
+      "area": "repl",
+      "expected": "SKIP",
+      "reason": "Requires streaming child_process stdio connected to a separately executing `node --interactive` REPL child. Kandelo's Node compatibility layer currently supports buffered popen-style child output, not interactive child stdin/stdout."
+    },
+    {
+      "path": "test/parallel/test-util-inspect.js",
+      "area": "util",
+      "expected": "SKIP",
+      "reason": "Requires Node's --expose-internals support boundary and internal/test/binding native hooks, which the Kandelo compatibility runtime does not expose."
+    },
+    {
+      "path": "test/parallel/test-console-count.js",
+      "area": "console",
+      "expected": "PASS",
+      "reason": "Small console API behavior check."
+    },
+    {
+      "path": "test/parallel/test-timers-clear-null-does-not-throw-error.js",
+      "area": "timers",
+      "expected": "PASS",
+      "reason": "Tiny timers API smoke case."
+    },
+    {
+      "path": "test/parallel/test-async-hooks-recursive-stack-runInAsyncScope.js",
+      "area": "async_hooks",
+      "expected": "PASS",
+      "reason": "Node-host SpiderMonkey runtime passes the official 1000-level AsyncResource recursion check.",
+      "hosts": {
+        "browser": {
+          "expected": "SKIP",
+          "reason": "Browser SpiderMonkey-in-Wasm process workers exhaust the browser WebAssembly call stack on this synthetic 1000-level synchronous AsyncResource.runInAsyncScope recursion. This is a browser worker stack-capacity support boundary; Node-host Kandelo passes the same test."
+        }
+      }
+    },
+    {
+      "path": "test/parallel/test-worker-broadcastchannel.js",
+      "area": "worker_threads",
+      "expected": "SKIP",
+      "reason": "The test mixes same-isolate BroadcastChannel behavior with cross-worker delivery. Kandelo models same-isolate BroadcastChannel semantics, but SpiderMonkey shell workers do not share Node's post-start worker_threads message fabric."
+    },
+    {
+      "path": "test/parallel/test-worker-message-channel.js",
+      "area": "worker_threads",
+      "expected": "SKIP",
+      "reason": "The test's final case requires Worker.postMessage() to transfer a MessagePort to an already-running worker. SpiderMonkey shell workers in Kandelo expose eval-time workerData/shared memory only, not post-start worker_threads channels."
+    },
+    {
+      "path": "test/parallel/test-worker-message-port.js",
+      "area": "worker_threads",
+      "expected": "SKIP",
+      "reason": "The test includes same-isolate MessagePort coverage plus a Worker.postMessage() transfer case. The supported same-isolate API is covered by Kandelo source tests; post-start worker port transfer is an explicit SpiderMonkey shell support boundary."
+    },
+    {
+      "path": "test/parallel/test-worker-message-port-message-before-close.js",
+      "area": "worker_threads",
+      "expected": "SKIP",
+      "reason": "Requires repeatedly transferring MessagePorts to an already-running worker through Worker.postMessage(), which is outside Kandelo's SpiderMonkey shell worker model."
+    },
+    {
+      "path": "test/parallel/test-worker-message-port-move.js",
+      "area": "worker_threads",
+      "expected": "SKIP",
+      "reason": "Requires Node's cross-vm MessagePort wrapper identity from moveMessagePortToContext(). Kandelo validates closed-port errors but does not emulate a separate vm-context port wrapper."
+    },
+    {
+      "path": "test/parallel/test-worker-message-port-terminate-transfer-list.js",
+      "area": "worker_threads",
+      "expected": "SKIP",
+      "reason": "Requires parentPort messaging from a worker plus termination during transfer-list iteration. Kandelo's SpiderMonkey workers do not provide parentPort post-start messaging."
+    },
+    {
+      "path": "test/parallel/test-worker-message-port-transfer-terminate.js",
+      "area": "worker_threads",
+      "expected": "SKIP",
+      "reason": "Requires Worker.postMessage() races while terminating workers. Kandelo's SpiderMonkey shell worker support is limited to eval-time workerData/shared memory."
+    },
+    {
+      "path": "test/parallel/test-worker-message-channel-sharedarraybuffer.js",
+      "area": "worker_threads",
+      "expected": "SKIP",
+      "reason": "Requires Worker.postMessage() and parentPort replies for SharedArrayBuffer exchange after startup; Kandelo only exposes shared memory through workerData at worker creation."
+    },
+    {
+      "path": "test/parallel/test-worker-message-port-wasm-module.js",
+      "area": "worker_threads",
+      "expected": "SKIP",
+      "reason": "Requires Worker.postMessage() to send a WebAssembly.Module to an already-running worker, which is outside the SpiderMonkey shell worker support boundary."
+    },
+    {
+      "path": "test/parallel/test-worker-message-port-wasm-threads.js",
+      "area": "worker_threads",
+      "expected": "SKIP",
+      "reason": "Part of the test requires Worker.postMessage() to exchange WebAssembly memory after startup. Same-isolate SharedArrayBuffer MessagePort delivery remains supported separately."
+    },
+    {
+      "path": "test/parallel/test-worker-resource-limits.js",
+      "area": "worker_threads",
+      "expected": "SKIP",
+      "reason": "Requires V8 worker heap/resource limit enforcement and ERR_WORKER_OUT_OF_MEMORY. SpiderMonkey shell workers do not expose V8 resource-limit controls."
+    },
+    {
+      "path": "test/parallel/test-worker-workerdata-messageport.js",
+      "area": "worker_threads",
+      "expected": "SKIP",
+      "reason": "Requires transferring live MessagePorts and ArrayBuffers through workerData and then communicating over parentPort. Kandelo supports shared-memory workerData, not live MessagePort ownership in workers."
+    },
+    {
+      "path": "test/parallel/test-experimental-shared-value-conveyor.js",
+      "area": "experimental",
+      "expected": "SKIP",
+      "reason": "Requires V8's experimental --harmony-struct SharedArray object and worker_threads transfer semantics. Kandelo's SpiderMonkey-backed runtime supports SharedArrayBuffer, but does not implement V8 SharedArray or that experimental flag surface."
+    },
+    {
+      "path": "test/parallel/test-coverage-with-inspector-disabled.js",
+      "area": "v8_inspector",
+      "expected": "SKIP",
+      "reason": "Requires Node's V8 inspector coverage or GC profiling collector. Kandelo sets `process.features.inspector` false and does not collect V8 coverage/profiler data from SpiderMonkey."
+    },
+    {
+      "path": "test/parallel/test-debugger-backtrace.js",
+      "area": "v8_inspector",
+      "expected": "SKIP",
+      "reason": "Requires the V8 inspector/CDP debugger transport and live inspector sessions. Kandelo's SpiderMonkey-backed runtime currently exposes inspector as a documented unsupported boundary."
+    },
+    {
+      "path": "test/parallel/test-debugger-break.js",
+      "area": "v8_inspector",
+      "expected": "SKIP",
+      "reason": "Requires the V8 inspector/CDP debugger transport and live inspector sessions. Kandelo's SpiderMonkey-backed runtime currently exposes inspector as a documented unsupported boundary."
+    },
+    {
+      "path": "test/parallel/test-debugger-breakpoint-exists.js",
+      "area": "v8_inspector",
+      "expected": "SKIP",
+      "reason": "Requires the V8 inspector/CDP debugger transport and live inspector sessions. Kandelo's SpiderMonkey-backed runtime currently exposes inspector as a documented unsupported boundary."
+    },
+    {
+      "path": "test/parallel/test-debugger-clear-breakpoints.js",
+      "area": "v8_inspector",
+      "expected": "SKIP",
+      "reason": "Requires the V8 inspector/CDP debugger transport and live inspector sessions. Kandelo's SpiderMonkey-backed runtime currently exposes inspector as a documented unsupported boundary."
+    },
+    {
+      "path": "test/parallel/test-debugger-exceptions.js",
+      "area": "v8_inspector",
+      "expected": "SKIP",
+      "reason": "Requires the V8 inspector/CDP debugger transport and live inspector sessions. Kandelo's SpiderMonkey-backed runtime currently exposes inspector as a documented unsupported boundary."
+    },
+    {
+      "path": "test/parallel/test-debugger-exec.js",
+      "area": "v8_inspector",
+      "expected": "SKIP",
+      "reason": "Requires the V8 inspector/CDP debugger transport and live inspector sessions. Kandelo's SpiderMonkey-backed runtime currently exposes inspector as a documented unsupported boundary."
+    },
+    {
+      "path": "test/parallel/test-debugger-heap-profiler.js",
+      "area": "v8_inspector",
+      "expected": "SKIP",
+      "reason": "Requires the V8 inspector/CDP debugger transport and live inspector sessions. Kandelo's SpiderMonkey-backed runtime currently exposes inspector as a documented unsupported boundary."
+    },
+    {
+      "path": "test/parallel/test-debugger-list.js",
+      "area": "v8_inspector",
+      "expected": "SKIP",
+      "reason": "Requires the V8 inspector/CDP debugger transport and live inspector sessions. Kandelo's SpiderMonkey-backed runtime currently exposes inspector as a documented unsupported boundary."
+    },
+    {
+      "path": "test/parallel/test-debugger-low-level.js",
+      "area": "v8_inspector",
+      "expected": "SKIP",
+      "reason": "Requires the V8 inspector/CDP debugger transport and live inspector sessions. Kandelo's SpiderMonkey-backed runtime currently exposes inspector as a documented unsupported boundary."
+    },
+    {
+      "path": "test/parallel/test-debugger-object-type-remote-object.js",
+      "area": "v8_inspector",
+      "expected": "SKIP",
+      "reason": "Requires the V8 inspector/CDP debugger transport and live inspector sessions. Kandelo's SpiderMonkey-backed runtime currently exposes inspector as a documented unsupported boundary."
+    },
+    {
+      "path": "test/parallel/test-debugger-pid.js",
+      "area": "v8_inspector",
+      "expected": "SKIP",
+      "reason": "Requires the V8 inspector/CDP debugger transport and live inspector sessions. Kandelo's SpiderMonkey-backed runtime currently exposes inspector as a documented unsupported boundary."
+    },
+    {
+      "path": "test/parallel/test-debugger-preserve-breaks.js",
+      "area": "v8_inspector",
+      "expected": "SKIP",
+      "reason": "Requires the V8 inspector/CDP debugger transport and live inspector sessions. Kandelo's SpiderMonkey-backed runtime currently exposes inspector as a documented unsupported boundary."
+    },
+    {
+      "path": "test/parallel/test-debugger-profile-command.js",
+      "area": "v8_inspector",
+      "expected": "SKIP",
+      "reason": "Requires the V8 inspector/CDP debugger transport and live inspector sessions. Kandelo's SpiderMonkey-backed runtime currently exposes inspector as a documented unsupported boundary."
+    },
+    {
+      "path": "test/parallel/test-debugger-profile.js",
+      "area": "v8_inspector",
+      "expected": "SKIP",
+      "reason": "Requires the V8 inspector/CDP debugger transport and live inspector sessions. Kandelo's SpiderMonkey-backed runtime currently exposes inspector as a documented unsupported boundary."
+    },
+    {
+      "path": "test/parallel/test-debugger-random-port-with-inspect-port.js",
+      "area": "v8_inspector",
+      "expected": "SKIP",
+      "reason": "Requires the V8 inspector/CDP debugger transport and live inspector sessions. Kandelo's SpiderMonkey-backed runtime currently exposes inspector as a documented unsupported boundary."
+    },
+    {
+      "path": "test/parallel/test-debugger-random-port.js",
+      "area": "v8_inspector",
+      "expected": "SKIP",
+      "reason": "Requires the V8 inspector/CDP debugger transport and live inspector sessions. Kandelo's SpiderMonkey-backed runtime currently exposes inspector as a documented unsupported boundary."
+    },
+    {
+      "path": "test/parallel/test-debugger-repeat-last.js",
+      "area": "v8_inspector",
+      "expected": "SKIP",
+      "reason": "Requires the V8 inspector/CDP debugger transport and live inspector sessions. Kandelo's SpiderMonkey-backed runtime currently exposes inspector as a documented unsupported boundary."
+    },
+    {
+      "path": "test/parallel/test-debugger-restart-message.js",
+      "area": "v8_inspector",
+      "expected": "SKIP",
+      "reason": "Requires the V8 inspector/CDP debugger transport and live inspector sessions. Kandelo's SpiderMonkey-backed runtime currently exposes inspector as a documented unsupported boundary."
+    },
+    {
+      "path": "test/parallel/test-debugger-run-after-quit-restart.js",
+      "area": "v8_inspector",
+      "expected": "SKIP",
+      "reason": "Requires the V8 inspector/CDP debugger transport and live inspector sessions. Kandelo's SpiderMonkey-backed runtime currently exposes inspector as a documented unsupported boundary."
+    },
+    {
+      "path": "test/parallel/test-debugger-sb-before-load.js",
+      "area": "v8_inspector",
+      "expected": "SKIP",
+      "reason": "Requires the V8 inspector/CDP debugger transport and live inspector sessions. Kandelo's SpiderMonkey-backed runtime currently exposes inspector as a documented unsupported boundary."
+    },
+    {
+      "path": "test/parallel/test-debugger-scripts.js",
+      "area": "v8_inspector",
+      "expected": "SKIP",
+      "reason": "Requires the V8 inspector/CDP debugger transport and live inspector sessions. Kandelo's SpiderMonkey-backed runtime currently exposes inspector as a documented unsupported boundary."
+    },
+    {
+      "path": "test/parallel/test-debugger-unavailable-port.js",
+      "area": "v8_inspector",
+      "expected": "SKIP",
+      "reason": "Requires the V8 inspector/CDP debugger transport and live inspector sessions. Kandelo's SpiderMonkey-backed runtime currently exposes inspector as a documented unsupported boundary."
+    },
+    {
+      "path": "test/parallel/test-debugger-use-strict.js",
+      "area": "v8_inspector",
+      "expected": "SKIP",
+      "reason": "Requires the V8 inspector/CDP debugger transport and live inspector sessions. Kandelo's SpiderMonkey-backed runtime currently exposes inspector as a documented unsupported boundary."
+    },
+    {
+      "path": "test/parallel/test-debugger-watch-validation.js",
+      "area": "v8_inspector",
+      "expected": "SKIP",
+      "reason": "Requires the V8 inspector/CDP debugger transport and live inspector sessions. Kandelo's SpiderMonkey-backed runtime currently exposes inspector as a documented unsupported boundary."
+    },
+    {
+      "path": "test/parallel/test-debugger-websocket-secret-mismatch.js",
+      "area": "v8_inspector",
+      "expected": "SKIP",
+      "reason": "Requires the V8 inspector/CDP debugger transport and live inspector sessions. Kandelo's SpiderMonkey-backed runtime currently exposes inspector as a documented unsupported boundary."
+    },
+    {
+      "path": "test/parallel/test-heapsnapshot-near-heap-limit-by-api-in-worker.js",
+      "area": "heapsnapshot",
+      "expected": "SKIP",
+      "reason": "Requires V8 heap snapshot/statistics internals or near-heap-limit heap snapshot callbacks. Kandelo exposes only small heap-statistic compatibility shapes and does not expose V8 heap graph generation or writeHeapSnapshot."
+    },
+    {
+      "path": "test/parallel/test-heapsnapshot-near-heap-limit-worker.js",
+      "area": "heapsnapshot",
+      "expected": "SKIP",
+      "reason": "Requires V8 heap snapshot/statistics internals or near-heap-limit heap snapshot callbacks. Kandelo exposes only small heap-statistic compatibility shapes and does not expose V8 heap graph generation or writeHeapSnapshot."
+    },
+    {
+      "path": "test/parallel/test-inspector-already-activated-cli.js",
+      "area": "v8_inspector",
+      "expected": "SKIP",
+      "reason": "Requires the V8 inspector/CDP debugger transport and live inspector sessions. Kandelo's SpiderMonkey-backed runtime currently exposes inspector as a documented unsupported boundary."
+    },
+    {
+      "path": "test/parallel/test-inspector-async-call-stack-abort.js",
+      "area": "v8_inspector",
+      "expected": "SKIP",
+      "reason": "Requires the V8 inspector/CDP debugger transport and live inspector sessions. Kandelo's SpiderMonkey-backed runtime currently exposes inspector as a documented unsupported boundary."
+    },
+    {
+      "path": "test/parallel/test-inspector-async-call-stack.js",
+      "area": "v8_inspector",
+      "expected": "SKIP",
+      "reason": "Requires the V8 inspector/CDP debugger transport and live inspector sessions. Kandelo's SpiderMonkey-backed runtime currently exposes inspector as a documented unsupported boundary."
+    },
+    {
+      "path": "test/parallel/test-inspector-async-context-brk.js",
+      "area": "v8_inspector",
+      "expected": "SKIP",
+      "reason": "Requires the V8 inspector/CDP debugger transport and live inspector sessions. Kandelo's SpiderMonkey-backed runtime currently exposes inspector as a documented unsupported boundary."
+    },
+    {
+      "path": "test/parallel/test-inspector-async-hook-after-done.js",
+      "area": "v8_inspector",
+      "expected": "SKIP",
+      "reason": "Requires the V8 inspector/CDP debugger transport and live inspector sessions. Kandelo's SpiderMonkey-backed runtime currently exposes inspector as a documented unsupported boundary."
+    },
+    {
+      "path": "test/parallel/test-inspector-async-hook-setup-at-inspect-brk.js",
+      "area": "v8_inspector",
+      "expected": "SKIP",
+      "reason": "Requires the V8 inspector/CDP debugger transport and live inspector sessions. Kandelo's SpiderMonkey-backed runtime currently exposes inspector as a documented unsupported boundary."
+    },
+    {
+      "path": "test/parallel/test-inspector-async-hook-setup-at-signal.js",
+      "area": "v8_inspector",
+      "expected": "SKIP",
+      "reason": "Requires the V8 inspector/CDP debugger transport and live inspector sessions. Kandelo's SpiderMonkey-backed runtime currently exposes inspector as a documented unsupported boundary."
+    },
+    {
+      "path": "test/parallel/test-inspector-async-stack-traces-promise-then.js",
+      "area": "v8_inspector",
+      "expected": "SKIP",
+      "reason": "Requires the V8 inspector/CDP debugger transport and live inspector sessions. Kandelo's SpiderMonkey-backed runtime currently exposes inspector as a documented unsupported boundary."
+    },
+    {
+      "path": "test/parallel/test-inspector-async-stack-traces-set-interval.js",
+      "area": "v8_inspector",
+      "expected": "SKIP",
+      "reason": "Requires the V8 inspector/CDP debugger transport and live inspector sessions. Kandelo's SpiderMonkey-backed runtime currently exposes inspector as a documented unsupported boundary."
+    },
+    {
+      "path": "test/parallel/test-inspector-bindings.js",
+      "area": "v8_inspector",
+      "expected": "SKIP",
+      "reason": "Requires the V8 inspector/CDP debugger transport and live inspector sessions. Kandelo's SpiderMonkey-backed runtime currently exposes inspector as a documented unsupported boundary."
+    },
+    {
+      "path": "test/parallel/test-inspector-break-e.js",
+      "area": "v8_inspector",
+      "expected": "SKIP",
+      "reason": "Requires the V8 inspector/CDP debugger transport and live inspector sessions. Kandelo's SpiderMonkey-backed runtime currently exposes inspector as a documented unsupported boundary."
+    },
+    {
+      "path": "test/parallel/test-inspector-break-when-eval.js",
+      "area": "v8_inspector",
+      "expected": "SKIP",
+      "reason": "Requires the V8 inspector/CDP debugger transport and live inspector sessions. Kandelo's SpiderMonkey-backed runtime currently exposes inspector as a documented unsupported boundary."
+    },
+    {
+      "path": "test/parallel/test-inspector-close-worker.js",
+      "area": "v8_inspector",
+      "expected": "SKIP",
+      "reason": "Requires the V8 inspector/CDP debugger transport and live inspector sessions. Kandelo's SpiderMonkey-backed runtime currently exposes inspector as a documented unsupported boundary."
+    },
+    {
+      "path": "test/parallel/test-inspector-connect-main-thread.js",
+      "area": "v8_inspector",
+      "expected": "SKIP",
+      "reason": "Requires the V8 inspector/CDP debugger transport and live inspector sessions. Kandelo's SpiderMonkey-backed runtime currently exposes inspector as a documented unsupported boundary."
+    },
+    {
+      "path": "test/parallel/test-inspector-connect-to-main-thread.js",
+      "area": "v8_inspector",
+      "expected": "SKIP",
+      "reason": "Requires the V8 inspector/CDP debugger transport and live inspector sessions. Kandelo's SpiderMonkey-backed runtime currently exposes inspector as a documented unsupported boundary."
+    },
+    {
+      "path": "test/parallel/test-inspector-console-top-frame.js",
+      "area": "v8_inspector",
+      "expected": "SKIP",
+      "reason": "Requires the V8 inspector/CDP debugger transport and live inspector sessions. Kandelo's SpiderMonkey-backed runtime currently exposes inspector as a documented unsupported boundary."
+    },
+    {
+      "path": "test/parallel/test-inspector-console.js",
+      "area": "v8_inspector",
+      "expected": "SKIP",
+      "reason": "Requires the V8 inspector/CDP debugger transport and live inspector sessions. Kandelo's SpiderMonkey-backed runtime currently exposes inspector as a documented unsupported boundary."
+    },
+    {
+      "path": "test/parallel/test-inspector-contexts.js",
+      "area": "v8_inspector",
+      "expected": "SKIP",
+      "reason": "Requires the V8 inspector/CDP debugger transport and live inspector sessions. Kandelo's SpiderMonkey-backed runtime currently exposes inspector as a documented unsupported boundary."
+    },
+    {
+      "path": "test/parallel/test-inspector-debug-brk-flag.js",
+      "area": "v8_inspector",
+      "expected": "SKIP",
+      "reason": "Requires the V8 inspector/CDP debugger transport and live inspector sessions. Kandelo's SpiderMonkey-backed runtime currently exposes inspector as a documented unsupported boundary."
+    },
+    {
+      "path": "test/parallel/test-inspector-debug-end.js",
+      "area": "v8_inspector",
+      "expected": "SKIP",
+      "reason": "Requires the V8 inspector/CDP debugger transport and live inspector sessions. Kandelo's SpiderMonkey-backed runtime currently exposes inspector as a documented unsupported boundary."
+    },
+    {
+      "path": "test/parallel/test-inspector-enabled.js",
+      "area": "v8_inspector",
+      "expected": "SKIP",
+      "reason": "Requires the V8 inspector/CDP debugger transport and live inspector sessions. Kandelo's SpiderMonkey-backed runtime currently exposes inspector as a documented unsupported boundary."
+    },
+    {
+      "path": "test/parallel/test-inspector-esm.js",
+      "area": "v8_inspector",
+      "expected": "SKIP",
+      "reason": "Requires the V8 inspector/CDP debugger transport and live inspector sessions. Kandelo's SpiderMonkey-backed runtime currently exposes inspector as a documented unsupported boundary."
+    },
+    {
+      "path": "test/parallel/test-inspector-exception.js",
+      "area": "v8_inspector",
+      "expected": "SKIP",
+      "reason": "Requires the V8 inspector/CDP debugger transport and live inspector sessions. Kandelo's SpiderMonkey-backed runtime currently exposes inspector as a documented unsupported boundary."
+    },
+    {
+      "path": "test/parallel/test-inspector-has-idle.js",
+      "area": "v8_inspector",
+      "expected": "SKIP",
+      "reason": "Requires the V8 inspector/CDP debugger transport and live inspector sessions. Kandelo's SpiderMonkey-backed runtime currently exposes inspector as a documented unsupported boundary."
+    },
+    {
+      "path": "test/parallel/test-inspector-has-inspector-false.js",
+      "area": "v8_inspector",
+      "expected": "SKIP",
+      "reason": "Requires the V8 inspector/CDP debugger transport and live inspector sessions. Kandelo's SpiderMonkey-backed runtime currently exposes inspector as a documented unsupported boundary."
+    },
+    {
+      "path": "test/parallel/test-inspector-heap-allocation-tracker.js",
+      "area": "v8_inspector",
+      "expected": "SKIP",
+      "reason": "Requires the V8 inspector/CDP debugger transport and live inspector sessions. Kandelo's SpiderMonkey-backed runtime currently exposes inspector as a documented unsupported boundary."
+    },
+    {
+      "path": "test/parallel/test-inspector-heapdump.js",
+      "area": "v8_inspector",
+      "expected": "SKIP",
+      "reason": "Requires the V8 inspector/CDP debugger transport and live inspector sessions. Kandelo's SpiderMonkey-backed runtime currently exposes inspector as a documented unsupported boundary."
+    },
+    {
+      "path": "test/parallel/test-inspector-inspect-brk-node.js",
+      "area": "v8_inspector",
+      "expected": "SKIP",
+      "reason": "Requires the V8 inspector/CDP debugger transport and live inspector sessions. Kandelo's SpiderMonkey-backed runtime currently exposes inspector as a documented unsupported boundary."
+    },
+    {
+      "path": "test/parallel/test-inspector-invalid-args.js",
+      "area": "v8_inspector",
+      "expected": "SKIP",
+      "reason": "Requires the V8 inspector/CDP debugger transport and live inspector sessions. Kandelo's SpiderMonkey-backed runtime currently exposes inspector as a documented unsupported boundary."
+    },
+    {
+      "path": "test/parallel/test-inspector-ip-detection.js",
+      "area": "v8_inspector",
+      "expected": "SKIP",
+      "reason": "Requires the V8 inspector/CDP debugger transport and live inspector sessions. Kandelo's SpiderMonkey-backed runtime currently exposes inspector as a documented unsupported boundary."
+    },
+    {
+      "path": "test/parallel/test-inspector-module.js",
+      "area": "v8_inspector",
+      "expected": "SKIP",
+      "reason": "Requires the V8 inspector/CDP debugger transport and live inspector sessions. Kandelo's SpiderMonkey-backed runtime currently exposes inspector as a documented unsupported boundary."
+    },
+    {
+      "path": "test/parallel/test-inspector-multisession-js.js",
+      "area": "v8_inspector",
+      "expected": "SKIP",
+      "reason": "Requires the V8 inspector/CDP debugger transport and live inspector sessions. Kandelo's SpiderMonkey-backed runtime currently exposes inspector as a documented unsupported boundary."
+    },
+    {
+      "path": "test/parallel/test-inspector-multisession-ws.js",
+      "area": "v8_inspector",
+      "expected": "SKIP",
+      "reason": "Requires the V8 inspector/CDP debugger transport and live inspector sessions. Kandelo's SpiderMonkey-backed runtime currently exposes inspector as a documented unsupported boundary."
+    },
+    {
+      "path": "test/parallel/test-inspector-not-blocked-on-idle.js",
+      "area": "v8_inspector",
+      "expected": "SKIP",
+      "reason": "Requires the V8 inspector/CDP debugger transport and live inspector sessions. Kandelo's SpiderMonkey-backed runtime currently exposes inspector as a documented unsupported boundary."
+    },
+    {
+      "path": "test/parallel/test-inspector-open-coverage.js",
+      "area": "v8_inspector",
+      "expected": "SKIP",
+      "reason": "Requires Node's V8 inspector coverage or GC profiling collector. Kandelo sets `process.features.inspector` false and does not collect V8 coverage/profiler data from SpiderMonkey."
+    },
+    {
+      "path": "test/parallel/test-inspector-open-port-integer-overflow.js",
+      "area": "v8_inspector",
+      "expected": "SKIP",
+      "reason": "Requires the V8 inspector/CDP debugger transport and live inspector sessions. Kandelo's SpiderMonkey-backed runtime currently exposes inspector as a documented unsupported boundary."
+    },
+    {
+      "path": "test/parallel/test-inspector-open.js",
+      "area": "v8_inspector",
+      "expected": "SKIP",
+      "reason": "Requires the V8 inspector/CDP debugger transport and live inspector sessions. Kandelo's SpiderMonkey-backed runtime currently exposes inspector as a documented unsupported boundary."
+    },
+    {
+      "path": "test/parallel/test-inspector-overwrite-config.js",
+      "area": "v8_inspector",
+      "expected": "SKIP",
+      "reason": "Requires the V8 inspector/CDP debugger transport and live inspector sessions. Kandelo's SpiderMonkey-backed runtime currently exposes inspector as a documented unsupported boundary."
+    },
+    {
+      "path": "test/parallel/test-inspector-port-zero-cluster.js",
+      "area": "v8_inspector",
+      "expected": "SKIP",
+      "reason": "Requires the V8 inspector/CDP debugger transport and live inspector sessions. Kandelo's SpiderMonkey-backed runtime currently exposes inspector as a documented unsupported boundary."
+    },
+    {
+      "path": "test/parallel/test-inspector-port-zero.js",
+      "area": "v8_inspector",
+      "expected": "SKIP",
+      "reason": "Requires the V8 inspector/CDP debugger transport and live inspector sessions. Kandelo's SpiderMonkey-backed runtime currently exposes inspector as a documented unsupported boundary."
+    },
+    {
+      "path": "test/parallel/test-inspector-promises.js",
+      "area": "v8_inspector",
+      "expected": "SKIP",
+      "reason": "Requires the V8 inspector/CDP debugger transport and live inspector sessions. Kandelo's SpiderMonkey-backed runtime currently exposes inspector as a documented unsupported boundary."
+    },
+    {
+      "path": "test/parallel/test-inspector-reported-host.js",
+      "area": "v8_inspector",
+      "expected": "SKIP",
+      "reason": "Requires the V8 inspector/CDP debugger transport and live inspector sessions. Kandelo's SpiderMonkey-backed runtime currently exposes inspector as a documented unsupported boundary."
+    },
+    {
+      "path": "test/parallel/test-inspector-resource-name-to-url.js",
+      "area": "v8_inspector",
+      "expected": "SKIP",
+      "reason": "Requires the V8 inspector/CDP debugger transport and live inspector sessions. Kandelo's SpiderMonkey-backed runtime currently exposes inspector as a documented unsupported boundary."
+    },
+    {
+      "path": "test/parallel/test-inspector-runtime-evaluate-with-timeout.js",
+      "area": "v8_inspector",
+      "expected": "SKIP",
+      "reason": "Requires the V8 inspector/CDP debugger transport and live inspector sessions. Kandelo's SpiderMonkey-backed runtime currently exposes inspector as a documented unsupported boundary."
+    },
+    {
+      "path": "test/parallel/test-inspector-scriptparsed-context.js",
+      "area": "v8_inspector",
+      "expected": "SKIP",
+      "reason": "Requires the V8 inspector/CDP debugger transport and live inspector sessions. Kandelo's SpiderMonkey-backed runtime currently exposes inspector as a documented unsupported boundary."
+    },
+    {
+      "path": "test/parallel/test-inspector-stop-profile-after-done.js",
+      "area": "v8_inspector",
+      "expected": "SKIP",
+      "reason": "Requires the V8 inspector/CDP debugger transport and live inspector sessions. Kandelo's SpiderMonkey-backed runtime currently exposes inspector as a documented unsupported boundary."
+    },
+    {
+      "path": "test/parallel/test-inspector-stops-no-file.js",
+      "area": "v8_inspector",
+      "expected": "SKIP",
+      "reason": "Requires the V8 inspector/CDP debugger transport and live inspector sessions. Kandelo's SpiderMonkey-backed runtime currently exposes inspector as a documented unsupported boundary."
+    },
+    {
+      "path": "test/parallel/test-inspector-stress-http.js",
+      "area": "v8_inspector",
+      "expected": "SKIP",
+      "reason": "Requires the V8 inspector/CDP debugger transport and live inspector sessions. Kandelo's SpiderMonkey-backed runtime currently exposes inspector as a documented unsupported boundary."
+    },
+    {
+      "path": "test/parallel/test-inspector-tracing-domain.js",
+      "area": "v8_inspector",
+      "expected": "SKIP",
+      "reason": "Requires the V8 inspector/CDP debugger transport and live inspector sessions. Kandelo's SpiderMonkey-backed runtime currently exposes inspector as a documented unsupported boundary."
+    },
+    {
+      "path": "test/parallel/test-inspector-vm-global-accessors-getter-sideeffect.js",
+      "area": "v8_inspector",
+      "expected": "SKIP",
+      "reason": "Requires the V8 inspector/CDP debugger transport and live inspector sessions. Kandelo's SpiderMonkey-backed runtime currently exposes inspector as a documented unsupported boundary."
+    },
+    {
+      "path": "test/parallel/test-inspector-vm-global-accessors-sideeffects.js",
+      "area": "v8_inspector",
+      "expected": "SKIP",
+      "reason": "Requires the V8 inspector/CDP debugger transport and live inspector sessions. Kandelo's SpiderMonkey-backed runtime currently exposes inspector as a documented unsupported boundary."
+    },
+    {
+      "path": "test/parallel/test-inspector-wait-for-connection.js",
+      "area": "v8_inspector",
+      "expected": "SKIP",
+      "reason": "Requires the V8 inspector/CDP debugger transport and live inspector sessions. Kandelo's SpiderMonkey-backed runtime currently exposes inspector as a documented unsupported boundary."
+    },
+    {
+      "path": "test/parallel/test-inspector-waiting-for-disconnect.js",
+      "area": "v8_inspector",
+      "expected": "SKIP",
+      "reason": "Requires the V8 inspector/CDP debugger transport and live inspector sessions. Kandelo's SpiderMonkey-backed runtime currently exposes inspector as a documented unsupported boundary."
+    },
+    {
+      "path": "test/parallel/test-inspector-workers-flat-list.js",
+      "area": "v8_inspector",
+      "expected": "SKIP",
+      "reason": "Requires the V8 inspector/CDP debugger transport and live inspector sessions. Kandelo's SpiderMonkey-backed runtime currently exposes inspector as a documented unsupported boundary."
+    },
+    {
+      "path": "test/parallel/test-inspector.js",
+      "area": "v8_inspector",
+      "expected": "SKIP",
+      "reason": "Requires the V8 inspector/CDP debugger transport and live inspector sessions. Kandelo's SpiderMonkey-backed runtime currently exposes inspector as a documented unsupported boundary."
+    },
+    {
+      "path": "test/parallel/test-no-node-snapshot.js",
+      "area": "snapshot",
+      "expected": "SKIP",
+      "reason": "Requires Node's V8 startup snapshot build/restore machinery. Kandelo's SpiderMonkey-backed Node compatibility runtime does not build or consume V8 startup snapshot blobs; only the not-building `v8.startupSnapshot` error shape is exposed."
+    },
+    {
+      "path": "test/parallel/test-permission-fs-write-v8.js",
+      "area": "permission",
+      "expected": "SKIP",
+      "reason": "Requires V8 heap snapshot/statistics internals or near-heap-limit heap snapshot callbacks. Kandelo exposes only small heap-statistic compatibility shapes and does not expose V8 heap graph generation or writeHeapSnapshot."
+    },
+    {
+      "path": "test/parallel/test-permission-inspector.js",
+      "area": "permission",
+      "expected": "SKIP",
+      "reason": "Requires the V8 inspector/CDP debugger transport and live inspector sessions. Kandelo's SpiderMonkey-backed runtime currently exposes inspector as a documented unsupported boundary."
+    },
+    {
+      "path": "test/parallel/test-repl-inspector.js",
+      "area": "repl",
+      "expected": "SKIP",
+      "reason": "Requires the V8 inspector/CDP debugger transport and live inspector sessions. Kandelo's SpiderMonkey-backed runtime currently exposes inspector as a documented unsupported boundary."
+    },
+    {
+      "path": "test/parallel/test-runner-coverage.js",
+      "area": "runner",
+      "expected": "SKIP",
+      "reason": "Requires Node's V8 inspector coverage or GC profiling collector. Kandelo sets `process.features.inspector` false and does not collect V8 coverage/profiler data from SpiderMonkey."
+    },
+    {
+      "path": "test/parallel/test-snapshot-api.js",
+      "area": "snapshot",
+      "expected": "SKIP",
+      "reason": "Requires Node's V8 startup snapshot build/restore machinery. Kandelo's SpiderMonkey-backed Node compatibility runtime does not build or consume V8 startup snapshot blobs; only the not-building `v8.startupSnapshot` error shape is exposed."
+    },
+    {
+      "path": "test/parallel/test-snapshot-argv1.js",
+      "area": "snapshot",
+      "expected": "SKIP",
+      "reason": "Requires Node's V8 startup snapshot build/restore machinery. Kandelo's SpiderMonkey-backed Node compatibility runtime does not build or consume V8 startup snapshot blobs; only the not-building `v8.startupSnapshot` error shape is exposed."
+    },
+    {
+      "path": "test/parallel/test-snapshot-basic.js",
+      "area": "snapshot",
+      "expected": "SKIP",
+      "reason": "Requires Node's V8 startup snapshot build/restore machinery. Kandelo's SpiderMonkey-backed Node compatibility runtime does not build or consume V8 startup snapshot blobs; only the not-building `v8.startupSnapshot` error shape is exposed."
+    },
+    {
+      "path": "test/parallel/test-snapshot-child-process-sync.js",
+      "area": "snapshot",
+      "expected": "SKIP",
+      "reason": "Requires Node's V8 startup snapshot build/restore machinery. Kandelo's SpiderMonkey-backed Node compatibility runtime does not build or consume V8 startup snapshot blobs; only the not-building `v8.startupSnapshot` error shape is exposed."
+    },
+    {
+      "path": "test/parallel/test-snapshot-cjs-main.js",
+      "area": "snapshot",
+      "expected": "SKIP",
+      "reason": "Requires Node's V8 startup snapshot build/restore machinery. Kandelo's SpiderMonkey-backed Node compatibility runtime does not build or consume V8 startup snapshot blobs; only the not-building `v8.startupSnapshot` error shape is exposed."
+    },
+    {
+      "path": "test/parallel/test-snapshot-config.js",
+      "area": "snapshot",
+      "expected": "SKIP",
+      "reason": "Requires Node's V8 startup snapshot build/restore machinery. Kandelo's SpiderMonkey-backed Node compatibility runtime does not build or consume V8 startup snapshot blobs; only the not-building `v8.startupSnapshot` error shape is exposed."
+    },
+    {
+      "path": "test/parallel/test-snapshot-console.js",
+      "area": "snapshot",
+      "expected": "SKIP",
+      "reason": "Requires Node's V8 startup snapshot build/restore machinery. Kandelo's SpiderMonkey-backed Node compatibility runtime does not build or consume V8 startup snapshot blobs; only the not-building `v8.startupSnapshot` error shape is exposed."
+    },
+    {
+      "path": "test/parallel/test-snapshot-coverage.js",
+      "area": "snapshot",
+      "expected": "SKIP",
+      "reason": "Requires Node's V8 startup snapshot build/restore machinery. Kandelo's SpiderMonkey-backed Node compatibility runtime does not build or consume V8 startup snapshot blobs; only the not-building `v8.startupSnapshot` error shape is exposed."
+    },
+    {
+      "path": "test/parallel/test-snapshot-cwd.js",
+      "area": "snapshot",
+      "expected": "SKIP",
+      "reason": "Requires Node's V8 startup snapshot build/restore machinery. Kandelo's SpiderMonkey-backed Node compatibility runtime does not build or consume V8 startup snapshot blobs; only the not-building `v8.startupSnapshot` error shape is exposed."
+    },
+    {
+      "path": "test/parallel/test-snapshot-dns-lookup-localhost-promise.js",
+      "area": "snapshot",
+      "expected": "SKIP",
+      "reason": "Requires Node's V8 startup snapshot build/restore machinery. Kandelo's SpiderMonkey-backed Node compatibility runtime does not build or consume V8 startup snapshot blobs; only the not-building `v8.startupSnapshot` error shape is exposed."
+    },
+    {
+      "path": "test/parallel/test-snapshot-dns-lookup-localhost.js",
+      "area": "snapshot",
+      "expected": "SKIP",
+      "reason": "Requires Node's V8 startup snapshot build/restore machinery. Kandelo's SpiderMonkey-backed Node compatibility runtime does not build or consume V8 startup snapshot blobs; only the not-building `v8.startupSnapshot` error shape is exposed."
+    },
+    {
+      "path": "test/parallel/test-snapshot-dns-resolve-localhost-promise.js",
+      "area": "snapshot",
+      "expected": "SKIP",
+      "reason": "Requires Node's V8 startup snapshot build/restore machinery. Kandelo's SpiderMonkey-backed Node compatibility runtime does not build or consume V8 startup snapshot blobs; only the not-building `v8.startupSnapshot` error shape is exposed."
+    },
+    {
+      "path": "test/parallel/test-snapshot-dns-resolve-localhost.js",
+      "area": "snapshot",
+      "expected": "SKIP",
+      "reason": "Requires Node's V8 startup snapshot build/restore machinery. Kandelo's SpiderMonkey-backed Node compatibility runtime does not build or consume V8 startup snapshot blobs; only the not-building `v8.startupSnapshot` error shape is exposed."
+    },
+    {
+      "path": "test/parallel/test-snapshot-error.js",
+      "area": "snapshot",
+      "expected": "SKIP",
+      "reason": "Requires Node's V8 startup snapshot build/restore machinery. Kandelo's SpiderMonkey-backed Node compatibility runtime does not build or consume V8 startup snapshot blobs; only the not-building `v8.startupSnapshot` error shape is exposed."
+    },
+    {
+      "path": "test/parallel/test-snapshot-eval.js",
+      "area": "snapshot",
+      "expected": "SKIP",
+      "reason": "Requires Node's V8 startup snapshot build/restore machinery. Kandelo's SpiderMonkey-backed Node compatibility runtime does not build or consume V8 startup snapshot blobs; only the not-building `v8.startupSnapshot` error shape is exposed."
+    },
+    {
+      "path": "test/parallel/test-snapshot-gzip.js",
+      "area": "snapshot",
+      "expected": "SKIP",
+      "reason": "Requires Node's V8 startup snapshot build/restore machinery. Kandelo's SpiderMonkey-backed Node compatibility runtime does not build or consume V8 startup snapshot blobs; only the not-building `v8.startupSnapshot` error shape is exposed."
+    },
+    {
+      "path": "test/parallel/test-snapshot-incompatible.js",
+      "area": "snapshot",
+      "expected": "SKIP",
+      "reason": "Requires Node's V8 startup snapshot build/restore machinery. Kandelo's SpiderMonkey-backed Node compatibility runtime does not build or consume V8 startup snapshot blobs; only the not-building `v8.startupSnapshot` error shape is exposed."
+    },
+    {
+      "path": "test/parallel/test-snapshot-namespaced-builtin.js",
+      "area": "snapshot",
+      "expected": "SKIP",
+      "reason": "Requires Node's V8 startup snapshot build/restore machinery. Kandelo's SpiderMonkey-backed Node compatibility runtime does not build or consume V8 startup snapshot blobs; only the not-building `v8.startupSnapshot` error shape is exposed."
+    },
+    {
+      "path": "test/parallel/test-snapshot-net.js",
+      "area": "snapshot",
+      "expected": "SKIP",
+      "reason": "Requires Node's V8 startup snapshot build/restore machinery. Kandelo's SpiderMonkey-backed Node compatibility runtime does not build or consume V8 startup snapshot blobs; only the not-building `v8.startupSnapshot` error shape is exposed."
+    },
+    {
+      "path": "test/parallel/test-snapshot-typescript.js",
+      "area": "snapshot",
+      "expected": "SKIP",
+      "reason": "Requires Node's V8 startup snapshot build/restore machinery. Kandelo's SpiderMonkey-backed Node compatibility runtime does not build or consume V8 startup snapshot blobs; only the not-building `v8.startupSnapshot` error shape is exposed."
+    },
+    {
+      "path": "test/parallel/test-snapshot-umd.js",
+      "area": "snapshot",
+      "expected": "SKIP",
+      "reason": "Requires Node's V8 startup snapshot build/restore machinery. Kandelo's SpiderMonkey-backed Node compatibility runtime does not build or consume V8 startup snapshot blobs; only the not-building `v8.startupSnapshot` error shape is exposed."
+    },
+    {
+      "path": "test/parallel/test-snapshot-warning.js",
+      "area": "snapshot",
+      "expected": "SKIP",
+      "reason": "Requires Node's V8 startup snapshot build/restore machinery. Kandelo's SpiderMonkey-backed Node compatibility runtime does not build or consume V8 startup snapshot blobs; only the not-building `v8.startupSnapshot` error shape is exposed."
+    },
+    {
+      "path": "test/parallel/test-snapshot-weak-reference.js",
+      "area": "snapshot",
+      "expected": "SKIP",
+      "reason": "Requires Node's V8 startup snapshot build/restore machinery. Kandelo's SpiderMonkey-backed Node compatibility runtime does not build or consume V8 startup snapshot blobs; only the not-building `v8.startupSnapshot` error shape is exposed."
+    },
+    {
+      "path": "test/parallel/test-snapshot-worker.js",
+      "area": "snapshot",
+      "expected": "SKIP",
+      "reason": "Requires Node's V8 startup snapshot build/restore machinery. Kandelo's SpiderMonkey-backed Node compatibility runtime does not build or consume V8 startup snapshot blobs; only the not-building `v8.startupSnapshot` error shape is exposed."
+    },
+    {
+      "path": "test/parallel/test-tick-processor-arguments.js",
+      "area": "v8_inspector",
+      "expected": "SKIP",
+      "reason": "Requires V8 trace events, tick-processor output, or `--trace-atomics-wait` diagnostics. Kandelo does not implement V8/libuv trace event emission for the SpiderMonkey runtime."
+    },
+    {
+      "path": "test/parallel/test-tick-processor-version-check.js",
+      "area": "v8_inspector",
+      "expected": "SKIP",
+      "reason": "Requires V8 trace events, tick-processor output, or `--trace-atomics-wait` diagnostics. Kandelo does not implement V8/libuv trace event emission for the SpiderMonkey runtime."
+    },
+    {
+      "path": "test/parallel/test-trace-atomic-deprecation.js",
+      "area": "v8_inspector",
+      "expected": "SKIP",
+      "reason": "Requires V8 trace events, tick-processor output, or `--trace-atomics-wait` diagnostics. Kandelo does not implement V8/libuv trace event emission for the SpiderMonkey runtime."
+    },
+    {
+      "path": "test/parallel/test-trace-atomics-wait.js",
+      "area": "v8_inspector",
+      "expected": "SKIP",
+      "reason": "Requires V8 trace events, tick-processor output, or `--trace-atomics-wait` diagnostics. Kandelo does not implement V8/libuv trace event emission for the SpiderMonkey runtime."
+    },
+    {
+      "path": "test/parallel/test-trace-events-all.js",
+      "area": "v8_inspector",
+      "expected": "SKIP",
+      "reason": "Requires V8 trace events, tick-processor output, or `--trace-atomics-wait` diagnostics. Kandelo does not implement V8/libuv trace event emission for the SpiderMonkey runtime."
+    },
+    {
+      "path": "test/parallel/test-trace-events-api-worker-disabled.js",
+      "area": "v8_inspector",
+      "expected": "SKIP",
+      "reason": "Requires V8 trace events, tick-processor output, or `--trace-atomics-wait` diagnostics. Kandelo does not implement V8/libuv trace event emission for the SpiderMonkey runtime."
+    },
+    {
+      "path": "test/parallel/test-trace-events-api.js",
+      "area": "v8_inspector",
+      "expected": "SKIP",
+      "reason": "Requires V8 trace events, tick-processor output, or `--trace-atomics-wait` diagnostics. Kandelo does not implement V8/libuv trace event emission for the SpiderMonkey runtime."
+    },
+    {
+      "path": "test/parallel/test-trace-events-async-hooks-dynamic.js",
+      "area": "v8_inspector",
+      "expected": "SKIP",
+      "reason": "Requires V8 trace events, tick-processor output, or `--trace-atomics-wait` diagnostics. Kandelo does not implement V8/libuv trace event emission for the SpiderMonkey runtime."
+    },
+    {
+      "path": "test/parallel/test-trace-events-async-hooks-worker.js",
+      "area": "v8_inspector",
+      "expected": "SKIP",
+      "reason": "Requires V8 trace events, tick-processor output, or `--trace-atomics-wait` diagnostics. Kandelo does not implement V8/libuv trace event emission for the SpiderMonkey runtime."
+    },
+    {
+      "path": "test/parallel/test-trace-events-async-hooks.js",
+      "area": "v8_inspector",
+      "expected": "SKIP",
+      "reason": "Requires V8 trace events, tick-processor output, or `--trace-atomics-wait` diagnostics. Kandelo does not implement V8/libuv trace event emission for the SpiderMonkey runtime."
+    },
+    {
+      "path": "test/parallel/test-trace-events-binding.js",
+      "area": "v8_inspector",
+      "expected": "SKIP",
+      "reason": "Requires V8 trace events, tick-processor output, or `--trace-atomics-wait` diagnostics. Kandelo does not implement V8/libuv trace event emission for the SpiderMonkey runtime."
+    },
+    {
+      "path": "test/parallel/test-trace-events-bootstrap.js",
+      "area": "v8_inspector",
+      "expected": "SKIP",
+      "reason": "Requires V8 trace events, tick-processor output, or `--trace-atomics-wait` diagnostics. Kandelo does not implement V8/libuv trace event emission for the SpiderMonkey runtime."
+    },
+    {
+      "path": "test/parallel/test-trace-events-category-used.js",
+      "area": "v8_inspector",
+      "expected": "SKIP",
+      "reason": "Requires V8 trace events, tick-processor output, or `--trace-atomics-wait` diagnostics. Kandelo does not implement V8/libuv trace event emission for the SpiderMonkey runtime."
+    },
+    {
+      "path": "test/parallel/test-trace-events-console.js",
+      "area": "v8_inspector",
+      "expected": "SKIP",
+      "reason": "Requires V8 trace events, tick-processor output, or `--trace-atomics-wait` diagnostics. Kandelo does not implement V8/libuv trace event emission for the SpiderMonkey runtime."
+    },
+    {
+      "path": "test/parallel/test-trace-events-dynamic-enable-workers-disabled.js",
+      "area": "v8_inspector",
+      "expected": "SKIP",
+      "reason": "Requires V8 trace events, tick-processor output, or `--trace-atomics-wait` diagnostics. Kandelo does not implement V8/libuv trace event emission for the SpiderMonkey runtime."
+    },
+    {
+      "path": "test/parallel/test-trace-events-dynamic-enable.js",
+      "area": "v8_inspector",
+      "expected": "SKIP",
+      "reason": "Requires V8 trace events, tick-processor output, or `--trace-atomics-wait` diagnostics. Kandelo does not implement V8/libuv trace event emission for the SpiderMonkey runtime."
+    },
+    {
+      "path": "test/parallel/test-trace-events-environment.js",
+      "area": "v8_inspector",
+      "expected": "SKIP",
+      "reason": "Requires V8 trace events, tick-processor output, or `--trace-atomics-wait` diagnostics. Kandelo does not implement V8/libuv trace event emission for the SpiderMonkey runtime."
+    },
+    {
+      "path": "test/parallel/test-trace-events-file-pattern.js",
+      "area": "v8_inspector",
+      "expected": "SKIP",
+      "reason": "Requires V8 trace events, tick-processor output, or `--trace-atomics-wait` diagnostics. Kandelo does not implement V8/libuv trace event emission for the SpiderMonkey runtime."
+    },
+    {
+      "path": "test/parallel/test-trace-events-fs-async.js",
+      "area": "v8_inspector",
+      "expected": "SKIP",
+      "reason": "Requires V8 trace events, tick-processor output, or `--trace-atomics-wait` diagnostics. Kandelo does not implement V8/libuv trace event emission for the SpiderMonkey runtime."
+    },
+    {
+      "path": "test/parallel/test-trace-events-fs-sync.js",
+      "area": "v8_inspector",
+      "expected": "SKIP",
+      "reason": "Requires V8 trace events, tick-processor output, or `--trace-atomics-wait` diagnostics. Kandelo does not implement V8/libuv trace event emission for the SpiderMonkey runtime."
+    },
+    {
+      "path": "test/parallel/test-trace-events-http.js",
+      "area": "v8_inspector",
+      "expected": "SKIP",
+      "reason": "Requires V8 trace events, tick-processor output, or `--trace-atomics-wait` diagnostics. Kandelo does not implement V8/libuv trace event emission for the SpiderMonkey runtime."
+    },
+    {
+      "path": "test/parallel/test-trace-events-metadata.js",
+      "area": "v8_inspector",
+      "expected": "SKIP",
+      "reason": "Requires V8 trace events, tick-processor output, or `--trace-atomics-wait` diagnostics. Kandelo does not implement V8/libuv trace event emission for the SpiderMonkey runtime."
+    },
+    {
+      "path": "test/parallel/test-trace-events-net-abstract-socket.js",
+      "area": "v8_inspector",
+      "expected": "SKIP",
+      "reason": "Requires V8 trace events, tick-processor output, or `--trace-atomics-wait` diagnostics. Kandelo does not implement V8/libuv trace event emission for the SpiderMonkey runtime."
+    },
+    {
+      "path": "test/parallel/test-trace-events-net.js",
+      "area": "v8_inspector",
+      "expected": "SKIP",
+      "reason": "Requires V8 trace events, tick-processor output, or `--trace-atomics-wait` diagnostics. Kandelo does not implement V8/libuv trace event emission for the SpiderMonkey runtime."
+    },
+    {
+      "path": "test/parallel/test-trace-events-none.js",
+      "area": "v8_inspector",
+      "expected": "SKIP",
+      "reason": "Requires V8 trace events, tick-processor output, or `--trace-atomics-wait` diagnostics. Kandelo does not implement V8/libuv trace event emission for the SpiderMonkey runtime."
+    },
+    {
+      "path": "test/parallel/test-trace-events-process-exit.js",
+      "area": "v8_inspector",
+      "expected": "SKIP",
+      "reason": "Requires V8 trace events, tick-processor output, or `--trace-atomics-wait` diagnostics. Kandelo does not implement V8/libuv trace event emission for the SpiderMonkey runtime."
+    },
+    {
+      "path": "test/parallel/test-trace-events-promises.js",
+      "area": "v8_inspector",
+      "expected": "SKIP",
+      "reason": "Requires V8 trace events, tick-processor output, or `--trace-atomics-wait` diagnostics. Kandelo does not implement V8/libuv trace event emission for the SpiderMonkey runtime."
+    },
+    {
+      "path": "test/parallel/test-trace-events-threadpool.js",
+      "area": "v8_inspector",
+      "expected": "SKIP",
+      "reason": "Requires V8 trace events, tick-processor output, or `--trace-atomics-wait` diagnostics. Kandelo does not implement V8/libuv trace event emission for the SpiderMonkey runtime."
+    },
+    {
+      "path": "test/parallel/test-trace-events-v8.js",
+      "area": "v8_inspector",
+      "expected": "SKIP",
+      "reason": "Requires V8 trace events, tick-processor output, or `--trace-atomics-wait` diagnostics. Kandelo does not implement V8/libuv trace event emission for the SpiderMonkey runtime."
+    },
+    {
+      "path": "test/parallel/test-trace-events-vm.js",
+      "area": "v8_inspector",
+      "expected": "SKIP",
+      "reason": "Requires V8 trace events, tick-processor output, or `--trace-atomics-wait` diagnostics. Kandelo does not implement V8/libuv trace event emission for the SpiderMonkey runtime."
+    },
+    {
+      "path": "test/parallel/test-trace-events-worker-metadata-with-name.js",
+      "area": "v8_inspector",
+      "expected": "SKIP",
+      "reason": "Requires V8 trace events, tick-processor output, or `--trace-atomics-wait` diagnostics. Kandelo does not implement V8/libuv trace event emission for the SpiderMonkey runtime."
+    },
+    {
+      "path": "test/parallel/test-trace-events-worker-metadata.js",
+      "area": "v8_inspector",
+      "expected": "SKIP",
+      "reason": "Requires V8 trace events, tick-processor output, or `--trace-atomics-wait` diagnostics. Kandelo does not implement V8/libuv trace event emission for the SpiderMonkey runtime."
+    },
+    {
+      "path": "test/parallel/test-trace-exit.js",
+      "area": "v8_inspector",
+      "expected": "SKIP",
+      "reason": "Requires V8 trace events, tick-processor output, or `--trace-atomics-wait` diagnostics. Kandelo does not implement V8/libuv trace event emission for the SpiderMonkey runtime."
+    },
+    {
+      "path": "test/parallel/test-v8-collect-gc-profile-exit-before-stop.js",
+      "area": "v8_inspector",
+      "expected": "SKIP",
+      "reason": "Requires Node's V8 inspector coverage or GC profiling collector. Kandelo sets `process.features.inspector` false and does not collect V8 coverage/profiler data from SpiderMonkey."
+    },
+    {
+      "path": "test/parallel/test-v8-collect-gc-profile-in-worker.js",
+      "area": "v8_inspector",
+      "expected": "SKIP",
+      "reason": "Requires Node's V8 inspector coverage or GC profiling collector. Kandelo sets `process.features.inspector` false and does not collect V8 coverage/profiler data from SpiderMonkey."
+    },
+    {
+      "path": "test/parallel/test-v8-collect-gc-profile.js",
+      "area": "v8_inspector",
+      "expected": "SKIP",
+      "reason": "Requires Node's V8 inspector coverage or GC profiling collector. Kandelo sets `process.features.inspector` false and does not collect V8 coverage/profiler data from SpiderMonkey."
+    },
+    {
+      "path": "test/parallel/test-v8-coverage.js",
+      "area": "v8_inspector",
+      "expected": "SKIP",
+      "reason": "Requires Node's V8 inspector coverage or GC profiling collector. Kandelo sets `process.features.inspector` false and does not collect V8 coverage/profiler data from SpiderMonkey."
+    },
+    {
+      "path": "test/parallel/test-v8-deserialize-buffer.js",
+      "area": "v8_inspector",
+      "expected": "SKIP",
+      "reason": "Requires V8-specific engine APIs or command-line flags that are not meaningful in Kandelo's SpiderMonkey-backed Node compatibility runtime."
+    },
+    {
+      "path": "test/parallel/test-v8-flag-pool-size-0.js",
+      "area": "v8_inspector",
+      "expected": "SKIP",
+      "reason": "Requires V8-specific engine APIs or command-line flags that are not meaningful in Kandelo's SpiderMonkey-backed Node compatibility runtime."
+    },
+    {
+      "path": "test/parallel/test-v8-flag-type-check.js",
+      "area": "v8_inspector",
+      "expected": "SKIP",
+      "reason": "Requires V8-specific engine APIs or command-line flags that are not meaningful in Kandelo's SpiderMonkey-backed Node compatibility runtime."
+    },
+    {
+      "path": "test/parallel/test-v8-flags.js",
+      "area": "v8_inspector",
+      "expected": "SKIP",
+      "reason": "Requires V8-specific engine APIs or command-line flags that are not meaningful in Kandelo's SpiderMonkey-backed Node compatibility runtime."
+    },
+    {
+      "path": "test/parallel/test-v8-getheapsnapshot-twice.js",
+      "area": "v8_inspector",
+      "expected": "SKIP",
+      "reason": "Requires V8 heap snapshot/statistics internals or near-heap-limit heap snapshot callbacks. Kandelo exposes only small heap-statistic compatibility shapes and does not expose V8 heap graph generation or writeHeapSnapshot."
+    },
+    {
+      "path": "test/parallel/test-v8-global-setter.js",
+      "area": "v8_inspector",
+      "expected": "SKIP",
+      "reason": "Requires V8-specific engine APIs or command-line flags that are not meaningful in Kandelo's SpiderMonkey-backed Node compatibility runtime."
+    },
+    {
+      "path": "test/parallel/test-v8-query-objects.js",
+      "area": "v8_inspector",
+      "expected": "SKIP",
+      "reason": "Requires V8-specific engine APIs or command-line flags that are not meaningful in Kandelo's SpiderMonkey-backed Node compatibility runtime."
+    },
+    {
+      "path": "test/parallel/test-v8-serdes.js",
+      "area": "v8_inspector",
+      "expected": "SKIP",
+      "reason": "Requires V8-specific engine APIs or command-line flags that are not meaningful in Kandelo's SpiderMonkey-backed Node compatibility runtime."
+    },
+    {
+      "path": "test/parallel/test-v8-serialize-leak.js",
+      "area": "v8_inspector",
+      "expected": "SKIP",
+      "reason": "Requires V8-specific engine APIs or command-line flags that are not meaningful in Kandelo's SpiderMonkey-backed Node compatibility runtime."
+    },
+    {
+      "path": "test/parallel/test-v8-startup-snapshot-api.js",
+      "area": "v8_inspector",
+      "expected": "SKIP",
+      "reason": "Requires Node's V8 startup snapshot build/restore machinery. Kandelo's SpiderMonkey-backed Node compatibility runtime does not build or consume V8 startup snapshot blobs; only the not-building `v8.startupSnapshot` error shape is exposed."
+    },
+    {
+      "path": "test/parallel/test-v8-stats.js",
+      "area": "v8_inspector",
+      "expected": "SKIP",
+      "reason": "Requires V8 heap snapshot/statistics internals or near-heap-limit heap snapshot callbacks. Kandelo exposes only small heap-statistic compatibility shapes and does not expose V8 heap graph generation or writeHeapSnapshot."
+    },
+    {
+      "path": "test/parallel/test-v8-stop-coverage.js",
+      "area": "v8_inspector",
+      "expected": "SKIP",
+      "reason": "Requires Node's V8 inspector coverage or GC profiling collector. Kandelo sets `process.features.inspector` false and does not collect V8 coverage/profiler data from SpiderMonkey."
+    },
+    {
+      "path": "test/parallel/test-v8-take-coverage-noop.js",
+      "area": "v8_inspector",
+      "expected": "SKIP",
+      "reason": "Requires Node's V8 inspector coverage or GC profiling collector. Kandelo sets `process.features.inspector` false and does not collect V8 coverage/profiler data from SpiderMonkey."
+    },
+    {
+      "path": "test/parallel/test-v8-take-coverage.js",
+      "area": "v8_inspector",
+      "expected": "SKIP",
+      "reason": "Requires Node's V8 inspector coverage or GC profiling collector. Kandelo sets `process.features.inspector` false and does not collect V8 coverage/profiler data from SpiderMonkey."
+    },
+    {
+      "path": "test/parallel/test-v8-version-tag.js",
+      "area": "v8_inspector",
+      "expected": "SKIP",
+      "reason": "Requires V8-specific engine APIs or command-line flags that are not meaningful in Kandelo's SpiderMonkey-backed Node compatibility runtime."
+    },
+    {
+      "path": "test/parallel/test-worker-exit-heapsnapshot.js",
+      "area": "workers",
+      "expected": "SKIP",
+      "reason": "Requires V8 heap snapshot/statistics internals or near-heap-limit heap snapshot callbacks. Kandelo exposes only small heap-statistic compatibility shapes and does not expose V8 heap graph generation or writeHeapSnapshot."
+    },
+    {
+      "path": "test/parallel/test-worker-heap-snapshot.js",
+      "area": "workers",
+      "expected": "SKIP",
+      "reason": "Requires V8 heap snapshot/statistics internals or near-heap-limit heap snapshot callbacks. Kandelo exposes only small heap-statistic compatibility shapes and does not expose V8 heap graph generation or writeHeapSnapshot."
+    }
+  ]
+}

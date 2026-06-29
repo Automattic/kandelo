@@ -16,7 +16,18 @@ import genCatWasmUrl from "@binaries/programs/wasm32/posix-utils-lite/gencat.was
 interface DataFile {
   path: string;
   data?: number[]; // byte array (transferred as JSON-safe array)
+  url?: string; // same-origin URL fetched by the browser page
+  lazy?: boolean; // if true, register URL as a lazy VFS file
+  size?: number; // required for lazy files
+  mode?: number;
   useWasmBytes?: boolean; // if true, use the wasmBytes as file content
+}
+
+interface RunOptions {
+  dataFiles?: DataFile[];
+  useNodeCoreOfficialBaseFiles?: boolean;
+  cwd?: string;
+  env?: string[];
 }
 
 declare global {
@@ -26,13 +37,25 @@ declare global {
       wasmBytes: ArrayBuffer,
       argv?: string[],
       timeoutMs?: number,
-      options?: { dataFiles?: DataFile[]; cwd?: string; env?: string[] },
+      options?: RunOptions,
     ) => Promise<{
       exitCode: number;
       stdout: string;
       stderr: string;
       combined: string;
     }>;
+    __runTestFromUrl: (
+      wasmUrl: string,
+      argv?: string[],
+      timeoutMs?: number,
+      options?: RunOptions,
+    ) => Promise<{
+      exitCode: number;
+      stdout: string;
+      stderr: string;
+      combined: string;
+    }>;
+    __setNodeCoreOfficialBaseFiles: (files: DataFile[]) => void;
     __testCount: number;
   }
 }
@@ -44,6 +67,8 @@ let coreutilsBytes: ArrayBuffer | null = null;
 let grepBytes: ArrayBuffer | null = null;
 let sedBytes: ArrayBuffer | null = null;
 let genCatBytes: ArrayBuffer | null = null;
+let nodeCoreOfficialBaseFiles: DataFile[] = [];
+const wasmUrlCache = new Map<string, Promise<ArrayBuffer>>();
 
 const COREUTILS_NAMES = [
   "arch", "b2sum", "base32", "base64", "basename", "basenc", "cat",
@@ -113,6 +138,30 @@ function populateExecBinaries(fs: import("@host/browser-kernel-host").BrowserKer
   }
 }
 
+async function fetchBytes(url: string): Promise<ArrayBuffer> {
+  const response = await fetch(url);
+  if (!response.ok) {
+    throw new Error(`fetch ${url} failed: ${response.status} ${response.statusText}`);
+  }
+  return response.arrayBuffer();
+}
+
+async function fetchWasmBytes(url: string): Promise<ArrayBuffer> {
+  let cached = wasmUrlCache.get(url);
+  if (!cached) {
+    cached = fetchBytes(url);
+    wasmUrlCache.set(url, cached);
+  }
+  return cached;
+}
+
+async function dataFileBytes(file: DataFile, wasmBytes: ArrayBuffer): Promise<Uint8Array> {
+  if (file.useWasmBytes) return new Uint8Array(wasmBytes);
+  if (file.url) return new Uint8Array(await fetchBytes(file.url));
+  if (file.data !== undefined) return new Uint8Array(file.data);
+  throw new Error(`Data file ${file.path} has neither data nor url`);
+}
+
 async function init() {
   // Fetch kernel wasm and tool binaries in parallel
   const fetches = await Promise.allSettled([
@@ -135,18 +184,23 @@ async function init() {
   }
 
   window.__testCount = 0;
+  window.__setNodeCoreOfficialBaseFiles = (files: DataFile[]) => {
+    nodeCoreOfficialBaseFiles = files;
+  };
 
   window.__runTest = async (
     wasmBytes: ArrayBuffer,
     argv?: string[],
     timeoutMs = 30_000,
-    options?: { dataFiles?: DataFile[]; cwd?: string; env?: string[] },
+    options?: RunOptions,
   ) => {
     let stdout = "";
     let stderr = "";
     let combined = "";
 
     const kernel = new BrowserKernel({
+      fsSize: 64 * 1024 * 1024,
+      maxFsSize: 256 * 1024 * 1024,
       onStdout: (data: Uint8Array) => {
         const text = new TextDecoder().decode(data);
         stdout += text;
@@ -163,28 +217,45 @@ async function init() {
       await kernel.init(kernelWasmBytes!);
       populateExecBinaries(kernel.fs);
 
-      // Populate VFS with data files if provided
-      if (options?.dataFiles) {
-        for (const file of options.dataFiles) {
-          // Ensure parent directories exist
-          const parts = file.path.split("/").filter(Boolean);
-          let dirPath = "";
-          for (let i = 0; i < parts.length - 1; i++) {
-            dirPath += "/" + parts[i];
-            try {
-              kernel.fs.mkdir(dirPath, 0o755);
-            } catch {
-              // Directory may already exist
-            }
+      const dataFiles = [
+        ...(options?.useNodeCoreOfficialBaseFiles ? nodeCoreOfficialBaseFiles : []),
+        ...(options?.dataFiles ?? []),
+      ];
+
+      const lazyFiles = dataFiles.filter((file) => file.lazy);
+      if (lazyFiles.length > 0) {
+        kernel.registerLazyFiles(lazyFiles.map((file) => {
+          if (!file.url || !Number.isFinite(file.size)) {
+            throw new Error(`Lazy data file ${file.path} requires url and size`);
           }
-          // Write the file — use wasmBytes if flagged, otherwise use provided data
-          const fileData = file.useWasmBytes
-            ? new Uint8Array(wasmBytes)
-            : new Uint8Array(file.data!);
-          const fd = kernel.fs.open(file.path, 0x241 /* O_WRONLY|O_CREAT|O_TRUNC */, 0o755);
-          kernel.fs.write(fd, fileData, null, fileData.length);
-          kernel.fs.close(fd);
+          return {
+            path: file.path,
+            url: file.url,
+            size: file.size!,
+            mode: file.mode ?? 0o644,
+          };
+        }));
+      }
+
+      // Populate eager VFS data files if provided.
+      for (const file of dataFiles) {
+        if (file.lazy) continue;
+        // Ensure parent directories exist
+        const parts = file.path.split("/").filter(Boolean);
+        let dirPath = "";
+        for (let i = 0; i < parts.length - 1; i++) {
+          dirPath += "/" + parts[i];
+          try {
+            kernel.fs.mkdir(dirPath, 0o755);
+          } catch {
+            // Directory may already exist
+          }
         }
+        // Write the file — use wasmBytes if flagged, otherwise use provided data
+        const fileData = await dataFileBytes(file, wasmBytes);
+        const fd = kernel.fs.open(file.path, 0x241 /* O_WRONLY|O_CREAT|O_TRUNC */, 0o755);
+        kernel.fs.write(fd, fileData, null, fileData.length);
+        kernel.fs.close(fd);
       }
 
       // Run the test with a timeout
@@ -205,6 +276,16 @@ async function init() {
       await kernel.destroy();
       window.__testCount++;
     }
+  };
+
+  window.__runTestFromUrl = async (
+    wasmUrl: string,
+    argv?: string[],
+    timeoutMs = 30_000,
+    options?: RunOptions,
+  ) => {
+    const wasmBytes = await fetchWasmBytes(wasmUrl);
+    return window.__runTest(wasmBytes, argv, timeoutMs, options);
   };
 
   document.getElementById("status")!.textContent = "Ready";

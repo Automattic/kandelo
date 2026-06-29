@@ -1,0 +1,1 @@
+{ status: 1, stdout: <BufferFactory >, stderr: <BufferFactory >, output: [ null, <BufferFactory >, <BufferFactory > ], pid: 0, signal: null, error: Error: popen failed: errno 2 }

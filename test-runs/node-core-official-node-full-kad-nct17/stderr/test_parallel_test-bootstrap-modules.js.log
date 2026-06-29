@@ -1,0 +1,33 @@
+AssertionError: These builtins are now no longer loaded before pre-execution.
+If this is intentional, remove them from `expected.beforePreExec`.
+
+--- These could be removed from expected.beforePreExec ---
+[ 'Internal Binding async_wrap', 'Internal Binding blob', 'Internal Binding buffer', 'Internal Binding builtins', 'Internal Binding config', 'Internal Binding constants', 'Internal Binding contextify', 'Internal Binding credentials', 'Internal Binding encoding_binding', 'Internal Binding errors', 'Internal Binding fs', 'Internal Binding messaging', 'Internal Binding mksnapshot', 'Internal Binding module_wrap', 'Internal Binding modules', 'Internal Binding options', 'Internal Binding performance', 'Internal Binding permission', 'Internal Binding process_methods', 'Internal Binding string_decoder', 'Internal Binding symbols', 'Internal Binding task_queue', 'Internal Binding timers', 'Internal Binding trace_events', 'Internal Binding types', 'Internal Binding url', 'Internal Binding util', 'Internal Binding wasm_web_api', 'NativeModule async_hooks', 'NativeModule buffer', 'NativeModule events', 'NativeModule fs', 'NativeModule internal/assert', 'NativeModule internal/async_hooks', 'NativeModule internal/blob', 'NativeModule internal/buffer', 'NativeModule internal/console/constructor', 'NativeModule internal/console/global', 'NativeModule internal/constants', 'NativeModule internal/encoding', 'NativeModule internal/errors', 'NativeModule internal/event_target', 'NativeModule internal/events/abort_listener', 'NativeModule internal/fixed_queue', 'NativeModule internal/fs/utils', 'NativeModule internal/idna', 'NativeModule internal/linkedlist', 'NativeModule internal/modules/cjs/loader', 'NativeModule internal/modules/helpers', 'NativeModule internal/modules/package_json_reader', 'NativeModule internal/options', 'NativeModule internal/perf/utils', 'NativeModule internal/priority_queue', 'NativeModule internal/process/execution', 'NativeModule internal/process/per_thread', 'NativeModule internal/process/permission', 'NativeModule internal/process/promises', 'NativeModule internal/process/signal', 'NativeModule internal/process/task_queues', 'NativeModule internal/process/warning', 'NativeModule internal/querystring', 'NativeModule internal/source_map/source_map_cache', 'NativeModule internal/timers', 'NativeModule internal/url', 'NativeModule internal/util', 'NativeModule internal/util/debuglog', 'NativeModule internal/util/inspect', 'NativeModule internal/util/types', 'NativeModule internal/v8/startup_snapshot', 'NativeModule internal/validators', 'NativeModule internal/vm', 'NativeModule internal/webidl', 'NativeModule internal/webstreams/queuingstrategies', 'NativeModule internal/webstreams/util', 'NativeModule internal/worker/js_transferable', 'NativeModule path', 'NativeModule querystring', 'NativeModule timers', 'NativeModule url', 'NativeModule util' ]
+
+These builtins are now no longer loaded at run time.
+If this is intentional, remove them from `expected.atRunTime`.
+
+--- These could be removed from expected.atRunTime ---
+[ 'Internal Binding worker', 'NativeModule internal/dns/utils', 'NativeModule internal/modules/esm/utils', 'NativeModule internal/modules/run_main', 'NativeModule internal/net', 'NativeModule internal/process/pre_execution' ]
+
+AssertionError@kandelo:spidermonkey-node-bootstrap:2648:13
+_assert.strictEqual@kandelo:spidermonkey-node-bootstrap:2680:19
+@/Users/brandon/gt/kandelo/polecats/capable/kandelo/.cache/node-core-official/node-v22.0.0/test/parallel/test-bootstrap-modules.js:246:8
+require@kandelo:spidermonkey-node-bootstrap:5300:22
+@/Users/brandon/gt/kandelo/polecats/capable/kandelo/test-runs/node-core-official-node-full-kad-nct17/kandelo-node-core-prelude.js:45:8
+_runEsmMain@kandelo:spidermonkey-node-bootstrap:5443:21
+_runMainScriptIfPresent@kandelo:spidermonkey-node-bootstrap:5471:20
+@kandelo:spidermonkey-node-bootstrap:6158:1
+@kandelo:spidermonkey-node-bootstrap:6159:3
+
+kandelo:spidermonkey-node-bootstrap:2648:13 AssertionError: Unexpected global(s) found: __kandeloRunDueTimers, __kandeloNextTimerDelay, __kandeloCreateWorkerThreads, argv0, execArgv, TextEncoder, TextDecoder, btoa, atob, Blob, File, FormData, MessagePort, MessageChannel, BroadcastChannel, Event, EventTarget, MessageEvent, CloseEvent, ErrorEvent, DOMException, AbortSignal
+Stack:
+  AssertionError@kandelo:spidermonkey-node-bootstrap:2648:13
+  _assert.fail@kandelo:spidermonkey-node-bootstrap:2711:15
+  @/Users/brandon/gt/kandelo/polecats/capable/kandelo/.cache/node-core-official/node-v22.0.0/test/common/index.js:401:14
+  emit@kandelo:spidermonkey-node-bootstrap:800:20
+  exit@kandelo:spidermonkey-node-bootstrap:1304:18
+  _runEsmMain@kandelo:spidermonkey-node-bootstrap:5459:13
+  _runMainScriptIfPresent@kandelo:spidermonkey-node-bootstrap:5471:20
+  @kandelo:spidermonkey-node-bootstrap:6158:1
+  @kandelo:spidermonkey-node-bootstrap:6159:3

@@ -102,6 +102,30 @@ import { pathToFileURL } from "node:url";
 import { createRequire } from "node:module";
 import { existsSync } from "node:fs";
 
+export const NODE_WORKER_TERMINATE_TIMEOUT_MS = 2_000;
+
+export async function terminateNodeWorker(
+  worker: Pick<Worker, "terminate" | "unref">,
+  timeoutMs = NODE_WORKER_TERMINATE_TIMEOUT_MS,
+): Promise<number> {
+  const termination = worker.terminate();
+  let timeoutId: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      termination,
+      new Promise<number>((resolve) => {
+        timeoutId = setTimeout(() => {
+          worker.unref();
+          resolve(1);
+        }, timeoutMs);
+      }),
+    ]);
+  } finally {
+    if (timeoutId !== undefined) clearTimeout(timeoutId);
+    termination.catch(() => {});
+  }
+}
+
 function currentModuleUrl(): string {
   if (typeof __filename !== "undefined") return pathToFileURL(__filename).href;
   return import.meta.url;
@@ -205,6 +229,6 @@ class NodeWorkerHandle implements WorkerHandle {
   }
 
   async terminate(): Promise<number> {
-    return this.worker.terminate();
+    return terminateNodeWorker(this.worker);
   }
 }

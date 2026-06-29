@@ -22,8 +22,22 @@ function jsWasmCandidates(): string[] {
   ];
 }
 
+function spiderMonkeyNodeWasmCandidates(): string[] {
+  return [
+    join(repoRoot, "local-binaries/programs/wasm32/spidermonkey-node.wasm"),
+    join(repoRoot, "local-binaries/programs/wasm32/node.wasm"),
+    join(repoRoot, "binaries/programs/wasm32/spidermonkey-node.wasm"),
+    join(repoRoot, "binaries/programs/wasm32/node.wasm"),
+    join(repoRoot, "packages/registry/spidermonkey/bin/node.wasm"),
+  ];
+}
+
 function findJsWasm(): string | null {
   return jsWasmCandidates().find((candidate) => existsSync(candidate)) ?? null;
+}
+
+function findSpiderMonkeyNodeWasm(): string | null {
+  return spiderMonkeyNodeWasmCandidates().find((candidate) => existsSync(candidate)) ?? null;
 }
 
 function loadArrayBuffer(path: string): ArrayBuffer {
@@ -37,13 +51,20 @@ const hasKernelWasm = [
 ].some((candidate) => existsSync(candidate));
 const jsWasm = findJsWasm();
 const jsWasmAbi = jsWasm ? extractAbiVersion(loadArrayBuffer(jsWasm)) : null;
+const nodeWasm = findSpiderMonkeyNodeWasm();
+const nodeWasmAbi = nodeWasm ? extractAbiVersion(loadArrayBuffer(nodeWasm)) : null;
 const abiVersion = currentAbiVersion();
 
 test.skip(!hasKernelWasm, "kernel.wasm is not built or fetched");
 test.skip(!jsWasm, "SpiderMonkey js.wasm is not built or fetched");
+test.skip(!nodeWasm, "SpiderMonkey Node-compatible wasm is not built or fetched");
 test.skip(
   jsWasmAbi !== abiVersion,
   `SpiderMonkey js.wasm ABI ${jsWasmAbi ?? "unknown"} does not match current ABI ${abiVersion}; rebuild spidermonkey before running this stress test`,
+);
+test.skip(
+  nodeWasmAbi !== abiVersion,
+  `SpiderMonkey Node-compatible wasm ABI ${nodeWasmAbi ?? "unknown"} does not match current ABI ${abiVersion}; rebuild spidermonkey before running this stress test`,
 );
 
 test("repeated /usr/bin/js browser launches stay compact and do not leak processes", async ({ page }) => {
@@ -69,5 +90,18 @@ test("repeated /usr/bin/js browser launches stay compact and do not leak process
   expect(results.iterations).toBe(7);
   expect(results.maxObservedMemoryBytes).toBeLessThan(512 * 1024 * 1024);
   expect(results.leakedPids).toEqual([]);
+  expect(results.nodeWorkerProbes).toEqual([
+    expect.objectContaining({
+      label: "test-worker-abort-on-uncaught-exception-terminate",
+      exitCode: 0,
+      stdout: expect.stringContaining("abort-on-uncaught-exception-terminate exit 1"),
+    }),
+    expect.objectContaining({
+      label: "test-worker-terminate-microtask-loop",
+      exitCode: 0,
+      stdout: expect.stringContaining("terminate-microtask-loop message up"),
+    }),
+  ]);
+  expect(results.nodeWorkerProbes[1].stdout).toContain("terminate-microtask-loop exit 1");
   expect(results.stdout).toContain("stress-ok-6");
 });

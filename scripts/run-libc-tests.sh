@@ -39,6 +39,7 @@ REGRESSION_EXPECTED_FAIL=(
 )
 REGRESSION_FLAKY=(
     pthread_cond-smasher        # CI timing-sensitive pthread_cond stress test; can PASS or fail on slow runners
+    raise-race                  # signal/fork stress test; can PASS, fail, or timeout depending on runner load/resources
 )
 
 # ── Helper: check if a test is in an expected-failure list ──

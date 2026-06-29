@@ -1,0 +1,11 @@
+kandelo:spidermonkey-node-bootstrap:3261:34 TypeError: can't convert undefined to object
+Stack:
+  stringify@kandelo:spidermonkey-node-bootstrap:3261:34
+  @/node-v22.0.0/test/parallel/test-querystring.js:341:23
+  require@kandelo:spidermonkey-node-bootstrap:5300:22
+  @/node-v22.0.0/kandelo-node-core-prelude.js:44:8
+  require@kandelo:spidermonkey-node-bootstrap:5300:22
+  _runCommonJsMain@kandelo:spidermonkey-node-bootstrap:5407:16
+  _runMainScriptIfPresent@kandelo:spidermonkey-node-bootstrap:5473:25
+  @kandelo:spidermonkey-node-bootstrap:6158:1
+  @kandelo:spidermonkey-node-bootstrap:6159:3

@@ -53,6 +53,17 @@ function findJsBinary(): string | null {
   return candidates.find((candidate) => fs.existsSync(candidate)) ?? null;
 }
 
+function findSpiderMonkeyNodeBinary(): string | null {
+  const candidates = [
+    path.resolve(repoRoot, "local-binaries/programs/wasm32/spidermonkey-node.wasm"),
+    path.resolve(repoRoot, "local-binaries/programs/wasm32/node.wasm"),
+    path.resolve(repoRoot, "binaries/programs/wasm32/spidermonkey-node.wasm"),
+    path.resolve(repoRoot, "binaries/programs/wasm32/node.wasm"),
+    path.resolve(repoRoot, "packages/registry/spidermonkey/bin/node.wasm"),
+  ];
+  return candidates.find((candidate) => fs.existsSync(candidate)) ?? null;
+}
+
 function serveJsWasm(): Plugin {
   return {
     name: "serve-js-wasm",
@@ -79,9 +90,35 @@ function serveJsWasm(): Plugin {
   };
 }
 
+function serveSpiderMonkeyNodeWasm(): Plugin {
+  return {
+    name: "serve-spidermonkey-node-wasm",
+    configureServer(server) {
+      server.middlewares.use((req, res, next) => {
+        if (req.url === "/spidermonkey-node.wasm") {
+          const nodeBinary = findSpiderMonkeyNodeBinary();
+          if (!nodeBinary) {
+            res.statusCode = 404;
+            res.end(
+              "spidermonkey-node.wasm not found. Run `bash packages/registry/spidermonkey/build-spidermonkey.sh` " +
+              "or fetch package binaries.",
+            );
+            return;
+          }
+          const data = fs.readFileSync(nodeBinary);
+          res.setHeader("Content-Type", "application/wasm");
+          res.end(data);
+          return;
+        }
+        next();
+      });
+    },
+  };
+}
+
 export default {
   root: __dirname,
-  plugins: [resolveKernelArtifactsAlias(), serveJsWasm()],
+  plugins: [resolveKernelArtifactsAlias(), serveJsWasm(), serveSpiderMonkeyNodeWasm()],
   server: {
     headers: {
       "Cross-Origin-Opener-Policy": "same-origin",

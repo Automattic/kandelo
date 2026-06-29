@@ -1,0 +1,85 @@
+AssertionError: 
+path.win32.relative("c:/blah\\blah","d:/games")
+  expect="d:\\games"
+  actual="../../d:/games"
+path.win32.relative("c:/aaaa/bbbb","c:/cccc")
+  expect="..\\..\\cccc"
+  actual="../../cccc"
+path.win32.relative("c:/aaaa/bbbb","c:/aaaa/cccc")
+  expect="..\\cccc"
+  actual="../cccc"
+path.win32.relative("c:/","c:\\aaaa\\bbbb")
+  expect="aaaa\\bbbb"
+  actual="../c:\\aaaa\\bbbb"
+path.win32.relative("c:/aaaa/bbbb","d:\\")
+  expect="d:\\"
+  actual="../../../d:\\"
+path.win32.relative("c:/AaAa/bbbb","c:/aaaa/bbbb")
+  expect=""
+  actual="../../aaaa/bbbb"
+path.win32.relative("c:/aaaaa/","c:/aaaa/cccc")
+  expect="..\\aaaa\\cccc"
+  actual="../aaaa/cccc"
+path.win32.relative("C:\\foo\\bar\\baz\\quux","C:\\")
+  expect="..\\..\\..\\.."
+  actual="../C:\\"
+path.win32.relative("C:\\foo\\test","C:\\foo\\test\\bar\\package.json")
+  expect="bar\\package.json"
+  actual="../C:\\foo\\test\\bar\\package.json"
+path.win32.relative("C:\\foo\\bar\\baz-quux","C:\\foo\\bar\\baz")
+  expect="..\\baz"
+  actual="../C:\\foo\\bar\\baz"
+path.win32.relative("C:\\foo\\bar\\baz","C:\\foo\\bar\\baz-quux")
+  expect="..\\baz-quux"
+  actual="../C:\\foo\\bar\\baz-quux"
+path.win32.relative("\\\\foo\\bar","\\\\foo\\bar\\baz")
+  expect="baz"
+  actual="../\\\\foo\\bar\\baz"
+path.win32.relative("\\\\foo\\bar\\baz","\\\\foo\\bar")
+  expect=".."
+  actual="../\\\\foo\\bar"
+path.win32.relative("\\\\foo\\bar\\baz-quux","\\\\foo\\bar\\baz")
+  expect="..\\baz"
+  actual="../\\\\foo\\bar\\baz"
+path.win32.relative("\\\\foo\\bar\\baz","\\\\foo\\bar\\baz-quux")
+  expect="..\\baz-quux"
+  actual="../\\\\foo\\bar\\baz-quux"
+path.win32.relative("C:\\baz-quux","C:\\baz")
+  expect="..\\baz"
+  actual="../C:\\baz"
+path.win32.relative("C:\\baz","C:\\baz-quux")
+  expect="..\\baz-quux"
+  actual="../C:\\baz-quux"
+path.win32.relative("\\\\foo\\baz-quux","\\\\foo\\baz")
+  expect="..\\baz"
+  actual="../\\\\foo\\baz"
+path.win32.relative("\\\\foo\\baz","\\\\foo\\baz-quux")
+  expect="..\\baz-quux"
+  actual="../\\\\foo\\baz-quux"
+path.win32.relative("C:\\baz","\\\\foo\\bar\\baz")
+  expect="\\\\foo\\bar\\baz"
+  actual="../\\\\foo\\bar\\baz"
+path.win32.relative("\\\\foo\\bar\\baz","C:\\baz")
+  expect="C:\\baz"
+  actual="../C:\\baz"
+AssertionError@kandelo:spidermonkey-node-bootstrap:2648:13
+_assert.strictEqual@kandelo:spidermonkey-node-bootstrap:2680:19
+@/Users/brandon/gt/kandelo/polecats/capable/kandelo/.cache/node-core-official/node-v22.0.0/test/parallel/test-path-relative.js:70:8
+require@kandelo:spidermonkey-node-bootstrap:5300:22
+@/Users/brandon/gt/kandelo/polecats/capable/kandelo/test-runs/node-core-official-node-full-kad-nct17/kandelo-node-core-prelude.js:45:8
+_runEsmMain@kandelo:spidermonkey-node-bootstrap:5443:21
+_runMainScriptIfPresent@kandelo:spidermonkey-node-bootstrap:5471:20
+@kandelo:spidermonkey-node-bootstrap:6158:1
+@kandelo:spidermonkey-node-bootstrap:6159:3
+
+kandelo:spidermonkey-node-bootstrap:2648:13 AssertionError: Unexpected global(s) found: __kandeloRunDueTimers, __kandeloNextTimerDelay, __kandeloCreateWorkerThreads, argv0, execArgv, TextEncoder, TextDecoder, btoa, atob, Blob, File, FormData, MessagePort, MessageChannel, BroadcastChannel, Event, EventTarget, MessageEvent, CloseEvent, ErrorEvent, DOMException, AbortSignal
+Stack:
+  AssertionError@kandelo:spidermonkey-node-bootstrap:2648:13
+  _assert.fail@kandelo:spidermonkey-node-bootstrap:2711:15
+  @/Users/brandon/gt/kandelo/polecats/capable/kandelo/.cache/node-core-official/node-v22.0.0/test/common/index.js:401:14
+  emit@kandelo:spidermonkey-node-bootstrap:800:20
+  exit@kandelo:spidermonkey-node-bootstrap:1304:18
+  _runEsmMain@kandelo:spidermonkey-node-bootstrap:5459:13
+  _runMainScriptIfPresent@kandelo:spidermonkey-node-bootstrap:5471:20
+  @kandelo:spidermonkey-node-bootstrap:6158:1
+  @kandelo:spidermonkey-node-bootstrap:6159:3

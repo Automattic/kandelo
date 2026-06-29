@@ -1,0 +1,26 @@
+AssertionError: Unexpected global(s) found: __kandeloRunDueTimers, __kandeloNextTimerDelay, __kandeloCreateWorkerThreads, argv0, execArgv, TextEncoder, TextDecoder, btoa, atob, Blob, File, FormData, MessagePort, MessageChannel, BroadcastChannel, Event, EventTarget, MessageEvent, CloseEvent, ErrorEvent, DOMException, AbortSignal
+AssertionError@kandelo:spidermonkey-node-bootstrap:2648:13
+_assert.fail@kandelo:spidermonkey-node-bootstrap:2711:15
+@/Users/brandon/gt/kandelo/polecats/capable/kandelo/.cache/node-core-official/node-v22.0.0/test/common/index.js:401:14
+emit@kandelo:spidermonkey-node-bootstrap:800:20
+exit@kandelo:spidermonkey-node-bootstrap:1304:18
+skip@/Users/brandon/gt/kandelo/polecats/capable/kandelo/.cache/node-core-official/node-v22.0.0/test/common/index.js:610:11
+@/Users/brandon/gt/kandelo/polecats/capable/kandelo/.cache/node-core-official/node-v22.0.0/test/parallel/test-https-client-checkServerIdentity.js:26:10
+require@kandelo:spidermonkey-node-bootstrap:5300:22
+@/Users/brandon/gt/kandelo/polecats/capable/kandelo/test-runs/node-core-official-node-full-kad-nct17/kandelo-node-core-prelude.js:45:8
+_runEsmMain@kandelo:spidermonkey-node-bootstrap:5443:21
+_runMainScriptIfPresent@kandelo:spidermonkey-node-bootstrap:5471:20
+@kandelo:spidermonkey-node-bootstrap:6158:1
+@kandelo:spidermonkey-node-bootstrap:6159:3
+
+kandelo:spidermonkey-node-bootstrap:2648:13 AssertionError: Unexpected global(s) found: __kandeloRunDueTimers, __kandeloNextTimerDelay, __kandeloCreateWorkerThreads, argv0, execArgv, TextEncoder, TextDecoder, btoa, atob, Blob, File, FormData, MessagePort, MessageChannel, BroadcastChannel, Event, EventTarget, MessageEvent, CloseEvent, ErrorEvent, DOMException, AbortSignal
+Stack:
+  AssertionError@kandelo:spidermonkey-node-bootstrap:2648:13
+  _assert.fail@kandelo:spidermonkey-node-bootstrap:2711:15
+  @/Users/brandon/gt/kandelo/polecats/capable/kandelo/.cache/node-core-official/node-v22.0.0/test/common/index.js:401:14
+  emit@kandelo:spidermonkey-node-bootstrap:800:20
+  exit@kandelo:spidermonkey-node-bootstrap:1304:18
+  _runEsmMain@kandelo:spidermonkey-node-bootstrap:5459:13
+  _runMainScriptIfPresent@kandelo:spidermonkey-node-bootstrap:5471:20
+  @kandelo:spidermonkey-node-bootstrap:6158:1
+  @kandelo:spidermonkey-node-bootstrap:6159:3

@@ -155,6 +155,14 @@ Located in `apps/browser-demos/pages/`:
 | network | dash + GNU Netcat + curl | `kernel.boot` x 3 | Boots multiple local Kandelo machines and verifies UDP datagrams, TCP streams, and HTTP over virtual TCP |
 | doom | fbDOOM | legacy spawn | `/dev/fb0` framebuffer + canvas renderer + keyboard via stdin + mouse via `/dev/input/mice` (pointer-locked) + SFX **and** OPL2-synthesized music via `/dev/dsp` → AudioContext. The shareware `doom1.wad` is **fetched at page load** from a Linux-distro mirror (SHA-256 verified, Cache API cached); no IWAD ships in the package archive. |
 
+The Node demo uses the SpiderMonkey-backed compatibility runtime. Its
+`process` object exposes POSIX identity helpers, warning events,
+`process.binding()` compatibility shims, memory/resource reporting, active
+resource names, and uncaught-exception capture callbacks. Kandelo does not yet
+implement Node's CLI permission-enforcement model; `process.permission.has()`
+validates Node-compatible scopes and reports known capabilities as allowed
+rather than denying filesystem, worker, addon, or child-process operations.
+
 The "Boot pattern" column reflects how the demo enters the kernel:
 - **`kernel.boot`** — `kernelOwnedFs: true`, exec the language interpreter as the first process.
 - **dinit** — `kernelOwnedFs: true`, exec dinit (PID 1), which brings up the per-demo service tree.

@@ -9,6 +9,9 @@ Current scope:
 - wasm32 POSIX cross-build through `wasm32posix-cc` / `wasm32posix-c++`
 - ECMAScript `Intl` support through Mozilla's in-tree ICU/ICU4X
 - JS shared memory and shell worker support
+- Node-compatible `node.wasm` entry point with the shared JS builtin shim;
+  `cluster` setup/control APIs are present, while real `cluster.fork()` IPC is
+  still an explicit unsupported platform boundary
 - JIT disabled and C++ exceptions enabled
 - no fork instrumentation: SpiderMonkey's C++ control flow is too large for
   the current fork-stack rewrite in Chromium workers; JS worker_threads use

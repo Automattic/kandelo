@@ -97,6 +97,7 @@
             pkgs.flex
             pkgs.bison
             pkgs.xz
+            pkgs.bzip2
             pkgs.gnupatch
             pkgs.gh
             # rsync — build-vim-zip.sh / build-shell-vfs-image.sh

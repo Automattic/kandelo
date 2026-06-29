@@ -238,6 +238,406 @@ describe.skipIf(!nodeWasm)("SpiderMonkey Node compatibility parity", () => {
     });
   });
 
+  describe("async_hooks", () => {
+    it("validates hook callbacks and returns chainable hook controls", async () => {
+      const result = await runNodeScript(`
+        const assert = require('assert');
+        const async_hooks = require('async_hooks');
+        assert.throws(() => async_hooks.createHook({ init: 1 }), {
+          code: 'ERR_ASYNC_CALLBACK',
+          name: 'TypeError',
+          message: 'hook.init must be a function',
+        });
+        const seen = [];
+        const hook = async_hooks.createHook({
+          init(id, type, triggerId) {
+            if (type === 'Immediate') seen.push(['init', id > 1, triggerId]);
+          },
+          before(id) { seen.push(['before', id]); },
+          after(id) { seen.push(['after', id]); },
+          destroy(id) { seen.push(['destroy', id]); },
+        });
+        assert.strictEqual(hook.enable(), hook);
+        assert.strictEqual(hook.disable(), hook);
+        hook.enable();
+        setImmediate(() => {
+          setImmediate(() => {
+            hook.disable();
+            process.stdout.write(JSON.stringify({
+              hasInit: seen.some((entry) => entry[0] === 'init' && entry[1] === true && entry[2] === 1),
+              hasBefore: seen.some((entry) => entry[0] === 'before'),
+              hasAfter: seen.some((entry) => entry[0] === 'after'),
+            }));
+          });
+        });
+      `);
+
+      expect(result.stderr).toBe("");
+      expect(result.exitCode).toBe(0);
+      expect(JSON.parse(result.stdout)).toEqual({
+        hasInit: true,
+        hasBefore: true,
+        hasAfter: true,
+      });
+    });
+
+    it("tracks AsyncResource scope, bind metadata, and AsyncLocalStorage snapshots", async () => {
+      const result = await runNodeScript(`
+        const assert = require('assert');
+        const { AsyncLocalStorage, AsyncResource, executionAsyncId, triggerAsyncId } = require('async_hooks');
+        const als = new AsyncLocalStorage();
+        const resource = new AsyncResource('test-resource');
+        const bound = resource.bind(function(a, b) {
+          assert.strictEqual(this.label, 'ctx');
+          assert.strictEqual(executionAsyncId(), resource.asyncId());
+          assert.strictEqual(triggerAsyncId(), 1);
+          return [a, b, als.getStore()];
+        }, { label: 'ctx' });
+        assert.strictEqual(bound.asyncResource, resource);
+        assert.strictEqual(bound.length, 2);
+        const sync = als.run('outer', () => {
+          const snapshot = AsyncLocalStorage.snapshot();
+          return als.run('inner', () => snapshot(() => als.getStore()));
+        });
+        assert.strictEqual(sync, 'outer');
+        als.run('timer-store', () => {
+          setTimeout(() => {
+            Promise.resolve('promise-store').then(() => {
+              const boundResult = bound(1, 2);
+              process.stdout.write(JSON.stringify({
+                timerStore: als.getStore(),
+                boundResult,
+              }));
+            });
+          }, 0);
+        });
+      `);
+
+      expect(result.stderr).toBe("");
+      expect(result.exitCode).toBe(0);
+      expect(JSON.parse(result.stdout)).toEqual({
+        timerStore: "timer-store",
+        boundResult: [1, 2, null],
+      });
+    });
+
+    it("exposes v8.promiseHooks for resolve and then lifecycle events", async () => {
+      const result = await runNodeScript(`
+        const assert = require('assert');
+        const { promiseHooks } = require('v8');
+        const seen = [];
+        const stop = promiseHooks.createHook({
+          init(promise, parent) { seen.push(['init', !!promise, parent === undefined ? 'root' : 'child']); },
+          before(promise) { seen.push(['before', !!promise]); },
+          after(promise) { seen.push(['after', !!promise]); },
+          settled(promise) { seen.push(['settled', !!promise]); },
+        });
+        const parent = Promise.resolve(1);
+        const child = parent.then((value) => value + 1);
+        child.then((value) => {
+          stop();
+          assert.strictEqual(value, 2);
+          process.stdout.write(JSON.stringify({
+            rootInit: seen.some((entry) => entry[0] === 'init' && entry[2] === 'root'),
+            childInit: seen.some((entry) => entry[0] === 'init' && entry[2] === 'child'),
+            before: seen.some((entry) => entry[0] === 'before'),
+            after: seen.some((entry) => entry[0] === 'after'),
+            settled: seen.filter((entry) => entry[0] === 'settled').length >= 2,
+          }));
+        });
+      `);
+
+      expect(result.stderr).toBe("");
+      expect(result.exitCode).toBe(0);
+      expect(JSON.parse(result.stdout)).toEqual({
+        rootInit: true,
+        childInit: true,
+        before: true,
+        after: true,
+        settled: true,
+      });
+    });
+
+    it("runs EventEmitterAsyncResource emits inside its async resource", async () => {
+      const result = await runNodeScript(`
+        const assert = require('assert');
+        const { EventEmitterAsyncResource } = require('events');
+        const { createHook, executionAsyncId } = require('async_hooks');
+        const events = [];
+        const hook = createHook({
+          init(id, type, triggerId, resource) {
+            if (type === 'ResourceName') events.push(['init', id, triggerId, resource.eventEmitter instanceof EventEmitterAsyncResource]);
+          },
+          before(id) { events.push(['before', id]); },
+          after(id) { events.push(['after', id]); },
+          destroy(id) { events.push(['destroy', id]); },
+        }).enable();
+        const rootId = executionAsyncId();
+        const emitter = new EventEmitterAsyncResource('ResourceName');
+        let listenerAsyncId = 0;
+        emitter.on('value', () => { listenerAsyncId = executionAsyncId(); });
+        emitter.emit('value');
+        emitter.emitDestroy();
+        hook.disable();
+        process.stdout.write(JSON.stringify({
+          asyncId: emitter.asyncId,
+          triggerAsyncId: emitter.triggerAsyncId,
+          rootId,
+          listenerAsyncId,
+          sawResource: events.some((entry) => entry[0] === 'init' && entry[3]),
+          sawBefore: events.some((entry) => entry[0] === 'before' && entry[1] === emitter.asyncId),
+          sawAfter: events.some((entry) => entry[0] === 'after' && entry[1] === emitter.asyncId),
+          sawDestroy: events.some((entry) => entry[0] === 'destroy' && entry[1] === emitter.asyncId),
+        }));
+      `);
+
+      expect(result.stderr).toBe("");
+      expect(result.exitCode).toBe(0);
+      expect(JSON.parse(result.stdout)).toEqual({
+        asyncId: expect.any(Number),
+        triggerAsyncId: 1,
+        rootId: 1,
+        listenerAsyncId: expect.any(Number),
+        sawResource: true,
+        sawBefore: true,
+        sawAfter: true,
+        sawDestroy: true,
+      });
+    });
+
+    it("supports deep AsyncResource and AsyncLocalStorage scopes", async () => {
+      const result = await runNodeScript(`
+        const assert = require('assert');
+        const async_hooks = require('async_hooks');
+        const { AsyncLocalStorage, AsyncResource } = async_hooks;
+
+        function resourceRecurse(n) {
+          const resource = new AsyncResource('deep-resource');
+          resource.runInAsyncScope(() => {
+            assert.strictEqual(resource.asyncId(), async_hooks.executionAsyncId());
+            assert.strictEqual(resource.triggerAsyncId(), async_hooks.triggerAsyncId());
+            if (n !== 0) resourceRecurse(n - 1);
+            assert.strictEqual(resource.asyncId(), async_hooks.executionAsyncId());
+            assert.strictEqual(resource.triggerAsyncId(), async_hooks.triggerAsyncId());
+          });
+        }
+
+        const als = new AsyncLocalStorage();
+        function alsRecurse(n) {
+          if (n !== 0) return als.run(n, alsRecurse, n - 1);
+          assert.strictEqual(als.getStore(), 1);
+        }
+
+        resourceRecurse(1000);
+        alsRecurse(1000);
+        process.stdout.write('ok');
+      `, { timeout: 60_000 });
+
+      expect(result.stderr).toBe("");
+      expect(result.exitCode).toBe(0);
+      expect(result.stdout).toBe("ok");
+    });
+
+    it("emits destroy when GC collects userland AsyncResource", async () => {
+      const result = await runNodeScript(`
+        const { AsyncResource, createHook } = require('async_hooks');
+        const destroyed = [];
+        const hook = createHook({
+          destroy(id) { destroyed.push(id); },
+        }).enable();
+        let asyncId = 0;
+        (function allocateResource() {
+          const resource = new AsyncResource('gc-resource');
+          asyncId = resource.asyncId();
+        })();
+        let attempts = 0;
+        function checkCollected() {
+          if (typeof global.gc === 'function') global.gc();
+          if (destroyed.includes(asyncId) || ++attempts >= 10) {
+            hook.disable();
+            process.stdout.write(JSON.stringify({
+              hasGc: typeof global.gc === 'function',
+              destroyed: destroyed.includes(asyncId),
+            }));
+            return;
+          }
+          setImmediate(checkCollected);
+        }
+        setImmediate(checkCollected);
+      `);
+
+      expect(result.stderr).toBe("");
+      expect(result.exitCode).toBe(0);
+      expect(JSON.parse(result.stdout)).toEqual({
+        hasGc: true,
+        destroyed: true,
+      });
+    });
+  });
+
+  describe("diagnostics_channel", () => {
+    it("tracks channel identity, subscriptions, and hasSubscribers", async () => {
+      const result = await runNodeScript(`
+        const assert = require('assert');
+        const dc = require('diagnostics_channel');
+        const { Channel } = dc;
+        const seen = [];
+        const channel = dc.channel('probe');
+        assert.strictEqual(channel, dc.channel('probe'));
+        assert.ok(channel instanceof Channel);
+        assert.strictEqual(channel.hasSubscribers, false);
+        assert.strictEqual(dc.hasSubscribers('probe'), false);
+        const subscriber = (message, name) => seen.push([message.value, name]);
+        assert.strictEqual(dc.subscribe('probe', subscriber), undefined);
+        assert.strictEqual(channel.hasSubscribers, true);
+        assert.strictEqual(dc.hasSubscribers('probe'), true);
+        channel.publish({ value: 1 });
+        assert.strictEqual(dc.unsubscribe('probe', subscriber), true);
+        assert.strictEqual(dc.unsubscribe('probe', subscriber), false);
+        assert.strictEqual(channel.hasSubscribers, false);
+        channel.publish({ value: 2 });
+        const symbol = Symbol('named');
+        dc.channel(symbol).subscribe((message, name) => seen.push([message.value, name === symbol]));
+        dc.channel(symbol).publish({ value: 3 });
+        assert.throws(() => channel.subscribe(null), { code: 'ERR_INVALID_ARG_TYPE' });
+        process.stdout.write(JSON.stringify(seen));
+      `);
+
+      expect(result.stderr).toBe("");
+      expect(result.exitCode).toBe(0);
+      expect(JSON.parse(result.stdout)).toEqual([
+        [1, "probe"],
+        [3, true],
+      ]);
+    });
+
+    it("runs bound stores through channel and tracing operations", async () => {
+      const result = await runNodeScript(`
+        const assert = require('assert');
+        const { AsyncLocalStorage } = require('async_hooks');
+        const dc = require('diagnostics_channel');
+        const store = new AsyncLocalStorage();
+        const channel = dc.channel('stores');
+        const seen = [];
+        channel.bindStore(store, (data) => ({ data }));
+        assert.strictEqual(channel.hasSubscribers, true);
+        channel.runStores('outer', function(arg) {
+          seen.push(['runStores', this.label, arg, store.getStore().data]);
+        }, { label: 'thisArg' }, 'arg');
+        const ordered = dc.channel('ordered-stores');
+        const firstStore = new AsyncLocalStorage();
+        const secondStore = new AsyncLocalStorage();
+        ordered.bindStore(firstStore, () => {
+          seen.push(['transform', 'first']);
+          return 'first';
+        });
+        ordered.bindStore(secondStore, () => {
+          seen.push(['transform', 'second']);
+          return 'second';
+        });
+        ordered.runStores('ordered', () => {
+          seen.push(['ordered', firstStore.getStore(), secondStore.getStore()]);
+        });
+
+        const tracing = dc.tracingChannel('trace');
+        assert.strictEqual(tracing.start.name, 'tracing:trace:start');
+        tracing.start.bindStore(store, () => ({ phase: 'start' }));
+        tracing.asyncStart.bindStore(store, () => ({ phase: 'asyncStart' }));
+        tracing.subscribe({
+          start: (ctx) => seen.push(['start', ctx.input, store.getStore().phase]),
+          end: (ctx) => seen.push(['end', ctx.result]),
+          asyncStart: (ctx) => seen.push(['asyncStart', ctx.result, store.getStore().phase]),
+          asyncEnd: (ctx) => seen.push(['asyncEnd', ctx.result]),
+          error: (ctx) => seen.push(['error', ctx.error && ctx.error.message]),
+        });
+        const result = tracing.traceSync(function(value) {
+          seen.push(['body', value, store.getStore().phase]);
+          return 'sync-result';
+        }, { input: 'sync' }, null, 42);
+        assert.strictEqual(result, 'sync-result');
+        tracing.traceCallback(function(cb) {
+          seen.push(['callback-body', store.getStore().phase]);
+          setImmediate(cb, null, 'callback-result');
+        }, 0, { input: 'callback' }, null, (err, value) => {
+          assert.strictEqual(err, null);
+          seen.push(['callback', value, store.getStore().phase]);
+          setImmediate(() => process.stdout.write(JSON.stringify(seen)));
+        });
+      `);
+
+      expect(result.stderr).toBe("");
+      expect(result.exitCode).toBe(0);
+      expect(JSON.parse(result.stdout)).toEqual([
+        ["runStores", "thisArg", "arg", "outer"],
+        ["transform", "second"],
+        ["transform", "first"],
+        ["ordered", "first", "second"],
+        ["start", "sync", "start"],
+        ["body", 42, "start"],
+        ["end", "sync-result"],
+        ["start", "callback", "start"],
+        ["callback-body", "start"],
+        ["end", null],
+        ["asyncStart", "callback-result", "asyncStart"],
+        ["callback", "callback-result", "asyncStart"],
+        ["asyncEnd", "callback-result"],
+      ]);
+    });
+
+    it("handles tracing promise/error paths and argument validation", async () => {
+      const result = await runNodeScript(`
+        const assert = require('assert');
+        const dc = require('diagnostics_channel');
+        const seen = [];
+        const tracing = dc.tracingChannel({
+          start: dc.channel('custom:start'),
+          end: dc.channel('custom:end'),
+          asyncStart: dc.channel('custom:asyncStart'),
+          asyncEnd: dc.channel('custom:asyncEnd'),
+          error: dc.channel('custom:error'),
+        });
+        tracing.subscribe({
+          start: (ctx) => seen.push(['start', ctx.kind]),
+          end: (ctx) => seen.push(['end', ctx.kind]),
+          asyncStart: (ctx) => seen.push(['asyncStart', ctx.kind, ctx.result || ctx.error.message]),
+          asyncEnd: (ctx) => seen.push(['asyncEnd', ctx.kind]),
+          error: (ctx) => seen.push(['error', ctx.kind, ctx.error.message]),
+        });
+        assert.throws(() => dc.tracingChannel(0), { code: 'ERR_INVALID_ARG_TYPE' });
+        assert.throws(() => dc.tracingChannel({ start: '' }), { code: 'ERR_INVALID_ARG_TYPE' });
+        const expected = new Error('boom');
+        try {
+          tracing.traceSync(() => { throw expected; }, { kind: 'sync-error' });
+        } catch (err) {
+          assert.strictEqual(err, expected);
+        }
+        tracing.tracePromise(() => Promise.resolve('ok'), { kind: 'promise-ok' }).then(() =>
+          tracing.tracePromise(() => Promise.reject(expected), { kind: 'promise-error' }),
+          assert.fail,
+        ).then(assert.fail, () => {
+          process.stdout.write(JSON.stringify(seen));
+        });
+      `);
+
+      expect(result.stderr).toBe("");
+      expect(result.exitCode).toBe(0);
+      expect(JSON.parse(result.stdout)).toEqual([
+        ["start", "sync-error"],
+        ["error", "sync-error", "boom"],
+        ["end", "sync-error"],
+        ["start", "promise-ok"],
+        ["end", "promise-ok"],
+        ["asyncStart", "promise-ok", "ok"],
+        ["asyncEnd", "promise-ok"],
+        ["start", "promise-error"],
+        ["end", "promise-error"],
+        ["error", "promise-error", "boom"],
+        ["asyncStart", "promise-error", "boom"],
+        ["asyncEnd", "promise-error"],
+      ]);
+    });
+  });
+
   describe.skipIf(!hasNpm)("npm-oriented CommonJS compatibility", () => {
     it("supports EventEmitter class extension and proc-log output events", async () => {
       const result = await runNodeScriptOnHostFs(`

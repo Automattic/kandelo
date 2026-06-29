@@ -19,6 +19,7 @@ import { pathToFileURL } from "node:url";
 import { createRequire } from "node:module";
 import { Worker as NodeThreadWorker } from "node:worker_threads";
 import { resolveBinary } from "./binary-resolver";
+import { terminateNodeWorker } from "./worker-adapter";
 import type {
   MainToKernelMessage,
   KernelToMainMessage,
@@ -460,7 +461,7 @@ export class NodeKernelHost {
     } finally {
       if (timeoutId !== undefined) clearTimeout(timeoutId);
     }
-    await this.worker.terminate();
+    await terminateNodeWorker(this.worker);
     this.exitResolvers.clear();
     this.pendingRequests.clear();
   }

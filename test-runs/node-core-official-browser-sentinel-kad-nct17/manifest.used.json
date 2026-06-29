@@ -1,0 +1,38 @@
+{
+  "source": {
+    "repo": "https://github.com/nodejs/node.git",
+    "tag": "v22.0.0",
+    "tagObject": "ec49bec48284ab642db1d109d917c6ae3b695c13",
+    "commit": "12fb157f79da8c094a54bc99370994941c28c235",
+    "sparsePaths": [
+      "test/parallel",
+      "test/common",
+      "test/fixtures",
+      "lib"
+    ]
+  },
+  "defaults": {
+    "timeoutMs": 30000,
+    "jobs": 1
+  },
+  "selection": {
+    "mode": "full-suite",
+    "generatedFrom": "test/parallel/test-*.js",
+    "selected": 1,
+    "filters": {
+      "areas": [],
+      "tests": [
+        "test/parallel/test-kandelo-sentinel.js"
+      ]
+    }
+  },
+  "tests": [
+    {
+      "path": "test/parallel/test-kandelo-sentinel.js",
+      "area": "kandelo",
+      "expected": "PASS",
+      "reason": "Discovered from upstream Node v22.0.0 test/parallel/test-*.js; full-suite mode has no pre-run exclusions.",
+      "timeoutMs": 10000
+    }
+  ]
+}
