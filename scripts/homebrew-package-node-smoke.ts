@@ -36,7 +36,7 @@ const PREFIX = "/home/linuxbrew/.linuxbrew";
 const CELLAR = `${PREFIX}/Cellar`;
 
 type OutcomeStatus = "pass" | "fail" | "skip";
-type FormulaName = "sqlite" | "bzip2" | "xz";
+type FormulaName = string;
 
 interface CliOptions {
   resultDir: string;
@@ -128,8 +128,9 @@ async function buildFormulaVfs(
   formula: FormulaName,
   options: CliOptions,
 ): Promise<BuiltVfs> {
+  const packageName = packageNameForFormula(formula);
   const plan = await planHomebrewVfs(metadata, {
-    packages: [formula],
+    packages: [packageName],
     arch: options.arch,
     runtime: "node",
     expectedAbi: ABI_VERSION,
@@ -172,14 +173,75 @@ async function runFormulaSmoke(
   built: BuiltVfs,
   options: CliOptions,
 ): Promise<string> {
-  switch (formula) {
+  const packageName = packageNameForFormula(formula);
+  switch (packageName) {
     case "sqlite":
       return runSqliteSmoke(built, options);
+    case "bc":
+      return runProgramSmoke("bc", `${PREFIX}/bin/bc`, /(^|\n)5(\n|$)/, built, options, {
+        stdin: "2+3\nquit\n",
+      });
+    case "coreutils":
+      return runProgramSmoke("printf", `${PREFIX}/bin/coreutils`, /^ok$/m, built, options, {
+        args: ["ok\n"],
+      });
+    case "diffutils":
+      return runProgramVersionSmoke("diff", `${PREFIX}/bin/diff`, /diff/i, built, options);
+    case "file":
+      return runProgramVersionSmoke("file", `${PREFIX}/bin/file`, /file/i, built, options);
+    case "findutils":
+      return runProgramVersionSmoke("find", `${PREFIX}/bin/find`, /find/i, built, options);
+    case "gawk":
+      return runProgramSmoke("gawk", `${PREFIX}/bin/gawk`, /^42$/m, built, options, {
+        args: ["BEGIN { print 6 * 7 }"],
+      });
+    case "grep":
+      return runProgramSmoke("grep", `${PREFIX}/bin/grep`, /^beta$/m, built, options, {
+        args: ["beta"],
+        stdin: "alpha\nbeta\n",
+      });
+    case "gzip":
+      return runProgramVersionSmoke("gzip", `${PREFIX}/bin/gzip`, /gzip/i, built, options);
+    case "m4":
+      return runProgramSmoke("m4", `${PREFIX}/bin/m4`, /ok/, built, options, {
+        stdin: "define(`x',`ok')x\n",
+      });
+    case "make":
+      return runProgramVersionSmoke("make", `${PREFIX}/bin/make`, /make/i, built, options);
+    case "posix-utils-lite":
+      return runProgramSmoke("patch", `${PREFIX}/bin/patch`, /patch/i, built, options, {
+        args: ["patch"],
+        stdin: "--- a/file\n+++ b/file\n",
+      });
+    case "sed":
+      return runProgramSmoke("sed", `${PREFIX}/bin/sed`, /^b$/m, built, options, {
+        args: ["s/a/b/"],
+        stdin: "a\n",
+      });
+    case "tar":
+      return runProgramVersionSmoke("tar", `${PREFIX}/bin/tar`, /tar/i, built, options);
+    case "tcl":
+      return runProgramSmoke("tcl", `${PREFIX}/bin/tcl`, /^7$/m, built, options, {
+        stdin: "puts [expr {2 + 5}]\n",
+        env: [`TCL_LIBRARY=${PREFIX}/lib/tcl8.6`],
+      });
+    case "unzip":
+      return runProgramVersionSmoke("unzip", `${PREFIX}/bin/unzip`, /unzip/i, built, options, ["-v"]);
+    case "zip":
+      return runProgramVersionSmoke("zip", `${PREFIX}/bin/zip`, /zip/i, built, options, ["-v"]);
     case "bzip2":
       return runProgramVersionSmoke("bzip2", `${PREFIX}/bin/bzip2`, /bzip2/i, built, options, ["--help"]);
     case "xz":
       return runProgramVersionSmoke("xz", `${PREFIX}/bin/xz`, /xz/i, built, options);
+    case "zstd":
+      return runProgramVersionSmoke("zstd", `${PREFIX}/bin/zstd`, /zstandard|zstd/i, built, options);
+    default:
+      return runProgramVersionSmoke(packageName, `${PREFIX}/bin/${packageName}`, new RegExp(escapeRegex(packageName), "i"), built, options);
   }
+}
+
+function packageNameForFormula(formula: FormulaName): string {
+  return formula === "file-formula" ? "file" : formula;
 }
 
 async function runProgramVersionSmoke(
@@ -190,8 +252,23 @@ async function runProgramVersionSmoke(
   options: CliOptions,
   args: string[] = ["--version"],
 ): Promise<string> {
+  return runProgramSmoke(argv0, guestPath, expected, built, options, { args });
+}
+
+async function runProgramSmoke(
+  argv0: string,
+  guestPath: string,
+  expected: RegExp,
+  built: BuiltVfs,
+  options: CliOptions,
+  runOptions: { args?: string[]; stdin?: string; env?: string[] } = {},
+): Promise<string> {
   const programBytes = readVfsFile(built.fs, guestPath);
-  const result = await runWasm(programBytes, [argv0, ...args], built.imageBytes, options);
+  const args = runOptions.args ?? [];
+  const result = await runWasm(programBytes, [argv0, ...args], built.imageBytes, options, {
+    stdin: runOptions.stdin === undefined ? undefined : new TextEncoder().encode(runOptions.stdin),
+    env: runOptions.env,
+  });
   if (result.exitCode !== 0) {
     throw new Error(`${argv0} ${args.join(" ")} exited ${result.exitCode}; stderr=${JSON.stringify(result.stderr)}`);
   }
@@ -258,6 +335,7 @@ async function runWasm(
   argv: string[],
   rootfsImage: Uint8Array,
   options: CliOptions,
+  runOptions: { stdin?: Uint8Array; env?: string[] } = {},
 ): Promise<{ exitCode: number; stdout: string; stderr: string }> {
   let stdout = "";
   let stderr = "";
@@ -275,9 +353,10 @@ async function runWasm(
         "PATH=/home/linuxbrew/.linuxbrew/bin:/usr/bin:/bin",
         "HOME=/tmp",
         "TMPDIR=/tmp",
+        ...(runOptions.env ?? []),
       ],
       cwd: "/",
-      stdin: new Uint8Array(),
+      stdin: runOptions.stdin ?? new Uint8Array(),
     });
     const timeoutPromise = new Promise<never>((_, reject) => {
       timeout = setTimeout(
@@ -447,8 +526,8 @@ function parseArgs(args: string[]): CliOptions {
 }
 
 function parseFormula(value: string): FormulaName {
-  if (value === "sqlite" || value === "bzip2" || value === "xz") return value;
-  usage(2, `--formula must be sqlite, bzip2, or xz, got ${value}`);
+  if (/^[a-z0-9][a-z0-9._-]*$/.test(value)) return value;
+  usage(2, `--formula must be a Homebrew formula name, got ${value}`);
 }
 
 function parseArch(value: string): HomebrewBottleArch {
@@ -483,7 +562,7 @@ function requireValue(args: string[], index: number, flag: string): string {
 function usage(code: number, message?: string): never {
   if (message) console.error(`homebrew-package-node-smoke: ${message}`);
   console.error(`usage: npx tsx scripts/homebrew-package-node-smoke.ts \\
-  --tap-root <dir> --formula <sqlite|bzip2|xz> [--formula ...] \\
+  --tap-root <dir> --formula <name> [--formula ...] \\
   [--arch <wasm32|wasm64>] [--result-dir <dir>] [--bottle-cache <dir>]`);
   process.exit(code);
 }
@@ -636,6 +715,10 @@ function toArrayBuffer(bytes: Uint8Array): ArrayBuffer {
 
 function tsv(value: string): string {
   return value.replace(/\t/g, " ").replace(/\r?\n/g, "\\n");
+}
+
+function escapeRegex(value: string): string {
+  return value.replace(/[\\^$.*+?()[\]{}|]/g, "\\$&");
 }
 
 main().catch((err) => {
