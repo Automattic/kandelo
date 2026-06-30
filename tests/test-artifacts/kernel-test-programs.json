@@ -1,0 +1,120 @@
+{
+  "schema": 1,
+  "name": "kernel-test-programs",
+  "owner": "host-kernel-tests",
+  "producer": {
+    "script": "scripts/build-programs.sh",
+    "output_root": "local-binaries/programs"
+  },
+  "fixtures": [
+    {
+      "name": "exec-caller",
+      "arch": "wasm32",
+      "source": "programs/exec-caller.c",
+      "binary": "programs/wasm32/exec-caller.wasm",
+      "resolver_path": "programs/exec-caller.wasm",
+      "consumers": [
+        "host/test/exec.test.ts",
+        "host/test/abi-version.test.ts"
+      ]
+    },
+    {
+      "name": "exec-child",
+      "arch": "wasm32",
+      "source": "programs/exec-child.c",
+      "binary": "programs/wasm32/exec-child.wasm",
+      "resolver_path": "programs/exec-child.wasm",
+      "consumers": [
+        "host/test/exec.test.ts"
+      ]
+    },
+    {
+      "name": "fork-exec",
+      "arch": "wasm32",
+      "source": "programs/fork-exec.c",
+      "binary": "programs/wasm32/fork-exec.wasm",
+      "resolver_path": "programs/fork-exec.wasm",
+      "consumers": [
+        "host/test/exec.test.ts",
+        "host/test/wasm64.test.ts"
+      ]
+    },
+    {
+      "name": "ifhwaddr",
+      "arch": "wasm32",
+      "source": "programs/ifhwaddr.c",
+      "binary": "programs/wasm32/ifhwaddr.wasm",
+      "resolver_path": "programs/ifhwaddr.wasm",
+      "consumers": [
+        "host/test/ifhwaddr.test.ts"
+      ]
+    },
+    {
+      "name": "mmap_shared_test",
+      "arch": "wasm32",
+      "source": "programs/mmap_shared_test.c",
+      "binary": "programs/wasm32/mmap_shared_test.wasm",
+      "resolver_path": "programs/mmap_shared_test.wasm",
+      "consumers": [
+        "host/test/mmap-shared.test.ts"
+      ]
+    },
+    {
+      "name": "hello64",
+      "arch": "wasm64",
+      "source": "programs/hello64.c",
+      "binary": "programs/wasm64/hello64.wasm",
+      "resolver_path": "programs/wasm64/hello64.wasm",
+      "consumers": [
+        "host/test/wasm64.test.ts",
+        "host/test/worker-entry.test.ts"
+      ]
+    }
+  ],
+  "legacy_outputs": [
+    {
+      "name": "exec-caller",
+      "wasm": "exec-caller.wasm",
+      "disposition": "migrated-fixture",
+      "fixture": "exec-caller"
+    },
+    {
+      "name": "exec-child",
+      "wasm": "exec-child.wasm",
+      "disposition": "migrated-fixture",
+      "fixture": "exec-child"
+    },
+    {
+      "name": "fork-exec",
+      "wasm": "fork-exec.wasm",
+      "disposition": "migrated-fixture",
+      "fixture": "fork-exec"
+    },
+    {
+      "name": "ifhwaddr",
+      "wasm": "ifhwaddr.wasm",
+      "disposition": "migrated-fixture",
+      "fixture": "ifhwaddr"
+    },
+    {
+      "name": "mmap_shared_test",
+      "wasm": "mmap_shared_test.wasm",
+      "disposition": "migrated-fixture",
+      "fixture": "mmap_shared_test"
+    },
+    {
+      "name": "hello",
+      "wasm": "hello.wasm",
+      "disposition": "package-owned",
+      "owner": "packages/registry/hello/package.toml",
+      "alternate_test_fixture": "examples/hello.wasm",
+      "reason": "GNU hello now owns programs/hello.wasm as a real package output; host tests that need a package-independent hello fixture build examples/hello.wasm."
+    },
+    {
+      "name": "hello64",
+      "wasm": "hello64.wasm",
+      "disposition": "migrated-fixture",
+      "fixture": "hello64"
+    }
+  ]
+}
