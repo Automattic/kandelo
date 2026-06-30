@@ -101,7 +101,8 @@ trap cleanup EXIT
 BREW_REPO="$("$BREW_BIN" --repository)"
 if [ -f "$PATCH_FILE" ] && git -C "$BREW_REPO" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
   git -C "$BREW_REPO" apply --check "$PATCH_FILE"
-  BREW_OVERLAY="$WORK_DIR/homebrew-overlay"
+  BREW_OVERLAY="$OUT_DIR/homebrew-overlay"
+  rm -rf "$BREW_OVERLAY"
   git -C "$BREW_REPO" worktree add --detach "$BREW_OVERLAY" HEAD >/dev/null
   git -C "$BREW_OVERLAY" apply --whitespace=nowarn "$PATCH_FILE"
   BREW_BIN="$BREW_OVERLAY/bin/brew"

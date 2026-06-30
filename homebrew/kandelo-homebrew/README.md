@@ -27,6 +27,7 @@ Kandelo/
 This template currently contains:
 
 - `Formula/hello.rb`, the first Kandelo Homebrew formula scaffold;
+- `Formula/zlib.rb`, the first static-library formula scaffold;
 - JSON Schemas for the Kandelo sidecar metadata contract;
 - `hello` example metadata for schema and validator development.
 - an `xtask homebrew-sidecars` generator that converts produced bottle bytes

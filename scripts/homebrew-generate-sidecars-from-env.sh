@@ -58,7 +58,15 @@ CACHE_KEY_SHA="$(
 )"
 
 SDK_FINGERPRINT="$(shasum -a 256 "$KANDELO_ROOT/sdk/activate.sh" | awk '{print $1}')"
-SYSROOT_FINGERPRINT="$(shasum -a 256 "$KANDELO_ROOT/sysroot/lib/libc.a" | awk '{print $1}')"
+case "$KANDELO_HOMEBREW_ARCH" in
+  wasm64) SYSROOT_LIBC="$KANDELO_ROOT/sysroot64/lib/libc.a" ;;
+  *) SYSROOT_LIBC="$KANDELO_ROOT/sysroot/lib/libc.a" ;;
+esac
+if [ ! -f "$SYSROOT_LIBC" ]; then
+  echo "homebrew-generate-sidecars-from-env.sh: sysroot libc not found: $SYSROOT_LIBC" >&2
+  exit 2
+fi
+SYSROOT_FINGERPRINT="$(shasum -a 256 "$SYSROOT_LIBC" | awk '{print $1}')"
 BREW_VERSION="$("${HOMEBREW_BREW_FILE:-brew}" --version | head -n 1)"
 TAP_COMMIT="$(git -C "$KANDELO_HOMEBREW_TAP_ROOT" rev-parse HEAD)"
 KANDELO_COMMIT="$(git -C "$KANDELO_ROOT" rev-parse HEAD)"
