@@ -1620,6 +1620,7 @@ function handleInjectConnection(msg: Extract<MainToKernelMessage, { type: "injec
     msg.peerPort,
   );
   if (recvPipeIdx >= 0) {
+    (kernelWorker as any).drainAndProcessWakeupEvents?.();
     (kernelWorker as any).scheduleWakeBlockedRetries();
   }
   respond(msg.requestId, recvPipeIdx);
@@ -1970,6 +1971,8 @@ sw.onmessage = (e: MessageEvent) => {
       if (raw?.type === "sysprof_start") {
         (globalThis as { __sysprof?: boolean }).__sysprof = true;
         (globalThis as { __sysprofTable?: Map<string, unknown> }).__sysprofTable = new Map();
+        (globalThis as { __sysprofGap?: Map<number, unknown> }).__sysprofGap = new Map();
+        (globalThis as { __sysprofLastSeen?: Map<number, number> }).__sysprofLastSeen = new Map();
         (globalThis as { __sysprofStartedAt?: number }).__sysprofStartedAt = performance.now();
         post({ type: "stdout", pid: 0, data: new TextEncoder().encode("[sysprof] started\n") });
       } else if (raw?.type === "pid_map_dump") {

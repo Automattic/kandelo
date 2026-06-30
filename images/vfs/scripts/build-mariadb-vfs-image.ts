@@ -71,6 +71,9 @@ const COREUTILS_SYMLINK_NAMES = [
   "md5sum", "seq", "test", "[",
 ];
 
+const MYSQL_UID = 101;
+const MYSQL_GID = 101;
+
 function commonMariadbArgs(engine: string): string[] {
   return [
     "/usr/sbin/mariadbd", "--no-defaults",
@@ -166,7 +169,11 @@ async function main() {
   ]) {
     ensureDir(fs, dir);
   }
-  fs.chmod("/tmp", 0o777);
+  fs.chmod("/tmp", 0o1777);
+  for (const dir of ["/data", "/data/mysql", "/data/tmp", "/data/test"]) {
+    fs.chown(dir, MYSQL_UID, MYSQL_GID);
+    fs.chmod(dir, 0o775);
+  }
 
   // dash + coreutils symlinks (page registers coreutils.wasm lazily).
   if (existsSync(DASH_PATH)) {
