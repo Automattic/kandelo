@@ -1795,11 +1795,9 @@ cache_key_sha = "000000000000000000000000000000000000000000000000000000000000000
 
     #[test]
     fn source_parse_accepts_kernel_abi_absent_when_no_build_block() {
-        // Source-only packages (pcre2-source) and metadata-only
-        // packages (kernel, userspace, examples, node, sqlite-cli)
-        // don't have a [build] block and aren't subject to the
-        // kernel_abi requirement — they don't produce binaries and
-        // aren't gated by ABI.
+        // Source-only packages (pcre2-source) and sidecar/tooling-owned
+        // data packages (kernel-test-programs) don't have a [build]
+        // block and aren't subject to the kernel_abi requirement.
         let toml = r#"
 kind = "source"
 name = "test-source"

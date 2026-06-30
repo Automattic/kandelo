@@ -112,9 +112,9 @@ for pkg_toml in sorted(repo_root.glob("packages/registry/*/package.toml")):
 
     # ---- 4. Decide whether to write a build.toml.
     #         A package gets a build.toml IFF its package.toml carries
-    #         a [build] block at all. Source-only / metadata-only
-    #         packages (kernel, userspace, examples, node, sqlite-cli)
-    #         have no [build] → no build.toml needed.
+    #         a [build] block at all. Source-only or
+    #         sidecar/tooling-owned data packages have no [build] → no
+    #         build.toml needed.
     has_build_block = bool(re.search(r"(?m)^\[build\]\s*$", text))
 
     pkg_toml.write_text(text)
