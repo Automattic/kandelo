@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { ABI_VERSION } from "../src/generated/abi";
 import {
+  HomebrewVfsUnsupportedError,
   planHomebrewVfs,
   type HomebrewLinkManifest,
   type HomebrewTapMetadata,
@@ -212,6 +213,52 @@ describe("Homebrew VFS planner", () => {
       arch: "wasm64",
       loadLinkManifest: manifestMap({}),
     })).rejects.toThrow('package "hello" has no wasm64 bottle');
+  });
+
+  it("rejects unsupported runtime metadata before loading link manifests", async () => {
+    let loaded = false;
+    const unsupportedBottle = bottle("hello", "2.12.1", {
+      runtime_support: [],
+      runtime_status: {
+        node: {
+          status: "unsupported",
+          reason_code: "fork-instrumentation-disabled-imports-kernel-fork",
+          reason: "raw fork imports are not VFS runtime compatible",
+          artifact_policy_failures: [
+            {
+              path: "bin/hello",
+              failures: [
+                "imports kernel.kernel_fork without complete wasm-fork-instrument exports",
+              ],
+            },
+          ],
+        },
+        browser: {
+          status: "unsupported",
+          reason_code: "fork-instrumentation-disabled-imports-kernel-fork",
+          reason: "raw fork imports are not browser VFS runtime compatible",
+        },
+      },
+    });
+    const tapMetadata = metadata([packageEntry("hello", "2.12.1", [], [unsupportedBottle])]);
+
+    await expect(planHomebrewVfs(tapMetadata, {
+      packages: ["hello"],
+      arch: "wasm32",
+      runtime: "node",
+      loadLinkManifest() {
+        loaded = true;
+        return linkManifest("hello", "2.12.1");
+      },
+    })).rejects.toMatchObject({
+      name: "HomebrewVfsUnsupportedError",
+      packageName: "hello",
+      runtime: "node",
+      runtimeStatus: {
+        reason_code: "fork-instrumentation-disabled-imports-kernel-fork",
+      },
+    } satisfies Partial<HomebrewVfsUnsupportedError>);
+    expect(loaded).toBe(false);
   });
 
   it("rejects link manifest bottle sha drift before extraction", async () => {

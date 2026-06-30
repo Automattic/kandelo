@@ -101,9 +101,10 @@
         "runtime_support": {
           "type": "array",
           "items": { "enum": ["node", "browser"] },
-          "minItems": 1,
+          "minItems": 0,
           "uniqueItems": true
         },
+        "runtime_status": { "$ref": "#/$defs/runtimeStatusByHost" },
         "browser_compatible": { "type": "boolean" },
         "fork_instrumentation": {
           "enum": ["not-required", "required", "disabled", "unknown"]
@@ -158,8 +159,32 @@
               }
             }
           }
+        },
+        {
+          "if": { "properties": { "runtime_support": { "maxItems": 0 } } },
+          "then": {
+            "required": ["runtime_status"],
+            "properties": {
+              "runtime_status": {
+                "required": ["node", "browser"]
+              }
+            }
+          }
         }
       ]
+    },
+    "artifactPolicyFailure": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path", "failures"],
+      "properties": {
+        "path": { "$ref": "#/$defs/tapRelativePath" },
+        "failures": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1 },
+          "minItems": 1
+        }
+      }
     },
     "builtFrom": {
       "type": "object",
@@ -177,6 +202,34 @@
         "tap_repository": { "$ref": "#/$defs/repository" },
         "tap_commit": { "$ref": "#/$defs/gitSha" },
         "formula_sha256": { "$ref": "#/$defs/sha256" }
+      }
+    },
+    "runtimeStatus": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["status"],
+      "properties": {
+        "status": {
+          "enum": ["supported", "unsupported", "failed", "not-validated"]
+        },
+        "reason_code": {
+          "type": "string",
+          "pattern": "^[a-z0-9][a-z0-9._-]*$"
+        },
+        "reason": { "type": "string", "minLength": 1 },
+        "artifact_policy_failures": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/artifactPolicyFailure" },
+          "minItems": 1
+        }
+      }
+    },
+    "runtimeStatusByHost": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "node": { "$ref": "#/$defs/runtimeStatus" },
+        "browser": { "$ref": "#/$defs/runtimeStatus" }
       }
     },
     "dependency": {

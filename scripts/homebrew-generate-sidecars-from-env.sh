@@ -185,10 +185,18 @@ def package_links_and_env():
 
 def package_fork_instrumentation():
     outputs = package_toml.get("outputs", [])
+    disabled_wasm_output = False
     if isinstance(outputs, list):
         for output in outputs:
-            if output.get("name") == formula:
-                return output.get("fork_instrumentation", "not-required")
+            if "wasm" not in output:
+                continue
+            fork_instrumentation = output.get("fork_instrumentation", "not-required")
+            if output.get("name", formula) == formula:
+                return fork_instrumentation
+            if fork_instrumentation == "disabled":
+                disabled_wasm_output = True
+    if disabled_wasm_output:
+        return "disabled"
     return "not-required"
 
 def default_node_smoke_text():
@@ -234,7 +242,58 @@ if browser_smoke_status not in {"success", "skipped", "failed"}:
 browser_compatible = browser_smoke_status == "success"
 if browser_compatible and arch != "wasm32":
     raise SystemExit("browser smoke can only mark wasm32 bottles browser-compatible")
-runtime_support = ["node", "browser"] if browser_compatible else ["node"]
+
+def parse_hosts_env(name, default):
+    raw = os.environ.get(name)
+    if raw is None:
+        return list(default)
+    hosts = [part.strip() for part in raw.split(",") if part.strip()]
+    invalid = [host for host in hosts if host not in {"node", "browser"}]
+    if invalid:
+        raise SystemExit(f"{name} contains unsupported hosts: {', '.join(invalid)}")
+    return hosts
+
+default_runtime_support = ["node", "browser"] if browser_compatible else ["node"]
+runtime_support = parse_hosts_env("KANDELO_HOMEBREW_RUNTIME_SUPPORT", default_runtime_support)
+unsupported_hosts = parse_hosts_env("KANDELO_HOMEBREW_RUNTIME_UNSUPPORTED_HOSTS", [])
+if (
+    not unsupported_hosts
+    and formula in {"spidermonkey", "spidermonkey-node", "node"}
+    and package_fork_instrumentation() == "disabled"
+):
+    unsupported_hosts = ["node", "browser"]
+    runtime_support = []
+
+unsupported_reason_code = os.environ.get(
+    "KANDELO_HOMEBREW_RUNTIME_UNSUPPORTED_REASON_CODE",
+    "fork-instrumentation-disabled-imports-kernel-fork",
+)
+unsupported_reason = os.environ.get(
+    "KANDELO_HOMEBREW_RUNTIME_UNSUPPORTED_REASON",
+    "The linked Wasm imports kernel.kernel_fork but intentionally disables wasm-fork-instrument; VFS images must reject it.",
+)
+for host in unsupported_hosts:
+    if host in runtime_support:
+        runtime_support.remove(host)
+if "browser" in runtime_support and not browser_compatible:
+    raise SystemExit("runtime_support may include browser only after successful browser smoke")
+
+runtime_status = {}
+for host in ("node", "browser"):
+    if host in runtime_support:
+        runtime_status[host] = {"status": "supported"}
+    elif host in unsupported_hosts:
+        runtime_status[host] = {
+            "status": "unsupported",
+            "reason_code": unsupported_reason_code,
+            "reason": unsupported_reason,
+        }
+    else:
+        runtime_status[host] = {
+            "status": "not-validated",
+            "reason_code": "smoke-not-recorded",
+            "reason": f"No successful {host} VFS smoke was recorded for {formula} {arch}.",
+        }
 
 browser_reason = os.environ.get(
     "KANDELO_HOMEBREW_BROWSER_SMOKE_REASON",
@@ -282,6 +341,16 @@ if browser_compatible:
     }
 
 node_smoke_text = os.environ.get("KANDELO_HOMEBREW_NODE_SMOKE_COMMAND", default_node_smoke_text())
+if runtime_status["node"]["status"] == "supported":
+    node_smoke_outcome = {
+        "name": "node_smoke",
+        "status": "success",
+        "passed": [node_smoke_text],
+        "failed": [],
+        "skipped": [],
+    }
+else:
+    node_smoke_outcome = skipped_outcome("node_smoke", runtime_status["node"]["reason"])
 
 manifest = {
     "schema": 1,
@@ -310,6 +379,7 @@ manifest = {
                     "cellar": "/home/linuxbrew/.linuxbrew/Cellar",
                     "prefix": "/home/linuxbrew/.linuxbrew",
                     "runtime_support": runtime_support,
+                    "runtime_status": runtime_status,
                     "browser_compatible": browser_compatible,
                     "fork_instrumentation": package_fork_instrumentation(),
                     "status": "success",
@@ -365,13 +435,7 @@ manifest = {
                                 "failed": [],
                                 "skipped": [],
                             },
-                            {
-                                "name": "node_smoke",
-                                "status": "success",
-                                "passed": [node_smoke_text],
-                                "failed": [],
-                                "skipped": [],
-                            },
+                            node_smoke_outcome,
                             browser_smoke_outcome,
                         ],
                     },

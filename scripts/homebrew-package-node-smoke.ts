@@ -21,6 +21,7 @@ import { ABI_VERSION } from "../host/src/generated/abi";
 import { fetchHomebrewBottleBytes } from "../host/src/homebrew-vfs-fetch";
 import { buildHomebrewVfs } from "../host/src/homebrew-vfs-builder";
 import {
+  HomebrewVfsUnsupportedError,
   planHomebrewVfs,
   type HomebrewBottleArch,
   type HomebrewTapMetadata,
@@ -106,16 +107,24 @@ async function main(): Promise<void> {
   });
 
   const builtByFormula = new Map<FormulaName, BuiltVfs>();
+  const unsupportedByFormula = new Map<FormulaName, string>();
   for (const formula of options.formulas) {
-    await runCase(outcomes, options, tapCommit, `homebrew_vfs_build_${formula}`, async () => {
+    const buildOutcome = await runCase(outcomes, options, tapCommit, `homebrew_vfs_build_${formula}`, async () => {
       const built = await buildFormulaVfs(metadata, formula, options);
       builtByFormula.set(formula, built);
       return `report=${built.reportPath}`;
     });
+    if (buildOutcome.status === "skip" && buildOutcome.details) {
+      unsupportedByFormula.set(formula, buildOutcome.details);
+    }
 
     await runCase(outcomes, options, tapCommit, `node_smoke_${formula}`, async () => {
       const built = builtByFormula.get(formula);
-      if (!built) throw new SkipCase(`requires successful homebrew_vfs_build_${formula}`);
+      if (!built) {
+        throw new SkipCase(
+          unsupportedByFormula.get(formula) ?? `requires successful homebrew_vfs_build_${formula}`,
+        );
+      }
       return await runFormulaSmoke(formula, built, options);
     });
   }
@@ -143,13 +152,21 @@ async function buildFormulaVfs(
   formula: FormulaName,
   options: CliOptions,
 ): Promise<BuiltVfs> {
-  const plan = await planHomebrewVfs(metadata, {
-    packages: [formula],
-    arch: options.arch,
-    runtime: "node",
-    expectedAbi: ABI_VERSION,
-    loadLinkManifest: (relPath) => readJsonFile(join(options.tapRoot, relPath)),
-  });
+  let plan;
+  try {
+    plan = await planHomebrewVfs(metadata, {
+      packages: [formula],
+      arch: options.arch,
+      runtime: "node",
+      expectedAbi: ABI_VERSION,
+      loadLinkManifest: (relPath) => readJsonFile(join(options.tapRoot, relPath)),
+    });
+  } catch (err) {
+    if (err instanceof HomebrewVfsUnsupportedError) {
+      throw new SkipCase(formatUnsupportedRuntime(err, formula));
+    }
+    throw err;
+  }
   const fs = createFs(options.maxBytes);
   const result = await buildHomebrewVfs(plan, {
     fs,
@@ -180,6 +197,23 @@ async function buildFormulaVfs(
     },
   });
   return { fs, imageBytes, reportPath };
+}
+
+function formatUnsupportedRuntime(err: HomebrewVfsUnsupportedError, requestedFormula: string): string {
+  const status = err.runtimeStatus;
+  const details = [
+    `requested=${requestedFormula}`,
+    `blocked_package=${err.packageName}`,
+    `runtime=${err.runtime}`,
+    `arch=${err.arch}`,
+  ];
+  if (status?.status) details.push(`status=${status.status}`);
+  if (status?.reason_code) details.push(`reason_code=${status.reason_code}`);
+  if (status?.reason) details.push(`reason=${status.reason}`);
+  for (const failure of status?.artifact_policy_failures ?? []) {
+    details.push(`artifact=${failure.path}: ${failure.failures.join("; ")}`);
+  }
+  return details.join("; ");
 }
 
 async function runFormulaSmoke(
@@ -928,7 +962,7 @@ async function runCase(
   tapCommit: string,
   name: string,
   fn: () => Promise<string | undefined>,
-): Promise<void> {
+): Promise<Outcome> {
   writeCurrentRun(options, {
     status: "running",
     tapCommit,
@@ -938,18 +972,23 @@ async function runCase(
   const started = Date.now();
   try {
     const details = await fn();
-    outcomes.push({ name, status: "pass", durationMs: Date.now() - started, details });
+    const outcome = { name, status: "pass" as const, durationMs: Date.now() - started, details };
+    outcomes.push(outcome);
+    writeOutcomeLists(options.resultDir, outcomes);
+    return outcome;
   } catch (err) {
     const error = err instanceof Error ? err : new Error(String(err));
-    outcomes.push({
+    const outcome = {
       name,
-      status: error instanceof SkipCase ? "skip" : "fail",
+      status: error instanceof SkipCase ? "skip" as const : "fail" as const,
       durationMs: Date.now() - started,
       details: error.message,
       error: error.stack ?? error.message,
-    });
+    };
+    outcomes.push(outcome);
+    writeOutcomeLists(options.resultDir, outcomes);
+    return outcome;
   }
-  writeOutcomeLists(options.resultDir, outcomes);
 }
 
 async function loadBottleBytes(

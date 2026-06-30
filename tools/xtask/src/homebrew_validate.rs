@@ -397,6 +397,118 @@ impl Validator<'_> {
                 ));
             }
         }
+
+        self.validate_runtime_status(label, bottle);
+    }
+
+    fn validate_runtime_status(&mut self, label: &str, bottle: &Value) {
+        let runtime_support = bottle
+            .get("runtime_support")
+            .and_then(Value::as_array)
+            .map(|values| {
+                values
+                    .iter()
+                    .filter_map(Value::as_str)
+                    .map(ToOwned::to_owned)
+                    .collect::<BTreeSet<_>>()
+            })
+            .unwrap_or_default();
+
+        let runtime_status = bottle.get("runtime_status").and_then(Value::as_object);
+        if runtime_support.is_empty() && runtime_status.is_none() {
+            self.err(format!(
+                "{label}: empty runtime_support requires runtime_status for node and browser"
+            ));
+            return;
+        }
+
+        let mut has_artifact_policy_failures = false;
+        if let Some(statuses) = runtime_status {
+            for host in statuses.keys() {
+                if host != "node" && host != "browser" {
+                    self.err(format!(
+                        "{label}: runtime_status host {host:?} is not supported"
+                    ));
+                }
+            }
+        }
+
+        for host in ["node", "browser"] {
+            let supports_host = runtime_support.contains(host);
+            let Some(status_value) = runtime_status.and_then(|statuses| statuses.get(host)) else {
+                if runtime_support.is_empty() {
+                    self.err(format!(
+                        "{label}: empty runtime_support requires runtime_status.{host}"
+                    ));
+                }
+                continue;
+            };
+            let Some(status) = status_value.get("status").and_then(Value::as_str) else {
+                continue;
+            };
+            match status {
+                "supported" => {
+                    if !supports_host {
+                        self.err(format!(
+                            "{label}: runtime_status.{host}=supported requires runtime_support to include {host}"
+                        ));
+                    }
+                }
+                "unsupported" | "failed" | "not-validated" => {
+                    if supports_host {
+                        self.err(format!(
+                            "{label}: runtime_status.{host}={status} is incompatible with runtime_support containing {host}"
+                        ));
+                    }
+                }
+                other => self.err(format!(
+                    "{label}: runtime_status.{host}.status {other:?} is invalid"
+                )),
+            }
+
+            if status == "unsupported" {
+                if string_at(status_value, "/reason_code")
+                    .unwrap_or("")
+                    .is_empty()
+                {
+                    self.err(format!(
+                        "{label}: runtime_status.{host}=unsupported requires reason_code"
+                    ));
+                }
+                if string_at(status_value, "/reason").unwrap_or("").is_empty() {
+                    self.err(format!(
+                        "{label}: runtime_status.{host}=unsupported requires reason"
+                    ));
+                }
+            }
+
+            if let Some(failures) = status_value
+                .get("artifact_policy_failures")
+                .and_then(Value::as_array)
+            {
+                if !failures.is_empty() {
+                    has_artifact_policy_failures = true;
+                }
+                for (index, failure) in failures.iter().enumerate() {
+                    let failure_label =
+                        format!("{label}: runtime_status.{host}.artifact_policy_failures #{index}");
+                    let path = string_at(failure, "/path").unwrap_or("");
+                    if !is_safe_relative_path(path) {
+                        self.err(format!("{failure_label}: path {path:?} is not path-safe"));
+                    }
+                    match failure.get("failures").and_then(Value::as_array) {
+                        Some(items) if !items.is_empty() => {}
+                        _ => self.err(format!("{failure_label}: failures must not be empty")),
+                    }
+                }
+            }
+        }
+
+        if has_artifact_policy_failures && !runtime_support.is_empty() {
+            self.err(format!(
+                "{label}: artifact_policy_failures are incompatible with non-empty runtime_support"
+            ));
+        }
     }
 
     fn validate_success_link_manifest(&mut self, label: &str, package: &Value, bottle: &Value) {
@@ -889,14 +1001,12 @@ mod tests {
             set(
                 &mut provenance,
                 "/metadata/link_manifest_json/sha256",
-                json!(
-                    sha256_file(
-                        &self
-                            .tap_root
-                            .join("Kandelo/link/hello-2.12.1-rebuild0-wasm32.json")
-                    )
-                    .unwrap()
-                ),
+                json!(sha256_file(
+                    &self
+                        .tap_root
+                        .join("Kandelo/link/hello-2.12.1-rebuild0-wasm32.json")
+                )
+                .unwrap()),
             );
             set(
                 &mut provenance,
@@ -1034,12 +1144,10 @@ mod tests {
         );
         fixture.write();
         let report = fixture.validate();
-        assert!(
-            report
-                .errors
-                .join("\n")
-                .contains("link manifest /bottle/sha256 does not match")
-        );
+        assert!(report
+            .errors
+            .join("\n")
+            .contains("link manifest /bottle/sha256 does not match"));
     }
 
     #[test]
