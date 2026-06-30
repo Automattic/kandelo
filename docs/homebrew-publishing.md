@@ -232,6 +232,12 @@ the prefix. Package-specific Node and browser outcome text may be supplied via
 only when `KANDELO_HOMEBREW_BROWSER_SMOKE_STATUS=success` and the browser VFS
 smoke artifact environment is complete.
 
+Program package registry dependencies are build inputs for statically linked
+Wasm outputs, not runtime Homebrew packages. The sidecar wrapper omits them
+from the VFS dependency closure. Library package dependencies remain in the
+closure so headers/static archives are planned with their required libraries;
+shared runtime dependencies must be modeled as real Formulae with sidecars.
+
 ## VFS Planning And Building
 
 Homebrew-derived VFS images are built from sidecars and verified bottle bytes,

@@ -115,18 +115,33 @@ tag = bottle["tags"].get(tag_name)
 if tag is None:
     raise SystemExit(f"bottle JSON lacks tag {tag_name}; tags={list(bottle['tags'])}")
 
-deps = []
-for dep in package_toml.get("depends_on", []):
-    if "@" in dep:
-        name, version = dep.split("@", 1)
-        deps.append({"name": name, "version": version})
-    else:
-        deps.append({"name": dep})
-
-version = str(bottle_formula["pkg_version"])
 package_kind = package_toml.get("kind", "program")
 if package_kind not in {"library", "program"}:
     raise SystemExit(f"unsupported Homebrew sidecar package kind for {formula}: {package_kind!r}")
+
+deps = []
+for dep in package_toml.get("depends_on", []):
+    if package_kind == "program":
+        continue
+    if "@" in dep:
+        name, version = dep.split("@", 1)
+        dep_package_path = pathlib.Path(os.environ["KANDELO_ROOT"]) / "packages" / "registry" / name / "package.toml"
+        if dep_package_path.exists():
+            with dep_package_path.open("rb") as f:
+                dep_package_toml = tomllib.load(f)
+            if dep_package_toml.get("kind") == "source":
+                continue
+        deps.append({"name": name, "version": version})
+    else:
+        dep_package_path = pathlib.Path(os.environ["KANDELO_ROOT"]) / "packages" / "registry" / dep / "package.toml"
+        if dep_package_path.exists():
+            with dep_package_path.open("rb") as f:
+                dep_package_toml = tomllib.load(f)
+            if dep_package_toml.get("kind") == "source":
+                continue
+        deps.append({"name": dep})
+
+version = str(bottle_formula["pkg_version"])
 
 def package_links_and_env():
     def output_link(kind, rel):
