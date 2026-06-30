@@ -1,0 +1,9 @@
+[[helper_inputs]]
+name = "node-compat"
+owner = "spidermonkey"
+disposition = "sidecar_tooling_owned_data"
+registry_identity = false
+source = "first-party"
+license_spdx = "MPL-2.0"
+helper_path = "packages/registry/node-compat/bootstrap.js"
+dist_behavior = "build-spidermonkey.sh combines the shared bootstrap with the SpiderMonkey adapter and suffix to generate js/src/shell/kandelo-node-bootstrap.h for the Node-compatible runtime."

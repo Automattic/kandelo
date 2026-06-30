@@ -1,0 +1,12 @@
+[[helper_inputs]]
+name = "pcre2-source"
+owner = "mariadb"
+disposition = "homebrew_resource_helper"
+registry_identity = false
+version = "10.44"
+source_url = "https://github.com/PCRE2Project/pcre2/releases/download/pcre2-10.44/pcre2-10.44.tar.gz"
+sha256 = "86b9cb0aa3bcb7994faa88018292bc704cdbb708e785f7c74352ff6ea7d3175b"
+license_spdx = "BSD-3-Clause"
+license_url = "https://github.com/PCRE2Project/pcre2/blob/master/LICENCE"
+legacy_registry_manifest = "packages/registry/pcre2-source/package.toml"
+dist_behavior = "Legacy resolver fetches and extracts the PCRE2 source tree; MariaDB builds arch-specific static PCRE2 libraries with its own CMake flags and installs them into the active sysroot for the MariaDB build."

@@ -5,6 +5,10 @@ kernel, but this tree keeps the CI and shipped software story organized.
 
 - `registry/<name>/package.toml` describes one buildable package, its source,
   license, dependencies, build script, and outputs.
+- `registry/<name>/helper-inputs.toml` records owner-local helper or source
+  inputs that are not standalone package identities. Current Homebrew bridge
+  examples are MariaDB's `pcre2-source`, node-vfs's `npm` tarball, and
+  SpiderMonkey's `node-compat` bootstrap.
 - `registry/<name>/build-*.sh` builds the package for Kandelo.
 - `registry/<name>/demo/` contains package-owned launchers, service configs,
   sample assets, and local demo helpers.
@@ -15,8 +19,8 @@ kernel, but this tree keeps the CI and shipped software story organized.
   host/kernel smoke tests; the source files themselves live in `../programs/`
   and `../examples/`.
 - `sets/*.toml` names product or CI scenarios that should be kept buildable as
-  a group. These are advisory manifests today; automation can consume them
-  once the package-set schema is wired into `tools/xtask`.
+  a group. These are advisory manifests today and should list package
+  identities only, not helper inputs recorded in `helper-inputs.toml`.
 
 Package-system tests that validate registry tooling rather than a specific
 package live in [`../tests/package-system/`](../tests/package-system/). Root

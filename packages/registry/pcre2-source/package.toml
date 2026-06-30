@@ -1,6 +1,9 @@
 kind = "source"
 name = "pcre2-source"
 version = "10.44"
+# MariaDB owns this as a source helper during the registry bridge. It is not
+# a standalone Homebrew package identity; see
+# packages/registry/mariadb/helper-inputs.toml.
 
 [source]
 url = "https://github.com/PCRE2Project/pcre2/releases/download/pcre2-10.44/pcre2-10.44.tar.gz"
