@@ -215,6 +215,18 @@ path calls `scripts/homebrew-publish-sidecars.sh --status failed` so the failed
 attempt is durable while the previous successful bottle remains selectable when
 its fallback fields are complete.
 
+The default trusted sidecar wrapper,
+`scripts/homebrew-generate-sidecars-from-env.sh`, derives non-hello link
+manifests from package kind. Program Formulae link their installed
+`bin/<formula>` into the Homebrew prefix. Library Formulae link the declared
+`[outputs]` headers, static libraries, and pkg-config files from the keg into
+the prefix. Package-specific Node and browser outcome text may be supplied via
+`KANDELO_HOMEBREW_NODE_SMOKE_COMMAND`,
+`KANDELO_HOMEBREW_BROWSER_SMOKE_STATUS`, and
+`KANDELO_HOMEBREW_BROWSER_SMOKE_REASON`; browser compatibility is recorded
+only when `KANDELO_HOMEBREW_BROWSER_SMOKE_STATUS=success` and the browser VFS
+smoke artifact environment is complete.
+
 ## VFS Planning And Building
 
 Homebrew-derived VFS images are built from sidecars and verified bottle bytes,
@@ -264,6 +276,26 @@ npx tsx packages/registry/hello/test/homebrew-node-smoke.ts \
 It clones or reads the tap, builds a Homebrew VFS from published sidecars, runs
 `/home/linuxbrew/.linuxbrew/bin/hello --version` through `NodeKernelHost`, and
 checks negative ABI-mismatch and missing-bottle cases.
+
+For the sqlite/bzip2/xz pilot and later non-hello package checks, use the
+generic package smoke runner against a generated tap root:
+
+```bash
+npx tsx scripts/homebrew-package-node-smoke.ts \
+  --tap-root /path/to/kandelo-homebrew \
+  --formula sqlite \
+  --formula bzip2 \
+  --formula xz \
+  --arch wasm32 \
+  --result-dir test-runs/homebrew-package-node-smoke
+```
+
+The runner builds Homebrew VFS images from sidecars, writes passed, failed,
+and skipped outcome lists, runs program package version smokes from the poured
+prefix, and compiles SQLite's `sqlite_basic.c` against the poured headers and
+static library before running the validation Wasm on Node. Dry-run bottle
+evidence remains local evidence until the trusted workflow publishes GHCR
+bottle bytes and tap sidecars.
 
 Browser compatibility requires a separate browser smoke. For the current
 `hello` path, the trusted publisher builds a precomposed wasm32 VFS image,
