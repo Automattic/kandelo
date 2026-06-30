@@ -6,9 +6,15 @@ Tracked work:
 
 - `kd-1mr` - Port all current Kandelo packages to Homebrew.
 - `kd-1mr.2` - Port sqlite, bzip2, and xz Homebrew pilot.
+- `kd-1mr.2.1` - Add generic browser smoke for non-hello Homebrew
+  packages.
 - `kd-1mr.2.4` - Scope SQLite official upstream harness for Kandelo runtime.
 - Source evidence: `kd-1mr.2` commit `440ac7e5e`, plus its
   `test-runs/kd-1mr.2/sqlite-upstream/` artifacts.
+- Browser-smoke foundation evidence: `kd-1mr.2.1` implementation commit
+  `1332b60c9`, which adds a generic Homebrew browser smoke runner for
+  sqlite/bzip2/xz. That commit exists on its child branch at the time of this
+  plan update and is not assumed to be present in this design branch.
 
 This is a design artifact. It does not implement new runners, change package
 artifacts, publish bottles, or claim a new SQLite upstream-test tier has passed.
@@ -90,11 +96,13 @@ promotes one tier to a gate.
 
 The browser operator needs a separate status path. Today's official browser
 harness exists for the registry SQLite test VFS, but the Homebrew pilot does not
-yet have a generic non-hello browser smoke path or a Homebrew-derived official
-SQLite browser image. Browser upstream-test status should therefore remain
-`unsupported/deferred` for Homebrew SQLite until a focused browser follow-up
-lands. Existing follow-up `kd-1mr.2.1` covers the generic non-hello Homebrew
-browser smoke foundation.
+yet have a Homebrew-derived official SQLite browser image. The generic
+non-hello Homebrew browser smoke foundation was implemented in `kd-1mr.2.1`,
+but that smoke proves package consumer behavior, not SQLite's official Tcl
+runner. Browser upstream-test status should therefore remain
+`unsupported/deferred` for Homebrew SQLite official tiers until a focused
+browser official-tier follow-up runs the same tier through a Homebrew-derived
+SQLite validation image.
 
 ## Proposed Tier Model
 
@@ -110,8 +118,9 @@ pilot.
 Host policy:
 
 - Required first host: Node.
-- Browser status: deferred until the Homebrew browser smoke follow-up can boot
-  a Homebrew-derived SQLite validation image.
+- Browser status: deferred until the generic Homebrew browser smoke foundation
+  is available on the implementation base and a Homebrew-derived SQLite
+  official validation image can run this tier.
 
 Command shape:
 
@@ -289,11 +298,15 @@ Browser is a peer host but not the same feature:
 
 - Existing browser official tooling boots `apps/browser-demos/pages/sqlite-test`
   with a registry-built SQLite test VFS.
-- The Homebrew pilot needs a generic non-hello browser smoke path before it can
-  claim browser support for a Homebrew-derived SQLite bottle.
+- The Homebrew pilot now has a generic non-hello browser smoke path on the
+  `kd-1mr.2.1` branch, and that path proved a Homebrew-derived sqlite consumer
+  smoke through `BrowserKernel`.
+- That browser smoke path is still not an official SQLite Tcl runner path. It
+  does not by itself provide `testrunner.tcl`, Tcl/testfixture prerequisites,
+  official-tier manifests, or complete official outcome lists for browser.
 - Therefore `sqlite-official-smoke-v1` should record browser status as deferred
-  with a link to `kd-1mr.2.1` until a Homebrew-derived browser image can run
-  the same tier.
+  with a link to `kd-1mr.2.1` and any later official-browser-tier bead until a
+  Homebrew-derived browser image can run the same tier.
 
 The design should not create a fake browser pass from Node artifacts. Browser
 results must come from a browser host run or remain explicitly unsupported.
@@ -323,9 +336,11 @@ better for broader tiers.
 ### Browser first
 
 Rejected for this bead. Browser is required product surface, but current
-blocking evidence points to generic non-hello Homebrew browser smoke and
-browser long-run stability work. Node is the practical first official tier;
-browser should be a focused follow-up with explicit status.
+blocking evidence points to official-tier browser image construction and
+browser long-run stability work. `kd-1mr.2.1` removed the generic package
+browser-smoke gap, but Node remains the practical first official tier because
+the official `veryquick` evidence and outcome-list gap are already on the Node
+path. Browser should be a focused follow-up with explicit status.
 
 ### Hide unsupported official-test jobs as skipped
 
@@ -395,9 +410,12 @@ Outcome-list gaps:
      --results-root test-runs/kd-1mr.2.4/sqlite-official-smoke-v1-node
    ```
 
-6. Record browser status as deferred and link it to the non-hello Homebrew
-   browser smoke follow-up. If that follow-up lands first, add a browser Tier 0
-   run from the Homebrew-derived SQLite image.
+6. Record browser status as deferred and link it to `kd-1mr.2.1` plus any
+   focused official-browser-tier follow-up. If the implementation base contains
+   the generic browser smoke runner, reuse its candidate-VFS/browser launch
+   pattern, but add a separate SQLite official validation image and outcome
+   exporter instead of treating the package `sqlite_basic` browser smoke as
+   official-tier evidence.
 7. Wire Tier 0 summary paths into Homebrew sidecar/provenance metadata as
    upstream-test status, not as default bottle availability.
 8. Add a scheduled or manually dispatched convoy path for Tier 1 shards only
@@ -440,8 +458,8 @@ Documentation updates after implementation:
   budget still stays under 10 minutes?
 - Should Tier 1 shards be fixed-count shards derived at implementation time, or
   should the tier manifest pin every shard's explicit job list for review?
-- Where should browser official status live if `kd-1mr.2.1` lands generic
-  browser smoke but not a full Homebrew-derived SQLite official-test image?
+- Where should browser official status live now that `kd-1mr.2.1` has generic
+  package browser smoke but not a Homebrew-derived SQLite official-test image?
 - Should upstream-test status become a new structured field in Homebrew
   sidecars, or remain provenance-only until more packages have upstream suites?
 - What is the owner-approved policy for promoting any SQLite official tier from
