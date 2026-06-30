@@ -2,27 +2,77 @@
 set -euo pipefail
 
 NGINX_VERSION="${NGINX_VERSION:-1.24.0}"
+NGINX_SOURCE_URL="${NGINX_SOURCE_URL:-https://nginx.org/download/nginx-${NGINX_VERSION}.tar.gz}"
+NGINX_SOURCE_SHA256="${NGINX_SOURCE_SHA256:-77a2541637b92a621e3ee76776c8b7b40cf6d707e69ba53a940283e30ff2f55d}"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-SRC_DIR="$SCRIPT_DIR/nginx-src"
-BUILD_DIR="$SRC_DIR/objs"
+REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
+# shellcheck source=/dev/null
+source "$REPO_ROOT/sdk/activate.sh"
 
-if ! command -v wasm32posix-cc &>/dev/null; then
-    echo "ERROR: wasm32posix-cc not found. Run 'npm link' in sdk/ first." >&2
+ARCH="${WASM_POSIX_DEP_TARGET_ARCH:-wasm32}"
+if [ "$ARCH" != "wasm32" ]; then
+    echo "ERROR: nginx package currently supports wasm32 only, got '$ARCH'." >&2
     exit 1
 fi
 
-REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
+WORK_DIR="${WASM_POSIX_DEP_WORK_DIR:-$SCRIPT_DIR}"
+DOWNLOAD_DIR="$WORK_DIR/downloads"
+SRC_DIR="$WORK_DIR/nginx-src"
+BUILD_DIR="$SRC_DIR/objs"
+if [ -n "${WASM_POSIX_DEP_OUT_DIR:-}" ]; then
+    BIN_DIR="$WORK_DIR/bin"
+else
+    BIN_DIR="$SCRIPT_DIR"
+fi
+OUT_WASM="$BIN_DIR/nginx.wasm"
+SOURCE_MARKER="$SRC_DIR/.kandelo-source"
+
+sha256_file() {
+    python3 - "$1" <<'PY'
+import hashlib
+import sys
+
+h = hashlib.sha256()
+with open(sys.argv[1], "rb") as f:
+    for chunk in iter(lambda: f.read(1024 * 1024), b""):
+        h.update(chunk)
+print(h.hexdigest())
+PY
+}
+
+if ! command -v wasm32posix-cc &>/dev/null; then
+    echo "ERROR: wasm32posix-cc not found. Run through scripts/dev-shell.sh." >&2
+    exit 1
+fi
+
 SYSROOT="$REPO_ROOT/sysroot"
 export WASM_POSIX_SYSROOT="$SYSROOT"
 
 # Download nginx source
-if [ ! -d "$SRC_DIR" ]; then
+mkdir -p "$DOWNLOAD_DIR"
+TARBALL="nginx-${NGINX_VERSION}.tar.gz"
+ARCHIVE="$DOWNLOAD_DIR/$TARBALL"
+if [ ! -f "$ARCHIVE" ]; then
     echo "==> Downloading nginx $NGINX_VERSION..."
-    TARBALL="nginx-${NGINX_VERSION}.tar.gz"
-    curl -fsSL "https://nginx.org/download/${TARBALL}" -o "/tmp/${TARBALL}"
+    curl -fsSL "$NGINX_SOURCE_URL" -o "$ARCHIVE"
+fi
+
+if [ -n "$NGINX_SOURCE_SHA256" ]; then
+    actual_sha="$(sha256_file "$ARCHIVE")"
+    if [ "$actual_sha" != "$NGINX_SOURCE_SHA256" ]; then
+        echo "ERROR: source SHA256 mismatch for $ARCHIVE" >&2
+        echo "  expected: $NGINX_SOURCE_SHA256" >&2
+        echo "  actual:   $actual_sha" >&2
+        exit 1
+    fi
+fi
+
+if [ ! -d "$SRC_DIR" ] || [ ! -f "$SOURCE_MARKER" ] || [ "$(cat "$SOURCE_MARKER")" != "$NGINX_VERSION $NGINX_SOURCE_SHA256" ]; then
+    echo "==> Extracting nginx $NGINX_VERSION..."
+    rm -rf "$SRC_DIR"
     mkdir -p "$SRC_DIR"
-    tar xzf "/tmp/${TARBALL}" -C "$SRC_DIR" --strip-components=1
-    rm "/tmp/${TARBALL}"
+    tar xzf "$ARCHIVE" -C "$SRC_DIR" --strip-components=1
+    printf '%s %s\n' "$NGINX_VERSION" "$NGINX_SOURCE_SHA256" > "$SOURCE_MARKER"
 fi
 
 cd "$SRC_DIR"
@@ -409,8 +459,9 @@ if [ -f objs/ngx_modules.c ]; then
     OBJS+=(objs/ngx_modules.o)
 fi
 
+mkdir -p "$BIN_DIR"
 echo "  Linking nginx.wasm..."
-wasm32posix-cc "${OBJS[@]}" -o "$SCRIPT_DIR/nginx.wasm" -lcrypt
+wasm32posix-cc "${OBJS[@]}" -o "$OUT_WASM" -lcrypt
 
 # Fork instrumentation (master_process on requires fork children to
 # resume from the fork point rather than re-executing _start).
@@ -419,13 +470,23 @@ wasm32posix-cc "${OBJS[@]}" -o "$SCRIPT_DIR/nginx.wasm" -lcrypt
 # and any later pass reordering globals would corrupt the fork buffer.
 FORK_INSTRUMENT="$REPO_ROOT/scripts/run-wasm-fork-instrument.sh"
 echo "  Applying fork instrumentation..."
-"$FORK_INSTRUMENT" "$SCRIPT_DIR/nginx.wasm" -o "$SCRIPT_DIR/nginx.wasm.instr"
-mv "$SCRIPT_DIR/nginx.wasm.instr" "$SCRIPT_DIR/nginx.wasm"
+"$FORK_INSTRUMENT" "$OUT_WASM" -o "$OUT_WASM.instr"
+mv "$OUT_WASM.instr" "$OUT_WASM"
 
 echo "==> nginx.wasm built successfully!"
-ls -la "$SCRIPT_DIR/nginx.wasm"
+ls -la "$OUT_WASM"
 
-# Install into local-binaries/ so the resolver picks the freshly-built
-# binary over the fetched release.
-source "$REPO_ROOT/scripts/install-local-binary.sh"
-install_local_binary nginx "$SCRIPT_DIR/nginx.wasm"
+if [ -n "${WASM_POSIX_DEP_OUT_DIR:-}" ]; then
+    source "$REPO_ROOT/scripts/wasm-artifact-guards.sh"
+    wasm_require_no_legacy_asyncify "$OUT_WASM"
+    wasm_require_fork_instrumentation_if_needed "$OUT_WASM"
+    rm -rf "$WASM_POSIX_DEP_OUT_DIR"
+    mkdir -p "$WASM_POSIX_DEP_OUT_DIR"
+    cp "$OUT_WASM" "$WASM_POSIX_DEP_OUT_DIR/nginx.wasm"
+    echo "==> Installed nginx.wasm to $WASM_POSIX_DEP_OUT_DIR"
+else
+    # Install into local-binaries/ so the resolver picks the freshly-built
+    # binary over the fetched release.
+    source "$REPO_ROOT/scripts/install-local-binary.sh"
+    install_local_binary nginx "$OUT_WASM"
+fi

@@ -10,31 +10,75 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-SRC_DIR="$SCRIPT_DIR/openssl-src"
+REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
+
+# shellcheck source=/dev/null
+source "$REPO_ROOT/sdk/activate.sh"
 
 # --- Resolver contract (with legacy fallbacks) ---
 OPENSSL_VERSION="${WASM_POSIX_DEP_VERSION:-${OPENSSL_VERSION:-3.3.2}}"
 INSTALL_DIR="${WASM_POSIX_DEP_OUT_DIR:-$SCRIPT_DIR/openssl-install}"
+WORK_DIR="${WASM_POSIX_DEP_WORK_DIR:-$SCRIPT_DIR}"
+TARGET_ARCH="${WASM_POSIX_DEP_TARGET_ARCH:-wasm32}"
 SOURCE_URL="${WASM_POSIX_DEP_SOURCE_URL:-https://github.com/openssl/openssl/releases/download/openssl-${OPENSSL_VERSION}/openssl-${OPENSSL_VERSION}.tar.gz}"
 SOURCE_SHA256="${WASM_POSIX_DEP_SOURCE_SHA256:-}"
 
-if ! command -v wasm32posix-cc &>/dev/null; then
-    echo "ERROR: wasm32posix-cc not found. Run 'npm link' in sdk/ first." >&2
+case "$TARGET_ARCH" in
+    wasm32)
+        TOOL_PREFIX="wasm32posix"
+        OPENSSL_TARGET="linux-generic32"
+        SYSROOT="${WASM_POSIX_SYSROOT:-$REPO_ROOT/sysroot}"
+        ;;
+    wasm64)
+        TOOL_PREFIX="wasm64posix"
+        OPENSSL_TARGET="linux-generic64"
+        SYSROOT="${WASM_POSIX_SYSROOT:-$REPO_ROOT/sysroot64}"
+        ;;
+    *)
+        echo "ERROR: unsupported WASM_POSIX_DEP_TARGET_ARCH=$TARGET_ARCH" >&2
+        exit 2
+        ;;
+esac
+
+CC="${TOOL_PREFIX}-cc"
+AR="${TOOL_PREFIX}-ar"
+RANLIB="${TOOL_PREFIX}-ranlib"
+SRC_DIR="$WORK_DIR/openssl-src-$TARGET_ARCH"
+SOURCE_MARKER="$SRC_DIR/.kandelo-openssl-source"
+export WASM_POSIX_SYSROOT="$SYSROOT"
+
+if ! command -v "$CC" &>/dev/null; then
+    echo "ERROR: $CC not found after sourcing sdk/activate.sh." >&2
+    exit 1
+fi
+
+if [ ! -f "$SYSROOT/lib/libc.a" ]; then
+    echo "ERROR: sysroot not found at $SYSROOT. Run scripts/build-musl.sh for $TARGET_ARCH first." >&2
     exit 1
 fi
 
 # --- Fetch + verify source ---
+expected_marker="$(printf '%s\n%s\n%s\n' "$OPENSSL_VERSION" "$SOURCE_URL" "$SOURCE_SHA256")"
+if [ -d "$SRC_DIR" ] && [ "$(cat "$SOURCE_MARKER" 2>/dev/null || true)" != "$expected_marker" ]; then
+    echo "==> Existing OpenSSL source does not match requested version/source; cleaning..."
+    rm -rf "$SRC_DIR"
+fi
+
 if [ ! -d "$SRC_DIR" ]; then
     echo "==> Downloading OpenSSL $OPENSSL_VERSION..."
-    TARBALL="openssl-${OPENSSL_VERSION}.tar.gz"
-    curl --retry 10 --retry-delay 5 --retry-max-time 300 --retry-all-errors -fsSL "$SOURCE_URL" -o "/tmp/${TARBALL}"
+    tmpdir="$(mktemp -d "${TMPDIR:-/tmp}/kandelo-openssl-src.XXXXXX")"
+    trap 'rm -rf "$tmpdir"' EXIT
+    TARBALL="$tmpdir/openssl-${OPENSSL_VERSION}.tar.gz"
+    curl --retry 10 --retry-delay 5 --retry-max-time 300 --retry-all-errors -fsSL "$SOURCE_URL" -o "$TARBALL"
     if [ -n "$SOURCE_SHA256" ]; then
         echo "==> Verifying source sha256..."
-        echo "$SOURCE_SHA256  /tmp/${TARBALL}" | shasum -a 256 -c -
+        echo "$SOURCE_SHA256  $TARBALL" | shasum -a 256 -c -
     fi
     mkdir -p "$SRC_DIR"
-    tar xzf "/tmp/${TARBALL}" -C "$SRC_DIR" --strip-components=1
-    rm "/tmp/${TARBALL}"
+    tar xzf "$TARBALL" -C "$SRC_DIR" --strip-components=1
+    printf '%s\n' "$expected_marker" > "$SOURCE_MARKER"
+    trap - EXIT
+    rm -rf "$tmpdir"
 fi
 
 cd "$SRC_DIR"
@@ -45,12 +89,13 @@ if [ -f Makefile ]; then
 fi
 rm -rf "$INSTALL_DIR"
 
-# Configure for Wasm using linux-generic32 target.
-echo "==> Configuring OpenSSL for Wasm..."
-CC=wasm32posix-cc \
-AR=wasm32posix-ar \
-RANLIB=wasm32posix-ranlib \
-perl Configure linux-generic32 \
+# Configure for Wasm using OpenSSL's generic Linux targets. The SDK
+# wrapper supplies the actual wasm target triple.
+echo "==> Configuring OpenSSL for $TARGET_ARCH..."
+CC="$CC" \
+AR="$AR" \
+RANLIB="$RANLIB" \
+perl Configure "$OPENSSL_TARGET" \
     -DHAVE_FORK=0 \
     -DOPENSSL_NO_AFALGENG=1 \
     -DOPENSSL_NO_UI_CONSOLE=1 \
@@ -70,12 +115,14 @@ perl Configure linux-generic32 \
     --prefix="$INSTALL_DIR" \
     --openssldir=/etc/ssl
 
-# Patch Makefile: remove cross-compile prefix + the -m32 that
-# linux-generic32 assumes.
+# Patch Makefile: remove cross-compile prefix and host-only -m32/-m64
+# switches that the linux-generic* targets assume.
 echo "==> Patching Makefile..."
 sed -i.bak 's/^CROSS_COMPILE=.*/CROSS_COMPILE=/' Makefile
 sed -i.bak 's/ -m32 / /g' Makefile
 sed -i.bak 's/ -m32$//' Makefile
+sed -i.bak 's/ -m64 / /g' Makefile
+sed -i.bak 's/ -m64$//' Makefile
 rm -f Makefile.bak
 
 echo "==> Building OpenSSL..."
