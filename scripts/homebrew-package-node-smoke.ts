@@ -45,7 +45,13 @@ type FormulaName =
   | "libxml2"
   | "libpng"
   | "libcurl"
-  | "ncurses";
+  | "ncurses"
+  | "spidermonkey"
+  | "spidermonkey-node"
+  | "node"
+  | "redis"
+  | "nginx"
+  | "mariadb";
 
 interface CliOptions {
   resultDir: string;
@@ -200,6 +206,18 @@ async function runFormulaSmoke(
       return runLibcurlSmoke(built, options);
     case "ncurses":
       return runNcursesSmoke(built, options);
+    case "spidermonkey":
+      return runSpiderMonkeySmoke(built, options);
+    case "spidermonkey-node":
+      return runSpiderMonkeyNodeSmoke("spidermonkey-node", `${PREFIX}/bin/spidermonkey-node`, built, options);
+    case "node":
+      return runSpiderMonkeyNodeSmoke("node", `${PREFIX}/bin/node`, built, options);
+    case "redis":
+      return runRedisSmoke(built, options);
+    case "nginx":
+      return runNginxSmoke(built, options);
+    case "mariadb":
+      return runMariadbSmoke(built, options);
   }
 }
 
@@ -480,6 +498,279 @@ int main(void) {
   return "tput -V ran and an ncurses consumer linked against the poured keg";
 }
 
+async function runSpiderMonkeySmoke(built: BuiltVfs, options: CliOptions): Promise<string> {
+  const programBytes = readVfsFile(built.fs, `${PREFIX}/bin/js`);
+  const result = await runWasm(programBytes, [
+    "js",
+    "-e",
+    [
+      "print(1 + 1)",
+      "print([3, 1, 2].toSorted().join(','))",
+      "print(typeof Intl)",
+    ].join(";"),
+  ], built.imageBytes, options);
+  assertRunPassed("js -e", result, "2\n1,2,3\nobject");
+  return "SpiderMonkey js shell evaluated arithmetic, modern array syntax, and Intl";
+}
+
+async function runSpiderMonkeyNodeSmoke(
+  argv0: "spidermonkey-node" | "node",
+  guestPath: string,
+  built: BuiltVfs,
+  options: CliOptions,
+): Promise<string> {
+  const programBytes = readVfsFile(built.fs, guestPath);
+  const versionResult = await runWasm(programBytes, [argv0, "--version"], built.imageBytes, options);
+  assertRunPassed(`${argv0} --version`, versionResult, "v22.0.0");
+
+  const evalResult = await runWasm(programBytes, [
+    argv0,
+    "-e",
+    [
+      "const assert = require('node:assert')",
+      "const path = require('path')",
+      "const util = require('util')",
+      "const b = Buffer.from('hello')",
+      "assert.strictEqual(Buffer.isBuffer(b), true)",
+      "assert.strictEqual(b.toString('hex'), '68656c6c6f')",
+      "console.log(util.format('%s:%d:%s', path.basename('/usr/bin/node'), b.length, process.platform))",
+    ].join(";"),
+  ], built.imageBytes, options);
+  assertRunPassed(`${argv0} -e`, evalResult, "node:5:linux");
+  return `${argv0} reported v22.0.0 and exercised process, Buffer, path, util, and assert`;
+}
+
+async function runRedisSmoke(built: BuiltVfs, options: CliOptions): Promise<string> {
+  const serverBytes = readVfsFile(built.fs, `${PREFIX}/bin/redis-server`);
+  const serverResult = await runWasm(serverBytes, ["redis-server", "--version"], built.imageBytes, options);
+  assertRunPassed("redis-server --version", serverResult, "Redis server");
+
+  const cliBytes = readVfsFile(built.fs, `${PREFIX}/bin/redis-cli`);
+  const cliResult = await runWasm(cliBytes, ["redis-cli", "--version"], built.imageBytes, options);
+  assertRunPassed("redis-cli --version", cliResult, "redis-cli");
+
+  await runRedisPingSmoke(serverBytes, cliBytes, built.imageBytes, options);
+  return "redis-server and redis-cli version paths ran, and redis-cli PING returned PONG through a poured Homebrew VFS";
+}
+
+async function runRedisPingSmoke(
+  serverBytes: Uint8Array,
+  cliBytes: Uint8Array,
+  rootfsImage: Uint8Array,
+  options: CliOptions,
+): Promise<void> {
+  let stdout = "";
+  let stderr = "";
+  const host = new NodeKernelHost({
+    maxWorkers: 4,
+    rootfsImage,
+    enableTcpNetwork: true,
+    onStdout: (_pid, data) => { stdout += new TextDecoder().decode(data); },
+    onStderr: (_pid, data) => { stderr += new TextDecoder().decode(data); },
+  });
+
+  await host.init();
+  let serverPid: number | undefined;
+  let serverExitStatus: number | Error | undefined;
+  const port = "26379";
+  const env = programEnv();
+  const serverExit = host.spawn(toArrayBuffer(serverBytes), [
+    "redis-server",
+    "--save", "",
+    "--appendonly", "no",
+    "--protected-mode", "no",
+    "--bind", "127.0.0.1",
+    "--port", port,
+    "--dir", "/tmp",
+  ], {
+    env,
+    cwd: "/",
+    stdin: new Uint8Array(),
+    onStarted: (pid) => { serverPid = pid; },
+  });
+  serverExit.then(
+    (code) => { serverExitStatus = code; },
+    (err) => { serverExitStatus = err instanceof Error ? err : new Error(String(err)); },
+  );
+
+  try {
+    const pid = await waitForStarted(() => serverPid, "redis-server");
+    const deadline = Date.now() + Math.max(options.timeoutMs, 15_000);
+    let lastAttempt = "redis-cli PING was not attempted";
+
+    while (Date.now() < deadline) {
+      if (serverExitStatus !== undefined) {
+        throw new Error(`redis-server exited before PING completed: ${serverExitStatus}; stderr=${JSON.stringify(stderr)}`);
+      }
+
+      const beforeStdout = stdout.length;
+      const beforeStderr = stderr.length;
+      let cliPid: number | undefined;
+      const cliExit = host.spawn(toArrayBuffer(cliBytes), [
+        "redis-cli",
+        "-h", "127.0.0.1",
+        "-p", port,
+        "PING",
+      ], {
+        env,
+        cwd: "/",
+        stdin: new Uint8Array(),
+        onStarted: (startedPid) => { cliPid = startedPid; },
+      });
+      await waitForStarted(() => cliPid, "redis-cli");
+      const exitCode = await withTimeout(cliExit, 5_000, "redis-cli PING");
+      const newStdout = stdout.slice(beforeStdout);
+      const newStderr = stderr.slice(beforeStderr);
+      lastAttempt = `exit=${exitCode} stdout=${JSON.stringify(newStdout)} stderr=${JSON.stringify(newStderr)}`;
+      if (exitCode === 0 && newStdout.includes("PONG")) return;
+      await sleep(250);
+    }
+
+    throw new Error(`redis-cli PING did not return PONG before timeout; ${lastAttempt}; server_pid=${pid}`);
+  } finally {
+    if (serverPid !== undefined) {
+      await host.terminateProcess(serverPid, 0).catch(() => {});
+      await Promise.race([serverExit, sleep(1_000)]).catch(() => {});
+    }
+    await host.destroy().catch(() => {});
+  }
+}
+
+async function runNginxSmoke(built: BuiltVfs, options: CliOptions): Promise<string> {
+  const programBytes = readVfsFile(built.fs, `${PREFIX}/bin/nginx`);
+  const versionResult = await runWasm(programBytes, ["nginx", "-v"], built.imageBytes, options);
+  if (versionResult.exitCode !== 0) {
+    throw new Error(`nginx -v exited ${versionResult.exitCode}; stderr=${JSON.stringify(versionResult.stderr)}`);
+  }
+  if (!/nginx/i.test(`${versionResult.stdout}\n${versionResult.stderr}`)) {
+    throw new Error(`nginx -v did not report nginx: ${JSON.stringify(versionResult.stderr || versionResult.stdout)}`);
+  }
+  await runNginxHttpSmoke(programBytes, built.imageBytes, options);
+  return "nginx version path ran, and nginx served a static HTTP response through a poured Homebrew VFS";
+}
+
+async function runNginxHttpSmoke(
+  programBytes: Uint8Array,
+  rootfsImage: Uint8Array,
+  options: CliOptions,
+): Promise<void> {
+  const stage = join(options.resultDir, "nginx-http-smoke", options.arch);
+  rmSync(stage, { recursive: true, force: true });
+  mkdirSync(join(stage, "html"), { recursive: true });
+  mkdirSync(join(stage, "etc"), { recursive: true });
+  writeFileSync(join(stage, "etc", "passwd"), [
+    "root:x:0:0:root:/root:/bin/sh",
+    "nobody:x:65534:65534:nobody:/nonexistent:/usr/sbin/nologin",
+    "",
+  ].join("\n"));
+  writeFileSync(join(stage, "etc", "group"), [
+    "root:x:0:",
+    "nobody:x:65534:",
+    "",
+  ].join("\n"));
+  writeFileSync(join(stage, "html", "index.html"), "kandelo nginx smoke\n");
+  writeFileSync(join(stage, "nginx.conf"), [
+    "user nobody;",
+    "worker_processes 1;",
+    "pid /tmp/nginx-smoke/nginx.pid;",
+    "error_log stderr notice;",
+    "events { worker_connections 16; }",
+    "http {",
+    "  access_log off;",
+    "  server {",
+    "    listen 127.0.0.1:28080;",
+    "    server_name localhost;",
+    "    location / { root /tmp/nginx-smoke/html; }",
+    "  }",
+    "}",
+    "",
+  ].join("\n"));
+
+  let stdout = "";
+  let stderr = "";
+  const host = new NodeKernelHost({
+    maxWorkers: 4,
+    rootfsImage,
+    enableTcpNetwork: true,
+    extraMounts: [
+      { mountPoint: "/tmp/nginx-smoke", hostPath: stage },
+      { mountPoint: "/etc", hostPath: join(stage, "etc"), readonly: true },
+    ],
+    onStdout: (_pid, data) => { stdout += new TextDecoder().decode(data); },
+    onStderr: (_pid, data) => { stderr += new TextDecoder().decode(data); },
+  });
+
+  await host.init();
+  let serverPid: number | undefined;
+  let serverExitStatus: number | Error | undefined;
+  const serverExit = host.spawn(toArrayBuffer(programBytes), [
+    "nginx",
+    "-p", "/tmp/nginx-smoke",
+    "-c", "/tmp/nginx-smoke/nginx.conf",
+    "-g", "daemon off; master_process off;",
+  ], {
+    env: programEnv(),
+    cwd: "/",
+    stdin: new Uint8Array(),
+    onStarted: (pid) => { serverPid = pid; },
+  });
+  serverExit.then(
+    (code) => { serverExitStatus = code; },
+    (err) => { serverExitStatus = err instanceof Error ? err : new Error(String(err)); },
+  );
+
+  try {
+    await waitForStarted(() => serverPid, "nginx");
+    let lastError: unknown = null;
+    const deadline = Date.now() + Math.max(options.timeoutMs, 15_000);
+
+    while (Date.now() < deadline) {
+      if (serverExitStatus !== undefined) {
+        throw new Error(`nginx exited before HTTP smoke completed: ${serverExitStatus}; stdout=${JSON.stringify(stdout)} stderr=${JSON.stringify(stderr)}`);
+      }
+
+      try {
+        const response = await host.fetchInKernel(
+          28080,
+          { method: "GET", url: "/", headers: { Host: "localhost" }, body: null },
+          { timeoutMs: 5_000 },
+        );
+        const body = new TextDecoder().decode(response.body);
+        if (response.status !== 200 || body !== "kandelo nginx smoke\n") {
+          throw new Error(`unexpected nginx response status=${response.status} body=${JSON.stringify(body)}`);
+        }
+        return;
+      } catch (err) {
+        lastError = err;
+        await sleep(100);
+      }
+    }
+
+    throw new Error(`nginx HTTP smoke did not complete before timeout: ${lastError}; stdout=${JSON.stringify(stdout)} stderr=${JSON.stringify(stderr)}`);
+  } finally {
+    if (serverPid !== undefined) {
+      await host.terminateProcess(serverPid, 0).catch(() => {});
+      await Promise.race([serverExit, sleep(1_000)]).catch(() => {});
+    }
+    await host.destroy().catch(() => {});
+  }
+}
+
+async function runMariadbSmoke(built: BuiltVfs, options: CliOptions): Promise<string> {
+  const serverBytes = readVfsFile(built.fs, `${PREFIX}/bin/mariadbd`);
+  const serverResult = await runWasm(serverBytes, ["mariadbd", "--help", "--verbose"], built.imageBytes, options);
+  if (serverResult.exitCode !== 0) {
+    throw new Error(`mariadbd --help --verbose exited ${serverResult.exitCode}; stderr=${JSON.stringify(serverResult.stderr)}`);
+  }
+  const combined = `${serverResult.stdout}\n${serverResult.stderr}`;
+  if (!/MariaDB|mariadbd/i.test(combined)) {
+    throw new Error(`mariadbd help did not mention MariaDB: ${JSON.stringify(combined.slice(0, 4000))}`);
+  }
+
+  readVfsFile(built.fs, `${PREFIX}/bin/mysqltest`);
+  return "mariadbd help ran through a poured Homebrew VFS and mysqltest was present";
+}
+
 function stagePackagePaths(
   built: BuiltVfs,
   options: CliOptions,
@@ -568,11 +859,7 @@ async function runWasm(
   let timeout: ReturnType<typeof setTimeout> | undefined;
   try {
     const exitPromise = host.spawn(toArrayBuffer(programBytes), argv, {
-      env: [
-        "PATH=/home/linuxbrew/.linuxbrew/bin:/usr/bin:/bin",
-        "HOME=/tmp",
-        "TMPDIR=/tmp",
-      ],
+      env: programEnv(),
       cwd: "/",
       stdin: new Uint8Array(),
     });
@@ -587,6 +874,51 @@ async function runWasm(
   } finally {
     if (timeout) clearTimeout(timeout);
     await host.destroy().catch(() => {});
+  }
+}
+
+function programEnv(): string[] {
+  return [
+    "PATH=/home/linuxbrew/.linuxbrew/bin:/usr/bin:/bin",
+    "HOME=/tmp",
+    "TMPDIR=/tmp",
+  ];
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function waitForStarted(
+  getPid: () => number | undefined,
+  label: string,
+): Promise<number> {
+  for (let i = 0; i < 200; i += 1) {
+    const pid = getPid();
+    if (pid !== undefined) return pid;
+    await sleep(10);
+  }
+  throw new Error(`${label} did not start`);
+}
+
+async function withTimeout<T>(
+  promise: Promise<T>,
+  ms: number,
+  label: string,
+): Promise<T> {
+  let timeout: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      promise,
+      new Promise<never>((_, reject) => {
+        timeout = setTimeout(
+          () => reject(new Error(`${label} timed out after ${ms}ms`)),
+          ms,
+        );
+      }),
+    ]);
+  } finally {
+    if (timeout) clearTimeout(timeout);
   }
 }
 
@@ -753,9 +1085,15 @@ function parseFormula(value: string): FormulaName {
     value === "libxml2" ||
     value === "libpng" ||
     value === "libcurl" ||
-    value === "ncurses"
+    value === "ncurses" ||
+    value === "spidermonkey" ||
+    value === "spidermonkey-node" ||
+    value === "node" ||
+    value === "redis" ||
+    value === "nginx" ||
+    value === "mariadb"
   ) return value;
-  usage(2, `--formula must be one of sqlite, bzip2, xz, openssl, libcxx, libxml2, libpng, libcurl, ncurses; got ${value}`);
+  usage(2, `--formula must be one of sqlite, bzip2, xz, openssl, libcxx, libxml2, libpng, libcurl, ncurses, spidermonkey, spidermonkey-node, node, redis, nginx, mariadb; got ${value}`);
 }
 
 function parseArch(value: string): HomebrewBottleArch {

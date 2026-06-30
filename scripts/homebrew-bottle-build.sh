@@ -123,6 +123,19 @@ export HOMEBREW_KANDELO_ARCH="$ARCH"
 export HOMEBREW_KANDELO_ROOT="$KANDELO_ROOT"
 export HOMEBREW_KANDELO_NODE="$(command -v node)"
 export HOMEBREW_KANDELO_LLVM_BIN="${LLVM_BIN:-${WASM_POSIX_LLVM_DIR:-}}"
+export HOMEBREW_KANDELO_PKG_CONFIG="$(command -v pkg-config || true)"
+HOST_TOOL_PATH=""
+for tool in rustc cargo cbindgen cmake bison pkg-config; do
+  tool_path="$(command -v "$tool" || true)"
+  if [ -n "$tool_path" ]; then
+    tool_dir="$(dirname "$tool_path")"
+    case ":$HOST_TOOL_PATH:" in
+      *":$tool_dir:"*) ;;
+      *) HOST_TOOL_PATH="${HOST_TOOL_PATH:+$HOST_TOOL_PATH:}$tool_dir" ;;
+    esac
+  fi
+done
+export HOMEBREW_KANDELO_HOST_TOOL_PATH="$HOST_TOOL_PATH"
 
 if [ ! -d "$TAP_SOURCE/.git" ]; then
   TAP_SOURCE="$WORK_DIR/tap-source"
@@ -186,8 +199,15 @@ brew_install_build_bottle() {
     "$BREW_BIN" bottle --json --no-rebuild --root-url "$BOTTLE_ROOT_URL" "$FORMULA_REF"
 )
 
-mapfile -t bottle_jsons < <(find "$WORK_DIR" -maxdepth 1 -type f -name '*.bottle.json' -print | sort)
-mapfile -t bottle_archives < <(find "$WORK_DIR" -maxdepth 1 -type f \( -name '*.bottle.tar.gz' -o -name '*.bottle.tar.zst' \) -print | sort)
+bottle_jsons=()
+while IFS= read -r path; do
+  bottle_jsons+=("$path")
+done < <(find "$WORK_DIR" -maxdepth 1 -type f -name '*.bottle.json' -print | sort)
+
+bottle_archives=()
+while IFS= read -r path; do
+  bottle_archives+=("$path")
+done < <(find "$WORK_DIR" -maxdepth 1 -type f \( -name '*.bottle.tar.gz' -o -name '*.bottle.tar.zst' \) -print | sort)
 
 if [ "${#bottle_jsons[@]}" -ne 1 ]; then
   echo "homebrew-bottle-build.sh: expected exactly one .bottle.json, found ${#bottle_jsons[@]}" >&2

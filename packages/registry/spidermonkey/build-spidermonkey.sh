@@ -13,7 +13,7 @@ source "$REPO_ROOT/sdk/activate.sh"
 
 VERSION="${WASM_POSIX_DEP_VERSION:-$(tr -d '[:space:]' < "$SCRIPT_DIR/VERSION")}"
 SOURCE_URL="${WASM_POSIX_DEP_SOURCE_URL:-https://ftp.mozilla.org/pub/firefox/releases/$VERSION/source/firefox-$VERSION.source.tar.xz}"
-SOURCE_SHA256="${WASM_POSIX_DEP_SOURCE_SHA256:-}"
+SOURCE_SHA256="${WASM_POSIX_DEP_SOURCE_SHA256:-1b034d2117356fda24807a151055132315c6ba58ad2bdf7ec71ee707fac5e028}"
 ARCH="${WASM_POSIX_DEP_TARGET_ARCH:-wasm32}"
 
 if [ "$ARCH" != "wasm32" ]; then
@@ -22,11 +22,16 @@ if [ "$ARCH" != "wasm32" ]; then
 fi
 
 SYSROOT="${WASM_POSIX_SYSROOT:-$REPO_ROOT/sysroot}"
-BIN_DIR="$SCRIPT_DIR/bin"
-DOWNLOAD_DIR="$SCRIPT_DIR/downloads"
-SRC_PARENT="$SCRIPT_DIR/source"
-OBJ_DIR="$SCRIPT_DIR/obj-wasm32"
-MOZCONFIG_PATH="$SCRIPT_DIR/mozconfig-wasm32"
+WORK_DIR="${WASM_POSIX_DEP_WORK_DIR:-$SCRIPT_DIR}"
+if [ -n "${WASM_POSIX_DEP_OUT_DIR:-}" ]; then
+    BIN_DIR="$WORK_DIR/bin"
+else
+    BIN_DIR="$SCRIPT_DIR/bin"
+fi
+DOWNLOAD_DIR="$WORK_DIR/downloads"
+SRC_PARENT="$WORK_DIR/source"
+OBJ_DIR="$WORK_DIR/obj-wasm32"
+MOZCONFIG_PATH="$WORK_DIR/mozconfig-wasm32"
 HOST_OS="$(uname -s)"
 MACOS_SDK_DIR="${WASM_POSIX_MACOS_SDK_DIR:-}"
 
@@ -51,6 +56,18 @@ fi
 if [ ! -f "$SYSROOT/lib/libc.a" ]; then
     echo "ERROR: sysroot not found at $SYSROOT. Run 'bash build.sh' first." >&2
     exit 1
+fi
+
+if [ -n "${WASM_POSIX_DEP_OUT_DIR:-}" ]; then
+    BASE_SYSROOT="$SYSROOT"
+    SYSROOT="$WORK_DIR/sysroot"
+    if [ ! -f "$SYSROOT/lib/libc.a" ]; then
+        echo "==> Copying sysroot into package work directory..."
+        rm -rf "$SYSROOT"
+        mkdir -p "$SYSROOT"
+        cp -R "$BASE_SYSROOT/." "$SYSROOT"
+    fi
+    export WASM_POSIX_SYSROOT="$SYSROOT"
 fi
 
 for required_tool in python3 rustc cargo cbindgen node curl make; do
@@ -128,7 +145,7 @@ ln -sf "$ZLIB_PREFIX/lib/libz.a" "$SYSROOT/lib/libz.a"
 rm -rf "$SYSROOT/include/c++/v1"
 ln -sfn "$LIBCXX_PREFIX/include/c++/v1" "$SYSROOT/include/c++/v1"
 
-mkdir -p "$BIN_DIR" "$DOWNLOAD_DIR" "$SRC_PARENT"
+mkdir -p "$BIN_DIR" "$DOWNLOAD_DIR" "$SRC_PARENT" "$WORK_DIR"
 
 find_mach_dir() {
     local mach_path
@@ -277,7 +294,7 @@ if [ -n "$MACOS_SDK_DIR" ]; then
 fi
 
 export MOZCONFIG="$MOZCONFIG_PATH"
-export MOZBUILD_STATE_PATH="$SCRIPT_DIR/.mozbuild"
+export MOZBUILD_STATE_PATH="$WORK_DIR/.mozbuild"
 export MACH_BUILD_PYTHON_NATIVE_PACKAGE_SOURCE=system
 
 TARGET_OS_DEFINES="${WASM_POSIX_TARGET_OS_DEFINES:--D__linux__=1 -D__unix__=1}"
@@ -357,8 +374,21 @@ cp "$BIN_DIR/js.wasm" "$BIN_DIR/node.wasm"
 NODE_SIZE="$(wc -c < "$BIN_DIR/node.wasm" | tr -d ' ')"
 echo "==> SpiderMonkey Node-compatible runtime staged: $BIN_DIR/node.wasm ($NODE_SIZE bytes)"
 
-# shellcheck source=/dev/null
-source "$REPO_ROOT/scripts/install-local-binary.sh"
-WASM_POSIX_INSTALL_FORK_INSTRUMENTATION=disabled install_local_binary spidermonkey "$BIN_DIR/js.wasm"
-WASM_POSIX_INSTALL_FORK_INSTRUMENTATION=disabled install_local_binary spidermonkey-node "$BIN_DIR/node.wasm"
-WASM_POSIX_INSTALL_FORK_INSTRUMENTATION=disabled install_local_binary node "$BIN_DIR/node.wasm"
+if [ -n "${WASM_POSIX_DEP_OUT_DIR:-}" ]; then
+    source "$REPO_ROOT/scripts/wasm-artifact-guards.sh"
+    wasm_require_no_legacy_asyncify "$BIN_DIR/js.wasm"
+    wasm_require_no_fork_instrumentation "$BIN_DIR/js.wasm"
+    wasm_require_no_legacy_asyncify "$BIN_DIR/node.wasm"
+    wasm_require_no_fork_instrumentation "$BIN_DIR/node.wasm"
+    rm -rf "$WASM_POSIX_DEP_OUT_DIR"
+    mkdir -p "$WASM_POSIX_DEP_OUT_DIR"
+    cp "$BIN_DIR/js.wasm" "$WASM_POSIX_DEP_OUT_DIR/js.wasm"
+    cp "$BIN_DIR/node.wasm" "$WASM_POSIX_DEP_OUT_DIR/node.wasm"
+    echo "==> Installed SpiderMonkey outputs to $WASM_POSIX_DEP_OUT_DIR"
+else
+    # shellcheck source=/dev/null
+    source "$REPO_ROOT/scripts/install-local-binary.sh"
+    WASM_POSIX_INSTALL_FORK_INSTRUMENTATION=disabled install_local_binary spidermonkey "$BIN_DIR/js.wasm"
+    WASM_POSIX_INSTALL_FORK_INSTRUMENTATION=disabled install_local_binary spidermonkey-node "$BIN_DIR/node.wasm"
+    WASM_POSIX_INSTALL_FORK_INSTRUMENTATION=disabled install_local_binary node "$BIN_DIR/node.wasm"
+fi

@@ -11,7 +11,7 @@ set -euo pipefail
 #   1. Host build: generates import_executables.cmake (native helper programs)
 #   2. Cross build: uses CMake toolchain file for wasm32 or wasm64
 
-MARIADB_VERSION="${MARIADB_VERSION:-10.5.28}"
+MARIADB_VERSION="${WASM_POSIX_DEP_VERSION:-${MARIADB_VERSION:-10.5.28}}"
 MARIADB_MAJOR="10.5"
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -19,9 +19,14 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
 # Worktree-local SDK on PATH (no global npm link required).
 # shellcheck source=/dev/null
 source "$REPO_ROOT/sdk/activate.sh"
-SRC_DIR="$SCRIPT_DIR/mariadb-src"
-HOST_BUILD_DIR="$SCRIPT_DIR/mariadb-host-build"
+WORK_DIR="${WASM_POSIX_DEP_WORK_DIR:-$SCRIPT_DIR}"
+DOWNLOAD_DIR="$WORK_DIR/downloads"
+SRC_DIR="$WORK_DIR/mariadb-src"
+HOST_BUILD_DIR="$WORK_DIR/mariadb-host-build"
 GLUE_DIR="$REPO_ROOT/libc/glue"
+MARIADB_SOURCE_URL="${WASM_POSIX_DEP_SOURCE_URL:-https://archive.mariadb.org/mariadb-${MARIADB_VERSION}/source/mariadb-${MARIADB_VERSION}.tar.gz}"
+MARIADB_SOURCE_SHA256="${WASM_POSIX_DEP_SOURCE_SHA256:-0b5070208da0116640f20bd085f1136527f998cc23268715bcbf352e7b7f3cc1}"
+SOURCE_MARKER="$SRC_DIR/.kandelo-source"
 
 # Default to xtask resolver's WASM_POSIX_DEP_TARGET_ARCH (set per
 # manifest arch at build-deps time); fall back to wasm32 outside the
@@ -40,8 +45,8 @@ while [ $# -gt 0 ]; do
 done
 
 if [ "$WASM_ARCH" = "wasm64" ]; then
-    CROSS_BUILD_DIR="$SCRIPT_DIR/mariadb-cross-build-64"
-    INSTALL_DIR="$SCRIPT_DIR/mariadb-install-64"
+    CROSS_BUILD_DIR="$WORK_DIR/mariadb-cross-build-64"
+    INSTALL_DIR="$WORK_DIR/mariadb-install-64"
     TOOLCHAIN_FILE="$SCRIPT_DIR/wasm64-posix-toolchain.cmake"
     SYSROOT="${WASM_POSIX_SYSROOT:-$REPO_ROOT/sysroot64}"
     WASM_TARGET="wasm64-unknown-unknown"
@@ -49,13 +54,26 @@ if [ "$WASM_ARCH" = "wasm64" ]; then
     # in table lookups). Use -O1 until the LLVM wasm64 backend matures.
     : "${MARIADB_OPT_LEVEL:=-O1}"
 else
-    CROSS_BUILD_DIR="$SCRIPT_DIR/mariadb-cross-build"
-    INSTALL_DIR="$SCRIPT_DIR/mariadb-install"
+    CROSS_BUILD_DIR="$WORK_DIR/mariadb-cross-build"
+    INSTALL_DIR="$WORK_DIR/mariadb-install"
     TOOLCHAIN_FILE="$SCRIPT_DIR/wasm32-posix-toolchain.cmake"
     SYSROOT="${WASM_POSIX_SYSROOT:-$REPO_ROOT/sysroot}"
     WASM_TARGET="wasm32-unknown-unknown"
 fi
 export WASM_POSIX_SYSROOT="$SYSROOT"
+
+sha256_file() {
+    python3 - "$1" <<'PY'
+import hashlib
+import sys
+
+h = hashlib.sha256()
+with open(sys.argv[1], "rb") as f:
+    for chunk in iter(lambda: f.read(1024 * 1024), b""):
+        h.update(chunk)
+print(h.hexdigest())
+PY
+}
 
 NPROC="$(sysctl -n hw.ncpu 2>/dev/null || nproc)"
 HOST_HELPERS=(
@@ -84,6 +102,18 @@ if [ ! -f "$SYSROOT/lib/libc.a" ]; then
     exit 1
 fi
 
+if [ -n "${WASM_POSIX_DEP_OUT_DIR:-}" ]; then
+    BASE_SYSROOT="$SYSROOT"
+    SYSROOT="$WORK_DIR/sysroot"
+    if [ ! -f "$SYSROOT/lib/libc.a" ]; then
+        echo "==> Copying sysroot into package work directory..."
+        rm -rf "$SYSROOT"
+        mkdir -p "$SYSROOT"
+        cp -R "$BASE_SYSROOT/." "$SYSROOT"
+    fi
+    export WASM_POSIX_SYSROOT="$SYSROOT"
+fi
+
 if [ ! -f "$TOOLCHAIN_FILE" ]; then
     echo "ERROR: Toolchain file not found at $TOOLCHAIN_FILE" >&2
     exit 1
@@ -101,14 +131,30 @@ if ! command -v bison &>/dev/null; then
 fi
 
 # --- Download MariaDB source ---
-if [ ! -d "$SRC_DIR" ]; then
+mkdir -p "$DOWNLOAD_DIR"
+TARBALL="mariadb-${MARIADB_VERSION}.tar.gz"
+ARCHIVE="$DOWNLOAD_DIR/$TARBALL"
+if [ ! -f "$ARCHIVE" ]; then
     echo "==> Downloading MariaDB $MARIADB_VERSION..."
-    TARBALL="mariadb-${MARIADB_VERSION}.tar.gz"
-    URL="https://archive.mariadb.org/mariadb-${MARIADB_VERSION}/source/${TARBALL}"
-    curl --retry 10 --retry-delay 5 --retry-max-time 300 --retry-all-errors -fsSL "$URL" -o "/tmp/$TARBALL"
+    curl --retry 10 --retry-delay 5 --retry-max-time 300 --retry-all-errors -fsSL "$MARIADB_SOURCE_URL" -o "$ARCHIVE"
+fi
+
+if [ -n "$MARIADB_SOURCE_SHA256" ]; then
+    actual_sha="$(sha256_file "$ARCHIVE")"
+    if [ "$actual_sha" != "$MARIADB_SOURCE_SHA256" ]; then
+        echo "ERROR: source SHA256 mismatch for $ARCHIVE" >&2
+        echo "  expected: $MARIADB_SOURCE_SHA256" >&2
+        echo "  actual:   $actual_sha" >&2
+        exit 1
+    fi
+fi
+
+if [ ! -d "$SRC_DIR" ] || [ ! -f "$SOURCE_MARKER" ] || [ "$(cat "$SOURCE_MARKER")" != "$MARIADB_VERSION $MARIADB_SOURCE_SHA256" ]; then
+    echo "==> Extracting MariaDB $MARIADB_VERSION..."
+    rm -rf "$SRC_DIR"
     mkdir -p "$SRC_DIR"
-    tar xzf "/tmp/$TARBALL" -C "$SRC_DIR" --strip-components=1
-    rm "/tmp/$TARBALL"
+    tar xzf "$ARCHIVE" -C "$SRC_DIR" --strip-components=1
+    printf '%s %s\n' "$MARIADB_VERSION" "$MARIADB_SOURCE_SHA256" > "$SOURCE_MARKER"
     echo "==> Source extracted to $SRC_DIR"
 fi
 
@@ -268,9 +314,9 @@ fi
 # below) and try to link a wasm32 archive into a wasm64 binary, dying
 # with: "wasm32 object file can't be linked in wasm64 mode".
 if [ "$WASM_ARCH" = "wasm64" ]; then
-    PCRE2_BUILD="$SCRIPT_DIR/pcre2-wasm-build-64"
+    PCRE2_BUILD="$WORK_DIR/pcre2-wasm-build-64"
 else
-    PCRE2_BUILD="$SCRIPT_DIR/pcre2-wasm-build"
+    PCRE2_BUILD="$WORK_DIR/pcre2-wasm-build"
 fi
 if [ ! -f "$PCRE2_BUILD/libpcre2-8.a" ]; then
     echo "==> Building PCRE2 for $WASM_ARCH from source at $PCRE2_SOURCE_DIR..."
@@ -317,9 +363,9 @@ echo "==> PCRE2 installed to sysroot from cached source"
 WASM_COMPILE_FLAGS="--target=$WASM_TARGET -matomics -mbulk-memory -mexception-handling -mllvm -wasm-enable-sjlj -fno-trapping-math --sysroot=$SYSROOT"
 
 if [ "$WASM_ARCH" = "wasm64" ]; then
-    GLUE_OBJ_DIR="$SCRIPT_DIR/mariadb-glue-objs-64"
+    GLUE_OBJ_DIR="$WORK_DIR/mariadb-glue-objs-64"
 else
-    GLUE_OBJ_DIR="$SCRIPT_DIR/mariadb-glue-objs"
+    GLUE_OBJ_DIR="$WORK_DIR/mariadb-glue-objs"
 fi
 mkdir -p "$GLUE_OBJ_DIR"
 
@@ -349,6 +395,7 @@ cmake "$SRC_DIR" \
     -DCMAKE_TOOLCHAIN_FILE="$TOOLCHAIN_FILE" \
     -DCMAKE_INSTALL_PREFIX="$INSTALL_DIR" \
     -DIMPORT_EXECUTABLES="$HOST_BUILD_DIR/import_executables.cmake" \
+    -DKANDELO_GLUE_OBJ_DIR="$GLUE_OBJ_DIR" \
     \
     -DCMAKE_BUILD_TYPE=Release \
     -DCMAKE_C_FLAGS_RELEASE="${MARIADB_OPT_LEVEL:--O2} -DNDEBUG" \
@@ -508,11 +555,26 @@ else
     echo "WARNING: mysql-test directory not found in source tree" >&2
 fi
 
-# Install into local-binaries/ so the resolver picks the freshly-built
-# binary over the fetched release. Use $INSTALL_DIR (set per WASM_ARCH
-# above) — hard-coding mariadb-install/ lost the wasm64 build's output
-# at mariadb-install-64/, which then made build-mariadb-vfs.sh's wasm64
-# branch fail with "mariadbd.wasm not found".
-source "$REPO_ROOT/scripts/install-local-binary.sh"
-WASM_POSIX_DEP_TARGET_ARCH="$WASM_ARCH" install_local_binary mariadb "$INSTALL_DIR/bin/mariadbd.wasm" mariadbd.wasm
-[ -f "$INSTALL_DIR/bin/mysqltest.wasm" ] && WASM_POSIX_DEP_TARGET_ARCH="$WASM_ARCH" install_local_binary mariadb "$INSTALL_DIR/bin/mysqltest.wasm" mysqltest.wasm || true
+if [ -n "${WASM_POSIX_DEP_OUT_DIR:-}" ]; then
+    source "$REPO_ROOT/scripts/wasm-artifact-guards.sh"
+    wasm_require_no_legacy_asyncify "$INSTALL_DIR/bin/mariadbd.wasm"
+    wasm_require_fork_instrumentation_if_needed "$INSTALL_DIR/bin/mariadbd.wasm"
+    rm -rf "$WASM_POSIX_DEP_OUT_DIR"
+    mkdir -p "$WASM_POSIX_DEP_OUT_DIR"
+    cp "$INSTALL_DIR/bin/mariadbd.wasm" "$WASM_POSIX_DEP_OUT_DIR/mariadbd.wasm"
+    if [ -f "$INSTALL_DIR/bin/mysqltest.wasm" ]; then
+        wasm_require_no_legacy_asyncify "$INSTALL_DIR/bin/mysqltest.wasm"
+        wasm_require_fork_instrumentation_if_needed "$INSTALL_DIR/bin/mysqltest.wasm"
+        cp "$INSTALL_DIR/bin/mysqltest.wasm" "$WASM_POSIX_DEP_OUT_DIR/mysqltest.wasm"
+    fi
+    echo "==> Installed MariaDB outputs to $WASM_POSIX_DEP_OUT_DIR"
+else
+    # Install into local-binaries/ so the resolver picks the freshly-built
+    # binary over the fetched release. Use $INSTALL_DIR (set per WASM_ARCH
+    # above) — hard-coding mariadb-install/ lost the wasm64 build's output
+    # at mariadb-install-64/, which then made build-mariadb-vfs.sh's wasm64
+    # branch fail with "mariadbd.wasm not found".
+    source "$REPO_ROOT/scripts/install-local-binary.sh"
+    WASM_POSIX_DEP_TARGET_ARCH="$WASM_ARCH" install_local_binary mariadb "$INSTALL_DIR/bin/mariadbd.wasm" mariadbd.wasm
+    [ -f "$INSTALL_DIR/bin/mysqltest.wasm" ] && WASM_POSIX_DEP_TARGET_ARCH="$WASM_ARCH" install_local_binary mariadb "$INSTALL_DIR/bin/mysqltest.wasm" mysqltest.wasm || true
+fi

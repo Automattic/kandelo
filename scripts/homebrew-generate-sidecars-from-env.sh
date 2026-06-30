@@ -119,9 +119,17 @@ deps = []
 for dep in package_toml.get("depends_on", []):
     if "@" in dep:
         name, version = dep.split("@", 1)
-        deps.append({"name": name, "version": version})
+        entry = {"name": name, "version": version}
     else:
-        deps.append({"name": dep})
+        name = dep
+        entry = {"name": dep}
+    dep_package_toml = pathlib.Path(os.environ["KANDELO_ROOT"]) / "packages" / "registry" / name / "package.toml"
+    if dep_package_toml.exists():
+        with dep_package_toml.open("rb") as f:
+            dep_package = tomllib.load(f)
+        if dep_package.get("kind") == "source":
+            continue
+    deps.append(entry)
 
 version = str(bottle_formula["pkg_version"])
 package_kind = package_toml.get("kind", "program")
