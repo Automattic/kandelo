@@ -340,75 +340,90 @@ jobs:
             bash scripts/dev-shell.sh bash "$sidecar_script"
 
             browser_gallery_root=""
-            if [ "$KANDELO_HOMEBREW_FORMULA" = "hello" ] && [ "$KANDELO_HOMEBREW_ARCH" = "wasm32" ]; then
-              browser_vfs_root="$RUNNER_TEMP/homebrew-browser-vfs"
+            if [ "$KANDELO_HOMEBREW_ARCH" = "wasm32" ]; then
+              browser_result_dir="$RUNNER_TEMP/homebrew-browser-smoke"
               browser_gallery_root="$RUNNER_TEMP/homebrew-browser-gallery"
-              browser_public_dir="$GITHUB_WORKSPACE/kandelo/apps/browser-demos/public/__kandelo-smoke"
               browser_port="${KANDELO_PLAYWRIGHT_PORT:-5401}"
-              browser_vfs="$browser_vfs_root/homebrew-hello.vfs.zst"
-              browser_report="$browser_vfs_root/homebrew-hello.vfs-report.json"
-              browser_url="http://127.0.0.1:${browser_port}/__kandelo-smoke/homebrew-hello.vfs.zst"
-              mkdir -p "$browser_vfs_root" "$browser_gallery_root" "$browser_public_dir"
-
-              bash scripts/dev-shell.sh npx tsx images/vfs/scripts/build-homebrew-vfs-image.ts \
-                --metadata "$sidecar_root/Kandelo/metadata.json" \
-                --tap-root "$sidecar_root" \
-                --package hello \
-                --arch wasm32 \
-                --runtime node \
-                --out "$browser_vfs" \
-                --report "$browser_report" \
-                --bottle-cache "$RUNNER_TEMP/homebrew-bottle-cache" \
-                --write-profile
-              cp "$browser_vfs" "$browser_public_dir/homebrew-hello.vfs.zst"
+              mkdir -p "$browser_result_dir" "$browser_gallery_root"
 
               (
                 cd apps/browser-demos
                 npx playwright install chromium --with-deps
-                KANDELO_PLAYWRIGHT_PORT="$browser_port" \
-                KANDELO_BROWSER_HELLO_VFS_URL="$browser_url" \
-                npx playwright test test/kandelo-homebrew.spec.ts \
-                  --project=chromium \
-                  --grep "Homebrew hello VFS image boots"
               )
 
-              export KANDELO_HOMEBREW_BROWSER_SMOKE_STATUS="success"
-              export KANDELO_HOMEBREW_VFS_IMAGE="$browser_vfs"
-              export KANDELO_HOMEBREW_VFS_REPORT="$browser_report"
-              export KANDELO_HOMEBREW_GALLERY_ROOT="$browser_gallery_root"
-              export KANDELO_HOMEBREW_BROWSER_SMOKE_URL="$browser_url"
-              export KANDELO_HOMEBREW_BROWSER_SMOKE_COMMAND="/home/linuxbrew/.linuxbrew/bin/hello --version"
+              set +e
+              KANDELO_PLAYWRIGHT_PORT="$browser_port" \
+              bash scripts/dev-shell.sh npx tsx scripts/homebrew-package-browser-smoke.ts \
+                --tap-root "$sidecar_root" \
+                --formula "$KANDELO_HOMEBREW_FORMULA" \
+                --arch wasm32 \
+                --result-dir "$browser_result_dir" \
+                --bottle-cache "$RUNNER_TEMP/homebrew-bottle-cache" \
+                --port "$browser_port" \
+                --run-id "gha-${KANDELO_HOMEBREW_FORMULA}-${KANDELO_HOMEBREW_ARCH}-${GITHUB_RUN_ID}"
+              browser_smoke_exit=$?
+              set -e
+
+              if [ ! -f "$browser_result_dir/summary.json" ]; then
+                echo "::error::browser smoke did not produce $browser_result_dir/summary.json"
+                exit 1
+              fi
+
+              export KANDELO_HOMEBREW_BROWSER_SMOKE_SUMMARY="$browser_result_dir/summary.json"
 
               rm -rf "$sidecar_root"
               mkdir -p "$sidecar_root"
               bash scripts/dev-shell.sh bash "$sidecar_script"
 
-              bash scripts/homebrew-create-browser-gallery.sh \
-                --metadata "$sidecar_root/Kandelo/metadata.json" \
-                --image "$browser_vfs" \
-                --report "$browser_report" \
-                --out "$browser_gallery_root" \
-                --formula hello \
-                --title "GNU hello Homebrew VFS" \
-                --description "GNU hello poured from the published Automattic/kandelo-homebrew bottle into a browser-smoked Kandelo VFS image."
-              node scripts/validate-software-gallery.mjs \
-                --gallery "$browser_gallery_root/gallery.json" \
-                --index "$browser_gallery_root/index.toml"
+              if [ "$browser_smoke_exit" -ne 0 ]; then
+                echo "::warning::browser smoke exited $browser_smoke_exit; final sidecars record the browser outcome from $browser_result_dir/summary.json"
+              fi
 
-              if [ "$KANDELO_HOMEBREW_DRY_RUN" != "true" ]; then
-                if ! gh release view "$KANDELO_HOMEBREW_RELEASE_TAG" --repo "$KANDELO_HOMEBREW_TAP_REPOSITORY" >/dev/null 2>&1; then
-                  gh release create "$KANDELO_HOMEBREW_RELEASE_TAG" \
-                    --repo "$KANDELO_HOMEBREW_TAP_REPOSITORY" \
-                    --target "$(git -C "$GITHUB_WORKSPACE/tap" rev-parse HEAD)" \
-                    --title "$KANDELO_HOMEBREW_RELEASE_TAG" \
-                    --notes "Kandelo Homebrew bottle sidecars and browser gallery assets."
+              if jq -e \
+                --arg formula "$KANDELO_HOMEBREW_FORMULA" \
+                --arg arch "$KANDELO_HOMEBREW_ARCH" \
+                '.packages[] | select(.formula == $formula and .arch == $arch and .status == "success")' \
+                "$browser_result_dir/summary.json" >/dev/null; then
+                browser_vfs="$(jq -r \
+                  --arg formula "$KANDELO_HOMEBREW_FORMULA" \
+                  --arg arch "$KANDELO_HOMEBREW_ARCH" \
+                  '.packages[] | select(.formula == $formula and .arch == $arch) | .vfs_image' \
+                  "$browser_result_dir/summary.json")"
+                browser_report="$(jq -r \
+                  --arg formula "$KANDELO_HOMEBREW_FORMULA" \
+                  --arg arch "$KANDELO_HOMEBREW_ARCH" \
+                  '.packages[] | select(.formula == $formula and .arch == $arch) | .vfs_report' \
+                  "$browser_result_dir/summary.json")"
+
+                if [ "$KANDELO_HOMEBREW_FORMULA" = "hello" ]; then
+                  bash scripts/homebrew-create-browser-gallery.sh \
+                    --metadata "$sidecar_root/Kandelo/metadata.json" \
+                    --image "$browser_vfs" \
+                    --report "$browser_report" \
+                    --out "$browser_gallery_root" \
+                    --formula hello \
+                    --title "GNU hello Homebrew VFS" \
+                    --description "GNU hello poured from the published Automattic/kandelo-homebrew bottle into a browser-smoked Kandelo VFS image."
+                  node scripts/validate-software-gallery.mjs \
+                    --gallery "$browser_gallery_root/gallery.json" \
+                    --index "$browser_gallery_root/index.toml"
+
+                  if [ "$KANDELO_HOMEBREW_DRY_RUN" != "true" ]; then
+                    if ! gh release view "$KANDELO_HOMEBREW_RELEASE_TAG" --repo "$KANDELO_HOMEBREW_TAP_REPOSITORY" >/dev/null 2>&1; then
+                      gh release create "$KANDELO_HOMEBREW_RELEASE_TAG" \
+                        --repo "$KANDELO_HOMEBREW_TAP_REPOSITORY" \
+                        --target "$(git -C "$GITHUB_WORKSPACE/tap" rev-parse HEAD)" \
+                        --title "$KANDELO_HOMEBREW_RELEASE_TAG" \
+                        --notes "Kandelo Homebrew bottle sidecars and browser gallery assets."
+                    fi
+                    gh release upload "$KANDELO_HOMEBREW_RELEASE_TAG" \
+                      "$browser_gallery_root/gallery.json" \
+                      "$browser_gallery_root/index.toml" \
+                      "$browser_gallery_root"/*.tar.zst \
+                      --repo "$KANDELO_HOMEBREW_TAP_REPOSITORY" \
+                      --clobber
+                  fi
                 fi
-                gh release upload "$KANDELO_HOMEBREW_RELEASE_TAG" \
-                  "$browser_gallery_root/gallery.json" \
-                  "$browser_gallery_root/index.toml" \
-                  "$browser_gallery_root"/*.tar.zst \
-                  --repo "$KANDELO_HOMEBREW_TAP_REPOSITORY" \
-                  --clobber
               fi
             fi
 
@@ -460,6 +475,7 @@ jobs:
           path: |
             ${{ runner.temp }}/homebrew-bottle/**
             ${{ runner.temp }}/homebrew-browser-gallery/**
+            ${{ runner.temp }}/homebrew-browser-smoke/**
             ${{ runner.temp }}/homebrew-browser-vfs/**
             ${{ runner.temp }}/homebrew-sidecars/**
             ${{ runner.temp }}/homebrew-*.txt

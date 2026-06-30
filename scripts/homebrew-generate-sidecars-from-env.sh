@@ -108,88 +108,190 @@ for dep in package_toml.get("depends_on", []):
         deps.append({"name": dep})
 
 version = str(bottle_formula["pkg_version"])
-browser_smoke_status = os.environ.get("KANDELO_HOMEBREW_BROWSER_SMOKE_STATUS", "skipped")
-if browser_smoke_status not in {"success", "skipped"}:
-    raise SystemExit(f"invalid KANDELO_HOMEBREW_BROWSER_SMOKE_STATUS={browser_smoke_status!r}")
+package_kind = package_toml.get("kind", "program")
+if package_kind not in {"library", "program"}:
+    raise SystemExit(f"unsupported Homebrew sidecar package kind for {formula}: {package_kind!r}")
+
+def package_links_and_env():
+    if package_kind == "library":
+        outputs = package_toml.get("outputs", {})
+        links = []
+        for key in ("headers", "libs", "pkgconfig"):
+            for rel in sorted(outputs.get(key, [])):
+                links.append({
+                    "type": "file",
+                    "source": rel,
+                    "target": rel,
+                    "mode": "0644",
+                })
+        if not links:
+            raise SystemExit(f"library formula {formula} has no declared package outputs to link")
+        return links, {}
+
+    return [
+        {"type": "symlink", "source": f"bin/{formula}", "target": f"bin/{formula}"}
+    ], {"PATH_prepend": ["bin"]}
+
+def package_fork_instrumentation():
+    outputs = package_toml.get("outputs", [])
+    if isinstance(outputs, list):
+        for output in outputs:
+            if output.get("name") == formula:
+                return output.get("fork_instrumentation", "not-required")
+    return "not-required"
+
+def default_node_smoke_text():
+    if package_kind == "library":
+        return (
+            f"Formula test compiled packages/registry/{formula}/test/{formula}_basic.c "
+            "against the installed keg and ran the resulting Wasm through "
+            "node --import tsx/esm examples/run-example.ts"
+        )
+    if formula == "bzip2":
+        return (
+            "Formula test ran bzip2 --help through "
+            "node --import tsx/esm examples/run-example.ts"
+        )
+    return (
+        f"Formula test ran {formula} --version through "
+        "node --import tsx/esm examples/run-example.ts"
+    )
+
+def skipped_outcome(name, reason):
+    return {
+        "name": name,
+        "status": "skipped",
+        "passed": [],
+        "failed": [],
+        "skipped": [reason],
+        "skip_reason": reason,
+    }
+
+def failed_outcome(name, reason):
+    return {
+        "name": name,
+        "status": "failed",
+        "passed": [],
+        "failed": [reason],
+        "skipped": [],
+    }
+
+def browser_outcome_from_summary(summary_path, formula, arch):
+    with pathlib.Path(summary_path).open("r", encoding="utf-8") as f:
+        summary = json.load(f)
+    packages = summary.get("packages")
+    if not isinstance(packages, list):
+        raise SystemExit(f"browser smoke summary lacks packages list: {summary_path}")
+    matches = [
+        package for package in packages
+        if package.get("formula") == formula and package.get("arch") == arch
+    ]
+    if len(matches) != 1:
+        raise SystemExit(
+            f"browser smoke summary expected one {formula} {arch} entry, got {len(matches)}"
+        )
+    package = matches[0]
+    status = package.get("status")
+    if status not in {"success", "failed", "skipped"}:
+        raise SystemExit(f"invalid browser smoke summary status for {formula} {arch}: {status!r}")
+
+    def strings(key):
+        value = package.get(key, [])
+        if not isinstance(value, list):
+            raise SystemExit(f"browser smoke summary {formula} {arch} {key} must be a list")
+        out = []
+        for entry in value:
+            text = str(entry)
+            if text:
+                out.append(text)
+        return out
+
+    passed = strings("passed")
+    failed = strings("failed")
+    skipped = strings("skipped")
+    if status == "success" and not passed:
+        raise SystemExit(f"browser smoke summary success for {formula} {arch} has no passed evidence")
+    if status == "failed" and not failed:
+        failed = [f"browser smoke failed for {formula} {arch}; see {summary_path}"]
+    if status == "skipped" and not skipped:
+        skipped = [package.get("skip_reason") or f"browser smoke skipped for {formula} {arch}; see {summary_path}"]
+
+    outcome = {
+        "name": "browser_smoke",
+        "status": status,
+        "passed": passed,
+        "failed": failed,
+        "skipped": skipped,
+    }
+    if status == "skipped":
+        outcome["skip_reason"] = package.get("skip_reason") or skipped[0]
+    return status, outcome
+
+links, link_env = package_links_and_env()
+browser_summary = os.environ.get("KANDELO_HOMEBREW_BROWSER_SMOKE_SUMMARY", "")
+browser_smoke_outcome = None
+if browser_summary:
+    browser_smoke_status, browser_smoke_outcome = browser_outcome_from_summary(
+        browser_summary,
+        formula,
+        arch,
+    )
+else:
+    browser_smoke_status = os.environ.get("KANDELO_HOMEBREW_BROWSER_SMOKE_STATUS", "skipped")
+    if browser_smoke_status not in {"success", "skipped", "failed"}:
+        raise SystemExit(f"invalid KANDELO_HOMEBREW_BROWSER_SMOKE_STATUS={browser_smoke_status!r}")
 browser_compatible = browser_smoke_status == "success"
 if browser_compatible and arch != "wasm32":
     raise SystemExit("browser smoke can only mark wasm32 bottles browser-compatible")
 runtime_support = ["node", "browser"] if browser_compatible else ["node"]
 
-browser_smoke_outcome = {
-    "name": "browser_smoke",
-    "status": "skipped",
-    "passed": [],
-    "failed": [],
-    "skipped": ["browser_compatible is false for this bottle"],
-    "skip_reason": "No successful browser VFS smoke was recorded for this bottle.",
-}
-vfs_image_outcome = {
-    "name": "homebrew_vfs_image",
-    "status": "skipped",
-    "passed": [],
-    "failed": [],
-    "skipped": ["precomposed browser VFS image was not built"],
-    "skip_reason": "Browser-compatible gallery publication requires kd-8ho.10 browser smoke.",
-}
-gallery_outcome = {
-    "name": "browser_gallery",
-    "status": "skipped",
-    "passed": [],
-    "failed": [],
-    "skipped": ["browser gallery assets were not generated"],
-    "skip_reason": "Gallery assets require a successful browser VFS smoke.",
-}
-if browser_compatible:
+if browser_smoke_outcome is None:
+    browser_reason = os.environ.get(
+        "KANDELO_HOMEBREW_BROWSER_SMOKE_REASON",
+        f"No successful browser VFS smoke was recorded for {formula} {arch}.",
+    )
+    browser_smoke_outcome = skipped_outcome("browser_smoke", browser_reason)
+    if browser_smoke_status == "failed":
+        browser_smoke_outcome = failed_outcome("browser_smoke", browser_reason)
+if browser_compatible and not browser_summary:
     vfs_image = os.environ.get("KANDELO_HOMEBREW_VFS_IMAGE", "")
     vfs_report = os.environ.get("KANDELO_HOMEBREW_VFS_REPORT", "")
-    gallery_root = os.environ.get("KANDELO_HOMEBREW_GALLERY_ROOT", "")
     browser_url = os.environ.get("KANDELO_HOMEBREW_BROWSER_SMOKE_URL", "")
     browser_command = os.environ.get(
         "KANDELO_HOMEBREW_BROWSER_SMOKE_COMMAND",
-        "/home/linuxbrew/.linuxbrew/bin/hello --version",
+        f"/home/linuxbrew/.linuxbrew/bin/{formula} --version",
     )
     missing = [
         name for name, value in [
             ("KANDELO_HOMEBREW_VFS_IMAGE", vfs_image),
             ("KANDELO_HOMEBREW_VFS_REPORT", vfs_report),
-            ("KANDELO_HOMEBREW_GALLERY_ROOT", gallery_root),
             ("KANDELO_HOMEBREW_BROWSER_SMOKE_URL", browser_url),
         ] if not value
     ]
     if missing:
         raise SystemExit("browser smoke success is missing env: " + ", ".join(missing))
-    browser_smoke_outcome = {
-        "name": "browser_smoke",
-        "status": "success",
-        "passed": [
-            f"Playwright chromium launched {browser_url}",
-            f"terminal command passed: {browser_command}",
-        ],
-        "failed": [],
-        "skipped": [],
-    }
-    vfs_image_outcome = {
-        "name": "homebrew_vfs_image",
-        "status": "success",
-        "passed": [
-            f"built {vfs_image}",
-            f"wrote report {vfs_report}",
-        ],
-        "failed": [],
-        "skipped": [],
-    }
-    gallery_outcome = {
-        "name": "browser_gallery",
-        "status": "success",
-        "passed": [
+    browser_passed = [
+        f"built precomposed VFS image {vfs_image}",
+        f"wrote VFS report {vfs_report}",
+        f"Playwright chromium launched {browser_url}",
+        f"terminal command passed: {browser_command}",
+    ]
+    gallery_root = os.environ.get("KANDELO_HOMEBREW_GALLERY_ROOT", "")
+    if gallery_root:
+        browser_passed.extend([
             f"generated {gallery_root}/gallery.json",
             f"generated {gallery_root}/index.toml",
             "scripts/validate-software-gallery.mjs accepted generated gallery assets",
-        ],
+        ])
+    browser_smoke_outcome = {
+        "name": "browser_smoke",
+        "status": "success",
+        "passed": browser_passed,
         "failed": [],
         "skipped": [],
     }
+
+node_smoke_text = os.environ.get("KANDELO_HOMEBREW_NODE_SMOKE_COMMAND", default_node_smoke_text())
 
 manifest = {
     "schema": 1,
@@ -219,7 +321,7 @@ manifest = {
                     "prefix": "/home/linuxbrew/.linuxbrew",
                     "runtime_support": runtime_support,
                     "browser_compatible": browser_compatible,
-                    "fork_instrumentation": "not-required",
+                    "fork_instrumentation": package_fork_instrumentation(),
                     "status": "success",
                     "built_by": os.environ["RUN_URL"],
                     "built_at": os.environ["GENERATED_AT"],
@@ -227,11 +329,9 @@ manifest = {
                     "url": os.environ["KANDELO_HOMEBREW_BOTTLE_URL"],
                     "cache_key_sha": os.environ["CACHE_KEY_SHA"],
                     "payload_root": f"{formula}/{version}",
-                    "links": [
-                        {"type": "symlink", "source": f"bin/{formula}", "target": f"bin/{formula}"}
-                    ],
+                    "links": links,
                     "receipts": [f".brew/{formula}.rb", "INSTALL_RECEIPT.json"],
-                    "env": {"PATH_prepend": ["bin"]},
+                    "env": link_env,
                     "build": {
                         "github_run": os.environ["RUN_URL"],
                         "job": os.environ.get("GITHUB_JOB", "local"),
@@ -260,8 +360,8 @@ manifest = {
                                 "status": "skipped",
                                 "passed": [],
                                 "failed": [],
-                                "skipped": ["brew audit was not part of kd-8ho.5 local verification"],
-                                "skip_reason": "kd-8ho.5 validates the first bottle build and sidecars; tap audit can run in the real tap publication gate.",
+                                "skipped": ["brew audit was not part of this local dry-run verification"],
+                                "skip_reason": "Tap audit can run in the trusted tap publication gate.",
                             },
                             {
                                 "name": "bottle_build",
@@ -278,15 +378,11 @@ manifest = {
                             {
                                 "name": "node_smoke",
                                 "status": "success",
-                                "passed": [
-                                    "Formula test ran hello --version through node --import tsx/esm examples/run-example.ts"
-                                ],
+                                "passed": [node_smoke_text],
                                 "failed": [],
                                 "skipped": [],
                             },
-                            vfs_image_outcome,
                             browser_smoke_outcome,
-                            gallery_outcome,
                         ],
                     },
                 }
