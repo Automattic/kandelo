@@ -4,7 +4,7 @@
  * The runner consumes generated Kandelo/Homebrew sidecars, materializes each
  * requested package into a VFS, and runs a package-specific smoke through
  * NodeKernelHost. Program packages execute their poured binary. SQLite
- * compiles a test-only consumer from the poured headers and static library.
+ * compiles test-only consumers from the poured headers and static libraries.
  */
 import { execFileSync } from "node:child_process";
 import {
@@ -36,7 +36,16 @@ const PREFIX = "/home/linuxbrew/.linuxbrew";
 const CELLAR = `${PREFIX}/Cellar`;
 
 type OutcomeStatus = "pass" | "fail" | "skip";
-type FormulaName = "sqlite" | "bzip2" | "xz";
+type FormulaName =
+  | "sqlite"
+  | "bzip2"
+  | "xz"
+  | "openssl"
+  | "libcxx"
+  | "libxml2"
+  | "libpng"
+  | "libcurl"
+  | "ncurses";
 
 interface CliOptions {
   resultDir: string;
@@ -179,6 +188,18 @@ async function runFormulaSmoke(
       return runProgramVersionSmoke("bzip2", `${PREFIX}/bin/bzip2`, /bzip2/i, built, options, ["--help"]);
     case "xz":
       return runProgramVersionSmoke("xz", `${PREFIX}/bin/xz`, /xz/i, built, options);
+    case "openssl":
+      return runOpenSslSmoke(built, options);
+    case "libcxx":
+      return runLibcxxSmoke(built, options);
+    case "libxml2":
+      return runLibxml2Smoke(built, options);
+    case "libpng":
+      return runLibpngSmoke(built, options);
+    case "libcurl":
+      return runLibcurlSmoke(built, options);
+    case "ncurses":
+      return runNcursesSmoke(built, options);
   }
 }
 
@@ -251,6 +272,282 @@ async function runSqliteSmoke(built: BuiltVfs, options: CliOptions): Promise<str
     throw new Error(`sqlite_basic did not report PASS: ${JSON.stringify(result.stdout)}`);
   }
   return "sqlite_basic linked against poured sqlite keg and reported PASS";
+}
+
+async function runOpenSslSmoke(built: BuiltVfs, options: CliOptions): Promise<string> {
+  const stage = stagePackagePaths(built, options, "openssl", [
+    "include/openssl",
+    "lib/libssl.a",
+    "lib/libcrypto.a",
+  ]);
+  const testSrc = join(repoRoot, "packages", "registry", "openssl", "test", "ssl_basic.c");
+  const outWasm = join(stage, "ssl_basic.wasm");
+  runCompiler(options, "cc", [
+    `-I${join(stage, "include")}`,
+    testSrc,
+    join(stage, "lib", "libssl.a"),
+    join(stage, "lib", "libcrypto.a"),
+    "-ldl",
+    "-o",
+    outWasm,
+  ]);
+
+  const result = await runWasm(new Uint8Array(readFileSync(outWasm)), ["ssl_basic"], built.imageBytes, options);
+  assertRunPassed("ssl_basic", result, "PASS");
+  return "ssl_basic linked against poured openssl keg and reported PASS";
+}
+
+async function runLibcxxSmoke(built: BuiltVfs, options: CliOptions): Promise<string> {
+  const stage = stagePackagePaths(built, options, "libcxx", [
+    "include/c++/v1",
+    "lib/libc++.a",
+    "lib/libc++abi.a",
+  ]);
+  const testSrc = join(stage, "libcxx-smoke.cpp");
+  const outWasm = join(stage, "libcxx-smoke.wasm");
+  writeFileSync(testSrc, `#include <stdexcept>
+#include <string>
+#include <vector>
+#include <cstdio>
+int main() {
+  try {
+    std::vector<std::string> values;
+    values.push_back("kandelo");
+    if (values.size() != 1) throw std::runtime_error("vector failed");
+    throw std::runtime_error(values[0]);
+  } catch (const std::runtime_error& err) {
+    std::printf("libcxx caught %s\\n", err.what());
+    return 0;
+  }
+}
+`);
+
+  runCompiler(options, "c++", [
+    "-std=c++20",
+    "-fexceptions",
+    "-fwasm-exceptions",
+    "-mexception-handling",
+    "-mllvm",
+    "-wasm-enable-sjlj",
+    "-mllvm",
+    "-wasm-use-legacy-eh=false",
+    "-nostdinc++",
+    "-isystem",
+    join(stage, "include", "c++", "v1"),
+    testSrc,
+    join(stage, "lib", "libc++.a"),
+    join(stage, "lib", "libc++abi.a"),
+    "-o",
+    outWasm,
+  ]);
+
+  const result = await runWasm(new Uint8Array(readFileSync(outWasm)), ["libcxx-smoke"], built.imageBytes, options);
+  assertRunPassed("libcxx-smoke", result, "libcxx caught kandelo");
+  return "libcxx consumer linked against poured libcxx keg and caught an exception";
+}
+
+async function runLibxml2Smoke(built: BuiltVfs, options: CliOptions): Promise<string> {
+  const xmlStage = stagePackagePaths(built, options, "libxml2", [
+    "include/libxml",
+    "lib/libxml2.a",
+  ]);
+  const zlibStage = stagePackagePaths(built, options, "zlib", ["lib/libz.a"], "libxml2-zlib");
+  const testSrc = join(repoRoot, "packages", "registry", "libxml2", "test", "libxml2_basic.c");
+  const outWasm = join(xmlStage, "libxml2_basic.wasm");
+  runCompiler(options, "cc", [
+    `-I${join(xmlStage, "include")}`,
+    testSrc,
+    join(xmlStage, "lib", "libxml2.a"),
+    join(zlibStage, "lib", "libz.a"),
+    "-lm",
+    "-o",
+    outWasm,
+  ]);
+
+  const result = await runWasm(new Uint8Array(readFileSync(outWasm)), ["libxml2_basic"], built.imageBytes, options);
+  assertRunPassed("libxml2_basic", result, "PASS");
+  return "libxml2_basic linked against poured libxml2 and zlib kegs and reported PASS";
+}
+
+async function runLibpngSmoke(built: BuiltVfs, options: CliOptions): Promise<string> {
+  const pngStage = stagePackagePaths(built, options, "libpng", [
+    "include/libpng16",
+    "lib/libpng16.a",
+  ]);
+  const zlibStage = stagePackagePaths(built, options, "zlib", ["lib/libz.a"], "libpng-zlib");
+  const testSrc = join(pngStage, "libpng-smoke.c");
+  const outWasm = join(pngStage, "libpng-smoke.wasm");
+  writeFileSync(testSrc, `#include <png.h>
+#include <stdio.h>
+int main(void) {
+  printf("libpng %s ok\\n", png_get_libpng_ver(NULL));
+  return 0;
+}
+`);
+
+  runCompiler(options, "cc", [
+    `-I${join(pngStage, "include", "libpng16")}`,
+    testSrc,
+    join(pngStage, "lib", "libpng16.a"),
+    join(zlibStage, "lib", "libz.a"),
+    "-lm",
+    "-o",
+    outWasm,
+  ]);
+
+  const result = await runWasm(new Uint8Array(readFileSync(outWasm)), ["libpng-smoke"], built.imageBytes, options);
+  assertRunPassed("libpng-smoke", result, "libpng");
+  return "libpng consumer linked against poured libpng and zlib kegs";
+}
+
+async function runLibcurlSmoke(built: BuiltVfs, options: CliOptions): Promise<string> {
+  const curlStage = stagePackagePaths(built, options, "libcurl", [
+    "include/curl",
+    "lib/libcurl.a",
+  ]);
+  const opensslStage = stagePackagePaths(built, options, "openssl", [
+    "include/openssl",
+    "lib/libssl.a",
+    "lib/libcrypto.a",
+  ], "libcurl-openssl");
+  const zlibStage = stagePackagePaths(built, options, "zlib", ["lib/libz.a"], "libcurl-zlib");
+  const testSrc = join(curlStage, "libcurl-smoke.c");
+  const outWasm = join(curlStage, "libcurl-smoke.wasm");
+  writeFileSync(testSrc, `#include <curl/curl.h>
+#include <stdio.h>
+int main(void) {
+  CURLcode rc = curl_global_init(CURL_GLOBAL_DEFAULT);
+  if (rc != CURLE_OK) {
+    printf("curl_global_init failed: %d\\n", (int)rc);
+    return 1;
+  }
+  printf("libcurl %s ok\\n", curl_version());
+  curl_global_cleanup();
+  return 0;
+}
+`);
+
+  runCompiler(options, "cc", [
+    `-I${join(curlStage, "include")}`,
+    `-I${join(opensslStage, "include")}`,
+    testSrc,
+    join(curlStage, "lib", "libcurl.a"),
+    join(opensslStage, "lib", "libssl.a"),
+    join(opensslStage, "lib", "libcrypto.a"),
+    join(zlibStage, "lib", "libz.a"),
+    "-ldl",
+    "-lm",
+    "-o",
+    outWasm,
+  ]);
+
+  const result = await runWasm(new Uint8Array(readFileSync(outWasm)), ["libcurl-smoke"], built.imageBytes, options);
+  assertRunPassed("libcurl-smoke", result, "libcurl");
+  return "libcurl consumer linked against poured libcurl, openssl, and zlib kegs";
+}
+
+async function runNcursesSmoke(built: BuiltVfs, options: CliOptions): Promise<string> {
+  const programBytes = readVfsFile(built.fs, `${PREFIX}/bin/tput`);
+  const programResult = await runWasm(programBytes, ["tput", "-V"], built.imageBytes, options);
+  assertRunPassed("tput -V", programResult, "ncurses");
+
+  const stage = stagePackagePaths(built, options, "ncurses", [
+    "include/ncursesw",
+    "lib/libncursesw.a",
+    "lib/libtinfow.a",
+  ]);
+  const testSrc = join(stage, "ncurses-smoke.c");
+  const outWasm = join(stage, "ncurses-smoke.wasm");
+  writeFileSync(testSrc, `#include <ncursesw/curses.h>
+#include <stdio.h>
+int main(void) {
+  printf("%s\\n", curses_version());
+  return 0;
+}
+`);
+
+  runCompiler(options, "cc", [
+    `-I${join(stage, "include")}`,
+    testSrc,
+    join(stage, "lib", "libncursesw.a"),
+    join(stage, "lib", "libtinfow.a"),
+    "-o",
+    outWasm,
+  ]);
+
+  const result = await runWasm(new Uint8Array(readFileSync(outWasm)), ["ncurses-smoke"], built.imageBytes, options);
+  assertRunPassed("ncurses-smoke", result, "ncurses");
+  return "tput -V ran and an ncurses consumer linked against the poured keg";
+}
+
+function stagePackagePaths(
+  built: BuiltVfs,
+  options: CliOptions,
+  formula: string,
+  relPaths: string[],
+  label = formula,
+): string {
+  const stage = join(options.resultDir, `${label}-consumer-build`, options.arch);
+  rmSync(stage, { recursive: true, force: true });
+  mkdirSync(stage, { recursive: true });
+  const version = findPackageVersion(built.fs, formula);
+  for (const rel of relPaths) {
+    copyVfsPath(
+      built.fs,
+      `${CELLAR}/${formula}/${version}/${rel}`,
+      join(stage, rel),
+    );
+  }
+  return stage;
+}
+
+function copyVfsPath(fs: MemoryFileSystem, vfsPath: string, localPath: string): void {
+  const st = fs.stat(vfsPath);
+  if ((st.mode & 0xf000) === 0x4000) {
+    mkdirSync(localPath, { recursive: true });
+    const dh = fs.opendir(vfsPath);
+    try {
+      while (true) {
+        const entry = fs.readdir(dh);
+        if (!entry) break;
+        if (entry.name === "." || entry.name === "..") continue;
+        copyVfsPath(fs, `${vfsPath}/${entry.name}`, join(localPath, entry.name));
+      }
+    } finally {
+      fs.closedir(dh);
+    }
+    return;
+  }
+
+  mkdirSync(dirname(localPath), { recursive: true });
+  writeFileSync(localPath, readVfsFile(fs, vfsPath));
+}
+
+function runCompiler(options: CliOptions, compiler: "cc" | "c++", args: string[]): void {
+  const command = join(repoRoot, "sdk", "bin", `${options.arch}posix-${compiler}`);
+  execFileSync(command, args, {
+    cwd: repoRoot,
+    env: {
+      ...process.env,
+      PATH: `${join(repoRoot, "sdk", "bin")}:${process.env.PATH ?? ""}`,
+      WASM_POSIX_SYSROOT: join(repoRoot, options.arch === "wasm64" ? "sysroot64" : "sysroot"),
+      WASM_POSIX_GLUE_DIR: join(repoRoot, "libc", "glue"),
+    },
+    stdio: "pipe",
+  });
+}
+
+function assertRunPassed(
+  label: string,
+  result: { exitCode: number; stdout: string; stderr: string },
+  expectedStdout: string,
+): void {
+  if (result.exitCode !== 0) {
+    throw new Error(`${label} exited ${result.exitCode}; stderr=${JSON.stringify(result.stderr)}`);
+  }
+  if (!result.stdout.includes(expectedStdout)) {
+    throw new Error(`${label} did not print ${JSON.stringify(expectedStdout)}: ${JSON.stringify(result.stdout)}`);
+  }
 }
 
 async function runWasm(
@@ -350,7 +647,7 @@ function findPackageVersion(fs: MemoryFileSystem, formula: string): string {
   if (!pkg) throw new Error(`package ${formula} missing from /etc/kandelo/homebrew-vfs.json`);
   const keg = String(pkg.keg ?? "");
   const prefix = `${CELLAR}/${formula}/`;
-  if (!keg.startsWith(prefix)) throw new Error(`unexpected sqlite keg path: ${keg}`);
+  if (!keg.startsWith(prefix)) throw new Error(`unexpected ${formula} keg path: ${keg}`);
   return keg.slice(prefix.length);
 }
 
@@ -396,7 +693,7 @@ function parseArgs(args: string[]): CliOptions {
     arch: "wasm32",
     bottleCache: "",
     timeoutMs: 30_000,
-    maxBytes: 128 * 1024 * 1024,
+    maxBytes: 512 * 1024 * 1024,
     beadId: process.env.KANDELO_BEAD_ID || "kd-1mr.2",
   };
 
@@ -447,8 +744,18 @@ function parseArgs(args: string[]): CliOptions {
 }
 
 function parseFormula(value: string): FormulaName {
-  if (value === "sqlite" || value === "bzip2" || value === "xz") return value;
-  usage(2, `--formula must be sqlite, bzip2, or xz, got ${value}`);
+  if (
+    value === "sqlite" ||
+    value === "bzip2" ||
+    value === "xz" ||
+    value === "openssl" ||
+    value === "libcxx" ||
+    value === "libxml2" ||
+    value === "libpng" ||
+    value === "libcurl" ||
+    value === "ncurses"
+  ) return value;
+  usage(2, `--formula must be one of sqlite, bzip2, xz, openssl, libcxx, libxml2, libpng, libcurl, ncurses; got ${value}`);
 }
 
 function parseArch(value: string): HomebrewBottleArch {
@@ -483,7 +790,7 @@ function requireValue(args: string[], index: number, flag: string): string {
 function usage(code: number, message?: string): never {
   if (message) console.error(`homebrew-package-node-smoke: ${message}`);
   console.error(`usage: npx tsx scripts/homebrew-package-node-smoke.ts \\
-  --tap-root <dir> --formula <sqlite|bzip2|xz> [--formula ...] \\
+  --tap-root <dir> --formula <name> [--formula ...] \\
   [--arch <wasm32|wasm64>] [--result-dir <dir>] [--bottle-cache <dir>]`);
   process.exit(code);
 }

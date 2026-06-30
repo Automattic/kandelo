@@ -76,6 +76,14 @@ TAP_NAME="$(printf '%s' "$KANDELO_HOMEBREW_TAP_REPOSITORY" | tr '[:upper:]' '[:l
 INPUT_JSON="$KANDELO_HOMEBREW_SIDECAR_ROOT/sidecars-input.json"
 
 mkdir -p "$KANDELO_HOMEBREW_SIDECAR_ROOT"
+if [ -d "$KANDELO_HOMEBREW_TAP_ROOT/Formula" ]; then
+  mkdir -p "$KANDELO_HOMEBREW_SIDECAR_ROOT/Formula"
+  rsync -a "$KANDELO_HOMEBREW_TAP_ROOT/Formula/" "$KANDELO_HOMEBREW_SIDECAR_ROOT/Formula/"
+fi
+if [ -d "$KANDELO_HOMEBREW_TAP_ROOT/Kandelo" ]; then
+  mkdir -p "$KANDELO_HOMEBREW_SIDECAR_ROOT/Kandelo"
+  rsync -a "$KANDELO_HOMEBREW_TAP_ROOT/Kandelo/" "$KANDELO_HOMEBREW_SIDECAR_ROOT/Kandelo/"
+fi
 export ABI_VERSION CACHE_KEY_SHA SDK_FINGERPRINT SYSROOT_FINGERPRINT BREW_VERSION
 export TAP_COMMIT KANDELO_COMMIT GENERATED_AT RUN_URL TAP_NAME PACKAGE_DIR KANDELO_ROOT
 
@@ -121,24 +129,51 @@ if package_kind not in {"library", "program"}:
     raise SystemExit(f"unsupported Homebrew sidecar package kind for {formula}: {package_kind!r}")
 
 def package_links_and_env():
+    def output_link(kind, rel):
+        if kind == "headers" and not rel.endswith((".h", ".hpp", ".hh", ".hxx")):
+            return {
+                "type": "symlink",
+                "source": rel,
+                "target": rel,
+            }
+        return {
+            "type": "file",
+            "source": rel,
+            "target": rel,
+            "mode": "0644",
+        }
+
     if package_kind == "library":
         outputs = package_toml.get("outputs", {})
         links = []
         for key in ("headers", "libs", "pkgconfig"):
             for rel in sorted(outputs.get(key, [])):
-                links.append({
-                    "type": "file",
-                    "source": rel,
-                    "target": rel,
-                    "mode": "0644",
-                })
+                links.append(output_link(key, rel))
         if not links:
             raise SystemExit(f"library formula {formula} has no declared package outputs to link")
         return links, {}
 
-    return [
-        {"type": "symlink", "source": f"bin/{formula}", "target": f"bin/{formula}"}
-    ], {"PATH_prepend": ["bin"]}
+    links = []
+    outputs = package_toml.get("outputs", [])
+    if isinstance(outputs, list):
+        for output in outputs:
+            name = output.get("name", formula)
+            if "wasm" in output:
+                links.append({"type": "symlink", "source": f"bin/{name}", "target": f"bin/{name}"})
+    if not links:
+        links.append({"type": "symlink", "source": f"bin/{formula}", "target": f"bin/{formula}"})
+
+    if formula == "ncurses":
+        links.extend([
+            {"type": "file", "source": "lib/libncursesw.a", "target": "lib/libncursesw.a", "mode": "0644"},
+            {"type": "file", "source": "lib/libtinfow.a", "target": "lib/libtinfow.a", "mode": "0644"},
+            {"type": "symlink", "source": "lib/libncurses.a", "target": "lib/libncurses.a"},
+            {"type": "symlink", "source": "lib/libtinfo.a", "target": "lib/libtinfo.a"},
+            {"type": "symlink", "source": "include/ncursesw", "target": "include/ncursesw"},
+            {"type": "symlink", "source": "include/ncurses", "target": "include/ncurses"},
+        ])
+
+    return links, {"PATH_prepend": ["bin"]}
 
 def package_fork_instrumentation():
     outputs = package_toml.get("outputs", [])
@@ -151,8 +186,8 @@ def package_fork_instrumentation():
 def default_node_smoke_text():
     if package_kind == "library":
         return (
-            f"Formula test compiled packages/registry/{formula}/test/{formula}_basic.c "
-            "against the installed keg and ran the resulting Wasm through "
+            f"Formula test compiled a {formula} consumer against the installed keg "
+            "and ran the resulting Wasm through "
             "node --import tsx/esm examples/run-example.ts"
         )
     if formula == "bzip2":

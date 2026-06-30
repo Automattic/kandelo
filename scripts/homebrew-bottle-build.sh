@@ -116,6 +116,8 @@ export HOMEBREW_NO_INSTALL_CLEANUP="${HOMEBREW_NO_INSTALL_CLEANUP:-1}"
 export HOMEBREW_NO_ANALYTICS="${HOMEBREW_NO_ANALYTICS:-1}"
 export HOMEBREW_DEVELOPER="${HOMEBREW_DEVELOPER:-1}"
 export KANDELO_HOMEBREW_ARCH="$ARCH"
+export HOMEBREW_KANDELO_BOTTLE_TAG="$BOTTLE_TAG"
+export KANDELO_HOMEBREW_BOTTLE_TAG="$BOTTLE_TAG"
 export KANDELO_HOMEBREW_KANDELO_ROOT="$KANDELO_ROOT"
 export HOMEBREW_KANDELO_ARCH="$ARCH"
 export HOMEBREW_KANDELO_ROOT="$KANDELO_ROOT"
@@ -134,6 +136,7 @@ if [ ! -d "$TAP_SOURCE/.git" ]; then
 fi
 
 "$BREW_BIN" tap "$TAP_NAME" "$TAP_SOURCE"
+"$BREW_BIN" trust "$TAP_NAME"
 FORMULA_REF="$TAP_NAME/$FORMULA"
 TAPPED_TAP_ROOT="$("$BREW_BIN" --repository "$TAP_NAME")"
 TAPPED_FORMULA_PATH="$TAPPED_TAP_ROOT/Formula/$FORMULA.rb"
@@ -200,6 +203,17 @@ cp "${bottle_archives[0]}" "$OUT_DIR/bottles/"
 
 BOTTLE_JSON="$OUT_DIR/bottles/$(basename "${bottle_jsons[0]}")"
 BOTTLE_ARCHIVE="$OUT_DIR/bottles/$(basename "${bottle_archives[0]}")"
+REMOTE_BOTTLE_FILENAME="$(
+  "$BREW_BIN" ruby -rjson -e '
+    json_path, bottle_tag = ARGV
+    data = JSON.parse(File.read(json_path))
+    tag = data.values.first.fetch("bottle").fetch("tags").fetch(bottle_tag)
+    puts tag.fetch("filename")
+  ' "$BOTTLE_JSON" "$BOTTLE_TAG"
+)"
+if [ -n "$REMOTE_BOTTLE_FILENAME" ] && [ "$REMOTE_BOTTLE_FILENAME" != "$(basename "$BOTTLE_ARCHIVE")" ]; then
+  cp "$BOTTLE_ARCHIVE" "$OUT_DIR/bottles/$REMOTE_BOTTLE_FILENAME"
+fi
 
 (
   cd "$TAPPED_TAP_ROOT"

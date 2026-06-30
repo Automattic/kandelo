@@ -115,6 +115,11 @@ For formulae that build Kandelo Wasm artifacts:
    for Homebrew bottle selection. Update Kandelo `build.toml` `revision` only
    when the underlying Kandelo package output bytes legitimately change.
 
+Current dependency-root formulae mirror the registry manifests' architecture
+support: `openssl`, `libcxx`, and `libxml2` build wasm32 and wasm64 bottles;
+`libpng`, `libcurl`, and the hybrid `ncurses` package are wasm32-only until
+their registry manifests opt into wasm64.
+
 Formula Ruby should read these `HOMEBREW_KANDELO_*` variables for values that
 must survive Homebrew environment handling:
 
@@ -286,16 +291,23 @@ npx tsx scripts/homebrew-package-node-smoke.ts \
   --formula sqlite \
   --formula bzip2 \
   --formula xz \
+  --formula openssl \
+  --formula libcxx \
+  --formula libxml2 \
+  --formula libpng \
+  --formula libcurl \
+  --formula ncurses \
   --arch wasm32 \
   --result-dir test-runs/homebrew-package-node-smoke
 ```
 
 The runner builds Homebrew VFS images from sidecars, writes passed, failed,
 and skipped outcome lists, runs program package version smokes from the poured
-prefix, and compiles SQLite's `sqlite_basic.c` against the poured headers and
-static library before running the validation Wasm on Node. Dry-run bottle
-evidence remains local evidence until the trusted workflow publishes GHCR
-bottle bytes and tap sidecars.
+prefix, and compiles small consumers against poured library headers and static
+libraries before running the validation Wasm on Node. Use a separate wasm64 run
+for formulae whose registry manifests declare `arches = ["wasm32", "wasm64"]`.
+Dry-run bottle evidence remains local evidence until the trusted workflow
+publishes GHCR bottle bytes and tap sidecars.
 
 Browser compatibility requires a separate browser smoke. For the current
 `hello` path, the trusted publisher builds a precomposed wasm32 VFS image,
