@@ -85,9 +85,10 @@ fi
 KANDELO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 PATCH_FILE="$KANDELO_ROOT/homebrew/patches/0001-add-kandelo-wasm-bottle-tags.patch"
 mkdir -p "$OUT_DIR/bottles"
-WORK_DIR="$(mktemp -d)"
+WORK_DIR="$(mktemp -d "$OUT_DIR/homebrew-work.XXXXXX")"
 BREW_REPO=""
 BREW_OVERLAY=""
+TAP_SOURCE="$TAP_ROOT"
 
 cleanup() {
   if [ -n "$BREW_REPO" ] && [ -n "$BREW_OVERLAY" ] && [ -d "$BREW_OVERLAY" ]; then
@@ -100,7 +101,8 @@ trap cleanup EXIT
 BREW_REPO="$("$BREW_BIN" --repository)"
 if [ -f "$PATCH_FILE" ] && git -C "$BREW_REPO" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
   git -C "$BREW_REPO" apply --check "$PATCH_FILE"
-  BREW_OVERLAY="$WORK_DIR/homebrew-overlay"
+  BREW_OVERLAY="$OUT_DIR/homebrew-overlay"
+  rm -rf "$BREW_OVERLAY"
   git -C "$BREW_REPO" worktree add --detach "$BREW_OVERLAY" HEAD >/dev/null
   git -C "$BREW_OVERLAY" apply --whitespace=nowarn "$PATCH_FILE"
   BREW_BIN="$BREW_OVERLAY/bin/brew"
@@ -114,13 +116,27 @@ export HOMEBREW_NO_INSTALL_CLEANUP="${HOMEBREW_NO_INSTALL_CLEANUP:-1}"
 export HOMEBREW_NO_ANALYTICS="${HOMEBREW_NO_ANALYTICS:-1}"
 export HOMEBREW_DEVELOPER="${HOMEBREW_DEVELOPER:-1}"
 export KANDELO_HOMEBREW_ARCH="$ARCH"
+export HOMEBREW_KANDELO_BOTTLE_TAG="$BOTTLE_TAG"
+export KANDELO_HOMEBREW_BOTTLE_TAG="$BOTTLE_TAG"
 export KANDELO_HOMEBREW_KANDELO_ROOT="$KANDELO_ROOT"
 export HOMEBREW_KANDELO_ARCH="$ARCH"
 export HOMEBREW_KANDELO_ROOT="$KANDELO_ROOT"
 export HOMEBREW_KANDELO_NODE="$(command -v node)"
 export HOMEBREW_KANDELO_LLVM_BIN="${LLVM_BIN:-${WASM_POSIX_LLVM_DIR:-}}"
 
-"$BREW_BIN" tap "$TAP_NAME" "$TAP_ROOT"
+if [ ! -d "$TAP_SOURCE/.git" ]; then
+  TAP_SOURCE="$WORK_DIR/tap-source"
+  mkdir -p "$TAP_SOURCE"
+  rsync -a --exclude .git "$TAP_ROOT/" "$TAP_SOURCE/"
+  git -C "$TAP_SOURCE" init -q
+  git -C "$TAP_SOURCE" config user.name "kandelo-homebrew-local"
+  git -C "$TAP_SOURCE" config user.email "kandelo-homebrew-local@example.invalid"
+  git -C "$TAP_SOURCE" add .
+  git -C "$TAP_SOURCE" commit -q -m "stage Kandelo Homebrew tap"
+fi
+
+"$BREW_BIN" tap "$TAP_NAME" "$TAP_SOURCE"
+"$BREW_BIN" trust "$TAP_NAME"
 FORMULA_REF="$TAP_NAME/$FORMULA"
 TAPPED_TAP_ROOT="$("$BREW_BIN" --repository "$TAP_NAME")"
 TAPPED_FORMULA_PATH="$TAPPED_TAP_ROOT/Formula/$FORMULA.rb"
@@ -187,9 +203,20 @@ cp "${bottle_archives[0]}" "$OUT_DIR/bottles/"
 
 BOTTLE_JSON="$OUT_DIR/bottles/$(basename "${bottle_jsons[0]}")"
 BOTTLE_ARCHIVE="$OUT_DIR/bottles/$(basename "${bottle_archives[0]}")"
+REMOTE_BOTTLE_FILENAME="$(
+  "$BREW_BIN" ruby -rjson -e '
+    json_path, bottle_tag = ARGV
+    data = JSON.parse(File.read(json_path))
+    tag = data.values.first.fetch("bottle").fetch("tags").fetch(bottle_tag)
+    puts tag.fetch("filename")
+  ' "$BOTTLE_JSON" "$BOTTLE_TAG"
+)"
+if [ -n "$REMOTE_BOTTLE_FILENAME" ] && [ "$REMOTE_BOTTLE_FILENAME" != "$(basename "$BOTTLE_ARCHIVE")" ]; then
+  cp "$BOTTLE_ARCHIVE" "$OUT_DIR/bottles/$REMOTE_BOTTLE_FILENAME"
+fi
 
 (
-  cd "$TAP_ROOT"
+  cd "$TAPPED_TAP_ROOT"
   HOMEBREW_KANDELO_BOTTLE_TAG="$BOTTLE_TAG" \
   KANDELO_HOMEBREW_BOTTLE_TAG="$BOTTLE_TAG" \
     "$BREW_BIN" bottle --merge --write --no-commit "$BOTTLE_JSON"
