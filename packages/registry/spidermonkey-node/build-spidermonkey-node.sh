@@ -19,8 +19,8 @@ SPIDERMONKEY_PREFIX="${WASM_POSIX_DEP_SPIDERMONKEY_DIR:-}"
 NODE_WASM=""
 
 for candidate in \
-    "$REPO_ROOT/packages/registry/spidermonkey/bin/node.wasm" \
     "${SPIDERMONKEY_PREFIX:+$SPIDERMONKEY_PREFIX/node.wasm}" \
+    "$REPO_ROOT/packages/registry/spidermonkey/bin/node.wasm" \
     "$REPO_ROOT/local-binaries/programs/$ARCH/spidermonkey-node.wasm"; do
     if [ -z "$NODE_WASM" ] && [ -f "$candidate" ]; then
         NODE_WASM="$candidate"
@@ -50,15 +50,28 @@ if [ -z "$NODE_WASM" ]; then
     fi
 fi
 
-BIN_DIR="$SCRIPT_DIR/bin"
+WORK_DIR="${WASM_POSIX_DEP_WORK_DIR:-$SCRIPT_DIR}"
+if [ -n "${WASM_POSIX_DEP_OUT_DIR:-}" ]; then
+    BIN_DIR="$WORK_DIR/bin"
+else
+    BIN_DIR="$SCRIPT_DIR/bin"
+fi
 mkdir -p "$BIN_DIR"
 cp "$NODE_WASM" "$BIN_DIR/node.wasm"
 
 NODE_SIZE="$(wc -c < "$BIN_DIR/node.wasm" | tr -d ' ')"
 echo "==> SpiderMonkey Node-compatible runtime staged: $BIN_DIR/node.wasm ($NODE_SIZE bytes)"
 
-# shellcheck source=/dev/null
-if command -v rustc >/dev/null 2>&1 && command -v cargo >/dev/null 2>&1; then
+if [ -n "${WASM_POSIX_DEP_OUT_DIR:-}" ]; then
+    source "$REPO_ROOT/scripts/wasm-artifact-guards.sh"
+    wasm_require_no_legacy_asyncify "$BIN_DIR/node.wasm"
+    wasm_require_no_fork_instrumentation "$BIN_DIR/node.wasm"
+    rm -rf "$WASM_POSIX_DEP_OUT_DIR"
+    mkdir -p "$WASM_POSIX_DEP_OUT_DIR"
+    cp "$BIN_DIR/node.wasm" "$WASM_POSIX_DEP_OUT_DIR/node.wasm"
+    echo "  installed $WASM_POSIX_DEP_OUT_DIR/node.wasm (resolver scratch)"
+elif command -v rustc >/dev/null 2>&1 && command -v cargo >/dev/null 2>&1; then
+    # shellcheck source=/dev/null
     source "$REPO_ROOT/scripts/install-local-binary.sh"
     WASM_POSIX_INSTALL_FORK_INSTRUMENTATION=disabled install_local_binary spidermonkey-node "$BIN_DIR/node.wasm"
     WASM_POSIX_INSTALL_FORK_INSTRUMENTATION=disabled install_local_binary node "$BIN_DIR/node.wasm"
@@ -69,9 +82,4 @@ else
         cp "$BIN_DIR/node.wasm" "$dest"
         echo "  installed $dest"
     done
-    if [ -n "${WASM_POSIX_DEP_OUT_DIR:-}" ]; then
-        mkdir -p "$WASM_POSIX_DEP_OUT_DIR"
-        cp "$BIN_DIR/node.wasm" "$WASM_POSIX_DEP_OUT_DIR/node.wasm"
-        echo "  installed $WASM_POSIX_DEP_OUT_DIR/node.wasm (resolver scratch)"
-    fi
 fi

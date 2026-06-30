@@ -1,0 +1,104 @@
+{
+  "schema": 1,
+  "subject": {
+    "package": "hello",
+    "version": "2.12.1",
+    "arch": "wasm32",
+    "bottle_rebuild": 0,
+    "kandelo_abi": 15
+  },
+  "repositories": {
+    "kandelo_repository": "Automattic/kandelo",
+    "kandelo_commit": "2222222222222222222222222222222222222222",
+    "tap_repository": "Automattic/kandelo-homebrew",
+    "tap_commit": "1111111111111111111111111111111111111111"
+  },
+  "formula": {
+    "path": "Formula/hello.rb",
+    "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+  },
+  "bottle": {
+    "url": "https://example.invalid/kandelo-homebrew/hello-2.12.1-rebuild0-wasm32_kandelo.bottle.tar.gz",
+    "sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "bytes": 12345,
+    "cache_key_sha": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+    "bottle_tag": "wasm32_kandelo",
+    "cellar": "/home/linuxbrew/.linuxbrew/Cellar",
+    "prefix": "/home/linuxbrew/.linuxbrew"
+  },
+  "build": {
+    "github_run": "https://example.invalid/Automattic/kandelo-homebrew/actions/runs/1",
+    "job": "publish-bottles",
+    "runner_os": "ubuntu-24.04",
+    "brew_version": "Homebrew 4.x fixture",
+    "dev_shell": "scripts/dev-shell.sh fixture",
+    "sdk_fingerprint": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+    "sysroot_fingerprint": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+  },
+  "validation": {
+    "outcome_lists": [
+      {
+        "name": "schema",
+        "status": "success",
+        "passed": [
+          "metadata.json",
+          "formula/hello.json",
+          "link/hello-2.12.1-rebuild0-wasm32.json",
+          "reports/hello-2.12.1-rebuild0-wasm32.provenance.json"
+        ],
+        "failed": [],
+        "skipped": []
+      },
+      {
+        "name": "homebrew_audit",
+        "status": "skipped",
+        "passed": [],
+        "failed": [],
+        "skipped": ["fixture has no live Formula/hello.rb"],
+        "skip_reason": "Scaffold example only; formula implementation belongs to kd-8ho.5."
+      },
+      {
+        "name": "bottle_build",
+        "status": "skipped",
+        "passed": [],
+        "failed": [],
+        "skipped": ["fixture does not build or upload bottle bytes"],
+        "skip_reason": "Trusted bottle publishing belongs to kd-8ho.3 and kd-8ho.5."
+      },
+      {
+        "name": "node_smoke",
+        "status": "skipped",
+        "passed": [],
+        "failed": [],
+        "skipped": ["fixture does not boot a VFS image"],
+        "skip_reason": "Node runtime validation belongs to kd-8ho.9."
+      },
+      {
+        "name": "browser_smoke",
+        "status": "skipped",
+        "passed": [],
+        "failed": [],
+        "skipped": ["browser_compatible is false in this fixture"],
+        "skip_reason": "Browser validation belongs to kd-8ho.10."
+      }
+    ]
+  },
+  "metadata": {
+    "metadata_json": {
+      "path": "Kandelo/metadata.json",
+      "sha256": "1111111111111111111111111111111111111111111111111111111111111111"
+    },
+    "formula_json": {
+      "path": "Kandelo/formula/hello.json",
+      "sha256": "2222222222222222222222222222222222222222222222222222222222222222"
+    },
+    "link_manifest_json": {
+      "path": "Kandelo/link/hello-2.12.1-rebuild0-wasm32.json",
+      "sha256": "3333333333333333333333333333333333333333333333333333333333333333"
+    },
+    "provenance_json": {
+      "path": "Kandelo/reports/hello-2.12.1-rebuild0-wasm32.provenance.json",
+      "sha256": "4444444444444444444444444444444444444444444444444444444444444444"
+    }
+  }
+}

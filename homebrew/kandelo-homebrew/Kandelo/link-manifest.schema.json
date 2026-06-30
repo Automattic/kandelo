@@ -1,0 +1,116 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/Automattic/kandelo/blob/main/homebrew/kandelo-homebrew/Kandelo/link-manifest.schema.json",
+  "title": "Kandelo Homebrew link manifest",
+  "description": "Structured pour/link instructions for one verified Homebrew bottle.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "package",
+    "version",
+    "arch",
+    "kandelo_abi",
+    "prefix",
+    "cellar",
+    "keg",
+    "bottle",
+    "links",
+    "receipts",
+    "env"
+  ],
+  "properties": {
+    "schema": { "const": 1 },
+    "package": { "$ref": "#/$defs/packageName" },
+    "version": { "type": "string", "minLength": 1 },
+    "arch": { "enum": ["wasm32", "wasm64"] },
+    "kandelo_abi": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "prefix": { "$ref": "#/$defs/guestAbsolutePath" },
+    "cellar": { "$ref": "#/$defs/guestAbsolutePath" },
+    "keg": { "$ref": "#/$defs/guestAbsolutePath" },
+    "bottle": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "url",
+        "sha256",
+        "bytes",
+        "cache_key_sha",
+        "payload_root"
+      ],
+      "properties": {
+        "url": { "$ref": "#/$defs/httpsUrl" },
+        "sha256": { "$ref": "#/$defs/sha256" },
+        "bytes": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "cache_key_sha": { "$ref": "#/$defs/sha256" },
+        "payload_root": { "$ref": "#/$defs/relativePath" }
+      }
+    },
+    "links": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/link" },
+      "uniqueItems": true
+    },
+    "receipts": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/relativePath" },
+      "minItems": 1,
+      "uniqueItems": true
+    },
+    "env": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "PATH_prepend": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/relativePath" },
+          "uniqueItems": true
+        }
+      }
+    }
+  },
+  "$defs": {
+    "guestAbsolutePath": {
+      "type": "string",
+      "pattern": "^/[^\\s]*$"
+    },
+    "httpsUrl": {
+      "type": "string",
+      "pattern": "^https://[^\\s]+$"
+    },
+    "link": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "source", "target"],
+      "properties": {
+        "type": {
+          "enum": ["symlink", "directory", "file"]
+        },
+        "source": { "$ref": "#/$defs/relativePath" },
+        "target": { "$ref": "#/$defs/relativePath" },
+        "mode": {
+          "type": "string",
+          "pattern": "^[0-7]{4}$"
+        }
+      }
+    },
+    "packageName": {
+      "type": "string",
+      "pattern": "^[a-z0-9][a-z0-9._-]*$"
+    },
+    "relativePath": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9._@%+=:-]+(/[A-Za-z0-9._@%+=:-]+)*$"
+    },
+    "sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    }
+  }
+}

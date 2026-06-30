@@ -28,16 +28,23 @@ if(DEFINED ENV{LLVM_PREFIX})
   list(APPEND _LLVM_SEARCH_PATHS "$ENV{LLVM_PREFIX}/bin")
 endif()
 
-find_program(LLVM_CLANG NAMES clang PATHS ${_LLVM_SEARCH_PATHS})
+if(_LLVM_SEARCH_PATHS)
+  find_program(LLVM_CLANG NAMES clang PATHS ${_LLVM_SEARCH_PATHS} NO_DEFAULT_PATH)
+  find_program(LLVM_AR     NAMES llvm-ar     PATHS ${_LLVM_SEARCH_PATHS} NO_DEFAULT_PATH)
+  find_program(LLVM_RANLIB NAMES llvm-ranlib PATHS ${_LLVM_SEARCH_PATHS} NO_DEFAULT_PATH)
+  find_program(LLVM_NM     NAMES llvm-nm     PATHS ${_LLVM_SEARCH_PATHS} NO_DEFAULT_PATH)
+endif()
+
+find_program(LLVM_CLANG NAMES clang)
 if(NOT LLVM_CLANG)
   message(FATAL_ERROR
     "LLVM clang not found. Searched: ${_LLVM_SEARCH_PATHS}. "
     "Run through scripts/dev-shell.sh or set LLVM_BIN/LLVM_PREFIX."
   )
 endif()
-find_program(LLVM_AR     NAMES llvm-ar     PATHS ${_LLVM_SEARCH_PATHS})
-find_program(LLVM_RANLIB NAMES llvm-ranlib PATHS ${_LLVM_SEARCH_PATHS})
-find_program(LLVM_NM     NAMES llvm-nm     PATHS ${_LLVM_SEARCH_PATHS})
+find_program(LLVM_AR     NAMES llvm-ar)
+find_program(LLVM_RANLIB NAMES llvm-ranlib)
+find_program(LLVM_NM     NAMES llvm-nm)
 
 # --- Sysroot ---
 if(NOT WASM_POSIX_SYSROOT)
@@ -103,10 +110,10 @@ string(REPLACE ";" " " WASM64_LINK_FLAGS_STR "${WASM64_LINK_FLAGS}")
 
 # --- Startup objects and runtime libraries ---
 get_filename_component(_TOOLCHAIN_DIR2 "${CMAKE_CURRENT_LIST_FILE}" DIRECTORY)
-set(_GLUE_OBJ_DIR "${_TOOLCHAIN_DIR2}/mariadb-glue-objs-64")
+set(KANDELO_GLUE_OBJ_DIR "${_TOOLCHAIN_DIR2}/mariadb-glue-objs-64" CACHE PATH "Directory containing Kandelo glue objects")
 
 set(CMAKE_EXE_LINKER_FLAGS_INIT
-  "${WASM64_LINK_FLAGS_STR} ${WASM_POSIX_SYSROOT}/lib/crt1.o ${_GLUE_OBJ_DIR}/channel_syscall.o ${_GLUE_OBJ_DIR}/compiler_rt.o -lc++ -lc++abi -lc"
+  "${WASM64_LINK_FLAGS_STR} ${WASM_POSIX_SYSROOT}/lib/crt1.o ${KANDELO_GLUE_OBJ_DIR}/channel_syscall.o ${KANDELO_GLUE_OBJ_DIR}/compiler_rt.o -lc++ -lc++abi -lc"
 )
 
 # --- Type sizes for wasm64 LP64 ---

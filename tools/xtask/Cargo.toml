@@ -25,6 +25,12 @@ path = "src/main.rs"
 wasm-posix-shared = { path = "../../crates/shared" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+# JSON-Schema validation for Homebrew sidecar metadata. Pinned to 0.18 —
+# tested clean on aarch64-apple-darwin; newer 0.4x versions pull in
+# `aws-lc-rs` via a default feature path that has historically been brittle on
+# macOS hosts. `default-features = false` drops remote resolution and CLI
+# plumbing; Kandelo schemas use only local `#/$defs/...` references.
+jsonschema = { version = "0.18", default-features = false }
 # Pinned to a single minor. wasmparser has churned across minors
 # (CompositeType vs CompositeInnerType, SubType shape, etc). A passive
 # `cargo update` should not silently break the snapshot generator.
@@ -58,14 +64,3 @@ regex = "1"
 # tempdirs. Not promoted to a runtime dep: the source_extract zip path
 # uses std::io::Cursor instead of NamedTempFile.
 tempfile = "3"
-# JSON-Schema conformance test for `abi/manifest.schema.json`
-# (Task E.1). Pinned to 0.18 — tested clean on aarch64-apple-darwin;
-# newer 0.4x versions pull in `aws-lc-rs` via a default feature path
-# that has historically been brittle on macOS hosts.
-#
-# `default-features = false` to drop `resolve-http` (reqwest + tokio +
-# hyper + wasm-bindgen) and `cli` (clap). The schema only ever resolves
-# local `#/$defs/...` fragment refs, so no network/file resolver is
-# needed. Mirrors the project's "minimize transitive deps" invariant —
-# see the `ureq` rationale just above.
-jsonschema = { version = "0.18", default-features = false }

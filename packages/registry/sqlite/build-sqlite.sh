@@ -14,14 +14,33 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
-SRC_DIR="$SCRIPT_DIR/sqlite-src"
+source "$REPO_ROOT/sdk/activate.sh"
 
 # --- Resolver contract (with legacy fallbacks) ---
 SQLITE_VERSION="${WASM_POSIX_DEP_VERSION:-${SQLITE_VERSION:-3.49.1}}"
+WORK_DIR="${WASM_POSIX_DEP_WORK_DIR:-$SCRIPT_DIR}"
+SRC_DIR="$WORK_DIR/sqlite-src"
 INSTALL_DIR="${WASM_POSIX_DEP_OUT_DIR:-$SCRIPT_DIR/sqlite-install}"
+TARGET_ARCH="${WASM_POSIX_DEP_TARGET_ARCH:-wasm32}"
 # Legacy default URL uses the packed version form (3.49.1 → 3490100).
 SOURCE_URL="${WASM_POSIX_DEP_SOURCE_URL:-https://www.sqlite.org/2025/sqlite-amalgamation-3490100.zip}"
 SOURCE_SHA256="${WASM_POSIX_DEP_SOURCE_SHA256:-}"
+
+case "$TARGET_ARCH" in
+    wasm32)
+        TOOL_PREFIX="wasm32posix"
+        SYSROOT="${WASM_POSIX_SYSROOT:-$REPO_ROOT/sysroot}"
+        ;;
+    wasm64)
+        TOOL_PREFIX="wasm64posix"
+        SYSROOT="${WASM_POSIX_SYSROOT:-$REPO_ROOT/sysroot64}"
+        ;;
+    *)
+        echo "ERROR: unsupported WASM_POSIX_DEP_TARGET_ARCH=$TARGET_ARCH" >&2
+        exit 2
+        ;;
+esac
+export WASM_POSIX_SYSROOT="$SYSROOT"
 
 # CLI is a consumer artifact, not a library. Skip it when invoked via
 # the resolver — it would waste cache space and the consumer-side
@@ -29,15 +48,29 @@ SOURCE_SHA256="${WASM_POSIX_DEP_SOURCE_SHA256:-}"
 BUILD_CLI=1
 [ -n "${WASM_POSIX_DEP_OUT_DIR:-}" ] && BUILD_CLI=0
 
-if ! command -v wasm32posix-cc &>/dev/null; then
-    echo "ERROR: wasm32posix-cc not found. Run 'npm link' in sdk/ first." >&2
+if ! command -v "${TOOL_PREFIX}-cc" &>/dev/null; then
+    echo "ERROR: ${TOOL_PREFIX}-cc not found. Run through scripts/dev-shell.sh." >&2
+    exit 1
+fi
+
+if [ ! -f "$SYSROOT/lib/libc.a" ]; then
+    echo "ERROR: sysroot not found at $SYSROOT. Run scripts/build-musl.sh for $TARGET_ARCH first." >&2
     exit 1
 fi
 
 # --- Fetch + verify source ---
-if [ ! -d "$SRC_DIR/sqlite3.c" ] && [ ! -f "$SRC_DIR/sqlite3.c" ]; then
+expected_marker="$(printf '%s\n%s\n%s\n' "$SQLITE_VERSION" "$SOURCE_URL" "$SOURCE_SHA256")"
+SOURCE_MARKER="$SRC_DIR/.kandelo-sqlite-source"
+if [ -d "$SRC_DIR" ] && [ "$(cat "$SOURCE_MARKER" 2>/dev/null || true)" != "$expected_marker" ]; then
+    echo "==> Existing SQLite source does not match requested version/source; cleaning..."
+    rm -rf "$SRC_DIR"
+fi
+
+if [ ! -f "$SRC_DIR/sqlite3.c" ]; then
     echo "==> Downloading SQLite $SQLITE_VERSION..."
-    TARBALL="/tmp/sqlite-amalgamation.zip"
+    tmpdir="$(mktemp -d "${TMPDIR:-/tmp}/kandelo-sqlite-src.XXXXXX")"
+    trap 'rm -rf "$tmpdir"' EXIT
+    TARBALL="$tmpdir/sqlite-amalgamation.zip"
     curl --retry 10 --retry-delay 5 --retry-max-time 300 --retry-all-errors -fsSL "$SOURCE_URL" -o "$TARBALL"
     if [ -n "$SOURCE_SHA256" ]; then
         echo "==> Verifying source sha256..."
@@ -51,7 +84,9 @@ if [ ! -d "$SRC_DIR/sqlite3.c" ] && [ ! -f "$SRC_DIR/sqlite3.c" ]; then
         mv "$inner"/* "$SRC_DIR/"
         rmdir "$inner"
     fi
-    rm "$TARBALL"
+    printf '%s\n' "$expected_marker" > "$SOURCE_MARKER"
+    trap - EXIT
+    rm -rf "$tmpdir"
 fi
 
 SQLITE_CFLAGS="-O2 \
@@ -68,10 +103,10 @@ SQLITE_CFLAGS="-O2 \
 # --- Compile library ---
 echo "==> Compiling SQLite for Wasm..."
 # shellcheck disable=SC2086
-wasm32posix-cc -c $SQLITE_CFLAGS \
+"${TOOL_PREFIX}-cc" -c $SQLITE_CFLAGS \
     "$SRC_DIR/sqlite3.c" -o "$SRC_DIR/sqlite3.o"
 
-wasm32posix-ar rcs "$SRC_DIR/libsqlite3.a" "$SRC_DIR/sqlite3.o"
+"${TOOL_PREFIX}-ar" rcs "$SRC_DIR/libsqlite3.a" "$SRC_DIR/sqlite3.o"
 
 # --- Install library into INSTALL_DIR ---
 echo "==> Installing to $INSTALL_DIR..."
@@ -98,7 +133,7 @@ if [ "$BUILD_CLI" = "1" ]; then
     echo "==> Building sqlite3 CLI..."
     mkdir -p "$INSTALL_DIR/bin"
     # shellcheck disable=SC2086
-    wasm32posix-cc $SQLITE_CFLAGS \
+    "${TOOL_PREFIX}-cc" $SQLITE_CFLAGS \
         "$SRC_DIR/shell.c" "$SRC_DIR/sqlite3.c" \
         -o "$INSTALL_DIR/bin/sqlite3.wasm" -lm
 
