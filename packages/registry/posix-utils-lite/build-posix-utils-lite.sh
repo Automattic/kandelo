@@ -7,7 +7,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
 SRC="$SCRIPT_DIR/src/posix-utils-lite.c"
-BIN_DIR="$SCRIPT_DIR/bin"
+BIN_DIR="${WASM_POSIX_DEP_OUT_DIR:-$SCRIPT_DIR/bin}"
 SYSROOT="$REPO_ROOT/sysroot"
 
 UTILITIES=(
