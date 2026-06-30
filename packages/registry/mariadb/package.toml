@@ -2,6 +2,8 @@ kind = "program"
 name = "mariadb"
 version = "10.5.28"
 kernel_abi = 7
+# pcre2-source remains a legacy resolver source-kind dep, but its Homebrew
+# owner is MariaDB as a Formula resource/helper, not a standalone package.
 depends_on = ["pcre2-source@10.44", "libcxx@21.1.7"]
 # Opt into wasm64 — see memory/wasm64-build-policy.md.
 arches = ["wasm32", "wasm64"]

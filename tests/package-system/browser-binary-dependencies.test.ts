@@ -19,8 +19,11 @@ const localOnlyBrowserImports = new Set([
 
 const registryPackagesWithoutBuildToml = new Set([
   "kernel-test-programs",
-  "pcre2-source",
   "sqlite-cli",
+]);
+
+const registryPackageIdentityExclusions = new Set([
+  "pcre2-source",
 ]);
 
 function registryPackageDirs(): string[] {
@@ -28,6 +31,14 @@ function registryPackageDirs(): string[] {
     .map((name) => join(registryRoot, name))
     .filter((path) => statSync(path).isDirectory())
     .filter((path) => existsSync(join(path, "package.toml")));
+}
+
+function registryPackageIdentityDirs(): string[] {
+  return registryPackageDirs().filter((packageDir) => {
+    const manifest = readFileSync(join(packageDir, "package.toml"), "utf8");
+    const packageName = firstTomlString(manifest, "name");
+    return !packageName || !registryPackageIdentityExclusions.has(packageName);
+  });
 }
 
 function walkFiles(root: string): string[] {
@@ -132,7 +143,7 @@ function browserBinariesImports(): string[] {
 
 describe("browser binary dependencies", () => {
   it("requires a build.toml sidecar for every fetchable registry package", () => {
-    const missingBuildToml = registryPackageDirs()
+    const missingBuildToml = registryPackageIdentityDirs()
       .filter((packageDir) => {
         const manifest = readFileSync(join(packageDir, "package.toml"), "utf8");
         const packageName = firstTomlString(manifest, "name");
@@ -144,6 +155,16 @@ describe("browser binary dependencies", () => {
       .map((packageDir) => relative(repoRoot, packageDir));
 
     expect(missingBuildToml).toEqual([]);
+  });
+
+  it("keeps helper inputs out of fetchable package identity discovery", () => {
+    const identityNames = registryPackageIdentityDirs()
+      .map((packageDir) => firstTomlString(readFileSync(join(packageDir, "package.toml"), "utf8"), "name"))
+      .filter((name): name is string => Boolean(name));
+
+    expect(identityNames).not.toContain("pcre2-source");
+    expect(existsSync(join(registryRoot, "npm", "package.toml"))).toBe(false);
+    expect(existsSync(join(registryRoot, "node-compat", "package.toml"))).toBe(false);
   });
 
   it("backs every browser @binaries import with a fetchable package output", () => {

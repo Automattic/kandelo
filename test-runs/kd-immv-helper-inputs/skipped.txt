@@ -1,0 +1,3 @@
+full gate: not run; change is package metadata, package-system validation, docs, and VFS helper messaging only, with no ABI, host-runtime, libc, POSIX, or package output-byte change.
+package builds: not run; helper ownership metadata does not change build scripts or output bytes, and affected manifests were parsed through xtask in the declared dev shell.
+browser verification: not run; no browser runtime, UI, service worker, VFS image behavior, or generated VFS bytes changed.

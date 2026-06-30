@@ -50,7 +50,7 @@ const DEMO_GID = 1000;
 async function main() {
   if (!existsSync(join(NPM_DIST, "bin", "npm-cli.js"))) {
     console.error(`npm dist not found at ${NPM_DIST}/bin/npm-cli.js`);
-    console.error("Run: bash packages/registry/npm/build-npm.sh (or whatever populates packages/registry/npm/dist)");
+    console.error("Run: bash packages/registry/npm/fetch-npm.sh");
     process.exit(1);
   }
 
