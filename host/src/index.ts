@@ -43,6 +43,7 @@ export {
 } from "./binary-resolver";
 export {
   HomebrewVfsPlanError,
+  HomebrewVfsUnsupportedError,
   planHomebrewVfs,
 } from "./homebrew-vfs-planner";
 export type {
@@ -55,6 +56,9 @@ export type {
   HomebrewMetadataBottle,
   HomebrewMetadataPackage,
   HomebrewRuntime,
+  HomebrewRuntimeArtifactPolicyFailure,
+  HomebrewRuntimeStatus,
+  HomebrewRuntimeStatusKind,
   HomebrewTapMetadata,
   HomebrewVfsPackagePlan,
   HomebrewVfsPlan,

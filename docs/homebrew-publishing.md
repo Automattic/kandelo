@@ -234,6 +234,26 @@ the prefix. Package-specific Node and browser outcome text may be supplied via
 only when `KANDELO_HOMEBREW_BROWSER_SMOKE_STATUS=success` and the browser VFS
 smoke artifact environment is complete.
 
+`runtime_support` is the allow-list of hosts that may plan, pour, save, and
+execute a Homebrew-derived VFS image from the bottle. It may be empty only when
+`runtime_status` records the Node and browser state. Supported hosts must have
+`runtime_status.<host>.status = "supported"`; unsupported hosts should record a
+stable `reason_code`, a human-readable `reason`, and any
+`artifact_policy_failures` discovered from the bottle payload.
+
+The default sidecar generator scans success bottle Wasm files before writing
+metadata. If any staged artifact would make `saveImage()` reject the VFS image,
+for example raw `kernel.kernel_fork` imports without complete
+`wasm-fork-instrument` exports, the generator refuses any Node/browser runtime
+support claim. SpiderMonkey-derived `spidermonkey`, `spidermonkey-node`, and
+`node` bottles currently emit `runtime_support = []` with
+`runtime_status.node` and `runtime_status.browser` marked `unsupported` while
+their package outputs intentionally keep `fork_instrumentation = "disabled"`.
+Operators may set `KANDELO_HOMEBREW_RUNTIME_SUPPORT`,
+`KANDELO_HOMEBREW_RUNTIME_UNSUPPORTED_HOSTS`,
+`KANDELO_HOMEBREW_RUNTIME_UNSUPPORTED_REASON_CODE`, and
+`KANDELO_HOMEBREW_RUNTIME_UNSUPPORTED_REASON` for custom sidecar commands.
+
 ## VFS Planning And Building
 
 Homebrew-derived VFS images are built from sidecars and verified bottle bytes,
@@ -311,6 +331,11 @@ for formulae whose registry manifests declare `arches = ["wasm32", "wasm64"]`.
 Dry-run bottle evidence remains local evidence until the trusted workflow
 publishes GHCR bottle bytes and tap sidecars.
 
+If the planner sees an explicit unsupported runtime status, the generic Node
+smoke records skipped rows for the VFS build and dependent Node smoke with the
+sidecar reason and artifact paths. This is an accepted unsupported outcome, not
+a stale-Wasm guard failure.
+
 Browser compatibility requires a separate browser smoke. For the current
 `hello` path, the trusted publisher builds a precomposed wasm32 VFS image,
 serves it through the browser demo, runs Chromium Playwright against
@@ -352,6 +377,8 @@ Launch-time archive failures must remain visible in the Kandelo UI.
 - Do not treat a successful bottle build as browser support.
 - Do not mark `browser_compatible = true` without browser smoke evidence.
 - Do not use Homebrew sidecars to weaken Kandelo ABI or cache-key checks.
+- Do not claim `runtime_support` for Node or browser when the bottle contains
+  artifact-policy failures that would make a VFS image unsavable.
 - Do not publish user-facing `brew install` instructions until guest Homebrew
   install is validated.
 - Do not delete GHCR bottle blobs as the normal recovery path. Prefer marking a

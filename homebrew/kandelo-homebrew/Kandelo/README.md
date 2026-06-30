@@ -74,6 +74,8 @@ The semantic validator must still check cross-file and artifact facts:
 - metadata ABI matches the `bottles-abi-v<N>` release;
 - formula sidecars match their package entry in `metadata.json`;
 - bottle `arch` and `bottle_tag` agree;
+- `runtime_support` and `runtime_status` agree for Node and browser runtime
+  claims;
 - browser-compatible entries have browser validation evidence;
 - link-manifest paths do not escape the Homebrew prefix;
 - link sources exist inside the verified bottle payload;
@@ -104,6 +106,12 @@ bytes are extracted.
 For `failed`, `pending`, or `building` bottle entries, the planner uses the
 complete last-green fallback fields when available. Without a complete fallback,
 the package is not plannable for a VFS image.
+
+`runtime_support` is a VFS runtime allow-list, not a bottle build result. A
+successful bottle may set `runtime_support = []` when `runtime_status.node` and
+`runtime_status.browser` explain why it is intentionally unsupported. The
+planner rejects an unsupported requested runtime before loading link manifests
+or bottle bytes and exposes the sidecar reason to Node and browser callers.
 
 ## VFS Image Building
 
@@ -151,8 +159,9 @@ Playwright Chromium, and runs:
 ```
 
 On success, sidecars record `runtime_support = ["node", "browser"]` and
-`browser_compatible = true`; otherwise the bottle remains Node-only. Gallery
-assets are generated with:
+`browser_compatible = true`; otherwise the browser host stays out of
+`runtime_support`, or both hosts stay out when `runtime_status` marks the
+bottle intentionally unsupported. Gallery assets are generated with:
 
 ```bash
 scripts/homebrew-create-browser-gallery.sh \

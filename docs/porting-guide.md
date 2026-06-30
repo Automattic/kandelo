@@ -750,6 +750,11 @@ published bottle plus a successful Node VFS smoke proves the bottle can be
 poured into a precomposed image; browser support additionally requires the
 browser smoke and `browser_compatible = true` metadata.
 
+If a formula build and direct `test do` pass but the bottle contains Wasm that
+cannot be saved in a Kandelo VFS image, do not claim Node or browser
+`runtime_support`. Emit `runtime_support = []` with `runtime_status` reasons
+and artifact-policy evidence until the package has a VFS-safe runtime profile.
+
 ## Existing Build Scripts
 
 All build scripts are in `packages/registry/`. They serve as reference implementations:

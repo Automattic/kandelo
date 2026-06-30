@@ -25,6 +25,16 @@
       "cache_key_sha": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
       "link_manifest": "Kandelo/link/hello-2.12.1-rebuild0-wasm32.json",
       "runtime_support": ["node"],
+      "runtime_status": {
+        "node": {
+          "status": "supported"
+        },
+        "browser": {
+          "status": "not-validated",
+          "reason_code": "smoke-not-recorded",
+          "reason": "No successful browser VFS smoke was recorded for hello wasm32."
+        }
+      },
       "browser_compatible": false,
       "fork_instrumentation": "not-required",
       "status": "success",

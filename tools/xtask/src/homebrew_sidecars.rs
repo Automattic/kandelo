@@ -1,12 +1,24 @@
 use serde::Deserialize;
-use serde_json::{Value, json};
+use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs::{self, File};
+use std::io::Read;
 use std::path::{Path, PathBuf};
 
 const METADATA_REL: &str = "Kandelo/metadata.json";
 const ZERO_SHA256: &str = "0000000000000000000000000000000000000000000000000000000000000000";
+const RUNTIME_HOSTS: [&str; 2] = ["node", "browser"];
+const RAW_FORK_REASON_CODE: &str = "fork-instrumentation-disabled-imports-kernel-fork";
+const RAW_FORK_REASON: &str = "The linked Wasm imports kernel.kernel_fork but intentionally disables wasm-fork-instrument; VFS images must reject it.";
+const WASM_MAGIC: &[u8] = b"\0asm";
+const WPK_FORK_EXPORTS: [&str; 5] = [
+    "wpk_fork_unwind_begin",
+    "wpk_fork_unwind_end",
+    "wpk_fork_rewind_begin",
+    "wpk_fork_rewind_end",
+    "wpk_fork_state",
+];
 
 pub fn run(args: Vec<String>) -> Result<(), String> {
     let options = Options::parse(args)?;
@@ -134,6 +146,8 @@ struct BottleInput {
     cellar: String,
     prefix: String,
     runtime_support: Vec<String>,
+    #[serde(default)]
+    runtime_status: Option<BTreeMap<String, RuntimeStatusInput>>,
     browser_compatible: bool,
     fork_instrumentation: String,
     #[serde(default)]
@@ -170,6 +184,25 @@ struct BottleInput {
     last_attempt_by: Option<String>,
     #[serde(default)]
     queued_at: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RuntimeStatusInput {
+    status: String,
+    #[serde(default)]
+    reason_code: Option<String>,
+    #[serde(default)]
+    reason: Option<String>,
+    #[serde(default)]
+    artifact_policy_failures: Vec<ArtifactPolicyFailureInput>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ArtifactPolicyFailureInput {
+    path: String,
+    failures: Vec<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -216,6 +249,19 @@ struct PendingProvenance {
     formula_sidecar_path: String,
     link_manifest_path: String,
     value: Value,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ArtifactPolicyFailure {
+    path: String,
+    failures: Vec<String>,
+}
+
+#[derive(Default)]
+struct WasmArtifactFacts {
+    imports_kernel_fork: bool,
+    exports: BTreeSet<String>,
+    is_relocatable_object: bool,
 }
 
 impl Generator<'_> {
@@ -595,8 +641,9 @@ impl Generator<'_> {
             output["queued_at"] = json!(queued_at);
         }
 
+        let artifact_policy_failures;
         if status == "success" {
-            self.add_success_bottle(
+            artifact_policy_failures = self.add_success_bottle(
                 package,
                 bottle,
                 formula_sha,
@@ -605,8 +652,10 @@ impl Generator<'_> {
                 link_outputs,
             )?;
         } else {
+            artifact_policy_failures = Vec::new();
             self.add_non_success_fields(package, bottle, &mut output)?;
         }
+        output["runtime_status"] = runtime_status_json(package, bottle, &artifact_policy_failures)?;
 
         Ok(output)
     }
@@ -619,7 +668,7 @@ impl Generator<'_> {
         formula_sidecar_path: &str,
         output: &mut Value,
         link_outputs: &mut Vec<(String, Value)>,
-    ) -> Result<(), String> {
+    ) -> Result<Vec<ArtifactPolicyFailure>, String> {
         let url = required_field(&bottle.url, package, bottle, "url")?;
         let cache_key_sha =
             required_field(&bottle.cache_key_sha, package, bottle, "cache_key_sha")?;
@@ -645,6 +694,8 @@ impl Generator<'_> {
 
         let bottle_path = self.resolve_input_relative(bottle_file);
         verify_bottle_payload(package, bottle, &bottle_path, payload_root)?;
+        let artifact_policy_failures =
+            scan_bottle_artifact_policy_failures(package, bottle, &bottle_path, payload_root)?;
         let (bottle_sha, bottle_bytes) = sha256_file_and_len(&bottle_path)?;
         let link_path = link_manifest_path(package, &bottle.arch);
         let provenance_path = provenance_path(package, &bottle.arch);
@@ -735,7 +786,7 @@ impl Generator<'_> {
             value: provenance,
         });
 
-        Ok(())
+        Ok(artifact_policy_failures)
     }
 
     fn add_non_success_fields(
@@ -877,6 +928,186 @@ struct PackageOutput {
     bottles: usize,
     link_manifests: usize,
     provenance_reports: usize,
+}
+
+fn runtime_status_json(
+    package: &PackageInput,
+    bottle: &BottleInput,
+    artifact_policy_failures: &[ArtifactPolicyFailure],
+) -> Result<Value, String> {
+    let runtime_support: BTreeSet<&str> =
+        bottle.runtime_support.iter().map(String::as_str).collect();
+    for host in &runtime_support {
+        if !RUNTIME_HOSTS.contains(host) {
+            return Err(bottle_error(
+                package,
+                bottle,
+                &format!("runtime_support contains unsupported host {host:?}"),
+            ));
+        }
+    }
+
+    if !artifact_policy_failures.is_empty() && !runtime_support.is_empty() {
+        return Err(bottle_error(
+            package,
+            bottle,
+            "artifact-policy failures are incompatible with runtime_support; remove node/browser support and provide runtime_status unsupported reasons",
+        ));
+    }
+
+    let mut statuses = BTreeMap::new();
+    if let Some(input) = &bottle.runtime_status {
+        for (host, status) in input {
+            if !RUNTIME_HOSTS.contains(&host.as_str()) {
+                return Err(bottle_error(
+                    package,
+                    bottle,
+                    &format!("runtime_status contains unsupported host {host:?}"),
+                ));
+            }
+            statuses.insert(host.as_str(), status.clone());
+        }
+    }
+
+    let mut out = serde_json::Map::new();
+    for host in RUNTIME_HOSTS {
+        let status = if let Some(status) = statuses.remove(host) {
+            status
+        } else if runtime_support.contains(host) {
+            RuntimeStatusInput {
+                status: "supported".to_string(),
+                reason_code: None,
+                reason: None,
+                artifact_policy_failures: Vec::new(),
+            }
+        } else if artifact_policy_failures.is_empty() {
+            RuntimeStatusInput {
+                status: "not-validated".to_string(),
+                reason_code: Some("smoke-not-recorded".to_string()),
+                reason: Some(format!(
+                    "No successful {host} VFS smoke was recorded for {} {}.",
+                    package.name, bottle.arch
+                )),
+                artifact_policy_failures: Vec::new(),
+            }
+        } else {
+            return Err(bottle_error(
+                package,
+                bottle,
+                &format!(
+                    "artifact-policy failures require explicit runtime_status.{host}=unsupported"
+                ),
+            ));
+        };
+
+        let status_name = status.status.as_str();
+        match status_name {
+            "supported" => {
+                if !runtime_support.contains(host) {
+                    return Err(bottle_error(
+                        package,
+                        bottle,
+                        &format!("runtime_status.{host}=supported requires runtime_support to include {host}"),
+                    ));
+                }
+            }
+            "unsupported" | "failed" | "not-validated" => {
+                if runtime_support.contains(host) {
+                    return Err(bottle_error(
+                        package,
+                        bottle,
+                        &format!("runtime_status.{host}={status_name} is incompatible with runtime_support containing {host}"),
+                    ));
+                }
+            }
+            other => {
+                return Err(bottle_error(
+                    package,
+                    bottle,
+                    &format!("runtime_status.{host}.status {other:?} is invalid"),
+                ));
+            }
+        }
+
+        if status_name == "unsupported"
+            && (status.reason_code.as_deref().unwrap_or("").is_empty()
+                || status.reason.as_deref().unwrap_or("").is_empty())
+        {
+            return Err(bottle_error(
+                package,
+                bottle,
+                &format!("runtime_status.{host}=unsupported requires reason_code and reason"),
+            ));
+        }
+
+        if !artifact_policy_failures.is_empty() && status_name != "unsupported" {
+            return Err(bottle_error(
+                package,
+                bottle,
+                &format!("artifact-policy failures require runtime_status.{host}=unsupported"),
+            ));
+        }
+
+        let artifact_failures = if status.artifact_policy_failures.is_empty()
+            && status_name == "unsupported"
+            && !artifact_policy_failures.is_empty()
+        {
+            artifact_policy_failures
+                .iter()
+                .map(|failure| {
+                    json!({
+                        "path": failure.path,
+                        "failures": failure.failures,
+                    })
+                })
+                .collect::<Vec<_>>()
+        } else {
+            status
+                .artifact_policy_failures
+                .iter()
+                .map(|failure| {
+                    json!({
+                        "path": failure.path,
+                        "failures": failure.failures,
+                    })
+                })
+                .collect::<Vec<_>>()
+        };
+
+        let mut value = json!({ "status": status_name });
+        if let Some(reason_code) = status
+            .reason_code
+            .as_deref()
+            .filter(|value| !value.is_empty())
+        {
+            value["reason_code"] = json!(reason_code);
+        } else if status_name == "unsupported" && !artifact_policy_failures.is_empty() {
+            value["reason_code"] = json!(RAW_FORK_REASON_CODE);
+        }
+        if let Some(reason) = status.reason.as_deref().filter(|value| !value.is_empty()) {
+            value["reason"] = json!(reason);
+        } else if status_name == "unsupported" && !artifact_policy_failures.is_empty() {
+            value["reason"] = json!(RAW_FORK_REASON);
+        }
+        if !artifact_failures.is_empty() {
+            value["artifact_policy_failures"] = Value::Array(artifact_failures);
+        }
+        out.insert(host.to_string(), value);
+    }
+
+    if bottle.runtime_support.is_empty() {
+        for host in RUNTIME_HOSTS {
+            if !out.contains_key(host) {
+                return Err(bottle_error(
+                    package,
+                    bottle,
+                    &format!("empty runtime_support requires runtime_status.{host}"),
+                ));
+            }
+        }
+    }
+
+    Ok(Value::Object(out))
 }
 
 fn read_manifest(path: &Path) -> Result<SidecarInput, String> {
@@ -1047,6 +1278,95 @@ fn verify_bottle_payload(
     Ok(())
 }
 
+fn scan_bottle_artifact_policy_failures(
+    package: &PackageInput,
+    bottle: &BottleInput,
+    bottle_path: &Path,
+    payload_root: &str,
+) -> Result<Vec<ArtifactPolicyFailure>, String> {
+    require_relative_path(payload_root, "payload_root")?;
+    let file = File::open(bottle_path).map_err(|e| {
+        bottle_error(
+            package,
+            bottle,
+            &format!(
+                "open bottle for artifact scan {}: {e}",
+                bottle_path.display()
+            ),
+        )
+    })?;
+    let decoder = flate2::read::GzDecoder::new(file);
+    let mut archive = tar::Archive::new(decoder);
+    let entries = archive.entries().map_err(|e| {
+        bottle_error(
+            package,
+            bottle,
+            &format!("read bottle entries for artifact scan: {e}"),
+        )
+    })?;
+    let mut out = Vec::new();
+    for entry in entries {
+        let mut entry = entry.map_err(|e| {
+            bottle_error(
+                package,
+                bottle,
+                &format!("read bottle entry for artifact scan: {e}"),
+            )
+        })?;
+        if !entry.header().entry_type().is_file() {
+            continue;
+        }
+        let entry_path = entry
+            .path()
+            .map_err(|e| {
+                bottle_error(
+                    package,
+                    bottle,
+                    &format!("read bottle entry path for artifact scan: {e}"),
+                )
+            })?
+            .to_str()
+            .ok_or_else(|| {
+                bottle_error(
+                    package,
+                    bottle,
+                    "bottle entry path for artifact scan is not UTF-8",
+                )
+            })?
+            .trim_start_matches("./")
+            .trim_end_matches('/')
+            .to_string();
+        let mut bytes = Vec::new();
+        entry.read_to_end(&mut bytes).map_err(|e| {
+            bottle_error(
+                package,
+                bottle,
+                &format!("read bottle entry {entry_path:?} for artifact scan: {e}"),
+            )
+        })?;
+        if !is_wasm_bytes(&bytes) {
+            continue;
+        }
+        let failures = wasm_artifact_policy_failures(&bytes);
+        if failures.is_empty() {
+            continue;
+        }
+        out.push(ArtifactPolicyFailure {
+            path: artifact_evidence_path(&entry_path, payload_root),
+            failures,
+        });
+    }
+    out.sort_by(|a, b| a.path.cmp(&b.path));
+    Ok(out)
+}
+
+fn artifact_evidence_path(entry_path: &str, payload_root: &str) -> String {
+    entry_path
+        .strip_prefix(&format!("{payload_root}/"))
+        .unwrap_or(entry_path)
+        .to_string()
+}
+
 fn payload_contains(entries: &BTreeSet<String>, payload_root: &str, rel: &str) -> bool {
     entries.contains(rel) || entries.contains(&format!("{payload_root}/{rel}"))
 }
@@ -1075,6 +1395,111 @@ fn tar_gz_entries(path: &Path) -> Result<BTreeSet<String>, String> {
         }
     }
     Ok(out)
+}
+
+fn is_wasm_bytes(bytes: &[u8]) -> bool {
+    bytes.len() >= WASM_MAGIC.len() && &bytes[..WASM_MAGIC.len()] == WASM_MAGIC
+}
+
+fn wasm_artifact_policy_failures(bytes: &[u8]) -> Vec<String> {
+    let mut failures = Vec::new();
+    if bytes_contain(bytes, b"asyncify_") {
+        failures.push("contains asyncify_".to_string());
+    }
+
+    let facts = match wasm_artifact_facts(bytes) {
+        Ok(facts) => facts,
+        Err(e) => {
+            failures.push(e);
+            return failures;
+        }
+    };
+
+    if facts.is_relocatable_object {
+        return failures;
+    }
+
+    let present_wpk_exports = WPK_FORK_EXPORTS
+        .iter()
+        .copied()
+        .filter(|name| facts.exports.contains(*name))
+        .collect::<Vec<_>>();
+    let has_complete_fork_instrumentation = present_wpk_exports.len() == WPK_FORK_EXPORTS.len();
+    if !present_wpk_exports.is_empty() && !has_complete_fork_instrumentation {
+        let missing = WPK_FORK_EXPORTS
+            .iter()
+            .copied()
+            .filter(|name| !facts.exports.contains(*name))
+            .collect::<Vec<_>>();
+        failures.push(format!(
+            "incomplete wasm-fork-instrument exports; missing {}",
+            missing.join(", ")
+        ));
+    }
+
+    if facts.imports_kernel_fork && !has_complete_fork_instrumentation {
+        failures.push(
+            "imports kernel.kernel_fork without complete wasm-fork-instrument exports".to_string(),
+        );
+    }
+
+    failures
+}
+
+fn wasm_artifact_facts(bytes: &[u8]) -> Result<WasmArtifactFacts, String> {
+    use wasmparser::{Imports, Parser, Payload};
+
+    let mut facts = WasmArtifactFacts::default();
+    for payload in Parser::new(0).parse_all(bytes) {
+        match payload.map_err(|e| format!("parse wasm: {e}"))? {
+            Payload::ImportSection(r) => {
+                for group in r {
+                    let group = group.map_err(|e| format!("import section: {e}"))?;
+                    match group {
+                        Imports::Single(_, imp) => {
+                            if imp.module == "kernel" && imp.name == "kernel_fork" {
+                                facts.imports_kernel_fork = true;
+                            }
+                        }
+                        Imports::Compact1 { module, items } => {
+                            for item in items {
+                                let item = item.map_err(|e| format!("import section: {e}"))?;
+                                if module == "kernel" && item.name == "kernel_fork" {
+                                    facts.imports_kernel_fork = true;
+                                }
+                            }
+                        }
+                        Imports::Compact2 { module, names, .. } => {
+                            for name in names {
+                                let name = name.map_err(|e| format!("import section: {e}"))?;
+                                if module == "kernel" && name == "kernel_fork" {
+                                    facts.imports_kernel_fork = true;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            Payload::ExportSection(r) => {
+                for export in r {
+                    let export = export.map_err(|e| format!("export section: {e}"))?;
+                    facts.exports.insert(export.name.to_string());
+                }
+            }
+            Payload::CustomSection(c) => {
+                let name = c.name();
+                if name == "linking" || name.starts_with("reloc.") {
+                    facts.is_relocatable_object = true;
+                }
+            }
+            _ => {}
+        }
+    }
+    Ok(facts)
+}
+
+fn bytes_contain(bytes: &[u8], needle: &[u8]) -> bool {
+    needle.is_empty() || bytes.windows(needle.len()).any(|window| window == needle)
 }
 
 fn sha256_file(path: &Path) -> Result<String, String> {
@@ -1132,8 +1557,8 @@ fn set_pointer(value: &mut Value, pointer: &str, replacement: Value) -> Result<(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use flate2::Compression;
     use flate2::write::GzEncoder;
+    use flate2::Compression;
     use tempfile::TempDir;
 
     fn write_text(path: &Path, text: &str) {
@@ -1151,18 +1576,28 @@ mod tests {
     }
 
     fn write_bottle(path: &Path) {
+        write_bottle_with_entries(
+            path,
+            &[
+                ("hello/2.12.1/bin/hello", b"#!/bin/sh\n".as_slice()),
+                (
+                    "hello/2.12.1/INSTALL_RECEIPT.json",
+                    b"{\"installed_as_dependency\":false}\n".as_slice(),
+                ),
+            ],
+        );
+    }
+
+    fn write_bottle_with_entries(path: &Path, entries: &[(&str, &[u8])]) {
         if let Some(parent) = path.parent() {
             fs::create_dir_all(parent).unwrap();
         }
         let file = File::create(path).unwrap();
         let encoder = GzEncoder::new(file, Compression::default());
         let mut archive = tar::Builder::new(encoder);
-        append_tar_file(&mut archive, "hello/2.12.1/bin/hello", b"#!/bin/sh\n");
-        append_tar_file(
-            &mut archive,
-            "hello/2.12.1/INSTALL_RECEIPT.json",
-            b"{\"installed_as_dependency\":false}\n",
-        );
+        for (path, bytes) in entries {
+            append_tar_file(&mut archive, path, bytes);
+        }
         archive.finish().unwrap();
     }
 
@@ -1173,6 +1608,17 @@ mod tests {
         header.set_mtime(0);
         header.set_cksum();
         archive.append_data(&mut header, path, bytes).unwrap();
+    }
+
+    fn raw_fork_wasm() -> Vec<u8> {
+        vec![
+            0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00, // header
+            0x01, 0x04, 0x01, 0x60, 0x00, 0x00, // type: () -> ()
+            0x02, 0x16, 0x01, // import section, one import
+            0x06, b'k', b'e', b'r', b'n', b'e', b'l', // module
+            0x0b, b'k', b'e', b'r', b'n', b'e', b'l', b'_', b'f', b'o', b'r', b'k', 0x00,
+            0x00, // function import type 0
+        ]
     }
 
     fn copy_tree(from: &Path, to: &Path) {
@@ -1393,6 +1839,87 @@ mod tests {
         crate::homebrew_validate::run(vec![
             "--tap-root".to_string(),
             failed.tap_root.to_string_lossy().into_owned(),
+        ])
+        .unwrap();
+    }
+
+    #[test]
+    fn success_generation_rejects_runtime_support_for_stale_fork_artifacts() {
+        let fixture = Fixture::new("success");
+        let wasm = raw_fork_wasm();
+        write_bottle_with_entries(
+            &fixture.input_path.with_file_name("hello.bottle.tar.gz"),
+            &[
+                ("hello/2.12.1/bin/hello", wasm.as_slice()),
+                (
+                    "hello/2.12.1/INSTALL_RECEIPT.json",
+                    b"{\"installed_as_dependency\":false}\n".as_slice(),
+                ),
+            ],
+        );
+
+        let err = run(vec![
+            "--tap-root".to_string(),
+            fixture.tap_root.to_string_lossy().into_owned(),
+            "--input".to_string(),
+            fixture.input_path.to_string_lossy().into_owned(),
+        ])
+        .unwrap_err();
+
+        assert!(
+            err.contains("artifact-policy failures are incompatible with runtime_support"),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn unsupported_runtime_status_records_stale_fork_evidence() {
+        let fixture = Fixture::new("success");
+        let wasm = raw_fork_wasm();
+        write_bottle_with_entries(
+            &fixture.input_path.with_file_name("hello.bottle.tar.gz"),
+            &[
+                ("hello/2.12.1/bin/hello", wasm.as_slice()),
+                (
+                    "hello/2.12.1/INSTALL_RECEIPT.json",
+                    b"{\"installed_as_dependency\":false}\n".as_slice(),
+                ),
+            ],
+        );
+        let mut input = load_json(&fixture.input_path).unwrap();
+        let bottle = &mut input["packages"][0]["bottles"][0];
+        bottle["runtime_support"] = json!([]);
+        bottle["runtime_status"] = json!({
+            "node": {
+                "status": "unsupported",
+                "reason_code": RAW_FORK_REASON_CODE,
+                "reason": RAW_FORK_REASON
+            },
+            "browser": {
+                "status": "unsupported",
+                "reason_code": RAW_FORK_REASON_CODE,
+                "reason": RAW_FORK_REASON
+            }
+        });
+        write_json_value(&fixture.input_path, &input);
+
+        fixture.run(None);
+
+        let metadata: Value = load_json(&fixture.tap_root.join("Kandelo/metadata.json")).unwrap();
+        let bottle = &metadata["packages"][0]["bottles"][0];
+        assert_eq!(bottle["runtime_support"], json!([]));
+        assert_eq!(
+            bottle["runtime_status"]["node"]["artifact_policy_failures"][0]["path"],
+            json!("bin/hello")
+        );
+        assert_eq!(
+            bottle["runtime_status"]["node"]["artifact_policy_failures"][0]["failures"],
+            json!(["imports kernel.kernel_fork without complete wasm-fork-instrument exports"])
+        );
+
+        crate::homebrew_validate::run(vec![
+            "--tap-root".to_string(),
+            fixture.tap_root.to_string_lossy().into_owned(),
         ])
         .unwrap();
     }
