@@ -14,7 +14,7 @@ spdx = "GPL-2.0-or-later"
 url = "https://github.com/brandonpayton/kandelo/blob/main/COPYING"
 
 [build]
-script_path = "packages/registry/kernel/build-kernel.sh"
+script_path = "platform/artifacts/kernel/build-kernel.sh"
 
 [[outputs]]
 name = "kernel"

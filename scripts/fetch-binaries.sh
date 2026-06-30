@@ -1,11 +1,18 @@
 #!/usr/bin/env bash
 #
-# Fetch published Wasm binaries by walking every package under
+# Fetch published Wasm binaries by materializing first-party runtime
+# platform artifacts, then walking every package under
 # `packages/registry/<name>/` that has both package.toml and build.toml.
 #
-# The resolver consumes the central binary index configured by
+# Runtime platform artifacts (`kernel`, `userspace`, `kandelo-sdk`) are owned
+# by `platform/artifacts/manifest.json` and materialized through:
+#
+#     cargo run -p xtask -- platform-artifacts materialize \
+#         --binaries-dir <repo>/binaries
+#
+# Package artifacts consume the central binary index configured by
 # `WASM_POSIX_BINARY_INDEX_URL`. For each package that has a
-# publishable build source (`build.toml`) we run
+# publishable build source (`build.toml`) we then run
 #
 #     cargo run -p xtask -- build-deps resolve <name> \
 #         --arch <arch> --binaries-dir <repo>/binaries
@@ -17,10 +24,9 @@
 #
 # Packages without `build.toml` (kernel-test-programs, kind=source,
 # libraries that ship only as link-time inputs) are skipped here.
-# Kernel and userspace now have build.toml entries, so published
-# release indexes can populate `binaries/kernel.wasm` and
-# `binaries/userspace.wasm` for fresh checkouts and npm package
-# preparation.
+# `kernel`, `userspace`, and `kandelo-sdk` are also skipped in the package
+# loop because their runtime paths are populated by the platform artifact
+# materializer before registry package resolution starts.
 #
 # Per-arch handling: read the optional `arches = ["wasm32", ...]`
 # field from each package.toml. Default is `["wasm32"]`. For each
@@ -94,6 +100,7 @@ PR_NUMBER=""
 ALLOW_STALE=0
 FETCH_ONLY=0
 SKIP_PKGS=" ${WASM_POSIX_FETCH_SKIP_PKGS:-} "
+PLATFORM_ARTIFACT_PKGS=" kernel userspace kandelo-sdk "
 while [ $# -gt 0 ]; do
     case "$1" in
         --offline)     OFFLINE=1; shift ;;
@@ -153,10 +160,6 @@ if [ "$OFFLINE" = "1" ]; then
     export WASM_POSIX_OFFLINE=1
 fi
 
-# --- Walk packages and resolve each --------------------------------------
-LIBS_DIR="$REPO_ROOT/packages/registry"
-[ -d "$LIBS_DIR" ] || { echo "fetch-binaries: $LIBS_DIR not found" >&2; exit 2; }
-
 # Collect failures and report them after the loop. A single archive
 # that's been pulled from the release (or whose source build fails on
 # this runner) shouldn't stop fetch-binaries from populating the rest
@@ -165,6 +168,25 @@ FAILED=()
 TOTAL=0
 RESOLVED=0
 SKIPPED=0
+
+# --- Materialize runtime platform artifacts ------------------------------
+echo "fetch-binaries: materialize platform artifacts"
+TOTAL=$((TOTAL + 1))
+platform_args=(platform-artifacts materialize --binaries-dir "$REPO_ROOT/binaries")
+if [ "$FETCH_ONLY" = "1" ]; then
+    platform_args+=(--fetch-only)
+fi
+if cargo run --release -p xtask --target "$HOST_TARGET" --quiet -- \
+        "${platform_args[@]}" >/dev/null; then
+    RESOLVED=$((RESOLVED + 1))
+else
+    FAILED+=("platform-artifacts")
+    echo "fetch-binaries: WARN platform artifacts failed to materialize" >&2
+fi
+
+# --- Walk packages and resolve each --------------------------------------
+LIBS_DIR="$REPO_ROOT/packages/registry"
+[ -d "$LIBS_DIR" ] || { echo "fetch-binaries: $LIBS_DIR not found" >&2; exit 2; }
 
 # Read the `arches` list out of a package.toml. AWK keeps the
 # dependency footprint tight (no jq/tomlq needed for what is
@@ -237,6 +259,12 @@ for pkg_dir in "$LIBS_DIR"/*/; do
 
     if [[ "$SKIP_PKGS" == *" $pkg "* ]]; then
         echo "fetch-binaries: skip $pkg (WASM_POSIX_FETCH_SKIP_PKGS)"
+        SKIPPED=$((SKIPPED + 1))
+        continue
+    fi
+
+    if [[ "$PLATFORM_ARTIFACT_PKGS" == *" $pkg "* ]]; then
+        echo "fetch-binaries: skip $pkg (platform artifact owner)"
         SKIPPED=$((SKIPPED + 1))
         continue
     fi

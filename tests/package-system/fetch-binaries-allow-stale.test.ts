@@ -1,7 +1,7 @@
 /**
  * Unit-ish test for `scripts/fetch-binaries.sh` (Phase C cutover).
  *
- * Exercises the per-package walk: for each
+ * Exercises platform-artifact materialization plus the per-package walk: for each
  * `packages/registry/<name>/package.toml` with a sibling `build.toml`,
  * the script runs
  *
@@ -256,25 +256,28 @@ exit 0
     const { status, stdout, stderr } = runScript([]);
     expect(status, `stderr:\n${stderr}\nstdout:\n${stdout}`).toBe(0);
 
-    // alpha: single arch (default wasm32) → 1 build-deps invocation.
+    const platformLines = logLines(/platform-artifacts.*materialize/);
+    expect(platformLines.length).toBe(1);
+
+    // alpha: single arch (default wasm32) -> 1 build-deps invocation.
     const alphaLines = logLines(/build-deps.*resolve\s+alpha\b/);
     expect(alphaLines.length).toBe(1);
     expect(alphaLines[0]).toMatch(/--arch\s+wasm32/);
     expect(alphaLines[0]).toMatch(/--binaries-dir\s+\S+/);
 
-    // bravo: multi-arch → 2 build-deps invocations.
+    // bravo: multi-arch -> 2 build-deps invocations.
     const bravoLines = logLines(/build-deps.*resolve\s+bravo\b/);
     expect(bravoLines.length).toBe(2);
     expect(bravoLines.some((l) => /--arch\s+wasm32/.test(l))).toBe(true);
     expect(bravoLines.some((l) => /--arch\s+wasm64/.test(l))).toBe(true);
 
-    // charlie: multi-arch → 2 build-deps invocations.
+    // charlie: multi-arch -> 2 build-deps invocations.
     const charlieLines = logLines(/build-deps.*resolve\s+charlie\b/);
     expect(charlieLines.length).toBe(2);
     expect(charlieLines.some((l) => /--arch\s+wasm32/.test(l))).toBe(true);
     expect(charlieLines.some((l) => /--arch\s+wasm64/.test(l))).toBe(true);
 
-    // delta: no build.toml → no build-deps invocation.
+    // delta: no build.toml -> no build-deps invocation.
     const deltaLines = logLines(/build-deps.*resolve\s+delta\b/);
     expect(deltaLines.length).toBe(0);
 
@@ -285,10 +288,11 @@ exit 0
     const installLines = logLines(/install-release/);
     expect(installLines.length).toBe(0);
 
-    // Summary prints resolved=5 (alpha ×1 + bravo ×2 + charlie ×2),
-    // skipped=1 (delta). The stray dir without package.toml is
-    // silently ignored (counted as neither resolved nor skipped).
-    expect(stdout).toMatch(/resolved=5\s+total=5\s+skipped=1/);
+    // Summary prints resolved=6 (platform artifacts + alpha x1 +
+    // bravo x2 + charlie x2), skipped=1 (delta). The stray dir
+    // without package.toml is silently ignored (counted as neither
+    // resolved nor skipped).
+    expect(stdout).toMatch(/resolved=6\s+total=6\s+skipped=1/);
   });
 
   it("--allow-stale resolves the same packages as the default (banner printed)", () => {
@@ -296,6 +300,7 @@ exit 0
     expect(status, `stderr:\n${stderr}\nstdout:\n${stdout}`).toBe(0);
 
     // Same set of resolves regardless of --allow-stale.
+    expect(logLines(/platform-artifacts.*materialize/).length).toBe(1);
     expect(logLines(/build-deps.*resolve\s+alpha\b/).length).toBe(1);
     expect(logLines(/build-deps.*resolve\s+bravo\b/).length).toBe(2);
     expect(logLines(/build-deps.*resolve\s+charlie\b/).length).toBe(2);
@@ -320,6 +325,10 @@ exit 0
     expect(bravoLines.every((l) => /--fetch-only/.test(l))).toBe(true);
 
     expect(stdout).toMatch(/--fetch-only enabled/);
+
+    const platformLines = logLines(/platform-artifacts.*materialize/);
+    expect(platformLines.length).toBe(1);
+    expect(platformLines[0]).toMatch(/--fetch-only/);
   });
 
   it("--allow-stale degrades per-package failures to warnings (exit 0)", () => {

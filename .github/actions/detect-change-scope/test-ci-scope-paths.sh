@@ -84,6 +84,12 @@ assert_matches binary_materialization_changed_files \
   "tools/xtask/src/remote_fetch.rs" \
   "tools/xtask/src/remote_fetch.rs"
 assert_matches binary_materialization_changed_files \
+  "tools/xtask/src/platform_artifacts.rs" \
+  "tools/xtask/src/platform_artifacts.rs"
+assert_matches binary_materialization_changed_files \
+  "platform/artifacts/manifest.json" \
+  "platform/artifacts/manifest.json"
+assert_matches binary_materialization_changed_files \
   "scripts/fetch-binaries.sh" \
   "scripts/fetch-binaries.sh"
 assert_matches binary_materialization_changed_files \
