@@ -3,6 +3,8 @@ set -euo pipefail
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$HERE/../../.." && pwd)"
+OUT_DIR="${WASM_POSIX_DEP_OUT_DIR:-$HERE}"
+OUT="$OUT_DIR/modeset.wasm"
 
 source "$REPO_ROOT/sdk/activate.sh"
 export WASM_POSIX_SYSROOT="$REPO_ROOT/sysroot"
@@ -20,6 +22,7 @@ PKG_CFLAGS="$(wasm32posix-pkg-config --cflags libdrm gbm egl glesv2)"
 PKG_LIBS="$(wasm32posix-pkg-config --libs gbm libdrm egl glesv2)"
 
 echo "==> Building modeset fluid simulation..."
+mkdir -p "$OUT_DIR"
 wasm32posix-cc \
     -std=c11 \
     -O2 \
@@ -31,13 +34,13 @@ wasm32posix-cc \
     "$REPO_ROOT/programs/modeset.c" \
     $PKG_LIBS \
     -lm \
-    -o "$HERE/modeset.wasm"
+    -o "$OUT"
 
 "$REPO_ROOT/scripts/run-wasm-fork-instrument.sh" \
-    "$HERE/modeset.wasm" \
-    -o "$HERE/modeset.wasm.instr"
-mv "$HERE/modeset.wasm.instr" "$HERE/modeset.wasm"
+    "$OUT" \
+    -o "$OUT.instr"
+mv "$OUT.instr" "$OUT"
 
 cd "$REPO_ROOT"
 source "$REPO_ROOT/scripts/install-local-binary.sh"
-install_local_binary modeset "$HERE/modeset.wasm" modeset.wasm
+install_local_binary modeset "$OUT" modeset.wasm

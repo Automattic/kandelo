@@ -25,8 +25,9 @@ set -euo pipefail
 GIT_VERSION="${GIT_VERSION:-2.47.1}"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
-SRC_DIR="$SCRIPT_DIR/git-src"
-BIN_DIR="$SCRIPT_DIR/bin"
+WORK_DIR="${WASM_POSIX_DEP_WORK_DIR:-$SCRIPT_DIR}"
+SRC_DIR="$WORK_DIR/git-src"
+BIN_DIR="${WASM_POSIX_DEP_OUT_DIR:-$SCRIPT_DIR/bin}"
 # Explicit env wins; else the in-tree sysroot. Matches build-libcurl.sh:49.
 SYSROOT="${WASM_POSIX_SYSROOT:-$REPO_ROOT/sysroot}"
 
