@@ -30,23 +30,52 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
-SRC_DIR="$SCRIPT_DIR/ncurses-src"
+
+# shellcheck source=/dev/null
+source "$REPO_ROOT/sdk/activate.sh"
 
 # --- Inputs from resolver, with legacy fallbacks ---
 NCURSES_VERSION="${WASM_POSIX_DEP_VERSION:-${NCURSES_VERSION:-6.5}}"
 INSTALL_DIR="${WASM_POSIX_DEP_OUT_DIR:-$SCRIPT_DIR/ncurses-install}"
+WORK_DIR="${WASM_POSIX_DEP_WORK_DIR:-$SCRIPT_DIR}"
+TARGET_ARCH="${WASM_POSIX_DEP_TARGET_ARCH:-wasm32}"
 SOURCE_URL="${WASM_POSIX_DEP_SOURCE_URL:-https://ftpmirror.gnu.org/gnu/ncurses/ncurses-${NCURSES_VERSION}.tar.gz}"
 SOURCE_SHA256="${WASM_POSIX_DEP_SOURCE_SHA256:-}"
 
-if ! command -v wasm32posix-cc &>/dev/null; then
-    echo "ERROR: wasm32posix-cc not found. Run 'npm link' in sdk/ first." >&2
+if [ "$TARGET_ARCH" != "wasm32" ]; then
+    echo "ERROR: ncurses is currently packaged for wasm32 only, got $TARGET_ARCH" >&2
+    exit 2
+fi
+
+TOOL_PREFIX="wasm32posix"
+CC="${TOOL_PREFIX}-cc"
+CXX="${TOOL_PREFIX}-c++"
+AR="${TOOL_PREFIX}-ar"
+RANLIB="${TOOL_PREFIX}-ranlib"
+SRC_DIR="$WORK_DIR/ncurses-src"
+SOURCE_MARKER="$SRC_DIR/.kandelo-ncurses-source"
+RESOLVER_MODE=0
+if [ -n "${WASM_POSIX_DEP_OUT_DIR:-}" ]; then
+    RESOLVER_MODE=1
+fi
+
+if ! command -v "$CC" &>/dev/null; then
+    echo "ERROR: $CC not found after sourcing sdk/activate.sh." >&2
     exit 1
 fi
 
 # --- Fetch + verify source ---
+expected_marker="$(printf '%s\n%s\n%s\n' "$NCURSES_VERSION" "$SOURCE_URL" "$SOURCE_SHA256")"
+if [ -d "$SRC_DIR" ] && [ "$(cat "$SOURCE_MARKER" 2>/dev/null || true)" != "$expected_marker" ]; then
+    echo "==> Existing ncurses source does not match requested version/source; cleaning..."
+    rm -rf "$SRC_DIR"
+fi
+
 if [ ! -d "$SRC_DIR" ]; then
     echo "==> Downloading ncurses $NCURSES_VERSION..."
-    TARBALL="/tmp/ncurses-${NCURSES_VERSION}.tar.gz"
+    tmpdir="$(mktemp -d "${TMPDIR:-/tmp}/kandelo-ncurses-src.XXXXXX")"
+    trap 'rm -rf "$tmpdir"' EXIT
+    TARBALL="$tmpdir/ncurses-${NCURSES_VERSION}.tar.gz"
     curl --retry 10 --retry-delay 5 --retry-max-time 300 --retry-all-errors -fsSL "$SOURCE_URL" -o "$TARBALL"
     if [ -n "$SOURCE_SHA256" ]; then
         echo "==> Verifying source sha256..."
@@ -56,12 +85,14 @@ if [ ! -d "$SRC_DIR" ]; then
     fi
     mkdir -p "$SRC_DIR"
     tar xzf "$TARBALL" -C "$SRC_DIR" --strip-components=1
-    rm "$TARBALL"
+    printf '%s\n' "$expected_marker" > "$SOURCE_MARKER"
+    trap - EXIT
+    rm -rf "$tmpdir"
     echo "==> Source extracted to $SRC_DIR"
 fi
 
 # --- Build host tic + infocmp once (needed to generate fallback.c) ---
-HOST_BUILD_DIR="$SCRIPT_DIR/ncurses-host-build"
+HOST_BUILD_DIR="$WORK_DIR/ncurses-host-build"
 HOST_TIC="$HOST_BUILD_DIR/progs/tic"
 HOST_INFOCMP="$HOST_BUILD_DIR/progs/infocmp"
 if [ ! -f "$HOST_TIC" ] || [ ! -f "$HOST_INFOCMP" ]; then
@@ -89,7 +120,7 @@ fi
 
 # --- Compile minimal terminfo DB (build-time intermediate, not a declared output) ---
 # Fed into MKfallback.sh below to produce the compiled-in fallback table.
-TERMINFO_DIR="$SCRIPT_DIR/terminfo"
+TERMINFO_DIR="$WORK_DIR/terminfo"
 if [ ! -f "$TERMINFO_DIR/x/xterm-256color" ]; then
     echo "==> Compiling host-side terminfo database..."
     mkdir -p "$TERMINFO_DIR"
@@ -102,7 +133,7 @@ fi
 # cache-miss invocations, and autoconf bakes the prefix into the
 # Makefile, so reusing a stale wasm-build dir would `make install`
 # into the wrong path.
-WASM_BUILD_DIR="$SCRIPT_DIR/ncurses-wasm-build"
+WASM_BUILD_DIR="$WORK_DIR/ncurses-wasm-build"
 rm -rf "$WASM_BUILD_DIR" "$INSTALL_DIR"
 mkdir -p "$WASM_BUILD_DIR"
 
@@ -126,11 +157,11 @@ export ac_cv_sizeof_void_p=4
 (
     cd "$WASM_BUILD_DIR"
 
-    CC=wasm32posix-cc \
-    CXX=wasm32posix-c++ \
-    AR=wasm32posix-ar \
-    RANLIB=wasm32posix-ranlib \
-    LD=wasm32posix-cc \
+    CC="$CC" \
+    CXX="$CXX" \
+    AR="$AR" \
+    RANLIB="$RANLIB" \
+    LD="$CC" \
     CFLAGS="-O2" \
     LDFLAGS="" \
     "$SRC_DIR/configure" \
@@ -239,7 +270,7 @@ NCURSES_PROGRAMS=(
     captoinfo
     infotocap
 )
-BIN_DIR="$SCRIPT_DIR/bin"
+BIN_DIR="$WORK_DIR/bin"
 rm -rf "$BIN_DIR"
 mkdir -p "$BIN_DIR"
 
@@ -251,12 +282,23 @@ for program in "${NCURSES_PROGRAMS[@]}"; do
         exit 1
     fi
     cp "$source_path" "$BIN_DIR/$program.wasm"
+    if [ "$RESOLVER_MODE" = "1" ]; then
+        cp "$source_path" "$INSTALL_DIR/$program.wasm"
+    fi
 done
 
-source "$REPO_ROOT/scripts/install-local-binary.sh"
-for program in "${NCURSES_PROGRAMS[@]}"; do
-    install_local_binary ncurses "$BIN_DIR/$program.wasm"
-done
+if [ "$RESOLVER_MODE" = "1" ]; then
+    source "$REPO_ROOT/scripts/wasm-artifact-guards.sh"
+    for program in "${NCURSES_PROGRAMS[@]}"; do
+        wasm_require_no_legacy_asyncify "$BIN_DIR/$program.wasm"
+        wasm_require_no_fork_instrumentation "$BIN_DIR/$program.wasm"
+    done
+else
+    source "$REPO_ROOT/scripts/install-local-binary.sh"
+    for program in "${NCURSES_PROGRAMS[@]}"; do
+        install_local_binary ncurses "$BIN_DIR/$program.wasm"
+    done
+fi
 
 if [ -f "$INSTALL_DIR/lib/libncursesw.a" ] && [ -f "$INSTALL_DIR/lib/libtinfow.a" ]; then
     echo ""
