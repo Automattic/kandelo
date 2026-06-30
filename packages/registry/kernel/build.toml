@@ -1,4 +1,4 @@
-script_path = "packages/registry/kernel/build-kernel.sh"
+script_path = "platform/artifacts/kernel/build-kernel.sh"
 repo_url    = "https://github.com/brandonpayton/kandelo.git"
 commit      = "8d76b33862c72b1565bbd377ad824ef214f50ab8"
 revision    = 1

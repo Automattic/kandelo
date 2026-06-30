@@ -40,6 +40,8 @@
 //!   homebrew-sidecars     Generate Kandelo/Homebrew tap sidecars from
 //!                         produced bottle bytes and workflow evidence.
 //!   homebrew-validate     Validate Kandelo/Homebrew tap sidecar metadata.
+//!   platform-artifacts    Validate/materialize first-party runtime platform
+//!                         artifacts that are not registry packages.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -60,6 +62,7 @@ mod index_toml;
 mod index_update;
 mod package_matrix;
 mod pkg_manifest;
+mod platform_artifacts;
 mod remote_fetch;
 mod source_extract;
 mod update_pkg_manifest;
@@ -72,7 +75,7 @@ fn main() -> ExitCode {
         None => {
             eprintln!("usage: xtask <subcommand> [args...]");
             eprintln!(
-                "subcommands: dump-abi, bundle-program, build-deps, compute-cache-key-sha, sort-package-matrix, package-dependency-artifacts, archive-stage, build-index, set-build-commit, set-package-binary, index-update, homebrew-sidecars, homebrew-validate"
+                "subcommands: dump-abi, bundle-program, build-deps, compute-cache-key-sha, sort-package-matrix, package-dependency-artifacts, archive-stage, build-index, set-build-commit, set-package-binary, index-update, homebrew-sidecars, homebrew-validate, platform-artifacts"
             );
             return ExitCode::from(2);
         }
@@ -92,6 +95,7 @@ fn main() -> ExitCode {
         "index-update" => index_update::run_index_update(&rest),
         "homebrew-sidecars" => homebrew_sidecars::run(rest),
         "homebrew-validate" => homebrew_validate::run(rest),
+        "platform-artifacts" => platform_artifacts::run(rest),
         other => {
             eprintln!("xtask: unknown subcommand {other:?}");
             return ExitCode::from(2);

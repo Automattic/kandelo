@@ -29,7 +29,8 @@ Most readers want one of these. Detailed sections follow further down.
 
 | I want to… | Look at |
 |---|---|
-| Pull pre-built binaries without compiling | [`scripts/fetch-binaries.sh`](#release-archives) — walks every `package.toml`, calls the resolver. Run with `--allow-stale` in CI. |
+| Pull pre-built binaries without compiling | [`scripts/fetch-binaries.sh`](#release-archives) - materializes platform artifacts, then walks package `package.toml` files and calls the resolver. Run with `--allow-stale` in CI. |
+| Work on kernel/userspace/SDK runtime artifacts | [`platform/artifacts/README.md`](../platform/artifacts/README.md) - owns `kernel`, `userspace`, and `kandelo-sdk`; these are not Homebrew package identities. |
 | Add a new package to the registry | [Schema: `package.toml`](#schema-packagetoml) + [docs/porting-guide.md](porting-guide.md#adding-a-new-package-to-the-registry) for the end-to-end workflow. |
 | Resolve one package on demand | `cargo xtask build-deps resolve <name>` — handles fetch/source-build, populates the cache. |
 | Find where an output lands | `cargo xtask build-deps output-path <name> <wasm-basename>` — single source of truth for the layout convention (flat for 1-output packages, nested under `<pkg>/` for ≥2-output packages). |
@@ -144,6 +145,13 @@ The split is load-bearing post the
   it, where the binary is published, what publish-time revision
   it's at. **Project-specific** — every fork or downstream
   consumer gets its own `build.toml`.
+
+Runtime platform artifacts are outside this package schema. `kernel`,
+`userspace`, and `kandelo-sdk` are owned by
+`platform/artifacts/manifest.json`; bridge TOML files may remain under
+`packages/registry/` during migration, but `scripts/fetch-binaries.sh`
+skips those names in the package loop and materializes them through
+`xtask platform-artifacts` first.
 
 ### `package.toml`
 

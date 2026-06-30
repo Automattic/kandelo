@@ -13,7 +13,7 @@ spdx = "GPL-2.0-or-later AND MIT AND Apache-2.0 WITH LLVM-exception"
 url = "https://github.com/Automattic/kandelo"
 
 [build]
-script_path = "packages/registry/kandelo-sdk/build-kandelo-sdk.sh"
+script_path = "platform/artifacts/kandelo-sdk/build-kandelo-sdk.sh"
 
 [[outputs]]
 name = "kandelo-sdk"
