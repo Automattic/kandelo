@@ -15,7 +15,7 @@
 # places `binaries/programs/<arch>/<output>.wasm` symlinks pointing
 # into the cache. Browser demos hardcode these paths.
 #
-# Packages without `build.toml` (kernel-test-programs, kind=source,
+# Packages without `build.toml` (kind=source, manifest-only entries,
 # libraries that ship only as link-time inputs) are skipped here.
 # Kernel and userspace now have build.toml entries, so published
 # release indexes can populate `binaries/kernel.wasm` and
