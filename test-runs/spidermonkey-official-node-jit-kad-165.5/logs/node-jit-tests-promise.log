@@ -1,0 +1,2070 @@
+===== Official SpiderMonkey jit-tests on Kandelo node host =====
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - promise/allSettled-dead.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/promise/allSettled-dead.js | RuntimeError: memory access out of bounds (code 255, args "") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - promise/allSettled-dead.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/promise/allSettled-dead.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - promise/allSettled-dead.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/promise/allSettled-dead.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - promise/allSettled-dead.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/promise/allSettled-dead.js | RuntimeError: memory access out of bounds (code 255, args "--baseline-eager --write-protect-code=off") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - promise/allSettled-dead.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/promise/allSettled-dead.js | RuntimeError: memory access out of bounds (code 255, args "--no-blinterp --no-baseline --no-ion --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - promise/allSettled-dead.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/promise/allSettled-dead.js | RuntimeError: memory access out of bounds (code 255, args "--blinterp-eager") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - promise/bug-1298776.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/promise/bug-1298776.js | RuntimeError: memory access out of bounds (code 255, args "") [0.4 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - promise/bug-1298776.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/promise/bug-1298776.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --more-compartments") [0.6 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - promise/bug-1298776.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/promise/bug-1298776.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads") [0.4 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - promise/bug-1298776.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/promise/bug-1298776.js | RuntimeError: memory access out of bounds (code 255, args "--baseline-eager --write-protect-code=off") [0.3 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - promise/bug-1298776.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/promise/bug-1298776.js | RuntimeError: memory access out of bounds (code 255, args "--no-blinterp --no-baseline --no-ion --more-compartments") [0.2 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - promise/bug-1298776.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/promise/bug-1298776.js | RuntimeError: memory access out of bounds (code 255, args "--blinterp-eager") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - promise/bug-1545369.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/promise/bug-1545369.js | RuntimeError: memory access out of bounds (code 255, args "--no-cgc") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - promise/bug-1545369.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/promise/bug-1545369.js | RuntimeError: memory access out of bounds (code 255, args "--no-cgc --ion-eager --ion-offthread-compile=off --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - promise/bug-1545369.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/promise/bug-1545369.js | RuntimeError: memory access out of bounds (code 255, args "--no-cgc --ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - promise/bug-1545369.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/promise/bug-1545369.js | RuntimeError: memory access out of bounds (code 255, args "--no-cgc --baseline-eager --write-protect-code=off") [0.2 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - promise/bug-1545369.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/promise/bug-1545369.js | RuntimeError: memory access out of bounds (code 255, args "--no-cgc --no-blinterp --no-baseline --no-ion --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - promise/bug-1545369.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/promise/bug-1545369.js | RuntimeError: memory access out of bounds (code 255, args "--no-cgc --blinterp-eager") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - promise/bug1347984.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/promise/bug1347984.js | RuntimeError: memory access out of bounds (code 255, args "") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - promise/bug1347984.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/promise/bug1347984.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - promise/bug1347984.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/promise/bug1347984.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads") [0.2 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - promise/bug1347984.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/promise/bug1347984.js | RuntimeError: memory access out of bounds (code 255, args "--baseline-eager --write-protect-code=off") [0.5 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - promise/bug1347984.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/promise/bug1347984.js | RuntimeError: memory access out of bounds (code 255, args "--no-blinterp --no-baseline --no-ion --more-compartments") [0.3 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - promise/bug1347984.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/promise/bug1347984.js | RuntimeError: memory access out of bounds (code 255, args "--blinterp-eager") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - promise/bug1406463.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/promise/bug1406463.js | RuntimeError: memory access out of bounds (code 255, args "") [0.2 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - promise/bug1406463.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/promise/bug1406463.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - promise/bug1406463.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/promise/bug1406463.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - promise/bug1406463.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/promise/bug1406463.js | RuntimeError: memory access out of bounds (code 255, args "--baseline-eager --write-protect-code=off") [0.2 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - promise/bug1406463.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/promise/bug1406463.js | RuntimeError: memory access out of bounds (code 255, args "--no-blinterp --no-baseline --no-ion --more-compartments") [0.2 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - promise/bug1406463.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/promise/bug1406463.js | RuntimeError: memory access out of bounds (code 255, args "--blinterp-eager") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - promise/debugger-reaction-does-not-resolve.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/promise/debugger-reaction-does-not-resolve.js | RuntimeError: memory access out of bounds (code 255, args "") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - promise/debugger-reaction-does-not-resolve.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/promise/debugger-reaction-does-not-resolve.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - promise/debugger-reaction-does-not-resolve.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/promise/debugger-reaction-does-not-resolve.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - promise/debugger-reaction-does-not-resolve.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/promise/debugger-reaction-does-not-resolve.js | RuntimeError: memory access out of bounds (code 255, args "--baseline-eager --write-protect-code=off") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - promise/debugger-reaction-does-not-resolve.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/promise/debugger-reaction-does-not-resolve.js | RuntimeError: memory access out of bounds (code 255, args "--no-blinterp --no-baseline --no-ion --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - promise/debugger-reaction-does-not-resolve.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/promise/debugger-reaction-does-not-resolve.js | RuntimeError: memory access out of bounds (code 255, args "--blinterp-eager") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - promise/drain-job-queue-after-quit-called.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/promise/drain-job-queue-after-quit-called.js | RuntimeError: memory access out of bounds (code 255, args "") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - promise/drain-job-queue-after-quit-called.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/promise/drain-job-queue-after-quit-called.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - promise/drain-job-queue-after-quit-called.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/promise/drain-job-queue-after-quit-called.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads") [0.4 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - promise/drain-job-queue-after-quit-called.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/promise/drain-job-queue-after-quit-called.js | RuntimeError: memory access out of bounds (code 255, args "--baseline-eager --write-protect-code=off") [0.5 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - promise/drain-job-queue-after-quit-called.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/promise/drain-job-queue-after-quit-called.js | RuntimeError: memory access out of bounds (code 255, args "--no-blinterp --no-baseline --no-ion --more-compartments") [0.4 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - promise/drain-job-queue-after-quit-called.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/promise/drain-job-queue-after-quit-called.js | RuntimeError: memory access out of bounds (code 255, args "--blinterp-eager") [0.2 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - promise/getwaitforallpromise-error-handling.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/promise/getwaitforallpromise-error-handling.js | RuntimeError: memory access out of bounds (code 255, args "") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - promise/getwaitforallpromise-error-handling.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/promise/getwaitforallpromise-error-handling.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --more-compartments") [0.2 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - promise/getwaitforallpromise-error-handling.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/promise/getwaitforallpromise-error-handling.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - promise/getwaitforallpromise-error-handling.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/promise/getwaitforallpromise-error-handling.js | RuntimeError: memory access out of bounds (code 255, args "--baseline-eager --write-protect-code=off") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - promise/getwaitforallpromise-error-handling.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/promise/getwaitforallpromise-error-handling.js | RuntimeError: memory access out of bounds (code 255, args "--no-blinterp --no-baseline --no-ion --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - promise/getwaitforallpromise-error-handling.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/promise/getwaitforallpromise-error-handling.js | RuntimeError: memory access out of bounds (code 255, args "--blinterp-eager") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - promise/job-realm.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/promise/job-realm.js | RuntimeError: memory access out of bounds (code 255, args "") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - promise/job-realm.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/promise/job-realm.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - promise/job-realm.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/promise/job-realm.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - promise/job-realm.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/promise/job-realm.js | RuntimeError: memory access out of bounds (code 255, args "--baseline-eager --write-protect-code=off") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - promise/job-realm.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/promise/job-realm.js | RuntimeError: memory access out of bounds (code 255, args "--no-blinterp --no-baseline --no-ion --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - promise/job-realm.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/promise/job-realm.js | RuntimeError: memory access out of bounds (code 255, args "--blinterp-eager") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - promise/jobqueue-interrupt-01.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/promise/jobqueue-interrupt-01.js | RuntimeError: memory access out of bounds (code 255, args "") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - promise/jobqueue-interrupt-01.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/promise/jobqueue-interrupt-01.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --more-compartments") [0.5 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - promise/jobqueue-interrupt-01.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/promise/jobqueue-interrupt-01.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads") [0.4 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - promise/jobqueue-interrupt-01.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/promise/jobqueue-interrupt-01.js | RuntimeError: memory access out of bounds (code 255, args "--baseline-eager --write-protect-code=off") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - promise/jobqueue-interrupt-01.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/promise/jobqueue-interrupt-01.js | RuntimeError: memory access out of bounds (code 255, args "--no-blinterp --no-baseline --no-ion --more-compartments") [0.2 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - promise/jobqueue-interrupt-01.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/promise/jobqueue-interrupt-01.js | RuntimeError: memory access out of bounds (code 255, args "--blinterp-eager") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - promise/jobqueue-interrupt-02.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/promise/jobqueue-interrupt-02.js | RuntimeError: memory access out of bounds (code 255, args "") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - promise/jobqueue-interrupt-02.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/promise/jobqueue-interrupt-02.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --more-compartments") [0.2 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - promise/jobqueue-interrupt-02.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/promise/jobqueue-interrupt-02.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads") [0.4 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - promise/jobqueue-interrupt-02.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/promise/jobqueue-interrupt-02.js | RuntimeError: memory access out of bounds (code 255, args "--baseline-eager --write-protect-code=off") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - promise/jobqueue-interrupt-02.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/promise/jobqueue-interrupt-02.js | RuntimeError: memory access out of bounds (code 255, args "--no-blinterp --no-baseline --no-ion --more-compartments") [0.2 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - promise/jobqueue-interrupt-02.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/promise/jobqueue-interrupt-02.js | RuntimeError: memory access out of bounds (code 255, args "--blinterp-eager") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - promise/newpromisecapability-error-message.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/promise/newpromisecapability-error-message.js | RuntimeError: memory access out of bounds (code 255, args "") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - promise/newpromisecapability-error-message.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/promise/newpromisecapability-error-message.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - promise/newpromisecapability-error-message.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/promise/newpromisecapability-error-message.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - promise/newpromisecapability-error-message.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/promise/newpromisecapability-error-message.js | RuntimeError: memory access out of bounds (code 255, args "--baseline-eager --write-protect-code=off") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - promise/newpromisecapability-error-message.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/promise/newpromisecapability-error-message.js | RuntimeError: memory access out of bounds (code 255, args "--no-blinterp --no-baseline --no-ion --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - promise/newpromisecapability-error-message.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/promise/newpromisecapability-error-message.js | RuntimeError: memory access out of bounds (code 255, args "--blinterp-eager") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - promise/no-reentrant-drainjobqueue.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/promise/no-reentrant-drainjobqueue.js | RuntimeError: memory access out of bounds (code 255, args "") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - promise/no-reentrant-drainjobqueue.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/promise/no-reentrant-drainjobqueue.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --more-compartments") [0.6 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - promise/no-reentrant-drainjobqueue.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/promise/no-reentrant-drainjobqueue.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads") [0.4 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - promise/no-reentrant-drainjobqueue.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/promise/no-reentrant-drainjobqueue.js | RuntimeError: memory access out of bounds (code 255, args "--baseline-eager --write-protect-code=off") [0.5 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - promise/no-reentrant-drainjobqueue.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/promise/no-reentrant-drainjobqueue.js | RuntimeError: memory access out of bounds (code 255, args "--no-blinterp --no-baseline --no-ion --more-compartments") [0.3 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - promise/no-reentrant-drainjobqueue.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/promise/no-reentrant-drainjobqueue.js | RuntimeError: memory access out of bounds (code 255, args "--blinterp-eager") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - promise/optimized-promise-already-resolved.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/promise/optimized-promise-already-resolved.js | RuntimeError: memory access out of bounds (code 255, args "") [0.2 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - promise/optimized-promise-already-resolved.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/promise/optimized-promise-already-resolved.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - promise/optimized-promise-already-resolved.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/promise/optimized-promise-already-resolved.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads") [0.3 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - promise/optimized-promise-already-resolved.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/promise/optimized-promise-already-resolved.js | RuntimeError: memory access out of bounds (code 255, args "--baseline-eager --write-protect-code=off") [0.3 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - promise/optimized-promise-already-resolved.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/promise/optimized-promise-already-resolved.js | RuntimeError: memory access out of bounds (code 255, args "--no-blinterp --no-baseline --no-ion --more-compartments") [0.4 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - promise/optimized-promise-already-resolved.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/promise/optimized-promise-already-resolved.js | RuntimeError: memory access out of bounds (code 255, args "--blinterp-eager") [0.2 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - promise/primitives-handling-in-promise-all.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/promise/primitives-handling-in-promise-all.js | RuntimeError: memory access out of bounds (code 255, args "") [0.3 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - promise/primitives-handling-in-promise-all.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/promise/primitives-handling-in-promise-all.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - promise/primitives-handling-in-promise-all.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/promise/primitives-handling-in-promise-all.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads") [0.2 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - promise/primitives-handling-in-promise-all.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/promise/primitives-handling-in-promise-all.js | RuntimeError: memory access out of bounds (code 255, args "--baseline-eager --write-protect-code=off") [0.9 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - promise/primitives-handling-in-promise-all.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/promise/primitives-handling-in-promise-all.js | RuntimeError: memory access out of bounds (code 255, args "--no-blinterp --no-baseline --no-ion --more-compartments") [0.8 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - promise/primitives-handling-in-promise-all.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/promise/primitives-handling-in-promise-all.js | RuntimeError: memory access out of bounds (code 255, args "--blinterp-eager") [0.7 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - promise/promise-any-with-non-default-resolving.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/promise/promise-any-with-non-default-resolving.js | RuntimeError: memory access out of bounds (code 255, args "") [0.6 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - promise/promise-any-with-non-default-resolving.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/promise/promise-any-with-non-default-resolving.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --more-compartments") [0.6 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - promise/promise-any-with-non-default-resolving.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/promise/promise-any-with-non-default-resolving.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads") [0.5 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - promise/promise-any-with-non-default-resolving.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/promise/promise-any-with-non-default-resolving.js | RuntimeError: memory access out of bounds (code 255, args "--baseline-eager --write-protect-code=off") [0.4 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - promise/promise-any-with-non-default-resolving.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/promise/promise-any-with-non-default-resolving.js | RuntimeError: memory access out of bounds (code 255, args "--no-blinterp --no-baseline --no-ion --more-compartments") [0.5 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - promise/promise-any-with-non-default-resolving.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/promise/promise-any-with-non-default-resolving.js | RuntimeError: memory access out of bounds (code 255, args "--blinterp-eager") [0.5 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - promise/promise-cross-compartment-subclassing.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/promise/promise-cross-compartment-subclassing.js | RuntimeError: memory access out of bounds (code 255, args "") [0.3 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - promise/promise-cross-compartment-subclassing.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/promise/promise-cross-compartment-subclassing.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - promise/promise-cross-compartment-subclassing.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/promise/promise-cross-compartment-subclassing.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - promise/promise-cross-compartment-subclassing.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/promise/promise-cross-compartment-subclassing.js | RuntimeError: memory access out of bounds (code 255, args "--baseline-eager --write-protect-code=off") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - promise/promise-cross-compartment-subclassing.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/promise/promise-cross-compartment-subclassing.js | RuntimeError: memory access out of bounds (code 255, args "--no-blinterp --no-baseline --no-ion --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - promise/promise-cross-compartment-subclassing.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/promise/promise-cross-compartment-subclassing.js | RuntimeError: memory access out of bounds (code 255, args "--blinterp-eager") [0.5 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - promise/promise-race-with-default-resolving-internal.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/promise/promise-race-with-default-resolving-internal.js | RuntimeError: memory access out of bounds (code 255, args "") [0.5 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - promise/promise-race-with-default-resolving-internal.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/promise/promise-race-with-default-resolving-internal.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - promise/promise-race-with-default-resolving-internal.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/promise/promise-race-with-default-resolving-internal.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads") [0.2 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - promise/promise-race-with-default-resolving-internal.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/promise/promise-race-with-default-resolving-internal.js | RuntimeError: memory access out of bounds (code 255, args "--baseline-eager --write-protect-code=off") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - promise/promise-race-with-default-resolving-internal.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/promise/promise-race-with-default-resolving-internal.js | RuntimeError: memory access out of bounds (code 255, args "--no-blinterp --no-baseline --no-ion --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - promise/promise-race-with-default-resolving-internal.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/promise/promise-race-with-default-resolving-internal.js | RuntimeError: memory access out of bounds (code 255, args "--blinterp-eager") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - promise/promise-race-with-non-default-resolving.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/promise/promise-race-with-non-default-resolving.js | RuntimeError: memory access out of bounds (code 255, args "") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - promise/promise-race-with-non-default-resolving.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/promise/promise-race-with-non-default-resolving.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - promise/promise-race-with-non-default-resolving.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/promise/promise-race-with-non-default-resolving.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - promise/promise-race-with-non-default-resolving.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/promise/promise-race-with-non-default-resolving.js | RuntimeError: memory access out of bounds (code 255, args "--baseline-eager --write-protect-code=off") [0.2 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - promise/promise-race-with-non-default-resolving.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/promise/promise-race-with-non-default-resolving.js | RuntimeError: memory access out of bounds (code 255, args "--no-blinterp --no-baseline --no-ion --more-compartments") [0.3 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - promise/promise-race-with-non-default-resolving.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/promise/promise-race-with-non-default-resolving.js | RuntimeError: memory access out of bounds (code 255, args "--blinterp-eager") [0.5 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - promise/resolve-promise-scripted-and-api.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/promise/resolve-promise-scripted-and-api.js | RuntimeError: memory access out of bounds (code 255, args "") [0.4 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - promise/resolve-promise-scripted-and-api.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/promise/resolve-promise-scripted-and-api.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - promise/resolve-promise-scripted-and-api.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/promise/resolve-promise-scripted-and-api.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads") [0.2 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - promise/resolve-promise-scripted-and-api.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/promise/resolve-promise-scripted-and-api.js | RuntimeError: memory access out of bounds (code 255, args "--baseline-eager --write-protect-code=off") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - promise/resolve-promise-scripted-and-api.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/promise/resolve-promise-scripted-and-api.js | RuntimeError: memory access out of bounds (code 255, args "--no-blinterp --no-baseline --no-ion --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - promise/resolve-promise-scripted-and-api.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/promise/resolve-promise-scripted-and-api.js | RuntimeError: memory access out of bounds (code 255, args "--blinterp-eager") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - promise/settle-async-generator.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/promise/settle-async-generator.js | RuntimeError: memory access out of bounds (code 255, args "") [0.3 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - promise/settle-async-generator.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/promise/settle-async-generator.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - promise/settle-async-generator.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/promise/settle-async-generator.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - promise/settle-async-generator.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/promise/settle-async-generator.js | RuntimeError: memory access out of bounds (code 255, args "--baseline-eager --write-protect-code=off") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - promise/settle-async-generator.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/promise/settle-async-generator.js | RuntimeError: memory access out of bounds (code 255, args "--no-blinterp --no-baseline --no-ion --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - promise/settle-async-generator.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/promise/settle-async-generator.js | RuntimeError: memory access out of bounds (code 255, args "--blinterp-eager") [0.4 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - promise/settle-now-already-resolved.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/promise/settle-now-already-resolved.js | RuntimeError: memory access out of bounds (code 255, args "") [0.3 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - promise/settle-now-already-resolved.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/promise/settle-now-already-resolved.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --more-compartments") [0.3 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - promise/settle-now-already-resolved.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/promise/settle-now-already-resolved.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads") [0.4 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - promise/settle-now-already-resolved.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/promise/settle-now-already-resolved.js | RuntimeError: memory access out of bounds (code 255, args "--baseline-eager --write-protect-code=off") [0.3 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - promise/settle-now-already-resolved.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/promise/settle-now-already-resolved.js | RuntimeError: memory access out of bounds (code 255, args "--no-blinterp --no-baseline --no-ion --more-compartments") [0.2 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - promise/settle-now-already-resolved.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/promise/settle-now-already-resolved.js | RuntimeError: memory access out of bounds (code 255, args "--blinterp-eager") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - promise/settle-now-breaks-all-invariants-1.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/promise/settle-now-breaks-all-invariants-1.js | RuntimeError: memory access out of bounds (code 255, args "") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - promise/settle-now-breaks-all-invariants-1.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/promise/settle-now-breaks-all-invariants-1.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - promise/settle-now-breaks-all-invariants-1.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/promise/settle-now-breaks-all-invariants-1.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - promise/settle-now-breaks-all-invariants-1.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/promise/settle-now-breaks-all-invariants-1.js | RuntimeError: memory access out of bounds (code 255, args "--baseline-eager --write-protect-code=off") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - promise/settle-now-breaks-all-invariants-1.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/promise/settle-now-breaks-all-invariants-1.js | RuntimeError: memory access out of bounds (code 255, args "--no-blinterp --no-baseline --no-ion --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - promise/settle-now-breaks-all-invariants-1.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/promise/settle-now-breaks-all-invariants-1.js | RuntimeError: memory access out of bounds (code 255, args "--blinterp-eager") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - promise/settle-now-breaks-all-invariants-10.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/promise/settle-now-breaks-all-invariants-10.js | RuntimeError: memory access out of bounds (code 255, args "") [0.3 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - promise/settle-now-breaks-all-invariants-10.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/promise/settle-now-breaks-all-invariants-10.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --more-compartments") [0.8 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - promise/settle-now-breaks-all-invariants-10.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/promise/settle-now-breaks-all-invariants-10.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads") [0.5 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - promise/settle-now-breaks-all-invariants-10.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/promise/settle-now-breaks-all-invariants-10.js | RuntimeError: memory access out of bounds (code 255, args "--baseline-eager --write-protect-code=off") [0.3 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - promise/settle-now-breaks-all-invariants-10.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/promise/settle-now-breaks-all-invariants-10.js | RuntimeError: memory access out of bounds (code 255, args "--no-blinterp --no-baseline --no-ion --more-compartments") [0.2 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - promise/settle-now-breaks-all-invariants-10.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/promise/settle-now-breaks-all-invariants-10.js | RuntimeError: memory access out of bounds (code 255, args "--blinterp-eager") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - promise/settle-now-breaks-all-invariants-11.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/promise/settle-now-breaks-all-invariants-11.js | RuntimeError: memory access out of bounds (code 255, args "") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - promise/settle-now-breaks-all-invariants-11.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/promise/settle-now-breaks-all-invariants-11.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - promise/settle-now-breaks-all-invariants-11.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/promise/settle-now-breaks-all-invariants-11.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads") [0.2 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - promise/settle-now-breaks-all-invariants-11.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/promise/settle-now-breaks-all-invariants-11.js | RuntimeError: memory access out of bounds (code 255, args "--baseline-eager --write-protect-code=off") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - promise/settle-now-breaks-all-invariants-11.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/promise/settle-now-breaks-all-invariants-11.js | RuntimeError: memory access out of bounds (code 255, args "--no-blinterp --no-baseline --no-ion --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - promise/settle-now-breaks-all-invariants-11.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/promise/settle-now-breaks-all-invariants-11.js | RuntimeError: memory access out of bounds (code 255, args "--blinterp-eager") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - promise/settle-now-breaks-all-invariants-2.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/promise/settle-now-breaks-all-invariants-2.js | RuntimeError: memory access out of bounds (code 255, args "") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - promise/settle-now-breaks-all-invariants-2.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/promise/settle-now-breaks-all-invariants-2.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - promise/settle-now-breaks-all-invariants-2.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/promise/settle-now-breaks-all-invariants-2.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads") [0.2 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - promise/settle-now-breaks-all-invariants-2.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/promise/settle-now-breaks-all-invariants-2.js | RuntimeError: memory access out of bounds (code 255, args "--baseline-eager --write-protect-code=off") [0.4 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - promise/settle-now-breaks-all-invariants-2.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/promise/settle-now-breaks-all-invariants-2.js | RuntimeError: memory access out of bounds (code 255, args "--no-blinterp --no-baseline --no-ion --more-compartments") [0.4 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - promise/settle-now-breaks-all-invariants-2.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/promise/settle-now-breaks-all-invariants-2.js | RuntimeError: memory access out of bounds (code 255, args "--blinterp-eager") [0.6 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - promise/settle-now-breaks-all-invariants-3.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/promise/settle-now-breaks-all-invariants-3.js | RuntimeError: memory access out of bounds (code 255, args "") [0.5 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - promise/settle-now-breaks-all-invariants-3.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/promise/settle-now-breaks-all-invariants-3.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --more-compartments") [0.3 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - promise/settle-now-breaks-all-invariants-3.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/promise/settle-now-breaks-all-invariants-3.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - promise/settle-now-breaks-all-invariants-3.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/promise/settle-now-breaks-all-invariants-3.js | RuntimeError: memory access out of bounds (code 255, args "--baseline-eager --write-protect-code=off") [0.2 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - promise/settle-now-breaks-all-invariants-3.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/promise/settle-now-breaks-all-invariants-3.js | RuntimeError: memory access out of bounds (code 255, args "--no-blinterp --no-baseline --no-ion --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - promise/settle-now-breaks-all-invariants-3.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/promise/settle-now-breaks-all-invariants-3.js | RuntimeError: memory access out of bounds (code 255, args "--blinterp-eager") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - promise/settle-now-breaks-all-invariants-4.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/promise/settle-now-breaks-all-invariants-4.js | RuntimeError: memory access out of bounds (code 255, args "") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - promise/settle-now-breaks-all-invariants-4.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/promise/settle-now-breaks-all-invariants-4.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --more-compartments") [0.3 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - promise/settle-now-breaks-all-invariants-4.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/promise/settle-now-breaks-all-invariants-4.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads") [0.2 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - promise/settle-now-breaks-all-invariants-4.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/promise/settle-now-breaks-all-invariants-4.js | RuntimeError: memory access out of bounds (code 255, args "--baseline-eager --write-protect-code=off") [0.4 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - promise/settle-now-breaks-all-invariants-4.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/promise/settle-now-breaks-all-invariants-4.js | RuntimeError: memory access out of bounds (code 255, args "--no-blinterp --no-baseline --no-ion --more-compartments") [0.4 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - promise/settle-now-breaks-all-invariants-4.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/promise/settle-now-breaks-all-invariants-4.js | RuntimeError: memory access out of bounds (code 255, args "--blinterp-eager") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - promise/settle-now-breaks-all-invariants-5.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/promise/settle-now-breaks-all-invariants-5.js | RuntimeError: memory access out of bounds (code 255, args "") [0.2 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - promise/settle-now-breaks-all-invariants-5.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/promise/settle-now-breaks-all-invariants-5.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - promise/settle-now-breaks-all-invariants-5.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/promise/settle-now-breaks-all-invariants-5.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads") [0.2 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - promise/settle-now-breaks-all-invariants-5.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/promise/settle-now-breaks-all-invariants-5.js | RuntimeError: memory access out of bounds (code 255, args "--baseline-eager --write-protect-code=off") [0.5 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - promise/settle-now-breaks-all-invariants-5.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/promise/settle-now-breaks-all-invariants-5.js | RuntimeError: memory access out of bounds (code 255, args "--no-blinterp --no-baseline --no-ion --more-compartments") [0.2 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - promise/settle-now-breaks-all-invariants-5.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/promise/settle-now-breaks-all-invariants-5.js | RuntimeError: memory access out of bounds (code 255, args "--blinterp-eager") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - promise/settle-now-breaks-all-invariants-6.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/promise/settle-now-breaks-all-invariants-6.js | RuntimeError: memory access out of bounds (code 255, args "") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - promise/settle-now-breaks-all-invariants-6.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/promise/settle-now-breaks-all-invariants-6.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - promise/settle-now-breaks-all-invariants-6.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/promise/settle-now-breaks-all-invariants-6.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads") [0.2 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - promise/settle-now-breaks-all-invariants-6.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/promise/settle-now-breaks-all-invariants-6.js | RuntimeError: memory access out of bounds (code 255, args "--baseline-eager --write-protect-code=off") [0.5 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - promise/settle-now-breaks-all-invariants-6.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/promise/settle-now-breaks-all-invariants-6.js | RuntimeError: memory access out of bounds (code 255, args "--no-blinterp --no-baseline --no-ion --more-compartments") [0.5 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - promise/settle-now-breaks-all-invariants-6.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/promise/settle-now-breaks-all-invariants-6.js | RuntimeError: memory access out of bounds (code 255, args "--blinterp-eager") [0.5 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - promise/settle-now-breaks-all-invariants-7.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/promise/settle-now-breaks-all-invariants-7.js | RuntimeError: memory access out of bounds (code 255, args "") [0.3 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - promise/settle-now-breaks-all-invariants-7.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/promise/settle-now-breaks-all-invariants-7.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - promise/settle-now-breaks-all-invariants-7.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/promise/settle-now-breaks-all-invariants-7.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - promise/settle-now-breaks-all-invariants-7.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/promise/settle-now-breaks-all-invariants-7.js | RuntimeError: memory access out of bounds (code 255, args "--baseline-eager --write-protect-code=off") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - promise/settle-now-breaks-all-invariants-7.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/promise/settle-now-breaks-all-invariants-7.js | RuntimeError: memory access out of bounds (code 255, args "--no-blinterp --no-baseline --no-ion --more-compartments") [0.2 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - promise/settle-now-breaks-all-invariants-7.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/promise/settle-now-breaks-all-invariants-7.js | RuntimeError: memory access out of bounds (code 255, args "--blinterp-eager") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - promise/settle-now-breaks-all-invariants-8.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/promise/settle-now-breaks-all-invariants-8.js | RuntimeError: memory access out of bounds (code 255, args "") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - promise/settle-now-breaks-all-invariants-8.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/promise/settle-now-breaks-all-invariants-8.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --more-compartments") [0.4 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - promise/settle-now-breaks-all-invariants-8.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/promise/settle-now-breaks-all-invariants-8.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads") [0.3 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - promise/settle-now-breaks-all-invariants-8.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/promise/settle-now-breaks-all-invariants-8.js | RuntimeError: memory access out of bounds (code 255, args "--baseline-eager --write-protect-code=off") [0.6 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - promise/settle-now-breaks-all-invariants-8.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/promise/settle-now-breaks-all-invariants-8.js | RuntimeError: memory access out of bounds (code 255, args "--no-blinterp --no-baseline --no-ion --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - promise/settle-now-breaks-all-invariants-8.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/promise/settle-now-breaks-all-invariants-8.js | RuntimeError: memory access out of bounds (code 255, args "--blinterp-eager") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - promise/settle-now-breaks-all-invariants-9.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/promise/settle-now-breaks-all-invariants-9.js | RuntimeError: memory access out of bounds (code 255, args "") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - promise/settle-now-breaks-all-invariants-9.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/promise/settle-now-breaks-all-invariants-9.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - promise/settle-now-breaks-all-invariants-9.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/promise/settle-now-breaks-all-invariants-9.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - promise/settle-now-breaks-all-invariants-9.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/promise/settle-now-breaks-all-invariants-9.js | RuntimeError: memory access out of bounds (code 255, args "--baseline-eager --write-protect-code=off") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - promise/settle-now-breaks-all-invariants-9.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/promise/settle-now-breaks-all-invariants-9.js | RuntimeError: memory access out of bounds (code 255, args "--no-blinterp --no-baseline --no-ion --more-compartments") [0.2 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - promise/settle-now-breaks-all-invariants-9.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/promise/settle-now-breaks-all-invariants-9.js | RuntimeError: memory access out of bounds (code 255, args "--blinterp-eager") [0.3 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - promise/species-redefine-getter.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/promise/species-redefine-getter.js | RuntimeError: memory access out of bounds (code 255, args "") [0.2 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - promise/species-redefine-getter.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/promise/species-redefine-getter.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --more-compartments") [0.2 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - promise/species-redefine-getter.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/promise/species-redefine-getter.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - promise/species-redefine-getter.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/promise/species-redefine-getter.js | RuntimeError: memory access out of bounds (code 255, args "--baseline-eager --write-protect-code=off") [0.3 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - promise/species-redefine-getter.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/promise/species-redefine-getter.js | RuntimeError: memory access out of bounds (code 255, args "--no-blinterp --no-baseline --no-ion --more-compartments") [0.2 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - promise/species-redefine-getter.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/promise/species-redefine-getter.js | RuntimeError: memory access out of bounds (code 255, args "--blinterp-eager") [0.3 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - promise/stopdrainingjobqueue.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/promise/stopdrainingjobqueue.js | RuntimeError: memory access out of bounds (code 255, args "") [0.2 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - promise/stopdrainingjobqueue.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/promise/stopdrainingjobqueue.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - promise/stopdrainingjobqueue.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/promise/stopdrainingjobqueue.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads") [0.6 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - promise/stopdrainingjobqueue.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/promise/stopdrainingjobqueue.js | RuntimeError: memory access out of bounds (code 255, args "--baseline-eager --write-protect-code=off") [0.4 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - promise/stopdrainingjobqueue.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/promise/stopdrainingjobqueue.js | RuntimeError: memory access out of bounds (code 255, args "--no-blinterp --no-baseline --no-ion --more-compartments") [0.3 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - promise/stopdrainingjobqueue.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/promise/stopdrainingjobqueue.js | RuntimeError: memory access out of bounds (code 255, args "--blinterp-eager") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - promise/thenable-counter.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/promise/thenable-counter.js | RuntimeError: memory access out of bounds (code 255, args "") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - promise/thenable-counter.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/promise/thenable-counter.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - promise/thenable-counter.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/promise/thenable-counter.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - promise/thenable-counter.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/promise/thenable-counter.js | RuntimeError: memory access out of bounds (code 255, args "--baseline-eager --write-protect-code=off") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - promise/thenable-counter.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/promise/thenable-counter.js | RuntimeError: memory access out of bounds (code 255, args "--no-blinterp --no-baseline --no-ion --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - promise/thenable-counter.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/promise/thenable-counter.js | RuntimeError: memory access out of bounds (code 255, args "--blinterp-eager") [0.3 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - promise/unhandled-rejections-dead-2.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/promise/unhandled-rejections-dead-2.js | RuntimeError: memory access out of bounds (code 255, args "") [0.6 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - promise/unhandled-rejections-dead-2.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/promise/unhandled-rejections-dead-2.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --more-compartments") [0.4 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - promise/unhandled-rejections-dead-2.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/promise/unhandled-rejections-dead-2.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads") [0.3 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - promise/unhandled-rejections-dead-2.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/promise/unhandled-rejections-dead-2.js | RuntimeError: memory access out of bounds (code 255, args "--baseline-eager --write-protect-code=off") [0.2 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - promise/unhandled-rejections-dead-2.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/promise/unhandled-rejections-dead-2.js | RuntimeError: memory access out of bounds (code 255, args "--no-blinterp --no-baseline --no-ion --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - promise/unhandled-rejections-dead-2.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/promise/unhandled-rejections-dead-2.js | RuntimeError: memory access out of bounds (code 255, args "--blinterp-eager") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - promise/unhandled-rejections-dead.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/promise/unhandled-rejections-dead.js | RuntimeError: memory access out of bounds (code 255, args "") [0.2 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - promise/unhandled-rejections-dead.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/promise/unhandled-rejections-dead.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --more-compartments") [0.2 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - promise/unhandled-rejections-dead.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/promise/unhandled-rejections-dead.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - promise/unhandled-rejections-dead.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/promise/unhandled-rejections-dead.js | RuntimeError: memory access out of bounds (code 255, args "--baseline-eager --write-protect-code=off") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - promise/unhandled-rejections-dead.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/promise/unhandled-rejections-dead.js | RuntimeError: memory access out of bounds (code 255, args "--no-blinterp --no-baseline --no-ion --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - promise/unhandled-rejections-dead.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/promise/unhandled-rejections-dead.js | RuntimeError: memory access out of bounds (code 255, args "--blinterp-eager") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - promise/unhandled-rejections-different-realm.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/promise/unhandled-rejections-different-realm.js | RuntimeError: memory access out of bounds (code 255, args "") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - promise/unhandled-rejections-different-realm.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/promise/unhandled-rejections-different-realm.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --more-compartments") [0.3 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - promise/unhandled-rejections-different-realm.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/promise/unhandled-rejections-different-realm.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads") [0.2 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - promise/unhandled-rejections-different-realm.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/promise/unhandled-rejections-different-realm.js | RuntimeError: memory access out of bounds (code 255, args "--baseline-eager --write-protect-code=off") [0.7 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - promise/unhandled-rejections-different-realm.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/promise/unhandled-rejections-different-realm.js | RuntimeError: memory access out of bounds (code 255, args "--no-blinterp --no-baseline --no-ion --more-compartments") [0.4 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - promise/unhandled-rejections-different-realm.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/promise/unhandled-rejections-different-realm.js | RuntimeError: memory access out of bounds (code 255, args "--blinterp-eager") [0.4 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - promise/unhandled-rejections-error.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/promise/unhandled-rejections-error.js | RuntimeError: memory access out of bounds (code 255, args "") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - promise/unhandled-rejections-error.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/promise/unhandled-rejections-error.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - promise/unhandled-rejections-error.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/promise/unhandled-rejections-error.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - promise/unhandled-rejections-error.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/promise/unhandled-rejections-error.js | RuntimeError: memory access out of bounds (code 255, args "--baseline-eager --write-protect-code=off") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - promise/unhandled-rejections-error.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/promise/unhandled-rejections-error.js | RuntimeError: memory access out of bounds (code 255, args "--no-blinterp --no-baseline --no-ion --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - promise/unhandled-rejections-error.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/promise/unhandled-rejections-error.js | RuntimeError: memory access out of bounds (code 255, args "--blinterp-eager") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - promise/unhandled-rejections-oom.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/promise/unhandled-rejections-oom.js | RuntimeError: memory access out of bounds (code 255, args "") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - promise/unhandled-rejections-oom.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/promise/unhandled-rejections-oom.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --more-compartments") [0.5 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - promise/unhandled-rejections-oom.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/promise/unhandled-rejections-oom.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads") [0.2 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - promise/unhandled-rejections-oom.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/promise/unhandled-rejections-oom.js | RuntimeError: memory access out of bounds (code 255, args "--baseline-eager --write-protect-code=off") [0.3 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - promise/unhandled-rejections-oom.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/promise/unhandled-rejections-oom.js | RuntimeError: memory access out of bounds (code 255, args "--no-blinterp --no-baseline --no-ion --more-compartments") [0.2 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - promise/unhandled-rejections-oom.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/promise/unhandled-rejections-oom.js | RuntimeError: memory access out of bounds (code 255, args "--blinterp-eager") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - promise/unhandled-rejections.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/promise/unhandled-rejections.js | RuntimeError: memory access out of bounds (code 255, args "") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - promise/unhandled-rejections.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/promise/unhandled-rejections.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - promise/unhandled-rejections.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/promise/unhandled-rejections.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - promise/unhandled-rejections.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/promise/unhandled-rejections.js | RuntimeError: memory access out of bounds (code 255, args "--baseline-eager --write-protect-code=off") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - promise/unhandled-rejections.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/promise/unhandled-rejections.js | RuntimeError: memory access out of bounds (code 255, args "--no-blinterp --no-baseline --no-ion --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - promise/unhandled-rejections.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/promise/unhandled-rejections.js | RuntimeError: memory access out of bounds (code 255, args "--blinterp-eager") [0.2 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - promise/user-activation-propagation.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/promise/user-activation-propagation.js | RuntimeError: memory access out of bounds (code 255, args "") [0.2 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - promise/user-activation-propagation.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/promise/user-activation-propagation.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - promise/user-activation-propagation.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/promise/user-activation-propagation.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - promise/user-activation-propagation.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/promise/user-activation-propagation.js | RuntimeError: memory access out of bounds (code 255, args "--baseline-eager --write-protect-code=off") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - promise/user-activation-propagation.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/promise/user-activation-propagation.js | RuntimeError: memory access out of bounds (code 255, args "--no-blinterp --no-baseline --no-ion --more-compartments") [0.2 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - promise/user-activation-propagation.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/promise/user-activation-propagation.js | RuntimeError: memory access out of bounds (code 255, args "--blinterp-eager") [0.5 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+FAILURES:
+    promise/allSettled-dead.js
+    --ion-eager --ion-offthread-compile=off --more-compartments promise/allSettled-dead.js
+    --ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads promise/allSettled-dead.js
+    --baseline-eager --write-protect-code=off promise/allSettled-dead.js
+    --no-blinterp --no-baseline --no-ion --more-compartments promise/allSettled-dead.js
+    --blinterp-eager promise/allSettled-dead.js
+    promise/bug-1298776.js
+    --ion-eager --ion-offthread-compile=off --more-compartments promise/bug-1298776.js
+    --ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads promise/bug-1298776.js
+    --baseline-eager --write-protect-code=off promise/bug-1298776.js
+    --no-blinterp --no-baseline --no-ion --more-compartments promise/bug-1298776.js
+    --blinterp-eager promise/bug-1298776.js
+    --no-cgc promise/bug-1545369.js
+    --no-cgc --ion-eager --ion-offthread-compile=off --more-compartments promise/bug-1545369.js
+    --no-cgc --ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads promise/bug-1545369.js
+    --no-cgc --baseline-eager --write-protect-code=off promise/bug-1545369.js
+    --no-cgc --no-blinterp --no-baseline --no-ion --more-compartments promise/bug-1545369.js
+    --no-cgc --blinterp-eager promise/bug-1545369.js
+    promise/bug1347984.js
+    --ion-eager --ion-offthread-compile=off --more-compartments promise/bug1347984.js
+    --ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads promise/bug1347984.js
+    --baseline-eager --write-protect-code=off promise/bug1347984.js
+    --no-blinterp --no-baseline --no-ion --more-compartments promise/bug1347984.js
+    --blinterp-eager promise/bug1347984.js
+    promise/bug1406463.js
+    --ion-eager --ion-offthread-compile=off --more-compartments promise/bug1406463.js
+    --ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads promise/bug1406463.js
+    --baseline-eager --write-protect-code=off promise/bug1406463.js
+    --no-blinterp --no-baseline --no-ion --more-compartments promise/bug1406463.js
+    --blinterp-eager promise/bug1406463.js
+    promise/debugger-reaction-does-not-resolve.js
+    --ion-eager --ion-offthread-compile=off --more-compartments promise/debugger-reaction-does-not-resolve.js
+    --ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads promise/debugger-reaction-does-not-resolve.js
+    --baseline-eager --write-protect-code=off promise/debugger-reaction-does-not-resolve.js
+    --no-blinterp --no-baseline --no-ion --more-compartments promise/debugger-reaction-does-not-resolve.js
+    --blinterp-eager promise/debugger-reaction-does-not-resolve.js
+    promise/drain-job-queue-after-quit-called.js
+    --ion-eager --ion-offthread-compile=off --more-compartments promise/drain-job-queue-after-quit-called.js
+    --ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads promise/drain-job-queue-after-quit-called.js
+    --baseline-eager --write-protect-code=off promise/drain-job-queue-after-quit-called.js
+    --no-blinterp --no-baseline --no-ion --more-compartments promise/drain-job-queue-after-quit-called.js
+    --blinterp-eager promise/drain-job-queue-after-quit-called.js
+    promise/getwaitforallpromise-error-handling.js
+    --ion-eager --ion-offthread-compile=off --more-compartments promise/getwaitforallpromise-error-handling.js
+    --ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads promise/getwaitforallpromise-error-handling.js
+    --baseline-eager --write-protect-code=off promise/getwaitforallpromise-error-handling.js
+    --no-blinterp --no-baseline --no-ion --more-compartments promise/getwaitforallpromise-error-handling.js
+    --blinterp-eager promise/getwaitforallpromise-error-handling.js
+    promise/job-realm.js
+    --ion-eager --ion-offthread-compile=off --more-compartments promise/job-realm.js
+    --ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads promise/job-realm.js
+    --baseline-eager --write-protect-code=off promise/job-realm.js
+    --no-blinterp --no-baseline --no-ion --more-compartments promise/job-realm.js
+    --blinterp-eager promise/job-realm.js
+    promise/jobqueue-interrupt-01.js
+    --ion-eager --ion-offthread-compile=off --more-compartments promise/jobqueue-interrupt-01.js
+    --ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads promise/jobqueue-interrupt-01.js
+    --baseline-eager --write-protect-code=off promise/jobqueue-interrupt-01.js
+    --no-blinterp --no-baseline --no-ion --more-compartments promise/jobqueue-interrupt-01.js
+    --blinterp-eager promise/jobqueue-interrupt-01.js
+    promise/jobqueue-interrupt-02.js
+    --ion-eager --ion-offthread-compile=off --more-compartments promise/jobqueue-interrupt-02.js
+    --ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads promise/jobqueue-interrupt-02.js
+    --baseline-eager --write-protect-code=off promise/jobqueue-interrupt-02.js
+    --no-blinterp --no-baseline --no-ion --more-compartments promise/jobqueue-interrupt-02.js
+    --blinterp-eager promise/jobqueue-interrupt-02.js
+    promise/newpromisecapability-error-message.js
+    --ion-eager --ion-offthread-compile=off --more-compartments promise/newpromisecapability-error-message.js
+    --ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads promise/newpromisecapability-error-message.js
+    --baseline-eager --write-protect-code=off promise/newpromisecapability-error-message.js
+    --no-blinterp --no-baseline --no-ion --more-compartments promise/newpromisecapability-error-message.js
+    --blinterp-eager promise/newpromisecapability-error-message.js
+    promise/no-reentrant-drainjobqueue.js
+    --ion-eager --ion-offthread-compile=off --more-compartments promise/no-reentrant-drainjobqueue.js
+    --ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads promise/no-reentrant-drainjobqueue.js
+    --baseline-eager --write-protect-code=off promise/no-reentrant-drainjobqueue.js
+    --no-blinterp --no-baseline --no-ion --more-compartments promise/no-reentrant-drainjobqueue.js
+    --blinterp-eager promise/no-reentrant-drainjobqueue.js
+    promise/optimized-promise-already-resolved.js
+    --ion-eager --ion-offthread-compile=off --more-compartments promise/optimized-promise-already-resolved.js
+    --ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads promise/optimized-promise-already-resolved.js
+    --baseline-eager --write-protect-code=off promise/optimized-promise-already-resolved.js
+    --no-blinterp --no-baseline --no-ion --more-compartments promise/optimized-promise-already-resolved.js
+    --blinterp-eager promise/optimized-promise-already-resolved.js
+    promise/primitives-handling-in-promise-all.js
+    --ion-eager --ion-offthread-compile=off --more-compartments promise/primitives-handling-in-promise-all.js
+    --ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads promise/primitives-handling-in-promise-all.js
+    --baseline-eager --write-protect-code=off promise/primitives-handling-in-promise-all.js
+    --no-blinterp --no-baseline --no-ion --more-compartments promise/primitives-handling-in-promise-all.js
+    --blinterp-eager promise/primitives-handling-in-promise-all.js
+    promise/promise-any-with-non-default-resolving.js
+    --ion-eager --ion-offthread-compile=off --more-compartments promise/promise-any-with-non-default-resolving.js
+    --ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads promise/promise-any-with-non-default-resolving.js
+    --baseline-eager --write-protect-code=off promise/promise-any-with-non-default-resolving.js
+    --no-blinterp --no-baseline --no-ion --more-compartments promise/promise-any-with-non-default-resolving.js
+    --blinterp-eager promise/promise-any-with-non-default-resolving.js
+    promise/promise-cross-compartment-subclassing.js
+    --ion-eager --ion-offthread-compile=off --more-compartments promise/promise-cross-compartment-subclassing.js
+    --ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads promise/promise-cross-compartment-subclassing.js
+    --baseline-eager --write-protect-code=off promise/promise-cross-compartment-subclassing.js
+    --no-blinterp --no-baseline --no-ion --more-compartments promise/promise-cross-compartment-subclassing.js
+    --blinterp-eager promise/promise-cross-compartment-subclassing.js
+    promise/promise-race-with-default-resolving-internal.js
+    --ion-eager --ion-offthread-compile=off --more-compartments promise/promise-race-with-default-resolving-internal.js
+    --ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads promise/promise-race-with-default-resolving-internal.js
+    --baseline-eager --write-protect-code=off promise/promise-race-with-default-resolving-internal.js
+    --no-blinterp --no-baseline --no-ion --more-compartments promise/promise-race-with-default-resolving-internal.js
+    --blinterp-eager promise/promise-race-with-default-resolving-internal.js
+    promise/promise-race-with-non-default-resolving.js
+    --ion-eager --ion-offthread-compile=off --more-compartments promise/promise-race-with-non-default-resolving.js
+    --ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads promise/promise-race-with-non-default-resolving.js
+    --baseline-eager --write-protect-code=off promise/promise-race-with-non-default-resolving.js
+    --no-blinterp --no-baseline --no-ion --more-compartments promise/promise-race-with-non-default-resolving.js
+    --blinterp-eager promise/promise-race-with-non-default-resolving.js
+    promise/resolve-promise-scripted-and-api.js
+    --ion-eager --ion-offthread-compile=off --more-compartments promise/resolve-promise-scripted-and-api.js
+    --ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads promise/resolve-promise-scripted-and-api.js
+    --baseline-eager --write-protect-code=off promise/resolve-promise-scripted-and-api.js
+    --no-blinterp --no-baseline --no-ion --more-compartments promise/resolve-promise-scripted-and-api.js
+    --blinterp-eager promise/resolve-promise-scripted-and-api.js
+    promise/settle-async-generator.js
+    --ion-eager --ion-offthread-compile=off --more-compartments promise/settle-async-generator.js
+    --ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads promise/settle-async-generator.js
+    --baseline-eager --write-protect-code=off promise/settle-async-generator.js
+    --no-blinterp --no-baseline --no-ion --more-compartments promise/settle-async-generator.js
+    --blinterp-eager promise/settle-async-generator.js
+    promise/settle-now-already-resolved.js
+    --ion-eager --ion-offthread-compile=off --more-compartments promise/settle-now-already-resolved.js
+    --ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads promise/settle-now-already-resolved.js
+    --baseline-eager --write-protect-code=off promise/settle-now-already-resolved.js
+    --no-blinterp --no-baseline --no-ion --more-compartments promise/settle-now-already-resolved.js
+    --blinterp-eager promise/settle-now-already-resolved.js
+    promise/settle-now-breaks-all-invariants-1.js
+    --ion-eager --ion-offthread-compile=off --more-compartments promise/settle-now-breaks-all-invariants-1.js
+    --ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads promise/settle-now-breaks-all-invariants-1.js
+    --baseline-eager --write-protect-code=off promise/settle-now-breaks-all-invariants-1.js
+    --no-blinterp --no-baseline --no-ion --more-compartments promise/settle-now-breaks-all-invariants-1.js
+    --blinterp-eager promise/settle-now-breaks-all-invariants-1.js
+    promise/settle-now-breaks-all-invariants-10.js
+    --ion-eager --ion-offthread-compile=off --more-compartments promise/settle-now-breaks-all-invariants-10.js
+    --ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads promise/settle-now-breaks-all-invariants-10.js
+    --baseline-eager --write-protect-code=off promise/settle-now-breaks-all-invariants-10.js
+    --no-blinterp --no-baseline --no-ion --more-compartments promise/settle-now-breaks-all-invariants-10.js
+    --blinterp-eager promise/settle-now-breaks-all-invariants-10.js
+    promise/settle-now-breaks-all-invariants-11.js
+    --ion-eager --ion-offthread-compile=off --more-compartments promise/settle-now-breaks-all-invariants-11.js
+    --ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads promise/settle-now-breaks-all-invariants-11.js
+    --baseline-eager --write-protect-code=off promise/settle-now-breaks-all-invariants-11.js
+    --no-blinterp --no-baseline --no-ion --more-compartments promise/settle-now-breaks-all-invariants-11.js
+    --blinterp-eager promise/settle-now-breaks-all-invariants-11.js
+    promise/settle-now-breaks-all-invariants-2.js
+    --ion-eager --ion-offthread-compile=off --more-compartments promise/settle-now-breaks-all-invariants-2.js
+    --ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads promise/settle-now-breaks-all-invariants-2.js
+    --baseline-eager --write-protect-code=off promise/settle-now-breaks-all-invariants-2.js
+    --no-blinterp --no-baseline --no-ion --more-compartments promise/settle-now-breaks-all-invariants-2.js
+    --blinterp-eager promise/settle-now-breaks-all-invariants-2.js
+    promise/settle-now-breaks-all-invariants-3.js
+    --ion-eager --ion-offthread-compile=off --more-compartments promise/settle-now-breaks-all-invariants-3.js
+    --ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads promise/settle-now-breaks-all-invariants-3.js
+    --baseline-eager --write-protect-code=off promise/settle-now-breaks-all-invariants-3.js
+    --no-blinterp --no-baseline --no-ion --more-compartments promise/settle-now-breaks-all-invariants-3.js
+    --blinterp-eager promise/settle-now-breaks-all-invariants-3.js
+    promise/settle-now-breaks-all-invariants-4.js
+    --ion-eager --ion-offthread-compile=off --more-compartments promise/settle-now-breaks-all-invariants-4.js
+    --ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads promise/settle-now-breaks-all-invariants-4.js
+    --baseline-eager --write-protect-code=off promise/settle-now-breaks-all-invariants-4.js
+    --no-blinterp --no-baseline --no-ion --more-compartments promise/settle-now-breaks-all-invariants-4.js
+    --blinterp-eager promise/settle-now-breaks-all-invariants-4.js
+    promise/settle-now-breaks-all-invariants-5.js
+    --ion-eager --ion-offthread-compile=off --more-compartments promise/settle-now-breaks-all-invariants-5.js
+    --ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads promise/settle-now-breaks-all-invariants-5.js
+    --baseline-eager --write-protect-code=off promise/settle-now-breaks-all-invariants-5.js
+    --no-blinterp --no-baseline --no-ion --more-compartments promise/settle-now-breaks-all-invariants-5.js
+    --blinterp-eager promise/settle-now-breaks-all-invariants-5.js
+    promise/settle-now-breaks-all-invariants-6.js
+    --ion-eager --ion-offthread-compile=off --more-compartments promise/settle-now-breaks-all-invariants-6.js
+    --ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads promise/settle-now-breaks-all-invariants-6.js
+    --baseline-eager --write-protect-code=off promise/settle-now-breaks-all-invariants-6.js
+    --no-blinterp --no-baseline --no-ion --more-compartments promise/settle-now-breaks-all-invariants-6.js
+    --blinterp-eager promise/settle-now-breaks-all-invariants-6.js
+    promise/settle-now-breaks-all-invariants-7.js
+    --ion-eager --ion-offthread-compile=off --more-compartments promise/settle-now-breaks-all-invariants-7.js
+    --ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads promise/settle-now-breaks-all-invariants-7.js
+    --baseline-eager --write-protect-code=off promise/settle-now-breaks-all-invariants-7.js
+    --no-blinterp --no-baseline --no-ion --more-compartments promise/settle-now-breaks-all-invariants-7.js
+    --blinterp-eager promise/settle-now-breaks-all-invariants-7.js
+    promise/settle-now-breaks-all-invariants-8.js
+    --ion-eager --ion-offthread-compile=off --more-compartments promise/settle-now-breaks-all-invariants-8.js
+    --ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads promise/settle-now-breaks-all-invariants-8.js
+    --baseline-eager --write-protect-code=off promise/settle-now-breaks-all-invariants-8.js
+    --no-blinterp --no-baseline --no-ion --more-compartments promise/settle-now-breaks-all-invariants-8.js
+    --blinterp-eager promise/settle-now-breaks-all-invariants-8.js
+    promise/settle-now-breaks-all-invariants-9.js
+    --ion-eager --ion-offthread-compile=off --more-compartments promise/settle-now-breaks-all-invariants-9.js
+    --ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads promise/settle-now-breaks-all-invariants-9.js
+    --baseline-eager --write-protect-code=off promise/settle-now-breaks-all-invariants-9.js
+    --no-blinterp --no-baseline --no-ion --more-compartments promise/settle-now-breaks-all-invariants-9.js
+    --blinterp-eager promise/settle-now-breaks-all-invariants-9.js
+    promise/species-redefine-getter.js
+    --ion-eager --ion-offthread-compile=off --more-compartments promise/species-redefine-getter.js
+    --ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads promise/species-redefine-getter.js
+    --baseline-eager --write-protect-code=off promise/species-redefine-getter.js
+    --no-blinterp --no-baseline --no-ion --more-compartments promise/species-redefine-getter.js
+    --blinterp-eager promise/species-redefine-getter.js
+    promise/stopdrainingjobqueue.js
+    --ion-eager --ion-offthread-compile=off --more-compartments promise/stopdrainingjobqueue.js
+    --ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads promise/stopdrainingjobqueue.js
+    --baseline-eager --write-protect-code=off promise/stopdrainingjobqueue.js
+    --no-blinterp --no-baseline --no-ion --more-compartments promise/stopdrainingjobqueue.js
+    --blinterp-eager promise/stopdrainingjobqueue.js
+    promise/thenable-counter.js
+    --ion-eager --ion-offthread-compile=off --more-compartments promise/thenable-counter.js
+    --ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads promise/thenable-counter.js
+    --baseline-eager --write-protect-code=off promise/thenable-counter.js
+    --no-blinterp --no-baseline --no-ion --more-compartments promise/thenable-counter.js
+    --blinterp-eager promise/thenable-counter.js
+    promise/unhandled-rejections-dead-2.js
+    --ion-eager --ion-offthread-compile=off --more-compartments promise/unhandled-rejections-dead-2.js
+    --ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads promise/unhandled-rejections-dead-2.js
+    --baseline-eager --write-protect-code=off promise/unhandled-rejections-dead-2.js
+    --no-blinterp --no-baseline --no-ion --more-compartments promise/unhandled-rejections-dead-2.js
+    --blinterp-eager promise/unhandled-rejections-dead-2.js
+    promise/unhandled-rejections-dead.js
+    --ion-eager --ion-offthread-compile=off --more-compartments promise/unhandled-rejections-dead.js
+    --ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads promise/unhandled-rejections-dead.js
+    --baseline-eager --write-protect-code=off promise/unhandled-rejections-dead.js
+    --no-blinterp --no-baseline --no-ion --more-compartments promise/unhandled-rejections-dead.js
+    --blinterp-eager promise/unhandled-rejections-dead.js
+    promise/unhandled-rejections-different-realm.js
+    --ion-eager --ion-offthread-compile=off --more-compartments promise/unhandled-rejections-different-realm.js
+    --ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads promise/unhandled-rejections-different-realm.js
+    --baseline-eager --write-protect-code=off promise/unhandled-rejections-different-realm.js
+    --no-blinterp --no-baseline --no-ion --more-compartments promise/unhandled-rejections-different-realm.js
+    --blinterp-eager promise/unhandled-rejections-different-realm.js
+    promise/unhandled-rejections-error.js
+    --ion-eager --ion-offthread-compile=off --more-compartments promise/unhandled-rejections-error.js
+    --ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads promise/unhandled-rejections-error.js
+    --baseline-eager --write-protect-code=off promise/unhandled-rejections-error.js
+    --no-blinterp --no-baseline --no-ion --more-compartments promise/unhandled-rejections-error.js
+    --blinterp-eager promise/unhandled-rejections-error.js
+    promise/unhandled-rejections-oom.js
+    --ion-eager --ion-offthread-compile=off --more-compartments promise/unhandled-rejections-oom.js
+    --ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads promise/unhandled-rejections-oom.js
+    --baseline-eager --write-protect-code=off promise/unhandled-rejections-oom.js
+    --no-blinterp --no-baseline --no-ion --more-compartments promise/unhandled-rejections-oom.js
+    --blinterp-eager promise/unhandled-rejections-oom.js
+    promise/unhandled-rejections.js
+    --ion-eager --ion-offthread-compile=off --more-compartments promise/unhandled-rejections.js
+    --ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads promise/unhandled-rejections.js
+    --baseline-eager --write-protect-code=off promise/unhandled-rejections.js
+    --no-blinterp --no-baseline --no-ion --more-compartments promise/unhandled-rejections.js
+    --blinterp-eager promise/unhandled-rejections.js
+    promise/user-activation-propagation.js
+    --ion-eager --ion-offthread-compile=off --more-compartments promise/user-activation-propagation.js
+    --ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads promise/user-activation-propagation.js
+    --baseline-eager --write-protect-code=off promise/user-activation-propagation.js
+    --no-blinterp --no-baseline --no-ion --more-compartments promise/user-activation-propagation.js
+    --blinterp-eager promise/user-activation-propagation.js
+TIMEOUTS:
+Result summary:
+Passed: 0
+Failed: 258

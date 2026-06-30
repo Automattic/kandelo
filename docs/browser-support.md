@@ -164,6 +164,11 @@ The "Boot pattern" column reflects how the demo enters the kernel:
 Run the browser app: `cd apps/browser-demos && npm run dev`, then open
 `http://127.0.0.1:5401/`.
 
+Test-only browser pages are omitted from the default static build but can be
+selected for harness runners with `KANDELO_BROWSER_DEMO_INPUTS`. Existing
+official-suite runners use this for pages such as `sqlite-test` and
+`spidermonkey-test` so production builds stay limited to the public demos.
+
 Cross-origin browser fetches are routed through `public/service-worker.js`,
 which defaults to `https://wordpress-playground-cors-proxy.net/?`. Override it
 with `VITE_CORS_PROXY_URL` when testing another proxy:

@@ -1,0 +1,1734 @@
+===== Official SpiderMonkey jit-tests on Kandelo node host =====
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - profiler/bug1135703.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/profiler/bug1135703.js | RuntimeError: memory access out of bounds (code 255, args "") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - profiler/bug1135703.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/profiler/bug1135703.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --more-compartments") [0.3 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - profiler/bug1135703.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/profiler/bug1135703.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads") [0.4 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - profiler/bug1135703.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/profiler/bug1135703.js | RuntimeError: memory access out of bounds (code 255, args "--baseline-eager --write-protect-code=off") [0.5 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - profiler/bug1135703.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/profiler/bug1135703.js | RuntimeError: memory access out of bounds (code 255, args "--no-blinterp --no-baseline --no-ion --more-compartments") [0.5 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - profiler/bug1135703.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/profiler/bug1135703.js | RuntimeError: memory access out of bounds (code 255, args "--blinterp-eager") [0.3 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - profiler/bug1161351.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/profiler/bug1161351.js | RuntimeError: memory access out of bounds (code 255, args "") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - profiler/bug1161351.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/profiler/bug1161351.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - profiler/bug1161351.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/profiler/bug1161351.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - profiler/bug1161351.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/profiler/bug1161351.js | RuntimeError: memory access out of bounds (code 255, args "--baseline-eager --write-protect-code=off") [0.2 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - profiler/bug1161351.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/profiler/bug1161351.js | RuntimeError: memory access out of bounds (code 255, args "--no-blinterp --no-baseline --no-ion --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - profiler/bug1161351.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/profiler/bug1161351.js | RuntimeError: memory access out of bounds (code 255, args "--blinterp-eager") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - profiler/bug1164448.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/profiler/bug1164448.js | RuntimeError: memory access out of bounds (code 255, args "") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - profiler/bug1164448.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/profiler/bug1164448.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --more-compartments") [0.2 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - profiler/bug1164448.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/profiler/bug1164448.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads") [0.2 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - profiler/bug1164448.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/profiler/bug1164448.js | RuntimeError: memory access out of bounds (code 255, args "--baseline-eager --write-protect-code=off") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - profiler/bug1164448.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/profiler/bug1164448.js | RuntimeError: memory access out of bounds (code 255, args "--no-blinterp --no-baseline --no-ion --more-compartments") [0.5 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - profiler/bug1164448.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/profiler/bug1164448.js | RuntimeError: memory access out of bounds (code 255, args "--blinterp-eager") [0.3 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - profiler/bug1231925.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/profiler/bug1231925.js | RuntimeError: memory access out of bounds (code 255, args "") [0.6 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - profiler/bug1231925.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/profiler/bug1231925.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --more-compartments") [0.5 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - profiler/bug1231925.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/profiler/bug1231925.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads") [0.3 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - profiler/bug1231925.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/profiler/bug1231925.js | RuntimeError: memory access out of bounds (code 255, args "--baseline-eager --write-protect-code=off") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - profiler/bug1231925.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/profiler/bug1231925.js | RuntimeError: memory access out of bounds (code 255, args "--no-blinterp --no-baseline --no-ion --more-compartments") [0.2 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - profiler/bug1231925.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/profiler/bug1231925.js | RuntimeError: memory access out of bounds (code 255, args "--blinterp-eager") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - profiler/bug1233921.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/profiler/bug1233921.js | RuntimeError: memory access out of bounds (code 255, args "") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - profiler/bug1233921.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/profiler/bug1233921.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - profiler/bug1233921.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/profiler/bug1233921.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - profiler/bug1233921.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/profiler/bug1233921.js | RuntimeError: memory access out of bounds (code 255, args "--baseline-eager --write-protect-code=off") [0.2 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - profiler/bug1233921.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/profiler/bug1233921.js | RuntimeError: memory access out of bounds (code 255, args "--no-blinterp --no-baseline --no-ion --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - profiler/bug1233921.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/profiler/bug1233921.js | RuntimeError: memory access out of bounds (code 255, args "--blinterp-eager") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - profiler/bug1242840.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/profiler/bug1242840.js | RuntimeError: memory access out of bounds (code 255, args "") [0.5 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - profiler/bug1242840.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/profiler/bug1242840.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --more-compartments") [0.2 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - profiler/bug1242840.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/profiler/bug1242840.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - profiler/bug1242840.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/profiler/bug1242840.js | RuntimeError: memory access out of bounds (code 255, args "--baseline-eager --write-protect-code=off") [0.2 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - profiler/bug1242840.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/profiler/bug1242840.js | RuntimeError: memory access out of bounds (code 255, args "--no-blinterp --no-baseline --no-ion --more-compartments") [0.2 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - profiler/bug1242840.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/profiler/bug1242840.js | RuntimeError: memory access out of bounds (code 255, args "--blinterp-eager") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - profiler/bug1261324.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/profiler/bug1261324.js | RuntimeError: memory access out of bounds (code 255, args "") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - profiler/bug1261324.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/profiler/bug1261324.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --more-compartments") [0.2 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - profiler/bug1261324.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/profiler/bug1261324.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - profiler/bug1261324.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/profiler/bug1261324.js | RuntimeError: memory access out of bounds (code 255, args "--baseline-eager --write-protect-code=off") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - profiler/bug1261324.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/profiler/bug1261324.js | RuntimeError: memory access out of bounds (code 255, args "--no-blinterp --no-baseline --no-ion --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - profiler/bug1261324.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/profiler/bug1261324.js | RuntimeError: memory access out of bounds (code 255, args "--blinterp-eager") [0.2 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - profiler/bug1352507-1.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/profiler/bug1352507-1.js | RuntimeError: memory access out of bounds (code 255, args "") [0.2 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - profiler/bug1352507-1.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/profiler/bug1352507-1.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --more-compartments") [0.3 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - profiler/bug1352507-1.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/profiler/bug1352507-1.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads") [0.4 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - profiler/bug1352507-1.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/profiler/bug1352507-1.js | RuntimeError: memory access out of bounds (code 255, args "--baseline-eager --write-protect-code=off") [0.2 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - profiler/bug1352507-1.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/profiler/bug1352507-1.js | RuntimeError: memory access out of bounds (code 255, args "--no-blinterp --no-baseline --no-ion --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - profiler/bug1352507-1.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/profiler/bug1352507-1.js | RuntimeError: memory access out of bounds (code 255, args "--blinterp-eager") [0.4 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - profiler/bug1427774.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/profiler/bug1427774.js | RuntimeError: memory access out of bounds (code 255, args "") [0.3 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - profiler/bug1427774.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/profiler/bug1427774.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --more-compartments") [0.2 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - profiler/bug1427774.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/profiler/bug1427774.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - profiler/bug1427774.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/profiler/bug1427774.js | RuntimeError: memory access out of bounds (code 255, args "--baseline-eager --write-protect-code=off") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - profiler/bug1427774.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/profiler/bug1427774.js | RuntimeError: memory access out of bounds (code 255, args "--no-blinterp --no-baseline --no-ion --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - profiler/bug1427774.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/profiler/bug1427774.js | RuntimeError: memory access out of bounds (code 255, args "--blinterp-eager") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - profiler/bug1478509.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/profiler/bug1478509.js | RuntimeError: memory access out of bounds (code 255, args "") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - profiler/bug1478509.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/profiler/bug1478509.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - profiler/bug1478509.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/profiler/bug1478509.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - profiler/bug1478509.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/profiler/bug1478509.js | RuntimeError: memory access out of bounds (code 255, args "--baseline-eager --write-protect-code=off") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - profiler/bug1478509.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/profiler/bug1478509.js | RuntimeError: memory access out of bounds (code 255, args "--no-blinterp --no-baseline --no-ion --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - profiler/bug1478509.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/profiler/bug1478509.js | RuntimeError: memory access out of bounds (code 255, args "--blinterp-eager") [0.6 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - profiler/bug1502744.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/profiler/bug1502744.js | RuntimeError: memory access out of bounds (code 255, args "") [0.5 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - profiler/bug1502744.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/profiler/bug1502744.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --more-compartments") [0.2 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - profiler/bug1502744.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/profiler/bug1502744.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads") [0.2 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - profiler/bug1502744.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/profiler/bug1502744.js | RuntimeError: memory access out of bounds (code 255, args "--baseline-eager --write-protect-code=off") [0.3 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - profiler/bug1502744.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/profiler/bug1502744.js | RuntimeError: memory access out of bounds (code 255, args "--no-blinterp --no-baseline --no-ion --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - profiler/bug1502744.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/profiler/bug1502744.js | RuntimeError: memory access out of bounds (code 255, args "--blinterp-eager") [0.2 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - profiler/bug1563889.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/profiler/bug1563889.js | RuntimeError: memory access out of bounds (code 255, args "") [0.2 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - profiler/bug1563889.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/profiler/bug1563889.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --more-compartments") [0.2 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - profiler/bug1563889.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/profiler/bug1563889.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - profiler/bug1563889.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/profiler/bug1563889.js | RuntimeError: memory access out of bounds (code 255, args "--baseline-eager --write-protect-code=off") [0.2 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - profiler/bug1563889.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/profiler/bug1563889.js | RuntimeError: memory access out of bounds (code 255, args "--no-blinterp --no-baseline --no-ion --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - profiler/bug1563889.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/profiler/bug1563889.js | RuntimeError: memory access out of bounds (code 255, args "--blinterp-eager") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - profiler/bug1774149.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/profiler/bug1774149.js | RuntimeError: memory access out of bounds (code 255, args "--fast-warmup") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - profiler/bug1774149.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/profiler/bug1774149.js | RuntimeError: memory access out of bounds (code 255, args "--fast-warmup --ion-eager --ion-offthread-compile=off --more-compartments") [0.6 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - profiler/bug1774149.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/profiler/bug1774149.js | RuntimeError: memory access out of bounds (code 255, args "--fast-warmup --ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads") [0.6 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - profiler/bug1774149.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/profiler/bug1774149.js | RuntimeError: memory access out of bounds (code 255, args "--fast-warmup --baseline-eager --write-protect-code=off") [0.6 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - profiler/bug1774149.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/profiler/bug1774149.js | RuntimeError: memory access out of bounds (code 255, args "--fast-warmup --no-blinterp --no-baseline --no-ion --more-compartments") [0.3 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - profiler/bug1774149.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/profiler/bug1774149.js | RuntimeError: memory access out of bounds (code 255, args "--fast-warmup --blinterp-eager") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - profiler/bug1782003.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/profiler/bug1782003.js | RuntimeError: memory access out of bounds (code 255, args "") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - profiler/bug1782003.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/profiler/bug1782003.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --more-compartments") [0.2 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - profiler/bug1782003.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/profiler/bug1782003.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - profiler/bug1782003.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/profiler/bug1782003.js | RuntimeError: memory access out of bounds (code 255, args "--baseline-eager --write-protect-code=off") [0.2 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - profiler/bug1782003.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/profiler/bug1782003.js | RuntimeError: memory access out of bounds (code 255, args "--no-blinterp --no-baseline --no-ion --more-compartments") [0.2 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - profiler/bug1782003.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/profiler/bug1782003.js | RuntimeError: memory access out of bounds (code 255, args "--blinterp-eager") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - profiler/bug925309.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/profiler/bug925309.js | RuntimeError: memory access out of bounds (code 255, args "") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - profiler/bug925309.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/profiler/bug925309.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --more-compartments") [0.3 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - profiler/bug925309.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/profiler/bug925309.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads") [0.3 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - profiler/bug925309.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/profiler/bug925309.js | RuntimeError: memory access out of bounds (code 255, args "--baseline-eager --write-protect-code=off") [0.3 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - profiler/bug925309.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/profiler/bug925309.js | RuntimeError: memory access out of bounds (code 255, args "--no-blinterp --no-baseline --no-ion --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - profiler/bug925309.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/profiler/bug925309.js | RuntimeError: memory access out of bounds (code 255, args "--blinterp-eager") [0.2 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - profiler/debugmode-osr-exception-return-addr.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/profiler/debugmode-osr-exception-return-addr.js | RuntimeError: memory access out of bounds (code 255, args "") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - profiler/debugmode-osr-exception-return-addr.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/profiler/debugmode-osr-exception-return-addr.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - profiler/debugmode-osr-exception-return-addr.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/profiler/debugmode-osr-exception-return-addr.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads") [0.2 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - profiler/debugmode-osr-exception-return-addr.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/profiler/debugmode-osr-exception-return-addr.js | RuntimeError: memory access out of bounds (code 255, args "--baseline-eager --write-protect-code=off") [0.2 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - profiler/debugmode-osr-exception-return-addr.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/profiler/debugmode-osr-exception-return-addr.js | RuntimeError: memory access out of bounds (code 255, args "--no-blinterp --no-baseline --no-ion --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - profiler/debugmode-osr-exception-return-addr.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/profiler/debugmode-osr-exception-return-addr.js | RuntimeError: memory access out of bounds (code 255, args "--blinterp-eager") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - profiler/debugmode-osr-resume-addr.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/profiler/debugmode-osr-resume-addr.js | RuntimeError: memory access out of bounds (code 255, args "") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - profiler/debugmode-osr-resume-addr.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/profiler/debugmode-osr-resume-addr.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - profiler/debugmode-osr-resume-addr.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/profiler/debugmode-osr-resume-addr.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - profiler/debugmode-osr-resume-addr.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/profiler/debugmode-osr-resume-addr.js | RuntimeError: memory access out of bounds (code 255, args "--baseline-eager --write-protect-code=off") [0.4 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - profiler/debugmode-osr-resume-addr.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/profiler/debugmode-osr-resume-addr.js | RuntimeError: memory access out of bounds (code 255, args "--no-blinterp --no-baseline --no-ion --more-compartments") [0.4 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - profiler/debugmode-osr-resume-addr.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/profiler/debugmode-osr-resume-addr.js | RuntimeError: memory access out of bounds (code 255, args "--blinterp-eager") [0.4 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - profiler/enterjit-osr-disabling-earlyret.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/profiler/enterjit-osr-disabling-earlyret.js | RuntimeError: memory access out of bounds (code 255, args "") [0.4 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - profiler/enterjit-osr-disabling-earlyret.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/profiler/enterjit-osr-disabling-earlyret.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --more-compartments") [0.3 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - profiler/enterjit-osr-disabling-earlyret.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/profiler/enterjit-osr-disabling-earlyret.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads") [0.2 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - profiler/enterjit-osr-disabling-earlyret.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/profiler/enterjit-osr-disabling-earlyret.js | RuntimeError: memory access out of bounds (code 255, args "--baseline-eager --write-protect-code=off") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - profiler/enterjit-osr-disabling-earlyret.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/profiler/enterjit-osr-disabling-earlyret.js | RuntimeError: memory access out of bounds (code 255, args "--no-blinterp --no-baseline --no-ion --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - profiler/enterjit-osr-disabling-earlyret.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/profiler/enterjit-osr-disabling-earlyret.js | RuntimeError: memory access out of bounds (code 255, args "--blinterp-eager") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - profiler/enterjit-osr-disabling.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/profiler/enterjit-osr-disabling.js | RuntimeError: memory access out of bounds (code 255, args "") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - profiler/enterjit-osr-disabling.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/profiler/enterjit-osr-disabling.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - profiler/enterjit-osr-disabling.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/profiler/enterjit-osr-disabling.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - profiler/enterjit-osr-disabling.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/profiler/enterjit-osr-disabling.js | RuntimeError: memory access out of bounds (code 255, args "--baseline-eager --write-protect-code=off") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - profiler/enterjit-osr-disabling.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/profiler/enterjit-osr-disabling.js | RuntimeError: memory access out of bounds (code 255, args "--no-blinterp --no-baseline --no-ion --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - profiler/enterjit-osr-disabling.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/profiler/enterjit-osr-disabling.js | RuntimeError: memory access out of bounds (code 255, args "--blinterp-eager") [0.2 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - profiler/enterjit-osr-enabling-earlyret.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/profiler/enterjit-osr-enabling-earlyret.js | RuntimeError: memory access out of bounds (code 255, args "") [0.3 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - profiler/enterjit-osr-enabling-earlyret.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/profiler/enterjit-osr-enabling-earlyret.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --more-compartments") [0.5 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - profiler/enterjit-osr-enabling-earlyret.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/profiler/enterjit-osr-enabling-earlyret.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads") [0.4 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - profiler/enterjit-osr-enabling-earlyret.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/profiler/enterjit-osr-enabling-earlyret.js | RuntimeError: memory access out of bounds (code 255, args "--baseline-eager --write-protect-code=off") [0.2 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - profiler/enterjit-osr-enabling-earlyret.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/profiler/enterjit-osr-enabling-earlyret.js | RuntimeError: memory access out of bounds (code 255, args "--no-blinterp --no-baseline --no-ion --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - profiler/enterjit-osr-enabling-earlyret.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/profiler/enterjit-osr-enabling-earlyret.js | RuntimeError: memory access out of bounds (code 255, args "--blinterp-eager") [0.2 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - profiler/enterjit-osr-enabling.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/profiler/enterjit-osr-enabling.js | RuntimeError: memory access out of bounds (code 255, args "") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - profiler/enterjit-osr-enabling.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/profiler/enterjit-osr-enabling.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --more-compartments") [0.2 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - profiler/enterjit-osr-enabling.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/profiler/enterjit-osr-enabling.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads") [0.2 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - profiler/enterjit-osr-enabling.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/profiler/enterjit-osr-enabling.js | RuntimeError: memory access out of bounds (code 255, args "--baseline-eager --write-protect-code=off") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - profiler/enterjit-osr-enabling.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/profiler/enterjit-osr-enabling.js | RuntimeError: memory access out of bounds (code 255, args "--no-blinterp --no-baseline --no-ion --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - profiler/enterjit-osr-enabling.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/profiler/enterjit-osr-enabling.js | RuntimeError: memory access out of bounds (code 255, args "--blinterp-eager") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - profiler/enterjit-osr.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/profiler/enterjit-osr.js | RuntimeError: memory access out of bounds (code 255, args "") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - profiler/enterjit-osr.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/profiler/enterjit-osr.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - profiler/enterjit-osr.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/profiler/enterjit-osr.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - profiler/enterjit-osr.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/profiler/enterjit-osr.js | RuntimeError: memory access out of bounds (code 255, args "--baseline-eager --write-protect-code=off") [0.6 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - profiler/enterjit-osr.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/profiler/enterjit-osr.js | RuntimeError: memory access out of bounds (code 255, args "--no-blinterp --no-baseline --no-ion --more-compartments") [0.4 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - profiler/enterjit-osr.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/profiler/enterjit-osr.js | RuntimeError: memory access out of bounds (code 255, args "--blinterp-eager") [0.5 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - profiler/exception-unwind-hook.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/profiler/exception-unwind-hook.js | RuntimeError: memory access out of bounds (code 255, args "") [0.4 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - profiler/exception-unwind-hook.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/profiler/exception-unwind-hook.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --more-compartments") [0.2 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - profiler/exception-unwind-hook.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/profiler/exception-unwind-hook.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads") [0.2 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - profiler/exception-unwind-hook.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/profiler/exception-unwind-hook.js | RuntimeError: memory access out of bounds (code 255, args "--baseline-eager --write-protect-code=off") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - profiler/exception-unwind-hook.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/profiler/exception-unwind-hook.js | RuntimeError: memory access out of bounds (code 255, args "--no-blinterp --no-baseline --no-ion --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - profiler/exception-unwind-hook.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/profiler/exception-unwind-hook.js | RuntimeError: memory access out of bounds (code 255, args "--blinterp-eager") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - profiler/getter-setter-ic.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/profiler/getter-setter-ic.js | RuntimeError: memory access out of bounds (code 255, args "") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - profiler/getter-setter-ic.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/profiler/getter-setter-ic.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - profiler/getter-setter-ic.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/profiler/getter-setter-ic.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads") [0.2 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - profiler/getter-setter-ic.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/profiler/getter-setter-ic.js | RuntimeError: memory access out of bounds (code 255, args "--baseline-eager --write-protect-code=off") [0.2 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - profiler/getter-setter-ic.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/profiler/getter-setter-ic.js | RuntimeError: memory access out of bounds (code 255, args "--no-blinterp --no-baseline --no-ion --more-compartments") [0.4 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - profiler/getter-setter-ic.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/profiler/getter-setter-ic.js | RuntimeError: memory access out of bounds (code 255, args "--blinterp-eager") [0.2 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - profiler/interpreter-stacks.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/profiler/interpreter-stacks.js | RuntimeError: memory access out of bounds (code 255, args "--no-blinterp") [0.5 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - profiler/interpreter-stacks.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/profiler/interpreter-stacks.js | RuntimeError: memory access out of bounds (code 255, args "--no-blinterp --ion-eager --ion-offthread-compile=off --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - profiler/interpreter-stacks.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/profiler/interpreter-stacks.js | RuntimeError: memory access out of bounds (code 255, args "--no-blinterp --ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - profiler/interpreter-stacks.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/profiler/interpreter-stacks.js | RuntimeError: memory access out of bounds (code 255, args "--no-blinterp --baseline-eager --write-protect-code=off") [0.2 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - profiler/interpreter-stacks.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/profiler/interpreter-stacks.js | RuntimeError: memory access out of bounds (code 255, args "--no-blinterp --no-blinterp --no-baseline --no-ion --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - profiler/interpreter-stacks.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/profiler/interpreter-stacks.js | RuntimeError: memory access out of bounds (code 255, args "--no-blinterp --blinterp-eager") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - profiler/ion-rectifier-frame-bug1530351.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/profiler/ion-rectifier-frame-bug1530351.js | RuntimeError: memory access out of bounds (code 255, args "") [0.3 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - profiler/ion-rectifier-frame-bug1530351.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/profiler/ion-rectifier-frame-bug1530351.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - profiler/ion-rectifier-frame-bug1530351.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/profiler/ion-rectifier-frame-bug1530351.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - profiler/ion-rectifier-frame-bug1530351.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/profiler/ion-rectifier-frame-bug1530351.js | RuntimeError: memory access out of bounds (code 255, args "--baseline-eager --write-protect-code=off") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - profiler/ion-rectifier-frame-bug1530351.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/profiler/ion-rectifier-frame-bug1530351.js | RuntimeError: memory access out of bounds (code 255, args "--no-blinterp --no-baseline --no-ion --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - profiler/ion-rectifier-frame-bug1530351.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/profiler/ion-rectifier-frame-bug1530351.js | RuntimeError: memory access out of bounds (code 255, args "--blinterp-eager") [0.7 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - profiler/jsop-resume-return-bug1451385-1.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/profiler/jsop-resume-return-bug1451385-1.js | RuntimeError: memory access out of bounds (code 255, args "") [0.4 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - profiler/jsop-resume-return-bug1451385-1.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/profiler/jsop-resume-return-bug1451385-1.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --more-compartments") [0.6 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - profiler/jsop-resume-return-bug1451385-1.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/profiler/jsop-resume-return-bug1451385-1.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads") [0.3 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - profiler/jsop-resume-return-bug1451385-1.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/profiler/jsop-resume-return-bug1451385-1.js | RuntimeError: memory access out of bounds (code 255, args "--baseline-eager --write-protect-code=off") [0.4 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - profiler/jsop-resume-return-bug1451385-1.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/profiler/jsop-resume-return-bug1451385-1.js | RuntimeError: memory access out of bounds (code 255, args "--no-blinterp --no-baseline --no-ion --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - profiler/jsop-resume-return-bug1451385-1.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/profiler/jsop-resume-return-bug1451385-1.js | RuntimeError: memory access out of bounds (code 255, args "--blinterp-eager") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - profiler/jsop-resume-return-bug1451385-2.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/profiler/jsop-resume-return-bug1451385-2.js | RuntimeError: memory access out of bounds (code 255, args "") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - profiler/jsop-resume-return-bug1451385-2.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/profiler/jsop-resume-return-bug1451385-2.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --more-compartments") [0.3 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - profiler/jsop-resume-return-bug1451385-2.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/profiler/jsop-resume-return-bug1451385-2.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads") [0.4 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - profiler/jsop-resume-return-bug1451385-2.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/profiler/jsop-resume-return-bug1451385-2.js | RuntimeError: memory access out of bounds (code 255, args "--baseline-eager --write-protect-code=off") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - profiler/jsop-resume-return-bug1451385-2.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/profiler/jsop-resume-return-bug1451385-2.js | RuntimeError: memory access out of bounds (code 255, args "--no-blinterp --no-baseline --no-ion --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - profiler/jsop-resume-return-bug1451385-2.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/profiler/jsop-resume-return-bug1451385-2.js | RuntimeError: memory access out of bounds (code 255, args "--blinterp-eager") [0.3 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - profiler/native-trampoline-2.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/profiler/native-trampoline-2.js | RuntimeError: memory access out of bounds (code 255, args "") [0.4 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - profiler/native-trampoline-2.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/profiler/native-trampoline-2.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --more-compartments") [0.2 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - profiler/native-trampoline-2.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/profiler/native-trampoline-2.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - profiler/native-trampoline-2.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/profiler/native-trampoline-2.js | RuntimeError: memory access out of bounds (code 255, args "--baseline-eager --write-protect-code=off") [0.3 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - profiler/native-trampoline-2.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/profiler/native-trampoline-2.js | RuntimeError: memory access out of bounds (code 255, args "--no-blinterp --no-baseline --no-ion --more-compartments") [0.3 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - profiler/native-trampoline-2.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/profiler/native-trampoline-2.js | RuntimeError: memory access out of bounds (code 255, args "--blinterp-eager") [0.3 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - profiler/native-trampoline-3.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/profiler/native-trampoline-3.js | RuntimeError: memory access out of bounds (code 255, args "") [0.4 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - profiler/native-trampoline-3.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/profiler/native-trampoline-3.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - profiler/native-trampoline-3.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/profiler/native-trampoline-3.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - profiler/native-trampoline-3.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/profiler/native-trampoline-3.js | RuntimeError: memory access out of bounds (code 255, args "--baseline-eager --write-protect-code=off") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - profiler/native-trampoline-3.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/profiler/native-trampoline-3.js | RuntimeError: memory access out of bounds (code 255, args "--no-blinterp --no-baseline --no-ion --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - profiler/native-trampoline-3.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/profiler/native-trampoline-3.js | RuntimeError: memory access out of bounds (code 255, args "--blinterp-eager") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - profiler/native-trampoline.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/profiler/native-trampoline.js | RuntimeError: memory access out of bounds (code 255, args "") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - profiler/native-trampoline.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/profiler/native-trampoline.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --more-compartments") [0.6 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - profiler/native-trampoline.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/profiler/native-trampoline.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads") [0.6 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - profiler/native-trampoline.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/profiler/native-trampoline.js | RuntimeError: memory access out of bounds (code 255, args "--baseline-eager --write-protect-code=off") [0.4 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - profiler/native-trampoline.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/profiler/native-trampoline.js | RuntimeError: memory access out of bounds (code 255, args "--no-blinterp --no-baseline --no-ion --more-compartments") [0.2 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - profiler/native-trampoline.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/profiler/native-trampoline.js | RuntimeError: memory access out of bounds (code 255, args "--blinterp-eager") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - profiler/pc-count-profiler.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/profiler/pc-count-profiler.js | RuntimeError: memory access out of bounds (code 255, args "") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - profiler/pc-count-profiler.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/profiler/pc-count-profiler.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - profiler/pc-count-profiler.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/profiler/pc-count-profiler.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - profiler/pc-count-profiler.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/profiler/pc-count-profiler.js | RuntimeError: memory access out of bounds (code 255, args "--baseline-eager --write-protect-code=off") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - profiler/pc-count-profiler.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/profiler/pc-count-profiler.js | RuntimeError: memory access out of bounds (code 255, args "--no-blinterp --no-baseline --no-ion --more-compartments") [0.2 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - profiler/pc-count-profiler.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/profiler/pc-count-profiler.js | RuntimeError: memory access out of bounds (code 255, args "--blinterp-eager") [0.2 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - profiler/test-baseline-eval-frame-profiling.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/profiler/test-baseline-eval-frame-profiling.js | RuntimeError: memory access out of bounds (code 255, args "") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - profiler/test-baseline-eval-frame-profiling.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/profiler/test-baseline-eval-frame-profiling.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - profiler/test-baseline-eval-frame-profiling.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/profiler/test-baseline-eval-frame-profiling.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads") [0.5 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - profiler/test-baseline-eval-frame-profiling.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/profiler/test-baseline-eval-frame-profiling.js | RuntimeError: memory access out of bounds (code 255, args "--baseline-eager --write-protect-code=off") [0.3 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - profiler/test-baseline-eval-frame-profiling.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/profiler/test-baseline-eval-frame-profiling.js | RuntimeError: memory access out of bounds (code 255, args "--no-blinterp --no-baseline --no-ion --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - profiler/test-baseline-eval-frame-profiling.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/profiler/test-baseline-eval-frame-profiling.js | RuntimeError: memory access out of bounds (code 255, args "--blinterp-eager") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - profiler/test-bug1026485.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/profiler/test-bug1026485.js | RuntimeError: memory access out of bounds (code 255, args "") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - profiler/test-bug1026485.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/profiler/test-bug1026485.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - profiler/test-bug1026485.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/profiler/test-bug1026485.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - profiler/test-bug1026485.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/profiler/test-bug1026485.js | RuntimeError: memory access out of bounds (code 255, args "--baseline-eager --write-protect-code=off") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - profiler/test-bug1026485.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/profiler/test-bug1026485.js | RuntimeError: memory access out of bounds (code 255, args "--no-blinterp --no-baseline --no-ion --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - profiler/test-bug1026485.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/profiler/test-bug1026485.js | RuntimeError: memory access out of bounds (code 255, args "--blinterp-eager") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - profiler/wasm-to-js-1.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/profiler/wasm-to-js-1.js | RuntimeError: memory access out of bounds (code 255, args "--fast-warmup") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - profiler/wasm-to-js-1.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/profiler/wasm-to-js-1.js | RuntimeError: memory access out of bounds (code 255, args "--fast-warmup --ion-eager --ion-offthread-compile=off --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - profiler/wasm-to-js-1.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/profiler/wasm-to-js-1.js | RuntimeError: memory access out of bounds (code 255, args "--fast-warmup --ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads") [0.4 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - profiler/wasm-to-js-1.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/profiler/wasm-to-js-1.js | RuntimeError: memory access out of bounds (code 255, args "--fast-warmup --baseline-eager --write-protect-code=off") [0.5 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - profiler/wasm-to-js-1.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/profiler/wasm-to-js-1.js | RuntimeError: memory access out of bounds (code 255, args "--fast-warmup --no-blinterp --no-baseline --no-ion --more-compartments") [0.2 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - profiler/wasm-to-js-1.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/profiler/wasm-to-js-1.js | RuntimeError: memory access out of bounds (code 255, args "--fast-warmup --blinterp-eager") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - profiler/wasm-to-js-2.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/profiler/wasm-to-js-2.js | RuntimeError: memory access out of bounds (code 255, args "") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - profiler/wasm-to-js-2.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/profiler/wasm-to-js-2.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --more-compartments") [0.2 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - profiler/wasm-to-js-2.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/profiler/wasm-to-js-2.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads") [0.3 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - profiler/wasm-to-js-2.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/profiler/wasm-to-js-2.js | RuntimeError: memory access out of bounds (code 255, args "--baseline-eager --write-protect-code=off") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - profiler/wasm-to-js-2.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/profiler/wasm-to-js-2.js | RuntimeError: memory access out of bounds (code 255, args "--no-blinterp --no-baseline --no-ion --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - profiler/wasm-to-js-2.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/profiler/wasm-to-js-2.js | RuntimeError: memory access out of bounds (code 255, args "--blinterp-eager") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+FAILURES:
+    profiler/bug1135703.js
+    --ion-eager --ion-offthread-compile=off --more-compartments profiler/bug1135703.js
+    --ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads profiler/bug1135703.js
+    --baseline-eager --write-protect-code=off profiler/bug1135703.js
+    --no-blinterp --no-baseline --no-ion --more-compartments profiler/bug1135703.js
+    --blinterp-eager profiler/bug1135703.js
+    profiler/bug1161351.js
+    --ion-eager --ion-offthread-compile=off --more-compartments profiler/bug1161351.js
+    --ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads profiler/bug1161351.js
+    --baseline-eager --write-protect-code=off profiler/bug1161351.js
+    --no-blinterp --no-baseline --no-ion --more-compartments profiler/bug1161351.js
+    --blinterp-eager profiler/bug1161351.js
+    profiler/bug1164448.js
+    --ion-eager --ion-offthread-compile=off --more-compartments profiler/bug1164448.js
+    --ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads profiler/bug1164448.js
+    --baseline-eager --write-protect-code=off profiler/bug1164448.js
+    --no-blinterp --no-baseline --no-ion --more-compartments profiler/bug1164448.js
+    --blinterp-eager profiler/bug1164448.js
+    profiler/bug1231925.js
+    --ion-eager --ion-offthread-compile=off --more-compartments profiler/bug1231925.js
+    --ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads profiler/bug1231925.js
+    --baseline-eager --write-protect-code=off profiler/bug1231925.js
+    --no-blinterp --no-baseline --no-ion --more-compartments profiler/bug1231925.js
+    --blinterp-eager profiler/bug1231925.js
+    profiler/bug1233921.js
+    --ion-eager --ion-offthread-compile=off --more-compartments profiler/bug1233921.js
+    --ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads profiler/bug1233921.js
+    --baseline-eager --write-protect-code=off profiler/bug1233921.js
+    --no-blinterp --no-baseline --no-ion --more-compartments profiler/bug1233921.js
+    --blinterp-eager profiler/bug1233921.js
+    profiler/bug1242840.js
+    --ion-eager --ion-offthread-compile=off --more-compartments profiler/bug1242840.js
+    --ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads profiler/bug1242840.js
+    --baseline-eager --write-protect-code=off profiler/bug1242840.js
+    --no-blinterp --no-baseline --no-ion --more-compartments profiler/bug1242840.js
+    --blinterp-eager profiler/bug1242840.js
+    profiler/bug1261324.js
+    --ion-eager --ion-offthread-compile=off --more-compartments profiler/bug1261324.js
+    --ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads profiler/bug1261324.js
+    --baseline-eager --write-protect-code=off profiler/bug1261324.js
+    --no-blinterp --no-baseline --no-ion --more-compartments profiler/bug1261324.js
+    --blinterp-eager profiler/bug1261324.js
+    profiler/bug1352507-1.js
+    --ion-eager --ion-offthread-compile=off --more-compartments profiler/bug1352507-1.js
+    --ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads profiler/bug1352507-1.js
+    --baseline-eager --write-protect-code=off profiler/bug1352507-1.js
+    --no-blinterp --no-baseline --no-ion --more-compartments profiler/bug1352507-1.js
+    --blinterp-eager profiler/bug1352507-1.js
+    profiler/bug1427774.js
+    --ion-eager --ion-offthread-compile=off --more-compartments profiler/bug1427774.js
+    --ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads profiler/bug1427774.js
+    --baseline-eager --write-protect-code=off profiler/bug1427774.js
+    --no-blinterp --no-baseline --no-ion --more-compartments profiler/bug1427774.js
+    --blinterp-eager profiler/bug1427774.js
+    profiler/bug1478509.js
+    --ion-eager --ion-offthread-compile=off --more-compartments profiler/bug1478509.js
+    --ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads profiler/bug1478509.js
+    --baseline-eager --write-protect-code=off profiler/bug1478509.js
+    --no-blinterp --no-baseline --no-ion --more-compartments profiler/bug1478509.js
+    --blinterp-eager profiler/bug1478509.js
+    profiler/bug1502744.js
+    --ion-eager --ion-offthread-compile=off --more-compartments profiler/bug1502744.js
+    --ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads profiler/bug1502744.js
+    --baseline-eager --write-protect-code=off profiler/bug1502744.js
+    --no-blinterp --no-baseline --no-ion --more-compartments profiler/bug1502744.js
+    --blinterp-eager profiler/bug1502744.js
+    profiler/bug1563889.js
+    --ion-eager --ion-offthread-compile=off --more-compartments profiler/bug1563889.js
+    --ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads profiler/bug1563889.js
+    --baseline-eager --write-protect-code=off profiler/bug1563889.js
+    --no-blinterp --no-baseline --no-ion --more-compartments profiler/bug1563889.js
+    --blinterp-eager profiler/bug1563889.js
+    --fast-warmup profiler/bug1774149.js
+    --fast-warmup --ion-eager --ion-offthread-compile=off --more-compartments profiler/bug1774149.js
+    --fast-warmup --ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads profiler/bug1774149.js
+    --fast-warmup --baseline-eager --write-protect-code=off profiler/bug1774149.js
+    --fast-warmup --no-blinterp --no-baseline --no-ion --more-compartments profiler/bug1774149.js
+    --fast-warmup --blinterp-eager profiler/bug1774149.js
+    profiler/bug1782003.js
+    --ion-eager --ion-offthread-compile=off --more-compartments profiler/bug1782003.js
+    --ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads profiler/bug1782003.js
+    --baseline-eager --write-protect-code=off profiler/bug1782003.js
+    --no-blinterp --no-baseline --no-ion --more-compartments profiler/bug1782003.js
+    --blinterp-eager profiler/bug1782003.js
+    profiler/bug925309.js
+    --ion-eager --ion-offthread-compile=off --more-compartments profiler/bug925309.js
+    --ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads profiler/bug925309.js
+    --baseline-eager --write-protect-code=off profiler/bug925309.js
+    --no-blinterp --no-baseline --no-ion --more-compartments profiler/bug925309.js
+    --blinterp-eager profiler/bug925309.js
+    profiler/debugmode-osr-exception-return-addr.js
+    --ion-eager --ion-offthread-compile=off --more-compartments profiler/debugmode-osr-exception-return-addr.js
+    --ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads profiler/debugmode-osr-exception-return-addr.js
+    --baseline-eager --write-protect-code=off profiler/debugmode-osr-exception-return-addr.js
+    --no-blinterp --no-baseline --no-ion --more-compartments profiler/debugmode-osr-exception-return-addr.js
+    --blinterp-eager profiler/debugmode-osr-exception-return-addr.js
+    profiler/debugmode-osr-resume-addr.js
+    --ion-eager --ion-offthread-compile=off --more-compartments profiler/debugmode-osr-resume-addr.js
+    --ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads profiler/debugmode-osr-resume-addr.js
+    --baseline-eager --write-protect-code=off profiler/debugmode-osr-resume-addr.js
+    --no-blinterp --no-baseline --no-ion --more-compartments profiler/debugmode-osr-resume-addr.js
+    --blinterp-eager profiler/debugmode-osr-resume-addr.js
+    profiler/enterjit-osr-disabling-earlyret.js
+    --ion-eager --ion-offthread-compile=off --more-compartments profiler/enterjit-osr-disabling-earlyret.js
+    --ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads profiler/enterjit-osr-disabling-earlyret.js
+    --baseline-eager --write-protect-code=off profiler/enterjit-osr-disabling-earlyret.js
+    --no-blinterp --no-baseline --no-ion --more-compartments profiler/enterjit-osr-disabling-earlyret.js
+    --blinterp-eager profiler/enterjit-osr-disabling-earlyret.js
+    profiler/enterjit-osr-disabling.js
+    --ion-eager --ion-offthread-compile=off --more-compartments profiler/enterjit-osr-disabling.js
+    --ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads profiler/enterjit-osr-disabling.js
+    --baseline-eager --write-protect-code=off profiler/enterjit-osr-disabling.js
+    --no-blinterp --no-baseline --no-ion --more-compartments profiler/enterjit-osr-disabling.js
+    --blinterp-eager profiler/enterjit-osr-disabling.js
+    profiler/enterjit-osr-enabling-earlyret.js
+    --ion-eager --ion-offthread-compile=off --more-compartments profiler/enterjit-osr-enabling-earlyret.js
+    --ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads profiler/enterjit-osr-enabling-earlyret.js
+    --baseline-eager --write-protect-code=off profiler/enterjit-osr-enabling-earlyret.js
+    --no-blinterp --no-baseline --no-ion --more-compartments profiler/enterjit-osr-enabling-earlyret.js
+    --blinterp-eager profiler/enterjit-osr-enabling-earlyret.js
+    profiler/enterjit-osr-enabling.js
+    --ion-eager --ion-offthread-compile=off --more-compartments profiler/enterjit-osr-enabling.js
+    --ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads profiler/enterjit-osr-enabling.js
+    --baseline-eager --write-protect-code=off profiler/enterjit-osr-enabling.js
+    --no-blinterp --no-baseline --no-ion --more-compartments profiler/enterjit-osr-enabling.js
+    --blinterp-eager profiler/enterjit-osr-enabling.js
+    profiler/enterjit-osr.js
+    --ion-eager --ion-offthread-compile=off --more-compartments profiler/enterjit-osr.js
+    --ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads profiler/enterjit-osr.js
+    --baseline-eager --write-protect-code=off profiler/enterjit-osr.js
+    --no-blinterp --no-baseline --no-ion --more-compartments profiler/enterjit-osr.js
+    --blinterp-eager profiler/enterjit-osr.js
+    profiler/exception-unwind-hook.js
+    --ion-eager --ion-offthread-compile=off --more-compartments profiler/exception-unwind-hook.js
+    --ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads profiler/exception-unwind-hook.js
+    --baseline-eager --write-protect-code=off profiler/exception-unwind-hook.js
+    --no-blinterp --no-baseline --no-ion --more-compartments profiler/exception-unwind-hook.js
+    --blinterp-eager profiler/exception-unwind-hook.js
+    profiler/getter-setter-ic.js
+    --ion-eager --ion-offthread-compile=off --more-compartments profiler/getter-setter-ic.js
+    --ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads profiler/getter-setter-ic.js
+    --baseline-eager --write-protect-code=off profiler/getter-setter-ic.js
+    --no-blinterp --no-baseline --no-ion --more-compartments profiler/getter-setter-ic.js
+    --blinterp-eager profiler/getter-setter-ic.js
+    --no-blinterp profiler/interpreter-stacks.js
+    --no-blinterp --ion-eager --ion-offthread-compile=off --more-compartments profiler/interpreter-stacks.js
+    --no-blinterp --ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads profiler/interpreter-stacks.js
+    --no-blinterp --baseline-eager --write-protect-code=off profiler/interpreter-stacks.js
+    --no-blinterp --no-blinterp --no-baseline --no-ion --more-compartments profiler/interpreter-stacks.js
+    --no-blinterp --blinterp-eager profiler/interpreter-stacks.js
+    profiler/ion-rectifier-frame-bug1530351.js
+    --ion-eager --ion-offthread-compile=off --more-compartments profiler/ion-rectifier-frame-bug1530351.js
+    --ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads profiler/ion-rectifier-frame-bug1530351.js
+    --baseline-eager --write-protect-code=off profiler/ion-rectifier-frame-bug1530351.js
+    --no-blinterp --no-baseline --no-ion --more-compartments profiler/ion-rectifier-frame-bug1530351.js
+    --blinterp-eager profiler/ion-rectifier-frame-bug1530351.js
+    profiler/jsop-resume-return-bug1451385-1.js
+    --ion-eager --ion-offthread-compile=off --more-compartments profiler/jsop-resume-return-bug1451385-1.js
+    --ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads profiler/jsop-resume-return-bug1451385-1.js
+    --baseline-eager --write-protect-code=off profiler/jsop-resume-return-bug1451385-1.js
+    --no-blinterp --no-baseline --no-ion --more-compartments profiler/jsop-resume-return-bug1451385-1.js
+    --blinterp-eager profiler/jsop-resume-return-bug1451385-1.js
+    profiler/jsop-resume-return-bug1451385-2.js
+    --ion-eager --ion-offthread-compile=off --more-compartments profiler/jsop-resume-return-bug1451385-2.js
+    --ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads profiler/jsop-resume-return-bug1451385-2.js
+    --baseline-eager --write-protect-code=off profiler/jsop-resume-return-bug1451385-2.js
+    --no-blinterp --no-baseline --no-ion --more-compartments profiler/jsop-resume-return-bug1451385-2.js
+    --blinterp-eager profiler/jsop-resume-return-bug1451385-2.js
+    profiler/native-trampoline-2.js
+    --ion-eager --ion-offthread-compile=off --more-compartments profiler/native-trampoline-2.js
+    --ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads profiler/native-trampoline-2.js
+    --baseline-eager --write-protect-code=off profiler/native-trampoline-2.js
+    --no-blinterp --no-baseline --no-ion --more-compartments profiler/native-trampoline-2.js
+    --blinterp-eager profiler/native-trampoline-2.js
+    profiler/native-trampoline-3.js
+    --ion-eager --ion-offthread-compile=off --more-compartments profiler/native-trampoline-3.js
+    --ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads profiler/native-trampoline-3.js
+    --baseline-eager --write-protect-code=off profiler/native-trampoline-3.js
+    --no-blinterp --no-baseline --no-ion --more-compartments profiler/native-trampoline-3.js
+    --blinterp-eager profiler/native-trampoline-3.js
+    profiler/native-trampoline.js
+    --ion-eager --ion-offthread-compile=off --more-compartments profiler/native-trampoline.js
+    --ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads profiler/native-trampoline.js
+    --baseline-eager --write-protect-code=off profiler/native-trampoline.js
+    --no-blinterp --no-baseline --no-ion --more-compartments profiler/native-trampoline.js
+    --blinterp-eager profiler/native-trampoline.js
+    profiler/pc-count-profiler.js
+    --ion-eager --ion-offthread-compile=off --more-compartments profiler/pc-count-profiler.js
+    --ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads profiler/pc-count-profiler.js
+    --baseline-eager --write-protect-code=off profiler/pc-count-profiler.js
+    --no-blinterp --no-baseline --no-ion --more-compartments profiler/pc-count-profiler.js
+    --blinterp-eager profiler/pc-count-profiler.js
+    profiler/test-baseline-eval-frame-profiling.js
+    --ion-eager --ion-offthread-compile=off --more-compartments profiler/test-baseline-eval-frame-profiling.js
+    --ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads profiler/test-baseline-eval-frame-profiling.js
+    --baseline-eager --write-protect-code=off profiler/test-baseline-eval-frame-profiling.js
+    --no-blinterp --no-baseline --no-ion --more-compartments profiler/test-baseline-eval-frame-profiling.js
+    --blinterp-eager profiler/test-baseline-eval-frame-profiling.js
+    profiler/test-bug1026485.js
+    --ion-eager --ion-offthread-compile=off --more-compartments profiler/test-bug1026485.js
+    --ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads profiler/test-bug1026485.js
+    --baseline-eager --write-protect-code=off profiler/test-bug1026485.js
+    --no-blinterp --no-baseline --no-ion --more-compartments profiler/test-bug1026485.js
+    --blinterp-eager profiler/test-bug1026485.js
+    --fast-warmup profiler/wasm-to-js-1.js
+    --fast-warmup --ion-eager --ion-offthread-compile=off --more-compartments profiler/wasm-to-js-1.js
+    --fast-warmup --ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads profiler/wasm-to-js-1.js
+    --fast-warmup --baseline-eager --write-protect-code=off profiler/wasm-to-js-1.js
+    --fast-warmup --no-blinterp --no-baseline --no-ion --more-compartments profiler/wasm-to-js-1.js
+    --fast-warmup --blinterp-eager profiler/wasm-to-js-1.js
+    profiler/wasm-to-js-2.js
+    --ion-eager --ion-offthread-compile=off --more-compartments profiler/wasm-to-js-2.js
+    --ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads profiler/wasm-to-js-2.js
+    --baseline-eager --write-protect-code=off profiler/wasm-to-js-2.js
+    --no-blinterp --no-baseline --no-ion --more-compartments profiler/wasm-to-js-2.js
+    --blinterp-eager profiler/wasm-to-js-2.js
+TIMEOUTS:
+Result summary:
+Passed: 0
+Failed: 216

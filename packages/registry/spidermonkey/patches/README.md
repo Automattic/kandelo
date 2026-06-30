@@ -31,10 +31,12 @@ Kandelo wasm32 integration points needed by the standalone SpiderMonkey shell.
   Node-mode shell entry point, POSIX file/fd helpers, native crypto/zlib/TCP/TLS
   hooks, and the shell job-loop integration needed by the shared JavaScript
   CommonJS bootstrap.
-- `0014-disable-mozglue-interposers-on-wasm32.patch`: skips Mozilla's Linux
-  `mozglue/interposers` directory for wasm32 because those wrappers require ELF
-  `dlsym(RTLD_NEXT, ...)` semantics and abort `setenv()` / `unsetenv()` calls in
-  the static Kandelo POSIX environment.
+- `0013-kandelo-join-shell-workers.patch`: exposes a shell helper for joining
+  SpiderMonkey worker threads during Kandelo adapter teardown.
+- `0014-skip-mozglue-interposers-for-wasm-target.patch`: skips Linux mozglue
+  dynamic-linker interposers for Kandelo's static wasm target. In particular,
+  the env interposer depends on `RTLD_NEXT` and aborts when SpiderMonkey Date
+  tests call `setTimeZone()` through `setenv()` / `unsetenv()`.
 
 Revisit this set when bumping ESR versions. Most patches are
 Kandelo-specific integration glue, but any general wasm32 or POSIX portability

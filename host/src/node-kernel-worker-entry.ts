@@ -626,12 +626,13 @@ async function handleInit(msg: InitMessage) {
     },
   );
 
+  const kw = kernelWorker as any;
   kernelWorker.setOutputCallbacks({
     onStdout: (data: Uint8Array) => {
-      post({ type: "stdout", pid: 0, data: new Uint8Array(data) });
+      post({ type: "stdout", pid: kw.currentHandlePid || 0, data: new Uint8Array(data) });
     },
     onStderr: (data: Uint8Array) => {
-      post({ type: "stderr", pid: 0, data: new Uint8Array(data) });
+      post({ type: "stderr", pid: kw.currentHandlePid || 0, data: new Uint8Array(data) });
     },
   });
 

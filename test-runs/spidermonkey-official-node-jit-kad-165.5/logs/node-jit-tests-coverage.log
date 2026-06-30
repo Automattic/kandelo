@@ -1,0 +1,534 @@
+===== Official SpiderMonkey jit-tests on Kandelo node host =====
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - coverage/bug1203695.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/coverage/bug1203695.js | RuntimeError: memory access out of bounds (code 255, args "--code-coverage") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - coverage/bug1203695.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/coverage/bug1203695.js | RuntimeError: memory access out of bounds (code 255, args "--code-coverage --ion-eager --ion-offthread-compile=off --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - coverage/bug1203695.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/coverage/bug1203695.js | RuntimeError: memory access out of bounds (code 255, args "--code-coverage --ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - coverage/bug1203695.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/coverage/bug1203695.js | RuntimeError: memory access out of bounds (code 255, args "--code-coverage --baseline-eager --write-protect-code=off") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - coverage/bug1203695.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/coverage/bug1203695.js | RuntimeError: memory access out of bounds (code 255, args "--code-coverage --no-blinterp --no-baseline --no-ion --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - coverage/bug1203695.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/coverage/bug1203695.js | RuntimeError: memory access out of bounds (code 255, args "--code-coverage --blinterp-eager") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - coverage/bug1206247.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/coverage/bug1206247.js | RuntimeError: memory access out of bounds (code 255, args "--code-coverage") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - coverage/bug1206247.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/coverage/bug1206247.js | RuntimeError: memory access out of bounds (code 255, args "--code-coverage --ion-eager --ion-offthread-compile=off --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - coverage/bug1206247.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/coverage/bug1206247.js | RuntimeError: memory access out of bounds (code 255, args "--code-coverage --ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - coverage/bug1206247.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/coverage/bug1206247.js | RuntimeError: memory access out of bounds (code 255, args "--code-coverage --baseline-eager --write-protect-code=off") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - coverage/bug1206247.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/coverage/bug1206247.js | RuntimeError: memory access out of bounds (code 255, args "--code-coverage --no-blinterp --no-baseline --no-ion --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - coverage/bug1206247.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/coverage/bug1206247.js | RuntimeError: memory access out of bounds (code 255, args "--code-coverage --blinterp-eager") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - coverage/bug1214548.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/coverage/bug1214548.js | RuntimeError: memory access out of bounds (code 255, args "--code-coverage") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - coverage/bug1214548.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/coverage/bug1214548.js | RuntimeError: memory access out of bounds (code 255, args "--code-coverage --ion-eager --ion-offthread-compile=off --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - coverage/bug1214548.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/coverage/bug1214548.js | RuntimeError: memory access out of bounds (code 255, args "--code-coverage --ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - coverage/bug1214548.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/coverage/bug1214548.js | RuntimeError: memory access out of bounds (code 255, args "--code-coverage --baseline-eager --write-protect-code=off") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - coverage/bug1214548.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/coverage/bug1214548.js | RuntimeError: memory access out of bounds (code 255, args "--code-coverage --no-blinterp --no-baseline --no-ion --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - coverage/bug1214548.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/coverage/bug1214548.js | RuntimeError: memory access out of bounds (code 255, args "--code-coverage --blinterp-eager") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - coverage/bug1274048.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/coverage/bug1274048.js | RuntimeError: memory access out of bounds (code 255, args "--code-coverage") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - coverage/bug1274048.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/coverage/bug1274048.js | RuntimeError: memory access out of bounds (code 255, args "--code-coverage --ion-eager --ion-offthread-compile=off --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - coverage/bug1274048.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/coverage/bug1274048.js | RuntimeError: memory access out of bounds (code 255, args "--code-coverage --ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - coverage/bug1274048.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/coverage/bug1274048.js | RuntimeError: memory access out of bounds (code 255, args "--code-coverage --baseline-eager --write-protect-code=off") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - coverage/bug1274048.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/coverage/bug1274048.js | RuntimeError: memory access out of bounds (code 255, args "--code-coverage --no-blinterp --no-baseline --no-ion --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - coverage/bug1274048.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/coverage/bug1274048.js | RuntimeError: memory access out of bounds (code 255, args "--code-coverage --blinterp-eager") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - coverage/bug1304569-switch-case.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/coverage/bug1304569-switch-case.js | RuntimeError: memory access out of bounds (code 255, args "--code-coverage") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - coverage/bug1304569-switch-case.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/coverage/bug1304569-switch-case.js | RuntimeError: memory access out of bounds (code 255, args "--code-coverage --ion-eager --ion-offthread-compile=off --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - coverage/bug1304569-switch-case.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/coverage/bug1304569-switch-case.js | RuntimeError: memory access out of bounds (code 255, args "--code-coverage --ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - coverage/bug1304569-switch-case.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/coverage/bug1304569-switch-case.js | RuntimeError: memory access out of bounds (code 255, args "--code-coverage --baseline-eager --write-protect-code=off") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - coverage/bug1304569-switch-case.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/coverage/bug1304569-switch-case.js | RuntimeError: memory access out of bounds (code 255, args "--code-coverage --no-blinterp --no-baseline --no-ion --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - coverage/bug1304569-switch-case.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/coverage/bug1304569-switch-case.js | RuntimeError: memory access out of bounds (code 255, args "--code-coverage --blinterp-eager") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - coverage/getLcovInfo_twice.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/coverage/getLcovInfo_twice.js | RuntimeError: memory access out of bounds (code 255, args "--code-coverage") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - coverage/getLcovInfo_twice.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/coverage/getLcovInfo_twice.js | RuntimeError: memory access out of bounds (code 255, args "--code-coverage --ion-eager --ion-offthread-compile=off --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - coverage/getLcovInfo_twice.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/coverage/getLcovInfo_twice.js | RuntimeError: memory access out of bounds (code 255, args "--code-coverage --ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - coverage/getLcovInfo_twice.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/coverage/getLcovInfo_twice.js | RuntimeError: memory access out of bounds (code 255, args "--code-coverage --baseline-eager --write-protect-code=off") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - coverage/getLcovInfo_twice.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/coverage/getLcovInfo_twice.js | RuntimeError: memory access out of bounds (code 255, args "--code-coverage --no-blinterp --no-baseline --no-ion --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - coverage/getLcovInfo_twice.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/coverage/getLcovInfo_twice.js | RuntimeError: memory access out of bounds (code 255, args "--code-coverage --blinterp-eager") [0.2 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - coverage/lcov-enabled-1.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/coverage/lcov-enabled-1.js | RuntimeError: memory access out of bounds (code 255, args "--code-coverage") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - coverage/lcov-enabled-1.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/coverage/lcov-enabled-1.js | RuntimeError: memory access out of bounds (code 255, args "--code-coverage --ion-eager --ion-offthread-compile=off --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - coverage/lcov-enabled-1.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/coverage/lcov-enabled-1.js | RuntimeError: memory access out of bounds (code 255, args "--code-coverage --ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - coverage/lcov-enabled-1.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/coverage/lcov-enabled-1.js | RuntimeError: memory access out of bounds (code 255, args "--code-coverage --baseline-eager --write-protect-code=off") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - coverage/lcov-enabled-1.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/coverage/lcov-enabled-1.js | RuntimeError: memory access out of bounds (code 255, args "--code-coverage --no-blinterp --no-baseline --no-ion --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - coverage/lcov-enabled-1.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/coverage/lcov-enabled-1.js | RuntimeError: memory access out of bounds (code 255, args "--code-coverage --blinterp-eager") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - coverage/lcov-enabled-2.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/coverage/lcov-enabled-2.js | RuntimeError: memory access out of bounds (code 255, args "") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - coverage/lcov-enabled-2.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/coverage/lcov-enabled-2.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - coverage/lcov-enabled-2.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/coverage/lcov-enabled-2.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - coverage/lcov-enabled-2.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/coverage/lcov-enabled-2.js | RuntimeError: memory access out of bounds (code 255, args "--baseline-eager --write-protect-code=off") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - coverage/lcov-enabled-2.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/coverage/lcov-enabled-2.js | RuntimeError: memory access out of bounds (code 255, args "--no-blinterp --no-baseline --no-ion --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - coverage/lcov-enabled-2.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/coverage/lcov-enabled-2.js | RuntimeError: memory access out of bounds (code 255, args "--blinterp-eager") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - coverage/off-thread-01.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/coverage/off-thread-01.js | RuntimeError: memory access out of bounds (code 255, args "--code-coverage --no-ion") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - coverage/off-thread-01.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/coverage/off-thread-01.js | RuntimeError: memory access out of bounds (code 255, args "--code-coverage --no-ion --ion-eager --ion-offthread-compile=off --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - coverage/off-thread-01.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/coverage/off-thread-01.js | RuntimeError: memory access out of bounds (code 255, args "--code-coverage --no-ion --ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - coverage/off-thread-01.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/coverage/off-thread-01.js | RuntimeError: memory access out of bounds (code 255, args "--code-coverage --no-ion --baseline-eager --write-protect-code=off") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - coverage/off-thread-01.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/coverage/off-thread-01.js | RuntimeError: memory access out of bounds (code 255, args "--code-coverage --no-ion --no-blinterp --no-baseline --no-ion --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - coverage/off-thread-01.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/coverage/off-thread-01.js | RuntimeError: memory access out of bounds (code 255, args "--code-coverage --no-ion --blinterp-eager") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - coverage/off-thread-02.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/coverage/off-thread-02.js | RuntimeError: memory access out of bounds (code 255, args "--code-coverage --no-ion") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - coverage/off-thread-02.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/coverage/off-thread-02.js | RuntimeError: memory access out of bounds (code 255, args "--code-coverage --no-ion --ion-eager --ion-offthread-compile=off --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - coverage/off-thread-02.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/coverage/off-thread-02.js | RuntimeError: memory access out of bounds (code 255, args "--code-coverage --no-ion --ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - coverage/off-thread-02.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/coverage/off-thread-02.js | RuntimeError: memory access out of bounds (code 255, args "--code-coverage --no-ion --baseline-eager --write-protect-code=off") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - coverage/off-thread-02.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/coverage/off-thread-02.js | RuntimeError: memory access out of bounds (code 255, args "--code-coverage --no-ion --no-blinterp --no-baseline --no-ion --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - coverage/off-thread-02.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/coverage/off-thread-02.js | RuntimeError: memory access out of bounds (code 255, args "--code-coverage --no-ion --blinterp-eager") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - coverage/simple.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/coverage/simple.js | RuntimeError: memory access out of bounds (code 255, args "--code-coverage") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - coverage/simple.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/coverage/simple.js | RuntimeError: memory access out of bounds (code 255, args "--code-coverage --ion-eager --ion-offthread-compile=off --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - coverage/simple.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/coverage/simple.js | RuntimeError: memory access out of bounds (code 255, args "--code-coverage --ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - coverage/simple.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/coverage/simple.js | RuntimeError: memory access out of bounds (code 255, args "--code-coverage --baseline-eager --write-protect-code=off") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - coverage/simple.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/coverage/simple.js | RuntimeError: memory access out of bounds (code 255, args "--code-coverage --no-blinterp --no-baseline --no-ion --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - coverage/simple.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/coverage/simple.js | RuntimeError: memory access out of bounds (code 255, args "--code-coverage --blinterp-eager") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+FAILURES:
+    --code-coverage coverage/bug1203695.js
+    --code-coverage --ion-eager --ion-offthread-compile=off --more-compartments coverage/bug1203695.js
+    --code-coverage --ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads coverage/bug1203695.js
+    --code-coverage --baseline-eager --write-protect-code=off coverage/bug1203695.js
+    --code-coverage --no-blinterp --no-baseline --no-ion --more-compartments coverage/bug1203695.js
+    --code-coverage --blinterp-eager coverage/bug1203695.js
+    --code-coverage coverage/bug1206247.js
+    --code-coverage --ion-eager --ion-offthread-compile=off --more-compartments coverage/bug1206247.js
+    --code-coverage --ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads coverage/bug1206247.js
+    --code-coverage --baseline-eager --write-protect-code=off coverage/bug1206247.js
+    --code-coverage --no-blinterp --no-baseline --no-ion --more-compartments coverage/bug1206247.js
+    --code-coverage --blinterp-eager coverage/bug1206247.js
+    --code-coverage coverage/bug1214548.js
+    --code-coverage --ion-eager --ion-offthread-compile=off --more-compartments coverage/bug1214548.js
+    --code-coverage --ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads coverage/bug1214548.js
+    --code-coverage --baseline-eager --write-protect-code=off coverage/bug1214548.js
+    --code-coverage --no-blinterp --no-baseline --no-ion --more-compartments coverage/bug1214548.js
+    --code-coverage --blinterp-eager coverage/bug1214548.js
+    --code-coverage coverage/bug1274048.js
+    --code-coverage --ion-eager --ion-offthread-compile=off --more-compartments coverage/bug1274048.js
+    --code-coverage --ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads coverage/bug1274048.js
+    --code-coverage --baseline-eager --write-protect-code=off coverage/bug1274048.js
+    --code-coverage --no-blinterp --no-baseline --no-ion --more-compartments coverage/bug1274048.js
+    --code-coverage --blinterp-eager coverage/bug1274048.js
+    --code-coverage coverage/bug1304569-switch-case.js
+    --code-coverage --ion-eager --ion-offthread-compile=off --more-compartments coverage/bug1304569-switch-case.js
+    --code-coverage --ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads coverage/bug1304569-switch-case.js
+    --code-coverage --baseline-eager --write-protect-code=off coverage/bug1304569-switch-case.js
+    --code-coverage --no-blinterp --no-baseline --no-ion --more-compartments coverage/bug1304569-switch-case.js
+    --code-coverage --blinterp-eager coverage/bug1304569-switch-case.js
+    --code-coverage coverage/getLcovInfo_twice.js
+    --code-coverage --ion-eager --ion-offthread-compile=off --more-compartments coverage/getLcovInfo_twice.js
+    --code-coverage --ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads coverage/getLcovInfo_twice.js
+    --code-coverage --baseline-eager --write-protect-code=off coverage/getLcovInfo_twice.js
+    --code-coverage --no-blinterp --no-baseline --no-ion --more-compartments coverage/getLcovInfo_twice.js
+    --code-coverage --blinterp-eager coverage/getLcovInfo_twice.js
+    --code-coverage coverage/lcov-enabled-1.js
+    --code-coverage --ion-eager --ion-offthread-compile=off --more-compartments coverage/lcov-enabled-1.js
+    --code-coverage --ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads coverage/lcov-enabled-1.js
+    --code-coverage --baseline-eager --write-protect-code=off coverage/lcov-enabled-1.js
+    --code-coverage --no-blinterp --no-baseline --no-ion --more-compartments coverage/lcov-enabled-1.js
+    --code-coverage --blinterp-eager coverage/lcov-enabled-1.js
+    coverage/lcov-enabled-2.js
+    --ion-eager --ion-offthread-compile=off --more-compartments coverage/lcov-enabled-2.js
+    --ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads coverage/lcov-enabled-2.js
+    --baseline-eager --write-protect-code=off coverage/lcov-enabled-2.js
+    --no-blinterp --no-baseline --no-ion --more-compartments coverage/lcov-enabled-2.js
+    --blinterp-eager coverage/lcov-enabled-2.js
+    --code-coverage --no-ion coverage/off-thread-01.js
+    --code-coverage --no-ion --ion-eager --ion-offthread-compile=off --more-compartments coverage/off-thread-01.js
+    --code-coverage --no-ion --ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads coverage/off-thread-01.js
+    --code-coverage --no-ion --baseline-eager --write-protect-code=off coverage/off-thread-01.js
+    --code-coverage --no-ion --no-blinterp --no-baseline --no-ion --more-compartments coverage/off-thread-01.js
+    --code-coverage --no-ion --blinterp-eager coverage/off-thread-01.js
+    --code-coverage --no-ion coverage/off-thread-02.js
+    --code-coverage --no-ion --ion-eager --ion-offthread-compile=off --more-compartments coverage/off-thread-02.js
+    --code-coverage --no-ion --ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads coverage/off-thread-02.js
+    --code-coverage --no-ion --baseline-eager --write-protect-code=off coverage/off-thread-02.js
+    --code-coverage --no-ion --no-blinterp --no-baseline --no-ion --more-compartments coverage/off-thread-02.js
+    --code-coverage --no-ion --blinterp-eager coverage/off-thread-02.js
+    --code-coverage coverage/simple.js
+    --code-coverage --ion-eager --ion-offthread-compile=off --more-compartments coverage/simple.js
+    --code-coverage --ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads coverage/simple.js
+    --code-coverage --baseline-eager --write-protect-code=off coverage/simple.js
+    --code-coverage --no-blinterp --no-baseline --no-ion --more-compartments coverage/simple.js
+    --code-coverage --blinterp-eager coverage/simple.js
+TIMEOUTS:
+Result summary:
+Passed: 0
+Failed: 66

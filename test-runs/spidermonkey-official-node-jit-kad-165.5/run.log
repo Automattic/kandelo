@@ -1,0 +1,306 @@
+command: scripts/dev-shell.sh bash -lc export\ SPIDERMONKEY_NODE_JS_SHELL_PORT=55372\;\ bash\ scripts/run-spidermonkey-official-all.sh\ --host\ node\ --suite\ jit-tests\ --jobs\ 1\ --no-slow\ --results-dir\ test-results/spidermonkey-official/kad-165.5-node-jit-tests-20260613T021426Z
+effective_jitflags: all (script default SPIDERMONKEY_OFFICIAL_JITFLAGS, no --jitflags override)
+started_utc: 2026-06-13T02:14:26Z
+kandelo dev shell — LLVM 21, Rust (pinned via rust-toolchain.toml), Node 24, Erlang 28 (minimal), SDK on PATH
+Inventory written to test-results/spidermonkey-official/kad-165.5-node-jit-tests-20260613T021426Z/inventory.tsv
+node js shell bridge listening on http://127.0.0.1:55372/run
+===== 2026-06-13T02:15:07Z node jit-tests _files =====
+node	jit-tests	_files	2	196	0	8	test-results/spidermonkey-official/kad-165.5-node-jit-tests-20260613T021426Z/node-jit-tests-_files.log
+===== 2026-06-13T02:32:31Z node jit-tests Date =====
+node	jit-tests	Date	0	6	0	0	test-results/spidermonkey-official/kad-165.5-node-jit-tests-20260613T021426Z/node-jit-tests-Date.log
+===== 2026-06-13T02:32:33Z node jit-tests JSON =====
+node	jit-tests	JSON	0	12	0	0	test-results/spidermonkey-official/kad-165.5-node-jit-tests-20260613T021426Z/node-jit-tests-JSON.log
+===== 2026-06-13T02:32:37Z node jit-tests Set =====
+node	jit-tests	Set	0	42	0	0	test-results/spidermonkey-official/kad-165.5-node-jit-tests-20260613T021426Z/node-jit-tests-Set.log
+===== 2026-06-13T02:32:52Z node jit-tests arguments =====
+node	jit-tests	arguments	0	1524	0	0	test-results/spidermonkey-official/kad-165.5-node-jit-tests-20260613T021426Z/node-jit-tests-arguments.log
+===== 2026-06-13T02:41:50Z node jit-tests arrays =====
+node	jit-tests	arrays	0	300	0	0	test-results/spidermonkey-official/kad-165.5-node-jit-tests-20260613T021426Z/node-jit-tests-arrays.log
+===== 2026-06-13T02:43:46Z node jit-tests arrow-functions =====
+node	jit-tests	arrow-functions	0	288	0	0	test-results/spidermonkey-official/kad-165.5-node-jit-tests-20260613T021426Z/node-jit-tests-arrow-functions.log
+===== 2026-06-13T02:45:35Z node jit-tests asm.js =====
+node	jit-tests	asm.js	0	833	0	0	test-results/spidermonkey-official/kad-165.5-node-jit-tests-20260613T021426Z/node-jit-tests-asm.js.log
+===== 2026-06-13T02:52:30Z node jit-tests async =====
+node	jit-tests	async	0	0	0	0	test-results/spidermonkey-official/kad-165.5-node-jit-tests-20260613T021426Z/node-jit-tests-async.log
+/bin/bash: line 14: 65843 Terminated: 15          scripts/dev-shell.sh bash -lc "export SPIDERMONKEY_NODE_JS_SHELL_PORT=${PORT}; bash scripts/run-spidermonkey-official-all.sh --host node --suite jit-tests --jobs 1 --no-slow --results-dir ${RESULTS_DIR}"
+
+resume_command: scripts/dev-shell.sh bash -lc export\ SPIDERMONKEY_NODE_JS_SHELL_PORT=55373\;\ bash\ scripts/run-spidermonkey-official-all.sh\ --host\ node\ --suite\ jit-tests\ --jobs\ 1\ --no-slow\ --results-dir\ test-results/spidermonkey-official/kad-165.5-node-jit-tests-20260613T021426Z\ --start-at\ atomics
+resume_effective_jitflags: all (script default SPIDERMONKEY_OFFICIAL_JITFLAGS, no --jitflags override)
+resume_started_utc: 2026-06-13T03:08:04Z
+kandelo dev shell — LLVM 21, Rust (pinned via rust-toolchain.toml), Node 24, Erlang 28 (minimal), SDK on PATH
+Inventory written to test-results/spidermonkey-official/kad-165.5-node-jit-tests-20260613T021426Z/inventory.tsv
+Skipping node jit-tests _files before --start-at atomics
+Skipping node jit-tests Date before --start-at atomics
+Skipping node jit-tests JSON before --start-at atomics
+Skipping node jit-tests Set before --start-at atomics
+Skipping node jit-tests arguments before --start-at atomics
+Skipping node jit-tests arrays before --start-at atomics
+Skipping node jit-tests arrow-functions before --start-at atomics
+Skipping node jit-tests asm.js before --start-at atomics
+Skipping node jit-tests async before --start-at atomics
+===== 2026-06-13T03:11:32Z node jit-tests atomics =====
+node:events:487
+      throw er; // Unhandled 'error' event
+      ^
+
+Error: listen EADDRINUSE: address already in use 127.0.0.1:5311
+    at Server.setupListenHandle [as _listen2] (node:net:2008:16)
+    at listenInCluster (node:net:2065:12)
+    at node:net:2274:7
+    at process.processTicksAndRejections (node:internal/process/task_queues:90:21)
+Emitted 'error' event on Server instance at:
+    at emitErrorNT (node:net:2044:8)
+    at process.processTicksAndRejections (node:internal/process/task_queues:90:21) {
+  code: 'EADDRINUSE',
+  errno: -48,
+  syscall: 'listen',
+  address: '127.0.0.1',
+  port: 5311
+}
+
+Node.js v24.15.0
+
+resume_note: discarded interrupted atomics attempt because SPIDERMONKEY_NODE_JS_SHELL_PORT was not exported inside dev shell and the wrapper used another worktree bridge on 5311. Re-running from atomics with port 55373.
+resume_command: scripts/dev-shell.sh bash -lc export\ SPIDERMONKEY_NODE_JS_SHELL_PORT=55373\;\ bash\ scripts/run-spidermonkey-official-all.sh\ --host\ node\ --suite\ jit-tests\ --jobs\ 1\ --no-slow\ --results-dir\ test-results/spidermonkey-official/kad-165.5-node-jit-tests-20260613T021426Z\ --start-at\ atomics
+resume_effective_jitflags: all (script default SPIDERMONKEY_OFFICIAL_JITFLAGS, no --jitflags override)
+resume_started_utc: 2026-06-13T03:13:01Z
+warning: Git tree '/Users/brandon/gt/kandelo/polecats/valkyrie/kandelo' has uncommitted changes
+kandelo dev shell — LLVM 21, Rust (pinned via rust-toolchain.toml), Node 24, Erlang 28 (minimal), SDK on PATH
+Inventory written to test-results/spidermonkey-official/kad-165.5-node-jit-tests-20260613T021426Z/inventory.tsv
+node js shell bridge listening on http://127.0.0.1:55373/run
+Skipping node jit-tests _files before --start-at atomics
+Skipping node jit-tests Date before --start-at atomics
+Skipping node jit-tests JSON before --start-at atomics
+Skipping node jit-tests Set before --start-at atomics
+Skipping node jit-tests arguments before --start-at atomics
+Skipping node jit-tests arrays before --start-at atomics
+Skipping node jit-tests arrow-functions before --start-at atomics
+Skipping node jit-tests asm.js before --start-at atomics
+Skipping node jit-tests async before --start-at atomics
+===== 2026-06-13T03:13:54Z node jit-tests atomics =====
+node	jit-tests	atomics	2	72	0	168	test-results/spidermonkey-official/kad-165.5-node-jit-tests-20260613T021426Z/node-jit-tests-atomics.log
+===== 2026-06-13T03:16:05Z node jit-tests auto-regress =====
+node	jit-tests	auto-regress	2	1992	0	6	test-results/spidermonkey-official/kad-165.5-node-jit-tests-20260613T021426Z/node-jit-tests-auto-regress.log
+===== 2026-06-13T03:33:14Z node jit-tests baseline =====
+node	jit-tests	baseline	0	450	0	0	test-results/spidermonkey-official/kad-165.5-node-jit-tests-20260613T021426Z/node-jit-tests-baseline.log
+===== 2026-06-13T03:36:43Z node jit-tests basic#part-0001 =====
+[kernel-worker] onClone failed: Error: process pthread slot limit exhausted (limit=64, active=64). Rebuild with --kandelo-thread-slots=N or increase the host defaultThreadSlots setting.
+[kernel-worker] onClone failed: Error: process pthread slot limit exhausted (limit=64, active=64). Rebuild with --kandelo-thread-slots=N or increase the host defaultThreadSlots setting.
+[kernel-worker] onClone failed: Error: process pthread slot limit exhausted (limit=64, active=64). Rebuild with --kandelo-thread-slots=N or increase the host defaultThreadSlots setting.
+[kernel-worker] onClone failed: Error: process pthread slot limit exhausted (limit=64, active=64). Rebuild with --kandelo-thread-slots=N or increase the host defaultThreadSlots setting.
+[kernel-worker] onClone failed: Error: process pthread slot limit exhausted (limit=64, active=64). Rebuild with --kandelo-thread-slots=N or increase the host defaultThreadSlots setting.
+node	jit-tests	basic#part-0001	2	1068	0	1908	test-results/spidermonkey-official/kad-165.5-node-jit-tests-20260613T021426Z/node-jit-tests-basic#part-0001.log
+===== 2026-06-13T03:58:14Z node jit-tests basic#part-0002 =====
+node	jit-tests	basic#part-0002	2	0	0	2982	test-results/spidermonkey-official/kad-165.5-node-jit-tests-20260613T021426Z/node-jit-tests-basic#part-0002.log
+===== 2026-06-13T04:03:43Z node jit-tests basic#part-0003 =====
+node	jit-tests	basic#part-0003	2	0	0	2814	test-results/spidermonkey-official/kad-165.5-node-jit-tests-20260613T021426Z/node-jit-tests-basic#part-0003.log
+===== 2026-06-13T04:08:52Z node jit-tests bigint =====
+node	jit-tests	bigint	2	0	0	516	test-results/spidermonkey-official/kad-165.5-node-jit-tests-20260613T021426Z/node-jit-tests-bigint.log
+===== 2026-06-13T04:09:51Z node jit-tests cacheir =====
+node	jit-tests	cacheir	2	0	0	1572	test-results/spidermonkey-official/kad-165.5-node-jit-tests-20260613T021426Z/node-jit-tests-cacheir.log
+===== 2026-06-13T04:12:48Z node jit-tests class =====
+node	jit-tests	class	2	0	0	318	test-results/spidermonkey-official/kad-165.5-node-jit-tests-20260613T021426Z/node-jit-tests-class.log
+===== 2026-06-13T04:13:24Z node jit-tests closures =====
+node	jit-tests	closures	2	0	0	516	test-results/spidermonkey-official/kad-165.5-node-jit-tests-20260613T021426Z/node-jit-tests-closures.log
+===== 2026-06-13T04:14:23Z node jit-tests collections =====
+node	jit-tests	collections	2	0	0	954	test-results/spidermonkey-official/kad-165.5-node-jit-tests-20260613T021426Z/node-jit-tests-collections.log
+===== 2026-06-13T04:16:08Z node jit-tests constant-compare =====
+node	jit-tests	constant-compare	2	0	0	24	test-results/spidermonkey-official/kad-165.5-node-jit-tests-20260613T021426Z/node-jit-tests-constant-compare.log
+===== 2026-06-13T04:16:10Z node jit-tests coverage =====
+node	jit-tests	coverage	2	0	0	66	test-results/spidermonkey-official/kad-165.5-node-jit-tests-20260613T021426Z/node-jit-tests-coverage.log
+===== 2026-06-13T04:16:17Z node jit-tests ctypes =====
+node	jit-tests	ctypes	2	0	0	282	test-results/spidermonkey-official/kad-165.5-node-jit-tests-20260613T021426Z/node-jit-tests-ctypes.log
+===== 2026-06-13T04:16:48Z node jit-tests dataview =====
+node	jit-tests	dataview	2	0	0	96	test-results/spidermonkey-official/kad-165.5-node-jit-tests-20260613T021426Z/node-jit-tests-dataview.log
+===== 2026-06-13T04:16:58Z node jit-tests debug#part-0001 =====
+node	jit-tests	debug#part-0001	2	0	0	3000	test-results/spidermonkey-official/kad-165.5-node-jit-tests-20260613T021426Z/node-jit-tests-debug#part-0001.log
+===== 2026-06-13T04:24:05Z node jit-tests debug#part-0002 =====
+node	jit-tests	debug#part-0002	2	0	0	2978	test-results/spidermonkey-official/kad-165.5-node-jit-tests-20260613T021426Z/node-jit-tests-debug#part-0002.log
+===== 2026-06-13T04:36:33Z node jit-tests debug#part-0003 =====
+node	jit-tests	debug#part-0003	2	0	0	707	test-results/spidermonkey-official/kad-165.5-node-jit-tests-20260613T021426Z/node-jit-tests-debug#part-0003.log
+===== 2026-06-13T04:37:46Z node jit-tests decorators =====
+node	jit-tests	decorators	2	0	0	54	test-results/spidermonkey-official/kad-165.5-node-jit-tests-20260613T021426Z/node-jit-tests-decorators.log
+===== 2026-06-13T04:37:51Z node jit-tests environments =====
+node	jit-tests	environments	2	0	0	96	test-results/spidermonkey-official/kad-165.5-node-jit-tests-20260613T021426Z/node-jit-tests-environments.log
+===== 2026-06-13T04:38:01Z node jit-tests errors =====
+node	jit-tests	errors	2	0	0	102	test-results/spidermonkey-official/kad-165.5-node-jit-tests-20260613T021426Z/node-jit-tests-errors.log
+===== 2026-06-13T04:38:12Z node jit-tests explicit-resource-management =====
+node	jit-tests	explicit-resource-management	2	0	0	678	test-results/spidermonkey-official/kad-165.5-node-jit-tests-20260613T021426Z/node-jit-tests-explicit-resource-management.log
+===== 2026-06-13T04:39:20Z node jit-tests fields =====
+node	jit-tests	fields	2	0	0	312	test-results/spidermonkey-official/kad-165.5-node-jit-tests-20260613T021426Z/node-jit-tests-fields.log
+===== 2026-06-13T04:39:49Z node jit-tests for-of =====
+node	jit-tests	for-of	2	0	0	624	test-results/spidermonkey-official/kad-165.5-node-jit-tests-20260613T021426Z/node-jit-tests-for-of.log
+===== 2026-06-13T04:40:50Z node jit-tests function =====
+node	jit-tests	function	2	0	0	30	test-results/spidermonkey-official/kad-165.5-node-jit-tests-20260613T021426Z/node-jit-tests-function.log
+===== 2026-06-13T04:40:53Z node jit-tests fuses =====
+node	jit-tests	fuses	2	0	0	192	test-results/spidermonkey-official/kad-165.5-node-jit-tests-20260613T021426Z/node-jit-tests-fuses.log
+===== 2026-06-13T04:41:13Z node jit-tests gc =====
+node	jit-tests	gc	2	0	0	2742	test-results/spidermonkey-official/kad-165.5-node-jit-tests-20260613T021426Z/node-jit-tests-gc.log
+===== 2026-06-13T04:46:36Z node jit-tests generators =====
+node	jit-tests	generators	2	0	0	168	test-results/spidermonkey-official/kad-165.5-node-jit-tests-20260613T021426Z/node-jit-tests-generators.log
+===== 2026-06-13T04:46:54Z node jit-tests heap-analysis =====
+node	jit-tests	heap-analysis	2	0	0	66	test-results/spidermonkey-official/kad-165.5-node-jit-tests-20260613T021426Z/node-jit-tests-heap-analysis.log
+===== 2026-06-13T04:47:03Z node jit-tests ion#part-0001 =====
+node	jit-tests	ion#part-0001	2	0	0	2988	test-results/spidermonkey-official/kad-165.5-node-jit-tests-20260613T021426Z/node-jit-tests-ion#part-0001.log
+===== 2026-06-13T04:53:29Z node jit-tests ion#part-0002 =====
+node	jit-tests	ion#part-0002	2	0	0	3000	test-results/spidermonkey-official/kad-165.5-node-jit-tests-20260613T021426Z/node-jit-tests-ion#part-0002.log
+===== 2026-06-13T04:58:52Z node jit-tests ion#part-0003 =====
+node	jit-tests	ion#part-0003	2	0	0	180	test-results/spidermonkey-official/kad-165.5-node-jit-tests-20260613T021426Z/node-jit-tests-ion#part-0003.log
+===== 2026-06-13T04:59:12Z node jit-tests jaeger =====
+
+resume_command: scripts/dev-shell.sh bash -lc export\ SPIDERMONKEY_NODE_JS_SHELL_PORT=55389\;\ bash\ scripts/run-spidermonkey-official-all.sh\ --host\ node\ --suite\ jit-tests\ --jobs\ 1\ --no-slow\ --results-dir\ test-results/spidermonkey-official/kad-165.5-node-jit-tests-20260613T021426Z\ --start-at\ jaeger
+resume_effective_jitflags: all (script default SPIDERMONKEY_OFFICIAL_JITFLAGS, no --jitflags override)
+resume_started_utc: 2026-06-13T11:31:20Z
+kandelo dev shell — LLVM 21, Rust (pinned via rust-toolchain.toml), Node 24, Erlang 28 (minimal), SDK on PATH
+Inventory written to test-results/spidermonkey-official/kad-165.5-node-jit-tests-20260613T021426Z/inventory.tsv
+node js shell bridge listening on http://127.0.0.1:55389/run
+Skipping node jit-tests _files before --start-at jaeger
+Skipping node jit-tests Date before --start-at jaeger
+Skipping node jit-tests JSON before --start-at jaeger
+Skipping node jit-tests Set before --start-at jaeger
+Skipping node jit-tests arguments before --start-at jaeger
+Skipping node jit-tests arrays before --start-at jaeger
+Skipping node jit-tests arrow-functions before --start-at jaeger
+Skipping node jit-tests asm.js before --start-at jaeger
+Skipping node jit-tests async before --start-at jaeger
+Skipping node jit-tests atomics before --start-at jaeger
+Skipping node jit-tests auto-regress before --start-at jaeger
+Skipping node jit-tests baseline before --start-at jaeger
+Skipping node jit-tests basic#part-0001 before --start-at jaeger
+Skipping node jit-tests basic#part-0002 before --start-at jaeger
+Skipping node jit-tests basic#part-0003 before --start-at jaeger
+Skipping node jit-tests bigint before --start-at jaeger
+Skipping node jit-tests cacheir before --start-at jaeger
+Skipping node jit-tests class before --start-at jaeger
+Skipping node jit-tests closures before --start-at jaeger
+Skipping node jit-tests collections before --start-at jaeger
+Skipping node jit-tests constant-compare before --start-at jaeger
+Skipping node jit-tests coverage before --start-at jaeger
+Skipping node jit-tests ctypes before --start-at jaeger
+Skipping node jit-tests dataview before --start-at jaeger
+Skipping node jit-tests debug#part-0001 before --start-at jaeger
+Skipping node jit-tests debug#part-0002 before --start-at jaeger
+Skipping node jit-tests debug#part-0003 before --start-at jaeger
+Skipping node jit-tests decorators before --start-at jaeger
+Skipping node jit-tests environments before --start-at jaeger
+Skipping node jit-tests errors before --start-at jaeger
+Skipping node jit-tests explicit-resource-management before --start-at jaeger
+Skipping node jit-tests fields before --start-at jaeger
+Skipping node jit-tests for-of before --start-at jaeger
+Skipping node jit-tests function before --start-at jaeger
+Skipping node jit-tests fuses before --start-at jaeger
+Skipping node jit-tests gc before --start-at jaeger
+Skipping node jit-tests generators before --start-at jaeger
+Skipping node jit-tests heap-analysis before --start-at jaeger
+Skipping node jit-tests ion#part-0001 before --start-at jaeger
+Skipping node jit-tests ion#part-0002 before --start-at jaeger
+Skipping node jit-tests ion#part-0003 before --start-at jaeger
+===== 2026-06-13T11:33:58Z node jit-tests jaeger =====
+
+resume_note: stopped interrupted jaeger resume and restarted with SPIDERMONKEY_WASM set directly to avoid repeated resolver validation delay.
+resume_command: scripts/dev-shell.sh bash -lc export\ SPIDERMONKEY_WASM=/Users/brandon/gt/kandelo/polecats/valkyrie/kandelo/binaries/programs/wasm32/js.wasm\;\ export\ SPIDERMONKEY_NODE_JS_SHELL_PORT=55390\;\ bash\ scripts/run-spidermonkey-official-all.sh\ --host\ node\ --suite\ jit-tests\ --jobs\ 1\ --no-slow\ --results-dir\ test-results/spidermonkey-official/kad-165.5-node-jit-tests-20260613T021426Z\ --start-at\ jaeger
+resume_effective_jitflags: all (script default SPIDERMONKEY_OFFICIAL_JITFLAGS, no --jitflags override)
+resume_started_utc: 2026-06-13T11:34:36Z
+kandelo dev shell — LLVM 21, Rust (pinned via rust-toolchain.toml), Node 24, Erlang 28 (minimal), SDK on PATH
+Inventory written to test-results/spidermonkey-official/kad-165.5-node-jit-tests-20260613T021426Z/inventory.tsv
+node js shell bridge listening on http://127.0.0.1:55390/run
+Skipping node jit-tests _files before --start-at jaeger
+Skipping node jit-tests Date before --start-at jaeger
+Skipping node jit-tests JSON before --start-at jaeger
+Skipping node jit-tests Set before --start-at jaeger
+Skipping node jit-tests arguments before --start-at jaeger
+Skipping node jit-tests arrays before --start-at jaeger
+Skipping node jit-tests arrow-functions before --start-at jaeger
+Skipping node jit-tests asm.js before --start-at jaeger
+Skipping node jit-tests async before --start-at jaeger
+Skipping node jit-tests atomics before --start-at jaeger
+Skipping node jit-tests auto-regress before --start-at jaeger
+Skipping node jit-tests baseline before --start-at jaeger
+Skipping node jit-tests basic#part-0001 before --start-at jaeger
+Skipping node jit-tests basic#part-0002 before --start-at jaeger
+Skipping node jit-tests basic#part-0003 before --start-at jaeger
+Skipping node jit-tests bigint before --start-at jaeger
+Skipping node jit-tests cacheir before --start-at jaeger
+Skipping node jit-tests class before --start-at jaeger
+Skipping node jit-tests closures before --start-at jaeger
+Skipping node jit-tests collections before --start-at jaeger
+Skipping node jit-tests constant-compare before --start-at jaeger
+Skipping node jit-tests coverage before --start-at jaeger
+Skipping node jit-tests ctypes before --start-at jaeger
+Skipping node jit-tests dataview before --start-at jaeger
+Skipping node jit-tests debug#part-0001 before --start-at jaeger
+Skipping node jit-tests debug#part-0002 before --start-at jaeger
+Skipping node jit-tests debug#part-0003 before --start-at jaeger
+Skipping node jit-tests decorators before --start-at jaeger
+Skipping node jit-tests environments before --start-at jaeger
+Skipping node jit-tests errors before --start-at jaeger
+Skipping node jit-tests explicit-resource-management before --start-at jaeger
+Skipping node jit-tests fields before --start-at jaeger
+Skipping node jit-tests for-of before --start-at jaeger
+Skipping node jit-tests function before --start-at jaeger
+Skipping node jit-tests fuses before --start-at jaeger
+Skipping node jit-tests gc before --start-at jaeger
+Skipping node jit-tests generators before --start-at jaeger
+Skipping node jit-tests heap-analysis before --start-at jaeger
+Skipping node jit-tests ion#part-0001 before --start-at jaeger
+Skipping node jit-tests ion#part-0002 before --start-at jaeger
+Skipping node jit-tests ion#part-0003 before --start-at jaeger
+===== 2026-06-13T11:35:59Z node jit-tests jaeger =====
+node	jit-tests	jaeger	2	2542	0	20	test-results/spidermonkey-official/kad-165.5-node-jit-tests-20260613T021426Z/node-jit-tests-jaeger.log
+===== 2026-06-13T13:00:46Z node jit-tests large-arraybuffers =====
+node	jit-tests	large-arraybuffers	0	62	0	0	test-results/spidermonkey-official/kad-165.5-node-jit-tests-20260613T021426Z/node-jit-tests-large-arraybuffers.log
+===== 2026-06-13T13:01:38Z node jit-tests latin1 =====
+node	jit-tests	latin1	0	174	0	0	test-results/spidermonkey-official/kad-165.5-node-jit-tests-20260613T021426Z/node-jit-tests-latin1.log
+===== 2026-06-13T13:04:30Z node jit-tests modules =====
+node	jit-tests	modules	2	810	0	198	test-results/spidermonkey-official/kad-165.5-node-jit-tests-20260613T021426Z/node-jit-tests-modules.log
+===== 2026-06-13T13:16:39Z node jit-tests optional-chain =====
+node	jit-tests	optional-chain	2	0	0	18	test-results/spidermonkey-official/kad-165.5-node-jit-tests-20260613T021426Z/node-jit-tests-optional-chain.log
+===== 2026-06-13T13:16:44Z node jit-tests parser =====
+node	jit-tests	parser	2	0	0	906	test-results/spidermonkey-official/kad-165.5-node-jit-tests-20260613T021426Z/node-jit-tests-parser.log
+===== 2026-06-13T13:20:02Z node jit-tests pic =====
+node	jit-tests	pic	2	0	0	186	test-results/spidermonkey-official/kad-165.5-node-jit-tests-20260613T021426Z/node-jit-tests-pic.log
+===== 2026-06-13T13:20:43Z node jit-tests profiler =====
+node	jit-tests	profiler	2	0	0	216	test-results/spidermonkey-official/kad-165.5-node-jit-tests-20260613T021426Z/node-jit-tests-profiler.log
+===== 2026-06-13T13:21:31Z node jit-tests promise =====
+node	jit-tests	promise	2	0	0	258	test-results/spidermonkey-official/kad-165.5-node-jit-tests-20260613T021426Z/node-jit-tests-promise.log
+===== 2026-06-13T13:22:29Z node jit-tests proxy =====
+node	jit-tests	proxy	2	0	0	882	test-results/spidermonkey-official/kad-165.5-node-jit-tests-20260613T021426Z/node-jit-tests-proxy.log
+===== 2026-06-13T13:26:06Z node jit-tests realms =====
+node	jit-tests	realms	2	0	0	132	test-results/spidermonkey-official/kad-165.5-node-jit-tests-20260613T021426Z/node-jit-tests-realms.log
+===== 2026-06-13T13:26:35Z node jit-tests regexp =====
+node	jit-tests	regexp	2	0	0	306	test-results/spidermonkey-official/kad-165.5-node-jit-tests-20260613T021426Z/node-jit-tests-regexp.log
+===== 2026-06-13T13:27:53Z node jit-tests resist-fingerprinting =====
+node	jit-tests	resist-fingerprinting	2	0	0	24	test-results/spidermonkey-official/kad-165.5-node-jit-tests-20260613T021426Z/node-jit-tests-resist-fingerprinting.log
+===== 2026-06-13T13:27:59Z node jit-tests saved-stacks =====
+node	jit-tests	saved-stacks	2	0	0	306	test-results/spidermonkey-official/kad-165.5-node-jit-tests-20260613T021426Z/node-jit-tests-saved-stacks.log
+===== 2026-06-13T13:29:08Z node jit-tests self-hosting =====
+node	jit-tests	self-hosting	2	0	0	126	test-results/spidermonkey-official/kad-165.5-node-jit-tests-20260613T021426Z/node-jit-tests-self-hosting.log
+===== 2026-06-13T13:29:36Z node jit-tests self-test =====
+node	jit-tests	self-test	2	0	0	133	test-results/spidermonkey-official/kad-165.5-node-jit-tests-20260613T021426Z/node-jit-tests-self-test.log
+===== 2026-06-13T13:30:05Z node jit-tests sharedbuf =====
+node	jit-tests	sharedbuf	2	0	0	132	test-results/spidermonkey-official/kad-165.5-node-jit-tests-20260613T021426Z/node-jit-tests-sharedbuf.log
+===== 2026-06-13T13:30:31Z node jit-tests strings =====
+node	jit-tests	strings	2	0	0	12	test-results/spidermonkey-official/kad-165.5-node-jit-tests-20260613T021426Z/node-jit-tests-strings.log
+===== 2026-06-13T13:30:34Z node jit-tests structured-clone =====
+node	jit-tests	structured-clone	2	0	0	138	test-results/spidermonkey-official/kad-165.5-node-jit-tests-20260613T021426Z/node-jit-tests-structured-clone.log
+===== 2026-06-13T13:31:00Z node jit-tests sunspider =====
+node	jit-tests	sunspider	2	0	0	175	test-results/spidermonkey-official/kad-165.5-node-jit-tests-20260613T021426Z/node-jit-tests-sunspider.log
+===== 2026-06-13T13:31:31Z node jit-tests symbol =====
+node	jit-tests	symbol	2	0	0	48	test-results/spidermonkey-official/kad-165.5-node-jit-tests-20260613T021426Z/node-jit-tests-symbol.log
+===== 2026-06-13T13:31:39Z node jit-tests truthiness =====
+node	jit-tests	truthiness	2	0	0	126	test-results/spidermonkey-official/kad-165.5-node-jit-tests-20260613T021426Z/node-jit-tests-truthiness.log
+===== 2026-06-13T13:32:05Z node jit-tests typedarray =====
+node	jit-tests	typedarray	2	0	0	325	test-results/spidermonkey-official/kad-165.5-node-jit-tests-20260613T021426Z/node-jit-tests-typedarray.log
+===== 2026-06-13T13:33:19Z node jit-tests v8-v5 =====
+node	jit-tests	v8-v5	2	0	0	36	test-results/spidermonkey-official/kad-165.5-node-jit-tests-20260613T021426Z/node-jit-tests-v8-v5.log
+===== 2026-06-13T13:33:26Z node jit-tests warp =====
+node	jit-tests	warp	2	0	0	1345	test-results/spidermonkey-official/kad-165.5-node-jit-tests-20260613T021426Z/node-jit-tests-warp.log
+===== 2026-06-13T13:38:23Z node jit-tests wasm#part-0001 =====
+node	jit-tests	wasm#part-0001	2	0	0	5170	test-results/spidermonkey-official/kad-165.5-node-jit-tests-20260613T021426Z/node-jit-tests-wasm#part-0001.log
+===== 2026-06-13T13:58:00Z node jit-tests wasm#part-0002 =====
+node	jit-tests	wasm#part-0002	2	0	0	3697	test-results/spidermonkey-official/kad-165.5-node-jit-tests-20260613T021426Z/node-jit-tests-wasm#part-0002.log
+===== 2026-06-13T14:12:53Z node jit-tests watchtower =====
+node	jit-tests	watchtower	2	0	0	54	test-results/spidermonkey-official/kad-165.5-node-jit-tests-20260613T021426Z/node-jit-tests-watchtower.log
+===== 2026-06-13T14:13:08Z node jit-tests xdr =====
+node	jit-tests	xdr	2	0	0	270	test-results/spidermonkey-official/kad-165.5-node-jit-tests-20260613T021426Z/node-jit-tests-xdr.log
+Summary written to test-results/spidermonkey-official/kad-165.5-node-jit-tests-20260613T021426Z/summary.tsv

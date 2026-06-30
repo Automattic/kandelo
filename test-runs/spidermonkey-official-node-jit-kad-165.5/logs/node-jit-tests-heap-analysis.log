@@ -1,0 +1,534 @@
+===== Official SpiderMonkey jit-tests on Kandelo node host =====
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - heap-analysis/bug-1249107.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/heap-analysis/bug-1249107.js | RuntimeError: memory access out of bounds (code 255, args "") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - heap-analysis/bug-1249107.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/heap-analysis/bug-1249107.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - heap-analysis/bug-1249107.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/heap-analysis/bug-1249107.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - heap-analysis/bug-1249107.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/heap-analysis/bug-1249107.js | RuntimeError: memory access out of bounds (code 255, args "--baseline-eager --write-protect-code=off") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - heap-analysis/bug-1249107.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/heap-analysis/bug-1249107.js | RuntimeError: memory access out of bounds (code 255, args "--no-blinterp --no-baseline --no-ion --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - heap-analysis/bug-1249107.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/heap-analysis/bug-1249107.js | RuntimeError: memory access out of bounds (code 255, args "--blinterp-eager") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - heap-analysis/bug-1252912.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/heap-analysis/bug-1252912.js | RuntimeError: memory access out of bounds (code 255, args "") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - heap-analysis/bug-1252912.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/heap-analysis/bug-1252912.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - heap-analysis/bug-1252912.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/heap-analysis/bug-1252912.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - heap-analysis/bug-1252912.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/heap-analysis/bug-1252912.js | RuntimeError: memory access out of bounds (code 255, args "--baseline-eager --write-protect-code=off") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - heap-analysis/bug-1252912.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/heap-analysis/bug-1252912.js | RuntimeError: memory access out of bounds (code 255, args "--no-blinterp --no-baseline --no-ion --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - heap-analysis/bug-1252912.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/heap-analysis/bug-1252912.js | RuntimeError: memory access out of bounds (code 255, args "--blinterp-eager") [0.2 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - heap-analysis/bug-1254105.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/heap-analysis/bug-1254105.js | RuntimeError: memory access out of bounds (code 255, args "") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - heap-analysis/bug-1254105.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/heap-analysis/bug-1254105.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - heap-analysis/bug-1254105.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/heap-analysis/bug-1254105.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - heap-analysis/bug-1254105.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/heap-analysis/bug-1254105.js | RuntimeError: memory access out of bounds (code 255, args "--baseline-eager --write-protect-code=off") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - heap-analysis/bug-1254105.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/heap-analysis/bug-1254105.js | RuntimeError: memory access out of bounds (code 255, args "--no-blinterp --no-baseline --no-ion --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - heap-analysis/bug-1254105.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/heap-analysis/bug-1254105.js | RuntimeError: memory access out of bounds (code 255, args "--blinterp-eager") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - heap-analysis/byteSize-of-bigint.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/heap-analysis/byteSize-of-bigint.js | RuntimeError: memory access out of bounds (code 255, args "") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - heap-analysis/byteSize-of-bigint.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/heap-analysis/byteSize-of-bigint.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - heap-analysis/byteSize-of-bigint.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/heap-analysis/byteSize-of-bigint.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - heap-analysis/byteSize-of-bigint.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/heap-analysis/byteSize-of-bigint.js | RuntimeError: memory access out of bounds (code 255, args "--baseline-eager --write-protect-code=off") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - heap-analysis/byteSize-of-bigint.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/heap-analysis/byteSize-of-bigint.js | RuntimeError: memory access out of bounds (code 255, args "--no-blinterp --no-baseline --no-ion --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - heap-analysis/byteSize-of-bigint.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/heap-analysis/byteSize-of-bigint.js | RuntimeError: memory access out of bounds (code 255, args "--blinterp-eager") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - heap-analysis/byteSize-of-object.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/heap-analysis/byteSize-of-object.js | RuntimeError: memory access out of bounds (code 255, args "") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - heap-analysis/byteSize-of-object.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/heap-analysis/byteSize-of-object.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - heap-analysis/byteSize-of-object.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/heap-analysis/byteSize-of-object.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - heap-analysis/byteSize-of-object.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/heap-analysis/byteSize-of-object.js | RuntimeError: memory access out of bounds (code 255, args "--baseline-eager --write-protect-code=off") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - heap-analysis/byteSize-of-object.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/heap-analysis/byteSize-of-object.js | RuntimeError: memory access out of bounds (code 255, args "--no-blinterp --no-baseline --no-ion --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - heap-analysis/byteSize-of-object.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/heap-analysis/byteSize-of-object.js | RuntimeError: memory access out of bounds (code 255, args "--blinterp-eager") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - heap-analysis/byteSize-of-scripts.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/heap-analysis/byteSize-of-scripts.js | RuntimeError: memory access out of bounds (code 255, args "") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - heap-analysis/byteSize-of-scripts.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/heap-analysis/byteSize-of-scripts.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - heap-analysis/byteSize-of-scripts.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/heap-analysis/byteSize-of-scripts.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - heap-analysis/byteSize-of-scripts.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/heap-analysis/byteSize-of-scripts.js | RuntimeError: memory access out of bounds (code 255, args "--baseline-eager --write-protect-code=off") [0.3 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - heap-analysis/byteSize-of-scripts.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/heap-analysis/byteSize-of-scripts.js | RuntimeError: memory access out of bounds (code 255, args "--no-blinterp --no-baseline --no-ion --more-compartments") [0.2 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - heap-analysis/byteSize-of-scripts.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/heap-analysis/byteSize-of-scripts.js | RuntimeError: memory access out of bounds (code 255, args "--blinterp-eager") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - heap-analysis/byteSize-of-string.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/heap-analysis/byteSize-of-string.js | RuntimeError: memory access out of bounds (code 255, args "") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - heap-analysis/byteSize-of-string.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/heap-analysis/byteSize-of-string.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - heap-analysis/byteSize-of-string.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/heap-analysis/byteSize-of-string.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - heap-analysis/byteSize-of-string.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/heap-analysis/byteSize-of-string.js | RuntimeError: memory access out of bounds (code 255, args "--baseline-eager --write-protect-code=off") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - heap-analysis/byteSize-of-string.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/heap-analysis/byteSize-of-string.js | RuntimeError: memory access out of bounds (code 255, args "--no-blinterp --no-baseline --no-ion --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - heap-analysis/byteSize-of-string.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/heap-analysis/byteSize-of-string.js | RuntimeError: memory access out of bounds (code 255, args "--blinterp-eager") [0.2 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - heap-analysis/byteSize-of-symbol.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/heap-analysis/byteSize-of-symbol.js | RuntimeError: memory access out of bounds (code 255, args "") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - heap-analysis/byteSize-of-symbol.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/heap-analysis/byteSize-of-symbol.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - heap-analysis/byteSize-of-symbol.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/heap-analysis/byteSize-of-symbol.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads") [0.2 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - heap-analysis/byteSize-of-symbol.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/heap-analysis/byteSize-of-symbol.js | RuntimeError: memory access out of bounds (code 255, args "--baseline-eager --write-protect-code=off") [0.2 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - heap-analysis/byteSize-of-symbol.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/heap-analysis/byteSize-of-symbol.js | RuntimeError: memory access out of bounds (code 255, args "--no-blinterp --no-baseline --no-ion --more-compartments") [0.2 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - heap-analysis/byteSize-of-symbol.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/heap-analysis/byteSize-of-symbol.js | RuntimeError: memory access out of bounds (code 255, args "--blinterp-eager") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - heap-analysis/findPath.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/heap-analysis/findPath.js | RuntimeError: memory access out of bounds (code 255, args "") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - heap-analysis/findPath.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/heap-analysis/findPath.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - heap-analysis/findPath.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/heap-analysis/findPath.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - heap-analysis/findPath.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/heap-analysis/findPath.js | RuntimeError: memory access out of bounds (code 255, args "--baseline-eager --write-protect-code=off") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - heap-analysis/findPath.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/heap-analysis/findPath.js | RuntimeError: memory access out of bounds (code 255, args "--no-blinterp --no-baseline --no-ion --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - heap-analysis/findPath.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/heap-analysis/findPath.js | RuntimeError: memory access out of bounds (code 255, args "--blinterp-eager") [0.2 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - heap-analysis/pointerByteSize.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/heap-analysis/pointerByteSize.js | RuntimeError: memory access out of bounds (code 255, args "") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - heap-analysis/pointerByteSize.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/heap-analysis/pointerByteSize.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - heap-analysis/pointerByteSize.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/heap-analysis/pointerByteSize.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - heap-analysis/pointerByteSize.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/heap-analysis/pointerByteSize.js | RuntimeError: memory access out of bounds (code 255, args "--baseline-eager --write-protect-code=off") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - heap-analysis/pointerByteSize.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/heap-analysis/pointerByteSize.js | RuntimeError: memory access out of bounds (code 255, args "--no-blinterp --no-baseline --no-ion --more-compartments") [0.2 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - heap-analysis/pointerByteSize.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/heap-analysis/pointerByteSize.js | RuntimeError: memory access out of bounds (code 255, args "--blinterp-eager") [0.2 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - heap-analysis/shortestPaths.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/heap-analysis/shortestPaths.js | RuntimeError: memory access out of bounds (code 255, args "") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - heap-analysis/shortestPaths.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/heap-analysis/shortestPaths.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - heap-analysis/shortestPaths.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/heap-analysis/shortestPaths.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - heap-analysis/shortestPaths.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/heap-analysis/shortestPaths.js | RuntimeError: memory access out of bounds (code 255, args "--baseline-eager --write-protect-code=off") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - heap-analysis/shortestPaths.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/heap-analysis/shortestPaths.js | RuntimeError: memory access out of bounds (code 255, args "--no-blinterp --no-baseline --no-ion --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - heap-analysis/shortestPaths.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/heap-analysis/shortestPaths.js | RuntimeError: memory access out of bounds (code 255, args "--blinterp-eager") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+FAILURES:
+    heap-analysis/bug-1249107.js
+    --ion-eager --ion-offthread-compile=off --more-compartments heap-analysis/bug-1249107.js
+    --ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads heap-analysis/bug-1249107.js
+    --baseline-eager --write-protect-code=off heap-analysis/bug-1249107.js
+    --no-blinterp --no-baseline --no-ion --more-compartments heap-analysis/bug-1249107.js
+    --blinterp-eager heap-analysis/bug-1249107.js
+    heap-analysis/bug-1252912.js
+    --ion-eager --ion-offthread-compile=off --more-compartments heap-analysis/bug-1252912.js
+    --ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads heap-analysis/bug-1252912.js
+    --baseline-eager --write-protect-code=off heap-analysis/bug-1252912.js
+    --no-blinterp --no-baseline --no-ion --more-compartments heap-analysis/bug-1252912.js
+    --blinterp-eager heap-analysis/bug-1252912.js
+    heap-analysis/bug-1254105.js
+    --ion-eager --ion-offthread-compile=off --more-compartments heap-analysis/bug-1254105.js
+    --ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads heap-analysis/bug-1254105.js
+    --baseline-eager --write-protect-code=off heap-analysis/bug-1254105.js
+    --no-blinterp --no-baseline --no-ion --more-compartments heap-analysis/bug-1254105.js
+    --blinterp-eager heap-analysis/bug-1254105.js
+    heap-analysis/byteSize-of-bigint.js
+    --ion-eager --ion-offthread-compile=off --more-compartments heap-analysis/byteSize-of-bigint.js
+    --ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads heap-analysis/byteSize-of-bigint.js
+    --baseline-eager --write-protect-code=off heap-analysis/byteSize-of-bigint.js
+    --no-blinterp --no-baseline --no-ion --more-compartments heap-analysis/byteSize-of-bigint.js
+    --blinterp-eager heap-analysis/byteSize-of-bigint.js
+    heap-analysis/byteSize-of-object.js
+    --ion-eager --ion-offthread-compile=off --more-compartments heap-analysis/byteSize-of-object.js
+    --ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads heap-analysis/byteSize-of-object.js
+    --baseline-eager --write-protect-code=off heap-analysis/byteSize-of-object.js
+    --no-blinterp --no-baseline --no-ion --more-compartments heap-analysis/byteSize-of-object.js
+    --blinterp-eager heap-analysis/byteSize-of-object.js
+    heap-analysis/byteSize-of-scripts.js
+    --ion-eager --ion-offthread-compile=off --more-compartments heap-analysis/byteSize-of-scripts.js
+    --ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads heap-analysis/byteSize-of-scripts.js
+    --baseline-eager --write-protect-code=off heap-analysis/byteSize-of-scripts.js
+    --no-blinterp --no-baseline --no-ion --more-compartments heap-analysis/byteSize-of-scripts.js
+    --blinterp-eager heap-analysis/byteSize-of-scripts.js
+    heap-analysis/byteSize-of-string.js
+    --ion-eager --ion-offthread-compile=off --more-compartments heap-analysis/byteSize-of-string.js
+    --ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads heap-analysis/byteSize-of-string.js
+    --baseline-eager --write-protect-code=off heap-analysis/byteSize-of-string.js
+    --no-blinterp --no-baseline --no-ion --more-compartments heap-analysis/byteSize-of-string.js
+    --blinterp-eager heap-analysis/byteSize-of-string.js
+    heap-analysis/byteSize-of-symbol.js
+    --ion-eager --ion-offthread-compile=off --more-compartments heap-analysis/byteSize-of-symbol.js
+    --ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads heap-analysis/byteSize-of-symbol.js
+    --baseline-eager --write-protect-code=off heap-analysis/byteSize-of-symbol.js
+    --no-blinterp --no-baseline --no-ion --more-compartments heap-analysis/byteSize-of-symbol.js
+    --blinterp-eager heap-analysis/byteSize-of-symbol.js
+    heap-analysis/findPath.js
+    --ion-eager --ion-offthread-compile=off --more-compartments heap-analysis/findPath.js
+    --ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads heap-analysis/findPath.js
+    --baseline-eager --write-protect-code=off heap-analysis/findPath.js
+    --no-blinterp --no-baseline --no-ion --more-compartments heap-analysis/findPath.js
+    --blinterp-eager heap-analysis/findPath.js
+    heap-analysis/pointerByteSize.js
+    --ion-eager --ion-offthread-compile=off --more-compartments heap-analysis/pointerByteSize.js
+    --ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads heap-analysis/pointerByteSize.js
+    --baseline-eager --write-protect-code=off heap-analysis/pointerByteSize.js
+    --no-blinterp --no-baseline --no-ion --more-compartments heap-analysis/pointerByteSize.js
+    --blinterp-eager heap-analysis/pointerByteSize.js
+    heap-analysis/shortestPaths.js
+    --ion-eager --ion-offthread-compile=off --more-compartments heap-analysis/shortestPaths.js
+    --ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads heap-analysis/shortestPaths.js
+    --baseline-eager --write-protect-code=off heap-analysis/shortestPaths.js
+    --no-blinterp --no-baseline --no-ion --more-compartments heap-analysis/shortestPaths.js
+    --blinterp-eager heap-analysis/shortestPaths.js
+TIMEOUTS:
+Result summary:
+Passed: 0
+Failed: 66

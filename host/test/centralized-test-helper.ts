@@ -121,6 +121,9 @@ export interface RunProgramOptions {
    *  programs can dial external hosts via real Node sockets. Worker-thread
    *  mode only — incompatible with `io`. */
   enableTcpNetwork?: boolean;
+  /** Additional host-directory mounts for worker-thread mount-based VFS runs.
+   *  Worker-thread mode only — incompatible with `io`. */
+  extraMounts?: Array<{ mountPoint: string; hostPath: string; readonly?: boolean }>;
   /** Map of virtual path → .wasm file path for exec targets */
   execPrograms?: Map<string, string>;
   /** Data to provide on stdin (process will see EOF after this data) */
@@ -162,6 +165,9 @@ export interface RunProgramResult {
 export async function runCentralizedProgram(
   options: RunProgramOptions,
 ): Promise<RunProgramResult> {
+  if (options.io && options.extraMounts?.length) {
+    throw new Error("runCentralizedProgram extraMounts require worker-thread mode");
+  }
   if (options.io) {
     return runOnMainThread(options);
   }
@@ -207,6 +213,7 @@ async function runInWorkerThread(options: RunProgramOptions): Promise<RunProgram
     maxWorkers: 4,
     execPrograms,
     rootfsImage: options.useDefaultRootfs === false ? undefined : "default",
+    extraMounts: options.extraMounts,
     enableTcpNetwork: options.enableTcpNetwork,
     onStdout: (_pid: number, data: Uint8Array) => {
       stdout += new TextDecoder().decode(data);

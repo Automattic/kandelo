@@ -82,6 +82,7 @@ export interface SaveImageOptions {
   metadata?: VfsImageMetadata;
   kernelAbi?: number;
   skipWasmArtifactCheck?: boolean;
+  allowedWasmArtifactPolicyFailures?: Record<string, readonly string[]>;
 }
 
 function readVfsBytes(fs: MemoryFileSystem, path: string): Uint8Array {
@@ -136,7 +137,11 @@ function isWasm(bytes: Uint8Array): boolean {
     bytes[3] === 0x6d;
 }
 
-function assertNoStaleWasmArtifacts(fs: MemoryFileSystem, kernelAbi: number): void {
+function assertNoStaleWasmArtifacts(
+  fs: MemoryFileSystem,
+  kernelAbi: number,
+  allowedFailures: Record<string, readonly string[]> = {},
+): void {
   const failures: string[] = [];
   for (const path of walkVfsFiles(fs, "/")) {
     let bytes: Uint8Array;
@@ -150,7 +155,11 @@ function assertNoStaleWasmArtifacts(fs: MemoryFileSystem, kernelAbi: number): vo
       bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength),
       { expectedAbi: kernelAbi },
     );
-    if (reasons.length > 0) failures.push(`${path}: ${reasons.join("; ")}`);
+    const allowed = allowedFailures[path] ?? [];
+    const unexpectedReasons = reasons.filter((reason) => !allowed.includes(reason));
+    if (unexpectedReasons.length > 0) {
+      failures.push(`${path}: ${unexpectedReasons.join("; ")}`);
+    }
   }
   if (failures.length > 0) {
     throw new Error(
@@ -174,7 +183,11 @@ export async function saveImage(
   console.log("Saving VFS image...");
   const kernelAbi = options.kernelAbi ?? ABI_VERSION;
   if (!options.skipWasmArtifactCheck) {
-    assertNoStaleWasmArtifacts(fs, kernelAbi);
+    assertNoStaleWasmArtifacts(
+      fs,
+      kernelAbi,
+      options.allowedWasmArtifactPolicyFailures,
+    );
   }
   const metadata = options.metadata ??
     {

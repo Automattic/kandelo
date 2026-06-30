@@ -1,0 +1,438 @@
+===== Official SpiderMonkey jit-tests on Kandelo node host =====
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - decorators/accessor-decorators.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/decorators/accessor-decorators.js | RuntimeError: memory access out of bounds (code 255, args "") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - decorators/accessor-decorators.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/decorators/accessor-decorators.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - decorators/accessor-decorators.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/decorators/accessor-decorators.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - decorators/accessor-decorators.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/decorators/accessor-decorators.js | RuntimeError: memory access out of bounds (code 255, args "--baseline-eager --write-protect-code=off") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - decorators/accessor-decorators.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/decorators/accessor-decorators.js | RuntimeError: memory access out of bounds (code 255, args "--no-blinterp --no-baseline --no-ion --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - decorators/accessor-decorators.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/decorators/accessor-decorators.js | RuntimeError: memory access out of bounds (code 255, args "--blinterp-eager") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - decorators/accessors.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/decorators/accessors.js | RuntimeError: memory access out of bounds (code 255, args "") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - decorators/accessors.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/decorators/accessors.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - decorators/accessors.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/decorators/accessors.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - decorators/accessors.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/decorators/accessors.js | RuntimeError: memory access out of bounds (code 255, args "--baseline-eager --write-protect-code=off") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - decorators/accessors.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/decorators/accessors.js | RuntimeError: memory access out of bounds (code 255, args "--no-blinterp --no-baseline --no-ion --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - decorators/accessors.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/decorators/accessors.js | RuntimeError: memory access out of bounds (code 255, args "--blinterp-eager") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - decorators/addInitializer.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/decorators/addInitializer.js | RuntimeError: memory access out of bounds (code 255, args "") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - decorators/addInitializer.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/decorators/addInitializer.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - decorators/addInitializer.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/decorators/addInitializer.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - decorators/addInitializer.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/decorators/addInitializer.js | RuntimeError: memory access out of bounds (code 255, args "--baseline-eager --write-protect-code=off") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - decorators/addInitializer.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/decorators/addInitializer.js | RuntimeError: memory access out of bounds (code 255, args "--no-blinterp --no-baseline --no-ion --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - decorators/addInitializer.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/decorators/addInitializer.js | RuntimeError: memory access out of bounds (code 255, args "--blinterp-eager") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - decorators/class-decorators.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/decorators/class-decorators.js | RuntimeError: memory access out of bounds (code 255, args "") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - decorators/class-decorators.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/decorators/class-decorators.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - decorators/class-decorators.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/decorators/class-decorators.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - decorators/class-decorators.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/decorators/class-decorators.js | RuntimeError: memory access out of bounds (code 255, args "--baseline-eager --write-protect-code=off") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - decorators/class-decorators.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/decorators/class-decorators.js | RuntimeError: memory access out of bounds (code 255, args "--no-blinterp --no-baseline --no-ion --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - decorators/class-decorators.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/decorators/class-decorators.js | RuntimeError: memory access out of bounds (code 255, args "--blinterp-eager") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - decorators/decorator-this.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/decorators/decorator-this.js | RuntimeError: memory access out of bounds (code 255, args "") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - decorators/decorator-this.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/decorators/decorator-this.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - decorators/decorator-this.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/decorators/decorator-this.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - decorators/decorator-this.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/decorators/decorator-this.js | RuntimeError: memory access out of bounds (code 255, args "--baseline-eager --write-protect-code=off") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - decorators/decorator-this.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/decorators/decorator-this.js | RuntimeError: memory access out of bounds (code 255, args "--no-blinterp --no-baseline --no-ion --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - decorators/decorator-this.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/decorators/decorator-this.js | RuntimeError: memory access out of bounds (code 255, args "--blinterp-eager") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - decorators/field-decorators.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/decorators/field-decorators.js | RuntimeError: memory access out of bounds (code 255, args "") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - decorators/field-decorators.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/decorators/field-decorators.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - decorators/field-decorators.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/decorators/field-decorators.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - decorators/field-decorators.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/decorators/field-decorators.js | RuntimeError: memory access out of bounds (code 255, args "--baseline-eager --write-protect-code=off") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - decorators/field-decorators.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/decorators/field-decorators.js | RuntimeError: memory access out of bounds (code 255, args "--no-blinterp --no-baseline --no-ion --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - decorators/field-decorators.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/decorators/field-decorators.js | RuntimeError: memory access out of bounds (code 255, args "--blinterp-eager") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - decorators/getter-setter-decorators.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/decorators/getter-setter-decorators.js | RuntimeError: memory access out of bounds (code 255, args "") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - decorators/getter-setter-decorators.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/decorators/getter-setter-decorators.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - decorators/getter-setter-decorators.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/decorators/getter-setter-decorators.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - decorators/getter-setter-decorators.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/decorators/getter-setter-decorators.js | RuntimeError: memory access out of bounds (code 255, args "--baseline-eager --write-protect-code=off") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - decorators/getter-setter-decorators.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/decorators/getter-setter-decorators.js | RuntimeError: memory access out of bounds (code 255, args "--no-blinterp --no-baseline --no-ion --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - decorators/getter-setter-decorators.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/decorators/getter-setter-decorators.js | RuntimeError: memory access out of bounds (code 255, args "--blinterp-eager") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - decorators/method-decorators.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/decorators/method-decorators.js | RuntimeError: memory access out of bounds (code 255, args "") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - decorators/method-decorators.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/decorators/method-decorators.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - decorators/method-decorators.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/decorators/method-decorators.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - decorators/method-decorators.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/decorators/method-decorators.js | RuntimeError: memory access out of bounds (code 255, args "--baseline-eager --write-protect-code=off") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - decorators/method-decorators.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/decorators/method-decorators.js | RuntimeError: memory access out of bounds (code 255, args "--no-blinterp --no-baseline --no-ion --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - decorators/method-decorators.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/decorators/method-decorators.js | RuntimeError: memory access out of bounds (code 255, args "--blinterp-eager") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - decorators/syntax.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/decorators/syntax.js | RuntimeError: memory access out of bounds (code 255, args "") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - decorators/syntax.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/decorators/syntax.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - decorators/syntax.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/decorators/syntax.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - decorators/syntax.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/decorators/syntax.js | RuntimeError: memory access out of bounds (code 255, args "--baseline-eager --write-protect-code=off") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - decorators/syntax.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/decorators/syntax.js | RuntimeError: memory access out of bounds (code 255, args "--no-blinterp --no-baseline --no-ion --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - decorators/syntax.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/decorators/syntax.js | RuntimeError: memory access out of bounds (code 255, args "--blinterp-eager") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+FAILURES:
+    decorators/accessor-decorators.js
+    --ion-eager --ion-offthread-compile=off --more-compartments decorators/accessor-decorators.js
+    --ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads decorators/accessor-decorators.js
+    --baseline-eager --write-protect-code=off decorators/accessor-decorators.js
+    --no-blinterp --no-baseline --no-ion --more-compartments decorators/accessor-decorators.js
+    --blinterp-eager decorators/accessor-decorators.js
+    decorators/accessors.js
+    --ion-eager --ion-offthread-compile=off --more-compartments decorators/accessors.js
+    --ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads decorators/accessors.js
+    --baseline-eager --write-protect-code=off decorators/accessors.js
+    --no-blinterp --no-baseline --no-ion --more-compartments decorators/accessors.js
+    --blinterp-eager decorators/accessors.js
+    decorators/addInitializer.js
+    --ion-eager --ion-offthread-compile=off --more-compartments decorators/addInitializer.js
+    --ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads decorators/addInitializer.js
+    --baseline-eager --write-protect-code=off decorators/addInitializer.js
+    --no-blinterp --no-baseline --no-ion --more-compartments decorators/addInitializer.js
+    --blinterp-eager decorators/addInitializer.js
+    decorators/class-decorators.js
+    --ion-eager --ion-offthread-compile=off --more-compartments decorators/class-decorators.js
+    --ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads decorators/class-decorators.js
+    --baseline-eager --write-protect-code=off decorators/class-decorators.js
+    --no-blinterp --no-baseline --no-ion --more-compartments decorators/class-decorators.js
+    --blinterp-eager decorators/class-decorators.js
+    decorators/decorator-this.js
+    --ion-eager --ion-offthread-compile=off --more-compartments decorators/decorator-this.js
+    --ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads decorators/decorator-this.js
+    --baseline-eager --write-protect-code=off decorators/decorator-this.js
+    --no-blinterp --no-baseline --no-ion --more-compartments decorators/decorator-this.js
+    --blinterp-eager decorators/decorator-this.js
+    decorators/field-decorators.js
+    --ion-eager --ion-offthread-compile=off --more-compartments decorators/field-decorators.js
+    --ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads decorators/field-decorators.js
+    --baseline-eager --write-protect-code=off decorators/field-decorators.js
+    --no-blinterp --no-baseline --no-ion --more-compartments decorators/field-decorators.js
+    --blinterp-eager decorators/field-decorators.js
+    decorators/getter-setter-decorators.js
+    --ion-eager --ion-offthread-compile=off --more-compartments decorators/getter-setter-decorators.js
+    --ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads decorators/getter-setter-decorators.js
+    --baseline-eager --write-protect-code=off decorators/getter-setter-decorators.js
+    --no-blinterp --no-baseline --no-ion --more-compartments decorators/getter-setter-decorators.js
+    --blinterp-eager decorators/getter-setter-decorators.js
+    decorators/method-decorators.js
+    --ion-eager --ion-offthread-compile=off --more-compartments decorators/method-decorators.js
+    --ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads decorators/method-decorators.js
+    --baseline-eager --write-protect-code=off decorators/method-decorators.js
+    --no-blinterp --no-baseline --no-ion --more-compartments decorators/method-decorators.js
+    --blinterp-eager decorators/method-decorators.js
+    decorators/syntax.js
+    --ion-eager --ion-offthread-compile=off --more-compartments decorators/syntax.js
+    --ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads decorators/syntax.js
+    --baseline-eager --write-protect-code=off decorators/syntax.js
+    --no-blinterp --no-baseline --no-ion --more-compartments decorators/syntax.js
+    --blinterp-eager decorators/syntax.js
+TIMEOUTS:
+Result summary:
+Passed: 0
+Failed: 54

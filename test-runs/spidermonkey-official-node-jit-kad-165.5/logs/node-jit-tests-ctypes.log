@@ -1,0 +1,2262 @@
+===== Official SpiderMonkey jit-tests on Kandelo node host =====
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - ctypes/AddressOfField.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/ctypes/AddressOfField.js | RuntimeError: memory access out of bounds (code 255, args "") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - ctypes/AddressOfField.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/ctypes/AddressOfField.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - ctypes/AddressOfField.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/ctypes/AddressOfField.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - ctypes/AddressOfField.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/ctypes/AddressOfField.js | RuntimeError: memory access out of bounds (code 255, args "--baseline-eager --write-protect-code=off") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - ctypes/AddressOfField.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/ctypes/AddressOfField.js | RuntimeError: memory access out of bounds (code 255, args "--no-blinterp --no-baseline --no-ion --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - ctypes/AddressOfField.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/ctypes/AddressOfField.js | RuntimeError: memory access out of bounds (code 255, args "--blinterp-eager") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - ctypes/argument-length-abi.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/ctypes/argument-length-abi.js | RuntimeError: memory access out of bounds (code 255, args "") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - ctypes/argument-length-abi.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/ctypes/argument-length-abi.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - ctypes/argument-length-abi.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/ctypes/argument-length-abi.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - ctypes/argument-length-abi.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/ctypes/argument-length-abi.js | RuntimeError: memory access out of bounds (code 255, args "--baseline-eager --write-protect-code=off") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - ctypes/argument-length-abi.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/ctypes/argument-length-abi.js | RuntimeError: memory access out of bounds (code 255, args "--no-blinterp --no-baseline --no-ion --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - ctypes/argument-length-abi.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/ctypes/argument-length-abi.js | RuntimeError: memory access out of bounds (code 255, args "--blinterp-eager") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - ctypes/argument-length-array.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/ctypes/argument-length-array.js | RuntimeError: memory access out of bounds (code 255, args "") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - ctypes/argument-length-array.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/ctypes/argument-length-array.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - ctypes/argument-length-array.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/ctypes/argument-length-array.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - ctypes/argument-length-array.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/ctypes/argument-length-array.js | RuntimeError: memory access out of bounds (code 255, args "--baseline-eager --write-protect-code=off") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - ctypes/argument-length-array.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/ctypes/argument-length-array.js | RuntimeError: memory access out of bounds (code 255, args "--no-blinterp --no-baseline --no-ion --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - ctypes/argument-length-array.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/ctypes/argument-length-array.js | RuntimeError: memory access out of bounds (code 255, args "--blinterp-eager") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - ctypes/argument-length-cdata.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/ctypes/argument-length-cdata.js | RuntimeError: memory access out of bounds (code 255, args "") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - ctypes/argument-length-cdata.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/ctypes/argument-length-cdata.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - ctypes/argument-length-cdata.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/ctypes/argument-length-cdata.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - ctypes/argument-length-cdata.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/ctypes/argument-length-cdata.js | RuntimeError: memory access out of bounds (code 255, args "--baseline-eager --write-protect-code=off") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - ctypes/argument-length-cdata.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/ctypes/argument-length-cdata.js | RuntimeError: memory access out of bounds (code 255, args "--no-blinterp --no-baseline --no-ion --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - ctypes/argument-length-cdata.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/ctypes/argument-length-cdata.js | RuntimeError: memory access out of bounds (code 255, args "--blinterp-eager") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - ctypes/argument-length-ctypes.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/ctypes/argument-length-ctypes.js | RuntimeError: memory access out of bounds (code 255, args "") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - ctypes/argument-length-ctypes.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/ctypes/argument-length-ctypes.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - ctypes/argument-length-ctypes.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/ctypes/argument-length-ctypes.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - ctypes/argument-length-ctypes.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/ctypes/argument-length-ctypes.js | RuntimeError: memory access out of bounds (code 255, args "--baseline-eager --write-protect-code=off") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - ctypes/argument-length-ctypes.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/ctypes/argument-length-ctypes.js | RuntimeError: memory access out of bounds (code 255, args "--no-blinterp --no-baseline --no-ion --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - ctypes/argument-length-ctypes.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/ctypes/argument-length-ctypes.js | RuntimeError: memory access out of bounds (code 255, args "--blinterp-eager") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - ctypes/argument-length-finalizer.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/ctypes/argument-length-finalizer.js | RuntimeError: memory access out of bounds (code 255, args "") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - ctypes/argument-length-finalizer.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/ctypes/argument-length-finalizer.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - ctypes/argument-length-finalizer.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/ctypes/argument-length-finalizer.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - ctypes/argument-length-finalizer.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/ctypes/argument-length-finalizer.js | RuntimeError: memory access out of bounds (code 255, args "--baseline-eager --write-protect-code=off") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - ctypes/argument-length-finalizer.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/ctypes/argument-length-finalizer.js | RuntimeError: memory access out of bounds (code 255, args "--no-blinterp --no-baseline --no-ion --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - ctypes/argument-length-finalizer.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/ctypes/argument-length-finalizer.js | RuntimeError: memory access out of bounds (code 255, args "--blinterp-eager") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - ctypes/argument-length-function.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/ctypes/argument-length-function.js | RuntimeError: memory access out of bounds (code 255, args "") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - ctypes/argument-length-function.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/ctypes/argument-length-function.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - ctypes/argument-length-function.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/ctypes/argument-length-function.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - ctypes/argument-length-function.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/ctypes/argument-length-function.js | RuntimeError: memory access out of bounds (code 255, args "--baseline-eager --write-protect-code=off") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - ctypes/argument-length-function.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/ctypes/argument-length-function.js | RuntimeError: memory access out of bounds (code 255, args "--no-blinterp --no-baseline --no-ion --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - ctypes/argument-length-function.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/ctypes/argument-length-function.js | RuntimeError: memory access out of bounds (code 255, args "--blinterp-eager") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - ctypes/argument-length-int64.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/ctypes/argument-length-int64.js | RuntimeError: memory access out of bounds (code 255, args "") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - ctypes/argument-length-int64.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/ctypes/argument-length-int64.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - ctypes/argument-length-int64.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/ctypes/argument-length-int64.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - ctypes/argument-length-int64.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/ctypes/argument-length-int64.js | RuntimeError: memory access out of bounds (code 255, args "--baseline-eager --write-protect-code=off") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - ctypes/argument-length-int64.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/ctypes/argument-length-int64.js | RuntimeError: memory access out of bounds (code 255, args "--no-blinterp --no-baseline --no-ion --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - ctypes/argument-length-int64.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/ctypes/argument-length-int64.js | RuntimeError: memory access out of bounds (code 255, args "--blinterp-eager") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - ctypes/argument-length-pointer.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/ctypes/argument-length-pointer.js | RuntimeError: memory access out of bounds (code 255, args "") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - ctypes/argument-length-pointer.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/ctypes/argument-length-pointer.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - ctypes/argument-length-pointer.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/ctypes/argument-length-pointer.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - ctypes/argument-length-pointer.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/ctypes/argument-length-pointer.js | RuntimeError: memory access out of bounds (code 255, args "--baseline-eager --write-protect-code=off") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - ctypes/argument-length-pointer.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/ctypes/argument-length-pointer.js | RuntimeError: memory access out of bounds (code 255, args "--no-blinterp --no-baseline --no-ion --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - ctypes/argument-length-pointer.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/ctypes/argument-length-pointer.js | RuntimeError: memory access out of bounds (code 255, args "--blinterp-eager") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - ctypes/argument-length-primitive.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/ctypes/argument-length-primitive.js | RuntimeError: memory access out of bounds (code 255, args "") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - ctypes/argument-length-primitive.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/ctypes/argument-length-primitive.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - ctypes/argument-length-primitive.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/ctypes/argument-length-primitive.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - ctypes/argument-length-primitive.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/ctypes/argument-length-primitive.js | RuntimeError: memory access out of bounds (code 255, args "--baseline-eager --write-protect-code=off") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - ctypes/argument-length-primitive.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/ctypes/argument-length-primitive.js | RuntimeError: memory access out of bounds (code 255, args "--no-blinterp --no-baseline --no-ion --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - ctypes/argument-length-primitive.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/ctypes/argument-length-primitive.js | RuntimeError: memory access out of bounds (code 255, args "--blinterp-eager") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - ctypes/argument-length-struct.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/ctypes/argument-length-struct.js | RuntimeError: memory access out of bounds (code 255, args "") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - ctypes/argument-length-struct.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/ctypes/argument-length-struct.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - ctypes/argument-length-struct.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/ctypes/argument-length-struct.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - ctypes/argument-length-struct.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/ctypes/argument-length-struct.js | RuntimeError: memory access out of bounds (code 255, args "--baseline-eager --write-protect-code=off") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - ctypes/argument-length-struct.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/ctypes/argument-length-struct.js | RuntimeError: memory access out of bounds (code 255, args "--no-blinterp --no-baseline --no-ion --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - ctypes/argument-length-struct.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/ctypes/argument-length-struct.js | RuntimeError: memory access out of bounds (code 255, args "--blinterp-eager") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - ctypes/argument-type-array.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/ctypes/argument-type-array.js | RuntimeError: memory access out of bounds (code 255, args "") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - ctypes/argument-type-array.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/ctypes/argument-type-array.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - ctypes/argument-type-array.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/ctypes/argument-type-array.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - ctypes/argument-type-array.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/ctypes/argument-type-array.js | RuntimeError: memory access out of bounds (code 255, args "--baseline-eager --write-protect-code=off") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - ctypes/argument-type-array.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/ctypes/argument-type-array.js | RuntimeError: memory access out of bounds (code 255, args "--no-blinterp --no-baseline --no-ion --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - ctypes/argument-type-array.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/ctypes/argument-type-array.js | RuntimeError: memory access out of bounds (code 255, args "--blinterp-eager") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - ctypes/argument-type-ctypes.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/ctypes/argument-type-ctypes.js | RuntimeError: memory access out of bounds (code 255, args "") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - ctypes/argument-type-ctypes.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/ctypes/argument-type-ctypes.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - ctypes/argument-type-ctypes.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/ctypes/argument-type-ctypes.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - ctypes/argument-type-ctypes.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/ctypes/argument-type-ctypes.js | RuntimeError: memory access out of bounds (code 255, args "--baseline-eager --write-protect-code=off") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - ctypes/argument-type-ctypes.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/ctypes/argument-type-ctypes.js | RuntimeError: memory access out of bounds (code 255, args "--no-blinterp --no-baseline --no-ion --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - ctypes/argument-type-ctypes.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/ctypes/argument-type-ctypes.js | RuntimeError: memory access out of bounds (code 255, args "--blinterp-eager") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - ctypes/argument-type-function.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/ctypes/argument-type-function.js | RuntimeError: memory access out of bounds (code 255, args "") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - ctypes/argument-type-function.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/ctypes/argument-type-function.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - ctypes/argument-type-function.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/ctypes/argument-type-function.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - ctypes/argument-type-function.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/ctypes/argument-type-function.js | RuntimeError: memory access out of bounds (code 255, args "--baseline-eager --write-protect-code=off") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - ctypes/argument-type-function.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/ctypes/argument-type-function.js | RuntimeError: memory access out of bounds (code 255, args "--no-blinterp --no-baseline --no-ion --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - ctypes/argument-type-function.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/ctypes/argument-type-function.js | RuntimeError: memory access out of bounds (code 255, args "--blinterp-eager") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - ctypes/argument-type-int64.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/ctypes/argument-type-int64.js | RuntimeError: memory access out of bounds (code 255, args "") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - ctypes/argument-type-int64.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/ctypes/argument-type-int64.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - ctypes/argument-type-int64.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/ctypes/argument-type-int64.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads") [0.2 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - ctypes/argument-type-int64.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/ctypes/argument-type-int64.js | RuntimeError: memory access out of bounds (code 255, args "--baseline-eager --write-protect-code=off") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - ctypes/argument-type-int64.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/ctypes/argument-type-int64.js | RuntimeError: memory access out of bounds (code 255, args "--no-blinterp --no-baseline --no-ion --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - ctypes/argument-type-int64.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/ctypes/argument-type-int64.js | RuntimeError: memory access out of bounds (code 255, args "--blinterp-eager") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - ctypes/argument-type-pointer.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/ctypes/argument-type-pointer.js | RuntimeError: memory access out of bounds (code 255, args "") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - ctypes/argument-type-pointer.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/ctypes/argument-type-pointer.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - ctypes/argument-type-pointer.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/ctypes/argument-type-pointer.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - ctypes/argument-type-pointer.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/ctypes/argument-type-pointer.js | RuntimeError: memory access out of bounds (code 255, args "--baseline-eager --write-protect-code=off") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - ctypes/argument-type-pointer.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/ctypes/argument-type-pointer.js | RuntimeError: memory access out of bounds (code 255, args "--no-blinterp --no-baseline --no-ion --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - ctypes/argument-type-pointer.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/ctypes/argument-type-pointer.js | RuntimeError: memory access out of bounds (code 255, args "--blinterp-eager") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - ctypes/argument-type-struct.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/ctypes/argument-type-struct.js | RuntimeError: memory access out of bounds (code 255, args "") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - ctypes/argument-type-struct.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/ctypes/argument-type-struct.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - ctypes/argument-type-struct.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/ctypes/argument-type-struct.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - ctypes/argument-type-struct.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/ctypes/argument-type-struct.js | RuntimeError: memory access out of bounds (code 255, args "--baseline-eager --write-protect-code=off") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - ctypes/argument-type-struct.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/ctypes/argument-type-struct.js | RuntimeError: memory access out of bounds (code 255, args "--no-blinterp --no-baseline --no-ion --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - ctypes/argument-type-struct.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/ctypes/argument-type-struct.js | RuntimeError: memory access out of bounds (code 255, args "--blinterp-eager") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - ctypes/array-index.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/ctypes/array-index.js | RuntimeError: memory access out of bounds (code 255, args "") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - ctypes/array-index.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/ctypes/array-index.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - ctypes/array-index.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/ctypes/array-index.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - ctypes/array-index.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/ctypes/array-index.js | RuntimeError: memory access out of bounds (code 255, args "--baseline-eager --write-protect-code=off") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - ctypes/array-index.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/ctypes/array-index.js | RuntimeError: memory access out of bounds (code 255, args "--no-blinterp --no-baseline --no-ion --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - ctypes/array-index.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/ctypes/array-index.js | RuntimeError: memory access out of bounds (code 255, args "--blinterp-eager") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - ctypes/bug1155985.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/ctypes/bug1155985.js | RuntimeError: memory access out of bounds (code 255, args "") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - ctypes/bug1155985.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/ctypes/bug1155985.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - ctypes/bug1155985.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/ctypes/bug1155985.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - ctypes/bug1155985.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/ctypes/bug1155985.js | RuntimeError: memory access out of bounds (code 255, args "--baseline-eager --write-protect-code=off") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - ctypes/bug1155985.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/ctypes/bug1155985.js | RuntimeError: memory access out of bounds (code 255, args "--no-blinterp --no-baseline --no-ion --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - ctypes/bug1155985.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/ctypes/bug1155985.js | RuntimeError: memory access out of bounds (code 255, args "--blinterp-eager") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - ctypes/cast.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/ctypes/cast.js | RuntimeError: memory access out of bounds (code 255, args "") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - ctypes/cast.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/ctypes/cast.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - ctypes/cast.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/ctypes/cast.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - ctypes/cast.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/ctypes/cast.js | RuntimeError: memory access out of bounds (code 255, args "--baseline-eager --write-protect-code=off") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - ctypes/cast.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/ctypes/cast.js | RuntimeError: memory access out of bounds (code 255, args "--no-blinterp --no-baseline --no-ion --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - ctypes/cast.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/ctypes/cast.js | RuntimeError: memory access out of bounds (code 255, args "--blinterp-eager") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - ctypes/construct.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/ctypes/construct.js | RuntimeError: memory access out of bounds (code 255, args "") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - ctypes/construct.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/ctypes/construct.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - ctypes/construct.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/ctypes/construct.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - ctypes/construct.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/ctypes/construct.js | RuntimeError: memory access out of bounds (code 255, args "--baseline-eager --write-protect-code=off") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - ctypes/construct.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/ctypes/construct.js | RuntimeError: memory access out of bounds (code 255, args "--no-blinterp --no-baseline --no-ion --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - ctypes/construct.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/ctypes/construct.js | RuntimeError: memory access out of bounds (code 255, args "--blinterp-eager") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - ctypes/conversion-array.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/ctypes/conversion-array.js | RuntimeError: memory access out of bounds (code 255, args "") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - ctypes/conversion-array.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/ctypes/conversion-array.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - ctypes/conversion-array.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/ctypes/conversion-array.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - ctypes/conversion-array.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/ctypes/conversion-array.js | RuntimeError: memory access out of bounds (code 255, args "--baseline-eager --write-protect-code=off") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - ctypes/conversion-array.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/ctypes/conversion-array.js | RuntimeError: memory access out of bounds (code 255, args "--no-blinterp --no-baseline --no-ion --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - ctypes/conversion-array.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/ctypes/conversion-array.js | RuntimeError: memory access out of bounds (code 255, args "--blinterp-eager") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - ctypes/conversion-error.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/ctypes/conversion-error.js | RuntimeError: memory access out of bounds (code 255, args "") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - ctypes/conversion-error.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/ctypes/conversion-error.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - ctypes/conversion-error.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/ctypes/conversion-error.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - ctypes/conversion-error.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/ctypes/conversion-error.js | RuntimeError: memory access out of bounds (code 255, args "--baseline-eager --write-protect-code=off") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - ctypes/conversion-error.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/ctypes/conversion-error.js | RuntimeError: memory access out of bounds (code 255, args "--no-blinterp --no-baseline --no-ion --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - ctypes/conversion-error.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/ctypes/conversion-error.js | RuntimeError: memory access out of bounds (code 255, args "--blinterp-eager") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - ctypes/conversion-finalizer.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/ctypes/conversion-finalizer.js | RuntimeError: memory access out of bounds (code 255, args "") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - ctypes/conversion-finalizer.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/ctypes/conversion-finalizer.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - ctypes/conversion-finalizer.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/ctypes/conversion-finalizer.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - ctypes/conversion-finalizer.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/ctypes/conversion-finalizer.js | RuntimeError: memory access out of bounds (code 255, args "--baseline-eager --write-protect-code=off") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - ctypes/conversion-finalizer.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/ctypes/conversion-finalizer.js | RuntimeError: memory access out of bounds (code 255, args "--no-blinterp --no-baseline --no-ion --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - ctypes/conversion-finalizer.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/ctypes/conversion-finalizer.js | RuntimeError: memory access out of bounds (code 255, args "--blinterp-eager") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - ctypes/conversion-function.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/ctypes/conversion-function.js | RuntimeError: memory access out of bounds (code 255, args "") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - ctypes/conversion-function.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/ctypes/conversion-function.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - ctypes/conversion-function.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/ctypes/conversion-function.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - ctypes/conversion-function.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/ctypes/conversion-function.js | RuntimeError: memory access out of bounds (code 255, args "--baseline-eager --write-protect-code=off") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - ctypes/conversion-function.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/ctypes/conversion-function.js | RuntimeError: memory access out of bounds (code 255, args "--no-blinterp --no-baseline --no-ion --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - ctypes/conversion-function.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/ctypes/conversion-function.js | RuntimeError: memory access out of bounds (code 255, args "--blinterp-eager") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - ctypes/conversion-int64.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/ctypes/conversion-int64.js | RuntimeError: memory access out of bounds (code 255, args "") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - ctypes/conversion-int64.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/ctypes/conversion-int64.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - ctypes/conversion-int64.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/ctypes/conversion-int64.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - ctypes/conversion-int64.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/ctypes/conversion-int64.js | RuntimeError: memory access out of bounds (code 255, args "--baseline-eager --write-protect-code=off") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - ctypes/conversion-int64.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/ctypes/conversion-int64.js | RuntimeError: memory access out of bounds (code 255, args "--no-blinterp --no-baseline --no-ion --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - ctypes/conversion-int64.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/ctypes/conversion-int64.js | RuntimeError: memory access out of bounds (code 255, args "--blinterp-eager") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - ctypes/conversion-native-function.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/ctypes/conversion-native-function.js | RuntimeError: memory access out of bounds (code 255, args "") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - ctypes/conversion-native-function.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/ctypes/conversion-native-function.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - ctypes/conversion-native-function.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/ctypes/conversion-native-function.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - ctypes/conversion-native-function.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/ctypes/conversion-native-function.js | RuntimeError: memory access out of bounds (code 255, args "--baseline-eager --write-protect-code=off") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - ctypes/conversion-native-function.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/ctypes/conversion-native-function.js | RuntimeError: memory access out of bounds (code 255, args "--no-blinterp --no-baseline --no-ion --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - ctypes/conversion-native-function.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/ctypes/conversion-native-function.js | RuntimeError: memory access out of bounds (code 255, args "--blinterp-eager") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - ctypes/conversion-pointer.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/ctypes/conversion-pointer.js | RuntimeError: memory access out of bounds (code 255, args "") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - ctypes/conversion-pointer.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/ctypes/conversion-pointer.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - ctypes/conversion-pointer.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/ctypes/conversion-pointer.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - ctypes/conversion-pointer.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/ctypes/conversion-pointer.js | RuntimeError: memory access out of bounds (code 255, args "--baseline-eager --write-protect-code=off") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - ctypes/conversion-pointer.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/ctypes/conversion-pointer.js | RuntimeError: memory access out of bounds (code 255, args "--no-blinterp --no-baseline --no-ion --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - ctypes/conversion-pointer.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/ctypes/conversion-pointer.js | RuntimeError: memory access out of bounds (code 255, args "--blinterp-eager") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - ctypes/conversion-primitive.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/ctypes/conversion-primitive.js | RuntimeError: memory access out of bounds (code 255, args "") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - ctypes/conversion-primitive.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/ctypes/conversion-primitive.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - ctypes/conversion-primitive.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/ctypes/conversion-primitive.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - ctypes/conversion-primitive.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/ctypes/conversion-primitive.js | RuntimeError: memory access out of bounds (code 255, args "--baseline-eager --write-protect-code=off") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - ctypes/conversion-primitive.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/ctypes/conversion-primitive.js | RuntimeError: memory access out of bounds (code 255, args "--no-blinterp --no-baseline --no-ion --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - ctypes/conversion-primitive.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/ctypes/conversion-primitive.js | RuntimeError: memory access out of bounds (code 255, args "--blinterp-eager") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - ctypes/conversion-struct.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/ctypes/conversion-struct.js | RuntimeError: memory access out of bounds (code 255, args "") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - ctypes/conversion-struct.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/ctypes/conversion-struct.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - ctypes/conversion-struct.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/ctypes/conversion-struct.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - ctypes/conversion-struct.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/ctypes/conversion-struct.js | RuntimeError: memory access out of bounds (code 255, args "--baseline-eager --write-protect-code=off") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - ctypes/conversion-struct.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/ctypes/conversion-struct.js | RuntimeError: memory access out of bounds (code 255, args "--no-blinterp --no-baseline --no-ion --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - ctypes/conversion-struct.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/ctypes/conversion-struct.js | RuntimeError: memory access out of bounds (code 255, args "--blinterp-eager") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - ctypes/conversion-to-number.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/ctypes/conversion-to-number.js | RuntimeError: memory access out of bounds (code 255, args "") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - ctypes/conversion-to-number.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/ctypes/conversion-to-number.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - ctypes/conversion-to-number.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/ctypes/conversion-to-number.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - ctypes/conversion-to-number.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/ctypes/conversion-to-number.js | RuntimeError: memory access out of bounds (code 255, args "--baseline-eager --write-protect-code=off") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - ctypes/conversion-to-number.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/ctypes/conversion-to-number.js | RuntimeError: memory access out of bounds (code 255, args "--no-blinterp --no-baseline --no-ion --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - ctypes/conversion-to-number.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/ctypes/conversion-to-number.js | RuntimeError: memory access out of bounds (code 255, args "--blinterp-eager") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - ctypes/conversion-to-primitive.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/ctypes/conversion-to-primitive.js | RuntimeError: memory access out of bounds (code 255, args "") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - ctypes/conversion-to-primitive.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/ctypes/conversion-to-primitive.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - ctypes/conversion-to-primitive.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/ctypes/conversion-to-primitive.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - ctypes/conversion-to-primitive.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/ctypes/conversion-to-primitive.js | RuntimeError: memory access out of bounds (code 255, args "--baseline-eager --write-protect-code=off") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - ctypes/conversion-to-primitive.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/ctypes/conversion-to-primitive.js | RuntimeError: memory access out of bounds (code 255, args "--no-blinterp --no-baseline --no-ion --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - ctypes/conversion-to-primitive.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/ctypes/conversion-to-primitive.js | RuntimeError: memory access out of bounds (code 255, args "--blinterp-eager") [0.2 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - ctypes/function-definition.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/ctypes/function-definition.js | RuntimeError: memory access out of bounds (code 255, args "") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - ctypes/function-definition.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/ctypes/function-definition.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - ctypes/function-definition.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/ctypes/function-definition.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - ctypes/function-definition.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/ctypes/function-definition.js | RuntimeError: memory access out of bounds (code 255, args "--baseline-eager --write-protect-code=off") [0.2 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - ctypes/function-definition.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/ctypes/function-definition.js | RuntimeError: memory access out of bounds (code 255, args "--no-blinterp --no-baseline --no-ion --more-compartments") [0.2 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - ctypes/function-definition.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/ctypes/function-definition.js | RuntimeError: memory access out of bounds (code 255, args "--blinterp-eager") [0.2 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - ctypes/incompatible-abi.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/ctypes/incompatible-abi.js | RuntimeError: memory access out of bounds (code 255, args "") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - ctypes/incompatible-abi.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/ctypes/incompatible-abi.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - ctypes/incompatible-abi.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/ctypes/incompatible-abi.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - ctypes/incompatible-abi.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/ctypes/incompatible-abi.js | RuntimeError: memory access out of bounds (code 255, args "--baseline-eager --write-protect-code=off") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - ctypes/incompatible-abi.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/ctypes/incompatible-abi.js | RuntimeError: memory access out of bounds (code 255, args "--no-blinterp --no-baseline --no-ion --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - ctypes/incompatible-abi.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/ctypes/incompatible-abi.js | RuntimeError: memory access out of bounds (code 255, args "--blinterp-eager") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - ctypes/incompatible-array.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/ctypes/incompatible-array.js | RuntimeError: memory access out of bounds (code 255, args "") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - ctypes/incompatible-array.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/ctypes/incompatible-array.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - ctypes/incompatible-array.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/ctypes/incompatible-array.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - ctypes/incompatible-array.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/ctypes/incompatible-array.js | RuntimeError: memory access out of bounds (code 255, args "--baseline-eager --write-protect-code=off") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - ctypes/incompatible-array.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/ctypes/incompatible-array.js | RuntimeError: memory access out of bounds (code 255, args "--no-blinterp --no-baseline --no-ion --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - ctypes/incompatible-array.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/ctypes/incompatible-array.js | RuntimeError: memory access out of bounds (code 255, args "--blinterp-eager") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - ctypes/incompatible-cdata.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/ctypes/incompatible-cdata.js | RuntimeError: memory access out of bounds (code 255, args "") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - ctypes/incompatible-cdata.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/ctypes/incompatible-cdata.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - ctypes/incompatible-cdata.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/ctypes/incompatible-cdata.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - ctypes/incompatible-cdata.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/ctypes/incompatible-cdata.js | RuntimeError: memory access out of bounds (code 255, args "--baseline-eager --write-protect-code=off") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - ctypes/incompatible-cdata.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/ctypes/incompatible-cdata.js | RuntimeError: memory access out of bounds (code 255, args "--no-blinterp --no-baseline --no-ion --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - ctypes/incompatible-cdata.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/ctypes/incompatible-cdata.js | RuntimeError: memory access out of bounds (code 255, args "--blinterp-eager") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - ctypes/incompatible-ctype.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/ctypes/incompatible-ctype.js | RuntimeError: memory access out of bounds (code 255, args "") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - ctypes/incompatible-ctype.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/ctypes/incompatible-ctype.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - ctypes/incompatible-ctype.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/ctypes/incompatible-ctype.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - ctypes/incompatible-ctype.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/ctypes/incompatible-ctype.js | RuntimeError: memory access out of bounds (code 255, args "--baseline-eager --write-protect-code=off") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - ctypes/incompatible-ctype.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/ctypes/incompatible-ctype.js | RuntimeError: memory access out of bounds (code 255, args "--no-blinterp --no-baseline --no-ion --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - ctypes/incompatible-ctype.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/ctypes/incompatible-ctype.js | RuntimeError: memory access out of bounds (code 255, args "--blinterp-eager") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - ctypes/incompatible-finalizer.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/ctypes/incompatible-finalizer.js | RuntimeError: memory access out of bounds (code 255, args "") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - ctypes/incompatible-finalizer.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/ctypes/incompatible-finalizer.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - ctypes/incompatible-finalizer.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/ctypes/incompatible-finalizer.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - ctypes/incompatible-finalizer.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/ctypes/incompatible-finalizer.js | RuntimeError: memory access out of bounds (code 255, args "--baseline-eager --write-protect-code=off") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - ctypes/incompatible-finalizer.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/ctypes/incompatible-finalizer.js | RuntimeError: memory access out of bounds (code 255, args "--no-blinterp --no-baseline --no-ion --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - ctypes/incompatible-finalizer.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/ctypes/incompatible-finalizer.js | RuntimeError: memory access out of bounds (code 255, args "--blinterp-eager") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - ctypes/incompatible-function.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/ctypes/incompatible-function.js | RuntimeError: memory access out of bounds (code 255, args "") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - ctypes/incompatible-function.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/ctypes/incompatible-function.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - ctypes/incompatible-function.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/ctypes/incompatible-function.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - ctypes/incompatible-function.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/ctypes/incompatible-function.js | RuntimeError: memory access out of bounds (code 255, args "--baseline-eager --write-protect-code=off") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - ctypes/incompatible-function.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/ctypes/incompatible-function.js | RuntimeError: memory access out of bounds (code 255, args "--no-blinterp --no-baseline --no-ion --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - ctypes/incompatible-function.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/ctypes/incompatible-function.js | RuntimeError: memory access out of bounds (code 255, args "--blinterp-eager") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - ctypes/incompatible-int64.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/ctypes/incompatible-int64.js | RuntimeError: memory access out of bounds (code 255, args "") [0.2 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - ctypes/incompatible-int64.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/ctypes/incompatible-int64.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - ctypes/incompatible-int64.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/ctypes/incompatible-int64.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - ctypes/incompatible-int64.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/ctypes/incompatible-int64.js | RuntimeError: memory access out of bounds (code 255, args "--baseline-eager --write-protect-code=off") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - ctypes/incompatible-int64.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/ctypes/incompatible-int64.js | RuntimeError: memory access out of bounds (code 255, args "--no-blinterp --no-baseline --no-ion --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - ctypes/incompatible-int64.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/ctypes/incompatible-int64.js | RuntimeError: memory access out of bounds (code 255, args "--blinterp-eager") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - ctypes/incompatible-pointer.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/ctypes/incompatible-pointer.js | RuntimeError: memory access out of bounds (code 255, args "") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - ctypes/incompatible-pointer.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/ctypes/incompatible-pointer.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --more-compartments") [0.2 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - ctypes/incompatible-pointer.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/ctypes/incompatible-pointer.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - ctypes/incompatible-pointer.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/ctypes/incompatible-pointer.js | RuntimeError: memory access out of bounds (code 255, args "--baseline-eager --write-protect-code=off") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - ctypes/incompatible-pointer.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/ctypes/incompatible-pointer.js | RuntimeError: memory access out of bounds (code 255, args "--no-blinterp --no-baseline --no-ion --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - ctypes/incompatible-pointer.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/ctypes/incompatible-pointer.js | RuntimeError: memory access out of bounds (code 255, args "--blinterp-eager") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - ctypes/incompatible-struct.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/ctypes/incompatible-struct.js | RuntimeError: memory access out of bounds (code 255, args "") [0.2 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - ctypes/incompatible-struct.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/ctypes/incompatible-struct.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - ctypes/incompatible-struct.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/ctypes/incompatible-struct.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - ctypes/incompatible-struct.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/ctypes/incompatible-struct.js | RuntimeError: memory access out of bounds (code 255, args "--baseline-eager --write-protect-code=off") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - ctypes/incompatible-struct.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/ctypes/incompatible-struct.js | RuntimeError: memory access out of bounds (code 255, args "--no-blinterp --no-baseline --no-ion --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - ctypes/incompatible-struct.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/ctypes/incompatible-struct.js | RuntimeError: memory access out of bounds (code 255, args "--blinterp-eager") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - ctypes/pointer.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/ctypes/pointer.js | RuntimeError: memory access out of bounds (code 255, args "") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - ctypes/pointer.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/ctypes/pointer.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - ctypes/pointer.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/ctypes/pointer.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - ctypes/pointer.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/ctypes/pointer.js | RuntimeError: memory access out of bounds (code 255, args "--baseline-eager --write-protect-code=off") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - ctypes/pointer.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/ctypes/pointer.js | RuntimeError: memory access out of bounds (code 255, args "--no-blinterp --no-baseline --no-ion --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - ctypes/pointer.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/ctypes/pointer.js | RuntimeError: memory access out of bounds (code 255, args "--blinterp-eager") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - ctypes/size-overflow-array.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/ctypes/size-overflow-array.js | RuntimeError: memory access out of bounds (code 255, args "") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - ctypes/size-overflow-array.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/ctypes/size-overflow-array.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - ctypes/size-overflow-array.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/ctypes/size-overflow-array.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - ctypes/size-overflow-array.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/ctypes/size-overflow-array.js | RuntimeError: memory access out of bounds (code 255, args "--baseline-eager --write-protect-code=off") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - ctypes/size-overflow-array.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/ctypes/size-overflow-array.js | RuntimeError: memory access out of bounds (code 255, args "--no-blinterp --no-baseline --no-ion --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - ctypes/size-overflow-array.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/ctypes/size-overflow-array.js | RuntimeError: memory access out of bounds (code 255, args "--blinterp-eager") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - ctypes/size-overflow-struct.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/ctypes/size-overflow-struct.js | RuntimeError: memory access out of bounds (code 255, args "") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - ctypes/size-overflow-struct.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/ctypes/size-overflow-struct.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - ctypes/size-overflow-struct.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/ctypes/size-overflow-struct.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - ctypes/size-overflow-struct.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/ctypes/size-overflow-struct.js | RuntimeError: memory access out of bounds (code 255, args "--baseline-eager --write-protect-code=off") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - ctypes/size-overflow-struct.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/ctypes/size-overflow-struct.js | RuntimeError: memory access out of bounds (code 255, args "--no-blinterp --no-baseline --no-ion --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - ctypes/size-overflow-struct.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/ctypes/size-overflow-struct.js | RuntimeError: memory access out of bounds (code 255, args "--blinterp-eager") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - ctypes/struct-field.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/ctypes/struct-field.js | RuntimeError: memory access out of bounds (code 255, args "") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - ctypes/struct-field.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/ctypes/struct-field.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - ctypes/struct-field.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/ctypes/struct-field.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - ctypes/struct-field.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/ctypes/struct-field.js | RuntimeError: memory access out of bounds (code 255, args "--baseline-eager --write-protect-code=off") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - ctypes/struct-field.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/ctypes/struct-field.js | RuntimeError: memory access out of bounds (code 255, args "--no-blinterp --no-baseline --no-ion --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - ctypes/struct-field.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/ctypes/struct-field.js | RuntimeError: memory access out of bounds (code 255, args "--blinterp-eager") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - ctypes/typedarrays.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/ctypes/typedarrays.js | RuntimeError: memory access out of bounds (code 255, args "") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - ctypes/typedarrays.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/ctypes/typedarrays.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - ctypes/typedarrays.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/ctypes/typedarrays.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - ctypes/typedarrays.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/ctypes/typedarrays.js | RuntimeError: memory access out of bounds (code 255, args "--baseline-eager --write-protect-code=off") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - ctypes/typedarrays.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/ctypes/typedarrays.js | RuntimeError: memory access out of bounds (code 255, args "--no-blinterp --no-baseline --no-ion --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - ctypes/typedarrays.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/ctypes/typedarrays.js | RuntimeError: memory access out of bounds (code 255, args "--blinterp-eager") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+FAILURES:
+    ctypes/AddressOfField.js
+    --ion-eager --ion-offthread-compile=off --more-compartments ctypes/AddressOfField.js
+    --ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads ctypes/AddressOfField.js
+    --baseline-eager --write-protect-code=off ctypes/AddressOfField.js
+    --no-blinterp --no-baseline --no-ion --more-compartments ctypes/AddressOfField.js
+    --blinterp-eager ctypes/AddressOfField.js
+    ctypes/argument-length-abi.js
+    --ion-eager --ion-offthread-compile=off --more-compartments ctypes/argument-length-abi.js
+    --ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads ctypes/argument-length-abi.js
+    --baseline-eager --write-protect-code=off ctypes/argument-length-abi.js
+    --no-blinterp --no-baseline --no-ion --more-compartments ctypes/argument-length-abi.js
+    --blinterp-eager ctypes/argument-length-abi.js
+    ctypes/argument-length-array.js
+    --ion-eager --ion-offthread-compile=off --more-compartments ctypes/argument-length-array.js
+    --ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads ctypes/argument-length-array.js
+    --baseline-eager --write-protect-code=off ctypes/argument-length-array.js
+    --no-blinterp --no-baseline --no-ion --more-compartments ctypes/argument-length-array.js
+    --blinterp-eager ctypes/argument-length-array.js
+    ctypes/argument-length-cdata.js
+    --ion-eager --ion-offthread-compile=off --more-compartments ctypes/argument-length-cdata.js
+    --ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads ctypes/argument-length-cdata.js
+    --baseline-eager --write-protect-code=off ctypes/argument-length-cdata.js
+    --no-blinterp --no-baseline --no-ion --more-compartments ctypes/argument-length-cdata.js
+    --blinterp-eager ctypes/argument-length-cdata.js
+    ctypes/argument-length-ctypes.js
+    --ion-eager --ion-offthread-compile=off --more-compartments ctypes/argument-length-ctypes.js
+    --ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads ctypes/argument-length-ctypes.js
+    --baseline-eager --write-protect-code=off ctypes/argument-length-ctypes.js
+    --no-blinterp --no-baseline --no-ion --more-compartments ctypes/argument-length-ctypes.js
+    --blinterp-eager ctypes/argument-length-ctypes.js
+    ctypes/argument-length-finalizer.js
+    --ion-eager --ion-offthread-compile=off --more-compartments ctypes/argument-length-finalizer.js
+    --ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads ctypes/argument-length-finalizer.js
+    --baseline-eager --write-protect-code=off ctypes/argument-length-finalizer.js
+    --no-blinterp --no-baseline --no-ion --more-compartments ctypes/argument-length-finalizer.js
+    --blinterp-eager ctypes/argument-length-finalizer.js
+    ctypes/argument-length-function.js
+    --ion-eager --ion-offthread-compile=off --more-compartments ctypes/argument-length-function.js
+    --ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads ctypes/argument-length-function.js
+    --baseline-eager --write-protect-code=off ctypes/argument-length-function.js
+    --no-blinterp --no-baseline --no-ion --more-compartments ctypes/argument-length-function.js
+    --blinterp-eager ctypes/argument-length-function.js
+    ctypes/argument-length-int64.js
+    --ion-eager --ion-offthread-compile=off --more-compartments ctypes/argument-length-int64.js
+    --ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads ctypes/argument-length-int64.js
+    --baseline-eager --write-protect-code=off ctypes/argument-length-int64.js
+    --no-blinterp --no-baseline --no-ion --more-compartments ctypes/argument-length-int64.js
+    --blinterp-eager ctypes/argument-length-int64.js
+    ctypes/argument-length-pointer.js
+    --ion-eager --ion-offthread-compile=off --more-compartments ctypes/argument-length-pointer.js
+    --ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads ctypes/argument-length-pointer.js
+    --baseline-eager --write-protect-code=off ctypes/argument-length-pointer.js
+    --no-blinterp --no-baseline --no-ion --more-compartments ctypes/argument-length-pointer.js
+    --blinterp-eager ctypes/argument-length-pointer.js
+    ctypes/argument-length-primitive.js
+    --ion-eager --ion-offthread-compile=off --more-compartments ctypes/argument-length-primitive.js
+    --ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads ctypes/argument-length-primitive.js
+    --baseline-eager --write-protect-code=off ctypes/argument-length-primitive.js
+    --no-blinterp --no-baseline --no-ion --more-compartments ctypes/argument-length-primitive.js
+    --blinterp-eager ctypes/argument-length-primitive.js
+    ctypes/argument-length-struct.js
+    --ion-eager --ion-offthread-compile=off --more-compartments ctypes/argument-length-struct.js
+    --ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads ctypes/argument-length-struct.js
+    --baseline-eager --write-protect-code=off ctypes/argument-length-struct.js
+    --no-blinterp --no-baseline --no-ion --more-compartments ctypes/argument-length-struct.js
+    --blinterp-eager ctypes/argument-length-struct.js
+    ctypes/argument-type-array.js
+    --ion-eager --ion-offthread-compile=off --more-compartments ctypes/argument-type-array.js
+    --ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads ctypes/argument-type-array.js
+    --baseline-eager --write-protect-code=off ctypes/argument-type-array.js
+    --no-blinterp --no-baseline --no-ion --more-compartments ctypes/argument-type-array.js
+    --blinterp-eager ctypes/argument-type-array.js
+    ctypes/argument-type-ctypes.js
+    --ion-eager --ion-offthread-compile=off --more-compartments ctypes/argument-type-ctypes.js
+    --ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads ctypes/argument-type-ctypes.js
+    --baseline-eager --write-protect-code=off ctypes/argument-type-ctypes.js
+    --no-blinterp --no-baseline --no-ion --more-compartments ctypes/argument-type-ctypes.js
+    --blinterp-eager ctypes/argument-type-ctypes.js
+    ctypes/argument-type-function.js
+    --ion-eager --ion-offthread-compile=off --more-compartments ctypes/argument-type-function.js
+    --ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads ctypes/argument-type-function.js
+    --baseline-eager --write-protect-code=off ctypes/argument-type-function.js
+    --no-blinterp --no-baseline --no-ion --more-compartments ctypes/argument-type-function.js
+    --blinterp-eager ctypes/argument-type-function.js
+    ctypes/argument-type-int64.js
+    --ion-eager --ion-offthread-compile=off --more-compartments ctypes/argument-type-int64.js
+    --ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads ctypes/argument-type-int64.js
+    --baseline-eager --write-protect-code=off ctypes/argument-type-int64.js
+    --no-blinterp --no-baseline --no-ion --more-compartments ctypes/argument-type-int64.js
+    --blinterp-eager ctypes/argument-type-int64.js
+    ctypes/argument-type-pointer.js
+    --ion-eager --ion-offthread-compile=off --more-compartments ctypes/argument-type-pointer.js
+    --ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads ctypes/argument-type-pointer.js
+    --baseline-eager --write-protect-code=off ctypes/argument-type-pointer.js
+    --no-blinterp --no-baseline --no-ion --more-compartments ctypes/argument-type-pointer.js
+    --blinterp-eager ctypes/argument-type-pointer.js
+    ctypes/argument-type-struct.js
+    --ion-eager --ion-offthread-compile=off --more-compartments ctypes/argument-type-struct.js
+    --ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads ctypes/argument-type-struct.js
+    --baseline-eager --write-protect-code=off ctypes/argument-type-struct.js
+    --no-blinterp --no-baseline --no-ion --more-compartments ctypes/argument-type-struct.js
+    --blinterp-eager ctypes/argument-type-struct.js
+    ctypes/array-index.js
+    --ion-eager --ion-offthread-compile=off --more-compartments ctypes/array-index.js
+    --ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads ctypes/array-index.js
+    --baseline-eager --write-protect-code=off ctypes/array-index.js
+    --no-blinterp --no-baseline --no-ion --more-compartments ctypes/array-index.js
+    --blinterp-eager ctypes/array-index.js
+    ctypes/bug1155985.js
+    --ion-eager --ion-offthread-compile=off --more-compartments ctypes/bug1155985.js
+    --ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads ctypes/bug1155985.js
+    --baseline-eager --write-protect-code=off ctypes/bug1155985.js
+    --no-blinterp --no-baseline --no-ion --more-compartments ctypes/bug1155985.js
+    --blinterp-eager ctypes/bug1155985.js
+    ctypes/cast.js
+    --ion-eager --ion-offthread-compile=off --more-compartments ctypes/cast.js
+    --ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads ctypes/cast.js
+    --baseline-eager --write-protect-code=off ctypes/cast.js
+    --no-blinterp --no-baseline --no-ion --more-compartments ctypes/cast.js
+    --blinterp-eager ctypes/cast.js
+    ctypes/construct.js
+    --ion-eager --ion-offthread-compile=off --more-compartments ctypes/construct.js
+    --ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads ctypes/construct.js
+    --baseline-eager --write-protect-code=off ctypes/construct.js
+    --no-blinterp --no-baseline --no-ion --more-compartments ctypes/construct.js
+    --blinterp-eager ctypes/construct.js
+    ctypes/conversion-array.js
+    --ion-eager --ion-offthread-compile=off --more-compartments ctypes/conversion-array.js
+    --ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads ctypes/conversion-array.js
+    --baseline-eager --write-protect-code=off ctypes/conversion-array.js
+    --no-blinterp --no-baseline --no-ion --more-compartments ctypes/conversion-array.js
+    --blinterp-eager ctypes/conversion-array.js
+    ctypes/conversion-error.js
+    --ion-eager --ion-offthread-compile=off --more-compartments ctypes/conversion-error.js
+    --ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads ctypes/conversion-error.js
+    --baseline-eager --write-protect-code=off ctypes/conversion-error.js
+    --no-blinterp --no-baseline --no-ion --more-compartments ctypes/conversion-error.js
+    --blinterp-eager ctypes/conversion-error.js
+    ctypes/conversion-finalizer.js
+    --ion-eager --ion-offthread-compile=off --more-compartments ctypes/conversion-finalizer.js
+    --ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads ctypes/conversion-finalizer.js
+    --baseline-eager --write-protect-code=off ctypes/conversion-finalizer.js
+    --no-blinterp --no-baseline --no-ion --more-compartments ctypes/conversion-finalizer.js
+    --blinterp-eager ctypes/conversion-finalizer.js
+    ctypes/conversion-function.js
+    --ion-eager --ion-offthread-compile=off --more-compartments ctypes/conversion-function.js
+    --ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads ctypes/conversion-function.js
+    --baseline-eager --write-protect-code=off ctypes/conversion-function.js
+    --no-blinterp --no-baseline --no-ion --more-compartments ctypes/conversion-function.js
+    --blinterp-eager ctypes/conversion-function.js
+    ctypes/conversion-int64.js
+    --ion-eager --ion-offthread-compile=off --more-compartments ctypes/conversion-int64.js
+    --ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads ctypes/conversion-int64.js
+    --baseline-eager --write-protect-code=off ctypes/conversion-int64.js
+    --no-blinterp --no-baseline --no-ion --more-compartments ctypes/conversion-int64.js
+    --blinterp-eager ctypes/conversion-int64.js
+    ctypes/conversion-native-function.js
+    --ion-eager --ion-offthread-compile=off --more-compartments ctypes/conversion-native-function.js
+    --ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads ctypes/conversion-native-function.js
+    --baseline-eager --write-protect-code=off ctypes/conversion-native-function.js
+    --no-blinterp --no-baseline --no-ion --more-compartments ctypes/conversion-native-function.js
+    --blinterp-eager ctypes/conversion-native-function.js
+    ctypes/conversion-pointer.js
+    --ion-eager --ion-offthread-compile=off --more-compartments ctypes/conversion-pointer.js
+    --ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads ctypes/conversion-pointer.js
+    --baseline-eager --write-protect-code=off ctypes/conversion-pointer.js
+    --no-blinterp --no-baseline --no-ion --more-compartments ctypes/conversion-pointer.js
+    --blinterp-eager ctypes/conversion-pointer.js
+    ctypes/conversion-primitive.js
+    --ion-eager --ion-offthread-compile=off --more-compartments ctypes/conversion-primitive.js
+    --ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads ctypes/conversion-primitive.js
+    --baseline-eager --write-protect-code=off ctypes/conversion-primitive.js
+    --no-blinterp --no-baseline --no-ion --more-compartments ctypes/conversion-primitive.js
+    --blinterp-eager ctypes/conversion-primitive.js
+    ctypes/conversion-struct.js
+    --ion-eager --ion-offthread-compile=off --more-compartments ctypes/conversion-struct.js
+    --ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads ctypes/conversion-struct.js
+    --baseline-eager --write-protect-code=off ctypes/conversion-struct.js
+    --no-blinterp --no-baseline --no-ion --more-compartments ctypes/conversion-struct.js
+    --blinterp-eager ctypes/conversion-struct.js
+    ctypes/conversion-to-number.js
+    --ion-eager --ion-offthread-compile=off --more-compartments ctypes/conversion-to-number.js
+    --ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads ctypes/conversion-to-number.js
+    --baseline-eager --write-protect-code=off ctypes/conversion-to-number.js
+    --no-blinterp --no-baseline --no-ion --more-compartments ctypes/conversion-to-number.js
+    --blinterp-eager ctypes/conversion-to-number.js
+    ctypes/conversion-to-primitive.js
+    --ion-eager --ion-offthread-compile=off --more-compartments ctypes/conversion-to-primitive.js
+    --ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads ctypes/conversion-to-primitive.js
+    --baseline-eager --write-protect-code=off ctypes/conversion-to-primitive.js
+    --no-blinterp --no-baseline --no-ion --more-compartments ctypes/conversion-to-primitive.js
+    --blinterp-eager ctypes/conversion-to-primitive.js
+    ctypes/function-definition.js
+    --ion-eager --ion-offthread-compile=off --more-compartments ctypes/function-definition.js
+    --ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads ctypes/function-definition.js
+    --baseline-eager --write-protect-code=off ctypes/function-definition.js
+    --no-blinterp --no-baseline --no-ion --more-compartments ctypes/function-definition.js
+    --blinterp-eager ctypes/function-definition.js
+    ctypes/incompatible-abi.js
+    --ion-eager --ion-offthread-compile=off --more-compartments ctypes/incompatible-abi.js
+    --ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads ctypes/incompatible-abi.js
+    --baseline-eager --write-protect-code=off ctypes/incompatible-abi.js
+    --no-blinterp --no-baseline --no-ion --more-compartments ctypes/incompatible-abi.js
+    --blinterp-eager ctypes/incompatible-abi.js
+    ctypes/incompatible-array.js
+    --ion-eager --ion-offthread-compile=off --more-compartments ctypes/incompatible-array.js
+    --ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads ctypes/incompatible-array.js
+    --baseline-eager --write-protect-code=off ctypes/incompatible-array.js
+    --no-blinterp --no-baseline --no-ion --more-compartments ctypes/incompatible-array.js
+    --blinterp-eager ctypes/incompatible-array.js
+    ctypes/incompatible-cdata.js
+    --ion-eager --ion-offthread-compile=off --more-compartments ctypes/incompatible-cdata.js
+    --ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads ctypes/incompatible-cdata.js
+    --baseline-eager --write-protect-code=off ctypes/incompatible-cdata.js
+    --no-blinterp --no-baseline --no-ion --more-compartments ctypes/incompatible-cdata.js
+    --blinterp-eager ctypes/incompatible-cdata.js
+    ctypes/incompatible-ctype.js
+    --ion-eager --ion-offthread-compile=off --more-compartments ctypes/incompatible-ctype.js
+    --ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads ctypes/incompatible-ctype.js
+    --baseline-eager --write-protect-code=off ctypes/incompatible-ctype.js
+    --no-blinterp --no-baseline --no-ion --more-compartments ctypes/incompatible-ctype.js
+    --blinterp-eager ctypes/incompatible-ctype.js
+    ctypes/incompatible-finalizer.js
+    --ion-eager --ion-offthread-compile=off --more-compartments ctypes/incompatible-finalizer.js
+    --ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads ctypes/incompatible-finalizer.js
+    --baseline-eager --write-protect-code=off ctypes/incompatible-finalizer.js
+    --no-blinterp --no-baseline --no-ion --more-compartments ctypes/incompatible-finalizer.js
+    --blinterp-eager ctypes/incompatible-finalizer.js
+    ctypes/incompatible-function.js
+    --ion-eager --ion-offthread-compile=off --more-compartments ctypes/incompatible-function.js
+    --ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads ctypes/incompatible-function.js
+    --baseline-eager --write-protect-code=off ctypes/incompatible-function.js
+    --no-blinterp --no-baseline --no-ion --more-compartments ctypes/incompatible-function.js
+    --blinterp-eager ctypes/incompatible-function.js
+    ctypes/incompatible-int64.js
+    --ion-eager --ion-offthread-compile=off --more-compartments ctypes/incompatible-int64.js
+    --ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads ctypes/incompatible-int64.js
+    --baseline-eager --write-protect-code=off ctypes/incompatible-int64.js
+    --no-blinterp --no-baseline --no-ion --more-compartments ctypes/incompatible-int64.js
+    --blinterp-eager ctypes/incompatible-int64.js
+    ctypes/incompatible-pointer.js
+    --ion-eager --ion-offthread-compile=off --more-compartments ctypes/incompatible-pointer.js
+    --ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads ctypes/incompatible-pointer.js
+    --baseline-eager --write-protect-code=off ctypes/incompatible-pointer.js
+    --no-blinterp --no-baseline --no-ion --more-compartments ctypes/incompatible-pointer.js
+    --blinterp-eager ctypes/incompatible-pointer.js
+    ctypes/incompatible-struct.js
+    --ion-eager --ion-offthread-compile=off --more-compartments ctypes/incompatible-struct.js
+    --ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads ctypes/incompatible-struct.js
+    --baseline-eager --write-protect-code=off ctypes/incompatible-struct.js
+    --no-blinterp --no-baseline --no-ion --more-compartments ctypes/incompatible-struct.js
+    --blinterp-eager ctypes/incompatible-struct.js
+    ctypes/pointer.js
+    --ion-eager --ion-offthread-compile=off --more-compartments ctypes/pointer.js
+    --ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads ctypes/pointer.js
+    --baseline-eager --write-protect-code=off ctypes/pointer.js
+    --no-blinterp --no-baseline --no-ion --more-compartments ctypes/pointer.js
+    --blinterp-eager ctypes/pointer.js
+    ctypes/size-overflow-array.js
+    --ion-eager --ion-offthread-compile=off --more-compartments ctypes/size-overflow-array.js
+    --ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads ctypes/size-overflow-array.js
+    --baseline-eager --write-protect-code=off ctypes/size-overflow-array.js
+    --no-blinterp --no-baseline --no-ion --more-compartments ctypes/size-overflow-array.js
+    --blinterp-eager ctypes/size-overflow-array.js
+    ctypes/size-overflow-struct.js
+    --ion-eager --ion-offthread-compile=off --more-compartments ctypes/size-overflow-struct.js
+    --ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads ctypes/size-overflow-struct.js
+    --baseline-eager --write-protect-code=off ctypes/size-overflow-struct.js
+    --no-blinterp --no-baseline --no-ion --more-compartments ctypes/size-overflow-struct.js
+    --blinterp-eager ctypes/size-overflow-struct.js
+    ctypes/struct-field.js
+    --ion-eager --ion-offthread-compile=off --more-compartments ctypes/struct-field.js
+    --ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads ctypes/struct-field.js
+    --baseline-eager --write-protect-code=off ctypes/struct-field.js
+    --no-blinterp --no-baseline --no-ion --more-compartments ctypes/struct-field.js
+    --blinterp-eager ctypes/struct-field.js
+    ctypes/typedarrays.js
+    --ion-eager --ion-offthread-compile=off --more-compartments ctypes/typedarrays.js
+    --ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads ctypes/typedarrays.js
+    --baseline-eager --write-protect-code=off ctypes/typedarrays.js
+    --no-blinterp --no-baseline --no-ion --more-compartments ctypes/typedarrays.js
+    --blinterp-eager ctypes/typedarrays.js
+TIMEOUTS:
+Result summary:
+Passed: 0
+Failed: 282

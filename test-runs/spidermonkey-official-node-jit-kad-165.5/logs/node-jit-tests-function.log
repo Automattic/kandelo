@@ -1,0 +1,246 @@
+===== Official SpiderMonkey jit-tests on Kandelo node host =====
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - function/bug-1751660.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/function/bug-1751660.js | RuntimeError: memory access out of bounds (code 255, args "") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - function/bug-1751660.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/function/bug-1751660.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - function/bug-1751660.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/function/bug-1751660.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - function/bug-1751660.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/function/bug-1751660.js | RuntimeError: memory access out of bounds (code 255, args "--baseline-eager --write-protect-code=off") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - function/bug-1751660.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/function/bug-1751660.js | RuntimeError: memory access out of bounds (code 255, args "--no-blinterp --no-baseline --no-ion --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - function/bug-1751660.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/function/bug-1751660.js | RuntimeError: memory access out of bounds (code 255, args "--blinterp-eager") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - function/function-displayName-computed.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/function/function-displayName-computed.js | RuntimeError: memory access out of bounds (code 255, args "") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - function/function-displayName-computed.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/function/function-displayName-computed.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - function/function-displayName-computed.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/function/function-displayName-computed.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - function/function-displayName-computed.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/function/function-displayName-computed.js | RuntimeError: memory access out of bounds (code 255, args "--baseline-eager --write-protect-code=off") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - function/function-displayName-computed.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/function/function-displayName-computed.js | RuntimeError: memory access out of bounds (code 255, args "--no-blinterp --no-baseline --no-ion --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - function/function-displayName-computed.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/function/function-displayName-computed.js | RuntimeError: memory access out of bounds (code 255, args "--blinterp-eager") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - function/function-toString-discard-source-name.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/function/function-toString-discard-source-name.js | RuntimeError: memory access out of bounds (code 255, args "") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - function/function-toString-discard-source-name.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/function/function-toString-discard-source-name.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - function/function-toString-discard-source-name.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/function/function-toString-discard-source-name.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - function/function-toString-discard-source-name.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/function/function-toString-discard-source-name.js | RuntimeError: memory access out of bounds (code 255, args "--baseline-eager --write-protect-code=off") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - function/function-toString-discard-source-name.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/function/function-toString-discard-source-name.js | RuntimeError: memory access out of bounds (code 255, args "--no-blinterp --no-baseline --no-ion --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - function/function-toString-discard-source-name.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/function/function-toString-discard-source-name.js | RuntimeError: memory access out of bounds (code 255, args "--blinterp-eager") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - function/function-toString-discard-source.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/function/function-toString-discard-source.js | RuntimeError: memory access out of bounds (code 255, args "") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - function/function-toString-discard-source.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/function/function-toString-discard-source.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - function/function-toString-discard-source.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/function/function-toString-discard-source.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - function/function-toString-discard-source.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/function/function-toString-discard-source.js | RuntimeError: memory access out of bounds (code 255, args "--baseline-eager --write-protect-code=off") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - function/function-toString-discard-source.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/function/function-toString-discard-source.js | RuntimeError: memory access out of bounds (code 255, args "--no-blinterp --no-baseline --no-ion --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - function/function-toString-discard-source.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/function/function-toString-discard-source.js | RuntimeError: memory access out of bounds (code 255, args "--blinterp-eager") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - function/function-toString-lazy-name.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/function/function-toString-lazy-name.js | RuntimeError: memory access out of bounds (code 255, args "") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - function/function-toString-lazy-name.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/function/function-toString-lazy-name.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - function/function-toString-lazy-name.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/function/function-toString-lazy-name.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - function/function-toString-lazy-name.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/function/function-toString-lazy-name.js | RuntimeError: memory access out of bounds (code 255, args "--baseline-eager --write-protect-code=off") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - function/function-toString-lazy-name.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/function/function-toString-lazy-name.js | RuntimeError: memory access out of bounds (code 255, args "--no-blinterp --no-baseline --no-ion --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - function/function-toString-lazy-name.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/function/function-toString-lazy-name.js | RuntimeError: memory access out of bounds (code 255, args "--blinterp-eager") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+FAILURES:
+    function/bug-1751660.js
+    --ion-eager --ion-offthread-compile=off --more-compartments function/bug-1751660.js
+    --ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads function/bug-1751660.js
+    --baseline-eager --write-protect-code=off function/bug-1751660.js
+    --no-blinterp --no-baseline --no-ion --more-compartments function/bug-1751660.js
+    --blinterp-eager function/bug-1751660.js
+    function/function-displayName-computed.js
+    --ion-eager --ion-offthread-compile=off --more-compartments function/function-displayName-computed.js
+    --ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads function/function-displayName-computed.js
+    --baseline-eager --write-protect-code=off function/function-displayName-computed.js
+    --no-blinterp --no-baseline --no-ion --more-compartments function/function-displayName-computed.js
+    --blinterp-eager function/function-displayName-computed.js
+    function/function-toString-discard-source-name.js
+    --ion-eager --ion-offthread-compile=off --more-compartments function/function-toString-discard-source-name.js
+    --ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads function/function-toString-discard-source-name.js
+    --baseline-eager --write-protect-code=off function/function-toString-discard-source-name.js
+    --no-blinterp --no-baseline --no-ion --more-compartments function/function-toString-discard-source-name.js
+    --blinterp-eager function/function-toString-discard-source-name.js
+    function/function-toString-discard-source.js
+    --ion-eager --ion-offthread-compile=off --more-compartments function/function-toString-discard-source.js
+    --ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads function/function-toString-discard-source.js
+    --baseline-eager --write-protect-code=off function/function-toString-discard-source.js
+    --no-blinterp --no-baseline --no-ion --more-compartments function/function-toString-discard-source.js
+    --blinterp-eager function/function-toString-discard-source.js
+    function/function-toString-lazy-name.js
+    --ion-eager --ion-offthread-compile=off --more-compartments function/function-toString-lazy-name.js
+    --ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads function/function-toString-lazy-name.js
+    --baseline-eager --write-protect-code=off function/function-toString-lazy-name.js
+    --no-blinterp --no-baseline --no-ion --more-compartments function/function-toString-lazy-name.js
+    --blinterp-eager function/function-toString-lazy-name.js
+TIMEOUTS:
+Result summary:
+Passed: 0
+Failed: 30

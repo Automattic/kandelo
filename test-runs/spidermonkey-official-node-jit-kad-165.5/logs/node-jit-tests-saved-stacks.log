@@ -1,0 +1,2454 @@
+===== Official SpiderMonkey jit-tests on Kandelo node host =====
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - saved-stacks/1438121-async-function.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/saved-stacks/1438121-async-function.js | RuntimeError: memory access out of bounds (code 255, args "") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - saved-stacks/1438121-async-function.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/saved-stacks/1438121-async-function.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - saved-stacks/1438121-async-function.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/saved-stacks/1438121-async-function.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - saved-stacks/1438121-async-function.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/saved-stacks/1438121-async-function.js | RuntimeError: memory access out of bounds (code 255, args "--baseline-eager --write-protect-code=off") [0.4 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - saved-stacks/1438121-async-function.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/saved-stacks/1438121-async-function.js | RuntimeError: memory access out of bounds (code 255, args "--no-blinterp --no-baseline --no-ion --more-compartments") [0.6 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - saved-stacks/1438121-async-function.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/saved-stacks/1438121-async-function.js | RuntimeError: memory access out of bounds (code 255, args "--blinterp-eager") [0.4 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - saved-stacks/1438121-generator.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/saved-stacks/1438121-generator.js | RuntimeError: memory access out of bounds (code 255, args "") [0.3 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - saved-stacks/1438121-generator.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/saved-stacks/1438121-generator.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --more-compartments") [0.2 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - saved-stacks/1438121-generator.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/saved-stacks/1438121-generator.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads") [0.2 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - saved-stacks/1438121-generator.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/saved-stacks/1438121-generator.js | RuntimeError: memory access out of bounds (code 255, args "--baseline-eager --write-protect-code=off") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - saved-stacks/1438121-generator.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/saved-stacks/1438121-generator.js | RuntimeError: memory access out of bounds (code 255, args "--no-blinterp --no-baseline --no-ion --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - saved-stacks/1438121-generator.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/saved-stacks/1438121-generator.js | RuntimeError: memory access out of bounds (code 255, args "--blinterp-eager") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - saved-stacks/SavedFrame-constructor.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/saved-stacks/SavedFrame-constructor.js | RuntimeError: memory access out of bounds (code 255, args "") [0.4 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - saved-stacks/SavedFrame-constructor.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/saved-stacks/SavedFrame-constructor.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - saved-stacks/SavedFrame-constructor.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/saved-stacks/SavedFrame-constructor.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - saved-stacks/SavedFrame-constructor.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/saved-stacks/SavedFrame-constructor.js | RuntimeError: memory access out of bounds (code 255, args "--baseline-eager --write-protect-code=off") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - saved-stacks/SavedFrame-constructor.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/saved-stacks/SavedFrame-constructor.js | RuntimeError: memory access out of bounds (code 255, args "--no-blinterp --no-baseline --no-ion --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - saved-stacks/SavedFrame-constructor.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/saved-stacks/SavedFrame-constructor.js | RuntimeError: memory access out of bounds (code 255, args "--blinterp-eager") [0.5 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - saved-stacks/asm-frames.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/saved-stacks/asm-frames.js | RuntimeError: memory access out of bounds (code 255, args "") [0.5 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - saved-stacks/asm-frames.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/saved-stacks/asm-frames.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --more-compartments") [0.3 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - saved-stacks/asm-frames.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/saved-stacks/asm-frames.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads") [0.4 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - saved-stacks/asm-frames.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/saved-stacks/asm-frames.js | RuntimeError: memory access out of bounds (code 255, args "--baseline-eager --write-protect-code=off") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - saved-stacks/asm-frames.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/saved-stacks/asm-frames.js | RuntimeError: memory access out of bounds (code 255, args "--no-blinterp --no-baseline --no-ion --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - saved-stacks/asm-frames.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/saved-stacks/asm-frames.js | RuntimeError: memory access out of bounds (code 255, args "--blinterp-eager") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - saved-stacks/async-implicit.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/saved-stacks/async-implicit.js | RuntimeError: memory access out of bounds (code 255, args "") [0.2 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - saved-stacks/async-implicit.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/saved-stacks/async-implicit.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - saved-stacks/async-implicit.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/saved-stacks/async-implicit.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - saved-stacks/async-implicit.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/saved-stacks/async-implicit.js | RuntimeError: memory access out of bounds (code 255, args "--baseline-eager --write-protect-code=off") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - saved-stacks/async-implicit.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/saved-stacks/async-implicit.js | RuntimeError: memory access out of bounds (code 255, args "--no-blinterp --no-baseline --no-ion --more-compartments") [0.2 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - saved-stacks/async-implicit.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/saved-stacks/async-implicit.js | RuntimeError: memory access out of bounds (code 255, args "--blinterp-eager") [0.5 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - saved-stacks/async-livecache.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/saved-stacks/async-livecache.js | RuntimeError: memory access out of bounds (code 255, args "") [0.6 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - saved-stacks/async-livecache.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/saved-stacks/async-livecache.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --more-compartments") [0.6 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - saved-stacks/async-livecache.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/saved-stacks/async-livecache.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads") [0.3 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - saved-stacks/async-livecache.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/saved-stacks/async-livecache.js | RuntimeError: memory access out of bounds (code 255, args "--baseline-eager --write-protect-code=off") [0.2 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - saved-stacks/async-livecache.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/saved-stacks/async-livecache.js | RuntimeError: memory access out of bounds (code 255, args "--no-blinterp --no-baseline --no-ion --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - saved-stacks/async-livecache.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/saved-stacks/async-livecache.js | RuntimeError: memory access out of bounds (code 255, args "--blinterp-eager") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - saved-stacks/async-max-frame-count.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/saved-stacks/async-max-frame-count.js | RuntimeError: memory access out of bounds (code 255, args "") [0.2 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - saved-stacks/async-max-frame-count.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/saved-stacks/async-max-frame-count.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --more-compartments") [0.3 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - saved-stacks/async-max-frame-count.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/saved-stacks/async-max-frame-count.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - saved-stacks/async-max-frame-count.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/saved-stacks/async-max-frame-count.js | RuntimeError: memory access out of bounds (code 255, args "--baseline-eager --write-protect-code=off") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - saved-stacks/async-max-frame-count.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/saved-stacks/async-max-frame-count.js | RuntimeError: memory access out of bounds (code 255, args "--no-blinterp --no-baseline --no-ion --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - saved-stacks/async-max-frame-count.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/saved-stacks/async-max-frame-count.js | RuntimeError: memory access out of bounds (code 255, args "--blinterp-eager") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - saved-stacks/async-principals.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/saved-stacks/async-principals.js | RuntimeError: memory access out of bounds (code 255, args "") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - saved-stacks/async-principals.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/saved-stacks/async-principals.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --more-compartments") [0.2 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - saved-stacks/async-principals.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/saved-stacks/async-principals.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads") [0.4 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - saved-stacks/async-principals.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/saved-stacks/async-principals.js | RuntimeError: memory access out of bounds (code 255, args "--baseline-eager --write-protect-code=off") [0.4 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - saved-stacks/async-principals.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/saved-stacks/async-principals.js | RuntimeError: memory access out of bounds (code 255, args "--no-blinterp --no-baseline --no-ion --more-compartments") [0.4 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - saved-stacks/async-principals.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/saved-stacks/async-principals.js | RuntimeError: memory access out of bounds (code 255, args "--blinterp-eager") [0.2 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - saved-stacks/async.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/saved-stacks/async.js | RuntimeError: memory access out of bounds (code 255, args "") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - saved-stacks/async.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/saved-stacks/async.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - saved-stacks/async.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/saved-stacks/async.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - saved-stacks/async.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/saved-stacks/async.js | RuntimeError: memory access out of bounds (code 255, args "--baseline-eager --write-protect-code=off") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - saved-stacks/async.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/saved-stacks/async.js | RuntimeError: memory access out of bounds (code 255, args "--no-blinterp --no-baseline --no-ion --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - saved-stacks/async.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/saved-stacks/async.js | RuntimeError: memory access out of bounds (code 255, args "--blinterp-eager") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - saved-stacks/bug-1004479-savedStacks-with-string-parameter.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/saved-stacks/bug-1004479-savedStacks-with-string-parameter.js | RuntimeError: memory access out of bounds (code 255, args "") [0.2 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - saved-stacks/bug-1004479-savedStacks-with-string-parameter.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/saved-stacks/bug-1004479-savedStacks-with-string-parameter.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --more-compartments") [0.6 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - saved-stacks/bug-1004479-savedStacks-with-string-parameter.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/saved-stacks/bug-1004479-savedStacks-with-string-parameter.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads") [0.5 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - saved-stacks/bug-1004479-savedStacks-with-string-parameter.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/saved-stacks/bug-1004479-savedStacks-with-string-parameter.js | RuntimeError: memory access out of bounds (code 255, args "--baseline-eager --write-protect-code=off") [0.4 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - saved-stacks/bug-1004479-savedStacks-with-string-parameter.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/saved-stacks/bug-1004479-savedStacks-with-string-parameter.js | RuntimeError: memory access out of bounds (code 255, args "--no-blinterp --no-baseline --no-ion --more-compartments") [0.2 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - saved-stacks/bug-1004479-savedStacks-with-string-parameter.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/saved-stacks/bug-1004479-savedStacks-with-string-parameter.js | RuntimeError: memory access out of bounds (code 255, args "--blinterp-eager") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - saved-stacks/bug-1006876-too-much-recursion.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/saved-stacks/bug-1006876-too-much-recursion.js | RuntimeError: memory access out of bounds (code 255, args "") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - saved-stacks/bug-1006876-too-much-recursion.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/saved-stacks/bug-1006876-too-much-recursion.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - saved-stacks/bug-1006876-too-much-recursion.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/saved-stacks/bug-1006876-too-much-recursion.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - saved-stacks/bug-1006876-too-much-recursion.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/saved-stacks/bug-1006876-too-much-recursion.js | RuntimeError: memory access out of bounds (code 255, args "--baseline-eager --write-protect-code=off") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - saved-stacks/bug-1006876-too-much-recursion.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/saved-stacks/bug-1006876-too-much-recursion.js | RuntimeError: memory access out of bounds (code 255, args "--no-blinterp --no-baseline --no-ion --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - saved-stacks/bug-1006876-too-much-recursion.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/saved-stacks/bug-1006876-too-much-recursion.js | RuntimeError: memory access out of bounds (code 255, args "--blinterp-eager") [0.3 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - saved-stacks/bug-1012646-strlen-crasher.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/saved-stacks/bug-1012646-strlen-crasher.js | RuntimeError: memory access out of bounds (code 255, args "") [0.2 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - saved-stacks/bug-1012646-strlen-crasher.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/saved-stacks/bug-1012646-strlen-crasher.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --more-compartments") [0.3 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - saved-stacks/bug-1012646-strlen-crasher.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/saved-stacks/bug-1012646-strlen-crasher.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads") [0.4 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - saved-stacks/bug-1012646-strlen-crasher.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/saved-stacks/bug-1012646-strlen-crasher.js | RuntimeError: memory access out of bounds (code 255, args "--baseline-eager --write-protect-code=off") [0.4 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - saved-stacks/bug-1012646-strlen-crasher.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/saved-stacks/bug-1012646-strlen-crasher.js | RuntimeError: memory access out of bounds (code 255, args "--no-blinterp --no-baseline --no-ion --more-compartments") [0.3 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - saved-stacks/bug-1012646-strlen-crasher.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/saved-stacks/bug-1012646-strlen-crasher.js | RuntimeError: memory access out of bounds (code 255, args "--blinterp-eager") [0.5 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - saved-stacks/bug-1031168-trace-sources.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/saved-stacks/bug-1031168-trace-sources.js | RuntimeError: memory access out of bounds (code 255, args "") [0.2 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - saved-stacks/bug-1031168-trace-sources.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/saved-stacks/bug-1031168-trace-sources.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - saved-stacks/bug-1031168-trace-sources.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/saved-stacks/bug-1031168-trace-sources.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads") [0.2 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - saved-stacks/bug-1031168-trace-sources.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/saved-stacks/bug-1031168-trace-sources.js | RuntimeError: memory access out of bounds (code 255, args "--baseline-eager --write-protect-code=off") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - saved-stacks/bug-1031168-trace-sources.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/saved-stacks/bug-1031168-trace-sources.js | RuntimeError: memory access out of bounds (code 255, args "--no-blinterp --no-baseline --no-ion --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - saved-stacks/bug-1031168-trace-sources.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/saved-stacks/bug-1031168-trace-sources.js | RuntimeError: memory access out of bounds (code 255, args "--blinterp-eager") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - saved-stacks/bug-1149495.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/saved-stacks/bug-1149495.js | RuntimeError: memory access out of bounds (code 255, args "") [0.2 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - saved-stacks/bug-1149495.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/saved-stacks/bug-1149495.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - saved-stacks/bug-1149495.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/saved-stacks/bug-1149495.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - saved-stacks/bug-1149495.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/saved-stacks/bug-1149495.js | RuntimeError: memory access out of bounds (code 255, args "--baseline-eager --write-protect-code=off") [0.5 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - saved-stacks/bug-1149495.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/saved-stacks/bug-1149495.js | RuntimeError: memory access out of bounds (code 255, args "--no-blinterp --no-baseline --no-ion --more-compartments") [0.5 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - saved-stacks/bug-1149495.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/saved-stacks/bug-1149495.js | RuntimeError: memory access out of bounds (code 255, args "--blinterp-eager") [0.4 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - saved-stacks/bug-1225474.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/saved-stacks/bug-1225474.js | RuntimeError: memory access out of bounds (code 255, args "") [0.2 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - saved-stacks/bug-1225474.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/saved-stacks/bug-1225474.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - saved-stacks/bug-1225474.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/saved-stacks/bug-1225474.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - saved-stacks/bug-1225474.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/saved-stacks/bug-1225474.js | RuntimeError: memory access out of bounds (code 255, args "--baseline-eager --write-protect-code=off") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - saved-stacks/bug-1225474.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/saved-stacks/bug-1225474.js | RuntimeError: memory access out of bounds (code 255, args "--no-blinterp --no-baseline --no-ion --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - saved-stacks/bug-1225474.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/saved-stacks/bug-1225474.js | RuntimeError: memory access out of bounds (code 255, args "--blinterp-eager") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - saved-stacks/bug-1260712.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/saved-stacks/bug-1260712.js | RuntimeError: memory access out of bounds (code 255, args "") [0.4 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - saved-stacks/bug-1260712.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/saved-stacks/bug-1260712.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - saved-stacks/bug-1260712.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/saved-stacks/bug-1260712.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - saved-stacks/bug-1260712.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/saved-stacks/bug-1260712.js | RuntimeError: memory access out of bounds (code 255, args "--baseline-eager --write-protect-code=off") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - saved-stacks/bug-1260712.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/saved-stacks/bug-1260712.js | RuntimeError: memory access out of bounds (code 255, args "--no-blinterp --no-baseline --no-ion --more-compartments") [0.5 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - saved-stacks/bug-1260712.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/saved-stacks/bug-1260712.js | RuntimeError: memory access out of bounds (code 255, args "--blinterp-eager") [0.5 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - saved-stacks/bug-1289058.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/saved-stacks/bug-1289058.js | RuntimeError: memory access out of bounds (code 255, args "") [0.3 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - saved-stacks/bug-1289058.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/saved-stacks/bug-1289058.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --more-compartments") [0.5 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - saved-stacks/bug-1289058.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/saved-stacks/bug-1289058.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads") [0.2 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - saved-stacks/bug-1289058.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/saved-stacks/bug-1289058.js | RuntimeError: memory access out of bounds (code 255, args "--baseline-eager --write-protect-code=off") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - saved-stacks/bug-1289058.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/saved-stacks/bug-1289058.js | RuntimeError: memory access out of bounds (code 255, args "--no-blinterp --no-baseline --no-ion --more-compartments") [0.2 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - saved-stacks/bug-1289058.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/saved-stacks/bug-1289058.js | RuntimeError: memory access out of bounds (code 255, args "--blinterp-eager") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - saved-stacks/bug-1289073.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/saved-stacks/bug-1289073.js | RuntimeError: memory access out of bounds (code 255, args "") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - saved-stacks/bug-1289073.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/saved-stacks/bug-1289073.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - saved-stacks/bug-1289073.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/saved-stacks/bug-1289073.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - saved-stacks/bug-1289073.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/saved-stacks/bug-1289073.js | RuntimeError: memory access out of bounds (code 255, args "--baseline-eager --write-protect-code=off") [0.7 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - saved-stacks/bug-1289073.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/saved-stacks/bug-1289073.js | RuntimeError: memory access out of bounds (code 255, args "--no-blinterp --no-baseline --no-ion --more-compartments") [0.4 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - saved-stacks/bug-1289073.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/saved-stacks/bug-1289073.js | RuntimeError: memory access out of bounds (code 255, args "--blinterp-eager") [0.3 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - saved-stacks/bug-1445973-quick.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/saved-stacks/bug-1445973-quick.js | RuntimeError: memory access out of bounds (code 255, args "--no-baseline") [0.2 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - saved-stacks/bug-1445973-quick.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/saved-stacks/bug-1445973-quick.js | RuntimeError: memory access out of bounds (code 255, args "--no-baseline --ion-eager --ion-offthread-compile=off --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - saved-stacks/bug-1445973-quick.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/saved-stacks/bug-1445973-quick.js | RuntimeError: memory access out of bounds (code 255, args "--no-baseline --ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - saved-stacks/bug-1445973-quick.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/saved-stacks/bug-1445973-quick.js | RuntimeError: memory access out of bounds (code 255, args "--no-baseline --baseline-eager --write-protect-code=off") [0.2 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - saved-stacks/bug-1445973-quick.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/saved-stacks/bug-1445973-quick.js | RuntimeError: memory access out of bounds (code 255, args "--no-baseline --no-blinterp --no-baseline --no-ion --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - saved-stacks/bug-1445973-quick.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/saved-stacks/bug-1445973-quick.js | RuntimeError: memory access out of bounds (code 255, args "--no-baseline --blinterp-eager") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - saved-stacks/bug-1451268.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/saved-stacks/bug-1451268.js | RuntimeError: memory access out of bounds (code 255, args "--no-threads --ion-eager") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - saved-stacks/bug-1451268.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/saved-stacks/bug-1451268.js | RuntimeError: memory access out of bounds (code 255, args "--no-threads --ion-eager --ion-eager --ion-offthread-compile=off --more-compartments") [0.2 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - saved-stacks/bug-1451268.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/saved-stacks/bug-1451268.js | RuntimeError: memory access out of bounds (code 255, args "--no-threads --ion-eager --ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads") [0.5 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - saved-stacks/bug-1451268.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/saved-stacks/bug-1451268.js | RuntimeError: memory access out of bounds (code 255, args "--no-threads --ion-eager --baseline-eager --write-protect-code=off") [0.4 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - saved-stacks/bug-1451268.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/saved-stacks/bug-1451268.js | RuntimeError: memory access out of bounds (code 255, args "--no-threads --ion-eager --no-blinterp --no-baseline --no-ion --more-compartments") [0.3 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - saved-stacks/bug-1451268.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/saved-stacks/bug-1451268.js | RuntimeError: memory access out of bounds (code 255, args "--no-threads --ion-eager --blinterp-eager") [0.2 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - saved-stacks/bug-1505387-dbg-eval-ion.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/saved-stacks/bug-1505387-dbg-eval-ion.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --no-threads") [0.3 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - saved-stacks/bug-1505387-dbg-eval-ion.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/saved-stacks/bug-1505387-dbg-eval-ion.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --no-threads --ion-eager --ion-offthread-compile=off --more-compartments") [0.2 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - saved-stacks/bug-1505387-dbg-eval-ion.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/saved-stacks/bug-1505387-dbg-eval-ion.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --no-threads --ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - saved-stacks/bug-1505387-dbg-eval-ion.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/saved-stacks/bug-1505387-dbg-eval-ion.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --no-threads --baseline-eager --write-protect-code=off") [0.4 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - saved-stacks/bug-1505387-dbg-eval-ion.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/saved-stacks/bug-1505387-dbg-eval-ion.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --no-threads --no-blinterp --no-baseline --no-ion --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - saved-stacks/bug-1505387-dbg-eval-ion.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/saved-stacks/bug-1505387-dbg-eval-ion.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --no-threads --blinterp-eager") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - saved-stacks/bug-1509420.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/saved-stacks/bug-1509420.js | RuntimeError: memory access out of bounds (code 255, args "") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - saved-stacks/bug-1509420.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/saved-stacks/bug-1509420.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - saved-stacks/bug-1509420.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/saved-stacks/bug-1509420.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - saved-stacks/bug-1509420.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/saved-stacks/bug-1509420.js | RuntimeError: memory access out of bounds (code 255, args "--baseline-eager --write-protect-code=off") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - saved-stacks/bug-1509420.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/saved-stacks/bug-1509420.js | RuntimeError: memory access out of bounds (code 255, args "--no-blinterp --no-baseline --no-ion --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - saved-stacks/bug-1509420.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/saved-stacks/bug-1509420.js | RuntimeError: memory access out of bounds (code 255, args "--blinterp-eager") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - saved-stacks/bug-1640034-dbg-eval-across-compartments.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/saved-stacks/bug-1640034-dbg-eval-across-compartments.js | RuntimeError: memory access out of bounds (code 255, args "") [0.4 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - saved-stacks/bug-1640034-dbg-eval-across-compartments.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/saved-stacks/bug-1640034-dbg-eval-across-compartments.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --more-compartments") [0.6 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - saved-stacks/bug-1640034-dbg-eval-across-compartments.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/saved-stacks/bug-1640034-dbg-eval-across-compartments.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads") [0.5 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - saved-stacks/bug-1640034-dbg-eval-across-compartments.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/saved-stacks/bug-1640034-dbg-eval-across-compartments.js | RuntimeError: memory access out of bounds (code 255, args "--baseline-eager --write-protect-code=off") [0.4 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - saved-stacks/bug-1640034-dbg-eval-across-compartments.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/saved-stacks/bug-1640034-dbg-eval-across-compartments.js | RuntimeError: memory access out of bounds (code 255, args "--no-blinterp --no-baseline --no-ion --more-compartments") [0.2 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - saved-stacks/bug-1640034-dbg-eval-across-compartments.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/saved-stacks/bug-1640034-dbg-eval-across-compartments.js | RuntimeError: memory access out of bounds (code 255, args "--blinterp-eager") [0.2 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - saved-stacks/bug-1744495.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/saved-stacks/bug-1744495.js | RuntimeError: memory access out of bounds (code 255, args "--fast-warmup --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - saved-stacks/bug-1744495.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/saved-stacks/bug-1744495.js | RuntimeError: memory access out of bounds (code 255, args "--fast-warmup --more-compartments --ion-eager --ion-offthread-compile=off --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - saved-stacks/bug-1744495.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/saved-stacks/bug-1744495.js | RuntimeError: memory access out of bounds (code 255, args "--fast-warmup --more-compartments --ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - saved-stacks/bug-1744495.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/saved-stacks/bug-1744495.js | RuntimeError: memory access out of bounds (code 255, args "--fast-warmup --more-compartments --baseline-eager --write-protect-code=off") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - saved-stacks/bug-1744495.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/saved-stacks/bug-1744495.js | RuntimeError: memory access out of bounds (code 255, args "--fast-warmup --more-compartments --no-blinterp --no-baseline --no-ion --more-compartments") [0.3 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - saved-stacks/bug-1744495.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/saved-stacks/bug-1744495.js | RuntimeError: memory access out of bounds (code 255, args "--fast-warmup --more-compartments --blinterp-eager") [0.2 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - saved-stacks/bug1813533.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/saved-stacks/bug1813533.js | RuntimeError: memory access out of bounds (code 255, args "") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - saved-stacks/bug1813533.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/saved-stacks/bug1813533.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - saved-stacks/bug1813533.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/saved-stacks/bug1813533.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - saved-stacks/bug1813533.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/saved-stacks/bug1813533.js | RuntimeError: memory access out of bounds (code 255, args "--baseline-eager --write-protect-code=off") [0.4 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - saved-stacks/bug1813533.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/saved-stacks/bug1813533.js | RuntimeError: memory access out of bounds (code 255, args "--no-blinterp --no-baseline --no-ion --more-compartments") [0.4 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - saved-stacks/bug1813533.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/saved-stacks/bug1813533.js | RuntimeError: memory access out of bounds (code 255, args "--blinterp-eager") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - saved-stacks/bug1832936.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/saved-stacks/bug1832936.js | RuntimeError: memory access out of bounds (code 255, args "") [0.5 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - saved-stacks/bug1832936.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/saved-stacks/bug1832936.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --more-compartments") [0.2 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - saved-stacks/bug1832936.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/saved-stacks/bug1832936.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - saved-stacks/bug1832936.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/saved-stacks/bug1832936.js | RuntimeError: memory access out of bounds (code 255, args "--baseline-eager --write-protect-code=off") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - saved-stacks/bug1832936.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/saved-stacks/bug1832936.js | RuntimeError: memory access out of bounds (code 255, args "--no-blinterp --no-baseline --no-ion --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - saved-stacks/bug1832936.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/saved-stacks/bug1832936.js | RuntimeError: memory access out of bounds (code 255, args "--blinterp-eager") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - saved-stacks/bug1907801.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/saved-stacks/bug1907801.js | RuntimeError: memory access out of bounds (code 255, args "") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - saved-stacks/bug1907801.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/saved-stacks/bug1907801.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - saved-stacks/bug1907801.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/saved-stacks/bug1907801.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads") [0.2 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - saved-stacks/bug1907801.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/saved-stacks/bug1907801.js | RuntimeError: memory access out of bounds (code 255, args "--baseline-eager --write-protect-code=off") [0.6 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - saved-stacks/bug1907801.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/saved-stacks/bug1907801.js | RuntimeError: memory access out of bounds (code 255, args "--no-blinterp --no-baseline --no-ion --more-compartments") [0.7 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - saved-stacks/bug1907801.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/saved-stacks/bug1907801.js | RuntimeError: memory access out of bounds (code 255, args "--blinterp-eager") [0.6 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - saved-stacks/caching-and-ccws.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/saved-stacks/caching-and-ccws.js | RuntimeError: memory access out of bounds (code 255, args "") [0.3 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - saved-stacks/caching-and-ccws.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/saved-stacks/caching-and-ccws.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - saved-stacks/caching-and-ccws.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/saved-stacks/caching-and-ccws.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - saved-stacks/caching-and-ccws.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/saved-stacks/caching-and-ccws.js | RuntimeError: memory access out of bounds (code 255, args "--baseline-eager --write-protect-code=off") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - saved-stacks/caching-and-ccws.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/saved-stacks/caching-and-ccws.js | RuntimeError: memory access out of bounds (code 255, args "--no-blinterp --no-baseline --no-ion --more-compartments") [0.3 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - saved-stacks/caching-and-ccws.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/saved-stacks/caching-and-ccws.js | RuntimeError: memory access out of bounds (code 255, args "--blinterp-eager") [0.2 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - saved-stacks/caching-and-frame-count.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/saved-stacks/caching-and-frame-count.js | RuntimeError: memory access out of bounds (code 255, args "") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - saved-stacks/caching-and-frame-count.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/saved-stacks/caching-and-frame-count.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - saved-stacks/caching-and-frame-count.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/saved-stacks/caching-and-frame-count.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - saved-stacks/caching-and-frame-count.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/saved-stacks/caching-and-frame-count.js | RuntimeError: memory access out of bounds (code 255, args "--baseline-eager --write-protect-code=off") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - saved-stacks/caching-and-frame-count.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/saved-stacks/caching-and-frame-count.js | RuntimeError: memory access out of bounds (code 255, args "--no-blinterp --no-baseline --no-ion --more-compartments") [0.4 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - saved-stacks/caching-and-frame-count.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/saved-stacks/caching-and-frame-count.js | RuntimeError: memory access out of bounds (code 255, args "--blinterp-eager") [0.4 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - saved-stacks/capture-first-frame-with-principals.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/saved-stacks/capture-first-frame-with-principals.js | RuntimeError: memory access out of bounds (code 255, args "") [0.2 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - saved-stacks/capture-first-frame-with-principals.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/saved-stacks/capture-first-frame-with-principals.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --more-compartments") [0.4 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - saved-stacks/capture-first-frame-with-principals.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/saved-stacks/capture-first-frame-with-principals.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads") [0.2 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - saved-stacks/capture-first-frame-with-principals.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/saved-stacks/capture-first-frame-with-principals.js | RuntimeError: memory access out of bounds (code 255, args "--baseline-eager --write-protect-code=off") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - saved-stacks/capture-first-frame-with-principals.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/saved-stacks/capture-first-frame-with-principals.js | RuntimeError: memory access out of bounds (code 255, args "--no-blinterp --no-baseline --no-ion --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - saved-stacks/capture-first-frame-with-principals.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/saved-stacks/capture-first-frame-with-principals.js | RuntimeError: memory access out of bounds (code 255, args "--blinterp-eager") [0.2 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - saved-stacks/display-url.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/saved-stacks/display-url.js | RuntimeError: memory access out of bounds (code 255, args "") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - saved-stacks/display-url.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/saved-stacks/display-url.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - saved-stacks/display-url.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/saved-stacks/display-url.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - saved-stacks/display-url.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/saved-stacks/display-url.js | RuntimeError: memory access out of bounds (code 255, args "--baseline-eager --write-protect-code=off") [0.3 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - saved-stacks/display-url.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/saved-stacks/display-url.js | RuntimeError: memory access out of bounds (code 255, args "--no-blinterp --no-baseline --no-ion --more-compartments") [0.5 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - saved-stacks/display-url.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/saved-stacks/display-url.js | RuntimeError: memory access out of bounds (code 255, args "--blinterp-eager") [0.4 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - saved-stacks/evals.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/saved-stacks/evals.js | RuntimeError: memory access out of bounds (code 255, args "") [0.3 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - saved-stacks/evals.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/saved-stacks/evals.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --more-compartments") [0.3 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - saved-stacks/evals.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/saved-stacks/evals.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - saved-stacks/evals.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/saved-stacks/evals.js | RuntimeError: memory access out of bounds (code 255, args "--baseline-eager --write-protect-code=off") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - saved-stacks/evals.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/saved-stacks/evals.js | RuntimeError: memory access out of bounds (code 255, args "--no-blinterp --no-baseline --no-ion --more-compartments") [0.2 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - saved-stacks/evals.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/saved-stacks/evals.js | RuntimeError: memory access out of bounds (code 255, args "--blinterp-eager") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - saved-stacks/function-display-name.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/saved-stacks/function-display-name.js | RuntimeError: memory access out of bounds (code 255, args "") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - saved-stacks/function-display-name.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/saved-stacks/function-display-name.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - saved-stacks/function-display-name.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/saved-stacks/function-display-name.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads") [0.3 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - saved-stacks/function-display-name.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/saved-stacks/function-display-name.js | RuntimeError: memory access out of bounds (code 255, args "--baseline-eager --write-protect-code=off") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - saved-stacks/function-display-name.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/saved-stacks/function-display-name.js | RuntimeError: memory access out of bounds (code 255, args "--no-blinterp --no-baseline --no-ion --more-compartments") [0.2 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - saved-stacks/function-display-name.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/saved-stacks/function-display-name.js | RuntimeError: memory access out of bounds (code 255, args "--blinterp-eager") [0.5 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - saved-stacks/gc-frame-cache.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/saved-stacks/gc-frame-cache.js | RuntimeError: memory access out of bounds (code 255, args "") [0.5 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - saved-stacks/gc-frame-cache.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/saved-stacks/gc-frame-cache.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - saved-stacks/gc-frame-cache.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/saved-stacks/gc-frame-cache.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads") [0.2 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - saved-stacks/gc-frame-cache.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/saved-stacks/gc-frame-cache.js | RuntimeError: memory access out of bounds (code 255, args "--baseline-eager --write-protect-code=off") [0.4 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - saved-stacks/gc-frame-cache.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/saved-stacks/gc-frame-cache.js | RuntimeError: memory access out of bounds (code 255, args "--no-blinterp --no-baseline --no-ion --more-compartments") [0.2 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - saved-stacks/gc-frame-cache.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/saved-stacks/gc-frame-cache.js | RuntimeError: memory access out of bounds (code 255, args "--blinterp-eager") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - saved-stacks/generators.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/saved-stacks/generators.js | RuntimeError: memory access out of bounds (code 255, args "") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - saved-stacks/generators.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/saved-stacks/generators.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - saved-stacks/generators.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/saved-stacks/generators.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - saved-stacks/generators.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/saved-stacks/generators.js | RuntimeError: memory access out of bounds (code 255, args "--baseline-eager --write-protect-code=off") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - saved-stacks/generators.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/saved-stacks/generators.js | RuntimeError: memory access out of bounds (code 255, args "--no-blinterp --no-baseline --no-ion --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - saved-stacks/generators.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/saved-stacks/generators.js | RuntimeError: memory access out of bounds (code 255, args "--blinterp-eager") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - saved-stacks/get-set.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/saved-stacks/get-set.js | RuntimeError: memory access out of bounds (code 255, args "") [0.6 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - saved-stacks/get-set.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/saved-stacks/get-set.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --more-compartments") [0.5 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - saved-stacks/get-set.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/saved-stacks/get-set.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads") [0.4 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - saved-stacks/get-set.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/saved-stacks/get-set.js | RuntimeError: memory access out of bounds (code 255, args "--baseline-eager --write-protect-code=off") [0.2 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - saved-stacks/get-set.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/saved-stacks/get-set.js | RuntimeError: memory access out of bounds (code 255, args "--no-blinterp --no-baseline --no-ion --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - saved-stacks/get-set.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/saved-stacks/get-set.js | RuntimeError: memory access out of bounds (code 255, args "--blinterp-eager") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - saved-stacks/getters-on-invalid-objects.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/saved-stacks/getters-on-invalid-objects.js | RuntimeError: memory access out of bounds (code 255, args "") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - saved-stacks/getters-on-invalid-objects.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/saved-stacks/getters-on-invalid-objects.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - saved-stacks/getters-on-invalid-objects.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/saved-stacks/getters-on-invalid-objects.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - saved-stacks/getters-on-invalid-objects.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/saved-stacks/getters-on-invalid-objects.js | RuntimeError: memory access out of bounds (code 255, args "--baseline-eager --write-protect-code=off") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - saved-stacks/getters-on-invalid-objects.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/saved-stacks/getters-on-invalid-objects.js | RuntimeError: memory access out of bounds (code 255, args "--no-blinterp --no-baseline --no-ion --more-compartments") [0.4 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - saved-stacks/getters-on-invalid-objects.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/saved-stacks/getters-on-invalid-objects.js | RuntimeError: memory access out of bounds (code 255, args "--blinterp-eager") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - saved-stacks/max-frame-count.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/saved-stacks/max-frame-count.js | RuntimeError: memory access out of bounds (code 255, args "") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - saved-stacks/max-frame-count.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/saved-stacks/max-frame-count.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --more-compartments") [0.2 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - saved-stacks/max-frame-count.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/saved-stacks/max-frame-count.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads") [0.4 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - saved-stacks/max-frame-count.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/saved-stacks/max-frame-count.js | RuntimeError: memory access out of bounds (code 255, args "--baseline-eager --write-protect-code=off") [0.4 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - saved-stacks/max-frame-count.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/saved-stacks/max-frame-count.js | RuntimeError: memory access out of bounds (code 255, args "--no-blinterp --no-baseline --no-ion --more-compartments") [0.2 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - saved-stacks/max-frame-count.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/saved-stacks/max-frame-count.js | RuntimeError: memory access out of bounds (code 255, args "--blinterp-eager") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - saved-stacks/native-calls.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/saved-stacks/native-calls.js | RuntimeError: memory access out of bounds (code 255, args "") [0.4 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - saved-stacks/native-calls.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/saved-stacks/native-calls.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --more-compartments") [0.2 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - saved-stacks/native-calls.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/saved-stacks/native-calls.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - saved-stacks/native-calls.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/saved-stacks/native-calls.js | RuntimeError: memory access out of bounds (code 255, args "--baseline-eager --write-protect-code=off") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - saved-stacks/native-calls.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/saved-stacks/native-calls.js | RuntimeError: memory access out of bounds (code 255, args "--no-blinterp --no-baseline --no-ion --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - saved-stacks/native-calls.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/saved-stacks/native-calls.js | RuntimeError: memory access out of bounds (code 255, args "--blinterp-eager") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - saved-stacks/oom-in-save-stack-02.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/saved-stacks/oom-in-save-stack-02.js | RuntimeError: memory access out of bounds (code 255, args "--no-ion --no-baseline --no-blinterp") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - saved-stacks/oom-in-save-stack-02.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/saved-stacks/oom-in-save-stack-02.js | RuntimeError: memory access out of bounds (code 255, args "--no-ion --no-baseline --no-blinterp --ion-eager --ion-offthread-compile=off --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - saved-stacks/oom-in-save-stack-02.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/saved-stacks/oom-in-save-stack-02.js | RuntimeError: memory access out of bounds (code 255, args "--no-ion --no-baseline --no-blinterp --ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - saved-stacks/oom-in-save-stack-02.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/saved-stacks/oom-in-save-stack-02.js | RuntimeError: memory access out of bounds (code 255, args "--no-ion --no-baseline --no-blinterp --baseline-eager --write-protect-code=off") [0.4 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - saved-stacks/oom-in-save-stack-02.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/saved-stacks/oom-in-save-stack-02.js | RuntimeError: memory access out of bounds (code 255, args "--no-ion --no-baseline --no-blinterp --no-blinterp --no-baseline --no-ion --more-compartments") [0.5 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - saved-stacks/oom-in-save-stack-02.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/saved-stacks/oom-in-save-stack-02.js | RuntimeError: memory access out of bounds (code 255, args "--no-ion --no-baseline --no-blinterp --blinterp-eager") [0.4 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - saved-stacks/oom-in-save-stack.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/saved-stacks/oom-in-save-stack.js | RuntimeError: memory access out of bounds (code 255, args "") [0.3 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - saved-stacks/oom-in-save-stack.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/saved-stacks/oom-in-save-stack.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --more-compartments") [0.3 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - saved-stacks/oom-in-save-stack.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/saved-stacks/oom-in-save-stack.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - saved-stacks/oom-in-save-stack.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/saved-stacks/oom-in-save-stack.js | RuntimeError: memory access out of bounds (code 255, args "--baseline-eager --write-protect-code=off") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - saved-stacks/oom-in-save-stack.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/saved-stacks/oom-in-save-stack.js | RuntimeError: memory access out of bounds (code 255, args "--no-blinterp --no-baseline --no-ion --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - saved-stacks/oom-in-save-stack.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/saved-stacks/oom-in-save-stack.js | RuntimeError: memory access out of bounds (code 255, args "--blinterp-eager") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - saved-stacks/principals-01.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/saved-stacks/principals-01.js | RuntimeError: memory access out of bounds (code 255, args "") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - saved-stacks/principals-01.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/saved-stacks/principals-01.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - saved-stacks/principals-01.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/saved-stacks/principals-01.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads") [0.3 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - saved-stacks/principals-01.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/saved-stacks/principals-01.js | RuntimeError: memory access out of bounds (code 255, args "--baseline-eager --write-protect-code=off") [0.2 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - saved-stacks/principals-01.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/saved-stacks/principals-01.js | RuntimeError: memory access out of bounds (code 255, args "--no-blinterp --no-baseline --no-ion --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - saved-stacks/principals-01.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/saved-stacks/principals-01.js | RuntimeError: memory access out of bounds (code 255, args "--blinterp-eager") [0.3 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - saved-stacks/principals-02.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/saved-stacks/principals-02.js | RuntimeError: memory access out of bounds (code 255, args "") [0.4 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - saved-stacks/principals-02.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/saved-stacks/principals-02.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --more-compartments") [0.4 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - saved-stacks/principals-02.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/saved-stacks/principals-02.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - saved-stacks/principals-02.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/saved-stacks/principals-02.js | RuntimeError: memory access out of bounds (code 255, args "--baseline-eager --write-protect-code=off") [0.2 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - saved-stacks/principals-02.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/saved-stacks/principals-02.js | RuntimeError: memory access out of bounds (code 255, args "--no-blinterp --no-baseline --no-ion --more-compartments") [0.4 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - saved-stacks/principals-02.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/saved-stacks/principals-02.js | RuntimeError: memory access out of bounds (code 255, args "--blinterp-eager") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - saved-stacks/principals-03.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/saved-stacks/principals-03.js | RuntimeError: memory access out of bounds (code 255, args "") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - saved-stacks/principals-03.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/saved-stacks/principals-03.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - saved-stacks/principals-03.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/saved-stacks/principals-03.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - saved-stacks/principals-03.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/saved-stacks/principals-03.js | RuntimeError: memory access out of bounds (code 255, args "--baseline-eager --write-protect-code=off") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - saved-stacks/principals-03.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/saved-stacks/principals-03.js | RuntimeError: memory access out of bounds (code 255, args "--no-blinterp --no-baseline --no-ion --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - saved-stacks/principals-03.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/saved-stacks/principals-03.js | RuntimeError: memory access out of bounds (code 255, args "--blinterp-eager") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - saved-stacks/principals-04.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/saved-stacks/principals-04.js | RuntimeError: memory access out of bounds (code 255, args "") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - saved-stacks/principals-04.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/saved-stacks/principals-04.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --more-compartments") [0.5 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - saved-stacks/principals-04.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/saved-stacks/principals-04.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads") [0.5 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - saved-stacks/principals-04.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/saved-stacks/principals-04.js | RuntimeError: memory access out of bounds (code 255, args "--baseline-eager --write-protect-code=off") [0.5 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - saved-stacks/principals-04.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/saved-stacks/principals-04.js | RuntimeError: memory access out of bounds (code 255, args "--no-blinterp --no-baseline --no-ion --more-compartments") [0.3 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - saved-stacks/principals-04.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/saved-stacks/principals-04.js | RuntimeError: memory access out of bounds (code 255, args "--blinterp-eager") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - saved-stacks/proxy-handlers.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/saved-stacks/proxy-handlers.js | RuntimeError: memory access out of bounds (code 255, args "") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - saved-stacks/proxy-handlers.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/saved-stacks/proxy-handlers.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - saved-stacks/proxy-handlers.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/saved-stacks/proxy-handlers.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - saved-stacks/proxy-handlers.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/saved-stacks/proxy-handlers.js | RuntimeError: memory access out of bounds (code 255, args "--baseline-eager --write-protect-code=off") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - saved-stacks/proxy-handlers.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/saved-stacks/proxy-handlers.js | RuntimeError: memory access out of bounds (code 255, args "--no-blinterp --no-baseline --no-ion --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - saved-stacks/proxy-handlers.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/saved-stacks/proxy-handlers.js | RuntimeError: memory access out of bounds (code 255, args "--blinterp-eager") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - saved-stacks/same-stack.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/saved-stacks/same-stack.js | RuntimeError: memory access out of bounds (code 255, args "") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - saved-stacks/same-stack.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/saved-stacks/same-stack.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - saved-stacks/same-stack.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/saved-stacks/same-stack.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads") [0.2 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - saved-stacks/same-stack.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/saved-stacks/same-stack.js | RuntimeError: memory access out of bounds (code 255, args "--baseline-eager --write-protect-code=off") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - saved-stacks/same-stack.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/saved-stacks/same-stack.js | RuntimeError: memory access out of bounds (code 255, args "--no-blinterp --no-baseline --no-ion --more-compartments") [0.4 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - saved-stacks/same-stack.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/saved-stacks/same-stack.js | RuntimeError: memory access out of bounds (code 255, args "--blinterp-eager") [0.4 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - saved-stacks/self-hosted.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/saved-stacks/self-hosted.js | RuntimeError: memory access out of bounds (code 255, args "") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - saved-stacks/self-hosted.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/saved-stacks/self-hosted.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --more-compartments") [0.3 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - saved-stacks/self-hosted.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/saved-stacks/self-hosted.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - saved-stacks/self-hosted.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/saved-stacks/self-hosted.js | RuntimeError: memory access out of bounds (code 255, args "--baseline-eager --write-protect-code=off") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - saved-stacks/self-hosted.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/saved-stacks/self-hosted.js | RuntimeError: memory access out of bounds (code 255, args "--no-blinterp --no-baseline --no-ion --more-compartments") [0.4 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - saved-stacks/self-hosted.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/saved-stacks/self-hosted.js | RuntimeError: memory access out of bounds (code 255, args "--blinterp-eager") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - saved-stacks/shared-parent-frames.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/saved-stacks/shared-parent-frames.js | RuntimeError: memory access out of bounds (code 255, args "") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - saved-stacks/shared-parent-frames.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/saved-stacks/shared-parent-frames.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - saved-stacks/shared-parent-frames.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/saved-stacks/shared-parent-frames.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - saved-stacks/shared-parent-frames.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/saved-stacks/shared-parent-frames.js | RuntimeError: memory access out of bounds (code 255, args "--baseline-eager --write-protect-code=off") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - saved-stacks/shared-parent-frames.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/saved-stacks/shared-parent-frames.js | RuntimeError: memory access out of bounds (code 255, args "--no-blinterp --no-baseline --no-ion --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - saved-stacks/shared-parent-frames.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/saved-stacks/shared-parent-frames.js | RuntimeError: memory access out of bounds (code 255, args "--blinterp-eager") [0.3 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - saved-stacks/stacks-are-frozen.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/saved-stacks/stacks-are-frozen.js | RuntimeError: memory access out of bounds (code 255, args "") [0.2 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - saved-stacks/stacks-are-frozen.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/saved-stacks/stacks-are-frozen.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --more-compartments") [0.4 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - saved-stacks/stacks-are-frozen.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/saved-stacks/stacks-are-frozen.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads") [0.6 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - saved-stacks/stacks-are-frozen.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/saved-stacks/stacks-are-frozen.js | RuntimeError: memory access out of bounds (code 255, args "--baseline-eager --write-protect-code=off") [0.4 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - saved-stacks/stacks-are-frozen.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/saved-stacks/stacks-are-frozen.js | RuntimeError: memory access out of bounds (code 255, args "--no-blinterp --no-baseline --no-ion --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - saved-stacks/stacks-are-frozen.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/saved-stacks/stacks-are-frozen.js | RuntimeError: memory access out of bounds (code 255, args "--blinterp-eager") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - saved-stacks/stringify-with-self-hosted.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/saved-stacks/stringify-with-self-hosted.js | RuntimeError: memory access out of bounds (code 255, args "") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - saved-stacks/stringify-with-self-hosted.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/saved-stacks/stringify-with-self-hosted.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - saved-stacks/stringify-with-self-hosted.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/saved-stacks/stringify-with-self-hosted.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - saved-stacks/stringify-with-self-hosted.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/saved-stacks/stringify-with-self-hosted.js | RuntimeError: memory access out of bounds (code 255, args "--baseline-eager --write-protect-code=off") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - saved-stacks/stringify-with-self-hosted.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/saved-stacks/stringify-with-self-hosted.js | RuntimeError: memory access out of bounds (code 255, args "--no-blinterp --no-baseline --no-ion --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - saved-stacks/stringify-with-self-hosted.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/saved-stacks/stringify-with-self-hosted.js | RuntimeError: memory access out of bounds (code 255, args "--blinterp-eager") [0.2 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+FAILURES:
+    saved-stacks/1438121-async-function.js
+    --ion-eager --ion-offthread-compile=off --more-compartments saved-stacks/1438121-async-function.js
+    --ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads saved-stacks/1438121-async-function.js
+    --baseline-eager --write-protect-code=off saved-stacks/1438121-async-function.js
+    --no-blinterp --no-baseline --no-ion --more-compartments saved-stacks/1438121-async-function.js
+    --blinterp-eager saved-stacks/1438121-async-function.js
+    saved-stacks/1438121-generator.js
+    --ion-eager --ion-offthread-compile=off --more-compartments saved-stacks/1438121-generator.js
+    --ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads saved-stacks/1438121-generator.js
+    --baseline-eager --write-protect-code=off saved-stacks/1438121-generator.js
+    --no-blinterp --no-baseline --no-ion --more-compartments saved-stacks/1438121-generator.js
+    --blinterp-eager saved-stacks/1438121-generator.js
+    saved-stacks/SavedFrame-constructor.js
+    --ion-eager --ion-offthread-compile=off --more-compartments saved-stacks/SavedFrame-constructor.js
+    --ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads saved-stacks/SavedFrame-constructor.js
+    --baseline-eager --write-protect-code=off saved-stacks/SavedFrame-constructor.js
+    --no-blinterp --no-baseline --no-ion --more-compartments saved-stacks/SavedFrame-constructor.js
+    --blinterp-eager saved-stacks/SavedFrame-constructor.js
+    saved-stacks/asm-frames.js
+    --ion-eager --ion-offthread-compile=off --more-compartments saved-stacks/asm-frames.js
+    --ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads saved-stacks/asm-frames.js
+    --baseline-eager --write-protect-code=off saved-stacks/asm-frames.js
+    --no-blinterp --no-baseline --no-ion --more-compartments saved-stacks/asm-frames.js
+    --blinterp-eager saved-stacks/asm-frames.js
+    saved-stacks/async-implicit.js
+    --ion-eager --ion-offthread-compile=off --more-compartments saved-stacks/async-implicit.js
+    --ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads saved-stacks/async-implicit.js
+    --baseline-eager --write-protect-code=off saved-stacks/async-implicit.js
+    --no-blinterp --no-baseline --no-ion --more-compartments saved-stacks/async-implicit.js
+    --blinterp-eager saved-stacks/async-implicit.js
+    saved-stacks/async-livecache.js
+    --ion-eager --ion-offthread-compile=off --more-compartments saved-stacks/async-livecache.js
+    --ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads saved-stacks/async-livecache.js
+    --baseline-eager --write-protect-code=off saved-stacks/async-livecache.js
+    --no-blinterp --no-baseline --no-ion --more-compartments saved-stacks/async-livecache.js
+    --blinterp-eager saved-stacks/async-livecache.js
+    saved-stacks/async-max-frame-count.js
+    --ion-eager --ion-offthread-compile=off --more-compartments saved-stacks/async-max-frame-count.js
+    --ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads saved-stacks/async-max-frame-count.js
+    --baseline-eager --write-protect-code=off saved-stacks/async-max-frame-count.js
+    --no-blinterp --no-baseline --no-ion --more-compartments saved-stacks/async-max-frame-count.js
+    --blinterp-eager saved-stacks/async-max-frame-count.js
+    saved-stacks/async-principals.js
+    --ion-eager --ion-offthread-compile=off --more-compartments saved-stacks/async-principals.js
+    --ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads saved-stacks/async-principals.js
+    --baseline-eager --write-protect-code=off saved-stacks/async-principals.js
+    --no-blinterp --no-baseline --no-ion --more-compartments saved-stacks/async-principals.js
+    --blinterp-eager saved-stacks/async-principals.js
+    saved-stacks/async.js
+    --ion-eager --ion-offthread-compile=off --more-compartments saved-stacks/async.js
+    --ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads saved-stacks/async.js
+    --baseline-eager --write-protect-code=off saved-stacks/async.js
+    --no-blinterp --no-baseline --no-ion --more-compartments saved-stacks/async.js
+    --blinterp-eager saved-stacks/async.js
+    saved-stacks/bug-1004479-savedStacks-with-string-parameter.js
+    --ion-eager --ion-offthread-compile=off --more-compartments saved-stacks/bug-1004479-savedStacks-with-string-parameter.js
+    --ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads saved-stacks/bug-1004479-savedStacks-with-string-parameter.js
+    --baseline-eager --write-protect-code=off saved-stacks/bug-1004479-savedStacks-with-string-parameter.js
+    --no-blinterp --no-baseline --no-ion --more-compartments saved-stacks/bug-1004479-savedStacks-with-string-parameter.js
+    --blinterp-eager saved-stacks/bug-1004479-savedStacks-with-string-parameter.js
+    saved-stacks/bug-1006876-too-much-recursion.js
+    --ion-eager --ion-offthread-compile=off --more-compartments saved-stacks/bug-1006876-too-much-recursion.js
+    --ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads saved-stacks/bug-1006876-too-much-recursion.js
+    --baseline-eager --write-protect-code=off saved-stacks/bug-1006876-too-much-recursion.js
+    --no-blinterp --no-baseline --no-ion --more-compartments saved-stacks/bug-1006876-too-much-recursion.js
+    --blinterp-eager saved-stacks/bug-1006876-too-much-recursion.js
+    saved-stacks/bug-1012646-strlen-crasher.js
+    --ion-eager --ion-offthread-compile=off --more-compartments saved-stacks/bug-1012646-strlen-crasher.js
+    --ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads saved-stacks/bug-1012646-strlen-crasher.js
+    --baseline-eager --write-protect-code=off saved-stacks/bug-1012646-strlen-crasher.js
+    --no-blinterp --no-baseline --no-ion --more-compartments saved-stacks/bug-1012646-strlen-crasher.js
+    --blinterp-eager saved-stacks/bug-1012646-strlen-crasher.js
+    saved-stacks/bug-1031168-trace-sources.js
+    --ion-eager --ion-offthread-compile=off --more-compartments saved-stacks/bug-1031168-trace-sources.js
+    --ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads saved-stacks/bug-1031168-trace-sources.js
+    --baseline-eager --write-protect-code=off saved-stacks/bug-1031168-trace-sources.js
+    --no-blinterp --no-baseline --no-ion --more-compartments saved-stacks/bug-1031168-trace-sources.js
+    --blinterp-eager saved-stacks/bug-1031168-trace-sources.js
+    saved-stacks/bug-1149495.js
+    --ion-eager --ion-offthread-compile=off --more-compartments saved-stacks/bug-1149495.js
+    --ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads saved-stacks/bug-1149495.js
+    --baseline-eager --write-protect-code=off saved-stacks/bug-1149495.js
+    --no-blinterp --no-baseline --no-ion --more-compartments saved-stacks/bug-1149495.js
+    --blinterp-eager saved-stacks/bug-1149495.js
+    saved-stacks/bug-1225474.js
+    --ion-eager --ion-offthread-compile=off --more-compartments saved-stacks/bug-1225474.js
+    --ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads saved-stacks/bug-1225474.js
+    --baseline-eager --write-protect-code=off saved-stacks/bug-1225474.js
+    --no-blinterp --no-baseline --no-ion --more-compartments saved-stacks/bug-1225474.js
+    --blinterp-eager saved-stacks/bug-1225474.js
+    saved-stacks/bug-1260712.js
+    --ion-eager --ion-offthread-compile=off --more-compartments saved-stacks/bug-1260712.js
+    --ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads saved-stacks/bug-1260712.js
+    --baseline-eager --write-protect-code=off saved-stacks/bug-1260712.js
+    --no-blinterp --no-baseline --no-ion --more-compartments saved-stacks/bug-1260712.js
+    --blinterp-eager saved-stacks/bug-1260712.js
+    saved-stacks/bug-1289058.js
+    --ion-eager --ion-offthread-compile=off --more-compartments saved-stacks/bug-1289058.js
+    --ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads saved-stacks/bug-1289058.js
+    --baseline-eager --write-protect-code=off saved-stacks/bug-1289058.js
+    --no-blinterp --no-baseline --no-ion --more-compartments saved-stacks/bug-1289058.js
+    --blinterp-eager saved-stacks/bug-1289058.js
+    saved-stacks/bug-1289073.js
+    --ion-eager --ion-offthread-compile=off --more-compartments saved-stacks/bug-1289073.js
+    --ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads saved-stacks/bug-1289073.js
+    --baseline-eager --write-protect-code=off saved-stacks/bug-1289073.js
+    --no-blinterp --no-baseline --no-ion --more-compartments saved-stacks/bug-1289073.js
+    --blinterp-eager saved-stacks/bug-1289073.js
+    --no-baseline saved-stacks/bug-1445973-quick.js
+    --no-baseline --ion-eager --ion-offthread-compile=off --more-compartments saved-stacks/bug-1445973-quick.js
+    --no-baseline --ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads saved-stacks/bug-1445973-quick.js
+    --no-baseline --baseline-eager --write-protect-code=off saved-stacks/bug-1445973-quick.js
+    --no-baseline --no-blinterp --no-baseline --no-ion --more-compartments saved-stacks/bug-1445973-quick.js
+    --no-baseline --blinterp-eager saved-stacks/bug-1445973-quick.js
+    --no-threads --ion-eager saved-stacks/bug-1451268.js
+    --no-threads --ion-eager --ion-eager --ion-offthread-compile=off --more-compartments saved-stacks/bug-1451268.js
+    --no-threads --ion-eager --ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads saved-stacks/bug-1451268.js
+    --no-threads --ion-eager --baseline-eager --write-protect-code=off saved-stacks/bug-1451268.js
+    --no-threads --ion-eager --no-blinterp --no-baseline --no-ion --more-compartments saved-stacks/bug-1451268.js
+    --no-threads --ion-eager --blinterp-eager saved-stacks/bug-1451268.js
+    --ion-eager --no-threads saved-stacks/bug-1505387-dbg-eval-ion.js
+    --ion-eager --no-threads --ion-eager --ion-offthread-compile=off --more-compartments saved-stacks/bug-1505387-dbg-eval-ion.js
+    --ion-eager --no-threads --ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads saved-stacks/bug-1505387-dbg-eval-ion.js
+    --ion-eager --no-threads --baseline-eager --write-protect-code=off saved-stacks/bug-1505387-dbg-eval-ion.js
+    --ion-eager --no-threads --no-blinterp --no-baseline --no-ion --more-compartments saved-stacks/bug-1505387-dbg-eval-ion.js
+    --ion-eager --no-threads --blinterp-eager saved-stacks/bug-1505387-dbg-eval-ion.js
+    saved-stacks/bug-1509420.js
+    --ion-eager --ion-offthread-compile=off --more-compartments saved-stacks/bug-1509420.js
+    --ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads saved-stacks/bug-1509420.js
+    --baseline-eager --write-protect-code=off saved-stacks/bug-1509420.js
+    --no-blinterp --no-baseline --no-ion --more-compartments saved-stacks/bug-1509420.js
+    --blinterp-eager saved-stacks/bug-1509420.js
+    saved-stacks/bug-1640034-dbg-eval-across-compartments.js
+    --ion-eager --ion-offthread-compile=off --more-compartments saved-stacks/bug-1640034-dbg-eval-across-compartments.js
+    --ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads saved-stacks/bug-1640034-dbg-eval-across-compartments.js
+    --baseline-eager --write-protect-code=off saved-stacks/bug-1640034-dbg-eval-across-compartments.js
+    --no-blinterp --no-baseline --no-ion --more-compartments saved-stacks/bug-1640034-dbg-eval-across-compartments.js
+    --blinterp-eager saved-stacks/bug-1640034-dbg-eval-across-compartments.js
+    --fast-warmup --more-compartments saved-stacks/bug-1744495.js
+    --fast-warmup --more-compartments --ion-eager --ion-offthread-compile=off --more-compartments saved-stacks/bug-1744495.js
+    --fast-warmup --more-compartments --ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads saved-stacks/bug-1744495.js
+    --fast-warmup --more-compartments --baseline-eager --write-protect-code=off saved-stacks/bug-1744495.js
+    --fast-warmup --more-compartments --no-blinterp --no-baseline --no-ion --more-compartments saved-stacks/bug-1744495.js
+    --fast-warmup --more-compartments --blinterp-eager saved-stacks/bug-1744495.js
+    saved-stacks/bug1813533.js
+    --ion-eager --ion-offthread-compile=off --more-compartments saved-stacks/bug1813533.js
+    --ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads saved-stacks/bug1813533.js
+    --baseline-eager --write-protect-code=off saved-stacks/bug1813533.js
+    --no-blinterp --no-baseline --no-ion --more-compartments saved-stacks/bug1813533.js
+    --blinterp-eager saved-stacks/bug1813533.js
+    saved-stacks/bug1832936.js
+    --ion-eager --ion-offthread-compile=off --more-compartments saved-stacks/bug1832936.js
+    --ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads saved-stacks/bug1832936.js
+    --baseline-eager --write-protect-code=off saved-stacks/bug1832936.js
+    --no-blinterp --no-baseline --no-ion --more-compartments saved-stacks/bug1832936.js
+    --blinterp-eager saved-stacks/bug1832936.js
+    saved-stacks/bug1907801.js
+    --ion-eager --ion-offthread-compile=off --more-compartments saved-stacks/bug1907801.js
+    --ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads saved-stacks/bug1907801.js
+    --baseline-eager --write-protect-code=off saved-stacks/bug1907801.js
+    --no-blinterp --no-baseline --no-ion --more-compartments saved-stacks/bug1907801.js
+    --blinterp-eager saved-stacks/bug1907801.js
+    saved-stacks/caching-and-ccws.js
+    --ion-eager --ion-offthread-compile=off --more-compartments saved-stacks/caching-and-ccws.js
+    --ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads saved-stacks/caching-and-ccws.js
+    --baseline-eager --write-protect-code=off saved-stacks/caching-and-ccws.js
+    --no-blinterp --no-baseline --no-ion --more-compartments saved-stacks/caching-and-ccws.js
+    --blinterp-eager saved-stacks/caching-and-ccws.js
+    saved-stacks/caching-and-frame-count.js
+    --ion-eager --ion-offthread-compile=off --more-compartments saved-stacks/caching-and-frame-count.js
+    --ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads saved-stacks/caching-and-frame-count.js
+    --baseline-eager --write-protect-code=off saved-stacks/caching-and-frame-count.js
+    --no-blinterp --no-baseline --no-ion --more-compartments saved-stacks/caching-and-frame-count.js
+    --blinterp-eager saved-stacks/caching-and-frame-count.js
+    saved-stacks/capture-first-frame-with-principals.js
+    --ion-eager --ion-offthread-compile=off --more-compartments saved-stacks/capture-first-frame-with-principals.js
+    --ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads saved-stacks/capture-first-frame-with-principals.js
+    --baseline-eager --write-protect-code=off saved-stacks/capture-first-frame-with-principals.js
+    --no-blinterp --no-baseline --no-ion --more-compartments saved-stacks/capture-first-frame-with-principals.js
+    --blinterp-eager saved-stacks/capture-first-frame-with-principals.js
+    saved-stacks/display-url.js
+    --ion-eager --ion-offthread-compile=off --more-compartments saved-stacks/display-url.js
+    --ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads saved-stacks/display-url.js
+    --baseline-eager --write-protect-code=off saved-stacks/display-url.js
+    --no-blinterp --no-baseline --no-ion --more-compartments saved-stacks/display-url.js
+    --blinterp-eager saved-stacks/display-url.js
+    saved-stacks/evals.js
+    --ion-eager --ion-offthread-compile=off --more-compartments saved-stacks/evals.js
+    --ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads saved-stacks/evals.js
+    --baseline-eager --write-protect-code=off saved-stacks/evals.js
+    --no-blinterp --no-baseline --no-ion --more-compartments saved-stacks/evals.js
+    --blinterp-eager saved-stacks/evals.js
+    saved-stacks/function-display-name.js
+    --ion-eager --ion-offthread-compile=off --more-compartments saved-stacks/function-display-name.js
+    --ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads saved-stacks/function-display-name.js
+    --baseline-eager --write-protect-code=off saved-stacks/function-display-name.js
+    --no-blinterp --no-baseline --no-ion --more-compartments saved-stacks/function-display-name.js
+    --blinterp-eager saved-stacks/function-display-name.js
+    saved-stacks/gc-frame-cache.js
+    --ion-eager --ion-offthread-compile=off --more-compartments saved-stacks/gc-frame-cache.js
+    --ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads saved-stacks/gc-frame-cache.js
+    --baseline-eager --write-protect-code=off saved-stacks/gc-frame-cache.js
+    --no-blinterp --no-baseline --no-ion --more-compartments saved-stacks/gc-frame-cache.js
+    --blinterp-eager saved-stacks/gc-frame-cache.js
+    saved-stacks/generators.js
+    --ion-eager --ion-offthread-compile=off --more-compartments saved-stacks/generators.js
+    --ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads saved-stacks/generators.js
+    --baseline-eager --write-protect-code=off saved-stacks/generators.js
+    --no-blinterp --no-baseline --no-ion --more-compartments saved-stacks/generators.js
+    --blinterp-eager saved-stacks/generators.js
+    saved-stacks/get-set.js
+    --ion-eager --ion-offthread-compile=off --more-compartments saved-stacks/get-set.js
+    --ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads saved-stacks/get-set.js
+    --baseline-eager --write-protect-code=off saved-stacks/get-set.js
+    --no-blinterp --no-baseline --no-ion --more-compartments saved-stacks/get-set.js
+    --blinterp-eager saved-stacks/get-set.js
+    saved-stacks/getters-on-invalid-objects.js
+    --ion-eager --ion-offthread-compile=off --more-compartments saved-stacks/getters-on-invalid-objects.js
+    --ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads saved-stacks/getters-on-invalid-objects.js
+    --baseline-eager --write-protect-code=off saved-stacks/getters-on-invalid-objects.js
+    --no-blinterp --no-baseline --no-ion --more-compartments saved-stacks/getters-on-invalid-objects.js
+    --blinterp-eager saved-stacks/getters-on-invalid-objects.js
+    saved-stacks/max-frame-count.js
+    --ion-eager --ion-offthread-compile=off --more-compartments saved-stacks/max-frame-count.js
+    --ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads saved-stacks/max-frame-count.js
+    --baseline-eager --write-protect-code=off saved-stacks/max-frame-count.js
+    --no-blinterp --no-baseline --no-ion --more-compartments saved-stacks/max-frame-count.js
+    --blinterp-eager saved-stacks/max-frame-count.js
+    saved-stacks/native-calls.js
+    --ion-eager --ion-offthread-compile=off --more-compartments saved-stacks/native-calls.js
+    --ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads saved-stacks/native-calls.js
+    --baseline-eager --write-protect-code=off saved-stacks/native-calls.js
+    --no-blinterp --no-baseline --no-ion --more-compartments saved-stacks/native-calls.js
+    --blinterp-eager saved-stacks/native-calls.js
+    --no-ion --no-baseline --no-blinterp saved-stacks/oom-in-save-stack-02.js
+    --no-ion --no-baseline --no-blinterp --ion-eager --ion-offthread-compile=off --more-compartments saved-stacks/oom-in-save-stack-02.js
+    --no-ion --no-baseline --no-blinterp --ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads saved-stacks/oom-in-save-stack-02.js
+    --no-ion --no-baseline --no-blinterp --baseline-eager --write-protect-code=off saved-stacks/oom-in-save-stack-02.js
+    --no-ion --no-baseline --no-blinterp --no-blinterp --no-baseline --no-ion --more-compartments saved-stacks/oom-in-save-stack-02.js
+    --no-ion --no-baseline --no-blinterp --blinterp-eager saved-stacks/oom-in-save-stack-02.js
+    saved-stacks/oom-in-save-stack.js
+    --ion-eager --ion-offthread-compile=off --more-compartments saved-stacks/oom-in-save-stack.js
+    --ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads saved-stacks/oom-in-save-stack.js
+    --baseline-eager --write-protect-code=off saved-stacks/oom-in-save-stack.js
+    --no-blinterp --no-baseline --no-ion --more-compartments saved-stacks/oom-in-save-stack.js
+    --blinterp-eager saved-stacks/oom-in-save-stack.js
+    saved-stacks/principals-01.js
+    --ion-eager --ion-offthread-compile=off --more-compartments saved-stacks/principals-01.js
+    --ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads saved-stacks/principals-01.js
+    --baseline-eager --write-protect-code=off saved-stacks/principals-01.js
+    --no-blinterp --no-baseline --no-ion --more-compartments saved-stacks/principals-01.js
+    --blinterp-eager saved-stacks/principals-01.js
+    saved-stacks/principals-02.js
+    --ion-eager --ion-offthread-compile=off --more-compartments saved-stacks/principals-02.js
+    --ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads saved-stacks/principals-02.js
+    --baseline-eager --write-protect-code=off saved-stacks/principals-02.js
+    --no-blinterp --no-baseline --no-ion --more-compartments saved-stacks/principals-02.js
+    --blinterp-eager saved-stacks/principals-02.js
+    saved-stacks/principals-03.js
+    --ion-eager --ion-offthread-compile=off --more-compartments saved-stacks/principals-03.js
+    --ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads saved-stacks/principals-03.js
+    --baseline-eager --write-protect-code=off saved-stacks/principals-03.js
+    --no-blinterp --no-baseline --no-ion --more-compartments saved-stacks/principals-03.js
+    --blinterp-eager saved-stacks/principals-03.js
+    saved-stacks/principals-04.js
+    --ion-eager --ion-offthread-compile=off --more-compartments saved-stacks/principals-04.js
+    --ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads saved-stacks/principals-04.js
+    --baseline-eager --write-protect-code=off saved-stacks/principals-04.js
+    --no-blinterp --no-baseline --no-ion --more-compartments saved-stacks/principals-04.js
+    --blinterp-eager saved-stacks/principals-04.js
+    saved-stacks/proxy-handlers.js
+    --ion-eager --ion-offthread-compile=off --more-compartments saved-stacks/proxy-handlers.js
+    --ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads saved-stacks/proxy-handlers.js
+    --baseline-eager --write-protect-code=off saved-stacks/proxy-handlers.js
+    --no-blinterp --no-baseline --no-ion --more-compartments saved-stacks/proxy-handlers.js
+    --blinterp-eager saved-stacks/proxy-handlers.js
+    saved-stacks/same-stack.js
+    --ion-eager --ion-offthread-compile=off --more-compartments saved-stacks/same-stack.js
+    --ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads saved-stacks/same-stack.js
+    --baseline-eager --write-protect-code=off saved-stacks/same-stack.js
+    --no-blinterp --no-baseline --no-ion --more-compartments saved-stacks/same-stack.js
+    --blinterp-eager saved-stacks/same-stack.js
+    saved-stacks/self-hosted.js
+    --ion-eager --ion-offthread-compile=off --more-compartments saved-stacks/self-hosted.js
+    --ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads saved-stacks/self-hosted.js
+    --baseline-eager --write-protect-code=off saved-stacks/self-hosted.js
+    --no-blinterp --no-baseline --no-ion --more-compartments saved-stacks/self-hosted.js
+    --blinterp-eager saved-stacks/self-hosted.js
+    saved-stacks/shared-parent-frames.js
+    --ion-eager --ion-offthread-compile=off --more-compartments saved-stacks/shared-parent-frames.js
+    --ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads saved-stacks/shared-parent-frames.js
+    --baseline-eager --write-protect-code=off saved-stacks/shared-parent-frames.js
+    --no-blinterp --no-baseline --no-ion --more-compartments saved-stacks/shared-parent-frames.js
+    --blinterp-eager saved-stacks/shared-parent-frames.js
+    saved-stacks/stacks-are-frozen.js
+    --ion-eager --ion-offthread-compile=off --more-compartments saved-stacks/stacks-are-frozen.js
+    --ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads saved-stacks/stacks-are-frozen.js
+    --baseline-eager --write-protect-code=off saved-stacks/stacks-are-frozen.js
+    --no-blinterp --no-baseline --no-ion --more-compartments saved-stacks/stacks-are-frozen.js
+    --blinterp-eager saved-stacks/stacks-are-frozen.js
+    saved-stacks/stringify-with-self-hosted.js
+    --ion-eager --ion-offthread-compile=off --more-compartments saved-stacks/stringify-with-self-hosted.js
+    --ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads saved-stacks/stringify-with-self-hosted.js
+    --baseline-eager --write-protect-code=off saved-stacks/stringify-with-self-hosted.js
+    --no-blinterp --no-baseline --no-ion --more-compartments saved-stacks/stringify-with-self-hosted.js
+    --blinterp-eager saved-stacks/stringify-with-self-hosted.js
+TIMEOUTS:
+Result summary:
+Passed: 0
+Failed: 306

@@ -1,0 +1,150 @@
+===== Official SpiderMonkey jit-tests on Kandelo node host =====
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - optional-chain/bug1848244.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/optional-chain/bug1848244.js | RuntimeError: memory access out of bounds (code 255, args "") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - optional-chain/bug1848244.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/optional-chain/bug1848244.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - optional-chain/bug1848244.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/optional-chain/bug1848244.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads") [0.2 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - optional-chain/bug1848244.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/optional-chain/bug1848244.js | RuntimeError: memory access out of bounds (code 255, args "--baseline-eager --write-protect-code=off") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - optional-chain/bug1848244.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/optional-chain/bug1848244.js | RuntimeError: memory access out of bounds (code 255, args "--no-blinterp --no-baseline --no-ion --more-compartments") [0.2 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - optional-chain/bug1848244.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/optional-chain/bug1848244.js | RuntimeError: memory access out of bounds (code 255, args "--blinterp-eager") [0.4 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - optional-chain/call-ignore-rval.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/optional-chain/call-ignore-rval.js | RuntimeError: memory access out of bounds (code 255, args "") [0.2 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - optional-chain/call-ignore-rval.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/optional-chain/call-ignore-rval.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --more-compartments") [0.3 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - optional-chain/call-ignore-rval.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/optional-chain/call-ignore-rval.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads") [0.3 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - optional-chain/call-ignore-rval.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/optional-chain/call-ignore-rval.js | RuntimeError: memory access out of bounds (code 255, args "--baseline-eager --write-protect-code=off") [0.3 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - optional-chain/call-ignore-rval.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/optional-chain/call-ignore-rval.js | RuntimeError: memory access out of bounds (code 255, args "--no-blinterp --no-baseline --no-ion --more-compartments") [0.4 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - optional-chain/call-ignore-rval.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/optional-chain/call-ignore-rval.js | RuntimeError: memory access out of bounds (code 255, args "--blinterp-eager") [0.6 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - optional-chain/fun-call-or-apply.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/optional-chain/fun-call-or-apply.js | RuntimeError: memory access out of bounds (code 255, args "") [0.4 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - optional-chain/fun-call-or-apply.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/optional-chain/fun-call-or-apply.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - optional-chain/fun-call-or-apply.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/optional-chain/fun-call-or-apply.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - optional-chain/fun-call-or-apply.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/optional-chain/fun-call-or-apply.js | RuntimeError: memory access out of bounds (code 255, args "--baseline-eager --write-protect-code=off") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - optional-chain/fun-call-or-apply.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/optional-chain/fun-call-or-apply.js | RuntimeError: memory access out of bounds (code 255, args "--no-blinterp --no-baseline --no-ion --more-compartments") [0.2 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - optional-chain/fun-call-or-apply.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/optional-chain/fun-call-or-apply.js | RuntimeError: memory access out of bounds (code 255, args "--blinterp-eager") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+FAILURES:
+    optional-chain/bug1848244.js
+    --ion-eager --ion-offthread-compile=off --more-compartments optional-chain/bug1848244.js
+    --ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads optional-chain/bug1848244.js
+    --baseline-eager --write-protect-code=off optional-chain/bug1848244.js
+    --no-blinterp --no-baseline --no-ion --more-compartments optional-chain/bug1848244.js
+    --blinterp-eager optional-chain/bug1848244.js
+    optional-chain/call-ignore-rval.js
+    --ion-eager --ion-offthread-compile=off --more-compartments optional-chain/call-ignore-rval.js
+    --ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads optional-chain/call-ignore-rval.js
+    --baseline-eager --write-protect-code=off optional-chain/call-ignore-rval.js
+    --no-blinterp --no-baseline --no-ion --more-compartments optional-chain/call-ignore-rval.js
+    --blinterp-eager optional-chain/call-ignore-rval.js
+    optional-chain/fun-call-or-apply.js
+    --ion-eager --ion-offthread-compile=off --more-compartments optional-chain/fun-call-or-apply.js
+    --ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads optional-chain/fun-call-or-apply.js
+    --baseline-eager --write-protect-code=off optional-chain/fun-call-or-apply.js
+    --no-blinterp --no-baseline --no-ion --more-compartments optional-chain/fun-call-or-apply.js
+    --blinterp-eager optional-chain/fun-call-or-apply.js
+TIMEOUTS:
+Result summary:
+Passed: 0
+Failed: 18

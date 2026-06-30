@@ -1,0 +1,1110 @@
+===== Official SpiderMonkey jit-tests on Kandelo node host =====
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - structured-clone/Map-Set-cross-compartment.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/structured-clone/Map-Set-cross-compartment.js | RuntimeError: memory access out of bounds (code 255, args "") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - structured-clone/Map-Set-cross-compartment.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/structured-clone/Map-Set-cross-compartment.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --more-compartments") [0.2 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - structured-clone/Map-Set-cross-compartment.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/structured-clone/Map-Set-cross-compartment.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads") [0.2 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - structured-clone/Map-Set-cross-compartment.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/structured-clone/Map-Set-cross-compartment.js | RuntimeError: memory access out of bounds (code 255, args "--baseline-eager --write-protect-code=off") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - structured-clone/Map-Set-cross-compartment.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/structured-clone/Map-Set-cross-compartment.js | RuntimeError: memory access out of bounds (code 255, args "--no-blinterp --no-baseline --no-ion --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - structured-clone/Map-Set-cross-compartment.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/structured-clone/Map-Set-cross-compartment.js | RuntimeError: memory access out of bounds (code 255, args "--blinterp-eager") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - structured-clone/Map.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/structured-clone/Map.js | RuntimeError: memory access out of bounds (code 255, args "") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - structured-clone/Map.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/structured-clone/Map.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - structured-clone/Map.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/structured-clone/Map.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - structured-clone/Map.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/structured-clone/Map.js | RuntimeError: memory access out of bounds (code 255, args "--baseline-eager --write-protect-code=off") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - structured-clone/Map.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/structured-clone/Map.js | RuntimeError: memory access out of bounds (code 255, args "--no-blinterp --no-baseline --no-ion --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - structured-clone/Map.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/structured-clone/Map.js | RuntimeError: memory access out of bounds (code 255, args "--blinterp-eager") [0.2 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - structured-clone/Set.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/structured-clone/Set.js | RuntimeError: memory access out of bounds (code 255, args "") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - structured-clone/Set.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/structured-clone/Set.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --more-compartments") [0.6 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - structured-clone/Set.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/structured-clone/Set.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads") [0.2 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - structured-clone/Set.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/structured-clone/Set.js | RuntimeError: memory access out of bounds (code 255, args "--baseline-eager --write-protect-code=off") [0.2 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - structured-clone/Set.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/structured-clone/Set.js | RuntimeError: memory access out of bounds (code 255, args "--no-blinterp --no-baseline --no-ion --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - structured-clone/Set.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/structured-clone/Set.js | RuntimeError: memory access out of bounds (code 255, args "--blinterp-eager") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - structured-clone/allobjs.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/structured-clone/allobjs.js | RuntimeError: memory access out of bounds (code 255, args "") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - structured-clone/allobjs.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/structured-clone/allobjs.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - structured-clone/allobjs.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/structured-clone/allobjs.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads") [0.2 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - structured-clone/allobjs.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/structured-clone/allobjs.js | RuntimeError: memory access out of bounds (code 255, args "--baseline-eager --write-protect-code=off") [0.3 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - structured-clone/allobjs.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/structured-clone/allobjs.js | RuntimeError: memory access out of bounds (code 255, args "--no-blinterp --no-baseline --no-ion --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - structured-clone/allobjs.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/structured-clone/allobjs.js | RuntimeError: memory access out of bounds (code 255, args "--blinterp-eager") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - structured-clone/array-buffers.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/structured-clone/array-buffers.js | RuntimeError: memory access out of bounds (code 255, args "") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - structured-clone/array-buffers.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/structured-clone/array-buffers.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - structured-clone/array-buffers.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/structured-clone/array-buffers.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - structured-clone/array-buffers.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/structured-clone/array-buffers.js | RuntimeError: memory access out of bounds (code 255, args "--baseline-eager --write-protect-code=off") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - structured-clone/array-buffers.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/structured-clone/array-buffers.js | RuntimeError: memory access out of bounds (code 255, args "--no-blinterp --no-baseline --no-ion --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - structured-clone/array-buffers.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/structured-clone/array-buffers.js | RuntimeError: memory access out of bounds (code 255, args "--blinterp-eager") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - structured-clone/bug-1929618.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/structured-clone/bug-1929618.js | RuntimeError: memory access out of bounds (code 255, args "") [0.2 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - structured-clone/bug-1929618.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/structured-clone/bug-1929618.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --more-compartments") [0.3 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - structured-clone/bug-1929618.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/structured-clone/bug-1929618.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads") [0.6 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - structured-clone/bug-1929618.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/structured-clone/bug-1929618.js | RuntimeError: memory access out of bounds (code 255, args "--baseline-eager --write-protect-code=off") [0.3 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - structured-clone/bug-1929618.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/structured-clone/bug-1929618.js | RuntimeError: memory access out of bounds (code 255, args "--no-blinterp --no-baseline --no-ion --more-compartments") [0.3 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - structured-clone/bug-1929618.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/structured-clone/bug-1929618.js | RuntimeError: memory access out of bounds (code 255, args "--blinterp-eager") [0.3 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - structured-clone/bug1440748.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/structured-clone/bug1440748.js | RuntimeError: memory access out of bounds (code 255, args "") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - structured-clone/bug1440748.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/structured-clone/bug1440748.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - structured-clone/bug1440748.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/structured-clone/bug1440748.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - structured-clone/bug1440748.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/structured-clone/bug1440748.js | RuntimeError: memory access out of bounds (code 255, args "--baseline-eager --write-protect-code=off") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - structured-clone/bug1440748.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/structured-clone/bug1440748.js | RuntimeError: memory access out of bounds (code 255, args "--no-blinterp --no-baseline --no-ion --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - structured-clone/bug1440748.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/structured-clone/bug1440748.js | RuntimeError: memory access out of bounds (code 255, args "--blinterp-eager") [0.3 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - structured-clone/bug1687243.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/structured-clone/bug1687243.js | RuntimeError: memory access out of bounds (code 255, args "") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - structured-clone/bug1687243.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/structured-clone/bug1687243.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - structured-clone/bug1687243.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/structured-clone/bug1687243.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - structured-clone/bug1687243.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/structured-clone/bug1687243.js | RuntimeError: memory access out of bounds (code 255, args "--baseline-eager --write-protect-code=off") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - structured-clone/bug1687243.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/structured-clone/bug1687243.js | RuntimeError: memory access out of bounds (code 255, args "--no-blinterp --no-baseline --no-ion --more-compartments") [0.6 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - structured-clone/bug1687243.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/structured-clone/bug1687243.js | RuntimeError: memory access out of bounds (code 255, args "--blinterp-eager") [0.4 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - structured-clone/bug1875797.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/structured-clone/bug1875797.js | RuntimeError: memory access out of bounds (code 255, args "") [0.2 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - structured-clone/bug1875797.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/structured-clone/bug1875797.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --more-compartments") [0.4 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - structured-clone/bug1875797.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/structured-clone/bug1875797.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads") [0.3 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - structured-clone/bug1875797.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/structured-clone/bug1875797.js | RuntimeError: memory access out of bounds (code 255, args "--baseline-eager --write-protect-code=off") [0.2 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - structured-clone/bug1875797.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/structured-clone/bug1875797.js | RuntimeError: memory access out of bounds (code 255, args "--no-blinterp --no-baseline --no-ion --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - structured-clone/bug1875797.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/structured-clone/bug1875797.js | RuntimeError: memory access out of bounds (code 255, args "--blinterp-eager") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - structured-clone/bug1888727.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/structured-clone/bug1888727.js | RuntimeError: memory access out of bounds (code 255, args "") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - structured-clone/bug1888727.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/structured-clone/bug1888727.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - structured-clone/bug1888727.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/structured-clone/bug1888727.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - structured-clone/bug1888727.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/structured-clone/bug1888727.js | RuntimeError: memory access out of bounds (code 255, args "--baseline-eager --write-protect-code=off") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - structured-clone/bug1888727.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/structured-clone/bug1888727.js | RuntimeError: memory access out of bounds (code 255, args "--no-blinterp --no-baseline --no-ion --more-compartments") [0.3 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - structured-clone/bug1888727.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/structured-clone/bug1888727.js | RuntimeError: memory access out of bounds (code 255, args "--blinterp-eager") [0.2 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - structured-clone/bug1896557.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/structured-clone/bug1896557.js | RuntimeError: memory access out of bounds (code 255, args "") [0.6 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - structured-clone/bug1896557.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/structured-clone/bug1896557.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --more-compartments") [0.6 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - structured-clone/bug1896557.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/structured-clone/bug1896557.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads") [0.3 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - structured-clone/bug1896557.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/structured-clone/bug1896557.js | RuntimeError: memory access out of bounds (code 255, args "--baseline-eager --write-protect-code=off") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - structured-clone/bug1896557.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/structured-clone/bug1896557.js | RuntimeError: memory access out of bounds (code 255, args "--no-blinterp --no-baseline --no-ion --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - structured-clone/bug1896557.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/structured-clone/bug1896557.js | RuntimeError: memory access out of bounds (code 255, args "--blinterp-eager") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - structured-clone/bug1925703.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/structured-clone/bug1925703.js | RuntimeError: memory access out of bounds (code 255, args "") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - structured-clone/bug1925703.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/structured-clone/bug1925703.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - structured-clone/bug1925703.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/structured-clone/bug1925703.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads") [0.2 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - structured-clone/bug1925703.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/structured-clone/bug1925703.js | RuntimeError: memory access out of bounds (code 255, args "--baseline-eager --write-protect-code=off") [0.2 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - structured-clone/bug1925703.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/structured-clone/bug1925703.js | RuntimeError: memory access out of bounds (code 255, args "--no-blinterp --no-baseline --no-ion --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - structured-clone/bug1925703.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/structured-clone/bug1925703.js | RuntimeError: memory access out of bounds (code 255, args "--blinterp-eager") [0.2 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - structured-clone/errors.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/structured-clone/errors.js | RuntimeError: memory access out of bounds (code 255, args "") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - structured-clone/errors.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/structured-clone/errors.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --more-compartments") [0.3 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - structured-clone/errors.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/structured-clone/errors.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads") [0.3 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - structured-clone/errors.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/structured-clone/errors.js | RuntimeError: memory access out of bounds (code 255, args "--baseline-eager --write-protect-code=off") [0.3 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - structured-clone/errors.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/structured-clone/errors.js | RuntimeError: memory access out of bounds (code 255, args "--no-blinterp --no-baseline --no-ion --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - structured-clone/errors.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/structured-clone/errors.js | RuntimeError: memory access out of bounds (code 255, args "--blinterp-eager") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - structured-clone/growable-shared-array-buffers.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/structured-clone/growable-shared-array-buffers.js | RuntimeError: memory access out of bounds (code 255, args "") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - structured-clone/growable-shared-array-buffers.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/structured-clone/growable-shared-array-buffers.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --more-compartments") [0.3 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - structured-clone/growable-shared-array-buffers.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/structured-clone/growable-shared-array-buffers.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - structured-clone/growable-shared-array-buffers.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/structured-clone/growable-shared-array-buffers.js | RuntimeError: memory access out of bounds (code 255, args "--baseline-eager --write-protect-code=off") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - structured-clone/growable-shared-array-buffers.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/structured-clone/growable-shared-array-buffers.js | RuntimeError: memory access out of bounds (code 255, args "--no-blinterp --no-baseline --no-ion --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - structured-clone/growable-shared-array-buffers.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/structured-clone/growable-shared-array-buffers.js | RuntimeError: memory access out of bounds (code 255, args "--blinterp-eager") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - structured-clone/resizable-array-buffers-transferable.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/structured-clone/resizable-array-buffers-transferable.js | RuntimeError: memory access out of bounds (code 255, args "") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - structured-clone/resizable-array-buffers-transferable.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/structured-clone/resizable-array-buffers-transferable.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - structured-clone/resizable-array-buffers-transferable.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/structured-clone/resizable-array-buffers-transferable.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - structured-clone/resizable-array-buffers-transferable.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/structured-clone/resizable-array-buffers-transferable.js | RuntimeError: memory access out of bounds (code 255, args "--baseline-eager --write-protect-code=off") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - structured-clone/resizable-array-buffers-transferable.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/structured-clone/resizable-array-buffers-transferable.js | RuntimeError: memory access out of bounds (code 255, args "--no-blinterp --no-baseline --no-ion --more-compartments") [0.2 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - structured-clone/resizable-array-buffers-transferable.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/structured-clone/resizable-array-buffers-transferable.js | RuntimeError: memory access out of bounds (code 255, args "--blinterp-eager") [0.4 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - structured-clone/resizable-array-buffers.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/structured-clone/resizable-array-buffers.js | RuntimeError: memory access out of bounds (code 255, args "") [0.5 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - structured-clone/resizable-array-buffers.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/structured-clone/resizable-array-buffers.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --more-compartments") [0.3 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - structured-clone/resizable-array-buffers.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/structured-clone/resizable-array-buffers.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads") [0.4 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - structured-clone/resizable-array-buffers.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/structured-clone/resizable-array-buffers.js | RuntimeError: memory access out of bounds (code 255, args "--baseline-eager --write-protect-code=off") [0.2 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - structured-clone/resizable-array-buffers.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/structured-clone/resizable-array-buffers.js | RuntimeError: memory access out of bounds (code 255, args "--no-blinterp --no-baseline --no-ion --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - structured-clone/resizable-array-buffers.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/structured-clone/resizable-array-buffers.js | RuntimeError: memory access out of bounds (code 255, args "--blinterp-eager") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - structured-clone/roundtrip.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/structured-clone/roundtrip.js | RuntimeError: memory access out of bounds (code 255, args "") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - structured-clone/roundtrip.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/structured-clone/roundtrip.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - structured-clone/roundtrip.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/structured-clone/roundtrip.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - structured-clone/roundtrip.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/structured-clone/roundtrip.js | RuntimeError: memory access out of bounds (code 255, args "--baseline-eager --write-protect-code=off") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - structured-clone/roundtrip.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/structured-clone/roundtrip.js | RuntimeError: memory access out of bounds (code 255, args "--no-blinterp --no-baseline --no-ion --more-compartments") [0.2 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - structured-clone/roundtrip.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/structured-clone/roundtrip.js | RuntimeError: memory access out of bounds (code 255, args "--blinterp-eager") [0.2 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - structured-clone/sab-errMsg.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/structured-clone/sab-errMsg.js | RuntimeError: memory access out of bounds (code 255, args "") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - structured-clone/sab-errMsg.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/structured-clone/sab-errMsg.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --more-compartments") [0.5 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - structured-clone/sab-errMsg.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/structured-clone/sab-errMsg.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads") [0.3 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - structured-clone/sab-errMsg.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/structured-clone/sab-errMsg.js | RuntimeError: memory access out of bounds (code 255, args "--baseline-eager --write-protect-code=off") [0.2 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - structured-clone/sab-errMsg.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/structured-clone/sab-errMsg.js | RuntimeError: memory access out of bounds (code 255, args "--no-blinterp --no-baseline --no-ion --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - structured-clone/sab-errMsg.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/structured-clone/sab-errMsg.js | RuntimeError: memory access out of bounds (code 255, args "--blinterp-eager") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - structured-clone/saved-stack.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/structured-clone/saved-stack.js | RuntimeError: memory access out of bounds (code 255, args "") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - structured-clone/saved-stack.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/structured-clone/saved-stack.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - structured-clone/saved-stack.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/structured-clone/saved-stack.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads") [0.2 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - structured-clone/saved-stack.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/structured-clone/saved-stack.js | RuntimeError: memory access out of bounds (code 255, args "--baseline-eager --write-protect-code=off") [0.2 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - structured-clone/saved-stack.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/structured-clone/saved-stack.js | RuntimeError: memory access out of bounds (code 255, args "--no-blinterp --no-baseline --no-ion --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - structured-clone/saved-stack.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/structured-clone/saved-stack.js | RuntimeError: memory access out of bounds (code 255, args "--blinterp-eager") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - structured-clone/tenuring.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/structured-clone/tenuring.js | RuntimeError: memory access out of bounds (code 255, args "") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - structured-clone/tenuring.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/structured-clone/tenuring.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - structured-clone/tenuring.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/structured-clone/tenuring.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - structured-clone/tenuring.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/structured-clone/tenuring.js | RuntimeError: memory access out of bounds (code 255, args "--baseline-eager --write-protect-code=off") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - structured-clone/tenuring.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/structured-clone/tenuring.js | RuntimeError: memory access out of bounds (code 255, args "--no-blinterp --no-baseline --no-ion --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - structured-clone/tenuring.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/structured-clone/tenuring.js | RuntimeError: memory access out of bounds (code 255, args "--blinterp-eager") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - structured-clone/transferable-across-segments.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/structured-clone/transferable-across-segments.js | RuntimeError: memory access out of bounds (code 255, args "") [0.2 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - structured-clone/transferable-across-segments.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/structured-clone/transferable-across-segments.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --more-compartments") [0.3 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - structured-clone/transferable-across-segments.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/structured-clone/transferable-across-segments.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads") [0.4 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - structured-clone/transferable-across-segments.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/structured-clone/transferable-across-segments.js | RuntimeError: memory access out of bounds (code 255, args "--baseline-eager --write-protect-code=off") [0.3 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - structured-clone/transferable-across-segments.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/structured-clone/transferable-across-segments.js | RuntimeError: memory access out of bounds (code 255, args "--no-blinterp --no-baseline --no-ion --more-compartments") [0.2 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - structured-clone/transferable-across-segments.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/structured-clone/transferable-across-segments.js | RuntimeError: memory access out of bounds (code 255, args "--blinterp-eager") [0.2 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - structured-clone/transferable-cleanup.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/structured-clone/transferable-cleanup.js | RuntimeError: memory access out of bounds (code 255, args "") [0.2 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - structured-clone/transferable-cleanup.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/structured-clone/transferable-cleanup.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - structured-clone/transferable-cleanup.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/structured-clone/transferable-cleanup.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - structured-clone/transferable-cleanup.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/structured-clone/transferable-cleanup.js | RuntimeError: memory access out of bounds (code 255, args "--baseline-eager --write-protect-code=off") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - structured-clone/transferable-cleanup.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/structured-clone/transferable-cleanup.js | RuntimeError: memory access out of bounds (code 255, args "--no-blinterp --no-baseline --no-ion --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - structured-clone/transferable-cleanup.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/structured-clone/transferable-cleanup.js | RuntimeError: memory access out of bounds (code 255, args "--blinterp-eager") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - structured-clone/version3.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/structured-clone/version3.js | RuntimeError: memory access out of bounds (code 255, args "") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - structured-clone/version3.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/structured-clone/version3.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - structured-clone/version3.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/structured-clone/version3.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads") [0.2 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - structured-clone/version3.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/structured-clone/version3.js | RuntimeError: memory access out of bounds (code 255, args "--baseline-eager --write-protect-code=off") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - structured-clone/version3.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/structured-clone/version3.js | RuntimeError: memory access out of bounds (code 255, args "--no-blinterp --no-baseline --no-ion --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - structured-clone/version3.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/structured-clone/version3.js | RuntimeError: memory access out of bounds (code 255, args "--blinterp-eager") [0.5 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+FAILURES:
+    structured-clone/Map-Set-cross-compartment.js
+    --ion-eager --ion-offthread-compile=off --more-compartments structured-clone/Map-Set-cross-compartment.js
+    --ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads structured-clone/Map-Set-cross-compartment.js
+    --baseline-eager --write-protect-code=off structured-clone/Map-Set-cross-compartment.js
+    --no-blinterp --no-baseline --no-ion --more-compartments structured-clone/Map-Set-cross-compartment.js
+    --blinterp-eager structured-clone/Map-Set-cross-compartment.js
+    structured-clone/Map.js
+    --ion-eager --ion-offthread-compile=off --more-compartments structured-clone/Map.js
+    --ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads structured-clone/Map.js
+    --baseline-eager --write-protect-code=off structured-clone/Map.js
+    --no-blinterp --no-baseline --no-ion --more-compartments structured-clone/Map.js
+    --blinterp-eager structured-clone/Map.js
+    structured-clone/Set.js
+    --ion-eager --ion-offthread-compile=off --more-compartments structured-clone/Set.js
+    --ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads structured-clone/Set.js
+    --baseline-eager --write-protect-code=off structured-clone/Set.js
+    --no-blinterp --no-baseline --no-ion --more-compartments structured-clone/Set.js
+    --blinterp-eager structured-clone/Set.js
+    structured-clone/allobjs.js
+    --ion-eager --ion-offthread-compile=off --more-compartments structured-clone/allobjs.js
+    --ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads structured-clone/allobjs.js
+    --baseline-eager --write-protect-code=off structured-clone/allobjs.js
+    --no-blinterp --no-baseline --no-ion --more-compartments structured-clone/allobjs.js
+    --blinterp-eager structured-clone/allobjs.js
+    structured-clone/array-buffers.js
+    --ion-eager --ion-offthread-compile=off --more-compartments structured-clone/array-buffers.js
+    --ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads structured-clone/array-buffers.js
+    --baseline-eager --write-protect-code=off structured-clone/array-buffers.js
+    --no-blinterp --no-baseline --no-ion --more-compartments structured-clone/array-buffers.js
+    --blinterp-eager structured-clone/array-buffers.js
+    structured-clone/bug-1929618.js
+    --ion-eager --ion-offthread-compile=off --more-compartments structured-clone/bug-1929618.js
+    --ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads structured-clone/bug-1929618.js
+    --baseline-eager --write-protect-code=off structured-clone/bug-1929618.js
+    --no-blinterp --no-baseline --no-ion --more-compartments structured-clone/bug-1929618.js
+    --blinterp-eager structured-clone/bug-1929618.js
+    structured-clone/bug1440748.js
+    --ion-eager --ion-offthread-compile=off --more-compartments structured-clone/bug1440748.js
+    --ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads structured-clone/bug1440748.js
+    --baseline-eager --write-protect-code=off structured-clone/bug1440748.js
+    --no-blinterp --no-baseline --no-ion --more-compartments structured-clone/bug1440748.js
+    --blinterp-eager structured-clone/bug1440748.js
+    structured-clone/bug1687243.js
+    --ion-eager --ion-offthread-compile=off --more-compartments structured-clone/bug1687243.js
+    --ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads structured-clone/bug1687243.js
+    --baseline-eager --write-protect-code=off structured-clone/bug1687243.js
+    --no-blinterp --no-baseline --no-ion --more-compartments structured-clone/bug1687243.js
+    --blinterp-eager structured-clone/bug1687243.js
+    structured-clone/bug1875797.js
+    --ion-eager --ion-offthread-compile=off --more-compartments structured-clone/bug1875797.js
+    --ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads structured-clone/bug1875797.js
+    --baseline-eager --write-protect-code=off structured-clone/bug1875797.js
+    --no-blinterp --no-baseline --no-ion --more-compartments structured-clone/bug1875797.js
+    --blinterp-eager structured-clone/bug1875797.js
+    structured-clone/bug1888727.js
+    --ion-eager --ion-offthread-compile=off --more-compartments structured-clone/bug1888727.js
+    --ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads structured-clone/bug1888727.js
+    --baseline-eager --write-protect-code=off structured-clone/bug1888727.js
+    --no-blinterp --no-baseline --no-ion --more-compartments structured-clone/bug1888727.js
+    --blinterp-eager structured-clone/bug1888727.js
+    structured-clone/bug1896557.js
+    --ion-eager --ion-offthread-compile=off --more-compartments structured-clone/bug1896557.js
+    --ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads structured-clone/bug1896557.js
+    --baseline-eager --write-protect-code=off structured-clone/bug1896557.js
+    --no-blinterp --no-baseline --no-ion --more-compartments structured-clone/bug1896557.js
+    --blinterp-eager structured-clone/bug1896557.js
+    structured-clone/bug1925703.js
+    --ion-eager --ion-offthread-compile=off --more-compartments structured-clone/bug1925703.js
+    --ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads structured-clone/bug1925703.js
+    --baseline-eager --write-protect-code=off structured-clone/bug1925703.js
+    --no-blinterp --no-baseline --no-ion --more-compartments structured-clone/bug1925703.js
+    --blinterp-eager structured-clone/bug1925703.js
+    structured-clone/errors.js
+    --ion-eager --ion-offthread-compile=off --more-compartments structured-clone/errors.js
+    --ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads structured-clone/errors.js
+    --baseline-eager --write-protect-code=off structured-clone/errors.js
+    --no-blinterp --no-baseline --no-ion --more-compartments structured-clone/errors.js
+    --blinterp-eager structured-clone/errors.js
+    structured-clone/growable-shared-array-buffers.js
+    --ion-eager --ion-offthread-compile=off --more-compartments structured-clone/growable-shared-array-buffers.js
+    --ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads structured-clone/growable-shared-array-buffers.js
+    --baseline-eager --write-protect-code=off structured-clone/growable-shared-array-buffers.js
+    --no-blinterp --no-baseline --no-ion --more-compartments structured-clone/growable-shared-array-buffers.js
+    --blinterp-eager structured-clone/growable-shared-array-buffers.js
+    structured-clone/resizable-array-buffers-transferable.js
+    --ion-eager --ion-offthread-compile=off --more-compartments structured-clone/resizable-array-buffers-transferable.js
+    --ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads structured-clone/resizable-array-buffers-transferable.js
+    --baseline-eager --write-protect-code=off structured-clone/resizable-array-buffers-transferable.js
+    --no-blinterp --no-baseline --no-ion --more-compartments structured-clone/resizable-array-buffers-transferable.js
+    --blinterp-eager structured-clone/resizable-array-buffers-transferable.js
+    structured-clone/resizable-array-buffers.js
+    --ion-eager --ion-offthread-compile=off --more-compartments structured-clone/resizable-array-buffers.js
+    --ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads structured-clone/resizable-array-buffers.js
+    --baseline-eager --write-protect-code=off structured-clone/resizable-array-buffers.js
+    --no-blinterp --no-baseline --no-ion --more-compartments structured-clone/resizable-array-buffers.js
+    --blinterp-eager structured-clone/resizable-array-buffers.js
+    structured-clone/roundtrip.js
+    --ion-eager --ion-offthread-compile=off --more-compartments structured-clone/roundtrip.js
+    --ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads structured-clone/roundtrip.js
+    --baseline-eager --write-protect-code=off structured-clone/roundtrip.js
+    --no-blinterp --no-baseline --no-ion --more-compartments structured-clone/roundtrip.js
+    --blinterp-eager structured-clone/roundtrip.js
+    structured-clone/sab-errMsg.js
+    --ion-eager --ion-offthread-compile=off --more-compartments structured-clone/sab-errMsg.js
+    --ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads structured-clone/sab-errMsg.js
+    --baseline-eager --write-protect-code=off structured-clone/sab-errMsg.js
+    --no-blinterp --no-baseline --no-ion --more-compartments structured-clone/sab-errMsg.js
+    --blinterp-eager structured-clone/sab-errMsg.js
+    structured-clone/saved-stack.js
+    --ion-eager --ion-offthread-compile=off --more-compartments structured-clone/saved-stack.js
+    --ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads structured-clone/saved-stack.js
+    --baseline-eager --write-protect-code=off structured-clone/saved-stack.js
+    --no-blinterp --no-baseline --no-ion --more-compartments structured-clone/saved-stack.js
+    --blinterp-eager structured-clone/saved-stack.js
+    structured-clone/tenuring.js
+    --ion-eager --ion-offthread-compile=off --more-compartments structured-clone/tenuring.js
+    --ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads structured-clone/tenuring.js
+    --baseline-eager --write-protect-code=off structured-clone/tenuring.js
+    --no-blinterp --no-baseline --no-ion --more-compartments structured-clone/tenuring.js
+    --blinterp-eager structured-clone/tenuring.js
+    structured-clone/transferable-across-segments.js
+    --ion-eager --ion-offthread-compile=off --more-compartments structured-clone/transferable-across-segments.js
+    --ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads structured-clone/transferable-across-segments.js
+    --baseline-eager --write-protect-code=off structured-clone/transferable-across-segments.js
+    --no-blinterp --no-baseline --no-ion --more-compartments structured-clone/transferable-across-segments.js
+    --blinterp-eager structured-clone/transferable-across-segments.js
+    structured-clone/transferable-cleanup.js
+    --ion-eager --ion-offthread-compile=off --more-compartments structured-clone/transferable-cleanup.js
+    --ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads structured-clone/transferable-cleanup.js
+    --baseline-eager --write-protect-code=off structured-clone/transferable-cleanup.js
+    --no-blinterp --no-baseline --no-ion --more-compartments structured-clone/transferable-cleanup.js
+    --blinterp-eager structured-clone/transferable-cleanup.js
+    structured-clone/version3.js
+    --ion-eager --ion-offthread-compile=off --more-compartments structured-clone/version3.js
+    --ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads structured-clone/version3.js
+    --baseline-eager --write-protect-code=off structured-clone/version3.js
+    --no-blinterp --no-baseline --no-ion --more-compartments structured-clone/version3.js
+    --blinterp-eager structured-clone/version3.js
+TIMEOUTS:
+Result summary:
+Passed: 0
+Failed: 138

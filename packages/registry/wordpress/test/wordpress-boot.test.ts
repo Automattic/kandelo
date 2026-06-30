@@ -14,11 +14,10 @@
 
 import { describe, it, expect, afterAll } from "vitest";
 import { existsSync, writeFileSync, unlinkSync } from "node:fs";
-import { join, dirname } from "node:path";
+import { join, dirname, posix } from "node:path";
 import { fileURLToPath } from "node:url";
 import { runCentralizedProgram } from "../../../../host/test/centralized-test-helper";
 import { tryResolveBinary } from "../../../../host/src/binary-resolver";
-import { NodePlatformIO } from "../../../../host/src/platform/node";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const repoRoot = join(__dirname, "../../../..");
@@ -27,21 +26,37 @@ const phpBinaryPath =
   join(repoRoot, "packages/registry/php/php-src/sapi/cli/php");
 const wpDir = join(repoRoot, "packages/registry/wordpress/wordpress");
 const dbPath = join(wpDir, "wp-content/database/wordpress.db");
+const guestWpDir = "/wordpress";
+const requiredWordPressFiles = [
+  "wp-settings.php",
+  "wp-load.php",
+  "wp-config.php",
+  "wp-content/db.php",
+  "wp-content/database",
+  "wp-content/plugins/sqlite-database-integration/load.php",
+];
 
 const PHP_AVAILABLE = existsSync(phpBinaryPath);
-const WP_AVAILABLE = existsSync(join(wpDir, "wp-settings.php"));
+const missingWordPressFile = requiredWordPressFiles.find(
+  (path) => !existsSync(join(wpDir, path)),
+);
+const WP_AVAILABLE = missingWordPressFile === undefined;
 
 const SKIP_REASON = !PHP_AVAILABLE
   ? "PHP binary not built"
   : !WP_AVAILABLE
-    ? "WordPress not downloaded (run packages/registry/wordpress/setup.sh)"
+    ? `WordPress setup incomplete: missing ${missingWordPressFile} (run packages/registry/wordpress/setup.sh)`
     : "";
 
 // Helper: write a PHP script file, run it, clean up
-function writeTempScript(name: string, content: string): string {
-  const path = join(wpDir, name);
-  writeFileSync(path, content);
-  return path;
+function writeTempScript(name: string, content: string): { hostPath: string; guestPath: string } {
+  const hostPath = join(wpDir, name);
+  writeFileSync(hostPath, content);
+  return { hostPath, guestPath: posix.join(guestWpDir, name) };
+}
+
+function wordpressMounts(): Array<{ mountPoint: string; hostPath: string; readonly: boolean }> {
+  return [{ mountPoint: guestWpDir, hostPath: wpDir, readonly: false }];
 }
 
 const tempScripts: string[] = [];
@@ -56,8 +71,8 @@ describe.skipIf(!!SKIP_REASON)("WordPress on kandelo", () => {
   it("PHP can parse wp-settings.php without syntax errors", async () => {
     const { stdout, exitCode } = await runCentralizedProgram({
       programPath: phpBinaryPath,
-      argv: ["php", "-l", join(wpDir, "wp-settings.php")],
-      io: new NodePlatformIO(),
+      argv: ["php", "-l", posix.join(guestWpDir, "wp-settings.php")],
+      extraMounts: wordpressMounts(),
       timeout: 30_000,
     });
     expect(exitCode).toBe(0);
@@ -99,13 +114,13 @@ if (isset($wpdb)) {
 
 echo "BOOT_OK\\n";
 `);
-    tempScripts.push(script);
+    tempScripts.push(script.hostPath);
 
     const { stdout, stderr, exitCode } = await runCentralizedProgram({
       programPath: phpBinaryPath,
-      argv: ["php", script],
+      argv: ["php", script.guestPath],
       env: ["HOME=/tmp", "TMPDIR=/tmp"],
-      io: new NodePlatformIO(),
+      extraMounts: wordpressMounts(),
       timeout: 30_000,
     });
 
