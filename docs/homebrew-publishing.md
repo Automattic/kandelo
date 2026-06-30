@@ -227,6 +227,16 @@ the prefix. Package-specific Node and browser outcome text may be supplied via
 only when `KANDELO_HOMEBREW_BROWSER_SMOKE_STATUS=success` and the browser VFS
 smoke artifact environment is complete.
 
+Trusted publication can also supply
+`KANDELO_HOMEBREW_BROWSER_SMOKE_SUMMARY=/path/to/summary.json` from
+`scripts/homebrew-package-browser-smoke.ts`. When present, that summary is the
+authoritative browser outcome for the current formula and arch: successful
+wasm32 package entries become `runtime_support = ["node", "browser"]` and
+`browser_compatible = true`; failed or skipped entries stay Node-only and
+record the concrete browser cases, reasons, and artifact paths in the
+`browser_smoke` provenance outcome. The older manual browser-smoke environment
+variables remain available for transitional and one-off runs.
+
 ## VFS Planning And Building
 
 Homebrew-derived VFS images are built from sidecars and verified bottle bytes,
@@ -298,17 +308,45 @@ evidence remains local evidence until the trusted workflow publishes GHCR
 bottle bytes and tap sidecars.
 
 Browser compatibility requires a separate browser smoke. For the current
-`hello` path, the trusted publisher builds a precomposed wasm32 VFS image,
-serves it through the browser demo, runs Chromium Playwright against
-`apps/browser-demos/test/kandelo-homebrew.spec.ts`, and executes:
+generic path, the trusted publisher first generates candidate sidecars without
+requiring `browser_compatible=true`, then runs:
 
 ```bash
-/home/linuxbrew/.linuxbrew/bin/hello --version
+npx tsx scripts/homebrew-package-browser-smoke.ts \
+  --tap-root /path/to/kandelo-homebrew \
+  --formula sqlite \
+  --formula bzip2 \
+  --formula xz \
+  --arch wasm32 \
+  --result-dir test-runs/homebrew-package-browser-smoke
 ```
 
-Only after that smoke passes may sidecars record
+The runner materializes one Homebrew-derived VFS image per formula, serves it
+through the browser demo app, launches Chromium with the same cross-origin
+isolation requirements as the browser tests, and uses the dedicated
+`pages/homebrew-smoke/` entry to boot the candidate image through
+`BrowserKernel`. Program packages execute their poured binary directly as the
+first browser-kernel process, using explicit argv such as
+`["/home/linuxbrew/.linuxbrew/bin/bzip2", "--help"]`; sqlite compiles
+`packages/registry/sqlite/test/sqlite_basic.c` against the poured keg, injects
+that validation-only Wasm into the candidate image, and runs it the same way.
+The generic smoke entry only imports the kernel and the explicit VFS path under
+test, so unrelated browser-gallery assets and the default rootfs do not decide
+whether a Homebrew package is browser-compatible.
+
+The browser runner writes `summary.json`, `summary.md`, `current-run.json`,
+`failures.json`, and `outcome-lists/{passed,failed,skipped}-tests.tsv`.
+Skipped outcomes include reasons, such as the wasm64 browser boundary or a
+missing sqlite consumer compiler. Final sidecars are regenerated with
+`KANDELO_HOMEBREW_BROWSER_SMOKE_SUMMARY` after the smoke finishes. Only after
+that smoke passes may sidecars record
 `runtime_support = ["node", "browser"]` and `browser_compatible = true`.
 Packages without a successful browser smoke remain Node-only.
+
+The older `apps/browser-demos/test/kandelo-homebrew.spec.ts` coverage remains
+as app/gallery regression coverage for the published hello image. New
+Homebrew package browser claims should use the generic package runner instead
+of adding per-formula Playwright specs.
 
 ## Browser Gallery Assets
 

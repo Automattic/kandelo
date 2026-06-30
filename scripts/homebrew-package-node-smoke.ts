@@ -29,13 +29,18 @@ import {
 import { NodeKernelHost } from "../host/src/node-kernel-host";
 import { MemoryFileSystem } from "../host/src/vfs/memory-fs";
 import { saveImage } from "../images/vfs/scripts/vfs-image-helpers";
+import {
+  countOutcomes,
+  SkipCase,
+  type SmokeOutcome as Outcome,
+  writeOutcomeLists,
+} from "./homebrew-smoke-outcomes";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const repoRoot = resolve(__dirname, "..");
 const PREFIX = "/home/linuxbrew/.linuxbrew";
 const CELLAR = `${PREFIX}/Cellar`;
 
-type OutcomeStatus = "pass" | "fail" | "skip";
 type FormulaName = "sqlite" | "bzip2" | "xz";
 
 interface CliOptions {
@@ -49,25 +54,10 @@ interface CliOptions {
   beadId: string;
 }
 
-interface Outcome {
-  name: string;
-  status: OutcomeStatus;
-  durationMs: number;
-  details?: string;
-  error?: string;
-}
-
 interface BuiltVfs {
   fs: MemoryFileSystem;
   imageBytes: Uint8Array;
   reportPath: string;
-}
-
-class SkipCase extends Error {
-  constructor(message: string) {
-    super(message);
-    this.name = "SkipCase";
-  }
 }
 
 async function main(): Promise<void> {
@@ -488,33 +478,6 @@ function usage(code: number, message?: string): never {
   process.exit(code);
 }
 
-function writeOutcomeLists(resultDir: string, outcomes: Outcome[]): void {
-  const listsDir = join(resultDir, "outcome-lists");
-  mkdirSync(listsDir, { recursive: true });
-  const passed = outcomes.filter((outcome) => outcome.status === "pass");
-  const failed = outcomes.filter((outcome) => outcome.status === "fail");
-  const skipped = outcomes.filter((outcome) => outcome.status === "skip");
-  writeFileSync(
-    join(listsDir, "passed-tests.tsv"),
-    ["test\tduration_ms\tdetails", ...passed.map((outcome) =>
-      `${outcome.name}\t${outcome.durationMs}\t${tsv(outcome.details ?? "")}`,
-    )].join("\n") + "\n",
-  );
-  writeFileSync(
-    join(listsDir, "failed-tests.tsv"),
-    ["test\tduration_ms\terror", ...failed.map((outcome) =>
-      `${outcome.name}\t${outcome.durationMs}\t${tsv(outcome.error ?? outcome.details ?? "")}`,
-    )].join("\n") + "\n",
-  );
-  writeFileSync(
-    join(listsDir, "skipped-tests.tsv"),
-    ["test\treason", ...skipped.map((outcome) =>
-      `${outcome.name}\t${tsv(outcome.details ?? "")}`,
-    )].join("\n") + "\n",
-  );
-  writeFileSync(join(resultDir, "failures.json"), `${JSON.stringify(failed, null, 2)}\n`);
-}
-
 function writeSummary(
   options: CliOptions,
   data: {
@@ -612,14 +575,6 @@ function writeCurrentRun(
   renameSync(tmp, out);
 }
 
-function countOutcomes(outcomes: Outcome[]): { pass: number; fail: number; skip: number } {
-  return {
-    pass: outcomes.filter((outcome) => outcome.status === "pass").length,
-    fail: outcomes.filter((outcome) => outcome.status === "fail").length,
-    skip: outcomes.filter((outcome) => outcome.status === "skip").length,
-  };
-}
-
 function readJsonFile<T>(path: string): T {
   return JSON.parse(readFileSync(path, "utf8")) as T;
 }
@@ -632,10 +587,6 @@ function gitRevParse(path: string): string {
 
 function toArrayBuffer(bytes: Uint8Array): ArrayBuffer {
   return bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer;
-}
-
-function tsv(value: string): string {
-  return value.replace(/\t/g, " ").replace(/\r?\n/g, "\\n");
 }
 
 main().catch((err) => {

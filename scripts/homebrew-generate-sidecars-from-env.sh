@@ -176,23 +176,84 @@ def failed_outcome(name, reason):
         "skipped": [],
     }
 
+def browser_outcome_from_summary(summary_path, formula, arch):
+    with pathlib.Path(summary_path).open("r", encoding="utf-8") as f:
+        summary = json.load(f)
+    packages = summary.get("packages")
+    if not isinstance(packages, list):
+        raise SystemExit(f"browser smoke summary lacks packages list: {summary_path}")
+    matches = [
+        package for package in packages
+        if package.get("formula") == formula and package.get("arch") == arch
+    ]
+    if len(matches) != 1:
+        raise SystemExit(
+            f"browser smoke summary expected one {formula} {arch} entry, got {len(matches)}"
+        )
+    package = matches[0]
+    status = package.get("status")
+    if status not in {"success", "failed", "skipped"}:
+        raise SystemExit(f"invalid browser smoke summary status for {formula} {arch}: {status!r}")
+
+    def strings(key):
+        value = package.get(key, [])
+        if not isinstance(value, list):
+            raise SystemExit(f"browser smoke summary {formula} {arch} {key} must be a list")
+        out = []
+        for entry in value:
+            text = str(entry)
+            if text:
+                out.append(text)
+        return out
+
+    passed = strings("passed")
+    failed = strings("failed")
+    skipped = strings("skipped")
+    if status == "success" and not passed:
+        raise SystemExit(f"browser smoke summary success for {formula} {arch} has no passed evidence")
+    if status == "failed" and not failed:
+        failed = [f"browser smoke failed for {formula} {arch}; see {summary_path}"]
+    if status == "skipped" and not skipped:
+        skipped = [package.get("skip_reason") or f"browser smoke skipped for {formula} {arch}; see {summary_path}"]
+
+    outcome = {
+        "name": "browser_smoke",
+        "status": status,
+        "passed": passed,
+        "failed": failed,
+        "skipped": skipped,
+    }
+    if status == "skipped":
+        outcome["skip_reason"] = package.get("skip_reason") or skipped[0]
+    return status, outcome
+
 links, link_env = package_links_and_env()
-browser_smoke_status = os.environ.get("KANDELO_HOMEBREW_BROWSER_SMOKE_STATUS", "skipped")
-if browser_smoke_status not in {"success", "skipped", "failed"}:
-    raise SystemExit(f"invalid KANDELO_HOMEBREW_BROWSER_SMOKE_STATUS={browser_smoke_status!r}")
+browser_summary = os.environ.get("KANDELO_HOMEBREW_BROWSER_SMOKE_SUMMARY", "")
+browser_smoke_outcome = None
+if browser_summary:
+    browser_smoke_status, browser_smoke_outcome = browser_outcome_from_summary(
+        browser_summary,
+        formula,
+        arch,
+    )
+else:
+    browser_smoke_status = os.environ.get("KANDELO_HOMEBREW_BROWSER_SMOKE_STATUS", "skipped")
+    if browser_smoke_status not in {"success", "skipped", "failed"}:
+        raise SystemExit(f"invalid KANDELO_HOMEBREW_BROWSER_SMOKE_STATUS={browser_smoke_status!r}")
 browser_compatible = browser_smoke_status == "success"
 if browser_compatible and arch != "wasm32":
     raise SystemExit("browser smoke can only mark wasm32 bottles browser-compatible")
 runtime_support = ["node", "browser"] if browser_compatible else ["node"]
 
-browser_reason = os.environ.get(
-    "KANDELO_HOMEBREW_BROWSER_SMOKE_REASON",
-    f"No successful browser VFS smoke was recorded for {formula} {arch}.",
-)
-browser_smoke_outcome = skipped_outcome("browser_smoke", browser_reason)
-if browser_smoke_status == "failed":
-    browser_smoke_outcome = failed_outcome("browser_smoke", browser_reason)
-if browser_compatible:
+if browser_smoke_outcome is None:
+    browser_reason = os.environ.get(
+        "KANDELO_HOMEBREW_BROWSER_SMOKE_REASON",
+        f"No successful browser VFS smoke was recorded for {formula} {arch}.",
+    )
+    browser_smoke_outcome = skipped_outcome("browser_smoke", browser_reason)
+    if browser_smoke_status == "failed":
+        browser_smoke_outcome = failed_outcome("browser_smoke", browser_reason)
+if browser_compatible and not browser_summary:
     vfs_image = os.environ.get("KANDELO_HOMEBREW_VFS_IMAGE", "")
     vfs_report = os.environ.get("KANDELO_HOMEBREW_VFS_REPORT", "")
     browser_url = os.environ.get("KANDELO_HOMEBREW_BROWSER_SMOKE_URL", "")
