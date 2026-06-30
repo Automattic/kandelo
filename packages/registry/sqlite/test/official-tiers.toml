@@ -1,7 +1,7 @@
 [[tiers]]
 name = "sqlite-official-smoke-v1"
 permutation = "veryquick"
-hosts = ["node"]
+hosts = ["node", "browser"]
 timeout_ms = 600000
 gate = false
 description = "Small deterministic official-runner smoke for Homebrew SQLite status."
@@ -13,9 +13,8 @@ tests = [
 ]
 
 [tiers.browser_status]
-status = "deferred"
-follow_up = "kd-1mr.2.4.1"
-reason = "Generic Homebrew browser smoke exists in kd-1mr.2.1, but no Homebrew-derived SQLite official Tcl-runner validation image emits official outcome lists yet."
+status = "supported"
+reason = "Runs through the browser SQLite official Tcl-runner image and emits official outcome lists for the smoke tier."
 
 [[tiers]]
 name = "sqlite-official-veryquick-shards-v1"

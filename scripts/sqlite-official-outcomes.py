@@ -563,17 +563,12 @@ def write_summary_md(
     for key, value in summary["artifacts"].items():
         lines.append(f"- `{key}`: `{value}`")
     if summary.get("browser_status"):
-        lines.extend(
-            [
-                "",
-                "## Browser Status",
-                "",
-                f"Status: `{summary['browser_status'].get('status', 'unknown')}`",
-                f"Follow-up: `{summary['browser_status'].get('follow_up', '')}`",
-                "",
-                summary["browser_status"].get("reason", ""),
-            ]
-        )
+        lines.extend(["", "## Browser Status", ""])
+        lines.append(f"Status: `{summary['browser_status'].get('status', 'unknown')}`")
+        if summary["browser_status"].get("follow_up"):
+            lines.append(f"Follow-up: `{summary['browser_status']['follow_up']}`")
+        if summary["browser_status"].get("reason"):
+            lines.extend(["", summary["browser_status"]["reason"]])
     lines.extend(["", "## Planned Tests", ""])
     for item in planned:
         lines.append(f"- `{item['test']}`")

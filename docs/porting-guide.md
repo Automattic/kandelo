@@ -80,13 +80,22 @@ bash scripts/dev-shell.sh bash scripts/run-sqlite-official-tier.sh \
   --tier sqlite-official-smoke-v1 \
   --host node \
   --results-root test-runs/<bead>/sqlite-official-smoke-v1-node
+
+bash scripts/dev-shell.sh bash scripts/run-sqlite-official-tier.sh \
+  --tier sqlite-official-smoke-v1 \
+  --host browser \
+  --results-root test-runs/<bead>/sqlite-official-smoke-v1-browser
 ```
 
 The tier definitions live in
 `packages/registry/sqlite/test/official-tiers.toml`. `sqlite-official-smoke-v1`
-is a non-gating Node smoke over a small deterministic official-test allowlist.
-Longer `veryquick`, `full`, and `all` coverage belongs in explicit sharded or
-investigation convoys, not the default package or Homebrew bottle gate.
+is a non-gating Node and browser smoke over a small deterministic official-test
+allowlist. Browser runs use the SQLite official Tcl-runner VFS image built by
+`images/vfs/scripts/build-sqlite-test-vfs-image.sh`; the browser app still
+needs the canonical `host/wasm/rootfs.vfs` artifact available for Vite's host
+runtime imports. Longer `veryquick`, `full`, and `all` coverage belongs in
+explicit sharded or investigation convoys, not the default package or Homebrew
+bottle gate.
 
 Every tier run writes durable outcome lists under `outcome-lists/`:
 `passed-tests.tsv`, `failed-tests.tsv`, `skipped-tests.tsv`, and
