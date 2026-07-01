@@ -13,24 +13,17 @@ set -euo pipefail
 #
 # Output: packages/registry/perl/bin/perl.wasm
 
-PERL_VERSION="${WASM_POSIX_DEP_VERSION:-${PERL_VERSION:-5.40.3}}"
+PERL_VERSION="${PERL_VERSION:-5.40.3}"
 PERL_CROSS_VERSION="${PERL_CROSS_VERSION:-1.6.4}"
-SOURCE_URL="${WASM_POSIX_DEP_SOURCE_URL:-https://www.cpan.org/src/5.0/perl-${PERL_VERSION}.tar.gz}"
-SOURCE_SHA256="${WASM_POSIX_DEP_SOURCE_SHA256:-}"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
-WORK_DIR="${WASM_POSIX_DEP_WORK_DIR:-$SCRIPT_DIR}"
-SRC_DIR="$WORK_DIR/perl-src"
-BIN_DIR="${WASM_POSIX_DEP_OUT_DIR:-$SCRIPT_DIR/bin}"
-# Worktree-local SDK on PATH (no global npm link required).
-# shellcheck source=/dev/null
-source "$REPO_ROOT/sdk/activate.sh"
-SYSROOT="${WASM_POSIX_SYSROOT:-$REPO_ROOT/sysroot}"
-export WASM_POSIX_SYSROOT="$SYSROOT"
+SRC_DIR="$SCRIPT_DIR/perl-src"
+BIN_DIR="$SCRIPT_DIR/bin"
+SYSROOT="$REPO_ROOT/sysroot"
 
 # --- Prerequisites ---
 if ! command -v wasm32posix-cc &>/dev/null; then
-    echo "ERROR: wasm32posix-cc not found after sourcing sdk/activate.sh." >&2
+    echo "ERROR: wasm32posix-cc not found. Run 'npm link' in sdk/ first." >&2
     exit 1
 fi
 
@@ -38,6 +31,8 @@ if [ ! -f "$SYSROOT/lib/libc.a" ]; then
     echo "ERROR: sysroot not found. Run: bash build.sh && bash scripts/build-musl.sh" >&2
     exit 1
 fi
+
+export WASM_POSIX_SYSROOT="$SYSROOT"
 
 # perl-cross's configure scripts require GNU tools (sed -r, readelf, objdump).
 # scripts/dev-shell.sh provides those tools in the pure build environment.
@@ -52,7 +47,7 @@ if [ -z "${LLVM_BIN:-}" ]; then
 fi
 if [ -d "$LLVM_BIN" ]; then
     # Create temp dir with readelf/objdump symlinks for perl-cross
-    TOOL_DIR="$WORK_DIR/.host-tools"
+    TOOL_DIR="$SCRIPT_DIR/.host-tools"
     mkdir -p "$TOOL_DIR"
     ln -sf "$LLVM_BIN/llvm-readelf" "$TOOL_DIR/readelf"
     ln -sf "$LLVM_BIN/llvm-objdump" "$TOOL_DIR/objdump"
@@ -62,14 +57,11 @@ fi
 # --- Download Perl source + perl-cross overlay ---
 if [ ! -d "$SRC_DIR" ]; then
     echo "==> Downloading Perl $PERL_VERSION..."
-    TARBALL="$(basename "$SOURCE_URL")"
-    curl --retry 10 --retry-delay 5 --retry-max-time 300 --retry-all-errors -fsSL "$SOURCE_URL" -o "/tmp/$TARBALL"
-    if [ -n "$SOURCE_SHA256" ]; then
-        echo "==> Verifying source sha256..."
-        echo "$SOURCE_SHA256  /tmp/$TARBALL" | shasum -a 256 -c -
-    fi
+    TARBALL="perl-${PERL_VERSION}.tar.gz"
+    URL="https://www.cpan.org/src/5.0/${TARBALL}"
+    curl --retry 10 --retry-delay 5 --retry-max-time 300 --retry-all-errors -fsSL "$URL" -o "/tmp/$TARBALL"
     mkdir -p "$SRC_DIR"
-    tar xf "/tmp/$TARBALL" -C "$SRC_DIR" --strip-components=1
+    tar xzf "/tmp/$TARBALL" -C "$SRC_DIR" --strip-components=1
     rm "/tmp/$TARBALL"
 
     echo "==> Downloading perl-cross $PERL_CROSS_VERSION..."
@@ -471,7 +463,7 @@ if [ ! -f config.sh ]; then
         -Dd_crypt=undef \
         -Dd_times=undef \
         -Dd_system=undef \
-        2>&1 | tee "$WORK_DIR/configure.log" | tail -50
+        2>&1 | tee "$SCRIPT_DIR/configure.log" | tail -50
 
     echo "==> Configure complete."
 
@@ -513,7 +505,7 @@ fi
 
 # --- Build ---
 echo "==> Building Perl (this takes a while)..."
-make -j"$(sysctl -n hw.ncpu 2>/dev/null || nproc)" perl 2>&1 | tee "$WORK_DIR/build.log" | tail -80
+make -j"$(sysctl -n hw.ncpu 2>/dev/null || nproc)" perl 2>&1 | tee "$SCRIPT_DIR/build.log" | tail -80
 
 echo "==> Collecting binary..."
 mkdir -p "$BIN_DIR"
@@ -525,7 +517,7 @@ if [ -f "$SRC_DIR/perl" ]; then
 else
     echo "ERROR: perl binary not found after build" >&2
     echo "==> Last 100 lines of build.log:"
-    tail -100 "$WORK_DIR/build.log"
+    tail -100 "$SCRIPT_DIR/build.log"
     exit 1
 fi
 
@@ -536,4 +528,4 @@ echo "Binary: $BIN_DIR/perl.wasm"
 # Install into local-binaries/ so the resolver picks the freshly-built
 # binary over the fetched release.
 source "$REPO_ROOT/scripts/install-local-binary.sh"
-install_local_binary perl "$BIN_DIR/perl.wasm"
+install_local_binary perl "$SCRIPT_DIR/bin/perl.wasm"
