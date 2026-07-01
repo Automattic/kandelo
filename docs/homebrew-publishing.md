@@ -227,6 +227,45 @@ the prefix. Package-specific Node and browser outcome text may be supplied via
 only when `KANDELO_HOMEBREW_BROWSER_SMOKE_STATUS=success` and the browser VFS
 smoke artifact environment is complete.
 
+### Fork Instrumentation Disposition
+
+Every bottle records a `fork_instrumentation` disposition. The schema and the
+composite-status planner accept only four values:
+
+- `required`: the program forks/execs at runtime (shell pipelines, command
+  substitution, subshells, `:!` shell-outs, hooks, pagers, credential
+  helpers), so `wasm-fork-instrument` transformed the binary and the kernel
+  must provide the fork import.
+- `not-required`: the program never forks; `wasm-fork-instrument` was a no-op
+  and the binary is byte-identical.
+- `disabled`: fork instrumentation was deliberately turned off for the binary.
+- `unknown`: the disposition has not been determined.
+
+`auto` is a build-time placeholder, not a publishable value; it must never
+reach a sidecar. The trusted wrapper derives the bottle disposition from the
+per-output `fork_instrumentation` declared in `packages/registry/<name>/
+package.toml`. Declare it on each `[[outputs]]` entry (or once at the package
+top level). Outputs are aggregated conservatively: any `required` output makes
+the whole bottle `required`; a package that declares nothing is reported as
+`unknown` rather than an invalid `auto`. Whether a program forks matches
+whether its `build-<name>.sh` applies `wasm-fork-instrument` to a forking
+binary (see `docs/fork-instrumentation.md`).
+
+### Bottle URLs Must Be Publishable
+
+A bottle's `url` (and any `fallback_url`) must be an `https://` address, the
+canonical publish destination for the bytes:
+
+- GHCR OCI blob (what `scripts/homebrew-ghcr-upload.sh` produces):
+  `https://ghcr.io/v2/automattic/kandelo-homebrew/<formula>/blobs/sha256:<sha256>`.
+
+A `file://` url is only a local pre-publish build artifact. It fails both the
+sidecar schema (`httpsUrl`) and the composite-status planner, so it is never a
+publishable disposition. The bottle bytes still have to be uploaded to that
+`https` destination by the trusted publish flow before the url resolves;
+recording the canonical url makes the sidecar structurally publishable, and the
+upload is the remaining publication step.
+
 ## VFS Planning And Building
 
 Homebrew-derived VFS images are built from sidecars and verified bottle bytes,
