@@ -244,6 +244,12 @@ impl Generator<'_> {
             summary.provenance_reports += package_output.provenance_reports;
             package_values.push(package_output.metadata_value);
         }
+        self.merge_previous_packages(&mut package_values);
+        package_values.sort_by(|a, b| {
+            let a_name = a.get("name").and_then(Value::as_str).unwrap_or_default();
+            let b_name = b.get("name").and_then(Value::as_str).unwrap_or_default();
+            a_name.cmp(b_name)
+        });
 
         let metadata = json!({
             "schema": 1,
@@ -273,7 +279,8 @@ impl Generator<'_> {
             json_hashes.insert(rel, sha);
         }
 
-        for mut provenance in self.pending_provenance {
+        let pending_provenance = std::mem::take(&mut self.pending_provenance);
+        for mut provenance in pending_provenance {
             let metadata_sha = required_hash(&json_hashes, METADATA_REL)?;
             let formula_sha = required_hash(&json_hashes, &provenance.formula_sidecar_path)?;
             let link_sha = required_hash(&json_hashes, &provenance.link_manifest_path)?;
@@ -306,8 +313,123 @@ impl Generator<'_> {
                 &provenance.value,
             )?;
         }
+        self.refresh_provenance_hashes(&package_values, &json_hashes)?;
 
         Ok(summary)
+    }
+
+    fn merge_previous_packages(&self, package_values: &mut Vec<Value>) {
+        let Some(previous) = self.previous else {
+            return;
+        };
+        if previous.get("kandelo_abi").and_then(Value::as_u64) != Some(self.input.kandelo_abi) {
+            return;
+        }
+
+        let current_names: BTreeSet<String> = package_values
+            .iter()
+            .filter_map(|package| package.get("name").and_then(Value::as_str))
+            .map(ToOwned::to_owned)
+            .collect();
+        let Some(previous_packages) = previous.get("packages").and_then(Value::as_array) else {
+            return;
+        };
+
+        for package in previous_packages {
+            let Some(name) = package.get("name").and_then(Value::as_str) else {
+                continue;
+            };
+            if !current_names.contains(name) {
+                package_values.push(package.clone());
+            }
+        }
+    }
+
+    fn refresh_provenance_hashes(
+        &self,
+        package_values: &[Value],
+        json_hashes: &BTreeMap<String, String>,
+    ) -> Result<(), String> {
+        let metadata_sha =
+            hash_for_rel(self.options.tap_root.as_path(), json_hashes, METADATA_REL)?;
+        for package in package_values {
+            let Some(name) = package.get("name").and_then(Value::as_str) else {
+                continue;
+            };
+            let Some(version) = package.get("version").and_then(Value::as_str) else {
+                continue;
+            };
+            let Some(rebuild) = package.get("bottle_rebuild").and_then(Value::as_u64) else {
+                continue;
+            };
+            let Some(formula_sidecar_path) =
+                package.get("formula_metadata").and_then(Value::as_str)
+            else {
+                continue;
+            };
+            let formula_sha = hash_for_rel(
+                self.options.tap_root.as_path(),
+                json_hashes,
+                formula_sidecar_path,
+            )?;
+            let Some(bottles) = package.get("bottles").and_then(Value::as_array) else {
+                continue;
+            };
+            for bottle in bottles {
+                if bottle.get("status").and_then(Value::as_str) != Some("success") {
+                    continue;
+                }
+                let Some(arch) = bottle.get("arch").and_then(Value::as_str) else {
+                    continue;
+                };
+                let Some(link_manifest_path) = bottle.get("link_manifest").and_then(Value::as_str)
+                else {
+                    continue;
+                };
+                let link_sha = hash_for_rel(
+                    self.options.tap_root.as_path(),
+                    json_hashes,
+                    link_manifest_path,
+                )?;
+                let provenance_path = format!(
+                    "Kandelo/reports/{name}-{version}-rebuild{rebuild}-{arch}.provenance.json"
+                );
+                let full_path = self.options.tap_root.join(&provenance_path);
+                if !full_path.is_file() {
+                    return Err(format!(
+                        "provenance report referenced by metadata does not exist: {}",
+                        full_path.display()
+                    ));
+                }
+                let mut provenance = load_json(&full_path)?;
+                provenance["metadata"] = json!({
+                    "metadata_json": {
+                        "path": METADATA_REL,
+                        "sha256": metadata_sha,
+                    },
+                    "formula_json": {
+                        "path": formula_sidecar_path,
+                        "sha256": formula_sha,
+                    },
+                    "link_manifest_json": {
+                        "path": link_manifest_path,
+                        "sha256": link_sha,
+                    },
+                    "provenance_json": {
+                        "path": provenance_path,
+                        "sha256": ZERO_SHA256,
+                    },
+                });
+                let normalized_sha = json_sha256(&provenance)?;
+                set_pointer(
+                    &mut provenance,
+                    "/metadata/provenance_json/sha256",
+                    json!(normalized_sha),
+                )?;
+                write_json(&full_path, &provenance)?;
+            }
+        }
+        Ok(())
     }
 
     fn generate_package(
@@ -341,6 +463,12 @@ impl Generator<'_> {
             }
             bottle_values.push(bottle_value);
         }
+        self.merge_previous_bottles(package, &mut bottle_values);
+        bottle_values.sort_by(|a, b| {
+            let a_arch = a.get("arch").and_then(Value::as_str).unwrap_or_default();
+            let b_arch = b.get("arch").and_then(Value::as_str).unwrap_or_default();
+            a_arch.cmp(b_arch)
+        });
 
         let dependencies = dependencies_json(&package.dependencies);
         let full_name = package
@@ -384,6 +512,47 @@ impl Generator<'_> {
             link_manifests,
             provenance_reports,
         })
+    }
+
+    fn merge_previous_bottles(&self, package: &PackageInput, bottle_values: &mut Vec<Value>) {
+        let Some(previous) = self.previous else {
+            return;
+        };
+        if previous.get("kandelo_abi").and_then(Value::as_u64) != Some(self.input.kandelo_abi) {
+            return;
+        }
+        let Some(previous_packages) = previous.get("packages").and_then(Value::as_array) else {
+            return;
+        };
+        let Some(previous_package) = previous_packages.iter().find(|candidate| {
+            candidate.get("name").and_then(Value::as_str) == Some(package.name.as_str())
+                && candidate.get("version").and_then(Value::as_str)
+                    == Some(package.version.as_str())
+                && candidate.get("formula_revision").and_then(Value::as_u64)
+                    == Some(package.formula_revision)
+                && candidate.get("bottle_rebuild").and_then(Value::as_u64)
+                    == Some(package.bottle_rebuild)
+        }) else {
+            return;
+        };
+
+        let current_arches: BTreeSet<String> = bottle_values
+            .iter()
+            .filter_map(|bottle| bottle.get("arch").and_then(Value::as_str))
+            .map(ToOwned::to_owned)
+            .collect();
+        let Some(previous_bottles) = previous_package.get("bottles").and_then(Value::as_array)
+        else {
+            return;
+        };
+        for bottle in previous_bottles {
+            let Some(arch) = bottle.get("arch").and_then(Value::as_str) else {
+                continue;
+            };
+            if !current_arches.contains(arch) {
+                bottle_values.push(bottle.clone());
+            }
+        }
     }
 
     fn generate_bottle(
@@ -720,6 +889,18 @@ fn load_json(path: &Path) -> Result<Value, String> {
     serde_json::from_str(&text).map_err(|e| format!("parse {}: {e}", path.display()))
 }
 
+fn hash_for_rel(
+    tap_root: &Path,
+    json_hashes: &BTreeMap<String, String>,
+    rel: &str,
+) -> Result<String, String> {
+    if let Some(hash) = json_hashes.get(rel) {
+        return Ok(hash.clone());
+    }
+    require_relative_path(rel, "sidecar hash path")?;
+    sha256_file(&tap_root.join(rel))
+}
+
 fn dependencies_json(dependencies: &[DependencyInput]) -> Value {
     let mut dependencies = dependencies.to_vec();
     dependencies.sort_by(|a, b| a.name.cmp(&b.name));
@@ -994,6 +1175,20 @@ mod tests {
         archive.append_data(&mut header, path, bytes).unwrap();
     }
 
+    fn copy_tree(from: &Path, to: &Path) {
+        fs::create_dir_all(to).unwrap();
+        for entry in fs::read_dir(from).unwrap() {
+            let entry = entry.unwrap();
+            let entry_path = entry.path();
+            let target = to.join(entry.file_name());
+            if entry_path.is_dir() {
+                copy_tree(&entry_path, &target);
+            } else {
+                fs::copy(&entry_path, target).unwrap();
+            }
+        }
+    }
+
     fn fixture_input(bottle_file: &str, status: &str) -> Value {
         let mut bottle = json!({
             "arch": "wasm32",
@@ -1198,6 +1393,49 @@ mod tests {
         crate::homebrew_validate::run(vec![
             "--tap-root".to_string(),
             failed.tap_root.to_string_lossy().into_owned(),
+        ])
+        .unwrap();
+    }
+
+    #[test]
+    fn success_generation_preserves_previous_arch_bottles() {
+        let previous = Fixture::new("success");
+        previous.run(None);
+
+        let current = Fixture::new("success");
+        copy_tree(
+            &previous.tap_root.join("Kandelo"),
+            &current.tap_root.join("Kandelo"),
+        );
+
+        let mut input = load_json(&current.input_path).unwrap();
+        input["packages"][0]["bottles"][0]["arch"] = json!("wasm64");
+        input["packages"][0]["bottles"][0]["url"] = json!(
+            "https://example.invalid/kandelo-homebrew/hello-2.12.1-rebuild0-wasm64_kandelo.bottle.tar.gz"
+        );
+        write_json_value(&current.input_path, &input);
+
+        current.run(Some(&previous.tap_root.join("Kandelo/metadata.json")));
+
+        let metadata: Value = load_json(&current.tap_root.join("Kandelo/metadata.json")).unwrap();
+        let bottles = metadata["packages"][0]["bottles"].as_array().unwrap();
+        let arches: Vec<_> = bottles
+            .iter()
+            .map(|bottle| bottle["arch"].as_str().unwrap())
+            .collect();
+        assert_eq!(arches, vec!["wasm32", "wasm64"]);
+        assert_eq!(
+            bottles[0]["link_manifest"],
+            json!("Kandelo/link/hello-2.12.1-rebuild0-wasm32.json")
+        );
+        assert_eq!(
+            bottles[1]["link_manifest"],
+            json!("Kandelo/link/hello-2.12.1-rebuild0-wasm64.json")
+        );
+
+        crate::homebrew_validate::run(vec![
+            "--tap-root".to_string(),
+            current.tap_root.to_string_lossy().into_owned(),
         ])
         .unwrap();
     }

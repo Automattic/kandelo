@@ -115,6 +115,11 @@ For formulae that build Kandelo Wasm artifacts:
    for Homebrew bottle selection. Update Kandelo `build.toml` `revision` only
    when the underlying Kandelo package output bytes legitimately change.
 
+Current dependency-root formulae mirror the registry manifests' architecture
+support: `openssl`, `libcxx`, and `libxml2` build wasm32 and wasm64 bottles;
+`libpng`, `libcurl`, and the hybrid `ncurses` package are wasm32-only until
+their registry manifests opt into wasm64.
+
 Formula Ruby should read these `HOMEBREW_KANDELO_*` variables for values that
 must survive Homebrew environment handling:
 
@@ -123,6 +128,8 @@ HOMEBREW_KANDELO_ROOT
 HOMEBREW_KANDELO_ARCH
 HOMEBREW_KANDELO_NODE
 HOMEBREW_KANDELO_LLVM_BIN
+HOMEBREW_KANDELO_HOST_TOOL_PATH
+HOMEBREW_KANDELO_PKG_CONFIG
 ```
 
 Workflow-facing scripts use `KANDELO_HOMEBREW_*` variables outside Formula
@@ -215,6 +222,18 @@ path calls `scripts/homebrew-publish-sidecars.sh --status failed` so the failed
 attempt is durable while the previous successful bottle remains selectable when
 its fallback fields are complete.
 
+The default trusted sidecar wrapper,
+`scripts/homebrew-generate-sidecars-from-env.sh`, derives non-hello link
+manifests from package kind. Program Formulae link their installed
+`bin/<formula>` into the Homebrew prefix. Library Formulae link the declared
+`[outputs]` headers, static libraries, and pkg-config files from the keg into
+the prefix. Package-specific Node and browser outcome text may be supplied via
+`KANDELO_HOMEBREW_NODE_SMOKE_COMMAND`,
+`KANDELO_HOMEBREW_BROWSER_SMOKE_STATUS`, and
+`KANDELO_HOMEBREW_BROWSER_SMOKE_REASON`; browser compatibility is recorded
+only when `KANDELO_HOMEBREW_BROWSER_SMOKE_STATUS=success` and the browser VFS
+smoke artifact environment is complete.
+
 ## VFS Planning And Building
 
 Homebrew-derived VFS images are built from sidecars and verified bottle bytes,
@@ -264,6 +283,33 @@ npx tsx packages/registry/hello/test/homebrew-node-smoke.ts \
 It clones or reads the tap, builds a Homebrew VFS from published sidecars, runs
 `/home/linuxbrew/.linuxbrew/bin/hello --version` through `NodeKernelHost`, and
 checks negative ABI-mismatch and missing-bottle cases.
+
+For the sqlite/bzip2/xz pilot and later non-hello package checks, use the
+generic package smoke runner against a generated tap root:
+
+```bash
+npx tsx scripts/homebrew-package-node-smoke.ts \
+  --tap-root /path/to/kandelo-homebrew \
+  --formula sqlite \
+  --formula bzip2 \
+  --formula xz \
+  --formula openssl \
+  --formula libcxx \
+  --formula libxml2 \
+  --formula libpng \
+  --formula libcurl \
+  --formula ncurses \
+  --arch wasm32 \
+  --result-dir test-runs/homebrew-package-node-smoke
+```
+
+The runner builds Homebrew VFS images from sidecars, writes passed, failed,
+and skipped outcome lists, runs program package version smokes from the poured
+prefix, and compiles small consumers against poured library headers and static
+libraries before running the validation Wasm on Node. Use a separate wasm64 run
+for formulae whose registry manifests declare `arches = ["wasm32", "wasm64"]`.
+Dry-run bottle evidence remains local evidence until the trusted workflow
+publishes GHCR bottle bytes and tap sidecars.
 
 Browser compatibility requires a separate browser smoke. For the current
 `hello` path, the trusted publisher builds a precomposed wasm32 VFS image,
