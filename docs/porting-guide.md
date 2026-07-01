@@ -63,6 +63,19 @@ headers from an arbitrary host LLVM install; the libcxx package generates and
 ships a version-matched header tree with its `libc++.a` and `libc++abi.a`.
 See `packages/registry/mariadb/build-mariadb.sh` for a complete example.
 
+**Header-scanning build steps (cpp linemarkers + `-P`)**: Some language
+runtimes discover constants at build time by preprocessing a system header and
+scanning the output for `# <line> "file"` linemarkers to learn which headers to
+grep (e.g. Perl's `ext/Errno/Errno_pm.PL` finds the `E*` errno constants this
+way). perl-cross defines `cpp`/`cpprun`/`cppstdin` as `"$cc -E -P"`, and `-P`
+*suppresses* linemarkers — so on the wasm cross target the scan discovers zero
+headers and silently produces nothing (Errno then dies "No error definitions
+found" and `use Errno` fails, even though the constants are plain `#define E*`
+in `$WASM_POSIX_SYSROOT/include/bits/errno.h`). When a `.PL`/config step relies
+on cpp linemarkers, point it at the sysroot header directly rather than
+depending on linemarker discovery. See the `Errno_pm.PL` fallback patch in
+`packages/registry/perl/build-perl.sh`.
+
 ### Step 3: Test it
 
 ```bash
