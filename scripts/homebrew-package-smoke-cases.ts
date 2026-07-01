@@ -56,6 +56,15 @@ export function browserSmokeCasesForFormula(formula: HomebrewSmokeFormula): Brow
         expected: /bzip2/i,
         description: "Run bzip2 --help from the poured Homebrew prefix.",
       })];
+    case "bash":
+      return [programOutputCase({
+        formula,
+        name: "bash_echo",
+        argv: [`${HOMEBREW_PREFIX}/bin/bash`, "-c", "echo bash-ok"],
+        env: ["TERM=dumb"],
+        expected: /^bash-ok$/m,
+        description: "Run a non-interactive Bash command from the poured Homebrew prefix.",
+      })];
     case "coreutils":
       return [programOutputCase({
         formula,
@@ -64,8 +73,55 @@ export function browserSmokeCasesForFormula(formula: HomebrewSmokeFormula): Brow
         expected: /^ok$/m,
         description: "Run coreutils printf through the multicall binary.",
       })];
+    case "cpython":
+      return [programOutputCase({
+        formula,
+        name: "cpython_print",
+        argv: [`${HOMEBREW_PREFIX}/bin/python3`, "-S", "-c", "print('python-ok')"],
+        env: [
+          `PYTHONHOME=${HOMEBREW_PREFIX}`,
+          "PYTHONDONTWRITEBYTECODE=1",
+          "PYTHONNOUSERSITE=1",
+        ],
+        expected: /^python-ok$/m,
+        description: "Run a CPython one-liner using the poured stdlib.",
+      })];
+    case "curl":
+      return [programVersionCase(formula, "curl", /curl/i)];
+    case "dinit":
+      return [programVersionCase(formula, "dinit", /dinit/i)];
     case "diffutils":
       return [programVersionCase(formula, "diff", /diff/i)];
+    case "erlang":
+      return [programOutputCase({
+        formula,
+        name: "erlang_eval",
+        argv: [
+          `${HOMEBREW_PREFIX}/bin/erlang`,
+          "-S", "1:1",
+          "-A", "0",
+          "-SDio", "1",
+          "-SDcpu", "1:1",
+          "-P", "262144",
+          "--",
+          "-root", `${HOMEBREW_PREFIX}/lib/erlang`,
+          "-bindir", `${HOMEBREW_PREFIX}/lib/erlang/erts-16.1.2/bin`,
+          "-progname", "erl",
+          "-home", "/tmp",
+          "-start_epmd", "false",
+          "-boot", `${HOMEBREW_PREFIX}/lib/erlang/releases/28/start_clean`,
+          "-noshell",
+          "-eval", "io:format(\"erlang-ok~n\"), halt().",
+        ],
+        env: [
+          `ROOTDIR=${HOMEBREW_PREFIX}/lib/erlang`,
+          `BINDIR=${HOMEBREW_PREFIX}/lib/erlang/erts-16.1.2/bin`,
+          "EMU=beam",
+          "PROGNAME=erl",
+        ],
+        expected: /erlang-ok/,
+        description: "Attempt to boot BEAM with the poured OTP runtime.",
+      })];
     case "file":
       return [programVersionCase(formula, "file", /file/i)];
     case "findutils":
@@ -100,6 +156,32 @@ export function browserSmokeCasesForFormula(formula: HomebrewSmokeFormula): Brow
       })];
     case "make":
       return [programVersionCase(formula, "make", /make/i)];
+    case "nethack":
+      return [programOutputCase({
+        formula,
+        name: "nethack_scores",
+        argv: [`${HOMEBREW_PREFIX}/bin/nethack`, "-s"],
+        env: [`NETHACKDIR=${HOMEBREW_PREFIX}/share/nethack`, "TERM=xterm"],
+        expected: /nethack|points|score/i,
+        description: "Run NetHack score listing against the poured runtime data.",
+      })];
+    case "perl":
+      return [programOutputCase({
+        formula,
+        name: "perl_print",
+        argv: [`${HOMEBREW_PREFIX}/bin/perl`, "-e", "print qq(perl-ok\\n)"],
+        env: [`PERL5LIB=${HOMEBREW_PREFIX}/lib/perl5/5.40.3`],
+        expected: /^perl-ok$/m,
+        description: "Run a Perl one-liner using the poured core library.",
+      })];
+    case "php":
+      return [programOutputCase({
+        formula,
+        name: "php_print",
+        argv: [`${HOMEBREW_PREFIX}/bin/php`, "-r", "echo 'php-ok\n';"],
+        expected: /^php-ok$/m,
+        description: "Run a PHP CLI one-liner from the poured Homebrew prefix.",
+      })];
     case "posix-utils-lite":
       return [programOutputCase({
         formula,
@@ -118,6 +200,15 @@ export function browserSmokeCasesForFormula(formula: HomebrewSmokeFormula): Brow
         expected: /^b$/m,
         description: "Run a sed substitution against stdin.",
       })];
+    case "ruby":
+      return [programOutputCase({
+        formula,
+        name: "ruby_print",
+        argv: [`${HOMEBREW_PREFIX}/bin/ruby`, "-e", "puts 'ruby-ok'"],
+        env: [`RUBYLIB=${HOMEBREW_PREFIX}/lib/ruby/4.0.0`, "GEM_HOME=/tmp/gems"],
+        expected: /^ruby-ok$/m,
+        description: "Run a Ruby one-liner using the poured runtime library.",
+      })];
     case "tar":
       return [programVersionCase(formula, "tar", /tar/i)];
     case "tcl":
@@ -129,6 +220,18 @@ export function browserSmokeCasesForFormula(formula: HomebrewSmokeFormula): Brow
         env: [`TCL_LIBRARY=${HOMEBREW_PREFIX}/lib/tcl8.6`],
         expected: /^7$/m,
         description: "Run a Tcl expression using the poured Tcl runtime library.",
+      })];
+    case "texlive":
+      return [programOutputCase({
+        formula,
+        name: "pdftex_version",
+        argv: [`${HOMEBREW_PREFIX}/bin/pdftex`, "--version"],
+        env: [
+          `TEXMFDIST=${HOMEBREW_PREFIX}/share/texmf-dist`,
+          `TEXMFCNF=${HOMEBREW_PREFIX}/share/texmf-dist/web2c`,
+        ],
+        expected: /pdfTeX/i,
+        description: "Run pdftex --version from the poured TeX Live keg.",
       })];
     case "unzip":
       return [programOutputCase({

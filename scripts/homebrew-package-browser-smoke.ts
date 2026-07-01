@@ -29,6 +29,7 @@ import type {
 import type { MemoryFileSystem } from "../host/src/vfs/memory-fs";
 import {
   HOMEBREW_CELLAR,
+  HOMEBREW_PREFIX,
   browserSmokeCasesForFormula,
   browserUnsupportedReason,
   parseHomebrewSmokeFormula,
@@ -219,6 +220,12 @@ async function buildFormulaVfs(
   if (formula === "sqlite") {
     await compileAndInjectSqliteConsumer(fs, options);
   }
+  if (formula === "nethack") {
+    ensureGuestDir(fs, "/home/.nethack", 0o777);
+    fs.createFileWithOwner("/home/.nethack/record", 0o666, 0, 0, new Uint8Array());
+    fs.createFileWithOwner("/record", 0o666, 0, 0, new Uint8Array());
+    fs.createFileWithOwner(`${HOMEBREW_PREFIX}/share/nethack/record`, 0o666, 0, 0, new Uint8Array());
+  }
 
   const dir = formulaDir(options, formula);
   mkdirSync(dir, { recursive: true });
@@ -306,6 +313,19 @@ async function compileAndInjectSqliteConsumer(fs: MemoryFileSystem, options: Cli
 
   ensureDirRecursive(fs, dirname(SQLITE_BROWSER_CONSUMER_PATH));
   writeVfsBinary(fs, SQLITE_BROWSER_CONSUMER_PATH, new Uint8Array(readFileSync(outWasm)), 0o755);
+}
+
+function ensureGuestDir(fs: MemoryFileSystem, path: string, mode: number): void {
+  let current = "";
+  for (const part of path.split("/").filter(Boolean)) {
+    current += `/${part}`;
+    try {
+      fs.mkdir(current, mode);
+    } catch {
+      // Directory already exists; chmod keeps the smoke setup deterministic.
+    }
+    fs.chmod(current, mode);
+  }
 }
 
 async function runBrowserSmokeCase(

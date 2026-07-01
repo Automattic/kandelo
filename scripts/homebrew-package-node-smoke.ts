@@ -181,12 +181,32 @@ async function runFormulaSmoke(
       return runProgramSmoke("bc", `${PREFIX}/bin/bc`, /(^|\n)5(\n|$)/, built, options, {
         stdin: "2+3\nquit\n",
       });
+    case "bash":
+      return runProgramSmoke("bash", `${PREFIX}/bin/bash`, /^bash-ok$/m, built, options, {
+        args: ["-c", "echo bash-ok"],
+        env: ["TERM=dumb"],
+      });
     case "coreutils":
       return runProgramSmoke("printf", `${PREFIX}/bin/coreutils`, /^ok$/m, built, options, {
         args: ["ok\n"],
       });
+    case "cpython":
+      return runProgramSmoke("python3", `${PREFIX}/bin/python3`, /^python-ok$/m, built, options, {
+        args: ["-S", "-c", "print('python-ok')"],
+        env: [
+          `PYTHONHOME=${PREFIX}`,
+          "PYTHONDONTWRITEBYTECODE=1",
+          "PYTHONNOUSERSITE=1",
+        ],
+      });
+    case "curl":
+      return runProgramVersionSmoke("curl", `${PREFIX}/bin/curl`, /curl/i, built, options);
+    case "dinit":
+      return runProgramVersionSmoke("dinit", `${PREFIX}/bin/dinit`, /dinit/i, built, options);
     case "diffutils":
       return runProgramVersionSmoke("diff", `${PREFIX}/bin/diff`, /diff/i, built, options);
+    case "erlang":
+      return runErlangSmoke(built, options);
     case "file":
       return runProgramVersionSmoke("file", `${PREFIX}/bin/file`, /file/i, built, options);
     case "findutils":
@@ -208,10 +228,41 @@ async function runFormulaSmoke(
       });
     case "make":
       return runProgramVersionSmoke("make", `${PREFIX}/bin/make`, /make/i, built, options);
+    case "nethack":
+      return runProgramSmoke("nethack", `${PREFIX}/bin/nethack`, /nethack|points|score/i, built, options, {
+        args: ["-s"],
+        env: [
+          `NETHACKDIR=${PREFIX}/share/nethack`,
+          "TERM=xterm",
+        ],
+        setupFs: (fs) => {
+          ensureGuestDir(fs, "/home/.nethack", 0o777);
+          fs.createFileWithOwner("/home/.nethack/record", 0o666, 0, 0, new Uint8Array());
+          fs.createFileWithOwner("/record", 0o666, 0, 0, new Uint8Array());
+          fs.createFileWithOwner(`${PREFIX}/share/nethack/record`, 0o666, 0, 0, new Uint8Array());
+        },
+      });
+    case "perl":
+      return runProgramSmoke("perl", `${PREFIX}/bin/perl`, /^perl-ok$/m, built, options, {
+        args: ["-e", "print qq(perl-ok\\n)"],
+        env: [`PERL5LIB=${PREFIX}/lib/perl5/5.40.3`],
+      });
+    case "php":
+      return runProgramSmoke("php", `${PREFIX}/bin/php`, /^php-ok$/m, built, options, {
+        args: ["-r", "echo 'php-ok\n';"],
+      });
     case "posix-utils-lite":
       return runProgramSmoke("patch", `${PREFIX}/bin/patch`, /patch/i, built, options, {
         args: ["patch"],
         stdin: "--- a/file\n+++ b/file\n",
+      });
+    case "ruby":
+      return runProgramSmoke("ruby", `${PREFIX}/bin/ruby`, /^ruby-ok$/m, built, options, {
+        args: ["-e", "puts 'ruby-ok'"],
+        env: [
+          `RUBYLIB=${PREFIX}/lib/ruby/4.0.0`,
+          "GEM_HOME=/tmp/gems",
+        ],
       });
     case "sed":
       return runProgramSmoke("sed", `${PREFIX}/bin/sed`, /^b$/m, built, options, {
@@ -225,6 +276,8 @@ async function runFormulaSmoke(
         stdin: "puts [expr {2 + 5}]\n",
         env: [`TCL_LIBRARY=${PREFIX}/lib/tcl8.6`],
       });
+    case "texlive":
+      return runProgramVersionSmoke("pdftex", `${PREFIX}/bin/pdftex`, /pdftex/i, built, options);
     case "unzip":
       return runProgramVersionSmoke("unzip", `${PREFIX}/bin/unzip`, /unzip/i, built, options, ["-v"]);
     case "zip":
@@ -261,11 +314,13 @@ async function runProgramSmoke(
   expected: RegExp,
   built: BuiltVfs,
   options: CliOptions,
-  runOptions: { args?: string[]; stdin?: string; env?: string[] } = {},
+  runOptions: { args?: string[]; stdin?: string; env?: string[]; setupFs?: (fs: MemoryFileSystem) => void } = {},
 ): Promise<string> {
   const programBytes = readVfsFile(built.fs, guestPath);
   const args = runOptions.args ?? [];
-  const result = await runWasm(programBytes, [argv0, ...args], built.imageBytes, options, {
+  runOptions.setupFs?.(built.fs);
+  const imageBytes = runOptions.setupFs ? await built.fs.saveImage() : built.imageBytes;
+  const result = await runWasm(programBytes, [argv0, ...args], imageBytes, options, {
     stdin: runOptions.stdin === undefined ? undefined : new TextEncoder().encode(runOptions.stdin),
     env: runOptions.env,
   });
@@ -277,6 +332,59 @@ async function runProgramSmoke(
     throw new Error(`unexpected ${argv0} ${args.join(" ")} output: ${JSON.stringify(combined)}`);
   }
   return combined.trim().split("\n").find((line) => line.trim() !== "") ?? `${argv0} ${args.join(" ")} passed`;
+}
+
+function ensureGuestDir(fs: MemoryFileSystem, path: string, mode: number): void {
+  let current = "";
+  for (const part of path.split("/").filter(Boolean)) {
+    current += `/${part}`;
+    try {
+      fs.mkdir(current, mode);
+    } catch {
+      // Directory already exists; chmod keeps the smoke setup deterministic.
+    }
+    fs.chmod(current, mode);
+  }
+}
+
+async function runErlangSmoke(built: BuiltVfs, options: CliOptions): Promise<string> {
+  const programBytes = readVfsFile(built.fs, `${PREFIX}/bin/erlang`);
+  const root = `${PREFIX}/lib/erlang`;
+  const args = [
+    "beam.smp",
+    "-S", "1:1",
+    "-A", "0",
+    "-SDio", "1",
+    "-SDcpu", "1:1",
+    "-P", "262144",
+    "--",
+    "-root", root,
+    "-bindir", `${root}/erts-16.1.2/bin`,
+    "-progname", "erl",
+    "-home", "/tmp",
+    "-start_epmd", "false",
+    "-boot", `${root}/releases/28/start_clean`,
+    "-noshell",
+    "-eval", "io:format(\"erlang-ok~n\"), halt().",
+  ];
+  const maxThreads = 8;
+  const pagesPerThread = 4;
+  const maxPages = 16384;
+  const lowestThreadTlsPage = maxPages - 2 - maxThreads * pagesPerThread - 2;
+  const result = await runWasm(programBytes, args, built.imageBytes, options, {
+    env: [
+      `ROOTDIR=${root}`,
+      `BINDIR=${root}/erts-16.1.2/bin`,
+      "EMU=beam",
+      "PROGNAME=erl",
+    ],
+    maxAddr: lowestThreadTlsPage * 65536,
+  });
+  const combined = `${result.stdout}\n${result.stderr}`;
+  if (!combined.includes("erlang-ok")) {
+    throw new Error(`Erlang smoke did not report erlang-ok; exit=${result.exitCode}; stderr=${JSON.stringify(result.stderr)}`);
+  }
+  return "erlang-ok";
 }
 
 async function runSqliteSmoke(built: BuiltVfs, options: CliOptions): Promise<string> {
@@ -335,7 +443,7 @@ async function runWasm(
   argv: string[],
   rootfsImage: Uint8Array,
   options: CliOptions,
-  runOptions: { stdin?: Uint8Array; env?: string[] } = {},
+  runOptions: { stdin?: Uint8Array; env?: string[]; maxAddr?: number } = {},
 ): Promise<{ exitCode: number; stdout: string; stderr: string }> {
   let stdout = "";
   let stderr = "";
@@ -357,6 +465,7 @@ async function runWasm(
       ],
       cwd: "/",
       stdin: runOptions.stdin ?? new Uint8Array(),
+      maxAddr: runOptions.maxAddr,
     });
     const timeoutPromise = new Promise<never>((_, reject) => {
       timeout = setTimeout(

@@ -81,6 +81,7 @@ import json
 import os
 import pathlib
 import sys
+import tarfile
 import tomllib
 
 out_path = pathlib.Path(sys.argv[1])
@@ -89,6 +90,7 @@ package_name = os.environ["KANDELO_HOMEBREW_PACKAGE"]
 arch = os.environ["KANDELO_HOMEBREW_ARCH"]
 package_dir = pathlib.Path(os.environ["PACKAGE_DIR"])
 bottle_json_path = pathlib.Path(os.environ["KANDELO_HOMEBREW_BOTTLE_JSON"])
+bottle_archive_path = pathlib.Path(os.environ["KANDELO_HOMEBREW_BOTTLE_ARCHIVE"])
 
 with (package_dir / "package.toml").open("rb") as f:
     package_toml = tomllib.load(f)
@@ -118,7 +120,24 @@ package_kind = package_toml.get("kind", "program")
 if package_kind not in {"library", "program"}:
     raise SystemExit(f"unsupported Homebrew sidecar package kind for {package_name}: {package_kind!r}")
 
+with tarfile.open(bottle_archive_path, "r:*") as bottle_tar:
+    bottle_members = {member.name.rstrip("/"): member for member in bottle_tar.getmembers()}
+
+def bottle_output_link(rel):
+    rel = rel.strip("/")
+    payload_path = f"{formula}/{version}/{rel}"
+    member = bottle_members.get(payload_path)
+    if member is not None and member.isdir():
+        return {"type": "directory", "source": rel, "target": rel, "mode": f"{member.mode & 0o777:04o}"}
+    if member is not None and member.isfile():
+        return {"type": "file", "source": rel, "target": rel, "mode": f"{member.mode & 0o777:04o}"}
+    if any(name.startswith(payload_path + "/") for name in bottle_members):
+        mode = member.mode & 0o777 if member is not None else 0o755
+        return {"type": "directory", "source": rel, "target": rel, "mode": f"{mode:04o}"}
+    return {"type": "file", "source": rel, "target": rel, "mode": "0644"}
+
 PROGRAM_ALIASES = {
+    "cpython": ["python", "python3"],
     "coreutils": [
         "cat", "ls", "cp", "mv", "rm", "mkdir", "rmdir", "ln", "chmod", "chown",
         "head", "tail", "wc", "sort", "uniq", "tr", "cut", "paste", "tee",
@@ -128,21 +147,48 @@ PROGRAM_ALIASES = {
         "sha256sum", "base64", "seq", "factor", "nproc", "du", "df",
     ],
     "gzip": ["gunzip", "zcat"],
+    "ruby": ["gem", "bundle", "bundler"],
     "tcl": ["tclsh"],
     "unzip": ["zipinfo", "funzip"],
     "zstd": ["unzstd", "zstdcat"],
 }
 
 EXTRA_PROGRAM_LINKS = {
+    "cpython": [
+        {"type": "directory", "source": "lib/python3.13", "target": "lib/python3.13", "mode": "0755"},
+    ],
+    "erlang": [
+        {"type": "directory", "source": "lib/erlang", "target": "lib/erlang", "mode": "0755"},
+    ],
     "file": [
         {"type": "file", "source": "share/file/magic.lite", "target": "share/file/magic.lite", "mode": "0644"},
+    ],
+    "nethack": [
+        {"type": "directory", "source": "share/nethack", "target": "share/nethack", "mode": "0755"},
+    ],
+    "perl": [
+        {"type": "directory", "source": "lib/perl5", "target": "lib/perl5", "mode": "0755"},
+    ],
+    "php": [
+        {
+            "type": "file",
+            "source": "lib/php/extensions/opcache.so",
+            "target": "lib/php/extensions/opcache.so",
+            "mode": "0644",
+        },
+    ],
+    "ruby": [
+        {"type": "directory", "source": "lib/ruby", "target": "lib/ruby", "mode": "0755"},
     ],
     "tcl": [
         {"type": "directory", "source": "lib/tcl8.6", "target": "lib/tcl8.6", "mode": "0755"},
     ],
+    "texlive": [
+        {"type": "directory", "source": "share/texmf-dist", "target": "share/texmf-dist", "mode": "0755"},
+    ],
 }
 
-FORK_INSTRUMENTED_PROGRAMS = {"coreutils", "tcl"}
+FORK_INSTRUMENTED_PROGRAMS = {"bash", "coreutils", "dinit", "php", "ruby", "tcl"}
 
 def package_links_and_env():
     if package_kind == "library":
@@ -150,12 +196,7 @@ def package_links_and_env():
         links = []
         for key in ("headers", "libs", "pkgconfig"):
             for rel in sorted(outputs.get(key, [])):
-                links.append({
-                    "type": "file",
-                    "source": rel,
-                    "target": rel,
-                    "mode": "0644",
-                })
+                links.append(bottle_output_link(rel))
         if not links:
             raise SystemExit(f"library formula {formula} has no declared package outputs to link")
         return links, {}
@@ -207,6 +248,18 @@ def default_node_smoke_text():
             "Formula test ran bzip2 --help through "
             "node --import tsx/esm examples/run-example.ts"
         )
+    NODE_SMOKE_TEXT = {
+        "bash": "Formula test ran bash -c 'echo bash-ok' through node --import tsx/esm examples/run-example.ts",
+        "cpython": "Formula test ran python -S -c 'print(...)' with PYTHONHOME pointing at the keg",
+        "erlang": "Formula test verified erlang.wasm magic and the poured OTP start_clean boot file",
+        "nethack": "Formula test ran nethack --version through node --import tsx/esm examples/run-example.ts; package smokes cover the poured runtime data",
+        "perl": "Formula test ran perl -e with PERL5LIB pointing at the keg core library",
+        "php": "Formula test ran php -r through node --import tsx/esm examples/run-example.ts",
+        "ruby": "Formula test ran ruby -e with RUBYLIB pointing at the keg runtime library",
+        "texlive": "Formula test ran pdftex --version with TEXMFDIST/TEXMFCNF pointing at the keg",
+    }
+    if package_name in NODE_SMOKE_TEXT:
+        return NODE_SMOKE_TEXT[package_name]
     return (
         f"Formula test ran {package_name} --version through "
         "node --import tsx/esm examples/run-example.ts"

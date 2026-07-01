@@ -1,21 +1,23 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-TEXLIVE_VERSION="${TEXLIVE_VERSION:-2025}"
+TEXLIVE_VERSION="${TEXLIVE_VERSION:-${WASM_POSIX_DEP_VERSION:-2025}}"
 # Exported so build-texlive-bundle.sh's tlnet-final URL pins to the
 # same release as the source tarball below — keeps the engine and
 # its texmf-dist macros from drifting across upstream rollovers.
 export TEXLIVE_VERSION
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-SRC_DIR="$SCRIPT_DIR/texlive-src"
-HOST_BUILD_DIR="$SCRIPT_DIR/texlive-host-build"
-CROSS_BUILD_DIR="$SCRIPT_DIR/texlive-cross-build"
-BIN_DIR="$SCRIPT_DIR/bin"
-
 REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
 # Worktree-local SDK on PATH (no global npm link required).
 # shellcheck source=/dev/null
 source "$REPO_ROOT/sdk/activate.sh"
+WORK_DIR="${WASM_POSIX_DEP_WORK_DIR:-$SCRIPT_DIR}"
+SRC_DIR="${WASM_POSIX_DEP_SOURCE_DIR:-$WORK_DIR/texlive-src}"
+HOST_BUILD_DIR="$WORK_DIR/texlive-host-build"
+CROSS_BUILD_DIR="$WORK_DIR/texlive-cross-build"
+BIN_DIR="${WASM_POSIX_DEP_OUT_DIR:-$SCRIPT_DIR/bin}"
+SOURCE_URL="${WASM_POSIX_DEP_SOURCE_URL:-https://ftp.math.utah.edu/pub/tex/historic/systems/texlive/${TEXLIVE_VERSION}/texlive-${TEXLIVE_VERSION}0308-source.tar.xz}"
+SOURCE_SHA256="${WASM_POSIX_DEP_SOURCE_SHA256:-}"
 # Explicit env wins; else the in-tree sysroot. Matches build-git.sh.
 SYSROOT="${WASM_POSIX_SYSROOT:-$REPO_ROOT/sysroot}"
 export WASM_POSIX_SYSROOT="$SYSROOT"
@@ -56,12 +58,19 @@ echo "==> libpng at $LIBPNG_PREFIX"
 # Download TeX Live source
 if [ ! -d "$SRC_DIR" ]; then
     echo "==> Downloading TeX Live $TEXLIVE_VERSION source..."
-    TARBALL="texlive-${TEXLIVE_VERSION}0308-source.tar.xz"
-    curl --retry 10 --retry-delay 5 --retry-max-time 300 --retry-all-errors -fsSL "https://ftp.math.utah.edu/pub/tex/historic/systems/texlive/${TEXLIVE_VERSION}/${TARBALL}" \
-        -o "/tmp/${TARBALL}"
+    tmpdir="$(mktemp -d "${TMPDIR:-/tmp}/kandelo-texlive-src.XXXXXX")"
+    trap 'rm -rf "$tmpdir"' EXIT
+    TARBALL="$tmpdir/texlive-${TEXLIVE_VERSION}0308-source.tar.xz"
+    curl --retry 10 --retry-delay 5 --retry-max-time 300 --retry-all-errors -fsSL "$SOURCE_URL" \
+        -o "$TARBALL"
+    if [ -n "$SOURCE_SHA256" ]; then
+        echo "==> Verifying source sha256..."
+        echo "$SOURCE_SHA256  $TARBALL" | shasum -a 256 -c -
+    fi
     mkdir -p "$SRC_DIR"
-    tar xf "/tmp/${TARBALL}" -C "$SRC_DIR" --strip-components=1
-    rm "/tmp/${TARBALL}"
+    tar xf "$TARBALL" -C "$SRC_DIR" --strip-components=1
+    trap - EXIT
+    rm -rf "$tmpdir"
 fi
 
 # TeX Live always runs luajit's sub-configure even when all Lua engines are
@@ -145,8 +154,10 @@ if [ ! -x "$HOST_BUILD_DIR/texk/web2c/pdftex" ]; then
     echo "==> Host build step 2/4: libs/ recurse + xpdf"
     make -C libs recurse
     make -C libs/xpdf -j"$NPROC"
-    echo "==> Host build step 3/4: texk/ (kpathsea, ptexenc, web2c)"
-    make -C texk -j"$NPROC"
+    echo "==> Host build step 3/4: texk/ recurse (configure web2c)"
+    if [ ! -f texk/web2c/Makefile ]; then
+        make -C texk recurse
+    fi
     echo "==> Host build step 4/4: pdftex + otangle"
     make -C texk/web2c -j"$NPROC" pdftex otangle
     cd "$REPO_ROOT"
@@ -241,14 +252,21 @@ SITE
     # archives for wasm object files.
     WASM_AR="AR=wasm32posix-ar RANLIB=wasm32posix-ranlib"
 
-    echo "==> Cross build step 1/4: top-level recurse"
-    make -j"$NPROC" $WASM_AR
+    echo "==> Cross build step 1/5: top-level all-local"
+    make -j"$NPROC" all-local $WASM_AR
 
-    echo "==> Cross build step 2/4: texk/kpathsea"
+    echo "==> Cross build step 2/5: texk/kpathsea"
     make -C texk/kpathsea -j"$NPROC" $WASM_AR
-    echo "==> Cross build step 3/4: libs/xpdf"
+    echo "==> Cross build step 3/5: libs/ recurse + xpdf"
+    if [ ! -f libs/xpdf/Makefile ]; then
+        make -C libs recurse
+    fi
     make -C libs/xpdf -j"$NPROC" $WASM_AR
-    echo "==> Cross build step 4/4: texk/web2c pdftex"
+    echo "==> Cross build step 4/5: texk/ recurse (configure web2c)"
+    if [ ! -f texk/web2c/Makefile ]; then
+        make -C texk recurse
+    fi
+    echo "==> Cross build step 5/5: texk/web2c pdftex"
     make -C texk/web2c pdftex -j"$NPROC" $WASM_AR
     cd "$REPO_ROOT"
 fi
@@ -273,6 +291,8 @@ echo "==> pdftex.wasm: $(du -h "$BIN_DIR/pdftex.wasm" | cut -f1)"
 # resolver scratch dir, so writing the JSON there is enough.
 BUNDLE_FILE="$BIN_DIR/texlive-bundle.json"
 echo "==> Building TeX Live distribution bundle..."
+TEXLIVE_HOST_PDFTEX="$HOST_PDFTEX" \
+TEXLIVE_WORK_DIR="$WORK_DIR/texlive-bundle-work" \
 TEXLIVE_BUNDLE_OUT="$BUNDLE_FILE" \
     bash "$REPO_ROOT/images/vfs/scripts/build-texlive-bundle.sh"
 echo "==> texlive-bundle.json: $(du -h "$BUNDLE_FILE" | cut -f1)"

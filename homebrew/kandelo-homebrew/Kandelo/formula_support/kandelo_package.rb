@@ -51,7 +51,7 @@ module KandeloPackageFormula
     ENV["WASM_POSIX_DEP_WORK_DIR"] = buildpath/"kandelo-package-work"
     ENV["WASM_POSIX_DEP_TARGET_ARCH"] = kandelo_arch
     ENV["WASM_POSIX_DEP_SKIP_LOCAL_INSTALL"] = "1"
-    script_env.each { |key, value| ENV[key] = value }
+    script_env.each { |key, value| ENV[key] = value.to_s }
 
     system "bash", "#{root}/packages/registry/#{package}/#{script}"
     out_dir
@@ -92,7 +92,7 @@ module KandeloPackageFormula
     command = "cd #{root.shellescape} && #{command}"
 
     if input.nil?
-      shell_output(command)
+      shell_output("#{command} < /dev/null")
     else
       pipe_output(command, input, 0)
     end

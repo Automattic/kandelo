@@ -7,8 +7,6 @@ class Libcxx < Formula
   sha256 "e5b65fd79c95c343bb584127114cb2d252306c1ada1e057899b6aacdd445899e"
   license "Apache-2.0" => { with: "LLVM-exception" }
 
-  depends_on "cmake" => :build
-
   skip_clean "lib/libc++.a"
   skip_clean "lib/libc++abi.a"
 
@@ -49,6 +47,9 @@ class Libcxx < Formula
       ENV["LLVM_PREFIX"] ||= File.expand_path("..", llvm_bin)
       ENV.prepend_path "PATH", llvm_bin
     end
+    if (build_path = ENV["HOMEBREW_KANDELO_BUILD_PATH"]).to_s != ""
+      ENV.prepend_path "PATH", build_path
+    end
   end
 
   def run_kandelo_wasm(root, wasm, *args)
@@ -61,7 +62,7 @@ class Libcxx < Formula
       wasm.to_s,
       *args,
     ].map(&:shellescape).join(" ")
-    shell_output("cd #{root.shellescape} && #{argv}")
+    shell_output("cd #{root.shellescape} && #{argv} < /dev/null")
   end
 
   def install

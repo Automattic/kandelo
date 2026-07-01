@@ -125,8 +125,13 @@ sed -i.bak 's/ -m64 / /g' Makefile
 sed -i.bak 's/ -m64$//' Makefile
 rm -f Makefile.bak
 
+NPROC="$(nproc 2>/dev/null || sysctl -n hw.ncpu)"
+
+echo "==> Generating OpenSSL build headers..."
+make -j"$NPROC" build_generated
+
 echo "==> Building OpenSSL..."
-make -j"$(nproc 2>/dev/null || sysctl -n hw.ncpu)" build_generated libssl.a libcrypto.a
+make -j"$NPROC" libssl.a libcrypto.a
 
 echo "==> Installing..."
 make install_sw 2>/dev/null || true

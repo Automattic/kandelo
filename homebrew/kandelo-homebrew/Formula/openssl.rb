@@ -59,7 +59,7 @@ class Openssl < Formula
       wasm.to_s,
       *args,
     ].map(&:shellescape).join(" ")
-    shell_output("cd #{root.shellescape} && #{argv}")
+    shell_output("cd #{root.shellescape} && #{argv} < /dev/null")
   end
 
   def install

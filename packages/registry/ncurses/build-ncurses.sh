@@ -48,10 +48,10 @@ if [ "$TARGET_ARCH" != "wasm32" ]; then
 fi
 
 TOOL_PREFIX="wasm32posix"
-CC="${TOOL_PREFIX}-cc"
-CXX="${TOOL_PREFIX}-c++"
-AR="${TOOL_PREFIX}-ar"
-RANLIB="${TOOL_PREFIX}-ranlib"
+TARGET_CC="${TOOL_PREFIX}-cc"
+TARGET_CXX="${TOOL_PREFIX}-c++"
+TARGET_AR="${TOOL_PREFIX}-ar"
+TARGET_RANLIB="${TOOL_PREFIX}-ranlib"
 SRC_DIR="$WORK_DIR/ncurses-src"
 SOURCE_MARKER="$SRC_DIR/.kandelo-ncurses-source"
 RESOLVER_MODE=0
@@ -59,8 +59,8 @@ if [ -n "${WASM_POSIX_DEP_OUT_DIR:-}" ]; then
     RESOLVER_MODE=1
 fi
 
-if ! command -v "$CC" &>/dev/null; then
-    echo "ERROR: $CC not found after sourcing sdk/activate.sh." >&2
+if ! command -v "$TARGET_CC" &>/dev/null; then
+    echo "ERROR: $TARGET_CC not found after sourcing sdk/activate.sh." >&2
     exit 1
 fi
 
@@ -100,7 +100,12 @@ if [ ! -f "$HOST_TIC" ] || [ ! -f "$HOST_INFOCMP" ]; then
     mkdir -p "$HOST_BUILD_DIR"
     (
         cd "$HOST_BUILD_DIR"
-        "$SRC_DIR/configure" \
+        CC="${HOST_CC:-cc}" \
+        CXX="${HOST_CXX:-c++}" \
+        CFLAGS="${HOST_CFLAGS:-}" \
+        CXXFLAGS="${HOST_CXXFLAGS:-}" \
+        LDFLAGS="${HOST_LDFLAGS:-}" \
+            "$SRC_DIR/configure" \
             --without-cxx \
             --without-cxx-binding \
             --without-ada \
@@ -157,11 +162,11 @@ export ac_cv_sizeof_void_p=4
 (
     cd "$WASM_BUILD_DIR"
 
-    CC="$CC" \
-    CXX="$CXX" \
-    AR="$AR" \
-    RANLIB="$RANLIB" \
-    LD="$CC" \
+    CC="$TARGET_CC" \
+    CXX="$TARGET_CXX" \
+    AR="$TARGET_AR" \
+    RANLIB="$TARGET_RANLIB" \
+    LD="$TARGET_CC" \
     CFLAGS="-O2" \
     LDFLAGS="" \
     "$SRC_DIR/configure" \

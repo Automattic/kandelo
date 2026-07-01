@@ -8,11 +8,17 @@ set -euo pipefail
 #
 # Output: packages/registry/bash/bin/bash.wasm
 
-BASH_VERSION_PKG="${BASH_VERSION_PKG:-5.2.37}"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
-SRC_DIR="$SCRIPT_DIR/bash-src"
-BIN_DIR="$SCRIPT_DIR/bin"
+# shellcheck source=/dev/null
+source "$REPO_ROOT/sdk/activate.sh"
+
+BASH_VERSION_PKG="${BASH_VERSION_PKG:-${WASM_POSIX_DEP_VERSION:-5.2.37}}"
+WORK_DIR="${WASM_POSIX_DEP_WORK_DIR:-$SCRIPT_DIR}"
+SRC_DIR="${WASM_POSIX_DEP_SOURCE_DIR:-$WORK_DIR/bash-src}"
+BIN_DIR="${WASM_POSIX_DEP_OUT_DIR:-$SCRIPT_DIR/bin}"
+SOURCE_URL="${WASM_POSIX_DEP_SOURCE_URL:-https://ftpmirror.gnu.org/gnu/bash/bash-${BASH_VERSION_PKG}.tar.gz}"
+SOURCE_SHA256="${WASM_POSIX_DEP_SOURCE_SHA256:-}"
 SYSROOT="$REPO_ROOT/sysroot"
 
 # --- Prerequisites ---
@@ -47,18 +53,30 @@ if [ ! -f "$NCURSES_PREFIX/lib/libtinfo.a" ]; then
     exit 1
 fi
 echo "==> ncurses at $NCURSES_PREFIX"
-export CPPFLAGS="-I$NCURSES_PREFIX/include"
+NCURSES_CPPFLAGS="-I$NCURSES_PREFIX/include"
+if [ -d "$NCURSES_PREFIX/include/ncursesw" ]; then
+    NCURSES_CPPFLAGS="$NCURSES_CPPFLAGS -I$NCURSES_PREFIX/include/ncursesw"
+elif [ -d "$NCURSES_PREFIX/include/ncurses" ]; then
+    NCURSES_CPPFLAGS="$NCURSES_CPPFLAGS -I$NCURSES_PREFIX/include/ncurses"
+fi
+export CPPFLAGS="$NCURSES_CPPFLAGS"
 export LDFLAGS_NCURSES="-L$NCURSES_PREFIX/lib"
 
 # --- Download bash source ---
 if [ ! -d "$SRC_DIR" ]; then
     echo "==> Downloading bash $BASH_VERSION_PKG..."
-    TARBALL="bash-${BASH_VERSION_PKG}.tar.gz"
-    URL="https://ftpmirror.gnu.org/gnu/bash/${TARBALL}"
-    curl --retry 10 --retry-delay 5 --retry-max-time 300 --retry-all-errors -fsSL "$URL" -o "/tmp/$TARBALL"
+    tmpdir="$(mktemp -d "${TMPDIR:-/tmp}/kandelo-bash-src.XXXXXX")"
+    trap 'rm -rf "$tmpdir"' EXIT
+    TARBALL="$tmpdir/bash-${BASH_VERSION_PKG}.tar.gz"
+    curl --retry 10 --retry-delay 5 --retry-max-time 300 --retry-all-errors -fsSL "$SOURCE_URL" -o "$TARBALL"
+    if [ -n "$SOURCE_SHA256" ]; then
+        echo "==> Verifying source sha256..."
+        echo "$SOURCE_SHA256  $TARBALL" | shasum -a 256 -c -
+    fi
     mkdir -p "$SRC_DIR"
-    tar xzf "/tmp/$TARBALL" -C "$SRC_DIR" --strip-components=1
-    rm "/tmp/$TARBALL"
+    tar xzf "$TARBALL" -C "$SRC_DIR" --strip-components=1
+    trap - EXIT
+    rm -rf "$tmpdir"
     echo "==> Source extracted to $SRC_DIR"
 fi
 

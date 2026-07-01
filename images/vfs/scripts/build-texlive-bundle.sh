@@ -26,8 +26,9 @@ TEXLIVE_INSTALL_URL="https://ftp.math.utah.edu/pub/tex/historic/systems/texlive/
 TEXLIVE_REPOSITORY="https://ftp.math.utah.edu/pub/tex/historic/systems/texlive/${TEXLIVE_VERSION}/tlnet-final"
 
 TEXLIVE_DIR="$REPO_ROOT/packages/registry/texlive"
-HOST_PDFTEX="$TEXLIVE_DIR/texlive-host-build/texk/web2c/pdftex"
-INSTALL_DIR="$TEXLIVE_DIR/texlive-dist"
+WORK_DIR="${TEXLIVE_WORK_DIR:-$TEXLIVE_DIR}"
+HOST_PDFTEX="${TEXLIVE_HOST_PDFTEX:-$TEXLIVE_DIR/texlive-host-build/texk/web2c/pdftex}"
+INSTALL_DIR="${TEXLIVE_INSTALL_DIR:-$WORK_DIR/texlive-dist}"
 
 # Bundle output destination. Default: served-from-public/ for direct
 # `bash build-texlive-bundle.sh` invocations during local dev.
@@ -46,7 +47,7 @@ if [ ! -d "$INSTALL_DIR/texmf-dist" ]; then
     echo "==> Installing minimal TeX Live distribution..."
 
     # Download install-tl from the pinned historical archive (see header).
-    INSTALLER_DIR="$TEXLIVE_DIR/install-tl"
+    INSTALLER_DIR="$WORK_DIR/install-tl"
     if [ ! -d "$INSTALLER_DIR" ]; then
         curl --retry 10 --retry-delay 5 --retry-max-time 300 --retry-all-errors \
             -fsSL "$TEXLIVE_INSTALL_URL" \
@@ -57,7 +58,8 @@ if [ ! -d "$INSTALL_DIR/texmf-dist" ]; then
     fi
 
     # Create installation profile
-    cat > "$TEXLIVE_DIR/texlive.profile" << EOF
+    mkdir -p "$WORK_DIR"
+    cat > "$WORK_DIR/texlive.profile" << EOF
 selected_scheme scheme-custom
 TEXDIR $INSTALL_DIR
 TEXMFLOCAL $INSTALL_DIR/texmf-local
@@ -101,7 +103,7 @@ EOF
 
     cd "$INSTALLER_DIR"
     perl install-tl \
-        --profile="$TEXLIVE_DIR/texlive.profile" \
+        --profile="$WORK_DIR/texlive.profile" \
         --no-interaction \
         --force-platform="$TL_PLATFORM" \
         --repository="$TEXLIVE_REPOSITORY"
@@ -109,7 +111,7 @@ EOF
 fi
 
 # ─── Step 2: Generate latex.fmt ────────────────────────────────
-FMT_DIR="$TEXLIVE_DIR/texlive-fmt"
+FMT_DIR="$WORK_DIR/texlive-fmt"
 if [ ! -f "$FMT_DIR/latex.fmt" ]; then
     echo "==> Generating latex.fmt..."
     mkdir -p "$FMT_DIR"

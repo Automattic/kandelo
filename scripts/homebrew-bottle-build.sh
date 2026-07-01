@@ -85,12 +85,16 @@ fi
 KANDELO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 PATCH_FILE="$KANDELO_ROOT/homebrew/patches/0001-add-kandelo-wasm-bottle-tags.patch"
 mkdir -p "$OUT_DIR/bottles"
-WORK_DIR="$(mktemp -d)"
+WORK_PARENT="${KANDELO_HOMEBREW_BOTTLE_WORK_PARENT:-$OUT_DIR/work}"
+mkdir -p "$WORK_PARENT"
+WORK_DIR="$(mktemp -d "$WORK_PARENT/homebrew-bottle.XXXXXX")"
+REUSE_OVERLAY="${KANDELO_HOMEBREW_BOTTLE_REUSE_OVERLAY:-}"
+REUSE_BREW_OVERLAY=0
 BREW_REPO=""
 BREW_OVERLAY=""
 
 cleanup() {
-  if [ -n "$BREW_REPO" ] && [ -n "$BREW_OVERLAY" ] && [ -d "$BREW_OVERLAY" ]; then
+  if [ "$REUSE_BREW_OVERLAY" != "1" ] && [ -n "$BREW_REPO" ] && [ -n "$BREW_OVERLAY" ] && [ -d "$BREW_OVERLAY" ]; then
     git -C "$BREW_REPO" worktree remove --force "$BREW_OVERLAY" >/dev/null 2>&1 || rm -rf "$BREW_OVERLAY"
   fi
   rm -rf "$WORK_DIR"
@@ -100,14 +104,30 @@ trap cleanup EXIT
 BREW_REPO="$("$BREW_BIN" --repository)"
 if [ -f "$PATCH_FILE" ] && git -C "$BREW_REPO" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
   git -C "$BREW_REPO" apply --check "$PATCH_FILE"
-  BREW_OVERLAY="$WORK_DIR/homebrew-overlay"
-  git -C "$BREW_REPO" worktree add --detach "$BREW_OVERLAY" HEAD >/dev/null
-  git -C "$BREW_OVERLAY" apply --whitespace=nowarn "$PATCH_FILE"
+  if [ -n "$REUSE_OVERLAY" ]; then
+    BREW_OVERLAY="$REUSE_OVERLAY"
+    mkdir -p "$(dirname "$BREW_OVERLAY")"
+    if [ -e "$BREW_OVERLAY" ] && [ ! -f "$BREW_OVERLAY/.kandelo-bottle-overlay" ]; then
+      echo "homebrew-bottle-build.sh: reusable overlay exists without Kandelo marker: $BREW_OVERLAY" >&2
+      exit 1
+    fi
+    if [ ! -d "$BREW_OVERLAY" ]; then
+      git -C "$BREW_REPO" worktree add --detach "$BREW_OVERLAY" HEAD >/dev/null
+      git -C "$BREW_OVERLAY" apply --whitespace=nowarn "$PATCH_FILE"
+      touch "$BREW_OVERLAY/.kandelo-bottle-overlay"
+    fi
+    REUSE_BREW_OVERLAY=1
+  else
+    BREW_OVERLAY="$WORK_DIR/homebrew-overlay"
+    git -C "$BREW_REPO" worktree add --detach "$BREW_OVERLAY" HEAD >/dev/null
+    git -C "$BREW_OVERLAY" apply --whitespace=nowarn "$PATCH_FILE"
+  fi
   BREW_BIN="$BREW_OVERLAY/bin/brew"
 fi
 
 TAP_NAME="$(printf '%s' "$TAP_REPOSITORY" | tr '[:upper:]' '[:lower:]')"
 BOTTLE_TAG="${ARCH}_kandelo"
+TAP_SOURCE="$TAP_ROOT"
 
 export HOMEBREW_NO_AUTO_UPDATE="${HOMEBREW_NO_AUTO_UPDATE:-1}"
 export HOMEBREW_NO_INSTALL_CLEANUP="${HOMEBREW_NO_INSTALL_CLEANUP:-1}"
@@ -124,7 +144,12 @@ export HOMEBREW_KANDELO_LLVM_BIN="${LLVM_BIN:-${WASM_POSIX_LLVM_DIR:-}}"
 export HOMEBREW_KANDELO_BUILD_PATH="$PATH"
 
 if [ ! -d "$TAP_SOURCE/.git" ]; then
-  TAP_SOURCE="$WORK_DIR/tap-source"
+  if [ "$REUSE_BREW_OVERLAY" = "1" ]; then
+    TAP_SOURCE="${KANDELO_HOMEBREW_BOTTLE_REUSE_TAP_SOURCE:-$(dirname "$BREW_OVERLAY")/tap-source}"
+  else
+    TAP_SOURCE="$WORK_DIR/tap-source"
+  fi
+  rm -rf "$TAP_SOURCE"
   mkdir -p "$TAP_SOURCE"
   rsync -a --exclude .git "$TAP_ROOT/" "$TAP_SOURCE/"
   git -C "$TAP_SOURCE" init -q
@@ -180,8 +205,37 @@ brew_install_build_bottle() {
   return "$status"
 }
 
+tap_dependency_refs() {
+  "$BREW_BIN" ruby -e '
+    require "formula"
+
+    formula_ref, tap_name = ARGV
+    tap_prefix = "#{tap_name.downcase}/"
+    formula = Formulary.factory(formula_ref)
+
+    formula.deps.each do |dep|
+      dep_formula = dep.to_formula
+      full_name = dep_formula.full_name
+      puts full_name if full_name.downcase.start_with?(tap_prefix)
+    end
+  ' "$FORMULA_REF" "$TAP_NAME"
+}
+
+install_tap_dependencies_from_source() {
+  local dep_ref
+  while IFS= read -r dep_ref; do
+    [ -n "$dep_ref" ] || continue
+    if "$BREW_BIN" list --formula "$dep_ref" >/dev/null 2>&1; then
+      continue
+    fi
+    "$BREW_BIN" install --build-from-source --formula "$dep_ref"
+  done < <(tap_dependency_refs)
+}
+
 (
   cd "$WORK_DIR"
+  install_tap_dependencies_from_source
+  "$BREW_BIN" install --only-dependencies --formula "$FORMULA_REF"
   brew_install_build_bottle
   "$BREW_BIN" test "$FORMULA_REF"
   HOMEBREW_KANDELO_BOTTLE_TAG="$BOTTLE_TAG" \
@@ -218,24 +272,26 @@ if [ -n "$REMOTE_BOTTLE_FILENAME" ] && [ "$REMOTE_BOTTLE_FILENAME" != "$(basenam
   cp "$BOTTLE_ARCHIVE" "$OUT_DIR/bottles/$REMOTE_BOTTLE_FILENAME"
 fi
 
-(
-  cd "$TAP_ROOT"
-  HOMEBREW_KANDELO_BOTTLE_TAG="$BOTTLE_TAG" \
-  KANDELO_HOMEBREW_BOTTLE_TAG="$BOTTLE_TAG" \
-    "$BREW_BIN" bottle --merge --write --no-commit "$BOTTLE_JSON"
-)
+if [ "${KANDELO_HOMEBREW_SKIP_BOTTLE_MERGE:-0}" != "1" ]; then
+  (
+    cd "$TAP_ROOT"
+    HOMEBREW_KANDELO_BOTTLE_TAG="$BOTTLE_TAG" \
+    KANDELO_HOMEBREW_BOTTLE_TAG="$BOTTLE_TAG" \
+      "$BREW_BIN" bottle --merge --write --no-commit "$BOTTLE_JSON"
+  )
 
-if [ ! -f "$TAPPED_FORMULA_PATH" ]; then
-  echo "homebrew-bottle-build.sh: merged formula not found: $TAPPED_FORMULA_PATH" >&2
-  exit 1
-fi
-if formula_has_bottle_tag "$FORMULA_PATH"; then
-  :
-elif formula_has_bottle_tag "$TAPPED_FORMULA_PATH"; then
-  cp "$TAPPED_FORMULA_PATH" "$FORMULA_PATH"
-else
-  echo "homebrew-bottle-build.sh: bottle merge did not write $BOTTLE_TAG to $FORMULA_PATH" >&2
-  exit 1
+  if [ ! -f "$TAPPED_FORMULA_PATH" ]; then
+    echo "homebrew-bottle-build.sh: merged formula not found: $TAPPED_FORMULA_PATH" >&2
+    exit 1
+  fi
+  if formula_has_bottle_tag "$FORMULA_PATH"; then
+    :
+  elif formula_has_bottle_tag "$TAPPED_FORMULA_PATH"; then
+    cp "$TAPPED_FORMULA_PATH" "$FORMULA_PATH"
+  else
+    echo "homebrew-bottle-build.sh: bottle merge did not write $BOTTLE_TAG to $FORMULA_PATH" >&2
+    exit 1
+  fi
 fi
 
 {

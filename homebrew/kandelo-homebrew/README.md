@@ -32,6 +32,9 @@ This template currently contains:
   post-hello pilot package formulae;
 - dependency-root and hybrid package formulae for `openssl`, `libcxx`,
   `libxml2`, `libpng`, `libcurl`, and `ncurses`;
+- dependent program and language/runtime formulae for `bash`, `curl`,
+  `dinit`, `nethack`, `cpython`, `perl`, `ruby`, `php`, `erlang`, and
+  `texlive`;
 - JSON Schemas for the Kandelo sidecar metadata contract;
 - `hello` example metadata for schema and validator development.
 - an `xtask homebrew-sidecars` generator that converts produced bottle bytes

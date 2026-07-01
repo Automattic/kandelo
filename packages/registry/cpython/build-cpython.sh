@@ -1,17 +1,21 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-PYTHON_VERSION="${PYTHON_VERSION:-3.13.3}"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-SRC_DIR="$SCRIPT_DIR/cpython-src"
-HOST_BUILD_DIR="$SCRIPT_DIR/cpython-host-build"
-CROSS_BUILD_DIR="$SCRIPT_DIR/cpython-cross-build"
-INSTALL_DIR="$SCRIPT_DIR/cpython-install"
-
 REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
 # Worktree-local SDK on PATH (no global npm link required).
 # shellcheck source=/dev/null
 source "$REPO_ROOT/sdk/activate.sh"
+
+PYTHON_VERSION="${PYTHON_VERSION:-${WASM_POSIX_DEP_VERSION:-3.13.3}}"
+WORK_DIR="${WASM_POSIX_DEP_WORK_DIR:-$SCRIPT_DIR}"
+SRC_DIR="${WASM_POSIX_DEP_SOURCE_DIR:-$WORK_DIR/cpython-src}"
+HOST_BUILD_DIR="$WORK_DIR/cpython-host-build"
+CROSS_BUILD_DIR="$WORK_DIR/cpython-cross-build"
+INSTALL_DIR="$WORK_DIR/cpython-install"
+BIN_DIR="${WASM_POSIX_DEP_OUT_DIR:-$SCRIPT_DIR/bin}"
+SOURCE_URL="${WASM_POSIX_DEP_SOURCE_URL:-https://www.python.org/ftp/python/${PYTHON_VERSION}/Python-${PYTHON_VERSION}.tar.xz}"
+SOURCE_SHA256="${WASM_POSIX_DEP_SOURCE_SHA256:-}"
 # Explicit env wins; else the in-tree sysroot.
 SYSROOT="${WASM_POSIX_SYSROOT:-$REPO_ROOT/sysroot}"
 export WASM_POSIX_SYSROOT="$SYSROOT"
@@ -51,11 +55,18 @@ done
 # Download CPython source
 if [ ! -d "$SRC_DIR" ]; then
     echo "==> Downloading CPython $PYTHON_VERSION..."
-    TARBALL="Python-${PYTHON_VERSION}.tgz"
-    curl --retry 10 --retry-delay 5 --retry-max-time 300 --retry-all-errors -fsSL "https://www.python.org/ftp/python/${PYTHON_VERSION}/${TARBALL}" -o "/tmp/${TARBALL}"
+    tmpdir="$(mktemp -d "${TMPDIR:-/tmp}/kandelo-cpython-src.XXXXXX")"
+    trap 'rm -rf "$tmpdir"' EXIT
+    TARBALL="$tmpdir/Python-${PYTHON_VERSION}.tar"
+    curl --retry 10 --retry-delay 5 --retry-max-time 300 --retry-all-errors -fsSL "$SOURCE_URL" -o "$TARBALL"
+    if [ -n "$SOURCE_SHA256" ]; then
+        echo "==> Verifying source sha256..."
+        echo "$SOURCE_SHA256  $TARBALL" | shasum -a 256 -c -
+    fi
     mkdir -p "$SRC_DIR"
-    tar xzf "/tmp/${TARBALL}" -C "$SRC_DIR" --strip-components=1
-    rm "/tmp/${TARBALL}"
+    tar xf "$TARBALL" -C "$SRC_DIR" --strip-components=1
+    trap - EXIT
+    rm -rf "$tmpdir"
 fi
 
 # ─── Phase 1: Build host/native Python ───────────────────────────────
@@ -573,26 +584,17 @@ make -j"$(sysctl -n hw.ncpu 2>/dev/null || nproc)" 2>&1 || {
 }
 
 # Copy binary
-mkdir -p "$SCRIPT_DIR/bin"
+mkdir -p "$BIN_DIR"
 if [ -f python.wasm ]; then
-    cp python.wasm "$SCRIPT_DIR/bin/python.wasm"
+    cp python.wasm "$BIN_DIR/python.wasm"
 elif [ -f python ]; then
-    cp python "$SCRIPT_DIR/bin/python.wasm"
+    cp python "$BIN_DIR/python.wasm"
 fi
 
 echo "==> CPython built successfully!"
-ls -la "$SCRIPT_DIR/bin/python.wasm"
+ls -la "$BIN_DIR/python.wasm"
 
 # Install into local-binaries/ so the resolver picks the freshly-built
 # binary over the fetched release.
 source "$REPO_ROOT/scripts/install-local-binary.sh"
-install_local_binary cpython "$SCRIPT_DIR/bin/python.wasm"
-
-# Manifest declares `wasm = "python.wasm"` (not cpython.wasm), so the
-# resolver's $WASM_POSIX_DEP_OUT_DIR scratch needs the file under that
-# exact name. The helper's default-fallback uses <program>.<ext> which
-# doesn't match here.
-if [ -n "${WASM_POSIX_DEP_OUT_DIR:-}" ]; then
-    cp "$SCRIPT_DIR/bin/python.wasm" "$WASM_POSIX_DEP_OUT_DIR/python.wasm"
-    echo "  installed $WASM_POSIX_DEP_OUT_DIR/python.wasm (manifest output name)"
-fi
+install_local_binary cpython "$BIN_DIR/python.wasm"

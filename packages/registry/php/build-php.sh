@@ -15,15 +15,20 @@ set -euo pipefail
 # CFLAGS/LDFLAGS are set to FPM's stricter requirements. CLI ships
 # with the same flags for debuggability.
 
-PHP_VERSION="${PHP_VERSION:-8.3.15}"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-SRC_DIR="$SCRIPT_DIR/php-src"
-INSTALL_DIR="$SCRIPT_DIR/php-install"
 
 REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
 # Worktree-local SDK on PATH (no global npm link required).
 # shellcheck source=/dev/null
 source "$REPO_ROOT/sdk/activate.sh"
+
+PHP_VERSION="${PHP_VERSION:-${WASM_POSIX_DEP_VERSION:-8.3.2}}"
+WORK_DIR="${WASM_POSIX_DEP_WORK_DIR:-$SCRIPT_DIR}"
+SRC_DIR="${WASM_POSIX_DEP_SOURCE_DIR:-$WORK_DIR/php-src}"
+INSTALL_DIR="$WORK_DIR/php-install"
+BIN_DIR="${WASM_POSIX_DEP_OUT_DIR:-$SCRIPT_DIR/bin}"
+SOURCE_URL="${WASM_POSIX_DEP_SOURCE_URL:-https://www.php.net/distributions/php-${PHP_VERSION}.tar.xz}"
+SOURCE_SHA256="${WASM_POSIX_DEP_SOURCE_SHA256:-}"
 
 if ! command -v wasm32posix-cc &>/dev/null; then
     echo "ERROR: wasm32posix-cc not found after sourcing sdk/activate.sh." >&2
@@ -67,11 +72,18 @@ DEP_LDFLAGS="-L$ZLIB_PREFIX/lib -L$SQLITE_PREFIX/lib -L$OPENSSL_PREFIX/lib -L$LI
 
 if [ ! -d "$SRC_DIR" ]; then
     echo "==> Downloading PHP $PHP_VERSION..."
-    TARBALL="php-${PHP_VERSION}.tar.gz"
-    curl --retry 10 --retry-delay 5 --retry-max-time 300 --retry-all-errors -fsSL "https://www.php.net/distributions/${TARBALL}" -o "/tmp/${TARBALL}"
+    tmpdir="$(mktemp -d "${TMPDIR:-/tmp}/kandelo-php-src.XXXXXX")"
+    trap 'rm -rf "$tmpdir"' EXIT
+    TARBALL="$tmpdir/php-${PHP_VERSION}.tar"
+    curl --retry 10 --retry-delay 5 --retry-max-time 300 --retry-all-errors -fsSL "$SOURCE_URL" -o "$TARBALL"
+    if [ -n "$SOURCE_SHA256" ]; then
+        echo "==> Verifying source sha256..."
+        echo "$SOURCE_SHA256  $TARBALL" | shasum -a 256 -c -
+    fi
     mkdir -p "$SRC_DIR"
-    tar xzf "/tmp/${TARBALL}" -C "$SRC_DIR" --strip-components=1
-    rm "/tmp/${TARBALL}"
+    tar xf "$TARBALL" -C "$SRC_DIR" --strip-components=1
+    trap - EXIT
+    rm -rf "$tmpdir"
 fi
 
 cd "$SRC_DIR"
@@ -290,8 +302,8 @@ echo "==> Both PHP binaries built successfully!"
 # which routes through `wasm-ld --shared --experimental-pic`.
 echo "==> Building opcache.so (Zend extension)..."
 make -j"$(sysctl -n hw.ncpu 2>/dev/null || nproc)" EXTRA_CFLAGS="$EXTRA_INC_LIBXML" ext/opcache/opcache.la || true
-mkdir -p "$SCRIPT_DIR/bin"
-wasm32posix-cc -shared -fPIC -o "$SCRIPT_DIR/bin/opcache.so" \
+mkdir -p "$BIN_DIR"
+wasm32posix-cc -shared -fPIC -o "$BIN_DIR/opcache.so" \
     ext/opcache/.libs/ZendAccelerator.o \
     ext/opcache/.libs/zend_accelerator_blacklist.o \
     ext/opcache/.libs/zend_accelerator_debug.o \
@@ -305,12 +317,12 @@ wasm32posix-cc -shared -fPIC -o "$SCRIPT_DIR/bin/opcache.so" \
     ext/opcache/.libs/shared_alloc_shm.o \
     ext/opcache/.libs/shared_alloc_mmap.o \
     ext/opcache/.libs/shared_alloc_posix.o
-echo "==> opcache.so: $(wc -c < "$SCRIPT_DIR/bin/opcache.so") bytes"
+echo "==> opcache.so: $(wc -c < "$BIN_DIR/opcache.so") bytes"
 
 # Copy to bin/ with .wasm extension (needed for Vite browser demos)
-mkdir -p "$SCRIPT_DIR/bin"
-cp sapi/cli/php "$SCRIPT_DIR/bin/php.wasm"
-cp sapi/fpm/php-fpm "$SCRIPT_DIR/bin/php-fpm.wasm"
+mkdir -p "$BIN_DIR"
+cp sapi/cli/php "$BIN_DIR/php.wasm"
+cp sapi/fpm/php-fpm "$BIN_DIR/php-fpm.wasm"
 
 # CLI and FPM both retain libc paths that can reach kernel_fork
 # (system/popen/fork wrappers for CLI, worker forks for FPM), so both
@@ -322,26 +334,26 @@ cp sapi/fpm/php-fpm "$SCRIPT_DIR/bin/php-fpm.wasm"
 WASM_OPT="$(command -v wasm-opt 2>/dev/null || true)"
 if [ -n "$WASM_OPT" ]; then
     echo "==> Optimizing CLI binary with wasm-opt -O2..."
-    "$WASM_OPT" -O2 "$SCRIPT_DIR/bin/php.wasm" -o "$SCRIPT_DIR/bin/php.wasm"
+    "$WASM_OPT" -O2 "$BIN_DIR/php.wasm" -o "$BIN_DIR/php.wasm"
 
     echo "==> Optimizing FPM binary with wasm-opt -O2..."
-    "$WASM_OPT" -O2 "$SCRIPT_DIR/bin/php-fpm.wasm" -o "$SCRIPT_DIR/bin/php-fpm.wasm"
+    "$WASM_OPT" -O2 "$BIN_DIR/php-fpm.wasm" -o "$BIN_DIR/php-fpm.wasm"
 fi
 
 FORK_INSTRUMENT="$REPO_ROOT/scripts/run-wasm-fork-instrument.sh"
 echo "==> Applying fork instrumentation to CLI..."
-"$FORK_INSTRUMENT" "$SCRIPT_DIR/bin/php.wasm" -o "$SCRIPT_DIR/bin/php.wasm.instr"
-mv "$SCRIPT_DIR/bin/php.wasm.instr" "$SCRIPT_DIR/bin/php.wasm"
+"$FORK_INSTRUMENT" "$BIN_DIR/php.wasm" -o "$BIN_DIR/php.wasm.instr"
+mv "$BIN_DIR/php.wasm.instr" "$BIN_DIR/php.wasm"
 
 echo "==> Applying fork instrumentation to FPM..."
-"$FORK_INSTRUMENT" "$SCRIPT_DIR/bin/php-fpm.wasm" -o "$SCRIPT_DIR/bin/php-fpm.wasm.instr"
-mv "$SCRIPT_DIR/bin/php-fpm.wasm.instr" "$SCRIPT_DIR/bin/php-fpm.wasm"
+"$FORK_INSTRUMENT" "$BIN_DIR/php-fpm.wasm" -o "$BIN_DIR/php-fpm.wasm.instr"
+mv "$BIN_DIR/php-fpm.wasm.instr" "$BIN_DIR/php-fpm.wasm"
 
-ls -la "$SCRIPT_DIR/bin/php.wasm" "$SCRIPT_DIR/bin/php-fpm.wasm"
+ls -la "$BIN_DIR/php.wasm" "$BIN_DIR/php-fpm.wasm"
 
 # Install into local-binaries/ so the resolver picks the freshly-built
 # binaries over the fetched release.
 source "$REPO_ROOT/scripts/install-local-binary.sh"
-install_local_binary php "$SCRIPT_DIR/bin/php.wasm"     php.wasm
-install_local_binary php "$SCRIPT_DIR/bin/php-fpm.wasm" php-fpm.wasm
-install_local_binary php "$SCRIPT_DIR/bin/opcache.so"
+install_local_binary php "$BIN_DIR/php.wasm"     php.wasm
+install_local_binary php "$BIN_DIR/php-fpm.wasm" php-fpm.wasm
+install_local_binary php "$BIN_DIR/opcache.so"

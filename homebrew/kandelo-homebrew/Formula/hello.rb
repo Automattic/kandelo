@@ -50,7 +50,7 @@ class Hello < Formula
     test_wasm = testpath/"hello.wasm"
     File.binwrite(test_wasm, File.binread(hello))
     output = shell_output(
-      "cd #{kandelo_root.shellescape} && node --experimental-wasm-exnref --import tsx/esm examples/run-example.ts #{test_wasm.to_s.shellescape} --version",
+      "cd #{kandelo_root.shellescape} && node --experimental-wasm-exnref --import tsx/esm examples/run-example.ts #{test_wasm.to_s.shellescape} --version < /dev/null",
     )
     assert_match "hello (GNU Hello) #{version}", output
   end

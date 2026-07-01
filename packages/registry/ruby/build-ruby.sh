@@ -16,12 +16,17 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
-SRC_DIR="$SCRIPT_DIR/ruby-src"
+WORK_DIR="${WASM_POSIX_DEP_WORK_DIR:-$SCRIPT_DIR}"
+SOURCE_DIR_FROM_ENV=0
+if [ -n "${WASM_POSIX_DEP_SOURCE_DIR:-}" ]; then
+    SOURCE_DIR_FROM_ENV=1
+fi
+SRC_DIR="${WASM_POSIX_DEP_SOURCE_DIR:-$WORK_DIR/ruby-src}"
 SOURCE_MARKER="$SRC_DIR/.kandelo-ruby-version"
-HOST_BUILD_DIR="$SCRIPT_DIR/ruby-host-build"
-CROSS_BUILD_DIR="$SCRIPT_DIR/ruby-cross-build"
-INSTALL_DIR="$SCRIPT_DIR/ruby-install"
-BIN_DIR="$SCRIPT_DIR/bin"
+HOST_BUILD_DIR="$WORK_DIR/ruby-host-build"
+CROSS_BUILD_DIR="$WORK_DIR/ruby-cross-build"
+INSTALL_DIR="$WORK_DIR/ruby-install"
+BIN_DIR="${WASM_POSIX_DEP_OUT_DIR:-$SCRIPT_DIR/bin}"
 RUNTIME_ZIP="$BIN_DIR/ruby-runtime.zip"
 # Worktree-local SDK on PATH (no global npm link required).
 # shellcheck source=/dev/null
@@ -46,7 +51,7 @@ if [ ! -f "$SYSROOT/lib/libc.a" ]; then
     exit 1
 fi
 
-if [ -d "$SRC_DIR" ] && [ "$(cat "$SOURCE_MARKER" 2>/dev/null || true)" != "$RUBY_VERSION" ]; then
+if [ "$SOURCE_DIR_FROM_ENV" = "0" ] && [ -d "$SRC_DIR" ] && [ "$(cat "$SOURCE_MARKER" 2>/dev/null || true)" != "$RUBY_VERSION" ]; then
     echo "==> Existing Ruby source is not $RUBY_VERSION; cleaning Ruby build directories..."
     rm -rf "$SRC_DIR" "$HOST_BUILD_DIR" "$CROSS_BUILD_DIR" "$INSTALL_DIR" "$BIN_DIR"
 fi
@@ -80,12 +85,12 @@ fi
 echo "==> zlib at $ZLIB_PREFIX"
 
 # Build libyaml if not already built (Ruby needs it for psych/YAML)
-LIBYAML_DIR="$SCRIPT_DIR/libyaml-install"
+LIBYAML_DIR="$WORK_DIR/libyaml-install"
 if [ ! -f "$LIBYAML_DIR/lib/libyaml.a" ]; then
     echo "==> Building libyaml for wasm32..."
     LIBYAML_VERSION="0.2.5"
     LIBYAML_SHA256="c642ae9b75fee120b2d96c712538bd2cf283228d2337df2cf2988e3c02678ef4"
-    LIBYAML_SRC="$SCRIPT_DIR/libyaml-src"
+    LIBYAML_SRC="$WORK_DIR/libyaml-src"
     if [ ! -d "$LIBYAML_SRC" ]; then
         curl --retry 10 --retry-delay 5 --retry-max-time 300 --retry-all-errors -fsSL "https://pyyaml.org/download/libyaml/yaml-${LIBYAML_VERSION}.tar.gz" \
             -o "/tmp/yaml-${LIBYAML_VERSION}.tar.gz"
@@ -123,15 +128,18 @@ done
 # --- Download Ruby source ---
 if [ ! -d "$SRC_DIR" ]; then
     echo "==> Downloading Ruby $RUBY_VERSION..."
-    TARBALL="ruby-${RUBY_VERSION}.tar.gz"
-    curl --retry 10 --retry-delay 5 --retry-max-time 300 --retry-all-errors -fsSL "$SOURCE_URL" -o "/tmp/${TARBALL}"
+    tmpdir="$(mktemp -d "${TMPDIR:-/tmp}/kandelo-ruby-src.XXXXXX")"
+    trap 'rm -rf "$tmpdir"' EXIT
+    TARBALL="$tmpdir/ruby-${RUBY_VERSION}.tar.gz"
+    curl --retry 10 --retry-delay 5 --retry-max-time 300 --retry-all-errors -fsSL "$SOURCE_URL" -o "$TARBALL"
     if [ -n "$SOURCE_SHA256" ]; then
         echo "==> Verifying source sha256..."
-        echo "$SOURCE_SHA256  /tmp/${TARBALL}" | shasum -a 256 -c -
+        echo "$SOURCE_SHA256  $TARBALL" | shasum -a 256 -c -
     fi
     mkdir -p "$SRC_DIR"
-    tar xzf "/tmp/${TARBALL}" -C "$SRC_DIR" --strip-components=1
-    rm "/tmp/${TARBALL}"
+    tar xzf "$TARBALL" -C "$SRC_DIR" --strip-components=1
+    trap - EXIT
+    rm -rf "$tmpdir"
     printf '%s\n' "$RUBY_VERSION" > "$SOURCE_MARKER"
     echo "==> Source extracted to $SRC_DIR"
 fi
@@ -1201,5 +1209,5 @@ ls -lh "$RUNTIME_ZIP"
 # Install into local-binaries/ so the resolver picks the freshly-built
 # package outputs over the fetched release.
 source "$REPO_ROOT/scripts/install-local-binary.sh"
-install_local_binary "$PACKAGE_NAME" "$SCRIPT_DIR/bin/ruby.wasm"
+install_local_binary "$PACKAGE_NAME" "$BIN_DIR/ruby.wasm"
 install_local_binary "$PACKAGE_NAME" "$RUNTIME_ZIP"

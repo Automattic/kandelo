@@ -21,14 +21,20 @@ set -euo pipefail
 #   packages/registry/nethack/bin/nethack.wasm
 #   packages/registry/nethack/runtime/share/nethack/nhdat   (and symbols/license)
 
-NETHACK_VERSION="${NETHACK_VERSION:-3.6.7}"
+NETHACK_VERSION="${NETHACK_VERSION:-${WASM_POSIX_DEP_VERSION:-3.6.7}}"
 NETHACK_SHORT="367"  # Upstream tarballs drop the dots: "nethack-367-src.tgz"
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
-SRC_DIR="$SCRIPT_DIR/nethack-src"
-BIN_DIR="$SCRIPT_DIR/bin"
-RUNTIME_DIR="$SCRIPT_DIR/runtime"
+# shellcheck source=/dev/null
+source "$REPO_ROOT/sdk/activate.sh"
+
+WORK_DIR="${WASM_POSIX_DEP_WORK_DIR:-$SCRIPT_DIR}"
+SRC_DIR="${WASM_POSIX_DEP_SOURCE_DIR:-$WORK_DIR/nethack-src}"
+BIN_DIR="${WASM_POSIX_DEP_OUT_DIR:-$SCRIPT_DIR/bin}"
+RUNTIME_DIR="$WORK_DIR/runtime"
+SOURCE_URL="${WASM_POSIX_DEP_SOURCE_URL:-https://www.nethack.org/download/${NETHACK_VERSION}/nethack-${NETHACK_SHORT}-src.tgz}"
+SOURCE_SHA256="${WASM_POSIX_DEP_SOURCE_SHA256:-}"
 SYSROOT="$REPO_ROOT/sysroot"
 
 # --- Prerequisites ---
@@ -56,18 +62,31 @@ if [ ! -f "$NCURSES_PREFIX/lib/libncursesw.a" ]; then
     exit 1
 fi
 echo "==> ncurses at $NCURSES_PREFIX"
-export CPPFLAGS="${CPPFLAGS:-} -I$NCURSES_PREFIX/include"
+mkdir -p "$WORK_DIR" "$BIN_DIR"
+NCURSES_CPPFLAGS="-I$NCURSES_PREFIX/include"
+if [ -d "$NCURSES_PREFIX/include/ncursesw" ]; then
+    NCURSES_CPPFLAGS="$NCURSES_CPPFLAGS -I$NCURSES_PREFIX/include/ncursesw"
+elif [ -d "$NCURSES_PREFIX/include/ncurses" ]; then
+    NCURSES_CPPFLAGS="$NCURSES_CPPFLAGS -I$NCURSES_PREFIX/include/ncurses"
+fi
+export CPPFLAGS="${CPPFLAGS:-} $NCURSES_CPPFLAGS"
 export LDFLAGS="${LDFLAGS:-} -L$NCURSES_PREFIX/lib"
 
 # --- Download NetHack source ---
 if [ ! -d "$SRC_DIR" ]; then
     echo "==> Downloading NetHack $NETHACK_VERSION..."
-    TARBALL="nethack-${NETHACK_SHORT}-src.tgz"
-    URL="https://www.nethack.org/download/${NETHACK_VERSION}/${TARBALL}"
-    curl --retry 10 --retry-delay 5 --retry-max-time 300 --retry-all-errors -fsSL "$URL" -o "/tmp/${TARBALL}"
+    tmpdir="$(mktemp -d "${TMPDIR:-/tmp}/kandelo-nethack-src.XXXXXX")"
+    trap 'rm -rf "$tmpdir"' EXIT
+    TARBALL="$tmpdir/nethack-${NETHACK_SHORT}-src.tgz"
+    curl --retry 10 --retry-delay 5 --retry-max-time 300 --retry-all-errors -fsSL "$SOURCE_URL" -o "$TARBALL"
+    if [ -n "$SOURCE_SHA256" ]; then
+        echo "==> Verifying source sha256..."
+        echo "$SOURCE_SHA256  $TARBALL" | shasum -a 256 -c -
+    fi
     mkdir -p "$SRC_DIR"
-    tar xzf "/tmp/${TARBALL}" -C "$SRC_DIR" --strip-components=1
-    rm "/tmp/${TARBALL}"
+    tar xzf "$TARBALL" -C "$SRC_DIR" --strip-components=1
+    trap - EXIT
+    rm -rf "$tmpdir"
     echo "==> Source extracted to $SRC_DIR"
 fi
 
@@ -392,16 +411,22 @@ if [ ! -f "$SRC_DIR/dat/nhdat" ]; then
     # `$(MAKE)` in top-level Makefile recurses with no CC override; the
     # Linux hints default is gcc, which we override on the command line.
     # On macOS cc=clang works for these tools.
-    make CC=cc LD=cc -C util makedefs dgn_comp lev_comp dlb recover 2>&1 | tail -20
+    env MAKEFLAGS= make -j1 CC=cc LD=cc -C util makedefs dgn_comp lev_comp dlb recover 2>&1 \
+        | tee "$WORK_DIR/nethack-host-util.log" \
+        | tail -20
 
     echo "==> Host phase: generating data files (dat/)..."
     # dat/Makefile's `all` builds $(VARDAT) + spec_levs + quest_levs + dungeon
     # using the tools built above. No CC needed — these are data files.
-    make CC=cc LD=cc -C dat all 2>&1 | tail -20
+    env MAKEFLAGS= make -j1 CC=cc LD=cc -C dat all 2>&1 \
+        | tee "$WORK_DIR/nethack-host-dat.log" \
+        | tail -20
 
     echo "==> Host phase: packing nhdat via dlb..."
     # Top-level `make dlb` runs dlb in dat/ to produce nhdat.
-    make CC=cc LD=cc dlb 2>&1 | tail -10
+    env MAKEFLAGS= make -j1 CC=cc LD=cc dlb 2>&1 \
+        | tee "$WORK_DIR/nethack-host-dlb.log" \
+        | tail -10
 
     if [ ! -f "$SRC_DIR/dat/nhdat" ]; then
         echo "ERROR: dat/nhdat not produced by host build" >&2
@@ -436,7 +461,9 @@ make -C src \
     LINK=wasm32posix-cc \
     AR=wasm32posix-ar \
     RANLIB=wasm32posix-ranlib \
-    nethack 2>&1 | tail -30
+    nethack 2>&1 \
+    | tee "$WORK_DIR/nethack-cross-src.log" \
+    | tail -30
 
 if [ ! -f "$SRC_DIR/src/nethack" ]; then
     echo "ERROR: src/nethack binary not produced" >&2

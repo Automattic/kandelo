@@ -16,10 +16,17 @@ OTP_TAG="OTP-${OTP_VERSION}"
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
-SRC_DIR="$SCRIPT_DIR/erlang-src"
-HOST_BUILD_DIR="$SCRIPT_DIR/erlang-host-build"
-CROSS_BUILD_DIR="$SCRIPT_DIR/erlang-cross-build"
-INSTALL_DIR="$SCRIPT_DIR/erlang-install"
+# shellcheck source=/dev/null
+source "$REPO_ROOT/sdk/activate.sh"
+
+WORK_DIR="${WASM_POSIX_DEP_WORK_DIR:-$SCRIPT_DIR}"
+SRC_DIR="${WASM_POSIX_DEP_SOURCE_DIR:-$WORK_DIR/erlang-src}"
+HOST_BUILD_DIR="$WORK_DIR/erlang-host-build"
+CROSS_BUILD_DIR="$WORK_DIR/erlang-cross-build"
+INSTALL_DIR="$WORK_DIR/erlang-install"
+BIN_DIR="${WASM_POSIX_DEP_OUT_DIR:-$SCRIPT_DIR}"
+SOURCE_URL="${WASM_POSIX_DEP_SOURCE_URL:-https://github.com/erlang/otp/releases/download/${OTP_TAG}/otp_src_${OTP_VERSION}.tar.gz}"
+SOURCE_SHA256="${WASM_POSIX_DEP_SOURCE_SHA256:-}"
 SYSROOT="$REPO_ROOT/sysroot"
 
 NPROC="$(sysctl -n hw.ncpu 2>/dev/null || nproc)"
@@ -52,12 +59,18 @@ echo "==> Host Erlang: OTP $HOST_OTP_REL ($(erl -eval 'io:format("~s", [erlang:s
 # --- Download OTP source ---
 if [ ! -d "$SRC_DIR" ]; then
     echo "==> Downloading Erlang/OTP ${OTP_VERSION}..."
-    TARBALL="otp_src_${OTP_VERSION}.tar.gz"
-    URL="https://github.com/erlang/otp/releases/download/${OTP_TAG}/${TARBALL}"
-    curl --retry 10 --retry-delay 5 --retry-max-time 300 --retry-all-errors -fsSL "$URL" -o "/tmp/$TARBALL"
+    tmpdir="$(mktemp -d "${TMPDIR:-/tmp}/kandelo-erlang-src.XXXXXX")"
+    trap 'rm -rf "$tmpdir"' EXIT
+    TARBALL="$tmpdir/otp_src_${OTP_VERSION}.tar.gz"
+    curl --retry 10 --retry-delay 5 --retry-max-time 300 --retry-all-errors -fsSL "$SOURCE_URL" -o "$TARBALL"
+    if [ -n "$SOURCE_SHA256" ]; then
+        echo "==> Verifying source sha256..."
+        echo "$SOURCE_SHA256  $TARBALL" | shasum -a 256 -c -
+    fi
     mkdir -p "$SRC_DIR"
-    tar xzf "/tmp/$TARBALL" -C "$SRC_DIR" --strip-components=1
-    rm "/tmp/$TARBALL"
+    tar xzf "$TARBALL" -C "$SRC_DIR" --strip-components=1
+    trap - EXIT
+    rm -rf "$tmpdir"
     echo "==> Source extracted to $SRC_DIR"
 fi
 
@@ -565,8 +578,9 @@ BEAM_BIN=$(find "$INSTALL_DIR" -name "beam.smp" -o -name "beam" 2>/dev/null | he
 if [ -n "$BEAM_BIN" ]; then
     echo "==> Erlang/OTP built successfully!"
     ls -lh "$BEAM_BIN"
-    cp "$BEAM_BIN" "$SCRIPT_DIR/beam.wasm"
-    echo "==> BEAM emulator: $SCRIPT_DIR/beam.wasm"
+    mkdir -p "$WORK_DIR"
+    cp "$BEAM_BIN" "$WORK_DIR/beam.wasm"
+    echo "==> BEAM emulator: $WORK_DIR/beam.wasm"
 else
     echo "==> Looking for BEAM in build tree..."
     find "$SRC_DIR/bin" "$SRC_DIR/erts" -name "beam*" -type f 2>/dev/null | head -10
@@ -582,9 +596,10 @@ echo "==> Install directory: $INSTALL_DIR"
 # (renamed from beam.wasm) + erlang-otp.tar.zst. Both land under
 # local-binaries/programs/<arch>/erlang/ (multi-output subdir layout
 # matching the resolver's `place_binaries_symlinks` mirror).
-cp "$SCRIPT_DIR/beam.wasm" "$SCRIPT_DIR/erlang.wasm"
+mkdir -p "$BIN_DIR"
+cp "$WORK_DIR/beam.wasm" "$BIN_DIR/erlang.wasm"
 source "$REPO_ROOT/scripts/install-local-binary.sh"
-install_local_binary erlang "$SCRIPT_DIR/erlang.wasm"
+install_local_binary erlang "$BIN_DIR/erlang.wasm"
 
 # --- Pack OTP runtime tree for the erlang-vfs demo ---
 # erlang-vfs needs the compiled .beam files for the bundled OTP apps
@@ -611,7 +626,7 @@ for sub in "${OTP_SUBDIRS[@]}"; do
     mkdir -p "$OTP_STAGE/$(dirname "$sub")"
     cp -R "$src" "$OTP_STAGE/$sub"
 done
-OTP_TARBALL="$SCRIPT_DIR/erlang-otp.tar.zst"
+OTP_TARBALL="$BIN_DIR/erlang-otp.tar.zst"
 rm -f "$OTP_TARBALL"
 tar --zstd -cf "$OTP_TARBALL" -C "$OTP_STAGE" .
 

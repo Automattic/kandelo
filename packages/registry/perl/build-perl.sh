@@ -13,12 +13,20 @@ set -euo pipefail
 #
 # Output: packages/registry/perl/bin/perl.wasm
 
-PERL_VERSION="${PERL_VERSION:-5.40.3}"
-PERL_CROSS_VERSION="${PERL_CROSS_VERSION:-1.6.4}"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
-SRC_DIR="$SCRIPT_DIR/perl-src"
-BIN_DIR="$SCRIPT_DIR/bin"
+# shellcheck source=/dev/null
+source "$REPO_ROOT/sdk/activate.sh"
+
+PERL_VERSION="${PERL_VERSION:-${WASM_POSIX_DEP_VERSION:-5.40.3}}"
+PERL_CROSS_VERSION="${PERL_CROSS_VERSION:-1.6.4}"
+WORK_DIR="${WASM_POSIX_DEP_WORK_DIR:-$SCRIPT_DIR}"
+SRC_DIR="${WASM_POSIX_DEP_SOURCE_DIR:-$WORK_DIR/perl-src}"
+BIN_DIR="${WASM_POSIX_DEP_OUT_DIR:-$SCRIPT_DIR/bin}"
+PERL_SOURCE_URL="${WASM_POSIX_DEP_SOURCE_URL:-https://www.cpan.org/src/5.0/perl-${PERL_VERSION}.tar.gz}"
+PERL_SOURCE_SHA256="${WASM_POSIX_DEP_SOURCE_SHA256:-}"
+PERL_CROSS_SOURCE_URL="${PERL_CROSS_SOURCE_URL:-https://github.com/arsv/perl-cross/releases/download/${PERL_CROSS_VERSION}/perl-cross-${PERL_CROSS_VERSION}.tar.gz}"
+PERL_CROSS_SOURCE_SHA256="${PERL_CROSS_SOURCE_SHA256:-}"
 SYSROOT="$REPO_ROOT/sysroot"
 
 # --- Prerequisites ---
@@ -47,30 +55,45 @@ if [ -z "${LLVM_BIN:-}" ]; then
 fi
 if [ -d "$LLVM_BIN" ]; then
     # Create temp dir with readelf/objdump symlinks for perl-cross
-    TOOL_DIR="$SCRIPT_DIR/.host-tools"
+    TOOL_DIR="$WORK_DIR/.host-tools"
     mkdir -p "$TOOL_DIR"
     ln -sf "$LLVM_BIN/llvm-readelf" "$TOOL_DIR/readelf"
     ln -sf "$LLVM_BIN/llvm-objdump" "$TOOL_DIR/objdump"
     export PATH="$TOOL_DIR:$PATH"
 fi
 
-# --- Download Perl source + perl-cross overlay ---
+# --- Download Perl source ---
 if [ ! -d "$SRC_DIR" ]; then
     echo "==> Downloading Perl $PERL_VERSION..."
-    TARBALL="perl-${PERL_VERSION}.tar.gz"
-    URL="https://www.cpan.org/src/5.0/${TARBALL}"
-    curl --retry 10 --retry-delay 5 --retry-max-time 300 --retry-all-errors -fsSL "$URL" -o "/tmp/$TARBALL"
+    tmpdir="$(mktemp -d "${TMPDIR:-/tmp}/kandelo-perl-src.XXXXXX")"
+    trap 'rm -rf "$tmpdir"' EXIT
+    TARBALL="$tmpdir/perl-${PERL_VERSION}.tar.gz"
+    curl --retry 10 --retry-delay 5 --retry-max-time 300 --retry-all-errors -fsSL "$PERL_SOURCE_URL" -o "$TARBALL"
+    if [ -n "$PERL_SOURCE_SHA256" ]; then
+        echo "==> Verifying source sha256..."
+        echo "$PERL_SOURCE_SHA256  $TARBALL" | shasum -a 256 -c -
+    fi
     mkdir -p "$SRC_DIR"
-    tar xzf "/tmp/$TARBALL" -C "$SRC_DIR" --strip-components=1
-    rm "/tmp/$TARBALL"
+    tar xzf "$TARBALL" -C "$SRC_DIR" --strip-components=1
+    trap - EXIT
+    rm -rf "$tmpdir"
+fi
 
+# --- Apply perl-cross overlay ---
+if [ ! -f "$SRC_DIR/cnf/configure" ]; then
     echo "==> Downloading perl-cross $PERL_CROSS_VERSION..."
-    CROSS_TARBALL="perl-cross-${PERL_CROSS_VERSION}.tar.gz"
-    CROSS_URL="https://github.com/arsv/perl-cross/releases/download/${PERL_CROSS_VERSION}/${CROSS_TARBALL}"
-    curl --retry 10 --retry-delay 5 --retry-max-time 300 --retry-all-errors -fsSL "$CROSS_URL" -o "/tmp/$CROSS_TARBALL"
+    tmpdir="$(mktemp -d "${TMPDIR:-/tmp}/kandelo-perl-cross-src.XXXXXX")"
+    trap 'rm -rf "$tmpdir"' EXIT
+    CROSS_TARBALL="$tmpdir/perl-cross-${PERL_CROSS_VERSION}.tar.gz"
+    curl --retry 10 --retry-delay 5 --retry-max-time 300 --retry-all-errors -fsSL "$PERL_CROSS_SOURCE_URL" -o "$CROSS_TARBALL"
+    if [ -n "$PERL_CROSS_SOURCE_SHA256" ]; then
+        echo "==> Verifying perl-cross source sha256..."
+        echo "$PERL_CROSS_SOURCE_SHA256  $CROSS_TARBALL" | shasum -a 256 -c -
+    fi
     # Overlay perl-cross on top of perl source tree
-    tar xzf "/tmp/$CROSS_TARBALL" -C "$SRC_DIR" --strip-components=1
-    rm "/tmp/$CROSS_TARBALL"
+    tar xzf "$CROSS_TARBALL" -C "$SRC_DIR" --strip-components=1
+    trap - EXIT
+    rm -rf "$tmpdir"
 
     echo "==> Source prepared with perl-cross overlay"
 
@@ -528,4 +551,4 @@ echo "Binary: $BIN_DIR/perl.wasm"
 # Install into local-binaries/ so the resolver picks the freshly-built
 # binary over the fetched release.
 source "$REPO_ROOT/scripts/install-local-binary.sh"
-install_local_binary perl "$SCRIPT_DIR/bin/perl.wasm"
+install_local_binary perl "$BIN_DIR/perl.wasm"
