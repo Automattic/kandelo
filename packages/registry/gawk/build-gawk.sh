@@ -6,11 +6,12 @@ set -euo pipefail
 # Uses the SDK's wasm32posix-configure wrapper for cross-compilation.
 # Output: packages/registry/gawk/bin/gawk.wasm
 
-GAWK_VERSION="${GAWK_VERSION:-5.3.1}"
+GAWK_VERSION="${GAWK_VERSION:-${WASM_POSIX_DEP_VERSION:-5.3.0}}"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
-SRC_DIR="$SCRIPT_DIR/gawk-src"
-BIN_DIR="$SCRIPT_DIR/bin"
+WORK_DIR="${WASM_POSIX_DEP_WORK_DIR:-$SCRIPT_DIR}"
+SRC_DIR="${WASM_POSIX_DEP_SOURCE_DIR:-$WORK_DIR/gawk-src}"
+BIN_DIR="${WASM_POSIX_DEP_OUT_DIR:-$SCRIPT_DIR/bin}"
 SYSROOT="$REPO_ROOT/sysroot"
 
 # --- Prerequisites ---
@@ -30,8 +31,17 @@ export WASM_POSIX_SYSROOT="$SYSROOT"
 if [ ! -d "$SRC_DIR" ]; then
     echo "==> Downloading gawk $GAWK_VERSION..."
     TARBALL="gawk-${GAWK_VERSION}.tar.xz"
-    URL="https://ftpmirror.gnu.org/gnu/gawk/${TARBALL}"
+    URL="${WASM_POSIX_DEP_SOURCE_URL:-https://ftpmirror.gnu.org/gnu/gawk/${TARBALL}}"
     curl --retry 10 --retry-delay 5 --retry-max-time 300 --retry-all-errors -fsSL "$URL" -o "/tmp/$TARBALL"
+    if [ -n "${WASM_POSIX_DEP_SOURCE_SHA256:-}" ]; then
+        actual_sha256="$(shasum -a 256 "/tmp/$TARBALL" | awk '{print $1}')"
+        if [ "$actual_sha256" != "$WASM_POSIX_DEP_SOURCE_SHA256" ]; then
+            echo "ERROR: checksum mismatch for $URL" >&2
+            echo "expected: $WASM_POSIX_DEP_SOURCE_SHA256" >&2
+            echo "actual:   $actual_sha256" >&2
+            exit 1
+        fi
+    fi
     mkdir -p "$SRC_DIR"
     tar xJf "/tmp/$TARBALL" -C "$SRC_DIR" --strip-components=1
     rm "/tmp/$TARBALL"
@@ -192,4 +202,4 @@ echo "Binary: $BIN_DIR/gawk.wasm"
 # Install into local-binaries/ so the resolver picks the freshly-built
 # binary over the fetched release.
 source "$REPO_ROOT/scripts/install-local-binary.sh"
-install_local_binary gawk "$SCRIPT_DIR/bin/gawk.wasm"
+install_local_binary gawk "$BIN_DIR/gawk.wasm"

@@ -11,12 +11,14 @@ set -euo pipefail
 # must run on the host, we do a native build first to generate libmath.h,
 # then cross-compile with that pre-generated file.
 
-BC_VERSION="${BC_VERSION:-1.07.1}"
+BC_VERSION="${BC_VERSION:-${WASM_POSIX_DEP_VERSION:-1.07.1}}"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
-SRC_DIR="$SCRIPT_DIR/bc-src"
-HOST_BUILD_DIR="$SCRIPT_DIR/bc-host-build"
-BIN_DIR="$SCRIPT_DIR/bin"
+WORK_DIR="${WASM_POSIX_DEP_WORK_DIR:-$SCRIPT_DIR}"
+SRC_DIR="${WASM_POSIX_DEP_SOURCE_DIR:-$WORK_DIR/bc-src}"
+HOST_BUILD_DIR="$WORK_DIR/bc-host-build"
+GENERATED_DIR="$WORK_DIR/generated"
+BIN_DIR="${WASM_POSIX_DEP_OUT_DIR:-$SCRIPT_DIR/bin}"
 SYSROOT="$REPO_ROOT/sysroot"
 
 # --- Prerequisites ---
@@ -47,8 +49,17 @@ download_bc() {
     local dest="$1"
     echo "==> Downloading bc $BC_VERSION to $dest..."
     TARBALL="bc-${BC_VERSION}.tar.gz"
-    URL="https://ftpmirror.gnu.org/gnu/bc/${TARBALL}"
+    URL="${WASM_POSIX_DEP_SOURCE_URL:-https://ftpmirror.gnu.org/gnu/bc/${TARBALL}}"
     curl --retry 10 --retry-delay 5 --retry-max-time 300 --retry-all-errors -fsSL "$URL" -o "/tmp/$TARBALL"
+    if [ -n "${WASM_POSIX_DEP_SOURCE_SHA256:-}" ]; then
+        actual_sha256="$(shasum -a 256 "/tmp/$TARBALL" | awk '{print $1}')"
+        if [ "$actual_sha256" != "$WASM_POSIX_DEP_SOURCE_SHA256" ]; then
+            echo "ERROR: checksum mismatch for $URL" >&2
+            echo "expected: $WASM_POSIX_DEP_SOURCE_SHA256" >&2
+            echo "actual:   $actual_sha256" >&2
+            exit 1
+        fi
+    fi
     mkdir -p "$dest"
     tar xzf "/tmp/$TARBALL" -C "$dest" --strip-components=1
     rm "/tmp/$TARBALL"
@@ -59,7 +70,8 @@ if [ ! -d "$SRC_DIR" ]; then
 fi
 
 # --- Step 1: Host-native build to generate libmath.h ---
-if [ ! -f "$SCRIPT_DIR/libmath.h" ]; then
+mkdir -p "$GENERATED_DIR"
+if [ ! -f "$GENERATED_DIR/libmath.h" ]; then
     echo "==> Building host-native bc to generate libmath.h..."
     if [ ! -d "$HOST_BUILD_DIR" ]; then
         download_bc "$HOST_BUILD_DIR"
@@ -69,7 +81,7 @@ if [ ! -f "$SCRIPT_DIR/libmath.h" ]; then
         ./configure --with-readline=no 2>&1 | tail -10
     fi
     make -j"$(sysctl -n hw.ncpu 2>/dev/null || nproc)" 2>&1 | tail -10
-    cp "$HOST_BUILD_DIR/bc/libmath.h" "$SCRIPT_DIR/libmath.h"
+    cp "$HOST_BUILD_DIR/bc/libmath.h" "$GENERATED_DIR/libmath.h"
     echo "==> libmath.h generated"
 fi
 
@@ -103,7 +115,7 @@ if [ ! -f Makefile ]; then
 fi
 
 # Place libmath.h from host build.
-cp "$SCRIPT_DIR/libmath.h" "$SRC_DIR/bc/libmath.h"
+cp "$GENERATED_DIR/libmath.h" "$SRC_DIR/bc/libmath.h"
 
 # Patch the Makefile to skip fbc/libmath.h regeneration.
 # The Makefile rule rebuilds libmath.h via fbc (a host-native binary) from
@@ -136,4 +148,4 @@ echo "Binary: $BIN_DIR/bc.wasm"
 # Install into local-binaries/ so the resolver picks the freshly-built
 # binary over the fetched release.
 source "$REPO_ROOT/scripts/install-local-binary.sh"
-install_local_binary bc "$SCRIPT_DIR/bin/bc.wasm"
+install_local_binary bc "$BIN_DIR/bc.wasm"

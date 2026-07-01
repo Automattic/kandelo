@@ -39,7 +39,11 @@ if ! [[ "$KANDELO_HOMEBREW_FORMULA" =~ ^[a-z0-9][a-z0-9._-]*$ ]]; then
 fi
 
 HOST_TARGET="$(rustc -vV | awk '/^host/ {print $2}')"
-PACKAGE_DIR="$KANDELO_ROOT/packages/registry/$KANDELO_HOMEBREW_FORMULA"
+KANDELO_HOMEBREW_PACKAGE="$KANDELO_HOMEBREW_FORMULA"
+if [ "$KANDELO_HOMEBREW_PACKAGE" = "file-formula" ]; then
+  KANDELO_HOMEBREW_PACKAGE="file"
+fi
+PACKAGE_DIR="$KANDELO_ROOT/packages/registry/$KANDELO_HOMEBREW_PACKAGE"
 if [ ! -d "$PACKAGE_DIR" ]; then
   echo "homebrew-generate-sidecars-from-env.sh: package registry entry not found: $PACKAGE_DIR" >&2
   exit 2
@@ -86,6 +90,7 @@ if [ -d "$KANDELO_HOMEBREW_TAP_ROOT/Kandelo" ]; then
 fi
 export ABI_VERSION CACHE_KEY_SHA SDK_FINGERPRINT SYSROOT_FINGERPRINT BREW_VERSION
 export TAP_COMMIT KANDELO_COMMIT GENERATED_AT RUN_URL TAP_NAME PACKAGE_DIR KANDELO_ROOT
+export KANDELO_HOMEBREW_PACKAGE
 
 python3 - "$INPUT_JSON" <<'PY'
 import json
@@ -96,6 +101,7 @@ import tomllib
 
 out_path = pathlib.Path(sys.argv[1])
 formula = os.environ["KANDELO_HOMEBREW_FORMULA"]
+package_name = os.environ["KANDELO_HOMEBREW_PACKAGE"]
 arch = os.environ["KANDELO_HOMEBREW_ARCH"]
 package_dir = pathlib.Path(os.environ["PACKAGE_DIR"])
 bottle_json_path = pathlib.Path(os.environ["KANDELO_HOMEBREW_BOTTLE_JSON"])
@@ -134,56 +140,78 @@ for dep in package_toml.get("depends_on", []):
 version = str(bottle_formula["pkg_version"])
 package_kind = package_toml.get("kind", "program")
 if package_kind not in {"library", "program"}:
-    raise SystemExit(f"unsupported Homebrew sidecar package kind for {formula}: {package_kind!r}")
+    raise SystemExit(f"unsupported Homebrew sidecar package kind for {package_name}: {package_kind!r}")
+
+PROGRAM_ALIASES = {
+    "coreutils": [
+        "cat", "ls", "cp", "mv", "rm", "mkdir", "rmdir", "ln", "chmod", "chown",
+        "head", "tail", "wc", "sort", "uniq", "tr", "cut", "paste", "tee",
+        "true", "false", "yes", "env", "printenv", "printf", "expr", "test", "[",
+        "basename", "dirname", "readlink", "realpath", "stat", "touch", "date",
+        "sleep", "id", "whoami", "uname", "hostname", "pwd", "dd", "od", "md5sum",
+        "sha256sum", "base64", "seq", "factor", "nproc", "du", "df",
+    ],
+    "gzip": ["gunzip", "zcat"],
+    "tcl": ["tclsh"],
+    "unzip": ["zipinfo", "funzip"],
+    "zstd": ["unzstd", "zstdcat"],
+}
+
+EXTRA_PROGRAM_LINKS = {
+    "file": [
+        {"type": "file", "source": "share/file/magic.lite", "target": "share/file/magic.lite", "mode": "0644"},
+    ],
+    "tcl": [
+        {"type": "directory", "source": "lib/tcl8.6", "target": "lib/tcl8.6", "mode": "0755"},
+    ],
+}
+
+FORK_INSTRUMENTED_PROGRAMS = {"coreutils", "tcl"}
 
 def package_links_and_env():
-    def output_link(kind, rel):
-        if kind == "headers" and not rel.endswith((".h", ".hpp", ".hh", ".hxx")):
-            return {
-                "type": "symlink",
-                "source": rel,
-                "target": rel,
-            }
-        return {
-            "type": "file",
-            "source": rel,
-            "target": rel,
-            "mode": "0644",
-        }
-
     if package_kind == "library":
         outputs = package_toml.get("outputs", {})
         links = []
         for key in ("headers", "libs", "pkgconfig"):
             for rel in sorted(outputs.get(key, [])):
-                links.append(output_link(key, rel))
+                links.append({
+                    "type": "file",
+                    "source": rel,
+                    "target": rel,
+                    "mode": "0644",
+                })
         if not links:
             raise SystemExit(f"library formula {formula} has no declared package outputs to link")
         return links, {}
 
-    links = []
     outputs = package_toml.get("outputs", [])
-    if isinstance(outputs, list):
-        for output in outputs:
-            name = output.get("name", formula)
-            if "wasm" in output:
-                links.append({"type": "symlink", "source": f"bin/{name}", "target": f"bin/{name}"})
-    if not links:
-        links.append({"type": "symlink", "source": f"bin/{formula}", "target": f"bin/{formula}"})
+    if not isinstance(outputs, list):
+        raise SystemExit(f"program formula {formula} has invalid outputs shape")
 
-    if formula == "ncurses":
-        links.extend([
-            {"type": "file", "source": "lib/libncursesw.a", "target": "lib/libncursesw.a", "mode": "0644"},
-            {"type": "file", "source": "lib/libtinfow.a", "target": "lib/libtinfow.a", "mode": "0644"},
-            {"type": "symlink", "source": "lib/libncurses.a", "target": "lib/libncurses.a"},
-            {"type": "symlink", "source": "lib/libtinfo.a", "target": "lib/libtinfo.a"},
-            {"type": "symlink", "source": "include/ncursesw", "target": "include/ncursesw"},
-            {"type": "symlink", "source": "include/ncurses", "target": "include/ncurses"},
-        ])
+    bin_names = []
+    for output in outputs:
+        output_name = output.get("name")
+        wasm_name = output.get("wasm", "")
+        if output_name and wasm_name.endswith(".wasm"):
+            bin_names.append(output_name)
+    if not bin_names:
+            bin_names.append(package_name)
 
+    names = []
+    for name in [*bin_names, *PROGRAM_ALIASES.get(package_name, [])]:
+        if name not in names:
+            names.append(name)
+
+    links = [
+        {"type": "symlink", "source": f"bin/{name}", "target": f"bin/{name}"}
+        for name in names
+    ]
+    links.extend(EXTRA_PROGRAM_LINKS.get(package_name, []))
     return links, {"PATH_prepend": ["bin"]}
 
 def package_fork_instrumentation():
+    if package_name in FORK_INSTRUMENTED_PROGRAMS:
+        return "required"
     outputs = package_toml.get("outputs", [])
     disabled_wasm_output = False
     if isinstance(outputs, list):
@@ -191,7 +219,7 @@ def package_fork_instrumentation():
             if "wasm" not in output:
                 continue
             fork_instrumentation = output.get("fork_instrumentation", "not-required")
-            if output.get("name", formula) == formula:
+            if output.get("name") == package_name:
                 return fork_instrumentation
             if fork_instrumentation == "disabled":
                 disabled_wasm_output = True
@@ -202,17 +230,17 @@ def package_fork_instrumentation():
 def default_node_smoke_text():
     if package_kind == "library":
         return (
-            f"Formula test compiled a {formula} consumer against the installed keg "
-            "and ran the resulting Wasm through "
+            f"Formula test compiled packages/registry/{package_name}/test/{package_name}_basic.c "
+            "against the installed keg and ran the resulting Wasm through "
             "node --import tsx/esm examples/run-example.ts"
         )
-    if formula == "bzip2":
+    if package_name == "bzip2":
         return (
             "Formula test ran bzip2 --help through "
             "node --import tsx/esm examples/run-example.ts"
         )
     return (
-        f"Formula test ran {formula} --version through "
+        f"Formula test ran {package_name} --version through "
         "node --import tsx/esm examples/run-example.ts"
     )
 
@@ -235,10 +263,70 @@ def failed_outcome(name, reason):
         "skipped": [],
     }
 
+def browser_outcome_from_summary(summary_path, summary_formula, arch):
+    with pathlib.Path(summary_path).open("r", encoding="utf-8") as f:
+        summary = json.load(f)
+    packages = summary.get("packages")
+    if not isinstance(packages, list):
+        raise SystemExit(f"browser smoke summary lacks packages list: {summary_path}")
+    matches = [
+        package for package in packages
+        if package.get("formula") == summary_formula and package.get("arch") == arch
+    ]
+    if len(matches) != 1:
+        raise SystemExit(
+            f"browser smoke summary expected one {summary_formula} {arch} entry, got {len(matches)}"
+        )
+    package = matches[0]
+    status = package.get("status")
+    if status not in {"success", "failed", "skipped"}:
+        raise SystemExit(f"invalid browser smoke summary status for {summary_formula} {arch}: {status!r}")
+
+    def strings(key):
+        value = package.get(key, [])
+        if not isinstance(value, list):
+            raise SystemExit(f"browser smoke summary {summary_formula} {arch} {key} must be a list")
+        out = []
+        for entry in value:
+            text = str(entry)
+            if text:
+                out.append(text)
+        return out
+
+    passed = strings("passed")
+    failed = strings("failed")
+    skipped = strings("skipped")
+    if status == "success" and not passed:
+        raise SystemExit(f"browser smoke summary success for {summary_formula} {arch} has no passed evidence")
+    if status == "failed" and not failed:
+        failed = [f"browser smoke failed for {summary_formula} {arch}; see {summary_path}"]
+    if status == "skipped" and not skipped:
+        skipped = [package.get("skip_reason") or f"browser smoke skipped for {summary_formula} {arch}; see {summary_path}"]
+
+    outcome = {
+        "name": "browser_smoke",
+        "status": status,
+        "passed": passed,
+        "failed": failed,
+        "skipped": skipped,
+    }
+    if status == "skipped":
+        outcome["skip_reason"] = package.get("skip_reason") or skipped[0]
+    return status, outcome
+
 links, link_env = package_links_and_env()
-browser_smoke_status = os.environ.get("KANDELO_HOMEBREW_BROWSER_SMOKE_STATUS", "skipped")
-if browser_smoke_status not in {"success", "skipped", "failed"}:
-    raise SystemExit(f"invalid KANDELO_HOMEBREW_BROWSER_SMOKE_STATUS={browser_smoke_status!r}")
+browser_summary = os.environ.get("KANDELO_HOMEBREW_BROWSER_SMOKE_SUMMARY", "")
+browser_smoke_outcome = None
+if browser_summary:
+    browser_smoke_status, browser_smoke_outcome = browser_outcome_from_summary(
+        browser_summary,
+        package_name,
+        arch,
+    )
+else:
+    browser_smoke_status = os.environ.get("KANDELO_HOMEBREW_BROWSER_SMOKE_STATUS", "skipped")
+    if browser_smoke_status not in {"success", "skipped", "failed"}:
+        raise SystemExit(f"invalid KANDELO_HOMEBREW_BROWSER_SMOKE_STATUS={browser_smoke_status!r}")
 browser_compatible = browser_smoke_status == "success"
 if browser_compatible and arch != "wasm32":
     raise SystemExit("browser smoke can only mark wasm32 bottles browser-compatible")
@@ -258,7 +346,7 @@ runtime_support = parse_hosts_env("KANDELO_HOMEBREW_RUNTIME_SUPPORT", default_ru
 unsupported_hosts = parse_hosts_env("KANDELO_HOMEBREW_RUNTIME_UNSUPPORTED_HOSTS", [])
 if (
     not unsupported_hosts
-    and formula in {"spidermonkey", "spidermonkey-node", "node"}
+    and package_name in {"spidermonkey", "spidermonkey-node", "node"}
     and package_fork_instrumentation() == "disabled"
 ):
     unsupported_hosts = ["node", "browser"]
@@ -292,17 +380,18 @@ for host in ("node", "browser"):
         runtime_status[host] = {
             "status": "not-validated",
             "reason_code": "smoke-not-recorded",
-            "reason": f"No successful {host} VFS smoke was recorded for {formula} {arch}.",
+            "reason": f"No successful {host} VFS smoke was recorded for {package_name} {arch}.",
         }
 
-browser_reason = os.environ.get(
-    "KANDELO_HOMEBREW_BROWSER_SMOKE_REASON",
-    f"No successful browser VFS smoke was recorded for {formula} {arch}.",
-)
-browser_smoke_outcome = skipped_outcome("browser_smoke", browser_reason)
-if browser_smoke_status == "failed":
-    browser_smoke_outcome = failed_outcome("browser_smoke", browser_reason)
-if browser_compatible:
+if browser_smoke_outcome is None:
+    browser_reason = os.environ.get(
+        "KANDELO_HOMEBREW_BROWSER_SMOKE_REASON",
+        f"No successful browser VFS smoke was recorded for {package_name} {arch}.",
+    )
+    browser_smoke_outcome = skipped_outcome("browser_smoke", browser_reason)
+    if browser_smoke_status == "failed":
+        browser_smoke_outcome = failed_outcome("browser_smoke", browser_reason)
+if browser_compatible and not browser_summary:
     vfs_image = os.environ.get("KANDELO_HOMEBREW_VFS_IMAGE", "")
     vfs_report = os.environ.get("KANDELO_HOMEBREW_VFS_REPORT", "")
     browser_url = os.environ.get("KANDELO_HOMEBREW_BROWSER_SMOKE_URL", "")
@@ -365,7 +454,7 @@ manifest = {
     "generator": "kandelo-homebrew-publish 1",
     "packages": [
         {
-            "name": formula,
+            "name": package_name,
             "full_name": formula_key,
             "version": version,
             "formula_revision": 0,
@@ -444,6 +533,17 @@ manifest = {
         }
     ],
 }
+if os.environ.get("KANDELO_HOMEBREW_ACCUMULATE_INPUTS") == "1" and out_path.exists():
+    with out_path.open("r", encoding="utf-8") as f:
+        previous_manifest = json.load(f)
+    previous_packages = previous_manifest.get("packages", [])
+    if not isinstance(previous_packages, list):
+        raise SystemExit(f"existing {out_path} has invalid packages list")
+    current_names = {pkg["name"] for pkg in manifest["packages"]}
+    manifest["packages"] = [
+        pkg for pkg in previous_packages
+        if isinstance(pkg, dict) and pkg.get("name") not in current_names
+    ] + manifest["packages"]
 out_path.write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n", encoding="utf-8")
 PY
 
@@ -458,7 +558,9 @@ cp "$KANDELO_HOMEBREW_TAP_ROOT/Formula/$KANDELO_HOMEBREW_FORMULA.rb" \
     --tap-root "$KANDELO_HOMEBREW_SIDECAR_ROOT"
     --input "$INPUT_JSON"
   )
-  if [ -f "$KANDELO_HOMEBREW_TAP_ROOT/Kandelo/metadata.json" ]; then
+  if [ -f "$KANDELO_HOMEBREW_SIDECAR_ROOT/Kandelo/metadata.json" ]; then
+    sidecar_args+=(--previous-metadata "$KANDELO_HOMEBREW_SIDECAR_ROOT/Kandelo/metadata.json")
+  elif [ -f "$KANDELO_HOMEBREW_TAP_ROOT/Kandelo/metadata.json" ]; then
     sidecar_args+=(--previous-metadata "$KANDELO_HOMEBREW_TAP_ROOT/Kandelo/metadata.json")
   fi
   cargo run --release -p xtask --target "$HOST_TARGET" --quiet -- \

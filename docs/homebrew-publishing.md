@@ -336,14 +336,24 @@ smoke records skipped rows for the VFS build and dependent Node smoke with the
 sidecar reason and artifact paths. This is an accepted unsupported outcome, not
 a stale-Wasm guard failure.
 
-Browser compatibility requires a separate browser smoke. For the current
-`hello` path, the trusted publisher builds a precomposed wasm32 VFS image,
-serves it through the browser demo, runs Chromium Playwright against
-`apps/browser-demos/test/kandelo-homebrew.spec.ts`, and executes:
+Browser compatibility requires a separate browser smoke. For package sidecars,
+use the generic browser runner against a generated tap root:
 
 ```bash
-/home/linuxbrew/.linuxbrew/bin/hello --version
+npx tsx scripts/homebrew-package-browser-smoke.ts \
+  --tap-root /path/to/kandelo-homebrew \
+  --formula bc \
+  --formula coreutils \
+  --arch wasm32 \
+  --result-dir test-runs/homebrew-package-browser-smoke
 ```
+
+The runner builds a precomposed wasm32 VFS image for each package, serves it
+through the browser demo's `homebrew-smoke` page, launches Chromium, executes
+the package-specific smoke command through `BrowserKernel`, and writes passed,
+failed, and skipped outcome lists. Set
+`KANDELO_HOMEBREW_BROWSER_SMOKE_SUMMARY` to its `summary.json` when
+regenerating sidecars so provenance records the exact browser evidence.
 
 Only after that smoke passes may sidecars record
 `runtime_support = ["node", "browser"]` and `browser_compatible = true`.

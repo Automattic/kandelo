@@ -136,6 +136,7 @@ for tool in rustc cargo cbindgen cmake bison pkg-config; do
   fi
 done
 export HOMEBREW_KANDELO_HOST_TOOL_PATH="$HOST_TOOL_PATH"
+export HOMEBREW_KANDELO_BUILD_PATH="$PATH"
 
 if [ ! -d "$TAP_SOURCE/.git" ]; then
   TAP_SOURCE="$WORK_DIR/tap-source"
@@ -166,6 +167,10 @@ formula_has_bottle_tag() {
 if ! same_file "$FORMULA_PATH" "$TAPPED_FORMULA_PATH"; then
   mkdir -p "$(dirname "$TAPPED_FORMULA_PATH")"
   cp "$FORMULA_PATH" "$TAPPED_FORMULA_PATH"
+  if [ -d "$TAP_ROOT/Kandelo/formula_support" ]; then
+    mkdir -p "$TAPPED_TAP_ROOT/Kandelo"
+    rsync -a "$TAP_ROOT/Kandelo/formula_support/" "$TAPPED_TAP_ROOT/Kandelo/formula_support/"
+  fi
 fi
 
 brew_install_build_bottle() {
