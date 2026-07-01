@@ -51,9 +51,9 @@ const THEME_ITEM: DockItem<"theme"> = {
 const PANE_ITEMS: DockItem<DockPaneId>[] = [
   {
     id: "gallery",
-    label: "Gallery",
-    title: "Gallery",
-    icon: <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.4"><rect x="2" y="2" width="5" height="5" rx="1" /><rect x="9" y="2" width="5" height="5" rx="1" /><rect x="2" y="9" width="5" height="5" rx="1" /><rect x="9" y="9" width="5" height="5" rx="1" /></svg>,
+    label: "New",
+    title: "Launch new machine",
+    icon: <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.6"><path d="M8 3v10M3 8h10" /></svg>,
   },
 ];
 

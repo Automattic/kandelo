@@ -880,15 +880,15 @@
   flex: 1;
 }
 
-.ktheme-option[data-family="playground"] .ktheme-swatch span:nth-child(1) { background: var(--k-theme-swatch-playground-1); }
-.ktheme-option[data-family="playground"] .ktheme-swatch span:nth-child(2) { background: var(--k-theme-swatch-playground-2); }
-.ktheme-option[data-family="playground"] .ktheme-swatch span:nth-child(3) { background: var(--k-theme-swatch-playground-3); }
-.ktheme-option[data-family="balanced"] .ktheme-swatch span:nth-child(1) { background: var(--k-theme-swatch-balanced-1); }
-.ktheme-option[data-family="balanced"] .ktheme-swatch span:nth-child(2) { background: var(--k-theme-swatch-balanced-2); }
-.ktheme-option[data-family="balanced"] .ktheme-swatch span:nth-child(3) { background: var(--k-theme-swatch-balanced-3); }
-.ktheme-option[data-family="terminal"] .ktheme-swatch span:nth-child(1) { background: var(--k-theme-swatch-terminal-1); }
-.ktheme-option[data-family="terminal"] .ktheme-swatch span:nth-child(2) { background: var(--k-theme-swatch-terminal-2); }
-.ktheme-option[data-family="terminal"] .ktheme-swatch span:nth-child(3) { background: var(--k-theme-swatch-terminal-3); }
+.ktheme-option[data-family="wordpress"] .ktheme-swatch span:nth-child(1) { background: var(--k-theme-swatch-wordpress-1); }
+.ktheme-option[data-family="wordpress"] .ktheme-swatch span:nth-child(2) { background: var(--k-theme-swatch-wordpress-2); }
+.ktheme-option[data-family="wordpress"] .ktheme-swatch span:nth-child(3) { background: var(--k-theme-swatch-wordpress-3); }
+.ktheme-option[data-family="kandelo"] .ktheme-swatch span:nth-child(1) { background: var(--k-theme-swatch-kandelo-1); }
+.ktheme-option[data-family="kandelo"] .ktheme-swatch span:nth-child(2) { background: var(--k-theme-swatch-kandelo-2); }
+.ktheme-option[data-family="kandelo"] .ktheme-swatch span:nth-child(3) { background: var(--k-theme-swatch-kandelo-3); }
+.ktheme-option[data-family="ubuntu"] .ktheme-swatch span:nth-child(1) { background: var(--k-theme-swatch-ubuntu-1); }
+.ktheme-option[data-family="ubuntu"] .ktheme-swatch span:nth-child(2) { background: var(--k-theme-swatch-ubuntu-2); }
+.ktheme-option[data-family="ubuntu"] .ktheme-swatch span:nth-child(3) { background: var(--k-theme-swatch-ubuntu-3); }
 
 .ktheme-copy {
   min-width: 0;

@@ -17,7 +17,7 @@ import type {
 } from "../../../../../web-libs/kandelo-session/src/kernel-host";
 
 type InternalsTab = "syslog" | "procs" | "vfs" | "lazy-load" | "config" | "syscalls";
-type ThemeFamily = "playground" | "balanced" | "terminal";
+type ThemeFamily = "ubuntu" | "wordpress" | "kandelo";
 type ResolvedThemeMode = "light" | "dark";
 type ThemeMode = ResolvedThemeMode | "auto";
 type ThemePreference = {
@@ -26,17 +26,17 @@ type ThemePreference = {
 };
 
 const THEME_STORAGE_KEY = "kandelo.theme";
-const THEME_STORAGE_VERSION = 1;
+const THEME_STORAGE_VERSION = 3;
 
 type StoredThemePreference = ThemePreference & {
   version: typeof THEME_STORAGE_VERSION;
 };
 
-const DEFAULT_THEME: ThemePreference = { family: "playground", mode: "auto" };
+const DEFAULT_THEME: ThemePreference = { family: "ubuntu", mode: "auto" };
 const THEME_FAMILIES: Array<{ family: ThemeFamily; label: string; description: string }> = [
-  { family: "playground", label: "Playground", description: "WordPress-style product neutrals and blue accents." },
-  { family: "balanced", label: "Kandelo Ember", description: "Warm parchment and orange from the public Kandelo UI." },
-  { family: "terminal", label: "Kandelo Terminal", description: "Primer-style neutrals with amber terminal cues." },
+  { family: "ubuntu", label: "Ubuntu", description: "Yaru light and dark colors with Ubuntu terminal palettes." },
+  { family: "wordpress", label: "WordPress", description: "WordPress design-system grays with the modern blueberry accent." },
+  { family: "kandelo", label: "Kandelo Ember", description: "Warm Kandelo surfaces with ember accents and terminal contrast." },
 ];
 const THEME_MODES: Array<{ mode: ThemeMode; label: string }> = [
   { mode: "auto", label: "Auto" },
@@ -46,8 +46,8 @@ const THEME_MODES: Array<{ mode: ThemeMode; label: string }> = [
 
 const PANE_META: Record<DockPaneId, { title: string; subtitle: string }> = {
   gallery: {
-    title: "Gallery",
-    subtitle: "Published Kandelo systems and local demo images.",
+    title: "Launch New Machine",
+    subtitle: "Choose a published Kandelo machine or local demo image to boot.",
   },
 };
 
@@ -71,6 +71,7 @@ export const App: React.FC = () => {
   const [terminals, setTerminals] = React.useState<ShellTerminal[]>(() => [createShellTerminal(1)]);
   const [activeTerminalId, setActiveTerminalId] = React.useState("tty-1");
   const nextTerminalIndex = React.useRef(2);
+  const autoOpenedDemoGuideKey = React.useRef<string | null>(null);
 
   const desc = host.getBootDescriptor();
   const resolvedThemeMode = theme.mode === "auto" ? systemThemeMode : theme.mode;
@@ -100,8 +101,11 @@ export const App: React.FC = () => {
   }, [resolvedThemeMode, theme]);
 
   React.useEffect(() => {
-    setDemoGuideOpen(demoGuide !== null);
-  }, [demoGuide?.title, desc.id]);
+    const key = `${desc.id}:${demoGuide?.title ?? "no-guide"}`;
+    if (autoOpenedDemoGuideKey.current === key) return;
+    autoOpenedDemoGuideKey.current = key;
+    setDemoGuideOpen(dockPane === null && demoGuide !== null);
+  }, [demoGuide?.title, desc.id, dockPane]);
 
   React.useEffect(() => {
     setDemoDockControls(null);
@@ -551,18 +555,36 @@ function readThemePreference(): ThemePreference {
     const raw = window.localStorage.getItem(THEME_STORAGE_KEY);
     if (!raw) return DEFAULT_THEME;
     const parsed = JSON.parse(raw) as Partial<StoredThemePreference>;
-    if (parsed.version !== THEME_STORAGE_VERSION) return DEFAULT_THEME;
-    const family = parsed.family;
+    if (
+      parsed.version !== THEME_STORAGE_VERSION &&
+      parsed.version !== 2 &&
+      parsed.version !== 1
+    ) {
+      return DEFAULT_THEME;
+    }
+    const family = normalizeThemeFamily(parsed.family);
     const mode = parsed.mode;
-    if (!isThemeFamily(family) || !isThemeMode(mode)) return DEFAULT_THEME;
+    if (!family || !isThemeMode(mode)) return DEFAULT_THEME;
     return { family, mode };
   } catch {
     return DEFAULT_THEME;
   }
 }
 
-function isThemeFamily(value: unknown): value is ThemeFamily {
-  return value === "playground" || value === "balanced" || value === "terminal";
+function normalizeThemeFamily(value: unknown): ThemeFamily | null {
+  switch (value) {
+    case "playground":
+      return "wordpress";
+    case "wordpress":
+    case "kandelo":
+    case "ubuntu":
+      return value;
+    case "balanced":
+    case "terminal":
+      return "kandelo";
+    default:
+      return null;
+  }
 }
 
 function isThemeMode(value: unknown): value is ThemeMode {
