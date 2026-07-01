@@ -1,10 +1,20 @@
-%% ring.erl — Classic Erlang ring benchmark
+%% ring.erl — Classic Erlang ring benchmark (reference source)
 %%
-%% Spawns N processes in a ring, sends a message around M times.
-%% Demonstrates Erlang's lightweight process model running on
-%% a single wasm32 thread via the BEAM scheduler.
+%% Spawns N processes in a ring and sends a token around M times,
+%% demonstrating Erlang's lightweight process model running on a single
+%% wasm32 thread via the BEAM scheduler.
 %%
-%% Usage:
+%% NOTE: this module is reference source; it is NOT loaded by the runtime
+%% smoke. Erlang cannot compile modules on Kandelo yet — beam_asm hashes
+%% each module with erlang:md5/1 over an iolist, and erlang:md5/1 returns
+%% badarg on iolist input in the current wasm build (works only on a
+%% binary), so `erlc ring.erl` / compile:file/1 crash on-platform. Tracked
+%% as kd-qe2c. The runtime smoke (test/erlang.test.ts) exercises the same
+%% spawn/message-passing behaviour via a self-contained -eval program that
+%% needs no compilation.
+%%
+%% Usage (requires a host-precompiled ring.beam on the -pa code path):
+%%   erlc ring.erl   %% on a host with matching OTP 28
 %%   npx tsx packages/registry/erlang/demo/serve.ts -eval "ring:start()."
 
 -module(ring).
