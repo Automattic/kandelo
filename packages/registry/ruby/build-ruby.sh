@@ -16,13 +16,12 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
-WORK_DIR="${WASM_POSIX_DEP_WORK_DIR:-$SCRIPT_DIR}"
-SRC_DIR="$WORK_DIR/ruby-src"
+SRC_DIR="$SCRIPT_DIR/ruby-src"
 SOURCE_MARKER="$SRC_DIR/.kandelo-ruby-version"
-HOST_BUILD_DIR="$WORK_DIR/ruby-host-build"
-CROSS_BUILD_DIR="$WORK_DIR/ruby-cross-build"
-INSTALL_DIR="$WORK_DIR/ruby-install"
-BIN_DIR="${WASM_POSIX_DEP_OUT_DIR:-$SCRIPT_DIR/bin}"
+HOST_BUILD_DIR="$SCRIPT_DIR/ruby-host-build"
+CROSS_BUILD_DIR="$SCRIPT_DIR/ruby-cross-build"
+INSTALL_DIR="$SCRIPT_DIR/ruby-install"
+BIN_DIR="$SCRIPT_DIR/bin"
 RUNTIME_ZIP="$BIN_DIR/ruby-runtime.zip"
 # Worktree-local SDK on PATH (no global npm link required).
 # shellcheck source=/dev/null
@@ -80,17 +79,44 @@ if [ ! -f "$ZLIB_PREFIX/lib/libz.a" ]; then
 fi
 echo "==> zlib at $ZLIB_PREFIX"
 
-# Psych/YAML is omitted from this first Kandelo Ruby runtime. The target
-# extension probe can fail after the core wasm binary links, so keep the
-# initial port to the smoke-tested standard library surface and track YAML
-# support as follow-up work.
+# Build libyaml if not already built (Ruby needs it for psych/YAML)
+LIBYAML_DIR="$SCRIPT_DIR/libyaml-install"
+if [ ! -f "$LIBYAML_DIR/lib/libyaml.a" ]; then
+    echo "==> Building libyaml for wasm32..."
+    LIBYAML_VERSION="0.2.5"
+    LIBYAML_SHA256="c642ae9b75fee120b2d96c712538bd2cf283228d2337df2cf2988e3c02678ef4"
+    LIBYAML_SRC="$SCRIPT_DIR/libyaml-src"
+    if [ ! -d "$LIBYAML_SRC" ]; then
+        curl --retry 10 --retry-delay 5 --retry-max-time 300 --retry-all-errors -fsSL "https://pyyaml.org/download/libyaml/yaml-${LIBYAML_VERSION}.tar.gz" \
+            -o "/tmp/yaml-${LIBYAML_VERSION}.tar.gz"
+        echo "$LIBYAML_SHA256  /tmp/yaml-${LIBYAML_VERSION}.tar.gz" | shasum -a 256 -c -
+        mkdir -p "$LIBYAML_SRC"
+        tar xzf "/tmp/yaml-${LIBYAML_VERSION}.tar.gz" -C "$LIBYAML_SRC" --strip-components=1
+        rm "/tmp/yaml-${LIBYAML_VERSION}.tar.gz"
+    fi
+    cd "$LIBYAML_SRC"
+    if [ ! -f Makefile ]; then
+        wasm32posix-configure --prefix="$LIBYAML_DIR" --disable-shared --enable-static
+    fi
+    make -j"$(sysctl -n hw.ncpu 2>/dev/null || nproc)"
+    make install
+    cd "$REPO_ROOT"
+    echo "==> libyaml built"
+fi
+
+# Install libyaml into sysroot
+cp "$LIBYAML_DIR/include/yaml.h" "$SYSROOT/include/"
+cp "$LIBYAML_DIR/lib/libyaml.a" "$SYSROOT/lib/"
+mkdir -p "$SYSROOT/lib/pkgconfig"
+if [ -f "$LIBYAML_DIR/lib/pkgconfig/yaml-0.1.pc" ]; then
+    sed "s|^prefix=.*|prefix=$SYSROOT|" "$LIBYAML_DIR/lib/pkgconfig/yaml-0.1.pc" \
+        > "$SYSROOT/lib/pkgconfig/yaml-0.1.pc"
+fi
 
 # Ensure WASI stub libraries exist (Ruby's wasi detection injects -lwasi-emulated-*)
-WASI_STUB_DIR="$WORK_DIR/wasi-stubs"
-mkdir -p "$WASI_STUB_DIR"
 for lib in libwasi-emulated-signal.a libwasi-emulated-getpid.a libwasi-emulated-process-clocks.a libwasi-emulated-mman.a; do
     if [ ! -f "$SYSROOT/lib/$lib" ]; then
-        wasm32posix-ar rcs "$WASI_STUB_DIR/$lib"
+        wasm32posix-ar rcs "$SYSROOT/lib/$lib"
     fi
 done
 
@@ -823,8 +849,8 @@ SITE_EOF
     # wasi target wires in wasm/asyncify setjmp/fiber sources and a POSTLINK
     # asyncify transform; Kandelo uses libc's wasm SJLJ lowering, the
     # local-root-spill pass, and explicit wasm-fork-instrument below.
-    # Prism remains available explicitly, but Ruby's parser/compiler paths are
-    # stack-heavy on Kandelo wasm32-posix.
+    # Prism remains available explicitly, but its Ruby 4 compiler path traps on
+    # Kandelo wasm32-posix while compiling Psych::Visitors::ToRuby.
     # Ruby parser/compiler paths are stack-heavy, and local-root spilling
     # adds small linear-stack frames to preserve VALUE visibility for GC.
     CONFIG_SITE="$CONFIG_SITE" \
@@ -835,12 +861,12 @@ SITE_EOF
     NM=wasm32posix-nm \
     STRIP=wasm32posix-strip \
     PKG_CONFIG=wasm32posix-pkg-config \
-    PKG_CONFIG_PATH="$ZLIB_PREFIX/lib/pkgconfig" \
+    PKG_CONFIG_PATH="$SYSROOT/lib/pkgconfig:$ZLIB_PREFIX/lib/pkgconfig" \
     BASERUBY="$BASERUBY_WRAPPER" \
     WASM_POSIX_CROSS_COMPILE=1 \
     CFLAGS="-O2" \
-    CPPFLAGS="-DRUBY_KANDELO_POSIX=1 -I$WORK_DIR/include -I$SYSROOT/include -I$ZLIB_PREFIX/include" \
-    LDFLAGS="-L$SYSROOT/lib -L$WASI_STUB_DIR -L$ZLIB_PREFIX/lib -Wl,-z,stack-size=1048576" \
+    CPPFLAGS="-DRUBY_KANDELO_POSIX=1 -I$SYSROOT/include -I$ZLIB_PREFIX/include" \
+    LDFLAGS="-L$SYSROOT/lib -L$ZLIB_PREFIX/lib -Wl,-z,stack-size=1048576" \
     "$SRC_DIR/configure" \
         --host=wasm32-unknown-none \
         --build="$(uname -m)-apple-darwin" \
@@ -861,8 +887,8 @@ SITE_EOF
         --without-fiddle \
         --without-readline \
         --with-static-linked-ext \
-        --with-ext=stringio,zlib,monitor,digest,digest/md5,digest/sha1,digest/sha2,json,json/parser,json/generator,strscan,date,etc,fcntl,io/console,pty,socket,continuation \
-        --with-out-ext=openssl,fiddle,readline,syslog,nkf,bigdecimal,psych \
+        --with-ext=stringio,zlib,monitor,psych,digest,digest/md5,digest/sha1,digest/sha2,json,json/parser,json/generator,strscan,date,etc,fcntl,io/console,pty,socket,continuation \
+        --with-out-ext=openssl,fiddle,readline,syslog,nkf,bigdecimal \
         2>&1 | tail -50
 
     echo "==> Configure complete."
@@ -1032,12 +1058,11 @@ if [ ! -f revision.h ]; then
 REVEOF
 fi
 
-# execinfo.h (backtrace) not available; create header with declarations only.
-mkdir -p "$WORK_DIR/include"
-if [ ! -f "$WORK_DIR/include/execinfo.h" ]; then
+# execinfo.h (backtrace) not available — create header with declarations only
+if [ ! -f "$SYSROOT/include/execinfo.h" ]; then
     echo "==> Creating stub execinfo.h..."
-    cat > "$WORK_DIR/include/execinfo.h" << 'EXECEOF'
-/* Stub execinfo.h for wasm32-posix; no backtrace support. */
+    cat > "$SYSROOT/include/execinfo.h" << 'EXECEOF'
+/* Stub execinfo.h for wasm32-posix — no backtrace support */
 #ifndef _EXECINFO_H
 #define _EXECINFO_H
 int backtrace(void **buffer, int size);
@@ -1062,10 +1087,10 @@ if [ ! -f exts.mk ]; then
     exit 1
 fi
 
-STATIC_EXTINITS="continuation date_core digest digest/md5 digest/sha1 digest/sha2 etc fcntl io/console json/ext/generator json/ext/parser monitor pty socket stringio strscan zlib"
-STATIC_EXTOBJS="ext/extinit.o ext/continuation/continuation.a ext/date/date_core.a ext/digest/digest.a ext/digest/md5/md5.a ext/digest/sha1/sha1.a ext/digest/sha2/sha2.a ext/etc/etc.a ext/fcntl/fcntl.a ext/io/console/console.a ext/json/generator/generator.a ext/json/parser/parser.a ext/monitor/monitor.a ext/pty/pty.a ext/socket/socket.a ext/stringio/stringio.a ext/strscan/strscan.a ext/zlib/zlib.a"
+STATIC_EXTINITS="continuation date_core digest digest/md5 digest/sha1 digest/sha2 etc fcntl io/console json/ext/generator json/ext/parser monitor psych pty socket stringio strscan zlib"
+STATIC_EXTOBJS="ext/extinit.o ext/continuation/continuation.a ext/date/date_core.a ext/digest/digest.a ext/digest/md5/md5.a ext/digest/sha1/sha1.a ext/digest/sha2/sha2.a ext/etc/etc.a ext/fcntl/fcntl.a ext/io/console/console.a ext/json/generator/generator.a ext/json/parser/parser.a ext/monitor/monitor.a ext/psych/psych.a ext/pty/pty.a ext/socket/socket.a ext/stringio/stringio.a ext/strscan/strscan.a ext/zlib/zlib.a"
 STATIC_ENCOBJS="enc/encinit.o enc/libenc.a enc/libtrans.a"
-STATIC_EXTLIBS="-lz"
+STATIC_EXTLIBS="-lyaml -lz"
 STATIC_LINK_PATHS="-L. -L$SYSROOT/lib -L$ZLIB_PREFIX/lib"
 FINAL_RUBY_LDFLAGS="$STATIC_LINK_PATHS -Wl,-z,stack-size=1048576"
 
@@ -1176,5 +1201,5 @@ ls -lh "$RUNTIME_ZIP"
 # Install into local-binaries/ so the resolver picks the freshly-built
 # package outputs over the fetched release.
 source "$REPO_ROOT/scripts/install-local-binary.sh"
-install_local_binary "$PACKAGE_NAME" "$BIN_DIR/ruby.wasm"
+install_local_binary "$PACKAGE_NAME" "$SCRIPT_DIR/bin/ruby.wasm"
 install_local_binary "$PACKAGE_NAME" "$RUNTIME_ZIP"
