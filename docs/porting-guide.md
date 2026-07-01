@@ -790,6 +790,34 @@ Then run the harness:
 scripts/run-sqlite-project-unit-tests.sh --host both --permutation full
 ```
 
+`full` and `all` are different SQLite Tcl targets. `full` runs the public Tcl
+scripts once under the default configuration. `all` starts with `full` and adds
+SQLite's public Tcl runtime-configuration matrix from `testrunner_data.tcl`.
+The current public Tcl job-count reference from the SQLite audit is
+`full=1416` and `all=10523`; run `--explain` against a fresh
+`packages/registry/sqlite/sqlite-full-src/` tree before a long run and report
+the database count that was actually scheduled.
+
+For `all`, keep Node.js and browser hosts as separate result roots so a long
+run or browser restart does not hide which host produced each artifact:
+
+```bash
+scripts/run-sqlite-project-unit-tests.sh --host node --permutation all --explain
+scripts/run-sqlite-project-unit-tests.sh --host browser --permutation all --explain
+```
+
+When executing `all`, publish `summary.txt`, `combined-summary.md`,
+`host-status.tsv`, `failures.tsv`, `testrunner.db`, `testrunner.log`, and the
+four durable files under `outcome-lists/`: `passed-jobs.tsv`,
+`failed-jobs.tsv`, `skipped-jobs.tsv`, and `incomplete-jobs.tsv`. The skipped
+list records SQLite's omitted jobs and any exposed reason. The incomplete list
+records jobs still `ready`, `running`, `halt`, or otherwise nonterminal at the
+time the report is written.
+
+This harness is the public Tcl `testrunner.tcl` surface only. It does not claim
+coverage for TH3, SQL Logic Test, dbsqlfuzz, or the source-rebuild targets
+`release`, `mdevtest`, and `sdevtest`.
+
 Use `--explain` to ask SQLite's testrunner to print the planned jobs without
 starting a full permutation run. Browser runs launch the SQLite-only demo page
 through Vite with `KANDELO_BROWSER_DEMO_INPUTS=sqlite-test` and disable HMR

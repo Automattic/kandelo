@@ -147,8 +147,18 @@ write_sqlite_report() {
   local db="$WORKDIR/testrunner.db"
   local report="$RESULTS_DIR/summary.txt"
   local failures="$RESULTS_DIR/failures.tsv"
+  local outcome_dir="$RESULTS_DIR/outcome-lists"
+  bash "$REPO_ROOT/scripts/write-sqlite-official-outcome-lists.sh" "$db" "$outcome_dir" || true
   if [ ! -f "$db" ]; then
-    echo "No testrunner.db was created at $db" > "$report"
+    {
+      echo "No testrunner.db was created at $db"
+      echo
+      echo "Outcome lists:"
+      echo "passed_jobs=$outcome_dir/passed-jobs.tsv"
+      echo "failed_jobs=$outcome_dir/failed-jobs.tsv"
+      echo "skipped_jobs=$outcome_dir/skipped-jobs.tsv"
+      echo "incomplete_jobs=$outcome_dir/incomplete-jobs.tsv"
+    } > "$report"
     return
   fi
 
@@ -173,6 +183,12 @@ write_sqlite_report() {
       echo
       echo "Available artifacts:"
       find "$RESULTS_DIR" -maxdepth 1 -type f -name 'testrunner.*' -print | sort
+      echo
+      echo "Outcome lists:"
+      echo "passed_jobs=$outcome_dir/passed-jobs.tsv"
+      echo "failed_jobs=$outcome_dir/failed-jobs.tsv"
+      echo "skipped_jobs=$outcome_dir/skipped-jobs.tsv"
+      echo "incomplete_jobs=$outcome_dir/incomplete-jobs.tsv"
     } > "$report"
     : > "$failures"
     echo "===== SQLite official testrunner database summary ====="
@@ -235,6 +251,12 @@ write_sqlite_report() {
          FROM jobs
         WHERE state IN ('failed', 'running', 'omit')
         ORDER BY state, jobid;"
+    echo
+    echo "Outcome lists:"
+    echo "passed_jobs=$outcome_dir/passed-jobs.tsv"
+    echo "failed_jobs=$outcome_dir/failed-jobs.tsv"
+    echo "skipped_jobs=$outcome_dir/skipped-jobs.tsv"
+    echo "incomplete_jobs=$outcome_dir/incomplete-jobs.tsv"
   } > "$report"
 
   sqlite3 -header -separator $'\t' "$db" \
