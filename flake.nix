@@ -128,6 +128,9 @@
             # dies later with "makeinfo: command not found" on every
             # `*.info` rule.
             pkgs.texinfo
+            # GNU bc's host-side libmath.h generator calls upstream's
+            # fix-libmath_h helper, which invokes `ed`.
+            pkgs.ed
             # Mozilla CA bundle — Nix's curl is built against
             # cacert and looks up its bundle via SSL_CERT_FILE /
             # NIX_SSL_CERT_FILE / GIT_SSL_CAINFO. Pure-shell

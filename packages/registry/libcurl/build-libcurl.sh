@@ -20,12 +20,27 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
-SRC_DIR="$SCRIPT_DIR/curl-src"
+
+# shellcheck source=/dev/null
+source "$REPO_ROOT/sdk/activate.sh"
 
 # --- Inputs from resolver, with legacy fallbacks ---
 CURL_VERSION="${WASM_POSIX_DEP_VERSION:-${CURL_VERSION:-8.11.1}}"
+WORK_DIR="${WASM_POSIX_DEP_WORK_DIR:-$SCRIPT_DIR}"
+TARGET_ARCH="${WASM_POSIX_DEP_TARGET_ARCH:-wasm32}"
 SOURCE_URL="${WASM_POSIX_DEP_SOURCE_URL:-https://curl.se/download/curl-${CURL_VERSION}.tar.xz}"
 SOURCE_SHA256="${WASM_POSIX_DEP_SOURCE_SHA256:-}"
+
+if [ "$TARGET_ARCH" != "wasm32" ]; then
+    echo "ERROR: libcurl is currently packaged for wasm32 only, got $TARGET_ARCH" >&2
+    exit 2
+fi
+
+TOOL_PREFIX="wasm32posix"
+CC="${TOOL_PREFIX}-cc"
+CONFIGURE="${TOOL_PREFIX}-configure"
+SRC_DIR="$WORK_DIR/curl-src"
+SOURCE_MARKER="$SRC_DIR/.kandelo-curl-source"
 
 # Resolver vs legacy is decided by whether WASM_POSIX_DEP_OUT_DIR is
 # set. In resolver mode INSTALL_DIR is the cache temp dir; in legacy
@@ -38,8 +53,8 @@ else
     INSTALL_DIR="$SCRIPT_DIR/bin"
 fi
 
-if ! command -v wasm32posix-cc &>/dev/null; then
-    echo "ERROR: wasm32posix-cc not found. Run 'npm link' in sdk/ first." >&2
+if ! command -v "$CC" &>/dev/null; then
+    echo "ERROR: $CC not found after sourcing sdk/activate.sh." >&2
     exit 1
 fi
 
@@ -70,9 +85,17 @@ if [ -z "$OPENSSL_PREFIX" ] \
 fi
 
 # --- Fetch + verify source ---
+expected_marker="$(printf '%s\n%s\n%s\n' "$CURL_VERSION" "$SOURCE_URL" "$SOURCE_SHA256")"
+if [ -d "$SRC_DIR" ] && [ "$(cat "$SOURCE_MARKER" 2>/dev/null || true)" != "$expected_marker" ]; then
+    echo "==> Existing curl source does not match requested version/source; cleaning..."
+    rm -rf "$SRC_DIR"
+fi
+
 if [ ! -d "$SRC_DIR" ]; then
     echo "==> Downloading curl $CURL_VERSION..."
-    TARBALL="/tmp/curl-${CURL_VERSION}.tar.xz"
+    tmpdir="$(mktemp -d "${TMPDIR:-/tmp}/kandelo-curl-src.XXXXXX")"
+    trap 'rm -rf "$tmpdir"' EXIT
+    TARBALL="$tmpdir/curl-${CURL_VERSION}.tar.xz"
     curl --retry 10 --retry-delay 5 --retry-max-time 300 --retry-all-errors -fsSL "$SOURCE_URL" -o "$TARBALL"
     if [ -n "$SOURCE_SHA256" ]; then
         echo "==> Verifying source sha256..."
@@ -82,7 +105,9 @@ if [ ! -d "$SRC_DIR" ]; then
     fi
     mkdir -p "$SRC_DIR"
     tar xJf "$TARBALL" -C "$SRC_DIR" --strip-components=1
-    rm "$TARBALL"
+    printf '%s\n' "$expected_marker" > "$SOURCE_MARKER"
+    trap - EXIT
+    rm -rf "$tmpdir"
     echo "==> Source extracted to $SRC_DIR"
 fi
 
@@ -205,7 +230,7 @@ if [ ! -f Makefile ]; then
         PREFIX_ARGS+=(--prefix="$INSTALL_DIR")
     fi
 
-    wasm32posix-configure \
+    "$CONFIGURE" \
         ${PREFIX_ARGS[@]+"${PREFIX_ARGS[@]}"} \
         --disable-nls \
         --disable-shared \

@@ -164,7 +164,7 @@ interface SelectedBottle {
 
 const PACKAGE_RE = /^[a-z0-9][a-z0-9._-]*$/;
 const SHA256_RE = /^[0-9a-f]{64}$/;
-const SAFE_REL_SEGMENT_RE = /^[A-Za-z0-9._@%+=:-]+$/;
+const SAFE_REL_SEGMENT_RE = /^[A-Za-z0-9._@%+=:\[\]-]+$/;
 
 export async function planHomebrewVfs(
   metadataValue: unknown,
