@@ -152,9 +152,13 @@ install_local_binary() {
         dest="$repo_root/local-binaries/programs/$arch/$program$src_ext"
     fi
 
-    mkdir -p "$(dirname "$dest")"
-    cp "$src" "$dest"
-    echo "  installed $dest"
+    if [ "${WASM_POSIX_DEP_SKIP_LOCAL_INSTALL:-}" = "1" ]; then
+        echo "  skipped local-binaries install for $src_basename"
+    else
+        mkdir -p "$(dirname "$dest")"
+        cp "$src" "$dest"
+        echo "  installed $dest"
+    fi
 
     # When invoked under the package-system resolver (`xtask build-deps
     # resolve`, `xtask archive-stage`), WASM_POSIX_DEP_OUT_DIR points at
@@ -173,7 +177,11 @@ install_local_binary() {
     if [ -n "${WASM_POSIX_DEP_OUT_DIR:-}" ]; then
         local resolver_dest="$WASM_POSIX_DEP_OUT_DIR/$src_basename"
         mkdir -p "$(dirname "$resolver_dest")"
-        cp "$src" "$resolver_dest"
-        echo "  installed $resolver_dest (resolver scratch)"
+        if [ "$src" -ef "$resolver_dest" ]; then
+            echo "  output already staged at $resolver_dest"
+        else
+            cp "$src" "$resolver_dest"
+            echo "  installed $resolver_dest (resolver scratch)"
+        fi
     fi
 }
