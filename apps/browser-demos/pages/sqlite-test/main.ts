@@ -108,6 +108,34 @@ function createFs(): MemoryFileSystem {
   return fs;
 }
 
+function installKandeloTestrunnerShim(fs: MemoryFileSystem): void {
+  const path = "/sqlite/test/testrunner.tcl";
+  const decoder = new TextDecoder();
+  const original = decoder.decode(readVfsFile(fs, path));
+  if (original.includes("kandelo_testrunner_platform_shim")) return;
+
+  const marker = 'exec tclsh "$0" "$@"\n';
+  const markerEnd = original.indexOf(marker);
+  if (markerEnd < 0) {
+    throw new Error("Unable to locate SQLite testrunner.tcl shell preamble");
+  }
+
+  const insertAt = markerEnd + marker.length;
+  const shim = [
+    "",
+    "# Kandelo platform shim: the wasm Tcl build reports a target OS name",
+    "# that SQLite testrunner.tcl does not classify. Keep the shim inside",
+    "# the staged upstream runner so nested config jobs inherit it too.",
+    "if {![info exists ::kandelo_testrunner_platform_shim]} {",
+    "  set ::kandelo_testrunner_platform_shim 1",
+    "  set ::tcl_platform(os) OpenBSD",
+    "  set ::tcl_platform(platform) unix",
+    "}",
+    "",
+  ].join("\n");
+  writeVfsFile(fs, path, original.slice(0, insertAt) + shim + original.slice(insertAt), 0o644);
+}
+
 function sqliteSyscallLogPtrWidth(): 4 | 8 | undefined {
   const value = import.meta.env.VITE_SQLITE_BROWSER_SYSCALL_LOG_PTR_WIDTH;
   if (value === "4") return 4;
@@ -164,6 +192,7 @@ async function init() {
     };
     const artifactTimer = window.setInterval(publishArtifactSnapshot, 5000);
     if (argv[1] === "kandelo-testrunner.tcl") {
+      installKandeloTestrunnerShim(fs);
       writeVfsFile(fs, "/sqlite/kandelo-testrunner.tcl", [
         "set ::tcl_platform(os) OpenBSD",
         "set ::tcl_platform(platform) unix",
