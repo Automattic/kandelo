@@ -29,12 +29,12 @@ Core validation surface:
 | musl libc-test | `scripts/run-libc-tests.sh` | libc, syscall, and kernel semantic changes |
 | Open POSIX Test Suite | `scripts/run-posix-tests.sh` | POSIX API behavior |
 | Sortix os-test | `scripts/run-sortix-tests.sh --all` | Broad POSIX/kernel regression coverage |
-| ABI snapshot | `bash scripts/check-abi-version.sh` | ABI-adjacent changes |
+| ABI snapshot | `bash scripts/dev-shell.sh bash scripts/check-abi-version.sh` | ABI-adjacent changes |
 
 For CI-shaped local runs, prefer:
 
 ```bash
-bash scripts/dev-shell.sh bash scripts/ci-run-test-suite.sh <cargo-kernel|fork-instrument|vitest|browser|libc|posix|sortix>
+bash scripts/dev-shell.sh bash scripts/ci-run-test-suite.sh <cargo-kernel|fork-instrument|vitest|browser|libc|posix|sortix|abi>
 ```
 
 For direct Cargo commands, compute `<host-target>` with:
@@ -43,8 +43,10 @@ For direct Cargo commands, compute `<host-target>` with:
 rustc -vV | awk '/^host/ {print $2}'
 ```
 
-`scripts/ci-run-test-suite.sh` does not currently expose an `abi` suite; run
-`bash scripts/check-abi-version.sh` separately for ABI-adjacent changes.
+When already inside `scripts/dev-shell.sh bash`, the ABI suite runs the same
+checker as `bash scripts/check-abi-version.sh`. Outside that shell, use the
+dev-shell-wrapped form so the pinned nightly Rust toolchain and LLVM tools come
+from the repository flake.
 
 The table names primary evidence, not a universal checklist. Choose the suites
 that support the claim you will make, broaden coverage when a change crosses

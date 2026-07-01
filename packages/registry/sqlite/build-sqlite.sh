@@ -97,9 +97,15 @@ PCEOF
 if [ "$BUILD_CLI" = "1" ]; then
     echo "==> Building sqlite3 CLI..."
     mkdir -p "$INSTALL_DIR/bin"
+    # SQLite's shell recursion-limit tests intentionally nest .read input 25
+    # levels deep. The default wasm-ld 64 KiB stack traps before the shell can
+    # report its own "Input nesting limit" error, so give the CLI the same
+    # conservative stack budget used by other recursive command-line tools.
+    SQLITE_CLI_LDFLAGS="-Wl,-z,stack-size=1048576"
     # shellcheck disable=SC2086
     wasm32posix-cc $SQLITE_CFLAGS \
         "$SRC_DIR/shell.c" "$SRC_DIR/sqlite3.c" \
+        $SQLITE_CLI_LDFLAGS \
         -o "$INSTALL_DIR/bin/sqlite3.wasm" -lm
 
     source "$REPO_ROOT/scripts/install-local-binary.sh"

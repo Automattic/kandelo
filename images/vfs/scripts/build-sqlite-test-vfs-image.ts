@@ -13,6 +13,7 @@ import { MemoryFileSystem } from "../../../host/src/vfs/memory-fs";
 import {
   ensureDir,
   ensureDirRecursive,
+  writeVfsFile,
   writeVfsBinary,
   symlink,
 } from "../../../host/src/vfs/image-helpers";
@@ -36,6 +37,7 @@ const COREUTILS_SYMLINK_NAMES = [
   "head", "ln", "ls", "mkdir", "mv", "pwd", "rm", "rmdir", "sed", "sleep",
   "sort", "tail", "tee", "test", "touch", "tr", "true", "uname", "wc", "[",
 ];
+const O_RDONLY = 0;
 
 function checkPrereqs(): void {
   const missing: string[] = [];
@@ -51,6 +53,43 @@ function checkPrereqs(): void {
       "  bash packages/registry/sqlite/build-testfixture.sh",
     );
   }
+}
+
+function readVfsText(fs: MemoryFileSystem, path: string): string {
+  const stat = fs.stat(path);
+  const fd = fs.open(path, O_RDONLY, 0);
+  const out = new Uint8Array(stat.size);
+  let offset = 0;
+  try {
+    while (offset < out.length) {
+      const nread = fs.read(fd, out.subarray(offset), null, out.length - offset);
+      if (nread <= 0) break;
+      offset += nread;
+    }
+  } finally {
+    fs.close(fd);
+  }
+  return new TextDecoder().decode(out.subarray(0, offset));
+}
+
+function patchTestrunnerPlatform(fs: MemoryFileSystem): void {
+  const path = "/sqlite/test/testrunner.tcl";
+  const marker = "Kandelo platform shim for browser all-mode child jobs.";
+  const source = readVfsText(fs, path);
+  if (source.includes(marker)) return;
+  const needle = "switch -nocase -glob -- $tcl_platform(os) {\n";
+  const patch = [
+    "# Kandelo platform shim for browser all-mode child jobs.",
+    "# The browser runner writes kandelo-testrunner.tcl for the top-level",
+    "# process, but all-mode jobs source this copied runner directly.",
+    "set ::tcl_platform(os) OpenBSD",
+    "set ::tcl_platform(platform) unix",
+    "",
+  ].join("\n");
+  if (!source.includes(needle)) {
+    throw new Error(`Could not find SQLite testrunner platform switch in ${path}`);
+  }
+  writeVfsFile(fs, path, source.replace(needle, `${patch}${needle}`), 0o644);
 }
 
 async function main() {
@@ -100,6 +139,7 @@ async function main() {
       rel.endsWith(".o") ||
       rel.endsWith(".a"),
   });
+  patchTestrunnerPlatform(fs);
   console.log(`    ${count} source/test files`);
 
   symlink(fs, "/usr/bin/testfixture", "/sqlite/testfixture");
