@@ -23,7 +23,6 @@ import type { HttpRequest, HttpResponse } from "./networking/in-kernel-http";
 
 export type { HttpRequest, HttpResponse };
 import kernelWasmUrl from "@kernel-wasm?url";
-import rootfsVfsUrl from "@rootfs-vfs?url";
 import workerEntryUrl from "./worker-entry-browser.ts?worker&url";
 import kernelWorkerEntryUrl from "./browser-kernel-worker-entry.ts?worker&url";
 import { DEFAULT_MAX_PAGES } from "./constants";
@@ -254,13 +253,13 @@ export class BrowserKernel {
       kernelWasmBytes
         ? Promise.resolve(kernelWasmBytes)
         : fetch(kernelWasmUrl).then((r) => r.arrayBuffer()),
-      fetch(rootfsVfsUrl).then((r) => r.arrayBuffer()),
+      loadDefaultRootfsImage(),
     ]);
 
     await this.bootWorker({
       kernelWasmBytes: wasmBytes,
       fsSab: this.fsSab!,
-      rootfsImage: new Uint8Array(rootfsVfsBuf),
+      rootfsImage: rootfsVfsBuf,
     });
 
     await registerLazyVfsMetadata(this.memfs!, async (message) => {
@@ -294,9 +293,7 @@ export class BrowserKernel {
         ? Promise.resolve(options.kernelWasm)
         : fetch(kernelWasmUrl).then((r) => r.arrayBuffer()),
       options.vfsImage === "default"
-        ? fetch(rootfsVfsUrl)
-            .then((r) => r.arrayBuffer())
-            .then((b) => new Uint8Array(b))
+        ? loadDefaultRootfsImage()
         : Promise.resolve(options.vfsImage),
     ]);
 
@@ -1126,4 +1123,10 @@ export class BrowserKernel {
   getProcessMemory(pid: number): WebAssembly.Memory | undefined {
     return this.fbMemoryByPid.get(pid);
   }
+}
+
+async function loadDefaultRootfsImage(): Promise<Uint8Array> {
+  const { default: rootfsVfsUrl } = await import("./default-rootfs-url");
+  const bytes = await fetch(rootfsVfsUrl).then((r) => r.arrayBuffer());
+  return new Uint8Array(bytes);
 }
