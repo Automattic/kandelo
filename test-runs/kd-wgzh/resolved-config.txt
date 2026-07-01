@@ -1,0 +1,3 @@
+# Resolved vitest config (v4.1.9) after migration — proves maxForks(1 CI / 4 local) preserved as maxWorkers
+RESOLVED {"CI":"","pool":"forks","maxWorkers":4}
+RESOLVED {"CI":"1","pool":"forks","maxWorkers":1}
