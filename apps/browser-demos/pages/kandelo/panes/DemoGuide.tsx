@@ -3,11 +3,12 @@ import type { DemoActionConfig, DemoGuideConfig } from "../../../../../web-libs/
 import { useDemoGuide, useKernelHost, useStatus, useWebPreview } from "../kernel-host/react";
 
 export interface DemoGuideProps {
+  onClose: () => void;
   onOpenTerminal: () => void;
   onRunWebAction: (action: DemoActionConfig) => Promise<string | void>;
 }
 
-export const DemoGuide: React.FC<DemoGuideProps> = ({ onOpenTerminal, onRunWebAction }) => {
+export const DemoGuide: React.FC<DemoGuideProps> = ({ onClose, onOpenTerminal, onRunWebAction }) => {
   const host = useKernelHost();
   const status = useStatus();
   const webPreview = useWebPreview();
@@ -90,11 +91,25 @@ export const DemoGuide: React.FC<DemoGuideProps> = ({ onOpenTerminal, onRunWebAc
   return (
     <aside className="kdemo" aria-label="Demo actions">
       <div className="kdemo-head">
-        <div>
+        <div className="kdemo-head-main">
           <div className="kdemo-kicker">DEMO</div>
           <h2>{guide.title}</h2>
         </div>
-        <div className="kdemo-id">{descriptor.id}</div>
+        <div className="kdemo-head-tools">
+          <div className="kdemo-id">{descriptor.id}</div>
+          <button
+            type="button"
+            className="kdemo-close"
+            title="Close demo guide"
+            aria-label="Close demo guide"
+            onClick={onClose}
+          >
+            <svg width="14" height="14" viewBox="0 0 12 12" fill="none" stroke="currentColor" strokeWidth="1.5">
+              <path d="M3 3l6 6" />
+              <path d="M9 3 3 9" />
+            </svg>
+          </button>
+        </div>
       </div>
       {guide.summary && <p className="kdemo-summary">{guide.summary}</p>}
 

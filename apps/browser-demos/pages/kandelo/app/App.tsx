@@ -1,69 +1,155 @@
 // Top-level Kandelo app. The machine remains the primary canvas; the dock
-// switches machine views and opens exploratory panes for gallery, config,
-// sharing, and new machine setup.
+// switches machine views and opens exploratory panes for gallery and overlays.
 
 import * as React from "react";
-import { useKernelHost } from "../kernel-host/react";
-import { Dock, DockPane, type DockPaneId, type DockViewId } from "./Dock";
-import { NewMachinePane } from "./NewMachinePane";
+import { useDemoGuide, useKernelHost, useLazyDownloads } from "../kernel-host/react";
+import { Dock, DockPane, type DockLayoutState, type DockPaneId, type DockViewId } from "./Dock";
 import { MachineView, useMachineSurfaceController } from "../views/MachineView";
 import { Gallery, descriptorFromGalleryItem } from "../views/Gallery";
-import { Config } from "../views/Config";
 import { EmptyState } from "../views/EmptyState";
-import { SharePanel } from "../dialogs/ShareDialog";
 import { createShellTerminal, type ShellTerminal } from "../panes/Shell";
+import { Inspector, INSPECTOR_TABS } from "../panes/Inspector";
 import { navigateToGalleryItemUrl } from "../url-state";
-import type { BootDescriptor, GalleryItem } from "../../../../../web-libs/kandelo-session/src/kernel-host";
+import type {
+  BootDescriptor,
+  GalleryItem,
+  LazyDownloadEvent,
+} from "../../../../../web-libs/kandelo-session/src/kernel-host";
 
 type InternalsTab = "syslog" | "procs" | "vfs" | "lazy-load" | "config" | "syscalls";
+type ThemeFamily = "playground" | "balanced" | "terminal";
+type ResolvedThemeMode = "light" | "dark";
+type ThemeMode = ResolvedThemeMode | "auto";
+type ThemePreference = {
+  family: ThemeFamily;
+  mode: ThemeMode;
+};
+
+const THEME_STORAGE_KEY = "kandelo.theme";
+const THEME_STORAGE_VERSION = 1;
+
+type StoredThemePreference = ThemePreference & {
+  version: typeof THEME_STORAGE_VERSION;
+};
+
+const DEFAULT_THEME: ThemePreference = { family: "playground", mode: "auto" };
+const THEME_FAMILIES: Array<{ family: ThemeFamily; label: string; description: string }> = [
+  { family: "playground", label: "Playground", description: "WordPress-style product neutrals and blue accents." },
+  { family: "balanced", label: "Kandelo Ember", description: "Warm parchment and orange from the public Kandelo UI." },
+  { family: "terminal", label: "Kandelo Terminal", description: "Primer-style neutrals with amber terminal cues." },
+];
+const THEME_MODES: Array<{ mode: ThemeMode; label: string }> = [
+  { mode: "auto", label: "Auto" },
+  { mode: "light", label: "Light" },
+  { mode: "dark", label: "Dark" },
+];
 
 const PANE_META: Record<DockPaneId, { title: string; subtitle: string }> = {
-  new: {
-    title: "New machine",
-    subtitle: "Start from a preset, open a Kandelo URL, or review image import boundaries.",
-  },
   gallery: {
     title: "Gallery",
     subtitle: "Published Kandelo systems and local demo images.",
-  },
-  config: {
-    title: "This machine",
-    subtitle: "Edit the current boot descriptor through KernelHost.",
-  },
-  share: {
-    title: "Share and export",
-    subtitle: "Create a Kandelo URL and check what state it can carry.",
   },
 };
 
 export const App: React.FC = () => {
   const host = useKernelHost();
+  const demoGuide = useDemoGuide();
+  const lazyDownloads = useLazyDownloads();
   const surface = useMachineSurfaceController();
 
   const [dockPane, setDockPane] = React.useState<DockPaneId | null>(null);
+  const [dockHeight, setDockHeight] = React.useState(0);
+  const [dockLayout, setDockLayout] = React.useState<DockLayoutState>({ collapsed: false, fullWidth: false });
+  const [demoGuideOpen, setDemoGuideOpen] = React.useState(demoGuide !== null);
+  const [demoDockControls, setDemoDockControls] = React.useState<React.ReactNode | null>(null);
+  const [demoGuidePopup, setDemoGuidePopup] = React.useState<React.ReactNode | null>(null);
+  const [internalsOpen, setInternalsOpen] = React.useState(false);
   const [internalsTab, setInternalsTab] = React.useState<InternalsTab>("syslog");
-  const [shareTarget, setShareTarget] = React.useState<BootDescriptor | null>(null);
+  const [theme, setTheme] = React.useState<ThemePreference>(() => readThemePreference());
+  const [systemThemeMode, setSystemThemeMode] = React.useState<ResolvedThemeMode>(() => getSystemThemeMode());
+  const [themeOpen, setThemeOpen] = React.useState(false);
   const [terminals, setTerminals] = React.useState<ShellTerminal[]>(() => [createShellTerminal(1)]);
   const [activeTerminalId, setActiveTerminalId] = React.useState("tty-1");
   const nextTerminalIndex = React.useRef(2);
 
   const desc = host.getBootDescriptor();
+  const resolvedThemeMode = theme.mode === "auto" ? systemThemeMode : theme.mode;
+
+  React.useEffect(() => {
+    const query = window.matchMedia("(prefers-color-scheme: dark)");
+    const onChange = () => setSystemThemeMode(query.matches ? "dark" : "light");
+    onChange();
+    query.addEventListener("change", onChange);
+    return () => query.removeEventListener("change", onChange);
+  }, []);
+
+  React.useEffect(() => {
+    const root = document.documentElement;
+    root.dataset.kTheme = theme.family;
+    root.dataset.kMode = resolvedThemeMode;
+    root.dataset.kModePreference = theme.mode;
+    root.style.colorScheme = resolvedThemeMode;
+    try {
+      window.localStorage.setItem(THEME_STORAGE_KEY, JSON.stringify({
+        ...theme,
+        version: THEME_STORAGE_VERSION,
+      } satisfies StoredThemePreference));
+    } catch {
+      // User preference storage can be unavailable in private or restricted contexts.
+    }
+  }, [resolvedThemeMode, theme]);
+
+  React.useEffect(() => {
+    setDemoGuideOpen(demoGuide !== null);
+  }, [demoGuide?.title, desc.id]);
+
+  React.useEffect(() => {
+    setDemoDockControls(null);
+    setDemoGuidePopup(null);
+    setInternalsOpen(false);
+    setThemeOpen(false);
+  }, [desc.id]);
 
   const closeDockPane = React.useCallback(() => {
     setDockPane(null);
-    setShareTarget(null);
   }, []);
 
   const selectDockPane = React.useCallback((pane: DockPaneId | null) => {
-    setShareTarget(null);
+    setInternalsOpen(false);
+    setDemoGuideOpen(false);
+    setThemeOpen(false);
     setDockPane((current) => current === pane ? null : pane);
   }, []);
 
   const selectMachineView = React.useCallback((view: DockViewId) => {
-    setShareTarget(null);
     setDockPane(null);
+    setInternalsOpen(false);
+    setThemeOpen(false);
     surface.chooseView(view);
   }, [surface]);
+
+  const toggleDemoGuide = React.useCallback(() => {
+    if (!demoGuide) return;
+    setDockPane(null);
+    setInternalsOpen(false);
+    setThemeOpen(false);
+    setDemoGuideOpen((open) => !open);
+  }, [demoGuide]);
+
+  const toggleInternals = React.useCallback(() => {
+    if (!surface.canUseInternals) return;
+    setDockPane(null);
+    setDemoGuideOpen(false);
+    setThemeOpen(false);
+    setInternalsOpen((open) => !open);
+  }, [surface.canUseInternals]);
+
+  const toggleTheme = React.useCallback(() => {
+    setDockPane(null);
+    setDemoGuideOpen(false);
+    setInternalsOpen(false);
+    setThemeOpen((open) => !open);
+  }, []);
 
   const applyDescriptor = React.useCallback((d: BootDescriptor) => {
     void host.applyBootDescriptor(d).then(closeDockPane).catch((err) => {
@@ -83,11 +169,6 @@ export const App: React.FC = () => {
     });
   }, [host, closeDockPane]);
 
-  const onShareGalleryItem = React.useCallback((item: GalleryItem) => {
-    setShareTarget(descriptorFromGalleryItem(item, host.getBootDescriptor()));
-    setDockPane("share");
-  }, [host]);
-
   const onAddTerminal = React.useCallback(() => {
     const terminal = createShellTerminal(nextTerminalIndex.current++);
     setTerminals((prev) => [...prev, terminal]);
@@ -95,10 +176,55 @@ export const App: React.FC = () => {
   }, []);
 
   const isEmpty = surface.status === "idle";
+  const dockActiveView: DockViewId | null = !isEmpty && surface.activeView !== "internals"
+    ? surface.activeView
+    : null;
+  const viewControls = !isEmpty
+    ? surface.activeView === "demo"
+      ? demoDockControls
+      : surface.activeView === "terminal"
+        ? (
+          <TerminalDockControls
+            terminals={terminals}
+            activeTerminalId={activeTerminalId}
+            onActiveTerminalId={setActiveTerminalId}
+            onAddTerminal={onAddTerminal}
+          />
+        )
+        : null
+    : null;
+  const internalsPopup = !isEmpty && internalsOpen && surface.canUseInternals
+    ? (
+      <InternalsPopup
+        activeTab={internalsTab}
+        onTab={(tab) => setInternalsTab(tab as InternalsTab)}
+      />
+    )
+    : null;
   const meta = dockPane ? PANE_META[dockPane] : null;
+  const appStyle = {
+    "--kdock-height": `${dockHeight}px`,
+  } as React.CSSProperties;
+  const isTerminalView = !isEmpty && surface.activeView === "terminal";
+  const reserveDockSpace = isTerminalView || dockLayout.fullWidth;
+  const appClassName = [
+    "kapp",
+    "kdocked-app",
+    isTerminalView ? "is-terminal-view" : "",
+    dockLayout.fullWidth ? "is-dock-full-width" : "is-dock-sliding",
+    dockLayout.collapsed ? "is-dock-collapsed" : "",
+    reserveDockSpace ? "is-dock-space-reserved" : "is-dock-overlay",
+  ].filter(Boolean).join(" ");
+  const onDockLayoutChange = React.useCallback((layout: DockLayoutState) => {
+    setDockLayout((current) => (
+      current.collapsed === layout.collapsed && current.fullWidth === layout.fullWidth
+        ? current
+        : layout
+    ));
+  }, []);
 
   return (
-    <div className="kapp kdocked-app">
+    <div className={appClassName} style={appStyle}>
       <main className={`kmain kdocked-main${isEmpty ? " kmain-flush" : ""}`}>
         {isEmpty ? (
           <EmptyState
@@ -109,8 +235,11 @@ export const App: React.FC = () => {
         ) : (
           <MachineView
             surface={surface}
+            demoGuideOpen={demoGuideOpen}
+            onDemoGuideOpenChange={setDemoGuideOpen}
+            onDemoDockControlsChange={setDemoDockControls}
+            onDemoGuidePopupChange={setDemoGuidePopup}
             internalsTab={internalsTab}
-            onInternalsTab={(t) => setInternalsTab(t as InternalsTab)}
             terminals={terminals}
             activeTerminalId={activeTerminalId}
             onActiveTerminalId={setActiveTerminalId}
@@ -120,53 +249,327 @@ export const App: React.FC = () => {
       </main>
 
       {dockPane && meta && (
-        <DockPane
-          pane={dockPane}
-          title={meta.title}
-          subtitle={meta.subtitle}
-          onClose={closeDockPane}
-        >
-          {dockPane === "new" && (
-            <NewMachinePane
-              onLaunchItem={onLaunchGalleryItem}
-              onBrowseAll={() => setDockPane("gallery")}
-              onApplyDescriptor={applyDescriptor}
-            />
-          )}
-          {dockPane === "gallery" && (
-            <Gallery
-              compact
-              onLaunch={onLaunchGalleryItem}
-              onShare={onShareGalleryItem}
-            />
-          )}
-          {dockPane === "config" && (
-            <Config onApplied={closeDockPane} />
-          )}
-          {dockPane === "share" && (
-            <SharePanel
-              embedded
-              descriptor={shareTarget ?? undefined}
-              presetId={shareTarget ? shareTarget.id : desc.id}
-              onClose={closeDockPane}
-            />
-          )}
-        </DockPane>
+        <>
+          <div
+            className="kdock-pane-dismiss-layer"
+            aria-hidden="true"
+            onPointerDown={closeDockPane}
+          />
+          <DockPane
+            pane={dockPane}
+            title={meta.title}
+            subtitle={meta.subtitle}
+            onClose={closeDockPane}
+          >
+            {dockPane === "gallery" && (
+              <Gallery
+                compact
+                onLaunch={onLaunchGalleryItem}
+              />
+            )}
+          </DockPane>
+        </>
       )}
+
+      <LazyDownloadToasts downloads={lazyDownloads} />
 
       <Dock
         activePane={dockPane}
-        activeView={isEmpty ? null : surface.activeView}
+        activeView={dockActiveView}
+        viewControls={viewControls}
+        guidePopup={demoGuidePopup}
+        internalsPopup={internalsPopup}
+        themePopup={<ThemePopup theme={theme} resolvedMode={resolvedThemeMode} onThemeChange={setTheme} />}
+        guideAvailable={!isEmpty && demoGuide !== null}
+        guideOpen={!isEmpty && demoGuide !== null && demoGuideOpen}
+        internalsAvailable={!isEmpty && surface.canUseInternals}
+        internalsOpen={!isEmpty && surface.canUseInternals && internalsOpen}
+        themeOpen={themeOpen}
         status={surface.status}
         machineTitle={desc.title}
         viewDisabled={{
           demo: !surface.canOpenDemo,
           terminal: !surface.canUseTerminal,
-          internals: !surface.canUseInternals,
         }}
         onSelectPane={selectDockPane}
         onSelectView={selectMachineView}
+        onToggleGuide={toggleDemoGuide}
+        onToggleInternals={toggleInternals}
+        onToggleTheme={toggleTheme}
+        onCloseGuide={() => setDemoGuideOpen(false)}
+        onCloseInternals={() => setInternalsOpen(false)}
+        onCloseTheme={() => setThemeOpen(false)}
+        onHeightChange={setDockHeight}
+        onLayoutChange={onDockLayoutChange}
       />
     </div>
   );
 };
+
+const TerminalDockControls: React.FC<{
+  terminals: ShellTerminal[];
+  activeTerminalId: string;
+  onActiveTerminalId: (id: string) => void;
+  onAddTerminal: () => void;
+}> = ({ terminals, activeTerminalId, onActiveTerminalId, onAddTerminal }) => (
+  <div className="kdock-view-tabs" role="tablist" aria-label="Terminals">
+    {terminals.map((terminal) => (
+      <button
+        key={terminal.id}
+        type="button"
+        className="kdock-view-tab"
+        role="tab"
+        aria-selected={terminal.id === activeTerminalId}
+        onClick={() => onActiveTerminalId(terminal.id)}
+      >
+        {terminal.label}
+      </button>
+    ))}
+    <button
+      type="button"
+      className="kdock-view-iconbtn"
+      title="New terminal"
+      aria-label="New terminal"
+      onClick={onAddTerminal}
+    >
+      <svg width="13" height="13" viewBox="0 0 12 12" fill="none" stroke="currentColor" strokeWidth="1.5">
+        <path d="M6 2v8M2 6h8" />
+      </svg>
+    </button>
+  </div>
+);
+
+const InternalsPopup: React.FC<{
+  activeTab: string;
+  onTab: (id: string) => void;
+}> = ({ activeTab, onTab }) => (
+  <div className="kinternals-popup">
+    <div className="kinternals-tabs" role="tablist" aria-label="Internals sections">
+      {INSPECTOR_TABS.map((tab) => (
+        <button
+          key={tab.id}
+          type="button"
+          className="kinternals-tab"
+          role="tab"
+          aria-selected={tab.id === activeTab}
+          onClick={() => onTab(tab.id)}
+        >
+          {tab.label}
+        </button>
+      ))}
+    </div>
+    <Inspector tab={activeTab} showTitle={false} />
+  </div>
+);
+
+const ThemePopup: React.FC<{
+  theme: ThemePreference;
+  resolvedMode: ResolvedThemeMode;
+  onThemeChange: React.Dispatch<React.SetStateAction<ThemePreference>>;
+}> = ({ theme, resolvedMode, onThemeChange }) => (
+  <div className="ktheme-popup">
+    <section className="ktheme-section" aria-labelledby="ktheme-family-label">
+      <div id="ktheme-family-label" className="ktheme-label">Palette</div>
+      <div className="ktheme-options" role="radiogroup" aria-labelledby="ktheme-family-label">
+        {THEME_FAMILIES.map((item) => (
+          <button
+            key={item.family}
+            type="button"
+            className="ktheme-option"
+            data-family={item.family}
+            role="radio"
+            aria-checked={theme.family === item.family}
+            onClick={() => onThemeChange((current) => ({ ...current, family: item.family }))}
+          >
+            <span className="ktheme-swatch" aria-hidden="true">
+              <span />
+              <span />
+              <span />
+            </span>
+            <span className="ktheme-copy">
+              <span className="ktheme-name">{item.label}</span>
+              <span className="ktheme-desc">{item.description}</span>
+            </span>
+          </button>
+        ))}
+      </div>
+    </section>
+    <section className="ktheme-section" aria-labelledby="ktheme-mode-label">
+      <div id="ktheme-mode-label" className="ktheme-label">Mode</div>
+      <div className="ktheme-mode-row">
+        {THEME_MODES.map((item) => {
+          const autoResolved = theme.mode === "auto" && item.mode === resolvedMode;
+          return (
+            <button
+              key={item.mode}
+              type="button"
+              className="ktheme-mode-button"
+              aria-label={autoResolved ? `${item.label}, current system mode` : item.label}
+              aria-pressed={theme.mode === item.mode}
+              data-auto-resolved={autoResolved ? "true" : undefined}
+              onClick={() => onThemeChange((current) => ({ ...current, mode: item.mode }))}
+            >
+              {item.label}
+            </button>
+          );
+        })}
+      </div>
+    </section>
+  </div>
+);
+
+const LazyDownloadToasts: React.FC<{
+  downloads: LazyDownloadEvent[];
+}> = ({ downloads }) => {
+  const [dismissed, setDismissed] = React.useState<Set<string>>(() => new Set());
+  const visibleDownloads = React.useMemo(
+    () => downloads.filter((download) => !dismissed.has(download.id)),
+    [dismissed, downloads],
+  );
+
+  React.useEffect(() => {
+    setDismissed((current) => {
+      if (current.size === 0) return current;
+      const activeIds = new Set(downloads.map((download) => download.id));
+      let changed = false;
+      const next = new Set<string>();
+      for (const id of current) {
+        if (activeIds.has(id)) {
+          next.add(id);
+        } else {
+          changed = true;
+        }
+      }
+      return changed ? next : current;
+    });
+  }, [downloads]);
+
+  const dismiss = React.useCallback((id: string) => {
+    setDismissed((current) => new Set(current).add(id));
+  }, []);
+
+  if (visibleDownloads.length === 0) return null;
+
+  return (
+    <aside className="kdownload-toasts" aria-label="Download status" aria-live="polite">
+      {visibleDownloads.slice(0, 3).map((download) => (
+        <LazyDownloadToast key={download.id} download={download} onDismiss={dismiss} />
+      ))}
+      {visibleDownloads.length > 3 && (
+        <div className="kdownload-toast kdownload-toast-overflow">
+          <span className="kdownload-toast-title">More downloads</span>
+          <span className="kdownload-toast-detail">+{visibleDownloads.length - 3} active</span>
+        </div>
+      )}
+    </aside>
+  );
+};
+
+const LazyDownloadToast: React.FC<{
+  download: LazyDownloadEvent;
+  onDismiss: (id: string) => void;
+}> = ({ download, onDismiss }) => {
+  const pct = download.totalBytes && download.totalBytes > 0
+    ? Math.min(100, Math.max(0, (download.loadedBytes / download.totalBytes) * 100))
+    : null;
+  const label = downloadLabel(download);
+  const progressLabel = downloadProgressLabel(download, pct);
+  const title = `${downloadStatusVerb(download)} ${label}`;
+  const detail = `${humanBytes(download.loadedBytes)}${
+    download.totalBytes ? ` / ${humanBytes(download.totalBytes)}` : ""
+  }`;
+
+  return (
+    <div
+      className={`kdownload-toast kdownload-toast-${download.status}`}
+      title={download.error ? `${title}: ${download.error}` : `${title} (${detail})`}
+    >
+      <div className="kdownload-toast-top">
+        <span className="kdownload-toast-title">{title}</span>
+        <span className="kdownload-toast-progress-label">{progressLabel}</span>
+        <button
+          type="button"
+          className="kdownload-toast-close"
+          aria-label={`Dismiss ${label} download status`}
+          onPointerDown={(event) => event.stopPropagation()}
+          onPointerUp={(event) => event.stopPropagation()}
+          onClick={(event) => {
+            event.stopPropagation();
+            onDismiss(download.id);
+          }}
+        >
+          <svg width="11" height="11" viewBox="0 0 12 12" fill="none" stroke="currentColor" strokeWidth="1.6">
+            <path d="M3 3l6 6" />
+            <path d="M9 3 3 9" />
+          </svg>
+        </button>
+      </div>
+      <div className="kdownload-toast-detail">
+        {download.error ?? detail}
+      </div>
+      <div className={`kdownload-toast-bar${pct === null ? " indeterminate" : ""}`} aria-hidden="true">
+        <span style={{ width: pct === null ? "44%" : `${pct}%` }} />
+      </div>
+    </div>
+  );
+};
+
+function downloadStatusVerb(event: LazyDownloadEvent): string {
+  switch (event.status) {
+    case "complete": return "Downloaded";
+    case "error": return "Failed";
+    default: return "Downloading";
+  }
+}
+
+function downloadLabel(event: LazyDownloadEvent): string {
+  const raw = event.kind === "archive"
+    ? event.url
+    : event.path ?? event.mountPrefix ?? event.url;
+  const clean = raw.split(/[?#]/, 1)[0].replace(/\/+$/, "");
+  return clean.split("/").pop() || event.kind;
+}
+
+function downloadProgressLabel(event: LazyDownloadEvent, pct: number | null): string {
+  if (event.status === "complete") return "OK";
+  if (event.status === "error") return "ERR";
+  return pct === null ? "..." : `${Math.round(pct)}%`;
+}
+
+function humanBytes(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`;
+  const kib = bytes / 1024;
+  if (kib < 1024) return `${kib.toFixed(kib < 10 ? 1 : 0)} KiB`;
+  const mib = kib / 1024;
+  return `${mib.toFixed(mib < 10 ? 1 : 0)} MiB`;
+}
+
+function readThemePreference(): ThemePreference {
+  if (typeof window === "undefined") return DEFAULT_THEME;
+
+  try {
+    const raw = window.localStorage.getItem(THEME_STORAGE_KEY);
+    if (!raw) return DEFAULT_THEME;
+    const parsed = JSON.parse(raw) as Partial<StoredThemePreference>;
+    if (parsed.version !== THEME_STORAGE_VERSION) return DEFAULT_THEME;
+    const family = parsed.family;
+    const mode = parsed.mode;
+    if (!isThemeFamily(family) || !isThemeMode(mode)) return DEFAULT_THEME;
+    return { family, mode };
+  } catch {
+    return DEFAULT_THEME;
+  }
+}
+
+function isThemeFamily(value: unknown): value is ThemeFamily {
+  return value === "playground" || value === "balanced" || value === "terminal";
+}
+
+function isThemeMode(value: unknown): value is ThemeMode {
+  return value === "auto" || value === "light" || value === "dark";
+}
+
+function getSystemThemeMode(): ResolvedThemeMode {
+  if (typeof window === "undefined") return "light";
+  return window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
+}

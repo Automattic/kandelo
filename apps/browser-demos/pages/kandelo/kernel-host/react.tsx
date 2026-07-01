@@ -14,8 +14,8 @@ import type {
 import type { DemoGuideConfig } from "../../../../../web-libs/kandelo-session/src/demo-config";
 
 const KernelHostContext = React.createContext<KernelHost | null>(null);
-const LAZY_DOWNLOAD_COMPLETE_VISIBLE_MS = 5000;
-const LAZY_DOWNLOAD_ERROR_VISIBLE_MS = 8000;
+const LAZY_DOWNLOAD_COMPLETE_VISIBLE_MS = 2400;
+const LAZY_DOWNLOAD_ERROR_VISIBLE_MS = 5000;
 
 export const KernelHostProvider: React.FC<{
   host: KernelHost;

@@ -11,21 +11,6 @@ import "@xterm/xterm/css/xterm.css";
 
 import { useKernelHost, useStatus } from "../kernel-host/react";
 import type { PtyHandle } from "../../../../../web-libs/kandelo-session/src/kernel-host";
-import { PaneHead } from "./PaneHead";
-
-const ICON = (
-  <svg width="13" height="13" viewBox="0 0 13 13" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round">
-    <path d="M2 3l3 3-3 3M6 9.5h5" />
-  </svg>
-);
-
-const SHELL_THEME = {
-  background: "#1a1208",
-  foreground: "#f4dca0",
-  cursor: "#f08a2c",
-  cursorAccent: "#1a1208",
-  selectionBackground: "rgba(240,138,44,0.32)",
-};
 
 export interface ShellProps {
   dragProps?: import("./PaneHead").PaneHeadDragProps;
@@ -54,102 +39,46 @@ export function createShellTerminal(index: number): ShellTerminal {
 }
 
 export const Shell: React.FC<ShellProps> = ({
-  dragProps,
-  onCollapse,
-  onMaximize,
-  isMax,
   autoFocus = false,
   terminals: controlledTerminals,
   activeTerminalId: controlledActiveTerminalId,
   onActiveTerminalId,
-  onAddTerminal,
 }) => {
-  const [localTerminals, setLocalTerminals] = React.useState<ShellTerminal[]>(() => [createShellTerminal(1)]);
+  const [localTerminals] = React.useState<ShellTerminal[]>(() => [createShellTerminal(1)]);
   const [localActiveTerminalId, setLocalActiveTerminalId] = React.useState("tty-1");
-  const nextLocalTerminalIndex = React.useRef(2);
 
   const terminals = controlledTerminals ?? localTerminals;
   const activeTerminalId = controlledActiveTerminalId ?? localActiveTerminalId;
   const activeTerminal = terminals.find((terminal) => terminal.id === activeTerminalId) ?? terminals[0];
+  const focusTerminalRef = React.useRef<(() => void) | null>(null);
+  const setFocusTerminal = React.useCallback((focusTerminal: (() => void) | null) => {
+    focusTerminalRef.current = focusTerminal;
+  }, []);
 
   const setActiveTerminal = React.useCallback((id: string) => {
     if (onActiveTerminalId) onActiveTerminalId(id);
     else setLocalActiveTerminalId(id);
   }, [onActiveTerminalId]);
 
-  const addTerminal = React.useCallback(() => {
-    if (onAddTerminal) {
-      onAddTerminal();
-      return;
-    }
-    const next = createShellTerminal(nextLocalTerminalIndex.current++);
-    setLocalTerminals((prev) => [...prev, next]);
-    setLocalActiveTerminalId(next.id);
-  }, [onAddTerminal]);
-
   React.useEffect(() => {
     if (!activeTerminal && terminals[0]) setActiveTerminal(terminals[0].id);
   }, [activeTerminal, setActiveTerminal, terminals]);
 
-  const tabStrip = (
-    <div
-      className="kshell-tabs"
-      role="tablist"
-      aria-label="Terminals"
-      onDragStart={(event) => event.stopPropagation()}
-    >
-      {terminals.map((terminal) => (
-        <button
-          key={terminal.id}
-          type="button"
-          className="kshell-tab"
-          role="tab"
-          aria-selected={terminal.id === activeTerminal?.id}
-          onClick={(event) => {
-            event.stopPropagation();
-            setActiveTerminal(terminal.id);
-          }}
-        >
-          {terminal.label}
-        </button>
-      ))}
-      <button
-        type="button"
-        className="kshell-tab-add"
-        title="New terminal"
-        aria-label="New terminal"
-        onClick={(event) => {
-          event.stopPropagation();
-          addTerminal();
-        }}
-      >
-        <svg width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="currentColor" strokeWidth="1.5">
-          <path d="M6 2v8M2 6h8" />
-        </svg>
-      </button>
-    </div>
-  );
-
   return (
-    <div className="kpane">
-      <PaneHead
-        icon={ICON}
-        title={activeTerminal ? `${activeTerminal.label} · /BIN/SH` : "TERMINAL"}
-        right={tabStrip}
-        dragProps={dragProps}
-        onCollapse={onCollapse}
-        onMaximize={onMaximize}
-        isMax={isMax}
-      />
-      <div className="kpane-body kshell-body">
-        {activeTerminal && (
-          <ShellTerminalHost
-            key={activeTerminal.id}
-            terminal={activeTerminal}
-            autoFocus={autoFocus}
-          />
-        )}
-      </div>
+    <div
+      className="kshell-surface"
+      onPointerDown={() => {
+        focusTerminalRef.current?.();
+      }}
+    >
+      {activeTerminal && (
+        <ShellTerminalHost
+          key={activeTerminal.id}
+          terminal={activeTerminal}
+          autoFocus={autoFocus}
+          onFocusTerminalChange={setFocusTerminal}
+        />
+      )}
     </div>
   );
 };
@@ -157,13 +86,22 @@ export const Shell: React.FC<ShellProps> = ({
 const ShellTerminalHost: React.FC<{
   terminal: ShellTerminal;
   autoFocus: boolean;
-}> = ({ terminal, autoFocus }) => {
+  onFocusTerminalChange: (focusTerminal: (() => void) | null) => void;
+}> = ({ terminal, autoFocus, onFocusTerminalChange }) => {
   const host = useKernelHost();
   const status = useStatus();
   const containerRef = React.useRef<HTMLDivElement>(null);
+  const terminalRef = React.useRef<Terminal | null>(null);
   const ptyRef = React.useRef<PtyHandle | null>(null);
   const [attached, setAttached] = React.useState(false);
   const [attachError, setAttachError] = React.useState<string | null>(null);
+
+  React.useEffect(() => {
+    onFocusTerminalChange(() => {
+      terminalRef.current?.focus();
+    });
+    return () => onFocusTerminalChange(null);
+  }, [onFocusTerminalChange]);
 
   React.useEffect(() => {
     // Don't open the PTY until the kernel is running. The chassis-driven
@@ -175,15 +113,47 @@ const ShellTerminalHost: React.FC<{
       cursorBlink: true,
       fontSize: 13,
       fontFamily: '"JetBrains Mono", "SF Mono", Menlo, monospace',
-      theme: SHELL_THEME,
+      theme: readShellTheme(containerRef.current),
       allowProposedApi: true,
     });
+    terminalRef.current = term;
     const fit = new FitAddon();
     term.loadAddon(fit);
     term.open(containerRef.current);
+    const applyTheme = () => {
+      term.options.theme = readShellTheme(containerRef.current);
+    };
+    applyTheme();
+    const themeObserver = new MutationObserver(applyTheme);
+    themeObserver.observe(document.documentElement, {
+      attributes: true,
+      attributeFilter: ["data-k-theme", "data-k-mode", "style"],
+    });
     fit.fit();
     let unsubData = () => {};
     let disposed = false;
+    const focusTerminal = () => {
+      term.focus();
+      window.requestAnimationFrame(() => {
+        if (!disposed) term.focus();
+      });
+    };
+    const onDocumentPointerDown = (event: PointerEvent) => {
+      const surface = containerRef.current?.closest(".kshell-surface");
+      if (!(surface instanceof HTMLElement)) return;
+      if (shouldIgnoreTerminalFocusTarget(event.target)) return;
+
+      const rect = surface.getBoundingClientRect();
+      if (
+        event.clientX < rect.left ||
+        event.clientX > rect.right ||
+        event.clientY < rect.top ||
+        event.clientY > rect.bottom
+      ) {
+        return;
+      }
+      focusTerminal();
+    };
     const focusTerm = () => {
       if (!autoFocus) return;
       window.requestAnimationFrame(() => {
@@ -191,6 +161,7 @@ const ShellTerminalHost: React.FC<{
       });
     };
     focusTerm();
+    document.addEventListener("pointerdown", onDocumentPointerDown, true);
 
     void (async () => {
       try {
@@ -233,7 +204,10 @@ const ShellTerminalHost: React.FC<{
         try { ptyRef.current.close(); } catch { /* noop */ }
         ptyRef.current = null;
       }
+      document.removeEventListener("pointerdown", onDocumentPointerDown, true);
+      themeObserver.disconnect();
       term.dispose();
+      terminalRef.current = null;
       setAttached(false);
     };
   }, [autoFocus, host, status, terminal.path]);
@@ -278,3 +252,52 @@ const PreBoot: React.FC<{ status: string }> = ({ status }) => (
     <span className="kshell-cursor" />
   </div>
 );
+
+function readShellTheme(element: HTMLElement | null) {
+  const styles = getComputedStyle(element ?? document.documentElement);
+  const background = cssToken(styles, "--k-shell-bg", "#1e2327");
+  return {
+    background,
+    foreground: cssToken(styles, "--k-shell-text", "#e5e6e6"),
+    cursor: cssToken(styles, "--k-shell-prompt", "#fcd34d"),
+    cursorAccent: background,
+    selectionBackground: cssToken(styles, "--k-shell-selection", "rgba(56, 88, 233, 0.32)"),
+    black: cssToken(styles, "--k-shell-ansi-black", "#1e2327"),
+    red: cssToken(styles, "--k-shell-ansi-red", "#fa383e"),
+    green: cssToken(styles, "--k-shell-ansi-green", "#00a400"),
+    yellow: cssToken(styles, "--k-shell-ansi-yellow", "#ffba00"),
+    blue: cssToken(styles, "--k-shell-ansi-blue", "#3858e9"),
+    magenta: cssToken(styles, "--k-shell-ansi-magenta", "#a855f7"),
+    cyan: cssToken(styles, "--k-shell-ansi-cyan", "#0891b2"),
+    white: cssToken(styles, "--k-shell-ansi-white", "#e5e6e6"),
+    brightBlack: cssToken(styles, "--k-shell-ansi-bright-black", "#9ca3af"),
+    brightRed: cssToken(styles, "--k-shell-ansi-bright-red", "#ff8a8f"),
+    brightGreen: cssToken(styles, "--k-shell-ansi-bright-green", "#7ee787"),
+    brightYellow: cssToken(styles, "--k-shell-ansi-bright-yellow", "#fcd34d"),
+    brightBlue: cssToken(styles, "--k-shell-ansi-bright-blue", "#93a4ff"),
+    brightMagenta: cssToken(styles, "--k-shell-ansi-bright-magenta", "#d8b4fe"),
+    brightCyan: cssToken(styles, "--k-shell-ansi-bright-cyan", "#67e8f9"),
+    brightWhite: cssToken(styles, "--k-shell-ansi-bright-white", "#ffffff"),
+  };
+}
+
+function cssToken(styles: CSSStyleDeclaration, name: string, fallback: string): string {
+  return styles.getPropertyValue(name).trim() || fallback;
+}
+
+function shouldIgnoreTerminalFocusTarget(target: EventTarget | null): boolean {
+  if (!(target instanceof Element)) return false;
+  return target.closest([
+    ".kdock-shell",
+    ".kdock-popover",
+    ".kdock-pane",
+    ".kdownload-toasts",
+    "a",
+    "button",
+    "input",
+    "select",
+    "textarea",
+    "[role='button']",
+    "[role='tab']",
+  ].join(",")) !== null;
+}

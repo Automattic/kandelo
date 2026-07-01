@@ -1906,9 +1906,7 @@ function softwareEntryToGalleryItem(
   return {
     id,
     title: entry.title,
-    summary: archiveUrl
-      ? `${entry.description} Archive: ${archiveUrl}`
-      : entry.description,
+    summary: entry.description,
     base: `kandelo:shell@abi${ABI_VERSION}`,
     packages: entry.packages.map(packageKey),
     bootCommand: ["bash", "-l", "-i"],
