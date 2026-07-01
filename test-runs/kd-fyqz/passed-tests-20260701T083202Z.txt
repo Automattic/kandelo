@@ -1,0 +1,7 @@
+# Passed — packages/registry/erlang/test/erlang.test.ts (Node, vitest v4.1.9, dev-shell)
+# 5 passed / 5 total
+Erlang BEAM > prints hello world
+Erlang BEAM > evaluates arithmetic
+Erlang BEAM > handles lists and pattern matching
+Erlang BEAM > spawns lightweight processes
+Erlang BEAM > runs a ring benchmark with inter-process message passing
