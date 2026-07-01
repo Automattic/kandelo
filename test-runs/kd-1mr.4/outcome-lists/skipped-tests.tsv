@@ -1,0 +1,3 @@
+test	reason
+curl	BLOCKED: depends_on libcurl@8.11.1,zlib@1.3.1,openssl@3.3.2 have no Homebrew Formula in any convoy branch; sidecar dependency closure unsatisfiable until the dependent-runtime wave (kd-xhdd/kd-yuef) ports them
+nethack	BLOCKED: ships a runtime data tree (share/nethack/nhdat) that package_links_and_env() (bin-symlinks-only) cannot express; needs a sidecar-generator extension + build-script WORK_DIR fix + Formula authoring

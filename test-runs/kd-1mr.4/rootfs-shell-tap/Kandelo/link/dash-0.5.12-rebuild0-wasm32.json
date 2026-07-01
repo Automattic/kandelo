@@ -1,0 +1,33 @@
+{
+  "arch": "wasm32",
+  "bottle": {
+    "bytes": 144268,
+    "cache_key_sha": "f1cf217ac3c91d7dddf9acfa101b6ea0c090fbbbb7abe064f31f601de2e11772",
+    "payload_root": "dash/0.5.12",
+    "sha256": "b07b39e7eb19324f49bd6ab23cad020354f4bcbf5602a6b6936a2633969888b8",
+    "url": "https://ghcr.io/v2/automattic/kandelo-homebrew/dash/blobs/sha256:b07b39e7eb19324f49bd6ab23cad020354f4bcbf5602a6b6936a2633969888b8"
+  },
+  "cellar": "/home/linuxbrew/.linuxbrew/Cellar",
+  "env": {
+    "PATH_prepend": [
+      "bin"
+    ]
+  },
+  "kandelo_abi": 16,
+  "keg": "/home/linuxbrew/.linuxbrew/Cellar/dash/0.5.12",
+  "links": [
+    {
+      "source": "bin/dash",
+      "target": "bin/dash",
+      "type": "symlink"
+    }
+  ],
+  "package": "dash",
+  "prefix": "/home/linuxbrew/.linuxbrew",
+  "receipts": [
+    ".brew/dash.rb",
+    "INSTALL_RECEIPT.json"
+  ],
+  "schema": 1,
+  "version": "0.5.12"
+}
