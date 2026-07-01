@@ -1,0 +1,113 @@
+{
+  "bottle": {
+    "bottle_tag": "wasm32_kandelo",
+    "bytes": 62564,
+    "cache_key_sha": "49c19e83209e7954c9f8399262cd76d7e23868e4a022e4502f8668d4e0c9cd5f",
+    "cellar": "/home/linuxbrew/.linuxbrew/Cellar",
+    "prefix": "/home/linuxbrew/.linuxbrew",
+    "sha256": "98468e8b210c247f40eb35e2c394bcdccbf18e1f9305fcc7946292327fe5167a",
+    "url": "https://ghcr.io/v2/automattic/kandelo-homebrew/bzip2/blobs/sha256:98468e8b210c247f40eb35e2c394bcdccbf18e1f9305fcc7946292327fe5167a"
+  },
+  "build": {
+    "brew_version": "Homebrew 6.0.5",
+    "dev_shell": "scripts/dev-shell.sh",
+    "github_run": "https://github.com/local/kandelo/actions/runs/local",
+    "job": "local",
+    "runner_os": "local",
+    "sdk_fingerprint": "a7ef0c406359039ee25d54e4f8baee3afdc857cdbcac5df9a065ef875b3a3b48",
+    "sysroot_fingerprint": "d19b801e0da64ff3415019de982ee194ef093de68e1a08d25f41a82f07bcca98"
+  },
+  "formula": {
+    "path": "Formula/bzip2.rb",
+    "sha256": "f0785634aa730b9e9d31700fa9341fb6cc6637589bb7a47cf7b5e3d2c6181639"
+  },
+  "metadata": {
+    "formula_json": {
+      "path": "Kandelo/formula/bzip2.json",
+      "sha256": "b21d1f62c59d824b25fc8c50d3998763a24b2ff0bf645f6db23f65eb421708d1"
+    },
+    "link_manifest_json": {
+      "path": "Kandelo/link/bzip2-1.0.8-rebuild0-wasm32.json",
+      "sha256": "d6bf5e6292dc8e2c757e8acf71793f25675d0fe4fb25c9dfba0afe82a20d44eb"
+    },
+    "metadata_json": {
+      "path": "Kandelo/metadata.json",
+      "sha256": "79b0e916b5eb80845acc97871720e4741013bb97d2ed83dc3bbe00f511d6c332"
+    },
+    "provenance_json": {
+      "path": "Kandelo/reports/bzip2-1.0.8-rebuild0-wasm32.provenance.json",
+      "sha256": "c0a571d36a9b3d1b2bce7fbac6252bf4a27d9cadd7f699faa0d54f17623fb7f3"
+    }
+  },
+  "repositories": {
+    "kandelo_commit": "1ab41fe2ad5553f4fa4bb0223f2d804b13149578",
+    "kandelo_repository": "Automattic/kandelo",
+    "tap_commit": "1ab41fe2ad5553f4fa4bb0223f2d804b13149578",
+    "tap_repository": "Automattic/kandelo-homebrew"
+  },
+  "schema": 1,
+  "subject": {
+    "arch": "wasm32",
+    "bottle_rebuild": 0,
+    "kandelo_abi": 16,
+    "package": "bzip2",
+    "version": "1.0.8"
+  },
+  "validation": {
+    "outcome_lists": [
+      {
+        "failed": [],
+        "name": "schema",
+        "passed": [
+          "Kandelo/metadata.json",
+          "Kandelo/formula/bzip2.json",
+          "Kandelo/link/bzip2-1.0.8-rebuild0-wasm32.json",
+          "Kandelo/reports/bzip2-1.0.8-rebuild0-wasm32.provenance.json"
+        ],
+        "skipped": [],
+        "status": "success"
+      },
+      {
+        "failed": [],
+        "name": "homebrew_audit",
+        "passed": [],
+        "skip_reason": "Tap audit can run in the trusted tap publication gate.",
+        "skipped": [
+          "brew audit was not part of this local dry-run verification"
+        ],
+        "status": "skipped"
+      },
+      {
+        "failed": [],
+        "name": "bottle_build",
+        "passed": [
+          "brew install --build-bottle",
+          "brew test",
+          "brew bottle --json --no-rebuild",
+          "brew bottle --merge --write --no-commit"
+        ],
+        "skipped": [],
+        "status": "success"
+      },
+      {
+        "failed": [],
+        "name": "node_smoke",
+        "passed": [
+          "Formula test ran bzip2 --help through node --import tsx/esm examples/run-example.ts"
+        ],
+        "skipped": [],
+        "status": "success"
+      },
+      {
+        "failed": [],
+        "name": "browser_smoke",
+        "passed": [],
+        "skip_reason": "No successful browser VFS smoke was recorded for bzip2 wasm32.",
+        "skipped": [
+          "No successful browser VFS smoke was recorded for bzip2 wasm32."
+        ],
+        "status": "skipped"
+      }
+    ]
+  }
+}

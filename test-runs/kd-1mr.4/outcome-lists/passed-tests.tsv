@@ -1,0 +1,6 @@
+test	result
+ncurses-sidecar	homebrew-validate ok (packages=1); fork=not-required; bottle+test+bottle green
+bash-sidecar	built+tested+bottled green; fork=required; ncurses@6.5 closure satisfied in combined tap
+combined-rootfs-shell-tap	homebrew-validate ok (packages=14 bottles=14 link_manifests=14 provenance_reports=14)
+ncurses-node-smoke	infocmp -V -> ncurses 6.5.20240427 (exit 0)
+bash-node-smoke	bash -c echo bash-homebrew-smoke -> matched (exit 0)

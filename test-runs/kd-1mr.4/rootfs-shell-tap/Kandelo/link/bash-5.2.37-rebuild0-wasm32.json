@@ -1,0 +1,33 @@
+{
+  "arch": "wasm32",
+  "bottle": {
+    "bytes": 1016067,
+    "cache_key_sha": "c67dcfe90a20808ade2d2662264e5bd1539e08c46062fb35dbaccd9708a55950",
+    "payload_root": "bash/5.2.37",
+    "sha256": "d853cbef2e1f55db3995918c974adf83bd126a0c6ac0d2d3c80a9ff19ab44fdb",
+    "url": "https://ghcr.io/v2/automattic/kandelo-homebrew/bash/blobs/sha256:d853cbef2e1f55db3995918c974adf83bd126a0c6ac0d2d3c80a9ff19ab44fdb"
+  },
+  "cellar": "/home/linuxbrew/.linuxbrew/Cellar",
+  "env": {
+    "PATH_prepend": [
+      "bin"
+    ]
+  },
+  "kandelo_abi": 16,
+  "keg": "/home/linuxbrew/.linuxbrew/Cellar/bash/5.2.37",
+  "links": [
+    {
+      "source": "bin/bash",
+      "target": "bin/bash",
+      "type": "symlink"
+    }
+  ],
+  "package": "bash",
+  "prefix": "/home/linuxbrew/.linuxbrew",
+  "receipts": [
+    ".brew/bash.rb",
+    "INSTALL_RECEIPT.json"
+  ],
+  "schema": 1,
+  "version": "5.2.37"
+}

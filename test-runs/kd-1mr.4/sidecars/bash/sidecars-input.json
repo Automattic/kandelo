@@ -1,0 +1,130 @@
+{
+  "generated_at": "2026-07-01T06:56:55Z",
+  "generator": "kandelo-homebrew-publish 1",
+  "kandelo_abi": 16,
+  "kandelo_commit": "378a411abf24ce6c860575ce195e24d41659d034",
+  "kandelo_repository": "Automattic/kandelo",
+  "packages": [
+    {
+      "bottle_rebuild": 0,
+      "bottles": [
+        {
+          "arch": "wasm32",
+          "bottle_file": "/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-1mr.4-port-missing-rootfs-shell-formulae-bash-ncurses-curl-net/test-runs/kd-1mr.4/homebrew-bottles/bash-wasm32/bottles/bash--5.2.37.wasm32_kandelo.bottle.tar.gz",
+          "bottle_tag": "wasm32_kandelo",
+          "browser_compatible": false,
+          "build": {
+            "brew_version": "Homebrew 6.0.6",
+            "dev_shell": "scripts/dev-shell.sh",
+            "github_run": "https://github.com/local/kandelo/actions/runs/local",
+            "job": "local",
+            "runner_os": "local",
+            "sdk_fingerprint": "a7ef0c406359039ee25d54e4f8baee3afdc857cdbcac5df9a065ef875b3a3b48",
+            "sysroot_fingerprint": "d19b801e0da64ff3415019de982ee194ef093de68e1a08d25f41a82f07bcca98"
+          },
+          "built_at": "2026-07-01T06:56:55Z",
+          "built_by": "https://github.com/local/kandelo/actions/runs/local",
+          "cache_key_sha": "c67dcfe90a20808ade2d2662264e5bd1539e08c46062fb35dbaccd9708a55950",
+          "cellar": "/home/linuxbrew/.linuxbrew/Cellar",
+          "env": {
+            "PATH_prepend": [
+              "bin"
+            ]
+          },
+          "fork_instrumentation": "required",
+          "links": [
+            {
+              "source": "bin/bash",
+              "target": "bin/bash",
+              "type": "symlink"
+            }
+          ],
+          "payload_root": "bash/5.2.37",
+          "prefix": "/home/linuxbrew/.linuxbrew",
+          "receipts": [
+            ".brew/bash.rb",
+            "INSTALL_RECEIPT.json"
+          ],
+          "runtime_support": [
+            "node"
+          ],
+          "status": "success",
+          "url": "https://ghcr.io/v2/automattic/kandelo-homebrew/bash/blobs/sha256:d853cbef2e1f55db3995918c974adf83bd126a0c6ac0d2d3c80a9ff19ab44fdb",
+          "validation": {
+            "outcome_lists": [
+              {
+                "failed": [],
+                "name": "schema",
+                "passed": [
+                  "Kandelo/metadata.json",
+                  "Kandelo/formula/bash.json",
+                  "Kandelo/link/bash-5.2.37-rebuild0-wasm32.json",
+                  "Kandelo/reports/bash-5.2.37-rebuild0-wasm32.provenance.json"
+                ],
+                "skipped": [],
+                "status": "success"
+              },
+              {
+                "failed": [],
+                "name": "homebrew_audit",
+                "passed": [],
+                "skip_reason": "Tap audit can run in the trusted tap publication gate.",
+                "skipped": [
+                  "brew audit was not part of this local dry-run verification"
+                ],
+                "status": "skipped"
+              },
+              {
+                "failed": [],
+                "name": "bottle_build",
+                "passed": [
+                  "brew install --build-bottle",
+                  "brew test",
+                  "brew bottle --json --no-rebuild",
+                  "brew bottle --merge --write --no-commit"
+                ],
+                "skipped": [],
+                "status": "success"
+              },
+              {
+                "failed": [],
+                "name": "node_smoke",
+                "passed": [
+                  "Formula test ran bash utilities (infocmp -V) through node --import tsx/esm examples/run-example.ts"
+                ],
+                "skipped": [],
+                "status": "success"
+              },
+              {
+                "failed": [],
+                "name": "browser_smoke",
+                "passed": [],
+                "skip_reason": "No successful browser VFS smoke was recorded for bash wasm32.",
+                "skipped": [
+                  "No successful browser VFS smoke was recorded for bash wasm32."
+                ],
+                "status": "skipped"
+              }
+            ]
+          }
+        }
+      ],
+      "dependencies": [
+        {
+          "name": "ncurses",
+          "version": "6.5"
+        }
+      ],
+      "formula_path": "Formula/bash.rb",
+      "formula_revision": 0,
+      "full_name": "automattic/kandelo-homebrew/bash",
+      "name": "bash",
+      "version": "5.2.37"
+    }
+  ],
+  "release_tag": "bottles-abi-v16",
+  "schema": 1,
+  "tap_commit": "378a411abf24ce6c860575ce195e24d41659d034",
+  "tap_name": "automattic/kandelo-homebrew",
+  "tap_repository": "Automattic/kandelo-homebrew"
+}

@@ -1,0 +1,44 @@
+{
+  "bottle_rebuild": 0,
+  "bottles": [
+    {
+      "arch": "wasm32",
+      "bottle_tag": "wasm32_kandelo",
+      "browser_compatible": false,
+      "built_at": "2026-06-30T14:09:13Z",
+      "built_by": "https://github.com/local/kandelo/actions/runs/local",
+      "built_from": {
+        "formula_sha256": "0481f1947e92f1e08e785b5d8034cf1cf88c5cede0ee3e282f984f6429f43c95",
+        "kandelo_commit": "1ab41fe2ad5553f4fa4bb0223f2d804b13149578",
+        "kandelo_repository": "Automattic/kandelo",
+        "tap_commit": "1ab41fe2ad5553f4fa4bb0223f2d804b13149578",
+        "tap_repository": "Automattic/kandelo-homebrew"
+      },
+      "bytes": 202079,
+      "cache_key_sha": "e74be0eac8237d4345eb1db5c0c6d59aa0a20a54d7a603affeaa76190c7effc3",
+      "cellar": "/home/linuxbrew/.linuxbrew/Cellar",
+      "fork_instrumentation": "not-required",
+      "kandelo_abi": 16,
+      "link_manifest": "Kandelo/link/fbdoom-0.1.0-rebuild0-wasm32.json",
+      "prefix": "/home/linuxbrew/.linuxbrew",
+      "runtime_support": [
+        "node"
+      ],
+      "sha256": "51f8e3d28b47a182dbee12dd6eb25ab1a39c4c11cb6f78da51183d442796173c",
+      "status": "success",
+      "url": "https://ghcr.io/v2/automattic/kandelo-homebrew/fbdoom/blobs/sha256:51f8e3d28b47a182dbee12dd6eb25ab1a39c4c11cb6f78da51183d442796173c"
+    }
+  ],
+  "dependencies": [],
+  "formula_path": "Formula/fbdoom.rb",
+  "formula_revision": 0,
+  "full_name": "automattic/kandelo-homebrew/fbdoom",
+  "kandelo_abi": 16,
+  "name": "fbdoom",
+  "schema": 1,
+  "source_metadata": "Kandelo/metadata.json",
+  "tap_commit": "1ab41fe2ad5553f4fa4bb0223f2d804b13149578",
+  "tap_name": "automattic/kandelo-homebrew",
+  "tap_repository": "Automattic/kandelo-homebrew",
+  "version": "0.1.0"
+}

@@ -1,0 +1,17 @@
+warning: Git tree '/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-0hns-vfs-rootfs-shell-sidecars' has uncommitted changes
+kandelo dev shell — LLVM 21.1.7, Rust (pinned via rust-toolchain.toml), Node 24, Erlang 28 (minimal), SDK on PATH
+== building xtask ==
+   Compiling ureq v2.12.1
+   Compiling xtask v0.1.0 (/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-0hns-vfs-rootfs-shell-sidecars/tools/xtask)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 1m 43s
+PASS  dash :: homebrew-validate: ok (packages=1, bottles=1, link_manifests=1, provenance_reports=1)
+PASS  git :: homebrew-validate: ok (packages=1, bottles=1, link_manifests=1, provenance_reports=1)
+PASS  vim :: homebrew-validate: ok (packages=1, bottles=1, link_manifests=1, provenance_reports=1)
+PASS  less :: homebrew-validate: ok (packages=1, bottles=1, link_manifests=1, provenance_reports=1)
+PASS  lsof :: homebrew-validate: ok (packages=1, bottles=1, link_manifests=1, provenance_reports=1)
+PASS  modeset :: homebrew-validate: ok (packages=1, bottles=1, link_manifests=1, provenance_reports=1)
+PASS  nano :: homebrew-validate: ok (packages=1, bottles=1, link_manifests=1, provenance_reports=1)
+PASS  netcat :: homebrew-validate: ok (packages=1, bottles=1, link_manifests=1, provenance_reports=1)
+PASS  wget :: homebrew-validate: ok (packages=1, bottles=1, link_manifests=1, provenance_reports=1)
+PASS  fbdoom :: homebrew-validate: ok (packages=1, bottles=1, link_manifests=1, provenance_reports=1)
+SUMMARY pass=10 fail=0

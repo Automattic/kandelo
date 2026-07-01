@@ -1,0 +1,113 @@
+{
+  "bottle": {
+    "bottle_tag": "wasm32_kandelo",
+    "bytes": 42724,
+    "cache_key_sha": "d3fc05bf7b73121ad1d49c447b755154ebff60f6e0baac959cf54107617aac66",
+    "cellar": "/home/linuxbrew/.linuxbrew/Cellar",
+    "prefix": "/home/linuxbrew/.linuxbrew",
+    "sha256": "48002a330c17971fed6d7edf71872e0cce9552c8bfb3b18813092f936e14ca88",
+    "url": "https://ghcr.io/v2/automattic/kandelo-homebrew/modeset/blobs/sha256:48002a330c17971fed6d7edf71872e0cce9552c8bfb3b18813092f936e14ca88"
+  },
+  "build": {
+    "brew_version": "Homebrew 6.0.5",
+    "dev_shell": "scripts/dev-shell.sh",
+    "github_run": "https://github.com/local/kandelo/actions/runs/local",
+    "job": "local",
+    "runner_os": "local",
+    "sdk_fingerprint": "a7ef0c406359039ee25d54e4f8baee3afdc857cdbcac5df9a065ef875b3a3b48",
+    "sysroot_fingerprint": "d19b801e0da64ff3415019de982ee194ef093de68e1a08d25f41a82f07bcca98"
+  },
+  "formula": {
+    "path": "Formula/modeset.rb",
+    "sha256": "1747945d62ab174951721bc844fce55ffece7765ed123ed7ca3c449479d9d8a0"
+  },
+  "metadata": {
+    "formula_json": {
+      "path": "Kandelo/formula/modeset.json",
+      "sha256": "03ac190adb6e59c612f30574797cff7bb846b120ebb556aee8f3ece65d85c89b"
+    },
+    "link_manifest_json": {
+      "path": "Kandelo/link/modeset-0.1.0-rebuild0-wasm32.json",
+      "sha256": "da475ddcb7bcfaec1c9ad88cb707ca0a95d18ee603215fe4aabf88b1aaa644c8"
+    },
+    "metadata_json": {
+      "path": "Kandelo/metadata.json",
+      "sha256": "79b0e916b5eb80845acc97871720e4741013bb97d2ed83dc3bbe00f511d6c332"
+    },
+    "provenance_json": {
+      "path": "Kandelo/reports/modeset-0.1.0-rebuild0-wasm32.provenance.json",
+      "sha256": "4648c29a66ad4c4664ee62b701521d62b0ff378f7ca3d03eb8e92358e34b60fe"
+    }
+  },
+  "repositories": {
+    "kandelo_commit": "1ab41fe2ad5553f4fa4bb0223f2d804b13149578",
+    "kandelo_repository": "Automattic/kandelo",
+    "tap_commit": "1ab41fe2ad5553f4fa4bb0223f2d804b13149578",
+    "tap_repository": "Automattic/kandelo-homebrew"
+  },
+  "schema": 1,
+  "subject": {
+    "arch": "wasm32",
+    "bottle_rebuild": 0,
+    "kandelo_abi": 16,
+    "package": "modeset",
+    "version": "0.1.0"
+  },
+  "validation": {
+    "outcome_lists": [
+      {
+        "failed": [],
+        "name": "schema",
+        "passed": [
+          "Kandelo/metadata.json",
+          "Kandelo/formula/modeset.json",
+          "Kandelo/link/modeset-0.1.0-rebuild0-wasm32.json",
+          "Kandelo/reports/modeset-0.1.0-rebuild0-wasm32.provenance.json"
+        ],
+        "skipped": [],
+        "status": "success"
+      },
+      {
+        "failed": [],
+        "name": "homebrew_audit",
+        "passed": [],
+        "skip_reason": "Tap audit can run in the trusted tap publication gate.",
+        "skipped": [
+          "brew audit was not part of this local dry-run verification"
+        ],
+        "status": "skipped"
+      },
+      {
+        "failed": [],
+        "name": "bottle_build",
+        "passed": [
+          "brew install --build-bottle",
+          "brew test",
+          "brew bottle --json --no-rebuild",
+          "brew bottle --merge --write --no-commit"
+        ],
+        "skipped": [],
+        "status": "success"
+      },
+      {
+        "failed": [],
+        "name": "node_smoke",
+        "passed": [
+          "Formula test ran modeset through node --import tsx/esm examples/run-example.ts"
+        ],
+        "skipped": [],
+        "status": "success"
+      },
+      {
+        "failed": [],
+        "name": "browser_smoke",
+        "passed": [],
+        "skip_reason": "browser smoke not run locally: modeset requires DRI/GLES framebuffer/device validation",
+        "skipped": [
+          "browser smoke not run locally: modeset requires DRI/GLES framebuffer/device validation"
+        ],
+        "status": "skipped"
+      }
+    ]
+  }
+}
