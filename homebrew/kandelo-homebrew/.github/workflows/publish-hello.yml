@@ -1,0 +1,343 @@
+name: Publish hello bottle
+
+on:
+  workflow_dispatch:
+    inputs:
+      formulae:
+        description: Formulae to publish.
+        required: true
+        default: hello
+        type: string
+      arches:
+        description: Architectures to publish.
+        required: true
+        default: wasm32
+        type: string
+      kandelo-ref:
+        description: Kandelo ref containing the trusted publisher implementation.
+        required: true
+        default: gascity/kd-8ho/kd-8ho.5-hello-bottle
+        type: string
+      release-tag:
+        description: Bottle release tag. Empty derives bottles-abi-v<N>.
+        required: false
+        default: ""
+        type: string
+      dry-run:
+        description: Build and validate without pushing GHCR or tap sidecars.
+        required: true
+        default: false
+        type: boolean
+
+permissions:
+  contents: write
+  packages: write
+  actions: read
+
+concurrency:
+  group: kandelo-homebrew-bottle-publish-${{ inputs.release-tag || github.run_id }}
+  cancel-in-progress: false
+
+jobs:
+  plan:
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.matrix.outputs.matrix }}
+      abi: ${{ steps.release.outputs.abi }}
+      release-tag: ${{ steps.release.outputs.release-tag }}
+      bottle-root-prefix: ${{ steps.release.outputs.bottle-root-prefix }}
+    steps:
+      - name: Checkout Kandelo workflow source
+        uses: actions/checkout@v7.0.0
+        with:
+          repository: Automattic/kandelo
+          ref: ${{ inputs.kandelo-ref }}
+          path: kandelo
+          submodules: false
+
+      - name: Checkout tap
+        uses: actions/checkout@v7.0.0
+        with:
+          repository: Automattic/kandelo-homebrew
+          ref: main
+          path: tap
+
+      - name: Resolve release and bottle root
+        id: release
+        shell: bash
+        run: |
+          set -euo pipefail
+          abi=$(sed -nE 's/^pub const ABI_VERSION: u32 = ([0-9]+);$/\1/p' kandelo/crates/shared/src/lib.rs | head -n1)
+          if [ -z "$abi" ]; then
+            echo "::error::could not read ABI_VERSION"
+            exit 2
+          fi
+          release_tag="${{ inputs.release-tag }}"
+          if [ -z "$release_tag" ]; then
+            release_tag="bottles-abi-v${abi}"
+          fi
+          if ! [[ "$release_tag" =~ ^bottles-abi-v[1-9][0-9]*$ ]]; then
+            echo "::error::release-tag must be bottles-abi-v<N>: $release_tag"
+            exit 2
+          fi
+          root_prefix="https://ghcr.io/v2/automattic/kandelo-homebrew"
+          {
+            echo "abi=$abi"
+            echo "release-tag=$release_tag"
+            echo "bottle-root-prefix=$root_prefix"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Plan formula matrix
+        id: matrix
+        shell: bash
+        run: |
+          set -euo pipefail
+          matrix="$(bash kandelo/scripts/homebrew-plan-matrix.sh \
+            --tap-root "$GITHUB_WORKSPACE/tap" \
+            --formulae '${{ inputs.formulae }}' \
+            --arches '${{ inputs.arches }}')"
+          echo "matrix=$matrix" >> "$GITHUB_OUTPUT"
+          echo "$matrix" | jq .
+
+  build-and-publish:
+    needs: [plan]
+    if: ${{ needs.plan.outputs.matrix != '[]' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 1440
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJson(needs.plan.outputs.matrix) }}
+    permissions:
+      contents: write
+      packages: write
+      actions: read
+    steps:
+      - name: Checkout tap
+        uses: actions/checkout@v7.0.0
+        with:
+          repository: Automattic/kandelo-homebrew
+          ref: main
+          path: tap
+
+      - name: Prepare tap branch
+        shell: bash
+        run: |
+          git -C tap checkout -B main origin/main
+
+      - name: Checkout Kandelo workflow source
+        uses: actions/checkout@v7.0.0
+        with:
+          repository: Automattic/kandelo
+          ref: ${{ inputs.kandelo-ref }}
+          path: kandelo
+          submodules: false
+
+      - name: Install Homebrew
+        uses: Homebrew/actions/setup-homebrew@master
+
+      - name: Export Homebrew path and token env
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          brew_bin="$(command -v brew)"
+          homebrew_cache="$RUNNER_TEMP/homebrew-cache-${{ matrix.formula }}-${{ matrix.arch }}"
+          homebrew_temp="$RUNNER_TEMP/homebrew-temp-${{ matrix.formula }}-${{ matrix.arch }}"
+          mkdir -p "$homebrew_cache" "$homebrew_temp"
+          {
+            echo "HOMEBREW_BREW_FILE=$brew_bin"
+            echo "HOMEBREW_CACHE=$homebrew_cache"
+            echo "HOMEBREW_TEMP=$homebrew_temp"
+            echo "HOMEBREW_NO_AUTO_UPDATE=1"
+            echo "HOMEBREW_NO_INSTALL_CLEANUP=1"
+            echo "HOMEBREW_NO_ANALYTICS=1"
+            echo "HOMEBREW_DEVELOPER=1"
+            echo "HOMEBREW_GITHUB_API_TOKEN=$GH_TOKEN"
+            echo "HOMEBREW_GITHUB_PACKAGES_TOKEN=$GH_TOKEN"
+            echo "HOMEBREW_GITHUB_PACKAGES_USER=${GITHUB_ACTOR}"
+            printf 'HOMEBREW_DOCKER_REGISTRY_TOKEN=%s\n' "$(printf 'x-access-token:%s' "$GH_TOKEN" | base64 -w0)"
+          } >> "$GITHUB_ENV"
+
+      - name: Install Nix
+        uses: DeterminateSystems/nix-installer-action@ef8a148080ab6020fd15196c2084a2eea5ff2d25
+        with:
+          github-token: ""
+
+      - name: Cache Nix store + flake eval
+        uses: DeterminateSystems/magic-nix-cache-action@908b263ff629f4cc17666315b7fd3ec127c6244d
+        with:
+          use-gha-cache: false
+          use-flakehub: false
+
+      - name: Cache Cargo and xtask
+        uses: actions/cache@v5
+        with:
+          path: |
+            ~/.cargo/registry
+            kandelo/target
+          key: kandelo-homebrew-publish-${{ runner.os }}-${{ hashFiles('kandelo/Cargo.lock', 'kandelo/tools/xtask/**') }}
+          restore-keys: |
+            kandelo-homebrew-publish-${{ runner.os }}-
+
+      - name: Warm Kandelo dev shell
+        shell: bash
+        run: |
+          cd kandelo
+          bash scripts/dev-shell.sh true
+
+      - name: Build Kandelo sysroot
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd kandelo
+          git config --global url."https://github.com/".insteadOf "git@github.com:"
+          git config submodule.musl.url "https://github.com/ifduyue/musl.git"
+          fetched=0
+          for attempt in 1 2 3; do
+            if timeout 180s git submodule update --init --depth 1 libc/musl; then
+              fetched=1
+              break
+            fi
+            echo "::warning::libc/musl fetch failed (attempt ${attempt}/3)"
+            rm -f .git/index.lock
+            find .git/modules -type f -name '*.lock' -delete 2>/dev/null || true
+            sleep 10
+          done
+          if [ "$fetched" != "1" ]; then
+            echo "::error::failed to fetch libc/musl"
+            exit 1
+          fi
+          bash scripts/dev-shell.sh bash scripts/build-musl.sh
+          if [ "${{ matrix.arch }}" = "wasm64" ]; then
+            bash scripts/dev-shell.sh bash scripts/build-musl.sh --arch wasm64posix
+          fi
+
+      - name: Build Kandelo kernel
+        shell: bash
+        run: |
+          cd kandelo
+          bash scripts/dev-shell.sh bash packages/registry/kernel/build-kernel.sh
+
+      - name: Install JavaScript dependencies for formula tests
+        shell: bash
+        run: |
+          cd kandelo
+          bash scripts/dev-shell.sh bash -c '
+            set -euo pipefail
+            PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1 npm ci --no-audit --no-fund
+            cd host
+            PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1 npm ci --no-audit --no-fund
+          '
+
+      - name: Build, upload, and publish sidecars
+        id: publish
+        continue-on-error: true
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          KANDELO_HOMEBREW_FORMULA: ${{ matrix.formula }}
+          KANDELO_HOMEBREW_ARCH: ${{ matrix.arch }}
+          KANDELO_HOMEBREW_RELEASE_TAG: ${{ needs.plan.outputs.release-tag }}
+          KANDELO_HOMEBREW_TAP_REPOSITORY: Automattic/kandelo-homebrew
+          KANDELO_HOMEBREW_DRY_RUN: ${{ inputs.dry-run }}
+        run: |
+          set -euo pipefail
+          error_file="$RUNNER_TEMP/homebrew-publish-error.txt"
+          : >"$error_file"
+          {
+            bottle_out="$RUNNER_TEMP/homebrew-bottle"
+            sidecar_root="$RUNNER_TEMP/homebrew-sidecars"
+            mkdir -p "$bottle_out" "$sidecar_root"
+
+            bottle_root_url="${{ needs.plan.outputs.bottle-root-prefix }}"
+            cd "$GITHUB_WORKSPACE/kandelo"
+            bash scripts/dev-shell.sh bash scripts/homebrew-bottle-build.sh \
+              --tap-root "$GITHUB_WORKSPACE/tap" \
+              --tap-repository "$KANDELO_HOMEBREW_TAP_REPOSITORY" \
+              --formula "$KANDELO_HOMEBREW_FORMULA" \
+              --arch "$KANDELO_HOMEBREW_ARCH" \
+              --out "$bottle_out" \
+              --bottle-root-url "$bottle_root_url"
+
+            . "$bottle_out/build.env"
+
+            upload_env="$RUNNER_TEMP/homebrew-upload.env"
+            upload_args=(
+              --tap-repository "$KANDELO_HOMEBREW_TAP_REPOSITORY"
+              --formula "$KANDELO_HOMEBREW_FORMULA"
+              --arch "$KANDELO_HOMEBREW_ARCH"
+              --release-tag "$KANDELO_HOMEBREW_RELEASE_TAG"
+              --bottle "$BOTTLE_ARCHIVE"
+              --out-env "$upload_env"
+            )
+            if [ "$KANDELO_HOMEBREW_DRY_RUN" = "true" ]; then
+              upload_args+=(--dry-run)
+            fi
+            bash scripts/dev-shell.sh bash scripts/homebrew-ghcr-upload.sh "${upload_args[@]}"
+            . "$upload_env"
+
+            export KANDELO_HOMEBREW_TAP_ROOT="$GITHUB_WORKSPACE/tap"
+            export KANDELO_HOMEBREW_SIDECAR_ROOT="$sidecar_root"
+            export KANDELO_HOMEBREW_BOTTLE_ARCHIVE="$BOTTLE_ARCHIVE"
+            export KANDELO_HOMEBREW_BOTTLE_JSON="$BOTTLE_JSON"
+            export KANDELO_HOMEBREW_BOTTLE_URL="$BOTTLE_URL"
+            export KANDELO_HOMEBREW_BOTTLE_SHA256="$BOTTLE_SHA256"
+            export KANDELO_HOMEBREW_BOTTLE_BYTES="$BOTTLE_BYTES"
+            bash scripts/dev-shell.sh bash scripts/homebrew-generate-sidecars-from-env.sh
+
+            publish_args=(
+              --tap-root "$GITHUB_WORKSPACE/tap"
+              --sidecar-root "$sidecar_root"
+              --formula "$KANDELO_HOMEBREW_FORMULA"
+              --arch "$KANDELO_HOMEBREW_ARCH"
+              --release-tag "$KANDELO_HOMEBREW_RELEASE_TAG"
+              --status success
+            )
+            if [ "$KANDELO_HOMEBREW_DRY_RUN" = "true" ]; then
+              publish_args+=(--dry-run --no-lock)
+            fi
+            bash scripts/dev-shell.sh bash scripts/homebrew-publish-sidecars.sh "${publish_args[@]}"
+          } 2> >(tee "$error_file" >&2)
+
+      - name: Record failed attempt without replacing last-green metadata
+        if: ${{ steps.publish.outcome != 'success' }}
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          KANDELO_HOMEBREW_DRY_RUN: ${{ inputs.dry-run }}
+        run: |
+          set -euo pipefail
+          error_text="$(tail -c 6000 "$RUNNER_TEMP/homebrew-publish-error.txt" || true)"
+          publish_args=(
+            --tap-root "$GITHUB_WORKSPACE/tap"
+            --formula "${{ matrix.formula }}"
+            --arch "${{ matrix.arch }}"
+            --release-tag "${{ needs.plan.outputs.release-tag }}"
+            --status failed
+            --error "$error_text"
+          )
+          if [ "$KANDELO_HOMEBREW_DRY_RUN" = "true" ]; then
+            publish_args+=(--dry-run --no-lock)
+          fi
+          cd "$GITHUB_WORKSPACE/kandelo"
+          bash scripts/dev-shell.sh bash scripts/homebrew-publish-sidecars.sh "${publish_args[@]}"
+
+      - name: Upload bottle diagnostics
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: homebrew-${{ matrix.formula }}-${{ matrix.arch }}
+          path: |
+            ${{ runner.temp }}/homebrew-bottle/**
+            ${{ runner.temp }}/homebrew-sidecars/**
+            ${{ runner.temp }}/homebrew-*.txt
+            ${{ runner.temp }}/homebrew-*.env
+          if-no-files-found: ignore
+          retention-days: 14
+
+      - name: Fail matrix entry after failure report is durable
+        if: ${{ steps.publish.outcome != 'success' }}
+        shell: bash
+        run: exit 1

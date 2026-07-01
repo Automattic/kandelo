@@ -1,7 +1,7 @@
 kind = "program"
 name = "node"
 version = "0.1.0"
-kernel_abi = 7
+kernel_abi = 16
 depends_on = ["spidermonkey@140.11.0esr"]
 
 [source]

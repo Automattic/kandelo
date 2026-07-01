@@ -88,7 +88,8 @@
             #            mkconfig, cpython itself, file's
             #            magic-build, etc.
             #   flex/bison — bash, m4, mariadb (yacc-style parsers)
-            #   xz     — extracting .tar.xz tarballs (sed, m4, …)
+            #   xz/bzip2 — extracting .tar.xz/.tar.bz2 tarballs and linking
+            #            xtask's source extraction helpers.
             #   patch  — applying *.patch files (mariadb, ruby)
             #   gh     — only used by stage-pr-staging release lookup
             pkgs.curl
@@ -97,8 +98,13 @@
             pkgs.flex
             pkgs.bison
             pkgs.xz
+            pkgs.bzip2
             pkgs.gnupatch
             pkgs.gh
+            # oras - used by the trusted Homebrew bottle publish workflow
+            # to push bottle bytes to GitHub Packages / GHCR while keeping
+            # the actual `brew` executable outside PATH leakage.
+            pkgs.oras
             # rsync — build-vim-zip.sh / build-shell-vfs-image.sh
             #   use it to copy vim's runtime tree.
             # jq    — fetch-binaries / verify-release / publish-release

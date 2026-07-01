@@ -30,6 +30,7 @@ import {
   NodeTimeProvider,
   DEFAULT_MOUNT_SPEC,
   DeviceFileSystem,
+  ensureMountParentDirectories,
   HostFileSystem,
   MemoryFileSystem,
   resolveForNode,
@@ -561,6 +562,7 @@ function buildVirtualPlatformIO(
     : null;
   if (rootfsMemfs) {
     installDefaultCaBundle(rootfsMemfs);
+    ensureMountParentDirectories(rootfsMemfs, extras.map((m) => m.mountPoint));
   }
   return new VirtualPlatformIO(mounts, new NodeTimeProvider());
 }

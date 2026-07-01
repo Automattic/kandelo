@@ -6,35 +6,80 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
-VERSION="7.2.7"
-TARBALL="redis-${VERSION}.tar.gz"
-SRC_DIR="$SCRIPT_DIR/redis-src"
-BIN_DIR="$SCRIPT_DIR/bin"
+# shellcheck source=/dev/null
+source "$REPO_ROOT/sdk/activate.sh"
 
-# Check SDK
-if ! command -v wasm32posix-cc &>/dev/null; then
-    echo "Error: wasm32posix-cc not found. Install the SDK first." >&2
+ARCH="${WASM_POSIX_DEP_TARGET_ARCH:-wasm32}"
+if [ "$ARCH" != "wasm32" ]; then
+    echo "ERROR: Redis package currently supports wasm32 only, got '$ARCH'." >&2
     exit 1
 fi
 
+VERSION="${WASM_POSIX_DEP_VERSION:-7.2.5}"
+TARBALL="redis-${VERSION}.tar.gz"
+SOURCE_URL="${WASM_POSIX_DEP_SOURCE_URL:-https://github.com/redis/redis/archive/refs/tags/${VERSION}.tar.gz}"
+SOURCE_SHA256="${WASM_POSIX_DEP_SOURCE_SHA256:-98a8502a2e902d2a9785ef46a69a5f8d5e24cbf9ea3ae4d845afcfc6778aa783}"
+WORK_DIR="${WASM_POSIX_DEP_WORK_DIR:-$SCRIPT_DIR}"
+DOWNLOAD_DIR="$WORK_DIR/downloads"
+SRC_DIR="$WORK_DIR/redis-src"
+if [ -n "${WASM_POSIX_DEP_OUT_DIR:-}" ]; then
+    BIN_DIR="$WORK_DIR/bin"
+else
+    BIN_DIR="$SCRIPT_DIR/bin"
+fi
+SOURCE_MARKER="$SRC_DIR/.kandelo-source"
+
+sha256_file() {
+    python3 - "$1" <<'PY'
+import hashlib
+import sys
+
+h = hashlib.sha256()
+with open(sys.argv[1], "rb") as f:
+    for chunk in iter(lambda: f.read(1024 * 1024), b""):
+        h.update(chunk)
+print(h.hexdigest())
+PY
+}
+
+# Check SDK
+if ! command -v wasm32posix-cc &>/dev/null; then
+    echo "Error: wasm32posix-cc not found. Run through scripts/dev-shell.sh." >&2
+    exit 1
+fi
+
+mkdir -p "$DOWNLOAD_DIR"
+
 # Download if needed
-if [ ! -f "$SCRIPT_DIR/$TARBALL" ]; then
+ARCHIVE="$DOWNLOAD_DIR/$TARBALL"
+if [ ! -f "$ARCHIVE" ]; then
     echo "==> Downloading Redis $VERSION..."
     # `-f` (--fail) is load-bearing here: without it, curl returns 0
     # and writes the error HTML payload to TARBALL on a 5xx response,
     # which then poisons the tar-extract step downstream. Combined
     # with --retry to ride out transient mirror outages (#406).
     curl --retry 10 --retry-delay 5 --retry-max-time 300 --retry-all-errors -fsSL \
-        -o "$SCRIPT_DIR/$TARBALL" \
-        "https://github.com/redis/redis/archive/refs/tags/${VERSION}.tar.gz"
+        -o "$ARCHIVE" \
+        "$SOURCE_URL"
+fi
+
+if [ -n "$SOURCE_SHA256" ]; then
+    actual_sha="$(sha256_file "$ARCHIVE")"
+    if [ "$actual_sha" != "$SOURCE_SHA256" ]; then
+        echo "ERROR: source SHA256 mismatch for $ARCHIVE" >&2
+        echo "  expected: $SOURCE_SHA256" >&2
+        echo "  actual:   $actual_sha" >&2
+        exit 1
+    fi
 fi
 
 # Extract if needed
-if [ ! -d "$SRC_DIR/src" ]; then
+if [ ! -d "$SRC_DIR/src" ] || [ ! -f "$SOURCE_MARKER" ] || [ "$(cat "$SOURCE_MARKER")" != "$VERSION $SOURCE_SHA256" ]; then
     echo "==> Extracting..."
     rm -rf "$SRC_DIR"
-    tar xf "$SCRIPT_DIR/$TARBALL" -C "$SCRIPT_DIR"
-    mv "$SCRIPT_DIR/redis-${VERSION}" "$SRC_DIR"
+    tar xf "$ARCHIVE" -C "$WORK_DIR"
+    mv "$WORK_DIR/redis-${VERSION}" "$SRC_DIR"
+    printf '%s %s\n' "$VERSION" "$SOURCE_SHA256" > "$SOURCE_MARKER"
 fi
 
 cd "$SRC_DIR"
@@ -149,8 +194,29 @@ cp redis-cli "$BIN_DIR/redis-cli.wasm"
 echo "==> Redis binaries:"
 ls -lh "$BIN_DIR/"
 
-# Install into local-binaries/ so the resolver picks the freshly-built
-# binary over the fetched release.
-source "$REPO_ROOT/scripts/install-local-binary.sh"
-install_local_binary redis "$SCRIPT_DIR/bin/redis-server.wasm" redis-server.wasm
-install_local_binary redis "$SCRIPT_DIR/bin/redis-cli.wasm" redis-cli.wasm
+if [ -n "${WASM_POSIX_DEP_OUT_DIR:-}" ]; then
+    source "$REPO_ROOT/scripts/wasm-artifact-guards.sh"
+    if wasm_imports_kernel_fork "$BIN_DIR/redis-server.wasm" &&
+        ! wasm_has_complete_fork_instrumentation "$BIN_DIR/redis-server.wasm"; then
+        echo "  applying wasm-fork-instrument to redis-server.wasm"
+        "$REPO_ROOT/scripts/run-wasm-fork-instrument.sh" \
+            "$BIN_DIR/redis-server.wasm" \
+            -o "$BIN_DIR/redis-server.wasm.instr"
+        mv "$BIN_DIR/redis-server.wasm.instr" "$BIN_DIR/redis-server.wasm"
+    fi
+    wasm_require_no_legacy_asyncify "$BIN_DIR/redis-server.wasm"
+    wasm_require_fork_instrumentation_if_needed "$BIN_DIR/redis-server.wasm"
+    wasm_require_no_legacy_asyncify "$BIN_DIR/redis-cli.wasm"
+    wasm_require_fork_instrumentation_if_needed "$BIN_DIR/redis-cli.wasm"
+    rm -rf "$WASM_POSIX_DEP_OUT_DIR"
+    mkdir -p "$WASM_POSIX_DEP_OUT_DIR"
+    cp "$BIN_DIR/redis-server.wasm" "$WASM_POSIX_DEP_OUT_DIR/redis-server.wasm"
+    cp "$BIN_DIR/redis-cli.wasm" "$WASM_POSIX_DEP_OUT_DIR/redis-cli.wasm"
+    echo "==> Installed Redis outputs to $WASM_POSIX_DEP_OUT_DIR"
+else
+    # Install into local-binaries/ so the resolver picks the freshly-built
+    # binary over the fetched release.
+    source "$REPO_ROOT/scripts/install-local-binary.sh"
+    install_local_binary redis "$BIN_DIR/redis-server.wasm" redis-server.wasm
+    install_local_binary redis "$BIN_DIR/redis-cli.wasm" redis-cli.wasm
+fi

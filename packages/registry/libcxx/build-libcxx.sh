@@ -102,7 +102,7 @@ if [ ! -d "$NIX_LIBUNWIND_SOURCE/libunwind" ]; then
     exit 1
 fi
 
-BUILD_DIR="$SCRIPT_DIR/build-${ARCH}"
+BUILD_DIR="${WASM_POSIX_DEP_WORK_DIR:-$SCRIPT_DIR/build-${ARCH}}"
 LLVM_SRC_DIR="$BUILD_DIR/llvm-source"
 
 # --- Verify prerequisites ---
