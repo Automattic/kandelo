@@ -14,10 +14,13 @@
       try {
         const raw = window.localStorage.getItem("kandelo.theme");
         const parsed = raw ? JSON.parse(raw) : {};
-        const validStoredPreference = parsed.version === 1;
-        const family = validStoredPreference && ["playground", "balanced", "terminal"].includes(parsed.family)
-          ? parsed.family
-          : "playground";
+        const validStoredPreference = parsed.version === 1 || parsed.version === 2 || parsed.version === 3;
+        const normalizeFamily = (family) => {
+          if (family === "playground") return "wordpress";
+          if (family === "balanced" || family === "terminal") return "kandelo";
+          return ["ubuntu", "wordpress", "kandelo"].includes(family) ? family : "ubuntu";
+        };
+        const family = validStoredPreference ? normalizeFamily(parsed.family) : "ubuntu";
         const preference = validStoredPreference && ["auto", "light", "dark"].includes(parsed.mode)
           ? parsed.mode
           : "auto";
