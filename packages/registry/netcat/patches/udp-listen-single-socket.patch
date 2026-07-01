@@ -2,11 +2,18 @@ diff --git a/src/core.c b/src/core.c
 index 7e6f3dd..d8d17c1 100644
 --- a/src/core.c
 +++ b/src/core.c
-@@ -98,2 +98,6 @@ static int core_udp_listen(nc_sock_t *ncsock)
+@@ -94,7 +94,13 @@ static int core_udp_listen(nc_sock_t *ncsock)
+   if (ncsock->local_host.iaddrs[0].s_addr)
+     need_udphelper = FALSE;
  #endif
 -
++
 +#if 1
 +  /* Kandelo exposes normal POSIX UDP sockets, but not GNU netcat's legacy
 +     helper protocol. Use one bound datagram socket for UDP listen mode. */
 +  need_udphelper = FALSE;
 +#endif
++
+   if (!need_udphelper) {
+     /* simulates a udphelper_sockets_open() call */
+     sockbuf = calloc(2, sizeof(int));

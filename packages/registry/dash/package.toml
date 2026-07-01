@@ -17,4 +17,5 @@ script_path = "packages/registry/dash/build-dash.sh"
 
 [[outputs]]
 name = "dash"
+fork_instrumentation = "required"
 wasm = "dash.wasm"

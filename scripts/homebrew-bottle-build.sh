@@ -66,6 +66,7 @@ esac
 TAP_ROOT="$(cd "$TAP_ROOT" && pwd)"
 mkdir -p "$OUT_DIR"
 OUT_DIR="$(cd "$OUT_DIR" && pwd)"
+mkdir -p "$OUT_DIR/homebrew-temp"
 
 FORMULA_PATH="$TAP_ROOT/Formula/$FORMULA.rb"
 if [ ! -f "$FORMULA_PATH" ]; then
@@ -88,6 +89,7 @@ mkdir -p "$OUT_DIR/bottles"
 WORK_DIR="$(mktemp -d)"
 BREW_REPO=""
 BREW_OVERLAY=""
+TAP_SOURCE="$TAP_ROOT"
 
 cleanup() {
   if [ -n "$BREW_REPO" ] && [ -n "$BREW_OVERLAY" ] && [ -d "$BREW_OVERLAY" ]; then
@@ -113,14 +115,37 @@ export HOMEBREW_NO_AUTO_UPDATE="${HOMEBREW_NO_AUTO_UPDATE:-1}"
 export HOMEBREW_NO_INSTALL_CLEANUP="${HOMEBREW_NO_INSTALL_CLEANUP:-1}"
 export HOMEBREW_NO_ANALYTICS="${HOMEBREW_NO_ANALYTICS:-1}"
 export HOMEBREW_DEVELOPER="${HOMEBREW_DEVELOPER:-1}"
+export HOMEBREW_NO_REQUIRE_TAP_TRUST="${HOMEBREW_NO_REQUIRE_TAP_TRUST:-1}"
+export HOMEBREW_AVOID_NESTED_SANDBOXING="${HOMEBREW_AVOID_NESTED_SANDBOXING:-1}"
+export HOMEBREW_TEMP="${HOMEBREW_TEMP:-$OUT_DIR/homebrew-temp}"
 export KANDELO_HOMEBREW_ARCH="$ARCH"
 export KANDELO_HOMEBREW_KANDELO_ROOT="$KANDELO_ROOT"
 export HOMEBREW_KANDELO_ARCH="$ARCH"
 export HOMEBREW_KANDELO_ROOT="$KANDELO_ROOT"
 export HOMEBREW_KANDELO_NODE="$(command -v node)"
 export HOMEBREW_KANDELO_LLVM_BIN="${LLVM_BIN:-${WASM_POSIX_LLVM_DIR:-}}"
+if command -v cargo >/dev/null 2>&1; then
+  export HOMEBREW_KANDELO_RUST_BIN="$(dirname "$(command -v cargo)")"
+fi
+if command -v wasm-opt >/dev/null 2>&1; then
+  export HOMEBREW_KANDELO_BINARYEN_BIN="$(dirname "$(command -v wasm-opt)")"
+fi
+if command -v pkg-config >/dev/null 2>&1; then
+  export HOMEBREW_KANDELO_PKG_CONFIG="$(command -v pkg-config)"
+fi
 
-"$BREW_BIN" tap "$TAP_NAME" "$TAP_ROOT"
+if [ ! -d "$TAP_SOURCE/.git" ]; then
+  TAP_SOURCE="$WORK_DIR/tap-source"
+  mkdir -p "$TAP_SOURCE"
+  rsync -a --exclude .git "$TAP_ROOT/" "$TAP_SOURCE/"
+  git -C "$TAP_SOURCE" init -q
+  git -C "$TAP_SOURCE" config user.name "kandelo-homebrew-local"
+  git -C "$TAP_SOURCE" config user.email "kandelo-homebrew-local@example.invalid"
+  git -C "$TAP_SOURCE" add .
+  git -C "$TAP_SOURCE" commit -q -m "stage Kandelo Homebrew tap"
+fi
+
+"$BREW_BIN" tap "$TAP_NAME" "$TAP_SOURCE"
 FORMULA_REF="$TAP_NAME/$FORMULA"
 TAPPED_TAP_ROOT="$("$BREW_BIN" --repository "$TAP_NAME")"
 TAPPED_FORMULA_PATH="$TAPPED_TAP_ROOT/Formula/$FORMULA.rb"
