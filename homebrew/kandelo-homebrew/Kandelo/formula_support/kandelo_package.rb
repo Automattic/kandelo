@@ -12,6 +12,18 @@ module KandeloPackageFormula
     ENV.fetch("HOMEBREW_KANDELO_ARCH", ENV.fetch("KANDELO_HOMEBREW_ARCH", "wasm32"))
   end
 
+  def kandelo_tool_prefix
+    case kandelo_arch
+    when "wasm32" then "wasm32posix"
+    when "wasm64" then "wasm64posix"
+    else odie "unsupported HOMEBREW_KANDELO_ARCH=#{kandelo_arch}"
+    end
+  end
+
+  def kandelo_sysroot(root)
+    "#{root}/#{kandelo_arch == "wasm64" ? "sysroot64" : "sysroot"}"
+  end
+
   def kandelo_wasm32_only!
     odie "unsupported HOMEBREW_KANDELO_ARCH=#{kandelo_arch}" if kandelo_arch != "wasm32"
   end
@@ -24,6 +36,8 @@ module KandeloPackageFormula
     ].each { |key| ENV.delete(key) }
 
     ENV.prepend_path "PATH", "#{root}/sdk/bin"
+    ENV["WASM_POSIX_SYSROOT"] = kandelo_sysroot(root)
+    ENV["WASM_POSIX_GLUE_DIR"] = "#{root}/libc/glue"
     if (node = ENV["HOMEBREW_KANDELO_NODE"]).to_s != ""
       ENV.prepend_path "PATH", File.dirname(node)
     end
@@ -37,21 +51,22 @@ module KandeloPackageFormula
     end
   end
 
-  def kandelo_build_package(package, script, source_url, source_sha256, script_env: {})
-    kandelo_wasm32_only!
+  def kandelo_build_package(package, script, source_url, source_sha256, script_env: {}, wasm32_only: true)
+    kandelo_wasm32_only! if wasm32_only
     root = kandelo_root
     configure_kandelo_environment(root)
 
     out_dir = buildpath/"kandelo-package-out"
+    ENV["WASM_POSIX_DEP_NAME"] = package
     ENV["WASM_POSIX_DEP_VERSION"] = version.to_s
     ENV["WASM_POSIX_DEP_SOURCE_URL"] = source_url
     ENV["WASM_POSIX_DEP_SOURCE_SHA256"] = source_sha256
-    ENV["WASM_POSIX_DEP_SOURCE_DIR"] = buildpath
-    ENV["WASM_POSIX_DEP_OUT_DIR"] = out_dir
-    ENV["WASM_POSIX_DEP_WORK_DIR"] = buildpath/"kandelo-package-work"
+    ENV["WASM_POSIX_DEP_SOURCE_DIR"] = buildpath.to_s
+    ENV["WASM_POSIX_DEP_OUT_DIR"] = out_dir.to_s
+    ENV["WASM_POSIX_DEP_WORK_DIR"] = (buildpath/"kandelo-package-work").to_s
     ENV["WASM_POSIX_DEP_TARGET_ARCH"] = kandelo_arch
     ENV["WASM_POSIX_DEP_SKIP_LOCAL_INSTALL"] = "1"
-    script_env.each { |key, value| ENV[key] = value }
+    script_env.each { |key, value| ENV[key] = value.to_s }
 
     system "bash", "#{root}/packages/registry/#{package}/#{script}"
     out_dir

@@ -3,6 +3,7 @@ import type { HomebrewBottleArch } from "../host/src/homebrew-vfs-planner";
 export const HOMEBREW_PREFIX = "/home/linuxbrew/.linuxbrew";
 export const HOMEBREW_CELLAR = `${HOMEBREW_PREFIX}/Cellar`;
 export const SQLITE_BROWSER_CONSUMER_PATH = "/usr/local/kandelo-smoke/bin/sqlite_basic";
+export const ZLIB_BROWSER_CONSUMER_PATH = "/usr/local/kandelo-smoke/bin/zlib_basic";
 
 export type HomebrewSmokeFormula = string;
 
@@ -14,6 +15,7 @@ export interface BrowserSmokeCase {
   argv: string[];
   stdin?: string;
   env?: string[];
+  skipReason?: string;
   expected: RegExp;
   description: string;
 }
@@ -64,6 +66,19 @@ export function browserSmokeCasesForFormula(formula: HomebrewSmokeFormula): Brow
         expected: /^ok$/m,
         description: "Run coreutils printf through the multicall binary.",
       })];
+    case "cpython":
+      return [programOutputCase({
+        formula,
+        name: "cpython_os_path",
+        argv: [`${HOMEBREW_PREFIX}/bin/cpython`, "-S", "-c", "import os; print(os.path.join('a', 'b'))"],
+        env: [
+          `PYTHONHOME=${HOMEBREW_PREFIX}`,
+          "PYTHONDONTWRITEBYTECODE=1",
+          "PYTHONNOUSERSITE=1",
+        ],
+        expected: /^a\/b$/m,
+        description: "Run CPython with the poured standard library.",
+      })];
     case "diffutils":
       return [programVersionCase(formula, "diff", /diff/i)];
     case "file":
@@ -100,6 +115,23 @@ export function browserSmokeCasesForFormula(formula: HomebrewSmokeFormula): Brow
       })];
     case "make":
       return [programVersionCase(formula, "make", /make/i)];
+    case "perl":
+      return [programOutputCase({
+        formula,
+        name: "perl_core_modules",
+        argv: [`${HOMEBREW_PREFIX}/bin/perl`, "-e", "use strict; use warnings; print 2 + 3"],
+        env: [`PERL5LIB=${HOMEBREW_PREFIX}/lib/perl5/5.40.3`],
+        expected: /^5$/m,
+        description: "Run Perl with the poured pure core library tree.",
+      })];
+    case "php":
+      return [programOutputCase({
+        formula,
+        name: "php_expression",
+        argv: [`${HOMEBREW_PREFIX}/bin/php`, "-r", "echo 2 + 3;"],
+        expected: /^5$/m,
+        description: "Run a simple PHP expression through the poured interpreter.",
+      })];
     case "posix-utils-lite":
       return [programOutputCase({
         formula,
@@ -120,6 +152,22 @@ export function browserSmokeCasesForFormula(formula: HomebrewSmokeFormula): Brow
       })];
     case "tar":
       return [programVersionCase(formula, "tar", /tar/i)];
+    case "ruby":
+      return [programOutputCase({
+        formula,
+        name: "ruby_expression",
+        argv: [`${HOMEBREW_PREFIX}/bin/ruby`, "-e", "puts 2 + 3"],
+        env: [`RUBYLIB=${HOMEBREW_PREFIX}/lib/ruby/4.0.0`],
+        expected: /^5$/m,
+        description: "Run a simple Ruby expression through the poured interpreter.",
+      })];
+    case "erlang":
+      return [programSkipCase({
+        formula,
+        name: "erlang_beam_launch",
+        reason: "Erlang BEAM Homebrew browser smoke needs specialized -root/-bindir/-boot launch arguments and maxAddr handling; node smoke records the same limitation.",
+        description: "Record that the generic browser smoke runner cannot launch BEAM yet.",
+      })];
     case "tcl":
       return [programOutputCase({
         formula,
@@ -156,6 +204,16 @@ export function browserSmokeCasesForFormula(formula: HomebrewSmokeFormula): Brow
       })];
     case "zstd":
       return [programVersionCase(formula, "zstd", /zstandard|zstd/i)];
+    case "zlib":
+      return [{
+        name: "zlib_basic_consumer",
+        formula,
+        required: true,
+        command: ZLIB_BROWSER_CONSUMER_PATH,
+        argv: [ZLIB_BROWSER_CONSUMER_PATH],
+        expected: /PASS/,
+        description: "Run zlib_basic linked against the poured zlib keg.",
+      }];
     case "sqlite":
       return [{
         name: "sqlite_basic_consumer",
@@ -166,6 +224,15 @@ export function browserSmokeCasesForFormula(formula: HomebrewSmokeFormula): Brow
         expected: /PASS/,
         description: "Run sqlite_basic linked against the poured sqlite keg.",
       }];
+    case "texlive":
+      return [programOutputCase({
+        formula,
+        name: "pdftex_version",
+        argv: [`${HOMEBREW_PREFIX}/bin/pdftex`, "--version"],
+        env: [`TEXMFCNF=${HOMEBREW_PREFIX}/share/texmf-dist/web2c`],
+        expected: /pdfTeX/i,
+        description: "Run pdftex --version with the poured texmf config path.",
+      })];
     default:
       return [programVersionCase(formula, formula, new RegExp(escapeRegex(formula), "i"))];
   }
@@ -173,6 +240,24 @@ export function browserSmokeCasesForFormula(formula: HomebrewSmokeFormula): Brow
 
 export function browserCaseNamesForFormula(formula: HomebrewSmokeFormula): string[] {
   return browserSmokeCasesForFormula(formula).map((smokeCase) => smokeCase.name);
+}
+
+function programSkipCase(options: {
+  formula: HomebrewSmokeFormula;
+  name: string;
+  reason: string;
+  description: string;
+}): BrowserSmokeCase {
+  return {
+    name: options.name,
+    formula: options.formula,
+    required: false,
+    command: "skipped",
+    argv: [],
+    skipReason: options.reason,
+    expected: /^$/,
+    description: options.description,
+  };
 }
 
 function programOutputCase(options: {

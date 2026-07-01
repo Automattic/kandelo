@@ -2,17 +2,20 @@
 set -euo pipefail
 
 TEXLIVE_VERSION="${TEXLIVE_VERSION:-2025}"
+SOURCE_URL="${WASM_POSIX_DEP_SOURCE_URL:-https://ftp.math.utah.edu/pub/tex/historic/systems/texlive/${TEXLIVE_VERSION}/texlive-${TEXLIVE_VERSION}0308-source.tar.xz}"
+SOURCE_SHA256="${WASM_POSIX_DEP_SOURCE_SHA256:-}"
 # Exported so build-texlive-bundle.sh's tlnet-final URL pins to the
 # same release as the source tarball below — keeps the engine and
 # its texmf-dist macros from drifting across upstream rollovers.
 export TEXLIVE_VERSION
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-SRC_DIR="$SCRIPT_DIR/texlive-src"
-HOST_BUILD_DIR="$SCRIPT_DIR/texlive-host-build"
-CROSS_BUILD_DIR="$SCRIPT_DIR/texlive-cross-build"
-BIN_DIR="$SCRIPT_DIR/bin"
 
 REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
+WORK_DIR="${WASM_POSIX_DEP_WORK_DIR:-$SCRIPT_DIR}"
+SRC_DIR="$WORK_DIR/texlive-src"
+HOST_BUILD_DIR="$WORK_DIR/texlive-host-build"
+CROSS_BUILD_DIR="$WORK_DIR/texlive-cross-build"
+BIN_DIR="${WASM_POSIX_DEP_OUT_DIR:-$SCRIPT_DIR/bin}"
 # Worktree-local SDK on PATH (no global npm link required).
 # shellcheck source=/dev/null
 source "$REPO_ROOT/sdk/activate.sh"
@@ -50,18 +53,36 @@ if [ ! -f "$LIBPNG_PREFIX/lib/libpng.a" ] && [ ! -f "$LIBPNG_PREFIX/lib/libpng16
     echo "ERROR: libpng resolve returned '$LIBPNG_PREFIX' but libpng[16].a missing" >&2
     exit 1
 fi
+LIBPNG_CFLAGS="-I$LIBPNG_PREFIX/include"
+if [ -d "$LIBPNG_PREFIX/include/libpng16" ]; then
+    LIBPNG_CFLAGS="$LIBPNG_CFLAGS -I$LIBPNG_PREFIX/include/libpng16"
+fi
+LIBPNG_LIB="-lpng"
+if [ ! -f "$LIBPNG_PREFIX/lib/libpng.a" ] && [ -f "$LIBPNG_PREFIX/lib/libpng16.a" ]; then
+    LIBPNG_LIB="-lpng16"
+fi
 echo "==> zlib at $ZLIB_PREFIX"
 echo "==> libpng at $LIBPNG_PREFIX"
 
 # Download TeX Live source
 if [ ! -d "$SRC_DIR" ]; then
-    echo "==> Downloading TeX Live $TEXLIVE_VERSION source..."
-    TARBALL="texlive-${TEXLIVE_VERSION}0308-source.tar.xz"
-    curl --retry 10 --retry-delay 5 --retry-max-time 300 --retry-all-errors -fsSL "https://ftp.math.utah.edu/pub/tex/historic/systems/texlive/${TEXLIVE_VERSION}/${TARBALL}" \
-        -o "/tmp/${TARBALL}"
-    mkdir -p "$SRC_DIR"
-    tar xf "/tmp/${TARBALL}" -C "$SRC_DIR" --strip-components=1
-    rm "/tmp/${TARBALL}"
+    if [ -x ./configure ] && [ -d ./texk/web2c ]; then
+        echo "==> Using staged TeX Live source from $(pwd)"
+        mkdir -p "$SRC_DIR"
+        rsync -a --exclude kandelo-package-work/ ./ "$SRC_DIR/"
+    else
+        echo "==> Downloading TeX Live $TEXLIVE_VERSION source..."
+        TARBALL="$(basename "$SOURCE_URL")"
+        curl --retry 10 --retry-delay 5 --retry-max-time 300 --retry-all-errors -fsSL "$SOURCE_URL" \
+            -o "/tmp/${TARBALL}"
+        if [ -n "$SOURCE_SHA256" ]; then
+            echo "==> Verifying source sha256..."
+            echo "$SOURCE_SHA256  /tmp/${TARBALL}" | shasum -a 256 -c -
+        fi
+        mkdir -p "$SRC_DIR"
+        tar xf "/tmp/${TARBALL}" -C "$SRC_DIR" --strip-components=1
+        rm "/tmp/${TARBALL}"
+    fi
 fi
 
 # TeX Live always runs luajit's sub-configure even when all Lua engines are
@@ -218,12 +239,12 @@ SITE
         BUILDCFLAGS=-O2 \
         BUILDCPPFLAGS= \
         BUILDLDFLAGS= \
-        CFLAGS="-O2 -I$ZLIB_PREFIX/include -I$LIBPNG_PREFIX/include" \
+        CFLAGS="-O2 -I$ZLIB_PREFIX/include $LIBPNG_CFLAGS" \
         LDFLAGS="-L$ZLIB_PREFIX/lib -L$LIBPNG_PREFIX/lib" \
         ZLIB_CFLAGS="-I$ZLIB_PREFIX/include" \
         ZLIB_LIBS="-L$ZLIB_PREFIX/lib -lz" \
-        LIBPNG_CFLAGS="-I$LIBPNG_PREFIX/include" \
-        LIBPNG_LIBS="-L$LIBPNG_PREFIX/lib -lpng -lz"
+        LIBPNG_CFLAGS="$LIBPNG_CFLAGS" \
+        LIBPNG_LIBS="-L$LIBPNG_PREFIX/lib $LIBPNG_LIB -lz"
 
     # --disable-all-pkgs leaves MAKE_SUBDIRS empty everywhere, but
     # CONF_SUBDIRS still lists all subdirectories. Running top-level
@@ -274,6 +295,8 @@ echo "==> pdftex.wasm: $(du -h "$BIN_DIR/pdftex.wasm" | cut -f1)"
 BUNDLE_FILE="$BIN_DIR/texlive-bundle.json"
 echo "==> Building TeX Live distribution bundle..."
 TEXLIVE_BUNDLE_OUT="$BUNDLE_FILE" \
+TEXLIVE_WORK_DIR="$WORK_DIR" \
+TEXLIVE_HOST_PDFTEX="$HOST_BUILD_DIR/texk/web2c/pdftex" \
     bash "$REPO_ROOT/images/vfs/scripts/build-texlive-bundle.sh"
 echo "==> texlive-bundle.json: $(du -h "$BUNDLE_FILE" | cut -f1)"
 

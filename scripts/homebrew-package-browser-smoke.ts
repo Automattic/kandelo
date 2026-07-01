@@ -33,6 +33,7 @@ import {
   browserUnsupportedReason,
   parseHomebrewSmokeFormula,
   SQLITE_BROWSER_CONSUMER_PATH,
+  ZLIB_BROWSER_CONSUMER_PATH,
   type BrowserSmokeCase,
   type HomebrewSmokeFormula,
 } from "./homebrew-package-smoke-cases";
@@ -153,6 +154,7 @@ async function main(): Promise<void> {
                 const built = builtByFormula.get(formula);
                 if (!built) throw new SkipCase(`requires successful homebrew_browser_vfs_build_${formula}`);
                 if (!browser) throw new Error("browser did not start");
+                if (smokeCase.skipReason) throw new SkipCase(smokeCase.skipReason);
                 return runBrowserSmokeCase(browser, built, smokeCase, options);
               },
               join(formulaDir(options, formula), `${smokeCase.name}-terminal.txt`),
@@ -218,6 +220,8 @@ async function buildFormulaVfs(
 
   if (formula === "sqlite") {
     await compileAndInjectSqliteConsumer(fs, options);
+  } else if (formula === "zlib") {
+    await compileAndInjectZlibConsumer(fs, options);
   }
 
   const dir = formulaDir(options, formula);
@@ -252,6 +256,59 @@ async function buildFormulaVfs(
   const publicUrl = `http://127.0.0.1:${options.port}${publicSmokePath}/${encodeURIComponent(options.runId)}/${encodeURIComponent(basename(imagePath))}`;
 
   return { formula, fs, imagePath, reportPath, publicPath, publicUrl };
+}
+
+async function compileAndInjectZlibConsumer(fs: MemoryFileSystem, options: CliOptions): Promise<void> {
+  const { ensureDirRecursive, writeVfsBinary } = await import("../images/vfs/scripts/vfs-image-helpers");
+  const stage = join(formulaDir(options, "zlib"), "zlib-consumer-build", options.arch);
+  rmSync(stage, { recursive: true, force: true });
+  mkdirSync(join(stage, "include"), { recursive: true });
+  mkdirSync(join(stage, "lib"), { recursive: true });
+
+  const version = findPackageVersion(fs, "zlib");
+  writeFileSync(
+    join(stage, "include", "zlib.h"),
+    readVfsFile(fs, `${HOMEBREW_CELLAR}/zlib/${version}/include/zlib.h`),
+  );
+  writeFileSync(
+    join(stage, "include", "zconf.h"),
+    readVfsFile(fs, `${HOMEBREW_CELLAR}/zlib/${version}/include/zconf.h`),
+  );
+  writeFileSync(
+    join(stage, "lib", "libz.a"),
+    readVfsFile(fs, `${HOMEBREW_CELLAR}/zlib/${version}/lib/libz.a`),
+  );
+  writeFileSync(join(stage, "zlib_basic.c"), zlibSmokeSource());
+
+  const cc = join(repoRoot, "sdk", "bin", `${options.arch}posix-cc`);
+  if (!existsSync(cc)) {
+    throw new SkipCase(`zlib consumer compiler is unavailable: ${cc}`);
+  }
+  const outWasm = join(stage, "zlib_basic.wasm");
+  try {
+    execFileSync(cc, [
+      `-I${join(stage, "include")}`,
+      join(stage, "zlib_basic.c"),
+      join(stage, "lib", "libz.a"),
+      "-o",
+      outWasm,
+    ], {
+      cwd: repoRoot,
+      env: {
+        ...process.env,
+        PATH: `${join(repoRoot, "sdk", "bin")}:${process.env.PATH ?? ""}`,
+        WASM_POSIX_SYSROOT: join(repoRoot, options.arch === "wasm64" ? "sysroot64" : "sysroot"),
+      },
+      stdio: "pipe",
+    });
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    const stderr = readProcessErrorStderr(err);
+    throw new Error(`zlib consumer compilation failed: ${stderr || message}`);
+  }
+
+  ensureDirRecursive(fs, dirname(ZLIB_BROWSER_CONSUMER_PATH));
+  writeVfsBinary(fs, ZLIB_BROWSER_CONSUMER_PATH, new Uint8Array(readFileSync(outWasm)), 0o755);
 }
 
 async function compileAndInjectSqliteConsumer(fs: MemoryFileSystem, options: CliOptions): Promise<void> {
@@ -306,6 +363,26 @@ async function compileAndInjectSqliteConsumer(fs: MemoryFileSystem, options: Cli
 
   ensureDirRecursive(fs, dirname(SQLITE_BROWSER_CONSUMER_PATH));
   writeVfsBinary(fs, SQLITE_BROWSER_CONSUMER_PATH, new Uint8Array(readFileSync(outWasm)), 0o755);
+}
+
+function zlibSmokeSource(): string {
+  return `#include <stdio.h>
+#include <string.h>
+#include <zlib.h>
+
+int main(void) {
+  const Bytef input[] = "ok";
+  Bytef compressed[32];
+  Bytef output[32];
+  uLongf compressed_len = sizeof(compressed);
+  uLongf output_len = sizeof(output);
+  if (compress(compressed, &compressed_len, input, strlen((const char *)input)) != Z_OK) return 1;
+  if (uncompress(output, &output_len, compressed, compressed_len) != Z_OK) return 2;
+  output[output_len] = 0;
+  puts(strcmp((const char *)output, "ok") == 0 ? "PASS" : "FAIL");
+  return 0;
+}
+`;
 }
 
 async function runBrowserSmokeCase(

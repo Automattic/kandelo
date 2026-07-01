@@ -123,6 +123,7 @@ export HOMEBREW_KANDELO_NODE="$(command -v node)"
 export HOMEBREW_KANDELO_LLVM_BIN="${LLVM_BIN:-${WASM_POSIX_LLVM_DIR:-}}"
 export HOMEBREW_KANDELO_BUILD_PATH="$PATH"
 
+TAP_SOURCE="$TAP_ROOT"
 if [ ! -d "$TAP_SOURCE/.git" ]; then
   TAP_SOURCE="$WORK_DIR/tap-source"
   mkdir -p "$TAP_SOURCE"
@@ -164,8 +165,12 @@ brew_install_build_bottle() {
   for attempt in 1 2 3; do
     log="$WORK_DIR/brew-install-attempt-${attempt}.log"
     set +e
-    "$BREW_BIN" install --build-bottle --formula "$FORMULA_REF" 2> >(tee "$log" >&2)
+    "$BREW_BIN" install --build-from-source --only-dependencies --formula "$FORMULA_REF" 2> >(tee "$log" >&2)
     status=$?
+    if [ "$status" -eq 0 ]; then
+      "$BREW_BIN" install --build-bottle --formula "$FORMULA_REF" 2> >(tee -a "$log" >&2)
+      status=$?
+    fi
     set -e
     if [ "$status" -eq 0 ]; then
       return 0

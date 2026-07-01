@@ -177,6 +177,8 @@ async function runFormulaSmoke(
   switch (packageName) {
     case "sqlite":
       return runSqliteSmoke(built, options);
+    case "zlib":
+      return runZlibSmoke(built, options);
     case "bc":
       return runProgramSmoke("bc", `${PREFIX}/bin/bc`, /(^|\n)5(\n|$)/, built, options, {
         stdin: "2+3\nquit\n",
@@ -184,6 +186,15 @@ async function runFormulaSmoke(
     case "coreutils":
       return runProgramSmoke("printf", `${PREFIX}/bin/coreutils`, /^ok$/m, built, options, {
         args: ["ok\n"],
+      });
+    case "cpython":
+      return runProgramSmoke("cpython", `${PREFIX}/bin/cpython`, /^a\/b$/m, built, options, {
+        args: ["-S", "-c", "import os; print(os.path.join('a', 'b'))"],
+        env: [
+          `PYTHONHOME=${PREFIX}`,
+          "PYTHONDONTWRITEBYTECODE=1",
+          "PYTHONNOUSERSITE=1",
+        ],
       });
     case "diffutils":
       return runProgramVersionSmoke("diff", `${PREFIX}/bin/diff`, /diff/i, built, options);
@@ -208,6 +219,15 @@ async function runFormulaSmoke(
       });
     case "make":
       return runProgramVersionSmoke("make", `${PREFIX}/bin/make`, /make/i, built, options);
+    case "perl":
+      return runProgramSmoke("perl", `${PREFIX}/bin/perl`, /^5$/m, built, options, {
+        args: ["-e", "use strict; use warnings; print 2 + 3"],
+        env: [`PERL5LIB=${PREFIX}/lib/perl5/5.40.3`],
+      });
+    case "php":
+      return runProgramSmoke("php", `${PREFIX}/bin/php`, /^5$/m, built, options, {
+        args: ["-r", "echo 2 + 3;"],
+      });
     case "posix-utils-lite":
       return runProgramSmoke("patch", `${PREFIX}/bin/patch`, /patch/i, built, options, {
         args: ["patch"],
@@ -217,6 +237,11 @@ async function runFormulaSmoke(
       return runProgramSmoke("sed", `${PREFIX}/bin/sed`, /^b$/m, built, options, {
         args: ["s/a/b/"],
         stdin: "a\n",
+      });
+    case "ruby":
+      return runProgramSmoke("ruby", `${PREFIX}/bin/ruby`, /^5$/m, built, options, {
+        args: ["-e", "puts 2 + 3"],
+        env: [`RUBYLIB=${PREFIX}/lib/ruby/4.0.0`],
       });
     case "tar":
       return runProgramVersionSmoke("tar", `${PREFIX}/bin/tar`, /tar/i, built, options);
@@ -235,6 +260,13 @@ async function runFormulaSmoke(
       return runProgramVersionSmoke("xz", `${PREFIX}/bin/xz`, /xz/i, built, options);
     case "zstd":
       return runProgramVersionSmoke("zstd", `${PREFIX}/bin/zstd`, /zstandard|zstd/i, built, options);
+    case "erlang":
+      throw new SkipCase("Erlang BEAM requires specialized -root/-bindir/-boot launch arguments not yet modeled by the generic Homebrew VFS smoke runner");
+    case "texlive":
+      return runProgramSmoke("pdftex", `${PREFIX}/bin/pdftex`, /pdfTeX/i, built, options, {
+        args: ["--version"],
+        env: [`TEXMFCNF=${PREFIX}/share/texmf-dist/web2c`],
+      });
     default:
       return runProgramVersionSmoke(packageName, `${PREFIX}/bin/${packageName}`, new RegExp(escapeRegex(packageName), "i"), built, options);
   }
@@ -328,6 +360,56 @@ async function runSqliteSmoke(built: BuiltVfs, options: CliOptions): Promise<str
     throw new Error(`sqlite_basic did not report PASS: ${JSON.stringify(result.stdout)}`);
   }
   return "sqlite_basic linked against poured sqlite keg and reported PASS";
+}
+
+async function runZlibSmoke(built: BuiltVfs, options: CliOptions): Promise<string> {
+  const stage = join(options.resultDir, "zlib-consumer-build", options.arch);
+  rmSync(stage, { recursive: true, force: true });
+  mkdirSync(join(stage, "include"), { recursive: true });
+  mkdirSync(join(stage, "lib"), { recursive: true });
+
+  const version = findPackageVersion(built.fs, "zlib");
+  writeFileSync(
+    join(stage, "include", "zlib.h"),
+    readVfsFile(built.fs, `${CELLAR}/zlib/${version}/include/zlib.h`),
+  );
+  writeFileSync(
+    join(stage, "include", "zconf.h"),
+    readVfsFile(built.fs, `${CELLAR}/zlib/${version}/include/zconf.h`),
+  );
+  writeFileSync(
+    join(stage, "lib", "libz.a"),
+    readVfsFile(built.fs, `${CELLAR}/zlib/${version}/lib/libz.a`),
+  );
+  writeFileSync(join(stage, "zlib_basic.c"), zlibSmokeSource());
+
+  const outWasm = join(stage, "zlib_basic.wasm");
+  const cc = join(repoRoot, "sdk", "bin", `${options.arch}posix-cc`);
+  execFileSync(cc, [
+    `-I${join(stage, "include")}`,
+    join(stage, "zlib_basic.c"),
+    join(stage, "lib", "libz.a"),
+    "-o",
+    outWasm,
+  ], {
+    cwd: repoRoot,
+    env: {
+      ...process.env,
+      PATH: `${join(repoRoot, "sdk", "bin")}:${process.env.PATH ?? ""}`,
+      WASM_POSIX_SYSROOT: join(repoRoot, options.arch === "wasm64" ? "sysroot64" : "sysroot"),
+    },
+    stdio: "pipe",
+  });
+
+  const consumerBytes = new Uint8Array(readFileSync(outWasm));
+  const result = await runWasm(consumerBytes, ["zlib_basic"], built.imageBytes, options);
+  if (result.exitCode !== 0) {
+    throw new Error(`zlib_basic exited ${result.exitCode}; stderr=${JSON.stringify(result.stderr)}`);
+  }
+  if (!result.stdout.includes("PASS")) {
+    throw new Error(`zlib_basic did not report PASS: ${JSON.stringify(result.stdout)}`);
+  }
+  return "zlib_basic linked against poured zlib keg and reported PASS";
 }
 
 async function runWasm(
@@ -429,8 +511,28 @@ function findPackageVersion(fs: MemoryFileSystem, formula: string): string {
   if (!pkg) throw new Error(`package ${formula} missing from /etc/kandelo/homebrew-vfs.json`);
   const keg = String(pkg.keg ?? "");
   const prefix = `${CELLAR}/${formula}/`;
-  if (!keg.startsWith(prefix)) throw new Error(`unexpected sqlite keg path: ${keg}`);
+  if (!keg.startsWith(prefix)) throw new Error(`unexpected ${formula} keg path: ${keg}`);
   return keg.slice(prefix.length);
+}
+
+function zlibSmokeSource(): string {
+  return `#include <stdio.h>
+#include <string.h>
+#include <zlib.h>
+
+int main(void) {
+  const Bytef input[] = "ok";
+  Bytef compressed[32];
+  Bytef output[32];
+  uLongf compressed_len = sizeof(compressed);
+  uLongf output_len = sizeof(output);
+  if (compress(compressed, &compressed_len, input, strlen((const char *)input)) != Z_OK) return 1;
+  if (uncompress(output, &output_len, compressed, compressed_len) != Z_OK) return 2;
+  output[output_len] = 0;
+  puts(strcmp((const char *)output, "ok") == 0 ? "PASS" : "FAIL");
+  return 0;
+}
+`;
 }
 
 function readVfsFile(fs: MemoryFileSystem, path: string): Uint8Array {

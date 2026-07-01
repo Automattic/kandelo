@@ -120,6 +120,11 @@ support: `openssl`, `libcxx`, and `libxml2` build wasm32 and wasm64 bottles;
 `libpng`, `libcurl`, and the hybrid `ncurses` package are wasm32-only until
 their registry manifests opt into wasm64.
 
+Formulae that use `KandeloPackageFormula#kandelo_build_package` are wasm32-only
+by default. Pass `wasm32_only: false` only when the underlying package build
+script consumes `WASM_POSIX_DEP_TARGET_ARCH`, selects the matching sysroot, and
+the formula test has been checked for that architecture.
+
 Formula Ruby should read these `HOMEBREW_KANDELO_*` variables for values that
 must survive Homebrew environment handling:
 

@@ -119,6 +119,7 @@ if package_kind not in {"library", "program"}:
     raise SystemExit(f"unsupported Homebrew sidecar package kind for {package_name}: {package_kind!r}")
 
 PROGRAM_ALIASES = {
+    "cpython": ["python", "python3"],
     "coreutils": [
         "cat", "ls", "cp", "mv", "rm", "mkdir", "rmdir", "ln", "chmod", "chown",
         "head", "tail", "wc", "sort", "uniq", "tr", "cut", "paste", "tee",
@@ -128,21 +129,42 @@ PROGRAM_ALIASES = {
         "sha256sum", "base64", "seq", "factor", "nproc", "du", "df",
     ],
     "gzip": ["gunzip", "zcat"],
+    "php": ["php-fpm"],
     "tcl": ["tclsh"],
     "unzip": ["zipinfo", "funzip"],
     "zstd": ["unzstd", "zstdcat"],
 }
 
 EXTRA_PROGRAM_LINKS = {
+    "cpython": [
+        {"type": "directory", "source": "lib/python3.13", "target": "lib/python3.13", "mode": "0755"},
+    ],
+    "erlang": [
+        {"type": "directory", "source": "libexec/erlang", "target": "libexec/erlang", "mode": "0755"},
+    ],
     "file": [
         {"type": "file", "source": "share/file/magic.lite", "target": "share/file/magic.lite", "mode": "0644"},
+    ],
+    "php": [
+        {"type": "file", "source": "lib/php/extensions/opcache.so", "target": "lib/php/extensions/opcache.so", "mode": "0644"},
+    ],
+    "perl": [
+        {"type": "directory", "source": "lib/perl5", "target": "lib/perl5", "mode": "0755"},
+    ],
+    "ruby": [
+        {"type": "directory", "source": "lib/ruby", "target": "lib/ruby", "mode": "0755"},
+        {"type": "file", "source": "share/ruby-runtime.zip", "target": "share/ruby-runtime.zip", "mode": "0644"},
     ],
     "tcl": [
         {"type": "directory", "source": "lib/tcl8.6", "target": "lib/tcl8.6", "mode": "0755"},
     ],
+    "texlive": [
+        {"type": "directory", "source": "share/texmf-dist", "target": "share/texmf-dist", "mode": "0755"},
+        {"type": "file", "source": "share/texlive/texlive-bundle.json", "target": "share/texlive/texlive-bundle.json", "mode": "0644"},
+    ],
 }
 
-FORK_INSTRUMENTED_PROGRAMS = {"coreutils", "tcl"}
+FORK_INSTRUMENTED_PROGRAMS = {"coreutils", "php", "ruby", "tcl"}
 
 def package_links_and_env():
     if package_kind == "library":
