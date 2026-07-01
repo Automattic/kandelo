@@ -18,15 +18,15 @@ test("Kandelo modeset demo commits PAGE_FLIPs through /dev/dri/card0", async ({ 
 
   await gotoOrSkip(page, "/?demo=modeset");
 
-  const modesetHead = page
-    .locator(".kpane-head")
-    .filter({ has: page.locator(".kpane-head-title", { hasText: /MODESET/ }) })
+  const modesetControls = page
+    .locator(".kdemo-surface-controls")
+    .filter({ has: page.locator(".kdemo-surface-title", { hasText: /MODESET/ }) })
     .first();
-  await expect(modesetHead).toBeVisible({ timeout: 180_000 });
+  await expect(modesetControls).toBeVisible({ timeout: 180_000 });
 
-  // Pane CSS applies text-transform: uppercase, so match case-insensitively.
+  // The dock status strip carries the modeset PAGE_FLIP counter.
   await expect
-    .poll(() => modesetHead.innerText(), { timeout: 180_000 })
+    .poll(() => modesetControls.innerText(), { timeout: 180_000 })
     .toMatch(/[1-9]\d*\s+flips/i);
 
   // Flip-counter ticks prove PAGE_FLIP reached the kernel; the canvas

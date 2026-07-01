@@ -3,12 +3,11 @@
 // During boot the machine shows syslog as the primary surface. Once the demo
 // reaches the useful state, the primary surface follows the active profile:
 // web preview for service demos, framebuffer for Doom, terminal for shell-like
-// demos. Terminal is exposed after boot; internals stay available as a drawer.
+// demos. The dock owns switching between demo, terminal, and internals views.
 
 import * as React from "react";
 import {
   useDemoGuide,
-  useLazyDownloads,
   usePresentation,
   useStatus,
   useSurfaceAvailability,
@@ -21,16 +20,10 @@ import { DemoGuide } from "../panes/DemoGuide";
 import type { DemoActionConfig } from "../../../../../web-libs/kandelo-session/src/demo-config";
 import type {
   DemoPresentation,
-  LazyDownloadEvent,
   MachineStatus,
   PrimarySurface,
   SurfaceAvailability,
 } from "../../../../../web-libs/kandelo-session/src/kernel-host";
-
-const DEMO_GUIDE_DEFAULT_WIDTH = 300;
-const DEMO_GUIDE_MIN_WIDTH = 220;
-const DEMO_GUIDE_MAX_WIDTH = 480;
-const DEMO_GUIDE_PRIMARY_MIN_WIDTH = 480;
 
 export type MachineSurfaceView = "demo" | "terminal" | "internals";
 
@@ -166,8 +159,11 @@ export function useMachineSurfaceController(): MachineSurfaceController {
 
 export interface MachineViewProps {
   surface: MachineSurfaceController;
+  demoGuideOpen: boolean;
+  onDemoGuideOpenChange: (open: boolean) => void;
+  onDemoDockControlsChange: (controls: React.ReactNode | null) => void;
+  onDemoGuidePopupChange: (popup: React.ReactNode | null) => void;
   internalsTab: string;
-  onInternalsTab: (id: string) => void;
   terminals: ShellTerminal[];
   activeTerminalId: string;
   onActiveTerminalId: (id: string) => void;
@@ -176,41 +172,26 @@ export interface MachineViewProps {
 
 export const MachineView: React.FC<MachineViewProps> = ({
   surface,
+  demoGuideOpen,
+  onDemoGuideOpenChange,
+  onDemoDockControlsChange,
+  onDemoGuidePopupChange,
   internalsTab,
-  onInternalsTab,
   terminals,
   activeTerminalId,
   onActiveTerminalId,
   onAddTerminal,
 }) => {
   const demoGuide = useDemoGuide();
-  const lazyDownloads = useLazyDownloads();
-  const rootRef = React.useRef<HTMLDivElement>(null);
   const displayRef = React.useRef<DisplayHandle | null>(null);
-  const [terminalOpen, setTerminalOpen] = React.useState(false);
-  const [internalsOpen, setInternalsOpen] = React.useState(false);
-  const [terminalDrawerHeight, setTerminalDrawerHeight] = React.useState(320);
-  const [internalsDrawerHeight, setInternalsDrawerHeight] = React.useState(320);
-  const [demoGuideWidth, setDemoGuideWidth] = React.useState(DEMO_GUIDE_DEFAULT_WIDTH);
   const {
-    status,
-    presentation,
     activePrimary,
-    primaryLabel,
     demoSurface,
     canUseTerminal,
     shouldMountDemoSurface,
     followDemoSurface,
+    chooseView,
   } = surface;
-
-  React.useEffect(() => {
-    setTerminalOpen(false);
-    setInternalsOpen(false);
-  }, [presentation.runningPrimary, presentation.autoCommand]);
-
-  React.useEffect(() => {
-    if (!canUseTerminal) setTerminalOpen(false);
-  }, [canUseTerminal]);
 
   const runWebAction = React.useCallback(async (action: DemoActionConfig): Promise<string | void> => {
     if (action.kind === "web.wordpressLogin") {
@@ -230,110 +211,35 @@ export const MachineView: React.FC<MachineViewProps> = ({
     onAddTerminal,
   };
 
-  const showDemoGuide = demoGuide !== null;
+  const showDemoGuide = demoGuide !== null && demoGuideOpen;
 
-  const beginDrawerResize = (
-    event: React.PointerEvent<HTMLDivElement>,
-    currentHeight: number,
-    setHeight: React.Dispatch<React.SetStateAction<number>>,
-  ) => {
-    event.preventDefault();
-    const startY = event.clientY;
-    const startHeight = currentHeight;
-    const rootHeight = rootRef.current?.getBoundingClientRect().height ?? window.innerHeight;
-    const maxHeight = Math.max(180, rootHeight - 320);
-    const target = event.currentTarget;
-    target.setPointerCapture(event.pointerId);
-    target.classList.add("dragging");
+  React.useEffect(() => {
+    if (!shouldMountDemoSurface) onDemoDockControlsChange(null);
+  }, [onDemoDockControlsChange, shouldMountDemoSurface]);
 
-    const onMove = (moveEvent: PointerEvent) => {
-      const delta = moveEvent.clientY - startY;
-      setHeight(clamp(startHeight - delta, 180, maxHeight));
-    };
-    const onDone = () => {
-      target.classList.remove("dragging");
-      window.removeEventListener("pointermove", onMove);
-      window.removeEventListener("pointerup", onDone);
-      window.removeEventListener("pointercancel", onDone);
-    };
+  const openTerminalFromGuide = React.useCallback(() => {
+    if (canUseTerminal) chooseView("terminal");
+  }, [canUseTerminal, chooseView]);
 
-    window.addEventListener("pointermove", onMove);
-    window.addEventListener("pointerup", onDone);
-    window.addEventListener("pointercancel", onDone);
-  };
+  const demoGuidePopup = React.useMemo(() => {
+    if (!showDemoGuide) return null;
+    return (
+      <DemoGuide
+        onClose={() => onDemoGuideOpenChange(false)}
+        onOpenTerminal={openTerminalFromGuide}
+        onRunWebAction={runWebAction}
+      />
+    );
+  }, [onDemoGuideOpenChange, openTerminalFromGuide, runWebAction, showDemoGuide]);
 
-  const demoGuideBounds = React.useCallback(() => {
-    const rootWidth = rootRef.current?.getBoundingClientRect().width ?? window.innerWidth;
-    return {
-      min: DEMO_GUIDE_MIN_WIDTH,
-      max: Math.max(
-        DEMO_GUIDE_MIN_WIDTH,
-        Math.min(DEMO_GUIDE_MAX_WIDTH, rootWidth - DEMO_GUIDE_PRIMARY_MIN_WIDTH),
-      ),
-    };
-  }, []);
-
-  const setClampedDemoGuideWidth = React.useCallback((next: number) => {
-    const bounds = demoGuideBounds();
-    setDemoGuideWidth(clamp(next, bounds.min, bounds.max));
-  }, [demoGuideBounds]);
-
-  const beginDemoGuideResize = React.useCallback((event: React.PointerEvent<HTMLDivElement>) => {
-    event.preventDefault();
-    const startX = event.clientX;
-    const startWidth = demoGuideWidth;
-    const bounds = demoGuideBounds();
-    const target = event.currentTarget;
-    target.setPointerCapture(event.pointerId);
-    target.classList.add("dragging");
-
-    const onMove = (moveEvent: PointerEvent) => {
-      const delta = startX - moveEvent.clientX;
-      setDemoGuideWidth(clamp(startWidth + delta, bounds.min, bounds.max));
-    };
-    const onDone = () => {
-      target.classList.remove("dragging");
-      window.removeEventListener("pointermove", onMove);
-      window.removeEventListener("pointerup", onDone);
-      window.removeEventListener("pointercancel", onDone);
-    };
-
-    window.addEventListener("pointermove", onMove);
-    window.addEventListener("pointerup", onDone);
-    window.addEventListener("pointercancel", onDone);
-  }, [demoGuideBounds, demoGuideWidth]);
-
-  const onDemoGuideResizeKeyDown = React.useCallback((event: React.KeyboardEvent<HTMLDivElement>) => {
-    if (event.key === "ArrowLeft") {
-      event.preventDefault();
-      setClampedDemoGuideWidth(demoGuideWidth + 20);
-    } else if (event.key === "ArrowRight") {
-      event.preventDefault();
-      setClampedDemoGuideWidth(demoGuideWidth - 20);
-    } else if (event.key === "Home") {
-      event.preventDefault();
-      setClampedDemoGuideWidth(DEMO_GUIDE_MIN_WIDTH);
-    } else if (event.key === "End") {
-      event.preventDefault();
-      setClampedDemoGuideWidth(DEMO_GUIDE_MAX_WIDTH);
-    }
-  }, [demoGuideWidth, setClampedDemoGuideWidth]);
+  React.useEffect(() => {
+    onDemoGuidePopupChange(demoGuidePopup);
+    return () => onDemoGuidePopupChange(null);
+  }, [demoGuidePopup, onDemoGuidePopupChange]);
 
   return (
-    <div className="kmachine" ref={rootRef}>
-      {lazyDownloads.length > 0 && (
-        <div className="kmachine-statusline">
-          <LazyDownloadIndicator downloads={lazyDownloads} />
-          <span className="kmachine-current-label">{primaryLabel}</span>
-        </div>
-      )}
-
-      <div
-        className={`kmachine-workspace${showDemoGuide ? "" : " no-demo-guide"}`}
-        style={showDemoGuide
-          ? { "--kmachine-demo-guide-width": `${demoGuideWidth}px` } as React.CSSProperties
-          : undefined}
-      >
+    <div className="kmachine">
+      <div className="kmachine-workspace">
         <div className="kmachine-primary">
           {shouldMountDemoSurface && (
             <PrimarySurfaceSlot active={activePrimary === demoSurface}>
@@ -341,6 +247,7 @@ export const MachineView: React.FC<MachineViewProps> = ({
                 ref={displayRef}
                 autoFocus={activePrimary === demoSurface}
                 surface={demoSurface ?? undefined}
+                onDockControlsChange={onDemoDockControlsChange}
               />
             </PrimarySurfaceSlot>
           )}
@@ -351,76 +258,14 @@ export const MachineView: React.FC<MachineViewProps> = ({
           )}
           {activePrimary === "syslog" && (
             <PrimarySurfaceSlot active>
-              <Inspector tab={internalsTab} onTab={onInternalsTab} />
+              <Inspector tab={internalsTab} />
             </PrimarySurfaceSlot>
           )}
         </div>
-        {showDemoGuide && (
-          <DemoGuideResizer
-            width={demoGuideWidth}
-            onPointerDown={beginDemoGuideResize}
-            onKeyDown={onDemoGuideResizeKeyDown}
-          />
-        )}
-        {showDemoGuide && (
-          <DemoGuide
-            onOpenTerminal={() => {
-              if (canUseTerminal) setTerminalOpen(true);
-            }}
-            onRunWebAction={runWebAction}
-          />
-        )}
       </div>
-
-      {activePrimary !== "terminal" && canUseTerminal && (
-        <MachineDrawer
-          title="Terminal"
-          open={terminalOpen}
-          bodyHeight={terminalDrawerHeight}
-          onResizeStart={(event) => beginDrawerResize(event, terminalDrawerHeight, setTerminalDrawerHeight)}
-          onToggle={() => {
-            setTerminalOpen((v) => !v);
-          }}
-        >
-          <Shell autoFocus {...shellProps} />
-        </MachineDrawer>
-      )}
-
-      {activePrimary !== "syslog" && (
-        <MachineDrawer
-          title="Internals"
-          open={internalsOpen}
-          bodyHeight={internalsDrawerHeight}
-          onResizeStart={(event) => beginDrawerResize(event, internalsDrawerHeight, setInternalsDrawerHeight)}
-          onToggle={() => {
-            setInternalsOpen((v) => !v);
-          }}
-        >
-          <Inspector tab={internalsTab} onTab={onInternalsTab} />
-        </MachineDrawer>
-      )}
     </div>
   );
 };
-
-const DemoGuideResizer: React.FC<{
-  width: number;
-  onPointerDown: (event: React.PointerEvent<HTMLDivElement>) => void;
-  onKeyDown: (event: React.KeyboardEvent<HTMLDivElement>) => void;
-}> = ({ width, onPointerDown, onKeyDown }) => (
-  <div
-    className="kmachine-guide-resizer"
-    role="separator"
-    aria-orientation="vertical"
-    aria-label="Resize demo actions"
-    aria-valuemin={DEMO_GUIDE_MIN_WIDTH}
-    aria-valuemax={DEMO_GUIDE_MAX_WIDTH}
-    aria-valuenow={width}
-    tabIndex={0}
-    onPointerDown={onPointerDown}
-    onKeyDown={onKeyDown}
-  />
-);
 
 function parseWordPressLoginPayload(payload: string): WordPressLoginOptions {
   let parsed: unknown;
@@ -449,71 +294,6 @@ const PrimarySurfaceSlot: React.FC<{
   </div>
 );
 
-const LazyDownloadIndicator: React.FC<{
-  downloads: LazyDownloadEvent[];
-}> = ({ downloads }) => {
-  if (downloads.length === 0) return null;
-  const current = downloads[0];
-  const pct = current.totalBytes && current.totalBytes > 0
-    ? Math.min(100, Math.max(0, (current.loadedBytes / current.totalBytes) * 100))
-    : null;
-  const title = `${downloadStatusVerb(current)} ${downloadLabel(current)} (${humanBytes(current.loadedBytes)}${
-    current.totalBytes ? ` / ${humanBytes(current.totalBytes)}` : ""
-  })`;
-  const label = downloadLabel(current);
-  const progressLabel = downloadProgressLabel(current, pct);
-
-  return (
-    <span
-      className={`kmachine-download kmachine-download-${current.status}`}
-      title={current.error ? `${title}: ${current.error}` : title}
-      aria-live="polite"
-      aria-label={current.error ? `${title}: ${current.error}` : title}
-    >
-      <span className="kmachine-download-label" aria-hidden="true">{label}</span>
-      <span className="kmachine-download-pct" aria-hidden="true">{progressLabel}</span>
-      {downloads.length > 1 && <span className="kmachine-download-count">+{downloads.length - 1}</span>}
-      <span className={`kmachine-download-bar${pct === null ? " indeterminate" : ""}`} aria-hidden="true">
-        <span style={{ width: pct === null ? "44%" : `${pct}%` }} />
-      </span>
-    </span>
-  );
-};
-
-const MachineDrawer: React.FC<{
-  title: string;
-  open: boolean;
-  bodyHeight: number;
-  onResizeStart: (event: React.PointerEvent<HTMLDivElement>) => void;
-  onToggle: () => void;
-  children: React.ReactNode;
-}> = ({ title, open, bodyHeight, onResizeStart, onToggle, children }) => (
-  <section className={`kmachine-drawer${open ? " open" : ""}`}>
-    {open && (
-      <div
-        className="kmachine-drawer-resizer"
-        role="separator"
-        aria-orientation="horizontal"
-        aria-label={`Resize ${title}`}
-        onPointerDown={onResizeStart}
-      />
-    )}
-    <button
-      type="button"
-      className="kmachine-drawer-toggle"
-      aria-expanded={open}
-      onClick={onToggle}
-    >
-      <span className="kmachine-drawer-dot" />
-      <span>{title}</span>
-      <svg width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="currentColor" strokeWidth="1.5">
-        <path d={open ? "M3 7.5 6 4.5l3 3" : "M3 4.5 6 7.5l3-3"} />
-      </svg>
-    </button>
-    {open && <div className="kmachine-drawer-body" style={{ height: bodyHeight }}>{children}</div>}
-  </section>
-);
-
 function surfaceLabel(surface: PrimarySurface): string {
   switch (surface) {
     case "terminal": return "Terminal";
@@ -540,38 +320,4 @@ function resolveDemoSurface(preferences: readonly PrimarySurface[]): PrimarySurf
 
 function isSurfaceAvailable(surface: PrimarySurface, availability: SurfaceAvailability): boolean {
   return availability[surface] === true;
-}
-
-function clamp(value: number, min: number, max: number): number {
-  return Math.min(Math.max(value, min), max);
-}
-
-function downloadStatusVerb(event: LazyDownloadEvent): string {
-  switch (event.status) {
-    case "complete": return "Downloaded";
-    case "error": return "Failed";
-    default: return "Downloading";
-  }
-}
-
-function downloadLabel(event: LazyDownloadEvent): string {
-  const raw = event.kind === "archive"
-    ? event.url
-    : event.path ?? event.mountPrefix ?? event.url;
-  const clean = raw.split(/[?#]/, 1)[0].replace(/\/+$/, "");
-  return clean.split("/").pop() || event.kind;
-}
-
-function downloadProgressLabel(event: LazyDownloadEvent, pct: number | null): string {
-  if (event.status === "complete") return "OK";
-  if (event.status === "error") return "ERR";
-  return pct === null ? "..." : `${Math.round(pct)}%`;
-}
-
-function humanBytes(bytes: number): string {
-  if (bytes < 1024) return `${bytes} B`;
-  const kib = bytes / 1024;
-  if (kib < 1024) return `${kib.toFixed(kib < 10 ? 1 : 0)} KiB`;
-  const mib = kib / 1024;
-  return `${mib.toFixed(mib < 10 ? 1 : 0)} MiB`;
 }
