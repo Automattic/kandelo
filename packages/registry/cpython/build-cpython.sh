@@ -583,10 +583,32 @@ fi
 echo "==> CPython built successfully!"
 ls -la "$SCRIPT_DIR/bin/python.wasm"
 
+# --- Package the Python standard library for the shippable runtime ---
+# The wasm build produces only python.wasm; without the stdlib on sys.path the
+# shipped runtime cannot import re/json/etc. Ship lib/python3.13 as
+# python-stdlib.zip (a declared package output) that the Homebrew formula
+# installs and points PYTHONHOME at. Exclude the test suite and GUI-only
+# packages that cannot run on Kandelo wasm32-posix.
+echo "==> Packaging CPython standard library..."
+STDLIB_STAGE="$SCRIPT_DIR/python-stdlib-stage"
+rm -rf "$STDLIB_STAGE"
+mkdir -p "$STDLIB_STAGE/lib/python3.13"
+cp -R "$SRC_DIR/Lib/." "$STDLIB_STAGE/lib/python3.13/"
+rm -rf "$STDLIB_STAGE/lib/python3.13/test" \
+       "$STDLIB_STAGE/lib/python3.13/idlelib" \
+       "$STDLIB_STAGE/lib/python3.13/tkinter" \
+       "$STDLIB_STAGE/lib/python3.13/turtledemo"
+find "$STDLIB_STAGE" -type d -name '__pycache__' -prune -exec rm -rf {} + 2>/dev/null || true
+STDLIB_ZIP="$SCRIPT_DIR/bin/python-stdlib.zip"
+rm -f "$STDLIB_ZIP"
+( cd "$STDLIB_STAGE" && zip -q -r -X "$STDLIB_ZIP" lib )
+echo "==> Packaged stdlib: $STDLIB_ZIP ($(du -h "$STDLIB_ZIP" | cut -f1))"
+
 # Install into local-binaries/ so the resolver picks the freshly-built
 # binary over the fetched release.
 source "$REPO_ROOT/scripts/install-local-binary.sh"
 install_local_binary cpython "$SCRIPT_DIR/bin/python.wasm"
+install_local_binary cpython "$STDLIB_ZIP"
 
 # Manifest declares `wasm = "python.wasm"` (not cpython.wasm), so the
 # resolver's $WASM_POSIX_DEP_OUT_DIR scratch needs the file under that
@@ -595,4 +617,6 @@ install_local_binary cpython "$SCRIPT_DIR/bin/python.wasm"
 if [ -n "${WASM_POSIX_DEP_OUT_DIR:-}" ]; then
     cp "$SCRIPT_DIR/bin/python.wasm" "$WASM_POSIX_DEP_OUT_DIR/python.wasm"
     echo "  installed $WASM_POSIX_DEP_OUT_DIR/python.wasm (manifest output name)"
+    cp "$STDLIB_ZIP" "$WASM_POSIX_DEP_OUT_DIR/python-stdlib.zip"
+    echo "  installed $WASM_POSIX_DEP_OUT_DIR/python-stdlib.zip (stdlib output)"
 fi
