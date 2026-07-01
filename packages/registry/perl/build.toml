@@ -1,7 +1,11 @@
 script_path = "packages/registry/perl/build-perl.sh"
 repo_url    = "https://github.com/brandonpayton/kandelo.git"
 commit      = "8c53383229fab78f97b098c3207a655159c03041"
-revision    = 3
+# rev4: build-perl.sh patches the target config.h to musl's positional LC_ALL
+# notation, fixing the default-locale startup panic (kd-dvph). Output bytes
+# change (locale.o + relink), so the archive cache must invalidate. Stacked
+# after kd-k7zy runtime (rev2, #821) and kd-gtxa Errno (rev3, #827).
+revision    = 4
 
 [binary]
 index_url = "https://github.com/Automattic/kandelo/releases/download/binaries-abi-v{abi}/index.toml"

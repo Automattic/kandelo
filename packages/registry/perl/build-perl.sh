@@ -606,6 +606,78 @@ if [ ! -f config.sh ]; then
         Makefile
 fi
 
+# --- Fix the default-locale startup panic (kd-dvph) ---
+#
+# musl's setlocale(LC_ALL,"") returns a POSITIONAL, ';'-separated composite of
+# the per-category locale names in musl category order
+# (CTYPE;NUMERIC;TIME;COLLATE;MONETARY;MESSAGES) whenever the categories are not
+# all identical -- e.g. with no locale env set it returns the default
+# "C.UTF-8;C;C;C;C;C" (musl gives LC_CTYPE a UTF-8 C locale, the rest plain C).
+# This is POSIX-legal: the LC_ALL return string is unspecified and need only
+# round-trip through setlocale, which musl's does.
+#
+# perl-cross cross-configures the TARGET with glibc's assumption
+# (d_perl_lc_all_uses_name_value_pairs=define), so perl compiles out its
+# positional LC_ALL parser and parses musl's first field "C.UTF-8" as a glibc
+# "name=value" pair. There is no '=', so perl panics during the startup locale
+# scan (locale.c "needs an '=' to split name=value") and aborts with exit 29.
+# The effect is that perl is unusable unless LC_ALL is forced to a single value
+# like "C" -- even LC_ALL=C.UTF-8 or LANG=... trips it.
+#
+# Fix the TARGET config header. In perl-cross, config.h is the primary
+# (cross-compiled perl.wasm) config -- Makefile builds target objects with
+# `%$o: %.c config.h` using the cross compiler -- while xconfig.h configures the
+# build-time miniperl that runs on the build machine (`%$O: %.c xconfig.h`,
+# HOSTCC). So patch config.h (target) and leave xconfig.h (host miniperl)
+# matching the build machine's libc.
+# This is the mechanism perl already uses for positional platforms (*BSD):
+#   - undef PERL_LC_ALL_USES_NAME_VALUE_PAIRS (musl is positional, not name=value)
+#   - define PERL_LC_ALL_SEPARATOR ";"
+#   - define PERL_LC_ALL_CATEGORY_POSITIONS_INIT to the LC_* categories in
+#     musl's emit order; perl's get_category_index() maps each to its internal
+#     index and a compile-time STATIC_ASSERT checks the count == LC_ALL_INDEX_.
+# Idempotent + applied on every build so incremental rebuilds can't ship the
+# unpatched interpreter.
+echo "==> Patching config.h for musl positional LC_ALL notation (kd-dvph)..."
+python3 - "$SRC_DIR/config.h" << 'PYLOCALE'
+import re, sys
+
+path = sys.argv[1]
+with open(path) as f:
+    original = f.read()
+
+def sub_macro(content, macro, replacement):
+    # Rewrite the single '#define'/'#undef' line for `macro` (whether currently
+    # defined or emitted as the commented "/*#define MACRO */" template form),
+    # leaving the doc-comment header (which has no #define/#undef) untouched.
+    pat = re.compile(r'^.*#\s*(?:define|undef)\s+' + re.escape(macro) + r'\b.*$', re.M)
+    new, n = pat.subn(lambda _m: replacement, content)
+    if n != 1:
+        # Fail loudly rather than ship a perl that mis-parses musl's LC_ALL: a
+        # future perl-cross template change that renamed/duplicated the macro
+        # line would otherwise silently skip the fix (locale.c would fall back
+        # to the all-categories-map-to-0 branch -> subtly wrong parsing).
+        sys.stderr.write("kd-dvph ERROR: %s matched %d config.h lines (expected 1); "
+                         "perl-cross layout changed -- update the LC_ALL patch.\n" % (macro, n))
+        sys.exit(1)
+    return new
+
+content = original
+content = sub_macro(content, "PERL_LC_ALL_USES_NAME_VALUE_PAIRS",
+                    "#undef PERL_LC_ALL_USES_NAME_VALUE_PAIRS\t/* kd-dvph: musl uses positional LC_ALL */")
+content = sub_macro(content, "PERL_LC_ALL_SEPARATOR",
+                    '#define PERL_LC_ALL_SEPARATOR ";"\t/**/')
+content = sub_macro(content, "PERL_LC_ALL_CATEGORY_POSITIONS_INIT",
+                    "#define PERL_LC_ALL_CATEGORY_POSITIONS_INIT { LC_CTYPE, LC_NUMERIC, LC_TIME, LC_COLLATE, LC_MONETARY, LC_MESSAGES }\t/**/")
+
+if content != original:
+    with open(path, 'w') as f:
+        f.write(content)
+    print("Patched config.h for musl positional LC_ALL notation (kd-dvph)")
+else:
+    print("config.h already patched for musl positional LC_ALL notation (kd-dvph)")
+PYLOCALE
+
 # --- Build ---
 echo "==> Building Perl (this takes a while)..."
 make -j"$(sysctl -n hw.ncpu 2>/dev/null || nproc)" perl 2>&1 | tee "$WORK_DIR/build.log" | tail -80
