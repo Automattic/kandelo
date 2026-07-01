@@ -1,0 +1,9 @@
+Erlang BEAM runs ring benchmark with message passing
+
+Reason for the single failure:
+"Erlang BEAM runs ring benchmark with message passing" (ring:start()) fails with
+{undef,[{ring,start,[],[]},...]} because origin/main ships no compiled ring.beam and
+ring:start() cannot auto-compile. PRE-EXISTING on origin/main, UNRELATED to md5/kd-qe2c
+(this test is not touched by this PR). Owned/fixed by open PR #820 (kd-fyqz), which
+rewrites it self-contained. In CI (no host erlang build) the whole suite skips via
+describe.skipIf(!hasErlang), so this does not turn CI red.

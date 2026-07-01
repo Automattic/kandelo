@@ -1,0 +1,7 @@
+Erlang BEAM prints hello world
+Erlang BEAM evaluates arithmetic
+Erlang BEAM handles lists and pattern matching
+Erlang BEAM spawns lightweight processes
+Erlang md5 iodata (kd-qe2c) hashes a byte list the same as the equivalent binary
+Erlang md5 iodata (kd-qe2c) hashes a mixed iolist (binaries, strings, chars, nesting)
+Erlang md5 iodata (kd-qe2c) compiles and loads a module on Kandelo (beam_asm md5-over-iolist)

@@ -5,3 +5,5 @@ bin/
 build.log
 configure.log
 *.wasm
+# erlang-otp.tar.zst is a build output (see package.toml), like *.wasm
+*.tar.zst

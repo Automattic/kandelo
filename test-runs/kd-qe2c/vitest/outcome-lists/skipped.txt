@@ -1,0 +1,4 @@
+(none in this local run — host erlang build present)
+
+CI note: without a local build-erlang.sh runtime, describe.skipIf(!hasErlang) skips all 8
+erlang BEAM tests (documented environment-setup skip, not a regression).
