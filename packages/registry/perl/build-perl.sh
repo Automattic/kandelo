@@ -225,6 +225,58 @@ PYEOF2
         -e "s/whichprog readelf READELF readelf || die \"Cannot find readelf\"/whichprog readelf READELF readelf || true/" \
         -e "s/whichprog objdump OBJDUMP objdump || die \"Cannot find objdump\"/whichprog objdump OBJDUMP objdump || true/" \
         "$SRC_DIR/cnf/configure_tool.sh"
+
+    # Point ext/Errno's errno-constant scan at the sysroot errno headers.
+    # Errno_pm.PL::get_files() discovers which headers define the E* constants
+    # by preprocessing `#include <errno.h>` and scanning the output for
+    # `# <line> "file"` linemarkers -- but perl-cross defines cpp/cpprun/
+    # cppstdin as "$cc -E -P" (cnf/configure_tool.sh) and -P suppresses
+    # linemarkers, so on the wasm cross target the scan discovers zero headers,
+    # collects no constants, and Errno_pm.PL dies "No error definitions found".
+    # Errno.pm is then never generated/staged and `use Errno` fails. The
+    # constants exist as plain `#define E* <int>` in the sysroot (musl
+    # arch/generic bits/errno.h); patch get_files() to fall back to the sysroot
+    # errno headers when linemarker discovery yields nothing.
+    chmod u+w "$SRC_DIR/ext/Errno/Errno_pm.PL"
+    python3 - "$SRC_DIR/ext/Errno/Errno_pm.PL" << 'PYEOF3'
+import sys
+
+path = sys.argv[1]
+with open(path) as f:
+    content = f.read()
+
+marker = "kd-gtxa: sysroot errno-header fallback"
+if marker in content:
+    print("Errno_pm.PL already patched for kd-gtxa", file=sys.stderr)
+    sys.exit(0)
+
+old = "    return uniq(@file);"
+new = """    # kd-gtxa: sysroot errno-header fallback. perl-cross defines
+    # cpp/cpprun/cppstdin as "$cc -E -P"; -P suppresses the `# <line> "file"`
+    # linemarkers get_files() scans for, so on the wasm cross target the loop
+    # above discovers zero headers -> no E* constants collected -> Errno.pm is
+    # never generated and write_errno_pm() dies "No error definitions found".
+    # Point the scan at the sysroot errno headers directly (musl ships the
+    # constants as plain `#define E* <int>` there). Fallback-only: leaves the
+    # upstream linemarker discovery intact wherever it already works.
+    if (!@file) {
+        my $sysroot = $ENV{WASM_POSIX_SYSROOT} || $Config{sysroot} || '';
+        push @file, grep { -f $_ }
+            "$sysroot/include/errno.h", "$sysroot/include/bits/errno.h";
+    }
+    return uniq(@file);"""
+
+if old not in content:
+    print("ERROR: Errno_pm.PL anchor 'return uniq(@file);' not found "
+          "(perl layout changed?) -- refusing to ship perl without Errno",
+          file=sys.stderr)
+    sys.exit(1)
+
+content = content.replace(old, new, 1)
+with open(path, "w") as f:
+    f.write(content)
+print("Patched get_files() in ext/Errno/Errno_pm.PL (kd-gtxa sysroot errno fallback)")
+PYEOF3
 fi
 
 cd "$SRC_DIR"
@@ -631,7 +683,7 @@ PRIVLIB_SRC="$SRC_DIR/lib"
 # are still absent -- do not publish a silently-incomplete runtime. Cwd.pm is
 # the file whose absence made File::Spec fail in the original report.
 missing=""
-for f in XSLoader.pm Config.pm File/Spec.pm File/Spec/Unix.pm Cwd.pm; do
+for f in XSLoader.pm Config.pm File/Spec.pm File/Spec/Unix.pm Cwd.pm Errno.pm; do
     [ -f "$PRIVLIB_SRC/$f" ] || missing="$missing $f"
 done
 if [ -n "$missing" ]; then
@@ -639,7 +691,7 @@ if [ -n "$missing" ]; then
     echo "       (make -k rc=$ALL_RC) -- see $WORK_DIR/build-all.log" >&2
     exit 1
 fi
-echo "==> Generated runtime files present (XSLoader.pm, Config.pm, File::Spec, Cwd.pm)."
+echo "==> Generated runtime files present (XSLoader.pm, Config.pm, File::Spec, Cwd.pm, Errno.pm)."
 
 # `make perl` above linked perl.wasm before any extension was built; with
 # `-Uusedl` the `make -k` pass compiles the core XS extensions and relinks
