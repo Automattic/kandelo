@@ -203,7 +203,7 @@ jobs:
           use-flakehub: false
 
       - name: Cache Cargo and xtask
-        uses: actions/cache@v5
+        uses: actions/cache@v5.0.5
         with:
           path: |
             ~/.cargo/registry
