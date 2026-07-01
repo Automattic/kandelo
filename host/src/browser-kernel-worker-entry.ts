@@ -6,59 +6,9 @@
  * instance, process spawning (fork/exec/clone), and the HTTP connection pump.
  */
 
-// Polyfill setImmediate for the web worker context.
-// CentralizedKernelWorker uses setImmediate for yielding between syscall
-// batches and waking blocked retries. In a dedicated worker there's no UI
-// to starve, so we can use a simple MessageChannel polyfill.
-if (typeof globalThis.setImmediate === "undefined") {
-  const _immQueue: Array<{ id: number; fn: (...args: any[]) => void; args: any[] }> = [];
-  let _immNextId = 0;
-  let _immScheduled = false;
-  let _immFlushing = false;
-  const _immCancelled = new Set<number>();
+import { installSetImmediatePolyfill } from "./set-immediate-polyfill";
 
-  const _immChannel = new MessageChannel();
-  _immChannel.port1.onmessage = _immFlush;
-
-  function _immFlush() {
-    _immScheduled = false;
-    _immFlushing = true;
-    // Process only items queued at flush start — items added during the flush
-    // are deferred to a new macrotask so onmessage handlers can interleave.
-    const count = _immQueue.length;
-    for (let i = 0; i < count && _immQueue.length > 0; i++) {
-      const entry = _immQueue.shift()!;
-      if (_immCancelled.has(entry.id)) {
-        _immCancelled.delete(entry.id);
-        continue;
-      }
-      try {
-        entry.fn(...entry.args);
-      } catch (e) {
-        console.error("[setImmediate] callback threw:", e);
-      }
-    }
-    _immFlushing = false;
-    // Schedule another flush if new items were added during processing
-    if (_immQueue.length > 0 && !_immScheduled) {
-      _immScheduled = true;
-      _immChannel.port2.postMessage(null);
-    }
-  }
-
-  (globalThis as any).setImmediate = (fn: (...args: any[]) => void, ...args: any[]) => {
-    const id = ++_immNextId;
-    _immQueue.push({ id, fn, args });
-    if (!_immScheduled && !_immFlushing) {
-      _immScheduled = true;
-      _immChannel.port2.postMessage(null);
-    }
-    return id;
-  };
-  (globalThis as any).clearImmediate = (id: number) => {
-    _immCancelled.add(id);
-  };
-}
+installSetImmediatePolyfill();
 
 import { CAPTURED_STDIO, CentralizedKernelWorker, TERMINAL_STDIO } from "./kernel-worker";
 import type {
