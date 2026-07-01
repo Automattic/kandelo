@@ -1,0 +1,113 @@
+{
+  "bottle": {
+    "bottle_tag": "wasm32_kandelo",
+    "bytes": 4718293,
+    "cache_key_sha": "4c43e2a22ab146ab7136937652d959824578d07927521a16329dbd8474e3e3b8",
+    "cellar": "/home/linuxbrew/.linuxbrew/Cellar",
+    "prefix": "/home/linuxbrew/.linuxbrew",
+    "sha256": "2ba2c7ce61393c99a06aff34744973b55bbd9e28ded2303e2f98d2363b39295f",
+    "url": "https://ghcr.io/v2/automattic/kandelo-homebrew/git/blobs/sha256:2ba2c7ce61393c99a06aff34744973b55bbd9e28ded2303e2f98d2363b39295f"
+  },
+  "build": {
+    "brew_version": "Homebrew 6.0.5",
+    "dev_shell": "scripts/dev-shell.sh",
+    "github_run": "https://github.com/local/kandelo/actions/runs/local",
+    "job": "local",
+    "runner_os": "local",
+    "sdk_fingerprint": "a7ef0c406359039ee25d54e4f8baee3afdc857cdbcac5df9a065ef875b3a3b48",
+    "sysroot_fingerprint": "d19b801e0da64ff3415019de982ee194ef093de68e1a08d25f41a82f07bcca98"
+  },
+  "formula": {
+    "path": "Formula/git.rb",
+    "sha256": "8c5b08ee978619bf49028174b88e65abd7e17a10bbc6a50aff7175600ce37a84"
+  },
+  "metadata": {
+    "formula_json": {
+      "path": "Kandelo/formula/git.json",
+      "sha256": "eb33fed5bd2a5699c91f7d471465687fa6b98df09d6c839a14698a07fb569d1f"
+    },
+    "link_manifest_json": {
+      "path": "Kandelo/link/git-2.47.1-rebuild0-wasm32.json",
+      "sha256": "1bfcd6157ac3f634bfb8be19af7c8c8cbfa4b1538e994002ef4cd70ea83ef1b0"
+    },
+    "metadata_json": {
+      "path": "Kandelo/metadata.json",
+      "sha256": "09973d75c369f192036c606ed88ee777e5a82f1a7475d9edfd7fb14f49683e38"
+    },
+    "provenance_json": {
+      "path": "Kandelo/reports/git-2.47.1-rebuild0-wasm32.provenance.json",
+      "sha256": "bdc451c1a936bc49f3c26cf8bed75f4d9bca12b6def3cc2c825e5f761da35cef"
+    }
+  },
+  "repositories": {
+    "kandelo_commit": "1ab41fe2ad5553f4fa4bb0223f2d804b13149578",
+    "kandelo_repository": "Automattic/kandelo",
+    "tap_commit": "1ab41fe2ad5553f4fa4bb0223f2d804b13149578",
+    "tap_repository": "Automattic/kandelo-homebrew"
+  },
+  "schema": 1,
+  "subject": {
+    "arch": "wasm32",
+    "bottle_rebuild": 0,
+    "kandelo_abi": 16,
+    "package": "git",
+    "version": "2.47.1"
+  },
+  "validation": {
+    "outcome_lists": [
+      {
+        "failed": [],
+        "name": "schema",
+        "passed": [
+          "Kandelo/metadata.json",
+          "Kandelo/formula/git.json",
+          "Kandelo/link/git-2.47.1-rebuild0-wasm32.json",
+          "Kandelo/reports/git-2.47.1-rebuild0-wasm32.provenance.json"
+        ],
+        "skipped": [],
+        "status": "success"
+      },
+      {
+        "failed": [],
+        "name": "homebrew_audit",
+        "passed": [],
+        "skip_reason": "Tap audit can run in the trusted tap publication gate.",
+        "skipped": [
+          "brew audit was not part of this local dry-run verification"
+        ],
+        "status": "skipped"
+      },
+      {
+        "failed": [],
+        "name": "bottle_build",
+        "passed": [
+          "brew install --build-bottle",
+          "brew test",
+          "brew bottle --json --no-rebuild",
+          "brew bottle --merge --write --no-commit"
+        ],
+        "skipped": [],
+        "status": "success"
+      },
+      {
+        "failed": [],
+        "name": "node_smoke",
+        "passed": [
+          "Formula test ran git through node --import tsx/esm examples/run-example.ts"
+        ],
+        "skipped": [],
+        "status": "success"
+      },
+      {
+        "failed": [],
+        "name": "browser_smoke",
+        "passed": [],
+        "skip_reason": "browser smoke not run in this local bottle verification pass; Node formula smoke passed",
+        "skipped": [
+          "browser smoke not run in this local bottle verification pass; Node formula smoke passed"
+        ],
+        "status": "skipped"
+      }
+    ]
+  }
+}

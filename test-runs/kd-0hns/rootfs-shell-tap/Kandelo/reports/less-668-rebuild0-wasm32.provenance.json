@@ -1,0 +1,113 @@
+{
+  "bottle": {
+    "bottle_tag": "wasm32_kandelo",
+    "bytes": 176495,
+    "cache_key_sha": "3ec5d016d15c7b316c6643d57f66cc2f4db4ed5726c3f30356c72fa9e15d6425",
+    "cellar": "/home/linuxbrew/.linuxbrew/Cellar",
+    "prefix": "/home/linuxbrew/.linuxbrew",
+    "sha256": "ee8799015db23b073bb5f6f3c16953c07613f1c5dd16488cca16c9008da6c061",
+    "url": "https://ghcr.io/v2/automattic/kandelo-homebrew/less/blobs/sha256:ee8799015db23b073bb5f6f3c16953c07613f1c5dd16488cca16c9008da6c061"
+  },
+  "build": {
+    "brew_version": "Homebrew 6.0.5",
+    "dev_shell": "scripts/dev-shell.sh",
+    "github_run": "https://github.com/local/kandelo/actions/runs/local",
+    "job": "local",
+    "runner_os": "local",
+    "sdk_fingerprint": "a7ef0c406359039ee25d54e4f8baee3afdc857cdbcac5df9a065ef875b3a3b48",
+    "sysroot_fingerprint": "d19b801e0da64ff3415019de982ee194ef093de68e1a08d25f41a82f07bcca98"
+  },
+  "formula": {
+    "path": "Formula/less.rb",
+    "sha256": "eaa31a9603fb0b69b2d1415334e6559bc78273b16c2ef9ef00daf0aaf9a4c0d6"
+  },
+  "metadata": {
+    "formula_json": {
+      "path": "Kandelo/formula/less.json",
+      "sha256": "912fe0bb071d14711d5d0197a1b12300e02c8d4982a2e25d87e83c79f5fdf716"
+    },
+    "link_manifest_json": {
+      "path": "Kandelo/link/less-668-rebuild0-wasm32.json",
+      "sha256": "e8a6fadc56f4c52250acad4befc6be27f0c6d6df2252a9276dd6b9abed2e2c1e"
+    },
+    "metadata_json": {
+      "path": "Kandelo/metadata.json",
+      "sha256": "09973d75c369f192036c606ed88ee777e5a82f1a7475d9edfd7fb14f49683e38"
+    },
+    "provenance_json": {
+      "path": "Kandelo/reports/less-668-rebuild0-wasm32.provenance.json",
+      "sha256": "5182cac09e7d7fd6997efe5f3d58a43defab892247480553c338f79b36735081"
+    }
+  },
+  "repositories": {
+    "kandelo_commit": "1ab41fe2ad5553f4fa4bb0223f2d804b13149578",
+    "kandelo_repository": "Automattic/kandelo",
+    "tap_commit": "1ab41fe2ad5553f4fa4bb0223f2d804b13149578",
+    "tap_repository": "Automattic/kandelo-homebrew"
+  },
+  "schema": 1,
+  "subject": {
+    "arch": "wasm32",
+    "bottle_rebuild": 0,
+    "kandelo_abi": 16,
+    "package": "less",
+    "version": "668"
+  },
+  "validation": {
+    "outcome_lists": [
+      {
+        "failed": [],
+        "name": "schema",
+        "passed": [
+          "Kandelo/metadata.json",
+          "Kandelo/formula/less.json",
+          "Kandelo/link/less-668-rebuild0-wasm32.json",
+          "Kandelo/reports/less-668-rebuild0-wasm32.provenance.json"
+        ],
+        "skipped": [],
+        "status": "success"
+      },
+      {
+        "failed": [],
+        "name": "homebrew_audit",
+        "passed": [],
+        "skip_reason": "Tap audit can run in the trusted tap publication gate.",
+        "skipped": [
+          "brew audit was not part of this local dry-run verification"
+        ],
+        "status": "skipped"
+      },
+      {
+        "failed": [],
+        "name": "bottle_build",
+        "passed": [
+          "brew install --build-bottle",
+          "brew test",
+          "brew bottle --json --no-rebuild",
+          "brew bottle --merge --write --no-commit"
+        ],
+        "skipped": [],
+        "status": "success"
+      },
+      {
+        "failed": [],
+        "name": "node_smoke",
+        "passed": [
+          "Formula test ran less through node --import tsx/esm examples/run-example.ts"
+        ],
+        "skipped": [],
+        "status": "success"
+      },
+      {
+        "failed": [],
+        "name": "browser_smoke",
+        "passed": [],
+        "skip_reason": "browser smoke not run in this local bottle verification pass; Node formula smoke passed",
+        "skipped": [
+          "browser smoke not run in this local bottle verification pass; Node formula smoke passed"
+        ],
+        "status": "skipped"
+      }
+    ]
+  }
+}

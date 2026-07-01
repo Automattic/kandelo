@@ -17,4 +17,5 @@ script_path = "packages/registry/netcat/build-netcat.sh"
 
 [[outputs]]
 name = "nc"
+fork_instrumentation = "not-required"
 wasm = "nc.wasm"
