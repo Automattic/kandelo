@@ -298,6 +298,8 @@ export interface SyscallTraceEvent {
   nr: number;
   /** Raw arg values as the wasm program saw them. 6 entries, undefined slots are 0. */
   args: [number, number, number, number, number, number];
+  /** Human-readable syscall entry, including decoded pointer arguments when available. */
+  decoded?: string;
 }
 
 /**
@@ -460,6 +462,8 @@ interface RegisterProcessOptions {
   skipKernelCreate?: boolean;
   argv?: string[];
   ptrWidth?: 4 | 8;
+  /** Required for new kernel Process creation; ignored when skipKernelCreate is true. */
+  stdio?: RegisterProcessStdio;
   /** Initial program break after any host-owned low control pages. */
   brkBase?: number;
   /** Lower bound for automatic mmap allocation. */
@@ -468,6 +472,33 @@ interface RegisterProcessOptions {
   maxAddr?: number;
   /** brk ceiling below host-owned control pages. */
   brkLimit?: number;
+}
+
+type RegisterProcessStdioKind = "pipe" | "terminal";
+
+interface RegisterProcessStdio {
+  stdin: RegisterProcessStdioKind;
+  stdout: RegisterProcessStdioKind;
+  stderr: RegisterProcessStdioKind;
+}
+
+export const CAPTURED_STDIO: RegisterProcessStdio = {
+  stdin: "pipe",
+  stdout: "pipe",
+  stderr: "pipe",
+};
+
+export const TERMINAL_STDIO: RegisterProcessStdio = {
+  stdin: "terminal",
+  stdout: "terminal",
+  stderr: "terminal",
+};
+
+function encodeStdioKind(kind: RegisterProcessStdioKind): number {
+  switch (kind) {
+    case "pipe": return 0;
+    case "terminal": return 1;
+  }
 }
 
 type WaitPollResult =
@@ -598,9 +629,9 @@ export interface CentralizedKernelCallbacks {
 
   /**
    * Called after a pthread channel reaches SYS_EXIT and the kernel worker has
-   * performed the Linux CLONE_CHILD_CLEARTID wake. Return true when the host
-   * will terminate the backing Worker, so the syscall channel should not be
-   * completed back into guest code.
+   * performed the musl clear-TID wake used by pthread joiners. Return true when
+   * the host will terminate the backing Worker, so the syscall channel should
+   * not be completed back into guest code.
    */
   onThreadExit?: (pid: number, tid: number, channelOffset: number) => boolean;
 
@@ -641,7 +672,18 @@ export class CentralizedKernelWorker {
     }
     return this.nextChildPid++;
   }
-  /** Maps "pid:channelOffset" to TID for tracking thread channels */
+  /**
+   * Maps a pthread syscall mailbox to its kernel/libc thread id.
+   *
+   * Each pthread gets a distinct `channelOffset` range inside the process
+   * WebAssembly.Memory/SharedArrayBuffer. That offset identifies the host-side
+   * transport mailbox; it is enough for the host to find the pending syscall,
+   * but it is not the POSIX thread identity the Rust kernel exposes to musl.
+   * Before entering `kernel_handle_channel`, the host uses this map to bind the
+   * selected mailbox to the current TID so gettid, set_tid_address, per-thread
+   * signal masks, directed signals, and thread cleanup apply to the right
+   * pthread.
+   */
   private channelTids = new Map<string, number>();
   /**
    * Per-thread-channel fork context: the pthread_create entry point and
@@ -656,13 +698,17 @@ export class CentralizedKernelWorker {
   /** Tracks the pid currently being serviced by kernel_handle_channel */
   private currentHandlePid = 0;
   /**
-   * Bind the kernel's view of "which thread is executing this syscall" to
-   * the calling channel. Must be called immediately before every
-   * `kernel_handle_channel` invocation that originates from user code — the
-   * kernel consults this to route per-thread signal state (pthread_sigmask,
-   * pthread_kill pending, sigsuspend per-thread mask swap). `tid = 0` means
-   * "main thread" and is the default for channels without a tracked TID
-   * (e.g. the main process worker).
+   * Bind the kernel's view of "which thread is executing this syscall" to the
+   * already-selected channel. The channel offset is the transport identity; TID
+   * is the guest-visible pthread identity used by the kernel/libc ABI.
+   *
+   * This ambient current-TID value is correct while this host serializes calls
+   * into one kernel instance. If kernel dispatch ever becomes concurrent or
+   * reentrant for the same instance, this must move into the syscall header or
+   * become an explicit `kernel_handle_channel` argument.
+   *
+   * `tid = 0` means "main thread" and is the default for channels without a
+   * tracked TID, such as the main process worker.
    */
   private bindKernelTidForChannel(channel: ChannelInfo): void {
     const tid = this.channelTids.get(`${channel.pid}:${channel.channelOffset}`) ?? 0;
@@ -810,7 +856,7 @@ export class CentralizedKernelWorker {
   private ptyOutputCallbacks = new Map<number, (data: Uint8Array) => void>();
 
   /** Virtual MAC address for this kernel instance (locally administered, unicast) */
-  private virtualMacAddress: Uint8Array;
+  private virtualMacAddress: Uint8Array<ArrayBuffer>;
 
   /** KMS presenter: OffscreenCanvas per CRTC for the vblank pump to blit
    *  the bound framebuffer into. Populated via `attachKmsCanvas`. */
@@ -1078,8 +1124,21 @@ export class CentralizedKernelWorker {
 
     // Create process in kernel's process table (skip if already created, e.g. by fork)
     if (!options?.skipKernelCreate) {
-      const createProcess = this.kernelInstance!.exports.kernel_create_process as (pid: number) => number;
-      const result = createProcess(pid);
+      const stdio = options?.stdio;
+      if (!stdio) {
+        throw new Error("registerProcess requires explicit stdio when creating a kernel process");
+      }
+      const createProcess = this.kernelInstance!.exports.kernel_create_process_with_stdio as
+        ((pid: number, stdinKind: number, stdoutKind: number, stderrKind: number) => number) | undefined;
+      if (!createProcess) {
+        throw new Error("Kernel missing kernel_create_process_with_stdio export");
+      }
+      const result = createProcess(
+        pid,
+        encodeStdioKind(stdio.stdin),
+        encodeStdioKind(stdio.stdout),
+        encodeStdioKind(stdio.stderr),
+      );
       if (result < 0) {
         throw new Error(`Failed to create process ${pid}: errno ${-result}`);
       }
@@ -1177,12 +1236,6 @@ export class CentralizedKernelWorker {
   setStdinData(pid: number, data: Uint8Array): void {
     this.stdinBuffers.set(pid, { data, offset: 0 });
     this.stdinFinite.add(pid); // EOF after data is consumed
-    // Mark stdin as a pipe so terminal echo is disabled and isatty(0) = false
-    const kernelSetStdinPipe = this.kernelInstance!.exports.kernel_set_stdin_pipe as
-      ((pid: number) => number) | undefined;
-    if (kernelSetStdinPipe) {
-      kernelSetStdinPipe(pid);
-    }
   }
 
   /**
@@ -1302,6 +1355,7 @@ export class CentralizedKernelWorker {
    */
   onPtyOutput(ptyIdx: number, callback: (data: Uint8Array) => void): void {
     this.ptyOutputCallbacks.set(ptyIdx, callback);
+    this.drainPtyOutput(ptyIdx);
   }
 
   /**
@@ -1837,6 +1891,23 @@ export class CentralizedKernelWorker {
     return new TextDecoder("utf-8", { fatal: false }).decode(copy);
   }
 
+  private formatPollFds(memory: WebAssembly.Memory, ptr: number, nfds: number): string {
+    if (ptr === 0 || nfds <= 0) return "";
+    const view = new DataView(memory.buffer);
+    const entries: string[] = [];
+    const capped = Math.min(nfds, 8);
+    for (let i = 0; i < capped; i++) {
+      const off = ptr + i * 8;
+      if (off + 8 > view.byteLength) break;
+      const fd = view.getInt32(off, true);
+      const events = view.getInt16(off + 4, true);
+      const revents = view.getInt16(off + 6, true);
+      entries.push(`{fd:${fd},events:0x${(events & 0xffff).toString(16)},revents:0x${(revents & 0xffff).toString(16)}}`);
+    }
+    if (nfds > capped) entries.push("...");
+    return entries.join(",");
+  }
+
   /** Format a syscall for logging, decoding path/string args from process memory */
   private formatSyscallEntry(channel: ChannelInfo, syscallNr: number, args: number[]): string {
     const name = SYSCALL_NAMES[syscallNr] ?? `syscall_${syscallNr}`;
@@ -1894,7 +1965,7 @@ export class CentralizedKernelWorker {
         return `[${pid}${tidSuffix}] clone(0x${(args[0] >>> 0).toString(16)})`;
       case ABI_SYSCALLS.Exit: return `[${pid}${tidSuffix}] exit(${args[0]})`;
       case ABI_SYSCALLS.Poll: // poll(fds, nfds, timeout)
-        return `[${pid}${tidSuffix}] poll(${args[1]}, ${args[2]})`;
+        return `[${pid}${tidSuffix}] poll(${args[1]}, ${args[2]}, [${this.formatPollFds(channel.memory, args[0], args[1])}])`;
       case ABI_SYSCALLS.Ioctl: // ioctl(fd, cmd, arg)
         return `[${pid}${tidSuffix}] ioctl(${args[0]}, 0x${(args[1] >>> 0).toString(16)})`;
       default:
@@ -1977,6 +2048,7 @@ export class CentralizedKernelWorker {
           origArgs[0] ?? 0, origArgs[1] ?? 0, origArgs[2] ?? 0,
           origArgs[3] ?? 0, origArgs[4] ?? 0, origArgs[5] ?? 0,
         ],
+        decoded: this.formatSyscallEntry(channel, syscallNr, origArgs),
       });
     }
 
@@ -6209,31 +6281,7 @@ export class CentralizedKernelWorker {
       // Thread exit: find TID, notify kernel, remove channel, complete to unblock
       const tidKey = `${channel.pid}:${channel.channelOffset}`;
       const tid = this.channelTids.get(tidKey) ?? 0;
-      if (tid > 0) {
-        this.channelTids.delete(tidKey);
-        this.threadForkContexts.delete(tidKey);
-      }
-
-      // CLONE_CHILD_CLEARTID: write 0 to ctidPtr and futex-wake it.
-      // This is normally done by the Linux kernel on thread exit; we must
-      // do it here because the thread worker never returns from __pthread_exit
-      // (it loops on SYS_EXIT).
-      if (tid > 0) {
-        const ctidKey = `${channel.pid}:${tid}`;
-        const ctidPtr = this.threadCtidPtrs.get(ctidKey);
-        if (ctidPtr && ctidPtr !== 0) {
-          this.threadCtidPtrs.delete(ctidKey);
-          const procView = new DataView(channel.memory.buffer);
-          procView.setInt32(ctidPtr, 0, true);
-          const i32View = new Int32Array(channel.memory.buffer);
-          Atomics.notify(i32View, ctidPtr >>> 2, 1);
-        }
-      }
-
-      if (tid > 0) {
-        this.notifyThreadExit(channel.pid, tid);
-      }
-      this.removeChannel(channel.pid, channel.channelOffset);
+      if (tid > 0) this.finalizeThreadExit(channel.pid, tid, channel.channelOffset);
       const hostWillTerminateThread = tid > 0 &&
         this.callbacks.onThreadExit?.(channel.pid, tid, channel.channelOffset) === true;
       if (hostWillTerminateThread) {
@@ -6812,6 +6860,40 @@ export class CentralizedKernelWorker {
     if (threadExit) {
       threadExit(pid, tid);
     }
+  }
+
+  /**
+   * Complete kernel-side cleanup for a thread whose worker has stopped.
+   * Normal pthread exit reaches this from SYS_EXIT. Crash paths use the same
+   * cleanup so pthread_join waiters do not stay blocked on CLONE_CHILD_CLEARTID.
+   *
+   * Both identifiers matter: `channelOffset` removes the host mailbox/fork
+   * context, while `tid` addresses the kernel/libc thread state and clear-TID
+   * futex word used by joiners.
+   */
+  finalizeThreadExit(pid: number, tid: number, channelOffset: number): void {
+    const tidKey = `${pid}:${channelOffset}`;
+    this.channelTids.delete(tidKey);
+    this.threadForkContexts.delete(tidKey);
+
+    const ctidKey = `${pid}:${tid}`;
+    const ctidPtr = this.threadCtidPtrs.get(ctidKey);
+    if (ctidPtr && ctidPtr !== 0) {
+      this.threadCtidPtrs.delete(ctidKey);
+      const channel = this.activeChannels.find(
+        (ch) => ch.pid === pid && ch.channelOffset === channelOffset,
+      );
+      const memory = channel?.memory ?? this.processes.get(pid)?.memory;
+      if (memory) {
+        const procView = new DataView(memory.buffer);
+        procView.setInt32(ctidPtr, 0, true);
+        const i32View = new Int32Array(memory.buffer);
+        Atomics.notify(i32View, ctidPtr >>> 2, 1);
+      }
+    }
+
+    this.notifyThreadExit(pid, tid);
+    this.removeChannel(pid, channelOffset);
   }
 
   /**

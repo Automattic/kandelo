@@ -79,15 +79,30 @@ async function runTerminalCommand(
   expected: string | RegExp,
   timeout = 120_000,
 ) {
-  await page.locator(".kshell-host").first().click();
   const terminalInput = page.getByRole("textbox", { name: "Terminal input" }).first();
   if (await terminalInput.count()) {
     await terminalInput.focus();
+  } else {
+    await page.locator(".kshell-host").first().click();
   }
   await page.keyboard.insertText(command);
   await page.waitForTimeout(250);
   await page.keyboard.press("Enter");
   await waitForTerminalContent(page, expected, timeout);
+}
+
+async function runGuideScript(
+  page: Page,
+  script: string,
+  expected: string | RegExp,
+  timeout = 120_000,
+) {
+  const runButton = page.locator(".kdemo-run").first();
+  await page.locator(".kdemo textarea").first().fill(script);
+  await runButton.click();
+  await waitForTerminalContent(page, expected, timeout);
+  await expect(runButton).toHaveText("Run script", { timeout });
+  await expect(runButton).toBeEnabled();
 }
 
 async function openTerminalDrawer(page: Page) {
@@ -205,19 +220,41 @@ test("Kandelo shell demo runs bash, vim, and NetHack", async ({ page }) => {
   await waitForReady(page);
   await expect(page.locator(".xterm-rows").first()).toBeVisible({ timeout: 120_000 });
 
-  await runTerminalCommand(
+  await runGuideScript(
     page,
-    "vals=(alpha beta); [[ ${vals[1]} == beta ]] && export PS1=\"KANDELO_\"'BASH_OK'\":$BASH_VERSION:$(pwd) $ \"",
+    "vals=(alpha beta)\n" +
+      "if [[ ${vals[1]} == beta ]]; then\n" +
+      "  printf 'KANDELO_BASH_OK:%s:%s\\n' \"$BASH_VERSION\" \"$PWD\"\n" +
+      "else\n" +
+      "  printf 'KANDELO_BASH_FAIL:%s\\n' \"$PWD\"\n" +
+      "fi",
     /KANDELO_BASH_OK:[0-9][^\r\n]*:\/home\/user/,
   );
-  await runTerminalCommand(
+  await runGuideScript(
     page,
-    "vim --version >/tmp/kandelo-vim.out 2>&1; vim_version=$(</tmp/kandelo-vim.out); if [[ \"$vim_version\" == *'VIM - Vi IMproved'* ]]; then export PS1='KANDELO_''VIM_OK $ '; else export PS1='KANDELO_''VIM_FAIL $ '; fi",
+    "vim --version >/tmp/kandelo-vim.out 2>&1\n" +
+      "vim_version=$(</tmp/kandelo-vim.out)\n" +
+      "marker=VIM\n" +
+      "if [[ \"$vim_version\" == *'VIM - Vi IMproved'* ]]; then\n" +
+      "  printf 'KANDELO_%s_OK\\n' \"$marker\"\n" +
+      "else\n" +
+      "  printf 'KANDELO_%s_FAIL\\n' \"$marker\"\n" +
+      "  cat /tmp/kandelo-vim.out\n" +
+      "fi",
     "KANDELO_VIM_OK",
   );
-  await runTerminalCommand(
+  await runGuideScript(
     page,
-    "touch /home/.nethack/record; nethack -s all >/tmp/kandelo-nethack.out 2>&1; status=$?; nethack_out=$(</tmp/kandelo-nethack.out); if [[ \"$nethack_out\" == *'Cannot open record file'* ]]; then export PS1=\"KANDELO_\"\"NETHACK_BAD:$status $ \"; else export PS1=\"KANDELO_\"\"NETHACK_OK:$status $ \"; fi",
+    "touch /home/.nethack/record\n" +
+      "nethack -s all >/tmp/kandelo-nethack.out 2>&1\n" +
+      "status=$?\n" +
+      "nethack_out=$(</tmp/kandelo-nethack.out)\n" +
+      "if [[ \"$nethack_out\" == *'Cannot open record file'* ]]; then\n" +
+      "  printf 'KANDELO_NETHACK_BAD:%s\\n' \"$status\"\n" +
+      "  cat /tmp/kandelo-nethack.out\n" +
+      "else\n" +
+      "  printf 'KANDELO_NETHACK_OK:%s\\n' \"$status\"\n" +
+      "fi",
     "KANDELO_NETHACK_OK:0",
     180_000,
   );

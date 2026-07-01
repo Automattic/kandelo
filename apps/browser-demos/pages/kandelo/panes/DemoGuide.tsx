@@ -16,18 +16,23 @@ export const DemoGuide: React.FC<DemoGuideProps> = ({ onOpenTerminal, onRunWebAc
   const [scriptText, setScriptText] = React.useState(() => guide?.script?.initialText ?? "");
   const [runningId, setRunningId] = React.useState<string | null>(null);
   const [message, setMessage] = React.useState<string | null>(null);
+  const runningIdRef = React.useRef<string | null>(null);
+  const editorRef = React.useRef<HTMLTextAreaElement | null>(null);
   const iframeRef = React.useRef<HTMLIFrameElement | null>(null);
 
   React.useEffect(() => {
     setScriptText(guide?.script?.initialText ?? "");
     setMessage(null);
     setRunningId(null);
+    runningIdRef.current = null;
   }, [guide]);
 
   const actionsById = React.useMemo(() => actionMap(guide), [guide]);
 
   const runAction = React.useCallback(async (action: DemoActionConfig) => {
     if (status !== "running") return;
+    if (runningIdRef.current !== null) return;
+    runningIdRef.current = action.id;
     setRunningId(action.id);
     setMessage(null);
     try {
@@ -48,13 +53,14 @@ export const DemoGuide: React.FC<DemoGuideProps> = ({ onOpenTerminal, onRunWebAc
     } catch (err) {
       setMessage(err instanceof Error ? err.message : String(err));
     } finally {
+      runningIdRef.current = null;
       setRunningId(null);
     }
   }, [host, onOpenTerminal, status]);
 
   const runScript = React.useCallback(async () => {
     if (!guide?.script) return;
-    const text = scriptText.trimEnd();
+    const text = (editorRef.current?.value ?? scriptText).trimEnd();
     if (!text || status !== "running") return;
     await runAction({
       id: "script",
@@ -126,6 +132,7 @@ export const DemoGuide: React.FC<DemoGuideProps> = ({ onOpenTerminal, onRunWebAc
         <section className="kdemo-section">
           <div className="kdemo-section-title">{guide.script.title}</div>
           <textarea
+            ref={editorRef}
             className="kdemo-editor"
             spellCheck={false}
             value={scriptText}
@@ -179,10 +186,9 @@ function actionMap(guide: DemoGuideConfig | null): Map<string, DemoActionConfig>
 
 function scriptToShellCommand(script: string): string {
   const delimiter = pickDelimiter(script);
-  return `cat > /tmp/kandelo-demo-action.sh <<'${delimiter}'
+  return `cat > /tmp/kandelo-demo-action.sh <<'${delimiter}' && bash /tmp/kandelo-demo-action.sh
 ${script}
-${delimiter}
-bash /tmp/kandelo-demo-action.sh`;
+${delimiter}`;
 }
 
 function pickDelimiter(script: string): string {

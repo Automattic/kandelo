@@ -1,0 +1,210 @@
+name: Reusable Kandelo Homebrew bottle maintenance
+
+on:
+  workflow_call:
+    inputs:
+      mode:
+        type: string
+        default: rebuild
+      kandelo-repository:
+        type: string
+        default: Automattic/kandelo
+      kandelo-ref:
+        type: string
+        default: main
+      tap-repository:
+        type: string
+        default: Automattic/kandelo-homebrew
+      tap-ref:
+        type: string
+        default: main
+      formulae:
+        type: string
+        required: true
+      arches:
+        type: string
+        default: wasm32
+      release-tag:
+        type: string
+        default: ""
+      bottle-root-url:
+        type: string
+        default: ""
+      sidecar-command:
+        type: string
+        default: ""
+      expected-cache-keys:
+        type: string
+        default: ""
+      force:
+        type: boolean
+        default: false
+      rollback-reason:
+        type: string
+        default: ""
+      rollback-ref:
+        type: string
+        default: ""
+      deleted-package-url:
+        type: string
+        default: ""
+      deletion-reason:
+        type: string
+        default: ""
+      dry-run:
+        type: boolean
+        default: false
+  workflow_dispatch:
+    inputs:
+      mode:
+        type: choice
+        options:
+          - rebuild
+          - repair-only
+          - rollback
+        default: rebuild
+      kandelo-repository:
+        type: string
+        default: Automattic/kandelo
+      kandelo-ref:
+        type: string
+        default: main
+      tap-repository:
+        type: string
+        default: Automattic/kandelo-homebrew
+      tap-ref:
+        type: string
+        default: main
+      formulae:
+        type: string
+        required: true
+      arches:
+        type: string
+        default: wasm32
+      release-tag:
+        type: string
+        default: ""
+      bottle-root-url:
+        type: string
+        default: ""
+      sidecar-command:
+        type: string
+        default: ""
+      expected-cache-keys:
+        type: string
+        default: ""
+      force:
+        type: boolean
+        default: false
+      rollback-reason:
+        type: string
+        default: ""
+      rollback-ref:
+        type: string
+        default: ""
+      deleted-package-url:
+        type: string
+        default: ""
+      deletion-reason:
+        type: string
+        default: ""
+      dry-run:
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+  packages: write
+  actions: read
+
+concurrency:
+  group: kandelo-homebrew-bottle-maintenance-${{ inputs.tap-repository }}-${{ inputs.release-tag || github.run_id }}
+  cancel-in-progress: false
+
+jobs:
+  rebuild-or-repair:
+    if: ${{ inputs.mode == 'rebuild' || inputs.mode == 'repair-only' }}
+    uses: ./.github/workflows/reusable-homebrew-bottle-publish.yml
+    with:
+      kandelo-repository: ${{ inputs.kandelo-repository }}
+      kandelo-ref: ${{ inputs.kandelo-ref }}
+      tap-repository: ${{ inputs.tap-repository }}
+      tap-ref: ${{ inputs.tap-ref }}
+      formulae: ${{ inputs.formulae }}
+      arches: ${{ inputs.arches }}
+      release-tag: ${{ inputs.release-tag }}
+      bottle-root-url: ${{ inputs.bottle-root-url }}
+      sidecar-command: ${{ inputs.sidecar-command }}
+      expected-cache-keys: ${{ inputs.expected-cache-keys }}
+      force: ${{ inputs.force }}
+      repair-only: ${{ inputs.mode == 'repair-only' }}
+      dry-run: ${{ inputs.dry-run }}
+    secrets: inherit
+
+  rollback:
+    if: ${{ inputs.mode == 'rollback' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: write
+      packages: read
+      actions: read
+    steps:
+      - name: Checkout tap
+        uses: actions/checkout@v6.0.2
+        with:
+          repository: ${{ inputs.tap-repository }}
+          ref: ${{ inputs.tap-ref }}
+          path: tap
+
+      - name: Checkout Kandelo workflow source
+        uses: actions/checkout@v6.0.2
+        with:
+          repository: ${{ inputs.kandelo-repository }}
+          ref: ${{ inputs.kandelo-ref }}
+          path: kandelo
+          submodules: false
+
+      - name: Install Nix
+        uses: DeterminateSystems/nix-installer-action@ef8a148080ab6020fd15196c2084a2eea5ff2d25 # v22
+        with:
+          github-token: ""
+
+      - name: Warm Kandelo dev shell
+        shell: bash
+        run: |
+          cd kandelo
+          bash scripts/dev-shell.sh true
+
+      - name: Record rollback without replacing last-green metadata
+        shell: bash
+        env:
+          KANDELO_HOMEBREW_DRY_RUN: ${{ inputs.dry-run }}
+          KANDELO_HOMEBREW_ROLLBACK_REASON: ${{ inputs.rollback-reason }}
+          KANDELO_HOMEBREW_ROLLBACK_REF: ${{ inputs.rollback-ref }}
+          KANDELO_HOMEBREW_DELETED_PACKAGE_URL: ${{ inputs.deleted-package-url }}
+          KANDELO_HOMEBREW_DELETION_REASON: ${{ inputs.deletion-reason }}
+        run: |
+          set -euo pipefail
+          publish_args=(
+            --tap-root "$GITHUB_WORKSPACE/tap"
+            --formula "${{ inputs.formulae }}"
+            --arch "${{ inputs.arches }}"
+            --release-tag "${{ inputs.release-tag }}"
+            --status rollback
+            --reason "$KANDELO_HOMEBREW_ROLLBACK_REASON"
+          )
+          if [ -n "$KANDELO_HOMEBREW_ROLLBACK_REF" ]; then
+            publish_args+=(--rollback-ref "$KANDELO_HOMEBREW_ROLLBACK_REF")
+          fi
+          if [ -n "$KANDELO_HOMEBREW_DELETED_PACKAGE_URL" ]; then
+            publish_args+=(--deleted-package-url "$KANDELO_HOMEBREW_DELETED_PACKAGE_URL")
+          fi
+          if [ -n "$KANDELO_HOMEBREW_DELETION_REASON" ]; then
+            publish_args+=(--deletion-reason "$KANDELO_HOMEBREW_DELETION_REASON")
+          fi
+          if [ "$KANDELO_HOMEBREW_DRY_RUN" = "true" ]; then
+            publish_args+=(--dry-run --no-lock)
+          fi
+          cd "$GITHUB_WORKSPACE/kandelo"
+          bash scripts/dev-shell.sh bash scripts/homebrew-publish-sidecars.sh "${publish_args[@]}"

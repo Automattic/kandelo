@@ -60,7 +60,7 @@ if (typeof globalThis.setImmediate === "undefined") {
   };
 }
 
-import { CentralizedKernelWorker } from "./kernel-worker";
+import { CAPTURED_STDIO, CentralizedKernelWorker, TERMINAL_STDIO } from "./kernel-worker";
 import type {
   ForkFromThreadContext,
   ResolvedSpawnProgram,
@@ -87,6 +87,7 @@ import {
   signalExitStatus,
   SIGSEGV,
 } from "./trap-signals";
+import { threadWorkerFailureDisposition } from "./thread-worker-disposition";
 import type {
   CentralizedWorkerInitMessage,
   CentralizedThreadInitMessage,
@@ -886,6 +887,7 @@ async function handleSpawn(msg: Extract<MainToKernelMessage, { type: "spawn" }>)
       brkBase: layout.brkBase,
       mmapBase: layout.mmapBase,
       maxAddr: layout.maxAddr,
+      stdio: msg.pty ? TERMINAL_STDIO : CAPTURED_STDIO,
     });
 
     if (msg.cwd) {
@@ -903,9 +905,11 @@ async function handleSpawn(msg: Extract<MainToKernelMessage, { type: "spawn" }>)
       if (msg.ptyCols != null && msg.ptyRows != null) {
         kernelWorker.ptySetWinsize(ptyIdx, msg.ptyRows, msg.ptyCols);
       }
-    } else if (msg.stdin) {
-      const stdinData = msg.stdin instanceof Uint8Array ? msg.stdin : new Uint8Array(msg.stdin);
-      kernelWorker.setStdinData(pid, stdinData);
+    } else {
+      if (msg.stdin) {
+        const stdinData = msg.stdin instanceof Uint8Array ? msg.stdin : new Uint8Array(msg.stdin);
+        kernelWorker.setStdinData(pid, stdinData);
+      }
     }
 
     const initData: CentralizedWorkerInitMessage = {
@@ -1403,9 +1407,12 @@ async function handleClone(
   const failThread = (reason: string) => {
     const text = `[kernel-worker] pid=${pid} tid=${tid}: ${reason}\n`;
     post({ type: "stderr", pid, data: new TextEncoder().encode(text) });
-    kernelWorker.notifyThreadExit(pid, tid);
-    kernelWorker.removeChannel(pid, alloc.channelOffset);
+    const disposition = threadWorkerFailureDisposition(reason);
+    kernelWorker.finalizeThreadExit(pid, tid, alloc.channelOffset);
     void terminateThreadEntry();
+    if (disposition.kind === "guest-fatal-trap") {
+      handleExit(pid, disposition.exitStatus, disposition.signum);
+    }
   };
 
   threadWorker.on("message", (msg: unknown) => {

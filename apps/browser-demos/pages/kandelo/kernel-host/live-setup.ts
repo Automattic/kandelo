@@ -109,9 +109,12 @@ type SoftwareGalleryManifest = {
   entries: SoftwareGalleryEntry[];
 };
 
-type IndexBinaryEntry = {
-  status?: string;
-  archive_url?: string;
+type TomlValue = string | number | boolean;
+
+type IndexBinaryEntry = Record<string, TomlValue | undefined> & {
+  status?: TomlValue;
+  archive_url?: TomlValue;
+  browser_compatible?: TomlValue;
 };
 
 type IndexPackageEntry = {
@@ -1838,12 +1841,13 @@ async function loadKandeloSoftwareGalleryItems(): Promise<GalleryItem[]> {
 }
 
 async function loadSoftwareGalleryItemsFromManifest(manifestUrl: string): Promise<GalleryItem[]> {
-  const manifestText = await fetchTextNoStore(manifestUrl);
+  const resolvedManifestUrl = new URL(manifestUrl, location.href).href;
+  const manifestText = await fetchTextNoStore(resolvedManifestUrl);
   const manifest = JSON.parse(manifestText) as SoftwareGalleryManifest;
-  const sourceId = sourceIdForManifest(manifest, manifestUrl);
+  const sourceId = sourceIdForManifest(manifest, resolvedManifestUrl);
   const indexUrl = manifest.index_url
-    ? new URL(manifest.index_url, manifestUrl).href
-    : new URL("index.toml", manifestUrl).href;
+    ? new URL(manifest.index_url, resolvedManifestUrl).href
+    : new URL("index.toml", resolvedManifestUrl).href;
   const index = parseIndexToml(await fetchTextNoStore(indexUrl));
   if (index.abiVersion !== undefined && index.abiVersion !== ABI_VERSION) {
     console.warn(
@@ -2046,8 +2050,10 @@ function packageAvailable(
   index: SoftwareIndex,
   requirement: GalleryPackageRequirement,
 ): boolean {
-  const entry = index.packages.get(packageKey(requirement));
-  return entry?.binary.wasm32?.status === "success";
+  const wasm32 = index.packages.get(packageKey(requirement))?.binary.wasm32;
+  return stringTomlValue(wasm32?.status) === "success" &&
+    Boolean(stringTomlValue(wasm32?.archive_url)) &&
+    booleanTomlValue(wasm32?.browser_compatible) === true;
 }
 
 function archiveUrlFor(
@@ -2056,7 +2062,9 @@ function archiveUrlFor(
   requirement: GalleryPackageRequirement | undefined,
 ): string | undefined {
   if (!requirement) return undefined;
-  const archiveUrl = index.packages.get(packageKey(requirement))?.binary.wasm32?.archive_url;
+  const archiveUrl = stringTomlValue(
+    index.packages.get(packageKey(requirement))?.binary.wasm32?.archive_url,
+  );
   if (!archiveUrl) return undefined;
   return new URL(archiveUrl, indexUrl).href;
 }
@@ -2074,7 +2082,7 @@ function stripTomlComment(line: string): string {
   return line;
 }
 
-function parseTomlValue(value: string): string {
+function parseTomlValue(value: string): TomlValue {
   const trimmed = value.trim();
   if (trimmed.startsWith('"') && trimmed.endsWith('"')) {
     try {
@@ -2083,7 +2091,18 @@ function parseTomlValue(value: string): string {
       return trimmed.slice(1, -1);
     }
   }
+  if (trimmed === "true") return true;
+  if (trimmed === "false") return false;
+  if (/^[0-9]+$/.test(trimmed)) return Number(trimmed);
   return trimmed;
+}
+
+function stringTomlValue(value: TomlValue | undefined): string | undefined {
+  return typeof value === "string" ? value : undefined;
+}
+
+function booleanTomlValue(value: TomlValue | undefined): boolean | undefined {
+  return typeof value === "boolean" ? value : undefined;
 }
 
 function parseIndexToml(text: string): SoftwareIndex {
@@ -2116,15 +2135,17 @@ function parseIndexToml(text: string): SoftwareIndex {
     const value = parseTomlValue(rawValue);
     if (!currentPackage) {
       if (key === "abi_version") {
-        const parsed = Number.parseInt(value, 10);
+        const parsed = typeof value === "number" ? value : Number.parseInt(String(value), 10);
         if (Number.isFinite(parsed)) abiVersion = parsed;
       }
       continue;
     }
     if (currentBinary) {
-      currentBinary[key as keyof IndexBinaryEntry] = value;
+      currentBinary[key] = value;
     } else if (key === "name" || key === "version") {
-      currentPackage[key] = value;
+      const stringValue = stringTomlValue(value);
+      if (!stringValue) continue;
+      currentPackage[key] = stringValue;
       if (currentPackage.name && currentPackage.version) {
         packages.set(`${currentPackage.name}@${currentPackage.version}`, currentPackage);
       }

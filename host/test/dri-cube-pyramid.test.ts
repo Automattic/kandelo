@@ -6,7 +6,7 @@
  */
 import { describe, it, expect, vi, afterEach } from "vitest";
 import { existsSync, readFileSync } from "node:fs";
-import { CentralizedKernelWorker } from "../src/kernel-worker";
+import { CAPTURED_STDIO, CentralizedKernelWorker } from "../src/kernel-worker";
 import { NodePlatformIO } from "../src/platform/node";
 import { NodeWorkerAdapter } from "../src/worker-adapter";
 import { detectPtrWidth, extractHeapBase } from "../src/constants";
@@ -187,7 +187,7 @@ describe.skipIf(!existsSync(programBinary) || !existsSync(kernelBinary))(
       memory.grow(MAX_PAGES - 17);
       new Uint8Array(memory.buffer, channelOffset, CH_TOTAL_SIZE).fill(0);
 
-      kernel.registerProcess(parentPid, memory, [channelOffset], { ptrWidth });
+      kernel.registerProcess(parentPid, memory, [channelOffset], { ptrWidth, stdio: CAPTURED_STDIO });
       const heapBase = extractHeapBase(programBytes);
       if (heapBase !== null) kernel.setBrkBase(parentPid, heapBase);
 

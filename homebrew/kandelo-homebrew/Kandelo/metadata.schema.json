@@ -1,0 +1,297 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/Automattic/kandelo/blob/main/homebrew/kandelo-homebrew/Kandelo/metadata.schema.json",
+  "title": "Kandelo Homebrew tap metadata",
+  "description": "Top-level Kandelo sidecar index for one generated Homebrew tap commit and ABI release.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "tap_repository",
+    "tap_name",
+    "tap_commit",
+    "kandelo_repository",
+    "kandelo_commit",
+    "kandelo_abi",
+    "release_tag",
+    "generated_at",
+    "generator",
+    "packages"
+  ],
+  "properties": {
+    "schema": { "const": 1 },
+    "tap_repository": { "$ref": "#/$defs/repository" },
+    "tap_name": {
+      "type": "string",
+      "pattern": "^[a-z0-9._-]+/[a-z0-9._-]+$"
+    },
+    "tap_commit": { "$ref": "#/$defs/gitSha" },
+    "kandelo_repository": { "$ref": "#/$defs/repository" },
+    "kandelo_commit": { "$ref": "#/$defs/gitSha" },
+    "kandelo_abi": { "$ref": "#/$defs/abi" },
+    "release_tag": {
+      "type": "string",
+      "pattern": "^bottles-abi-v[1-9][0-9]*$"
+    },
+    "generated_at": { "type": "string", "format": "date-time" },
+    "generator": { "type": "string", "minLength": 1 },
+    "packages": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/package" },
+      "uniqueItems": true
+    }
+  },
+  "$defs": {
+    "abi": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "arch": {
+      "enum": ["wasm32", "wasm64"]
+    },
+    "bottle": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "arch",
+        "bottle_tag",
+        "kandelo_abi",
+        "cellar",
+        "prefix",
+        "runtime_support",
+        "browser_compatible",
+        "fork_instrumentation",
+        "status",
+        "built_by",
+        "built_from"
+      ],
+      "properties": {
+        "arch": { "$ref": "#/$defs/arch" },
+        "bottle_tag": {
+          "enum": ["wasm32_kandelo", "wasm64_kandelo"]
+        },
+        "kandelo_abi": { "$ref": "#/$defs/abi" },
+        "cellar": { "$ref": "#/$defs/guestAbsolutePath" },
+        "prefix": { "$ref": "#/$defs/guestAbsolutePath" },
+        "url": { "$ref": "#/$defs/httpsUrl" },
+        "sha256": { "$ref": "#/$defs/sha256" },
+        "bytes": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "cache_key_sha": { "$ref": "#/$defs/sha256" },
+        "link_manifest": { "$ref": "#/$defs/tapRelativePath" },
+        "runtime_support": {
+          "type": "array",
+          "items": { "enum": ["node", "browser"] },
+          "minItems": 1,
+          "uniqueItems": true
+        },
+        "browser_compatible": { "type": "boolean" },
+        "fork_instrumentation": {
+          "enum": ["not-required", "required", "disabled", "unknown"]
+        },
+        "status": {
+          "enum": ["success", "failed", "pending", "building"]
+        },
+        "built_by": { "$ref": "#/$defs/httpsUrl" },
+        "built_at": { "type": "string", "format": "date-time" },
+        "built_from": { "$ref": "#/$defs/builtFrom" },
+        "error": { "type": "string", "minLength": 1 },
+        "last_attempt": { "type": "string", "format": "date-time" },
+        "last_attempt_by": { "$ref": "#/$defs/httpsUrl" },
+        "queued_at": { "type": "string", "format": "date-time" },
+        "fallback_url": { "$ref": "#/$defs/httpsUrl" },
+        "fallback_sha256": { "$ref": "#/$defs/sha256" },
+        "fallback_bytes": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "fallback_cache_key_sha": { "$ref": "#/$defs/sha256" },
+        "fallback_link_manifest": { "$ref": "#/$defs/tapRelativePath" },
+        "fallback_built_at": { "type": "string", "format": "date-time" }
+      },
+      "dependentRequired": {
+        "fallback_url": [
+          "fallback_sha256",
+          "fallback_bytes",
+          "fallback_cache_key_sha",
+          "fallback_link_manifest",
+          "fallback_built_at"
+        ],
+        "fallback_sha256": [
+          "fallback_url",
+          "fallback_bytes",
+          "fallback_cache_key_sha",
+          "fallback_link_manifest",
+          "fallback_built_at"
+        ],
+        "fallback_bytes": [
+          "fallback_url",
+          "fallback_sha256",
+          "fallback_cache_key_sha",
+          "fallback_link_manifest",
+          "fallback_built_at"
+        ],
+        "fallback_cache_key_sha": [
+          "fallback_url",
+          "fallback_sha256",
+          "fallback_bytes",
+          "fallback_link_manifest",
+          "fallback_built_at"
+        ],
+        "fallback_link_manifest": [
+          "fallback_url",
+          "fallback_sha256",
+          "fallback_bytes",
+          "fallback_cache_key_sha",
+          "fallback_built_at"
+        ],
+        "fallback_built_at": [
+          "fallback_url",
+          "fallback_sha256",
+          "fallback_bytes",
+          "fallback_cache_key_sha",
+          "fallback_link_manifest"
+        ]
+      },
+      "allOf": [
+        {
+          "if": { "properties": { "status": { "const": "success" } } },
+          "then": {
+            "required": [
+              "url",
+              "sha256",
+              "bytes",
+              "cache_key_sha",
+              "link_manifest"
+            ]
+          }
+        },
+        {
+          "if": { "properties": { "status": { "const": "failed" } } },
+          "then": {
+            "required": ["error", "last_attempt", "last_attempt_by"]
+          }
+        },
+        {
+          "if": { "properties": { "arch": { "const": "wasm32" } } },
+          "then": { "properties": { "bottle_tag": { "const": "wasm32_kandelo" } } }
+        },
+        {
+          "if": { "properties": { "arch": { "const": "wasm64" } } },
+          "then": { "properties": { "bottle_tag": { "const": "wasm64_kandelo" } } }
+        },
+        {
+          "if": { "properties": { "browser_compatible": { "const": true } } },
+          "then": {
+            "properties": {
+              "runtime_support": {
+                "contains": { "const": "browser" }
+              }
+            }
+          }
+        }
+      ]
+    },
+    "builtFrom": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kandelo_repository",
+        "kandelo_commit",
+        "tap_repository",
+        "tap_commit",
+        "formula_sha256"
+      ],
+      "properties": {
+        "kandelo_repository": { "$ref": "#/$defs/repository" },
+        "kandelo_commit": { "$ref": "#/$defs/gitSha" },
+        "tap_repository": { "$ref": "#/$defs/repository" },
+        "tap_commit": { "$ref": "#/$defs/gitSha" },
+        "formula_sha256": { "$ref": "#/$defs/sha256" }
+      }
+    },
+    "dependency": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name"],
+      "properties": {
+        "name": { "$ref": "#/$defs/packageName" },
+        "version": { "type": "string", "minLength": 1 }
+      }
+    },
+    "gitSha": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{40}$"
+    },
+    "guestAbsolutePath": {
+      "type": "string",
+      "pattern": "^/[^\\s]*$"
+    },
+    "httpsUrl": {
+      "type": "string",
+      "pattern": "^https://[^\\s]+$"
+    },
+    "package": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "name",
+        "full_name",
+        "version",
+        "formula_revision",
+        "bottle_rebuild",
+        "formula_path",
+        "formula_metadata",
+        "dependencies",
+        "bottles"
+      ],
+      "properties": {
+        "name": { "$ref": "#/$defs/packageName" },
+        "full_name": {
+          "type": "string",
+          "pattern": "^[a-z0-9._-]+/[a-z0-9._-]+/[a-z0-9._-]+$"
+        },
+        "version": { "type": "string", "minLength": 1 },
+        "formula_revision": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "bottle_rebuild": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "formula_path": { "$ref": "#/$defs/tapRelativePath" },
+        "formula_metadata": { "$ref": "#/$defs/tapRelativePath" },
+        "dependencies": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/dependency" },
+          "uniqueItems": true
+        },
+        "bottles": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/bottle" },
+          "minItems": 1,
+          "uniqueItems": true
+        }
+      }
+    },
+    "packageName": {
+      "type": "string",
+      "pattern": "^[a-z0-9][a-z0-9._-]*$"
+    },
+    "repository": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$"
+    },
+    "sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "tapRelativePath": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9._@%+=:-]+(/[A-Za-z0-9._@%+=:-]+)*$"
+    }
+  }
+}

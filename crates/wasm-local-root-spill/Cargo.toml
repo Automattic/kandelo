@@ -1,0 +1,25 @@
+[package]
+name = "wasm-local-root-spill"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Conservatively spills wasm locals into linear memory for Ruby GC root visibility"
+publish = false
+
+[[bin]]
+name = "wasm-local-root-spill"
+path = "src/main.rs"
+
+[lib]
+name = "wasm_local_root_spill"
+path = "src/lib.rs"
+
+[dependencies]
+anyhow = "1"
+clap = { version = "4", features = ["derive"] }
+walrus = "0.26"
+
+[dev-dependencies]
+wasmparser = "0.247"
+wasmprinter = "0.247"
+wat = "1"

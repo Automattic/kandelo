@@ -37,6 +37,9 @@
 //!                         `.github/workflows/prepare-merge.yml` (and the
 //!                         force-rebuild equivalent) to point the in-tree
 //!                         manifest at a freshly-published archive.
+//!   homebrew-sidecars     Generate Kandelo/Homebrew tap sidecars from
+//!                         produced bottle bytes and workflow evidence.
+//!   homebrew-validate     Validate Kandelo/Homebrew tap sidecar metadata.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -48,6 +51,10 @@ mod build_deps;
 mod build_index;
 mod bundle_program;
 mod dump_abi;
+#[cfg(test)]
+mod homebrew_schema;
+mod homebrew_sidecars;
+mod homebrew_validate;
 mod host_tool_probe;
 mod index_toml;
 mod index_update;
@@ -65,7 +72,7 @@ fn main() -> ExitCode {
         None => {
             eprintln!("usage: xtask <subcommand> [args...]");
             eprintln!(
-                "subcommands: dump-abi, bundle-program, build-deps, compute-cache-key-sha, sort-package-matrix, package-dependency-artifacts, archive-stage, build-index, set-build-commit, set-package-binary, index-update"
+                "subcommands: dump-abi, bundle-program, build-deps, compute-cache-key-sha, sort-package-matrix, package-dependency-artifacts, archive-stage, build-index, set-build-commit, set-package-binary, index-update, homebrew-sidecars, homebrew-validate"
             );
             return ExitCode::from(2);
         }
@@ -83,6 +90,8 @@ fn main() -> ExitCode {
         "set-build-commit" => update_pkg_manifest::run(rest),
         "set-package-binary" => update_pkg_manifest::run_set_package_binary(rest),
         "index-update" => index_update::run_index_update(&rest),
+        "homebrew-sidecars" => homebrew_sidecars::run(rest),
+        "homebrew-validate" => homebrew_validate::run(rest),
         other => {
             eprintln!("xtask: unknown subcommand {other:?}");
             return ExitCode::from(2);

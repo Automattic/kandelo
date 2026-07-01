@@ -21,7 +21,7 @@ use wasm_posix_shared::flags::O_ACCMODE;
 use wasm_posix_shared::Errno;
 
 use crate::ofd::FileType;
-use crate::process::{Process, ProcessState};
+use crate::process::{Process, ProcessState, StdioConfig};
 
 const INITIAL_FORK_STATE_BUFFER_LEN: usize = 64 * 1024;
 const MAX_FORK_STATE_BUFFER_LEN: usize = 4 * 1024 * 1024;
@@ -43,10 +43,17 @@ pub struct ProcessTable {
     pub(crate) processes: BTreeMap<u32, Process>,
     current_pid: u32,
     next_spawn_pid: u32,
-    /// TID of the thread currently servicing a syscall. 0 means "main thread"
-    /// (or unknown — callers that don't set this get main-thread semantics).
-    /// The host sets this before each `kernel_handle_channel` when a thread
-    /// worker is the caller.
+    /// Kernel/libc thread id for the syscall currently being serviced.
+    ///
+    /// The host already selected a syscall channel by its `channelOffset`; this
+    /// field supplies the POSIX thread identity that cannot be inferred from the
+    /// `kernel_handle_channel(pid)` call. `0` means "main thread" and is also
+    /// the fallback for callers that do not bind a pthread TID.
+    ///
+    /// This is ambient dispatch context for the current serialized kernel call.
+    /// If a single kernel instance ever services channels concurrently or
+    /// reentrantly, the TID should move into the syscall header or be passed as
+    /// an explicit `kernel_handle_channel` argument.
     current_tid: u32,
 }
 
@@ -246,18 +253,24 @@ impl ProcessTable {
         }
     }
 
-    /// Create a new process with the given pid and add it to the table.
+    /// Create a new process with captured, pipe-backed stdio and add it to
+    /// the table.
     ///
     /// Also lazily registers a virtual init process (pid 1) if absent. Init has
     /// no worker — it exists so that `kill(1, ...)` and `sched_*(1, ...)` from
     /// user processes resolve to a real target owned by root, enabling EPERM
     /// checks to fire instead of ESRCH.
     pub fn create_process(&mut self, pid: u32) -> Result<(), ()> {
+        self.create_process_with_stdio(pid, StdioConfig::captured())
+    }
+
+    /// Create a new process with explicit stdio wiring and add it to the table.
+    pub fn create_process_with_stdio(&mut self, pid: u32, stdio: StdioConfig) -> Result<(), ()> {
         self.ensure_init();
         if self.processes.contains_key(&pid) {
             return Err(());
         }
-        self.processes.insert(pid, Process::new(pid));
+        self.processes.insert(pid, Process::new_with_stdio(pid, stdio));
         Ok(())
     }
 
@@ -484,8 +497,8 @@ impl ProcessTable {
         limbo.thread_name = proc.thread_name;
         limbo.has_exec = proc.has_exec;
 
-        // Process::new preopens stdio; limbo records must not own any
-        // resources because teardown already ran for the real process.
+        // Limbo records must not own any resources because teardown already
+        // ran for the real process.
         limbo.fd_table = crate::fd::FdTable::new();
         limbo.ofd_table = crate::ofd::OfdTable::new();
         limbo
@@ -517,15 +530,17 @@ impl ProcessTable {
         self.current_pid
     }
 
-    /// Set the current thread id. 0 means "main thread" and is the default.
-    /// The host must call this before `kernel_handle_channel` for any syscall
-    /// originating from a non-main thread so that per-thread signal state is
-    /// consulted correctly.
+    /// Set the current kernel/libc thread id for the next serialized dispatch.
+    ///
+    /// The host calls this after selecting a pthread channel and before
+    /// `kernel_handle_channel` so gettid, set_tid_address, pthread signal masks,
+    /// directed signal delivery, and clear-TID cleanup all refer to the calling
+    /// thread. `0` means "main thread" and is the default.
     pub fn set_current_tid(&mut self, tid: u32) {
         self.current_tid = tid;
     }
 
-    /// Get the current thread id (0 for main thread).
+    /// Get the current kernel/libc thread id (0 for main thread).
     pub fn current_tid(&self) -> u32 {
         self.current_tid
     }
@@ -649,11 +664,11 @@ impl ProcessTable {
         child.argv = argv.iter().map(|s| s.to_vec()).collect();
         child.environ = envp.iter().map(|s| s.to_vec()).collect();
 
-        // Parent's fd state replaces the default stdio table from
-        // Process::new (we want the parent's open fds, not fresh stdio).
-        // The Process::new-created OFDs at indices 0/1/2 are dropped here
-        // without decrementing any global refcount because Process::new
-        // never bumped them.
+        // Parent's fd state replaces the fresh process fd table; spawn
+        // inherits the parent's open fds instead of creating new stdio.
+        // The constructor-created OFDs at indices 0/1/2 are dropped here
+        // without decrementing any global refcount because they never
+        // bumped one.
         child.fd_table = inherit.fd_table;
         child.ofd_table = inherit.ofd_table;
         child.sockets = inherit.sockets;
@@ -685,8 +700,8 @@ impl ProcessTable {
                 child.pgid = child.pid;
                 child.is_session_leader = true;
                 // POSIX also releases the controlling tty here. The spawn
-                // child's terminal state is fresh from `Process::new`, so
-                // there's no ctty to release.
+                // child starts from fresh terminal state, so there's no ctty
+                // to release.
             }
             if attrs.flags & attr_flags::SETPGROUP != 0 {
                 child.pgid = if attrs.pgrp == 0 {
@@ -1010,7 +1025,7 @@ unsafe impl Sync for GlobalProcessTable {}
 pub static GLOBAL_PROCESS_TABLE: GlobalProcessTable =
     GlobalProcessTable(UnsafeCell::new(ProcessTable::new()));
 
-/// Read the currently-serviced thread id (0 = main thread).
+/// Read the currently-serviced kernel/libc thread id (0 = main thread).
 #[inline]
 pub fn current_tid() -> u32 {
     unsafe { (*GLOBAL_PROCESS_TABLE.0.get()).current_tid() }

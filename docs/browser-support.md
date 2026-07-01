@@ -299,6 +299,18 @@ For local browser artifacts, force a rebuild with `./run.sh rebuild <target>`.
 
 VFS images are `.gitignore`d and must be built locally. The `run.sh` script handles this automatically (e.g., `./run.sh browser` builds any missing VFS images before starting the dev server).
 
+Homebrew-derived browser images are published through the package-source
+gallery path, not bundled into the app. The trusted Homebrew publisher first
+pours a wasm32 bottle into a precomposed `.vfs.zst`, boots that image in the
+browser UI, and runs the package smoke command, such as
+`/home/linuxbrew/.linuxbrew/bin/hello --version`. Only then may the generated
+Homebrew sidecars and gallery `index.toml` set `browser_compatible = true`.
+
+A Homebrew gallery entry is visible only when its `index.toml` package record
+is wasm32 success, has an `archive_url`, and sets
+`browser_compatible = true`. Launch-time archive failures are surfaced in the
+UI instead of silently hiding the rest of the gallery.
+
 ### Building VFS images
 
 Each build script requires the corresponding software to be compiled first (e.g., `build-cpython.sh` before `build-python-vfs-image.sh`). The `run.sh` script orchestrates this:

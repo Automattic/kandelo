@@ -18,7 +18,7 @@
 import { readFileSync, existsSync, writeFileSync } from "fs";
 import { resolve, dirname } from "path";
 import { createConnection } from "net";
-import { CentralizedKernelWorker } from "../../../../host/src/kernel-worker";
+import { CAPTURED_STDIO, CentralizedKernelWorker } from "../../../../host/src/kernel-worker";
 import { NodePlatformIO } from "../../../../host/src/platform/node";
 import { NodeWorkerAdapter } from "../../../../host/src/worker-adapter";
 import { tryResolveBinary } from "../../../../host/src/binary-resolver";
@@ -244,7 +244,7 @@ async function runNginx(opts: ReturnType<typeof parseArgs>) {
   new Uint8Array(memory.buffer, channelOffset, CH_TOTAL_SIZE).fill(0);
 
   const pid = 1;
-  kernelWorker.registerProcess(pid, memory, [channelOffset]);
+  kernelWorker.registerProcess(pid, memory, [channelOffset], { stdio: CAPTURED_STDIO });
   kernelWorker.setCwd(pid, opts.prefix || process.cwd());
   kernelWorker.setNextChildPid(2);
 

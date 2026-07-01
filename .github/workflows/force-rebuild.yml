@@ -170,7 +170,7 @@ jobs:
       abi: ${{ steps.compute.outputs.abi }}
       target_tag: ${{ steps.compute.outputs.target_tag }}
     steps:
-      - uses: actions/checkout@v6.0.2
+      - uses: actions/checkout@v7.0.0
         with:
           ref: ${{ needs.gate.outputs.build_ref }}
 
@@ -200,7 +200,7 @@ jobs:
         run: bash scripts/dev-shell.sh true
 
       - name: Cache xtask build
-        uses: actions/cache@v5
+        uses: actions/cache@v5.0.5
         with:
           path: |
             ~/.cargo/registry
@@ -354,7 +354,7 @@ jobs:
     needs: [gate]
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6.0.2
+      - uses: actions/checkout@v7.0.0
         with:
           ref: ${{ needs.gate.outputs.build_ref }}
 
@@ -387,7 +387,7 @@ jobs:
           echo "toolchain-cache key: $KEY"
 
       - name: Cache musl sysroot + libc++
-        uses: actions/cache@v5
+        uses: actions/cache@v5.0.5
         id: cache
         with:
           path: |
@@ -449,7 +449,7 @@ jobs:
         include: ${{ fromJSON(needs.preflight.outputs.library_matrix) }}
     steps:
       - id: checkout
-        uses: actions/checkout@v6.0.2
+        uses: actions/checkout@v7.0.0
         with:
           ref: ${{ needs.gate.outputs.build_ref }}
 
@@ -575,7 +575,7 @@ jobs:
         include: ${{ fromJSON(needs.preflight.outputs.program_matrix) }}
     steps:
       - id: checkout
-        uses: actions/checkout@v6.0.2
+        uses: actions/checkout@v7.0.0
         with:
           ref: ${{ needs.gate.outputs.build_ref }}
 
@@ -792,7 +792,7 @@ jobs:
     env:
       WASM_POSIX_BINARY_INDEX_URL: https://github.com/${{ github.repository }}/releases/download/${{ needs.preflight.outputs.target_tag }}/index.toml
     steps:
-      - uses: actions/checkout@v6.0.2
+      - uses: actions/checkout@v7.0.0
         with:
           ref: ${{ needs.gate.outputs.build_ref }}
 
@@ -922,7 +922,7 @@ jobs:
     env:
       SUITE: ${{ matrix.suite }}
     steps:
-      - uses: actions/checkout@v6.0.2
+      - uses: actions/checkout@v7.0.0
         with:
           ref: ${{ needs.gate.outputs.build_ref }}
 
