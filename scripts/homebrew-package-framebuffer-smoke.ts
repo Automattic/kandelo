@@ -34,40 +34,13 @@ import {
   writeOutcomeLists,
   type SmokeOutcome,
 } from "./homebrew-smoke-outcomes";
+import { FB_SPECS, type FbSmokeResult } from "./homebrew-fb-vfs";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const repoRoot = resolve(__dirname, "..");
 const browserDemoDir = join(repoRoot, "apps", "browser-demos");
 const publicSmokeRoot = join(browserDemoDir, "public", "__kandelo-homebrew-fb-smoke");
 const publicSmokePath = "/__kandelo-homebrew-fb-smoke";
-
-interface FbSpec {
-  argv: string[];
-  device: string;
-  mode: "fb" | "kms";
-  needsWad: boolean;
-  minWrites: number;
-  description: string;
-}
-
-const FB_SPECS: Record<string, FbSpec> = {
-  fbdoom: {
-    argv: ["/home/linuxbrew/.linuxbrew/bin/fbdoom", "-iwad", "/doom1.wad"],
-    device: "/dev/fb0",
-    mode: "fb",
-    needsWad: true,
-    minWrites: 1,
-    description: "fbdoom renders DOOM to /dev/fb0 from the poured Homebrew keg + shareware IWAD.",
-  },
-  modeset: {
-    argv: ["/home/linuxbrew/.linuxbrew/bin/modeset"],
-    device: "/dev/dri/card0",
-    mode: "kms",
-    needsWad: false,
-    minWrites: 1,
-    description: "modeset drives an EGL/GLES fluid sim through /dev/dri/card0 page flips.",
-  },
-};
 
 interface CliOptions {
   resultDir: string;
@@ -84,25 +57,6 @@ interface CliOptions {
   browserChannel: string;
 }
 
-interface FbSmokeResult {
-  mode: "fb" | "kms";
-  binds: number;
-  unbinds: number;
-  writes: number;
-  writeBytes: number;
-  kmsBlits: number;
-  kmsCommits: number;
-  boundPid: number | null;
-  width: number;
-  height: number;
-  fmt: string | null;
-  canvasNonBlankPixels: number;
-  exitedEarly: boolean;
-  exitCode: number | null;
-  durationMs: number;
-  stdoutTail: string;
-  stderrTail: string;
-}
 
 function requireValue(args: string[], index: number, flag: string): string {
   const value = args[index];
