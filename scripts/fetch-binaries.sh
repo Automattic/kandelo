@@ -125,6 +125,20 @@ done
 HOST_TARGET="$(rustc -vV | awk '/^host/ {print $2}')"
 [ -n "$HOST_TARGET" ] || { echo "fetch-binaries: rustc -vV did not report host triple" >&2; exit 2; }
 
+# The resolver source-builds on any release-cache miss / cache_key drift, and
+# a source build needs the SDK cross-toolchain (wasm32posix-cc). Outside
+# scripts/dev-shell.sh that toolchain is absent, so a miss fails with opaque
+# compiler/linker errors that look nothing like a cache miss. Warn up front so
+# a MISSING TOOL is not mistaken for a release-cache problem. Non-fatal:
+# published archives can still be fetched when every package is a cache hit.
+if ! command -v wasm32posix-cc >/dev/null 2>&1; then
+    echo "fetch-binaries: WARN wasm32posix-cc (SDK cross-toolchain) is not on PATH." >&2
+    echo "fetch-binaries: WARN published archives can still be fetched, but any release-cache" >&2
+    echo "fetch-binaries: WARN miss/drift falls back to a SOURCE BUILD that will fail without it." >&2
+    echo "fetch-binaries: WARN for source builds, run inside the dev shell:" >&2
+    echo "fetch-binaries: WARN   bash scripts/dev-shell.sh bash scripts/fetch-binaries.sh" >&2
+fi
+
 if [ "$ALLOW_STALE" = "1" ]; then
     # The resolver source-builds automatically on archive verification
     # failure (tools/xtask/src/build_deps.rs cmd_resolve fallback: any
