@@ -250,6 +250,26 @@ ERROR_COUNT=0
 RESULTS=()
 TOTAL=0
 
+record_missing_browser_results() {
+    local start_idx="$1"
+    local runner_rc="$2"
+    local reason
+
+    if [ "$runner_rc" -ne 0 ]; then
+        reason="browser runner exited with status $runner_rc before reporting result"
+    else
+        reason="browser runner did not report a result"
+    fi
+
+    while [ "$start_idx" -lt "${#TEST_META[@]}" ]; do
+        local test_id="${TEST_META[$start_idx]}"
+        echo "ERROR ${test_id}: $reason"
+        RESULTS+=("ERROR ${test_id}")
+        ERROR_COUNT=$((ERROR_COUNT + 1))
+        start_idx=$((start_idx + 1))
+    done
+}
+
 # Build all tests first, then run them all in the browser in one session
 WASM_FILES=()
 TEST_META=()  # parallel array: "category/test_name"
@@ -298,8 +318,12 @@ if [ ${#WASM_FILES[@]} -gt 0 ]; then
     # Separate stdout (JSON) from stderr (status messages)
     cd "$REPO_ROOT"
     STDERR_FILE=$(mktemp)
+    RUNNER_RC=0
+    set +e
     npx tsx scripts/browser-test-runner.ts --json --timeout "$TEST_TIMEOUT" \
-        "${WASM_FILES[@]}" > "$RESULT_FILE" 2>"$STDERR_FILE" || true
+        "${WASM_FILES[@]}" > "$RESULT_FILE" 2>"$STDERR_FILE"
+    RUNNER_RC=$?
+    set -e
     # Show browser runner status on stderr
     cat "$STDERR_FILE" >&2
     rm -f "$STDERR_FILE"
@@ -383,6 +407,14 @@ if [ ${#WASM_FILES[@]} -gt 0 ]; then
             fi
         fi
     done < "$RESULT_FILE"
+
+    if [ "$idx" -lt "${#TEST_META[@]}" ]; then
+        record_missing_browser_results "$idx" "$RUNNER_RC"
+    elif [ "$RUNNER_RC" -ne 0 ]; then
+        echo "ERROR browser-runner: browser runner exited with status $RUNNER_RC after reporting all results"
+        RESULTS+=("ERROR browser-runner")
+        ERROR_COUNT=$((ERROR_COUNT + 1))
+    fi
 fi
 
 # ── Summary ────────────────────────────────────────────────────────
@@ -416,7 +448,7 @@ if [ ${#RESULTS[@]} -gt 0 ]; then
     done
 fi
 
-if [ $FAIL -gt 0 ] || [ $XPASS -gt 0 ] || [ $ERROR_COUNT -gt 0 ] || [ $TIMEOUT_COUNT -gt 0 ]; then
+if [ $FAIL -gt 0 ] || [ $XPASS -gt 0 ] || [ $BUILD_FAIL -gt 0 ] || [ $ERROR_COUNT -gt 0 ] || [ $TIMEOUT_COUNT -gt 0 ]; then
     exit 1
 fi
 exit 0
