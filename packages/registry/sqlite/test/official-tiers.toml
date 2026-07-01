@@ -1,0 +1,27 @@
+[[tiers]]
+name = "sqlite-official-smoke-v1"
+permutation = "veryquick"
+hosts = ["node", "browser"]
+timeout_ms = 600000
+gate = false
+description = "Small deterministic official-runner smoke for Homebrew SQLite status."
+tests = [
+  "ext/fts5/test/fts5optimize3.test",
+  "ext/fts5/test/fts5optimize2.test",
+  "test/walvfs.test",
+  "test/win32lock.test",
+]
+
+[tiers.browser_status]
+status = "supported"
+reason = "Runs through the browser SQLite official Tcl-runner image and emits official outcome lists for the smoke tier."
+
+[[tiers]]
+name = "sqlite-official-veryquick-shards-v1"
+permutation = "veryquick"
+hosts = ["node"]
+timeout_ms = 1800000
+gate = false
+sharded = true
+description = "Future deterministic shards for the full SQLite official veryquick permutation."
+tests = []
