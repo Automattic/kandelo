@@ -1,0 +1,23 @@
+test	duration_ms	details
+homebrew_vfs_build_dash	486	report=/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-v3fs-composite-vfs/test-runs/kd-v3fs/vim-node-smoke-20260701/out/dash-wasm32-homebrew-vfs-report.json
+node_smoke_dash	594	dash-homebrew-smoke
+homebrew_vfs_build_git	9838	report=/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-v3fs-composite-vfs/test-runs/kd-v3fs/vim-node-smoke-20260701/out/git-wasm32-homebrew-vfs-report.json
+node_smoke_git	631	git version 2.47.1
+homebrew_vfs_build_less	343	report=/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-v3fs-composite-vfs/test-runs/kd-v3fs/vim-node-smoke-20260701/out/less-wasm32-homebrew-vfs-report.json
+node_smoke_less	465	less 668 (POSIX regular expressions)
+homebrew_vfs_build_lsof	236	report=/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-v3fs-composite-vfs/test-runs/kd-v3fs/vim-node-smoke-20260701/out/lsof-wasm32-homebrew-vfs-report.json
+node_smoke_lsof	471	COMMAND      PID   FD    TYPE NAME
+homebrew_vfs_build_nano	840	report=/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-v3fs-composite-vfs/test-runs/kd-v3fs/vim-node-smoke-20260701/out/nano-wasm32-homebrew-vfs-report.json
+node_smoke_nano	499	GNU nano, version 8.0
+homebrew_vfs_build_netcat	250	report=/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-v3fs-composite-vfs/test-runs/kd-v3fs/vim-node-smoke-20260701/out/netcat-wasm32-homebrew-vfs-report.json
+node_smoke_netcat	495	GNU netcat 0.7.1, a rewrite of the famous networking tool.
+homebrew_vfs_build_wget	4514	report=/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-v3fs-composite-vfs/test-runs/kd-v3fs/vim-node-smoke-20260701/out/wget-wasm32-homebrew-vfs-report.json
+node_smoke_wget	644	GNU Wget 1.25.0 built on none.
+homebrew_vfs_build_bzip2	290	report=/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-v3fs-composite-vfs/test-runs/kd-v3fs/vim-node-smoke-20260701/out/bzip2-wasm32-homebrew-vfs-report.json
+node_smoke_bzip2	589	bzip2, a block-sorting file compressor.  Version 1.0.8, 13-Jul-2019.
+homebrew_vfs_build_xz	738	report=/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-v3fs-composite-vfs/test-runs/kd-v3fs/vim-node-smoke-20260701/out/xz-wasm32-homebrew-vfs-report.json
+node_smoke_xz	593	xz (XZ Utils) 5.6.2
+homebrew_vfs_build_vim	14673	report=/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-v3fs-composite-vfs/test-runs/kd-v3fs/vim-node-smoke-20260701/out/vim-wasm32-homebrew-vfs-report.json
+node_smoke_vim	768	VIM - Vi IMproved 9.1 (2024 Jan 02, compiled Dec 02 2024 18:58:51)
+homebrew_vfs_build_fbdoom	383	report=/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-v3fs-composite-vfs/test-runs/kd-v3fs/vim-node-smoke-20260701/out/fbdoom-wasm32-homebrew-vfs-report.json
+homebrew_vfs_build_modeset	270	report=/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-v3fs-composite-vfs/test-runs/kd-v3fs/vim-node-smoke-20260701/out/modeset-wasm32-homebrew-vfs-report.json

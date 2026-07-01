@@ -1,0 +1,39 @@
+{
+  "schema": 1,
+  "metadata": {
+    "tap_repository": "Automattic/kandelo-homebrew",
+    "tap_name": "automattic/kandelo-homebrew",
+    "tap_commit": "1ab41fe2ad5553f4fa4bb0223f2d804b13149578",
+    "kandelo_repository": "Automattic/kandelo",
+    "kandelo_commit": "1ab41fe2ad5553f4fa4bb0223f2d804b13149578",
+    "kandelo_abi": 16,
+    "release_tag": "bottles-abi-v16"
+  },
+  "packages": [
+    {
+      "name": "git",
+      "version": "2.47.1",
+      "arch": "wasm32",
+      "source_status": "success",
+      "metadata_status": "success",
+      "url": "https://ghcr.io/v2/automattic/kandelo-homebrew/git/blobs/sha256:2ba2c7ce61393c99a06aff34744973b55bbd9e28ded2303e2f98d2363b39295f",
+      "sha256": "2ba2c7ce61393c99a06aff34744973b55bbd9e28ded2303e2f98d2363b39295f",
+      "bytes": 4718293,
+      "cache_key_sha": "4c43e2a22ab146ab7136937652d959824578d07927521a16329dbd8474e3e3b8",
+      "link_manifest": "Kandelo/link/git-2.47.1-rebuild0-wasm32.json",
+      "prefix": "/home/linuxbrew/.linuxbrew",
+      "keg": "/home/linuxbrew/.linuxbrew/Cellar/git/2.47.1",
+      "staged_files": 7,
+      "staged_directories": 2,
+      "staged_symlinks": 3,
+      "receipts": [
+        ".brew/git.rb",
+        "INSTALL_RECEIPT.json"
+      ],
+      "links": [
+        "bin/git",
+        "bin/git-remote-http"
+      ]
+    }
+  ]
+}

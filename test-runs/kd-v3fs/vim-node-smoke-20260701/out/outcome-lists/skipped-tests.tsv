@@ -1,0 +1,3 @@
+test	reason
+node_smoke_fbdoom	fbdoom requires IWAD data and framebuffer/audio device plumbing; record browser framebuffer smoke separately
+node_smoke_modeset	modeset requires DRI/GLES framebuffer device support; record browser/device smoke separately

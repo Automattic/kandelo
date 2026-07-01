@@ -1,0 +1,72 @@
+{
+  "suite": "homebrew-package-node-smoke",
+  "bead_id": "kd-v3fs",
+  "worktree": "/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-v3fs-composite-vfs",
+  "result_dir": "/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-v3fs-composite-vfs/test-runs/kd-v3fs/vim-node-smoke-20260701/out",
+  "status": "complete",
+  "started_at": "2026-07-01T05:24:05.460Z",
+  "updated_at": "2026-07-01T05:24:44.114Z",
+  "current_case": "complete",
+  "progress": {
+    "completed": 24,
+    "total": 24,
+    "pass": 22,
+    "fail": 0,
+    "skip": 2
+  },
+  "tap_root": "/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-v3fs-composite-vfs/test-runs/kd-v3fs/vim-node-smoke-20260701/tap",
+  "tap_commit": "d12f41f7faa20d41f9088e398031fc342850ec27",
+  "command": {
+    "cwd": "/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-v3fs-composite-vfs",
+    "argv": [
+      "/Users/brandon/.nvm/versions/node/v24.15.0/bin/node",
+      "/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-v3fs-composite-vfs/scripts/homebrew-package-node-smoke.ts",
+      "--tap-root",
+      "test-runs/kd-v3fs/vim-node-smoke-20260701/tap",
+      "--formula",
+      "dash",
+      "--formula",
+      "git",
+      "--formula",
+      "less",
+      "--formula",
+      "lsof",
+      "--formula",
+      "nano",
+      "--formula",
+      "netcat",
+      "--formula",
+      "wget",
+      "--formula",
+      "bzip2",
+      "--formula",
+      "xz",
+      "--formula",
+      "vim",
+      "--formula",
+      "fbdoom",
+      "--formula",
+      "modeset",
+      "--arch",
+      "wasm32",
+      "--bottle-cache",
+      "test-runs/kd-v3fs/vim-node-smoke-20260701/bottle-cache",
+      "--result-dir",
+      "test-runs/kd-v3fs/vim-node-smoke-20260701/out",
+      "--bead-id",
+      "kd-v3fs",
+      "--timeout-ms",
+      "120000"
+    ]
+  },
+  "outcome_lists": {
+    "passed": "/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-v3fs-composite-vfs/test-runs/kd-v3fs/vim-node-smoke-20260701/out/outcome-lists/passed-tests.tsv",
+    "failed": "/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-v3fs-composite-vfs/test-runs/kd-v3fs/vim-node-smoke-20260701/out/outcome-lists/failed-tests.tsv",
+    "skipped": "/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-v3fs-composite-vfs/test-runs/kd-v3fs/vim-node-smoke-20260701/out/outcome-lists/skipped-tests.tsv"
+  },
+  "stale_no_runner_threshold_seconds": 600,
+  "expected_next": {
+    "deterministic": false,
+    "action": "suite terminal"
+  }
+}

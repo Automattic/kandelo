@@ -1,0 +1,38 @@
+{
+  "schema": 1,
+  "metadata": {
+    "tap_repository": "Automattic/kandelo-homebrew",
+    "tap_name": "automattic/kandelo-homebrew",
+    "tap_commit": "1ab41fe2ad5553f4fa4bb0223f2d804b13149578",
+    "kandelo_repository": "Automattic/kandelo",
+    "kandelo_commit": "1ab41fe2ad5553f4fa4bb0223f2d804b13149578",
+    "kandelo_abi": 16,
+    "release_tag": "bottles-abi-v16"
+  },
+  "packages": [
+    {
+      "name": "less",
+      "version": "668",
+      "arch": "wasm32",
+      "source_status": "success",
+      "metadata_status": "success",
+      "url": "https://ghcr.io/v2/automattic/kandelo-homebrew/less/blobs/sha256:ee8799015db23b073bb5f6f3c16953c07613f1c5dd16488cca16c9008da6c061",
+      "sha256": "ee8799015db23b073bb5f6f3c16953c07613f1c5dd16488cca16c9008da6c061",
+      "bytes": 176495,
+      "cache_key_sha": "3ec5d016d15c7b316c6643d57f66cc2f4db4ed5726c3f30356c72fa9e15d6425",
+      "link_manifest": "Kandelo/link/less-668-rebuild0-wasm32.json",
+      "prefix": "/home/linuxbrew/.linuxbrew",
+      "keg": "/home/linuxbrew/.linuxbrew/Cellar/less/668",
+      "staged_files": 8,
+      "staged_directories": 2,
+      "staged_symlinks": 0,
+      "receipts": [
+        ".brew/less.rb",
+        "INSTALL_RECEIPT.json"
+      ],
+      "links": [
+        "bin/less"
+      ]
+    }
+  ]
+}

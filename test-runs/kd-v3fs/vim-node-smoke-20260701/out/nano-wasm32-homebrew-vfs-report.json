@@ -1,0 +1,38 @@
+{
+  "schema": 1,
+  "metadata": {
+    "tap_repository": "Automattic/kandelo-homebrew",
+    "tap_name": "automattic/kandelo-homebrew",
+    "tap_commit": "1ab41fe2ad5553f4fa4bb0223f2d804b13149578",
+    "kandelo_repository": "Automattic/kandelo",
+    "kandelo_commit": "1ab41fe2ad5553f4fa4bb0223f2d804b13149578",
+    "kandelo_abi": 16,
+    "release_tag": "bottles-abi-v16"
+  },
+  "packages": [
+    {
+      "name": "nano",
+      "version": "8.0",
+      "arch": "wasm32",
+      "source_status": "success",
+      "metadata_status": "success",
+      "url": "https://ghcr.io/v2/automattic/kandelo-homebrew/nano/blobs/sha256:5c9724cea03f33dbf62b4c3edafdc797d37f2ce060a8456fee3c9f50406db2f0",
+      "sha256": "5c9724cea03f33dbf62b4c3edafdc797d37f2ce060a8456fee3c9f50406db2f0",
+      "bytes": 505439,
+      "cache_key_sha": "4be127352be19f0d75448a83769107716757e545aa4f3790dca8069a093aab59",
+      "link_manifest": "Kandelo/link/nano-8.0-rebuild0-wasm32.json",
+      "prefix": "/home/linuxbrew/.linuxbrew",
+      "keg": "/home/linuxbrew/.linuxbrew/Cellar/nano/8.0",
+      "staged_files": 11,
+      "staged_directories": 2,
+      "staged_symlinks": 0,
+      "receipts": [
+        ".brew/nano.rb",
+        "INSTALL_RECEIPT.json"
+      ],
+      "links": [
+        "bin/nano"
+      ]
+    }
+  ]
+}

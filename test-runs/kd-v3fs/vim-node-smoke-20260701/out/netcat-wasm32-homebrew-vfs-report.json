@@ -1,0 +1,38 @@
+{
+  "schema": 1,
+  "metadata": {
+    "tap_repository": "Automattic/kandelo-homebrew",
+    "tap_name": "automattic/kandelo-homebrew",
+    "tap_commit": "1ab41fe2ad5553f4fa4bb0223f2d804b13149578",
+    "kandelo_repository": "Automattic/kandelo",
+    "kandelo_commit": "1ab41fe2ad5553f4fa4bb0223f2d804b13149578",
+    "kandelo_abi": 16,
+    "release_tag": "bottles-abi-v16"
+  },
+  "packages": [
+    {
+      "name": "netcat",
+      "version": "0.7.1",
+      "arch": "wasm32",
+      "source_status": "success",
+      "metadata_status": "success",
+      "url": "https://ghcr.io/v2/automattic/kandelo-homebrew/netcat/blobs/sha256:2eec1a038a610fca2ab8d2cc6b2feff048b009288f3fa249cbbd586107bb0efd",
+      "sha256": "2eec1a038a610fca2ab8d2cc6b2feff048b009288f3fa249cbbd586107bb0efd",
+      "bytes": 71472,
+      "cache_key_sha": "ecfdca45ff958a00f498d460f57df18b9de2e66ecac5d95aa7c346b3686a9409",
+      "link_manifest": "Kandelo/link/netcat-0.7.1-rebuild0-wasm32.json",
+      "prefix": "/home/linuxbrew/.linuxbrew",
+      "keg": "/home/linuxbrew/.linuxbrew/Cellar/netcat/0.7.1",
+      "staged_files": 10,
+      "staged_directories": 2,
+      "staged_symlinks": 1,
+      "receipts": [
+        ".brew/netcat.rb",
+        "INSTALL_RECEIPT.json"
+      ],
+      "links": [
+        "bin/nc"
+      ]
+    }
+  ]
+}

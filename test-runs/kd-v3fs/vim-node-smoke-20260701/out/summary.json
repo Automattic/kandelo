@@ -1,0 +1,185 @@
+{
+  "suite": "Homebrew package Node VFS smoke",
+  "bead_id": "kd-v3fs",
+  "started_at": "2026-07-01T05:24:05.460Z",
+  "completed_at": "2026-07-01T05:24:44.112Z",
+  "duration_ms": 38652,
+  "result_dir": "/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-v3fs-composite-vfs/test-runs/kd-v3fs/vim-node-smoke-20260701/out",
+  "tap_root": "/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-v3fs-composite-vfs/test-runs/kd-v3fs/vim-node-smoke-20260701/tap",
+  "tap_commit": "d12f41f7faa20d41f9088e398031fc342850ec27",
+  "arch": "wasm32",
+  "formulas": [
+    "dash",
+    "git",
+    "less",
+    "lsof",
+    "nano",
+    "netcat",
+    "wget",
+    "bzip2",
+    "xz",
+    "vim",
+    "fbdoom",
+    "modeset"
+  ],
+  "counts": {
+    "pass": 22,
+    "fail": 0,
+    "skip": 2
+  },
+  "outcomes": [
+    {
+      "name": "homebrew_vfs_build_dash",
+      "status": "pass",
+      "durationMs": 486,
+      "details": "report=/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-v3fs-composite-vfs/test-runs/kd-v3fs/vim-node-smoke-20260701/out/dash-wasm32-homebrew-vfs-report.json"
+    },
+    {
+      "name": "node_smoke_dash",
+      "status": "pass",
+      "durationMs": 594,
+      "details": "dash-homebrew-smoke"
+    },
+    {
+      "name": "homebrew_vfs_build_git",
+      "status": "pass",
+      "durationMs": 9838,
+      "details": "report=/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-v3fs-composite-vfs/test-runs/kd-v3fs/vim-node-smoke-20260701/out/git-wasm32-homebrew-vfs-report.json"
+    },
+    {
+      "name": "node_smoke_git",
+      "status": "pass",
+      "durationMs": 631,
+      "details": "git version 2.47.1"
+    },
+    {
+      "name": "homebrew_vfs_build_less",
+      "status": "pass",
+      "durationMs": 343,
+      "details": "report=/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-v3fs-composite-vfs/test-runs/kd-v3fs/vim-node-smoke-20260701/out/less-wasm32-homebrew-vfs-report.json"
+    },
+    {
+      "name": "node_smoke_less",
+      "status": "pass",
+      "durationMs": 465,
+      "details": "less 668 (POSIX regular expressions)"
+    },
+    {
+      "name": "homebrew_vfs_build_lsof",
+      "status": "pass",
+      "durationMs": 236,
+      "details": "report=/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-v3fs-composite-vfs/test-runs/kd-v3fs/vim-node-smoke-20260701/out/lsof-wasm32-homebrew-vfs-report.json"
+    },
+    {
+      "name": "node_smoke_lsof",
+      "status": "pass",
+      "durationMs": 471,
+      "details": "COMMAND      PID   FD    TYPE NAME"
+    },
+    {
+      "name": "homebrew_vfs_build_nano",
+      "status": "pass",
+      "durationMs": 840,
+      "details": "report=/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-v3fs-composite-vfs/test-runs/kd-v3fs/vim-node-smoke-20260701/out/nano-wasm32-homebrew-vfs-report.json"
+    },
+    {
+      "name": "node_smoke_nano",
+      "status": "pass",
+      "durationMs": 499,
+      "details": "GNU nano, version 8.0"
+    },
+    {
+      "name": "homebrew_vfs_build_netcat",
+      "status": "pass",
+      "durationMs": 250,
+      "details": "report=/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-v3fs-composite-vfs/test-runs/kd-v3fs/vim-node-smoke-20260701/out/netcat-wasm32-homebrew-vfs-report.json"
+    },
+    {
+      "name": "node_smoke_netcat",
+      "status": "pass",
+      "durationMs": 495,
+      "details": "GNU netcat 0.7.1, a rewrite of the famous networking tool."
+    },
+    {
+      "name": "homebrew_vfs_build_wget",
+      "status": "pass",
+      "durationMs": 4514,
+      "details": "report=/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-v3fs-composite-vfs/test-runs/kd-v3fs/vim-node-smoke-20260701/out/wget-wasm32-homebrew-vfs-report.json"
+    },
+    {
+      "name": "node_smoke_wget",
+      "status": "pass",
+      "durationMs": 644,
+      "details": "GNU Wget 1.25.0 built on none."
+    },
+    {
+      "name": "homebrew_vfs_build_bzip2",
+      "status": "pass",
+      "durationMs": 290,
+      "details": "report=/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-v3fs-composite-vfs/test-runs/kd-v3fs/vim-node-smoke-20260701/out/bzip2-wasm32-homebrew-vfs-report.json"
+    },
+    {
+      "name": "node_smoke_bzip2",
+      "status": "pass",
+      "durationMs": 589,
+      "details": "bzip2, a block-sorting file compressor.  Version 1.0.8, 13-Jul-2019."
+    },
+    {
+      "name": "homebrew_vfs_build_xz",
+      "status": "pass",
+      "durationMs": 738,
+      "details": "report=/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-v3fs-composite-vfs/test-runs/kd-v3fs/vim-node-smoke-20260701/out/xz-wasm32-homebrew-vfs-report.json"
+    },
+    {
+      "name": "node_smoke_xz",
+      "status": "pass",
+      "durationMs": 593,
+      "details": "xz (XZ Utils) 5.6.2"
+    },
+    {
+      "name": "homebrew_vfs_build_vim",
+      "status": "pass",
+      "durationMs": 14673,
+      "details": "report=/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-v3fs-composite-vfs/test-runs/kd-v3fs/vim-node-smoke-20260701/out/vim-wasm32-homebrew-vfs-report.json"
+    },
+    {
+      "name": "node_smoke_vim",
+      "status": "pass",
+      "durationMs": 768,
+      "details": "VIM - Vi IMproved 9.1 (2024 Jan 02, compiled Dec 02 2024 18:58:51)"
+    },
+    {
+      "name": "homebrew_vfs_build_fbdoom",
+      "status": "pass",
+      "durationMs": 383,
+      "details": "report=/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-v3fs-composite-vfs/test-runs/kd-v3fs/vim-node-smoke-20260701/out/fbdoom-wasm32-homebrew-vfs-report.json"
+    },
+    {
+      "name": "node_smoke_fbdoom",
+      "status": "skip",
+      "durationMs": 0,
+      "details": "fbdoom requires IWAD data and framebuffer/audio device plumbing; record browser framebuffer smoke separately",
+      "error": "SkipCase: fbdoom requires IWAD data and framebuffer/audio device plumbing; record browser framebuffer smoke separately\n    at runFormulaSmoke (/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-v3fs-composite-vfs/scripts/homebrew-package-node-smoke.ts:229:13)\n    at <anonymous> (/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-v3fs-composite-vfs/scripts/homebrew-package-node-smoke.ts:113:20)\n    at runCase (/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-v3fs-composite-vfs/scripts/homebrew-package-node-smoke.ts:453:27)\n    at main (/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-v3fs-composite-vfs/scripts/homebrew-package-node-smoke.ts:106:11)\n    at process.processTicksAndRejections (node:internal/process/task_queues:104:5)"
+    },
+    {
+      "name": "homebrew_vfs_build_modeset",
+      "status": "pass",
+      "durationMs": 270,
+      "details": "report=/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-v3fs-composite-vfs/test-runs/kd-v3fs/vim-node-smoke-20260701/out/modeset-wasm32-homebrew-vfs-report.json"
+    },
+    {
+      "name": "node_smoke_modeset",
+      "status": "skip",
+      "durationMs": 0,
+      "details": "modeset requires DRI/GLES framebuffer device support; record browser/device smoke separately",
+      "error": "SkipCase: modeset requires DRI/GLES framebuffer device support; record browser/device smoke separately\n    at runFormulaSmoke (/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-v3fs-composite-vfs/scripts/homebrew-package-node-smoke.ts:260:13)\n    at <anonymous> (/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-v3fs-composite-vfs/scripts/homebrew-package-node-smoke.ts:113:20)\n    at runCase (/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-v3fs-composite-vfs/scripts/homebrew-package-node-smoke.ts:453:27)\n    at main (/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-v3fs-composite-vfs/scripts/homebrew-package-node-smoke.ts:106:11)\n    at process.processTicksAndRejections (node:internal/process/task_queues:104:5)"
+    }
+  ],
+  "artifacts": {
+    "passed": "/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-v3fs-composite-vfs/test-runs/kd-v3fs/vim-node-smoke-20260701/out/outcome-lists/passed-tests.tsv",
+    "failed": "/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-v3fs-composite-vfs/test-runs/kd-v3fs/vim-node-smoke-20260701/out/outcome-lists/failed-tests.tsv",
+    "skipped": "/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-v3fs-composite-vfs/test-runs/kd-v3fs/vim-node-smoke-20260701/out/outcome-lists/skipped-tests.tsv",
+    "failures": "/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-v3fs-composite-vfs/test-runs/kd-v3fs/vim-node-smoke-20260701/out/failures.json",
+    "current_run": "/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-v3fs-composite-vfs/test-runs/kd-v3fs/vim-node-smoke-20260701/out/current-run.json"
+  }
+}

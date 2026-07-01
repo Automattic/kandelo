@@ -1,0 +1,38 @@
+{
+  "schema": 1,
+  "metadata": {
+    "tap_repository": "Automattic/kandelo-homebrew",
+    "tap_name": "automattic/kandelo-homebrew",
+    "tap_commit": "1ab41fe2ad5553f4fa4bb0223f2d804b13149578",
+    "kandelo_repository": "Automattic/kandelo",
+    "kandelo_commit": "1ab41fe2ad5553f4fa4bb0223f2d804b13149578",
+    "kandelo_abi": 16,
+    "release_tag": "bottles-abi-v16"
+  },
+  "packages": [
+    {
+      "name": "wget",
+      "version": "1.25.0",
+      "arch": "wasm32",
+      "source_status": "success",
+      "metadata_status": "success",
+      "url": "https://ghcr.io/v2/automattic/kandelo-homebrew/wget/blobs/sha256:7d7b48ed79816e1c2e3812b68d4f0eb82d1178118a37d1b01cf0ee7e38f1a5ad",
+      "sha256": "7d7b48ed79816e1c2e3812b68d4f0eb82d1178118a37d1b01cf0ee7e38f1a5ad",
+      "bytes": 2456339,
+      "cache_key_sha": "17d7408ea85bf3a5e4e8d1e1630c5a157df613b2313a5c407b6e7c7a466d1c31",
+      "link_manifest": "Kandelo/link/wget-1.25.0-rebuild0-wasm32.json",
+      "prefix": "/home/linuxbrew/.linuxbrew",
+      "keg": "/home/linuxbrew/.linuxbrew/Cellar/wget/1.25.0",
+      "staged_files": 9,
+      "staged_directories": 2,
+      "staged_symlinks": 0,
+      "receipts": [
+        ".brew/wget.rb",
+        "INSTALL_RECEIPT.json"
+      ],
+      "links": [
+        "bin/wget"
+      ]
+    }
+  ]
+}

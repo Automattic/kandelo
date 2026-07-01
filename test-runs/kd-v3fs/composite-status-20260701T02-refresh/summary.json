@@ -1,0 +1,434 @@
+{
+  "suite": "Homebrew composite VFS status",
+  "bead_id": "kd-v3fs",
+  "generated_at": "2026-07-01T05:25:18.271Z",
+  "result_dir": "/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-v3fs-composite-vfs/test-runs/kd-v3fs/composite-status-20260701T02-refresh",
+  "arch": "wasm32",
+  "runtimes": [
+    "node",
+    "browser"
+  ],
+  "metadata": [
+    "/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-v3fs-composite-vfs/test-runs/kd-v3fs/vim-node-smoke-20260701/tap/Kandelo/metadata.json",
+    "/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-0k6q-core-cli/test-runs/kd-0k6q/homebrew-sidecars/Kandelo/metadata.json",
+    "/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-nlyy.1-spidermonkey-homebrew-vfs-fork-status/test-runs/kd-nlyy.1/homebrew/runtime-status-sidecars-full/tap/Kandelo/metadata.json"
+  ],
+  "package_count": 42,
+  "counts": {
+    "pass": 1,
+    "fail": 0,
+    "skip": 15
+  },
+  "outcomes": [
+    {
+      "name": "rootfs_node_vfs_image",
+      "composite": "rootfs",
+      "runtime": "node",
+      "direct_packages": [
+        "dash",
+        "bash",
+        "ncurses",
+        "coreutils",
+        "gawk",
+        "grep",
+        "sed",
+        "bc",
+        "file",
+        "m4",
+        "make",
+        "findutils",
+        "diffutils",
+        "posix-utils-lite"
+      ],
+      "closure_packages": [
+        "dash",
+        "bash",
+        "ncurses",
+        "coreutils",
+        "gawk",
+        "grep",
+        "sed",
+        "bc",
+        "file",
+        "m4",
+        "make",
+        "findutils",
+        "diffutils",
+        "posix-utils-lite"
+      ],
+      "status": "skip",
+      "details": "bash: no generated Homebrew sidecar metadata found; ncurses: wasm32 bottle metadata is not publishable (url file:///Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-zq4n-dependency-roots/test-runs/kd-zq4n/bottles/ncurses-wasm32/bottles/ncurses--6.5.wasm32_kandelo.bottle.tar.gz is not an https URL)",
+      "blockers": [
+        "bash: no generated Homebrew sidecar metadata found",
+        "ncurses: wasm32 bottle metadata is not publishable (url file:///Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-zq4n-dependency-roots/test-runs/kd-zq4n/bottles/ncurses-wasm32/bottles/ncurses--6.5.wasm32_kandelo.bottle.tar.gz is not an https URL)"
+      ]
+    },
+    {
+      "name": "shell_node_vfs_image",
+      "composite": "shell",
+      "runtime": "node",
+      "direct_packages": [
+        "less",
+        "tar",
+        "curl",
+        "netcat",
+        "wget",
+        "git",
+        "gzip",
+        "bzip2",
+        "xz",
+        "zstd",
+        "zip",
+        "unzip",
+        "lsof",
+        "nano",
+        "vim",
+        "nethack",
+        "fbdoom",
+        "modeset"
+      ],
+      "closure_packages": [
+        "less",
+        "tar",
+        "curl",
+        "netcat",
+        "wget",
+        "git",
+        "gzip",
+        "bzip2",
+        "xz",
+        "zstd",
+        "zip",
+        "unzip",
+        "lsof",
+        "nano",
+        "vim",
+        "nethack",
+        "fbdoom",
+        "modeset"
+      ],
+      "status": "skip",
+      "details": "composite rootfs is not ready for node: bash: no generated Homebrew sidecar metadata found; ncurses: wasm32 bottle metadata is not publishable (url file:///Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-zq4n-dependency-roots/test-runs/kd-zq4n/bottles/ncurses-wasm32/bottles/ncurses--6.5.wasm32_kandelo.bottle.tar.gz is not an https URL); curl: no generated Homebrew sidecar metadata found; nethack: no generated Homebrew sidecar metadata found",
+      "blockers": [
+        "composite rootfs is not ready for node: bash: no generated Homebrew sidecar metadata found; ncurses: wasm32 bottle metadata is not publishable (url file:///Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-zq4n-dependency-roots/test-runs/kd-zq4n/bottles/ncurses-wasm32/bottles/ncurses--6.5.wasm32_kandelo.bottle.tar.gz is not an https URL)",
+        "curl: no generated Homebrew sidecar metadata found",
+        "nethack: no generated Homebrew sidecar metadata found"
+      ]
+    },
+    {
+      "name": "python-vfs_node_vfs_image",
+      "composite": "python-vfs",
+      "runtime": "node",
+      "direct_packages": [
+        "cpython"
+      ],
+      "closure_packages": [
+        "cpython"
+      ],
+      "status": "skip",
+      "details": "cpython: no generated Homebrew sidecar metadata found",
+      "blockers": [
+        "cpython: no generated Homebrew sidecar metadata found"
+      ]
+    },
+    {
+      "name": "perl-vfs_node_vfs_image",
+      "composite": "perl-vfs",
+      "runtime": "node",
+      "direct_packages": [
+        "perl"
+      ],
+      "closure_packages": [
+        "perl"
+      ],
+      "status": "skip",
+      "details": "perl: no generated Homebrew sidecar metadata found",
+      "blockers": [
+        "perl: no generated Homebrew sidecar metadata found"
+      ]
+    },
+    {
+      "name": "erlang-vfs_node_vfs_image",
+      "composite": "erlang-vfs",
+      "runtime": "node",
+      "direct_packages": [
+        "erlang"
+      ],
+      "closure_packages": [
+        "erlang"
+      ],
+      "status": "skip",
+      "details": "erlang: no generated Homebrew sidecar metadata found",
+      "blockers": [
+        "erlang: no generated Homebrew sidecar metadata found"
+      ]
+    },
+    {
+      "name": "vim-browser-bundle_node_lazy_archive",
+      "composite": "vim-browser-bundle",
+      "runtime": "node",
+      "direct_packages": [
+        "vim"
+      ],
+      "closure_packages": [
+        "vim"
+      ],
+      "status": "pass",
+      "details": "vim-browser-bundle lazy_archive has 1 Homebrew package inputs ready for node/wasm32",
+      "blockers": []
+    },
+    {
+      "name": "nethack-browser-bundle_node_lazy_archive",
+      "composite": "nethack-browser-bundle",
+      "runtime": "node",
+      "direct_packages": [
+        "nethack"
+      ],
+      "closure_packages": [
+        "nethack"
+      ],
+      "status": "skip",
+      "details": "nethack: no generated Homebrew sidecar metadata found",
+      "blockers": [
+        "nethack: no generated Homebrew sidecar metadata found"
+      ]
+    },
+    {
+      "name": "node-vfs_node_vfs_image",
+      "composite": "node-vfs",
+      "runtime": "node",
+      "direct_packages": [
+        "node"
+      ],
+      "closure_packages": [
+        "node",
+        "spidermonkey",
+        "libcxx",
+        "openssl",
+        "zlib"
+      ],
+      "status": "skip",
+      "details": "composite shell is not ready for node: composite rootfs is not ready for node: bash: no generated Homebrew sidecar metadata found; ncurses: wasm32 bottle metadata is not publishable (url file:///Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-zq4n-dependency-roots/test-runs/kd-zq4n/bottles/ncurses-wasm32/bottles/ncurses--6.5.wasm32_kandelo.bottle.tar.gz is not an https URL); curl: no generated Homebrew sidecar metadata found; nethack: no generated Homebrew sidecar metadata found; node: node unsupported (status=unsupported, reason_code=fork-instrumentation-disabled-imports-kernel-fork, reason=The linked Wasm imports kernel.kernel_fork but intentionally disables wasm-fork-instrument; VFS images must reject it., artifact=bin/node:imports kernel.kernel_fork without complete wasm-fork-instrument exports); spidermonkey: node unsupported (status=unsupported, reason_code=fork-instrumentation-disabled-imports-kernel-fork, reason=The linked Wasm imports kernel.kernel_fork but intentionally disables wasm-fork-instrument; VFS images must reject it., artifact=bin/js:imports kernel.kernel_fork without complete wasm-fork-instrument exports, artifact=libexec/node.wasm:imports kernel.kernel_fork without complete wasm-fork-instrument exports); libcxx: wasm32 bottle metadata is not publishable (url file:///Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-zq4n-dependency-roots/test-runs/kd-zq4n/bottles/libcxx-wasm32/bottles/libcxx--21.1.7.wasm32_kandelo.bottle.tar.gz is not an https URL); openssl: wasm32 bottle metadata is not publishable (url file:///Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-zq4n-dependency-roots/test-runs/kd-zq4n/bottles/openssl-wasm32/bottles/openssl--3.3.2.wasm32_kandelo.bottle.tar.gz is not an https URL); zlib: wasm32 bottle metadata is not publishable (url file:///Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-zq4n-dependency-roots/test-runs/kd-zq4n/bottles/zlib-wasm32/bottles/zlib--1.3.1.wasm32_kandelo.bottle.tar.gz is not an https URL)",
+      "blockers": [
+        "composite shell is not ready for node: composite rootfs is not ready for node: bash: no generated Homebrew sidecar metadata found; ncurses: wasm32 bottle metadata is not publishable (url file:///Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-zq4n-dependency-roots/test-runs/kd-zq4n/bottles/ncurses-wasm32/bottles/ncurses--6.5.wasm32_kandelo.bottle.tar.gz is not an https URL); curl: no generated Homebrew sidecar metadata found; nethack: no generated Homebrew sidecar metadata found",
+        "node: node unsupported (status=unsupported, reason_code=fork-instrumentation-disabled-imports-kernel-fork, reason=The linked Wasm imports kernel.kernel_fork but intentionally disables wasm-fork-instrument; VFS images must reject it., artifact=bin/node:imports kernel.kernel_fork without complete wasm-fork-instrument exports)",
+        "spidermonkey: node unsupported (status=unsupported, reason_code=fork-instrumentation-disabled-imports-kernel-fork, reason=The linked Wasm imports kernel.kernel_fork but intentionally disables wasm-fork-instrument; VFS images must reject it., artifact=bin/js:imports kernel.kernel_fork without complete wasm-fork-instrument exports, artifact=libexec/node.wasm:imports kernel.kernel_fork without complete wasm-fork-instrument exports)",
+        "libcxx: wasm32 bottle metadata is not publishable (url file:///Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-zq4n-dependency-roots/test-runs/kd-zq4n/bottles/libcxx-wasm32/bottles/libcxx--21.1.7.wasm32_kandelo.bottle.tar.gz is not an https URL)",
+        "openssl: wasm32 bottle metadata is not publishable (url file:///Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-zq4n-dependency-roots/test-runs/kd-zq4n/bottles/openssl-wasm32/bottles/openssl--3.3.2.wasm32_kandelo.bottle.tar.gz is not an https URL)",
+        "zlib: wasm32 bottle metadata is not publishable (url file:///Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-zq4n-dependency-roots/test-runs/kd-zq4n/bottles/zlib-wasm32/bottles/zlib--1.3.1.wasm32_kandelo.bottle.tar.gz is not an https URL)"
+      ]
+    },
+    {
+      "name": "rootfs_browser_vfs_image",
+      "composite": "rootfs",
+      "runtime": "browser",
+      "direct_packages": [
+        "dash",
+        "bash",
+        "ncurses",
+        "coreutils",
+        "gawk",
+        "grep",
+        "sed",
+        "bc",
+        "file",
+        "m4",
+        "make",
+        "findutils",
+        "diffutils",
+        "posix-utils-lite"
+      ],
+      "closure_packages": [
+        "dash",
+        "bash",
+        "ncurses",
+        "coreutils",
+        "gawk",
+        "grep",
+        "sed",
+        "bc",
+        "file",
+        "m4",
+        "make",
+        "findutils",
+        "diffutils",
+        "posix-utils-lite"
+      ],
+      "status": "skip",
+      "details": "dash: browser unsupported (runtime_support does not include browser); bash: no generated Homebrew sidecar metadata found; ncurses: wasm32 bottle metadata is not publishable (url file:///Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-zq4n-dependency-roots/test-runs/kd-zq4n/bottles/ncurses-wasm32/bottles/ncurses--6.5.wasm32_kandelo.bottle.tar.gz is not an https URL)",
+      "blockers": [
+        "dash: browser unsupported (runtime_support does not include browser)",
+        "bash: no generated Homebrew sidecar metadata found",
+        "ncurses: wasm32 bottle metadata is not publishable (url file:///Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-zq4n-dependency-roots/test-runs/kd-zq4n/bottles/ncurses-wasm32/bottles/ncurses--6.5.wasm32_kandelo.bottle.tar.gz is not an https URL)"
+      ]
+    },
+    {
+      "name": "shell_browser_vfs_image",
+      "composite": "shell",
+      "runtime": "browser",
+      "direct_packages": [
+        "less",
+        "tar",
+        "curl",
+        "netcat",
+        "wget",
+        "git",
+        "gzip",
+        "bzip2",
+        "xz",
+        "zstd",
+        "zip",
+        "unzip",
+        "lsof",
+        "nano",
+        "vim",
+        "nethack",
+        "fbdoom",
+        "modeset"
+      ],
+      "closure_packages": [
+        "less",
+        "tar",
+        "curl",
+        "netcat",
+        "wget",
+        "git",
+        "gzip",
+        "bzip2",
+        "xz",
+        "zstd",
+        "zip",
+        "unzip",
+        "lsof",
+        "nano",
+        "vim",
+        "nethack",
+        "fbdoom",
+        "modeset"
+      ],
+      "status": "skip",
+      "details": "composite rootfs is not ready for browser: dash: browser unsupported (runtime_support does not include browser); bash: no generated Homebrew sidecar metadata found; ncurses: wasm32 bottle metadata is not publishable (url file:///Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-zq4n-dependency-roots/test-runs/kd-zq4n/bottles/ncurses-wasm32/bottles/ncurses--6.5.wasm32_kandelo.bottle.tar.gz is not an https URL); less: browser unsupported (runtime_support does not include browser); curl: no generated Homebrew sidecar metadata found; netcat: browser unsupported (runtime_support does not include browser); wget: browser unsupported (runtime_support does not include browser); git: browser unsupported (runtime_support does not include browser); bzip2: browser unsupported (runtime_support does not include browser); xz: browser unsupported (runtime_support does not include browser); lsof: browser unsupported (runtime_support does not include browser); nano: browser unsupported (runtime_support does not include browser); vim: browser unsupported (runtime_support does not include browser); nethack: no generated Homebrew sidecar metadata found; fbdoom: browser unsupported (runtime_support does not include browser); modeset: browser unsupported (runtime_support does not include browser)",
+      "blockers": [
+        "composite rootfs is not ready for browser: dash: browser unsupported (runtime_support does not include browser); bash: no generated Homebrew sidecar metadata found; ncurses: wasm32 bottle metadata is not publishable (url file:///Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-zq4n-dependency-roots/test-runs/kd-zq4n/bottles/ncurses-wasm32/bottles/ncurses--6.5.wasm32_kandelo.bottle.tar.gz is not an https URL)",
+        "less: browser unsupported (runtime_support does not include browser)",
+        "curl: no generated Homebrew sidecar metadata found",
+        "netcat: browser unsupported (runtime_support does not include browser)",
+        "wget: browser unsupported (runtime_support does not include browser)",
+        "git: browser unsupported (runtime_support does not include browser)",
+        "bzip2: browser unsupported (runtime_support does not include browser)",
+        "xz: browser unsupported (runtime_support does not include browser)",
+        "lsof: browser unsupported (runtime_support does not include browser)",
+        "nano: browser unsupported (runtime_support does not include browser)",
+        "vim: browser unsupported (runtime_support does not include browser)",
+        "nethack: no generated Homebrew sidecar metadata found",
+        "fbdoom: browser unsupported (runtime_support does not include browser)",
+        "modeset: browser unsupported (runtime_support does not include browser)"
+      ]
+    },
+    {
+      "name": "python-vfs_browser_vfs_image",
+      "composite": "python-vfs",
+      "runtime": "browser",
+      "direct_packages": [
+        "cpython"
+      ],
+      "closure_packages": [
+        "cpython"
+      ],
+      "status": "skip",
+      "details": "cpython: no generated Homebrew sidecar metadata found",
+      "blockers": [
+        "cpython: no generated Homebrew sidecar metadata found"
+      ]
+    },
+    {
+      "name": "perl-vfs_browser_vfs_image",
+      "composite": "perl-vfs",
+      "runtime": "browser",
+      "direct_packages": [
+        "perl"
+      ],
+      "closure_packages": [
+        "perl"
+      ],
+      "status": "skip",
+      "details": "perl: no generated Homebrew sidecar metadata found",
+      "blockers": [
+        "perl: no generated Homebrew sidecar metadata found"
+      ]
+    },
+    {
+      "name": "erlang-vfs_browser_vfs_image",
+      "composite": "erlang-vfs",
+      "runtime": "browser",
+      "direct_packages": [
+        "erlang"
+      ],
+      "closure_packages": [
+        "erlang"
+      ],
+      "status": "skip",
+      "details": "erlang: no generated Homebrew sidecar metadata found",
+      "blockers": [
+        "erlang: no generated Homebrew sidecar metadata found"
+      ]
+    },
+    {
+      "name": "vim-browser-bundle_browser_lazy_archive",
+      "composite": "vim-browser-bundle",
+      "runtime": "browser",
+      "direct_packages": [
+        "vim"
+      ],
+      "closure_packages": [
+        "vim"
+      ],
+      "status": "skip",
+      "details": "vim: browser unsupported (runtime_support does not include browser)",
+      "blockers": [
+        "vim: browser unsupported (runtime_support does not include browser)"
+      ]
+    },
+    {
+      "name": "nethack-browser-bundle_browser_lazy_archive",
+      "composite": "nethack-browser-bundle",
+      "runtime": "browser",
+      "direct_packages": [
+        "nethack"
+      ],
+      "closure_packages": [
+        "nethack"
+      ],
+      "status": "skip",
+      "details": "nethack: no generated Homebrew sidecar metadata found",
+      "blockers": [
+        "nethack: no generated Homebrew sidecar metadata found"
+      ]
+    },
+    {
+      "name": "node-vfs_browser_vfs_image",
+      "composite": "node-vfs",
+      "runtime": "browser",
+      "direct_packages": [
+        "node"
+      ],
+      "closure_packages": [
+        "node",
+        "spidermonkey",
+        "libcxx",
+        "openssl",
+        "zlib"
+      ],
+      "status": "skip",
+      "details": "composite shell is not ready for browser: composite rootfs is not ready for browser: dash: browser unsupported (runtime_support does not include browser); bash: no generated Homebrew sidecar metadata found; ncurses: wasm32 bottle metadata is not publishable (url file:///Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-zq4n-dependency-roots/test-runs/kd-zq4n/bottles/ncurses-wasm32/bottles/ncurses--6.5.wasm32_kandelo.bottle.tar.gz is not an https URL); less: browser unsupported (runtime_support does not include browser); curl: no generated Homebrew sidecar metadata found; netcat: browser unsupported (runtime_support does not include browser); wget: browser unsupported (runtime_support does not include browser); git: browser unsupported (runtime_support does not include browser); bzip2: browser unsupported (runtime_support does not include browser); xz: browser unsupported (runtime_support does not include browser); lsof: browser unsupported (runtime_support does not include browser); nano: browser unsupported (runtime_support does not include browser); vim: browser unsupported (runtime_support does not include browser); nethack: no generated Homebrew sidecar metadata found; fbdoom: browser unsupported (runtime_support does not include browser); modeset: browser unsupported (runtime_support does not include browser); node: browser unsupported (status=unsupported, reason_code=fork-instrumentation-disabled-imports-kernel-fork, reason=The linked Wasm imports kernel.kernel_fork but intentionally disables wasm-fork-instrument; VFS images must reject it., artifact=bin/node:imports kernel.kernel_fork without complete wasm-fork-instrument exports); spidermonkey: browser unsupported (status=unsupported, reason_code=fork-instrumentation-disabled-imports-kernel-fork, reason=The linked Wasm imports kernel.kernel_fork but intentionally disables wasm-fork-instrument; VFS images must reject it., artifact=bin/js:imports kernel.kernel_fork without complete wasm-fork-instrument exports, artifact=libexec/node.wasm:imports kernel.kernel_fork without complete wasm-fork-instrument exports); libcxx: wasm32 bottle metadata is not publishable (url file:///Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-zq4n-dependency-roots/test-runs/kd-zq4n/bottles/libcxx-wasm32/bottles/libcxx--21.1.7.wasm32_kandelo.bottle.tar.gz is not an https URL); openssl: wasm32 bottle metadata is not publishable (url file:///Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-zq4n-dependency-roots/test-runs/kd-zq4n/bottles/openssl-wasm32/bottles/openssl--3.3.2.wasm32_kandelo.bottle.tar.gz is not an https URL); zlib: wasm32 bottle metadata is not publishable (url file:///Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-zq4n-dependency-roots/test-runs/kd-zq4n/bottles/zlib-wasm32/bottles/zlib--1.3.1.wasm32_kandelo.bottle.tar.gz is not an https URL)",
+      "blockers": [
+        "composite shell is not ready for browser: composite rootfs is not ready for browser: dash: browser unsupported (runtime_support does not include browser); bash: no generated Homebrew sidecar metadata found; ncurses: wasm32 bottle metadata is not publishable (url file:///Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-zq4n-dependency-roots/test-runs/kd-zq4n/bottles/ncurses-wasm32/bottles/ncurses--6.5.wasm32_kandelo.bottle.tar.gz is not an https URL); less: browser unsupported (runtime_support does not include browser); curl: no generated Homebrew sidecar metadata found; netcat: browser unsupported (runtime_support does not include browser); wget: browser unsupported (runtime_support does not include browser); git: browser unsupported (runtime_support does not include browser); bzip2: browser unsupported (runtime_support does not include browser); xz: browser unsupported (runtime_support does not include browser); lsof: browser unsupported (runtime_support does not include browser); nano: browser unsupported (runtime_support does not include browser); vim: browser unsupported (runtime_support does not include browser); nethack: no generated Homebrew sidecar metadata found; fbdoom: browser unsupported (runtime_support does not include browser); modeset: browser unsupported (runtime_support does not include browser)",
+        "node: browser unsupported (status=unsupported, reason_code=fork-instrumentation-disabled-imports-kernel-fork, reason=The linked Wasm imports kernel.kernel_fork but intentionally disables wasm-fork-instrument; VFS images must reject it., artifact=bin/node:imports kernel.kernel_fork without complete wasm-fork-instrument exports)",
+        "spidermonkey: browser unsupported (status=unsupported, reason_code=fork-instrumentation-disabled-imports-kernel-fork, reason=The linked Wasm imports kernel.kernel_fork but intentionally disables wasm-fork-instrument; VFS images must reject it., artifact=bin/js:imports kernel.kernel_fork without complete wasm-fork-instrument exports, artifact=libexec/node.wasm:imports kernel.kernel_fork without complete wasm-fork-instrument exports)",
+        "libcxx: wasm32 bottle metadata is not publishable (url file:///Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-zq4n-dependency-roots/test-runs/kd-zq4n/bottles/libcxx-wasm32/bottles/libcxx--21.1.7.wasm32_kandelo.bottle.tar.gz is not an https URL)",
+        "openssl: wasm32 bottle metadata is not publishable (url file:///Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-zq4n-dependency-roots/test-runs/kd-zq4n/bottles/openssl-wasm32/bottles/openssl--3.3.2.wasm32_kandelo.bottle.tar.gz is not an https URL)",
+        "zlib: wasm32 bottle metadata is not publishable (url file:///Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-zq4n-dependency-roots/test-runs/kd-zq4n/bottles/zlib-wasm32/bottles/zlib--1.3.1.wasm32_kandelo.bottle.tar.gz is not an https URL)"
+      ]
+    }
+  ]
+}

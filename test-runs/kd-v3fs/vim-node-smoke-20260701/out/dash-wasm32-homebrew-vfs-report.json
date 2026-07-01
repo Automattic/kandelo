@@ -1,0 +1,38 @@
+{
+  "schema": 1,
+  "metadata": {
+    "tap_repository": "Automattic/kandelo-homebrew",
+    "tap_name": "automattic/kandelo-homebrew",
+    "tap_commit": "1ab41fe2ad5553f4fa4bb0223f2d804b13149578",
+    "kandelo_repository": "Automattic/kandelo",
+    "kandelo_commit": "1ab41fe2ad5553f4fa4bb0223f2d804b13149578",
+    "kandelo_abi": 16,
+    "release_tag": "bottles-abi-v16"
+  },
+  "packages": [
+    {
+      "name": "dash",
+      "version": "0.5.12",
+      "arch": "wasm32",
+      "source_status": "success",
+      "metadata_status": "success",
+      "url": "https://ghcr.io/v2/automattic/kandelo-homebrew/dash/blobs/sha256:b07b39e7eb19324f49bd6ab23cad020354f4bcbf5602a6b6936a2633969888b8",
+      "sha256": "b07b39e7eb19324f49bd6ab23cad020354f4bcbf5602a6b6936a2633969888b8",
+      "bytes": 144268,
+      "cache_key_sha": "f1cf217ac3c91d7dddf9acfa101b6ea0c090fbbbb7abe064f31f601de2e11772",
+      "link_manifest": "Kandelo/link/dash-0.5.12-rebuild0-wasm32.json",
+      "prefix": "/home/linuxbrew/.linuxbrew",
+      "keg": "/home/linuxbrew/.linuxbrew/Cellar/dash/0.5.12",
+      "staged_files": 6,
+      "staged_directories": 2,
+      "staged_symlinks": 0,
+      "receipts": [
+        ".brew/dash.rb",
+        "INSTALL_RECEIPT.json"
+      ],
+      "links": [
+        "bin/dash"
+      ]
+    }
+  ]
+}

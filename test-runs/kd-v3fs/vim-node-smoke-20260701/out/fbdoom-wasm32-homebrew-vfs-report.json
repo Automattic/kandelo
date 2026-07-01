@@ -1,0 +1,38 @@
+{
+  "schema": 1,
+  "metadata": {
+    "tap_repository": "Automattic/kandelo-homebrew",
+    "tap_name": "automattic/kandelo-homebrew",
+    "tap_commit": "1ab41fe2ad5553f4fa4bb0223f2d804b13149578",
+    "kandelo_repository": "Automattic/kandelo",
+    "kandelo_commit": "1ab41fe2ad5553f4fa4bb0223f2d804b13149578",
+    "kandelo_abi": 16,
+    "release_tag": "bottles-abi-v16"
+  },
+  "packages": [
+    {
+      "name": "fbdoom",
+      "version": "0.1.0",
+      "arch": "wasm32",
+      "source_status": "success",
+      "metadata_status": "success",
+      "url": "https://ghcr.io/v2/automattic/kandelo-homebrew/fbdoom/blobs/sha256:51f8e3d28b47a182dbee12dd6eb25ab1a39c4c11cb6f78da51183d442796173c",
+      "sha256": "51f8e3d28b47a182dbee12dd6eb25ab1a39c4c11cb6f78da51183d442796173c",
+      "bytes": 202079,
+      "cache_key_sha": "e74be0eac8237d4345eb1db5c0c6d59aa0a20a54d7a603affeaa76190c7effc3",
+      "link_manifest": "Kandelo/link/fbdoom-0.1.0-rebuild0-wasm32.json",
+      "prefix": "/home/linuxbrew/.linuxbrew",
+      "keg": "/home/linuxbrew/.linuxbrew/Cellar/fbdoom/0.1.0",
+      "staged_files": 5,
+      "staged_directories": 2,
+      "staged_symlinks": 0,
+      "receipts": [
+        ".brew/fbdoom.rb",
+        "INSTALL_RECEIPT.json"
+      ],
+      "links": [
+        "bin/fbdoom"
+      ]
+    }
+  ]
+}

@@ -1,0 +1,38 @@
+{
+  "schema": 1,
+  "metadata": {
+    "tap_repository": "Automattic/kandelo-homebrew",
+    "tap_name": "automattic/kandelo-homebrew",
+    "tap_commit": "1ab41fe2ad5553f4fa4bb0223f2d804b13149578",
+    "kandelo_repository": "Automattic/kandelo",
+    "kandelo_commit": "1ab41fe2ad5553f4fa4bb0223f2d804b13149578",
+    "kandelo_abi": 16,
+    "release_tag": "bottles-abi-v16"
+  },
+  "packages": [
+    {
+      "name": "vim",
+      "version": "9.1.0900",
+      "arch": "wasm32",
+      "source_status": "success",
+      "metadata_status": "success",
+      "url": "https://ghcr.io/v2/automattic/kandelo-homebrew/vim/blobs/sha256:778be8fe04ce0439b260ed72c9bd81b163c60badd9e61c864864828198fee6ae",
+      "sha256": "778be8fe04ce0439b260ed72c9bd81b163c60badd9e61c864864828198fee6ae",
+      "bytes": 7794122,
+      "cache_key_sha": "4a2a54d3a4c1052e2d484be6f8f25661bd233c49b9f0eecca5fd7040bcc222ba",
+      "link_manifest": "Kandelo/link/vim-9.1.0900-rebuild0-wasm32.json",
+      "prefix": "/home/linuxbrew/.linuxbrew",
+      "keg": "/home/linuxbrew/.linuxbrew/Cellar/vim/9.1.0900",
+      "staged_files": 1914,
+      "staged_directories": 68,
+      "staged_symlinks": 0,
+      "receipts": [
+        ".brew/vim.rb",
+        "INSTALL_RECEIPT.json"
+      ],
+      "links": [
+        "bin/vim"
+      ]
+    }
+  ]
+}

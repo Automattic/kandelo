@@ -1,0 +1,38 @@
+{
+  "schema": 1,
+  "metadata": {
+    "tap_repository": "Automattic/kandelo-homebrew",
+    "tap_name": "automattic/kandelo-homebrew",
+    "tap_commit": "1ab41fe2ad5553f4fa4bb0223f2d804b13149578",
+    "kandelo_repository": "Automattic/kandelo",
+    "kandelo_commit": "1ab41fe2ad5553f4fa4bb0223f2d804b13149578",
+    "kandelo_abi": 16,
+    "release_tag": "bottles-abi-v16"
+  },
+  "packages": [
+    {
+      "name": "modeset",
+      "version": "0.1.0",
+      "arch": "wasm32",
+      "source_status": "success",
+      "metadata_status": "success",
+      "url": "https://ghcr.io/v2/automattic/kandelo-homebrew/modeset/blobs/sha256:48002a330c17971fed6d7edf71872e0cce9552c8bfb3b18813092f936e14ca88",
+      "sha256": "48002a330c17971fed6d7edf71872e0cce9552c8bfb3b18813092f936e14ca88",
+      "bytes": 42724,
+      "cache_key_sha": "d3fc05bf7b73121ad1d49c447b755154ebff60f6e0baac959cf54107617aac66",
+      "link_manifest": "Kandelo/link/modeset-0.1.0-rebuild0-wasm32.json",
+      "prefix": "/home/linuxbrew/.linuxbrew",
+      "keg": "/home/linuxbrew/.linuxbrew/Cellar/modeset/0.1.0",
+      "staged_files": 8,
+      "staged_directories": 2,
+      "staged_symlinks": 0,
+      "receipts": [
+        ".brew/modeset.rb",
+        "INSTALL_RECEIPT.json"
+      ],
+      "links": [
+        "bin/modeset"
+      ]
+    }
+  ]
+}

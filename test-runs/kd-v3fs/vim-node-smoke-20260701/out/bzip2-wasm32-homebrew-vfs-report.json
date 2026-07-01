@@ -1,0 +1,38 @@
+{
+  "schema": 1,
+  "metadata": {
+    "tap_repository": "Automattic/kandelo-homebrew",
+    "tap_name": "automattic/kandelo-homebrew",
+    "tap_commit": "1ab41fe2ad5553f4fa4bb0223f2d804b13149578",
+    "kandelo_repository": "Automattic/kandelo",
+    "kandelo_commit": "1ab41fe2ad5553f4fa4bb0223f2d804b13149578",
+    "kandelo_abi": 16,
+    "release_tag": "bottles-abi-v16"
+  },
+  "packages": [
+    {
+      "name": "bzip2",
+      "version": "1.0.8",
+      "arch": "wasm32",
+      "source_status": "success",
+      "metadata_status": "success",
+      "url": "https://ghcr.io/v2/automattic/kandelo-homebrew/bzip2/blobs/sha256:98468e8b210c247f40eb35e2c394bcdccbf18e1f9305fcc7946292327fe5167a",
+      "sha256": "98468e8b210c247f40eb35e2c394bcdccbf18e1f9305fcc7946292327fe5167a",
+      "bytes": 62564,
+      "cache_key_sha": "49c19e83209e7954c9f8399262cd76d7e23868e4a022e4502f8668d4e0c9cd5f",
+      "link_manifest": "Kandelo/link/bzip2-1.0.8-rebuild0-wasm32.json",
+      "prefix": "/home/linuxbrew/.linuxbrew",
+      "keg": "/home/linuxbrew/.linuxbrew/Cellar/bzip2/1.0.8",
+      "staged_files": 7,
+      "staged_directories": 2,
+      "staged_symlinks": 0,
+      "receipts": [
+        ".brew/bzip2.rb",
+        "INSTALL_RECEIPT.json"
+      ],
+      "links": [
+        "bin/bzip2"
+      ]
+    }
+  ]
+}

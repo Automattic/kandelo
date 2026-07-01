@@ -1,0 +1,38 @@
+{
+  "schema": 1,
+  "metadata": {
+    "tap_repository": "Automattic/kandelo-homebrew",
+    "tap_name": "automattic/kandelo-homebrew",
+    "tap_commit": "1ab41fe2ad5553f4fa4bb0223f2d804b13149578",
+    "kandelo_repository": "Automattic/kandelo",
+    "kandelo_commit": "1ab41fe2ad5553f4fa4bb0223f2d804b13149578",
+    "kandelo_abi": 16,
+    "release_tag": "bottles-abi-v16"
+  },
+  "packages": [
+    {
+      "name": "xz",
+      "version": "5.6.2",
+      "arch": "wasm32",
+      "source_status": "success",
+      "metadata_status": "success",
+      "url": "https://ghcr.io/v2/automattic/kandelo-homebrew/xz/blobs/sha256:887c92f55f775a041503e670cd7a2d845839fa2167c89440ede0fb127a37a0ca",
+      "sha256": "887c92f55f775a041503e670cd7a2d845839fa2167c89440ede0fb127a37a0ca",
+      "bytes": 379877,
+      "cache_key_sha": "6dcdd72b55ed0fbb6edc38c3854216da67579110efbaf56ee35803c7aec84027",
+      "link_manifest": "Kandelo/link/xz-5.6.2-rebuild0-wasm32.json",
+      "prefix": "/home/linuxbrew/.linuxbrew",
+      "keg": "/home/linuxbrew/.linuxbrew/Cellar/xz/5.6.2",
+      "staged_files": 14,
+      "staged_directories": 2,
+      "staged_symlinks": 0,
+      "receipts": [
+        ".brew/xz.rb",
+        "INSTALL_RECEIPT.json"
+      ],
+      "links": [
+        "bin/xz"
+      ]
+    }
+  ]
+}
