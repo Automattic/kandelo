@@ -154,15 +154,17 @@ async function init() {
     };
     const fs = createFs();
     const readArtifacts = () => collectArtifacts(fs);
-    const publishArtifactSnapshot = () => {
+    const publishArtifactSnapshot = async (artifacts = readArtifacts()) => {
       const sink = window.__sqliteArtifactSnapshot;
       if (!sink) return;
-      void Promise.resolve(sink({
+      await Promise.resolve(sink({
         durationMs: Math.round(performance.now() - start),
-        artifacts: readArtifacts(),
+        artifacts,
       })).catch(() => {});
     };
-    const artifactTimer = window.setInterval(publishArtifactSnapshot, 5000);
+    const artifactTimer = window.setInterval(() => {
+      void publishArtifactSnapshot();
+    }, 5000);
     if (argv[1] === "kandelo-testrunner.tcl") {
       writeVfsFile(fs, "/sqlite/kandelo-testrunner.tcl", [
         "set ::tcl_platform(os) OpenBSD",
@@ -181,10 +183,12 @@ async function init() {
       onStderr: (data) => { stderr += new TextDecoder().decode(data); },
     });
 
+    let exitCode = -1;
+    let error: string | undefined;
     try {
       await kernel.init(kernelBytes!);
       const textDecoder = new TextDecoder();
-      const exitCode = await Promise.race([
+      exitCode = await Promise.race([
         kernel.spawn(testfixtureBytes!, argv, {
           cwd: "/sqlite",
           uid: options.uid,
@@ -207,30 +211,24 @@ async function init() {
           setTimeout(() => reject(new Error("TIMEOUT")), timeoutMs),
         ),
       ]);
-      return {
-        test: label,
-        exitCode,
-        stdout,
-        stderr,
-        durationMs: Math.round(performance.now() - start),
-        artifacts: readArtifacts(),
-      };
     } catch (err: any) {
       const message = err?.message || String(err);
-      return {
-        test: label,
-        exitCode: -1,
-        stdout,
-        stderr,
-        error: message.includes("TIMEOUT") ? "TIMEOUT" : message,
-        durationMs: Math.round(performance.now() - start),
-        artifacts: readArtifacts(),
-      };
+      error = message.includes("TIMEOUT") ? "TIMEOUT" : message;
     } finally {
       window.clearInterval(artifactTimer);
-      publishArtifactSnapshot();
       await kernel.destroy().catch(() => {});
     }
+    const artifacts = readArtifacts();
+    await publishArtifactSnapshot(artifacts);
+    return {
+      test: label,
+      exitCode,
+      stdout,
+      stderr,
+      error,
+      durationMs: Math.round(performance.now() - start),
+      artifacts,
+    };
   }
 
   window.__runSqliteTest = async (testFile: string, timeoutMs = 180_000) => {

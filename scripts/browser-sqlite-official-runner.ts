@@ -33,6 +33,12 @@ interface BrowserArtifactSnapshot {
   artifacts?: BrowserArtifact[];
 }
 
+interface PersistedArtifactSnapshot {
+  source: string;
+  durationMs: number;
+  artifacts?: BrowserArtifact[];
+}
+
 function isPortAvailable(port: number): Promise<boolean> {
   return new Promise((resolvePromise) => {
     const server = createServer();
@@ -108,6 +114,18 @@ function writeArtifacts(resultsDir: string, artifacts: BrowserArtifact[] | undef
   }
 }
 
+function writeArtifactSnapshotMetadata(resultsDir: string, snapshot: PersistedArtifactSnapshot): void {
+  if (!resultsDir) return;
+  mkdirSync(resultsDir, { recursive: true });
+  writeFileSync(resolve(resultsDir, "artifact-snapshot.json"), `${JSON.stringify({
+    writtenAt: new Date().toISOString(),
+    source: snapshot.source,
+    durationMs: snapshot.durationMs,
+    artifactCount: snapshot.artifacts?.length ?? 0,
+    artifactPaths: snapshot.artifacts?.map((artifact) => artifact.path) ?? [],
+  }, null, 2)}\n`);
+}
+
 async function main() {
   const argv = process.argv.slice(2);
   let timeoutMs = 600_000;
@@ -141,6 +159,7 @@ async function main() {
   let vite: ChildProcess | null = null;
   let browser: Browser | null = null;
   let latestArtifacts: BrowserArtifact[] | undefined;
+  let latestSnapshot: BrowserArtifactSnapshot | undefined;
   try {
     const vitePort = await findVitePort();
     vite = await startViteServer(vitePort);
@@ -148,7 +167,10 @@ async function main() {
     const context = await browser.newContext();
     const page = await context.newPage();
     await page.exposeFunction("__sqliteArtifactSnapshot", (snapshot: BrowserArtifactSnapshot) => {
-      if (snapshot.artifacts?.length) latestArtifacts = snapshot.artifacts;
+      if (snapshot.artifacts?.length) {
+        latestArtifacts = snapshot.artifacts;
+        latestSnapshot = snapshot;
+      }
     });
     page.on("console", (msg) => {
       if (msg.text().startsWith("[sqlite-progress]")) {
@@ -185,10 +207,24 @@ async function main() {
       );
     } catch (err) {
       writeArtifacts(resultsDir, latestArtifacts);
+      writeArtifactSnapshotMetadata(resultsDir, {
+        source: "evaluate-error-latest-periodic-snapshot",
+        durationMs: latestSnapshot?.durationMs ?? 0,
+        artifacts: latestArtifacts,
+      });
       throw err;
     }
-    if (!result.artifacts && latestArtifacts) result.artifacts = latestArtifacts;
+    let artifactSource = "post-teardown-result";
+    if (!result.artifacts && latestArtifacts) {
+      result.artifacts = latestArtifacts;
+      artifactSource = "latest-periodic-snapshot";
+    }
     writeArtifacts(resultsDir, result.artifacts);
+    writeArtifactSnapshotMetadata(resultsDir, {
+      source: artifactSource,
+      durationMs: result.durationMs,
+      artifacts: result.artifacts,
+    });
     if (result.stdout) process.stdout.write(result.stdout);
     if (result.stderr) process.stderr.write(result.stderr);
     if (result.error) process.stderr.write(`${result.error}\n`);
