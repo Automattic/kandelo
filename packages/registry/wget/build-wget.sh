@@ -13,8 +13,9 @@ set -euo pipefail
 WGET_VERSION="${WGET_VERSION:-1.24.5}"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
-SRC_DIR="$SCRIPT_DIR/wget-src"
-BIN_DIR="$SCRIPT_DIR/bin"
+WORK_DIR="${WASM_POSIX_DEP_WORK_DIR:-$SCRIPT_DIR}"
+SRC_DIR="$WORK_DIR/wget-src"
+BIN_DIR="${WASM_POSIX_DEP_OUT_DIR:-$SCRIPT_DIR/bin}"
 # Explicit env wins; else the in-tree sysroot. Matches build-curl.sh:49.
 SYSROOT="${WASM_POSIX_SYSROOT:-$REPO_ROOT/sysroot}"
 
@@ -258,4 +259,4 @@ echo "Binary: $BIN_DIR/wget.wasm"
 # Install into local-binaries/ so the resolver picks the freshly-built
 # binary over the fetched release.
 source "$REPO_ROOT/scripts/install-local-binary.sh"
-[ -f "$SCRIPT_DIR/bin/wget.wasm" ] && install_local_binary wget "$SCRIPT_DIR/bin/wget.wasm" || true
+[ -f "$BIN_DIR/wget.wasm" ] && install_local_binary wget "$BIN_DIR/wget.wasm" || true

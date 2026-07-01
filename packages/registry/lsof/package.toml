@@ -22,4 +22,5 @@ script_path = "packages/registry/lsof/build-lsof.sh"
 
 [[outputs]]
 name = "lsof"
+fork_instrumentation = "not-required"
 wasm = "lsof.wasm"
