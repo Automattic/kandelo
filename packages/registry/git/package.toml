@@ -17,10 +17,8 @@ script_path = "packages/registry/git/build-git.sh"
 
 [[outputs]]
 name = "git"
-fork_instrumentation = "required"
 wasm = "git.wasm"
 
 [[outputs]]
 name = "git-remote-http"
-fork_instrumentation = "not-required"
 wasm = "git-remote-http.wasm"

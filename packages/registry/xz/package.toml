@@ -17,5 +17,4 @@ script_path = "packages/registry/xz/build-xz.sh"
 
 [[outputs]]
 name = "xz"
-fork_instrumentation = "not-required"
 wasm = "xz.wasm"

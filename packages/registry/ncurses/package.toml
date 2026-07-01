@@ -31,50 +31,40 @@ script_path = "packages/registry/ncurses/build-ncurses.sh"
 
 [[outputs]]
 name = "clear"
-fork_instrumentation = "not-required"
 wasm = "clear.wasm"
 
 [[outputs]]
 name = "reset"
-fork_instrumentation = "not-required"
 wasm = "reset.wasm"
 
 [[outputs]]
 name = "tset"
-fork_instrumentation = "not-required"
 wasm = "tset.wasm"
 
 [[outputs]]
 name = "tput"
-fork_instrumentation = "not-required"
 wasm = "tput.wasm"
 
 [[outputs]]
 name = "tabs"
-fork_instrumentation = "not-required"
 wasm = "tabs.wasm"
 
 [[outputs]]
 name = "tic"
-fork_instrumentation = "not-required"
 wasm = "tic.wasm"
 
 [[outputs]]
 name = "infocmp"
-fork_instrumentation = "not-required"
 wasm = "infocmp.wasm"
 
 [[outputs]]
 name = "toe"
-fork_instrumentation = "not-required"
 wasm = "toe.wasm"
 
 [[outputs]]
 name = "captoinfo"
-fork_instrumentation = "not-required"
 wasm = "captoinfo.wasm"
 
 [[outputs]]
 name = "infotocap"
-fork_instrumentation = "not-required"
 wasm = "infotocap.wasm"

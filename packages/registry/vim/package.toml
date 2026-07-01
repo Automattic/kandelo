@@ -17,5 +17,4 @@ script_path = "packages/registry/vim/build-vim.sh"
 
 [[outputs]]
 name = "vim"
-fork_instrumentation = "required"
 wasm = "vim.wasm"

@@ -17,5 +17,4 @@ script_path = "packages/registry/bash/build-bash.sh"
 
 [[outputs]]
 name = "bash"
-fork_instrumentation = "required"
 wasm = "bash.wasm"

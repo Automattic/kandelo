@@ -241,15 +241,18 @@ composite-status planner accept only four values:
 - `disabled`: fork instrumentation was deliberately turned off for the binary.
 - `unknown`: the disposition has not been determined.
 
-`auto` is a build-time placeholder, not a publishable value; it must never
-reach a sidecar. The trusted wrapper derives the bottle disposition from the
-per-output `fork_instrumentation` declared in `packages/registry/<name>/
-package.toml`. Declare it on each `[[outputs]]` entry (or once at the package
-top level). Outputs are aggregated conservatively: any `required` output makes
-the whole bottle `required`; a package that declares nothing is reported as
-`unknown` rather than an invalid `auto`. Whether a program forks matches
-whether its `build-<name>.sh` applies `wasm-fork-instrument` to a forking
-binary (see `docs/fork-instrumentation.md`).
+This sidecar disposition is separate from the package.toml
+`outputs[].fork_instrumentation` **build policy**, which is only `auto`
+(default — let `wasm-fork-instrument` run; it is a no-op for non-forking
+binaries) or `disabled` (never instrument). The trusted wrapper
+(`scripts/homebrew-generate-sidecars-from-env.sh`) derives the disposition:
+a program named in its `FORK_INSTRUMENTED_PROGRAMS` set is `required`; a package
+whose every output sets the build policy to `disabled` is `disabled`; anything
+else is `not-required`. Keep the set in sync with whether a program's
+`build-<name>.sh` fork-instruments a genuinely forking binary (shells, git,
+vim, …; see `docs/fork-instrumentation.md`). Do not put the sidecar values
+`required`/`not-required`/`unknown` in package.toml — the manifest parser only
+accepts the build-policy enum `{auto, disabled}`.
 
 ### Bottle URLs Must Be Publishable
 

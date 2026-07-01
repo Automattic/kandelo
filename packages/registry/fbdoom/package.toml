@@ -26,5 +26,4 @@ script_path = "packages/registry/fbdoom/build-fbdoom.sh"
 
 [[outputs]]
 name = "fbdoom"
-fork_instrumentation = "not-required"
 wasm = "fbdoom.wasm"

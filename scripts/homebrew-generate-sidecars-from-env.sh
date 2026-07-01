@@ -139,41 +139,27 @@ def package_links_and_env():
         links.append({"type": "symlink", "source": f"bin/{formula}", "target": f"bin/{formula}"})
     return links, {"PATH_prepend": ["bin"]}
 
+# Programs whose built binaries import kernel.kernel_fork and therefore require
+# the kernel's fork instrumentation at runtime. This sidecar disposition is
+# separate from the package.toml outputs[].fork_instrumentation BUILD policy
+# (auto/disabled): keep this set in sync with whether build-<name>.sh applies
+# wasm-fork-instrument to a genuinely forking binary (shells, git, vim, ...).
+FORK_INSTRUMENTED_PROGRAMS = {"bash", "coreutils", "dash", "git", "tcl", "vim"}
+
 def package_fork_instrumentation():
-    # The Homebrew sidecar schema only accepts these four values. "auto" is a
-    # build-time placeholder, not a publishable disposition, so it must never
-    # reach the emitted metadata. The bottle-level value is aggregated from the
-    # per-output policies declared in package.toml: if any output forks the
-    # whole bottle requires fork instrumentation; a package that declares no
-    # policy is honestly reported as "unknown" rather than an invalid "auto".
-    valid = {"not-required", "required", "disabled", "unknown"}
-
-    def check(value, where):
-        if value not in valid:
-            raise SystemExit(
-                f"package {formula}: invalid fork_instrumentation {value!r} in "
-                f"{where}; expected one of {sorted(valid)}"
-            )
-        return value
-
-    top = package_toml.get("fork_instrumentation")
-    if top is not None and top != "auto":
-        return check(top, "package.toml [fork_instrumentation]")
-
-    declared = []
+    # Emit only the sidecar-schema values not-required/required/disabled, never
+    # the build-time "auto" placeholder. If the build policy disables
+    # instrumentation for every output the bottle is "disabled"; a known forking
+    # program is "required"; otherwise the fork path is a no-op ("not-required").
     outputs = package_toml.get("outputs", [])
-    if isinstance(outputs, list):
-        for output in outputs:
-            value = output.get("fork_instrumentation")
-            if value is not None and value != "auto":
-                declared.append(check(value, f"output {output.get('name', '?')!r}"))
-
-    if not declared:
-        return "unknown"
-    if any(policy == "required" for policy in declared):
-        return "required"
-    if all(policy == "disabled" for policy in declared):
+    if (
+        isinstance(outputs, list)
+        and outputs
+        and all(output.get("fork_instrumentation") == "disabled" for output in outputs)
+    ):
         return "disabled"
+    if formula in FORK_INSTRUMENTED_PROGRAMS:
+        return "required"
     return "not-required"
 
 def primary_program_name():
