@@ -12,6 +12,7 @@
 #     WASM_POSIX_DEP_SOURCE_URL     # tarball URL
 #     WASM_POSIX_DEP_SOURCE_SHA256  # expected sha256 of the tarball
 #     WASM_POSIX_DEP_ZLIB_DIR       # resolved zlib prefix (direct dep)
+#     WASM_POSIX_DEP_LIBICONV_DIR   # resolved GNU libiconv prefix (direct dep)
 #
 # For ad-hoc / legacy invocation (`bash build-libxml2.sh`), the script
 # falls back to the in-tree `libxml2-install/` layout and to a
@@ -43,7 +44,7 @@ fi
 SYSROOT="${WASM_POSIX_SYSROOT:-$REPO_ROOT/sysroot}"
 export WASM_POSIX_SYSROOT="$SYSROOT"
 
-# --- Locate zlib ---
+# --- Locate zlib / libiconv ---
 # Resolver surfaces the direct-dep install path via contract env var.
 # Legacy mode falls back to the sibling zlib-install dir that
 # `build-zlib.sh` lays down (also our historical layout).
@@ -59,6 +60,21 @@ fi
 
 if [ ! -f "$ZLIB_PREFIX/lib/libz.a" ]; then
     echo "ERROR: zlib not found at $ZLIB_PREFIX" >&2
+    exit 1
+fi
+
+LIBICONV_PREFIX="${WASM_POSIX_DEP_LIBICONV_DIR:-}"
+if [ -z "$LIBICONV_PREFIX" ]; then
+    LEGACY_LIBICONV="$SCRIPT_DIR/../libiconv/libiconv-install"
+    if [ ! -f "$LEGACY_LIBICONV/lib/libiconv.a" ]; then
+        echo "==> Building GNU libiconv (legacy path)..."
+        bash "$SCRIPT_DIR/../libiconv/build-libiconv.sh"
+    fi
+    LIBICONV_PREFIX="$LEGACY_LIBICONV"
+fi
+
+if [ ! -f "$LIBICONV_PREFIX/lib/libiconv.a" ]; then
+    echo "ERROR: GNU libiconv not found at $LIBICONV_PREFIX" >&2
     exit 1
 fi
 
@@ -88,12 +104,14 @@ rm -f config.h config.status
 
 wasm32posix-configure \
     --disable-shared --enable-static \
-    --without-python --without-readline --without-iconv \
+    --without-python --without-readline \
     --without-icu --without-lzma --without-http --without-ftp \
     --without-threads \
     --with-zlib="$ZLIB_PREFIX" \
+    --with-iconv="$LIBICONV_PREFIX" \
     --prefix="$INSTALL_DIR" \
-    CFLAGS="-O2"
+    CFLAGS="-O2 -I$LIBICONV_PREFIX/include" \
+    LDFLAGS="-L$LIBICONV_PREFIX/lib"
 
 # Compile directly without libtool. Source list mirrors Makefile.am's
 # libxml2_la_SOURCES plus the modules our `configure` run enables.
@@ -112,7 +130,7 @@ SOURCES=(
     schematron.c
 )
 
-CFLAGS="-O2 -DHAVE_CONFIG_H -I. -I./include"
+CFLAGS="-O2 -DHAVE_CONFIG_H -I. -I./include -I$ZLIB_PREFIX/include -I$LIBICONV_PREFIX/include"
 
 echo "==> Compiling libxml2 source files..."
 OBJS=()
@@ -150,7 +168,7 @@ Description: libXML library version2.
 Version: $LIBXML2_VERSION
 Requires:
 Libs: -L\${libdir} -lxml2
-Libs.private: -lz -lm
+Libs.private: -liconv -lcharset -lz -lm
 Cflags: -I\${includedir}/libxml
 PCEOF
 
