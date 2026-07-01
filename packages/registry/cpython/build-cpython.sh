@@ -3,16 +3,12 @@ set -euo pipefail
 
 PYTHON_VERSION="${PYTHON_VERSION:-3.13.3}"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-SOURCE_URL="${WASM_POSIX_DEP_SOURCE_URL:-https://www.python.org/ftp/python/${PYTHON_VERSION}/Python-${PYTHON_VERSION}.tar.xz}"
-SOURCE_SHA256="${WASM_POSIX_DEP_SOURCE_SHA256:-}"
+SRC_DIR="$SCRIPT_DIR/cpython-src"
+HOST_BUILD_DIR="$SCRIPT_DIR/cpython-host-build"
+CROSS_BUILD_DIR="$SCRIPT_DIR/cpython-cross-build"
+INSTALL_DIR="$SCRIPT_DIR/cpython-install"
 
 REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
-WORK_DIR="${WASM_POSIX_DEP_WORK_DIR:-$SCRIPT_DIR}"
-SRC_DIR="$WORK_DIR/cpython-src"
-HOST_BUILD_DIR="$WORK_DIR/cpython-host-build"
-CROSS_BUILD_DIR="$WORK_DIR/cpython-cross-build"
-INSTALL_DIR="$WORK_DIR/cpython-install"
-BIN_DIR="${WASM_POSIX_DEP_OUT_DIR:-$SCRIPT_DIR/bin}"
 # Worktree-local SDK on PATH (no global npm link required).
 # shellcheck source=/dev/null
 source "$REPO_ROOT/sdk/activate.sh"
@@ -46,25 +42,19 @@ fi
 echo "==> zlib at $ZLIB_PREFIX"
 
 # Ensure WASI stub libraries exist (CPython's wasi detection injects -lwasi-emulated-*)
-WASI_STUB_DIR="$WORK_DIR/wasi-stubs"
-mkdir -p "$WASI_STUB_DIR"
 for lib in libwasi-emulated-signal.a libwasi-emulated-getpid.a libwasi-emulated-process-clocks.a; do
     if [ ! -f "$SYSROOT/lib/$lib" ]; then
-        wasm32posix-ar rcs "$WASI_STUB_DIR/$lib"
+        wasm32posix-ar rcs "$SYSROOT/lib/$lib"
     fi
 done
 
 # Download CPython source
 if [ ! -d "$SRC_DIR" ]; then
     echo "==> Downloading CPython $PYTHON_VERSION..."
-    TARBALL="$(basename "$SOURCE_URL")"
-    curl --retry 10 --retry-delay 5 --retry-max-time 300 --retry-all-errors -fsSL "$SOURCE_URL" -o "/tmp/${TARBALL}"
-    if [ -n "$SOURCE_SHA256" ]; then
-        echo "==> Verifying source sha256..."
-        echo "$SOURCE_SHA256  /tmp/${TARBALL}" | shasum -a 256 -c -
-    fi
+    TARBALL="Python-${PYTHON_VERSION}.tgz"
+    curl --retry 10 --retry-delay 5 --retry-max-time 300 --retry-all-errors -fsSL "https://www.python.org/ftp/python/${PYTHON_VERSION}/${TARBALL}" -o "/tmp/${TARBALL}"
     mkdir -p "$SRC_DIR"
-    tar xf "/tmp/${TARBALL}" -C "$SRC_DIR" --strip-components=1
+    tar xzf "/tmp/${TARBALL}" -C "$SRC_DIR" --strip-components=1
     rm "/tmp/${TARBALL}"
 fi
 
@@ -73,13 +63,6 @@ if [ ! -x "$HOST_BUILD_DIR/python" ] && [ ! -x "$HOST_BUILD_DIR/python.exe" ]; t
     echo "==> Building host Python (native build)..."
     mkdir -p "$HOST_BUILD_DIR"
     cd "$HOST_BUILD_DIR"
-    py_cv_module__ctypes=n/a \
-    py_cv_module__ctypes_test=n/a \
-    py_cv_module_zlib=n/a \
-    py_cv_module_binascii=n/a \
-    py_cv_module__bz2=n/a \
-    py_cv_module__dbm=n/a \
-    py_cv_module_readline=n/a \
     "$SRC_DIR/configure" \
         --prefix="$HOST_BUILD_DIR/install" \
         --without-ensurepip \
@@ -99,7 +82,7 @@ echo "==> Host Python: $HOST_PYTHON"
 # ─── Phase 2: Modules/Setup.local is written post-configure (see Phase 4) ─
 
 # ─── Phase 3: config.site ────────────────────────────────────────────
-CONFIG_SITE="$WORK_DIR/config.site-wasm32-posix"
+CONFIG_SITE="$SCRIPT_DIR/config.site-wasm32-posix"
 cat > "$CONFIG_SITE" << 'SITE_EOF'
 # config.site for wasm32-posix-kernel cross compilation
 #
@@ -445,8 +428,6 @@ ac_cv_alignof_size_t=4
 ac_cv_alignof_max_align_t=8
 ac_cv_c_bigendian=no
 ac_cv_pthread=yes
-py_cv_module__ctypes=n/a
-py_cv_module__ctypes_test=n/a
 SITE_EOF
 
 echo "==> Created config.site: $CONFIG_SITE"
@@ -481,7 +462,7 @@ if [ ! -f Makefile ]; then
         --prefix="$INSTALL_DIR" \
         CFLAGS="-O2 -D_WASI_EMULATED_SIGNAL -D_WASI_EMULATED_PROCESS_CLOCKS" \
         CPPFLAGS="-I$ZLIB_PREFIX/include" \
-        LDFLAGS="-L$ZLIB_PREFIX/lib -L$WASI_STUB_DIR"
+        LDFLAGS="-L$ZLIB_PREFIX/lib"
 
     # Belt-and-suspenders: patch any HAVE_* that slipped through config.site
     # (header-based detection, not link-based)
@@ -592,25 +573,26 @@ make -j"$(sysctl -n hw.ncpu 2>/dev/null || nproc)" 2>&1 || {
 }
 
 # Copy binary
-mkdir -p "$BIN_DIR"
+mkdir -p "$SCRIPT_DIR/bin"
 if [ -f python.wasm ]; then
-    cp python.wasm "$BIN_DIR/python.wasm"
+    cp python.wasm "$SCRIPT_DIR/bin/python.wasm"
 elif [ -f python ]; then
-    cp python "$BIN_DIR/python.wasm"
+    cp python "$SCRIPT_DIR/bin/python.wasm"
 fi
 
 echo "==> CPython built successfully!"
-ls -la "$BIN_DIR/python.wasm"
+ls -la "$SCRIPT_DIR/bin/python.wasm"
 
 # Install into local-binaries/ so the resolver picks the freshly-built
 # binary over the fetched release.
 source "$REPO_ROOT/scripts/install-local-binary.sh"
-install_local_binary cpython "$BIN_DIR/python.wasm"
+install_local_binary cpython "$SCRIPT_DIR/bin/python.wasm"
 
 # Manifest declares `wasm = "python.wasm"` (not cpython.wasm), so the
 # resolver's $WASM_POSIX_DEP_OUT_DIR scratch needs the file under that
 # exact name. The helper's default-fallback uses <program>.<ext> which
 # doesn't match here.
 if [ -n "${WASM_POSIX_DEP_OUT_DIR:-}" ]; then
+    cp "$SCRIPT_DIR/bin/python.wasm" "$WASM_POSIX_DEP_OUT_DIR/python.wasm"
     echo "  installed $WASM_POSIX_DEP_OUT_DIR/python.wasm (manifest output name)"
 fi
