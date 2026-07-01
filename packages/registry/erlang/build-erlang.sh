@@ -534,6 +534,11 @@ if [ -f "$EMU_MAKEFILE" ] && ! grep -q 'erl_unicode.o:' "$EMU_MAKEFILE"; then
 $(OBJDIR)/erl_unicode.o: beam/erl_unicode.c\
 	$(V_CC) $(subst -O2,-O1,$(CFLAGS)) $(INCLUDES) -c $< -o $@\
 \
+# wasm32: erl_bif_chksum.c miscompiles at -O2 (do_chksum iolist traversal returns\
+# badarg for erlang:md5/crc32/adler32 on any non-empty list/iolist; binaries work).\
+$(OBJDIR)/erl_bif_chksum.o: beam/erl_bif_chksum.c\
+	$(V_CC) $(subst -O2,-O1,$(CFLAGS)) $(INCLUDES) -c $< -o $@\
+\
 # wasm32: erl_db_util.c miscompiles at -O2 (db_is_fully_bound OOB crash).\
 $(OBJDIR)/erl_db_util.o: beam/erl_db_util.c\
 	$(V_CC) $(subst -O2,-O1,$(CFLAGS)) $(INCLUDES) -c $< -o $@\
@@ -547,7 +552,7 @@ $(OBJDIR)/erl_db.o: beam/erl_db.c\
 	$(V_CC) $(subst -O2,-O1,$(CFLAGS)) $(INCLUDES) -c $< -o $@\
 
 ' "$EMU_MAKEFILE"
-    echo "==> Patched Makefile: erl_unicode.c, erl_db_util.c, erl_db_hash.c at -O1"
+    echo "==> Patched Makefile: erl_unicode.c, erl_bif_chksum.c, erl_db_util.c, erl_db_hash.c at -O1"
 fi
 
 echo "==> Starting build..."

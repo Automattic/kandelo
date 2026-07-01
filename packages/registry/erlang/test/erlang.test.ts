@@ -70,3 +70,52 @@ describe.skipIf(!hasErlang)("Erlang BEAM", () => {
     expect(output).toContain("Completed in");
   });
 });
+
+// Regression coverage for kd-qe2c: erlang:md5/1 must accept iodata (binary OR
+// iolist), matching OTP semantics. On the wasm32 BEAM, do_chksum() in
+// erl_bif_chksum.c (the shared routine behind md5/crc32/adler32) was
+// miscompiled at -O2 by LLVM and returned badarg for any non-empty
+// list/iolist, while binaries worked. That broke beam_asm — which hashes each
+// module's chunks as an iolist via erlang:md5/1 — so no module could be
+// compiled on Kandelo (erlc/compile:file/compile:forms all failed). The fix
+// compiles erl_bif_chksum.c at -O1 in build-erlang.sh, alongside erl_unicode.c
+// and the ETS files already handled the same way.
+describe.skipIf(!hasErlang)("Erlang md5 iodata (kd-qe2c)", () => {
+  it("hashes a byte list the same as the equivalent binary", { timeout: 30_000 }, () => {
+    const output = runErlang(
+      'B = erlang:md5(<<"abc">>), L = erlang:md5("abc"),'
+      + ' io:format("eq=~p digest=~w~n", [B =:= L, L]), halt().'
+    );
+    expect(output).toContain("eq=true");
+    // MD5("abc") = 900150983cd24fb0d6963f7d28e17f72
+    expect(output).toContain(
+      "digest=<<144,1,80,152,60,210,79,176,214,150,63,125,40,225,127,114>>"
+    );
+  });
+
+  it("hashes a mixed iolist (binaries, strings, chars, nesting)", { timeout: 30_000 }, () => {
+    // [<<"He">>,"ll",[111]," ",<<"world">>] flattens to "Hello world".
+    const output = runErlang(
+      'A = erlang:md5([<<"He">>,"ll",[111]," ",<<"world">>]),'
+      + ' B = erlang:md5(<<"Hello world">>),'
+      + ' io:format("eq=~p~n", [A =:= B]), halt().'
+    );
+    expect(output).toContain("eq=true");
+  });
+
+  it("compiles and loads a module on Kandelo (beam_asm md5-over-iolist)", { timeout: 30_000 }, () => {
+    // beam_asm:build_file/8 md5-hashes the module chunk iolist; before the fix
+    // this failed with "internal error in pass beam_asm: bad argument in
+    // erlang:md5/1". compiler-*/ebin isn't on start_clean's path, so add it.
+    const output = runErlang(
+      '[CompEbin|_] = filelib:wildcard(filename:join([code:root_dir(),"lib","compiler-*","ebin"])),'
+      + ' code:add_pathz(CompEbin),'
+      + ' Forms = [{attribute,1,module,kd_qe2c_smoke},{attribute,2,export,[{f,0}]},'
+      + '          {function,3,f,0,[{clause,3,[],[],[{integer,3,42}]}]}],'
+      + ' {ok,kd_qe2c_smoke,Bin} = compile:forms(Forms, [binary]),'
+      + ' {module,kd_qe2c_smoke} = code:load_binary(kd_qe2c_smoke, "kd_qe2c_smoke.beam", Bin),'
+      + ' io:format("answer=~p~n", [kd_qe2c_smoke:f()]), halt().'
+    );
+    expect(output).toContain("answer=42");
+  });
+});
