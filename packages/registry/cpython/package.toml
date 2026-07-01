@@ -18,3 +18,10 @@ script_path = "packages/registry/cpython/build-cpython.sh"
 [[outputs]]
 name = "cpython"
 wasm = "python.wasm"
+
+# Python standard library (lib/python3.13/*.py), staged so the shipped runtime
+# can import re/json/etc. The Homebrew formula installs this and points
+# PYTHONHOME at it. Without it the bare python.wasm has no filesystem stdlib.
+[[outputs]]
+name = "cpython-stdlib"
+wasm = "python-stdlib.zip"
