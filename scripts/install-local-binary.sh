@@ -67,7 +67,10 @@ install_local_binary() {
     local src_basename
     src_basename="$(basename "$src")"
     local host_target
-    host_target="$(rustc -vV 2>/dev/null | awk '/^host/ {print $2}')"
+    host_target=""
+    if command -v rustc >/dev/null 2>&1; then
+        host_target="$(rustc -vV 2>/dev/null | awk '/^host/ {print $2}' || true)"
+    fi
 
     if ! wasm_require_no_legacy_asyncify "$src"; then
         return 1
@@ -152,7 +155,7 @@ install_local_binary() {
         dest="$repo_root/local-binaries/programs/$arch/$program$src_ext"
     fi
 
-    if [ "${WASM_POSIX_DEP_SKIP_LOCAL_INSTALL:-}" = "1" ]; then
+    if [ "${WASM_POSIX_DEP_SKIP_LOCAL_INSTALL:-}" = "1" ] || [ "${WASM_POSIX_SKIP_LOCAL_BINARY_INSTALL:-0}" = "1" ]; then
         echo "  skipped local-binaries install for $src_basename"
     else
         mkdir -p "$(dirname "$dest")"

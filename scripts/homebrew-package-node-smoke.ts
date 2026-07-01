@@ -221,6 +221,14 @@ async function runFormulaSmoke(
       });
     case "diffutils":
       return runProgramVersionSmoke("diff", `${PREFIX}/bin/diff`, /diff/i, built, options);
+    case "dash":
+      return runProgramSmoke("dash", `${PREFIX}/bin/dash`, /dash-homebrew-smoke/, built, options, {
+        args: ["-c", "echo dash-homebrew-smoke"],
+      });
+    case "fbdoom":
+      throw new SkipCase(
+        "fbdoom requires IWAD data and framebuffer/audio device plumbing; record browser framebuffer smoke separately",
+      );
     case "file":
       return runProgramVersionSmoke("file", `${PREFIX}/bin/file`, /file/i, built, options);
     case "findutils":
@@ -234,14 +242,30 @@ async function runFormulaSmoke(
         args: ["beta"],
         stdin: "alpha\nbeta\n",
       });
+    case "git":
+      return runProgramVersionSmoke("git", `${PREFIX}/bin/git`, /git version/i, built, options);
     case "gzip":
       return runProgramVersionSmoke("gzip", `${PREFIX}/bin/gzip`, /gzip/i, built, options);
+    case "less":
+      return runProgramVersionSmoke("less", `${PREFIX}/bin/less`, /less/i, built, options);
+    case "lsof":
+      return runProgramSmoke("lsof", `${PREFIX}/bin/lsof`, /COMMAND|PID|lsof/i, built, options);
     case "m4":
       return runProgramSmoke("m4", `${PREFIX}/bin/m4`, /ok/, built, options, {
         stdin: "define(`x',`ok')x\n",
       });
     case "make":
       return runProgramVersionSmoke("make", `${PREFIX}/bin/make`, /make/i, built, options);
+    case "modeset":
+      throw new SkipCase(
+        "modeset requires DRI/GLES framebuffer device support; record browser/device smoke separately",
+      );
+    case "msmtpd":
+      return runProgramVersionSmoke("msmtpd", `${PREFIX}/bin/msmtpd`, /msmtp|msmtpd/i, built, options);
+    case "nano":
+      return runProgramVersionSmoke("nano", `${PREFIX}/bin/nano`, /GNU nano|nano/i, built, options);
+    case "netcat":
+      return runProgramVersionSmoke("nc", `${PREFIX}/bin/nc`, /netcat|listen|connect|usage/i, built, options, ["--help"]);
     case "posix-utils-lite":
       return runProgramSmoke("patch", `${PREFIX}/bin/patch`, /patch/i, built, options, {
         args: ["patch"],
@@ -269,6 +293,10 @@ async function runFormulaSmoke(
       return runProgramVersionSmoke("xz", `${PREFIX}/bin/xz`, /xz/i, built, options);
     case "zstd":
       return runProgramVersionSmoke("zstd", `${PREFIX}/bin/zstd`, /zstandard|zstd/i, built, options);
+    case "vim":
+      return runProgramVersionSmoke("vim", `${PREFIX}/bin/vim`, /VIM|Vi IMproved/i, built, options);
+    case "wget":
+      return runProgramVersionSmoke("wget", `${PREFIX}/bin/wget`, /GNU Wget|Wget/i, built, options);
     default:
       return runProgramVersionSmoke(packageName, `${PREFIX}/bin/${packageName}`, new RegExp(escapeRegex(packageName), "i"), built, options);
   }

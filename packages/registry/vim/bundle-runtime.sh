@@ -28,9 +28,9 @@ set -euo pipefail
 # Output: packages/registry/vim/runtime/ (directory tree)
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-SRC_DIR="$SCRIPT_DIR/vim-src"
+SRC_DIR="${VIM_SRC_DIR:-$SCRIPT_DIR/vim-src}"
 RUNTIME_SRC="$SRC_DIR/runtime"
-RUNTIME_OUT="$SCRIPT_DIR/runtime"
+RUNTIME_OUT="${VIM_RUNTIME_OUT:-$SCRIPT_DIR/runtime}"
 
 if [ ! -d "$RUNTIME_SRC" ]; then
     echo "ERROR: Vim source not found. Run build-vim.sh first." >&2
