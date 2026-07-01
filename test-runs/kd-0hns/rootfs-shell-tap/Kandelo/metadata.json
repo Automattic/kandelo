@@ -11,7 +11,7 @@
         {
           "arch": "wasm32",
           "bottle_tag": "wasm32_kandelo",
-          "browser_compatible": false,
+          "browser_compatible": true,
           "built_at": "2026-06-30T03:05:02Z",
           "built_by": "https://github.com/local/kandelo/actions/runs/local",
           "built_from": {
@@ -29,6 +29,7 @@
           "link_manifest": "Kandelo/link/bzip2-1.0.8-rebuild0-wasm32.json",
           "prefix": "/home/linuxbrew/.linuxbrew",
           "runtime_support": [
+            "browser",
             "node"
           ],
           "sha256": "98468e8b210c247f40eb35e2c394bcdccbf18e1f9305fcc7946292327fe5167a",
@@ -50,7 +51,7 @@
         {
           "arch": "wasm32",
           "bottle_tag": "wasm32_kandelo",
-          "browser_compatible": false,
+          "browser_compatible": true,
           "built_at": "2026-06-30T14:09:12Z",
           "built_by": "https://github.com/local/kandelo/actions/runs/local",
           "built_from": {
@@ -68,6 +69,7 @@
           "link_manifest": "Kandelo/link/dash-0.5.12-rebuild0-wasm32.json",
           "prefix": "/home/linuxbrew/.linuxbrew",
           "runtime_support": [
+            "browser",
             "node"
           ],
           "sha256": "b07b39e7eb19324f49bd6ab23cad020354f4bcbf5602a6b6936a2633969888b8",
@@ -128,7 +130,7 @@
         {
           "arch": "wasm32",
           "bottle_tag": "wasm32_kandelo",
-          "browser_compatible": false,
+          "browser_compatible": true,
           "built_at": "2026-06-30T14:09:14Z",
           "built_by": "https://github.com/local/kandelo/actions/runs/local",
           "built_from": {
@@ -146,6 +148,7 @@
           "link_manifest": "Kandelo/link/git-2.47.1-rebuild0-wasm32.json",
           "prefix": "/home/linuxbrew/.linuxbrew",
           "runtime_support": [
+            "browser",
             "node"
           ],
           "sha256": "2ba2c7ce61393c99a06aff34744973b55bbd9e28ded2303e2f98d2363b39295f",
@@ -167,7 +170,7 @@
         {
           "arch": "wasm32",
           "bottle_tag": "wasm32_kandelo",
-          "browser_compatible": false,
+          "browser_compatible": true,
           "built_at": "2026-06-30T14:09:15Z",
           "built_by": "https://github.com/local/kandelo/actions/runs/local",
           "built_from": {
@@ -185,6 +188,7 @@
           "link_manifest": "Kandelo/link/less-668-rebuild0-wasm32.json",
           "prefix": "/home/linuxbrew/.linuxbrew",
           "runtime_support": [
+            "browser",
             "node"
           ],
           "sha256": "ee8799015db23b073bb5f6f3c16953c07613f1c5dd16488cca16c9008da6c061",
@@ -206,7 +210,7 @@
         {
           "arch": "wasm32",
           "bottle_tag": "wasm32_kandelo",
-          "browser_compatible": false,
+          "browser_compatible": true,
           "built_at": "2026-06-30T14:09:16Z",
           "built_by": "https://github.com/local/kandelo/actions/runs/local",
           "built_from": {
@@ -224,6 +228,7 @@
           "link_manifest": "Kandelo/link/lsof-0.1.0-rebuild0-wasm32.json",
           "prefix": "/home/linuxbrew/.linuxbrew",
           "runtime_support": [
+            "browser",
             "node"
           ],
           "sha256": "104cc2d3f485eb2da330996de062cde2574aa28d693c60d875b7af0c0d534a6b",
@@ -284,7 +289,7 @@
         {
           "arch": "wasm32",
           "bottle_tag": "wasm32_kandelo",
-          "browser_compatible": false,
+          "browser_compatible": true,
           "built_at": "2026-06-30T14:09:20Z",
           "built_by": "https://github.com/local/kandelo/actions/runs/local",
           "built_from": {
@@ -302,6 +307,7 @@
           "link_manifest": "Kandelo/link/nano-8.0-rebuild0-wasm32.json",
           "prefix": "/home/linuxbrew/.linuxbrew",
           "runtime_support": [
+            "browser",
             "node"
           ],
           "sha256": "5c9724cea03f33dbf62b4c3edafdc797d37f2ce060a8456fee3c9f50406db2f0",
@@ -323,7 +329,7 @@
         {
           "arch": "wasm32",
           "bottle_tag": "wasm32_kandelo",
-          "browser_compatible": false,
+          "browser_compatible": true,
           "built_at": "2026-06-30T14:09:21Z",
           "built_by": "https://github.com/local/kandelo/actions/runs/local",
           "built_from": {
@@ -341,6 +347,7 @@
           "link_manifest": "Kandelo/link/netcat-0.7.1-rebuild0-wasm32.json",
           "prefix": "/home/linuxbrew/.linuxbrew",
           "runtime_support": [
+            "browser",
             "node"
           ],
           "sha256": "2eec1a038a610fca2ab8d2cc6b2feff048b009288f3fa249cbbd586107bb0efd",
@@ -362,7 +369,7 @@
         {
           "arch": "wasm32",
           "bottle_tag": "wasm32_kandelo",
-          "browser_compatible": false,
+          "browser_compatible": true,
           "built_at": "2026-06-30T14:09:22Z",
           "built_by": "https://github.com/local/kandelo/actions/runs/local",
           "built_from": {
@@ -380,6 +387,7 @@
           "link_manifest": "Kandelo/link/vim-9.1.0900-rebuild0-wasm32.json",
           "prefix": "/home/linuxbrew/.linuxbrew",
           "runtime_support": [
+            "browser",
             "node"
           ],
           "sha256": "778be8fe04ce0439b260ed72c9bd81b163c60badd9e61c864864828198fee6ae",
@@ -401,7 +409,7 @@
         {
           "arch": "wasm32",
           "bottle_tag": "wasm32_kandelo",
-          "browser_compatible": false,
+          "browser_compatible": true,
           "built_at": "2026-06-30T14:09:23Z",
           "built_by": "https://github.com/local/kandelo/actions/runs/local",
           "built_from": {
@@ -419,6 +427,7 @@
           "link_manifest": "Kandelo/link/wget-1.25.0-rebuild0-wasm32.json",
           "prefix": "/home/linuxbrew/.linuxbrew",
           "runtime_support": [
+            "browser",
             "node"
           ],
           "sha256": "7d7b48ed79816e1c2e3812b68d4f0eb82d1178118a37d1b01cf0ee7e38f1a5ad",
@@ -440,7 +449,7 @@
         {
           "arch": "wasm32",
           "bottle_tag": "wasm32_kandelo",
-          "browser_compatible": false,
+          "browser_compatible": true,
           "built_at": "2026-06-30T03:00:22Z",
           "built_by": "https://github.com/local/kandelo/actions/runs/local",
           "built_from": {
@@ -458,6 +467,7 @@
           "link_manifest": "Kandelo/link/xz-5.6.2-rebuild0-wasm32.json",
           "prefix": "/home/linuxbrew/.linuxbrew",
           "runtime_support": [
+            "browser",
             "node"
           ],
           "sha256": "887c92f55f775a041503e670cd7a2d845839fa2167c89440ede0fb127a37a0ca",

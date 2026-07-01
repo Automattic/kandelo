@@ -4,7 +4,7 @@
     {
       "arch": "wasm32",
       "bottle_tag": "wasm32_kandelo",
-      "browser_compatible": false,
+      "browser_compatible": true,
       "built_at": "2026-06-30T14:09:16Z",
       "built_by": "https://github.com/local/kandelo/actions/runs/local",
       "built_from": {
@@ -22,6 +22,7 @@
       "link_manifest": "Kandelo/link/lsof-0.1.0-rebuild0-wasm32.json",
       "prefix": "/home/linuxbrew/.linuxbrew",
       "runtime_support": [
+        "browser",
         "node"
       ],
       "sha256": "104cc2d3f485eb2da330996de062cde2574aa28d693c60d875b7af0c0d534a6b",

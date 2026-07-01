@@ -4,7 +4,7 @@
     {
       "arch": "wasm32",
       "bottle_tag": "wasm32_kandelo",
-      "browser_compatible": false,
+      "browser_compatible": true,
       "built_at": "2026-06-30T14:09:20Z",
       "built_by": "https://github.com/local/kandelo/actions/runs/local",
       "built_from": {
@@ -22,6 +22,7 @@
       "link_manifest": "Kandelo/link/nano-8.0-rebuild0-wasm32.json",
       "prefix": "/home/linuxbrew/.linuxbrew",
       "runtime_support": [
+        "browser",
         "node"
       ],
       "sha256": "5c9724cea03f33dbf62b4c3edafdc797d37f2ce060a8456fee3c9f50406db2f0",
