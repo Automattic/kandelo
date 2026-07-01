@@ -1,0 +1,33 @@
+{
+  "arch": "wasm32",
+  "bottle": {
+    "bytes": 379877,
+    "cache_key_sha": "6dcdd72b55ed0fbb6edc38c3854216da67579110efbaf56ee35803c7aec84027",
+    "payload_root": "xz/5.6.2",
+    "sha256": "887c92f55f775a041503e670cd7a2d845839fa2167c89440ede0fb127a37a0ca",
+    "url": "https://ghcr.io/v2/automattic/kandelo-homebrew/xz/blobs/sha256:887c92f55f775a041503e670cd7a2d845839fa2167c89440ede0fb127a37a0ca"
+  },
+  "cellar": "/home/linuxbrew/.linuxbrew/Cellar",
+  "env": {
+    "PATH_prepend": [
+      "bin"
+    ]
+  },
+  "kandelo_abi": 16,
+  "keg": "/home/linuxbrew/.linuxbrew/Cellar/xz/5.6.2",
+  "links": [
+    {
+      "source": "bin/xz",
+      "target": "bin/xz",
+      "type": "symlink"
+    }
+  ],
+  "package": "xz",
+  "prefix": "/home/linuxbrew/.linuxbrew",
+  "receipts": [
+    ".brew/xz.rb",
+    "INSTALL_RECEIPT.json"
+  ],
+  "schema": 1,
+  "version": "5.6.2"
+}
