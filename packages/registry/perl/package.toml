@@ -18,3 +18,12 @@ script_path = "packages/registry/perl/build-perl.sh"
 [[outputs]]
 name = "perl"
 wasm = "perl.wasm"
+
+# Generated core-module runtime library (lib/perl5/5.40.3/*): XSLoader.pm,
+# Config*.pm, File::Spec and the rest of the pure-perl core tree that
+# perl-cross generates during `make all` (not `make perl`). The Homebrew
+# formula installs this and points PERL5LIB at it; without it the bare
+# perl.wasm cannot load File::Spec (-> Cwd -> XSLoader).
+[[outputs]]
+name = "perl-runtime"
+wasm = "perl-runtime.zip"
