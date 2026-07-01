@@ -1,0 +1,9 @@
+check	result	evidence
+config-loads-without-poolOptions-deprecation (CI unset)	PASS	logs/after-local-no-warning.log (0 lines matching poolOptions; BEFORE had the DEPRECATED line — logs/before-poolOptions-warning.log)
+config-loads-without-poolOptions-deprecation (CI=1)	PASS	logs/after-ci-no-warning.log (0 lines matching poolOptions)
+config-has-no-config-error-under-vitest-4.1.9 (both CI states)	PASS	logs/after-local-no-warning.log, logs/after-ci-no-warning.log (RUN v4.1.9 banner, exits on "No test files found" not a config error)
+resolved-pool-is-forks	PASS	resolved-config.txt (pool:"forks" in both states)
+resolved-maxWorkers-equals-1-under-CI (serialization preserved)	PASS	resolved-config.txt (CI=1 -> maxWorkers:1)
+resolved-maxWorkers-equals-4-locally (parallelism preserved)	PASS	resolved-config.txt (CI unset -> maxWorkers:4)
+no-other-tracked-file-uses-removed-poolOptions	PASS	git grep poolOptions -> only new descriptive comment lines in host/vitest.config.ts; sdk + packages/registry/* vitest configs never set poolOptions
+working-tree-clean-only-vitest-config-changed	PASS	git status --short -> only M host/vitest.config.ts (no lockfile/node_modules churn)

@@ -37,19 +37,19 @@ export default defineConfig({
       "../examples/dlopen/**/*.test.ts",
     ],
     globalSetup: ["test/global-setup.ts"],
-    // `pool: 'forks'` avoids the worker_threads RPC that vitest 3.2.4
-    // uses for inter-thread task-update messaging. Under the GHA
-    // runner's CPU contention (two long-running test files —
-    // release-roundtrip @ ~63s and exec-brk-base @ ~14s — running in
-    // parallel with ~50 other files), the default `pool: 'threads'`
-    // hits "Timeout calling onTaskUpdate" *after* all 392 tests pass,
-    // failing the run on a vitest internal RPC error rather than any
-    // real test failure.
+    // `pool: 'forks'` avoids the worker_threads RPC that vitest uses
+    // for inter-thread task-update messaging. Under the GHA runner's
+    // CPU contention (two long-running test files — release-roundtrip @
+    // ~63s and exec-brk-base @ ~14s — running in parallel with ~50
+    // other files), `pool: 'threads'` hits "Timeout calling
+    // onTaskUpdate" *after* all tests pass, failing the run on a vitest
+    // internal RPC error rather than any real test failure. First
+    // observed on vitest 3.2.4; retained after the Vitest 4 upgrade
+    // (4.1.9).
     //
-    // Forks have higher per-file process-spawn overhead (~20-30s
-    // added wall-clock for our suite) but no shared-thread RPC, so
-    // the timeout doesn't apply. A future vitest version (3.2.5+) is
-    // expected to ship the fix; revisit then.
+    // Forks have higher per-file process-spawn overhead (~20-30s added
+    // wall-clock for our suite) but no shared-thread RPC, so the
+    // timeout doesn't apply.
     pool: "forks",
     // Even with forks, the post-run aggregation RPC (`onTaskUpdate`)
     // can time out on a heavily contended GHA runner. Fork-heavy host
@@ -57,10 +57,11 @@ export default defineConfig({
     // parallel, but serialize CI files so dash/fork/spawn coverage has
     // enough worker time to make forward progress.
     teardownTimeout: 60_000,
-    poolOptions: {
-      forks: {
-        maxForks: process.env.CI ? 1 : 4,
-      },
-    },
+    // Vitest 4 removed `test.poolOptions`; the former
+    // `poolOptions.forks.maxForks` is now the top-level `maxWorkers`
+    // (https://vitest.dev/guide/migration#pool-rework). With
+    // `pool: 'forks'` this caps worker forks: 1 on CI (serialized),
+    // 4 locally (parallel).
+    maxWorkers: process.env.CI ? 1 : 4,
   },
 });

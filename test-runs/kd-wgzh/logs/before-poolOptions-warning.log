@@ -1,0 +1,10 @@
+ DEPRECATED  `test.poolOptions` was removed in Vitest 4. All previous `poolOptions` are now top-level options. Please, refer to the migration guide: https://vitest.dev/guide/migration#pool-rework
+
+ RUN  v4.1.9 /Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-wgzh-migrate-vitest.config.ts-off-removed-test.pooloptions-fo/host
+
+No test files found, exiting with code 1
+
+filter: __kd_wgzh_nonexistent_filter__
+include: test/**/*.test.ts, ../web-libs/**/*.test.ts, ../packages/registry/*/test/**/*.test.ts, ../tests/package-system/**/*.test.ts, ../examples/dlopen/**/*.test.ts
+exclude:  **/node_modules/**, **/.git/**
+
