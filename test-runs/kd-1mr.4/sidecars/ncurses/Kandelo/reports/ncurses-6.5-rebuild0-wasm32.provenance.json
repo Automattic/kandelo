@@ -1,0 +1,113 @@
+{
+  "bottle": {
+    "bottle_tag": "wasm32_kandelo",
+    "bytes": 941150,
+    "cache_key_sha": "d8f9598534928d7b15b38acd956ea8434104c2893484ea9f546696f577d7b0ba",
+    "cellar": "/home/linuxbrew/.linuxbrew/Cellar",
+    "prefix": "/home/linuxbrew/.linuxbrew",
+    "sha256": "829ba62710a56245cb7a8af904b775209952e929aeb49e2b62f8b0ac6394a1ab",
+    "url": "https://ghcr.io/v2/automattic/kandelo-homebrew/ncurses/blobs/sha256:829ba62710a56245cb7a8af904b775209952e929aeb49e2b62f8b0ac6394a1ab"
+  },
+  "build": {
+    "brew_version": "Homebrew 6.0.6",
+    "dev_shell": "scripts/dev-shell.sh",
+    "github_run": "https://github.com/local/kandelo/actions/runs/local",
+    "job": "local",
+    "runner_os": "local",
+    "sdk_fingerprint": "a7ef0c406359039ee25d54e4f8baee3afdc857cdbcac5df9a065ef875b3a3b48",
+    "sysroot_fingerprint": "d19b801e0da64ff3415019de982ee194ef093de68e1a08d25f41a82f07bcca98"
+  },
+  "formula": {
+    "path": "Formula/ncurses.rb",
+    "sha256": "653ff839b2d8e0e387d7473ccdc6095af12c50675b049d5aa67f0945fa694f36"
+  },
+  "metadata": {
+    "formula_json": {
+      "path": "Kandelo/formula/ncurses.json",
+      "sha256": "4d06ae8da238298402dc2fd391f8fd7d1e2c27422ddc9bfea235f4bb3b6be73b"
+    },
+    "link_manifest_json": {
+      "path": "Kandelo/link/ncurses-6.5-rebuild0-wasm32.json",
+      "sha256": "21dccfcb7d7e681701b2c5e09266b955be1ae1ef79eb236a4a4e6a11cd414522"
+    },
+    "metadata_json": {
+      "path": "Kandelo/metadata.json",
+      "sha256": "b19f1ff20924ccd8189996750269e2b8ddd0739883f7e79dbd8498245b4c81c5"
+    },
+    "provenance_json": {
+      "path": "Kandelo/reports/ncurses-6.5-rebuild0-wasm32.provenance.json",
+      "sha256": "f24bc6551b20d470b9b77ddc3305b39e36d3284c93c56d423f9fdd251e512009"
+    }
+  },
+  "repositories": {
+    "kandelo_commit": "37bcd20d847101859641daf6e4583c70d634cfae",
+    "kandelo_repository": "Automattic/kandelo",
+    "tap_commit": "37bcd20d847101859641daf6e4583c70d634cfae",
+    "tap_repository": "Automattic/kandelo-homebrew"
+  },
+  "schema": 1,
+  "subject": {
+    "arch": "wasm32",
+    "bottle_rebuild": 0,
+    "kandelo_abi": 16,
+    "package": "ncurses",
+    "version": "6.5"
+  },
+  "validation": {
+    "outcome_lists": [
+      {
+        "failed": [],
+        "name": "schema",
+        "passed": [
+          "Kandelo/metadata.json",
+          "Kandelo/formula/ncurses.json",
+          "Kandelo/link/ncurses-6.5-rebuild0-wasm32.json",
+          "Kandelo/reports/ncurses-6.5-rebuild0-wasm32.provenance.json"
+        ],
+        "skipped": [],
+        "status": "success"
+      },
+      {
+        "failed": [],
+        "name": "homebrew_audit",
+        "passed": [],
+        "skip_reason": "Tap audit can run in the trusted tap publication gate.",
+        "skipped": [
+          "brew audit was not part of this local dry-run verification"
+        ],
+        "status": "skipped"
+      },
+      {
+        "failed": [],
+        "name": "bottle_build",
+        "passed": [
+          "brew install --build-bottle",
+          "brew test",
+          "brew bottle --json --no-rebuild",
+          "brew bottle --merge --write --no-commit"
+        ],
+        "skipped": [],
+        "status": "success"
+      },
+      {
+        "failed": [],
+        "name": "node_smoke",
+        "passed": [
+          "Formula test ran ncurses utilities (infocmp -V) through node --import tsx/esm examples/run-example.ts"
+        ],
+        "skipped": [],
+        "status": "success"
+      },
+      {
+        "failed": [],
+        "name": "browser_smoke",
+        "passed": [],
+        "skip_reason": "No successful browser VFS smoke was recorded for ncurses wasm32.",
+        "skipped": [
+          "No successful browser VFS smoke was recorded for ncurses wasm32."
+        ],
+        "status": "skipped"
+      }
+    ]
+  }
+}
