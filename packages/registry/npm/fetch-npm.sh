@@ -5,7 +5,8 @@
 # `require('/usr/lib/npm/lib/cli.js')` and run `npm install` from inside
 # node.wasm.
 #
-# The Node compatibility runtime stages this npm tree into the node-vfs image.
+# node-vfs owns this npm tarball as a Formula resource/helper during the
+# Homebrew bridge; see packages/registry/node-vfs/helper-inputs.toml.
 #
 # To bump npm: change NPM_VERSION + NPM_SHA256 below. The sha is the
 # sha256 of the raw .tgz served by registry.npmjs.org. Verify with:
