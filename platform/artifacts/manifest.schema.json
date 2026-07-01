@@ -1,0 +1,202 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/Automattic/kandelo/platform-artifacts.schema.json",
+  "title": "Kandelo platform artifact manifest",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "owner",
+    "kandelo_repository",
+    "kandelo_abi",
+    "release_tag",
+    "generator",
+    "artifacts"
+  ],
+  "properties": {
+    "$schema": { "type": "string" },
+    "schema": { "const": 1 },
+    "owner": { "type": "string", "minLength": 1 },
+    "kandelo_repository": { "type": "string", "minLength": 1 },
+    "kandelo_abi": { "type": "integer", "minimum": 1 },
+    "release_tag": { "type": "string", "pattern": "^binaries-abi-v[0-9]+$" },
+    "generator": { "type": "string", "minLength": 1 },
+    "artifacts": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "$ref": "#/$defs/artifact" }
+    }
+  },
+  "$defs": {
+    "artifact": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "kind",
+        "version",
+        "target_arch",
+        "kandelo_abi",
+        "status",
+        "source",
+        "build",
+        "inputs",
+        "outputs",
+        "fallback",
+        "provenance",
+        "validation"
+      ],
+      "properties": {
+        "id": { "type": "string", "minLength": 1 },
+        "kind": {
+          "enum": [
+            "kernel_wasm",
+            "userspace_wasm",
+            "sdk_vfs"
+          ]
+        },
+        "version": { "type": "string", "minLength": 1 },
+        "target_arch": { "enum": ["wasm32", "wasm64"] },
+        "kandelo_abi": { "type": "integer", "minimum": 1 },
+        "status": { "$ref": "#/$defs/status" },
+        "source": { "$ref": "#/$defs/source" },
+        "build": { "$ref": "#/$defs/build" },
+        "inputs": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "type": "string", "minLength": 1 }
+        },
+        "outputs": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "$ref": "#/$defs/output" }
+        },
+        "archive": { "$ref": "#/$defs/archive" },
+        "fallback": { "$ref": "#/$defs/fallback" },
+        "provenance": { "$ref": "#/$defs/provenance" },
+        "validation": { "$ref": "#/$defs/validation" }
+      }
+    },
+    "status": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["state"],
+      "properties": {
+        "state": {
+          "enum": [
+            "success",
+            "failed",
+            "pending",
+            "building",
+            "blocked",
+            "excluded"
+          ]
+        },
+        "reason": { "type": "string", "minLength": 1 },
+        "last_attempt_at": { "type": "string", "minLength": 1 },
+        "last_attempt_by": { "type": "string", "minLength": 1 },
+        "next_action": { "type": "string", "minLength": 1 }
+      }
+    },
+    "source": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["repository", "commit"],
+      "properties": {
+        "repository": { "type": "string", "minLength": 1 },
+        "commit": { "type": "string", "minLength": 1 }
+      }
+    },
+    "build": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["script_path"],
+      "properties": {
+        "script_path": { "type": "string", "minLength": 1 }
+      }
+    },
+    "output": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["source_paths", "archive_paths", "binaries_path", "repo_paths"],
+      "properties": {
+        "source_paths": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "type": "string", "minLength": 1 }
+        },
+        "archive_paths": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "type": "string", "minLength": 1 }
+        },
+        "binaries_path": { "type": "string", "minLength": 1 },
+        "repo_paths": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1 }
+        }
+      }
+    },
+    "archive": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["url", "sha256", "bytes", "cache_key_sha"],
+      "properties": {
+        "url": { "type": "string", "minLength": 1 },
+        "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+        "bytes": { "type": "integer", "minimum": 1 },
+        "cache_key_sha": { "type": "string", "pattern": "^[0-9a-f]{64}$" }
+      }
+    },
+    "fallback": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["mode", "available", "reason"],
+      "properties": {
+        "mode": { "type": "string", "minLength": 1 },
+        "available": { "type": "boolean" },
+        "reason": { "type": "string", "minLength": 1 },
+        "archive": { "$ref": "#/$defs/archive" }
+      }
+    },
+    "provenance": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["cache_key_inputs"],
+      "properties": {
+        "cache_key_inputs": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "type": "string", "minLength": 1 }
+        }
+      }
+    },
+    "validation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["required", "smoke_evidence"],
+      "properties": {
+        "required": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "type": "string", "minLength": 1 }
+        },
+        "smoke_evidence": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/smoke" }
+        }
+      }
+    },
+    "smoke": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "surface", "command", "status"],
+      "properties": {
+        "id": { "type": "string", "minLength": 1 },
+        "surface": { "enum": ["node", "browser"] },
+        "command": { "type": "string", "minLength": 1 },
+        "status": { "type": "string", "minLength": 1 }
+      }
+    }
+  }
+}

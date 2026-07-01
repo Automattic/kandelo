@@ -1,15 +1,22 @@
 # Binary releases
 
-Prebuilt Wasm binaries — the kernel, userspace stub, user programs,
-and library archives — live in GitHub Releases rather than the Git repo. This
+Prebuilt Wasm binaries - runtime platform artifacts, user programs,
+and library archives - live in GitHub Releases rather than the Git repo. This
 keeps the repo small and makes rebuilds optional for contributors:
 fetch once, use everywhere.
 
-The flow is **per-package + index-ledger**: every release tag carries
+Package artifacts use a **per-package + index-ledger** flow: every release tag carries
 a single `index.toml` ledger that records every published archive's
 URL + sha + cache-key. Each `packages/registry/<name>/build.toml` points
 its `[binary]` entry at that ledger (typically via `index_url` with a
 `{abi}` placeholder so one `build.toml` survives ABI bumps).
+
+First-party runtime platform artifacts are owned separately by
+`platform/artifacts/manifest.json`. That manifest records `kernel`,
+`userspace`, and `kandelo-sdk` archive URLs, shas, ABI, source fallback,
+provenance inputs, runtime paths, and required Node.js/browser smoke evidence.
+They may still be present as bridge entries in `packages/registry/`, but fresh
+materialization does not require their package identities.
 
 Adding or rebuilding one package re-uploads that package's `.tar.zst`
 **and** updates exactly that package's entry in `index.toml` —
@@ -309,7 +316,15 @@ remains authoritative.
 bash scripts/fetch-binaries.sh
 ```
 
-Walks every `packages/registry/<pkg>/` that has a `build.toml` and runs:
+First materializes platform artifacts:
+
+```
+cargo run -p xtask -- platform-artifacts materialize \
+    --binaries-dir <repo>/binaries
+```
+
+Then walks every non-platform `packages/registry/<pkg>/` that has a
+`build.toml` and runs:
 
 ```
 cargo run -p xtask -- build-deps --arch <arch> \
@@ -345,6 +360,10 @@ On any verification failure, the resolver logs a warning and falls
 through to a source build (the package's build script). This
 makes ABI bumps and rev bumps non-fatal: as long as the source-build
 path works, missing archives just slow the first run.
+
+`--fetch-only` is stricter for both layers. Platform artifacts must be present
+locally or fetchable from their manifest archive URLs, and package artifacts
+must be present in the release ledger; neither layer source-builds.
 
 ## Cache eviction
 
