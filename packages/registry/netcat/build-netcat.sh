@@ -6,8 +6,9 @@ set -euo pipefail
 NETCAT_VERSION="${NETCAT_VERSION:-0.7.1}"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
-SRC_DIR="$SCRIPT_DIR/netcat-src"
-BIN_DIR="$SCRIPT_DIR/bin"
+WORK_DIR="${WASM_POSIX_DEP_WORK_DIR:-$SCRIPT_DIR}"
+SRC_DIR="$WORK_DIR/netcat-src"
+BIN_DIR="${WASM_POSIX_DEP_OUT_DIR:-$SCRIPT_DIR/bin}"
 SYSROOT="${WASM_POSIX_SYSROOT:-$REPO_ROOT/sysroot}"
 
 if ! command -v wasm32posix-cc &>/dev/null; then
@@ -42,17 +43,31 @@ PATCH_SET=(
     "disable-pktinfo.patch"
 )
 echo "==> Verifying Kandelo netcat portability patches..."
-for patch_name in "${PATCH_SET[@]}"; do
-    patch_file="$SCRIPT_DIR/patches/$patch_name"
-    if patch --reverse --dry-run -p1 < "$patch_file" >/dev/null 2>&1; then
-        echo "    $patch_name already applied"
-    elif patch --forward --dry-run -p1 < "$patch_file" >/dev/null 2>&1; then
-        patch -p1 < "$patch_file"
-    else
-        echo "ERROR: $patch_name does not apply and is not already present" >&2
-        exit 1
-    fi
-done
+
+if awk '
+    /if \(netcat_mode == NETCAT_LISTEN\)/ { in_listen = 1; next }
+    in_listen && /glob_ret = EXIT_SUCCESS;/ { ok = 1; exit }
+    in_listen && /if \(opt_exec\)/ { exit }
+    END { exit ok ? 0 : 1 }
+' src/netcat.c; then
+    echo "    listen-success-exit.patch already applied"
+else
+    patch --batch -p1 < "$SCRIPT_DIR/patches/listen-success-exit.patch"
+fi
+
+udp_marker_count=$(grep -c "Kandelo exposes normal POSIX UDP sockets" src/core.c || true)
+case "$udp_marker_count" in
+    0) patch --batch -p1 < "$SCRIPT_DIR/patches/udp-listen-single-socket.patch" ;;
+    1) echo "    udp-listen-single-socket.patch already applied" ;;
+    *) echo "ERROR: udp-listen-single-socket.patch marker count is $udp_marker_count, expected 0 or 1" >&2; exit 1 ;;
+esac
+
+if grep -q "/\\* #  define USE_PKTINFO \\*/" src/netcat.h; then
+    echo "    disable-pktinfo.patch already applied"
+else
+    patch --batch -p1 < "$SCRIPT_DIR/patches/disable-pktinfo.patch"
+fi
+
 printf '%s\n' "${PATCH_SET[*]}" > "$PATCH_MARKER"
 
 if ! awk '

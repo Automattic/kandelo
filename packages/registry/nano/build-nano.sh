@@ -13,8 +13,9 @@ set -euo pipefail
 NANO_VERSION="${NANO_VERSION:-8.3}"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
-SRC_DIR="$SCRIPT_DIR/nano-src"
-BIN_DIR="$SCRIPT_DIR/bin"
+WORK_DIR="${WASM_POSIX_DEP_WORK_DIR:-$SCRIPT_DIR}"
+SRC_DIR="$WORK_DIR/nano-src"
+BIN_DIR="${WASM_POSIX_DEP_OUT_DIR:-$SCRIPT_DIR/bin}"
 # Explicit env wins; else the in-tree sysroot. Matches build-curl.sh:49.
 SYSROOT="${WASM_POSIX_SYSROOT:-$REPO_ROOT/sysroot}"
 
@@ -222,4 +223,4 @@ echo "Binary: $BIN_DIR/nano.wasm"
 # Install into local-binaries/ so the resolver picks the freshly-built
 # binary over the fetched release.
 source "$REPO_ROOT/scripts/install-local-binary.sh"
-install_local_binary nano "$SCRIPT_DIR/bin/nano.wasm"
+install_local_binary nano "$BIN_DIR/nano.wasm"

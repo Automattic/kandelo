@@ -1,0 +1,33 @@
+{
+  "arch": "wasm32",
+  "bottle": {
+    "bytes": 176495,
+    "cache_key_sha": "3ec5d016d15c7b316c6643d57f66cc2f4db4ed5726c3f30356c72fa9e15d6425",
+    "payload_root": "less/668",
+    "sha256": "ee8799015db23b073bb5f6f3c16953c07613f1c5dd16488cca16c9008da6c061",
+    "url": "https://ghcr.io/v2/automattic/kandelo-homebrew/less/blobs/sha256:ee8799015db23b073bb5f6f3c16953c07613f1c5dd16488cca16c9008da6c061"
+  },
+  "cellar": "/home/linuxbrew/.linuxbrew/Cellar",
+  "env": {
+    "PATH_prepend": [
+      "bin"
+    ]
+  },
+  "kandelo_abi": 16,
+  "keg": "/home/linuxbrew/.linuxbrew/Cellar/less/668",
+  "links": [
+    {
+      "source": "bin/less",
+      "target": "bin/less",
+      "type": "symlink"
+    }
+  ],
+  "package": "less",
+  "prefix": "/home/linuxbrew/.linuxbrew",
+  "receipts": [
+    ".brew/less.rb",
+    "INSTALL_RECEIPT.json"
+  ],
+  "schema": 1,
+  "version": "668"
+}
