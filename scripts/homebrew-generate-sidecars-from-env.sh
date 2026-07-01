@@ -130,13 +130,34 @@ def package_links_and_env():
 
     outputs = package_toml.get("outputs", [])
     links = []
+    data_links = []
     if isinstance(outputs, list):
         for output in outputs:
             name = output.get("name")
             if name:
                 links.append({"type": "symlink", "source": f"bin/{name}", "target": f"bin/{name}"})
+            # A program may ship a runtime data tree (e.g. a game's packed data
+            # archive under share/<name>/) declared as outputs[].data_files.
+            # Emit each as a `file` link — the same schema the library path uses
+            # for headers/libs — so the bottle keg and Kandelo VFS preserve the
+            # data alongside the bin/ symlinks.
+            for rel in output.get("data_files") or []:
+                data_links.append({
+                    "type": "file",
+                    "source": rel,
+                    "target": rel,
+                    "mode": "0644",
+                })
     if not links:
         links.append({"type": "symlink", "source": f"bin/{formula}", "target": f"bin/{formula}"})
+    # Append data-file links after the bin/ symlinks, deduped and sorted so the
+    # link manifest is deterministic and satisfies the schema's uniqueItems.
+    seen = set()
+    for link in sorted(data_links, key=lambda item: item["target"]):
+        key = (link["type"], link["source"], link["target"])
+        if key not in seen:
+            seen.add(key)
+            links.append(link)
     return links, {"PATH_prepend": ["bin"]}
 
 # Programs whose built binaries import kernel.kernel_fork and therefore require

@@ -26,9 +26,22 @@ NETHACK_SHORT="367"  # Upstream tarballs drop the dots: "nethack-367-src.tgz"
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
-SRC_DIR="$SCRIPT_DIR/nethack-src"
-BIN_DIR="$SCRIPT_DIR/bin"
-RUNTIME_DIR="$SCRIPT_DIR/runtime"
+# WASM_POSIX_DEP_WORK_DIR keeps every scratch tree (source checkout, staged
+# bin/, runtime data) inside a writable dir the caller controls, so the
+# Homebrew build sandbox (and the build-deps resolver) never writes into the
+# read-only source tree. Defaults to the in-tree package dir for a normal
+# resolver/release build, which keeps the output byte-identical.
+WORK_DIR="${WASM_POSIX_DEP_WORK_DIR:-$SCRIPT_DIR}"
+# WASM_POSIX_DEP_SOURCE_DIR lets a caller that has already fetched, verified, and
+# unpacked the upstream tarball (the Homebrew Formula, which unpacks its
+# checksummed `url` into buildpath) point the build at that tree in place. This
+# avoids a second nethack.org download inside the Homebrew build sandbox — which
+# blocks/404s the fetch — and reuses Homebrew's checksum-verified source. The
+# normal resolver/release build leaves it unset and downloads into
+# $WORK_DIR/nethack-src.
+SRC_DIR="${WASM_POSIX_DEP_SOURCE_DIR:-$WORK_DIR/nethack-src}"
+BIN_DIR="$WORK_DIR/bin"
+RUNTIME_DIR="$WORK_DIR/runtime"
 SYSROOT="$REPO_ROOT/sysroot"
 
 # --- Prerequisites ---
@@ -59,7 +72,20 @@ echo "==> ncurses at $NCURSES_PREFIX"
 export CPPFLAGS="${CPPFLAGS:-} -I$NCURSES_PREFIX/include"
 export LDFLAGS="${LDFLAGS:-} -L$NCURSES_PREFIX/lib"
 
-# --- Download NetHack source ---
+# Force serial make for NetHack's own build phases. NetHack's util/ Makefile
+# generates both dgn_lex.c and lev_lex.c from the fixed intermediate name
+# lex.yy.c (flex's default output), so a parallel build races: one target's
+# `sed lex.yy.c ... && rm lex.yy.c` deletes the file the other still needs. The
+# resolver/release build runs make serially and is unaffected, but the Homebrew
+# build sandbox's superenv injects MAKEFLAGS=-j<ncpu>, which trips the race. Pin
+# -j1 here (command-line/exported -j1 overrides the inherited MAKEFLAGS) so the
+# Homebrew build matches the known-good serial behavior. Scoped after the
+# ncurses resolve so ncurses still builds in parallel.
+export MAKEFLAGS="-j1"
+
+# --- Obtain NetHack source ---
+# If SRC_DIR already exists (a caller-provided WASM_POSIX_DEP_SOURCE_DIR, or a
+# cached checkout from a prior resolver build) build from it. Otherwise download.
 if [ ! -d "$SRC_DIR" ]; then
     echo "==> Downloading NetHack $NETHACK_VERSION..."
     TARBALL="nethack-${NETHACK_SHORT}-src.tgz"
@@ -392,16 +418,29 @@ if [ ! -f "$SRC_DIR/dat/nhdat" ]; then
     # `$(MAKE)` in top-level Makefile recurses with no CC override; the
     # Linux hints default is gcc, which we override on the command line.
     # On macOS cc=clang works for these tools.
-    make CC=cc LD=cc -C util makedefs dgn_comp lev_comp dlb recover 2>&1 | tail -20
+    #
+    # Build one target per make invocation. NetHack's util/Makefile is not
+    # parallel-safe: dgn_lex.c and lev_lex.c are both produced from flex's fixed
+    # output name lex.yy.c (LEXYYC) via `sed lex.yy.c ... > $@ && rm lex.yy.c`,
+    # so building both in one parallel make races — one target's `rm lex.yy.c`
+    # deletes the intermediate the other still needs. The dev-shell resolver
+    # build runs make serially and is fine, but the Homebrew build sandbox's
+    # superenv forces a parallel make (and overrides an inherited MAKEFLAGS=-j1).
+    # Separate invocations keep the two lexers out of the same make process
+    # regardless of the job count; -j1 serializes each one belt-and-suspenders.
+    for util_target in makedefs dgn_comp lev_comp dlb recover; do
+        echo "==> Host phase: building util/$util_target..."
+        make CC=cc LD=cc -j1 -C util "$util_target" 2>&1 | tail -20
+    done
 
     echo "==> Host phase: generating data files (dat/)..."
     # dat/Makefile's `all` builds $(VARDAT) + spec_levs + quest_levs + dungeon
     # using the tools built above. No CC needed — these are data files.
-    make CC=cc LD=cc -C dat all 2>&1 | tail -20
+    make CC=cc LD=cc -j1 -C dat all 2>&1 | tail -20
 
     echo "==> Host phase: packing nhdat via dlb..."
     # Top-level `make dlb` runs dlb in dat/ to produce nhdat.
-    make CC=cc LD=cc dlb 2>&1 | tail -10
+    make CC=cc LD=cc -j1 dlb 2>&1 | tail -10
 
     if [ ! -f "$SRC_DIR/dat/nhdat" ]; then
         echo "ERROR: dat/nhdat not produced by host build" >&2
@@ -430,8 +469,11 @@ make -C src clean 2>&1 | tail -5 || true
 
 # Pass CC/LD/AR/RANLIB via command line; DO NOT override CFLAGS — the
 # Makefile already has the right include paths and defines for this
-# port after the src/Makefile patch above.
-make -C src \
+# port after the src/Makefile patch above. -j1 matches the serial
+# dev-shell resolver build and keeps the generated-header ordering the
+# host phase set up (see the future-date touch above) race-free under the
+# Homebrew superenv's parallel default.
+make -C src -j1 \
     CC=wasm32posix-cc \
     LINK=wasm32posix-cc \
     AR=wasm32posix-ar \
