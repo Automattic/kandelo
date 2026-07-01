@@ -264,6 +264,38 @@ describe("Homebrew VFS builder", () => {
     expect(result.fs.readlink(`${PREFIX}/bin/hello`)).toBe(`${KEG}/bin/hello`);
   });
 
+  it("recursively populates a directory link (files, nested subdirs, symlinks)", async () => {
+    const bytes = bottleTar(standardEntries([
+      { path: "hello/2.12.1/share/hello", type: "directory" },
+      { path: "hello/2.12.1/share/hello/data.txt", data: "top-level data\n" },
+      { path: "hello/2.12.1/share/hello/sub", type: "directory" },
+      { path: "hello/2.12.1/share/hello/sub/nested.txt", data: "nested data\n" },
+      { path: "hello/2.12.1/share/hello/link", type: "symlink", linkName: "data.txt" },
+    ]));
+    const result = await buildFixture(bytes, {
+      linkOverrides: {
+        links: [
+          { type: "symlink", source: "Cellar/hello/2.12.1/bin/hello", target: "bin/hello" },
+          { type: "directory", source: "Cellar/hello/2.12.1/share/hello", target: "share/hello" },
+        ],
+      },
+    });
+
+    // The directory link is copied recursively rather than left as an empty dir.
+    expect(readVfsFile(result.fs, `${PREFIX}/share/hello/data.txt`)).toBe("top-level data\n");
+    expect(readVfsFile(result.fs, `${PREFIX}/share/hello/sub/nested.txt`)).toBe("nested data\n");
+    expect(result.fs.readlink(`${PREFIX}/share/hello/link`)).toBe("data.txt");
+  });
+
+  it("rejects a directory link whose source is not a directory", async () => {
+    const bytes = bottleTar(standardEntries());
+    await expect(buildFixture(bytes, {
+      linkOverrides: {
+        links: [{ type: "directory", source: "Cellar/hello/2.12.1/bin/hello", target: "share/hello" }],
+      },
+    })).rejects.toThrow(/is not a directory/);
+  });
+
   it("records last-green fallback source status in the report", async () => {
     const bytes = bottleTar(standardEntries());
     const metadataOverrides = {
