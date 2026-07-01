@@ -288,6 +288,33 @@ The bottle fetcher follows GHCR `WWW-Authenticate` bearer challenges. Public
 bottle materializers do not need a GitHub token merely to read public GHCR
 blobs.
 
+## Composite VFS Status
+
+Composite packages such as `rootfs`, `shell`, language VFS images, lazy archive
+bundles, and `node-vfs` must first prove that every required input package has
+generated Homebrew sidecar metadata for the requested host runtime. Use the
+status runner with one or more generated metadata files from package waves:
+
+```bash
+npx tsx scripts/homebrew-composite-status.ts \
+  --metadata test-runs/kd-0k6q/homebrew-sidecars/Kandelo/metadata.json \
+  --metadata test-runs/kd-bry6/sidecars/dash/Kandelo/metadata.json \
+  --metadata test-runs/kd-nlyy.1/homebrew/runtime-status-sidecars-full/tap/Kandelo/metadata.json \
+  --result-dir test-runs/homebrew-composite-status
+```
+
+The runner writes `summary.json` and passed, failed, and skipped outcome lists.
+A passed row means the composite's Homebrew inputs are plannable for that host;
+it is not image-build or browser-boot evidence. The runner walks each package's
+Homebrew dependency closure and requires publishable bottle metadata such as
+HTTPS bottle URLs, sha256/cache-key fields, link manifests, and a valid
+`fork_instrumentation` value. A skipped row is a visible blocker, for example a
+missing generated sidecar for `bash`, a local `file://` scratch bottle URL, or
+an unsupported `node` runtime status. Image builders and browser gallery
+publication must run only after the relevant composite status row is passed and
+the actual image or bundle build plus Node/browser smoke has produced its own
+artifacts.
+
 ## Node And Browser Claims
 
 Node and browser support are explicit metadata claims.
