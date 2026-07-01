@@ -69,6 +69,31 @@ See `packages/registry/mariadb/build-mariadb.sh` for a complete example.
 npx tsx examples/run-example.ts /path/to/program.wasm [args]
 ```
 
+### SQLite Official Project Test Tiers
+
+SQLite has a separate official `testrunner.tcl` harness in addition to the
+small SQL fixture smoke tests. Use the tier wrapper for practical upstream-test
+status evidence:
+
+```bash
+bash scripts/dev-shell.sh bash scripts/run-sqlite-official-tier.sh \
+  --tier sqlite-official-smoke-v1 \
+  --host node \
+  --results-root test-runs/<bead>/sqlite-official-smoke-v1-node
+```
+
+The tier definitions live in
+`packages/registry/sqlite/test/official-tiers.toml`. `sqlite-official-smoke-v1`
+is a non-gating Node smoke over a small deterministic official-test allowlist.
+Longer `veryquick`, `full`, and `all` coverage belongs in explicit sharded or
+investigation convoys, not the default package or Homebrew bottle gate.
+
+Every tier run writes durable outcome lists under `outcome-lists/`:
+`passed-tests.tsv`, `failed-tests.tsv`, `skipped-tests.tsv`, and
+`incomplete-tests.tsv`. Skipped means SQLite intentionally omitted a job.
+Timeouts, interruptions, setup failures, unsupported hosts, and jobs that were
+planned but not reached are incomplete.
+
 ## Shipping runtime files: the lazy-archive pattern
 
 Many ported programs depend on a tree of read-only runtime files at execution time - vim's syntax and indent scripts, NetHack's `nhdat`, Python's stdlib, ncurses terminfo, and so on. **Use the lazy-archive pattern to deliver them.** It is the canonical approach for Kandelo browser UI images and retained browser labs that need on-demand runtime files.
