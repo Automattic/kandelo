@@ -40,6 +40,7 @@ Most readers want one of these. Detailed sections follow further down.
 | Bump a package's revision number | Edit `revision = N` in its `build.toml` (NOT `package.toml` — revision moved to the project-view file during the binary-resolution-via-index-ledger migration). Invalidates the cache for that package. Only bump when output bytes legitimately change. |
 | Understand the release flow | [docs/binary-releases.md](binary-releases.md). |
 | Work on Homebrew bottle publishing | [docs/homebrew-publishing.md](homebrew-publishing.md) - formula authoring, trusted CI, sidecars, VFS images, and Node/browser gates. |
+| Understand the Homebrew registry replacement model | [docs/plans/2026-06-30-homebrew-registry-replacement-model.md](plans/2026-06-30-homebrew-registry-replacement-model.md) - Formulae as source of truth, sidecars as additive metadata, failure visibility, ABI identity, and registry removal criteria. |
 | Publish packages from another repository | [docs/package-sources.md](package-sources.md) — package-source layout, reusable workflow, and browser-gallery contract. |
 | Trace an ABI mismatch | [docs/abi-versioning.md](abi-versioning.md). |
 | See what's missing | [docs/package-management-future-work.md](package-management-future-work.md). |

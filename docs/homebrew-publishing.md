@@ -20,6 +20,13 @@ metadata is an additional contract for VFS builders, Node validation, browser
 automation, and publication audits; it is not a replacement for Formula Ruby or
 Homebrew's `bottle do` block.
 
+The long-term registry replacement direction is described in
+[`docs/plans/2026-06-30-homebrew-registry-replacement-model.md`](plans/2026-06-30-homebrew-registry-replacement-model.md).
+That design treats Formulae as the future package source of truth,
+`packages/registry` as temporary migration scaffolding, failed packages as
+visible status entries, and Node plus browser smoke as required compatibility
+evidence.
+
 ## Repositories And Ownership
 
 | Repository | Owns |
