@@ -34,7 +34,7 @@ type StoredThemePreference = ThemePreference & {
 
 const DEFAULT_THEME: ThemePreference = { family: "kandelo", mode: "auto" };
 const THEME_FAMILIES: Array<{ family: ThemeFamily; label: string; description: string }> = [
-  { family: "kandelo", label: "Kandelo Ember", description: "Warm Kandelo surfaces with ember accents and terminal contrast." },
+  { family: "kandelo", label: "Kandelo", description: "Candlelit Kandelo surfaces with warm highlights and ink-dark contrast." },
   { family: "wordpress", label: "WordPress", description: "WordPress design-system grays with the modern blueberry accent." },
   { family: "ubuntu", label: "Ubuntu", description: "Yaru light and dark colors with Ubuntu terminal palettes." },
 ];
