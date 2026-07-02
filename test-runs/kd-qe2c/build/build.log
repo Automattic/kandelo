@@ -1,0 +1,394 @@
+warning: Git tree '/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-qe2c-erlang-md5-iolist' has uncommitted changes
+kandelo dev shell — LLVM 21.1.7, Rust (pinned via rust-toolchain.toml), Node 24, Erlang 28 (minimal), SDK on PATH
+==> Host Erlang: OTP 28 (16.4)
+==> Downloading Erlang/OTP 28.2...
+==> Source extracted to /Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-qe2c-erlang-md5-iolist/packages/registry/erlang/erlang-src
+==> Phase 1: Building host bootstrap...
+
+        wxWidgets must be installed on your system.
+
+        Please check that wx-config is in path, the directory
+        where wxWidgets libraries are installed (returned by
+        'wx-config --libs' or 'wx-config --static --libs' command)
+        is in LD_LIBRARY_PATH or equivalent variable and
+        wxWidgets version is 3.0.2 or above.
+
+*********************************************************************
+make[4]: Entering directory '/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-qe2c-erlang-md5-iolist/packages/registry/erlang/erlang-src/lib/snmp/priv/conf/manager'
+make[4]: Nothing to be done for 'opt'.
+make[4]: Leaving directory '/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-qe2c-erlang-md5-iolist/packages/registry/erlang/erlang-src/lib/snmp/priv/conf/manager'
+make[3]: Leaving directory '/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-qe2c-erlang-md5-iolist/packages/registry/erlang/erlang-src/lib/snmp/priv/conf'
+make[3]: Entering directory '/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-qe2c-erlang-md5-iolist/packages/registry/erlang/erlang-src/lib/snmp/doc'
+make[3]: Nothing to be done for 'opt'.
+make[3]: Leaving directory '/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-qe2c-erlang-md5-iolist/packages/registry/erlang/erlang-src/lib/snmp/doc'
+=== Leaving application snmp
+make[2]: Leaving directory '/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-qe2c-erlang-md5-iolist/packages/registry/erlang/erlang-src/lib/snmp'
+make[1]: Leaving directory '/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-qe2c-erlang-md5-iolist/packages/registry/erlang/erlang-src/lib'
+==> Host bootstrap complete.
+==> Created config.site: /Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-qe2c-erlang-md5-iolist/packages/registry/erlang/config.site-wasm32-posix
+==> Phase 3: Cross-compiling Erlang/OTP for wasm32-posix...
+ MAKE	depend
+make[1]: Entering directory '/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-qe2c-erlang-md5-iolist/packages/registry/erlang/erlang-src/erts/emulator'
+ MAKE	generate
+make[2]: Entering directory '/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-qe2c-erlang-md5-iolist/packages/registry/erlang/erlang-src/erts/emulator'
+make[2]: Nothing to be done for 'generate'.
+make[2]: Leaving directory '/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-qe2c-erlang-md5-iolist/packages/registry/erlang/erlang-src/erts/emulator'
+make[1]: Leaving directory '/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-qe2c-erlang-md5-iolist/packages/registry/erlang/erlang-src/erts/emulator'
+make[1]: Entering directory '/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-qe2c-erlang-md5-iolist/packages/registry/erlang/erlang-src/erts/emulator'
+ MAKE	depend
+make[2]: Entering directory '/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-qe2c-erlang-md5-iolist/packages/registry/erlang/erlang-src/erts/emulator'
+make[2]: Nothing to be done for 'depend'.
+make[2]: Leaving directory '/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-qe2c-erlang-md5-iolist/packages/registry/erlang/erlang-src/erts/emulator'
+make[1]: Leaving directory '/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-qe2c-erlang-md5-iolist/packages/registry/erlang/erlang-src/erts/emulator'
+make[1]: Entering directory '/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-qe2c-erlang-md5-iolist/packages/registry/erlang/erlang-src/erts/lib_src'
+ MAKE	depend
+make[2]: Entering directory '/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-qe2c-erlang-md5-iolist/packages/registry/erlang/erlang-src/erts/lib_src'
+make[2]: Nothing to be done for 'depend'.
+make[2]: Leaving directory '/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-qe2c-erlang-md5-iolist/packages/registry/erlang/erlang-src/erts/lib_src'
+make[1]: Leaving directory '/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-qe2c-erlang-md5-iolist/packages/registry/erlang/erlang-src/erts/lib_src'
+ MAKE	erl_interface_build
+make[1]: Entering directory '/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-qe2c-erlang-md5-iolist/packages/registry/erlang/erlang-src/lib/erl_interface'
+=== Entering application erl_interface
+make[2]: Entering directory '/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-qe2c-erlang-md5-iolist/packages/registry/erlang/erlang-src/lib/erl_interface/src'
+ MAKE	opt
+make[3]: Entering directory '/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-qe2c-erlang-md5-iolist/packages/registry/erlang/erlang-src/lib/erl_interface/src'
+make[3]: Nothing to be done for 'opt'.
+make[3]: Leaving directory '/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-qe2c-erlang-md5-iolist/packages/registry/erlang/erlang-src/lib/erl_interface/src'
+make[2]: Leaving directory '/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-qe2c-erlang-md5-iolist/packages/registry/erlang/erlang-src/lib/erl_interface/src'
+make[2]: Entering directory '/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-qe2c-erlang-md5-iolist/packages/registry/erlang/erlang-src/lib/erl_interface/doc'
+make[2]: Nothing to be done for 'opt'.
+make[2]: Leaving directory '/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-qe2c-erlang-md5-iolist/packages/registry/erlang/erlang-src/lib/erl_interface/doc'
+=== Leaving application erl_interface
+make[1]: Leaving directory '/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-qe2c-erlang-md5-iolist/packages/registry/erlang/erlang-src/lib/erl_interface'
+ MAKE	emulator
+make[1]: Entering directory '/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-qe2c-erlang-md5-iolist/packages/registry/erlang/erlang-src/erts'
+make[2]: Entering directory '/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-qe2c-erlang-md5-iolist/packages/registry/erlang/erlang-src/erts'
+make[3]: Entering directory '/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-qe2c-erlang-md5-iolist/packages/registry/erlang/erlang-src/erts/emulator'
+ MAKE	opt
+make[4]: Entering directory '/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-qe2c-erlang-md5-iolist/packages/registry/erlang/erlang-src/erts/emulator'
+make[4]: Nothing to be done for 'all'.
+make[4]: Leaving directory '/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-qe2c-erlang-md5-iolist/packages/registry/erlang/erlang-src/erts/emulator'
+make[3]: Leaving directory '/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-qe2c-erlang-md5-iolist/packages/registry/erlang/erlang-src/erts/emulator'
+make[3]: Entering directory '/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-qe2c-erlang-md5-iolist/packages/registry/erlang/erlang-src/erts/etc'
+make[4]: Entering directory '/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-qe2c-erlang-md5-iolist/packages/registry/erlang/erlang-src/erts/etc/common'
+ MAKE	opt
+make[5]: Entering directory '/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-qe2c-erlang-md5-iolist/packages/registry/erlang/erlang-src/erts/etc/common'
+make[5]: Nothing to be done for 'etc'.
+make[5]: Leaving directory '/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-qe2c-erlang-md5-iolist/packages/registry/erlang/erlang-src/erts/etc/common'
+make[4]: Leaving directory '/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-qe2c-erlang-md5-iolist/packages/registry/erlang/erlang-src/erts/etc/common'
+make[4]: Entering directory '/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-qe2c-erlang-md5-iolist/packages/registry/erlang/erlang-src/erts/etc/unix'
+make[4]: Nothing to be done for 'opt'.
+make[4]: Leaving directory '/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-qe2c-erlang-md5-iolist/packages/registry/erlang/erlang-src/erts/etc/unix'
+make[3]: Leaving directory '/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-qe2c-erlang-md5-iolist/packages/registry/erlang/erlang-src/erts/etc'
+make[3]: Entering directory '/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-qe2c-erlang-md5-iolist/packages/registry/erlang/erlang-src/erts/epmd'
+make[4]: Entering directory '/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-qe2c-erlang-md5-iolist/packages/registry/erlang/erlang-src/erts/epmd/src'
+ MAKE	opt
+make[5]: Entering directory '/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-qe2c-erlang-md5-iolist/packages/registry/erlang/erlang-src/erts/epmd/src'
+make[5]: Nothing to be done for 'all'.
+make[5]: Leaving directory '/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-qe2c-erlang-md5-iolist/packages/registry/erlang/erlang-src/erts/epmd/src'
+make[4]: Leaving directory '/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-qe2c-erlang-md5-iolist/packages/registry/erlang/erlang-src/erts/epmd/src'
+make[3]: Leaving directory '/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-qe2c-erlang-md5-iolist/packages/registry/erlang/erlang-src/erts/epmd'
+make[3]: Entering directory '/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-qe2c-erlang-md5-iolist/packages/registry/erlang/erlang-src/erts/lib_src'
+ MAKE	opt
+make[4]: Entering directory '/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-qe2c-erlang-md5-iolist/packages/registry/erlang/erlang-src/erts/lib_src'
+make[4]: Nothing to be done for 'all'.
+make[4]: Leaving directory '/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-qe2c-erlang-md5-iolist/packages/registry/erlang/erlang-src/erts/lib_src'
+make[3]: Leaving directory '/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-qe2c-erlang-md5-iolist/packages/registry/erlang/erlang-src/erts/lib_src'
+(cd preloaded/src && make ../../ebin/erts.app)
+make[3]: Entering directory '/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-qe2c-erlang-md5-iolist/packages/registry/erlang/erlang-src/erts/preloaded/src'
+make[3]: '../../ebin/erts.app' is up to date.
+make[3]: Leaving directory '/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-qe2c-erlang-md5-iolist/packages/registry/erlang/erlang-src/erts/preloaded/src'
+make[2]: Leaving directory '/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-qe2c-erlang-md5-iolist/packages/registry/erlang/erlang-src/erts'
+make[1]: Leaving directory '/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-qe2c-erlang-md5-iolist/packages/registry/erlang/erlang-src/erts'
+ MAKE	secondary_bootstrap
+make[1]: Entering directory '/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-qe2c-erlang-md5-iolist/packages/registry/erlang/erlang-src/lib'
+make[2]: Entering directory '/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-qe2c-erlang-md5-iolist/packages/registry/erlang/erlang-src/lib/parsetools'
+=== Entering application parsetools
+make[3]: Entering directory '/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-qe2c-erlang-md5-iolist/packages/registry/erlang/erlang-src/lib/parsetools/src'
+make[3]: Nothing to be done for 'opt'.
+make[3]: Leaving directory '/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-qe2c-erlang-md5-iolist/packages/registry/erlang/erlang-src/lib/parsetools/src'
+make[3]: Entering directory '/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-qe2c-erlang-md5-iolist/packages/registry/erlang/erlang-src/lib/parsetools/doc'
+make[3]: Nothing to be done for 'opt'.
+make[3]: Leaving directory '/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-qe2c-erlang-md5-iolist/packages/registry/erlang/erlang-src/lib/parsetools/doc'
+=== Leaving application parsetools
+make[2]: Leaving directory '/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-qe2c-erlang-md5-iolist/packages/registry/erlang/erlang-src/lib/parsetools'
+make[2]: Entering directory '/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-qe2c-erlang-md5-iolist/packages/registry/erlang/erlang-src/lib/sasl'
+=== Entering application sasl
+make[3]: Entering directory '/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-qe2c-erlang-md5-iolist/packages/registry/erlang/erlang-src/lib/sasl/src'
+make[3]: Nothing to be done for 'opt'.
+make[3]: Leaving directory '/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-qe2c-erlang-md5-iolist/packages/registry/erlang/erlang-src/lib/sasl/src'
+make[3]: Entering directory '/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-qe2c-erlang-md5-iolist/packages/registry/erlang/erlang-src/lib/sasl/doc'
+make[3]: Nothing to be done for 'opt'.
+make[3]: Leaving directory '/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-qe2c-erlang-md5-iolist/packages/registry/erlang/erlang-src/lib/sasl/doc'
+make[3]: Entering directory '/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-qe2c-erlang-md5-iolist/packages/registry/erlang/erlang-src/lib/sasl/examples/src'
+make[3]: Nothing to be done for 'opt'.
+make[3]: Leaving directory '/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-qe2c-erlang-md5-iolist/packages/registry/erlang/erlang-src/lib/sasl/examples/src'
+=== Leaving application sasl
+make[2]: Leaving directory '/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-qe2c-erlang-md5-iolist/packages/registry/erlang/erlang-src/lib/sasl'
+make[2]: Entering directory '/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-qe2c-erlang-md5-iolist/packages/registry/erlang/erlang-src/lib/asn1/src'
+make[2]: Nothing to be done for 'opt'.
+make[2]: Leaving directory '/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-qe2c-erlang-md5-iolist/packages/registry/erlang/erlang-src/lib/asn1/src'
+make[1]: Leaving directory '/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-qe2c-erlang-md5-iolist/packages/registry/erlang/erlang-src/lib'
+ MAKE	tertiary_bootstrap
+make[1]: Entering directory '/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-qe2c-erlang-md5-iolist/packages/registry/erlang/erlang-src/lib'
+make[2]: Entering directory '/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-qe2c-erlang-md5-iolist/packages/registry/erlang/erlang-src/lib/parsetools'
+=== Entering application parsetools
+make[3]: Entering directory '/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-qe2c-erlang-md5-iolist/packages/registry/erlang/erlang-src/lib/parsetools/src'
+make[3]: Nothing to be done for 'opt'.
+make[3]: Leaving directory '/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-qe2c-erlang-md5-iolist/packages/registry/erlang/erlang-src/lib/parsetools/src'
+make[3]: Entering directory '/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-qe2c-erlang-md5-iolist/packages/registry/erlang/erlang-src/lib/parsetools/doc'
+make[3]: Nothing to be done for 'opt'.
+make[3]: Leaving directory '/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-qe2c-erlang-md5-iolist/packages/registry/erlang/erlang-src/lib/parsetools/doc'
+=== Leaving application parsetools
+make[2]: Leaving directory '/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-qe2c-erlang-md5-iolist/packages/registry/erlang/erlang-src/lib/parsetools'
+make[2]: Entering directory '/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-qe2c-erlang-md5-iolist/packages/registry/erlang/erlang-src/lib/wx'
+=== Entering application wx
+make[3]: Entering directory '/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-qe2c-erlang-md5-iolist/packages/registry/erlang/erlang-src/lib/wx/src'
+make[3]: Nothing to be done for 'opt'.
+make[3]: Leaving directory '/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-qe2c-erlang-md5-iolist/packages/registry/erlang/erlang-src/lib/wx/src'
+=== Leaving application wx
+make[2]: Leaving directory '/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-qe2c-erlang-md5-iolist/packages/registry/erlang/erlang-src/lib/wx'
+make[2]: Entering directory '/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-qe2c-erlang-md5-iolist/packages/registry/erlang/erlang-src/lib/public_key'
+=== Entering application public_key
+make[3]: Entering directory '/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-qe2c-erlang-md5-iolist/packages/registry/erlang/erlang-src/lib/public_key/asn1'
+make[3]: Nothing to be done for 'opt'.
+make[3]: Leaving directory '/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-qe2c-erlang-md5-iolist/packages/registry/erlang/erlang-src/lib/public_key/asn1'
+make[3]: Entering directory '/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-qe2c-erlang-md5-iolist/packages/registry/erlang/erlang-src/lib/public_key/src'
+make[3]: Nothing to be done for 'opt'.
+make[3]: Leaving directory '/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-qe2c-erlang-md5-iolist/packages/registry/erlang/erlang-src/lib/public_key/src'
+make[3]: Entering directory '/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-qe2c-erlang-md5-iolist/packages/registry/erlang/erlang-src/lib/public_key/c_src'
+make[3]: Nothing to be done for 'opt'.
+make[3]: Leaving directory '/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-qe2c-erlang-md5-iolist/packages/registry/erlang/erlang-src/lib/public_key/c_src'
+make[3]: Entering directory '/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-qe2c-erlang-md5-iolist/packages/registry/erlang/erlang-src/lib/public_key/doc'
+make[3]: Nothing to be done for 'opt'.
+make[3]: Leaving directory '/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-qe2c-erlang-md5-iolist/packages/registry/erlang/erlang-src/lib/public_key/doc'
+=== Leaving application public_key
+make[2]: Leaving directory '/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-qe2c-erlang-md5-iolist/packages/registry/erlang/erlang-src/lib/public_key'
+make[2]: Entering directory '/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-qe2c-erlang-md5-iolist/packages/registry/erlang/erlang-src/lib/erl_interface'
+=== Entering application erl_interface
+make[3]: Entering directory '/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-qe2c-erlang-md5-iolist/packages/registry/erlang/erlang-src/lib/erl_interface/src'
+ MAKE	opt
+make[4]: Entering directory '/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-qe2c-erlang-md5-iolist/packages/registry/erlang/erlang-src/lib/erl_interface/src'
+make[4]: Nothing to be done for 'opt'.
+make[4]: Leaving directory '/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-qe2c-erlang-md5-iolist/packages/registry/erlang/erlang-src/lib/erl_interface/src'
+make[3]: Leaving directory '/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-qe2c-erlang-md5-iolist/packages/registry/erlang/erlang-src/lib/erl_interface/src'
+make[3]: Entering directory '/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-qe2c-erlang-md5-iolist/packages/registry/erlang/erlang-src/lib/erl_interface/doc'
+make[3]: Nothing to be done for 'opt'.
+make[3]: Leaving directory '/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-qe2c-erlang-md5-iolist/packages/registry/erlang/erlang-src/lib/erl_interface/doc'
+=== Leaving application erl_interface
+make[2]: Leaving directory '/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-qe2c-erlang-md5-iolist/packages/registry/erlang/erlang-src/lib/erl_interface'
+make[2]: Entering directory '/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-qe2c-erlang-md5-iolist/packages/registry/erlang/erlang-src/lib/syntax_tools'
+=== Entering application syntax_tools
+make[3]: Entering directory '/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-qe2c-erlang-md5-iolist/packages/registry/erlang/erlang-src/lib/syntax_tools/src'
+make[3]: Nothing to be done for 'opt'.
+make[3]: Leaving directory '/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-qe2c-erlang-md5-iolist/packages/registry/erlang/erlang-src/lib/syntax_tools/src'
+make[3]: Entering directory '/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-qe2c-erlang-md5-iolist/packages/registry/erlang/erlang-src/lib/syntax_tools/examples'
+make[3]: Nothing to be done for 'opt'.
+make[3]: Leaving directory '/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-qe2c-erlang-md5-iolist/packages/registry/erlang/erlang-src/lib/syntax_tools/examples'
+make[3]: Entering directory '/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-qe2c-erlang-md5-iolist/packages/registry/erlang/erlang-src/lib/syntax_tools/doc'
+make[3]: Nothing to be done for 'opt'.
+make[3]: Leaving directory '/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-qe2c-erlang-md5-iolist/packages/registry/erlang/erlang-src/lib/syntax_tools/doc'
+=== Leaving application syntax_tools
+make[2]: Leaving directory '/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-qe2c-erlang-md5-iolist/packages/registry/erlang/erlang-src/lib/syntax_tools'
+make[2]: Entering directory '/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-qe2c-erlang-md5-iolist/packages/registry/erlang/erlang-src/lib/snmp'
+=== Entering application snmp
+make[3]: Entering directory '/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-qe2c-erlang-md5-iolist/packages/registry/erlang/erlang-src/lib/snmp/src/compile'
+make[3]: Nothing to be done for 'opt'.
+make[3]: Leaving directory '/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-qe2c-erlang-md5-iolist/packages/registry/erlang/erlang-src/lib/snmp/src/compile'
+make[3]: Entering directory '/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-qe2c-erlang-md5-iolist/packages/registry/erlang/erlang-src/lib/snmp/mibs'
+make[3]: Nothing to be done for 'opt'.
+make[3]: Leaving directory '/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-qe2c-erlang-md5-iolist/packages/registry/erlang/erlang-src/lib/snmp/mibs'
+make[3]: Entering directory '/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-qe2c-erlang-md5-iolist/packages/registry/erlang/erlang-src/lib/snmp/src'
+make[4]: Entering directory '/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-qe2c-erlang-md5-iolist/packages/registry/erlang/erlang-src/lib/snmp/src/compile'
+make[4]: Nothing to be done for 'opt'.
+make[4]: Leaving directory '/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-qe2c-erlang-md5-iolist/packages/registry/erlang/erlang-src/lib/snmp/src/compile'
+make[4]: Entering directory '/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-qe2c-erlang-md5-iolist/packages/registry/erlang/erlang-src/lib/snmp/src/app'
+make[4]: Nothing to be done for 'opt'.
+make[4]: Leaving directory '/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-qe2c-erlang-md5-iolist/packages/registry/erlang/erlang-src/lib/snmp/src/app'
+make[4]: Entering directory '/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-qe2c-erlang-md5-iolist/packages/registry/erlang/erlang-src/lib/snmp/src/misc'
+make[4]: Nothing to be done for 'opt'.
+make[4]: Leaving directory '/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-qe2c-erlang-md5-iolist/packages/registry/erlang/erlang-src/lib/snmp/src/misc'
+make[4]: Entering directory '/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-qe2c-erlang-md5-iolist/packages/registry/erlang/erlang-src/lib/snmp/src/agent'
+make[5]: Entering directory '/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-qe2c-erlang-md5-iolist/packages/registry/erlang/erlang-src/lib/snmp/src/agent'
+make[5]: Nothing to be done for 'behaviour_targets'.
+make[5]: Leaving directory '/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-qe2c-erlang-md5-iolist/packages/registry/erlang/erlang-src/lib/snmp/src/agent'
+make[5]: Entering directory '/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-qe2c-erlang-md5-iolist/packages/registry/erlang/erlang-src/lib/snmp/src/agent'
+make[5]: Nothing to be done for 'targets'.
+make[5]: Leaving directory '/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-qe2c-erlang-md5-iolist/packages/registry/erlang/erlang-src/lib/snmp/src/agent'
+make[4]: Leaving directory '/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-qe2c-erlang-md5-iolist/packages/registry/erlang/erlang-src/lib/snmp/src/agent'
+make[4]: Entering directory '/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-qe2c-erlang-md5-iolist/packages/registry/erlang/erlang-src/lib/snmp/src/manager'
+make[5]: Entering directory '/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-qe2c-erlang-md5-iolist/packages/registry/erlang/erlang-src/lib/snmp/src/manager'
+make[5]: Nothing to be done for 'behaviour_targets'.
+make[5]: Leaving directory '/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-qe2c-erlang-md5-iolist/packages/registry/erlang/erlang-src/lib/snmp/src/manager'
+make[5]: Entering directory '/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-qe2c-erlang-md5-iolist/packages/registry/erlang/erlang-src/lib/snmp/src/manager'
+make[5]: Nothing to be done for 'targets'.
+make[5]: Leaving directory '/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-qe2c-erlang-md5-iolist/packages/registry/erlang/erlang-src/lib/snmp/src/manager'
+make[4]: Leaving directory '/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-qe2c-erlang-md5-iolist/packages/registry/erlang/erlang-src/lib/snmp/src/manager'
+make[3]: Leaving directory '/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-qe2c-erlang-md5-iolist/packages/registry/erlang/erlang-src/lib/snmp/src'
+make[3]: Entering directory '/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-qe2c-erlang-md5-iolist/packages/registry/erlang/erlang-src/lib/snmp/examples'
+make[4]: Entering directory '/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-qe2c-erlang-md5-iolist/packages/registry/erlang/erlang-src/lib/snmp/examples/ex1'
+make[4]: Nothing to be done for 'opt'.
+make[4]: Leaving directory '/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-qe2c-erlang-md5-iolist/packages/registry/erlang/erlang-src/lib/snmp/examples/ex1'
+make[4]: Entering directory '/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-qe2c-erlang-md5-iolist/packages/registry/erlang/erlang-src/lib/snmp/examples/ex2'
+make[4]: Nothing to be done for 'opt'.
+make[4]: Leaving directory '/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-qe2c-erlang-md5-iolist/packages/registry/erlang/erlang-src/lib/snmp/examples/ex2'
+make[3]: Leaving directory '/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-qe2c-erlang-md5-iolist/packages/registry/erlang/erlang-src/lib/snmp/examples'
+make[3]: Entering directory '/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-qe2c-erlang-md5-iolist/packages/registry/erlang/erlang-src/lib/snmp/priv/conf'
+make[4]: Entering directory '/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-qe2c-erlang-md5-iolist/packages/registry/erlang/erlang-src/lib/snmp/priv/conf/agent'
+make[4]: Nothing to be done for 'opt'.
+make[4]: Leaving directory '/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-qe2c-erlang-md5-iolist/packages/registry/erlang/erlang-src/lib/snmp/priv/conf/agent'
+make[4]: Entering directory '/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-qe2c-erlang-md5-iolist/packages/registry/erlang/erlang-src/lib/snmp/priv/conf/manager'
+make[4]: Nothing to be done for 'opt'.
+make[4]: Leaving directory '/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-qe2c-erlang-md5-iolist/packages/registry/erlang/erlang-src/lib/snmp/priv/conf/manager'
+make[3]: Leaving directory '/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-qe2c-erlang-md5-iolist/packages/registry/erlang/erlang-src/lib/snmp/priv/conf'
+make[3]: Entering directory '/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-qe2c-erlang-md5-iolist/packages/registry/erlang/erlang-src/lib/snmp/doc'
+make[3]: Nothing to be done for 'opt'.
+make[3]: Leaving directory '/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-qe2c-erlang-md5-iolist/packages/registry/erlang/erlang-src/lib/snmp/doc'
+=== Leaving application snmp
+make[2]: Leaving directory '/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-qe2c-erlang-md5-iolist/packages/registry/erlang/erlang-src/lib/snmp'
+make[1]: Leaving directory '/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-qe2c-erlang-md5-iolist/packages/registry/erlang/erlang-src/lib'
+config.status: creating src/wasm32-unknown-wasi/config.h
+
+*********************************************************************
+**********************  APPLICATIONS DISABLED  **********************
+*********************************************************************
+
+jinterface     : No Java compiler found
+wx             : User gave --without-wx option
+odbc           : User gave --without-odbc option
+ssl            : User gave --without-ssl option
+crypto         : User gave --without-crypto option
+ssh            : User gave --without-ssh option
+megaco         : User gave --without-megaco option
+diameter       : User gave --without-diameter option
+snmp           : User gave --without-snmp option
+ftp            : User gave --without-ftp option
+tftp           : User gave --without-tftp option
+observer       : User gave --without-observer option
+debugger       : User gave --without-debugger option
+dialyzer       : User gave --without-dialyzer option
+jinterface     : User gave --without-jinterface option
+et             : User gave --without-et option
+eldap          : User gave --without-eldap option
+common_test    : User gave --without-common_test option
+eunit          : User gave --without-eunit option
+tools          : User gave --without-tools option
+runtime_tools  : User gave --without-runtime_tools option
+reltool        : User gave --without-reltool option
+xmerl          : User gave --without-xmerl option
+mnesia         : User gave --without-mnesia option
+os_mon         : User gave --without-os_mon option
+public_key     : User gave --without-public_key option
+asn1           : User gave --without-asn1 option
+
+*********************************************************************
+*********************************************************************
+**********************  APPLICATIONS INFORMATION  *******************
+*********************************************************************
+
+wx             : wxWidgets was not compiled with --enable-webview or wxWebView developer package is not installed, wxWebView will NOT be available
+
+        wxWidgets must be installed on your system.
+
+        Please check that wx-config is in path, the directory
+        where wxWidgets libraries are installed (returned by
+        'wx-config --libs' or 'wx-config --static --libs' command)
+        is in LD_LIBRARY_PATH or equivalent variable and
+        wxWidgets version is 3.0.2 or above.
+
+*********************************************************************
+==> Configure complete. Patching config.h files...
+Patched 48 defines in /Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-qe2c-erlang-md5-iolist/packages/registry/erlang/erlang-src/erts/wasm32-unknown-wasi/config.h
+Patched 1 defines in /Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-qe2c-erlang-md5-iolist/packages/registry/erlang/erlang-src/lib/erl_interface/src/wasm32-unknown-wasi/config.h
+Patched 0 defines in /Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-qe2c-erlang-md5-iolist/packages/registry/erlang/erlang-src/erts/wasm32-unknown-wasi/config.h
+==> Patched run_erl.c syslog defines
+==> Patched epmd.c closelog
+==> Patched sys_drivers.c to skip forker on wasm32
+  /Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-qe2c-erlang-md5-iolist/packages/registry/erlang/erlang-src/erts/emulator/beam/global.h: patched
+==> Patched global.h ESTACK/WSTACK for wasm32
+  Patched /Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-qe2c-erlang-md5-iolist/packages/registry/erlang/erlang-src/erts/emulator/beam/erl_db_util.c
+==> Patched erl_db_util.c with wasm bounds checking
+==> Patched inet_drv.c driver start signatures (3-arg for wasm call_indirect)
+==> Patched ram_file_drv.c driver start signature (3-arg for wasm call_indirect)
+==> Patched Makefile: erl_unicode.c, erl_bif_chksum.c, erl_db_util.c, erl_db_hash.c at -O1
+==> Starting build...
+make[3]: Nothing to be done for 'opt'.
+make[3]: Leaving directory '/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-qe2c-erlang-md5-iolist/packages/registry/erlang/erlang-src/lib/edoc/src'
+make[3]: Entering directory '/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-qe2c-erlang-md5-iolist/packages/registry/erlang/erlang-src/lib/edoc/include'
+make[3]: Nothing to be done for 'opt'.
+make[3]: Leaving directory '/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-qe2c-erlang-md5-iolist/packages/registry/erlang/erlang-src/lib/edoc/include'
+make[3]: Entering directory '/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-qe2c-erlang-md5-iolist/packages/registry/erlang/erlang-src/lib/edoc/priv'
+make[3]: Nothing to be done for 'opt'.
+make[3]: Leaving directory '/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-qe2c-erlang-md5-iolist/packages/registry/erlang/erlang-src/lib/edoc/priv'
+make[3]: Entering directory '/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-qe2c-erlang-md5-iolist/packages/registry/erlang/erlang-src/lib/edoc/doc'
+make[3]: Nothing to be done for 'opt'.
+make[3]: Leaving directory '/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-qe2c-erlang-md5-iolist/packages/registry/erlang/erlang-src/lib/edoc/doc'
+=== Leaving application edoc
+make[2]: Leaving directory '/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-qe2c-erlang-md5-iolist/packages/registry/erlang/erlang-src/lib/edoc'
+make[2]: Entering directory '/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-qe2c-erlang-md5-iolist/packages/registry/erlang/erlang-src/lib/erl_interface'
+=== Entering application erl_interface
+make[3]: Entering directory '/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-qe2c-erlang-md5-iolist/packages/registry/erlang/erlang-src/lib/erl_interface/src'
+ MAKE	opt
+make[4]: Entering directory '/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-qe2c-erlang-md5-iolist/packages/registry/erlang/erlang-src/lib/erl_interface/src'
+make[4]: Nothing to be done for 'opt'.
+make[4]: Leaving directory '/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-qe2c-erlang-md5-iolist/packages/registry/erlang/erlang-src/lib/erl_interface/src'
+make[3]: Leaving directory '/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-qe2c-erlang-md5-iolist/packages/registry/erlang/erlang-src/lib/erl_interface/src'
+make[3]: Entering directory '/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-qe2c-erlang-md5-iolist/packages/registry/erlang/erlang-src/lib/erl_interface/doc'
+make[3]: Nothing to be done for 'opt'.
+make[3]: Leaving directory '/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-qe2c-erlang-md5-iolist/packages/registry/erlang/erlang-src/lib/erl_interface/doc'
+=== Leaving application erl_interface
+make[2]: Leaving directory '/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-qe2c-erlang-md5-iolist/packages/registry/erlang/erlang-src/lib/erl_interface'
+make[2]: Entering directory '/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-qe2c-erlang-md5-iolist/packages/registry/erlang/erlang-src/lib/syntax_tools'
+=== Entering application syntax_tools
+make[3]: Entering directory '/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-qe2c-erlang-md5-iolist/packages/registry/erlang/erlang-src/lib/syntax_tools/src'
+make[3]: Nothing to be done for 'opt'.
+make[3]: Leaving directory '/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-qe2c-erlang-md5-iolist/packages/registry/erlang/erlang-src/lib/syntax_tools/src'
+make[3]: Entering directory '/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-qe2c-erlang-md5-iolist/packages/registry/erlang/erlang-src/lib/syntax_tools/examples'
+make[3]: Nothing to be done for 'opt'.
+make[3]: Leaving directory '/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-qe2c-erlang-md5-iolist/packages/registry/erlang/erlang-src/lib/syntax_tools/examples'
+make[3]: Entering directory '/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-qe2c-erlang-md5-iolist/packages/registry/erlang/erlang-src/lib/syntax_tools/doc'
+make[3]: Nothing to be done for 'opt'.
+make[3]: Leaving directory '/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-qe2c-erlang-md5-iolist/packages/registry/erlang/erlang-src/lib/syntax_tools/doc'
+=== Leaving application syntax_tools
+make[2]: Leaving directory '/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-qe2c-erlang-md5-iolist/packages/registry/erlang/erlang-src/lib/syntax_tools'
+make[1]: Leaving directory '/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-qe2c-erlang-md5-iolist/packages/registry/erlang/erlang-src/lib'
+make[1]: Entering directory '/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-qe2c-erlang-md5-iolist/packages/registry/erlang/erlang-src/erts/start_scripts'
+ GEN	/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-qe2c-erlang-md5-iolist/packages/registry/erlang/erlang-src/erts/start_scripts/start_clean.rel
+ GEN	/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-qe2c-erlang-md5-iolist/packages/registry/erlang/erlang-src/erts/start_scripts/start_sasl.rel
+ GEN	/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-qe2c-erlang-md5-iolist/packages/registry/erlang/erlang-src/erts/start_scripts/start_all_example.rel
+ GEN	/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-qe2c-erlang-md5-iolist/packages/registry/erlang/erlang-src/erts/start_scripts/no_dot_erlang.rel
+ GEN	/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-qe2c-erlang-md5-iolist/packages/registry/erlang/erlang-src/erts/start_scripts/start_clean.script
+ GEN	/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-qe2c-erlang-md5-iolist/packages/registry/erlang/erlang-src/erts/start_scripts/start_sasl.boot
+ GEN	/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-qe2c-erlang-md5-iolist/packages/registry/erlang/erlang-src/erts/start_scripts/no_dot_erlang.boot
+ GEN	RELEASES.src
+make[1]: Leaving directory '/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-qe2c-erlang-md5-iolist/packages/registry/erlang/erlang-src/erts/start_scripts'
+==> Build complete. Creating release...
+/nix/store/8xhvpkpg6gbm9q0sk2p3hf6nj9fzgr3n-coreutils-9.8/bin/install -c -m 644 ../../ebin/erl_prim_loader.beam ../../ebin/init.beam ../../ebin/prim_buffer.beam ../../ebin/prim_file.beam ../../ebin/prim_inet.beam ../../ebin/socket_registry.beam ../../ebin/prim_socket.beam ../../ebin/prim_net.beam ../../ebin/zlib.beam ../../ebin/prim_zip.beam ../../ebin/erl_init.beam ../../ebin/erts_code_purger.beam ../../ebin/erlang.beam ../../ebin/erts_internal.beam ../../ebin/erl_tracer.beam ../../ebin/erts_literal_area_collector.beam ../../ebin/erts_trace_cleaner.beam ../../ebin/erts_dirty_process_signal_handler.beam ../../ebin/atomics.beam ../../ebin/counters.beam ../../ebin/persistent_term.beam ../../ebin/prim_eval.beam ../../ebin/erts.app "/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-qe2c-erlang-md5-iolist/packages/registry/erlang/erlang-install/lib/erts-16.1.2/ebin"
+make[4]: Leaving directory '/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-qe2c-erlang-md5-iolist/packages/registry/erlang/erlang-src/erts/preloaded/src'
+make[3]: Leaving directory '/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-qe2c-erlang-md5-iolist/packages/registry/erlang/erlang-src/erts/preloaded/src'
+make[2]: Leaving directory '/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-qe2c-erlang-md5-iolist/packages/registry/erlang/erlang-src/erts/preloaded'
+( make -f "/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-qe2c-erlang-md5-iolist/packages/registry/erlang/erlang-src/make/otp_released_app.mk"	\
+	APP_PWD="/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-qe2c-erlang-md5-iolist/packages/registry/erlang/erlang-src/erts" APP_VSN=VSN APP=erts	\
+	TESTROOT="/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-qe2c-erlang-md5-iolist/packages/registry/erlang/erlang-install" update)			\
+ || exit $?
+make[2]: Entering directory '/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-qe2c-erlang-md5-iolist/packages/registry/erlang/erlang-src/erts'
+test -d "/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-qe2c-erlang-md5-iolist/packages/registry/erlang/erlang-install/releases/28" || mkdir -p "/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-qe2c-erlang-md5-iolist/packages/registry/erlang/erlang-install/releases/28" ;			\
+if test ! -f "/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-qe2c-erlang-md5-iolist/packages/registry/erlang/erlang-install/releases/28/installed_application_versions" ; then				\
+ echo "erts-16.1.2" > "/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-qe2c-erlang-md5-iolist/packages/registry/erlang/erlang-install/releases/28/installed_application_versions" || exit 1;	\
+else								\
+ if test x = x`grep erts-16.1.2 "/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-qe2c-erlang-md5-iolist/packages/registry/erlang/erlang-install/releases/28/installed_application_versions"` ; then \
+  echo erts-16.1.2 >> "/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-qe2c-erlang-md5-iolist/packages/registry/erlang/erlang-install/releases/28/installed_application_versions" || exit 1;	\
+ fi ;								\
+fi
+make[2]: Leaving directory '/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-qe2c-erlang-md5-iolist/packages/registry/erlang/erlang-src/erts'
+make[1]: Leaving directory '/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-qe2c-erlang-md5-iolist/packages/registry/erlang/erlang-src/erts'
+/nix/store/8xhvpkpg6gbm9q0sk2p3hf6nj9fzgr3n-coreutils-9.8/bin/install -c -m 644 "/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-qe2c-erlang-md5-iolist/packages/registry/erlang/erlang-src/OTP_VERSION" "/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-qe2c-erlang-md5-iolist/packages/registry/erlang/erlang-install/releases/28"
+==> Erlang/OTP built successfully!
+-rwxr-xr-x 1 brandon staff 4.2M Jul  1 12:16 /Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-qe2c-erlang-md5-iolist/packages/registry/erlang/erlang-install/erts-16.1.2/bin/beam.smp
+==> BEAM emulator: /Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-qe2c-erlang-md5-iolist/packages/registry/erlang/beam.wasm
+==> Erlang/OTP 28.2 build complete!
+==> Install directory: /Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-qe2c-erlang-md5-iolist/packages/registry/erlang/erlang-install
+  installed /Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-qe2c-erlang-md5-iolist/local-binaries/programs/wasm32/erlang/erlang.wasm
+==> Packing OTP runtime tree (erlang-otp.tar.zst)...
+==> erlang-otp.tar.zst: 14M
+  installed /Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-qe2c-erlang-md5-iolist/local-binaries/programs/wasm32/erlang/erlang-otp.tar.zst

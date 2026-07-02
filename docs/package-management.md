@@ -666,13 +666,22 @@ are pre-existing issues that surface independent of the cache —
 but consumers must keep the per-file workaround in place when
 porting their build script:
 
-- **Erlang `erl_unicode.c`** — compiled at `-O1` (rest of OTP
-  builds at `-O2`). At `-O2`, LLVM miscompiles aggregate
-  initialization of structs that hold shadow-stack pointers,
-  breaking ESTACK iodata traversal. Adding `fprintf` inside the
-  function changes code layout enough to mask the bug, hence the
-  Heisenbug character. See `packages/registry/erlang/build-erlang.sh`
-  comments.
+- **Erlang — several ERTS files at `-O1`** (rest of OTP builds at
+  `-O2`). At `-O2`, LLVM miscompiles code that walks iodata/term
+  structures via shadow-stack state:
+  - `erl_unicode.c` — aggregate initialization of structs that hold
+    shadow-stack pointers, breaking ESTACK iodata traversal.
+  - `erl_bif_chksum.c` — `do_chksum()`, the shared routine behind
+    `erlang:md5/1`, `crc32/1` and `adler32/1`, returns `badarg` for any
+    non-empty iolist (binaries work). This broke `beam_asm`, which
+    md5-hashes each module's chunks as an iolist, so **no module could
+    be compiled on Kandelo**; the `-O1` build restores on-platform
+    `erlc`/`compile:file`/`compile:forms`.
+  - `erl_db_util.c`, `erl_db_hash.c`, `erl_db.c` — ETS
+    match/traverse corruption.
+  Adding an `fprintf` inside such a function changes code layout enough
+  to mask the bug, hence the Heisenbug character. See
+  `packages/registry/erlang/build-erlang.sh` comments.
 - **Redis `tls.c`** — at `-O1` and above, LLVM 21.1.8 crashes
   inside `llvm::AsmPrinter::emitGlobalVariable`. Currently the
   file is stubbed out to dodge the issue; re-enabling TLS for
