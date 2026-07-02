@@ -1,0 +1,50 @@
+# Raw ESTACK/WSTACK audit grep output — OTP 28.2 erts/emulator/beam
+# source: otp_src_28.2.tar.gz (package.toml [source] OTP-28.2), sha256 verified by download
+# command: grep -rlE 'DECLARE_ESTACK|DECLARE_WSTACK|WSTACK_DECLARE|ESTACK_DECLARE' erts/emulator/beam
+
+## files (declaration idiom):
+copy.c
+erl_bif_chksum.c
+erl_db_util.c
+erl_io_queue.c
+erl_iolist.c
+erl_map.c
+erl_printf_term.c
+erl_proc_sig_queue.c
+erl_process.c
+erl_term_hashing.c
+erl_unicode.c
+external.c
+global.h
+io.c
+utils.c
+
+## per-file op counts (declare+push):
+  36  erl_map.c
+  30  external.c
+  30  erl_term_hashing.c
+  23  utils.c
+  17  erl_db_util.c
+  16  erl_printf_term.c
+  15  global.h
+  12  erl_unicode.c
+  10  copy.c
+   6  erl_proc_sig_queue.c
+   5  erl_iolist.c
+   5  erl_io_queue.c
+   3  erl_bif_chksum.c
+   2  io.c
+   2  erl_process.c
+
+## DEF sizes (heap-path thresholds):
+322:#define DEF_ESTACK_SIZE (16)
+493:#define DEF_WSTACK_SIZE (16)
+837:#define DEF_EQUEUE_SIZE (16)
+
+## db_util idiom split:
+ESTACK ops: 18
+DMC_STACK ops: 192
+
+## design-guessed files that do NOT use the idiom (refuted):
+erl_bif_binary.c: ESTACK|WSTACK count = 0
+erl_bif_re.c: ESTACK|WSTACK count = 0

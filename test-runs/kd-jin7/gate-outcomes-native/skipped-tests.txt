@@ -1,0 +1,2 @@
+chksum_iolist	pending_pr_824
+compile_module	pending_pr_824

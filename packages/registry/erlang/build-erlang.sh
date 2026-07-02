@@ -456,6 +456,18 @@ if ! grep -q '__wasm32__' "$SYS_DRIVERS" 2>/dev/null; then
     echo "==> Patched sys_drivers.c to skip forker on wasm32"
 fi
 
+# =====================================================================
+# wasm32 -O2 miscompilation workarounds (global.h init patch, per-file
+# -O1 downgrades, and the erl_db_util bounds guard below).
+#
+# SOURCE OF TRUTH + triage runbook + removal checklist:
+#   packages/registry/erlang/wasm32-miscompilations.md
+# Each workaround below has a row there and a guarding smoke case in
+# test/erlang.test.ts. If you add/remove an -O1 file, update the
+# registry and the smoke matrix in the SAME change (see the runbook).
+# On an OTP_VERSION bump, re-run the audit in that registry first.
+# =====================================================================
+
 # Patch global.h: ESTACK/WSTACK explicit field initialization on wasm32.
 # LLVM's wasm32 backend miscompiles aggregate initialization of structs
 # containing pointers to shadow-stack local arrays at -O2.
@@ -527,6 +539,9 @@ fi
 # Patch Makefile: compile certain files at -O1.
 # LLVM's wasm32 backend miscompiles several BEAM files at -O2, causing
 # shadow-stack pointer corruption and incorrect aggregate initialization.
+# Registry (facet, discovering bead, guarding smoke, removal criteria):
+#   packages/registry/erlang/wasm32-miscompilations.md
+# erl_bif_chksum.c gets its own -O1 rule via PR #824 (kd-qe2c), not here.
 EMU_MAKEFILE="$SRC_DIR/erts/emulator/wasm32-unknown-wasi/Makefile"
 if [ -f "$EMU_MAKEFILE" ] && ! grep -q 'erl_unicode.o:' "$EMU_MAKEFILE"; then
     sed -i.bak '/\$(OBJDIR)\/beam_emu\.o: beam\/emu\/beam_emu\.c/i\
