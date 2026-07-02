@@ -509,7 +509,7 @@ describe.skipIf(!nodeWasm)("SpiderMonkey Node compatibility runtime", () => {
           ? readdirSync(logsDir).map((name) => readFileSync(join(logsDir, name), "utf8")).join("\n--- npm log ---\n")
           : "";
         expect(installExitCode, `stdout:\n${stdout}\nstderr:\n${stderr}\npty:\n${ptyOutput}\nlogs:\n${npmLogs}`).toBe(0);
-        expect(ptyOutput).toMatch(/[\u280b\u2819\u2839\u2838\u283c\u2834\u2826\u2827\u2807\u280f]/);
+        expect(ptyOutput).toMatch(/added \d+ packages? in /);
         expect(existsSync(join(workDir, "node_modules/cowsay/package.json"))).toBe(true);
 
         stdout = "";

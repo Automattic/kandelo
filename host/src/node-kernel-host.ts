@@ -36,6 +36,10 @@ function currentModuleDir(): string {
 
 const MODULE_DIR = currentModuleDir();
 const DESTROY_REQUEST_TIMEOUT_MS = 2_000;
+const DEFAULT_SSL_ENV = [
+  "SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt",
+  "SSL_CERT_DIR=/etc/ssl/certs",
+] as const;
 
 export interface NodeKernelHostOptions {
   /** Maximum concurrent workers (default: 4) */
@@ -94,6 +98,8 @@ export interface SpawnOptions {
   uid?: number;
   /** Initial real/effective group ID for the process. */
   gid?: number;
+  /** Finite stdin buffer. If omitted for a non-PTY spawn without onStarted,
+   * stdin defaults to an immediate EOF. */
   stdin?: Uint8Array;
   /** Optional pre-compiled module for the supplied program bytes. */
   programModule?: WebAssembly.Module;
@@ -104,7 +110,8 @@ export interface SpawnOptions {
   ptyRows?: number;
   /** Limit heap growth to protect thread channel pages */
   maxAddr?: number;
-  /** Called after the process has been created and started */
+  /** Called after the process has been created and started. When this is set
+   * and no stdin buffer is supplied, stdin remains open for appendStdinData(). */
   onStarted?: (pid: number) => void | Promise<void>;
 }
 
@@ -197,6 +204,9 @@ export class NodeKernelHost {
   ): Promise<number> {
     const requestId = this._nextRequestId++;
     const spawnStartedBeforeExitSequence = this.exitSequence;
+    const stdin =
+      options?.stdin ??
+      (!options?.pty && !options?.onStarted ? new Uint8Array() : undefined);
 
     const pid = await this.request(requestId, {
       type: "spawn",
@@ -209,14 +219,14 @@ export class NodeKernelHost {
       // Node's dedicated kernel worker compiles/caches fork and pthread modules
       // internally where it can pass them across a single worker boundary.
       argv,
-      env: options?.env,
+      env: mergeEnv(options?.env ?? []),
       cwd: options?.cwd,
       uid: options?.uid,
       gid: options?.gid,
       pty: options?.pty,
       ptyCols: options?.ptyCols,
       ptyRows: options?.ptyRows,
-      stdin: options?.stdin,
+      stdin,
       maxAddr: options?.maxAddr,
     }) as number;
 
@@ -537,6 +547,17 @@ export class NodeKernelHost {
 }
 
 // ── Module-level helpers ──
+
+function mergeEnv(env: string[]): string[] {
+  const result = [...env];
+  for (const entry of DEFAULT_SSL_ENV) {
+    const key = entry.split("=", 1)[0];
+    if (!result.some((existing) => existing.startsWith(`${key}=`))) {
+      result.push(entry);
+    }
+  }
+  return result;
+}
 
 function loadKernelWasm(): ArrayBuffer {
   const buf = readFileSync(resolveBinary("kernel.wasm"));

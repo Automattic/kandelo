@@ -6,7 +6,7 @@ use wasm_posix_shared::{Errno, WasmStat, WasmStatfs};
 use crate::fd::FdTable;
 use crate::lock::LockTable;
 use crate::memory::MemoryManager;
-use crate::ofd::OfdTable;
+use crate::ofd::{FileType, OfdTable};
 use crate::pipe::PipeBuffer;
 use crate::signal::{PerThreadSignalState, SignalState};
 use crate::socket::SocketTable;
@@ -590,20 +590,93 @@ pub struct Process {
     pub(crate) fork_count: u64,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum StdioKind {
+    HostPipe,
+    HostTerminal,
+}
+
+impl StdioKind {
+    pub fn from_abi(value: u32) -> Option<Self> {
+        match value {
+            0 => Some(Self::HostPipe),
+            1 => Some(Self::HostTerminal),
+            _ => None,
+        }
+    }
+
+    fn file_type(self) -> FileType {
+        match self {
+            Self::HostPipe => FileType::Pipe,
+            Self::HostTerminal => FileType::CharDevice,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct StdioConfig {
+    pub stdin: StdioKind,
+    pub stdout: StdioKind,
+    pub stderr: StdioKind,
+}
+
+impl StdioConfig {
+    pub const fn captured() -> Self {
+        Self {
+            stdin: StdioKind::HostPipe,
+            stdout: StdioKind::HostPipe,
+            stderr: StdioKind::HostPipe,
+        }
+    }
+
+    pub const fn terminal() -> Self {
+        Self {
+            stdin: StdioKind::HostTerminal,
+            stdout: StdioKind::HostTerminal,
+            stderr: StdioKind::HostTerminal,
+        }
+    }
+
+    fn kind_for_fd(self, fd: i32) -> StdioKind {
+        match fd {
+            0 => self.stdin,
+            1 => self.stdout,
+            2 => self.stderr,
+            _ => unreachable!("stdio fd must be 0, 1, or 2"),
+        }
+    }
+}
+
 impl Process {
-    /// Create a new process with stdio pre-opened (fds 0, 1, 2).
-    ///
-    /// - OFD 0 = stdin  (CharDevice, O_RDONLY, host_handle=0)
-    /// - OFD 1 = stdout (CharDevice, O_WRONLY, host_handle=1)
-    /// - OFD 2 = stderr (CharDevice, O_WRONLY, host_handle=2)
+    /// Create a new process with captured, pipe-backed stdio.
     pub fn new(pid: u32) -> Self {
-        use crate::ofd::FileType;
+        Self::new_with_stdio(pid, StdioConfig::captured())
+    }
+
+    /// Create a new process with fds 0, 1, and 2 wired according to the
+    /// caller-supplied stdio configuration.
+    pub fn new_with_stdio(pid: u32, stdio: StdioConfig) -> Self {
         use wasm_posix_shared::flags::{O_RDONLY, O_WRONLY};
 
         let mut ofd_table = OfdTable::new();
-        ofd_table.create(FileType::CharDevice, O_RDONLY, 0, b"/dev/stdin".to_vec()); // OFD 0 = stdin
-        ofd_table.create(FileType::CharDevice, O_WRONLY, 1, b"/dev/stdout".to_vec()); // OFD 1 = stdout
-        ofd_table.create(FileType::CharDevice, O_WRONLY, 2, b"/dev/stderr".to_vec()); // OFD 2 = stderr
+        ofd_table.create(
+            stdio.kind_for_fd(0).file_type(),
+            O_RDONLY,
+            0,
+            b"/dev/stdin".to_vec(),
+        );
+        ofd_table.create(
+            stdio.kind_for_fd(1).file_type(),
+            O_WRONLY,
+            1,
+            b"/dev/stdout".to_vec(),
+        );
+        ofd_table.create(
+            stdio.kind_for_fd(2).file_type(),
+            O_WRONLY,
+            2,
+            b"/dev/stderr".to_vec(),
+        );
 
         let mut fd_table = FdTable::new();
         fd_table.preopen_stdio(); // fds 0,1,2 → OFD refs 0,1,2
@@ -1117,12 +1190,35 @@ pub(crate) mod test_host {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ofd::FileType;
     use crate::pipe::PipeBuffer;
 
     #[test]
     fn fork_count_starts_at_zero() {
         let proc = Process::new(1);
         assert_eq!(proc.fork_count(), 0);
+    }
+
+    #[test]
+    fn new_creates_captured_stdio_as_pipes() {
+        let proc = Process::new(1);
+        for fd in 0..=2 {
+            let entry = proc.fd_table.get(fd).expect("stdio fd");
+            let ofd = proc.ofd_table.get(entry.ofd_ref.0).expect("stdio ofd");
+            assert_eq!(ofd.file_type, FileType::Pipe);
+            assert_eq!(ofd.host_handle, fd as i64);
+        }
+    }
+
+    #[test]
+    fn new_with_stdio_can_create_terminal_stdio() {
+        let proc = Process::new_with_stdio(1, StdioConfig::terminal());
+        for fd in 0..=2 {
+            let entry = proc.fd_table.get(fd).expect("stdio fd");
+            let ofd = proc.ofd_table.get(entry.ofd_ref.0).expect("stdio ofd");
+            assert_eq!(ofd.file_type, FileType::CharDevice);
+            assert_eq!(ofd.host_handle, fd as i64);
+        }
     }
 
     #[test]

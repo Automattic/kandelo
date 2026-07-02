@@ -8,7 +8,7 @@
 import { readFileSync, existsSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
-import { CentralizedKernelWorker } from "../src/kernel-worker";
+import { CAPTURED_STDIO, CentralizedKernelWorker } from "../src/kernel-worker";
 import { resolveBinary } from "../src/binary-resolver";
 import { NodePlatformIO } from "../src/platform/node";
 import { NodeWorkerAdapter } from "../src/worker-adapter";
@@ -195,6 +195,8 @@ async function runInWorkerThread(options: RunProgramOptions): Promise<RunProgram
     stdinData = options.stdinBytes;
   } else if (options.stdin != null) {
     stdinData = new TextEncoder().encode(options.stdin);
+  } else if (!options.onStarted) {
+    stdinData = new Uint8Array();
   }
 
   // Default to mount-based VFS (rootfs.vfs at /, scratch dirs at /tmp etc.).
@@ -536,6 +538,7 @@ async function runOnMainThread(options: RunProgramOptions): Promise<RunProgramRe
     brkBase: layout.brkBase,
     mmapBase: layout.mmapBase,
     maxAddr: layout.maxAddr,
+    stdio: CAPTURED_STDIO,
   });
   processProgramBytes.set(pid, programBytes);
   processLayouts.set(pid, layout);

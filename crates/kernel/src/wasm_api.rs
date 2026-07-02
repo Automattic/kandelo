@@ -21,7 +21,7 @@ use wasm_posix_shared::fd_flags::FD_CLOEXEC;
 use wasm_posix_shared::{Errno, WasmDirent, WasmStat, WasmStatfs, WasmTimespec};
 
 use crate::ofd::FileType;
-use crate::process::{HostIO, Process};
+use crate::process::{HostIO, Process, StdioConfig, StdioKind};
 use crate::syscalls;
 
 // ---------------------------------------------------------------------------
@@ -1297,7 +1297,7 @@ pub extern "C" fn kernel_get_memory_pages() -> u32 {
     }
 }
 
-/// Create a new process in the process table.
+/// Create a new process in the process table with captured pipe stdio.
 /// Returns 0 on success, -EEXIST if pid already exists.
 #[unsafe(no_mangle)]
 pub extern "C" fn kernel_create_process(pid: u32) -> i32 {
@@ -1308,8 +1308,43 @@ pub extern "C" fn kernel_create_process(pid: u32) -> i32 {
     }
 }
 
+/// Create a new process with explicit stdio wiring.
+///
+/// Stdio kind values are per-fd:
+/// - 0: host-backed pipe semantics (`isatty` false, FIFO stat mode)
+/// - 1: host-backed terminal/char-device semantics
+///
+/// Returns 0 on success, -EINVAL for an unknown stdio kind, or -EEXIST if
+/// pid already exists.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_create_process_with_stdio(
+    pid: u32,
+    stdin_kind: u32,
+    stdout_kind: u32,
+    stderr_kind: u32,
+) -> i32 {
+    let stdio = match (
+        StdioKind::from_abi(stdin_kind),
+        StdioKind::from_abi(stdout_kind),
+        StdioKind::from_abi(stderr_kind),
+    ) {
+        (Some(stdin), Some(stdout), Some(stderr)) => StdioConfig {
+            stdin,
+            stdout,
+            stderr,
+        },
+        _ => return -(Errno::EINVAL as i32),
+    };
+
+    let table = unsafe { &mut *PROCESS_TABLE.0.get() };
+    match table.create_process_with_stdio(pid, stdio) {
+        Ok(()) => 0,
+        Err(()) => -(Errno::EEXIST as i32),
+    }
+}
+
 /// Set the program's initial brk to the value of its `__heap_base` export.
-/// Called by the host once per process — between [`kernel_create_process`]
+/// Called by the host once per process — between process creation
 /// (or post-exec re-init) and the first syscall from the new program — so
 /// `brk(0)` returns a value above the program's data section and stack
 /// region. Returns 0 on success, -ESRCH if pid not found.
@@ -1447,24 +1482,6 @@ pub extern "C" fn kernel_set_process_argv(pid: u32, data_ptr: *const u8, data_le
             if !arg.is_empty() {
                 proc.argv.push(arg.to_vec());
             }
-        }
-        0
-    } else {
-        -(Errno::ESRCH as i32)
-    }
-}
-
-/// Mark a process's stdin (fd 0) as a pipe instead of a terminal.
-/// This disables terminal line discipline (no ECHO, no ICANON) and makes
-/// isatty(0) return false. Used when providing buffered stdin data.
-/// Returns 0 on success, -ESRCH if pid not found.
-#[unsafe(no_mangle)]
-pub extern "C" fn kernel_set_stdin_pipe(pid: u32) -> i32 {
-    let table = unsafe { &mut *PROCESS_TABLE.0.get() };
-    if let Some(proc) = table.get_mut(pid) {
-        // Change OFD 0 (stdin) from CharDevice to Pipe
-        if let Some(ofd) = proc.ofd_table.get_mut(0) {
-            ofd.file_type = crate::ofd::FileType::Pipe;
         }
         0
     } else {
@@ -4208,13 +4225,21 @@ pub extern "C" fn kernel_set_current_pid(pid: u32) {
     table.set_current_pid(pid);
 }
 
-/// Set the current thread id for the next `kernel_handle_channel` call (and
-/// for any subsequent signal syscalls that need to know which thread is
-/// executing — `sigprocmask`, `sigsuspend`, `ppoll`/`pselect`, …).
+/// Set the current kernel/libc thread id for the next `kernel_handle_channel`
+/// call and for subsequent signal syscalls that need to know which POSIX thread
+/// is executing (`sigprocmask`, `sigsuspend`, `ppoll`/`pselect`, etc.).
 ///
-/// The host tracks `(pid, channelOffset) → tid` in its own map (`channelTids`)
+/// The host tracks `(pid, channelOffset) -> tid` in its own map (`channelTids`)
 /// and must call this *before* dispatching a thread-originated syscall. The
-/// main thread uses `tid = 0`, which is also the default.
+/// channel offset identifies the host mailbox; this value supplies the
+/// guest-visible pthread identity used by gettid, set_tid_address, per-thread
+/// signal state, and clear-TID cleanup.
+///
+/// This is ambient dispatch context for today's serialized host/kernel entry
+/// model. If a single kernel instance ever services channels concurrently or
+/// reentrantly, the TID should move into the syscall header or be passed as a
+/// `kernel_handle_channel` argument. The main thread uses `tid = 0`, which is
+/// also the default.
 #[unsafe(no_mangle)]
 pub extern "C" fn kernel_set_current_tid(tid: u32) {
     let table = unsafe { &mut *PROCESS_TABLE.0.get() };
@@ -9365,21 +9390,25 @@ pub extern "C" fn kernel_getaddrinfo(
 }
 
 // ---------------------------------------------------------------------------
-// Thread identity stubs (pre-threading)
+// Thread identity
 // ---------------------------------------------------------------------------
 
-/// gettid — returns pid (tid == pid until threading is implemented).
+/// gettid - returns pid for the main thread or the host-bound worker TID.
 #[unsafe(no_mangle)]
 pub extern "C" fn kernel_gettid() -> i32 {
     let (_gkl, proc) = unsafe { get_process() };
     syscalls::sys_gettid(proc)
 }
 
-/// set_tid_address — STUB: ignores tidptr, returns pid.
+/// set_tid_address - stores the calling worker thread's clear-TID pointer.
+///
+/// This is part of the musl pthread syscall ABI Kandelo supports so POSIX
+/// pthreads can join and clean up correctly; it is not a promise of Linux
+/// kernel compatibility.
 #[unsafe(no_mangle)]
-pub extern "C" fn kernel_set_tid_address(_tidptr: usize) -> i32 {
+pub extern "C" fn kernel_set_tid_address(tidptr: usize) -> i32 {
     let (_gkl, proc) = unsafe { get_process() };
-    syscalls::sys_set_tid_address(proc)
+    syscalls::sys_set_tid_address(proc, tidptr)
 }
 
 /// set_robust_list — stores the robust list head pointer (no-op for now).
@@ -9992,8 +10021,8 @@ pub extern "C" fn kernel_get_fd_send_pipe_idx(pid: u32, fd: i32) -> i32 {
 /// Create a PTY pair and wire fds 0/1/2 of `pid` to the slave side.
 /// Returns the PTY index on success, or negative errno on failure.
 ///
-/// This replaces the default CharDevice stdin/stdout/stderr with a PtySlave
-/// so that `isatty()` returns true and the process gets a real terminal.
+/// This replaces the current stdin/stdout/stderr OFDs with a PtySlave so that
+/// `isatty()` returns true and the process gets a real terminal.
 #[unsafe(no_mangle)]
 pub extern "C" fn kernel_pty_create(pid: u32) -> i32 {
     use crate::fd::OpenFileDescRef;
@@ -10033,7 +10062,7 @@ pub extern "C" fn kernel_pty_create(pid: u32) -> i32 {
         .ofd_table
         .create(FileType::PtySlave, O_RDWR, pty_idx as i64, path);
 
-    // Close the existing CharDevice OFDs for fds 0, 1, 2
+    // Close the existing stdio OFDs for fds 0, 1, 2
     for fd in 0..3i32 {
         if let Ok(entry) = proc.fd_table.get(fd) {
             let old_ofd_ref = entry.ofd_ref.0;
