@@ -30,7 +30,7 @@ import nodeVfsUrl from "@binaries/programs/wasm32/node-vfs.vfs.zst?url";
 import dashWasmUrl from "@binaries/programs/wasm32/dash.wasm?url";
 import bashWasmUrl from "@binaries/programs/wasm32/bash.wasm?url";
 import coreutilsWasmUrl from "@binaries/programs/wasm32/coreutils.wasm?url";
-import spiderMonkeyNodeWasmUrl from "@binaries/programs/wasm32/spidermonkey-node.wasm?url";
+import nodeWasmUrl from "@binaries/programs/wasm32/node.wasm?url";
 
 const SW_URL = import.meta.env.BASE_URL + "service-worker.js";
 const COI_RELOAD_SESSION_KEY = "kandelo:sm-node-coi-reload-attempted";
@@ -318,7 +318,7 @@ async function boot(
       loadBytes(bashWasmUrl, "bash.wasm"),
       loadBytes(dashWasmUrl, "dash.wasm"),
       loadBytes(coreutilsWasmUrl, "coreutils.wasm"),
-      loadBytes(spiderMonkeyNodeWasmUrl, "spidermonkey-node.wasm"),
+      loadBytes(nodeWasmUrl, "node.wasm"),
     ]);
     assertCurrent();
 
@@ -374,7 +374,7 @@ function rewriteNodeLazyFileUrl(fs: MemoryFileSystem): void {
   const placeholder = shellLazyPlaceholderUrl(NODE_LAZY_BINARY_SPEC);
   fs.rewriteLazyFileUrls((url) => {
     if (url !== placeholder) return url;
-    return spiderMonkeyNodeWasmUrl;
+    return nodeWasmUrl;
   });
 }
 
