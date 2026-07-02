@@ -9,12 +9,14 @@ set -euo pipefail
 #   tcl-install/lib/tcl8.6/        — runtime library (init.tcl, encoding/, etc.)
 #   bin/tclsh.wasm                 — standalone interpreter (optional validation)
 
-TCL_VERSION="${TCL_VERSION:-8.6.16}"
+TCL_VERSION="${TCL_VERSION:-${WASM_POSIX_DEP_VERSION:-8.6.16}}"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
-SRC_DIR="$SCRIPT_DIR/tcl-src"
-BUILD_DIR="$SCRIPT_DIR/tcl-build"
-INSTALL_DIR="$SCRIPT_DIR/tcl-install"
+WORK_DIR="${WASM_POSIX_DEP_WORK_DIR:-$SCRIPT_DIR}"
+SRC_DIR="${WASM_POSIX_DEP_SOURCE_DIR:-$WORK_DIR/tcl-src}"
+BUILD_DIR="$WORK_DIR/tcl-build"
+INSTALL_DIR="${WASM_POSIX_DEP_OUT_DIR:-$SCRIPT_DIR/tcl-install}"
+BIN_DIR="${WASM_POSIX_DEP_OUT_DIR:-$SCRIPT_DIR/bin}"
 SYSROOT="$REPO_ROOT/sysroot"
 
 # --- Prerequisites ---
@@ -34,8 +36,17 @@ export WASM_POSIX_SYSROOT="$SYSROOT"
 if [ ! -d "$SRC_DIR" ]; then
     echo "==> Downloading TCL $TCL_VERSION..."
     TARBALL="tcl${TCL_VERSION}-src.tar.gz"
-    URL="https://prdownloads.sourceforge.net/tcl/${TARBALL}"
+    URL="${WASM_POSIX_DEP_SOURCE_URL:-https://prdownloads.sourceforge.net/tcl/${TARBALL}}"
     curl --retry 10 --retry-delay 5 --retry-max-time 300 --retry-all-errors -fsSL "$URL" -o "/tmp/$TARBALL"
+    if [ -n "${WASM_POSIX_DEP_SOURCE_SHA256:-}" ]; then
+        actual_sha256="$(shasum -a 256 "/tmp/$TARBALL" | awk '{print $1}')"
+        if [ "$actual_sha256" != "$WASM_POSIX_DEP_SOURCE_SHA256" ]; then
+            echo "ERROR: checksum mismatch for $URL" >&2
+            echo "expected: $WASM_POSIX_DEP_SOURCE_SHA256" >&2
+            echo "actual:   $actual_sha256" >&2
+            exit 1
+        fi
+    fi
     mkdir -p "$SRC_DIR"
     tar xzf "/tmp/$TARBALL" -C "$SRC_DIR" --strip-components=1
     rm "/tmp/$TARBALL"
@@ -171,10 +182,10 @@ if [ -f "$TCLSH" ]; then
     mv "$TCLSH.instr" "$TCLSH"
 
     # Copy to bin/ with .wasm extension
-    mkdir -p "$SCRIPT_DIR/bin"
-    cp "$TCLSH" "$SCRIPT_DIR/bin/tclsh.wasm"
+    mkdir -p "$BIN_DIR"
+    cp "$TCLSH" "$BIN_DIR/tclsh.wasm"
     echo "==> tclsh.wasm built:"
-    ls -lh "$SCRIPT_DIR/bin/tclsh.wasm"
+    ls -lh "$BIN_DIR/tclsh.wasm"
 fi
 
 # --- Verify ---
@@ -193,12 +204,16 @@ fi
 # Install into local-binaries/ so the resolver picks the freshly-built
 # binary over the fetched release.
 source "$REPO_ROOT/scripts/install-local-binary.sh"
-install_local_binary tcl "$SCRIPT_DIR/bin/tclsh.wasm"
+install_local_binary tcl "$BIN_DIR/tclsh.wasm"
 
 # Manifest declares `wasm = "tclsh.wasm"` (not tcl.wasm), so the
 # resolver's $WASM_POSIX_DEP_OUT_DIR scratch needs the file under that
 # exact name. The helper's default-fallback uses <program>.<ext>.
 if [ -n "${WASM_POSIX_DEP_OUT_DIR:-}" ]; then
-    cp "$SCRIPT_DIR/bin/tclsh.wasm" "$WASM_POSIX_DEP_OUT_DIR/tclsh.wasm"
-    echo "  installed $WASM_POSIX_DEP_OUT_DIR/tclsh.wasm (manifest output name)"
+    if [ "$BIN_DIR/tclsh.wasm" -ef "$WASM_POSIX_DEP_OUT_DIR/tclsh.wasm" ]; then
+        echo "  output already staged at $WASM_POSIX_DEP_OUT_DIR/tclsh.wasm"
+    else
+        cp "$BIN_DIR/tclsh.wasm" "$WASM_POSIX_DEP_OUT_DIR/tclsh.wasm"
+        echo "  installed $WASM_POSIX_DEP_OUT_DIR/tclsh.wasm (manifest output name)"
+    fi
 fi

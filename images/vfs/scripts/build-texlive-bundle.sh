@@ -22,12 +22,20 @@ TEXLIVE_VERSION="${TEXLIVE_VERSION:-2025}"
 # snapshot of that year's final release; using it pins both halves of
 # the install (install-tl binary + the repository it pulls packages
 # from) to the same edition.
-TEXLIVE_INSTALL_URL="https://ftp.math.utah.edu/pub/tex/historic/systems/texlive/${TEXLIVE_VERSION}/tlnet-final/install-tl-unx.tar.gz"
-TEXLIVE_REPOSITORY="https://ftp.math.utah.edu/pub/tex/historic/systems/texlive/${TEXLIVE_VERSION}/tlnet-final"
+TEXLIVE_REPOSITORY="${TEXLIVE_REPOSITORY:-https://texlive.info/historic/systems/texlive/${TEXLIVE_VERSION}/tlnet-final}"
+TEXLIVE_FALLBACK_REPOSITORY="https://ftp.math.utah.edu/pub/tex/historic/systems/texlive/${TEXLIVE_VERSION}/tlnet-final"
+if [ -n "${TEXLIVE_INSTALL_URL:-}" ]; then
+    TEXLIVE_INSTALL_URLS=("$TEXLIVE_INSTALL_URL")
+else
+    TEXLIVE_INSTALL_URLS=(
+        "${TEXLIVE_REPOSITORY}/install-tl-unx.tar.gz"
+        "${TEXLIVE_FALLBACK_REPOSITORY}/install-tl-unx.tar.gz"
+    )
+fi
 
-TEXLIVE_DIR="$REPO_ROOT/packages/registry/texlive"
-HOST_PDFTEX="$TEXLIVE_DIR/texlive-host-build/texk/web2c/pdftex"
-INSTALL_DIR="$TEXLIVE_DIR/texlive-dist"
+TEXLIVE_DIR="${TEXLIVE_WORK_DIR:-$REPO_ROOT/packages/registry/texlive}"
+HOST_PDFTEX="${TEXLIVE_HOST_PDFTEX:-$TEXLIVE_DIR/texlive-host-build/texk/web2c/pdftex}"
+INSTALL_DIR="${TEXLIVE_INSTALL_DIR:-$TEXLIVE_DIR/texlive-dist}"
 
 # Bundle output destination. Default: served-from-public/ for direct
 # `bash build-texlive-bundle.sh` invocations during local dev.
@@ -48,9 +56,19 @@ if [ ! -d "$INSTALL_DIR/texmf-dist" ]; then
     # Download install-tl from the pinned historical archive (see header).
     INSTALLER_DIR="$TEXLIVE_DIR/install-tl"
     if [ ! -d "$INSTALLER_DIR" ]; then
-        curl --retry 10 --retry-delay 5 --retry-max-time 300 --retry-all-errors \
-            -fsSL "$TEXLIVE_INSTALL_URL" \
-            -o "/tmp/install-tl.tar.gz"
+        downloaded=
+        for install_url in "${TEXLIVE_INSTALL_URLS[@]}"; do
+            echo "==> Fetching install-tl from $install_url"
+            if curl --retry 3 --retry-delay 3 --retry-max-time 180 --retry-all-errors \
+                --connect-timeout 20 -fsSL "$install_url" -o "/tmp/install-tl.tar.gz"; then
+                downloaded=1
+                break
+            fi
+        done
+        if [ -z "$downloaded" ]; then
+            echo "ERROR: failed to download install-tl from pinned TeX Live $TEXLIVE_VERSION archives" >&2
+            exit 1
+        fi
         mkdir -p "$INSTALLER_DIR"
         tar xzf "/tmp/install-tl.tar.gz" -C "$INSTALLER_DIR" --strip-components=1
         rm "/tmp/install-tl.tar.gz"

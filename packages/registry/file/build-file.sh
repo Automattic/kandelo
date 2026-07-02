@@ -13,9 +13,10 @@ set -euo pipefail
 FILE_VERSION="${FILE_VERSION:-5.45}"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
-SRC_DIR="$SCRIPT_DIR/file-src"
-HOST_BUILD_DIR="$SCRIPT_DIR/file-host-build"
-BIN_DIR="$SCRIPT_DIR/bin"
+WORK_DIR="${WASM_POSIX_DEP_WORK_DIR:-$SCRIPT_DIR}"
+SRC_DIR="${WASM_POSIX_DEP_SOURCE_DIR:-$WORK_DIR/file-src}"
+HOST_BUILD_DIR="$WORK_DIR/file-host-build"
+BIN_DIR="${WASM_POSIX_DEP_OUT_DIR:-$SCRIPT_DIR/bin}"
 SYSROOT="$REPO_ROOT/sysroot"
 
 # --- Prerequisites ---
@@ -35,8 +36,17 @@ export WASM_POSIX_SYSROOT="$SYSROOT"
 if [ ! -d "$SRC_DIR" ]; then
     echo "==> Downloading file $FILE_VERSION..."
     TARBALL="file-${FILE_VERSION}.tar.gz"
-    URL="https://astron.com/pub/file/${TARBALL}"
+    URL="${WASM_POSIX_DEP_SOURCE_URL:-https://astron.com/pub/file/${TARBALL}}"
     curl --retry 10 --retry-delay 5 --retry-max-time 300 --retry-all-errors -fsSL "$URL" -o "/tmp/$TARBALL"
+    if [ -n "${WASM_POSIX_DEP_SOURCE_SHA256:-}" ]; then
+        actual_sha256="$(shasum -a 256 "/tmp/$TARBALL" | awk '{print $1}')"
+        if [ "$actual_sha256" != "$WASM_POSIX_DEP_SOURCE_SHA256" ]; then
+            echo "ERROR: checksum mismatch for $URL" >&2
+            echo "expected: $WASM_POSIX_DEP_SOURCE_SHA256" >&2
+            echo "actual:   $actual_sha256" >&2
+            exit 1
+        fi
+    fi
     mkdir -p "$SRC_DIR"
     tar xzf "/tmp/$TARBALL" -C "$SRC_DIR" --strip-components=1
     rm "/tmp/$TARBALL"
@@ -251,8 +261,8 @@ echo "Usage: file.wasm -m /path/to/magic.lite /path/to/file"
 # Install into local-binaries/ so the resolver picks the freshly-built
 # binary over the fetched release.
 source "$REPO_ROOT/scripts/install-local-binary.sh"
-install_local_binary file "$SCRIPT_DIR/bin/file.wasm"
-install_local_binary file "$SCRIPT_DIR/bin/magic.lite"
+install_local_binary file "$BIN_DIR/file.wasm"
+install_local_binary file "$BIN_DIR/magic.lite"
 
 # Stage magic.lite into the resolver scratch so it lands in the cache
 # canonical path (and from there, the .tar.zst release archive).
@@ -262,6 +272,10 @@ install_local_binary file "$SCRIPT_DIR/bin/magic.lite"
 # consumer's path empty and shell's source build dies. Outside the
 # resolver, $WASM_POSIX_DEP_OUT_DIR is unset and this is a no-op.
 if [ -n "${WASM_POSIX_DEP_OUT_DIR:-}" ] && [ -f "$BIN_DIR/magic.lite" ]; then
-    cp "$BIN_DIR/magic.lite" "$WASM_POSIX_DEP_OUT_DIR/magic.lite"
-    echo "  staged magic.lite into resolver scratch"
+    if [ "$BIN_DIR/magic.lite" -ef "$WASM_POSIX_DEP_OUT_DIR/magic.lite" ]; then
+        echo "  output already staged at $WASM_POSIX_DEP_OUT_DIR/magic.lite"
+    else
+        cp "$BIN_DIR/magic.lite" "$WASM_POSIX_DEP_OUT_DIR/magic.lite"
+        echo "  staged magic.lite into resolver scratch"
+    fi
 fi

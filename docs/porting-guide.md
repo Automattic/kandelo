@@ -723,6 +723,10 @@ Formulae should use normal Homebrew DSL and call the normal Kandelo build path:
 - keep cross-compile truth in the package build script with explicit
   `ac_cv_*` cache variables when upstream `configure` would otherwise detect
   host features;
+- leave `KandeloPackageFormula#kandelo_build_package` at its wasm32-only
+  default unless the build script consumes `WASM_POSIX_DEP_TARGET_ARCH`,
+  selects the matching sysroot, and the formula test is verified for the
+  requested architecture;
 - install the produced Wasm files into the Homebrew keg, not into Kandelo's
   resolver cache;
 - put `test do` coverage through Kandelo, for example by running the produced
