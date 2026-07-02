@@ -5,12 +5,14 @@
     "moduleResolution": "bundler",
     "strict": true,
     "esModuleInterop": true,
+    "ignoreDeprecations": "6.0",
     "skipLibCheck": true,
     "outDir": "dist",
     "rootDir": "src",
     "declaration": true,
     "sourceMap": true,
-    "lib": ["ES2024", "ES2024.SharedMemory", "DOM"]
+    "lib": ["ES2024", "ES2024.SharedMemory", "DOM"],
+    "types": ["node"]
   },
   "include": ["src"]
 }

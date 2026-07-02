@@ -20,6 +20,20 @@ export const DEFAULT_MAX_PAGES = PROCESS_MEMORY_DEFAULT_MAX_PAGES;
 export const PAGES_PER_THREAD = PROCESS_MEMORY_PAGES_PER_THREAD_SLOT;
 export const PAGES_PER_THREAD_SLOT = PROCESS_MEMORY_PAGES_PER_THREAD_SLOT;
 
+/** Return true when bytes start with a WebAssembly module header. */
+export function isWasmModuleBytes(programBytes: ArrayBuffer): boolean {
+  const src = new Uint8Array(programBytes);
+  return src.length >= 8 &&
+    src[0] === 0x00 &&
+    src[1] === 0x61 &&
+    src[2] === 0x73 &&
+    src[3] === 0x6d &&
+    src[4] === 0x01 &&
+    src[5] === 0x00 &&
+    src[6] === 0x00 &&
+    src[7] === 0x00;
+}
+
 /**
  * Read an unsigned LEB128 starting at `off`.
  * Returns [value, bytesConsumed].

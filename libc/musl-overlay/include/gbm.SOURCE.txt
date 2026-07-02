@@ -1,0 +1,42 @@
+Vendored libgbm public header
+=============================
+
+Source:     mesa/mesa @ mesa-24.3.0
+Tag SHA:    ae41063cd236bd9242c2e7e54583d0ed4b00e641 (annotated)
+Commit SHA: f1f246cfda65eff82fba3be1caf2d23bdeda60cc
+Tagger/Author: Dylan Baker <dylan.c.baker@intel.com>
+Tag date:   2024-11-21T16:40:11Z
+Vendored:   2026-05-20
+License:    MIT (Intel Corporation 2011 — see header preamble)
+
+The file is byte-for-byte upstream from
+`src/gbm/main/gbm.h` at the above tag. The implementation in
+`libc/glue/libgbm_stub.c` covers a deliberate subset of the
+declared surface (the buffer-object lifecycle + the accessors —
+see the file header for the exact list). Symbols declared in this
+header but NOT implemented by the stub (e.g. gbm_surface_*,
+gbm_bo_create_with_modifiers*, gbm_bo_write,
+gbm_bo_set_user_data) will surface as link-time undefined-symbol
+errors if a consumer calls them — by design, to keep the stub
+scope obvious.
+
+File
+----
+gbm.h  sha256 8b18b1d673798eb1d6cc8757ebd884bb679cb5e902e470e78da42d86a809d4d6
+
+Fetch recipe (deterministic — re-run to refresh against the same tag)
+---------------------------------------------------------------------
+TAG=mesa-24.3.0
+URL=https://gitlab.freedesktop.org/mesa/mesa/-/raw/${TAG}/src/gbm/main/gbm.h
+curl -sSfL -o libc/musl-overlay/include/gbm.h "${URL}"
+shasum -a 256 libc/musl-overlay/include/gbm.h
+
+If the sha256 no longer matches the value above, the upstream tag
+has been re-pushed (rare for release tags) or the wrong tag is
+pinned. Investigate before silently updating this file.
+
+Installation
+------------
+`scripts/install-overlay-headers.sh <sysroot>` copies this to
+`<sysroot>/include/gbm.h`, making it reachable as `<gbm.h>` from
+any user program compiled with the wasm32 sysroot.

@@ -7,6 +7,7 @@
  * the site editor. It ensures the Gutenberg editor iframe renders blocks.
  *
  * Requires:
+ *   0. KANDELO_WORDPRESS_SITE_EDITOR_E2E=1
  *   1. PHP binary: packages/registry/php/php-src/sapi/cli/php
  *   2. WordPress files: packages/registry/wordpress/wordpress/
  *   3. Kernel wasm: host/wasm/kandelo-kernel.wasm
@@ -33,14 +34,17 @@ const dbPath = join(wpDir, "wp-content/database/wordpress.db");
 const PHP_AVAILABLE = !!phpBinaryPath;
 const WP_AVAILABLE = existsSync(join(wpDir, "wp-settings.php"));
 const KERNEL_AVAILABLE = !!kernelWasmPath;
+const E2E_ENABLED = process.env.KANDELO_WORDPRESS_SITE_EDITOR_E2E === "1";
 
-const SKIP_REASON = !PHP_AVAILABLE
-  ? "PHP binary not built"
-  : !WP_AVAILABLE
-    ? "WordPress not downloaded (run packages/registry/wordpress/setup.sh)"
-    : !KERNEL_AVAILABLE
-      ? "Kernel wasm not built (run bash build.sh)"
-      : "";
+const SKIP_REASON = !E2E_ENABLED
+  ? "set KANDELO_WORDPRESS_SITE_EDITOR_E2E=1 to run the heavyweight browser E2E"
+  : !PHP_AVAILABLE
+    ? "PHP binary not built"
+    : !WP_AVAILABLE
+      ? "WordPress not downloaded (run packages/registry/wordpress/setup.sh)"
+      : !KERNEL_AVAILABLE
+        ? "Kernel wasm not built (run bash build.sh)"
+        : "";
 
 const ADMIN_USER = "admin";
 const ADMIN_PASS = "X9#kQ2!vLm@pR7$w";

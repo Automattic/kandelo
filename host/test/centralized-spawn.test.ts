@@ -10,6 +10,8 @@
  */
 
 import { describe, expect, it } from "vitest";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { runCentralizedProgram } from "./centralized-test-helper";
@@ -33,6 +35,7 @@ describe("non-forking posix_spawn", () => {
       execPrograms: new Map([
         ["/usr/bin/hello", helloWasm],
       ]),
+      useDefaultRootfs: false,
       timeout: 30_000,
       captureForkCount: true,
     });
@@ -59,6 +62,7 @@ describe("non-forking posix_spawn", () => {
         ["/usr/bin/hello", helloWasm],
         ["/usr/bin/spawn-pause", spawnPauseWasm],
       ]),
+      useDefaultRootfs: false,
       timeout: 60_000,
       captureForkCount: true,
     });
@@ -70,5 +74,30 @@ describe("non-forking posix_spawn", () => {
     expect(result.stdout).toContain("ALL OK");
     // GUARDRAIL: three posix_spawn calls and zero fork bumps.
     expect(result.forkCount).toBe(0n);
+  });
+
+  it("reports ENOEXEC for non-Wasm spawn targets before launching a worker", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "kandelo-enoexec-"));
+    const nativeLikeBinary = join(tempDir, "not-wasm");
+    try {
+      writeFileSync(nativeLikeBinary, Buffer.from([0x7f, 0x45, 0x4c, 0x46, 0, 0, 0, 0]));
+
+      const result = await runCentralizedProgram({
+        programPath: spawnSmokeWasm,
+        argv: ["spawn-smoke", "/usr/bin/not-wasm"],
+        execPrograms: new Map([
+          ["/usr/bin/not-wasm", nativeLikeBinary],
+        ]),
+        useDefaultRootfs: false,
+        timeout: 30_000,
+      });
+
+      expect(result.exitCode).toBe(1);
+      expect(result.stderr).toContain("Exec format error");
+      expect(result.stderr).not.toContain("Centralized worker failed");
+      expect(result.stderr).not.toContain("WebAssembly.compile()");
+    } finally {
+      rmSync(tempDir, { recursive: true, force: true });
+    }
   });
 });

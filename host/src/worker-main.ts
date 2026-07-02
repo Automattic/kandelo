@@ -1,5 +1,5 @@
 /**
- * Centralized worker entry points.
+ * Kernel worker entry points.
  *
  * Programs compiled with channel_syscall.c run in Worker threads.
  * All syscalls go through a shared-memory channel to the
@@ -94,7 +94,7 @@ function buildKernelImports(
       return len;
     },
 
-    // Fork/exec state — not a fork child in centralized mode
+    // Fork/exec state — not a fork child.
     kernel_is_fork_child: (): number => 0,
     kernel_apply_fork_fd_actions: (): number => 0,
     kernel_get_fork_exec_path: (_buf: number | bigint, _max: number): number => 0,
@@ -472,13 +472,11 @@ function buildImportObject(
 
   // llvm/lld ≥22 emit __c_longjmp as a tag import for setjmp users; instantiation fails silently without it.
   if (moduleImports.some(i => i.module === "env" && i.name === "__c_longjmp" && (i.kind as string) === "tag")) {
-    const Tag = (
-      WebAssembly as typeof WebAssembly & {
-        Tag?: new (descriptor: { parameters: string[] }) => WebAssembly.ExportValue;
-      }
-    ).Tag;
+    const Tag = (WebAssembly as typeof WebAssembly & {
+      Tag?: new (descriptor: { parameters: string[] }) => WebAssembly.Tag;
+    }).Tag;
     if (Tag) {
-      envImports.__c_longjmp = new Tag({ parameters: ["i32"] });
+      envImports.__c_longjmp = new Tag({ parameters: ["i32"] }) as unknown as WebAssembly.ExportValue;
     }
   }
 
@@ -1125,7 +1123,7 @@ export async function centralizedWorkerMain(
     port.postMessage({
       type: "error",
       pid: initData.pid,
-      message: `Centralized worker failed: ${errMsg}`,
+      message: `Kernel worker failed: ${errMsg}`,
     } satisfies WorkerToHostMessage);
   }
 }
@@ -1691,7 +1689,7 @@ export function patchWasmForThread(bytes: ArrayBuffer): ArrayBuffer {
 }
 
 /**
- * Thread worker entry point for centralized mode.
+ * Thread worker entry point.
  *
  * Threads share the parent process's Memory. This function:
  * 1. Instantiates the same Wasm module with shared memory (start section stripped)
@@ -1732,7 +1730,16 @@ export async function centralizedThreadWorkerMain(
     const forkBufAddr = channelOffset - FORK_BUF_SIZE;
     let forkResult = 0;
 
-    const kernelImports = buildKernelImports(memory, channelOffset);
+    let kernelThreadExitStatus: number | null = null;
+    const kernelImports = buildKernelImports(
+      memory,
+      channelOffset,
+      undefined,
+      undefined,
+      (status) => {
+        kernelThreadExitStatus = status;
+      },
+    );
     if (hasForkInstrumentation) {
       kernelImports.kernel_fork = (): number => {
         if (!threadInstance) return -38; // ENOSYS
@@ -1817,12 +1824,12 @@ export async function centralizedThreadWorkerMain(
           const raw = threadFn(threadArg);
           result = Number(raw);
         } catch (e) {
-          if (e instanceof Error && e.message.includes("unreachable")) {
-            result = 0;
-            break;
-          }
-          if (e instanceof Error && e.message.includes("null function or function signature mismatch")) {
-            result = 0;
+          if (
+            e instanceof Error &&
+            e.message.includes("unreachable") &&
+            kernelThreadExitStatus !== null
+          ) {
+            result = kernelThreadExitStatus;
             break;
           }
           throw e;
@@ -1846,12 +1853,12 @@ export async function centralizedThreadWorkerMain(
         const raw = threadFn(threadArg);
         result = Number(raw);
       } catch (e) {
-        if (e instanceof Error && e.message.includes("unreachable")) {
-          // Thread exited via kernel_exit → unreachable trap
-          result = 0;
-        } else if (e instanceof Error && e.message.includes("null function or function signature mismatch")) {
-          // call_indirect type mismatch — treat as thread crash but don't abort
-          result = 0;
+        if (
+          e instanceof Error &&
+          e.message.includes("unreachable") &&
+          kernelThreadExitStatus !== null
+        ) {
+          result = kernelThreadExitStatus;
         } else {
           throw e;
         }
@@ -1880,10 +1887,13 @@ export async function centralizedThreadWorkerMain(
       tid,
     } satisfies WorkerToHostMessage);
   } catch (err) {
+    const message = err instanceof Error
+      ? `${err.message}\n${err.stack ?? ""}`
+      : String(err);
     port.postMessage({
-      type: "thread_exit",
+      type: "error",
       pid,
-      tid,
+      message: `Thread worker failed: ${message}`,
     } satisfies WorkerToHostMessage);
   }
 }

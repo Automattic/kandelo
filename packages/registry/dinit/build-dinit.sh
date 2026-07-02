@@ -68,9 +68,36 @@ if ! command -v wasm32posix-c++ &>/dev/null; then
     exit 1
 fi
 
+LIBCXX_DIR="${WASM_POSIX_DEP_LIBCXX_DIR:-}"
+if [ -n "$LIBCXX_DIR" ]; then
+    copy_dep_file() {
+        local src="$1"
+        local dst="$2"
+
+        if [ -e "$dst" ] && [ ! -L "$dst" ] && cmp -s "$src" "$dst"; then
+            return
+        fi
+
+        rm -f "$dst"
+        cp "$src" "$dst"
+    }
+
+    mkdir -p "$SYSROOT/lib" "$SYSROOT/include/c++"
+    copy_dep_file "$LIBCXX_DIR/lib/libc++.a" "$SYSROOT/lib/libc++.a"
+    copy_dep_file "$LIBCXX_DIR/lib/libc++abi.a" "$SYSROOT/lib/libc++abi.a"
+
+    LIBCXX_INCLUDE_SRC="$LIBCXX_DIR/include/c++/v1"
+    LIBCXX_INCLUDE_DST="$SYSROOT/include/c++/v1"
+    if [ ! -d "$LIBCXX_INCLUDE_DST" ] \
+        || [ "$(cd "$LIBCXX_INCLUDE_SRC" && pwd -P)" != "$(cd "$LIBCXX_INCLUDE_DST" && pwd -P)" ]; then
+        rm -rf "$LIBCXX_INCLUDE_DST"
+        cp -RL "$LIBCXX_INCLUDE_SRC" "$LIBCXX_INCLUDE_DST"
+    fi
+fi
+
 if [ ! -f "$SYSROOT/lib/libc++.a" ]; then
     echo "ERROR: libc++.a not found in $SYSROOT/lib/" >&2
-    echo "       The MariaDB or another C++ build script installs it; build that first." >&2
+    echo "       Resolve the declared libcxx dependency first." >&2
     exit 1
 fi
 

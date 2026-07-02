@@ -1,5 +1,5 @@
 /*
- * channel_syscall.c — Channel-based syscall dispatch for centralized kernel.
+ * channel_syscall.c — Channel-based syscall dispatch for the shared kernel.
  *
  * Instead of importing kernel_* functions, this glue writes the syscall
  * number and arguments to a shared-memory channel, notifies the kernel

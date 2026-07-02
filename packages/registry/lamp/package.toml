@@ -2,21 +2,19 @@ kind = "program"
 name = "lamp"
 version = "0.1.0"
 kernel_abi = 7
-# build-lamp-vfs-image.ts bakes a service image: dinit as PID 1,
-# nginx, php-fpm/opcache, mariadbd, a minimal bootstrap shell for the
-# MariaDB one-shot script, and the WordPress tree. It does not bake the
-# full shell toolset; service inspection happens from a separate shell
-# process in the browser host.
+# build-lamp-vfs-image.ts starts from shell.vfs.zst, then bakes a service
+# image: dinit as PID 1, nginx, php-fpm/opcache, mariadbd, the MariaDB
+# preinitialized /data directory, and a preinstalled WordPress database.
+# The interactive terminal sees the same shell files that the shell demo ships.
 # It reads mariadbd.wasm via `resolveBinary("programs/mariadb/mariadbd.wasm")`.
 # The bootstrap SQL prefers `packages/registry/mariadb/mariadb-install/`
 # when a local source build has populated it, otherwise it is extracted
 # from the MariaDB source tarball on demand.
 depends_on = [
+    "shell@0.1.0",
     "mariadb@10.5.28",
     "nginx@1.24.0",
     "php@8.3.2",
-    "dash@0.5.12",
-    "coreutils@9.6",
     "dinit@0.19.4",
     "msmtpd@1.8.32",
 ]

@@ -1,0 +1,43 @@
+started_at=2026-06-12T23:42:43Z
+kandelo dev shell — LLVM 21, Rust (pinned via rust-toolchain.toml), Node 24, Erlang 28 (minimal), SDK on PATH
+===== SQLite project unit tests on Kandelo node host =====
+Permutation: full | Jobs: 2 | Results: test-runs/gastown-sqlite-node-full-pr5/node
+===== SQLite official testrunner.tcl on Kandelo Node host =====
+Permutation: full | Jobs: 2 | Workdir: /tmp/kandelo-sqlite-official.eHaCqw
+Results dir: test-runs/gastown-sqlite-node-full-pr5/node
+splitting work across 2 cores
+built testset in 2538ms..
+[kernel-worker] pid=101: Kernel worker failed: WebAssembly.compile(): expected magic word 00 61 73 6d, found cf fa ed fe @+0
+CompileError: WebAssembly.compile(): expected magic word 00 61 73 6d, found cf fa ed fe @+0
+[process-worker] Kernel worker failed: WebAssembly.compile(): expected magic word 00 61 73 6d, found cf fa ed fe @+0
+CompileError: WebAssembly.compile(): expected magic word 00 61 73 6d, found cf fa ed fe @+0
+Terminated: 15             TCL_LIBRARY="$TCL_INSTALL/lib/tcl8.6" KERNEL_CWD="$WORKDIR" KERNEL_UID="${SQLITE_TEST_UID:-1000}" KERNEL_GID="${SQLITE_TEST_GID:-1000}" TIMEOUT="$TIMEOUT_MS" node --experimental-wasm-exnref --import tsx/esm "$REPO_ROOT/examples/run-example.ts" "$TESTFIXTURE" "${ARGS[@]}"
+===== SQLite official testrunner database summary =====
+SQLite official testrunner summary
+host=node
+permutation=full
+jobs=2
+workdir=/tmp/kandelo-sqlite-official.eHaCqw
+results_dir=test-runs/gastown-sqlite-node-full-pr5/node
+
+total_jobs  done_jobs  failed_jobs  omitted_jobs  running_jobs  ready_jobs  total_cases  total_case_errors
+----------  ---------  -----------  ------------  ------------  ----------  -----------  -----------------
+1394        0          0            0             1             1393        0            0
+
+state    jobs  cases  case_errors
+-------  ----  -----  -----------
+ready    1393  0      0
+running  1     0      0
+
+Jobs by SQLite testrunner config:
+config  jobs  cases  case_errors
+------  ----  -----  -----------
+full    1394  0      0
+
+Failed, running, and omitted jobs:
+jobid  state    displaytype  displayname                       cases  errors  ms
+-----  -------  -----------  --------------------------------  -----  ------  --
+883    running  tcl          ext/fts5/test/fts5optimize2.test  0      0       0
+scripts/run-sqlite-project-unit-tests.sh: line 142: EXTRA_ARGS[@]: unbound variable
+finished_at=2026-06-12T23:49:35Z
+exit_status=1

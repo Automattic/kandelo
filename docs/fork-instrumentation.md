@@ -11,6 +11,10 @@ program invokes the tool after linking. Asyncify is not an active implementation
 path: do not use `wasm-opt --asyncify`, do not accept `asyncify_*` exports, and
 do not add Asyncify compatibility fallbacks. This document is the
 living reference for the tool's behavior, exported ABI, and save-buffer format.
+Some conservative-GC package builds run an additional local-root visibility
+pass before fork instrumentation. That pass is not part of the fork ABI; see
+[`crates/wasm-local-root-spill/README.md`](../crates/wasm-local-root-spill/README.md)
+for its Ruby-focused rationale, risk profile, and extension limits.
 For motivation, tradeoffs, and the rollout plan that led here, read
 [`plans/2026-04-20-fork-instrumentation-design.md`](plans/2026-04-20-fork-instrumentation-design.md);
 for the post-rollout switch-dispatch redesign and non-fork-path-call gating
@@ -227,8 +231,8 @@ tool per-function based on call-site topology:
 
 | Scheme                       | When picked                                                                                                                                                                                                                                                                                                                       | How REWIND reaches the resumed call                                                                                                                                                                                            |
 |------------------------------|-----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
-| switch-dispatch (top-level)  | Every fork-path call lives at the function's top level. Top-level operand-stack carryovers (values pushed before the call's args and consumed after — common in LLVM `*(sp+K) = call(...)` patterns) are absorbed via per-call spill locals (sub-commit 2.4c).                                                                    | A top-level `br_table`, gated by `state == REWINDING`, jumps directly to the matching `$POST_K` label. The chunks between calls run only on the NORMAL fall-through path; carryover spill locals are reloaded in the post-call. |
-| switch-dispatch (nested)     | Some fork-path calls live inside `Block` / `IfElse` / `Loop` / `TryTable` bodies. Sub-commits 2.5/2.6 made this scheme cover: direct-call carryovers at any nesting depth (2.5c), nested-Loop-with-carryover (2.5c side benefit), multi-value-params SubRegion bodies via body-input-param prespill (2.6c).                       | Cascading `POST_K` blocks plus a per-region `br_table` route REWIND through each enclosing instruction's own dispatch — see [Nested per-block switch-dispatch](#nested-per-block-switch-dispatch). For multi-value-params bodies, the body's input params are pre-spilled at body entry and reloaded inside POST_0 to bridge the `Simple(None)` POST_K typing. |
+| switch-dispatch (top-level)  | Every fork-path call lives at the function's top level. Top-level operand-stack carryovers (values pushed before the call's args and consumed after — common in LLVM `*(sp+K) = call(...)` patterns) are absorbed via per-call spill locals (sub-commit 2.4c). Pure scalar call-argument tails can be replayed instead of spilled. | A top-level `br_table`, gated by `state == REWINDING`, jumps directly to the matching `$POST_K` label. The chunks between calls run only on the NORMAL fall-through path; carryover spill locals are reloaded in the post-call, followed by spilled or replayed call args. |
+| switch-dispatch (nested)     | Some fork-path calls live inside `Block` / `IfElse` / `Loop` / `TryTable` bodies. Sub-commits 2.5/2.6 made this scheme cover: direct-call carryovers at any nesting depth (2.5c), nested-Loop-with-carryover (2.5c side benefit), multi-value-params SubRegion bodies via body-input-param prespill (2.6c). Pure scalar direct-call args and condition-only `IfElse` carryovers can be replayed instead of spilled. | Cascading `POST_K` blocks plus a per-region `br_table` route REWIND through each enclosing instruction's own dispatch — see [Nested per-block switch-dispatch](#nested-per-block-switch-dispatch). For multi-value-params bodies, the body's input params are pre-spilled at body entry and reloaded inside POST_0 to bridge the `Simple(None)` POST_K typing. |
 
 A third path — **guard-dispatch** — existed before commits 3-4 of the
 fork-instrument mega-PR (2026-05-14). It wrapped each fork-path call site
@@ -324,34 +328,36 @@ After instrumentation (abridged):
   ;; [1] Preamble: if REWINDING, load our frame and jump to matching call.
   (if (i32.eq (global.get $_wpk_fork_state) (i32.const 2 (; REWINDING ;)))
     (then
-      ;; Load frame header + locals from buf; set $call_idx_local.
+      ;; Move current_pos back to this frame, then restore frame fields
+      ;; and locals. call_index remains in the frame header.
       ...))
 
-  ;; [2] Body wrapper: runs on NORMAL, and on REWINDING only when
-  ;;     call_idx matches the target call site.
+  ;; [2] Body wrapper: runs on NORMAL; on REWINDING, dispatch jumps to
+  ;;     the matching post-call site using frame.call_index.
   (block $unwind_save
-    (if (i32.or
-          (i32.eq (global.get $_wpk_fork_state) (i32.const 0 (; NORMAL ;)))
-          (i32.and
-            (i32.eq (global.get $_wpk_fork_state) (i32.const 2 (; REWINDING ;)))
-            (i32.eq (local.get $call_idx_local) (i32.const 0))))
+    (block $POST_0
+      (block $dispatch_normal
+        (if (i32.eq (global.get $_wpk_fork_state) (i32.const 2 (; REWINDING ;)))
+          (then
+            ;; Load frame.call_index from *(buf + 0) + 4.
+            ...
+            (br_table $POST_0 $unwind_save))))
+      ;; chunk 0 would run here on NORMAL only.
+    )
+    ;; [3] Wrapped call site.
+    call $fork
+    ;; [4] Post-call unwind check: if callee returned in UNWINDING,
+    ;;     write frame.call_index and jump to postamble.
+    (if (i32.eq (global.get $_wpk_fork_state) (i32.const 1 (; UNWINDING ;)))
       (then
-        ;; [3] Wrapped call site.
-        call $fork
-        (local.set $call_idx_local (i32.const 0))
-        ;; [4] Post-call unwind check: if callee returned in UNWINDING
-        ;;     state, skip the rest of the body and jump to postamble.
-        (br_if $unwind_save
-          (i32.eq (global.get $_wpk_fork_state) (i32.const 1 (; UNWINDING ;))))
-      )
-      (else
-        ;; Supply default values for the call's result types so the
-        ;; wrapper typechecks; never reached on NORMAL.
-        (i32.const 0)))
+        ;; *( *(buf + 0) + 4 ) = 0
+        ...
+        (br $unwind_save)))
     (return))
 
-  ;; [5] Postamble: write frame header, serialize locals, bump current_pos,
-  ;;     then return a default value for the function's result type.
+  ;; [5] Postamble: write remaining frame header fields, serialize locals,
+  ;;     bump current_pos, then return a default value for the function's
+  ;;     result type.
   ...
   (return (i32.const 0)))
 ```
@@ -360,19 +366,21 @@ Numbered callouts:
 
 1. **Preamble (Phase 4d).** Every instrumented function opens with a state
    test. Under `REWINDING`, the preamble reads `current_pos`, locates the
-   frame at `current_pos - frame_size`, loads the header into synthetic
-   locals, and deserializes each scalar user local.
+   frame at `current_pos - frame_size`, stores that frame base back into
+   `*(buf + 0)`, and deserializes each scalar user local. Dispatch reads
+   `call_index` directly from that active frame header.
 2. **Body wrapper (Phase 4b/4c).** The original body is wrapped in a `$unwind_save`
-   block. The if-gate condition lets the body run under `NORMAL`, and also
-   under `REWINDING` when the per-function `$call_idx_local` matches the
-   index baked into this call site.
+   block. On `REWINDING`, a `br_table` keyed by `frame.call_index` jumps to
+   the selected post-call landing. On `NORMAL`, dispatch falls through and
+   executes the original chunks.
 3. **Wrapped call site (Phase 4c).** The original call is kept intact. After
-   the call returns, the tool writes `call_index` into `$call_idx_local`.
-4. **Unwind bridge (Phase 4c/4d).** A `br_if $unwind_save` checks the state
-   global. If the callee began unwinding, control jumps past the rest of the
-   body directly to the postamble.
-5. **Postamble (Phase 4d).** Emits the frame header (func_index, call_index,
-   catch_region_id, exnref_slot), writes each scalar user local, bumps
+   the call returns in `UNWINDING`, the tool writes the call site's
+   `call_index` to `frame[+4]`.
+4. **Unwind bridge (Phase 4c/4d).** The unwind-only branch writes
+   `frame.call_index` and exits `$unwind_save`. If the callee did not begin
+   unwinding, execution continues normally.
+5. **Postamble (Phase 4d).** Emits the remaining frame header fields
+   (func_index, catch_region_id, exnref_slot), writes each scalar user local, bumps
    `*(buf + 0)` by the frame size, and returns a default value of the
    function's result type. Callers see the default on the unwind path but
    discard it because their own postamble runs next.
@@ -441,8 +449,8 @@ Numbered callouts:
 - **6e — Call-site region writes.** Any call site inside the handler
   observes `$in_catch_K == 1` and writes the active region's id and exnref
   slot into `$catch_region_id_local` / `$exnref_slot_local` before the
-  `br_if $unwind_save`, so the frame carries the handler identity into the
-  save buffer.
+  unwind-only call-index store and `$unwind_save` branch, so the frame
+  carries the handler identity into the save buffer.
 
 ### (c) Indirect fork through `call_indirect`
 
@@ -470,8 +478,10 @@ before the `call_indirect`.
       (then
         (local.get $arg_idx_0)    ;; [3b] restore arg before call
         (call_indirect (type $sig))
-        (local.set $call_idx_local (i32.const 0))
-        (br_if $unwind_save (<unwinding check>)))
+        (if (<unwinding check>)
+          (then
+            ;; frame.call_index = 0
+            (br $unwind_save))))
       (else
         (i32.const 0)))           ;; default i32 for the call's result
     (return))
@@ -534,7 +544,7 @@ a sub-region landing. Sub-regions then dispatch internally via their own
 
 The standard top-level `POST_K` block has type `Simple(None)` (0 → 0).
 That's incompatible with an `IfElse` landing because the chunk preceding
-the IfElse has to leave the original cond on the stack. The fix:
+the IfElse has to leave the original cond on the stack. The default fix:
 
 - At the end of the chunk inside `POST_K`, spill the original cond into a
   freshly-allocated i32 local, `cond_swap_local`.
@@ -567,6 +577,13 @@ contains the active call_idx, regardless of `orig_cond`. This avoids
 re-evaluating the original cond expression during REWIND — important when
 that expression has side effects or reads state that may diverge between
 parent NORMAL and child/parent REWIND.
+
+When the original condition is produced by a pure scalar suffix such as
+`local.get $depth; i32.eqz`, the suffix is removed from the NORMAL chunk and
+replayed in the post-landing sequence instead of allocating `cond_swap_local`
+or a frame-backed carryover local. If the condition is not pure, or if an
+`IfElse` landing also needs extra carryover values below the condition, the
+spill-local path above remains the fallback.
 
 ### 3. Carryover-spilling at SubRegion + DirectCall landings
 
@@ -631,6 +648,26 @@ runs), reload them via prepended `local.get`s. On NORMAL flow the body
 params are saved and reloaded; on REWIND the dispatch br_tables past
 chunks[0], so the LocalGets are skipped — exactly the cases where the
 params would otherwise be needed.
+
+### 4. Pure scalar materialization
+
+Before allocating call-argument or sub-region carryover locals, the transform
+checks whether the values at the landing are produced by a suffix that can be
+replayed from an empty stack. The whitelist is deliberately small:
+
+- scalar constants and scalar `local.get`;
+- non-trapping i32/i64 unary ops such as `eqz`, `clz`, `ctz`, `popcnt`, and
+  integer extends;
+- non-trapping i32/i64 binary arithmetic, bit operations, shifts, rotates, and
+  integer comparisons.
+
+The whitelist excludes calls, memory/table operations, globals, reference
+operations, integer div/rem, floating-point operators, `local.set`/`local.tee`,
+and any instruction that needs stack input from before the suffix. Unsupported
+or type-mismatched suffixes fall back to the existing spill-local path. This
+keeps REWIND behavior tied to the same post-call/post-landing sequence while
+avoiding frame locals for common compiler shapes like recursive
+`walk(depth - 1)` arguments and `eqz(depth)` branch conditions.
 
 **Function-level analyser gate.** When `walk_seq_for_carryovers` or
 `compute_nested_carryover_types` encounters a producer whose pushed type
@@ -742,21 +779,36 @@ algorithm in `crates/fork-instrument/src/call_graph.rs`:
 1. Seed set `S` = { the imported `kernel.kernel_fork` function }.
 2. **Direct reverse closure.** For every newly discovered callee `g`, add
    every local function that directly calls `g`.
-3. **Indirect reverse closure.** If `g` appears in a function table, add
-   every local function that performs `call_indirect` with a structurally
-   matching function type.
+3. **Indirect reverse closure.** If `g` can be dispatched from a function
+   table, add every local function that performs `call_indirect` or
+   `return_call_indirect` against the same table with a structurally matching
+   function type.
 4. Repeat steps 2–3 until the worklist is empty.
 
 The output is a function-set `S` that gets instrumented. All other functions
 pass through unmodified.
 
-The indirect-call step is conservative — a table-addressable fork-path target
-pulls in every same-signature indirect caller. This is enough for registered
-callback paths such as signal handlers, pthread cleanup handlers, `atexit`
-handlers, and qsort-style comparators in the current libc output. The broader
-"instrument every address-taken function" rule from the original C3 plan was
-not needed for this PR and was not added; K-01, K-02, K-04, and K-07 cover the
-current behavior.
+The indirect-call step is a may-analysis, but it is slot-sensitive when the
+Wasm proves enough facts. Active element segments with constant offsets
+populate known table slots. A `call_indirect` whose table index is a literal
+`i32.const` or a folded constant `i32.add`/`i32.sub` expression can dispatch
+only to that slot, so a same-signature fork-path target in a different slot
+does not pull in the caller. Dynamic indexes remain conservative: if the table
+contains a matching fork-path target anywhere, the caller stays in `S`.
+
+Unknown table state also remains conservative. Passive segments count only for
+tables that can receive them via `table.init`; because the destination range is
+not modeled, their functions are table-wide. Declared segments do not populate
+a table. Dynamic table writes (`table.set`, `table.fill`, `table.grow`) make
+the table unknown, so any matching-signature fork-path target may be reachable.
+`table.copy` propagates known and unknown source-table state to the
+destination.
+
+This is enough for registered callback paths such as signal handlers, pthread
+cleanup handlers, `atexit` handlers, and qsort-style comparators in the current
+libc output. The broader "instrument every address-taken function" rule from
+the original C3 plan was not needed for this PR and was not added; K-01, K-02,
+K-04, and K-07 cover the current behavior.
 
 ## Guarantees and non-guarantees
 
@@ -890,11 +942,12 @@ inspected, not current PR output.
 To distinguish top-level switch-dispatch from nested switch-dispatch,
 look inside the enclosing instructions: nested switch-dispatch emits the
 same `if (state == REWINDING) ... br_table ...` shape inside any
-fork-bearing `block` / `loop` / `if` / `try_table`, plus a
-`local.set $cond_swap_local` at the end of the chunk preceding any IfElse
-landing and a `select` rewriting that IfElse's cond afterwards. Top-level
-switch-dispatch has only the function-level dispatch and never touches a
-sub-region's body.
+fork-bearing `block` / `loop` / `if` / `try_table`, plus a `select`
+rewriting any fork-bearing IfElse's condition afterwards. Impure IfElse
+conditions also show a `local.set $cond_swap_local` at the end of the
+preceding chunk; pure condition suffixes are replayed at the post-landing
+instead. Top-level switch-dispatch has only the function-level dispatch and
+never touches a sub-region's body.
 
 Carryover-spilling at a SubRegion landing shows up as a pair of fresh
 i32 locals (recorded in the function's frame): the chunk inside `POST_K`
@@ -904,9 +957,10 @@ enclosing instr returns an i32, a brief juggle through `tmp_result_local`).
 
 Nested switch-dispatch coverage lives in
 `tests/switch_dispatch.rs::nested_fork_call_uses_per_block_switch_dispatch`
-and the carryover-spilling fixtures alongside it. Add new regressions there
-or in `host/test/fork-instrument-coverage.test.ts` depending on whether the
-bug is a tool-level transform issue or an end-to-end host/runtime issue.
+and the carryover-spilling / pure-materialization fixtures alongside it. Add
+new regressions there or in `host/test/fork-instrument-coverage.test.ts`
+depending on whether the bug is a tool-level transform issue or an end-to-end
+host/runtime issue.
 
 ### Running tests
 

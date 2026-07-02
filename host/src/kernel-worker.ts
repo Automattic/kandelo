@@ -119,7 +119,7 @@ const SYS_RT_SIGTIMEDWAIT = ABI_SYSCALLS.RtSigtimedwait;
 /**
  * Grace period for signal-mask-swapping ppoll/pselect wakeups after a pipe
  * event. This gives the writer's immediately-following signal syscall a
- * chance to reach the centralized kernel before ppoll restores its mask.
+ * chance to reach the kernel before ppoll restores its mask.
  */
 const SIGNAL_SAFE_POLL_WAKE_DELAY_MS = 50;
 
@@ -298,6 +298,8 @@ export interface SyscallTraceEvent {
   nr: number;
   /** Raw arg values as the wasm program saw them. 6 entries, undefined slots are 0. */
   args: [number, number, number, number, number, number];
+  /** Human-readable syscall entry, including decoded pointer arguments when available. */
+  decoded?: string;
 }
 
 /**
@@ -460,6 +462,8 @@ interface RegisterProcessOptions {
   skipKernelCreate?: boolean;
   argv?: string[];
   ptrWidth?: 4 | 8;
+  /** Required for new kernel Process creation; ignored when skipKernelCreate is true. */
+  stdio?: RegisterProcessStdio;
   /** Initial program break after any host-owned low control pages. */
   brkBase?: number;
   /** Lower bound for automatic mmap allocation. */
@@ -468,6 +472,33 @@ interface RegisterProcessOptions {
   maxAddr?: number;
   /** brk ceiling below host-owned control pages. */
   brkLimit?: number;
+}
+
+type RegisterProcessStdioKind = "pipe" | "terminal";
+
+interface RegisterProcessStdio {
+  stdin: RegisterProcessStdioKind;
+  stdout: RegisterProcessStdioKind;
+  stderr: RegisterProcessStdioKind;
+}
+
+export const CAPTURED_STDIO: RegisterProcessStdio = {
+  stdin: "pipe",
+  stdout: "pipe",
+  stderr: "pipe",
+};
+
+export const TERMINAL_STDIO: RegisterProcessStdio = {
+  stdin: "terminal",
+  stdout: "terminal",
+  stderr: "terminal",
+};
+
+function encodeStdioKind(kind: RegisterProcessStdioKind): number {
+  switch (kind) {
+    case "pipe": return 0;
+    case "terminal": return 1;
+  }
 }
 
 type WaitPollResult =
@@ -505,9 +536,21 @@ export interface ResolvedSpawnProgram {
   argv: string[];
 }
 
-export type SpawnProgramResolution = ArrayBuffer | ResolvedSpawnProgram;
+export interface SpawnResolveError {
+  errno: number;
+}
 
-/** Callbacks for fork/exec/exit handling in centralized mode. */
+export type SpawnProgramResolution = ArrayBuffer | ResolvedSpawnProgram | SpawnResolveError;
+
+function isSpawnResolveError(
+  resolution: SpawnProgramResolution,
+): resolution is SpawnResolveError {
+  return !(resolution instanceof ArrayBuffer) &&
+    "errno" in resolution &&
+    typeof resolution.errno === "number";
+}
+
+/** Callbacks for fork/exec/exit handling. */
 export interface CentralizedKernelCallbacks {
   /**
    * Called when a process forks. The kernel has already cloned the Process
@@ -548,7 +591,8 @@ export interface CentralizedKernelCallbacks {
   /**
    * Pre-flight resolution step for SYS_SPAWN. Returns the program bytes
    * for `path` (or `{ programBytes, argv }` when resolution rewrites argv,
-   * e.g. a shebang script), or `null` for ENOENT. **Must NOT have side effects** —
+   * e.g. a shebang script), `{ errno }` for a located but unlaunchable
+   * program, or `null` for ENOENT. **Must NOT have side effects** —
    * `handleSpawn` calls this BEFORE `kernel_spawn_process` so that file
    * actions never run on a doomed PATH-iteration. POSIX requires
    * file_actions to run "exactly once," and `posix_spawnp`'s PATH-walk
@@ -585,9 +629,9 @@ export interface CentralizedKernelCallbacks {
 
   /**
    * Called after a pthread channel reaches SYS_EXIT and the kernel worker has
-   * performed the Linux CLONE_CHILD_CLEARTID wake. Return true when the host
-   * will terminate the backing Worker, so the syscall channel should not be
-   * completed back into guest code.
+   * performed the musl clear-TID wake used by pthread joiners. Return true when
+   * the host will terminate the backing Worker, so the syscall channel should
+   * not be completed back into guest code.
    */
   onThreadExit?: (pid: number, tid: number, channelOffset: number) => boolean;
 
@@ -628,7 +672,18 @@ export class CentralizedKernelWorker {
     }
     return this.nextChildPid++;
   }
-  /** Maps "pid:channelOffset" to TID for tracking thread channels */
+  /**
+   * Maps a pthread syscall mailbox to its kernel/libc thread id.
+   *
+   * Each pthread gets a distinct `channelOffset` range inside the process
+   * WebAssembly.Memory/SharedArrayBuffer. That offset identifies the host-side
+   * transport mailbox; it is enough for the host to find the pending syscall,
+   * but it is not the POSIX thread identity the Rust kernel exposes to musl.
+   * Before entering `kernel_handle_channel`, the host uses this map to bind the
+   * selected mailbox to the current TID so gettid, set_tid_address, per-thread
+   * signal masks, directed signals, and thread cleanup apply to the right
+   * pthread.
+   */
   private channelTids = new Map<string, number>();
   /**
    * Per-thread-channel fork context: the pthread_create entry point and
@@ -643,13 +698,17 @@ export class CentralizedKernelWorker {
   /** Tracks the pid currently being serviced by kernel_handle_channel */
   private currentHandlePid = 0;
   /**
-   * Bind the kernel's view of "which thread is executing this syscall" to
-   * the calling channel. Must be called immediately before every
-   * `kernel_handle_channel` invocation that originates from user code — the
-   * kernel consults this to route per-thread signal state (pthread_sigmask,
-   * pthread_kill pending, sigsuspend per-thread mask swap). `tid = 0` means
-   * "main thread" and is the default for channels without a tracked TID
-   * (e.g. the main process worker).
+   * Bind the kernel's view of "which thread is executing this syscall" to the
+   * already-selected channel. The channel offset is the transport identity; TID
+   * is the guest-visible pthread identity used by the kernel/libc ABI.
+   *
+   * This ambient current-TID value is correct while this host serializes calls
+   * into one kernel instance. If kernel dispatch ever becomes concurrent or
+   * reentrant for the same instance, this must move into the syscall header or
+   * become an explicit `kernel_handle_channel` argument.
+   *
+   * `tid = 0` means "main thread" and is the default for channels without a
+   * tracked TID, such as the main process worker.
    */
   private bindKernelTidForChannel(channel: ChannelInfo): void {
     const tid = this.channelTids.get(`${channel.pid}:${channel.channelOffset}`) ?? 0;
@@ -797,7 +856,31 @@ export class CentralizedKernelWorker {
   private ptyOutputCallbacks = new Map<number, (data: Uint8Array) => void>();
 
   /** Virtual MAC address for this kernel instance (locally administered, unicast) */
-  private virtualMacAddress: Uint8Array;
+  private virtualMacAddress: Uint8Array<ArrayBuffer>;
+
+  /** KMS presenter: OffscreenCanvas per CRTC for the vblank pump to blit
+   *  the bound framebuffer into. Populated via `attachKmsCanvas`. */
+  private kmsCanvases = new Map<number, OffscreenCanvas>();
+  private kmsContexts = new Map<number, OffscreenCanvasRenderingContext2D>();
+  /** Which context type each CRTC's canvas has been claimed for. Set
+   *  by `attachKmsCanvas` when the embedder declares the mode up-front
+   *  (`"2d"` for legacy CPU-blit demos, `"webgl2"` for libdrm/libgbm/EGL
+   *  apps like modeset.c). Auto-mode leaves this unset so the pump
+   *  never touches the canvas — `host_gl_create_context` later flips
+   *  it to `"webgl2"` via `markKmsCanvasGlOwned` once the GL session
+   *  claims the canvas. Once set, the value is sticky: an OffscreenCanvas
+   *  can only ever hold one context type for its lifetime. */
+  private kmsContextMode = new Map<number, "2d" | "webgl2">();
+  /** KMS stats SAB per CRTC. Slots [0..4] populated by the pump (frame
+   *  count, timestamp, width, height, blit µs); slots [5,6] populated
+   *  from kernel-side `kernel_kms_commit_count` / `kernel_kms_last_frame_us`. */
+  private kmsStatsViews = new Map<number, Int32Array>();
+  /** Cached per-CRTC `Uint8ClampedArray` for `putImageData` so the pump
+   *  doesn't allocate 8 MB/frame at 1080p. Resized on bo geometry change.
+   *  Backed by a plain `ArrayBuffer` so `new ImageData(scratch, …)`
+   *  accepts it (an `ImageDataArray` rejects SAB-backed views). */
+  private kmsScratchBytes = new Map<number, Uint8ClampedArray<ArrayBuffer>>();
+  private vblankTimer: ReturnType<typeof setInterval> | null = null;
 
   constructor(
     private config: KernelConfig,
@@ -805,8 +888,19 @@ export class CentralizedKernelWorker {
     private callbacks: CentralizedKernelCallbacks = {},
   ) {
     this.kernel = new WasmPosixKernel(config, io, {
-      // In centralized mode, callbacks like onKill/onFork are handled
-      // differently — the kernel returns EAGAIN and JS handles them.
+      // Process-lifecycle callbacks are handled by the kernel worker: the
+      // kernel returns EAGAIN and JS performs the host-side action.
+      getProcessMemory: (pid: number): WebAssembly.Memory | undefined => {
+        return this.processes.get(pid)?.memory;
+      },
+      // KMS scanout canvas lookup for the GL bridge's auto-attach
+      // path. `host_gl_create_context` calls this when a DRM-master
+      // pid has no canvas bound yet; the kernel-worker's KMS registry
+      // is the single source of truth for `crtc_id → OffscreenCanvas`.
+      getKmsCanvas: (crtcId: number) => this.kmsCanvases.get(crtcId),
+      markKmsCanvasGlOwned: (crtcId: number) => {
+        this.kmsContextMode.set(crtcId, "webgl2");
+      },
       onStdin: (maxLen: number): Uint8Array | null => {
         const pid = this.currentHandlePid;
         const buf = this.stdinBuffers.get(pid);
@@ -948,8 +1042,8 @@ export class CentralizedKernelWorker {
   }
 
   /**
-   * Initialize the centralized kernel.
-   * Loads kernel Wasm, sets mode to centralized (1).
+   * Initialize the kernel.
+   * Loads kernel Wasm and validates the host adapter ABI.
    */
   async init(kernelWasmBytes: BufferSource): Promise<void> {
     await this.kernel.init(kernelWasmBytes);
@@ -972,10 +1066,6 @@ export class CentralizedKernelWorker {
     }
     this.kernelAbiVersion = abiVersionFn();
     validateKernelHostAdapterManifest(this.kernelInstance, this.kernelMemory);
-
-    // Set centralized mode (existing call below)
-    const setMode = this.kernelInstance.exports.kernel_set_mode as (mode: number) => void;
-    setMode(1);
 
     // Allocate scratch area from the kernel's own heap allocator.
     // IMPORTANT: Do NOT use this.kernelMemory.grow() — the kernel's
@@ -1007,7 +1097,7 @@ export class CentralizedKernelWorker {
     }
 
     // Register a SharedLockTable so host_fcntl_lock can handle advisory locks
-    // (including OFD locks) within the centralized kernel.
+    // (including OFD locks) within the kernel.
     this.lockTable = SharedLockTable.create();
     this.kernel.registerSharedLockTable(this.lockTable.getBuffer());
 
@@ -1034,8 +1124,21 @@ export class CentralizedKernelWorker {
 
     // Create process in kernel's process table (skip if already created, e.g. by fork)
     if (!options?.skipKernelCreate) {
-      const createProcess = this.kernelInstance!.exports.kernel_create_process as (pid: number) => number;
-      const result = createProcess(pid);
+      const stdio = options?.stdio;
+      if (!stdio) {
+        throw new Error("registerProcess requires explicit stdio when creating a kernel process");
+      }
+      const createProcess = this.kernelInstance!.exports.kernel_create_process_with_stdio as
+        ((pid: number, stdinKind: number, stdoutKind: number, stderrKind: number) => number) | undefined;
+      if (!createProcess) {
+        throw new Error("Kernel missing kernel_create_process_with_stdio export");
+      }
+      const result = createProcess(
+        pid,
+        encodeStdioKind(stdio.stdin),
+        encodeStdioKind(stdio.stdout),
+        encodeStdioKind(stdio.stderr),
+      );
       if (result < 0) {
         throw new Error(`Failed to create process ${pid}: errno ${-result}`);
       }
@@ -1133,12 +1236,6 @@ export class CentralizedKernelWorker {
   setStdinData(pid: number, data: Uint8Array): void {
     this.stdinBuffers.set(pid, { data, offset: 0 });
     this.stdinFinite.add(pid); // EOF after data is consumed
-    // Mark stdin as a pipe so terminal echo is disabled and isatty(0) = false
-    const kernelSetStdinPipe = this.kernelInstance!.exports.kernel_set_stdin_pipe as
-      ((pid: number) => number) | undefined;
-    if (kernelSetStdinPipe) {
-      kernelSetStdinPipe(pid);
-    }
   }
 
   /**
@@ -1258,6 +1355,7 @@ export class CentralizedKernelWorker {
    */
   onPtyOutput(ptyIdx: number, callback: (data: Uint8Array) => void): void {
     this.ptyOutputCallbacks.set(ptyIdx, callback);
+    this.drainPtyOutput(ptyIdx);
   }
 
   /**
@@ -1470,14 +1568,7 @@ export class CentralizedKernelWorker {
       }
     }
 
-    // Release all advisory file locks held by this process.
-    // Force-reset the spinlock first: a terminated worker may have been holding it,
-    // and Atomics.wait is not allowed on the browser main thread.
-    if (this.lockTable) {
-      const lockBuf = this.lockTable.getBuffer();
-      Atomics.store(new Int32Array(lockBuf), 0, 0); // force-release spinlock
-      this.lockTable.removeLocksByPid(pid);
-    }
+    this.releaseAdvisoryLocksForPid(pid);
 
     // Remove from kernel process table
     this.removeFromKernelProcessTable(pid);
@@ -1524,11 +1615,22 @@ export class CentralizedKernelWorker {
     removeProcess(pid);
   }
 
+  private releaseAdvisoryLocksForPid(pid: number): void {
+    if (!this.lockTable) return;
+
+    // Force-reset the spinlock first: a terminated worker may have been
+    // holding it, and Atomics.wait is not allowed on the browser main thread.
+    const lockBuf = this.lockTable.getBuffer();
+    Atomics.store(new Int32Array(lockBuf), 0, 0);
+    this.lockTable.removeLocksByPid(pid);
+  }
+
   deactivateProcess(pid: number): void {
     this.activeChannels = this.activeChannels.filter((ch) => ch.pid !== pid);
     this.processes.delete(pid);
     this.stdinFinite.delete(pid);
     this.stdinBuffers.delete(pid);
+    this.releaseAdvisoryLocksForPid(pid);
     // Cancel any pending alarm timer for this process
     const alarmTimer = this.alarmTimers.get(pid);
     if (alarmTimer) {
@@ -1779,6 +1881,33 @@ export class CentralizedKernelWorker {
     return new TextDecoder().decode(copy);
   }
 
+  private readBytesPreview(memory: WebAssembly.Memory, ptr: number, len: number, maxLen = 160): string {
+    if (ptr === 0 || len <= 0) return "";
+    const mem = new Uint8Array(memory.buffer);
+    const capped = Math.max(0, Math.min(len, maxLen, mem.length - ptr));
+    if (capped <= 0) return "";
+    const copy = new Uint8Array(capped);
+    copy.set(mem.subarray(ptr, ptr + capped));
+    return new TextDecoder("utf-8", { fatal: false }).decode(copy);
+  }
+
+  private formatPollFds(memory: WebAssembly.Memory, ptr: number, nfds: number): string {
+    if (ptr === 0 || nfds <= 0) return "";
+    const view = new DataView(memory.buffer);
+    const entries: string[] = [];
+    const capped = Math.min(nfds, 8);
+    for (let i = 0; i < capped; i++) {
+      const off = ptr + i * 8;
+      if (off + 8 > view.byteLength) break;
+      const fd = view.getInt32(off, true);
+      const events = view.getInt16(off + 4, true);
+      const revents = view.getInt16(off + 6, true);
+      entries.push(`{fd:${fd},events:0x${(events & 0xffff).toString(16)},revents:0x${(revents & 0xffff).toString(16)}}`);
+    }
+    if (nfds > capped) entries.push("...");
+    return entries.join(",");
+  }
+
   /** Format a syscall for logging, decoding path/string args from process memory */
   private formatSyscallEntry(channel: ChannelInfo, syscallNr: number, args: number[]): string {
     const name = SYSCALL_NAMES[syscallNr] ?? `syscall_${syscallNr}`;
@@ -1815,7 +1944,7 @@ export class CentralizedKernelWorker {
       case ABI_SYSCALLS.Read: // read(fd, buf, count)
         return `[${pid}${tidSuffix}] read(${args[0]}, ${args[2]})`;
       case ABI_SYSCALLS.Write: // write(fd, buf, count)
-        return `[${pid}${tidSuffix}] write(${args[0]}, ${args[2]})`;
+        return `[${pid}${tidSuffix}] write(${args[0]}, ${args[2]}, ${JSON.stringify(this.readBytesPreview(channel.memory, args[1], args[2]))})`;
       case ABI_SYSCALLS.Close: // close(fd)
         return `[${pid}${tidSuffix}] close(${args[0]})`;
       case ABI_SYSCALLS.Fstat: // fstat(fd, buf)
@@ -1836,7 +1965,7 @@ export class CentralizedKernelWorker {
         return `[${pid}${tidSuffix}] clone(0x${(args[0] >>> 0).toString(16)})`;
       case ABI_SYSCALLS.Exit: return `[${pid}${tidSuffix}] exit(${args[0]})`;
       case ABI_SYSCALLS.Poll: // poll(fds, nfds, timeout)
-        return `[${pid}${tidSuffix}] poll(${args[1]}, ${args[2]})`;
+        return `[${pid}${tidSuffix}] poll(${args[1]}, ${args[2]}, [${this.formatPollFds(channel.memory, args[0], args[1])}])`;
       case ABI_SYSCALLS.Ioctl: // ioctl(fd, cmd, arg)
         return `[${pid}${tidSuffix}] ioctl(${args[0]}, 0x${(args[1] >>> 0).toString(16)})`;
       default:
@@ -1898,10 +2027,10 @@ export class CentralizedKernelWorker {
     }
 
     // Track last 30 syscalls per channel for crash diagnostics
-    const ringKey = channel.channelOffset;
+    const ringKey = channel.pid;
     let ring = this.syscallRing.get(ringKey);
     if (!ring) { ring = []; this.syscallRing.set(ringKey, ring); }
-    ring.push(`  syscall=${syscallNr} args=[${origArgs.join(',')}]`);
+    ring.push(`  ${this.formatSyscallEntry(channel, syscallNr, origArgs)}`);
     if (ring.length > 30) ring.shift();
 
     // Opt-in live trace ring. enableSyscallTrace() flips the flag; the
@@ -1919,6 +2048,7 @@ export class CentralizedKernelWorker {
           origArgs[0] ?? 0, origArgs[1] ?? 0, origArgs[2] ?? 0,
           origArgs[3] ?? 0, origArgs[4] ?? 0, origArgs[5] ?? 0,
         ],
+        decoded: this.formatSyscallEntry(channel, syscallNr, origArgs),
       });
     }
 
@@ -1987,9 +2117,8 @@ export class CentralizedKernelWorker {
     }
 
     // --- Futex: must operate on process memory, not kernel memory ---
-    // The kernel's host_futex_wake/wait imports use kernel memory, but in
-    // centralized mode the futex address is in process memory. Intercept
-    // here and handle directly.
+    // The kernel's host_futex_wake/wait imports use kernel memory, but futex
+    // addresses are in process memory. Intercept here and handle directly.
     if (syscallNr === SYS_FUTEX) {
       if (logging) {
         // Futex args: (uaddr, op, val, timeout, uaddr2, val3). Decode the op
@@ -2139,8 +2268,8 @@ export class CentralizedKernelWorker {
     // (sec, usec) and no sigmask. musl's select.c routes here on wasm64
     // because `__NR_pselect6_time64` isn't defined for that arch (unlike
     // wasm32, which aliases it to __NR_pselect6). Without this intercept,
-    // sys_select returns EAGAIN unconditionally in centralized mode and
-    // the generic blocking-retry has no select-timeout awareness — every
+    // sys_select returns EAGAIN when it needs host-managed waiting, and the
+    // generic blocking-retry has no select-timeout awareness — every
     // `select(0,0,0,0,&tv)` (= my_sleep) becomes an infinite loop. That
     // surfaced as the wasm64 mariadbd boot hang at
     // wait_for_signal_thread_to_end's kill+my_sleep loop.
@@ -2321,8 +2450,8 @@ export class CentralizedKernelWorker {
     const errVal = kernelView.getUint32(CH_ERRNO, true);
 
     // --- Process memory growth for brk/mmap/mremap ---
-    // In centralized mode, the kernel's ensure_memory_covers() grows the
-    // KERNEL's Wasm memory, not the process's. We must grow the process's
+    // The kernel's ensure_memory_covers() grows the KERNEL's Wasm memory, not
+    // the process's. We must grow the process's
     // WebAssembly.Memory here so the process can access the new addresses.
     if (retVal > 0) {
       this.ensureProcessMemoryCovers(channel.pid, channel.memory, syscallNr, retVal, origArgs);
@@ -2369,6 +2498,17 @@ export class CentralizedKernelWorker {
           });
         }
       }
+      // DRI bo mmap prime: the kernel's sys_mmap on /dev/dri/{render,card}
+      // already called `host_gbm_bo_bind` to record metadata, but the
+      // actual SAB→Memory copy is deferred until here so the
+      // anonymous-mmap zero-fill is in place first. This is what
+      // delivers the parent's writes to a child across PRIME
+      // export → fork → PRIME import. No-op for non-DRI mmaps.
+      const mmapAddr = retVal >>> 0;
+      const boId = this.kernel.bos.findBindingByAddr(channel.pid, mmapAddr);
+      if (boId !== undefined) {
+        this.kernel.bos.primeBindFromSab(channel.pid, boId, channel.memory);
+      }
     }
 
     // --- msync: flush MAP_SHARED regions back to file ---
@@ -2382,7 +2522,7 @@ export class CentralizedKernelWorker {
       this.cleanupSharedMappings(channel.pid, origArgs[0] >>> 0, origArgs[1] >>> 0);
     }
 
-    // --- Signal-death check (centralized mode) ---
+    // --- Signal-death check ---
     // If deliver_pending_signals marked this process as Exited (e.g., abort()
     // raises SIGABRT with default action Terminate), don't complete the channel.
     // Instead, record signal-death wait status and terminate the worker.
@@ -2396,14 +2536,14 @@ export class CentralizedKernelWorker {
       }
     }
 
-    // --- POSIX mqueue notification (centralized mode) ---
+    // --- POSIX mqueue notification ---
     // After mq_timedsend, the kernel may have a pending notification (signal
     // to deliver when a message arrives on a previously empty queue).
     if (syscallNr === SYS_MQ_TIMEDSEND && retVal === 0) {
       this.drainMqueueNotification();
     }
 
-    // --- Signal delivery (centralized mode) ---
+    // --- Signal delivery ---
     // After each syscall, check if the kernel has a pending Handler signal.
     // If so, dequeue it and write delivery info to the process channel.
     // The glue code (channel_syscall.c) will invoke the handler after waking.
@@ -3031,7 +3171,7 @@ export class CentralizedKernelWorker {
     // a blocked ppoll in the reader to observe BOTH events atomically.
     // On a real kernel that works because X's two syscalls execute
     // before the scheduler runs the reader. In our retry-based
-    // centralized kernel, the pipe wakeup can fire a ppoll retry BEFORE
+    // shared kernel, the pipe wakeup can fire a ppoll retry BEFORE
     // X's follow-up kill is even sent by X's worker (Atomics.notify →
     // uv_async round-trip takes 1–5ms). If the retry fires first, ppoll
     // returns POLLIN and restores its sigmask; the late signal is then
@@ -3579,8 +3719,8 @@ export class CentralizedKernelWorker {
     // (epoll_pwait is now handled entirely on the host side by handleEpollPwait)
 
     // sigtimedwait: kernel returned EAGAIN because no signal is pending.
-    // Instead of retrying (signal won't arrive in single-process mode),
-    // delay for the requested timeout then complete with -1/EAGAIN.
+    // Instead of busy-retrying, delay for the requested timeout then complete
+    // with -1/EAGAIN.
     if (syscallNr === SYS_RT_SIGTIMEDWAIT) {
       const timeoutPtr = origArgs[2]; // pointer to timespec in process memory
       if (timeoutPtr === 0) {
@@ -3934,6 +4074,16 @@ export class CentralizedKernelWorker {
     if (flockPtr !== 0 && retVal >= 0) {
       const freshProcessMem = new Uint8Array(channel.memory.buffer);
       freshProcessMem.set(kernelMem.subarray(dataStart, dataStart + FLOCK_SIZE), flockPtr);
+    }
+
+    const cmd = origArgs[1];
+    if (
+      retVal === -1 &&
+      errVal === EAGAIN &&
+      (cmd === F_SETLKW || cmd === F_SETLKW64 || cmd === F_OFD_SETLKW)
+    ) {
+      this.handleBlockingRetry(channel, SYS_FCNTL, origArgs);
+      return;
     }
 
     this.completeChannel(channel, SYS_FCNTL, origArgs, undefined, retVal, errVal);
@@ -5752,6 +5902,10 @@ export class CentralizedKernelWorker {
         this.completeChannel(channel, SYS_SPAWN, origArgs, undefined, -1, 2); // ENOENT
         return;
       }
+      if (isSpawnResolveError(resolved)) {
+        this.completeChannel(channel, SYS_SPAWN, origArgs, undefined, -1, resolved.errno >>> 0);
+        return;
+      }
       const programBytes = resolved instanceof ArrayBuffer ? resolved : resolved.programBytes;
       const launchArgv = resolved instanceof ArrayBuffer ? argv : resolved.argv;
       this.handleSpawnAfterResolve(
@@ -6012,8 +6166,8 @@ export class CentralizedKernelWorker {
   private handleClone(channel: ChannelInfo, origArgs: number[]): void {
     // Channel args from musl's __clone override which calls kernel_clone directly:
     //   kernel_clone(fn_ptr, stack_ptr, flags, arg, ptid_ptr, tls_ptr, ctid_ptr)
-    // But in centralized mode, __clone goes through channel_syscall which
-    // dispatches SYS_CLONE with Linux syscall convention:
+    // The channel syscall path dispatches SYS_CLONE with Linux syscall
+    // convention:
     //   a1=flags, a2=stack, a3=ptid, a4=tls, a5=ctid
     // The kernel dispatch remaps: kernel_clone(0, a2, a1, 0, a3, a4, a5)
     //
@@ -6058,8 +6212,8 @@ export class CentralizedKernelWorker {
     const tid = retVal;
 
     // CLONE_PARENT_SETTID: write TID to ptid_ptr in process memory.
-    // The kernel skips this in centralized mode since ptid_ptr is in
-    // process memory, not kernel memory.
+    // The host writes this because ptid_ptr is in process memory, not kernel
+    // memory.
     const CLONE_PARENT_SETTID = 0x00100000;
     const flags = origArgs[0];
     const ptidPtr = origArgs[2];
@@ -6127,31 +6281,7 @@ export class CentralizedKernelWorker {
       // Thread exit: find TID, notify kernel, remove channel, complete to unblock
       const tidKey = `${channel.pid}:${channel.channelOffset}`;
       const tid = this.channelTids.get(tidKey) ?? 0;
-      if (tid > 0) {
-        this.channelTids.delete(tidKey);
-        this.threadForkContexts.delete(tidKey);
-      }
-
-      // CLONE_CHILD_CLEARTID: write 0 to ctidPtr and futex-wake it.
-      // This is normally done by the Linux kernel on thread exit; we must
-      // do it here because the thread worker never returns from __pthread_exit
-      // (it loops on SYS_EXIT).
-      if (tid > 0) {
-        const ctidKey = `${channel.pid}:${tid}`;
-        const ctidPtr = this.threadCtidPtrs.get(ctidKey);
-        if (ctidPtr && ctidPtr !== 0) {
-          this.threadCtidPtrs.delete(ctidKey);
-          const procView = new DataView(channel.memory.buffer);
-          procView.setInt32(ctidPtr, 0, true);
-          const i32View = new Int32Array(channel.memory.buffer);
-          Atomics.notify(i32View, ctidPtr >>> 2, 1);
-        }
-      }
-
-      if (tid > 0) {
-        this.notifyThreadExit(channel.pid, tid);
-      }
-      this.removeChannel(channel.pid, channel.channelOffset);
+      if (tid > 0) this.finalizeThreadExit(channel.pid, tid, channel.channelOffset);
       const hostWillTerminateThread = tid > 0 &&
         this.callbacks.onThreadExit?.(channel.pid, tid, channel.channelOffset) === true;
       if (hostWillTerminateThread) {
@@ -6569,9 +6699,9 @@ export class CentralizedKernelWorker {
   /**
    * Handle SYS_FUTEX directly on process memory.
    *
-   * In centralized mode, the kernel's host_futex_wake/wait imports operate on
-   * kernel memory, but futex addresses are in process memory. We bypass the
-   * kernel entirely and implement the futex ops here.
+   * The kernel's host_futex_wake/wait imports operate on kernel memory, but
+   * futex addresses are in process memory. We bypass the kernel entirely and
+   * implement the futex ops here.
    *
    * FUTEX_WAIT: compare-and-block. If the value at addr matches expected,
    * use Atomics.waitAsync to wait for a change, then return 0. If it doesn't
@@ -6733,6 +6863,40 @@ export class CentralizedKernelWorker {
   }
 
   /**
+   * Complete kernel-side cleanup for a thread whose worker has stopped.
+   * Normal pthread exit reaches this from SYS_EXIT. Crash paths use the same
+   * cleanup so pthread_join waiters do not stay blocked on CLONE_CHILD_CLEARTID.
+   *
+   * Both identifiers matter: `channelOffset` removes the host mailbox/fork
+   * context, while `tid` addresses the kernel/libc thread state and clear-TID
+   * futex word used by joiners.
+   */
+  finalizeThreadExit(pid: number, tid: number, channelOffset: number): void {
+    const tidKey = `${pid}:${channelOffset}`;
+    this.channelTids.delete(tidKey);
+    this.threadForkContexts.delete(tidKey);
+
+    const ctidKey = `${pid}:${tid}`;
+    const ctidPtr = this.threadCtidPtrs.get(ctidKey);
+    if (ctidPtr && ctidPtr !== 0) {
+      this.threadCtidPtrs.delete(ctidKey);
+      const channel = this.activeChannels.find(
+        (ch) => ch.pid === pid && ch.channelOffset === channelOffset,
+      );
+      const memory = channel?.memory ?? this.processes.get(pid)?.memory;
+      if (memory) {
+        const procView = new DataView(memory.buffer);
+        procView.setInt32(ctidPtr, 0, true);
+        const i32View = new Int32Array(memory.buffer);
+        Atomics.notify(i32View, ctidPtr >>> 2, 1);
+      }
+    }
+
+    this.notifyThreadExit(pid, tid);
+    this.removeChannel(pid, channelOffset);
+  }
+
+  /**
    * Queue a signal on a target process in the kernel by invoking SYS_KILL
    * through kernel_handle_channel. The signal is queued in the kernel's
    * ProcessTable and will be delivered via dequeueSignalForDelivery on the
@@ -6818,8 +6982,8 @@ export class CentralizedKernelWorker {
   // -----------------------------------------------------------------------
   // Process memory management
   //
-  // In centralized mode, the kernel's ensure_memory_covers() grows the
-  // KERNEL's Wasm memory (memory index 0 in the kernel module). But the
+  // The kernel's ensure_memory_covers() grows the KERNEL's Wasm memory
+  // (memory index 0 in the kernel module). But the
   // process runs in a different WebAssembly.Memory. After brk/mmap/mremap
   // syscalls, we must grow the process's memory to cover the returned
   // addresses — otherwise the process gets "memory access out of bounds".
@@ -7709,10 +7873,9 @@ export class CentralizedKernelWorker {
 
     // The injected pipes live in the global pipe table (see
     // kernel_inject_connection in crates/kernel/src/wasm_api.rs). Pass
-    // pid=0 to the kernel pipe APIs as a sentinel meaning "use the
-    // global pipe table" — needed because any process sharing the
-    // listener can accept this connection, so the pipes can't live in
-    // a single process's per-pid pipe table.
+    // pid=0 to the legacy kernel pipe APIs as a compatibility sentinel.
+    // The APIs now always resolve pipe indexes through the global pipe table,
+    // which lets any process sharing the listener accept this connection.
     const GLOBAL_PIPE_PID = 0;
     const pipeWrite = this.kernelInstance!.exports.kernel_pipe_write as
       (pid: number, pipeIdx: number, bufPtr: KernelPointer, bufLen: number) => number;
@@ -8354,6 +8517,150 @@ export class CentralizedKernelWorker {
       const signo = dv.getUint32(4, true);
       if (signo > 0) {
         this.sendSignalToProcess(pid, signo);
+      }
+    }
+  }
+
+  // ---- DRI/KMS presenter wiring ------------------------------------------
+
+  /** Live `/dev/dri/renderD128` GBM bos. Pixel storage for a bound bo
+   *  lives in the owning process's wasm Memory at the binding range;
+   *  consumers read pixels by projecting `[addr, addr+len)` onto the
+   *  SAB returned by `getProcessMemory(pid)`. */
+  get bos() {
+    return this.kernel.bos;
+  }
+
+  get gl() {
+    return this.kernel.gl;
+  }
+
+  get kms() {
+    return this.kernel.kms;
+  }
+
+  /** Register an `OffscreenCanvas` (and optional stats SAB) as the
+   *  scanout target for a CRTC. Starts the vblank pump on first
+   *  attach.
+   *
+   *  `opts.mode` selects how the canvas is painted:
+   *  - `"auto"` (default): the pump never grabs a 2D context. If the
+   *    DRM-master pid later calls `eglCreateContext`, the GL bridge's
+   *    auto-attach path claims the canvas for WebGL2 and the user
+   *    program paints directly. Slots 5/6 (commit count, last µs)
+   *    still tick from kernel-side PAGE_FLIP state.
+   *  - `"2d"`: legacy CPU-blit path. The pump eagerly grabs 2D here
+   *    and copies the kernel's scanout BO into the canvas each frame.
+   *    Used by demos that render into the FB via memcpy rather than GL.
+   *  - `"webgl2"`: marks the canvas as GL-owned up front. Pump never
+   *    blits. Same effect as auto + a later `markKmsCanvasGlOwned`,
+   *    but spares the GL bridge from racing the pump's 2D acquisition. */
+  attachKmsCanvas(
+    crtc_id: number,
+    canvas: OffscreenCanvas,
+    statsSab?: SharedArrayBuffer,
+    opts?: { mode?: "auto" | "2d" | "webgl2" },
+  ): void {
+    this.kmsCanvases.set(crtc_id, canvas);
+    if (statsSab) this.kmsStatsViews.set(crtc_id, new Int32Array(statsSab));
+    const mode = opts?.mode ?? "auto";
+    if (mode === "2d") {
+      // Eagerly acquire 2D so the first tickVblank can blit without a
+      // round-trip. If acquisition fails (some other path already
+      // claimed the canvas), the pump will skip the blit branch and
+      // slots 0/1/4 stay 0 — better than throwing.
+      const ctx = canvas.getContext("2d");
+      if (ctx) {
+        this.kmsContexts.set(crtc_id, ctx);
+        this.kmsContextMode.set(crtc_id, "2d");
+      }
+    } else if (mode === "webgl2") {
+      this.kmsContextMode.set(crtc_id, "webgl2");
+    }
+    this.startVblankPump();
+  }
+
+  /** Attach a stats SAB for a CRTC without registering a scanout canvas.
+   *  Slots 5/6 (kernel commit count + last-frame µs) are populated by
+   *  the vblank pump regardless of whether the same crtc owns a blit
+   *  target. Used by demos that render through the GL bridge while
+   *  still driving real `drmModePageFlip` ioctls. */
+  attachKmsStats(crtc_id: number, statsSab: SharedArrayBuffer): void {
+    this.kmsStatsViews.set(crtc_id, new Int32Array(statsSab));
+    this.startVblankPump();
+  }
+
+  private startVblankPump(): void {
+    if (this.vblankTimer) return;
+    this.vblankTimer = setInterval(() => this.tickVblank(), 1000 / 60);
+    // Node only: prevent the pump from blocking process exit.
+    (this.vblankTimer as { unref?: () => void }).unref?.();
+  }
+
+  private tickVblank(): void {
+    const vblankFn = this.kernelInstance?.exports.kernel_vblank as
+      (() => void) | undefined;
+    vblankFn?.();
+    // 2D-blit path. Runs only for CRTCs the embedder explicitly opted
+    // into `mode: "2d"`. The pump never touches the canvas in "auto"
+    // or "webgl2" mode — touching it with `getContext("2d")` would
+    // claim the canvas for life and break the later WebGL2 attach
+    // (an OffscreenCanvas can only hold one context type ever).
+    for (const [crtc_id, canvas] of this.kmsCanvases) {
+      if (this.kmsContextMode.get(crtc_id) !== "2d") continue;
+      const fb = this.kernel.kms.currentFb(crtc_id);
+      if (!fb) continue;
+      const pixels = this.kernel.kms.scanoutBytes(crtc_id);
+      if (!pixels) continue;
+      const ctx = this.kmsContexts.get(crtc_id);
+      if (!ctx) continue;
+      if (canvas.width !== fb.width || canvas.height !== fb.height) {
+        canvas.width = fb.width;
+        canvas.height = fb.height;
+      }
+      // bo bytes are opaque RGBA8888 — one memcpy into a cached
+      // Uint8ClampedArray is all the pump owes the canvas.
+      const blitStart = performance.now();
+      const need = fb.width * fb.height * 4;
+      let scratch = this.kmsScratchBytes.get(crtc_id);
+      if (!scratch || scratch.byteLength !== need) {
+        scratch = new Uint8ClampedArray(new ArrayBuffer(need)) as Uint8ClampedArray<ArrayBuffer>;
+        this.kmsScratchBytes.set(crtc_id, scratch);
+      }
+      scratch.set(pixels);
+      ctx.putImageData(new ImageData(scratch, fb.width, fb.height), 0, 0);
+      const blitUs = ((performance.now() - blitStart) * 1000) | 0;
+      const stats = this.kmsStatsViews.get(crtc_id);
+      if (stats) {
+        Atomics.add(stats, 0, 1);
+        Atomics.store(stats, 1, performance.now() | 0);
+        Atomics.store(stats, 4, blitUs);
+      }
+    }
+
+    // Slots 2/3 (scanout width/height) and 5/6 (kernel-side PAGE_FLIP
+    // commit count, last frame µs) are populated for every CRTC with
+    // a stats SAB, regardless of the canvas-owner mode. Slots 2/3
+    // sourced from the kernel's current FB so embedders (e.g. the
+    // Modeset React pane) can detect "scanout active" without
+    // depending on the 2D-blit path. Slots 5/6 reflect kernel-side
+    // ioctls — independent of the 60 Hz blit loop above.
+    if (this.kmsStatsViews.size > 0) {
+      const exports = this.kernelInstance?.exports as
+        | { kernel_kms_commit_count?: (id: number) => bigint;
+            kernel_kms_last_frame_us?: (id: number) => bigint }
+        | undefined;
+      for (const [crtc_id, stats] of this.kmsStatsViews) {
+        const fb = this.kernel.kms.currentFb(crtc_id);
+        if (fb) {
+          Atomics.store(stats, 2, fb.width);
+          Atomics.store(stats, 3, fb.height);
+        }
+        if (stats.length < 7) continue;
+        const commits = exports?.kernel_kms_commit_count?.(crtc_id) ?? 0n;
+        const lastUs = exports?.kernel_kms_last_frame_us?.(crtc_id) ?? 0n;
+        Atomics.store(stats, 5, Number(commits & 0x7fffffffn));
+        Atomics.store(stats, 6, Number(lastUs & 0x7fffffffn));
       }
     }
   }

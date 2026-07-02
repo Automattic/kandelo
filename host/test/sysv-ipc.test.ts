@@ -1,6 +1,6 @@
 /**
  * Tests for SysV IPC: message queues, semaphores, and shared memory.
- * Verifies that the SharedIpcTable is properly wired up in CentralizedKernelWorker.
+ * Verifies that the SharedIpcTable is properly wired up in the kernel worker.
  */
 import { describe, it, expect } from "vitest";
 import { join, dirname } from "node:path";

@@ -1,7 +1,7 @@
 /**
- * Build a fully-bootable VFS image for the nginx + PHP-FPM demo.
- * dinit (PID 1) brings up php-fpm on :9000 then nginx on :8080
- * (depends-on chain ensures php-fpm is up first).
+ * Build a fully-bootable VFS image for the nginx + PHP-FPM demo. The image
+ * starts from shell.vfs.zst, then dinit (PID 1) brings up php-fpm on :9000
+ * and nginx on :8080 (depends-on chain ensures php-fpm is up first).
  *
  * Produces: apps/browser-demos/public/nginx-php.vfs
  *
@@ -9,9 +9,7 @@
  */
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import { MemoryFileSystem } from "../../../host/src/vfs/memory-fs";
 import {
-  ensureDir,
   ensureDirRecursive,
   writeVfsFile,
   writeVfsBinary,
@@ -20,6 +18,7 @@ import { resolveBinary, findRepoRoot } from "../../../host/src/binary-resolver";
 import { saveImage } from "./vfs-image-helpers";
 import { addDinitInit } from "./dinit-image-helpers";
 import { prewarmOpcache } from "./opcache-prewarm";
+import { loadShellBaseFileSystem } from "./shell-vfs-build";
 import {
   webPresentation,
   writeKandeloDemoConfig,
@@ -28,6 +27,9 @@ import { nginxPhpGuide } from "./kandelo-demo-guides";
 
 const OUT_FILE = join(findRepoRoot(), "apps", "browser-demos", "public", "nginx-php.vfs.zst");
 const PHP_FPM_WORKERS = 6;
+const NGINX_PHP_IMAGE_MAX_BYTES = 256 * 1024 * 1024;
+const DEMO_UID = 1000;
+const DEMO_GID = 1000;
 
 const NGINX_CONF = `user root;
 daemon off;
@@ -115,8 +117,8 @@ request_slowlog_trace_depth = 0
 
 // opcache: file-cache backend, populated at build time by
 // prewarmOpcache (see end of main()). See build-wp-vfs-image.ts for
-// the rationale. validate_timestamps=0 is safe because VFS files
-// don't change at runtime.
+// the rationale. Timestamp revalidation stays enabled so files edited from
+// the demo terminal are reflected after a browser reload.
 const PHP_INI = `zend_extension=/usr/lib/php/extensions/opcache.so
 
 [opcache]
@@ -124,7 +126,8 @@ opcache.enable=1
 opcache.enable_cli=1
 opcache.file_cache=/var/cache/opcache
 opcache.file_cache_only=1
-opcache.validate_timestamps=0
+opcache.validate_timestamps=1
+opcache.revalidate_freq=0
 `;
 
 const FPM_ROUTER_PHP = `<?php
@@ -212,14 +215,12 @@ async function main() {
   const PHP_FPM_WASM = resolveBinary("programs/php/php-fpm.wasm");
   const OPCACHE_SO = resolveBinary("programs/php/opcache.so");
 
-  const sab = new SharedArrayBuffer(64 * 1024 * 1024, { maxByteLength: 256 * 1024 * 1024 });
-  const fs = MemoryFileSystem.create(sab, 256 * 1024 * 1024);
-
-  for (const dir of ["/tmp", "/home", "/dev", "/etc", "/run", "/var"]) {
-    ensureDir(fs, dir);
-  }
+  console.log("Loading shell base image...");
+  const fs = loadShellBaseFileSystem(NGINX_PHP_IMAGE_MAX_BYTES);
   fs.chmod("/tmp", 0o777);
   ensureDirRecursive(fs, "/usr/sbin");
+  ensureDirRecursive(fs, "/run");
+  ensureDirRecursive(fs, "/var");
   ensureDirRecursive(fs, "/var/www/html");
   ensureDirRecursive(fs, "/etc/nginx");
   ensureDirRecursive(fs, "/tmp/nginx_client_temp");
@@ -241,6 +242,14 @@ async function main() {
   writeVfsFile(fs, "/etc/php.ini", PHP_INI);
   writeVfsFile(fs, "/var/www/fpm-router.php", FPM_ROUTER_PHP);
   writeVfsFile(fs, "/var/www/html/index.php", INDEX_PHP);
+  fs.chown("/var/www", DEMO_UID, DEMO_GID);
+  fs.chown("/var/www/html", DEMO_UID, DEMO_GID);
+  fs.chown("/var/www/fpm-router.php", DEMO_UID, DEMO_GID);
+  fs.chown("/var/www/html/index.php", DEMO_UID, DEMO_GID);
+  fs.chmod("/var/www", 0o755);
+  fs.chmod("/var/www/html", 0o755);
+  fs.chmod("/var/www/fpm-router.php", 0o644);
+  fs.chmod("/var/www/html/index.php", 0o644);
 
   // Prewarm opcache: compile the demo's router and document-root PHP
   // files into the file cache so the first request doesn't pay the parse

@@ -18,10 +18,9 @@ int pthread_cond_wait(pthread_cond_t *restrict c, pthread_mutex_t *restrict m)
 		                    c->__u.__i[1], m->__u.__i[1]);
 		if (r < 0) return -r;
 
-		/* In centralized mode the kernel completes the syscall only when
-		 * the waiter can proceed (signaled + mutex reacquired); EAGAIN is
-		 * handled entirely by the host retry loop, so the loop below is
-		 * defensive. */
+		/* The kernel completes the syscall only when the waiter can proceed
+		 * (signaled + mutex reacquired); EAGAIN is handled entirely by the
+		 * host retry loop, so the loop below is defensive. */
 		for (;;) {
 			long rc = __syscall(SYS_PSHARED_COND_WAIT_CHECK,
 			                     c->__u.__i[1], m->__u.__i[1]);

@@ -34,7 +34,7 @@ wasm = "erlang-otp.tar.zst"
 name = "erl"
 version_constraint = ">=16.0"
 probe = { args = ["-version"], version_regex = "emulator version (\\d+\\.\\d+(?:\\.\\d+)?)" }
-install_hints = { darwin = "brew install erlang", linux = "apt install erlang  # or: asdf install erlang 28.0" }
+install_hints = { darwin = "run through scripts/dev-shell.sh", linux = "run through scripts/dev-shell.sh" }
 
 # GNU make >=3.80 is OTP's documented minimum (matches what stock macOS
 # bundles — Apple ships make 3.81 — and any reasonable linux distro).
@@ -42,4 +42,4 @@ install_hints = { darwin = "brew install erlang", linux = "apt install erlang  #
 name = "make"
 version_constraint = ">=3.80"
 probe = { args = ["--version"], version_regex = "GNU Make (\\d+\\.\\d+(?:\\.\\d+)?)" }
-install_hints = { darwin = "ships with macOS Command Line Tools; or: brew install make", linux = "apt install make" }
+install_hints = { darwin = "run through scripts/dev-shell.sh", linux = "run through scripts/dev-shell.sh" }

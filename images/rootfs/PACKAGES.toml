@@ -31,6 +31,59 @@ path = "/usr/bin/bash"
 aliases = ["/bin/bash"]
 
 [[packages]]
+name = "ncurses"
+
+[[packages.outputs]]
+binary = "programs/wasm32/ncurses/clear.wasm"
+path = "/usr/bin/clear"
+aliases = ["/bin/clear"]
+
+[[packages.outputs]]
+binary = "programs/wasm32/ncurses/reset.wasm"
+path = "/usr/bin/reset"
+aliases = ["/bin/reset"]
+
+[[packages.outputs]]
+binary = "programs/wasm32/ncurses/tset.wasm"
+path = "/usr/bin/tset"
+aliases = ["/bin/tset"]
+
+[[packages.outputs]]
+binary = "programs/wasm32/ncurses/tput.wasm"
+path = "/usr/bin/tput"
+aliases = ["/bin/tput"]
+
+[[packages.outputs]]
+binary = "programs/wasm32/ncurses/tabs.wasm"
+path = "/usr/bin/tabs"
+aliases = ["/bin/tabs"]
+
+[[packages.outputs]]
+binary = "programs/wasm32/ncurses/tic.wasm"
+path = "/usr/bin/tic"
+aliases = ["/bin/tic"]
+
+[[packages.outputs]]
+binary = "programs/wasm32/ncurses/infocmp.wasm"
+path = "/usr/bin/infocmp"
+aliases = ["/bin/infocmp"]
+
+[[packages.outputs]]
+binary = "programs/wasm32/ncurses/toe.wasm"
+path = "/usr/bin/toe"
+aliases = ["/bin/toe"]
+
+[[packages.outputs]]
+binary = "programs/wasm32/ncurses/captoinfo.wasm"
+path = "/usr/bin/captoinfo"
+aliases = ["/bin/captoinfo"]
+
+[[packages.outputs]]
+binary = "programs/wasm32/ncurses/infotocap.wasm"
+path = "/usr/bin/infotocap"
+aliases = ["/bin/infotocap"]
+
+[[packages]]
 name = "coreutils"
 
 [[packages.outputs]]
@@ -391,16 +444,6 @@ aliases = ["/bin/strings"]
 binary = "programs/wasm32/posix-utils-lite/strip.wasm"
 path = "/usr/bin/strip"
 aliases = ["/bin/strip"]
-
-[[packages.outputs]]
-binary = "programs/wasm32/posix-utils-lite/tabs.wasm"
-path = "/usr/bin/tabs"
-aliases = ["/bin/tabs"]
-
-[[packages.outputs]]
-binary = "programs/wasm32/posix-utils-lite/tput.wasm"
-path = "/usr/bin/tput"
-aliases = ["/bin/tput"]
 
 [[packages.outputs]]
 binary = "programs/wasm32/posix-utils-lite/uncompress.wasm"

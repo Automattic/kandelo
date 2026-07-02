@@ -1,22 +1,21 @@
 /**
  * Build a fully-bootable VFS image for the WordPress + MariaDB (LAMP)
- * browser demo. dinit (PID 1) brings up the full stack:
+ * browser demo. The image starts from shell.vfs.zst, then dinit (PID 1)
+ * brings up the full stack:
  *
- *   mariadb-bootstrap (scripted) — wraps `mariadbd --bootstrap < SQL`
- *                                  with a sleep+kill timeout because
- *                                  mariadbd doesn't exit at stdin EOF.
- *   mariadb           (process)  — depends-on mariadb-bootstrap
+ *   mariadb           (process)  — starts from a build-time-initialized /data
  *   wp-config-init    (internal) — dependency marker. The browser host writes
  *                                  runtime wp-config.php before dinit starts.
  *   smtp-capture      (process)  — local SMTP sink storing mail under /var/mail
- *   php-fpm           (process)  — depends-on mariadb, wp-config-init, smtp-capture
+ *   mariadb-ready     (scripted) — waits for the MariaDB socket
+ *   php-fpm           (process)  — depends-on mariadb-ready, wp-config-init, smtp-capture
  *   nginx             (process)  — depends-on php-fpm
  *
  * Produces: apps/browser-demos/public/lamp.vfs
  */
 import { readFileSync, lstatSync, existsSync } from "node:fs";
 import { join } from "node:path";
-import { MemoryFileSystem } from "../../../host/src/vfs/memory-fs";
+import type { MemoryFileSystem } from "../../../host/src/vfs/memory-fs";
 import { resolveBinary, findRepoRoot } from "../../../host/src/binary-resolver";
 import {
   writeVfsFile,
@@ -25,7 +24,11 @@ import {
   walkAndWrite,
   saveImage,
 } from "./vfs-image-helpers";
-import { addDinitInit, type DinitService } from "./dinit-image-helpers";
+import {
+  addDinitInit,
+  addPathReadinessService,
+  type DinitService,
+} from "./dinit-image-helpers";
 import { ensureSourceExtract } from "./source-extract-helper";
 import { prewarmOpcache } from "./opcache-prewarm";
 import {
@@ -44,6 +47,8 @@ import {
   wordpressSmtpCaptureMuPlugin,
 } from "./smtp-capture-helpers";
 import { MYSQL_BENCHMARK_PHP } from "../../../apps/browser-demos/lib/init/mysql-benchmark";
+import { loadShellBaseFileSystem } from "./shell-vfs-build";
+import { preinstallWordPressMariaDb } from "./wordpress-preinstall";
 
 const REPO_ROOT = findRepoRoot();
 const BROWSER_DIR = join(REPO_ROOT, "apps", "browser-demos");
@@ -69,18 +74,22 @@ const SYSTEM_DATA_PATH = existsSync(join(MARIADB_LEGACY_INSTALL, "share/mysql/my
 const NGINX_PATH = resolveBinary("programs/nginx.wasm");
 const PHP_FPM_PATH = resolveBinary("programs/php/php-fpm.wasm");
 const OPCACHE_SO_PATH = resolveBinary("programs/php/opcache.so");
-const DASH_PATH = resolveBinary("programs/dash.wasm");
-const COREUTILS_PATH = resolveBinary("programs/coreutils.wasm");
 const MSMTPD_PATH = resolveBinary("programs/msmtpd.wasm");
 const OUT_FILE = join(BROWSER_DIR, "public", "lamp.vfs.zst");
 const PHP_FPM_WORKERS = 6;
 const MYSQL_UID = 101;
 const MYSQL_GID = 101;
 const MARIADB_SOCKET_PATH = "/tmp/mysql.sock";
+const LAMP_IMAGE_MAX_BYTES = 768 * 1024 * 1024;
+const MARIADB_ARIA_LOG_FILE_SIZE = 16 * 1024 * 1024;
+const MARIADB_ARIA_PAGECACHE_SIZE = 1024 * 1024;
+const MARIADB_INNODB_LOG_FILE_SIZE = 16 * 1024 * 1024;
+const MARIADB_INNODB_LOG_BUFFER_SIZE = 1024 * 1024;
+const MARIADB_INNODB_BUFFER_POOL_SIZE = 8 * 1024 * 1024;
 
 // LAMP-specific data dirs that mariadbd writes to at runtime. The image
-// intentionally bakes only a minimal /bin/sh + sleep environment for the
-// bootstrap script, not the full shell demo toolset.
+// starts from the full shell demo VFS, so the bootstrap script gets the same
+// /bin/sh and utility layout users see in the interactive terminal.
 function populateMariadbDataDirs(fs: MemoryFileSystem): void {
   for (const dir of ["/data", "/data/mysql", "/data/tmp", "/data/test"]) {
     ensureDirRecursive(fs, dir);
@@ -89,18 +98,6 @@ function populateMariadbDataDirs(fs: MemoryFileSystem): void {
   }
   ensureDirRecursive(fs, "/tmp");
   fs.chmod("/tmp", 0o1777);
-}
-
-function populateBootstrapShell(fs: MemoryFileSystem): void {
-  ensureDirRecursive(fs, "/bin");
-  ensureDirRecursive(fs, "/usr/bin");
-  writeVfsBinary(fs, "/bin/dash", new Uint8Array(readFileSync(DASH_PATH)));
-  writeVfsBinary(fs, "/bin/coreutils", new Uint8Array(readFileSync(COREUTILS_PATH)));
-  try { fs.symlink("/bin/dash", "/bin/sh"); } catch { /* exists */ }
-  for (const name of ["cat", "date", "mkdir", "mv", "sleep"]) {
-    try { fs.symlink("/bin/coreutils", `/bin/${name}`); } catch { /* exists */ }
-    try { fs.symlink("/bin/coreutils", `/usr/bin/${name}`); } catch { /* exists */ }
-  }
 }
 
 function populateMariadb(fs: MemoryFileSystem): void {
@@ -116,7 +113,7 @@ function populateMariadb(fs: MemoryFileSystem): void {
 function populateNginxConfig(fs: MemoryFileSystem): void {
   for (const dir of [
     "/etc/nginx", "/var/www/html", "/var/log/nginx",
-    "/tmp/nginx_client_temp", "/tmp/nginx_fastcgi_temp",
+    "/tmp/nginx_client_temp", "/tmp/nginx_fastcgi_temp", "/tmp/nginx_proxy_temp",
   ]) ensureDirRecursive(fs, dir);
 
   const fastcgiParams = `fastcgi_pass 127.0.0.1:9000;
@@ -149,6 +146,7 @@ events {
 http {
     client_body_temp_path /tmp/nginx_client_temp;
     fastcgi_temp_path     /tmp/nginx_fastcgi_temp;
+    proxy_temp_path       /tmp/nginx_proxy_temp;
     types {
         text/html  html htm;
         text/css   css;
@@ -306,6 +304,11 @@ const MARIADB_BOOTSTRAP_SCRIPT = `# mariadbd --bootstrap doesn't exit at stdin E
 # rest of dinit's chain runs concurrently with bootstrap.
 /usr/sbin/mariadbd --no-defaults --user=mysql --datadir=/data --tmpdir=/data/tmp \\
     --default-storage-engine=Aria --skip-grant-tables \\
+    --aria-log-file-size=${MARIADB_ARIA_LOG_FILE_SIZE} \\
+    --aria-pagecache-buffer-size=${MARIADB_ARIA_PAGECACHE_SIZE} \\
+    --innodb-log-file-size=${MARIADB_INNODB_LOG_FILE_SIZE} \\
+    --innodb-log-buffer-size=${MARIADB_INNODB_LOG_BUFFER_SIZE} \\
+    --innodb-buffer-pool-size=${MARIADB_INNODB_BUFFER_POOL_SIZE} \\
     --key-buffer-size=1048576 --table-open-cache=10 --sort-buffer-size=262144 \\
     --bootstrap --skip-networking --log-warnings=0 \\
     --log-error=/data/bootstrap.log < /etc/mariadb/bootstrap.sql &
@@ -316,7 +319,10 @@ while [ $i -lt 60 ]; do
         # Marker present — give mariadbd a moment to flush its writes,
         # then tear it down. The persistent mariadb daemon will start
         # fresh on the populated /data and serve normal requests.
-        sleep 1
+        # In build-time preinstall this is the source of the runtime /data
+        # image, so prefer the old conservative bootstrap delay over
+        # fast-but-dirty crash recovery on the next daemon start.
+        sleep 60
         break
     fi
     sleep 1
@@ -328,29 +334,29 @@ kill -KILL $PID 2>/dev/null
 exit 0
 `;
 
-function buildServices(): DinitService[] {
+function buildServices(fs: MemoryFileSystem): DinitService[] {
+  const mariadbReady = addPathReadinessService(fs, {
+    name: "mariadb-ready",
+    path: MARIADB_SOCKET_PATH,
+    dependsOn: ["mariadb"],
+    label: "MariaDB",
+  });
+
   return [
-    {
-      name: "mariadb-bootstrap",
-      type: "scripted",
-      command: "/bin/sh /etc/mariadb/bootstrap.sh",
-      logfile: "/var/log/mariadb-bootstrap.log",
-      restart: false,
-    },
     {
       name: "mariadb",
       type: "process",
       command: "/usr/sbin/mariadbd --no-defaults --user=mysql " +
         "--datadir=/data --tmpdir=/data/tmp --default-storage-engine=Aria " +
+        `--aria-log-file-size=${MARIADB_ARIA_LOG_FILE_SIZE} ` +
+        `--aria-pagecache-buffer-size=${MARIADB_ARIA_PAGECACHE_SIZE} ` +
+        `--innodb-log-file-size=${MARIADB_INNODB_LOG_FILE_SIZE} ` +
+        `--innodb-log-buffer-size=${MARIADB_INNODB_LOG_BUFFER_SIZE} ` +
+        `--innodb-buffer-pool-size=${MARIADB_INNODB_BUFFER_POOL_SIZE} ` +
         "--skip-grant-tables --key-buffer-size=1048576 --table-open-cache=10 " +
-        "--sort-buffer-size=262144 --skip-networking=0 --port=3306 " +
-        `--bind-address=0.0.0.0 --socket=${MARIADB_SOCKET_PATH} --max-connections=10 ` +
-        "--log-error=/data/error.log " +
-        // --init-file runs after the daemon is ready — guarantees the
-        // wordpress DB exists even if the bootstrap timeout-and-kill
-        // truncated the original CREATE DATABASE.
-        "--init-file=/etc/mariadb/init.sql",
-      dependsOn: ["mariadb-bootstrap"],
+        "--sort-buffer-size=262144 --skip-networking " +
+        `--socket=${MARIADB_SOCKET_PATH} --max-connections=10 ` +
+        "--log-error=/data/error.log",
       logfile: "/var/log/mariadb.log",
       restart: false,
     },
@@ -360,11 +366,12 @@ function buildServices(): DinitService[] {
       restart: false,
     },
     smtpCaptureService(),
+    mariadbReady,
     {
       name: "php-fpm",
       type: "process",
       command: "/usr/sbin/php-fpm -y /etc/php-fpm.conf -c /etc/php.ini --nodaemonize",
-      dependsOn: ["mariadb", "wp-config-init", "smtp-capture"],
+      dependsOn: ["mariadb-ready", "wp-config-init", "smtp-capture"],
       logfile: "/var/log/php-fpm.log",
       restart: false,
     },
@@ -421,15 +428,8 @@ async function main() {
     process.exit(1);
   }
 
-  // 256 MiB initial — WordPress core + SQLite plugin (~80 MiB) + MariaDB
-  // binary (~14 MiB) + bootstrap SQL (~1 MiB) plus headroom. Worker entry
-  // makes the SAB growable to 1 GiB so InnoDB's allocations and table
-  // data can expand at runtime.
-  const sab = new SharedArrayBuffer(256 * 1024 * 1024, { maxByteLength: 512 * 1024 * 1024 });
-  const fs = MemoryFileSystem.create(sab, 512 * 1024 * 1024);
-
-  console.log("Populating bootstrap shell...");
-  populateBootstrapShell(fs);
+  console.log("Loading shell base image...");
+  const fs = loadShellBaseFileSystem(LAMP_IMAGE_MAX_BYTES);
   populateMariadbDataDirs(fs);
 
   console.log("Writing nginx + php-fpm + msmtpd binaries...");
@@ -445,14 +445,9 @@ async function main() {
   populatePhpFpmConfig(fs);
   populateSmtpCaptureConfig(fs);
 
-  // Bootstrap scripts + default wp-config. The browser host overwrites
-  // wp-config.php with the current page prefix/protocol before dinit starts.
+  // Build-time MariaDB bootstrap script + default wp-config. The browser host
+  // overwrites wp-config.php with the current page prefix/protocol before dinit starts.
   writeVfsFile(fs, "/etc/mariadb/bootstrap.sh", MARIADB_BOOTSTRAP_SCRIPT);
-  // mariadbd --init-file runs at server startup — used as a belt-and-
-  // suspenders guarantee that the wordpress DB exists, since the
-  // bootstrap timeout-and-kill might truncate the original
-  // CREATE DATABASE during system-table replay.
-  writeVfsFile(fs, "/etc/mariadb/init.sql", "CREATE DATABASE IF NOT EXISTS wordpress;\n");
   writeVfsFile(fs, "/etc/wp-config-template.php", wordpressConfigTemplate("mariadb"));
   writeVfsFile(fs, "/etc/wp-config-init.sh", WORDPRESS_CONFIG_INIT_SCRIPT);
   ensureDirRecursive(fs, "/var/www/html");
@@ -475,7 +470,9 @@ async function main() {
   console.log(`  WordPress core: ${wpCount} files`);
 
   // Service tree
-  addDinitInit(fs, buildServices());
+  addDinitInit(fs, buildServices(fs));
+
+  await preinstallWordPressMariaDb(fs);
 
   // Prewarm opcache: see build-wp-vfs-image.ts for context.
   await prewarmOpcache(fs, {

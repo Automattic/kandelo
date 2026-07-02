@@ -1,0 +1,220 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/Automattic/kandelo/blob/main/homebrew/kandelo-homebrew/Kandelo/provenance.schema.json",
+  "title": "Kandelo Homebrew bottle provenance",
+  "description": "Durable build, validation, and metadata evidence for one published Homebrew bottle.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "subject",
+    "repositories",
+    "formula",
+    "bottle",
+    "build",
+    "validation",
+    "metadata"
+  ],
+  "properties": {
+    "schema": { "const": 1 },
+    "subject": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "package",
+        "version",
+        "arch",
+        "bottle_rebuild",
+        "kandelo_abi"
+      ],
+      "properties": {
+        "package": { "$ref": "#/$defs/packageName" },
+        "version": { "type": "string", "minLength": 1 },
+        "arch": { "enum": ["wasm32", "wasm64"] },
+        "bottle_rebuild": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "kandelo_abi": {
+          "type": "integer",
+          "minimum": 1
+        }
+      }
+    },
+    "repositories": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kandelo_repository",
+        "kandelo_commit",
+        "tap_repository",
+        "tap_commit"
+      ],
+      "properties": {
+        "kandelo_repository": { "$ref": "#/$defs/repository" },
+        "kandelo_commit": { "$ref": "#/$defs/gitSha" },
+        "tap_repository": { "$ref": "#/$defs/repository" },
+        "tap_commit": { "$ref": "#/$defs/gitSha" }
+      }
+    },
+    "formula": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path", "sha256"],
+      "properties": {
+        "path": { "$ref": "#/$defs/relativePath" },
+        "sha256": { "$ref": "#/$defs/sha256" }
+      }
+    },
+    "bottle": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "url",
+        "sha256",
+        "bytes",
+        "cache_key_sha",
+        "bottle_tag",
+        "cellar",
+        "prefix"
+      ],
+      "properties": {
+        "url": { "$ref": "#/$defs/httpsUrl" },
+        "sha256": { "$ref": "#/$defs/sha256" },
+        "bytes": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "cache_key_sha": { "$ref": "#/$defs/sha256" },
+        "bottle_tag": {
+          "enum": ["wasm32_kandelo", "wasm64_kandelo"]
+        },
+        "cellar": { "$ref": "#/$defs/guestAbsolutePath" },
+        "prefix": { "$ref": "#/$defs/guestAbsolutePath" }
+      }
+    },
+    "build": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "github_run",
+        "job",
+        "runner_os",
+        "brew_version",
+        "dev_shell",
+        "sdk_fingerprint",
+        "sysroot_fingerprint"
+      ],
+      "properties": {
+        "github_run": { "$ref": "#/$defs/httpsUrl" },
+        "job": { "type": "string", "minLength": 1 },
+        "runner_os": { "type": "string", "minLength": 1 },
+        "brew_version": { "type": "string", "minLength": 1 },
+        "dev_shell": { "type": "string", "minLength": 1 },
+        "sdk_fingerprint": { "$ref": "#/$defs/sha256" },
+        "sysroot_fingerprint": { "$ref": "#/$defs/sha256" }
+      }
+    },
+    "validation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["outcome_lists"],
+      "properties": {
+        "outcome_lists": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/outcomeList" },
+          "minItems": 1,
+          "uniqueItems": true
+        }
+      }
+    },
+    "metadata": {
+      "type": "object",
+      "description": "Hashes of generated JSON files. provenance_json.sha256 is the sha256 of this provenance document after replacing /metadata/provenance_json/sha256 with 64 zeroes; this avoids an impossible self-referential hash.",
+      "additionalProperties": false,
+      "required": [
+        "metadata_json",
+        "formula_json",
+        "link_manifest_json",
+        "provenance_json"
+      ],
+      "properties": {
+        "metadata_json": { "$ref": "#/$defs/metadataSha" },
+        "formula_json": { "$ref": "#/$defs/metadataSha" },
+        "link_manifest_json": { "$ref": "#/$defs/metadataSha" },
+        "provenance_json": { "$ref": "#/$defs/metadataSha" }
+      }
+    }
+  },
+  "$defs": {
+    "gitSha": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{40}$"
+    },
+    "guestAbsolutePath": {
+      "type": "string",
+      "pattern": "^/[^\\s]*$"
+    },
+    "httpsUrl": {
+      "type": "string",
+      "pattern": "^https://[^\\s]+$"
+    },
+    "metadataSha": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path", "sha256"],
+      "properties": {
+        "path": { "$ref": "#/$defs/relativePath" },
+        "sha256": { "$ref": "#/$defs/sha256" }
+      }
+    },
+    "outcomeList": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "status", "passed", "failed", "skipped"],
+      "properties": {
+        "name": {
+          "enum": [
+            "schema",
+            "homebrew_audit",
+            "bottle_build",
+            "node_smoke",
+            "browser_smoke"
+          ]
+        },
+        "status": {
+          "enum": ["success", "failed", "skipped"]
+        },
+        "passed": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1 }
+        },
+        "failed": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1 }
+        },
+        "skipped": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1 }
+        },
+        "skip_reason": { "type": "string", "minLength": 1 }
+      }
+    },
+    "packageName": {
+      "type": "string",
+      "pattern": "^[a-z0-9][a-z0-9._-]*$"
+    },
+    "relativePath": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9._@%+=:-]+(/[A-Za-z0-9._@%+=:-]+)*$"
+    },
+    "repository": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$"
+    },
+    "sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    }
+  }
+}

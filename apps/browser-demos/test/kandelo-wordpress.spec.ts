@@ -61,50 +61,29 @@ test("@slow Kandelo WordPress/MariaDB mysqli transport benchmark returns", async
   expect(data.variants.tcp_persistent.error).toBeUndefined();
 });
 
-test("@slow Kandelo WordPress/MariaDB installer reaches success page", async ({
+test("@slow Kandelo WordPress/MariaDB preinstalled site logs into wp-admin", async ({
   page,
 }) => {
-  test.setTimeout(600_000);
+  test.setTimeout(420_000);
 
   await gotoOrSkip(page, "/?demo=wordpress-mariadb");
   await page.waitForSelector('iframe[src*="/app/"]', { timeout: 180_000 });
 
   const frame = page.frameLocator('iframe[src*="/app/"]');
-  await expect(
-    frame.locator("form#setup, form#language-chooser, .wp-core-ui").first(),
-  ).toBeVisible({ timeout: 180_000 });
+  await expect(frame.locator("body")).toContainText(/WordPress on Kandelo|Hello world/i, {
+    timeout: 240_000,
+  });
+  await expect(frame.locator("form#setup, form#language-chooser")).toHaveCount(0);
 
-  if ((await frame.locator("form#language-chooser").count()) > 0) {
-    await frame.locator("form#language-chooser [type='submit']").click();
-    await expect(frame.locator("form#setup")).toBeVisible({ timeout: 60_000 });
-  }
+  await frame.locator("body").evaluate(() => {
+    window.location.href = "/app/wp-login.php";
+  });
 
-  await frame.locator("#weblog_title").fill("Kandelo MariaDB E2E");
+  await expect(frame.locator("#loginform")).toBeVisible({ timeout: 120_000 });
   await frame.locator("#user_login").fill("admin");
-
-  const password = "Testpass123!Testpass123!";
-  const passField = frame.locator("#pass1");
-  if ((await passField.count()) > 0) {
-    await passField.fill(password);
-  }
-  const pass2Field = frame.locator("#pass2");
-  if ((await pass2Field.count()) > 0 && await pass2Field.isVisible()) {
-    await pass2Field.fill(password);
-  }
-
-  const weakPw = frame.locator("#pw_weak, .pw-weak input[type='checkbox']");
-  if ((await weakPw.count()) > 0) {
-    try {
-      await weakPw.check({ timeout: 5000 });
-    } catch {
-      // Hidden by WordPress JS; no confirmation needed.
-    }
-  }
-
-  await frame.locator("#admin_email").fill("admin@example.com");
-  await frame.locator("#submit, [name='Submit']").click();
-
-  await expect(
-    frame.locator(".step, .install-success, h1").filter({ hasText: /success|installed|log in/i }).first(),
-  ).toBeVisible({ timeout: 360_000 });
+  await frame.locator("#user_pass").fill("password");
+  await frame.locator("#wp-submit").click();
+  await expect(frame.locator("#wpadminbar, #adminmenu, body.wp-admin").first()).toBeVisible({
+    timeout: 180_000,
+  });
 });

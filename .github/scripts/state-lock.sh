@@ -156,6 +156,7 @@ same_run_owner_is_inactive() {
   local repo="$1"
   local owner_run_id="$2"
   local owner_detail="$3"
+  local owner_detail_alt=""
   local jobs
   local found=0
   local active=0
@@ -165,12 +166,18 @@ same_run_owner_is_inactive() {
     return 1
   fi
 
+  if [[ "$owner_detail" =~ ^([^,]+),[[:space:]]*(wasm32|wasm64)$ ]]; then
+    owner_detail_alt="${BASH_REMATCH[2]}, ${BASH_REMATCH[1]}"
+  fi
+
   jobs="$(gh api "/repos/${repo}/actions/runs/${owner_run_id}/jobs" \
     --paginate \
     --jq '.jobs[] | [.name, .status] | @tsv' 2>/dev/null || true)"
 
   while IFS=$'\t' read -r job_name job_status; do
-    if [[ "$job_name" == *"$owner_detail"* ]]; then
+    if [[ "$job_name" == *"$owner_detail"* ]] ||
+       { [ -n "$owner_detail_alt" ] && [[ "$job_name" == *"$owner_detail_alt"* ]]; }
+    then
       found=1
       if [ "$job_status" != "completed" ]; then
         active=1
@@ -317,7 +324,11 @@ acquire() {
     fi
 
     if [ -n "$owner_run_id" ]; then
-      echo "State lock for subject=$SUBJECT is held by workflow run ${owner_run_id}; waiting ${LOCK_POLL_SECONDS}s."
+      if [ -n "$owner_detail" ]; then
+        echo "State lock for subject=$SUBJECT is held by workflow run ${owner_run_id} (${owner_detail}); waiting ${LOCK_POLL_SECONDS}s."
+      else
+        echo "State lock for subject=$SUBJECT is held by workflow run ${owner_run_id}; waiting ${LOCK_POLL_SECONDS}s."
+      fi
     else
       echo "State lock for subject=$SUBJECT is held by ${held_sha}; waiting ${LOCK_POLL_SECONDS}s."
     fi

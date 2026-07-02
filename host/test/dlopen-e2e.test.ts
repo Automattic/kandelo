@@ -2,7 +2,7 @@
  * End-to-end test for dlopen/dlsym/dlclose.
  *
  * Builds a shared Wasm library and a main program that loads it via dlopen,
- * then runs the program through the centralized kernel and verifies output.
+ * then runs the program through the kernel and verifies output.
  */
 import { describe, it, expect, beforeAll } from "vitest";
 import { execFileSync } from "node:child_process";

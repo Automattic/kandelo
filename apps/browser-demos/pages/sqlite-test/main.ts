@@ -13,6 +13,7 @@ declare global {
     __sqliteTestReady: boolean;
     __runSqliteTest: (testFile: string, timeoutMs?: number) => Promise<SqliteTestResult>;
     __runSqliteCommand: (argv: string[], timeoutMs?: number, options?: SqliteRunOptions) => Promise<SqliteTestResult>;
+    __sqliteArtifactSnapshot?: (snapshot: SqliteArtifactSnapshot) => void | Promise<void>;
   }
 }
 
@@ -32,6 +33,11 @@ interface SqliteTestResult {
     path: string;
     base64: string;
   }>;
+}
+
+interface SqliteArtifactSnapshot {
+  durationMs: number;
+  artifacts?: SqliteTestResult["artifacts"];
 }
 
 let kernelBytes: ArrayBuffer | null = null;
@@ -77,6 +83,9 @@ function collectArtifacts(fs: MemoryFileSystem): SqliteTestResult["artifacts"] {
   const artifacts: NonNullable<SqliteTestResult["artifacts"]> = [];
   for (const path of [
     "/sqlite/testrunner.db",
+    "/sqlite/testrunner.db-journal",
+    "/sqlite/testrunner.db-shm",
+    "/sqlite/testrunner.db-wal",
     "/sqlite/testrunner.log",
     "/sqlite/testrunner_build.log",
   ]) {
@@ -97,6 +106,13 @@ function createFs(): MemoryFileSystem {
     fs.chmod("/sqlite/testdir", 0o777);
   } catch {}
   return fs;
+}
+
+function sqliteSyscallLogPtrWidth(): 4 | 8 | undefined {
+  const value = import.meta.env.VITE_SQLITE_BROWSER_SYSCALL_LOG_PTR_WIDTH;
+  if (value === "4") return 4;
+  if (value === "8") return 8;
+  return undefined;
 }
 
 async function init() {
@@ -137,6 +153,16 @@ async function init() {
       if (line) console.info(`[sqlite-progress] ${line}`);
     };
     const fs = createFs();
+    const readArtifacts = () => collectArtifacts(fs);
+    const publishArtifactSnapshot = () => {
+      const sink = window.__sqliteArtifactSnapshot;
+      if (!sink) return;
+      void Promise.resolve(sink({
+        durationMs: Math.round(performance.now() - start),
+        artifacts: readArtifacts(),
+      })).catch(() => {});
+    };
+    const artifactTimer = window.setInterval(publishArtifactSnapshot, 5000);
     if (argv[1] === "kandelo-testrunner.tcl") {
       writeVfsFile(fs, "/sqlite/kandelo-testrunner.tcl", [
         "set ::tcl_platform(os) OpenBSD",
@@ -150,7 +176,7 @@ async function init() {
       memfs: fs,
       maxWorkers: 4,
       enableSyscallLog: import.meta.env.VITE_SQLITE_BROWSER_SYSCALL_LOG === "1",
-      syscallLogPtrWidth: import.meta.env.VITE_SQLITE_BROWSER_SYSCALL_LOG_PTR_WIDTH === "8" ? 8 : 4,
+      syscallLogPtrWidth: sqliteSyscallLogPtrWidth(),
       onStdout: (data) => { appendStdout(new TextDecoder().decode(data)); },
       onStderr: (data) => { stderr += new TextDecoder().decode(data); },
     });
@@ -187,7 +213,7 @@ async function init() {
         stdout,
         stderr,
         durationMs: Math.round(performance.now() - start),
-        artifacts: collectArtifacts(fs),
+        artifacts: readArtifacts(),
       };
     } catch (err: any) {
       const message = err?.message || String(err);
@@ -198,9 +224,11 @@ async function init() {
         stderr,
         error: message.includes("TIMEOUT") ? "TIMEOUT" : message,
         durationMs: Math.round(performance.now() - start),
-        artifacts: collectArtifacts(fs),
+        artifacts: readArtifacts(),
       };
     } finally {
+      window.clearInterval(artifactTimer);
+      publishArtifactSnapshot();
       await kernel.destroy().catch(() => {});
     }
   }

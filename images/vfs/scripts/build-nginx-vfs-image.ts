@@ -1,7 +1,7 @@
 /**
- * Build a fully-bootable VFS image for the nginx demo. The image
- * contains dinit (PID 1), nginx, the nginx config + static content,
- * and a single dinit service file. The browser demo just fetches the
+ * Build a fully-bootable VFS image for the nginx demo. The image starts from
+ * shell.vfs.zst, then adds dinit (PID 1), nginx, the nginx config + static
+ * content, and a single dinit service file. The browser demo just fetches the
  * image and boots — no JS-side orchestration.
  *
  * Produces: apps/browser-demos/public/nginx.vfs
@@ -10,9 +10,7 @@
  */
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import { MemoryFileSystem } from "../../../host/src/vfs/memory-fs";
 import {
-  ensureDir,
   ensureDirRecursive,
   writeVfsFile,
   writeVfsBinary,
@@ -20,6 +18,7 @@ import {
 import { resolveBinary, findRepoRoot } from "../../../host/src/binary-resolver";
 import { saveImage } from "./vfs-image-helpers";
 import { addDinitInit } from "./dinit-image-helpers";
+import { loadShellBaseFileSystem } from "./shell-vfs-build";
 import {
   webPresentation,
   writeKandeloDemoConfig,
@@ -28,6 +27,9 @@ import { nginxGuide } from "./kandelo-demo-guides";
 
 const REPO_ROOT = findRepoRoot();
 const OUT_FILE = join(REPO_ROOT, "apps", "browser-demos", "public", "nginx.vfs.zst");
+const NGINX_IMAGE_MAX_BYTES = 256 * 1024 * 1024;
+const DEMO_UID = 1000;
+const DEMO_GID = 1000;
 
 // Multi-process nginx config — master + 2 workers, mirroring the
 // standalone CLI demo's nginx.conf. AF_INET listening sockets share a
@@ -103,17 +105,12 @@ const INDEX_HTML = `<!DOCTYPE html>
 async function main() {
   const NGINX_WASM = resolveBinary("programs/nginx.wasm");
 
-  // 32MB SAB; nginx wasm itself is ~3MB, dinit+dinitctl ~1.6MB,
-  // plus configs and html — fits comfortably with room to grow at boot.
-  const sab = new SharedArrayBuffer(32 * 1024 * 1024, { maxByteLength: 128 * 1024 * 1024 });
-  const fs = MemoryFileSystem.create(sab, 128 * 1024 * 1024);
-
-  // Standard system tree
-  for (const dir of ["/tmp", "/home", "/dev", "/etc", "/run", "/var"]) {
-    ensureDir(fs, dir);
-  }
+  console.log("Loading shell base image...");
+  const fs = loadShellBaseFileSystem(NGINX_IMAGE_MAX_BYTES);
   fs.chmod("/tmp", 0o777);
   ensureDirRecursive(fs, "/usr/sbin");
+  ensureDirRecursive(fs, "/run");
+  ensureDirRecursive(fs, "/var");
   ensureDirRecursive(fs, "/var/www/html");
   ensureDirRecursive(fs, "/etc/nginx");
 
@@ -121,6 +118,12 @@ async function main() {
   writeVfsBinary(fs, "/usr/sbin/nginx", new Uint8Array(readFileSync(NGINX_WASM)));
   writeVfsFile(fs, "/etc/nginx/nginx.conf", NGINX_CONF);
   writeVfsFile(fs, "/var/www/html/index.html", INDEX_HTML);
+  fs.chown("/var/www", DEMO_UID, DEMO_GID);
+  fs.chown("/var/www/html", DEMO_UID, DEMO_GID);
+  fs.chown("/var/www/html/index.html", DEMO_UID, DEMO_GID);
+  fs.chmod("/var/www", 0o755);
+  fs.chmod("/var/www/html", 0o755);
+  fs.chmod("/var/www/html/index.html", 0o644);
 
   // dinit + service tree
   addDinitInit(fs, [

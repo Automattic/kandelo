@@ -17,12 +17,14 @@ set -euo pipefail
 # the resolver:
 #
 #     WASM_POSIX_DEP_OUT_DIR        # where to install (lib/, include/c++/v1/)
-#     WASM_POSIX_DEP_VERSION        # LLVM major version (e.g. "21")
+#     WASM_POSIX_DEP_VERSION        # exact LLVM version from flake.nix (e.g. "21.1.7")
 #     WASM_POSIX_DEP_TARGET_ARCH    # "wasm32" or "wasm64"
 #
 # Prerequisites:
-#   - Homebrew LLVM (brew install llvm) at the version declared in deps.toml
-#   - CMake (brew install cmake)
+#   - scripts/dev-shell.sh / flake.nix, which provides:
+#       LLVM_PREFIX, LLVM_VERSION,
+#       WASM_POSIX_LLVM_LIBCXX_SOURCE, WASM_POSIX_LLVM_LIBUNWIND_SOURCE
+#   - CMake
 #   - kandelo sysroot built (bash build.sh)
 #
 # Output layout:
@@ -30,7 +32,7 @@ set -euo pipefail
 #     lib/libc++.a
 #     lib/libc++abi.a              ← bundles libunwind contents
 #     include/c++/v1/__config_site
-#     include/c++/v1/...           ← copied from $LLVM_PREFIX/include/c++/v1
+#     include/c++/v1/...           ← staged by the Nix-provided libcxx source build
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
@@ -38,7 +40,7 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
 source "$REPO_ROOT/sdk/activate.sh"
 
 # --- Inputs from resolver ---
-LLVM_MAJOR="${WASM_POSIX_DEP_VERSION:?WASM_POSIX_DEP_VERSION not set (must be invoked via cargo xtask build-deps resolve)}"
+LLVM_VERSION_EXPECTED="${WASM_POSIX_DEP_VERSION:?WASM_POSIX_DEP_VERSION not set (must be invoked via cargo xtask build-deps resolve)}"
 INSTALL_DIR="${WASM_POSIX_DEP_OUT_DIR:?WASM_POSIX_DEP_OUT_DIR not set (must be invoked via cargo xtask build-deps resolve)}"
 ARCH="${WASM_POSIX_DEP_TARGET_ARCH:-wasm32}"
 
@@ -59,27 +61,49 @@ case "$ARCH" in
         ;;
 esac
 
-LLVM_PREFIX="${LLVM_PREFIX:-$(brew --prefix llvm 2>/dev/null || echo /opt/homebrew/opt/llvm)}"
+LLVM_PREFIX="${LLVM_PREFIX:?LLVM_PREFIX not set. Run this build through scripts/dev-shell.sh so flake.nix supplies LLVM.}"
+LLVM_VERSION_ACTUAL="${LLVM_VERSION:?LLVM_VERSION not set. Run this build through scripts/dev-shell.sh so flake.nix declares the LLVM version.}"
+NIX_LIBCXX_SOURCE="${WASM_POSIX_LLVM_LIBCXX_SOURCE:?WASM_POSIX_LLVM_LIBCXX_SOURCE not set. Run this build through scripts/dev-shell.sh.}"
+NIX_LIBUNWIND_SOURCE="${WASM_POSIX_LLVM_LIBUNWIND_SOURCE:?WASM_POSIX_LLVM_LIBUNWIND_SOURCE not set. Run this build through scripts/dev-shell.sh.}"
 LLVM_CLANG="$LLVM_PREFIX/bin/clang"
 LLVM_AR="$LLVM_PREFIX/bin/llvm-ar"
 LLVM_RANLIB="$LLVM_PREFIX/bin/llvm-ranlib"
 LLVM_NM="$LLVM_PREFIX/bin/llvm-nm"
 
-# Verify host LLVM is at the declared major version.
-if [ -x "$LLVM_CLANG" ]; then
-    HOST_LLVM_VERSION="$("$LLVM_CLANG" --version | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1)"
-    HOST_LLVM_MAJOR="${HOST_LLVM_VERSION%%.*}"
-    if [ "$HOST_LLVM_MAJOR" != "$LLVM_MAJOR" ]; then
-        echo "WARNING: host LLVM major ($HOST_LLVM_MAJOR) does not match deps.toml version ($LLVM_MAJOR)." >&2
-        echo "         Build may still work but headers come from host LLVM." >&2
-    fi
-else
-    echo "ERROR: host clang not found at $LLVM_CLANG. Install with: brew install llvm" >&2
+if [ "$LLVM_VERSION_ACTUAL" != "$LLVM_VERSION_EXPECTED" ]; then
+    echo "ERROR: libcxx package version ($LLVM_VERSION_EXPECTED) does not match flake LLVM_VERSION ($LLVM_VERSION_ACTUAL)." >&2
+    echo "       Update packages/registry/libcxx/package.toml and libcxx dependents with the exact Nix LLVM version." >&2
     exit 1
 fi
 
-LLVM_SRC_DIR="$SCRIPT_DIR/llvm-project-${LLVM_MAJOR}"
+if [ ! -x "$LLVM_CLANG" ]; then
+    echo "ERROR: clang not found at $LLVM_CLANG. Run through scripts/dev-shell.sh." >&2
+    exit 1
+fi
+
+HOST_LLVM_VERSION="$("$LLVM_CLANG" --version | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1)"
+if [ "$HOST_LLVM_VERSION" != "$LLVM_VERSION_EXPECTED" ]; then
+    echo "ERROR: clang version ($HOST_LLVM_VERSION) does not match libcxx package version ($LLVM_VERSION_EXPECTED)." >&2
+    echo "       Run through scripts/dev-shell.sh so the compiler and libcxx sources come from the same Nix LLVM package." >&2
+    exit 1
+fi
+
+if [ ! -f "$NIX_LIBCXX_SOURCE/runtimes/CMakeLists.txt" ] ||
+        [ ! -d "$NIX_LIBCXX_SOURCE/libcxx" ] ||
+        [ ! -d "$NIX_LIBCXX_SOURCE/libcxxabi" ]; then
+    echo "ERROR: Nix libcxx source is incomplete at $NIX_LIBCXX_SOURCE" >&2
+    echo "       Expected runtimes/, libcxx/, and libcxxabi/ from flake.nix's llvmPackages_21.libcxx.src." >&2
+    exit 1
+fi
+
+if [ ! -d "$NIX_LIBUNWIND_SOURCE/libunwind" ]; then
+    echo "ERROR: Nix libunwind source is incomplete at $NIX_LIBUNWIND_SOURCE" >&2
+    echo "       Expected libunwind/ from flake.nix's llvmPackages_21.libunwind.src." >&2
+    exit 1
+fi
+
 BUILD_DIR="$SCRIPT_DIR/build-${ARCH}"
+LLVM_SRC_DIR="$BUILD_DIR/llvm-source"
 
 # --- Verify prerequisites ---
 if [ ! -f "$SYSROOT/lib/libc.a" ]; then
@@ -92,23 +116,8 @@ if [ ! -f "$SYSROOT/lib/libc.a" ]; then
 fi
 
 if ! command -v cmake &>/dev/null; then
-    echo "ERROR: cmake not found. Install: brew install cmake" >&2
+    echo "ERROR: cmake not found. Run through scripts/dev-shell.sh." >&2
     exit 1
-fi
-
-# --- Clone LLVM source (sparse, runtimes only) ---
-if [ ! -f "$LLVM_SRC_DIR/runtimes/CMakeLists.txt" ]; then
-    echo "==> Cloning LLVM ${LLVM_MAJOR}.x source (sparse: libcxx + libcxxabi + libunwind)..."
-    rm -rf "$LLVM_SRC_DIR"
-    mkdir -p "$LLVM_SRC_DIR"
-
-    git clone --depth=1 --branch "release/${LLVM_MAJOR}.x" \
-        --filter=blob:none --sparse \
-        https://github.com/llvm/llvm-project.git "$LLVM_SRC_DIR"
-
-    (cd "$LLVM_SRC_DIR" && \
-        git sparse-checkout set libcxx libcxxabi libunwind runtimes cmake llvm/cmake llvm/utils/llvm-lit libc)
-    echo "==> LLVM source ready."
 fi
 
 # --- Build ---
@@ -117,7 +126,7 @@ echo "==> Building libc++ and libc++abi for ${ARCH}..."
 # Base wasm compile flags — no C++ header paths here; CMake manages its own
 # generated headers for the runtimes build.
 # Modern wasm-EH lowering (commit 9 of the fork-instrument mega-PR).
-# Empirical: LLVM 21's `-wasm-use-legacy-eh` default is `true`, so we
+# Empirical: this LLVM line's `-wasm-use-legacy-eh` default is `true`, so we
 # must pass `=false` explicitly to get modern `try_table`/`catch_ref`
 # lowering — just dropping the earlier `=true` override leaves the
 # toolchain on legacy `try`/`catch`. libcxxabi's
@@ -131,6 +140,26 @@ WASM_C_FLAGS="--target=${WASM_TARGET} -matomics -mbulk-memory -mexception-handli
 # not mix old + new cmake artifacts.
 rm -rf "$BUILD_DIR"
 mkdir -p "$BUILD_DIR"
+
+# Assemble the monorepo-shaped source tree expected by runtimes/CMakeLists.txt
+# from exact Nix source derivations. Nix's libcxx source carries runtimes/,
+# libcxx/, libcxxabi/, and shared CMake support; libunwind is exposed as a
+# smaller separate source derivation. Keep runtimes/ itself as a real directory:
+# CMake checks siblings via runtimes/../libunwind, and if runtimes is a symlink
+# that `..` resolves inside the Nix libcxx source instead of this overlay tree.
+mkdir -p "$LLVM_SRC_DIR"
+for entry in cmake libc libcxx libcxxabi llvm third-party; do
+    if [ -e "$NIX_LIBCXX_SOURCE/$entry" ]; then
+        ln -s "$NIX_LIBCXX_SOURCE/$entry" "$LLVM_SRC_DIR/$entry"
+    fi
+done
+mkdir -p "$LLVM_SRC_DIR/runtimes"
+for entry in "$NIX_LIBCXX_SOURCE/runtimes"/*; do
+    [ -e "$entry" ] || continue
+    ln -s "$entry" "$LLVM_SRC_DIR/runtimes/$(basename "$entry")"
+done
+ln -s "$NIX_LIBUNWIND_SOURCE/libunwind" "$LLVM_SRC_DIR/libunwind"
+
 cd "$BUILD_DIR"
 
 cmake -G "Unix Makefiles" -S "$LLVM_SRC_DIR/runtimes" \
@@ -205,38 +234,69 @@ fi
 cp "$LIBCXX_A" "$INSTALL_DIR/lib/libc++.a"
 cp "$LIBCXXABI_A" "$INSTALL_DIR/lib/libc++abi.a"
 
-# Copy libc++ headers from host LLVM. We continue to source headers from
-# the host LLVM at build time (matching version with the binary we just
-# produced); migrating headers into an upstream tarball is a future
-# cleanup tracked in the design doc.
+# Install libc++ headers from the build tree, NOT from the host LLVM.
+# The CMake runtimes build stages a complete, version-matched header set under
+# $BUILD_DIR/include/c++/v1: the bulk headers from the Nix-provided libcxx
+# source, plus the build-generated __config_site, __assertion_handler,
+# module.modulemap, and the libc++abi headers (cxxabi.h, __cxxabi_config.h).
+# Sourcing from here makes the artifact hermetic: headers, lib/, and
+# __config_site all come from the source version compiled into the libraries.
 #
-# Header path differs by distribution:
-#   - Homebrew LLVM:  $LLVM_PREFIX/include/c++/v1/
-#   - Nix LLVM:       $LLVM_PREFIX/share/libc++/v1/
-# Try both in order; first one with __config (or iostream) wins.
-LLVM_CXX_HEADERS=""
-for cand in "$LLVM_PREFIX/include/c++/v1" "$LLVM_PREFIX/share/libc++/v1"; do
-    if [ -f "$cand/__config" ] || [ -f "$cand/iostream" ]; then
-        LLVM_CXX_HEADERS="$cand"
-        break
-    fi
-done
-if [ -z "$LLVM_CXX_HEADERS" ]; then
-    echo "ERROR: libc++ headers not found under $LLVM_PREFIX (tried include/c++/v1 and share/libc++/v1)" >&2
+# The previous approach copied headers from the host $LLVM_PREFIX while
+# generating __config_site from the package source. When the host LLVM drifted
+# ahead of the package version (e.g. a newer host LLVM leaking into a non-pure
+# shell), a newer host header
+# (__configuration/hardening.h, added in LLVM 22) demanded config macros
+# (_LIBCPP_ASSERTION_SEMANTIC_DEFAULT) that the older __config_site never emits,
+# breaking every downstream C++ build with a
+# cryptic "_LIBCPP_ASSERTION_SEMANTIC_DEFAULT is not defined" error.
+STAGED_HEADERS="$BUILD_DIR/include/c++/v1"
+if [ ! -f "$STAGED_HEADERS/__config_site" ] || [ ! -f "$STAGED_HEADERS/vector" ]; then
+    echo "ERROR: staged header tree incomplete at $STAGED_HEADERS" >&2
+    echo "       (expected __config_site + vector from the cxx-headers build target)" >&2
     exit 1
 fi
-# cp -L dereferences symlinks (Nix's symlinkJoin tree contains read-only
-# symlinks; later writes to __config_site fail with EACCES otherwise).
-cp -RL "$LLVM_CXX_HEADERS/." "$INSTALL_DIR/include/c++/v1/"
+# cp -RL dereferences any symlinks CMake staged into the source tree, so
+# the installed copy stays self-contained after $BUILD_DIR is removed.
+cp -RL "$STAGED_HEADERS/." "$INSTALL_DIR/include/c++/v1/"
 chmod -R u+w "$INSTALL_DIR/include/c++/v1/"
+# The .in template is a build input, not a consumer header.
+rm -f "$INSTALL_DIR/include/c++/v1/__config_site.in"
 
-# Override __config_site with the build-generated copy so the headers
-# match the just-built libc++.a (musl libc + pthread thread API +
-# serial PSTL backend, never libdispatch).
-GENERATED_CONFIG_SITE="$BUILD_DIR/include/c++/v1/__config_site"
-if [ -f "$GENERATED_CONFIG_SITE" ]; then
-    cp "$GENERATED_CONFIG_SITE" "$INSTALL_DIR/include/c++/v1/__config_site"
+# Guard against header/__config_site version mixing: compile a
+# representative consumer translation unit against the freshly installed
+# header set with the same wasm target. <vector>/<string>/<stdexcept>
+# pull in __config, __config_site, the hardening config, the assertion
+# handler, and the libc++abi headers, so any inconsistency (a header
+# demanding a config macro the __config_site does not define, a missing
+# generated header) fails HERE, loudly, at package-build time instead of
+# surfacing later in a downstream C++ build. Do not remove: this is the
+# check that makes shipping a mixed-version header set impossible.
+echo "==> Verifying installed libc++ headers are self-consistent..."
+SMOKE_SRC="$BUILD_DIR/.libcxx-smoke.cpp"
+SMOKE_LOG="$BUILD_DIR/.libcxx-smoke.log"
+cat > "$SMOKE_SRC" <<'EOF'
+#include <vector>
+#include <string>
+#include <stdexcept>
+int main() {
+    std::vector<int> v;
+    v.push_back(1);
+    std::string s = "ok";
+    if (v.empty()) throw std::runtime_error(s);
+    return static_cast<int>(v.size() + s.size());
+}
+EOF
+# shellcheck disable=SC2086 # WASM_C_FLAGS is an intentional word list.
+if ! "$LLVM_CLANG" ${WASM_C_FLAGS} \
+        -nostdinc++ -isystem "$INSTALL_DIR/include/c++/v1" \
+        -c "$SMOKE_SRC" -o "$BUILD_DIR/.libcxx-smoke.o" 2>"$SMOKE_LOG"; then
+    echo "ERROR: installed libc++ headers failed a smoke compile." >&2
+    echo "       Headers and __config_site are inconsistent (version mix?)." >&2
+    sed 's/^/    /' "$SMOKE_LOG" >&2
+    exit 1
 fi
+echo "==> Header smoke compile passed."
 
 echo "==> Done!"
 echo "  libc++.a:    $(wc -c < "$INSTALL_DIR/lib/libc++.a" | tr -d ' ') bytes"

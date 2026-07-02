@@ -32,8 +32,8 @@
 //!
 //! The device is single-open. A second `open` from a different pid
 //! returns `EBUSY`. Re-opens by the current owner are allowed (mirrors
-//! Linux mousedev's exclusive-grab semantics for our single-process
-//! model). Owner is released when the process closes its last
+//! Linux mousedev's exclusive-grab semantics). Owner is released when
+//! the process closes its last
 //! `/dev/input/mice` fd, or exits.
 //!
 //! Multi-fd within one process shares the queue — packets are consumed

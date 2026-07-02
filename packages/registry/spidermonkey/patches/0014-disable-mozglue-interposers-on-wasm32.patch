@@ -1,0 +1,10 @@
+diff --git a/mozglue/moz.build b/mozglue/moz.build
+--- a/mozglue/moz.build
++++ b/mozglue/moz.build
+@@ -16 +16,5 @@ if CONFIG["MOZ_WIDGET_TOOLKIT"] == "android":
+-if CONFIG["OS_ARCH"] == "Linux" and not CONFIG["FUZZING_SNAPSHOT"]:
++# The Linux interposers depend on ELF dynamic-linker semantics such as
++# dlsym(RTLD_NEXT, ...). Kandelo's wasm32 target is a static POSIX/Wasm
++# executable environment, so building these interposers causes calls such as
++# setenv() and unsetenv() to abort before reaching libc.
++if CONFIG["OS_ARCH"] == "Linux" and CONFIG["TARGET_CPU"] != "wasm32" and not CONFIG["FUZZING_SNAPSHOT"]:

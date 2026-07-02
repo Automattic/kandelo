@@ -49,8 +49,8 @@ describe.each(shells)(
   "appendStdinData with $name",
   ({ binary, argv0, env }) => {
     it("delivers a single line to a blocked reader", async () => {
-      // appendStdinData does NOT mark stdin as a pipe, so terminal echo is
-      // enabled — input characters appear in stdout alongside program output.
+      // Non-PTY captured stdio is pipe-backed; appendStdinData delivers
+      // incremental bytes without switching the process back to terminal mode.
       const result = await runCentralizedProgram({
         programPath: binary,
         argv: [argv0, "-c", 'read line; echo "got:$line"'],
@@ -116,8 +116,7 @@ describe.each(shells)(
       expect(result.stdout).toContain("2:beta");
     });
 
-    it("terminal echo is present for interactive stdin", async () => {
-      // Verify that input characters are echoed to stdout (terminal behavior)
+    it("does not echo appended input on captured non-PTY stdin", async () => {
       const result = await runCentralizedProgram({
         programPath: binary,
         argv: [argv0, "-c", 'read line; echo "done"'],
@@ -132,17 +131,13 @@ describe.each(shells)(
         },
       });
       expect(result.exitCode).toBe(0);
-      // The echoed input should appear before the program output
       const lines = result.stdout.split("\n").filter(Boolean);
-      expect(lines).toContain("typed");
       expect(lines).toContain("done");
-      expect(result.stdout.indexOf("typed")).toBeLessThan(
-        result.stdout.indexOf("done"),
-      );
+      expect(lines).not.toContain("typed");
     });
 
     it("no echo when using setStdinData (pipe mode)", async () => {
-      // setStdinData marks stdin as a pipe — no terminal echo
+      // setStdinData also uses pipe semantics, with EOF after the buffer.
       const result = await runCentralizedProgram({
         programPath: binary,
         argv: [argv0, "-c", 'read line; echo "got:$line"'],

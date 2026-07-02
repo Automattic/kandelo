@@ -59,7 +59,7 @@ export const EmptyState: React.FC<EmptyStateProps> = ({
         <div className="kempty-hero">
           <img className="kempty-logo" src={markUrl} alt="" />
           <h1 className="kempty-wordmark">Kandelo</h1>
-          <div className="kempty-tag">Fold a computer into a URL.</div>
+          <div className="kempty-tag">Boot a VFS image in your browser.</div>
         </div>
 
         <div className="kempty-doors">
@@ -76,9 +76,9 @@ export const EmptyState: React.FC<EmptyStateProps> = ({
                 <rect x="10" y="11" width="6" height="6" rx="1" />
               </svg>
             </div>
-            <div className="kempty-door-title">Boot a preset</div>
+            <div className="kempty-door-title">Boot a preset VFS image</div>
             <div className="kempty-door-sub">
-              Pick an official, signed computer — shell, WordPress, LAMP, DOOM.
+              Start a ready-made shell, server stack, or graphical demo.
             </div>
           </button>
 

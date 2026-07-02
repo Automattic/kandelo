@@ -73,7 +73,7 @@ jobs:
       package_staging_reason: ${{ steps.scope.outputs.package_staging_reason }}
       skip_staging_tests: ${{ steps.skip.outputs.skip_staging_tests }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7.0.0
         with:
           ref: ${{ github.event.pull_request.head.sha }}
           fetch-depth: 0
@@ -101,7 +101,10 @@ jobs:
     needs: [change-scope]
     if: |
       github.event.pull_request.head.repo.full_name == github.repository &&
-      needs.change-scope.outputs.package_staging_required == 'true'
+      (
+        needs.change-scope.outputs.package_staging_required == 'true' ||
+        needs.change-scope.outputs.test_gate_required == 'true'
+      )
     runs-on: ubuntu-latest
     permissions:
       contents: read           # gh release view (target tag probe)
@@ -114,7 +117,7 @@ jobs:
       target_tag: ${{ steps.compute.outputs.target_tag }}
       baseline_tag: ${{ steps.compute.outputs.baseline_tag }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7.0.0
         with:
           ref: ${{ github.event.pull_request.head.sha }}
 
@@ -134,7 +137,7 @@ jobs:
           github-token: ""
 
       - name: Cache Nix store + flake eval
-        uses: DeterminateSystems/magic-nix-cache-action@565684385bcd71bad329742eefe8d12f2e765b39 # v13
+        uses: DeterminateSystems/magic-nix-cache-action@908b263ff629f4cc17666315b7fd3ec127c6244d # v14
         with:
           use-gha-cache: false
           use-flakehub: false
@@ -143,7 +146,7 @@ jobs:
         run: bash scripts/dev-shell.sh true
 
       - name: Cache xtask build
-        uses: actions/cache@v4
+        uses: actions/cache@v5.0.5
         with:
           path: |
             ~/.cargo/registry
@@ -166,6 +169,7 @@ jobs:
         run: |
           bash scripts/dev-shell.sh bash -c '
             set -euo pipefail
+            PACKAGE_STAGING_REQUIRED="${{ needs.change-scope.outputs.package_staging_required }}"
 
             ABI=$(grep -oE "ABI_VERSION: u32 = [0-9]+" crates/shared/src/lib.rs | awk "{print \$4}")
             echo "abi=$ABI" >> "$GITHUB_OUTPUT"
@@ -174,6 +178,14 @@ jobs:
             BASELINE_TAG="binaries-abi-v${ABI}"
             echo "target_tag=$TARGET_TAG" >> "$GITHUB_OUTPUT"
             echo "baseline_tag=$BASELINE_TAG" >> "$GITHUB_OUTPUT"
+
+            if [ "$PACKAGE_STAGING_REQUIRED" != "true" ]; then
+              echo "library_matrix=[]" >> "$GITHUB_OUTPUT"
+              echo "program_matrix=[]" >> "$GITHUB_OUTPUT"
+              echo "repair_index=false" >> "$GITHUB_OUTPUT"
+              echo "preflight: package staging not required; skipping package drift matrix"
+              exit 0
+            fi
 
             # One-shot fetch of existing release assets for fast lookup.
             # Falls back to empty list if the release doesn'"'"'t exist
@@ -287,6 +299,14 @@ jobs:
               done
             done
 
+            program_matrix_file=$(mktemp)
+            printf "%s" "$program_matrix" > "$program_matrix_file"
+            program_matrix=$(cargo run --release -p xtask --target "$HOST_TARGET" --quiet -- \
+              sort-package-matrix \
+                --registry packages/registry \
+                --matrix "$program_matrix_file")
+            rm -f "$program_matrix_file"
+
             library_count=$(echo "$library_matrix" | jq length)
             program_count=$(echo "$program_matrix" | jq length)
             repair_index_output=false
@@ -374,7 +394,7 @@ jobs:
        needs.change-scope.outputs.test_gate_required == 'true')
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7.0.0
         with:
           ref: ${{ github.event.pull_request.head.sha }}
 
@@ -405,7 +425,7 @@ jobs:
         include: ${{ fromJSON(needs.preflight.outputs.library_matrix) }}
     steps:
       - id: checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7.0.0
         with:
           ref: ${{ github.event.pull_request.head.sha }}
 
@@ -416,6 +436,7 @@ jobs:
           package: ${{ matrix.package }}
           arch: ${{ matrix.arch }}
           build-host: ${{ github.repository }}@${{ github.sha }}
+          expected-cache-key-sha: ${{ matrix.sha }}
 
       # Atomic per-matrix-entry publish to the pr-<N>-staging tag.
       # Different state-lock subjects from durable-release, so PR
@@ -479,7 +500,7 @@ jobs:
         include: ${{ fromJSON(needs.preflight.outputs.program_matrix) }}
     steps:
       - id: checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7.0.0
         with:
           ref: ${{ github.event.pull_request.head.sha }}
 
@@ -490,8 +511,11 @@ jobs:
           package: ${{ matrix.package }}
           arch: ${{ matrix.arch }}
           build-host: ${{ github.repository }}@${{ github.sha }}
+          expected-cache-key-sha: ${{ matrix.sha }}
           materialize-library-overlays: ${{ needs.preflight.outputs.library_matrix != '[]' }}
-          github-token: ${{ secrets.GITHUB_TOKEN }}
+          library-matrix: ${{ needs.preflight.outputs.library_matrix }}
+          dependency-matrix: ${{ needs.preflight.outputs.program_matrix }}
+          github-token: ${{ github.token }}
 
       # Atomic per-matrix-entry publish — same flow as
       # lib-matrix-build, targeting the pr-<N>-staging tag.
@@ -538,7 +562,7 @@ jobs:
       GH_TOKEN: ${{ github.token }}
       GITHUB_REPOSITORY: ${{ github.repository }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7.0.0
         with:
           ref: ${{ github.event.pull_request.head.sha }}
 
@@ -548,7 +572,7 @@ jobs:
           github-token: ""
 
       - name: Cache Nix store + flake eval
-        uses: DeterminateSystems/magic-nix-cache-action@565684385bcd71bad329742eefe8d12f2e765b39 # v13
+        uses: DeterminateSystems/magic-nix-cache-action@908b263ff629f4cc17666315b7fd3ec127c6244d # v14
         with:
           use-gha-cache: false
           use-flakehub: false
@@ -579,32 +603,24 @@ jobs:
     if: |
       !cancelled() &&
       needs.toolchain-cache.result == 'success' &&
-      (
-        (
-          needs.change-scope.outputs.package_staging_required == 'true' &&
-          needs.preflight.result == 'success' &&
-          (needs.repair-staging-index.result == 'success' || needs.repair-staging-index.result == 'skipped') &&
-          (needs.lib-matrix-build.result == 'success' || needs.lib-matrix-build.result == 'skipped') &&
-          (needs.matrix-build.result == 'success' || needs.matrix-build.result == 'skipped')
-        ) ||
-        (
-          needs.change-scope.outputs.package_staging_required == 'false' &&
-          needs.change-scope.outputs.test_gate_required == 'true'
-        )
-      )
+      needs.preflight.result == 'success' &&
+      (needs.repair-staging-index.result == 'success' || needs.repair-staging-index.result == 'skipped') &&
+      (needs.lib-matrix-build.result == 'success' || needs.lib-matrix-build.result == 'skipped') &&
+      (needs.matrix-build.result == 'success' || needs.matrix-build.result == 'skipped')
     runs-on: ubuntu-latest
     permissions:
       actions: read
       contents: read
     env:
       PACKAGE_STAGING_REQUIRED: ${{ needs.change-scope.outputs.package_staging_required }}
+      PACKAGE_STAGE_OVERLAYS_REQUIRED: ${{ needs.preflight.outputs.library_matrix != '[]' || needs.preflight.outputs.program_matrix != '[]' }}
       PACKAGE_PUBLISH_FLOW_CHANGED: ${{ needs.change-scope.outputs.package_publish_flow_changed }}
       BINARY_MATERIALIZATION_CHANGED: ${{ needs.change-scope.outputs.binary_materialization_changed }}
       PACKAGE_TARGET_TAG: ${{ needs.preflight.outputs.target_tag }}
       PACKAGE_BASELINE_TAG: ${{ needs.preflight.outputs.baseline_tag }}
       SKIP_STAGING_TESTS: ${{ needs.change-scope.outputs.skip_staging_tests }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7.0.0
         with:
           ref: ${{ github.event.pull_request.head.sha }}
 
@@ -624,13 +640,13 @@ jobs:
           github-token: ""
 
       - name: Cache Nix store + flake eval
-        uses: DeterminateSystems/magic-nix-cache-action@565684385bcd71bad329742eefe8d12f2e765b39 # v13
+        uses: DeterminateSystems/magic-nix-cache-action@908b263ff629f4cc17666315b7fd3ec127c6244d # v14
         with:
           use-gha-cache: false
           use-flakehub: false
 
       - name: Download toolchain sysroots artifact
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: toolchain-sysroots
           path: ${{ runner.temp }}/toolchain
@@ -643,19 +659,17 @@ jobs:
         # Each matrix entry uploaded one artifact named "<pkg>-<arch>"
         # containing one .tar.zst. The pattern excludes the
         # toolchain-sysroots helper artifact uploaded by toolchain-cache.
-        if: ${{ needs.change-scope.outputs.package_staging_required == 'true' && (needs.preflight.outputs.library_matrix != '[]' || needs.preflight.outputs.program_matrix != '[]') }}
+        if: ${{ needs.preflight.outputs.library_matrix != '[]' || needs.preflight.outputs.program_matrix != '[]' }}
         uses: ./.github/actions/download-run-artifacts
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           pattern: '*-wasm*'
           path: ${{ runner.temp }}/staged-archives
 
-      - name: Install host npm deps (resolver prereq)
-        # Must run before Materialize binaries: the resolver may
-        # source-build a meta-package not covered by an overlay (e.g.,
-        # a matrix entry that failed to build), and those scripts
-        # invoke tsx with imports from host/src/. Without this,
-        # fetch-binaries gets a confusing fzstd module-not-found.
+      - name: Install host npm deps
+        # Keep this before the host typecheck, package-system tests,
+        # and later test-program/rootfs build steps. Binary
+        # materialization itself runs fetch-only in CI.
         run: |
           bash scripts/dev-shell.sh bash -c '
             PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1 npm ci --no-audit --no-fund
@@ -681,13 +695,13 @@ jobs:
       - name: Materialize binaries
         env:
           WASM_POSIX_FETCH_SKIP_PKGS: cpython erlang erlang-vfs perl perl-vfs python-vfs redis ruby texlive
-        # Package-staging runs resolve against the durable ABI release plus
-        # local file:// overlays for matrix-built archives. Non-archive
-        # validation runs use the same durable release; the fresh kernel
-        # built below shadows kernel.wasm via local-binaries/.
+        # Resolve against the durable ABI release plus local file://
+        # overlays for any matrix-built archives. Runtime-only PRs can
+        # still reach this overlay path when preflight detects durable
+        # index drift from an earlier package-key change.
         run: |
           set -euo pipefail
-          if [ "$PACKAGE_STAGING_REQUIRED" = "true" ]; then
+          if [ "$PACKAGE_STAGE_OVERLAYS_REQUIRED" = "true" ]; then
             export WASM_POSIX_BINARY_INDEX_URL="https://github.com/${GITHUB_REPOSITORY}/releases/download/${PACKAGE_BASELINE_TAG}/index.toml"
             STAGE="$RUNNER_TEMP/staged-overlay"
             bash scripts/materialize-pr-overlays.sh "$RUNNER_TEMP/staged-archives" "$STAGE"
@@ -696,14 +710,14 @@ jobs:
             export WASM_POSIX_BINARY_INDEX_URL="https://github.com/${GITHUB_REPOSITORY}/releases/download/binaries-abi-v${ABI}/index.toml"
           fi
           echo "WASM_POSIX_BINARY_INDEX_URL=$WASM_POSIX_BINARY_INDEX_URL" >> "$GITHUB_ENV"
-          bash scripts/dev-shell.sh bash scripts/fetch-binaries.sh --allow-stale
+          bash scripts/dev-shell.sh bash scripts/fetch-binaries.sh --fetch-only
 
       - name: Skip staging test suites
         if: env.SKIP_STAGING_TESTS == 'true'
         run: |
           echo "skip-staging-tests label is present on this PR."
           echo "staging-build validated preflight, toolchain cache, package matrix/builds, and binary materialization."
-          echo "Kernel/test program build, cargo tests, fork-instrument tests, vitest, libc-test, POSIX, and Sortix are deferred to prepare-merge."
+          echo "Kernel/test program build, cargo tests, fork-instrument tests, vitest, browser E2E, libc-test, POSIX, and Sortix are deferred to prepare-merge."
 
       - name: Build kernel + test programs + install host deps
         if: env.SKIP_STAGING_TESTS != 'true'
@@ -730,6 +744,15 @@ jobs:
             bash scripts/build-rootfs.sh
           '
 
+      - name: Prepare browser assets from package index
+        if: env.SKIP_STAGING_TESTS != 'true'
+        run: |
+          bash scripts/dev-shell.sh bash -c '
+            set -euo pipefail
+            ./run.sh --fetch-only prepare-browser
+            bash scripts/ci-check-browser-assets.sh
+          '
+
       - name: Pack prepared test workspace
         if: env.SKIP_STAGING_TESTS != 'true'
         run: |
@@ -737,7 +760,7 @@ jobs:
 
       - name: Upload prepared test workspace
         if: env.SKIP_STAGING_TESTS != 'true'
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: test-workspace
           path: ${{ runner.temp }}/test-workspace.tar.zst
@@ -769,6 +792,11 @@ jobs:
             needs_toolchain: false
             needs_workspace: false
           - suite: vitest
+            kernel_only: false
+            needs_submodules: false
+            needs_toolchain: true
+            needs_workspace: true
+          - suite: browser
             kernel_only: false
             needs_submodules: false
             needs_toolchain: true
@@ -810,7 +838,7 @@ jobs:
           fi
           echo "skip=false" >> "$GITHUB_OUTPUT"
 
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7.0.0
         if: steps.suite.outputs.skip != 'true'
         with:
           ref: ${{ github.event.pull_request.head.sha }}
@@ -829,14 +857,14 @@ jobs:
 
       - name: Cache Nix store + flake eval
         if: steps.suite.outputs.skip != 'true'
-        uses: DeterminateSystems/magic-nix-cache-action@565684385bcd71bad329742eefe8d12f2e765b39 # v13
+        uses: DeterminateSystems/magic-nix-cache-action@908b263ff629f4cc17666315b7fd3ec127c6244d # v14
         with:
           use-gha-cache: false
           use-flakehub: false
 
       - name: Download toolchain sysroots artifact
         if: steps.suite.outputs.skip != 'true' && matrix.needs_toolchain == true
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: toolchain-sysroots
           path: ${{ runner.temp }}/toolchain
@@ -848,7 +876,7 @@ jobs:
 
       - name: Download prepared test workspace
         if: steps.suite.outputs.skip != 'true' && matrix.needs_workspace == true
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: test-workspace
           path: ${{ runner.temp }}/test-workspace
@@ -862,6 +890,16 @@ jobs:
         if: steps.suite.outputs.skip != 'true'
         run: |
           bash scripts/dev-shell.sh bash scripts/ci-run-test-suite.sh "$SUITE"
+
+      - name: Upload browser test artifacts
+        if: failure() && steps.suite.outputs.skip != 'true' && matrix.suite == 'browser'
+        uses: actions/upload-artifact@v7
+        with:
+          name: browser-test-artifacts
+          path: |
+            apps/browser-demos/test-results
+          if-no-files-found: ignore
+          retention-days: 7
 
   test-gate:
     needs: [change-scope, test-gate-prepare, test-suite]
@@ -949,7 +987,7 @@ jobs:
     env:
       GH_TOKEN: ${{ github.token }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7.0.0
         with:
           ref: ${{ github.event.pull_request.head.sha }}
 
@@ -1034,7 +1072,7 @@ jobs:
           } >> "$GITHUB_OUTPUT"
 
       - name: Upload publish-status.json
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: publish-status
           path: publish-status.json
@@ -1046,7 +1084,7 @@ jobs:
         # force-rebuild flow, etc.) — those still get the artifact
         # but have no PR to comment on.
         if: github.event_name == 'pull_request'
-        uses: actions/github-script@v7
+        uses: actions/github-script@v9
         env:
           STATUS_JSON: ${{ steps.status.outputs.json }}
         with:

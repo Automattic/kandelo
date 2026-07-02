@@ -18,7 +18,7 @@ kernel_abi = 7
 #   - nethack.wasm + runtime/ via `cargo xtask build-deps resolve
 #     nethack` (build-nethack-zip.sh) — nethack's rev2 archive ships
 #     the runtime tree alongside the wasm.
-#   - fbdoom.wasm via `resolveBinary("programs/fbdoom.wasm")`.
+#   - fbdoom.wasm and modeset.wasm via `resolveBinary("programs/<name>.wasm")`.
 #
 # Folding each dep's cache_key into ours via depends_on guarantees a
 # fresh shell archive whenever any lazy binary or runtime input changes. The
@@ -44,12 +44,13 @@ depends_on = [
   "nano@8.0",
   "vim@9.1.0900",
   "nethack@3.6.7",
-  "fbdoom@0.1.0"
+  "fbdoom@0.1.0",
+  "modeset@0.1.0"
 ]
 
 # Composite VFS image for the browser shell demo: canonical rootfs plus
-# shell-specific config, demo utility lazy-file stubs, Doom runtime, and
-# lazy-archive references for vim/nethack. Built by
+# shell-specific config, demo utility lazy-file stubs, Doom + modeset
+# runtimes, and lazy-archive references for vim/nethack. Built by
 # images/vfs/scripts/build-shell-vfs-image.ts. The .vfs file is
 # wrapped (not double-compressed) inside the package-system .tar.zst
 # archive at archive-stage time.

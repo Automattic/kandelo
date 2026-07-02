@@ -252,9 +252,9 @@ pub struct SocketInfo {
     pub state: SocketState,
     /// Index of peer socket (for connected Unix domain pairs).
     pub peer_idx: Option<usize>,
-    /// Index into Process.pipes for the receive buffer.
+    /// Index into the global pipe table for the receive buffer.
     pub recv_buf_idx: Option<usize>,
-    /// Index into Process.pipes for the send buffer.
+    /// Index into the global pipe table for the send buffer.
     pub send_buf_idx: Option<usize>,
     /// Whether the read half has been shut down.
     pub shut_rd: bool,
@@ -287,8 +287,8 @@ pub struct SocketInfo {
     pub accept_wake_idx: Option<u32>,
     /// Received UDP datagrams (for DGRAM sockets).
     pub dgram_queue: Vec<Datagram>,
-    /// Whether recv/send pipe indices refer to the global pipe table
-    /// (cross-process loopback) rather than process-local pipes.
+    /// Whether recv/send pipe indices refer to the global pipe table. Kept in
+    /// serialized state for compatibility; runtime socket buffers are global.
     pub global_pipes: bool,
     /// Out-of-band byte (if pending). Set by peer's send(MSG_OOB),
     /// read by recv(MSG_OOB), queried by ioctl(SIOCATMARK).
@@ -326,7 +326,7 @@ impl SocketInfo {
             shared_backlog_idx: None,
             accept_wake_idx: None,
             dgram_queue: Vec::new(),
-            global_pipes: false,
+            global_pipes: true,
             oob_byte: None,
             recv_timeout_us: 0,
             send_timeout_us: 0,

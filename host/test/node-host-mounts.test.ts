@@ -30,6 +30,7 @@ const repoRoot = join(__dirname, "../..");
 const probeWasm = join(repoRoot, "examples/mount_probe_test.wasm");
 const rootfsImage = join(repoRoot, "host/wasm/rootfs.vfs");
 const servicesSource = join(repoRoot, "images/rootfs/etc/services");
+const caCertSource = join(repoRoot, "packages/registry/openssl/cacert.pem");
 
 const haveProbe = existsSync(probeWasm);
 const haveRootfs = existsSync(rootfsImage);
@@ -62,6 +63,23 @@ describe.skipIf(!haveProbe || !haveRootfs)("node-host default mount setup", () =
     expect(result.exitCode, result.stderr).toBe(0);
     expect(result.stdout).toContain("SCRATCH size=24");
     expect(result.stdout).toContain("content=scratch-mount-roundtrip");
+  });
+
+  it("installs the default OpenSSL CA bundle for Node VFS boots", async () => {
+    const expected = readFileSync(caCertSource);
+    const expectedHead = Array.from(expected.subarray(0, 16))
+      .map((b) => b.toString(16).padStart(2, "0"))
+      .join("");
+
+    const result = await runCentralizedProgram({
+      programPath: probeWasm,
+      argv: ["mount_probe_test", "rootfs", "/etc/ssl/certs/ca-certificates.crt"],
+      timeout: 10_000,
+    });
+
+    expect(result.exitCode, result.stderr).toBe(0);
+    expect(result.stdout).toContain(`ROOTFS size=${expected.length}`);
+    expect(result.stdout).toContain(`head=${expectedHead}`);
   });
 
   it("returns ENOENT for paths outside every mount (no fallthrough)", async () => {

@@ -119,7 +119,8 @@ build_publish_one() {
       --arch "$arch" \
       --out "$out_dir" \
       --build-timestamp "$BUILD_TIMESTAMP" \
-      --build-host "$BUILD_HOST"
+      --build-host "$BUILD_HOST" \
+      --expected-cache-key-sha "$sha"
   then
     bash "$KANDELO_ROOT/scripts/index-update.sh" \
       --target-tag "$TARGET_TAG" \

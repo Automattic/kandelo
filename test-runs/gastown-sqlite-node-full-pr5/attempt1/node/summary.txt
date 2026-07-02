@@ -1,0 +1,1 @@
+No testrunner.db was created at /tmp/kandelo-sqlite-official.odjgiR/testrunner.db

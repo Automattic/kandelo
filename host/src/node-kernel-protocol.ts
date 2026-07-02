@@ -161,6 +161,25 @@ export interface HttpRequestMessage {
   timeoutMs?: number;
 }
 
+/** Register an `OffscreenCanvas` as the scanout target for a KMS CRTC.
+ *  Mirrors the Browser-side handler. Under Node, OffscreenCanvas is only
+ *  available when the host wires a polyfill; without one the worker
+ *  ignores the canvas and only `attachKmsStats` is meaningful. */
+export interface KmsAttachCanvasMessage {
+  type: "kms_attach_canvas";
+  crtcId: number;
+  canvas: OffscreenCanvas;
+  stats?: SharedArrayBuffer;
+  opts?: { mode?: "auto" | "2d" | "webgl2" };
+}
+
+/** Register a stats SAB for a CRTC without binding a scanout canvas. */
+export interface KmsAttachStatsMessage {
+  type: "kms_attach_stats";
+  crtcId: number;
+  stats: SharedArrayBuffer;
+}
+
 export type MainToKernelMessage =
   | InitMessage
   | SpawnMessage
@@ -176,7 +195,9 @@ export type MainToKernelMessage =
   | ReadProcMapsRequestMessage
   | SetSyscallTraceMessage
   | DrainSyscallTraceMessage
-  | HttpRequestMessage;
+  | HttpRequestMessage
+  | KmsAttachCanvasMessage
+  | KmsAttachStatsMessage;
 
 // ── Kernel Worker → Main Thread ──
 

@@ -18,6 +18,7 @@ import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { runCentralizedProgram } from "../../../../host/test/centralized-test-helper";
 import { tryResolveBinary } from "../../../../host/src/binary-resolver";
+import { NodePlatformIO } from "../../../../host/src/platform/node";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const repoRoot = join(__dirname, "../../../..");
@@ -56,6 +57,7 @@ describe.skipIf(!!SKIP_REASON)("WordPress on kandelo", () => {
     const { stdout, exitCode } = await runCentralizedProgram({
       programPath: phpBinaryPath,
       argv: ["php", "-l", join(wpDir, "wp-settings.php")],
+      io: new NodePlatformIO(),
       timeout: 30_000,
     });
     expect(exitCode).toBe(0);
@@ -103,6 +105,7 @@ echo "BOOT_OK\\n";
       programPath: phpBinaryPath,
       argv: ["php", script],
       env: ["HOME=/tmp", "TMPDIR=/tmp"],
+      io: new NodePlatformIO(),
       timeout: 30_000,
     });
 
@@ -112,7 +115,7 @@ echo "BOOT_OK\\n";
     }
 
     expect(stdout).toContain("BOOT_OK");
-    expect(stdout).toContain("WP_VERSION=6.");
+    expect(stdout).toMatch(/WP_VERSION=\d+\./);
     expect(stdout).toContain("WPDB=WP_SQLite_DB");
     expect(stdout).toContain("DB_QUERY=42");
     expect(exitCode).toBe(0);

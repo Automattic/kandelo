@@ -16,16 +16,16 @@
  *
  * Usage: npx tsx images/vfs/scripts/build-node-vfs-image.ts
  */
-import { existsSync, readFileSync, statSync } from "node:fs";
+import { existsSync, statSync } from "node:fs";
 import { join } from "node:path";
-import { MemoryFileSystem } from "../../../host/src/vfs/memory-fs";
+import type { MemoryFileSystem } from "../../../host/src/vfs/memory-fs";
 import {
   ensureDirRecursive,
   walkAndWrite,
   saveImage,
   symlink,
 } from "./vfs-image-helpers";
-import { resolveVfsArtifact } from "./shell-vfs-build";
+import { loadShellBaseFileSystem, resolveVfsArtifact } from "./shell-vfs-build";
 import {
   NODE_LAZY_BINARY_SPEC,
   shellLazyPlaceholderUrl,
@@ -55,11 +55,7 @@ async function main() {
   }
 
   console.log("Loading shell base image...");
-  const shellImagePath = resolveVfsArtifact("programs/shell.vfs.zst", "shell");
-  const shellImage = new Uint8Array(readFileSync(shellImagePath));
-  const fs = MemoryFileSystem.fromImage(shellImage, {
-    maxByteLength: NODE_IMAGE_MAX_BYTES,
-  });
+  const fs = loadShellBaseFileSystem(NODE_IMAGE_MAX_BYTES);
   populateNodeLazyBinary(fs);
 
   // Node/npm workspace additions.

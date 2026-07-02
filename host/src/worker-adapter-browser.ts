@@ -1,13 +1,5 @@
 import type { WorkerAdapter, WorkerHandle } from "./worker-adapter";
 
-const WORKER_SHUTDOWN_MESSAGE = "__kandelo_worker_shutdown";
-const WORKER_SHUTDOWN_ACK_MESSAGE = "__kandelo_worker_shutdown_ack";
-const WORKER_SHUTDOWN_ACK_TIMEOUT_MS = 500;
-
-function delay(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}
-
 export class BrowserWorkerAdapter implements WorkerAdapter {
   private entryUrl: string | URL;
 
@@ -30,20 +22,10 @@ class BrowserWorkerHandle implements WorkerHandle {
   private handlers = new Map<string, Set<(...args: any[]) => void>>();
   private terminated = false;
   private terminationPromise: Promise<number> | null = null;
-  private shutdownAckResolver: (() => void) | null = null;
 
   constructor(worker: Worker) {
     this.worker = worker;
     worker.onmessage = (e: MessageEvent) => {
-      if (
-        e.data &&
-        typeof e.data === "object" &&
-        (e.data as { type?: string }).type === WORKER_SHUTDOWN_ACK_MESSAGE
-      ) {
-        this.shutdownAckResolver?.();
-        this.shutdownAckResolver = null;
-        return;
-      }
       for (const h of this.handlers.get("message") ?? []) h(e.data);
     };
     worker.onerror = (e: ErrorEvent) => {
@@ -51,8 +33,6 @@ class BrowserWorkerHandle implements WorkerHandle {
       // Worker errors are unrecoverable — synthesize an exit event
       if (!this.terminated) {
         this.terminated = true;
-        this.shutdownAckResolver?.();
-        this.shutdownAckResolver = null;
         for (const h of this.handlers.get("exit") ?? []) h(1);
       }
     };
@@ -87,27 +67,17 @@ class BrowserWorkerHandle implements WorkerHandle {
   }
 
   private async terminateOnce(): Promise<number> {
-    if (!this.terminated) {
-      let acked = false;
-      try {
-        const ack = new Promise<void>((resolve) => {
-          this.shutdownAckResolver = () => {
-            acked = true;
-            resolve();
-          };
-        });
-        this.worker.postMessage({ type: WORKER_SHUTDOWN_MESSAGE });
-        await Promise.race([ack, delay(WORKER_SHUTDOWN_ACK_TIMEOUT_MS)]);
-      } catch {
-        // Fall back to immediate termination for workers that cannot process
-        // the cooperative shutdown message.
-      } finally {
-        if (!acked && this.shutdownAckResolver) {
-          this.shutdownAckResolver = null;
-        }
-      }
-    }
-
+    // Terminate immediately, with no cooperative "please shut down" handshake.
+    // A process worker is never idle in its JS event loop while alive: it is
+    // always either executing wasm or parked in an in-wasm Atomics.wait on the
+    // syscall channel (e.g. musl's post-exit_group _Exit loop, or a blocked
+    // read/accept). In neither state can it observe a postMessage, so the old
+    // handshake never got an ack and just stalled ~500ms per teardown before
+    // force-terminating anyway — 500ms that landed on the critical path of the
+    // *next* command via waitForProcessTeardowns(). The kernel owns all
+    // authoritative process state (kernel worker + shared memory), so hard
+    // termination loses nothing. Matches the Node host, whose
+    // NodeWorkerHandle.terminate() has always terminated immediately.
     this.worker.terminate();
     if (!this.terminated) {
       this.terminated = true;

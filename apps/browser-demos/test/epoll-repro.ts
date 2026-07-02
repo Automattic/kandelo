@@ -2,7 +2,7 @@
  * Reproduce the epoll_pwait crash using CentralizedKernelWorker in Node.js.
  * Run: npx tsx test/epoll-repro.ts
  */
-import { CentralizedKernelWorker } from "../../../host/src/kernel-worker.ts";
+import { CAPTURED_STDIO, CentralizedKernelWorker } from "../../../host/src/kernel-worker.ts";
 import { VirtualPlatformIO, MemoryFileSystem, DeviceFileSystem } from "../../../host/src/vfs/index.ts";
 import { readFileSync } from "fs";
 
@@ -45,7 +45,7 @@ async function main() {
   // Grow to max so channel offset is valid
   procMem.grow(MAX_PAGES - 17);
   const channelOff = (MAX_PAGES - 2) * PAGE_SIZE;
-  kw.registerProcess(1, procMem, [channelOff]);
+  kw.registerProcess(1, procMem, [channelOff], { stdio: CAPTURED_STDIO });
 
   const getSP = ki.exports.kernel_get_stack_pointer as () => number;
   console.log(`SP initial: ${getSP()}`);
