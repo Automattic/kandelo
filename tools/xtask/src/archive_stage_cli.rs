@@ -898,6 +898,11 @@ built_by = "test"
         );
         let name = &entries[0];
         // <name>-<version>-rev<N>-abi<N>-<arch>-<short8>.tar.zst
+        // Derive the abi<N> segment from the shared const so the assertion
+        // tracks ABI_VERSION instead of drifting on every bump, and doubles as a
+        // guard that the canonical filename encodes the real ABI. (The sibling
+        // `cli_archive_filename_uses_build_toml_revision` stays abi-pinned on
+        // purpose: it passes `--abi "4"` to test the revision field.)
         let prefix = format!("z-1.0.0-rev1-abi{}-wasm32-", shared::ABI_VERSION);
         assert!(name.starts_with(&prefix), "got: {name}");
         assert!(name.ends_with(".tar.zst"), "got: {name}");
