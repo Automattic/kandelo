@@ -836,7 +836,7 @@ Run them — they should fail until parser is implemented, then pass.
 
 In `wasm_api.rs` after `kernel_fork_process`:
 ```rust
-/// Non-forking spawn (centralized mode). Parses the SYS_SPAWN blob from
+/// Non-forking spawn. Parses the SYS_SPAWN blob from
 /// kernel scratch memory, allocates a child pid, builds the child Process
 /// with attrs and file actions applied, and inserts it into the
 /// ProcessTable. Returns the allocated child pid on success, negated errno
@@ -1233,7 +1233,7 @@ cd host && npx tsc --noEmit 2>&1 | tail -5
 ```bash
 cd ..
 git add host/src/run-example.ts
-git commit -m "host(run-example): wire onSpawn for centralized test harness
+git commit -m "host(run-example): wire onSpawn for kernel test harness
 
 Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>"
 ```

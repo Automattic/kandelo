@@ -162,7 +162,7 @@ If the caller inserts even a short `nanosleep` between `aio_read` and `sigsuspen
 **Fix approach:**
 
 1. Move `blocked` and `sigsuspend_saved_mask` off `SignalState` / `Process` and onto `ThreadInfo` (or a new per-thread slot keyed by `(pid, tid)`). Keep `pending` and `rt_queue` process-wide — signals are generated at the process, not the thread.
-2. `get_process()` plus the current channel must surface the *current thread*, so that `sys_sigprocmask` / `sys_sigsuspend` / `sys_rt_sigpending` read-and-write the caller's own `blocked` mask. Centralized mode already threads `channel.pid` through `kernel_set_current_pid`; add a similar `set_current_tid` and read it in those syscalls.
+2. `get_process()` plus the current channel must surface the *current thread*, so that `sys_sigprocmask` / `sys_sigsuspend` / `sys_rt_sigpending` read-and-write the caller's own `blocked` mask. The channel already threads `channel.pid` through `kernel_set_current_pid`; add a similar `set_current_tid` and read it in those syscalls.
 3. Signal delivery logic (`kernel_dequeue_signal`, `deliver_pending_signals`) must pick a thread whose `blocked` mask does *not* block the signal, with a preference for a thread currently parked in `sigsuspend`/`sigtimedwait`/`pselect6`/`ppoll` on that signal. Today we just dequeue into whichever channel next completes a syscall — that's what sends the AIO signal to the worker.
 4. `sys_pthread_kill(tid, sig)` should target a specific thread's pending queue rather than the process-wide queue.
 5. Fork: a single thread survives fork; only that thread's mask is inherited. Existing code resets the process mask on fork (`kernel_reset_signal_mask`) — needs to become per-thread.

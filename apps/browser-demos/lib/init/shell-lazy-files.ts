@@ -24,6 +24,16 @@ import diffWasmUrl from "@binaries/programs/wasm32/diffutils/diff.wasm?url";
 import cmpWasmUrl from "@binaries/programs/wasm32/diffutils/cmp.wasm?url";
 import diff3WasmUrl from "@binaries/programs/wasm32/diffutils/diff3.wasm?url";
 import sdiffWasmUrl from "@binaries/programs/wasm32/diffutils/sdiff.wasm?url";
+import ncursesClearWasmUrl from "@binaries/programs/wasm32/ncurses/clear.wasm?url";
+import ncursesResetWasmUrl from "@binaries/programs/wasm32/ncurses/reset.wasm?url";
+import ncursesTsetWasmUrl from "@binaries/programs/wasm32/ncurses/tset.wasm?url";
+import ncursesTputWasmUrl from "@binaries/programs/wasm32/ncurses/tput.wasm?url";
+import ncursesTabsWasmUrl from "@binaries/programs/wasm32/ncurses/tabs.wasm?url";
+import ncursesTicWasmUrl from "@binaries/programs/wasm32/ncurses/tic.wasm?url";
+import ncursesInfocmpWasmUrl from "@binaries/programs/wasm32/ncurses/infocmp.wasm?url";
+import ncursesToeWasmUrl from "@binaries/programs/wasm32/ncurses/toe.wasm?url";
+import ncursesCaptoinfoWasmUrl from "@binaries/programs/wasm32/ncurses/captoinfo.wasm?url";
+import ncursesInfotocapWasmUrl from "@binaries/programs/wasm32/ncurses/infotocap.wasm?url";
 import tarWasmUrl from "@binaries/programs/wasm32/tar.wasm?url";
 import curlWasmUrl from "@binaries/programs/wasm32/curl.wasm?url";
 import ncWasmUrl from "@binaries/programs/wasm32/nc.wasm?url";
@@ -68,8 +78,6 @@ import posixPsWasmUrl from "@binaries/programs/wasm32/posix-utils-lite/ps.wasm?u
 import posixReniceWasmUrl from "@binaries/programs/wasm32/posix-utils-lite/renice.wasm?url";
 import posixStringsWasmUrl from "@binaries/programs/wasm32/posix-utils-lite/strings.wasm?url";
 import posixStripWasmUrl from "@binaries/programs/wasm32/posix-utils-lite/strip.wasm?url";
-import posixTabsWasmUrl from "@binaries/programs/wasm32/posix-utils-lite/tabs.wasm?url";
-import posixTputWasmUrl from "@binaries/programs/wasm32/posix-utils-lite/tput.wasm?url";
 import posixUncompressWasmUrl from "@binaries/programs/wasm32/posix-utils-lite/uncompress.wasm?url";
 import posixUudecodeWasmUrl from "@binaries/programs/wasm32/posix-utils-lite/uudecode.wasm?url";
 import posixUuencodeWasmUrl from "@binaries/programs/wasm32/posix-utils-lite/uuencode.wasm?url";
@@ -126,6 +134,16 @@ const ROOTFS_LAZY_ASSET_URLS = new Map<string, string>([
   ["binaries/programs/wasm32/diffutils/cmp.wasm", cmpWasmUrl],
   ["binaries/programs/wasm32/diffutils/diff3.wasm", diff3WasmUrl],
   ["binaries/programs/wasm32/diffutils/sdiff.wasm", sdiffWasmUrl],
+  ["binaries/programs/wasm32/ncurses/clear.wasm", ncursesClearWasmUrl],
+  ["binaries/programs/wasm32/ncurses/reset.wasm", ncursesResetWasmUrl],
+  ["binaries/programs/wasm32/ncurses/tset.wasm", ncursesTsetWasmUrl],
+  ["binaries/programs/wasm32/ncurses/tput.wasm", ncursesTputWasmUrl],
+  ["binaries/programs/wasm32/ncurses/tabs.wasm", ncursesTabsWasmUrl],
+  ["binaries/programs/wasm32/ncurses/tic.wasm", ncursesTicWasmUrl],
+  ["binaries/programs/wasm32/ncurses/infocmp.wasm", ncursesInfocmpWasmUrl],
+  ["binaries/programs/wasm32/ncurses/toe.wasm", ncursesToeWasmUrl],
+  ["binaries/programs/wasm32/ncurses/captoinfo.wasm", ncursesCaptoinfoWasmUrl],
+  ["binaries/programs/wasm32/ncurses/infotocap.wasm", ncursesInfotocapWasmUrl],
   ["binaries/programs/wasm32/posix-utils-lite/ar.wasm", posixArWasmUrl],
   ["binaries/programs/wasm32/posix-utils-lite/asa.wasm", posixAsaWasmUrl],
   ["binaries/programs/wasm32/posix-utils-lite/cal.wasm", posixCalWasmUrl],
@@ -156,8 +174,6 @@ const ROOTFS_LAZY_ASSET_URLS = new Map<string, string>([
   ["binaries/programs/wasm32/posix-utils-lite/renice.wasm", posixReniceWasmUrl],
   ["binaries/programs/wasm32/posix-utils-lite/strings.wasm", posixStringsWasmUrl],
   ["binaries/programs/wasm32/posix-utils-lite/strip.wasm", posixStripWasmUrl],
-  ["binaries/programs/wasm32/posix-utils-lite/tabs.wasm", posixTabsWasmUrl],
-  ["binaries/programs/wasm32/posix-utils-lite/tput.wasm", posixTputWasmUrl],
   ["binaries/programs/wasm32/posix-utils-lite/uncompress.wasm", posixUncompressWasmUrl],
   ["binaries/programs/wasm32/posix-utils-lite/uudecode.wasm", posixUudecodeWasmUrl],
   ["binaries/programs/wasm32/posix-utils-lite/uuencode.wasm", posixUuencodeWasmUrl],

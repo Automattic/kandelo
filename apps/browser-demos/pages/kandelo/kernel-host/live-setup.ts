@@ -1,11 +1,8 @@
 // Builds a LiveKernelHost over a real BrowserKernel for the Kandelo page.
 
 import { BrowserKernel } from "@host/browser-kernel-host";
-import {
-  ensureServiceWorkerReady,
-  initServiceWorkerBridge,
-} from "../../../lib/init/service-worker-bridge";
-import { HttpBridgeHost } from "../../../lib/http-bridge";
+import { ensureServiceWorkerReady } from "../../../lib/init/service-worker-bridge";
+import { setupServiceWorkerFetchBridge } from "../../../lib/init/sw-bridge-fetch";
 import { rewriteShellLazyFileUrls } from "../../../lib/init/shell-lazy-files";
 import { resolveShellLazyArchiveUrl } from "../../../lib/init/lazy-archives";
 import {
@@ -112,9 +109,12 @@ type SoftwareGalleryManifest = {
   entries: SoftwareGalleryEntry[];
 };
 
-type IndexBinaryEntry = {
-  status?: string;
-  archive_url?: string;
+type TomlValue = string | number | boolean;
+
+type IndexBinaryEntry = Record<string, TomlValue | undefined> & {
+  status?: TomlValue;
+  archive_url?: TomlValue;
+  browser_compatible?: TomlValue;
 };
 
 type IndexPackageEntry = {
@@ -150,7 +150,9 @@ const SOFTWARE_PROFILES = new Map<string, SoftwareProfile>();
 const tarDecoder = new TextDecoder();
 const HTTP_PORT = 8080;
 const PHP_FPM_PORT = 9000;
-const MARIADB_PORT = 3306;
+const MARIADB_SOCKET_PATH = "/tmp/mysql.sock";
+const MARIADB_READY_SERVICE = "mariadb-ready";
+const MARIADB_READY_SCRIPT_PATH = "/usr/local/bin/mariadb-ready";
 const ROOT_UID = 0;
 const ROOT_GID = 0;
 const ROOT_HOME = "/root";
@@ -163,6 +165,12 @@ const DEMO_GID = 1000;
 const DEMO_USER = "user";
 const DEMO_HOME = "/home/user";
 const NODE_WORKDIR = "/work";
+const DINITCTL_PATH = "/sbin/dinitctl";
+const DINITCTL_SOCKET_PATH = "/tmp/dinitctl";
+const DINIT_STARTING_POLL_INTERVAL_MS = 2_000;
+const DINIT_STARTING_POLL_TIMEOUT_MS = 180_000;
+const DINITCTL_LIST_TIMEOUT_MS = 2_000;
+const DINIT_STARTING_POLL_FAILURE_LIMIT = 3;
 
 class BootSuperseded extends Error {
   constructor() {
@@ -199,7 +207,11 @@ interface LiveProfileSpec {
     gid?: number;
     maxWorkers?: number;
     maxMemoryPages?: number;
-    web?: { requiredPorts: number[] };
+    web?: {
+      requiredPorts: number[];
+      requiredServices?: string[];
+      probeHttp?: boolean;
+    };
   };
 }
 
@@ -222,35 +234,16 @@ const LIVE_DEMO_IDS = [
   "wordpress-sqlite",
   "wordpress-mariadb",
   "doom",
+  "modeset",
 ] as const;
 
 type LiveDemoId = typeof LIVE_DEMO_IDS[number];
-
-const NODE_WORKER_AUTO_COMMAND = [
-  "node -e \"",
-  "const assert=require('node:assert');",
-  "const path=require('path');",
-  "const {Worker}=require('worker_threads');",
-  "const b=Buffer.from('Kandelo');",
-  "assert.strictEqual(path.basename('/usr/bin/node'),'node');",
-  "console.log('SpiderMonkey Node', process.version, process.arch);",
-  "console.log(b.toString('hex'));",
-  "console.log(new Intl.NumberFormat('de-DE').format(1234567.89));",
-  "const sab=new SharedArrayBuffer(8);",
-  "const view=new Int32Array(sab);",
-  "new Worker('const view=new Int32Array(workerData); Atomics.store(view,0,42); Atomics.store(view,1,1); Atomics.notify(view,1);',{eval:true,workerData:sab});",
-  "if(Atomics.load(view,1)===0) Atomics.wait(view,1,0,5000);",
-  "if(Atomics.load(view,1)!==1) throw new Error('worker did not finish');",
-  "console.log('worker', Atomics.load(view,0));",
-  "\"",
-  "&& npm --version",
-].join(" ");
 
 async function settleAfterKernelDestroy(): Promise<void> {
   const ua = navigator.userAgent;
   const isWebKitLikeBrowser = /AppleWebKit/i.test(ua)
     && !/(Chrome|Chromium|CriOS|Edg|OPR|Firefox|FxiOS)/i.test(ua);
-  if (!isWebKitLikeBrowser()) return;
+  if (!isWebKitLikeBrowser) return;
   await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
   await new Promise<void>((resolve) => window.setTimeout(resolve, 1_000));
 }
@@ -266,7 +259,6 @@ const LIVE_PROFILE_SPECS: Record<LiveDemoId, LiveProfileSpec> = {
     memoryPages: 4096,
     network: true,
     features: ["js-workers"],
-    autoCommand: NODE_WORKER_AUTO_COMMAND,
   },
   nginx: {
     image: "nginx",
@@ -307,7 +299,7 @@ const LIVE_PROFILE_SPECS: Record<LiveDemoId, LiveProfileSpec> = {
     // MariaDB's Aria recovery can grow beyond the 4096-page cap used by
     // lighter PHP presets.
     memoryPages: 16384,
-    maxVfsByteLength: 512 * 1024 * 1024,
+    maxVfsByteLength: 768 * 1024 * 1024,
     network: true,
     init: {
       argv: DINIT_NGINX_ARGV,
@@ -315,12 +307,20 @@ const LIVE_PROFILE_SPECS: Record<LiveDemoId, LiveProfileSpec> = {
       programUrl: dinitWasmUrl,
       maxWorkers: 24,
       maxMemoryPages: 16384,
-      web: { requiredPorts: [HTTP_PORT, PHP_FPM_PORT, MARIADB_PORT] },
+      web: {
+        requiredPorts: [HTTP_PORT, PHP_FPM_PORT],
+        requiredServices: ["mariadb-ready", "php-fpm", "nginx"],
+        probeHttp: false,
+      },
     },
   },
   doom: {
     image: "shell",
     features: ["framebuffer"],
+  },
+  modeset: {
+    image: "shell",
+    features: ["kms"],
   },
 };
 
@@ -357,7 +357,12 @@ interface LiveProfile {
     gid?: number;
     maxWorkers?: number;
     maxMemoryPages?: number;
-    web?: { label: string; requiredPorts: number[] };
+    web?: {
+      label: string;
+      requiredPorts: number[];
+      requiredServices?: string[];
+      probeHttp: boolean;
+    };
   };
   framebufferTest: boolean;
 }
@@ -374,7 +379,6 @@ const SW_URL = import.meta.env.BASE_URL + "service-worker.js";
 const DEV_CORS_PROXY_PATH = import.meta.env.BASE_URL + "__kandelo_cors_proxy";
 const COI_RELOAD_SESSION_KEY = "kandelo:coi-reload-attempted";
 const PHP_FPM_WORKERS = 6;
-const MARIADB_SOCKET_PATH = "/tmp/mysql.sock";
 const PATCHED_PHP_FPM_CONF = `[global]
 daemonize = no
 error_log = /dev/stderr
@@ -533,12 +537,14 @@ export async function createLiveHost(opts: CreateLiveHostOptions = {}): Promise<
       await settleAfterKernelDestroy();
     }
     h.detachKernel();
+    const bootStartedAt = performance.now();
 
     try {
       const kernel = await bootProfile(
         h,
         profile,
         descriptor,
+        bootStartedAt,
         () => seq === bootSeq,
         requireServiceWorker,
       );
@@ -551,7 +557,7 @@ export async function createLiveHost(opts: CreateLiveHostOptions = {}): Promise<
       if (err instanceof BootSuperseded || seq !== bootSeq) return;
       currentKernel = null;
       h.detachKernel();
-      showBootError(h, descriptor, err);
+      showBootError(h, descriptor, err, bootStartedAt);
     }
   }
 }
@@ -560,6 +566,7 @@ function showBootError(
   host: LiveKernelHost,
   descriptor: BootDescriptor,
   err: unknown,
+  bootStartedAt: number,
 ): void {
   const message = err instanceof Error ? err.message : String(err);
   host.clearDmesg();
@@ -573,26 +580,30 @@ function showBootError(
     internalsAccess: "drawer",
   });
   host.pushDmesg({
-    t: 50,
+    t: bootElapsedMs(bootStartedAt),
     level: "err",
     facility: "kandelo",
     msg: `Failed to boot ${descriptor.title || descriptor.id}`,
   });
   host.pushDmesg({
-    t: 100,
+    t: bootElapsedMs(bootStartedAt),
     level: "err",
     facility: "kandelo",
     msg: message,
   });
   if (SOFTWARE_PROFILES.has(descriptor.id)) {
     host.pushDmesg({
-      t: 150,
+      t: bootElapsedMs(bootStartedAt),
       level: "warn",
       facility: "kandelo-software",
       msg: "The third-party gallery entry may be temporarily unavailable or its release artifact may have been deleted.",
     });
   }
   host.setStatus("error");
+}
+
+function bootElapsedMs(bootStartedAt: number): number {
+  return Math.max(0, performance.now() - bootStartedAt);
 }
 
 function descriptorForBootQuery(
@@ -693,6 +704,8 @@ function profileFor(id: string, fb?: FbDemo): LiveProfile {
       web: spec.init.web && {
         label: desc.title,
         requiredPorts: spec.init.web.requiredPorts.slice(),
+        requiredServices: spec.init.web.requiredServices?.slice(),
+        probeHttp: spec.init.web.probeHttp ?? true,
       },
     },
     framebufferTest: fb === "test",
@@ -719,14 +732,10 @@ function shellIdentityForProfile(profile: LiveProfile, boot?: BootDescriptor["bo
   gid: number;
 } {
   let identity: { env: string[]; cwd: string; uid: number; gid: number };
-  if (profile.software?.shellEnv) {
-    identity = profile.init || profile.software.shellEnv === SERVICE_ENV
-      ? { env: profile.software.shellEnv, cwd: ROOT_HOME, uid: ROOT_UID, gid: ROOT_GID }
-      : { env: profile.software.shellEnv, cwd: DEMO_HOME, uid: DEMO_UID, gid: DEMO_GID };
-  } else if (profile.shell === "node") {
+  if (profile.shell === "node") {
     identity = { env: shellEnvFor(profile.shell), cwd: shellCwdFor(profile.shell), uid: DEMO_UID, gid: DEMO_GID };
-  } else if (profile.init) {
-    identity = { env: SERVICE_ENV, cwd: ROOT_HOME, uid: ROOT_UID, gid: ROOT_GID };
+  } else if (profile.software?.shellEnv && profile.software.shellEnv !== SERVICE_ENV) {
+    identity = { env: profile.software.shellEnv, cwd: DEMO_HOME, uid: DEMO_UID, gid: DEMO_GID };
   } else {
     identity = { env: shellEnvFor(profile.shell), cwd: shellCwdFor(profile.shell), uid: DEMO_UID, gid: DEMO_GID };
   }
@@ -803,10 +812,168 @@ function reportInitError(
   host.setStatus("error");
 }
 
+class DinitBootStatusTracker {
+  private completedServices = new Set<string>();
+  private startingServices = new Set<string>();
+  private outputTails = new Map<string, string>();
+
+  constructor(
+    private tick: (msg: string) => void,
+    private onServiceCompleted?: (serviceName: string) => void,
+  ) {}
+
+  observeProcessOutput(text: string, stream: string): void {
+    if (!text) return;
+    const normalized = `${this.outputTails.get(stream) ?? ""}${text}`.replace(/\r/g, "");
+    const lines = normalized.split("\n");
+    this.outputTails.set(stream, text.endsWith("\n") ? "" : lines.pop() ?? "");
+    for (const line of lines) {
+      const serviceName = parseDinitCompletionLine(line);
+      if (!serviceName) continue;
+      if (this.completedServices.has(serviceName)) continue;
+      this.emitStarting(serviceName);
+      this.completedServices.add(serviceName);
+      this.onServiceCompleted?.(serviceName);
+    }
+  }
+
+  emitStartingFromList(output: string): void {
+    for (const serviceName of parseDinitStartingServices(output)) {
+      this.emitStarting(serviceName);
+    }
+  }
+
+  hasCompleted(serviceName: string): boolean {
+    return this.completedServices.has(serviceName);
+  }
+
+  private emitStarting(serviceName: string): void {
+    if (this.completedServices.has(serviceName)) return;
+    if (this.startingServices.has(serviceName)) return;
+    this.startingServices.add(serviceName);
+    this.tick(`Starting ${serviceName}...`);
+  }
+}
+
+function parseDinitCompletionLine(line: string): string | null {
+  const match = stripAnsi(line).trim().match(/^\[(?:\s*OK\s*|FAILED)\]\s+(.+)$/);
+  return match?.[1]?.trim() || null;
+}
+
+function parseDinitStartingServices(output: string): string[] {
+  const services: string[] = [];
+  for (const line of stripAnsi(output).replace(/\r/g, "").split("\n")) {
+    const match = line.match(/^\[[^\]]*<<[^\]]*\]\s+(\S+)/);
+    if (match?.[1]) services.push(match[1]);
+  }
+  return services;
+}
+
+function stripAnsi(text: string): string {
+  return text.replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, "");
+}
+
+function startDinitStartingPoller(options: {
+  kernel: BrowserKernel;
+  memfs: MemoryFileSystem;
+  tracker: DinitBootStatusTracker;
+  isCurrent: () => boolean;
+  shouldStop?: () => boolean;
+}): () => void {
+  if (!vfsPathExists(options.memfs, DINITCTL_PATH)) return () => {};
+
+  let stopped = false;
+  void (async () => {
+    const deadline = Date.now() + DINIT_STARTING_POLL_TIMEOUT_MS;
+    let failures = 0;
+    while (!stopped && options.isCurrent() && Date.now() < deadline) {
+      if (options.shouldStop?.()) break;
+      if (!vfsPathExists(options.memfs, DINITCTL_SOCKET_PATH)) {
+        await delay(DINIT_STARTING_POLL_INTERVAL_MS);
+        continue;
+      }
+      let output: string | null = null;
+      try {
+        output = await readDinitctlList(options.kernel);
+        failures = 0;
+      } catch {
+        failures += 1;
+        if (failures >= DINIT_STARTING_POLL_FAILURE_LIMIT) break;
+      }
+      if (stopped || !options.isCurrent()) break;
+      if (output !== null) options.tracker.emitStartingFromList(output);
+      await delay(DINIT_STARTING_POLL_INTERVAL_MS);
+    }
+  })();
+
+  return () => {
+    stopped = true;
+  };
+}
+
+async function readDinitctlList(kernel: BrowserKernel): Promise<string | null> {
+  const chunks: Uint8Array[] = [];
+  const { pid, exit } = await kernel.spawnFromVfs(DINITCTL_PATH, [
+    DINITCTL_PATH,
+    "-p",
+    DINITCTL_SOCKET_PATH,
+    "list",
+  ], {
+    cwd: "/",
+    uid: ROOT_UID,
+    gid: ROOT_GID,
+    pty: true,
+  });
+  kernel.onPtyOutput(pid, (data) => {
+    chunks.push(data.slice());
+  });
+
+  try {
+    const code = await Promise.race([
+      exit,
+      delay(DINITCTL_LIST_TIMEOUT_MS).then(() => null),
+    ]);
+    if (code === null) {
+      await kernel.terminateProcess(pid).catch(() => {});
+      return null;
+    }
+    await delay(0);
+    if (code !== 0 || chunks.length === 0) return null;
+    return decodeChunks(chunks);
+  } finally {
+    kernel.clearPtyOutput(pid);
+  }
+}
+
+function decodeChunks(chunks: Uint8Array[]): string {
+  const total = chunks.reduce((sum, chunk) => sum + chunk.byteLength, 0);
+  const bytes = new Uint8Array(total);
+  let offset = 0;
+  for (const chunk of chunks) {
+    bytes.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  return new TextDecoder().decode(bytes);
+}
+
+function vfsPathExists(fs: MemoryFileSystem, path: string): boolean {
+  try {
+    fs.stat(path);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function delay(ms: number): Promise<void> {
+  return new Promise((resolve) => window.setTimeout(resolve, ms));
+}
+
 async function bootProfile(
   host: LiveKernelHost,
   profile: LiveProfile,
   requestedDescriptor: BootDescriptor,
+  bootStartedAt: number,
   isCurrent: () => boolean,
   requireServiceWorker: (tick?: (msg: string) => void) => Promise<ServiceWorker>,
 ): Promise<BrowserKernel> {
@@ -838,10 +1005,18 @@ async function bootProfile(
   host.setPresentation(genericPresentation);
   host.setStatus("booting");
 
-  let t = 0;
   const tick = (msg: string) => {
     if (!isCurrent()) return;
-    host.pushDmesg({ t: (t += 50), level: "info", facility: "kandelo", msg });
+    host.pushDmesg({ t: bootElapsedMs(bootStartedAt), level: "info", facility: "kandelo", msg });
+  };
+  let maybeUpdateWebReadiness = () => {};
+  const dinitBootTracker = new DinitBootStatusTracker(tick, () => {
+    maybeUpdateWebReadiness();
+  });
+  const recordProcessOutput = (data: Uint8Array, fallback: string) => {
+    const text = new TextDecoder().decode(data);
+    dinitBootTracker.observeProcessOutput(text, fallback);
+    tick(text.trimEnd() || fallback);
   };
 
   await requireServiceWorker(tick);
@@ -874,7 +1049,6 @@ async function bootProfile(
   ) {
     writeVfsFile(memfs, "/etc/php-fpm.conf", PATCHED_PHP_FPM_CONF);
     ensureDirRecursive(memfs, "/var/cache/opcache");
-    stripDinitServiceLogfiles(memfs, dinitServicesForProfile(profile.id));
   }
   if (profile.id === "wordpress-sqlite") {
     patchWordPressRuntimeConfig(memfs, "sqlite");
@@ -914,20 +1088,38 @@ async function bootProfile(
   const seenPorts = new Set<number>();
   let bridgeSent = false;
   const webReadiness: WebReadinessState = { ready: false, probing: false };
+  maybeUpdateWebReadiness = () => {
+    maybeMarkWebReady(
+      host,
+      profile,
+      seenPorts,
+      bridgeSent,
+      webReadiness,
+      dinitBootTracker,
+      tick,
+      isCurrent,
+    );
+  };
   let kernel: BrowserKernel | null = null;
+  let stopDinitStartingPoller = () => {};
   try {
     kernel = new BrowserKernel({
       memfs,
       maxWorkers: profile.init?.maxWorkers ?? 4,
       maxMemoryPages: profile.init?.maxMemoryPages,
-      onStdout: (data) => tick(new TextDecoder().decode(data).trimEnd() || "stdout"),
-      onStderr: (data) => tick(new TextDecoder().decode(data).trimEnd() || "stderr"),
+      onStdout: (data) => recordProcessOutput(data, "stdout"),
+      onStderr: (data) => recordProcessOutput(data, "stderr"),
       onProcessEvent: (event) => { if (isCurrent()) host.emitProcessEvent(event); },
-      onListenTcp: (_pid, _fd, port) => {
+      onHttpBridgePendingRequests: (count) => {
+        if (isCurrent()) host.setWebPreviewPendingRequests(count);
+      },
+      onListenTcp: (pid, _fd, port) => {
         if (!isCurrent()) return;
         seenPorts.add(port);
-        tick(`service listening on :${port}`);
-        maybeMarkWebReady(host, profile, seenPorts, bridgeSent, webReadiness, tick, isCurrent);
+        void reportTcpListener(kernel!, pid, port, tick, isCurrent)
+          .finally(() => {
+            maybeUpdateWebReadiness();
+          });
       },
     });
     await kernel.init(kernelBytes);
@@ -938,8 +1130,9 @@ async function bootProfile(
     stageSoftwareBinaries(kernel, softwareBinaries);
     assertCurrent();
     host.attachKernel(kernel);
-    const shellIdentity = shellIdentityForProfile(profile, effectiveBoot);
+    const shellIdentity = shellIdentityForProfile(profile, profile.init ? undefined : effectiveBoot);
     host.setDefaultShell({
+      programPath: "/bin/bash",
       programBytes: bashBytes,
       argv: ["bash", "-l", "-i"],
       env: shellIdentity.env,
@@ -954,21 +1147,29 @@ async function bootProfile(
         label: profile.init.web.label,
         url: APP_PREFIX,
         status: "starting",
-        message: "Waiting for service ports",
+        message: "Waiting for services",
       });
-      const swBridge = await initServiceWorkerBridge(SW_URL, APP_PREFIX);
-      assertCurrent();
-      if (!swBridge) {
+      try {
+        await setupServiceWorkerFetchBridge(SW_URL, APP_PREFIX, kernel, HTTP_PORT, {
+          timeoutMs: 90_000,
+          debugLog: (line) => tick(line),
+          onPendingRequests: (count) => {
+            if (isCurrent()) host.setWebPreviewPendingRequests(count);
+          },
+        });
+        assertCurrent();
+        bridgeSent = true;
+        maybeUpdateWebReadiness();
+      } catch (err) {
+        if (!isCurrent()) throw err;
+        const message = err instanceof Error ? err.message : String(err);
+        tick(`HTTP bridge failed: ${message}`);
         host.setWebPreview({
           label: profile.init.web.label,
           url: APP_PREFIX,
           status: "error",
-          message: "Service workers unavailable",
+          message: "HTTP bridge unavailable",
         });
-      } else {
-        kernel.sendBridgePort(swBridge.detachHostPort(), HTTP_PORT);
-        bridgeSent = true;
-        setupBridgeRestoreListener(kernel, HTTP_PORT, tick);
       }
     }
 
@@ -981,8 +1182,19 @@ async function bootProfile(
         cwd: effectiveBoot.cwd || profile.init.cwd || ROOT_HOME,
         uid: effectiveBoot.uid ?? profile.init.uid ?? ROOT_UID,
         gid: effectiveBoot.gid ?? profile.init.gid ?? ROOT_GID,
+        onStarted: () => {
+          stopDinitStartingPoller = startDinitStartingPoller({
+            kernel: kernel!,
+            memfs,
+            tracker: dinitBootTracker,
+            isCurrent,
+            shouldStop: () => webReadiness.ready,
+          });
+        },
       }).then(
         (code) => {
+          stopDinitStartingPoller();
+          stopDinitStartingPoller = () => {};
           if (!isCurrent()) return;
           reportInitError(
             host,
@@ -992,6 +1204,8 @@ async function bootProfile(
           );
         },
         (err) => {
+          stopDinitStartingPoller();
+          stopDinitStartingPoller = () => {};
           if (!isCurrent()) return;
           reportInitError(
             host,
@@ -1003,7 +1217,7 @@ async function bootProfile(
       );
     }
 
-    maybeMarkWebReady(host, profile, seenPorts, bridgeSent, webReadiness, tick, isCurrent);
+    maybeUpdateWebReadiness();
 
     if (profile.framebufferTest) {
       const fbtestWasmUrl = await optionalBinaryUrl([
@@ -1027,6 +1241,7 @@ async function bootProfile(
     host.setStatus("running");
     return kernel;
   } catch (err) {
+    stopDinitStartingPoller();
     if (kernel && !isCurrent()) {
       await kernel.destroy().catch(() => {});
     }
@@ -1036,6 +1251,9 @@ async function bootProfile(
 
 function genericPresentationForProfile(profile: LiveProfile): DemoPresentation {
   if (profile.init?.web) return genericDemoPresentation("web");
+  if (profile.descriptor.runtime.features.includes("kms")) {
+    return genericDemoPresentation("kms");
+  }
   if (profile.framebufferTest || profile.descriptor.runtime.features.includes("framebuffer")) {
     return genericDemoPresentation("framebuffer");
   }
@@ -1109,29 +1327,6 @@ function patchWordPressRuntimeConfig(
   );
 }
 
-function dinitServicesForProfile(profileId: string): string[] {
-  switch (profileId) {
-    case "wordpress-mariadb":
-      return ["mariadb-bootstrap", "mariadb", "wp-config-init", "php-fpm", "nginx"];
-    case "wordpress-sqlite":
-      return ["wp-config-init", "php-fpm", "nginx"];
-    case "nginx-php":
-      return ["php-fpm", "nginx"];
-    default:
-      return [];
-  }
-}
-
-function stripDinitServiceLogfiles(fs: MemoryFileSystem, serviceNames: string[]): void {
-  for (const serviceName of serviceNames) {
-    const path = `/etc/dinit.d/${serviceName}`;
-    const conf = readOptionalVfsText(fs, path);
-    if (conf === null) continue;
-    const patched = conf.replace(/^logfile\s*=.*(?:\r?\n|$)/gm, "");
-    if (patched !== conf) writeVfsFile(fs, path, patched);
-  }
-}
-
 function patchMariaDbUnixSocketConfig(fs: MemoryFileSystem): void {
   ensureDirRecursive(fs, "/tmp");
   fs.chmod("/tmp", 0o1777);
@@ -1162,6 +1357,55 @@ function patchMariaDbUnixSocketConfig(fs: MemoryFileSystem): void {
       .replace(/--socket=(?:\S*)?/g, `--socket=${MARIADB_SOCKET_PATH}`)
       .replace(/\s*--thread-handling=no-threads\b/g, "");
     if (patched !== mariadbService) writeVfsFile(fs, mariadbServicePath, patched);
+  }
+
+  ensureMariaDbReadyService(fs);
+  patchPhpFpmMariaDbDependency(fs);
+}
+
+function ensureMariaDbReadyService(fs: MemoryFileSystem): void {
+  ensureDirRecursive(fs, dirname(MARIADB_READY_SCRIPT_PATH));
+  writeVfsFile(fs, MARIADB_READY_SCRIPT_PATH, `#!/bin/sh
+set -u
+
+i=0
+while [ "$i" -lt 60 ]; do
+    if [ -S "${MARIADB_SOCKET_PATH}" ] || [ -e "${MARIADB_SOCKET_PATH}" ]; then
+        exit 0
+    fi
+    sleep 1
+    i=$((i + 1))
+done
+
+echo "MariaDB readiness timed out waiting for ${MARIADB_SOCKET_PATH}" >&2
+exit 1
+`, 0o755);
+  writeVfsFile(fs, `/etc/dinit.d/${MARIADB_READY_SERVICE}`, `type = scripted
+command = /bin/sh ${MARIADB_READY_SCRIPT_PATH}
+depends-on = mariadb
+restart = false
+`);
+}
+
+function patchPhpFpmMariaDbDependency(fs: MemoryFileSystem): void {
+  const phpFpmServicePath = "/etc/dinit.d/php-fpm";
+  const phpFpmService = readOptionalVfsText(fs, phpFpmServicePath);
+  if (phpFpmService === null) return;
+  if (new RegExp(`^depends-on\\s*=\\s*${MARIADB_READY_SERVICE}$`, "m").test(phpFpmService)) {
+    return;
+  }
+  const patched = phpFpmService.replace(
+    /^depends-on\s*=\s*mariadb\s*$/m,
+    `depends-on = ${MARIADB_READY_SERVICE}`,
+  );
+  if (patched !== phpFpmService) {
+    writeVfsFile(fs, phpFpmServicePath, patched);
+  } else {
+    writeVfsFile(
+      fs,
+      phpFpmServicePath,
+      `${phpFpmService}${phpFpmService.endsWith("\n") ? "" : "\n"}depends-on = ${MARIADB_READY_SERVICE}\n`,
+    );
   }
 }
 
@@ -1217,6 +1461,33 @@ function stageSoftwareBinaries(
 function dirname(path: string): string {
   const idx = path.lastIndexOf("/");
   return idx <= 0 ? "/" : path.slice(0, idx);
+}
+
+async function reportTcpListener(
+  kernel: BrowserKernel,
+  pid: number,
+  port: number,
+  tick: (msg: string) => void,
+  isCurrent: () => boolean,
+): Promise<void> {
+  const processName = await processNameForPid(kernel, pid).catch(() => null);
+  if (!isCurrent()) return;
+  tick(`${processName ?? "service"} listening on :${port}`);
+}
+
+async function processNameForPid(kernel: BrowserKernel, pid: number): Promise<string | null> {
+  if (pid <= 0) return null;
+  const proc = (await kernel.enumProcs()).find((entry) => entry.pid === pid);
+  if (!proc) return null;
+  const comm = proc.comm.trim();
+  if (comm && !comm.startsWith("[")) return comm;
+  const arg0 = basename(proc.cmdline.trim().split(/\s+/)[0] ?? "").trim();
+  return arg0 && !arg0.startsWith("[") ? arg0 : null;
+}
+
+function basename(path: string): string {
+  const idx = path.lastIndexOf("/");
+  return idx < 0 ? path : path.slice(idx + 1);
 }
 
 async function loadArchiveArtifact(archiveUrl: string, artifactPath: string): Promise<Uint8Array> {
@@ -1320,20 +1591,35 @@ function maybeMarkWebReady(
   seenPorts: Set<number>,
   bridgeSent: boolean,
   readiness: WebReadinessState,
+  dinitBootTracker: DinitBootStatusTracker,
   tick: (msg: string) => void,
   isCurrent: () => boolean,
 ): void {
   const web = profile.init?.web;
   if (!web) return;
   const portsReady = web.requiredPorts.every((p) => seenPorts.has(p));
-  if (!portsReady || !bridgeSent) return;
+  const servicesReady = (web.requiredServices ?? [])
+    .every((serviceName) => dinitBootTracker.hasCompleted(serviceName));
+  if (!portsReady || !servicesReady || !bridgeSent) return;
+  const readyMessage = web.probeHttp ? "HTTP bridge ready" : "Service stack ready";
   if (readiness.ready) {
     if (!isCurrent()) return;
     host.setWebPreview({
       label: web.label,
       url: APP_PREFIX,
       status: "running",
-      message: "HTTP bridge ready",
+      message: readyMessage,
+    });
+    return;
+  }
+  if (!web.probeHttp) {
+    readiness.ready = true;
+    tick("Web preview ready");
+    host.setWebPreview({
+      label: web.label,
+      url: APP_PREFIX,
+      status: "running",
+      message: readyMessage,
     });
     return;
   }
@@ -1410,26 +1696,6 @@ async function fetchWithTimeout(url: string, timeoutMs: number): Promise<Respons
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => window.setTimeout(resolve, ms));
-}
-
-function setupBridgeRestoreListener(
-  kernel: BrowserKernel,
-  httpPort: number,
-  tick: (msg: string) => void,
-): void {
-  if (!("serviceWorker" in navigator)) return;
-  navigator.serviceWorker.addEventListener("message", (event) => {
-    if (event.data?.type !== "need-bridge") return;
-    const replyPort = event.ports[0];
-    if (!replyPort) return;
-    const bridge = new HttpBridgeHost();
-    replyPort.postMessage(
-      { type: "bridge-restored", appPrefix: APP_PREFIX },
-      [bridge.getSwPort()],
-    );
-    kernel.sendBridgePort(bridge.detachHostPort(), httpPort);
-    tick("HTTP bridge restored");
-  });
 }
 
 function descriptorBootIdentity(
@@ -1533,7 +1799,10 @@ function liveDemoIdForVfsImageUrl(vfsUrl: string): LiveDemoId | null {
 
   const matches = LIVE_DEMO_IDS.filter((id) => baseUrl === profileVfsBaseUrl(id));
   if (matches.length === 1) return matches[0];
-  return matches.find((id) => id !== "doom") ?? null;
+  // Multiple presets share the shell VFS image (doom, modeset). When the URL
+  // doesn't pin one via the hash, fall back to the shell preset so the
+  // ambiguous shell-image link doesn't auto-launch a demo binary.
+  return matches.find((id) => id !== "doom" && id !== "modeset") ?? null;
 }
 
 function profileVfsBaseUrl(id: LiveDemoId): string {
@@ -1572,12 +1841,13 @@ async function loadKandeloSoftwareGalleryItems(): Promise<GalleryItem[]> {
 }
 
 async function loadSoftwareGalleryItemsFromManifest(manifestUrl: string): Promise<GalleryItem[]> {
-  const manifestText = await fetchTextNoStore(manifestUrl);
+  const resolvedManifestUrl = new URL(manifestUrl, location.href).href;
+  const manifestText = await fetchTextNoStore(resolvedManifestUrl);
   const manifest = JSON.parse(manifestText) as SoftwareGalleryManifest;
-  const sourceId = sourceIdForManifest(manifest, manifestUrl);
+  const sourceId = sourceIdForManifest(manifest, resolvedManifestUrl);
   const indexUrl = manifest.index_url
-    ? new URL(manifest.index_url, manifestUrl).href
-    : new URL("index.toml", manifestUrl).href;
+    ? new URL(manifest.index_url, resolvedManifestUrl).href
+    : new URL("index.toml", resolvedManifestUrl).href;
   const index = parseIndexToml(await fetchTextNoStore(indexUrl));
   if (index.abiVersion !== undefined && index.abiVersion !== ABI_VERSION) {
     console.warn(
@@ -1780,8 +2050,10 @@ function packageAvailable(
   index: SoftwareIndex,
   requirement: GalleryPackageRequirement,
 ): boolean {
-  const entry = index.packages.get(packageKey(requirement));
-  return entry?.binary.wasm32?.status === "success";
+  const wasm32 = index.packages.get(packageKey(requirement))?.binary.wasm32;
+  return stringTomlValue(wasm32?.status) === "success" &&
+    Boolean(stringTomlValue(wasm32?.archive_url)) &&
+    booleanTomlValue(wasm32?.browser_compatible) === true;
 }
 
 function archiveUrlFor(
@@ -1790,7 +2062,9 @@ function archiveUrlFor(
   requirement: GalleryPackageRequirement | undefined,
 ): string | undefined {
   if (!requirement) return undefined;
-  const archiveUrl = index.packages.get(packageKey(requirement))?.binary.wasm32?.archive_url;
+  const archiveUrl = stringTomlValue(
+    index.packages.get(packageKey(requirement))?.binary.wasm32?.archive_url,
+  );
   if (!archiveUrl) return undefined;
   return new URL(archiveUrl, indexUrl).href;
 }
@@ -1808,7 +2082,7 @@ function stripTomlComment(line: string): string {
   return line;
 }
 
-function parseTomlValue(value: string): string {
+function parseTomlValue(value: string): TomlValue {
   const trimmed = value.trim();
   if (trimmed.startsWith('"') && trimmed.endsWith('"')) {
     try {
@@ -1817,7 +2091,18 @@ function parseTomlValue(value: string): string {
       return trimmed.slice(1, -1);
     }
   }
+  if (trimmed === "true") return true;
+  if (trimmed === "false") return false;
+  if (/^[0-9]+$/.test(trimmed)) return Number(trimmed);
   return trimmed;
+}
+
+function stringTomlValue(value: TomlValue | undefined): string | undefined {
+  return typeof value === "string" ? value : undefined;
+}
+
+function booleanTomlValue(value: TomlValue | undefined): boolean | undefined {
+  return typeof value === "boolean" ? value : undefined;
 }
 
 function parseIndexToml(text: string): SoftwareIndex {
@@ -1850,15 +2135,17 @@ function parseIndexToml(text: string): SoftwareIndex {
     const value = parseTomlValue(rawValue);
     if (!currentPackage) {
       if (key === "abi_version") {
-        const parsed = Number.parseInt(value, 10);
+        const parsed = typeof value === "number" ? value : Number.parseInt(String(value), 10);
         if (Number.isFinite(parsed)) abiVersion = parsed;
       }
       continue;
     }
     if (currentBinary) {
-      currentBinary[key as keyof IndexBinaryEntry] = value;
+      currentBinary[key] = value;
     } else if (key === "name" || key === "version") {
-      currentPackage[key] = value;
+      const stringValue = stringTomlValue(value);
+      if (!stringValue) continue;
+      currentPackage[key] = stringValue;
       if (currentPackage.name && currentPackage.version) {
         packages.set(`${currentPackage.name}@${currentPackage.version}`, currentPackage);
       }

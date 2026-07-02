@@ -15,14 +15,27 @@ import type { BrowserKernel } from "@host/browser-kernel-host";
 import { HttpBridgeHost, type HttpRequest } from "../http-bridge";
 import { initServiceWorkerBridge } from "./service-worker-bridge";
 
+interface ServiceWorkerFetchBridgeOptions {
+  timeoutMs?: number;
+  debugLog?: (line: string) => void;
+  onPendingRequests?: (count: number) => void;
+}
+
 /** Hook a single bridge instance up to fetchInKernel. */
 export function attachBridgeToKernel(
   bridge: HttpBridgeHost,
   kernel: BrowserKernel,
   port: number,
-  options?: { timeoutMs?: number; debugLog?: (line: string) => void },
+  options?: ServiceWorkerFetchBridgeOptions,
 ): void {
+  let pendingRequests = 0;
+  const updatePendingRequests = (delta: 1 | -1) => {
+    pendingRequests = Math.max(0, pendingRequests + delta);
+    options?.onPendingRequests?.(pendingRequests);
+  };
+
   bridge.onRequest(async (requestId, request: HttpRequest) => {
+    updatePendingRequests(1);
     try {
       const response = await kernel.fetchInKernel(port, request, {
         timeoutMs: options?.timeoutMs,
@@ -32,6 +45,8 @@ export function attachBridgeToKernel(
       const msg = e instanceof Error ? e.message : String(e);
       options?.debugLog?.(`bridge fetch failed: ${request.method} ${request.url}: ${msg}`);
       bridge.error(requestId, msg);
+    } finally {
+      updatePendingRequests(-1);
     }
   });
 }
@@ -51,7 +66,7 @@ export async function setupServiceWorkerFetchBridge(
   appPrefix: string,
   kernel: BrowserKernel,
   port: number,
-  options?: { timeoutMs?: number; debugLog?: (line: string) => void },
+  options?: ServiceWorkerFetchBridgeOptions,
 ): Promise<HttpBridgeHost> {
   const bridge = await initServiceWorkerBridge(swUrl, appPrefix);
   if (!bridge) {

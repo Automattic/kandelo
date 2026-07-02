@@ -307,6 +307,21 @@ exit 0
     expect(stdout).toMatch(/--allow-stale accepted/);
   });
 
+  it("--fetch-only passes the resolver source-build guard", () => {
+    const { status, stdout, stderr } = runScript(["--fetch-only"]);
+    expect(status, `stderr:\n${stderr}\nstdout:\n${stdout}`).toBe(0);
+
+    const alphaLines = logLines(/build-deps.*resolve\s+alpha\b/);
+    expect(alphaLines.length).toBe(1);
+    expect(alphaLines[0]).toMatch(/--fetch-only/);
+
+    const bravoLines = logLines(/build-deps.*resolve\s+bravo\b/);
+    expect(bravoLines.length).toBe(2);
+    expect(bravoLines.every((l) => /--fetch-only/.test(l))).toBe(true);
+
+    expect(stdout).toMatch(/--fetch-only enabled/);
+  });
+
   it("--allow-stale degrades per-package failures to warnings (exit 0)", () => {
     // Without --allow-stale, a single resolve failure exits 1
     // (covered by the next test). With --allow-stale, failures are

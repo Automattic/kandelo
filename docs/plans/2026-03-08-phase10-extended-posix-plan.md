@@ -26,7 +26,7 @@ These need new host_ftruncate and host_fsync methods in the HostIO trait. The ho
 Rather than adding kernel-internal vectored I/O, we iterate through iovec entries and call the existing sys_read/sys_write for each. This reuses all existing pipe/socket/file dispatch logic.
 
 ### DD4: getrlimit/setrlimit are advisory only
-Limits are stored but not enforced. The single-process Wasm environment doesn't have the infrastructure to enforce resource limits.
+Limits are stored but not enforced. The Wasm runtime does not yet provide the hooks needed for full resource-limit enforcement.
 
 ### DD5: sysconf returns Wasm-appropriate values
 _SC_PAGE_SIZE=65536 (Wasm page size), _SC_NPROCESSORS_ONLN=1 (single-threaded), etc.

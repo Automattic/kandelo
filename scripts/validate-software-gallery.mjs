@@ -56,6 +56,8 @@ if (!gallery || typeof gallery !== "object") {
           errors.push(`${pkgPrefix} is not wasm32 success in index.toml: ${key}`);
         } else if (!record.wasm32.archive_url) {
           errors.push(`${pkgPrefix} has no wasm32 archive_url in index.toml: ${key}`);
+        } else if (record.wasm32.browser_compatible !== true) {
+          errors.push(`${pkgPrefix} is not wasm32 browser-compatible in index.toml: ${key}`);
         }
       }
     }
@@ -166,6 +168,8 @@ function parseTomlValue(raw) {
   if (raw.startsWith("\"") && raw.endsWith("\"")) {
     return raw.slice(1, -1).replace(/\\"/g, "\"").replace(/\\\\/g, "\\");
   }
+  if (raw === "true") return true;
+  if (raw === "false") return false;
   if (/^[0-9]+$/.test(raw)) return Number(raw);
   return raw;
 }

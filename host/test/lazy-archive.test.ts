@@ -530,6 +530,33 @@ describe("Lazy archive export/import", () => {
     expect(mfs2.stat("/usr/share/vim/README").size).toBe(0);
   });
 
+  it("rebaseToNewFileSystem preserves unmaterialized archive metadata", () => {
+    const mfs = createMemfs();
+    const entries = makeFakeEntries();
+    mfs.registerLazyArchiveFromEntries(
+      "http://example.com/vim.zip",
+      entries,
+      "/",
+    );
+
+    const rebased = mfs.rebaseToNewFileSystem(8 * 1024 * 1024);
+
+    expect(rebased.stat("/usr/bin/vim").size).toBe(500000);
+    expect(rebased.stat("/usr/share/vim/syntax/c.vim").size).toBe(2048);
+    const serialized = rebased.exportLazyArchiveEntries();
+    expect(serialized).toHaveLength(1);
+    expect(serialized[0]).toMatchObject({
+      url: "http://example.com/vim.zip",
+      mountPrefix: "/",
+      materialized: false,
+    });
+
+    const fd = rebased.open("/usr/bin/vim", O_RDONLY, 0);
+    const buf = new Uint8Array(16);
+    expect(rebased.read(fd, buf, null, buf.length)).toBe(0);
+    rebased.close(fd);
+  });
+
   it("import of materialized group does not populate lazyArchiveInodes", async () => {
     const sab = new SharedArrayBuffer(4 * 1024 * 1024);
     const mfs1 = MemoryFileSystem.create(sab);

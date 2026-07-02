@@ -74,11 +74,6 @@ host_helpers_ready() {
     done
 }
 
-# Homebrew bison (macOS system bison is too old for MariaDB)
-if [ -x /opt/homebrew/opt/bison/bin/bison ]; then
-    export PATH="/opt/homebrew/opt/bison/bin:$PATH"
-fi
-
 # --- Verify prerequisites ---
 if [ ! -f "$SYSROOT/lib/libc.a" ]; then
     if [ "$WASM_ARCH" = "wasm64" ]; then
@@ -96,7 +91,12 @@ fi
 
 # Check for cmake
 if ! command -v cmake &>/dev/null; then
-    echo "ERROR: cmake not found. Install: brew install cmake" >&2
+    echo "ERROR: cmake not found. Run through scripts/dev-shell.sh." >&2
+    exit 1
+fi
+
+if ! command -v bison &>/dev/null; then
+    echo "ERROR: bison not found. Run through scripts/dev-shell.sh." >&2
     exit 1
 fi
 
@@ -211,8 +211,12 @@ resolve_dep() {
 }
 
 # --- Resolve libcxx via the dep cache, then index into the sysroot ---
-LLVM_PREFIX="${LLVM_PREFIX:-$(brew --prefix llvm 2>/dev/null || echo /opt/homebrew/opt/llvm)}"
+LLVM_PREFIX="${LLVM_PREFIX:?LLVM_PREFIX not set. Run through scripts/dev-shell.sh.}"
 LLVM_CLANG="$LLVM_PREFIX/bin/clang"
+if [ ! -x "$LLVM_CLANG" ]; then
+    echo "ERROR: clang not found at $LLVM_CLANG. Run through scripts/dev-shell.sh." >&2
+    exit 1
+fi
 
 LIBCXX_PREFIX="${WASM_POSIX_DEP_LIBCXX_DIR:-}"
 if [ -z "$LIBCXX_PREFIX" ]; then

@@ -316,7 +316,7 @@ pub fn sys_tcgetattr(proc: &mut Process, fd: i32, buf: &mut [u8]) -> Result<(), 
 
 /// tcsetattr — set terminal attributes
 /// Reads c_iflag, c_oflag, c_cflag, c_lflag (4 x u32 = 16 bytes) then c_cc (32 bytes) = 48 bytes
-/// action: 0=TCSANOW, 1=TCSADRAIN, 2=TCSAFLUSH (all treated same in single-process)
+/// action: 0=TCSANOW, 1=TCSADRAIN, 2=TCSAFLUSH (all treated the same here)
 pub fn sys_tcsetattr(proc: &mut Process, fd: i32, _action: u32, buf: &[u8]) -> Result<(), Errno> {
     let entry = proc.fd_table.get(fd).ok_or(Errno::EBADF)?;
     let ofd = proc.ofd_table.get(entry.ofd_index).ok_or(Errno::EBADF)?;

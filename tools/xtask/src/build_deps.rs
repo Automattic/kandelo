@@ -978,9 +978,13 @@ pub struct ResolveOpts<'a> {
     /// `None` means "no force rebuild" (the default for every consumer
     /// other than the manual workflow). `local_libs` still wins over
     /// force_source_build (a hand-patched override is always honored).
-    /// The single-process resolver assumes no concurrent peers during
-    /// a force rebuild — see `build_into_cache`'s atomic-install comment.
+    /// A force rebuild assumes no concurrent resolver invocation for
+    /// the same package -- see `build_into_cache`'s atomic-install comment.
     pub force_source_build: Option<&'a BTreeSet<String>>,
+    /// Refuse any source build or source fetch fallback. Used by CI
+    /// binary-materialization gates, where package bytes must come from
+    /// staging overlays, the durable index, or an existing valid cache entry.
+    pub fetch_only: bool,
     /// Repo root used to resolve `[build].script_path` (which is
     /// repo-relative as of Phase A-bis Task 2). `None` means "use
     /// `crate::repo_root()`", which is the production default.
@@ -1131,7 +1135,9 @@ fn render_probe_failures(target: &DepsManifest, failures: &[ProbeFailure]) -> St
 ///   a force-rebuild-all loop every call has the same flag, so the
 ///   memo collapses N calls per (name, arch) into 1 build — the
 ///   actual optimization we wanted.
-type BuildMemoKey = (PathBuf, String, TargetArch, bool);
+/// * `fetch_only` — fetch-only failures must not poison later normal
+///   resolves, which are allowed to build from source.
+type BuildMemoKey = (PathBuf, String, TargetArch, bool, bool);
 type BuildMemoValue = Result<(PathBuf, BTreeSet<PathBuf>), String>;
 
 fn build_memo() -> &'static Mutex<BTreeMap<BuildMemoKey, BuildMemoValue>> {
@@ -1147,7 +1153,7 @@ fn is_cycle_error(e: &str) -> bool {
     e.starts_with("cycle while building:")
 }
 
-/// Fast path for `build-deps resolve --binaries-dir <dir>` callers.
+/// Fast path for archive-only resolver callers.
 ///
 /// Browser/dev-server preparation needs to materialize self-contained program
 /// archives into `binaries/`. If one of those programs has a stale or corrupt
@@ -1155,7 +1161,11 @@ fn is_cycle_error(e: &str) -> bool {
 /// source build even though the target archive itself is valid. Keep normal
 /// source-build resolution unchanged, but allow program archive fetches in
 /// binary-materialization mode to satisfy the request before walking deps.
-fn try_fetch_program_without_deps(
+///
+/// Fetch-only CI materialization is stricter: it accepts only a valid cache
+/// entry or prebuilt archive for the target package and never falls through to
+/// dependency resolution/source builds.
+fn try_fetch_without_deps(
     target: &DepsManifest,
     registry: &Registry,
     arch: TargetArch,
@@ -1163,9 +1173,11 @@ fn try_fetch_program_without_deps(
     opts: &ResolveOpts<'_>,
     memo: &mut BTreeMap<String, [u8; 32]>,
 ) -> Result<Option<PathBuf>, String> {
-    if opts.binaries_dir.is_none()
-        || !matches!(target.kind, ManifestKind::Program)
-        || target.program_outputs.is_empty()
+    let binary_materialization_fast_path = opts.binaries_dir.is_some()
+        && matches!(target.kind, ManifestKind::Program)
+        && !target.program_outputs.is_empty();
+    if (!opts.fetch_only && !binary_materialization_fast_path)
+        || !matches!(target.kind, ManifestKind::Library | ManifestKind::Program)
     {
         return Ok(None);
     }
@@ -1175,13 +1187,22 @@ fn try_fetch_program_without_deps(
         .map(|s| s.contains(&target.name))
         .unwrap_or(false);
     if force_rebuild {
+        if opts.fetch_only {
+            return Err(format!(
+                "{}: fetch-only resolve cannot honor force source-build for arch {}",
+                target.spec(),
+                arch.as_str(),
+            ));
+        }
         return Ok(None);
     }
 
-    if let Some(lr) = opts.local_libs {
-        let override_dir = lr.join(&target.name).join("build");
-        if override_dir.is_dir() {
-            return Ok(Some(override_dir));
+    if !opts.fetch_only {
+        if let Some(lr) = opts.local_libs {
+            let override_dir = lr.join(&target.name).join("build");
+            if override_dir.is_dir() {
+                return Ok(Some(override_dir));
+            }
         }
     }
 
@@ -1224,11 +1245,11 @@ fn try_fetch_program_without_deps(
                 Err(e) => {
                     eprintln!(
                         "warning: direct binary fetch for {} from {} produced \
-                         a stale artifact ({}); falling back to dependency \
-                         resolution/source build",
+                         a stale artifact ({}); {}",
                         target.spec(),
                         binary.archive_url,
                         e,
+                        fetch_fallback_phrase(opts.fetch_only),
                     );
                     let _ = std::fs::remove_dir_all(&canonical);
                 }
@@ -1236,17 +1257,35 @@ fn try_fetch_program_without_deps(
             Err(e) => {
                 eprintln!(
                     "warning: direct binary fetch for {} from {} failed ({}); \
-                     falling back to dependency resolution/source build",
+                     {}",
                     target.spec(),
                     binary.archive_url,
                     e,
+                    fetch_fallback_phrase(opts.fetch_only),
                 );
             }
         }
     }
 
-    if let Some(()) = try_index_install(target, arch, abi_version, &canonical, &cache_key_sha_hex) {
+    if let Some(()) = try_index_install(
+        target,
+        arch,
+        abi_version,
+        &canonical,
+        &cache_key_sha_hex,
+        opts.fetch_only,
+    ) {
         return Ok(Some(canonical));
+    }
+
+    if opts.fetch_only {
+        return Err(format!(
+            "{}: fetch-only resolve could not install a valid archive for arch {}; \
+             run package staging/prepare to publish this package instead of \
+             source-building during binary materialization",
+            target.spec(),
+            arch.as_str(),
+        ));
     }
 
     Ok(None)
@@ -1287,6 +1326,7 @@ fn ensure_built_inner(
         target.name.clone(),
         arch,
         was_force_rebuild,
+        opts.fetch_only,
     );
     {
         let cache = build_memo().lock().unwrap();
@@ -1332,9 +1372,7 @@ fn ensure_built_uncached(
     }
     building.push(target.name.clone());
 
-    if let Some(path) =
-        try_fetch_program_without_deps(target, registry, arch, abi_version, opts, memo)?
-    {
+    if let Some(path) = try_fetch_without_deps(target, registry, arch, abi_version, opts, memo)? {
         building.pop();
         return Ok((path, BTreeSet::new()));
     }
@@ -1405,11 +1443,10 @@ fn ensure_built_uncached(
         // Place binaries/programs/<arch>/<output> symlinks for each
         // program dep so consumer build scripts can find them via
         // `tryResolveBinary("programs/<x>.wasm")`. Only kicks in when
-        // the caller (cmd_resolve under --binaries-dir) opted in;
-        // other ensure_built consumers (archive-stage, tests) leave
-        // binaries_dir = None and no symlinks land. Library deps and
-        // source deps are linked at compile time via WASM_POSIX_DEP_*
-        // env vars and don't need a binaries/ entry.
+        // the caller opts in with binaries_dir; other ensure_built
+        // consumers leave binaries_dir = None and no symlinks land.
+        // Library deps and source deps are linked at compile time via
+        // WASM_POSIX_DEP_* env vars and don't need a binaries/ entry.
         if let Some(bdir) = opts.binaries_dir {
             if matches!(dep_m.kind, ManifestKind::Program) && !dep_m.program_outputs.is_empty() {
                 place_binaries_symlinks(&dep_m, &dep_path, bdir, dep_arch)?;
@@ -1514,6 +1551,13 @@ fn ensure_built_uncached(
     //                        back to the build script.
     match (target.kind, target.build.script_path.is_some()) {
         (ManifestKind::Source, false) => {
+            if opts.fetch_only {
+                return Err(format!(
+                    "{}: fetch-only resolve cannot fetch source package fallback for arch {}",
+                    target.spec(),
+                    arch.as_str(),
+                ));
+            }
             let parent = canonical
                 .parent()
                 .ok_or_else(|| format!("canonical path has no parent: {}", canonical.display()))?;
@@ -1552,6 +1596,13 @@ fn ensure_built_uncached(
             Ok((canonical, transitive))
         }
         (ManifestKind::Source, true) => {
+            if opts.fetch_only {
+                return Err(format!(
+                    "{}: fetch-only resolve cannot run source package build script for arch {}",
+                    target.spec(),
+                    arch.as_str(),
+                ));
+            }
             // Override path: run the script. No remote-binary fetch for
             // sources (`[binary]` is rejected at parse time for source
             // kind), so we go straight to `build_into_cache`.
@@ -1608,11 +1659,11 @@ fn ensure_built_uncached(
                             Err(e) => {
                                 eprintln!(
                                     "warning: direct binary fetch for {} from {} produced \
-                                     a stale artifact ({}); falling back to indexed \
-                                     binary/source build",
+                                     a stale artifact ({}); {}",
                                     target.spec(),
                                     binary.archive_url,
                                     e,
+                                    fetch_fallback_phrase(opts.fetch_only),
                                 );
                                 let _ = std::fs::remove_dir_all(&canonical);
                             }
@@ -1620,19 +1671,34 @@ fn ensure_built_uncached(
                         Err(e) => {
                             eprintln!(
                                 "warning: direct binary fetch for {} from {} failed ({}); \
-                                 falling back to indexed binary/source build",
+                                 {}",
                                 target.spec(),
                                 binary.archive_url,
                                 e,
+                                fetch_fallback_phrase(opts.fetch_only),
                             );
                         }
                     }
                 }
-                if let Some(()) =
-                    try_index_install(target, arch, abi_version, &canonical, &cache_key_sha_hex)
-                {
+                if let Some(()) = try_index_install(
+                    target,
+                    arch,
+                    abi_version,
+                    &canonical,
+                    &cache_key_sha_hex,
+                    opts.fetch_only,
+                ) {
                     return Ok((canonical, transitive));
                 }
+            }
+
+            if opts.fetch_only {
+                return Err(format!(
+                    "{}: fetch-only resolve could not install a valid archive for arch {}; \
+                     package staging or the durable release must provide one",
+                    target.spec(),
+                    arch.as_str(),
+                ));
             }
 
             let pkgconfig_path = compose_pkgconfig_path(&transitive);
@@ -1661,13 +1727,23 @@ fn ensure_built_uncached(
 ///
 /// Logging is on stderr (matching the prior remote-fetch
 /// implementation's UX): users see warnings about why the index
-/// path was skipped, but the build still completes via source.
+/// path was skipped. Normal resolves then build from source; fetch-only
+/// resolves turn the miss into an error at the caller.
+fn fetch_fallback_phrase(fetch_only: bool) -> &'static str {
+    if fetch_only {
+        "source builds disabled by fetch-only mode"
+    } else {
+        "falling back to source build"
+    }
+}
+
 fn try_index_install(
     target: &DepsManifest,
     arch: TargetArch,
     abi_version: u32,
     canonical: &Path,
     cache_key_sha_hex: &str,
+    fetch_only: bool,
 ) -> Option<()> {
     // 1. Load build.toml. Source manifests without one (e.g. an
     //    upstream package that hasn't been ported to the new schema
@@ -1696,10 +1772,11 @@ fn try_index_install(
                 Err(e) => {
                     eprintln!(
                         "warning: index fetch for {} from {} failed ({}); \
-                         falling back to source build",
+                         {}",
                         target.spec(),
                         index_url,
                         e,
+                        fetch_fallback_phrase(fetch_only),
                     );
                     return None;
                 }
@@ -1707,11 +1784,12 @@ fn try_index_install(
             if index.abi_version != abi_version {
                 eprintln!(
                     "warning: index for {} from {} declares ABI {}, but resolver ABI is {}; \
-                     falling back to source build",
+                     {}",
                     target.spec(),
                     index_url,
                     index.abi_version,
                     abi_version,
+                    fetch_fallback_phrase(fetch_only),
                 );
                 return None;
             }
@@ -1720,9 +1798,10 @@ fn try_index_install(
                 None => {
                     eprintln!(
                         "warning: no index entry for {} in {}; \
-                         falling back to source build",
+                         {}",
                         target.spec(),
                         index_url,
+                        fetch_fallback_phrase(fetch_only),
                     );
                     return None;
                 }
@@ -1758,9 +1837,10 @@ fn try_index_install(
                 _ => {
                     eprintln!(
                         "warning: {} index entry status={:?} has no usable archive; \
-                         falling back to source build",
+                         {}",
                         target.spec(),
                         entry.status,
+                        fetch_fallback_phrase(fetch_only),
                     );
                     return None;
                 }
@@ -1786,10 +1866,11 @@ fn try_index_install(
             Err(e) => {
                 eprintln!(
                     "warning: index-based fetch for {} from {} produced \
-                     a stale artifact ({}); falling back to source build",
+                     a stale artifact ({}); {}",
                     target.spec(),
                     archive_url,
                     e,
+                    fetch_fallback_phrase(fetch_only),
                 );
                 let _ = std::fs::remove_dir_all(canonical);
                 None
@@ -1798,10 +1879,11 @@ fn try_index_install(
         Err(e) => {
             eprintln!(
                 "warning: index-based fetch for {} from {} failed ({}); \
-                 falling back to source build",
+                 {}",
                 target.spec(),
                 archive_url,
                 e,
+                fetch_fallback_phrase(fetch_only),
             );
             None
         }
@@ -2484,6 +2566,22 @@ fn extract_binaries_dir_flag(args: Vec<String>) -> Result<(Option<PathBuf>, Vec<
     Ok((binaries_dir, rest))
 }
 
+/// Extract `--fetch-only` from `args`, leaving non-flag arguments in place.
+/// Only meaningful for `resolve`: it turns archive/source mismatches into
+/// errors instead of running package build scripts.
+fn extract_fetch_only_flag(args: Vec<String>) -> (bool, Vec<String>) {
+    let mut fetch_only = false;
+    let mut rest: Vec<String> = Vec::with_capacity(args.len());
+    for a in args {
+        if a == "--fetch-only" {
+            fetch_only = true;
+        } else {
+            rest.push(a);
+        }
+    }
+    (fetch_only, rest)
+}
+
 pub fn run(args: Vec<String>) -> Result<(), String> {
     let (arch_flag, rest) = extract_arch_flag(args)?;
     let arch = match arch_flag {
@@ -2496,10 +2594,11 @@ pub fn run(args: Vec<String>) -> Result<(), String> {
     // `--binaries-dir x resolve foo` both work, matching `--arch`'s
     // shape.
     let (binaries_dir, rest) = extract_binaries_dir_flag(rest)?;
+    let (fetch_only, rest) = extract_fetch_only_flag(rest);
 
     let mut it = rest.into_iter();
     let sub = it.next().ok_or(
-        "usage: xtask build-deps [--arch=wasm32|wasm64] [--binaries-dir <path>] \
+        "usage: xtask build-deps [--arch=wasm32|wasm64] [--binaries-dir <path>] [--fetch-only] \
          <parse|sha|path|resolve|check|output-path|output-fork-instrumentation|output-fork-instrumentation-for-rel> \
          [<name|path> [<wasm-basename>]]",
     )?;
@@ -2522,6 +2621,11 @@ pub fn run(args: Vec<String>) -> Result<(), String> {
     if binaries_dir.is_some() && sub != "resolve" {
         return Err(format!(
             "build-deps {sub}: --binaries-dir is only valid for `resolve`"
+        ));
+    }
+    if fetch_only && sub != "resolve" {
+        return Err(format!(
+            "build-deps {sub}: --fetch-only is only valid for `resolve`"
         ));
     }
 
@@ -2573,7 +2677,14 @@ pub fn run(args: Vec<String>) -> Result<(), String> {
                     if extra.is_some() {
                         return Err("build-deps resolve: unexpected extra arg".into());
                     }
-                    cmd_resolve(&manifest, &registry, &repo, arch, binaries_dir.as_deref())
+                    cmd_resolve(
+                        &manifest,
+                        &registry,
+                        &repo,
+                        arch,
+                        binaries_dir.as_deref(),
+                        fetch_only,
+                    )
                 }
                 "output-path" => {
                     let basename = extra.ok_or_else(|| {
@@ -2739,6 +2850,7 @@ fn cmd_resolve(
     repo: &Path,
     arch: TargetArch,
     binaries_dir: Option<&Path>,
+    fetch_only: bool,
 ) -> Result<(), String> {
     let cache_root = default_cache_root();
     let local_libs = repo.join("local-libs");
@@ -2746,6 +2858,7 @@ fn cmd_resolve(
         cache_root: &cache_root,
         local_libs: Some(&local_libs),
         force_source_build: None,
+        fetch_only,
         repo_root: Some(repo),
         // Plumb binaries_dir into ensure_built so place_binaries_symlinks
         // runs for every transitive program dep, not just the target.
@@ -3590,28 +3703,35 @@ index_url = "https://example.test/releases/download/binaries-abi-v{abi}/index.to
                 ]
             }
         });
-        let lock = |anyhow_checksum: &str, dev_checksum: &str, unrelated_checksum: &str| CargoLock {
-            package: vec![
-                CargoLockPackage {
-                    name: "anyhow".into(),
-                    version: "1.0.0".into(),
-                    source: Some("registry+https://github.com/rust-lang/crates.io-index".into()),
-                    checksum: Some(anyhow_checksum.into()),
-                },
-                CargoLockPackage {
-                    name: "dev-only".into(),
-                    version: "1.0.0".into(),
-                    source: Some("registry+https://github.com/rust-lang/crates.io-index".into()),
-                    checksum: Some(dev_checksum.into()),
-                },
-                CargoLockPackage {
-                    name: "kernel-only".into(),
-                    version: "1.0.0".into(),
-                    source: Some("registry+https://github.com/rust-lang/crates.io-index".into()),
-                    checksum: Some(unrelated_checksum.into()),
-                },
-            ],
-        };
+        let lock =
+            |anyhow_checksum: &str, dev_checksum: &str, unrelated_checksum: &str| CargoLock {
+                package: vec![
+                    CargoLockPackage {
+                        name: "anyhow".into(),
+                        version: "1.0.0".into(),
+                        source: Some(
+                            "registry+https://github.com/rust-lang/crates.io-index".into(),
+                        ),
+                        checksum: Some(anyhow_checksum.into()),
+                    },
+                    CargoLockPackage {
+                        name: "dev-only".into(),
+                        version: "1.0.0".into(),
+                        source: Some(
+                            "registry+https://github.com/rust-lang/crates.io-index".into(),
+                        ),
+                        checksum: Some(dev_checksum.into()),
+                    },
+                    CargoLockPackage {
+                        name: "kernel-only".into(),
+                        version: "1.0.0".into(),
+                        source: Some(
+                            "registry+https://github.com/rust-lang/crates.io-index".into(),
+                        ),
+                        checksum: Some(unrelated_checksum.into()),
+                    },
+                ],
+            };
 
         let before = fork_instrument_cargo_dependency_digest_from_metadata(
             &root,
@@ -4192,6 +4312,7 @@ spdx = "TestLicense"
             cache_root: cache,
             local_libs: local,
             force_source_build: None,
+            fetch_only: false,
             repo_root: None,
             binaries_dir: None,
         }
@@ -4210,6 +4331,7 @@ spdx = "TestLicense"
             cache_root: cache,
             local_libs: local,
             force_source_build: None,
+            fetch_only: false,
             repo_root: Some(repo_root),
             binaries_dir: None,
         }
@@ -5513,6 +5635,7 @@ cache_key_sha = "{cache_key_hex}"
             cache_root: &cache,
             local_libs: None,
             force_source_build: None,
+            fetch_only: false,
             repo_root: Some(&root),
             binaries_dir: Some(&bin_dir),
         };
@@ -5715,6 +5838,57 @@ cache_key_sha = "{cache_key_hex}"
         assert!(
             path.join("via-build").exists(),
             "cache_key_sha mismatch must fall through to source build"
+        );
+    }
+
+    #[test]
+    fn fetch_only_rejects_missing_index_entry_without_source_build() {
+        let root = tempdir("fetch-only-missing-reg");
+        let cache = tempdir("fetch-only-missing-cache");
+        let index_dir = tempdir("fetch-only-missing-index");
+
+        let index_path = index_dir.join("index.toml");
+        std::fs::write(
+            &index_path,
+            format!(
+                r#"abi_version = {TEST_ABI}
+generated_at = "2026-06-09T00:00:00Z"
+generator = "test"
+"#
+            ),
+        )
+        .unwrap();
+        let index_url = format!("file://{}", index_path.display());
+        write_lib_with_build_toml(&root, "libFetchOnly", &index_url);
+
+        let reg = Registry {
+            roots: vec![root.clone()],
+        };
+        let m = reg.load("libFetchOnly").unwrap();
+        let sha = compute_sha(
+            &m,
+            &reg,
+            TEST_ARCH,
+            TEST_ABI,
+            &mut BTreeMap::new(),
+            &mut Vec::new(),
+        )
+        .unwrap();
+        let canonical = canonical_path(&cache, &m, TEST_ARCH, &sha);
+        let opts = ResolveOpts {
+            cache_root: &cache,
+            local_libs: None,
+            force_source_build: None,
+            fetch_only: true,
+            repo_root: Some(&root),
+            binaries_dir: None,
+        };
+
+        let err = ensure_built(&m, &reg, TEST_ARCH, TEST_ABI, &opts).unwrap_err();
+        assert!(err.contains("fetch-only resolve"), "got: {err}");
+        assert!(
+            !canonical.join("via-build").exists(),
+            "fetch-only must not run the source build script"
         );
     }
 
@@ -6268,6 +6442,7 @@ spdx = "BSD-3-Clause"
             cache_root: &cache,
             local_libs: None,
             force_source_build: None,
+            fetch_only: false,
             repo_root: None,
             binaries_dir: None,
         };
@@ -6810,6 +6985,7 @@ libs = ["lib/libF1.a"]
             cache_root: &cache,
             local_libs: None,
             force_source_build: Some(&force),
+            fetch_only: false,
             repo_root: None,
             binaries_dir: None,
         };
@@ -6896,6 +7072,7 @@ libs = ["lib/libF1.a"]
             cache_root: &cache,
             local_libs: None,
             force_source_build: Some(&force),
+            fetch_only: false,
             repo_root: None,
             binaries_dir: None,
         };
@@ -6983,6 +7160,7 @@ libs = ["lib/libF3b.a"]
             cache_root: &cache,
             local_libs: None,
             force_source_build: Some(&force),
+            fetch_only: false,
             repo_root: None,
             binaries_dir: None,
         };
@@ -7053,6 +7231,14 @@ libs = ["lib/libF3b.a"]
         ])
         .unwrap_err();
         assert!(err.contains("more than once"), "got: {err}");
+    }
+
+    #[test]
+    fn extract_fetch_only_flag_removes_flag() {
+        let (got, rest) =
+            extract_fetch_only_flag(vec!["resolve".into(), "--fetch-only".into(), "bash".into()]);
+        assert!(got);
+        assert_eq!(rest, vec!["resolve".to_string(), "bash".into()]);
     }
 
     #[test]
@@ -7249,6 +7435,7 @@ touch "$WASM_POSIX_DEP_OUT_DIR/beta.wasm""#,
             cache_root,
             local_libs: None,
             force_source_build: None,
+            fetch_only: false,
             repo_root: Some(repo),
             binaries_dir: None,
         };

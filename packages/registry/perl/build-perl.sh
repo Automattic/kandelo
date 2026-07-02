@@ -34,14 +34,17 @@ fi
 
 export WASM_POSIX_SYSROOT="$SYSROOT"
 
-# perl-cross's configure scripts require GNU tools (sed -r, readelf, objdump)
-# On macOS, prepend Homebrew GNU tool paths and LLVM binutils
-for tool in gnu-sed coreutils findutils grep; do
-    gnubin="/opt/homebrew/opt/$tool/libexec/gnubin"
-    [ -d "$gnubin" ] && export PATH="$gnubin:$PATH"
-done
+# perl-cross's configure scripts require GNU tools (sed -r, readelf, objdump).
+# scripts/dev-shell.sh provides those tools in the pure build environment.
 # LLVM provides readelf and objdump that perl-cross needs
-LLVM_BIN="${LLVM_BIN:-/opt/homebrew/opt/llvm/bin}"
+if [ -z "${LLVM_BIN:-}" ]; then
+    if [ -n "${LLVM_PREFIX:-}" ]; then
+        LLVM_BIN="$LLVM_PREFIX/bin"
+    else
+        echo "ERROR: LLVM_BIN is not set. Run through scripts/dev-shell.sh." >&2
+        exit 1
+    fi
+fi
 if [ -d "$LLVM_BIN" ]; then
     # Create temp dir with readelf/objdump symlinks for perl-cross
     TOOL_DIR="$SCRIPT_DIR/.host-tools"

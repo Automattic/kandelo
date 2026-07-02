@@ -8,7 +8,7 @@
 import { readFileSync, existsSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
-import { CentralizedKernelWorker } from "../src/kernel-worker";
+import { CAPTURED_STDIO, CentralizedKernelWorker } from "../src/kernel-worker";
 import { resolveBinary } from "../src/binary-resolver";
 import { NodePlatformIO } from "../src/platform/node";
 import { NodeWorkerAdapter } from "../src/worker-adapter";
@@ -136,6 +136,8 @@ export interface RunProgramOptions {
    *  only (NodeKernelHost.getForkCount); main-thread mode falls back to
    *  reading from the kernel instance directly. */
   captureForkCount?: boolean;
+  /** Use the canonical rootfs image in worker-thread mode. Defaults to true. */
+  useDefaultRootfs?: boolean;
 }
 
 export interface RunProgramResult {
@@ -151,7 +153,7 @@ export interface RunProgramResult {
 }
 
 /**
- * Run a Wasm program using the centralized kernel architecture.
+ * Run a Wasm program using the shared-kernel architecture.
  *
  * By default, spawns the kernel in a dedicated worker_thread for optimal
  * syscall throughput. Falls back to main-thread mode when `options.io` is
@@ -193,6 +195,8 @@ async function runInWorkerThread(options: RunProgramOptions): Promise<RunProgram
     stdinData = options.stdinBytes;
   } else if (options.stdin != null) {
     stdinData = new TextEncoder().encode(options.stdin);
+  } else if (!options.onStarted) {
+    stdinData = new Uint8Array();
   }
 
   // Default to mount-based VFS (rootfs.vfs at /, scratch dirs at /tmp etc.).
@@ -202,7 +206,7 @@ async function runInWorkerThread(options: RunProgramOptions): Promise<RunProgram
   const host = new NodeKernelHost({
     maxWorkers: 4,
     execPrograms,
-    rootfsImage: "default",
+    rootfsImage: options.useDefaultRootfs === false ? undefined : "default",
     enableTcpNetwork: options.enableTcpNetwork,
     onStdout: (_pid: number, data: Uint8Array) => {
       stdout += new TextDecoder().decode(data);
@@ -534,6 +538,7 @@ async function runOnMainThread(options: RunProgramOptions): Promise<RunProgramRe
     brkBase: layout.brkBase,
     mmapBase: layout.mmapBase,
     maxAddr: layout.maxAddr,
+    stdio: CAPTURED_STDIO,
   });
   processProgramBytes.set(pid, programBytes);
   processLayouts.set(pid, layout);

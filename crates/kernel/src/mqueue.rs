@@ -12,6 +12,7 @@ use wasm_posix_shared::Errno;
 // Access mode flags
 const O_RDONLY: u32 = 0;
 const O_WRONLY: u32 = 1;
+#[cfg(test)]
 const O_RDWR: u32 = 2;
 const O_ACCMODE: u32 = 3;
 const O_CREAT: u32 = 0o100;
@@ -247,7 +248,7 @@ impl MqueueTable {
             if nonblock {
                 return Err(Errno::EAGAIN);
             }
-            // In centralized mode, return EAGAIN for host retry
+            // Return EAGAIN for host retry.
             return Err(Errno::EAGAIN);
         }
 

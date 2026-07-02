@@ -66,6 +66,7 @@ chmod 755 "$STAGING/bin/nethack"
 # Runtime files — staged under share/nethack/
 mkdir -p "$STAGING/share/nethack"
 cp -R "$RUNTIME_ROOT/." "$STAGING/share/nethack/"
+chmod -R a+rX "$STAGING/share/nethack"
 
 (cd "$STAGING" && zip -r -q "$OUTPUT_FILE" .)
 

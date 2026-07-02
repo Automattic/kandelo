@@ -60,7 +60,7 @@ export interface CentralizedWorkerInitMessage {
 }
 
 /**
- * Init message for thread Workers in centralized mode.
+ * Init message for thread Workers.
  * Threads share the parent process's Memory and run a function pointer.
  */
 export interface CentralizedThreadInitMessage {

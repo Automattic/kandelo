@@ -1,8 +1,7 @@
 //! SysV IPC implementation: message queues, semaphore sets, shared memory.
 //!
-//! In centralized mode, all IPC operations are handled by the kernel.
-//! The host marshals data between process memory and kernel scratch;
-//! all IPC logic and storage lives here.
+//! IPC operations are handled by the kernel. The host marshals data between
+//! process memory and kernel scratch; all IPC logic and storage lives here.
 
 extern crate alloc;
 
@@ -141,8 +140,8 @@ pub struct MsgRcvResult {
 struct SemValue {
     val: u16,
     pid: u32,
-    // ncnt/zcnt are not truly tracked (would require blocking, which
-    // we don't do in centralized mode), but we store them for IPC_STAT.
+    // ncnt/zcnt are not truly tracked (would require in-kernel blocking), but
+    // we store them for IPC_STAT.
     ncnt: u32,
     zcnt: u32,
 }
@@ -352,7 +351,7 @@ impl IpcTable {
             if (flags & IPC_NOWAIT) != 0 {
                 return Err(Errno::EAGAIN);
             }
-            // In centralized mode, return EAGAIN for host retry
+            // Return EAGAIN for host retry.
             return Err(Errno::EAGAIN);
         }
 

@@ -1,9 +1,9 @@
 # Shareable Computer URL Design
 
-Kandelo's tagline is "Fold a computer into a URL." The important
-interpretation is not that every byte of a serious computer must fit
-inside the URL. A URL should be able to identify, configure, verify,
-and optionally customize a computer.
+Kandelo's long-term dream is to fold a computer into a URL. The
+important interpretation is not that every byte of a serious computer
+must fit inside the URL. A URL should be able to identify, configure,
+verify, and optionally customize a computer.
 
 The strongest direction is to share the computer topology, not the
 bytes: a compact boot descriptor that names signed base images, signed

@@ -76,7 +76,7 @@ npx vite --port 5198
 | WordPress | `/pages/wordpress/` | nginx + PHP-FPM + SQLite |
 | LAMP | `/pages/lamp/` | MariaDB + nginx + PHP-FPM + WordPress |
 
-Live at: [Kandelo browser demos](https://brandonpayton.github.io/kandelo/)
+Live at: [Kandelo browser demos](https://automattic.github.io/kandelo/)
 
 See [docs/porting-guide.md](../docs/porting-guide.md) for how to create new demos.
 

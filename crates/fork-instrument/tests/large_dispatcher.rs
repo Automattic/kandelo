@@ -203,10 +203,10 @@ fn dispatcher_unwind_save(local: &LocalFunction) -> InstrSeqId {
     blocks[0]
 }
 
-fn collect_br_if_targets(local: &LocalFunction) -> Vec<InstrSeqId> {
+fn collect_br_targets(local: &LocalFunction) -> Vec<InstrSeqId> {
     fn walk(local: &LocalFunction, seq: InstrSeqId, out: &mut Vec<InstrSeqId>) {
         for (instr, _) in &local.block(seq).instrs {
-            if let Instr::BrIf(ir::BrIf { block }) = instr {
+            if let Instr::Br(ir::Br { block }) = instr {
                 out.push(*block);
             }
             let children: Vec<InstrSeqId> = match instr {
@@ -378,18 +378,18 @@ fn bucketed_depth_indirect_dispatcher_passes_v8_limit() {
     }
 }
 
-/// Every per-call UNWIND `br_if` must target the function-level
+/// Every per-call UNWIND branch must target the function-level
 /// `$unwind_save`. A regression re-pointing them at a leaf-local
 /// `$child_K` / `$dispatch_normal` would still validate as wasm but
 /// scramble the fork frame on the next REWIND. The dispatcher
-/// fixtures emit no other `BrIf`s, so "every BrIf → $unwind_save"
+/// fixtures emit no other direct `br`s, so "every Br → $unwind_save"
 /// pins the invariant without pattern-matching the surrounding
-/// `(global.get state, const UNWINDING, i32.eq)` sequence.
+/// `(global.get state, const UNWINDING, i32.eq, if)` sequence.
 ///
 /// N=33 straddles `BUCKET_SIZE=32` to force one full leaf + one
 /// singleton leaf — exercises both first-leaf and last-leaf paths.
 #[test]
-fn leaf_unwind_br_if_targets_function_level_unwind_save() {
+fn leaf_unwind_br_targets_function_level_unwind_save() {
     for &n in &[33usize, 64, 100, 1024, 1025] {
         for (label, wat) in [
             ("direct", wat_direct_dispatcher(n)),
@@ -407,16 +407,16 @@ fn leaf_unwind_br_if_targets_function_level_unwind_save() {
             };
 
             let unwind_save = dispatcher_unwind_save(local);
-            let targets = collect_br_if_targets(local);
+            let targets = collect_br_targets(local);
 
             assert!(
                 !targets.is_empty(),
-                "{label} N={n}: dispatcher has no BrIf",
+                "{label} N={n}: dispatcher has no direct Br",
             );
             for (idx, target) in targets.iter().enumerate() {
                 assert_eq!(
                     *target, unwind_save,
-                    "{label} N={n}: BrIf #{idx} targets {target:?}, expected $unwind_save ({unwind_save:?})",
+                    "{label} N={n}: Br #{idx} targets {target:?}, expected $unwind_save ({unwind_save:?})",
                 );
             }
         }

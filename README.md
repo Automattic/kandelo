@@ -1,8 +1,10 @@
 # Kandelo
 
-Fold a computer into a URL. Kandelo is a POSIX-compatible multi-process kernel for WebAssembly that lets you compile C programs against a real musl libc and run them in the browser or Node.js with syscall-level compatibility.
+Kandelo is a POSIX-compatible multi-process kernel for WebAssembly that runs command-line tools, server stacks, and early graphical demos in the browser or Node.js with syscall-level compatibility.
 
-**Live demo**: [Open Kandelo in the browser](https://brandonpayton.github.io/kandelo/)
+**Live demo**: [Open Kandelo in the browser](https://automattic.github.io/kandelo/)
+
+**User guide**: [Read the browser and VFS guide](https://automattic.github.io/kandelo/guide/)
 
 ***ATTENTION:*** This repo may contain .wasm binary builds in its history. In the future, history will likely be rewritten to remove these as they are offloaded to a better data store.
 
@@ -48,7 +50,7 @@ All run in both Node.js and the browser with no source modifications.
 
 ## Architecture
 
-A centralized kernel serves all processes via channel IPC (SharedArrayBuffer + Atomics):
+A single shared kernel serves all processes via channel IPC (SharedArrayBuffer + Atomics):
 
 ```
 ┌─────────────────────────────────────────┐
@@ -108,20 +110,22 @@ Or use the Nix flake (see [Using Nix](#using-nix) below) and skip per-tool insta
 ## Using Nix
 
 A `flake.nix` provides a reproducible dev shell with the pinned Rust nightly,
-LLVM 21, Node 24, minimal Erlang 28, and the autotools/cmake/binaryen/wabt
-stack the build scripts need. With [Nix](https://nixos.org/download.html) installed
-(flakes enabled — Determinate Systems Nix has them on by default):
+Nix's LLVM 21 package set, Node 24, minimal Erlang 28, and the
+autotools/cmake/binaryen/wabt stack the build scripts need. With
+[Nix](https://nixos.org/download.html) installed (flakes enabled —
+Determinate Systems Nix has them on by default):
 
 ```bash
-nix develop                          # interactive shell
+scripts/dev-shell.sh bash            # interactive pure shell
 # or
-nix develop -c bash build.sh         # one-shot
+scripts/dev-shell.sh bash build.sh   # one-shot
 ```
 
-The `shellHook` exports `LLVM_BIN` / `LLVM_PREFIX` so the build scripts
-pick up the Nix-provided LLVM 21 instead of looking for a Homebrew install.
-The first `nix develop` downloads the toolchain (~10–15 min); subsequent
-entries are near-instant.
+The `shellHook` exports `LLVM_BIN` / `LLVM_PREFIX` / `LLVM_VERSION` so the
+build scripts pick up the Nix-provided LLVM toolchain. It also exports the
+LLVM source paths used to rebuild the repo's libcxx package reproducibly.
+The first shell entry downloads the toolchain (~10–15 min); subsequent entries
+are near-instant.
 
 ## Quick Start
 
@@ -355,6 +359,7 @@ docs/
 
 | Document | Description |
 |----------|-------------|
+| [User Guide](https://automattic.github.io/kandelo/guide/) | Browser UI usage, custom browser apps, VFS images, publishing, and API stability notes |
 | [Architecture](docs/architecture.md) | Kernel design, syscall flow, multi-process model, memory layout |
 | [Repository Organization](docs/repository-organization.md) | Top-level ownership boundaries and CI-oriented path categories |
 | [SDK Guide](docs/sdk-guide.md) | Compiling programs, toolchain setup, autoconf/CMake integration |

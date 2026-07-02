@@ -2,15 +2,14 @@ kind = "program"
 name = "wordpress"
 version = "7.0"
 kernel_abi = 7
-# build-wp-vfs-image.ts bakes a service image: dinit as PID 1, nginx,
-# php-fpm/opcache, the WordPress tree, and the SQLite drop-in. It does
-# not bake the shell toolset; service inspection happens from a separate
-# shell process in the browser host.
+# build-wp-vfs-image.ts starts from shell.vfs.zst, then bakes a service
+# image: dinit as PID 1, nginx, php-fpm/opcache, the WordPress tree, and
+# the SQLite drop-in with a preinstalled WordPress database. The interactive
+# terminal sees the same shell files that the shell demo ships.
 depends_on = [
+    "shell@0.1.0",
     "nginx@1.24.0",
     "php@8.3.2",
-    "dash@0.5.12",
-    "coreutils@9.6",
     "dinit@0.19.4",
     "msmtpd@1.8.32",
 ]

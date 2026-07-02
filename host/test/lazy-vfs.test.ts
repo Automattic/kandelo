@@ -1,5 +1,5 @@
-import { describe, it, expect } from "vitest";
-import { MemoryFileSystem } from "../src/vfs/memory-fs";
+import { describe, it, expect, vi } from "vitest";
+import { MemoryFileSystem, type LazyDownloadEvent } from "../src/vfs/memory-fs";
 
 const O_RDONLY = 0x0000;
 const O_WRONLY = 0x0001;
@@ -146,5 +146,49 @@ describe("Lazy VFS files", () => {
 
     expect(mfs.stat("/bin/small").size).toBe(100);
     expect(mfs.stat("/bin/large").size).toBe(10_000_000);
+  });
+
+  it("emits lazy download progress while materializing a file", async () => {
+    const originalFetch = globalThis.fetch;
+    const mfs = createMemfs();
+    mfs.registerLazyFile("/bin/test", "http://example.com/test.wasm", 5, 0o755);
+    const events: LazyDownloadEvent[] = [];
+    const off = mfs.subscribeLazyDownloads((event) => events.push(event));
+
+    globalThis.fetch = vi.fn().mockResolvedValue({
+      ok: true,
+      headers: new Headers({ "content-length": "5" }),
+      body: new ReadableStream<Uint8Array>({
+        start(controller) {
+          controller.enqueue(new Uint8Array([1, 2]));
+          controller.enqueue(new Uint8Array([3, 4, 5]));
+          controller.close();
+        },
+      }),
+    } as unknown as Response);
+
+    try {
+      await expect(mfs.ensureMaterialized("/bin/test")).resolves.toBe(true);
+    } finally {
+      off();
+      globalThis.fetch = originalFetch;
+    }
+
+    expect(events.map((event) => event.status)).toEqual([
+      "started",
+      "progress",
+      "progress",
+      "complete",
+    ]);
+    expect(events[0].id.startsWith("file:")).toBe(true);
+    expect(events[0]).toMatchObject({
+      kind: "file",
+      url: "http://example.com/test.wasm",
+      path: "/bin/test",
+      loadedBytes: 0,
+      totalBytes: 5,
+    });
+    expect(events[2].loadedBytes).toBe(5);
+    expect(events[3]).toMatchObject({ loadedBytes: 5, totalBytes: 5 });
   });
 });

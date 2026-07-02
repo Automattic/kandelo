@@ -4,7 +4,7 @@ This document describes the internal architecture of Kandelo. It is written for 
 
 ## Overview
 
-Kandelo is a centralized, multi-process POSIX kernel that runs as WebAssembly. A single kernel Wasm instance manages all processes. The kernel **must** run in a dedicated worker thread (Web Worker in browsers, `worker_thread` in Node.js) — never on the main thread. Each process also runs in its own worker and communicates with the kernel via a SharedArrayBuffer-based channel.
+Kandelo is a shared, multi-process POSIX kernel that runs as WebAssembly. A single kernel Wasm instance manages all processes. The kernel **must** run in a dedicated worker thread (Web Worker in browsers, `worker_thread` in Node.js) — never on the main thread. Each process also runs in its own worker and communicates with the kernel via a SharedArrayBuffer-based channel.
 
 > **Architecture requirement**: All platform hosts MUST run the kernel in a dedicated worker thread. The main thread should only act as a thin proxy for setup, I/O routing, and UI. Running the kernel on the main thread degrades syscall throughput by 3-4x due to event loop overhead from libuv (Node.js) or rendering (browsers).
 
@@ -337,13 +337,13 @@ MAX_PAGES         End of memory (1GB default)
 
 For current binaries, `control_base` is page-aligned from the larger of the imported-memory minimum and the program's `__heap_base`. The host installs only the main control pages before `_start` can run, then calls `kernel_set_brk_base(pid, control_end)` and `kernel_set_mmap_base(pid, control_end)`. `__heap_base` is therefore treated as "first byte available to the host layout" rather than the value returned by guest `brk(0)`.
 
-The Rust ABI declaration in `crates/shared/src/lib.rs` is the source of truth for this layout and is mirrored into `abi/snapshot.json` plus generated TypeScript constants. The main control area uses three Wasm pages: fork-save/scratch, syscall channel primary, and syscall channel spill. Each pthread slot is four Wasm pages addressed from the slot start: TLS/control, per-thread fork-save/scratch, syscall channel primary, and syscall channel spill. Pthread workers share the process `WebAssembly.Memory`; the host gives each worker a distinct dynamically reserved slot and returns the slot to that process-local allocator after thread exit.
+The Rust ABI declaration in `crates/shared/src/lib.rs` is the source of truth for this layout and is mirrored into `abi/snapshot.json` plus generated TypeScript constants. The main control area uses three Wasm pages: fork-save/scratch, syscall channel primary, and syscall channel spill. Each pthread slot is four Wasm pages addressed from the slot start: TLS/control, per-thread fork-save/scratch, syscall channel primary, and syscall channel spill. Pthread workers share the process `WebAssembly.Memory`; the host gives each worker a distinct dynamically reserved slot and returns the slot to that process's allocator after thread exit.
 
-Processes may export `__wasm_posix_thread_slots` to declare their maximum concurrent pthread count. A value of `-1` uses the host default, `0` allows no pthreads, and a positive value sets the exact process-local limit. The kernel worker creation options expose `defaultThreadSlots` for the `-1`/missing-export case. The built-in default is 1024: an intentionally arbitrary high limit meant to avoid pthread availability problems for most programs now that slots are reserved on demand. Hosts can lower or raise it with `defaultThreadSlots` when they need a different resource policy. This limit is a resource-control guard, not a static memory reservation.
+Processes may export `__wasm_posix_thread_slots` to declare their maximum concurrent pthread count. A value of `-1` uses the host default, `0` allows no pthreads, and a positive value sets the exact per-process limit. The kernel worker creation options expose `defaultThreadSlots` for the `-1`/missing-export case. The built-in default is 1024: an intentionally arbitrary high limit meant to avoid pthread availability problems for most programs now that slots are reserved on demand. Hosts can lower or raise it with `defaultThreadSlots` when they need a different resource policy. This limit is a resource-control guard, not a static memory reservation.
 
 `mmap` remains coherent because the kernel has one per-process address-space model for brk, mmap, and host-reserved dynamic control ranges. Automatic `mmap` starts at the process's `mmap_base`, not at the legacy fixed 64MB floor. `brk` growth succeeds only when the adjacent range is free; if an mmap region or host-reserved pthread slot occupies the next pages, `brk` fails by returning the old break. `MAP_FIXED`, `munmap`, and `mremap` growth are rejected when they would overlap the reserved prefix, legacy host-control range, or a host-reserved pthread slot. The host grows the process `WebAssembly.Memory` after successful brk/mmap/mremap syscalls and after dynamic pthread-slot reservations so returned guest addresses are backed before user code touches them.
 
-Every spawn or exec computes a fresh layout from the target binary's memory import and `__heap_base`; the layout is process-local and is discarded when the process is unregistered. Fork children copy the parent's current memory length, not the configured maximum, and pthread workers share the owning process memory plus that process's thread allocator. WebAssembly memory cannot shrink, so a fork child may inherit the parent's current byte length, but it does not inherit dead parent pthread slot reservations. Correctness must not depend on page reloads, context resets, periodic kernel resets, or browser garbage collection reclaiming old shared memories.
+Every spawn or exec computes a fresh layout from the target binary's memory import and `__heap_base`; the layout is per-process and is discarded when the process is unregistered. Fork children copy the parent's current memory length, not the configured maximum, and pthread workers share the owning process memory plus that process's thread allocator. WebAssembly memory cannot shrink, so a fork child may inherit the parent's current byte length, but it does not inherit dead parent pthread slot reservations. Correctness must not depend on page reloads, context resets, periodic kernel resets, or browser garbage collection reclaiming old shared memories.
 
 ### Pthread slots and fork
 
@@ -451,6 +451,8 @@ When restoring for use in a browser, pass `maxByteLength` to create a growable `
 ```typescript
 const restored = MemoryFileSystem.fromImage(image, { maxByteLength: 1024 * 1024 * 1024 });
 ```
+
+The image must also have been built with a large enough filesystem maximum, for example `MemoryFileSystem.create(sab, 1024 * 1024 * 1024)`. `fromImage(..., { maxByteLength })` only controls the restored buffer's runtime growth ceiling; `statfs`/`df` and allocation remain capped by the image superblock maximum.
 
 Kandelo browser UI presets use this approach. Each image builder pre-populates a VFS with runtime files, directory structure, configs, and symlinks, then saves it as a `.vfs.zst` file (zstd-compressed; `saveImage()` compresses on write). At runtime, the UI fetches the file and `MemoryFileSystem.fromImage` decompresses transparently - restoring the image replaces thousands of individual file writes with a single buffer copy. The empty regions of the SharedFS allocator compress to almost nothing, so a 32 MB filesystem with a few MB of real content typically ships as a 1-3 MB download.
 
@@ -638,6 +640,42 @@ The remaining methods (`pipeRead`/`pipeWrite`, `injectConnection`, stdin/PTY rou
 **dinit (PID 1)** (`packages/registry/dinit/`): Service-supervised demos boot dinit v0.19.4 (cross-compiled to wasm32) as the first process via `kernel.boot({ argv: ["/sbin/dinit", "--container", ...] })`. The service tree is baked into `/etc/dinit.d/*` at image-build time via `addDinitInit()` in `dinit-image-helpers.ts`. Service types in use: `process` (long-running daemons), `scripted` (one-shot bootstraps that exit cleanly), and `internal` (dependency-only nodes used to express "boot the whole tree" or "pick this engine"). dinit handles SIGCHLD reaping, restarts disabled by default, and inter-service `depends-on` ordering.
 
 **Service Worker** (`apps/browser-demos/public/service-worker.js`): Dual-mode file that acts as both a page bootstrap script (registers itself, enables cross-origin isolation) and a service worker (adds COOP/COEP headers, handles HTTP bridge routing).
+
+### Linux-compatible graphics devices
+
+Kandelo exposes a small Linux-shaped graphics stack through virtual character
+devices:
+
+- `/dev/dri/renderD128` accepts the render-node subset used by `libdrm`,
+  `libgbm`, EGL, and GLES userspace shims.
+- `/dev/dri/card0` adds the KMS subset used for one virtual connector, encoder,
+  CRTC, dumb buffers, framebuffer objects, `SET_MASTER`, `SET_CRTC`, and
+  `PAGE_FLIP` events.
+- `/dev/fb0` remains the simpler framebuffer path for software that writes a
+  linear BGRA buffer directly.
+
+The kernel owns the device ABI, fd-local GEM handles, DRM-master ownership,
+KMS framebuffer refcounts, BO mmap authorization, and process lifecycle
+cleanup. User programs cannot mmap an arbitrary BO id: the mmap offset must
+come from `DRM_IOCTL_MODE_MAP_DUMB` on the same open file description. On
+`munmap`, `exec`, `exit`, or final fd close, the kernel unbinds BO and GL
+memory from the host before those Wasm memory ranges can be reused.
+
+Pixel and GL execution are host responsibilities. The TypeScript host keeps
+GBM BO metadata/SAB snapshots, KMS scanout state, and WebGL contexts. GLIO
+command buffers live in the user process's Wasm memory; `libGLESv2.a` appends
+TLV commands, the kernel validates the submitted range, and the host decodes
+the commands against a browser `WebGL2RenderingContext` or a test double in
+Node.js. The kernel does not contain GL rendering code.
+
+The user-space libraries are sysroot libraries, not kernel build outputs:
+`scripts/build-musl.sh` installs the headers and builds `sysroot/lib/libdrm.a`,
+`libgbm.a`, `libEGL.a`, and `libGLESv2.a`, plus matching pkg-config files.
+Packages that depend on these APIs link through `wasm32posix-pkg-config` and
+declare their resulting program artifacts as packages. The `modeset` demo is
+one such package: its VFS image installs `/usr/local/bin/modeset`, and
+`/etc/kandelo/demo.json` selects the KMS surface and `autoCommand` that starts
+it. The browser loader stays generic; it does not special-case `modeset.wasm`.
 
 ## Performance Architecture
 

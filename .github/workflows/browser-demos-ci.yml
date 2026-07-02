@@ -31,9 +31,9 @@ jobs:
     name: COI smoke
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7.0.0
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v6
         with:
           node-version: "22"
           cache: "npm"
@@ -57,10 +57,13 @@ jobs:
         working-directory: apps/browser-demos
         run: npx playwright install --with-deps chromium firefox webkit
 
-      - name: Run cross-origin isolation smoke tests
+      - name: Run browser smoke tests
         working-directory: apps/browser-demos
         run: |
-          npx playwright test test/coi.spec.ts \
+          npx playwright test \
+            test/coi.spec.ts \
+            test/browser-kernel-lazy-registration.spec.ts \
+            test/wasm-trap-signal.spec.ts \
             --project=chromium \
             --project=firefox \
             --project=webkit

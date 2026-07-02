@@ -17,6 +17,8 @@
 #   --allow-stale                 Accepted for back-compat; the resolver
 #                                  source-builds automatically on any
 #                                  verification failure. No-op today.
+#   --fetch-only                  Refuse source-build fallback when fetching
+#                                  package binaries.
 #   --pr-staging                  Use the current PR's staging binary index
 #                                  unless WASM_POSIX_BINARY_INDEX_URL is set.
 #
@@ -51,15 +53,20 @@ step()  { echo "${CYAN}${BOLD}=== $* ===${RESET}"; }
 # Scrub top-level flags from $@ and turn them into env vars so any
 # downstream invocation of fetch-binaries.sh (called directly or
 # nested via build_target) picks them up. Also honor env vars if the
-# user prefers `WASM_POSIX_ALLOW_STALE=1 ./run.sh browser` or
+# user prefers `WASM_POSIX_ALLOW_STALE=1 ./run.sh browser`,
+# `WASM_POSIX_FETCH_ONLY=1 ./run.sh prepare-browser`, or
 # `WASM_POSIX_USE_PR_STAGING=1 ./run.sh browser`.
 ALLOW_STALE_ARGS=()
+FETCH_ONLY_ARGS=()
 USE_PR_STAGING=0
 NEW_ARGS=()
 for a in "$@"; do
     case "$a" in
         --allow-stale)
             ALLOW_STALE_ARGS=(--allow-stale)
+            ;;
+        --fetch-only)
+            FETCH_ONLY_ARGS=(--fetch-only)
             ;;
         --pr-staging)
             USE_PR_STAGING=1
@@ -73,7 +80,15 @@ set -- "${NEW_ARGS[@]+"${NEW_ARGS[@]}"}"
 if [ "${WASM_POSIX_ALLOW_STALE:-0}" = "1" ]; then
     ALLOW_STALE_ARGS=(--allow-stale)
 fi
+if [ "${WASM_POSIX_FETCH_ONLY:-0}" = "1" ]; then
+    FETCH_ONLY_ARGS=(--fetch-only)
+fi
+if [ "${#ALLOW_STALE_ARGS[@]}" -gt 0 ] && [ "${#FETCH_ONLY_ARGS[@]}" -gt 0 ]; then
+    err "--allow-stale and --fetch-only cannot be combined."
+    exit 2
+fi
 export WASM_POSIX_ALLOW_STALE=$([ "${#ALLOW_STALE_ARGS[@]}" -gt 0 ] && echo 1 || echo 0)
+export WASM_POSIX_FETCH_ONLY=$([ "${#FETCH_ONLY_ARGS[@]}" -gt 0 ] && echo 1 || echo 0)
 if [ "${WASM_POSIX_USE_PR_STAGING:-0}" = "1" ]; then
     USE_PR_STAGING=1
 fi
@@ -159,7 +174,6 @@ KERNEL_REQUIRED_EXPORTS=(
     kernel_mark_process_signaled
     kernel_reap_exited_child
     kernel_remove_process
-    kernel_set_mode
     kernel_wait4_poll
 )
 
@@ -306,7 +320,7 @@ has_texlive_vfs()   { pkg_has_output texlive texlive-bundle.json || [ -f "$REPO_
 has_nginx_vfs()     { has_resolvable programs/nginx-vfs.vfs.zst; }
 has_redis_vfs()     { has_resolvable programs/redis-vfs.vfs.zst; }
 has_nginx_php_vfs() { has_resolvable programs/nginx-php-vfs.vfs.zst; }
-has_ncurses()       { [ -f "$REPO_ROOT/sysroot/lib/libncursesw.a" ]; }
+has_ncurses()       { pkg_has_output ncurses clear.wasm && pkg_has_output ncurses tic.wasm && pkg_has_output ncurses tput.wasm; }
 has_zlib()          { [ -f "$REPO_ROOT/sysroot/lib/libz.a" ]; }
 has_openssl()       { [ -f "$REPO_ROOT/sysroot/lib/libssl.a" ] && [ -f "$REPO_ROOT/sysroot/lib/libcrypto.a" ]; }
 has_libcurl()       { [ -f "$REPO_ROOT/sysroot/lib/libcurl.a" ] && [ -f "$REPO_ROOT/sysroot/include/curl/curl.h" ]; }
@@ -588,6 +602,7 @@ build_wp_vfs() {
         info "WP VFS image"
         return
     fi
+    build_shell_vfs
     # Source needed only if we have to build the VFS from scratch.
     build_wordpress
     build_msmtpd
@@ -829,6 +844,7 @@ build_node_vfs() {
         info "Node VFS image"
         return
     fi
+    build_shell_vfs
     build_node
     step "Building Node VFS image"
     bash "$REPO_ROOT/packages/registry/node-vfs/build-node-vfs.sh"
@@ -912,6 +928,7 @@ build_lamp_vfs() {
         info "LAMP VFS image"
         return
     fi
+    build_shell_vfs
     build_wordpress
     build_msmtpd
     step "Building LAMP VFS image"
@@ -926,6 +943,7 @@ build_nginx_vfs() {
     build_dinit
     build_nginx
     if ! has_nginx_vfs; then
+        build_shell_vfs
         step "Building nginx VFS image"
         bash "$REPO_ROOT/images/vfs/scripts/build-nginx-vfs-image.sh"
         info "nginx VFS image built"
@@ -951,6 +969,7 @@ build_nginx_php_vfs() {
     build_nginx
     build_php_fpm
     if ! has_nginx_php_vfs; then
+        build_shell_vfs
         step "Building nginx + PHP-FPM VFS image"
         bash "$REPO_ROOT/images/vfs/scripts/build-nginx-php-vfs-image.sh"
         info "nginx + PHP-FPM VFS image built"
@@ -1564,8 +1583,14 @@ build_browser() {
 
 fetch_browser_binaries() {
     local disabled_pkgs
-    local fetch_args=("${ALLOW_STALE_ARGS[@]+"${ALLOW_STALE_ARGS[@]}"}")
+    local fetch_args=()
     disabled_pkgs="${BROWSER_EXTERNAL_GALLERY_PKGS[*]} ${BROWSER_FETCH_SKIP_PKGS[*]}"
+    if [ "${#FETCH_ONLY_ARGS[@]}" -gt 0 ]; then
+        fetch_args+=("${FETCH_ONLY_ARGS[@]}")
+    fi
+    if [ "${#ALLOW_STALE_ARGS[@]}" -gt 0 ]; then
+        fetch_args+=("${ALLOW_STALE_ARGS[@]}")
+    fi
     if [ ${#fetch_args[@]} -eq 0 ]; then
         # Browser prep has a source-build fallback for every enabled demo
         # target below. A single stale release archive should not abort before
@@ -2065,7 +2090,14 @@ cmd_run() {
 
 cmd_fetch() {
     step "Fetching binaries pinned by per-package package.toml"
-    "$REPO_ROOT/scripts/fetch-binaries.sh" "${ALLOW_STALE_ARGS[@]+"${ALLOW_STALE_ARGS[@]}"}" "$@"
+    local fetch_args=()
+    if [ "${#FETCH_ONLY_ARGS[@]}" -gt 0 ]; then
+        fetch_args+=("${FETCH_ONLY_ARGS[@]}")
+    fi
+    if [ "${#ALLOW_STALE_ARGS[@]}" -gt 0 ]; then
+        fetch_args+=("${ALLOW_STALE_ARGS[@]}")
+    fi
+    "$REPO_ROOT/scripts/fetch-binaries.sh" "${fetch_args[@]}" "$@"
 }
 
 cmd_prepare_browser() {
@@ -2277,6 +2309,8 @@ cmd_list() {
     echo "  --allow-stale                        Accepted for back-compat. The resolver"
     echo "                                        source-builds automatically on any"
     echo "                                        verification failure. No-op today."
+    echo "  --fetch-only                         Refuse source-build fallback when"
+    echo "                                        fetching package binaries."
     echo "  --pr-staging                         Use the current PR's staging binary"
     echo "                                        index unless WASM_POSIX_BINARY_INDEX_URL"
     echo "                                        is already set."

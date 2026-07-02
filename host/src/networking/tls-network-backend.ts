@@ -41,7 +41,7 @@ interface TlsConnectionState {
   hostname: string;
   ip: Uint8Array;
   port: number;
-  tls: TLS_1_2_Connection;
+  tls: TlsMitmConnection;
   /** Writer for clientEnd.upstream.writable — feeds encrypted data from program */
   clientUpstreamWriter: WritableStreamDefaultWriter<Uint8Array>;
   /** Writer for serverEnd.downstream.writable — sends plaintext responses */
@@ -148,6 +148,22 @@ function corsProxyFetchUrl(corsProxyUrl: string, targetUrl: string): string {
 
 // ------------------------------------------------------------------ backend
 
+/** The slice of the TLS 1.2 server engine the MITM path drives. Kept as an
+ *  injection seam so tests can exercise the connect → request → response →
+ *  recv loop deterministically without a real handshake. */
+export interface TlsMitmConnection {
+  clientEnd: {
+    upstream: { writable: WritableStream<Uint8Array> };
+    downstream: { readable: ReadableStream<Uint8Array> };
+  };
+  serverEnd: {
+    upstream: { readable: ReadableStream<Uint8Array> };
+    downstream: { writable: WritableStream<Uint8Array> };
+  };
+  TLSHandshake(certificatePrivateKey: CryptoKey, certificatesDER: Uint8Array[]): Promise<void>;
+  close(): Promise<void>;
+}
+
 export interface TlsNetworkBackendOptions {
   /** CORS proxy URL prefix.
    *  Browser demos normally leave this unset and rely on the service worker.
@@ -158,6 +174,9 @@ export interface TlsNetworkBackendOptions {
    *  CORS proxy (e.g. proxy.local → registry.npmjs.org). Defaults to that
    *  single npm-registry alias for back-compat. */
   dnsAliases?: Record<string, string>;
+  /** Factory for the MITM TLS engine. Defaults to a real TLS 1.2 server
+   *  connection; tests override it to drive the loop deterministically. */
+  createTlsConnection?: () => TlsMitmConnection;
 }
 
 export class TlsNetworkBackend implements NetworkIO {
@@ -165,6 +184,7 @@ export class TlsNetworkBackend implements NetworkIO {
   private hostnameMap = new Map<string, string>(); // ip string → hostname
   private corsProxyUrl: string;
   private dnsAliases: Record<string, string>;
+  private createTlsConnection: () => TlsMitmConnection;
 
   // MITM CA state
   private caKeyPair: CryptoKeyPair | null = null;
@@ -175,6 +195,7 @@ export class TlsNetworkBackend implements NetworkIO {
   constructor(options?: TlsNetworkBackendOptions) {
     this.corsProxyUrl = options?.corsProxyUrl?.trim() ?? "";
     this.dnsAliases = options?.dnsAliases ?? { "proxy.local": "https://registry.npmjs.org" };
+    this.createTlsConnection = options?.createTlsConnection ?? (() => new TLS_1_2_Connection());
   }
 
   /**
@@ -273,7 +294,7 @@ export class TlsNetworkBackend implements NetworkIO {
   // ---- TLS MITM ----
 
   private connectTls(handle: number, addr: Uint8Array, port: number, hostname: string): void {
-    const tls = new TLS_1_2_Connection();
+    const tls = this.createTlsConnection();
 
     // Get writers for our side of the streams
     const clientUpstreamWriter = tls.clientEnd.upstream.writable.getWriter();
@@ -309,6 +330,12 @@ export class TlsNetworkBackend implements NetworkIO {
         }
       } catch {
         // Stream closed or errored — normal during teardown
+      } finally {
+        // Reported as EOF only here, once the last ciphertext record has been
+        // buffered. Closing the connection right after the response is written
+        // races the async encryption pump: recv() could observe conn.closed
+        // with an empty buffer and return a premature 0-byte EOF.
+        conn.closed = true;
       }
     })();
 
@@ -471,7 +498,6 @@ export class TlsNetworkBackend implements NetworkIO {
         // it automatically and it appears on clientEnd.downstream.readable.
         await conn.serverDownstreamWriter.write(responseBytes);
         await conn.serverDownstreamWriter.close();
-        conn.closed = true;
       } catch (err) {
         // Send a 502 Bad Gateway response through TLS
         const errorBody = `Error fetching ${url}: ${err}`;
@@ -484,7 +510,6 @@ export class TlsNetworkBackend implements NetworkIO {
         try {
           await conn.serverDownstreamWriter.write(errorResponse);
           await conn.serverDownstreamWriter.close();
-          conn.closed = true;
         } catch {
           // Ignore write errors
         }

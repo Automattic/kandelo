@@ -36,10 +36,6 @@ REGRESSION_EXPECTED_FAIL=(
     pthread_create-oom          # not a kernel gap — see docs/compromising-xfails.md "Not compromising"
     setenv-oom                  # OOM behavior differs in Wasm linear memory
     tls_get_new-dtv             # requires dlopen TLS (dynamic TLS not supported)
-    # raise-race is skipped on CI in discover_regression (the
-    # test crashes the GHA runner before its timeout fires). The
-    # XFAIL entry remains for non-CI runs that exercise the test.
-    raise-race                  # known kernel race; tracked separately
 )
 REGRESSION_FLAKY=(
     pthread_cond-smasher        # CI timing-sensitive pthread_cond stress test; can PASS or fail on slow runners
@@ -57,22 +53,20 @@ is_expected_fail() {
     return 1
 }
 
-# Auto-detect LLVM (same logic as SDK)
 find_llvm_bin() {
-    # Env var override
-    if [ -n "${LLVM_BIN:-}" ]; then echo "$LLVM_BIN"; return; fi
-    # Homebrew (macOS)
-    local brew_prefix
-    if brew_prefix=$(brew --prefix llvm 2>/dev/null) && [ -d "$brew_prefix/bin" ]; then
-        echo "$brew_prefix/bin"; return
+    if [ -n "${LLVM_BIN:-}" ] && [ -x "$LLVM_BIN/clang" ]; then
+        echo "$LLVM_BIN"
+        return
     fi
-    # Linux system
-    for v in 21 20 19 18 17 16 15; do
-        if [ -x "/usr/bin/clang-$v" ]; then echo "/usr/bin"; return; fi
-    done
-    # PATH fallback
-    if command -v clang >/dev/null 2>&1; then echo "$(dirname "$(command -v clang)")"; return; fi
-    echo "Error: LLVM/clang not found. Set LLVM_BIN or install LLVM." >&2
+    if [ -n "${LLVM_PREFIX:-}" ] && [ -x "$LLVM_PREFIX/bin/clang" ]; then
+        echo "$LLVM_PREFIX/bin"
+        return
+    fi
+    if command -v clang >/dev/null 2>&1; then
+        dirname "$(command -v clang)"
+        return
+    fi
+    echo "Error: LLVM/clang not found. Run scripts/dev-shell.sh or set LLVM_BIN/LLVM_PREFIX." >&2
     exit 1
 }
 
@@ -159,12 +153,12 @@ discover_regression() {
         # Skip _dso helper files (they're not standalone tests)
         [[ "$name" == *_dso ]] && continue
         # raise-race forks inside a signal handler 1000× across
-        # multiple threads — on resource-constrained Linux CI runners
-        # this exhausts process/thread limits and the GHA agent gets
-        # OOM-killed (exit 143) before the test's own timeout fires,
-        # killing the entire workflow. The test is documented as a
-        # known kernel race; skip on CI to keep the suite usable.
-        # Set ALLOW_RAISE_RACE=1 to override (Mac dev hosts).
+        # multiple threads. It now passes on dev hosts after per-thread
+        # signal routing landed, but on resource-constrained Linux CI
+        # runners it can still exhaust process/thread limits and kill
+        # the GHA agent before the test's own timeout fires. Skip on CI
+        # unless explicitly requested; local PASS or TIME is acceptable.
+        # Set ALLOW_RAISE_RACE=1 to override.
         if [ "${CI:-}" = "true" ] && [ "${ALLOW_RAISE_RACE:-0}" != "1" ]; then
             [[ "$name" == "raise-race" ]] && continue
         fi
@@ -239,6 +233,21 @@ build_math-relaxed() {
         "${COMMON_SRCS[@]}" "${LINK_FLAGS[@]}" \
         -o "$wasm" 2>/tmp/libc-test-build-err.txt
     instrument_wasm "$wasm"
+}
+
+build_example_program() {
+    local name="$1"
+    local src="$REPO_ROOT/examples/${name}.c"
+    local wasm="$REPO_ROOT/examples/${name}.wasm"
+
+    [ -f "$src" ] || return 0
+    if [ -f "$wasm" ] && [ "$wasm" -nt "$src" ]; then
+        return 0
+    fi
+
+    "$CC" "${CFLAGS[@]}" \
+        "$src" "${LINK_FLAGS[@]}" \
+        -o "$wasm" 2>/tmp/libc-test-build-err.txt
 }
 
 # ── Run a single test ───────────────────────────────────────
@@ -370,6 +379,12 @@ if [ ! -f "$SYSROOT/lib/libc.a" ]; then
 fi
 if [ ! -f "$KERNEL_WASM" ]; then
     echo "Error: kernel wasm not found. Run build.sh first." >&2
+    exit 1
+fi
+if ! build_example_program echo; then
+    err=$(head -5 /tmp/libc-test-build-err.txt 2>/dev/null || echo "(no error output)")
+    echo "Error: failed to build examples/echo.wasm" >&2
+    echo "$err" | head -3 | sed 's/^/  /' >&2
     exit 1
 fi
 

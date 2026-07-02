@@ -2,6 +2,7 @@ import { test, expect } from "@playwright/test";
 import { existsSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { extractAbiVersion } from "../../../../../host/src/constants";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const repoRoot = join(__dirname, "../../../../..");
@@ -25,125 +26,9 @@ function findJsWasm(): string | null {
   return jsWasmCandidates().find((candidate) => existsSync(candidate)) ?? null;
 }
 
-function readULEB128(buf: Uint8Array, off: number): [number, number] {
-  let result = 0;
-  let shift = 0;
-  let pos = off;
-  for (;;) {
-    const byte = buf[pos++];
-    result |= (byte & 0x7f) << shift;
-    if ((byte & 0x80) === 0) break;
-    shift += 7;
-  }
-  return [result, pos - off];
-}
-
-function readSLEB128I32(buf: Uint8Array, off: number): [number, number] {
-  let result = 0;
-  let shift = 0;
-  let pos = off;
-  let byte = 0;
-  for (;;) {
-    byte = buf[pos++];
-    result |= (byte & 0x7f) << shift;
-    shift += 7;
-    if ((byte & 0x80) === 0) break;
-  }
-  if (shift < 32 && (byte & 0x40) !== 0) result |= ~0 << shift;
-  return [result, pos - off];
-}
-
-function skipLimits(buf: Uint8Array, off: number): number {
-  const [flags, flagsLen] = readULEB128(buf, off);
-  let pos = off + flagsLen;
-  const [, minLen] = readULEB128(buf, pos);
-  pos += minLen;
-  if ((flags & 0x01) !== 0) {
-    const [, maxLen] = readULEB128(buf, pos);
-    pos += maxLen;
-  }
-  return pos;
-}
-
-function extractAbiVersion(bytes: Uint8Array): number | null {
-  let off = 8;
-  let importedFunctionCount = 0;
-  let abiFunctionIndex: number | null = null;
-  const decoder = new TextDecoder();
-
-  while (off < bytes.length) {
-    const id = bytes[off++];
-    const [size, sizeLen] = readULEB128(bytes, off);
-    off += sizeLen;
-    const sectionEnd = off + size;
-
-    if (id === 2) {
-      const [count, countLen] = readULEB128(bytes, off);
-      let pos = off + countLen;
-      for (let i = 0; i < count; i++) {
-        const [moduleLen, moduleLenBytes] = readULEB128(bytes, pos);
-        pos += moduleLenBytes + moduleLen;
-        const [nameLen, nameLenBytes] = readULEB128(bytes, pos);
-        pos += nameLenBytes + nameLen;
-        const kind = bytes[pos++];
-        if (kind === 0x00) {
-          importedFunctionCount++;
-          const [, typeLen] = readULEB128(bytes, pos);
-          pos += typeLen;
-        } else if (kind === 0x01) {
-          pos += 1;
-          pos = skipLimits(bytes, pos);
-        } else if (kind === 0x02) {
-          pos = skipLimits(bytes, pos);
-        } else if (kind === 0x03) {
-          pos += 2;
-        } else if (kind === 0x04) {
-          pos += 1;
-          const [, typeLen] = readULEB128(bytes, pos);
-          pos += typeLen;
-        }
-      }
-    } else if (id === 7) {
-      const [count, countLen] = readULEB128(bytes, off);
-      let pos = off + countLen;
-      for (let i = 0; i < count; i++) {
-        const [nameLen, nameLenBytes] = readULEB128(bytes, pos);
-        pos += nameLenBytes;
-        const name = decoder.decode(bytes.subarray(pos, pos + nameLen));
-        pos += nameLen;
-        const kind = bytes[pos++];
-        const [index, indexLen] = readULEB128(bytes, pos);
-        pos += indexLen;
-        if (kind === 0x00 && name === "__abi_version") abiFunctionIndex = index;
-      }
-    } else if (id === 10 && abiFunctionIndex !== null) {
-      const bodyIndex = abiFunctionIndex - importedFunctionCount;
-      if (bodyIndex < 0) return null;
-      const [count, countLen] = readULEB128(bytes, off);
-      let pos = off + countLen;
-      for (let i = 0; i < count; i++) {
-        const [bodySize, bodySizeLen] = readULEB128(bytes, pos);
-        pos += bodySizeLen;
-        const bodyStart = pos;
-        const bodyEnd = bodyStart + bodySize;
-        if (i === bodyIndex) {
-          const [localDeclCount, localDeclLen] = readULEB128(bytes, pos);
-          pos += localDeclLen;
-          for (let j = 0; j < localDeclCount; j++) {
-            const [, nLen] = readULEB128(bytes, pos);
-            pos += nLen + 1;
-          }
-          if (bytes[pos++] !== 0x41) return null;
-          const [value] = readSLEB128I32(bytes, pos);
-          return value;
-        }
-        pos = bodyEnd;
-      }
-    }
-
-    off = sectionEnd;
-  }
-  return null;
+function loadArrayBuffer(path: string): ArrayBuffer {
+  const buf = readFileSync(path);
+  return buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength);
 }
 
 const hasKernelWasm = [
@@ -151,7 +36,7 @@ const hasKernelWasm = [
   join(repoRoot, "binaries/kernel.wasm"),
 ].some((candidate) => existsSync(candidate));
 const jsWasm = findJsWasm();
-const jsWasmAbi = jsWasm ? extractAbiVersion(readFileSync(jsWasm)) : null;
+const jsWasmAbi = jsWasm ? extractAbiVersion(loadArrayBuffer(jsWasm)) : null;
 const abiVersion = currentAbiVersion();
 
 test.skip(!hasKernelWasm, "kernel.wasm is not built or fetched");

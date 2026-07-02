@@ -58,6 +58,11 @@
 #                  rely on this: the matrix target's build runs in a
 #                  later step and fails loudly if its actual deps are
 #                  missing.
+#   --fetch-only   Refuse resolver source-build fallback. CI
+#                  materialization uses this after staging has had a
+#                  chance to publish drifted package archives; stale or
+#                  missing archives fail fast instead of compiling in
+#                  the test gate.
 #   -h / --help    Print this header.
 #
 # Env:
@@ -87,12 +92,14 @@ cd "$REPO_ROOT"
 OFFLINE=0
 PR_NUMBER=""
 ALLOW_STALE=0
+FETCH_ONLY=0
 SKIP_PKGS=" ${WASM_POSIX_FETCH_SKIP_PKGS:-} "
 while [ $# -gt 0 ]; do
     case "$1" in
         --offline)     OFFLINE=1; shift ;;
         --pr)          PR_NUMBER="$2"; shift 2 ;;
         --allow-stale) ALLOW_STALE=1; shift ;;
+        --fetch-only)  FETCH_ONLY=1; shift ;;
         # Phase C deprecates --force / --prune: the resolver cache
         # is content-addressed (a different archive_url ⇒ a different
         # canonical path) so neither flag has a meaningful action.
@@ -127,6 +134,9 @@ if [ "$ALLOW_STALE" = "1" ]; then
     # build is broken on this runner doesn't abort CI when the matrix
     # target itself builds fine. See the header for full semantics.
     echo "fetch-binaries: --allow-stale accepted (per-package failures degrade to warnings)"
+fi
+if [ "$FETCH_ONLY" = "1" ]; then
+    echo "fetch-binaries: --fetch-only enabled (stale/missing archives will not source-build)"
 fi
 
 if [ -n "$PR_NUMBER" ]; then
@@ -248,9 +258,13 @@ for pkg_dir in "$LIBS_DIR"/*/; do
     for arch in $arches; do
         TOTAL=$((TOTAL + 1))
         echo "fetch-binaries: resolve $pkg ($arch)"
+        resolve_args=(build-deps --arch "$arch" --binaries-dir "$REPO_ROOT/binaries")
+        if [ "$FETCH_ONLY" = "1" ]; then
+            resolve_args+=(--fetch-only)
+        fi
+        resolve_args+=(resolve "$pkg")
         if cargo run --release -p xtask --target "$HOST_TARGET" --quiet -- \
-                build-deps --arch "$arch" --binaries-dir "$REPO_ROOT/binaries" \
-                resolve "$pkg" >/dev/null; then
+                "${resolve_args[@]}" >/dev/null; then
             RESOLVED=$((RESOLVED + 1))
         else
             FAILED+=("$pkg ($arch)")

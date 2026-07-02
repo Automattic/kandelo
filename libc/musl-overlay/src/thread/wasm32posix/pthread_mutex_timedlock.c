@@ -4,8 +4,8 @@
  *
  * For kernel-managed mutexes we ignore the timeout — the kernel's lock
  * entry is serviced synchronously inside the single-threaded kernel, and
- * the centralized-mode host retry loop re-invokes on EAGAIN until either
- * the lock is acquired or the process is killed. Real time-bounded
+ * the host retry loop re-invokes on EAGAIN until either the lock is
+ * acquired or the process is killed. Real time-bounded
  * blocking would require a kernel-side timer per waiter; none of the
  * currently-ported software uses pthread_mutex_timedlock on pshared
  * mutexes in a way that depends on the timeout bounding behavior.

@@ -135,8 +135,9 @@ test("Kandelo WordPress SQLite renders in WebKit without COEP redirect failures"
   await gotoOrSkip(page, "/?demo=wordpress-sqlite");
   await page.waitForSelector('iframe[title="WordPress SQLite"]', { timeout: 240_000 });
   const frame = page.frameLocator('iframe[title="WordPress SQLite"]');
-  await expect(
-    frame.locator("form#setup, form#language-chooser, .wp-core-ui").first(),
-  ).toBeVisible({ timeout: 240_000 });
+  await expect(frame.locator("body")).toContainText(/WordPress on Kandelo|Hello world/i, {
+    timeout: 240_000,
+  });
+  await expect(frame.locator("form#setup, form#language-chooser")).toHaveCount(0);
   expect(isolationErrors).toEqual([]);
 });

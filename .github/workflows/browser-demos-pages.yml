@@ -57,7 +57,7 @@ jobs:
   deploy:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7.0.0
 
       - name: Fetch musl submodule
         uses: ./.github/actions/fetch-submodules
@@ -94,7 +94,7 @@ jobs:
           github-token: ""
 
       - name: Cache Nix store + flake eval
-        uses: DeterminateSystems/magic-nix-cache-action@565684385bcd71bad329742eefe8d12f2e765b39 # v13
+        uses: DeterminateSystems/magic-nix-cache-action@908b263ff629f4cc17666315b7fd3ec127c6244d # v14
         with:
           use-gha-cache: false
           use-flakehub: false

@@ -256,7 +256,7 @@ single-program test pattern (find one to copy from with
 `ls host/test/ | grep -E 'fork|exec|hello'` and pick the closest
 fit). The test should:
 
-1. Spawn `host/wasm/cpp_throw_test.wasm` via the centralized test
+1. Spawn `host/wasm/cpp_throw_test.wasm` via the kernel test
    helper.
 2. Assert exit code 0.
 3. Assert stdout contains `PASS: typed catch`, `PASS: catch-all`,

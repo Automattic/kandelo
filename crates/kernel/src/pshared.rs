@@ -13,7 +13,7 @@
 //! lock/unlock/wait/signal through the kernel.
 //!
 //! Blocking semantics are expressed as `Err(Errno::EAGAIN)` — the host
-//! centralized-mode retry loop re-invokes the syscall after a short delay
+//! host retry loop re-invokes the syscall after a short delay
 //! until the operation can succeed. The kernel calls
 //! `kernel_wake_blocked_retries()` from state-changing operations so waiters
 //! are woken promptly rather than through pure timer polling.

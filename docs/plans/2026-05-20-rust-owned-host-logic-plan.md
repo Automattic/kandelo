@@ -10,7 +10,7 @@ The host must stay responsible for browser and Node platform primitives: Workers
 
 | Area | Current owner | Current TS host logic | Rust/kernel ownership opportunity |
 |---|---|---|---|
-| Kernel boot | `kernel-worker.ts`, Node/browser worker entries | Instantiate kernel Wasm, read `__abi_version`, call `kernel_set_mode`, allocate scratch, wire callbacks | Rust can publish a compact host-adapter manifest describing ABI version, required exports/imports, protocol features, and channel layout. JS still instantiates and validates. |
+| Kernel boot | `kernel-worker.ts`, Node/browser worker entries | Instantiate kernel Wasm, read `__abi_version`, allocate scratch, wire callbacks | Rust can publish a compact host-adapter manifest describing ABI version, required exports/imports, protocol features, and channel layout. JS still instantiates and validates. |
 | Process worker lifecycle | `node-kernel-worker-entry.ts`, `browser-kernel-worker-entry.ts`, `worker-main.ts` | Allocate `WebAssembly.Memory`, Workers, channel offsets, fork/exec/clone Worker setup, crash safety net, module ABI checks | Kernel should own process table state, pid allocation semantics, exec/fork/spawn process descriptors, cleanup invariants. JS must keep Worker/memory creation and crash observation. |
 | Syscall channel marshalling | `kernel-worker.ts`, `worker-main.ts`, `wasi-shim.ts`, `constants.ts` | Hardcoded channel offsets, status codes, syscall numbers, struct sizes, pointer argument descriptors, scatter/gather special cases | Channel layout, status codes, struct sizes, syscall names/numbers, and host-intercepted syscall metadata should be generated from `crates/shared`/`xtask dump-abi`. Pointer-copy descriptors are a candidate if they can be generated without adding runtime Wasm calls. |
 | Blocking and wakeups | `kernel-worker.ts` | `Atomics.waitAsync`, timers, retry queues, pipe/socket reader/writer maps, poll/select/epoll retry timing | Kernel already emits wakeup events for pipe state. More readiness policy can move into Rust event metadata, but JS must keep the actual wait/timer scheduling. |
@@ -44,7 +44,7 @@ The host must stay responsible for browser and Node platform primitives: Workers
 
 3. **Rust-defined host adapter manifest.**
    - Add kernel exports for a compact manifest: ABI version, required host adapter protocol version, required exports/imports, optional exports, required worker protocol features, channel layout checksum/version.
-   - Have `CentralizedKernelWorker.init` validate it before `kernel_set_mode`.
+   - Have `CentralizedKernelWorker.init` validate it before accepting the kernel instance.
    - Keep behavior unchanged except earlier, clearer boot errors.
 
 4. **Process lifecycle cleanup consolidation.**

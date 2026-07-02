@@ -1,8 +1,8 @@
-# Enable pthread_create in Centralized Mode
+# Enable pthread_create
 
 ## Context
 
-`pthread_create` already exists in musl and the kernel-side infrastructure (TID allocation, ThreadInfo, sys_clone) is complete. The missing piece is the **host-side `onClone` callback** that spawns thread Workers in centralized mode.
+`pthread_create` already exists in musl and the kernel-side infrastructure (TID allocation, ThreadInfo, sys_clone) is complete. The missing piece is the **host-side `onClone` callback** that spawns thread Workers.
 
 **Current call chain (working through to the gap):**
 ```
@@ -33,7 +33,7 @@ view.setUint32(base + 40, fnPtr, true);    // CH_DATA + 0
 view.setUint32(base + 44, arg, true);      // CH_DATA + 4
 ```
 
-**Step 2:** Verify `cd host && npx vitest run` still passes (no existing tests use centralized clone, so this is a no-regression check).
+**Step 2:** Verify `cd host && npx vitest run` still passes (no existing tests use thread clone, so this is a no-regression check).
 
 ---
 
@@ -121,7 +121,7 @@ export interface CentralizedThreadInitMessage {
 
 **Files:** `host/src/worker-main.ts`, `host/src/index.ts`
 
-This is the thread entry point for centralized mode. Structurally similar to `centralizedWorkerMain` (channel dispatch) but calls `fn(arg)` via function table instead of `_start()`, and handles thread exit cleanup.
+This is the thread entry point for pthread workers. Structurally similar to `centralizedWorkerMain` (channel dispatch) but calls `fn(arg)` via function table instead of `_start()`, and handles thread exit cleanup.
 
 **Step 1:** Extract `buildChannelCloneStub(memory, channelOffset)` from the inline stub in `centralizedWorkerMain` (lines 1197-1235). Both `centralizedWorkerMain` and the new function will use it.
 
@@ -170,7 +170,7 @@ This is the thread entry point for centralized mode. Structurally similar to `ce
 
 **Files:** `host/src/process-manager.ts`
 
-The ProcessManager already has `this.config.centralizedKernel` and `handleCloneRequest` for non-centralized mode. Wire up onClone for centralized mode.
+The ProcessManager already has `this.config.centralizedKernel` and `handleCloneRequest`; wire up `onClone` to spawn thread Workers through the kernel.
 
 **Step 1:** Add a method to ProcessManager that returns the onClone callback:
 

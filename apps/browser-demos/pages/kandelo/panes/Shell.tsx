@@ -267,7 +267,7 @@ const PreBoot: React.FC<{ status: string }> = ({ status }) => (
       lineHeight: 1.1,
     }}>
 {`      (        Kandelo Linux 6.8.0
-       )       Fold a computer into a URL.
+       )       Booting a browser VFS image.
       (
  ___|||___     status: ${status}
 |  | | |  |    image: b3:9f2a3b81d2c47f1e

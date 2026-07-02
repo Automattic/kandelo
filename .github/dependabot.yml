@@ -1,22 +1,69 @@
 version: 2
 updates:
   - package-ecosystem: "github-actions"
-    directory: "/"
+    # Scan composite actions too — their SHA-pinned `uses:` refs need update
+    # PRs just like the workflow files do ('**' covers nested action dirs).
+    directories:
+      - "/"
+      - "/.github/actions/**"
     schedule:
       interval: "weekly"
       day: "monday"
     open-pull-requests-limit: 10
     groups:
       actions-minor-patch:
+        applies-to: version-updates
         patterns:
           - "*"
         update-types:
           - "minor"
           - "patch"
       actions-major:
+        applies-to: version-updates
         patterns:
           - "*"
         update-types:
           - "major"
+      actions-security:
+        applies-to: security-updates
+        patterns:
+          - "*"
+    cooldown:
+      default-days: 7
+
+  - package-ecosystem: "npm"
+    directories:
+      - "/"
+      - "/apps/browser-demos"
+      - "/host"
+      - "/packages/registry/libxml2"
+      - "/packages/registry/openssl"
+      - "/packages/registry/sqlite"
+      - "/packages/registry/wordpress/demo"
+      - "/packages/registry/zlib"
+      - "/sdk"
+      - "/tools/mkrootfs"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+    open-pull-requests-limit: 10
+    groups:
+      npm-minor-patch:
+        applies-to: version-updates
+        patterns:
+          - "*"
+        update-types:
+          - "minor"
+          - "patch"
+      npm-major:
+        applies-to: version-updates
+        patterns:
+          - "*"
+        update-types:
+          - "major"
+      npm-security:
+        applies-to: security-updates
+        patterns:
+          - "*"
     cooldown:
       default-days: 7

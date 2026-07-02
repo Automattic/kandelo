@@ -1399,7 +1399,7 @@ static long __do_syscall(long n, long a1, long a2, long a3,
     /* ============================================================== */
 
     /* prlimit64 — (pid, resource, new_limit, old_limit)
-     * pid is ignored (single-process). If new_limit != NULL, call
+     * pid is ignored. If new_limit != NULL, call
      * kernel_setrlimit; if old_limit != NULL, call kernel_getrlimit. */
     case SYS_PRLIMIT64: {
         uint32_t resource = (uint32_t)a2;

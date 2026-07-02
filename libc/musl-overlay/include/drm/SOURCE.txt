@@ -1,0 +1,42 @@
+Vendored Linux UAPI DRM headers
+================================
+
+Source: torvalds/linux @ v6.12 (LTS)
+Tag SHA:    06090c9b622a7e1f797e775db4c035e0d779b76e (annotated)
+Commit SHA: adc218676eef25575469234709c2d87185ca223a
+Tagger:     Linus Torvalds <torvalds@linux-foundation.org>
+Tag date:   2024-11-17T22:15:08Z
+Vendored:   2026-05-20
+
+Files are byte-for-byte upstream from `include/uapi/drm/` at the
+above tag. Any wasm32-specific size or alignment differences are
+intentionally NOT patched here — the kernel-side ABI shape lives
+in `crates/shared/src/dri.rs` (see Task A1) and is asserted by the
+ioctl-number tests there. The headers exist purely so user-space
+code in this sysroot can `#include <drm/...>` against the same
+struct layouts and ioctl numbers the kernel expects.
+
+Files
+-----
+drm.h         sha256 3ab6ac01bf91067aed96b70d7fa7847a86e7f726d74278151f085143688659cc
+drm_mode.h    sha256 3a5bad960e64a6374e046450dcb637145f4127950659a6429561d9d8faf4d14b
+drm_fourcc.h  sha256 dd775484fc3d603d20cde445f79b858906531b4a26104b4726a0c8852f7f4415
+
+Fetch recipe (deterministic — re-run to refresh against the same tag)
+---------------------------------------------------------------------
+TAG=v6.12
+BASE=https://raw.githubusercontent.com/torvalds/linux/${TAG}/include/uapi/drm
+for h in drm.h drm_mode.h drm_fourcc.h; do
+    curl -sSfL -o libc/musl-overlay/include/drm/${h} "${BASE}/${h}"
+done
+shasum -a 256 libc/musl-overlay/include/drm/*.h
+
+If sha256s no longer match the values above, the upstream tag has
+been re-pushed (rare for release tags) or the wrong tag is pinned.
+Investigate before silently updating this file.
+
+Installation
+------------
+`scripts/install-overlay-headers.sh <sysroot>` copies these to
+`<sysroot>/include/drm/`, making them reachable as `<drm/drm.h>`
+etc. from any user program compiled with the wasm32 sysroot.

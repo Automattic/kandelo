@@ -513,6 +513,46 @@ describe("VFS image save/restore", () => {
       expect(buf.byteLength).toBe(4 * 1024 * 1024);
     });
 
+    it("restored growable filesystem reports the image's permitted max capacity", async () => {
+      const initialBytes = 1 * 1024 * 1024;
+      const maxBytes = 8 * 1024 * 1024;
+      const sab = new SharedArrayBuffer(initialBytes, {
+        maxByteLength: maxBytes,
+      });
+      const mfs = MemoryFileSystem.create(sab, maxBytes);
+      writeFile(mfs, "/test.txt", new TextEncoder().encode("hello"));
+      const image = await mfs.saveImage();
+
+      const restored = MemoryFileSystem.fromImage(image, {
+        maxByteLength: maxBytes,
+      });
+      const stats = restored.statfs("/");
+
+      expect(restored.sharedBuffer.byteLength).toBe(initialBytes);
+      expect(restored.sharedBuffer.maxByteLength).toBe(maxBytes);
+      expect(stats.blocks * stats.bsize).toBe(maxBytes);
+      expect(stats.bfree).toBeGreaterThan(initialBytes / stats.bsize);
+    });
+
+    it("restored statfs capacity is capped by the image superblock max", async () => {
+      const initialBytes = 1 * 1024 * 1024;
+      const imageMaxBytes = 4 * 1024 * 1024;
+      const runtimeMaxBytes = 8 * 1024 * 1024;
+      const sab = new SharedArrayBuffer(initialBytes, {
+        maxByteLength: imageMaxBytes,
+      });
+      const mfs = MemoryFileSystem.create(sab, imageMaxBytes);
+      const image = await mfs.saveImage();
+
+      const restored = MemoryFileSystem.fromImage(image, {
+        maxByteLength: runtimeMaxBytes,
+      });
+      const stats = restored.statfs("/");
+
+      expect(restored.sharedBuffer.maxByteLength).toBe(runtimeMaxBytes);
+      expect(stats.blocks * stats.bsize).toBe(imageMaxBytes);
+    });
+
     it("restored filesystem with maxByteLength is writable", async () => {
       const mfs = createMemfs();
       writeFile(mfs, "/original.txt", new TextEncoder().encode("data"));
@@ -533,6 +573,62 @@ describe("VFS image save/restore", () => {
       const buf = restored.sharedBuffer;
       // Non-growable SABs have maxByteLength === byteLength
       expect(buf.maxByteLength).toBe(buf.byteLength);
+    });
+  });
+
+  describe("rebaseToNewFileSystem", () => {
+    it("raises the filesystem max beyond the source image superblock cap", async () => {
+      const initialBytes = 1 * 1024 * 1024;
+      const imageMaxBytes = 2 * 1024 * 1024;
+      const rebaseMaxBytes = 8 * 1024 * 1024;
+      const sab = new SharedArrayBuffer(initialBytes, {
+        maxByteLength: imageMaxBytes,
+      });
+      const mfs = MemoryFileSystem.create(sab, imageMaxBytes);
+      writeFile(mfs, "/data.txt", new TextEncoder().encode("base"));
+      const image = await mfs.saveImage();
+
+      const restored = MemoryFileSystem.fromImage(image, {
+        maxByteLength: rebaseMaxBytes,
+      });
+      expect(restored.statfs("/").blocks * restored.statfs("/").bsize).toBe(imageMaxBytes);
+
+      const rebased = restored.rebaseToNewFileSystem(rebaseMaxBytes);
+      const stats = rebased.statfs("/");
+      expect(rebased.sharedBuffer.maxByteLength).toBe(rebaseMaxBytes);
+      expect(stats.blocks * stats.bsize).toBe(rebaseMaxBytes);
+      expect(new TextDecoder().decode(readFile(rebased, "/data.txt"))).toBe("base");
+
+      const rebasedImage = await rebased.saveImage();
+      const rerestored = MemoryFileSystem.fromImage(rebasedImage, {
+        maxByteLength: rebaseMaxBytes,
+      });
+      const rerestoredStats = rerestored.statfs("/");
+      expect(rerestoredStats.blocks * rerestoredStats.bsize).toBe(rebaseMaxBytes);
+    });
+
+    it("preserves lazy file metadata without materializing stubs", async () => {
+      const mfs = createMemfs();
+      writeFile(mfs, "/real.txt", new TextEncoder().encode("real"));
+      mfs.registerLazyFile("/bin/lazy-tool", "http://example.com/tool.wasm", 5_000_000, 0o755);
+
+      const rebased = mfs.rebaseToNewFileSystem(16 * 1024 * 1024);
+
+      expect(new TextDecoder().decode(readFile(rebased, "/real.txt"))).toBe("real");
+      expect(rebased.stat("/bin/lazy-tool").size).toBe(5_000_000);
+      expect(rebased.stat("/bin/lazy-tool").mode & 0o777).toBe(0o755);
+      expect(rebased.exportLazyEntries()).toMatchObject([
+        {
+          path: "/bin/lazy-tool",
+          url: "http://example.com/tool.wasm",
+          size: 5_000_000,
+        },
+      ]);
+
+      const fd = rebased.open("/bin/lazy-tool", O_RDONLY, 0);
+      const buf = new Uint8Array(16);
+      expect(rebased.read(fd, buf, null, buf.length)).toBe(0);
+      rebased.close(fd);
     });
   });
 
