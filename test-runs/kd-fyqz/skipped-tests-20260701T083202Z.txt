@@ -1,0 +1,13 @@
+# Skipped — packages/registry/erlang/test/erlang.test.ts (Node)
+# 0 skipped / 5 total in this run (Erlang wasm + erlang-install/ staged, so hasErlang=true).
+(none in this run)
+
+# Conditional-skip contract (unchanged by this bead):
+# The suite is describe.skipIf(!hasErlang), where
+#   hasErlang = tryResolveBinary("programs/erlang/erlang.wasm") && existsSync(erlang-install/).
+# On a checkout WITHOUT the local OTP build artifacts, all 5 tests SKIP
+# (reason: host-side OTP runtime not present — environment setup, not a
+# regression). The abi-v6 binary release ships only erlang.wasm, not the
+# erlang-install/ OTP tree, so CI without a local/staged OTP install tree
+# records these 5 as skipped. Making that tree fetchable in CI/browser is
+# a separate packaging concern (runtime data-tree sidecar: kd-1mr.6 / kd-yuef).

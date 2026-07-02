@@ -1,0 +1,3 @@
+# Failed — packages/registry/erlang/test/erlang.test.ts (Node)
+# 0 failed / 5 total
+(none)

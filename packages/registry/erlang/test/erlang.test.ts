@@ -39,6 +39,31 @@ function runErlang(evalExpr: string, timeoutMs = 30_000): string {
   return result;
 }
 
+// Self-contained ring benchmark run via -eval. demo/ring.erl ships the
+// same algorithm as readable reference source, but Erlang cannot compile
+// modules on Kandelo yet: beam_asm hashes each module with erlang:md5/1
+// over an iolist, and erlang:md5/1 returns badarg on iolist input in this
+// wasm build (it works only on a binary) — tracked as kd-qe2c. So rather
+// than loading a compiled ring.beam, the smoke drives spawn/2 and
+// inter-process message passing across a ring directly with named funs.
+// Kept small (50 procs x 10 rounds) so the compute finishes well inside
+// serve.ts's 2s idle-exit watchdog (~0.06s locally).
+const RING_EVAL = [
+  "N = 50, M = 10,",
+  'io:format("Ring benchmark: ~p processes, ~p rounds~n", [N, M]),',
+  "Fwd = fun F(Next) -> receive token -> Next ! token, F(Next); stop -> ok end end,",
+  "First = self(),",
+  "Last = lists:foldl(fun(_, Nx) -> spawn(fun() -> Fwd(Nx) end) end, First, lists:seq(2, N)),",
+  "T1 = erlang:monotonic_time(microsecond),",
+  "Cnt = fun C(_, 0) -> ok; C(Nx, K) -> Nx ! token, receive token -> ok end, C(Nx, K - 1) end,",
+  "Cnt(Last, M),",
+  "T2 = erlang:monotonic_time(microsecond),",
+  "El = T2 - T1,",
+  'io:format("Completed in ~s seconds (~p us)~n", [erlang:float_to_list(El / 1.0e6, [{decimals, 3}]), El]),',
+  'io:format("Total messages: ~p~n", [N * M]),',
+  "halt().",
+].join(" ");
+
 describe.skipIf(!hasErlang)("Erlang BEAM", () => {
   it("prints hello world", { timeout: 30_000 }, () => {
     const output = runErlang('io:format("Hello from BEAM!~n"), halt().');
@@ -64,9 +89,10 @@ describe.skipIf(!hasErlang)("Erlang BEAM", () => {
     expect(output).toContain("process ok");
   });
 
-  it("runs ring benchmark with message passing", { timeout: 30_000 }, () => {
-    const output = runErlang("ring:start().");
-    expect(output).toContain("Ring benchmark:");
+  it("runs a ring benchmark with inter-process message passing", { timeout: 30_000 }, () => {
+    const output = runErlang(RING_EVAL);
+    expect(output).toContain("Ring benchmark: 50 processes, 10 rounds");
     expect(output).toContain("Completed in");
+    expect(output).toContain("Total messages: 500");
   });
 });
