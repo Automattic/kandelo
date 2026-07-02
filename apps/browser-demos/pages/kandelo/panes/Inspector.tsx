@@ -10,9 +10,8 @@ import type {
   DmesgLine, ProcessEvent, ProcessInfo, MountInfo, KernelStateKV,
   MemMapEntry, SyscallEvent, VfsDirent, LazyDownloadEvent,
 } from "../../../../../web-libs/kandelo-session/src/kernel-host";
-import { PaneHead } from "./PaneHead";
 
-const TABS = [
+export const INSPECTOR_TABS = [
   { id: "syslog", label: "Syslog" },
   { id: "procs", label: "Procs" },
   { id: "vfs", label: "VFS" },
@@ -21,40 +20,23 @@ const TABS = [
   { id: "config", label: "Config" },
 ];
 
-const ICON = (
-  <svg width="13" height="13" viewBox="0 0 13 13" fill="none" stroke="currentColor" strokeWidth="1.4">
-    <circle cx="5.5" cy="5.5" r="3.2" />
-    <path d="M8 8l3 3" />
-  </svg>
-);
-
-const LABEL_BY_TAB = new Map(TABS.map((t) => [t.id, t.label]));
+const LABEL_BY_TAB = new Map(INSPECTOR_TABS.map((t) => [t.id, t.label]));
 
 export const Inspector: React.FC<{
   tab: string;
-  onTab: (id: string) => void;
+  showTitle?: boolean;
   dragProps?: import("./PaneHead").PaneHeadDragProps;
   onCollapse?: () => void;
   onMaximize?: () => void;
   isMax?: boolean;
-}> = ({ tab, onTab, dragProps, onCollapse, onMaximize, isMax }) => {
+}> = ({ tab, showTitle = true }) => {
   const lines = useDmesg();
   const activeTab = normalizeInspectorTab(tab);
   const title = LABEL_BY_TAB.get(activeTab) ?? activeTab;
   return (
-    <div className="kpane">
-      <PaneHead
-        icon={ICON}
-        title={title}
-        tabs={TABS}
-        activeTab={activeTab}
-        onTab={onTab}
-        dragProps={dragProps}
-        onCollapse={onCollapse}
-        onMaximize={onMaximize}
-        isMax={isMax}
-      />
-      <div className="kpane-body">
+    <div className="kinternals-surface">
+      {showTitle && <div className="kinternals-title">{title}</div>}
+      <div className="kinternals-body">
         {activeTab === "syslog" && <SyslogTable lines={lines} />}
         {activeTab === "procs" && <ProcsTab />}
         {activeTab === "vfs" && <VfsTab />}

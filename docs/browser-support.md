@@ -164,6 +164,23 @@ The "Boot pattern" column reflects how the demo enters the kernel:
 Run the browser app: `cd apps/browser-demos && npm run dev`, then open
 `http://127.0.0.1:5401/`.
 
+### Kandelo session UI
+
+The Kandelo app at `/pages/kandelo/` keeps the running machine as the primary
+browser canvas and exposes related tools through a bottom dock. Dock controls
+switch between Demo, Terminal, and Internals views, while dock panes open for
+new-machine setup, gallery browsing, system config, and sharing. These controls
+consume `KernelHost` state and actions rather than replacing the runtime path.
+
+The dock may be collapsed or moved horizontally within the browser viewport;
+that placement is UI-only presentation state and does not alter the running
+machine, boot descriptor, VFS image, or share/export data.
+
+Image-declared demo guides from `/etc/kandelo/demo.json` remain part of the
+machine presentation owned by the demo image. Guide actions may run terminal or
+web actions through `KernelHost`, but they do not replace process supervision,
+VFS state, networking, or runtime behavior.
+
 Cross-origin browser fetches are routed through `public/service-worker.js`,
 which defaults to `https://wordpress-playground-cors-proxy.net/?`. Override it
 with `VITE_CORS_PROXY_URL` when testing another proxy:

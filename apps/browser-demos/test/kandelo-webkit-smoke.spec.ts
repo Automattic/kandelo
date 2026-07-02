@@ -89,8 +89,13 @@ test("Kandelo WebKit tears down Node before launching another demo", async ({
     .poll(() => terminalText(page), { timeout: 300_000 })
     .toContain("< Kandelo >");
 
-  await page.getByRole("button", { name: "Gallery" }).click();
-  await page.locator(".kgal-card").filter({ hasText: "Bare shell" }).first().click();
+  await page.getByRole("button", { name: "New", exact: true }).click();
+  await page
+    .locator(".kgal-row", {
+      has: page.locator(".kgal-machine-title", { hasText: /^Bare shell$/ }),
+    })
+    .getByRole("button", { name: "Launch" })
+    .click();
   await waitForReady(page, 180_000);
   await expect(page.locator(".xterm-rows").first()).toBeVisible({ timeout: 120_000 });
   await waitForPrompt(page);

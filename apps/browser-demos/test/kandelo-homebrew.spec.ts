@@ -24,11 +24,17 @@ async function gotoOrSkip(page: Page, path: string) {
   }
 }
 
-async function openGallery(page: Page) {
-  await page.getByRole("button", { name: "Gallery" }).click();
-  await expect(page.getByRole("heading", { name: "Gallery" })).toBeVisible();
-  await expect(page.locator(".kgal-card").filter({ hasText: "Bare shell" })).toBeVisible({
+async function openNewMachineLauncher(page: Page) {
+  await page.getByRole("button", { name: "New", exact: true }).click();
+  await expect(page.getByRole("heading", { name: "Launch New Machine" })).toBeVisible();
+  await expect(galleryRowByTitle(page, /^Bare shell$/)).toBeVisible({
     timeout: 90_000,
+  });
+}
+
+function galleryRowByTitle(page: Page, title: string | RegExp) {
+  return page.locator(".kgal-row", {
+    has: page.locator(".kgal-machine-title", { hasText: title }),
   });
 }
 
@@ -113,12 +119,12 @@ test("software gallery hides wasm32 entries without browser-compatible metadata"
     { id: "hello-sentinel", title: "GNU hello Browser Sentinel", browserCompatible: true },
   ]);
   await gotoOrSkip(page, `/?softwareManifest=${encodeURIComponent(manifestPath)}`);
-  await openGallery(page);
+  await openNewMachineLauncher(page);
 
-  await expect(page.locator(".kgal-card").filter({ hasText: "GNU hello Browser Sentinel" })).toBeVisible({
+  await expect(galleryRowByTitle(page, /^GNU hello Browser Sentinel$/)).toBeVisible({
     timeout: 90_000,
   });
-  await expect(page.locator(".kgal-card").filter({ hasText: "GNU hello Homebrew VFS" })).toHaveCount(0);
+  await expect(galleryRowByTitle(page, /^GNU hello Homebrew VFS$/)).toHaveCount(0);
 });
 
 test("browser-compatible gallery archive launch failures are visible", async ({ page }) => {
@@ -126,11 +132,11 @@ test("browser-compatible gallery archive launch failures are visible", async ({ 
     { id: "hello-vfs", title: "GNU hello Homebrew VFS", browserCompatible: true },
   ]);
   await gotoOrSkip(page, `/?softwareManifest=${encodeURIComponent(manifestPath)}`);
-  await openGallery(page);
+  await openNewMachineLauncher(page);
 
-  const card = page.locator(".kgal-card").filter({ hasText: "GNU hello Homebrew VFS" });
-  await expect(card).toBeVisible({ timeout: 90_000 });
-  await card.getByRole("button", { name: "Launch" }).click();
+  const row = galleryRowByTitle(page, /^GNU hello Homebrew VFS$/);
+  await expect(row).toBeVisible({ timeout: 90_000 });
+  await row.getByRole("button", { name: "Launch" }).click();
 
   await expect(page.getByText("Failed to boot GNU hello Homebrew VFS")).toBeVisible({
     timeout: 120_000,
