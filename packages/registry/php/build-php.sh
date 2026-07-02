@@ -48,22 +48,27 @@ OPENSSL_PREFIX="${WASM_POSIX_DEP_OPENSSL_DIR:-}"
 [ -z "$OPENSSL_PREFIX" ] && { echo "==> Resolving openssl..."; OPENSSL_PREFIX="$(resolve_dep openssl)"; }
 LIBXML2_PREFIX="${WASM_POSIX_DEP_LIBXML2_DIR:-}"
 [ -z "$LIBXML2_PREFIX" ] && { echo "==> Resolving libxml2..."; LIBXML2_PREFIX="$(resolve_dep libxml2)"; }
+LIBZIP_PREFIX="${WASM_POSIX_DEP_LIBZIP_DIR:-}"
+[ -z "$LIBZIP_PREFIX" ] && { echo "==> Resolving libzip..."; LIBZIP_PREFIX="$(resolve_dep libzip)"; }
 [ -f "$ZLIB_PREFIX/lib/libz.a" ] || { echo "ERROR: zlib resolve missing libz.a"; exit 1; }
 [ -f "$SQLITE_PREFIX/lib/libsqlite3.a" ] || { echo "ERROR: sqlite resolve missing libsqlite3.a"; exit 1; }
 [ -f "$OPENSSL_PREFIX/lib/libssl.a" ] || { echo "ERROR: openssl resolve missing libssl.a"; exit 1; }
 [ -f "$LIBXML2_PREFIX/lib/libxml2.a" ] || { echo "ERROR: libxml2 resolve missing libxml2.a"; exit 1; }
+[ -f "$LIBZIP_PREFIX/lib/libzip.a" ] || { echo "ERROR: libzip resolve missing libzip.a"; exit 1; }
 echo "==> zlib at $ZLIB_PREFIX"
 echo "==> sqlite at $SQLITE_PREFIX"
 echo "==> openssl at $OPENSSL_PREFIX"
 echo "==> libxml2 at $LIBXML2_PREFIX"
+echo "==> libzip at $LIBZIP_PREFIX"
 
-# Compose PKG_CONFIG_PATH for all 4 deps so wasm32posix-configure's
-# pkg-config probes can find them in the cache instead of the sysroot.
-DEP_PKG_CONFIG_PATH="$ZLIB_PREFIX/lib/pkgconfig:$SQLITE_PREFIX/lib/pkgconfig:$OPENSSL_PREFIX/lib/pkgconfig:$LIBXML2_PREFIX/lib/pkgconfig"
+# Compose PKG_CONFIG_PATH for all 5 deps so wasm32posix-configure's
+# pkg-config probes (in particular ext/zip's `libzip >= 0.11`) can find
+# them in the cache instead of the sysroot.
+DEP_PKG_CONFIG_PATH="$ZLIB_PREFIX/lib/pkgconfig:$SQLITE_PREFIX/lib/pkgconfig:$OPENSSL_PREFIX/lib/pkgconfig:$LIBXML2_PREFIX/lib/pkgconfig:$LIBZIP_PREFIX/lib/pkgconfig"
 
 # Compose -I and -L flags for defense-in-depth (autoconf raw probes).
-DEP_CPPFLAGS="-I$ZLIB_PREFIX/include -I$SQLITE_PREFIX/include -I$OPENSSL_PREFIX/include -I$LIBXML2_PREFIX/include"
-DEP_LDFLAGS="-L$ZLIB_PREFIX/lib -L$SQLITE_PREFIX/lib -L$OPENSSL_PREFIX/lib -L$LIBXML2_PREFIX/lib"
+DEP_CPPFLAGS="-I$ZLIB_PREFIX/include -I$SQLITE_PREFIX/include -I$OPENSSL_PREFIX/include -I$LIBXML2_PREFIX/include -I$LIBZIP_PREFIX/include"
+DEP_LDFLAGS="-L$ZLIB_PREFIX/lib -L$SQLITE_PREFIX/lib -L$OPENSSL_PREFIX/lib -L$LIBXML2_PREFIX/lib -L$LIBZIP_PREFIX/lib"
 
 if [ ! -d "$SRC_DIR" ]; then
     echo "==> Downloading PHP $PHP_VERSION..."
@@ -181,6 +186,7 @@ if [ ! -f Makefile ]; then
     CPPFLAGS="$DEP_CPPFLAGS" \
     LDFLAGS="$DEP_LDFLAGS -ldl -Wl,--export-all \
 -u setgid -u setuid -u initgroups -u writev -u asctime \
+-u rand -u srand -u remove \
 -Wl,-z,stack-size=4194304" \
     wasm32posix-configure \
         --disable-all \
@@ -215,6 +221,7 @@ if [ ! -f Makefile ]; then
         --enable-simplexml \
         --enable-xmlreader \
         --enable-xmlwriter \
+        --with-zip=shared \
         --cache-file="$SCRIPT_DIR/config.cache" \
         --prefix="$INSTALL_DIR" \
         CFLAGS="-O2 -gline-tables-only -DZEND_USE_ASM_ARITHMETIC=0"
@@ -307,6 +314,18 @@ wasm32posix-cc -shared -fPIC -o "$SCRIPT_DIR/bin/opcache.so" \
     ext/opcache/.libs/shared_alloc_posix.o
 echo "==> opcache.so: $(wc -c < "$SCRIPT_DIR/bin/opcache.so") bytes"
 
+# Same shared-module pattern as opcache above. libzip.a is linked
+# statically into zip.so; libz symbols stay undefined and resolve
+# against php.wasm at instantiation (php.wasm exports them via
+# --with-zlib + --export-all).
+echo "==> Building zip.so (ext/zip extension)..."
+make -j"$(sysctl -n hw.ncpu 2>/dev/null || nproc)" EXTRA_CFLAGS="$EXTRA_INC_LIBXML -I$LIBZIP_PREFIX/include" ext/zip/zip.la || true
+wasm32posix-cc -shared -fPIC -o "$SCRIPT_DIR/bin/zip.so" \
+    ext/zip/.libs/php_zip.o \
+    ext/zip/.libs/zip_stream.o \
+    "$LIBZIP_PREFIX/lib/libzip.a"
+echo "==> zip.so: $(wc -c < "$SCRIPT_DIR/bin/zip.so") bytes"
+
 # Copy to bin/ with .wasm extension (needed for Vite browser demos)
 mkdir -p "$SCRIPT_DIR/bin"
 cp sapi/cli/php "$SCRIPT_DIR/bin/php.wasm"
@@ -345,3 +364,4 @@ source "$REPO_ROOT/scripts/install-local-binary.sh"
 install_local_binary php "$SCRIPT_DIR/bin/php.wasm"     php.wasm
 install_local_binary php "$SCRIPT_DIR/bin/php-fpm.wasm" php-fpm.wasm
 install_local_binary php "$SCRIPT_DIR/bin/opcache.so"
+install_local_binary php "$SCRIPT_DIR/bin/zip.so"
