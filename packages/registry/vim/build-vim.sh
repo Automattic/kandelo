@@ -16,8 +16,10 @@ set -euo pipefail
 VIM_VERSION="${VIM_VERSION:-9.1.0900}"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
-SRC_DIR="$SCRIPT_DIR/vim-src"
-BIN_DIR="$SCRIPT_DIR/bin"
+WORK_DIR="${WASM_POSIX_DEP_WORK_DIR:-$SCRIPT_DIR}"
+SRC_DIR="$WORK_DIR/vim-src"
+BIN_DIR="${WASM_POSIX_DEP_OUT_DIR:-$SCRIPT_DIR/bin}"
+RUNTIME_DIR="$WORK_DIR/runtime"
 # Explicit env wins; else the in-tree sysroot. Keeps neighbour-worktree
 # invocations viable (WASM_POSIX_SYSROOT=<other>/sysroot). Same shape as
 # build-curl.sh:49.
@@ -250,7 +252,7 @@ echo "Binary: $BIN_DIR/vim.wasm"
 # vim.wasm + runtime/* and is self-sufficient (consumers don't need
 # to re-fetch upstream source to assemble vim.zip).
 echo "==> Bundling Vim runtime (for archive)..."
-bash "$SCRIPT_DIR/bundle-runtime.sh"
+VIM_SRC_DIR="$SRC_DIR" VIM_RUNTIME_OUT="$RUNTIME_DIR" bash "$SCRIPT_DIR/bundle-runtime.sh"
 
 source "$REPO_ROOT/scripts/install-local-binary.sh"
 install_local_binary vim "$BIN_DIR/vim.wasm"
@@ -260,8 +262,8 @@ install_local_binary vim "$BIN_DIR/vim.wasm"
 # the resolver, $WASM_POSIX_DEP_OUT_DIR is unset and this is a
 # no-op — direct invocations of build-vim.sh just leave runtime/
 # at its source-tree location.
-if [ -n "${WASM_POSIX_DEP_OUT_DIR:-}" ] && [ -d "$SCRIPT_DIR/runtime" ]; then
+if [ -n "${WASM_POSIX_DEP_OUT_DIR:-}" ] && [ -d "$RUNTIME_DIR" ]; then
     rm -rf "$WASM_POSIX_DEP_OUT_DIR/runtime"
-    cp -R "$SCRIPT_DIR/runtime" "$WASM_POSIX_DEP_OUT_DIR/runtime"
+    cp -R "$RUNTIME_DIR" "$WASM_POSIX_DEP_OUT_DIR/runtime"
     echo "  staged runtime tree into resolver scratch"
 fi

@@ -1,0 +1,38 @@
+{
+  "arch": "wasm32",
+  "bottle": {
+    "bytes": 4718293,
+    "cache_key_sha": "4c43e2a22ab146ab7136937652d959824578d07927521a16329dbd8474e3e3b8",
+    "payload_root": "git/2.47.1",
+    "sha256": "2ba2c7ce61393c99a06aff34744973b55bbd9e28ded2303e2f98d2363b39295f",
+    "url": "https://ghcr.io/v2/automattic/kandelo-homebrew/git/blobs/sha256:2ba2c7ce61393c99a06aff34744973b55bbd9e28ded2303e2f98d2363b39295f"
+  },
+  "cellar": "/home/linuxbrew/.linuxbrew/Cellar",
+  "env": {
+    "PATH_prepend": [
+      "bin"
+    ]
+  },
+  "kandelo_abi": 16,
+  "keg": "/home/linuxbrew/.linuxbrew/Cellar/git/2.47.1",
+  "links": [
+    {
+      "source": "bin/git",
+      "target": "bin/git",
+      "type": "symlink"
+    },
+    {
+      "source": "bin/git-remote-http",
+      "target": "bin/git-remote-http",
+      "type": "symlink"
+    }
+  ],
+  "package": "git",
+  "prefix": "/home/linuxbrew/.linuxbrew",
+  "receipts": [
+    ".brew/git.rb",
+    "INSTALL_RECEIPT.json"
+  ],
+  "schema": 1,
+  "version": "2.47.1"
+}

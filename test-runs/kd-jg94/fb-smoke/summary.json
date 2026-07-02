@@ -1,0 +1,92 @@
+{
+  "suite": "Homebrew package framebuffer/device browser smoke",
+  "bead_id": "kd-jg94",
+  "arch": "wasm32",
+  "tap_root": "/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-jg94-ci-gate-homebrew-framebuffer/test-runs/kd-0hns/rootfs-shell-tap",
+  "formulas": [
+    "fbdoom",
+    "modeset"
+  ],
+  "counts": {
+    "pass": 5,
+    "fail": 0,
+    "skip": 0
+  },
+  "outcomes": [
+    {
+      "name": "homebrew_fb_vfs_build_fbdoom",
+      "status": "pass",
+      "durationMs": 2086,
+      "details": "image=/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-jg94-ci-gate-homebrew-framebuffer/test-runs/kd-jg94/fb-smoke/fbdoom-wasm32/fbdoom-wasm32-homebrew.vfs.zst; browser_url=http://127.0.0.1:54904/__kandelo-homebrew-fb-smoke/kd-jg94-fb-27894/fbdoom-wasm32-homebrew.vfs.zst",
+      "artifactPath": "/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-jg94-ci-gate-homebrew-framebuffer/test-runs/kd-jg94/fb-smoke/fbdoom-wasm32"
+    },
+    {
+      "name": "homebrew_fb_vfs_build_modeset",
+      "status": "pass",
+      "durationMs": 526,
+      "details": "image=/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-jg94-ci-gate-homebrew-framebuffer/test-runs/kd-jg94/fb-smoke/modeset-wasm32/modeset-wasm32-homebrew.vfs.zst; browser_url=http://127.0.0.1:54904/__kandelo-homebrew-fb-smoke/kd-jg94-fb-27894/modeset-wasm32-homebrew.vfs.zst",
+      "artifactPath": "/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-jg94-ci-gate-homebrew-framebuffer/test-runs/kd-jg94/fb-smoke/modeset-wasm32"
+    },
+    {
+      "name": "browser_server_start",
+      "status": "pass",
+      "durationMs": 2265,
+      "details": "vite=http://127.0.0.1:54904",
+      "artifactPath": "/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-jg94-ci-gate-homebrew-framebuffer/test-runs/kd-jg94/fb-smoke/vite.log"
+    },
+    {
+      "name": "fb_smoke_fbdoom",
+      "status": "pass",
+      "durationMs": 3010,
+      "details": "binds=1 writes=1424 writeBytes=91136000 dims=640x400 canvasNonBlank=249072 screenshotBytes=0 exitedEarly=false exit=-; device=/dev/fb0",
+      "artifactPath": "/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-jg94-ci-gate-homebrew-framebuffer/test-runs/kd-jg94/fb-smoke/fbdoom-wasm32/fbdoom-fb-result.json"
+    },
+    {
+      "name": "fb_smoke_modeset",
+      "status": "pass",
+      "durationMs": 2580,
+      "details": "kmsCommits=110 kmsBlits=0 dims=1920x1080 screenshotBytes=0 exitedEarly=false exit=-; device=/dev/dri/card0",
+      "artifactPath": "/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-jg94-ci-gate-homebrew-framebuffer/test-runs/kd-jg94/fb-smoke/modeset-wasm32/modeset-fb-result.json"
+    }
+  ],
+  "results": {
+    "fbdoom": {
+      "mode": "fb",
+      "binds": 1,
+      "unbinds": 0,
+      "writes": 1424,
+      "writeBytes": 91136000,
+      "kmsBlits": 0,
+      "kmsCommits": 0,
+      "boundPid": 100,
+      "width": 640,
+      "height": 400,
+      "fmt": "BGRA32",
+      "canvasNonBlankPixels": 249072,
+      "exitedEarly": false,
+      "exitCode": null,
+      "durationMs": 2476,
+      "stdoutTail": "",
+      "stderrTail": ""
+    },
+    "modeset": {
+      "mode": "kms",
+      "binds": 0,
+      "unbinds": 0,
+      "writes": 0,
+      "writeBytes": 0,
+      "kmsBlits": 0,
+      "kmsCommits": 110,
+      "boundPid": null,
+      "width": 1920,
+      "height": 1080,
+      "fmt": null,
+      "canvasNonBlankPixels": -1,
+      "exitedEarly": false,
+      "exitCode": null,
+      "durationMs": 2249,
+      "stdoutTail": "",
+      "stderrTail": ""
+    }
+  }
+}
