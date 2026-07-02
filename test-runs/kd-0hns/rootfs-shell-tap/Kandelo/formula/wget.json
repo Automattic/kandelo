@@ -1,0 +1,44 @@
+{
+  "bottle_rebuild": 0,
+  "bottles": [
+    {
+      "arch": "wasm32",
+      "bottle_tag": "wasm32_kandelo",
+      "browser_compatible": false,
+      "built_at": "2026-06-30T14:09:23Z",
+      "built_by": "https://github.com/local/kandelo/actions/runs/local",
+      "built_from": {
+        "formula_sha256": "9ef07777d42633279dfd1317e118ddd868ed96c7e564cf53c91bd453f2da98fb",
+        "kandelo_commit": "1ab41fe2ad5553f4fa4bb0223f2d804b13149578",
+        "kandelo_repository": "Automattic/kandelo",
+        "tap_commit": "1ab41fe2ad5553f4fa4bb0223f2d804b13149578",
+        "tap_repository": "Automattic/kandelo-homebrew"
+      },
+      "bytes": 2456339,
+      "cache_key_sha": "17d7408ea85bf3a5e4e8d1e1630c5a157df613b2313a5c407b6e7c7a466d1c31",
+      "cellar": "/home/linuxbrew/.linuxbrew/Cellar",
+      "fork_instrumentation": "not-required",
+      "kandelo_abi": 16,
+      "link_manifest": "Kandelo/link/wget-1.25.0-rebuild0-wasm32.json",
+      "prefix": "/home/linuxbrew/.linuxbrew",
+      "runtime_support": [
+        "node"
+      ],
+      "sha256": "7d7b48ed79816e1c2e3812b68d4f0eb82d1178118a37d1b01cf0ee7e38f1a5ad",
+      "status": "success",
+      "url": "https://ghcr.io/v2/automattic/kandelo-homebrew/wget/blobs/sha256:7d7b48ed79816e1c2e3812b68d4f0eb82d1178118a37d1b01cf0ee7e38f1a5ad"
+    }
+  ],
+  "dependencies": [],
+  "formula_path": "Formula/wget.rb",
+  "formula_revision": 0,
+  "full_name": "automattic/kandelo-homebrew/wget",
+  "kandelo_abi": 16,
+  "name": "wget",
+  "schema": 1,
+  "source_metadata": "Kandelo/metadata.json",
+  "tap_commit": "1ab41fe2ad5553f4fa4bb0223f2d804b13149578",
+  "tap_name": "automattic/kandelo-homebrew",
+  "tap_repository": "Automattic/kandelo-homebrew",
+  "version": "1.25.0"
+}

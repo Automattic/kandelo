@@ -1,0 +1,49 @@
+{
+  "bottle_rebuild": 0,
+  "bottles": [
+    {
+      "arch": "wasm32",
+      "bottle_tag": "wasm32_kandelo",
+      "browser_compatible": false,
+      "built_at": "2026-07-01T06:56:55Z",
+      "built_by": "https://github.com/local/kandelo/actions/runs/local",
+      "built_from": {
+        "formula_sha256": "d9cc81f75998a82fb099b89b831e21a78e9ab26ae8ef147784da7000d58cbc73",
+        "kandelo_commit": "1ab41fe2ad5553f4fa4bb0223f2d804b13149578",
+        "kandelo_repository": "Automattic/kandelo",
+        "tap_commit": "1ab41fe2ad5553f4fa4bb0223f2d804b13149578",
+        "tap_repository": "Automattic/kandelo-homebrew"
+      },
+      "bytes": 1016067,
+      "cache_key_sha": "c67dcfe90a20808ade2d2662264e5bd1539e08c46062fb35dbaccd9708a55950",
+      "cellar": "/home/linuxbrew/.linuxbrew/Cellar",
+      "fork_instrumentation": "required",
+      "kandelo_abi": 16,
+      "link_manifest": "Kandelo/link/bash-5.2.37-rebuild0-wasm32.json",
+      "prefix": "/home/linuxbrew/.linuxbrew",
+      "runtime_support": [
+        "node"
+      ],
+      "sha256": "d853cbef2e1f55db3995918c974adf83bd126a0c6ac0d2d3c80a9ff19ab44fdb",
+      "status": "success",
+      "url": "https://ghcr.io/v2/automattic/kandelo-homebrew/bash/blobs/sha256:d853cbef2e1f55db3995918c974adf83bd126a0c6ac0d2d3c80a9ff19ab44fdb"
+    }
+  ],
+  "dependencies": [
+    {
+      "name": "ncurses",
+      "version": "6.5"
+    }
+  ],
+  "formula_path": "Formula/bash.rb",
+  "formula_revision": 0,
+  "full_name": "automattic/kandelo-homebrew/bash",
+  "kandelo_abi": 16,
+  "name": "bash",
+  "schema": 1,
+  "source_metadata": "Kandelo/metadata.json",
+  "tap_commit": "1ab41fe2ad5553f4fa4bb0223f2d804b13149578",
+  "tap_name": "automattic/kandelo-homebrew",
+  "tap_repository": "Automattic/kandelo-homebrew",
+  "version": "5.2.37"
+}

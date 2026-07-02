@@ -18,3 +18,12 @@ script_path = "packages/registry/nethack/build-nethack.sh"
 [[outputs]]
 name = "nethack"
 wasm = "nethack.wasm"
+# Runtime data tree packed by the host build (dlb -> nhdat) plus the loose
+# symbols/license files. Installed by the Formula under share/nethack and
+# emitted as `file` links so the bottle keg and Kandelo VFS ship the data the
+# game opens from HACKDIR (/usr/share/nethack). Paths are keg-prefix relative.
+data_files = [
+  "share/nethack/nhdat",
+  "share/nethack/symbols",
+  "share/nethack/license",
+]

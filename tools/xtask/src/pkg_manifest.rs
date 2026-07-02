@@ -178,6 +178,15 @@ pub struct ProgramOutput {
     pub wasm: String,
     #[serde(default)]
     pub fork_instrumentation: ForkInstrumentationPolicy,
+    /// Runtime data files this program ships outside `bin/` (e.g. a game's
+    /// packed data archive and config under `share/<name>/`). Paths are
+    /// relative to the package's install/keg prefix and become `file`
+    /// link-manifest entries so the Homebrew bottle and Kandelo VFS preserve
+    /// the data tree — the sidecar generator can only see `package.toml`, not
+    /// the built keg, so a program's data tree must be declared here to be
+    /// linked. Empty for programs that ship only their wasm binary.
+    #[serde(default)]
+    pub data_files: Vec<String>,
 }
 
 /// One entry in a manifest's `[[host_tools]]` array. Inline
@@ -1381,6 +1390,23 @@ impl DepsManifest {
                     if out.wasm.is_empty() {
                         return Err(format!("[[outputs]][{idx}].wasm must not be empty"));
                     }
+                    for data in &out.data_files {
+                        let p = std::path::Path::new(data);
+                        if data.is_empty() || p.is_absolute() {
+                            return Err(format!(
+                                "[[outputs]][{idx}].data_files entries must be non-empty \
+                                 relative paths, got {data:?}"
+                            ));
+                        }
+                        if p.components().any(|c| {
+                            matches!(c, std::path::Component::ParentDir)
+                        }) {
+                            return Err(format!(
+                                "[[outputs]][{idx}].data_files entries must not contain '..', \
+                                 got {data:?}"
+                            ));
+                        }
+                    }
                 }
                 (Outputs::default(), program_outputs)
             }
@@ -2142,6 +2168,44 @@ wasm = "git-remote-http.wasm"
         assert_eq!(m.program_outputs.len(), 2);
         assert_eq!(m.program_outputs[0].name, "git");
         assert_eq!(m.program_outputs[1].name, "git-remote-http");
+    }
+
+    #[test]
+    fn program_output_data_files_default_empty() {
+        // A program that ships only its wasm binary has no data_files.
+        let m = DepsManifest::parse(PROGRAM_EXAMPLE, PathBuf::from("/x")).unwrap();
+        assert!(m.program_outputs[0].data_files.is_empty());
+    }
+
+    #[test]
+    fn parses_program_output_data_files() {
+        // A program declaring a runtime data tree (e.g. nethack's packed data)
+        // carries it on the output so the sidecar generator can emit file links.
+        let text = format!(
+            "{PROGRAM_EXAMPLE}data_files = [\"share/nethack/nhdat\", \"share/nethack/symbols\"]\n"
+        );
+        let m = DepsManifest::parse(&text, PathBuf::from("/x")).unwrap();
+        assert_eq!(
+            m.program_outputs[0].data_files,
+            vec![
+                "share/nethack/nhdat".to_string(),
+                "share/nethack/symbols".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn rejects_data_files_with_parent_dir() {
+        let text = format!("{PROGRAM_EXAMPLE}data_files = [\"../escape\"]\n");
+        let err = DepsManifest::parse(&text, PathBuf::from("/x")).unwrap_err();
+        assert!(err.contains("data_files") && err.contains(".."), "got: {err}");
+    }
+
+    #[test]
+    fn rejects_absolute_data_files() {
+        let text = format!("{PROGRAM_EXAMPLE}data_files = [\"/etc/passwd\"]\n");
+        let err = DepsManifest::parse(&text, PathBuf::from("/x")).unwrap_err();
+        assert!(err.contains("data_files"), "got: {err}");
     }
 
     #[test]

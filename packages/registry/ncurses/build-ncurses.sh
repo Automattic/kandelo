@@ -30,7 +30,11 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
-SRC_DIR="$SCRIPT_DIR/ncurses-src"
+# WASM_POSIX_DEP_WORK_DIR keeps all scratch build trees inside a writable dir a
+# sandboxed caller (e.g. the Homebrew Formula) controls; defaults to the
+# in-tree source dir for the normal resolver/release build.
+WORK_DIR="${WASM_POSIX_DEP_WORK_DIR:-$SCRIPT_DIR}"
+SRC_DIR="$WORK_DIR/ncurses-src"
 
 # --- Inputs from resolver, with legacy fallbacks ---
 NCURSES_VERSION="${WASM_POSIX_DEP_VERSION:-${NCURSES_VERSION:-6.5}}"
@@ -61,7 +65,7 @@ if [ ! -d "$SRC_DIR" ]; then
 fi
 
 # --- Build host tic + infocmp once (needed to generate fallback.c) ---
-HOST_BUILD_DIR="$SCRIPT_DIR/ncurses-host-build"
+HOST_BUILD_DIR="$WORK_DIR/ncurses-host-build"
 HOST_TIC="$HOST_BUILD_DIR/progs/tic"
 HOST_INFOCMP="$HOST_BUILD_DIR/progs/infocmp"
 if [ ! -f "$HOST_TIC" ] || [ ! -f "$HOST_INFOCMP" ]; then
@@ -89,7 +93,7 @@ fi
 
 # --- Compile minimal terminfo DB (build-time intermediate, not a declared output) ---
 # Fed into MKfallback.sh below to produce the compiled-in fallback table.
-TERMINFO_DIR="$SCRIPT_DIR/terminfo"
+TERMINFO_DIR="$WORK_DIR/terminfo"
 if [ ! -f "$TERMINFO_DIR/x/xterm-256color" ]; then
     echo "==> Compiling host-side terminfo database..."
     mkdir -p "$TERMINFO_DIR"
@@ -102,7 +106,7 @@ fi
 # cache-miss invocations, and autoconf bakes the prefix into the
 # Makefile, so reusing a stale wasm-build dir would `make install`
 # into the wrong path.
-WASM_BUILD_DIR="$SCRIPT_DIR/ncurses-wasm-build"
+WASM_BUILD_DIR="$WORK_DIR/ncurses-wasm-build"
 rm -rf "$WASM_BUILD_DIR" "$INSTALL_DIR"
 mkdir -p "$WASM_BUILD_DIR"
 
@@ -239,7 +243,12 @@ NCURSES_PROGRAMS=(
     captoinfo
     infotocap
 )
-BIN_DIR="$SCRIPT_DIR/bin"
+# WASM_POSIX_DEP_BIN_DIR lets a sandboxed caller (e.g. the Homebrew Formula)
+# collect the program wasm outputs in a writable build dir separate from the
+# make-install prefix (INSTALL_DIR). Falls back to $WORK_DIR/bin, which is the
+# in-tree bin/ for a normal build but a sandbox-writable dir whenever the caller
+# (Homebrew Formula, or the build-deps resolver) sets WASM_POSIX_DEP_WORK_DIR.
+BIN_DIR="${WASM_POSIX_DEP_BIN_DIR:-$WORK_DIR/bin}"
 rm -rf "$BIN_DIR"
 mkdir -p "$BIN_DIR"
 

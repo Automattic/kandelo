@@ -1,0 +1,78 @@
+{
+  "arch": "wasm32",
+  "bottle": {
+    "bytes": 941150,
+    "cache_key_sha": "d8f9598534928d7b15b38acd956ea8434104c2893484ea9f546696f577d7b0ba",
+    "payload_root": "ncurses/6.5",
+    "sha256": "829ba62710a56245cb7a8af904b775209952e929aeb49e2b62f8b0ac6394a1ab",
+    "url": "https://ghcr.io/v2/automattic/kandelo-homebrew/ncurses/blobs/sha256:829ba62710a56245cb7a8af904b775209952e929aeb49e2b62f8b0ac6394a1ab"
+  },
+  "cellar": "/home/linuxbrew/.linuxbrew/Cellar",
+  "env": {
+    "PATH_prepend": [
+      "bin"
+    ]
+  },
+  "kandelo_abi": 16,
+  "keg": "/home/linuxbrew/.linuxbrew/Cellar/ncurses/6.5",
+  "links": [
+    {
+      "source": "bin/clear",
+      "target": "bin/clear",
+      "type": "symlink"
+    },
+    {
+      "source": "bin/reset",
+      "target": "bin/reset",
+      "type": "symlink"
+    },
+    {
+      "source": "bin/tset",
+      "target": "bin/tset",
+      "type": "symlink"
+    },
+    {
+      "source": "bin/tput",
+      "target": "bin/tput",
+      "type": "symlink"
+    },
+    {
+      "source": "bin/tabs",
+      "target": "bin/tabs",
+      "type": "symlink"
+    },
+    {
+      "source": "bin/tic",
+      "target": "bin/tic",
+      "type": "symlink"
+    },
+    {
+      "source": "bin/infocmp",
+      "target": "bin/infocmp",
+      "type": "symlink"
+    },
+    {
+      "source": "bin/toe",
+      "target": "bin/toe",
+      "type": "symlink"
+    },
+    {
+      "source": "bin/captoinfo",
+      "target": "bin/captoinfo",
+      "type": "symlink"
+    },
+    {
+      "source": "bin/infotocap",
+      "target": "bin/infotocap",
+      "type": "symlink"
+    }
+  ],
+  "package": "ncurses",
+  "prefix": "/home/linuxbrew/.linuxbrew",
+  "receipts": [
+    ".brew/ncurses.rb",
+    "INSTALL_RECEIPT.json"
+  ],
+  "schema": 1,
+  "version": "6.5"
+}
