@@ -17,5 +17,4 @@ script_path = "packages/registry/wget/build-wget.sh"
 
 [[outputs]]
 name = "wget"
-fork_instrumentation = "not-required"
 wasm = "wget.wasm"

@@ -17,5 +17,4 @@ script_path = "packages/registry/nano/build-nano.sh"
 
 [[outputs]]
 name = "nano"
-fork_instrumentation = "not-required"
 wasm = "nano.wasm"

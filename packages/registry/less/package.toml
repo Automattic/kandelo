@@ -17,5 +17,4 @@ script_path = "packages/registry/less/build-less.sh"
 
 [[outputs]]
 name = "less"
-fork_instrumentation = "not-required"
 wasm = "less.wasm"

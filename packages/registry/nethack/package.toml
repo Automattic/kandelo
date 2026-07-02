@@ -17,5 +17,4 @@ script_path = "packages/registry/nethack/build-nethack.sh"
 
 [[outputs]]
 name = "nethack"
-fork_instrumentation = "not-required"
 wasm = "nethack.wasm"
