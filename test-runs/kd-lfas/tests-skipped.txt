@@ -1,0 +1,22 @@
+# kd-lfas SKIPPED / not-run, with reasons
+#
+# 1. Full perl SOURCE recompile via build-perl.sh from scratch — SKIPPED.
+#    Reason: the edit only ADDS a post-link pass; the raw `make -k` output is
+#    deterministic and was validated byte-identical to kd-k7zy's shipped build
+#    (instrument(perl-src/perl) == shipped, sha f9d77c1a). The added glue
+#    (wasm-opt -O2 + real install_local_binary auto fork-instrument) WAS exercised
+#    end-to-end and produced the verified 6822373 B output. A fresh source build
+#    also needs the musl sysroot (not staged in this worktree). Recompile would
+#    only re-validate the unchanged perl compile, at multi-ten-minute cost.
+#
+# 2. Browser-tier smoke of the optimized perl.wasm — SKIPPED (skip-with-reason).
+#    Reason: this is a package BUILD change producing one smaller wasm binary that
+#    BOTH hosts consume identically (not a host-runtime code change). Functional
+#    correctness was validated on the Node host (runtime+ext+fork). The identical
+#    bytes load in the browser host via the same resolver path. Candidate follow-up:
+#    a browser-tier perl smoke (coordinate with kd-gk6o perl-smoke CI wiring).
+#
+# 3. Runtime performance (perl throughput) delta of -O2 vs -Oz vs baseline —
+#    NOT MEASURED. Reason: bead scope is SIZE; -O2 chosen for convention parity +
+#    interpreter-perf safety over -Oz (0.45% larger only). No perf regression claim
+#    is made; a perf baseline is a possible follow-up if -O1/-Oz is ever considered.

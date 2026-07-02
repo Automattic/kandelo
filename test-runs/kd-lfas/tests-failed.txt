@@ -1,0 +1,21 @@
+# kd-lfas FAILED checks on the FINAL landed recipe output (6822373 B): NONE (0).
+#
+# Investigated failures on REJECTED candidates / test bugs (not the shipped output):
+#
+# 1. wasm-opt -all -Oz (REJECTED candidate): fork-instrumentation FAILED —
+#    "fork-instrument: function `<anon>` has a ref-typed local of type
+#     RefType { nullable: false, heap_type: Abstract(Exn) } which is not yet supported".
+#    Cause: `-all` enabled exception-handling/reference features the input did not
+#    declare, introducing exnref locals wasm-fork-instrument cannot handle.
+#    Resolution: land plain `-O2` (honors input target_features) — instruments cleanly.
+#
+# 2. ext-smoke re_unicode (initial run, TEST-EXPECTATION bug, since fixed):
+#    "caf\x{e9}" =~ /^\w+$/ returned false on BOTH baseline and optimized —
+#    correct Perl semantics for a Latin-1 (non-utf8) string without /u.
+#    Fixed the test to use /^\w+$/u; both binaries then 21/21. Not a binary defect.
+#
+# 3. Direct-run of a DOUBLE-instrumented binary (invalid harness step, discarded):
+#    "WebAssembly.compile(): Duplicate export name 'wpk_fork_state'" — occurred
+#    because the shipped binary is ALREADY instrumented; re-instrumenting duplicated
+#    exports. Identical on baseline and optimized. Resolved by using single-instrument
+#    binaries (the real recipe output).
