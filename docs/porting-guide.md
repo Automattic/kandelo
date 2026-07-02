@@ -832,3 +832,20 @@ accepted. See [fork-instrumentation.md](fork-instrumentation.md).
 **Process hangs on read**: The fd might be in blocking mode waiting for data. Check that writers are properly closing their end of the pipe.
 
 **Browser SharedArrayBuffer unavailable**: Ensure COOP/COEP headers are set. In production, the service worker handles this. In dev, Vite's config sets them.
+
+**Locale panic / `setlocale(LC_ALL, "")` format mismatch**: Kandelo's libc is
+musl, whose `setlocale(LC_ALL, "")` returns a *positional*, `;`-separated
+composite of the per-category locales in category order
+(`CTYPE;NUMERIC;TIME;COLLATE;MONETARY;MESSAGES`) when the categories differ —
+e.g. with no locale env set it returns `C.UTF-8;C;C;C;C;C`. This is POSIX-legal
+(the `LC_ALL` return string is unspecified and need only round-trip through
+`setlocale`), but it is *not* glibc's `LC_CTYPE=…;LC_NUMERIC=…` `name=value`
+form. A runtime that assumes the glibc format — often because a cross-build
+tool defaulted to it — will mis-parse musl's output and can abort at startup.
+Perl 5.40 hit exactly this: perl-cross configured the target with
+`PERL_LC_ALL_USES_NAME_VALUE_PAIRS`, so perl parsed `C.UTF-8` as `name=value`,
+found no `=`, and panicked (`packages/registry/perl/build-perl.sh` now patches
+the target `config.h` to perl's positional mode with musl's category order; see
+kd-dvph). If you port another locale-aware runtime and see startup failures
+tied to `LC_ALL`, check whether it assumes the glibc composite format and point
+it at musl's positional notation instead of forcing `LC_ALL=C`.
