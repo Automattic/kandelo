@@ -48,20 +48,51 @@ OPENSSL_PREFIX="${WASM_POSIX_DEP_OPENSSL_DIR:-}"
 [ -z "$OPENSSL_PREFIX" ] && { echo "==> Resolving openssl..."; OPENSSL_PREFIX="$(resolve_dep openssl)"; }
 LIBXML2_PREFIX="${WASM_POSIX_DEP_LIBXML2_DIR:-}"
 [ -z "$LIBXML2_PREFIX" ] && { echo "==> Resolving libxml2..."; LIBXML2_PREFIX="$(resolve_dep libxml2)"; }
+# ICU + libcxx back the intl side module only; they are linked into intl.so, not
+# php.wasm (see the intl.so build below), so base PHP stays ICU-free.
+ICU_PREFIX="${WASM_POSIX_DEP_ICU_DIR:-}"
+[ -z "$ICU_PREFIX" ] && { echo "==> Resolving icu..."; ICU_PREFIX="$(resolve_dep icu)"; }
+LIBCXX_PREFIX="${WASM_POSIX_DEP_LIBCXX_DIR:-}"
+[ -z "$LIBCXX_PREFIX" ] && { echo "==> Resolving libcxx..."; LIBCXX_PREFIX="$(resolve_dep libcxx)"; }
 [ -f "$ZLIB_PREFIX/lib/libz.a" ] || { echo "ERROR: zlib resolve missing libz.a"; exit 1; }
 [ -f "$SQLITE_PREFIX/lib/libsqlite3.a" ] || { echo "ERROR: sqlite resolve missing libsqlite3.a"; exit 1; }
 [ -f "$OPENSSL_PREFIX/lib/libssl.a" ] || { echo "ERROR: openssl resolve missing libssl.a"; exit 1; }
 [ -f "$LIBXML2_PREFIX/lib/libxml2.a" ] || { echo "ERROR: libxml2 resolve missing libxml2.a"; exit 1; }
+[ -f "$ICU_PREFIX/lib/libicuuc.a" ] || { echo "ERROR: icu resolve missing libicuuc.a"; exit 1; }
+[ -f "$ICU_PREFIX/share/icu.dat" ] || { echo "ERROR: icu resolve missing share/icu.dat"; exit 1; }
+[ -f "$LIBCXX_PREFIX/lib/libc++.a" ] || { echo "ERROR: libcxx resolve missing libc++.a"; exit 1; }
+# A -shared PIC side module needs the position-independent libc++ (libcxx
+# revision >= 6); the non-PIC pair above is for the main php.wasm link.
+[ -f "$LIBCXX_PREFIX/lib/libc++-pic.a" ] || { echo "ERROR: libcxx resolve missing libc++-pic.a — rebuild libcxx (revision >= 6)"; exit 1; }
+[ -f "$LIBCXX_PREFIX/lib/libc++abi-pic.a" ] || { echo "ERROR: libcxx resolve missing libc++abi-pic.a — rebuild libcxx (revision >= 6)"; exit 1; }
 echo "==> zlib at $ZLIB_PREFIX"
 echo "==> sqlite at $SQLITE_PREFIX"
 echo "==> openssl at $OPENSSL_PREFIX"
 echo "==> libxml2 at $LIBXML2_PREFIX"
+echo "==> icu at $ICU_PREFIX"
+echo "==> libcxx at $LIBCXX_PREFIX"
 
-# Compose PKG_CONFIG_PATH for all 4 deps so wasm32posix-configure's
-# pkg-config probes can find them in the cache instead of the sysroot.
-DEP_PKG_CONFIG_PATH="$ZLIB_PREFIX/lib/pkgconfig:$SQLITE_PREFIX/lib/pkgconfig:$OPENSSL_PREFIX/lib/pkgconfig:$LIBXML2_PREFIX/lib/pkgconfig"
+# Make libc++ visible in the sysroot so ext/intl (C++) compiles and intl.so
+# links against it (mirrors packages/registry/mariadb/build-mariadb.sh).
+mkdir -p "$SYSROOT/lib" "$SYSROOT/include/c++"
+ln -sf  "$LIBCXX_PREFIX/lib/libc++.a"    "$SYSROOT/lib/libc++.a"
+ln -sf  "$LIBCXX_PREFIX/lib/libc++abi.a" "$SYSROOT/lib/libc++abi.a"
+rm -rf  "$SYSROOT/include/c++/v1"
+ln -sfn "$LIBCXX_PREFIX/include/c++/v1"  "$SYSROOT/include/c++/v1"
+# Enabling a C++ extension makes PHP's PHP_REQUIRE_CXX append -lstdc++ to the
+# main SAPI link (upstream assumes GNU libstdc++, but our runtime is LLVM
+# libc++). intl bundles its own libc++, so the main SAPIs reference no C++
+# symbols and -lstdc++ only needs to resolve — bridge the name to our libc++.
+ln -sf  "$LIBCXX_PREFIX/lib/libc++.a"    "$SYSROOT/lib/libstdc++.a"
+
+# Compose PKG_CONFIG_PATH so wasm32posix-configure's pkg-config probes can find
+# the deps in the cache instead of the sysroot. ICU is included so PHP_SETUP_ICU
+# detects it and enables the (shared) intl extension.
+DEP_PKG_CONFIG_PATH="$ZLIB_PREFIX/lib/pkgconfig:$SQLITE_PREFIX/lib/pkgconfig:$OPENSSL_PREFIX/lib/pkgconfig:$LIBXML2_PREFIX/lib/pkgconfig:$ICU_PREFIX/lib/pkgconfig"
 
 # Compose -I and -L flags for defense-in-depth (autoconf raw probes).
+# ICU's -I/-L are deliberately omitted so ICU can't leak into the main link;
+# ext/intl gets ICU_CFLAGS/ICU_LIBS from configure and intl.so links ICU below.
 DEP_CPPFLAGS="-I$ZLIB_PREFIX/include -I$SQLITE_PREFIX/include -I$OPENSSL_PREFIX/include -I$LIBXML2_PREFIX/include"
 DEP_LDFLAGS="-L$ZLIB_PREFIX/lib -L$SQLITE_PREFIX/lib -L$OPENSSL_PREFIX/lib -L$LIBXML2_PREFIX/lib"
 
@@ -165,6 +196,12 @@ if [ ! -f Makefile ]; then
     # invokes on our wasm port — but the import has to resolve at
     # instantiation time).
     #
+    # The second -u group forces libc symbols intl.so imports but base PHP
+    # never references (allocator, wide-char, math, and the pthread mutex/
+    # cond/TLS that ICU's UMutex uses). They must resolve to php.wasm's own
+    # musl so intl.so shares one libc state — one allocator, one pthread key
+    # table; without -u they never enter php.wasm and intl.so fails to load.
+    #
     # -Wl,-z,stack-size=4194304: 4 MB wasm stack. The default wasm-ld
     # stack is 64 KB, which sits ~100 KB above PHP's `alloc_globals`
     # data segment. Opcache's PASS_6 (DFA-based SSA optimization) calls
@@ -181,6 +218,13 @@ if [ ! -f Makefile ]; then
     CPPFLAGS="$DEP_CPPFLAGS" \
     LDFLAGS="$DEP_LDFLAGS -ldl -Wl,--export-all \
 -u setgid -u setuid -u initgroups -u writev -u asctime \
+-u aligned_alloc -u div -u modf -u round -u tanhf \
+-u swprintf -u wcstod -u wcstof -u wcstol -u wcstold \
+-u wcstoll -u wcstoul -u wcstoull -u wmemchr -u wmemcmp \
+-u pthread_cond_broadcast -u pthread_cond_destroy -u pthread_cond_signal \
+-u pthread_cond_timedwait -u pthread_cond_wait -u pthread_detach \
+-u pthread_getspecific -u pthread_key_create -u pthread_self \
+-u pthread_setspecific \
 -Wl,-z,stack-size=4194304" \
     wasm32posix-configure \
         --disable-all \
@@ -189,6 +233,7 @@ if [ ! -f Makefile ]; then
         --enable-cli \
         --enable-fpm \
         --enable-opcache \
+        --enable-intl=shared \
         --enable-mbstring \
         --disable-mbregex \
         --enable-ctype \
@@ -307,6 +352,39 @@ wasm32posix-cc -shared -fPIC -o "$SCRIPT_DIR/bin/opcache.so" \
     ext/opcache/.libs/shared_alloc_posix.o
 echo "==> opcache.so: $(wc -c < "$SCRIPT_DIR/bin/opcache.so") bytes"
 
+# Build intl as a shared .so, same libtool workaround as opcache: make compiles
+# the PIC objects under ext/intl/**/.libs/ but the bundled libtool can't emit the
+# final .so on this target, so we link it with `wasm32posix-cc -shared`. intl
+# statically absorbs ICU and libc++/libc++abi so neither enters php.wasm; the ICU
+# common data stays out of the .so as icu.dat (loaded by intl-icu-data-loader.c).
+echo "==> Building intl.so (PHP extension)..."
+make -j"$(sysctl -n hw.ncpu 2>/dev/null || nproc)" EXTRA_CFLAGS="$EXTRA_INC_LIBXML" ext/intl/intl.la || true
+
+# Compile the icu.dat loader (PIC) that feeds ICU its common data at dlopen.
+wasm32posix-cc -fPIC -O2 -c "$SCRIPT_DIR/intl-icu-data-loader.c" \
+    -I"$ICU_PREFIX/include" -o ext/intl/kandelo_icu_data_loader.o
+
+# Collect every PIC object libtool produced for ext/intl (top dir + the
+# collator/, dateformat/, formatter/, … subdirs each have their own .libs/).
+mapfile -t INTL_OBJS < <(find ext/intl -path '*/.libs/*.o' | sort)
+[ "${#INTL_OBJS[@]}" -gt 0 ] || { echo "ERROR: no ext/intl PIC objects found — did 'make ext/intl/intl.la' compile?" >&2; exit 1; }
+echo "==> linking intl.so from ${#INTL_OBJS[@]} objects + ICU static libs + libc++"
+
+# wasm-ld resolves archive back-references without --start-group, so the ICU
+# archives are listed in dependency order (i18n -> io -> uc -> data), then
+# libc++/libc++abi. A -shared PIC module requires every input to be PIC, so the
+# libc++ PIC variants are named explicitly to win over the non-PIC sysroot ones.
+wasm32posix-cc -shared -fPIC -o "$SCRIPT_DIR/bin/intl.so" \
+    "${INTL_OBJS[@]}" \
+    ext/intl/kandelo_icu_data_loader.o \
+    "$ICU_PREFIX/lib/libicui18n.a" \
+    "$ICU_PREFIX/lib/libicuio.a" \
+    "$ICU_PREFIX/lib/libicuuc.a" \
+    "$ICU_PREFIX/lib/libicudata.a" \
+    "$LIBCXX_PREFIX/lib/libc++-pic.a" \
+    "$LIBCXX_PREFIX/lib/libc++abi-pic.a"
+echo "==> intl.so: $(wc -c < "$SCRIPT_DIR/bin/intl.so") bytes"
+
 # Copy to bin/ with .wasm extension (needed for Vite browser demos)
 mkdir -p "$SCRIPT_DIR/bin"
 cp sapi/cli/php "$SCRIPT_DIR/bin/php.wasm"
@@ -345,3 +423,4 @@ source "$REPO_ROOT/scripts/install-local-binary.sh"
 install_local_binary php "$SCRIPT_DIR/bin/php.wasm"     php.wasm
 install_local_binary php "$SCRIPT_DIR/bin/php-fpm.wasm" php-fpm.wasm
 install_local_binary php "$SCRIPT_DIR/bin/opcache.so"
+install_local_binary php "$SCRIPT_DIR/bin/intl.so"
