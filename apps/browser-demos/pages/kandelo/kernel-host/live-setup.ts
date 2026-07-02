@@ -14,6 +14,12 @@ import {
   type WordPressDatabaseKind,
 } from "../../../lib/init/wordpress-runtime-config";
 import { MYSQL_BENCHMARK_PHP } from "../../../lib/init/mysql-benchmark";
+import {
+  WORDPRESS_MARIADB_READY_FILE,
+  WORDPRESS_MARIADB_READY_PATH,
+  WORDPRESS_MARIADB_READY_PHP,
+  WORDPRESS_MARIADB_SOCKET_PATH,
+} from "../../../lib/init/wordpress-mariadb-readiness";
 import { MemoryFileSystem } from "../../../../../host/src/vfs/memory-fs";
 import {
   ensureDirRecursive,
@@ -160,7 +166,7 @@ const SOFTWARE_PROFILES = new Map<string, SoftwareProfile>();
 const tarDecoder = new TextDecoder();
 const HTTP_PORT = 8080;
 const PHP_FPM_PORT = 9000;
-const MARIADB_SOCKET_PATH = "/tmp/mysql.sock";
+const MARIADB_SOCKET_PATH = WORDPRESS_MARIADB_SOCKET_PATH;
 const MARIADB_READY_SERVICE = "mariadb-ready";
 const MARIADB_READY_SCRIPT_PATH = "/usr/local/bin/mariadb-ready";
 const ROOT_UID = 0;
@@ -225,6 +231,7 @@ interface LiveProfileSpec {
       requiredPorts: number[];
       requiredServices?: string[];
       probeHttp?: boolean;
+      probePath?: string;
     };
   };
 }
@@ -338,7 +345,8 @@ const LIVE_PROFILE_SPECS: Record<LiveDemoId, LiveProfileSpec> = {
       web: {
         requiredPorts: [HTTP_PORT, PHP_FPM_PORT],
         requiredServices: ["mariadb-ready", "php-fpm", "nginx"],
-        probeHttp: false,
+        probeHttp: true,
+        probePath: WORDPRESS_MARIADB_READY_PATH,
       },
     },
   },
@@ -391,6 +399,7 @@ interface LiveProfile {
       requiredPorts: number[];
       requiredServices?: string[];
       probeHttp: boolean;
+      probePath?: string;
     };
   };
   framebufferTest: boolean;
@@ -737,6 +746,7 @@ function profileFor(id: string, fb?: FbDemo): LiveProfile {
         requiredPorts: spec.init.web.requiredPorts.slice(),
         requiredServices: spec.init.web.requiredServices?.slice(),
         probeHttp: spec.init.web.probeHttp ?? true,
+        probePath: spec.init.web.probePath,
       },
     },
     framebufferTest: fb === "test",
@@ -1361,6 +1371,8 @@ function patchWordPressRuntimeConfig(
 function patchMariaDbUnixSocketConfig(fs: MemoryFileSystem): void {
   ensureDirRecursive(fs, "/tmp");
   fs.chmod("/tmp", 0o1777);
+  ensureDirRecursive(fs, dirname(WORDPRESS_MARIADB_READY_FILE));
+  writeVfsFile(fs, WORDPRESS_MARIADB_READY_FILE, WORDPRESS_MARIADB_READY_PHP);
 
   const phpIniPath = "/etc/php.ini";
   const phpIni = readOptionalVfsText(fs, phpIniPath);
@@ -1666,13 +1678,14 @@ function maybeMarkWebReady(
   }
   if (readiness.probing) return;
   readiness.probing = true;
+  const probeUrl = previewUrlForPath(web.probePath ?? "/");
   host.setWebPreview({
     label: web.label,
     url: APP_PREFIX,
     status: "starting",
-    message: "Waiting for HTTP response",
+    message: web.probePath ? "Waiting for application readiness" : "Waiting for HTTP response",
   });
-  void waitForHttpPreview(APP_PREFIX).then(
+  void waitForHttpPreview(probeUrl, 90_000, { requireOk: Boolean(web.probePath) }).then(
     () => {
       if (!isCurrent()) return;
       readiness.ready = true;
@@ -1701,7 +1714,11 @@ function maybeMarkWebReady(
   });
 }
 
-async function waitForHttpPreview(url: string, timeoutMs = 90_000): Promise<void> {
+async function waitForHttpPreview(
+  url: string,
+  timeoutMs = 90_000,
+  options: { requireOk?: boolean } = {},
+): Promise<void> {
   const started = performance.now();
   let delayMs = 250;
   let lastError = "";
@@ -1709,7 +1726,7 @@ async function waitForHttpPreview(url: string, timeoutMs = 90_000): Promise<void
   while (performance.now() - started < timeoutMs) {
     try {
       const response = await fetchWithTimeout(url, 5_000);
-      if (response.status < 500) return;
+      if (options.requireOk ? response.ok : response.status < 500) return;
       lastError = `HTTP ${response.status}`;
     } catch (err) {
       lastError = err instanceof Error ? err.message : String(err);
@@ -1719,6 +1736,12 @@ async function waitForHttpPreview(url: string, timeoutMs = 90_000): Promise<void
   }
 
   throw new Error(lastError || "timed out");
+}
+
+function previewUrlForPath(path: string): string {
+  const root = new URL(APP_PREFIX, window.location.href);
+  const normalized = path.startsWith("/") ? path.slice(1) : path;
+  return new URL(normalized || ".", root).href;
 }
 
 async function fetchWithTimeout(url: string, timeoutMs: number): Promise<Response> {
