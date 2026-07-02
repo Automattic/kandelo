@@ -1,0 +1,46 @@
+# kd-lfas PASSED checks — run against the ACTUAL recipe output
+# packages/registry/perl/bin/perl.wasm = 6822373 bytes (wasm-opt -O2 + fork-instrument), 5 WPK exports
+# All also pass identically on the shipped baseline (7291919 B); wasm-opt introduced ZERO behavioral change.
+
+## runtime-smoke.ts (kd-k7zy harness) — 9/9 PERL_RUNTIME_SMOKE_PASS
+Config
+XSLoader
+FileSpec_catfile
+FileSpec_rel2abs
+Cwd_xs
+POSIX_xs
+Fcntl_xs
+ListUtil_xs
+DataDumper_xs
+
+## ext-smoke.ts (kd-lfas) — 21/21 EXT_SMOKE_PASS
+int_arith
+float_pi
+float_sqrt
+bigmul
+str_basic
+str_join_split
+str_repeat
+sprintf_fmt
+re_named
+re_subst
+re_tr
+re_unicode
+sort_num
+sort_schwartz
+hash_ops
+pack_N
+pack_mixed
+posix_math
+listutil
+refs
+closure
+
+## fork-smoke.ts (kd-lfas, INSTRUMENTED binary) — 5/5 FORK_SMOKE_PASS
+fork_pid          # fork() returns child pid in parent
+fork_pipe         # pipe() IPC child->parent survives fork save/restore
+fork_exit         # waitpid() exit status ($? >> 8 == 3)
+system_exit       # system(LIST) fork+execve child perl, status == 5
+open_pipe         # open('-|',LIST) fork+execve+pipe capture
+
+TOTAL PASSED: 35/35 checks (9 runtime + 21 ext + 5 fork) on the optimized recipe output.
