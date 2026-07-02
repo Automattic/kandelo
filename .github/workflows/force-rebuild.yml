@@ -830,6 +830,12 @@ jobs:
             needs_submodules: false
             needs_toolchain: false
             needs_workspace: false
+          - suite: cargo-xtask
+            label: cargo-xtask
+            group: all
+            needs_submodules: false
+            needs_toolchain: false
+            needs_workspace: false
           - suite: vitest
             label: vitest (1/2)
             group: 1/2

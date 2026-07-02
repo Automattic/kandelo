@@ -1609,9 +1609,17 @@ jobs:
         include:
           - suite: cargo-kernel
             label: cargo-kernel
+            kernel_only: true
           - suite: fork-instrument
             label: fork-instrument
+            kernel_only: true
+          - suite: cargo-xtask
+            label: cargo-xtask
+            # Package-system automation is independent of kernel changes and
+            # needs neither the toolchain nor the prepared test workspace.
+            kernel_only: false
     env:
+      KERNEL_ONLY: ${{ matrix.kernel_only }}
       KERNEL_CHANGED: ${{ needs.change-scope.outputs.kernel }}
       SUITE: ${{ matrix.suite }}
     steps:
@@ -1619,7 +1627,7 @@ jobs:
         id: suite
         run: |
           set -euo pipefail
-          if [ "$KERNEL_CHANGED" != "true" ]; then
+          if [ "$KERNEL_ONLY" = "true" ] && [ "$KERNEL_CHANGED" != "true" ]; then
             echo "skip=true" >> "$GITHUB_OUTPUT"
             echo "$SUITE is kernel-only and this diff does not require kernel suites."
             exit 0
