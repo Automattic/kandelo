@@ -1,5 +1,7 @@
 node_modules/
 # LLVM source clone (per major version) — build script populates on demand.
 llvm-project-*/
+# Per-arch LLVM source symlink tree the build script recreates each run.
+llvm-source-*/
 # Per-arch build trees produced by the build script.
 build-*/

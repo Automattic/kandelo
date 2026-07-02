@@ -345,6 +345,28 @@ function instantiateSharedLibrary(
     ? new (WebAssembly as any).Tag({ parameters: ["i32"] })
     : undefined;
 
+  // C++ side modules built with -fwasm-exceptions import an env.__cpp_exception
+  // tag. It is module-local, so an exception thrown here can only be caught
+  // within this module — fine while side modules don't let C++ exceptions
+  // escape across the boundary; cross-module EH would need a process-shared tag.
+  const cppExceptionTag = (typeof (WebAssembly as any).Tag === "function")
+    ? new (WebAssembly as any).Tag({ parameters: ["i32"] })
+    : undefined;
+
+  // A self-contained C++ side module both defines and imports its weak COMDAT
+  // symbols (virtual dtors, template instantiations, operator new/delete):
+  // wasm-ld routes default-visibility weak symbols through env so a main module
+  // could interpose them, but a pure-C main module exports none of them. Inspect
+  // the declared imports up front so the env proxy can satisfy such a symbol
+  // from the module's own exports instead of failing instantiation.
+  const module = new WebAssembly.Module(wasmBytes as unknown as BufferSource);
+  const envFunctionImports = new Set(
+    WebAssembly.Module.imports(module)
+      .filter((imp) => imp.module === "env" && imp.kind === "function")
+      .map((imp) => imp.name),
+  );
+  let selfExports: WebAssembly.Exports | undefined;
+
   // Construct imports
   const imports: WebAssembly.Imports = {
     env: new Proxy({} as Record<string, WebAssembly.ImportValue>, {
@@ -356,15 +378,34 @@ function instantiateSharedLibrary(
           case "__table_base": return tableBaseGlobal;
           case "__stack_pointer": return options.stackPointer;
           case "__c_longjmp": return longjmpTag;
+          case "__cpp_exception": return cppExceptionTag;
         }
         const sym = options.globalSymbols.get(prop);
         if (sym !== undefined) return sym;
+        // Weak self-import: route to the module's own exports, which exist only
+        // after instantiation. A genuinely missing symbol throws at call time
+        // rather than silently returning 0, keeping a real ABI gap truthful.
+        // Data imports resolve via GOT.mem, so only function imports land here.
+        if (envFunctionImports.has(prop)) {
+          return (...args: unknown[]) => {
+            const fn = selfExports?.[prop];
+            if (typeof fn !== "function") {
+              throw new Error(
+                `${name}: import env.${prop} is not provided by the main ` +
+                  `module or the side module's own exports`,
+              );
+            }
+            return (fn as Function)(...args);
+          };
+        }
         return undefined;
       },
       has(_target, prop: string) {
         if (["memory", "__indirect_function_table", "__memory_base",
-             "__table_base", "__stack_pointer", "__c_longjmp"].includes(prop)) return true;
-        return options.globalSymbols.has(prop);
+             "__table_base", "__stack_pointer", "__c_longjmp",
+             "__cpp_exception"].includes(prop)) return true;
+        if (options.globalSymbols.has(prop)) return true;
+        return envFunctionImports.has(prop);
       },
     }),
     "GOT.mem": new Proxy({} as Record<string, WebAssembly.Global>, {
@@ -379,9 +420,11 @@ function instantiateSharedLibrary(
     }),
   };
 
-  // Compile and instantiate synchronously
-  const module = new WebAssembly.Module(wasmBytes as unknown as BufferSource);
+  // Capture exports immediately so the weak-self-import trampolines can reach
+  // the module's own functions. Instantiation never fires them: side modules
+  // have no start function and defer ctors to the __wasm_call_ctors call below.
   const instance = new WebAssembly.Instance(module, imports);
+  selfExports = instance.exports;
 
   // Relocate exports: data address globals need memoryBase added
   const relocatedExports: Record<string, WebAssembly.ExportValue> = {};
