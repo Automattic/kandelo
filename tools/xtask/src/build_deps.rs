@@ -11814,10 +11814,19 @@ wasm = "second.wasm"
         complete_wasm_fork_artifact(4)
     }
 
+    /// A minimal, valid executable wasm module that exports exactly the required
+    /// program entrypoint exports (`__abi_version`, `_start`) -- the canonical
+    /// fixture shape for a non-kernel program output.
+    ///
+    /// Program-build fixtures must emit real wasm, never `touch` an empty file:
+    /// output/cache validation correctly rejects empty and export-less outputs.
+    /// Kernel fixtures must instead use the complete shared kernel export set.
     fn minimal_executable_wasm() -> Vec<u8> {
         wasm_exporting_names(&EXECUTABLE_PROGRAM_REQUIRED_EXPORTS)
     }
 
+    /// Render a build script that writes valid fixture bytes to a declared
+    /// program output instead of creating an empty file rejected by validation.
     fn emit_wasm_build_script(rel: &str, bytes: &[u8]) -> String {
         let escaped = bytes
             .iter()
@@ -15749,6 +15758,10 @@ cache_key_sha = "{cache_key_hex}"
             &[TEST_ABI],
             &cache_key_hex,
         );
+        // Valid wasm so the fetched artifact passes cache validation and the
+        // remote-first path is actually exercised (a header-only fixture is
+        // rejected as "missing required exports", forcing the source-build
+        // fallback this test is meant to prove does NOT happen).
         let prog_wasm = minimal_executable_wasm();
         let archive_bytes = crate::remote_fetch::build_test_archive(
             &manifest_text,
@@ -18707,34 +18720,55 @@ wasm = "bad.wasm"
     }
 
     #[test]
-    fn wasm_artifact_policy_rejects_empty_and_exportless_executables() {
+    fn wasm_artifact_policy_rejects_empty_and_exportless_when_exports_required() {
+        // Regression guard for the stale-fixture class (kd-872c / kd-xc19): the
+        // production artifact validation MUST keep rejecting empty
+        // (`touch`-style, 0-byte / non-wasm) outputs and wasm missing required
+        // exports. The 7 stale tests failed precisely because they emitted such
+        // fixtures; "fixing" them by weakening validation would trip these
+        // assertions. Fix the fixture (emit real wasm) instead.
         let required = &EXECUTABLE_PROGRAM_REQUIRED_EXPORTS;
 
+        // Empty and non-wasm bytes -> "is not a wasm binary".
         assert_eq!(
             wasm_artifact_policy_failures_for(&[], ForkInstrumentationPolicy::Auto, required),
-            ["is not a wasm binary"]
+            vec!["is not a wasm binary".to_string()],
+            "empty output must be rejected",
+        );
+        assert_eq!(
+            wasm_artifact_policy_failures_for(
+                b"not wasm",
+                ForkInstrumentationPolicy::Auto,
+                required
+            ),
+            vec!["is not a wasm binary".to_string()],
+            "non-wasm output must be rejected",
         );
 
-        let failures = wasm_artifact_policy_failures_for(
+        // Header-only wasm with no export section -> "missing required exports".
+        let exportless = wasm_artifact_policy_failures_for(
             b"\0asm\x01\0\0\0",
             ForkInstrumentationPolicy::Auto,
             required,
         );
-        assert_eq!(failures.len(), 1, "got: {failures:?}");
+        assert_eq!(exportless.len(), 1, "got: {exportless:?}");
         assert!(
-            failures[0].contains("missing required exports")
-                && failures[0].contains("__abi_version")
-                && failures[0].contains("_start"),
-            "got: {failures:?}"
+            exportless[0].contains("missing required exports")
+                && exportless[0].contains("__abi_version")
+                && exportless[0].contains("_start"),
+            "got: {exportless:?}",
         );
 
+        // Positive control: the shared minimal fixture passes cleanly, so the
+        // rejections above are about the fixture, not an over-strict policy.
         assert!(
             wasm_artifact_policy_failures_for(
                 &minimal_executable_wasm(),
                 ForkInstrumentationPolicy::Auto,
                 required,
             )
-            .is_empty()
+            .is_empty(),
+            "minimal executable wasm must satisfy validation",
         );
     }
 

@@ -20,7 +20,7 @@ host_target() {
 
 suite="${1:-}"
 if [ -z "$suite" ]; then
-    echo "usage: $0 <cargo-kernel|fork-instrument|vitest|browser|libc|posix|sortix> [group]" >&2
+    echo "usage: $0 <cargo-kernel|cargo-xtask|fork-instrument|vitest|browser|libc|posix|sortix> [group]" >&2
     exit 2
 fi
 group="${2:-${TEST_GROUP:-all}}"
@@ -811,6 +811,13 @@ case "$suite" in
     fork-instrument)
         HOST_TARGET="$(host_target)"
         cargo test -p fork-instrument --target "$HOST_TARGET"
+        ;;
+    cargo-xtask)
+        # Package-system automation unit tests (tools/xtask/**): package
+        # resolver, binaries-dir placement, and archive staging/naming. Pure
+        # host-target cargo tests; no wasm sysroots or prepared workspace needed.
+        HOST_TARGET="$(host_target)"
+        cargo test -p xtask --target "$HOST_TARGET"
         ;;
     vitest)
         if [ "$group" = "exact-abi-source" ]; then

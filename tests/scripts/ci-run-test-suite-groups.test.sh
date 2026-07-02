@@ -1366,6 +1366,15 @@ fi
     exit 1
 }
 
+: > "$CARGO_CAPTURE"
+PATH="$FIXTURE/bin:$PATH" \
+    bash "$FIXTURE/scripts/ci-run-test-suite.sh" cargo-xtask all
+grep -Fxq "test -p xtask --target fixture-host" "$CARGO_CAPTURE" || {
+    echo "ci-run-test-suite.sh did not dispatch the cargo-xtask suite" >&2
+    cat "$CARGO_CAPTURE" >&2
+    exit 1
+}
+
 for workflow in \
     "$REPO_ROOT/.github/workflows/staging-build.yml" \
     "$REPO_ROOT/.github/workflows/prepare-merge.yml"; do
@@ -1396,66 +1405,27 @@ for workflow in \
         exit 1
     fi
 
-    case "$(basename "$workflow")" in
-        staging-build.yml)
-            node_acceptance_name="Run exact staged Node npm acceptance"
-            ;;
-        prepare-merge.yml)
-            node_acceptance_name="Build and run exact candidate Node npm acceptance"
-            ;;
-    esac
-    node_acceptance_block="$TMP_DIR/$(basename "$workflow").node-acceptance"
-    awk -v expected="      - name: $node_acceptance_name" '
-        $0 == expected {
-            inside = 1
-            print
-            next
+    early_rows=$(sed -n '/^  test-suite-early:/,/^    env:/p' "$workflow" | awk '
+        /^          - suite: / {
+            suite = $0
+            sub(/^          - suite: /, "", suite)
         }
-        inside && /^      - name: / { exit }
-        inside { print }
-    ' "$workflow" > "$node_acceptance_block"
-    dev_shell_line="$(awk '
-        /scripts\/dev-shell\.sh/ { print NR; exit }
-    ' "$node_acceptance_block")"
-    activation_line="$(awk '
-        /activate-ci-test-workspace\.sh/ { print NR; exit }
-    ' "$node_acceptance_block")"
-    consumer_line="$(awk '
-        /resolve-binary\.sh|npm run build|npx playwright test/ {
-            print NR
-            exit
+        /^            kernel_only: / {
+            kernel_only = $0
+            sub(/^            kernel_only: /, "", kernel_only)
+            print suite ":" kernel_only
         }
-    ' "$node_acceptance_block")"
-    if ! [[ "$dev_shell_line" =~ ^[1-9][0-9]*$ ]] ||
-       ! [[ "$activation_line" =~ ^[1-9][0-9]*$ ]] ||
-       ! [[ "$consumer_line" =~ ^[1-9][0-9]*$ ]] ||
-       [ "$dev_shell_line" -ge "$activation_line" ] ||
-       [ "$activation_line" -ge "$consumer_line" ]; then
-        echo "$(basename "$workflow"): direct Node acceptance does not activate its transported cache identity inside the dev shell before consumption" >&2
+    ')
+    expected_early_rows=$'cargo-kernel:true\nfork-instrument:true\ncargo-xtask:false'
+    if [ "$early_rows" != "$expected_early_rows" ]; then
+        echo "$(basename "$workflow"): unexpected early Cargo suite matrix:" >&2
+        printf '%s\n' "$early_rows" >&2
         exit 1
     fi
-    if [ "$(basename "$workflow")" = prepare-merge.yml ]; then
-        dev_shell_count="$(grep -Fc 'scripts/dev-shell.sh' "$node_acceptance_block")"
-        if [ "$dev_shell_count" -ne 1 ] ||
-           ! grep -Fq "bash <<'NODE_ACCEPTANCE'" "$node_acceptance_block"; then
-            echo "prepare-merge.yml: candidate Node resolve, build, and acceptance do not share one activated dev-shell process" >&2
-            exit 1
-        fi
-    fi
-    for contract in \
-        "scripts/recover-homebrew-bottle-mirror.ts" \
-        "programs/homebrew-bootstrap/homebrew-bootstrap.zip" \
-        "KANDELO_NODE_LOCAL_BOOT_ASSET_ROOT" \
-        "KANDELO_NODE_LOCAL_PROXY_PORT" \
-        "http://127.0.0.1:\${node_proxy_port}/?" \
-        "KANDELO_PLAYWRIGHT_SERVE_DIST=1" \
-        "--grep '@node-npm-acceptance'"
-    do
-        grep -Fq -- "$contract" "$node_acceptance_block" || {
-            echo "$(basename "$workflow"): exact Node acceptance lacks $contract" >&2
-            exit 1
-        }
-    done
+    grep -Fq 'KERNEL_ONLY: ${{ matrix.kernel_only }}' "$workflow" || {
+        echo "$(basename "$workflow"): early Cargo suites lack kernel scope" >&2
+        exit 1
+    }
 done
 
 grep -Fq \
@@ -1504,7 +1474,7 @@ force_rebuild_rows=$(sed -n \
         print suite ":" group
     }
 ')
-expected_force_rebuild_rows=$'cargo-kernel:all\nfork-instrument:all\nvitest:1/2\nvitest:2/2\nvitest:resource-isolated\nlibc:functional-regression\nlibc:math\nposix:all\nsortix:include\nsortix:basic\nsortix:runtime'
+expected_force_rebuild_rows=$'cargo-kernel:all\nfork-instrument:all\ncargo-xtask:all\nvitest:1/2\nvitest:2/2\nvitest:resource-isolated\nlibc:functional-regression\nlibc:math\nposix:all\nsortix:include\nsortix:basic\nsortix:runtime'
 if [ "$force_rebuild_rows" != "$expected_force_rebuild_rows" ]; then
     echo "force-rebuild.yml: unexpected test-suite matrix:" >&2
     printf '%s\n' "$force_rebuild_rows" >&2
