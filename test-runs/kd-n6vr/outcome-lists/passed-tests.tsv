@@ -1,0 +1,586 @@
+test/binary-resolver.test.ts	binary resolver artifact policy skips a stale local .vfs.zst when a fetched ABI-matching candidate exists
+test/binary-resolver.test.ts	binary resolver artifact policy skips a stale local .vfs when a fetched ABI-matching candidate exists
+test/binary-resolver.test.ts	binary resolver artifact policy selects a matching local .vfs.zst before the fetched candidate
+test/binary-resolver.test.ts	binary resolver artifact policy accepts a VFS image with metadata but no kernelAbi declaration
+test/binary-resolver.test.ts	binary resolver artifact policy keeps skipping a stale local .wasm when a fetched ABI-matching candidate exists
+test/browser-kernel.test.ts	BrowserKernel constructs with kernelOwnedFs without spawning a worker
+test/browser-kernel.test.ts	BrowserKernel boot() spawns a worker, sends init, and resolves on `ready`
+test/browser-kernel.test.ts	BrowserKernel init() waits for lazy VFS registration to be acknowledged
+test/browser-kernel.test.ts	BrowserKernel init() rejects when lazy VFS registration fails
+test/browser-kernel.test.ts	BrowserKernel fetchInKernel emits an http_request message with the right shape
+test/browser-kernel.test.ts	BrowserKernel fetchInKernel forwards a custom timeout in the message
+test/browser-kernel.test.ts	BrowserKernel fetchInKernel rejects when the worker reports an error for the request
+test/browser-kernel.test.ts	BrowserKernel fetchInKernel each call uses a fresh requestId
+test/browser-kernel.test.ts	BrowserKernel destroy() terminates the worker
+test/browser-worker-adapter.test.ts	BrowserWorkerAdapter createWorker should create a Worker with the entry URL and module type
+test/browser-worker-adapter.test.ts	BrowserWorkerAdapter createWorker should accept a URL object as entry
+test/browser-worker-adapter.test.ts	BrowserWorkerAdapter createWorker should send workerData via postMessage
+test/browser-worker-adapter.test.ts	BrowserWorkerAdapter createWorker should return a WorkerHandle
+test/browser-worker-adapter.test.ts	BrowserWorkerAdapter message event routing should route Worker onmessage to registered message handlers
+test/browser-worker-adapter.test.ts	BrowserWorkerAdapter message event routing should support multiple message handlers
+test/browser-worker-adapter.test.ts	BrowserWorkerAdapter message event routing should not throw when message fires with no handlers
+test/browser-worker-adapter.test.ts	BrowserWorkerAdapter error event routing should route Worker onerror to registered error handlers as Error
+test/browser-worker-adapter.test.ts	BrowserWorkerAdapter error event routing should not throw when error fires with no handlers
+test/browser-worker-adapter.test.ts	BrowserWorkerAdapter postMessage forwarding should forward postMessage to the underlying Worker
+test/browser-worker-adapter.test.ts	BrowserWorkerAdapter postMessage forwarding should pass transfer array when provided
+test/browser-worker-adapter.test.ts	BrowserWorkerAdapter postMessage forwarding should pass empty array when no transfer argument given
+test/browser-worker-adapter.test.ts	BrowserWorkerAdapter terminate should request cooperative shutdown before terminating
+test/browser-worker-adapter.test.ts	BrowserWorkerAdapter terminate should not route shutdown acknowledgements to message handlers
+test/browser-worker-adapter.test.ts	BrowserWorkerAdapter terminate should call terminate on the underlying Worker
+test/browser-worker-adapter.test.ts	BrowserWorkerAdapter terminate should fire exit handlers with code 0
+test/browser-worker-adapter.test.ts	BrowserWorkerAdapter terminate should return 0
+test/browser-worker-adapter.test.ts	BrowserWorkerAdapter off (unregister handler) should stop dispatching to a removed message handler
+test/browser-worker-adapter.test.ts	BrowserWorkerAdapter off (unregister handler) should stop dispatching to a removed error handler
+test/browser-worker-adapter.test.ts	BrowserWorkerAdapter off (unregister handler) should stop dispatching to a removed exit handler
+test/browser-worker-adapter.test.ts	BrowserWorkerAdapter off (unregister handler) should be a no-op for unregistered handlers
+test/cross-process-lock.test.ts	Cross-Process Lock — SharedLockTable concurrency should detect write-write conflict between different pids
+test/cross-process-lock.test.ts	Cross-Process Lock — SharedLockTable concurrency should allow read-read from different pids
+test/cross-process-lock.test.ts	Cross-Process Lock — SharedLockTable concurrency should block write when read lock is held (and vice versa)
+test/cross-process-lock.test.ts	Cross-Process Lock — SharedLockTable concurrency should release locks when pid is removed
+test/cross-process-lock.test.ts	Cross-Process Lock — SharedLockTable concurrency should handle setLockWait (blocking acquire)
+test/cross-process-lock.test.ts	Cross-Process Lock — SharedLockTable concurrency should coordinate unlock + setLock sequence across pids
+test/cross-process-lock.test.ts	Cross-Process Lock — SharedLockTable concurrency should handle multiple files independently
+test/cross-process-lock.test.ts	Cross-Process Lock — SharedLockTable concurrency should support lock-on-close semantics (unlock by pid removal)
+test/device-fs.test.ts	DeviceFileSystem opens and closes /dev/null
+test/device-fs.test.ts	DeviceFileSystem /dev/null reads return 0 (EOF)
+test/device-fs.test.ts	DeviceFileSystem /dev/null writes succeed and report length
+test/device-fs.test.ts	DeviceFileSystem /dev/zero reads return zero bytes
+test/device-fs.test.ts	DeviceFileSystem /dev/urandom reads return non-zero bytes (probabilistic)
+test/device-fs.test.ts	DeviceFileSystem /dev/random reads same as urandom
+test/device-fs.test.ts	DeviceFileSystem stat on /dev/null returns character device
+test/device-fs.test.ts	DeviceFileSystem stat on root returns directory
+test/device-fs.test.ts	DeviceFileSystem throws ENOENT for unknown device
+test/device-fs.test.ts	DeviceFileSystem throws EBADF for invalid handle
+test/device-fs.test.ts	DeviceFileSystem readdir lists all device files
+test/device-fs.test.ts	DeviceFileSystem open /dev root as directory succeeds
+test/device-fs.test.ts	DeviceFileSystem stat /dev/pts returns directory
+test/device-fs.test.ts	DeviceFileSystem read/write on directory handle throws EISDIR
+test/device-fs.test.ts	DeviceFileSystem seek is a no-op on character devices
+test/device-fs.test.ts	DeviceFileSystem works with VirtualPlatformIO mount
+test/dri-kms-registry.test.ts	KmsRegistry addFb / rmFb / setFb / currentFb track bindings
+test/dri-kms-registry.test.ts	KmsRegistry setMasterPid / dropMaster / isMasterPid
+test/dri-kms-registry.test.ts	KmsRegistry scanoutBytes returns the bo's pixel SAB for the bound CRTC
+test/dri-kms-registry.test.ts	KmsRegistry scanoutBytes returns undefined for an unknown bo
+test/dri-kms-registry.test.ts	KmsRegistry scanoutBytes syncs the writer's wasm Memory into the SAB on every call
+test/dri-kms-stats-sab.test.ts	CentralizedKernelWorker KMS stats SAB tickVblank writes [count, ts_ms, width, height, tick_us] when a statsSab is attached
+test/dri-kms-stats-sab.test.ts	CentralizedKernelWorker KMS stats SAB tickVblank is a no-op for the stats slots when no SAB is attached
+test/dri-kms-stats-sab.test.ts	CentralizedKernelWorker KMS stats SAB tickVblank fills slots 5/6 from kernel kms_commit_count + kms_last_frame_us when SAB is sized for them
+test/dri-kms-stats-sab.test.ts	CentralizedKernelWorker KMS stats SAB tickVblank populates slots 2/3 from the current FB in auto mode (no 2D blit)
+test/dri-kms-stats-sab.test.ts	CentralizedKernelWorker KMS stats SAB tickVblank leaves slots 5/6 alone when the SAB is the legacy 5-slot size
+test/dri-kms-stats-sab.test.ts	CentralizedKernelWorker KMS stats SAB attachKmsStats publishes slots 5/6 without a canvas attachment
+test/dri-kms-stats-sab.test.ts	CentralizedKernelWorker KMS stats SAB attachKmsStats leaves slots 5/6 untouched when the SAB is too small
+test/dri-multiplex.test.ts	dri multiplex — two-pid interleaved submits (plan 3 §B8) two clients sharing one GL context drain in submit order, switchTo fires per pid
+test/dri-multiplex.test.ts	dri multiplex — two-pid interleaved submits (plan 3 §B8) compositor (pid=2) drains before pid-11 even when pid-11 was enqueued first
+test/dri-registry.test.ts	GbmBoRegistry — SAB-backed bo store bind alone does NOT touch the binding's Memory (timing-fix invariant)
+test/dri-registry.test.ts	GbmBoRegistry — SAB-backed bo store primeBindFromSab copies the SAB into the bound pid's Memory at [addr, len)
+test/dri-registry.test.ts	GbmBoRegistry — SAB-backed bo store unbind flushes the unbinding pid's bytes into the SAB
+test/dri-registry.test.ts	GbmBoRegistry — SAB-backed bo store primeBindFromSab flushes OTHER currently-bound pids before priming
+test/dri-registry.test.ts	GbmBoRegistry — SAB-backed bo store findBindingByAddr returns the bo_id for a live (pid, addr) and undefined otherwise
+test/dri-registry.test.ts	GbmBoRegistry — SAB-backed bo store pure-metadata mode (no resolver) records bindings without touching any Memory
+test/dri-registry.test.ts	GbmBoRegistry — SAB-backed bo store resolver returning undefined for a pid silently skips that pid's flush
+test/dri-registry.test.ts	GbmBoRegistry — SAB-backed bo store setProcessMemoryResolver wires the resolver after construction
+test/dri-registry.test.ts	GbmBoRegistry — SAB-backed bo store syncFromMemory flushes every bound pid's Memory into the SAB
+test/dri-registry.test.ts	GbmBoRegistry — SAB-backed bo store syncFromMemory is a no-op for unknown bo_id
+test/dylink.test.ts	dylink.0 parser parses a simple shared library
+test/dylink.test.ts	dylink.0 parser parses a library with static data
+test/dylink.test.ts	dylink.0 parser returns null for non-shared-library Wasm
+test/dylink.test.ts	dylink.0 parser returns null for non-Wasm data
+test/dylink.test.ts	shared library loading loads a simple shared library and calls exported functions
+test/dylink.test.ts	shared library loading loads a library with mutable static data
+test/dylink.test.ts	shared library loading deduplicates already-loaded libraries
+test/dylink.test.ts	shared library loading allocates separate memory regions for multiple libraries
+test/dylink.test.ts	shared library loading handles function pointers (indirect calls through the table)
+test/dylink.test.ts	shared library loading resolves cross-library symbols through globalSymbols
+test/dylink.test.ts	synchronous loading (loadSharedLibrarySync) loads and calls a shared library synchronously
+test/dylink.test.ts	DynamicLinker dlopen + dlsym + dlclose lifecycle
+test/dylink.test.ts	DynamicLinker uses the supplied allocator for side-module memory
+test/dylink.test.ts	DynamicLinker dlerror reports failures
+test/dylink.test.ts	DynamicLinker dlsym for non-existent symbol returns null
+test/dylink.test.ts	DynamicLinker deduplicates handles for the same library
+test/fetch-backend.test.ts	FetchNetworkBackend getaddrinfo returns a 4-byte address for any hostname
+test/fetch-backend.test.ts	FetchNetworkBackend getaddrinfo returns deterministic results for same hostname
+test/fetch-backend.test.ts	FetchNetworkBackend connect succeeds for port 80
+test/fetch-backend.test.ts	FetchNetworkBackend connect succeeds for port 443 (uses https:// scheme for fetch)
+test/fetch-backend.test.ts	FetchNetworkBackend close cleans up connection state
+test/fetch-backend.test.ts	FetchNetworkBackend recv without send throws EAGAIN when no fetch has completed
+test/fetch-backend.test.ts	FetchNetworkBackend poll reports writable readiness without echoing requested error bits
+test/fetch-backend.test.ts	FetchNetworkBackend hostAliases rewrites the fetch target while preserving the request port
+test/fetch-backend.test.ts	TlsNetworkBackend HTTP proxy path resets response state for keep-alive HTTP requests
+test/fetch-backend.test.ts	TlsNetworkBackend HTTP proxy path emits headers for the decoded body actually returned to the guest
+test/framebuffer-browser-controls.test.ts	framebuffer browser controls maps WASD as letter keycodes, not movement aliases
+test/framebuffer-browser-controls.test.ts	framebuffer browser controls encodes key presses and releases as Linux MEDIUMRAW bytes
+test/framebuffer-browser-controls.test.ts	framebuffer browser controls maps common non-letter keys sent by Doom menus
+test/framebuffer-browser-controls.test.ts	framebuffer browser controls keeps focused key events in the framebuffer path and reserves Ctrl+Shift+Esc for release
+test/framebuffer-browser-controls.test.ts	framebuffer browser controls scales CSS-pixel pointer-lock movement into PS/2 deltas
+test/framebuffer-browser-controls.test.ts	framebuffer browser controls defaults to screen-space-ish Doom mouse scaling
+test/framebuffer-browser-controls.test.ts	framebuffer browser controls splits large mouse movement into legal signed-byte PS/2 packets
+test/framebuffer-registry.test.ts	FramebufferRegistry binds and retrieves with lazy view
+test/framebuffer-registry.test.ts	FramebufferRegistry unbinds idempotently
+test/framebuffer-registry.test.ts	FramebufferRegistry rebindMemory invalidates cached view + imageData
+test/framebuffer-registry.test.ts	FramebufferRegistry onChange fires for bind and unbind, returns unsubscribe
+test/framebuffer-registry.test.ts	FramebufferRegistry list returns current bindings
+test/framebuffer-registry.test.ts	FramebufferRegistry write-based binding (addr=0,len=0) allocates a host buffer + fbWrite copies in
+test/framebuffer-registry.test.ts	FramebufferRegistry fbWrite fires onWrite listeners with the original pid/offset/bytes
+test/framebuffer-registry.test.ts	FramebufferRegistry rebindMemory is a no-op for write-based bindings
+test/generated-abi.test.ts	generated host ABI bindings match the ABI version and channel layout snapshot
+test/generated-abi.test.ts	generated host ABI bindings match status and signal delivery metadata
+test/generated-abi.test.ts	generated host ABI bindings match Rust-owned syscall and struct metadata
+test/generated-abi.test.ts	generated host ABI bindings match Rust-owned host adapter manifest metadata
+test/generated-abi.test.ts	generated host ABI bindings match Rust-owned process memory layout metadata
+test/host-adapter-manifest.test.ts	host adapter manifest validation reads and validates a current Rust-owned manifest
+test/host-adapter-manifest.test.ts	host adapter manifest validation rejects missing required kernel exports
+test/host-adapter-manifest.test.ts	host adapter manifest validation rejects unsupported worker feature bits
+test/host-adapter-manifest.test.ts	host adapter manifest validation rejects out-of-bounds manifest pointers
+test/in-kernel-http.test.ts	buildRawHttpRequest / parseRawHttpResponse round-trips a fixed-length response
+test/in-kernel-http.test.ts	buildRawHttpRequest / parseRawHttpResponse decodes a chunked response body
+test/in-kernel-http.test.ts	buildRawHttpRequest / parseRawHttpResponse merges multiple Set-Cookie headers
+test/kernel-fcntl-lock.test.ts	WasmPosixKernel fcntl locking import returns EAGAIN for conflicting F_SETLK
+test/kernel-fcntl-lock.test.ts	WasmPosixKernel fcntl locking import returns EAGAIN for conflicting F_SETLKW instead of blocking the kernel worker
+test/kernel-fcntl-lock.test.ts	WasmPosixKernel fcntl locking import acquires F_SETLKW through setLock so the worker controls retrying
+test/kernel.test.ts	CentralizedKernelWorker drains queued PTY output when a listener registers
+test/lazy-archive.test.ts	Lazy archive group registration registerLazyArchiveFromEntries creates stubs for all files
+test/lazy-archive.test.ts	Lazy archive group registration stat returns declared size for unmaterialized archive files
+test/lazy-archive.test.ts	Lazy archive group registration fstat and lstat return declared size
+test/lazy-archive.test.ts	Lazy archive group registration creates parent directories automatically
+test/lazy-archive.test.ts	Lazy archive group registration respects mount prefix
+test/lazy-archive.test.ts	Lazy archive group registration handles symlink entries with known targets
+test/lazy-archive.test.ts	Lazy archive group registration handles empty files in archive (size 0)
+test/lazy-archive.test.ts	Lazy archive group registration skips directory entries
+test/lazy-archive.test.ts	Lazy archive materialization ensureArchiveMaterialized writes all file contents
+test/lazy-archive.test.ts	Lazy archive materialization ensureMaterialized triggers archive materialization for any file in the group
+test/lazy-archive.test.ts	Lazy archive materialization all files materialized when any one is accessed
+test/lazy-archive.test.ts	Lazy archive materialization double materialization is a no-op (fetch called only once)
+test/lazy-archive.test.ts	Lazy archive materialization preserves mode changes made to stubs before materialization
+test/lazy-archive.test.ts	Lazy archive unlink tracking unlink marks archive entry as deleted
+test/lazy-archive.test.ts	Lazy archive unlink tracking deleted entries are skipped during materialization
+test/lazy-archive.test.ts	Lazy archive unlink tracking unlink of non-archive file does not affect archive groups
+test/lazy-archive.test.ts	Lazy archive export/import exports and imports archive group metadata
+test/lazy-archive.test.ts	Lazy archive export/import rebaseToNewFileSystem preserves unmaterialized archive metadata
+test/lazy-archive.test.ts	Lazy archive export/import import of materialized group does not populate lazyArchiveInodes
+test/lazy-vfs.test.ts	Lazy VFS files registerLazyFile creates empty stub and returns inode
+test/lazy-vfs.test.ts	Lazy VFS files stat returns declared size for unmaterialized lazy file
+test/lazy-vfs.test.ts	Lazy VFS files fstat returns declared size for unmaterialized lazy file
+test/lazy-vfs.test.ts	Lazy VFS files lstat returns declared size for unmaterialized lazy file
+test/lazy-vfs.test.ts	Lazy VFS files creates parent directories automatically
+test/lazy-vfs.test.ts	Lazy VFS files exportLazyEntries returns all registered lazy files
+test/lazy-vfs.test.ts	Lazy VFS files getLazyEntry returns lazy metadata and follows symlinks
+test/lazy-vfs.test.ts	Lazy VFS files rewriteLazyFileUrls updates lazy metadata without changing size
+test/lazy-vfs.test.ts	Lazy VFS files importLazyEntries restores lazy metadata on another instance
+test/lazy-vfs.test.ts	Lazy VFS files materialized file shows real size instead of declared size
+test/lazy-vfs.test.ts	Lazy VFS files multiple lazy files with different sizes
+test/lazy-vfs.test.ts	Lazy VFS files emits lazy download progress while materializing a file
+test/multi-worker.test.ts	CentralizedKernelWorker Process Management releases host-backed advisory locks when deactivating an exited process
+test/multi-worker.test.ts	CentralizedKernelWorker Process Management lets the host terminate pthread workers without waking SYS_EXIT back into guest code
+test/multi-worker.test.ts	CentralizedKernelWorker Process Management keeps completing pthread SYS_EXIT channels when no host terminator is installed
+test/multi-worker.test.ts	CentralizedKernelWorker Process Management clears pthread child TID when forced thread cleanup skips guest SYS_EXIT
+test/multi-worker.test.ts	CentralizedKernelWorker Process Management registers pthread clear-TID before the host clone callback can complete
+test/multi-worker.test.ts	CentralizedKernelWorker Process Management does not lower compact process max_addr when adding dynamic pthread channels
+test/multi-worker.test.ts	CentralizedKernelWorker Process Management requires explicit stdio when creating a kernel process
+test/multi-worker.test.ts	CentralizedKernelWorker Process Management should throw when registering before init
+test/node-host-vfs-only-metadata.test.ts	HostFileSystem scratch backend keeps path chmod/chown changes in VFS metadata only
+test/node-host-vfs-only-metadata.test.ts	HostFileSystem scratch backend keeps fd fchmod/fchown changes in VFS metadata only
+test/node-host-vfs-only-metadata.test.ts	HostFileSystem scratch backend relays open(O_CREAT) mode to native creation and records it virtually
+test/node-host-vfs-only-metadata.test.ts	HostFileSystem scratch backend relays mkdir mode to native creation and records it virtually
+test/node-host-vfs-only-metadata.test.ts	HostFileSystem scratch backend honors uid/gid -1 as unchanged in virtual metadata only
+test/node-host-vfs-only-metadata.test.ts	HostFileSystem scratch backend answers access from VFS mode metadata instead of native mode
+test/node-host-vfs-only-metadata.test.ts	HostFileSystem scratch backend shares virtual metadata across hard links without changing native metadata
+test/node-host-vfs-only-metadata.test.ts	HostFileSystem scratch backend carries virtual metadata across rename without changing native metadata
+test/node-host-vfs-only-metadata.test.ts	HostFileSystem scratch backend does not leak virtual metadata after unlink and recreate
+test/node-host-vfs-only-metadata.test.ts	NodePlatformIO direct host backend keeps path chmod/chown changes in VFS metadata only
+test/node-host-vfs-only-metadata.test.ts	NodePlatformIO direct host backend keeps fd fchmod/fchown changes in VFS metadata only
+test/node-host-vfs-only-metadata.test.ts	NodePlatformIO direct host backend relays open(O_CREAT) mode to native creation and records it virtually
+test/node-host-vfs-only-metadata.test.ts	NodePlatformIO direct host backend relays mkdir mode to native creation and records it virtually
+test/node-host-vfs-only-metadata.test.ts	NodePlatformIO direct host backend honors uid/gid -1 as unchanged in virtual metadata only
+test/node-host-vfs-only-metadata.test.ts	NodePlatformIO direct host backend answers access from VFS mode metadata instead of native mode
+test/node-host-vfs-only-metadata.test.ts	NodePlatformIO direct host backend shares virtual metadata across hard links without changing native metadata
+test/node-host-vfs-only-metadata.test.ts	NodePlatformIO direct host backend carries virtual metadata across rename without changing native metadata
+test/node-host-vfs-only-metadata.test.ts	NodePlatformIO direct host backend does not leak virtual metadata after unlink and recreate
+test/node-host-vfs-only-metadata.test.ts	VirtualPlatformIO on Node host mounts routes metadata operations to HostFileSystem as VFS-only changes
+test/node-host-vfs-only-metadata.test.ts	VirtualPlatformIO on Node host mounts routes access through VFS metadata
+test/node-host-vfs-only-metadata.test.ts	VirtualPlatformIO on Node host mounts applies every default Node scratch mount mode virtually
+test/node-platform-io-uid-gid.test.ts	NodePlatformIO uid/gid normalization stat returns uid=0 gid=0 regardless of host uid
+test/node-platform-io-uid-gid.test.ts	NodePlatformIO uid/gid normalization lstat returns uid=0 gid=0
+test/node-platform-io-uid-gid.test.ts	NodePlatformIO uid/gid normalization fstat returns uid=0 gid=0
+test/node-platform-io-uid-gid.test.ts	NodePlatformIO uid/gid normalization stat on a directory also normalizes
+test/node-platform-io-uid-gid.test.ts	NodePlatformIO uid/gid normalization chmod updates virtual mode without changing native mode
+test/node-platform-io-uid-gid.test.ts	NodePlatformIO uid/gid normalization chown updates virtual owner without changing native owner
+test/node-platform-io-uid-gid.test.ts	NodePlatformIO uid/gid normalization fchmod and fchown update virtual metadata without native changes
+test/opfs-channel.test.ts	OpfsChannel initializes with Idle status
+test/opfs-channel.test.ts	OpfsChannel reads and writes opcode
+test/opfs-channel.test.ts	OpfsChannel reads and writes args
+test/opfs-channel.test.ts	OpfsChannel reads and writes result and result2
+test/opfs-channel.test.ts	OpfsChannel writes and reads strings in data section
+test/opfs-channel.test.ts	OpfsChannel writes and reads UTF-8 strings
+test/opfs-channel.test.ts	OpfsChannel writes and reads two null-separated strings
+test/opfs-channel.test.ts	OpfsChannel writes and reads stat results
+test/opfs-channel.test.ts	OpfsChannel notifyComplete sets status to Complete
+test/opfs-channel.test.ts	OpfsChannel notifyError sets status to Error
+test/opfs-channel.test.ts	OpfsChannel setPending sets status to Pending
+test/opfs-channel.test.ts	OpfsChannel data section has expected capacity
+test/opfs-channel.test.ts	OpfsChannel two channels sharing same SAB see each other's writes
+test/opfs-channel.test.ts	OpfsChannel status transitions are visible across channels via atomics
+test/platform-node.test.ts	translateWindowsDrivePath converts /C/foo → C:/foo
+test/platform-node.test.ts	translateWindowsDrivePath accepts lowercase drive letters
+test/platform-node.test.ts	translateWindowsDrivePath converts a bare drive prefix /C → C:/
+test/platform-node.test.ts	translateWindowsDrivePath converts /C/ → C:/
+test/platform-node.test.ts	translateWindowsDrivePath preserves nested path segments
+test/platform-node.test.ts	translateWindowsDrivePath returns null for paths without a single-letter drive prefix
+test/platform-node.test.ts	translateWindowsDrivePath returns null for paths missing a leading slash
+test/platform-node.test.ts	translateWindowsDrivePath returns null for the root /
+test/process-memory.test.ts	process memory layout starts shared process memory below the configured maximum
+test/process-memory.test.ts	process memory layout places host control before the shared brk/mmap region
+test/process-memory.test.ts	process memory layout fails fast when maxPages cannot fit an explicitly preallocated thread slab
+test/process-memory.test.ts	process memory layout can shrink the preallocated thread slab with an explicit slot count
+test/process-memory.test.ts	process memory layout can allow no pthread slots for single-threaded declarations
+test/process-memory.test.ts	process memory layout honors wasm-declared pthread slot limit
+test/process-wait-lifecycle.test.ts	Rust-owned process wait lifecycle wait4 consumes Rust-selected zombies and writes the Rust wait status
+test/process-wait-lifecycle.test.ts	Rust-owned process wait lifecycle wait4 leaves blocking waits in the host queue when Rust reports a running child
+test/process-wait-lifecycle.test.ts	Rust-owned process wait lifecycle wait4 WNOHANG completes without queuing when Rust reports a running child
+test/process-wait-lifecycle.test.ts	Rust-owned process wait lifecycle wait4 passes a bigint status pointer for wasm64 kernels
+test/process-wait-lifecycle.test.ts	Rust-owned process wait lifecycle host-observed crashes are marked in Rust before parent notification
+test/process-wait-lifecycle.test.ts	Rust-owned process wait lifecycle SA_NOCLDWAIT auto-reaps through Rust without SIGCHLD
+test/shared-lock-table.test.ts	SharedLockTable should create with default capacity
+test/shared-lock-table.test.ts	SharedLockTable should reconstruct from existing buffer
+test/shared-lock-table.test.ts	SharedLockTable should detect write-write conflict between different pids
+test/shared-lock-table.test.ts	SharedLockTable should not conflict for same pid
+test/shared-lock-table.test.ts	SharedLockTable should allow read-read from different pids
+test/shared-lock-table.test.ts	SharedLockTable should detect read-write conflict
+test/shared-lock-table.test.ts	SharedLockTable should detect write-read conflict
+test/shared-lock-table.test.ts	SharedLockTable should not conflict for non-overlapping ranges
+test/shared-lock-table.test.ts	SharedLockTable should not conflict for different path hashes
+test/shared-lock-table.test.ts	SharedLockTable should handle zero-length (to EOF) locks
+test/shared-lock-table.test.ts	SharedLockTable should remove lock on unlock
+test/shared-lock-table.test.ts	SharedLockTable should replace same-pid lock on same range (upgrade)
+test/shared-lock-table.test.ts	SharedLockTable should return false on conflict with setLock (EAGAIN)
+test/shared-lock-table.test.ts	SharedLockTable should removeLocksByPid
+test/shared-lock-table.test.ts	SharedLockTable hashPath should be deterministic
+test/shared-lock-table.test.ts	SharedLockTable hashPath should produce different hashes for different paths
+test/shared-pipe-buffer.test.ts	SharedPipeBuffer should create with correct capacity
+test/shared-pipe-buffer.test.ts	SharedPipeBuffer should write and read data
+test/shared-pipe-buffer.test.ts	SharedPipeBuffer should handle partial writes when buffer is nearly full
+test/shared-pipe-buffer.test.ts	SharedPipeBuffer should return 0 when reading empty buffer
+test/shared-pipe-buffer.test.ts	SharedPipeBuffer should handle ring buffer wraparound
+test/shared-pipe-buffer.test.ts	SharedPipeBuffer should close read end
+test/shared-pipe-buffer.test.ts	SharedPipeBuffer should close write end
+test/shared-pipe-buffer.test.ts	SharedPipeBuffer should create from existing SharedArrayBuffer
+test/spawn-host-parity.test.ts	spawn host parity Node kernel-worker-entry wires both onResolveSpawn and onSpawn
+test/spawn-host-parity.test.ts	spawn host parity Browser kernel-worker-entry wires both onResolveSpawn and onSpawn
+test/spawn-host-parity.test.ts	spawn host parity CentralizedKernelCallbacks declares both onResolveSpawn and onSpawn
+test/symlink.test.ts	symlink and lstat lstat returns symlink inode, not target
+test/symlink.test.ts	symlink and lstat lstat on dangling symlink succeeds
+test/symlink.test.ts	symlink and lstat readlink returns the symlink target
+test/symlink.test.ts	symlink and lstat stat follows chain of symlinks
+test/thread-allocator.test.ts	ThreadPageAllocator allocates upward in the process control arena
+test/thread-allocator.test.ts	ThreadPageAllocator allocates consecutive threads upward
+test/thread-allocator.test.ts	ThreadPageAllocator reuses freed pages
+test/thread-allocator.test.ts	ThreadPageAllocator zeros channel and TLS regions on allocate
+test/thread-allocator.test.ts	ThreadPageAllocator zeros reused pages
+test/thread-allocator.test.ts	ThreadPageAllocator free list is LIFO
+test/thread-allocator.test.ts	ThreadPageAllocator grows memory only far enough to cover the allocated control pages
+test/thread-allocator.test.ts	ThreadPageAllocator throws when the thread control arena is exhausted
+test/thread-allocator.test.ts	ThreadPageAllocator dynamically reserves slots when configured
+test/thread-allocator.test.ts	ThreadPageAllocator reuses dynamic slots without reserving a new host range
+test/thread-exit-coordinator.test.ts	ThreadExitCoordinator abandons pthread SYS_exit even before a terminator is registered
+test/thread-exit-coordinator.test.ts	ThreadExitCoordinator terminates immediately when the terminator is already registered
+test/thread-exit-coordinator.test.ts	ThreadExitCoordinator does not let a stale pending exit terminate a reused channel
+test/thread-worker-disposition.test.ts	pthread worker failure disposition treats classified guest traps as process-fatal signal deaths
+test/thread-worker-disposition.test.ts	pthread worker failure disposition does not misclassify host/setup failures as guest signal traps
+test/trap-signals.test.ts	Wasm trap signal classification maps memory and stack traps to SIGSEGV
+test/trap-signals.test.ts	Wasm trap signal classification maps generic Wasm bounds traps to SIGSEGV
+test/trap-signals.test.ts	Wasm trap signal classification maps arithmetic traps to SIGFPE
+test/trap-signals.test.ts	Wasm trap signal classification maps illegal control-flow traps to SIGILL
+test/trap-signals.test.ts	Wasm trap signal classification does not classify loader and ABI errors as Wasm trap causes
+test/trap-signals.test.ts	Wasm trap signal classification keeps call_indirect bounds traps separate from null indirect calls
+test/trap-signals.test.ts	Wasm trap signal classification returns POSIX-style signal exit statuses for classified traps
+test/vfs-image.test.ts	VFS image save/restore saveImage + fromImage round-trip preserves a single file
+test/vfs-image.test.ts	VFS image save/restore saveImage + fromImage round-trip preserves file permissions
+test/vfs-image.test.ts	VFS image save/restore saveImage + fromImage round-trip preserves directory structure
+test/vfs-image.test.ts	VFS image save/restore saveImage + fromImage round-trip preserves symlinks
+test/vfs-image.test.ts	VFS image save/restore saveImage + fromImage round-trip preserves multiple files of varying sizes
+test/vfs-image.test.ts	VFS image save/restore saveImage + fromImage round-trip produces a valid image even with an empty filesystem
+test/vfs-image.test.ts	VFS image save/restore saveImage + fromImage round-trip restored filesystem is writable
+test/vfs-image.test.ts	VFS image save/restore lazy file handling preserves lazy file metadata by default
+test/vfs-image.test.ts	VFS image save/restore lazy file handling preserves multiple lazy files
+test/vfs-image.test.ts	VFS image save/restore lazy file handling materializeAll clears lazy entries from image
+test/vfs-image.test.ts	VFS image save/restore lazy file handling image without lazy files has no lazy flag
+test/vfs-image.test.ts	VFS image save/restore lazy file handling image with lazy files has lazy flag set
+test/vfs-image.test.ts	VFS image save/restore image metadata stores and restores a kernel ABI declaration
+test/vfs-image.test.ts	VFS image save/restore image metadata preserves metadata when a restored image is saved again
+test/vfs-image.test.ts	VFS image save/restore image metadata can clear metadata on save
+test/vfs-image.test.ts	VFS image save/restore image metadata reads metadata from a zstd-wrapped image without materializing callers' fs state
+test/vfs-image.test.ts	VFS image save/restore image metadata rejects malformed metadata declarations
+test/vfs-image.test.ts	VFS image save/restore image metadata validates a declared kernel ABI against the running ABI supplied by the caller
+test/vfs-image.test.ts	VFS image save/restore zstd-compressed images fromImage transparently decompresses a zstd-wrapped image
+test/vfs-image.test.ts	VFS image save/restore zstd-compressed images fromImage with maxByteLength still works on zstd-wrapped image
+test/vfs-image.test.ts	VFS image save/restore zstd-compressed images saveImage writes a .vfs.zst that fromImage can restore
+test/vfs-image.test.ts	VFS image save/restore zstd-compressed images saveImage rejects a non-.vfs.zst output path
+test/vfs-image.test.ts	VFS image save/restore image format validation rejects image with bad magic
+test/vfs-image.test.ts	VFS image save/restore image format validation rejects image with wrong version
+test/vfs-image.test.ts	VFS image save/restore image format validation rejects truncated image
+test/vfs-image.test.ts	VFS image save/restore image format validation rejects image that is too small
+test/vfs-image.test.ts	VFS image save/restore image format validation image has correct magic and version
+test/vfs-image.test.ts	VFS image save/restore sharedBuffer getter returns the underlying SharedArrayBuffer
+test/vfs-image.test.ts	VFS image save/restore sharedBuffer getter returns the same buffer on repeated calls
+test/vfs-image.test.ts	VFS image save/restore sharedBuffer getter returns the restored SAB after fromImage
+test/vfs-image.test.ts	VFS image save/restore fromImage with maxByteLength creates a growable SharedArrayBuffer
+test/vfs-image.test.ts	VFS image save/restore fromImage with maxByteLength restored growable filesystem reports the image's permitted max capacity
+test/vfs-image.test.ts	VFS image save/restore fromImage with maxByteLength restored statfs capacity is capped by the image superblock max
+test/vfs-image.test.ts	VFS image save/restore fromImage with maxByteLength restored filesystem with maxByteLength is writable
+test/vfs-image.test.ts	VFS image save/restore fromImage with maxByteLength without maxByteLength creates a non-growable SAB
+test/vfs-image.test.ts	VFS image save/restore rebaseToNewFileSystem raises the filesystem max beyond the source image superblock cap
+test/vfs-image.test.ts	VFS image save/restore rebaseToNewFileSystem preserves lazy file metadata without materializing stubs
+test/vfs-image.test.ts	VFS image save/restore isolation restored filesystem is independent from original
+test/vfs-image.test.ts	VFS image save/restore isolation modifications to restored filesystem don't affect original
+test/vfs-image.test.ts	VFS image save/restore isolation can create multiple independent restores from the same image
+test/vfs-image.test.ts	image-helpers EEXIST-swallow honesty (kd-n6vr) ensureDir swallows EEXIST so repeated creation is idempotent
+test/vfs-image.test.ts	image-helpers EEXIST-swallow honesty (kd-n6vr) ensureDir rethrows a missing-parent failure instead of masking it
+test/vfs-image.test.ts	image-helpers EEXIST-swallow honesty (kd-n6vr) surfaces an out-of-space overflow as ENOSPC, not a masked parent-dir ENOENT
+test/vfs-image.test.ts	image-helpers EEXIST-swallow honesty (kd-n6vr) symlink swallows EEXIST but rethrows a missing-parent failure
+test/vfs.test.ts	VirtualPlatformIO mount resolution routes root-level paths to the / mount
+test/vfs.test.ts	VirtualPlatformIO mount resolution routes /tmp paths to the /tmp mount
+test/vfs.test.ts	VirtualPlatformIO mount resolution does not route /home/foo to /tmp mount
+test/vfs.test.ts	VirtualPlatformIO mount resolution longest prefix wins: /tmp/data beats /tmp
+test/vfs.test.ts	VirtualPlatformIO mount resolution exact mount-point path routes correctly
+test/vfs.test.ts	VirtualPlatformIO mount resolution strips trailing slashes from mount points
+test/vfs.test.ts	VirtualPlatformIO handle mapping returns unique global handles that map to backend-local handles
+test/vfs.test.ts	VirtualPlatformIO handle mapping delegates read/write/seek to the correct backend via handle
+test/vfs.test.ts	VirtualPlatformIO handle mapping close removes handle mapping; reuse errors
+test/vfs.test.ts	VirtualPlatformIO cross-mount rename (EXDEV) throws EXDEV when renaming across mounts
+test/vfs.test.ts	VirtualPlatformIO cross-mount rename (EXDEV) succeeds when renaming within the same mount
+test/vfs.test.ts	VirtualPlatformIO cross-mount rename (EXDEV) throws EXDEV for cross-mount link
+test/vfs.test.ts	HostFileSystem path traversal rejects paths that escape rootPath
+test/vfs.test.ts	HostFileSystem path traversal rejects paths with embedded .. sequences
+test/vfs.test.ts	MemoryFileSystem creates, writes, seeks, and reads back a file
+test/vfs.test.ts	MemoryFileSystem opens more than the old 64-descriptor SharedFS table limit
+test/vfs.test.ts	MemoryFileSystem throws EMFILE when the derived SharedFS fd table is full
+test/vfs.test.ts	MemoryFileSystem creates and lists directories
+test/vfs.test.ts	MemoryFileSystem stat returns correct size after writing
+test/vfs.test.ts	MemoryFileSystem unlink removes a file
+test/vfs.test.ts	MemoryFileSystem ftruncate changes file size
+test/vfs.test.ts	MemoryFileSystem statfs reports real SharedFS block usage
+test/vfs.test.ts	MemoryFileSystem statfs reports effective max capacity for growable filesystems
+test/vfs.test.ts	MemoryFileSystem statfs does not report the internal default growth cap for non-growable buffers
+test/vfs.test.ts	Mixed mounts: HostFileSystem root + MemoryFileSystem /tmp writes via /tmp (memory) and reads via / (host) independently
+test/vfs.test.ts	Mixed mounts: HostFileSystem root + MemoryFileSystem /tmp directory listing works for host-backed mount
+test/vfs.test.ts	Mixed mounts: HostFileSystem root + MemoryFileSystem /tmp routes statfs to the mounted backend
+test/vfs.test.ts	VirtualPlatformIO constructor validation throws if no mounts provided
+test/vfs.test.ts	NodeTimeProvider returns realtime clock
+test/vfs.test.ts	NodeTimeProvider returns monotonic clock
+test/vfs.test.ts	NodeTimeProvider monotonic clock is non-decreasing across calls
+test/virtual-network.test.ts	LocalVirtualNetwork routes TCP streams between attached machines
+test/virtual-network.test.ts	LocalVirtualNetwork reports refused TCP connects when no listener is bound
+test/virtual-network.test.ts	LocalVirtualNetwork reports host unreachable for unknown virtual addresses
+test/virtual-network.test.ts	LocalVirtualNetwork wakes TCP peers with EOF and EPIPE when a machine detaches
+test/virtual-network.test.ts	LocalVirtualNetwork routes UDP datagrams and preserves source metadata
+test/virtual-network.test.ts	LocalVirtualNetwork scopes INADDR_ANY UDP binds to each attached machine
+test/virtual-network.test.ts	LocalVirtualNetwork scopes backend UDP endpoint identifiers to each attached machine
+test/virtual-network.test.ts	LocalVirtualNetwork scopes INADDR_ANY TCP listeners to each attached machine
+test/virtual-network.test.ts	LocalVirtualNetwork uses normal UDP errno style for missing destination hosts and ports
+test/virtual-network.test.ts	LocalVirtualNetwork throws EAGAIN when a connected stream has no data yet
+test/wasm-binary-parse.test.ts	extractHeapBase returns null for an empty/too-short binary
+test/wasm-binary-parse.test.ts	extractHeapBase returns null when no __heap_base export is present
+test/wasm-binary-parse.test.ts	extractHeapBase reads an i32 __heap_base from a defined global (wasm32)
+test/wasm-binary-parse.test.ts	extractHeapBase reads an i32 __heap_base above the import-global offset
+test/wasm-binary-parse.test.ts	extractHeapBase reads an i64 __heap_base for wasm64
+test/wasm-binary-parse.test.ts	extractHeapBase returns null when __heap_base is imported (no init expression to read)
+test/wasm-binary-parse.test.ts	extractHeapBase returns null for a non-const init expression
+test/wasm-binary-parse.test.ts	extractAbiVersion returns null for an empty binary
+test/wasm-binary-parse.test.ts	extractAbiVersion returns null when no __abi_version export is present
+test/wasm-binary-parse.test.ts	extractAbiVersion reads the i32.const after the ctors-call prefix
+test/wasm-binary-parse.test.ts	extractAbiVersion handles the export wrapper for older ABI values
+test/wasm-binary-parse.test.ts	extractAbiVersion ignores instrumentation constants before the ABI return value
+test/wasm-binary-parse.test.ts	extractAbiVersion follows an instrumented command-export wrapper to the real ABI marker
+test/wasm-binary-parse.test.ts	extractAbiVersion counts function imports correctly when computing the body index
+test/wasm-binary-parse.test.ts	extractThreadSlotDeclaration returns null when the process-wasm declaration export is absent
+test/wasm-binary-parse.test.ts	extractThreadSlotDeclaration reads the signed i32 thread slot declaration
+test/wasm-binary-parse.test.ts	wasm artifact policy helpers reads import and export names without compiling the module
+test/wasm-binary-parse.test.ts	wasm artifact policy helpers flags fork-capable wasm without the complete instrumentation exports
+test/wasm-binary-parse.test.ts	wasm artifact policy helpers accepts fork-capable wasm with the complete instrumentation export set
+test/wasm-binary-parse.test.ts	wasm artifact policy helpers does not require fork instrumentation for thread-only kernel_clone imports
+test/wasm-binary-parse.test.ts	wasm artifact policy helpers flags missing required exports
+test/wasm-binary-parse.test.ts	wasm artifact policy helpers flags executable wasm missing the ABI and entrypoint exports
+test/wasm-binary-parse.test.ts	wasm artifact policy helpers does not require fork instrumentation for relocatable wasm objects
+test/wasm-binary-parse.test.ts	wasm artifact policy helpers allows fork imports when an output explicitly disables fork instrumentation
+test/wasm-binary-parse.test.ts	wasm artifact policy helpers rejects fork instrumentation when an output disables it
+test/wasm-binary-parse.test.ts	extractHeapBase against cached binaries matches wasm-objdump for dash.wasm
+test/webgl-bridge.test.ts	cmdbuf decoder — TLV walker walks ClearColor + Clear + Viewport in order
+test/webgl-bridge.test.ts	cmdbuf decoder — TLV walker GenBuffers + BindBuffer + BufferData round-trips a u32 name
+test/webgl-bridge.test.ts	cmdbuf decoder — TLV walker CreateShader + ShaderSource decodes UTF-8 source
+test/webgl-bridge.test.ts	cmdbuf decoder — TLV walker ShaderSource decodes over a SharedArrayBuffer-backed cmdbuf
+test/webgl-bridge.test.ts	cmdbuf decoder — TLV walker BindAttribLocation decodes over a SharedArrayBuffer-backed cmdbuf
+test/webgl-bridge.test.ts	cmdbuf decoder — TLV walker UniformMatrix4fv reads the right number of floats
+test/webgl-bridge.test.ts	cmdbuf decoder — TLV walker DrawArrays(GL_TRIANGLES, 0, 3) decodes correctly
+test/webgl-bridge.test.ts	cmdbuf decoder — TLV walker unknown opcode returns EINVAL without throwing
+test/webgl-bridge.test.ts	cmdbuf decoder — TLV walker truncated TLV header returns EINVAL
+test/webgl-bridge.test.ts	cmdbuf decoder — TLV walker overlong payload returns EINVAL
+test/webgl-bridge.test.ts	cmdbuf decoder — TLV walker short array payload returns EINVAL before partial dispatch
+test/webgl-bridge.test.ts	cmdbuf decoder — TLV walker submit with no live context is a silent no-op
+test/webgl-bridge.test.ts	query handler QOP_GET_ERROR writes 4 bytes
+test/webgl-bridge.test.ts	query handler QOP_GET_INTEGERV reads a u32 pname and writes an i32
+test/webgl-bridge.test.ts	query handler QOP_GET_UNIFORM_LOC allocates monotonic indices
+test/webgl-bridge.test.ts	query handler QOP_GET_UNIFORM_LOC returns -1 for a missing uniform
+test/webgl-bridge.test.ts	query handler QOP_GET_SHADER_INFO_LOG writes string-len header + bytes
+test/webgl-bridge.test.ts	query handler returns -EPERM when the binding has no live context
+test/webgl-bridge.test.ts	query handler returns -EINVAL for an unknown query op
+test/webgl-main-forward.test.ts	setupMainForward builds gl on gl_forward_create_context and discards on destroy
+test/webgl-main-forward.test.ts	setupMainForward forwards submit bytes through decodeAndDispatch
+test/webgl-main-forward.test.ts	setupMainForward ignores messages for other pids
+test/webgl-main-forward.test.ts	setupMainForward dispose() unregisters the listener
+test/webgl-main-forward.test.ts	GlContextRegistry forward channel attachMainForward applies eagerly when binding exists
+test/webgl-main-forward.test.ts	GlContextRegistry forward channel attachMainForward defers until bind() when binding is absent
+test/webgl-main-forward.test.ts	GlContextRegistry forward channel detachMainForward clears both pending and active channels
+test/webgl-main-forward.test.ts	GlContextRegistry forward channel unbind() drops the forward channel
+test/webgl-muxer.test.ts	GlMuxer.switchTo replays viewport, clearColor, useProgram from the target shadow
+test/webgl-muxer.test.ts	GlMuxer.switchTo bindFramebuffer always targets FRAMEBUFFER (draw+read)
+test/webgl-muxer.test.ts	GlMuxer.switchTo scissor enabled → gl.enable; disabled → gl.disable; rect is always replayed
+test/webgl-muxer.test.ts	GlMuxer.switchTo emits enable/disable for each cap based on the shadow bit
+test/webgl-muxer.test.ts	GlMuxer.switchTo blendFuncSeparate uses the shadow's per-channel factors
+test/webgl-muxer.test.ts	GlMuxer.switchTo iterates only non-null texture units and ends with shadow.activeTexture
+test/webgl-muxer.test.ts	GlMuxer.switchTo pixelStorei replays unpack and pack alignment
+test/webgl-muxer.test.ts	GlMuxer.switchTo switchTo is a no-op when the target is the current binding
+test/webgl-muxer.test.ts	GlMuxer.switchTo switchTo to a different target replays state
+test/webgl-muxer.test.ts	GlMuxer.switchTo invalidateCurrent forces the next switchTo to replay
+test/webgl-registry.test.ts	GlContextRegistry binds and retrieves with null lazy fields
+test/webgl-registry.test.ts	GlContextRegistry unbinds idempotently
+test/webgl-registry.test.ts	GlContextRegistry rebindMemory invalidates the cached cmdbuf view
+test/webgl-registry.test.ts	GlContextRegistry rebindMemory on an unknown pid is a no-op
+test/webgl-registry.test.ts	GlContextRegistry attachCanvas wires the surface but does not build a context
+test/webgl-registry.test.ts	GlContextRegistry detachCanvas clears the canvas and the context
+test/webgl-registry.test.ts	GlContextRegistry attachCanvas before bind queues the canvas and drains on bind
+test/webgl-registry.test.ts	GlContextRegistry detachCanvas drops a pending canvas (no binding yet)
+test/webgl-registry.test.ts	GlContextRegistry getCanvas returns the bound canvas, the pending canvas, or null
+test/webgl-registry.test.ts	GlContextRegistry propagating parent canvas via getCanvas + attachCanvas wires both pids to the same canvas
+test/webgl-registry.test.ts	GlContextRegistry onChange notifies bind/unbind events and the unsubscribe closure works
+test/webgl-registry.test.ts	GlContextRegistry list() returns all live bindings
+test/webgl-shadow.test.ts	GlShadowState — defaults defaultShadow returns plan §B1 initial state
+test/webgl-shadow.test.ts	GlShadowState — defaults registry.bind() installs a fresh shadow per binding
+test/webgl-shadow.test.ts	cmdbuf decoder — shadow writes OP_VIEWPORT writes shadow.viewport
+test/webgl-shadow.test.ts	cmdbuf decoder — shadow writes OP_CLEAR_COLOR writes shadow.clearColor
+test/webgl-shadow.test.ts	cmdbuf decoder — shadow writes OP_ENABLE / OP_DISABLE flip the matching shadow cap bits
+test/webgl-shadow.test.ts	cmdbuf decoder — shadow writes OP_ENABLE on an unrecognized cap leaves the shadow untouched
+test/webgl-shadow.test.ts	cmdbuf decoder — shadow writes SCISSOR_TEST enable/disable flips shadow.scissor.enabled without touching rect
+test/webgl-shadow.test.ts	cmdbuf decoder — shadow writes OP_SCISSOR before OP_ENABLE(GL_SCISSOR_TEST) survives switchTo
+test/webgl-shadow.test.ts	cmdbuf decoder — shadow writes OP_BLEND_FUNC duplicates srcRGB→srcA and dstRGB→dstA
+test/webgl-shadow.test.ts	cmdbuf decoder — shadow writes OP_DEPTH_FUNC / OP_CULL_FACE / OP_FRONT_FACE write their shadow fields
+test/webgl-shadow.test.ts	cmdbuf decoder — shadow writes OP_PIXEL_STOREI writes unpack/pack alignment only on matching pnames
+test/webgl-shadow.test.ts	cmdbuf decoder — shadow writes OP_ACTIVE_TEXTURE + OP_BIND_TEXTURE populate the active unit
+test/webgl-shadow.test.ts	cmdbuf decoder — shadow writes OP_USE_PROGRAM writes shadow.currentProgram and b.currentProgram in sync
+test/webgl-shadow.test.ts	cmdbuf decoder — shadow writes OP_BIND_VERTEX_ARRAY writes shadow.vao
+test/webgl-shadow.test.ts	cmdbuf decoder — shadow writes OP_BIND_FRAMEBUFFER writes shadow.fbo for draw targets only
+test/webgl-submit-drain.test.ts	drainSubmitQueue drives switchTo once per distinct binding then dispatches each frame
+test/webgl-submit-drain.test.ts	drainSubmitQueue compositor pid drains before clients regardless of enqueue order
+test/webgl-submit-drain.test.ts	drainSubmitQueue skips switchTo when muxerFor returns null
+test/webgl-submit-drain.test.ts	drainSubmitQueue still dispatches when binding has a gl but muxerFor returns null
+test/webgl-submit-drain.test.ts	drainSubmitQueue each binding gets its own muxer when they hold distinct gl contexts
+test/webgl-submit-drain.test.ts	drainSubmitQueue returns immediately on an empty queue
+test/webgl-submit-drain.test.ts	drainSubmitQueue releaseIfEmpty drops entries promptly so isEmpty flips after the last frame
+test/webgl-submit-drain.test.ts	drainSubmitQueue returns the first dispatch error and leaves later frames queued
+test/webgl-submit-queue.test.ts	SubmitQueue compositor pid jumps ahead of clients enqueued earlier
+test/webgl-submit-queue.test.ts	SubmitQueue drains compositor first, then clients in enqueue order
+test/webgl-submit-queue.test.ts	SubmitQueue round-robins among clients when each carries multiple frames
+test/webgl-submit-queue.test.ts	SubmitQueue multiple frames for the same (pid, ctx) coalesce into one entry
+test/webgl-submit-queue.test.ts	SubmitQueue same pid with different contextId produces two distinct entries
+test/webgl-submit-queue.test.ts	SubmitQueue releaseIfEmpty is a no-op when the entry still has frames
+test/webgl-submit-queue.test.ts	SubmitQueue releaseIfEmpty drops empty entries from byKey and the lane
+test/webgl-submit-queue.test.ts	SubmitQueue pickNext on empty queue returns null and leaves isEmpty true
+test/webgl-submit-queue.test.ts	SubmitQueue isCompositor predicate override routes the chosen pid to the compositor lane
+test/webgl-submit-queue.test.ts	SubmitQueue compositor with multiple frames stays at the head until drained
+test/webgl-submit-queue.test.ts	SubmitQueue re-enqueuing after release creates a fresh entry at the tail
+test/worker-adapter.test.ts	MockWorkerAdapter should create a worker handle and capture workerData
+test/worker-adapter.test.ts	MockWorkerAdapter should dispatch messages to registered handlers
+test/worker-adapter.test.ts	MockWorkerAdapter should dispatch error events to registered handlers
+test/worker-adapter.test.ts	MockWorkerAdapter should dispatch exit events to registered handlers
+test/worker-adapter.test.ts	MockWorkerAdapter should capture sent messages via postMessage
+/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-n6vr-perl-vfs-image-build-fails-with-vfs-parent-dir-write-err/tests/package-system/browser-binary-dependencies.test.ts	browser binary dependencies requires a build.toml sidecar for every fetchable registry package
+/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-n6vr-perl-vfs-image-build-fails-with-vfs-parent-dir-write-err/tests/package-system/browser-binary-dependencies.test.ts	browser binary dependencies backs every browser @binaries import with a fetchable package output
+/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-n6vr-perl-vfs-image-build-fails-with-vfs-parent-dir-write-err/tests/package-system/fetch-binaries-allow-stale.test.ts	fetch-binaries.sh per-package walk walks every package with build.toml, once per declared arch
+/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-n6vr-perl-vfs-image-build-fails-with-vfs-parent-dir-write-err/tests/package-system/fetch-binaries-allow-stale.test.ts	fetch-binaries.sh per-package walk --allow-stale resolves the same packages as the default (banner printed)
+/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-n6vr-perl-vfs-image-build-fails-with-vfs-parent-dir-write-err/tests/package-system/fetch-binaries-allow-stale.test.ts	fetch-binaries.sh per-package walk --fetch-only passes the resolver source-build guard
+/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-n6vr-perl-vfs-image-build-fails-with-vfs-parent-dir-write-err/tests/package-system/fetch-binaries-allow-stale.test.ts	fetch-binaries.sh per-package walk --allow-stale degrades per-package failures to warnings (exit 0)
+/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-n6vr-perl-vfs-image-build-fails-with-vfs-parent-dir-write-err/tests/package-system/fetch-binaries-allow-stale.test.ts	fetch-binaries.sh per-package walk propagates a build-deps failure as a non-zero exit + stderr listing
+/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-n6vr-perl-vfs-image-build-fails-with-vfs-parent-dir-write-err/tests/package-system/fetch-binaries-allow-stale.test.ts	fetch-binaries.sh per-package walk --help mentions the per-package walk
+test/vfs/browser-mount-layering.test.ts	browser host mount layering produces 10 mounts: 8 from spec + /dev/shm + /dev
+test/vfs/browser-mount-layering.test.ts	browser host mount layering /dev/shm wins over /dev via longest-prefix match
+test/vfs/browser-mount-layering.test.ts	browser host mount layering rootfs files reach the image backend through the router
+test/vfs/browser-mount-layering.test.ts	browser host mount layering scratch /tmp roundtrips a write that does not appear under /
+test/vfs/browser-mount-layering.test.ts	browser host mount layering /home/user and /root resolve to distinct scratch backends
+test/vfs/default-mounts.test.ts	DEFAULT_MOUNT_SPEC includes the eight canonical mount points
+test/vfs/default-mounts.test.ts	DEFAULT_MOUNT_SPEC declares / as a read-only image mount
+test/vfs/default-mounts.test.ts	resolveForNode produces a MountConfig per spec entry
+test/vfs/default-mounts.test.ts	resolveForNode / mount is a MemoryFileSystem loaded from the supplied image
+test/vfs/default-mounts.test.ts	resolveForNode /tmp mount is a HostFileSystem rooted under sessionDir
+test/vfs/default-mounts.test.ts	resolveForNode pre-creates every scratch directory under sessionDir
+test/vfs/default-mounts.test.ts	resolveForNode applies declared scratch directory modes natively on creation and virtually
+test/vfs/default-mounts.test.ts	resolveForNode adds the nobody group to legacy dinit images
+test/vfs/default-mounts.test.ts	resolveForNode throws on duplicate mount paths
+test/vfs/default-mounts.test.ts	resolveForNode throws on a non-absolute mount path
+test/vfs/default-mounts.test.ts	resolveForNode rejects mount paths with . or .. segments
+test/vfs/default-mounts.test.ts	resolveForNode rejects trailing slash on non-root mount paths
+test/vfs/default-mounts.test.ts	resolveForBrowser produces image-backed and memfs-scratch backends only
+test/vfs/default-mounts.test.ts	resolveForBrowser / mount is image-backed and reads /etc/passwd from the image
+test/vfs/default-mounts.test.ts	resolveForBrowser scratch mounts are independent writable memfs instances
+test/vfs/default-mounts.test.ts	resolveForBrowser applies declared scratch root modes
+test/vfs/default-mounts.test.ts	resolveForBrowser adds the nobody group to legacy dinit images
+test/vfs/default-mounts.test.ts	resolveForBrowser scratchSabBytes overrides apply per mount
+test/vfs/default-mounts.test.ts	resolveForBrowser throws on duplicate mount paths
+test/vfs/host-fs-uid-gid.test.ts	HostFileSystem uid/gid normalization stat returns uid=0 gid=0 regardless of host's real uid
+test/vfs/host-fs-uid-gid.test.ts	HostFileSystem uid/gid normalization lstat returns uid=0 gid=0
+test/vfs/host-fs-uid-gid.test.ts	HostFileSystem uid/gid normalization fstat returns uid=0 gid=0
+test/vfs/host-fs-uid-gid.test.ts	HostFileSystem uid/gid normalization stat on a directory also normalizes
+test/vfs/host-fs-uid-gid.test.ts	HostFileSystem uid/gid normalization chmod updates virtual mode without changing native mode
+test/vfs/host-fs-uid-gid.test.ts	HostFileSystem uid/gid normalization chown updates virtual owner without changing native owner
+test/vfs/host-fs-uid-gid.test.ts	HostFileSystem uid/gid normalization fchmod and fchown update virtual metadata without native changes
+test/vfs/memfs-uid-gid-image.test.ts	uid/gid round-trip through image saveImage + fromImage preserves uid/gid
+test/vfs/memfs-uid-gid-image.test.ts	uid/gid round-trip through image preserves distinctive non-default uid/gid pair through round-trip
+test/vfs/memfs-uid-gid-image.test.ts	uid/gid round-trip through image survives load → mutate → save → load (round-trip in both directions)
+test/vfs/sharedfs-uid-gid.test.ts	SharedFS uid/gid new file has uid=0 gid=0 by default
+test/vfs/sharedfs-uid-gid.test.ts	SharedFS uid/gid stat surfaces non-zero uid/gid written to inode bytes
+test/vfs/sharedfs-uid-gid.test.ts	SharedFS uid/gid chown changes uid/gid
+test/vfs/sharedfs-uid-gid.test.ts	SharedFS uid/gid fchown changes uid/gid via fd
+test/vfs/sharedfs-uid-gid.test.ts	SharedFS uid/gid chown round-trips back to zero and leaves other inode fields intact
+test/vfs/sharedfs-uid-gid.test.ts	SharedFS uid/gid createFileWithOwner sets uid/gid at creation
+test/vfs/sharedfs-uid-gid.test.ts	SharedFS uid/gid createFileWithOwner sets non-root uid/gid
+test/vfs/sharedfs-uid-gid.test.ts	SharedFS uid/gid mkdirWithOwner sets uid/gid at creation
+test/vfs/sharedfs-uid-gid.test.ts	SharedFS uid/gid symlinkWithOwner sets uid/gid at creation
+test/vfs/sharedfs-uid-gid.test.ts	SharedFS uid/gid symlinkWithOwner does not follow symlinks (chowns the link, not target)
+/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-n6vr-perl-vfs-image-build-fails-with-vfs-parent-dir-write-err/web-libs/kandelo-session/test/kandelo-session.test.ts	LiveKernelHost: status returns the initial status from the constructor option
+/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-n6vr-perl-vfs-image-build-fails-with-vfs-parent-dir-write-err/web-libs/kandelo-session/test/kandelo-session.test.ts	LiveKernelHost: status defaults to 'idle' when no status is provided
+/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-n6vr-perl-vfs-image-build-fails-with-vfs-parent-dir-write-err/web-libs/kandelo-session/test/kandelo-session.test.ts	LiveKernelHost: status fires subscribers on setStatus and returns an unsubscribe
+/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-n6vr-perl-vfs-image-build-fails-with-vfs-parent-dir-write-err/web-libs/kandelo-session/test/kandelo-session.test.ts	LiveKernelHost: status does NOT fire when setStatus is called with the current value
+/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-n6vr-perl-vfs-image-build-fails-with-vfs-parent-dir-write-err/web-libs/kandelo-session/test/kandelo-session.test.ts	LiveKernelHost: dmesg ring collects pushed lines into history
+/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-n6vr-perl-vfs-image-build-fails-with-vfs-parent-dir-write-err/web-libs/kandelo-session/test/kandelo-session.test.ts	LiveKernelHost: dmesg ring fires subscribers on each pushed line and returns an unsubscribe
+/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-n6vr-perl-vfs-image-build-fails-with-vfs-parent-dir-write-err/web-libs/kandelo-session/test/kandelo-session.test.ts	LiveKernelHost: dmesg ring history is a snapshot — mutating the returned array doesn't affect the ring
+/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-n6vr-perl-vfs-image-build-fails-with-vfs-parent-dir-write-err/web-libs/kandelo-session/test/kandelo-session.test.ts	LiveKernelHost: process events fans out emitProcessEvent to subscribers in order
+/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-n6vr-perl-vfs-image-build-fails-with-vfs-parent-dir-write-err/web-libs/kandelo-session/test/kandelo-session.test.ts	LiveKernelHost: process events subscribe returns an unsubscribe that detaches that listener only
+/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-n6vr-perl-vfs-image-build-fails-with-vfs-parent-dir-write-err/web-libs/kandelo-session/test/kandelo-session.test.ts	LiveKernelHost: lazy download events fans out kernel lazy download events and records history
+/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-n6vr-perl-vfs-image-build-fails-with-vfs-parent-dir-write-err/web-libs/kandelo-session/test/kandelo-session.test.ts	LiveKernelHost: lazy download events clears lazy download history when the kernel is replaced
+/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-n6vr-perl-vfs-image-build-fails-with-vfs-parent-dir-write-err/web-libs/kandelo-session/test/kandelo-session.test.ts	LiveKernelHost: process listing resolves process snapshot UIDs through /etc/passwd
+/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-n6vr-perl-vfs-image-build-fails-with-vfs-parent-dir-write-err/web-libs/kandelo-session/test/kandelo-session.test.ts	LiveKernelHost: shell command queue does not treat heredoc continuation prompts as command completion
+/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-n6vr-perl-vfs-image-build-fails-with-vfs-parent-dir-write-err/web-libs/kandelo-session/test/kandelo-session.test.ts	LiveKernelHost: shell command queue does not treat echoed dollar-looking input as shell readiness
+/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-n6vr-perl-vfs-image-build-fails-with-vfs-parent-dir-write-err/web-libs/kandelo-session/test/kandelo-session.test.ts	LiveKernelHost: shell command queue serializes concurrent PTY attaches for the same terminal session
+/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-n6vr-perl-vfs-image-build-fails-with-vfs-parent-dir-write-err/web-libs/kandelo-session/test/kandelo-session.test.ts	LiveKernelHost: shell command queue respawns stale PTY sessions without disconnecting existing listeners
+/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-n6vr-perl-vfs-image-build-fails-with-vfs-parent-dir-write-err/web-libs/kandelo-session/test/kandelo-session.test.ts	LiveKernelHost: shell command queue keeps PTY listeners connected when an exited shell respawns
+/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-n6vr-perl-vfs-image-build-fails-with-vfs-parent-dir-write-err/web-libs/kandelo-session/test/kandelo-session.test.ts	LiveKernelHost: descriptor getBootDescriptor returns a deep clone — callers can't mutate internal state
+/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-n6vr-perl-vfs-image-build-fails-with-vfs-parent-dir-write-err/web-libs/kandelo-session/test/kandelo-session.test.ts	LiveKernelHost: descriptor setDescriptor replaces the descriptor without firing status
+/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-n6vr-perl-vfs-image-build-fails-with-vfs-parent-dir-write-err/web-libs/kandelo-session/test/kandelo-session.test.ts	LiveKernelHost: descriptor + gallery lifecycle defaults applyBootDescriptor stores the descriptor when no live apply hook is installed
+/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-n6vr-perl-vfs-image-build-fails-with-vfs-parent-dir-write-err/web-libs/kandelo-session/test/kandelo-session.test.ts	LiveKernelHost: descriptor + gallery lifecycle defaults applyBootDescriptor delegates to the installed live apply hook
+/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-n6vr-perl-vfs-image-build-fails-with-vfs-parent-dir-write-err/web-libs/kandelo-session/test/kandelo-session.test.ts	LiveKernelHost: descriptor + gallery lifecycle defaults halt sets status to halted
+/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-n6vr-perl-vfs-image-build-fails-with-vfs-parent-dir-write-err/web-libs/kandelo-session/test/kandelo-session.test.ts	LiveKernelHost: descriptor + gallery lifecycle defaults galleryQuery returns installed presets and still leaves saveCurrentToGallery as a stub
+/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-n6vr-perl-vfs-image-build-fails-with-vfs-parent-dir-write-err/web-libs/kandelo-session/test/kandelo-session.test.ts	LiveKernelHost: descriptor + gallery lifecycle defaults setGalleryItems replaces presets and notifies gallery subscribers
+/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-n6vr-perl-vfs-image-build-fails-with-vfs-parent-dir-write-err/web-libs/kandelo-session/test/kandelo-session.test.ts	LiveKernelHost: surface availability marks a configured web preview available only after the HTTP response is ready
+/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-n6vr-perl-vfs-image-build-fails-with-vfs-parent-dir-write-err/web-libs/kandelo-session/test/kandelo-session.test.ts	LiveKernelHost: surface availability clears web availability when the preview is removed
+/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-n6vr-perl-vfs-image-build-fails-with-vfs-parent-dir-write-err/web-libs/kandelo-session/test/kandelo-session.test.ts	LiveKernelHost: surface availability tracks web preview pending requests without affecting availability
+/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-n6vr-perl-vfs-image-build-fails-with-vfs-parent-dir-write-err/web-libs/kandelo-session/test/kandelo-session.test.ts	LiveKernelHost: snapshot delegates to takeSnapshot returns a Snapshot whose descriptor matches the host's
+/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-n6vr-perl-vfs-image-build-fails-with-vfs-parent-dir-write-err/web-libs/kandelo-session/test/kandelo-session.test.ts	LiveKernelHost: snapshot delegates to takeSnapshot honors preferMode override
+/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-n6vr-perl-vfs-image-build-fails-with-vfs-parent-dir-write-err/web-libs/kandelo-session/test/kandelo-session.test.ts	LiveKernelHost: snapshot delegates to takeSnapshot picks 'delta' when the descriptor carries a small inline overlay
+/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-n6vr-perl-vfs-image-build-fails-with-vfs-parent-dir-write-err/web-libs/kandelo-session/test/kandelo-session.test.ts	Kandelo demo config provides generic presentation defaults for web-backed profiles
+/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-n6vr-perl-vfs-image-build-fails-with-vfs-parent-dir-write-err/web-libs/kandelo-session/test/kandelo-session.test.ts	Kandelo demo config resolves profile presentation over image defaults
+/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-n6vr-perl-vfs-image-build-fails-with-vfs-parent-dir-write-err/web-libs/kandelo-session/test/kandelo-session.test.ts	Kandelo demo config throws when profile metadata is incomplete
+/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-n6vr-perl-vfs-image-build-fails-with-vfs-parent-dir-write-err/web-libs/kandelo-session/test/kandelo-session.test.ts	Kandelo demo config throws when profile metadata has an invalid surface
+/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-n6vr-perl-vfs-image-build-fails-with-vfs-parent-dir-write-err/web-libs/kandelo-session/test/kandelo-session.test.ts	Kandelo demo config resolves and validates profile assets
+/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-n6vr-perl-vfs-image-build-fails-with-vfs-parent-dir-write-err/web-libs/kandelo-session/test/kandelo-session.test.ts	Kandelo demo config throws when profile assets use a relative path
+/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-n6vr-perl-vfs-image-build-fails-with-vfs-parent-dir-write-err/web-libs/kandelo-session/test/kandelo-session.test.ts	Kandelo demo config resolves and validates guide actions
+/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-n6vr-perl-vfs-image-build-fails-with-vfs-parent-dir-write-err/web-libs/kandelo-session/test/kandelo-session.test.ts	Kandelo demo config provides built-in Node guide metadata for stale VFS images
+/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-n6vr-perl-vfs-image-build-fails-with-vfs-parent-dir-write-err/web-libs/kandelo-session/test/kandelo-session.test.ts	Kandelo demo config provides built-in presentation and assets for stale VFS images
+/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-n6vr-perl-vfs-image-build-fails-with-vfs-parent-dir-write-err/web-libs/kandelo-session/test/kandelo-session.test.ts	Kandelo demo config rejects duplicate guide action ids
+/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-n6vr-perl-vfs-image-build-fails-with-vfs-parent-dir-write-err/web-libs/kandelo-session/test/kandelo-session.test.ts	Kandelo demo config returns null when no matching presentation exists
