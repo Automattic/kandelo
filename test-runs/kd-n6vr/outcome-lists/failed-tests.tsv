@@ -1,0 +1,29 @@
+test/centralized-spawn.test.ts	non-forking posix_spawn runs spawn-smoke and the parent's fork_count stays 0
+test/centralized-spawn.test.ts	non-forking posix_spawn covers spawnp / file actions / SETPGROUP
+test/centralized-spawn.test.ts	non-forking posix_spawn reports ENOEXEC for non-Wasm spawn targets before launching a worker
+test/getaddrinfo.test.ts	getaddrinfo override resolves numeric IP, NULL name, and hostname via getaddrinfo
+test/getaddrinfo.test.ts	getaddrinfo override resolves a hostname through TcpNetworkBackend without deadlocking on real DNS
+test/ifhwaddr.test.ts	SIOCGIFCONF / SIOCGIFHWADDR returns a virtual MAC address via ioctl
+test/kernel.test.ts	CentralizedKernelWorker should initialize the kernel from wasm bytes
+test/mmap-shared.test.ts	MAP_SHARED mmap + msync writes through MAP_SHARED mapping and flushes with msync
+test/multi-worker.test.ts	CentralizedKernelWorker Process Management should register and unregister processes
+test/multi-worker.test.ts	CentralizedKernelWorker Process Management repeated compact-layout launches do not leave process registrations behind
+test/multi-worker.test.ts	CentralizedKernelWorker Process Management should set next child PID for fork
+test/multi-worker.test.ts	CentralizedKernelWorker Process Management should throw when registering duplicate PID
+test/pthread-trap-semantics.test.ts	pthread trap POSIX semantics keeps normal pthread return and pthread_exit per-thread
+test/pthread-trap-semantics.test.ts	pthread trap POSIX semantics terminates the process when a pthread worker hits an uncaught guest trap
+test/pthread-trap-semantics.test.ts	pthread trap POSIX semantics makes a fatal pthread trap visible through waitpid signal status
+test/pthread.test.ts	pthread creates a thread that modifies shared state and returns a value
+test/pthread.test.ts	thread process exit preserves exit(0) from a non-main thread while the main thread is blocked
+test/putenv.test.ts	putenv / setenv / unsetenv populates __environ from kernel at startup and syncs setenv/putenv/unsetenv
+test/run-example-resolver.test.ts	run-example exec resolver does not resolve native host executables outside KERNEL_CWD as guest programs
+test/sysv-ipc.test.ts	SysV IPC message queues, semaphores, shared memory
+test/wasi-shim.test.ts	WASI shim hello world via fd_write
+test/wasi-shim.test.ts	WASI shim args_get passes argv to the program
+test/wasm-trap.test.ts	wasm trap → host exit (regression) __builtin_trap() in user code: spawn() resolves promptly, no hang
+test/wasm-trap.test.ts	wasm trap → host exit (regression) out-of-bounds memory trap resolves as SIGSEGV
+test/wasm-trap.test.ts	wasm trap → host exit (regression) integer divide-by-zero trap resolves as SIGFPE
+test/wasm-trap.test.ts	wasm trap → host exit (regression) abort(): doesn't reach post-abort code, doesn't hang the host
+test/wasm64.test.ts	wasm64 process support detectPtrWidth identifies wasm64 binary
+test/wasm64.test.ts	wasm64 process support detectPtrWidth identifies wasm32 binary
+test/wasm64.test.ts	wasm64 process support hello64: LP64 type sizes
