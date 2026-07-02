@@ -43,6 +43,28 @@ function injectCorsProxyUrlPlaceholder(content: string, corsProxyUrl: string): s
   return content.replace('"__CORS_PROXY_URL__"', JSON.stringify(corsProxyUrl));
 }
 
+const blobIframeInterceptorPath = path.resolve(
+  __dirname,
+  "public",
+  "blob-iframe-interceptor.js",
+);
+
+/**
+ * Inline the reusable blob-iframe interceptor (public/blob-iframe-interceptor.js)
+ * into the service worker in place of the `"__BLOB_IFRAME_INTERCEPTOR__"`
+ * placeholder. The service worker injects this source into every bridged HTML
+ * document so app-created `blob:` iframes become service-worker-controlled
+ * `about:srcdoc` documents. Kept as a separate file so it stays independently
+ * readable and testable.
+ */
+function injectBlobIframeInterceptorPlaceholder(content: string): string {
+  if (!content.includes('"__BLOB_IFRAME_INTERCEPTOR__"')) {
+    return content;
+  }
+  const interceptor = fs.readFileSync(blobIframeInterceptorPath, "utf-8");
+  return content.replace('"__BLOB_IFRAME_INTERCEPTOR__"', JSON.stringify(interceptor));
+}
+
 /**
  * Vite plugin: resolve `@kernel-wasm` and `@rootfs-vfs` lazily.
  *
@@ -259,9 +281,11 @@ function injectCorsProxyUrl(): Plugin {
   const sourceSwPath = path.resolve(__dirname, "public", "service-worker.js");
 
   function serviceWorkerSource(): string {
-    return injectCorsProxyUrlPlaceholder(
-      fs.readFileSync(sourceSwPath, "utf-8"),
-      servedCorsProxyUrl,
+    return injectBlobIframeInterceptorPlaceholder(
+      injectCorsProxyUrlPlaceholder(
+        fs.readFileSync(sourceSwPath, "utf-8"),
+        servedCorsProxyUrl,
+      ),
     );
   }
 
@@ -305,6 +329,7 @@ function injectCorsProxyUrl(): Plugin {
       if (fs.existsSync(swPath)) {
         let content = fs.readFileSync(swPath, "utf-8");
         content = injectCorsProxyUrlPlaceholder(content, outputCorsProxyUrl);
+        content = injectBlobIframeInterceptorPlaceholder(content);
         fs.writeFileSync(swPath, content);
       }
     },
