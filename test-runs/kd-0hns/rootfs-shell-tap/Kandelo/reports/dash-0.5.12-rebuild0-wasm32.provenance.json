@@ -1,0 +1,113 @@
+{
+  "bottle": {
+    "bottle_tag": "wasm32_kandelo",
+    "bytes": 144268,
+    "cache_key_sha": "f1cf217ac3c91d7dddf9acfa101b6ea0c090fbbbb7abe064f31f601de2e11772",
+    "cellar": "/home/linuxbrew/.linuxbrew/Cellar",
+    "prefix": "/home/linuxbrew/.linuxbrew",
+    "sha256": "b07b39e7eb19324f49bd6ab23cad020354f4bcbf5602a6b6936a2633969888b8",
+    "url": "https://ghcr.io/v2/automattic/kandelo-homebrew/dash/blobs/sha256:b07b39e7eb19324f49bd6ab23cad020354f4bcbf5602a6b6936a2633969888b8"
+  },
+  "build": {
+    "brew_version": "Homebrew 6.0.5",
+    "dev_shell": "scripts/dev-shell.sh",
+    "github_run": "https://github.com/local/kandelo/actions/runs/local",
+    "job": "local",
+    "runner_os": "local",
+    "sdk_fingerprint": "a7ef0c406359039ee25d54e4f8baee3afdc857cdbcac5df9a065ef875b3a3b48",
+    "sysroot_fingerprint": "d19b801e0da64ff3415019de982ee194ef093de68e1a08d25f41a82f07bcca98"
+  },
+  "formula": {
+    "path": "Formula/dash.rb",
+    "sha256": "10131b1f653fee7727b06b6c0feed3d16b9edab6d156c183be3a3ee19fc61f4a"
+  },
+  "metadata": {
+    "formula_json": {
+      "path": "Kandelo/formula/dash.json",
+      "sha256": "f518b7f65c41827e58dd2938409418db017005ebce8ed5a05f4fcaf40362a07b"
+    },
+    "link_manifest_json": {
+      "path": "Kandelo/link/dash-0.5.12-rebuild0-wasm32.json",
+      "sha256": "28de98099cba2d9786772805650501ea839491cc778fe55a6c96eb86f1f1e719"
+    },
+    "metadata_json": {
+      "path": "Kandelo/metadata.json",
+      "sha256": "09973d75c369f192036c606ed88ee777e5a82f1a7475d9edfd7fb14f49683e38"
+    },
+    "provenance_json": {
+      "path": "Kandelo/reports/dash-0.5.12-rebuild0-wasm32.provenance.json",
+      "sha256": "441622942228d6fec1ebe1c3432dae916fb3cd9fe1994623851e5b4edf903611"
+    }
+  },
+  "repositories": {
+    "kandelo_commit": "1ab41fe2ad5553f4fa4bb0223f2d804b13149578",
+    "kandelo_repository": "Automattic/kandelo",
+    "tap_commit": "1ab41fe2ad5553f4fa4bb0223f2d804b13149578",
+    "tap_repository": "Automattic/kandelo-homebrew"
+  },
+  "schema": 1,
+  "subject": {
+    "arch": "wasm32",
+    "bottle_rebuild": 0,
+    "kandelo_abi": 16,
+    "package": "dash",
+    "version": "0.5.12"
+  },
+  "validation": {
+    "outcome_lists": [
+      {
+        "failed": [],
+        "name": "schema",
+        "passed": [
+          "Kandelo/metadata.json",
+          "Kandelo/formula/dash.json",
+          "Kandelo/link/dash-0.5.12-rebuild0-wasm32.json",
+          "Kandelo/reports/dash-0.5.12-rebuild0-wasm32.provenance.json"
+        ],
+        "skipped": [],
+        "status": "success"
+      },
+      {
+        "failed": [],
+        "name": "homebrew_audit",
+        "passed": [],
+        "skip_reason": "Tap audit can run in the trusted tap publication gate.",
+        "skipped": [
+          "brew audit was not part of this local dry-run verification"
+        ],
+        "status": "skipped"
+      },
+      {
+        "failed": [],
+        "name": "bottle_build",
+        "passed": [
+          "brew install --build-bottle",
+          "brew test",
+          "brew bottle --json --no-rebuild",
+          "brew bottle --merge --write --no-commit"
+        ],
+        "skipped": [],
+        "status": "success"
+      },
+      {
+        "failed": [],
+        "name": "node_smoke",
+        "passed": [
+          "Formula test ran dash through node --import tsx/esm examples/run-example.ts"
+        ],
+        "skipped": [],
+        "status": "success"
+      },
+      {
+        "failed": [],
+        "name": "browser_smoke",
+        "passed": [],
+        "skip_reason": "browser smoke not run in this local bottle verification pass; Node formula smoke passed",
+        "skipped": [
+          "browser smoke not run in this local bottle verification pass; Node formula smoke passed"
+        ],
+        "status": "skipped"
+      }
+    ]
+  }
+}

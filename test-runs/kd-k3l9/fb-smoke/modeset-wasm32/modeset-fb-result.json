@@ -1,0 +1,20 @@
+{
+  "mode": "kms",
+  "binds": 0,
+  "unbinds": 0,
+  "writes": 0,
+  "writeBytes": 0,
+  "kmsBlits": 0,
+  "kmsCommits": 110,
+  "boundPid": null,
+  "width": 1920,
+  "height": 1080,
+  "fmt": null,
+  "canvasNonBlankPixels": -1,
+  "exitedEarly": false,
+  "exitCode": null,
+  "durationMs": 2252,
+  "stdoutTail": "",
+  "stderrTail": "",
+  "consoleErrors": []
+}

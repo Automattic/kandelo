@@ -17,4 +17,5 @@ script_path = "packages/registry/bzip2/build-bzip2.sh"
 
 [[outputs]]
 name = "bzip2"
+fork_instrumentation = "not-required"
 wasm = "bzip2.wasm"

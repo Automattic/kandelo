@@ -1,0 +1,113 @@
+{
+  "bottle": {
+    "bottle_tag": "wasm32_kandelo",
+    "bytes": 202079,
+    "cache_key_sha": "e74be0eac8237d4345eb1db5c0c6d59aa0a20a54d7a603affeaa76190c7effc3",
+    "cellar": "/home/linuxbrew/.linuxbrew/Cellar",
+    "prefix": "/home/linuxbrew/.linuxbrew",
+    "sha256": "51f8e3d28b47a182dbee12dd6eb25ab1a39c4c11cb6f78da51183d442796173c",
+    "url": "https://ghcr.io/v2/automattic/kandelo-homebrew/fbdoom/blobs/sha256:51f8e3d28b47a182dbee12dd6eb25ab1a39c4c11cb6f78da51183d442796173c"
+  },
+  "build": {
+    "brew_version": "Homebrew 6.0.5",
+    "dev_shell": "scripts/dev-shell.sh",
+    "github_run": "https://github.com/local/kandelo/actions/runs/local",
+    "job": "local",
+    "runner_os": "local",
+    "sdk_fingerprint": "a7ef0c406359039ee25d54e4f8baee3afdc857cdbcac5df9a065ef875b3a3b48",
+    "sysroot_fingerprint": "d19b801e0da64ff3415019de982ee194ef093de68e1a08d25f41a82f07bcca98"
+  },
+  "formula": {
+    "path": "Formula/fbdoom.rb",
+    "sha256": "0481f1947e92f1e08e785b5d8034cf1cf88c5cede0ee3e282f984f6429f43c95"
+  },
+  "metadata": {
+    "formula_json": {
+      "path": "Kandelo/formula/fbdoom.json",
+      "sha256": "5948f5ae1432784439a8bd644744a43f9a8683dafda34a3fb9866ec6017e80eb"
+    },
+    "link_manifest_json": {
+      "path": "Kandelo/link/fbdoom-0.1.0-rebuild0-wasm32.json",
+      "sha256": "638883c4808ab936c3bc491e9b4fd60338df42c81cee2dd2922f573d6089aa7c"
+    },
+    "metadata_json": {
+      "path": "Kandelo/metadata.json",
+      "sha256": "09973d75c369f192036c606ed88ee777e5a82f1a7475d9edfd7fb14f49683e38"
+    },
+    "provenance_json": {
+      "path": "Kandelo/reports/fbdoom-0.1.0-rebuild0-wasm32.provenance.json",
+      "sha256": "b289977e36facc97ccf4d1c4cb07ff64acca406b1cd335e5a6b89f9050a93faf"
+    }
+  },
+  "repositories": {
+    "kandelo_commit": "1ab41fe2ad5553f4fa4bb0223f2d804b13149578",
+    "kandelo_repository": "Automattic/kandelo",
+    "tap_commit": "1ab41fe2ad5553f4fa4bb0223f2d804b13149578",
+    "tap_repository": "Automattic/kandelo-homebrew"
+  },
+  "schema": 1,
+  "subject": {
+    "arch": "wasm32",
+    "bottle_rebuild": 0,
+    "kandelo_abi": 16,
+    "package": "fbdoom",
+    "version": "0.1.0"
+  },
+  "validation": {
+    "outcome_lists": [
+      {
+        "failed": [],
+        "name": "schema",
+        "passed": [
+          "Kandelo/metadata.json",
+          "Kandelo/formula/fbdoom.json",
+          "Kandelo/link/fbdoom-0.1.0-rebuild0-wasm32.json",
+          "Kandelo/reports/fbdoom-0.1.0-rebuild0-wasm32.provenance.json"
+        ],
+        "skipped": [],
+        "status": "success"
+      },
+      {
+        "failed": [],
+        "name": "homebrew_audit",
+        "passed": [],
+        "skip_reason": "Tap audit can run in the trusted tap publication gate.",
+        "skipped": [
+          "brew audit was not part of this local dry-run verification"
+        ],
+        "status": "skipped"
+      },
+      {
+        "failed": [],
+        "name": "bottle_build",
+        "passed": [
+          "brew install --build-bottle",
+          "brew test",
+          "brew bottle --json --no-rebuild",
+          "brew bottle --merge --write --no-commit"
+        ],
+        "skipped": [],
+        "status": "success"
+      },
+      {
+        "failed": [],
+        "name": "node_smoke",
+        "passed": [
+          "Formula test ran fbdoom through node --import tsx/esm examples/run-example.ts"
+        ],
+        "skipped": [],
+        "status": "success"
+      },
+      {
+        "failed": [],
+        "name": "browser_smoke",
+        "passed": [],
+        "skip_reason": "browser smoke not run locally: fbdoom requires IWAD data plus framebuffer/audio device validation",
+        "skipped": [
+          "browser smoke not run locally: fbdoom requires IWAD data plus framebuffer/audio device validation"
+        ],
+        "status": "skipped"
+      }
+    ]
+  }
+}

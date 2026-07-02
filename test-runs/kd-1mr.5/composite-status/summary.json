@@ -1,0 +1,436 @@
+{
+  "suite": "Homebrew composite VFS status",
+  "bead_id": "kd-1mr.5",
+  "generated_at": "2026-07-01T06:55:57.001Z",
+  "result_dir": "/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-1mr.5-certify-browser-rootfs-shell/test-runs/kd-1mr.5/composite-status",
+  "arch": "wasm32",
+  "runtimes": [
+    "node",
+    "browser"
+  ],
+  "metadata": [
+    "/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-1mr.5-certify-browser-rootfs-shell/test-runs/kd-0hns/rootfs-shell-tap/Kandelo/metadata.json"
+  ],
+  "package_count": 12,
+  "counts": {
+    "pass": 2,
+    "fail": 0,
+    "skip": 14
+  },
+  "outcomes": [
+    {
+      "name": "rootfs_node_vfs_image",
+      "composite": "rootfs",
+      "runtime": "node",
+      "direct_packages": [
+        "dash",
+        "bash",
+        "ncurses",
+        "coreutils",
+        "gawk",
+        "grep",
+        "sed",
+        "bc",
+        "file",
+        "m4",
+        "make",
+        "findutils",
+        "diffutils",
+        "posix-utils-lite"
+      ],
+      "closure_packages": [
+        "dash",
+        "bash",
+        "ncurses",
+        "coreutils",
+        "gawk",
+        "grep",
+        "sed",
+        "bc",
+        "file",
+        "m4",
+        "make",
+        "findutils",
+        "diffutils",
+        "posix-utils-lite"
+      ],
+      "status": "skip",
+      "details": "bash: no generated Homebrew sidecar metadata found; ncurses: no generated Homebrew sidecar metadata found; coreutils: no generated Homebrew sidecar metadata found; gawk: no generated Homebrew sidecar metadata found; grep: no generated Homebrew sidecar metadata found; sed: no generated Homebrew sidecar metadata found; bc: no generated Homebrew sidecar metadata found; file: no generated Homebrew sidecar metadata found; m4: no generated Homebrew sidecar metadata found; make: no generated Homebrew sidecar metadata found; findutils: no generated Homebrew sidecar metadata found; diffutils: no generated Homebrew sidecar metadata found; posix-utils-lite: no generated Homebrew sidecar metadata found",
+      "blockers": [
+        "bash: no generated Homebrew sidecar metadata found",
+        "ncurses: no generated Homebrew sidecar metadata found",
+        "coreutils: no generated Homebrew sidecar metadata found",
+        "gawk: no generated Homebrew sidecar metadata found",
+        "grep: no generated Homebrew sidecar metadata found",
+        "sed: no generated Homebrew sidecar metadata found",
+        "bc: no generated Homebrew sidecar metadata found",
+        "file: no generated Homebrew sidecar metadata found",
+        "m4: no generated Homebrew sidecar metadata found",
+        "make: no generated Homebrew sidecar metadata found",
+        "findutils: no generated Homebrew sidecar metadata found",
+        "diffutils: no generated Homebrew sidecar metadata found",
+        "posix-utils-lite: no generated Homebrew sidecar metadata found"
+      ]
+    },
+    {
+      "name": "shell_node_vfs_image",
+      "composite": "shell",
+      "runtime": "node",
+      "direct_packages": [
+        "less",
+        "tar",
+        "curl",
+        "netcat",
+        "wget",
+        "git",
+        "gzip",
+        "bzip2",
+        "xz",
+        "zstd",
+        "zip",
+        "unzip",
+        "lsof",
+        "nano",
+        "vim",
+        "nethack",
+        "fbdoom",
+        "modeset"
+      ],
+      "closure_packages": [
+        "less",
+        "tar",
+        "curl",
+        "netcat",
+        "wget",
+        "git",
+        "gzip",
+        "bzip2",
+        "xz",
+        "zstd",
+        "zip",
+        "unzip",
+        "lsof",
+        "nano",
+        "vim",
+        "nethack",
+        "fbdoom",
+        "modeset"
+      ],
+      "status": "skip",
+      "details": "composite rootfs is not ready for node: bash: no generated Homebrew sidecar metadata found; ncurses: no generated Homebrew sidecar metadata found; coreutils: no generated Homebrew sidecar metadata found; gawk: no generated Homebrew sidecar metadata found; grep: no generated Homebrew sidecar metadata found; sed: no generated Homebrew sidecar metadata found; bc: no generated Homebrew sidecar metadata found; file: no generated Homebrew sidecar metadata found; m4: no generated Homebrew sidecar metadata found; make: no generated Homebrew sidecar metadata found; findutils: no generated Homebrew sidecar metadata found; diffutils: no generated Homebrew sidecar metadata found; posix-utils-lite: no generated Homebrew sidecar metadata found; tar: no generated Homebrew sidecar metadata found; curl: no generated Homebrew sidecar metadata found; gzip: no generated Homebrew sidecar metadata found; zstd: no generated Homebrew sidecar metadata found; zip: no generated Homebrew sidecar metadata found; unzip: no generated Homebrew sidecar metadata found; nethack: no generated Homebrew sidecar metadata found",
+      "blockers": [
+        "composite rootfs is not ready for node: bash: no generated Homebrew sidecar metadata found; ncurses: no generated Homebrew sidecar metadata found; coreutils: no generated Homebrew sidecar metadata found; gawk: no generated Homebrew sidecar metadata found; grep: no generated Homebrew sidecar metadata found; sed: no generated Homebrew sidecar metadata found; bc: no generated Homebrew sidecar metadata found; file: no generated Homebrew sidecar metadata found; m4: no generated Homebrew sidecar metadata found; make: no generated Homebrew sidecar metadata found; findutils: no generated Homebrew sidecar metadata found; diffutils: no generated Homebrew sidecar metadata found; posix-utils-lite: no generated Homebrew sidecar metadata found",
+        "tar: no generated Homebrew sidecar metadata found",
+        "curl: no generated Homebrew sidecar metadata found",
+        "gzip: no generated Homebrew sidecar metadata found",
+        "zstd: no generated Homebrew sidecar metadata found",
+        "zip: no generated Homebrew sidecar metadata found",
+        "unzip: no generated Homebrew sidecar metadata found",
+        "nethack: no generated Homebrew sidecar metadata found"
+      ]
+    },
+    {
+      "name": "python-vfs_node_vfs_image",
+      "composite": "python-vfs",
+      "runtime": "node",
+      "direct_packages": [
+        "cpython"
+      ],
+      "closure_packages": [
+        "cpython"
+      ],
+      "status": "skip",
+      "details": "cpython: no generated Homebrew sidecar metadata found",
+      "blockers": [
+        "cpython: no generated Homebrew sidecar metadata found"
+      ]
+    },
+    {
+      "name": "perl-vfs_node_vfs_image",
+      "composite": "perl-vfs",
+      "runtime": "node",
+      "direct_packages": [
+        "perl"
+      ],
+      "closure_packages": [
+        "perl"
+      ],
+      "status": "skip",
+      "details": "perl: no generated Homebrew sidecar metadata found",
+      "blockers": [
+        "perl: no generated Homebrew sidecar metadata found"
+      ]
+    },
+    {
+      "name": "erlang-vfs_node_vfs_image",
+      "composite": "erlang-vfs",
+      "runtime": "node",
+      "direct_packages": [
+        "erlang"
+      ],
+      "closure_packages": [
+        "erlang"
+      ],
+      "status": "skip",
+      "details": "erlang: no generated Homebrew sidecar metadata found",
+      "blockers": [
+        "erlang: no generated Homebrew sidecar metadata found"
+      ]
+    },
+    {
+      "name": "vim-browser-bundle_node_lazy_archive",
+      "composite": "vim-browser-bundle",
+      "runtime": "node",
+      "direct_packages": [
+        "vim"
+      ],
+      "closure_packages": [
+        "vim"
+      ],
+      "status": "pass",
+      "details": "vim-browser-bundle lazy_archive has 1 Homebrew package inputs ready for node/wasm32",
+      "blockers": []
+    },
+    {
+      "name": "nethack-browser-bundle_node_lazy_archive",
+      "composite": "nethack-browser-bundle",
+      "runtime": "node",
+      "direct_packages": [
+        "nethack"
+      ],
+      "closure_packages": [
+        "nethack"
+      ],
+      "status": "skip",
+      "details": "nethack: no generated Homebrew sidecar metadata found",
+      "blockers": [
+        "nethack: no generated Homebrew sidecar metadata found"
+      ]
+    },
+    {
+      "name": "node-vfs_node_vfs_image",
+      "composite": "node-vfs",
+      "runtime": "node",
+      "direct_packages": [
+        "node"
+      ],
+      "closure_packages": [
+        "node"
+      ],
+      "status": "skip",
+      "details": "composite shell is not ready for node: composite rootfs is not ready for node: bash: no generated Homebrew sidecar metadata found; ncurses: no generated Homebrew sidecar metadata found; coreutils: no generated Homebrew sidecar metadata found; gawk: no generated Homebrew sidecar metadata found; grep: no generated Homebrew sidecar metadata found; sed: no generated Homebrew sidecar metadata found; bc: no generated Homebrew sidecar metadata found; file: no generated Homebrew sidecar metadata found; m4: no generated Homebrew sidecar metadata found; make: no generated Homebrew sidecar metadata found; findutils: no generated Homebrew sidecar metadata found; diffutils: no generated Homebrew sidecar metadata found; posix-utils-lite: no generated Homebrew sidecar metadata found; tar: no generated Homebrew sidecar metadata found; curl: no generated Homebrew sidecar metadata found; gzip: no generated Homebrew sidecar metadata found; zstd: no generated Homebrew sidecar metadata found; zip: no generated Homebrew sidecar metadata found; unzip: no generated Homebrew sidecar metadata found; nethack: no generated Homebrew sidecar metadata found; node: no generated Homebrew sidecar metadata found",
+      "blockers": [
+        "composite shell is not ready for node: composite rootfs is not ready for node: bash: no generated Homebrew sidecar metadata found; ncurses: no generated Homebrew sidecar metadata found; coreutils: no generated Homebrew sidecar metadata found; gawk: no generated Homebrew sidecar metadata found; grep: no generated Homebrew sidecar metadata found; sed: no generated Homebrew sidecar metadata found; bc: no generated Homebrew sidecar metadata found; file: no generated Homebrew sidecar metadata found; m4: no generated Homebrew sidecar metadata found; make: no generated Homebrew sidecar metadata found; findutils: no generated Homebrew sidecar metadata found; diffutils: no generated Homebrew sidecar metadata found; posix-utils-lite: no generated Homebrew sidecar metadata found; tar: no generated Homebrew sidecar metadata found; curl: no generated Homebrew sidecar metadata found; gzip: no generated Homebrew sidecar metadata found; zstd: no generated Homebrew sidecar metadata found; zip: no generated Homebrew sidecar metadata found; unzip: no generated Homebrew sidecar metadata found; nethack: no generated Homebrew sidecar metadata found",
+        "node: no generated Homebrew sidecar metadata found"
+      ]
+    },
+    {
+      "name": "rootfs_browser_vfs_image",
+      "composite": "rootfs",
+      "runtime": "browser",
+      "direct_packages": [
+        "dash",
+        "bash",
+        "ncurses",
+        "coreutils",
+        "gawk",
+        "grep",
+        "sed",
+        "bc",
+        "file",
+        "m4",
+        "make",
+        "findutils",
+        "diffutils",
+        "posix-utils-lite"
+      ],
+      "closure_packages": [
+        "dash",
+        "bash",
+        "ncurses",
+        "coreutils",
+        "gawk",
+        "grep",
+        "sed",
+        "bc",
+        "file",
+        "m4",
+        "make",
+        "findutils",
+        "diffutils",
+        "posix-utils-lite"
+      ],
+      "status": "skip",
+      "details": "bash: no generated Homebrew sidecar metadata found; ncurses: no generated Homebrew sidecar metadata found; coreutils: no generated Homebrew sidecar metadata found; gawk: no generated Homebrew sidecar metadata found; grep: no generated Homebrew sidecar metadata found; sed: no generated Homebrew sidecar metadata found; bc: no generated Homebrew sidecar metadata found; file: no generated Homebrew sidecar metadata found; m4: no generated Homebrew sidecar metadata found; make: no generated Homebrew sidecar metadata found; findutils: no generated Homebrew sidecar metadata found; diffutils: no generated Homebrew sidecar metadata found; posix-utils-lite: no generated Homebrew sidecar metadata found",
+      "blockers": [
+        "bash: no generated Homebrew sidecar metadata found",
+        "ncurses: no generated Homebrew sidecar metadata found",
+        "coreutils: no generated Homebrew sidecar metadata found",
+        "gawk: no generated Homebrew sidecar metadata found",
+        "grep: no generated Homebrew sidecar metadata found",
+        "sed: no generated Homebrew sidecar metadata found",
+        "bc: no generated Homebrew sidecar metadata found",
+        "file: no generated Homebrew sidecar metadata found",
+        "m4: no generated Homebrew sidecar metadata found",
+        "make: no generated Homebrew sidecar metadata found",
+        "findutils: no generated Homebrew sidecar metadata found",
+        "diffutils: no generated Homebrew sidecar metadata found",
+        "posix-utils-lite: no generated Homebrew sidecar metadata found"
+      ]
+    },
+    {
+      "name": "shell_browser_vfs_image",
+      "composite": "shell",
+      "runtime": "browser",
+      "direct_packages": [
+        "less",
+        "tar",
+        "curl",
+        "netcat",
+        "wget",
+        "git",
+        "gzip",
+        "bzip2",
+        "xz",
+        "zstd",
+        "zip",
+        "unzip",
+        "lsof",
+        "nano",
+        "vim",
+        "nethack",
+        "fbdoom",
+        "modeset"
+      ],
+      "closure_packages": [
+        "less",
+        "tar",
+        "curl",
+        "netcat",
+        "wget",
+        "git",
+        "gzip",
+        "bzip2",
+        "xz",
+        "zstd",
+        "zip",
+        "unzip",
+        "lsof",
+        "nano",
+        "vim",
+        "nethack",
+        "fbdoom",
+        "modeset"
+      ],
+      "status": "skip",
+      "details": "composite rootfs is not ready for browser: bash: no generated Homebrew sidecar metadata found; ncurses: no generated Homebrew sidecar metadata found; coreutils: no generated Homebrew sidecar metadata found; gawk: no generated Homebrew sidecar metadata found; grep: no generated Homebrew sidecar metadata found; sed: no generated Homebrew sidecar metadata found; bc: no generated Homebrew sidecar metadata found; file: no generated Homebrew sidecar metadata found; m4: no generated Homebrew sidecar metadata found; make: no generated Homebrew sidecar metadata found; findutils: no generated Homebrew sidecar metadata found; diffutils: no generated Homebrew sidecar metadata found; posix-utils-lite: no generated Homebrew sidecar metadata found; tar: no generated Homebrew sidecar metadata found; curl: no generated Homebrew sidecar metadata found; gzip: no generated Homebrew sidecar metadata found; zstd: no generated Homebrew sidecar metadata found; zip: no generated Homebrew sidecar metadata found; unzip: no generated Homebrew sidecar metadata found; nethack: no generated Homebrew sidecar metadata found; fbdoom: browser unsupported (runtime_support does not include browser); modeset: browser unsupported (runtime_support does not include browser)",
+      "blockers": [
+        "composite rootfs is not ready for browser: bash: no generated Homebrew sidecar metadata found; ncurses: no generated Homebrew sidecar metadata found; coreutils: no generated Homebrew sidecar metadata found; gawk: no generated Homebrew sidecar metadata found; grep: no generated Homebrew sidecar metadata found; sed: no generated Homebrew sidecar metadata found; bc: no generated Homebrew sidecar metadata found; file: no generated Homebrew sidecar metadata found; m4: no generated Homebrew sidecar metadata found; make: no generated Homebrew sidecar metadata found; findutils: no generated Homebrew sidecar metadata found; diffutils: no generated Homebrew sidecar metadata found; posix-utils-lite: no generated Homebrew sidecar metadata found",
+        "tar: no generated Homebrew sidecar metadata found",
+        "curl: no generated Homebrew sidecar metadata found",
+        "gzip: no generated Homebrew sidecar metadata found",
+        "zstd: no generated Homebrew sidecar metadata found",
+        "zip: no generated Homebrew sidecar metadata found",
+        "unzip: no generated Homebrew sidecar metadata found",
+        "nethack: no generated Homebrew sidecar metadata found",
+        "fbdoom: browser unsupported (runtime_support does not include browser)",
+        "modeset: browser unsupported (runtime_support does not include browser)"
+      ]
+    },
+    {
+      "name": "python-vfs_browser_vfs_image",
+      "composite": "python-vfs",
+      "runtime": "browser",
+      "direct_packages": [
+        "cpython"
+      ],
+      "closure_packages": [
+        "cpython"
+      ],
+      "status": "skip",
+      "details": "cpython: no generated Homebrew sidecar metadata found",
+      "blockers": [
+        "cpython: no generated Homebrew sidecar metadata found"
+      ]
+    },
+    {
+      "name": "perl-vfs_browser_vfs_image",
+      "composite": "perl-vfs",
+      "runtime": "browser",
+      "direct_packages": [
+        "perl"
+      ],
+      "closure_packages": [
+        "perl"
+      ],
+      "status": "skip",
+      "details": "perl: no generated Homebrew sidecar metadata found",
+      "blockers": [
+        "perl: no generated Homebrew sidecar metadata found"
+      ]
+    },
+    {
+      "name": "erlang-vfs_browser_vfs_image",
+      "composite": "erlang-vfs",
+      "runtime": "browser",
+      "direct_packages": [
+        "erlang"
+      ],
+      "closure_packages": [
+        "erlang"
+      ],
+      "status": "skip",
+      "details": "erlang: no generated Homebrew sidecar metadata found",
+      "blockers": [
+        "erlang: no generated Homebrew sidecar metadata found"
+      ]
+    },
+    {
+      "name": "vim-browser-bundle_browser_lazy_archive",
+      "composite": "vim-browser-bundle",
+      "runtime": "browser",
+      "direct_packages": [
+        "vim"
+      ],
+      "closure_packages": [
+        "vim"
+      ],
+      "status": "pass",
+      "details": "vim-browser-bundle lazy_archive has 1 Homebrew package inputs ready for browser/wasm32",
+      "blockers": []
+    },
+    {
+      "name": "nethack-browser-bundle_browser_lazy_archive",
+      "composite": "nethack-browser-bundle",
+      "runtime": "browser",
+      "direct_packages": [
+        "nethack"
+      ],
+      "closure_packages": [
+        "nethack"
+      ],
+      "status": "skip",
+      "details": "nethack: no generated Homebrew sidecar metadata found",
+      "blockers": [
+        "nethack: no generated Homebrew sidecar metadata found"
+      ]
+    },
+    {
+      "name": "node-vfs_browser_vfs_image",
+      "composite": "node-vfs",
+      "runtime": "browser",
+      "direct_packages": [
+        "node"
+      ],
+      "closure_packages": [
+        "node"
+      ],
+      "status": "skip",
+      "details": "composite shell is not ready for browser: composite rootfs is not ready for browser: bash: no generated Homebrew sidecar metadata found; ncurses: no generated Homebrew sidecar metadata found; coreutils: no generated Homebrew sidecar metadata found; gawk: no generated Homebrew sidecar metadata found; grep: no generated Homebrew sidecar metadata found; sed: no generated Homebrew sidecar metadata found; bc: no generated Homebrew sidecar metadata found; file: no generated Homebrew sidecar metadata found; m4: no generated Homebrew sidecar metadata found; make: no generated Homebrew sidecar metadata found; findutils: no generated Homebrew sidecar metadata found; diffutils: no generated Homebrew sidecar metadata found; posix-utils-lite: no generated Homebrew sidecar metadata found; tar: no generated Homebrew sidecar metadata found; curl: no generated Homebrew sidecar metadata found; gzip: no generated Homebrew sidecar metadata found; zstd: no generated Homebrew sidecar metadata found; zip: no generated Homebrew sidecar metadata found; unzip: no generated Homebrew sidecar metadata found; nethack: no generated Homebrew sidecar metadata found; fbdoom: browser unsupported (runtime_support does not include browser); modeset: browser unsupported (runtime_support does not include browser); node: no generated Homebrew sidecar metadata found",
+      "blockers": [
+        "composite shell is not ready for browser: composite rootfs is not ready for browser: bash: no generated Homebrew sidecar metadata found; ncurses: no generated Homebrew sidecar metadata found; coreutils: no generated Homebrew sidecar metadata found; gawk: no generated Homebrew sidecar metadata found; grep: no generated Homebrew sidecar metadata found; sed: no generated Homebrew sidecar metadata found; bc: no generated Homebrew sidecar metadata found; file: no generated Homebrew sidecar metadata found; m4: no generated Homebrew sidecar metadata found; make: no generated Homebrew sidecar metadata found; findutils: no generated Homebrew sidecar metadata found; diffutils: no generated Homebrew sidecar metadata found; posix-utils-lite: no generated Homebrew sidecar metadata found; tar: no generated Homebrew sidecar metadata found; curl: no generated Homebrew sidecar metadata found; gzip: no generated Homebrew sidecar metadata found; zstd: no generated Homebrew sidecar metadata found; zip: no generated Homebrew sidecar metadata found; unzip: no generated Homebrew sidecar metadata found; nethack: no generated Homebrew sidecar metadata found; fbdoom: browser unsupported (runtime_support does not include browser); modeset: browser unsupported (runtime_support does not include browser)",
+        "node: no generated Homebrew sidecar metadata found"
+      ]
+    }
+  ]
+}

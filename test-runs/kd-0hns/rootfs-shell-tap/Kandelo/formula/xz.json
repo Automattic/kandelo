@@ -1,0 +1,45 @@
+{
+  "bottle_rebuild": 0,
+  "bottles": [
+    {
+      "arch": "wasm32",
+      "bottle_tag": "wasm32_kandelo",
+      "browser_compatible": true,
+      "built_at": "2026-06-30T03:00:22Z",
+      "built_by": "https://github.com/local/kandelo/actions/runs/local",
+      "built_from": {
+        "formula_sha256": "cb2d319d104ffc915cdc02d83fdc976849ae4a6bd33c195ba82cd4fd91645c96",
+        "kandelo_commit": "1ab41fe2ad5553f4fa4bb0223f2d804b13149578",
+        "kandelo_repository": "Automattic/kandelo",
+        "tap_commit": "1ab41fe2ad5553f4fa4bb0223f2d804b13149578",
+        "tap_repository": "Automattic/kandelo-homebrew"
+      },
+      "bytes": 379877,
+      "cache_key_sha": "6dcdd72b55ed0fbb6edc38c3854216da67579110efbaf56ee35803c7aec84027",
+      "cellar": "/home/linuxbrew/.linuxbrew/Cellar",
+      "fork_instrumentation": "not-required",
+      "kandelo_abi": 16,
+      "link_manifest": "Kandelo/link/xz-5.6.2-rebuild0-wasm32.json",
+      "prefix": "/home/linuxbrew/.linuxbrew",
+      "runtime_support": [
+        "browser",
+        "node"
+      ],
+      "sha256": "887c92f55f775a041503e670cd7a2d845839fa2167c89440ede0fb127a37a0ca",
+      "status": "success",
+      "url": "https://ghcr.io/v2/automattic/kandelo-homebrew/xz/blobs/sha256:887c92f55f775a041503e670cd7a2d845839fa2167c89440ede0fb127a37a0ca"
+    }
+  ],
+  "dependencies": [],
+  "formula_path": "Formula/xz.rb",
+  "formula_revision": 0,
+  "full_name": "automattic/kandelo-homebrew/xz",
+  "kandelo_abi": 16,
+  "name": "xz",
+  "schema": 1,
+  "source_metadata": "Kandelo/metadata.json",
+  "tap_commit": "1ab41fe2ad5553f4fa4bb0223f2d804b13149578",
+  "tap_name": "automattic/kandelo-homebrew",
+  "tap_repository": "Automattic/kandelo-homebrew",
+  "version": "5.6.2"
+}

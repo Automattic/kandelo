@@ -1,0 +1,33 @@
+{
+  "arch": "wasm32",
+  "bottle": {
+    "bytes": 62564,
+    "cache_key_sha": "49c19e83209e7954c9f8399262cd76d7e23868e4a022e4502f8668d4e0c9cd5f",
+    "payload_root": "bzip2/1.0.8",
+    "sha256": "98468e8b210c247f40eb35e2c394bcdccbf18e1f9305fcc7946292327fe5167a",
+    "url": "https://ghcr.io/v2/automattic/kandelo-homebrew/bzip2/blobs/sha256:98468e8b210c247f40eb35e2c394bcdccbf18e1f9305fcc7946292327fe5167a"
+  },
+  "cellar": "/home/linuxbrew/.linuxbrew/Cellar",
+  "env": {
+    "PATH_prepend": [
+      "bin"
+    ]
+  },
+  "kandelo_abi": 16,
+  "keg": "/home/linuxbrew/.linuxbrew/Cellar/bzip2/1.0.8",
+  "links": [
+    {
+      "source": "bin/bzip2",
+      "target": "bin/bzip2",
+      "type": "symlink"
+    }
+  ],
+  "package": "bzip2",
+  "prefix": "/home/linuxbrew/.linuxbrew",
+  "receipts": [
+    ".brew/bzip2.rb",
+    "INSTALL_RECEIPT.json"
+  ],
+  "schema": 1,
+  "version": "1.0.8"
+}
