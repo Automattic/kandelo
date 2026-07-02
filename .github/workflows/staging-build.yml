@@ -791,6 +791,14 @@ jobs:
             needs_submodules: false
             needs_toolchain: false
             needs_workspace: false
+          - suite: cargo-xtask
+            # Package-system automation unit tests. Not kernel-gated: xtask
+            # regressions are independent of kernel changes, and the suite is
+            # cheap (~16s) with no toolchain/workspace setup.
+            kernel_only: false
+            needs_submodules: false
+            needs_toolchain: false
+            needs_workspace: false
           - suite: vitest
             kernel_only: false
             needs_submodules: false

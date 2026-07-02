@@ -5614,9 +5614,14 @@ cache_key_sha = "{cache_key_hex}"
             &[TEST_ABI],
             &cache_key_hex,
         );
+        // Valid wasm so the fetched artifact passes cache validation and the
+        // remote-first path is actually exercised (a header-only fixture is
+        // rejected as "missing required exports", forcing the source-build
+        // fallback this test is meant to prove does NOT happen).
+        let prog_wasm = minimal_executable_wasm();
         let archive_bytes = crate::remote_fetch::build_test_archive(
             &manifest_text,
-            &[("progIdx.wasm", b"\0asm\x01\0\0\0")],
+            &[("progIdx.wasm", prog_wasm.as_slice())],
         );
         let archive_sha_hex = sha256_hex(&archive_bytes);
         let archive_path = archive_dir.join("progIdx-1.0.0.tar.zst");
@@ -5641,10 +5646,7 @@ cache_key_sha = "{cache_key_hex}"
         };
         let path = ensure_built(&m, &reg, TEST_ARCH, TEST_ABI, &opts).unwrap();
 
-        assert_eq!(
-            std::fs::read(path.join("progIdx.wasm")).unwrap(),
-            b"\0asm\x01\0\0\0"
-        );
+        assert_eq!(std::fs::read(path.join("progIdx.wasm")).unwrap(), prog_wasm);
         let baddep_cached = std::fs::read_dir(cache.join("programs"))
             .unwrap()
             .filter_map(Result::ok)
@@ -5947,6 +5949,39 @@ spdx = "MIT"
         }
     }
 
+    /// A minimal, valid executable wasm module that exports exactly the required
+    /// program entrypoint exports (`__abi_version`, `_start`) -- the canonical
+    /// fixture shape for a non-kernel program output.
+    ///
+    /// Program-build fixtures MUST emit real wasm, never `touch` an empty file:
+    /// PR #605 (`3430c5bbc`) added output/cache artifact validation that
+    /// correctly rejects empty (`is not a wasm binary`) and export-less
+    /// (`missing required exports`) `.wasm` outputs. See
+    /// `build_validates_program_wasm_outputs_present` for the positive contract
+    /// and `wasm_artifact_policy_rejects_empty_and_exportless_when_exports_required`
+    /// for the negative guard. For the kernel output (which requires the full
+    /// `HOST_ADAPTER_REQUIRED_KERNEL_EXPORTS` set) build the bytes from that
+    /// shared const via `wasm_exporting_names` so the fixture self-updates.
+    fn minimal_executable_wasm() -> Vec<u8> {
+        wasm_exporting_names(&EXECUTABLE_PROGRAM_REQUIRED_EXPORTS)
+    }
+
+    /// Render a build-script body that writes `bytes` to
+    /// `$WASM_POSIX_DEP_OUT_DIR/<rel>`. Pair with [`minimal_executable_wasm`] (or
+    /// `wasm_exporting_names` for the kernel export set) so a program-build
+    /// fixture emits a *valid* wasm module that passes output validation instead
+    /// of `touch`-ing an empty file. Mirrors the `printf`-of-bytes shape used by
+    /// `build_validates_program_wasm_outputs_present`.
+    fn emit_wasm_build_script(rel: &str, bytes: &[u8]) -> String {
+        let mut escaped = String::with_capacity(bytes.len() * 4);
+        for &b in bytes {
+            escaped.push_str(&format!("\\x{b:02x}"));
+        }
+        format!(
+            r#"mkdir -p "$WASM_POSIX_DEP_OUT_DIR" && printf '{escaped}' > "$WASM_POSIX_DEP_OUT_DIR/{rel}""#
+        )
+    }
+
     #[test]
     fn canonical_path_uses_programs_subdir_for_program_kind() {
         let m = DepsManifest::parse(
@@ -6062,6 +6097,59 @@ wasm = "bad.wasm"
         assert!(err.contains("missing required exports"), "got: {err}");
         assert!(err.contains("__abi_version"), "got: {err}");
         assert!(err.contains("_start"), "got: {err}");
+    }
+
+    #[test]
+    fn wasm_artifact_policy_rejects_empty_and_exportless_when_exports_required() {
+        // Regression guard for the stale-fixture class (kd-872c / kd-xc19): the
+        // production artifact validation MUST keep rejecting empty
+        // (`touch`-style, 0-byte / non-wasm) outputs and wasm missing required
+        // exports. The 7 stale tests failed precisely because they emitted such
+        // fixtures; "fixing" them by weakening validation would trip these
+        // assertions. Fix the fixture (emit real wasm) instead.
+        let required = &EXECUTABLE_PROGRAM_REQUIRED_EXPORTS;
+
+        // Empty and non-wasm bytes -> "is not a wasm binary".
+        assert_eq!(
+            wasm_artifact_policy_failures_for(&[], ForkInstrumentationPolicy::Auto, required),
+            vec!["is not a wasm binary".to_string()],
+            "empty output must be rejected",
+        );
+        assert_eq!(
+            wasm_artifact_policy_failures_for(
+                b"not wasm",
+                ForkInstrumentationPolicy::Auto,
+                required
+            ),
+            vec!["is not a wasm binary".to_string()],
+            "non-wasm output must be rejected",
+        );
+
+        // Header-only wasm with no export section -> "missing required exports".
+        let exportless = wasm_artifact_policy_failures_for(
+            b"\0asm\x01\0\0\0",
+            ForkInstrumentationPolicy::Auto,
+            required,
+        );
+        assert_eq!(exportless.len(), 1, "got: {exportless:?}");
+        assert!(
+            exportless[0].contains("missing required exports")
+                && exportless[0].contains("__abi_version")
+                && exportless[0].contains("_start"),
+            "got: {exportless:?}",
+        );
+
+        // Positive control: the shared minimal fixture passes cleanly, so the
+        // rejections above are about the fixture, not an over-strict policy.
+        assert!(
+            wasm_artifact_policy_failures_for(
+                &minimal_executable_wasm(),
+                ForkInstrumentationPolicy::Auto,
+                required,
+            )
+            .is_empty(),
+            "minimal executable wasm must satisfy validation",
+        );
     }
 
     #[test]
@@ -7254,7 +7342,7 @@ libs = ["lib/libF3b.a"]
             "tinybin",
             "0.1.0",
             &[],
-            r#"mkdir -p "$WASM_POSIX_DEP_OUT_DIR" && touch "$WASM_POSIX_DEP_OUT_DIR/tinybin.wasm""#,
+            &emit_wasm_build_script("tinybin.wasm", &minimal_executable_wasm()),
             &[("tinybin", "tinybin.wasm")],
         );
         let reg = Registry {
@@ -7300,7 +7388,10 @@ libs = ["lib/libF3b.a"]
             "kernel",
             "0.1.0",
             &[],
-            r#"mkdir -p "$WASM_POSIX_DEP_OUT_DIR" && touch "$WASM_POSIX_DEP_OUT_DIR/kandelo-kernel.wasm""#,
+            &emit_wasm_build_script(
+                "kandelo-kernel.wasm",
+                &wasm_exporting_names(wasm_posix_shared::abi::HOST_ADAPTER_REQUIRED_KERNEL_EXPORTS),
+            ),
             &[("kernel", "kandelo-kernel.wasm")],
         );
         let reg = Registry {
@@ -7335,9 +7426,11 @@ libs = ["lib/libF3b.a"]
             "twobin",
             "0.1.0",
             &[],
-            r#"mkdir -p "$WASM_POSIX_DEP_OUT_DIR"
-touch "$WASM_POSIX_DEP_OUT_DIR/alpha.wasm"
-touch "$WASM_POSIX_DEP_OUT_DIR/beta.wasm""#,
+            &format!(
+                "{}\n{}",
+                emit_wasm_build_script("alpha.wasm", &minimal_executable_wasm()),
+                emit_wasm_build_script("beta.wasm", &minimal_executable_wasm()),
+            ),
             &[("alpha", "alpha.wasm"), ("beta", "beta.wasm")],
         );
         let reg = Registry {
@@ -7366,7 +7459,7 @@ touch "$WASM_POSIX_DEP_OUT_DIR/beta.wasm""#,
             "noflag",
             "0.1.0",
             &[],
-            r#"mkdir -p "$WASM_POSIX_DEP_OUT_DIR" && touch "$WASM_POSIX_DEP_OUT_DIR/noflag.wasm""#,
+            &emit_wasm_build_script("noflag.wasm", &minimal_executable_wasm()),
             &[("noflag", "noflag.wasm")],
         );
         let reg = Registry {
@@ -7396,7 +7489,7 @@ touch "$WASM_POSIX_DEP_OUT_DIR/beta.wasm""#,
             "rep",
             "0.1.0",
             &[],
-            r#"mkdir -p "$WASM_POSIX_DEP_OUT_DIR" && touch "$WASM_POSIX_DEP_OUT_DIR/rep.wasm""#,
+            &emit_wasm_build_script("rep.wasm", &minimal_executable_wasm()),
             &[("rep", "rep.wasm")],
         );
         let reg = Registry {
