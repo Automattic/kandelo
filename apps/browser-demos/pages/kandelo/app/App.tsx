@@ -26,17 +26,17 @@ type ThemePreference = {
 };
 
 const THEME_STORAGE_KEY = "kandelo.theme";
-const THEME_STORAGE_VERSION = 3;
+const THEME_STORAGE_VERSION = 4;
 
 type StoredThemePreference = ThemePreference & {
   version: typeof THEME_STORAGE_VERSION;
 };
 
-const DEFAULT_THEME: ThemePreference = { family: "ubuntu", mode: "auto" };
+const DEFAULT_THEME: ThemePreference = { family: "kandelo", mode: "auto" };
 const THEME_FAMILIES: Array<{ family: ThemeFamily; label: string; description: string }> = [
-  { family: "ubuntu", label: "Ubuntu", description: "Yaru light and dark colors with Ubuntu terminal palettes." },
-  { family: "wordpress", label: "WordPress", description: "WordPress design-system grays with the modern blueberry accent." },
   { family: "kandelo", label: "Kandelo Ember", description: "Warm Kandelo surfaces with ember accents and terminal contrast." },
+  { family: "wordpress", label: "WordPress", description: "WordPress design-system grays with the modern blueberry accent." },
+  { family: "ubuntu", label: "Ubuntu", description: "Yaru light and dark colors with Ubuntu terminal palettes." },
 ];
 const THEME_MODES: Array<{ mode: ThemeMode; label: string }> = [
   { mode: "auto", label: "Auto" },
