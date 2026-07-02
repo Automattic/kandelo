@@ -176,6 +176,28 @@ VITE_CORS_PROXY_URL='https://your-proxy.example/?' npm run dev
 Proxy prefixes ending in a bare `?` receive raw target URLs; `?url=`-style
 prefixes receive percent-encoded targets.
 
+### Blob-URL iframes (service-worker boundary)
+
+The service worker can only bridge requests from documents it **controls**. A
+`blob:` document is not service-worker-controlled (and has no base URL), so its
+subresource requests bypass the bridge and hit the static origin instead of the
+in-kernel server. This is a real browser boundary, not a Kandelo bug.
+
+It surfaces in the WordPress block/site editor, whose canvas iframe is mounted
+from `URL.createObjectURL(new Blob([html]))`: the canvas's
+`load-scripts.php`/`load-styles.php` and block-asset requests would 404 against
+the origin even though nginx serves them correctly over the bridge.
+
+`public/blob-iframe-interceptor.js` is a reusable, framework-free DOM patch that
+neutralizes this class of issue. It hooks `Blob`/`URL.createObjectURL` and the
+`HTMLIFrameElement` `src` setter/`setAttribute` so that any iframe pointed at a
+`text/html` blob URL is instead rendered from `srcdoc` (an `about:srcdoc`
+document, which the service worker *does* control). It is idempotent and a no-op
+unless a text/html blob URL is used as an iframe src. The service worker inlines
+it (via the `"__BLOB_IFRAME_INTERCEPTOR__"` build-time placeholder, mirroring
+`"__CORS_PROXY_URL__"`) into the `<head>` of every bridged HTML document, so it
+applies to all app demos, not just WordPress.
+
 ## VFS Images
 
 Browser demos use pre-built **VFS images** — binary snapshots of a `MemoryFileSystem` containing all runtime files, directory structure, configs, and symlinks needed by a demo. At runtime, restoring a VFS image is a single buffer copy, replacing what would otherwise be hundreds or thousands of individual file creation operations.
