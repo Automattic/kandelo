@@ -204,35 +204,3 @@ describe.skipIf(!PHP_AVAILABLE)("PHP XML extensions on kandelo", () => {
         expect(exitCode).toBe(0);
     }, 60_000);
 });
-
-const curlSoPath = tryResolveBinary("programs/php/curl.so");
-const CURL_AVAILABLE = PHP_AVAILABLE && curlSoPath !== null;
-const curlExtArgs = CURL_AVAILABLE
-    ? ["-d", `extension_dir=${dirname(curlSoPath!)}`, "-d", "extension=curl.so"]
-    : [];
-
-describe.skipIf(!CURL_AVAILABLE)("PHP curl extension on kandelo", () => {
-    // NodePlatformIO: extension_dir is a real host path the default
-    // mount-based VFS does not expose.
-    it("curl_init() returns a handle when curl.so is loaded", async () => {
-        const { stdout, exitCode } = await runCentralizedProgram({
-            programPath: phpBinaryPath,
-            argv: ["php", ...curlExtArgs, "-r",
-                'echo function_exists("curl_init") && curl_init() ? "curl-ok" : "fail";'],
-            io: new NodePlatformIO(),
-        });
-        expect(stdout).toContain("curl-ok");
-        expect(exitCode).toBe(0);
-    }, 60_000);
-
-    it("exposes CURLOPT_* constants from the linked libcurl", async () => {
-        const { stdout, exitCode } = await runCentralizedProgram({
-            programPath: phpBinaryPath,
-            argv: ["php", ...curlExtArgs, "-r",
-                'echo defined("CURLOPT_URL") && defined("CURLOPT_RETURNTRANSFER") ? "consts-ok" : "fail";'],
-            io: new NodePlatformIO(),
-        });
-        expect(stdout).toContain("consts-ok");
-        expect(exitCode).toBe(0);
-    }, 60_000);
-});

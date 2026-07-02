@@ -169,6 +169,15 @@ if [ ! -f Makefile ]; then
     # invokes on our wasm port — but the import has to resolve at
     # instantiation time).
     #
+    # The second -u group forces the libc + OpenSSL symbols curl.so imports
+    # but base PHP never references, so --export-all can expose them for the
+    # side module at dlopen (derived from `comm -23` of curl.so's env imports
+    # against php.wasm's exports).
+    #
+    # ac_cv_lib_curl_curl_easy_perform=yes skips ext/curl's AC_CHECK_LIB
+    # probe, whose ~3 MB conftest crashes wasm-opt -O2 ("popping from empty
+    # stack"); libcurl.a is already checked above.
+    #
     # -Wl,-z,stack-size=4194304: 4 MB wasm stack. The default wasm-ld
     # stack is 64 KB, which sits ~100 KB above PHP's `alloc_globals`
     # data segment. Opcache's PASS_6 (DFA-based SSA optimization) calls
@@ -181,15 +190,6 @@ if [ ! -f Makefile ]; then
     # out of bounds" because it tries to dereference the now-bogus heap
     # pointer. 4 MB gives PASS_6 enough headroom for any function that
     # passes its own `blocks*vars > 4M` size guard.
-    # ac_cv_lib_curl_curl_easy_perform=yes short-circuits ext/curl's
-    # AC_CHECK_LIB probe; its conftest link triggers clang's wasm-opt
-    # which crashes parsing the ~3 MB output ("parse exception:
-    # popping from empty stack"). libcurl is already sanity-checked
-    # above.
-    #
-    # Second -u line is the precise set of curl.so env imports that
-    # PHP doesn't naturally reference (from
-    # `comm -23 <curl.so-imports> <php.wasm-exports>`).
     PKG_CONFIG_PATH="$DEP_PKG_CONFIG_PATH" \
     CPPFLAGS="$DEP_CPPFLAGS" \
     ac_cv_lib_curl_curl_easy_perform=yes \
@@ -325,12 +325,12 @@ wasm32posix-cc -shared -fPIC -o "$SCRIPT_DIR/bin/opcache.so" \
     ext/opcache/.libs/shared_alloc_posix.o
 echo "==> opcache.so: $(wc -c < "$SCRIPT_DIR/bin/opcache.so") bytes"
 
-# Same manual-link pattern as opcache.so above: libtool can't emit the
-# `.so` on this target, so we feed its PIC .libs/*.o objects to
-# `wasm32posix-cc -shared`. libcurl.a is linked in; libssl/libcrypto/libz
-# stay undefined and resolve against php.wasm at instantiation.
+# curl.so: same libtool workaround as opcache above. libcurl.a is absorbed
+# PIC; openssl/zlib/libc stay undefined so they resolve against php.wasm at
+# dlopen, keeping one copy of each in the process.
 echo "==> Building curl.so (ext/curl extension)..."
-make -j"$(sysctl -n hw.ncpu 2>/dev/null || nproc)" EXTRA_CFLAGS="$EXTRA_INC_LIBXML -I$LIBCURL_PREFIX/include" ext/curl/curl.la || true
+make -j"$(sysctl -n hw.ncpu 2>/dev/null || nproc)" \
+    EXTRA_CFLAGS="$EXTRA_INC_LIBXML -I$LIBCURL_PREFIX/include" ext/curl/curl.la || true
 wasm32posix-cc -shared -fPIC -o "$SCRIPT_DIR/bin/curl.so" \
     ext/curl/.libs/interface.o \
     ext/curl/.libs/multi.o \

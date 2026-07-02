@@ -49,9 +49,9 @@ wasm = "php-fpm.wasm"
 name = "opcache"
 wasm = "opcache.so"
 
-# ext/curl as a side module, loaded via
-# `-d extension_dir=<dir> -d extension=curl.so`. Same shared-module
-# pattern as opcache.so above.
+# ext/curl shipped as a fourth output: a side module loaded via
+# `extension=curl.so`, same manual -shared link as opcache. libcurl.a is
+# absorbed PIC; openssl/zlib/libc import from php.wasm at dlopen.
 [[outputs]]
 name = "curl"
 wasm = "curl.so"
