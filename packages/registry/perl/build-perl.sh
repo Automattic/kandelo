@@ -651,6 +651,28 @@ if [ -f "$SRC_DIR/perl" ]; then
     echo "==> Re-collected perl.wasm after make -k ($(wc -c < "$BIN_DIR/perl.wasm" | tr -d ' ') bytes)."
 fi
 
+# --- Size optimization (post-link, PRE fork-instrumentation) ---
+# The link above uses a load-bearing --no-gc-sections (so wasm-ld's
+# --allow-undefined does not strip live Perl code), which leaves dead code from
+# the curated static extensions in the binary. wasm-opt runs its own DCE +
+# simplification to reclaim it. It MUST run BEFORE fork instrumentation:
+# install_local_binary applies wasm-fork-instrument (auto policy -- perl imports
+# kernel_fork), and that pass hardcodes mutable-global offsets, so any later
+# pass that reordered globals would corrupt the fork buffer. wasm-opt here is
+# therefore the last transform before install-time instrumentation.
+# -O2 (not -Oz) matches every other fork-instrumented package (bash/git/php/vim)
+# and preserves interpreter throughput; -Oz measured only ~0.45% smaller.
+WASM_OPT="$(command -v wasm-opt 2>/dev/null || true)"
+if [ -z "$WASM_OPT" ]; then
+    echo "ERROR: wasm-opt not found. Install binaryen (declared in the dev-shell flake)." >&2
+    exit 1
+fi
+OPT_BEFORE=$(wc -c < "$BIN_DIR/perl.wasm" | tr -d ' ')
+echo "==> Optimizing perl.wasm with wasm-opt -O2 (pre-instrumentation)..."
+"$WASM_OPT" -O2 "$BIN_DIR/perl.wasm" -o "$BIN_DIR/perl.wasm"
+OPT_AFTER=$(wc -c < "$BIN_DIR/perl.wasm" | tr -d ' ')
+echo "==> wasm-opt -O2: $OPT_BEFORE -> $OPT_AFTER bytes (fork instrumentation is added by install_local_binary)."
+
 echo "==> Packaging Perl runtime library (lib/perl5/$PERL_VERSION)..."
 RUNTIME_STAGE="$WORK_DIR/perl-runtime-stage"
 rm -rf "$RUNTIME_STAGE"
