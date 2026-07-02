@@ -48,22 +48,26 @@ OPENSSL_PREFIX="${WASM_POSIX_DEP_OPENSSL_DIR:-}"
 [ -z "$OPENSSL_PREFIX" ] && { echo "==> Resolving openssl..."; OPENSSL_PREFIX="$(resolve_dep openssl)"; }
 LIBXML2_PREFIX="${WASM_POSIX_DEP_LIBXML2_DIR:-}"
 [ -z "$LIBXML2_PREFIX" ] && { echo "==> Resolving libxml2..."; LIBXML2_PREFIX="$(resolve_dep libxml2)"; }
+LIBCURL_PREFIX="${WASM_POSIX_DEP_LIBCURL_DIR:-}"
+[ -z "$LIBCURL_PREFIX" ] && { echo "==> Resolving libcurl..."; LIBCURL_PREFIX="$(resolve_dep libcurl)"; }
 [ -f "$ZLIB_PREFIX/lib/libz.a" ] || { echo "ERROR: zlib resolve missing libz.a"; exit 1; }
 [ -f "$SQLITE_PREFIX/lib/libsqlite3.a" ] || { echo "ERROR: sqlite resolve missing libsqlite3.a"; exit 1; }
 [ -f "$OPENSSL_PREFIX/lib/libssl.a" ] || { echo "ERROR: openssl resolve missing libssl.a"; exit 1; }
 [ -f "$LIBXML2_PREFIX/lib/libxml2.a" ] || { echo "ERROR: libxml2 resolve missing libxml2.a"; exit 1; }
+[ -f "$LIBCURL_PREFIX/lib/libcurl.a" ] || { echo "ERROR: libcurl resolve missing libcurl.a"; exit 1; }
 echo "==> zlib at $ZLIB_PREFIX"
 echo "==> sqlite at $SQLITE_PREFIX"
 echo "==> openssl at $OPENSSL_PREFIX"
 echo "==> libxml2 at $LIBXML2_PREFIX"
+echo "==> libcurl at $LIBCURL_PREFIX"
 
-# Compose PKG_CONFIG_PATH for all 4 deps so wasm32posix-configure's
+# Compose PKG_CONFIG_PATH for all 5 deps so wasm32posix-configure's
 # pkg-config probes can find them in the cache instead of the sysroot.
-DEP_PKG_CONFIG_PATH="$ZLIB_PREFIX/lib/pkgconfig:$SQLITE_PREFIX/lib/pkgconfig:$OPENSSL_PREFIX/lib/pkgconfig:$LIBXML2_PREFIX/lib/pkgconfig"
+DEP_PKG_CONFIG_PATH="$ZLIB_PREFIX/lib/pkgconfig:$SQLITE_PREFIX/lib/pkgconfig:$OPENSSL_PREFIX/lib/pkgconfig:$LIBXML2_PREFIX/lib/pkgconfig:$LIBCURL_PREFIX/lib/pkgconfig"
 
 # Compose -I and -L flags for defense-in-depth (autoconf raw probes).
-DEP_CPPFLAGS="-I$ZLIB_PREFIX/include -I$SQLITE_PREFIX/include -I$OPENSSL_PREFIX/include -I$LIBXML2_PREFIX/include"
-DEP_LDFLAGS="-L$ZLIB_PREFIX/lib -L$SQLITE_PREFIX/lib -L$OPENSSL_PREFIX/lib -L$LIBXML2_PREFIX/lib"
+DEP_CPPFLAGS="-I$ZLIB_PREFIX/include -I$SQLITE_PREFIX/include -I$OPENSSL_PREFIX/include -I$LIBXML2_PREFIX/include -I$LIBCURL_PREFIX/include"
+DEP_LDFLAGS="-L$ZLIB_PREFIX/lib -L$SQLITE_PREFIX/lib -L$OPENSSL_PREFIX/lib -L$LIBXML2_PREFIX/lib -L$LIBCURL_PREFIX/lib"
 
 if [ ! -d "$SRC_DIR" ]; then
     echo "==> Downloading PHP $PHP_VERSION..."
@@ -165,6 +169,15 @@ if [ ! -f Makefile ]; then
     # invokes on our wasm port — but the import has to resolve at
     # instantiation time).
     #
+    # The second -u group forces the libc + OpenSSL symbols curl.so imports
+    # but base PHP never references, so --export-all can expose them for the
+    # side module at dlopen (derived from `comm -23` of curl.so's env imports
+    # against php.wasm's exports).
+    #
+    # ac_cv_lib_curl_curl_easy_perform=yes skips ext/curl's AC_CHECK_LIB
+    # probe, whose ~3 MB conftest crashes wasm-opt -O2 ("popping from empty
+    # stack"); libcurl.a is already checked above.
+    #
     # -Wl,-z,stack-size=4194304: 4 MB wasm stack. The default wasm-ld
     # stack is 64 KB, which sits ~100 KB above PHP's `alloc_globals`
     # data segment. Opcache's PASS_6 (DFA-based SSA optimization) calls
@@ -179,8 +192,12 @@ if [ ! -f Makefile ]; then
     # passes its own `blocks*vars > 4M` size guard.
     PKG_CONFIG_PATH="$DEP_PKG_CONFIG_PATH" \
     CPPFLAGS="$DEP_CPPFLAGS" \
+    ac_cv_lib_curl_curl_easy_perform=yes \
     LDFLAGS="$DEP_LDFLAGS -ldl -Wl,--export-all \
 -u setgid -u setuid -u initgroups -u writev -u asctime \
+-u inet_pton -u inet_ntop -u sched_yield -u alarm -u basename \
+-u OCSP_basic_verify -u OCSP_cert_status_str -u OCSP_crl_reason_str \
+-u OCSP_response_status_str -u SSL_alert_desc_string_long \
 -Wl,-z,stack-size=4194304" \
     wasm32posix-configure \
         --disable-all \
@@ -215,6 +232,7 @@ if [ ! -f Makefile ]; then
         --enable-simplexml \
         --enable-xmlreader \
         --enable-xmlwriter \
+        --with-curl=shared \
         --cache-file="$SCRIPT_DIR/config.cache" \
         --prefix="$INSTALL_DIR" \
         CFLAGS="-O2 -gline-tables-only -DZEND_USE_ASM_ARITHMETIC=0"
@@ -307,6 +325,20 @@ wasm32posix-cc -shared -fPIC -o "$SCRIPT_DIR/bin/opcache.so" \
     ext/opcache/.libs/shared_alloc_posix.o
 echo "==> opcache.so: $(wc -c < "$SCRIPT_DIR/bin/opcache.so") bytes"
 
+# curl.so: same libtool workaround as opcache above. libcurl.a is absorbed
+# PIC; openssl/zlib/libc stay undefined so they resolve against php.wasm at
+# dlopen, keeping one copy of each in the process.
+echo "==> Building curl.so (ext/curl extension)..."
+make -j"$(sysctl -n hw.ncpu 2>/dev/null || nproc)" \
+    EXTRA_CFLAGS="$EXTRA_INC_LIBXML -I$LIBCURL_PREFIX/include" ext/curl/curl.la || true
+wasm32posix-cc -shared -fPIC -o "$SCRIPT_DIR/bin/curl.so" \
+    ext/curl/.libs/interface.o \
+    ext/curl/.libs/multi.o \
+    ext/curl/.libs/share.o \
+    ext/curl/.libs/curl_file.o \
+    "$LIBCURL_PREFIX/lib/libcurl.a"
+echo "==> curl.so: $(wc -c < "$SCRIPT_DIR/bin/curl.so") bytes"
+
 # Copy to bin/ with .wasm extension (needed for Vite browser demos)
 mkdir -p "$SCRIPT_DIR/bin"
 cp sapi/cli/php "$SCRIPT_DIR/bin/php.wasm"
@@ -345,3 +377,4 @@ source "$REPO_ROOT/scripts/install-local-binary.sh"
 install_local_binary php "$SCRIPT_DIR/bin/php.wasm"     php.wasm
 install_local_binary php "$SCRIPT_DIR/bin/php-fpm.wasm" php-fpm.wasm
 install_local_binary php "$SCRIPT_DIR/bin/opcache.so"
+install_local_binary php "$SCRIPT_DIR/bin/curl.so"
