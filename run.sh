@@ -1632,11 +1632,14 @@ build_all() {
     build_nethack
     build_git
     build_nginx
+    build_nginx_vfs
     build_php
     build_php_fpm
+    build_nginx_php_vfs
     build_mariadb
     build_mariadb_vfs
     build_redis
+    build_redis_vfs
     build_dinit
     build_msmtpd
     build_cpython
@@ -2021,42 +2024,42 @@ cmd_run() {
 
     case "$example" in
         nginx)
-            build_nginx
+            build_nginx_vfs
             step "Starting nginx"
             exec npx tsx "$REPO_ROOT/packages/registry/nginx/demo/serve.ts" "$@"
             ;;
         mariadb)
-            build_mariadb
+            local use_wasm64=false
+            for arg in "$@"; do
+                if [ "$arg" = "--wasm64" ]; then
+                    use_wasm64=true
+                fi
+            done
+            if [ "$use_wasm64" = true ]; then
+                build_mariadb64_vfs
+            else
+                build_mariadb_vfs
+            fi
             step "Starting MariaDB"
             exec npx tsx "$REPO_ROOT/packages/registry/mariadb/demo/serve.ts" "$@"
             ;;
         redis)
-            build_redis
+            build_redis_vfs
             step "Starting Redis"
             exec npx tsx "$REPO_ROOT/packages/registry/redis/demo/serve.ts" "$@"
             ;;
         wordpress)
-            build_php
-            build_wordpress
-            step "Starting WordPress (PHP built-in server + SQLite)"
+            build_wp_vfs
+            step "Starting WordPress (nginx + PHP-FPM + SQLite)"
             exec npx tsx "$REPO_ROOT/packages/registry/wordpress/demo/serve.ts" "$@"
             ;;
         wordpress-nginx)
-            build_nginx
-            build_php_fpm
-            build_wordpress
+            build_wp_vfs
             step "Starting WordPress (nginx + PHP-FPM + SQLite)"
             exec npx tsx "$REPO_ROOT/packages/registry/wordpress/demo/serve-nginx.ts" "$@"
             ;;
         lamp)
-            build_mariadb
-            build_nginx
-            build_php_fpm
-            # LAMP uses its own WordPress setup (MySQL mode)
-            if [ ! -f "$REPO_ROOT/packages/registry/lamp/demo/wordpress/wp-settings.php" ]; then
-                step "Setting up LAMP WordPress"
-                bash "$REPO_ROOT/packages/registry/lamp/demo/setup.sh"
-            fi
+            build_lamp_vfs
             step "Starting LAMP stack (MariaDB + PHP-FPM + nginx + WordPress)"
             exec npx tsx "$REPO_ROOT/packages/registry/lamp/demo/serve.ts" "$@"
             ;;
@@ -2272,11 +2275,14 @@ cmd_list() {
     echo "  fbdoom      fbDOOM (framebuffer DOOM via /dev/fb0) $(has_fbdoom && echo "${GREEN}✓${RESET}" || echo "${YELLOW}○${RESET}")"
     echo "  git         Git 2.47.1                             $(has_git && echo "${GREEN}✓${RESET}" || echo "${YELLOW}○${RESET}")"
     echo "  nginx       nginx 1.24 Wasm binary                $(has_nginx && echo "${GREEN}✓${RESET}" || echo "${YELLOW}○${RESET}")"
+    echo "  nginx-vfs   nginx service VFS image               $(has_nginx_vfs && echo "${GREEN}✓${RESET}" || echo "${YELLOW}○${RESET}")"
     echo "  php         PHP 8.3 CLI binary                    $(has_php && echo "${GREEN}✓${RESET}" || echo "${YELLOW}○${RESET}")"
     echo "  php-fpm     PHP-FPM Wasm binary                   $(has_php_fpm && echo "${GREEN}✓${RESET}" || echo "${YELLOW}○${RESET}")"
+    echo "  nginx-php-vfs nginx + PHP-FPM VFS image           $(has_nginx_php_vfs && echo "${GREEN}✓${RESET}" || echo "${YELLOW}○${RESET}")"
     echo "  mariadb     MariaDB 10.5 Wasm binary (wasm32)     $(has_mariadb && echo "${GREEN}✓${RESET}" || echo "${YELLOW}○${RESET}")"
     echo "  mariadb64   MariaDB 10.5 Wasm binary (wasm64)     $(has_mariadb64 && echo "${GREEN}✓${RESET}" || echo "${YELLOW}○${RESET}")"
     echo "  redis       Redis 7.2 Wasm binary                 $(has_redis && echo "${GREEN}✓${RESET}" || echo "${YELLOW}○${RESET}")"
+    echo "  redis-vfs   Redis service VFS image               $(has_redis_vfs && echo "${GREEN}✓${RESET}" || echo "${YELLOW}○${RESET}")"
     echo "  dinit       dinit service supervisor              $(has_dinit && echo "${GREEN}✓${RESET}" || echo "${YELLOW}○${RESET}")"
     echo "  msmtpd      Local SMTP capture server             $(has_msmtpd && echo "${GREEN}✓${RESET}" || echo "${YELLOW}○${RESET}")"
     echo "  cpython     CPython 3.13 Wasm binary              $(has_cpython && echo "${GREEN}✓${RESET}" || echo "${YELLOW}○${RESET}")"
@@ -2320,7 +2326,7 @@ cmd_list() {
     echo "  ./run.sh run nginx [port]            nginx HTTP server"
     echo "  ./run.sh run redis [port]            Redis key-value store"
     echo "  ./run.sh run mariadb                 MariaDB standalone"
-    echo "  ./run.sh run wordpress [port]        WordPress (PHP built-in + SQLite)"
+    echo "  ./run.sh run wordpress [port]        WordPress (nginx + PHP-FPM + SQLite)"
     echo "  ./run.sh run wordpress-nginx [port]  WordPress (nginx + PHP-FPM + SQLite)"
     echo "  ./run.sh run lamp [port]             Full LAMP stack (MariaDB + nginx + PHP-FPM)"
     echo "  ./run.sh run erlang [-eval 'Expr']    Erlang BEAM VM"
