@@ -1,0 +1,7 @@
+archive_stage_cli::tests::cli_produces_archive_with_canonical_filename
+build_deps::tests::binaries_dir_program_fetch_does_not_require_built_deps
+build_deps::tests::cmd_resolve_with_binaries_dir_places_kernel_at_root
+build_deps::tests::cmd_resolve_with_binaries_dir_places_multi_output_symlinks
+build_deps::tests::cmd_resolve_with_binaries_dir_places_single_output_symlink
+build_deps::tests::cmd_resolve_with_binaries_dir_replaces_existing_link
+build_deps::tests::cmd_resolve_without_binaries_dir_places_no_symlinks
