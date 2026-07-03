@@ -217,10 +217,20 @@ if [ ! -f Makefile ]; then
         --enable-xmlwriter \
         --cache-file="$SCRIPT_DIR/config.cache" \
         --prefix="$INSTALL_DIR" \
-        CFLAGS="-O2 -gline-tables-only -DZEND_USE_ASM_ARITHMETIC=0"
+        CFLAGS="-O2 -gline-tables-only -DZEND_USE_ASM_ARITHMETIC=0 -DHAVE_SQLITE3_COLUMN_TABLE_NAME=1"
     # CFLAGS includes -gline-tables-only for debug stack traces.
     # The debug-trace value is worth keeping. CLI inherits the same
     # flags; it just produces a slightly larger binary.
+    #
+    # -DHAVE_SQLITE3_COLUMN_TABLE_NAME=1: ext/pdo_sqlite/config.m4
+    # detects sqlite3_column_table_name via a PHP_CHECK_LIBRARY link
+    # probe, which is unreliable under the wasm cross-compile SDK — on
+    # a fresh build the macro stays undefined and pdo_sqlite compiles
+    # out the #ifdef'd "table" key of getColumnMeta(). Our sqlite is
+    # built with -DSQLITE_ENABLE_COLUMN_METADATA (see
+    # packages/registry/sqlite/build-sqlite.sh), so the symbol exists;
+    # override the probe rather than let host feature-detection define
+    # what the wasm sysroot supports.
 
     # Patch config.h: disable features that pass link-time checks (--allow-undefined)
     # but don't actually exist in our musl sysroot

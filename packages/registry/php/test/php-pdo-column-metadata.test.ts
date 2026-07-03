@@ -1,10 +1,15 @@
 /**
- * Regression test for #577: pdo_sqlite calls sqlite3_column_table_name()
- * unconditionally from pdo_sqlite_stmt_col_meta(). If libsqlite3 was built
- * without -DSQLITE_ENABLE_COLUMN_METADATA, that symbol is dropped from the
- * static library, the wasm linker emits an env. import, and the kernel
- * worker stubs it with a throwing function — any getColumnMeta() call
- * kills the worker on the first row read.
+ * Regression test for #577: getColumnMeta() must return the column's
+ * table name. Two halves have to line up:
+ *
+ * 1. libsqlite3 must be built with -DSQLITE_ENABLE_COLUMN_METADATA so
+ *    sqlite3_column_table_name() exists (otherwise the wasm linker
+ *    emits an env. import the kernel worker stubs with a throwing
+ *    function, killing the worker on the first getColumnMeta() call).
+ * 2. PHP must be compiled with HAVE_SQLITE3_COLUMN_TABLE_NAME defined —
+ *    pdo_sqlite_stmt_col_meta() #ifdef-guards the "table" key behind
+ *    it, and the config.m4 link probe that sets it is unreliable under
+ *    the wasm cross-compile SDK, so build-php.sh force-defines it.
  *
  * Skipped if the PHP CLI binary is not present.
  */
