@@ -5,7 +5,11 @@
 import * as React from "react";
 import { useKernelHost, useStatus } from "../kernel-host/react";
 import type { KmsDisplayHandle } from "../../../../../web-libs/kandelo-session/src/kernel-host";
-import { injectChunkedMouseMotion, type MouseEventSink } from "@host/framebuffer/browser-controls";
+import {
+  attachLinuxMediumRawKeyboard,
+  injectChunkedMouseMotion,
+  type MouseEventSink,
+} from "@host/framebuffer/browser-controls";
 import { DemoSurfaceDockControls } from "./Framebuffer";
 import { useFittedCanvasStyle } from "./canvasFit";
 
@@ -52,6 +56,8 @@ export const Modeset: React.FC<ModesetProps> = ({ crtcId = 1, onDockControlsChan
   const handleRef = React.useRef<KmsDisplayHandle | null>(null);
   const [error, setError] = React.useState<string | null>(null);
   const [stats, setStats] = React.useState<KmsStats>(ZERO_STATS);
+  const [boundPid, setBoundPid] = React.useState<number | null>(null);
+  const [focused, setFocused] = React.useState(false);
 
   // Attach the canvas as soon as we have one and the kernel is up.
   React.useEffect(() => {
@@ -72,6 +78,7 @@ export const Modeset: React.FC<ModesetProps> = ({ crtcId = 1, onDockControlsChan
     if (canvas.width !== MODESET_FB_W) canvas.width = MODESET_FB_W;
     if (canvas.height !== MODESET_FB_H) canvas.height = MODESET_FB_H;
 
+    let offBound: (() => void) | null = null;
     try {
       const handle = host.attachKmsDisplay(canvas, crtcId);
       if (!handle) {
@@ -79,14 +86,18 @@ export const Modeset: React.FC<ModesetProps> = ({ crtcId = 1, onDockControlsChan
         return;
       }
       handleRef.current = handle;
+      setBoundPid(handle.getBoundPid());
+      offBound = handle.onBoundPidChange(setBoundPid);
       setError(null);
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     }
 
     return () => {
+      offBound?.();
       handleRef.current?.close();
       handleRef.current = null;
+      setBoundPid(null);
     };
   }, [host, status, crtcId]);
 
@@ -154,6 +165,7 @@ export const Modeset: React.FC<ModesetProps> = ({ crtcId = 1, onDockControlsChan
     const onMouseDown = (e: MouseEvent) => {
       const bit = buttonBit(e.button);
       if (bit === 0) return;
+      canvas.focus();
       e.preventDefault();
       buttons |= bit;
       handleRef.current?.sendMouseEvent(0, 0, buttons);
@@ -185,6 +197,34 @@ export const Modeset: React.FC<ModesetProps> = ({ crtcId = 1, onDockControlsChan
     };
   }, [status]);
 
+  React.useEffect(() => {
+    if (status !== "running") return;
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+
+    const keyboard = attachLinuxMediumRawKeyboard(
+      canvas,
+      {
+        sendInput: (bytes) => handleRef.current?.sendInput(bytes),
+      },
+      {
+        getEnabled: () => handleRef.current !== null,
+        onReleaseCapture: () => canvas.blur(),
+        releaseDelayMs: 16,
+      },
+    );
+    const onBlur = () => setFocused(false);
+    const onFocus = () => setFocused(true);
+
+    canvas.addEventListener("blur", onBlur);
+    canvas.addEventListener("focus", onFocus);
+    return () => {
+      keyboard.close();
+      canvas.removeEventListener("blur", onBlur);
+      canvas.removeEventListener("focus", onFocus);
+    };
+  }, [status]);
+
   // Drain the stats SAB at 4 Hz. The numbers are advisory; rAF would
   // re-render every blit, which is overkill for a status panel.
   React.useEffect(() => {
@@ -206,17 +246,20 @@ export const Modeset: React.FC<ModesetProps> = ({ crtcId = 1, onDockControlsChan
 
   const showCanvas = status === "running" && !error;
   const hasFrame = stats.width > 0 && stats.height > 0;
+  const captureLabel = focused
+    ? boundPid !== null ? `captured · pid ${boundPid}` : "captured"
+    : boundPid !== null ? "click to type" : "waiting for KMS process";
   const canvasStyle = useFittedCanvasStyle(stageRef, canvasRef, MODESET_FB_W / MODESET_FB_H);
   const statusLabel = hasFrame
-    ? `${stats.width}×${stats.height} · ${stats.commitCount} flips · ${stats.lastFrameUs}µs`
+    ? `${stats.width}×${stats.height} · ${stats.commitCount} flips · ${stats.lastFrameUs}µs · ${captureLabel}`
     : "waiting for PAGE_FLIP";
   const dockControls = React.useMemo(() => (
     <DemoSurfaceDockControls
       title={`MODESET · /DEV/DRI/CARD0 · CRTC ${crtcId}`}
       status={statusLabel}
-      active={hasFrame}
+      active={hasFrame && focused}
     />
-  ), [crtcId, hasFrame, statusLabel]);
+  ), [crtcId, focused, hasFrame, statusLabel]);
 
   React.useEffect(() => {
     if (!onDockControlsChange) return;
@@ -224,12 +267,18 @@ export const Modeset: React.FC<ModesetProps> = ({ crtcId = 1, onDockControlsChan
     return () => onDockControlsChange(null);
   }, [dockControls, onDockControlsChange]);
 
+  const onCanvasClick = () => {
+    canvasRef.current?.focus();
+  };
+
   return (
     <div className="kmodeset-surface">
       <div className="kmodeset-stage" ref={stageRef}>
         <canvas
           ref={canvasRef}
           className="kmodeset-canvas"
+          tabIndex={0}
+          onClick={onCanvasClick}
           style={{
             ...canvasStyle,
             display: showCanvas ? "block" : "none",

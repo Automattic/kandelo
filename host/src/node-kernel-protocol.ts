@@ -114,6 +114,11 @@ export interface GetForkCountRequestMessage {
   pid: number;
 }
 
+export interface GetKmsMasterPidMessage {
+  type: "get_kms_master_pid";
+  requestId: number;
+}
+
 export interface ResolveExecResponseMessage {
   type: "resolve_exec_response";
   requestId: number;
@@ -190,6 +195,7 @@ export type MainToKernelMessage =
   | TerminateProcessMessage
   | DestroyMessage
   | GetForkCountRequestMessage
+  | GetKmsMasterPidMessage
   | ResolveExecResponseMessage
   | EnumProcsRequestMessage
   | ReadProcMapsRequestMessage

@@ -1333,6 +1333,10 @@ port.on("message", (msg: MainToKernelMessage) => {
       }
       break;
     }
+    case "get_kms_master_pid": {
+      post({ type: "response", requestId: msg.requestId, result: kernelWorker.kms.getMasterPid() });
+      break;
+    }
     case "enum_procs": {
       // Snapshot the kernel's process table for the Inspector → Procs tab.
       // Mirrors the Browser-side handler in browser-kernel-worker-entry.ts.
