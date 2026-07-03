@@ -87,3 +87,52 @@ test("@slow Kandelo WordPress/MariaDB preinstalled site logs into wp-admin", asy
     timeout: 180_000,
   });
 });
+
+test("@slow Kandelo WordPress site editor loads assets through the bridge (no blob-iframe 404s)", async ({
+  page,
+}) => {
+  test.setTimeout(420_000);
+
+  // The block/site editor mounts its canvas from a `blob:` URL. Blob documents
+  // are not controlled by the service worker, so without the blob-iframe
+  // interceptor their asset requests (load-scripts.php/load-styles.php) escape
+  // the bridge and 404 against the static origin. The interceptor rewrites
+  // such iframes to about:srcdoc, which the SW controls. Assert that no editor
+  // asset 404s and nothing under /app escapes to the origin.
+  const badAssets: string[] = [];
+  page.on("response", (resp) => {
+    const url = resp.url();
+    if (resp.status() >= 400 && (/load-scripts|load-styles/.test(url) || url.includes("/app/"))) {
+      badAssets.push(`${resp.status()} ${url}`);
+    }
+  });
+
+  await gotoOrSkip(page, "/?demo=wordpress-mariadb");
+  await page.waitForSelector('iframe[src*="/app/"]', { timeout: 180_000 });
+
+  const frame = page.frameLocator('iframe[src*="/app/"]');
+  await expect(frame.locator("body")).toContainText(/WordPress on Kandelo|Hello world/i, {
+    timeout: 240_000,
+  });
+
+  await frame.locator("body").evaluate(() => {
+    window.location.href = "/app/wp-login.php";
+  });
+  await expect(frame.locator("#loginform")).toBeVisible({ timeout: 120_000 });
+  await frame.locator("#user_login").fill("admin");
+  await frame.locator("#user_pass").fill("password");
+  await frame.locator("#wp-submit").click();
+  await expect(frame.locator("#wpadminbar, #adminmenu, body.wp-admin").first()).toBeVisible({
+    timeout: 180_000,
+  });
+
+  // Open the site editor and let its canvas iframe issue its asset requests.
+  badAssets.length = 0;
+  await frame.locator("body").evaluate(() => {
+    window.location.href = "/app/wp-admin/site-editor.php";
+  });
+  await expect(frame.locator("iframe").first()).toBeVisible({ timeout: 180_000 });
+  await page.waitForTimeout(20_000);
+
+  expect(badAssets, `escaped/404 asset requests:\n${badAssets.join("\n")}`).toEqual([]);
+});
