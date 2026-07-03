@@ -5,4 +5,3 @@ revision    = 1
 
 [binary]
 index_url = "https://github.com/brandonpayton/wasm-posix-kernel/releases/download/binaries-abi-v{abi}/index.toml"
-
