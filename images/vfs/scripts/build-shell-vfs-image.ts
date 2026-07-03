@@ -10,7 +10,6 @@
  */
 import { readFileSync } from "node:fs";
 import { posix as pathPosix } from "node:path";
-import { resolveBinary } from "../../../host/src/binary-resolver";
 import { MemoryFileSystem } from "../../../host/src/vfs/memory-fs";
 import { extractZipEntry, parseZipCentralDirectory } from "../../../host/src/vfs/zip";
 import {
@@ -43,9 +42,9 @@ const OUT_FILE = "apps/browser-demos/public/shell.vfs.zst";
 
 function resolveRootfsImagePath(): string {
   try {
-    return resolveBinary("rootfs.vfs");
+    return resolveVfsArtifact("rootfs.vfs", "rootfs");
   } catch {
-    return resolveBinary("programs/rootfs.vfs");
+    return resolveVfsArtifact("programs/rootfs.vfs", "rootfs");
   }
 }
 
@@ -87,15 +86,15 @@ async function main() {
         presentation: kmsPresentation("/usr/local/bin/modeset"),
       },
       love: {
-        presentation: framebufferPresentation(LOVE_COMMAND),
+        presentation: kmsPresentation(LOVE_COMMAND),
         guide: loveGuide(),
       },
       bytepath: {
-        presentation: framebufferPresentation(BYTEPATH_COMMAND),
+        presentation: kmsPresentation(BYTEPATH_COMMAND),
         guide: bytepathGuide(),
       },
       snkrx: {
-        presentation: framebufferPresentation(SNKRX_COMMAND),
+        presentation: kmsPresentation(SNKRX_COMMAND),
         guide: snkrxGuide(),
       },
     },

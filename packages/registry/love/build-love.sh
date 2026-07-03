@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
 #
-# Build the native Kandelo framebuffer LÖVE runtime.
+# Build the native Kandelo LÖVE runtime.
 #
 # This intentionally does not use Emscripten. The result is a POSIX/Wasm
-# program linked by wasm32posix-c++ that opens /dev/fb0 at runtime.
+# program linked by wasm32posix-c++ that prefers /dev/dri/card0 KMS/EGL/GLES
+# presentation and falls back to /dev/fb0 when direct rendering is unavailable.
 
 set -euo pipefail
 
@@ -41,6 +42,14 @@ find_llvm_bin() {
 LLVM_BIN="$(find_llvm_bin)"
 CXX="$LLVM_BIN/clang++"
 GLUE_DIR="$REPO_ROOT/libc/glue"
+LIBCXX_PREFIX="${WASM_POSIX_DEP_LIBCXX_DIR:-$WASM_POSIX_SYSROOT}"
+if [ ! -f "$LIBCXX_PREFIX/lib/libc++.a" ] ||
+   [ ! -f "$LIBCXX_PREFIX/lib/libc++abi.a" ] ||
+   [ ! -f "$LIBCXX_PREFIX/include/c++/v1/algorithm" ]; then
+    echo "ERROR: libcxx dependency not found at $LIBCXX_PREFIX" >&2
+    echo "Resolve libcxx first or build through cargo xtask build-deps resolve love." >&2
+    exit 1
+fi
 CXXFLAGS_NATIVE=(
     --target=wasm32-unknown-unknown
     --sysroot="$WASM_POSIX_SYSROOT"
@@ -48,7 +57,7 @@ CXXFLAGS_NATIVE=(
     -fno-trapping-math
     -fno-exceptions
     -fno-rtti
-    -isystem "$WASM_POSIX_SYSROOT/include/c++/v1"
+    -isystem "$LIBCXX_PREFIX/include/c++/v1"
 )
 LDFLAGS_NATIVE=(
     -nostdlib
@@ -85,6 +94,20 @@ if [ ! -f "$LUA_PREFIX/lib/liblua.a" ] || [ ! -f "$LUA_PREFIX/include/lua.h" ]; 
     exit 1
 fi
 
+DRI_LIBS=(
+    "$WASM_POSIX_SYSROOT/lib/libgbm.a"
+    "$WASM_POSIX_SYSROOT/lib/libdrm.a"
+    "$WASM_POSIX_SYSROOT/lib/libEGL.a"
+    "$WASM_POSIX_SYSROOT/lib/libGLESv2.a"
+)
+for lib in "${DRI_LIBS[@]}"; do
+    if [ ! -f "$lib" ]; then
+        echo "ERROR: DRI/EGL/GLES sysroot library is missing: $lib" >&2
+        echo "Run: scripts/dev-shell.sh bash scripts/build-musl.sh" >&2
+        exit 1
+    fi
+done
+
 if [ ! -d "$SRC/.git" ]; then
     echo "==> Cloning LÖVE $LOVE_COMMIT..."
     git clone --filter=blob:none https://github.com/love2d/love.git "$SRC"
@@ -115,7 +138,7 @@ fi
 rm -rf "$BUILD"
 mkdir -p "$BUILD"
 
-echo "==> Compiling framebuffer runtime..."
+echo "==> Compiling KMS/EGL/GLES runtime..."
 "$CXX" "${CXXFLAGS_NATIVE[@]}" -O2 -std=c++17 \
     -I"$LUA_PREFIX/include" \
     -I"$SRC/src/libraries/lodepng" \
@@ -132,8 +155,9 @@ echo "==> Linking love.wasm..."
     "$GLUE_DIR/cxxrt.c" \
     "$WASM_POSIX_SYSROOT/lib/crt1.o" \
     "$LUA_PREFIX/lib/liblua.a" \
-    "$WASM_POSIX_SYSROOT/lib/libc++.a" \
-    "$WASM_POSIX_SYSROOT/lib/libc++abi.a" \
+    "${DRI_LIBS[@]}" \
+    "$LIBCXX_PREFIX/lib/libc++.a" \
+    "$LIBCXX_PREFIX/lib/libc++abi.a" \
     "$WASM_POSIX_SYSROOT/lib/libc.a" \
     "${LDFLAGS_NATIVE[@]}" \
     -o "$HERE/love.wasm"

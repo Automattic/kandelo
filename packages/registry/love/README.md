@@ -1,8 +1,9 @@
-# LOVE framebuffer runtime
+# LOVE native runtime
 
 This package is the native Kandelo path for running LÖVE-style Lua game demos.
 It builds a `wasm32posix` executable with `wasm32posix-c++`, opens
-`/dev/fb0`, and renders with a small software backend.
+`/dev/dri/card0`, and presents frames through KMS/EGL/GLES. It falls back to
+`/dev/fb0` only when direct rendering is unavailable.
 
 It intentionally does not use Emscripten. The package also bundles
 the local game gallery, BYTEPATH, and SNKRX as `love-examples.zip`; the shell
@@ -26,9 +27,9 @@ SNKRX can be launched directly with:
 
 The upstream LÖVE 11.5 source is still pinned and fetched by the build script
 for the port baseline and bundled libraries such as `lodepng`, but the
-framebuffer backend here replaces the upstream SDL/OpenGL presentation path.
-Lua is provided by the separate `lua` registry package and linked as
-`liblua.a`.
+Kandelo backend replaces the upstream SDL presentation path with the kernel's
+direct-rendering surface. Lua is provided by the separate `lua` registry
+package and linked as `liblua.a`.
 
 The BYTEPATH staging step pins upstream `a327ex/BYTEPATH` and keeps the MIT
 game code plus permissive Lua dependencies needed for gameplay. It omits the

@@ -38,6 +38,25 @@ const COI_RELOAD_SESSION_KEY = "kandelo:sm-node-coi-reload-attempted";
 // Node profile's 256 MiB cap instead of reserving the 1 GiB BrowserKernel
 // default for every bash/node/worker process in this demo.
 const SPIDERMONKEY_NODE_MEMORY_PAGES = 4096;
+const SPIDERMONKEY_NODE_WASM_LOADERS = {
+  ...import.meta.glob("../../../../../local-binaries/programs/wasm32/spidermonkey-node.wasm", {
+    query: "?url", import: "default",
+  }),
+  ...import.meta.glob("../../../../../binaries/programs/wasm32/spidermonkey-node.wasm", {
+    query: "?url", import: "default",
+  }),
+} as Record<string, () => Promise<string>>;
+
+async function resolveSpiderMonkeyNodeWasmUrl(): Promise<string> {
+  for (const relPath of [
+    "../../../../../local-binaries/programs/wasm32/spidermonkey-node.wasm",
+    "../../../../../binaries/programs/wasm32/spidermonkey-node.wasm",
+  ]) {
+    const loader = SPIDERMONKEY_NODE_WASM_LOADERS[relPath];
+    if (loader) return loader();
+  }
+  throw new Error("spidermonkey-node.wasm is not built. Run: ./run.sh fetch or build the spidermonkey-node package.");
+}
 
 const SHELL_ENV = [
   "HOME=/work",

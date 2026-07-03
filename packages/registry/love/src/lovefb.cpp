@@ -1,12 +1,13 @@
-// Kandelo framebuffer runtime for LÖVE-style Lua demos.
+// Kandelo native runtime for LÖVE-style Lua demos.
 //
 // This is a native POSIX/Wasm executable. It does not use Emscripten or a
-// browser canvas API directly: rendering goes through /dev/fb0, keyboard input
-// is Linux MEDIUMRAW on stdin, and mouse input is /dev/input/mice PS/2 packets.
+// browser canvas API directly: rendering prefers /dev/dri/card0 with
+// KMS/EGL/GLES page flips, keyboard input is Linux MEDIUMRAW on stdin, and
+// mouse input is /dev/input/mice PS/2 packets.
 //
 // The upstream LÖVE 11.x graphics path is OpenGL/SDL-oriented. For Kandelo's
-// fixed fbdev surface this file provides a compact software renderer and the
-// small love.* API surface needed by the bundled game demos.
+// native surface this file provides a compact Lua compatibility layer and
+// presents the game frame through the kernel's direct-rendering stack.
 
 #include <algorithm>
 #include <array>
@@ -17,7 +18,12 @@
 #include <cstdlib>
 #include <cstring>
 #include <dirent.h>
+#include <EGL/egl.h>
 #include <fcntl.h>
+#include <gbm.h>
+#include <GLES2/gl2.h>
+#include <drm/drm.h>
+#include <drm/drm_fourcc.h>
 #include <linux/fb.h>
 #include <map>
 #include <set>
@@ -31,6 +37,8 @@
 #include <termios.h>
 #include <unistd.h>
 #include <vector>
+#include <xf86drm.h>
+#include <xf86drmMode.h>
 
 extern "C" {
 #include "lua.h"
@@ -44,7 +52,16 @@ namespace {
 
 constexpr int kLogicalWidth = 960;
 constexpr int kLogicalHeight = 540;
+constexpr int kScanoutWidth = 1920;
+constexpr int kScanoutHeight = 1080;
+constexpr int kKmsBoCount = 2;
 constexpr double kPi = 3.14159265358979323846;
+
+enum class Presenter {
+  None,
+  Framebuffer,
+  KmsGl,
+};
 
 struct Color {
   uint8_t r = 255;
@@ -169,12 +186,31 @@ struct Transform {
 
 struct Runtime {
   std::string root;
+  Presenter presenter = Presenter::None;
   int fbFd = -1;
   int miceFd = -1;
   int fbW = kLogicalWidth;
   int fbH = kLogicalHeight;
   size_t fbLen = 0;
   uint32_t *fb = nullptr;
+
+  int drmFd = -1;
+  gbm_device *gbm = nullptr;
+  gbm_bo *kmsBos[kKmsBoCount]{};
+  uint32_t kmsFbIds[kKmsBoCount]{};
+  uint32_t kmsCrtcId = 0;
+  uint32_t kmsConnId = 0;
+  drmModeModeInfo kmsMode{};
+  int kmsCurrentFb = 0;
+  EGLDisplay eglDisplay = EGL_NO_DISPLAY;
+  EGLContext eglContext = EGL_NO_CONTEXT;
+  EGLSurface eglSurface = EGL_NO_SURFACE;
+  GLuint glProgram = 0;
+  GLuint glTexture = 0;
+  GLuint glBuffer = 0;
+  GLint glPositionLoc = -1;
+  GLint glTexcoordLoc = -1;
+  GLint glSamplerLoc = -1;
 
   Surface screen;
   Surface *target = nullptr;
@@ -198,6 +234,8 @@ struct Runtime {
   int mouseButtons = 0;
   int mouseDx = 0;
   int mouseDy = 0;
+  double mouseRemainderX = 0.0;
+  double mouseRemainderY = 0.0;
   std::vector<MouseButtonEvent> mouseEvents;
   bool mouseVisible = false;
 
@@ -667,6 +705,7 @@ void flushFramebuffer() {
 }
 
 void drawSoftwareCursor() {
+  if (G.presenter == Presenter::KmsGl) return;
   if (!G.mouseVisible || !G.target) return;
   const int x = G.mouseX;
   const int y = G.mouseY;
@@ -693,6 +732,324 @@ void drawSoftwareCursor() {
   G.lineWidth = oldLineWidth;
 }
 
+void cleanupKmsGl() {
+  if (G.glBuffer) {
+    glDeleteBuffers(1, &G.glBuffer);
+    G.glBuffer = 0;
+  }
+  if (G.glTexture) {
+    glDeleteTextures(1, &G.glTexture);
+    G.glTexture = 0;
+  }
+  if (G.glProgram) {
+    glDeleteProgram(G.glProgram);
+    G.glProgram = 0;
+  }
+  if (G.eglDisplay != EGL_NO_DISPLAY) {
+    eglMakeCurrent(G.eglDisplay, EGL_NO_SURFACE, EGL_NO_SURFACE, EGL_NO_CONTEXT);
+    if (G.eglSurface != EGL_NO_SURFACE) eglDestroySurface(G.eglDisplay, G.eglSurface);
+    if (G.eglContext != EGL_NO_CONTEXT) eglDestroyContext(G.eglDisplay, G.eglContext);
+    eglTerminate(G.eglDisplay);
+  }
+  G.eglDisplay = EGL_NO_DISPLAY;
+  G.eglSurface = EGL_NO_SURFACE;
+  G.eglContext = EGL_NO_CONTEXT;
+
+  for (int i = 0; i < kKmsBoCount; ++i) {
+    if (G.kmsFbIds[i] != 0 && G.drmFd >= 0) {
+      drmModeRmFB(G.drmFd, G.kmsFbIds[i]);
+      G.kmsFbIds[i] = 0;
+    }
+    if (G.kmsBos[i]) {
+      gbm_bo_destroy(G.kmsBos[i]);
+      G.kmsBos[i] = nullptr;
+    }
+  }
+  if (G.gbm) {
+    gbm_device_destroy(G.gbm);
+    G.gbm = nullptr;
+  }
+  if (G.drmFd >= 0) {
+    close(G.drmFd);
+    G.drmFd = -1;
+  }
+}
+
+bool compileShader(GLenum type, const char *source, GLuint *out) {
+  GLuint shader = glCreateShader(type);
+  glShaderSource(shader, 1, &source, nullptr);
+  glCompileShader(shader);
+
+  GLint ok = GL_FALSE;
+  glGetShaderiv(shader, GL_COMPILE_STATUS, &ok);
+  if (ok != GL_TRUE) {
+    char log[512];
+    GLsizei len = 0;
+    glGetShaderInfoLog(shader, sizeof(log), &len, log);
+    fprintf(stderr, "love: GLES shader compile failed: %.*s\n", int(len), log);
+    glDeleteShader(shader);
+    return false;
+  }
+  *out = shader;
+  return true;
+}
+
+bool buildPresenterProgram() {
+  static const char *vertexSource =
+      "attribute vec2 a_position;\n"
+      "attribute vec2 a_texcoord;\n"
+      "varying vec2 v_texcoord;\n"
+      "void main() {\n"
+      "  gl_Position = vec4(a_position, 0.0, 1.0);\n"
+      "  v_texcoord = a_texcoord;\n"
+      "}\n";
+  static const char *fragmentSource =
+      "precision mediump float;\n"
+      "uniform sampler2D u_frame;\n"
+      "varying vec2 v_texcoord;\n"
+      "void main() {\n"
+      "  vec4 c = texture2D(u_frame, v_texcoord);\n"
+      "  gl_FragColor = vec4(c.b, c.g, c.r, c.a);\n"
+      "}\n";
+
+  GLuint vs = 0;
+  GLuint fs = 0;
+  if (!compileShader(GL_VERTEX_SHADER, vertexSource, &vs)) return false;
+  if (!compileShader(GL_FRAGMENT_SHADER, fragmentSource, &fs)) {
+    glDeleteShader(vs);
+    return false;
+  }
+
+  G.glProgram = glCreateProgram();
+  glAttachShader(G.glProgram, vs);
+  glAttachShader(G.glProgram, fs);
+  glLinkProgram(G.glProgram);
+  glDeleteShader(vs);
+  glDeleteShader(fs);
+
+  GLint ok = GL_FALSE;
+  glGetProgramiv(G.glProgram, GL_LINK_STATUS, &ok);
+  if (ok != GL_TRUE) {
+    char log[512];
+    GLsizei len = 0;
+    glGetProgramInfoLog(G.glProgram, sizeof(log), &len, log);
+    fprintf(stderr, "love: GLES program link failed: %.*s\n", int(len), log);
+    glDeleteProgram(G.glProgram);
+    G.glProgram = 0;
+    return false;
+  }
+
+  G.glPositionLoc = glGetAttribLocation(G.glProgram, "a_position");
+  G.glTexcoordLoc = glGetAttribLocation(G.glProgram, "a_texcoord");
+  G.glSamplerLoc = glGetUniformLocation(G.glProgram, "u_frame");
+  return G.glPositionLoc >= 0 && G.glTexcoordLoc >= 0 && G.glSamplerLoc >= 0;
+}
+
+int setupKmsGl() {
+  G.drmFd = open("/dev/dri/card0", O_RDWR | O_NONBLOCK);
+  if (G.drmFd < 0) {
+    perror("open /dev/dri/card0");
+    return 1;
+  }
+  if (drmSetMaster(G.drmFd) != 0) {
+    perror("drmSetMaster");
+    cleanupKmsGl();
+    return 1;
+  }
+
+  drmModeResPtr res = drmModeGetResources(G.drmFd);
+  if (!res || res->count_crtcs < 1 || res->count_connectors < 1) {
+    fprintf(stderr, "love: drmModeGetResources returned no usable CRTC/connector\n");
+    if (res) drmModeFreeResources(res);
+    cleanupKmsGl();
+    return 1;
+  }
+  G.kmsCrtcId = res->crtcs[0];
+  G.kmsConnId = res->connectors[0];
+
+  drmModeConnectorPtr conn = drmModeGetConnector(G.drmFd, G.kmsConnId);
+  if (!conn || conn->connection != DRM_MODE_CONNECTED || conn->count_modes < 1) {
+    fprintf(stderr, "love: drmModeGetConnector returned no connected mode\n");
+    if (conn) drmModeFreeConnector(conn);
+    drmModeFreeResources(res);
+    cleanupKmsGl();
+    return 1;
+  }
+  G.kmsMode = conn->modes[0];
+  drmModeFreeConnector(conn);
+  drmModeFreeResources(res);
+
+  G.gbm = gbm_create_device(G.drmFd);
+  if (!G.gbm) {
+    perror("gbm_create_device");
+    cleanupKmsGl();
+    return 1;
+  }
+
+  for (int i = 0; i < kKmsBoCount; ++i) {
+    G.kmsBos[i] = gbm_bo_create(G.gbm, kScanoutWidth, kScanoutHeight,
+                                GBM_FORMAT_XRGB8888, GBM_BO_USE_SCANOUT);
+    if (!G.kmsBos[i]) {
+      perror("gbm_bo_create");
+      cleanupKmsGl();
+      return 1;
+    }
+
+    uint32_t handle = gbm_bo_get_handle(G.kmsBos[i]).u32;
+    uint32_t stride = gbm_bo_get_stride(G.kmsBos[i]);
+    uint32_t handles[4] = {handle, 0, 0, 0};
+    uint32_t pitches[4] = {stride, 0, 0, 0};
+    uint32_t offsets[4] = {0, 0, 0, 0};
+    if (drmModeAddFB2(G.drmFd, kScanoutWidth, kScanoutHeight,
+                      DRM_FORMAT_XRGB8888, handles, pitches, offsets,
+                      &G.kmsFbIds[i], 0) != 0) {
+      perror("drmModeAddFB2");
+      cleanupKmsGl();
+      return 1;
+    }
+  }
+
+  int primeFd = gbm_bo_get_fd(G.kmsBos[0]);
+  if (primeFd >= 0) close(primeFd);
+
+  if (drmModeSetCrtc(G.drmFd, G.kmsCrtcId, G.kmsFbIds[0],
+                     0, 0, &G.kmsConnId, 1, &G.kmsMode) != 0) {
+    perror("drmModeSetCrtc");
+    cleanupKmsGl();
+    return 1;
+  }
+
+  G.eglDisplay = eglGetDisplay(EGL_DEFAULT_DISPLAY);
+  EGLint major = 0;
+  EGLint minor = 0;
+  if (!eglInitialize(G.eglDisplay, &major, &minor)) {
+    fprintf(stderr, "love: eglInitialize failed: 0x%x\n", unsigned(eglGetError()));
+    cleanupKmsGl();
+    return 1;
+  }
+
+  EGLint cfgAttribs[] = {
+      EGL_RENDERABLE_TYPE, EGL_OPENGL_ES2_BIT,
+      EGL_RED_SIZE, 8,
+      EGL_GREEN_SIZE, 8,
+      EGL_BLUE_SIZE, 8,
+      EGL_ALPHA_SIZE, 8,
+      EGL_SURFACE_TYPE, EGL_WINDOW_BIT,
+      EGL_NONE,
+  };
+  EGLConfig cfg = nullptr;
+  EGLint numCfg = 0;
+  if (!eglChooseConfig(G.eglDisplay, cfgAttribs, &cfg, 1, &numCfg) || numCfg < 1) {
+    fprintf(stderr, "love: eglChooseConfig failed: 0x%x\n", unsigned(eglGetError()));
+    cleanupKmsGl();
+    return 1;
+  }
+  if (!eglBindAPI(EGL_OPENGL_ES_API)) {
+    fprintf(stderr, "love: eglBindAPI failed: 0x%x\n", unsigned(eglGetError()));
+    cleanupKmsGl();
+    return 1;
+  }
+
+  EGLint ctxAttribs[] = {EGL_CONTEXT_CLIENT_VERSION, 2, EGL_NONE};
+  G.eglContext = eglCreateContext(G.eglDisplay, cfg, EGL_NO_CONTEXT, ctxAttribs);
+  if (G.eglContext == EGL_NO_CONTEXT) {
+    fprintf(stderr, "love: eglCreateContext failed: 0x%x\n", unsigned(eglGetError()));
+    cleanupKmsGl();
+    return 1;
+  }
+  G.eglSurface = eglCreateWindowSurface(G.eglDisplay, cfg, 0, nullptr);
+  if (G.eglSurface == EGL_NO_SURFACE) {
+    fprintf(stderr, "love: eglCreateWindowSurface failed: 0x%x\n", unsigned(eglGetError()));
+    cleanupKmsGl();
+    return 1;
+  }
+  if (!eglMakeCurrent(G.eglDisplay, G.eglSurface, G.eglSurface, G.eglContext)) {
+    fprintf(stderr, "love: eglMakeCurrent failed: 0x%x\n", unsigned(eglGetError()));
+    cleanupKmsGl();
+    return 1;
+  }
+
+  if (!buildPresenterProgram()) {
+    cleanupKmsGl();
+    return 1;
+  }
+
+  glGenTextures(1, &G.glTexture);
+  glBindTexture(GL_TEXTURE_2D, G.glTexture);
+  glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+  glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+  glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+  glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+  glPixelStorei(GL_UNPACK_ALIGNMENT, 4);
+  glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, kLogicalWidth, kLogicalHeight, 0,
+               GL_RGBA, GL_UNSIGNED_BYTE, G.screen.bgra.data());
+
+  const GLfloat verts[] = {
+      -1.0f, -1.0f, 0.0f, 1.0f,
+       1.0f, -1.0f, 1.0f, 1.0f,
+      -1.0f,  1.0f, 0.0f, 0.0f,
+       1.0f,  1.0f, 1.0f, 0.0f,
+  };
+  glGenBuffers(1, &G.glBuffer);
+  glBindBuffer(GL_ARRAY_BUFFER, G.glBuffer);
+  glBufferData(GL_ARRAY_BUFFER, sizeof(verts), verts, GL_STATIC_DRAW);
+  glViewport(0, 0, kScanoutWidth, kScanoutHeight);
+  glDisable(GL_DEPTH_TEST);
+  glDisable(GL_STENCIL_TEST);
+  glDisable(GL_BLEND);
+  G.presenter = Presenter::KmsGl;
+  fprintf(stderr, "love: using KMS/EGL/GLES presenter on /dev/dri/card0\n");
+  return 0;
+}
+
+int kmsPageflipWait() {
+  int nextFb = G.kmsCurrentFb ^ 1;
+  if (drmModePageFlip(G.drmFd, G.kmsCrtcId, G.kmsFbIds[nextFb],
+                      DRM_MODE_PAGE_FLIP_EVENT, nullptr) != 0) {
+    perror("drmModePageFlip");
+    return 1;
+  }
+
+  struct drm_event_vblank ev{};
+  for (;;) {
+    ssize_t n = read(G.drmFd, &ev, sizeof(ev));
+    if (n == ssize_t(sizeof(ev))) break;
+    if (n < 0 && errno == EAGAIN) {
+      usleep(1000);
+      continue;
+    }
+    fprintf(stderr, "love: DRM event read failed: n=%zd errno=%d\n", n, errno);
+    return 1;
+  }
+  G.kmsCurrentFb = nextFb;
+  return 0;
+}
+
+void flushKmsGl() {
+  if (G.presenter != Presenter::KmsGl) return;
+  glViewport(0, 0, kScanoutWidth, kScanoutHeight);
+  glUseProgram(G.glProgram);
+  glActiveTexture(GL_TEXTURE0);
+  glBindTexture(GL_TEXTURE_2D, G.glTexture);
+  glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, kLogicalWidth, kLogicalHeight,
+                  GL_RGBA, GL_UNSIGNED_BYTE, G.screen.bgra.data());
+  glUniform1i(G.glSamplerLoc, 0);
+  glBindBuffer(GL_ARRAY_BUFFER, G.glBuffer);
+  glEnableVertexAttribArray(GLuint(G.glPositionLoc));
+  glEnableVertexAttribArray(GLuint(G.glTexcoordLoc));
+  glVertexAttribPointer(GLuint(G.glPositionLoc), 2, GL_FLOAT, GL_FALSE,
+                        4 * sizeof(GLfloat), reinterpret_cast<void *>(0));
+  glVertexAttribPointer(GLuint(G.glTexcoordLoc), 2, GL_FLOAT, GL_FALSE,
+                        4 * sizeof(GLfloat), reinterpret_cast<void *>(2 * sizeof(GLfloat)));
+  glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+  if (!eglSwapBuffers(G.eglDisplay, G.eglSurface)) {
+    fprintf(stderr, "love: eglSwapBuffers failed: 0x%x\n", unsigned(eglGetError()));
+    gRunning = 0;
+    return;
+  }
+  if (kmsPageflipWait() != 0) gRunning = 0;
+}
+
 int openFramebuffer() {
   G.fbFd = open("/dev/fb0", O_RDWR);
   if (G.fbFd < 0) {
@@ -717,7 +1074,33 @@ int openFramebuffer() {
     perror("mmap /dev/fb0");
     return 1;
   }
+  G.presenter = Presenter::Framebuffer;
+  fprintf(stderr, "love: using /dev/fb0 presenter\n");
   return 0;
+}
+
+int openPresenter() {
+  if (setupKmsGl() == 0) return 0;
+  fprintf(stderr, "love: falling back to /dev/fb0 presenter\n");
+  return openFramebuffer();
+}
+
+void presentFrame() {
+  if (G.presenter == Presenter::KmsGl) flushKmsGl();
+  else flushFramebuffer();
+}
+
+void cleanupPresenter() {
+  if (G.presenter == Presenter::KmsGl) cleanupKmsGl();
+  if (G.fb) {
+    munmap(G.fb, G.fbLen);
+    G.fb = nullptr;
+  }
+  if (G.fbFd >= 0) {
+    close(G.fbFd);
+    G.fbFd = -1;
+  }
+  G.presenter = Presenter::None;
 }
 
 void configureRawStdin() {
@@ -784,11 +1167,19 @@ void pollInput() {
     ssize_t n = read(G.miceFd, pkt, 3);
     if (n != 3) break;
     int dx = int(int8_t(pkt[1]));
-    int dy = int(int8_t(pkt[2]));
+    int dy = -int(int8_t(pkt[2]));
+    if (G.presenter == Presenter::KmsGl) {
+      G.mouseRemainderX += double(dx) * double(kLogicalWidth) / double(kScanoutWidth);
+      G.mouseRemainderY += double(dy) * double(kLogicalHeight) / double(kScanoutHeight);
+      dx = int(std::trunc(G.mouseRemainderX));
+      dy = int(std::trunc(G.mouseRemainderY));
+      G.mouseRemainderX -= double(dx);
+      G.mouseRemainderY -= double(dy);
+    }
     G.mouseDx += dx;
-    G.mouseDy -= dy;
+    G.mouseDy += dy;
     G.mouseX = clampInt(G.mouseX + dx, 0, kLogicalWidth - 1);
-    G.mouseY = clampInt(G.mouseY - dy, 0, kLogicalHeight - 1);
+    G.mouseY = clampInt(G.mouseY + dy, 0, kLogicalHeight - 1);
     newButtons = pkt[0] & 0x07;
   }
   int changed = G.mouseButtons ^ newButtons;
@@ -1106,8 +1497,8 @@ int l_g_getSystemLimits(lua_State *L) {
 int l_g_getSupported(lua_State *L) { lua_newtable(L); return 1; }
 int l_g_getRendererInfo(lua_State *L) {
   lua_pushstring(L, "Kandelo");
-  lua_pushstring(L, "lovefb");
-  lua_pushstring(L, "software");
+  lua_pushstring(L, G.presenter == Presenter::KmsGl ? "love-kms-gles" : "lovefb");
+  lua_pushstring(L, G.presenter == Presenter::KmsGl ? "GLES2" : "software");
   lua_pushstring(L, "1.0");
   return 4;
 }
@@ -2195,7 +2586,7 @@ int runLove(lua_State *L) {
       G.font = savedFont;
     }
     drawSoftwareCursor();
-    flushFramebuffer();
+    presentFrame();
 
     double frame = nowSeconds() - t;
     if (frame < 1.0 / 60.0) usleep(useconds_t((1.0 / 60.0 - frame) * 1000000.0));
@@ -2213,23 +2604,22 @@ int main(int argc, char **argv) {
 
   signal(SIGTERM, signalHandler);
   signal(SIGINT, signalHandler);
-  if (openFramebuffer() != 0) return 1;
+  if (openPresenter() != 0) return 1;
   configureRawStdin();
   G.savedStdinFlags = fcntl(STDIN_FILENO, F_GETFL, 0);
   if (G.savedStdinFlags >= 0) fcntl(STDIN_FILENO, F_SETFL, G.savedStdinFlags | O_NONBLOCK);
   G.miceFd = open("/dev/input/mice", O_RDONLY | O_NONBLOCK);
 
   clearSurface(G.screen, Color{14, 18, 24, 255});
-  drawText(G.screen, "LOVE framebuffer runtime", 20, 20);
-  flushFramebuffer();
+  drawText(G.screen, G.presenter == Presenter::KmsGl ? "LOVE KMS/EGL/GLES runtime" : "LOVE framebuffer runtime", 20, 20);
+  presentFrame();
 
   lua_State *L = luaL_newstate();
   luaL_openlibs(L);
   int rc = runLove(L);
   lua_close(L);
   restoreStdin();
-  if (G.fb) munmap(G.fb, G.fbLen);
-  if (G.fbFd >= 0) close(G.fbFd);
+  cleanupPresenter();
   if (G.miceFd >= 0) close(G.miceFd);
   return rc;
 }

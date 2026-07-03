@@ -154,6 +154,9 @@ Located in `apps/browser-demos/pages/`:
 | benchmark | (per-suite) | legacy spawn | Micro-benchmarks + WordPress + Erlang ring |
 | network | dash + GNU Netcat + curl | `kernel.boot` x 3 | Boots multiple local Kandelo machines and verifies UDP datagrams, TCP streams, and HTTP over virtual TCP |
 | doom | fbDOOM | legacy spawn | `/dev/fb0` framebuffer + canvas renderer + keyboard via stdin + mouse via `/dev/input/mice` (pointer-locked) + SFX **and** OPL2-synthesized music via `/dev/dsp` → AudioContext. The shareware `doom1.wad` is **fetched at page load** from a Linux-distro mirror (SHA-256 verified, Cache API cached); no IWAD ships in the package archive. |
+| love | LOVE native runtime | legacy spawn | Bundled LÖVE-style Lua game gallery presented through `/dev/dri/card0` KMS/EGL/GLES, with `/dev/fb0` fallback for non-KMS environments. |
+| bytepath | BYTEPATH via LOVE | legacy spawn | The bundled BYTEPATH port uses the same native LOVE KMS/EGL/GLES presentation path. |
+| snkrx | SNKRX via LOVE | legacy spawn | The bundled SNKRX port uses the same native LOVE KMS/EGL/GLES presentation path. |
 
 The "Boot pattern" column reflects how the demo enters the kernel:
 - **`kernel.boot`** — `kernelOwnedFs: true`, exec the language interpreter as the first process.

@@ -98,17 +98,17 @@ export function builtinDemoPresentation(profileId: string): DemoPresentation | n
       return genericDemoPresentation("kms");
     case "love":
       return {
-        ...genericDemoPresentation("framebuffer"),
+        ...genericDemoPresentation("kms"),
         autoCommand: LOVE_COMMAND,
       };
     case "bytepath":
       return {
-        ...genericDemoPresentation("framebuffer"),
+        ...genericDemoPresentation("kms"),
         autoCommand: BYTEPATH_COMMAND,
       };
     case "snkrx":
       return {
-        ...genericDemoPresentation("framebuffer"),
+        ...genericDemoPresentation("kms"),
         autoCommand: SNKRX_COMMAND,
       };
     default:
@@ -261,7 +261,7 @@ export function wordpressGuide(): DemoGuideConfig {
 export function loveGuide(): DemoGuideConfig {
   return scriptGuide(
     "LOVE game gallery",
-    "The native runtime opens /dev/fb0 and runs bundled Lua game demos.",
+    "The native runtime opens /dev/dri/card0 and presents bundled Lua game demos through KMS/EGL/GLES.",
     [
       actionGroup("Runtime", [
         action("run-love", "Run", "Start the LOVE game gallery.", "terminal.run", LOVE_COMMAND),
@@ -282,7 +282,7 @@ export function loveGuide(): DemoGuideConfig {
 export function bytepathGuide(): DemoGuideConfig {
   return scriptGuide(
     "BYTEPATH",
-    "BYTEPATH runs as a standard Lua 5.1 LOVE app on the native framebuffer runtime.",
+    "BYTEPATH runs as a standard Lua 5.1 LOVE app on the native KMS/EGL/GLES runtime.",
     [
       actionGroup("Runtime", [
         action("run-bytepath", "Run", "Start BYTEPATH.", "terminal.run", BYTEPATH_COMMAND),
@@ -301,7 +301,7 @@ export function bytepathGuide(): DemoGuideConfig {
 export function snkrxGuide(): DemoGuideConfig {
   return scriptGuide(
     "SNKRX",
-    "SNKRX runs as a standard Lua 5.1 LOVE app on the native framebuffer runtime.",
+    "SNKRX runs as a standard Lua 5.1 LOVE app on the native KMS/EGL/GLES runtime.",
     [
       actionGroup("Runtime", [
         action("run-snkrx", "Run", "Start SNKRX.", "terminal.run", SNKRX_COMMAND),

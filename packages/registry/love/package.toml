@@ -1,11 +1,11 @@
 kind = "program"
 name = "love"
-version = "11.5-kandelo-fb"
-# Native Kandelo framebuffer port. The wasm executable is built with the
-# wasm32posix SDK and renders through /dev/fb0; no Emscripten/browser shim is
-# involved. The second output carries the bundled Lua game demo tree.
+version = "11.5-kandelo-kms"
+# Native Kandelo port. The wasm executable is built with the wasm32posix SDK
+# and prefers /dev/dri/card0 KMS/EGL/GLES presentation; no Emscripten/browser
+# shim is involved. The second output carries the bundled Lua game demo tree.
 kernel_abi = 7
-depends_on = ["libcxx@21", "lua@5.1.5"]
+depends_on = ["libcxx@21.1.7", "lua@5.1.5"]
 
 [source]
 url = "https://github.com/love2d/love"
