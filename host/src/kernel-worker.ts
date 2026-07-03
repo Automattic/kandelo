@@ -2887,12 +2887,6 @@ export class CentralizedKernelWorker {
     Atomics.notify(i32View, CH_STATUS / 4, 1);
   }
 
-  private abandonChannel(channel: ChannelInfo): void {
-    channel.handling = false;
-    this.clearSocketTimeout(channel);
-    this.pendingCancels.delete(channel.channelOffset);
-  }
-
   /**
    * Handle EAGAIN retry for blocking syscalls.
    * The process stays blocked while we retry asynchronously.
@@ -6278,18 +6272,31 @@ export class CentralizedKernelWorker {
       registration.channels[0].channelOffset === channel.channelOffset;
 
     if (syscallNr === SYS_EXIT && !isMainChannel) {
-      // Thread exit: find TID, notify kernel, remove channel, complete to unblock
+      // Thread exit: finalize kernel-side thread state, ask the host to tear
+      // down the backing thread Worker (browser + Node both wire onThreadExit),
+      // then complete the channel.
       const tidKey = `${channel.pid}:${channel.channelOffset}`;
       const tid = this.channelTids.get(tidKey) ?? 0;
       if (tid > 0) this.finalizeThreadExit(channel.pid, tid, channel.channelOffset);
-      const hostWillTerminateThread = tid > 0 &&
-        this.callbacks.onThreadExit?.(channel.pid, tid, channel.channelOffset) === true;
-      if (hostWillTerminateThread) {
-        this.abandonChannel(channel);
-      } else {
-        // Back-compatibility for embedders that have not wired onThreadExit.
-        this.completeChannelRaw(channel, 0, 0);
+      if (tid > 0) {
+        this.callbacks.onThreadExit?.(channel.pid, tid, channel.channelOffset);
       }
+      // Complete — never merely abandon — the channel on thread exit. This
+      // flips the status word off CH_PENDING so the exiting guest's in-wasm
+      // memory.atomic.wait32() on this status word returns and its waiter is
+      // removed *before* the thread's slot and channel offset are freed and
+      // reused by a later clone(). Abandoning (leaving status=PENDING with the
+      // guest still parked) lets that waiter outlive the slot: #830 replaced
+      // the cooperative worker-shutdown handshake with an immediate
+      // terminate(), so the dying Worker's agent is not guaranteed gone before
+      // reuse. The guest wake protocol notifies exactly one waiter
+      // (memory.atomic.notify(status, 1)); a stale parked waiter from the prior
+      // thread then steals the reused thread's first-syscall notify, the
+      // kernel's Atomics.waitAsync never fires, and the new thread wedges
+      // forever. Observed as: MariaDB's connection-handler thread (cloned when
+      // it accepts php-fpm's DB connection) never runs its first syscall, so
+      // the WordPress-over-MariaDB demo never gets a MySQL greeting and hangs.
+      this.completeChannelRaw(channel, 0, 0);
       return;
     }
 
