@@ -328,15 +328,15 @@ const LIVE_PROFILE_SPECS: Record<LiveDemoId, LiveProfileSpec> = {
   },
   love: {
     image: "shell",
-    features: ["framebuffer"],
+    features: ["kms"],
   },
   bytepath: {
     image: "shell",
-    features: ["framebuffer"],
+    features: ["kms"],
   },
   snkrx: {
     image: "shell",
-    features: ["framebuffer"],
+    features: ["kms"],
   },
 };
 
@@ -1815,9 +1815,9 @@ function liveDemoIdForVfsImageUrl(vfsUrl: string): LiveDemoId | null {
 
   const matches = LIVE_DEMO_IDS.filter((id) => baseUrl === profileVfsBaseUrl(id));
   if (matches.length === 1) return matches[0];
-  // Multiple presets share the shell VFS image (doom, modeset). When the URL
-  // doesn't pin one via the hash, fall back to the shell preset so the
-  // ambiguous shell-image link doesn't auto-launch a demo binary.
+  // Multiple presets share the shell VFS image. When the URL doesn't pin one
+  // via the hash, fall back to the shell preset so the ambiguous shell-image
+  // link doesn't auto-launch a demo binary.
   return matches.find((id) => id !== "doom" && id !== "modeset") ?? null;
 }
 

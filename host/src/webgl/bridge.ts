@@ -121,6 +121,17 @@ function countedFloatPayload(
   return v.byteLength === headerLen + count * floatsPerCount * 4;
 }
 
+function copyBytes(v: DataView, offset: number, length: number): Uint8Array {
+  const out = new Uint8Array(length);
+  out.set(new Uint8Array(v.buffer, v.byteOffset + offset, length));
+  return out;
+}
+
+function copyFloat32Array(v: DataView, offset: number, count: number): Float32Array {
+  const bytes = copyBytes(v, offset, count * 4);
+  return new Float32Array(bytes.buffer, bytes.byteOffset, count);
+}
+
 function validPayload(op: number, v: DataView): boolean {
   switch (op) {
     case O.OP_CLEAR:
@@ -320,7 +331,7 @@ function dispatch(
       if (dataLen === 0) {
         gl.bufferData(target, 0, usage);
       } else {
-        const data = new Uint8Array(v.buffer, v.byteOffset + p + 8, dataLen);
+        const data = copyBytes(v, p + 8, dataLen);
         gl.bufferData(target, data, usage);
       }
       return;
@@ -330,7 +341,7 @@ function dispatch(
       const target = v.getUint32(p, true);
       const dstOff = v.getInt32(p + 4, true);
       const dataLen = v.getUint32(p + 8, true);
-      const data = new Uint8Array(v.buffer, v.byteOffset + p + 12, dataLen);
+      const data = copyBytes(v, p + 12, dataLen);
       gl.bufferSubData(target, dstOff, data);
       return;
     }
@@ -379,7 +390,7 @@ function dispatch(
       const dataLen = v.getUint32(p + 32, true);
       const data = dataLen === 0
         ? null
-        : new Uint8Array(v.buffer, v.byteOffset + p + 36, dataLen);
+        : copyBytes(v, p + 36, dataLen);
       gl.texImage2D(
         target, level, internalFormat, width, height, border,
         format, type, data,
@@ -399,7 +410,7 @@ function dispatch(
       const format = v.getUint32(p + 24, true);
       const type = v.getUint32(p + 28, true);
       const dataLen = v.getUint32(p + 32, true);
-      const data = new Uint8Array(v.buffer, v.byteOffset + p + 36, dataLen);
+      const data = copyBytes(v, p + 36, dataLen);
       gl.texSubImage2D(
         target, level, xoff, yoff, width, height, format, type, data,
       );
@@ -547,11 +558,7 @@ function dispatch(
       const loc = b.uniformLocations.get(v.getInt32(p, true)) ?? null;
       const count = v.getUint32(p + 4, true);
       const transpose = v.getUint32(p + 8, true) !== 0;
-      const mat = new Float32Array(
-        v.buffer,
-        v.byteOffset + p + 12,
-        count * 16,
-      );
+      const mat = copyFloat32Array(v, p + 12, count * 16);
       gl.uniformMatrix4fv(loc, transpose, mat);
       return;
     }
@@ -559,11 +566,7 @@ function dispatch(
     case O.OP_UNIFORM4FV: {
       const loc = b.uniformLocations.get(v.getInt32(p, true)) ?? null;
       const count = v.getUint32(p + 4, true);
-      const arr = new Float32Array(
-        v.buffer,
-        v.byteOffset + p + 8,
-        count * 4,
-      );
+      const arr = copyFloat32Array(v, p + 8, count * 4);
       gl.uniform4fv(loc, arr);
       return;
     }

@@ -215,7 +215,7 @@ export const Modeset: React.FC<ModesetProps> = ({ dragProps, onCollapse, onMaxim
     <div className="kpane">
       <PaneHead
         icon={ICON}
-        title={`MODESET · /DEV/DRI/CARD0 · CRTC ${crtcId}`}
+        title={`KMS · /DEV/DRI/CARD0 · CRTC ${crtcId}`}
         dragProps={dragProps}
         onCollapse={onCollapse}
         onMaximize={onMaximize}
@@ -247,7 +247,7 @@ export const Modeset: React.FC<ModesetProps> = ({ dragProps, onCollapse, onMaxim
             <div className="kmodeset-waiting" role="status" aria-live="polite">
               <div className="kmodeset-waiting-line">Waiting for PAGE_FLIP on CRTC {crtcId}</div>
               <div className="kmodeset-waiting-line kmodeset-waiting-secondary">
-                Run <code>modeset</code> from the shell.
+                Run a KMS demo from the shell.
               </div>
             </div>
           )}

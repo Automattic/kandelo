@@ -289,7 +289,7 @@ end
 
 local function drawMenu()
   text(fonts.title, "LOVE GAME GALLERY", 42, 34, palette.ink)
-  text(fonts.body, "Native wasm32posix runtime rendering through /dev/fb0", 48, 88, palette.dim)
+  text(fonts.body, "Native wasm32posix runtime rendering through KMS/EGL/GLES", 48, 88, palette.dim)
   text(fonts.small, "Arrow keys select, Enter starts, mouse click starts", 50, 122, palette.dim)
   local x, y, w, h = 72, 172, W - 144, 72
   for i, g in ipairs(games) do

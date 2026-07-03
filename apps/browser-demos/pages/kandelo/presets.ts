@@ -131,7 +131,7 @@ export const PRESET_LIBRARY: Preset[] = [
   {
     id: "love",
     title: "LOVE games",
-    summary: "Lua game demos rendered by a native LOVE-style /dev/fb0 runtime.",
+    summary: "Lua game demos presented through Kandelo's native KMS/EGL/GLES LOVE runtime.",
     base: SHELL_BASE,
     packages: ["love@local", "bash@local", "coreutils@local"],
     accent: "#e04b83",
@@ -142,8 +142,8 @@ export const PRESET_LIBRARY: Preset[] = [
   {
     id: "bytepath",
     title: "BYTEPATH",
-    summary: "The open-source LÖVE arcade shooter running through Kandelo's native framebuffer runtime.",
-    base: "kandelo:shell@abi8",
+    summary: "The open-source LÖVE arcade shooter running through Kandelo's native KMS/EGL/GLES runtime.",
+    base: SHELL_BASE,
     packages: ["love@local", "bash@local", "coreutils@local"],
     accent: "#7bd7c2",
     glyph: "BP",
@@ -153,8 +153,8 @@ export const PRESET_LIBRARY: Preset[] = [
   {
     id: "snkrx",
     title: "SNKRX",
-    summary: "The open-source LÖVE snake roguelite running through Kandelo's native framebuffer runtime.",
-    base: "kandelo:shell@abi8",
+    summary: "The open-source LÖVE snake roguelite running through Kandelo's native KMS/EGL/GLES runtime.",
+    base: SHELL_BASE,
     packages: ["love@local", "bash@local", "coreutils@local"],
     accent: "#f0cf45",
     glyph: "SX",
