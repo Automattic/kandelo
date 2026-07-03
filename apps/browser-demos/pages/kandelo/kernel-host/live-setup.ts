@@ -198,6 +198,7 @@ interface LiveProfileSpec {
   maxVfsByteLength?: number;
   network?: boolean;
   features?: string[];
+  autoCommand?: string;
   init?: {
     argv: string[];
     env?: InitEnvProfile;
@@ -235,6 +236,9 @@ const LIVE_DEMO_IDS = [
   "wordpress-mariadb",
   "doom",
   "modeset",
+  "love",
+  "bytepath",
+  "snkrx",
 ] as const;
 
 type LiveDemoId = typeof LIVE_DEMO_IDS[number];
@@ -319,6 +323,18 @@ const LIVE_PROFILE_SPECS: Record<LiveDemoId, LiveProfileSpec> = {
     features: ["framebuffer"],
   },
   modeset: {
+    image: "shell",
+    features: ["kms"],
+  },
+  love: {
+    image: "shell",
+    features: ["kms"],
+  },
+  bytepath: {
+    image: "shell",
+    features: ["kms"],
+  },
+  snkrx: {
     image: "shell",
     features: ["kms"],
   },
@@ -1799,9 +1815,9 @@ function liveDemoIdForVfsImageUrl(vfsUrl: string): LiveDemoId | null {
 
   const matches = LIVE_DEMO_IDS.filter((id) => baseUrl === profileVfsBaseUrl(id));
   if (matches.length === 1) return matches[0];
-  // Multiple presets share the shell VFS image (doom, modeset). When the URL
-  // doesn't pin one via the hash, fall back to the shell preset so the
-  // ambiguous shell-image link doesn't auto-launch a demo binary.
+  // Multiple presets share the shell VFS image. When the URL doesn't pin one
+  // via the hash, fall back to the shell preset so the ambiguous shell-image
+  // link doesn't auto-launch a demo binary.
   return matches.find((id) => id !== "doom" && id !== "modeset") ?? null;
 }
 

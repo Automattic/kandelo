@@ -1658,6 +1658,10 @@ function handleIsStdinConsumed(msg: Extract<MainToKernelMessage, { type: "is_std
   respond(msg.requestId, kw.stdinFinite.has(msg.pid) && !kw.stdinBuffers.has(msg.pid));
 }
 
+function handleGetKmsMasterPid(msg: Extract<MainToKernelMessage, { type: "get_kms_master_pid" }>) {
+  respond(msg.requestId, kernelWorker.kms.getMasterPid());
+}
+
 function handlePickListenerTarget(msg: Extract<MainToKernelMessage, { type: "pick_listener_target" }>) {
   const kw = kernelWorker as any;
   const result = kw.pickListenerTarget(msg.port);
@@ -1907,6 +1911,7 @@ sw.onmessage = (e: MessageEvent) => {
     case "wake_blocked_readers": handleWakeBlockedReaders(msg); break;
     case "wake_blocked_writers": handleWakeBlockedWriters(msg); break;
     case "is_stdin_consumed": handleIsStdinConsumed(msg); break;
+    case "get_kms_master_pid": handleGetKmsMasterPid(msg); break;
     case "pick_listener_target": handlePickListenerTarget(msg); break;
     case "http_request": handleHttpRequestMessage(msg); break;
     case "destroy": void handleDestroy(msg); break;

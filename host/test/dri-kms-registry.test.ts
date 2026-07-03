@@ -24,11 +24,14 @@ describe("KmsRegistry", () => {
 
   it("setMasterPid / dropMaster / isMasterPid", () => {
     const kms = new KmsRegistry(new GbmBoRegistry());
+    expect(kms.getMasterPid()).toBeNull();
     expect(kms.isMasterPid(7)).toBe(false);
     kms.setMasterPid(7);
+    expect(kms.getMasterPid()).toBe(7);
     expect(kms.isMasterPid(7)).toBe(true);
     expect(kms.isMasterPid(8)).toBe(false);
     kms.dropMaster();
+    expect(kms.getMasterPid()).toBeNull();
     expect(kms.isMasterPid(7)).toBe(false);
   });
 

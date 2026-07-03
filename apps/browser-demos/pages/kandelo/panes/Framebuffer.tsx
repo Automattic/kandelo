@@ -49,10 +49,39 @@ export const Framebuffer: React.FC<FramebufferProps> = ({ dragProps, onCollapse,
   const handleRef = React.useRef<FramebufferHandle | null>(null);
   const mouseRef = React.useRef<PointerLockMouseHandle | null>(null);
   const audioRef = React.useRef<AudioOutputHandle | null>(null);
+  const bodyRef = React.useRef<HTMLDivElement>(null);
   const [error, setError] = React.useState<string | null>(null);
   const [boundPid, setBoundPid] = React.useState<number | null>(null);
   const [focused, setFocused] = React.useState(false);
   const [mouseCaptured, setMouseCaptured] = React.useState(false);
+  const [canvasBox, setCanvasBox] = React.useState<{ width: number; height: number } | null>(null);
+
+  React.useEffect(() => {
+    const body = bodyRef.current;
+    if (!body) return;
+    const update = () => {
+      const bounds = body.getBoundingClientRect();
+      if (bounds.width <= 0 || bounds.height <= 0) return;
+      const aspect = 16 / 9;
+      let width = bounds.width;
+      let height = width / aspect;
+      if (height > bounds.height) {
+        height = bounds.height;
+        width = height * aspect;
+      }
+      const next = {
+        width: Math.max(1, Math.floor(width)),
+        height: Math.max(1, Math.floor(height)),
+      };
+      setCanvasBox((prev) => (
+        prev?.width === next.width && prev?.height === next.height ? prev : next
+      ));
+    };
+    update();
+    const observer = new ResizeObserver(update);
+    observer.observe(body);
+    return () => observer.disconnect();
+  }, []);
 
   React.useEffect(() => {
     if (status !== "running") return;
@@ -198,11 +227,11 @@ export const Framebuffer: React.FC<FramebufferProps> = ({ dragProps, onCollapse,
           </span>
         }
       />
-      <div className="kpane-body" style={{
+      <div ref={bodyRef} className="kpane-body" style={{
         background: "var(--k-fb-bg)",
         color: "var(--k-fb-text)",
         display: "flex",
-        alignItems: "center",
+        alignItems: "flex-start",
         justifyContent: "center",
         padding: 0,
         position: "relative",
@@ -212,8 +241,8 @@ export const Framebuffer: React.FC<FramebufferProps> = ({ dragProps, onCollapse,
           tabIndex={0}
           onClick={onCanvasClick}
           style={{
-            maxWidth: "100%",
-            maxHeight: "100%",
+            width: canvasBox ? `${canvasBox.width}px` : "100%",
+            height: canvasBox ? `${canvasBox.height}px` : "100%",
             imageRendering: "pixelated",
             background: "var(--k-fb-bg)",
             display: showCanvas ? "block" : "none",

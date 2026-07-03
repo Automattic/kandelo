@@ -27,6 +27,7 @@ export class KmsRegistry {
 
   setMasterPid(pid: number): void { this.masterPid = pid; }
   dropMaster(): void { this.masterPid = null; }
+  getMasterPid(): number | null { return this.masterPid; }
   isMasterPid(pid: number): boolean { return this.masterPid === pid; }
 
   /** First CRTC with an FB bound for which `pid` holds DRM master.

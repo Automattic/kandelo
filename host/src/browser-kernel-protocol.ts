@@ -183,6 +183,11 @@ export interface IsStdinConsumedMessage {
   pid: number;
 }
 
+export interface GetKmsMasterPidMessage {
+  type: "get_kms_master_pid";
+  requestId: number;
+}
+
 export interface PickListenerTargetMessage {
   type: "pick_listener_target";
   requestId: number;
@@ -343,6 +348,7 @@ export type MainToKernelMessage =
   | WakeBlockedReadersMessage
   | WakeBlockedWritersMessage
   | IsStdinConsumedMessage
+  | GetKmsMasterPidMessage
   | PickListenerTargetMessage
   | DestroyMessage
   | RegisterPtyOutputMessage

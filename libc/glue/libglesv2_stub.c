@@ -10,11 +10,6 @@
  * a monotonic counter; OP_GEN_BUFFERS / OP_CREATE_SHADER / OP_CREATE_PROGRAM
  * carry the chosen u32 to the host so it can register the matching
  * WebGL2 handle in `GlBinding.{buffers, shaders, programs}`.
- *
- * v1 scope is what `programs/gltri.c` exercises — clear, viewport,
- * shader compile/link, vertex attribs, drawArrays. Texture/FBO/VAO/RBO
- * ops live in shared::gl but are deliberately not encoded here yet;
- * they land alongside the demos that need them.
  */
 
 #include <GLES2/gl2.h>
@@ -27,6 +22,8 @@
 #include "gl_abi.h"
 
 static uint8_t *g_cursor = NULL;
+
+enum { WPK_GL_MAX_TLV_PAYLOAD = 0xffffu };
 
 static inline void w_u16(uint8_t **c, uint16_t v) { memcpy(*c, &v, 2); *c += 2; }
 static inline void w_u32(uint8_t **c, uint32_t v) { memcpy(*c, &v, 4); *c += 4; }
@@ -96,6 +93,13 @@ void glScissor(GLint x, GLint y, GLsizei w, GLsizei h) {
 void glEnable(GLenum cap)  { EMIT_BEGIN(OP_ENABLE,  4) w_u32(&_c, (uint32_t)cap); EMIT_END() }
 void glDisable(GLenum cap) { EMIT_BEGIN(OP_DISABLE, 4) w_u32(&_c, (uint32_t)cap); EMIT_END() }
 
+void glPixelStorei(GLenum pname, GLint param) {
+    EMIT_BEGIN(OP_PIXEL_STOREI, 8)
+    w_u32(&_c, (uint32_t)pname);
+    w_i32(&_c, param);
+    EMIT_END()
+}
+
 /* ----- buffers ------------------------------------------------------ */
 
 static uint32_t g_next_buffer  = 1;
@@ -111,6 +115,14 @@ void glGenBuffers(GLsizei n, GLuint *out) {
         out[i] = g_next_buffer++;
         w_u32(&_c, out[i]);
     }
+    EMIT_END()
+}
+
+void glDeleteBuffers(GLsizei n, const GLuint *names) {
+    if (n <= 0 || !names) return;
+    EMIT_BEGIN(OP_DELETE_BUFFERS, 4u + (uint32_t)n * 4u)
+    w_u32(&_c, (uint32_t)n);
+    for (GLsizei i = 0; i < n; i++) w_u32(&_c, names[i]);
     EMIT_END()
 }
 
@@ -345,15 +357,86 @@ void glActiveTexture(GLenum unit) {
     EMIT_END()
 }
 
-/* Pavel's pipeline only allocates render-target textures (data == NULL):
- * the fragment shaders write each texture's contents. The upload path
- * (data != NULL) needs per-(format,type) byte-size logic; extend when a
- * demo actually needs to upload pixel data from C. */
+static uint32_t pixel_data_len(GLsizei width, GLsizei height,
+                               GLenum format, GLenum type) {
+    if (width <= 0 || height <= 0) return 0;
+    uint32_t channels = 0;
+    uint32_t bytes_per_channel = 0;
+    switch (format) {
+    case GL_ALPHA:
+    case GL_LUMINANCE:
+        channels = 1;
+        break;
+    case GL_LUMINANCE_ALPHA:
+        channels = 2;
+        break;
+    case GL_RGB:
+        channels = 3;
+        break;
+    case GL_RGBA:
+        channels = 4;
+        break;
+    default:
+        return 0;
+    }
+    switch (type) {
+    case GL_UNSIGNED_BYTE:
+        bytes_per_channel = 1;
+        break;
+    case GL_UNSIGNED_SHORT_5_6_5:
+    case GL_UNSIGNED_SHORT_4_4_4_4:
+    case GL_UNSIGNED_SHORT_5_5_5_1:
+        channels = 1;
+        bytes_per_channel = 2;
+        break;
+    case GL_FLOAT:
+        bytes_per_channel = 4;
+        break;
+    default:
+        return 0;
+    }
+    uint64_t len = (uint64_t)(uint32_t)width * (uint64_t)(uint32_t)height *
+                   (uint64_t)channels * (uint64_t)bytes_per_channel;
+    if (len > UINT32_MAX) return 0;
+    return (uint32_t)len;
+}
+
+void glTexSubImage2D(GLenum target, GLint level, GLint xoffset, GLint yoffset,
+                     GLsizei width, GLsizei height, GLenum format, GLenum type,
+                     const void *pixels);
+
+static void emit_tex_sub_image_2d(GLenum target, GLint level,
+                                  GLint xoffset, GLint yoffset,
+                                  GLsizei width, GLsizei height,
+                                  GLenum format, GLenum type,
+                                  const uint8_t *pixels, uint32_t dlen) {
+    EMIT_BEGIN(OP_TEX_SUB_IMAGE_2D, 36u + dlen)
+    w_u32(&_c, (uint32_t)target);
+    w_i32(&_c, level);
+    w_i32(&_c, xoffset);
+    w_i32(&_c, yoffset);
+    w_i32(&_c, width);
+    w_i32(&_c, height);
+    w_u32(&_c, (uint32_t)format);
+    w_u32(&_c, (uint32_t)type);
+    w_u32(&_c, dlen);
+    memcpy(_c, pixels, dlen);
+    _c += dlen;
+    EMIT_END()
+}
+
 void glTexImage2D(GLenum target, GLint level, GLint internalFormat,
                   GLsizei width, GLsizei height, GLint border,
                   GLenum format, GLenum type, const void *data) {
-    if (data != NULL) return;
-    EMIT_BEGIN(OP_TEX_IMAGE_2D, 36)
+    uint32_t dlen = data ? pixel_data_len(width, height, format, type) : 0u;
+    if (data && dlen == 0) return;
+    if (data && 36u + dlen > WPK_GL_MAX_TLV_PAYLOAD) {
+        glTexImage2D(target, level, internalFormat, width, height, border,
+                     format, type, NULL);
+        glTexSubImage2D(target, level, 0, 0, width, height, format, type, data);
+        return;
+    }
+    EMIT_BEGIN(OP_TEX_IMAGE_2D, 36u + dlen)
     w_u32(&_c, (uint32_t)target);
     w_i32(&_c, level);
     w_i32(&_c, internalFormat);
@@ -362,8 +445,41 @@ void glTexImage2D(GLenum target, GLint level, GLint internalFormat,
     w_i32(&_c, border);
     w_u32(&_c, (uint32_t)format);
     w_u32(&_c, (uint32_t)type);
-    w_u32(&_c, 0u);   /* dataLen */
+    w_u32(&_c, dlen);
+    if (data && dlen > 0) {
+        memcpy(_c, data, dlen);
+        _c += dlen;
+    }
     EMIT_END()
+}
+
+void glTexSubImage2D(GLenum target, GLint level, GLint xoffset, GLint yoffset,
+                     GLsizei width, GLsizei height, GLenum format, GLenum type,
+                     const void *pixels) {
+    uint32_t dlen = pixels ? pixel_data_len(width, height, format, type) : 0u;
+    if (!pixels || dlen == 0) return;
+    if (36u + dlen <= WPK_GL_MAX_TLV_PAYLOAD) {
+        emit_tex_sub_image_2d(target, level, xoffset, yoffset, width, height,
+                              format, type, (const uint8_t *)pixels, dlen);
+        return;
+    }
+
+    uint32_t row_len = pixel_data_len(width, 1, format, type);
+    if (row_len == 0 || 36u + row_len > WPK_GL_MAX_TLV_PAYLOAD) return;
+    uint32_t max_rows = (WPK_GL_MAX_TLV_PAYLOAD - 36u) / row_len;
+    if (max_rows == 0) return;
+
+    const uint8_t *src = (const uint8_t *)pixels;
+    GLsizei row = 0;
+    while (row < height) {
+        GLsizei rows = (GLsizei)max_rows;
+        if (rows > height - row) rows = height - row;
+        uint32_t chunk_len = row_len * (uint32_t)rows;
+        emit_tex_sub_image_2d(target, level, xoffset, yoffset + row, width, rows,
+                              format, type, src + (size_t)row_len * (size_t)row,
+                              chunk_len);
+        row += rows;
+    }
 }
 
 void glTexParameteri(GLenum target, GLenum pname, GLint param) {

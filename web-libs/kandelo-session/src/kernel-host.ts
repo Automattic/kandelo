@@ -144,6 +144,8 @@ export interface KernelLike {
    * telemetry without a 2D blit.
    */
   kmsAttachStats?(crtcId: number, stats: SharedArrayBuffer): void;
+  /** Return the process that currently holds DRM master for KMS, if any. */
+  getKmsMasterPid?(): Promise<number | null>;
   /**
    * Drain PCM bytes buffered in `/dev/dsp` for browser playback.
    */
@@ -354,6 +356,12 @@ export interface KmsDisplayHandle {
    *  positive Y up). `buttons` uses PS/2 bits: bit0=left, bit1=right,
    *  bit2=middle. No-op when the wrapped kernel lacks mouse injection. */
   sendMouseEvent(dx: number, dy: number, buttons: number): void;
+  /** Send raw keyboard bytes to the process currently driving KMS. */
+  sendInput(bytes: Uint8Array): void;
+  /** Pid currently holding DRM master, or null if no KMS client is live. */
+  getBoundPid(): number | null;
+  /** Subscribe to DRM-master pid changes. */
+  onBoundPidChange(cb: (pid: number | null) => void): () => void;
   /** Detach the canvas. Subsequent vblank ticks no-op for this CRTC. */
   close(): void;
 }
@@ -1726,26 +1734,94 @@ export class LiveKernelHost implements KernelHost {
     // memoize the handle here. The cached handle keeps the original
     // statsSab/OffscreenCanvas alive across the StrictMode unmount.
     const cached = this.kmsHandles.get(canvas);
-    if (cached) return cached;
+    if (cached) {
+      (cached as KmsDisplayHandle & { __reopen?: () => void }).__reopen?.();
+      return cached;
+    }
     // 7 i32 slots × 4 bytes = 28 bytes; align to 64 so atomics are happy.
     const statsSab = new SharedArrayBuffer(64);
     const stats = new Int32Array(statsSab);
     const offscreen = canvas.transferControlToOffscreen();
     this.kernel.kmsAttachCanvas(crtcId, offscreen, statsSab, opts);
     const kernel = this.kernel;
-    const handle: KmsDisplayHandle = {
+    const boundPidListeners = new ListenerSet<number | null>();
+    let closed = false;
+    let attachedPid: number | null = null;
+    let attachedPtyPid: number | null = null;
+
+    const setBoundPid = (pid: number | null) => {
+      if (pid === attachedPid) return;
+      attachedPid = pid;
+      if (pid === null) attachedPtyPid = null;
+      boundPidListeners.emit(pid);
+      if (pid !== null) {
+        void this.findPtyRoutingPid(pid).then((ptyPid) => {
+          if (!closed && attachedPid === pid) attachedPtyPid = ptyPid;
+        });
+      }
+    };
+    const refreshBoundPid = async (): Promise<number | null> => {
+      if (!kernel.getKmsMasterPid) return attachedPid;
+      try {
+        const pid = await kernel.getKmsMasterPid();
+        if (!closed) setBoundPid(pid);
+        return pid;
+      } catch {
+        return attachedPid;
+      }
+    };
+    const routeInput = (pid: number, bytes: Uint8Array) => {
+      if (attachedPtyPid !== null) {
+        kernel.ptyWrite(attachedPtyPid, bytes);
+      } else if (kernel.appendStdinData) {
+        kernel.appendStdinData(pid, bytes);
+      }
+    };
+    let poll: ReturnType<typeof globalThis.setInterval> | null = null;
+    const startPolling = () => {
+      if (poll !== null) return;
+      closed = false;
+      poll = globalThis.setInterval(() => {
+        void refreshBoundPid();
+      }, 250);
+      void refreshBoundPid();
+    };
+    const stopPolling = () => {
+      closed = true;
+      if (poll !== null) {
+        globalThis.clearInterval(poll);
+        poll = null;
+      }
+    };
+    const handle: KmsDisplayHandle & { __reopen?: () => void } = {
       crtcId,
       stats,
       sendMouseEvent: (dx, dy, buttons) => {
         kernel.injectMouseEvent?.(dx, dy, buttons);
       },
+      sendInput: (bytes) => {
+        const pid = attachedPid;
+        if (pid !== null) {
+          routeInput(pid, bytes);
+          return;
+        }
+        void refreshBoundPid().then((refreshedPid) => {
+          if (!closed && refreshedPid !== null) routeInput(refreshedPid, bytes);
+        });
+      },
+      getBoundPid: () => attachedPid,
+      onBoundPidChange: (cb) => boundPidListeners.add(cb),
       close: () => {
+        stopPolling();
         // The worker auto-stops the pump tick for unused CRTCs on the
         // next teardown; there's no explicit detach API yet. Closing
         // the handle just drops the local view so callers can drop
         // their reference.
+        setBoundPid(null);
       },
     };
+    handle.__reopen = startPolling;
+    startPolling();
     this.kmsHandles.set(canvas, handle);
     return handle;
   }
