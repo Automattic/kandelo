@@ -100,6 +100,40 @@ function resolveKernelArtifactsAlias(): Plugin {
 }
 
 /**
+ * Vite plugin (worker build only): strip the dead `export { … }` that rolldown
+ * synthesizes on worker entry chunks.
+ *
+ * A worker entry is a terminal module — nothing imports it — so the export is
+ * dead. But its presence makes WebKit/Safari evaluate the module worker TWICE:
+ * the second (uninitialized) evaluation reinstalls `self.onmessage` bound to a
+ * fresh module state whose `initReady` is false, which shadows the first
+ * evaluation's handler and silently parks the kernel's lazy-VFS registration
+ * messages — deadlocking `kernel.init()` so the shell never boots. Chromium and
+ * Firefox evaluate the module once and are unaffected. Dropping the export
+ * makes the worker a plain single-evaluation module on every engine.
+ *
+ * The "proper" lever for this is `preserveEntrySignatures: false`, but as of
+ * 2026-07-02 (Vite 8 / rolldown 1.0.3) setting it under `worker.rollupOptions`
+ * had zero effect here (byte-identical output): rolldown-vite does not thread
+ * that option into the worker build. So we strip the artifact at `renderChunk`
+ * instead — a build-time output transform, not a runtime workaround. Revisit
+ * once rolldown-vite honors `preserveEntrySignatures` for worker builds (or
+ * stops emitting the dead export), and this plugin can be dropped for the
+ * option.
+ */
+function dropWorkerEntryExports(): Plugin {
+  return {
+    name: "drop-worker-entry-exports",
+    enforce: "post",
+    renderChunk(code, chunk) {
+      if (!chunk.isEntry) return null;
+      const stripped = code.replace(/\bexport\s*\{[^}]*\}\s*;?\s*$/, "");
+      return stripped === code ? null : { code: stripped, map: null };
+    },
+  };
+}
+
+/**
  * Vite plugin: resolve `@binaries/...` imports against the
  * resolver-managed binaries trees.
  *
@@ -483,6 +517,7 @@ export default defineConfig({
     plugins: () => [
       resolveKernelArtifactsAlias(),
       resolveBinariesAlias(),
+      dropWorkerEntryExports(),
     ],
   },
   assetsInclude: ["**/*.wasm", "**/*.sql", "**/*.vfs", "**/*.vfs.zst", "**/*.zip"],
