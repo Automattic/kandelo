@@ -125,7 +125,7 @@ const WebPreviewPane = React.forwardRef<DisplayHandle, FramebufferProps & {
 
   const dockControls = React.useMemo(() => (
     <WebPreviewDockControls
-      origin={previewOriginLabel(preview.url)}
+      baseUrl={preview.url}
       path={path}
       ready={ready}
       pendingRequests={pendingRequests}
@@ -198,16 +198,19 @@ const WebPreviewPane = React.forwardRef<DisplayHandle, FramebufferProps & {
 WebPreviewPane.displayName = "WebPreviewPane";
 
 const WebPreviewDockControls: React.FC<{
-  origin: string;
+  baseUrl: string;
   path: string;
   ready: boolean;
   pendingRequests: number;
   message?: string;
   onNavigate: (path: string) => void;
   onReload: () => void;
-}> = ({ origin, path, ready, pendingRequests, message, onNavigate, onReload }) => {
+}> = ({ baseUrl, path, ready, pendingRequests, message, onNavigate, onReload }) => {
   const [draftPath, setDraftPath] = React.useState(path);
   const loading = ready && pendingRequests > 0;
+  const loadingTitle = loading
+    ? `${pendingRequests} pending preview ${pendingRequests === 1 ? "request" : "requests"}`
+    : undefined;
 
   React.useEffect(() => {
     setDraftPath(path);
@@ -224,32 +227,42 @@ const WebPreviewDockControls: React.FC<{
     >
       <button
         type="button"
-        className={`kdock-view-iconbtn kweb-reload${loading ? " is-loading" : ""}`}
+        className="kdock-view-iconbtn kweb-reload"
         onClick={onReload}
         disabled={!ready}
-        title={loading
-          ? `${pendingRequests} pending preview ${pendingRequests === 1 ? "request" : "requests"}`
-          : "Reload preview"}
-        aria-label={loading
-          ? `Reload preview, ${pendingRequests} pending ${pendingRequests === 1 ? "request" : "requests"}`
-          : "Reload preview"}
+        title="Reload preview"
+        aria-label="Reload preview"
       >
         <svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.6">
           <path d="M13 6.5A5 5 0 1 0 11.4 11" />
           <path d="M13 3.5v3h-3" />
         </svg>
       </button>
-      <span className="kweb-urlbar-origin">{origin}</span>
       <input
         className="kweb-urlbar-input"
         value={draftPath}
         onChange={(event) => setDraftPath(event.currentTarget.value)}
-        onBlur={() => setDraftPath((value) => normalizePreviewPath(value, origin))}
+        onKeyDown={(event) => {
+          if (event.key !== "Enter" || event.nativeEvent.isComposing) return;
+          event.preventDefault();
+          if (ready) onNavigate(event.currentTarget.value);
+        }}
+        onBlur={() => setDraftPath((value) => normalizePreviewPath(value, baseUrl))}
         disabled={!ready}
         spellCheck={false}
+        enterKeyHint="go"
         aria-label="Preview URL path"
       />
-      <button className="kweb-urlbar-go" type="submit" disabled={!ready}>Go</button>
+      <span
+        className={`kweb-loading${loading ? " is-active" : ""}`}
+        role={loading ? "status" : undefined}
+        aria-hidden={loading ? undefined : true}
+        aria-label={loading ? "Loading preview" : undefined}
+        title={loadingTitle}
+      >
+        <span className="kweb-loading-spinner" aria-hidden="true" />
+        <span className="kweb-loading-text">Loading...</span>
+      </span>
     </form>
   );
 };
@@ -288,17 +301,6 @@ function relativePathFromHref(base: string, href: string): string | null {
     return `/${suffix}${url.search}${url.hash}`;
   } catch {
     return null;
-  }
-}
-
-function previewOriginLabel(base: string): string {
-  if (base === "about:blank") return "about:";
-  try {
-    const root = new URL(base, window.location.href);
-    const path = root.pathname.endsWith("/") ? root.pathname : `${root.pathname}/`;
-    return `${root.origin}${path}`;
-  } catch {
-    return base;
   }
 }
 

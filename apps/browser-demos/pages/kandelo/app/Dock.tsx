@@ -135,6 +135,7 @@ export const Dock: React.FC<{
 }) => {
   const shellRef = React.useRef<HTMLElement | null>(null);
   const bodyRef = React.useRef<HTMLDivElement | null>(null);
+  const rowRef = React.useRef<HTMLDivElement | null>(null);
   const guideButtonRef = React.useRef<HTMLButtonElement | null>(null);
   const internalsButtonRef = React.useRef<HTMLButtonElement | null>(null);
   const themeButtonRef = React.useRef<HTMLButtonElement | null>(null);
@@ -212,14 +213,14 @@ export const Dock: React.FC<{
   }, [collapsed, fullWidth, onLayoutChange]);
 
   React.useEffect(() => {
-    const body = bodyRef.current;
-    if (!body) return;
+    const row = rowRef.current;
+    if (!row) return;
     if (collapsed) {
-      body.setAttribute("inert", "");
-      body.setAttribute("aria-hidden", "true");
+      row.setAttribute("inert", "");
+      row.setAttribute("aria-hidden", "true");
     } else {
-      body.removeAttribute("inert");
-      body.removeAttribute("aria-hidden");
+      row.removeAttribute("inert");
+      row.removeAttribute("aria-hidden");
     }
   }, [collapsed]);
 
@@ -282,8 +283,13 @@ export const Dock: React.FC<{
     }
     : undefined;
 
-  const onCenterPointerDown = React.useCallback((event: React.PointerEvent<HTMLButtonElement>) => {
+  const onDockPointerDown = React.useCallback((event: React.PointerEvent<HTMLDivElement>) => {
     if (event.button !== 0 || event.metaKey || event.altKey || event.ctrlKey || fullWidth) {
+      return;
+    }
+
+    const target = event.target as Element | null;
+    if (target?.closest("button,input,textarea,select,a,[role='button'],[role='textbox'],[role='combobox']")) {
       return;
     }
 
@@ -306,7 +312,7 @@ export const Dock: React.FC<{
     }
   }, [dockCenter, fullWidth]);
 
-  const onCenterPointerMove = React.useCallback((event: React.PointerEvent<HTMLButtonElement>) => {
+  const onDockPointerMove = React.useCallback((event: React.PointerEvent<HTMLDivElement>) => {
     const drag = dragRef.current;
     if (!drag || drag.pointerId !== event.pointerId) {
       return;
@@ -324,7 +330,7 @@ export const Dock: React.FC<{
     }
   }, [clampDockCenter]);
 
-  const onCenterPointerUp = React.useCallback((event: React.PointerEvent<HTMLButtonElement>) => {
+  const onDockPointerUp = React.useCallback((event: React.PointerEvent<HTMLDivElement>) => {
     const drag = dragRef.current;
     if (!drag || drag.pointerId !== event.pointerId) {
       return;
@@ -343,7 +349,7 @@ export const Dock: React.FC<{
     setDragging(false);
   }, []);
 
-  const onCenterClick = React.useCallback((event: React.MouseEvent<HTMLButtonElement>) => {
+  const onToggleCollapsed = React.useCallback((event: React.MouseEvent<HTMLButtonElement>) => {
     if (suppressCenterClickRef.current) {
       suppressCenterClickRef.current = false;
       event.preventDefault();
@@ -369,47 +375,48 @@ export const Dock: React.FC<{
         style={dockStyle}
         aria-label="Kandelo tools"
       >
-        <div className="kdock-header">
-          <button
-            type="button"
-            className="kdock-header-center"
-            aria-label={collapsed ? "Expand dock" : "Collapse dock"}
-            aria-expanded={!collapsed}
-            title={collapsed ? "Expand dock" : "Collapse dock"}
-            onPointerDown={onCenterPointerDown}
-            onPointerMove={onCenterPointerMove}
-            onPointerUp={onCenterPointerUp}
-            onPointerCancel={onCenterPointerUp}
-            onClick={onCenterClick}
-          >
-            <svg viewBox="0 0 16 16" aria-hidden="true">
-              <path d="M4.5 6.5 8 10l3.5-3.5" />
-            </svg>
-          </button>
-          {!collapsed && (
-            <button
-              type="button"
-              className="kdock-header-btn"
-              aria-label={fullWidth ? "Use compact dock" : "Use full-width dock"}
-              aria-pressed={fullWidth}
-              title={fullWidth ? "Use compact dock" : "Use full-width dock"}
-              onClick={onToggleFullWidth}
-            >
-              <svg viewBox="0 0 16 16" aria-hidden="true">
-                <rect x="2.5" y="4" width="11" height="8" rx="1.2" />
-                <path d="M5 6.5H3M11 6.5h2M5 9.5H3M11 9.5h2" />
-              </svg>
-            </button>
-          )}
-        </div>
-
-        <div ref={bodyRef} className="kdock-body">
-          {viewControls && (
-            <div className="kdock-view-controls">
+        <div
+          ref={bodyRef}
+          className="kdock-body"
+          onPointerDown={onDockPointerDown}
+          onPointerMove={onDockPointerMove}
+          onPointerUp={onDockPointerUp}
+          onPointerCancel={onDockPointerUp}
+        >
+          <div className="kdock-top-row">
+            <div className="kdock-view-controls" data-empty={viewControls ? "false" : "true"}>
               {viewControls}
             </div>
-          )}
-          <div className="kdock-row">
+            <div className="kdock-toggle-pill" aria-label="Dock layout controls">
+              <button
+                type="button"
+                className="kdock-header-btn kdock-collapse-btn"
+                aria-label={collapsed ? "Show dock tools" : "Hide dock tools"}
+                aria-expanded={!collapsed}
+                title={collapsed ? "Show dock tools" : "Hide dock tools"}
+                onClick={onToggleCollapsed}
+              >
+                <svg viewBox="0 0 16 16" aria-hidden="true">
+                  <path d="M4.5 6.5 8 10l3.5-3.5" />
+                </svg>
+              </button>
+              <button
+                type="button"
+                className="kdock-header-btn"
+                aria-label={fullWidth ? "Use compact dock" : "Use full-width dock"}
+                aria-pressed={fullWidth}
+                title={fullWidth ? "Use compact dock" : "Use full-width dock"}
+                onClick={onToggleFullWidth}
+              >
+                <svg viewBox="0 0 16 16" aria-hidden="true">
+                  <rect x="2.5" y="4" width="11" height="8" rx="1.2" />
+                  <path d="M5 6.5H3M11 6.5h2M5 9.5H3M11 9.5h2" />
+                </svg>
+              </button>
+            </div>
+          </div>
+
+          <div ref={rowRef} className="kdock-row">
             <button
               type="button"
               className="kdock-status"
@@ -426,7 +433,6 @@ export const Dock: React.FC<{
                 </span>
               </span>
             </button>
-
             <div className="kdock">
               <div className="kdock-section" aria-label="Machine tools">
                 {PANE_ITEMS.map((item) => (

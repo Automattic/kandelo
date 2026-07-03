@@ -349,8 +349,8 @@
   transition: none;
 }
 
-.kdock-shell.kdock-collapsed.kdock-compact {
-  width: 128px;
+.kdock-shell.kdock-compact {
+  min-width: min(860px, calc(100vw - 24px));
 }
 
 .kdock-header {
@@ -404,8 +404,20 @@
 }
 
 .kdock-header-btn[aria-pressed="true"] {
-  background: var(--kdock-accent);
-  color: #fff;
+  background: var(--kdock-active-fill);
+  color: var(--kdock-active-text);
+  box-shadow: inset 0 0 0 1px var(--kdock-active-ring);
+}
+
+.kdock-header-btn[aria-pressed="true"]:hover,
+.kdock-header-btn[aria-pressed="true"]:focus-visible {
+  background: var(--kdock-active-fill);
+  color: var(--kdock-active-text);
+  box-shadow:
+    inset 0 0 0 1px var(--kdock-active-ring),
+    inset 0 1px 0 rgba(255, 255, 255, 0.42),
+    inset 0 -1px 0 rgba(36, 24, 11, 0.16);
+  filter: saturate(1.04) brightness(1.03);
 }
 
 .kdock-header-btn svg {
@@ -433,7 +445,7 @@
   padding: 0 8px;
   touch-action: none;
   user-select: none;
-  transition: background 0.12s, color 0.12s;
+  transition: background 0.12s, box-shadow 0.12s, color 0.12s, filter 0.12s;
 }
 
 .kdock-shell.kdock-full-width .kdock-header-center {
@@ -486,27 +498,53 @@
   max-height: min(260px, calc(100dvh - 48px));
   opacity: 1;
   overflow: hidden;
+  touch-action: none;
+  user-select: none;
   transition:
     max-height 0.2s cubic-bezier(0.22, 1, 0.36, 1),
     opacity 0.14s ease,
-    padding 0.2s cubic-bezier(0.22, 1, 0.36, 1);
+    padding 0.2s cubic-bezier(0.22, 1, 0.36, 1),
+    gap 0.2s cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.kdock-shell.kdock-compact:not(.kdock-full-width) .kdock-body {
+  cursor: grab;
+}
+
+.kdock-shell.kdock-dragging .kdock-body {
+  cursor: grabbing;
+}
+
+.kdock-shell.kdock-full-width .kdock-body {
+  cursor: default;
+  touch-action: auto;
 }
 
 .kdock-shell.kdock-collapsed .kdock-body {
-  max-height: 0;
-  opacity: 0;
-  padding-top: 0;
-  padding-bottom: 0;
-  pointer-events: none;
+  gap: 0;
+  opacity: 1;
+  pointer-events: auto;
+}
+
+.kdock-top-row {
+  width: 100%;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 8px;
 }
 
 .kdock-view-controls {
-  width: 100%;
-  max-width: 100%;
+  flex: 1 1 360px;
+  max-width: none;
   min-width: 0;
   display: flex;
   align-items: center;
   align-self: stretch;
+}
+
+.kdock-view-controls[data-empty="true"] {
+  flex-basis: 80px;
 }
 
 .kdock-view-controls > * {
@@ -522,6 +560,21 @@
   min-width: 0;
   width: 100%;
   max-width: 100%;
+  max-height: 56px;
+  opacity: 1;
+  overflow: hidden;
+  transform: translateY(0);
+  transition:
+    max-height 0.2s cubic-bezier(0.22, 1, 0.36, 1),
+    opacity 0.14s ease,
+    transform 0.2s cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.kdock-shell.kdock-collapsed .kdock-row {
+  max-height: 0;
+  opacity: 0;
+  pointer-events: none;
+  transform: translateY(8px);
 }
 
 .kdock-status {
@@ -539,6 +592,8 @@
   padding: 0 12px;
   font: inherit;
   text-align: left;
+  flex: 0 1 240px;
+  user-select: none;
 }
 
 .kdock-status img {
@@ -583,6 +638,42 @@
   font-weight: 760;
   letter-spacing: 0;
   line-height: 1.15;
+}
+
+.kdock-toggle-pill {
+  flex: 0 0 auto;
+  height: 34px;
+  display: inline-flex;
+  align-items: center;
+  overflow: hidden;
+  border: 1px solid var(--kdock-border);
+  border-radius: 9px;
+  background: var(--kdock-bg-raised);
+  user-select: none;
+}
+
+.kdock-toggle-pill .kdock-header-btn {
+  width: 34px;
+  height: 32px;
+  flex: 0 0 34px;
+  border-radius: 0;
+}
+
+.kdock-toggle-pill .kdock-header-btn + .kdock-header-btn {
+  border-left: 1px solid color-mix(in oklch, var(--kdock-border) 72%, transparent);
+}
+
+.kdock-toggle-pill .kdock-header-btn svg {
+  width: 18px;
+  height: 18px;
+}
+
+.kdock-collapse-btn svg {
+  transition: transform 0.18s ease;
+}
+
+.kdock-shell.kdock-collapsed .kdock-collapse-btn svg {
+  transform: rotate(180deg);
 }
 
 .kdock-status-dot {
@@ -689,8 +780,20 @@
 }
 
 .kdock-view-tab[aria-selected="true"] {
-  background: var(--kdock-accent);
-  color: #fff;
+  background: var(--kdock-active-fill);
+  color: var(--kdock-active-text);
+  box-shadow: inset 0 0 0 1px var(--kdock-active-ring);
+}
+
+.kdock-view-tab[aria-selected="true"]:hover,
+.kdock-view-tab[aria-selected="true"]:focus-visible {
+  background: var(--kdock-active-fill);
+  color: var(--kdock-active-text);
+  box-shadow:
+    inset 0 0 0 1px var(--kdock-active-ring),
+    inset 0 1px 0 rgba(255, 255, 255, 0.42),
+    inset 0 -1px 0 rgba(36, 24, 11, 0.16);
+  filter: saturate(1.04) brightness(1.03);
 }
 
 .kdock-view-iconbtn:disabled {
@@ -744,9 +847,9 @@
 }
 
 .kdemo-surface-badge[data-active="true"] {
-  border-color: color-mix(in oklch, var(--kdock-accent) 72%, var(--kdock-border));
-  background: color-mix(in oklch, var(--kdock-accent) 24%, transparent);
-  color: #fff;
+  border-color: color-mix(in oklch, var(--kdock-active-bg) 72%, var(--kdock-border));
+  background: color-mix(in oklch, var(--kdock-active-bg) 24%, transparent);
+  color: var(--kdock-active-text);
 }
 
 .kdock-popover-dismiss-layer {
@@ -781,6 +884,21 @@
   -webkit-backdrop-filter: blur(18px);
 }
 
+:root[data-k-mode="dark"] .kdock-popover {
+  border-color: color-mix(in oklch, var(--k-border-strong) 72%, white);
+  background:
+    linear-gradient(
+      180deg,
+      color-mix(in oklch, var(--k-surface-alt) 92%, var(--k-accent) 8%),
+      color-mix(in oklch, var(--k-surface) 94%, var(--k-bg))
+    );
+  box-shadow:
+    0 1px 0 color-mix(in oklch, white 16%, transparent) inset,
+    0 0 0 1px color-mix(in oklch, white 7%, transparent),
+    0 24px 70px rgba(0, 0, 0, 0.66),
+    0 8px 24px rgba(0, 0, 0, 0.48);
+}
+
 .kdock-guide-popover {
   --kdock-popover-width: 380px;
 }
@@ -802,6 +920,12 @@
   border: 0;
   border-radius: 0;
   box-shadow: none;
+}
+
+:root[data-k-mode="dark"] .kdock-popover .kdemo,
+:root[data-k-mode="dark"] .kdock-popover .ktheme-popup,
+:root[data-k-mode="dark"] .kdock-internals-popover .kinternals-popup {
+  background: transparent;
 }
 
 .ktheme-popup {
@@ -856,14 +980,21 @@
 
 .ktheme-option:hover,
 .ktheme-option:focus-visible {
-  border-color: color-mix(in oklch, var(--k-accent) 54%, var(--k-border));
-  background: color-mix(in oklch, var(--k-accent) 9%, var(--k-surface));
+  border-color: color-mix(in oklch, var(--kdock-active-bg) 54%, var(--k-border));
+  background: color-mix(in oklch, var(--kdock-active-bg) 9%, var(--k-surface));
   outline: none;
 }
 
 .ktheme-option[aria-checked="true"] {
-  border-color: color-mix(in oklch, var(--k-accent) 78%, var(--k-border));
-  background: color-mix(in oklch, var(--k-accent) 16%, var(--k-surface));
+  border-color: color-mix(in oklch, var(--kdock-active-bg) 78%, var(--k-border));
+  background: color-mix(in oklch, var(--kdock-active-bg) 16%, var(--k-surface));
+  box-shadow: inset 0 0 0 1px color-mix(in oklch, var(--kdock-active-ring) 74%, transparent);
+}
+
+.ktheme-option[aria-checked="true"]:hover,
+.ktheme-option[aria-checked="true"]:focus-visible {
+  border-color: color-mix(in oklch, var(--kdock-active-bg) 86%, var(--k-border));
+  background: color-mix(in oklch, var(--kdock-active-bg) 20%, var(--k-surface));
 }
 
 .ktheme-swatch {
@@ -935,7 +1066,7 @@
   font-family: var(--k-font-ui);
   font-size: 12px;
   font-weight: 740;
-  transition: background 0.12s, color 0.12s;
+  transition: background 0.12s, box-shadow 0.12s, color 0.12s, filter 0.12s;
 }
 
 .ktheme-mode-button:hover,
@@ -946,20 +1077,32 @@
 }
 
 .ktheme-mode-button[aria-pressed="true"] {
-  background: var(--k-accent);
-  color: #fff;
+  background: var(--kdock-active-fill);
+  color: var(--kdock-active-text);
+  box-shadow: inset 0 0 0 1px var(--kdock-active-ring);
 }
 
-.ktheme-mode-button[data-auto-resolved="true"] {
-  background: color-mix(in oklch, var(--k-accent) 16%, var(--k-surface));
-  color: var(--k-accent);
-  box-shadow: inset 0 0 0 1px color-mix(in oklch, var(--k-accent) 58%, transparent);
+.ktheme-mode-button[aria-pressed="true"]:hover,
+.ktheme-mode-button[aria-pressed="true"]:focus-visible {
+  background: var(--kdock-active-fill);
+  color: var(--kdock-active-text);
+  box-shadow:
+    inset 0 0 0 1px var(--kdock-active-ring),
+    inset 0 1px 0 rgba(255, 255, 255, 0.42),
+    inset 0 -1px 0 rgba(36, 24, 11, 0.16);
+  filter: saturate(1.04) brightness(1.03);
 }
 
-.ktheme-mode-button[data-auto-resolved="true"]:hover,
-.ktheme-mode-button[data-auto-resolved="true"]:focus-visible {
-  background: color-mix(in oklch, var(--k-accent) 22%, var(--k-surface));
-  color: var(--k-accent);
+.ktheme-mode-button[data-auto-resolved="true"]:not([aria-pressed="true"]) {
+  background: color-mix(in oklch, var(--kdock-active-bg) 16%, var(--k-surface));
+  color: color-mix(in oklch, var(--kdock-active-bg) 76%, var(--k-text));
+  box-shadow: inset 0 0 0 1px color-mix(in oklch, var(--kdock-active-bg) 58%, transparent);
+}
+
+.ktheme-mode-button[data-auto-resolved="true"]:not([aria-pressed="true"]):hover,
+.ktheme-mode-button[data-auto-resolved="true"]:not([aria-pressed="true"]):focus-visible {
+  background: color-mix(in oklch, var(--kdock-active-bg) 22%, var(--k-surface));
+  color: color-mix(in oklch, var(--kdock-active-bg) 82%, var(--k-text));
 }
 
 .kdock-internals-popover .kinternals-surface {
@@ -1001,10 +1144,10 @@
   gap: 3px;
   padding: 6px 9px;
   font: inherit;
-  transition: background 0.12s, color 0.12s, transform 0.12s;
+  transition: background 0.12s, color 0.12s, filter 0.12s, transform 0.12s;
 }
 
-.kdock-item:hover:not(:disabled) {
+.kdock-item:hover:not(:disabled):not([aria-current="true"]):not([aria-pressed="true"]) {
   background: color-mix(in oklch, var(--kdock-text) 10%, transparent);
   color: var(--kdock-text);
   transform: translateY(-1px);
@@ -1016,19 +1159,29 @@
 }
 
 .kdock-item[aria-current="true"] {
-  background: var(--kdock-accent);
-  color: #fff;
+  background: var(--kdock-active-fill);
+  color: var(--kdock-active-text);
+  box-shadow: inset 0 0 0 1px var(--kdock-active-ring);
 }
 
 .kdock-item[aria-pressed="true"] {
-  background: var(--kdock-accent);
-  color: #fff;
+  background: var(--kdock-active-fill);
+  color: var(--kdock-active-text);
+  box-shadow: inset 0 0 0 1px var(--kdock-active-ring);
 }
 
+.kdock-item[aria-current="true"]:hover:not(:disabled),
+.kdock-item[aria-current="true"]:focus-visible,
 .kdock-item[aria-pressed="true"]:hover:not(:disabled),
 .kdock-item[aria-pressed="true"]:focus-visible {
-  background: var(--kdock-accent);
-  color: #fff;
+  background: var(--kdock-active-fill);
+  color: var(--kdock-active-text);
+  box-shadow:
+    inset 0 0 0 1px var(--kdock-active-ring),
+    inset 0 1px 0 rgba(255, 255, 255, 0.42),
+    inset 0 -1px 0 rgba(36, 24, 11, 0.16);
+  filter: saturate(1.04) brightness(1.03);
+  transform: none;
 }
 
 .kdock-item[aria-current="true"]:disabled {
@@ -1416,6 +1569,7 @@
   font-size: 12px;
   font-weight: 740;
   letter-spacing: 0;
+  transition: background 0.12s, box-shadow 0.12s, color 0.12s, filter 0.12s;
 }
 
 .knew-tab:hover {
@@ -1424,9 +1578,20 @@
 }
 
 .knew-tab[aria-selected="true"] {
-  background: var(--k-surface);
-  color: var(--k-accent);
-  box-shadow: 0 1px 0 color-mix(in oklch, white 70%, transparent) inset;
+  background: var(--kdock-active-fill);
+  color: var(--kdock-active-text);
+  box-shadow: inset 0 0 0 1px var(--kdock-active-ring);
+}
+
+.knew-tab[aria-selected="true"]:hover,
+.knew-tab[aria-selected="true"]:focus-visible {
+  background: var(--kdock-active-fill);
+  color: var(--kdock-active-text);
+  box-shadow:
+    inset 0 0 0 1px var(--kdock-active-ring),
+    inset 0 1px 0 rgba(255, 255, 255, 0.42),
+    inset 0 -1px 0 rgba(36, 24, 11, 0.16);
+  filter: saturate(1.04) brightness(1.03);
 }
 
 .knew-panel,
@@ -2582,16 +2747,6 @@
   font-family: var(--k-font-mono);
 }
 
-.kweb-urlbar-origin {
-  max-width: 42%;
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  color: var(--kdock-faint);
-  font-size: 11px;
-}
-
 .kweb-urlbar-input {
   flex: 1;
   min-width: 0;
@@ -2611,28 +2766,7 @@
   box-shadow: 0 0 0 2px color-mix(in oklch, var(--k-accent) 18%, transparent);
 }
 
-.kweb-urlbar-go {
-  height: 26px;
-  padding: 0 10px;
-  border: 0;
-  border-radius: 7px;
-  background: transparent;
-  color: var(--kdock-muted);
-  font-family: var(--k-font-ui);
-  font-size: 10.5px;
-  font-weight: 720;
-  cursor: pointer;
-}
-
-.kweb-urlbar-go:hover:not(:disabled),
-.kweb-urlbar-go:focus-visible {
-  background: color-mix(in oklch, var(--kdock-text) 10%, transparent);
-  color: var(--kdock-text);
-  outline: none;
-}
-
-.kweb-urlbar-input:disabled,
-.kweb-urlbar-go:disabled {
+.kweb-urlbar-input:disabled {
   cursor: not-allowed;
   opacity: 0.48;
 }
@@ -2641,13 +2775,41 @@
   transform-origin: 50% 50%;
 }
 
-.kweb-reload.is-loading {
+.kweb-loading {
+  width: 82px;
+  height: 26px;
+  flex: 0 0 82px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: flex-start;
+  gap: 6px;
   color: var(--k-accent);
-  background: color-mix(in oklch, var(--k-accent) 12%, transparent);
+  font-family: var(--k-font-ui);
+  font-size: 11px;
+  font-weight: 720;
+  letter-spacing: 0;
+  line-height: 1;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.12s ease;
 }
 
-.kweb-reload.is-loading svg {
+.kweb-loading.is-active {
+  opacity: 1;
+}
+
+.kweb-loading-spinner {
+  width: 13px;
+  height: 13px;
+  flex: 0 0 13px;
+  border: 2px solid color-mix(in oklch, var(--k-accent) 22%, transparent);
+  border-top-color: currentColor;
+  border-radius: 999px;
   animation: kweb-spin 0.72s linear infinite;
+}
+
+.kweb-loading-text {
+  white-space: nowrap;
 }
 
 /* ── Shell pane ─────────────────────────────────────────────────────────── */
@@ -2769,8 +2931,20 @@
 }
 
 .kinternals-tab[aria-selected="true"] {
-  background: var(--k-accent);
-  color: #fff;
+  background: var(--kdock-active-fill);
+  color: var(--kdock-active-text);
+  box-shadow: inset 0 0 0 1px var(--kdock-active-ring);
+}
+
+.kinternals-tab[aria-selected="true"]:hover,
+.kinternals-tab[aria-selected="true"]:focus-visible {
+  background: var(--kdock-active-fill);
+  color: var(--kdock-active-text);
+  box-shadow:
+    inset 0 0 0 1px var(--kdock-active-ring),
+    inset 0 1px 0 rgba(255, 255, 255, 0.42),
+    inset 0 -1px 0 rgba(36, 24, 11, 0.16);
+  filter: saturate(1.04) brightness(1.03);
 }
 
 .kinternals-surface {
@@ -3973,6 +4147,64 @@
   transition: background 0.12s;
 }
 .kempty-btn:hover { background: var(--k-accent-fire); }
+
+.knew-primary,
+.kurl-btn-primary,
+.kdemo-run,
+.kgal-row-btn-primary,
+.kshare-btn-primary,
+.kcfg-btn-primary,
+.kempty-btn {
+  border-color: var(--kdock-active-ring);
+  background: var(--kdock-active-fill);
+  color: var(--kdock-active-text);
+  box-shadow: inset 0 0 0 1px var(--kdock-active-ring);
+  transition: background 0.12s, border-color 0.12s, box-shadow 0.12s, color 0.12s, filter 0.12s;
+}
+
+.knew-primary:hover:not(:disabled),
+.knew-primary:focus-visible,
+.kurl-btn-primary:hover:not(:disabled),
+.kurl-btn-primary:focus-visible,
+.kdemo-run:hover:not(:disabled),
+.kdemo-run:focus-visible,
+.kgal-row-btn-primary:hover:not(:disabled),
+.kgal-row-btn-primary:focus-visible,
+.kshare-btn-primary:hover:not(:disabled),
+.kshare-btn-primary:focus-visible,
+.kcfg-btn-primary:hover:not(:disabled),
+.kcfg-btn-primary:focus-visible,
+.kempty-btn:hover:not(:disabled),
+.kempty-btn:focus-visible {
+  border-color: var(--kdock-active-ring);
+  background: var(--kdock-active-fill);
+  color: var(--kdock-active-text);
+  box-shadow:
+    inset 0 0 0 1px var(--kdock-active-ring),
+    inset 0 1px 0 rgba(255, 255, 255, 0.42),
+    inset 0 -1px 0 rgba(36, 24, 11, 0.16);
+  filter: saturate(1.04) brightness(1.03);
+  outline: none;
+}
+
+.kdock-header-btn[aria-pressed="true"],
+.kdock-view-tab[aria-selected="true"],
+.kdemo-surface-badge[data-active="true"],
+.ktheme-mode-button[aria-pressed="true"],
+.kdock-item[aria-current="true"],
+.kdock-item[aria-pressed="true"],
+.knew-tab[aria-selected="true"],
+.kinternals-tab[aria-selected="true"],
+.knew-primary,
+.kurl-btn-primary,
+.kdemo-run,
+.kgal-row-btn-primary,
+.kshare-btn-primary,
+.kcfg-btn-primary,
+.kempty-btn {
+  text-shadow: var(--kdock-active-text-shadow);
+}
+
 .kempty-featured {
   display: flex;
   flex-direction: column;
@@ -4144,10 +4376,6 @@
   .kdock-view-tab {
     max-width: 78px;
     padding: 0 8px;
-  }
-
-  .kweb-urlbar-origin {
-    display: none;
   }
 
   .kdock-item {

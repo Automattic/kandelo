@@ -45,6 +45,11 @@
   --kdock-muted: #757575;
   --kdock-faint: #949494;
   --kdock-accent: #3858e9;
+  --kdock-active-bg: var(--kdock-accent);
+  --kdock-active-fill: var(--kdock-active-bg);
+  --kdock-active-text: #ffffff;
+  --kdock-active-ring: transparent;
+  --kdock-active-text-shadow: none;
 
   /* theme switcher swatches */
   --k-theme-swatch-wordpress-1: #f0f0f0;
@@ -52,7 +57,7 @@
   --k-theme-swatch-wordpress-3: #3858e9;
   --k-theme-swatch-kandelo-1: #f7ead2;
   --k-theme-swatch-kandelo-2: #fff8e8;
-  --k-theme-swatch-kandelo-3: #c43d18;
+  --k-theme-swatch-kandelo-3: #ff982b;
   --k-theme-swatch-ubuntu-1: #fafafa;
   --k-theme-swatch-ubuntu-2: #2c001e;
   --k-theme-swatch-ubuntu-3: #e95420;
@@ -193,6 +198,11 @@
   --kdock-muted: #674f29;
   --kdock-faint: #977c45;
   --kdock-accent: #c43d18;
+  --kdock-active-bg: #ff982b;
+  --kdock-active-fill: var(--kdock-active-bg);
+  --kdock-active-text: #24180b;
+  --kdock-active-ring: #b85412;
+  --kdock-active-text-shadow: none;
   --k-shell-bg: #fff8ed;
   --k-shell-text: #211a14;
   --k-shell-prompt: #b83a15;
@@ -218,6 +228,12 @@
   --k-fb-text: #24180b;
   --k-pane-head: #f0dfbd;
   --k-pane-head-text: #24180b;
+}
+
+:root[data-k-mode="dark"] {
+  --k-theme-swatch-kandelo-1: #15121b;
+  --k-theme-swatch-kandelo-2: #211a28;
+  --k-theme-swatch-kandelo-3: #f5bd55;
 }
 
 :root[data-k-theme="kandelo"][data-k-mode="dark"],
@@ -252,6 +268,13 @@
   --kdock-muted: #d9c8b8;
   --kdock-faint: #aca0b8;
   --kdock-accent: #f5bd55;
+  --kdock-active-bg: #f5bd55;
+  --kdock-active-fill: linear-gradient(180deg, #f7c967 0%, #d99a34 100%);
+  --kdock-active-text: #ffffff;
+  --kdock-active-ring: #8a5f16;
+  --kdock-active-text-shadow:
+    0 1px 0 rgba(21, 18, 27, 0.42),
+    0 0 1px rgba(21, 18, 27, 0.52);
   --k-shell-bg: #100d16;
   --k-shell-text: #f8e9cf;
   --k-shell-prompt: #f5bd55;
