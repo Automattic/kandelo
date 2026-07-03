@@ -20,4 +20,3 @@ script_path = "packages/registry/lua/build-lua.sh"
 libs = ["lib/liblua.a"]
 headers = ["include"]
 pkgconfig = ["lib/pkgconfig/lua5.1.pc"]
-
