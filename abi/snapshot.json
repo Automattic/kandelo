@@ -1,5 +1,5 @@
 {
-  "abi_version": 14,
+  "abi_version": 16,
   "channel_buffers": {
     "data_offset": 72,
     "data_size": 65536,
@@ -113,7 +113,7 @@
   },
   "host_adapter": {
     "manifest": {
-      "abi_version": 14,
+      "abi_version": 16,
       "channel_data_offset": 72,
       "channel_data_size": 65536,
       "channel_header_size": 72,
@@ -195,6 +195,7 @@
       "__abi_version",
       "kernel_alloc_scratch",
       "kernel_create_process",
+      "kernel_create_process_with_stdio",
       "kernel_get_parent_pid",
       "kernel_handle_channel",
       "kernel_host_adapter_manifest_len",
@@ -202,7 +203,6 @@
       "kernel_mark_process_signaled",
       "kernel_reap_exited_child",
       "kernel_remove_process",
-      "kernel_set_mode",
       "kernel_wait4_poll"
     ],
     "required_worker_features": 7,
@@ -379,6 +379,11 @@
       "kind": "func",
       "name": "kernel_create_process",
       "signature": "(i32) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_create_process_with_stdio",
+      "signature": "(i32,i32,i32,i32) -> (i32)"
     },
     {
       "kind": "func",
@@ -907,6 +912,16 @@
     },
     {
       "kind": "func",
+      "name": "kernel_kms_commit_count",
+      "signature": "(i32) -> (i64)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_kms_last_frame_us",
+      "signature": "(i32) -> (i64)"
+    },
+    {
+      "kind": "func",
       "name": "kernel_link",
       "signature": "(i32,i32,i32,i32) -> (i32)"
     },
@@ -1208,12 +1223,12 @@
     {
       "kind": "func",
       "name": "kernel_reserve_host_region",
-      "signature": "(i32,i64) -> (i64)"
+      "signature": "(i32,i32) -> (i32)"
     },
     {
       "kind": "func",
       "name": "kernel_reserve_host_region_at",
-      "signature": "(i32,i64,i64) -> (i64)"
+      "signature": "(i32,i32,i32) -> (i32)"
     },
     {
       "kind": "func",
@@ -1322,11 +1337,6 @@
     },
     {
       "kind": "func",
-      "name": "kernel_set_mode",
-      "signature": "(i32) -> ()"
-    },
-    {
-      "kind": "func",
       "name": "kernel_set_process_argv",
       "signature": "(i32,i32,i32) -> (i32)"
     },
@@ -1339,11 +1349,6 @@
       "kind": "func",
       "name": "kernel_set_robust_list",
       "signature": "(i32,i32) -> (i32)"
-    },
-    {
-      "kind": "func",
-      "name": "kernel_set_stdin_pipe",
-      "signature": "(i32) -> (i32)"
     },
     {
       "kind": "func",
@@ -1614,6 +1619,11 @@
       "kind": "func",
       "name": "kernel_utimensat",
       "signature": "(i32,i32,i32,i32,i32) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_vblank",
+      "signature": "() -> (i32)"
     },
     {
       "kind": "func",
@@ -1901,6 +1911,101 @@
       ],
       "size": 160
     },
+    "GlContextAttrs": {
+      "fields": [
+        {
+          "name": "client_version",
+          "offset": 0,
+          "span": 4
+        },
+        {
+          "name": "reserved",
+          "offset": 4,
+          "span": 12
+        }
+      ],
+      "size": 16
+    },
+    "GlQueryInfo": {
+      "fields": [
+        {
+          "name": "op",
+          "offset": 0,
+          "span": 4
+        },
+        {
+          "name": "in_buf_ptr",
+          "offset": 4,
+          "span": 4
+        },
+        {
+          "name": "in_buf_len",
+          "offset": 8,
+          "span": 4
+        },
+        {
+          "name": "out_buf_ptr",
+          "offset": 12,
+          "span": 4
+        },
+        {
+          "name": "out_buf_len",
+          "offset": 16,
+          "span": 4
+        },
+        {
+          "name": "reserved",
+          "offset": 20,
+          "span": 4
+        }
+      ],
+      "size": 24
+    },
+    "GlSubmitInfo": {
+      "fields": [
+        {
+          "name": "offset",
+          "offset": 0,
+          "span": 4
+        },
+        {
+          "name": "length",
+          "offset": 4,
+          "span": 4
+        }
+      ],
+      "size": 8
+    },
+    "GlSurfaceAttrs": {
+      "fields": [
+        {
+          "name": "kind",
+          "offset": 0,
+          "span": 4
+        },
+        {
+          "name": "width",
+          "offset": 4,
+          "span": 4
+        },
+        {
+          "name": "height",
+          "offset": 8,
+          "span": 4
+        },
+        {
+          "name": "config_id",
+          "offset": 12,
+          "span": 4
+        },
+        {
+          "name": "reserved",
+          "offset": 16,
+          "span": 16
+        }
+      ],
+      "size": 32
+    },
     "WasmDirent": {
       "fields": [
         {
@@ -2130,6 +2235,701 @@
         },
         {
           "name": "tv_nsec",
+          "offset": 8,
+          "span": 8
+        }
+      ],
+      "size": 16
+    },
+    "WpkDrmBindForeignTexture": {
+      "fields": [
+        {
+          "name": "bo_handle",
+          "offset": 0,
+          "span": 4
+        },
+        {
+          "name": "gl_target",
+          "offset": 4,
+          "span": 4
+        },
+        {
+          "name": "ctx_id",
+          "offset": 8,
+          "span": 4
+        },
+        {
+          "name": "gl_texture_id",
+          "offset": 12,
+          "span": 4
+        }
+      ],
+      "size": 16
+    },
+    "WpkDrmEventVblank": {
+      "fields": [
+        {
+          "name": "ev_type",
+          "offset": 0,
+          "span": 4
+        },
+        {
+          "name": "length",
+          "offset": 4,
+          "span": 4
+        },
+        {
+          "name": "user_data",
+          "offset": 8,
+          "span": 8
+        },
+        {
+          "name": "tv_sec",
+          "offset": 16,
+          "span": 4
+        },
+        {
+          "name": "tv_usec",
+          "offset": 20,
+          "span": 4
+        },
+        {
+          "name": "sequence",
+          "offset": 24,
+          "span": 4
+        },
+        {
+          "name": "crtc_id",
+          "offset": 28,
+          "span": 4
+        }
+      ],
+      "size": 32
+    },
+    "WpkDrmGemClose": {
+      "fields": [
+        {
+          "name": "handle",
+          "offset": 0,
+          "span": 4
+        },
+        {
+          "name": "pad",
+          "offset": 4,
+          "span": 4
+        }
+      ],
+      "size": 8
+    },
+    "WpkDrmGetCap": {
+      "fields": [
+        {
+          "name": "capability",
+          "offset": 0,
+          "span": 8
+        },
+        {
+          "name": "value",
+          "offset": 8,
+          "span": 8
+        }
+      ],
+      "size": 16
+    },
+    "WpkDrmGpuBoCreate": {
+      "fields": [
+        {
+          "name": "width",
+          "offset": 0,
+          "span": 4
+        },
+        {
+          "name": "height",
+          "offset": 4,
+          "span": 4
+        },
+        {
+          "name": "format",
+          "offset": 8,
+          "span": 4
+        },
+        {
+          "name": "usage",
+          "offset": 12,
+          "span": 4
+        }
+      ],
+      "size": 16
+    },
+    "WpkDrmModeCardRes": {
+      "fields": [
+        {
+          "name": "fb_id_ptr",
+          "offset": 0,
+          "span": 8
+        },
+        {
+          "name": "crtc_id_ptr",
+          "offset": 8,
+          "span": 8
+        },
+        {
+          "name": "connector_id_ptr",
+          "offset": 16,
+          "span": 8
+        },
+        {
+          "name": "encoder_id_ptr",
+          "offset": 24,
+          "span": 8
+        },
+        {
+          "name": "count_fbs",
+          "offset": 32,
+          "span": 4
+        },
+        {
+          "name": "count_crtcs",
+          "offset": 36,
+          "span": 4
+        },
+        {
+          "name": "count_connectors",
+          "offset": 40,
+          "span": 4
+        },
+        {
+          "name": "count_encoders",
+          "offset": 44,
+          "span": 4
+        },
+        {
+          "name": "min_width",
+          "offset": 48,
+          "span": 4
+        },
+        {
+          "name": "max_width",
+          "offset": 52,
+          "span": 4
+        },
+        {
+          "name": "min_height",
+          "offset": 56,
+          "span": 4
+        },
+        {
+          "name": "max_height",
+          "offset": 60,
+          "span": 4
+        }
+      ],
+      "size": 64
+    },
+    "WpkDrmModeCreateDumb": {
+      "fields": [
+        {
+          "name": "height",
+          "offset": 0,
+          "span": 4
+        },
+        {
+          "name": "width",
+          "offset": 4,
+          "span": 4
+        },
+        {
+          "name": "bpp",
+          "offset": 8,
+          "span": 4
+        },
+        {
+          "name": "flags",
+          "offset": 12,
+          "span": 4
+        },
+        {
+          "name": "handle",
+          "offset": 16,
+          "span": 4
+        },
+        {
+          "name": "pitch",
+          "offset": 20,
+          "span": 4
+        },
+        {
+          "name": "size",
+          "offset": 24,
+          "span": 8
+        }
+      ],
+      "size": 32
+    },
+    "WpkDrmModeCrtcPageFlip": {
+      "fields": [
+        {
+          "name": "crtc_id",
+          "offset": 0,
+          "span": 4
+        },
+        {
+          "name": "fb_id",
+          "offset": 4,
+          "span": 4
+        },
+        {
+          "name": "flags",
+          "offset": 8,
+          "span": 4
+        },
+        {
+          "name": "reserved",
+          "offset": 12,
+          "span": 4
+        },
+        {
+          "name": "user_data",
+          "offset": 16,
+          "span": 8
+        }
+      ],
+      "size": 24
+    },
+    "WpkDrmModeDestroyDumb": {
+      "fields": [
+        {
+          "name": "handle",
+          "offset": 0,
+          "span": 4
+        }
+      ],
+      "size": 4
+    },
+    "WpkDrmModeFbCmd2": {
+      "fields": [
+        {
+          "name": "fb_id",
+          "offset": 0,
+          "span": 4
+        },
+        {
+          "name": "width",
+          "offset": 4,
+          "span": 4
+        },
+        {
+          "name": "height",
+          "offset": 8,
+          "span": 4
+        },
+        {
+          "name": "pixel_format",
+          "offset": 12,
+          "span": 4
+        },
+        {
+          "name": "flags",
+          "offset": 16,
+          "span": 4
+        },
+        {
+          "name": "handles",
+          "offset": 20,
+          "span": 16
+        },
+        {
+          "name": "pitches",
+          "offset": 36,
+          "span": 16
+        },
+        {
+          "name": "offsets",
+          "offset": 52,
+          "span": 20
+        },
+        {
+          "name": "modifier",
+          "offset": 72,
+          "span": 32
+        }
+      ],
+      "size": 104
+    },
+    "WpkDrmModeGetConnector": {
+      "fields": [
+        {
+          "name": "encoders_ptr",
+          "offset": 0,
+          "span": 8
+        },
+        {
+          "name": "modes_ptr",
+          "offset": 8,
+          "span": 8
+        },
+        {
+          "name": "props_ptr",
+          "offset": 16,
+          "span": 8
+        },
+        {
+          "name": "prop_values_ptr",
+          "offset": 24,
+          "span": 8
+        },
+        {
+          "name": "count_modes",
+          "offset": 32,
+          "span": 4
+        },
+        {
+          "name": "count_props",
+          "offset": 36,
+          "span": 4
+        },
+        {
+          "name": "count_encoders",
+          "offset": 40,
+          "span": 4
+        },
+        {
+          "name": "encoder_id",
+          "offset": 44,
+          "span": 4
+        },
+        {
+          "name": "connector_id",
+          "offset": 48,
+          "span": 4
+        },
+        {
+          "name": "connector_type",
+          "offset": 52,
+          "span": 4
+        },
+        {
+          "name": "connector_type_id",
+          "offset": 56,
+          "span": 4
+        },
+        {
+          "name": "connection",
+          "offset": 60,
+          "span": 4
+        },
+        {
+          "name": "mm_width",
+          "offset": 64,
+          "span": 4
+        },
+        {
+          "name": "mm_height",
+          "offset": 68,
+          "span": 4
+        },
+        {
+          "name": "subpixel",
+          "offset": 72,
+          "span": 4
+        },
+        {
+          "name": "pad",
+          "offset": 76,
+          "span": 4
+        }
+      ],
+      "size": 80
+    },
+    "WpkDrmModeGetCrtc": {
+      "fields": [
+        {
+          "name": "set_connectors_ptr",
+          "offset": 0,
+          "span": 8
+        },
+        {
+          "name": "count_connectors",
+          "offset": 8,
+          "span": 4
+        },
+        {
+          "name": "crtc_id",
+          "offset": 12,
+          "span": 4
+        },
+        {
+          "name": "fb_id",
+          "offset": 16,
+          "span": 4
+        },
+        {
+          "name": "x",
+          "offset": 20,
+          "span": 4
+        },
+        {
+          "name": "y",
+          "offset": 24,
+          "span": 4
+        },
+        {
+          "name": "gamma_size",
+          "offset": 28,
+          "span": 4
+        },
+        {
+          "name": "mode_valid",
+          "offset": 32,
+          "span": 4
+        },
+        {
+          "name": "mode",
+          "offset": 36,
+          "span": 68
+        }
+      ],
+      "size": 104
+    },
+    "WpkDrmModeGetEncoder": {
+      "fields": [
+        {
+          "name": "encoder_id",
+          "offset": 0,
+          "span": 4
+        },
+        {
+          "name": "encoder_type",
+          "offset": 4,
+          "span": 4
+        },
+        {
+          "name": "crtc_id",
+          "offset": 8,
+          "span": 4
+        },
+        {
+          "name": "possible_crtcs",
+          "offset": 12,
+          "span": 4
+        },
+        {
+          "name": "possible_clones",
+          "offset": 16,
+          "span": 4
+        }
+      ],
+      "size": 20
+    },
+    "WpkDrmModeMapDumb": {
+      "fields": [
+        {
+          "name": "handle",
+          "offset": 0,
+          "span": 4
+        },
+        {
+          "name": "pad",
+          "offset": 4,
+          "span": 4
+        },
+        {
+          "name": "offset",
+          "offset": 8,
+          "span": 8
+        }
+      ],
+      "size": 16
+    },
+    "WpkDrmModeModeinfo": {
+      "fields": [
+        {
+          "name": "clock",
+          "offset": 0,
+          "span": 4
+        },
+        {
+          "name": "hdisplay",
+          "offset": 4,
+          "span": 2
+        },
+        {
+          "name": "hsync_start",
+          "offset": 6,
+          "span": 2
+        },
+        {
+          "name": "hsync_end",
+          "offset": 8,
+          "span": 2
+        },
+        {
+          "name": "htotal",
+          "offset": 10,
+          "span": 2
+        },
+        {
+          "name": "hskew",
+          "offset": 12,
+          "span": 2
+        },
+        {
+          "name": "vdisplay",
+          "offset": 14,
+          "span": 2
+        },
+        {
+          "name": "vsync_start",
+          "offset": 16,
+          "span": 2
+        },
+        {
+          "name": "vsync_end",
+          "offset": 18,
+          "span": 2
+        },
+        {
+          "name": "vtotal",
+          "offset": 20,
+          "span": 2
+        },
+        {
+          "name": "vscan",
+          "offset": 22,
+          "span": 2
+        },
+        {
+          "name": "vrefresh",
+          "offset": 24,
+          "span": 4
+        },
+        {
+          "name": "flags",
+          "offset": 28,
+          "span": 4
+        },
+        {
+          "name": "mode_type",
+          "offset": 32,
+          "span": 4
+        },
+        {
+          "name": "name",
+          "offset": 36,
+          "span": 32
+        }
+      ],
+      "size": 68
+    },
+    "WpkDrmPrimeHandle": {
+      "fields": [
+        {
+          "name": "handle",
+          "offset": 0,
+          "span": 4
+        },
+        {
+          "name": "flags",
+          "offset": 4,
+          "span": 4
+        },
+        {
+          "name": "fd",
+          "offset": 8,
+          "span": 4
+        }
+      ],
+      "size": 12
+    },
+    "WpkDrmVersion": {
+      "fields": [
+        {
+          "name": "version_major",
+          "offset": 0,
+          "span": 4
+        },
+        {
+          "name": "version_minor",
+          "offset": 4,
+          "span": 4
+        },
+        {
+          "name": "version_patchlevel",
+          "offset": 8,
+          "span": 4
+        },
+        {
+          "name": "name_len",
+          "offset": 12,
+          "span": 4
+        },
+        {
+          "name": "name_ptr",
+          "offset": 16,
+          "span": 4
+        },
+        {
+          "name": "date_len",
+          "offset": 20,
+          "span": 4
+        },
+        {
+          "name": "date_ptr",
+          "offset": 24,
+          "span": 4
+        },
+        {
+          "name": "desc_len",
+          "offset": 28,
+          "span": 4
+        },
+        {
+          "name": "desc_ptr",
+          "offset": 32,
+          "span": 4
+        }
+      ],
+      "size": 36
+    },
+    "WpkDrmWaitVblankReply": {
+      "fields": [
+        {
+          "name": "rep_type",
+          "offset": 0,
+          "span": 4
+        },
+        {
+          "name": "sequence",
+          "offset": 4,
+          "span": 4
+        },
+        {
+          "name": "tv_sec",
+          "offset": 8,
+          "span": 4
+        },
+        {
+          "name": "tv_usec",
+          "offset": 12,
+          "span": 4
+        }
+      ],
+      "size": 16
+    },
+    "WpkDrmWaitVblankRequest": {
+      "fields": [
+        {
+          "name": "req_type",
+          "offset": 0,
+          "span": 4
+        },
+        {
+          "name": "sequence",
+          "offset": 4,
+          "span": 4
+        },
+        {
+          "name": "signal",
           "offset": 8,
           "span": 8
         }

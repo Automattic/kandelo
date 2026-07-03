@@ -13,7 +13,7 @@ use wasm_posix_shared::seek::*;
 use wasm_posix_shared::{WasmFlock, WasmPollFd, WasmStat, WasmStatfs, WasmTimespec};
 
 use crate::fd::OpenFileDescRef;
-use crate::lock::FileLock;
+use crate::lock::{FileLock, LockTable};
 use crate::ofd::FileType;
 use crate::pipe::{DEFAULT_PIPE_CAPACITY, PipeBuffer};
 use crate::process::{HostIO, Process};
@@ -65,6 +65,8 @@ pub enum VirtualDevice {
     Fb0,     // /dev/fb0          host_handle = -5
     Mice,    // /dev/input/mice   host_handle = -6
     Dsp,     // /dev/dsp          host_handle = -7
+    DriRenderD128, // /dev/dri/renderD128  host_handle = -8
+    DriCard0,      // /dev/dri/card0       host_handle = -9
 }
 
 impl VirtualDevice {
@@ -78,6 +80,8 @@ impl VirtualDevice {
             VirtualDevice::Fb0 => -5,
             VirtualDevice::Mice => -6,
             VirtualDevice::Dsp => -7,
+            VirtualDevice::DriRenderD128 => -8,
+            VirtualDevice::DriCard0 => -9,
         }
     }
 
@@ -91,6 +95,8 @@ impl VirtualDevice {
             -5 => Some(VirtualDevice::Fb0),
             -6 => Some(VirtualDevice::Mice),
             -7 => Some(VirtualDevice::Dsp),
+            -8 => Some(VirtualDevice::DriRenderD128),
+            -9 => Some(VirtualDevice::DriCard0),
             _ => None,
         }
     }
@@ -105,6 +111,8 @@ impl VirtualDevice {
             VirtualDevice::Fb0 => 5,
             VirtualDevice::Mice => 6,
             VirtualDevice::Dsp => 7,
+            VirtualDevice::DriRenderD128 => 8,
+            VirtualDevice::DriCard0 => 9,
         }
     }
 }
@@ -124,12 +132,19 @@ fn match_virtual_device(path: &[u8]) -> Option<VirtualDevice> {
         b"/dev/fb0" => Some(VirtualDevice::Fb0),
         b"/dev/input/mice" => Some(VirtualDevice::Mice),
         b"/dev/dsp" => Some(VirtualDevice::Dsp),
+        b"/dev/dri/renderD128" => Some(VirtualDevice::DriRenderD128),
+        b"/dev/dri/card0" => Some(VirtualDevice::DriCard0),
         _ => None,
     }
 }
 
 /// Sentinel host_handle for synthetic in-kernel files.
 const SYNTHETIC_FILE_HANDLE: i64 = -100;
+
+#[inline]
+fn fallback_lock_table(_proc: &mut Process) -> &mut LockTable {
+    unsafe { crate::lock::global_fallback_lock_table() }
+}
 
 /// Mozilla CA root bundle, vendored from <https://curl.se/ca/cacert.pem>.
 /// Served at `/etc/ssl/cert.pem` so OpenSSL's `SSL_CTX_set_default_verify_paths`
@@ -529,6 +544,1062 @@ fn handle_fb_ioctl(request: u32, buf: &mut [u8]) -> Result<(), Errno> {
     }
 }
 
+/// Install the DRI sidecar on a freshly-allocated OFD for a
+/// `/dev/dri/*` open. No-op for non-DRI virtual devices, so
+/// `sys_open` / `sys_openat` can call this unconditionally with
+/// whichever `VirtualDevice` matched.
+fn install_dri_state_on_open(proc: &mut Process, ofd_idx: usize, dev: VirtualDevice) {
+    let state = match dev {
+        VirtualDevice::DriRenderD128 => Some(crate::ofd::DriOfdState::RenderNode(
+            crate::ofd::DriFdState::default(),
+        )),
+        VirtualDevice::DriCard0 => Some(crate::ofd::DriOfdState::Card {
+            dri: crate::ofd::DriFdState::default(),
+            kms: crate::ofd::KmsFdState::default(),
+        }),
+        _ => None,
+    };
+    if let Some(s) = state {
+        if let Some(ofd) = proc.ofd_table.get_mut(ofd_idx) {
+            ofd.dri_state = Some(alloc::boxed::Box::new(s));
+        }
+    }
+}
+
+/// Borrow the `DriFdState` hung off the OFD at `ofd_idx`, returning
+/// `EBADF` if the OFD doesn't have one or is a prime-bo. Used by
+/// renderD128- and card0-targeted ioctls that manipulate per-fd GEM
+/// handles.
+fn dri_state(proc: &Process, ofd_idx: usize) -> Result<&crate::ofd::DriFdState, Errno> {
+    proc.ofd_table
+        .get(ofd_idx)
+        .and_then(|o| o.dri())
+        .ok_or(Errno::EBADF)
+}
+
+fn dri_state_mut(
+    proc: &mut Process,
+    ofd_idx: usize,
+) -> Result<&mut crate::ofd::DriFdState, Errno> {
+    proc.ofd_table
+        .get_mut(ofd_idx)
+        .and_then(|o| o.dri_mut())
+        .ok_or(Errno::EBADF)
+}
+
+fn kms_state(proc: &Process, ofd_idx: usize) -> Result<&crate::ofd::KmsFdState, Errno> {
+    proc.ofd_table
+        .get(ofd_idx)
+        .and_then(|o| o.kms())
+        .ok_or(Errno::EBADF)
+}
+
+fn kms_state_mut(
+    proc: &mut Process,
+    ofd_idx: usize,
+) -> Result<&mut crate::ofd::KmsFdState, Errno> {
+    proc.ofd_table
+        .get_mut(ofd_idx)
+        .and_then(|o| o.kms_mut())
+        .ok_or(Errno::EBADF)
+}
+
+fn ranges_overlap(a_addr: usize, a_len: usize, b_addr: usize, b_len: usize) -> bool {
+    let a_end = a_addr.saturating_add(a_len);
+    let b_end = b_addr.saturating_add(b_len);
+    a_addr < b_end && b_addr < a_end
+}
+
+fn dri_fd_has_bo_handle(dri: &crate::ofd::DriFdState, bo_id: crate::dri::BoId) -> bool {
+    dri.handles.values().any(|&candidate| candidate == bo_id)
+}
+
+fn clear_dri_fd_cmdbuf_in_range(
+    dri: &mut crate::ofd::DriFdState,
+    addr: usize,
+    len: usize,
+) -> bool {
+    let Some(gl) = dri.gl.as_mut() else {
+        return false;
+    };
+    let Some(cmdbuf) = gl.cmdbuf else {
+        return false;
+    };
+    if !ranges_overlap(addr, len, cmdbuf.addr, cmdbuf.len) {
+        return false;
+    }
+    gl.cmdbuf = None;
+    true
+}
+
+fn unbind_gl_cmdbufs_in_range(
+    proc: &mut Process,
+    host: &mut dyn HostIO,
+    addr: usize,
+    len: usize,
+) {
+    let mut released = false;
+    for (_ofd_idx, ofd) in proc.ofd_table.iter_mut() {
+        match ofd.dri_state.as_deref_mut() {
+            Some(crate::ofd::DriOfdState::RenderNode(dri)) => {
+                released |= clear_dri_fd_cmdbuf_in_range(dri, addr, len);
+            }
+            Some(crate::ofd::DriOfdState::Card { dri, .. }) => {
+                released |= clear_dri_fd_cmdbuf_in_range(dri, addr, len);
+            }
+            _ => {}
+        }
+    }
+    if released {
+        host.gl_unbind(proc.pid as i32);
+    }
+}
+
+fn release_process_dri_mappings(proc: &mut Process, host: &mut dyn HostIO) {
+    let pid = proc.pid as i32;
+    let bindings = core::mem::take(&mut proc.dri_bindings);
+    for b in bindings {
+        host.gbm_bo_unbind(pid, b.bo_id, b.addr, b.len);
+    }
+
+    let mut released_gl = false;
+    for (_ofd_idx, ofd) in proc.ofd_table.iter_mut() {
+        match ofd.dri_state.as_deref_mut() {
+            Some(crate::ofd::DriOfdState::RenderNode(dri)) => {
+                released_gl |= dri.gl.take().is_some();
+            }
+            Some(crate::ofd::DriOfdState::Card { dri, .. }) => {
+                released_gl |= dri.gl.take().is_some();
+            }
+            _ => {}
+        }
+    }
+    if released_gl {
+        host.gl_unbind(pid);
+    }
+}
+
+pub(crate) fn release_exec_image_state(proc: &mut Process, host: &mut dyn HostIO) {
+    // /dev/fb0 cleanup: exec wipes the binding. Tell the host before
+    // its memory snapshot of the process is invalidated, then drop the
+    // global ownership claim so the new image can re-acquire if it
+    // needs the device.
+    if proc.fb_binding.is_some() {
+        host.unbind_framebuffer(proc.pid as i32);
+        proc.fb_binding = None;
+        maybe_release_fb0(proc.pid);
+    }
+    // /dev/input/mice cleanup: exec also drops mouse ownership. The
+    // post-exec image starts with a clean queue — no stale packets from
+    // the parent program survive across exec.
+    maybe_release_mice(proc.pid);
+    // /dev/dsp cleanup: same — drop ownership and flush any queued PCM
+    // so a post-exec program doesn't hear the tail of its predecessor.
+    maybe_release_dsp(proc.pid);
+    release_process_dri_mappings(proc, host);
+}
+
+/// Release a per-fd handle (DESTROY_DUMB / GEM_CLOSE): drops the
+/// handle from the fd's namespace, decrefs the bo, and if the
+/// refcount hits zero asks the host to free the backing.
+fn release_dri_handle(
+    proc: &mut Process,
+    host: &mut dyn HostIO,
+    ofd_idx: usize,
+    handle: u32,
+) -> Result<(), Errno> {
+    let pid = proc.pid as i32;
+    let bo_id = {
+        let dri = dri_state_mut(proc, ofd_idx)?;
+        dri.handles.remove(&handle).ok_or(Errno::ENOENT)?
+    };
+    let new_count = crate::dri::with_registry(|r| r.decref(bo_id));
+    if new_count == Some(0) {
+        host.gbm_bo_destroy(pid, bo_id);
+    }
+    Ok(())
+}
+
+/// Shared render-node ioctls: probe (VERSION / GET_CAP), the dumb-buffer
+/// quartet (CREATE / MAP / DESTROY / GEM_CLOSE), PRIME export/import, and
+/// GLES2 session ioctls. Unknown requests return `ENOSYS` so libdrm
+/// reports "feature unsupported" rather than silently succeeding.
+fn handle_dri_ioctl(
+    proc: &mut Process,
+    host: &mut dyn HostIO,
+    ofd_idx: usize,
+    request: u32,
+    buf: &mut [u8],
+) -> Result<(), Errno> {
+    use wasm_posix_shared::dri::*;
+    use wasm_posix_shared::gl;
+    let pid = proc.pid as i32;
+    match request {
+        DRM_IOCTL_VERSION => {
+            if buf.len() < core::mem::size_of::<WpkDrmVersion>() {
+                return Err(Errno::EINVAL);
+            }
+            let v_in: WpkDrmVersion =
+                unsafe { core::ptr::read_unaligned(buf.as_ptr() as *const _) };
+            let v_out = WpkDrmVersion {
+                version_major: 1,
+                version_minor: 0,
+                version_patchlevel: 0,
+                name_len: 0,
+                name_ptr: v_in.name_ptr,
+                date_len: 0,
+                date_ptr: v_in.date_ptr,
+                desc_len: 0,
+                desc_ptr: v_in.desc_ptr,
+            };
+            unsafe {
+                core::ptr::write_unaligned(buf.as_mut_ptr() as *mut _, v_out);
+            }
+            Ok(())
+        }
+        DRM_IOCTL_GET_CAP => {
+            if buf.len() < core::mem::size_of::<WpkDrmGetCap>() {
+                return Err(Errno::EINVAL);
+            }
+            let mut cap: WpkDrmGetCap =
+                unsafe { core::ptr::read_unaligned(buf.as_ptr() as *const _) };
+            cap.value = match cap.capability {
+                DRM_CAP_DUMB_BUFFER => 1,
+                DRM_CAP_PRIME => DRM_PRIME_CAP_IMPORT | DRM_PRIME_CAP_EXPORT,
+                _ => 0,
+            };
+            unsafe {
+                core::ptr::write_unaligned(buf.as_mut_ptr() as *mut _, cap);
+            }
+            Ok(())
+        }
+        DRM_IOCTL_MODE_CREATE_DUMB => {
+            if buf.len() < core::mem::size_of::<WpkDrmModeCreateDumb>() {
+                return Err(Errno::EINVAL);
+            }
+            let mut req: WpkDrmModeCreateDumb =
+                unsafe { core::ptr::read_unaligned(buf.as_ptr() as *const _) };
+            if req.flags != 0 || req.width == 0 || req.height == 0 || req.bpp != 32 {
+                return Err(Errno::EINVAL);
+            }
+            // Allocate in registry first so we know the size/stride
+            // before asking the host.
+            let (bo_id, size, stride) = crate::dri::with_registry(|r| {
+                r.try_alloc(req.width, req.height, req.bpp)
+                    .map(|bo| (bo.id, bo.size, bo.stride))
+            })
+            .ok_or(Errno::EINVAL)?;
+            // Ask the host to back the bo with a SAB. Roll back the
+            // registry allocation on host failure so the BoId space
+            // doesn't leak.
+            let host_rc = host.gbm_bo_create(pid, bo_id, size, req.width, req.height, stride);
+            if host_rc < 0 {
+                crate::dri::with_registry(|r| {
+                    r.decref(bo_id);
+                });
+                return Err(Errno::ENOMEM);
+            }
+            // Register a fresh per-fd handle. On EMFILE, roll back the
+            // bo and host backing.
+            let handle = match dri_state_mut(proc, ofd_idx) {
+                Ok(dri) => {
+                    let h = dri.next_handle;
+                    match dri.next_handle.checked_add(1) {
+                        Some(n) => {
+                            dri.next_handle = n;
+                            dri.handles.insert(h, bo_id);
+                            h
+                        }
+                        None => {
+                            crate::dri::with_registry(|r| {
+                                r.decref(bo_id);
+                            });
+                            host.gbm_bo_destroy(pid, bo_id);
+                            return Err(Errno::EMFILE);
+                        }
+                    }
+                }
+                Err(e) => {
+                    crate::dri::with_registry(|r| {
+                        r.decref(bo_id);
+                    });
+                    host.gbm_bo_destroy(pid, bo_id);
+                    return Err(e);
+                }
+            };
+            req.handle = handle;
+            req.pitch = stride;
+            req.size = size;
+            unsafe {
+                core::ptr::write_unaligned(buf.as_mut_ptr() as *mut _, req);
+            }
+            Ok(())
+        }
+        DRM_IOCTL_MODE_MAP_DUMB => {
+            if buf.len() < core::mem::size_of::<WpkDrmModeMapDumb>() {
+                return Err(Errno::EINVAL);
+            }
+            let mut req: WpkDrmModeMapDumb =
+                unsafe { core::ptr::read_unaligned(buf.as_ptr() as *const _) };
+            let bo_id = *dri_state(proc, ofd_idx)?
+                .handles
+                .get(&req.handle)
+                .ok_or(Errno::ENOENT)?;
+            // The "mmap offset" is just the BoId page-shifted so it
+            // can't collide with file offsets. The mmap path decodes
+            // the offset back to a BoId.
+            req.offset = (bo_id as u64) << 12;
+            unsafe {
+                core::ptr::write_unaligned(buf.as_mut_ptr() as *mut _, req);
+            }
+            Ok(())
+        }
+        DRM_IOCTL_MODE_DESTROY_DUMB => {
+            if buf.len() < core::mem::size_of::<WpkDrmModeDestroyDumb>() {
+                return Err(Errno::EINVAL);
+            }
+            let req: WpkDrmModeDestroyDumb =
+                unsafe { core::ptr::read_unaligned(buf.as_ptr() as *const _) };
+            release_dri_handle(proc, host, ofd_idx, req.handle)
+        }
+        DRM_IOCTL_GEM_CLOSE => {
+            if buf.len() < core::mem::size_of::<WpkDrmGemClose>() {
+                return Err(Errno::EINVAL);
+            }
+            let req: WpkDrmGemClose =
+                unsafe { core::ptr::read_unaligned(buf.as_ptr() as *const _) };
+            release_dri_handle(proc, host, ofd_idx, req.handle)
+        }
+        DRM_IOCTL_PRIME_HANDLE_TO_FD => {
+            if buf.len() < core::mem::size_of::<WpkDrmPrimeHandle>() {
+                return Err(Errno::EINVAL);
+            }
+            let mut req: WpkDrmPrimeHandle =
+                unsafe { core::ptr::read_unaligned(buf.as_ptr() as *const _) };
+            let bo_id = *dri_state(proc, ofd_idx)?
+                .handles
+                .get(&req.handle)
+                .ok_or(Errno::ENOENT)?;
+
+            // Materialise the cookie (idempotent — re-export reuses
+            // the existing one). Bump the bo refcount for the new OFD
+            // that will hold the prime fd.
+            let cookie = crate::dri::with_registry(|r| r.ensure_prime_cookie(bo_id))
+                .ok_or(Errno::EINVAL)?;
+            crate::dri::with_registry(|r| r.incref(bo_id));
+
+            // Allocate a fresh OFD with the prime-bo sidecar. The
+            // host_handle = -200 sentinel sits outside the
+            // VirtualDevice range (-1..=-9) so this fd isn't
+            // mistakenly routed to a render or card ioctl path.
+            let path = alloc::format!("/dev/dri/prime-{}-{:x}", bo_id, cookie).into_bytes();
+            let prime_ofd = proc.ofd_table.create(
+                crate::ofd::FileType::CharDevice,
+                wasm_posix_shared::flags::O_RDWR,
+                -200,
+                path,
+            );
+            if let Some(new_ofd) = proc.ofd_table.get_mut(prime_ofd) {
+                new_ofd.dri_state = Some(alloc::boxed::Box::new(
+                    crate::ofd::DriOfdState::PrimeBo(crate::ofd::PrimeBoState { bo_id, cookie }),
+                ));
+            }
+            let fd_flags = if req.flags & wasm_posix_shared::flags::O_CLOEXEC != 0 {
+                wasm_posix_shared::fd_flags::FD_CLOEXEC
+            } else {
+                0
+            };
+            let new_fd = match proc
+                .fd_table
+                .alloc(crate::fd::OpenFileDescRef(prime_ofd), fd_flags)
+            {
+                Ok(fd) => fd,
+                Err(e) => {
+                    proc.ofd_table.dec_ref(prime_ofd);
+                    let _ = crate::dri::with_registry(|r| r.decref(bo_id));
+                    return Err(e);
+                }
+            };
+            req.fd = new_fd;
+            unsafe {
+                core::ptr::write_unaligned(buf.as_mut_ptr() as *mut _, req);
+            }
+            Ok(())
+        }
+        DRM_IOCTL_PRIME_FD_TO_HANDLE => {
+            if buf.len() < core::mem::size_of::<WpkDrmPrimeHandle>() {
+                return Err(Errno::EINVAL);
+            }
+            let mut req: WpkDrmPrimeHandle =
+                unsafe { core::ptr::read_unaligned(buf.as_ptr() as *const _) };
+
+            // Look up the prime-fd OFD and clone its prime-bo state.
+            let prime = {
+                let entry = proc.fd_table.get(req.fd)?;
+                let prime_ofd = proc.ofd_table.get(entry.ofd_ref.0).ok_or(Errno::EBADF)?;
+                prime_ofd.prime_bo().cloned().ok_or(Errno::EINVAL)?
+            };
+
+            // Capability check: the bo's current cookie must match the
+            // one stored on the prime-fd OFD. A stale cookie (bo
+            // destroyed + new bo took its id) fails with EACCES,
+            // matching Linux.
+            let bo_cookie = crate::dri::with_registry(|r| {
+                r.get(prime.bo_id).and_then(|b| b.prime_cookie)
+            })
+            .ok_or(Errno::EACCES)?;
+            if bo_cookie != prime.cookie {
+                return Err(Errno::EACCES);
+            }
+
+            crate::dri::with_registry(|r| r.incref(prime.bo_id));
+
+            let handle = match dri_state_mut(proc, ofd_idx) {
+                Ok(dri) => {
+                    let h = dri.next_handle;
+                    match dri.next_handle.checked_add(1) {
+                        Some(n) => {
+                            dri.next_handle = n;
+                            dri.handles.insert(h, prime.bo_id);
+                            h
+                        }
+                        None => {
+                            let _ = crate::dri::with_registry(|r| r.decref(prime.bo_id));
+                            return Err(Errno::EMFILE);
+                        }
+                    }
+                }
+                Err(e) => {
+                    let _ = crate::dri::with_registry(|r| r.decref(prime.bo_id));
+                    return Err(e);
+                }
+            };
+            req.handle = handle;
+            unsafe {
+                core::ptr::write_unaligned(buf.as_mut_ptr() as *mut _, req);
+            }
+            Ok(())
+        }
+        // --- GLES2 session ioctls --------------------------------------
+        //
+        // libEGL / libGLESv2 drive these. The cmdbuf mmap lives in the
+        // sys_mmap renderD128 block when offset==0; everything below is
+        // pure state-machine + host bridge forwarding.
+        gl::GLIO_INIT => {
+            if buf.len() < 4 {
+                return Err(Errno::EINVAL);
+            }
+            let client_version = u32::from_le_bytes([buf[0], buf[1], buf[2], buf[3]]);
+            if client_version != gl::OP_VERSION {
+                return Err(Errno::ENOSYS);
+            }
+            let dri = dri_state_mut(proc, ofd_idx)?;
+            if dri.gl.is_some() {
+                return Err(Errno::EBUSY);
+            }
+            dri.gl = Some(crate::ofd::GlState {
+                initialized: true,
+                ..Default::default()
+            });
+            Ok(())
+        }
+        gl::GLIO_TERMINATE => {
+            let dri = dri_state_mut(proc, ofd_idx)?;
+            if dri.gl.is_none() {
+                return Err(Errno::EINVAL);
+            }
+            dri.gl = None;
+            host.gl_unbind(pid);
+            Ok(())
+        }
+        gl::GLIO_CREATE_CONTEXT => {
+            if buf.len() < core::mem::size_of::<gl::GlContextAttrs>() {
+                return Err(Errno::EINVAL);
+            }
+            let attrs_bytes = &buf[..core::mem::size_of::<gl::GlContextAttrs>()];
+            let attrs: gl::GlContextAttrs =
+                unsafe { core::ptr::read_unaligned(attrs_bytes.as_ptr() as *const _) };
+            if attrs.client_version != 2 && attrs.client_version != 3 {
+                return Err(Errno::EINVAL);
+            }
+            let ctx_id;
+            {
+                let dri = dri_state_mut(proc, ofd_idx)?;
+                let gls = dri.gl.as_mut().ok_or(Errno::EINVAL)?;
+                if !gls.initialized {
+                    return Err(Errno::EINVAL);
+                }
+                if gls.context_id.is_some() {
+                    return Err(Errno::EBUSY);
+                }
+                ctx_id = 1u32;
+                gls.context_id = Some(ctx_id);
+            }
+            host.gl_create_context(pid, ctx_id, attrs_bytes);
+            Ok(())
+        }
+        gl::GLIO_DESTROY_CONTEXT => {
+            let ctx_id;
+            {
+                let dri = dri_state_mut(proc, ofd_idx)?;
+                let gls = dri.gl.as_mut().ok_or(Errno::EINVAL)?;
+                ctx_id = gls.context_id.ok_or(Errno::EINVAL)?;
+                gls.context_id = None;
+                gls.current = false;
+            }
+            host.gl_destroy_context(pid, ctx_id);
+            Ok(())
+        }
+        gl::GLIO_CREATE_SURFACE => {
+            if buf.len() < core::mem::size_of::<gl::GlSurfaceAttrs>() {
+                return Err(Errno::EINVAL);
+            }
+            let attrs_bytes = &buf[..core::mem::size_of::<gl::GlSurfaceAttrs>()];
+            let attrs: gl::GlSurfaceAttrs =
+                unsafe { core::ptr::read_unaligned(attrs_bytes.as_ptr() as *const _) };
+            if attrs.kind != gl::WPK_SURFACE_DEFAULT && attrs.kind != gl::WPK_SURFACE_PBUFFER {
+                return Err(Errno::EINVAL);
+            }
+            let surface_id;
+            {
+                let dri = dri_state_mut(proc, ofd_idx)?;
+                let gls = dri.gl.as_mut().ok_or(Errno::EINVAL)?;
+                if !gls.initialized {
+                    return Err(Errno::EINVAL);
+                }
+                if gls.surface_id.is_some() {
+                    return Err(Errno::EBUSY);
+                }
+                surface_id = 1u32;
+                gls.surface_id = Some(surface_id);
+            }
+            host.gl_create_surface(pid, surface_id, attrs_bytes);
+            Ok(())
+        }
+        gl::GLIO_DESTROY_SURFACE => {
+            let surface_id;
+            {
+                let dri = dri_state_mut(proc, ofd_idx)?;
+                let gls = dri.gl.as_mut().ok_or(Errno::EINVAL)?;
+                surface_id = gls.surface_id.ok_or(Errno::EINVAL)?;
+                gls.surface_id = None;
+                gls.current = false;
+            }
+            host.gl_destroy_surface(pid, surface_id);
+            Ok(())
+        }
+        gl::GLIO_MAKE_CURRENT => {
+            let (ctx_id, surface_id);
+            {
+                let dri = dri_state_mut(proc, ofd_idx)?;
+                let gls = dri.gl.as_mut().ok_or(Errno::EINVAL)?;
+                ctx_id = gls.context_id.ok_or(Errno::EINVAL)?;
+                surface_id = gls.surface_id.ok_or(Errno::EINVAL)?;
+                gls.current = true;
+            }
+            host.gl_make_current(pid, ctx_id, surface_id);
+            Ok(())
+        }
+        gl::GLIO_SUBMIT => {
+            if buf.len() < core::mem::size_of::<gl::GlSubmitInfo>() {
+                return Err(Errno::EINVAL);
+            }
+            let info: gl::GlSubmitInfo =
+                unsafe { core::ptr::read_unaligned(buf.as_ptr() as *const _) };
+            let (offset, length);
+            {
+                let dri = dri_state_mut(proc, ofd_idx)?;
+                let gls = dri.gl.as_mut().ok_or(Errno::EINVAL)?;
+                let cmdbuf = gls.cmdbuf.as_mut().ok_or(Errno::EINVAL)?;
+                let end = (info.offset as usize)
+                    .checked_add(info.length as usize)
+                    .ok_or(Errno::EINVAL)?;
+                if end > cmdbuf.len {
+                    return Err(Errno::EINVAL);
+                }
+                offset = info.offset as usize;
+                length = info.length as usize;
+            }
+            let submit_rc = host.gl_submit(pid, offset, length);
+            if submit_rc < 0 {
+                return Err(Errno::from_u32((-submit_rc) as u32).unwrap_or(Errno::EIO));
+            }
+            let dri = dri_state_mut(proc, ofd_idx)?;
+            let gls = dri.gl.as_mut().ok_or(Errno::EINVAL)?;
+            let cmdbuf = gls.cmdbuf.as_mut().ok_or(Errno::EINVAL)?;
+            cmdbuf.submit_seq = cmdbuf.submit_seq.wrapping_add(1);
+            Ok(())
+        }
+        gl::GLIO_PRESENT => {
+            {
+                let dri = dri_state(proc, ofd_idx)?;
+                let gls = dri.gl.as_ref().ok_or(Errno::EINVAL)?;
+                if !gls.initialized {
+                    return Err(Errno::EINVAL);
+                }
+            }
+            host.gl_present(pid);
+            Ok(())
+        }
+        gl::GLIO_QUERY => {
+            if buf.len() < core::mem::size_of::<gl::GlQueryInfo>() {
+                return Err(Errno::EINVAL);
+            }
+            let info: gl::GlQueryInfo =
+                unsafe { core::ptr::read_unaligned(buf.as_ptr() as *const _) };
+            if info.in_buf_len > gl::MAX_QUERY_IN_LEN
+                || info.out_buf_len > gl::MAX_QUERY_OUT_LEN
+            {
+                return Err(Errno::EINVAL);
+            }
+            {
+                let dri = dri_state(proc, ofd_idx)?;
+                let gls = dri.gl.as_ref().ok_or(Errno::EINVAL)?;
+                if !gls.initialized {
+                    return Err(Errno::EINVAL);
+                }
+            }
+            // Copy input from process memory through the host bridge,
+            // forward to host.gl_query, then copy the result back. The
+            // kernel never decodes the bytes — `op` is the only thing
+            // the host needs to dispatch.
+            let mut in_buf: alloc::vec::Vec<u8> = alloc::vec![0u8; info.in_buf_len as usize];
+            if info.in_buf_len > 0 {
+                let rc = host.proc_read_bytes(pid, info.in_buf_ptr, &mut in_buf);
+                if rc < 0 {
+                    return Err(Errno::EFAULT);
+                }
+            }
+            let mut out_buf: alloc::vec::Vec<u8> =
+                alloc::vec![0u8; info.out_buf_len as usize];
+            let written = host.gl_query(pid, info.op, &in_buf, &mut out_buf);
+            if written < 0 {
+                return Err(Errno::EIO);
+            }
+            let n = (written as usize).min(out_buf.len());
+            if n > 0 && info.out_buf_ptr != 0 {
+                let rc = host.proc_write_bytes(pid, info.out_buf_ptr, &out_buf[..n]);
+                if rc < 0 {
+                    return Err(Errno::EFAULT);
+                }
+            }
+            Ok(())
+        }
+        _ => Err(Errno::ENOSYS),
+    }
+}
+
+/// Card0-specific KMS ioctls (SET/DROP_MASTER, MODE_GET*, ADDFB2/RMFB,
+/// SETCRTC, PAGE_FLIP, WAIT_VBLANK). Unknown requests fall through to
+/// `handle_dri_ioctl` so the per-fd GEM/PRIME path stays in one place.
+fn handle_dri_card_ioctl(
+    proc: &mut Process,
+    host: &mut dyn HostIO,
+    ofd_idx: usize,
+    request: u32,
+    buf: &mut [u8],
+) -> Result<(), Errno> {
+    use wasm_posix_shared::dri::*;
+    let pid = proc.pid as i32;
+    match request {
+        DRM_IOCTL_SET_MASTER => {
+            kms_state(proc, ofd_idx)?;
+            crate::dri::master::try_set_master(pid, ofd_idx)?;
+            if let Ok(kms) = kms_state_mut(proc, ofd_idx) {
+                kms.holds_master = true;
+            }
+            host.kms_set_master(pid);
+            Ok(())
+        }
+        DRM_IOCTL_DROP_MASTER => {
+            kms_state(proc, ofd_idx)?;
+            if crate::dri::master::drop_master(pid, ofd_idx) {
+                if let Ok(kms) = kms_state_mut(proc, ofd_idx) {
+                    kms.holds_master = false;
+                }
+                host.kms_drop_master(pid);
+            }
+            Ok(())
+        }
+        DRM_IOCTL_MODE_GETRESOURCES => {
+            if buf.len() < core::mem::size_of::<WpkDrmModeCardRes>() {
+                return Err(Errno::EINVAL);
+            }
+            let req: WpkDrmModeCardRes =
+                unsafe { core::ptr::read_unaligned(buf.as_ptr() as *const _) };
+            if req.count_crtcs >= 1 && req.crtc_id_ptr != 0 {
+                let rc = host.proc_write_bytes(pid, req.crtc_id_ptr as u32, &1u32.to_le_bytes());
+                if rc < 0 {
+                    return Err(Errno::EFAULT);
+                }
+            }
+            if req.count_connectors >= 1 && req.connector_id_ptr != 0 {
+                let rc = host.proc_write_bytes(
+                    pid,
+                    req.connector_id_ptr as u32,
+                    &1u32.to_le_bytes(),
+                );
+                if rc < 0 {
+                    return Err(Errno::EFAULT);
+                }
+            }
+            if req.count_encoders >= 1 && req.encoder_id_ptr != 0 {
+                let rc = host.proc_write_bytes(pid, req.encoder_id_ptr as u32, &1u32.to_le_bytes());
+                if rc < 0 {
+                    return Err(Errno::EFAULT);
+                }
+            }
+            let resp = WpkDrmModeCardRes {
+                count_fbs: 0,
+                count_crtcs: 1,
+                count_connectors: 1,
+                count_encoders: 1,
+                min_width: 1,
+                max_width: 16384,
+                min_height: 1,
+                max_height: 16384,
+                ..req
+            };
+            unsafe {
+                core::ptr::write_unaligned(buf.as_mut_ptr() as *mut _, resp);
+            }
+            Ok(())
+        }
+        DRM_IOCTL_MODE_GETCRTC => {
+            if buf.len() < core::mem::size_of::<WpkDrmModeGetCrtc>() {
+                return Err(Errno::EINVAL);
+            }
+            let req: WpkDrmModeGetCrtc =
+                unsafe { core::ptr::read_unaligned(buf.as_ptr() as *const _) };
+            if req.crtc_id != 1 {
+                return Err(Errno::ENOENT);
+            }
+            let resp = WpkDrmModeGetCrtc {
+                crtc_id: 1,
+                ..Default::default()
+            };
+            unsafe {
+                core::ptr::write_unaligned(buf.as_mut_ptr() as *mut _, resp);
+            }
+            Ok(())
+        }
+        DRM_IOCTL_MODE_GETENCODER => {
+            if buf.len() < core::mem::size_of::<WpkDrmModeGetEncoder>() {
+                return Err(Errno::EINVAL);
+            }
+            let req: WpkDrmModeGetEncoder =
+                unsafe { core::ptr::read_unaligned(buf.as_ptr() as *const _) };
+            if req.encoder_id != 1 {
+                return Err(Errno::ENOENT);
+            }
+            let resp = WpkDrmModeGetEncoder {
+                encoder_id: 1,
+                crtc_id: 1,
+                possible_crtcs: 0b1,
+                ..Default::default()
+            };
+            unsafe {
+                core::ptr::write_unaligned(buf.as_mut_ptr() as *mut _, resp);
+            }
+            Ok(())
+        }
+        DRM_IOCTL_MODE_GETCONNECTOR => {
+            if buf.len() < core::mem::size_of::<WpkDrmModeGetConnector>() {
+                return Err(Errno::EINVAL);
+            }
+            let req: WpkDrmModeGetConnector =
+                unsafe { core::ptr::read_unaligned(buf.as_ptr() as *const _) };
+            if req.connector_id != 1 {
+                return Err(Errno::ENOENT);
+            }
+            if req.count_modes >= 1 && req.modes_ptr != 0 {
+                let mode = host.kms_mode_info(1);
+                let mode_bytes = unsafe {
+                    core::slice::from_raw_parts(
+                        &mode as *const _ as *const u8,
+                        core::mem::size_of::<WpkDrmModeModeinfo>(),
+                    )
+                };
+                let rc = host.proc_write_bytes(pid, req.modes_ptr as u32, mode_bytes);
+                if rc < 0 {
+                    return Err(Errno::EFAULT);
+                }
+            }
+            if req.count_encoders >= 1 && req.encoders_ptr != 0 {
+                let rc =
+                    host.proc_write_bytes(pid, req.encoders_ptr as u32, &1u32.to_le_bytes());
+                if rc < 0 {
+                    return Err(Errno::EFAULT);
+                }
+            }
+            let resp = WpkDrmModeGetConnector {
+                encoders_ptr: req.encoders_ptr,
+                modes_ptr: req.modes_ptr,
+                props_ptr: req.props_ptr,
+                prop_values_ptr: req.prop_values_ptr,
+                count_modes: 1,
+                count_encoders: 1,
+                encoder_id: 1,
+                connector_id: 1,
+                connector_type: DRM_MODE_CONNECTOR_VIRTUAL,
+                connector_type_id: 1,
+                connection: DRM_MODE_CONNECTED,
+                subpixel: DRM_MODE_SUBPIXEL_UNKNOWN,
+                ..Default::default()
+            };
+            unsafe {
+                core::ptr::write_unaligned(buf.as_mut_ptr() as *mut _, resp);
+            }
+            Ok(())
+        }
+        DRM_IOCTL_MODE_ADDFB2 => {
+            if buf.len() < core::mem::size_of::<WpkDrmModeFbCmd2>() {
+                return Err(Errno::EINVAL);
+            }
+            let mut req: WpkDrmModeFbCmd2 =
+                unsafe { core::ptr::read_unaligned(buf.as_ptr() as *const _) };
+            if req.width == 0 || req.height == 0 {
+                return Err(Errno::EINVAL);
+            }
+            if req.handles[1..].iter().any(|&h| h != 0) {
+                return Err(Errno::EINVAL);
+            }
+            if !matches!(
+                req.pixel_format,
+                DRM_FORMAT_ARGB8888 | DRM_FORMAT_XRGB8888 | DRM_FORMAT_RGB565
+            ) {
+                return Err(Errno::EINVAL);
+            }
+            let bo_id = *dri_state(proc, ofd_idx)?
+                .handles
+                .get(&req.handles[0])
+                .ok_or(Errno::ENOENT)?;
+            let bo_stride = crate::dri::with_registry(|r| r.get(bo_id).map(|b| b.stride))
+                .ok_or(Errno::ENOENT)?;
+            if req.pitches[0] != bo_stride {
+                return Err(Errno::EINVAL);
+            }
+            let fb_id = {
+                let kms = kms_state_mut(proc, ofd_idx)?;
+                let id = kms.next_fb_id.checked_add(1).ok_or(Errno::ENOMEM)?;
+                kms.next_fb_id = id;
+                kms.fbs.insert(
+                    id,
+                    crate::ofd::KmsFb {
+                        bo_id,
+                        width: req.width,
+                        height: req.height,
+                        pixel_format: req.pixel_format,
+                        stride: req.pitches[0],
+                    },
+                );
+                id
+            };
+            crate::dri::with_registry(|r| r.incref(bo_id));
+            let rc = host.kms_addfb(
+                pid,
+                fb_id,
+                bo_id,
+                req.width,
+                req.height,
+                req.pixel_format,
+                req.pitches[0],
+            );
+            if rc < 0 {
+                if let Ok(kms) = kms_state_mut(proc, ofd_idx) {
+                    kms.fbs.remove(&fb_id);
+                }
+                let _ = crate::dri::with_registry(|r| r.decref(bo_id));
+                return Err(Errno::ENOMEM);
+            }
+            req.fb_id = fb_id;
+            unsafe {
+                core::ptr::write_unaligned(buf.as_mut_ptr() as *mut _, req);
+            }
+            Ok(())
+        }
+        DRM_IOCTL_MODE_RMFB => {
+            if buf.len() < 4 {
+                return Err(Errno::EINVAL);
+            }
+            let fb_id = u32::from_le_bytes(buf[..4].try_into().unwrap());
+            let bo_id = kms_state_mut(proc, ofd_idx)?
+                .fbs
+                .remove(&fb_id)
+                .map(|fb| fb.bo_id)
+                .ok_or(Errno::ENOENT)?;
+            let new_rc = crate::dri::with_registry(|r| r.decref(bo_id));
+            if new_rc == Some(0) {
+                host.gbm_bo_destroy(pid, bo_id);
+            }
+            host.kms_rmfb(pid, fb_id);
+            Ok(())
+        }
+        DRM_IOCTL_MODE_SETCRTC => {
+            if buf.len() < core::mem::size_of::<WpkDrmModeGetCrtc>() {
+                return Err(Errno::EINVAL);
+            }
+            let req: WpkDrmModeGetCrtc =
+                unsafe { core::ptr::read_unaligned(buf.as_ptr() as *const _) };
+            let kms = kms_state(proc, ofd_idx)?;
+            if !kms.holds_master {
+                return Err(Errno::EACCES);
+            }
+            if req.crtc_id != 1 {
+                return Err(Errno::ENOENT);
+            }
+            if req.fb_id != 0 && !kms.fbs.contains_key(&req.fb_id) {
+                return Err(Errno::ENOENT);
+            }
+            host.kms_set_fb(pid, req.crtc_id, req.fb_id);
+            Ok(())
+        }
+        DRM_IOCTL_MODE_PAGE_FLIP => {
+            if buf.len() < core::mem::size_of::<WpkDrmModeCrtcPageFlip>() {
+                return Err(Errno::EINVAL);
+            }
+            let req: WpkDrmModeCrtcPageFlip =
+                unsafe { core::ptr::read_unaligned(buf.as_ptr() as *const _) };
+            // Read-only gates first to avoid a redundant borrow split.
+            {
+                let kms = kms_state(proc, ofd_idx)?;
+                if req.crtc_id != 1 {
+                    return Err(Errno::ENOENT);
+                }
+                if !kms.holds_master {
+                    return Err(Errno::EACCES);
+                }
+                if !kms.fbs.contains_key(&req.fb_id) {
+                    return Err(Errno::ENOENT);
+                }
+                if kms.pending_flips.iter().any(|p| p.crtc_id == req.crtc_id) {
+                    return Err(Errno::EBUSY);
+                }
+            }
+            // Best-effort stats: a clock-read failure leaves the flip
+            // queued and just skips the counter bump. The host reads
+            // the running totals via the kernel_kms_* exports.
+            let (tv_sec, tv_usec) = match host.host_clock_gettime(
+                wasm_posix_shared::clock::CLOCK_MONOTONIC,
+            ) {
+                Ok((sec, nsec)) => {
+                    let now_us = (sec as u64)
+                        .wrapping_mul(1_000_000)
+                        + (nsec as u64) / 1000;
+                    crate::dri::record_kms_commit(req.crtc_id, now_us);
+                    (sec as u32, (nsec / 1000) as u32)
+                }
+                Err(_) => (0u32, 0u32),
+            };
+            let sequence = crate::dri::vblank_tick();
+            let kms_mut = kms_state_mut(proc, ofd_idx)?;
+            kms_mut.pending_flips.push(crate::ofd::PendingFlip {
+                crtc_id: req.crtc_id,
+                fb_id: req.fb_id,
+                user_data: req.user_data,
+            });
+            // v1 simplification: the host vblank pump exists only to
+            // refresh canvases + counters, so the test-bench can run
+            // PAGE_FLIP → drmHandleEvent without a real 60 Hz tick
+            // driving event delivery. Retire each queued flip into
+            // the per-fd event_ring as a DRM_EVENT_FLIP_COMPLETE
+            // record immediately, matching what a real DRM vblank IRQ
+            // would do before the next ioctl.
+            if let Some(flip) = kms_mut.pending_flips.pop() {
+                let mut record = [0u8; 32];
+                record[0..4].copy_from_slice(&2u32.to_le_bytes());
+                record[4..8].copy_from_slice(&32u32.to_le_bytes());
+                record[8..16].copy_from_slice(&flip.user_data.to_le_bytes());
+                record[16..20].copy_from_slice(&tv_sec.to_le_bytes());
+                record[20..24].copy_from_slice(&tv_usec.to_le_bytes());
+                record[24..28].copy_from_slice(&sequence.to_le_bytes());
+                record[28..32].copy_from_slice(&flip.crtc_id.to_le_bytes());
+                kms_mut.event_ring.extend(record.iter());
+            }
+            Ok(())
+        }
+        DRM_IOCTL_WAIT_VBLANK => {
+            if buf.len() < core::mem::size_of::<WpkDrmWaitVblankRequest>() {
+                return Err(Errno::EINVAL);
+            }
+            let (sec, nsec) = host.host_clock_gettime(wasm_posix_shared::clock::CLOCK_MONOTONIC)?;
+            let reply = WpkDrmWaitVblankReply {
+                rep_type: u32::from_le_bytes(buf[..4].try_into().unwrap()),
+                sequence: 0,
+                tv_sec: sec as u32,
+                tv_usec: (nsec / 1000) as u32,
+            };
+            unsafe {
+                core::ptr::write_unaligned(buf.as_mut_ptr() as *mut _, reply);
+            }
+            Ok(())
+        }
+        _ => handle_dri_ioctl(proc, host, ofd_idx, request, buf),
+    }
+}
+
+/// Run DRI-specific cleanup for a freshly-freed OFD: release the
+/// per-fd GEM handle map (decref every bo, free host backing on the
+/// last drop) and release a prime-bo capability cookie if any.
+///
+/// Called from `sys_close` after `dec_ref` has freed the OFD slot
+/// (the caller is responsible for serializing). No-op for OFDs
+/// without DRI state.
+pub(crate) fn dri_release_ofd_state(
+    pid: i32,
+    host: &mut dyn HostIO,
+    ofd_idx: usize,
+    state: Option<alloc::boxed::Box<crate::ofd::DriOfdState>>,
+) {
+    let Some(state) = state else {
+        return;
+    };
+    // Helper: decref a bo, destroy host backing on the last drop.
+    let release_bo = |host: &mut dyn HostIO, bo_id: u32| {
+        let new_count = crate::dri::with_registry(|r| r.decref(bo_id));
+        if new_count == Some(0) {
+            host.gbm_bo_destroy(pid, bo_id);
+        }
+    };
+    match *state {
+        crate::ofd::DriOfdState::PrimeBo(p) => {
+            release_bo(host, p.bo_id);
+        }
+        crate::ofd::DriOfdState::RenderNode(dri) => {
+            if dri.gl.is_some() {
+                host.gl_unbind(pid);
+            }
+            for (_handle, bo_id) in dri.handles.into_iter() {
+                release_bo(host, bo_id);
+            }
+        }
+        crate::ofd::DriOfdState::Card { dri, kms } => {
+            // KMS-side cleanup first: release framebuffers (each
+            // holds an extra bo refcount) and notify the host so it
+            // can drop GL textures / canvases bound to those fbs.
+            for (fb_id, fb) in kms.fbs.into_iter() {
+                release_bo(host, fb.bo_id);
+                host.kms_rmfb(pid, fb_id);
+            }
+            // Drop master if this OFD held it — otherwise a
+            // dangling holder would block future SET_MASTER calls
+            // by other processes.
+            crate::dri::master::release_if_held(
+                kms.holds_master,
+                pid,
+                ofd_idx,
+                host,
+            );
+            if dri.gl.is_some() {
+                host.gl_unbind(pid);
+            }
+            for (_handle, bo_id) in dri.handles.into_iter() {
+                release_bo(host, bo_id);
+            }
+        }
+    }
+}
+
 /// Build a synthetic WasmStat for a virtual device.
 fn virtual_device_stat(dev: VirtualDevice, uid: u32, gid: u32) -> WasmStat {
     use wasm_posix_shared::mode::S_IFCHR;
@@ -761,6 +1832,7 @@ pub fn sys_open(
             dev.host_handle(),
             resolved,
         );
+        install_dri_state_on_open(proc, ofd_idx, dev);
         let fd_flags = oflags_to_fd_flags(oflags);
         let fd = proc.fd_table.alloc(OpenFileDescRef(ofd_idx), fd_flags)?;
         return Ok(fd);
@@ -906,25 +1978,49 @@ pub fn sys_close(proc: &mut Process, host: &mut dyn HostIO, fd: i32) -> Result<(
         )
     };
 
+    // Snapshot the DRI sidecar so we can release it (decref bos, drop
+    // prime-bo cookies) once `dec_ref` actually frees the OFD on the
+    // last fd. `take()` only when this is the last reference — a
+    // `dup`-shared OFD must keep its DRI state until every fd closes.
+    let dri_state_for_release = {
+        let ofd = proc.ofd_table.get(idx).ok_or(Errno::EBADF)?;
+        if ofd.ref_count == 1 {
+            proc.ofd_table
+                .get_mut(idx)
+                .and_then(|ofd| ofd.dri_state.take())
+        } else {
+            None
+        }
+    };
+
     // POSIX: closing any fd for a file releases all advisory locks on that file
     // held by this process, regardless of which fd acquired the lock.
-    if host_handle >= 0
+    let pid = proc.pid;
+    fallback_lock_table(proc).remove_for_handle(host_handle, pid);
+    let host_lock_cleanup = host_handle >= 0
         && file_type != FileType::Pipe
         && file_type != FileType::Socket
         && file_type != FileType::PtyMaster
         && file_type != FileType::PtySlave
-    {
-        proc.lock_table.remove_for_handle(host_handle, proc.pid);
-        // Also release in the shared (cross-process) lock table
-        if !path.is_empty() {
-            let mut dummy = [0u8; 24];
-            let _ = host.host_fcntl_lock(&path, proc.pid, F_SETLK, F_UNLCK, 0, 0, &mut dummy);
-        }
+        && !path.is_empty();
+    if host_lock_cleanup {
+        let mut dummy = [0u8; 24];
+        let _ = host.host_fcntl_lock(&path, pid, F_SETLK, F_UNLCK, 0, 0, &mut dummy);
     }
 
     let freed = proc.ofd_table.dec_ref(idx);
 
     if freed {
+        // DRI per-fd cleanup runs first: drop GEM handles, framebuffers,
+        // KMS master, and prime-bo cookies so close-time bo destroy is
+        // observed before any FileType-specific release path runs.
+        dri_release_ofd_state(proc.pid as i32, host, idx, dri_state_for_release);
+        let ofd_lock_owner = (idx as u32) | 0x80000000;
+        fallback_lock_table(proc).remove_for_handle(host_handle, ofd_lock_owner);
+        if host_lock_cleanup {
+            let mut dummy = [0u8; 24];
+            let _ = host.host_fcntl_lock(&path, ofd_lock_owner, F_SETLK, F_UNLCK, 0, 0, &mut dummy);
+        }
         match file_type {
             FileType::Pipe => {
                 if host_handle >= 0 {
@@ -933,13 +2029,9 @@ pub fn sys_close(proc: &mut Process, host: &mut dyn HostIO, fd: i32) -> Result<(
                         let _ = host.host_close(host_handle);
                     }
                 } else {
-                    // Kernel-internal pipe
+                    // Kernel pipe
                     let pipe_idx = (-(host_handle + 1)) as usize;
-                    let pipe = if crate::is_centralized_mode() {
-                        unsafe { crate::pipe::global_pipe_table().get_mut(pipe_idx) }
-                    } else {
-                        proc.pipes.get_mut(pipe_idx).and_then(|p| p.as_mut())
-                    };
+                    let pipe = unsafe { crate::pipe::global_pipe_table().get_mut(pipe_idx) };
                     if let Some(pipe) = pipe {
                         let access_mode = status_flags & O_ACCMODE;
                         if access_mode == O_RDONLY {
@@ -948,16 +2040,12 @@ pub fn sys_close(proc: &mut Process, host: &mut dyn HostIO, fd: i32) -> Result<(
                             pipe.close_write_end();
                         }
                         // Free pipe slot if both endpoints are closed
-                        if crate::is_centralized_mode() {
-                            unsafe { crate::pipe::global_pipe_table().free_if_closed(pipe_idx) };
-                        }
+                        unsafe { crate::pipe::global_pipe_table().free_if_closed(pipe_idx) };
                     }
                 }
             }
             FileType::Socket => {
                 let sock_idx = (-(host_handle + 1)) as usize;
-                let mut send_idx_to_free: Option<usize> = None;
-                let mut recv_idx_to_free: Option<usize> = None;
                 if let Some(sock) = proc.sockets.get(sock_idx) {
                     if sock.domain == crate::socket::SocketDomain::Inet
                         && sock.sock_type == crate::socket::SocketType::Dgram
@@ -988,51 +2076,19 @@ pub fn sys_close(proc: &mut Process, host: &mut dyn HostIO, fd: i32) -> Result<(
                             crate::socket::shared_listener_backlog_table().dec_ref(shared_idx)
                         };
                     }
-                    let use_global = sock.global_pipes;
                     if let Some(send_idx) = sock.send_buf_idx {
-                        let pipe = if use_global {
-                            unsafe { crate::pipe::global_pipe_table().get_mut(send_idx) }
-                        } else {
-                            proc.pipes.get_mut(send_idx).and_then(|p| p.as_mut())
-                        };
+                        let pipe = unsafe { crate::pipe::global_pipe_table().get_mut(send_idx) };
                         if let Some(pipe) = pipe {
                             pipe.close_write_end();
-                            if use_global {
-                                unsafe {
-                                    crate::pipe::global_pipe_table().free_if_closed(send_idx)
-                                };
-                            } else if pipe.is_fully_closed() {
-                                send_idx_to_free = Some(send_idx);
-                            }
+                            unsafe { crate::pipe::global_pipe_table().free_if_closed(send_idx) };
                         }
                     }
                     if let Some(recv_idx) = sock.recv_buf_idx {
-                        let pipe = if use_global {
-                            unsafe { crate::pipe::global_pipe_table().get_mut(recv_idx) }
-                        } else {
-                            proc.pipes.get_mut(recv_idx).and_then(|p| p.as_mut())
-                        };
+                        let pipe = unsafe { crate::pipe::global_pipe_table().get_mut(recv_idx) };
                         if let Some(pipe) = pipe {
                             pipe.close_read_end();
-                            if use_global {
-                                unsafe {
-                                    crate::pipe::global_pipe_table().free_if_closed(recv_idx)
-                                };
-                            } else if pipe.is_fully_closed() {
-                                recv_idx_to_free = Some(recv_idx);
-                            }
+                            unsafe { crate::pipe::global_pipe_table().free_if_closed(recv_idx) };
                         }
-                    }
-                }
-                // Free fully-closed process-local pipe slots
-                if let Some(idx) = send_idx_to_free {
-                    if let Some(slot) = proc.pipes.get_mut(idx) {
-                        *slot = None;
-                    }
-                }
-                if let Some(idx) = recv_idx_to_free {
-                    if let Some(slot) = proc.pipes.get_mut(idx) {
-                        *slot = None;
                     }
                 }
                 proc.sockets.free(sock_idx);
@@ -1175,7 +2231,6 @@ pub fn sys_read(
     let host_handle = ofd.host_handle;
     let file_type = ofd.file_type;
     let status_flags = ofd.status_flags;
-
     match file_type {
         FileType::Pipe => {
             if host_handle >= 0 {
@@ -1183,16 +2238,11 @@ pub fn sys_read(
                 let n = host.host_read(host_handle, buf)?;
                 Ok(n)
             } else {
-                // Kernel-internal pipe
+                // Kernel pipe
                 let pipe_idx = (-(host_handle + 1)) as usize;
-                // First attempt: try to read from pipe (centralized uses global table)
                 {
-                    let pipe = if crate::is_centralized_mode() {
-                        unsafe { crate::pipe::global_pipe_table().get_mut(pipe_idx) }
-                    } else {
-                        proc.pipes.get_mut(pipe_idx).and_then(|p| p.as_mut())
-                    }
-                    .ok_or(Errno::EBADF)?;
+                    let pipe = unsafe { crate::pipe::global_pipe_table().get_mut(pipe_idx) }
+                        .ok_or(Errno::EBADF)?;
                     let n = pipe.read(buf);
                     if n > 0 {
                         return Ok(n);
@@ -1201,30 +2251,7 @@ pub fn sys_read(
                         return Ok(0); // EOF — write end closed
                     }
                 }
-                if status_flags & O_NONBLOCK != 0 || crate::is_centralized_mode() {
-                    return Err(Errno::EAGAIN);
-                }
-                // Non-centralized blocking loop (per-process pipes only)
-                loop {
-                    if proc.signals.deliverable() != 0 {
-                        if !proc.signals.should_restart() {
-                            return Err(Errno::EINTR);
-                        }
-                    }
-                    let _ = host.host_nanosleep(0, 1_000_000);
-                    let pipe = proc
-                        .pipes
-                        .get_mut(pipe_idx)
-                        .and_then(|p| p.as_mut())
-                        .ok_or(Errno::EBADF)?;
-                    let n = pipe.read(buf);
-                    if n > 0 {
-                        return Ok(n);
-                    }
-                    if !pipe.is_write_end_open() {
-                        return Ok(0);
-                    }
-                }
+                return Err(Errno::EAGAIN);
             }
         }
         FileType::Socket => {
@@ -1244,14 +2271,10 @@ pub fn sys_read(
                 SocketDomain::Inet | SocketDomain::Inet6 => {
                     // Loopback path: use pipe buffers if available
                     if let Some(recv_buf_idx) = sock.recv_buf_idx {
-                        let use_global = sock.global_pipes;
                         loop {
-                            let pipe = if use_global {
+                            let pipe =
                                 unsafe { crate::pipe::global_pipe_table().get_mut(recv_buf_idx) }
-                            } else {
-                                proc.pipes.get_mut(recv_buf_idx).and_then(|p| p.as_mut())
-                            }
-                            .ok_or(Errno::EBADF)?;
+                                    .ok_or(Errno::EBADF)?;
                             let n = pipe.read(buf);
                             if n > 0 {
                                 return Ok(n);
@@ -1259,15 +2282,7 @@ pub fn sys_read(
                             if !pipe.is_write_end_open() {
                                 return Ok(0);
                             }
-                            if status_flags & O_NONBLOCK != 0 || crate::is_centralized_mode() {
-                                return Err(Errno::EAGAIN);
-                            }
-                            if proc.signals.deliverable() != 0 {
-                                if !proc.signals.should_restart() {
-                                    return Err(Errno::EINTR);
-                                }
-                            }
-                            let _ = host.host_nanosleep(0, 1_000_000);
+                            return Err(Errno::EAGAIN);
                         }
                     }
                     // External path: delegate to host
@@ -1276,14 +2291,10 @@ pub fn sys_read(
                 }
                 SocketDomain::Unix => {
                     let recv_buf_idx = sock.recv_buf_idx.ok_or(Errno::ENOTCONN)?;
-                    let use_global = sock.global_pipes;
                     loop {
-                        let pipe = if use_global {
+                        let pipe =
                             unsafe { crate::pipe::global_pipe_table().get_mut(recv_buf_idx) }
-                        } else {
-                            proc.pipes.get_mut(recv_buf_idx).and_then(|p| p.as_mut())
-                        }
-                        .ok_or(Errno::EBADF)?;
+                                .ok_or(Errno::EBADF)?;
                         let n = pipe.read(buf);
                         if n > 0 {
                             return Ok(n);
@@ -1291,15 +2302,7 @@ pub fn sys_read(
                         if !pipe.is_write_end_open() {
                             return Ok(0); // EOF — peer closed
                         }
-                        if status_flags & O_NONBLOCK != 0 || crate::is_centralized_mode() {
-                            return Err(Errno::EAGAIN);
-                        }
-                        if proc.signals.deliverable() != 0 {
-                            if !proc.signals.should_restart() {
-                                return Err(Errno::EINTR);
-                            }
-                        }
-                        let _ = host.host_nanosleep(0, 1_000_000);
+                        return Err(Errno::EAGAIN);
                     }
                 }
             }
@@ -1320,24 +2323,7 @@ pub fn sys_read(
                 .and_then(|s| s.as_mut())
                 .ok_or(Errno::EBADF)?;
             if tfd.expirations == 0 {
-                if status_flags & O_NONBLOCK != 0 || crate::is_centralized_mode() {
-                    return Err(Errno::EAGAIN);
-                }
-                loop {
-                    if proc.signals.deliverable() != 0 && !proc.signals.should_restart() {
-                        return Err(Errno::EINTR);
-                    }
-                    let _ = host.host_nanosleep(0, 1_000_000);
-                    let (now_sec, now_nsec) = host.host_clock_gettime(0)?;
-                    if let Some(Some(tfd)) = proc.timerfds.get_mut(tfd_idx) {
-                        timerfd_compute_expirations(tfd, now_sec, now_nsec);
-                        if tfd.expirations > 0 {
-                            break;
-                        }
-                    } else {
-                        return Err(Errno::EBADF);
-                    }
-                }
+                return Err(Errno::EAGAIN);
             }
             let tfd = proc
                 .timerfds
@@ -1366,25 +2352,7 @@ pub fn sys_read(
             let pending = proc.signals.pending_mask();
             let matching = pending & mask;
             if matching == 0 {
-                if status_flags & O_NONBLOCK != 0 || crate::is_centralized_mode() {
-                    return Err(Errno::EAGAIN);
-                }
-                // Block until signal arrives (non-centralized only)
-                loop {
-                    if proc.signals.deliverable() != 0 && !proc.signals.should_restart() {
-                        return Err(Errno::EINTR);
-                    }
-                    let _ = host.host_nanosleep(0, 1_000_000);
-                    let mask2 = proc
-                        .signalfds
-                        .get(sfd_idx)
-                        .and_then(|s| s.as_ref())
-                        .ok_or(Errno::EBADF)?
-                        .mask;
-                    if proc.signals.pending_mask() & mask2 != 0 {
-                        break;
-                    }
-                }
+                return Err(Errno::EAGAIN);
             }
             // Re-read mask and find signal
             let mask = proc
@@ -1421,25 +2389,7 @@ pub fn sys_read(
                 .and_then(|s| s.as_mut())
                 .ok_or(Errno::EBADF)?;
             if efd.counter == 0 {
-                // Would block
-                if status_flags & O_NONBLOCK != 0 || crate::is_centralized_mode() {
-                    return Err(Errno::EAGAIN);
-                }
-                // Blocking mode: loop (non-centralized only)
-                loop {
-                    if proc.signals.deliverable() != 0 && !proc.signals.should_restart() {
-                        return Err(Errno::EINTR);
-                    }
-                    let _ = host.host_nanosleep(0, 1_000_000);
-                    let efd = proc
-                        .eventfds
-                        .get_mut(efd_idx)
-                        .and_then(|s| s.as_mut())
-                        .ok_or(Errno::EBADF)?;
-                    if efd.counter > 0 {
-                        break;
-                    }
-                }
+                return Err(Errno::EAGAIN);
             }
             let efd = proc
                 .eventfds
@@ -1467,11 +2417,7 @@ pub fn sys_read(
             if n > 0 {
                 return Ok(n);
             }
-            // No data available
-            if status_flags & O_NONBLOCK != 0 || crate::is_centralized_mode() {
-                return Err(Errno::EAGAIN);
-            }
-            Ok(0)
+            Err(Errno::EAGAIN)
         }
         FileType::PtySlave => {
             let pty_idx = host_handle as usize;
@@ -1483,11 +2429,7 @@ pub fn sys_read(
             if n > 0 {
                 return Ok(n);
             }
-            // No data available
-            if status_flags & O_NONBLOCK != 0 || crate::is_centralized_mode() {
-                return Err(Errno::EAGAIN);
-            }
-            Ok(0)
+            Err(Errno::EAGAIN)
         }
         _ => {
             // Virtual character devices — handle in-kernel
@@ -1500,7 +2442,37 @@ pub fn sys_read(
                         // "no-op for unsupported access" pattern. /dev/dsp
                         // is write-only too: the host drains via the
                         // dedicated wasm export, not via user-space read().
-                        VirtualDevice::Null | VirtualDevice::Fb0 | VirtualDevice::Dsp => 0,
+                        VirtualDevice::Null
+                        | VirtualDevice::Fb0
+                        | VirtualDevice::Dsp
+                        | VirtualDevice::DriRenderD128 => 0,
+                        VirtualDevice::DriCard0 => {
+                            // Drain queued DRM events (DRM_EVENT_FLIP_COMPLETE)
+                            // into the caller buffer, one byte at a time so a
+                            // short caller buffer returns whatever fits and
+                            // leaves the remainder queued for the next read.
+                            let kms = kms_state_mut(proc, ofd_idx)?;
+                            let mut n = 0usize;
+                            while n < buf.len() {
+                                match kms.event_ring.pop_front() {
+                                    Some(b) => {
+                                        buf[n] = b;
+                                        n += 1;
+                                    }
+                                    None => break,
+                                }
+                            }
+                            if n == 0 {
+                                if status_flags & O_NONBLOCK != 0 {
+                                    return Err(Errno::EAGAIN);
+                                }
+                                // Nothing queued and not non-blocking: return
+                                // 0 so drmHandleEvent treats it as "no events
+                                // this round" rather than a hard error.
+                                return Ok(0);
+                            }
+                            n
+                        }
                         VirtualDevice::Zero | VirtualDevice::Full => {
                             for b in buf.iter_mut() {
                                 *b = 0;
@@ -1545,12 +2517,7 @@ pub fn sys_read(
                         if n > 0 {
                             return Ok(n);
                         }
-                        // No complete line yet — in centralized mode return EAGAIN,
-                        // otherwise would loop (traditional blocking mode)
-                        if crate::is_centralized_mode() || status_flags & O_NONBLOCK != 0 {
-                            return Err(Errno::EAGAIN);
-                        }
-                        return Ok(0);
+                        return Err(Errno::EAGAIN);
                     }
                     // Non-canonical mode: pass through raw bytes from host
                     // VMIN/VTIME semantics are approximated
@@ -1657,17 +2624,12 @@ pub fn sys_write(
                 let n = host.host_write(host_handle, buf)?;
                 Ok(n)
             } else {
-                // Kernel-internal pipe
+                // Kernel pipe
                 const PIPE_BUF: usize = 4096;
                 let pipe_idx = (-(host_handle + 1)) as usize;
-                // First attempt: try to write to pipe (centralized uses global table)
                 {
-                    let pipe = if crate::is_centralized_mode() {
-                        unsafe { crate::pipe::global_pipe_table().get_mut(pipe_idx) }
-                    } else {
-                        proc.pipes.get_mut(pipe_idx).and_then(|p| p.as_mut())
-                    }
-                    .ok_or(Errno::EBADF)?;
+                    let pipe = unsafe { crate::pipe::global_pipe_table().get_mut(pipe_idx) }
+                        .ok_or(Errno::EBADF)?;
                     if !pipe.is_read_end_open() {
                         proc.signals.raise(wasm_posix_shared::signal::SIGPIPE);
                         return Err(Errno::EPIPE);
@@ -1682,34 +2644,7 @@ pub fn sys_write(
                         }
                     }
                 }
-                if status_flags & O_NONBLOCK != 0 || crate::is_centralized_mode() {
-                    return Err(Errno::EAGAIN);
-                }
-                // Non-centralized blocking loop (per-process pipes only)
-                loop {
-                    if proc.signals.deliverable() != 0 {
-                        if !proc.signals.should_restart() {
-                            return Err(Errno::EINTR);
-                        }
-                    }
-                    let _ = host.host_nanosleep(0, 1_000_000);
-                    let pipe = proc
-                        .pipes
-                        .get_mut(pipe_idx)
-                        .and_then(|p| p.as_mut())
-                        .ok_or(Errno::EBADF)?;
-                    if !pipe.is_read_end_open() {
-                        proc.signals.raise(wasm_posix_shared::signal::SIGPIPE);
-                        return Err(Errno::EPIPE);
-                    }
-                    if buf.len() <= PIPE_BUF && pipe.free_space() < buf.len() {
-                        continue; // Not enough space for atomic write
-                    }
-                    let n = pipe.write(buf);
-                    if n > 0 {
-                        return Ok(n);
-                    }
-                }
+                return Err(Errno::EAGAIN);
             }
         }
         FileType::Socket => {
@@ -1730,14 +2665,10 @@ pub fn sys_write(
                 SocketDomain::Inet | SocketDomain::Inet6 => {
                     // Loopback path: use pipe buffers if available
                     if let Some(send_buf_idx) = sock.send_buf_idx {
-                        let use_global = sock.global_pipes;
                         loop {
-                            let pipe = if use_global {
+                            let pipe =
                                 unsafe { crate::pipe::global_pipe_table().get_mut(send_buf_idx) }
-                            } else {
-                                proc.pipes.get_mut(send_buf_idx).and_then(|p| p.as_mut())
-                            }
-                            .ok_or(Errno::EBADF)?;
+                                    .ok_or(Errno::EBADF)?;
                             if !pipe.is_read_end_open() {
                                 proc.signals.raise(wasm_posix_shared::signal::SIGPIPE);
                                 return Err(Errno::EPIPE);
@@ -1746,15 +2677,7 @@ pub fn sys_write(
                             if n > 0 {
                                 return Ok(n);
                             }
-                            if status_flags & O_NONBLOCK != 0 || crate::is_centralized_mode() {
-                                return Err(Errno::EAGAIN);
-                            }
-                            if proc.signals.deliverable() != 0 {
-                                if !proc.signals.should_restart() {
-                                    return Err(Errno::EINTR);
-                                }
-                            }
-                            let _ = host.host_nanosleep(0, 1_000_000);
+                            return Err(Errno::EAGAIN);
                         }
                     }
                     // External path: delegate to host
@@ -1768,14 +2691,10 @@ pub fn sys_write(
                         return Ok(buf.len()); // bit-bucket for SOCK_DGRAM (syslog pattern)
                     }
                     let send_buf_idx = sock.send_buf_idx.ok_or(Errno::ENOTCONN)?;
-                    let use_global = sock.global_pipes;
                     loop {
-                        let pipe = if use_global {
+                        let pipe =
                             unsafe { crate::pipe::global_pipe_table().get_mut(send_buf_idx) }
-                        } else {
-                            proc.pipes.get_mut(send_buf_idx).and_then(|p| p.as_mut())
-                        }
-                        .ok_or(Errno::EBADF)?;
+                                .ok_or(Errno::EBADF)?;
                         if !pipe.is_read_end_open() {
                             proc.signals.raise(wasm_posix_shared::signal::SIGPIPE);
                             return Err(Errno::EPIPE);
@@ -1784,15 +2703,7 @@ pub fn sys_write(
                         if n > 0 {
                             return Ok(n);
                         }
-                        if status_flags & O_NONBLOCK != 0 || crate::is_centralized_mode() {
-                            return Err(Errno::EAGAIN);
-                        }
-                        if proc.signals.deliverable() != 0 {
-                            if !proc.signals.should_restart() {
-                                return Err(Errno::EINTR);
-                            }
-                        }
-                        let _ = host.host_nanosleep(0, 1_000_000);
+                        return Err(Errno::EAGAIN);
                     }
                 }
             }
@@ -1814,24 +2725,7 @@ pub fn sys_write(
                 .ok_or(Errno::EBADF)?;
             let max_val = u64::MAX - 1;
             if efd.counter > max_val - value {
-                // Would overflow — block or EAGAIN
-                if status_flags & O_NONBLOCK != 0 || crate::is_centralized_mode() {
-                    return Err(Errno::EAGAIN);
-                }
-                loop {
-                    if proc.signals.deliverable() != 0 && !proc.signals.should_restart() {
-                        return Err(Errno::EINTR);
-                    }
-                    let _ = host.host_nanosleep(0, 1_000_000);
-                    let efd = proc
-                        .eventfds
-                        .get_mut(efd_idx)
-                        .and_then(|s| s.as_mut())
-                        .ok_or(Errno::EBADF)?;
-                    if efd.counter <= max_val - value {
-                        break;
-                    }
-                }
+                return Err(Errno::EAGAIN);
             }
             let efd = proc
                 .eventfds
@@ -1946,7 +2840,7 @@ pub fn sys_write(
                     };
                 }
             }
-            // O_APPEND: seek to end before writing (POSIX atomicity guaranteed by centralized kernel)
+            // O_APPEND: seek to end before writing (POSIX atomicity guaranteed by serialized kernel syscalls)
             if status_flags & O_APPEND != 0 {
                 let end = host.host_seek(host_handle, 0, 2)?; // SEEK_END
                 if let Some(ofd) = proc.ofd_table.get_mut(ofd_idx) {
@@ -2585,14 +3479,8 @@ pub fn sys_pipe(proc: &mut Process) -> Result<(i32, i32), Errno> {
 
     let pipe = PipeBuffer::new(DEFAULT_PIPE_CAPACITY);
 
-    // Find or append a slot in the pipe table.
-    // Centralized mode: use global pipe table (shared across processes for fork).
-    // Non-centralized mode: use per-process pipe table (backward compat for tests).
-    let pipe_idx = if crate::is_centralized_mode() {
-        unsafe { crate::pipe::global_pipe_table().alloc(pipe) }
-    } else {
-        proc.alloc_pipe(pipe)
-    };
+    // Find or append a slot in the global pipe table.
+    let pipe_idx = unsafe { crate::pipe::global_pipe_table().alloc(pipe) };
 
     // Pipe handle is negative: -(pipe_idx + 1)
     let pipe_handle = -((pipe_idx as i64) + 1);
@@ -2897,8 +3785,15 @@ pub fn sys_fcntl_lock(
 
     let entry = proc.fd_table.get(fd)?;
     let ofd_idx = entry.ofd_ref.0;
-    let ofd = proc.ofd_table.get(ofd_idx).ok_or(Errno::EBADF)?;
-    let host_handle = ofd.host_handle;
+    let (host_handle, status_flags, offset, path) = {
+        let ofd = proc.ofd_table.get(ofd_idx).ok_or(Errno::EBADF)?;
+        (
+            ofd.host_handle,
+            ofd.status_flags,
+            ofd.offset,
+            ofd.path.clone(),
+        )
+    };
 
     // OFD locks use the OFD index as lock owner (not PID).
     // Map OFD and POSIX (5/6/7) commands to the internal lock constants (12/13/14).
@@ -2923,8 +3818,8 @@ pub fn sys_fcntl_lock(
 
     // Resolve start offset based on whence
     let start = match flock.l_whence {
-        0 => flock.l_start,              // SEEK_SET
-        1 => ofd.offset + flock.l_start, // SEEK_CUR
+        0 => flock.l_start,          // SEEK_SET
+        1 => offset + flock.l_start, // SEEK_CUR
         2 => {
             // SEEK_END: resolve relative to file size
             if host_handle >= 0 {
@@ -2942,10 +3837,10 @@ pub fn sys_fcntl_lock(
     let lock_type = flock.l_type as u32;
 
     // For host-backed files, delegate to the shared lock table via host import
-    if host_handle >= 0 && !ofd.path.is_empty() {
+    if host_handle >= 0 && !path.is_empty() {
         // Access mode check
         if base_cmd == F_SETLK || base_cmd == F_SETLKW {
-            let access_mode = ofd.status_flags & O_ACCMODE;
+            let access_mode = status_flags & O_ACCMODE;
             if lock_type == F_RDLCK && access_mode == O_WRONLY {
                 return Err(Errno::EBADF);
             }
@@ -2953,10 +3848,9 @@ pub fn sys_fcntl_lock(
                 return Err(Errno::EBADF);
             }
         }
-        let path = &ofd.path;
         let mut result_buf = [0u8; 24];
         host.host_fcntl_lock(
-            path,
+            &path,
             lock_owner,
             base_cmd,
             lock_type,
@@ -2983,10 +3877,11 @@ pub fn sys_fcntl_lock(
         return Ok(());
     }
 
-    // Fallback: use local lock_table for non-host files (pipes, etc.)
+    // Fallback: kernel-managed lock table for non-host files (pipes, etc.).
+    // The kernel-wide table lets different Process objects coordinate.
     match base_cmd {
         F_GETLK => {
-            match proc.lock_table.get_blocking_lock(
+            match fallback_lock_table(proc).get_blocking_lock(
                 host_handle,
                 lock_type,
                 start,
@@ -3008,7 +3903,7 @@ pub fn sys_fcntl_lock(
             Ok(())
         }
         F_SETLK | F_SETLKW => {
-            let access_mode = ofd.status_flags & O_ACCMODE;
+            let access_mode = status_flags & O_ACCMODE;
             if lock_type == F_RDLCK && access_mode == O_WRONLY {
                 return Err(Errno::EBADF);
             }
@@ -3023,30 +3918,24 @@ pub fn sys_fcntl_lock(
                     start,
                     len: flock.l_len,
                 };
-                proc.lock_table.set_lock(host_handle, lock);
+                fallback_lock_table(proc).set_lock(host_handle, lock);
                 return Ok(());
             }
 
-            if proc
-                .lock_table
+            if fallback_lock_table(proc)
                 .get_blocking_lock(host_handle, lock_type, start, flock.l_len, lock_owner)
                 .is_some()
             {
-                if base_cmd == F_SETLK {
-                    return Err(Errno::EAGAIN);
-                }
-                // F_SETLKW: in a single address space (Wasm), the caller owns
-                // all local locks, so a conflict is always a self-deadlock.
-                return Err(Errno::EDEADLK);
+                return Err(Errno::EAGAIN);
             }
 
             let lock = FileLock {
                 pid: lock_owner,
-                lock_type: lock_type,
+                lock_type,
                 start,
                 len: flock.l_len,
             };
-            proc.lock_table.set_lock(host_handle, lock);
+            fallback_lock_table(proc).set_lock(host_handle, lock);
             Ok(())
         }
         _ => Err(Errno::EINVAL),
@@ -4168,27 +5057,11 @@ pub fn sys_execve(proc: &mut Process, host: &mut dyn HostIO, path: &[u8]) -> Res
     if path.is_empty() {
         return Err(Errno::ENOENT);
     }
-    // /dev/fb0 cleanup: exec wipes the binding. Tell the host before
-    // its memory snapshot of the process is invalidated, then drop the
-    // global ownership claim so the new image can re-acquire if it
-    // needs the device.
-    if proc.fb_binding.is_some() {
-        host.unbind_framebuffer(proc.pid as i32);
-        proc.fb_binding = None;
-        maybe_release_fb0(proc.pid);
-    }
-    // /dev/input/mice cleanup: exec also drops mouse ownership. The
-    // post-exec image starts with a clean queue — no stale packets from
-    // the parent program survive across exec.
-    maybe_release_mice(proc.pid);
-    // /dev/dsp cleanup: same — drop ownership and flush any queued PCM
-    // so a post-exec program doesn't hear the tail of its predecessor.
-    maybe_release_dsp(proc.pid);
-    // Resolve relative paths against process CWD so the host sees absolute paths.
-    // This is critical for posix_spawn with chdir file actions — the child's CWD
-    // may differ from the initial data directory the host knows about.
+    // Resolve and validate before tearing down mappings. POSIX exec
+    // failure must leave the current image intact.
     let resolved = crate::path::resolve_path(path, &proc.cwd);
     check_exec_path(proc, host, &resolved)?;
+    release_exec_image_state(proc, host);
     host.host_exec(&resolved)
 }
 
@@ -4214,12 +5087,14 @@ pub fn sys_execveat(
         }
         let exec_path = ofd.path.clone();
         check_exec_path(proc, host, &exec_path)?;
+        release_exec_image_state(proc, host);
         host.host_exec(&exec_path)
     } else if path.is_empty() {
         Err(Errno::ENOENT)
     } else if path[0] == b'/' {
         // Absolute path — ignore dirfd
         check_exec_path(proc, host, path)?;
+        release_exec_image_state(proc, host);
         host.host_exec(path)
     } else {
         // Relative path — resolve against dirfd or CWD
@@ -4234,6 +5109,7 @@ pub fn sys_execveat(
         };
         let resolved = crate::path::resolve_path(path, &base);
         check_exec_path(proc, host, &resolved)?;
+        release_exec_image_state(proc, host);
         host.host_exec(&resolved)
     }
 }
@@ -4369,15 +5245,14 @@ pub fn sys_getitimer(
 /// rt_sigtimedwait -- wait for a signal from a specified set.
 ///
 /// Checks if any signal in `mask` is already pending and dequeues it.
-/// If `timeout_ms` >= 0, waits up to that many milliseconds for a signal.
-/// If `timeout_ms` < 0, waits indefinitely.
-/// Returns the signal number on success, or EAGAIN on timeout.
+/// Blocking waits are retried by the host; this returns EAGAIN when no
+/// matching signal is immediately pending.
 /// Returns (signum, si_value, si_code) on success.
 pub fn sys_sigtimedwait(
     proc: &mut Process,
-    host: &mut dyn HostIO,
+    _host: &mut dyn HostIO,
     mask: u64,
-    timeout_ms: i32,
+    _timeout_ms: i32,
 ) -> Result<(u32, i32, i32), Errno> {
     use wasm_posix_shared::signal::NSIG;
 
@@ -4418,25 +5293,6 @@ pub fn sys_sigtimedwait(
         }
     }
 
-    if timeout_ms == 0 || crate::is_centralized_mode() {
-        return Err(Errno::EAGAIN);
-    }
-
-    // Wait with 1ms sleep intervals, checking for signals
-    let iterations = if timeout_ms < 0 { i32::MAX } else { timeout_ms };
-    for _ in 0..iterations {
-        host.host_nanosleep(0, 1_000_000)?; // 1ms
-
-        let pending_in_mask = proc.pending_for(tid) & mask;
-        if pending_in_mask != 0 {
-            let signum = pending_in_mask.trailing_zeros() + 1;
-            if signum < NSIG {
-                let (si_value, si_code) = proc.signals.consume_one(signum);
-                return Ok((signum, si_value, si_code));
-            }
-        }
-    }
-
     Err(Errno::EAGAIN)
 }
 
@@ -4445,66 +5301,27 @@ pub fn sys_sigtimedwait(
 /// Atomically replaces the process's signal mask with `mask` (SIGKILL and SIGSTOP cannot
 /// be blocked), then blocks until a deliverable signal arrives. The original mask is
 /// restored before returning. Always returns Err(EINTR).
-pub fn sys_sigsuspend(proc: &mut Process, host: &mut dyn HostIO, mask: u64) -> Result<(), Errno> {
-    use wasm_posix_shared::signal::{NSIG, SIGKILL, SIGSTOP};
+pub fn sys_sigsuspend(proc: &mut Process, _host: &mut dyn HostIO, mask: u64) -> Result<(), Errno> {
+    use wasm_posix_shared::signal::{SIGKILL, SIGSTOP};
 
     let tid = crate::process_table::current_tid();
     let sig_guard = crate::signal::sig_bit(SIGKILL) | crate::signal::sig_bit(SIGSTOP);
     let new_mask = mask & !sig_guard;
 
-    // Centralized mode: keep sigsuspend mask active between EAGAIN retries.
-    // On first call, save old mask. On retries, the temp mask is already set.
-    if crate::is_centralized_mode() {
-        if proc.sigsuspend_saved_mask_for(tid).is_none() {
-            // First call: save old mask and install temporary mask
-            let old = proc.blocked_for(tid);
-            proc.set_sigsuspend_saved_mask_for(tid, Some(old));
-            proc.set_blocked_for(tid, new_mask);
-        }
-        // Check if any signals are deliverable with the sigsuspend mask
-        if proc.deliverable_for(tid) != 0 {
-            // Signal arrived — return EINTR but keep temp mask active so that
-            // dequeueSignalForDelivery picks the signal that woke sigsuspend
-            // (deliverable under the temp mask). The mask will be restored in
-            // kernel_dequeue_signal after the dequeue.
-            return Err(Errno::EINTR);
-        }
-        // No signal yet — keep temp mask active, return EAGAIN for async retry
-        return Err(Errno::EAGAIN);
+    // Keep the sigsuspend mask active between EAGAIN retries. On first call,
+    // save old mask. On retries, the temp mask is already set.
+    if proc.sigsuspend_saved_mask_for(tid).is_none() {
+        let old = proc.blocked_for(tid);
+        proc.set_sigsuspend_saved_mask_for(tid, Some(old));
+        proc.set_blocked_for(tid, new_mask);
     }
-
-    let old_mask = proc.blocked_for(tid);
-    proc.set_blocked_for(tid, new_mask);
-
-    // Check if any signals are already deliverable with new mask
     if proc.deliverable_for(tid) != 0 {
-        proc.set_blocked_for(tid, old_mask);
+        // Signal arrived — return EINTR but keep temp mask active so that
+        // dequeueSignalForDelivery picks the signal that woke sigsuspend.
+        // The mask will be restored in kernel_dequeue_signal after dequeue.
         return Err(Errno::EINTR);
     }
-
-    // Block until a deliverable signal arrives
-    loop {
-        let sig = match host.host_sigsuspend_wait() {
-            Ok(s) => s,
-            Err(_) => {
-                // Restore mask even on host error
-                proc.set_blocked_for(tid, old_mask);
-                return Err(Errno::EINTR);
-            }
-        };
-        if sig > 0 && sig < NSIG {
-            // Host reports a signal arrived — record it at the process level
-            // (shared-pending). Thread-targeted signals would already be in
-            // the thread's own pending queue.
-            proc.signals.raise(sig);
-        }
-        if proc.deliverable_for(tid) != 0 {
-            break;
-        }
-    }
-
-    proc.set_blocked_for(tid, old_mask);
-    Err(Errno::EINTR)
+    Err(Errno::EAGAIN)
 }
 
 /// pause -- suspend until a signal is delivered.
@@ -4611,6 +5428,8 @@ pub fn sys_sigprocmask(proc: &mut Process, how: u32, set: u64) -> Result<u64, Er
 
 /// Exit the process. Closes all fds and dir streams, sets state to Exited.
 pub fn sys_exit(proc: &mut Process, host: &mut dyn HostIO, status: i32) {
+    release_process_dri_mappings(proc, host);
+
     // Close all file descriptors
     let max_fd = 1024; // Use a reasonable upper bound
     for fd in 0..max_fd {
@@ -4627,7 +5446,8 @@ pub fn sys_exit(proc: &mut Process, host: &mut dyn HostIO, status: i32) {
     }
 
     // POSIX: all advisory locks held by the process are released on exit.
-    proc.lock_table.remove_all_for_pid(proc.pid);
+    let pid = proc.pid;
+    fallback_lock_table(proc).remove_all_for_pid(pid);
 
     proc.state = ProcessState::Exited;
     proc.exit_status = status;
@@ -4649,17 +5469,13 @@ pub fn sys_clock_gettime(
 /// Sleep for the specified duration.
 pub fn sys_nanosleep(
     _proc: &Process,
-    host: &mut dyn HostIO,
+    _host: &mut dyn HostIO,
     req: &WasmTimespec,
 ) -> Result<(), Errno> {
     if req.tv_sec < 0 || req.tv_nsec < 0 || req.tv_nsec >= 1_000_000_000 {
         return Err(Errno::EINVAL);
     }
-    // Centralized mode: return immediately, host handles the delay
-    if crate::is_centralized_mode() {
-        return Ok(());
-    }
-    host.host_nanosleep(req.tv_sec, req.tv_nsec)
+    Ok(())
 }
 
 /// Get clock resolution. Returns hardcoded values since Wasm doesn't
@@ -4713,30 +5529,18 @@ pub fn sys_clock_nanosleep(
             sec -= 1;
             nsec += 1_000_000_000;
         }
-        // Centralized mode: write relative delay to scratch and return
-        // immediately — the host reads it from CH_DATA and sets up setTimeout.
-        if crate::is_centralized_mode() {
-            let out = unsafe { core::slice::from_raw_parts_mut(req_ptr as *mut u8, 16) };
-            if sec < 0 {
-                // Past deadline — zero out so host sees delayMs=0
-                out[0..16].fill(0);
-            } else {
-                out[0..8].copy_from_slice(&sec.to_le_bytes());
-                out[8..16].copy_from_slice(&nsec.to_le_bytes());
-            }
-            return Ok(());
-        }
-        // Already past the deadline — return immediately
+        // Write relative delay to scratch and return immediately; the host
+        // reads it from CH_DATA and sets up the timer.
+        let out = unsafe { core::slice::from_raw_parts_mut(req_ptr as *mut u8, 16) };
         if sec < 0 {
-            return Ok(());
+            out[0..16].fill(0);
+        } else {
+            out[0..8].copy_from_slice(&sec.to_le_bytes());
+            out[8..16].copy_from_slice(&nsec.to_le_bytes());
         }
-        host.host_nanosleep(sec, nsec)
+        Ok(())
     } else {
-        // Centralized mode: return immediately, host handles the delay
-        if crate::is_centralized_mode() {
-            return Ok(());
-        }
-        host.host_nanosleep(req.tv_sec, req.tv_nsec)
+        Ok(())
     }
 }
 
@@ -4941,7 +5745,7 @@ pub fn sys_mmap(
     prot: u32,
     flags: u32,
     fd: i32,
-    _offset: i64,
+    offset: i64,
 ) -> Result<usize, Errno> {
     if flags & MAP_ANONYMOUS == 0 {
         // File-backed mapping: validate the fd is open.
@@ -4987,6 +5791,113 @@ pub fn sys_mmap(
                 FB_LINE_LENGTH,
                 0,
             );
+            return Ok(addr_out);
+        }
+
+        // /dev/dri/{renderD128,card0}: the caller obtained `offset` from
+        // `DRM_IOCTL_MODE_MAP_DUMB`, which encodes the target bo id as
+        // `(bo_id as u64) << 12`. Decode, validate the bo is live and
+        // the requested `len` matches the bo's backing size, allocate
+        // wasm pages, then ask the host to point that region at the
+        // bo's SAB slice via `gbm_bo_bind`.
+        if ofd.dri_state.is_some()
+            && matches!(
+                ofd.dri_state.as_deref(),
+                Some(crate::ofd::DriOfdState::RenderNode(_))
+                    | Some(crate::ofd::DriOfdState::Card { .. })
+            )
+        {
+            if offset < 0 {
+                return Err(Errno::EINVAL);
+            }
+            // Cmdbuf mmap: libEGL's eglInitialize does
+            // `mmap(NULL, CMDBUF_LEN, ..., MAP_SHARED, fd, 0)` after
+            // GLIO_INIT to acquire the encoder's write region. offset=0
+            // is the only valid GLIO indicator; bo mmaps go through
+            // MAP_DUMB which always encodes bo_id >= 1 into the offset.
+            let needs_cmdbuf = offset == 0
+                && ofd
+                    .dri()
+                    .and_then(|d| d.gl.as_ref())
+                    .map(|g| g.initialized && g.cmdbuf.is_none())
+                    .unwrap_or(false);
+            if needs_cmdbuf {
+                if len != wasm_posix_shared::gl::CMDBUF_LEN {
+                    return Err(Errno::EINVAL);
+                }
+                let alloc_flags = flags | MAP_ANONYMOUS;
+                let addr_out = proc.memory.mmap_anonymous(addr, len, prot, alloc_flags);
+                if addr_out == MAP_FAILED {
+                    return Err(Errno::ENOMEM);
+                }
+                // Re-borrow the OFD mutably to record the binding. The
+                // earlier `ofd` borrow goes out of scope at the start
+                // of this block; entry remains valid.
+                {
+                    let entry2 = proc.fd_table.get(fd)?;
+                    let ofd_mut = proc
+                        .ofd_table
+                        .get_mut(entry2.ofd_ref.0)
+                        .ok_or(Errno::EBADF)?;
+                    if let Some(dri_mut) = ofd_mut.dri_mut() {
+                        if let Some(gls) = dri_mut.gl.as_mut() {
+                            gls.cmdbuf = Some(crate::ofd::CmdbufBinding {
+                                addr: addr_out,
+                                len,
+                                submit_seq: 0,
+                            });
+                        }
+                    }
+                }
+                host.gl_bind(proc.pid as i32, addr_out, len);
+                return Ok(addr_out);
+            }
+            if (offset as u64) & 0xFFF != 0 {
+                return Err(Errno::EINVAL);
+            }
+            let bo_id_u64 = (offset as u64) >> 12;
+            if bo_id_u64 == 0 || bo_id_u64 > u32::MAX as u64 {
+                return Err(Errno::EINVAL);
+            }
+            let bo_id = bo_id_u64 as crate::dri::BoId;
+            let bo_size = crate::dri::with_registry(|r| r.get(bo_id).map(|b| b.size))
+                .ok_or(Errno::EINVAL)?;
+            let has_local_handle = ofd
+                .dri()
+                .map(|dri| dri_fd_has_bo_handle(dri, bo_id))
+                .unwrap_or(false);
+            if !has_local_handle {
+                return Err(Errno::EACCES);
+            }
+            // Accept either the raw bo size (matching what DRM_IOCTL_MODE_
+            // CREATE_DUMB returned and what the libgbm stub + direct
+            // mmap callers pass) or the wasm-page-aligned size some
+            // consumers round to. `mmap_anonymous` rounds to a wasm
+            // page internally, so either request maps the same number
+            // of pages; we just track the binding length the caller
+            // asked for.
+            let aligned_bo_size = (bo_size as usize)
+                .checked_add(0xFFFF)
+                .ok_or(Errno::EINVAL)?
+                & !0xFFFF;
+            if len != bo_size as usize && len != aligned_bo_size {
+                return Err(Errno::EINVAL);
+            }
+            let alloc_flags = flags | MAP_ANONYMOUS;
+            let addr_out = proc.memory.mmap_anonymous(addr, len, prot, alloc_flags);
+            if addr_out == MAP_FAILED {
+                return Err(Errno::ENOMEM);
+            }
+            let bind_rc = host.gbm_bo_bind(proc.pid as i32, bo_id, addr_out, len);
+            if bind_rc < 0 {
+                proc.memory.munmap(addr_out, len);
+                return Err(Errno::ENOMEM);
+            }
+            proc.dri_bindings.push(crate::process::DriBoBinding {
+                addr: addr_out,
+                len,
+                bo_id,
+            });
             return Ok(addr_out);
         }
     }
@@ -5043,6 +5954,31 @@ pub fn sys_munmap(
         if !proc_has_fb0_fd(proc) {
             maybe_release_fb0(proc.pid);
         }
+    }
+
+    // GL cmdbuf cleanup: any munmap overlap invalidates the host's
+    // single cmdbuf view for this pid. The GL session itself may remain
+    // initialized, but it must mmap the cmdbuf again before submitting.
+    unbind_gl_cmdbufs_in_range(proc, host, addr, len);
+
+    // DRI bo cleanup: drop every binding overlapped by [addr, addr+len)
+    // and tell the host so it stops mirroring the region before the
+    // wasm pages return to the anonymous pool. Partial munmap of a bo
+    // binding invalidates the whole host binding; callers that keep a
+    // remaining fragment must mmap the bo again before expecting
+    // host-side synchronization.
+    let pid = proc.pid as i32;
+    let mut released: alloc::vec::Vec<crate::process::DriBoBinding> = alloc::vec::Vec::new();
+    proc.dri_bindings.retain(|b| {
+        if ranges_overlap(addr, len, b.addr, b.len) {
+            released.push(*b);
+            false
+        } else {
+            true
+        }
+    });
+    for b in &released {
+        host.gbm_bo_unbind(pid, b.bo_id, b.addr, b.len);
     }
 
     // Linux munmap succeeds (returns 0) even if no mappings overlap the range,
@@ -5644,7 +6580,6 @@ pub fn sys_shutdown(
 
     let sock_idx = (-(ofd.host_handle + 1)) as usize;
     let sock = proc.sockets.get_mut(sock_idx).ok_or(Errno::EBADF)?;
-    let use_global = sock.global_pipes;
 
     match how {
         SHUT_RD => {
@@ -5653,11 +6588,7 @@ pub fn sys_shutdown(
         SHUT_WR => {
             sock.shut_wr = true;
             if let Some(send_idx) = sock.send_buf_idx {
-                let pipe = if use_global {
-                    unsafe { crate::pipe::global_pipe_table().get_mut(send_idx) }
-                } else {
-                    proc.pipes.get_mut(send_idx).and_then(|p| p.as_mut())
-                };
+                let pipe = unsafe { crate::pipe::global_pipe_table().get_mut(send_idx) };
                 if let Some(pipe) = pipe {
                     pipe.close_write_end();
                 }
@@ -5670,21 +6601,13 @@ pub fn sys_shutdown(
                 let _ = host.host_net_close(net_handle);
             }
             if let Some(send_idx) = sock.send_buf_idx {
-                let pipe = if use_global {
-                    unsafe { crate::pipe::global_pipe_table().get_mut(send_idx) }
-                } else {
-                    proc.pipes.get_mut(send_idx).and_then(|p| p.as_mut())
-                };
+                let pipe = unsafe { crate::pipe::global_pipe_table().get_mut(send_idx) };
                 if let Some(pipe) = pipe {
                     pipe.close_write_end();
                 }
             }
             if let Some(recv_idx) = sock.recv_buf_idx {
-                let pipe = if use_global {
-                    unsafe { crate::pipe::global_pipe_table().get_mut(recv_idx) }
-                } else {
-                    proc.pipes.get_mut(recv_idx).and_then(|p| p.as_mut())
-                };
+                let pipe = unsafe { crate::pipe::global_pipe_table().get_mut(recv_idx) };
                 if let Some(pipe) = pipe {
                     pipe.close_read_end();
                 }
@@ -5788,7 +6711,7 @@ pub fn sys_recv(
     flags: u32,
 ) -> Result<usize, Errno> {
     use crate::socket::{SocketDomain, SocketState, SocketType};
-    use wasm_posix_shared::socket::{MSG_DONTWAIT, MSG_OOB, MSG_PEEK};
+    use wasm_posix_shared::socket::{MSG_OOB, MSG_PEEK};
     const MSG_WAITALL: u32 = 0x100;
 
     let entry = proc.fd_table.get(fd)?;
@@ -5796,7 +6719,6 @@ pub fn sys_recv(
     if ofd.file_type != FileType::Socket {
         return Err(Errno::ENOTSOCK);
     }
-    let status_flags = ofd.status_flags;
     let sock_idx = (-(ofd.host_handle + 1)) as usize;
     let sock = proc.sockets.get(sock_idx).ok_or(Errno::EBADF)?;
     if sock.sock_type == SocketType::Dgram && sock.domain == SocketDomain::Inet {
@@ -5831,21 +6753,19 @@ pub fn sys_recv(
         _ => {
             // Pipe-backed recv path (AF_UNIX and loopback INET)
             let recv_buf_idx = sock.recv_buf_idx.ok_or(Errno::ENOTCONN)?;
-            let use_global = sock.global_pipes;
             let peek = flags & MSG_PEEK != 0;
-            let nonblock = (status_flags & O_NONBLOCK != 0)
-                || (flags & MSG_DONTWAIT != 0)
-                || crate::is_centralized_mode();
             let waitall = flags & MSG_WAITALL != 0 && !peek;
             let mut total = 0usize;
 
             loop {
-                let pipe = if use_global {
-                    unsafe { crate::pipe::global_pipe_table().get_mut(recv_buf_idx) }
-                } else {
-                    proc.pipes.get_mut(recv_buf_idx).and_then(|p| p.as_mut())
+                let pipe = unsafe { crate::pipe::global_pipe_table().get_mut(recv_buf_idx) }
+                    .ok_or(Errno::EBADF)?;
+                if waitall {
+                    let remaining = buf.len().saturating_sub(total);
+                    if pipe.available() < remaining && pipe.is_write_end_open() {
+                        return Err(Errno::EAGAIN);
+                    }
                 }
-                .ok_or(Errno::EBADF)?;
                 let n = if peek {
                     pipe.peek(&mut buf[total..])
                 } else {
@@ -5855,18 +6775,10 @@ pub fn sys_recv(
                 if total >= buf.len() || (total > 0 && !waitall) {
                     return Ok(total);
                 }
-                if n == 0 && !pipe.is_write_end_open() {
+                if !pipe.is_write_end_open() {
                     return Ok(total); // peer closed — return what we have
                 }
-                if nonblock {
-                    return Err(Errno::EAGAIN);
-                }
-                if proc.signals.deliverable() != 0 {
-                    if !proc.signals.should_restart() {
-                        return Err(Errno::EINTR);
-                    }
-                }
-                let _ = host.host_nanosleep(0, 1_000_000);
+                return Err(Errno::EAGAIN);
             }
         }
     }
@@ -6438,8 +7350,9 @@ pub fn sys_connect(
                 // Allocate two pipe buffers for bidirectional data:
                 //   pipe_a: client writes → server reads
                 //   pipe_b: server writes → client reads
-                let (pipe_a_idx, pipe_b_idx) =
-                    proc.alloc_pipe_pair(PipeBuffer::new(65536), PipeBuffer::new(65536));
+                let pipe_table = unsafe { crate::pipe::global_pipe_table() };
+                let pipe_a_idx = pipe_table.alloc(PipeBuffer::new(65536));
+                let pipe_b_idx = pipe_table.alloc(PipeBuffer::new(65536));
 
                 // Assign ephemeral port/addr to client if unbound
                 let client_sock = proc.sockets.get(sock_idx).ok_or(Errno::EBADF)?;
@@ -6474,6 +7387,7 @@ pub fn sys_connect(
                     .unwrap_or(0);
                 accepted_sock.peer_addr = client_addr;
                 accepted_sock.peer_port = client_port;
+                accepted_sock.global_pipes = true;
                 let accepted_idx = proc.sockets.alloc(accepted_sock);
 
                 // Push to listener's backlog
@@ -6489,6 +7403,7 @@ pub fn sys_connect(
                 client.peer_addr = ip;
                 client.peer_port = port;
                 client.peer_idx = Some(accepted_idx);
+                client.global_pipes = true;
                 if client.bind_port == 0 {
                     client.bind_port = client_port;
                     client.bind_addr = [127, 0, 0, 1];
@@ -6763,52 +7678,10 @@ pub fn sys_poll(
         return Ok(ready);
     }
 
-    // Centralized mode: return EAGAIN so the host JS can retry asynchronously.
-    // A deliverable signal on the retry path becomes EINTR — mirrors the
-    // traditional loop below, and lets the wasm process exit poll() to dispatch
-    // JS signal handlers instead of looping on EAGAIN forever.
-    if crate::is_centralized_mode() {
-        if proc.signals.deliverable() != 0 && !proc.signals.should_restart() {
-            return Err(Errno::EINTR);
-        }
-        return Err(Errno::EAGAIN);
+    if proc.signals.deliverable() != 0 && !proc.signals.should_restart() {
+        return Err(Errno::EINTR);
     }
-
-    // timeout_ms < 0 means wait indefinitely; > 0 means wait up to that many ms.
-    // Use polling loop with short sleeps (1ms intervals).
-    let deadline_ns: Option<u64> = if timeout_ms > 0 {
-        let (sec, nsec) = host.host_clock_gettime(1)?; // CLOCK_MONOTONIC
-        let now = sec as u64 * 1_000_000_000 + nsec as u64;
-        Some(now + (timeout_ms as u64) * 1_000_000)
-    } else {
-        None // infinite wait
-    };
-
-    loop {
-        // Check for pending signals — POSIX: poll is interruptible
-        if proc.signals.deliverable() != 0 {
-            if !proc.signals.should_restart() {
-                return Err(Errno::EINTR);
-            }
-        }
-
-        // Sleep 1ms
-        let _ = host.host_nanosleep(0, 1_000_000);
-
-        let ready = poll_check(proc, host, fds);
-        if ready > 0 {
-            return Ok(ready);
-        }
-
-        // Check deadline
-        if let Some(dl) = deadline_ns {
-            let (sec, nsec) = host.host_clock_gettime(1)?;
-            let now = sec as u64 * 1_000_000_000 + nsec as u64;
-            if now >= dl {
-                return Ok(0); // Timeout expired, nothing ready
-            }
-        }
-    }
+    Err(Errno::EAGAIN)
 }
 
 /// Single non-blocking pass checking fd readiness. Used by sys_poll's loop.
@@ -6948,13 +7821,9 @@ fn poll_check(proc: &mut Process, host: &mut dyn HostIO, fds: &mut [WasmPollFd])
                         revents |= POLLOUT;
                     }
                 } else {
-                    // Kernel-internal pipe
+                    // Kernel pipe
                     let pipe_idx = (-(ofd.host_handle + 1)) as usize;
-                    let pipe = if crate::is_centralized_mode() {
-                        unsafe { crate::pipe::global_pipe_table().get(pipe_idx) }
-                    } else {
-                        proc.pipes.get(pipe_idx).and_then(|p| p.as_ref())
-                    };
+                    let pipe = unsafe { crate::pipe::global_pipe_table().get(pipe_idx) };
                     if let Some(pipe) = pipe {
                         if pollfd.events & POLLIN != 0 && pipe.available() > 0 {
                             revents |= POLLIN;
@@ -6985,9 +7854,7 @@ fn poll_check(proc: &mut Process, host: &mut dyn HostIO, fds: &mut [WasmPollFd])
                     {
                         revents |= POLLIN;
                     }
-                    // Listening socket: POLLIN if backlog has pending connections
-                    // Check both the shared cross-process queue (AF_INET) and the
-                    // per-process backlog (AF_UNIX same-process).
+                    // Listening socket: POLLIN if backlog has pending connections.
                     if sock.state == SocketState::Listening {
                         let mut has_pending = !sock.listen_backlog.is_empty();
                         if !has_pending {
@@ -7028,11 +7895,7 @@ fn poll_check(proc: &mut Process, host: &mut dyn HostIO, fds: &mut [WasmPollFd])
                     }
                     // Check recv buffer for readability
                     if let Some(recv_idx) = sock.recv_buf_idx {
-                        let pipe_ref = if sock.global_pipes {
-                            unsafe { crate::pipe::global_pipe_table().get(recv_idx) }
-                        } else {
-                            proc.pipes.get(recv_idx).and_then(|p| p.as_ref())
-                        };
+                        let pipe_ref = unsafe { crate::pipe::global_pipe_table().get(recv_idx) };
                         if let Some(pipe) = pipe_ref {
                             if pollfd.events & POLLIN != 0 && pipe.available() > 0 {
                                 revents |= POLLIN;
@@ -7044,11 +7907,7 @@ fn poll_check(proc: &mut Process, host: &mut dyn HostIO, fds: &mut [WasmPollFd])
                     }
                     // Check send buffer for writability
                     if let Some(send_idx) = sock.send_buf_idx {
-                        let pipe_ref = if sock.global_pipes {
-                            unsafe { crate::pipe::global_pipe_table().get(send_idx) }
-                        } else {
-                            proc.pipes.get(send_idx).and_then(|p| p.as_ref())
-                        };
+                        let pipe_ref = unsafe { crate::pipe::global_pipe_table().get(send_idx) };
                         if let Some(pipe) = pipe_ref {
                             if pollfd.events & POLLOUT != 0 && pipe.free_space() > 0 {
                                 revents |= POLLOUT;
@@ -7221,6 +8080,7 @@ pub fn sys_openat(
             dev.host_handle(),
             resolved,
         );
+        install_dri_state_on_open(proc, ofd_idx, dev);
         let fd_flags = oflags_to_fd_flags(oflags);
         let fd = proc.fd_table.alloc(OpenFileDescRef(ofd_idx), fd_flags)?;
         return Ok(fd);
@@ -7581,7 +8441,13 @@ pub fn sys_tcsetattr(proc: &mut Process, fd: i32, _action: u32, buf: &[u8]) -> R
 /// ioctl -- device control.
 /// Supports generic ioctls (FIONREAD, FIONBIO, FIOCLEX, FIONCLEX) on any fd type,
 /// plus terminal ioctls (TIOCGWINSZ, TIOCSWINSZ) on CharDevice fds only.
-pub fn sys_ioctl(proc: &mut Process, fd: i32, request: u32, buf: &mut [u8]) -> Result<(), Errno> {
+pub fn sys_ioctl(
+    proc: &mut Process,
+    host: &mut dyn HostIO,
+    fd: i32,
+    request: u32,
+    buf: &mut [u8],
+) -> Result<(), Errno> {
     // FIOCLEX / FIONCLEX operate on the fd entry directly, not the OFD.
     match request {
         0x5451 => {
@@ -7642,11 +8508,7 @@ pub fn sys_ioctl(proc: &mut Process, fd: i32, request: u32, buf: &mut [u8]) -> R
             FileType::Pipe => {
                 if ofd.host_handle < 0 {
                     let pipe_idx = (-(ofd.host_handle + 1)) as usize;
-                    let pipe = if crate::is_centralized_mode() {
-                        unsafe { crate::pipe::global_pipe_table().get(pipe_idx) }
-                    } else {
-                        proc.pipes.get(pipe_idx).and_then(|p| p.as_ref())
-                    };
+                    let pipe = unsafe { crate::pipe::global_pipe_table().get(pipe_idx) };
                     pipe.map(|p| p.available() as i32).unwrap_or(0)
                 } else {
                     0
@@ -7657,9 +8519,7 @@ pub fn sys_ioctl(proc: &mut Process, fd: i32, request: u32, buf: &mut [u8]) -> R
                     let sock_idx = (-(ofd.host_handle + 1)) as usize;
                     if let Some(sock) = proc.sockets.get(sock_idx) {
                         if let Some(recv_idx) = sock.recv_buf_idx {
-                            proc.pipes
-                                .get(recv_idx)
-                                .and_then(|p| p.as_ref())
+                            unsafe { crate::pipe::global_pipe_table().get(recv_idx) }
                                 .map(|p| p.available() as i32)
                                 .unwrap_or(0)
                         } else {
@@ -7766,6 +8626,24 @@ pub fn sys_ioctl(proc: &mut Process, fd: i32, request: u32, buf: &mut [u8]) -> R
             && VirtualDevice::from_host_handle(ofd.host_handle) == Some(VirtualDevice::Dsp)
         {
             return handle_dsp_ioctl(request, buf);
+        }
+    }
+
+    // --- /dev/dri/{renderD128,card0} ioctls — DRM surface ---
+    //
+    // renderD128 → handle_dri_ioctl (probe + dumb-buffer + prime).
+    // card0      → handle_dri_card_ioctl, which falls through to
+    //              handle_dri_ioctl for shared ioctls.
+    {
+        let ofd = proc.ofd_table.get(ofd_idx).ok_or(Errno::EBADF)?;
+        if ofd.file_type == FileType::CharDevice {
+            let dev = VirtualDevice::from_host_handle(ofd.host_handle);
+            if dev == Some(VirtualDevice::DriRenderD128) {
+                return handle_dri_ioctl(proc, host, ofd_idx, request, buf);
+            }
+            if dev == Some(VirtualDevice::DriCard0) {
+                return handle_dri_card_ioctl(proc, host, ofd_idx, request, buf);
+            }
         }
     }
 
@@ -8090,16 +8968,41 @@ pub fn sys_prctl(proc: &mut Process, option: u32, _arg2: u32, buf: &mut [u8]) ->
     }
 }
 
-// Returns thread ID. Without threading, tid == pid.
-// Threading upgrade: return actual TID from thread table.
+// Return the kernel/libc thread id for the currently-serviced POSIX thread.
+//
+// The host selects the syscall mailbox by channelOffset first, then binds the
+// corresponding TID in process_table::current_tid before entering the kernel.
+// That TID is what musl's gettid-based pthread implementation observes. A
+// current_tid of 0 is the host/kernel sentinel for the process main thread, so
+// the syscall returns the process pid for main-thread callers.
 pub fn sys_gettid(proc: &Process) -> i32 {
-    proc.pid as i32
+    let tid = crate::process_table::current_tid();
+    if proc.is_main_thread(tid) {
+        proc.pid as i32
+    } else {
+        tid as i32
+    }
 }
 
-// Stores tidptr for thread exit notification. Without threading, returns pid.
-// Threading upgrade: store tidptr per-thread; kernel writes 0 + futex-wakes on exit.
-pub fn sys_set_tid_address(proc: &Process) -> i32 {
-    proc.pid as i32
+// Store the calling thread's clear-TID pointer for bookkeeping and return the
+// calling TID.
+//
+// set_tid_address is a Linux-derived syscall ABI that musl uses to implement
+// POSIX pthreads; supporting it here is not a Linux-compatibility goal. The
+// value must be associated with the current TID, not just the channel offset,
+// so pthread joiners and threaded runtimes observe the correct thread identity.
+// Host-side thread exit already performs the actual clear-and-futex-wake using
+// clone's ctid pointer.
+pub fn sys_set_tid_address(proc: &mut Process, tidptr: usize) -> i32 {
+    let tid = crate::process_table::current_tid();
+    if proc.is_main_thread(tid) {
+        proc.pid as i32
+    } else {
+        if let Some(thread) = proc.get_thread_mut(tid) {
+            thread.tidptr = tidptr;
+        }
+        tid as i32
+    }
 }
 
 // No-op — robust futex list tracking deferred until threading is implemented.
@@ -8132,28 +9035,7 @@ pub fn sys_futex(
     let base_op = op & !(FUTEX_PRIVATE_FLAG | FUTEX_CLOCK_REALTIME);
 
     match base_op {
-        FUTEX_WAIT | FUTEX_WAIT_BITSET => {
-            // Centralized mode: return EAGAIN so host can wait asynchronously
-            if crate::is_centralized_mode() {
-                return Err(Errno::EAGAIN);
-            }
-            // timeout is a pointer to struct timespec in Wasm memory.
-            // Layout (wasm32 time64): { tv_sec: i64, padding: 0, tv_nsec: i32, padding: 0 } = 16 bytes
-            // For FUTEX_WAIT_BITSET, val3 is the bitmask (we ignore it, treat as full mask)
-            let timeout_ns: i64 = if timeout != 0 {
-                // Read timespec from Wasm memory (16 bytes for time64 layout)
-                let mem = unsafe { core::slice::from_raw_parts(timeout as *const u8, 16) };
-                let sec = i64::from_le_bytes([
-                    mem[0], mem[1], mem[2], mem[3], mem[4], mem[5], mem[6], mem[7],
-                ]);
-                // tv_nsec is a long (4 bytes on wasm32) at offset 8
-                let nsec = i32::from_le_bytes([mem[8], mem[9], mem[10], mem[11]]) as i64;
-                sec * 1_000_000_000 + nsec
-            } else {
-                -1 // infinite wait
-            };
-            host.host_futex_wait(uaddr, val, timeout_ns)
-        }
+        FUTEX_WAIT | FUTEX_WAIT_BITSET => Err(Errno::EAGAIN),
         FUTEX_WAKE | FUTEX_WAKE_BITSET => host.host_futex_wake(uaddr, val),
         FUTEX_REQUEUE => {
             // Wake val waiters on uaddr, requeue up to val2 waiters to uaddr2.
@@ -8189,18 +9071,16 @@ pub fn sys_futex(
 
 /// clone — spawn a new thread.
 ///
-/// In centralized mode: allocate a TID, store thread state, return TID.
-/// The host's handleClone will then spawn the actual thread Worker.
-///
-/// In traditional mode: delegate to host_clone.
+/// Allocates a TID, stores thread state, and returns the TID. The host's
+/// handleClone then spawns the actual thread Worker.
 pub fn sys_clone(
     proc: &mut Process,
-    host: &mut dyn HostIO,
-    fn_ptr: usize,
+    _host: &mut dyn HostIO,
+    _fn_ptr: usize,
     stack_ptr: usize,
     flags: u32,
-    arg: usize,
-    ptid_ptr: usize,
+    _arg: usize,
+    _ptid_ptr: usize,
     tls_ptr: usize,
     ctid_ptr: usize,
 ) -> Result<i32, Errno> {
@@ -8219,48 +9099,28 @@ pub fn sys_clone(
         return Err(Errno::ENOSYS);
     }
 
-    let tid = if crate::is_centralized_mode() {
-        // Centralized mode: allocate TID and store thread info in process.
-        // The host will spawn the actual thread Worker after we return.
-        let tid = proc.alloc_tid();
-        let effective_tls = if flags & CLONE_SETTLS != 0 {
-            tls_ptr
-        } else {
-            0
-        };
-        let effective_ctid = if flags & CLONE_CHILD_CLEARTID != 0 {
-            ctid_ptr
-        } else {
-            0
-        };
-        // POSIX: new threads inherit the creator's signal mask.
-        let caller_tid = crate::process_table::current_tid();
-        let inherited_blocked = proc.blocked_for(caller_tid);
-        let mut thread_info = ThreadInfo::new(tid, effective_ctid, stack_ptr, effective_tls);
-        thread_info.signals.blocked = inherited_blocked;
-        proc.add_thread(thread_info);
-        tid as i32
+    let tid = proc.alloc_tid();
+    let effective_tls = if flags & CLONE_SETTLS != 0 {
+        tls_ptr
     } else {
-        // Traditional mode: delegate to host
-        host.host_clone(fn_ptr, arg, stack_ptr, tls_ptr, ctid_ptr)?
+        0
     };
+    let effective_ctid = if flags & CLONE_CHILD_CLEARTID != 0 {
+        ctid_ptr
+    } else {
+        0
+    };
+    // POSIX: new threads inherit the creator's signal mask. The creator is
+    // identified by current_tid because clone arrives through the caller's
+    // channel mailbox but the kernel stores masks by TID.
+    let caller_tid = crate::process_table::current_tid();
+    let inherited_blocked = proc.blocked_for(caller_tid);
+    let mut thread_info = ThreadInfo::new(tid, effective_ctid, stack_ptr, effective_tls);
+    thread_info.signals.blocked = inherited_blocked;
+    proc.add_thread(thread_info);
 
-    // Write TID to parent's tid pointer if CLONE_PARENT_SETTID.
-    // In centralized mode, ptid_ptr is in process memory (not kernel memory),
-    // so the host must handle this write instead.
-    if !crate::is_centralized_mode() && flags & CLONE_PARENT_SETTID != 0 && ptid_ptr != 0 {
-        #[cfg(any(target_arch = "wasm32", target_arch = "wasm64"))]
-        unsafe {
-            let ptr = ptid_ptr as *mut i32;
-            *ptr = tid;
-        }
-    }
-
-    // Write TID to child's tid pointer if CLONE_CHILD_SETTID
-    // (In centralized mode, the thread Worker will do this itself)
-    let _ = (flags, ctid_ptr); // suppress unused warnings
-
-    Ok(tid)
+    let _ = flags & CLONE_PARENT_SETTID;
+    Ok(tid as i32)
 }
 
 /// ppoll — poll with atomic signal mask swap.
@@ -8272,66 +9132,27 @@ pub fn sys_ppoll(
     timeout_ms: i32,
     mask: Option<u64>,
 ) -> Result<i32, Errno> {
-    // Centralized mode: use sigsuspend_saved_mask pattern for atomic mask swap.
-    // The mask stays swapped across EAGAIN retries so cross-process signals
-    // arriving between retries are caught on the next poll.
-    if crate::is_centralized_mode() {
-        let tid = crate::process_table::current_tid();
-        if let Some(new_mask) = mask {
-            use wasm_posix_shared::signal::{SIGKILL, SIGSTOP};
-            if proc.sigsuspend_saved_mask_for(tid).is_none() {
-                // First call: save original mask and install ppoll mask
-                proc.set_sigsuspend_saved_mask_for(tid, Some(proc.blocked_for(tid)));
-                let m =
-                    new_mask & !(crate::signal::sig_bit(SIGKILL) | crate::signal::sig_bit(SIGSTOP));
-                proc.set_blocked_for(tid, m);
-            }
-            // Check if any signals are deliverable with the ppoll mask
-            if proc.deliverable_for(tid) != 0 {
-                // Signal arrived — return EINTR. Keep temp mask active so
-                // kernel_dequeue_signal can deliver the signal and restore
-                // the original mask (via sigsuspend_saved_mask).
-                return Err(Errno::EINTR);
-            }
+    // Use the sigsuspend_saved_mask pattern for atomic mask swap. The mask
+    // stays swapped across EAGAIN retries so cross-process signals arriving
+    // between retries are caught on the next poll.
+    let tid = crate::process_table::current_tid();
+    if let Some(new_mask) = mask {
+        use wasm_posix_shared::signal::{SIGKILL, SIGSTOP};
+        if proc.sigsuspend_saved_mask_for(tid).is_none() {
+            proc.set_sigsuspend_saved_mask_for(tid, Some(proc.blocked_for(tid)));
+            let m = new_mask & !(crate::signal::sig_bit(SIGKILL) | crate::signal::sig_bit(SIGSTOP));
+            proc.set_blocked_for(tid, m);
         }
-
-        // Check fds (non-blocking) via sys_poll
-        let result = sys_poll(proc, host, fds, timeout_ms);
-        match result {
-            Err(Errno::EAGAIN) => {
-                // Still blocking — keep mask swapped for next retry
-                return Err(Errno::EAGAIN);
-            }
-            _ => {
-                // Poll completed (fds ready, timeout=0, or error).
-                // If signals became deliverable during the ppoll window,
-                // keep sigsuspend_saved_mask so kernel_dequeue_signal can
-                // deliver them with the ppoll mask active, then restore
-                // the original mask.  Otherwise restore immediately.
-                if proc.deliverable_for(tid) == 0 {
-                    if let Some(saved) = proc.take_sigsuspend_saved_mask_for(tid) {
-                        proc.set_blocked_for(tid, saved);
-                    }
-                }
-                return result;
-            }
+        if proc.deliverable_for(tid) != 0 {
+            return Err(Errno::EINTR);
         }
     }
-
-    // Non-centralized mode: simple save/restore around sys_poll
-    let old_mask = if let Some(new_mask) = mask {
-        let old = sys_sigprocmask(proc, SIG_SETMASK, new_mask)?;
-        Some(old)
-    } else {
-        None
-    };
-
     let result = sys_poll(proc, host, fds, timeout_ms);
-
-    if let Some(old) = old_mask {
-        let _ = sys_sigprocmask(proc, SIG_SETMASK, old);
+    if !matches!(result, Err(Errno::EAGAIN)) && proc.deliverable_for(tid) == 0 {
+        if let Some(saved) = proc.take_sigsuspend_saved_mask_for(tid) {
+            proc.set_blocked_for(tid, saved);
+        }
     }
-
     result
 }
 
@@ -8347,60 +9168,27 @@ pub fn sys_pselect6(
     timeout_ms: i32,
     mask: Option<u64>,
 ) -> Result<i32, Errno> {
-    // Centralized mode: use sigsuspend_saved_mask pattern for atomic mask swap.
-    // The mask stays swapped across EAGAIN retries so cross-process signals
-    // arriving between retries are caught on the next select.
-    if crate::is_centralized_mode() {
-        let tid = crate::process_table::current_tid();
-        if let Some(new_mask) = mask {
-            use wasm_posix_shared::signal::{SIGKILL, SIGSTOP};
-            if proc.sigsuspend_saved_mask_for(tid).is_none() {
-                // First call: save original mask and install pselect mask
-                proc.set_sigsuspend_saved_mask_for(tid, Some(proc.blocked_for(tid)));
-                let m =
-                    new_mask & !(crate::signal::sig_bit(SIGKILL) | crate::signal::sig_bit(SIGSTOP));
-                proc.set_blocked_for(tid, m);
-            }
-            // Check if any signals are deliverable with the pselect mask
-            if proc.deliverable_for(tid) != 0 {
-                return Err(Errno::EINTR);
-            }
+    // Use the sigsuspend_saved_mask pattern for atomic mask swap. The mask
+    // stays swapped across EAGAIN retries so cross-process signals arriving
+    // between retries are caught on the next select.
+    let tid = crate::process_table::current_tid();
+    if let Some(new_mask) = mask {
+        use wasm_posix_shared::signal::{SIGKILL, SIGSTOP};
+        if proc.sigsuspend_saved_mask_for(tid).is_none() {
+            proc.set_sigsuspend_saved_mask_for(tid, Some(proc.blocked_for(tid)));
+            let m = new_mask & !(crate::signal::sig_bit(SIGKILL) | crate::signal::sig_bit(SIGSTOP));
+            proc.set_blocked_for(tid, m);
         }
-
-        let result = sys_select(proc, host, nfds, readfds, writefds, exceptfds, timeout_ms);
-        match result {
-            Err(Errno::EAGAIN) => {
-                // Still blocking — keep mask swapped for next retry
-                return Err(Errno::EAGAIN);
-            }
-            _ => {
-                // Select completed — if signals became deliverable during
-                // the pselect window, keep sigsuspend_saved_mask so
-                // kernel_dequeue_signal can deliver them first.
-                if proc.deliverable_for(tid) == 0 {
-                    if let Some(saved) = proc.take_sigsuspend_saved_mask_for(tid) {
-                        proc.set_blocked_for(tid, saved);
-                    }
-                }
-                return result;
-            }
+        if proc.deliverable_for(tid) != 0 {
+            return Err(Errno::EINTR);
         }
     }
-
-    // Non-centralized mode: simple save/restore around sys_select
-    let old_mask = if let Some(new_mask) = mask {
-        let old = sys_sigprocmask(proc, SIG_SETMASK, new_mask)?;
-        Some(old)
-    } else {
-        None
-    };
-
     let result = sys_select(proc, host, nfds, readfds, writefds, exceptfds, timeout_ms);
-
-    if let Some(old) = old_mask {
-        let _ = sys_sigprocmask(proc, SIG_SETMASK, old);
+    if !matches!(result, Err(Errno::EAGAIN)) && proc.deliverable_for(tid) == 0 {
+        if let Some(saved) = proc.take_sigsuspend_saved_mask_for(tid) {
+            proc.set_blocked_for(tid, saved);
+        }
     }
-
     result
 }
 
@@ -9609,108 +10397,10 @@ pub fn sys_select(
     if ready > 0 || timeout_ms == 0 {
         return Ok(ready);
     }
-    // nfds=0 with no interested FDs but non-zero timeout: on Linux this
-    // blocks until a signal arrives (like sigsuspend). Fall through to
-    // EAGAIN/blocking path rather than returning immediately.
-
-    // Centralized mode: return EAGAIN so the host JS can retry asynchronously
-    if crate::is_centralized_mode() {
-        return Err(Errno::EAGAIN);
+    if proc.signals.deliverable() != 0 && !proc.signals.should_restart() {
+        return Err(Errno::EINTR);
     }
-
-    // Non-centralized mode: blocking poll loop
-    let deadline_ns: Option<u64> = if timeout_ms > 0 {
-        let (sec, nsec) = host.host_clock_gettime(1)?;
-        let now = sec as u64 * 1_000_000_000 + nsec as u64;
-        Some(now + (timeout_ms as u64) * 1_000_000)
-    } else {
-        None
-    };
-
-    loop {
-        if proc.signals.deliverable() != 0 {
-            if !proc.signals.should_restart() {
-                return Err(Errno::EINTR);
-            }
-        }
-
-        let _ = host.host_nanosleep(0, 1_000_000);
-
-        // Re-check readiness
-        ready = 0;
-        if let Some(ref mut s) = readfds {
-            s[..set_bytes].fill(0);
-        }
-        if let Some(ref mut s) = writefds {
-            s[..set_bytes].fill(0);
-        }
-        if let Some(ref mut s) = exceptfds {
-            s[..set_bytes].fill(0);
-        }
-
-        for fd in 0..nfds {
-            let byte = fd / 8;
-            let bit = fd % 8;
-            let want_read = (in_read_buf[byte] >> bit) & 1 != 0;
-            let want_write = (in_write_buf[byte] >> bit) & 1 != 0;
-            let want_except = (in_except_buf[byte] >> bit) & 1 != 0;
-            if !want_read && !want_write && !want_except {
-                continue;
-            }
-
-            let mut pollfd = WasmPollFd {
-                fd: fd as i32,
-                events: 0,
-                revents: 0,
-            };
-            if want_read {
-                pollfd.events |= POLLIN;
-            }
-            if want_write {
-                pollfd.events |= POLLOUT;
-            }
-            if want_except {
-                pollfd.events |= POLLPRI;
-            }
-            poll_check(proc, host, core::slice::from_mut(&mut pollfd));
-
-            let revents = pollfd.revents;
-            let mut counted = false;
-            if want_read && (revents & (POLLIN | POLLHUP | POLLERR)) != 0 {
-                if let Some(ref mut s) = readfds {
-                    s[byte] |= 1 << bit;
-                }
-                counted = true;
-            }
-            if want_write && (revents & (POLLOUT | POLLERR)) != 0 {
-                if let Some(ref mut s) = writefds {
-                    s[byte] |= 1 << bit;
-                }
-                counted = true;
-            }
-            if want_except && (revents & POLLPRI) != 0 {
-                if let Some(ref mut s) = exceptfds {
-                    s[byte] |= 1 << bit;
-                }
-                counted = true;
-            }
-            if counted {
-                ready += 1;
-            }
-        }
-
-        if ready > 0 {
-            return Ok(ready);
-        }
-
-        if let Some(dl) = deadline_ns {
-            let (sec, nsec) = host.host_clock_gettime(1)?;
-            let now = sec as u64 * 1_000_000_000 + nsec as u64;
-            if now >= dl {
-                return Ok(0);
-            }
-        }
-    }
+    Err(Errno::EAGAIN)
 }
 
 /// setuid -- set real and effective user ID.
@@ -10283,10 +10973,21 @@ mod tests {
     use wasm_posix_shared::mode::{S_IFDIR, S_IFLNK, S_IFMT, S_IFREG};
     use wasm_posix_shared::poll::{POLLIN, POLLOUT};
 
+    fn terminal_process(pid: u32) -> Process {
+        Process::new_with_stdio(pid, crate::process::StdioConfig::terminal())
+    }
+
     /// Mutex to serialize tests that access the global Unix socket registry.
     /// The registry uses UnsafeCell internally and is not thread-safe, so tests
     /// that call sys_bind/sys_connect for AF_UNIX must hold this lock.
     static UNIX_REGISTRY_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    static THREAD_IDENTITY_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    fn set_test_current_tid(tid: u32) {
+        unsafe {
+            (*crate::process_table::GLOBAL_PROCESS_TABLE.0.get()).set_current_tid(tid);
+        }
+    }
 
     fn test_path_is_dir(path: &[u8]) -> bool {
         path.ends_with(b"/")
@@ -10372,6 +11073,19 @@ mod tests {
         handle_paths: std::collections::HashMap<i64, Vec<u8>>,
         missing_paths: std::collections::HashSet<Vec<u8>>,
         statfs_by_path: std::collections::HashMap<Vec<u8>, WasmStatfs>,
+        /// Recorded `(pid, bo_id, addr, len)` for every `gbm_bo_bind` call so
+        /// the DRI mmap path can be asserted against.
+        gbm_bo_bind_calls: Vec<(i32, u32, usize, usize)>,
+        /// Recorded `(pid, bo_id, addr, len)` for every `gbm_bo_unbind` call.
+        gbm_bo_unbind_calls: Vec<(i32, u32, usize, usize)>,
+        /// Recorded pid for every `gl_unbind` call.
+        gl_unbind_calls: Vec<i32>,
+        /// Override for `gbm_bo_bind`'s return value (0 = success, negative
+        /// = errno). Defaults to 0.
+        gbm_bo_bind_rc: i32,
+        /// Override for `gl_submit`'s return value (0 = success, negative
+        /// = errno). Defaults to 0.
+        gl_submit_rc: i32,
     }
 
     impl MockHostIO {
@@ -10390,6 +11104,11 @@ mod tests {
                 handle_paths: std::collections::HashMap::new(),
                 missing_paths: std::collections::HashSet::new(),
                 statfs_by_path: std::collections::HashMap::new(),
+                gbm_bo_bind_calls: Vec::new(),
+                gbm_bo_unbind_calls: Vec::new(),
+                gl_unbind_calls: Vec::new(),
+                gbm_bo_bind_rc: 0,
+                gl_submit_rc: 0,
             }
         }
 
@@ -10834,6 +11553,35 @@ mod tests {
         }
         fn unbind_framebuffer(&mut self, _pid: i32) {}
         fn fb_write(&mut self, _pid: i32, _offset: usize, _bytes: &[u8]) {}
+
+        // DRI bo backing — the default impl returns ENOSYS; the mock
+        // succeeds so dumb-buffer ioctl tests can exercise the
+        // happy-path registry/handle bookkeeping without a real host.
+        fn gbm_bo_create(
+            &mut self,
+            _pid: i32,
+            _bo_id: u32,
+            _size: u64,
+            _width: u32,
+            _height: u32,
+            _stride: u32,
+        ) -> i32 {
+            0
+        }
+        fn gbm_bo_destroy(&mut self, _pid: i32, _bo_id: u32) {}
+        fn gbm_bo_bind(&mut self, pid: i32, bo_id: u32, addr: usize, len: usize) -> i32 {
+            self.gbm_bo_bind_calls.push((pid, bo_id, addr, len));
+            self.gbm_bo_bind_rc
+        }
+        fn gbm_bo_unbind(&mut self, pid: i32, bo_id: u32, addr: usize, len: usize) {
+            self.gbm_bo_unbind_calls.push((pid, bo_id, addr, len));
+        }
+        fn gl_unbind(&mut self, pid: i32) {
+            self.gl_unbind_calls.push(pid);
+        }
+        fn gl_submit(&mut self, _pid: i32, _offset: usize, _length: usize) -> i32 {
+            self.gl_submit_rc
+        }
     }
 
     fn user_process(pid: u32) -> Process {
@@ -11982,6 +12730,302 @@ mod tests {
         assert_eq!(result, Err(Errno::EBADF));
     }
 
+    fn fd_host_handle(proc: &Process, fd: i32) -> i64 {
+        let entry = proc.fd_table.get(fd).unwrap();
+        let ofd = proc.ofd_table.get(entry.ofd_ref.0).unwrap();
+        ofd.host_handle
+    }
+
+    #[test]
+    fn test_fcntl_setlk_fallback_conflict_reports_would_block() {
+        let _guard = enter_fallback_lock_test();
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        let (_read_fd, write_fd) = sys_pipe(&mut proc).unwrap();
+        let host_handle = fd_host_handle(&proc, write_fd);
+
+        unsafe { crate::lock::global_fallback_lock_table() }.set_lock(
+            host_handle,
+            FileLock {
+                pid: 2,
+                lock_type: F_WRLCK,
+                start: 0,
+                len: 100,
+            },
+        );
+
+        let mut flock = WasmFlock {
+            l_type: F_WRLCK as i16,
+            l_whence: 0,
+            _pad1: 0,
+            l_start: 0,
+            l_len: 100,
+            l_pid: 0,
+            _pad2: 0,
+        };
+        let result = sys_fcntl_lock(&mut proc, write_fd, F_SETLK, &mut flock, &mut host);
+        assert_eq!(result, Err(Errno::EAGAIN));
+    }
+
+    #[test]
+    fn test_fcntl_setlkw_fallback_conflict_uses_cooperative_retry() {
+        let _guard = enter_fallback_lock_test();
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        let (_read_fd, write_fd) = sys_pipe(&mut proc).unwrap();
+        let host_handle = fd_host_handle(&proc, write_fd);
+
+        unsafe { crate::lock::global_fallback_lock_table() }.set_lock(
+            host_handle,
+            FileLock {
+                pid: 2,
+                lock_type: F_WRLCK,
+                start: 0,
+                len: 100,
+            },
+        );
+
+        let mut flock = WasmFlock {
+            l_type: F_WRLCK as i16,
+            l_whence: 0,
+            _pad1: 0,
+            l_start: 0,
+            l_len: 100,
+            l_pid: 0,
+            _pad2: 0,
+        };
+        let result = sys_fcntl_lock(&mut proc, write_fd, F_SETLKW, &mut flock, &mut host);
+        assert_eq!(result, Err(Errno::EAGAIN));
+    }
+
+    struct FallbackLockTestGuard {
+        _guard: std::sync::MutexGuard<'static, ()>,
+    }
+
+    impl Drop for FallbackLockTestGuard {
+        fn drop(&mut self) {
+            unsafe { crate::lock::global_fallback_lock_table().clear() };
+        }
+    }
+
+    fn enter_fallback_lock_test() -> FallbackLockTestGuard {
+        let guard = crate::lock::FALLBACK_LOCK_TEST_LOCK.lock().unwrap();
+        unsafe { crate::lock::global_fallback_lock_table().clear() };
+        FallbackLockTestGuard { _guard: guard }
+    }
+
+    fn add_fallback_pipe_fd(proc: &mut Process, host_handle: i64, status_flags: u32) -> i32 {
+        let ofd_idx = proc.ofd_table.create(
+            FileType::Pipe,
+            status_flags,
+            host_handle,
+            b"/dev/pipe".to_vec(),
+        );
+        proc.fd_table.alloc(OpenFileDescRef(ofd_idx), 0).unwrap()
+    }
+
+    fn write_lock(start: i64, len: i64) -> WasmFlock {
+        WasmFlock {
+            l_type: F_WRLCK as i16,
+            l_whence: 0,
+            _pad1: 0,
+            l_start: start,
+            l_len: len,
+            l_pid: 0,
+            _pad2: 0,
+        }
+    }
+
+    #[test]
+    fn test_fcntl_getlk_fallback_conflict_reports_blocking_owner() {
+        let _guard = enter_fallback_lock_test();
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        let (_read_fd, write_fd) = sys_pipe(&mut proc).unwrap();
+        let host_handle = fd_host_handle(&proc, write_fd);
+
+        unsafe { crate::lock::global_fallback_lock_table() }.set_lock(
+            host_handle,
+            FileLock {
+                pid: 7,
+                lock_type: F_WRLCK,
+                start: 10,
+                len: 25,
+            },
+        );
+
+        let mut query = WasmFlock {
+            l_type: F_RDLCK as i16,
+            l_whence: 0,
+            _pad1: 0,
+            l_start: 20,
+            l_len: 5,
+            l_pid: 0,
+            _pad2: 0,
+        };
+        sys_fcntl_lock(&mut proc, write_fd, F_GETLK, &mut query, &mut host).unwrap();
+
+        assert_eq!(query.l_type as u32, F_WRLCK);
+        assert_eq!(query.l_pid, 7);
+        assert_eq!(query.l_start, 10);
+        assert_eq!(query.l_len, 25);
+        assert_eq!(query.l_whence, 0);
+    }
+
+    #[test]
+    fn test_fallback_locks_are_kernel_wide() {
+        let _guard = enter_fallback_lock_test();
+        let mut proc1 = Process::new(1);
+        let mut proc2 = Process::new(2);
+        let mut host = MockHostIO::new();
+        let shared_handle = -700;
+        let fd1 = add_fallback_pipe_fd(&mut proc1, shared_handle, O_RDWR);
+        let fd2 = add_fallback_pipe_fd(&mut proc2, shared_handle, O_RDWR);
+
+        let mut flock = write_lock(0, 100);
+        sys_fcntl_lock(&mut proc1, fd1, F_SETLK, &mut flock, &mut host).unwrap();
+
+        assert!(
+            proc1
+                .lock_table
+                .get_blocking_lock(shared_handle, F_WRLCK, 0, 100, 2)
+                .is_none(),
+            "kernel fallback locks must not be stored on proc1"
+        );
+        assert!(
+            proc2
+                .lock_table
+                .get_blocking_lock(shared_handle, F_WRLCK, 0, 100, 1)
+                .is_none(),
+            "kernel fallback locks must not be stored on proc2"
+        );
+
+        let mut conflict = write_lock(0, 100);
+        assert_eq!(
+            sys_fcntl_lock(&mut proc2, fd2, F_SETLK, &mut conflict, &mut host),
+            Err(Errno::EAGAIN)
+        );
+
+        let mut query = WasmFlock {
+            l_type: F_RDLCK as i16,
+            l_whence: 0,
+            _pad1: 0,
+            l_start: 50,
+            l_len: 10,
+            l_pid: 0,
+            _pad2: 0,
+        };
+        sys_fcntl_lock(&mut proc2, fd2, F_GETLK, &mut query, &mut host).unwrap();
+        assert_eq!(query.l_type as u32, F_WRLCK);
+        assert_eq!(query.l_pid, 1);
+        assert_eq!(query.l_start, 0);
+        assert_eq!(query.l_len, 100);
+
+        let mut unlock = WasmFlock {
+            l_type: F_UNLCK as i16,
+            l_whence: 0,
+            _pad1: 0,
+            l_start: 0,
+            l_len: 100,
+            l_pid: 0,
+            _pad2: 0,
+        };
+        sys_fcntl_lock(&mut proc1, fd1, F_SETLK, &mut unlock, &mut host).unwrap();
+        sys_fcntl_lock(&mut proc2, fd2, F_SETLK, &mut conflict, &mut host).unwrap();
+
+        assert!(
+            unsafe { crate::lock::global_fallback_lock_table() }
+                .get_blocking_lock(shared_handle, F_WRLCK, 0, 100, 1)
+                .is_some()
+        );
+    }
+
+    #[test]
+    fn test_flock_fallback_nonblocking_conflict_reports_would_block() {
+        let _guard = enter_fallback_lock_test();
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        let (_read_fd, write_fd) = sys_pipe(&mut proc).unwrap();
+        let host_handle = fd_host_handle(&proc, write_fd);
+
+        unsafe { crate::lock::global_fallback_lock_table() }.set_lock(
+            host_handle,
+            FileLock {
+                pid: 2,
+                lock_type: F_WRLCK,
+                start: 0,
+                len: 0,
+            },
+        );
+
+        assert_eq!(
+            sys_flock(&mut proc, write_fd, LOCK_EX | LOCK_NB, &mut host),
+            Err(Errno::EAGAIN)
+        );
+    }
+
+    #[test]
+    fn test_flock_blocking_fallback_conflict_uses_cooperative_retry() {
+        let _guard = enter_fallback_lock_test();
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        let host_handle = -701;
+        let write_fd = add_fallback_pipe_fd(&mut proc, host_handle, O_RDWR);
+
+        unsafe { crate::lock::global_fallback_lock_table() }.set_lock(
+            host_handle,
+            FileLock {
+                pid: 2,
+                lock_type: F_WRLCK,
+                start: 0,
+                len: 0,
+            },
+        );
+
+        let result = sys_flock(&mut proc, write_fd, LOCK_EX, &mut host);
+        assert_eq!(result, Err(Errno::EAGAIN));
+    }
+
+    #[test]
+    fn test_fcntl_setlkw_fallback_succeeds_after_unlock() {
+        let _guard = enter_fallback_lock_test();
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        let host_handle = -702;
+        let write_fd = add_fallback_pipe_fd(&mut proc, host_handle, O_RDWR);
+
+        unsafe { crate::lock::global_fallback_lock_table() }.set_lock(
+            host_handle,
+            FileLock {
+                pid: 2,
+                lock_type: F_WRLCK,
+                start: 0,
+                len: 100,
+            },
+        );
+
+        let mut flock = write_lock(0, 100);
+        let result = sys_fcntl_lock(&mut proc, write_fd, F_SETLKW, &mut flock, &mut host);
+        assert_eq!(result, Err(Errno::EAGAIN));
+
+        unsafe { crate::lock::global_fallback_lock_table() }.set_lock(
+            host_handle,
+            FileLock {
+                pid: 2,
+                lock_type: F_UNLCK,
+                start: 0,
+                len: 100,
+            },
+        );
+
+        sys_fcntl_lock(&mut proc, write_fd, F_SETLKW, &mut flock, &mut host).unwrap();
+        assert!(
+            unsafe { crate::lock::global_fallback_lock_table() }
+                .get_blocking_lock(host_handle, F_WRLCK, 0, 100, 2)
+                .is_some()
+        );
+    }
+
     #[test]
     fn test_close_releases_fcntl_locks() {
         let mut proc = Process::new(1);
@@ -12096,7 +13140,7 @@ mod tests {
 
     #[test]
     fn test_isatty_stdin() {
-        let proc = Process::new(1);
+        let proc = terminal_process(1);
         assert_eq!(sys_isatty(&proc, 0), Ok(1));
     }
 
@@ -13184,7 +14228,7 @@ mod tests {
     fn test_openat_dirfd_enotdir() {
         let mut proc = Process::new(1);
         let mut host = MockHostIO::new();
-        // fd 0 is stdin (CharDevice, not Directory)
+        // fd 0 is stdin pipe by default, not Directory.
         let result = sys_openat(&mut proc, &mut host, 0, b"relative", O_RDONLY, 0);
         assert_eq!(result, Err(Errno::ENOTDIR));
     }
@@ -13309,7 +14353,7 @@ mod tests {
 
     #[test]
     fn test_tcgetattr_returns_terminal_state() {
-        let mut proc = Process::new(1);
+        let mut proc = terminal_process(1);
         let mut buf = [0u8; 60];
         let result = sys_tcgetattr(&mut proc, 0, &mut buf);
         assert!(result.is_ok());
@@ -13330,7 +14374,7 @@ mod tests {
 
     #[test]
     fn test_tcsetattr_modifies_terminal_state() {
-        let mut proc = Process::new(1);
+        let mut proc = terminal_process(1);
         let mut buf = [0u8; 60];
         sys_tcgetattr(&mut proc, 0, &mut buf).unwrap();
         // Clear ECHO in c_lflag (4th u32, bytes 12-15)
@@ -13349,9 +14393,10 @@ mod tests {
 
     #[test]
     fn test_ioctl_tiocgwinsz() {
-        let mut proc = Process::new(1);
+        let mut proc = terminal_process(1);
+        let mut host = MockHostIO::new();
         let mut buf = [0u8; 8];
-        let result = sys_ioctl(&mut proc, 0, 0x5413, &mut buf); // TIOCGWINSZ
+        let result = sys_ioctl(&mut proc, &mut host, 0, 0x5413, &mut buf); // TIOCGWINSZ
         assert!(result.is_ok());
         let ws_row = u16::from_le_bytes([buf[0], buf[1]]);
         let ws_col = u16::from_le_bytes([buf[2], buf[3]]);
@@ -13361,15 +14406,16 @@ mod tests {
 
     #[test]
     fn test_ioctl_tiocswinsz() {
-        let mut proc = Process::new(1);
+        let mut proc = terminal_process(1);
+        let mut host = MockHostIO::new();
         let mut buf = [0u8; 8];
         buf[0..2].copy_from_slice(&120u16.to_le_bytes()); // rows
         buf[2..4].copy_from_slice(&200u16.to_le_bytes()); // cols
-        let result = sys_ioctl(&mut proc, 0, 0x5414, &mut buf); // TIOCSWINSZ
+        let result = sys_ioctl(&mut proc, &mut host, 0, 0x5414, &mut buf); // TIOCSWINSZ
         assert!(result.is_ok());
         // Read back
         let mut buf2 = [0u8; 8];
-        sys_ioctl(&mut proc, 0, 0x5413, &mut buf2).unwrap(); // TIOCGWINSZ
+        sys_ioctl(&mut proc, &mut host, 0, 0x5413, &mut buf2).unwrap(); // TIOCGWINSZ
         let ws_row = u16::from_le_bytes([buf2[0], buf2[1]]);
         let ws_col = u16::from_le_bytes([buf2[2], buf2[3]]);
         assert_eq!(ws_row, 120);
@@ -13379,17 +14425,19 @@ mod tests {
     #[test]
     fn test_ioctl_unsupported_returns_enotty() {
         let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
         let mut buf = [0u8; 8];
-        let result = sys_ioctl(&mut proc, 0, 0x9999, &mut buf);
+        let result = sys_ioctl(&mut proc, &mut host, 0, 0x9999, &mut buf);
         assert_eq!(result, Err(Errno::ENOTTY));
     }
 
     #[test]
     fn test_ioctl_fionbio_set_nonblock() {
         let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
         // Set O_NONBLOCK via FIONBIO on stdout (fd 1)
         let mut buf = 1i32.to_le_bytes();
-        let result = sys_ioctl(&mut proc, 1, 0x5421, &mut buf);
+        let result = sys_ioctl(&mut proc, &mut host, 1, 0x5421, &mut buf);
         assert!(result.is_ok());
         let ofd = proc
             .ofd_table
@@ -13398,7 +14446,7 @@ mod tests {
         assert_ne!(ofd.status_flags & wasm_posix_shared::flags::O_NONBLOCK, 0);
         // Clear it
         let mut buf = 0i32.to_le_bytes();
-        sys_ioctl(&mut proc, 1, 0x5421, &mut buf).unwrap();
+        sys_ioctl(&mut proc, &mut host, 1, 0x5421, &mut buf).unwrap();
         let ofd = proc
             .ofd_table
             .get(proc.fd_table.get(1).unwrap().ofd_ref.0)
@@ -13409,15 +14457,16 @@ mod tests {
     #[test]
     fn test_ioctl_fioclex_fionclex() {
         let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
         let mut buf = [0u8; 4];
         // Set FD_CLOEXEC via FIOCLEX on fd 0
-        sys_ioctl(&mut proc, 0, 0x5451, &mut buf).unwrap();
+        sys_ioctl(&mut proc, &mut host, 0, 0x5451, &mut buf).unwrap();
         assert_ne!(
             proc.fd_table.get(0).unwrap().fd_flags & wasm_posix_shared::fd_flags::FD_CLOEXEC,
             0
         );
         // Clear via FIONCLEX
-        sys_ioctl(&mut proc, 0, 0x5450, &mut buf).unwrap();
+        sys_ioctl(&mut proc, &mut host, 0, 0x5450, &mut buf).unwrap();
         assert_eq!(
             proc.fd_table.get(0).unwrap().fd_flags & wasm_posix_shared::fd_flags::FD_CLOEXEC,
             0
@@ -13433,17 +14482,18 @@ mod tests {
         sys_write(&mut proc, &mut host, write_fd, b"hello").unwrap();
         // FIONREAD should return 5
         let mut buf = [0u8; 4];
-        sys_ioctl(&mut proc, read_fd, 0x541B, &mut buf).unwrap();
+        sys_ioctl(&mut proc, &mut host,read_fd, 0x541B, &mut buf).unwrap();
         let avail = i32::from_le_bytes(buf);
         assert_eq!(avail, 5);
     }
 
     #[test]
     fn test_ioctl_fionread_regular() {
-        let mut proc = Process::new(1);
+        let mut proc = terminal_process(1);
+        let mut host = MockHostIO::new();
         // FIONREAD on a CharDevice returns 0
         let mut buf = [0u8; 4];
-        sys_ioctl(&mut proc, 0, 0x541B, &mut buf).unwrap();
+        sys_ioctl(&mut proc, &mut host, 0, 0x541B, &mut buf).unwrap();
         let avail = i32::from_le_bytes(buf);
         assert_eq!(avail, 0);
     }
@@ -13460,7 +14510,7 @@ mod tests {
 
         // No OOB pending: SIOCATMARK returns 0
         let mut iobuf = [0u8; 4];
-        sys_ioctl(&mut proc, fd1, 0x8905, &mut iobuf).unwrap();
+        sys_ioctl(&mut proc, &mut host,fd1, 0x8905, &mut iobuf).unwrap();
         assert_eq!(i32::from_le_bytes(iobuf), 0);
 
         // Send OOB byte from fd0
@@ -13469,7 +14519,7 @@ mod tests {
 
         // SIOCATMARK on fd1 returns 1
         let mut iobuf = [0u8; 4];
-        sys_ioctl(&mut proc, fd1, 0x8905, &mut iobuf).unwrap();
+        sys_ioctl(&mut proc, &mut host,fd1, 0x8905, &mut iobuf).unwrap();
         assert_eq!(i32::from_le_bytes(iobuf), 1);
 
         // Recv OOB byte from fd1
@@ -13480,7 +14530,7 @@ mod tests {
 
         // After reading OOB, SIOCATMARK returns 0
         let mut iobuf = [0u8; 4];
-        sys_ioctl(&mut proc, fd1, 0x8905, &mut iobuf).unwrap();
+        sys_ioctl(&mut proc, &mut host,fd1, 0x8905, &mut iobuf).unwrap();
         assert_eq!(i32::from_le_bytes(iobuf), 0);
     }
 
@@ -13610,22 +14660,18 @@ mod tests {
     }
 
     #[test]
-    fn test_blocking_pipe_read_eintr_on_signal() {
+    fn test_blocking_pipe_read_returns_eagain_for_host_retry() {
         let mut proc = Process::new(1);
         let mut host = MockHostIO::new();
         let (read_fd, _write_fd) = sys_pipe(&mut proc).unwrap();
-        // Don't set O_NONBLOCK — default is blocking
-
-        // Raise a signal so the blocking read returns EINTR
-        proc.signals.raise(wasm_posix_shared::signal::SIGTERM);
 
         let mut buf = [0u8; 16];
         let result = sys_read(&mut proc, &mut host, read_fd, &mut buf);
-        assert_eq!(result, Err(Errno::EINTR));
+        assert_eq!(result, Err(Errno::EAGAIN));
     }
 
     #[test]
-    fn test_blocking_pipe_write_eintr_on_signal() {
+    fn test_blocking_pipe_write_returns_eagain_for_host_retry() {
         let mut proc = Process::new(1);
         let mut host = MockHostIO::new();
         let (_read_fd, write_fd) = sys_pipe(&mut proc).unwrap();
@@ -13633,13 +14679,9 @@ mod tests {
         let big = [0u8; 65536];
         let n = sys_write(&mut proc, &mut host, write_fd, &big).unwrap();
         assert_eq!(n, 65536);
-        // Don't set O_NONBLOCK — default is blocking
-
-        // Raise a signal so the blocking write returns EINTR
-        proc.signals.raise(wasm_posix_shared::signal::SIGTERM);
 
         let result = sys_write(&mut proc, &mut host, write_fd, b"x");
-        assert_eq!(result, Err(Errno::EINTR));
+        assert_eq!(result, Err(Errno::EAGAIN));
     }
 
     // ---- umask tests ----
@@ -14833,46 +15875,47 @@ mod tests {
     }
 
     #[test]
-    fn test_sigsuspend_restores_old_mask() {
+    fn test_sigsuspend_saves_old_mask_until_signal_dequeue() {
         let mut proc = Process::new(1);
         let mut host = MockHostIO::new();
         proc.signals.blocked = 0xFF;
         proc.signals.raise(2); // SIGINT pending
-        let _ = sys_sigsuspend(&mut proc, &mut host, 0);
-        assert_eq!(proc.signals.blocked, 0xFF);
+        let result = sys_sigsuspend(&mut proc, &mut host, 0);
+        let tid = crate::process_table::current_tid();
+        assert_eq!(result, Err(Errno::EINTR));
+        assert_eq!(proc.signals.blocked, 0);
+        assert_eq!(proc.sigsuspend_saved_mask_for(tid), Some(0xFF));
     }
 
     #[test]
-    fn test_sigsuspend_blocks_until_signal() {
+    fn test_sigsuspend_returns_eagain_for_host_retry() {
         let mut proc = Process::new(1);
         let mut host = MockHostIO::new();
-        host.sigsuspend_signal = 15; // SIGTERM
         let result = sys_sigsuspend(&mut proc, &mut host, 0);
-        assert_eq!(result, Err(Errno::EINTR));
-        assert!(proc.signals.is_pending(15));
+        assert_eq!(result, Err(Errno::EAGAIN));
     }
 
     #[test]
     fn test_sigsuspend_cannot_block_sigkill() {
         let mut proc = Process::new(1);
         let mut host = MockHostIO::new();
-        host.sigsuspend_signal = 9; // SIGKILL
         let mask = u64::MAX; // try to block everything
         let result = sys_sigsuspend(&mut proc, &mut host, mask);
-        assert_eq!(result, Err(Errno::EINTR));
-        assert!(proc.signals.is_pending(9));
+        assert_eq!(result, Err(Errno::EAGAIN));
+        assert_eq!(proc.signals.blocked & crate::signal::sig_bit(SIGKILL), 0);
+        assert_eq!(proc.signals.blocked & crate::signal::sig_bit(SIGSTOP), 0);
     }
 
     #[test]
-    fn test_sigsuspend_restores_mask_on_host_error() {
+    fn test_sigsuspend_saves_mask_for_host_retry() {
         let mut proc = Process::new(1);
         let mut host = MockHostIO::new();
         proc.signals.blocked = 0xFF;
-        host.sigsuspend_error = true;
         let result = sys_sigsuspend(&mut proc, &mut host, 0);
-        assert_eq!(result, Err(Errno::EINTR));
-        // Mask must be restored even when host returns error
-        assert_eq!(proc.signals.blocked, 0xFF);
+        let tid = crate::process_table::current_tid();
+        assert_eq!(result, Err(Errno::EAGAIN));
+        assert_eq!(proc.signals.blocked, 0);
+        assert_eq!(proc.sigsuspend_saved_mask_for(tid), Some(0xFF));
     }
 
     // ---- *at() syscalls with real dirfd ----
@@ -15563,7 +16606,6 @@ mod tests {
             proc.sockets.get(sock_idx).unwrap().accept_wake_idx.unwrap()
         };
 
-        crate::set_kernel_mode(1);
         let mut wake_buf = [0u8; 16];
         crate::wakeup::drain(&mut wake_buf, 8);
 
@@ -15571,7 +16613,6 @@ mod tests {
         sys_connect(&mut proc, &mut host, client_fd, &addr[..addrlen]).unwrap();
 
         let count = crate::wakeup::drain(&mut wake_buf, 8);
-        crate::set_kernel_mode(0);
         unsafe { crate::unix_socket::global_unix_socket_registry() }.unregister(&resolved);
 
         assert_eq!(count, 1);
@@ -16461,6 +17502,8 @@ mod tests {
             VirtualDevice::Fb0,
             VirtualDevice::Mice,
             VirtualDevice::Dsp,
+            VirtualDevice::DriRenderD128,
+            VirtualDevice::DriCard0,
         ] {
             assert_eq!(
                 VirtualDevice::from_host_handle(dev.host_handle()),
@@ -16469,7 +17512,7 @@ mod tests {
         }
         assert_eq!(VirtualDevice::from_host_handle(0), None);
         // First sentinel past the allocated range — must not roundtrip.
-        assert_eq!(VirtualDevice::from_host_handle(-8), None);
+        assert_eq!(VirtualDevice::from_host_handle(-10), None);
     }
 
     // ===== Loopback socket tests =====
@@ -16659,15 +17702,43 @@ mod tests {
     }
 
     #[test]
-    fn test_clone_non_centralized_delegates_to_host() {
+    fn test_clone_thread_allocates_kernel_thread() {
         let mut proc = Process::new(1);
         let mut host = MockHostIO::new();
         const CLONE_VM: u32 = 0x00000100;
         const CLONE_THREAD: u32 = 0x00010000;
         let flags = CLONE_VM | CLONE_THREAD;
-        // In non-centralized mode, host_clone returns -ENOSYS (mock)
         let result = sys_clone(&mut proc, &mut host, 0, 0x8000, flags, 0, 0, 0, 0);
-        assert_eq!(result, Err(Errno::ENOSYS));
+        let tid = result.expect("thread-style clone should allocate a tid");
+        assert!(tid > 0);
+        assert!(proc.get_thread(tid as u32).is_some());
+    }
+
+    #[test]
+    fn test_gettid_returns_pid_for_main_thread() {
+        let _guard = THREAD_IDENTITY_LOCK.lock().unwrap();
+        set_test_current_tid(0);
+        let proc = Process::new(77);
+
+        assert_eq!(sys_gettid(&proc), 77);
+
+        set_test_current_tid(0);
+    }
+
+    #[test]
+    fn test_gettid_and_set_tid_address_use_current_worker_tid() {
+        use crate::process::ThreadInfo;
+
+        let _guard = THREAD_IDENTITY_LOCK.lock().unwrap();
+        let mut proc = Process::new(100);
+        proc.add_thread(ThreadInfo::new(101, 0, 0, 0));
+        set_test_current_tid(101);
+
+        assert_eq!(sys_gettid(&proc), 101);
+        assert_eq!(sys_set_tid_address(&mut proc, 0xbeef), 101);
+        assert_eq!(proc.get_thread(101).unwrap().tidptr, 0xbeef);
+
+        set_test_current_tid(0);
     }
 
     #[test]
@@ -17591,20 +18662,21 @@ mod tests {
 
     #[test]
     fn test_tiocgpgrp_tiocspgrp() {
-        let mut proc = Process::new(1);
+        let mut proc = terminal_process(1);
+        let mut host = MockHostIO::new();
         let mut buf = [0u8; 4];
 
-        // TIOCGPGRP on stdin (fd 0, which is a CharDevice)
-        sys_ioctl(&mut proc, 0, 0x540F, &mut buf).unwrap();
+        // TIOCGPGRP on terminal stdin.
+        sys_ioctl(&mut proc, &mut host, 0, 0x540F, &mut buf).unwrap();
         let pgid = i32::from_le_bytes(buf);
         assert_eq!(pgid, 1); // default foreground_pgid
 
         // TIOCSPGRP — set to 42
         buf.copy_from_slice(&42i32.to_le_bytes());
-        sys_ioctl(&mut proc, 0, 0x5410, &mut buf).unwrap();
+        sys_ioctl(&mut proc, &mut host, 0, 0x5410, &mut buf).unwrap();
 
         // Read back
-        sys_ioctl(&mut proc, 0, 0x540F, &mut buf).unwrap();
+        sys_ioctl(&mut proc, &mut host, 0, 0x540F, &mut buf).unwrap();
         let pgid = i32::from_le_bytes(buf);
         assert_eq!(pgid, 42);
     }
@@ -17617,7 +18689,7 @@ mod tests {
 
         // Open a regular file
         let fd = sys_open(&mut proc, &mut host, b"/tmp/test", O_RDWR | O_CREAT, 0o644).unwrap();
-        let result = sys_ioctl(&mut proc, fd, 0x540F, &mut buf);
+        let result = sys_ioctl(&mut proc, &mut host,fd, 0x540F, &mut buf);
         assert_eq!(result, Err(Errno::ENOTTY));
     }
 
@@ -19034,7 +20106,7 @@ mod tests {
         let mut host = MockHostIO::new();
         let fd = sys_open(&mut proc, &mut host, b"/dev/fb0", O_RDWR, 0).unwrap();
         let mut buf = [0u8; 160];
-        sys_ioctl(&mut proc, fd, FBIOGET_VSCREENINFO, &mut buf).unwrap();
+        sys_ioctl(&mut proc, &mut host,fd, FBIOGET_VSCREENINFO, &mut buf).unwrap();
         let v: FbVarScreenInfo = unsafe { core::ptr::read_unaligned(buf.as_ptr() as *const _) };
         assert_eq!(v.xres, 640);
         assert_eq!(v.yres, 400);
@@ -19061,7 +20133,7 @@ mod tests {
         let mut host = MockHostIO::new();
         let fd = sys_open(&mut proc, &mut host, b"/dev/fb0", O_RDWR, 0).unwrap();
         let mut buf = [0u8; 80];
-        sys_ioctl(&mut proc, fd, FBIOGET_FSCREENINFO, &mut buf).unwrap();
+        sys_ioctl(&mut proc, &mut host,fd, FBIOGET_FSCREENINFO, &mut buf).unwrap();
         let f: FbFixScreenInfo = unsafe { core::ptr::read_unaligned(buf.as_ptr() as *const _) };
         assert_eq!(&f.id[..6], b"wasmfb");
         assert_eq!(f.smem_len, 640 * 400 * 4);
@@ -19082,7 +20154,7 @@ mod tests {
         let mut host = MockHostIO::new();
         let fd = sys_open(&mut proc, &mut host, b"/dev/fb0", O_RDWR, 0).unwrap();
         let mut buf = [0u8; 160];
-        sys_ioctl(&mut proc, fd, FBIOPAN_DISPLAY, &mut buf).unwrap();
+        sys_ioctl(&mut proc, &mut host,fd, FBIOPAN_DISPLAY, &mut buf).unwrap();
         sys_close(&mut proc, &mut host, fd).unwrap();
     }
 
@@ -19103,7 +20175,7 @@ mod tests {
         unsafe {
             core::ptr::write_unaligned(buf.as_mut_ptr() as *mut _, v);
         }
-        let err = sys_ioctl(&mut proc, fd, FBIOPUT_VSCREENINFO, &mut buf).unwrap_err();
+        let err = sys_ioctl(&mut proc, &mut host,fd, FBIOPUT_VSCREENINFO, &mut buf).unwrap_err();
         assert_eq!(err, Errno::EINVAL);
 
         // Matching geometry succeeds.
@@ -19114,7 +20186,7 @@ mod tests {
         unsafe {
             core::ptr::write_unaligned(buf.as_mut_ptr() as *mut _, v);
         }
-        sys_ioctl(&mut proc, fd, FBIOPUT_VSCREENINFO, &mut buf).unwrap();
+        sys_ioctl(&mut proc, &mut host,fd, FBIOPUT_VSCREENINFO, &mut buf).unwrap();
 
         sys_close(&mut proc, &mut host, fd).unwrap();
     }
@@ -19128,7 +20200,7 @@ mod tests {
         let mut host = MockHostIO::new();
         let fd = sys_open(&mut proc, &mut host, b"/dev/fb0", O_RDWR, 0).unwrap();
         let mut buf = [0u8; 160]; // big enough that ENOTTY is the only failure mode
-        let err = sys_ioctl(&mut proc, fd, 0x46FF, &mut buf).unwrap_err();
+        let err = sys_ioctl(&mut proc, &mut host,fd, 0x46FF, &mut buf).unwrap_err();
         assert_eq!(err, Errno::ENOTTY);
         sys_close(&mut proc, &mut host, fd).unwrap();
     }
@@ -19641,7 +20713,7 @@ mod tests {
         let fd = sys_open(&mut proc, &mut host, b"/dev/dsp", O_WRONLY, 0).unwrap();
 
         let mut arg = 44100i32.to_le_bytes();
-        sys_ioctl(&mut proc, fd, SNDCTL_DSP_SPEED, &mut arg).unwrap();
+        sys_ioctl(&mut proc, &mut host,fd, SNDCTL_DSP_SPEED, &mut arg).unwrap();
         // The kernel echoes back the rate it actually configured.
         assert_eq!(i32::from_le_bytes(arg), 44100);
         assert_eq!(crate::audio::current_config().0, 44100);
@@ -19660,11 +20732,11 @@ mod tests {
         let fd = sys_open(&mut proc, &mut host, b"/dev/dsp", O_WRONLY, 0).unwrap();
 
         let mut arg = 0x08u32.to_le_bytes(); // AFMT_U8 — unsupported
-        let err = sys_ioctl(&mut proc, fd, SNDCTL_DSP_SETFMT, &mut arg).unwrap_err();
+        let err = sys_ioctl(&mut proc, &mut host,fd, SNDCTL_DSP_SETFMT, &mut arg).unwrap_err();
         assert_eq!(err, Errno::EINVAL);
 
         let mut arg = AFMT_S16_LE.to_le_bytes();
-        sys_ioctl(&mut proc, fd, SNDCTL_DSP_SETFMT, &mut arg).unwrap();
+        sys_ioctl(&mut proc, &mut host,fd, SNDCTL_DSP_SETFMT, &mut arg).unwrap();
         sys_close(&mut proc, &mut host, fd).unwrap();
     }
 
@@ -19679,7 +20751,7 @@ mod tests {
         let fd = sys_open(&mut proc, &mut host, b"/dev/dsp", O_WRONLY, 0).unwrap();
 
         let mut arg = [0u8; 4];
-        sys_ioctl(&mut proc, fd, SNDCTL_DSP_GETFMTS, &mut arg).unwrap();
+        sys_ioctl(&mut proc, &mut host,fd, SNDCTL_DSP_GETFMTS, &mut arg).unwrap();
         assert_eq!(u32::from_le_bytes(arg), AFMT_S16_LE);
 
         sys_close(&mut proc, &mut host, fd).unwrap();
@@ -19699,7 +20771,7 @@ mod tests {
         assert_eq!(crate::audio::pending_bytes(), 4);
 
         let mut arg = [0u8; 0];
-        sys_ioctl(&mut proc, fd, SNDCTL_DSP_RESET, &mut arg).unwrap();
+        sys_ioctl(&mut proc, &mut host,fd, SNDCTL_DSP_RESET, &mut arg).unwrap();
         assert_eq!(crate::audio::pending_bytes(), 0);
 
         sys_close(&mut proc, &mut host, fd).unwrap();
@@ -19750,6 +20822,1717 @@ mod tests {
             crate::audio::pending_bytes(),
             0,
             "exec should drain the ring when releasing ownership"
+        );
+    }
+
+    // -----------------------------------------------------------------
+    // /dev/dri/* tests — minimal DRM surface (probe ioctls only).
+    // -----------------------------------------------------------------
+
+    #[test]
+    fn match_virtual_device_recognizes_dri_nodes() {
+        assert_eq!(
+            match_virtual_device(b"/dev/dri/renderD128"),
+            Some(VirtualDevice::DriRenderD128)
+        );
+        assert_eq!(
+            match_virtual_device(b"/dev/dri/card0"),
+            Some(VirtualDevice::DriCard0)
+        );
+        assert_eq!(match_virtual_device(b"/dev/dri/card1"), None);
+    }
+
+    #[test]
+    fn dri_render_is_multi_process_no_busy() {
+        // DRI is multi-process by design — opening from two pids must
+        // succeed (unlike fb0/mice/dsp which are single-owner).
+        let mut proc1 = Process::new(101);
+        let mut proc2 = Process::new(102);
+        let mut host = MockHostIO::new();
+        let fd1 = sys_open(&mut proc1, &mut host, b"/dev/dri/renderD128", O_RDWR, 0).unwrap();
+        let fd2 = sys_open(&mut proc2, &mut host, b"/dev/dri/renderD128", O_RDWR, 0).unwrap();
+        assert!(fd1 >= 0);
+        assert!(fd2 >= 0);
+    }
+
+    #[test]
+    fn dri_card_is_multi_process_no_busy() {
+        let mut proc1 = Process::new(201);
+        let mut proc2 = Process::new(202);
+        let mut host = MockHostIO::new();
+        let fd1 = sys_open(&mut proc1, &mut host, b"/dev/dri/card0", O_RDWR, 0).unwrap();
+        let fd2 = sys_open(&mut proc2, &mut host, b"/dev/dri/card0", O_RDWR, 0).unwrap();
+        assert!(fd1 >= 0);
+        assert!(fd2 >= 0);
+    }
+
+    #[test]
+    fn dri_ioctl_version_returns_v1_with_zero_lengths() {
+        use wasm_posix_shared::dri::*;
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        let fd = sys_open(&mut proc, &mut host, b"/dev/dri/renderD128", O_RDWR, 0).unwrap();
+        let v_in = WpkDrmVersion {
+            name_len: 64,
+            name_ptr: 0xdead_beef,
+            date_len: 64,
+            date_ptr: 0xcafe_1234,
+            desc_len: 64,
+            desc_ptr: 0xabad_1dea,
+            ..Default::default()
+        };
+        let mut buf = [0u8; core::mem::size_of::<WpkDrmVersion>()];
+        unsafe { core::ptr::write_unaligned(buf.as_mut_ptr() as *mut WpkDrmVersion, v_in) };
+        sys_ioctl(&mut proc, &mut host,fd, DRM_IOCTL_VERSION, &mut buf).unwrap();
+        let v_out: WpkDrmVersion =
+            unsafe { core::ptr::read_unaligned(buf.as_ptr() as *const WpkDrmVersion) };
+        assert_eq!(v_out.version_major, 1);
+        assert_eq!(v_out.version_minor, 0);
+        assert_eq!(v_out.name_len, 0);
+        assert_eq!(v_out.date_len, 0);
+        assert_eq!(v_out.desc_len, 0);
+        // Pointers are echoed back verbatim — libdrm round-trips them.
+        assert_eq!(v_out.name_ptr, 0xdead_beef);
+        assert_eq!(v_out.date_ptr, 0xcafe_1234);
+        assert_eq!(v_out.desc_ptr, 0xabad_1dea);
+    }
+
+    #[test]
+    fn dri_ioctl_get_cap_known_and_unknown() {
+        use wasm_posix_shared::dri::*;
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        let fd = sys_open(&mut proc, &mut host, b"/dev/dri/renderD128", O_RDWR, 0).unwrap();
+
+        let mut buf = [0u8; core::mem::size_of::<WpkDrmGetCap>()];
+        let cap_in = WpkDrmGetCap {
+            capability: DRM_CAP_DUMB_BUFFER,
+            value: 0,
+        };
+        unsafe { core::ptr::write_unaligned(buf.as_mut_ptr() as *mut WpkDrmGetCap, cap_in) };
+        sys_ioctl(&mut proc, &mut host,fd, DRM_IOCTL_GET_CAP, &mut buf).unwrap();
+        let cap_out: WpkDrmGetCap =
+            unsafe { core::ptr::read_unaligned(buf.as_ptr() as *const WpkDrmGetCap) };
+        assert_eq!(cap_out.value, 1);
+
+        let cap_in = WpkDrmGetCap {
+            capability: DRM_CAP_PRIME,
+            value: 0,
+        };
+        unsafe { core::ptr::write_unaligned(buf.as_mut_ptr() as *mut WpkDrmGetCap, cap_in) };
+        sys_ioctl(&mut proc, &mut host,fd, DRM_IOCTL_GET_CAP, &mut buf).unwrap();
+        let cap_out: WpkDrmGetCap =
+            unsafe { core::ptr::read_unaligned(buf.as_ptr() as *const WpkDrmGetCap) };
+        assert_eq!(cap_out.value, DRM_PRIME_CAP_IMPORT | DRM_PRIME_CAP_EXPORT);
+
+        let cap_in = WpkDrmGetCap {
+            capability: 0xdead_beef,
+            value: 0,
+        };
+        unsafe { core::ptr::write_unaligned(buf.as_mut_ptr() as *mut WpkDrmGetCap, cap_in) };
+        sys_ioctl(&mut proc, &mut host,fd, DRM_IOCTL_GET_CAP, &mut buf).unwrap();
+        let cap_out: WpkDrmGetCap =
+            unsafe { core::ptr::read_unaligned(buf.as_ptr() as *const WpkDrmGetCap) };
+        // Unknown capabilities return value=0, errno=0 — matches Linux.
+        assert_eq!(cap_out.value, 0);
+    }
+
+    #[test]
+    fn dri_ioctl_unknown_returns_enosys() {
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        let fd = sys_open(&mut proc, &mut host, b"/dev/dri/card0", O_RDWR, 0).unwrap();
+        // An unallocated ioctl number must fall through both
+        // handle_dri_card_ioctl and handle_dri_ioctl, ending in
+        // ENOSYS — libdrm reads that as "feature unsupported"
+        // rather than silently succeeding with a bogus result.
+        let mut buf = [0u8; 64];
+        let err = sys_ioctl(&mut proc, &mut host, fd, 0xdead_beef, &mut buf).unwrap_err();
+        assert_eq!(err, Errno::ENOSYS);
+    }
+
+    #[test]
+    fn dri_open_installs_render_node_state() {
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        let fd = sys_open(&mut proc, &mut host, b"/dev/dri/renderD128", O_RDWR, 0).unwrap();
+        let ofd_idx = proc.fd_table.get(fd).unwrap().ofd_ref.0;
+        let ofd = proc.ofd_table.get(ofd_idx).unwrap();
+        assert!(ofd.dri().is_some());
+        assert!(ofd.kms().is_none());
+        assert_eq!(ofd.dri().unwrap().next_handle, 1);
+    }
+
+    #[test]
+    fn dri_open_installs_card_state_with_kms() {
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        let fd = sys_open(&mut proc, &mut host, b"/dev/dri/card0", O_RDWR, 0).unwrap();
+        let ofd_idx = proc.fd_table.get(fd).unwrap().ofd_ref.0;
+        let ofd = proc.ofd_table.get(ofd_idx).unwrap();
+        assert!(ofd.dri().is_some());
+        assert!(ofd.kms().is_some());
+        assert!(!ofd.kms().unwrap().holds_master);
+    }
+
+    #[test]
+    fn dri_ioctl_create_dumb_returns_handle_pitch_size() {
+        use wasm_posix_shared::dri::*;
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        let fd = sys_open(&mut proc, &mut host, b"/dev/dri/renderD128", O_RDWR, 0).unwrap();
+
+        let req = WpkDrmModeCreateDumb {
+            width: 64,
+            height: 32,
+            bpp: 32,
+            flags: 0,
+            handle: 0,
+            pitch: 0,
+            size: 0,
+        };
+        let mut buf = [0u8; core::mem::size_of::<WpkDrmModeCreateDumb>()];
+        unsafe { core::ptr::write_unaligned(buf.as_mut_ptr() as *mut WpkDrmModeCreateDumb, req) };
+        sys_ioctl(&mut proc, &mut host, fd, DRM_IOCTL_MODE_CREATE_DUMB, &mut buf).unwrap();
+
+        let out: WpkDrmModeCreateDumb =
+            unsafe { core::ptr::read_unaligned(buf.as_ptr() as *const WpkDrmModeCreateDumb) };
+        assert_eq!(out.handle, 1, "first handle for the fd should be 1");
+        assert_eq!(out.pitch, 64 * 4, "ARGB8888 stride is width * 4 bytes");
+        assert_eq!(out.size as u32, 64 * 4 * 32);
+    }
+
+    #[test]
+    fn dri_ioctl_create_dumb_rejects_invalid_inputs() {
+        use wasm_posix_shared::dri::*;
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        let fd = sys_open(&mut proc, &mut host, b"/dev/dri/renderD128", O_RDWR, 0).unwrap();
+
+        // bpp != 32 → EINVAL (v1 supports ARGB8888 only).
+        let req = WpkDrmModeCreateDumb {
+            width: 64,
+            height: 32,
+            bpp: 24,
+            ..Default::default()
+        };
+        let mut buf = [0u8; core::mem::size_of::<WpkDrmModeCreateDumb>()];
+        unsafe { core::ptr::write_unaligned(buf.as_mut_ptr() as *mut WpkDrmModeCreateDumb, req) };
+        assert_eq!(
+            sys_ioctl(&mut proc, &mut host, fd, DRM_IOCTL_MODE_CREATE_DUMB, &mut buf).unwrap_err(),
+            Errno::EINVAL
+        );
+
+        // width=0 → EINVAL.
+        let req = WpkDrmModeCreateDumb {
+            width: 0,
+            height: 32,
+            bpp: 32,
+            ..Default::default()
+        };
+        unsafe { core::ptr::write_unaligned(buf.as_mut_ptr() as *mut WpkDrmModeCreateDumb, req) };
+        assert_eq!(
+            sys_ioctl(&mut proc, &mut host, fd, DRM_IOCTL_MODE_CREATE_DUMB, &mut buf).unwrap_err(),
+            Errno::EINVAL
+        );
+
+        // flags != 0 → EINVAL (no GBM_BO_USE_* in v1).
+        let req = WpkDrmModeCreateDumb {
+            width: 64,
+            height: 32,
+            bpp: 32,
+            flags: 1,
+            ..Default::default()
+        };
+        unsafe { core::ptr::write_unaligned(buf.as_mut_ptr() as *mut WpkDrmModeCreateDumb, req) };
+        assert_eq!(
+            sys_ioctl(&mut proc, &mut host, fd, DRM_IOCTL_MODE_CREATE_DUMB, &mut buf).unwrap_err(),
+            Errno::EINVAL
+        );
+    }
+
+    #[test]
+    fn dri_ioctl_map_dumb_returns_bo_id_shifted_offset() {
+        use wasm_posix_shared::dri::*;
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        let fd = sys_open(&mut proc, &mut host, b"/dev/dri/renderD128", O_RDWR, 0).unwrap();
+
+        // CREATE_DUMB to get a handle.
+        let create = WpkDrmModeCreateDumb {
+            width: 16,
+            height: 16,
+            bpp: 32,
+            ..Default::default()
+        };
+        let mut buf = [0u8; core::mem::size_of::<WpkDrmModeCreateDumb>()];
+        unsafe { core::ptr::write_unaligned(buf.as_mut_ptr() as *mut WpkDrmModeCreateDumb, create) };
+        sys_ioctl(&mut proc, &mut host, fd, DRM_IOCTL_MODE_CREATE_DUMB, &mut buf).unwrap();
+        let created: WpkDrmModeCreateDumb =
+            unsafe { core::ptr::read_unaligned(buf.as_ptr() as *const WpkDrmModeCreateDumb) };
+        let handle = created.handle;
+
+        // MAP_DUMB on that handle returns an offset that decodes back
+        // to a BoId via (offset >> 12).
+        let map = WpkDrmModeMapDumb {
+            handle,
+            pad: 0,
+            offset: 0,
+        };
+        let mut mbuf = [0u8; core::mem::size_of::<WpkDrmModeMapDumb>()];
+        unsafe { core::ptr::write_unaligned(mbuf.as_mut_ptr() as *mut WpkDrmModeMapDumb, map) };
+        sys_ioctl(&mut proc, &mut host, fd, DRM_IOCTL_MODE_MAP_DUMB, &mut mbuf).unwrap();
+        let mapped: WpkDrmModeMapDumb =
+            unsafe { core::ptr::read_unaligned(mbuf.as_ptr() as *const WpkDrmModeMapDumb) };
+        assert_ne!(mapped.offset, 0);
+        assert_eq!(mapped.offset & 0xfff, 0, "offset must be page-aligned");
+    }
+
+    #[test]
+    fn dri_ioctl_map_dumb_unknown_handle_returns_enoent() {
+        use wasm_posix_shared::dri::*;
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        let fd = sys_open(&mut proc, &mut host, b"/dev/dri/renderD128", O_RDWR, 0).unwrap();
+
+        let map = WpkDrmModeMapDumb {
+            handle: 999,
+            pad: 0,
+            offset: 0,
+        };
+        let mut mbuf = [0u8; core::mem::size_of::<WpkDrmModeMapDumb>()];
+        unsafe { core::ptr::write_unaligned(mbuf.as_mut_ptr() as *mut WpkDrmModeMapDumb, map) };
+        assert_eq!(
+            sys_ioctl(&mut proc, &mut host, fd, DRM_IOCTL_MODE_MAP_DUMB, &mut mbuf).unwrap_err(),
+            Errno::ENOENT
+        );
+    }
+
+    #[test]
+    fn dri_ioctl_destroy_dumb_releases_handle_and_bo() {
+        use wasm_posix_shared::dri::*;
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        let fd = sys_open(&mut proc, &mut host, b"/dev/dri/renderD128", O_RDWR, 0).unwrap();
+
+        let create = WpkDrmModeCreateDumb {
+            width: 8,
+            height: 8,
+            bpp: 32,
+            ..Default::default()
+        };
+        let mut buf = [0u8; core::mem::size_of::<WpkDrmModeCreateDumb>()];
+        unsafe { core::ptr::write_unaligned(buf.as_mut_ptr() as *mut WpkDrmModeCreateDumb, create) };
+        sys_ioctl(&mut proc, &mut host, fd, DRM_IOCTL_MODE_CREATE_DUMB, &mut buf).unwrap();
+        let created: WpkDrmModeCreateDumb =
+            unsafe { core::ptr::read_unaligned(buf.as_ptr() as *const WpkDrmModeCreateDumb) };
+
+        // Per-fd handle is present.
+        let ofd_idx = proc.fd_table.get(fd).unwrap().ofd_ref.0;
+        assert!(
+            proc.ofd_table
+                .get(ofd_idx)
+                .unwrap()
+                .dri()
+                .unwrap()
+                .handles
+                .contains_key(&created.handle)
+        );
+
+        // DESTROY_DUMB removes it from the namespace.
+        let req = WpkDrmModeDestroyDumb {
+            handle: created.handle,
+        };
+        let mut dbuf = [0u8; core::mem::size_of::<WpkDrmModeDestroyDumb>()];
+        unsafe { core::ptr::write_unaligned(dbuf.as_mut_ptr() as *mut WpkDrmModeDestroyDumb, req) };
+        sys_ioctl(&mut proc, &mut host, fd, DRM_IOCTL_MODE_DESTROY_DUMB, &mut dbuf).unwrap();
+        assert!(
+            !proc
+                .ofd_table
+                .get(ofd_idx)
+                .unwrap()
+                .dri()
+                .unwrap()
+                .handles
+                .contains_key(&created.handle)
+        );
+
+        // Second DESTROY_DUMB on the same handle → ENOENT.
+        assert_eq!(
+            sys_ioctl(&mut proc, &mut host, fd, DRM_IOCTL_MODE_DESTROY_DUMB, &mut dbuf).unwrap_err(),
+            Errno::ENOENT
+        );
+    }
+
+    #[test]
+    fn dri_ioctl_gem_close_is_equivalent_to_destroy_dumb() {
+        use wasm_posix_shared::dri::*;
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        let fd = sys_open(&mut proc, &mut host, b"/dev/dri/renderD128", O_RDWR, 0).unwrap();
+
+        let create = WpkDrmModeCreateDumb {
+            width: 8,
+            height: 8,
+            bpp: 32,
+            ..Default::default()
+        };
+        let mut buf = [0u8; core::mem::size_of::<WpkDrmModeCreateDumb>()];
+        unsafe { core::ptr::write_unaligned(buf.as_mut_ptr() as *mut WpkDrmModeCreateDumb, create) };
+        sys_ioctl(&mut proc, &mut host, fd, DRM_IOCTL_MODE_CREATE_DUMB, &mut buf).unwrap();
+        let created: WpkDrmModeCreateDumb =
+            unsafe { core::ptr::read_unaligned(buf.as_ptr() as *const WpkDrmModeCreateDumb) };
+
+        let req = WpkDrmGemClose {
+            handle: created.handle,
+            pad: 0,
+        };
+        let mut gbuf = [0u8; core::mem::size_of::<WpkDrmGemClose>()];
+        unsafe { core::ptr::write_unaligned(gbuf.as_mut_ptr() as *mut WpkDrmGemClose, req) };
+        sys_ioctl(&mut proc, &mut host, fd, DRM_IOCTL_GEM_CLOSE, &mut gbuf).unwrap();
+
+        let ofd_idx = proc.fd_table.get(fd).unwrap().ofd_ref.0;
+        assert!(
+            !proc
+                .ofd_table
+                .get(ofd_idx)
+                .unwrap()
+                .dri()
+                .unwrap()
+                .handles
+                .contains_key(&created.handle)
+        );
+    }
+
+    #[test]
+    fn dri_ioctl_prime_handle_to_fd_returns_new_fd_with_prime_state() {
+        use wasm_posix_shared::dri::*;
+        let _g = crate::dri::bo::TEST_REGISTRY_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        let fd = sys_open(&mut proc, &mut host, b"/dev/dri/renderD128", O_RDWR, 0).unwrap();
+
+        // CREATE_DUMB to get a handle.
+        let create = WpkDrmModeCreateDumb {
+            width: 32,
+            height: 32,
+            bpp: 32,
+            ..Default::default()
+        };
+        let mut buf = [0u8; core::mem::size_of::<WpkDrmModeCreateDumb>()];
+        unsafe { core::ptr::write_unaligned(buf.as_mut_ptr() as *mut WpkDrmModeCreateDumb, create) };
+        sys_ioctl(&mut proc, &mut host, fd, DRM_IOCTL_MODE_CREATE_DUMB, &mut buf).unwrap();
+        let created: WpkDrmModeCreateDumb =
+            unsafe { core::ptr::read_unaligned(buf.as_ptr() as *const WpkDrmModeCreateDumb) };
+
+        // PRIME_HANDLE_TO_FD on that handle.
+        let req = WpkDrmPrimeHandle {
+            handle: created.handle,
+            flags: wasm_posix_shared::flags::O_CLOEXEC,
+            fd: -1,
+        };
+        let mut pbuf = [0u8; core::mem::size_of::<WpkDrmPrimeHandle>()];
+        unsafe { core::ptr::write_unaligned(pbuf.as_mut_ptr() as *mut WpkDrmPrimeHandle, req) };
+        sys_ioctl(&mut proc, &mut host, fd, DRM_IOCTL_PRIME_HANDLE_TO_FD, &mut pbuf).unwrap();
+        let out: WpkDrmPrimeHandle =
+            unsafe { core::ptr::read_unaligned(pbuf.as_ptr() as *const WpkDrmPrimeHandle) };
+        assert!(out.fd >= 0);
+        assert_ne!(out.fd, fd);
+
+        // The new fd's OFD must carry PrimeBo state.
+        let prime_entry = proc.fd_table.get(out.fd).unwrap();
+        let prime_ofd = proc.ofd_table.get(prime_entry.ofd_ref.0).unwrap();
+        assert!(prime_ofd.prime_bo().is_some());
+        assert!(prime_ofd.dri().is_none());
+
+        // O_CLOEXEC propagates to FD_CLOEXEC.
+        assert_ne!(
+            prime_entry.fd_flags & wasm_posix_shared::fd_flags::FD_CLOEXEC,
+            0
+        );
+    }
+
+    #[test]
+    fn dri_ioctl_prime_fd_to_handle_roundtrip() {
+        use wasm_posix_shared::dri::*;
+        let _g = crate::dri::bo::TEST_REGISTRY_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        let fd_a = sys_open(&mut proc, &mut host, b"/dev/dri/renderD128", O_RDWR, 0).unwrap();
+        let fd_b = sys_open(&mut proc, &mut host, b"/dev/dri/renderD128", O_RDWR, 0).unwrap();
+
+        // CREATE_DUMB on fd_a.
+        let create = WpkDrmModeCreateDumb {
+            width: 16,
+            height: 16,
+            bpp: 32,
+            ..Default::default()
+        };
+        let mut buf = [0u8; core::mem::size_of::<WpkDrmModeCreateDumb>()];
+        unsafe { core::ptr::write_unaligned(buf.as_mut_ptr() as *mut WpkDrmModeCreateDumb, create) };
+        sys_ioctl(&mut proc, &mut host, fd_a, DRM_IOCTL_MODE_CREATE_DUMB, &mut buf).unwrap();
+        let created: WpkDrmModeCreateDumb =
+            unsafe { core::ptr::read_unaligned(buf.as_ptr() as *const WpkDrmModeCreateDumb) };
+
+        // Export via fd_a.
+        let exp = WpkDrmPrimeHandle {
+            handle: created.handle,
+            flags: 0,
+            fd: -1,
+        };
+        let mut pbuf = [0u8; core::mem::size_of::<WpkDrmPrimeHandle>()];
+        unsafe { core::ptr::write_unaligned(pbuf.as_mut_ptr() as *mut WpkDrmPrimeHandle, exp) };
+        sys_ioctl(&mut proc, &mut host, fd_a, DRM_IOCTL_PRIME_HANDLE_TO_FD, &mut pbuf).unwrap();
+        let exported: WpkDrmPrimeHandle =
+            unsafe { core::ptr::read_unaligned(pbuf.as_ptr() as *const WpkDrmPrimeHandle) };
+
+        // Import the prime fd on fd_b — same bo, fresh per-fd handle.
+        let imp = WpkDrmPrimeHandle {
+            handle: 0,
+            flags: 0,
+            fd: exported.fd,
+        };
+        unsafe { core::ptr::write_unaligned(pbuf.as_mut_ptr() as *mut WpkDrmPrimeHandle, imp) };
+        sys_ioctl(&mut proc, &mut host, fd_b, DRM_IOCTL_PRIME_FD_TO_HANDLE, &mut pbuf).unwrap();
+        let imported: WpkDrmPrimeHandle =
+            unsafe { core::ptr::read_unaligned(pbuf.as_ptr() as *const WpkDrmPrimeHandle) };
+        assert_eq!(imported.handle, 1, "first handle in fd_b's namespace");
+
+        // The imported handle must resolve to the SAME bo as the
+        // original handle on fd_a.
+        let ofd_a_idx = proc.fd_table.get(fd_a).unwrap().ofd_ref.0;
+        let ofd_b_idx = proc.fd_table.get(fd_b).unwrap().ofd_ref.0;
+        let bo_a = *proc
+            .ofd_table
+            .get(ofd_a_idx)
+            .unwrap()
+            .dri()
+            .unwrap()
+            .handles
+            .get(&created.handle)
+            .unwrap();
+        let bo_b = *proc
+            .ofd_table
+            .get(ofd_b_idx)
+            .unwrap()
+            .dri()
+            .unwrap()
+            .handles
+            .get(&imported.handle)
+            .unwrap();
+        assert_eq!(bo_a, bo_b, "prime export+import must alias the same bo");
+    }
+
+    #[test]
+    fn dri_ioctl_prime_fd_to_handle_rejects_non_prime_fd() {
+        use wasm_posix_shared::dri::*;
+        let _g = crate::dri::bo::TEST_REGISTRY_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        let fd_render = sys_open(&mut proc, &mut host, b"/dev/dri/renderD128", O_RDWR, 0).unwrap();
+        let fd_null = sys_open(&mut proc, &mut host, b"/dev/null", O_RDWR, 0).unwrap();
+
+        let imp = WpkDrmPrimeHandle {
+            handle: 0,
+            flags: 0,
+            fd: fd_null, // not a prime-bo fd
+        };
+        let mut pbuf = [0u8; core::mem::size_of::<WpkDrmPrimeHandle>()];
+        unsafe { core::ptr::write_unaligned(pbuf.as_mut_ptr() as *mut WpkDrmPrimeHandle, imp) };
+        assert_eq!(
+            sys_ioctl(
+                &mut proc,
+                &mut host,
+                fd_render,
+                DRM_IOCTL_PRIME_FD_TO_HANDLE,
+                &mut pbuf,
+            )
+            .unwrap_err(),
+            Errno::EINVAL
+        );
+    }
+
+    #[test]
+    fn close_releases_dri_handles_and_destroys_host_bo() {
+        // Closing the last fd that references a bo must decref the bo
+        // to 0 and ask the host to destroy its SAB backing.
+        use wasm_posix_shared::dri::*;
+        let _g = crate::dri::bo::TEST_REGISTRY_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        let fd = sys_open(&mut proc, &mut host, b"/dev/dri/renderD128", O_RDWR, 0).unwrap();
+
+        let create = WpkDrmModeCreateDumb {
+            width: 8,
+            height: 8,
+            bpp: 32,
+            ..Default::default()
+        };
+        let mut buf = [0u8; core::mem::size_of::<WpkDrmModeCreateDumb>()];
+        unsafe { core::ptr::write_unaligned(buf.as_mut_ptr() as *mut WpkDrmModeCreateDumb, create) };
+        sys_ioctl(&mut proc, &mut host, fd, DRM_IOCTL_MODE_CREATE_DUMB, &mut buf).unwrap();
+        let created: WpkDrmModeCreateDumb =
+            unsafe { core::ptr::read_unaligned(buf.as_ptr() as *const WpkDrmModeCreateDumb) };
+
+        // Bo exists in the registry with refcount = 1.
+        let bo_id = crate::dri::bo::next_id_for_test() - 1;
+        let bo_present_before =
+            crate::dri::with_registry(|r| r.get(bo_id).is_some());
+        assert!(bo_present_before);
+
+        // Close the fd — the bo must be gone.
+        sys_close(&mut proc, &mut host, fd).unwrap();
+        let bo_gone_after =
+            crate::dri::with_registry(|r| r.get(bo_id).is_none());
+        assert!(bo_gone_after, "close should have released the bo");
+        // Avoid "unused variable" warning.
+        let _ = created;
+    }
+
+    #[test]
+    fn close_prime_fd_decrements_bo_refcount() {
+        // After PRIME_HANDLE_TO_FD, the bo refcount is 2 (original +
+        // prime). Closing only the prime fd decrements to 1; closing
+        // the original fd then destroys the bo.
+        use wasm_posix_shared::dri::*;
+        let _g = crate::dri::bo::TEST_REGISTRY_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        let fd = sys_open(&mut proc, &mut host, b"/dev/dri/renderD128", O_RDWR, 0).unwrap();
+
+        let create = WpkDrmModeCreateDumb {
+            width: 8,
+            height: 8,
+            bpp: 32,
+            ..Default::default()
+        };
+        let mut buf = [0u8; core::mem::size_of::<WpkDrmModeCreateDumb>()];
+        unsafe { core::ptr::write_unaligned(buf.as_mut_ptr() as *mut WpkDrmModeCreateDumb, create) };
+        sys_ioctl(&mut proc, &mut host, fd, DRM_IOCTL_MODE_CREATE_DUMB, &mut buf).unwrap();
+        let created: WpkDrmModeCreateDumb =
+            unsafe { core::ptr::read_unaligned(buf.as_ptr() as *const WpkDrmModeCreateDumb) };
+
+        let req = WpkDrmPrimeHandle {
+            handle: created.handle,
+            flags: 0,
+            fd: -1,
+        };
+        let mut pbuf = [0u8; core::mem::size_of::<WpkDrmPrimeHandle>()];
+        unsafe { core::ptr::write_unaligned(pbuf.as_mut_ptr() as *mut WpkDrmPrimeHandle, req) };
+        sys_ioctl(&mut proc, &mut host, fd, DRM_IOCTL_PRIME_HANDLE_TO_FD, &mut pbuf).unwrap();
+        let exported: WpkDrmPrimeHandle =
+            unsafe { core::ptr::read_unaligned(pbuf.as_ptr() as *const WpkDrmPrimeHandle) };
+
+        // Bo refcount is 2.
+        let bo_id = crate::dri::bo::next_id_for_test() - 1;
+        assert_eq!(
+            crate::dri::with_registry(|r| r.get(bo_id).map(|b| b.refcount)),
+            Some(2)
+        );
+
+        // Close just the prime fd — refcount drops to 1, bo still alive.
+        sys_close(&mut proc, &mut host, exported.fd).unwrap();
+        assert_eq!(
+            crate::dri::with_registry(|r| r.get(bo_id).map(|b| b.refcount)),
+            Some(1)
+        );
+
+        // Close the original fd — bo gone.
+        sys_close(&mut proc, &mut host, fd).unwrap();
+        assert!(crate::dri::with_registry(|r| r.get(bo_id).is_none()));
+    }
+
+    #[test]
+    fn kms_set_and_drop_master_round_trip() {
+        use wasm_posix_shared::dri::*;
+        let _g_master = crate::dri::master::lock_for_test();
+        let _g_reg = crate::dri::bo::TEST_REGISTRY_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        let fd = sys_open(&mut proc, &mut host, b"/dev/dri/card0", O_RDWR, 0).unwrap();
+
+        let mut buf = [0u8; 16];
+        sys_ioctl(&mut proc, &mut host, fd, DRM_IOCTL_SET_MASTER, &mut buf).unwrap();
+        let ofd_idx = proc.fd_table.get(fd).unwrap().ofd_ref.0;
+        assert!(proc.ofd_table.get(ofd_idx).unwrap().kms().unwrap().holds_master);
+
+        sys_ioctl(&mut proc, &mut host, fd, DRM_IOCTL_DROP_MASTER, &mut buf).unwrap();
+        assert!(!proc.ofd_table.get(ofd_idx).unwrap().kms().unwrap().holds_master);
+    }
+
+    #[test]
+    fn kms_second_set_master_from_other_pid_is_ebusy() {
+        use wasm_posix_shared::dri::*;
+        let _g_master = crate::dri::master::lock_for_test();
+        let _g_reg = crate::dri::bo::TEST_REGISTRY_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let mut proc_a = Process::new(1);
+        let mut proc_b = Process::new(2);
+        let mut host = MockHostIO::new();
+        let fd_a = sys_open(&mut proc_a, &mut host, b"/dev/dri/card0", O_RDWR, 0).unwrap();
+        let fd_b = sys_open(&mut proc_b, &mut host, b"/dev/dri/card0", O_RDWR, 0).unwrap();
+
+        let mut buf = [0u8; 16];
+        sys_ioctl(&mut proc_a, &mut host, fd_a, DRM_IOCTL_SET_MASTER, &mut buf).unwrap();
+        let err =
+            sys_ioctl(&mut proc_b, &mut host, fd_b, DRM_IOCTL_SET_MASTER, &mut buf).unwrap_err();
+        assert_eq!(err, Errno::EBUSY);
+    }
+
+    #[test]
+    fn kms_close_releases_master() {
+        use wasm_posix_shared::dri::*;
+        let _g_master = crate::dri::master::lock_for_test();
+        let _g_reg = crate::dri::bo::TEST_REGISTRY_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        let fd = sys_open(&mut proc, &mut host, b"/dev/dri/card0", O_RDWR, 0).unwrap();
+        let mut buf = [0u8; 16];
+        sys_ioctl(&mut proc, &mut host, fd, DRM_IOCTL_SET_MASTER, &mut buf).unwrap();
+
+        sys_close(&mut proc, &mut host, fd).unwrap();
+        assert!(crate::dri::master::current().is_none());
+    }
+
+    #[test]
+    fn kms_getresources_reports_one_crtc_one_connector_one_encoder() {
+        use wasm_posix_shared::dri::*;
+        let _g_reg = crate::dri::bo::TEST_REGISTRY_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        let fd = sys_open(&mut proc, &mut host, b"/dev/dri/card0", O_RDWR, 0).unwrap();
+
+        // Caller passes zero count/ptr first (probe), then re-issues
+        // with allocated buffers. We only assert the count outputs.
+        let req = WpkDrmModeCardRes::default();
+        let mut buf = [0u8; core::mem::size_of::<WpkDrmModeCardRes>()];
+        unsafe { core::ptr::write_unaligned(buf.as_mut_ptr() as *mut WpkDrmModeCardRes, req) };
+        sys_ioctl(&mut proc, &mut host, fd, DRM_IOCTL_MODE_GETRESOURCES, &mut buf).unwrap();
+        let out: WpkDrmModeCardRes =
+            unsafe { core::ptr::read_unaligned(buf.as_ptr() as *const WpkDrmModeCardRes) };
+        assert_eq!(out.count_crtcs, 1);
+        assert_eq!(out.count_connectors, 1);
+        assert_eq!(out.count_encoders, 1);
+        assert_eq!(out.min_width, 1);
+        assert_eq!(out.min_height, 1);
+        assert_eq!(out.max_width, 16384);
+        assert_eq!(out.max_height, 16384);
+    }
+
+    #[test]
+    fn kms_getcrtc_only_id_one_else_enoent() {
+        use wasm_posix_shared::dri::*;
+        let _g_reg = crate::dri::bo::TEST_REGISTRY_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        let fd = sys_open(&mut proc, &mut host, b"/dev/dri/card0", O_RDWR, 0).unwrap();
+
+        let req = WpkDrmModeGetCrtc {
+            crtc_id: 1,
+            ..Default::default()
+        };
+        let mut buf = [0u8; core::mem::size_of::<WpkDrmModeGetCrtc>()];
+        unsafe { core::ptr::write_unaligned(buf.as_mut_ptr() as *mut WpkDrmModeGetCrtc, req) };
+        sys_ioctl(&mut proc, &mut host, fd, DRM_IOCTL_MODE_GETCRTC, &mut buf).unwrap();
+        let out: WpkDrmModeGetCrtc =
+            unsafe { core::ptr::read_unaligned(buf.as_ptr() as *const WpkDrmModeGetCrtc) };
+        assert_eq!(out.crtc_id, 1);
+
+        let req = WpkDrmModeGetCrtc {
+            crtc_id: 99,
+            ..Default::default()
+        };
+        unsafe { core::ptr::write_unaligned(buf.as_mut_ptr() as *mut WpkDrmModeGetCrtc, req) };
+        assert_eq!(
+            sys_ioctl(&mut proc, &mut host, fd, DRM_IOCTL_MODE_GETCRTC, &mut buf).unwrap_err(),
+            Errno::ENOENT
+        );
+    }
+
+    #[test]
+    fn kms_addfb_then_setcrtc_then_page_flip_happy_path() {
+        use wasm_posix_shared::dri::*;
+        let _g_master = crate::dri::master::lock_for_test();
+        let _g_reg = crate::dri::bo::TEST_REGISTRY_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        crate::dri::bo::reset_registry();
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        let fd = sys_open(&mut proc, &mut host, b"/dev/dri/card0", O_RDWR, 0).unwrap();
+
+        // Acquire master.
+        let mut master_buf = [0u8; 16];
+        sys_ioctl(&mut proc, &mut host, fd, DRM_IOCTL_SET_MASTER, &mut master_buf).unwrap();
+
+        // CREATE_DUMB.
+        let create = WpkDrmModeCreateDumb {
+            width: 64,
+            height: 32,
+            bpp: 32,
+            ..Default::default()
+        };
+        let mut cbuf = [0u8; core::mem::size_of::<WpkDrmModeCreateDumb>()];
+        unsafe { core::ptr::write_unaligned(cbuf.as_mut_ptr() as *mut WpkDrmModeCreateDumb, create) };
+        sys_ioctl(&mut proc, &mut host, fd, DRM_IOCTL_MODE_CREATE_DUMB, &mut cbuf).unwrap();
+        let created: WpkDrmModeCreateDumb =
+            unsafe { core::ptr::read_unaligned(cbuf.as_ptr() as *const WpkDrmModeCreateDumb) };
+
+        // ADDFB2.
+        let mut fb_req = WpkDrmModeFbCmd2 {
+            width: 64,
+            height: 32,
+            pixel_format: DRM_FORMAT_ARGB8888,
+            ..Default::default()
+        };
+        fb_req.handles[0] = created.handle;
+        fb_req.pitches[0] = created.pitch;
+        let mut fbuf = [0u8; core::mem::size_of::<WpkDrmModeFbCmd2>()];
+        unsafe { core::ptr::write_unaligned(fbuf.as_mut_ptr() as *mut WpkDrmModeFbCmd2, fb_req) };
+        sys_ioctl(&mut proc, &mut host, fd, DRM_IOCTL_MODE_ADDFB2, &mut fbuf).unwrap();
+        let fb_out: WpkDrmModeFbCmd2 =
+            unsafe { core::ptr::read_unaligned(fbuf.as_ptr() as *const WpkDrmModeFbCmd2) };
+        assert_ne!(fb_out.fb_id, 0);
+
+        // SETCRTC.
+        let crtc_req = WpkDrmModeGetCrtc {
+            crtc_id: 1,
+            fb_id: fb_out.fb_id,
+            ..Default::default()
+        };
+        let mut crtcbuf = [0u8; core::mem::size_of::<WpkDrmModeGetCrtc>()];
+        unsafe { core::ptr::write_unaligned(crtcbuf.as_mut_ptr() as *mut WpkDrmModeGetCrtc, crtc_req) };
+        sys_ioctl(&mut proc, &mut host, fd, DRM_IOCTL_MODE_SETCRTC, &mut crtcbuf).unwrap();
+
+        // PAGE_FLIP enqueues + bumps the commit counter.
+        let commits_before = crate::dri::kms_commit_count(1);
+        let flip = WpkDrmModeCrtcPageFlip {
+            crtc_id: 1,
+            fb_id: fb_out.fb_id,
+            flags: 0,
+            reserved: 0,
+            user_data: 0x42,
+        };
+        let mut flipbuf = [0u8; core::mem::size_of::<WpkDrmModeCrtcPageFlip>()];
+        unsafe { core::ptr::write_unaligned(flipbuf.as_mut_ptr() as *mut WpkDrmModeCrtcPageFlip, flip) };
+        sys_ioctl(&mut proc, &mut host, fd, DRM_IOCTL_MODE_PAGE_FLIP, &mut flipbuf).unwrap();
+        assert_eq!(crate::dri::kms_commit_count(1), commits_before + 1);
+
+        let ofd_idx = proc.fd_table.get(fd).unwrap().ofd_ref.0;
+        let kms = proc.ofd_table.get(ofd_idx).unwrap().kms().unwrap();
+        // The v1 PAGE_FLIP path drains synchronously into event_ring, so
+        // pending_flips is left empty and a 32-byte DRM_EVENT_FLIP_COMPLETE
+        // record sits in event_ring waiting for read(card0).
+        assert!(kms.pending_flips.is_empty());
+        assert_eq!(kms.event_ring.len(), 32);
+        let event: Vec<u8> = kms.event_ring.iter().copied().collect();
+        assert_eq!(u32::from_le_bytes(event[0..4].try_into().unwrap()), 2);
+        assert_eq!(u32::from_le_bytes(event[4..8].try_into().unwrap()), 32);
+        assert_eq!(u64::from_le_bytes(event[8..16].try_into().unwrap()), 0x42);
+        assert_eq!(u32::from_le_bytes(event[28..32].try_into().unwrap()), 1);
+
+        // A back-to-back second PAGE_FLIP succeeds (the previous flip
+        // already retired synchronously) and appends another 32-byte
+        // record to the event_ring.
+        unsafe { core::ptr::write_unaligned(flipbuf.as_mut_ptr() as *mut WpkDrmModeCrtcPageFlip, flip) };
+        sys_ioctl(&mut proc, &mut host, fd, DRM_IOCTL_MODE_PAGE_FLIP, &mut flipbuf).unwrap();
+        let kms = proc.ofd_table.get(ofd_idx).unwrap().kms().unwrap();
+        assert!(kms.pending_flips.is_empty());
+        assert_eq!(kms.event_ring.len(), 64);
+    }
+
+    #[test]
+    fn kms_setcrtc_without_master_returns_eacces() {
+        use wasm_posix_shared::dri::*;
+        let _g_master = crate::dri::master::lock_for_test();
+        let _g_reg = crate::dri::bo::TEST_REGISTRY_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        let fd = sys_open(&mut proc, &mut host, b"/dev/dri/card0", O_RDWR, 0).unwrap();
+
+        let crtc_req = WpkDrmModeGetCrtc {
+            crtc_id: 1,
+            ..Default::default()
+        };
+        let mut crtcbuf = [0u8; core::mem::size_of::<WpkDrmModeGetCrtc>()];
+        unsafe { core::ptr::write_unaligned(crtcbuf.as_mut_ptr() as *mut WpkDrmModeGetCrtc, crtc_req) };
+        assert_eq!(
+            sys_ioctl(&mut proc, &mut host, fd, DRM_IOCTL_MODE_SETCRTC, &mut crtcbuf)
+                .unwrap_err(),
+            Errno::EACCES
+        );
+    }
+
+    #[test]
+    fn kms_rmfb_releases_fb_and_bo_refcount() {
+        use wasm_posix_shared::dri::*;
+        let _g_master = crate::dri::master::lock_for_test();
+        let _g_reg = crate::dri::bo::TEST_REGISTRY_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        crate::dri::bo::reset_registry();
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        let fd = sys_open(&mut proc, &mut host, b"/dev/dri/card0", O_RDWR, 0).unwrap();
+
+        // CREATE_DUMB + ADDFB2 path.
+        let create = WpkDrmModeCreateDumb {
+            width: 8,
+            height: 8,
+            bpp: 32,
+            ..Default::default()
+        };
+        let mut cbuf = [0u8; core::mem::size_of::<WpkDrmModeCreateDumb>()];
+        unsafe { core::ptr::write_unaligned(cbuf.as_mut_ptr() as *mut WpkDrmModeCreateDumb, create) };
+        sys_ioctl(&mut proc, &mut host, fd, DRM_IOCTL_MODE_CREATE_DUMB, &mut cbuf).unwrap();
+        let created: WpkDrmModeCreateDumb =
+            unsafe { core::ptr::read_unaligned(cbuf.as_ptr() as *const WpkDrmModeCreateDumb) };
+
+        let mut fb_req = WpkDrmModeFbCmd2 {
+            width: 8,
+            height: 8,
+            pixel_format: DRM_FORMAT_ARGB8888,
+            ..Default::default()
+        };
+        fb_req.handles[0] = created.handle;
+        fb_req.pitches[0] = created.pitch;
+        let mut fbuf = [0u8; core::mem::size_of::<WpkDrmModeFbCmd2>()];
+        unsafe { core::ptr::write_unaligned(fbuf.as_mut_ptr() as *mut WpkDrmModeFbCmd2, fb_req) };
+        sys_ioctl(&mut proc, &mut host, fd, DRM_IOCTL_MODE_ADDFB2, &mut fbuf).unwrap();
+        let fb_out: WpkDrmModeFbCmd2 =
+            unsafe { core::ptr::read_unaligned(fbuf.as_ptr() as *const WpkDrmModeFbCmd2) };
+
+        let bo_id = crate::dri::bo::next_id_for_test() - 1;
+        // ADDFB2 incref'd the bo (handle held ref + fb held ref = 2).
+        assert_eq!(
+            crate::dri::with_registry(|r| r.get(bo_id).map(|b| b.refcount)),
+            Some(2)
+        );
+
+        // RMFB drops the fb's ref.
+        let mut rmbuf = fb_out.fb_id.to_le_bytes();
+        sys_ioctl(&mut proc, &mut host, fd, DRM_IOCTL_MODE_RMFB, &mut rmbuf).unwrap();
+        assert_eq!(
+            crate::dri::with_registry(|r| r.get(bo_id).map(|b| b.refcount)),
+            Some(1)
+        );
+
+        // Per-fd kms.fbs map is empty.
+        let ofd_idx = proc.fd_table.get(fd).unwrap().ofd_ref.0;
+        assert!(proc.ofd_table.get(ofd_idx).unwrap().kms().unwrap().fbs.is_empty());
+
+        // Second RMFB on the same id → ENOENT.
+        let mut rmbuf = fb_out.fb_id.to_le_bytes();
+        assert_eq!(
+            sys_ioctl(&mut proc, &mut host, fd, DRM_IOCTL_MODE_RMFB, &mut rmbuf).unwrap_err(),
+            Errno::ENOENT
+        );
+    }
+
+    #[test]
+    fn dri_handles_are_per_fd_not_per_process() {
+        // Two opens of the same node from the same pid must get
+        // independent handle namespaces (Linux semantics).
+        use wasm_posix_shared::dri::*;
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        let fd_a = sys_open(&mut proc, &mut host, b"/dev/dri/renderD128", O_RDWR, 0).unwrap();
+        let fd_b = sys_open(&mut proc, &mut host, b"/dev/dri/renderD128", O_RDWR, 0).unwrap();
+        assert_ne!(fd_a, fd_b);
+
+        let create = WpkDrmModeCreateDumb {
+            width: 8,
+            height: 8,
+            bpp: 32,
+            ..Default::default()
+        };
+        let mut buf = [0u8; core::mem::size_of::<WpkDrmModeCreateDumb>()];
+
+        unsafe { core::ptr::write_unaligned(buf.as_mut_ptr() as *mut WpkDrmModeCreateDumb, create) };
+        sys_ioctl(&mut proc, &mut host, fd_a, DRM_IOCTL_MODE_CREATE_DUMB, &mut buf).unwrap();
+        let on_a: WpkDrmModeCreateDumb =
+            unsafe { core::ptr::read_unaligned(buf.as_ptr() as *const WpkDrmModeCreateDumb) };
+
+        unsafe { core::ptr::write_unaligned(buf.as_mut_ptr() as *mut WpkDrmModeCreateDumb, create) };
+        sys_ioctl(&mut proc, &mut host, fd_b, DRM_IOCTL_MODE_CREATE_DUMB, &mut buf).unwrap();
+        let on_b: WpkDrmModeCreateDumb =
+            unsafe { core::ptr::read_unaligned(buf.as_ptr() as *const WpkDrmModeCreateDumb) };
+
+        // Both fds yield handle == 1 in their own namespace.
+        assert_eq!(on_a.handle, 1);
+        assert_eq!(on_b.handle, 1);
+    }
+
+    #[test]
+    fn read_dri_returns_zero() {
+        // DRI nodes are not stream-readable — clients use mmap/ioctl.
+        // Same policy as /dev/fb0: read returns 0.
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        let fd = sys_open(&mut proc, &mut host, b"/dev/dri/renderD128", O_RDWR, 0).unwrap();
+        let mut buf = [0u8; 16];
+        let n = sys_read(&mut proc, &mut host, fd, &mut buf).unwrap();
+        assert_eq!(n, 0);
+    }
+
+    /// Helper: open `/dev/dri/renderD128`, allocate a dumb buffer, fetch its
+    /// mmap offset via `MODE_MAP_DUMB`, and return `(fd, offset, size)`.
+    fn dri_alloc_dumb_for_mmap(
+        proc: &mut Process,
+        host: &mut MockHostIO,
+        width: u32,
+        height: u32,
+    ) -> (i32, u64, usize) {
+        use wasm_posix_shared::dri::*;
+        let fd = sys_open(proc, host, b"/dev/dri/renderD128", O_RDWR, 0).unwrap();
+        let create = WpkDrmModeCreateDumb {
+            width,
+            height,
+            bpp: 32,
+            ..Default::default()
+        };
+        let mut cbuf = [0u8; core::mem::size_of::<WpkDrmModeCreateDumb>()];
+        unsafe {
+            core::ptr::write_unaligned(cbuf.as_mut_ptr() as *mut WpkDrmModeCreateDumb, create)
+        };
+        sys_ioctl(proc, host, fd, DRM_IOCTL_MODE_CREATE_DUMB, &mut cbuf).unwrap();
+        let created: WpkDrmModeCreateDumb =
+            unsafe { core::ptr::read_unaligned(cbuf.as_ptr() as *const WpkDrmModeCreateDumb) };
+
+        let map = WpkDrmModeMapDumb {
+            handle: created.handle,
+            pad: 0,
+            offset: 0,
+        };
+        let mut mbuf = [0u8; core::mem::size_of::<WpkDrmModeMapDumb>()];
+        unsafe { core::ptr::write_unaligned(mbuf.as_mut_ptr() as *mut WpkDrmModeMapDumb, map) };
+        sys_ioctl(proc, host, fd, DRM_IOCTL_MODE_MAP_DUMB, &mut mbuf).unwrap();
+        let mapped: WpkDrmModeMapDumb =
+            unsafe { core::ptr::read_unaligned(mbuf.as_ptr() as *const WpkDrmModeMapDumb) };
+
+        (fd, mapped.offset, created.size as usize)
+    }
+
+    #[test]
+    fn mmap_dri_binds_bo_in_process_memory() {
+        use wasm_posix_shared::mmap::{MAP_SHARED, PROT_READ, PROT_WRITE};
+        let _g = crate::dri::bo::TEST_REGISTRY_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        crate::dri::bo::reset_registry();
+
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        let (fd, offset, _size) = dri_alloc_dumb_for_mmap(&mut proc, &mut host, 64, 64);
+        // libgbm rounds the map length up to a wasm page; the kernel
+        // requires the caller to match that to avoid SAB/wasm geometry
+        // skew.
+        let aligned_len = (64usize * 64 * 4 + 0xFFFF) & !0xFFFF;
+
+        let addr = sys_mmap(
+            &mut proc,
+            &mut host,
+            0,
+            aligned_len,
+            PROT_READ | PROT_WRITE,
+            MAP_SHARED,
+            fd,
+            offset as i64,
+        )
+        .unwrap();
+        assert_ne!(addr, 0);
+
+        // The host saw a single bind for our pid + the bo whose id we
+        // can recover from the encoded offset.
+        let bo_id = (offset >> 12) as u32;
+        assert_eq!(host.gbm_bo_bind_calls, vec![(proc.pid as i32, bo_id, addr, aligned_len)]);
+
+        // Process tracks the binding so munmap can locate it later.
+        assert_eq!(proc.dri_bindings.len(), 1);
+        assert_eq!(proc.dri_bindings[0].addr, addr);
+        assert_eq!(proc.dri_bindings[0].len, aligned_len);
+        assert_eq!(proc.dri_bindings[0].bo_id, bo_id);
+    }
+
+    #[test]
+    fn mmap_dri_with_wrong_length_returns_einval_and_skips_host() {
+        use wasm_posix_shared::mmap::{MAP_SHARED, PROT_READ, PROT_WRITE};
+        let _g = crate::dri::bo::TEST_REGISTRY_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        crate::dri::bo::reset_registry();
+
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        let (fd, offset, _size) = dri_alloc_dumb_for_mmap(&mut proc, &mut host, 64, 64);
+
+        // Wrong length (single page < page-aligned bo size) → EINVAL,
+        // no host call.
+        let err = sys_mmap(
+            &mut proc,
+            &mut host,
+            0,
+            4096,
+            PROT_READ | PROT_WRITE,
+            MAP_SHARED,
+            fd,
+            offset as i64,
+        )
+        .unwrap_err();
+        assert_eq!(err, Errno::EINVAL);
+        assert!(host.gbm_bo_bind_calls.is_empty());
+        assert!(proc.dri_bindings.is_empty());
+    }
+
+    #[test]
+    fn mmap_dri_with_unknown_bo_offset_returns_einval() {
+        use wasm_posix_shared::mmap::{MAP_SHARED, PROT_READ, PROT_WRITE};
+        let _g = crate::dri::bo::TEST_REGISTRY_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        crate::dri::bo::reset_registry();
+
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        let fd = sys_open(&mut proc, &mut host, b"/dev/dri/renderD128", O_RDWR, 0).unwrap();
+
+        // An offset that doesn't decode to a live bo → EINVAL.
+        let err = sys_mmap(
+            &mut proc,
+            &mut host,
+            0,
+            0x10000,
+            PROT_READ | PROT_WRITE,
+            MAP_SHARED,
+            fd,
+            (0x9999u64 << 12) as i64,
+        )
+        .unwrap_err();
+        assert_eq!(err, Errno::EINVAL);
+        assert!(host.gbm_bo_bind_calls.is_empty());
+        assert!(proc.dri_bindings.is_empty());
+    }
+
+    #[test]
+    fn mmap_dri_requires_bo_handle_on_same_ofd() {
+        use wasm_posix_shared::mmap::{MAP_SHARED, PROT_READ, PROT_WRITE};
+        let _g = crate::dri::bo::TEST_REGISTRY_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        crate::dri::bo::reset_registry();
+
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        let (_owner_fd, offset, _size) = dri_alloc_dumb_for_mmap(&mut proc, &mut host, 64, 64);
+        let other_fd = sys_open(&mut proc, &mut host, b"/dev/dri/renderD128", O_RDWR, 0).unwrap();
+        let aligned_len = (64usize * 64 * 4 + 0xFFFF) & !0xFFFF;
+
+        let err = sys_mmap(
+            &mut proc,
+            &mut host,
+            0,
+            aligned_len,
+            PROT_READ | PROT_WRITE,
+            MAP_SHARED,
+            other_fd,
+            offset as i64,
+        )
+        .unwrap_err();
+        assert_eq!(err, Errno::EACCES);
+        assert!(host.gbm_bo_bind_calls.is_empty());
+        assert!(proc.dri_bindings.is_empty());
+    }
+
+    #[test]
+    fn mmap_dri_rolls_back_when_host_bind_fails() {
+        use wasm_posix_shared::mmap::{MAP_SHARED, PROT_READ, PROT_WRITE};
+        let _g = crate::dri::bo::TEST_REGISTRY_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        crate::dri::bo::reset_registry();
+
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        host.gbm_bo_bind_rc = -(Errno::ENOMEM as i32);
+        let (fd, offset, _size) = dri_alloc_dumb_for_mmap(&mut proc, &mut host, 64, 64);
+        let aligned_len = (64usize * 64 * 4 + 0xFFFF) & !0xFFFF;
+
+        let err = sys_mmap(
+            &mut proc,
+            &mut host,
+            0,
+            aligned_len,
+            PROT_READ | PROT_WRITE,
+            MAP_SHARED,
+            fd,
+            offset as i64,
+        )
+        .unwrap_err();
+        assert_eq!(err, Errno::ENOMEM);
+        // Bind attempt was made and observed.
+        assert_eq!(host.gbm_bo_bind_calls.len(), 1);
+        // Wasm pages were rolled back: no binding recorded, no live
+        // anonymous mapping in the address range we asked about.
+        assert!(proc.dri_bindings.is_empty());
+        // The host was NOT asked to unbind — the bind itself failed.
+        assert!(host.gbm_bo_unbind_calls.is_empty());
+    }
+
+    #[test]
+    fn munmap_dri_unbinds_host_and_clears_binding() {
+        use wasm_posix_shared::mmap::{MAP_SHARED, PROT_READ, PROT_WRITE};
+        let _g = crate::dri::bo::TEST_REGISTRY_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        crate::dri::bo::reset_registry();
+
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        let (fd, offset, _size) = dri_alloc_dumb_for_mmap(&mut proc, &mut host, 64, 64);
+        let aligned_len = (64usize * 64 * 4 + 0xFFFF) & !0xFFFF;
+
+        let addr = sys_mmap(
+            &mut proc,
+            &mut host,
+            0,
+            aligned_len,
+            PROT_READ | PROT_WRITE,
+            MAP_SHARED,
+            fd,
+            offset as i64,
+        )
+        .unwrap();
+        let bo_id = (offset >> 12) as u32;
+        assert_eq!(proc.dri_bindings.len(), 1);
+
+        sys_munmap(&mut proc, &mut host, addr, aligned_len).unwrap();
+        assert!(proc.dri_bindings.is_empty());
+        assert_eq!(
+            host.gbm_bo_unbind_calls,
+            vec![(proc.pid as i32, bo_id, addr, aligned_len)]
+        );
+    }
+
+    #[test]
+    fn partial_munmap_dri_unbinds_host_and_clears_binding() {
+        use wasm_posix_shared::mmap::{MAP_SHARED, PROT_READ, PROT_WRITE};
+        let _g = crate::dri::bo::TEST_REGISTRY_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        crate::dri::bo::reset_registry();
+
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        let (fd, offset, _size) = dri_alloc_dumb_for_mmap(&mut proc, &mut host, 256, 256);
+        let aligned_len = (256usize * 256 * 4 + 0xFFFF) & !0xFFFF;
+
+        let addr = sys_mmap(
+            &mut proc,
+            &mut host,
+            0,
+            aligned_len,
+            PROT_READ | PROT_WRITE,
+            MAP_SHARED,
+            fd,
+            offset as i64,
+        )
+        .unwrap();
+        let bo_id = (offset >> 12) as u32;
+
+        sys_munmap(&mut proc, &mut host, addr + 0x10000, 0x10000).unwrap();
+        assert!(proc.dri_bindings.is_empty());
+        assert_eq!(
+            host.gbm_bo_unbind_calls,
+            vec![(proc.pid as i32, bo_id, addr, aligned_len)]
+        );
+    }
+
+    #[test]
+    fn mmap_dri_works_for_card0_too() {
+        use wasm_posix_shared::dri::*;
+        use wasm_posix_shared::mmap::{MAP_SHARED, PROT_READ, PROT_WRITE};
+        let _g = crate::dri::bo::TEST_REGISTRY_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        crate::dri::bo::reset_registry();
+
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        let fd = sys_open(&mut proc, &mut host, b"/dev/dri/card0", O_RDWR, 0).unwrap();
+
+        // CREATE_DUMB on card0 — the Card variant carries a DriFdState too.
+        let create = WpkDrmModeCreateDumb {
+            width: 16,
+            height: 16,
+            bpp: 32,
+            ..Default::default()
+        };
+        let mut cbuf = [0u8; core::mem::size_of::<WpkDrmModeCreateDumb>()];
+        unsafe {
+            core::ptr::write_unaligned(cbuf.as_mut_ptr() as *mut WpkDrmModeCreateDumb, create)
+        };
+        sys_ioctl(&mut proc, &mut host, fd, DRM_IOCTL_MODE_CREATE_DUMB, &mut cbuf).unwrap();
+        let created: WpkDrmModeCreateDumb =
+            unsafe { core::ptr::read_unaligned(cbuf.as_ptr() as *const WpkDrmModeCreateDumb) };
+
+        let map = WpkDrmModeMapDumb {
+            handle: created.handle,
+            pad: 0,
+            offset: 0,
+        };
+        let mut mbuf = [0u8; core::mem::size_of::<WpkDrmModeMapDumb>()];
+        unsafe { core::ptr::write_unaligned(mbuf.as_mut_ptr() as *mut WpkDrmModeMapDumb, map) };
+        sys_ioctl(&mut proc, &mut host, fd, DRM_IOCTL_MODE_MAP_DUMB, &mut mbuf).unwrap();
+        let mapped: WpkDrmModeMapDumb =
+            unsafe { core::ptr::read_unaligned(mbuf.as_ptr() as *const WpkDrmModeMapDumb) };
+
+        let aligned_len = (16usize * 16 * 4 + 0xFFFF) & !0xFFFF;
+        let addr = sys_mmap(
+            &mut proc,
+            &mut host,
+            0,
+            aligned_len,
+            PROT_READ | PROT_WRITE,
+            MAP_SHARED,
+            fd,
+            mapped.offset as i64,
+        )
+        .unwrap();
+        assert_eq!(host.gbm_bo_bind_calls.len(), 1);
+        assert_eq!(proc.dri_bindings.len(), 1);
+        assert_eq!(proc.dri_bindings[0].addr, addr);
+    }
+
+    #[test]
+    fn glio_init_rejects_version_skew() {
+        use wasm_posix_shared::gl;
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        let fd = sys_open(&mut proc, &mut host, b"/dev/dri/renderD128", O_RDWR, 0).unwrap();
+        // A bumped op-table version from a user binary built against a
+        // newer kernel must be caught at first contact, not later as a
+        // silent decode error.
+        let bad_version: u32 = gl::OP_VERSION + 1;
+        let mut buf = [0u8; 4];
+        buf.copy_from_slice(&bad_version.to_le_bytes());
+        let err = sys_ioctl(&mut proc, &mut host, fd, gl::GLIO_INIT, &mut buf).unwrap_err();
+        assert_eq!(err, Errno::ENOSYS);
+        let ofd_idx = proc.fd_table.get(fd).unwrap().ofd_ref.0;
+        assert!(proc.ofd_table.get(ofd_idx).unwrap().dri().unwrap().gl.is_none());
+    }
+
+    #[test]
+    fn glio_init_accepts_matching_version_and_marks_initialized() {
+        use wasm_posix_shared::gl;
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        let fd = sys_open(&mut proc, &mut host, b"/dev/dri/renderD128", O_RDWR, 0).unwrap();
+        let ver = gl::OP_VERSION;
+        let mut buf = [0u8; 4];
+        buf.copy_from_slice(&ver.to_le_bytes());
+        sys_ioctl(&mut proc, &mut host, fd, gl::GLIO_INIT, &mut buf).unwrap();
+        let ofd_idx = proc.fd_table.get(fd).unwrap().ofd_ref.0;
+        let gls = proc
+            .ofd_table
+            .get(ofd_idx)
+            .unwrap()
+            .dri()
+            .unwrap()
+            .gl
+            .as_ref()
+            .expect("GlState installed");
+        assert!(gls.initialized);
+        assert!(gls.cmdbuf.is_none());
+        assert!(gls.context_id.is_none());
+        // Second GLIO_INIT on the same fd must be rejected with EBUSY.
+        assert_eq!(
+            sys_ioctl(&mut proc, &mut host, fd, gl::GLIO_INIT, &mut buf).unwrap_err(),
+            Errno::EBUSY,
+        );
+    }
+
+    #[test]
+    fn glio_create_context_assigns_id_and_rejects_double_create() {
+        use wasm_posix_shared::gl;
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        let fd = sys_open(&mut proc, &mut host, b"/dev/dri/renderD128", O_RDWR, 0).unwrap();
+        let mut ver_buf = [0u8; 4];
+        ver_buf.copy_from_slice(&gl::OP_VERSION.to_le_bytes());
+        sys_ioctl(&mut proc, &mut host, fd, gl::GLIO_INIT, &mut ver_buf).unwrap();
+
+        let attrs = gl::GlContextAttrs { client_version: 2, reserved: [0; 3] };
+        let mut buf = [0u8; core::mem::size_of::<gl::GlContextAttrs>()];
+        unsafe { core::ptr::write_unaligned(buf.as_mut_ptr() as *mut gl::GlContextAttrs, attrs) };
+        sys_ioctl(&mut proc, &mut host, fd, gl::GLIO_CREATE_CONTEXT, &mut buf).unwrap();
+
+        let ofd_idx = proc.fd_table.get(fd).unwrap().ofd_ref.0;
+        let gls = proc.ofd_table.get(ofd_idx).unwrap().dri().unwrap().gl.as_ref().unwrap();
+        assert_eq!(gls.context_id, Some(1));
+
+        // Second CREATE_CONTEXT on the same fd must fail until the
+        // first is destroyed.
+        unsafe { core::ptr::write_unaligned(buf.as_mut_ptr() as *mut gl::GlContextAttrs, attrs) };
+        assert_eq!(
+            sys_ioctl(&mut proc, &mut host, fd, gl::GLIO_CREATE_CONTEXT, &mut buf).unwrap_err(),
+            Errno::EBUSY,
+        );
+
+        // After DESTROY_CONTEXT a fresh CREATE_CONTEXT succeeds.
+        let mut nullbuf = [0u8; 0];
+        sys_ioctl(&mut proc, &mut host, fd, gl::GLIO_DESTROY_CONTEXT, &mut nullbuf).unwrap();
+        unsafe { core::ptr::write_unaligned(buf.as_mut_ptr() as *mut gl::GlContextAttrs, attrs) };
+        sys_ioctl(&mut proc, &mut host, fd, gl::GLIO_CREATE_CONTEXT, &mut buf).unwrap();
+    }
+
+    #[test]
+    fn glio_submit_rejects_out_of_range_range() {
+        use wasm_posix_shared::gl;
+        use wasm_posix_shared::mmap::{MAP_SHARED, PROT_READ, PROT_WRITE};
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        let fd = sys_open(&mut proc, &mut host, b"/dev/dri/renderD128", O_RDWR, 0).unwrap();
+        let mut ver_buf = [0u8; 4];
+        ver_buf.copy_from_slice(&gl::OP_VERSION.to_le_bytes());
+        sys_ioctl(&mut proc, &mut host, fd, gl::GLIO_INIT, &mut ver_buf).unwrap();
+
+        // Map the cmdbuf at offset==0 so submit has a binding to
+        // validate against.
+        sys_mmap(
+            &mut proc,
+            &mut host,
+            0,
+            gl::CMDBUF_LEN,
+            PROT_READ | PROT_WRITE,
+            MAP_SHARED,
+            fd,
+            0,
+        )
+        .unwrap();
+
+        // offset + length > CMDBUF_LEN must EINVAL.
+        let info = gl::GlSubmitInfo {
+            offset: (gl::CMDBUF_LEN - 4) as u32,
+            length: 16,
+        };
+        let mut buf = [0u8; core::mem::size_of::<gl::GlSubmitInfo>()];
+        unsafe { core::ptr::write_unaligned(buf.as_mut_ptr() as *mut gl::GlSubmitInfo, info) };
+        assert_eq!(
+            sys_ioctl(&mut proc, &mut host, fd, gl::GLIO_SUBMIT, &mut buf).unwrap_err(),
+            Errno::EINVAL,
+        );
+
+        // A valid sub-range succeeds and bumps the submit counter.
+        let info_ok = gl::GlSubmitInfo { offset: 0, length: 64 };
+        unsafe { core::ptr::write_unaligned(buf.as_mut_ptr() as *mut gl::GlSubmitInfo, info_ok) };
+        sys_ioctl(&mut proc, &mut host, fd, gl::GLIO_SUBMIT, &mut buf).unwrap();
+        let ofd_idx = proc.fd_table.get(fd).unwrap().ofd_ref.0;
+        let gls = proc.ofd_table.get(ofd_idx).unwrap().dri().unwrap().gl.as_ref().unwrap();
+        assert_eq!(gls.cmdbuf.unwrap().submit_seq, 1);
+    }
+
+    #[test]
+    fn glio_submit_returns_host_errno_without_bumping_sequence() {
+        use wasm_posix_shared::gl;
+        use wasm_posix_shared::mmap::{MAP_SHARED, PROT_READ, PROT_WRITE};
+
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        let fd = sys_open(&mut proc, &mut host, b"/dev/dri/renderD128", O_RDWR, 0).unwrap();
+        let mut ver_buf = [0u8; 4];
+        ver_buf.copy_from_slice(&gl::OP_VERSION.to_le_bytes());
+        sys_ioctl(&mut proc, &mut host, fd, gl::GLIO_INIT, &mut ver_buf).unwrap();
+        sys_mmap(
+            &mut proc,
+            &mut host,
+            0,
+            gl::CMDBUF_LEN,
+            PROT_READ | PROT_WRITE,
+            MAP_SHARED,
+            fd,
+            0,
+        )
+        .unwrap();
+
+        host.gl_submit_rc = -(Errno::EINVAL as i32);
+        let info = gl::GlSubmitInfo { offset: 0, length: 64 };
+        let mut buf = [0u8; core::mem::size_of::<gl::GlSubmitInfo>()];
+        unsafe { core::ptr::write_unaligned(buf.as_mut_ptr() as *mut gl::GlSubmitInfo, info) };
+        assert_eq!(
+            sys_ioctl(&mut proc, &mut host, fd, gl::GLIO_SUBMIT, &mut buf).unwrap_err(),
+            Errno::EINVAL,
+        );
+
+        let ofd_idx = proc.fd_table.get(fd).unwrap().ofd_ref.0;
+        let gls = proc.ofd_table.get(ofd_idx).unwrap().dri().unwrap().gl.as_ref().unwrap();
+        assert_eq!(gls.cmdbuf.unwrap().submit_seq, 0);
+    }
+
+    #[test]
+    fn glio_cmdbuf_mmap_validates_length_and_records_binding() {
+        use wasm_posix_shared::gl;
+        use wasm_posix_shared::mmap::{MAP_FAILED, MAP_SHARED, PROT_READ, PROT_WRITE};
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        let fd = sys_open(&mut proc, &mut host, b"/dev/dri/renderD128", O_RDWR, 0).unwrap();
+        let mut ver_buf = [0u8; 4];
+        ver_buf.copy_from_slice(&gl::OP_VERSION.to_le_bytes());
+        sys_ioctl(&mut proc, &mut host, fd, gl::GLIO_INIT, &mut ver_buf).unwrap();
+
+        // Wrong length is rejected.
+        let err = sys_mmap(
+            &mut proc,
+            &mut host,
+            0,
+            4096,
+            PROT_READ | PROT_WRITE,
+            MAP_SHARED,
+            fd,
+            0,
+        )
+        .unwrap_err();
+        assert_eq!(err, Errno::EINVAL);
+
+        // Correct length succeeds and installs the CmdbufBinding.
+        let addr = sys_mmap(
+            &mut proc,
+            &mut host,
+            0,
+            gl::CMDBUF_LEN,
+            PROT_READ | PROT_WRITE,
+            MAP_SHARED,
+            fd,
+            0,
+        )
+        .unwrap();
+        assert_ne!(addr, MAP_FAILED);
+        let ofd_idx = proc.fd_table.get(fd).unwrap().ofd_ref.0;
+        let gls = proc.ofd_table.get(ofd_idx).unwrap().dri().unwrap().gl.as_ref().unwrap();
+        let cb = gls.cmdbuf.expect("cmdbuf binding recorded");
+        assert_eq!(cb.addr, addr);
+        assert_eq!(cb.len, gl::CMDBUF_LEN);
+        assert_eq!(cb.submit_seq, 0);
+
+        // A second mmap at offset 0 after the cmdbuf is bound falls
+        // through to the bo path and EINVALs (bo_id=0 doesn't exist).
+        let err2 = sys_mmap(
+            &mut proc,
+            &mut host,
+            0,
+            gl::CMDBUF_LEN,
+            PROT_READ | PROT_WRITE,
+            MAP_SHARED,
+            fd,
+            0,
+        )
+        .unwrap_err();
+        assert_eq!(err2, Errno::EINVAL);
+    }
+
+    #[test]
+    fn munmap_gl_cmdbuf_unbinds_host_and_clears_binding() {
+        use wasm_posix_shared::gl;
+        use wasm_posix_shared::mmap::{MAP_SHARED, PROT_READ, PROT_WRITE};
+
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        let fd = sys_open(&mut proc, &mut host, b"/dev/dri/renderD128", O_RDWR, 0).unwrap();
+        let mut ver_buf = [0u8; 4];
+        ver_buf.copy_from_slice(&gl::OP_VERSION.to_le_bytes());
+        sys_ioctl(&mut proc, &mut host, fd, gl::GLIO_INIT, &mut ver_buf).unwrap();
+        let addr = sys_mmap(
+            &mut proc,
+            &mut host,
+            0,
+            gl::CMDBUF_LEN,
+            PROT_READ | PROT_WRITE,
+            MAP_SHARED,
+            fd,
+            0,
+        )
+        .unwrap();
+
+        sys_munmap(&mut proc, &mut host, addr + 0x10000, 0x10000).unwrap();
+        let ofd_idx = proc.fd_table.get(fd).unwrap().ofd_ref.0;
+        let gls = proc.ofd_table.get(ofd_idx).unwrap().dri().unwrap().gl.as_ref().unwrap();
+        assert!(gls.cmdbuf.is_none());
+        assert_eq!(host.gl_unbind_calls, vec![proc.pid as i32]);
+    }
+
+    #[test]
+    fn close_dri_fd_with_gl_state_unbinds_host() {
+        use wasm_posix_shared::gl;
+        use wasm_posix_shared::mmap::{MAP_SHARED, PROT_READ, PROT_WRITE};
+
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        let fd = sys_open(&mut proc, &mut host, b"/dev/dri/renderD128", O_RDWR, 0).unwrap();
+        let mut ver_buf = [0u8; 4];
+        ver_buf.copy_from_slice(&gl::OP_VERSION.to_le_bytes());
+        sys_ioctl(&mut proc, &mut host, fd, gl::GLIO_INIT, &mut ver_buf).unwrap();
+        sys_mmap(
+            &mut proc,
+            &mut host,
+            0,
+            gl::CMDBUF_LEN,
+            PROT_READ | PROT_WRITE,
+            MAP_SHARED,
+            fd,
+            0,
+        )
+        .unwrap();
+
+        sys_close(&mut proc, &mut host, fd).unwrap();
+        assert_eq!(host.gl_unbind_calls, vec![proc.pid as i32]);
+    }
+
+    #[test]
+    fn execve_releases_dri_bo_and_gl_mappings() {
+        use wasm_posix_shared::gl;
+        use wasm_posix_shared::mmap::{MAP_SHARED, PROT_READ, PROT_WRITE};
+        let _g = crate::dri::bo::TEST_REGISTRY_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        crate::dri::bo::reset_registry();
+
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        let (bo_fd, offset, _size) = dri_alloc_dumb_for_mmap(&mut proc, &mut host, 64, 64);
+        let bo_len = (64usize * 64 * 4 + 0xFFFF) & !0xFFFF;
+        let bo_addr = sys_mmap(
+            &mut proc,
+            &mut host,
+            0,
+            bo_len,
+            PROT_READ | PROT_WRITE,
+            MAP_SHARED,
+            bo_fd,
+            offset as i64,
+        )
+        .unwrap();
+
+        let gl_fd = sys_open(&mut proc, &mut host, b"/dev/dri/renderD128", O_RDWR, 0).unwrap();
+        let mut ver_buf = [0u8; 4];
+        ver_buf.copy_from_slice(&gl::OP_VERSION.to_le_bytes());
+        sys_ioctl(&mut proc, &mut host, gl_fd, gl::GLIO_INIT, &mut ver_buf).unwrap();
+        sys_mmap(
+            &mut proc,
+            &mut host,
+            0,
+            gl::CMDBUF_LEN,
+            PROT_READ | PROT_WRITE,
+            MAP_SHARED,
+            gl_fd,
+            0,
+        )
+        .unwrap();
+
+        sys_execve(&mut proc, &mut host, b"/bin/sh").unwrap();
+        let bo_id = (offset >> 12) as u32;
+        assert!(proc.dri_bindings.is_empty());
+        assert_eq!(
+            host.gbm_bo_unbind_calls,
+            vec![(proc.pid as i32, bo_id, bo_addr, bo_len)]
+        );
+        assert_eq!(host.gl_unbind_calls, vec![proc.pid as i32]);
+        let ofd_idx = proc.fd_table.get(gl_fd).unwrap().ofd_ref.0;
+        assert!(proc.ofd_table.get(ofd_idx).unwrap().dri().unwrap().gl.is_none());
+    }
+
+    #[test]
+    fn exit_releases_dri_bo_and_gl_mappings_before_fd_cleanup() {
+        use wasm_posix_shared::gl;
+        use wasm_posix_shared::mmap::{MAP_SHARED, PROT_READ, PROT_WRITE};
+        let _g = crate::dri::bo::TEST_REGISTRY_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        crate::dri::bo::reset_registry();
+
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        let (bo_fd, offset, _size) = dri_alloc_dumb_for_mmap(&mut proc, &mut host, 64, 64);
+        let bo_len = (64usize * 64 * 4 + 0xFFFF) & !0xFFFF;
+        let bo_addr = sys_mmap(
+            &mut proc,
+            &mut host,
+            0,
+            bo_len,
+            PROT_READ | PROT_WRITE,
+            MAP_SHARED,
+            bo_fd,
+            offset as i64,
+        )
+        .unwrap();
+
+        let gl_fd = sys_open(&mut proc, &mut host, b"/dev/dri/renderD128", O_RDWR, 0).unwrap();
+        let mut ver_buf = [0u8; 4];
+        ver_buf.copy_from_slice(&gl::OP_VERSION.to_le_bytes());
+        sys_ioctl(&mut proc, &mut host, gl_fd, gl::GLIO_INIT, &mut ver_buf).unwrap();
+        sys_mmap(
+            &mut proc,
+            &mut host,
+            0,
+            gl::CMDBUF_LEN,
+            PROT_READ | PROT_WRITE,
+            MAP_SHARED,
+            gl_fd,
+            0,
+        )
+        .unwrap();
+
+        sys_exit(&mut proc, &mut host, 0);
+        let bo_id = (offset >> 12) as u32;
+        assert!(proc.dri_bindings.is_empty());
+        assert_eq!(
+            host.gbm_bo_unbind_calls,
+            vec![(proc.pid as i32, bo_id, bo_addr, bo_len)]
+        );
+        assert_eq!(host.gl_unbind_calls, vec![proc.pid as i32]);
+    }
+
+    #[test]
+    fn glio_query_rejects_unbounded_input_len() {
+        use wasm_posix_shared::gl;
+
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        let fd = sys_open(&mut proc, &mut host, b"/dev/dri/renderD128", O_RDWR, 0).unwrap();
+        let mut ver_buf = [0u8; 4];
+        ver_buf.copy_from_slice(&gl::OP_VERSION.to_le_bytes());
+        sys_ioctl(&mut proc, &mut host, fd, gl::GLIO_INIT, &mut ver_buf).unwrap();
+
+        let info = gl::GlQueryInfo {
+            op: gl::QOP_GET_STRING,
+            in_buf_len: gl::MAX_QUERY_IN_LEN + 1,
+            out_buf_len: 4,
+            ..Default::default()
+        };
+        let mut buf = [0u8; core::mem::size_of::<gl::GlQueryInfo>()];
+        unsafe { core::ptr::write_unaligned(buf.as_mut_ptr() as *mut gl::GlQueryInfo, info) };
+        assert_eq!(
+            sys_ioctl(&mut proc, &mut host, fd, gl::GLIO_QUERY, &mut buf).unwrap_err(),
+            Errno::EINVAL,
         );
     }
 }

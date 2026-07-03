@@ -7,6 +7,7 @@ extern crate wasm_posix_shared;
 
 pub mod audio;
 pub mod devfs;
+pub mod dri;
 pub mod fd;
 pub mod fork;
 pub mod ipc;
@@ -75,33 +76,6 @@ pub fn current_time_secs() -> i64 {
     {
         0
     }
-}
-
-// ---------------------------------------------------------------------------
-// Kernel mode flag
-// ---------------------------------------------------------------------------
-
-use core::sync::atomic::{AtomicU32, Ordering};
-
-/// Kernel operating mode.
-///
-/// - Mode 0 (default): Traditional per-process kernel. Blocking syscalls spin
-///   or delegate to the host. Used by existing single-kernel-per-worker setup.
-/// - Mode 1: Centralized kernel. Blocking syscalls return EAGAIN immediately
-///   so the host JS event loop can handle waiting asynchronously.
-static KERNEL_MODE: AtomicU32 = AtomicU32::new(0);
-
-/// Returns true when the kernel is running in centralized mode (mode 1).
-/// In this mode, syscalls that would block instead return EAGAIN so the
-/// host can retry them asynchronously.
-#[inline]
-pub fn is_centralized_mode() -> bool {
-    KERNEL_MODE.load(Ordering::Relaxed) != 0
-}
-
-/// Set the kernel operating mode. Called from wasm_api or tests.
-pub fn set_kernel_mode(mode: u32) {
-    KERNEL_MODE.store(mode, Ordering::Relaxed);
 }
 
 #[cfg(any(target_arch = "wasm32", target_arch = "wasm64"))]

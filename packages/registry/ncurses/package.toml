@@ -1,13 +1,17 @@
-# Per-library manifest for ncurses. See docs/package-management.md.
+# ncurses provides both link-time libraries and the standard terminal
+# utilities. The package schema currently has one declared output shape per
+# manifest, so this is a program package whose build still installs
+# libncursesw/libtinfow and headers into the same prefix for consumers that
+# depend on ncurses as a link-time input.
 #
 # No wasm deps (host `tic`/`infocmp` are built out-of-band inside the
 # lib dir — they're host binaries, not cacheable wasm artifacts, so
 # they don't go through the resolver). The compiled-in terminal
 # fallback entries (xterm-256color, xterm, vt100, dumb) are linked
 # into libtinfow.a via MKfallback.sh; consumers don't need a runtime
-# terminfo database.
+# terminfo database for the common demo terminals.
 
-kind = "library"
+kind = "program"
 
 name = "ncurses"
 version = "6.5"
@@ -25,14 +29,42 @@ url = "https://invisible-island.net/ncurses/ncurses-license.html"
 [build]
 script_path = "packages/registry/ncurses/build-ncurses.sh"
 
-[outputs]
-# Wide variants are the ones we actually build (--enable-widec). Non-wide
-# names (libncurses.a, libtinfo.a) are provided as symlinks for consumers
-# that link `-lncurses`, but the resolver only enforces the underlying
-# files. Symlinks are nice-to-have, not part of the contract.
-libs = ["lib/libncursesw.a", "lib/libtinfow.a"]
-# Install produces ~40 headers under include/ncursesw/. Declare the
-# directory (validator accepts dirs; see openssl) instead of listing
-# every header — churn-free across version bumps.
-headers = ["include/ncursesw"]
-# `--enable-pc-files=no --with-pkg-config=no`: no pkgconfig outputs.
+[[outputs]]
+name = "clear"
+wasm = "clear.wasm"
+
+[[outputs]]
+name = "reset"
+wasm = "reset.wasm"
+
+[[outputs]]
+name = "tset"
+wasm = "tset.wasm"
+
+[[outputs]]
+name = "tput"
+wasm = "tput.wasm"
+
+[[outputs]]
+name = "tabs"
+wasm = "tabs.wasm"
+
+[[outputs]]
+name = "tic"
+wasm = "tic.wasm"
+
+[[outputs]]
+name = "infocmp"
+wasm = "infocmp.wasm"
+
+[[outputs]]
+name = "toe"
+wasm = "toe.wasm"
+
+[[outputs]]
+name = "captoinfo"
+wasm = "captoinfo.wasm"
+
+[[outputs]]
+name = "infotocap"
+wasm = "infotocap.wasm"

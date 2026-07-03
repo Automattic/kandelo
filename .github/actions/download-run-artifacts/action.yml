@@ -1,12 +1,12 @@
-name: Download run artifacts with retry
-description: Download artifacts from the current workflow run, retrying transient service failures.
+name: Download package run artifacts with retry
+description: Download package artifacts from the current workflow run, retrying transient service failures.
 
 inputs:
   github-token:
     description: Token with actions:read permission.
     required: true
   pattern:
-    description: Artifact name pattern to download.
+    description: Package artifact name pattern to download, matching artifacts like <pkg>-wasm32 or <pkg>-wasm64.
     required: true
   path:
     description: Destination directory.
@@ -30,45 +30,10 @@ runs:
         ARTIFACT_PATTERN: ${{ inputs.pattern }}
         ARTIFACT_PATH: ${{ inputs.path }}
         ARTIFACT_ATTEMPTS: ${{ inputs.attempts }}
-        ARTIFACT_INITIAL_DELAY_SECONDS: ${{ inputs.initial-delay-seconds }}
+        ARTIFACT_POLL_SECONDS: ${{ inputs.initial-delay-seconds }}
       run: |
         set -euo pipefail
-
-        if [ -z "$ARTIFACT_PATH" ] || [ "$ARTIFACT_PATH" = "/" ]; then
-          echo "::error::refusing to download artifacts to unsafe path: '$ARTIFACT_PATH'"
-          exit 1
-        fi
-        if ! [[ "$ARTIFACT_ATTEMPTS" =~ ^[1-9][0-9]*$ ]]; then
-          echo "::error::attempts must be a positive integer: '$ARTIFACT_ATTEMPTS'"
-          exit 1
-        fi
-        if ! [[ "$ARTIFACT_INITIAL_DELAY_SECONDS" =~ ^[0-9]+$ ]]; then
-          echo "::error::initial-delay-seconds must be a non-negative integer: '$ARTIFACT_INITIAL_DELAY_SECONDS'"
-          exit 1
-        fi
-
-        for attempt in $(seq 1 "$ARTIFACT_ATTEMPTS"); do
-          rm -rf "$ARTIFACT_PATH"
-          mkdir -p "$ARTIFACT_PATH"
-
-          set +e
-          gh run download "$GITHUB_RUN_ID" \
-            --repo "$GITHUB_REPOSITORY" \
-            --pattern "$ARTIFACT_PATTERN" \
-            --dir "$ARTIFACT_PATH"
-          status=$?
-          set -e
-
-          if [ "$status" -eq 0 ]; then
-            exit 0
-          fi
-
-          if [ "$attempt" -lt "$ARTIFACT_ATTEMPTS" ]; then
-            sleep_for=$((ARTIFACT_INITIAL_DELAY_SECONDS * attempt))
-            echo "::warning::artifact download failed with exit code $status (attempt $attempt/$ARTIFACT_ATTEMPTS); retrying in ${sleep_for}s"
-            sleep "$sleep_for"
-          fi
-        done
-
-        echo "::error::artifact download failed after $ARTIFACT_ATTEMPTS attempts"
-        exit 1
+        rm -rf "$ARTIFACT_PATH"
+        bash .github/scripts/download-dependency-artifacts.sh \
+          --pattern "$ARTIFACT_PATTERN" \
+          --output "$ARTIFACT_PATH"

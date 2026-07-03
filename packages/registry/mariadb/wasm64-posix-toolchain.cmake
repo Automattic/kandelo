@@ -4,7 +4,7 @@
 #   cmake -DCMAKE_TOOLCHAIN_FILE=.../wasm64-posix-toolchain.cmake ...
 #
 # Produces LP64 binaries where sizeof(long) = sizeof(void*) = 8.
-# Requires: LLVM 21+ clang with wasm64 support (Homebrew llvm)
+# Requires: LLVM clang with wasm64 support.
 #           kandelo sysroot64 built via scripts/build-musl.sh --arch wasm64posix
 
 cmake_minimum_required(VERSION 3.13)
@@ -19,7 +19,7 @@ set(CMAKE_CROSSCOMPILING TRUE)
 #   1. $LLVM_BIN — exported by the Nix flake's shellHook (so this works
 #      identically on Linux CI and Mac dev shells).
 #   2. $LLVM_PREFIX/bin — sibling form of (1) the flake also exports.
-#   3. Homebrew LLVM — for Mac users running outside the flake.
+#   3. clang/llvm-* on PATH.
 set(_LLVM_SEARCH_PATHS)
 if(DEFINED ENV{LLVM_BIN})
   list(APPEND _LLVM_SEARCH_PATHS "$ENV{LLVM_BIN}")
@@ -27,21 +27,24 @@ endif()
 if(DEFINED ENV{LLVM_PREFIX})
   list(APPEND _LLVM_SEARCH_PATHS "$ENV{LLVM_PREFIX}/bin")
 endif()
-list(APPEND _LLVM_SEARCH_PATHS
-  /opt/homebrew/opt/llvm/bin
-  /usr/local/opt/llvm/bin
-)
 
-find_program(LLVM_CLANG NAMES clang PATHS ${_LLVM_SEARCH_PATHS} NO_DEFAULT_PATH)
+if(_LLVM_SEARCH_PATHS)
+  find_program(LLVM_CLANG NAMES clang PATHS ${_LLVM_SEARCH_PATHS} NO_DEFAULT_PATH)
+  find_program(LLVM_AR     NAMES llvm-ar     PATHS ${_LLVM_SEARCH_PATHS} NO_DEFAULT_PATH)
+  find_program(LLVM_RANLIB NAMES llvm-ranlib PATHS ${_LLVM_SEARCH_PATHS} NO_DEFAULT_PATH)
+  find_program(LLVM_NM     NAMES llvm-nm     PATHS ${_LLVM_SEARCH_PATHS} NO_DEFAULT_PATH)
+endif()
+
+find_program(LLVM_CLANG NAMES clang)
 if(NOT LLVM_CLANG)
   message(FATAL_ERROR
     "LLVM clang not found. Searched: ${_LLVM_SEARCH_PATHS}. "
-    "Set LLVM_BIN (Nix dev shell exports this) or install Homebrew LLVM."
+    "Run through scripts/dev-shell.sh or set LLVM_BIN/LLVM_PREFIX."
   )
 endif()
-find_program(LLVM_AR     NAMES llvm-ar     PATHS ${_LLVM_SEARCH_PATHS} NO_DEFAULT_PATH)
-find_program(LLVM_RANLIB NAMES llvm-ranlib PATHS ${_LLVM_SEARCH_PATHS} NO_DEFAULT_PATH)
-find_program(LLVM_NM     NAMES llvm-nm     PATHS ${_LLVM_SEARCH_PATHS} NO_DEFAULT_PATH)
+find_program(LLVM_AR     NAMES llvm-ar)
+find_program(LLVM_RANLIB NAMES llvm-ranlib)
+find_program(LLVM_NM     NAMES llvm-nm)
 
 # --- Sysroot ---
 if(NOT WASM_POSIX_SYSROOT)

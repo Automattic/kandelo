@@ -21,7 +21,7 @@ export interface DemoAssetConfig {
   devCorsProxy?: boolean;
 }
 
-export type DemoActionKind = "terminal.run" | "terminal.write";
+export type DemoActionKind = "terminal.run" | "terminal.write" | "web.wordpressLogin";
 
 export interface DemoActionConfig {
   id: string;
@@ -69,7 +69,7 @@ export interface KandeloDemoConfig {
   profiles?: Record<string, KandeloDemoProfileConfig>;
 }
 
-export type GenericDemoPresentationKind = "terminal" | "web" | "framebuffer";
+export type GenericDemoPresentationKind = "terminal" | "web" | "framebuffer" | "kms";
 
 export function genericDemoPresentation(
   kind: GenericDemoPresentationKind = "terminal",
@@ -89,6 +89,13 @@ export function genericDemoPresentation(
         terminalAccess: "drawer",
         internalsAccess: "drawer",
       };
+    case "kms":
+      return {
+        bootPrimary: "syslog",
+        runningPrimary: ["kms", "terminal", "syslog"],
+        terminalAccess: "drawer",
+        internalsAccess: "drawer",
+      };
     case "terminal":
     default:
       return {
@@ -105,9 +112,14 @@ const PRIMARY_SURFACES = new Set<PrimarySurface>([
   "terminal",
   "framebuffer",
   "web",
+  "kms",
 ]);
 const ACCESS_MODES = new Set(["primary", "drawer", "side"]);
-const ACTION_KINDS = new Set<DemoActionKind>(["terminal.run", "terminal.write"]);
+const ACTION_KINDS = new Set<DemoActionKind>([
+  "terminal.run",
+  "terminal.write",
+  "web.wordpressLogin",
+]);
 
 export function parseKandeloDemoConfig(text: string): KandeloDemoConfig | null {
   const value: unknown = JSON.parse(text);

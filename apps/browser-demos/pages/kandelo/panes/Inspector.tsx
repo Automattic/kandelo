@@ -5,10 +5,10 @@
 // error; the pane catches those and renders a host-endpoint placeholder.
 
 import * as React from "react";
-import { useKernelHost, useDmesg } from "../kernel-host/react";
+import { useKernelHost, useDmesg, useLazyDownloadLog } from "../kernel-host/react";
 import type {
   DmesgLine, ProcessEvent, ProcessInfo, MountInfo, KernelStateKV,
-  MemMapEntry, SyscallEvent, VfsDirent,
+  MemMapEntry, SyscallEvent, VfsDirent, LazyDownloadEvent,
 } from "../../../../../web-libs/kandelo-session/src/kernel-host";
 import { PaneHead } from "./PaneHead";
 
@@ -16,6 +16,7 @@ const TABS = [
   { id: "syslog", label: "Syslog" },
   { id: "procs", label: "Procs" },
   { id: "vfs", label: "VFS" },
+  { id: "lazy-load", label: "Lazy Load" },
   { id: "syscalls", label: "Syscalls" },
   { id: "config", label: "Config" },
 ];
@@ -57,6 +58,7 @@ export const Inspector: React.FC<{
         {activeTab === "syslog" && <SyslogTable lines={lines} />}
         {activeTab === "procs" && <ProcsTab />}
         {activeTab === "vfs" && <VfsTab />}
+        {activeTab === "lazy-load" && <LazyLoadTab />}
         {activeTab === "config" && <ConfigTab />}
         {activeTab === "syscalls" && <SyscallsTab />}
       </div>
@@ -83,7 +85,6 @@ const SyslogTable: React.FC<{ lines: DmesgLine[] }> = ({ lines }) => {
         <div key={i} className="ksys-line">
           <span className="ksys-t">[{(l.t / 1000).toFixed(6).padStart(11, " ")}]</span>
           <span className={`ksys-lvl ksys-lvl-${l.level}`}>{l.level}</span>
-          <span className="ksys-fac">{l.facility}:</span>
           <span className="ksys-msg">{l.msg}</span>
         </div>
       ))}
@@ -790,6 +791,155 @@ const SyscallsTab: React.FC = () => {
     </div>
   );
 };
+
+// ── Lazy Load ───────────────────────────────────────────────────────────────
+
+interface LazyDownloadAssetLogEntry {
+  id: string;
+  kind: LazyDownloadEvent["kind"];
+  label: string;
+  status: LazyDownloadEvent["status"];
+  target: string;
+  source: string;
+  loadedBytes: number;
+  totalBytes?: number;
+  startedAt: number;
+  updatedAt: number;
+  eventCount: number;
+  error?: string;
+}
+
+const LazyLoadTab: React.FC = () => {
+  const events = useLazyDownloadLog();
+  const assets = React.useMemo(() => summarizeLazyDownloadLog(events), [events]);
+
+  return (
+    <div className="kdownload-log">
+      {assets.length === 0 ? (
+        <div className="kdownload-empty">No lazy assets retrieved.</div>
+      ) : (
+        <table className="ktable kdownload-table">
+          <thead>
+            <tr>
+              <th>ASSET</th>
+              <th>STATUS</th>
+              <th className="num">PROGRESS</th>
+              <th className="num">SIZE</th>
+              <th>TARGET</th>
+              <th>SOURCE</th>
+              <th className="num">UPDATED</th>
+            </tr>
+          </thead>
+          <tbody>
+            {assets.map((asset) => {
+              const pct = downloadPct(asset);
+              const sourceLabel = compactUrl(asset.source);
+              return (
+                <tr key={asset.id}>
+                  <td>
+                    <span className="kdownload-asset-name">{asset.label}</span>
+                    <span className="kdownload-kind">{asset.kind}</span>
+                  </td>
+                  <td>
+                    <span className={`kdownload-status kdownload-status-${asset.status}`}>
+                      {downloadStatusLabel(asset.status)}
+                    </span>
+                    {asset.error && <span className="kdownload-error-text" title={asset.error}>{asset.error}</span>}
+                  </td>
+                  <td className="num">{downloadProgressText(asset, pct)}</td>
+                  <td className="num">{asset.totalBytes ? humanBytes(asset.totalBytes) : humanBytes(asset.loadedBytes)}</td>
+                  <td className="kdownload-path" title={asset.target}>{asset.target}</td>
+                  <td className="kdownload-source" title={asset.source}>{sourceLabel}</td>
+                  <td className="num">{formatDownloadTime(asset.updatedAt)}</td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      )}
+    </div>
+  );
+};
+
+function summarizeLazyDownloadLog(events: LazyDownloadEvent[]): LazyDownloadAssetLogEntry[] {
+  const byId = new Map<string, LazyDownloadAssetLogEntry>();
+  for (const event of events) {
+    const existing = byId.get(event.id);
+    const loadedBytes = Math.max(existing?.loadedBytes ?? 0, event.loadedBytes);
+    const totalBytes = event.totalBytes ?? existing?.totalBytes;
+    byId.set(event.id, {
+      id: event.id,
+      kind: event.kind,
+      label: downloadLabel(event),
+      status: event.status,
+      target: downloadTarget(event),
+      source: event.url,
+      loadedBytes,
+      totalBytes,
+      startedAt: existing?.startedAt ?? event.t,
+      updatedAt: event.t,
+      eventCount: (existing?.eventCount ?? 0) + 1,
+      error: event.error ?? existing?.error,
+    });
+  }
+
+  return Array.from(byId.values()).sort((a, b) => b.updatedAt - a.updatedAt);
+}
+
+function downloadLabel(event: LazyDownloadEvent): string {
+  const raw = event.kind === "archive"
+    ? event.url
+    : event.path ?? event.mountPrefix ?? event.url;
+  const clean = raw.split(/[?#]/, 1)[0].replace(/\/+$/, "");
+  return clean.split("/").pop() || event.kind;
+}
+
+function downloadTarget(event: LazyDownloadEvent): string {
+  return event.path ?? event.mountPrefix ?? event.url;
+}
+
+function downloadStatusLabel(status: LazyDownloadEvent["status"]): string {
+  switch (status) {
+    case "started": return "Started";
+    case "progress": return "Downloading";
+    case "complete": return "Complete";
+    case "error": return "Error";
+  }
+}
+
+function downloadPct(asset: Pick<LazyDownloadAssetLogEntry, "loadedBytes" | "totalBytes">): number | null {
+  return asset.totalBytes && asset.totalBytes > 0
+    ? Math.min(100, Math.max(0, (asset.loadedBytes / asset.totalBytes) * 100))
+    : null;
+}
+
+function downloadProgressText(asset: LazyDownloadAssetLogEntry, pct: number | null): string {
+  if (pct === null) return humanBytes(asset.loadedBytes);
+  return `${Math.round(pct)}%`;
+}
+
+function compactUrl(raw: string): string {
+  try {
+    const url = new URL(raw, window.location.href);
+    const leaf = url.pathname.split("/").filter(Boolean).pop();
+    return leaf ? `${url.host}/${leaf}` : url.host;
+  } catch {
+    const clean = raw.split(/[?#]/, 1)[0].replace(/\/+$/, "");
+    return clean.split("/").filter(Boolean).slice(-2).join("/") || raw;
+  }
+}
+
+function formatDownloadTime(t: number): string {
+  return `${(t / 1000).toFixed(1)}s`;
+}
+
+function humanBytes(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`;
+  const kib = bytes / 1024;
+  if (kib < 1024) return `${kib.toFixed(kib < 10 ? 1 : 0)} KiB`;
+  const mib = kib / 1024;
+  return `${mib.toFixed(mib < 10 ? 1 : 0)} MiB`;
+}
 
 const Loading: React.FC = () => (
   <div style={{

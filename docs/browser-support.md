@@ -4,7 +4,7 @@
 
 ## Overview
 
-Kandelo runs in modern browsers with SharedArrayBuffer support (Chrome 91+, Firefox 79+, Safari 16.4+). The centralized kernel architecture uses one kernel Wasm instance in a dedicated web worker, with each process running in a sub-worker.
+Kandelo runs in modern browsers with SharedArrayBuffer support (Chrome 91+, Firefox 79+, Safari 16.4+). The shared-kernel architecture uses one kernel Wasm instance in a dedicated web worker, with each process running in a sub-worker.
 
 ## Required HTTP Headers
 
@@ -70,11 +70,16 @@ Process Worker → SharedArrayBuffer channel → Atomics.notify
 
 ```
 Browser fetch → Service Worker intercepts
-→ MessagePort → Kernel Worker (connection pump)
+→ MessagePort → BrowserKernel.fetchInKernel() → Kernel Worker
 → kernel_inject_connection() → pipe write (raw HTTP)
 → nginx (Wasm) accepts, processes → pipe read (response)
 → MessagePort → Service Worker → browser Response
 ```
+
+Injected TCP pipes live in the kernel's global pipe table (`pid == 0` for
+`kernel_pipe_*` host calls), so a listener inherited across fork can accept the
+connection in any nginx worker. The standalone nginx image runs with
+`master_process on` and `worker_processes 2`.
 
 ## Capabilities
 
@@ -106,7 +111,7 @@ Browser fetch → Service Worker intercepts
 - xterm.js integration via `PtyTerminal`
 
 ### Framebuffer (`/dev/fb0`)
-- 640×400 BGRA32 packed-pixel framebuffer; single-process owner.
+- 640×400 BGRA32 packed-pixel framebuffer; exclusive process owner.
 - The pixel buffer lives in the process's `WebAssembly.Memory` (a `SharedArrayBuffer`); the kernel notifies the host of `(pid, addr, len, w, h, stride, fmt)` on `mmap`, and the host renders via `requestAnimationFrame` + a 2D-canvas `putImageData` per frame.
 - `host/src/framebuffer/canvas-renderer.ts::attachCanvas(canvas, registry, pid, opts)` is the consumer-side renderer.
 - Keyboard input: the demo page maps focused browser `KeyboardEvent` values to Linux input keycodes, encodes them as MEDIUMRAW bytes, and feeds them through `appendStdinData(pid, …)`; fbDOOM-style software decodes those bytes from the tty. Ctrl+Shift+Esc is reserved as the host escape from keyboard capture.
@@ -177,8 +182,8 @@ Browser demos use pre-built **VFS images** — binary snapshots of a `MemoryFile
 
 ### How it works
 
-1. **Build time**: A TypeScript build script creates a `MemoryFileSystem`, writes files/dirs/symlinks into it, and calls `saveImage()` to produce a zstd-compressed `.vfs.zst` file. Empty regions of the SharedFS allocator compress to nearly nothing, so a 32 MB filesystem with a few MB of real content typically ships as a 1–3 MB download.
-2. **Runtime**: The demo page fetches the `.vfs.zst` file, calls `MemoryFileSystem.fromImage(imageBytes, { maxByteLength })` (which auto-detects zstd magic and decompresses transparently), and passes the resulting filesystem to `BrowserKernel({ memfs })`.
+1. **Build time**: A TypeScript build script creates a `MemoryFileSystem`, writes files/dirs/symlinks into it, and calls `saveImage()` to produce a zstd-compressed `.vfs.zst` file. Empty regions of the SharedFS allocator compress to nearly nothing, so a 32 MB filesystem with a few MB of real content typically ships as a 1–3 MB download. If the image should grow or report a larger `df` capacity at runtime, build it with `MemoryFileSystem.create(sab, permittedMaxBytes)` so the filesystem metadata is sized for that capacity.
+2. **Runtime**: The demo page fetches the `.vfs.zst` file, calls `MemoryFileSystem.fromImage(imageBytes, { maxByteLength })` (which auto-detects zstd magic and decompresses transparently), and passes the resulting filesystem to `BrowserKernel({ memfs })`. `maxByteLength` makes the restored `SharedArrayBuffer` growable; it does not raise the filesystem maximum beyond the image's superblock limit.
 
 ```typescript
 // Typical demo pattern
@@ -226,6 +231,13 @@ the Kandelo app does not carry demo-specific presentation fallbacks.
 Any extra files needed by an image-declared `autoCommand` can be declared in
 `assets`; the loader stages those paths generically and hash-verifies them when
 `sha256` is provided.
+
+KMS demos use the same metadata path. A profile can set
+`runningPrimary` to include `"kms"` and provide an `autoCommand` such as
+`/usr/local/bin/modeset`; the VFS image must contain that executable. The
+Kandelo app attaches the KMS canvas through the generic KMS surface plumbing,
+then runs the image-declared command. Do not add browser-loader branches that
+import or spawn a specific `modeset.wasm` file.
 
 Images can also declare an optional `guide`. When `guide` is absent, Kandelo
 does not render a demo panel; this is the intended shape for demos where the
@@ -286,6 +298,18 @@ For local browser artifacts, force a rebuild with `./run.sh rebuild <target>`.
 | MariaDB test | `mariadb-test.vfs.zst` | `bash images/vfs/scripts/build-mariadb-test-vfs-image.sh` | MariaDB + test suite |
 
 VFS images are `.gitignore`d and must be built locally. The `run.sh` script handles this automatically (e.g., `./run.sh browser` builds any missing VFS images before starting the dev server).
+
+Homebrew-derived browser images are published through the package-source
+gallery path, not bundled into the app. The trusted Homebrew publisher first
+pours a wasm32 bottle into a precomposed `.vfs.zst`, boots that image in the
+browser UI, and runs the package smoke command, such as
+`/home/linuxbrew/.linuxbrew/bin/hello --version`. Only then may the generated
+Homebrew sidecars and gallery `index.toml` set `browser_compatible = true`.
+
+A Homebrew gallery entry is visible only when its `index.toml` package record
+is wasm32 success, has an `archive_url`, and sets
+`browser_compatible = true`. Launch-time archive failures are surfaced in the
+UI instead of silently hiding the rest of the gallery.
 
 ### Building VFS images
 

@@ -2,7 +2,7 @@ kind = "program"
 name = "kandelo-sdk"
 version = "0.1.0"
 kernel_abi = 13
-depends_on = ["libcxx@21"]
+depends_on = ["libcxx@21.1.7"]
 
 [source]
 url = "https://github.com/Automattic/kandelo"
@@ -23,4 +23,4 @@ wasm = "kandelo-sdk.vfs.zst"
 name = "clang"
 version_constraint = ">=21.0"
 probe = { args = ["--version"], version_regex = "clang version (\\d+\\.\\d+(?:\\.\\d+)?)" }
-install_hints = { darwin = "use nix develop, or: brew install llvm", linux = "use nix develop, or: apt install clang" }
+install_hints = { darwin = "run through scripts/dev-shell.sh", linux = "run through scripts/dev-shell.sh" }

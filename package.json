@@ -6,6 +6,9 @@
     "wordpress:build": "bash packages/registry/wordpress/demo/build.sh",
     "wordpress:serve": "npx tsx packages/registry/wordpress/demo/serve.ts",
     "wordpress:benchmark": "npx tsx packages/registry/wordpress/demo/perf/benchmark.ts",
+    "docs:dev": "vitepress dev docs-site --host 127.0.0.1",
+    "docs:build": "vitepress build docs-site",
+    "docs:preview": "vitepress preview docs-site --host 127.0.0.1",
     "bench": "npx tsx benchmarks/run.ts",
     "bench:browser": "npx tsx benchmarks/run.ts --host browser",
     "bench:compare": "npx tsx benchmarks/compare.ts",
@@ -15,9 +18,10 @@
     "pack:packages": "npm run pack:host && npm run pack:sdk"
   },
   "devDependencies": {
-    "@playwright/test": "^1.59.1",
+    "@playwright/test": "^1.61.0",
     "playwright": "^1.59.1",
-    "tsx": "^4.21.0"
+    "tsx": "^4.22.4",
+    "vitepress": "^1.6.4"
   },
   "dependencies": {
     "fflate": "^0.8.3",

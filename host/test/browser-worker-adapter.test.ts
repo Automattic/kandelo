@@ -12,7 +12,6 @@ class MockBrowserWorker {
   onerror: ((e: { message: string }) => void) | null = null;
   sentMessages: unknown[] = [];
   terminated = false;
-  autoAckShutdown = true;
 
   constructor(url: string | URL, options?: any) {
     this.url = url;
@@ -21,16 +20,6 @@ class MockBrowserWorker {
 
   postMessage(msg: unknown, _transfer?: any[]) {
     this.sentMessages.push(msg);
-    if (
-      this.autoAckShutdown &&
-      msg &&
-      typeof msg === "object" &&
-      (msg as { type?: string }).type === "__kandelo_worker_shutdown"
-    ) {
-      queueMicrotask(() => {
-        this.simulateMessage({ type: "__kandelo_worker_shutdown_ack" });
-      });
-    }
   }
 
   terminate() {
@@ -226,28 +215,18 @@ describe("BrowserWorkerAdapter", () => {
   // ---- BrowserWorkerHandle terminate --------------------------------------
 
   describe("terminate", () => {
-    it("should request cooperative shutdown before terminating", async () => {
+    it("should terminate immediately without a cooperative shutdown handshake", async () => {
+      // A process worker is always inside wasm (running or parked in an in-wasm
+      // Atomics.wait) and can never observe a shutdown postMessage, so we hard
+      // terminate directly rather than waiting on an ack that never arrives.
       const adapter = new BrowserWorkerAdapter("worker.js");
       const handle = adapter.createWorker({});
       lastMockWorker!.sentMessages.length = 0;
 
       await handle.terminate();
 
-      expect(lastMockWorker!.sentMessages).toEqual([
-        { type: "__kandelo_worker_shutdown" },
-      ]);
+      expect(lastMockWorker!.sentMessages).toEqual([]);
       expect(lastMockWorker!.terminated).toBe(true);
-    });
-
-    it("should not route shutdown acknowledgements to message handlers", async () => {
-      const adapter = new BrowserWorkerAdapter("worker.js");
-      const handle = adapter.createWorker({});
-      const received: unknown[] = [];
-
-      handle.on("message", (msg) => received.push(msg));
-      await handle.terminate();
-
-      expect(received).toEqual([]);
     });
 
     it("should call terminate on the underlying Worker", async () => {

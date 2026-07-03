@@ -3,7 +3,7 @@
 # Usage:
 #   cmake -DCMAKE_TOOLCHAIN_FILE=.../wasm32-posix-toolchain.cmake ...
 #
-# Requires: LLVM 19+ clang with wasm32 support (Homebrew llvm)
+# Requires: LLVM clang with wasm32 support.
 #           kandelo sysroot built via scripts/build-musl.sh
 
 cmake_minimum_required(VERSION 3.13)
@@ -19,9 +19,7 @@ set(CMAKE_CROSSCOMPILING TRUE)
 #   1. $LLVM_BIN — exported by the Nix flake's shellHook (so this works
 #      identically on Linux CI and Mac dev shells).
 #   2. $LLVM_PREFIX/bin — sibling form of (1) the flake also exports.
-#   3. Homebrew LLVM — for Mac users running outside the flake.
-# Without this, the file used Homebrew-only paths and failed on Linux
-# with "brew install llvm" — even though the flake had clang on PATH.
+#   3. clang/llvm-* on PATH.
 set(_LLVM_SEARCH_PATHS)
 if(DEFINED ENV{LLVM_BIN})
   list(APPEND _LLVM_SEARCH_PATHS "$ENV{LLVM_BIN}")
@@ -29,21 +27,24 @@ endif()
 if(DEFINED ENV{LLVM_PREFIX})
   list(APPEND _LLVM_SEARCH_PATHS "$ENV{LLVM_PREFIX}/bin")
 endif()
-list(APPEND _LLVM_SEARCH_PATHS
-  /opt/homebrew/opt/llvm/bin
-  /usr/local/opt/llvm/bin
-)
 
-find_program(LLVM_CLANG NAMES clang PATHS ${_LLVM_SEARCH_PATHS} NO_DEFAULT_PATH)
+if(_LLVM_SEARCH_PATHS)
+  find_program(LLVM_CLANG NAMES clang PATHS ${_LLVM_SEARCH_PATHS} NO_DEFAULT_PATH)
+  find_program(LLVM_AR     NAMES llvm-ar     PATHS ${_LLVM_SEARCH_PATHS} NO_DEFAULT_PATH)
+  find_program(LLVM_RANLIB NAMES llvm-ranlib PATHS ${_LLVM_SEARCH_PATHS} NO_DEFAULT_PATH)
+  find_program(LLVM_NM     NAMES llvm-nm     PATHS ${_LLVM_SEARCH_PATHS} NO_DEFAULT_PATH)
+endif()
+
+find_program(LLVM_CLANG NAMES clang)
 if(NOT LLVM_CLANG)
   message(FATAL_ERROR
     "LLVM clang not found. Searched: ${_LLVM_SEARCH_PATHS}. "
-    "Set LLVM_BIN (Nix dev shell exports this) or install Homebrew LLVM."
+    "Run through scripts/dev-shell.sh or set LLVM_BIN/LLVM_PREFIX."
   )
 endif()
-find_program(LLVM_AR     NAMES llvm-ar     PATHS ${_LLVM_SEARCH_PATHS} NO_DEFAULT_PATH)
-find_program(LLVM_RANLIB NAMES llvm-ranlib PATHS ${_LLVM_SEARCH_PATHS} NO_DEFAULT_PATH)
-find_program(LLVM_NM     NAMES llvm-nm     PATHS ${_LLVM_SEARCH_PATHS} NO_DEFAULT_PATH)
+find_program(LLVM_AR     NAMES llvm-ar)
+find_program(LLVM_RANLIB NAMES llvm-ranlib)
+find_program(LLVM_NM     NAMES llvm-nm)
 
 # --- Sysroot ---
 # Allow override via WASM_POSIX_SYSROOT env or cmake var.
@@ -229,7 +230,7 @@ set(CURSES_HAVE_CURSES_H FALSE CACHE BOOL "" FORCE)
 set(CURSES_HAVE_NCURSES_H FALSE CACHE BOOL "" FORCE)
 
 # --- PCRE2 paths ---
-# Force PCRE2 include path to sysroot to avoid picking up Homebrew native headers.
+# Force PCRE2 include path to sysroot to avoid picking up host-native headers.
 # The PCRE2_DEBIAN_HACK check uses CHECK_LIBRARY_EXISTS which always passes with
 # static library try_compile, so pre-set it to avoid macro conflicts.
 set(PCRE2_INCLUDE_DIR "${WASM_POSIX_SYSROOT}/include" CACHE PATH "PCRE2 include dir" FORCE)

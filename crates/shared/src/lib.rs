@@ -22,7 +22,11 @@ pub mod host_abi;
 /// 13: process memory layout ABI is Rust-declared; per-pthread slots
 ///     use explicit TLS/control, fork-save, channel, and spill pages,
 ///     with a wasm-declared reserved thread-slot count.
-pub const ABI_VERSION: u32 = 14;
+/// 15: remove the obsolete `kernel_set_mode` export; the kernel is always
+///     the shared point of contact for all programs.
+/// 16: process creation takes explicit stdio descriptor kinds and removes the
+///     post-creation stdin pipe mutation export.
+pub const ABI_VERSION: u32 = 16;
 
 /// Syscall numbers for the POSIX kernel interface.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1087,6 +1091,7 @@ pub mod abi {
         "__abi_version",
         "kernel_alloc_scratch",
         "kernel_create_process",
+        "kernel_create_process_with_stdio",
         "kernel_get_parent_pid",
         "kernel_handle_channel",
         "kernel_host_adapter_manifest_len",
@@ -1094,7 +1099,6 @@ pub mod abi {
         "kernel_mark_process_signaled",
         "kernel_reap_exited_child",
         "kernel_remove_process",
-        "kernel_set_mode",
         "kernel_wait4_poll",
     ];
 
@@ -1796,4 +1800,819 @@ pub mod oss {
 
     /// `AFMT_S16_LE` — signed 16-bit little-endian. The only format we accept.
     pub const AFMT_S16_LE: u32 = 0x10;
+}
+
+
+/// GLES / EGL ABI: ioctl numbers, opcode tables, and marshalled argument
+/// structs for `/dev/dri/renderD128`.
+///
+/// These are part of the kernel↔user-space ABI: any change to the ioctl
+/// numbers, the marshalled struct layouts, or surface-kind tags requires
+/// bumping `ABI_VERSION` (see crate root) and updating `abi/snapshot.json`.
+///
+/// The kernel itself never decodes the cmdbuf opcode (`OP_*`) or sync-query
+/// (`QOP_*`) tables — it forwards bytes to `HostIO::gl_submit` /
+/// `HostIO::gl_query`. The opcodes are still owned by `shared::gl` because
+/// they are the wire contract between Phase B's host TS bridge and Phase
+/// C's user-space `libGLESv2` cmdbuf encoder; both sides mirror this
+/// table. Adding new opcodes bumps `OP_VERSION`, not `ABI_VERSION`, since
+/// the byte layout is unchanged from the kernel's perspective.
+pub mod gl {
+    /// Cmdbuf mmap length (1 MiB). Single fixed size in v1; see
+    /// the design doc §3 "Cmdbuf overflow".
+    pub const CMDBUF_LEN: usize = 1 << 20;
+
+    /// Version of the GLES op-table. Bumped independently of `ABI_VERSION`
+    /// when the cmdbuf opcode set changes; the libGLESv2 stub records this
+    /// at compile time and the kernel refuses GLIO_INIT on mismatch.
+    pub const OP_VERSION: u32 = 1;
+
+    // --- ioctl request numbers (DRM 'D' magic, starting at 0x40) -----------
+
+    // GLIO_INIT takes a pointer to a `u32` carrying the client's compile-time
+    // `OP_VERSION`. The kernel rejects mismatches with `ENOSYS` so a process
+    // built against an older op-table can't talk to a newer kernel (and vice
+    // versa) without the divergence being caught at first contact rather than
+    // surfacing later as a silent decode error. See A6's GLIO_INIT handler.
+    pub const GLIO_INIT:            u32 = 0x40;
+    pub const GLIO_TERMINATE:       u32 = 0x41;
+    pub const GLIO_CREATE_CONTEXT:  u32 = 0x42;
+    pub const GLIO_DESTROY_CONTEXT: u32 = 0x43;
+    pub const GLIO_CREATE_SURFACE:  u32 = 0x44;
+    pub const GLIO_DESTROY_SURFACE: u32 = 0x45;
+    pub const GLIO_MAKE_CURRENT:    u32 = 0x46;
+    pub const GLIO_SUBMIT:          u32 = 0x47;
+    pub const GLIO_PRESENT:         u32 = 0x48;
+    pub const GLIO_QUERY:           u32 = 0x49;
+
+    // --- surface kind tags -------------------------------------------------
+
+    /// `kind` value for the bound canvas surface.
+    pub const WPK_SURFACE_DEFAULT: u32 = 1;
+    /// `kind` value for an off-screen pbuffer surface (Phase C).
+    pub const WPK_SURFACE_PBUFFER: u32 = 2;
+
+    /// Upper bound on `GlQueryInfo.in_buf_len` / `out_buf_len`. The
+    /// kernel allocates scratch buffers of these sizes before forwarding
+    /// the query to the host; capping prevents a malicious wasm process
+    /// from passing `0xFFFFFFFE` and OOMing the kernel worker.
+    ///
+    /// 64 KiB comfortably fits every realistic sync-query output: shader
+    /// info logs (typically ~1 KB), program info logs, `glGetString`
+    /// results, framebuffer-completeness, and `glReadPixels` of a 64×64
+    /// RGBA thumbnail (16 KB). Demos that need to read back a full
+    /// framebuffer should do it in tiles.
+    pub const MAX_QUERY_IN_LEN: u32 = 64 * 1024;
+    pub const MAX_QUERY_OUT_LEN: u32 = 64 * 1024;
+
+    // --- cmdbuf opcodes (mirrored in host/src/webgl/ops.ts) ----------------
+    //
+    // Layout: TLV `{u16 op, u16 payload_len, payload[payload_len]}` little-
+    // endian. Payload formats are documented inline next to the libGLESv2
+    // stub call sites in glue/libglesv2_stub.c (Phase C).
+
+    pub const OP_CLEAR:                       u16 = 0x0001;
+    pub const OP_CLEAR_COLOR:                 u16 = 0x0002;
+    pub const OP_VIEWPORT:                    u16 = 0x0003;
+    pub const OP_SCISSOR:                     u16 = 0x0004;
+    pub const OP_ENABLE:                      u16 = 0x0005;
+    pub const OP_DISABLE:                     u16 = 0x0006;
+    pub const OP_BLEND_FUNC:                  u16 = 0x0007;
+    pub const OP_DEPTH_FUNC:                  u16 = 0x0008;
+    pub const OP_CULL_FACE:                   u16 = 0x0009;
+    pub const OP_FRONT_FACE:                  u16 = 0x000A;
+    pub const OP_LINE_WIDTH:                  u16 = 0x000B;
+    pub const OP_PIXEL_STOREI:                u16 = 0x000C;
+
+    pub const OP_GEN_BUFFERS:                 u16 = 0x0100;
+    pub const OP_DELETE_BUFFERS:              u16 = 0x0101;
+    pub const OP_BIND_BUFFER:                 u16 = 0x0102;
+    pub const OP_BUFFER_DATA:                 u16 = 0x0103;
+    pub const OP_BUFFER_SUB_DATA:             u16 = 0x0104;
+
+    pub const OP_GEN_TEXTURES:                u16 = 0x0200;
+    pub const OP_DELETE_TEXTURES:             u16 = 0x0201;
+    pub const OP_BIND_TEXTURE:                u16 = 0x0202;
+    pub const OP_TEX_IMAGE_2D:                u16 = 0x0203;
+    pub const OP_TEX_SUB_IMAGE_2D:            u16 = 0x0204;
+    pub const OP_TEX_PARAMETERI:              u16 = 0x0205;
+    pub const OP_ACTIVE_TEXTURE:              u16 = 0x0206;
+    pub const OP_GENERATE_MIPMAP:             u16 = 0x0207;
+
+    pub const OP_CREATE_SHADER:               u16 = 0x0300;
+    pub const OP_SHADER_SOURCE:               u16 = 0x0301;
+    pub const OP_COMPILE_SHADER:              u16 = 0x0302;
+    pub const OP_DELETE_SHADER:               u16 = 0x0303;
+    pub const OP_CREATE_PROGRAM:              u16 = 0x0304;
+    pub const OP_ATTACH_SHADER:               u16 = 0x0305;
+    pub const OP_LINK_PROGRAM:                u16 = 0x0306;
+    pub const OP_USE_PROGRAM:                 u16 = 0x0307;
+    pub const OP_BIND_ATTRIB_LOCATION:        u16 = 0x0308;
+    pub const OP_DELETE_PROGRAM:              u16 = 0x0309;
+
+    pub const OP_UNIFORM1I:                   u16 = 0x0400;
+    pub const OP_UNIFORM1F:                   u16 = 0x0401;
+    pub const OP_UNIFORM2F:                   u16 = 0x0402;
+    pub const OP_UNIFORM3F:                   u16 = 0x0403;
+    pub const OP_UNIFORM4F:                   u16 = 0x0404;
+    pub const OP_UNIFORM_MATRIX4FV:           u16 = 0x0405;
+    /// `glUniform4fv(location, count, value)` — vector form. es2gears uses
+    /// this for the directional light position. `OP_UNIFORM4F` (scalar) is a
+    /// different signature; both are needed.
+    pub const OP_UNIFORM4FV:                  u16 = 0x0406;
+
+    pub const OP_ENABLE_VERTEX_ATTRIB_ARRAY:  u16 = 0x0500;
+    pub const OP_DISABLE_VERTEX_ATTRIB_ARRAY: u16 = 0x0501;
+    pub const OP_VERTEX_ATTRIB_POINTER:       u16 = 0x0502;
+    pub const OP_DRAW_ARRAYS:                 u16 = 0x0503;
+    pub const OP_DRAW_ELEMENTS:               u16 = 0x0504;
+
+    pub const OP_GEN_VERTEX_ARRAYS:           u16 = 0x0600;
+    pub const OP_DELETE_VERTEX_ARRAYS:        u16 = 0x0601;
+    pub const OP_BIND_VERTEX_ARRAY:           u16 = 0x0602;
+
+    pub const OP_GEN_FRAMEBUFFERS:            u16 = 0x0700;
+    pub const OP_BIND_FRAMEBUFFER:            u16 = 0x0701;
+    pub const OP_FRAMEBUFFER_TEXTURE_2D:      u16 = 0x0702;
+    pub const OP_GEN_RENDERBUFFERS:           u16 = 0x0703;
+    pub const OP_BIND_RENDERBUFFER:           u16 = 0x0704;
+    pub const OP_RENDERBUFFER_STORAGE:        u16 = 0x0705;
+    pub const OP_FRAMEBUFFER_RENDERBUFFER:    u16 = 0x0706;
+
+    // --- sync query op tags (used in GlQueryInfo.op) -----------------------
+
+    pub const QOP_GET_ERROR:             u32 = 0x01;
+    pub const QOP_GET_STRING:            u32 = 0x02;
+    pub const QOP_GET_INTEGERV:          u32 = 0x03;
+    pub const QOP_GET_FLOATV:            u32 = 0x04;
+    pub const QOP_GET_UNIFORM_LOC:       u32 = 0x05;
+    pub const QOP_GET_ATTRIB_LOC:        u32 = 0x06;
+    pub const QOP_GET_SHADERIV:          u32 = 0x07;
+    pub const QOP_GET_SHADER_INFO_LOG:   u32 = 0x08;
+    pub const QOP_GET_PROGRAMIV:         u32 = 0x09;
+    pub const QOP_GET_PROGRAM_INFO_LOG:  u32 = 0x0A;
+    pub const QOP_READ_PIXELS:           u32 = 0x0B;
+    pub const QOP_CHECK_FB_STATUS:       u32 = 0x0C;
+
+    // --- marshalled ioctl argument structs ---------------------------------
+
+    /// Argument to `GLIO_SUBMIT`. Total: 8 bytes.
+    #[repr(C)]
+    #[derive(Clone, Copy, Default)]
+    pub struct GlSubmitInfo {
+        /// Byte offset within the cmdbuf at which to start decoding.
+        pub offset: u32,
+        /// Number of bytes to decode (must end on a TLV boundary).
+        pub length: u32,
+    }
+
+    /// Argument to `GLIO_CREATE_CONTEXT`. Total: 16 bytes.
+    /// Mirrors a tiny subset of EGL config attrs; v1 only consults
+    /// `client_version`.
+    #[repr(C)]
+    #[derive(Clone, Copy, Default)]
+    pub struct GlContextAttrs {
+        /// EGL client version (2 → GLES 2, 3 → GLES 3).
+        pub client_version: u32,
+        /// Reserved for `share_context`, debug bit, robustness bit, etc.
+        pub reserved: [u32; 3],
+    }
+
+    /// Argument to `GLIO_CREATE_SURFACE`. Total: 32 bytes.
+    #[repr(C)]
+    #[derive(Clone, Copy, Default)]
+    pub struct GlSurfaceAttrs {
+        /// Surface kind (only `WPK_SURFACE_DEFAULT` in v1).
+        pub kind: u32,
+        /// Pbuffer width (default-canvas surfaces ignore this).
+        pub width: u32,
+        /// Pbuffer height (default-canvas surfaces ignore this).
+        pub height: u32,
+        /// EGL config id (opaque; v1 reports a single config "1").
+        pub config_id: u32,
+        /// Reserved.
+        pub reserved: [u32; 4],
+    }
+
+    /// Argument to `GLIO_QUERY`. Total: 24 bytes.
+    /// `in_buf_ptr` / `out_buf_ptr` are wasm-process addresses that Phase B
+    /// dereferences via the host's typed-array view of process memory. v1
+    /// kernel forwards `op` + a kernel-scratch buffer sized by `out_buf_len`
+    /// to `HostIO::gl_query` and ignores the pointers.
+    #[repr(C)]
+    #[derive(Clone, Copy, Default)]
+    pub struct GlQueryInfo {
+        /// Sync-query op tag. The full table (QOP_*) is owned by the host
+        /// bridge in Phase B; the kernel forwards this value unchanged.
+        pub op: u32,
+        /// Process-relative pointer to the input bytes (Phase B only).
+        pub in_buf_ptr: u32,
+        /// Length of input in bytes (Phase B only).
+        pub in_buf_len: u32,
+        /// Process-relative pointer to the output buffer (Phase B only).
+        pub out_buf_ptr: u32,
+        /// Capacity of the output buffer in bytes. The kernel rejects
+        /// values above `MAX_QUERY_OUT_LEN` to bound the scratch
+        /// allocation and otherwise forwards.
+        pub out_buf_len: u32,
+        /// Reserved for a future async-completion handle.
+        pub reserved: u32,
+    }
+}
+
+/// Linux DRM `/dev/dri/*` ABI — ioctl numbers, fourcc constants, and
+/// marshalled argument structs.
+///
+/// Numbers are encoded with `_IOWR('d', nr, struct)` where `'d' = 0x64`.
+/// Struct field offsets must match the Linux ABI byte-for-byte; bumping
+/// `ABI_VERSION` is not required for *adding* new structs (additive
+/// compatibility, see `docs/abi-versioning.md`), but any change to an
+/// existing struct's layout requires a snapshot regen and a version bump.
+pub mod dri {
+    // --- ioctl numbers -----------------------------------------------------
+    // Derivation: dir=11 (READ|WRITE), size=struct sizeof, magic='d', nr=…
+    // Encoded: (dir << 30) | (size << 16) | (magic << 8) | nr
+    // The constants below are the byte-for-byte Linux values; the tests in
+    // `dri_tests` re-derive them from `_IOWR!` to catch drift.
+
+    /// `_IOWR('d', 0x00, drm_version)` — driver name / date / desc query.
+    /// `struct drm_version` is 36 bytes on wasm32 (ilp32: 3 × `int` + 3 ×
+    /// `__kernel_size_t` + 3 × `char *`, all 4-byte). Ioctl number encodes
+    /// 36 → `0xc0246400`. Linux x86_64's 60-byte layout is not us.
+    pub const DRM_IOCTL_VERSION: u32 = 0xc024_6400;
+
+    /// `_IOWR('d', 0x0c, drm_get_cap)` — feature capability query.
+    pub const DRM_IOCTL_GET_CAP: u32 = 0xc010_640c;
+
+    /// `_IOW('d', 0x09, drm_gem_close)` — drop a GEM handle.
+    pub const DRM_IOCTL_GEM_CLOSE: u32 = 0x4008_6409;
+
+    /// `_IOWR('d', 0x2d, drm_prime_handle)` — export bo as prime fd.
+    pub const DRM_IOCTL_PRIME_HANDLE_TO_FD: u32 = 0xc00c_642d;
+
+    /// `_IOWR('d', 0x2e, drm_prime_handle)` — import prime fd as bo handle.
+    pub const DRM_IOCTL_PRIME_FD_TO_HANDLE: u32 = 0xc00c_642e;
+
+    /// `_IOWR('d', 0xb2, drm_mode_create_dumb)` — allocate dumb buffer.
+    pub const DRM_IOCTL_MODE_CREATE_DUMB: u32 = 0xc020_64b2;
+
+    /// `_IOWR('d', 0xb3, drm_mode_map_dumb)` — fetch dumb-buffer mmap offset.
+    pub const DRM_IOCTL_MODE_MAP_DUMB: u32 = 0xc010_64b3;
+
+    /// `_IOWR('d', 0xb4, drm_mode_destroy_dumb)` — drop dumb buffer.
+    pub const DRM_IOCTL_MODE_DESTROY_DUMB: u32 = 0xc004_64b4;
+
+    // --- DRM_GET_CAP keys (clients call to probe features) ----------------
+
+    pub const DRM_CAP_DUMB_BUFFER: u64 = 0x1;
+    pub const DRM_CAP_PRIME: u64 = 0x5;
+    pub const DRM_PRIME_CAP_IMPORT: u64 = 0x1;
+    pub const DRM_PRIME_CAP_EXPORT: u64 = 0x2;
+
+    // --- DRM fourcc pixel formats ----------------------------------------
+    // Little-endian fourcc codes from `include/uapi/drm/drm_fourcc.h`.
+
+    /// `fourcc('A','R','2','4')` — 8-8-8-8 alpha + RGB.
+    pub const DRM_FORMAT_ARGB8888: u32 = 0x34325241;
+    /// `fourcc('X','R','2','4')` — 8-8-8-8 padding + RGB.
+    pub const DRM_FORMAT_XRGB8888: u32 = 0x34325258;
+    /// `fourcc('R','G','1','6')` — 5-6-5 RGB.
+    pub const DRM_FORMAT_RGB565: u32 = 0x36314752;
+
+    // --- marshalled structs ------------------------------------------------
+
+    /// Linux `struct drm_mode_create_dumb` (32 bytes, identical layout on
+    /// wasm32 and x86_64 — fixed-width fields only).
+    #[repr(C)]
+    #[derive(Clone, Copy, Default)]
+    pub struct WpkDrmModeCreateDumb {
+        pub height: u32,  // 0   in
+        pub width: u32,   // 4   in
+        pub bpp: u32,     // 8   in    bits-per-pixel (32 for ARGB8888)
+        pub flags: u32,   // 12  in    must be 0
+        pub handle: u32,  // 16  out   process-local bo handle
+        pub pitch: u32,   // 20  out   stride in bytes
+        pub size: u64,    // 24  out   total bytes (pitch * height)
+                          // total: 32
+    }
+
+    /// Linux `struct drm_mode_map_dumb` (16 bytes).
+    #[repr(C)]
+    #[derive(Clone, Copy, Default)]
+    pub struct WpkDrmModeMapDumb {
+        pub handle: u32, // 0   in
+        pub pad: u32,    // 4   reserved
+        pub offset: u64, // 8   out   pass to mmap() as the file offset
+                         // total: 16
+    }
+
+    /// Linux `struct drm_mode_destroy_dumb` (4 bytes).
+    #[repr(C)]
+    #[derive(Clone, Copy, Default)]
+    pub struct WpkDrmModeDestroyDumb {
+        pub handle: u32, // 0
+                         // total: 4
+    }
+
+    /// Linux `struct drm_gem_close` (8 bytes).
+    #[repr(C)]
+    #[derive(Clone, Copy, Default)]
+    pub struct WpkDrmGemClose {
+        pub handle: u32, // 0
+        pub pad: u32,    // 4
+                         // total: 8
+    }
+
+    /// Linux `struct drm_prime_handle` (12 bytes). Reused both for
+    /// HANDLE_TO_FD (handle → fd, flags=O_CLOEXEC|O_RDWR-ish) and
+    /// FD_TO_HANDLE (fd → handle).
+    #[repr(C)]
+    #[derive(Clone, Copy, Default)]
+    pub struct WpkDrmPrimeHandle {
+        pub handle: u32, // 0   in/out
+        pub flags: u32,  // 4   in    O_CLOEXEC/O_RDWR; we accept any, store none
+        pub fd: i32,     // 8   in/out   signed (-1 on error sentinel; -EBADF tests)
+                         // total: 12
+    }
+
+    /// Linux `struct drm_get_cap` (16 bytes).
+    #[repr(C)]
+    #[derive(Clone, Copy, Default)]
+    pub struct WpkDrmGetCap {
+        pub capability: u64, // 0  in   DRM_CAP_* constant
+        pub value: u64,      // 8  out
+                             // total: 16
+    }
+
+    /// Linux `struct drm_version` — used by `DRM_IOCTL_VERSION`. 36 bytes on
+    /// wasm32 (ilp32: 3 × `int` + 3 × `__kernel_size_t` + 3 × `char *`, all
+    /// 4-byte). Field order matches `include/uapi/drm/drm.h` — interleaved
+    /// `(len, ptr)` triples (not "lens first, then ptrs"). The kernel reads
+    /// `*_len` (caller-allocated capacity), writes strings via the three
+    /// pointers, and updates `*_len` to bytes actually written. v1 writes
+    /// zero-length strings (see Task A5); the field shape is fixed for the
+    /// future string-write path.
+    #[repr(C)]
+    #[derive(Clone, Copy, Default)]
+    pub struct WpkDrmVersion {
+        pub version_major: i32,       // 0
+        pub version_minor: i32,       // 4
+        pub version_patchlevel: i32,  // 8
+        pub name_len: u32,            // 12   in/out
+        pub name_ptr: u32,            // 16   wasm32 user pointer
+        pub date_len: u32,            // 20   in/out
+        pub date_ptr: u32,            // 24   wasm32 user pointer
+        pub desc_len: u32,            // 28   in/out
+        pub desc_ptr: u32,            // 32   wasm32 user pointer
+                                      // total: 36
+    }
+
+    // --- WPK extensions ('d' magic, nrs 0xE0+ — unused by Linux 6.x) ----
+
+    /// `_IOWR('d', 0xE0, WpkDrmGpuBoCreate)` — allocate a GPU-tier bo.
+    /// `MODE_CREATE_DUMB` covers CPU-shared bos (LINEAR, mmap'able). This
+    /// ioctl covers the GPU tier: the bo's backing is a host `WebGLTexture`,
+    /// not a SAB; the bo is unmappable on the CPU side and is intended for
+    /// sampling / rendering via the multiplexer.
+    pub const DRM_IOCTL_WPK_CREATE_GPU_BO: u32 = 0xc010_64e0;
+
+    /// `_IOWR('d', 0xE1, WpkDrmBindForeignTexture)` — bind a foreign bo as
+    /// a `WebGLTexture` in the caller's GL context. The caller must already
+    /// hold a local bo handle (via PRIME_FD_TO_HANDLE), and the bo must be
+    /// GPU-tier. Used by the compositor to sample client bos and by
+    /// `gbm_bo_import` callers that want texture-side access.
+    pub const DRM_IOCTL_WPK_BIND_FOREIGN_TEXTURE: u32 = 0xc010_64e1;
+
+    /// GPU-bo allocator argument. 16 bytes on wasm32 (4 × u32). `format` and
+    /// `usage` are passed through to libgbm's `gbm_bo_create(format, usage)`
+    /// from the user side.
+    ///
+    /// The kernel writes back over the same buffer on return; layout:
+    ///
+    ///   0..4   width    (echoed back, unchanged)
+    ///   4..8   height   (echoed back, unchanged)
+    ///   8..12  handle   (out — process-local; was `format` on the way in)
+    ///   12..16 stride   (out — bytes; was `usage` on the way in)
+    ///
+    /// The 16-byte size is preserved (ioctl encoding stays 0xc010_64e0).
+    #[repr(C)]
+    #[derive(Clone, Copy, Default)]
+    pub struct WpkDrmGpuBoCreate {
+        pub width: u32,   // 0   in
+        pub height: u32,  // 4   in
+        pub format: u32,  // 8   in    DRM_FORMAT_* (ARGB8888 etc.)
+        pub usage: u32,   // 12  in    GBM_BO_USE_* bitmask
+                          // total: 16
+    }
+
+    /// `BIND_FOREIGN_TEXTURE` argument. 16 bytes on wasm32 (4 × u32). After
+    /// the call, the caller's GL context has a `WebGLTexture` accessible by
+    /// `gl_texture_id` until the bo's refcount drops to zero — the bo is
+    /// the canonical owner; bo destruction (last `GEM_CLOSE` / OFD
+    /// final-close) deletes the underlying `WebGLTexture` and invalidates
+    /// every binding to it. There is no separate `UNBIND_FOREIGN_TEXTURE`
+    /// ioctl: bind lifetime is tied to the bo lifetime, scoped by the bo
+    /// refcount.
+    #[repr(C)]
+    #[derive(Clone, Copy, Default)]
+    pub struct WpkDrmBindForeignTexture {
+        pub bo_handle: u32,     // 0   in    caller's local GEM handle
+        pub gl_target: u32,     // 4   in    GL_TEXTURE_2D etc.
+        pub ctx_id: u32,        // 8   in    caller's GL ctx_id
+        pub gl_texture_id: u32, // 12  out   the WebGLTexture id assigned
+                                //          (also writable as a sampler binding)
+    }
+
+    // --- KMS ioctls ('d' magic, Linux UAPI) -------------------------------
+
+    /// `_IO('d', 0x1e)` — request DRM_MASTER.
+    pub const DRM_IOCTL_SET_MASTER: u32 = 0x0000_641e;
+
+    /// `_IO('d', 0x1f)` — release DRM_MASTER.
+    pub const DRM_IOCTL_DROP_MASTER: u32 = 0x0000_641f;
+
+    /// `_IOWR('d', 0x3a, drm_wait_vblank)` — block until next vblank.
+    pub const DRM_IOCTL_WAIT_VBLANK: u32 = 0xc010_643a;
+
+    /// `_IOWR('d', 0xa0, drm_mode_card_res)` — crtc/connector/encoder counts.
+    pub const DRM_IOCTL_MODE_GETRESOURCES: u32 = 0xc040_64a0;
+
+    /// `_IOWR('d', 0xa1, drm_mode_crtc)`.
+    pub const DRM_IOCTL_MODE_GETCRTC: u32 = 0xc068_64a1;
+
+    /// `_IOWR('d', 0xa2, drm_mode_crtc)`.
+    pub const DRM_IOCTL_MODE_SETCRTC: u32 = 0xc068_64a2;
+
+    /// `_IOWR('d', 0xa6, drm_mode_get_encoder)`.
+    pub const DRM_IOCTL_MODE_GETENCODER: u32 = 0xc014_64a6;
+
+    /// `_IOWR('d', 0xa7, drm_mode_get_connector)`.
+    pub const DRM_IOCTL_MODE_GETCONNECTOR: u32 = 0xc050_64a7;
+
+    /// `_IOWR('d', 0xaf, u32)` — drop fb id.
+    pub const DRM_IOCTL_MODE_RMFB: u32 = 0xc004_64af;
+
+    /// `_IOWR('d', 0xb0, drm_mode_crtc_page_flip)` — queue page-flip.
+    pub const DRM_IOCTL_MODE_PAGE_FLIP: u32 = 0xc018_64b0;
+
+    /// `_IOWR('d', 0xb8, drm_mode_fb_cmd2)`.
+    pub const DRM_IOCTL_MODE_ADDFB2: u32 = 0xc068_64b8;
+
+    // --- KMS enums --------------------------------------------------------
+
+    pub const DRM_MODE_CONNECTOR_VIRTUAL: u32 = 15;
+    pub const DRM_MODE_CONNECTED: u32 = 1;
+    pub const DRM_MODE_SUBPIXEL_UNKNOWN: u32 = 1;
+    pub const DRM_EVENT_VBLANK: u32 = 1;
+    pub const DRM_EVENT_FLIP_COMPLETE: u32 = 2;
+
+    // --- KMS marshalled structs -------------------------------------------
+
+    /// `struct drm_mode_card_res`. 64 bytes. The four `*_ptr` fields are
+    /// `__u64` upstream for x86_32/x86_64 portability; on wasm32 the user
+    /// pointer occupies the low 32 bits, high 32 bits are zero.
+    #[repr(C)]
+    #[derive(Clone, Copy, Default)]
+    pub struct WpkDrmModeCardRes {
+        pub fb_id_ptr: u64,         // 0   in
+        pub crtc_id_ptr: u64,       // 8   in
+        pub connector_id_ptr: u64,  // 16  in
+        pub encoder_id_ptr: u64,    // 24  in
+        pub count_fbs: u32,         // 32  in/out
+        pub count_crtcs: u32,       // 36  in/out
+        pub count_connectors: u32,  // 40  in/out
+        pub count_encoders: u32,    // 44  in/out
+        pub min_width: u32,         // 48  out
+        pub max_width: u32,         // 52  out
+        pub min_height: u32,        // 56  out
+        pub max_height: u32,        // 60  out
+                                    // total: 64
+    }
+
+    /// `struct drm_mode_modeinfo`. 68 bytes.
+    #[repr(C)]
+    #[derive(Clone, Copy, Default)]
+    pub struct WpkDrmModeModeinfo {
+        pub clock: u32,         // 0
+        pub hdisplay: u16,      // 4
+        pub hsync_start: u16,   // 6
+        pub hsync_end: u16,     // 8
+        pub htotal: u16,        // 10
+        pub hskew: u16,         // 12
+        pub vdisplay: u16,      // 14
+        pub vsync_start: u16,   // 16
+        pub vsync_end: u16,     // 18
+        pub vtotal: u16,        // 20
+        pub vscan: u16,         // 22
+        pub vrefresh: u32,      // 24
+        pub flags: u32,         // 28
+        pub mode_type: u32,     // 32
+        pub name: [u8; 32],     // 36..68
+                                // total: 68
+    }
+
+    /// `struct drm_mode_crtc`. 104 bytes (embedded modeinfo at offset 36).
+    #[repr(C)]
+    #[derive(Clone, Copy, Default)]
+    pub struct WpkDrmModeGetCrtc {
+        pub set_connectors_ptr: u64,   // 0    in   (SETCRTC only)
+        pub count_connectors: u32,     // 8    in   (SETCRTC only)
+        pub crtc_id: u32,              // 12   in/out
+        pub fb_id: u32,                // 16   in/out
+        pub x: u32,                    // 20   in/out
+        pub y: u32,                    // 24   in/out
+        pub gamma_size: u32,           // 28   out
+        pub mode_valid: u32,           // 32   in/out
+        pub mode: WpkDrmModeModeinfo,  // 36..104
+                                       // total: 104
+    }
+
+    /// `struct drm_mode_get_connector`. 80 bytes.
+    #[repr(C)]
+    #[derive(Clone, Copy, Default)]
+    pub struct WpkDrmModeGetConnector {
+        pub encoders_ptr: u64,         // 0    in
+        pub modes_ptr: u64,            // 8    in
+        pub props_ptr: u64,            // 16   in
+        pub prop_values_ptr: u64,      // 24   in
+        pub count_modes: u32,          // 32   in/out
+        pub count_props: u32,          // 36   in/out
+        pub count_encoders: u32,       // 40   in/out
+        pub encoder_id: u32,           // 44   out
+        pub connector_id: u32,         // 48   in/out
+        pub connector_type: u32,       // 52   out
+        pub connector_type_id: u32,    // 56   out
+        pub connection: u32,           // 60   out
+        pub mm_width: u32,             // 64   out
+        pub mm_height: u32,            // 68   out
+        pub subpixel: u32,             // 72   out
+        pub pad: u32,                  // 76
+                                       // total: 80
+    }
+
+    /// `struct drm_mode_get_encoder`. 20 bytes.
+    #[repr(C)]
+    #[derive(Clone, Copy, Default)]
+    pub struct WpkDrmModeGetEncoder {
+        pub encoder_id: u32,        // 0    in/out
+        pub encoder_type: u32,      // 4    out
+        pub crtc_id: u32,           // 8    out
+        pub possible_crtcs: u32,    // 12   out
+        pub possible_clones: u32,   // 16   out
+                                    // total: 20
+    }
+
+    /// `struct drm_mode_fb_cmd2`. 104 bytes — `[u64; 4] modifier` aligns
+    /// to offset 72, leaving 4 bytes of pad after `offsets`.
+    #[repr(C)]
+    #[derive(Clone, Copy, Default)]
+    pub struct WpkDrmModeFbCmd2 {
+        pub fb_id: u32,             // 0    out
+        pub width: u32,             // 4    in
+        pub height: u32,            // 8    in
+        pub pixel_format: u32,      // 12   in
+        pub flags: u32,             // 16   in
+        pub handles: [u32; 4],      // 20   in
+        pub pitches: [u32; 4],      // 36   in
+        pub offsets: [u32; 4],      // 52   in
+        pub modifier: [u64; 4],     // 72..104   in
+                                    // total: 104
+    }
+
+    /// `struct drm_mode_crtc_page_flip`. 24 bytes.
+    #[repr(C)]
+    #[derive(Clone, Copy, Default)]
+    pub struct WpkDrmModeCrtcPageFlip {
+        pub crtc_id: u32,    // 0    in
+        pub fb_id: u32,      // 4    in
+        pub flags: u32,      // 8    in
+        pub reserved: u32,   // 12
+        pub user_data: u64,  // 16   in
+                             // total: 24
+    }
+
+    /// `struct drm_event_vblank`. 32 bytes — `drm_event` header (8) +
+    /// body (24). Carries `sequence` + `crtc_id` at the tail so libdrm v3's
+    /// `page_flip_handler2(fd, sequence, tv_sec, tv_usec, crtc_id,
+    /// user_data)` reads correct bytes.
+    #[repr(C)]
+    #[derive(Clone, Copy, Default)]
+    pub struct WpkDrmEventVblank {
+        pub ev_type: u32,    // 0
+        pub length: u32,     // 4
+        pub user_data: u64,  // 8
+        pub tv_sec: u32,     // 16
+        pub tv_usec: u32,    // 20
+        pub sequence: u32,   // 24
+        pub crtc_id: u32,    // 28
+                             // total: 32
+    }
+
+    /// `struct drm_wait_vblank_request`. Union member (input). 16 bytes.
+    #[repr(C)]
+    #[derive(Clone, Copy, Default)]
+    pub struct WpkDrmWaitVblankRequest {
+        pub req_type: u32,  // 0
+        pub sequence: u32,  // 4
+        pub signal: u64,    // 8
+                            // total: 16
+    }
+
+    /// `struct drm_wait_vblank_reply`. Union member (output). 16 bytes.
+    #[repr(C)]
+    #[derive(Clone, Copy, Default)]
+    pub struct WpkDrmWaitVblankReply {
+        pub rep_type: u32,  // 0
+        pub sequence: u32,  // 4
+        pub tv_sec: u32,    // 8
+        pub tv_usec: u32,   // 12
+                            // total: 16
+    }
+}
+
+#[cfg(test)]
+mod dri_tests {
+    use super::dri::*;
+    use core::mem::size_of;
+
+    /// `_IOWR(magic, nr, type)` packs (dir, size, magic, nr) into a u32.
+    /// Mirrors include/uapi/asm-generic/ioctl.h.
+    const fn ioc(dir: u32, magic: u32, nr: u32, size: u32) -> u32 {
+        (dir << 30) | (size << 16) | (magic << 8) | nr
+    }
+    const IOC_READ: u32 = 2;
+    const IOC_WRITE: u32 = 1;
+
+    #[test]
+    fn struct_sizes_match_linux_abi() {
+        assert_eq!(size_of::<WpkDrmModeCreateDumb>(), 32);
+        assert_eq!(size_of::<WpkDrmModeMapDumb>(), 16);
+        assert_eq!(size_of::<WpkDrmModeDestroyDumb>(), 4);
+        assert_eq!(size_of::<WpkDrmGemClose>(), 8);
+        assert_eq!(size_of::<WpkDrmPrimeHandle>(), 12);
+        assert_eq!(size_of::<WpkDrmGetCap>(), 16);
+        assert_eq!(size_of::<WpkDrmVersion>(), 36);
+    }
+
+    #[test]
+    fn ioctl_numbers_match_linux_uapi() {
+        let iowr = IOC_READ | IOC_WRITE;
+        assert_eq!(DRM_IOCTL_VERSION,
+            ioc(iowr, 'd' as u32, 0x00, size_of::<WpkDrmVersion>() as u32));
+        assert_eq!(DRM_IOCTL_GET_CAP,
+            ioc(iowr, 'd' as u32, 0x0c, size_of::<WpkDrmGetCap>() as u32));
+        assert_eq!(DRM_IOCTL_GEM_CLOSE,
+            ioc(IOC_WRITE, 'd' as u32, 0x09, size_of::<WpkDrmGemClose>() as u32));
+        assert_eq!(DRM_IOCTL_PRIME_HANDLE_TO_FD,
+            ioc(iowr, 'd' as u32, 0x2d, size_of::<WpkDrmPrimeHandle>() as u32));
+        assert_eq!(DRM_IOCTL_PRIME_FD_TO_HANDLE,
+            ioc(iowr, 'd' as u32, 0x2e, size_of::<WpkDrmPrimeHandle>() as u32));
+        assert_eq!(DRM_IOCTL_MODE_CREATE_DUMB,
+            ioc(iowr, 'd' as u32, 0xb2, size_of::<WpkDrmModeCreateDumb>() as u32));
+        assert_eq!(DRM_IOCTL_MODE_MAP_DUMB,
+            ioc(iowr, 'd' as u32, 0xb3, size_of::<WpkDrmModeMapDumb>() as u32));
+        assert_eq!(DRM_IOCTL_MODE_DESTROY_DUMB,
+            ioc(iowr, 'd' as u32, 0xb4, size_of::<WpkDrmModeDestroyDumb>() as u32));
+    }
+
+    #[test]
+    fn wpk_extension_sizes_match_wasm32() {
+        assert_eq!(size_of::<WpkDrmGpuBoCreate>(), 16);
+        assert_eq!(size_of::<WpkDrmBindForeignTexture>(), 16);
+    }
+
+    #[test]
+    fn wpk_extension_ioctl_numbers() {
+        let iowr = IOC_READ | IOC_WRITE;
+        assert_eq!(DRM_IOCTL_WPK_CREATE_GPU_BO,
+            ioc(iowr, 'd' as u32, 0xE0, size_of::<WpkDrmGpuBoCreate>() as u32));
+        assert_eq!(DRM_IOCTL_WPK_BIND_FOREIGN_TEXTURE,
+            ioc(iowr, 'd' as u32, 0xE1, size_of::<WpkDrmBindForeignTexture>() as u32));
+    }
+
+    #[test]
+    fn drm_fourcc_constants_match_uapi() {
+        const fn fourcc(a: u8, b: u8, c: u8, d: u8) -> u32 {
+            (a as u32) | ((b as u32) << 8) | ((c as u32) << 16) | ((d as u32) << 24)
+        }
+        assert_eq!(DRM_FORMAT_ARGB8888, fourcc(b'A', b'R', b'2', b'4'));
+        assert_eq!(DRM_FORMAT_XRGB8888, fourcc(b'X', b'R', b'2', b'4'));
+        assert_eq!(DRM_FORMAT_RGB565, fourcc(b'R', b'G', b'1', b'6'));
+    }
+
+    #[test]
+    fn kms_struct_sizes_match_linux_abi() {
+        assert_eq!(size_of::<WpkDrmModeCardRes>(), 64);
+        assert_eq!(size_of::<WpkDrmModeModeinfo>(), 68);
+        assert_eq!(size_of::<WpkDrmModeGetCrtc>(), 104);
+        assert_eq!(size_of::<WpkDrmModeGetConnector>(), 80);
+        assert_eq!(size_of::<WpkDrmModeGetEncoder>(), 20);
+        assert_eq!(size_of::<WpkDrmModeFbCmd2>(), 104);
+        assert_eq!(size_of::<WpkDrmModeCrtcPageFlip>(), 24);
+        assert_eq!(size_of::<WpkDrmEventVblank>(), 32);
+        assert_eq!(size_of::<WpkDrmWaitVblankRequest>(), 16);
+        assert_eq!(size_of::<WpkDrmWaitVblankReply>(), 16);
+    }
+
+    #[test]
+    fn kms_ioctl_numbers_match_linux_uapi() {
+        let iowr = IOC_READ | IOC_WRITE;
+        assert_eq!(DRM_IOCTL_SET_MASTER,
+            ioc(0, 'd' as u32, 0x1e, 0));
+        assert_eq!(DRM_IOCTL_DROP_MASTER,
+            ioc(0, 'd' as u32, 0x1f, 0));
+        assert_eq!(DRM_IOCTL_WAIT_VBLANK,
+            ioc(iowr, 'd' as u32, 0x3a, size_of::<WpkDrmWaitVblankRequest>() as u32));
+        assert_eq!(DRM_IOCTL_MODE_GETRESOURCES,
+            ioc(iowr, 'd' as u32, 0xa0, size_of::<WpkDrmModeCardRes>() as u32));
+        assert_eq!(DRM_IOCTL_MODE_GETCRTC,
+            ioc(iowr, 'd' as u32, 0xa1, size_of::<WpkDrmModeGetCrtc>() as u32));
+        assert_eq!(DRM_IOCTL_MODE_SETCRTC,
+            ioc(iowr, 'd' as u32, 0xa2, size_of::<WpkDrmModeGetCrtc>() as u32));
+        assert_eq!(DRM_IOCTL_MODE_GETENCODER,
+            ioc(iowr, 'd' as u32, 0xa6, size_of::<WpkDrmModeGetEncoder>() as u32));
+        assert_eq!(DRM_IOCTL_MODE_GETCONNECTOR,
+            ioc(iowr, 'd' as u32, 0xa7, size_of::<WpkDrmModeGetConnector>() as u32));
+        assert_eq!(DRM_IOCTL_MODE_RMFB,
+            ioc(iowr, 'd' as u32, 0xaf, 4));
+        assert_eq!(DRM_IOCTL_MODE_PAGE_FLIP,
+            ioc(iowr, 'd' as u32, 0xb0, size_of::<WpkDrmModeCrtcPageFlip>() as u32));
+        assert_eq!(DRM_IOCTL_MODE_ADDFB2,
+            ioc(iowr, 'd' as u32, 0xb8, size_of::<WpkDrmModeFbCmd2>() as u32));
+    }
+
+    #[test]
+    fn kms_enum_constants_match_uapi() {
+        assert_eq!(DRM_MODE_CONNECTOR_VIRTUAL, 15);
+        assert_eq!(DRM_MODE_CONNECTED, 1);
+        assert_eq!(DRM_EVENT_VBLANK, 1);
+        assert_eq!(DRM_EVENT_FLIP_COMPLETE, 2);
+    }
+}
+
+#[cfg(test)]
+mod gl_tests {
+    use super::gl::*;
+    use core::mem::size_of;
+
+    #[test]
+    fn struct_sizes_match_abi() {
+        assert_eq!(size_of::<GlSubmitInfo>(),    8);
+        assert_eq!(size_of::<GlContextAttrs>(), 16);
+        assert_eq!(size_of::<GlSurfaceAttrs>(), 32);
+        assert_eq!(size_of::<GlQueryInfo>(),    24);
+    }
+
+    #[test]
+    fn cmdbuf_len_is_one_mib() {
+        assert_eq!(CMDBUF_LEN, 1024 * 1024);
+    }
+
+    #[test]
+    fn opcodes_are_unique() {
+        let ops: &[u16] = &[
+            OP_CLEAR, OP_CLEAR_COLOR, OP_VIEWPORT, OP_SCISSOR,
+            OP_ENABLE, OP_DISABLE, OP_BLEND_FUNC, OP_DEPTH_FUNC,
+            OP_CULL_FACE, OP_FRONT_FACE, OP_LINE_WIDTH, OP_PIXEL_STOREI,
+            OP_GEN_BUFFERS, OP_DELETE_BUFFERS, OP_BIND_BUFFER,
+            OP_BUFFER_DATA, OP_BUFFER_SUB_DATA,
+            OP_GEN_TEXTURES, OP_DELETE_TEXTURES, OP_BIND_TEXTURE,
+            OP_TEX_IMAGE_2D, OP_TEX_SUB_IMAGE_2D, OP_TEX_PARAMETERI,
+            OP_ACTIVE_TEXTURE, OP_GENERATE_MIPMAP,
+            OP_CREATE_SHADER, OP_SHADER_SOURCE, OP_COMPILE_SHADER,
+            OP_DELETE_SHADER, OP_CREATE_PROGRAM, OP_ATTACH_SHADER,
+            OP_LINK_PROGRAM, OP_USE_PROGRAM, OP_BIND_ATTRIB_LOCATION,
+            OP_DELETE_PROGRAM,
+            OP_UNIFORM1I, OP_UNIFORM1F, OP_UNIFORM2F, OP_UNIFORM3F,
+            OP_UNIFORM4F, OP_UNIFORM_MATRIX4FV, OP_UNIFORM4FV,
+            OP_ENABLE_VERTEX_ATTRIB_ARRAY, OP_DISABLE_VERTEX_ATTRIB_ARRAY,
+            OP_VERTEX_ATTRIB_POINTER, OP_DRAW_ARRAYS, OP_DRAW_ELEMENTS,
+            OP_GEN_VERTEX_ARRAYS, OP_DELETE_VERTEX_ARRAYS,
+            OP_BIND_VERTEX_ARRAY,
+            OP_GEN_FRAMEBUFFERS, OP_BIND_FRAMEBUFFER,
+            OP_FRAMEBUFFER_TEXTURE_2D, OP_GEN_RENDERBUFFERS,
+            OP_BIND_RENDERBUFFER, OP_RENDERBUFFER_STORAGE,
+            OP_FRAMEBUFFER_RENDERBUFFER,
+        ];
+        for (i, &a) in ops.iter().enumerate() {
+            for &b in &ops[i + 1..] {
+                assert_ne!(a, b, "duplicate opcode 0x{a:04x}");
+            }
+        }
+    }
+
+    #[test]
+    fn query_opcodes_are_unique() {
+        let qops: &[u32] = &[
+            QOP_GET_ERROR, QOP_GET_STRING, QOP_GET_INTEGERV,
+            QOP_GET_FLOATV, QOP_GET_UNIFORM_LOC, QOP_GET_ATTRIB_LOC,
+            QOP_GET_SHADERIV, QOP_GET_SHADER_INFO_LOG, QOP_GET_PROGRAMIV,
+            QOP_GET_PROGRAM_INFO_LOG, QOP_READ_PIXELS, QOP_CHECK_FB_STATUS,
+        ];
+        for (i, &a) in qops.iter().enumerate() {
+            for &b in &qops[i + 1..] {
+                assert_ne!(a, b, "duplicate query opcode 0x{a:02x}");
+            }
+        }
+    }
 }

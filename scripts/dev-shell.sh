@@ -4,11 +4,10 @@
 #
 # Always uses `nix develop --ignore-environment` so only flake.nix's
 # declared `packages` are visible. Builds fail immediately on a
-# missing dep rather than silently leaking a host tool from
-# /usr/bin or /opt/homebrew — that latent class of bug is exactly
-# what triggered PR #406 (force-rebuild's source-build path tripping
-# over /usr/bin/curl, /opt/homebrew/bin/python3, /usr/bin/perl, etc.
-# that the flake didn't declare).
+# missing dep rather than silently leaking a host tool from PATH.
+# That latent class of bug is exactly what triggered PR #406
+# (force-rebuild's source-build path tripping over undeclared host
+# curl, python, perl, etc. that the flake didn't declare).
 #
 # `--keep` preserves only the specific env vars CI workflows and
 # interactive use need. `HOME` is required because cargo/npm/git
@@ -59,10 +58,15 @@ nix_develop=(
     --keep INPUT_BUMP_LOCKFILE \
     --keep GH_TOKEN \
     --keep GITHUB_REPOSITORY \
+    --keep GITHUB_ACTOR \
     --keep GITHUB_REF \
     --keep GITHUB_REF_NAME \
     --keep GITHUB_SHA \
     --keep GITHUB_RUN_ID \
+    --keep GITHUB_RUN_ATTEMPT \
+    --keep GITHUB_SERVER_URL \
+    --keep GITHUB_WORKFLOW \
+    --keep GITHUB_JOB \
     --keep GITHUB_ACTIONS \
     --keep GITHUB_OUTPUT \
     --keep GITHUB_ENV \
@@ -89,6 +93,37 @@ nix_develop=(
     --keep WASM_POSIX_FETCH_SKIP_PKGS \
     --keep WASM_POSIX_SYSROOT \
     --keep WASM_POSIX_LLVM_DIR \
+    --keep HOMEBREW_BREW_FILE \
+    --keep HOMEBREW_PREFIX \
+    --keep HOMEBREW_REPOSITORY \
+    --keep HOMEBREW_CACHE \
+    --keep HOMEBREW_TEMP \
+    --keep HOMEBREW_NO_AUTO_UPDATE \
+    --keep HOMEBREW_NO_INSTALL_CLEANUP \
+    --keep HOMEBREW_NO_ANALYTICS \
+    --keep HOMEBREW_DEVELOPER \
+    --keep HOMEBREW_GITHUB_API_TOKEN \
+    --keep HOMEBREW_GITHUB_PACKAGES_TOKEN \
+    --keep HOMEBREW_GITHUB_PACKAGES_USER \
+    --keep HOMEBREW_DOCKER_REGISTRY_TOKEN \
+    --keep KANDELO_HOMEBREW_FORMULA \
+    --keep KANDELO_HOMEBREW_ARCH \
+    --keep KANDELO_HOMEBREW_RELEASE_TAG \
+    --keep KANDELO_HOMEBREW_TAP_REPOSITORY \
+    --keep KANDELO_HOMEBREW_DRY_RUN \
+    --keep KANDELO_HOMEBREW_TAP_ROOT \
+    --keep KANDELO_HOMEBREW_SIDECAR_ROOT \
+    --keep KANDELO_HOMEBREW_BOTTLE_ARCHIVE \
+    --keep KANDELO_HOMEBREW_BOTTLE_JSON \
+    --keep KANDELO_HOMEBREW_BOTTLE_URL \
+    --keep KANDELO_HOMEBREW_BOTTLE_SHA256 \
+    --keep KANDELO_HOMEBREW_BOTTLE_BYTES \
+    --keep KANDELO_HOMEBREW_BROWSER_SMOKE_STATUS \
+    --keep KANDELO_HOMEBREW_VFS_IMAGE \
+    --keep KANDELO_HOMEBREW_VFS_REPORT \
+    --keep KANDELO_HOMEBREW_GALLERY_ROOT \
+    --keep KANDELO_HOMEBREW_BROWSER_SMOKE_URL \
+    --keep KANDELO_HOMEBREW_BROWSER_SMOKE_COMMAND \
     --accept-flake-config \
     --command "$@"
 )

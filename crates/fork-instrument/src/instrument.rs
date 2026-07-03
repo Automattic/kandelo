@@ -22,8 +22,8 @@
 //!   ;; --- PREAMBLE (runs only when state == REWINDING) ---
 //!   (if (i32.eq (global.get $_wpk_fork_state) (i32.const 2))
 //!     (then
-//!       ;; pop frame from save buffer, restore locals, call_idx,
-//!       ;; catch_region_id, exnref_slot, arg-spill locals
+//!       ;; pop frame from save buffer, then restore catch_region_id,
+//!       ;; exnref_slot, scalar locals, and arg-spill locals
 //!     ))
 //!
 //!   ;; --- DISPATCH + WRAPPER + NESTED POST LABELS ---
@@ -34,7 +34,7 @@
 //!           (block $dispatch_normal
 //!             (if (i32.eq (global.get $_wpk_fork_state) (i32.const 2))
 //!               (then
-//!                 (local.get $call_idx_local)
+//!                 ;; load frame.call_index from *(buf + 0)
 //!                 (br_table $POST_0 $POST_1 ... $POST_{N-1} $unwind_save)))
 //!             ;; NORMAL: fall through out of $dispatch_normal
 //!           )
@@ -44,9 +44,10 @@
 //!         <reload args for call 0>
 //!         (call $callee_0)           ;; or call_indirect
 //!         <Phase 6e: set catch_region_id_local / exnref_slot_local>
-//!         (local.set $call_idx_local (i32.const 0))
 //!         (global.get $_wpk_fork_state) (i32.const 1) (i32.eq)
-//!         (br_if $unwind_save)        ;; propagate UNWINDING
+//!         (if (then
+//!           ;; frame.call_index = 0
+//!           (br $unwind_save)))       ;; propagate UNWINDING
 //!         <chunk 1>
 //!         <spill args for call 1>
 //!       )  ;; end $POST_1
@@ -55,17 +56,17 @@
 //!     <reload args for call N-1>
 //!     (call $callee_{N-1})
 //!     <Phase 6e>
-//!     (local.set $call_idx_local (i32.const N-1))
-//!     (br_if $unwind_save if UNWINDING)
+//!     (if state == UNWINDING:
+//!       frame.call_index = N-1
+//!       br $unwind_save)
 //!     <chunk N: tail>
 //!     (return)                       ;; normal-path exit
 //!   )  ;; end $unwind_save — br target for UNWINDING propagation
 //!
 //!   ;; --- POSTAMBLE (runs only when branched-to via br $unwind_save) ---
-//!   ;; push frame header (func_index, call_index, catch_region_id,
-//!   ;; exnref_slot), save scalar user locals, save arg-spill locals,
-//!   ;; spill ref-typed user locals to aux tables, advance current_pos,
-//!   ;; push defaults for the function's result types
+//!   ;; push frame header fields except call_index, save scalar user locals,
+//!   ;; save arg-spill locals, spill ref-typed user locals to aux tables,
+//!   ;; advance current_pos, push defaults for the function's result types
 //! )
 //! ```
 //!
@@ -113,15 +114,14 @@
 use std::collections::{HashMap, HashSet};
 
 use walrus::{
-    AbstractHeapType, FunctionId, FunctionKind, GlobalId, HeapType, LocalFunction, LocalId,
-    MemoryId, Module, RefType, TableId, TagId, TypeId, ValType,
     ir::{
-        AtomicWidth, BinaryOp, Binop, Block, Br, BrIf, BrTable, Call, CallIndirect, Const,
-        GlobalGet, IfElse, Instr, InstrLocId, InstrSeqId, InstrSeqType, LegacyCatch, LoadKind,
-        LocalGet, LocalSet, LocalTee, Loop, MemArg, RefAsNonNull, RefIsNull, RefNull, Return,
-        StoreKind, TableGet, TableSet, Throw, ThrowRef, TryTable, TryTableCatch, UnaryOp,
-        Unreachable, Value,
+        AtomicWidth, BinaryOp, Binop, Block, Br, BrTable, Call, CallIndirect, Const, GlobalGet,
+        IfElse, Instr, InstrLocId, InstrSeqId, InstrSeqType, LegacyCatch, LoadKind, LocalGet,
+        LocalSet, LocalTee, Loop, MemArg, RefAsNonNull, RefIsNull, RefNull, Return, StoreKind,
+        TableGet, TableSet, Throw, ThrowRef, TryTable, TryTableCatch, UnaryOp, Unreachable, Value,
     },
+    AbstractHeapType, FunctionId, FunctionKind, HeapType, LocalFunction, LocalId, MemoryId, Module,
+    RefType, TableId, TagId, TypeId, ValType,
 };
 
 use crate::runtime::{self, Runtime};
@@ -207,6 +207,12 @@ struct CallSiteInfo {
     target: CallTarget,
     sig_ty: TypeId,
     loc: InstrLocId,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct CatchStateLocals {
+    catch_region_id: LocalId,
+    exnref_slot: LocalId,
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -399,39 +405,50 @@ fn instrument_one_function_switch(
 
     // Take the original entry body; we rebuild it wholesale.
     let entry_id = local_mut(module, func_id).entry_block();
-    let original_body: Vec<(Instr, InstrLocId)> = std::mem::take(
-        &mut local_mut(module, func_id).block_mut(entry_id).instrs,
-    );
+    let original_body: Vec<(Instr, InstrLocId)> =
+        std::mem::take(&mut local_mut(module, func_id).block_mut(entry_id).instrs);
 
     // Partition the body at top-level fork-path call sites.
-    let (chunks, call_sites) = partition_body(&original_body, fork_path, module);
+    let (mut chunks, call_sites) = partition_body(&original_body, fork_path, module);
     let n_calls = call_sites.len();
 
     // Allocate per-function synthetic locals.
-    let call_idx_local = module.locals.add(ValType::I32);
-    let frame_ptr_local = module.locals.add(runtime.buf_type);
-    let catch_region_id_local = module.locals.add(ValType::I32);
-    let exnref_slot_local = module.locals.add(ValType::I32);
+    let catch_state_locals = if catch_plan.is_empty() && b1_slots.is_empty() {
+        None
+    } else {
+        Some(CatchStateLocals {
+            catch_region_id: module.locals.add(ValType::I32),
+            exnref_slot: module.locals.add(ValType::I32),
+        })
+    };
 
-    // Per-call arg-spill locals. Allocating them up front — before any
-    // IR mutation — lets the frame layout see them as user-visible
-    // scalar locals. Fork-path calls with ref-typed args are rejected
-    // up front (MVP limitation).
-    let mut arg_spills: Vec<Vec<LocalId>> = Vec::with_capacity(n_calls);
-    for cs in &call_sites {
-        let arg_types = call_arg_types(module, cs);
-        for ty in &arg_types {
-            if !is_scalar(*ty) {
-                let name = func_name(module, func_id);
-                panic!(
-                    "fork-instrument: function `{name}` has a fork-path call with a ref-typed \
+    // Per-call argument materialization. The default is the existing
+    // spill-local path; a conservative pure scalar suffix can instead
+    // be replayed after POST_K and needs no frame-backed arg locals.
+    let pending_arg_materializations: Vec<PendingCallArgMaterialization> = call_sites
+        .iter()
+        .enumerate()
+        .map(|(site_idx, cs)| {
+            let arg_types = call_arg_types(module, cs);
+            for ty in &arg_types {
+                if !is_scalar(*ty) {
+                    let name = func_name(module, func_id);
+                    panic!(
+                        "fork-instrument: function `{name}` has a fork-path call with a ref-typed \
                      argument ({ty:?}). Ref-typed call arguments need aux-table spilling, \
                      which the MVP switch-dispatch transform does not yet support.",
-                );
+                    );
+                }
             }
-        }
-        let spills: Vec<LocalId> = arg_types.iter().map(|&ty| module.locals.add(ty)).collect();
-        arg_spills.push(spills);
+            plan_call_arg_materialization(module, &chunks[site_idx], arg_types)
+        })
+        .collect();
+    let arg_materializations: Vec<CallArgMaterialization> = pending_arg_materializations
+        .into_iter()
+        .map(|pending| allocate_call_arg_materialization(module, pending))
+        .collect();
+    for (site_idx, materialization) in arg_materializations.iter().enumerate() {
+        truncate_materialized_tail(&mut chunks[site_idx], materialization.tail_len());
     }
 
     // Sub-commit 2.4c: per-call operand-stack carryovers (computed
@@ -455,12 +472,16 @@ fn instrument_one_function_switch(
     }
 
     // Combined scalar locals for the frame (user locals first, then
-    // per-call arg spills in call order, then per-call carryover spills
-    // in call order — added 2.4c).
+    // frame-backed per-call arg spills in call order, then per-call
+    // carryover spills in call order — added 2.4c).
     let mut frame_scalars: Vec<(LocalId, ValType)> = user_scalar_locals.clone();
     for (site_idx, cs) in call_sites.iter().enumerate() {
         let arg_types = call_arg_types(module, cs);
-        for (&lid, &ty) in arg_spills[site_idx].iter().zip(arg_types.iter()) {
+        for (&lid, &ty) in arg_materializations[site_idx]
+            .spill_locals()
+            .iter()
+            .zip(arg_types.iter())
+        {
             frame_scalars.push((lid, ty));
         }
     }
@@ -491,12 +512,14 @@ fn instrument_one_function_switch(
     // try_table body. Phase 6 covers catch_ref / catch_all_ref.
     // B1 Stage 2 (Task 2.3) extends the same stub with a plain-catch
     // dispatch when `b1_slots` lists arms for the region.
-    if aux_tables.exnref.is_some() {
+    if !catch_plan.is_empty() && aux_tables.exnref.is_some() {
+        let catch_state =
+            catch_state_locals.expect("exnref catch plan requires catch-state locals");
         inject_rewind_throw_stubs(
             module,
             func_id,
             runtime,
-            catch_region_id_local,
+            catch_state.catch_region_id,
             aux_tables,
             catch_plan,
             b1_slots,
@@ -545,10 +568,7 @@ fn instrument_one_function_switch(
         runtime,
         memory,
         ptr_ty,
-        frame_ptr_local,
-        call_idx_local,
-        catch_region_id_local,
-        exnref_slot_local,
+        catch_state_locals,
         &locals_with_offsets,
         ref_plan,
         aux_tables,
@@ -561,13 +581,13 @@ fn instrument_one_function_switch(
         &post_seqs,
         &chunks,
         &call_sites,
-        &arg_spills,
+        &arg_materializations,
         &carryover_spills,
         &catch_handlers,
-        runtime.state_global,
-        call_idx_local,
-        catch_region_id_local,
-        exnref_slot_local,
+        runtime,
+        memory,
+        ptr_ty,
+        catch_state_locals,
     );
 
     // Postamble lives outside $unwind_save, in the entry block, right
@@ -579,10 +599,7 @@ fn instrument_one_function_switch(
         runtime,
         memory,
         ptr_ty,
-        frame_ptr_local,
-        call_idx_local,
-        catch_region_id_local,
-        exnref_slot_local,
+        catch_state_locals,
         &locals_with_offsets,
         ref_plan,
         aux_tables,
@@ -607,7 +624,12 @@ fn instrument_one_function_switch(
             value: Value::I32(runtime::STATE_REWINDING),
         }),
     );
-    push_instr(entry_seq, Instr::Binop(Binop { op: BinaryOp::I32Eq }));
+    push_instr(
+        entry_seq,
+        Instr::Binop(Binop {
+            op: BinaryOp::I32Eq,
+        }),
+    );
     push_instr(
         entry_seq,
         Instr::IfElse(IfElse {
@@ -628,15 +650,19 @@ fn instrument_one_function_switch(
     // captures intercept plain catch dispatch so the operand tuple
     // can be saved at unwind time. Runs AFTER Phase 6 so it finds
     // try_tables at their post-Phase-6 locations.
-    apply_plain_catch_handlers(
-        module,
-        func_id,
-        runtime,
-        catch_region_id_local,
-        b1_slots,
-        catch_plan,
-        &catch_handlers,
-    );
+    if let Some(catch_state) = catch_state_locals {
+        apply_plain_catch_handlers(
+            module,
+            func_id,
+            runtime,
+            catch_state.catch_region_id,
+            b1_slots,
+            catch_plan,
+            &catch_handlers,
+        );
+    } else {
+        debug_assert!(b1_slots.is_empty());
+    }
 }
 
 // ----------------------------------------------------------------------
@@ -741,9 +767,13 @@ fn has_top_level_stack_carryovers(
         // Check for a fork-path call first — partitioning will split
         // here, so we need `depth` to equal the call's expected arity.
         let expected_args: Option<usize> = match instr {
-            Instr::Call(c) if fork_path.contains(&c.func) => {
-                Some(module.types.get(module.funcs.get(c.func).ty()).params().len())
-            }
+            Instr::Call(c) if fork_path.contains(&c.func) => Some(
+                module
+                    .types
+                    .get(module.funcs.get(c.func).ty())
+                    .params()
+                    .len(),
+            ),
             Instr::CallIndirect(ci) => {
                 // +1 for the table index on top of the signature's params.
                 Some(module.types.get(ci.ty).params().len() + 1)
@@ -793,11 +823,7 @@ enum StackEffect {
 /// Compute the stack effect of a single instruction assuming it is
 /// reachable (i.e., not sitting in a polymorphic post-terminator
 /// region). Only used by `has_top_level_stack_carryovers`.
-fn top_level_stack_effect(
-    module: &Module,
-    local: &LocalFunction,
-    instr: &Instr,
-) -> StackEffect {
+fn top_level_stack_effect(module: &Module, local: &LocalFunction, instr: &Instr) -> StackEffect {
     use StackEffect::{Delta, Terminator, Unknown};
 
     let block_params_results = |seq_id: InstrSeqId| -> (usize, usize) {
@@ -823,9 +849,7 @@ fn top_level_stack_effect(
         | Instr::RefFunc(_) => Delta { pops: 0, pushes: 1 },
 
         // --- Pure consumers (1 → 0) ---
-        Instr::LocalSet(_) | Instr::GlobalSet(_) | Instr::Drop(_) => {
-            Delta { pops: 1, pushes: 0 }
-        }
+        Instr::LocalSet(_) | Instr::GlobalSet(_) | Instr::Drop(_) => Delta { pops: 1, pushes: 0 },
 
         // --- 1 → 1 ---
         Instr::LocalTee(_)
@@ -905,7 +929,10 @@ fn top_level_stack_effect(
         Instr::IfElse(ie) => {
             let (p, r) = block_params_results(ie.consequent);
             // +1 for the branch condition consumed by `if`.
-            Delta { pops: p + 1, pushes: r }
+            Delta {
+                pops: p + 1,
+                pushes: r,
+            }
         }
         Instr::TryTable(t) => {
             let (p, r) = block_params_results(t.seq);
@@ -919,15 +946,24 @@ fn top_level_stack_effect(
         // --- Function calls ---
         Instr::Call(c) => {
             let t = module.types.get(module.funcs.get(c.func).ty());
-            Delta { pops: t.params().len(), pushes: t.results().len() }
+            Delta {
+                pops: t.params().len(),
+                pushes: t.results().len(),
+            }
         }
         Instr::CallIndirect(ci) => {
             let t = module.types.get(ci.ty);
-            Delta { pops: t.params().len() + 1, pushes: t.results().len() }
+            Delta {
+                pops: t.params().len() + 1,
+                pushes: t.results().len(),
+            }
         }
         Instr::CallRef(cr) => {
             let t = module.types.get(cr.ty);
-            Delta { pops: t.params().len() + 1, pushes: t.results().len() }
+            Delta {
+                pops: t.params().len() + 1,
+                pushes: t.results().len(),
+            }
         }
 
         // --- Terminators: stack becomes polymorphic. Remaining instrs
@@ -1014,9 +1050,7 @@ fn push_structured_results(
 /// the carryover-type tracker (`compute_carryover_types`).
 fn load_pushes(kind: &LoadKind) -> ValType {
     match kind {
-        LoadKind::I32 { .. } | LoadKind::I32_8 { .. } | LoadKind::I32_16 { .. } => {
-            ValType::I32
-        }
+        LoadKind::I32 { .. } | LoadKind::I32_8 { .. } | LoadKind::I32_16 { .. } => ValType::I32,
         LoadKind::I64 { .. }
         | LoadKind::I64_8 { .. }
         | LoadKind::I64_16 { .. }
@@ -1696,6 +1730,217 @@ fn call_arg_types(module: &Module, cs: &CallSiteInfo) -> Vec<ValType> {
     arg_types
 }
 
+#[derive(Debug, Clone)]
+enum PendingCallArgMaterialization {
+    Spill {
+        arg_types: Vec<ValType>,
+    },
+    PureTail {
+        tail: Vec<(Instr, InstrLocId)>,
+        tail_len: usize,
+    },
+}
+
+#[derive(Debug, Clone)]
+enum CallArgMaterialization {
+    Spill {
+        locals: Vec<LocalId>,
+    },
+    PureTail {
+        tail: Vec<(Instr, InstrLocId)>,
+        tail_len: usize,
+    },
+}
+
+impl CallArgMaterialization {
+    fn spill_locals(&self) -> &[LocalId] {
+        match self {
+            Self::Spill { locals } => locals,
+            Self::PureTail { .. } => &[],
+        }
+    }
+
+    fn tail_len(&self) -> usize {
+        match self {
+            Self::Spill { .. } => 0,
+            Self::PureTail { tail_len, .. } => *tail_len,
+        }
+    }
+}
+
+fn plan_call_arg_materialization(
+    module: &Module,
+    chunk: &[(Instr, InstrLocId)],
+    arg_types: Vec<ValType>,
+) -> PendingCallArgMaterialization {
+    if let Some((tail_len, tail)) = split_pure_scalar_tail(module, chunk, &arg_types) {
+        PendingCallArgMaterialization::PureTail { tail, tail_len }
+    } else {
+        PendingCallArgMaterialization::Spill { arg_types }
+    }
+}
+
+fn allocate_call_arg_materialization(
+    module: &mut Module,
+    pending: PendingCallArgMaterialization,
+) -> CallArgMaterialization {
+    match pending {
+        PendingCallArgMaterialization::Spill { arg_types } => {
+            let locals = arg_types.iter().map(|&ty| module.locals.add(ty)).collect();
+            CallArgMaterialization::Spill { locals }
+        }
+        PendingCallArgMaterialization::PureTail { tail, tail_len } => {
+            CallArgMaterialization::PureTail { tail, tail_len }
+        }
+    }
+}
+
+fn truncate_materialized_tail(chunk: &mut Vec<(Instr, InstrLocId)>, tail_len: usize) {
+    if tail_len == 0 {
+        return;
+    }
+    debug_assert!(chunk.len() >= tail_len);
+    chunk.truncate(chunk.len() - tail_len);
+}
+
+fn split_pure_scalar_tail(
+    module: &Module,
+    chunk: &[(Instr, InstrLocId)],
+    expected_outputs: &[ValType],
+) -> Option<(usize, Vec<(Instr, InstrLocId)>)> {
+    if expected_outputs.is_empty() {
+        return None;
+    }
+
+    for start in 0..chunk.len() {
+        let tail = &chunk[start..];
+        if let Some(outputs) = pure_scalar_tail_outputs(module, tail) {
+            if outputs == expected_outputs {
+                return Some((tail.len(), tail.to_vec()));
+            }
+        }
+    }
+
+    None
+}
+
+fn pure_scalar_tail_outputs(module: &Module, tail: &[(Instr, InstrLocId)]) -> Option<Vec<ValType>> {
+    let mut stack: Vec<ValType> = Vec::new();
+    for (instr, _) in tail {
+        match instr {
+            Instr::Const(c) => stack.push(pure_const_type(c)?),
+            Instr::LocalGet(LocalGet { local }) => {
+                let ty = module.locals.get(*local).ty();
+                if !is_scalar(ty) {
+                    return None;
+                }
+                stack.push(ty);
+            }
+            Instr::Unop(u) => {
+                let (input, output) = pure_unop_signature(u.op)?;
+                pop_exact_types(&mut stack, &[input])?;
+                stack.push(output);
+            }
+            Instr::Binop(b) => {
+                let (lhs, rhs, output) = pure_binop_signature(b.op)?;
+                pop_exact_types(&mut stack, &[lhs, rhs])?;
+                stack.push(output);
+            }
+            _ => return None,
+        }
+    }
+    Some(stack)
+}
+
+fn pure_const_type(c: &Const) -> Option<ValType> {
+    match c.value {
+        Value::I32(_) => Some(ValType::I32),
+        Value::I64(_) => Some(ValType::I64),
+        Value::F32(_) => Some(ValType::F32),
+        Value::F64(_) => Some(ValType::F64),
+        Value::V128(_) => None,
+    }
+}
+
+fn pop_exact_types(stack: &mut Vec<ValType>, expected: &[ValType]) -> Option<()> {
+    if stack.len() < expected.len() {
+        return None;
+    }
+    let start = stack.len() - expected.len();
+    if &stack[start..] != expected {
+        return None;
+    }
+    stack.truncate(start);
+    Some(())
+}
+
+fn pure_unop_signature(op: UnaryOp) -> Option<(ValType, ValType)> {
+    match op {
+        UnaryOp::I32Eqz | UnaryOp::I32Clz | UnaryOp::I32Ctz | UnaryOp::I32Popcnt => {
+            Some((ValType::I32, ValType::I32))
+        }
+        UnaryOp::I64Eqz => Some((ValType::I64, ValType::I32)),
+        UnaryOp::I64Clz | UnaryOp::I64Ctz | UnaryOp::I64Popcnt => {
+            Some((ValType::I64, ValType::I64))
+        }
+        UnaryOp::I32WrapI64 => Some((ValType::I64, ValType::I32)),
+        UnaryOp::I64ExtendSI32 | UnaryOp::I64ExtendUI32 => Some((ValType::I32, ValType::I64)),
+        UnaryOp::I32Extend8S | UnaryOp::I32Extend16S => Some((ValType::I32, ValType::I32)),
+        UnaryOp::I64Extend8S | UnaryOp::I64Extend16S | UnaryOp::I64Extend32S => {
+            Some((ValType::I64, ValType::I64))
+        }
+        _ => None,
+    }
+}
+
+fn pure_binop_signature(op: BinaryOp) -> Option<(ValType, ValType, ValType)> {
+    match op {
+        BinaryOp::I32Eq
+        | BinaryOp::I32Ne
+        | BinaryOp::I32LtS
+        | BinaryOp::I32LtU
+        | BinaryOp::I32GtS
+        | BinaryOp::I32GtU
+        | BinaryOp::I32LeS
+        | BinaryOp::I32LeU
+        | BinaryOp::I32GeS
+        | BinaryOp::I32GeU => Some((ValType::I32, ValType::I32, ValType::I32)),
+        BinaryOp::I64Eq
+        | BinaryOp::I64Ne
+        | BinaryOp::I64LtS
+        | BinaryOp::I64LtU
+        | BinaryOp::I64GtS
+        | BinaryOp::I64GtU
+        | BinaryOp::I64LeS
+        | BinaryOp::I64LeU
+        | BinaryOp::I64GeS
+        | BinaryOp::I64GeU => Some((ValType::I64, ValType::I64, ValType::I32)),
+        BinaryOp::I32Add
+        | BinaryOp::I32Sub
+        | BinaryOp::I32Mul
+        | BinaryOp::I32And
+        | BinaryOp::I32Or
+        | BinaryOp::I32Xor
+        | BinaryOp::I32Shl
+        | BinaryOp::I32ShrS
+        | BinaryOp::I32ShrU
+        | BinaryOp::I32Rotl
+        | BinaryOp::I32Rotr => Some((ValType::I32, ValType::I32, ValType::I32)),
+        BinaryOp::I64Add
+        | BinaryOp::I64Sub
+        | BinaryOp::I64Mul
+        | BinaryOp::I64And
+        | BinaryOp::I64Or
+        | BinaryOp::I64Xor
+        | BinaryOp::I64Shl
+        | BinaryOp::I64ShrS
+        | BinaryOp::I64ShrU
+        | BinaryOp::I64Rotl
+        | BinaryOp::I64Rotr => Some((ValType::I64, ValType::I64, ValType::I64)),
+        _ => None,
+    }
+}
+
 // ----------------------------------------------------------------------
 // Dispatch-structure emission
 // ----------------------------------------------------------------------
@@ -1869,8 +2114,9 @@ fn build_dispatch_tree_range(start: usize, end: usize, bucket_size: usize) -> Di
 fn populate_dispatch_normal(
     local: &mut LocalFunction,
     dispatch_normal: InstrSeqId,
-    state_global: GlobalId,
-    call_idx_local: LocalId,
+    runtime: &Runtime,
+    memory: MemoryId,
+    ptr_ty: ValType,
     post_seqs_slice: &[InstrSeqId],
     range_start: usize,
     default_target: InstrSeqId,
@@ -1886,7 +2132,7 @@ fn populate_dispatch_normal(
 
     {
         let s = &mut local.block_mut(if_then).instrs;
-        push_instr(s, Instr::LocalGet(LocalGet { local: call_idx_local }));
+        push_current_call_index(s, runtime, memory, ptr_ty);
         if range_start != 0 {
             push_instr(
                 s,
@@ -1894,7 +2140,12 @@ fn populate_dispatch_normal(
                     value: Value::I32(range_start as i32),
                 }),
             );
-            push_instr(s, Instr::Binop(Binop { op: BinaryOp::I32Sub }));
+            push_instr(
+                s,
+                Instr::Binop(Binop {
+                    op: BinaryOp::I32Sub,
+                }),
+            );
         }
         push_instr(
             s,
@@ -1909,7 +2160,7 @@ fn populate_dispatch_normal(
     push_instr(
         s,
         Instr::GlobalGet(GlobalGet {
-            global: state_global,
+            global: runtime.state_global,
         }),
     );
     push_instr(
@@ -1918,7 +2169,12 @@ fn populate_dispatch_normal(
             value: Value::I32(runtime::STATE_REWINDING),
         }),
     );
-    push_instr(s, Instr::Binop(Binop { op: BinaryOp::I32Eq }));
+    push_instr(
+        s,
+        Instr::Binop(Binop {
+            op: BinaryOp::I32Eq,
+        }),
+    );
     push_instr(
         s,
         Instr::IfElse(IfElse {
@@ -1935,8 +2191,9 @@ fn populate_dispatch_normal(
 fn populate_internal_dispatch(
     local: &mut LocalFunction,
     node_dispatch: InstrSeqId,
-    state_global: GlobalId,
-    call_idx_local: LocalId,
+    runtime: &Runtime,
+    memory: MemoryId,
+    ptr_ty: ValType,
     child_seqs: &[InstrSeqId],
     range_start: usize,
     span_per_child: usize,
@@ -1953,7 +2210,7 @@ fn populate_internal_dispatch(
 
     {
         let s = &mut local.block_mut(if_then).instrs;
-        push_instr(s, Instr::LocalGet(LocalGet { local: call_idx_local }));
+        push_current_call_index(s, runtime, memory, ptr_ty);
         if range_start != 0 {
             push_instr(
                 s,
@@ -1961,7 +2218,12 @@ fn populate_internal_dispatch(
                     value: Value::I32(range_start as i32),
                 }),
             );
-            push_instr(s, Instr::Binop(Binop { op: BinaryOp::I32Sub }));
+            push_instr(
+                s,
+                Instr::Binop(Binop {
+                    op: BinaryOp::I32Sub,
+                }),
+            );
         }
         push_instr(
             s,
@@ -1969,7 +2231,12 @@ fn populate_internal_dispatch(
                 value: Value::I32(span_per_child as i32),
             }),
         );
-        push_instr(s, Instr::Binop(Binop { op: BinaryOp::I32DivU }));
+        push_instr(
+            s,
+            Instr::Binop(Binop {
+                op: BinaryOp::I32DivU,
+            }),
+        );
         push_instr(
             s,
             Instr::BrTable(BrTable {
@@ -1983,7 +2250,7 @@ fn populate_internal_dispatch(
     push_instr(
         s,
         Instr::GlobalGet(GlobalGet {
-            global: state_global,
+            global: runtime.state_global,
         }),
     );
     push_instr(
@@ -1992,7 +2259,12 @@ fn populate_internal_dispatch(
             value: Value::I32(runtime::STATE_REWINDING),
         }),
     );
-    push_instr(s, Instr::Binop(Binop { op: BinaryOp::I32Eq }));
+    push_instr(
+        s,
+        Instr::Binop(Binop {
+            op: BinaryOp::I32Eq,
+        }),
+    );
     push_instr(
         s,
         Instr::IfElse(IfElse {
@@ -2012,13 +2284,13 @@ fn populate_dispatch_structure(
     post_seqs: &[InstrSeqId],
     chunks: &[Vec<(Instr, InstrLocId)>],
     call_sites: &[CallSiteInfo],
-    arg_spills: &[Vec<LocalId>],
+    arg_materializations: &[CallArgMaterialization],
     carryover_spills: &[Vec<LocalId>],
     catch_handlers: &[CatchHandlerInfo],
-    state_global: GlobalId,
-    call_idx_local: LocalId,
-    catch_region_id_local: LocalId,
-    exnref_slot_local: LocalId,
+    runtime: &Runtime,
+    memory: MemoryId,
+    ptr_ty: ValType,
+    catch_state_locals: Option<CatchStateLocals>,
 ) {
     let n_calls = call_sites.len();
 
@@ -2044,13 +2316,13 @@ fn populate_dispatch_structure(
         post_seqs,
         chunks,
         call_sites,
-        arg_spills,
+        arg_materializations,
         carryover_spills,
         catch_handlers,
-        state_global,
-        call_idx_local,
-        catch_region_id_local,
-        exnref_slot_local,
+        runtime,
+        memory,
+        ptr_ty,
+        catch_state_locals,
     );
 }
 
@@ -2068,13 +2340,13 @@ fn emit_dispatch_node(
     post_seqs: &[InstrSeqId],
     chunks: &[Vec<(Instr, InstrLocId)>],
     call_sites: &[CallSiteInfo],
-    arg_spills: &[Vec<LocalId>],
+    arg_materializations: &[CallArgMaterialization],
     carryover_spills: &[Vec<LocalId>],
     catch_handlers: &[CatchHandlerInfo],
-    state_global: GlobalId,
-    call_idx_local: LocalId,
-    catch_region_id_local: LocalId,
-    exnref_slot_local: LocalId,
+    runtime: &Runtime,
+    memory: MemoryId,
+    ptr_ty: ValType,
+    catch_state_locals: Option<CatchStateLocals>,
 ) {
     match node {
         DispatchTree::Leaf { start, end } => emit_leaf_dispatch(
@@ -2087,13 +2359,13 @@ fn emit_dispatch_node(
             post_seqs,
             chunks,
             call_sites,
-            arg_spills,
+            arg_materializations,
             carryover_spills,
             catch_handlers,
-            state_global,
-            call_idx_local,
-            catch_region_id_local,
-            exnref_slot_local,
+            runtime,
+            memory,
+            ptr_ty,
+            catch_state_locals,
         ),
         DispatchTree::Internal {
             children,
@@ -2108,13 +2380,13 @@ fn emit_dispatch_node(
             post_seqs,
             chunks,
             call_sites,
-            arg_spills,
+            arg_materializations,
             carryover_spills,
             catch_handlers,
-            state_global,
-            call_idx_local,
-            catch_region_id_local,
-            exnref_slot_local,
+            runtime,
+            memory,
+            ptr_ty,
+            catch_state_locals,
         ),
     }
 }
@@ -2148,13 +2420,13 @@ fn emit_internal_dispatch(
     post_seqs: &[InstrSeqId],
     chunks: &[Vec<(Instr, InstrLocId)>],
     call_sites: &[CallSiteInfo],
-    arg_spills: &[Vec<LocalId>],
+    arg_materializations: &[CallArgMaterialization],
     carryover_spills: &[Vec<LocalId>],
     catch_handlers: &[CatchHandlerInfo],
-    state_global: GlobalId,
-    call_idx_local: LocalId,
-    catch_region_id_local: LocalId,
-    exnref_slot_local: LocalId,
+    runtime: &Runtime,
+    memory: MemoryId,
+    ptr_ty: ValType,
+    catch_state_locals: Option<CatchStateLocals>,
 ) {
     let b = children.len();
     debug_assert!(b >= 2, "internal dispatch node must have >= 2 children");
@@ -2177,8 +2449,9 @@ fn emit_internal_dispatch(
     populate_internal_dispatch(
         local,
         node_dispatch,
-        state_global,
-        call_idx_local,
+        runtime,
+        memory,
+        ptr_ty,
         &child_seqs,
         range_start,
         span_per_child,
@@ -2193,7 +2466,12 @@ fn emit_internal_dispatch(
     for k in 1..b {
         {
             let s = &mut local.block_mut(child_seqs[k]).instrs;
-            push_instr(s, Instr::Block(Block { seq: child_seqs[k - 1] }));
+            push_instr(
+                s,
+                Instr::Block(Block {
+                    seq: child_seqs[k - 1],
+                }),
+            );
         }
         emit_dispatch_node(
             local,
@@ -2204,19 +2482,24 @@ fn emit_internal_dispatch(
             post_seqs,
             chunks,
             call_sites,
-            arg_spills,
+            arg_materializations,
             carryover_spills,
             catch_handlers,
-            state_global,
-            call_idx_local,
-            catch_region_id_local,
-            exnref_slot_local,
+            runtime,
+            memory,
+            ptr_ty,
+            catch_state_locals,
         );
     }
 
     {
         let s = &mut local.block_mut(exit_seq).instrs;
-        push_instr(s, Instr::Block(Block { seq: child_seqs[b - 1] }));
+        push_instr(
+            s,
+            Instr::Block(Block {
+                seq: child_seqs[b - 1],
+            }),
+        );
     }
     emit_dispatch_node(
         local,
@@ -2227,13 +2510,13 @@ fn emit_internal_dispatch(
         post_seqs,
         chunks,
         call_sites,
-        arg_spills,
+        arg_materializations,
         carryover_spills,
         catch_handlers,
-        state_global,
-        call_idx_local,
-        catch_region_id_local,
-        exnref_slot_local,
+        runtime,
+        memory,
+        ptr_ty,
+        catch_state_locals,
     );
 }
 
@@ -2254,13 +2537,13 @@ fn emit_leaf_dispatch(
     post_seqs: &[InstrSeqId],
     chunks: &[Vec<(Instr, InstrLocId)>],
     call_sites: &[CallSiteInfo],
-    arg_spills: &[Vec<LocalId>],
+    arg_materializations: &[CallArgMaterialization],
     carryover_spills: &[Vec<LocalId>],
     catch_handlers: &[CatchHandlerInfo],
-    state_global: GlobalId,
-    call_idx_local: LocalId,
-    catch_region_id_local: LocalId,
-    exnref_slot_local: LocalId,
+    runtime: &Runtime,
+    memory: MemoryId,
+    ptr_ty: ValType,
+    catch_state_locals: Option<CatchStateLocals>,
 ) {
     debug_assert!(
         leaf_end > leaf_start,
@@ -2275,8 +2558,9 @@ fn emit_leaf_dispatch(
     populate_dispatch_normal(
         local,
         dispatch_normal,
-        state_global,
-        call_idx_local,
+        runtime,
+        memory,
+        ptr_ty,
         &post_seqs[leaf_start..leaf_end],
         leaf_start,
         function_unwind_save,
@@ -2288,32 +2572,46 @@ fn emit_leaf_dispatch(
     // the chunk's side effects twice on NORMAL fall-through.
     {
         let s = &mut local.block_mut(post_seqs[leaf_start]).instrs;
-        push_instr(s, Instr::Block(Block { seq: dispatch_normal }));
+        push_instr(
+            s,
+            Instr::Block(Block {
+                seq: dispatch_normal,
+            }),
+        );
         if leaf_start == 0 {
             for (instr, loc) in &chunks[leaf_start] {
                 s.push((instr.clone(), *loc));
             }
-            emit_spill_args(s, &arg_spills[leaf_start], &carryover_spills[leaf_start]);
+            emit_spill_call_tail(
+                s,
+                &arg_materializations[leaf_start],
+                &carryover_spills[leaf_start],
+            );
         }
     }
 
     for k in (leaf_start + 1)..leaf_end {
         {
             let s = &mut local.block_mut(post_seqs[k]).instrs;
-            push_instr(s, Instr::Block(Block { seq: post_seqs[k - 1] }));
+            push_instr(
+                s,
+                Instr::Block(Block {
+                    seq: post_seqs[k - 1],
+                }),
+            );
         }
         emit_post_call_via_local(
             local,
             post_seqs[k],
             &call_sites[k - 1],
             k - 1,
-            &arg_spills[k - 1],
+            &arg_materializations[k - 1],
             &carryover_spills[k - 1],
             catch_handlers,
-            state_global,
-            call_idx_local,
-            catch_region_id_local,
-            exnref_slot_local,
+            runtime,
+            memory,
+            ptr_ty,
+            catch_state_locals,
             function_unwind_save,
         );
         {
@@ -2321,7 +2619,7 @@ fn emit_leaf_dispatch(
             for (instr, loc) in &chunks[k] {
                 s.push((instr.clone(), *loc));
             }
-            emit_spill_args(s, &arg_spills[k], &carryover_spills[k]);
+            emit_spill_call_tail(s, &arg_materializations[k], &carryover_spills[k]);
         }
     }
 
@@ -2331,20 +2629,25 @@ fn emit_leaf_dispatch(
     // sig `()->()` and would otherwise fail wasm validation.
     {
         let s = &mut local.block_mut(exit_seq).instrs;
-        push_instr(s, Instr::Block(Block { seq: post_seqs[leaf_end - 1] }));
+        push_instr(
+            s,
+            Instr::Block(Block {
+                seq: post_seqs[leaf_end - 1],
+            }),
+        );
     }
     emit_post_call_via_local(
         local,
         exit_seq,
         &call_sites[leaf_end - 1],
         leaf_end - 1,
-        &arg_spills[leaf_end - 1],
+        &arg_materializations[leaf_end - 1],
         &carryover_spills[leaf_end - 1],
         catch_handlers,
-        state_global,
-        call_idx_local,
-        catch_region_id_local,
-        exnref_slot_local,
+        runtime,
+        memory,
+        ptr_ty,
+        catch_state_locals,
         function_unwind_save,
     );
     if is_last_leaf {
@@ -2358,7 +2661,11 @@ fn emit_leaf_dispatch(
         for (instr, loc) in &chunks[leaf_end] {
             s.push((instr.clone(), *loc));
         }
-        emit_spill_args(s, &arg_spills[leaf_end], &carryover_spills[leaf_end]);
+        emit_spill_call_tail(
+            s,
+            &arg_materializations[leaf_end],
+            &carryover_spills[leaf_end],
+        );
     }
 }
 
@@ -2371,16 +2678,36 @@ fn emit_leaf_dispatch(
 /// arg_0, ..., arg_{m-1}]` (bottom-to-top). After popping all args,
 /// we keep popping into `carryovers` (also reverse-order), so
 /// `carryovers[0]` ends up holding the deepest carryover slot.
-fn emit_spill_args(
-    out: &mut Vec<(Instr, InstrLocId)>,
-    spills: &[LocalId],
-    carryovers: &[LocalId],
-) {
+fn emit_spill_args(out: &mut Vec<(Instr, InstrLocId)>, spills: &[LocalId], carryovers: &[LocalId]) {
     for &local in spills.iter().rev() {
         push_instr(out, Instr::LocalSet(LocalSet { local }));
     }
     for &local in carryovers.iter().rev() {
         push_instr(out, Instr::LocalSet(LocalSet { local }));
+    }
+}
+
+fn emit_spill_call_tail(
+    out: &mut Vec<(Instr, InstrLocId)>,
+    arg_materialization: &CallArgMaterialization,
+    carryovers: &[LocalId],
+) {
+    emit_spill_args(out, arg_materialization.spill_locals(), carryovers);
+}
+
+fn emit_materialized_call_args(
+    out: &mut Vec<(Instr, InstrLocId)>,
+    arg_materialization: &CallArgMaterialization,
+) {
+    match arg_materialization {
+        CallArgMaterialization::Spill { locals } => {
+            for &l in locals.iter() {
+                push_instr(out, Instr::LocalGet(LocalGet { local: l }));
+            }
+        }
+        CallArgMaterialization::PureTail { tail, .. } => {
+            out.extend(tail.iter().cloned());
+        }
     }
 }
 
@@ -2391,26 +2718,36 @@ fn emit_phase_6e_writes(
     local: &mut LocalFunction,
     seq_id: InstrSeqId,
     catch_handlers: &[CatchHandlerInfo],
-    catch_region_id_local: LocalId,
-    exnref_slot_local: LocalId,
+    catch_state_locals: Option<CatchStateLocals>,
 ) {
     if catch_handlers.is_empty() {
         return;
     }
+    let catch_state = catch_state_locals.expect("catch handlers require catch-state locals");
     {
         let s = &mut local.block_mut(seq_id).instrs;
-        push_instr(s, Instr::Const(Const { value: Value::I32(0) }));
         push_instr(
             s,
-            Instr::LocalSet(LocalSet {
-                local: catch_region_id_local,
+            Instr::Const(Const {
+                value: Value::I32(0),
             }),
         );
-        push_instr(s, Instr::Const(Const { value: Value::I32(0) }));
         push_instr(
             s,
             Instr::LocalSet(LocalSet {
-                local: exnref_slot_local,
+                local: catch_state.catch_region_id,
+            }),
+        );
+        push_instr(
+            s,
+            Instr::Const(Const {
+                value: Value::I32(0),
+            }),
+        );
+        push_instr(
+            s,
+            Instr::LocalSet(LocalSet {
+                local: catch_state.exnref_slot,
             }),
         );
     }
@@ -2429,7 +2766,7 @@ fn emit_phase_6e_writes(
             push_instr(
                 s,
                 Instr::LocalSet(LocalSet {
-                    local: catch_region_id_local,
+                    local: catch_state.catch_region_id,
                 }),
             );
             push_instr(
@@ -2441,7 +2778,7 @@ fn emit_phase_6e_writes(
             push_instr(
                 s,
                 Instr::LocalSet(LocalSet {
-                    local: exnref_slot_local,
+                    local: catch_state.exnref_slot,
                 }),
             );
         }
@@ -2462,6 +2799,65 @@ fn emit_phase_6e_writes(
     }
 }
 
+fn emit_call_index_store_and_unwind_branch(
+    local: &mut LocalFunction,
+    seq_id: InstrSeqId,
+    runtime: &Runtime,
+    memory: MemoryId,
+    ptr_ty: ValType,
+    call_idx: u32,
+    unwind_save: InstrSeqId,
+) {
+    let if_then = local
+        .builder_mut()
+        .dangling_instr_seq(InstrSeqType::Simple(None))
+        .id();
+    let if_else = local
+        .builder_mut()
+        .dangling_instr_seq(InstrSeqType::Simple(None))
+        .id();
+
+    {
+        let s = &mut local.block_mut(if_then).instrs;
+        push_current_frame_ptr(s, runtime, memory, ptr_ty);
+        push_instr(
+            s,
+            Instr::Const(Const {
+                value: Value::I32(call_idx as i32),
+            }),
+        );
+        push_instr(s, store_i32(memory, CALL_INDEX_OFFSET));
+        push_instr(s, Instr::Br(Br { block: unwind_save }));
+    }
+
+    let s = &mut local.block_mut(seq_id).instrs;
+    push_instr(
+        s,
+        Instr::GlobalGet(GlobalGet {
+            global: runtime.state_global,
+        }),
+    );
+    push_instr(
+        s,
+        Instr::Const(Const {
+            value: Value::I32(runtime::STATE_UNWINDING),
+        }),
+    );
+    push_instr(
+        s,
+        Instr::Binop(Binop {
+            op: BinaryOp::I32Eq,
+        }),
+    );
+    push_instr(
+        s,
+        Instr::IfElse(IfElse {
+            consequent: if_then,
+            alternative: if_else,
+        }),
+    );
+}
+
 // ----------------------------------------------------------------------
 // Preamble / postamble
 // ----------------------------------------------------------------------
@@ -2473,10 +2869,7 @@ fn populate_preamble_then(
     runtime: &Runtime,
     memory: MemoryId,
     ptr_ty: ValType,
-    frame_ptr_local: LocalId,
-    call_idx_local: LocalId,
-    catch_region_id_local: LocalId,
-    exnref_slot_local: LocalId,
+    catch_state_locals: Option<CatchStateLocals>,
     locals_with_offsets: &[(LocalId, ValType, u32)],
     ref_plan: &[RefLocalSlot],
     aux_tables: &AuxTables,
@@ -2484,7 +2877,14 @@ fn populate_preamble_then(
 ) {
     let s = &mut local.block_mut(preamble_then).instrs;
 
-    // frame_ptr = *(buf + 0) - frame_size
+    // *(buf + 0) = *(buf + 0) - frame_size. After this, the buffer
+    // cursor itself is the current frame pointer for all frame reads.
+    push_instr(
+        s,
+        Instr::GlobalGet(GlobalGet {
+            global: runtime.buf_global,
+        }),
+    );
     push_instr(
         s,
         Instr::GlobalGet(GlobalGet {
@@ -2493,46 +2893,38 @@ fn populate_preamble_then(
     );
     push_instr(s, load_ptr(memory, ptr_ty, 0));
     push_instr(s, ptr_const(ptr_ty, frame_size as i64));
-    push_instr(s, Instr::Binop(Binop { op: ptr_sub(ptr_ty) }));
-    push_instr(s, Instr::LocalSet(LocalSet { local: frame_ptr_local }));
-
-    // *(buf + 0) = frame_ptr
     push_instr(
         s,
-        Instr::GlobalGet(GlobalGet {
-            global: runtime.buf_global,
+        Instr::Binop(Binop {
+            op: ptr_sub(ptr_ty),
         }),
     );
-    push_instr(s, Instr::LocalGet(LocalGet { local: frame_ptr_local }));
     push_instr(s, store_ptr(memory, ptr_ty, 0));
 
-    // call_idx_local = *(frame_ptr + CALL_INDEX_OFFSET)
-    push_instr(s, Instr::LocalGet(LocalGet { local: frame_ptr_local }));
-    push_instr(s, load_i32(memory, CALL_INDEX_OFFSET));
-    push_instr(s, Instr::LocalSet(LocalSet { local: call_idx_local }));
+    if let Some(catch_state) = catch_state_locals {
+        // catch_region_id_local / exnref_slot_local
+        push_current_frame_ptr(s, runtime, memory, ptr_ty);
+        push_instr(s, load_i32(memory, CATCH_REGION_OFFSET));
+        push_instr(
+            s,
+            Instr::LocalSet(LocalSet {
+                local: catch_state.catch_region_id,
+            }),
+        );
 
-    // catch_region_id_local / exnref_slot_local
-    push_instr(s, Instr::LocalGet(LocalGet { local: frame_ptr_local }));
-    push_instr(s, load_i32(memory, CATCH_REGION_OFFSET));
-    push_instr(
-        s,
-        Instr::LocalSet(LocalSet {
-            local: catch_region_id_local,
-        }),
-    );
-
-    push_instr(s, Instr::LocalGet(LocalGet { local: frame_ptr_local }));
-    push_instr(s, load_i32(memory, EXNREF_SLOT_OFFSET));
-    push_instr(
-        s,
-        Instr::LocalSet(LocalSet {
-            local: exnref_slot_local,
-        }),
-    );
+        push_current_frame_ptr(s, runtime, memory, ptr_ty);
+        push_instr(s, load_i32(memory, EXNREF_SLOT_OFFSET));
+        push_instr(
+            s,
+            Instr::LocalSet(LocalSet {
+                local: catch_state.exnref_slot,
+            }),
+        );
+    }
 
     // Restore scalar user locals (includes arg-spill locals).
     for &(lid, ty, off) in locals_with_offsets {
-        push_instr(s, Instr::LocalGet(LocalGet { local: frame_ptr_local }));
+        push_current_frame_ptr(s, runtime, memory, ptr_ty);
         push_instr(s, load_scalar(memory, ty, off as u64));
         push_instr(s, Instr::LocalSet(LocalSet { local: lid }));
     }
@@ -2559,10 +2951,7 @@ fn populate_postamble(
     runtime: &Runtime,
     memory: MemoryId,
     ptr_ty: ValType,
-    frame_ptr_local: LocalId,
-    call_idx_local: LocalId,
-    catch_region_id_local: LocalId,
-    exnref_slot_local: LocalId,
+    catch_state_locals: Option<CatchStateLocals>,
     locals_with_offsets: &[(LocalId, ValType, u32)],
     ref_plan: &[RefLocalSlot],
     aux_tables: &AuxTables,
@@ -2570,28 +2959,8 @@ fn populate_postamble(
     func_ordinal: u32,
     result_types: &[ValType],
 ) {
-    // frame_ptr = *(buf + 0)
-    push_instr(
-        out,
-        Instr::GlobalGet(GlobalGet {
-            global: runtime.buf_global,
-        }),
-    );
-    push_instr(out, load_ptr(memory, ptr_ty, 0));
-    push_instr(
-        out,
-        Instr::LocalSet(LocalSet {
-            local: frame_ptr_local,
-        }),
-    );
-
     // frame[0] = func_ordinal
-    push_instr(
-        out,
-        Instr::LocalGet(LocalGet {
-            local: frame_ptr_local,
-        }),
-    );
+    push_current_frame_ptr(out, runtime, memory, ptr_ty);
     push_instr(
         out,
         Instr::Const(Const {
@@ -2600,59 +2969,41 @@ fn populate_postamble(
     );
     push_instr(out, store_i32(memory, FUNC_INDEX_OFFSET));
 
-    // frame[4] = call_idx_local
-    push_instr(
-        out,
-        Instr::LocalGet(LocalGet {
-            local: frame_ptr_local,
-        }),
-    );
-    push_instr(
-        out,
-        Instr::LocalGet(LocalGet {
-            local: call_idx_local,
-        }),
-    );
-    push_instr(out, store_i32(memory, CALL_INDEX_OFFSET));
-
-    // frame[8] = catch_region_id_local
-    push_instr(
-        out,
-        Instr::LocalGet(LocalGet {
-            local: frame_ptr_local,
-        }),
-    );
-    push_instr(
-        out,
-        Instr::LocalGet(LocalGet {
-            local: catch_region_id_local,
-        }),
-    );
-    push_instr(out, store_i32(memory, CATCH_REGION_OFFSET));
-
-    // frame[12] = exnref_slot_local
-    push_instr(
-        out,
-        Instr::LocalGet(LocalGet {
-            local: frame_ptr_local,
-        }),
-    );
-    push_instr(
-        out,
-        Instr::LocalGet(LocalGet {
-            local: exnref_slot_local,
-        }),
-    );
-    push_instr(out, store_i32(memory, EXNREF_SLOT_OFFSET));
-
-    // Save scalar user + arg-spill locals
-    for &(lid, ty, off) in locals_with_offsets {
+    if let Some(catch_state) = catch_state_locals {
+        // frame[8] = dynamic catch_region_id for catch-capable functions.
+        push_current_frame_ptr(out, runtime, memory, ptr_ty);
         push_instr(
             out,
             Instr::LocalGet(LocalGet {
-                local: frame_ptr_local,
+                local: catch_state.catch_region_id,
             }),
         );
+        push_instr(out, store_i32(memory, CATCH_REGION_OFFSET));
+
+        // frame[12] = dynamic exnref_slot for catch-capable functions.
+        push_current_frame_ptr(out, runtime, memory, ptr_ty);
+        push_instr(
+            out,
+            Instr::LocalGet(LocalGet {
+                local: catch_state.exnref_slot,
+            }),
+        );
+        push_instr(out, store_i32(memory, EXNREF_SLOT_OFFSET));
+    } else {
+        // frame[8..16] = zero catch_region_id + exnref_slot.
+        push_current_frame_ptr(out, runtime, memory, ptr_ty);
+        push_instr(
+            out,
+            Instr::Const(Const {
+                value: Value::I64(0),
+            }),
+        );
+        push_instr(out, store_scalar(memory, ValType::I64, CATCH_REGION_OFFSET));
+    }
+
+    // Save scalar user + arg-spill locals
+    for &(lid, ty, off) in locals_with_offsets {
+        push_current_frame_ptr(out, runtime, memory, ptr_ty);
         push_instr(out, Instr::LocalGet(LocalGet { local: lid }));
         push_instr(out, store_scalar(memory, ty, off as u64));
     }
@@ -2679,14 +3030,14 @@ fn populate_postamble(
             global: runtime.buf_global,
         }),
     );
+    push_current_frame_ptr(out, runtime, memory, ptr_ty);
+    push_instr(out, ptr_const(ptr_ty, frame_size as i64));
     push_instr(
         out,
-        Instr::LocalGet(LocalGet {
-            local: frame_ptr_local,
+        Instr::Binop(Binop {
+            op: ptr_add(ptr_ty),
         }),
     );
-    push_instr(out, ptr_const(ptr_ty, frame_size as i64));
-    push_instr(out, Instr::Binop(Binop { op: ptr_add(ptr_ty) }));
     push_instr(out, store_ptr(memory, ptr_ty, 0));
 
     // Push defaults for the function's result types, or `unreachable`
@@ -2711,8 +3062,8 @@ fn populate_postamble(
 /// - emit the call instruction
 /// - Phase 6e writes (compute catch_region_id / exnref_slot from active
 ///   in_catch flags)
-/// - tag `call_idx_local` with K
-/// - UNWINDING propagation: `br_if $unwind_save` if state == UNWINDING
+/// - if state == UNWINDING, write K to frame.call_index and branch to
+///   `$unwind_save`
 ///
 /// Takes `&mut LocalFunction` so Phase 6e can allocate dangling
 /// IfElse branches for each handler check.
@@ -2722,13 +3073,13 @@ fn emit_post_call_via_local(
     seq_id: InstrSeqId,
     call: &CallSiteInfo,
     call_idx: usize,
-    spills: &[LocalId],
+    arg_materialization: &CallArgMaterialization,
     carryovers: &[LocalId],
     catch_handlers: &[CatchHandlerInfo],
-    state_global: GlobalId,
-    call_idx_local: LocalId,
-    catch_region_id_local: LocalId,
-    exnref_slot_local: LocalId,
+    runtime: &Runtime,
+    memory: MemoryId,
+    ptr_ty: ValType,
+    catch_state_locals: Option<CatchStateLocals>,
     unwind_save: InstrSeqId,
 ) {
     // Reload carryovers (deepest first), then args (deepest first).
@@ -2739,9 +3090,7 @@ fn emit_post_call_via_local(
         for &l in carryovers.iter() {
             push_instr(s, Instr::LocalGet(LocalGet { local: l }));
         }
-        for &l in spills.iter() {
-            push_instr(s, Instr::LocalGet(LocalGet { local: l }));
-        }
+        emit_materialized_call_args(s, arg_materialization);
         let call_instr = match call.target {
             CallTarget::Direct(func) => Instr::Call(Call { func }),
             CallTarget::Indirect { table } => Instr::CallIndirect(CallIndirect {
@@ -2752,40 +3101,16 @@ fn emit_post_call_via_local(
         s.push((call_instr, call.loc));
     }
 
-    emit_phase_6e_writes(
+    emit_phase_6e_writes(local, seq_id, catch_handlers, catch_state_locals);
+
+    emit_call_index_store_and_unwind_branch(
         local,
         seq_id,
-        catch_handlers,
-        catch_region_id_local,
-        exnref_slot_local,
-    );
-
-    let s = &mut local.block_mut(seq_id).instrs;
-    push_instr(
-        s,
-        Instr::Const(Const {
-            value: Value::I32(call_idx as i32),
-        }),
-    );
-    push_instr(
-        s,
-        Instr::LocalSet(LocalSet {
-            local: call_idx_local,
-        }),
-    );
-    push_instr(s, Instr::GlobalGet(GlobalGet { global: state_global }));
-    push_instr(
-        s,
-        Instr::Const(Const {
-            value: Value::I32(runtime::STATE_UNWINDING),
-        }),
-    );
-    push_instr(s, Instr::Binop(Binop { op: BinaryOp::I32Eq }));
-    push_instr(
-        s,
-        Instr::BrIf(BrIf {
-            block: unwind_save,
-        }),
+        runtime,
+        memory,
+        ptr_ty,
+        call_idx as u32,
+        unwind_save,
     );
 }
 
@@ -2807,7 +3132,10 @@ fn assign_local_offsets(
 }
 
 fn user_locals_size(user_scalar_locals: &[(LocalId, ValType)]) -> u32 {
-    user_scalar_locals.iter().map(|(_, ty)| scalar_size(*ty)).sum()
+    user_scalar_locals
+        .iter()
+        .map(|(_, ty)| scalar_size(*ty))
+        .sum()
 }
 
 fn func_name(module: &Module, id: FunctionId) -> String {
@@ -2876,8 +3204,9 @@ fn nested_seqs(instr: &Instr) -> Vec<InstrSeqId> {
             let mut ids = vec![t.seq];
             for c in &t.catches {
                 match c {
-                    LegacyCatch::Catch { handler, .. }
-                    | LegacyCatch::CatchAll { handler } => ids.push(*handler),
+                    LegacyCatch::Catch { handler, .. } | LegacyCatch::CatchAll { handler } => {
+                        ids.push(*handler)
+                    }
                     LegacyCatch::Delegate { .. } => {}
                 }
             }
@@ -2917,11 +3246,21 @@ fn align_up_8(x: u32) -> u32 {
 
 fn default_for_type(ty: ValType) -> Option<Instr> {
     Some(match ty {
-        ValType::I32 => Instr::Const(Const { value: Value::I32(0) }),
-        ValType::I64 => Instr::Const(Const { value: Value::I64(0) }),
-        ValType::F32 => Instr::Const(Const { value: Value::F32(0.0) }),
-        ValType::F64 => Instr::Const(Const { value: Value::F64(0.0) }),
-        ValType::V128 => Instr::Const(Const { value: Value::V128(0) }),
+        ValType::I32 => Instr::Const(Const {
+            value: Value::I32(0),
+        }),
+        ValType::I64 => Instr::Const(Const {
+            value: Value::I64(0),
+        }),
+        ValType::F32 => Instr::Const(Const {
+            value: Value::F32(0.0),
+        }),
+        ValType::F64 => Instr::Const(Const {
+            value: Value::F64(0.0),
+        }),
+        ValType::V128 => Instr::Const(Const {
+            value: Value::V128(0),
+        }),
         ValType::Ref(rt) if rt.nullable => Instr::RefNull(RefNull { ty: rt }),
         ValType::Ref(_) => return None,
     })
@@ -3009,8 +3348,12 @@ fn store_ptr(memory: MemoryId, ptr_ty: ValType, offset: u64) -> Instr {
 
 fn ptr_const(ptr_ty: ValType, v: i64) -> Instr {
     match ptr_ty {
-        ValType::I32 => Instr::Const(Const { value: Value::I32(v as i32) }),
-        ValType::I64 => Instr::Const(Const { value: Value::I64(v) }),
+        ValType::I32 => Instr::Const(Const {
+            value: Value::I32(v as i32),
+        }),
+        ValType::I64 => Instr::Const(Const {
+            value: Value::I64(v),
+        }),
         _ => panic!("unsupported ptr type"),
     }
 }
@@ -3049,6 +3392,31 @@ fn local_mut(module: &mut Module, func_id: FunctionId) -> &mut LocalFunction {
 
 fn push_instr(out: &mut Vec<(Instr, InstrLocId)>, instr: Instr) {
     out.push((instr, InstrLocId::default()));
+}
+
+fn push_current_frame_ptr(
+    out: &mut Vec<(Instr, InstrLocId)>,
+    runtime: &Runtime,
+    memory: MemoryId,
+    ptr_ty: ValType,
+) {
+    push_instr(
+        out,
+        Instr::GlobalGet(GlobalGet {
+            global: runtime.buf_global,
+        }),
+    );
+    push_instr(out, load_ptr(memory, ptr_ty, 0));
+}
+
+fn push_current_call_index(
+    out: &mut Vec<(Instr, InstrLocId)>,
+    runtime: &Runtime,
+    memory: MemoryId,
+    ptr_ty: ValType,
+) {
+    push_current_frame_ptr(out, runtime, memory, ptr_ty);
+    push_instr(out, load_i32(memory, CALL_INDEX_OFFSET));
 }
 
 // ----------------------------------------------------------------------
@@ -3438,11 +3806,8 @@ pub fn plan_b1_scratch(module: &Module, targets: &[FunctionId]) -> B1ScratchPlan
         // 2 keeps things simple by treating the whole function's
         // plain-catch as off-limits if any arm has a ref operand.
         let has_unsupported = arms_per_region.iter().any(|(_, arms)| {
-            arms.iter().any(|arm| {
-                arm.operand_tys
-                    .iter()
-                    .any(|t| matches!(t, ValType::Ref(_)))
-            })
+            arms.iter()
+                .any(|arm| arm.operand_tys.iter().any(|t| matches!(t, ValType::Ref(_))))
         });
         // Stage 2 (B1) Task 2.4: multi-target plain-catch guard.
         // A try_table whose plain-catch arms branch to *different*
@@ -3559,8 +3924,7 @@ fn inject_rewind_throw_stubs(
         let body_seq_id = plan.body_seq;
         let region_id = plan.catch_region_id;
         let slot = plan.exnref_slot;
-        let plain_arms: &[PlainCatchArmSlot] =
-            b1_lookup.get(&body_seq_id).copied().unwrap_or(&[]);
+        let plain_arms: &[PlainCatchArmSlot] = b1_lookup.get(&body_seq_id).copied().unwrap_or(&[]);
 
         // Build the inner "catch_ref path" sequence (Phase 6's existing
         // logic). Always emitted — used either as the only path
@@ -3579,7 +3943,12 @@ fn inject_rewind_throw_stubs(
                     value: Value::I32(slot as i32),
                 }),
             );
-            push_instr(block, Instr::TableGet(TableGet { table: exnref_table }));
+            push_instr(
+                block,
+                Instr::TableGet(TableGet {
+                    table: exnref_table,
+                }),
+            );
             push_instr(block, Instr::RefAsNonNull(RefAsNonNull {}));
             push_instr(block, Instr::ThrowRef(ThrowRef {}));
             s
@@ -3611,7 +3980,12 @@ fn inject_rewind_throw_stubs(
                     value: Value::I32(slot as i32),
                 }),
             );
-            push_instr(block, Instr::TableGet(TableGet { table: exnref_table }));
+            push_instr(
+                block,
+                Instr::TableGet(TableGet {
+                    table: exnref_table,
+                }),
+            );
             push_instr(block, Instr::RefIsNull(RefIsNull {}));
             push_instr(
                 block,
@@ -3651,7 +4025,12 @@ fn inject_rewind_throw_stubs(
                 value: Value::I32(runtime::STATE_REWINDING),
             }),
         );
-        push_instr(body, Instr::Binop(Binop { op: BinaryOp::I32Eq }));
+        push_instr(
+            body,
+            Instr::Binop(Binop {
+                op: BinaryOp::I32Eq,
+            }),
+        );
         push_instr(
             body,
             Instr::LocalGet(LocalGet {
@@ -3664,8 +4043,18 @@ fn inject_rewind_throw_stubs(
                 value: Value::I32(region_id as i32),
             }),
         );
-        push_instr(body, Instr::Binop(Binop { op: BinaryOp::I32Eq }));
-        push_instr(body, Instr::Binop(Binop { op: BinaryOp::I32And }));
+        push_instr(
+            body,
+            Instr::Binop(Binop {
+                op: BinaryOp::I32Eq,
+            }),
+        );
+        push_instr(
+            body,
+            Instr::Binop(Binop {
+                op: BinaryOp::I32And,
+            }),
+        );
         push_instr(
             body,
             Instr::IfElse(IfElse {
@@ -3715,7 +4104,10 @@ fn build_plain_catch_dispatch(
             .builder_mut()
             .dangling_instr_seq(InstrSeqType::Simple(None))
             .id();
-        push_instr(&mut local.block_mut(s).instrs, Instr::Unreachable(Unreachable {}));
+        push_instr(
+            &mut local.block_mut(s).instrs,
+            Instr::Unreachable(Unreachable {}),
+        );
         s
     };
 
@@ -3743,7 +4135,9 @@ fn build_plain_catch_dispatch(
                 let abs_off = scratch_off + cur_off as u64;
                 cur_off += scalar_size(ty);
                 (
-                    Instr::GlobalGet(GlobalGet { global: runtime.buf_global }),
+                    Instr::GlobalGet(GlobalGet {
+                        global: runtime.buf_global,
+                    }),
                     load_scalar(memory, ty, abs_off),
                 )
             })
@@ -3771,7 +4165,9 @@ fn build_plain_catch_dispatch(
             // Load arm_id from scratch (offset +0 of tuple).
             push_instr(
                 s,
-                Instr::GlobalGet(GlobalGet { global: runtime.buf_global }),
+                Instr::GlobalGet(GlobalGet {
+                    global: runtime.buf_global,
+                }),
             );
             push_instr(s, load_i32(memory, scratch_off));
             push_instr(
@@ -3780,7 +4176,12 @@ fn build_plain_catch_dispatch(
                     value: Value::I32(slot.arm.arm_idx as i32),
                 }),
             );
-            push_instr(s, Instr::Binop(Binop { op: BinaryOp::I32Eq }));
+            push_instr(
+                s,
+                Instr::Binop(Binop {
+                    op: BinaryOp::I32Eq,
+                }),
+            );
             push_instr(
                 s,
                 Instr::IfElse(IfElse {
@@ -3936,20 +4337,35 @@ fn apply_catch_ref_handlers(
                     catches: new_catches,
                 }),
             );
-            push_instr(s, Instr::Br(Br { block: outer_seq_id }));
+            push_instr(
+                s,
+                Instr::Br(Br {
+                    block: outer_seq_id,
+                }),
+            );
         }
 
         {
             let local = local_mut(module, func_id);
             let s = &mut local.block_mut(outer_seq_id).instrs;
-            push_instr(s, Instr::Block(Block { seq: capture_seq_id }));
+            push_instr(
+                s,
+                Instr::Block(Block {
+                    seq: capture_seq_id,
+                }),
+            );
             push_instr(
                 s,
                 Instr::LocalTee(LocalTee {
                     local: info.captured_exnref_local,
                 }),
             );
-            push_instr(s, Instr::Const(Const { value: Value::I32(1) }));
+            push_instr(
+                s,
+                Instr::Const(Const {
+                    value: Value::I32(1),
+                }),
+            );
             push_instr(
                 s,
                 Instr::LocalSet(LocalSet {
@@ -3968,7 +4384,12 @@ fn apply_catch_ref_handlers(
                     local: info.captured_exnref_local,
                 }),
             );
-            push_instr(s, Instr::TableSet(TableSet { table: exnref_table }));
+            push_instr(
+                s,
+                Instr::TableSet(TableSet {
+                    table: exnref_table,
+                }),
+            );
             push_instr(
                 s,
                 Instr::Br(Br {
@@ -4132,9 +4553,7 @@ fn apply_plain_catch_handlers(
         // before any &mut LocalFunction borrow is needed.
         let cap_types: Vec<InstrSeqType> = arm_slots
             .iter()
-            .map(|slot| {
-                InstrSeqType::new(&mut module.types, &[], &slot.arm.operand_tys)
-            })
+            .map(|slot| InstrSeqType::new(&mut module.types, &[], &slot.arm.operand_tys))
             .collect();
 
         let mut cap_seq_ids: Vec<InstrSeqId> = Vec::with_capacity(arm_slots.len());
@@ -4144,8 +4563,7 @@ fn apply_plain_catch_handlers(
         }
 
         // Per-arm operand spill locals.
-        let mut arm_spill_locals: Vec<Vec<LocalId>> =
-            Vec::with_capacity(arm_slots.len());
+        let mut arm_spill_locals: Vec<Vec<LocalId>> = Vec::with_capacity(arm_slots.len());
         for slot in arm_slots {
             let spills: Vec<LocalId> = slot
                 .arm
@@ -4220,7 +4638,12 @@ fn apply_plain_catch_handlers(
                     catches: new_catches,
                 }),
             );
-            push_instr(s, Instr::Br(Br { block: outer_seq_id }));
+            push_instr(
+                s,
+                Instr::Br(Br {
+                    block: outer_seq_id,
+                }),
+            );
         }
 
         // ----------------------------------------------------------
@@ -4236,7 +4659,9 @@ fn apply_plain_catch_handlers(
                 let s = &mut local.block_mut(cap_seq_ids[j]).instrs;
                 push_instr(
                     s,
-                    Instr::Block(Block { seq: cap_seq_ids[j + 1] }),
+                    Instr::Block(Block {
+                        seq: cap_seq_ids[j + 1],
+                    }),
                 );
             }
             // Capture tail for arm J+1 (the arm whose catch
@@ -4274,7 +4699,12 @@ fn apply_plain_catch_handlers(
         {
             let local = local_mut(module, func_id);
             let s = &mut local.block_mut(outer_seq_id).instrs;
-            push_instr(s, Instr::Block(Block { seq: cap_seq_ids[0] }));
+            push_instr(
+                s,
+                Instr::Block(Block {
+                    seq: cap_seq_ids[0],
+                }),
+            );
         }
         // Capture tail for arm 0 (whose catch targets cap_seq[0]).
         // Emitted in outer_seq AFTER Block(cap_seq[0]).
@@ -4301,9 +4731,7 @@ fn apply_plain_catch_handlers(
             let parent_instrs = &mut local.block_mut(parent_seq).instrs;
             let tt_idx = parent_instrs
                 .iter()
-                .position(|(i, _)| {
-                    matches!(i, Instr::TryTable(tt) if tt.seq == *body_seq)
-                })
+                .position(|(i, _)| matches!(i, Instr::TryTable(tt) if tt.seq == *body_seq))
                 .expect("try_table not found in its parent (B1 stage 2 emission)");
             parent_instrs[tt_idx].0 = Instr::Block(Block { seq: outer_seq_id });
         }
@@ -4341,10 +4769,7 @@ fn emit_capture_save_and_branch(
     //    the stack with the LAST one on top — so we spill in reverse
     //    declaration order: spills[M-1] first, then [M-2], ..., [0].
     for i in (0..spills.len()).rev() {
-        push_instr(
-            s,
-            Instr::LocalSet(LocalSet { local: spills[i] }),
-        );
+        push_instr(s, Instr::LocalSet(LocalSet { local: spills[i] }));
     }
 
     // 2. Save arm_id at offset +0 of this arm's scratch tuple. The
@@ -4355,7 +4780,9 @@ fn emit_capture_save_and_branch(
     let scratch_off = (runtime.b1_scratch_base + slot.scratch_offset) as u64;
     push_instr(
         s,
-        Instr::GlobalGet(GlobalGet { global: runtime.buf_global }),
+        Instr::GlobalGet(GlobalGet {
+            global: runtime.buf_global,
+        }),
     );
     push_instr(
         s,
@@ -4371,7 +4798,9 @@ fn emit_capture_save_and_branch(
         let abs_off = scratch_off + cur_off as u64;
         push_instr(
             s,
-            Instr::GlobalGet(GlobalGet { global: runtime.buf_global }),
+            Instr::GlobalGet(GlobalGet {
+                global: runtime.buf_global,
+            }),
         );
         push_instr(s, Instr::LocalGet(LocalGet { local: spills[i] }));
         push_instr(s, store_scalar(memory, ty, abs_off));
@@ -4379,10 +4808,17 @@ fn emit_capture_save_and_branch(
     }
 
     // 3. Set flags.
-    push_instr(s, Instr::Const(Const { value: Value::I32(1) }));
     push_instr(
         s,
-        Instr::LocalSet(LocalSet { local: in_catch_local }),
+        Instr::Const(Const {
+            value: Value::I32(1),
+        }),
+    );
+    push_instr(
+        s,
+        Instr::LocalSet(LocalSet {
+            local: in_catch_local,
+        }),
     );
     push_instr(
         s,
@@ -4392,7 +4828,9 @@ fn emit_capture_save_and_branch(
     );
     push_instr(
         s,
-        Instr::LocalSet(LocalSet { local: catch_region_id_local }),
+        Instr::LocalSet(LocalSet {
+            local: catch_region_id_local,
+        }),
     );
 
     // 4. Re-push operands in declaration order.
@@ -4403,7 +4841,9 @@ fn emit_capture_save_and_branch(
     // 5. Branch to original handler.
     push_instr(
         s,
-        Instr::Br(Br { block: slot.arm.label }),
+        Instr::Br(Br {
+            block: slot.arm.label,
+        }),
     );
 }
 
@@ -4489,9 +4929,7 @@ fn emit_per_function_post_table(
     post_funcs: &[FunctionId],
 ) -> TableId {
     let n = post_funcs.len() as u64;
-    let table_id = module
-        .tables
-        .add_local(false, n, Some(n), RefType::FUNCREF);
+    let table_id = module.tables.add_local(false, n, Some(n), RefType::FUNCREF);
     module.tables.get_mut(table_id).name = Some(format!("{owner_name}_post_table"));
 
     if !post_funcs.is_empty() {
@@ -4652,7 +5090,6 @@ fn instrument_one_function_trampoline_dispatch(
 }
 
 #[allow(clippy::too_many_arguments)]
-
 // ======================================================================
 // Nested per-block switch-dispatch (Path A from
 // memory/fork-instrument-O2-bug-investigation.md)
@@ -4685,7 +5122,6 @@ fn instrument_one_function_trampoline_dispatch(
 // `Loop`, `TryTable` body. Unsupported (routes to guard-dispatch):
 // legacy `Try`, multi-value-params blocks, sub-region landings whose
 // preceding chunk has a stack carryover.
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum NestedSupportStatus {
     Supported,
@@ -4903,9 +5339,13 @@ fn seq_has_direct_fork_carryover(
     for (instr, _) in &f.block(seq).instrs {
         // Check direct fork-path call landings.
         let direct_expected: Option<usize> = match instr {
-            Instr::Call(c) if fork_path.contains(&c.func) => {
-                Some(module.types.get(module.funcs.get(c.func).ty()).params().len())
-            }
+            Instr::Call(c) if fork_path.contains(&c.func) => Some(
+                module
+                    .types
+                    .get(module.funcs.get(c.func).ty())
+                    .params()
+                    .len(),
+            ),
             Instr::CallIndirect(ci) => Some(module.types.get(ci.ty).params().len() + 1),
             _ => None,
         };
@@ -4923,11 +5363,9 @@ fn seq_has_direct_fork_carryover(
             | Instr::Loop(_)
             | Instr::TryTable(_)
             | Instr::Try(_)
-            | Instr::IfElse(_) => {
-                nested_seqs(instr)
-                    .iter()
-                    .any(|s| subtree_contains_fork_call(f, *s, fork_path))
-            }
+            | Instr::IfElse(_) => nested_seqs(instr)
+                .iter()
+                .any(|s| subtree_contains_fork_call(f, *s, fork_path)),
             _ => false,
         };
         if is_subregion_landing {
@@ -5002,11 +5440,9 @@ fn seq_has_unsupported_carryover(
             | Instr::Loop(_)
             | Instr::TryTable(_)
             | Instr::Try(_)
-            | Instr::IfElse(_) => {
-                nested_seqs(instr)
-                    .iter()
-                    .any(|s| subtree_contains_fork_call(f, *s, fork_path))
-            }
+            | Instr::IfElse(_) => nested_seqs(instr)
+                .iter()
+                .any(|s| subtree_contains_fork_call(f, *s, fork_path)),
             _ => false,
         };
         if is_subregion {
@@ -5020,8 +5456,7 @@ fn seq_has_unsupported_carryover(
             // SubRegions are no longer rejected — their params are
             // just one source of spill values.
             let subregion_params = subregion_input_param_count(module, f, instr);
-            let expected_input: usize =
-                if is_ifelse { 1 } else { subregion_params };
+            let expected_input: usize = if is_ifelse { 1 } else { subregion_params };
             let carryover_depth = depth.saturating_sub(expected_input);
             if carryover_depth > 0 {
                 // Otherwise: this is a supported extra-carryover
@@ -5047,11 +5482,7 @@ fn seq_has_unsupported_carryover(
 /// Sub-commit 2.6b: count the declared type-params of a SubRegion
 /// (Block/Loop/TryTable). Returns 0 for simple (non-multi-value)
 /// signatures, and 0 for non-SubRegion instructions.
-fn subregion_input_param_count(
-    module: &Module,
-    f: &LocalFunction,
-    instr: &Instr,
-) -> usize {
+fn subregion_input_param_count(module: &Module, f: &LocalFunction, instr: &Instr) -> usize {
     let body_seq = match instr {
         Instr::Block(b) => Some(b.seq),
         Instr::Loop(l) => Some(l.seq),
@@ -5145,8 +5576,7 @@ fn analyze_subregion_spill_types(
             let is_ifelse = matches!(instr, Instr::IfElse(_));
             if is_ifelse {
                 if let Instr::IfElse(ie) = instr {
-                    if regions.contains_key(&ie.consequent)
-                        || regions.contains_key(&ie.alternative)
+                    if regions.contains_key(&ie.consequent) || regions.contains_key(&ie.alternative)
                     {
                         is_subregion_landing = true;
                     }
@@ -5271,11 +5701,7 @@ fn has_fork_call_in_catch_handler(
         FunctionKind::Local(l) => l,
         _ => return false,
     };
-    fn walk(
-        f: &LocalFunction,
-        seq: InstrSeqId,
-        fork_path: &HashSet<FunctionId>,
-    ) -> bool {
+    fn walk(f: &LocalFunction, seq: InstrSeqId, fork_path: &HashSet<FunctionId>) -> bool {
         for (instr, _) in &f.block(seq).instrs {
             if let Instr::TryTable(tt) = instr {
                 for c in &tt.catches {
@@ -5367,10 +5793,13 @@ fn discover_calls_and_regions(
         }
         let lo = *call_idxs.first().unwrap();
         let hi = *call_idxs.last().unwrap();
-        regions.insert(seq_id, RegionInfo {
-            range_lo: lo,
-            range_hi: hi,
-        });
+        regions.insert(
+            seq_id,
+            RegionInfo {
+                range_lo: lo,
+                range_hi: hi,
+            },
+        );
     }
     (sites, regions)
 }
@@ -5470,29 +5899,85 @@ fn instrument_one_function_nested_switch(
         // by virtue of being in fork_path. Bail out to existing
         // top-level switch-dispatch (which handles n_calls==0 cleanly).
         instrument_one_function_switch(
-            module, func_id, runtime, fork_path, func_ordinal,
-            aux_tables, ref_plan, catch_plan, b1_slots,
+            module,
+            func_id,
+            runtime,
+            fork_path,
+            func_ordinal,
+            aux_tables,
+            ref_plan,
+            catch_plan,
+            b1_slots,
         );
         return;
     }
 
-    // Allocate per-call arg-spill locals up front so they can join the
-    // function's scalar frame.
-    let mut arg_spills: HashMap<u32, Vec<LocalId>> = HashMap::new();
-    for site in &sites {
-        let arg_types = nested_call_arg_types(module, site);
-        for &ty in &arg_types {
-            if !is_scalar(ty) {
-                let name = func_name(module, func_id);
-                panic!(
-                    "fork-instrument: function `{name}` has a nested fork-path call \
+    // Compute, for each fork-bearing seq, the call_idxs of its DIRECT
+    // fork-path calls (ordered by DFS, == order in `sites`). Used by
+    // argument materialization, the carryover pre-pass, and the
+    // transform loops below.
+    let direct_idxs_per_seq: HashMap<InstrSeqId, Vec<u32>> = {
+        let mut m: HashMap<InstrSeqId, Vec<u32>> = HashMap::new();
+        for site in &sites {
+            m.entry(site.seq_id).or_default().push(site.call_idx);
+        }
+        m
+    };
+
+    // Plan per-call argument materialization before allocating the
+    // frame. Pure scalar argument tails are replayed after POST_K;
+    // all other shapes keep the existing frame-backed spill locals.
+    let mut pending_arg_materializations: HashMap<u32, PendingCallArgMaterialization> =
+        HashMap::new();
+    {
+        let local_ro = match &module.funcs.get(func_id).kind {
+            FunctionKind::Local(l) => l,
+            _ => panic!("expected local function"),
+        };
+        let empty_idxs: Vec<u32> = Vec::new();
+        for &seq_id in direct_idxs_per_seq.keys() {
+            let direct = direct_idxs_per_seq.get(&seq_id).unwrap_or(&empty_idxs);
+            let original = &local_ro.block(seq_id).instrs;
+            let (chunks, landings) =
+                partition_region_instrs(local_ro, original, direct, &regions, fork_path);
+            for (landing_idx, landing) in landings.iter().enumerate() {
+                let LandingKind::DirectCall { call_idx } = &landing.kind else {
+                    continue;
+                };
+                let call_idx = *call_idx;
+                let site = sites
+                    .iter()
+                    .find(|site| site.call_idx == call_idx)
+                    .expect("call_idx must have a discovered site");
+                let arg_types = nested_call_arg_types(module, site);
+                for &ty in &arg_types {
+                    if !is_scalar(ty) {
+                        let name = func_name(module, func_id);
+                        panic!(
+                            "fork-instrument: function `{name}` has a nested fork-path call \
                      with a ref-typed argument ({ty:?}). Aux-table arg spilling \
                      is not yet supported in the nested per-block transform."
+                        );
+                    }
+                }
+                pending_arg_materializations.insert(
+                    call_idx,
+                    plan_call_arg_materialization(module, &chunks[landing_idx], arg_types),
                 );
             }
         }
-        let spills: Vec<LocalId> = arg_types.iter().map(|&ty| module.locals.add(ty)).collect();
-        arg_spills.insert(site.call_idx, spills);
+    }
+    let mut arg_materializations: HashMap<u32, CallArgMaterialization> = HashMap::new();
+    for site in &sites {
+        let pending = pending_arg_materializations
+            .remove(&site.call_idx)
+            .unwrap_or_else(|| PendingCallArgMaterialization::Spill {
+                arg_types: nested_call_arg_types(module, site),
+            });
+        arg_materializations.insert(
+            site.call_idx,
+            allocate_call_arg_materialization(module, pending),
+        );
     }
 
     // Sub-commit 2.5b: per-call operand-stack carryovers at direct
@@ -5517,18 +6002,22 @@ fn instrument_one_function_nested_switch(
             .get(&site.call_idx)
             .map(Vec::as_slice)
             .unwrap_or(&[]);
-        let spills: Vec<LocalId> =
-            cr_types.iter().map(|&ty| module.locals.add(ty)).collect();
+        let spills: Vec<LocalId> = cr_types.iter().map(|&ty| module.locals.add(ty)).collect();
         carryover_spills.insert(site.call_idx, spills);
     }
 
     // Combined scalar locals for the function frame: existing user
-    // scalars + per-call arg-spill locals (in call_idx order) + per-
-    // call carryover-spill locals (in call_idx order; sub-commit 2.5b).
+    // scalars + frame-backed per-call arg-spill locals (in call_idx
+    // order) + per-call carryover-spill locals (in call_idx order;
+    // sub-commit 2.5b).
     let mut frame_scalars: Vec<(LocalId, ValType)> = user_scalar_locals.clone();
     for site in &sites {
         let arg_types = nested_call_arg_types(module, site);
-        for (&lid, &ty) in arg_spills[&site.call_idx].iter().zip(arg_types.iter()) {
+        for (&lid, &ty) in arg_materializations[&site.call_idx]
+            .spill_locals()
+            .iter()
+            .zip(arg_types.iter())
+        {
             frame_scalars.push((lid, ty));
         }
     }
@@ -5543,25 +6032,18 @@ fn instrument_one_function_nested_switch(
     }
 
     // Synthetic locals.
-    let call_idx_local = module.locals.add(ValType::I32);
-    let frame_ptr_local = module.locals.add(runtime.buf_type);
-    let catch_region_id_local = module.locals.add(ValType::I32);
-    let exnref_slot_local = module.locals.add(ValType::I32);
+    let catch_state_locals = if catch_plan.is_empty() && b1_slots.is_empty() {
+        None
+    } else {
+        Some(CatchStateLocals {
+            catch_region_id: module.locals.add(ValType::I32),
+            exnref_slot: module.locals.add(ValType::I32),
+        })
+    };
     // Tmp i32 used by the IfElse cond rewrite to swap stack order
     // (preserve original cond while computing force_flag and
     // is_rewind without touching the operand stack).
     let cond_swap_local = module.locals.add(ValType::I32);
-
-    // Compute, for each fork-bearing seq, the call_idxs of its DIRECT
-    // fork-path calls (ordered by DFS, == order in `sites`). Used by
-    // both the carryover pre-pass and the transform loops below.
-    let direct_idxs_per_seq: HashMap<InstrSeqId, Vec<u32>> = {
-        let mut m: HashMap<InstrSeqId, Vec<u32>> = HashMap::new();
-        for site in &sites {
-            m.entry(site.seq_id).or_default().push(site.call_idx);
-        }
-        m
-    };
 
     // Pre-pass: walk each fork-bearing seq, identify its
     // SubRegion-with-1-i32-carryover landings, and pre-allocate spill
@@ -5583,7 +6065,7 @@ fn instrument_one_function_nested_switch(
         let empty_idxs: Vec<u32> = Vec::new();
         // Snapshot needed seq+landing data first (immutable borrow),
         // then allocate locals (mutable borrow).
-        let mut to_allocate: Vec<(InstrSeqId, usize, Vec<ValType>)> = Vec::new();
+        let mut pending_plans: Vec<(InstrSeqId, usize, PendingCarryoverPlan)> = Vec::new();
         for &seq_id in regions.keys() {
             let direct = direct_idxs_per_seq.get(&seq_id).unwrap_or(&empty_idxs);
             // Sub-commit 2.6a: typed analyser captures per-landing
@@ -5597,41 +6079,44 @@ fn instrument_one_function_nested_switch(
                 module, local_ro, seq_id, fork_path, direct, &regions,
             )
             .unwrap_or_default();
-            // Walk seq_id's instructions to find SubRegion landing
-            // positions in order, then pair them with spill_types
-            // entries.
-            let mut landing_idx = 0usize;
-            let mut direct_cursor = 0usize;
-            for (instr, _) in &local_ro.block(seq_id).instrs {
-                let is_fork_landing = match instr {
-                    Instr::Call(c) => fork_path.contains(&c.func),
-                    Instr::CallIndirect(_) => true,
-                    _ => false,
+            let original = &local_ro.block(seq_id).instrs;
+            let (chunks, landings) =
+                partition_region_instrs(local_ro, original, direct, &regions, fork_path);
+            for (landing_idx, landing) in landings.iter().enumerate() {
+                let Some(types) = spill_types.get(landing_idx) else {
+                    continue;
                 };
-                if is_fork_landing && direct_cursor < direct.len() {
-                    direct_cursor += 1;
-                    landing_idx += 1;
+                if types.is_empty() {
                     continue;
                 }
-                let is_subregion = match instr {
-                    Instr::Block(_)
-                    | Instr::Loop(_)
-                    | Instr::TryTable(_)
-                    | Instr::Try(_)
-                    | Instr::IfElse(_) => nested_seqs(instr)
-                        .iter()
-                        .any(|s| regions.contains_key(s)),
-                    _ => false,
+                let pure_allowed = match &landing.kind {
+                    LandingKind::SubRegionIfElse { .. } => types.len() == 1,
+                    LandingKind::SubRegion { .. } => true,
+                    LandingKind::DirectCall { .. } => false,
                 };
-                if is_subregion {
-                    if landing_idx < spill_types.len() {
-                        let types = &spill_types[landing_idx];
-                        if !types.is_empty() {
-                            to_allocate.push((seq_id, landing_idx, types.clone()));
-                        }
+                if pure_allowed {
+                    if let Some((tail_len, tail)) =
+                        split_pure_scalar_tail(module, &chunks[landing_idx], types)
+                    {
+                        pending_plans.push((
+                            seq_id,
+                            landing_idx,
+                            PendingCarryoverPlan::PureTail {
+                                tail,
+                                tail_len,
+                                types: types.clone(),
+                            },
+                        ));
+                        continue;
                     }
-                    landing_idx += 1;
                 }
+                pending_plans.push((
+                    seq_id,
+                    landing_idx,
+                    PendingCarryoverPlan::Spill {
+                        types: types.clone(),
+                    },
+                ));
             }
         }
         // Now allocate. Sub-commit 2.6a: per-landing Vec of typed
@@ -5640,17 +6125,28 @@ fn instrument_one_function_nested_switch(
         // tmp_result_local is no longer needed — the push-before
         // emission order leaves any extra carryover beneath the
         // SubRegion's result automatically.
-        for (seq_id, landing_idx, types) in to_allocate {
-            let mut spill_locals: Vec<(LocalId, ValType)> = Vec::with_capacity(types.len());
-            for &ty in &types {
-                let lid = module.locals.add(ty);
-                frame_scalars.push((lid, ty));
-                spill_locals.push((lid, ty));
-            }
-            carryover_plans.insert(
-                (seq_id, landing_idx),
-                CarryoverPlan { spill_locals },
-            );
+        for (seq_id, landing_idx, pending) in pending_plans {
+            let plan = match pending {
+                PendingCarryoverPlan::Spill { types } => {
+                    let mut spill_locals: Vec<(LocalId, ValType)> = Vec::with_capacity(types.len());
+                    for &ty in &types {
+                        let lid = module.locals.add(ty);
+                        frame_scalars.push((lid, ty));
+                        spill_locals.push((lid, ty));
+                    }
+                    CarryoverPlan::Spill { spill_locals }
+                }
+                PendingCarryoverPlan::PureTail {
+                    tail,
+                    tail_len,
+                    types,
+                } => CarryoverPlan::PureTail {
+                    tail,
+                    tail_len,
+                    types,
+                },
+            };
+            carryover_plans.insert((seq_id, landing_idx), plan);
         }
     }
 
@@ -5715,12 +6211,14 @@ fn instrument_one_function_nested_switch(
     // without fork-path calls — preserves the exnref serialization
     // path). Extended by B1 Stage 2 Task 2.3 with plain-catch arm
     // dispatch when `b1_slots` lists arms for the region.
-    if aux_tables.exnref.is_some() {
+    if !catch_plan.is_empty() && aux_tables.exnref.is_some() {
+        let catch_state =
+            catch_state_locals.expect("exnref catch plan requires catch-state locals");
         inject_rewind_throw_stubs(
             module,
             func_id,
             runtime,
-            catch_region_id_local,
+            catch_state.catch_region_id,
             aux_tables,
             catch_plan,
             b1_slots,
@@ -5748,10 +6246,7 @@ fn instrument_one_function_nested_switch(
         runtime,
         memory,
         ptr_ty,
-        frame_ptr_local,
-        call_idx_local,
-        catch_region_id_local,
-        exnref_slot_local,
+        catch_state_locals,
         &locals_with_offsets,
         ref_plan,
         aux_tables,
@@ -5777,11 +6272,8 @@ fn instrument_one_function_nested_switch(
     // Process all fork-bearing seqs except the entry (entry handled
     // specially with preamble/postamble + unwind_save). Order:
     // bottom-up (deepest first).
-    let mut non_entry_regions: Vec<InstrSeqId> = regions
-        .keys()
-        .copied()
-        .filter(|&s| s != entry_id)
-        .collect();
+    let mut non_entry_regions: Vec<InstrSeqId> =
+        regions.keys().copied().filter(|&s| s != entry_id).collect();
     // Sort by depth (deepest first). Walrus doesn't expose depth
     // directly, so compute via parent-seq walk.
     let depth_map = compute_seq_depths(local, entry_id);
@@ -5802,15 +6294,15 @@ fn instrument_one_function_nested_switch(
             &regions,
             &sites,
             fork_path,
-            &arg_spills,
+            &arg_materializations,
             &carryover_spills,
             &carryover_plans,
             &catch_handlers,
-            runtime.state_global,
-            call_idx_local,
+            runtime,
+            memory,
+            ptr_ty,
             cond_swap_local,
-            catch_region_id_local,
-            exnref_slot_local,
+            catch_state_locals,
             unwind_save,
             body_params,
         );
@@ -5830,15 +6322,15 @@ fn instrument_one_function_nested_switch(
         &regions,
         &sites,
         fork_path,
-        &arg_spills,
+        &arg_materializations,
         &carryover_spills,
         &carryover_plans,
         &catch_handlers,
-        runtime.state_global,
-        call_idx_local,
+        runtime,
+        memory,
+        ptr_ty,
         cond_swap_local,
-        catch_region_id_local,
-        exnref_slot_local,
+        catch_state_locals,
         unwind_save,
         &result_types,
     );
@@ -5850,10 +6342,7 @@ fn instrument_one_function_nested_switch(
         runtime,
         memory,
         ptr_ty,
-        frame_ptr_local,
-        call_idx_local,
-        catch_region_id_local,
-        exnref_slot_local,
+        catch_state_locals,
         &locals_with_offsets,
         ref_plan,
         aux_tables,
@@ -5876,13 +6365,22 @@ fn instrument_one_function_nested_switch(
     let entry_seq = &mut local.block_mut(entry_id).instrs;
     push_instr(
         entry_seq,
-        Instr::GlobalGet(GlobalGet { global: runtime.state_global }),
+        Instr::GlobalGet(GlobalGet {
+            global: runtime.state_global,
+        }),
     );
     push_instr(
         entry_seq,
-        Instr::Const(Const { value: Value::I32(runtime::STATE_REWINDING) }),
+        Instr::Const(Const {
+            value: Value::I32(runtime::STATE_REWINDING),
+        }),
     );
-    push_instr(entry_seq, Instr::Binop(Binop { op: BinaryOp::I32Eq }));
+    push_instr(
+        entry_seq,
+        Instr::Binop(Binop {
+            op: BinaryOp::I32Eq,
+        }),
+    );
     push_instr(
         entry_seq,
         Instr::IfElse(IfElse {
@@ -5897,15 +6395,19 @@ fn instrument_one_function_nested_switch(
 
     // Stage 2 (B1) plain-catch capture-block emission. Runs AFTER
     // Phase 6 so it sees post-Phase-6 try_table locations.
-    apply_plain_catch_handlers(
-        module,
-        func_id,
-        runtime,
-        catch_region_id_local,
-        b1_slots,
-        catch_plan,
-        &catch_handlers,
-    );
+    if let Some(catch_state) = catch_state_locals {
+        apply_plain_catch_handlers(
+            module,
+            func_id,
+            runtime,
+            catch_state.catch_region_id,
+            b1_slots,
+            catch_plan,
+            &catch_handlers,
+        );
+    } else {
+        debug_assert!(b1_slots.is_empty());
+    }
 }
 
 /// At the end of a chunk that precedes a landing (inside the POST_K
@@ -5922,7 +6424,7 @@ fn instrument_one_function_nested_switch(
 fn emit_chunk_tail_for_landing(
     out: &mut Vec<(Instr, InstrLocId)>,
     landing: &LandingInfo,
-    arg_spills: &HashMap<u32, Vec<LocalId>>,
+    arg_materializations: &HashMap<u32, CallArgMaterialization>,
     carryover_spills: &HashMap<u32, Vec<LocalId>>,
     cond_swap_local: LocalId,
 ) {
@@ -5937,15 +6439,22 @@ fn emit_chunk_tail_for_landing(
             // is treated as no-carryover.
             let empty: Vec<LocalId> = Vec::new();
             let cr = carryover_spills.get(call_idx).unwrap_or(&empty);
-            emit_spill_args(out, &arg_spills[call_idx], cr);
+            emit_spill_call_tail(out, &arg_materializations[call_idx], cr);
         }
         LandingKind::SubRegionIfElse { .. } => {
             if let Some(plan) = &landing.carryover {
-                for (l, _ty) in plan.spill_locals.iter().rev() {
-                    push_instr(out, Instr::LocalSet(LocalSet { local: *l }));
+                if let CarryoverPlan::Spill { spill_locals } = plan {
+                    for (l, _ty) in spill_locals.iter().rev() {
+                        push_instr(out, Instr::LocalSet(LocalSet { local: *l }));
+                    }
                 }
             } else {
-                push_instr(out, Instr::LocalSet(LocalSet { local: cond_swap_local }));
+                push_instr(
+                    out,
+                    Instr::LocalSet(LocalSet {
+                        local: cond_swap_local,
+                    }),
+                );
             }
         }
         LandingKind::SubRegion { .. } => {
@@ -5957,8 +6466,10 @@ fn emit_chunk_tail_for_landing(
             // first so spill_locals[0] receives the deepest slot.
             // After this, POST_K body's net stack effect is 0 → 0.
             if let Some(plan) = &landing.carryover {
-                for (l, _ty) in plan.spill_locals.iter().rev() {
-                    push_instr(out, Instr::LocalSet(LocalSet { local: *l }));
+                if let CarryoverPlan::Spill { spill_locals } = plan {
+                    for (l, _ty) in spill_locals.iter().rev() {
+                        push_instr(out, Instr::LocalSet(LocalSet { local: *l }));
+                    }
                 }
             }
         }
@@ -5977,12 +6488,7 @@ fn nested_call_arg_types(module: &Module, site: &NestedCallSite) -> Vec<ValType>
 
 fn compute_seq_depths(f: &LocalFunction, entry: InstrSeqId) -> HashMap<InstrSeqId, u32> {
     let mut out = HashMap::new();
-    fn walk(
-        f: &LocalFunction,
-        seq: InstrSeqId,
-        depth: u32,
-        out: &mut HashMap<InstrSeqId, u32>,
-    ) {
+    fn walk(f: &LocalFunction, seq: InstrSeqId, depth: u32, out: &mut HashMap<InstrSeqId, u32>) {
         out.insert(seq, depth);
         for (instr, _) in &f.block(seq).instrs {
             for child in nested_seqs(instr) {
@@ -6005,15 +6511,15 @@ fn transform_region_seq(
     regions: &HashMap<InstrSeqId, RegionInfo>,
     sites: &[NestedCallSite],
     fork_path: &HashSet<FunctionId>,
-    arg_spills: &HashMap<u32, Vec<LocalId>>,
+    arg_materializations: &HashMap<u32, CallArgMaterialization>,
     carryover_spills: &HashMap<u32, Vec<LocalId>>,
     carryover_plans: &HashMap<(InstrSeqId, usize), CarryoverPlan>,
     catch_handlers: &[CatchHandlerInfo],
-    state_global: GlobalId,
-    call_idx_local: LocalId,
+    runtime: &Runtime,
+    memory: MemoryId,
+    ptr_ty: ValType,
     cond_swap_local: LocalId,
-    catch_region_id_local: LocalId,
-    exnref_slot_local: LocalId,
+    catch_state_locals: Option<CatchStateLocals>,
     unwind_save: InstrSeqId,
     // Sub-commit 2.6c: this seq's declared type-params (only set for
     // multi-value Block/Loop/TryTable bodies). Pre-spilled at body
@@ -6022,11 +6528,15 @@ fn transform_region_seq(
     body_param_locals: &[(LocalId, ValType)],
 ) {
     // Take the original instrs of this region.
-    let original: Vec<(Instr, InstrLocId)> =
-        std::mem::take(&mut local.block_mut(seq_id).instrs);
+    let original: Vec<(Instr, InstrLocId)> = std::mem::take(&mut local.block_mut(seq_id).instrs);
 
-    let (mut chunks, mut landings) =
-        partition_region_instrs(local, &original, direct_idxs_at_this_seq, regions, fork_path);
+    let (mut chunks, mut landings) = partition_region_instrs(
+        local,
+        &original,
+        direct_idxs_at_this_seq,
+        regions,
+        fork_path,
+    );
 
     // Sub-commit 2.6c: if this seq has body params, prepend LocalGets
     // to chunks[0] so the params are restored onto POST_0's local
@@ -6035,7 +6545,10 @@ fn transform_region_seq(
     if !body_param_locals.is_empty() && !chunks.is_empty() {
         let mut prefix: Vec<(Instr, InstrLocId)> = Vec::with_capacity(body_param_locals.len());
         for (lid, _ty) in body_param_locals.iter() {
-            prefix.push((Instr::LocalGet(LocalGet { local: *lid }), InstrLocId::default()));
+            prefix.push((
+                Instr::LocalGet(LocalGet { local: *lid }),
+                InstrLocId::default(),
+            ));
         }
         prefix.extend(std::mem::take(&mut chunks[0]));
         chunks[0] = prefix;
@@ -6046,6 +6559,7 @@ fn transform_region_seq(
             landing.carryover = Some(plan.clone());
         }
     }
+    apply_landing_materializations_to_chunks(&mut chunks, &landings, arg_materializations);
 
     let n_landings = landings.len();
     if n_landings == 0 {
@@ -6059,7 +6573,12 @@ fn transform_region_seq(
 
     // Allocate POST seqs for each landing + dispatch seq.
     let post_seqs: Vec<InstrSeqId> = (0..n_landings)
-        .map(|_| local.builder_mut().dangling_instr_seq(InstrSeqType::Simple(None)).id())
+        .map(|_| {
+            local
+                .builder_mut()
+                .dangling_instr_seq(InstrSeqType::Simple(None))
+                .id()
+        })
         .collect();
     let dispatch_seq = local
         .builder_mut()
@@ -6070,8 +6589,9 @@ fn transform_region_seq(
     populate_region_dispatch(
         local,
         dispatch_seq,
-        state_global,
-        call_idx_local,
+        runtime,
+        memory,
+        ptr_ty,
         region_info,
         &landings,
         &post_seqs,
@@ -6087,14 +6607,14 @@ fn transform_region_seq(
         &chunks,
         &landings,
         sites,
-        arg_spills,
+        arg_materializations,
         carryover_spills,
         catch_handlers,
-        state_global,
-        call_idx_local,
+        runtime,
+        memory,
+        ptr_ty,
         cond_swap_local,
-        catch_region_id_local,
-        exnref_slot_local,
+        catch_state_locals,
         unwind_save,
         false, // don't append `return` at end
     );
@@ -6106,7 +6626,10 @@ fn transform_region_seq(
     if !body_param_locals.is_empty() {
         let mut preamble: Vec<(Instr, InstrLocId)> = Vec::with_capacity(body_param_locals.len());
         for (lid, _ty) in body_param_locals.iter().rev() {
-            preamble.push((Instr::LocalSet(LocalSet { local: *lid }), InstrLocId::default()));
+            preamble.push((
+                Instr::LocalSet(LocalSet { local: *lid }),
+                InstrLocId::default(),
+            ));
         }
         let s = &mut local.block_mut(seq_id).instrs;
         preamble.extend(std::mem::take(s));
@@ -6123,36 +6646,51 @@ fn transform_entry_region(
     regions: &HashMap<InstrSeqId, RegionInfo>,
     sites: &[NestedCallSite],
     fork_path: &HashSet<FunctionId>,
-    arg_spills: &HashMap<u32, Vec<LocalId>>,
+    arg_materializations: &HashMap<u32, CallArgMaterialization>,
     carryover_spills: &HashMap<u32, Vec<LocalId>>,
     carryover_plans: &HashMap<(InstrSeqId, usize), CarryoverPlan>,
     catch_handlers: &[CatchHandlerInfo],
-    state_global: GlobalId,
-    call_idx_local: LocalId,
+    runtime: &Runtime,
+    memory: MemoryId,
+    ptr_ty: ValType,
     cond_swap_local: LocalId,
-    catch_region_id_local: LocalId,
-    exnref_slot_local: LocalId,
+    catch_state_locals: Option<CatchStateLocals>,
     unwind_save: InstrSeqId,
     _result_types: &[ValType],
 ) {
-    let original: Vec<(Instr, InstrLocId)> =
-        std::mem::take(&mut local.block_mut(seq_id).instrs);
+    let original: Vec<(Instr, InstrLocId)> = std::mem::take(&mut local.block_mut(seq_id).instrs);
 
-    let (chunks, mut landings) =
-        partition_region_instrs(local, &original, direct_idxs_at_this_seq, regions, fork_path);
+    let (mut chunks, mut landings) = partition_region_instrs(
+        local,
+        &original,
+        direct_idxs_at_this_seq,
+        regions,
+        fork_path,
+    );
     for (li, landing) in landings.iter_mut().enumerate() {
         if let Some(plan) = carryover_plans.get(&(seq_id, li)) {
             landing.carryover = Some(plan.clone());
         }
     }
+    apply_landing_materializations_to_chunks(&mut chunks, &landings, arg_materializations);
 
     let n_landings = landings.len();
 
     let post_seqs: Vec<InstrSeqId> = (0..n_landings)
-        .map(|_| local.builder_mut().dangling_instr_seq(InstrSeqType::Simple(None)).id())
+        .map(|_| {
+            local
+                .builder_mut()
+                .dangling_instr_seq(InstrSeqType::Simple(None))
+                .id()
+        })
         .collect();
     let dispatch_seq = if n_landings > 0 {
-        Some(local.builder_mut().dangling_instr_seq(InstrSeqType::Simple(None)).id())
+        Some(
+            local
+                .builder_mut()
+                .dangling_instr_seq(InstrSeqType::Simple(None))
+                .id(),
+        )
     } else {
         None
     };
@@ -6161,8 +6699,9 @@ fn transform_entry_region(
         populate_region_dispatch(
             local,
             d,
-            state_global,
-            call_idx_local,
+            runtime,
+            memory,
+            ptr_ty,
             region_info,
             &landings,
             &post_seqs,
@@ -6180,14 +6719,14 @@ fn transform_entry_region(
         &chunks,
         &landings,
         sites,
-        arg_spills,
+        arg_materializations,
         carryover_spills,
         catch_handlers,
-        state_global,
-        call_idx_local,
+        runtime,
+        memory,
+        ptr_ty,
         cond_swap_local,
-        catch_region_id_local,
-        exnref_slot_local,
+        catch_state_locals,
         unwind_save,
         true, // append `return` for normal-path exit
     );
@@ -6195,9 +6734,14 @@ fn transform_entry_region(
 
 #[derive(Debug, Clone)]
 enum LandingKind {
-    DirectCall { call_idx: u32 },
+    DirectCall {
+        call_idx: u32,
+    },
     /// Block/Loop/TryTable: just preserved verbatim.
-    SubRegion { range_lo: u32, range_hi: u32 },
+    SubRegion {
+        range_lo: u32,
+        range_hi: u32,
+    },
     /// IfElse landing: needs a cond rewrite so REWIND lands in the
     /// branch that contains the active call_idx. We require the
     /// caller to supply both branch ranges; either may be empty
@@ -6233,11 +6777,39 @@ enum LandingKind {
 /// SubRegion consumes the top params, leaving any extra carryover
 /// beneath whatever result it pushes — no juggling tmp local needed.
 #[derive(Debug, Clone)]
-struct CarryoverPlan {
-    /// Spill locals, one per spilled value. Ordered deepest-first
-    /// (i.e., `spill_locals[0]` is the value that was at the bottom
-    /// of the spilled stack region; `spill_locals.last()` was on top).
-    spill_locals: Vec<(LocalId, ValType)>,
+enum CarryoverPlan {
+    Spill {
+        /// Spill locals, one per spilled value. Ordered deepest-first
+        /// (i.e., `spill_locals[0]` is the value that was at the bottom
+        /// of the spilled stack region; `spill_locals.last()` was on top).
+        spill_locals: Vec<(LocalId, ValType)>,
+    },
+    PureTail {
+        /// Pure scalar suffix removed from the NORMAL chunk and replayed
+        /// at the landing. The suffix must produce `types` from an empty
+        /// stack and may contain only constants, local.get, and whitelisted
+        /// non-trapping scalar numeric ops.
+        tail: Vec<(Instr, InstrLocId)>,
+        tail_len: usize,
+        types: Vec<ValType>,
+    },
+}
+
+#[derive(Debug, Clone)]
+enum PendingCarryoverPlan {
+    Spill {
+        types: Vec<ValType>,
+    },
+    PureTail {
+        tail: Vec<(Instr, InstrLocId)>,
+        tail_len: usize,
+        types: Vec<ValType>,
+    },
+}
+
+enum IfElseCondSource<'a> {
+    Local(LocalId),
+    PureTail(&'a [(Instr, InstrLocId)]),
 }
 
 #[derive(Debug, Clone)]
@@ -6250,6 +6822,25 @@ struct LandingInfo {
     /// Set on a SubRegion landing whose preceding chunk has a 1-i32
     /// stack carryover. None for landings without carryover.
     carryover: Option<CarryoverPlan>,
+}
+
+fn apply_landing_materializations_to_chunks(
+    chunks: &mut [Vec<(Instr, InstrLocId)>],
+    landings: &[LandingInfo],
+    arg_materializations: &HashMap<u32, CallArgMaterialization>,
+) {
+    for (landing_idx, landing) in landings.iter().enumerate() {
+        let tail_len = match &landing.kind {
+            LandingKind::DirectCall { call_idx } => arg_materializations[call_idx].tail_len(),
+            LandingKind::SubRegion { .. } | LandingKind::SubRegionIfElse { .. } => {
+                match &landing.carryover {
+                    Some(CarryoverPlan::PureTail { tail_len, .. }) => *tail_len,
+                    _ => 0,
+                }
+            }
+        };
+        truncate_materialized_tail(&mut chunks[landing_idx], tail_len);
+    }
 }
 
 /// Partition `original` instrs at landings:
@@ -6336,10 +6927,9 @@ fn partition_region_instrs(
                 if let Some(child_info) = regions.get(&child) {
                     sub_lo_hi = match sub_lo_hi {
                         None => Some((child_info.range_lo, child_info.range_hi)),
-                        Some((lo, hi)) => Some((
-                            lo.min(child_info.range_lo),
-                            hi.max(child_info.range_hi),
-                        )),
+                        Some((lo, hi)) => {
+                            Some((lo.min(child_info.range_lo), hi.max(child_info.range_hi)))
+                        }
                     };
                 }
             }
@@ -6354,7 +6944,10 @@ fn partition_region_instrs(
                     else_range: ifelse_else_range,
                 }
             } else {
-                LandingKind::SubRegion { range_lo: lo, range_hi: hi }
+                LandingKind::SubRegion {
+                    range_lo: lo,
+                    range_hi: hi,
+                }
             };
             landings.push(LandingInfo {
                 kind,
@@ -6377,8 +6970,9 @@ fn partition_region_instrs(
 fn populate_region_dispatch(
     local: &mut LocalFunction,
     dispatch_seq: InstrSeqId,
-    state_global: GlobalId,
-    call_idx_local: LocalId,
+    runtime: &Runtime,
+    memory: MemoryId,
+    ptr_ty: ValType,
     region_info: &RegionInfo,
     landings: &[LandingInfo],
     post_seqs: &[InstrSeqId],
@@ -6399,7 +6993,9 @@ fn populate_region_dispatch(
                 }
             }
             LandingKind::SubRegion { range_lo, range_hi }
-            | LandingKind::SubRegionIfElse { range_lo, range_hi, .. } => {
+            | LandingKind::SubRegionIfElse {
+                range_lo, range_hi, ..
+            } => {
                 for k in *range_lo..=*range_hi {
                     let i = (k - lo) as usize;
                     if i < count {
@@ -6421,10 +7017,20 @@ fn populate_region_dispatch(
 
     {
         let s = &mut local.block_mut(if_then).instrs;
-        push_instr(s, Instr::LocalGet(LocalGet { local: call_idx_local }));
+        push_current_call_index(s, runtime, memory, ptr_ty);
         if lo != 0 {
-            push_instr(s, Instr::Const(Const { value: Value::I32(lo as i32) }));
-            push_instr(s, Instr::Binop(Binop { op: BinaryOp::I32Sub }));
+            push_instr(
+                s,
+                Instr::Const(Const {
+                    value: Value::I32(lo as i32),
+                }),
+            );
+            push_instr(
+                s,
+                Instr::Binop(Binop {
+                    op: BinaryOp::I32Sub,
+                }),
+            );
         }
         push_instr(
             s,
@@ -6436,15 +7042,30 @@ fn populate_region_dispatch(
     }
 
     let s = &mut local.block_mut(dispatch_seq).instrs;
-    push_instr(s, Instr::GlobalGet(GlobalGet { global: state_global }));
     push_instr(
         s,
-        Instr::Const(Const { value: Value::I32(runtime::STATE_REWINDING) }),
+        Instr::GlobalGet(GlobalGet {
+            global: runtime.state_global,
+        }),
     );
-    push_instr(s, Instr::Binop(Binop { op: BinaryOp::I32Eq }));
     push_instr(
         s,
-        Instr::IfElse(IfElse { consequent: if_then, alternative: if_else }),
+        Instr::Const(Const {
+            value: Value::I32(runtime::STATE_REWINDING),
+        }),
+    );
+    push_instr(
+        s,
+        Instr::Binop(Binop {
+            op: BinaryOp::I32Eq,
+        }),
+    );
+    push_instr(
+        s,
+        Instr::IfElse(IfElse {
+            consequent: if_then,
+            alternative: if_else,
+        }),
     );
 }
 
@@ -6457,14 +7078,14 @@ fn populate_region_dispatch_structure(
     chunks: &[Vec<(Instr, InstrLocId)>],
     landings: &[LandingInfo],
     sites: &[NestedCallSite],
-    arg_spills: &HashMap<u32, Vec<LocalId>>,
+    arg_materializations: &HashMap<u32, CallArgMaterialization>,
     carryover_spills: &HashMap<u32, Vec<LocalId>>,
     catch_handlers: &[CatchHandlerInfo],
-    state_global: GlobalId,
-    call_idx_local: LocalId,
+    runtime: &Runtime,
+    memory: MemoryId,
+    ptr_ty: ValType,
     cond_swap_local: LocalId,
-    catch_region_id_local: LocalId,
-    exnref_slot_local: LocalId,
+    catch_state_locals: Option<CatchStateLocals>,
     unwind_save: InstrSeqId,
     append_return: bool,
 ) {
@@ -6495,7 +7116,7 @@ fn populate_region_dispatch_structure(
         emit_chunk_tail_for_landing(
             s,
             &landings[0],
-            arg_spills,
+            arg_materializations,
             carryover_spills,
             cond_swap_local,
         );
@@ -6506,21 +7127,26 @@ fn populate_region_dispatch_structure(
     for k in 1..n_landings {
         {
             let s = &mut local.block_mut(post_seqs[k]).instrs;
-            push_instr(s, Instr::Block(Block { seq: post_seqs[k - 1] }));
+            push_instr(
+                s,
+                Instr::Block(Block {
+                    seq: post_seqs[k - 1],
+                }),
+            );
         }
         emit_post_landing(
             local,
             post_seqs[k],
             &landings[k - 1],
             sites,
-            arg_spills,
+            arg_materializations,
             carryover_spills,
             catch_handlers,
-            state_global,
-            call_idx_local,
+            runtime,
+            memory,
+            ptr_ty,
             cond_swap_local,
-            catch_region_id_local,
-            exnref_slot_local,
+            catch_state_locals,
             unwind_save,
         );
         {
@@ -6531,7 +7157,7 @@ fn populate_region_dispatch_structure(
             emit_chunk_tail_for_landing(
                 s,
                 &landings[k],
-                arg_spills,
+                arg_materializations,
                 carryover_spills,
                 cond_swap_local,
             );
@@ -6542,21 +7168,26 @@ fn populate_region_dispatch_structure(
     //   [Block($POST_{n-1}), <post-(n-1) sequence>, chunk n, return?]
     {
         let s = &mut local.block_mut(outer_seq).instrs;
-        push_instr(s, Instr::Block(Block { seq: post_seqs[n_landings - 1] }));
+        push_instr(
+            s,
+            Instr::Block(Block {
+                seq: post_seqs[n_landings - 1],
+            }),
+        );
     }
     emit_post_landing(
         local,
         outer_seq,
         &landings[n_landings - 1],
         sites,
-        arg_spills,
+        arg_materializations,
         carryover_spills,
         catch_handlers,
-        state_global,
-        call_idx_local,
+        runtime,
+        memory,
+        ptr_ty,
         cond_swap_local,
-        catch_region_id_local,
-        exnref_slot_local,
+        catch_state_locals,
         unwind_save,
     );
     {
@@ -6576,20 +7207,22 @@ fn emit_post_landing(
     seq_id: InstrSeqId,
     landing: &LandingInfo,
     sites: &[NestedCallSite],
-    arg_spills: &HashMap<u32, Vec<LocalId>>,
+    arg_materializations: &HashMap<u32, CallArgMaterialization>,
     carryover_spills: &HashMap<u32, Vec<LocalId>>,
     catch_handlers: &[CatchHandlerInfo],
-    state_global: GlobalId,
-    call_idx_local: LocalId,
+    runtime: &Runtime,
+    memory: MemoryId,
+    ptr_ty: ValType,
     cond_swap_local: LocalId,
-    catch_region_id_local: LocalId,
-    exnref_slot_local: LocalId,
+    catch_state_locals: Option<CatchStateLocals>,
     unwind_save: InstrSeqId,
 ) {
     match &landing.kind {
         LandingKind::DirectCall { call_idx } => {
-            let site = sites.iter().find(|s| s.call_idx == *call_idx).expect("site");
-            let spills = &arg_spills[call_idx];
+            let site = sites
+                .iter()
+                .find(|s| s.call_idx == *call_idx)
+                .expect("site");
             // Sub-commit 2.5b: reload carryovers FIRST (deepest →
             // top), then args. The call pops only its args, leaving
             // the carryovers + result on the stack — matching the
@@ -6602,9 +7235,7 @@ fn emit_post_landing(
                 for &l in carryovers.iter() {
                     push_instr(s, Instr::LocalGet(LocalGet { local: l }));
                 }
-                for &l in spills.iter() {
-                    push_instr(s, Instr::LocalGet(LocalGet { local: l }));
-                }
+                emit_materialized_call_args(s, &arg_materializations[call_idx]);
                 let call_instr = match site.target {
                     NestedTarget::Direct(func) => Instr::Call(Call { func }),
                     NestedTarget::Indirect { table } => Instr::CallIndirect(CallIndirect {
@@ -6614,24 +7245,17 @@ fn emit_post_landing(
                 };
                 s.push((call_instr, site.loc));
             }
-            // Phase 6e + tag call_idx + br_if UNWIND
-            emit_phase_6e_writes(
+            // Phase 6e + call_idx frame write + UNWIND branch.
+            emit_phase_6e_writes(local, seq_id, catch_handlers, catch_state_locals);
+            emit_call_index_store_and_unwind_branch(
                 local,
                 seq_id,
-                catch_handlers,
-                catch_region_id_local,
-                exnref_slot_local,
+                runtime,
+                memory,
+                ptr_ty,
+                *call_idx,
+                unwind_save,
             );
-            let s = &mut local.block_mut(seq_id).instrs;
-            push_instr(s, Instr::Const(Const { value: Value::I32(*call_idx as i32) }));
-            push_instr(s, Instr::LocalSet(LocalSet { local: call_idx_local }));
-            push_instr(s, Instr::GlobalGet(GlobalGet { global: state_global }));
-            push_instr(
-                s,
-                Instr::Const(Const { value: Value::I32(runtime::STATE_UNWINDING) }),
-            );
-            push_instr(s, Instr::Binop(Binop { op: BinaryOp::I32Eq }));
-            push_instr(s, Instr::BrIf(BrIf { block: unwind_save }));
         }
         LandingKind::SubRegion { .. } => {
             // Block/Loop/TryTable: preserve the enclosing instr
@@ -6640,7 +7264,9 @@ fn emit_post_landing(
             // POST_J_ENTER's close, then fall through into the
             // enclosing instr unconditionally — since the body always
             // enters via fall-through, no cond rewrite is needed.
-            let (instr, loc) = landing.sub_region_instr.clone()
+            let (instr, loc) = landing
+                .sub_region_instr
+                .clone()
                 .expect("SubRegion landing must have its enclosing instr stashed");
 
             // Sub-commit 2.6a: push spill_locals BEFORE the SubRegion
@@ -6660,8 +7286,15 @@ fn emit_post_landing(
             // pre-2.6a post-emission with tmp_result juggle.
             let s = &mut local.block_mut(seq_id).instrs;
             if let Some(plan) = &landing.carryover {
-                for (l, _ty) in plan.spill_locals.iter() {
-                    push_instr(s, Instr::LocalGet(LocalGet { local: *l }));
+                match plan {
+                    CarryoverPlan::Spill { spill_locals } => {
+                        for (l, _ty) in spill_locals.iter() {
+                            push_instr(s, Instr::LocalGet(LocalGet { local: *l }));
+                        }
+                    }
+                    CarryoverPlan::PureTail { tail, .. } => {
+                        s.extend(tail.iter().cloned());
+                    }
                 }
             }
             s.push((instr, loc));
@@ -6686,55 +7319,125 @@ fn emit_post_landing(
             // The wasm `select` instruction pops 3 values [val1, val2,
             // cond] and pushes (cond ? val1 : val2). We arrange:
             //   val1 = force_flag, val2 = orig_cond, cond = is_rewind.
-            let (instr, loc) = landing.sub_region_instr.clone()
+            let (instr, loc) = landing
+                .sub_region_instr
+                .clone()
                 .expect("SubRegionIfElse landing must have its enclosing instr stashed");
 
             let s = &mut local.block_mut(seq_id).instrs;
-            let cond_local = if let Some(plan) = &landing.carryover {
-                let (cond_local, _ty) = plan
-                    .spill_locals
-                    .last()
-                    .copied()
-                    .expect("IfElse spill plan must include the condition");
-                for (l, _ty) in plan.spill_locals.iter().take(plan.spill_locals.len() - 1) {
-                    push_instr(s, Instr::LocalGet(LocalGet { local: *l }));
+            let cond_source = match &landing.carryover {
+                Some(CarryoverPlan::Spill { spill_locals }) => {
+                    let (cond_local, _ty) = spill_locals
+                        .last()
+                        .copied()
+                        .expect("IfElse spill plan must include the condition");
+                    for (l, _ty) in spill_locals.iter().take(spill_locals.len() - 1) {
+                        push_instr(s, Instr::LocalGet(LocalGet { local: *l }));
+                    }
+                    IfElseCondSource::Local(cond_local)
                 }
-                cond_local
-            } else {
-                cond_swap_local
+                Some(CarryoverPlan::PureTail { tail, types, .. }) => {
+                    debug_assert_eq!(
+                        types.as_slice(),
+                        &[ValType::I32],
+                        "pure IfElse cond materialization only supports condition-only i32 tails"
+                    );
+                    IfElseCondSource::PureTail(tail)
+                }
+                None => IfElseCondSource::Local(cond_swap_local),
             };
             // Push force_flag.
             match (then_range, else_range) {
                 (Some(_), None) => {
-                    push_instr(s, Instr::Const(Const { value: Value::I32(1) }));
+                    push_instr(
+                        s,
+                        Instr::Const(Const {
+                            value: Value::I32(1),
+                        }),
+                    );
                 }
                 (None, Some(_)) => {
-                    push_instr(s, Instr::Const(Const { value: Value::I32(0) }));
+                    push_instr(
+                        s,
+                        Instr::Const(Const {
+                            value: Value::I32(0),
+                        }),
+                    );
                 }
                 (Some((tlo, thi)), Some(_)) => {
                     // Both branches have fork calls. Use range
                     // membership on THEN's range.
-                    push_instr(s, Instr::LocalGet(LocalGet { local: call_idx_local }));
-                    push_instr(s, Instr::Const(Const { value: Value::I32(*tlo as i32) }));
-                    push_instr(s, Instr::Binop(Binop { op: BinaryOp::I32GeS }));
-                    push_instr(s, Instr::LocalGet(LocalGet { local: call_idx_local }));
-                    push_instr(s, Instr::Const(Const { value: Value::I32(*thi as i32) }));
-                    push_instr(s, Instr::Binop(Binop { op: BinaryOp::I32LeS }));
-                    push_instr(s, Instr::Binop(Binop { op: BinaryOp::I32And }));
+                    push_current_call_index(s, runtime, memory, ptr_ty);
+                    push_instr(
+                        s,
+                        Instr::Const(Const {
+                            value: Value::I32(*tlo as i32),
+                        }),
+                    );
+                    push_instr(
+                        s,
+                        Instr::Binop(Binop {
+                            op: BinaryOp::I32GeS,
+                        }),
+                    );
+                    push_current_call_index(s, runtime, memory, ptr_ty);
+                    push_instr(
+                        s,
+                        Instr::Const(Const {
+                            value: Value::I32(*thi as i32),
+                        }),
+                    );
+                    push_instr(
+                        s,
+                        Instr::Binop(Binop {
+                            op: BinaryOp::I32LeS,
+                        }),
+                    );
+                    push_instr(
+                        s,
+                        Instr::Binop(Binop {
+                            op: BinaryOp::I32And,
+                        }),
+                    );
                 }
                 (None, None) => {
-                    push_instr(s, Instr::Const(Const { value: Value::I32(0) }));
+                    push_instr(
+                        s,
+                        Instr::Const(Const {
+                            value: Value::I32(0),
+                        }),
+                    );
                 }
             }
-            // Push orig_cond from the spill local.
-            push_instr(s, Instr::LocalGet(LocalGet { local: cond_local }));
+            // Push orig_cond from either the spill local or the pure
+            // scalar tail removed from the NORMAL chunk.
+            match cond_source {
+                IfElseCondSource::Local(cond_local) => {
+                    push_instr(s, Instr::LocalGet(LocalGet { local: cond_local }));
+                }
+                IfElseCondSource::PureTail(tail) => {
+                    s.extend(tail.iter().cloned());
+                }
+            }
             // Push is_rewind.
-            push_instr(s, Instr::GlobalGet(GlobalGet { global: state_global }));
             push_instr(
                 s,
-                Instr::Const(Const { value: Value::I32(runtime::STATE_REWINDING) }),
+                Instr::GlobalGet(GlobalGet {
+                    global: runtime.state_global,
+                }),
             );
-            push_instr(s, Instr::Binop(Binop { op: BinaryOp::I32Eq }));
+            push_instr(
+                s,
+                Instr::Const(Const {
+                    value: Value::I32(runtime::STATE_REWINDING),
+                }),
+            );
+            push_instr(
+                s,
+                Instr::Binop(Binop {
+                    op: BinaryOp::I32Eq,
+                }),
+            );
             push_instr(s, Instr::Select(walrus::ir::Select { ty: None }));
             // Original IfElse with rewritten cond on the stack.
             s.push((instr, loc));
@@ -6781,10 +7484,7 @@ mod trampoline_tests {
 
     /// Returns the first active elem segment populating `table_id`,
     /// or None.
-    fn find_active_elem_for(
-        module: &Module,
-        table_id: TableId,
-    ) -> Option<&walrus::Element> {
+    fn find_active_elem_for(module: &Module, table_id: TableId) -> Option<&walrus::Element> {
         module.elements.iter().find(|el| {
             matches!(
                 &el.kind,
@@ -6796,8 +7496,7 @@ mod trampoline_tests {
     #[test]
     fn emit_per_function_post_table_creates_named_table_sized_to_fit() {
         let (mut module, post_funcs) = build_module_with_stubs(3);
-        let table_id =
-            emit_per_function_post_table(&mut module, "caller", &post_funcs);
+        let table_id = emit_per_function_post_table(&mut module, "caller", &post_funcs);
 
         let table = find_table_by_name(&module, "caller_post_table")
             .expect("table named caller_post_table must exist");
@@ -6810,8 +7509,7 @@ mod trampoline_tests {
     #[test]
     fn emit_per_function_post_table_emits_active_elem_with_funcrefs_in_order() {
         let (mut module, post_funcs) = build_module_with_stubs(3);
-        let table_id =
-            emit_per_function_post_table(&mut module, "caller", &post_funcs);
+        let table_id = emit_per_function_post_table(&mut module, "caller", &post_funcs);
 
         let elem = find_active_elem_for(&module, table_id)
             .expect("active elem segment must populate caller_post_table");
@@ -6840,8 +7538,7 @@ mod trampoline_tests {
     #[test]
     fn emit_per_function_post_table_empty_skips_elem_segment() {
         let (mut module, _) = build_module_with_stubs(0);
-        let table_id =
-            emit_per_function_post_table(&mut module, "caller", &[]);
+        let table_id = emit_per_function_post_table(&mut module, "caller", &[]);
 
         let table = find_table_by_name(&module, "caller_post_table")
             .expect("table is created even for empty post_funcs");
@@ -6859,7 +7556,12 @@ mod trampoline_tests {
     fn extract_chunk_to_function_creates_named_function_with_input_instrs() {
         let mut module = Module::default();
         let body = vec![
-            (Instr::Const(Const { value: Value::I32(7) }), InstrLocId::default()),
+            (
+                Instr::Const(Const {
+                    value: Value::I32(7),
+                }),
+                InstrLocId::default(),
+            ),
             (Instr::Drop(Drop {}), InstrLocId::default()),
         ];
         let func_id = extract_chunk_to_function(&mut module, "post_chunk_0", body);
@@ -6873,7 +7575,11 @@ mod trampoline_tests {
         };
         let entry = local.entry_block();
         let block = local.block(entry);
-        assert_eq!(block.instrs.len(), 2, "body must contain the 2 input instrs");
+        assert_eq!(
+            block.instrs.len(),
+            2,
+            "body must contain the 2 input instrs"
+        );
         assert!(matches!(block.instrs[0].0, Instr::Const(_)));
         assert!(matches!(block.instrs[1].0, Instr::Drop(_)));
     }
@@ -6895,7 +7601,12 @@ mod trampoline_tests {
         // it round-trips through extraction.
         let mut module = Module::default();
         let loc = InstrLocId::new(0xCAFEBABE);
-        let body = vec![(Instr::Const(Const { value: Value::I32(0) }), loc)];
+        let body = vec![(
+            Instr::Const(Const {
+                value: Value::I32(0),
+            }),
+            loc,
+        )];
         let func_id = extract_chunk_to_function(&mut module, "loc_test", body);
 
         let local = match &module.funcs.get(func_id).kind {
@@ -6903,7 +7614,11 @@ mod trampoline_tests {
             _ => panic!(),
         };
         let entry = local.entry_block();
-        assert_eq!(local.block(entry).instrs[0].1, loc, "InstrLocId must round-trip");
+        assert_eq!(
+            local.block(entry).instrs[0].1,
+            loc,
+            "InstrLocId must round-trip"
+        );
     }
 
     /// Module setup with a single 1-page memory and a known frame_ptr
@@ -7398,14 +8113,8 @@ mod trampoline_tests {
             .iter()
             .find(|s| s.seq_id != entry_seq)
             .expect("expected a nested helper call");
-        assert_eq!(
-            result.get(&entry_site.call_idx),
-            Some(&vec![ValType::I32])
-        );
-        assert_eq!(
-            result.get(&nested_site.call_idx),
-            Some(&vec![ValType::I32])
-        );
+        assert_eq!(result.get(&entry_site.call_idx), Some(&vec![ValType::I32]));
+        assert_eq!(result.get(&nested_site.call_idx), Some(&vec![ValType::I32]));
     }
 
     // Sub-commit 2.6a: typed SubRegion spill analyser.
@@ -7603,7 +8312,12 @@ mod trampoline_tests {
         // should produce wasm that round-trips through wasmparser.
         let mut module = Module::default();
         let body = vec![
-            (Instr::Const(Const { value: Value::I32(42) }), InstrLocId::default()),
+            (
+                Instr::Const(Const {
+                    value: Value::I32(42),
+                }),
+                InstrLocId::default(),
+            ),
             (Instr::Drop(Drop {}), InstrLocId::default()),
         ];
         let _ = extract_chunk_to_function(&mut module, "validates", body);
@@ -7636,10 +8350,7 @@ mod trampoline_tests {
         let elem_a = find_active_elem_for(&module, table_a).unwrap();
         let elem_b = find_active_elem_for(&module, table_b).unwrap();
         match (&elem_a.items, &elem_b.items) {
-            (
-                walrus::ElementItems::Functions(ids_a),
-                walrus::ElementItems::Functions(ids_b),
-            ) => {
+            (walrus::ElementItems::Functions(ids_a), walrus::ElementItems::Functions(ids_b)) => {
                 assert_eq!(ids_a, &post_a);
                 assert_eq!(ids_b, &post_b);
             }

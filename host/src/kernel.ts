@@ -18,6 +18,14 @@ import type { KernelConfig, PlatformIO, StatResult, StatfsResult } from "./types
 import { SharedPipeBuffer } from "./shared-pipe-buffer";
 import { SharedLockTable } from "./shared-lock-table";
 import { FramebufferRegistry } from "./framebuffer/registry";
+import { GbmBoRegistry } from "./dri/registry";
+import { KmsRegistry } from "./dri/kms-registry";
+import { GlContextRegistry } from "./webgl/registry";
+import { decodeAndDispatch, validateCommandBuffer } from "./webgl/bridge";
+import { runGlQuery } from "./webgl/query";
+import { SubmitQueue } from "./webgl/submit-queue";
+import { GlMuxer } from "./webgl/muxer";
+import { drainSubmitQueue } from "./webgl/submit-drain";
 import { STRUCT_SIZE_WASM_DIRENT, STRUCT_SIZE_WASM_STAT } from "./generated/abi";
 import { detectPtrWidth } from "./constants";
 
@@ -30,6 +38,57 @@ function bufferSourceToArrayBuffer(source: BufferSource): ArrayBuffer {
   const copy = new Uint8Array(view.byteLength);
   copy.set(view);
   return copy.buffer;
+}
+
+const DEFAULT_KMS_MODE_WIDTH = 1920;
+const DEFAULT_KMS_MODE_HEIGHT = 1080;
+const DEFAULT_KMS_REFRESH_HZ = 60;
+
+function kmsModeInfoBytes(
+  width?: number,
+  height?: number,
+  refreshHz = DEFAULT_KMS_REFRESH_HZ,
+): Uint8Array {
+  const w = clampModeDim(width, DEFAULT_KMS_MODE_WIDTH);
+  const h = clampModeDim(height, DEFAULT_KMS_MODE_HEIGHT);
+  const hsyncStart = clampU16(w + 16);
+  const hsyncEnd = clampU16(w + 48);
+  const htotal = clampU16(w + 160);
+  const vsyncStart = clampU16(h + 3);
+  const vsyncEnd = clampU16(h + 8);
+  const vtotal = clampU16(h + 45);
+  const clock = Math.max(1, Math.min(0xffffffff, Math.round(htotal * vtotal * refreshHz / 1000)));
+  const out = new Uint8Array(68);
+  const dv = new DataView(out.buffer);
+  dv.setUint32(0, clock, true);
+  dv.setUint16(4, w, true);
+  dv.setUint16(6, hsyncStart, true);
+  dv.setUint16(8, hsyncEnd, true);
+  dv.setUint16(10, htotal, true);
+  dv.setUint16(12, 0, true);
+  dv.setUint16(14, h, true);
+  dv.setUint16(16, vsyncStart, true);
+  dv.setUint16(18, vsyncEnd, true);
+  dv.setUint16(20, vtotal, true);
+  dv.setUint16(22, 0, true);
+  dv.setUint32(24, refreshHz, true);
+  dv.setUint32(28, 0, true);
+  // DRM_MODE_TYPE_DRIVER | DRM_MODE_TYPE_PREFERRED
+  dv.setUint32(32, 0x1 | 0x8, true);
+  const name = `${w}x${h}`;
+  for (let i = 0; i < Math.min(name.length, 31); i++) {
+    out[36 + i] = name.charCodeAt(i) & 0xff;
+  }
+  return out;
+}
+
+function clampModeDim(value: number | undefined, fallback: number): number {
+  if (value === undefined || !Number.isFinite(value) || value < 1) return fallback;
+  return clampU16(Math.trunc(value));
+}
+
+function clampU16(value: number): number {
+  return Math.max(1, Math.min(0xffff, Math.trunc(value)));
 }
 
 /**
@@ -114,6 +173,29 @@ export interface KernelCallbacks {
   onStderr?: (data: Uint8Array) => void;
   /** Read up to maxLen bytes from stdin. Return a Uint8Array with available data, or empty/null for EOF. */
   onStdin?: (maxLen: number) => Uint8Array | null;
+  /**
+   * Resolve the wasm `Memory` for `pid`. The GL bridge reads cmdbuf bytes
+   * directly out of the process's Memory SAB on `host_gl_submit` and
+   * `host_gl_query`, so the embedder must thread its per-pid memory map
+   * through this callback. Returning `undefined` is interpreted as "the
+   * process is gone" and turns the GL call into a silent no-op.
+   */
+  getProcessMemory?: (pid: number) => WebAssembly.Memory | undefined;
+  /**
+   * Resolve the KMS scanout canvas for `crtcId`, if one is registered.
+   * Used by `host_gl_create_context` to auto-attach the canvas to the
+   * DRM-master pid's GL binding so user programs that drive the modeset
+   * stack (drmModeSetCrtc + eglCreateContext) don't have to call
+   * `gl.attachCanvas` separately. Returning `undefined` keeps the
+   * legacy "embedder must call attachCanvas manually" path alive.
+   */
+  getKmsCanvas?: (crtcId: number) => OffscreenCanvas | HTMLCanvasElement | undefined;
+  /**
+   * Notify the embedder that GL has claimed the canvas for `crtcId`.
+   * The KMS vblank pump uses this to skip the CPU `putImageData` blit
+   * for canvases now painted directly by WebGL2. Idempotent.
+   */
+  markKmsCanvasGlOwned?: (crtcId: number) => void;
 }
 
 export class WasmPosixKernel {
@@ -138,6 +220,33 @@ export class WasmPosixKernel {
    * Node) read this on each frame.
    */
   readonly framebuffers = new FramebufferRegistry();
+  /**
+   * Live GBM buffer objects on `/dev/dri/renderD128` reported by the
+   * kernel via `host_gbm_bo_*`. Pixel storage for the v1 CpuShared
+   * tier lives in the process's wasm Memory at the bind range;
+   * consumers read pixels by projecting that range onto the process
+   * Memory SAB (same model as the mmap-based framebuffer binding).
+   */
+  readonly bos = new GbmBoRegistry();
+  readonly kms = new KmsRegistry(this.bos);
+  /**
+   * Live `/dev/dri/renderD128` GLES sessions. The kernel reports
+   * binds/unbinds via `host_gl_*`; the bridge in `webgl/bridge.ts`
+   * decodes the cmdbuf TLV stream against a per-pid `WebGL2RenderingContext`
+   * once the embedder has attached a canvas.
+   */
+  readonly gl = new GlContextRegistry();
+  /**
+   * Worker-side submit lanes. The compositor (current DRM_MASTER on
+   * card0) jumps ahead of clients; clients round-robin. Drain runs
+   * synchronously inside `host_gl_submit` because the C process is
+   * blocked on that syscall — deferring would race the SAB cmdbuf.
+   *
+   * Muxers keyed by `WebGL2RenderingContext` so pids sharing a canvas
+   * share a muxer; `WeakMap` drops the muxer when the context is GC'd.
+   */
+  private gl_submit_queue = new SubmitQueue((pid) => this.kms.isMasterPid(pid));
+  private gl_muxers = new WeakMap<WebGL2RenderingContext, GlMuxer>();
 
   /**
    * Merge additional callbacks into the existing set.
@@ -159,6 +268,13 @@ export class WasmPosixKernel {
     this.config = config;
     this.io = io;
     this.callbacks = callbacks ?? {};
+    // Let the GBM bo registry reach per-pid wasm Memory so the
+    // bind/unbind sync (parent writes → SAB → child reads after PRIME
+    // export+import) actually moves bytes. The closure follows
+    // `mergeCallbacks` because it reads `this.callbacks` at call time.
+    this.bos.setProcessMemoryResolver((pid) =>
+      this.callbacks.getProcessMemory?.(pid),
+    );
   }
 
   getKernelPtrWidth(): 4 | 8 {
@@ -610,6 +726,265 @@ export class WasmPosixKernel {
             this.readKernelBytes(Number(srcPtr), Number(len)),
           );
         },
+        // /dev/dri/renderD128 hooks. v1 CpuShared tier: pixel storage
+        // for a bo lives in the owning process's wasm Memory at the
+        // bind range. The registry is pure metadata.
+        host_gbm_bo_create: (
+          pid: number,
+          bo_id: number,
+          size: bigint,
+          w: number,
+          h: number,
+          stride: number,
+        ): number => {
+          this.bos.create({ pid, bo_id, size: Number(size), w, h, stride });
+          return 0;
+        },
+        host_gbm_bo_destroy: (pid: number, bo_id: number): void => {
+          this.bos.destroy(pid, bo_id);
+        },
+        host_gbm_bo_bind: (
+          pid: number,
+          bo_id: number,
+          addr: bigint,
+          len: bigint,
+        ): number => {
+          return this.bos.bind(pid, bo_id, Number(addr), Number(len));
+        },
+        host_gbm_bo_unbind: (
+          pid: number,
+          bo_id: number,
+          _addr: bigint,
+          _len: bigint,
+        ): void => {
+          this.bos.unbind(pid, bo_id);
+        },
+        // /dev/dri/renderD128 GL hooks. The cmdbuf lives in the process's
+        // wasm Memory SAB; submit/query reach into it via the embedder-
+        // supplied `getProcessMemory` callback. Without an attached
+        // canvas the create-context call leaves `b.gl = null` and
+        // submit/query become silent no-ops, so kernels that haven't
+        // wired a renderer (Node tests, headless smoke runs) stay safe.
+        host_gl_bind: (pid: number, addr: bigint, len: bigint): void => {
+          this.gl.bind({
+            pid,
+            cmdbufAddr: Number(addr),
+            cmdbufLen: Number(len),
+          });
+        },
+        host_gl_unbind: (pid: number): void => {
+          this.gl.unbind(pid);
+        },
+        host_gl_create_context: (
+          pid: number, ctxId: number,
+          _attrsPtr: bigint, _attrsLen: bigint,
+        ): void => {
+          const b = this.gl.get(pid);
+          if (!b) return;
+          b.contextId = ctxId;
+          if (b.forward) {
+            b.forward.onCreateContext();
+            return;
+          }
+          if (!b.canvas) {
+            // Auto-attach the KMS scanout canvas if this pid holds DRM
+            // master on a CRTC the embedder has registered with
+            // `kmsAttachCanvas`. Without this, a libdrm/libgbm/EGL
+            // program (e.g. modeset.c) that drove drmModeSetCrtc and
+            // is about to call eglCreateContext would silently no-op
+            // every shader compile/link/draw because `b.canvas` stays
+            // null and `b.gl` is never built.
+            const crtc = this.kms.masterCrtcForPid(pid);
+            if (crtc != null) {
+              const canvas = this.callbacks.getKmsCanvas?.(crtc);
+              if (canvas) {
+                // Resize the OffscreenCanvas's drawing buffer to match
+                // the kernel-side FB before WebGL2 binds, so glViewport
+                // and gl_FragCoord operate on the full surface rather
+                // than the default 300×150 corner. Modeset programs set
+                // their viewport from CANVAS_W/H (the FB they registered
+                // via drmModeAddFB2) and would otherwise render into a
+                // tiny clipped region of a default-sized canvas.
+                const fb = this.kms.currentFb(crtc);
+                if (fb && (canvas.width !== fb.width || canvas.height !== fb.height)) {
+                  canvas.width = fb.width;
+                  canvas.height = fb.height;
+                }
+                this.gl.attachCanvas(pid, canvas);
+                b.canvas = canvas;
+                this.callbacks.markKmsCanvasGlOwned?.(crtc);
+              }
+            }
+            if (!b.canvas) return;
+          }
+          const ctx = b.canvas.getContext("webgl2", {
+            antialias: false,
+            premultipliedAlpha: false,
+            preserveDrawingBuffer: true,
+          }) as WebGL2RenderingContext | null;
+          if (ctx) {
+            // Mirror main-forward.ts: enable the WebGL2 float extensions
+            // so RGBA16F framebuffers are renderable and float textures
+            // accept LINEAR filtering. Without these, ping-pong sims
+            // (Pavel-style fluid, GPU-side image processing) hit
+            // GL_FRAMEBUFFER_INCOMPLETE_ATTACHMENT silently.
+            ctx.getExtension("EXT_color_buffer_float");
+            ctx.getExtension("OES_texture_float_linear");
+            ctx.getExtension("EXT_float_blend");
+          }
+          b.gl = ctx;
+        },
+        host_gl_destroy_context: (pid: number, _ctxId: number): void => {
+          const b = this.gl.get(pid);
+          if (!b) return;
+          b.gl = null;
+          b.contextId = null;
+          b.currentProgram = null;
+          if (b.forward) b.forward.onDestroyContext();
+        },
+        host_gl_create_surface: (
+          pid: number, surfaceId: number,
+          _attrsPtr: bigint, _attrsLen: bigint,
+        ): void => {
+          const b = this.gl.get(pid);
+          if (b) b.surfaceId = surfaceId;
+        },
+        host_gl_destroy_surface: (pid: number, _surfaceId: number): void => {
+          const b = this.gl.get(pid);
+          if (b) b.surfaceId = null;
+        },
+        host_gl_make_current: (
+          _pid: number, _ctxId: number, _surfaceId: number,
+        ): void => {
+          // No-op: WebGL2 binds context per `getContext()`; we already
+          // track ctx + surface ids on the binding.
+        },
+        host_gl_submit: (
+          pid: number, offset: bigint, length: bigint,
+        ): number => {
+          const b = this.gl.get(pid);
+          if (!b) return -5; // EIO: kernel/host GL state diverged.
+          if (!b.forward && !b.gl) return 0;
+          if (!b.cmdbufView) {
+            const memory = this.callbacks.getProcessMemory?.(pid);
+            if (!memory) return -5; // EIO
+            try {
+              b.cmdbufView = new Uint8Array(
+                memory.buffer,
+                b.cmdbufAddr,
+                b.cmdbufLen,
+              );
+            } catch {
+              return -5; // EIO
+            }
+          }
+          if (b.forward) {
+            const off = Number(offset);
+            const len = Number(length);
+            const rc = validateCommandBuffer(b.cmdbufView, off, len);
+            if (rc < 0) return rc;
+            b.forward.onSubmit(b.cmdbufView.slice(off, off + len));
+            return 0;
+          }
+          this.gl_submit_queue.enqueue(b, {
+            memorySab: b.cmdbufView.buffer as ArrayBufferLike,
+            off: Number(offset),
+            len: Number(length),
+          });
+          return drainSubmitQueue(
+            this.gl_submit_queue,
+            (bb) => {
+              if (!bb.gl) return null;
+              let mux = this.gl_muxers.get(bb.gl);
+              if (!mux) {
+                mux = new GlMuxer(bb.gl);
+                this.gl_muxers.set(bb.gl, mux);
+              }
+              return mux;
+            },
+            (bb, off, len) => decodeAndDispatch(bb, off, len),
+          );
+        },
+        host_gl_present: (_pid: number): void => {
+          // RAF-driven canvas presentation handles itself in v1. Hook
+          // is here for explicit-swap / pbuffer paths in v2.
+        },
+        host_gl_query: (
+          pid: number, op: number,
+          inPtr: bigint, inLen: bigint,
+          outPtr: bigint, outLen: bigint,
+        ): number => {
+          const b = this.gl.get(pid);
+          if (!b || !b.gl) return -1;
+          const inBuf = inLen > 0n
+            ? this.readKernelBytes(Number(inPtr), Number(inLen))
+            : new Uint8Array(0);
+          const outBuf = new Uint8Array(Number(outLen));
+          const written = runGlQuery(b, op, inBuf, outBuf);
+          if (written > 0 && Number(outPtr) !== 0) {
+            this.writeKernelBytes(Number(outPtr), outBuf.subarray(0, written));
+          }
+          return written;
+        },
+        host_kms_set_master: (pid: number): void => { this.kms.setMasterPid(pid); },
+        host_kms_drop_master: (_pid: number): void => { this.kms.dropMaster(); },
+        host_proc_write_bytes: (
+          pid: number,
+          addr: bigint,
+          src_ptr: bigint,
+          len: number,
+        ): number => {
+          const procMem = this.callbacks.getProcessMemory?.(pid);
+          if (!procMem) return -14;
+          try {
+            const src = this.readKernelBytes(Number(src_ptr), len);
+            new Uint8Array(procMem.buffer, Number(addr), len).set(src);
+            return 0;
+          } catch {
+            return -14;
+          }
+        },
+        host_proc_read_bytes: (
+          pid: number,
+          addr: bigint,
+          dst_ptr: bigint,
+          len: number,
+        ): number => {
+          const procMem = this.callbacks.getProcessMemory?.(pid);
+          if (!procMem) return -14;
+          try {
+            const src = new Uint8Array(procMem.buffer, Number(addr), len);
+            const copy = new Uint8Array(len);
+            copy.set(src);
+            this.writeKernelBytes(Number(dst_ptr), copy);
+            return 0;
+          } catch {
+            return -14;
+          }
+        },
+        host_kms_mode_info: (connector_id: number, out_ptr: bigint): void => {
+          const canvas = this.callbacks.getKmsCanvas?.(connector_id);
+          this.writeKernelBytes(
+            Number(out_ptr),
+            kmsModeInfoBytes(canvas?.width, canvas?.height),
+          );
+        },
+        host_kms_addfb: (
+          _pid: number,
+          fb_id: number,
+          bo_id: number,
+          width: number,
+          height: number,
+          pixel_format: number,
+          pitch: number,
+        ): number => {
+          this.kms.addFb({ fb_id, bo_id, width, height, pixel_format, pitch });
+          return 0;
+        },
+        host_kms_rmfb: (_pid: number, fb_id: number): void => { this.kms.rmFb(fb_id); },
+        host_kms_set_fb: (_pid: number, crtc_id: number, fb_id: number): void => {
+          this.kms.setFb(crtc_id, fb_id);
+        },
       },
     };
   }
@@ -652,6 +1027,14 @@ export class WasmPosixKernel {
     const out = new Uint8Array(len);
     out.set(this.getMemoryBuffer().subarray(ptr, ptr + len));
     return out;
+  }
+
+  /** Write `bytes` into kernel memory at `ptr`. Used by host imports
+   *  that return kernel-scratch payloads (e.g. host_gl_query,
+   *  host_kms_mode_info, host_proc_read_bytes).
+   */
+  private writeKernelBytes(ptr: number, bytes: Uint8Array): void {
+    this.getMemoryBuffer().set(bytes, ptr);
   }
 
   /**
@@ -2143,8 +2526,8 @@ export class WasmPosixKernel {
           return ok ? 0 : -11; // -EAGAIN
         }
         case WasmPosixKernel.F_SETLKW: {
-          this.sharedLockTable.setLockWait(pathHash, pid, lockType, start, len);
-          return 0;
+          const ok = this.sharedLockTable.setLock(pathHash, pid, lockType, start, len);
+          return ok ? 0 : -11; // -EAGAIN, kernel-worker retries blocking fcntl
         }
         default:
           return -22; // -EINVAL

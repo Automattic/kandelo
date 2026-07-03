@@ -204,7 +204,10 @@ Rules:
 - `entries[].packages` lists every package required to launch the
   demo.
 - The browser shows an entry only when every listed package has a
-  `wasm32` `status = "success"` record in the matching `index.toml`.
+  `wasm32` `status = "success"` record, an `archive_url`, and
+  `browser_compatible = true` in the matching `index.toml`.
+- `browser_compatible = true` is a runtime claim. Set it only after a
+  browser smoke has launched the archive-backed image through the Kandelo UI.
 - If `gallery.json` or `index.toml` is temporarily unavailable, the
   core Kandelo gallery remains available and third-party entries are
   skipped.
@@ -315,6 +318,15 @@ cross-origin-isolated page. In practice, third-party image hosts should
 serve the file with CORS or compatible cross-origin resource policy
 headers.
 
+Homebrew browser-gallery assets use the same package-source contract only for
+the browser-launchable VFS image. The actual Homebrew bottle remains owned by
+the tap formula, GHCR bottle URL, and `Kandelo/` sidecars described in
+[docs/homebrew-publishing.md](homebrew-publishing.md). The trusted publisher
+writes a precomposed `.vfs.zst` into a package-source-shaped archive only after
+the published wasm32 Homebrew bottle has been poured into a VFS image and
+booted by the browser smoke. Bottles without that smoke remain Node-only and
+must keep `browser_compatible = false`.
+
 ## Agent Checklist
 
 When creating or maintaining a package source:
@@ -328,7 +340,7 @@ When creating or maintaining a package source:
 5. Keep `build.toml`'s `index_url` pointed at the package-source
    repository and keep `{abi}` in the URL.
 6. Add `gallery.json` only for demos that can launch from published
-   artifacts.
+   artifacts and have `browser_compatible = true` package records.
 7. Run `scripts/validate-software-gallery.mjs` after publishing an
    index.
 8. On ABI bumps, update `kernel_abi`, run the reusable workflow against

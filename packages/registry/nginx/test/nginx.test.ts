@@ -1,7 +1,7 @@
 /**
  * Regression test — nginx serving static HTML via kandelo.
  *
- * Starts nginx.wasm in centralized mode with master_process on + 2 workers,
+ * Starts nginx.wasm with master_process on + 2 workers,
  * sends HTTP requests through the TCP bridge, verifies responses, and tears down.
  */
 import { describe, it, expect } from "vitest";
@@ -10,7 +10,7 @@ import { join, dirname } from "node:path";
 import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
 import { createConnection, createServer } from "node:net";
-import { CentralizedKernelWorker } from "../../../../host/src/kernel-worker";
+import { CAPTURED_STDIO, CentralizedKernelWorker } from "../../../../host/src/kernel-worker";
 import { resolveBinary, tryResolveBinary } from "../../../../host/src/binary-resolver";
 import { NodePlatformIO } from "../../../../host/src/platform/node";
 import { NodeWorkerAdapter } from "../../../../host/src/worker-adapter";
@@ -45,6 +45,13 @@ function getFreePort(): Promise<number> {
 function loadWasm(path: string): ArrayBuffer {
   const buf = readFileSync(path);
   return buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength);
+}
+
+function hostRootGroup(): string {
+  const groupFile = readFileSync("/etc/group", "utf8");
+  if (/^root:/m.test(groupFile)) return "root";
+  if (/^wheel:/m.test(groupFile)) return "wheel";
+  throw new Error("No root or wheel group found in /etc/group");
 }
 
 /** Send a raw HTTP request and return the full response. */
@@ -84,7 +91,12 @@ describe.skipIf(!nginxWasmPath)(
       const tmpDir = mkdtempSync(join(tmpdir(), "nginx-test-"));
       const testConf = join(tmpDir, "nginx.conf");
       const confTemplate = readFileSync(join(nginxPrefix, "nginx.conf"), "utf8");
-      writeFileSync(testConf, confTemplate.replace("listen 8080", `listen ${testPort}`));
+      writeFileSync(
+        testConf,
+        confTemplate
+          .replace(/^user\s+root;\n/m, `user root ${hostRootGroup()};\n`)
+          .replace("listen 8080", `listen ${testPort}`),
+      );
 
       const kernelBytes = loadWasm(resolveBinary("kernel.wasm"));
       const programBytes = loadWasm(nginxWasmPath!);
@@ -167,7 +179,7 @@ describe.skipIf(!nginxWasmPath)(
       // `kill(1, ...)` / EPERM semantics), so the test runs nginx at
       // PID 100 with workers spawned at 101+. The actual PID nginx
       // sees doesn't matter to its operation.
-      kw.registerProcess(100, memory, [channelOffset]);
+      kw.registerProcess(100, memory, [channelOffset], { stdio: CAPTURED_STDIO });
       kw.setCwd(100, nginxPrefix);
       kw.setNextChildPid(101);
 
@@ -208,9 +220,40 @@ describe.skipIf(!nginxWasmPath)(
         expect(resp).toContain("Server: nginx");
         expect(resp).toContain("Hello from nginx on WebAssembly!");
 
+        // Browser service-worker requests use this in-kernel injection path:
+        // kernel_inject_connection() plus global pipe-table reads/writes.
+        // Keep it covered with nginx's master_process on + worker_processes 2.
+        const injectedResp = await kw.sendHttpRequest(
+          testPort,
+          {
+            method: "GET",
+            url: "/",
+            headers: { Host: "localhost" },
+            body: null,
+          },
+          { timeoutMs: 15_000 },
+        );
+        expect(injectedResp.status).toBe(200);
+        expect(injectedResp.headers.Server).toContain("nginx");
+        expect(new TextDecoder().decode(injectedResp.body)).toContain(
+          "Hello from nginx on WebAssembly!",
+        );
+
         // Request a non-existent path → 404
         const resp404 = await httpGet(testPort, "/nonexistent", 15_000);
         expect(resp404).toContain("404");
+
+        const injected404 = await kw.sendHttpRequest(
+          testPort,
+          {
+            method: "GET",
+            url: "/nonexistent",
+            headers: { Host: "localhost" },
+            body: null,
+          },
+          { timeoutMs: 15_000 },
+        );
+        expect(injected404.status).toBe(404);
       } finally {
         // Tear down all workers
         for (const [pid, w] of workers) {

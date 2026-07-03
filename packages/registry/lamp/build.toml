@@ -9,10 +9,16 @@ inputs = [
   "images/vfs/scripts/build-lamp-vfs-image.ts",
   "images/vfs/scripts/dinit-image-helpers.ts",
   "images/vfs/scripts/kandelo-demo-config.ts",
+  "images/vfs/scripts/kandelo-demo-guides.ts",
   "images/vfs/scripts/opcache-prewarm.ts",
+  "images/vfs/scripts/shell-vfs-build.ts",
   "images/vfs/scripts/smtp-capture-helpers.ts",
   "images/vfs/scripts/source-extract-helper.ts",
   "images/vfs/scripts/vfs-image-helpers.ts",
+  "images/vfs/lib/init/shell-binaries.ts",
+  "images/vfs/scripts/wordpress-preinstall.ts",
+  "apps/browser-demos/lib/init/mysql-benchmark.ts",
+  "apps/browser-demos/lib/init/wordpress-runtime-config.ts",
   "host/src/binary-resolver.ts",
   "host/src/constants.ts",
   "host/src/statfs.ts",
@@ -25,7 +31,7 @@ inputs = [
 ]
 repo_url    = "https://github.com/brandonpayton/kandelo.git"
 commit      = "8c53383229fab78f97b098c3207a655159c03041"
-revision    = 6
+revision    = 7
 
 [binary]
 index_url = "https://github.com/Automattic/kandelo/releases/download/binaries-abi-v{abi}/index.toml"

@@ -6,7 +6,7 @@ use wasm_posix_shared::{Errno, WasmStat, WasmStatfs};
 use crate::fd::FdTable;
 use crate::lock::LockTable;
 use crate::memory::MemoryManager;
-use crate::ofd::OfdTable;
+use crate::ofd::{FileType, OfdTable};
 use crate::pipe::PipeBuffer;
 use crate::signal::{PerThreadSignalState, SignalState};
 use crate::socket::SocketTable;
@@ -197,6 +197,145 @@ pub trait HostIO {
     /// copy into. Geometry/format come from a prior `bind_framebuffer`
     /// call with `addr=0, len=0` (the sentinel "write-based binding").
     fn fb_write(&mut self, pid: i32, offset: usize, bytes: &[u8]);
+    // --- DRI v2 buffer-sharing surface (renderD128 GBM) -----------------
+    //
+    // Default impls return `-ENOSYS as i32` / no-op so existing test
+    // mocks need no boilerplate. Concrete production hosts (Node +
+    // Browser) override these with their wasm-import bindings.
+
+    /// Allocate host-side SAB backing for a freshly-created bo. Called
+    /// once per `DRM_IOCTL_MODE_CREATE_DUMB`. Returns ≥ 0 on success,
+    /// negative errno on failure.
+    #[allow(unused_variables)]
+    fn gbm_bo_create(
+        &mut self,
+        pid: i32,
+        bo_id: u32,
+        size: u64,
+        width: u32,
+        height: u32,
+        stride: u32,
+    ) -> i32 {
+        -(Errno::ENOSYS as i32)
+    }
+
+    /// Free host-side SAB backing for a bo whose refcount has reached
+    /// zero. Idempotent: calling on an unknown `bo_id` is a no-op.
+    #[allow(unused_variables)]
+    fn gbm_bo_destroy(&mut self, pid: i32, bo_id: u32) {}
+
+    /// Bind a bo's SAB slice into a process's wasm `Memory` at `addr`
+    /// for `len` bytes. Called from the mmap path once
+    /// `mmap_anonymous` has reserved the wasm pages. After this
+    /// returns, writes to `[addr, addr+len)` go directly to the SAB.
+    /// Returns 0 on success, negative errno on failure.
+    #[allow(unused_variables)]
+    fn gbm_bo_bind(&mut self, pid: i32, bo_id: u32, addr: usize, len: usize) -> i32 {
+        -(Errno::ENOSYS as i32)
+    }
+
+    /// Unbind a prior `gbm_bo_bind` — called from munmap /
+    /// process-exit before the wasm pages are returned to the
+    /// anonymous pool.
+    #[allow(unused_variables)]
+    fn gbm_bo_unbind(&mut self, pid: i32, bo_id: u32, addr: usize, len: usize) {}
+
+    /// Notify the host that process `pid` has mapped its GL cmdbuf at the
+    /// given offset within its wasm `Memory`. Length is always
+    /// `shared::gl::CMDBUF_LEN` in v1.
+    #[allow(unused_variables)]
+    fn gl_bind(&mut self, pid: i32, addr: usize, len: usize) {}
+
+    /// Notify the host that the GL cmdbuf for `pid` is gone (`munmap`,
+    /// process exit, or exec). Idempotent.
+    #[allow(unused_variables)]
+    fn gl_unbind(&mut self, pid: i32) {}
+
+    /// Allocate a host-side WebGL context. `ctx_id` is the per-fd id chosen
+    /// by the kernel; `attrs` is a marshalled `shared::gl::GlContextAttrs`.
+    #[allow(unused_variables)]
+    fn gl_create_context(&mut self, pid: i32, ctx_id: u32, attrs: &[u8]) {}
+
+    #[allow(unused_variables)]
+    fn gl_destroy_context(&mut self, pid: i32, ctx_id: u32) {}
+
+    /// Allocate a host-side surface (default canvas or pbuffer). `attrs`
+    /// is a marshalled `shared::gl::GlSurfaceAttrs`.
+    #[allow(unused_variables)]
+    fn gl_create_surface(&mut self, pid: i32, surface_id: u32, attrs: &[u8]) {}
+
+    #[allow(unused_variables)]
+    fn gl_destroy_surface(&mut self, pid: i32, surface_id: u32) {}
+
+    /// Bind ctx + surface as the current rendering target for `pid`.
+    #[allow(unused_variables)]
+    fn gl_make_current(&mut self, pid: i32, ctx_id: u32, surface_id: u32) {}
+
+    /// Decode and dispatch one cmdbuf submit. `offset` / `length` are
+    /// within the bound cmdbuf region (validated by the kernel against
+    /// `shared::gl::CMDBUF_LEN`). Returns 0 on success, or a negative
+    /// errno when the host rejects the command stream or cannot dispatch it.
+    #[allow(unused_variables)]
+    fn gl_submit(&mut self, pid: i32, offset: usize, length: usize) -> i32 {
+        0
+    }
+
+    /// Flush any pending GL work and signal "frame ready". v1 no-op
+    /// (canvas presents on the next RAF); kept as a hook for future
+    /// fence/sync work.
+    #[allow(unused_variables)]
+    fn gl_present(&mut self, pid: i32) {}
+
+    /// Synchronous GL query (`glGetError`, `glReadPixels`, etc.).
+    /// Returns bytes written into `out`, or negative errno on failure.
+    #[allow(unused_variables)]
+    fn gl_query(&mut self, pid: i32, op: u32, input: &[u8], out: &mut [u8]) -> i32 {
+        -(Errno::ENOSYS as i32)
+    }
+
+    #[allow(unused_variables)]
+    fn kms_set_master(&mut self, pid: i32) {}
+
+    #[allow(unused_variables)]
+    fn kms_drop_master(&mut self, pid: i32) {}
+
+    #[allow(unused_variables)]
+    fn proc_write_bytes(&mut self, pid: i32, addr: u32, src: &[u8]) -> i32 {
+        0
+    }
+
+    /// Copy `dst.len()` bytes from the wasm process at `pid`'s linear
+    /// memory at `addr` into the kernel-side scratch `dst`. Returns 0 on
+    /// success, negative errno on failure.
+    #[allow(unused_variables)]
+    fn proc_read_bytes(&mut self, pid: i32, addr: u32, dst: &mut [u8]) -> i32 {
+        0
+    }
+
+    #[allow(unused_variables)]
+    fn kms_mode_info(&mut self, connector_id: u32) -> wasm_posix_shared::dri::WpkDrmModeModeinfo {
+        wasm_posix_shared::dri::WpkDrmModeModeinfo::default()
+    }
+
+    #[allow(unused_variables)]
+    fn kms_addfb(
+        &mut self,
+        pid: i32,
+        fb_id: u32,
+        bo_id: u32,
+        width: u32,
+        height: u32,
+        pixel_format: u32,
+        pitch: u32,
+    ) -> i32 {
+        0
+    }
+
+    #[allow(unused_variables)]
+    fn kms_rmfb(&mut self, pid: i32, fb_id: u32) {}
+
+    #[allow(unused_variables)]
+    fn kms_set_fb(&mut self, pid: i32, crtc_id: u32, fb_id: u32) {}
 }
 
 /// Process lifecycle state.
@@ -225,6 +364,22 @@ pub struct FbBinding {
     pub stride: u32,
     /// Pixel format tag (reserved; currently always 0 = BGRA32).
     pub fmt: u32,
+}
+
+/// Per-process binding tracking the live mmap of a DRI buffer object.
+///
+/// Recorded by `sys_mmap` on a `/dev/dri/{card0,renderD128}` fd whose
+/// `MODE_MAP_DUMB` offset decodes to `bo_id`. `sys_munmap` consults
+/// this list so it can call [`HostIO::gbm_bo_unbind`] before the wasm
+/// pages are returned to the anonymous pool.
+#[derive(Debug, Clone, Copy)]
+pub struct DriBoBinding {
+    /// Start address in the process's wasm `Memory`.
+    pub addr: usize,
+    /// Length in bytes (aligned to wasm page).
+    pub len: usize,
+    /// Bo currently bound at `[addr, addr+len)`.
+    pub bo_id: crate::dri::BoId,
 }
 
 /// Per-thread state within a process.
@@ -378,7 +533,7 @@ pub struct Process {
     pub thread_name: [u8; 16],
     /// True if this process is a fork child that should exec on startup.
     pub fork_child: bool,
-    /// Saved signal mask during sigsuspend (centralized mode blocking retry).
+    /// Saved signal mask during sigsuspend host retry.
     /// Set on first sigsuspend call, restored when a signal is delivered.
     pub sigsuspend_saved_mask: Option<u64>,
     /// Path to exec after fork (set by posix_spawn before forking).
@@ -389,7 +544,7 @@ pub struct Process {
     pub fork_fd_actions: Vec<FdAction>,
     /// Next ephemeral port to assign for bind(port=0).
     pub next_ephemeral_port: u16,
-    /// Threads created by this process (centralized mode).
+    /// Threads created by this process.
     pub threads: Vec<ThreadInfo>,
     /// Next thread ID to allocate.
     pub next_tid: u32,
@@ -424,6 +579,10 @@ pub struct Process {
     /// Live mmap of `/dev/fb0`, if any. `Some` between successful
     /// `mmap` and the matching `munmap`/process-exit/exec.
     pub fb_binding: Option<FbBinding>,
+    /// Active mmaps of DRI buffer objects. Each entry pairs a wasm
+    /// memory region with the bo currently bound there so `sys_munmap`
+    /// can issue the matching [`HostIO::gbm_bo_unbind`].
+    pub dri_bindings: Vec<DriBoBinding>,
     /// Counts how many times this process has called fork() (parent side, on success).
     /// Read-only from outside the kernel via `kernel_get_fork_count`.
     /// Used as a regression guardrail by the spawn test suite to confirm
@@ -431,20 +590,93 @@ pub struct Process {
     pub(crate) fork_count: u64,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum StdioKind {
+    HostPipe,
+    HostTerminal,
+}
+
+impl StdioKind {
+    pub fn from_abi(value: u32) -> Option<Self> {
+        match value {
+            0 => Some(Self::HostPipe),
+            1 => Some(Self::HostTerminal),
+            _ => None,
+        }
+    }
+
+    fn file_type(self) -> FileType {
+        match self {
+            Self::HostPipe => FileType::Pipe,
+            Self::HostTerminal => FileType::CharDevice,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct StdioConfig {
+    pub stdin: StdioKind,
+    pub stdout: StdioKind,
+    pub stderr: StdioKind,
+}
+
+impl StdioConfig {
+    pub const fn captured() -> Self {
+        Self {
+            stdin: StdioKind::HostPipe,
+            stdout: StdioKind::HostPipe,
+            stderr: StdioKind::HostPipe,
+        }
+    }
+
+    pub const fn terminal() -> Self {
+        Self {
+            stdin: StdioKind::HostTerminal,
+            stdout: StdioKind::HostTerminal,
+            stderr: StdioKind::HostTerminal,
+        }
+    }
+
+    fn kind_for_fd(self, fd: i32) -> StdioKind {
+        match fd {
+            0 => self.stdin,
+            1 => self.stdout,
+            2 => self.stderr,
+            _ => unreachable!("stdio fd must be 0, 1, or 2"),
+        }
+    }
+}
+
 impl Process {
-    /// Create a new process with stdio pre-opened (fds 0, 1, 2).
-    ///
-    /// - OFD 0 = stdin  (CharDevice, O_RDONLY, host_handle=0)
-    /// - OFD 1 = stdout (CharDevice, O_WRONLY, host_handle=1)
-    /// - OFD 2 = stderr (CharDevice, O_WRONLY, host_handle=2)
+    /// Create a new process with captured, pipe-backed stdio.
     pub fn new(pid: u32) -> Self {
-        use crate::ofd::FileType;
+        Self::new_with_stdio(pid, StdioConfig::captured())
+    }
+
+    /// Create a new process with fds 0, 1, and 2 wired according to the
+    /// caller-supplied stdio configuration.
+    pub fn new_with_stdio(pid: u32, stdio: StdioConfig) -> Self {
         use wasm_posix_shared::flags::{O_RDONLY, O_WRONLY};
 
         let mut ofd_table = OfdTable::new();
-        ofd_table.create(FileType::CharDevice, O_RDONLY, 0, b"/dev/stdin".to_vec()); // OFD 0 = stdin
-        ofd_table.create(FileType::CharDevice, O_WRONLY, 1, b"/dev/stdout".to_vec()); // OFD 1 = stdout
-        ofd_table.create(FileType::CharDevice, O_WRONLY, 2, b"/dev/stderr".to_vec()); // OFD 2 = stderr
+        ofd_table.create(
+            stdio.kind_for_fd(0).file_type(),
+            O_RDONLY,
+            0,
+            b"/dev/stdin".to_vec(),
+        );
+        ofd_table.create(
+            stdio.kind_for_fd(1).file_type(),
+            O_WRONLY,
+            1,
+            b"/dev/stdout".to_vec(),
+        );
+        ofd_table.create(
+            stdio.kind_for_fd(2).file_type(),
+            O_WRONLY,
+            2,
+            b"/dev/stderr".to_vec(),
+        );
 
         let mut fd_table = FdTable::new();
         fd_table.preopen_stdio(); // fds 0,1,2 → OFD refs 0,1,2
@@ -508,6 +740,7 @@ impl Process {
             procfs_bufs: Vec::new(),
             has_exec: false,
             fb_binding: None,
+            dri_bindings: Vec::new(),
             fork_count: 0,
         }
     }
@@ -523,7 +756,8 @@ impl Process {
         self.fork_count += 1;
     }
 
-    /// Allocate a process-local pipe buffer, reusing the first free slot.
+    /// Compatibility helper for the legacy pipe slot vector, reusing the first
+    /// free slot. Runtime pipe operations use the kernel-global pipe table.
     pub fn alloc_pipe(&mut self, pipe: PipeBuffer) -> usize {
         for (i, slot) in self.pipes.iter().enumerate() {
             if slot.is_none() {
@@ -536,8 +770,8 @@ impl Process {
         idx
     }
 
-    /// Allocate a consecutive pair of process-local pipe buffers, reusing freed
-    /// slots. Preserves adjacency so that `second_idx == first_idx + 1`.
+    /// Compatibility helper for a consecutive pair of legacy pipe slots.
+    /// Runtime pipe operations use the kernel-global pipe table.
     pub fn alloc_pipe_pair(&mut self, first: PipeBuffer, second: PipeBuffer) -> (usize, usize) {
         let len = self.pipes.len();
         for i in 0..len.saturating_sub(1) {
@@ -956,12 +1190,35 @@ pub(crate) mod test_host {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ofd::FileType;
     use crate::pipe::PipeBuffer;
 
     #[test]
     fn fork_count_starts_at_zero() {
         let proc = Process::new(1);
         assert_eq!(proc.fork_count(), 0);
+    }
+
+    #[test]
+    fn new_creates_captured_stdio_as_pipes() {
+        let proc = Process::new(1);
+        for fd in 0..=2 {
+            let entry = proc.fd_table.get(fd).expect("stdio fd");
+            let ofd = proc.ofd_table.get(entry.ofd_ref.0).expect("stdio ofd");
+            assert_eq!(ofd.file_type, FileType::Pipe);
+            assert_eq!(ofd.host_handle, fd as i64);
+        }
+    }
+
+    #[test]
+    fn new_with_stdio_can_create_terminal_stdio() {
+        let proc = Process::new_with_stdio(1, StdioConfig::terminal());
+        for fd in 0..=2 {
+            let entry = proc.fd_table.get(fd).expect("stdio fd");
+            let ofd = proc.ofd_table.get(entry.ofd_ref.0).expect("stdio ofd");
+            assert_eq!(ofd.file_type, FileType::CharDevice);
+            assert_eq!(ofd.host_handle, fd as i64);
+        }
     }
 
     #[test]

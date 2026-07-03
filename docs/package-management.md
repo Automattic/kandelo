@@ -39,6 +39,7 @@ Most readers want one of these. Detailed sections follow further down.
 | Republish a stale archive | Dispatch `.github/workflows/force-rebuild.yml` with the comma-separated package list (or `all`). |
 | Bump a package's revision number | Edit `revision = N` in its `build.toml` (NOT `package.toml` — revision moved to the project-view file during the binary-resolution-via-index-ledger migration). Invalidates the cache for that package. Only bump when output bytes legitimately change. |
 | Understand the release flow | [docs/binary-releases.md](binary-releases.md). |
+| Work on Homebrew bottle publishing | [docs/homebrew-publishing.md](homebrew-publishing.md) - formula authoring, trusted CI, sidecars, VFS images, and Node/browser gates. |
 | Publish packages from another repository | [docs/package-sources.md](package-sources.md) — package-source layout, reusable workflow, and browser-gallery contract. |
 | Trace an ABI mismatch | [docs/abi-versioning.md](abi-versioning.md). |
 | See what's missing | [docs/package-management-future-work.md](package-management-future-work.md). |
@@ -99,6 +100,12 @@ The PR change-scope detector should classify paths by effect:
 - **Package publish flow**: can change release/index/source-publish
   mechanics; run the publish-flow checks without rebuilding every
   archive.
+- **Homebrew bottle publish flow**: can change formula bottle
+  generation, GHCR upload, sidecar metadata, or Homebrew-derived VFS
+  materialization. Run the Homebrew publish, validator, VFS builder,
+  and Node/browser smoke checks that match the changed path; do not
+  rebuild every Kandelo package archive unless a package recipe/build
+  input also changed.
 - **Binary materialization**: can change fetching, verifying, overlaying,
   or installing already-published archives; run the materialization
   checks, materialize durable binaries, and run runtime tests, but do
@@ -211,6 +218,24 @@ index_url = "https://github.com/Automattic/kandelo/releases/download/binaries-ab
 
 The resolver picks the form by structural deserialization — mixing
 forms in one `[binary]` block is a parse error.
+
+### Homebrew bottles and package cache keys
+
+Homebrew bottles are not Kandelo release archives. A formula may build a
+Kandelo package by calling the same SDK and `packages/registry/<name>/build-*.sh`
+script that a source build uses, but the resulting bottle is selected by
+Homebrew's formula version, formula `revision`, bottle `rebuild`, bottle tag,
+and `bottle do` block.
+
+Kandelo still records the package `cache_key_sha` in Homebrew sidecar metadata
+so VFS tooling can reject stale bottle bytes. When package output bytes change,
+move the appropriate Homebrew formula revision or bottle rebuild so Homebrew
+fetches new bytes. Bump `build.toml` `revision` only when the Kandelo package
+archive cache key should change. Do not bump it for formula-only docs, tap
+metadata, or browser-gallery wording.
+
+See [docs/homebrew-publishing.md](homebrew-publishing.md) for the Homebrew
+formula, sidecar, GHCR, VFS, and runtime validation contract.
 
 ### `arches`
 
@@ -334,6 +359,15 @@ that doesn't respect them cannot be cached safely.
 | `WASM_POSIX_DEP_SOURCE_SHA256` | Expected sha256 of the downloaded tarball. Scripts **must** verify after download — the resolver does not fetch. |
 | `WASM_POSIX_DEP_<UPPER>_DIR` | For each *direct* dep, the resolved path to that dep's build output. `<UPPER>` is the dep name upper-cased, with `-` → `_` (e.g. `zlib-ng` → `ZLIB_NG`). Transitive deps are not surfaced — scripts that need them should declare them in `depends_on`. |
 
+The libcxx package is intentionally stricter than ordinary source-fetching
+packages. It builds the C++ standard library from the exact LLVM source
+derivations exported by `flake.nix` (`WASM_POSIX_LLVM_LIBCXX_SOURCE` and
+`WASM_POSIX_LLVM_LIBUNWIND_SOURCE`) and hard-fails if `LLVM_VERSION`,
+`clang --version`, and `packages/registry/libcxx/package.toml` disagree.
+That Nix-only restriction applies to rebuilding the repo's libcxx package
+from source; it does not restrict normal SDK users compiling against a
+published sysroot/libc++ artifact.
+
 After the script exits 0, the resolver verifies every path in
 `outputs.{libs,headers,pkgconfig}` exists under `$WASM_POSIX_DEP_OUT_DIR`.
 A missing output fails the build (and the temp dir is cleaned up,
@@ -357,6 +391,26 @@ env var is absent). `npm link` is now optional, and intentionally
 discouraged for multi-worktree development because the global
 symlink it creates routes every shell to a single worktree's
 source.
+
+### Sysroot libraries are not packages
+
+Some APIs are part of the Kandelo sysroot rather than the package graph. The
+DRI/EGL/GLES shims (`libdrm.a`, `libgbm.a`, `libEGL.a`, `libGLESv2.a`) are
+built by `scripts/build-musl.sh` and exposed through
+`wasm32posix-pkg-config`; they are not outputs of the `kernel` package and
+should not be modeled as standalone package dependencies.
+
+A package that depends on those libraries should:
+
+1. Source `sdk/activate.sh` and set `WASM_POSIX_SYSROOT` to the active worktree
+   sysroot, as other package build scripts do.
+2. Link with `wasm32posix-pkg-config --cflags/--libs` for `libdrm`, `gbm`,
+   `egl`, and/or `glesv2`.
+3. Declare only the consumer artifact in `[[outputs]]`.
+4. Add the relevant sysroot/glue inputs (`libc/glue/lib*_stub.c`,
+   `libc/glue/gl_abi.h`, `scripts/build-musl.sh`, `scripts/build-dri-stubs.sh`,
+   `scripts/build-gles-stubs.sh`) to `build.toml.inputs` so cache keys move
+   when the sysroot implementation changes.
 
 ## Migrating a consumer to the cache
 

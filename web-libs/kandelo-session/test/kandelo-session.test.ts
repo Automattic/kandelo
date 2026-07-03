@@ -3,6 +3,7 @@ import {
   LiveKernelHost,
   type BootDescriptor,
   type FileSystemLike,
+  type LazyDownloadEvent,
   type MachineStatus,
   type ProcessEvent,
 } from "../src/kernel-host";
@@ -206,6 +207,75 @@ describe("LiveKernelHost: process events", () => {
   });
 });
 
+describe("LiveKernelHost: lazy download events", () => {
+  it("fans out kernel lazy download events and records history", () => {
+    let kernelCb: ((event: LazyDownloadEvent) => void) | null = null;
+    const offKernel = vi.fn();
+    const host = new LiveKernelHost({
+      kernel: {
+        fs: makeFs({ "/etc/passwd": "" }),
+        nextPid: 1,
+        subscribeLazyDownloads(cb: (event: LazyDownloadEvent) => void) {
+          kernelCb = cb;
+          return offKernel;
+        },
+      } as any,
+    });
+    const seen: LazyDownloadEvent[] = [];
+    host.subscribeLazyDownloads((event) => seen.push(event));
+
+    const event: LazyDownloadEvent = {
+      id: "file:7",
+      kind: "file",
+      status: "progress",
+      url: "/assets/node.wasm",
+      path: "/usr/bin/node",
+      loadedBytes: 512,
+      totalBytes: 1024,
+      t: 10,
+    };
+    kernelCb?.(event);
+
+    expect(seen).toEqual([event]);
+    expect(host.lazyDownloadHistory()).toEqual([event]);
+    host.detachKernel();
+    expect(offKernel).toHaveBeenCalledOnce();
+  });
+
+  it("clears lazy download history when the kernel is replaced", () => {
+    let kernelCb: ((event: LazyDownloadEvent) => void) | null = null;
+    const host = new LiveKernelHost({
+      kernel: {
+        fs: makeFs({ "/etc/passwd": "" }),
+        nextPid: 1,
+        subscribeLazyDownloads(cb: (event: LazyDownloadEvent) => void) {
+          kernelCb = cb;
+          return vi.fn();
+        },
+      } as any,
+    });
+
+    kernelCb?.({
+      id: "file:7",
+      kind: "file",
+      status: "complete",
+      url: "/assets/curl.wasm",
+      path: "/usr/bin/curl",
+      loadedBytes: 1024,
+      totalBytes: 1024,
+      t: 10,
+    });
+    expect(host.lazyDownloadHistory()).toHaveLength(1);
+
+    host.attachKernel({
+      fs: makeFs({ "/etc/passwd": "" }),
+      nextPid: 1,
+    } as any);
+
+    expect(host.lazyDownloadHistory()).toEqual([]);
+  });
+});
+
 describe("LiveKernelHost: process listing", () => {
   it("resolves process snapshot UIDs through /etc/passwd", async () => {
     const fs = makeFs({
@@ -230,6 +300,297 @@ describe("LiveKernelHost: process listing", () => {
 
     const procs = await host.enumProcs();
     expect(procs.map((p) => p.user)).toEqual(["root", "www-data", "4242"]);
+  });
+});
+
+describe("LiveKernelHost: shell command queue", () => {
+  it("does not treat heredoc continuation prompts as command completion", async () => {
+    const encoder = new TextEncoder();
+    let onOutput: ((data: Uint8Array) => void) | null = null;
+    let releaseFinalPrompt!: () => void;
+    const finalPrompt = new Promise<void>((resolve) => {
+      releaseFinalPrompt = resolve;
+    });
+
+    const host = new LiveKernelHost({
+      kernel: {
+        fs: makeFs({ "/etc/passwd": "" }),
+        nextPid: 1,
+        spawnFromVfs: async () => ({ pid: 1, exit: new Promise<number>(() => {}) }),
+        onPtyOutput(_pid: number, callback: (data: Uint8Array) => void) {
+          onOutput = callback;
+          callback(encoder.encode("kandelo$ "));
+        },
+        ptyResize() {},
+        ptyWrite(_pid: number, _data: Uint8Array) {
+          onOutput?.(encoder.encode("cat > /tmp/k <<'EOF'\n> echo ok\n> "));
+          void finalPrompt.then(() => {
+            onOutput?.(encoder.encode("EOF\nok\nkandelo$ "));
+          });
+        },
+      } as any,
+    });
+    host.setDefaultShell({
+      programPath: "/bin/bash",
+      programBytes: new ArrayBuffer(0),
+      argv: ["bash", "-l", "-i"],
+      env: ["PS1=kandelo$ "],
+      cwd: "/home/user",
+    });
+
+    let completed = false;
+    const command = host.runShellCommand("cat > /tmp/k <<'EOF'\necho ok\nEOF");
+    void command.then(() => {
+      completed = true;
+    });
+
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(completed).toBe(false);
+
+    releaseFinalPrompt();
+    await command;
+    expect(completed).toBe(true);
+  });
+
+  it("does not treat echoed dollar-looking input as shell readiness", async () => {
+    const encoder = new TextEncoder();
+    let onOutput: ((data: Uint8Array) => void) | null = null;
+    let releaseFinalPrompt!: () => void;
+    const finalPrompt = new Promise<void>((resolve) => {
+      releaseFinalPrompt = resolve;
+    });
+
+    const host = new LiveKernelHost({
+      kernel: {
+        fs: makeFs({ "/etc/passwd": "" }),
+        nextPid: 1,
+        spawnFromVfs: async () => ({ pid: 1, exit: new Promise<number>(() => {}) }),
+        onPtyOutput(_pid: number, callback: (data: Uint8Array) => void) {
+          onOutput = callback;
+          callback(encoder.encode("kandelo$ "));
+        },
+        ptyResize() {},
+        ptyWrite(_pid: number, _data: Uint8Array) {
+          onOutput?.(encoder.encode("printf 'literal$ '\n"));
+          void finalPrompt.then(() => {
+            onOutput?.(encoder.encode("literal$ \nkandelo$ "));
+          });
+        },
+      } as any,
+    });
+    host.setDefaultShell({
+      programPath: "/bin/bash",
+      programBytes: new ArrayBuffer(0),
+      argv: ["bash", "-l", "-i"],
+      env: ["PS1=kandelo$ "],
+      cwd: "/home/user",
+    });
+
+    let completed = false;
+    const command = host.runShellCommand("printf 'literal$ '");
+    void command.then(() => {
+      completed = true;
+    });
+
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(completed).toBe(false);
+
+    releaseFinalPrompt();
+    await command;
+    expect(completed).toBe(true);
+  });
+
+  it("serializes concurrent PTY attaches for the same terminal session", async () => {
+    const encoder = new TextEncoder();
+    const decoder = new TextDecoder();
+    const callbacks = new Map<number, (data: Uint8Array) => void>();
+    const writes: Array<{ pid: number; text: string }> = [];
+    let releaseSpawn!: () => void;
+    const spawnGate = new Promise<void>((resolve) => {
+      releaseSpawn = resolve;
+    });
+    let spawnCalls = 0;
+    let nextPid = 1;
+
+    const host = new LiveKernelHost({
+      kernel: {
+        fs: makeFs({ "/etc/passwd": "" }),
+        nextPid: 1,
+        spawnFromVfs: async () => {
+          spawnCalls++;
+          await spawnGate;
+          const pid = nextPid++;
+          return { pid, exit: new Promise<number>(() => {}) };
+        },
+        onPtyOutput(pid: number, callback: (data: Uint8Array) => void) {
+          callbacks.set(pid, callback);
+          callback(encoder.encode(`spawned:${pid}\nkandelo$ `));
+        },
+        ptyResize() {},
+        ptyWrite(pid: number, data: Uint8Array) {
+          const text = decoder.decode(data);
+          writes.push({ pid, text });
+          callbacks.get(pid)?.(encoder.encode(`${text}done\nkandelo$ `));
+        },
+      } as any,
+    });
+    host.setDefaultShell({
+      programPath: "/bin/bash",
+      programBytes: new ArrayBuffer(0),
+      argv: ["bash", "-l", "-i"],
+      env: ["PS1=kandelo$ "],
+      cwd: "/home/user",
+    });
+
+    const visibleAttach = host.attachPty("/dev/pts/0", { cols: 80, rows: 24 });
+    await Promise.resolve();
+    const guideCommand = host.runShellCommand("printf guide-visible");
+    await Promise.resolve();
+    expect(spawnCalls).toBe(1);
+
+    releaseSpawn();
+    const visiblePty = await visibleAttach;
+    await guideCommand;
+
+    let visibleText = "";
+    visiblePty.onData((bytes) => {
+      visibleText += decoder.decode(bytes);
+    });
+    expect(spawnCalls).toBe(1);
+    expect(writes).toEqual([{ pid: 1, text: "printf guide-visible\n" }]);
+    expect(visibleText).toContain("spawned:1");
+    expect(visibleText).toContain("printf guide-visible");
+    expect(visibleText).toContain("done");
+  });
+
+  it("respawns stale PTY sessions without disconnecting existing listeners", async () => {
+    const encoder = new TextEncoder();
+    const decoder = new TextDecoder();
+    const callbacks = new Map<number, (data: Uint8Array) => void>();
+    const livePids = new Set<number>();
+    const writes: number[] = [];
+    let nextPid = 1;
+
+    const host = new LiveKernelHost({
+      kernel: {
+        fs: makeFs({ "/etc/passwd": "" }),
+        nextPid: 1,
+        spawnFromVfs: async () => {
+          const pid = nextPid++;
+          livePids.add(pid);
+          return { pid, exit: new Promise<number>(() => {}) };
+        },
+        enumProcs: async () => [
+          { pid: 99, ppid: 0, uid: 0, gid: 0, vsizeBytes: 1024, state: "S", comm: "dinit", cmdline: "dinit" },
+          ...Array.from(livePids).map((pid) => ({
+            pid,
+            ppid: 99,
+            uid: 1000,
+            gid: 1000,
+            vsizeBytes: 1024,
+            state: "S",
+            comm: "bash",
+            cmdline: "bash -l -i",
+          })),
+        ],
+        onPtyOutput(pid: number, callback: (data: Uint8Array) => void) {
+          callbacks.set(pid, callback);
+          callback(encoder.encode(`spawned:${pid}\nkandelo$ `));
+        },
+        ptyResize() {},
+        ptyWrite(pid: number, data: Uint8Array) {
+          writes.push(pid);
+          callbacks.get(pid)?.(encoder.encode(`write:${pid}:${decoder.decode(data)}kandelo$ `));
+        },
+      } as any,
+    });
+    host.setDefaultShell({
+      programPath: "/bin/bash",
+      programBytes: new ArrayBuffer(0),
+      argv: ["bash", "-l", "-i"],
+      env: ["PS1=kandelo$ "],
+      cwd: "/home/user",
+    });
+
+    const firstHandle = await host.attachPty("/dev/pts/0", { cols: 80, rows: 24 });
+    let seen = "";
+    firstHandle.onData((bytes) => {
+      seen += decoder.decode(bytes);
+    });
+    expect(seen).toContain("spawned:1");
+
+    livePids.delete(1);
+    const secondHandle = await host.attachPty("/dev/pts/0", { cols: 80, rows: 24 });
+    secondHandle.write("echo second\n");
+    expect(writes).toEqual([2]);
+    expect(seen).toContain("spawned:2");
+    expect(seen).toContain("write:2:echo second");
+
+    firstHandle.write("echo first\n");
+    expect(writes).toEqual([2, 2]);
+    expect(seen).toContain("write:2:echo first");
+  });
+
+  it("keeps PTY listeners connected when an exited shell respawns", async () => {
+    const encoder = new TextEncoder();
+    const decoder = new TextDecoder();
+    const callbacks = new Map<number, (data: Uint8Array) => void>();
+    const exitResolvers = new Map<number, (status: number) => void>();
+    const writes: number[] = [];
+    let nextPid = 1;
+
+    const host = new LiveKernelHost({
+      kernel: {
+        fs: makeFs({ "/etc/passwd": "" }),
+        nextPid: 1,
+        spawnFromVfs: async () => {
+          const pid = nextPid++;
+          const exit = new Promise<number>((resolve) => {
+            exitResolvers.set(pid, resolve);
+          });
+          return { pid, exit };
+        },
+        onPtyOutput(pid: number, callback: (data: Uint8Array) => void) {
+          callbacks.set(pid, callback);
+          callback(encoder.encode(`spawned:${pid}\nkandelo$ `));
+        },
+        ptyResize() {},
+        ptyWrite(pid: number, data: Uint8Array) {
+          writes.push(pid);
+          callbacks.get(pid)?.(encoder.encode(`write:${pid}:${decoder.decode(data)}kandelo$ `));
+        },
+      } as any,
+    });
+    host.setDefaultShell({
+      programPath: "/bin/bash",
+      programBytes: new ArrayBuffer(0),
+      argv: ["bash", "-l", "-i"],
+      env: ["PS1=kandelo$ "],
+      cwd: "/home/user",
+    });
+
+    const firstHandle = await host.attachPty("/dev/pts/0", { cols: 80, rows: 24 });
+    let seen = "";
+    firstHandle.onData((bytes) => {
+      seen += decoder.decode(bytes);
+    });
+    expect(seen).toContain("spawned:1");
+
+    exitResolvers.get(1)?.(0);
+    await Promise.resolve();
+    await Promise.resolve();
+
+    const secondHandle = await host.attachPty("/dev/pts/0", { cols: 80, rows: 24 });
+    secondHandle.write("echo after-exit\n");
+    expect(writes).toEqual([2]);
+    expect(seen).toContain("spawned:2");
+    expect(seen).toContain("write:2:echo after-exit");
+
+    firstHandle.write("echo old-handle\n");
+    expect(writes).toEqual([2, 2]);
+    expect(seen).toContain("write:2:echo old-handle");
   });
 });
 
@@ -359,6 +720,38 @@ describe("LiveKernelHost: surface availability", () => {
     host.setWebPreview(null);
 
     expect(host.getSurfaceAvailability().web).toBe(false);
+  });
+
+  it("tracks web preview pending requests without affecting availability", () => {
+    const host = new LiveKernelHost();
+    const seen: number[] = [];
+    host.setWebPreview({
+      label: "WordPress",
+      url: "/app/",
+      status: "running",
+    });
+    host.subscribeWebPreview((state) => {
+      seen.push(state?.pendingRequests ?? 0);
+    });
+
+    host.setWebPreviewPendingRequests(2);
+
+    expect(host.getWebPreview()?.pendingRequests).toBe(2);
+    expect(host.getSurfaceAvailability().web).toBe(true);
+    expect(seen).toEqual([2]);
+
+    host.setWebPreview({
+      label: "WordPress",
+      url: "/app/",
+      status: "running",
+      message: "HTTP bridge ready",
+    });
+
+    expect(host.getWebPreview()?.pendingRequests).toBe(2);
+
+    host.setWebPreviewPendingRequests(-1);
+
+    expect(host.getWebPreview()?.pendingRequests).toBe(0);
   });
 });
 
@@ -548,7 +941,10 @@ describe("Kandelo demo config", () => {
     expect(guide).toEqual(nodeGuide());
     expect(guide?.title).toBe("SpiderMonkey Node.js demo");
     expect(guide?.groups?.[0].actions.map((action) => action.id)).toContain("install-cowsay");
-    expect(builtinDemoGuide("wordpress-sqlite")).toBeNull();
+    expect(builtinDemoGuide("wordpress-sqlite")?.groups?.[0].actions[0]).toMatchObject({
+      id: "wp-admin-login",
+      kind: "web.wordpressLogin",
+    });
   });
 
   it("provides built-in presentation and assets for stale VFS images", () => {

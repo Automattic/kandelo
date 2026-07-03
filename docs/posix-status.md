@@ -13,9 +13,9 @@ This document tracks the implementation status of POSIX APIs in Kandelo. It is o
 
 ---
 
-## Architecture: Centralized Kernel Model
+## Architecture: Shared Kernel Model
 
-Kandelo uses a **centralized architecture**: a single kernel Wasm instance holds a `ProcessTable` and serves all process workers via channel IPC (`Atomics.waitAsync`).
+Kandelo uses a single kernel Wasm instance that holds a `ProcessTable` and serves all process workers via channel IPC (`Atomics.waitAsync`).
 
 **Key properties:**
 - **Single kernel instance** with a `ProcessTable` mapping PIDs to `Process` structs
@@ -47,7 +47,7 @@ Kandelo uses a **centralized architecture**: a single kernel Wasm instance holds
 | `dup()` | Full | Lowest available fd. FD_CLOEXEC cleared. Shares OFD with original. |
 | `dup2()` | Full | Atomic close-and-dup. Same-fd no-op. FD_CLOEXEC cleared. |
 | `dup3()` | Full | Like dup2 but returns EINVAL if oldfd==newfd. Supports O_CLOEXEC flag. |
-| `pipe()` | Partial | Kernel-space ring buffer (64KB). PIPE_BUF=4096 atomicity guaranteed by centralized kernel (serialized syscalls). O_NONBLOCK enforced (EAGAIN). Cross-process pipes work naturally via shared OFD table after fork. |
+| `pipe()` | Partial | Kernel-space ring buffer (64KB). PIPE_BUF=4096 atomicity guaranteed by serialized syscalls in the kernel. O_NONBLOCK enforced (EAGAIN). Cross-process pipes work naturally via shared OFD table after fork. |
 | `pipe2()` | Full | Like pipe with O_NONBLOCK and O_CLOEXEC flag support. |
 | `readv()` | Full | Scatter read. Iterates over iovec array calling sys_read for each buffer. Stops on short read or EOF. |
 | `writev()` | Full | Gather write. Iterates over iovec array calling sys_write for each buffer. Stops on short write. |
@@ -91,7 +91,7 @@ Kandelo uses a **centralized architecture**: a single kernel Wasm instance holds
 | `F_SETFL` | Full | Only O_APPEND, O_NONBLOCK modifiable. Access mode bits preserved. |
 | `F_GETLK` | Full | Advisory record locking. Returns blocking lock info or F_UNLCK if no conflict. Locks released on close() and exit() per POSIX. |
 | `F_SETLK` | Full | Non-blocking lock acquisition. Returns EAGAIN on conflict. Read/write access mode validated. Locks released on close() and exit() per POSIX. |
-| `F_SETLKW` | Partial | Blocking lock acquisition. In single-process mode, behaves like F_SETLK (no contention possible). Multi-process blocking not yet implemented. No deadlock detection. |
+| `F_SETLKW` | Partial | Blocking lock acquisition. Host-backed locks and in-kernel fallback locks are coordinated across processes; blocking conflicts use an internal EAGAIN retry path in the host worker until the lock is available. No deadlock detection. |
 | `F_GETOWN` | Full | Returns async I/O owner PID from OFD. Default 0. |
 | `F_SETOWN` | Full | Sets async I/O owner PID on OFD. SIGIO delivery deferred to signal delivery phase. |
 
@@ -99,9 +99,9 @@ Kandelo uses a **centralized architecture**: a single kernel Wasm instance holds
 
 | Function | Status | Notes |
 |----------|--------|-------|
-| `fork()` | Full | Centralized mode: kernel serializes full process state (FD/OFD tables, signals, environment, CWD, rlimits, brk, terminal), host spawns child Worker with copied Memory. Child resumes execution at the `fork()` call site with return value 0 via the `wpk_fork_*` instrumentation injected by `wasm-fork-instrument` (Phase 7; see [fork-instrumentation.md](fork-instrumentation.md)) — the call stack, local variables, and `__tls_base`/`__stack_pointer` are preserved across the boundary. Fork from pthread workers is supported by routing the child through the saved pthread entry function and the calling thread's fork buffer. Cross-process pipes, signals, and waitpid all functional. |
+| `fork()` | Full | The kernel serializes full process state (FD/OFD tables, signals, environment, CWD, rlimits, brk, terminal), and the host spawns a child Worker with copied Memory. Child resumes execution at the `fork()` call site with return value 0 via the `wpk_fork_*` instrumentation injected by `wasm-fork-instrument` (Phase 7; see [fork-instrumentation.md](fork-instrumentation.md)) — the call stack, local variables, and `__tls_base`/`__stack_pointer` are preserved across the boundary. Fork from pthread workers is supported by routing the child through the saved pthread entry function and the calling thread's fork buffer. Cross-process pipes, signals, and waitpid all functional. |
 | `exec()` | Full | Kernel-initiated via SYS_EXECVE (syscall 211). Host `handleExec` reads path/argv/envp from process memory, calls `onExec` callback. Replaces process image. Preserves PID, open fds (closes CLOEXEC), environment, CWD, signal mask. **Resets** the program break (POSIX-correct); host then re-installs the new program's `__heap_base` via `kernel_set_brk_base`. |
-| `waitpid()` | Full | Kernel-internal: blocks parent until child exits (WNOHANG supported). Reaps zombie processes. Supports pid>0 (specific child), pid=-1 (any child), pid=0 (same pgid), pid<-1 (specific pgid). Returns status with WIFEXITED/WEXITSTATUS. |
+| `waitpid()` | Full | Kernel-internal: blocks parent until child exits (WNOHANG supported). Reaps zombie processes. Supports pid>0 (specific child), pid=-1 (any child), pid=0 (same pgid), pid<-1 (specific pgid). Returns normal-exit status with WIFEXITED/WEXITSTATUS and signal-death status with WIFSIGNALED/WTERMSIG. |
 | `exit()` / `_exit()` | Full | Closes all fds and dir streams, releases all fcntl locks, sets ProcessState::Exited. SIGCHLD delivered to parent. Zombie state maintained until reaped by waitpid. |
 | `getpid()` | Full | Returns pid from Process struct. |
 | `getppid()` | Full | Returns ppid (0 for init process). |
@@ -114,17 +114,17 @@ Kandelo uses a **centralized architecture**: a single kernel Wasm instance holds
 | `getsid()` | Full | Returns session ID (simulated, defaults to pid). pid=0 means self. |
 | `setsid()` | Full | Creates new session. Sets sid=pid, pgid=pid. Returns new session ID. Returns EPERM if already session leader (POSIX-compliant). |
 | `prctl()` | Partial | PR_SET_NAME and PR_GET_NAME store/retrieve thread name (16 bytes). All other operations return success (no-op). Syscall number fixed to 223 (Batch 3). |
-| `gettid()` | Partial | Returns pid for all threads. Thread TIDs are tracked in ProcessTable but the channel IPC only passes PID, so the kernel cannot distinguish which thread is calling. |
-| `set_tid_address()` | Partial | Returns pid, stores tidptr for thread exit notification. |
+| `gettid()` | Partial | Returns pid for the main thread and the host-bound worker TID for pthread workers. Remaining limitation: this is Linux-compatible rather than POSIX-standard, and not all signal/thread APIs consume TID-specific state yet. |
+| `set_tid_address()` | Partial | Returns the calling TID and stores the clear-TID pointer for thread exit notification. Host thread cleanup writes 0 and futex-wakes the address for normal pthread exit and forced cleanup paths. Robust-list handling remains deferred. |
 | `set_robust_list()` | Stub | No-op. Robust futex list tracking deferred until threading is fully tested. |
-| `futex()` | Partial | FUTEX_WAIT, FUTEX_WAKE, FUTEX_REQUEUE, FUTEX_CMP_REQUEUE, FUTEX_WAKE_OP implemented. In centralized mode, WAIT returns EAGAIN (host retries via Atomics.waitAsync). Thread workers use direct Atomics.wait. |
+| `futex()` | Partial | FUTEX_WAIT, FUTEX_WAKE, FUTEX_REQUEUE, FUTEX_CMP_REQUEUE, FUTEX_WAKE_OP implemented. Main-process WAIT returns EAGAIN so the host retries via Atomics.waitAsync. Thread workers use direct Atomics.wait. |
 | `execve()` | Full | Delegates to kernel_execve. Replaces process image. |
 | `execveat()` | Full | SYS_EXECVEAT (386). Resolves fd path via `kernel_get_fd_path`. Supports AT_EMPTY_PATH for `fexecve()`. Relative paths resolved against process CWD. |
-| `fork()` (syscall) | Full | Centralized mode: glue traps to kernel via channel IPC. Kernel serializes state, host callback spawns child Worker. Returns child pid to parent, 0 to child. Continuation across the fork boundary uses `wasm-fork-instrument`'s `wpk_fork_*` exports. |
-| `vfork()` | Full | Alias for fork() in centralized mode. |
+| `fork()` (syscall) | Full | Glue traps to the kernel via channel IPC. Kernel serializes state, host callback spawns child Worker. Returns child pid to parent, 0 to child. Continuation across the fork boundary uses `wasm-fork-instrument`'s `wpk_fork_*` exports. |
+| `vfork()` | Full | Alias for fork(). |
 | `posix_spawn()` | Full | **Non-forking implementation** (this kernel's invention; no Linux equivalent). Glue issues `SYS_SPAWN` (500) with a marshalled blob (argv + envp + file actions + spawn attrs). Host parses the blob, calls `kernel_spawn_process` to allocate a child pid + build the child Process descriptor, then invokes `onSpawn` to launch a fresh Worker. No fork, no `wpk_fork_*` rewind, no exec replay. Supports POSIX_SPAWN_SETSID / SETPGROUP / SETSIGMASK / SETSIGDEF and FDOP_OPEN / CLOSE / DUP2 / CHDIR / FCHDIR. SIG_IGN dispositions persist across the implicit exec; custom handlers reset to SIG_DFL (POSIX exec semantics). Regression-guarded: `kernel_get_fork_count` exposes a per-process counter the test suite asserts is unchanged across SYS_SPAWN. See `docs/plans/2026-05-04-non-forking-posix-spawn-design.md`. |
 | `posix_spawnp()` | Full | PATH search lives in libc (`libc/musl-overlay/src/process/wasm32posix/posix_spawnp.c`); resolves the absolute path then delegates to `posix_spawn()`. Empty PATH entries treated as `.`; defers EACCES per `__execvpe` policy. |
-| `clone()` | Partial | Thread-style clone (CLONE_VM\|CLONE_THREAD) supported. Centralized mode: kernel allocates TID, host spawns thread Worker sharing parent's Memory. Traditional mode: delegates to host_clone. |
+| `clone()` | Partial | Thread-style clone (CLONE_VM\|CLONE_THREAD) supported. The kernel allocates the TID, and the host spawns a thread Worker sharing the parent's Memory. Normal pthread return, pthread_exit, and cancellation cleanup remain per-thread and wake join/clear-TID waiters; uncaught fatal Wasm traps in a pthread worker terminate the whole process with signal-style wait status. |
 | `personality()` | Stub | Returns 0 (PER_LINUX). |
 | `unshare()` / `setns()` | Stub | Returns EPERM. No namespace support. |
 | `ptrace()` | Stub | Returns ENOSYS. |
@@ -210,6 +210,18 @@ Kandelo uses a **centralized architecture**: a single kernel Wasm instance holds
 | `fchmodat2()` | Full | Delegates to fchmodat. Extra flags parameter ignored. |
 | `getdents()` (legacy) | Full | Delegates to getdents64. |
 | `name_to_handle_at()` / `open_by_handle_at()` | Stub | Returns ENOSYS. |
+
+## Linux-Compatible Device Extensions
+
+These interfaces are intentionally Linux-shaped rather than POSIX. They live
+in the kernel because they are device and process-lifecycle contracts, not demo
+shortcuts.
+
+| Interface | Status | Notes |
+|-----------|--------|-------|
+| `/dev/dri/renderD128` | Partial | Render-node subset for `libdrm`, GBM, EGL, and GLES. GEM handles are fd-local. BO mmap offsets must come from `DRM_IOCTL_MODE_MAP_DUMB` on the same open file description. GLIO command buffers live in process memory and are unbound on `munmap`, `exec`, `exit`, and final fd close. |
+| `/dev/dri/card0` | Partial | Single virtual KMS device with one connector, encoder, and CRTC. Supports dumb buffers, `ADDFB2`/`RMFB`, DRM master, `SET_CRTC`, `PAGE_FLIP`, vblank event reads, and host-provided mode info for the attached KMS canvas. Multi-head, real display probing, PRIME dma-buf fds, and hardware acceleration are out of scope for v1. |
+| Sysroot graphics libraries | Partial | `scripts/build-musl.sh` builds `libdrm.a`, `libgbm.a`, `libEGL.a`, and `libGLESv2.a` into `sysroot/lib` with pkg-config files. Packages consume these via `wasm32posix-pkg-config`; the libraries are not standalone package outputs. |
 
 ## Socket Operations
 
@@ -377,8 +389,8 @@ Systematic audit of all subsystems against POSIX specifications. Gaps are catego
 | Gap | Subsystem | Description |
 |-----|-----------|-------------|
 | **EINTR partially implemented** | all | read, write, recv, poll, select return EINTR when a signal is pending during a blocking wait. close() and other non-blocking syscalls do not check. Tied to signal handler invocation gap. |
-| ~~**PIPE_BUF atomicity not enforced**~~ | pipe | **Resolved.** Naturally atomic in centralized mode — syscalls are serialized, so concurrent writes ≤ PIPE_BUF cannot interleave. |
-| ~~**O_APPEND not atomic**~~ | write | **Resolved.** Naturally atomic in centralized mode — syscalls are serialized, so seek-to-end + write cannot be interrupted by another process. |
+| ~~**PIPE_BUF atomicity not enforced**~~ | pipe | **Resolved.** Syscalls are serialized through the kernel, so concurrent writes ≤ PIPE_BUF cannot interleave. |
+| ~~**O_APPEND not atomic**~~ | write | **Resolved.** Syscalls are serialized through the kernel, so seek-to-end + write cannot be interrupted by another process. |
 | ~~**sigaction() missing sa_flags**~~ | signals | **Resolved.** SA_RESTART supported (auto-restart blocking syscalls). sa_flags and sa_mask stored. SA_SIGINFO handler delivery with siginfo_t. SA_NOCLDWAIT auto-reaps children. SA_NOCLDSTOP accepted but not acted upon (no job control). |
 | ~~**No signal queuing**~~ | signals | **Resolved.** RT signals (32-63) are now queued in a VecDeque; standard signals (1-31) remain coalesced per POSIX. |
 | ~~**`*at()` functions with real dirfd**~~ | filesystem | **Resolved.** All *at() syscalls now support real dirfd via stored OFD paths. |
@@ -393,7 +405,7 @@ Systematic audit of all subsystems against POSIX specifications. Gaps are catego
 | ~~**realpath() no symlink resolution**~~ | filesystem | **Resolved.** Now resolves symlinks via iterative lstat/readlink with ELOOP after 40 resolutions. |
 | **Socket options partially no-op** | socket | SO_REUSEADDR affects UDP bind conflicts. SO_KEEPALIVE, SO_LINGER, SO_BROADCAST, SO_RCVTIMEO, SO_SNDTIMEO, TCP_NODELAY are accepted/stored but have limited or no effect on data transfer. |
 | **POLLERR partial** | I/O multiplex | poll() reports UDP pending socket errors and stream shutdown/error cases. Some edge cases remain implementation-defined. |
-| **pread/pwrite not multi-process safe** | I/O | Uses save/seek/read/restore pattern — safe in single process but races with shared OFDs across processes. |
+| **pread/pwrite not multi-process safe** | I/O | Uses save/seek/read/restore pattern — safe only when no other process shares the OFD, but races with shared OFDs across processes. |
 | ~~**brk not inherited on fork**~~ | memory | **Resolved.** Program break serialized/deserialized in fork state. (`exec` reset is intentional per POSIX; host re-installs from new program's `__heap_base`.) |
 | ~~**VMIN/VTIME not interpreted**~~ | terminal | **Partially resolved.** VMIN/VTIME values accessible via TerminalState methods. Full VMIN/VTIME read semantics for raw mode are approximated. |
 | ~~**ICANON no line buffering**~~ | terminal | **Resolved.** ICANON mode now buffers input with line editing: VERASE (backspace), VKILL (^U), VEOF (^D). ICRNL/INLCR/IGNCR input processing and ECHO/ECHOE/ECHOK/ECHONL echo handling. |
@@ -406,7 +418,7 @@ Systematic audit of all subsystems against POSIX specifications. Gaps are catego
 | Gap | Subsystem | Reason |
 |-----|-----------|--------|
 | **mprotect() is a no-op** | memory | Returns success but does not enforce. Wasm linear memory has no page-level protection. |
-| **No cross-process MAP_SHARED** | memory | MAP_SHARED works within a single process (file-backed, with msync writeback). Cross-process shared memory would require SharedArrayBuffer coordination. |
+| **No cross-process MAP_SHARED** | memory | MAP_SHARED works within one process address space (file-backed, with msync writeback). Cross-process shared memory would require SharedArrayBuffer coordination. |
 | **External raw UDP routes** | socket | AF_INET SOCK_DGRAM has POSIX-style in-kernel loopback/virtual semantics, but browsers cannot expose raw UDP and Node raw UDP is not yet wired behind HostIO. Non-loopback UDP routes currently return ENETUNREACH unless a future host backend/proxy handles them. |
 | **Setuid/setgid enforcement** | process | Single-user Wasm environment; privilege checks simulated only. |
 | **Permission checks** | filesystem | Delegated to host. Kernel does not independently verify file permissions. |
@@ -415,12 +427,12 @@ Systematic audit of all subsystems against POSIX specifications. Gaps are catego
 
 ### Future Work — Remaining items
 
-**Threading (functional in centralized mode):**
+**Threading:**
 - `clone()` — CLONE_VM|CLONE_THREAD: kernel allocates TID, host spawns thread Worker sharing parent's Memory. TLS initialization via `__wasm_thread_init` export.
 - `gettid()` — returns actual TID for threads, pid for main thread
 - `set_tid_address()` — stores tidptr; kernel writes 0 + futex-wakes on thread exit (CLONE_CHILD_CLEARTID)
 - `futex()` — WAIT/WAKE/REQUEUE/CMP_REQUEUE/WAKE_OP implemented; main-process WAIT returns EAGAIN (host retries via Atomics.waitAsync), thread workers use direct Atomics.wait
-- `pthread_create` — works via clone(). Basic pthreads tested (mutex, join). Cancellation not supported.
+- `pthread_create` — works via clone(). Basic pthreads tested (mutex, join). Normal thread return, `pthread_exit`, and cancellation cleanup are per-thread; uncaught fatal Wasm traps in a pthread worker are process-fatal and visible to parent `waitpid()` as signal termination. Cancellation remains limited; see the Wasm-inherent gaps below.
 
 **Hard / Architectural:**
 - Cross-process MAP_SHARED mmap (would need SharedArrayBuffer coordination between workers)
@@ -428,7 +440,7 @@ Systematic audit of all subsystems against POSIX specifications. Gaps are catego
 - SA_NOCLDWAIT / SA_NOCLDSTOP (stored but not acted upon; waitpid is host-delegated)
 - Full VMIN/VTIME raw mode semantics (timer-based timeout)
 
-**Centralized architecture advantages (already free):**
+**Shared-kernel advantages (already free):**
 - O_APPEND atomicity (serialized syscalls)
 - PIPE_BUF atomicity (serialized syscalls)
 - Cross-process eventfd/pipe/epoll sharing via shared OFD table
@@ -544,14 +556,14 @@ Target use case: hosting PHP-WASM (as used by WordPress Playground) on this kern
 | ~~`connect()` for AF_INET~~ | socket | **Done.** Host-delegated TCP networking. bind/listen/accept/connect/send/recv all functional. Node.js backend uses `net` module; browser backend uses fetch for HTTP. | ~~Hard~~ |
 | ~~`getaddrinfo()` / `gethostbyname()`~~ | DNS | **Done.** Host-delegated via `host_getaddrinfo` import. Returns AF_INET sockaddr_in. `/etc/hosts` is served from the canonical `rootfs.vfs` mount at `/` for localhost resolution. | ~~Medium~~ |
 | ~~`setsockopt()` expansion~~ | socket | **Done.** SO_KEEPALIVE, TCP_NODELAY, SO_REUSEADDR, SO_LINGER, and many more stored. | ~~Easy~~ |
-| ~~Async socket polling bridge~~ | socket | **Done.** poll/select/epoll all work with socket fds. Centralized mode: kernel checks readiness inline. | ~~Medium~~ |
+| ~~Async socket polling bridge~~ | socket | **Done.** poll/select/epoll all work with socket fds. The kernel checks readiness inline. | ~~Medium~~ |
 
 ### Phase C — Process management (enables wp-cli, Composer, PHPUnit)
 
 | Gap | Subsystem | Description | Difficulty |
 |-----|-----------|-------------|------------|
-| ~~Guest-initiated `fork()`~~ | process | **Done.** fork() works as a kernel syscall in centralized mode. Children re-execute from `_start` with forked state. Cross-process pipes and signals functional. | ~~Hard~~ |
-| ~~**Guest-initiated `exec()`**~~ | process | **Done.** exec() wired as SYS_EXECVE (syscall 211) in centralized mode. Host `handleExec` reads path/argv/envp from process memory, calls `onExec` callback. Fork+exec tested. | ~~Hard~~ |
+| ~~Guest-initiated `fork()`~~ | process | **Done.** fork() works as a kernel syscall. Children re-execute from `_start` with forked state. Cross-process pipes and signals functional. | ~~Hard~~ |
+| ~~**Guest-initiated `exec()`**~~ | process | **Done.** exec() wired as SYS_EXECVE (syscall 211). Host `handleExec` reads path/argv/envp from process memory, calls `onExec` callback. Fork+exec tested. | ~~Hard~~ |
 | ~~Blocking pipe reads with timeout~~ | pipe | **Done.** Pipes support blocking reads/writes with EINTR on signal delivery. O_NONBLOCK returns EAGAIN. | ~~Medium~~ |
 
 ### Phase D — Browser persistence + PHP compilation
@@ -628,5 +640,5 @@ without it catch handlers are dead-code-eliminated and `throw` hangs.
 
 Regression gate: `programs/cpp_throw_test.cpp` exercises throw → catch
 in a single program; `host/test/cpp-throw-test.test.ts` runs it via the
-centralized harness. The gap was first surfaced by the SpiderMonkey EH
+kernel harness. The gap was first surfaced by the SpiderMonkey EH
 spike (see external `memory/spidermonkey-spike-eh-toolchain-gap.md`).

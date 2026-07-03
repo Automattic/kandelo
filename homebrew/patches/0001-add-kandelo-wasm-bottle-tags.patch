@@ -1,0 +1,98 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Kandelo <noreply@kandelo.invalid>
+Date: Thu, 25 Jun 2026 00:00:00 +0000
+Subject: [PATCH] Add Kandelo Wasm bottle tags
+
+Teach Homebrew's bottle tag parser about wasm32 and wasm64 as CPU
+architectures, let trusted Kandelo bottle jobs select a wasm bottle tag through
+HOMEBREW_KANDELO_BOTTLE_TAG, and give the Kandelo pseudo-system the Linuxbrew
+prefix and cellar defaults. This lets formula bottle blocks, bottle JSON merge,
+and install-time tag selection round-trip tags such as :wasm32_kandelo and
+:wasm64_kandelo without treating "wasm32_kandelo" as an x86_64 system name.
+---
+ Library/Homebrew/extend/os/mac/utils/bottles.rb | 4 ++++
+ Library/Homebrew/hardware.rb                    | 4 ++++
+ Library/Homebrew/utils/bottles.rb               | 15 +++++++++++++--
+ 3 files changed, 23 insertions(+), 2 deletions(-)
+
+diff --git a/Library/Homebrew/extend/os/mac/utils/bottles.rb b/Library/Homebrew/extend/os/mac/utils/bottles.rb
+index 0000000000..0000000000 100644
+--- a/Library/Homebrew/extend/os/mac/utils/bottles.rb
++++ b/Library/Homebrew/extend/os/mac/utils/bottles.rb
+@@ -7,6 +7,10 @@ module OS
+         sig { params(tag: T.nilable(T.any(Symbol, Utils::Bottles::Tag))).returns(Utils::Bottles::Tag) }
+         def tag(tag = nil)
+           if tag.nil?
++            if (kandelo_tag = ENV["HOMEBREW_KANDELO_BOTTLE_TAG"] || ENV["KANDELO_HOMEBREW_BOTTLE_TAG"]) &&
++               !kandelo_tag.empty?
++              return Utils::Bottles::Tag.from_symbol(kandelo_tag.to_sym)
++            end
+             Utils::Bottles::Tag.new(system: MacOS.version.to_sym, arch: ::Hardware::CPU.arch)
+           else
+             super
+diff --git a/Library/Homebrew/hardware.rb b/Library/Homebrew/hardware.rb
+index 0000000000..0000000000 100644
+--- a/Library/Homebrew/hardware.rb
++++ b/Library/Homebrew/hardware.rb
+@@ -12,8 +12,12 @@ module Hardware
+     PPC_ARCHS         = T.let((PPC_32BIT_ARCHS + PPC_64BIT_ARCHS).freeze, T::Array[Symbol])
+     ARM_64BIT_ARCHS   = [:arm64, :aarch64].freeze
+     ARM_ARCHS         = ARM_64BIT_ARCHS
++    WASM_32BIT_ARCHS  = [:wasm32].freeze
++    WASM_64BIT_ARCHS  = [:wasm64].freeze
++    WASM_ARCHS        = T.let((WASM_32BIT_ARCHS + WASM_64BIT_ARCHS).freeze, T::Array[Symbol])
+     ALL_ARCHS = T.let([
+       *INTEL_ARCHS,
+       *PPC_ARCHS,
+       *ARM_ARCHS,
++      *WASM_ARCHS,
+     ].freeze, T::Array[Symbol])
+diff --git a/Library/Homebrew/utils/bottles.rb b/Library/Homebrew/utils/bottles.rb
+index 0000000000..0000000000 100644
+--- a/Library/Homebrew/utils/bottles.rb
++++ b/Library/Homebrew/utils/bottles.rb
+@@ -20,9 +20,14 @@
+         when Tag
+           tag
+         else
+-          @tag ||= T.let(Tag.new(
+-                           system: HOMEBREW_SYSTEM.downcase.to_sym,
+-                           arch:   HOMEBREW_PROCESSOR.downcase.to_sym,
+-                         ), T.nilable(Tag))
++          if (kandelo_tag = ENV["HOMEBREW_KANDELO_BOTTLE_TAG"] || ENV["KANDELO_HOMEBREW_BOTTLE_TAG"]) &&
++             !kandelo_tag.empty?
++            Tag.from_symbol(kandelo_tag.to_sym)
++          else
++            @tag ||= T.let(Tag.new(
++                             system: HOMEBREW_SYSTEM.downcase.to_sym,
++                             arch:   HOMEBREW_PROCESSOR.downcase.to_sym,
++                           ), T.nilable(Tag))
++          end
+         end
+       end
+@@ -257,7 +262,12 @@ module Utils
+       sig { returns(T::Boolean) }
+       def macos?
+         MacOSVersion::SYMBOLS.key?(system)
+       end
+-
++
++      sig { returns(T::Boolean) }
++      def kandelo?
++        system == :kandelo
++      end
++
+       sig { returns(T::Boolean) }
+       def valid_combination?
+@@ -273,2 +279,4 @@ module Utils
+-        if linux?
++        if kandelo?
++          "/home/linuxbrew/.linuxbrew"
++        elsif linux?
+           T.must(HOMEBREW_LINUX_DEFAULT_PREFIX)
+@@ -284,2 +292,4 @@ module Utils
+-        if linux?
++        if kandelo?
++          "/home/linuxbrew/.linuxbrew/Cellar"
++        elsif linux?
+           Homebrew::DEFAULT_LINUX_CELLAR

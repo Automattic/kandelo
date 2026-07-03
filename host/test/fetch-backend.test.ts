@@ -1,6 +1,6 @@
 import { afterEach, describe, it, expect, vi } from "vitest";
 import { FetchNetworkBackend, EagainError } from "../src/networking/fetch-backend";
-import { TlsNetworkBackend } from "../src/networking/tls-network-backend";
+import { TlsNetworkBackend, type TlsMitmConnection } from "../src/networking/tls-network-backend";
 
 const encoder = new TextEncoder();
 const decoder = new TextDecoder();
@@ -44,6 +44,43 @@ async function recvWhenReady(
     }
   }
   throw new Error("timed out waiting for response");
+}
+
+/**
+ * Loopback stand-in for the TLS 1.2 server engine. The real engine encrypts the
+ * server's plaintext response asynchronously before it surfaces on
+ * clientEnd.downstream; forwarding each record a macrotask late reproduces that
+ * ordering — the window in which the EOF race surfaced.
+ */
+class LoopbackMitmTls implements TlsMitmConnection {
+  clientEnd = {
+    upstream: new TransformStream<Uint8Array, Uint8Array>(),
+    downstream: new TransformStream<Uint8Array, Uint8Array>(),
+  };
+  serverEnd = {
+    upstream: new TransformStream<Uint8Array, Uint8Array>(),
+    downstream: new TransformStream<Uint8Array, Uint8Array>(),
+  };
+
+  constructor() {
+    const encrypted = this.clientEnd.downstream.writable.getWriter();
+    this.serverEnd.downstream.readable
+      .pipeTo(
+        new WritableStream({
+          async write(chunk) {
+            await new Promise((resolve) => setTimeout(resolve, 0));
+            await encrypted.write(chunk);
+          },
+          async close() {
+            await encrypted.close();
+          },
+        }),
+      )
+      .catch(() => {});
+  }
+
+  async TLSHandshake(): Promise<void> {}
+  async close(): Promise<void> {}
 }
 
 describe("FetchNetworkBackend", () => {
@@ -181,5 +218,35 @@ describe("TlsNetworkBackend HTTP proxy path", () => {
     expect(response.toLowerCase()).not.toContain("content-length: 999");
     expect(response.toLowerCase()).not.toContain("content-encoding");
     expect(response.toLowerCase()).not.toContain("connection: close");
+  });
+});
+
+describe("TlsNetworkBackend TLS MITM path", () => {
+  it("delivers the full response to recv() before reporting EOF", async () => {
+    const body = "mitm-response-body";
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(
+        new Response(body, { headers: { "content-type": "text/plain" } }),
+      ),
+    );
+
+    let tls!: LoopbackMitmTls;
+    const backend = new TlsNetworkBackend({
+      createTlsConnection: () => (tls = new LoopbackMitmTls()),
+    });
+    await backend.init();
+
+    const addr = backend.getaddrinfo("example.com");
+    backend.connect(1, addr, 443);
+
+    // Stand in for the TLS engine handing the decrypted request to the backend.
+    await tls.serverEnd.upstream.writable
+      .getWriter()
+      .write(encoder.encode("GET /readme HTTP/1.1\r\nHost: example.com\r\n\r\n"));
+
+    const response = decoder.decode(await recvWhenReady(backend, 1));
+    expect(response).toContain("200");
+    expect(response).toContain(body);
   });
 });

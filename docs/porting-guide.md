@@ -56,7 +56,12 @@ for the full transform and ABI.
 
 **Thread support**: Programs that create threads (MariaDB, Redis) work via the kernel's `clone()` syscall. No special compilation flags needed, but the host runner must implement the `onClone` callback.
 
-**C++ and libc++**: For C++ programs, include libc++ headers from your LLVM installation. Set `_LIBCPP_HAS_MUSL_LIBC=1` and `_LIBCPP_HAS_THREAD_API_PTHREAD=1` in a `__config_site` header. See `packages/registry/mariadb/build-mariadb.sh` for a complete example.
+**C++ and libc++**: For C++ programs, depend on the `libcxx` package and
+compile against its resolved headers and libraries, normally symlinked into
+the Kandelo sysroot by the consuming package build script. Do not copy libc++
+headers from an arbitrary host LLVM install; the libcxx package generates and
+ships a version-matched header tree with its `libc++.a` and `libc++abi.a`.
+See `packages/registry/mariadb/build-mariadb.sh` for a complete example.
 
 ### Step 3: Test it
 
@@ -379,7 +384,7 @@ const [kernelBuf, vfsImageBuf] = await Promise.all([
 // Restore filesystem from image (single buffer copy — fast)
 const memfs = MemoryFileSystem.fromImage(
   new Uint8Array(vfsImageBuf),
-  { maxByteLength: 512 * 1024 * 1024 },  // allow growth
+  { maxByteLength: 512 * 1024 * 1024 },  // allow growth up to the image's filesystem max
 );
 
 // Create kernel with pre-populated filesystem
@@ -702,6 +707,49 @@ hardcoding it.
   their paths via `WASM_POSIX_DEP_<NAME>_DIR` / `_SRC_DIR`. Hidden
   source-tree reads break on clean force-rebuild runs.
 
+## Homebrew Formula Authoring
+
+Homebrew formulae are a second publication surface for already-ported Kandelo
+software. Keep the portable package recipe and build script in
+`packages/registry/<name>/`; put Homebrew-specific formula state in the
+`Automattic/kandelo-homebrew` tap. The main repository's
+`homebrew/kandelo-homebrew/` directory is a template and fixture for that tap
+shape.
+
+Formulae should use normal Homebrew DSL and call the normal Kandelo build path:
+
+- build through the worktree-local SDK, usually by invoking the package's
+  existing `packages/registry/<name>/build-*.sh` script;
+- keep cross-compile truth in the package build script with explicit
+  `ac_cv_*` cache variables when upstream `configure` would otherwise detect
+  host features;
+- install the produced Wasm files into the Homebrew keg, not into Kandelo's
+  resolver cache;
+- put `test do` coverage through Kandelo, for example by running the produced
+  Wasm with `examples/run-example.ts`, not by executing it as a host binary;
+- leave VFS link plans, browser compatibility, provenance, and validation
+  evidence to generated `Kandelo/` sidecars.
+
+Formula Ruby should use `HOMEBREW_KANDELO_*` environment variables for values
+that must pass through Homebrew's environment handling:
+
+```text
+HOMEBREW_KANDELO_ROOT
+HOMEBREW_KANDELO_ARCH
+HOMEBREW_KANDELO_NODE
+HOMEBREW_KANDELO_LLVM_BIN
+```
+
+Workflow scripts outside Formula Ruby use `KANDELO_HOMEBREW_*` variables. See
+[docs/homebrew-publishing.md](homebrew-publishing.md) for the trusted publish,
+sidecar, VFS builder, Node smoke, and browser smoke contract.
+
+Do not document user-facing `brew tap` or guest `brew install` steps for a
+formula until that guest install path has been validated through Kandelo. A
+published bottle plus a successful Node VFS smoke proves the bottle can be
+poured into a precomposed image; browser support additionally requires the
+browser smoke and `browser_compatible = true` metadata.
+
 ## Existing Build Scripts
 
 All build scripts are in `packages/registry/`. They serve as reference implementations:
@@ -722,9 +770,42 @@ All build scripts are in `packages/registry/`. They serve as reference implement
 | libxml2 | `packages/registry/libxml2/build-libxml2.sh` | CMake | Dependency for PHP |
 | OpenSSL | `packages/registry/openssl/build-openssl.sh` | custom Configure | Dependency for PHP |
 
+## SQLite Official Project Tests
+
+SQLite's upstream `test/testrunner.tcl` permutations can be run through
+Kandelo with `scripts/run-sqlite-project-unit-tests.sh`. The wrapper runs the
+existing official test runner on the Node host, the browser host, or both, and
+writes per-host artifacts plus `combined-summary.md` under `test-runs/`.
+
+Build the Tcl and SQLite testfixture prerequisites first:
+
+```bash
+bash packages/registry/tcl/build-tcl.sh
+bash packages/registry/sqlite/build-testfixture.sh
+```
+
+Then run the harness:
+
+```bash
+scripts/run-sqlite-project-unit-tests.sh --host both --permutation full
+```
+
+Use `--explain` to ask SQLite's testrunner to print the planned jobs without
+starting a full permutation run. Browser runs launch the SQLite-only demo page
+through Vite with `KANDELO_BROWSER_DEMO_INPUTS=sqlite-test` and disable HMR
+with `KANDELO_BROWSER_TEST_NO_HMR=1` so long test runs do not churn on
+artifact writes.
+
 ## Troubleshooting
 
 **"sysroot not found"**: Run `bash scripts/build-musl.sh` first.
+
+**Graphics shim libraries missing**: Programs using DRM/KMS/GBM/EGL/GLES link
+against sysroot libraries built by `scripts/build-musl.sh`. Rebuild the sysroot
+with `scripts/dev-shell.sh bash scripts/build-musl.sh`, then use
+`wasm32posix-pkg-config --cflags --libs libdrm gbm egl glesv2` from the package
+build script. Do not vendor these libraries into the package archive; package
+the resulting program or VFS image instead.
 
 **"kandelo-kernel.wasm not found"**: Run `bash build.sh` first.
 
@@ -733,7 +814,7 @@ through `scripts/run-wasm-fork-instrument.sh`. Fork-using programs must export
 the complete `wpk_fork_*` set. Legacy Asyncify artifacts are intentionally not
 accepted. See [fork-instrumentation.md](fork-instrumentation.md).
 
-**"Maximum call stack size exceeded" in browser**: The program's fork-path closure (as discovered by `wasm-fork-instrument`) is large. This is rare — the tool instruments only fork-reachable functions, not the whole module. If it happens, check whether `call_indirect` is pulling in a much broader closure than expected (the indirect-call closure is conservative; signatures alone determine reach).
+**"Maximum call stack size exceeded" in browser**: The program's fork-path closure (as discovered by `wasm-fork-instrument --discover-only`) is large. This is rare — the tool instruments only fork-reachable functions, not the whole module. If it happens, check whether `call_indirect` is pulling in a much broader closure than expected. Literal table indexes are checked against active element slots, but dynamic indexes, passive `table.init`, and dynamic table writes remain conservative.
 
 **Process hangs on read**: The fd might be in blocking mode waiting for data. Check that writers are properly closing their end of the pipe.
 

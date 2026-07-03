@@ -14,14 +14,14 @@
  *   - audioSampleRate() / audioChannels() report what audiotest configured
  *   - drainAudio() returns the same 256 bytes the program wrote
  *
- * Runs in centralized worker mode (single shared kernel, per-process
- * worker) — same harness as mouse-integration.test.ts.
+ * Runs with the shared kernel and one worker per process — same harness as
+ * mouse-integration.test.ts.
  */
 import { describe, it, expect } from "vitest";
 import { existsSync, readFileSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
-import { CentralizedKernelWorker } from "../src/kernel-worker";
+import { CAPTURED_STDIO, CentralizedKernelWorker } from "../src/kernel-worker";
 import { NodePlatformIO } from "../src/platform/node";
 import { NodeWorkerAdapter } from "../src/worker-adapter";
 import { detectPtrWidth } from "../src/constants";
@@ -102,7 +102,7 @@ describe.skipIf(!existsSync(audiotestBinary))("audio integration", () => {
     memory.grow(MAX_PAGES - 17);
     new Uint8Array(memory.buffer, channelOffset, CH_TOTAL_SIZE).fill(0);
 
-    kernel.registerProcess(pid, memory, [channelOffset], { ptrWidth });
+    kernel.registerProcess(pid, memory, [channelOffset], { ptrWidth, stdio: CAPTURED_STDIO });
 
     const initData: CentralizedWorkerInitMessage = {
       type: "centralized_init",

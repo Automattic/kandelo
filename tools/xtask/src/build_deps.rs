@@ -978,8 +978,8 @@ pub struct ResolveOpts<'a> {
     /// `None` means "no force rebuild" (the default for every consumer
     /// other than the manual workflow). `local_libs` still wins over
     /// force_source_build (a hand-patched override is always honored).
-    /// The single-process resolver assumes no concurrent peers during
-    /// a force rebuild — see `build_into_cache`'s atomic-install comment.
+    /// A force rebuild assumes no concurrent resolver invocation for
+    /// the same package -- see `build_into_cache`'s atomic-install comment.
     pub force_source_build: Option<&'a BTreeSet<String>>,
     /// Refuse any source build or source fetch fallback. Used by CI
     /// binary-materialization gates, where package bytes must come from
@@ -1443,11 +1443,10 @@ fn ensure_built_uncached(
         // Place binaries/programs/<arch>/<output> symlinks for each
         // program dep so consumer build scripts can find them via
         // `tryResolveBinary("programs/<x>.wasm")`. Only kicks in when
-        // the caller (cmd_resolve under --binaries-dir) opted in;
-        // other ensure_built consumers (archive-stage, tests) leave
-        // binaries_dir = None and no symlinks land. Library deps and
-        // source deps are linked at compile time via WASM_POSIX_DEP_*
-        // env vars and don't need a binaries/ entry.
+        // the caller opts in with binaries_dir; other ensure_built
+        // consumers leave binaries_dir = None and no symlinks land.
+        // Library deps and source deps are linked at compile time via
+        // WASM_POSIX_DEP_* env vars and don't need a binaries/ entry.
         if let Some(bdir) = opts.binaries_dir {
             if matches!(dep_m.kind, ManifestKind::Program) && !dep_m.program_outputs.is_empty() {
                 place_binaries_symlinks(&dep_m, &dep_path, bdir, dep_arch)?;

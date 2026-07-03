@@ -73,7 +73,7 @@ jobs:
       package_staging_reason: ${{ steps.scope.outputs.package_staging_reason }}
       skip_staging_tests: ${{ steps.skip.outputs.skip_staging_tests }}
     steps:
-      - uses: actions/checkout@v6.0.2
+      - uses: actions/checkout@v7.0.0
         with:
           ref: ${{ github.event.pull_request.head.sha }}
           fetch-depth: 0
@@ -117,7 +117,7 @@ jobs:
       target_tag: ${{ steps.compute.outputs.target_tag }}
       baseline_tag: ${{ steps.compute.outputs.baseline_tag }}
     steps:
-      - uses: actions/checkout@v6.0.2
+      - uses: actions/checkout@v7.0.0
         with:
           ref: ${{ github.event.pull_request.head.sha }}
 
@@ -146,7 +146,7 @@ jobs:
         run: bash scripts/dev-shell.sh true
 
       - name: Cache xtask build
-        uses: actions/cache@v5
+        uses: actions/cache@v5.0.5
         with:
           path: |
             ~/.cargo/registry
@@ -169,6 +169,7 @@ jobs:
         run: |
           bash scripts/dev-shell.sh bash -c '
             set -euo pipefail
+            PACKAGE_STAGING_REQUIRED="${{ needs.change-scope.outputs.package_staging_required }}"
 
             ABI=$(grep -oE "ABI_VERSION: u32 = [0-9]+" crates/shared/src/lib.rs | awk "{print \$4}")
             echo "abi=$ABI" >> "$GITHUB_OUTPUT"
@@ -177,6 +178,14 @@ jobs:
             BASELINE_TAG="binaries-abi-v${ABI}"
             echo "target_tag=$TARGET_TAG" >> "$GITHUB_OUTPUT"
             echo "baseline_tag=$BASELINE_TAG" >> "$GITHUB_OUTPUT"
+
+            if [ "$PACKAGE_STAGING_REQUIRED" != "true" ]; then
+              echo "library_matrix=[]" >> "$GITHUB_OUTPUT"
+              echo "program_matrix=[]" >> "$GITHUB_OUTPUT"
+              echo "repair_index=false" >> "$GITHUB_OUTPUT"
+              echo "preflight: package staging not required; skipping package drift matrix"
+              exit 0
+            fi
 
             # One-shot fetch of existing release assets for fast lookup.
             # Falls back to empty list if the release doesn'"'"'t exist
@@ -290,6 +299,14 @@ jobs:
               done
             done
 
+            program_matrix_file=$(mktemp)
+            printf "%s" "$program_matrix" > "$program_matrix_file"
+            program_matrix=$(cargo run --release -p xtask --target "$HOST_TARGET" --quiet -- \
+              sort-package-matrix \
+                --registry packages/registry \
+                --matrix "$program_matrix_file")
+            rm -f "$program_matrix_file"
+
             library_count=$(echo "$library_matrix" | jq length)
             program_count=$(echo "$program_matrix" | jq length)
             repair_index_output=false
@@ -377,7 +394,7 @@ jobs:
        needs.change-scope.outputs.test_gate_required == 'true')
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6.0.2
+      - uses: actions/checkout@v7.0.0
         with:
           ref: ${{ github.event.pull_request.head.sha }}
 
@@ -408,7 +425,7 @@ jobs:
         include: ${{ fromJSON(needs.preflight.outputs.library_matrix) }}
     steps:
       - id: checkout
-        uses: actions/checkout@v6.0.2
+        uses: actions/checkout@v7.0.0
         with:
           ref: ${{ github.event.pull_request.head.sha }}
 
@@ -419,6 +436,7 @@ jobs:
           package: ${{ matrix.package }}
           arch: ${{ matrix.arch }}
           build-host: ${{ github.repository }}@${{ github.sha }}
+          expected-cache-key-sha: ${{ matrix.sha }}
 
       # Atomic per-matrix-entry publish to the pr-<N>-staging tag.
       # Different state-lock subjects from durable-release, so PR
@@ -482,7 +500,7 @@ jobs:
         include: ${{ fromJSON(needs.preflight.outputs.program_matrix) }}
     steps:
       - id: checkout
-        uses: actions/checkout@v6.0.2
+        uses: actions/checkout@v7.0.0
         with:
           ref: ${{ github.event.pull_request.head.sha }}
 
@@ -493,8 +511,11 @@ jobs:
           package: ${{ matrix.package }}
           arch: ${{ matrix.arch }}
           build-host: ${{ github.repository }}@${{ github.sha }}
+          expected-cache-key-sha: ${{ matrix.sha }}
           materialize-library-overlays: ${{ needs.preflight.outputs.library_matrix != '[]' }}
-          github-token: ${{ secrets.GITHUB_TOKEN }}
+          library-matrix: ${{ needs.preflight.outputs.library_matrix }}
+          dependency-matrix: ${{ needs.preflight.outputs.program_matrix }}
+          github-token: ${{ github.token }}
 
       # Atomic per-matrix-entry publish — same flow as
       # lib-matrix-build, targeting the pr-<N>-staging tag.
@@ -541,7 +562,7 @@ jobs:
       GH_TOKEN: ${{ github.token }}
       GITHUB_REPOSITORY: ${{ github.repository }}
     steps:
-      - uses: actions/checkout@v6.0.2
+      - uses: actions/checkout@v7.0.0
         with:
           ref: ${{ github.event.pull_request.head.sha }}
 
@@ -599,7 +620,7 @@ jobs:
       PACKAGE_BASELINE_TAG: ${{ needs.preflight.outputs.baseline_tag }}
       SKIP_STAGING_TESTS: ${{ needs.change-scope.outputs.skip_staging_tests }}
     steps:
-      - uses: actions/checkout@v6.0.2
+      - uses: actions/checkout@v7.0.0
         with:
           ref: ${{ github.event.pull_request.head.sha }}
 
@@ -723,6 +744,15 @@ jobs:
             bash scripts/build-rootfs.sh
           '
 
+      - name: Prepare browser assets from package index
+        if: env.SKIP_STAGING_TESTS != 'true'
+        run: |
+          bash scripts/dev-shell.sh bash -c '
+            set -euo pipefail
+            ./run.sh --fetch-only prepare-browser
+            bash scripts/ci-check-browser-assets.sh
+          '
+
       - name: Pack prepared test workspace
         if: env.SKIP_STAGING_TESTS != 'true'
         run: |
@@ -808,7 +838,7 @@ jobs:
           fi
           echo "skip=false" >> "$GITHUB_OUTPUT"
 
-      - uses: actions/checkout@v6.0.2
+      - uses: actions/checkout@v7.0.0
         if: steps.suite.outputs.skip != 'true'
         with:
           ref: ${{ github.event.pull_request.head.sha }}
@@ -860,6 +890,16 @@ jobs:
         if: steps.suite.outputs.skip != 'true'
         run: |
           bash scripts/dev-shell.sh bash scripts/ci-run-test-suite.sh "$SUITE"
+
+      - name: Upload browser test artifacts
+        if: failure() && steps.suite.outputs.skip != 'true' && matrix.suite == 'browser'
+        uses: actions/upload-artifact@v7
+        with:
+          name: browser-test-artifacts
+          path: |
+            apps/browser-demos/test-results
+          if-no-files-found: ignore
+          retention-days: 7
 
   test-gate:
     needs: [change-scope, test-gate-prepare, test-suite]
@@ -947,7 +987,7 @@ jobs:
     env:
       GH_TOKEN: ${{ github.token }}
     steps:
-      - uses: actions/checkout@v6.0.2
+      - uses: actions/checkout@v7.0.0
         with:
           ref: ${{ github.event.pull_request.head.sha }}
 

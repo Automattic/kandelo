@@ -13,10 +13,21 @@ inputs:
   build-host:
     description: Stable build host/provenance string embedded in manifest.toml.
     required: true
+  expected-cache-key-sha:
+    description: Preflight-computed cache_key_sha this archive must carry.
+    required: true
   materialize-library-overlays:
     description: Whether to download library-wave artifacts and write package.pr.toml overlays.
     required: false
     default: "false"
+  library-matrix:
+    description: JSON library package matrix for this run; available artifacts are downloaded before program builds.
+    required: false
+    default: "[]"
+  dependency-matrix:
+    description: JSON package matrix for this run; selected direct program dependencies are downloaded before building.
+    required: false
+    default: "[]"
   github-token:
     description: Token with actions:read permission, required when materialize-library-overlays is true.
     required: false
@@ -56,13 +67,13 @@ runs:
         github-token: ""
 
     - name: Cache Nix store + flake eval
-      uses: DeterminateSystems/magic-nix-cache-action@565684385bcd71bad329742eefe8d12f2e765b39 # v13
+      uses: DeterminateSystems/magic-nix-cache-action@908b263ff629f4cc17666315b7fd3ec127c6244d # v14
       with:
         use-gha-cache: false
         use-flakehub: false
 
     - name: Download toolchain sysroots artifact
-      uses: actions/download-artifact@v4
+      uses: actions/download-artifact@v8
       with:
         name: toolchain-sysroots
         path: ${{ runner.temp }}/toolchain
@@ -79,28 +90,99 @@ runs:
           cd host && PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1 npm ci --no-audit --no-fund
         '
 
-    - name: Download library archives from lib-matrix-build
-      if: ${{ inputs.materialize-library-overlays == 'true' }}
-      uses: ./.github/actions/download-run-artifacts
-      with:
-        github-token: ${{ inputs.github-token }}
-        pattern: '*-wasm*'
-        path: ${{ runner.temp }}/lib-archives
-
-    - name: Materialize library overlays
-      if: ${{ inputs.materialize-library-overlays == 'true' }}
-      shell: bash
-      run: bash scripts/materialize-pr-overlays.sh "$RUNNER_TEMP/lib-archives"
-
-    - name: Resolve target package's transitive deps
+    - name: Resolve selected library artifacts
+      if: ${{ inputs.materialize-library-overlays == 'true' && inputs.library-matrix != '[]' }}
       shell: bash
       run: |
-        bash scripts/dev-shell.sh bash -c '
+        set -euo pipefail
+        matrix_file="$RUNNER_TEMP/library-matrix.json"
+        artifact_file="$RUNNER_TEMP/library-dependency-artifacts.txt"
+        printf '%s\n' '${{ inputs.library-matrix }}' > "$matrix_file"
+        jq -r '.[] | "\(.package)-\(.arch)"' "$matrix_file" > "$artifact_file"
+
+        if [ -s "$artifact_file" ]; then
+          while IFS= read -r artifact; do
+            if ! [[ "$artifact" =~ ^[A-Za-z0-9._-]+-wasm(32|64)$ ]]; then
+              echo "::error::invalid library artifact name from library matrix: '$artifact'"
+              exit 1
+            fi
+          done < "$artifact_file"
+          echo "selected library dependency artifacts:"
+          sed 's/^/  /' "$artifact_file"
+        else
+          echo "selected library dependency artifacts: none"
+        fi
+
+    - name: Resolve selected program dependency artifacts
+      id: program-deps
+      if: ${{ inputs.dependency-matrix != '[]' }}
+      shell: bash
+      run: |
+        set -euo pipefail
+        matrix_file="$RUNNER_TEMP/program-matrix.json"
+        artifact_file="$RUNNER_TEMP/program-dependency-artifacts.txt"
+        printf '%s\n' '${{ inputs.dependency-matrix }}' > "$matrix_file"
+        bash scripts/dev-shell.sh bash -lc '
           HOST_TARGET=$(rustc -vV | awk "/^host/ {print \$2}")
           cargo run --release -p xtask --target "$HOST_TARGET" --quiet -- \
-            build-deps --arch "${{ inputs.arch }}" --binaries-dir "$(pwd)/binaries" \
-              resolve "${{ inputs.package }}"
+            package-dependency-artifacts \
+              --registry packages/registry \
+              --matrix "$RUNNER_TEMP/program-matrix.json" \
+              --package "${{ inputs.package }}" \
+              --arch "${{ inputs.arch }}" \
+              > "$RUNNER_TEMP/program-dependency-artifacts.txt"
         '
+
+        if [ -s "$artifact_file" ]; then
+          while IFS= read -r artifact; do
+            if ! [[ "$artifact" =~ ^[A-Za-z0-9._-]+-wasm(32|64)$ ]]; then
+              echo "::error::invalid dependency artifact name from package-dependency-artifacts: '$artifact'"
+              exit 1
+            fi
+          done < "$artifact_file"
+          echo "has-dependencies=true" >> "$GITHUB_OUTPUT"
+          echo "selected program dependency artifacts:"
+          sed 's/^/  /' "$artifact_file"
+        else
+          echo "has-dependencies=false" >> "$GITHUB_OUTPUT"
+          echo "selected program dependency artifacts: none"
+        fi
+
+    - name: Collect dependency artifacts
+      id: deps
+      shell: bash
+      run: |
+        set -euo pipefail
+        artifacts_file="$RUNNER_TEMP/dependency-artifacts.txt"
+        : > "$artifacts_file"
+        for file in \
+          "$RUNNER_TEMP/library-dependency-artifacts.txt" \
+          "$RUNNER_TEMP/program-dependency-artifacts.txt"
+        do
+          [ -f "$file" ] || continue
+          cat "$file"
+        done | sed '/^$/d' | sort -u > "$artifacts_file"
+
+        if [ -s "$artifacts_file" ]; then
+          echo "has-dependencies=true" >> "$GITHUB_OUTPUT"
+          echo "dependency artifacts to download:"
+          sed 's/^/  /' "$artifacts_file"
+        else
+          echo "has-dependencies=false" >> "$GITHUB_OUTPUT"
+          echo "dependency artifacts to download: none"
+        fi
+
+    - name: Download selected dependency archives
+      if: ${{ steps.deps.outputs.has-dependencies == 'true' }}
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.github-token }}
+      run: bash .github/scripts/download-dependency-artifacts.sh "$RUNNER_TEMP/dependency-artifacts.txt" "$RUNNER_TEMP/lib-archives"
+
+    - name: Materialize dependency overlays
+      if: ${{ steps.deps.outputs.has-dependencies == 'true' }}
+      shell: bash
+      run: bash scripts/materialize-pr-overlays.sh "$RUNNER_TEMP/lib-archives"
 
     - name: Build package archive
       id: archive
@@ -114,7 +196,9 @@ runs:
               --arch "${{ inputs.arch }}" \
               --out "$RUNNER_TEMP/staged" \
               --build-timestamp "${{ steps.provenance.outputs.build-timestamp }}" \
-              --build-host "${{ steps.provenance.outputs.build-host }}"
+              --build-host "${{ steps.provenance.outputs.build-host }}" \
+              --binaries-dir "$(pwd)/binaries" \
+              --expected-cache-key-sha "${{ inputs.expected-cache-key-sha }}"
         '
         archive_path=$(find "$RUNNER_TEMP/staged" -name '*.tar.zst' -print -quit)
         archive_name=$(basename "$archive_path")
@@ -122,7 +206,7 @@ runs:
         echo "archive-name=$archive_name" >> "$GITHUB_OUTPUT"
 
     - name: Upload archive as workflow artifact
-      uses: actions/upload-artifact@v4
+      uses: actions/upload-artifact@v7
       with:
         name: ${{ inputs.package }}-${{ inputs.arch }}
         path: ${{ runner.temp }}/staged/*.tar.zst
