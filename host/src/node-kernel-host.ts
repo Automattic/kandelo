@@ -305,6 +305,14 @@ export class NodeKernelHost {
     this.sendToWorker({ type: "kms_attach_stats", crtcId, stats });
   }
 
+  async getKmsMasterPid(): Promise<number | null> {
+    const requestId = this._nextRequestId++;
+    return this.request(requestId, {
+      type: "get_kms_master_pid",
+      requestId,
+    }) as Promise<number | null>;
+  }
+
   /**
    * Send an HTTP request to a server running inside the kernel and return
    * the parsed response. Bypasses real TCP by using the kernel's injected

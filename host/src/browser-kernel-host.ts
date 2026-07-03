@@ -895,6 +895,14 @@ export class BrowserKernel {
     this.sendToKernel({ type: "kms_attach_stats", crtcId, stats });
   }
 
+  async getKmsMasterPid(): Promise<number | null> {
+    const requestId = this.nextRequestId++;
+    return this.request(requestId, {
+      type: "get_kms_master_pid",
+      requestId,
+    }) as Promise<number | null>;
+  }
+
   /**
    * Drain up to `maxBytes` of PCM audio buffered in the kernel's
    * `/dev/dsp` ring. Returns the bytes plus the configured sample

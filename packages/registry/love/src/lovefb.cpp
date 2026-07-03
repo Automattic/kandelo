@@ -36,6 +36,7 @@
 #include <sys/time.h>
 #include <termios.h>
 #include <unistd.h>
+#include <utility>
 #include <vector>
 #include <xf86drm.h>
 #include <xf86drmMode.h>
@@ -175,6 +176,11 @@ struct MouseButtonEvent {
   bool pressed = false;
 };
 
+struct LoveEvent {
+  std::string name;
+  std::vector<std::string> args;
+};
+
 struct Transform {
   double a = 1.0;
   double b = 0.0;
@@ -229,6 +235,7 @@ struct Runtime {
 
   std::set<std::string> keys;
   std::vector<KeyEvent> keyEvents;
+  std::vector<LoveEvent> queuedEvents;
   int mouseX = kLogicalWidth / 2;
   int mouseY = kLogicalHeight / 2;
   int mouseButtons = 0;
@@ -2102,12 +2109,50 @@ int l_math_newRandomGenerator(lua_State *L) {
 
 int l_event_quit(lua_State *) { gRunning = 0; return 0; }
 int l_event_push(lua_State *L) {
-  if (lua_gettop(L) > 0 && std::string(luaL_checkstring(L, 1)) == "quit") gRunning = 0;
+  int top = lua_gettop(L);
+  if (top <= 0) return 0;
+  LoveEvent ev;
+  ev.name = luaL_checkstring(L, 1);
+  for (int i = 2; i <= top; ++i) {
+    size_t len = 0;
+    const char *s = lua_tolstring(L, i, &len);
+    if (s) ev.args.emplace_back(s, len);
+    else if (lua_isboolean(L, i)) ev.args.emplace_back(lua_toboolean(L, i) ? "true" : "false");
+    else ev.args.emplace_back("");
+  }
+  G.queuedEvents.push_back(std::move(ev));
   return 0;
 }
 int l_event_pump(lua_State *) { return 0; }
+
+int l_event_poll_iter(lua_State *L) {
+  lua_Integer idx = lua_tointeger(L, lua_upvalueindex(2));
+  lua_rawgeti(L, lua_upvalueindex(1), idx);
+  if (lua_isnil(L, -1)) return 0;
+  lua_pushinteger(L, idx + 1);
+  lua_replace(L, lua_upvalueindex(2));
+
+  int n = int(lua_objlen(L, -1));
+  for (int i = 1; i <= n; ++i) lua_rawgeti(L, -1, i);
+  lua_remove(L, -n - 1);
+  return n;
+}
+
 int l_event_poll(lua_State *L) {
-  lua_pushcfunction(L, [](lua_State *L) -> int { return 0; });
+  lua_newtable(L);
+  for (size_t i = 0; i < G.queuedEvents.size(); ++i) {
+    lua_newtable(L);
+    lua_pushstring(L, G.queuedEvents[i].name.c_str());
+    lua_rawseti(L, -2, 1);
+    for (size_t j = 0; j < G.queuedEvents[i].args.size(); ++j) {
+      lua_pushstring(L, G.queuedEvents[i].args[j].c_str());
+      lua_rawseti(L, -2, int(j + 2));
+    }
+    lua_rawseti(L, -2, int(i + 1));
+  }
+  G.queuedEvents.clear();
+  lua_pushinteger(L, 1);
+  lua_pushcclosure(L, l_event_poll_iter, 2);
   return 1;
 }
 
@@ -2480,6 +2525,19 @@ bool callLove(lua_State *L, const char *name, int nargs = 0) {
   return true;
 }
 
+void dispatchQueuedEvents(lua_State *L) {
+  std::vector<LoveEvent> events;
+  events.swap(G.queuedEvents);
+  for (const LoveEvent &e : events) {
+    if (e.name == "quit") {
+      gRunning = 0;
+      continue;
+    }
+    for (const std::string &arg : e.args) lua_pushstring(L, arg.c_str());
+    callLove(L, e.name.c_str(), int(e.args.size()));
+  }
+}
+
 void dispatchInput(lua_State *L) {
   for (const KeyEvent &e : G.keyEvents) {
     lua_pushstring(L, e.key.c_str());
@@ -2499,6 +2557,7 @@ void dispatchInput(lua_State *L) {
     lua_pushboolean(L, 0);
     callLove(L, e.pressed ? "mousepressed" : "mousereleased", 4);
   }
+  dispatchQueuedEvents(L);
 }
 
 void configureLuaPath(lua_State *L) {

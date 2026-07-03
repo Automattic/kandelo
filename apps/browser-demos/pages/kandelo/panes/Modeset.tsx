@@ -5,7 +5,11 @@
 import * as React from "react";
 import { useKernelHost, useStatus } from "../kernel-host/react";
 import type { KmsDisplayHandle } from "../../../../../web-libs/kandelo-session/src/kernel-host";
-import { injectChunkedMouseMotion, type MouseEventSink } from "@host/framebuffer/browser-controls";
+import {
+  attachLinuxMediumRawKeyboard,
+  injectChunkedMouseMotion,
+  type MouseEventSink,
+} from "@host/framebuffer/browser-controls";
 import { PaneHead } from "./PaneHead";
 
 // modeset.c hardcodes 1920×1080 (CANVAS_W/CANVAS_H). The kernel-side
@@ -56,6 +60,8 @@ export const Modeset: React.FC<ModesetProps> = ({ dragProps, onCollapse, onMaxim
   const handleRef = React.useRef<KmsDisplayHandle | null>(null);
   const [error, setError] = React.useState<string | null>(null);
   const [stats, setStats] = React.useState<KmsStats>(ZERO_STATS);
+  const [boundPid, setBoundPid] = React.useState<number | null>(null);
+  const [focused, setFocused] = React.useState(false);
 
   // Attach the canvas as soon as we have one and the kernel is up.
   React.useEffect(() => {
@@ -76,6 +82,7 @@ export const Modeset: React.FC<ModesetProps> = ({ dragProps, onCollapse, onMaxim
     if (canvas.width !== MODESET_FB_W) canvas.width = MODESET_FB_W;
     if (canvas.height !== MODESET_FB_H) canvas.height = MODESET_FB_H;
 
+    let offBound: (() => void) | null = null;
     try {
       const handle = host.attachKmsDisplay(canvas, crtcId);
       if (!handle) {
@@ -83,14 +90,18 @@ export const Modeset: React.FC<ModesetProps> = ({ dragProps, onCollapse, onMaxim
         return;
       }
       handleRef.current = handle;
+      setBoundPid(handle.getBoundPid());
+      offBound = handle.onBoundPidChange(setBoundPid);
       setError(null);
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     }
 
     return () => {
+      offBound?.();
       handleRef.current?.close();
       handleRef.current = null;
+      setBoundPid(null);
     };
   }, [host, status, crtcId]);
 
@@ -158,6 +169,7 @@ export const Modeset: React.FC<ModesetProps> = ({ dragProps, onCollapse, onMaxim
     const onMouseDown = (e: MouseEvent) => {
       const bit = buttonBit(e.button);
       if (bit === 0) return;
+      canvas.focus();
       e.preventDefault();
       buttons |= bit;
       handleRef.current?.sendMouseEvent(0, 0, buttons);
@@ -189,6 +201,34 @@ export const Modeset: React.FC<ModesetProps> = ({ dragProps, onCollapse, onMaxim
     };
   }, [status]);
 
+  React.useEffect(() => {
+    if (status !== "running") return;
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+
+    const keyboard = attachLinuxMediumRawKeyboard(
+      canvas,
+      {
+        sendInput: (bytes) => handleRef.current?.sendInput(bytes),
+      },
+      {
+        getEnabled: () => handleRef.current !== null,
+        onReleaseCapture: () => canvas.blur(),
+        releaseDelayMs: 16,
+      },
+    );
+    const onBlur = () => setFocused(false);
+    const onFocus = () => setFocused(true);
+
+    canvas.addEventListener("blur", onBlur);
+    canvas.addEventListener("focus", onFocus);
+    return () => {
+      keyboard.close();
+      canvas.removeEventListener("blur", onBlur);
+      canvas.removeEventListener("focus", onFocus);
+    };
+  }, [status]);
+
   // Drain the stats SAB at 4 Hz. The numbers are advisory; rAF would
   // re-render every blit, which is overkill for a status panel.
   React.useEffect(() => {
@@ -210,6 +250,12 @@ export const Modeset: React.FC<ModesetProps> = ({ dragProps, onCollapse, onMaxim
 
   const showCanvas = status === "running" && !error;
   const hasFrame = stats.width > 0 && stats.height > 0;
+  const captureLabel = focused
+    ? boundPid !== null ? `captured · pid ${boundPid}` : "captured"
+    : "click to type";
+  const onCanvasClick = () => {
+    canvasRef.current?.focus();
+  };
 
   return (
     <div className="kpane">
@@ -223,7 +269,7 @@ export const Modeset: React.FC<ModesetProps> = ({ dragProps, onCollapse, onMaxim
         right={
           <span className="kmodeset-status" data-ready={hasFrame ? "true" : "false"}>
             {hasFrame
-              ? `${stats.width}×${stats.height} · ${stats.commitCount} flips · ${stats.lastFrameUs}µs`
+              ? `${stats.width}×${stats.height} · ${stats.commitCount} flips · ${stats.lastFrameUs}µs · ${captureLabel}`
               : "waiting for PAGE_FLIP"}
           </span>
         }
@@ -241,6 +287,8 @@ export const Modeset: React.FC<ModesetProps> = ({ dragProps, onCollapse, onMaxim
           <canvas
             ref={canvasRef}
             className="kmodeset-canvas"
+            tabIndex={0}
+            onClick={onCanvasClick}
             style={{ display: showCanvas ? "block" : "none" }}
           />
           {showCanvas && !hasFrame && (
