@@ -4893,6 +4893,42 @@ export function patchWasmForThread(bytes: ArrayBuffer): ArrayBuffer {
  * but rooted at the pthread function and this thread's channel-local fork
  * buffer.
  */
+/**
+ * Build the JS argument list for calling a wasm pthread entry function through
+ * the indirect function table.
+ *
+ * Kandelo user programs are post-processed with binaryen's `--fpcast-emu` (see
+ * optimize_wasm in scripts/ports/*), which rewrites every indirectly-called
+ * function — including pthread entry points, which the host reaches via
+ * `table.get(fnPtr)` — to a single uniform trampoline signature with N i64
+ * parameters and an i64 result. Calling such a trampoline with the plain C ABI
+ * (`fn(argPtr)` where argPtr is a JS number) throws
+ * `TypeError: Cannot convert <n> to a BigInt`, because the first parameter is
+ * i64. This surfaced as the first fork-instrumented *and* threaded program
+ * (pcmanfm) crashing on its first worker thread.
+ *
+ * A plain (un-emulated) entry has exactly one pointer parameter, so the
+ * function wrapper's parameter count distinguishes the two: `length <= 1` is the
+ * plain C ABI (i32 pointer on wasm32, i64 on wasm64); `length > 1` is the
+ * fpcast-emu trampoline, whose parameters are all i64 — pass the pointer arg
+ * first as a BigInt and zero-fill the remaining slots.
+ */
+function buildThreadEntryArgs(
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  threadFn: (...args: any[]) => unknown,
+  argPtr: number,
+  ptrWidth: number,
+): (number | bigint)[] {
+  const argc = threadFn.length;
+  if (argc <= 1) {
+    const arg = ptrWidth === 8 ? BigInt(argPtr) : argPtr;
+    return argc === 0 ? [] : [arg];
+  }
+  const args: (number | bigint)[] = new Array(argc).fill(0n);
+  args[0] = BigInt(argPtr);
+  return args;
+}
+
 export async function centralizedThreadWorkerMain(
   port: MessagePort,
   initData: CentralizedThreadInitMessage,
@@ -5553,6 +5589,7 @@ export async function centralizedThreadWorkerMain(
     }
 
     const threadArg = ptrWidth === 8 ? BigInt(argPtr) : argPtr;
+    const threadArgs = buildThreadEntryArgs(threadFn, argPtr, ptrWidth);
     const resumeThread = hasForkInstrumentation
       ? (instance.exports.wpk_fork_resume_thread as
           | ((tableIndex: number, arg: number | bigint) => number | bigint)
@@ -5571,7 +5608,7 @@ export async function centralizedThreadWorkerMain(
         try {
           const raw =
             threadProcessContinuation.phaseName() === "idle"
-              ? threadFn(threadArg)
+              ? threadFn(...threadArgs)
               : resumeThread!(fnPtr, threadArg);
           result = Number(raw);
         } catch (e) {
@@ -5617,7 +5654,7 @@ export async function centralizedThreadWorkerMain(
       }
     } else {
       try {
-        const raw = threadFn(threadArg);
+        const raw = threadFn(...threadArgs);
         result = Number(raw);
       } catch (e) {
         if (
