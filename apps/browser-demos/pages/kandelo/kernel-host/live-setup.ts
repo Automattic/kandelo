@@ -14,6 +14,12 @@ import {
   type WordPressDatabaseKind,
 } from "../../../lib/init/wordpress-runtime-config";
 import { MYSQL_BENCHMARK_PHP } from "../../../lib/init/mysql-benchmark";
+import {
+  WORDPRESS_MARIADB_READY_FILE,
+  WORDPRESS_MARIADB_READY_PATH,
+  WORDPRESS_MARIADB_READY_PHP,
+  WORDPRESS_MARIADB_SOCKET_PATH,
+} from "../../../lib/init/wordpress-mariadb-readiness";
 import { MemoryFileSystem } from "../../../../../host/src/vfs/memory-fs";
 import {
   ensureDirRecursive,
@@ -60,8 +66,6 @@ import kernelWasmUrl from "@kernel-wasm?url";
 import shellVfsUrl from "@binaries/programs/wasm32/shell.vfs.zst?url";
 import nodeWasmUrl from "@binaries/programs/wasm32/node.wasm?url";
 import nodeVfsUrl from "@binaries/programs/wasm32/node-vfs.vfs.zst?url";
-import nginxVfsUrl from "@binaries/programs/wasm32/nginx-vfs.vfs.zst?url";
-import nginxPhpVfsUrl from "@binaries/programs/wasm32/nginx-php-vfs.vfs.zst?url";
 import wordpressVfsUrl from "@binaries/programs/wasm32/wordpress.vfs.zst?url";
 import lampVfsUrl from "@binaries/programs/wasm32/lamp.vfs.zst?url";
 import dinitWasmUrl from "@binaries/programs/wasm32/dinit/dinit.wasm?url";
@@ -77,6 +81,18 @@ const OPTIONAL_BINARY_URLS = {
     query: "?url", import: "default",
   }),
   ...import.meta.glob("../../../../../binaries/programs/wasm32/fbtest.wasm", {
+    query: "?url", import: "default",
+  }),
+  ...import.meta.glob("../../../../../local-binaries/programs/wasm32/nginx-vfs.vfs.zst", {
+    query: "?url", import: "default",
+  }),
+  ...import.meta.glob("../../../../../binaries/programs/wasm32/nginx-vfs.vfs.zst", {
+    query: "?url", import: "default",
+  }),
+  ...import.meta.glob("../../../../../local-binaries/programs/wasm32/nginx-php-vfs.vfs.zst", {
+    query: "?url", import: "default",
+  }),
+  ...import.meta.glob("../../../../../binaries/programs/wasm32/nginx-php-vfs.vfs.zst", {
     query: "?url", import: "default",
   }),
 } as Record<string, () => Promise<string>>;
@@ -150,7 +166,7 @@ const SOFTWARE_PROFILES = new Map<string, SoftwareProfile>();
 const tarDecoder = new TextDecoder();
 const HTTP_PORT = 8080;
 const PHP_FPM_PORT = 9000;
-const MARIADB_SOCKET_PATH = "/tmp/mysql.sock";
+const MARIADB_SOCKET_PATH = WORDPRESS_MARIADB_SOCKET_PATH;
 const MARIADB_READY_SERVICE = "mariadb-ready";
 const MARIADB_READY_SCRIPT_PATH = "/usr/local/bin/mariadb-ready";
 const ROOT_UID = 0;
@@ -186,6 +202,10 @@ type LiveVfsImage =
   | "wordpress"
   | "lamp";
 
+type LiveVfsSource =
+  | { kind: "url"; url: string }
+  | { kind: "optional-binary"; label: string; relPaths: string[] };
+
 type ShellProfile = "default" | "node";
 type InitEnvProfile = "service" | "wordpress";
 
@@ -211,17 +231,32 @@ interface LiveProfileSpec {
       requiredPorts: number[];
       requiredServices?: string[];
       probeHttp?: boolean;
+      probePath?: string;
     };
   };
 }
 
-const VFS_URLS: Record<LiveVfsImage, string> = {
-  shell: shellVfsUrl,
-  node: nodeVfsUrl,
-  nginx: nginxVfsUrl,
-  "nginx-php": nginxPhpVfsUrl,
-  wordpress: wordpressVfsUrl,
-  lamp: lampVfsUrl,
+const VFS_SOURCES: Record<LiveVfsImage, LiveVfsSource> = {
+  shell: { kind: "url", url: shellVfsUrl },
+  node: { kind: "url", url: nodeVfsUrl },
+  nginx: {
+    kind: "optional-binary",
+    label: "nginx-vfs.vfs.zst",
+    relPaths: [
+      "../../../../../local-binaries/programs/wasm32/nginx-vfs.vfs.zst",
+      "../../../../../binaries/programs/wasm32/nginx-vfs.vfs.zst",
+    ],
+  },
+  "nginx-php": {
+    kind: "optional-binary",
+    label: "nginx-php-vfs.vfs.zst",
+    relPaths: [
+      "../../../../../local-binaries/programs/wasm32/nginx-php-vfs.vfs.zst",
+      "../../../../../binaries/programs/wasm32/nginx-php-vfs.vfs.zst",
+    ],
+  },
+  wordpress: { kind: "url", url: wordpressVfsUrl },
+  lamp: { kind: "url", url: lampVfsUrl },
 };
 
 const DINIT_NGINX_ARGV = ["/sbin/dinit", "--container", "-p", "/tmp/dinitctl", "nginx"];
@@ -310,7 +345,8 @@ const LIVE_PROFILE_SPECS: Record<LiveDemoId, LiveProfileSpec> = {
       web: {
         requiredPorts: [HTTP_PORT, PHP_FPM_PORT],
         requiredServices: ["mariadb-ready", "php-fpm", "nginx"],
-        probeHttp: false,
+        probeHttp: true,
+        probePath: WORDPRESS_MARIADB_READY_PATH,
       },
     },
   },
@@ -341,6 +377,7 @@ const WEB_BOOT_LOG_DEMO_IDS = new Set<LiveDemoId>([
 interface LiveProfile {
   id: string;
   vfsUrl: string;
+  vfsSource?: LiveVfsSource;
   software?: SoftwareProfile;
   descriptor: BootDescriptor;
   shell: ShellProfile;
@@ -362,6 +399,7 @@ interface LiveProfile {
       requiredPorts: number[];
       requiredServices?: string[];
       probeHttp: boolean;
+      probePath?: string;
     };
   };
   framebufferTest: boolean;
@@ -684,9 +722,11 @@ function profileFor(id: string, fb?: FbDemo): LiveProfile {
   const normalized = normalizeDemoId(id) ?? "shell";
   const spec = LIVE_PROFILE_SPECS[normalized];
   const desc = descriptorFor(normalized);
+  const vfsSource = VFS_SOURCES[spec.image];
   return {
     id: normalized,
-    vfsUrl: VFS_URLS[spec.image],
+    vfsUrl: vfsSource.kind === "url" ? vfsSource.url : "",
+    vfsSource,
     descriptor: desc,
     shell: spec.shell ?? "default",
     includeNodeUtility: spec.includeNodeUtility ?? false,
@@ -706,6 +746,7 @@ function profileFor(id: string, fb?: FbDemo): LiveProfile {
         requiredPorts: spec.init.web.requiredPorts.slice(),
         requiredServices: spec.init.web.requiredServices?.slice(),
         probeHttp: spec.init.web.probeHttp ?? true,
+        probePath: spec.init.web.probePath,
       },
     },
     framebufferTest: fb === "test",
@@ -1330,6 +1371,8 @@ function patchWordPressRuntimeConfig(
 function patchMariaDbUnixSocketConfig(fs: MemoryFileSystem): void {
   ensureDirRecursive(fs, "/tmp");
   fs.chmod("/tmp", 0o1777);
+  ensureDirRecursive(fs, dirname(WORDPRESS_MARIADB_READY_FILE));
+  writeVfsFile(fs, WORDPRESS_MARIADB_READY_FILE, WORDPRESS_MARIADB_READY_PHP);
 
   const phpIniPath = "/etc/php.ini";
   const phpIni = readOptionalVfsText(fs, phpIniPath);
@@ -1423,7 +1466,8 @@ function patchWordPressPersistentMysqli(fs: MemoryFileSystem): void {
 
 async function loadVfsImageBytes(profile: LiveProfile): Promise<ArrayBuffer> {
   if (!profile.software) {
-    return fetch(profile.vfsUrl).then(failOn(`${profile.id}.vfs.zst`)).then((r) => r.arrayBuffer());
+    const vfsUrl = await resolveProfileVfsUrl(profile);
+    return fetch(vfsUrl).then(failOn(`${profile.id}.vfs.zst`)).then((r) => r.arrayBuffer());
   }
   const vfsImage = await loadArchiveArtifact(
     profile.software.vfsArchiveUrl,
@@ -1432,6 +1476,15 @@ async function loadVfsImageBytes(profile: LiveProfile): Promise<ArrayBuffer> {
   const copy = new Uint8Array(vfsImage.byteLength);
   copy.set(vfsImage);
   return copy.buffer;
+}
+
+async function resolveProfileVfsUrl(profile: LiveProfile): Promise<string> {
+  if (profile.vfsSource?.kind === "url") return profile.vfsSource.url;
+  if (profile.vfsSource?.kind === "optional-binary") {
+    return optionalBinaryUrl(profile.vfsSource.relPaths, profile.vfsSource.label);
+  }
+  if (profile.vfsUrl) return profile.vfsUrl;
+  throw new Error(`No VFS image URL configured for ${profile.id}`);
 }
 
 async function loadSoftwareBinaries(
@@ -1625,13 +1678,14 @@ function maybeMarkWebReady(
   }
   if (readiness.probing) return;
   readiness.probing = true;
+  const probeUrl = previewUrlForPath(web.probePath ?? "/");
   host.setWebPreview({
     label: web.label,
     url: APP_PREFIX,
     status: "starting",
-    message: "Waiting for HTTP response",
+    message: web.probePath ? "Waiting for application readiness" : "Waiting for HTTP response",
   });
-  void waitForHttpPreview(APP_PREFIX).then(
+  void waitForHttpPreview(probeUrl, 90_000, { requireOk: Boolean(web.probePath) }).then(
     () => {
       if (!isCurrent()) return;
       readiness.ready = true;
@@ -1660,7 +1714,11 @@ function maybeMarkWebReady(
   });
 }
 
-async function waitForHttpPreview(url: string, timeoutMs = 90_000): Promise<void> {
+async function waitForHttpPreview(
+  url: string,
+  timeoutMs = 90_000,
+  options: { requireOk?: boolean } = {},
+): Promise<void> {
   const started = performance.now();
   let delayMs = 250;
   let lastError = "";
@@ -1668,7 +1726,7 @@ async function waitForHttpPreview(url: string, timeoutMs = 90_000): Promise<void
   while (performance.now() - started < timeoutMs) {
     try {
       const response = await fetchWithTimeout(url, 5_000);
-      if (response.status < 500) return;
+      if (options.requireOk ? response.ok : response.status < 500) return;
       lastError = `HTTP ${response.status}`;
     } catch (err) {
       lastError = err instanceof Error ? err.message : String(err);
@@ -1678,6 +1736,12 @@ async function waitForHttpPreview(url: string, timeoutMs = 90_000): Promise<void
   }
 
   throw new Error(lastError || "timed out");
+}
+
+function previewUrlForPath(path: string): string {
+  const root = new URL(APP_PREFIX, window.location.href);
+  const normalized = path.startsWith("/") ? path.slice(1) : path;
+  return new URL(normalized || ".", root).href;
 }
 
 async function fetchWithTimeout(url: string, timeoutMs: number): Promise<Response> {
@@ -1781,7 +1845,9 @@ function liveGalleryItems(): GalleryItem[] {
 function vfsImageUrlForPreset(id: string): string | undefined {
   const liveId = normalizeDemoId(id);
   if (!liveId) return undefined;
-  const url = new URL(VFS_URLS[LIVE_PROFILE_SPECS[liveId].image], location.href);
+  const source = VFS_SOURCES[LIVE_PROFILE_SPECS[liveId].image];
+  if (source.kind !== "url") return undefined;
+  const url = new URL(source.url, location.href);
   url.hash = liveId;
   return url.href;
 }
@@ -1793,11 +1859,15 @@ function liveDemoIdForVfsImageUrl(vfsUrl: string): LiveDemoId | null {
   const url = new URL(normalized);
   const hashId = url.hash.slice(1);
   const baseUrl = withoutHash(url);
-  if (isLiveDemoId(hashId) && baseUrl === profileVfsBaseUrl(hashId)) {
+  const hashBaseUrl = isLiveDemoId(hashId) ? profileVfsBaseUrl(hashId) : null;
+  if (hashBaseUrl && baseUrl === hashBaseUrl) {
     return hashId;
   }
 
-  const matches = LIVE_DEMO_IDS.filter((id) => baseUrl === profileVfsBaseUrl(id));
+  const matches = LIVE_DEMO_IDS.filter((id) => {
+    const profileBaseUrl = profileVfsBaseUrl(id);
+    return profileBaseUrl !== null && baseUrl === profileBaseUrl;
+  });
   if (matches.length === 1) return matches[0];
   // Multiple presets share the shell VFS image (doom, modeset). When the URL
   // doesn't pin one via the hash, fall back to the shell preset so the
@@ -1805,8 +1875,10 @@ function liveDemoIdForVfsImageUrl(vfsUrl: string): LiveDemoId | null {
   return matches.find((id) => id !== "doom" && id !== "modeset") ?? null;
 }
 
-function profileVfsBaseUrl(id: LiveDemoId): string {
-  return withoutHash(new URL(VFS_URLS[LIVE_PROFILE_SPECS[id].image], location.href));
+function profileVfsBaseUrl(id: LiveDemoId): string | null {
+  const source = VFS_SOURCES[LIVE_PROFILE_SPECS[id].image];
+  if (source.kind !== "url") return null;
+  return withoutHash(new URL(source.url, location.href));
 }
 
 function withoutHash(url: URL): string {
@@ -1910,9 +1982,7 @@ function softwareEntryToGalleryItem(
   return {
     id,
     title: entry.title,
-    summary: archiveUrl
-      ? `${entry.description} Archive: ${archiveUrl}`
-      : entry.description,
+    summary: entry.description,
     base: `kandelo:shell@abi${ABI_VERSION}`,
     packages: entry.packages.map(packageKey),
     bootCommand: ["bash", "-l", "-i"],

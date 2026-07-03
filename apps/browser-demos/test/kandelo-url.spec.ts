@@ -11,12 +11,12 @@ test("Kandelo gallery launch updates the browser URL with a VFS image", async ({
     waitUntil: "domcontentloaded",
   });
 
-  await page.getByRole("button", { name: "Gallery" }).click();
-  await expect(page.getByRole("heading", { name: "Gallery" })).toBeVisible();
+  await page.getByRole("button", { name: "New", exact: true }).click();
+  await expect(page.getByRole("heading", { name: "Launch New Machine" })).toBeVisible();
 
   await page
-    .locator(".kgal-card", {
-      has: page.locator(".kgal-card-title", { hasText: /^Node\.js$/ }),
+    .locator(".kgal-row", {
+      has: page.locator(".kgal-machine-title", { hasText: /^Node\.js$/ }),
     })
     .getByRole("button", { name: "Launch" })
     .click();
