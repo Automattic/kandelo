@@ -9,8 +9,13 @@ async function main(): Promise<void> {
   const arch = detectArch();
   const toolchain = await resolveToolchain(arch);
   const userArgs = process.argv.slice(2);
-  await prepareExecutableLinker(userArgs, toolchain, arch);
-  const args = buildClangArgs(userArgs, toolchain, arch);
+  const executableLinker = await prepareExecutableLinker(
+    userArgs,
+    toolchain,
+    arch,
+    toolchain.cxx,
+  );
+  const args = buildClangArgs(userArgs, toolchain, arch, executableLinker ?? undefined);
   const exitCode = await runPassthrough(toolchain.cxx, args);
   process.exit(exitCode);
 }
