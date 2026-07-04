@@ -229,13 +229,18 @@ the protocol layer.
 
 ## User-space programs
 
-### Replace per-program `-Wl,-z,stack-size` workarounds with a real shadow-stack overflow guard
-`wasm-ld` reserves a default 64 KiB shadow stack (the linear-memory region the
-compiler uses for spilled locals, `alloca`, and address-taken locals). The
-shadow stack grows **downward** from `__stack_high`, and `wasm-ld` places it
+### Add a real shadow-stack overflow guard beyond the SDK's 8 MiB floor
+Upstream `wasm-ld` reserves a default 64 KiB shadow stack (the linear-memory
+region the compiler uses for spilled locals, `alloca`, and address-taken
+locals). Kandelo's SDK raises executable links to an 8 MiB floor while
+preserving larger explicit requests. That floor covers the mainstream
+workloads that exposed the 64 KiB default, but it is a capacity policy rather
+than an overflow guard.
+
+The shadow stack grows **downward** from `__stack_high`, and `wasm-ld` places it
 *immediately below* the `.data` / `.bss` segments in the same linear memory.
 There is no guard page, no stack-pointer bounds check, and no trap: a function
-that consumes more than the remaining shadow-stack budget silently writes
+that consumes more than the effective shadow-stack budget silently writes
 through `__stack_pointer` into whatever data segment happens to be just below
 it, corrupting unrelated globals.
 
@@ -245,12 +250,11 @@ shadow-stack frame underflowed by ~108 KiB into PHP's `alloc_globals` data
 segment, silently corrupting `AG(mm_heap)`. The next `_efree` call dereferenced
 the now-bogus heap pointer and trapped — surfacing as "memory access out of
 bounds" inside the optimizer, with no indication that the actual cause was
-stack overflow ~thousands of frames earlier. The PR's workaround is
-`LDFLAGS=-Wl,-z,stack-size=4194304` (4 MiB) in `packages/registry/php/build-php.sh`.
-That sidesteps the underflow for PHP's observed workload but doesn't *prevent*
-the failure mode — a deeper recursion or a larger `alloca` will silently
-corrupt data again, and every other large port we ship today (vim, nginx,
-mariadb, etc.) has the same latent bug.
+stack overflow ~thousands of frames earlier. The PHP recipe still requests
+`LDFLAGS=-Wl,-z,stack-size=4194304` (4 MiB), which the SDK raises to its 8 MiB
+floor. The larger reserve covers PHP's observed workload but doesn't *prevent*
+the failure mode: a deeper recursion or a larger `alloca` can still silently
+corrupt data, and every linked program has the same undetected-overflow risk.
 
 A real fix needs runtime detection so the failure surfaces as an obvious
 crash, not silent corruption. Possible approaches:
@@ -280,10 +284,11 @@ crash, not silent corruption. Possible approaches:
 Once a real guard is in place, the per-program `-Wl,-z,stack-size=...`
 overrides should be audited: programs that genuinely need a larger shadow
 stack (PHP optimizer, deep parser stacks) keep the explicit override and
-document why; everything else can drop the flag and rely on the default
-+ guard.
+document why; everything else can drop the package-local flag and rely on the
+SDK floor plus the guard.
 
-**Files:** `packages/registry/php/build-php.sh` (current 4 MiB workaround),
+**Files:** `sdk/src/lib/flags.ts` and `sdk/kandelo/bin/wasm32posix-cc` (current
+8 MiB floor), `packages/registry/php/build-php.sh` (current 4 MiB request),
 `libc/glue/channel_syscall.c` (likely site for a syscall-entry bounds check),
 `host/src/worker-main.ts` (instantiation-time wiring for stack bounds),
 plus any other `build-*.sh` that hits the same wall in the meantime.

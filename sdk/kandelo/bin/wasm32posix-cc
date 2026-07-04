@@ -31,6 +31,188 @@ find_tool() {
   return 1
 }
 
+is_gnu_response_whitespace() {
+  case "$1" in
+    ' '|$'\t'|$'\r'|$'\n') return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+# Match LLVM's POSIX TokenizeGNUCommandLine response-file grammar without eval
+# or shell expansion. The result is returned in the response_tokens array.
+tokenize_gnu_response_file() {
+  local source="$1"
+  local token=""
+  local char quote
+  local index=0
+  local length
+  response_tokens=()
+
+  source="${source#$'\xef\xbb\xbf'}"
+  length="${#source}"
+  while (( index < length )); do
+    if [[ -z "$token" ]]; then
+      while (( index < length )); do
+        char="${source:index:1}"
+        is_gnu_response_whitespace "$char" || break
+        index=$((index + 1))
+      done
+      (( index < length )) || break
+    fi
+
+    char="${source:index:1}"
+    if [[ "$char" == "\\" && $((index + 1)) -lt length ]]; then
+      index=$((index + 1))
+      token="${token}${source:index:1}"
+      index=$((index + 1))
+      continue
+    fi
+
+    if [[ "$char" == "'" || "$char" == '"' ]]; then
+      quote="$char"
+      index=$((index + 1))
+      while (( index < length )); do
+        char="${source:index:1}"
+        [[ "$char" != "$quote" ]] || break
+        if [[ "$char" == "\\" && $((index + 1)) -lt length ]]; then
+          index=$((index + 1))
+          char="${source:index:1}"
+        fi
+        token="${token}${char}"
+        index=$((index + 1))
+      done
+      (( index < length )) || break
+      index=$((index + 1))
+      continue
+    fi
+
+    if is_gnu_response_whitespace "$char"; then
+      [[ -z "$token" ]] || response_tokens+=("$token")
+      token=""
+      index=$((index + 1))
+      continue
+    fi
+
+    token="${token}${char}"
+    index=$((index + 1))
+  done
+
+  [[ -z "$token" ]] || response_tokens+=("$token")
+}
+
+response_file_is_active() {
+  local candidate="$1"
+  local active
+  for active in "${response_file_stack[@]}"; do
+    if [[ "$candidate" == "$active" || "$candidate" -ef "$active" ]]; then
+      return 0
+    fi
+  done
+  return 1
+}
+
+# Expand standalone @file arguments with an explicit work stack. This avoids a
+# nesting cutoff that could leave an lld-accepted stack request uninspected.
+# Bounds are work/resource limits and fail before compilation or linking.
+readonly max_response_file_expansions=4096
+readonly max_response_file_tokens=1048576
+readonly max_response_file_characters=67108864
+
+expand_response_arguments() {
+  local arg path source kind last_index active_last index
+  local response_prefix
+  local nested_tokens
+  local response_file_expansions=0
+  local response_file_tokens="$#"
+  local response_file_characters=0
+
+  response_tokens=()
+  response_file_stack=()
+  expanded_response_args=()
+  response_work_kinds=()
+  response_work_values=()
+
+  if (( response_file_tokens > max_response_file_tokens )); then
+    die "response-file expansion exceeds the ${max_response_file_tokens}-token safety limit"
+  fi
+
+  for ((index = $#; index >= 1; index--)); do
+    response_work_kinds+=("argument")
+    response_work_values+=("${!index}")
+  done
+
+  while (( ${#response_work_kinds[@]} > 0 )); do
+    last_index=$((${#response_work_kinds[@]} - 1))
+    kind="${response_work_kinds[$last_index]}"
+    arg="${response_work_values[$last_index]}"
+    unset "response_work_kinds[$last_index]"
+    unset "response_work_values[$last_index]"
+
+    if [[ "$kind" == "leave" ]]; then
+      active_last=$((${#response_file_stack[@]} - 1))
+      (( active_last >= 0 )) || die "internal response-file expansion stack underflow"
+      unset "response_file_stack[$active_last]"
+      continue
+    fi
+
+    case "$arg" in
+      @?*)
+        path="${arg#@}"
+        [[ -r "$path" && ! -d "$path" ]] || \
+          die "cannot inspect response file '$path' before linking"
+        response_file_is_active "$path" && \
+          die "recursive response file '$path' cannot be inspected safely"
+
+        response_file_expansions=$((response_file_expansions + 1))
+        if (( response_file_expansions > max_response_file_expansions )); then
+          die "response-file expansion exceeds the ${max_response_file_expansions}-file safety limit"
+        fi
+
+        response_prefix=""
+        LC_ALL=C IFS= read -r -n 2 response_prefix < "$path" || true
+        case "$response_prefix" in
+          $'\xff\xfe'|$'\xfe\xff')
+            # Bash variables cannot retain UTF-16's embedded NUL bytes, and
+            # the packaged SDK deliberately has no undeclared transcoder.
+            die "UTF-16 response file '$path' is unsupported by the Kandelo-native SDK driver;" \
+              "rewrite it as UTF-8"
+            ;;
+        esac
+        source="$(< "$path")"
+        response_file_characters=$((response_file_characters + ${#source}))
+        if (( response_file_characters > max_response_file_characters )); then
+          die "response-file expansion exceeds the ${max_response_file_characters}-character safety limit"
+        fi
+
+        tokenize_gnu_response_file "$source"
+        nested_tokens=("${response_tokens[@]}")
+        response_file_tokens=$((response_file_tokens + ${#nested_tokens[@]}))
+        if (( response_file_tokens > max_response_file_tokens )); then
+          die "response-file expansion exceeds the ${max_response_file_tokens}-token safety limit"
+        fi
+
+        response_file_stack+=("$path")
+        response_work_kinds+=("leave")
+        response_work_values+=("$path")
+        for ((index = ${#nested_tokens[@]} - 1; index >= 0; index--)); do
+          response_work_kinds+=("argument")
+          response_work_values+=("${nested_tokens[$index]}")
+        done
+        ;;
+      *)
+        expanded_response_args+=("$arg")
+        ;;
+    esac
+  done
+}
+
+original_args=("$@")
+response_tokens=()
+response_file_stack=()
+expanded_response_args=()
+expand_response_arguments "${original_args[@]}"
+set -- "${expanded_response_args[@]}"
+
 if [[ "$SDK_CXX" -eq 1 ]]; then
   CLANG="$(find_tool clang++ || true)"
   [[ -n "$CLANG" ]] || die "clang++ not found; set WASM_POSIX_LLVM_DIR"
@@ -126,6 +308,47 @@ if [[ -d "$RESOURCE_DIR" ]]; then
   compile_flags+=(-resource-dir "$RESOURCE_DIR")
 fi
 
+classify_clang_link_job() {
+  local trace line executable executable_name second
+  local compiler_jobs=0
+  local linker_jobs=0
+  local other_external_jobs=0
+
+  if ! trace="$("$CLANG" -### "${compile_flags[@]}" "${filtered[@]}" 2>&1 >/dev/null)"; then
+    printf '%s\n' "$trace" >&2
+    die "clang -### failed while classifying the requested jobs"
+  fi
+
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    [[ "$line" =~ ^[[:space:]]+\" ]] || continue
+    tokenize_gnu_response_file "$line"
+    (( ${#response_tokens[@]} > 0 )) || continue
+    executable="${response_tokens[0]}"
+    executable_name="${executable##*/}"
+    executable_name="${executable_name%.exe}"
+    second="${response_tokens[1]:-}"
+    if [[ "$executable" == "$WASM_LD" || "$executable" -ef "$WASM_LD" ]]; then
+      linker_jobs=$((linker_jobs + 1))
+    elif [[ "$second" == "-cc1" ]]; then
+      compiler_jobs=$((compiler_jobs + 1))
+    # Wrapped LLVM installations may schedule Binaryen after wasm-ld. It is a
+    # post-link transform, not a second or replacement linker job.
+    elif [[ "$executable_name" =~ ^wasm-opt(-[0-9]+)?$ ]]; then
+      :
+    else
+      other_external_jobs=$((other_external_jobs + 1))
+    fi
+  done <<< "$trace"
+
+  if (( linker_jobs == 0 && other_external_jobs == 0 && compiler_jobs > 0 )); then
+    linking=0
+    return
+  fi
+  if (( linker_jobs != 1 || other_external_jobs != 0 )); then
+    die "clang -### emitted ${linker_jobs} commands for the pinned linker ${WASM_LD}; expected exactly one"
+  fi
+}
+
 shared_link_flags=(
   -nostdlib
   -Wl,--experimental-pic
@@ -135,6 +358,8 @@ shared_link_flags=(
   -Wl,--allow-undefined
 )
 
+max_executable_memory_size=1073741824
+
 exe_link_flags=(
   -nostdlib
   -Wl,--entry=_start
@@ -142,8 +367,19 @@ exe_link_flags=(
   -Wl,--export=__heap_base
   -Wl,--import-memory
   -Wl,--shared-memory
-  -Wl,--max-memory=1073741824
+  "-Wl,--max-memory=${max_executable_memory_size}"
   -Wl,--allow-undefined
+  # Reserve an 8 MiB main-thread shadow stack. wasm-ld's default is only ~64 KiB,
+  # and WebAssembly has no stack guard page, so a deep call chain silently
+  # overflows past __data_end into .bss and corrupts the pthread/TLS globals that
+  # live there (__wasm_tp_storage, __pthread_tsd_main) -> spurious "memory access
+  # out of bounds". POSIX leaves the default stack size implementation-defined,
+  # but 8 MiB is the de-facto Linux/glibc RLIMIT_STACK default that mainstream C
+  # software (GTK, etc.) is written and tested against, so matching it maximizes
+  # portability. Treat it as a floor: explicit larger requests remain effective.
+  # Sizes the main thread only; pthreads use musl __default_stacksize. Cost: at
+  # least ~8 MiB initial linear memory per process (raises __heap_base 1:1). Keep
+  # in sync with sdk/src/lib/flags.ts. See docs/sdk-guide.md.
   -Wl,--global-base=1114112
   -Wl,--table-base=3
   -Wl,--export-table
@@ -157,6 +393,10 @@ exe_link_flags=(
   -Wl,--export=__abi_version
 )
 
+if [[ "$linking" -ne 0 ]]; then
+  classify_clang_link_job
+fi
+
 if [[ "$linking" -eq 0 ]]; then
   exec "$CLANG" "${compile_flags[@]}" "${filtered[@]}"
 fi
@@ -166,11 +406,130 @@ compile_args=()
 source_inputs=()
 object_inputs=()
 user_link_args=()
+main_thread_stack_size=8388608
+
+parse_lld_stack_size() {
+  local raw="$1"
+  local radix digits significant_digits max_digits value
+
+  # Match LLVM 21's radix-0 integer grammar. Invalid spellings stay in the
+  # original linker arguments so wasm-ld reports them truthfully.
+  if [[ "$raw" =~ ^0[xX]([0-9a-fA-F]+)$ ]]; then
+    radix=16
+    digits="${BASH_REMATCH[1]}"
+    max_digits=8
+  elif [[ "$raw" =~ ^0[bB]([01]+)$ ]]; then
+    radix=2
+    digits="${BASH_REMATCH[1]}"
+    max_digits=31
+  elif [[ "$raw" =~ ^0o([0-7]+)$ ]]; then
+    radix=8
+    digits="${BASH_REMATCH[1]}"
+    max_digits=11
+  elif [[ "$raw" =~ ^0[0-7]*$ ]]; then
+    radix=8
+    digits="${raw#0}"
+    digits="${digits:-0}"
+    max_digits=11
+  elif [[ "$raw" =~ ^[1-9][0-9]*$ ]]; then
+    radix=10
+    digits="$raw"
+    max_digits=10
+  else
+    return 1
+  fi
+
+  significant_digits="$digits"
+  while [[ "${#significant_digits}" -gt 1 && "${significant_digits:0:1}" == 0 ]]; do
+    significant_digits="${significant_digits#0}"
+  done
+  if [[ "${#significant_digits}" -gt "$max_digits" ]]; then
+    return 2
+  fi
+
+  case "$radix" in
+    2) value=$((2#$significant_digits)) ;;
+    8) value=$((8#$significant_digits)) ;;
+    10) value=$((10#$significant_digits)) ;;
+    16) value=$((16#$significant_digits)) ;;
+  esac
+  if (( value > max_executable_memory_size )); then
+    return 2
+  fi
+
+  printf '%s\n' "$value"
+}
+
+consider_lld_stack_size() {
+  local raw="$1"
+  local requested_stack_size parse_status
+
+  if requested_stack_size="$(parse_lld_stack_size "$raw")"; then
+    if (( requested_stack_size > main_thread_stack_size )); then
+      main_thread_stack_size="$requested_stack_size"
+    fi
+    return
+  else
+    parse_status=$?
+  fi
+
+  if [[ "$parse_status" -eq 2 ]]; then
+    die "stack-size=$raw exceeds the SDK's ${max_executable_memory_size}-byte executable memory limit"
+  fi
+}
+
+inspect_lld_stack_sizes() {
+  local index=0
+  local arg requested_stack_size
+  local scan_args
+
+  response_tokens=()
+  response_file_stack=()
+  expanded_response_args=()
+  expand_response_arguments "$@"
+  scan_args=("${expanded_response_args[@]}")
+
+  while [[ "$index" -lt "${#scan_args[@]}" ]]; do
+    arg="${scan_args[$index]}"
+    [[ "$arg" != "--" ]] || break
+    case "$arg" in
+      -z)
+        index=$((index + 1))
+        if [[ "$index" -lt "${#scan_args[@]}" ]]; then
+          arg="${scan_args[$index]}"
+          case "$arg" in
+            stack-size=*)
+              requested_stack_size="${arg#stack-size=}"
+              consider_lld_stack_size "$requested_stack_size"
+              ;;
+          esac
+        fi
+        ;;
+      -zstack-size=*)
+        requested_stack_size="${arg#-zstack-size=}"
+        consider_lld_stack_size "$requested_stack_size"
+        ;;
+    esac
+    index=$((index + 1))
+  done
+}
 
 idx=0
+clang_options_ended=0
 while [[ "$idx" -lt "${#filtered[@]}" ]]; do
   arg="${filtered[$idx]}"
+  if [[ "$clang_options_ended" -eq 1 ]]; then
+    case "$arg" in
+      *.c|*.cc|*.cpp|*.cxx|*.C) source_inputs+=("$arg") ;;
+      *) object_inputs+=("$arg") ;;
+    esac
+    idx=$((idx + 1))
+    continue
+  fi
   case "$arg" in
+    --)
+      clang_options_ended=1
+      ;;
     -o)
       idx=$((idx + 1))
       [[ "$idx" -lt "${#filtered[@]}" ]] || die "-o requires an output path"
@@ -187,7 +546,19 @@ while [[ "$idx" -lt "${#filtered[@]}" ]]; do
       ;;
     -Wl,*)
       IFS=',' read -r -a wl_parts <<< "${arg#-Wl,}"
-      user_link_args+=("${wl_parts[@]}")
+      for part in "${wl_parts[@]}"; do
+        [[ -z "$part" ]] || user_link_args+=("$part")
+      done
+      ;;
+    -Xlinker)
+      idx=$((idx + 1))
+      [[ "$idx" -lt "${#filtered[@]}" ]] || die "-Xlinker requires an argument"
+      user_link_args+=("${filtered[$idx]}")
+      ;;
+    -z)
+      idx=$((idx + 1))
+      [[ "$idx" -lt "${#filtered[@]}" ]] || die "-z requires an argument"
+      user_link_args+=("-z" "${filtered[$idx]}")
       ;;
     -L)
       idx=$((idx + 1))
@@ -203,6 +574,9 @@ while [[ "$idx" -lt "${#filtered[@]}" ]]; do
   esac
   idx=$((idx + 1))
 done
+
+inspect_lld_stack_sizes "${user_link_args[@]}"
+exe_link_flags+=("-Wl,-z,stack-size=${main_thread_stack_size}")
 
 compiled_objects=()
 for src in "${source_inputs[@]}"; do
