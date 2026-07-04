@@ -188,6 +188,7 @@ leave unresolved host imports in linked programs.
 -Wl,--import-memory                # Memory provided by host
 -Wl,--shared-memory                # Enable SharedArrayBuffer
 -Wl,--max-memory=1073741824        # 1GB max memory
+-Wl,-z,stack-size=8388608          # 8 MiB main-thread shadow stack (see below)
 -Wl,--global-base=1114112          # Data segment start
 -Wl,--no-stack-first               # LLVM 22+: preserve stack-after-data layout
 -Wl,--allow-undefined              # Host imports are resolved at load time
@@ -196,6 +197,95 @@ leave unresolved host imports in linked programs.
 -Wl,--export=__tls_base            # Required for TLS
 -Wl,--export=__wasm_init_tls       # TLS initialization
 ```
+
+#### Why an 8 MiB main-thread stack
+
+wasm-ld's default shadow stack is only ~64 KiB. WebAssembly has **no stack
+guard page**, so a program that overflows the shadow stack does not fault at the
+overflow — `__stack_pointer` simply keeps decrementing past `__data_end` and
+silently overwrites whatever lives at the top of `.bss`. On this platform that
+region holds the pthread/TLS globals (`__wasm_tp_storage`, the main thread's
+`struct pthread`, and `__pthread_tsd_main`), so an overflow corrupts thread-local
+storage and later surfaces as a **spurious "memory access out of bounds"** in an
+unrelated function (e.g. `__pthread_getspecific` or `pthread_mutex_lock`) — far
+from the actual overflow. Deep call chains in ordinary libraries hit this
+easily; GTK's `gdk_pixbuf_new_from_file` → GObject type-registration → glib
+chain is one confirmed case (see `docs/kandelo-lxde-desktop-demo.md`).
+
+POSIX does **not** mandate a default stack size — it is implementation-defined,
+with `RLIMIT_STACK` governing the main thread. We reserve **8 MiB** because that
+is the de-facto default soft `RLIMIT_STACK` on Linux/glibc (and macOS), so the
+large body of C software written and tested on Linux already assumes it fits
+within those bounds. Because a WebAssembly shadow stack cannot grow at runtime,
+the reservation is fixed at link time.
+
+Scope and cost:
+- **Main thread only.** This flag sizes the process's initial shadow stack.
+  Threads created via `pthread_create` get their own stacks from musl's
+  `__default_stacksize` (128 KiB by default), independent of this flag — an
+  8 MiB main stack does **not** multiply per thread.
+- **At least ~8 MiB of initial linear memory per process.** A larger stack raises
+  `__heap_base` 1:1, so each process instance reserves the extra space up front.
+  This is per-process; a `fork()`ed child is a separate address space with the
+  same configured main stack size.
+- The engine's native Wasm call stack (operand stack / call frames) is separate
+  and host/engine-managed; it is not part of this linear-memory reservation.
+
+The SDK treats 8 MiB as a floor. It appends the larger of that floor and every
+valid user stack request after the other linker arguments, where lld gives it
+final precedence. The Node-hosted driver first asks pinned Clang for a `-###`
+job trace without injecting executable glue. Compiler-only traces, including
+`-fsyntax-only`, dependency generation, and analyzer jobs hidden in response
+files, continue without link preparation. Confirmed executable links get a
+second `-###` trace with the complete SDK link inputs, and the SDK scans the
+exact `wasm-ld` argument vector Clang emits. This leaves option classification
+and ordering in Clang: positional inputs, `-Wl,`, `-Xlinker`, and direct `-z`
+transports cannot be misclassified by a duplicate SDK option table. A failed,
+missing, or ambiguous linker trace aborts before the real link. These traces are
+driver-only invocations and do not compile; they add two Clang processes per
+executable link and one for an otherwise-unrecognized compiler-only mode.
+
+The Kandelo-native driver also uses a non-compiling Clang job trace to preserve
+compiler-only modes before entering its manual link path. For a confirmed link,
+it invokes the adjacent `wasm-ld` directly and scans the exact linker arguments
+it has already classified.
+
+Relative lld response paths follow Clang's effective `-working-directory`,
+including when that option comes from a top-level Clang response file,
+configuration file, or environment override. The SDK reads the driver-owned cwd
+slot in the pinned Clang trace and fails before linking if the trace omits or
+contradicts that invariant. Debug, coverage, and file compilation-directory
+options do not affect linker response resolution.
+
+LLVM 21 accepts the lld forms `-z stack-size=<bytes>` and
+`-zstack-size=<bytes>`. Stack sizes follow LLVM 21's radix-0 integer syntax:
+decimal, leading-zero or `0o` octal, `0x`/`0X` hexadecimal, and `0b`/`0B`
+binary.
+
+Clang expands its response files when producing the trace. The SDK expands any
+remaining lld response files, including nested `@file` references, using LLVM's
+POSIX response-file tokenization rules. Expansion uses an iterative work stack,
+not a nesting cutoff: both drivers inspect chains accepted by LLVM and reject
+missing or recursive response files before the real link. To bound hostile or
+accidental input, they also reject an expansion after 4,096 file expansions,
+1,048,576 examined tokens, or 64 MiB of decoded response text. These are
+explicit resource limits; exhausting one never falls back to the 8 MiB floor.
+This keeps quoted or escaped paths distinct from linker options and prevents
+object filenames containing `stack-size=` from changing the stack. Bare
+`stack-size=<bytes>` tokens, `-z=stack-size=<bytes>`, and options after `--` are
+not stack requests. Response-file contents are never rewritten.
+The Node-hosted SDK accepts LLVM's UTF-8, UTF-16LE-BOM, and UTF-16BE-BOM
+response encodings. The Kandelo-native Bash driver accepts UTF-8 response files
+and rejects either UTF-16 BOM before compiling or linking: Bash variables cannot
+retain UTF-16's embedded NUL bytes, and the packaged SDK does not declare a
+transcoding tool. Generate UTF-8 response files when building inside Kandelo.
+Invalid spellings stay visible to LLVM so it can reject them; a valid stack
+larger than the SDK's fixed 1 GiB executable-memory maximum fails in the driver
+instead of being silently replaced by the floor. Smaller legacy requests
+therefore still receive 8 MiB, while programs such as SpiderMonkey that
+explicitly need 16 MiB retain that larger reservation. Changing the platform
+floor or scanner requires updating both `sdk/kandelo/bin/wasm32posix-cc` and
+`sdk/src/lib/flags.ts`.
 
 ### Files linked automatically
 
