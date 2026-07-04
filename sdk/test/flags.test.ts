@@ -1,9 +1,11 @@
 import { describe, it, expect } from 'vitest';
 import {
   COMPILE_FLAGS,
+  DEFAULT_MAIN_THREAD_STACK_SIZE,
   filterArgs,
   inferThreadSlotDeclaration,
   LINK_FLAGS,
+  mainThreadStackSize,
   needsLinking,
   parseArgs,
   THREAD_SLOT_NONE,
@@ -52,6 +54,11 @@ describe('filterArgs', () => {
       '-Wl,-z,stack-size=16777216',
       'main.c',
     ]);
+    expect(result.filtered).toEqual(['-Wl,-z,stack-size=16777216', 'main.c']);
+  });
+
+  it('normalizes zero-padded decimal stack sizes for linker parity', () => {
+    const result = filterArgs(['-Wl,-z,stack-size=016777216', 'main.c']);
     expect(result.filtered).toEqual(['-Wl,-z,stack-size=16777216', 'main.c']);
   });
 
@@ -159,6 +166,36 @@ describe('LINK_FLAGS', () => {
     expect(LINK_FLAGS).toContain('-Wl,--entry=_start');
     expect(LINK_FLAGS).toContain('-Wl,--import-memory');
     expect(LINK_FLAGS).toContain('-Wl,--shared-memory');
+  });
+
+  it('reserves an 8 MiB main-thread shadow stack (wasm-ld default ~64 KiB is too small)', () => {
+    expect(LINK_FLAGS).toContain('-Wl,-z,stack-size=8388608');
+  });
+});
+
+describe('mainThreadStackSize', () => {
+  it('uses 8 MiB when no explicit stack size is requested', () => {
+    expect(mainThreadStackSize(['main.c'])).toBe(DEFAULT_MAIN_THREAD_STACK_SIZE);
+  });
+
+  it('raises smaller requests to the SDK floor', () => {
+    expect(mainThreadStackSize(['-Wl,-z,stack-size=1048576', 'main.c']))
+      .toBe(DEFAULT_MAIN_THREAD_STACK_SIZE);
+  });
+
+  it('retains the largest explicit request', () => {
+    expect(mainThreadStackSize([
+      '-Wl,-z,stack-size=1048576',
+      '-Wl,-z,stack-size=16777216',
+      'main.c',
+    ])).toBe(16 * 1024 * 1024);
+  });
+
+  it('retains larger requests in directly referenced linker response files', () => {
+    expect(mainThreadStackSize(
+      ['-Wl,@/tmp/objects.list'],
+      () => 'first.o\n-z\nstack-size=16777216\n',
+    )).toBe(16 * 1024 * 1024);
   });
 });
 

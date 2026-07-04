@@ -20,7 +20,68 @@ export function compileFlags(arch: WasmArch): string[] {
   ];
 }
 
-export function linkFlags(arch: WasmArch): string[] {
+export const DEFAULT_MAIN_THREAD_STACK_SIZE = 8 * 1024 * 1024;
+
+function parseDecimalStackSize(value: string): number | null {
+  if (!/^\d+$/.test(value)) return null;
+
+  const result = Number(value);
+  return Number.isSafeInteger(result) ? result : null;
+}
+
+function normalizeStackSizeLinkerArg(arg: string): string {
+  if (!arg.startsWith('-Wl,')) return arg;
+
+  const parts = arg.slice('-Wl,'.length).split(',');
+  for (let i = 0; i < parts.length; i++) {
+    if (!parts[i].startsWith('stack-size=')) continue;
+
+    const requested = parseDecimalStackSize(parts[i].slice('stack-size='.length));
+    if (requested !== null) parts[i] = `stack-size=${requested}`;
+  }
+  return `-Wl,${parts.join(',')}`;
+}
+
+/**
+ * Apply the SDK's stack-size floor while retaining explicit larger requests.
+ * clang passes each comma-delimited -Wl component to wasm-ld in order, so the
+ * effective value is the last stack-size flag emitted by buildClangArgs().
+ */
+export function mainThreadStackSize(
+  args: string[],
+  readResponseFile?: (path: string) => string | null,
+): number {
+  let result = DEFAULT_MAIN_THREAD_STACK_SIZE;
+
+  const consider = (value: string): void => {
+    const requested = parseDecimalStackSize(value);
+    if (requested !== null && requested > result) result = requested;
+  };
+
+  for (const arg of args) {
+    if (!arg.startsWith('-Wl,')) continue;
+
+    for (const part of arg.slice('-Wl,'.length).split(',')) {
+      if (part.startsWith('stack-size=')) {
+        consider(part.slice('stack-size='.length));
+      } else if (part.startsWith('@') && readResponseFile) {
+        const response = readResponseFile(part.slice(1));
+        if (response === null) continue;
+
+        for (const match of response.matchAll(/\bstack-size=(\d+)\b/g)) {
+          consider(match[1]);
+        }
+      }
+    }
+  }
+
+  return result;
+}
+
+export function linkFlags(
+  arch: WasmArch,
+  mainThreadStackSizeBytes = DEFAULT_MAIN_THREAD_STACK_SIZE,
+): string[] {
   return [
     '-nostdlib',
     '-Wl,--entry=_start',
@@ -30,6 +91,20 @@ export function linkFlags(arch: WasmArch): string[] {
     '-Wl,--shared-memory',
     '-Wl,--max-memory=1073741824',
     '-Wl,--allow-undefined',
+    // Reserve an 8 MiB main-thread shadow stack. wasm-ld's default is only
+    // ~64 KiB, and WebAssembly has no stack guard page, so a deep call chain
+    // silently overflows past __data_end into .bss and corrupts the pthread/TLS
+    // globals that live there (__wasm_tp_storage, __pthread_tsd_main), which
+    // then surfaces as a spurious "memory access out of bounds" far from the
+    // real fault. POSIX leaves the default stack size implementation-defined,
+    // but 8 MiB is the de-facto Linux/glibc RLIMIT_STACK default that mainstream
+    // C software (GTK, etc.) is written and tested against, so matching it
+    // maximizes portability. Treat it as a floor: callers retain explicit larger
+    // requests. This sizes only the main thread; pthreads get their own stacks
+    // from musl's __default_stacksize. Cost: at least ~8 MiB of initial linear
+    // memory per process (it raises __heap_base 1:1). Keep in sync with the bash
+    // wasm32posix-cc. See docs/sdk-guide.md.
+    `-Wl,-z,stack-size=${mainThreadStackSizeBytes}`,
     '-Wl,--global-base=1114112',
     '-Wl,--table-base=3',
     '-Wl,--export-table',
@@ -112,7 +187,7 @@ export function filterArgs(args: string[], arch: WasmArch = 'wasm32'): FilterRes
       warnings.push(`${prefix}-cc: warning: ${arg} is not supported for Wasm targets (ignored)`);
       continue;
     }
-    filtered.push(arg);
+    filtered.push(normalizeStackSizeLinkerArg(arg));
   }
 
   return { filtered, warnings };

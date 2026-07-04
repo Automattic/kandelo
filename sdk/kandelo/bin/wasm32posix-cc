@@ -144,6 +144,17 @@ exe_link_flags=(
   -Wl,--shared-memory
   -Wl,--max-memory=1073741824
   -Wl,--allow-undefined
+  # Reserve an 8 MiB main-thread shadow stack. wasm-ld's default is only ~64 KiB,
+  # and WebAssembly has no stack guard page, so a deep call chain silently
+  # overflows past __data_end into .bss and corrupts the pthread/TLS globals that
+  # live there (__wasm_tp_storage, __pthread_tsd_main) -> spurious "memory access
+  # out of bounds". POSIX leaves the default stack size implementation-defined,
+  # but 8 MiB is the de-facto Linux/glibc RLIMIT_STACK default that mainstream C
+  # software (GTK, etc.) is written and tested against, so matching it maximizes
+  # portability. Treat it as a floor: explicit larger requests remain effective.
+  # Sizes the main thread only; pthreads use musl __default_stacksize. Cost: at
+  # least ~8 MiB initial linear memory per process (raises __heap_base 1:1). Keep
+  # in sync with sdk/src/lib/flags.ts. See docs/sdk-guide.md.
   -Wl,--global-base=1114112
   -Wl,--table-base=3
   -Wl,--export-table
@@ -166,6 +177,7 @@ compile_args=()
 source_inputs=()
 object_inputs=()
 user_link_args=()
+main_thread_stack_size=8388608
 
 idx=0
 while [[ "$idx" -lt "${#filtered[@]}" ]]; do
@@ -187,6 +199,38 @@ while [[ "$idx" -lt "${#filtered[@]}" ]]; do
       ;;
     -Wl,*)
       IFS=',' read -r -a wl_parts <<< "${arg#-Wl,}"
+      for part_index in "${!wl_parts[@]}"; do
+        part="${wl_parts[$part_index]}"
+        case "$part" in
+          stack-size=*)
+            requested_stack_size="${part#stack-size=}"
+            if [[ "$requested_stack_size" =~ ^[0-9]+$ ]]; then
+              requested_stack_size=$((10#$requested_stack_size))
+              wl_parts[part_index]="stack-size=${requested_stack_size}"
+              if (( requested_stack_size > main_thread_stack_size )); then
+                main_thread_stack_size="$requested_stack_size"
+              fi
+            fi
+            ;;
+          @*)
+            response_path="${part#@}"
+            if [[ -f "$response_path" ]]; then
+              while IFS= read -r response_line || [[ -n "$response_line" ]]; do
+                response_remaining="$response_line"
+                while [[ "$response_remaining" =~ stack-size=([0-9]+) ]]; do
+                  response_match="${BASH_REMATCH[0]}"
+                  requested_stack_size="${BASH_REMATCH[1]}"
+                  requested_stack_size=$((10#$requested_stack_size))
+                  if (( requested_stack_size > main_thread_stack_size )); then
+                    main_thread_stack_size="$requested_stack_size"
+                  fi
+                  response_remaining="${response_remaining#*"$response_match"}"
+                done
+              done < "$response_path"
+            fi
+            ;;
+        esac
+      done
       user_link_args+=("${wl_parts[@]}")
       ;;
     -L)
@@ -203,6 +247,8 @@ while [[ "$idx" -lt "${#filtered[@]}" ]]; do
   esac
   idx=$((idx + 1))
 done
+
+exe_link_flags+=("-Wl,-z,stack-size=${main_thread_stack_size}")
 
 compiled_objects=()
 for src in "${source_inputs[@]}"; do

@@ -7,6 +7,7 @@ import {
   filterArgs,
   inferThreadSlotDeclaration,
   linkFlags,
+  mainThreadStackSize,
   needsLinking,
   parseArgs,
   SHARED_LINK_FLAGS,
@@ -85,7 +86,13 @@ export function buildClangArgs(userArgs: string[], toolchain: Toolchain, arch: W
       args.push(
         join(toolchain.sysroot, 'lib', 'crt1.o'),
         join(toolchain.sysroot, 'lib', 'libc.a'),
-        ...linkFlags(arch),
+        ...linkFlags(arch, mainThreadStackSize(filtered, (path) => {
+          try {
+            return readFileSync(path, 'utf8');
+          } catch {
+            return null;
+          }
+        })),
       );
     }
   }

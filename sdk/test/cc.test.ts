@@ -34,6 +34,27 @@ describe('buildClangArgs', () => {
     expect(args.join(' ')).toContain('libc.a');
   });
 
+  it('uses the 8 MiB stack floor for default and smaller requests', () => {
+    const defaultArgs = buildClangArgs(['foo.c', '-o', 'foo.wasm'], toolchain);
+    const smallerArgs = buildClangArgs([
+      'foo.c', '-Wl,-z,stack-size=1048576', '-o', 'foo.wasm',
+    ], toolchain);
+
+    expect(defaultArgs.filter((arg) => arg.includes('stack-size=')).at(-1))
+      .toBe('-Wl,-z,stack-size=8388608');
+    expect(smallerArgs.filter((arg) => arg.includes('stack-size=')).at(-1))
+      .toBe('-Wl,-z,stack-size=8388608');
+  });
+
+  it('retains explicit stack requests larger than the SDK floor', () => {
+    const args = buildClangArgs([
+      'foo.c', '-Wl,-z,stack-size=16777216', '-o', 'foo.wasm',
+    ], toolchain);
+
+    expect(args.filter((arg) => arg.includes('stack-size=')).at(-1))
+      .toBe('-Wl,-z,stack-size=16777216');
+  });
+
   it('link-only: object files without -c get link flags plus compile flags for glue', () => {
     const args = buildClangArgs(['foo.o', 'bar.o', '-o', 'out.wasm'], toolchain);
     expect(args).toContain('-Wl,--entry=_start');
