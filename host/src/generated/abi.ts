@@ -105,6 +105,151 @@ export const CH_SIG_HANDLER = 65564 as const;
 export const CH_SIG_FLAGS = 65568 as const;
 export const CH_SIG_OLD_MASK = 65576 as const;
 
+export const PROC_SNAPSHOT_COUNT_OFFSET = 0 as const;
+export const PROC_SNAPSHOT_COUNT_SIZE = 4 as const;
+export const PROC_SNAPSHOT_RECORD_FIXED_SIZE = 36 as const;
+export const PROC_SNAPSHOT_RECORD_FIELDS = {
+  pid: { offset: 0, size: 4, type: "u32" },
+  ppid: { offset: 4, size: 4, type: "u32" },
+  uid: { offset: 8, size: 4, type: "u32" },
+  gid: { offset: 12, size: 4, type: "u32" },
+  vsizeBytes: { offset: 16, size: 8, type: "u64" },
+  state: { offset: 24, size: 4, type: "u32_ascii" },
+  commLen: { offset: 28, size: 4, type: "u32" },
+  cmdlineLen: { offset: 32, size: 4, type: "u32" },
+} as const;
+
+export const WAKEUP_EVENT_RECORD_SIZE = 5 as const;
+export const WAKEUP_EVENT_TYPE_READABLE = 1 as const;
+export const WAKEUP_EVENT_TYPE_WRITABLE = 2 as const;
+export const WAKEUP_EVENT_TYPE_ACCEPT = 4 as const;
+export const WAKEUP_EVENT_TYPES = {
+  readable: WAKEUP_EVENT_TYPE_READABLE,
+  writable: WAKEUP_EVENT_TYPE_WRITABLE,
+  accept: WAKEUP_EVENT_TYPE_ACCEPT,
+} as const;
+export const WAKEUP_EVENT_FIELDS = {
+  idx: { offset: 0, size: 4, type: "u32" },
+  wakeType: { offset: 4, size: 1, type: "u8" },
+} as const;
+
+export const POLL_EVENTS = {
+  POLLIN: 1,
+  POLLPRI: 2,
+  POLLOUT: 4,
+  POLLERR: 8,
+  POLLHUP: 16,
+  POLLNVAL: 32,
+} as const;
+
+export const EPOLL_EVENTS = {
+  EPOLLIN: 1,
+  EPOLLOUT: 4,
+  EPOLLERR: 8,
+  EPOLLHUP: 16,
+} as const;
+
+export const SELECT_FD_SETSIZE = 1024 as const;
+export const SELECT_FD_SET_BYTES = 128 as const;
+
+export const OPEN_FLAGS = {
+  O_RDONLY: 0,
+  O_WRONLY: 1,
+  O_RDWR: 2,
+  O_ACCMODE: 3,
+  O_CREAT: 64,
+  O_EXCL: 128,
+  O_NOCTTY: 256,
+  O_TRUNC: 512,
+  O_APPEND: 1024,
+  O_NONBLOCK: 2048,
+  O_DIRECTORY: 65536,
+  O_NOFOLLOW: 131072,
+  O_CLOEXEC: 524288,
+  O_CLOFORK: 8388608,
+} as const;
+
+export const AT_FLAGS = {
+  AT_FDCWD: -100,
+  AT_SYMLINK_NOFOLLOW: 256,
+  AT_REMOVEDIR: 512,
+  AT_EMPTY_PATH: 4096,
+} as const;
+
+export const FD_FLAGS = {
+  FD_CLOEXEC: 1,
+  FD_CLOFORK: 2,
+} as const;
+
+export const FCNTL_COMMANDS = {
+  F_DUPFD: 0,
+  F_GETFD: 1,
+  F_SETFD: 2,
+  F_GETFL: 3,
+  F_SETFL: 4,
+  F_GETLK: 12,
+  F_SETLK: 13,
+  F_SETLKW: 14,
+  F_SETOWN: 8,
+  F_GETOWN: 9,
+  F_DUPFD_CLOEXEC: 1030,
+  F_DUPFD_CLOFORK: 1028,
+  F_OFD_GETLK: 36,
+  F_OFD_SETLK: 37,
+  F_OFD_SETLKW: 38,
+} as const;
+
+export const ACCESS_MODES = {
+  F_OK: 0,
+  R_OK: 4,
+  W_OK: 2,
+  X_OK: 1,
+} as const;
+
+export const FILE_MODES = {
+  S_IFMT: 61440,
+  S_IFSOCK: 49152,
+  S_IFLNK: 40960,
+  S_IFREG: 32768,
+  S_IFBLK: 24576,
+  S_IFDIR: 16384,
+  S_IFCHR: 8192,
+  S_IFIFO: 4096,
+  S_ISUID: 2048,
+  S_ISGID: 1024,
+  S_ISVTX: 512,
+  S_IRWXU: 448,
+  S_IRUSR: 256,
+  S_IWUSR: 128,
+  S_IXUSR: 64,
+  S_IRWXG: 56,
+  S_IRGRP: 32,
+  S_IWGRP: 16,
+  S_IXGRP: 8,
+  S_IRWXO: 7,
+  S_IROTH: 4,
+  S_IWOTH: 2,
+  S_IXOTH: 1,
+  S_MODE_BITS: 4095,
+} as const;
+
+export const DIRENT_TYPES = {
+  DT_UNKNOWN: 0,
+  DT_FIFO: 1,
+  DT_CHR: 2,
+  DT_DIR: 4,
+  DT_BLK: 6,
+  DT_REG: 8,
+  DT_LNK: 10,
+  DT_SOCK: 12,
+} as const;
+
+export const SEEK_WHENCE = {
+  SEEK_SET: 0,
+  SEEK_CUR: 1,
+  SEEK_END: 2,
+} as const;
+
 export const STRUCT_SIZE_WASM_STAT = 88 as const;
 export const STRUCT_SIZE_WASM_DIRENT = 16 as const;
 export const STRUCT_SIZE_WASM_TIMESPEC = 16 as const;

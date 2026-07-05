@@ -22,6 +22,7 @@ use wasm_posix_shared::Errno;
 
 use crate::ofd::FileType;
 use crate::process::{Process, ProcessState, StdioConfig};
+use crate::socket::SocketState;
 
 const INITIAL_FORK_STATE_BUFFER_LEN: usize = 64 * 1024;
 const MAX_FORK_STATE_BUFFER_LEN: usize = 4 * 1024 * 1024;
@@ -55,6 +56,8 @@ pub struct ProcessTable {
     /// reentrantly, the TID should move into the syscall header or be passed as
     /// an explicit `kernel_handle_channel` argument.
     current_tid: u32,
+    /// Round-robin cursor for host-bridged TCP listener target selection.
+    tcp_listener_rr: BTreeMap<u16, usize>,
 }
 
 /// Outcome of `ProcessTable::remove_process`. Bundles the removed
@@ -195,6 +198,11 @@ fn bump_inherited_resource_refcounts(child: &Process) {
             }
         }
     }
+
+    let ipc = unsafe { crate::ipc::global_ipc_table() };
+    for mapping in &child.shm_mappings {
+        let _ = ipc.shm_attach_inherited(mapping.shmid, child.pid);
+    }
 }
 
 /// Build the fork-only `fork_pipe_replay` table: a list of (read_fd,
@@ -250,6 +258,7 @@ impl ProcessTable {
             current_pid: 0,
             next_spawn_pid: 2,
             current_tid: 0,
+            tcp_listener_rr: BTreeMap::new(),
         }
     }
 
@@ -458,6 +467,13 @@ impl ProcessTable {
         for (ofd_idx, ofd) in proc.ofd_table.iter() {
             let ofd_lock_owner = (ofd_idx as u32) | 0x80000000;
             fallback_locks.remove_for_handle(ofd.host_handle, ofd_lock_owner);
+        }
+
+        // Drop SysV shared-memory attachments that were still live when the
+        // process exited or was reaped.
+        let ipc = unsafe { crate::ipc::global_ipc_table() };
+        for mapping in &proc.shm_mappings {
+            let _ = ipc.shmdt(mapping.shmid, pid);
         }
 
         if retain_limbo_leader && proc.pgid == pid && self.group_has_member(pid) {
@@ -865,6 +881,62 @@ impl ProcessTable {
         self.processes.get(&pid).map(|proc| proc.ppid)
     }
 
+    /// Pick the process/fd that should receive the next host-bridged TCP
+    /// connection for `port`.
+    ///
+    /// JS still owns the actual `net.Server`/service-worker bridge, but the
+    /// process table owns which live process currently has an inherited
+    /// listening socket. When children inherited a listener through fork,
+    /// prefer them over the original parent just as the previous host-side
+    /// policy did.
+    pub fn pick_tcp_listener_target(&mut self, port: u16, exclude_pid: u32) -> Option<(u32, i32)> {
+        let mut targets = self.tcp_listener_targets(port, exclude_pid);
+        if targets.len() > 1 {
+            let children: Vec<(u32, i32)> = targets
+                .iter()
+                .copied()
+                .filter(|(pid, _fd)| self.processes.get(pid).is_some_and(|proc| proc.ppid > 0))
+                .collect();
+            if !children.is_empty() {
+                targets = children;
+            }
+        }
+
+        if targets.is_empty() {
+            self.tcp_listener_rr.remove(&port);
+            return None;
+        }
+
+        let idx = self.tcp_listener_rr.get(&port).copied().unwrap_or(0) % targets.len();
+        self.tcp_listener_rr.insert(port, idx + 1);
+        Some(targets[idx])
+    }
+
+    fn tcp_listener_targets(&self, port: u16, exclude_pid: u32) -> Vec<(u32, i32)> {
+        let mut targets = Vec::new();
+        for (&pid, proc) in &self.processes {
+            if pid == exclude_pid || proc.state != ProcessState::Running {
+                continue;
+            }
+            for (fd, entry) in proc.fd_table.iter() {
+                let Some(ofd) = proc.ofd_table.get(entry.ofd_ref.0) else {
+                    continue;
+                };
+                if ofd.file_type != FileType::Socket || ofd.host_handle >= 0 {
+                    continue;
+                }
+                let sock_idx = (-(ofd.host_handle + 1)) as usize;
+                let Some(sock) = proc.sockets.get(sock_idx) else {
+                    continue;
+                };
+                if sock.state == SocketState::Listening && sock.bind_port == port {
+                    targets.push((pid, fd));
+                }
+            }
+        }
+        targets
+    }
+
     /// Mark a process as terminated by a host-observed signal death.
     ///
     /// Used when the worker dies without reaching the normal `SYS_EXIT`
@@ -1220,5 +1292,59 @@ mod tests {
                 .is_none()
         );
         locks.clear();
+    }
+
+    #[test]
+    fn tcp_listener_target_policy_prefers_fork_children() {
+        let mut table = ProcessTable::new();
+        table.create_process(10).unwrap();
+        table.create_process(11).unwrap();
+        table.create_process(12).unwrap();
+        table.processes.get_mut(&11).unwrap().ppid = 10;
+        table.processes.get_mut(&12).unwrap().ppid = 10;
+
+        add_listening_socket(&mut table, 10, 8080, 3);
+        add_listening_socket(&mut table, 11, 8080, 3);
+        add_listening_socket(&mut table, 12, 8080, 3);
+
+        assert_eq!(table.pick_tcp_listener_target(8080, 0), Some((11, 3)));
+        assert_eq!(table.pick_tcp_listener_target(8080, 0), Some((12, 3)));
+        assert_eq!(table.pick_tcp_listener_target(8080, 0), Some((11, 3)));
+    }
+
+    #[test]
+    fn tcp_listener_target_policy_can_exclude_a_process_during_cleanup() {
+        let mut table = ProcessTable::new();
+        table.create_process(10).unwrap();
+        table.create_process(11).unwrap();
+        table.processes.get_mut(&11).unwrap().ppid = 10;
+
+        add_listening_socket(&mut table, 10, 8080, 3);
+        add_listening_socket(&mut table, 11, 8080, 3);
+
+        assert_eq!(table.pick_tcp_listener_target(8080, 10), Some((11, 3)));
+        assert_eq!(table.pick_tcp_listener_target(8080, 11), Some((10, 3)));
+        assert_eq!(table.pick_tcp_listener_target(9999, 0), None);
+    }
+
+    fn add_listening_socket(table: &mut ProcessTable, pid: u32, port: u16, fd: i32) {
+        use crate::fd::OpenFileDescRef;
+        use crate::socket::{SocketDomain, SocketInfo, SocketState, SocketType};
+        use wasm_posix_shared::flags::O_RDWR;
+
+        let proc = table.processes.get_mut(&pid).unwrap();
+        let mut sock = SocketInfo::new(SocketDomain::Inet, SocketType::Stream, 0);
+        sock.state = SocketState::Listening;
+        sock.bind_port = port;
+        let sock_idx = proc.sockets.alloc(sock);
+        let ofd_idx = proc.ofd_table.create(
+            FileType::Socket,
+            O_RDWR,
+            -((sock_idx as i64) + 1),
+            b"socket".to_vec(),
+        );
+        proc.fd_table
+            .alloc_at_min(OpenFileDescRef(ofd_idx), 0, fd)
+            .unwrap();
     }
 }

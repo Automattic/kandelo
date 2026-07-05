@@ -26,7 +26,7 @@ use crate::fd::{FdEntry, FdTable, OpenFileDescRef};
 use crate::lock::LockTable;
 use crate::memory::{MappedRegion, MemoryLayoutMetadata, MemoryManager};
 use crate::ofd::{FileType, OfdTable, OpenFileDesc};
-use crate::process::{Process, ProcessState};
+use crate::process::{Process, ProcessState, ShmMapping};
 use crate::signal::{SignalAction, SignalHandler, SignalState};
 use crate::socket::SocketTable;
 use crate::terminal::{NCCS, TerminalState, WinSize};
@@ -35,8 +35,9 @@ const FORK_MAGIC: u32 = 0x464F524B; // "FORK"
 const EXEC_MAGIC: u32 = 0x45584543; // "EXEC"
 // v9 adds the per-OFD DRI sidecar block: a u8 variant tag followed by
 // `DriFdState` / `KmsFdState` / `PrimeBoState` payload as appropriate.
+// v10 adds the SysV shared-memory attachment block after sockets.
 // See `write_dri_state` / `read_dri_state` below.
-const FORK_VERSION: u32 = 9;
+const FORK_VERSION: u32 = 10;
 
 // Bounds for deserialization to prevent OOM from malformed buffers.
 const MAX_FDS: u32 = 65536;
@@ -44,6 +45,7 @@ const MAX_OFDS: u32 = 65536;
 const MAX_ENV_VARS: u32 = 65536;
 const MAX_ARGV: u32 = 65536;
 const MAX_PATH_LEN: usize = 1048576; // 1 MiB
+const MAX_SHM_MAPPINGS: usize = 4096;
 const MAX_STRING_LEN: usize = 1048576; // 1 MiB
 
 // ── Writer helper ───────────────────────────────────────────────────────────
@@ -749,6 +751,14 @@ pub fn serialize_fork_state(proc: &Process, buf: &mut [u8]) -> Result<usize, Err
         }
     }
 
+    // ── SysV shared-memory attachments (v7) ──
+    w.write_u32(proc.shm_mappings.len() as u32)?;
+    for mapping in &proc.shm_mappings {
+        w.write_u32(mapping.addr as u32)?;
+        w.write_u32(mapping.shmid as u32)?;
+        w.write_u32(mapping.size as u32)?;
+    }
+
     // ── Patch total_size ──
     let total = w.pos as u32;
     w.patch_u32(total_size_offset, total);
@@ -1160,6 +1170,22 @@ pub fn deserialize_fork_state(buf: &[u8], child_pid: u32) -> Result<Process, Err
         }
     }
 
+    // ── SysV shared-memory attachments (v7) ──
+    let mut shm_mappings = Vec::new();
+    if r.remaining() >= 4 {
+        let count = r.read_u32()? as usize;
+        if count > MAX_SHM_MAPPINGS {
+            return Err(Errno::EINVAL);
+        }
+        shm_mappings = Vec::with_capacity(count);
+        for _ in 0..count {
+            let addr = r.read_u32()? as usize;
+            let shmid = r.read_u32()? as i32;
+            let size = r.read_u32()? as usize;
+            shm_mappings.push(ShmMapping { addr, shmid, size });
+        }
+    }
+
     Ok(Process {
         pid: child_pid,
         ppid,
@@ -1227,6 +1253,7 @@ pub fn deserialize_fork_state(buf: &[u8], child_pid: u32) -> Result<Process, Err
         // has not been told where to mirror anything; the child must
         // re-mmap to re-establish bindings, mirroring `fb_binding`.
         dri_bindings: Vec::new(),
+        shm_mappings,
         fork_count: 0,
     })
 }
@@ -1628,6 +1655,7 @@ pub fn deserialize_exec_state(buf: &[u8], pid: u32) -> Result<Process, Errno> {
         // exec replaces the address space, so every DRI bo binding
         // is gone — the new image must re-mmap.
         dri_bindings: Vec::new(),
+        shm_mappings: Vec::new(),
         // The fork counter exists as a kernel-side regression guardrail.
         // Resetting on exec keeps semantics simple: the next spawn-from-this-pid
         // test starts from a clean slate. The plan's regression check inspects
@@ -1776,6 +1804,19 @@ mod tests {
     }
 
     #[test]
+    fn test_fork_state_preserves_shm_mappings() {
+        let mut proc = Process::new(1);
+        proc.record_shm_mapping(0x20000, 17, 4096);
+
+        let mut buf = vec![0u8; 64 * 1024];
+        let written = serialize_fork_state(&proc, &mut buf).unwrap();
+        let child = deserialize_fork_state(&buf[..written], 42).unwrap();
+
+        assert_eq!(child.shm_mapping_at(0x20000).unwrap().shmid, 17);
+        assert_eq!(child.shm_mapping_at(0x20000).unwrap().size, 4096);
+    }
+
+    #[test]
     fn test_buffer_too_small() {
         let proc = Process::new(1);
         let mut buf = vec![0u8; 8];
@@ -1794,7 +1835,8 @@ mod tests {
 
     #[test]
     fn test_exec_roundtrip_default_process() {
-        let proc = Process::new(1);
+        let mut proc = Process::new(1);
+        proc.record_shm_mapping(0x20000, 17, 4096);
         let mut buf = vec![0u8; 64 * 1024];
         let written = serialize_exec_state(&proc, &mut buf).unwrap();
         assert!(written > 12);
@@ -1804,6 +1846,7 @@ mod tests {
         assert_eq!(restored.pid, 1);
         assert_eq!(restored.ppid, 0); // default ppid
         assert_eq!(restored.signals.pending, 0);
+        assert!(restored.shm_mappings.is_empty());
     }
 
     #[test]

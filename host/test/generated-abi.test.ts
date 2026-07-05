@@ -6,6 +6,8 @@ import {
   ABI_SYSCALL_NAMES,
   ABI_SYSCALLS,
   ABI_VERSION,
+  ACCESS_MODES,
+  AT_FLAGS,
   CHANNEL_STATUS,
   CH_ARG_SIZE,
   CH_ARGS,
@@ -23,6 +25,11 @@ import {
   CH_STATUS,
   CH_SYSCALL,
   CH_TOTAL_SIZE,
+  DIRENT_TYPES,
+  EPOLL_EVENTS,
+  FCNTL_COMMANDS,
+  FD_FLAGS,
+  FILE_MODES,
   HOST_ADAPTER_MANIFEST_FIELDS,
   HOST_ADAPTER_MANIFEST_MAGIC,
   HOST_ADAPTER_MANIFEST_SIZE,
@@ -34,6 +41,7 @@ import {
   HOST_ADAPTER_VERSION,
   HOST_ADAPTER_WORKER_FEATURES,
   HOST_INTERCEPTED_SYSCALLS,
+  OPEN_FLAGS,
   PROCESS_MEMORY_DEFAULT_INITIAL_PAGES,
   PROCESS_MEMORY_DEFAULT_MAX_PAGES,
   PROCESS_MEMORY_DEFAULT_THREAD_SLOTS,
@@ -52,12 +60,23 @@ import {
   PROCESS_MEMORY_THREAD_SLOTS_NONE,
   PROCESS_MEMORY_THREAD_SLOTS_USE_HOST_DEFAULT,
   PROCESS_MEMORY_WASM_PAGE_SIZE,
+  POLL_EVENTS,
+  PROC_SNAPSHOT_COUNT_OFFSET,
+  PROC_SNAPSHOT_COUNT_SIZE,
+  PROC_SNAPSHOT_RECORD_FIELDS,
+  PROC_SNAPSHOT_RECORD_FIXED_SIZE,
+  SELECT_FD_SET_BYTES,
+  SELECT_FD_SETSIZE,
+  SEEK_WHENCE,
   STRUCT_SIZE_WASM_DIRENT,
   STRUCT_SIZE_WASM_POLL_FD,
   STRUCT_SIZE_WASM_STAT,
   STRUCT_SIZE_WASM_STATFS,
   STRUCT_SIZE_WASM_TIMESPEC,
   SYSCALL_ARGS,
+  WAKEUP_EVENT_FIELDS,
+  WAKEUP_EVENT_RECORD_SIZE,
+  WAKEUP_EVENT_TYPES,
 } from "../src/generated/abi";
 
 const snapshot = JSON.parse(
@@ -91,10 +110,26 @@ function namedNumberMap(entries: NamedNumber[]): Record<string, number> {
   return Object.fromEntries(entries.map(({ name, number }) => [name, number]));
 }
 
+function namedValueMap(entries: Array<{ name: string; value: number }>): Record<string, number> {
+  return Object.fromEntries(entries.map(({ name, value }) => [name, value]));
+}
+
 function hostAdapterManifestField(name: string): { offset: number; size: number } {
   const field = snapshot.host_adapter.manifest_fields.find((f: { name: string }) => f.name === name);
   if (!field) throw new Error(`missing host_adapter manifest field ${name}`);
   return { offset: field.offset, size: field.size };
+}
+
+function processSnapshotField(name: string): { offset: number; size: number; type: string } {
+  const field = snapshot.process_snapshot.record_fields.find((f: { name: string }) => f.name === name);
+  if (!field) throw new Error(`missing process_snapshot field ${name}`);
+  return { offset: field.offset, size: field.size, type: field.type };
+}
+
+function wakeupEventField(name: string): { offset: number; size: number; type: string } {
+  const field = snapshot.wakeup_events.fields.find((f: { name: string }) => f.name === name);
+  if (!field) throw new Error(`missing wakeup_events field ${name}`);
+  return { offset: field.offset, size: field.size, type: field.type };
 }
 
 describe("generated host ABI bindings", () => {
@@ -216,5 +251,57 @@ describe("generated host ABI bindings", () => {
       .toBe(layout.thread_slot.pages.find((p: { name: string }) => p.name === "syscall_channel_primary").page_offset);
     expect(PROCESS_MEMORY_THREAD_SLOT_CHANNEL_SPILL_PAGE)
       .toBe(layout.thread_slot.pages.find((p: { name: string }) => p.name === "syscall_channel_spill").page_offset);
+  });
+
+  it("match Rust-owned process snapshot schema metadata", () => {
+    expect(PROC_SNAPSHOT_COUNT_OFFSET).toBe(snapshot.process_snapshot.count_offset);
+    expect(PROC_SNAPSHOT_COUNT_SIZE).toBe(snapshot.process_snapshot.count_size);
+    expect(PROC_SNAPSHOT_RECORD_FIXED_SIZE).toBe(
+      snapshot.process_snapshot.record_fixed_size,
+    );
+
+    for (const fieldName of Object.keys(PROC_SNAPSHOT_RECORD_FIELDS)) {
+      expect(
+        PROC_SNAPSHOT_RECORD_FIELDS[
+          fieldName as keyof typeof PROC_SNAPSHOT_RECORD_FIELDS
+        ],
+      ).toEqual(processSnapshotField(fieldName));
+    }
+  });
+
+  it("match Rust-owned wakeup event schema metadata", () => {
+    expect(WAKEUP_EVENT_RECORD_SIZE).toBe(snapshot.wakeup_events.record_size);
+    expect(Object.entries(WAKEUP_EVENT_TYPES)).toEqual(
+      snapshot.wakeup_events.types.map((t: { name: string; bit: number }) => [
+        t.name,
+        t.bit,
+      ]),
+    );
+
+    for (const fieldName of Object.keys(WAKEUP_EVENT_FIELDS)) {
+      expect(
+        WAKEUP_EVENT_FIELDS[
+          fieldName as keyof typeof WAKEUP_EVENT_FIELDS
+        ],
+      ).toEqual(wakeupEventField(fieldName));
+    }
+  });
+
+  it("match Rust-owned I/O multiplexing metadata", () => {
+    expect(POLL_EVENTS).toEqual(namedValueMap(snapshot.io_multiplexing.poll_events));
+    expect(EPOLL_EVENTS).toEqual(namedValueMap(snapshot.io_multiplexing.epoll_events));
+    expect(SELECT_FD_SETSIZE).toBe(snapshot.io_multiplexing.select.fd_setsize);
+    expect(SELECT_FD_SET_BYTES).toBe(snapshot.io_multiplexing.select.fd_set_bytes);
+  });
+
+  it("match Rust-owned VFS metadata", () => {
+    expect(OPEN_FLAGS).toEqual(namedValueMap(snapshot.vfs_metadata.open_flags));
+    expect(AT_FLAGS).toEqual(namedValueMap(snapshot.vfs_metadata.at_flags));
+    expect(FD_FLAGS).toEqual(namedValueMap(snapshot.vfs_metadata.fd_flags));
+    expect(FCNTL_COMMANDS).toEqual(namedValueMap(snapshot.vfs_metadata.fcntl_commands));
+    expect(ACCESS_MODES).toEqual(namedValueMap(snapshot.vfs_metadata.access_modes));
+    expect(FILE_MODES).toEqual(namedValueMap(snapshot.vfs_metadata.file_modes));
+    expect(DIRENT_TYPES).toEqual(namedValueMap(snapshot.vfs_metadata.dirent_types));
+    expect(SEEK_WHENCE).toEqual(namedValueMap(snapshot.vfs_metadata.seek_whence));
   });
 });

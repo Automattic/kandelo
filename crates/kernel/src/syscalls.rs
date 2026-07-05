@@ -5075,8 +5075,6 @@ pub fn sys_execveat(
     path: &[u8],
     flags: u32,
 ) -> Result<(), Errno> {
-    const AT_EMPTY_PATH: u32 = 0x1000;
-
     if flags & AT_EMPTY_PATH != 0 && path.is_empty() {
         // fexecve path: exec the file referenced by dirfd
         let entry = proc.fd_table.get(dirfd)?;

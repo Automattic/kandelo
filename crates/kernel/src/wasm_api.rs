@@ -1682,6 +1682,36 @@ pub extern "C" fn kernel_get_parent_pid(pid: u32) -> i32 {
     }
 }
 
+/// Pick the next live process/fd that should receive a host-bridged TCP
+/// connection for `port`.
+///
+/// Writes `{ u32 pid, i32 fd }` to `out_ptr`; returns 1 if a target was
+/// written, 0 if none exists, or negative errno.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_pick_tcp_listener_target(
+    port: u32,
+    exclude_pid: u32,
+    out_ptr: *mut u8,
+) -> i32 {
+    if out_ptr.is_null() {
+        return -(Errno::EFAULT as i32);
+    }
+    if port > u16::MAX as u32 {
+        return -(Errno::EINVAL as i32);
+    }
+
+    let table = unsafe { &mut *PROCESS_TABLE.0.get() };
+    match table.pick_tcp_listener_target(port as u16, exclude_pid) {
+        Some((pid, fd)) => {
+            let out = unsafe { core::slice::from_raw_parts_mut(out_ptr, 8) };
+            out[0..4].copy_from_slice(&pid.to_le_bytes());
+            out[4..8].copy_from_slice(&fd.to_le_bytes());
+            1
+        }
+        None => 0,
+    }
+}
+
 /// Mark a process as signal-terminated without removing it from the table.
 ///
 /// Used by the host when the Worker dies before the guest reaches SYS_EXIT.
@@ -1935,7 +1965,7 @@ pub extern "C" fn kernel_enum_procs(out_ptr: *mut u8, out_len: u32) -> i32 {
     // First pass: compute total bytes we need to write so we can fail fast
     // on a too-small buffer rather than partial-writing. Skip zombies on
     // the count too so the size estimate matches what we actually emit.
-    const HDR_BYTES: usize = 4 + 4 + 4 + 4 + 4 + 8 + 4 + 4 + 4; // 40 bytes per record
+    const HDR_BYTES: usize = wasm_posix_shared::process_snapshot::RECORD_FIXED_SIZE;
     let mut need: usize = 4; // count u32
     for pid in &pids {
         let proc = match table.get(*pid) {
@@ -2301,6 +2331,10 @@ pub extern "C" fn kernel_exec_setup(pid: u32) -> i32 {
     match crate::fork::deserialize_exec_state(&buf[..written], pid) {
         Ok(new_proc) => {
             table.get_mut(pid).map(|p| {
+                let ipc = unsafe { crate::ipc::global_ipc_table() };
+                for mapping in &p.shm_mappings {
+                    let _ = ipc.shmdt(mapping.shmid, pid);
+                }
                 *p = new_proc;
                 p.has_exec = true;
             });
@@ -3397,7 +3431,7 @@ fn dispatch_channel_syscall(nr: u32, args: &[i64; 6]) -> i32 {
         }
         // SYS_SHMAT (345), SYS_SHMDT (346): intercepted by host for process memory management
         345 => kernel_ipc_shmat(a1, a2, a3),
-        346 => kernel_ipc_shmdt(a1),
+        346 => kernel_ipc_shmdt_addr(a1 as usize),
         347 => {
             // SYS_SHMCTL: (shmid, cmd, buf_ptr)
             let ipc = unsafe { crate::ipc::global_ipc_table() };
@@ -4258,6 +4292,34 @@ pub extern "C" fn kernel_ipc_shmat(shmid: i32, _shmaddr: i32, flags: i32) -> i32
     }
 }
 
+/// Record the process address chosen by the host-managed mmap for a SysV
+/// shared-memory attachment.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_ipc_shm_record_mapping(addr: usize, shmid: i32, size: u32) -> i32 {
+    let (_guard, proc) = unsafe { get_process() };
+    proc.record_shm_mapping(addr, shmid, size as usize);
+    0
+}
+
+/// Look up a SysV shared-memory attachment by process address.
+/// Writes `{ i32 shmid, u32 size }` to `out_ptr`.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_ipc_shm_lookup_mapping(addr: usize, out_ptr: *mut u8) -> i32 {
+    if out_ptr.is_null() {
+        return -(Errno::EFAULT as i32);
+    }
+
+    let (_guard, proc) = unsafe { get_process() };
+    let Some(mapping) = proc.shm_mapping_at(addr) else {
+        return -(Errno::EINVAL as i32);
+    };
+
+    let out = unsafe { core::slice::from_raw_parts_mut(out_ptr, 8) };
+    out[0..4].copy_from_slice(&mapping.shmid.to_le_bytes());
+    out[4..8].copy_from_slice(&(mapping.size as u32).to_le_bytes());
+    0
+}
+
 /// Detach from shared memory segment.
 /// Host should call kernel_ipc_shm_write_chunk first to sync data back.
 #[unsafe(no_mangle)]
@@ -4265,6 +4327,22 @@ pub extern "C" fn kernel_ipc_shmdt(shmid: i32) -> i32 {
     let ipc = unsafe { crate::ipc::global_ipc_table() };
     let pid = unsafe { &*PROCESS_TABLE.0.get() }.current_pid();
     match ipc.shmdt(shmid, pid) {
+        Ok(()) => 0,
+        Err(e) => -(e as i32),
+    }
+}
+
+/// Detach from a shared-memory segment by process address.
+/// Host should call kernel_ipc_shm_lookup_mapping and sync data back first.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_ipc_shmdt_addr(addr: usize) -> i32 {
+    let ipc = unsafe { crate::ipc::global_ipc_table() };
+    let (_guard, proc) = unsafe { get_process() };
+    let Some(mapping) = proc.remove_shm_mapping(addr) else {
+        return -(Errno::EINVAL as i32);
+    };
+
+    match ipc.shmdt(mapping.shmid, proc.pid) {
         Ok(()) => 0,
         Err(e) => -(e as i32),
     }
@@ -9212,6 +9290,46 @@ pub extern "C" fn kernel_timer_delete(timerid: i32) -> i32 {
     0
 }
 
+/// Drain the process-owned timer cleanup list for host-side timer handles.
+///
+/// Writes `{ u32 cancel_alarm, u32 posix_count, u32 timer_ids[posix_count] }`
+/// to `out_ptr`, clears the Rust timer state, and returns `posix_count`.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_take_process_timer_cleanup(
+    pid: u32,
+    out_ptr: *mut u8,
+    max_timer_ids: u32,
+) -> i32 {
+    if out_ptr.is_null() {
+        return -(Errno::EFAULT as i32);
+    }
+
+    let table = unsafe { &mut *PROCESS_TABLE.0.get() };
+    let Some(proc) = table.get_mut(pid) else {
+        return -(Errno::ESRCH as i32);
+    };
+
+    let timer_count = proc
+        .posix_timers
+        .iter()
+        .filter(|slot| slot.is_some())
+        .count();
+    if timer_count > max_timer_ids as usize {
+        return -(Errno::EINVAL as i32);
+    }
+
+    let cleanup = proc.take_host_timer_cleanup();
+    let out_len = 8 + cleanup.posix_timer_ids.len() * 4;
+    let out = unsafe { core::slice::from_raw_parts_mut(out_ptr, out_len) };
+    out[0..4].copy_from_slice(&(cleanup.cancel_alarm as u32).to_le_bytes());
+    out[4..8].copy_from_slice(&(cleanup.posix_timer_ids.len() as u32).to_le_bytes());
+    for (idx, timer_id) in cleanup.posix_timer_ids.iter().enumerate() {
+        let offset = 8 + idx * 4;
+        out[offset..offset + 4].copy_from_slice(&(*timer_id as u32).to_le_bytes());
+    }
+    cleanup.posix_timer_ids.len() as i32
+}
+
 /// Called by the host when a repeating POSIX timer fires to increment the overrun counter.
 /// This is used for timer_getoverrun() support.
 #[unsafe(no_mangle)]
@@ -9428,12 +9546,17 @@ pub extern "C" fn kernel_get_robust_list(_pid: u32, _head_ptr: usize, _len_ptr: 
 
 /// thread_exit — clean up thread state in the kernel.
 /// Called by the host when a thread Worker exits.
-/// Removes the thread from the process's thread table.
+/// Removes the thread from the process's thread table and returns the
+/// CLONE_CHILD_CLEARTID pointer recorded in ThreadInfo, or 0 if no clear-tid
+/// wake is needed.
 #[unsafe(no_mangle)]
 pub extern "C" fn kernel_thread_exit(pid: u32, tid: u32) -> i32 {
     let pt = unsafe { &mut *PROCESS_TABLE.0.get() };
     if let Some(proc) = pt.get_mut(pid) {
-        proc.remove_thread(tid);
+        return proc
+            .remove_thread(tid)
+            .map(|thread| thread.ctid_ptr as i32)
+            .unwrap_or(0);
     }
     0
 }
