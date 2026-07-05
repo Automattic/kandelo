@@ -30,7 +30,8 @@ for the port baseline and bundled libraries such as `lodepng`, but the
 Kandelo backend replaces the upstream SDL presentation path with the kernel's
 direct-rendering surface. Lua is provided by the separate `lua` registry
 package and linked as `liblua.a`. The native backend reads `love.conf` before
-opening the KMS presenter, allocates scanout buffers at the game-requested
+opening the KMS presenter, preserves the advertised connector mode for
+fullscreen/window queries, allocates scanout buffers at the game-requested
 window size, and leaves browser-side upscaling to the Kandelo KMS surface.
 
 The BYTEPATH staging step pins upstream `a327ex/BYTEPATH` and keeps the MIT

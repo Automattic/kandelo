@@ -60,6 +60,7 @@ extern "C" {
 extern "C" bool kandelo_love_register_native_renderer(lua_State *L, const char *root,
                                                        int width, int height,
                                                        int pixelWidth, int pixelHeight,
+                                                       int desktopWidth, int desktopHeight,
                                                        bool (*swap)());
 
 namespace {
@@ -234,6 +235,8 @@ struct Runtime {
   uint32_t kmsCrtcId = 0;
   uint32_t kmsConnId = 0;
   drmModeModeInfo kmsMode{};
+  int desktopW = kLogicalWidth;
+  int desktopH = kLogicalHeight;
   int kmsCurrentFb = 0;
   EGLDisplay eglDisplay = EGL_NO_DISPLAY;
   EGLContext eglContext = EGL_NO_CONTEXT;
@@ -1360,6 +1363,8 @@ int setupKmsGl() {
     return 1;
   }
   G.kmsMode = conn->modes[0];
+  G.desktopW = std::max(1, int(G.kmsMode.hdisplay));
+  G.desktopH = std::max(1, int(G.kmsMode.vdisplay));
   setKmsModeDimensions(G.kmsMode, scanoutW, scanoutH);
   drmModeFreeConnector(conn);
   drmModeFreeResources(res);
@@ -1507,6 +1512,67 @@ int kmsPageflipWait() {
     return 1;
   }
   G.kmsCurrentFb = nextFb;
+  return 0;
+}
+
+int resizeKmsScanout(int width, int height) {
+  if (G.presenter != Presenter::KmsGl || G.drmFd < 0 || G.gbm == nullptr) return 0;
+
+  const int w = std::max(1, width);
+  const int h = std::max(1, height);
+  if (G.kmsMode.hdisplay == w && G.kmsMode.vdisplay == h) return 0;
+
+  gbm_bo *newBos[kKmsBoCount]{};
+  uint32_t newFbIds[kKmsBoCount]{};
+
+  for (int i = 0; i < kKmsBoCount; ++i) {
+    newBos[i] = gbm_bo_create(G.gbm, w, h, GBM_FORMAT_XRGB8888, GBM_BO_USE_SCANOUT);
+    if (!newBos[i]) {
+      perror("gbm_bo_create resize");
+      for (int j = 0; j < i; ++j) {
+        if (newFbIds[j]) drmModeRmFB(G.drmFd, newFbIds[j]);
+        if (newBos[j]) gbm_bo_destroy(newBos[j]);
+      }
+      return 1;
+    }
+
+    uint32_t handle = gbm_bo_get_handle(newBos[i]).u32;
+    uint32_t stride = gbm_bo_get_stride(newBos[i]);
+    uint32_t handles[4] = {handle, 0, 0, 0};
+    uint32_t pitches[4] = {stride, 0, 0, 0};
+    uint32_t offsets[4] = {0, 0, 0, 0};
+    if (drmModeAddFB2(G.drmFd, w, h, DRM_FORMAT_XRGB8888, handles, pitches, offsets,
+                      &newFbIds[i], 0) != 0) {
+      perror("drmModeAddFB2 resize");
+      for (int j = 0; j <= i; ++j) {
+        if (newFbIds[j]) drmModeRmFB(G.drmFd, newFbIds[j]);
+        if (newBos[j]) gbm_bo_destroy(newBos[j]);
+      }
+      return 1;
+    }
+  }
+
+  drmModeModeInfo newMode = G.kmsMode;
+  setKmsModeDimensions(newMode, w, h);
+  if (drmModeSetCrtc(G.drmFd, G.kmsCrtcId, newFbIds[0], 0, 0, &G.kmsConnId, 1,
+                     &newMode) != 0) {
+    perror("drmModeSetCrtc resize");
+    for (int i = 0; i < kKmsBoCount; ++i) {
+      if (newFbIds[i]) drmModeRmFB(G.drmFd, newFbIds[i]);
+      if (newBos[i]) gbm_bo_destroy(newBos[i]);
+    }
+    return 1;
+  }
+
+  for (int i = 0; i < kKmsBoCount; ++i) {
+    if (G.kmsFbIds[i]) drmModeRmFB(G.drmFd, G.kmsFbIds[i]);
+    if (G.kmsBos[i]) gbm_bo_destroy(G.kmsBos[i]);
+    G.kmsBos[i] = newBos[i];
+    G.kmsFbIds[i] = newFbIds[i];
+  }
+  G.kmsMode = newMode;
+  G.kmsCurrentFb = 0;
+  glViewport(0, 0, w, h);
   return 0;
 }
 
@@ -3480,6 +3546,7 @@ int runLove(lua_State *L) {
   if (G.presenter == Presenter::KmsGl) {
     G.nativeRenderer = kandelo_love_register_native_renderer(
         L, G.root.c_str(), G.windowW, G.windowH, scanoutWidth(), scanoutHeight(),
+        G.desktopW, G.desktopH,
         nativeSwapBuffers);
     if (G.nativeRenderer) {
       fprintf(stderr, "love: using upstream LÖVE OpenGL renderer on Kandelo KMS/EGL\n");
@@ -3582,6 +3649,7 @@ extern "C" void kandelo_love_set_native_window_size(int width, int height) {
   }
   G.mouseX = clampInt(G.mouseX, 0, std::max(1, G.windowW) - 1);
   G.mouseY = clampInt(G.mouseY, 0, std::max(1, G.windowH) - 1);
+  if (resizeKmsScanout(G.windowW, G.windowH) != 0) gRunning = 0;
 }
 
 int main(int argc, char **argv) {

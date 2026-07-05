@@ -119,7 +119,7 @@ connection in any nginx worker. The standalone nginx image runs with
 
 ### KMS (`/dev/dri/card0`)
 - KMS presentation follows the framebuffer object currently bound to the CRTC. The browser modeset pane reads the scanout width/height from the kernel stats SAB, uses those dimensions for input scaling, and upscales the canvas with CSS to fit the available Kandelo surface.
-- The browser pane seeds an initial connector mode before a process binds a framebuffer, but the committed KMS FB is authoritative once `MODE_SETCRTC`/`PAGE_FLIP` has run.
+- The advertised connector mode is tracked separately from the current scanout framebuffer. Browser surfaces seed a 1920×1080 connector mode before transfer so user software sees stable `DRM_IOCTL_MODE_GETCONNECTOR` dimensions, while `MODE_SETCRTC`/`PAGE_FLIP` remain authoritative for the active framebuffer size.
 
 ### Mouse input (`/dev/input/mice`)
 - Demo pages attach `mousemove` / `mousedown` / `mouseup` listeners to the canvas and call `BrowserKernel.injectMouseEvent(dx, dy, buttons)`. The main thread posts a `mouse_inject` message to the kernel worker, which calls the kernel's `kernel_inject_mouse_event` export. The kernel encodes a 3-byte PS/2 frame and queues it on a global ring; user processes drain the queue via `read("/dev/input/mice", …)`.

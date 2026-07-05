@@ -136,7 +136,10 @@ export interface KernelLike {
     crtcId: number,
     canvas: OffscreenCanvas,
     stats?: SharedArrayBuffer,
-    opts?: { mode?: "auto" | "2d" | "webgl2" },
+    opts?: {
+      mode?: "auto" | "2d" | "webgl2";
+      connectorMode?: { width: number; height: number };
+    },
   ): void;
   /**
    * Register a stats SAB for `crtcId` without binding a scanout
@@ -582,7 +585,10 @@ export interface KernelHost {
   attachKmsDisplay(
     canvas: HTMLCanvasElement,
     crtcId?: number,
-    opts?: { mode?: "auto" | "2d" | "webgl2" },
+    opts?: {
+      mode?: "auto" | "2d" | "webgl2";
+      connectorMode?: { width: number; height: number };
+    },
   ): KmsDisplayHandle | null;
 
   // web preview — service demos can expose an HTTP bridge endpoint.
@@ -1724,7 +1730,10 @@ export class LiveKernelHost implements KernelHost {
   attachKmsDisplay(
     canvas: HTMLCanvasElement,
     crtcId: number = 1,
-    opts: { mode?: "auto" | "2d" | "webgl2" } = { mode: "webgl2" },
+    opts: {
+      mode?: "auto" | "2d" | "webgl2";
+      connectorMode?: { width: number; height: number };
+    } = { mode: "webgl2" },
   ): KmsDisplayHandle | null {
     if (!this.kernel?.kmsAttachCanvas) return null;
     if (typeof canvas.transferControlToOffscreen !== "function") return null;
@@ -1741,8 +1750,12 @@ export class LiveKernelHost implements KernelHost {
     // 7 i32 slots × 4 bytes = 28 bytes; align to 64 so atomics are happy.
     const statsSab = new SharedArrayBuffer(64);
     const stats = new Int32Array(statsSab);
+    const connectorMode = opts.connectorMode ?? {
+      width: canvas.width,
+      height: canvas.height,
+    };
     const offscreen = canvas.transferControlToOffscreen();
-    this.kernel.kmsAttachCanvas(crtcId, offscreen, statsSab, opts);
+    this.kernel.kmsAttachCanvas(crtcId, offscreen, statsSab, { ...opts, connectorMode });
     const kernel = this.kernel;
     const boundPidListeners = new ListenerSet<number | null>();
     let closed = false;

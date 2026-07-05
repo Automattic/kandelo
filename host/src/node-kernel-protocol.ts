@@ -175,7 +175,10 @@ export interface KmsAttachCanvasMessage {
   crtcId: number;
   canvas: OffscreenCanvas;
   stats?: SharedArrayBuffer;
-  opts?: { mode?: "auto" | "2d" | "webgl2" };
+  opts?: {
+    mode?: "auto" | "2d" | "webgl2";
+    connectorMode?: { width: number; height: number };
+  };
 }
 
 /** Register a stats SAB for a CRTC without binding a scanout canvas. */

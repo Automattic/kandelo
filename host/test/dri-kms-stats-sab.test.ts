@@ -96,6 +96,25 @@ describe("CentralizedKernelWorker KMS stats SAB", () => {
     expect(Atomics.load(view, 4)).toBe(0);
   });
 
+  it("keeps the advertised connector mode separate from the canvas backing store", () => {
+    const kernel = makeKernel();
+    const canvas = makeFakeCanvas();
+    canvas.width = 1920;
+    canvas.height = 1080;
+    kernel.attachKmsCanvas(1, canvas, undefined, {
+      mode: "webgl2",
+      connectorMode: { width: 1920, height: 1080 },
+    });
+
+    canvas.width = 480;
+    canvas.height = 270;
+    const inner = (kernel as unknown as {
+      kernel: { callbacks: { getKmsMode?: (crtcId: number) => { width: number; height: number } | undefined } };
+    }).kernel;
+
+    expect(inner.callbacks.getKmsMode?.(1)).toEqual({ width: 1920, height: 1080 });
+  });
+
   it("tickVblank leaves slots 5/6 alone when the SAB is the legacy 5-slot size", () => {
     const kernel = makeKernel();
     stubScanout(kernel, 16, 16);

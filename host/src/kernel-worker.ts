@@ -861,6 +861,9 @@ export class CentralizedKernelWorker {
   /** KMS presenter: OffscreenCanvas per CRTC for the vblank pump to blit
    *  the bound framebuffer into. Populated via `attachKmsCanvas`. */
   private kmsCanvases = new Map<number, OffscreenCanvas>();
+  /** Advertised connector mode per CRTC. This is separate from the canvas
+   *  backing-store size, which tracks the current scanout framebuffer. */
+  private kmsAdvertisedModes = new Map<number, { width: number; height: number }>();
   private kmsContexts = new Map<number, OffscreenCanvasRenderingContext2D>();
   /** Which context type each CRTC's canvas has been claimed for. Set
    *  by `attachKmsCanvas` when the embedder declares the mode up-front
@@ -898,6 +901,7 @@ export class CentralizedKernelWorker {
       // pid has no canvas bound yet; the kernel-worker's KMS registry
       // is the single source of truth for `crtc_id → OffscreenCanvas`.
       getKmsCanvas: (crtcId: number) => this.kmsCanvases.get(crtcId),
+      getKmsMode: (crtcId: number) => this.kmsAdvertisedModes.get(crtcId),
       markKmsCanvasGlOwned: (crtcId: number) => {
         this.kmsContextMode.set(crtcId, "webgl2");
       },
@@ -8569,9 +8573,21 @@ export class CentralizedKernelWorker {
     crtc_id: number,
     canvas: OffscreenCanvas,
     statsSab?: SharedArrayBuffer,
-    opts?: { mode?: "auto" | "2d" | "webgl2" },
+    opts?: {
+      mode?: "auto" | "2d" | "webgl2";
+      connectorMode?: { width: number; height: number };
+    },
   ): void {
     this.kmsCanvases.set(crtc_id, canvas);
+    const connectorWidth = opts?.connectorMode?.width ?? canvas.width;
+    const connectorHeight = opts?.connectorMode?.height ?? canvas.height;
+    if (Number.isFinite(connectorWidth) && Number.isFinite(connectorHeight) &&
+        connectorWidth > 0 && connectorHeight > 0) {
+      this.kmsAdvertisedModes.set(crtc_id, {
+        width: Math.trunc(connectorWidth),
+        height: Math.trunc(connectorHeight),
+      });
+    }
     if (statsSab) this.kmsStatsViews.set(crtc_id, new Int32Array(statsSab));
     const mode = opts?.mode ?? "auto";
     if (mode === "2d") {
