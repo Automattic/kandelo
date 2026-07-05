@@ -4,7 +4,7 @@
 // setNextChildPid, and fork flow.
 import { describe, it, expect, vi } from "vitest";
 import { readFileSync } from "node:fs";
-import { CentralizedKernelWorker } from "../src/kernel-worker";
+import { CAPTURED_STDIO, CentralizedKernelWorker } from "../src/kernel-worker";
 import { resolveBinary } from "../src/binary-resolver";
 import { NodePlatformIO } from "../src/platform/node";
 import { SharedLockTable } from "../src/shared-lock-table";
@@ -54,6 +54,7 @@ function registerProcess(
     brkBase: entry.layout.brkBase,
     mmapBase: entry.layout.mmapBase,
     maxAddr: entry.layout.maxAddr,
+    stdio: CAPTURED_STDIO,
   });
 }
 
@@ -91,7 +92,18 @@ describe("CentralizedKernelWorker Process Management", () => {
     expect((kw as any).hostReaped.has(pid)).toBe(false);
   });
 
-  it("lets the host terminate pthread workers without waking SYS_EXIT back into guest code", () => {
+  it("completes pthread SYS_EXIT channels (clearing the exiting guest's atomic-wait waiter) even when the host terminates the worker", () => {
+    // Regression guard for the reused-slot notify-steal deadlock. On thread
+    // exit the kernel must flip the channel status word off CH_PENDING
+    // (completeChannelRaw) so the exiting guest's in-wasm memory.atomic.wait32
+    // returns and its waiter is removed *before* the thread slot / channel
+    // offset is freed and reused by a later clone(). This holds even in the
+    // browser case where onThreadExit reports the host will terminate the
+    // backing Worker: an earlier revision abandoned the channel here (leaving
+    // status=PENDING with the guest still parked), and once #830 made worker
+    // teardown immediate, that stale waiter could outlive the slot and steal a
+    // reused thread's memory.atomic.notify(count=1), so the kernel's
+    // Atomics.waitAsync never fired and the new thread wedged forever.
     const pid = 123;
     const mainChannelOffset = WASM_PAGE_SIZE;
     const threadChannelOffset = 2 * WASM_PAGE_SIZE;
@@ -108,8 +120,7 @@ describe("CentralizedKernelWorker Process Management", () => {
       handling: true,
     };
     const onThreadExit = vi.fn(() => true);
-    const completeChannelRaw = vi.fn();
-    const abandonChannel = vi.fn((ch: typeof channel) => {
+    const completeChannelRaw = vi.fn((ch: typeof channel) => {
       ch.handling = false;
     });
 
@@ -126,14 +137,14 @@ describe("CentralizedKernelWorker Process Management", () => {
       notifyThreadExit: vi.fn(),
       removeChannel: vi.fn(),
       completeChannelRaw,
-      abandonChannel,
     });
 
     (kw as any).handleExit(channel, ABI_SYSCALLS.Exit, [0]);
 
+    // Still asks the host to tear down the backing thread Worker...
     expect(onThreadExit).toHaveBeenCalledWith(pid, tid, threadChannelOffset);
-    expect(abandonChannel).toHaveBeenCalledWith(channel);
-    expect(completeChannelRaw).not.toHaveBeenCalled();
+    // ...but now completes the channel so the guest's wait waiter is cleared.
+    expect(completeChannelRaw).toHaveBeenCalledWith(channel, 0, 0);
     expect(channel.handling).toBe(false);
   });
 
@@ -178,8 +189,51 @@ describe("CentralizedKernelWorker Process Management", () => {
     expect(channel.handling).toBe(false);
   });
 
-  it("registers pthread clear-TID before the host clone callback can complete", async () => {
+  it("clears pthread child TID when forced thread cleanup skips guest SYS_EXIT", () => {
     const pid = 125;
+    const mainChannelOffset = WASM_PAGE_SIZE;
+    const threadChannelOffset = 2 * WASM_PAGE_SIZE;
+    const tid = 79;
+    const ctidPtr = 0x00040000;
+    const memory = new WebAssembly.Memory({
+      initial: 16,
+      maximum: 16,
+      shared: true,
+    });
+    const channel = {
+      pid,
+      channelOffset: threadChannelOffset,
+      memory,
+      i32View: new Int32Array(memory.buffer, threadChannelOffset),
+      consecutiveSyscalls: 0,
+    };
+    new DataView(memory.buffer).setInt32(ctidPtr, tid, true);
+
+    const kw = Object.assign(Object.create(CentralizedKernelWorker.prototype), {
+      processes: new Map([
+        [pid, { memory, channels: [{ channelOffset: mainChannelOffset }, channel] }],
+      ]),
+      activeChannels: [channel],
+      channelTids: new Map([[`${pid}:${threadChannelOffset}`, tid]]),
+      threadForkContexts: new Map([
+        [`${pid}:${threadChannelOffset}`, { fnPtr: 1, argPtr: 2 }],
+      ]),
+      threadCtidPtrs: new Map([[`${pid}:${tid}`, ctidPtr]]),
+      notifyThreadExit: vi.fn(),
+    }) as CentralizedKernelWorker;
+
+    kw.finalizeThreadExit(pid, tid, threadChannelOffset);
+
+    expect(new DataView(memory.buffer).getInt32(ctidPtr, true)).toBe(0);
+    expect((kw as any).threadCtidPtrs.has(`${pid}:${tid}`)).toBe(false);
+    expect((kw as any).channelTids.has(`${pid}:${threadChannelOffset}`)).toBe(false);
+    expect((kw as any).threadForkContexts.has(`${pid}:${threadChannelOffset}`)).toBe(false);
+    expect((kw as any).activeChannels).toEqual([]);
+    expect((kw as any).notifyThreadExit).toHaveBeenCalledWith(pid, tid);
+  });
+
+  it("registers pthread clear-TID before the host clone callback can complete", async () => {
+    const pid = 126;
     const mainChannelOffset = WASM_PAGE_SIZE;
     const tid = 79;
     const stackPtr = 0x00800000;
@@ -264,7 +318,7 @@ describe("CentralizedKernelWorker Process Management", () => {
       },
       kernelInstance: {
         exports: {
-          kernel_create_process: vi.fn(() => 0),
+          kernel_create_process_with_stdio: vi.fn(() => 0),
           kernel_set_brk_base: vi.fn(() => 0),
           kernel_set_mmap_base: vi.fn(() => 0),
           kernel_set_max_addr: setMaxAddr,
@@ -283,11 +337,36 @@ describe("CentralizedKernelWorker Process Management", () => {
       brkBase: 4 * WASM_PAGE_SIZE,
       mmapBase: 4 * WASM_PAGE_SIZE,
       maxAddr,
+      stdio: CAPTURED_STDIO,
     });
     kw.addChannel(321, highThreadChannelOffset, 7);
 
     expect(setMaxAddr).toHaveBeenCalledTimes(1);
     expect(setMaxAddr).toHaveBeenCalledWith(321, maxAddr);
+  });
+
+  it("requires explicit stdio when creating a kernel process", () => {
+    const kw = Object.assign(Object.create(CentralizedKernelWorker.prototype), {
+      initialized: true,
+      hostReaped: new Set(),
+      processes: new Map(),
+      activeChannels: [],
+      usePolling: true,
+      kernelInstance: {
+        exports: {
+          kernel_create_process_with_stdio: vi.fn(() => 0),
+        },
+      },
+    }) as CentralizedKernelWorker;
+    const memory = new WebAssembly.Memory({
+      initial: 16,
+      maximum: 16,
+      shared: true,
+    });
+
+    expect(() => kw.registerProcess(900, memory, [4 * WASM_PAGE_SIZE])).toThrow(
+      "registerProcess requires explicit stdio",
+    );
   });
 
   it("should register and unregister processes", async () => {

@@ -6,7 +6,8 @@ import * as React from "react";
 import { useKernelHost, useStatus } from "../kernel-host/react";
 import type { KmsDisplayHandle } from "../../../../../web-libs/kandelo-session/src/kernel-host";
 import { injectChunkedMouseMotion, type MouseEventSink } from "@host/framebuffer/browser-controls";
-import { PaneHead } from "./PaneHead";
+import { DemoSurfaceDockControls } from "./Framebuffer";
+import { useFittedCanvasStyle } from "./canvasFit";
 
 // modeset.c hardcodes 1920×1080 (CANVAS_W/CANVAS_H). The kernel-side
 // auto-attach resizes the OffscreenCanvas drawing buffer to match the
@@ -18,18 +19,12 @@ import { PaneHead } from "./PaneHead";
 const MODESET_FB_W = 1920;
 const MODESET_FB_H = 1080;
 
-const ICON = (
-  <svg width="13" height="13" viewBox="0 0 13 13" fill="none" stroke="currentColor" strokeWidth="1.4">
-    <rect x="1.5" y="2" width="10" height="6.5" rx="1" />
-    <path d="M4 11h5M6.5 8.5v2.5" />
-  </svg>
-);
-
 export interface ModesetProps {
   dragProps?: import("./PaneHead").PaneHeadDragProps;
   onCollapse?: () => void;
   onMaximize?: () => void;
   isMax?: boolean;
+  onDockControlsChange?: (controls: React.ReactNode | null) => void;
   /** CRTC to bind the canvas to. Defaults to 1 (the single CRTC the
    *  kernel currently advertises via MODE_GETRESOURCES). */
   crtcId?: number;
@@ -49,9 +44,10 @@ const ZERO_STATS: KmsStats = {
   lastFrameUs: 0,
 };
 
-export const Modeset: React.FC<ModesetProps> = ({ dragProps, onCollapse, onMaximize, isMax, crtcId = 1 }) => {
+export const Modeset: React.FC<ModesetProps> = ({ crtcId = 1, onDockControlsChange }) => {
   const host = useKernelHost();
   const status = useStatus();
+  const stageRef = React.useRef<HTMLDivElement>(null);
   const canvasRef = React.useRef<HTMLCanvasElement>(null);
   const handleRef = React.useRef<KmsDisplayHandle | null>(null);
   const [error, setError] = React.useState<string | null>(null);
@@ -210,55 +206,50 @@ export const Modeset: React.FC<ModesetProps> = ({ dragProps, onCollapse, onMaxim
 
   const showCanvas = status === "running" && !error;
   const hasFrame = stats.width > 0 && stats.height > 0;
+  const canvasStyle = useFittedCanvasStyle(stageRef, canvasRef, MODESET_FB_W / MODESET_FB_H);
+  const statusLabel = hasFrame
+    ? `${stats.width}×${stats.height} · ${stats.commitCount} flips · ${stats.lastFrameUs}µs`
+    : "waiting for PAGE_FLIP";
+  const dockControls = React.useMemo(() => (
+    <DemoSurfaceDockControls
+      title={`MODESET · /DEV/DRI/CARD0 · CRTC ${crtcId}`}
+      status={statusLabel}
+      active={hasFrame}
+    />
+  ), [crtcId, hasFrame, statusLabel]);
+
+  React.useEffect(() => {
+    if (!onDockControlsChange) return;
+    onDockControlsChange(dockControls);
+    return () => onDockControlsChange(null);
+  }, [dockControls, onDockControlsChange]);
 
   return (
-    <div className="kpane">
-      <PaneHead
-        icon={ICON}
-        title={`MODESET · /DEV/DRI/CARD0 · CRTC ${crtcId}`}
-        dragProps={dragProps}
-        onCollapse={onCollapse}
-        onMaximize={onMaximize}
-        isMax={isMax}
-        right={
-          <span className="kmodeset-status" data-ready={hasFrame ? "true" : "false"}>
-            {hasFrame
-              ? `${stats.width}×${stats.height} · ${stats.commitCount} flips · ${stats.lastFrameUs}µs`
-              : "waiting for PAGE_FLIP"}
-          </span>
-        }
-      />
-      <div className="kpane-body" style={{
-        background: "var(--k-fb-bg)",
-        color: "var(--k-fb-text)",
-        display: "flex",
-        flexDirection: "column",
-        alignItems: "stretch",
-        padding: 0,
-        position: "relative",
-      }}>
-        <div className="kmodeset-stage">
-          <canvas
-            ref={canvasRef}
-            className="kmodeset-canvas"
-            style={{ display: showCanvas ? "block" : "none" }}
-          />
-          {showCanvas && !hasFrame && (
-            <div className="kmodeset-waiting" role="status" aria-live="polite">
-              <div className="kmodeset-waiting-line">Waiting for PAGE_FLIP on CRTC {crtcId}</div>
-              <div className="kmodeset-waiting-line kmodeset-waiting-secondary">
-                Run <code>modeset</code> from the shell.
-              </div>
+    <div className="kmodeset-surface">
+      <div className="kmodeset-stage" ref={stageRef}>
+        <canvas
+          ref={canvasRef}
+          className="kmodeset-canvas"
+          style={{
+            ...canvasStyle,
+            display: showCanvas ? "block" : "none",
+          }}
+        />
+        {showCanvas && !hasFrame && (
+          <div className="kmodeset-waiting" role="status" aria-live="polite">
+            <div className="kmodeset-waiting-line">Waiting for PAGE_FLIP on CRTC {crtcId}</div>
+            <div className="kmodeset-waiting-line kmodeset-waiting-secondary">
+              Run <code>modeset</code> from the shell.
             </div>
-          )}
-          {(error || status !== "running") && (
-            <div className="kmodeset-waiting" role="status" aria-live="polite">
-              {error
-                ? <>attachKmsDisplay failed: {error}</>
-                : <>Waiting for the kernel to reach 'running'.</>}
-            </div>
-          )}
-        </div>
+          </div>
+        )}
+        {(error || status !== "running") && (
+          <div className="kmodeset-waiting" role="status" aria-live="polite">
+            {error
+              ? <>attachKmsDisplay failed: {error}</>
+              : <>Waiting for the kernel to reach 'running'.</>}
+          </div>
+        )}
       </div>
     </div>
   );

@@ -28,16 +28,23 @@ if(DEFINED ENV{LLVM_PREFIX})
   list(APPEND _LLVM_SEARCH_PATHS "$ENV{LLVM_PREFIX}/bin")
 endif()
 
-find_program(LLVM_CLANG NAMES clang PATHS ${_LLVM_SEARCH_PATHS})
+if(_LLVM_SEARCH_PATHS)
+  find_program(LLVM_CLANG NAMES clang PATHS ${_LLVM_SEARCH_PATHS} NO_DEFAULT_PATH)
+  find_program(LLVM_AR     NAMES llvm-ar     PATHS ${_LLVM_SEARCH_PATHS} NO_DEFAULT_PATH)
+  find_program(LLVM_RANLIB NAMES llvm-ranlib PATHS ${_LLVM_SEARCH_PATHS} NO_DEFAULT_PATH)
+  find_program(LLVM_NM     NAMES llvm-nm     PATHS ${_LLVM_SEARCH_PATHS} NO_DEFAULT_PATH)
+endif()
+
+find_program(LLVM_CLANG NAMES clang)
 if(NOT LLVM_CLANG)
   message(FATAL_ERROR
     "LLVM clang not found. Searched: ${_LLVM_SEARCH_PATHS}. "
     "Run through scripts/dev-shell.sh or set LLVM_BIN/LLVM_PREFIX."
   )
 endif()
-find_program(LLVM_AR     NAMES llvm-ar     PATHS ${_LLVM_SEARCH_PATHS})
-find_program(LLVM_RANLIB NAMES llvm-ranlib PATHS ${_LLVM_SEARCH_PATHS})
-find_program(LLVM_NM     NAMES llvm-nm     PATHS ${_LLVM_SEARCH_PATHS})
+find_program(LLVM_AR     NAMES llvm-ar)
+find_program(LLVM_RANLIB NAMES llvm-ranlib)
+find_program(LLVM_NM     NAMES llvm-nm)
 
 # --- Sysroot ---
 # Allow override via WASM_POSIX_SYSROOT env or cmake var.

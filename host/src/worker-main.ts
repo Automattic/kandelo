@@ -472,13 +472,11 @@ function buildImportObject(
 
   // llvm/lld ≥22 emit __c_longjmp as a tag import for setjmp users; instantiation fails silently without it.
   if (moduleImports.some(i => i.module === "env" && i.name === "__c_longjmp" && (i.kind as string) === "tag")) {
-    const Tag = (
-      WebAssembly as typeof WebAssembly & {
-        Tag?: new (descriptor: { parameters: string[] }) => WebAssembly.ExportValue;
-      }
-    ).Tag;
+    const Tag = (WebAssembly as typeof WebAssembly & {
+      Tag?: new (descriptor: { parameters: string[] }) => WebAssembly.Tag;
+    }).Tag;
     if (Tag) {
-      envImports.__c_longjmp = new Tag({ parameters: ["i32"] });
+      envImports.__c_longjmp = new Tag({ parameters: ["i32"] }) as unknown as WebAssembly.ExportValue;
     }
   }
 
@@ -1732,7 +1730,16 @@ export async function centralizedThreadWorkerMain(
     const forkBufAddr = channelOffset - FORK_BUF_SIZE;
     let forkResult = 0;
 
-    const kernelImports = buildKernelImports(memory, channelOffset);
+    let kernelThreadExitStatus: number | null = null;
+    const kernelImports = buildKernelImports(
+      memory,
+      channelOffset,
+      undefined,
+      undefined,
+      (status) => {
+        kernelThreadExitStatus = status;
+      },
+    );
     if (hasForkInstrumentation) {
       kernelImports.kernel_fork = (): number => {
         if (!threadInstance) return -38; // ENOSYS
@@ -1817,12 +1824,12 @@ export async function centralizedThreadWorkerMain(
           const raw = threadFn(threadArg);
           result = Number(raw);
         } catch (e) {
-          if (e instanceof Error && e.message.includes("unreachable")) {
-            result = 0;
-            break;
-          }
-          if (e instanceof Error && e.message.includes("null function or function signature mismatch")) {
-            result = 0;
+          if (
+            e instanceof Error &&
+            e.message.includes("unreachable") &&
+            kernelThreadExitStatus !== null
+          ) {
+            result = kernelThreadExitStatus;
             break;
           }
           throw e;
@@ -1846,12 +1853,12 @@ export async function centralizedThreadWorkerMain(
         const raw = threadFn(threadArg);
         result = Number(raw);
       } catch (e) {
-        if (e instanceof Error && e.message.includes("unreachable")) {
-          // Thread exited via kernel_exit → unreachable trap
-          result = 0;
-        } else if (e instanceof Error && e.message.includes("null function or function signature mismatch")) {
-          // call_indirect type mismatch — treat as thread crash but don't abort
-          result = 0;
+        if (
+          e instanceof Error &&
+          e.message.includes("unreachable") &&
+          kernelThreadExitStatus !== null
+        ) {
+          result = kernelThreadExitStatus;
         } else {
           throw e;
         }
@@ -1869,9 +1876,15 @@ export async function centralizedThreadWorkerMain(
       const i32 = new Int32Array(memory.buffer);
       Atomics.store(i32, (base + CH_STATUS) / 4, CHANNEL_STATUS_PENDING);
       Atomics.notify(i32, (base + CH_STATUS) / 4, 1);
-      // Wait for kernel to process the exit
+      // Wait for kernel to process the exit. The kernel completes the channel
+      // (CH_STATUS -> COMPLETE), which returns this Atomics.wait.
       while (Atomics.wait(i32, (base + CH_STATUS) / 4, CHANNEL_STATUS_PENDING) === "ok") { /* */ }
-      Atomics.store(i32, (base + CH_STATUS) / 4, CHANNEL_STATUS_IDLE);
+      // Intentionally do NOT reset CH_STATUS back to IDLE here. A normal syscall
+      // resets to IDLE so the next syscall can set PENDING, but an exiting thread
+      // issues no further syscalls — the channel is torn down and the slot is
+      // re-zeroed when it is reclaimed for a future clone(). Writing here would be
+      // the thread's only post-exit touch of the channel, so omitting it removes
+      // any possibility of a late write landing on a reused slot's status word.
     }
 
     port.postMessage({
@@ -1880,10 +1893,13 @@ export async function centralizedThreadWorkerMain(
       tid,
     } satisfies WorkerToHostMessage);
   } catch (err) {
+    const message = err instanceof Error
+      ? `${err.message}\n${err.stack ?? ""}`
+      : String(err);
     port.postMessage({
-      type: "thread_exit",
+      type: "error",
       pid,
-      tid,
+      message: `Thread worker failed: ${message}`,
     } satisfies WorkerToHostMessage);
   }
 }

@@ -32,12 +32,12 @@ jobs:
     timeout-minutes: 1440
     steps:
       - name: Checkout package source
-        uses: actions/checkout@v6.0.2
+        uses: actions/checkout@v7.0.0
         with:
           path: package-source
 
       - name: Checkout Kandelo
-        uses: actions/checkout@v6.0.2
+        uses: actions/checkout@v7.0.0
         with:
           repository: ${{ inputs.kandelo-repository }}
           ref: ${{ inputs.kandelo-ref }}
@@ -67,7 +67,7 @@ jobs:
           git -C kandelo submodule update --init --depth 1 musl
 
       - name: Cache Cargo and Kandelo sysroots
-        uses: actions/cache@v5
+        uses: actions/cache@v5.0.5
         with:
           path: |
             ~/.cargo/registry

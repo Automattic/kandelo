@@ -33,3 +33,22 @@ export { OpfsFileSystem } from "./vfs/opfs";
 export { BrowserTimeProvider } from "./vfs/time";
 export { OpfsChannel, OpfsChannelStatus, OpfsOpcode, OPFS_CHANNEL_SIZE } from "./vfs/opfs-channel";
 export type { FileSystemBackend, TimeProvider, MountConfig, DirEntry } from "./vfs/types";
+export {
+  HomebrewVfsPlanError,
+  planHomebrewVfs,
+} from "./homebrew-vfs-planner";
+export type {
+  HomebrewBottleArch,
+  HomebrewBottleSourceStatus,
+  HomebrewBottleStatus,
+  HomebrewDependency,
+  HomebrewLinkEntry,
+  HomebrewLinkManifest,
+  HomebrewMetadataBottle,
+  HomebrewMetadataPackage,
+  HomebrewRuntime,
+  HomebrewTapMetadata,
+  HomebrewVfsPackagePlan,
+  HomebrewVfsPlan,
+  HomebrewVfsPlanOptions,
+} from "./homebrew-vfs-planner";

@@ -18,7 +18,7 @@ import { readFileSync, existsSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { CentralizedKernelWorker } from "./kernel-worker";
+import { CAPTURED_STDIO, CentralizedKernelWorker, TERMINAL_STDIO } from "./kernel-worker";
 import type {
   ForkFromThreadContext,
   ResolvedSpawnProgram,
@@ -30,6 +30,7 @@ import {
   NodeTimeProvider,
   DEFAULT_MOUNT_SPEC,
   DeviceFileSystem,
+  ensureMountParentDirectories,
   HostFileSystem,
   MemoryFileSystem,
   resolveForNode,
@@ -49,6 +50,7 @@ import {
   signalExitStatus,
   SIGSEGV,
 } from "./trap-signals";
+import { threadWorkerFailureDisposition } from "./thread-worker-disposition";
 import {
   computeProcessMemoryLayout,
   createProcessMemory,
@@ -90,6 +92,8 @@ let rootfsMemfs: MemoryFileSystem | null = null;
  *  worker constructs a `VirtualPlatformIO` from the default mount spec. */
 let sessionDir: string | null = null;
 const ENOEXEC = 8;
+const SSL_CERT_FILE_PATH = "/etc/ssl/certs/ca-certificates.crt";
+const OPENSSL_DEFAULT_CERT_FILE_PATH = "/etc/ssl/cert.pem";
 
 // Process tracking
 interface ProcessInfo {
@@ -491,6 +495,36 @@ async function resolveExecutableForLaunch(
 
 // --- Init ---
 
+function writeMemfsFile(fs: MemoryFileSystem, path: string, bytes: Uint8Array): void {
+  const fd = fs.open(path, 0o1101, 0o644);
+  try {
+    fs.write(fd, bytes, 0, bytes.byteLength);
+  } finally {
+    fs.close(fd);
+  }
+}
+
+function installDefaultCaBundle(fs: MemoryFileSystem): void {
+  const certPath = join(findRepoRoot(), "packages", "registry", "openssl", "cacert.pem");
+  let certBytes: Uint8Array;
+  try {
+    certBytes = readFileSync(certPath);
+  } catch (e) {
+    console.error("[node-kernel-worker] Failed to read default CA bundle:", e);
+    return;
+  }
+
+  try {
+    for (const dir of ["/etc", "/etc/ssl", "/etc/ssl/certs"]) {
+      try { fs.mkdir(dir, 0o755); } catch { /* exists */ }
+    }
+    writeMemfsFile(fs, SSL_CERT_FILE_PATH, certBytes);
+    writeMemfsFile(fs, OPENSSL_DEFAULT_CERT_FILE_PATH, certBytes);
+  } catch (e) {
+    console.error("[node-kernel-worker] Failed to write default CA bundle to VFS:", e);
+  }
+}
+
 /**
  * Materialise the default mount spec into a `VirtualPlatformIO` backed by
  * the rootfs image at `/` and per-boot host-fs scratch dirs everywhere
@@ -501,11 +535,12 @@ function buildVirtualPlatformIO(
   rootfsImage: ArrayBuffer,
   extraMounts?: Array<{ mountPoint: string; hostPath: string; readonly?: boolean }>,
 ): VirtualPlatformIO {
-  sessionDir = mkdtempSync(join(tmpdir(), "wasm-posix-session-"));
+  const bootSessionDir = mkdtempSync(join(tmpdir(), "wasm-posix-session-"));
+  sessionDir = bootSessionDir;
   const specMounts = resolveForNode(
     DEFAULT_MOUNT_SPEC,
     new Uint8Array(rootfsImage),
-    sessionDir,
+    bootSessionDir,
   );
   const shmSab = new SharedArrayBuffer(16 * 1024 * 1024);
   const shmfs = MemoryFileSystem.create(shmSab);
@@ -525,6 +560,10 @@ function buildVirtualPlatformIO(
   rootfsMemfs = rootMount?.backend instanceof MemoryFileSystem
     ? rootMount.backend
     : null;
+  if (rootfsMemfs) {
+    installDefaultCaBundle(rootfsMemfs);
+    ensureMountParentDirectories(rootfsMemfs, extras.map((m) => m.mountPoint));
+  }
   return new VirtualPlatformIO(mounts, new NodeTimeProvider());
 }
 
@@ -630,6 +669,7 @@ function handleSpawn(msg: SpawnMessage) {
       brkBase: layout.brkBase,
       mmapBase: layout.mmapBase,
       maxAddr: layout.maxAddr,
+      stdio: msg.pty ? TERMINAL_STDIO : CAPTURED_STDIO,
     });
 
     if (msg.cwd) {
@@ -654,9 +694,11 @@ function handleSpawn(msg: SpawnMessage) {
       kernelWorker.onPtyOutput(ptyIdx, (data: Uint8Array) => {
         post({ type: "pty_output", pid, data });
       });
-    } else if (msg.stdin) {
-      const stdinData = msg.stdin instanceof Uint8Array ? msg.stdin : new Uint8Array(msg.stdin);
-      kernelWorker.setStdinData(pid, stdinData);
+    } else {
+      if (msg.stdin) {
+        const stdinData = msg.stdin instanceof Uint8Array ? msg.stdin : new Uint8Array(msg.stdin);
+        kernelWorker.setStdinData(pid, stdinData);
+      }
     }
 
     const initData: CentralizedWorkerInitMessage = {
@@ -1083,9 +1125,13 @@ async function handleClone(
   const failThread = (reason: string) => {
     const text = `[kernel-worker] pid=${pid} tid=${tid}: ${reason}\n`;
     post({ type: "stderr", pid, data: new TextEncoder().encode(text) });
-    kernelWorker.notifyThreadExit(pid, tid);
-    kernelWorker.removeChannel(pid, alloc.channelOffset);
+    const disposition = threadWorkerFailureDisposition(reason);
+    kernelWorker.finalizeThreadExit(pid, tid, alloc.channelOffset);
     void terminateThreadEntry();
+    if (disposition.kind === "guest-fatal-trap") {
+      try { kernelWorker.notifyHostProcessCrashed(pid, disposition.signum); } catch { /* best-effort */ }
+      void finishProcessExit(pid, disposition.exitStatus);
+    }
   };
   threadWorker.on("message", (msg: unknown) => {
     const m = msg as WorkerToHostMessage;

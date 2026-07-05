@@ -8968,16 +8968,41 @@ pub fn sys_prctl(proc: &mut Process, option: u32, _arg2: u32, buf: &mut [u8]) ->
     }
 }
 
-// Returns thread ID. Without threading, tid == pid.
-// Threading upgrade: return actual TID from thread table.
+// Return the kernel/libc thread id for the currently-serviced POSIX thread.
+//
+// The host selects the syscall mailbox by channelOffset first, then binds the
+// corresponding TID in process_table::current_tid before entering the kernel.
+// That TID is what musl's gettid-based pthread implementation observes. A
+// current_tid of 0 is the host/kernel sentinel for the process main thread, so
+// the syscall returns the process pid for main-thread callers.
 pub fn sys_gettid(proc: &Process) -> i32 {
-    proc.pid as i32
+    let tid = crate::process_table::current_tid();
+    if proc.is_main_thread(tid) {
+        proc.pid as i32
+    } else {
+        tid as i32
+    }
 }
 
-// Stores tidptr for thread exit notification. Without threading, returns pid.
-// Threading upgrade: store tidptr per-thread; kernel writes 0 + futex-wakes on exit.
-pub fn sys_set_tid_address(proc: &Process) -> i32 {
-    proc.pid as i32
+// Store the calling thread's clear-TID pointer for bookkeeping and return the
+// calling TID.
+//
+// set_tid_address is a Linux-derived syscall ABI that musl uses to implement
+// POSIX pthreads; supporting it here is not a Linux-compatibility goal. The
+// value must be associated with the current TID, not just the channel offset,
+// so pthread joiners and threaded runtimes observe the correct thread identity.
+// Host-side thread exit already performs the actual clear-and-futex-wake using
+// clone's ctid pointer.
+pub fn sys_set_tid_address(proc: &mut Process, tidptr: usize) -> i32 {
+    let tid = crate::process_table::current_tid();
+    if proc.is_main_thread(tid) {
+        proc.pid as i32
+    } else {
+        if let Some(thread) = proc.get_thread_mut(tid) {
+            thread.tidptr = tidptr;
+        }
+        tid as i32
+    }
 }
 
 // No-op — robust futex list tracking deferred until threading is implemented.
@@ -9085,7 +9110,9 @@ pub fn sys_clone(
     } else {
         0
     };
-    // POSIX: new threads inherit the creator's signal mask.
+    // POSIX: new threads inherit the creator's signal mask. The creator is
+    // identified by current_tid because clone arrives through the caller's
+    // channel mailbox but the kernel stores masks by TID.
     let caller_tid = crate::process_table::current_tid();
     let inherited_blocked = proc.blocked_for(caller_tid);
     let mut thread_info = ThreadInfo::new(tid, effective_ctid, stack_ptr, effective_tls);
@@ -10946,10 +10973,21 @@ mod tests {
     use wasm_posix_shared::mode::{S_IFDIR, S_IFLNK, S_IFMT, S_IFREG};
     use wasm_posix_shared::poll::{POLLIN, POLLOUT};
 
+    fn terminal_process(pid: u32) -> Process {
+        Process::new_with_stdio(pid, crate::process::StdioConfig::terminal())
+    }
+
     /// Mutex to serialize tests that access the global Unix socket registry.
     /// The registry uses UnsafeCell internally and is not thread-safe, so tests
     /// that call sys_bind/sys_connect for AF_UNIX must hold this lock.
     static UNIX_REGISTRY_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    static THREAD_IDENTITY_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    fn set_test_current_tid(tid: u32) {
+        unsafe {
+            (*crate::process_table::GLOBAL_PROCESS_TABLE.0.get()).set_current_tid(tid);
+        }
+    }
 
     fn test_path_is_dir(path: &[u8]) -> bool {
         path.ends_with(b"/")
@@ -13102,7 +13140,7 @@ mod tests {
 
     #[test]
     fn test_isatty_stdin() {
-        let proc = Process::new(1);
+        let proc = terminal_process(1);
         assert_eq!(sys_isatty(&proc, 0), Ok(1));
     }
 
@@ -14190,7 +14228,7 @@ mod tests {
     fn test_openat_dirfd_enotdir() {
         let mut proc = Process::new(1);
         let mut host = MockHostIO::new();
-        // fd 0 is stdin (CharDevice, not Directory)
+        // fd 0 is stdin pipe by default, not Directory.
         let result = sys_openat(&mut proc, &mut host, 0, b"relative", O_RDONLY, 0);
         assert_eq!(result, Err(Errno::ENOTDIR));
     }
@@ -14315,7 +14353,7 @@ mod tests {
 
     #[test]
     fn test_tcgetattr_returns_terminal_state() {
-        let mut proc = Process::new(1);
+        let mut proc = terminal_process(1);
         let mut buf = [0u8; 60];
         let result = sys_tcgetattr(&mut proc, 0, &mut buf);
         assert!(result.is_ok());
@@ -14336,7 +14374,7 @@ mod tests {
 
     #[test]
     fn test_tcsetattr_modifies_terminal_state() {
-        let mut proc = Process::new(1);
+        let mut proc = terminal_process(1);
         let mut buf = [0u8; 60];
         sys_tcgetattr(&mut proc, 0, &mut buf).unwrap();
         // Clear ECHO in c_lflag (4th u32, bytes 12-15)
@@ -14355,7 +14393,7 @@ mod tests {
 
     #[test]
     fn test_ioctl_tiocgwinsz() {
-        let mut proc = Process::new(1);
+        let mut proc = terminal_process(1);
         let mut host = MockHostIO::new();
         let mut buf = [0u8; 8];
         let result = sys_ioctl(&mut proc, &mut host, 0, 0x5413, &mut buf); // TIOCGWINSZ
@@ -14368,7 +14406,7 @@ mod tests {
 
     #[test]
     fn test_ioctl_tiocswinsz() {
-        let mut proc = Process::new(1);
+        let mut proc = terminal_process(1);
         let mut host = MockHostIO::new();
         let mut buf = [0u8; 8];
         buf[0..2].copy_from_slice(&120u16.to_le_bytes()); // rows
@@ -14451,7 +14489,7 @@ mod tests {
 
     #[test]
     fn test_ioctl_fionread_regular() {
-        let mut proc = Process::new(1);
+        let mut proc = terminal_process(1);
         let mut host = MockHostIO::new();
         // FIONREAD on a CharDevice returns 0
         let mut buf = [0u8; 4];
@@ -17677,6 +17715,33 @@ mod tests {
     }
 
     #[test]
+    fn test_gettid_returns_pid_for_main_thread() {
+        let _guard = THREAD_IDENTITY_LOCK.lock().unwrap();
+        set_test_current_tid(0);
+        let proc = Process::new(77);
+
+        assert_eq!(sys_gettid(&proc), 77);
+
+        set_test_current_tid(0);
+    }
+
+    #[test]
+    fn test_gettid_and_set_tid_address_use_current_worker_tid() {
+        use crate::process::ThreadInfo;
+
+        let _guard = THREAD_IDENTITY_LOCK.lock().unwrap();
+        let mut proc = Process::new(100);
+        proc.add_thread(ThreadInfo::new(101, 0, 0, 0));
+        set_test_current_tid(101);
+
+        assert_eq!(sys_gettid(&proc), 101);
+        assert_eq!(sys_set_tid_address(&mut proc, 0xbeef), 101);
+        assert_eq!(proc.get_thread(101).unwrap().tidptr, 0xbeef);
+
+        set_test_current_tid(0);
+    }
+
+    #[test]
     fn test_process_multiple_threads() {
         use crate::process::ThreadInfo;
         let mut proc = Process::new(1);
@@ -18597,11 +18662,11 @@ mod tests {
 
     #[test]
     fn test_tiocgpgrp_tiocspgrp() {
-        let mut proc = Process::new(1);
+        let mut proc = terminal_process(1);
         let mut host = MockHostIO::new();
         let mut buf = [0u8; 4];
 
-        // TIOCGPGRP on stdin (fd 0, which is a CharDevice)
+        // TIOCGPGRP on terminal stdin.
         sys_ioctl(&mut proc, &mut host, 0, 0x540F, &mut buf).unwrap();
         let pgid = i32::from_le_bytes(buf);
         assert_eq!(pgid, 1); // default foreground_pgid

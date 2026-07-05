@@ -18,6 +18,7 @@ import type {
   MainToKernelMessage,
   KernelToMainMessage,
 } from "./browser-kernel-protocol";
+import { registerLazyVfsMetadata } from "./browser-kernel-lazy-registration";
 import type { HttpRequest, HttpResponse } from "./networking/in-kernel-http";
 
 export type { HttpRequest, HttpResponse };
@@ -262,16 +263,13 @@ export class BrowserKernel {
       rootfsImage: new Uint8Array(rootfsVfsBuf),
     });
 
-    // Forward any lazy metadata from a pre-loaded VFS image so the worker
-    // can materialize image-backed files on first exec.
-    const lazyEntries = this.memfs!.exportLazyEntries();
-    if (lazyEntries.length > 0) {
-      this.sendToKernel({ type: "register_lazy_files", entries: lazyEntries });
-    }
-    const archiveEntries = this.memfs!.exportLazyArchiveEntries();
-    if (archiveEntries.length > 0) {
-      this.sendToKernel({ type: "register_lazy_archives", entries: archiveEntries });
-    }
+    await registerLazyVfsMetadata(this.memfs!, async (message) => {
+      const requestId = this.nextRequestId++;
+      await this.request(requestId, {
+        ...message,
+        requestId,
+      });
+    });
   }
 
   /**
@@ -410,6 +408,7 @@ export class BrowserKernel {
     options: BrowserKernelBootOptions,
   ): Promise<{ pid: number; exit: Promise<number> }> {
     const requestId = this.nextRequestId++;
+    const stdin = options.stdin ?? (!options.pty ? new Uint8Array() : undefined);
 
     const pid = await this.request(requestId, {
       type: "spawn",
@@ -422,7 +421,7 @@ export class BrowserKernel {
       uid: options.uid,
       gid: options.gid,
       pty: options.pty,
-      stdin: options.stdin,
+      stdin,
       maxPages: this.maxPages,
     }) as number;
 
@@ -477,6 +476,9 @@ export class BrowserKernel {
   ): Promise<number> {
     const pid = this.nextPid++;
     const requestId = this.nextRequestId++;
+    const stdin =
+      options?.stdin ??
+      (!options?.pty && !options?.onStarted ? new Uint8Array() : undefined);
 
     const exitPromise = new Promise<number>((resolve) => {
       this.exitResolvers.set(pid, resolve);
@@ -498,7 +500,7 @@ export class BrowserKernel {
       pty: options?.pty,
       ptyCols: options?.ptyCols,
       ptyRows: options?.ptyRows,
-      stdin: options?.stdin,
+      stdin,
       maxPages: this.maxPages,
     }, [bytesToSend]);
 
@@ -810,7 +812,14 @@ export class BrowserKernel {
       const ino = fs.registerLazyFile(e.path, e.url, e.size, e.mode);
       lazyEntries.push({ ino, path: e.path, url: e.url, size: e.size });
     }
-    this.sendToKernel({ type: "register_lazy_files", entries: lazyEntries });
+    const requestId = this.nextRequestId++;
+    void this.request(requestId, {
+      type: "register_lazy_files",
+      requestId,
+      entries: lazyEntries,
+    }).catch((err) => {
+      console.error("[BrowserKernel] Failed to register lazy VFS files:", err);
+    });
   }
 
   /**

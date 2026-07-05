@@ -292,6 +292,41 @@ if (typeof window !== "undefined") {
     }
   });
 
+  // --- Blob-URL iframe interceptor (injected at build time) ---
+  // Source of the reusable DOM patch in public/blob-iframe-interceptor.js.
+  // We inline it into every bridged HTML document (see
+  // injectBlobIframeInterceptor) so that apps which mount iframes from
+  // `blob:` URLs — e.g. the WordPress block/site editor canvas — render
+  // those iframes as service-worker-controlled `about:srcdoc` documents
+  // instead. Without this, a blob: document is not SW-controlled, so its
+  // subresource requests (load-scripts.php/load-styles.php, block assets)
+  // escape the bridge and 404 against the static origin.
+  var BLOB_IFRAME_INTERCEPTOR_SRC = "__BLOB_IFRAME_INTERCEPTOR__";
+
+  // Insert the interceptor as the first <head> child so it runs before any
+  // app script creates a blob iframe. Idempotent and HTML-only.
+  function injectBlobIframeInterceptor(html) {
+    if (
+      !BLOB_IFRAME_INTERCEPTOR_SRC ||
+      BLOB_IFRAME_INTERCEPTOR_SRC.indexOf("__BLOB_IFRAME") === 0 ||
+      html.indexOf("__kandeloBlobIframePatched") !== -1
+    ) {
+      return html;
+    }
+    var tag = "<script>" + BLOB_IFRAME_INTERCEPTOR_SRC + "</script>";
+    var headMatch = html.match(/<head[^>]*>/i);
+    if (headMatch) {
+      var at = headMatch.index + headMatch[0].length;
+      return html.slice(0, at) + tag + html.slice(at);
+    }
+    var htmlMatch = html.match(/<html[^>]*>/i);
+    if (htmlMatch) {
+      var htmlAt = htmlMatch.index + htmlMatch[0].length;
+      return html.slice(0, htmlAt) + tag + html.slice(htmlAt);
+    }
+    return tag + html;
+  }
+
   // --- CORS proxy URL (injected at build time, main proxy in dev) ---
   var CORS_PROXY_URL = "__CORS_PROXY_URL__";
   // In dev mode the placeholder is not replaced — use the main proxy so dev
@@ -757,6 +792,15 @@ if (typeof window !== "undefined") {
         if (shouldRewriteAppResponseBody(respHeaders)) {
           var text = new TextDecoder().decode(body);
           var rewritten = rewriteSameHostAppUrls(text, url);
+          // Inject the blob-iframe interceptor into HTML documents so that
+          // app-created `blob:` iframes (e.g. the WordPress editor canvas)
+          // render as SW-controlled about:srcdoc documents and their
+          // subresource requests stay on the bridge instead of escaping to
+          // the static origin. See injectBlobIframeInterceptor.
+          var contentType = (respHeaders.get("Content-Type") || "").toLowerCase();
+          if (contentType.indexOf("text/html") === 0) {
+            rewritten = injectBlobIframeInterceptor(rewritten);
+          }
           if (rewritten !== text) {
             body = new TextEncoder().encode(rewritten);
             respHeaders.delete("Content-Length");

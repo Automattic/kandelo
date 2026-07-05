@@ -101,7 +101,7 @@ Kandelo uses a single kernel Wasm instance that holds a `ProcessTable` and serve
 |----------|--------|-------|
 | `fork()` | Full | The kernel serializes full process state (FD/OFD tables, signals, environment, CWD, rlimits, brk, terminal), and the host spawns a child Worker with copied Memory. Child resumes execution at the `fork()` call site with return value 0 via the `wpk_fork_*` instrumentation injected by `wasm-fork-instrument` (Phase 7; see [fork-instrumentation.md](fork-instrumentation.md)) — the call stack, local variables, and `__tls_base`/`__stack_pointer` are preserved across the boundary. Fork from pthread workers is supported by routing the child through the saved pthread entry function and the calling thread's fork buffer. Cross-process pipes, signals, and waitpid all functional. |
 | `exec()` | Full | Kernel-initiated via SYS_EXECVE (syscall 211). Host `handleExec` reads path/argv/envp from process memory, calls `onExec` callback. Replaces process image. Preserves PID, open fds (closes CLOEXEC), environment, CWD, signal mask. **Resets** the program break (POSIX-correct); host then re-installs the new program's `__heap_base` via `kernel_set_brk_base`. |
-| `waitpid()` | Full | Kernel-internal: blocks parent until child exits (WNOHANG supported). Reaps zombie processes. Supports pid>0 (specific child), pid=-1 (any child), pid=0 (same pgid), pid<-1 (specific pgid). Returns status with WIFEXITED/WEXITSTATUS. |
+| `waitpid()` | Full | Kernel-internal: blocks parent until child exits (WNOHANG supported). Reaps zombie processes. Supports pid>0 (specific child), pid=-1 (any child), pid=0 (same pgid), pid<-1 (specific pgid). Returns normal-exit status with WIFEXITED/WEXITSTATUS and signal-death status with WIFSIGNALED/WTERMSIG. |
 | `exit()` / `_exit()` | Full | Closes all fds and dir streams, releases all fcntl locks, sets ProcessState::Exited. SIGCHLD delivered to parent. Zombie state maintained until reaped by waitpid. |
 | `getpid()` | Full | Returns pid from Process struct. |
 | `getppid()` | Full | Returns ppid (0 for init process). |
@@ -114,8 +114,8 @@ Kandelo uses a single kernel Wasm instance that holds a `ProcessTable` and serve
 | `getsid()` | Full | Returns session ID (simulated, defaults to pid). pid=0 means self. |
 | `setsid()` | Full | Creates new session. Sets sid=pid, pgid=pid. Returns new session ID. Returns EPERM if already session leader (POSIX-compliant). |
 | `prctl()` | Partial | PR_SET_NAME and PR_GET_NAME store/retrieve thread name (16 bytes). All other operations return success (no-op). Syscall number fixed to 223 (Batch 3). |
-| `gettid()` | Partial | Returns pid for all threads. Thread TIDs are tracked in ProcessTable but the channel IPC only passes PID, so the kernel cannot distinguish which thread is calling. |
-| `set_tid_address()` | Partial | Returns pid, stores tidptr for thread exit notification. |
+| `gettid()` | Partial | Returns pid for the main thread and the host-bound worker TID for pthread workers. Remaining limitation: this is Linux-compatible rather than POSIX-standard, and not all signal/thread APIs consume TID-specific state yet. |
+| `set_tid_address()` | Partial | Returns the calling TID and stores the clear-TID pointer for thread exit notification. Host thread cleanup writes 0 and futex-wakes the address for normal pthread exit and forced cleanup paths. Robust-list handling remains deferred. |
 | `set_robust_list()` | Stub | No-op. Robust futex list tracking deferred until threading is fully tested. |
 | `futex()` | Partial | FUTEX_WAIT, FUTEX_WAKE, FUTEX_REQUEUE, FUTEX_CMP_REQUEUE, FUTEX_WAKE_OP implemented. Main-process WAIT returns EAGAIN so the host retries via Atomics.waitAsync. Thread workers use direct Atomics.wait. |
 | `execve()` | Full | Delegates to kernel_execve. Replaces process image. |
@@ -124,7 +124,7 @@ Kandelo uses a single kernel Wasm instance that holds a `ProcessTable` and serve
 | `vfork()` | Full | Alias for fork(). |
 | `posix_spawn()` | Full | **Non-forking implementation** (this kernel's invention; no Linux equivalent). Glue issues `SYS_SPAWN` (500) with a marshalled blob (argv + envp + file actions + spawn attrs). Host parses the blob, calls `kernel_spawn_process` to allocate a child pid + build the child Process descriptor, then invokes `onSpawn` to launch a fresh Worker. No fork, no `wpk_fork_*` rewind, no exec replay. Supports POSIX_SPAWN_SETSID / SETPGROUP / SETSIGMASK / SETSIGDEF and FDOP_OPEN / CLOSE / DUP2 / CHDIR / FCHDIR. SIG_IGN dispositions persist across the implicit exec; custom handlers reset to SIG_DFL (POSIX exec semantics). Regression-guarded: `kernel_get_fork_count` exposes a per-process counter the test suite asserts is unchanged across SYS_SPAWN. See `docs/plans/2026-05-04-non-forking-posix-spawn-design.md`. |
 | `posix_spawnp()` | Full | PATH search lives in libc (`libc/musl-overlay/src/process/wasm32posix/posix_spawnp.c`); resolves the absolute path then delegates to `posix_spawn()`. Empty PATH entries treated as `.`; defers EACCES per `__execvpe` policy. |
-| `clone()` | Partial | Thread-style clone (CLONE_VM\|CLONE_THREAD) supported. The kernel allocates the TID, and the host spawns a thread Worker sharing the parent's Memory. |
+| `clone()` | Partial | Thread-style clone (CLONE_VM\|CLONE_THREAD) supported. The kernel allocates the TID, and the host spawns a thread Worker sharing the parent's Memory. Normal pthread return, pthread_exit, and cancellation cleanup remain per-thread and wake join/clear-TID waiters; uncaught fatal Wasm traps in a pthread worker terminate the whole process with signal-style wait status. |
 | `personality()` | Stub | Returns 0 (PER_LINUX). |
 | `unshare()` / `setns()` | Stub | Returns EPERM. No namespace support. |
 | `ptrace()` | Stub | Returns ENOSYS. |
@@ -432,7 +432,7 @@ Systematic audit of all subsystems against POSIX specifications. Gaps are catego
 - `gettid()` — returns actual TID for threads, pid for main thread
 - `set_tid_address()` — stores tidptr; kernel writes 0 + futex-wakes on thread exit (CLONE_CHILD_CLEARTID)
 - `futex()` — WAIT/WAKE/REQUEUE/CMP_REQUEUE/WAKE_OP implemented; main-process WAIT returns EAGAIN (host retries via Atomics.waitAsync), thread workers use direct Atomics.wait
-- `pthread_create` — works via clone(). Basic pthreads tested (mutex, join). Cancellation not supported.
+- `pthread_create` — works via clone(). Basic pthreads tested (mutex, join). Normal thread return, `pthread_exit`, and cancellation cleanup are per-thread; uncaught fatal Wasm traps in a pthread worker are process-fatal and visible to parent `waitpid()` as signal termination. Cancellation remains limited; see the Wasm-inherent gaps below.
 
 **Hard / Architectural:**
 - Cross-process MAP_SHARED mmap (would need SharedArrayBuffer coordination between workers)

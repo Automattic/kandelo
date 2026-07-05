@@ -3,11 +3,12 @@ import type { DemoActionConfig, DemoGuideConfig } from "../../../../../web-libs/
 import { useDemoGuide, useKernelHost, useStatus, useWebPreview } from "../kernel-host/react";
 
 export interface DemoGuideProps {
+  onClose: () => void;
   onOpenTerminal: () => void;
   onRunWebAction: (action: DemoActionConfig) => Promise<string | void>;
 }
 
-export const DemoGuide: React.FC<DemoGuideProps> = ({ onOpenTerminal, onRunWebAction }) => {
+export const DemoGuide: React.FC<DemoGuideProps> = ({ onClose, onOpenTerminal, onRunWebAction }) => {
   const host = useKernelHost();
   const status = useStatus();
   const webPreview = useWebPreview();
@@ -16,18 +17,23 @@ export const DemoGuide: React.FC<DemoGuideProps> = ({ onOpenTerminal, onRunWebAc
   const [scriptText, setScriptText] = React.useState(() => guide?.script?.initialText ?? "");
   const [runningId, setRunningId] = React.useState<string | null>(null);
   const [message, setMessage] = React.useState<string | null>(null);
+  const runningIdRef = React.useRef<string | null>(null);
+  const editorRef = React.useRef<HTMLTextAreaElement | null>(null);
   const iframeRef = React.useRef<HTMLIFrameElement | null>(null);
 
   React.useEffect(() => {
     setScriptText(guide?.script?.initialText ?? "");
     setMessage(null);
     setRunningId(null);
+    runningIdRef.current = null;
   }, [guide]);
 
   const actionsById = React.useMemo(() => actionMap(guide), [guide]);
 
   const runAction = React.useCallback(async (action: DemoActionConfig) => {
     if (status !== "running") return;
+    if (runningIdRef.current !== null) return;
+    runningIdRef.current = action.id;
     setRunningId(action.id);
     setMessage(null);
     try {
@@ -48,13 +54,14 @@ export const DemoGuide: React.FC<DemoGuideProps> = ({ onOpenTerminal, onRunWebAc
     } catch (err) {
       setMessage(err instanceof Error ? err.message : String(err));
     } finally {
+      runningIdRef.current = null;
       setRunningId(null);
     }
   }, [host, onOpenTerminal, status]);
 
   const runScript = React.useCallback(async () => {
     if (!guide?.script) return;
-    const text = scriptText.trimEnd();
+    const text = (editorRef.current?.value ?? scriptText).trimEnd();
     if (!text || status !== "running") return;
     await runAction({
       id: "script",
@@ -90,11 +97,25 @@ export const DemoGuide: React.FC<DemoGuideProps> = ({ onOpenTerminal, onRunWebAc
   return (
     <aside className="kdemo" aria-label="Demo actions">
       <div className="kdemo-head">
-        <div>
+        <div className="kdemo-head-main">
           <div className="kdemo-kicker">DEMO</div>
           <h2>{guide.title}</h2>
         </div>
-        <div className="kdemo-id">{descriptor.id}</div>
+        <div className="kdemo-head-tools">
+          <div className="kdemo-id">{descriptor.id}</div>
+          <button
+            type="button"
+            className="kdemo-close"
+            title="Close demo guide"
+            aria-label="Close demo guide"
+            onClick={onClose}
+          >
+            <svg width="14" height="14" viewBox="0 0 12 12" fill="none" stroke="currentColor" strokeWidth="1.5">
+              <path d="M3 3l6 6" />
+              <path d="M9 3 3 9" />
+            </svg>
+          </button>
+        </div>
       </div>
       {guide.summary && <p className="kdemo-summary">{guide.summary}</p>}
 
@@ -126,6 +147,7 @@ export const DemoGuide: React.FC<DemoGuideProps> = ({ onOpenTerminal, onRunWebAc
         <section className="kdemo-section">
           <div className="kdemo-section-title">{guide.script.title}</div>
           <textarea
+            ref={editorRef}
             className="kdemo-editor"
             spellCheck={false}
             value={scriptText}
@@ -179,10 +201,9 @@ function actionMap(guide: DemoGuideConfig | null): Map<string, DemoActionConfig>
 
 function scriptToShellCommand(script: string): string {
   const delimiter = pickDelimiter(script);
-  return `cat > /tmp/kandelo-demo-action.sh <<'${delimiter}'
+  return `cat > /tmp/kandelo-demo-action.sh <<'${delimiter}' && bash /tmp/kandelo-demo-action.sh
 ${script}
-${delimiter}
-bash /tmp/kandelo-demo-action.sh`;
+${delimiter}`;
 }
 
 function pickDelimiter(script: string): string {

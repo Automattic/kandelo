@@ -201,7 +201,7 @@ jobs:
       package_staging_required: ${{ steps.scope.outputs.package_staging_required }}
       package_staging_reason: ${{ steps.scope.outputs.package_staging_reason }}
     steps:
-      - uses: actions/checkout@v6.0.2
+      - uses: actions/checkout@v7.0.0
         with:
           ref: ${{ needs.synthesize-merge.outputs.base_sha }}
           fetch-depth: 1
@@ -362,7 +362,7 @@ jobs:
         if: |
           needs.change-scope.outputs.package_staging_required == 'true' ||
           needs.change-scope.outputs.test_gate_required == 'true'
-        uses: actions/checkout@v6.0.2
+        uses: actions/checkout@v7.0.0
         with:
           ref: ${{ github.sha }}
           sparse-checkout: |
@@ -574,7 +574,7 @@ jobs:
       staging_tag: ${{ steps.compute.outputs.staging_tag }}
       merge_base_sha: ${{ steps.compute.outputs.merge_base_sha }}
     steps:
-      - uses: actions/checkout@v6.0.2
+      - uses: actions/checkout@v7.0.0
         with:
           ref: ${{ needs.synthesize-merge.outputs.base_sha }}
           fetch-depth: 1
@@ -635,7 +635,7 @@ jobs:
         run: bash scripts/dev-shell.sh true
 
       - name: Cache xtask build
-        uses: actions/cache@v5
+        uses: actions/cache@v5.0.5
         with:
           path: |
             ~/.cargo/registry
@@ -823,7 +823,7 @@ jobs:
       needs.change-scope.outputs.test_gate_required == 'true'
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6.0.2
+      - uses: actions/checkout@v7.0.0
         with:
           ref: ${{ needs.synthesize-merge.outputs.base_sha }}
           fetch-depth: 1
@@ -879,7 +879,7 @@ jobs:
       matrix:
         include: ${{ fromJSON(needs.preflight.outputs.promote_matrix) }}
     steps:
-      - uses: actions/checkout@v6.0.2
+      - uses: actions/checkout@v7.0.0
         with:
           ref: ${{ needs.synthesize-merge.outputs.base_sha }}
           fetch-depth: 1
@@ -974,7 +974,7 @@ jobs:
         include: ${{ fromJSON(needs.preflight.outputs.library_matrix) }}
     steps:
       - id: checkout
-        uses: actions/checkout@v6.0.2
+        uses: actions/checkout@v7.0.0
         with:
           ref: ${{ needs.synthesize-merge.outputs.base_sha }}
           fetch-depth: 1
@@ -1084,7 +1084,7 @@ jobs:
         include: ${{ fromJSON(needs.preflight.outputs.program_matrix) }}
     steps:
       - id: checkout
-        uses: actions/checkout@v6.0.2
+        uses: actions/checkout@v7.0.0
         with:
           ref: ${{ needs.synthesize-merge.outputs.base_sha }}
           fetch-depth: 1
@@ -1189,7 +1189,7 @@ jobs:
       BINARY_MATERIALIZATION_CHANGED: ${{ needs.change-scope.outputs.binary_materialization_changed }}
       PACKAGE_TARGET_TAG: ${{ needs.preflight.outputs.target_tag }}
     steps:
-      - uses: actions/checkout@v6.0.2
+      - uses: actions/checkout@v7.0.0
         with:
           ref: ${{ needs.synthesize-merge.outputs.base_sha }}
           fetch-depth: 1
@@ -1428,7 +1428,7 @@ jobs:
           fi
           echo "skip=false" >> "$GITHUB_OUTPUT"
 
-      - uses: actions/checkout@v6.0.2
+      - uses: actions/checkout@v7.0.0
         if: steps.suite.outputs.skip != 'true'
         with:
           ref: ${{ needs.synthesize-merge.outputs.base_sha }}
@@ -1516,7 +1516,7 @@ jobs:
 
       - name: Upload browser test artifacts
         if: failure() && steps.suite.outputs.skip != 'true' && matrix.suite == 'browser'
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: browser-test-artifacts
           path: |

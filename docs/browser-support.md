@@ -164,6 +164,23 @@ The "Boot pattern" column reflects how the demo enters the kernel:
 Run the browser app: `cd apps/browser-demos && npm run dev`, then open
 `http://127.0.0.1:5401/`.
 
+### Kandelo session UI
+
+The Kandelo app at `/pages/kandelo/` keeps the running machine as the primary
+browser canvas and exposes related tools through a bottom dock. Dock controls
+switch between Demo, Terminal, and Internals views, while dock panes open for
+new-machine setup, gallery browsing, system config, and sharing. These controls
+consume `KernelHost` state and actions rather than replacing the runtime path.
+
+The dock may be collapsed or moved horizontally within the browser viewport;
+that placement is UI-only presentation state and does not alter the running
+machine, boot descriptor, VFS image, or share/export data.
+
+Image-declared demo guides from `/etc/kandelo/demo.json` remain part of the
+machine presentation owned by the demo image. Guide actions may run terminal or
+web actions through `KernelHost`, but they do not replace process supervision,
+VFS state, networking, or runtime behavior.
+
 Cross-origin browser fetches are routed through `public/service-worker.js`,
 which defaults to `https://wordpress-playground-cors-proxy.net/?`. Override it
 with `VITE_CORS_PROXY_URL` when testing another proxy:
@@ -175,6 +192,28 @@ VITE_CORS_PROXY_URL='https://your-proxy.example/?' npm run dev
 
 Proxy prefixes ending in a bare `?` receive raw target URLs; `?url=`-style
 prefixes receive percent-encoded targets.
+
+### Blob-URL iframes (service-worker boundary)
+
+The service worker can only bridge requests from documents it **controls**. A
+`blob:` document is not service-worker-controlled (and has no base URL), so its
+subresource requests bypass the bridge and hit the static origin instead of the
+in-kernel server. This is a real browser boundary, not a Kandelo bug.
+
+It surfaces in the WordPress block/site editor, whose canvas iframe is mounted
+from `URL.createObjectURL(new Blob([html]))`: the canvas's
+`load-scripts.php`/`load-styles.php` and block-asset requests would 404 against
+the origin even though nginx serves them correctly over the bridge.
+
+`public/blob-iframe-interceptor.js` is a reusable, framework-free DOM patch that
+neutralizes this class of issue. It hooks `Blob`/`URL.createObjectURL` and the
+`HTMLIFrameElement` `src` setter/`setAttribute` so that any iframe pointed at a
+`text/html` blob URL is instead rendered from `srcdoc` (an `about:srcdoc`
+document, which the service worker *does* control). It is idempotent and a no-op
+unless a text/html blob URL is used as an iframe src. The service worker inlines
+it (via the `"__BLOB_IFRAME_INTERCEPTOR__"` build-time placeholder, mirroring
+`"__CORS_PROXY_URL__"`) into the `<head>` of every bridged HTML document, so it
+applies to all app demos, not just WordPress.
 
 ## VFS Images
 
@@ -298,6 +337,18 @@ For local browser artifacts, force a rebuild with `./run.sh rebuild <target>`.
 | MariaDB test | `mariadb-test.vfs.zst` | `bash images/vfs/scripts/build-mariadb-test-vfs-image.sh` | MariaDB + test suite |
 
 VFS images are `.gitignore`d and must be built locally. The `run.sh` script handles this automatically (e.g., `./run.sh browser` builds any missing VFS images before starting the dev server).
+
+Homebrew-derived browser images are published through the package-source
+gallery path, not bundled into the app. The trusted Homebrew publisher first
+pours a wasm32 bottle into a precomposed `.vfs.zst`, boots that image in the
+browser UI, and runs the package smoke command, such as
+`/home/linuxbrew/.linuxbrew/bin/hello --version`. Only then may the generated
+Homebrew sidecars and gallery `index.toml` set `browser_compatible = true`.
+
+A Homebrew gallery entry is visible only when its `index.toml` package record
+is wasm32 success, has an `archive_url`, and sets
+`browser_compatible = true`. Launch-time archive failures are surfaced in the
+UI instead of silently hiding the rest of the gallery.
 
 ### Building VFS images
 
