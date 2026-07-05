@@ -300,6 +300,8 @@ export interface SideModuleForkState {
   name: string;
   instance: WebAssembly.Instance;
   forkBufAddr: number;
+  /** Byte capacity reserved for this module's continuation frames. */
+  forkBufSize: number;
 }
 
 /**
@@ -837,7 +839,12 @@ function instantiateSharedLibrary(
         if (forkState() !== WPK_FORK_UNWINDING) {
           throw new Error(`${name}: side-module fork failed to enter UNWINDING`);
         }
-        sideForkState = { name, instance, forkBufAddr: sideForkBufAddr };
+        sideForkState = {
+          name,
+          instance,
+          forkBufAddr: sideForkBufAddr,
+          forkBufSize: FORK_SAVE_BUFFER_SIZE,
+        };
         options.sideModuleFork.setActiveFork(sideForkState);
         return options.sideModuleFork.invokeMainFork(WPK_FORK_UNWINDING);
       }
@@ -855,6 +862,7 @@ function instantiateSharedLibrary(
           name,
           instance,
           forkBufAddr: sideForkBufAddr,
+          forkBufSize: FORK_SAVE_BUFFER_SIZE,
         };
         const result = options.sideModuleFork.invokeMainFork(WPK_FORK_NORMAL);
         options.sideModuleFork.clearActiveFork(completedState);

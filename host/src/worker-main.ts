@@ -466,6 +466,7 @@ function buildDlopenImports(
               || activeSideFork.name !== state.name
               || activeSideFork.instance !== state.instance
               || activeSideFork.forkBufAddr !== state.forkBufAddr
+              || activeSideFork.forkBufSize !== state.forkBufSize
               || persisted !== state.forkBufAddr
             ) {
               throw new Error(`${state.name}: stale side-module fork identity during rewind`);
@@ -683,6 +684,7 @@ function buildDlopenImports(
       name: loaded.name,
       instance: loaded.instance,
       forkBufAddr: persisted,
+      forkBufSize: FORK_BUF_SIZE,
     };
     return activeSideFork;
   };
@@ -693,13 +695,7 @@ function buildDlopenImports(
   const completeSideModuleForkUnwind = (): void => {
     const state = findActiveSideFork();
     if (!state) return;
-    if (sideForkState(state) !== 1) {
-      throw new Error(`${state.name}: expected UNWINDING before side-module unwind completion`);
-    }
-    (state.instance.exports.wpk_fork_unwind_end as () => void)();
-    if (sideForkState(state) !== 0) {
-      throw new Error(`${state.name}: side-module unwind did not return to NORMAL`);
-    }
+    finalizeSideModuleForkUnwind(memory, state, ptrWidth);
   };
 
   const beginSideModuleForkRewind = (): void => {
@@ -1088,6 +1084,78 @@ function buildImportObject(
 /** Size of the fork save buffer used by wpk_fork_* instrumentation */
 const FORK_BUF_SIZE = FORK_SAVE_BUFFER_SIZE;
 
+/**
+ * Detect a fork-continuation save-buffer overrun after an unwind completes.
+ *
+ * The instrumentation keeps `current_pos` — the pointer-width integer at the
+ * base of the save buffer (`forkBufAddr + 0`) — seeded to the absolute address
+ * `forkBufAddr + frames_start_offset` and advanced by every saved frame. After
+ * unwind it is therefore the high-water linear-memory address written (see
+ * crates/fork-instrument/src/runtime.rs, `emit_unwind_begin`). Main-process and
+ * pthread buffers sit below their syscall channels; fork-capable side modules
+ * use independent allocations. The explicit `forkBufSize` keeps the same
+ * bounds check truthful for either placement. Frames grow upward, away from
+ * the header, so the base word holding `current_pos` stays readable here.
+ *
+ * The instrumented unwind carries no bounds check of its own — runtime.rs
+ * documents the requirement `frames_start_offset + Σframe ≤ buffer_size` but
+ * never enforces it. Without this host check the overrun is silent: it
+ * corrupts the channel and only surfaces later as an unexplained trap or a
+ * fork child that never makes progress. Returns the overrun in bytes, or 0
+ * when the save fit within the buffer.
+ */
+export function forkSaveBufferOverrun(
+  memory: WebAssembly.Memory,
+  forkBufAddr: number,
+  ptrWidth: 4 | 8,
+  forkBufSize: number,
+): number {
+  const view = new DataView(memory.buffer);
+  const currentPos = ptrWidth === 8
+    ? Number(view.getBigUint64(forkBufAddr, true))
+    : view.getUint32(forkBufAddr, true);
+  const bufferEnd = forkBufAddr + forkBufSize;
+  return currentPos > bufferEnd ? currentPos - bufferEnd : 0;
+}
+
+/**
+ * Finish the active side-module unwind and reject an overrun before the main
+ * worker is allowed to send SYS_FORK. Side modules own a save-buffer
+ * allocation separate from the main process channel, so checking only the
+ * main buffer cannot protect this continuation.
+ */
+export function finalizeSideModuleForkUnwind(
+  memory: WebAssembly.Memory,
+  state: SideModuleForkState,
+  ptrWidth: 4 | 8,
+): void {
+  const sideForkState = (): number =>
+    Number((state.instance.exports.wpk_fork_state as () => number)());
+  if (sideForkState() !== 1) {
+    throw new Error(`${state.name}: expected UNWINDING before side-module unwind completion`);
+  }
+  (state.instance.exports.wpk_fork_unwind_end as () => void)();
+  if (sideForkState() !== 0) {
+    throw new Error(`${state.name}: side-module unwind did not return to NORMAL`);
+  }
+
+  const overrun = forkSaveBufferOverrun(
+    memory,
+    state.forkBufAddr,
+    ptrWidth,
+    state.forkBufSize,
+  );
+  if (overrun > 0) {
+    throw new Error(
+      `${state.name}: side-module fork() continuation save buffer overflow — ` +
+        `the call stack at fork() needed ${state.forkBufSize + overrun} bytes ` +
+        `but only ${state.forkBufSize} (FORK_SAVE_BUFFER_SIZE) are reserved; ` +
+        `the side-module stack is too deep/wide to fork here. This is a ` +
+        `platform limit of the fork continuation buffer, not a defect in the program.`,
+    );
+  }
+}
+
 // Host-private control slots below the process main channel's fork buffer.
 // Fork's memcpy carries the parent's dlopen archive into the child intact;
 // the child walks it to replay each module before wpk_fork rewind. These are
@@ -1467,6 +1535,32 @@ export async function centralizedWorkerMain(
           if (forkState === 1) {
             // Unwind completed (fork) — finalize and send SYS_FORK.
             unwindEnd();
+
+            // The unwind writes saved frames into a fixed FORK_BUF_SIZE buffer
+            // that abuts the syscall channel. If the call stack at fork() was
+            // too deep/wide, those writes overran into the channel. Fail
+            // truthfully here rather than sending a fork on a corrupt channel
+            // and spawning a child whose continuation buffer is already
+            // clobbered (which otherwise surfaces as an unexplained trap or a
+            // child worker that never makes progress). The process is torn
+            // down after this throw, discarding the corrupted channel.
+            const overrun = forkSaveBufferOverrun(
+              memory,
+              forkBufAddr,
+              ptrWidth,
+              FORK_BUF_SIZE,
+            );
+            if (overrun > 0) {
+              throw new Error(
+                `pid=${pid}: fork() continuation save buffer overflow — the ` +
+                  `call stack at fork() needed ${FORK_BUF_SIZE + overrun} bytes ` +
+                  `but only ${FORK_BUF_SIZE} (FORK_SAVE_BUFFER_SIZE) are ` +
+                  `reserved; the stack is too deep/wide to fork here. This is a ` +
+                  `platform limit of the fork continuation buffer, not a defect ` +
+                  `in the program.`,
+              );
+            }
+
             dlopenSupport.completeSideModuleForkUnwind();
 
             // Send SYS_FORK through the channel now that memory has the
@@ -2425,6 +2519,23 @@ export async function centralizedThreadWorkerMain(
         const forkState = getState();
         if (forkState === 1) {
           unwindEnd();
+          // See the main-process fork path: a too-deep/wide stack overruns the
+          // fixed save buffer into the channel. Detect and fail truthfully.
+          const overrun = forkSaveBufferOverrun(
+            memory,
+            forkBufAddr,
+            ptrWidth,
+            FORK_BUF_SIZE,
+          );
+          if (overrun > 0) {
+            throw new Error(
+              `pid=${pid} tid=${tid}: fork() continuation save buffer ` +
+                `overflow — the call stack at fork() needed ` +
+                `${FORK_BUF_SIZE + overrun} bytes but only ${FORK_BUF_SIZE} ` +
+                `(FORK_SAVE_BUFFER_SIZE) are reserved; too deep/wide to fork ` +
+                `from this thread. Platform limit, not a program defect.`,
+            );
+          }
           // Close the race where the process main worker dlopens after this
           // pthread began unwinding but before it completed. Rewind locally
           // with ENOTSUP and do not create a child.

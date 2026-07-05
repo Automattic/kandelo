@@ -251,7 +251,10 @@ base, while `__tls_size` and `__tls_align` remain scalar constants.
 
 Every participating module still uses the fixed 16 KiB save-buffer limit
 described below. A dynamically allocated side buffer avoids overlap with the
-main control slab but does not make deep/unbounded frame use safe.
+main control slab but does not make deep/unbounded frame use safe. Before the
+worker sends `SYS_FORK`, it checks both the main module's buffer and the active
+side module's independent buffer; either overrun terminates the process instead
+of creating a child from corrupted continuation state.
 
 ## Save buffer format
 
@@ -272,6 +275,17 @@ time and 0 in modules that do not contain plain-catch capture sites.
 `frames_start_offset = 2P + N + B`. It is exposed as metadata on the tool's
 internal `Runtime` struct, and `wpk_fork_unwind_begin` writes
 `buf + frames_start_offset` into `*(buf + 0)` on every invocation.
+
+After an unwind, the host compares this absolute `current_pos` with the explicit
+`buf + FORK_SAVE_BUFFER_SIZE` bound before sending `SYS_FORK`. Main-process and
+pthread buffers sit next to their syscall channels; a fork-capable side module
+has a separately allocated buffer recorded in its active-fork state. A cursor
+beyond either end means frame writes crossed that module's reserved boundary.
+The process fails with the required and reserved byte counts instead of
+creating a child from corrupted continuation state. This is detection, not
+prevention: the instrumented unwind has already written past the fixed reserve,
+so the host discards the process and its memory. Increasing or making the
+reserve elastic is a separate ABI layout change.
 
 For wasm32 (`P = 4`) with a module that declares three additional scalar
 mutable globals totaling 16 bytes (e.g. `__stack_pointer`, `__tls_base`, one
