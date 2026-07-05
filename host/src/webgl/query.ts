@@ -18,6 +18,20 @@
  */
 import type { GlBinding } from "./registry.js";
 import * as O from "./ops.js";
+import { getGlesExtensionString } from "./capabilities.js";
+
+const GL_VENDOR = 0x1F00;
+const GL_RENDERER = 0x1F01;
+const GL_VERSION = 0x1F02;
+const GL_EXTENSIONS = 0x1F03;
+const GL_SHADING_LANGUAGE_VERSION = 0x8B8C;
+const GL_FLOAT = 0x1406;
+const GL_HALF_FLOAT = 0x140B;
+const GL_HALF_FLOAT_OES = 0x8D61;
+
+function normalizeHalfFloatType(type: number): number {
+  return type === GL_HALF_FLOAT_OES ? GL_HALF_FLOAT : type;
+}
 
 export function runGlQuery(
   b: GlBinding,
@@ -40,7 +54,28 @@ export function runGlQuery(
     case O.QOP_GET_STRING: {
       if (input.byteLength < 4) return -22;
       const name = inDv.getUint32(0, true);
-      const s = (gl.getParameter(name) as string | null) ?? "";
+      let s: string;
+      switch (name) {
+        case GL_VENDOR:
+          s = "Kandelo";
+          break;
+        case GL_RENDERER:
+          s = "Kandelo WebGL2 GLES bridge";
+          break;
+        case GL_VERSION:
+          // Native GLES loaders expect this prefix and then query extensions.
+          s = "OpenGL ES 2.0 Kandelo";
+          break;
+        case GL_SHADING_LANGUAGE_VERSION:
+          s = "OpenGL ES GLSL ES 1.00 Kandelo";
+          break;
+        case GL_EXTENSIONS:
+          s = getGlesExtensionString(gl);
+          break;
+        default:
+          s = (gl.getParameter(name) as string | null) ?? "";
+          break;
+      }
       const bytes = new TextEncoder().encode(s);
       const need = 4 + bytes.byteLength;
       if (out.byteLength < need) return -22;
@@ -165,13 +200,13 @@ export function runGlQuery(
       const w = inDv.getInt32(8, true);
       const h = inDv.getInt32(12, true);
       const format = inDv.getUint32(16, true);
-      const type = inDv.getUint32(20, true);
+      const type = normalizeHalfFloatType(inDv.getUint32(20, true));
       // WebGL2 readPixels requires the destination view to match `type`.
       // 0x1406 = GL_FLOAT, 0x1401 = GL_UNSIGNED_BYTE, 0x140B = GL_HALF_FLOAT.
       let view: ArrayBufferView = out;
-      if (type === 0x1406) {
+      if (type === GL_FLOAT) {
         view = new Float32Array(out.buffer, out.byteOffset, (out.byteLength / 4) | 0);
-      } else if (type === 0x140B) {
+      } else if (type === GL_HALF_FLOAT) {
         view = new Uint16Array(out.buffer, out.byteOffset, (out.byteLength / 2) | 0);
       }
       gl.readPixels(x, y, w, h, format, type, view);
