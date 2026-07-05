@@ -119,7 +119,7 @@ connection in any nginx worker. The standalone nginx image runs with
 
 ### KMS (`/dev/dri/card0`)
 - KMS presentation follows the framebuffer object currently bound to the CRTC. The browser modeset pane reads the scanout width/height from the kernel stats SAB, uses those dimensions for input scaling, and upscales the canvas with CSS to fit the available Kandelo surface.
-- The advertised connector mode is tracked separately from the current scanout framebuffer. Browser surfaces seed a 1920×1080 connector mode before transfer so user software sees stable `DRM_IOCTL_MODE_GETCONNECTOR` dimensions, while `MODE_SETCRTC`/`PAGE_FLIP` remain authoritative for the active framebuffer size.
+- The advertised connector mode is tracked separately from the current scanout framebuffer. Browser surfaces seed the connector from image-declared KMS presentation metadata, defaulting to 1920×1080 when no mode is declared, so user software sees stable `DRM_IOCTL_MODE_GETCONNECTOR` dimensions while `MODE_SETCRTC`/`PAGE_FLIP` remain authoritative for the active framebuffer size.
 
 ### Mouse input (`/dev/input/mice`)
 - Demo pages attach `mousemove` / `mousedown` / `mouseup` listeners to the canvas and call `BrowserKernel.injectMouseEvent(dx, dy, buttons)`. The main thread posts a `mouse_inject` message to the kernel worker, which calls the kernel's `kernel_inject_mouse_event` export. The kernel encodes a 3-byte PS/2 frame and queues it on a global ring; user processes drain the queue via `read("/dev/input/mice", …)`.
@@ -284,6 +284,13 @@ KMS demos use the same metadata path. A profile can set
 Kandelo app attaches the KMS canvas through the generic KMS surface plumbing,
 then runs the image-declared command. Do not add browser-loader branches that
 import or spawn a specific `modeset.wasm` file.
+
+KMS profiles may also declare `presentation.kms.connectorMode` with integer
+`width` and `height` fields. The browser host advertises that as the virtual
+connector mode before the first KMS client binds a framebuffer, and the
+Kandelo surface upscales the resulting scanout with CSS. This lets pixel-art
+or fixed-resolution programs render to their intended logical display while
+generic KMS demos keep the default 1920×1080 connector mode.
 
 Images can also declare an optional `guide`. When `guide` is absent, Kandelo
 does not render a demo panel; this is the intended shape for demos where the

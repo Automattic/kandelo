@@ -189,6 +189,7 @@ export const MachineView: React.FC<MachineViewProps> = ({
   const {
     activePrimary,
     demoSurface,
+    presentation,
     canUseTerminal,
     shouldMountDemoSurface,
     followDemoSurface,
@@ -250,6 +251,7 @@ export const MachineView: React.FC<MachineViewProps> = ({
                 autoFocus={activePrimary === demoSurface}
                 focusToken={demoFocusToken}
                 surface={demoSurface ?? undefined}
+                presentation={presentation}
                 onDockControlsChange={onDemoDockControlsChange}
               />
             </PrimarySurfaceSlot>

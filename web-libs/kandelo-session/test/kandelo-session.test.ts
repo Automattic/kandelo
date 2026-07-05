@@ -817,6 +817,54 @@ describe("Kandelo demo config", () => {
     expect(presentation.autoCommand).toContain("fbdoom");
   });
 
+  it("resolves KMS presentation connector modes", () => {
+    const config = parseKandeloDemoConfig(JSON.stringify({
+      version: 1,
+      profiles: {
+        bytepath: {
+          presentation: {
+            bootPrimary: "syslog",
+            runningPrimary: ["kms", "terminal", "syslog"],
+            terminalAccess: "drawer",
+            internalsAccess: "drawer",
+            autoCommand: "/usr/local/bin/love /usr/local/share/love/BYTEPATH.love",
+            kms: {
+              connectorMode: { width: 480, height: 270 },
+            },
+          },
+        },
+      },
+    }));
+    expect(config).not.toBeNull();
+
+    expect(resolveDemoPresentation(config!, "bytepath")?.kms?.connectorMode).toEqual({
+      width: 480,
+      height: 270,
+    });
+  });
+
+  it("rejects invalid KMS connector mode metadata", () => {
+    const config = parseKandeloDemoConfig(JSON.stringify({
+      version: 1,
+      profiles: {
+        bytepath: {
+          presentation: {
+            bootPrimary: "syslog",
+            runningPrimary: ["kms", "terminal", "syslog"],
+            terminalAccess: "drawer",
+            internalsAccess: "drawer",
+            kms: {
+              connectorMode: { width: 0, height: 270 },
+            },
+          },
+        },
+      },
+    }));
+    expect(config).not.toBeNull();
+
+    expect(() => resolveDemoPresentation(config!, "bytepath")).toThrow("connectorMode.width");
+  });
+
   it("throws when profile metadata is incomplete", () => {
     const config = parseKandeloDemoConfig(JSON.stringify({
       version: 1,

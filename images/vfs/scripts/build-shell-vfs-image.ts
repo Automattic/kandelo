@@ -86,15 +86,15 @@ async function main() {
         presentation: kmsPresentation("/usr/local/bin/modeset"),
       },
       love: {
-        presentation: kmsPresentation(LOVE_COMMAND),
+        presentation: kmsPresentation(LOVE_COMMAND, { width: 960, height: 540 }),
         guide: loveGuide(),
       },
       bytepath: {
-        presentation: kmsPresentation(BYTEPATH_COMMAND),
+        presentation: kmsPresentation(BYTEPATH_COMMAND, { width: 480, height: 270 }),
         guide: bytepathGuide(),
       },
       snkrx: {
-        presentation: kmsPresentation(SNKRX_COMMAND),
+        presentation: kmsPresentation(SNKRX_COMMAND, { width: 960, height: 540 }),
         guide: snkrxGuide(),
       },
     },
@@ -118,13 +118,17 @@ function populateModesetRuntime(fs: MemoryFileSystem): void {
   writeVfsBinary(fs, "/usr/local/bin/modeset", new Uint8Array(modesetBytes), 0o755);
 }
 
-function kmsPresentation(autoCommand: string): DemoPresentationConfig {
+function kmsPresentation(
+  autoCommand: string,
+  connectorMode?: { width: number; height: number },
+): DemoPresentationConfig {
   return {
     bootPrimary: "syslog",
     runningPrimary: ["kms", "terminal", "syslog"],
     terminalAccess: "drawer",
     internalsAccess: "drawer",
     autoCommand,
+    ...(connectorMode ? { kms: { connectorMode } } : {}),
   };
 }
 

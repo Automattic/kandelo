@@ -385,6 +385,15 @@ export type PrimarySurface = "syslog" | "terminal" | "framebuffer" | "web" | "km
 
 export type SurfaceAvailability = Record<PrimarySurface, boolean>;
 
+export interface KmsConnectorMode {
+  width: number;
+  height: number;
+}
+
+export interface KmsPresentationOptions {
+  connectorMode?: KmsConnectorMode;
+}
+
 export interface DemoPresentation {
   /**
    * Surface that should dominate while the machine is booting. Most demos use
@@ -405,6 +414,8 @@ export interface DemoPresentation {
    * framebuffer demos so exiting the app returns to the shell command.
    */
   autoCommand?: string;
+  /** Presentation preferences for the browser KMS scanout surface. */
+  kms?: KmsPresentationOptions;
 }
 
 // ── Process lifecycle events ──────────────────────────────────────────────

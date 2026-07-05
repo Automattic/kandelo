@@ -4,7 +4,10 @@
 
 import * as React from "react";
 import { useKernelHost, useStatus } from "../kernel-host/react";
-import type { KmsDisplayHandle } from "../../../../../web-libs/kandelo-session/src/kernel-host";
+import type {
+  KmsConnectorMode,
+  KmsDisplayHandle,
+} from "../../../../../web-libs/kandelo-session/src/kernel-host";
 import {
   attachLinuxMediumRawKeyboard,
   injectChunkedMouseMotion,
@@ -13,11 +16,10 @@ import {
 import { DemoSurfaceDockControls } from "./Framebuffer";
 import { useFittedCanvasStyle } from "./canvasFit";
 
-// Initial connector mode before any process binds a KMS FB. Once a
-// process calls MODE_SETCRTC/PAGE_FLIP, stats slots 2/3 become the
-// authoritative scanout size and drive input scaling + CSS fitting.
-const FALLBACK_KMS_FB_W = 1920;
-const FALLBACK_KMS_FB_H = 1080;
+// Initial connector mode before any process binds a KMS FB. Once a process
+// calls MODE_SETCRTC/PAGE_FLIP, stats slots 2/3 become the authoritative
+// scanout size and drive input scaling + CSS fitting.
+const DEFAULT_KMS_CONNECTOR_MODE: KmsConnectorMode = { width: 1920, height: 1080 };
 
 export interface ModesetProps {
   dragProps?: import("./PaneHead").PaneHeadDragProps;
@@ -30,6 +32,8 @@ export interface ModesetProps {
   /** CRTC to bind the canvas to. Defaults to 1 (the single CRTC the
    *  kernel currently advertises via MODE_GETRESOURCES). */
   crtcId?: number;
+  /** Virtual mode advertised by the browser KMS connector before page flips. */
+  connectorMode?: KmsConnectorMode;
 }
 
 interface KmsStats {
@@ -46,9 +50,19 @@ const ZERO_STATS: KmsStats = {
   lastFrameUs: 0,
 };
 
-export const Modeset: React.FC<ModesetProps> = ({ autoFocus = false, focusToken = 0, crtcId = 1, onDockControlsChange }) => {
+export const Modeset: React.FC<ModesetProps> = ({
+  autoFocus = false,
+  focusToken = 0,
+  crtcId = 1,
+  connectorMode: configuredConnectorMode,
+  onDockControlsChange,
+}) => {
   const host = useKernelHost();
   const status = useStatus();
+  const connectorMode = React.useMemo(
+    () => sanitizeConnectorMode(configuredConnectorMode),
+    [configuredConnectorMode?.height, configuredConnectorMode?.width],
+  );
   const stageRef = React.useRef<HTMLDivElement>(null);
   const canvasRef = React.useRef<HTMLCanvasElement>(null);
   const handleRef = React.useRef<KmsDisplayHandle | null>(null);
@@ -72,12 +86,12 @@ export const Modeset: React.FC<ModesetProps> = ({ autoFocus = false, focusToken 
     // Seed the connector mode before transfer. The worker resizes the
     // OffscreenCanvas to the kernel's current FB before WebGL2 attaches,
     // and the stats SAB reports that real scanout size back to this pane.
-    if (canvas.width !== FALLBACK_KMS_FB_W) canvas.width = FALLBACK_KMS_FB_W;
-    if (canvas.height !== FALLBACK_KMS_FB_H) canvas.height = FALLBACK_KMS_FB_H;
+    if (canvas.width !== connectorMode.width) canvas.width = connectorMode.width;
+    if (canvas.height !== connectorMode.height) canvas.height = connectorMode.height;
 
     let offBound: (() => void) | null = null;
     try {
-      const handle = host.attachKmsDisplay(canvas, crtcId);
+      const handle = host.attachKmsDisplay(canvas, crtcId, { mode: "webgl2", connectorMode });
       if (!handle) {
         setError("Kernel does not expose kmsAttachCanvas (older ABI?)");
         return;
@@ -96,7 +110,7 @@ export const Modeset: React.FC<ModesetProps> = ({ autoFocus = false, focusToken 
       handleRef.current = null;
       setBoundPid(null);
     };
-  }, [host, status, crtcId]);
+  }, [connectorMode, host, status, crtcId]);
 
   // Forward mouse motion + buttons into the kernel's `/dev/input/mice`.
   // The wasm side has no absolute-cursor input — it integrates int8
@@ -115,8 +129,8 @@ export const Modeset: React.FC<ModesetProps> = ({ autoFocus = false, focusToken 
 
     const activeFrameSize = () => {
       const s = statsRef.current;
-      const width = s.width > 0 ? s.width : (canvas.width || FALLBACK_KMS_FB_W);
-      const height = s.height > 0 ? s.height : (canvas.height || FALLBACK_KMS_FB_H);
+      const width = s.width > 0 ? s.width : (canvas.width || connectorMode.width);
+      const height = s.height > 0 ? s.height : (canvas.height || connectorMode.height);
       return { width, height };
     };
     const initialFrame = activeFrameSize();
@@ -220,7 +234,7 @@ export const Modeset: React.FC<ModesetProps> = ({ autoFocus = false, focusToken 
       canvas.removeEventListener("contextmenu", onContextMenu);
       doc.removeEventListener("mouseup", onMouseUp);
     };
-  }, [boundPid, stats.height, stats.width, status]);
+  }, [boundPid, connectorMode.height, connectorMode.width, stats.height, stats.width, status]);
 
   React.useEffect(() => {
     if (status !== "running") return;
@@ -286,7 +300,7 @@ export const Modeset: React.FC<ModesetProps> = ({ autoFocus = false, focusToken 
   const canvasStyle = useFittedCanvasStyle(
     stageRef,
     canvasRef,
-    FALLBACK_KMS_FB_W / FALLBACK_KMS_FB_H,
+    connectorMode.width / connectorMode.height,
     scanoutAspect,
   );
   const statusLabel = hasFrame
@@ -342,3 +356,19 @@ export const Modeset: React.FC<ModesetProps> = ({ autoFocus = false, focusToken 
     </div>
   );
 };
+
+function sanitizeConnectorMode(mode: KmsConnectorMode | undefined): KmsConnectorMode {
+  if (
+    mode &&
+    Number.isFinite(mode.width) &&
+    Number.isFinite(mode.height) &&
+    mode.width > 0 &&
+    mode.height > 0
+  ) {
+    return {
+      width: Math.floor(mode.width),
+      height: Math.floor(mode.height),
+    };
+  }
+  return DEFAULT_KMS_CONNECTOR_MODE;
+}
