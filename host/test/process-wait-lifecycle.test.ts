@@ -291,6 +291,7 @@ function createWorkerHarness(exports: Record<string, unknown>, kernelPtrWidth: 4
     },
     kernelInstance: { exports },
     kernelMemory: createSharedMemory(),
+    callbacks: {},
     scratchOffset: 128,
   });
 }

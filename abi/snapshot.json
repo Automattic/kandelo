@@ -913,7 +913,7 @@
     {
       "kind": "func",
       "name": "kernel_ipc_shm_lookup_mapping",
-      "signature": "(i64,i64) -> (i32)"
+      "signature": "(i32,i32) -> (i32)"
     },
     {
       "kind": "func",
@@ -923,7 +923,7 @@
     {
       "kind": "func",
       "name": "kernel_ipc_shm_record_mapping",
-      "signature": "(i64,i32,i32) -> (i32)"
+      "signature": "(i32,i32,i32) -> (i32)"
     },
     {
       "kind": "func",
@@ -943,7 +943,7 @@
     {
       "kind": "func",
       "name": "kernel_ipc_shmdt_addr",
-      "signature": "(i64) -> (i32)"
+      "signature": "(i32) -> (i32)"
     },
     {
       "kind": "func",
@@ -1098,7 +1098,7 @@
     {
       "kind": "func",
       "name": "kernel_pick_tcp_listener_target",
-      "signature": "(i32,i32,i64) -> (i32)"
+      "signature": "(i32,i32,i32) -> (i32)"
     },
     {
       "kind": "func",
@@ -1573,7 +1573,7 @@
     {
       "kind": "func",
       "name": "kernel_take_process_timer_cleanup",
-      "signature": "(i32,i64,i32) -> (i32)"
+      "signature": "(i32,i32,i32) -> (i32)"
     },
     {
       "kind": "func",
