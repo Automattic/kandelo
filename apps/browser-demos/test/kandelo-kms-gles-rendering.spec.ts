@@ -218,7 +218,7 @@ async function captureKmsSnapshot(
   return metrics;
 }
 
-test("BYTEPATH reaches gameplay on the native LOVE KMS renderer", async ({ browserName, page }, testInfo: TestInfo) => {
+test("BYTEPATH reaches gameplay on the native KMS/GLES renderer", async ({ browserName, page }, testInfo: TestInfo) => {
   test.skip(browserName !== "chromium", "KMS WebGL2 OffscreenCanvas rendering is Chromium-only in CI");
   test.setTimeout(360_000);
 
