@@ -92,7 +92,18 @@ describe("CentralizedKernelWorker Process Management", () => {
     expect((kw as any).hostReaped.has(pid)).toBe(false);
   });
 
-  it("lets the host terminate pthread workers without waking SYS_EXIT back into guest code", () => {
+  it("completes pthread SYS_EXIT channels (clearing the exiting guest's atomic-wait waiter) even when the host terminates the worker", () => {
+    // Regression guard for the reused-slot notify-steal deadlock. On thread
+    // exit the kernel must flip the channel status word off CH_PENDING
+    // (completeChannelRaw) so the exiting guest's in-wasm memory.atomic.wait32
+    // returns and its waiter is removed *before* the thread slot / channel
+    // offset is freed and reused by a later clone(). This holds even in the
+    // browser case where onThreadExit reports the host will terminate the
+    // backing Worker: an earlier revision abandoned the channel here (leaving
+    // status=PENDING with the guest still parked), and once #830 made worker
+    // teardown immediate, that stale waiter could outlive the slot and steal a
+    // reused thread's memory.atomic.notify(count=1), so the kernel's
+    // Atomics.waitAsync never fired and the new thread wedged forever.
     const pid = 123;
     const mainChannelOffset = WASM_PAGE_SIZE;
     const threadChannelOffset = 2 * WASM_PAGE_SIZE;
@@ -109,8 +120,7 @@ describe("CentralizedKernelWorker Process Management", () => {
       handling: true,
     };
     const onThreadExit = vi.fn(() => true);
-    const completeChannelRaw = vi.fn();
-    const abandonChannel = vi.fn((ch: typeof channel) => {
+    const completeChannelRaw = vi.fn((ch: typeof channel) => {
       ch.handling = false;
     });
 
@@ -127,14 +137,14 @@ describe("CentralizedKernelWorker Process Management", () => {
       notifyThreadExit: vi.fn(),
       removeChannel: vi.fn(),
       completeChannelRaw,
-      abandonChannel,
     });
 
     (kw as any).handleExit(channel, ABI_SYSCALLS.Exit, [0]);
 
+    // Still asks the host to tear down the backing thread Worker...
     expect(onThreadExit).toHaveBeenCalledWith(pid, tid, threadChannelOffset);
-    expect(abandonChannel).toHaveBeenCalledWith(channel);
-    expect(completeChannelRaw).not.toHaveBeenCalled();
+    // ...but now completes the channel so the guest's wait waiter is cleared.
+    expect(completeChannelRaw).toHaveBeenCalledWith(channel, 0, 0);
     expect(channel.handling).toBe(false);
   });
 

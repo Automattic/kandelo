@@ -1876,9 +1876,15 @@ export async function centralizedThreadWorkerMain(
       const i32 = new Int32Array(memory.buffer);
       Atomics.store(i32, (base + CH_STATUS) / 4, CHANNEL_STATUS_PENDING);
       Atomics.notify(i32, (base + CH_STATUS) / 4, 1);
-      // Wait for kernel to process the exit
+      // Wait for kernel to process the exit. The kernel completes the channel
+      // (CH_STATUS -> COMPLETE), which returns this Atomics.wait.
       while (Atomics.wait(i32, (base + CH_STATUS) / 4, CHANNEL_STATUS_PENDING) === "ok") { /* */ }
-      Atomics.store(i32, (base + CH_STATUS) / 4, CHANNEL_STATUS_IDLE);
+      // Intentionally do NOT reset CH_STATUS back to IDLE here. A normal syscall
+      // resets to IDLE so the next syscall can set PENDING, but an exiting thread
+      // issues no further syscalls — the channel is torn down and the slot is
+      // re-zeroed when it is reclaimed for a future clone(). Writing here would be
+      // the thread's only post-exit touch of the channel, so omitting it removes
+      // any possibility of a late write landing on a reused slot's status word.
     }
 
     port.postMessage({
