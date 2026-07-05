@@ -75,8 +75,8 @@ Non-goals: not reviving the custom `oras` blob path; not a TS/Rust reimplementat
 
 ## 4. Open questions in flight
 
-1. **Sequencing (active topic).** Does kd-yuef unblock **now via the transitional link-manifest path** (greens the composite wave immediately, but that mechanism effort is throwaway — the bottles are not), or **wait for brew-in-Kandelo** (ties a P1 to the Ruby long-pole)? Deciding factor = **Ruby timeline**.
-2. **Ruby completeness (the gate for guest-brew / brew-in-Kandelo).** Ruby 4.0.5 builds ABI-15/fork-instrumented and runs simple scripts, but `require 'rubygems'` and `require 'uri'` **trap under GC** (needs the **designed-but-unlanded `wasm-local-root-spill`** pass — `docs/plans/2026-06-19-ruby-wasm-gc-root-visibility-design.md`), and **Psych/YAML is broken (kd-5mb)**. brew exercises exactly these. **Timeline unknown — the key input to the sequencing decision.**
+1. **Sequencing — RESOLVED (2026-07-05, Brandon): wait for brew-in-Kandelo.** kd-yuef does **not** take the transitional link-manifest unblock; the link-manifest replay path is abandoned, not kept alive. kd-yuef's unblock now depends on brew-in-Kandelo being usable.
+2. **Ruby status — CORRECTED (bead ground truth; the earlier committed-checkout snapshot was stale).** The GC root-visibility / `wasm-local-root-spill` work is **DONE and MERGED** — PR #718 merged to main 2026-06-24 (kd-drt.2/kd-drt.9/kd-26r closed); URI/RubyGems GC traps fixed. Psych/YAML **works at runtime** (psych 5.3.1, libyaml 0.2.5, YAML round-trip verified on Node via kd-egn1; psych on main via #774); **PR #814 (open, non-draft, base=main)** adds the psych/YAML `ruby.rb` formula, reconciled with #810, held open only on the kd-yuef bottle/browser gate. brew-config Ruby traps closed (kd-e8g/kd-xmh/kd-9jd/kd-nfr/kd-drt.13/kd-v8m/kd-bsj). **So Ruby is NOT a distant long-pole.** The real remaining critical path is the **brew-in-Kandelo *integration*** (guest `brew install`/doctor/tap end-to-end + driving the VFS build via brew-in-Kandelo) — the in-progress experiment (`target/kd-sqw-homebrew/` boot probe + sibling worktrees), whose exact state needs assessment. A dedicated agent prompt for this was produced (assess-first, then drive).
 3. **Lazy granularity.** Option 3 now; option 2 (per-file/zip derived rep) if whole-bottle fetch too heavy — needs measurement.
 4. **Link-manifest generator** (design Open Q #1 in `docs/plans/2026-06-18-homebrew-vfs-builder-design.md`): **unbuilt** (only synthetic test fixtures). Under the target it becomes brew-in-Kandelo's output; near-term for kd-yuef it may need a stopgap generator.
 5. **Owed verification against `Homebrew/brew` source:** `github_packages.rb`/`skopeo`; `pr-upload`/`pr-pull` standalone + synthetic-tag handling; GHCR path derivation for the tap; whether `brew bottle` has any non-tar.gz format flexibility (settles option 2's "zip").
@@ -107,6 +107,8 @@ Parity-first, native-only publish + brew-in-Kandelo consume:
 ## 7. Pointers
 
 - **PR #823** (draft, Automattic/kandelo): the prior research doc — being corrected.
+- **Ruby/brew PRs:** PR #718 (Ruby 4 + wasm-local-root-spill) **MERGED** 2026-06-24; PR #814 (ruby psych/YAML formula) **OPEN/non-draft**, code-done, gated on kd-yuef; PR #810 (language runtime formulas) OPEN, reconciled to not touch Ruby.
+- **brew-in-Kandelo:** guest-brew boot probe `target/kd-sqw-homebrew/`; runtime-bringup design `docs/plans/2026-06-18-homebrew-runtime-bringup-design.md`; live work in sibling worktrees. This integration — not the Ruby runtime — is the remaining critical path for the "wait for brew-in-Kandelo" decision.
 - **kd-1i0u** (closed): research bead; `github_pr` = #823; worktree = this one.
 - **kd-yuef** (P1, blocked): VFS-critical language sidecars (cpython/perl/erlang).
 - **kd-1mr**: umbrella convoy (homebrew-all).
