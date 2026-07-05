@@ -86,15 +86,15 @@ async function main() {
         presentation: kmsPresentation("/usr/local/bin/modeset"),
       },
       love: {
-        presentation: kmsPresentation(LOVE_COMMAND, { width: 960, height: 540 }),
+        presentation: kmsPresentation(LOVE_COMMAND, { connectorMode: { width: 960, height: 540 }, fit: "stretch" }),
         guide: loveGuide(),
       },
       bytepath: {
-        presentation: kmsPresentation(BYTEPATH_COMMAND, { width: 480, height: 270 }, 2),
+        presentation: kmsPresentation(BYTEPATH_COMMAND, { connectorMode: { width: 480, height: 270 }, fit: "stretch" }),
         guide: bytepathGuide(),
       },
       snkrx: {
-        presentation: kmsPresentation(SNKRX_COMMAND, { width: 960, height: 540 }),
+        presentation: kmsPresentation(SNKRX_COMMAND, { connectorMode: { width: 960, height: 540 }, fit: "stretch" }),
         guide: snkrxGuide(),
       },
     },
@@ -120,23 +120,19 @@ function populateModesetRuntime(fs: MemoryFileSystem): void {
 
 function kmsPresentation(
   autoCommand: string,
-  connectorMode?: { width: number; height: number },
-  maxCssScale?: number,
+  options: { connectorMode?: { width: number; height: number }; fit?: "contain" | "stretch" } = {},
 ): DemoPresentationConfig {
+  const kms = Object.keys(options).length > 0 ? {
+    ...(options.connectorMode ? { connectorMode: options.connectorMode } : {}),
+    ...(options.fit ? { fit: options.fit } : {}),
+  } : undefined;
   return {
     bootPrimary: "syslog",
     runningPrimary: ["kms", "terminal", "syslog"],
     terminalAccess: "drawer",
     internalsAccess: "drawer",
     autoCommand,
-    ...(connectorMode || maxCssScale
-      ? {
-          kms: {
-            ...(connectorMode ? { connectorMode } : {}),
-            ...(maxCssScale ? { maxCssScale } : {}),
-          },
-        }
-      : {}),
+    ...(kms ? { kms } : {}),
   };
 }
 

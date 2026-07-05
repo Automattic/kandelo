@@ -37,9 +37,9 @@ The browser shell image declares virtual KMS connector modes for the LOVE
 profiles through `/etc/kandelo/demo.json`: the gallery and SNKRX use 960x540,
 while BYTEPATH uses its original 480x270 target. The browser canvas scales
 those scanouts to the available Kandelo UI size without changing the mode seen
-by the game. BYTEPATH also declares a 2x CSS presentation cap so its
-low-resolution glitch shader offsets are not magnified across the full browser
-pane.
+by the game. The LOVE game profiles request stretched KMS presentation so the
+raw target-resolution scanout fills the available Kandelo surface, matching
+the games' fullscreen behavior.
 
 The BYTEPATH staging step pins upstream `a327ex/BYTEPATH` and keeps the MIT
 game code plus permissive Lua dependencies needed for gameplay. It omits the

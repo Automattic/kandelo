@@ -1009,11 +1009,8 @@ void glGenerateMipmap(GLenum target) {
     EMIT_END()
 }
 
-static uint32_t pixel_data_len(GLsizei width, GLsizei height,
-                               GLenum format, GLenum type) {
-    if (width <= 0 || height <= 0) return 0;
+static uint32_t pixel_component_count(GLenum format) {
     uint32_t channels = 0;
-    uint32_t bytes_per_channel = 0;
     switch (format) {
     case GL_ALPHA:
     case GL_LUMINANCE:
@@ -1031,9 +1028,22 @@ static uint32_t pixel_data_len(GLsizei width, GLsizei height,
     default:
         return 0;
     }
+    return channels;
+}
+
+static uint32_t pixel_bytes_per_pixel(GLenum format, GLenum type) {
+    uint32_t channels = pixel_component_count(format);
+    uint32_t bytes_per_channel = 0;
+    if (channels == 0) return 0;
     switch (type) {
     case GL_UNSIGNED_BYTE:
         bytes_per_channel = 1;
+        break;
+    case GL_UNSIGNED_SHORT:
+#ifdef GL_HALF_FLOAT
+    case GL_HALF_FLOAT:
+#endif
+        bytes_per_channel = 2;
         break;
     case GL_UNSIGNED_SHORT_5_6_5:
     case GL_UNSIGNED_SHORT_4_4_4_4:
@@ -1041,14 +1051,41 @@ static uint32_t pixel_data_len(GLsizei width, GLsizei height,
         channels = 1;
         bytes_per_channel = 2;
         break;
+    case GL_UNSIGNED_INT:
     case GL_FLOAT:
         bytes_per_channel = 4;
         break;
+#ifdef GL_UNSIGNED_INT_2_10_10_10_REV
+    case GL_UNSIGNED_INT_2_10_10_10_REV:
+        channels = 1;
+        bytes_per_channel = 4;
+        break;
+#endif
+#ifdef GL_UNSIGNED_INT_10F_11F_11F_REV
+    case GL_UNSIGNED_INT_10F_11F_11F_REV:
+        channels = 1;
+        bytes_per_channel = 4;
+        break;
+#endif
+#ifdef GL_UNSIGNED_INT_24_8
+    case GL_UNSIGNED_INT_24_8:
+        channels = 1;
+        bytes_per_channel = 4;
+        break;
+#endif
     default:
         return 0;
     }
+    return channels * bytes_per_channel;
+}
+
+static uint32_t pixel_data_len(GLsizei width, GLsizei height,
+                               GLenum format, GLenum type) {
+    if (width <= 0 || height <= 0) return 0;
+    uint32_t bpp = pixel_bytes_per_pixel(format, type);
+    if (bpp == 0) return 0;
     uint64_t len = (uint64_t)(uint32_t)width * (uint64_t)(uint32_t)height *
-                   (uint64_t)channels * (uint64_t)bytes_per_channel;
+                   (uint64_t)bpp;
     if (len > UINT32_MAX) return 0;
     return (uint32_t)len;
 }
@@ -1475,24 +1512,58 @@ GLenum glCheckFramebufferStatus(GLenum target) {
 void glReadPixels(GLint x, GLint y, GLsizei width, GLsizei height,
                   GLenum format, GLenum type, void *pixels) {
     if (!pixels || width <= 0 || height <= 0) return;
-    /* Bytes-per-pixel sizing for the combinations this stub supports.
-     * Extend when a demo needs another (format,type) pair. */
-    uint32_t bpp = 4;
-    if (format == GL_RGB  && type == GL_UNSIGNED_BYTE) bpp = 3;
-    if (format == GL_RGBA && type == GL_FLOAT)         bpp = 16;
-    if (format == GL_RGB  && type == GL_FLOAT)         bpp = 12;
-    uint32_t out_len = (uint32_t)width * (uint32_t)height * bpp;
-    uint8_t in[24];
-    int32_t xi = x, yi = y;
-    int32_t wi = width, hi = height;
-    uint32_t fmt = (uint32_t)format, t = (uint32_t)type;
-    memcpy(in,      &xi,  4);
-    memcpy(in + 4,  &yi,  4);
-    memcpy(in + 8,  &wi,  4);
-    memcpy(in + 12, &hi,  4);
-    memcpy(in + 16, &fmt, 4);
-    memcpy(in + 20, &t,   4);
-    (void)_wpk_gl_query_into(QOP_READ_PIXELS, in, sizeof in, pixels, out_len);
+    uint32_t bpp = pixel_bytes_per_pixel(format, type);
+    if (bpp == 0) return;
+    const uint32_t max_query_out_len = 64u * 1024u;
+    uint32_t row_len = (uint32_t)width * bpp;
+    uint8_t *dst = (uint8_t *)pixels;
+
+    for (int32_t yoff = 0; yoff < height;) {
+        uint32_t rows = row_len > 0 ? max_query_out_len / row_len : 0;
+        if (rows == 0) rows = 1;
+        if (rows > (uint32_t)(height - yoff)) rows = (uint32_t)(height - yoff);
+
+        if (row_len <= max_query_out_len) {
+            uint8_t in[24];
+            int32_t xi = x, yi = y + yoff;
+            int32_t wi = width, hi = (int32_t)rows;
+            uint32_t fmt = (uint32_t)format, t = (uint32_t)type;
+            uint32_t len = row_len * rows;
+            memcpy(in,      &xi,  4);
+            memcpy(in + 4,  &yi,  4);
+            memcpy(in + 8,  &wi,  4);
+            memcpy(in + 12, &hi,  4);
+            memcpy(in + 16, &fmt, 4);
+            memcpy(in + 20, &t,   4);
+            if (_wpk_gl_query_into(QOP_READ_PIXELS, in, sizeof in,
+                                    dst + (uint32_t)yoff * row_len, len) != 0)
+                return;
+            yoff += (int32_t)rows;
+            continue;
+        }
+
+        uint32_t max_cols = max_query_out_len / bpp;
+        if (max_cols == 0) return;
+        for (int32_t xoff = 0; xoff < width; xoff += (int32_t)max_cols) {
+            uint32_t cols = max_cols;
+            if (cols > (uint32_t)(width - xoff)) cols = (uint32_t)(width - xoff);
+            uint8_t in[24];
+            int32_t xi = x + xoff, yi = y + yoff;
+            int32_t wi = (int32_t)cols, hi = 1;
+            uint32_t fmt = (uint32_t)format, t = (uint32_t)type;
+            uint32_t len = cols * bpp;
+            memcpy(in,      &xi,  4);
+            memcpy(in + 4,  &yi,  4);
+            memcpy(in + 8,  &wi,  4);
+            memcpy(in + 12, &hi,  4);
+            memcpy(in + 16, &fmt, 4);
+            memcpy(in + 20, &t,   4);
+            if (_wpk_gl_query_into(QOP_READ_PIXELS, in, sizeof in,
+                                    dst + (uint32_t)yoff * row_len + (uint32_t)xoff * bpp, len) != 0)
+                return;
+        }
+        yoff++;
+    }
 }
 
 void glGetShaderiv(GLuint shader, GLenum pname, GLint *params) {

@@ -2697,7 +2697,7 @@ int l_timer_sleep(lua_State *L) { usleep(useconds_t(luaL_checknumber(L, 1) * 100
 int l_timer_step(lua_State *L) {
   double t = nowSeconds();
   if (G.last == 0.0) G.last = t;
-  G.dt = std::min(0.1, std::max(0.0, t - G.last));
+  G.dt = std::max(0.0, t - G.last);
   G.last = t;
   G.fpsFrames++;
   if (G.fpsT0 == 0.0) G.fpsT0 = t;
@@ -3576,7 +3576,7 @@ int runLove(lua_State *L) {
   G.start = G.last = G.fpsT0 = nowSeconds();
   while (gRunning) {
     double t = nowSeconds();
-    G.dt = std::min(0.1, std::max(0.0, t - G.last));
+    G.dt = std::max(0.0, t - G.last);
     G.last = t;
     G.fpsFrames++;
     if (t - G.fpsT0 >= 1.0) {

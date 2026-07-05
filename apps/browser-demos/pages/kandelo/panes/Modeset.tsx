@@ -7,6 +7,7 @@ import { useKernelHost, useStatus } from "../kernel-host/react";
 import type {
   KmsConnectorMode,
   KmsDisplayHandle,
+  KmsSurfaceFit,
 } from "../../../../../web-libs/kandelo-session/src/kernel-host";
 import {
   attachLinuxMediumRawKeyboard,
@@ -34,8 +35,8 @@ export interface ModesetProps {
   crtcId?: number;
   /** Virtual mode advertised by the browser KMS connector before page flips. */
   connectorMode?: KmsConnectorMode;
-  /** Maximum CSS pixels per backing-store pixel when fitting the KMS surface. */
-  maxCssScale?: number;
+  /** Browser presentation fit for the scanout canvas. */
+  fit?: KmsSurfaceFit;
 }
 
 interface KmsStats {
@@ -57,7 +58,7 @@ export const Modeset: React.FC<ModesetProps> = ({
   focusToken = 0,
   crtcId = 1,
   connectorMode: configuredConnectorMode,
-  maxCssScale,
+  fit = "contain",
   onDockControlsChange,
 }) => {
   const host = useKernelHost();
@@ -305,7 +306,7 @@ export const Modeset: React.FC<ModesetProps> = ({
     canvasRef,
     connectorMode.width / connectorMode.height,
     scanoutAspect,
-    maxCssScale,
+    fit,
   );
   const statusLabel = hasFrame
     ? `${stats.width}×${stats.height} · ${stats.commitCount} flips · ${stats.lastFrameUs}µs · ${captureLabel}`

@@ -141,7 +141,7 @@ class RecordingGl {
   getShaderInfoLog(_s: unknown) { return "shader log"; }
   getProgramParameter(_p: unknown, _q: number) { return 1; }
   getProgramInfoLog(_p: unknown) { return "program log"; }
-  readPixels(_x: number, _y: number, _w: number, _h: number, _f: number, _t: number, dst: Uint8Array) {
+  readPixels(_x: number, _y: number, _w: number, _h: number, _f: number, _t: number, dst: Uint8Array | Uint16Array | Uint32Array | Float32Array) {
     for (let i = 0; i < dst.length; i++) dst[i] = (i & 0xff);
   }
   checkFramebufferStatus(_t: number) { return 0x8CD5 /* GL_FRAMEBUFFER_COMPLETE */; }
@@ -494,6 +494,20 @@ describe("query handler", () => {
     expect(o[0]).toBe(0); // RecordingGl.getError() returns 0
   });
 
+  it("QOP_GET_STRING exposes GLES renderer extensions", () => {
+    const { b } = setup();
+    const pname = new Uint8Array(4);
+    new DataView(pname.buffer).setUint32(0, 0x1F03 /* GL_EXTENSIONS */, true);
+    const o = out(128);
+    const n = runGlQuery(b, O.QOP_GET_STRING, pname, o);
+    const len = new DataView(o.buffer).getUint32(0, true);
+    const extensions = new TextDecoder().decode(o.subarray(4, 4 + len));
+
+    expect(n).toBe(4 + len);
+    expect(extensions).toContain("GL_OES_rgb8_rgba8");
+    expect(extensions).not.toContain("WEBGL_test");
+  });
+
   it("QOP_GET_INTEGERV reads a u32 pname and writes an i32", () => {
     const { b } = setup();
     const o = out(4);
@@ -596,6 +610,23 @@ describe("query handler", () => {
     expect(len).toBe("shader log".length);
     expect(n).toBe(4 + len);
     expect(new TextDecoder().decode(o.subarray(4, 4 + len))).toBe("shader log");
+  });
+
+  it("QOP_READ_PIXELS copies packed 16-bit results into unaligned byte output", () => {
+    const { b } = setup();
+    const inp = new Uint8Array(24);
+    const idv = new DataView(inp.buffer);
+    idv.setInt32(0, 0, true);
+    idv.setInt32(4, 0, true);
+    idv.setInt32(8, 2, true);
+    idv.setInt32(12, 1, true);
+    idv.setUint32(16, 0x1908 /* GL_RGBA */, true);
+    idv.setUint32(20, 0x8033 /* GL_UNSIGNED_SHORT_4_4_4_4 */, true);
+    const backing = new ArrayBuffer(5);
+    const o = new Uint8Array(backing, 1, 4);
+
+    expect(runGlQuery(b, O.QOP_READ_PIXELS, inp, o)).toBe(4);
+    expect([...o]).toEqual([0, 0, 1, 0]);
   });
 
   it("returns -EPERM when the binding has no live context", () => {

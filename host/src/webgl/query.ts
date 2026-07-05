@@ -30,6 +30,68 @@ const GL_CURRENT_PROGRAM = 0x8B8D;
 const GL_ACTIVE_UNIFORMS = 0x8B86;
 const GL_ACTIVE_UNIFORM_MAX_LENGTH = 0x8B87;
 const GL_INFO_LOG_LENGTH = 0x8B84;
+const KANDELO_GLES_EXTENSIONS = [
+  // WebGL2 can render to RGBA8 textures. Expose the equivalent GLES2
+  // extension so native renderers do not fall back to lower-precision canvases.
+  "GL_OES_rgb8_rgba8",
+].join(" ");
+const GL_UNSIGNED_SHORT = 0x1403;
+const GL_UNSIGNED_INT = 0x1405;
+const GL_FLOAT = 0x1406;
+const GL_HALF_FLOAT = 0x140B;
+const GL_UNSIGNED_SHORT_4_4_4_4 = 0x8033;
+const GL_UNSIGNED_SHORT_5_5_5_1 = 0x8034;
+const GL_UNSIGNED_SHORT_5_6_5 = 0x8363;
+const GL_UNSIGNED_INT_2_10_10_10_REV = 0x8368;
+const GL_UNSIGNED_INT_24_8 = 0x84FA;
+const GL_UNSIGNED_INT_10F_11F_11F_REV = 0x8C3B;
+
+function alignedFloat32View(out: Uint8Array): Float32Array {
+  if (out.byteOffset % 4 === 0) {
+    return new Float32Array(out.buffer, out.byteOffset, (out.byteLength / 4) | 0);
+  }
+  return new Float32Array((out.byteLength / 4) | 0);
+}
+
+function alignedUint32View(out: Uint8Array): Uint32Array {
+  if (out.byteOffset % 4 === 0) {
+    return new Uint32Array(out.buffer, out.byteOffset, (out.byteLength / 4) | 0);
+  }
+  return new Uint32Array((out.byteLength / 4) | 0);
+}
+
+function alignedUint16View(out: Uint8Array): Uint16Array {
+  if (out.byteOffset % 2 === 0) {
+    return new Uint16Array(out.buffer, out.byteOffset, (out.byteLength / 2) | 0);
+  }
+  return new Uint16Array((out.byteLength / 2) | 0);
+}
+
+function readPixelsViewForType(type: number, out: Uint8Array): ArrayBufferView {
+  switch (type) {
+    case GL_FLOAT:
+      return alignedFloat32View(out);
+    case GL_UNSIGNED_SHORT:
+    case GL_HALF_FLOAT:
+    case GL_UNSIGNED_SHORT_4_4_4_4:
+    case GL_UNSIGNED_SHORT_5_5_5_1:
+    case GL_UNSIGNED_SHORT_5_6_5:
+      return alignedUint16View(out);
+    case GL_UNSIGNED_INT:
+    case GL_UNSIGNED_INT_2_10_10_10_REV:
+    case GL_UNSIGNED_INT_24_8:
+    case GL_UNSIGNED_INT_10F_11F_11F_REV:
+      return alignedUint32View(out);
+    default:
+      return out;
+  }
+}
+
+function copyReadPixelsResult(view: ArrayBufferView, out: Uint8Array): void {
+  if (view.buffer === out.buffer && view.byteOffset === out.byteOffset) return;
+  const bytes = new Uint8Array(view.buffer, view.byteOffset, Math.min(view.byteLength, out.byteLength));
+  out.set(bytes);
+}
 
 export function runGlQuery(
   b: GlBinding,
@@ -68,7 +130,7 @@ export function runGlQuery(
           s = "OpenGL ES GLSL ES 1.00 Kandelo";
           break;
         case GL_EXTENSIONS:
-          s = "";
+          s = KANDELO_GLES_EXTENSIONS;
           break;
         default:
           s = (gl.getParameter(name) as string | null) ?? "";
@@ -226,14 +288,9 @@ export function runGlQuery(
       const format = inDv.getUint32(16, true);
       const type = inDv.getUint32(20, true);
       // WebGL2 readPixels requires the destination view to match `type`.
-      // 0x1406 = GL_FLOAT, 0x1401 = GL_UNSIGNED_BYTE, 0x140B = GL_HALF_FLOAT.
-      let view: ArrayBufferView = out;
-      if (type === 0x1406) {
-        view = new Float32Array(out.buffer, out.byteOffset, (out.byteLength / 4) | 0);
-      } else if (type === 0x140B) {
-        view = new Uint16Array(out.buffer, out.byteOffset, (out.byteLength / 2) | 0);
-      }
+      const view = readPixelsViewForType(type, out);
       gl.readPixels(x, y, w, h, format, type, view);
+      copyReadPixelsResult(view, out);
       // gl.readPixels writes into `out` directly. Bytes-written depends
       // on (format,type,w,h); the kernel cap (`MAX_QUERY_OUT_LEN`) is
       // the upper bound. Return the full out length — the C side knows

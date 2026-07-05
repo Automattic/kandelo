@@ -594,6 +594,96 @@ describe("LiveKernelHost: shell command queue", () => {
   });
 });
 
+describe("LiveKernelHost: KMS input routing", () => {
+  function fakeKmsCanvas() {
+    return {
+      width: 480,
+      height: 270,
+      transferControlToOffscreen() {
+        return { width: 480, height: 270 };
+      },
+    } as unknown as HTMLCanvasElement;
+  }
+
+  it("routes KMS input through the PTY when the KMS master is the PTY session process", async () => {
+    const encoder = new TextEncoder();
+    const ptyWrites: Array<{ pid: number; data: number[] }> = [];
+    const stdinWrites: Array<{ pid: number; data: number[] }> = [];
+
+    const host = new LiveKernelHost({
+      kernel: {
+        fs: makeFs({ "/etc/passwd": "" }),
+        nextPid: 100,
+        spawnFromVfs: async () => ({ pid: 100, exit: new Promise<number>(() => {}) }),
+        enumProcs: async () => [
+          { pid: 100, ppid: 1, uid: 1000, gid: 1000, vsizeBytes: 1024, state: "S", comm: "love", cmdline: "love bytepath" },
+        ],
+        onPtyOutput(_pid: number, callback: (data: Uint8Array) => void) {
+          callback(encoder.encode("kandelo$ "));
+        },
+        ptyResize() {},
+        ptyWrite(pid: number, data: Uint8Array) {
+          ptyWrites.push({ pid, data: Array.from(data) });
+        },
+        appendStdinData(pid: number, data: Uint8Array) {
+          stdinWrites.push({ pid, data: Array.from(data) });
+        },
+        kmsAttachCanvas() {},
+        getKmsMasterPid: async () => 100,
+      } as any,
+    });
+    host.setDefaultShell({
+      programPath: "/bin/bash",
+      programBytes: new ArrayBuffer(0),
+      argv: ["bash", "-l", "-i"],
+      env: ["PS1=kandelo$ "],
+      cwd: "/home/user",
+    });
+
+    await host.attachPty("/dev/pts/0", { cols: 80, rows: 24 });
+    const kms = host.attachKmsDisplay(fakeKmsCanvas(), 1);
+    expect(kms).not.toBeNull();
+    await Promise.resolve();
+    await Promise.resolve();
+    await Promise.resolve();
+
+    kms!.sendInput(new Uint8Array([46]));
+    expect(ptyWrites).toEqual([{ pid: 100, data: [46] }]);
+    expect(stdinWrites).toEqual([]);
+    kms!.close();
+  });
+
+  it("routes KMS input to direct stdin for standalone KMS processes", async () => {
+    const ptyWrites: Array<{ pid: number; data: number[] }> = [];
+    const stdinWrites: Array<{ pid: number; data: number[] }> = [];
+
+    const host = new LiveKernelHost({
+      kernel: {
+        fs: makeFs({ "/etc/passwd": "" }),
+        nextPid: 1,
+        appendStdinData(pid: number, data: Uint8Array) {
+          stdinWrites.push({ pid, data: Array.from(data) });
+        },
+        ptyWrite(pid: number, data: Uint8Array) {
+          ptyWrites.push({ pid, data: Array.from(data) });
+        },
+        kmsAttachCanvas() {},
+        getKmsMasterPid: async () => 77,
+      } as any,
+    });
+
+    const kms = host.attachKmsDisplay(fakeKmsCanvas(), 1);
+    expect(kms).not.toBeNull();
+    await Promise.resolve();
+    await Promise.resolve();
+
+    kms!.sendInput(new Uint8Array([46]));
+    expect(stdinWrites).toEqual([{ pid: 77, data: [46] }]);
+    expect(ptyWrites).toEqual([]);
+    kms!.close();
+  });
+});
+
 describe("LiveKernelHost: descriptor", () => {
   it("getBootDescriptor returns a deep clone — callers can't mutate internal state", () => {
     const host = new LiveKernelHost({ descriptor: DUMMY_DESCRIPTOR });
@@ -830,7 +920,7 @@ describe("Kandelo demo config", () => {
             autoCommand: "/usr/local/bin/love /usr/local/share/love/BYTEPATH.love",
             kms: {
               connectorMode: { width: 480, height: 270 },
-              maxCssScale: 2,
+              fit: "stretch",
             },
           },
         },
@@ -842,7 +932,7 @@ describe("Kandelo demo config", () => {
       width: 480,
       height: 270,
     });
-    expect(resolveDemoPresentation(config!, "bytepath")?.kms?.maxCssScale).toBe(2);
+    expect(resolveDemoPresentation(config!, "bytepath")?.kms?.fit).toBe("stretch");
   });
 
   it("rejects invalid KMS connector mode metadata", () => {
@@ -867,7 +957,7 @@ describe("Kandelo demo config", () => {
     expect(() => resolveDemoPresentation(config!, "bytepath")).toThrow("connectorMode.width");
   });
 
-  it("rejects invalid KMS CSS scale metadata", () => {
+  it("rejects invalid KMS fit metadata", () => {
     const config = parseKandeloDemoConfig(JSON.stringify({
       version: 1,
       profiles: {
@@ -878,7 +968,7 @@ describe("Kandelo demo config", () => {
             terminalAccess: "drawer",
             internalsAccess: "drawer",
             kms: {
-              maxCssScale: -1,
+              fit: "cover",
             },
           },
         },
@@ -886,7 +976,7 @@ describe("Kandelo demo config", () => {
     }));
     expect(config).not.toBeNull();
 
-    expect(() => resolveDemoPresentation(config!, "bytepath")).toThrow("maxCssScale");
+    expect(() => resolveDemoPresentation(config!, "bytepath")).toThrow("presentation.kms.fit");
   });
 
   it("throws when profile metadata is incomplete", () => {
@@ -1029,6 +1119,10 @@ describe("Kandelo demo config", () => {
     expect(builtinDemoPresentation("doom")).toMatchObject({
       runningPrimary: ["framebuffer", "terminal", "syslog"],
       autoCommand: DOOM_COMMAND,
+    });
+    expect(builtinDemoPresentation("bytepath")).toMatchObject({
+      runningPrimary: ["kms", "terminal", "syslog"],
+      kms: { connectorMode: { width: 480, height: 270 }, fit: "stretch" },
     });
 
     expect(builtinDemoAssets("doom")).toEqual([

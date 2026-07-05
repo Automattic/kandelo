@@ -390,9 +390,11 @@ export interface KmsConnectorMode {
   height: number;
 }
 
+export type KmsSurfaceFit = "contain" | "stretch";
+
 export interface KmsPresentationOptions {
   connectorMode?: KmsConnectorMode;
-  maxCssScale?: number;
+  fit?: KmsSurfaceFit;
 }
 
 export interface DemoPresentation {
@@ -1580,7 +1582,7 @@ export class LiveKernelHost implements KernelHost {
    */
   private async findPtyRoutingPid(pid: number): Promise<number | null> {
     if (this.shellPids.size === 0) return null;
-    if (this.shellPids.has(pid)) return null;
+    if (this.shellPids.has(pid)) return pid;
     try {
       const procs = await this.enumProcs();
       const byPid = new Map(procs.map((p) => [p.pid, p.ppid]));

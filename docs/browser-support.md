@@ -290,11 +290,10 @@ KMS profiles may also declare `presentation.kms.connectorMode` with integer
 connector mode before the first KMS client binds a framebuffer, and the
 Kandelo surface upscales the resulting scanout with CSS. This lets pixel-art
 or fixed-resolution programs render to their intended logical display while
-generic KMS demos keep the default 1920×1080 connector mode.
-Profiles can set `presentation.kms.maxCssScale` to cap how far the browser
-presentation zooms that scanout. The cap does not change the KMS framebuffer
-or the dimensions visible to user software; it only prevents low-resolution
-shader effects from being magnified across an oversized browser pane.
+generic KMS demos keep the default 1920×1080 connector mode. By default the
+CSS presentation preserves the scanout aspect ratio. Profiles that should fill
+the whole Kandelo surface can set `presentation.kms.fit` to `"stretch"`; the
+other accepted value is `"contain"`.
 
 Images can also declare an optional `guide`. When `guide` is absent, Kandelo
 does not render a demo panel; this is the intended shape for demos where the
