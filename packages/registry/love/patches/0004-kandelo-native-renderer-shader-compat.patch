@@ -462,19 +462,26 @@ diff --git a/src/modules/graphics/wrap_GraphicsShader.lua b/src/modules/graphics
 index daf11ea..615df0c 100644
 --- a/src/modules/graphics/wrap_GraphicsShader.lua
 +++ b/src/modules/graphics/wrap_GraphicsShader.lua
-@@ -315,6 +315,16 @@ local function getLanguageTarget(code)
+@@ -241,3 +241,7 @@ GLSL.PIXEL = {
+ #ifdef GL_ES
+-	precision mediump float;
++#ifdef GL_FRAGMENT_PRECISION_HIGH
++	precision highp float;
++#else
++	precision mediump float;
++#endif
+ #endif
+@@ -315,6 +315,14 @@ local function getLanguageTarget(code)
  end
  
  local function createShaderStageCode(stage, code, lang, gles, glsl1on3, gammacorrect, custom, multicanvas)
-+	if gles then
-+		code = code:gsub("([^;\n]*%f[%w_]extern%s+[^;\n]-)%s*=%s*([^;\n]*);", function(prefix, value)
-+			local name = prefix:match("([%a_][%w_]*)%s*(%[[^%]]+%])?%s*$")
-+			if name then
-+				return "// LOVE_KANDELO_UNIFORM_INIT " .. name .. " " .. value .. "\n" .. prefix .. ";"
-+			end
-+			return prefix .. ";"
-+		end)
-+	end
++	code = code:gsub("([^;\n]*%f[%w_]extern%s+[^;\n]-)%s*=%s*([^;\n]*);", function(prefix, value)
++		local name = prefix:match("([%a_][%w_]*)%s*(%[[^%]]+%])?%s*$")
++		if name then
++			return "// LOVE_KANDELO_UNIFORM_INIT " .. name .. " " .. value .. "\n" .. prefix .. ";"
++		end
++		return prefix .. ";"
++	end)
 +
  	stage = stage:upper()
  	local lines = {

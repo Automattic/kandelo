@@ -877,7 +877,10 @@ export class BrowserKernel {
     crtcId: number,
     canvas: OffscreenCanvas,
     stats?: SharedArrayBuffer,
-    opts?: { mode?: "auto" | "2d" | "webgl2" },
+    opts?: {
+      mode?: "auto" | "2d" | "webgl2";
+      connectorMode?: { width: number; height: number };
+    },
   ): void {
     this.sendToKernel(
       { type: "kms_attach_canvas", crtcId, canvas, stats, opts },

@@ -60,14 +60,13 @@ extern "C" {
 extern "C" bool kandelo_love_register_native_renderer(lua_State *L, const char *root,
                                                        int width, int height,
                                                        int pixelWidth, int pixelHeight,
+                                                       int desktopWidth, int desktopHeight,
                                                        bool (*swap)());
 
 namespace {
 
 constexpr int kLogicalWidth = 960;
 constexpr int kLogicalHeight = 540;
-constexpr int kScanoutWidth = 1920;
-constexpr int kScanoutHeight = 1080;
 constexpr int kKmsBoCount = 2;
 constexpr double kPi = 3.14159265358979323846;
 
@@ -236,6 +235,8 @@ struct Runtime {
   uint32_t kmsCrtcId = 0;
   uint32_t kmsConnId = 0;
   drmModeModeInfo kmsMode{};
+  int desktopW = kLogicalWidth;
+  int desktopH = kLogicalHeight;
   int kmsCurrentFb = 0;
   EGLDisplay eglDisplay = EGL_NO_DISPLAY;
   EGLContext eglContext = EGL_NO_CONTEXT;
@@ -295,6 +296,49 @@ struct Runtime {
 
 Runtime G;
 volatile sig_atomic_t gRunning = 1;
+
+int scanoutWidth() {
+  return std::max(1, G.windowW);
+}
+
+int scanoutHeight() {
+  return std::max(1, G.windowH);
+}
+
+uint16_t clampModeU16(int value) {
+  return uint16_t(std::max(1, std::min(0xffff, value)));
+}
+
+void setKmsModeDimensions(drmModeModeInfo &mode, int width, int height) {
+  const int w = std::max(1, width);
+  const int h = std::max(1, height);
+  mode.hdisplay = clampModeU16(w);
+  mode.hsync_start = clampModeU16(w + 16);
+  mode.hsync_end = clampModeU16(w + 48);
+  mode.htotal = clampModeU16(w + 160);
+  mode.hskew = 0;
+  mode.vdisplay = clampModeU16(h);
+  mode.vsync_start = clampModeU16(h + 3);
+  mode.vsync_end = clampModeU16(h + 8);
+  mode.vtotal = clampModeU16(h + 45);
+  mode.vscan = 0;
+  mode.vrefresh = mode.vrefresh > 0 ? mode.vrefresh : 60;
+  mode.clock = uint32_t(std::max(1.0, std::round(double(mode.htotal) * double(mode.vtotal) *
+                                                 double(mode.vrefresh) / 1000.0)));
+  std::snprintf(mode.name, sizeof(mode.name), "%dx%d", w, h);
+}
+
+void resizeSoftwareScreen(int width, int height) {
+  const int w = std::max(1, width);
+  const int h = std::max(1, height);
+  if (G.screen.w == w && G.screen.h == h) return;
+  G.screen = Surface{w, h, std::vector<uint32_t>(size_t(w) * size_t(h), 0)};
+  if (G.target == nullptr || G.target->bgra.empty()) G.target = &G.screen;
+  G.sw = w;
+  G.sh = h;
+  G.mouseX = std::max(0, std::min(G.mouseX, w - 1));
+  G.mouseY = std::max(0, std::min(G.mouseY, h - 1));
+}
 
 const char *MT_IMAGE = "lovefb.Image";
 const char *MT_IMAGEDATA = "lovefb.ImageData";
@@ -1287,6 +1331,8 @@ bool buildPresenterProgram() {
 }
 
 int setupKmsGl() {
+  const int scanoutW = scanoutWidth();
+  const int scanoutH = scanoutHeight();
   G.drmFd = open("/dev/dri/card0", O_RDWR | O_NONBLOCK);
   if (G.drmFd < 0) {
     perror("open /dev/dri/card0");
@@ -1317,6 +1363,9 @@ int setupKmsGl() {
     return 1;
   }
   G.kmsMode = conn->modes[0];
+  G.desktopW = std::max(1, int(G.kmsMode.hdisplay));
+  G.desktopH = std::max(1, int(G.kmsMode.vdisplay));
+  setKmsModeDimensions(G.kmsMode, scanoutW, scanoutH);
   drmModeFreeConnector(conn);
   drmModeFreeResources(res);
 
@@ -1328,7 +1377,7 @@ int setupKmsGl() {
   }
 
   for (int i = 0; i < kKmsBoCount; ++i) {
-    G.kmsBos[i] = gbm_bo_create(G.gbm, kScanoutWidth, kScanoutHeight,
+    G.kmsBos[i] = gbm_bo_create(G.gbm, scanoutW, scanoutH,
                                 GBM_FORMAT_XRGB8888, GBM_BO_USE_SCANOUT);
     if (!G.kmsBos[i]) {
       perror("gbm_bo_create");
@@ -1341,7 +1390,7 @@ int setupKmsGl() {
     uint32_t handles[4] = {handle, 0, 0, 0};
     uint32_t pitches[4] = {stride, 0, 0, 0};
     uint32_t offsets[4] = {0, 0, 0, 0};
-    if (drmModeAddFB2(G.drmFd, kScanoutWidth, kScanoutHeight,
+    if (drmModeAddFB2(G.drmFd, scanoutW, scanoutH,
                       DRM_FORMAT_XRGB8888, handles, pitches, offsets,
                       &G.kmsFbIds[i], 0) != 0) {
       perror("drmModeAddFB2");
@@ -1422,7 +1471,7 @@ int setupKmsGl() {
   glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
   glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
   glPixelStorei(GL_UNPACK_ALIGNMENT, 4);
-  glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, kLogicalWidth, kLogicalHeight, 0,
+  glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, G.screen.w, G.screen.h, 0,
                GL_RGBA, GL_UNSIGNED_BYTE, G.screen.bgra.data());
 
   const GLfloat verts[] = {
@@ -1434,7 +1483,7 @@ int setupKmsGl() {
   glGenBuffers(1, &G.glBuffer);
   glBindBuffer(GL_ARRAY_BUFFER, G.glBuffer);
   glBufferData(GL_ARRAY_BUFFER, sizeof(verts), verts, GL_STATIC_DRAW);
-  glViewport(0, 0, kScanoutWidth, kScanoutHeight);
+  glViewport(0, 0, scanoutW, scanoutH);
   glDisable(GL_DEPTH_TEST);
   glDisable(GL_STENCIL_TEST);
   glDisable(GL_BLEND);
@@ -1466,13 +1515,74 @@ int kmsPageflipWait() {
   return 0;
 }
 
+int resizeKmsScanout(int width, int height) {
+  if (G.presenter != Presenter::KmsGl || G.drmFd < 0 || G.gbm == nullptr) return 0;
+
+  const int w = std::max(1, width);
+  const int h = std::max(1, height);
+  if (G.kmsMode.hdisplay == w && G.kmsMode.vdisplay == h) return 0;
+
+  gbm_bo *newBos[kKmsBoCount]{};
+  uint32_t newFbIds[kKmsBoCount]{};
+
+  for (int i = 0; i < kKmsBoCount; ++i) {
+    newBos[i] = gbm_bo_create(G.gbm, w, h, GBM_FORMAT_XRGB8888, GBM_BO_USE_SCANOUT);
+    if (!newBos[i]) {
+      perror("gbm_bo_create resize");
+      for (int j = 0; j < i; ++j) {
+        if (newFbIds[j]) drmModeRmFB(G.drmFd, newFbIds[j]);
+        if (newBos[j]) gbm_bo_destroy(newBos[j]);
+      }
+      return 1;
+    }
+
+    uint32_t handle = gbm_bo_get_handle(newBos[i]).u32;
+    uint32_t stride = gbm_bo_get_stride(newBos[i]);
+    uint32_t handles[4] = {handle, 0, 0, 0};
+    uint32_t pitches[4] = {stride, 0, 0, 0};
+    uint32_t offsets[4] = {0, 0, 0, 0};
+    if (drmModeAddFB2(G.drmFd, w, h, DRM_FORMAT_XRGB8888, handles, pitches, offsets,
+                      &newFbIds[i], 0) != 0) {
+      perror("drmModeAddFB2 resize");
+      for (int j = 0; j <= i; ++j) {
+        if (newFbIds[j]) drmModeRmFB(G.drmFd, newFbIds[j]);
+        if (newBos[j]) gbm_bo_destroy(newBos[j]);
+      }
+      return 1;
+    }
+  }
+
+  drmModeModeInfo newMode = G.kmsMode;
+  setKmsModeDimensions(newMode, w, h);
+  if (drmModeSetCrtc(G.drmFd, G.kmsCrtcId, newFbIds[0], 0, 0, &G.kmsConnId, 1,
+                     &newMode) != 0) {
+    perror("drmModeSetCrtc resize");
+    for (int i = 0; i < kKmsBoCount; ++i) {
+      if (newFbIds[i]) drmModeRmFB(G.drmFd, newFbIds[i]);
+      if (newBos[i]) gbm_bo_destroy(newBos[i]);
+    }
+    return 1;
+  }
+
+  for (int i = 0; i < kKmsBoCount; ++i) {
+    if (G.kmsFbIds[i]) drmModeRmFB(G.drmFd, G.kmsFbIds[i]);
+    if (G.kmsBos[i]) gbm_bo_destroy(G.kmsBos[i]);
+    G.kmsBos[i] = newBos[i];
+    G.kmsFbIds[i] = newFbIds[i];
+  }
+  G.kmsMode = newMode;
+  G.kmsCurrentFb = 0;
+  glViewport(0, 0, w, h);
+  return 0;
+}
+
 void flushKmsGl() {
   if (G.presenter != Presenter::KmsGl) return;
-  glViewport(0, 0, kScanoutWidth, kScanoutHeight);
+  glViewport(0, 0, scanoutWidth(), scanoutHeight());
   glUseProgram(G.glProgram);
   glActiveTexture(GL_TEXTURE0);
   glBindTexture(GL_TEXTURE_2D, G.glTexture);
-  glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, kLogicalWidth, kLogicalHeight,
+  glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, G.screen.w, G.screen.h,
                   GL_RGBA, GL_UNSIGNED_BYTE, G.screen.bgra.data());
   glUniform1i(G.glSamplerLoc, 0);
   glBindBuffer(GL_ARRAY_BUFFER, G.glBuffer);
@@ -1665,8 +1775,8 @@ void pollInput() {
     int dx = int(int8_t(pkt[1]));
     int dy = -int(int8_t(pkt[2]));
     if (G.presenter == Presenter::KmsGl) {
-      G.mouseRemainderX += double(dx) * double(G.windowW) / double(kScanoutWidth);
-      G.mouseRemainderY += double(dy) * double(G.windowH) / double(kScanoutHeight);
+      G.mouseRemainderX += double(dx) * double(G.windowW) / double(scanoutWidth());
+      G.mouseRemainderY += double(dy) * double(G.windowH) / double(scanoutHeight());
       dx = int(std::trunc(G.mouseRemainderX));
       dy = int(std::trunc(G.mouseRemainderY));
       G.mouseRemainderX -= double(dx);
@@ -2587,7 +2697,7 @@ int l_timer_sleep(lua_State *L) { usleep(useconds_t(luaL_checknumber(L, 1) * 100
 int l_timer_step(lua_State *L) {
   double t = nowSeconds();
   if (G.last == 0.0) G.last = t;
-  G.dt = std::min(0.1, std::max(0.0, t - G.last));
+  G.dt = std::max(0.0, t - G.last);
   G.last = t;
   G.fpsFrames++;
   if (G.fpsT0 == 0.0) G.fpsT0 = t;
@@ -2607,7 +2717,7 @@ int l_window_setTitle(lua_State *L) {
 
 int l_window_getFullscreenModes(lua_State *L) {
   lua_newtable(L);
-  int modes[2][2] = {{G.windowW, G.windowH}, {kScanoutWidth, kScanoutHeight}};
+  int modes[2][2] = {{G.windowW, G.windowH}, {scanoutWidth(), scanoutHeight()}};
   for (int i = 0; i < 2; ++i) {
     lua_newtable(L);
     lua_pushinteger(L, modes[i][0]); lua_setfield(L, -2, "width");
@@ -2620,6 +2730,7 @@ int l_window_getFullscreenModes(lua_State *L) {
 int l_window_setMode(lua_State *L) {
   G.windowW = std::max(1, int(luaL_checkinteger(L, 1)));
   G.windowH = std::max(1, int(luaL_checkinteger(L, 2)));
+  resizeSoftwareScreen(G.windowW, G.windowH);
   G.mouseX = clampInt(G.mouseX, 0, G.windowW - 1);
   G.mouseY = clampInt(G.mouseY, 0, G.windowH - 1);
   return 0;
@@ -2635,8 +2746,8 @@ int l_window_getMode(lua_State *L) {
 }
 int l_window_setIcon(lua_State *) { return 0; }
 int l_window_getDesktopDimensions(lua_State *L) {
-  lua_pushinteger(L, kScanoutWidth);
-  lua_pushinteger(L, kScanoutHeight);
+  lua_pushinteger(L, scanoutWidth());
+  lua_pushinteger(L, scanoutHeight());
   return 2;
 }
 int l_window_getDisplayCount(lua_State *L) { lua_pushinteger(L, 1); return 1; }
@@ -3430,9 +3541,12 @@ int runLove(lua_State *L) {
   configureLuaPath(L);
   installLoveHandlers(L);
   maybeRunConf(L);
+  resizeSoftwareScreen(G.windowW, G.windowH);
+  if (openPresenter() != 0) return 1;
   if (G.presenter == Presenter::KmsGl) {
     G.nativeRenderer = kandelo_love_register_native_renderer(
-        L, G.root.c_str(), G.windowW, G.windowH, kScanoutWidth, kScanoutHeight,
+        L, G.root.c_str(), G.windowW, G.windowH, scanoutWidth(), scanoutHeight(),
+        G.desktopW, G.desktopH,
         nativeSwapBuffers);
     if (G.nativeRenderer) {
       fprintf(stderr, "love: using upstream LÖVE OpenGL renderer on Kandelo KMS/EGL\n");
@@ -3462,7 +3576,7 @@ int runLove(lua_State *L) {
   G.start = G.last = G.fpsT0 = nowSeconds();
   while (gRunning) {
     double t = nowSeconds();
-    G.dt = std::min(0.1, std::max(0.0, t - G.last));
+    G.dt = std::max(0.0, t - G.last);
     G.last = t;
     G.fpsFrames++;
     if (t - G.fpsT0 >= 1.0) {
@@ -3535,6 +3649,7 @@ extern "C" void kandelo_love_set_native_window_size(int width, int height) {
   }
   G.mouseX = clampInt(G.mouseX, 0, std::max(1, G.windowW) - 1);
   G.mouseY = clampInt(G.mouseY, 0, std::max(1, G.windowH) - 1);
+  if (resizeKmsScanout(G.windowW, G.windowH) != 0) gRunning = 0;
 }
 
 int main(int argc, char **argv) {
@@ -3545,15 +3660,10 @@ int main(int argc, char **argv) {
 
   signal(SIGTERM, signalHandler);
   signal(SIGINT, signalHandler);
-  if (openPresenter() != 0) return 1;
   configureRawStdin();
   G.savedStdinFlags = fcntl(STDIN_FILENO, F_GETFL, 0);
   if (G.savedStdinFlags >= 0) fcntl(STDIN_FILENO, F_SETFL, G.savedStdinFlags | O_NONBLOCK);
   G.miceFd = open("/dev/input/mice", O_RDONLY | O_NONBLOCK);
-
-  clearSurface(G.screen, Color{14, 18, 24, 255});
-  drawText(G.screen, G.presenter == Presenter::KmsGl ? "LOVE KMS/EGL/GLES runtime" : "LOVE framebuffer runtime", 20, 20);
-  presentFrame();
 
   lua_State *L = luaL_newstate();
   lua_atpanic(L, luaPanic);

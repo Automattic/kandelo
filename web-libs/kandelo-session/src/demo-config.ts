@@ -1,5 +1,7 @@
 import type {
   DemoPresentation,
+  KmsPresentationOptions,
+  KmsSurfaceFit,
   PrimarySurface,
 } from "./kernel-host";
 
@@ -11,6 +13,7 @@ export interface DemoPresentationConfig {
   terminalAccess: DemoPresentation["terminalAccess"];
   internalsAccess: DemoPresentation["internalsAccess"];
   autoCommand?: string;
+  kms?: KmsPresentationOptions;
 }
 
 export interface DemoAssetConfig {
@@ -115,11 +118,13 @@ const PRIMARY_SURFACES = new Set<PrimarySurface>([
   "kms",
 ]);
 const ACCESS_MODES = new Set(["primary", "drawer", "side"]);
+const KMS_SURFACE_FITS = new Set<KmsSurfaceFit>(["contain", "stretch"]);
 const ACTION_KINDS = new Set<DemoActionKind>([
   "terminal.run",
   "terminal.write",
   "web.wordpressLogin",
 ]);
+const MAX_KMS_CONNECTOR_MODE_DIMENSION = 16_384;
 
 export function parseKandeloDemoConfig(text: string): KandeloDemoConfig | null {
   const value: unknown = JSON.parse(text);
@@ -194,7 +199,50 @@ function normalizePresentationConfig(config: unknown): DemoPresentation {
     terminalAccess: accessMode(config.terminalAccess, "terminalAccess"),
     internalsAccess: accessMode(config.internalsAccess, "internalsAccess"),
     ...(typeof config.autoCommand === "string" ? { autoCommand: config.autoCommand } : {}),
+    ...normalizeKmsPresentationOptions(config.kms),
   };
+}
+
+function normalizeKmsPresentationOptions(value: unknown): { kms?: KmsPresentationOptions } {
+  if (value === undefined) return {};
+  if (!isRecord(value)) {
+    throw new Error("presentation.kms must be an object");
+  }
+  const kms: KmsPresentationOptions = {};
+  if (value.connectorMode !== undefined) {
+    if (!isRecord(value.connectorMode)) {
+      throw new Error("presentation.kms.connectorMode must be an object");
+    }
+    kms.connectorMode = {
+      width: kmsModeDimension(
+        value.connectorMode.width,
+        "presentation.kms.connectorMode.width",
+      ),
+      height: kmsModeDimension(
+        value.connectorMode.height,
+        "presentation.kms.connectorMode.height",
+      ),
+    };
+  }
+  if (value.fit !== undefined) {
+    if (typeof value.fit !== "string" || !KMS_SURFACE_FITS.has(value.fit as KmsSurfaceFit)) {
+      throw new Error("presentation.kms.fit must be one of: contain, stretch");
+    }
+    kms.fit = value.fit as KmsSurfaceFit;
+  }
+  return { kms };
+}
+
+function kmsModeDimension(value: unknown, field: string): number {
+  if (
+    typeof value !== "number" ||
+    !Number.isInteger(value) ||
+    value < 1 ||
+    value > MAX_KMS_CONNECTOR_MODE_DIMENSION
+  ) {
+    throw new Error(`${field} must be an integer between 1 and ${MAX_KMS_CONNECTOR_MODE_DIMENSION}`);
+  }
+  return value;
 }
 
 function normalizeAssets(value: unknown, field: string): DemoAssetConfig[] {

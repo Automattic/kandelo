@@ -136,7 +136,10 @@ export interface KernelLike {
     crtcId: number,
     canvas: OffscreenCanvas,
     stats?: SharedArrayBuffer,
-    opts?: { mode?: "auto" | "2d" | "webgl2" },
+    opts?: {
+      mode?: "auto" | "2d" | "webgl2";
+      connectorMode?: { width: number; height: number };
+    },
   ): void;
   /**
    * Register a stats SAB for `crtcId` without binding a scanout
@@ -382,6 +385,18 @@ export type PrimarySurface = "syslog" | "terminal" | "framebuffer" | "web" | "km
 
 export type SurfaceAvailability = Record<PrimarySurface, boolean>;
 
+export interface KmsConnectorMode {
+  width: number;
+  height: number;
+}
+
+export type KmsSurfaceFit = "contain" | "stretch";
+
+export interface KmsPresentationOptions {
+  connectorMode?: KmsConnectorMode;
+  fit?: KmsSurfaceFit;
+}
+
 export interface DemoPresentation {
   /**
    * Surface that should dominate while the machine is booting. Most demos use
@@ -402,6 +417,8 @@ export interface DemoPresentation {
    * framebuffer demos so exiting the app returns to the shell command.
    */
   autoCommand?: string;
+  /** Presentation preferences for the browser KMS scanout surface. */
+  kms?: KmsPresentationOptions;
 }
 
 // ── Process lifecycle events ──────────────────────────────────────────────
@@ -582,7 +599,10 @@ export interface KernelHost {
   attachKmsDisplay(
     canvas: HTMLCanvasElement,
     crtcId?: number,
-    opts?: { mode?: "auto" | "2d" | "webgl2" },
+    opts?: {
+      mode?: "auto" | "2d" | "webgl2";
+      connectorMode?: { width: number; height: number };
+    },
   ): KmsDisplayHandle | null;
 
   // web preview — service demos can expose an HTTP bridge endpoint.
@@ -1562,7 +1582,7 @@ export class LiveKernelHost implements KernelHost {
    */
   private async findPtyRoutingPid(pid: number): Promise<number | null> {
     if (this.shellPids.size === 0) return null;
-    if (this.shellPids.has(pid)) return null;
+    if (this.shellPids.has(pid)) return pid;
     try {
       const procs = await this.enumProcs();
       const byPid = new Map(procs.map((p) => [p.pid, p.ppid]));
@@ -1724,7 +1744,10 @@ export class LiveKernelHost implements KernelHost {
   attachKmsDisplay(
     canvas: HTMLCanvasElement,
     crtcId: number = 1,
-    opts: { mode?: "auto" | "2d" | "webgl2" } = { mode: "webgl2" },
+    opts: {
+      mode?: "auto" | "2d" | "webgl2";
+      connectorMode?: { width: number; height: number };
+    } = { mode: "webgl2" },
   ): KmsDisplayHandle | null {
     if (!this.kernel?.kmsAttachCanvas) return null;
     if (typeof canvas.transferControlToOffscreen !== "function") return null;
@@ -1741,8 +1764,12 @@ export class LiveKernelHost implements KernelHost {
     // 7 i32 slots × 4 bytes = 28 bytes; align to 64 so atomics are happy.
     const statsSab = new SharedArrayBuffer(64);
     const stats = new Int32Array(statsSab);
+    const connectorMode = opts.connectorMode ?? {
+      width: canvas.width,
+      height: canvas.height,
+    };
     const offscreen = canvas.transferControlToOffscreen();
-    this.kernel.kmsAttachCanvas(crtcId, offscreen, statsSab, opts);
+    this.kernel.kmsAttachCanvas(crtcId, offscreen, statsSab, { ...opts, connectorMode });
     const kernel = this.kernel;
     const boundPidListeners = new ListenerSet<number | null>();
     let closed = false;

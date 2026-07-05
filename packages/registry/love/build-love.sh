@@ -455,11 +455,6 @@ find "$BYTEPATH_SRC" -mindepth 1 -maxdepth 1 \
     ! -name 'love' \
     -exec cp -R {} "$BYTEPATH_BUILD"/ \;
 perl -0pi -e "s/^Steam = require 'libraries\\/steamworks'\nif type\(Steam\) == 'boolean' then Steam = nil end/Steam = nil/m" "$BYTEPATH_BUILD/main.lua"
-for patch in "$HERE"/game-patches/bytepath/*.patch; do
-    [ -e "$patch" ] || continue
-    echo "==> Applying BYTEPATH demo patch $(basename "$patch")..."
-    (cd "$BYTEPATH_BUILD" && patch -p1 < "$patch")
-done
 
 # SNKRX is also packaged from its upstream game tree with its real assets and
 # rendering code. Steamworks is an external native SDK boundary, so only that

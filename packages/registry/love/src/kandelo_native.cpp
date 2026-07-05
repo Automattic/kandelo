@@ -53,8 +53,10 @@ struct NativeState {
   std::string root;
   int width = 960;
   int height = 540;
-  int pixelWidth = 1920;
-  int pixelHeight = 1080;
+  int pixelWidth = 960;
+  int pixelHeight = 540;
+  int desktopWidth = 960;
+  int desktopHeight = 540;
   SwapCallback swap = nullptr;
 };
 
@@ -368,8 +370,10 @@ private:
 
 class KandeloWindow final : public love::window::Window {
 public:
-  KandeloWindow(int width, int height, int pixelWidth, int pixelHeight)
-      : width(width), height(height), pixelWidth(pixelWidth), pixelHeight(pixelHeight) {
+  KandeloWindow(int width, int height, int pixelWidth, int pixelHeight,
+                int desktopWidth, int desktopHeight)
+      : width(width), height(height), pixelWidth(pixelWidth), pixelHeight(pixelHeight),
+        desktopWidth(desktopWidth), desktopHeight(desktopHeight) {
     settings.refreshrate = 60.0;
   }
 
@@ -380,6 +384,8 @@ public:
   bool setWindow(int width, int height, love::window::WindowSettings *settings) override {
     if (width > 0) this->width = width;
     if (height > 0) this->height = height;
+    pixelWidth = this->width;
+    pixelHeight = this->height;
     if (settings != nullptr) this->settings = *settings;
     if (this->settings.refreshrate <= 0.0) this->settings.refreshrate = 60.0;
     kandelo_love_set_native_window_size(this->width, this->height);
@@ -413,6 +419,8 @@ public:
   bool onSizeChanged(int width, int height) override {
     this->width = width;
     this->height = height;
+    pixelWidth = this->width;
+    pixelHeight = this->height;
     kandelo_love_set_native_window_size(this->width, this->height);
     return true;
   }
@@ -421,11 +429,11 @@ public:
   const char *getDisplayName(int) const override { return "Kandelo"; }
   DisplayOrientation getDisplayOrientation(int) const override { return ORIENTATION_LANDSCAPE; }
   std::vector<WindowSize> getFullscreenSizes(int) const override {
-    return {{pixelWidth, pixelHeight}, {width, height}};
+    return {{desktopWidth, desktopHeight}, {pixelWidth, pixelHeight}, {width, height}};
   }
   void getDesktopDimensions(int, int &width, int &height) const override {
-    width = pixelWidth;
-    height = pixelHeight;
+    width = desktopWidth;
+    height = desktopHeight;
   }
   void setPosition(int x, int y, int displayindex) override {
     posX = x;
@@ -514,8 +522,10 @@ private:
   love::graphics::Graphics *graphics = nullptr;
   int width = 960;
   int height = 540;
-  int pixelWidth = 1920;
-  int pixelHeight = 1080;
+  int pixelWidth = 960;
+  int pixelHeight = 540;
+  int desktopWidth = 960;
+  int desktopHeight = 540;
   int posX = 0;
   int posY = 0;
   int display = 0;
@@ -586,7 +596,8 @@ bool installWindow() {
   if (love::Module::getInstance<love::window::Window>(love::Module::M_WINDOW) != nullptr)
     return true;
   love::Module::registerInstance(new KandeloWindow(gNative.width, gNative.height,
-                                                   gNative.pixelWidth, gNative.pixelHeight));
+                                                   gNative.pixelWidth, gNative.pixelHeight,
+                                                   gNative.desktopWidth, gNative.desktopHeight));
   return true;
 }
 
@@ -668,12 +679,15 @@ uint64 Channel::push(const Variant &) {
 extern "C" bool kandelo_love_register_native_renderer(lua_State *L, const char *root,
                                                        int width, int height,
                                                        int pixelWidth, int pixelHeight,
+                                                       int desktopWidth, int desktopHeight,
                                                        SwapCallback swap) {
   gNative.root = root ? root : ".";
   gNative.width = width > 0 ? width : 960;
   gNative.height = height > 0 ? height : 540;
   gNative.pixelWidth = pixelWidth > 0 ? pixelWidth : gNative.width;
   gNative.pixelHeight = pixelHeight > 0 ? pixelHeight : gNative.height;
+  gNative.desktopWidth = desktopWidth > 0 ? desktopWidth : gNative.pixelWidth;
+  gNative.desktopHeight = desktopHeight > 0 ? desktopHeight : gNative.pixelHeight;
   gNative.swap = swap;
 
   try {

@@ -100,16 +100,19 @@ export function builtinDemoPresentation(profileId: string): DemoPresentation | n
       return {
         ...genericDemoPresentation("kms"),
         autoCommand: LOVE_COMMAND,
+        kms: { connectorMode: { width: 960, height: 540 }, fit: "stretch" },
       };
     case "bytepath":
       return {
         ...genericDemoPresentation("kms"),
         autoCommand: BYTEPATH_COMMAND,
+        kms: { connectorMode: { width: 480, height: 270 }, fit: "stretch" },
       };
     case "snkrx":
       return {
         ...genericDemoPresentation("kms"),
         autoCommand: SNKRX_COMMAND,
+        kms: { connectorMode: { width: 960, height: 540 }, fit: "stretch" },
       };
     default:
       return null;

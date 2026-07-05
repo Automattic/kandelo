@@ -86,15 +86,15 @@ async function main() {
         presentation: kmsPresentation("/usr/local/bin/modeset"),
       },
       love: {
-        presentation: kmsPresentation(LOVE_COMMAND),
+        presentation: kmsPresentation(LOVE_COMMAND, { connectorMode: { width: 960, height: 540 }, fit: "stretch" }),
         guide: loveGuide(),
       },
       bytepath: {
-        presentation: kmsPresentation(BYTEPATH_COMMAND),
+        presentation: kmsPresentation(BYTEPATH_COMMAND, { connectorMode: { width: 480, height: 270 }, fit: "stretch" }),
         guide: bytepathGuide(),
       },
       snkrx: {
-        presentation: kmsPresentation(SNKRX_COMMAND),
+        presentation: kmsPresentation(SNKRX_COMMAND, { connectorMode: { width: 960, height: 540 }, fit: "stretch" }),
         guide: snkrxGuide(),
       },
     },
@@ -118,13 +118,21 @@ function populateModesetRuntime(fs: MemoryFileSystem): void {
   writeVfsBinary(fs, "/usr/local/bin/modeset", new Uint8Array(modesetBytes), 0o755);
 }
 
-function kmsPresentation(autoCommand: string): DemoPresentationConfig {
+function kmsPresentation(
+  autoCommand: string,
+  options: { connectorMode?: { width: number; height: number }; fit?: "contain" | "stretch" } = {},
+): DemoPresentationConfig {
+  const kms = Object.keys(options).length > 0 ? {
+    ...(options.connectorMode ? { connectorMode: options.connectorMode } : {}),
+    ...(options.fit ? { fit: options.fit } : {}),
+  } : undefined;
   return {
     bootPrimary: "syslog",
     runningPrimary: ["kms", "terminal", "syslog"],
     terminalAccess: "drawer",
     internalsAccess: "drawer",
     autoCommand,
+    ...(kms ? { kms } : {}),
   };
 }
 

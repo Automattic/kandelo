@@ -158,6 +158,11 @@ const WASM_STATFS_SIZE = 72;
 /** Size of the WasmDirent struct: d_ino(u64) + d_type(u32) + d_namlen(u32). */
 const WASM_DIRENT_SIZE = STRUCT_SIZE_WASM_DIRENT;
 
+export type KmsModeDimensions = {
+  width: number;
+  height: number;
+};
+
 export interface KernelCallbacks {
   onKill?: (pid: number, signal: number) => number;
   onExec?: (path: string) => number;
@@ -190,6 +195,12 @@ export interface KernelCallbacks {
    * legacy "embedder must call attachCanvas manually" path alive.
    */
   getKmsCanvas?: (crtcId: number) => OffscreenCanvas | HTMLCanvasElement | undefined;
+  /**
+   * Resolve the advertised connector mode for `crtcId`. This is the display
+   * mode reported through DRM GETCONNECTOR and should remain stable even when
+   * the scanout canvas backing store is resized to the current framebuffer.
+   */
+  getKmsMode?: (crtcId: number) => KmsModeDimensions | undefined;
   /**
    * Notify the embedder that GL has claimed the canvas for `crtcId`.
    * The KMS vblank pump uses this to skip the CPU `putImageData` blit
@@ -978,10 +989,11 @@ export class WasmPosixKernel {
           }
         },
         host_kms_mode_info: (connector_id: number, out_ptr: bigint): void => {
+          const mode = this.callbacks.getKmsMode?.(connector_id);
           const canvas = this.callbacks.getKmsCanvas?.(connector_id);
           this.writeKernelBytes(
             Number(out_ptr),
-            kmsModeInfoBytes(canvas?.width, canvas?.height),
+            kmsModeInfoBytes(mode?.width ?? canvas?.width, mode?.height ?? canvas?.height),
           );
         },
         host_kms_addfb: (
@@ -999,6 +1011,12 @@ export class WasmPosixKernel {
         host_kms_rmfb: (_pid: number, fb_id: number): void => { this.kms.rmFb(fb_id); },
         host_kms_set_fb: (_pid: number, crtc_id: number, fb_id: number): void => {
           this.kms.setFb(crtc_id, fb_id);
+          const fb = this.kms.currentFb(crtc_id);
+          const canvas = this.callbacks.getKmsCanvas?.(crtc_id);
+          if (fb && canvas && (canvas.width !== fb.width || canvas.height !== fb.height)) {
+            canvas.width = fb.width;
+            canvas.height = fb.height;
+          }
         },
       },
     };

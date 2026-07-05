@@ -2,7 +2,10 @@ import * as React from "react";
 import { useWebPreview } from "../kernel-host/react";
 import { Framebuffer, type FramebufferProps } from "./Framebuffer";
 import { Modeset } from "./Modeset";
-import type { PrimarySurface } from "../../../../../web-libs/kandelo-session/src/kernel-host";
+import type {
+  DemoPresentation,
+  PrimarySurface,
+} from "../../../../../web-libs/kandelo-session/src/kernel-host";
 
 export interface WordPressLoginOptions {
   username: string;
@@ -23,13 +26,28 @@ export interface DisplayProps extends FramebufferProps {
    * framebuffer) for callers that don't yet pass a surface.
    */
   surface?: PrimarySurface;
+  presentation?: DemoPresentation;
   onDockControlsChange?: (controls: React.ReactNode | null) => void;
 }
 
-export const Display = React.forwardRef<DisplayHandle, DisplayProps>(({ surface, onDockControlsChange, ...props }, ref) => {
+export const Display = React.forwardRef<DisplayHandle, DisplayProps>(({
+  surface,
+  presentation,
+  onDockControlsChange,
+  ...props
+}, ref) => {
   const preview = useWebPreview();
 
-  if (surface === "kms") return <Modeset {...props} onDockControlsChange={onDockControlsChange} />;
+  if (surface === "kms") {
+    return (
+      <Modeset
+        {...props}
+        connectorMode={presentation?.kms?.connectorMode}
+        fit={presentation?.kms?.fit}
+        onDockControlsChange={onDockControlsChange}
+      />
+    );
+  }
   if (surface === "framebuffer") return <Framebuffer {...props} onDockControlsChange={onDockControlsChange} />;
   if (surface === "web" && preview) {
     return <WebPreviewPane ref={ref} preview={preview} onDockControlsChange={onDockControlsChange} {...props} />;
