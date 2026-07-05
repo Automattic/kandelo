@@ -29,15 +29,15 @@ The upstream LÖVE 11.5 source is still pinned and fetched by the build script
 for the port baseline and bundled libraries such as `lodepng`, but the
 Kandelo backend replaces the upstream SDL presentation path with the kernel's
 direct-rendering surface. Lua is provided by the separate `lua` registry
-package and linked as `liblua.a`.
+package and linked as `liblua.a`. The native backend reads `love.conf` before
+opening the KMS presenter, allocates scanout buffers at the game-requested
+window size, and leaves browser-side upscaling to the Kandelo KMS surface.
 
 The BYTEPATH staging step pins upstream `a327ex/BYTEPATH` and keeps the MIT
 game code plus permissive Lua dependencies needed for gameplay. It omits the
 bundled Windows runtime, tutorial archive, GPL windfield dependency, and audio
 assets; Kandelo supplies small compatibility shims for the omitted runtime
-pieces. The packaged demo also starts BYTEPATH's in-game `glitch` option below
-the upstream maximum so the authored RGB-split effect remains readable on the
-1080p KMS surface; the shaders and renderer path are otherwise unchanged.
+pieces.
 
 The SNKRX staging step pins upstream `a327ex/SNKRX` and keeps the MIT game
 code. Upstream notes that assets have separate licenses, so Kandelo omits the
