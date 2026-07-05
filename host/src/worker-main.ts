@@ -688,6 +688,39 @@ function buildImportObject(
 /** Size of the fork save buffer used by wpk_fork_* instrumentation */
 const FORK_BUF_SIZE = FORK_SAVE_BUFFER_SIZE;
 
+/**
+ * Detect a fork-continuation save-buffer overrun after an unwind completes.
+ *
+ * The instrumentation keeps `current_pos` — the pointer-width integer at the
+ * base of the save buffer (`forkBufAddr + 0`) — seeded to `frames_start_offset`
+ * and advanced by every saved frame, so after unwind it is the high-water byte
+ * offset the unwind wrote to (see crates/fork-instrument/src/runtime.rs,
+ * `emit_unwind_begin`). The buffer is only `FORK_BUF_SIZE` bytes and sits
+ * immediately below the syscall channel (`forkBufAddr = channelOffset -
+ * FORK_BUF_SIZE`), so `current_pos > FORK_BUF_SIZE` means the unwind overran
+ * the buffer and clobbered channel memory. Frames grow upward, away from
+ * offset 0, so the base word holding `current_pos` is never itself clobbered
+ * and stays readable here.
+ *
+ * The instrumented unwind carries no bounds check of its own — runtime.rs
+ * documents the requirement `frames_start_offset + Σframe ≤ buffer_size` but
+ * never enforces it. Without this host check the overrun is silent: it
+ * corrupts the channel and only surfaces later as an unexplained trap or a
+ * fork child that never makes progress. Returns the overrun in bytes, or 0
+ * when the save fit within the buffer.
+ */
+export function forkSaveBufferOverrun(
+  memory: WebAssembly.Memory,
+  forkBufAddr: number,
+  ptrWidth: 4 | 8,
+): number {
+  const view = new DataView(memory.buffer);
+  const currentPos = ptrWidth === 8
+    ? Number(view.getBigUint64(forkBufAddr, true))
+    : view.getUint32(forkBufAddr, true);
+  return currentPos > FORK_BUF_SIZE ? currentPos - FORK_BUF_SIZE : 0;
+}
+
 // Slot below forkBufAddr that stores the head pointer of the dlopen
 // archive linked list. Fork's memcpy carries the parent's archive into
 // the child intact; the child walks it to replay each dlopen before
@@ -1019,6 +1052,26 @@ export async function centralizedWorkerMain(
           if (forkState === 1) {
             // Unwind completed (fork) — finalize and send SYS_FORK.
             unwindEnd();
+
+            // The unwind writes saved frames into a fixed FORK_BUF_SIZE buffer
+            // that abuts the syscall channel. If the call stack at fork() was
+            // too deep/wide, those writes overran into the channel. Fail
+            // truthfully here rather than sending a fork on a corrupt channel
+            // and spawning a child whose continuation buffer is already
+            // clobbered (which otherwise surfaces as an unexplained trap or a
+            // child worker that never makes progress). The process is torn
+            // down after this throw, discarding the corrupted channel.
+            const overrun = forkSaveBufferOverrun(memory, forkBufAddr, ptrWidth);
+            if (overrun > 0) {
+              throw new Error(
+                `pid=${pid}: fork() continuation save buffer overflow — the ` +
+                  `call stack at fork() needed ${FORK_BUF_SIZE + overrun} bytes ` +
+                  `but only ${FORK_BUF_SIZE} (FORK_SAVE_BUFFER_SIZE) are ` +
+                  `reserved; the stack is too deep/wide to fork here. This is a ` +
+                  `platform limit of the fork continuation buffer, not a defect ` +
+                  `in the program.`,
+              );
+            }
 
             // Send SYS_FORK through the channel now that memory has the
             // fork save buffer populated (saved_globals + frames).
@@ -1838,6 +1891,18 @@ export async function centralizedThreadWorkerMain(
         const forkState = getState();
         if (forkState === 1) {
           unwindEnd();
+          // See the main-process fork path: a too-deep/wide stack overruns the
+          // fixed save buffer into the channel. Detect and fail truthfully.
+          const overrun = forkSaveBufferOverrun(memory, forkBufAddr, ptrWidth);
+          if (overrun > 0) {
+            throw new Error(
+              `pid=${pid} tid=${tid}: fork() continuation save buffer ` +
+                `overflow — the call stack at fork() needed ` +
+                `${FORK_BUF_SIZE + overrun} bytes but only ${FORK_BUF_SIZE} ` +
+                `(FORK_SAVE_BUFFER_SIZE) are reserved; too deep/wide to fork ` +
+                `from this thread. Platform limit, not a program defect.`,
+            );
+          }
           const childPid = sendForkSyscall(memory, channelOffset);
           if (childPid < 0) {
             throw new Error(`Fork failed: errno=${-childPid}`);
