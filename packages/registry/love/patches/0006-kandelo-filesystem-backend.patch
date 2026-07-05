@@ -1,0 +1,115 @@
+diff --git a/src/modules/filesystem/wrap_Filesystem.cpp b/src/modules/filesystem/wrap_Filesystem.cpp
+index 6a448f4..d65d2ea 100644
+--- a/src/modules/filesystem/wrap_Filesystem.cpp
++++ b/src/modules/filesystem/wrap_Filesystem.cpp
+@@ -21,20 +21,25 @@
+ // LOVE
+ #include "common/config.h"
+ #include "wrap_Filesystem.h"
++#include "Filesystem.h"
+ #include "wrap_File.h"
+ #include "wrap_DroppedFile.h"
+ #include "wrap_FileData.h"
+ #include "data/wrap_Data.h"
+ #include "data/wrap_DataModule.h"
+ 
++#ifndef LOVE_KANDELO
+ #include "physfs/Filesystem.h"
++#endif
+ 
+ #ifdef LOVE_ANDROID
+ #include "common/android.h"
+ #endif
+ 
+ // SDL
++#ifndef LOVE_KANDELO
+ #include <SDL_loadso.h>
++#endif
+ 
+ // STL
+ #include <vector>
+@@ -492,6 +497,12 @@ int w_read(lua_State *L)
+ 	const char *filename = luaL_checkstring(L, startidx + 0);
+ 	int64 len = (int64) luaL_optinteger(L, startidx + 1, File::ALL);
+ 
++#ifdef LOVE_KANDELO
++	Filesystem::Info readinfo = {};
++	if (!instance()->getInfo(filename, readinfo) || readinfo.type == Filesystem::FILETYPE_DIRECTORY)
++		return luax_ioError(L, "Could not read file %s.", filename);
++#endif
++
+ 	FileData *data = nullptr;
+ 	try
+ 	{
+@@ -539,6 +550,26 @@ static int w_write_or_append(lua_State *L, File::Mode mode)
+ 	// Get how much we should write. Length of string default.
+ 	len = luaL_optinteger(L, 3, len);
+ 
++#ifdef LOVE_KANDELO
++	File *file = instance()->newFile(filename);
++	bool opened = file->open(mode);
++	if (!opened)
++	{
++		file->release();
++		return luax_ioError(L, "Could not open file %s.", filename);
++	}
++
++	bool written = file->write((const void *) input, len);
++	bool closed = file->close();
++	file->release();
++
++	if (!written || !closed)
++		return luax_ioError(L, "Data could not be written.");
++
++	luax_pushboolean(L, true);
++	return 1;
++#endif
++
+ 	try
+ 	{
+ 		if (mode == File::MODE_APPEND)
+@@ -615,6 +646,12 @@ int w_load(lua_State *L)
+ {
+ 	std::string filename = std::string(luaL_checkstring(L, 1));
+ 
++#ifdef LOVE_KANDELO
++	Filesystem::Info loadinfo = {};
++	if (!instance()->getInfo(filename.c_str(), loadinfo) || loadinfo.type == Filesystem::FILETYPE_DIRECTORY)
++		return luax_ioError(L, "Could not read file %s.", filename.c_str());
++#endif
++
+ 	Data *data = nullptr;
+ 	try
+ 	{
+@@ -779,6 +816,11 @@ static const char *library_extensions[] =
+ int extloader(lua_State *L)
+ {
+ 	std::string filename = luax_checkstring(L, 1);
++
++#ifdef LOVE_KANDELO
++	lua_pushfstring(L, "\n\tno native C library loader is available for '%s' on Kandelo.", filename.c_str());
++	return 1;
++#else
+ 	std::string tokenized_name(filename);
+ 	std::string tokenized_function(filename);
+ 
+@@ -868,6 +910,7 @@ int extloader(lua_State *L)
+ 
+ 	lua_pushcfunction(L, (lua_CFunction) func);
+ 	return 1;
++#endif
+ }
+ 
+ // Deprecated functions.
+@@ -1011,7 +1054,11 @@ extern "C" int luaopen_love_filesystem(lua_State *L)
+ 	Filesystem *instance = instance();
+ 	if (instance == nullptr)
+ 	{
++#ifdef LOVE_KANDELO
++		return luaL_error(L, "love.filesystem backend is not installed.");
++#else
+ 		luax_catchexcept(L, [&](){ instance = new physfs::Filesystem(); });
++#endif
+ 	}
+ 	else
+ 		instance->retain();

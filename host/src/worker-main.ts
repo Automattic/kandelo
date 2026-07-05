@@ -487,11 +487,11 @@ function buildImportObject(
       WebAssembly as typeof WebAssembly & {
         Tag?: new (descriptor: { parameters: string[] }) => WebAssembly.ExportValue;
       }
-    ).Tag;
-    if (Tag) {
-      envImports.__cpp_exception = new Tag({ parameters: ["i32"] });
-    }
-  }
+	    ).Tag;
+	    if (Tag) {
+	      envImports.__cpp_exception = new Tag({ parameters: ["i32"] }) as unknown as WebAssembly.ExportValue;
+	    }
+	  }
 
   // Add dlopen imports if provided
   if (dlopenImports) {

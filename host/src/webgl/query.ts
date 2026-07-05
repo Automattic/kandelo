@@ -19,6 +19,18 @@
 import type { GlBinding } from "./registry.js";
 import * as O from "./ops.js";
 
+const GL_VENDOR = 0x1F00;
+const GL_RENDERER = 0x1F01;
+const GL_VERSION = 0x1F02;
+const GL_EXTENSIONS = 0x1F03;
+const GL_VIEWPORT = 0x0BA2;
+const GL_SCISSOR_BOX = 0x0C10;
+const GL_SHADING_LANGUAGE_VERSION = 0x8B8C;
+const GL_CURRENT_PROGRAM = 0x8B8D;
+const GL_ACTIVE_UNIFORMS = 0x8B86;
+const GL_ACTIVE_UNIFORM_MAX_LENGTH = 0x8B87;
+const GL_INFO_LOG_LENGTH = 0x8B84;
+
 export function runGlQuery(
   b: GlBinding,
   op: number,
@@ -40,31 +52,61 @@ export function runGlQuery(
     case O.QOP_GET_STRING: {
       if (input.byteLength < 4) return -22;
       const name = inDv.getUint32(0, true);
-      const s = (gl.getParameter(name) as string | null) ?? "";
-      const bytes = new TextEncoder().encode(s);
-      const need = 4 + bytes.byteLength;
-      if (out.byteLength < need) return -22;
-      outDv.setUint32(0, bytes.byteLength, true);
-      out.set(bytes, 4);
-      return need;
+      let s = "";
+      switch (name) {
+        case GL_VENDOR:
+          s = "Kandelo";
+          break;
+        case GL_RENDERER:
+          s = "Kandelo WebGL GLES bridge";
+          break;
+        case GL_VERSION:
+          // GLAD's GLES parser expects this exact native-style prefix.
+          s = "OpenGL ES 2.0 Kandelo";
+          break;
+        case GL_SHADING_LANGUAGE_VERSION:
+          s = "OpenGL ES GLSL ES 1.00 Kandelo";
+          break;
+        case GL_EXTENSIONS:
+          s = "";
+          break;
+        default:
+          s = (gl.getParameter(name) as string | null) ?? "";
+          break;
+      }
+      return writeLengthPrefixedString(out, outDv, s);
     }
 
-    // in: u32 pname; out: i32 value
+    // in: u32 pname; out: i32 value(s)
     case O.QOP_GET_INTEGERV: {
       if (input.byteLength < 4 || out.byteLength < 4) return -22;
       const pname = inDv.getUint32(0, true);
+      if (pname === GL_CURRENT_PROGRAM) {
+        outDv.setInt32(0, nameForObject(b.programs, b.currentProgram), true);
+        return 4;
+      }
+      if (pname === GL_VIEWPORT) {
+        return writeNumericValues(outDv, out.byteLength, b.shadow.viewport, false, pname);
+      }
+      if (pname === GL_SCISSOR_BOX) {
+        return writeNumericValues(outDv, out.byteLength, b.shadow.scissor.rect, false, pname);
+      }
       const value = gl.getParameter(pname);
-      outDv.setInt32(0, Number(value ?? 0), true);
-      return 4;
+      return writeNumericValues(outDv, out.byteLength, value, false, pname);
     }
 
-    // in: u32 pname; out: f32 value
+    // in: u32 pname; out: f32 value(s)
     case O.QOP_GET_FLOATV: {
       if (input.byteLength < 4 || out.byteLength < 4) return -22;
       const pname = inDv.getUint32(0, true);
+      if (pname === GL_VIEWPORT) {
+        return writeNumericValues(outDv, out.byteLength, b.shadow.viewport, true, pname);
+      }
+      if (pname === GL_SCISSOR_BOX) {
+        return writeNumericValues(outDv, out.byteLength, b.shadow.scissor.rect, true, pname);
+      }
       const value = gl.getParameter(pname);
-      outDv.setFloat32(0, Number(value ?? 0), true);
-      return 4;
+      return writeNumericValues(outDv, out.byteLength, value, true, pname);
     }
 
     // in: u32 program, u32 nameLen, u8 name[nameLen]; out: i32 location-index
@@ -107,7 +149,10 @@ export function runGlQuery(
         outDv.setInt32(0, 0, true);
         return 4;
       }
-      const v = gl.getShaderParameter(sh, inDv.getUint32(4, true));
+      const pname = inDv.getUint32(4, true);
+      const v = pname === GL_INFO_LOG_LENGTH
+        ? ((gl.getShaderInfoLog(sh) ?? "").length + 1)
+        : gl.getShaderParameter(sh, pname);
       outDv.setInt32(0, typeof v === "boolean" ? (v ? 1 : 0) : Number(v ?? 0), true);
       return 4;
     }
@@ -136,7 +181,21 @@ export function runGlQuery(
         outDv.setInt32(0, 0, true);
         return 4;
       }
-      const v = gl.getProgramParameter(prog, inDv.getUint32(4, true));
+      const pname = inDv.getUint32(4, true);
+      let v: unknown;
+      if (pname === GL_INFO_LOG_LENGTH) {
+        v = (gl.getProgramInfoLog(prog) ?? "").length + 1;
+      } else if (pname === GL_ACTIVE_UNIFORM_MAX_LENGTH) {
+        const n = Number(gl.getProgramParameter(prog, GL_ACTIVE_UNIFORMS) ?? 0);
+        let max = 0;
+        for (let i = 0; i < n; i++) {
+          const info = gl.getActiveUniform(prog, i);
+          if (info) max = Math.max(max, info.name.length + 1);
+        }
+        v = max;
+      } else {
+        v = gl.getProgramParameter(prog, pname);
+      }
       outDv.setInt32(0, typeof v === "boolean" ? (v ? 1 : 0) : Number(v ?? 0), true);
       return 4;
     }
@@ -190,7 +249,89 @@ export function runGlQuery(
       return 4;
     }
 
+    // in: u32 programName, u32 uniformIndex, u32 nameCapacity;
+    // out: u32 nameLen, i32 size, u32 type, u8 name[nameLen]
+    case O.QOP_GET_ACTIVE_UNIFORM: {
+      if (input.byteLength < 12 || out.byteLength < 12) return -22;
+      const prog = b.programs.get(inDv.getUint32(0, true));
+      const index = inDv.getUint32(4, true);
+      const cap = inDv.getUint32(8, true);
+      const info = prog ? gl.getActiveUniform(prog, index) : null;
+      if (!info) {
+        outDv.setUint32(0, 0, true);
+        outDv.setInt32(4, 0, true);
+        outDv.setUint32(8, 0, true);
+        return 12;
+      }
+      const nameBytes = new TextEncoder().encode(info.name);
+      const nameLen = Math.min(nameBytes.byteLength, cap, out.byteLength - 12);
+      outDv.setUint32(0, nameLen, true);
+      outDv.setInt32(4, info.size, true);
+      outDv.setUint32(8, info.type, true);
+      out.set(nameBytes.subarray(0, nameLen), 12);
+      return 12 + nameLen;
+    }
+
+    // in: u32 programName, i32 locationIndex; out: f32 values[]
+    case O.QOP_GET_UNIFORMFV:
+    case O.QOP_GET_UNIFORMIV: {
+      if (input.byteLength < 8 || out.byteLength < 4) return -22;
+      const prog = b.programs.get(inDv.getUint32(0, true));
+      const loc = b.uniformLocations.get(inDv.getInt32(4, true)) ?? null;
+      const value = prog && loc ? gl.getUniform(prog, loc) : null;
+      return writeNumericValues(outDv, out.byteLength, value, op === O.QOP_GET_UNIFORMFV, 0);
+    }
+
     default:
       return -22;
   }
+}
+
+function nameForObject<T>(objects: Map<number, T>, object: T | null): number {
+  if (!object) return 0;
+  for (const [name, candidate] of objects) {
+    if (candidate === object) return name;
+  }
+  return 0;
+}
+
+function writeLengthPrefixedString(
+  out: Uint8Array,
+  outDv: DataView,
+  value: string,
+): number {
+  const bytes = new TextEncoder().encode(value);
+  const need = 4 + bytes.byteLength;
+  if (out.byteLength < need) return -22;
+  outDv.setUint32(0, bytes.byteLength, true);
+  out.set(bytes, 4);
+  return need;
+}
+
+function writeNumericValues(
+  outDv: DataView,
+  outLen: number,
+  value: unknown,
+  asFloat: boolean,
+  pname: number,
+): number {
+  const values = normalizeNumericValues(value, pname);
+  const count = Math.min(values.length, Math.floor(outLen / 4));
+  for (let i = 0; i < count; i++) {
+    if (asFloat) outDv.setFloat32(i * 4, values[i], true);
+    else outDv.setInt32(i * 4, values[i] | 0, true);
+  }
+  return count * 4;
+}
+
+function normalizeNumericValues(value: unknown, pname: number): number[] {
+  if (value == null) {
+    if (pname === GL_VIEWPORT || pname === GL_SCISSOR_BOX) return [0, 0, 0, 0];
+    return [0];
+  }
+  if (typeof value === "boolean") return [value ? 1 : 0];
+  if (typeof value === "number") return [value];
+  if (Array.isArray(value)) return value.map(Number);
+  if (ArrayBuffer.isView(value)) return Array.from(value as ArrayLike<number>, Number);
+  return [Number(value) || 0];
 }

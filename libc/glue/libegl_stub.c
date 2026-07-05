@@ -13,13 +13,20 @@
  */
 
 #include <EGL/egl.h>
+#include <GLES2/gl2.h>
+#include <errno.h>
 #include <fcntl.h>
+#include <stdio.h>
 #include <string.h>
 #include <sys/ioctl.h>
 #include <sys/mman.h>
 #include <unistd.h>
 
 #include "gl_abi.h"
+
+void glDrawBuffer(GLenum buf);
+void glDrawBuffers(GLsizei n, const GLenum *bufs);
+void glReadBuffer(GLenum src);
 
 static int      g_fd            = -1;
 static uint8_t *g_cmdbuf_base   = NULL;
@@ -54,12 +61,17 @@ EGLBoolean eglInitialize(EGLDisplay dpy, EGLint *major, EGLint *minor) {
 
     int fd = open(WPK_GL_DEVICE, O_RDWR);
     if (fd < 0) {
+        fprintf(stderr, "eglInitialize: open(%s) failed: errno=%d\n",
+                WPK_GL_DEVICE, errno);
         g_last_error = EGL_NOT_INITIALIZED;
         return EGL_FALSE;
     }
 
     uint32_t op_version = WPK_GL_OP_VERSION;
     if (ioctl(fd, GLIO_INIT, &op_version) != 0) {
+        fprintf(stderr,
+                "eglInitialize: GLIO_INIT(op_version=%u) failed: errno=%d\n",
+                (unsigned)WPK_GL_OP_VERSION, errno);
         close(fd);
         g_last_error = EGL_NOT_INITIALIZED;
         return EGL_FALSE;
@@ -74,6 +86,9 @@ EGLBoolean eglInitialize(EGLDisplay dpy, EGLint *major, EGLint *minor) {
     void *p = mmap(NULL, WPK_GL_CMDBUF_LEN, PROT_READ | PROT_WRITE,
                    MAP_SHARED, fd, 0);
     if (p == MAP_FAILED) {
+        fprintf(stderr,
+                "eglInitialize: cmdbuf mmap(len=%u) failed: errno=%d\n",
+                (unsigned)WPK_GL_CMDBUF_LEN, errno);
         close(fd);
         g_last_error = EGL_NOT_INITIALIZED;
         return EGL_FALSE;
@@ -249,6 +264,161 @@ const char *eglQueryString(EGLDisplay dpy, EGLint name) {
         default:              return NULL;
     }
 }
+
+#define WPK_MAP_GL(name) \
+    if (strcmp(procname, #name) == 0) return (__eglMustCastToProperFunctionPointerType)(uintptr_t)&name
+
+__eglMustCastToProperFunctionPointerType eglGetProcAddress(const char *procname) {
+    if (!procname) return NULL;
+    WPK_MAP_GL(glActiveTexture);
+    WPK_MAP_GL(glAttachShader);
+    WPK_MAP_GL(glBindAttribLocation);
+    WPK_MAP_GL(glBindBuffer);
+    WPK_MAP_GL(glBindFramebuffer);
+    WPK_MAP_GL(glBindRenderbuffer);
+    WPK_MAP_GL(glBindTexture);
+    WPK_MAP_GL(glBlendColor);
+    WPK_MAP_GL(glBlendEquation);
+    WPK_MAP_GL(glBlendEquationSeparate);
+    WPK_MAP_GL(glBlendFunc);
+    WPK_MAP_GL(glBlendFuncSeparate);
+    WPK_MAP_GL(glBufferData);
+    WPK_MAP_GL(glBufferSubData);
+    WPK_MAP_GL(glCheckFramebufferStatus);
+    WPK_MAP_GL(glClear);
+    WPK_MAP_GL(glClearColor);
+    WPK_MAP_GL(glClearDepthf);
+    WPK_MAP_GL(glClearStencil);
+    WPK_MAP_GL(glColorMask);
+    WPK_MAP_GL(glCompileShader);
+    WPK_MAP_GL(glCompressedTexImage2D);
+    WPK_MAP_GL(glCompressedTexSubImage2D);
+    WPK_MAP_GL(glCopyTexImage2D);
+    WPK_MAP_GL(glCopyTexSubImage2D);
+    WPK_MAP_GL(glCreateProgram);
+    WPK_MAP_GL(glCreateShader);
+    WPK_MAP_GL(glCullFace);
+    WPK_MAP_GL(glDeleteBuffers);
+    WPK_MAP_GL(glDeleteFramebuffers);
+    WPK_MAP_GL(glDeleteProgram);
+    WPK_MAP_GL(glDeleteRenderbuffers);
+    WPK_MAP_GL(glDeleteShader);
+    WPK_MAP_GL(glDeleteTextures);
+    WPK_MAP_GL(glDepthFunc);
+    WPK_MAP_GL(glDepthMask);
+    WPK_MAP_GL(glDepthRangef);
+    WPK_MAP_GL(glDetachShader);
+    WPK_MAP_GL(glDisable);
+    WPK_MAP_GL(glDisableVertexAttribArray);
+    WPK_MAP_GL(glDrawArrays);
+    WPK_MAP_GL(glDrawBuffer);
+    WPK_MAP_GL(glDrawBuffers);
+    WPK_MAP_GL(glDrawElements);
+    WPK_MAP_GL(glEnable);
+    WPK_MAP_GL(glEnableVertexAttribArray);
+    WPK_MAP_GL(glFinish);
+    WPK_MAP_GL(glFlush);
+    WPK_MAP_GL(glFramebufferRenderbuffer);
+    WPK_MAP_GL(glFramebufferTexture2D);
+    WPK_MAP_GL(glFrontFace);
+    WPK_MAP_GL(glGenBuffers);
+    WPK_MAP_GL(glGenerateMipmap);
+    WPK_MAP_GL(glGenFramebuffers);
+    WPK_MAP_GL(glGenRenderbuffers);
+    WPK_MAP_GL(glGenTextures);
+    WPK_MAP_GL(glGetActiveAttrib);
+    WPK_MAP_GL(glGetActiveUniform);
+    WPK_MAP_GL(glGetAttachedShaders);
+    WPK_MAP_GL(glGetAttribLocation);
+    WPK_MAP_GL(glGetBooleanv);
+    WPK_MAP_GL(glGetBufferParameteriv);
+    WPK_MAP_GL(glGetError);
+    WPK_MAP_GL(glGetFloatv);
+    WPK_MAP_GL(glGetFramebufferAttachmentParameteriv);
+    WPK_MAP_GL(glGetIntegerv);
+    WPK_MAP_GL(glGetProgramiv);
+    WPK_MAP_GL(glGetProgramInfoLog);
+    WPK_MAP_GL(glGetRenderbufferParameteriv);
+    WPK_MAP_GL(glGetShaderiv);
+    WPK_MAP_GL(glGetShaderInfoLog);
+    WPK_MAP_GL(glGetShaderPrecisionFormat);
+    WPK_MAP_GL(glGetShaderSource);
+    WPK_MAP_GL(glGetString);
+    WPK_MAP_GL(glGetTexParameterfv);
+    WPK_MAP_GL(glGetTexParameteriv);
+    WPK_MAP_GL(glGetUniformfv);
+    WPK_MAP_GL(glGetUniformiv);
+    WPK_MAP_GL(glGetUniformLocation);
+    WPK_MAP_GL(glGetVertexAttribfv);
+    WPK_MAP_GL(glGetVertexAttribiv);
+    WPK_MAP_GL(glGetVertexAttribPointerv);
+    WPK_MAP_GL(glHint);
+    WPK_MAP_GL(glIsBuffer);
+    WPK_MAP_GL(glIsEnabled);
+    WPK_MAP_GL(glIsFramebuffer);
+    WPK_MAP_GL(glIsProgram);
+    WPK_MAP_GL(glIsRenderbuffer);
+    WPK_MAP_GL(glIsShader);
+    WPK_MAP_GL(glIsTexture);
+    WPK_MAP_GL(glLineWidth);
+    WPK_MAP_GL(glLinkProgram);
+    WPK_MAP_GL(glPixelStorei);
+    WPK_MAP_GL(glPolygonOffset);
+    WPK_MAP_GL(glReadBuffer);
+    WPK_MAP_GL(glReadPixels);
+    WPK_MAP_GL(glReleaseShaderCompiler);
+    WPK_MAP_GL(glRenderbufferStorage);
+    WPK_MAP_GL(glSampleCoverage);
+    WPK_MAP_GL(glScissor);
+    WPK_MAP_GL(glShaderBinary);
+    WPK_MAP_GL(glShaderSource);
+    WPK_MAP_GL(glStencilFunc);
+    WPK_MAP_GL(glStencilFuncSeparate);
+    WPK_MAP_GL(glStencilMask);
+    WPK_MAP_GL(glStencilMaskSeparate);
+    WPK_MAP_GL(glStencilOp);
+    WPK_MAP_GL(glStencilOpSeparate);
+    WPK_MAP_GL(glTexImage2D);
+    WPK_MAP_GL(glTexParameterf);
+    WPK_MAP_GL(glTexParameterfv);
+    WPK_MAP_GL(glTexParameteri);
+    WPK_MAP_GL(glTexParameteriv);
+    WPK_MAP_GL(glTexSubImage2D);
+    WPK_MAP_GL(glUniform1f);
+    WPK_MAP_GL(glUniform1fv);
+    WPK_MAP_GL(glUniform1i);
+    WPK_MAP_GL(glUniform1iv);
+    WPK_MAP_GL(glUniform2f);
+    WPK_MAP_GL(glUniform2fv);
+    WPK_MAP_GL(glUniform2i);
+    WPK_MAP_GL(glUniform2iv);
+    WPK_MAP_GL(glUniform3f);
+    WPK_MAP_GL(glUniform3fv);
+    WPK_MAP_GL(glUniform3i);
+    WPK_MAP_GL(glUniform3iv);
+    WPK_MAP_GL(glUniform4f);
+    WPK_MAP_GL(glUniform4fv);
+    WPK_MAP_GL(glUniform4i);
+    WPK_MAP_GL(glUniform4iv);
+    WPK_MAP_GL(glUniformMatrix2fv);
+    WPK_MAP_GL(glUniformMatrix3fv);
+    WPK_MAP_GL(glUniformMatrix4fv);
+    WPK_MAP_GL(glUseProgram);
+    WPK_MAP_GL(glValidateProgram);
+    WPK_MAP_GL(glVertexAttrib1f);
+    WPK_MAP_GL(glVertexAttrib1fv);
+    WPK_MAP_GL(glVertexAttrib2f);
+    WPK_MAP_GL(glVertexAttrib2fv);
+    WPK_MAP_GL(glVertexAttrib3f);
+    WPK_MAP_GL(glVertexAttrib3fv);
+    WPK_MAP_GL(glVertexAttrib4f);
+    WPK_MAP_GL(glVertexAttrib4fv);
+    WPK_MAP_GL(glVertexAttribPointer);
+    WPK_MAP_GL(glViewport);
+    return NULL;
+}
+
+#undef WPK_MAP_GL
 
 EGLBoolean eglWaitClient(void) {
     _wpk_gl_flush();

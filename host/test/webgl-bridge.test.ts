@@ -109,6 +109,12 @@ class RecordingGl {
   enableVertexAttribArray(i: number) { this.log.push(["enableVertexAttribArray", [i]]); }
   disableVertexAttribArray(i: number) { this.log.push(["disableVertexAttribArray", [i]]); }
   vertexAttribPointer(i: number, sz: number, t: number, n: boolean, st: number, off: number) { this.log.push(["vertexAttribPointer", [i, sz, t, n, st, off]]); }
+  vertexAttrib4f(i: number, x: number, y: number, z: number, w: number) {
+    this.log.push(["vertexAttrib4f", [i, x, y, z, w]]);
+  }
+  vertexAttrib4fv(i: number, values: Float32Array) {
+    this.log.push(["vertexAttrib4fv", [i, [...values]]]);
+  }
   drawArrays(m: number, f: number, c: number) { this.log.push(["drawArrays", [m, f, c]]); }
   drawElements(m: number, c: number, t: number, off: number) { this.log.push(["drawElements", [m, c, t, off]]); }
 
@@ -147,6 +153,7 @@ function setupBinding(gl: RecordingGl, capacity = 4096) {
   const b = reg.get(1)!;
   const sab = new ArrayBuffer(capacity);
   b.cmdbufView = new Uint8Array(sab, 0, capacity);
+  b.memoryView = b.cmdbufView;
   b.gl = gl as unknown as WebGL2RenderingContext;
   return { reg, b };
 }
@@ -340,6 +347,82 @@ describe("cmdbuf decoder — TLV walker", () => {
     expect(gl.log[0]).toEqual(["drawArrays", [0x0004, 0, 3]]);
   });
 
+  it("records generic vertex attribute values in the shadow state", () => {
+    const gl = new RecordingGl();
+    const { b } = setupBinding(gl);
+    const t = new Tlv(b.cmdbufView!.buffer);
+    const h = t.op(O.OP_VERTEX_ATTRIB4F, 20);
+    t.view.setUint32(h.p, 3, true);
+    t.view.setFloat32(h.p + 4, 0.498, true);
+    t.view.setFloat32(h.p + 8, 0.25, true);
+    t.view.setFloat32(h.p + 12, 0.75, true);
+    t.view.setFloat32(h.p + 16, 1, true);
+
+    decodeAndDispatch(b, 0, t.p);
+
+    expect(gl.log[0][0]).toBe("vertexAttrib4f");
+    expect(b.shadow.vertexAttribValues.get(3)?.map((x) => +x.toFixed(3)))
+      .toEqual([0.498, 0.25, 0.75, 1]);
+  });
+
+  it("translates native GLES client vertex and index arrays into WebGL buffers", () => {
+    const gl = new RecordingGl();
+    const { b } = setupBinding(gl, 2048);
+    const vertexOffset = 512;
+    const indexOffset = 640;
+
+    const mem = new DataView(b.memoryView!.buffer);
+    const vertices = [0, 0, 1, 0, 0, 1];
+    for (let i = 0; i < vertices.length; i++) {
+      mem.setFloat32(vertexOffset + i * 4, vertices[i], true);
+    }
+    mem.setUint16(indexOffset, 2, true);
+    mem.setUint16(indexOffset + 2, 0, true);
+    mem.setUint16(indexOffset + 4, 1, true);
+
+    const t = new Tlv(b.cmdbufView!.buffer);
+    let h = t.op(O.OP_ENABLE_VERTEX_ATTRIB_ARRAY, 4);
+    t.view.setUint32(h.p, 0, true);
+
+    h = t.op(O.OP_VERTEX_ATTRIB_POINTER, 24);
+    t.view.setUint32(h.p, 0, true);
+    t.view.setInt32(h.p + 4, 2, true);
+    t.view.setUint32(h.p + 8, 0x1406 /* GL_FLOAT */, true);
+    t.view.setUint32(h.p + 12, 0, true);
+    t.view.setInt32(h.p + 16, 0, true);
+    t.view.setInt32(h.p + 20, vertexOffset, true);
+
+    h = t.op(O.OP_DRAW_ELEMENTS, 16);
+    t.view.setUint32(h.p, 0x0004 /* GL_TRIANGLES */, true);
+    t.view.setInt32(h.p + 4, 3, true);
+    t.view.setUint32(h.p + 8, 0x1403 /* GL_UNSIGNED_SHORT */, true);
+    t.view.setUint32(h.p + 12, indexOffset, true);
+
+    expect(decodeAndDispatch(b, 0, t.p)).toBe(0);
+
+    const elementUpload = gl.log.find((r) =>
+      r[0] === "bufferData" && (r[1] as unknown[])[0] === 0x8893 /* GL_ELEMENT_ARRAY_BUFFER */
+    );
+    expect(Array.from((elementUpload![1] as unknown[])[1] as Uint8Array)).toEqual([2, 0, 0, 0, 1, 0]);
+
+    const vertexUpload = gl.log.find((r) =>
+      r[0] === "bufferData" && (r[1] as unknown[])[0] === 0x8892 /* GL_ARRAY_BUFFER */
+    );
+    const vertexBytes = (vertexUpload![1] as unknown[])[1] as Uint8Array;
+    expect(vertexBytes.byteLength).toBe(24);
+    expect(new DataView(vertexBytes.buffer, vertexBytes.byteOffset).getFloat32(16, true)).toBe(0);
+    expect(new DataView(vertexBytes.buffer, vertexBytes.byteOffset).getFloat32(20, true)).toBe(1);
+
+    expect(gl.log.find((r) => r[0] === "vertexAttribPointer")).toEqual([
+      "vertexAttribPointer",
+      [0, 2, 0x1406, false, 0, 0],
+    ]);
+    expect(gl.log.find((r) => r[0] === "drawElements")).toEqual([
+      "drawElements",
+      [0x0004, 3, 0x1403, 0],
+    ]);
+  });
+
   it("unknown opcode returns EINVAL without throwing", () => {
     const gl = new RecordingGl();
     const { b } = setupBinding(gl);
@@ -418,6 +501,44 @@ describe("query handler", () => {
     new DataView(pname.buffer).setUint32(0, 0x0D33 /* MAX_TEXTURE_SIZE */, true);
     expect(runGlQuery(b, O.QOP_GET_INTEGERV, pname, o)).toBe(4);
     expect(new DataView(o.buffer).getInt32(0, true)).toBe(42);
+  });
+
+  it("QOP_GET_INTEGERV returns shadowed viewport and scissor boxes", () => {
+    const { b } = setup();
+    b.shadow.viewport = [10, 20, 640, 400];
+    b.shadow.scissor.rect = [1, 2, 30, 40];
+
+    const pname = new Uint8Array(4);
+    const dv = new DataView(pname.buffer);
+    const o = out(16);
+    const od = new DataView(o.buffer);
+
+    dv.setUint32(0, 0x0BA2 /* GL_VIEWPORT */, true);
+    expect(runGlQuery(b, O.QOP_GET_INTEGERV, pname, o)).toBe(16);
+    expect([0, 1, 2, 3].map((i) => od.getInt32(i * 4, true))).toEqual([10, 20, 640, 400]);
+
+    dv.setUint32(0, 0x0C10 /* GL_SCISSOR_BOX */, true);
+    expect(runGlQuery(b, O.QOP_GET_INTEGERV, pname, o)).toBe(16);
+    expect([0, 1, 2, 3].map((i) => od.getInt32(i * 4, true))).toEqual([1, 2, 30, 40]);
+  });
+
+  it("QOP_GET_FLOATV returns shadowed viewport and scissor boxes", () => {
+    const { b } = setup();
+    b.shadow.viewport = [10, 20, 640, 400];
+    b.shadow.scissor.rect = [1, 2, 30, 40];
+
+    const pname = new Uint8Array(4);
+    const dv = new DataView(pname.buffer);
+    const o = out(16);
+    const od = new DataView(o.buffer);
+
+    dv.setUint32(0, 0x0BA2 /* GL_VIEWPORT */, true);
+    expect(runGlQuery(b, O.QOP_GET_FLOATV, pname, o)).toBe(16);
+    expect([0, 1, 2, 3].map((i) => od.getFloat32(i * 4, true))).toEqual([10, 20, 640, 400]);
+
+    dv.setUint32(0, 0x0C10 /* GL_SCISSOR_BOX */, true);
+    expect(runGlQuery(b, O.QOP_GET_FLOATV, pname, o)).toBe(16);
+    expect([0, 1, 2, 3].map((i) => od.getFloat32(i * 4, true))).toEqual([1, 2, 30, 40]);
   });
 
   it("QOP_GET_UNIFORM_LOC allocates monotonic indices", () => {

@@ -1,0 +1,22 @@
+kind = "library"
+
+name = "freetype"
+version = "2.13.3"
+kernel_abi = 7
+depends_on = []
+
+[source]
+url = "https://download.savannah.gnu.org/releases/freetype/freetype-2.13.3.tar.xz"
+sha256 = "0550350666d427c74daeb85d5ac7bb353acba5f76956395995311a9c6f063289"
+
+[license]
+spdx = "FTL OR GPL-2.0-or-later"
+url = "https://freetype.org/license.html"
+
+[build]
+script_path = "packages/registry/freetype/build-freetype.sh"
+
+[outputs]
+libs = ["lib/libfreetype.a"]
+headers = ["include/freetype2"]
+pkgconfig = ["lib/pkgconfig/freetype2.pc"]

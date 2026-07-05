@@ -1,13 +1,13 @@
 kind = "library"
 
 name = "lua"
-version = "5.1.5"
+version = "5.2.4"
 kernel_abi = 7
 depends_on = []
 
 [source]
-url = "https://www.lua.org/ftp/lua-5.1.5.tar.gz"
-sha256 = "2640cfd40d2a323fd1a1e2477ddf32c3d7fcc135c761b0314214d4cfc3f8cb9d"
+url = "https://www.lua.org/ftp/lua-5.2.4.tar.gz"
+sha256 = "b9e2e4aad6789b3b63a056d442f7b39f0ecfca3ae0f1fc0ae4e9614401b69f4b"
 
 [license]
 spdx = "MIT"
@@ -19,4 +19,4 @@ script_path = "packages/registry/lua/build-lua.sh"
 [outputs]
 libs = ["lib/liblua.a"]
 headers = ["include"]
-pkgconfig = ["lib/pkgconfig/lua5.1.pc"]
+pkgconfig = ["lib/pkgconfig/lua5.2.pc"]

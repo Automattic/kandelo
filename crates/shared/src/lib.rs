@@ -1825,7 +1825,7 @@ pub mod gl {
     /// Version of the GLES op-table. Bumped independently of `ABI_VERSION`
     /// when the cmdbuf opcode set changes; the libGLESv2 stub records this
     /// at compile time and the kernel refuses GLIO_INIT on mismatch.
-    pub const OP_VERSION: u32 = 1;
+    pub const OP_VERSION: u32 = 4;
 
     // --- ioctl request numbers (DRM 'D' magic, starting at 0x40) -----------
 
@@ -1883,6 +1883,23 @@ pub mod gl {
     pub const OP_FRONT_FACE:                  u16 = 0x000A;
     pub const OP_LINE_WIDTH:                  u16 = 0x000B;
     pub const OP_PIXEL_STOREI:                u16 = 0x000C;
+    pub const OP_BLEND_FUNC_SEPARATE:         u16 = 0x000D;
+    pub const OP_BLEND_EQUATION:              u16 = 0x000E;
+    pub const OP_BLEND_EQUATION_SEPARATE:     u16 = 0x000F;
+    pub const OP_BLEND_COLOR:                 u16 = 0x0010;
+    pub const OP_CLEAR_DEPTHF:                u16 = 0x0011;
+    pub const OP_CLEAR_STENCIL:               u16 = 0x0012;
+    pub const OP_COLOR_MASK:                  u16 = 0x0013;
+    pub const OP_DEPTH_MASK:                  u16 = 0x0014;
+    pub const OP_STENCIL_FUNC:                u16 = 0x0015;
+    pub const OP_STENCIL_FUNC_SEPARATE:       u16 = 0x0016;
+    pub const OP_STENCIL_MASK:                u16 = 0x0017;
+    pub const OP_STENCIL_MASK_SEPARATE:       u16 = 0x0018;
+    pub const OP_STENCIL_OP:                  u16 = 0x0019;
+    pub const OP_STENCIL_OP_SEPARATE:         u16 = 0x001A;
+    pub const OP_POLYGON_OFFSET:              u16 = 0x001B;
+    pub const OP_DEPTH_RANGEF:                u16 = 0x001C;
+    pub const OP_SAMPLE_COVERAGE:             u16 = 0x001D;
 
     pub const OP_GEN_BUFFERS:                 u16 = 0x0100;
     pub const OP_DELETE_BUFFERS:              u16 = 0x0101;
@@ -1898,6 +1915,11 @@ pub mod gl {
     pub const OP_TEX_PARAMETERI:              u16 = 0x0205;
     pub const OP_ACTIVE_TEXTURE:              u16 = 0x0206;
     pub const OP_GENERATE_MIPMAP:             u16 = 0x0207;
+    pub const OP_TEX_PARAMETERF:              u16 = 0x0208;
+    pub const OP_COMPRESSED_TEX_IMAGE_2D:     u16 = 0x0209;
+    pub const OP_COMPRESSED_TEX_SUB_IMAGE_2D: u16 = 0x020A;
+    pub const OP_COPY_TEX_IMAGE_2D:           u16 = 0x020B;
+    pub const OP_COPY_TEX_SUB_IMAGE_2D:       u16 = 0x020C;
 
     pub const OP_CREATE_SHADER:               u16 = 0x0300;
     pub const OP_SHADER_SOURCE:               u16 = 0x0301;
@@ -1920,12 +1942,23 @@ pub mod gl {
     /// this for the directional light position. `OP_UNIFORM4F` (scalar) is a
     /// different signature; both are needed.
     pub const OP_UNIFORM4FV:                  u16 = 0x0406;
+    pub const OP_UNIFORM1FV:                  u16 = 0x0407;
+    pub const OP_UNIFORM2FV:                  u16 = 0x0408;
+    pub const OP_UNIFORM3FV:                  u16 = 0x0409;
+    pub const OP_UNIFORM1IV:                  u16 = 0x040A;
+    pub const OP_UNIFORM2IV:                  u16 = 0x040B;
+    pub const OP_UNIFORM3IV:                  u16 = 0x040C;
+    pub const OP_UNIFORM4IV:                  u16 = 0x040D;
+    pub const OP_UNIFORM_MATRIX2FV:           u16 = 0x040E;
+    pub const OP_UNIFORM_MATRIX3FV:           u16 = 0x040F;
 
     pub const OP_ENABLE_VERTEX_ATTRIB_ARRAY:  u16 = 0x0500;
     pub const OP_DISABLE_VERTEX_ATTRIB_ARRAY: u16 = 0x0501;
     pub const OP_VERTEX_ATTRIB_POINTER:       u16 = 0x0502;
     pub const OP_DRAW_ARRAYS:                 u16 = 0x0503;
     pub const OP_DRAW_ELEMENTS:               u16 = 0x0504;
+    pub const OP_VERTEX_ATTRIB4F:             u16 = 0x0505;
+    pub const OP_VERTEX_ATTRIB4FV:            u16 = 0x0506;
 
     pub const OP_GEN_VERTEX_ARRAYS:           u16 = 0x0600;
     pub const OP_DELETE_VERTEX_ARRAYS:        u16 = 0x0601;
@@ -1938,6 +1971,11 @@ pub mod gl {
     pub const OP_BIND_RENDERBUFFER:           u16 = 0x0704;
     pub const OP_RENDERBUFFER_STORAGE:        u16 = 0x0705;
     pub const OP_FRAMEBUFFER_RENDERBUFFER:    u16 = 0x0706;
+    pub const OP_DELETE_FRAMEBUFFERS:         u16 = 0x0707;
+    pub const OP_DELETE_RENDERBUFFERS:        u16 = 0x0708;
+    pub const OP_DRAW_BUFFER:                 u16 = 0x0709;
+    pub const OP_DRAW_BUFFERS:                u16 = 0x070A;
+    pub const OP_READ_BUFFER:                 u16 = 0x070B;
 
     // --- sync query op tags (used in GlQueryInfo.op) -----------------------
 
@@ -1953,6 +1991,9 @@ pub mod gl {
     pub const QOP_GET_PROGRAM_INFO_LOG:  u32 = 0x0A;
     pub const QOP_READ_PIXELS:           u32 = 0x0B;
     pub const QOP_CHECK_FB_STATUS:       u32 = 0x0C;
+    pub const QOP_GET_ACTIVE_UNIFORM:    u32 = 0x0D;
+    pub const QOP_GET_UNIFORMFV:         u32 = 0x0E;
+    pub const QOP_GET_UNIFORMIV:         u32 = 0x0F;
 
     // --- marshalled ioctl argument structs ---------------------------------
 
@@ -2574,25 +2615,39 @@ mod gl_tests {
             OP_CLEAR, OP_CLEAR_COLOR, OP_VIEWPORT, OP_SCISSOR,
             OP_ENABLE, OP_DISABLE, OP_BLEND_FUNC, OP_DEPTH_FUNC,
             OP_CULL_FACE, OP_FRONT_FACE, OP_LINE_WIDTH, OP_PIXEL_STOREI,
+            OP_BLEND_FUNC_SEPARATE, OP_BLEND_EQUATION,
+            OP_BLEND_EQUATION_SEPARATE, OP_BLEND_COLOR, OP_CLEAR_DEPTHF,
+            OP_CLEAR_STENCIL, OP_COLOR_MASK, OP_DEPTH_MASK,
+            OP_STENCIL_FUNC, OP_STENCIL_FUNC_SEPARATE, OP_STENCIL_MASK,
+            OP_STENCIL_MASK_SEPARATE, OP_STENCIL_OP,
+            OP_STENCIL_OP_SEPARATE, OP_POLYGON_OFFSET, OP_DEPTH_RANGEF,
+            OP_SAMPLE_COVERAGE,
             OP_GEN_BUFFERS, OP_DELETE_BUFFERS, OP_BIND_BUFFER,
             OP_BUFFER_DATA, OP_BUFFER_SUB_DATA,
             OP_GEN_TEXTURES, OP_DELETE_TEXTURES, OP_BIND_TEXTURE,
             OP_TEX_IMAGE_2D, OP_TEX_SUB_IMAGE_2D, OP_TEX_PARAMETERI,
-            OP_ACTIVE_TEXTURE, OP_GENERATE_MIPMAP,
+            OP_ACTIVE_TEXTURE, OP_GENERATE_MIPMAP, OP_TEX_PARAMETERF,
+            OP_COMPRESSED_TEX_IMAGE_2D, OP_COMPRESSED_TEX_SUB_IMAGE_2D,
+            OP_COPY_TEX_IMAGE_2D, OP_COPY_TEX_SUB_IMAGE_2D,
             OP_CREATE_SHADER, OP_SHADER_SOURCE, OP_COMPILE_SHADER,
             OP_DELETE_SHADER, OP_CREATE_PROGRAM, OP_ATTACH_SHADER,
             OP_LINK_PROGRAM, OP_USE_PROGRAM, OP_BIND_ATTRIB_LOCATION,
             OP_DELETE_PROGRAM,
             OP_UNIFORM1I, OP_UNIFORM1F, OP_UNIFORM2F, OP_UNIFORM3F,
             OP_UNIFORM4F, OP_UNIFORM_MATRIX4FV, OP_UNIFORM4FV,
+            OP_UNIFORM1FV, OP_UNIFORM2FV, OP_UNIFORM3FV, OP_UNIFORM1IV,
+            OP_UNIFORM2IV, OP_UNIFORM3IV, OP_UNIFORM4IV,
+            OP_UNIFORM_MATRIX2FV, OP_UNIFORM_MATRIX3FV,
             OP_ENABLE_VERTEX_ATTRIB_ARRAY, OP_DISABLE_VERTEX_ATTRIB_ARRAY,
             OP_VERTEX_ATTRIB_POINTER, OP_DRAW_ARRAYS, OP_DRAW_ELEMENTS,
+            OP_VERTEX_ATTRIB4F, OP_VERTEX_ATTRIB4FV,
             OP_GEN_VERTEX_ARRAYS, OP_DELETE_VERTEX_ARRAYS,
             OP_BIND_VERTEX_ARRAY,
             OP_GEN_FRAMEBUFFERS, OP_BIND_FRAMEBUFFER,
             OP_FRAMEBUFFER_TEXTURE_2D, OP_GEN_RENDERBUFFERS,
             OP_BIND_RENDERBUFFER, OP_RENDERBUFFER_STORAGE,
-            OP_FRAMEBUFFER_RENDERBUFFER,
+            OP_FRAMEBUFFER_RENDERBUFFER, OP_DELETE_FRAMEBUFFERS,
+            OP_DELETE_RENDERBUFFERS,
         ];
         for (i, &a) in ops.iter().enumerate() {
             for &b in &ops[i + 1..] {
@@ -2608,6 +2663,7 @@ mod gl_tests {
             QOP_GET_FLOATV, QOP_GET_UNIFORM_LOC, QOP_GET_ATTRIB_LOC,
             QOP_GET_SHADERIV, QOP_GET_SHADER_INFO_LOG, QOP_GET_PROGRAMIV,
             QOP_GET_PROGRAM_INFO_LOG, QOP_READ_PIXELS, QOP_CHECK_FB_STATUS,
+            QOP_GET_ACTIVE_UNIFORM, QOP_GET_UNIFORMFV, QOP_GET_UNIFORMIV,
         ];
         for (i, &a) in qops.iter().enumerate() {
             for &b in &qops[i + 1..] {

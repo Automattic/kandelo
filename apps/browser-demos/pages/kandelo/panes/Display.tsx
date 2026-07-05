@@ -43,7 +43,7 @@ Display.displayName = "Display";
 const WebPreviewPane = React.forwardRef<DisplayHandle, FramebufferProps & {
   preview: NonNullable<ReturnType<typeof useWebPreview>>;
   onDockControlsChange?: (controls: React.ReactNode | null) => void;
-}>(({ preview, autoFocus = false, onDockControlsChange }, ref) => {
+}>(({ preview, autoFocus = false, focusToken = 0, onDockControlsChange }, ref) => {
   const [path, setPath] = React.useState("/");
   const [iframeSrc, setIframeSrc] = React.useState(() => buildPreviewUrl(preview.url, "/"));
   const ready = preview.status === "running";
@@ -61,7 +61,7 @@ const WebPreviewPane = React.forwardRef<DisplayHandle, FramebufferProps & {
       iframeRef.current?.focus();
     });
     return () => window.cancelAnimationFrame(handle);
-  }, [autoFocus, iframeSrc, ready]);
+  }, [autoFocus, focusToken, iframeSrc, ready]);
 
   // Keep the iframe's browsing context alive. Internal navigations are synced
   // in onLoad, while parent-initiated navigations target the existing frame.

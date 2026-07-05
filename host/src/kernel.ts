@@ -754,10 +754,10 @@ export class WasmPosixKernel {
         host_gbm_bo_unbind: (
           pid: number,
           bo_id: number,
-          _addr: bigint,
-          _len: bigint,
+          addr: bigint,
+          len: bigint,
         ): void => {
-          this.bos.unbind(pid, bo_id);
+          this.bos.unbind(pid, bo_id, Number(addr), Number(len));
         },
         // /dev/dri/renderD128 GL hooks. The cmdbuf lives in the process's
         // wasm Memory SAB; submit/query reach into it via the embedder-
@@ -819,8 +819,10 @@ export class WasmPosixKernel {
           }
           const ctx = b.canvas.getContext("webgl2", {
             antialias: false,
+            depth: true,
             premultipliedAlpha: false,
             preserveDrawingBuffer: true,
+            stencil: true,
           }) as WebGL2RenderingContext | null;
           if (ctx) {
             // Mirror main-forward.ts: enable the WebGL2 float extensions
@@ -865,9 +867,16 @@ export class WasmPosixKernel {
           const b = this.gl.get(pid);
           if (!b) return -5; // EIO: kernel/host GL state diverged.
           if (!b.forward && !b.gl) return 0;
-          if (!b.cmdbufView) {
-            const memory = this.callbacks.getProcessMemory?.(pid);
-            if (!memory) return -5; // EIO
+          const memory = this.callbacks.getProcessMemory?.(pid);
+          if (!memory) return -5; // EIO
+          if (!b.memoryView || b.memoryView.buffer !== memory.buffer) {
+            try {
+              b.memoryView = new Uint8Array(memory.buffer);
+            } catch {
+              return -5; // EIO
+            }
+          }
+          if (!b.cmdbufView || b.cmdbufView.buffer !== memory.buffer) {
             try {
               b.cmdbufView = new Uint8Array(
                 memory.buffer,
@@ -914,17 +923,23 @@ export class WasmPosixKernel {
           inPtr: bigint, inLen: bigint,
           outPtr: bigint, outLen: bigint,
         ): number => {
-          const b = this.gl.get(pid);
-          if (!b || !b.gl) return -1;
-          const inBuf = inLen > 0n
-            ? this.readKernelBytes(Number(inPtr), Number(inLen))
-            : new Uint8Array(0);
-          const outBuf = new Uint8Array(Number(outLen));
-          const written = runGlQuery(b, op, inBuf, outBuf);
-          if (written > 0 && Number(outPtr) !== 0) {
-            this.writeKernelBytes(Number(outPtr), outBuf.subarray(0, written));
+          try {
+            const b = this.gl.get(pid);
+            if (!b || !b.gl) return -1;
+            const inBuf = inLen > 0n
+              ? this.readKernelBytes(Number(inPtr), Number(inLen))
+              : new Uint8Array(0);
+            const outBuf = new Uint8Array(Number(outLen));
+            const written = runGlQuery(b, op, inBuf, outBuf);
+            if (written > 0 && Number(outPtr) !== 0) {
+              this.writeKernelBytes(Number(outPtr), outBuf.subarray(0, written));
+            }
+            return written;
+          } catch (err) {
+            const detail = err instanceof Error ? `${err.name}: ${err.message}` : String(err);
+            console.warn(`[webgl] query failed pid=${pid} op=${op} ${detail}`);
+            return -5;
           }
-          return written;
         },
         host_kms_set_master: (pid: number): void => { this.kms.setMasterPid(pid); },
         host_kms_drop_master: (_pid: number): void => { this.kms.dropMaster(); },

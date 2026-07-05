@@ -25,6 +25,15 @@ import { defaultShadow, type GlShadowState } from "./shadow.js";
 export type GlContextHandle = number;
 export type GlSurfaceHandle = number;
 
+export type GlVertexAttribPointer = {
+  size: number;
+  type: number;
+  normalized: boolean;
+  stride: number;
+  offset: number;
+  buffer: WebGLBuffer | null;
+};
+
 export type GlBindingInput = {
   pid: number;
   /** Wasm-process address where the cmdbuf was mmap'd (set by the
@@ -48,6 +57,10 @@ export type GlBinding = GlBindingInput & {
    *  wasm Memory SAB. Built on the first submit and dropped to `null`
    *  by `rebindMemory` after a `Memory.grow()`. */
   cmdbufView: Uint8Array | null;
+  /** Full view of the process's wasm Memory. Client-side GLES vertex/index
+   *  arrays are legal in native GLES but forbidden by WebGL; the bridge uses
+   *  this view to translate those guest pointers into temporary WebGL buffers. */
+  memoryView: Uint8Array | null;
 
   /** Live WebGL2 context, lazily constructed at `host_gl_create_context`
    *  time once the embedder has attached a canvas. */
@@ -80,6 +93,13 @@ export type GlBinding = GlBindingInput & {
    *  current program (e.g. uniform setters). */
   currentProgram: WebGLProgram | null;
 
+  boundArrayBuffer: WebGLBuffer | null;
+  boundElementArrayBuffer: WebGLBuffer | null;
+  enabledVertexAttribs: Set<number>;
+  vertexAttribPointers: Map<number, GlVertexAttribPointer>;
+  clientVertexBuffers: Map<number, WebGLBuffer>;
+  clientElementArrayBuffer: WebGLBuffer | null;
+
   shadow: GlShadowState;
 
   forward: GlForwardChannel | null;
@@ -109,6 +129,7 @@ export class GlContextRegistry {
     this.bindings.set(b.pid, {
       ...b,
       cmdbufView: null,
+      memoryView: null,
       gl: null,
       canvas,
       contextId: null,
@@ -123,6 +144,12 @@ export class GlContextRegistry {
       uniformLocations: new Map(),
       nextUniformLoc: 0,
       currentProgram: null,
+      boundArrayBuffer: null,
+      boundElementArrayBuffer: null,
+      enabledVertexAttribs: new Set(),
+      vertexAttribPointers: new Map(),
+      clientVertexBuffers: new Map(),
+      clientElementArrayBuffer: null,
       shadow: defaultShadow(),
       forward,
     });
@@ -151,7 +178,10 @@ export class GlContextRegistry {
    */
   rebindMemory(pid: number): void {
     const b = this.bindings.get(pid);
-    if (b) b.cmdbufView = null;
+    if (b) {
+      b.cmdbufView = null;
+      b.memoryView = null;
+    }
   }
 
   /**

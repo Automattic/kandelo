@@ -1,0 +1,75 @@
+diff --git a/src/modules/physics/box2d/World.cpp b/src/modules/physics/box2d/World.cpp
+index 33fbe35..7da9537 100644
+--- a/src/modules/physics/box2d/World.cpp
++++ b/src/modules/physics/box2d/World.cpp
+@@ -614,21 +614,40 @@ void World::destroy()
+ 
+ void World::registerObject(void *b2object, love::Object *object)
+ {
+-	box2dObjectMap[b2object] = object;
++	for (auto &entry : box2dObjectMap)
++	{
++		if (entry.first == b2object)
++		{
++			entry.second = object;
++			return;
++		}
++	}
++
++	box2dObjectMap.emplace_back(b2object, object);
+ }
+ 
+ void World::unregisterObject(void *b2object)
+ {
+-	box2dObjectMap.erase(b2object);
++	for (auto it = box2dObjectMap.begin(); it != box2dObjectMap.end(); ++it)
++	{
++		if (it->first == b2object)
++		{
++			*it = box2dObjectMap.back();
++			box2dObjectMap.pop_back();
++			return;
++		}
++	}
+ }
+ 
+ love::Object *World::findObject(void *b2object) const
+ {
+-	auto it = box2dObjectMap.find(b2object);
+-	if (it != box2dObjectMap.end())
+-		return it->second;
+-	else
+-		return nullptr;
++	for (const auto &entry : box2dObjectMap)
++	{
++		if (entry.first == b2object)
++			return entry.second;
++	}
++
++	return nullptr;
+ }
+ 
+ } // box2d
+diff --git a/src/modules/physics/box2d/World.h b/src/modules/physics/box2d/World.h
+index 83ad1ea..8a6772f 100644
+--- a/src/modules/physics/box2d/World.h
++++ b/src/modules/physics/box2d/World.h
+@@ -27,8 +27,8 @@
+ #include "common/Reference.h"
+ 
+ // STD
++#include <utility>
+ #include <vector>
+-#include <unordered_map>
+ 
+ // Box2D
+ #include <Box2D/Box2D.h>
+@@ -306,7 +306,7 @@ class World : public Object, public b2ContactListener, public b2ContactFilter, p
+ 	ContactCallback begin, end, presolve, postsolve;
+ 	ContactFilter filter;
+ 
+-	std::unordered_map<void *, love::Object *> box2dObjectMap;
++	std::vector<std::pair<void *, love::Object *>> box2dObjectMap;
+ 
+ }; // World
+ 

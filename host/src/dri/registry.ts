@@ -36,7 +36,8 @@
  *     metadata is already in the registry from the creator's
  *     CREATE_DUMB).
  *   - `unbind(pid, bo_id, addr, len)` — munmap. Last-writer state is
- *     flushed back into the SAB.
+ *     flushed back into the SAB when the host binding overlaps the unmapped
+ *     range.
  *   - `destroy(pid, bo_id)` — bo's global refcount reached zero
  *     (last GEM_CLOSE or process-exit). The entry + SAB are dropped.
  *
@@ -185,7 +186,7 @@ export class GbmBoRegistry {
     return 0;
   }
 
-  unbind(pid: number, bo_id: number): void {
+  unbind(pid: number, bo_id: number, addr?: number, len?: number): void {
     const e = this.bos.get(bo_id);
     if (!e) return;
     // Flush the unbinding pid's current bytes into the SAB before
@@ -195,6 +196,10 @@ export class GbmBoRegistry {
     // releases pages (see crates/kernel/src/syscalls.rs sys_munmap),
     // so the Memory still has the bytes here.
     const binding = e.bindingsByPid.get(pid);
+    if (!binding) return;
+    if (addr !== undefined && len !== undefined && !rangesOverlap(addr, len, binding.addr, binding.len)) {
+      return;
+    }
     if (binding) this.flushMemoryToSab(e, pid, binding);
     e.bindingsByPid.delete(pid);
     for (const l of this.listeners) l(pid, bo_id, "unbind");
@@ -301,4 +306,10 @@ export class GbmBoRegistry {
       binding: e.bindingsByPid.get(pid) ?? null,
     };
   }
+}
+
+function rangesOverlap(aAddr: number, aLen: number, bAddr: number, bLen: number): boolean {
+  const aEnd = aAddr + aLen;
+  const bEnd = bAddr + bLen;
+  return aAddr < bEnd && bAddr < aEnd;
 }

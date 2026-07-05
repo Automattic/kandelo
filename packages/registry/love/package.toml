@@ -5,7 +5,7 @@ version = "11.5-kandelo-kms"
 # and prefers /dev/dri/card0 KMS/EGL/GLES presentation; no Emscripten/browser
 # shim is involved. The second output carries the bundled Lua game demo tree.
 kernel_abi = 7
-depends_on = ["libcxx@21.1.7", "lua@5.1.5"]
+depends_on = ["libcxx@21.1.7", "lua@5.2.4", "freetype@2.13.3", "zlib@1.3.1"]
 
 [source]
 url = "https://github.com/love2d/love"

@@ -58,6 +58,13 @@ describe("setupMainForward", () => {
     worker.fire({ type: "gl_forward_create_context", pid: 7 });
     expect(getContextCalls.length).toBe(1);
     expect(getContextCalls[0][0]).toBe("webgl2");
+    expect(getContextCalls[0][1]).toMatchObject({
+      antialias: false,
+      depth: true,
+      premultipliedAlpha: false,
+      preserveDrawingBuffer: true,
+      stencil: true,
+    });
 
     worker.fire({ type: "gl_forward_destroy_context", pid: 7 });
     worker.fire({ type: "gl_forward_submit", pid: 7, bytes: clearCmdbuf() });

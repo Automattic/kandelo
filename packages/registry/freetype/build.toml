@@ -1,0 +1,7 @@
+script_path = "packages/registry/freetype/build-freetype.sh"
+repo_url    = "https://github.com/brandonpayton/kandelo.git"
+commit      = "99731a0ad0979baeca4a8e250886a2663a04c596"
+revision    = 1
+
+[binary]
+index_url = "https://github.com/Automattic/kandelo/releases/download/binaries-abi-v{abi}/index.toml"

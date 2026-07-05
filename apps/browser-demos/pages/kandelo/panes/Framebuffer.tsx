@@ -33,10 +33,11 @@ export interface FramebufferProps {
   onMaximize?: () => void;
   isMax?: boolean;
   autoFocus?: boolean;
+  focusToken?: number;
   onDockControlsChange?: (controls: React.ReactNode | null) => void;
 }
 
-export const Framebuffer: React.FC<FramebufferProps> = ({ autoFocus = false, onDockControlsChange }) => {
+export const Framebuffer: React.FC<FramebufferProps> = ({ autoFocus = false, focusToken = 0, onDockControlsChange }) => {
   const host = useKernelHost();
   const status = useStatus();
   const stageRef = React.useRef<HTMLDivElement>(null);
@@ -147,7 +148,7 @@ export const Framebuffer: React.FC<FramebufferProps> = ({ autoFocus = false, onD
       canvasRef.current?.focus();
     });
     return () => window.cancelAnimationFrame(handle);
-  }, [autoFocus, error, status]);
+  }, [autoFocus, error, focusToken, status]);
 
   const onCanvasClick = () => {
     canvasRef.current?.focus();

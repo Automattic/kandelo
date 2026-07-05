@@ -19,12 +19,20 @@ class RecordingGl {
   disable(c: number) { this.log.push(["disable", [c]]); }
   clearColor(...a: number[]) { this.log.push(["clearColor", a]); }
   clear(m: number) { this.log.push(["clear", [m]]); }
+  colorMask(...a: boolean[]) { this.log.push(["colorMask", a]); }
+  depthMask(v: boolean) { this.log.push(["depthMask", [v]]); }
   depthFunc(f: number) { this.log.push(["depthFunc", [f]]); }
+  stencilFuncSeparate(...a: number[]) { this.log.push(["stencilFuncSeparate", a]); }
+  stencilMaskSeparate(...a: number[]) { this.log.push(["stencilMaskSeparate", a]); }
+  stencilOpSeparate(...a: number[]) { this.log.push(["stencilOpSeparate", a]); }
+  blendEquationSeparate(...a: number[]) { this.log.push(["blendEquationSeparate", a]); }
+  blendColor(...a: number[]) { this.log.push(["blendColor", a]); }
   blendFuncSeparate(...a: number[]) { this.log.push(["blendFuncSeparate", a]); }
   cullFace(m: number) { this.log.push(["cullFace", [m]]); }
   frontFace(m: number) { this.log.push(["frontFace", [m]]); }
   useProgram(p: unknown) { this.log.push(["useProgram", [p]]); }
   activeTexture(u: number) { this.log.push(["activeTexture", [u]]); }
+  bindTexture(t: number, tex: unknown) { this.log.push(["bindTexture", [t, tex]]); }
   pixelStorei(p: number, v: number) { this.log.push(["pixelStorei", [p, v]]); }
 }
 

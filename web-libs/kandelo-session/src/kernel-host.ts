@@ -1748,17 +1748,30 @@ export class LiveKernelHost implements KernelHost {
     let closed = false;
     let attachedPid: number | null = null;
     let attachedPtyPid: number | null = null;
+    let ptyLookupPid: number | null = null;
+
+    const refreshAttachedPtyPid = (pid: number) => {
+      if (attachedPtyPid !== null || ptyLookupPid === pid) return;
+      ptyLookupPid = pid;
+      void this.findPtyRoutingPid(pid).then((ptyPid) => {
+        if (!closed && attachedPid === pid && ptyPid !== null) {
+          attachedPtyPid = ptyPid;
+        }
+      }).finally(() => {
+        if (ptyLookupPid === pid) ptyLookupPid = null;
+      });
+    };
 
     const setBoundPid = (pid: number | null) => {
-      if (pid === attachedPid) return;
-      attachedPid = pid;
-      if (pid === null) attachedPtyPid = null;
-      boundPidListeners.emit(pid);
-      if (pid !== null) {
-        void this.findPtyRoutingPid(pid).then((ptyPid) => {
-          if (!closed && attachedPid === pid) attachedPtyPid = ptyPid;
-        });
+      if (pid === attachedPid) {
+        if (pid !== null) refreshAttachedPtyPid(pid);
+        return;
       }
+      attachedPid = pid;
+      attachedPtyPid = null;
+      ptyLookupPid = null;
+      boundPidListeners.emit(pid);
+      if (pid !== null) refreshAttachedPtyPid(pid);
     };
     const refreshBoundPid = async (): Promise<number | null> => {
       if (!kernel.getKmsMasterPid) return attachedPid;

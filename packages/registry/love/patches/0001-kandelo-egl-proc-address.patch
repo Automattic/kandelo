@@ -1,0 +1,29 @@
+diff --git a/src/modules/graphics/opengl/OpenGL.cpp b/src/modules/graphics/opengl/OpenGL.cpp
+index d2d7f9db3..c03055a90 100644
+--- a/src/modules/graphics/opengl/OpenGL.cpp
++++ b/src/modules/graphics/opengl/OpenGL.cpp
+@@ -37,8 +37,12 @@
+ #include <cstring>
+ #include <cstdio>
+ 
++#ifdef LOVE_KANDELO
++#include <EGL/egl.h>
++#else
+ // For SDL_GL_GetProcAddress.
+ #include <SDL_video.h>
++#endif
+ 
+ #ifdef LOVE_IOS
+ #include <SDL_syswm.h>
+@@ -63,7 +67,11 @@ static void *LOVEGetProcAddress(const char *name)
+ 		return proc;
+ #endif
+ 
++#ifdef LOVE_KANDELO
++	return (void *) eglGetProcAddress(name);
++#else
+ 	return SDL_GL_GetProcAddress(name);
++#endif
+ }
+ 
+ OpenGL::TempDebugGroup::TempDebugGroup(const char *name)

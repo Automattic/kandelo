@@ -35,7 +35,9 @@ The BYTEPATH staging step pins upstream `a327ex/BYTEPATH` and keeps the MIT
 game code plus permissive Lua dependencies needed for gameplay. It omits the
 bundled Windows runtime, tutorial archive, GPL windfield dependency, and audio
 assets; Kandelo supplies small compatibility shims for the omitted runtime
-pieces.
+pieces. The packaged demo also starts BYTEPATH's in-game `glitch` option below
+the upstream maximum so the authored RGB-split effect remains readable on the
+1080p KMS surface; the shaders and renderer path are otherwise unchanged.
 
 The SNKRX staging step pins upstream `a327ex/SNKRX` and keeps the MIT game
 code. Upstream notes that assets have separate licenses, so Kandelo omits the

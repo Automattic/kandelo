@@ -26,6 +26,8 @@
 #include <drm/drm_fourcc.h>
 #include <linux/fb.h>
 #include <map>
+#include <memory>
+#include <new>
 #include <set>
 #include <signal.h>
 #include <sstream>
@@ -48,6 +50,17 @@ extern "C" {
 }
 
 #include "lodepng.h"
+#include "common/Exception.h"
+#include "common/runtime.h"
+
+#if LUA_VERSION_NUM >= 502
+#define lua_objlen lua_rawlen
+#endif
+
+extern "C" bool kandelo_love_register_native_renderer(lua_State *L, const char *root,
+                                                       int width, int height,
+                                                       int pixelWidth, int pixelHeight,
+                                                       bool (*swap)());
 
 namespace {
 
@@ -168,17 +181,33 @@ struct Fixture {
 
 struct KeyEvent {
   std::string key;
+  std::string text;
   bool pressed = false;
 };
 
 struct MouseButtonEvent {
+  int x = 0;
+  int y = 0;
   int button = 0;
   bool pressed = false;
 };
 
+struct EventArg {
+  enum class Type {
+    String,
+    Number,
+    Boolean,
+  };
+
+  Type type = Type::String;
+  std::string stringValue;
+  double numberValue = 0.0;
+  bool booleanValue = false;
+};
+
 struct LoveEvent {
   std::string name;
-  std::vector<std::string> args;
+  std::vector<EventArg> args;
 };
 
 struct Transform {
@@ -245,6 +274,12 @@ struct Runtime {
   double mouseRemainderY = 0.0;
   std::vector<MouseButtonEvent> mouseEvents;
   bool mouseVisible = false;
+  bool textInputEnabled = true;
+  bool nativeRenderer = false;
+  bool legacyColorRange = false;
+  std::string configuredVersion;
+  int windowW = kLogicalWidth;
+  int windowH = kLogicalHeight;
 
   double start = 0.0;
   double last = 0.0;
@@ -276,6 +311,405 @@ const char *MT_WORLD = "lovefb.World";
 const char *MT_BODY = "lovefb.Body";
 const char *MT_SHAPE = "lovefb.Shape";
 const char *MT_FIXTURE = "lovefb.Fixture";
+const char *MT_FFI_BUFFER = "lovefb.ffi.Buffer";
+
+enum class FfiKind {
+  UInt8,
+  Int16,
+  Int32,
+  Double,
+  Bool,
+};
+
+struct FfiBuffer {
+  std::shared_ptr<std::vector<uint8_t>> storage;
+  const uint8_t *raw = nullptr;
+  size_t offset = 0;
+  size_t elemSize = 1;
+  FfiKind kind = FfiKind::UInt8;
+};
+
+FfiBuffer *checkFfiBuffer(lua_State *L, int idx) {
+  return static_cast<FfiBuffer *>(luaL_checkudata(L, idx, MT_FFI_BUFFER));
+}
+
+FfiBuffer *toFfiBuffer(lua_State *L, int idx) {
+  return static_cast<FfiBuffer *>(luaL_testudata(L, idx, MT_FFI_BUFFER));
+}
+
+size_t ffiElemSize(FfiKind kind) {
+  switch (kind) {
+    case FfiKind::UInt8: return 1;
+    case FfiKind::Int16: return 2;
+    case FfiKind::Int32: return 4;
+    case FfiKind::Double: return 8;
+    case FfiKind::Bool: return 1;
+  }
+  return 1;
+}
+
+FfiKind ffiKindForCType(const std::string &ctype) {
+  if (ctype.find("int16_t") != std::string::npos) return FfiKind::Int16;
+  if (ctype.find("int32_t") != std::string::npos) return FfiKind::Int32;
+  if (ctype.find("double") != std::string::npos) return FfiKind::Double;
+  if (ctype.find("bool") != std::string::npos) return FfiKind::Bool;
+  return FfiKind::UInt8;
+}
+
+size_t ffiArrayLength(const std::string &ctype, lua_State *L, int &firstValueArg) {
+  size_t open = ctype.find('[');
+  size_t close = ctype.find(']', open == std::string::npos ? 0 : open + 1);
+  firstValueArg = 2;
+  if (open == std::string::npos || close == std::string::npos) return 1;
+  std::string len = ctype.substr(open + 1, close - open - 1);
+  if (len == "?") {
+    firstValueArg = 3;
+    return size_t(std::max<lua_Integer>(0, luaL_checkinteger(L, 2)));
+  }
+  char *end = nullptr;
+  long parsed = std::strtol(len.c_str(), &end, 10);
+  if (end == len.c_str() || parsed <= 0) return 1;
+  return size_t(parsed);
+}
+
+bool versionUsesLegacyColorRange(const std::string &version) {
+  if (version.empty()) return false;
+  char *end = nullptr;
+  long major = std::strtol(version.c_str(), &end, 10);
+  return end != version.c_str() && major >= 0 && major < 11;
+}
+
+const uint8_t *ffiReadPtr(lua_State *L, const FfiBuffer *buf, size_t byteOffset, size_t len) {
+  if (buf->storage) {
+    size_t absolute = buf->offset + byteOffset;
+    if (absolute + len > buf->storage->size()) luaL_error(L, "ffi buffer read out of bounds");
+    return buf->storage->data() + absolute;
+  }
+  if (!buf->raw) luaL_error(L, "ffi null pointer read");
+  return buf->raw + buf->offset + byteOffset;
+}
+
+uint8_t *ffiWritePtr(lua_State *L, FfiBuffer *buf, size_t byteOffset, size_t len) {
+  if (!buf->storage) luaL_error(L, "ffi pointer is not writable");
+  size_t absolute = buf->offset + byteOffset;
+  if (absolute + len > buf->storage->size()) luaL_error(L, "ffi buffer write out of bounds");
+  return buf->storage->data() + absolute;
+}
+
+void ffiWriteElement(lua_State *L, FfiBuffer *buf, size_t index, int valueIndex) {
+  uint8_t *dst = ffiWritePtr(L, buf, index * buf->elemSize, buf->elemSize);
+  switch (buf->kind) {
+    case FfiKind::UInt8: {
+      dst[0] = uint8_t(luaL_checkinteger(L, valueIndex) & 0xff);
+      break;
+    }
+    case FfiKind::Bool: {
+      dst[0] = lua_toboolean(L, valueIndex) ? 1 : 0;
+      break;
+    }
+    case FfiKind::Int16: {
+      int16_t v = int16_t(luaL_checkinteger(L, valueIndex));
+      std::memcpy(dst, &v, sizeof(v));
+      break;
+    }
+    case FfiKind::Int32: {
+      int32_t v = int32_t(luaL_checkinteger(L, valueIndex));
+      std::memcpy(dst, &v, sizeof(v));
+      break;
+    }
+    case FfiKind::Double: {
+      double v = luaL_checknumber(L, valueIndex);
+      std::memcpy(dst, &v, sizeof(v));
+      break;
+    }
+  }
+}
+
+void ffiPushElement(lua_State *L, const FfiBuffer *buf, size_t index) {
+  const uint8_t *src = ffiReadPtr(L, buf, index * buf->elemSize, buf->elemSize);
+  switch (buf->kind) {
+    case FfiKind::UInt8:
+      lua_pushinteger(L, src[0]);
+      break;
+    case FfiKind::Bool:
+      lua_pushboolean(L, src[0] != 0);
+      break;
+    case FfiKind::Int16: {
+      int16_t v = 0;
+      std::memcpy(&v, src, sizeof(v));
+      lua_pushinteger(L, v);
+      break;
+    }
+    case FfiKind::Int32: {
+      int32_t v = 0;
+      std::memcpy(&v, src, sizeof(v));
+      lua_pushinteger(L, v);
+      break;
+    }
+    case FfiKind::Double: {
+      double v = 0.0;
+      std::memcpy(&v, src, sizeof(v));
+      lua_pushnumber(L, v);
+      break;
+    }
+  }
+}
+
+FfiBuffer *pushFfiBuffer(lua_State *L, FfiKind kind, size_t elements) {
+  void *ud = lua_newuserdata(L, sizeof(FfiBuffer));
+  auto *buf = new (ud) FfiBuffer();
+  buf->kind = kind;
+  buf->elemSize = ffiElemSize(kind);
+  buf->storage = std::make_shared<std::vector<uint8_t>>(elements * buf->elemSize);
+  luaL_getmetatable(L, MT_FFI_BUFFER);
+  lua_setmetatable(L, -2);
+  return buf;
+}
+
+FfiBuffer *pushFfiPointer(lua_State *L, FfiKind kind, const FfiBuffer &src, size_t byteOffset) {
+  void *ud = lua_newuserdata(L, sizeof(FfiBuffer));
+  auto *buf = new (ud) FfiBuffer();
+  buf->kind = kind;
+  buf->elemSize = ffiElemSize(kind);
+  buf->storage = src.storage;
+  buf->raw = src.raw;
+  buf->offset = src.offset + byteOffset;
+  luaL_getmetatable(L, MT_FFI_BUFFER);
+  lua_setmetatable(L, -2);
+  return buf;
+}
+
+int l_ffi_buffer_gc(lua_State *L) {
+  checkFfiBuffer(L, 1)->~FfiBuffer();
+  return 0;
+}
+
+int l_ffi_buffer_index(lua_State *L) {
+  FfiBuffer *buf = checkFfiBuffer(L, 1);
+  if (!lua_isnumber(L, 2)) {
+    lua_pushnil(L);
+    return 1;
+  }
+  lua_Integer index = lua_tointeger(L, 2);
+  if (index < 0) return luaL_error(L, "ffi negative index");
+  ffiPushElement(L, buf, size_t(index));
+  return 1;
+}
+
+int l_ffi_buffer_newindex(lua_State *L) {
+  FfiBuffer *buf = checkFfiBuffer(L, 1);
+  lua_Integer index = luaL_checkinteger(L, 2);
+  if (index < 0) return luaL_error(L, "ffi negative index");
+  ffiWriteElement(L, buf, size_t(index), 3);
+  return 0;
+}
+
+int l_ffi_buffer_add(lua_State *L) {
+  FfiBuffer *buf = nullptr;
+  lua_Integer delta = 0;
+  if ((buf = toFfiBuffer(L, 1)) != nullptr) {
+    delta = luaL_checkinteger(L, 2);
+  } else {
+    buf = checkFfiBuffer(L, 2);
+    delta = luaL_checkinteger(L, 1);
+  }
+  if (delta < 0) {
+    size_t bytes = size_t(-delta) * buf->elemSize;
+    if (bytes > buf->offset) return luaL_error(L, "ffi pointer before buffer");
+    pushFfiPointer(L, buf->kind, *buf, 0);
+    checkFfiBuffer(L, -1)->offset -= bytes;
+    return 1;
+  }
+  pushFfiPointer(L, buf->kind, *buf, size_t(delta) * buf->elemSize);
+  return 1;
+}
+
+int l_ffi_new(lua_State *L) {
+  std::string ctype = luaL_checkstring(L, 1);
+  int firstValueArg = 2;
+  size_t elements = ffiArrayLength(ctype, L, firstValueArg);
+  FfiKind kind = ffiKindForCType(ctype);
+  FfiBuffer *buf = pushFfiBuffer(L, kind, elements);
+  int top = lua_gettop(L);
+  int values = top - firstValueArg;
+  for (int i = 0; i < values && size_t(i) < elements; ++i) {
+    lua_pushvalue(L, firstValueArg + i);
+    ffiWriteElement(L, buf, size_t(i), -1);
+    lua_pop(L, 1);
+  }
+  return 1;
+}
+
+int l_ffi_copy(lua_State *L) {
+  FfiBuffer *dst = checkFfiBuffer(L, 1);
+  size_t len = size_t(std::max<lua_Integer>(0, luaL_checkinteger(L, 3)));
+  uint8_t *dstPtr = ffiWritePtr(L, dst, 0, len);
+  if (lua_isstring(L, 2)) {
+    size_t srcLen = 0;
+    const char *src = lua_tolstring(L, 2, &srcLen);
+    if (len > srcLen) return luaL_error(L, "ffi.copy source string too short");
+    std::memcpy(dstPtr, src, len);
+    return 0;
+  }
+  if (FfiBuffer *src = toFfiBuffer(L, 2)) {
+    std::memcpy(dstPtr, ffiReadPtr(L, src, 0, len), len);
+    return 0;
+  }
+  if (lua_islightuserdata(L, 2)) {
+    const void *src = lua_touserdata(L, 2);
+    if (!src && len > 0) return luaL_error(L, "ffi.copy null source");
+    std::memcpy(dstPtr, src, len);
+    return 0;
+  }
+  return luaL_argerror(L, 2, "string, cdata buffer, or lightuserdata expected");
+}
+
+int l_ffi_string(lua_State *L) {
+  size_t len = 0;
+  const uint8_t *ptr = nullptr;
+  if (FfiBuffer *buf = toFfiBuffer(L, 1)) {
+    if (lua_isnoneornil(L, 2)) {
+      if (!buf->storage) return luaL_error(L, "ffi.string raw pointer requires a length");
+      size_t pos = buf->offset;
+      while (pos < buf->storage->size() && (*buf->storage)[pos] != 0) pos++;
+      len = pos - buf->offset;
+    } else {
+      len = size_t(std::max<lua_Integer>(0, luaL_checkinteger(L, 2)));
+    }
+    ptr = ffiReadPtr(L, buf, 0, len);
+  } else if (lua_islightuserdata(L, 1)) {
+    ptr = static_cast<const uint8_t *>(lua_touserdata(L, 1));
+    len = size_t(std::max<lua_Integer>(0, luaL_checkinteger(L, 2)));
+  } else {
+    return luaL_argerror(L, 1, "cdata buffer or lightuserdata expected");
+  }
+  lua_pushlstring(L, reinterpret_cast<const char *>(ptr), len);
+  return 1;
+}
+
+int l_ffi_cast(lua_State *L) {
+  std::string ctype = luaL_checkstring(L, 1);
+  FfiKind kind = ffiKindForCType(ctype);
+  if (FfiBuffer *src = toFfiBuffer(L, 2)) {
+    pushFfiPointer(L, kind, *src, 0);
+    return 1;
+  }
+  if (lua_islightuserdata(L, 2)) {
+    void *ud = lua_newuserdata(L, sizeof(FfiBuffer));
+    auto *buf = new (ud) FfiBuffer();
+    buf->kind = kind;
+    buf->elemSize = ffiElemSize(kind);
+    buf->raw = static_cast<const uint8_t *>(lua_touserdata(L, 2));
+    luaL_getmetatable(L, MT_FFI_BUFFER);
+    lua_setmetatable(L, -2);
+    return 1;
+  }
+  if (lua_isnil(L, 2)) {
+    lua_pushnil(L);
+    return 1;
+  }
+  return luaL_argerror(L, 2, "cdata buffer, lightuserdata, or nil expected");
+}
+
+int l_ffi_cdef(lua_State *) { return 0; }
+
+int l_ffi_load(lua_State *L) {
+  return luaL_error(L, "ffi.load is not available in this Kandelo LÖVE runtime");
+}
+
+int l_ffi_gc_func(lua_State *L) {
+  lua_settop(L, 1);
+  return 1;
+}
+
+int l_ffi_metatype(lua_State *L) {
+  lua_newtable(L);
+  return 1;
+}
+
+int luaopen_ffi_compat(lua_State *L) {
+  if (luaL_newmetatable(L, MT_FFI_BUFFER)) {
+    const luaL_Reg bufferMeta[] = {
+      {"__index", l_ffi_buffer_index},
+      {"__newindex", l_ffi_buffer_newindex},
+      {"__add", l_ffi_buffer_add},
+      {"__gc", l_ffi_buffer_gc},
+      {nullptr, nullptr},
+    };
+    luaL_setfuncs(L, bufferMeta, 0);
+  }
+  lua_pop(L, 1);
+
+  const luaL_Reg funcs[] = {
+    {"new", l_ffi_new},
+    {"copy", l_ffi_copy},
+    {"string", l_ffi_string},
+    {"cast", l_ffi_cast},
+    {"cdef", l_ffi_cdef},
+    {"load", l_ffi_load},
+    {"gc", l_ffi_gc_func},
+    {"metatype", l_ffi_metatype},
+    {nullptr, nullptr},
+  };
+  lua_newtable(L);
+  luaL_setfuncs(L, funcs, 0);
+  return 1;
+}
+
+void registerFfiCompat(lua_State *L) {
+  lua_getglobal(L, "package");
+  lua_getfield(L, -1, "preload");
+  lua_pushcfunction(L, luaopen_ffi_compat);
+  lua_setfield(L, -2, "ffi");
+  lua_pop(L, 2);
+}
+
+void installLoveHandlers(lua_State *L) {
+  const char *src =
+      "local love = love\n"
+      "if love.handlers then return end\n"
+      "local function call(name, ...)\n"
+      "  local f = love[name]\n"
+      "  if f then return f(...) end\n"
+      "end\n"
+      "love.handlers = setmetatable({\n"
+      "  keypressed = function(b, s, r) return call('keypressed', b, s, r) end,\n"
+      "  keyreleased = function(b, s) return call('keyreleased', b, s) end,\n"
+      "  textinput = function(t) return call('textinput', t) end,\n"
+      "  textedited = function(t, s, l) return call('textedited', t, s, l) end,\n"
+      "  mousemoved = function(x, y, dx, dy, t) return call('mousemoved', x, y, dx, dy, t) end,\n"
+      "  mousepressed = function(x, y, b, t, c) return call('mousepressed', x, y, b, t, c) end,\n"
+      "  mousereleased = function(x, y, b, t, c) return call('mousereleased', x, y, b, t, c) end,\n"
+      "  wheelmoved = function(x, y) return call('wheelmoved', x, y) end,\n"
+      "  touchpressed = function(id, x, y, dx, dy, p) return call('touchpressed', id, x, y, dx, dy, p) end,\n"
+      "  touchreleased = function(id, x, y, dx, dy, p) return call('touchreleased', id, x, y, dx, dy, p) end,\n"
+      "  touchmoved = function(id, x, y, dx, dy, p) return call('touchmoved', id, x, y, dx, dy, p) end,\n"
+      "  joystickpressed = function(j, b) return call('joystickpressed', j, b) end,\n"
+      "  joystickreleased = function(j, b) return call('joystickreleased', j, b) end,\n"
+      "  joystickaxis = function(j, a, v) return call('joystickaxis', j, a, v) end,\n"
+      "  joystickhat = function(j, h, v) return call('joystickhat', j, h, v) end,\n"
+      "  gamepadpressed = function(j, b) return call('gamepadpressed', j, b) end,\n"
+      "  gamepadreleased = function(j, b) return call('gamepadreleased', j, b) end,\n"
+      "  gamepadaxis = function(j, a, v) return call('gamepadaxis', j, a, v) end,\n"
+      "  joystickadded = function(j) return call('joystickadded', j) end,\n"
+      "  joystickremoved = function(j) return call('joystickremoved', j) end,\n"
+      "  focus = function(f) return call('focus', f) end,\n"
+      "  mousefocus = function(f) return call('mousefocus', f) end,\n"
+      "  visible = function(v) return call('visible', v) end,\n"
+      "  quit = function() return end,\n"
+      "  threaderror = function(t, err) return call('threaderror', t, err) end,\n"
+      "  resize = function(w, h) return call('resize', w, h) end,\n"
+      "  filedropped = function(f) return call('filedropped', f) end,\n"
+      "  directorydropped = function(d) return call('directorydropped', d) end,\n"
+      "  lowmemory = function() call('lowmemory'); collectgarbage(); collectgarbage() end,\n"
+      "  displayrotated = function(d, o) return call('displayrotated', d, o) end,\n"
+      "}, {__index = function(_, name) error('Unknown event: ' .. tostring(name)) end})\n";
+  if (luaL_loadstring(L, src) != 0 || lua_pcall(L, 0, 0, 0) != 0) {
+    const char *msg = lua_tostring(L, -1);
+    fprintf(stderr, "lovefb: love.handlers install failed: %s\n", msg ? msg : "unknown");
+    lua_pop(L, 1);
+  }
+}
 
 double nowSeconds() {
   timeval tv{};
@@ -1097,6 +1531,20 @@ void presentFrame() {
   else flushFramebuffer();
 }
 
+bool nativeSwapBuffers() {
+  if (G.presenter != Presenter::KmsGl) return false;
+  if (!eglSwapBuffers(G.eglDisplay, G.eglSurface)) {
+    fprintf(stderr, "love: eglSwapBuffers failed: 0x%x\n", unsigned(eglGetError()));
+    gRunning = 0;
+    return false;
+  }
+  if (kmsPageflipWait() != 0) {
+    gRunning = 0;
+    return false;
+  }
+  return true;
+}
+
 void cleanupPresenter() {
   if (G.presenter == Presenter::KmsGl) cleanupKmsGl();
   if (G.fb) {
@@ -1133,6 +1581,8 @@ std::string keyName(int code) {
     {57, "space"}, {103, "up"}, {108, "down"}, {105, "left"},
     {106, "right"}, {102, "home"}, {107, "end"}, {110, "insert"},
     {111, "delete"}, {104, "pageup"}, {109, "pagedown"},
+    {42, "lshift"}, {54, "rshift"}, {29, "lctrl"}, {97, "rctrl"},
+    {56, "lalt"}, {100, "ralt"},
     {2, "1"}, {3, "2"}, {4, "3"}, {5, "4"}, {6, "5"},
     {7, "6"}, {8, "7"}, {9, "8"}, {10, "9"}, {11, "0"},
     {16, "q"}, {17, "w"}, {18, "e"}, {19, "r"}, {20, "t"},
@@ -1140,10 +1590,49 @@ std::string keyName(int code) {
     {30, "a"}, {31, "s"}, {32, "d"}, {33, "f"}, {34, "g"},
     {35, "h"}, {36, "j"}, {37, "k"}, {38, "l"},
     {44, "z"}, {45, "x"}, {46, "c"}, {47, "v"}, {48, "b"},
-    {49, "n"}, {50, "m"},
+    {49, "n"}, {50, "m"}, {12, "-"}, {13, "="}, {26, "["},
+    {27, "]"}, {39, ";"}, {40, "'"}, {41, "`"}, {43, "\\"},
+    {51, ","}, {52, "."}, {53, "/"},
   };
   auto it = names.find(code);
   return it == names.end() ? "" : it->second;
+}
+
+bool shiftDown() {
+  return G.keys.count("lshift") || G.keys.count("rshift");
+}
+
+std::string textForKeyCode(int code, bool shifted) {
+  if (code >= 16 && code <= 25) {
+    const char *row = "qwertyuiop";
+    char c = row[code - 16];
+    if (shifted) c = char(c - 'a' + 'A');
+    return std::string(1, c);
+  }
+  if (code >= 30 && code <= 38) {
+    const char *row = "asdfghjkl";
+    char c = row[code - 30];
+    if (shifted) c = char(c - 'a' + 'A');
+    return std::string(1, c);
+  }
+  if (code >= 44 && code <= 50) {
+    const char *row = "zxcvbnm";
+    char c = row[code - 44];
+    if (shifted) c = char(c - 'a' + 'A');
+    return std::string(1, c);
+  }
+
+  static const std::map<int, std::pair<char, char>> printable = {
+    {2, {'1', '!'}}, {3, {'2', '@'}}, {4, {'3', '#'}}, {5, {'4', '$'}},
+    {6, {'5', '%'}}, {7, {'6', '^'}}, {8, {'7', '&'}}, {9, {'8', '*'}},
+    {10, {'9', '('}}, {11, {'0', ')'}}, {12, {'-', '_'}}, {13, {'=', '+'}},
+    {26, {'[', '{'}}, {27, {']', '}'}}, {39, {';', ':'}}, {40, {'\'', '"'}},
+    {41, {'`', '~'}}, {43, {'\\', '|'}}, {51, {',', '<'}}, {52, {'.', '>'}},
+    {53, {'/', '?'}}, {57, {' ', ' '}},
+  };
+  auto it = printable.find(code);
+  if (it == printable.end()) return "";
+  return std::string(1, shifted ? it->second.second : it->second.first);
 }
 
 void pollInput() {
@@ -1163,21 +1652,21 @@ void pollInput() {
       if (key.empty()) continue;
       if (pressed) G.keys.insert(key);
       else G.keys.erase(key);
-      G.keyEvents.push_back({key, pressed});
+      std::string text = pressed && G.textInputEnabled ? textForKeyCode(code, shiftDown()) : "";
+      G.keyEvents.push_back({key, text, pressed});
     }
   }
 
   if (G.miceFd < 0) return;
   uint8_t pkt[3];
-  int newButtons = G.mouseButtons;
   for (;;) {
     ssize_t n = read(G.miceFd, pkt, 3);
     if (n != 3) break;
     int dx = int(int8_t(pkt[1]));
     int dy = -int(int8_t(pkt[2]));
     if (G.presenter == Presenter::KmsGl) {
-      G.mouseRemainderX += double(dx) * double(kLogicalWidth) / double(kScanoutWidth);
-      G.mouseRemainderY += double(dy) * double(kLogicalHeight) / double(kScanoutHeight);
+      G.mouseRemainderX += double(dx) * double(G.windowW) / double(kScanoutWidth);
+      G.mouseRemainderY += double(dy) * double(G.windowH) / double(kScanoutHeight);
       dx = int(std::trunc(G.mouseRemainderX));
       dy = int(std::trunc(G.mouseRemainderY));
       G.mouseRemainderX -= double(dx);
@@ -1185,17 +1674,92 @@ void pollInput() {
     }
     G.mouseDx += dx;
     G.mouseDy += dy;
-    G.mouseX = clampInt(G.mouseX + dx, 0, kLogicalWidth - 1);
-    G.mouseY = clampInt(G.mouseY + dy, 0, kLogicalHeight - 1);
-    newButtons = pkt[0] & 0x07;
+    G.mouseX = clampInt(G.mouseX + dx, 0, std::max(1, G.windowW) - 1);
+    G.mouseY = clampInt(G.mouseY + dy, 0, std::max(1, G.windowH) - 1);
+    int packetButtons = pkt[0] & 0x07;
+    int changed = G.mouseButtons ^ packetButtons;
+    for (int bit = 0; bit < 3; ++bit) {
+      if ((changed & (1 << bit)) == 0) continue;
+      int button = bit == 0 ? 1 : (bit == 1 ? 2 : 3);
+      G.mouseEvents.push_back({G.mouseX, G.mouseY, button, (packetButtons & (1 << bit)) != 0});
+    }
+    G.mouseButtons = packetButtons;
   }
-  int changed = G.mouseButtons ^ newButtons;
-  for (int bit = 0; bit < 3; ++bit) {
-    if ((changed & (1 << bit)) == 0) continue;
-    int button = bit == 0 ? 1 : (bit == 1 ? 2 : 3);
-    G.mouseEvents.push_back({button, (newButtons & (1 << bit)) != 0});
+}
+
+EventArg stringArg(const std::string &value) {
+  EventArg arg;
+  arg.type = EventArg::Type::String;
+  arg.stringValue = value;
+  return arg;
+}
+
+EventArg numberArg(double value) {
+  EventArg arg;
+  arg.type = EventArg::Type::Number;
+  arg.numberValue = value;
+  return arg;
+}
+
+EventArg booleanArg(bool value) {
+  EventArg arg;
+  arg.type = EventArg::Type::Boolean;
+  arg.booleanValue = value;
+  return arg;
+}
+
+void pushEventArg(lua_State *L, const EventArg &arg) {
+  switch (arg.type) {
+    case EventArg::Type::String:
+      lua_pushlstring(L, arg.stringValue.data(), arg.stringValue.size());
+      break;
+    case EventArg::Type::Number:
+      lua_pushnumber(L, arg.numberValue);
+      break;
+    case EventArg::Type::Boolean:
+      lua_pushboolean(L, arg.booleanValue);
+      break;
   }
-  G.mouseButtons = newButtons;
+}
+
+void queueNativeInputEvents() {
+  for (const KeyEvent &e : G.keyEvents) {
+    LoveEvent ev;
+    ev.name = e.pressed ? "keypressed" : "keyreleased";
+    ev.args.push_back(stringArg(e.key));
+    ev.args.push_back(stringArg(e.key));
+    if (e.pressed) ev.args.push_back(booleanArg(false));
+    G.queuedEvents.push_back(std::move(ev));
+
+    if (e.pressed && !e.text.empty()) {
+      LoveEvent text;
+      text.name = "textinput";
+      text.args.push_back(stringArg(e.text));
+      G.queuedEvents.push_back(std::move(text));
+    }
+  }
+
+  if (G.mouseDx || G.mouseDy) {
+    LoveEvent ev;
+    ev.name = "mousemoved";
+    ev.args.push_back(numberArg(G.mouseX));
+    ev.args.push_back(numberArg(G.mouseY));
+    ev.args.push_back(numberArg(G.mouseDx));
+    ev.args.push_back(numberArg(G.mouseDy));
+    ev.args.push_back(booleanArg(false));
+    G.queuedEvents.push_back(std::move(ev));
+  }
+
+  for (const MouseButtonEvent &e : G.mouseEvents) {
+    LoveEvent ev;
+    ev.name = e.pressed ? "mousepressed" : "mousereleased";
+    ev.args.push_back(numberArg(e.x));
+    ev.args.push_back(numberArg(e.y));
+    ev.args.push_back(numberArg(e.button));
+    ev.args.push_back(booleanArg(false));
+    if (e.pressed) ev.args.push_back(numberArg(1));
+    G.queuedEvents.push_back(std::move(ev));
+  }
 }
 
 void signalHandler(int) {
@@ -1227,9 +1791,9 @@ int gcFixture(lua_State *L) {
 
 // ── love.graphics ─────────────────────────────────────────────────────────
 
-int l_g_getWidth(lua_State *L) { lua_pushinteger(L, kLogicalWidth); return 1; }
-int l_g_getHeight(lua_State *L) { lua_pushinteger(L, kLogicalHeight); return 1; }
-int l_g_getDimensions(lua_State *L) { lua_pushinteger(L, kLogicalWidth); lua_pushinteger(L, kLogicalHeight); return 2; }
+int l_g_getWidth(lua_State *L) { lua_pushinteger(L, G.windowW); return 1; }
+int l_g_getHeight(lua_State *L) { lua_pushinteger(L, G.windowH); return 1; }
+int l_g_getDimensions(lua_State *L) { lua_pushinteger(L, G.windowW); lua_pushinteger(L, G.windowH); return 2; }
 
 int l_g_setColor(lua_State *L) { G.color = readColor(L, 1); return 0; }
 int l_g_setBackgroundColor(lua_State *L) { G.background = readColor(L, 1); return 0; }
@@ -1877,10 +2441,16 @@ int l_fs_read(lua_State *L) {
 int l_fs_load(lua_State *L) {
   std::string path = luaL_checkstring(L, 1);
   std::vector<uint8_t> bytes;
-  if (!readFile(path, bytes)) return luaL_error(L, "could not read %s", path.c_str());
+  if (!readFile(path, bytes)) {
+    lua_pushnil(L);
+    lua_pushfstring(L, "could not read %s", path.c_str());
+    return 2;
+  }
   std::string chunk = "@" + path;
   if (luaL_loadbuffer(L, reinterpret_cast<const char *>(bytes.data()), bytes.size(), chunk.c_str()) != 0) {
-    return lua_error(L);
+    lua_pushnil(L);
+    lua_insert(L, -2);
+    return 2;
   }
   return 1;
 }
@@ -1890,6 +2460,13 @@ int l_fs_newFile(lua_State *L) {
   f->path = normalizePath(luaL_checkstring(L, 1));
   pushObj(L, f, MT_FILE);
   return 1;
+}
+
+int luaPanic(lua_State *L) {
+  const char *msg = lua_tostring(L, -1);
+  fprintf(stderr, "lovefb: Lua panic: %s\n", msg ? msg : "unknown");
+  fflush(stderr);
+  return 0;
 }
 
 int l_file_open(lua_State *L) {
@@ -1969,13 +2546,25 @@ int l_key_isDown(lua_State *L) {
   return 1;
 }
 int l_key_setKeyRepeat(lua_State *) { return 0; }
+int l_key_setTextInput(lua_State *L) {
+  G.textInputEnabled = lua_toboolean(L, 1) != 0;
+  return 0;
+}
+int l_key_hasTextInput(lua_State *L) {
+  lua_pushboolean(L, G.textInputEnabled);
+  return 1;
+}
+int l_key_hasScreenKeyboard(lua_State *L) {
+  lua_pushboolean(L, 0);
+  return 1;
+}
 
 int l_mouse_getPosition(lua_State *L) { lua_pushinteger(L, G.mouseX); lua_pushinteger(L, G.mouseY); return 2; }
 int l_mouse_getX(lua_State *L) { lua_pushinteger(L, G.mouseX); return 1; }
 int l_mouse_getY(lua_State *L) { lua_pushinteger(L, G.mouseY); return 1; }
 int l_mouse_setPosition(lua_State *L) {
-  G.mouseX = clampInt(int(luaL_checknumber(L, 1)), 0, kLogicalWidth - 1);
-  G.mouseY = clampInt(int(luaL_checknumber(L, 2)), 0, kLogicalHeight - 1);
+  G.mouseX = clampInt(int(luaL_checknumber(L, 1)), 0, std::max(1, G.windowW) - 1);
+  G.mouseY = clampInt(int(luaL_checknumber(L, 2)), 0, std::max(1, G.windowH) - 1);
   return 0;
 }
 int l_mouse_isDown(lua_State *L) {
@@ -2000,6 +2589,13 @@ int l_timer_step(lua_State *L) {
   if (G.last == 0.0) G.last = t;
   G.dt = std::min(0.1, std::max(0.0, t - G.last));
   G.last = t;
+  G.fpsFrames++;
+  if (G.fpsT0 == 0.0) G.fpsT0 = t;
+  if (t - G.fpsT0 >= 1.0) {
+    G.fps = int(std::lround(G.fpsFrames / (t - G.fpsT0)));
+    G.fpsFrames = 0;
+    G.fpsT0 = t;
+  }
   lua_pushnumber(L, G.dt);
   return 1;
 }
@@ -2011,7 +2607,7 @@ int l_window_setTitle(lua_State *L) {
 
 int l_window_getFullscreenModes(lua_State *L) {
   lua_newtable(L);
-  int modes[2][2] = {{kLogicalWidth, kLogicalHeight}, {G.fbW, G.fbH}};
+  int modes[2][2] = {{G.windowW, G.windowH}, {kScanoutWidth, kScanoutHeight}};
   for (int i = 0; i < 2; ++i) {
     lua_newtable(L);
     lua_pushinteger(L, modes[i][0]); lua_setfield(L, -2, "width");
@@ -2021,10 +2617,16 @@ int l_window_getFullscreenModes(lua_State *L) {
   return 1;
 }
 
-int l_window_setMode(lua_State *) { return 0; }
+int l_window_setMode(lua_State *L) {
+  G.windowW = std::max(1, int(luaL_checkinteger(L, 1)));
+  G.windowH = std::max(1, int(luaL_checkinteger(L, 2)));
+  G.mouseX = clampInt(G.mouseX, 0, G.windowW - 1);
+  G.mouseY = clampInt(G.mouseY, 0, G.windowH - 1);
+  return 0;
+}
 int l_window_getMode(lua_State *L) {
-  lua_pushinteger(L, kLogicalWidth);
-  lua_pushinteger(L, kLogicalHeight);
+  lua_pushinteger(L, G.windowW);
+  lua_pushinteger(L, G.windowH);
   lua_newtable(L);
   lua_pushinteger(L, 1); lua_setfield(L, -2, "display");
   lua_pushinteger(L, 60); lua_setfield(L, -2, "refreshrate");
@@ -2033,8 +2635,8 @@ int l_window_getMode(lua_State *L) {
 }
 int l_window_setIcon(lua_State *) { return 0; }
 int l_window_getDesktopDimensions(lua_State *L) {
-  lua_pushinteger(L, kLogicalWidth);
-  lua_pushinteger(L, kLogicalHeight);
+  lua_pushinteger(L, kScanoutWidth);
+  lua_pushinteger(L, kScanoutHeight);
   return 2;
 }
 int l_window_getDisplayCount(lua_State *L) { lua_pushinteger(L, 1); return 1; }
@@ -2114,28 +2716,58 @@ int l_event_push(lua_State *L) {
   LoveEvent ev;
   ev.name = luaL_checkstring(L, 1);
   for (int i = 2; i <= top; ++i) {
-    size_t len = 0;
-    const char *s = lua_tolstring(L, i, &len);
-    if (s) ev.args.emplace_back(s, len);
-    else if (lua_isboolean(L, i)) ev.args.emplace_back(lua_toboolean(L, i) ? "true" : "false");
-    else ev.args.emplace_back("");
+    int type = lua_type(L, i);
+    if (type == LUA_TNUMBER) {
+      ev.args.push_back(numberArg(lua_tonumber(L, i)));
+    } else if (type == LUA_TBOOLEAN) {
+      ev.args.push_back(booleanArg(lua_toboolean(L, i) != 0));
+    } else {
+      size_t len = 0;
+      const char *s = lua_tolstring(L, i, &len);
+      ev.args.push_back(stringArg(s ? std::string(s, len) : std::string()));
+    }
   }
   G.queuedEvents.push_back(std::move(ev));
   return 0;
 }
-int l_event_pump(lua_State *) { return 0; }
+int l_event_pump(lua_State *) {
+  pollInput();
+  queueNativeInputEvents();
+  return 0;
+}
 
-int l_event_poll_iter(lua_State *L) {
-  lua_Integer idx = lua_tointeger(L, lua_upvalueindex(2));
-  lua_rawgeti(L, lua_upvalueindex(1), idx);
-  if (lua_isnil(L, -1)) return 0;
-  lua_pushinteger(L, idx + 1);
-  lua_replace(L, lua_upvalueindex(2));
+int l_event_poll_empty_iter(lua_State *) { return 0; }
 
-  int n = int(lua_objlen(L, -1));
-  for (int i = 1; i <= n; ++i) lua_rawgeti(L, -1, i);
-  lua_remove(L, -n - 1);
-  return n;
+bool pushEventPollFactory(lua_State *L) {
+  static int ref = LUA_NOREF;
+  if (ref == LUA_NOREF) {
+    const char *src =
+      "return function(events)\n"
+      "  local unpack_fn = table.unpack or unpack\n"
+      "  local i = 0\n"
+      "  return function()\n"
+      "    i = i + 1\n"
+      "    local e = events[i]\n"
+      "    if e == nil then return nil end\n"
+      "    return unpack_fn(e, 1, e.n)\n"
+      "  end\n"
+      "end\n";
+    if (luaL_loadstring(L, src) != 0) {
+      const char *msg = lua_tostring(L, -1);
+      fprintf(stderr, "lovefb: event poll factory compile failed: %s\n", msg ? msg : "unknown");
+      lua_pop(L, 1);
+      return false;
+    }
+    if (lua_pcall(L, 0, 1, 0) != 0) {
+      const char *msg = lua_tostring(L, -1);
+      fprintf(stderr, "lovefb: event poll factory load failed: %s\n", msg ? msg : "unknown");
+      lua_pop(L, 1);
+      return false;
+    }
+    ref = luaL_ref(L, LUA_REGISTRYINDEX);
+  }
+  lua_rawgeti(L, LUA_REGISTRYINDEX, ref);
+  return true;
 }
 
 int l_event_poll(lua_State *L) {
@@ -2145,19 +2777,32 @@ int l_event_poll(lua_State *L) {
     lua_pushstring(L, G.queuedEvents[i].name.c_str());
     lua_rawseti(L, -2, 1);
     for (size_t j = 0; j < G.queuedEvents[i].args.size(); ++j) {
-      lua_pushstring(L, G.queuedEvents[i].args[j].c_str());
+      pushEventArg(L, G.queuedEvents[i].args[j]);
       lua_rawseti(L, -2, int(j + 2));
     }
+    lua_pushinteger(L, int(G.queuedEvents[i].args.size() + 1));
+    lua_setfield(L, -2, "n");
     lua_rawseti(L, -2, int(i + 1));
   }
   G.queuedEvents.clear();
-  lua_pushinteger(L, 1);
-  lua_pushcclosure(L, l_event_poll_iter, 2);
+  if (!pushEventPollFactory(L)) {
+    lua_pop(L, 1);
+    lua_pushcfunction(L, l_event_poll_empty_iter);
+    return 1;
+  }
+  lua_insert(L, -2);
+  if (lua_pcall(L, 1, 1, 0) != 0) {
+    const char *msg = lua_tostring(L, -1);
+    fprintf(stderr, "lovefb: event poll factory call failed: %s\n", msg ? msg : "unknown");
+    lua_pop(L, 1);
+    lua_pushcfunction(L, l_event_poll_empty_iter);
+  }
   return 1;
 }
 
 int l_system_openURL(lua_State *) { return 0; }
 int l_joystick_getJoysticks(lua_State *L) { lua_newtable(L); return 1; }
+int l_noop(lua_State *) { return 0; }
 
 // ── love.physics lightweight compatibility ───────────────────────────────
 
@@ -2473,7 +3118,12 @@ void registerLove(lua_State *L) {
     {"newFileData", l_fs_newFileData}, {"newFile", l_fs_newFile}, {"lines", l_fs_lines}, {nullptr, nullptr},
   };
   const luaL_Reg imageMod[] = {{"newImageData", l_image_newImageData}, {nullptr, nullptr}};
-  const luaL_Reg keyboard[] = {{"isDown", l_key_isDown}, {"setKeyRepeat", l_key_setKeyRepeat}, {nullptr, nullptr}};
+  const luaL_Reg keyboard[] = {
+    {"isDown", l_key_isDown}, {"setKeyRepeat", l_key_setKeyRepeat},
+    {"setTextInput", l_key_setTextInput}, {"hasTextInput", l_key_hasTextInput},
+    {"hasScreenKeyboard", l_key_hasScreenKeyboard},
+    {nullptr, nullptr},
+  };
   const luaL_Reg mouse[] = {
     {"getPosition", l_mouse_getPosition}, {"getX", l_mouse_getX}, {"getY", l_mouse_getY},
     {"setPosition", l_mouse_setPosition}, {"isDown", l_mouse_isDown},
@@ -2488,7 +3138,7 @@ void registerLove(lua_State *L) {
   const luaL_Reg mathMod[] = {{"random", l_math_random}, {"setRandomSeed", l_math_setRandomSeed}, {"isConvex", l_math_isConvex}, {"triangulate", l_math_triangulate}, {"newRandomGenerator", l_math_newRandomGenerator}, {nullptr, nullptr}};
   const luaL_Reg event[] = {{"quit", l_event_quit}, {"push", l_event_push}, {"pump", l_event_pump}, {"poll", l_event_poll}, {nullptr, nullptr}};
   const luaL_Reg system[] = {{"openURL", l_system_openURL}, {nullptr, nullptr}};
-  const luaL_Reg joystick[] = {{"getJoysticks", l_joystick_getJoysticks}, {"loadGamepadMappings", l_event_pump}, {nullptr, nullptr}};
+  const luaL_Reg joystick[] = {{"getJoysticks", l_joystick_getJoysticks}, {"loadGamepadMappings", l_noop}, {nullptr, nullptr}};
 
   setModule(L, "graphics", graphics);
   setModule(L, "filesystem", fs);
@@ -2525,6 +3175,81 @@ bool callLove(lua_State *L, const char *name, int nargs = 0) {
   return true;
 }
 
+bool callLoveModule(lua_State *L, const char *module, const char *name, int nargs = 0) {
+  lua_getglobal(L, "love");
+  lua_getfield(L, -1, module);
+  lua_remove(L, -2);
+  if (!lua_istable(L, -1)) {
+    lua_pop(L, 1 + nargs);
+    return false;
+  }
+  lua_getfield(L, -1, name);
+  lua_remove(L, -2);
+  if (!lua_isfunction(L, -1)) {
+    lua_pop(L, 1 + nargs);
+    return false;
+  }
+  if (nargs > 0) lua_insert(L, -1 - nargs);
+  if (lua_pcall(L, nargs, 0, 0) != 0) {
+    const char *msg = lua_tostring(L, -1);
+    G.lastError = std::string(module) + "." + name + " error: " + (msg ? msg : "unknown");
+    fprintf(stderr, "lovefb: %s\n", G.lastError.c_str());
+    lua_pop(L, 1);
+    return false;
+  }
+  return true;
+}
+
+bool clearNativeBackground(lua_State *L) {
+  lua_getglobal(L, "love");
+  lua_getfield(L, -1, "graphics");
+  lua_remove(L, -2);
+  if (!lua_istable(L, -1)) {
+    lua_pop(L, 1);
+    return false;
+  }
+  lua_getfield(L, -1, "getBackgroundColor");
+  if (!lua_isfunction(L, -1)) {
+    lua_pop(L, 2);
+    return false;
+  }
+  if (lua_pcall(L, 0, 4, 0) != 0) {
+    const char *msg = lua_tostring(L, -1);
+    G.lastError = std::string("graphics.getBackgroundColor error: ") + (msg ? msg : "unknown");
+    fprintf(stderr, "lovefb: %s\n", G.lastError.c_str());
+    lua_pop(L, 2);
+    return false;
+  }
+  lua_getfield(L, -5, "clear");
+  if (!lua_isfunction(L, -1)) {
+    lua_pop(L, 5);
+    return false;
+  }
+  lua_insert(L, -5);
+  if (lua_pcall(L, 4, 0, 0) != 0) {
+    const char *msg = lua_tostring(L, -1);
+    G.lastError = std::string("graphics.clear error: ") + (msg ? msg : "unknown");
+    fprintf(stderr, "lovefb: %s\n", G.lastError.c_str());
+    lua_pop(L, 2);
+    return false;
+  }
+  lua_pop(L, 1);
+  return true;
+}
+
+void drawNativeError(lua_State *L) {
+  if (G.lastError.empty()) return;
+  lua_pushnumber(L, 1.0);
+  lua_pushnumber(L, 0.25);
+  lua_pushnumber(L, 0.25);
+  lua_pushnumber(L, 1.0);
+  callLoveModule(L, "graphics", "setColor", 4);
+  lua_pushstring(L, G.lastError.c_str());
+  lua_pushinteger(L, 12);
+  lua_pushinteger(L, 12);
+  callLoveModule(L, "graphics", "print", 3);
+}
+
 void dispatchQueuedEvents(lua_State *L) {
   std::vector<LoveEvent> events;
   events.swap(G.queuedEvents);
@@ -2533,7 +3258,7 @@ void dispatchQueuedEvents(lua_State *L) {
       gRunning = 0;
       continue;
     }
-    for (const std::string &arg : e.args) lua_pushstring(L, arg.c_str());
+    for (const EventArg &arg : e.args) pushEventArg(L, arg);
     callLove(L, e.name.c_str(), int(e.args.size()));
   }
 }
@@ -2541,7 +3266,17 @@ void dispatchQueuedEvents(lua_State *L) {
 void dispatchInput(lua_State *L) {
   for (const KeyEvent &e : G.keyEvents) {
     lua_pushstring(L, e.key.c_str());
-    callLove(L, e.pressed ? "keypressed" : "keyreleased", 1);
+    lua_pushstring(L, e.key.c_str());
+    if (e.pressed) {
+      lua_pushboolean(L, 0);
+      callLove(L, "keypressed", 3);
+      if (!e.text.empty()) {
+        lua_pushlstring(L, e.text.data(), e.text.size());
+        callLove(L, "textinput", 1);
+      }
+    } else {
+      callLove(L, "keyreleased", 2);
+    }
   }
   if (G.mouseDx || G.mouseDy) {
     lua_pushinteger(L, G.mouseX);
@@ -2551,8 +3286,8 @@ void dispatchInput(lua_State *L) {
     callLove(L, "mousemoved", 4);
   }
   for (const MouseButtonEvent &e : G.mouseEvents) {
-    lua_pushinteger(L, G.mouseX);
-    lua_pushinteger(L, G.mouseY);
+    lua_pushinteger(L, e.x);
+    lua_pushinteger(L, e.y);
     lua_pushinteger(L, e.button);
     lua_pushboolean(L, 0);
     callLove(L, e.pressed ? "mousepressed" : "mousereleased", 4);
@@ -2574,12 +3309,21 @@ void configureLuaPath(lua_State *L) {
 
 void maybeRunConf(lua_State *L) {
   std::string conf = G.root + "/conf.lua";
-  if (access(conf.c_str(), R_OK) != 0) return;
-  if (luaL_dofile(L, conf.c_str()) != 0) {
-    fprintf(stderr, "lovefb: conf.lua: %s\n", lua_tostring(L, -1));
-    lua_pop(L, 1);
+  int top = lua_gettop(L);
+  int loadStatus = luaL_loadfile(L, conf.c_str());
+  if (loadStatus != 0) {
+    if (loadStatus != LUA_ERRFILE) {
+      fprintf(stderr, "lovefb: conf.lua load: %s\n", lua_tostring(L, -1));
+    }
+    lua_settop(L, top);
     return;
   }
+  if (lua_pcall(L, 0, LUA_MULTRET, 0) != 0) {
+    fprintf(stderr, "lovefb: conf.lua: %s\n", lua_tostring(L, -1));
+    lua_settop(L, top);
+    return;
+  }
+  lua_settop(L, top);
   lua_getglobal(L, "love");
   lua_getfield(L, -1, "conf");
   lua_remove(L, -2);
@@ -2587,25 +3331,132 @@ void maybeRunConf(lua_State *L) {
     lua_pop(L, 1);
     return;
   }
+  int confFuncIdx = lua_gettop(L);
   lua_newtable(L);
+  int configIdx = lua_gettop(L);
   lua_newtable(L);
   lua_setfield(L, -2, "window");
+  lua_newtable(L);
+  lua_setfield(L, -2, "modules");
+  lua_pushvalue(L, confFuncIdx);
+  lua_pushvalue(L, configIdx);
   if (lua_pcall(L, 1, 0, 0) != 0) {
     fprintf(stderr, "lovefb: love.conf: %s\n", lua_tostring(L, -1));
     lua_pop(L, 1);
+    lua_pop(L, 2);
+    return;
   }
+  lua_getfield(L, configIdx, "version");
+  if (lua_isstring(L, -1)) G.configuredVersion = lua_tostring(L, -1);
+  else G.configuredVersion.clear();
+  lua_pop(L, 1);
+  if (G.configuredVersion.empty()) {
+    lua_getfield(L, configIdx, "releases");
+    if (lua_istable(L, -1)) {
+      lua_getfield(L, -1, "loveVersion");
+      if (lua_isstring(L, -1)) G.configuredVersion = lua_tostring(L, -1);
+      lua_pop(L, 1);
+    }
+    lua_pop(L, 1);
+  }
+  G.legacyColorRange = versionUsesLegacyColorRange(G.configuredVersion);
+
+  lua_getfield(L, configIdx, "window");
+  if (lua_istable(L, -1)) {
+    lua_getfield(L, -1, "width");
+    if (lua_isnumber(L, -1)) G.windowW = std::max(1, int(lua_tointeger(L, -1)));
+    lua_pop(L, 1);
+    lua_getfield(L, -1, "height");
+    if (lua_isnumber(L, -1)) G.windowH = std::max(1, int(lua_tointeger(L, -1)));
+    lua_pop(L, 1);
+  }
+  lua_pop(L, 2);
+  lua_remove(L, confFuncIdx);
+  G.mouseX = G.windowW / 2;
+  G.mouseY = G.windowH / 2;
+}
+
+bool runGameProvidedLoop(lua_State *L) {
+  int top = lua_gettop(L);
+  lua_getglobal(L, "love");
+  lua_getfield(L, -1, "run");
+  lua_remove(L, -2);
+  if (!lua_isfunction(L, -1)) {
+    lua_settop(L, top);
+    return false;
+  }
+
+  G.start = G.last = G.fpsT0 = nowSeconds();
+  G.fpsFrames = 0;
+  if (lua_pcall(L, 0, 1, 0) != 0) {
+    const char *msg = lua_tostring(L, -1);
+    G.lastError = std::string("love.run error: ") + (msg ? msg : "unknown");
+    fprintf(stderr, "lovefb: %s\n", G.lastError.c_str());
+    lua_settop(L, top);
+    return true;
+  }
+
+  if (!lua_isfunction(L, -1)) {
+    lua_settop(L, top);
+    return true;
+  }
+
+  int frameRef = luaL_ref(L, LUA_REGISTRYINDEX);
+  while (gRunning) {
+    lua_rawgeti(L, LUA_REGISTRYINDEX, frameRef);
+    int status = lua_pcall(L, 0, LUA_MULTRET, 0);
+    if (status != 0) {
+      const char *msg = lua_tostring(L, -1);
+      G.lastError = std::string("love.run frame error: ") + (msg ? msg : "unknown");
+      fprintf(stderr, "lovefb: %s\n", G.lastError.c_str());
+      lua_pop(L, 1);
+      break;
+    }
+
+    int results = lua_gettop(L) - top;
+    if (results > 0 && !lua_isnil(L, top + 1)) {
+      lua_settop(L, top);
+      break;
+    }
+    lua_settop(L, top);
+  }
+  luaL_unref(L, LUA_REGISTRYINDEX, frameRef);
+  return true;
 }
 
 int runLove(lua_State *L) {
   registerLove(L);
+  love::luax_insistpinnedthread(L);
   configureLuaPath(L);
+  installLoveHandlers(L);
   maybeRunConf(L);
+  if (G.presenter == Presenter::KmsGl) {
+    G.nativeRenderer = kandelo_love_register_native_renderer(
+        L, G.root.c_str(), G.windowW, G.windowH, kScanoutWidth, kScanoutHeight,
+        nativeSwapBuffers);
+    if (G.nativeRenderer) {
+      fprintf(stderr, "love: using upstream LÖVE OpenGL renderer on Kandelo KMS/EGL\n");
+    } else {
+      fprintf(stderr, "love: upstream renderer unavailable on Kandelo KMS/EGL\n");
+      return 1;
+    }
+  }
 
   std::string mainLua = G.root + "/main.lua";
-  if (luaL_dofile(L, mainLua.c_str()) != 0) {
-    fprintf(stderr, "lovefb: main.lua: %s\n", lua_tostring(L, -1));
+  int mainStatus = luaL_loadfile(L, mainLua.c_str());
+  if (mainStatus != 0) {
+    fprintf(stderr, "lovefb: main.lua load: %s\n", lua_tostring(L, -1));
+    fflush(stderr);
     return 1;
   }
+  mainStatus = lua_pcall(L, 0, LUA_MULTRET, 0);
+  if (mainStatus != 0) {
+    fprintf(stderr, "lovefb: main.lua: %s\n", lua_tostring(L, -1));
+    fflush(stderr);
+    return 1;
+  }
+  if (runGameProvidedLoop(L)) return 0;
+
   callLove(L, "load", 0);
 
   G.start = G.last = G.fpsT0 = nowSeconds();
@@ -2626,26 +3477,34 @@ int runLove(lua_State *L) {
     lua_pushnumber(L, G.dt);
     callLove(L, "update", 1);
 
-    G.target = &G.screen;
-    G.transform = Transform{};
-    G.transformStack.clear();
-    G.scissor = false;
-    clearSurface(G.screen, G.background);
-    callLove(L, "draw", 0);
-    if (!G.lastError.empty()) {
-      Font *savedFont = G.font;
-      Color savedColor = G.color;
-      Transform savedTransform = G.transform;
-      G.font = &G.defaultFont;
-      G.color = Color{255, 80, 80, 255};
+    if (G.nativeRenderer) {
+      callLoveModule(L, "graphics", "origin", 0);
+      clearNativeBackground(L);
+      callLove(L, "draw", 0);
+      drawNativeError(L);
+      callLoveModule(L, "graphics", "present", 0);
+    } else {
+      G.target = &G.screen;
       G.transform = Transform{};
-      drawText(G.screen, G.lastError, 12, 12);
-      G.transform = savedTransform;
-      G.color = savedColor;
-      G.font = savedFont;
+      G.transformStack.clear();
+      G.scissor = false;
+      clearSurface(G.screen, G.background);
+      callLove(L, "draw", 0);
+      if (!G.lastError.empty()) {
+        Font *savedFont = G.font;
+        Color savedColor = G.color;
+        Transform savedTransform = G.transform;
+        G.font = &G.defaultFont;
+        G.color = Color{255, 80, 80, 255};
+        G.transform = Transform{};
+        drawText(G.screen, G.lastError, 12, 12);
+        G.transform = savedTransform;
+        G.color = savedColor;
+        G.font = savedFont;
+      }
+      drawSoftwareCursor();
+      presentFrame();
     }
-    drawSoftwareCursor();
-    presentFrame();
 
     double frame = nowSeconds() - t;
     if (frame < 1.0 / 60.0) usleep(useconds_t((1.0 / 60.0 - frame) * 1000000.0));
@@ -2654,6 +3513,29 @@ int runLove(lua_State *L) {
 }
 
 }  // namespace
+
+extern "C" bool kandelo_love_uses_legacy_color_range() {
+  return G.legacyColorRange;
+}
+
+extern "C" bool kandelo_love_uses_legacy_canvas_dpiscale() {
+  return G.legacyColorRange;
+}
+
+extern "C" void kandelo_love_set_native_window_size(int width, int height) {
+  int oldW = std::max(1, G.windowW);
+  int oldH = std::max(1, G.windowH);
+  if (width > 0 && width != G.windowW) {
+    G.mouseX = int(std::lround(double(G.mouseX) * double(width) / double(oldW)));
+    G.windowW = width;
+  }
+  if (height > 0 && height != G.windowH) {
+    G.mouseY = int(std::lround(double(G.mouseY) * double(height) / double(oldH)));
+    G.windowH = height;
+  }
+  G.mouseX = clampInt(G.mouseX, 0, std::max(1, G.windowW) - 1);
+  G.mouseY = clampInt(G.mouseY, 0, std::max(1, G.windowH) - 1);
+}
 
 int main(int argc, char **argv) {
   G.root = argc > 1 ? argv[1] : ".";
@@ -2674,8 +3556,22 @@ int main(int argc, char **argv) {
   presentFrame();
 
   lua_State *L = luaL_newstate();
+  lua_atpanic(L, luaPanic);
   luaL_openlibs(L);
-  int rc = runLove(L);
+  registerFfiCompat(L);
+  int rc = 0;
+  try {
+    rc = runLove(L);
+  } catch (love::Exception &e) {
+    fprintf(stderr, "love: unhandled LÖVE exception: %s\n", e.what());
+    rc = 1;
+  } catch (std::exception &e) {
+    fprintf(stderr, "love: unhandled C++ exception: %s\n", e.what());
+    rc = 1;
+  } catch (...) {
+    fprintf(stderr, "love: unhandled native exception\n");
+    rc = 1;
+  }
   lua_close(L);
   restoreStdin();
   cleanupPresenter();

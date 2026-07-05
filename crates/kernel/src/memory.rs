@@ -267,7 +267,12 @@ impl MemoryManager {
         if len == 0 {
             return false;
         }
-        let unmap_end = addr.saturating_add(len);
+        let Some(aligned_len) = Self::align_len_up(len) else {
+            return false;
+        };
+        let Some(unmap_end) = addr.checked_add(aligned_len) else {
+            return false;
+        };
         let mut found = false;
         let mut new_mappings: Vec<MappedRegion> = Vec::new();
 
@@ -517,6 +522,13 @@ impl MemoryManager {
         addr.saturating_add(0xFFFF) & !0xFFFF
     }
 
+    fn align_len_up(len: usize) -> Option<usize> {
+        if len == 0 {
+            return None;
+        }
+        len.checked_add(0xFFFF).map(|v| v & !0xFFFF)
+    }
+
     /// Extend an existing mapping at `addr` from `old_len` to `new_len`.
     /// The caller must ensure the space is free (via `can_grow_at`).
     pub fn extend_mapping(&mut self, addr: usize, old_len: usize, new_len: usize) {
@@ -609,6 +621,24 @@ mod tests {
         assert!(mm.is_mapped(addr));
         assert!(mm.is_mapped(addr + 0x10000));
         assert!(!mm.is_mapped(addr + 0x20000));
+    }
+
+    #[test]
+    fn test_munmap_rounds_length_to_wasm_page() {
+        let mut mm = MemoryManager::new();
+        let addr = mm.mmap_anonymous(
+            0,
+            0x30000,
+            PROT_READ | PROT_WRITE,
+            MAP_PRIVATE | MAP_ANONYMOUS,
+        );
+        assert_ne!(addr, MAP_FAILED);
+
+        assert!(mm.munmap(addr + 0x10000, 1));
+        assert!(mm.is_mapped(addr));
+        assert!(!mm.is_mapped(addr + 0x10000));
+        assert!(!mm.is_mapped(addr + 0x10001));
+        assert!(mm.is_mapped(addr + 0x20000));
     }
 
     #[test]
@@ -867,6 +897,8 @@ mod tests {
     fn assert_no_overlaps(mm: &MemoryManager) {
         for i in 0..mm.mappings.len() {
             let a = &mm.mappings[i];
+            assert_eq!(a.addr & 0xFFFF, 0, "mapping start is not page-aligned");
+            assert_eq!(a.len & 0xFFFF, 0, "mapping length is not page-aligned");
             let a_end = a.addr + a.len;
             for j in (i + 1)..mm.mappings.len() {
                 let b = &mm.mappings[j];

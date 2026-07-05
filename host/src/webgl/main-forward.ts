@@ -29,8 +29,10 @@ export function setupMainForward(
       case "gl_forward_create_context": {
         const gl = canvas.getContext("webgl2", {
           antialias: false,
+          depth: true,
           premultipliedAlpha: false,
           preserveDrawingBuffer: true,
+          stencil: true,
         }) as WebGL2RenderingContext | null;
         if (gl) {
           // Pavel's fluid sim renders the velocity/dye/pressure passes

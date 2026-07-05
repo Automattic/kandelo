@@ -1,0 +1,481 @@
+diff --git a/src/modules/graphics/Graphics.cpp b/src/modules/graphics/Graphics.cpp
+index 9cf72a6..76c6c34 100644
+--- a/src/modules/graphics/Graphics.cpp
++++ b/src/modules/graphics/Graphics.cpp
+@@ -298,6 +298,21 @@ bool Graphics::validateShader(bool gles, const std::string &vertex, const std::s
+ 		return false;
+ 	}
+ 
++#if defined(LOVE_KANDELO)
++	(void) gles;
++
++	try
++	{
++		Shader *shader = newShader(vertex, pixel);
++		shader->release();
++		return true;
++	}
++	catch (love::Exception &e)
++	{
++		err = e.what();
++		return false;
++	}
++#else
+ 	StrongRef<ShaderStage> vertexstage;
+ 	StrongRef<ShaderStage> pixelstage;
+ 
+@@ -310,6 +325,7 @@ bool Graphics::validateShader(bool gles, const std::string &vertex, const std::s
+ 		pixelstage.set(new ShaderStageForValidation(this, ShaderStage::STAGE_PIXEL, pixel, gles), Acquire::NORETAIN);
+ 
+ 	return Shader::validate(vertexstage.get(), pixelstage.get(), err);
++#endif
+ }
+ 
+ int Graphics::getWidth() const
+diff --git a/src/modules/graphics/Shader.cpp b/src/modules/graphics/Shader.cpp
+index 54a6ab6..44c99ba 100644
+--- a/src/modules/graphics/Shader.cpp
++++ b/src/modules/graphics/Shader.cpp
+@@ -128,6 +128,12 @@ void Shader::checkMainTexture(Texture *tex) const
+ 
+ bool Shader::validate(ShaderStage *vertex, ShaderStage *pixel, std::string &err)
+ {
++#if defined(LOVE_KANDELO)
++	(void) vertex;
++	(void) pixel;
++	(void) err;
++	return true;
++#else
+ 	glslang::TProgram program;
+ 
+ 	if (vertex != nullptr)
+@@ -143,6 +149,7 @@ bool Shader::validate(ShaderStage *vertex, ShaderStage *pixel, std::string &err)
+ 	}
+ 
+ 	return true;
++#endif
+ }
+ 
+ bool Shader::initialize()
+diff --git a/src/modules/graphics/ShaderStage.cpp b/src/modules/graphics/ShaderStage.cpp
+index 24ef452..7312f81 100644
+--- a/src/modules/graphics/ShaderStage.cpp
++++ b/src/modules/graphics/ShaderStage.cpp
+@@ -142,6 +142,13 @@ ShaderStage::ShaderStage(Graphics *gfx, StageType stage, const std::string &glsl
+ 	, cacheKey(cachekey)
+ 	, glslangShader(nullptr)
+ {
++#if defined(LOVE_KANDELO)
++	(void) gfx;
++	(void) gles;
++	if (stage != STAGE_VERTEX && stage != STAGE_PIXEL)
++		throw love::Exception("Cannot compile shader stage: unknown stage type.");
++	return;
++#else
+ 	EShLanguage glslangStage = EShLangCount;
+ 	if (stage == STAGE_VERTEX)
+ 		glslangStage = EShLangVertex;
+@@ -178,6 +185,7 @@ ShaderStage::ShaderStage(Graphics *gfx, StageType stage, const std::string &glsl
+ 		delete glslangShader;
+ 		throw love::Exception("%s", err.c_str());
+ 	}
++#endif
+ }
+ 
+ ShaderStage::~ShaderStage()
+diff --git a/src/modules/graphics/opengl/Shader.cpp b/src/modules/graphics/opengl/Shader.cpp
+index ef16655..975376c 100644
+--- a/src/modules/graphics/opengl/Shader.cpp
++++ b/src/modules/graphics/opengl/Shader.cpp
+@@ -26,8 +26,11 @@
+ 
+ // C++
+ #include <algorithm>
++#include <cctype>
++#include <cstdlib>
+ #include <limits>
+ #include <sstream>
++#include <vector>
+ 
+ namespace love
+ {
+@@ -36,6 +39,193 @@ namespace graphics
+ namespace opengl
+ {
+ 
++namespace
++{
++
++std::string trimCopy(const std::string &s)
++{
++	size_t start = 0;
++	while (start < s.size() && std::isspace((unsigned char) s[start]))
++		start++;
++
++	size_t end = s.size();
++	while (end > start && std::isspace((unsigned char) s[end - 1]))
++		end--;
++
++	return s.substr(start, end - start);
++}
++
++void collectKandeloUniformInitializers(const std::string &source, std::map<std::string, std::string> &initializers)
++{
++	const std::string marker = "LOVE_KANDELO_UNIFORM_INIT";
++	size_t pos = 0;
++
++	while ((pos = source.find(marker, pos)) != std::string::npos)
++	{
++		size_t payloadstart = pos + marker.size();
++		size_t lineend = source.find('\n', payloadstart);
++		std::string payload = lineend == std::string::npos
++			? source.substr(payloadstart)
++			: source.substr(payloadstart, lineend - payloadstart);
++
++		payload = trimCopy(payload);
++
++		size_t nameend = 0;
++		while (nameend < payload.size() && (std::isalnum((unsigned char) payload[nameend]) || payload[nameend] == '_'))
++			nameend++;
++
++		if (nameend > 0)
++		{
++			std::string name = payload.substr(0, nameend);
++			std::string value = trimCopy(payload.substr(nameend));
++			if (!value.empty())
++				initializers[name] = value;
++		}
++
++		if (lineend == std::string::npos)
++			break;
++
++		pos = lineend + 1;
++	}
++}
++
++bool unwrapConstructor(std::string &value)
++{
++	size_t open = value.find('(');
++	if (open == std::string::npos || value.empty() || value.back() != ')')
++		return false;
++
++	for (size_t i = 0; i < open; i++)
++	{
++		if (!(std::isalnum((unsigned char) value[i]) || value[i] == '_'))
++			return false;
++	}
++
++	value = trimCopy(value.substr(open + 1, value.size() - open - 2));
++	return true;
++}
++
++std::vector<std::string> splitInitializerValues(std::string value)
++{
++	value = trimCopy(value);
++	unwrapConstructor(value);
++
++	std::vector<std::string> values;
++	size_t start = 0;
++	int depth = 0;
++
++	for (size_t i = 0; i <= value.size(); i++)
++	{
++		char c = i < value.size() ? value[i] : ',';
++
++		if (c == '(')
++			depth++;
++		else if (c == ')' && depth > 0)
++			depth--;
++
++		if ((c == ',' && depth == 0) || i == value.size())
++		{
++			std::string token = trimCopy(value.substr(start, i - start));
++			if (!token.empty())
++				values.push_back(token);
++			start = i + 1;
++		}
++	}
++
++	return values;
++}
++
++bool parseFloatToken(const std::string &token, float &out)
++{
++	char *end = nullptr;
++	out = std::strtof(token.c_str(), &end);
++	return end != token.c_str() && trimCopy(end).empty();
++}
++
++bool parseIntToken(const std::string &token, int &out)
++{
++	if (token == "true")
++	{
++		out = 1;
++		return true;
++	}
++	else if (token == "false")
++	{
++		out = 0;
++		return true;
++	}
++
++	char *end = nullptr;
++	long value = std::strtol(token.c_str(), &end, 0);
++	if (end == token.c_str() || !trimCopy(end).empty())
++		return false;
++
++	out = (int) value;
++	return true;
++}
++
++bool parseUintToken(const std::string &token, unsigned int &out)
++{
++	char *end = nullptr;
++	unsigned long value = std::strtoul(token.c_str(), &end, 0);
++	if (end == token.c_str() || !trimCopy(end).empty())
++		return false;
++
++	out = (unsigned int) value;
++	return true;
++}
++
++bool applyKandeloUniformInitializer(Shader::UniformInfo &uniform, const std::string &initializer)
++{
++	std::vector<std::string> values = splitInitializerValues(initializer);
++	if (values.empty() || uniform.data == nullptr)
++		return false;
++
++	int elements = uniform.baseType == Shader::UNIFORM_MATRIX
++		? uniform.matrix.rows * uniform.matrix.columns
++		: uniform.components;
++
++	int maxvalues = elements * uniform.count;
++	int n = std::min<int>((int) values.size(), maxvalues);
++
++	switch (uniform.baseType)
++	{
++	case Shader::UNIFORM_FLOAT:
++	case Shader::UNIFORM_MATRIX:
++		for (int i = 0; i < n; i++)
++		{
++			float value = 0.0f;
++			if (!parseFloatToken(values[i], value))
++				return false;
++			uniform.floats[i] = value;
++		}
++		return true;
++	case Shader::UNIFORM_INT:
++	case Shader::UNIFORM_BOOL:
++		for (int i = 0; i < n; i++)
++		{
++			int value = 0;
++			if (!parseIntToken(values[i], value))
++				return false;
++			uniform.ints[i] = value;
++		}
++		return true;
++	case Shader::UNIFORM_UINT:
++		for (int i = 0; i < n; i++)
++		{
++			unsigned int value = 0;
++			if (!parseUintToken(values[i], value))
++				return false;
++			uniform.uints[i] = value;
++		}
++		return true;
++	default:
++		return false;
++	}
++}
++
++} // anonymous namespace
++
+ Shader::Shader(love::graphics::ShaderStage *vertex, love::graphics::ShaderStage *pixel)
+ 	: love::graphics::Shader(vertex, pixel)
+ 	, program(0)
+@@ -75,6 +265,15 @@ Shader::~Shader()
+ 
+ void Shader::mapActiveUniforms()
+ {
++#if defined(LOVE_KANDELO)
++	std::map<std::string, std::string> kandeloInitializers;
++	for (const auto &stage : stages)
++	{
++		if (stage.get() != nullptr)
++			collectKandeloUniformInitializers(stage->getSource(), kandeloInitializers);
++	}
++#endif
++
+ 	// Built-in uniform locations default to -1 (nonexistent.)
+ 	for (int i = 0; i < int(BUILTIN_MAX_ENUM); i++)
+ 	{
+@@ -244,6 +443,12 @@ void Shader::mapActiveUniforms()
+ 					break;
+ 				}
+ 			}
++
++#if defined(LOVE_KANDELO)
++			auto initializer = kandeloInitializers.find(u.name);
++			if (initializer != kandeloInitializers.end() && applyKandeloUniformInitializer(u, initializer->second))
++				updateUniform(&u, u.count, true);
++#endif
+ 		}
+ 
+ 		uniforms[u.name] = u;
+diff --git a/src/modules/graphics/wrap_Graphics.cpp b/src/modules/graphics/wrap_Graphics.cpp
+index ae574bb..db4d412 100644
+--- a/src/modules/graphics/wrap_Graphics.cpp
++++ b/src/modules/graphics/wrap_Graphics.cpp
+@@ -40,6 +40,10 @@
+ 
+ #include <algorithm>
+ 
++#ifdef LOVE_KANDELO
++extern "C" bool kandelo_love_uses_legacy_color_range();
++#endif
++
+ // Shove the wrap_Graphics.lua code directly into a raw string literal.
+ static const char graphics_lua[] =
+ #include "wrap_Graphics.lua"
+@@ -57,6 +61,32 @@ namespace graphics
+ 
+ #define instance() (Module::getInstance<Graphics>(Module::M_GRAPHICS))
+ 
++static bool usesLegacyColorRange()
++{
++#ifdef LOVE_KANDELO
++	return kandelo_love_uses_legacy_color_range();
++#else
++	return false;
++#endif
++}
++
++static Colorf normalizeColor(Colorf c)
++{
++	if (!usesLegacyColorRange())
++		return c;
++
++	c.r /= 255.0f;
++	c.g /= 255.0f;
++	c.b /= 255.0f;
++	c.a /= 255.0f;
++	return c;
++}
++
++static float defaultAlpha()
++{
++	return usesLegacyColorRange() ? 255.0f : 1.0f;
++}
++
+ static int luax_checkgraphicscreated(lua_State *L)
+ {
+ 	if (!instance()->isCreated())
+@@ -109,7 +139,8 @@ int w_clear(lua_State *L)
+ 			c.value.r = (float) luaL_checknumber(L, -4);
+ 			c.value.g = (float) luaL_checknumber(L, -3);
+ 			c.value.b = (float) luaL_checknumber(L, -2);
+-			c.value.a = (float) luaL_optnumber(L, -1, 1.0);
++			c.value.a = (float) luaL_optnumber(L, -1, defaultAlpha());
++			c.value = normalizeColor(c.value);
+ 			colors.push_back(c);
+ 
+ 			lua_pop(L, 4);
+@@ -126,7 +157,8 @@ int w_clear(lua_State *L)
+ 		color.value.r = (float) luaL_checknumber(L, 1);
+ 		color.value.g = (float) luaL_checknumber(L, 2);
+ 		color.value.b = (float) luaL_checknumber(L, 3);
+-		color.value.a = (float) luaL_optnumber(L, 4, 1.0);
++		color.value.a = (float) luaL_optnumber(L, 4, defaultAlpha());
++		color.value = normalizeColor(color.value);
+ 		startidx = 5;
+ 	}
+ 
+@@ -1690,7 +1722,7 @@ int w_setColor(lua_State *L)
+ 		c.r = (float) luaL_checknumber(L, -4);
+ 		c.g = (float) luaL_checknumber(L, -3);
+ 		c.b = (float) luaL_checknumber(L, -2);
+-		c.a = (float) luaL_optnumber(L, -1, 1.0);
++		c.a = (float) luaL_optnumber(L, -1, defaultAlpha());
+ 
+ 		lua_pop(L, 4);
+ 	}
+@@ -1699,8 +1731,9 @@ int w_setColor(lua_State *L)
+ 		c.r = (float) luaL_checknumber(L, 1);
+ 		c.g = (float) luaL_checknumber(L, 2);
+ 		c.b = (float) luaL_checknumber(L, 3);
+-		c.a = (float) luaL_optnumber(L, 4, 1.0);
++		c.a = (float) luaL_optnumber(L, 4, defaultAlpha());
+ 	}
++	c = normalizeColor(c);
+ 	instance()->setColor(c);
+ 	return 0;
+ }
+@@ -1708,6 +1741,13 @@ int w_setColor(lua_State *L)
+ int w_getColor(lua_State *L)
+ {
+ 	Colorf c = instance()->getColor();
++	if (usesLegacyColorRange())
++	{
++		c.r *= 255.0f;
++		c.g *= 255.0f;
++		c.b *= 255.0f;
++		c.a *= 255.0f;
++	}
+ 	lua_pushnumber(L, c.r);
+ 	lua_pushnumber(L, c.g);
+ 	lua_pushnumber(L, c.b);
+@@ -1726,7 +1766,7 @@ int w_setBackgroundColor(lua_State *L)
+ 		c.r = (float) luaL_checknumber(L, -4);
+ 		c.g = (float) luaL_checknumber(L, -3);
+ 		c.b = (float) luaL_checknumber(L, -2);
+-		c.a = (float) luaL_optnumber(L, -1, 1.0);
++		c.a = (float) luaL_optnumber(L, -1, defaultAlpha());
+ 
+ 		lua_pop(L, 4);
+ 	}
+@@ -1735,8 +1775,9 @@ int w_setBackgroundColor(lua_State *L)
+ 		c.r = (float) luaL_checknumber(L, 1);
+ 		c.g = (float) luaL_checknumber(L, 2);
+ 		c.b = (float) luaL_checknumber(L, 3);
+-		c.a = (float) luaL_optnumber(L, 4, 1.0);
++		c.a = (float) luaL_optnumber(L, 4, defaultAlpha());
+ 	}
++	c = normalizeColor(c);
+ 	instance()->setBackgroundColor(c);
+ 	return 0;
+ }
+@@ -1744,6 +1785,13 @@ int w_setBackgroundColor(lua_State *L)
+ int w_getBackgroundColor(lua_State *L)
+ {
+ 	Colorf c = instance()->getBackgroundColor();
++	if (usesLegacyColorRange())
++	{
++		c.r *= 255.0f;
++		c.g *= 255.0f;
++		c.b *= 255.0f;
++		c.a *= 255.0f;
++	}
+ 	lua_pushnumber(L, c.r);
+ 	lua_pushnumber(L, c.g);
+ 	lua_pushnumber(L, c.b);
+diff --git a/src/modules/graphics/wrap_GraphicsShader.lua b/src/modules/graphics/wrap_GraphicsShader.lua
+index daf11ea..615df0c 100644
+--- a/src/modules/graphics/wrap_GraphicsShader.lua
++++ b/src/modules/graphics/wrap_GraphicsShader.lua
+@@ -315,6 +315,16 @@ local function getLanguageTarget(code)
+ end
+ 
+ local function createShaderStageCode(stage, code, lang, gles, glsl1on3, gammacorrect, custom, multicanvas)
++	if gles then
++		code = code:gsub("([^;\n]*%f[%w_]extern%s+[^;\n]-)%s*=%s*([^;\n]*);", function(prefix, value)
++			local name = prefix:match("([%a_][%w_]*)%s*(%[[^%]]+%])?%s*$")
++			if name then
++				return "// LOVE_KANDELO_UNIFORM_INIT " .. name .. " " .. value .. "\n" .. prefix .. ";"
++			end
++			return prefix .. ";"
++		end)
++	end
++
+ 	stage = stage:upper()
+ 	local lines = {
+ 		GLSL.VERSION[lang][gles],

@@ -160,7 +160,8 @@ export function useMachineSurfaceController(): MachineSurfaceController {
 export interface MachineViewProps {
   surface: MachineSurfaceController;
   demoGuideOpen: boolean;
-  onDemoGuideOpenChange: (open: boolean) => void;
+  demoFocusToken: number;
+  onCloseDemoGuide: () => void;
   onDemoDockControlsChange: (controls: React.ReactNode | null) => void;
   onDemoGuidePopupChange: (popup: React.ReactNode | null) => void;
   internalsTab: string;
@@ -173,7 +174,8 @@ export interface MachineViewProps {
 export const MachineView: React.FC<MachineViewProps> = ({
   surface,
   demoGuideOpen,
-  onDemoGuideOpenChange,
+  demoFocusToken,
+  onCloseDemoGuide,
   onDemoDockControlsChange,
   onDemoGuidePopupChange,
   internalsTab,
@@ -225,12 +227,12 @@ export const MachineView: React.FC<MachineViewProps> = ({
     if (!showDemoGuide) return null;
     return (
       <DemoGuide
-        onClose={() => onDemoGuideOpenChange(false)}
+        onClose={onCloseDemoGuide}
         onOpenTerminal={openTerminalFromGuide}
         onRunWebAction={runWebAction}
       />
     );
-  }, [onDemoGuideOpenChange, openTerminalFromGuide, runWebAction, showDemoGuide]);
+  }, [onCloseDemoGuide, openTerminalFromGuide, runWebAction, showDemoGuide]);
 
   React.useEffect(() => {
     onDemoGuidePopupChange(demoGuidePopup);
@@ -246,6 +248,7 @@ export const MachineView: React.FC<MachineViewProps> = ({
               <Display
                 ref={displayRef}
                 autoFocus={activePrimary === demoSurface}
+                focusToken={demoFocusToken}
                 surface={demoSurface ?? undefined}
                 onDockControlsChange={onDemoDockControlsChange}
               />

@@ -95,6 +95,38 @@ describe("GbmBoRegistry — SAB-backed bo store", () => {
     expectPattern(readPattern(memB, BO_ADDR, BO_SIZE), 0x42);
   });
 
+  it("unbind ignores ranges that do not overlap the recorded binding", () => {
+    const memA = newMemory();
+    const reg = new GbmBoRegistry({
+      getProcessMemory: (pid) => (pid === 100 ? memA : undefined),
+    });
+    reg.create({ pid: 100, bo_id: 1, size: BO_SIZE, w: 16, h: 16, stride: 64 });
+    reg.bind(100, 1, 0x2000, BO_SIZE);
+    fillPattern(memA, 0x2000, BO_SIZE, 0x64);
+
+    reg.unbind(100, 1, 0x8000, 0x1000);
+
+    expect(reg.findBindingByAddr(100, 0x2000)).toBe(1);
+  });
+
+  it("unbind drops the whole host binding when the munmap range overlaps it", () => {
+    const memA = newMemory();
+    const memB = newMemory();
+    const reg = new GbmBoRegistry({
+      getProcessMemory: (pid) => (pid === 100 ? memA : pid === 200 ? memB : undefined),
+    });
+    reg.create({ pid: 100, bo_id: 1, size: BO_SIZE, w: 16, h: 16, stride: 64 });
+    reg.bind(100, 1, 0x2000, BO_SIZE);
+    fillPattern(memA, 0x2000, BO_SIZE, 0x71);
+
+    reg.unbind(100, 1, 0x2800, 0x100);
+
+    expect(reg.findBindingByAddr(100, 0x2000)).toBeUndefined();
+    reg.bind(200, 1, BO_ADDR, BO_SIZE);
+    reg.primeBindFromSab(200, 1, memB);
+    expectPattern(readPattern(memB, BO_ADDR, BO_SIZE), 0x71);
+  });
+
   it("primeBindFromSab flushes OTHER currently-bound pids before priming", () => {
     // The dumb_roundtrip flow: parent never unbinds before fork.
     // The cross-pid flush inside primeBindFromSab is what sources

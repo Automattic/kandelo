@@ -13,6 +13,8 @@
  */
 
 #include <GLES2/gl2.h>
+#include <errno.h>
+#include <stdio.h>
 #include <stdint.h>
 #include <stddef.h>
 #include <stdlib.h>
@@ -24,6 +26,9 @@
 static uint8_t *g_cursor = NULL;
 
 enum { WPK_GL_MAX_TLV_PAYLOAD = 0xffffu };
+
+static int g_submit_error_logs = 0;
+static int g_query_error_logs = 0;
 
 static inline void w_u16(uint8_t **c, uint16_t v) { memcpy(*c, &v, 2); *c += 2; }
 static inline void w_u32(uint8_t **c, uint32_t v) { memcpy(*c, &v, 4); *c += 4; }
@@ -37,7 +42,18 @@ void _wpk_gl_flush(void) {
 
     struct gl_submit_info si = { .offset = 0,
                                  .length = (uint32_t)(g_cursor - base) };
-    ioctl(fd, GLIO_SUBMIT, &si);
+    int rc = ioctl(fd, GLIO_SUBMIT, &si);
+    if (rc != 0 && g_submit_error_logs < 20) {
+        uint16_t first_op = 0;
+        uint16_t first_len = 0;
+        if (si.length >= 4) {
+            memcpy(&first_op, base, 2);
+            memcpy(&first_len, base + 2, 2);
+        }
+        fprintf(stderr, "love: GL submit failed rc=%d errno=%d length=%u first_op=0x%04x first_len=%u\n",
+                rc, errno, si.length, first_op, first_len);
+        g_submit_error_logs++;
+    }
     g_cursor = base;
 }
 
@@ -100,11 +116,255 @@ void glPixelStorei(GLenum pname, GLint param) {
     EMIT_END()
 }
 
+void glBlendFuncSeparate(GLenum srcRGB, GLenum dstRGB, GLenum srcAlpha, GLenum dstAlpha) {
+    EMIT_BEGIN(OP_BLEND_FUNC_SEPARATE, 16)
+    w_u32(&_c, (uint32_t)srcRGB);
+    w_u32(&_c, (uint32_t)dstRGB);
+    w_u32(&_c, (uint32_t)srcAlpha);
+    w_u32(&_c, (uint32_t)dstAlpha);
+    EMIT_END()
+}
+
+void glBlendEquation(GLenum mode) {
+    EMIT_BEGIN(OP_BLEND_EQUATION, 4)
+    w_u32(&_c, (uint32_t)mode);
+    EMIT_END()
+}
+
+void glBlendEquationSeparate(GLenum modeRGB, GLenum modeAlpha) {
+    EMIT_BEGIN(OP_BLEND_EQUATION_SEPARATE, 8)
+    w_u32(&_c, (uint32_t)modeRGB);
+    w_u32(&_c, (uint32_t)modeAlpha);
+    EMIT_END()
+}
+
+void glBlendColor(GLfloat r, GLfloat g, GLfloat b, GLfloat a) {
+    EMIT_BEGIN(OP_BLEND_COLOR, 16)
+    w_f32(&_c, r); w_f32(&_c, g); w_f32(&_c, b); w_f32(&_c, a);
+    EMIT_END()
+}
+
+void glClearDepthf(GLfloat d) {
+    EMIT_BEGIN(OP_CLEAR_DEPTHF, 4)
+    w_f32(&_c, d);
+    EMIT_END()
+}
+
+void glClearStencil(GLint s) {
+    EMIT_BEGIN(OP_CLEAR_STENCIL, 4)
+    w_i32(&_c, s);
+    EMIT_END()
+}
+
+void glColorMask(GLboolean r, GLboolean g, GLboolean b, GLboolean a) {
+    EMIT_BEGIN(OP_COLOR_MASK, 16)
+    w_u32(&_c, r ? 1u : 0u);
+    w_u32(&_c, g ? 1u : 0u);
+    w_u32(&_c, b ? 1u : 0u);
+    w_u32(&_c, a ? 1u : 0u);
+    EMIT_END()
+}
+
+void glDepthMask(GLboolean flag) {
+    EMIT_BEGIN(OP_DEPTH_MASK, 4)
+    w_u32(&_c, flag ? 1u : 0u);
+    EMIT_END()
+}
+
+void glDepthFunc(GLenum func) {
+    EMIT_BEGIN(OP_DEPTH_FUNC, 4)
+    w_u32(&_c, (uint32_t)func);
+    EMIT_END()
+}
+
+void glCullFace(GLenum mode) {
+    EMIT_BEGIN(OP_CULL_FACE, 4)
+    w_u32(&_c, (uint32_t)mode);
+    EMIT_END()
+}
+
+void glFrontFace(GLenum mode) {
+    EMIT_BEGIN(OP_FRONT_FACE, 4)
+    w_u32(&_c, (uint32_t)mode);
+    EMIT_END()
+}
+
+void glLineWidth(GLfloat width) {
+    EMIT_BEGIN(OP_LINE_WIDTH, 4)
+    w_f32(&_c, width);
+    EMIT_END()
+}
+
+void glStencilFunc(GLenum func, GLint ref, GLuint mask) {
+    EMIT_BEGIN(OP_STENCIL_FUNC, 12)
+    w_u32(&_c, (uint32_t)func);
+    w_i32(&_c, ref);
+    w_u32(&_c, mask);
+    EMIT_END()
+}
+
+void glStencilFuncSeparate(GLenum face, GLenum func, GLint ref, GLuint mask) {
+    EMIT_BEGIN(OP_STENCIL_FUNC_SEPARATE, 16)
+    w_u32(&_c, (uint32_t)face);
+    w_u32(&_c, (uint32_t)func);
+    w_i32(&_c, ref);
+    w_u32(&_c, mask);
+    EMIT_END()
+}
+
+void glStencilMask(GLuint mask) {
+    EMIT_BEGIN(OP_STENCIL_MASK, 4)
+    w_u32(&_c, mask);
+    EMIT_END()
+}
+
+void glStencilMaskSeparate(GLenum face, GLuint mask) {
+    EMIT_BEGIN(OP_STENCIL_MASK_SEPARATE, 8)
+    w_u32(&_c, (uint32_t)face);
+    w_u32(&_c, mask);
+    EMIT_END()
+}
+
+void glStencilOp(GLenum fail, GLenum zfail, GLenum zpass) {
+    EMIT_BEGIN(OP_STENCIL_OP, 12)
+    w_u32(&_c, (uint32_t)fail);
+    w_u32(&_c, (uint32_t)zfail);
+    w_u32(&_c, (uint32_t)zpass);
+    EMIT_END()
+}
+
+void glStencilOpSeparate(GLenum face, GLenum fail, GLenum zfail, GLenum zpass) {
+    EMIT_BEGIN(OP_STENCIL_OP_SEPARATE, 16)
+    w_u32(&_c, (uint32_t)face);
+    w_u32(&_c, (uint32_t)fail);
+    w_u32(&_c, (uint32_t)zfail);
+    w_u32(&_c, (uint32_t)zpass);
+    EMIT_END()
+}
+
+void glPolygonOffset(GLfloat factor, GLfloat units) {
+    EMIT_BEGIN(OP_POLYGON_OFFSET, 8)
+    w_f32(&_c, factor);
+    w_f32(&_c, units);
+    EMIT_END()
+}
+
+void glDepthRangef(GLfloat n, GLfloat f) {
+    EMIT_BEGIN(OP_DEPTH_RANGEF, 8)
+    w_f32(&_c, n);
+    w_f32(&_c, f);
+    EMIT_END()
+}
+
+void glSampleCoverage(GLfloat value, GLboolean invert) {
+    EMIT_BEGIN(OP_SAMPLE_COVERAGE, 8)
+    w_f32(&_c, value);
+    w_u32(&_c, invert ? 1u : 0u);
+    EMIT_END()
+}
+
+void glHint(GLenum target, GLenum mode) { (void)target; (void)mode; }
+void glReleaseShaderCompiler(void) {}
+
 /* ----- buffers ------------------------------------------------------ */
 
 static uint32_t g_next_buffer  = 1;
 static uint32_t g_next_shader  = 1;
 static uint32_t g_next_program = 1;
+
+enum { WPK_GL_MAX_VERTEX_ATTRIBS = 32 };
+
+struct wpk_vertex_attrib_state {
+    GLint size;
+    GLenum type;
+    GLboolean normalized;
+    GLsizei stride;
+    uintptr_t pointer;
+    GLuint buffer;
+    GLboolean enabled;
+};
+
+static struct wpk_vertex_attrib_state g_vertex_attribs[WPK_GL_MAX_VERTEX_ATTRIBS];
+static GLuint g_bound_array_buffer = 0;
+static GLuint g_bound_element_array_buffer = 0;
+static GLuint g_client_attrib_buffers[WPK_GL_MAX_VERTEX_ATTRIBS];
+static GLuint g_client_element_buffer = 0;
+
+static uint32_t attrib_component_size(GLenum type) {
+    switch (type) {
+    case GL_BYTE:
+    case GL_UNSIGNED_BYTE:
+        return 1;
+    case GL_SHORT:
+    case GL_UNSIGNED_SHORT:
+#ifdef GL_HALF_FLOAT
+    case GL_HALF_FLOAT:
+#endif
+        return 2;
+    case GL_INT:
+    case GL_UNSIGNED_INT:
+    case GL_FLOAT:
+#ifdef GL_FIXED
+    case GL_FIXED:
+#endif
+#ifdef GL_INT_2_10_10_10_REV
+    case GL_INT_2_10_10_10_REV:
+#endif
+#ifdef GL_UNSIGNED_INT_2_10_10_10_REV
+    case GL_UNSIGNED_INT_2_10_10_10_REV:
+#endif
+        return 4;
+    default:
+        return 0;
+    }
+}
+
+static uint32_t attrib_element_size(const struct wpk_vertex_attrib_state *a) {
+#ifdef GL_INT_2_10_10_10_REV
+    if (a->type == GL_INT_2_10_10_10_REV) return 4;
+#endif
+#ifdef GL_UNSIGNED_INT_2_10_10_10_REV
+    if (a->type == GL_UNSIGNED_INT_2_10_10_10_REV) return 4;
+#endif
+    return (uint32_t)a->size * attrib_component_size(a->type);
+}
+
+static uint32_t index_component_size(GLenum type) {
+    switch (type) {
+    case GL_UNSIGNED_BYTE:
+        return 1;
+    case GL_UNSIGNED_SHORT:
+        return 2;
+    case GL_UNSIGNED_INT:
+        return 4;
+    default:
+        return 0;
+    }
+}
+
+static uint32_t max_client_index(GLenum type, const void *indices, GLsizei count) {
+    if (!indices || count <= 0) return 0;
+    uint32_t max = 0;
+    if (type == GL_UNSIGNED_BYTE) {
+        const uint8_t *p = (const uint8_t *)indices;
+        for (GLsizei i = 0; i < count; i++) if (p[i] > max) max = p[i];
+    } else if (type == GL_UNSIGNED_SHORT) {
+        const uint16_t *p = (const uint16_t *)indices;
+        for (GLsizei i = 0; i < count; i++) if (p[i] > max) max = p[i];
+    } else if (type == GL_UNSIGNED_INT) {
+        const uint32_t *p = (const uint32_t *)indices;
+        for (GLsizei i = 0; i < count; i++) if (p[i] > max) max = p[i];
+    }
+    return max;
+}
+
+static int has_client_vertex_attribs(void) {
+    for (uint32_t i = 0; i < WPK_GL_MAX_VERTEX_ATTRIBS; i++) {
+        if (g_vertex_attribs[i].enabled && g_vertex_attribs[i].buffer == 0)
+            return 1;
+    }
+    return 0;
+}
 
 void glGenBuffers(GLsizei n, GLuint *out) {
     if (n <= 0 || !out) return;
@@ -122,7 +382,17 @@ void glDeleteBuffers(GLsizei n, const GLuint *names) {
     if (n <= 0 || !names) return;
     EMIT_BEGIN(OP_DELETE_BUFFERS, 4u + (uint32_t)n * 4u)
     w_u32(&_c, (uint32_t)n);
-    for (GLsizei i = 0; i < n; i++) w_u32(&_c, names[i]);
+    for (GLsizei i = 0; i < n; i++) {
+        GLuint name = names[i];
+        if (g_bound_array_buffer == name) g_bound_array_buffer = 0;
+        if (g_bound_element_array_buffer == name) g_bound_element_array_buffer = 0;
+        for (uint32_t a = 0; a < WPK_GL_MAX_VERTEX_ATTRIBS; a++) {
+            if (g_vertex_attribs[a].buffer == name) g_vertex_attribs[a].buffer = 0;
+            if (g_client_attrib_buffers[a] == name) g_client_attrib_buffers[a] = 0;
+        }
+        if (g_client_element_buffer == name) g_client_element_buffer = 0;
+        w_u32(&_c, name);
+    }
     EMIT_END()
 }
 
@@ -131,21 +401,62 @@ void glBindBuffer(GLenum target, GLuint buf) {
     w_u32(&_c, (uint32_t)target);
     w_u32(&_c, (uint32_t)buf);
     EMIT_END()
+    if (target == GL_ARRAY_BUFFER) g_bound_array_buffer = buf;
+    else if (target == GL_ELEMENT_ARRAY_BUFFER) g_bound_element_array_buffer = buf;
 }
+
+void glBufferSubData(GLenum target, GLintptr offset, GLsizeiptr size, const void *data);
 
 void glBufferData(GLenum target, GLsizeiptr size, const void *data, GLenum usage) {
     if (size < 0) return;
-    /* Payload: u32 target, u32 dataLen, u8 data[dataLen], u32 usage. */
+    /* With data: u32 target, u32 dataLen, u8 data[dataLen], u32 usage.
+     * Without data: u32 target, u32 byteLength, u32 usage. */
     uint32_t dlen = (uint32_t)size;
+    if (data == NULL || dlen == 0) {
+        EMIT_BEGIN(OP_BUFFER_DATA, 12u)
+        w_u32(&_c, (uint32_t)target);
+        w_u32(&_c, dlen);
+        w_u32(&_c, (uint32_t)usage);
+        EMIT_END()
+        return;
+    }
+
+    if (dlen > WPK_GL_MAX_TLV_PAYLOAD - 12u) {
+        glBufferData(target, size, NULL, usage);
+        glBufferSubData(target, 0, size, data);
+        return;
+    }
+
     EMIT_BEGIN(OP_BUFFER_DATA, 12u + dlen)
     w_u32(&_c, (uint32_t)target);
     w_u32(&_c, dlen);
-    if (data && dlen > 0) {
-        memcpy(_c, data, dlen);
-        _c += dlen;
-    }
+    memcpy(_c, data, dlen);
+    _c += dlen;
     w_u32(&_c, (uint32_t)usage);
     EMIT_END()
+}
+
+void glBufferSubData(GLenum target, GLintptr offset, GLsizeiptr size, const void *data) {
+    if (size <= 0 || data == NULL) return;
+    const uint8_t *src = (const uint8_t *)data;
+    GLsizeiptr remaining = size;
+    GLintptr dst = offset;
+    const uint32_t max_chunk = WPK_GL_MAX_TLV_PAYLOAD - 12u;
+    while (remaining > 0) {
+        uint32_t dlen = remaining > (GLsizeiptr)max_chunk
+            ? max_chunk
+            : (uint32_t)remaining;
+        EMIT_BEGIN(OP_BUFFER_SUB_DATA, 12u + dlen)
+        w_u32(&_c, (uint32_t)target);
+        w_i32(&_c, (int32_t)dst);
+        w_u32(&_c, dlen);
+        memcpy(_c, src, dlen);
+        _c += dlen;
+        EMIT_END()
+        src += dlen;
+        dst += dlen;
+        remaining -= dlen;
+    }
 }
 
 /* ----- shaders / programs ------------------------------------------ */
@@ -195,6 +506,11 @@ void glDeleteShader(GLuint shader) {
     EMIT_BEGIN(OP_DELETE_SHADER, 4) w_u32(&_c, shader); EMIT_END()
 }
 
+void glDetachShader(GLuint program, GLuint shader) {
+    (void)program;
+    (void)shader;
+}
+
 GLuint glCreateProgram(void) {
     uint32_t name = g_next_program++;
     uint8_t *_c = reserve(4u + 4u);
@@ -238,19 +554,9 @@ void glBindAttribLocation(GLuint program, GLuint index, const GLchar *name) {
 
 /* ----- vertex attribs / draws -------------------------------------- */
 
-void glEnableVertexAttribArray(GLuint index) {
-    EMIT_BEGIN(OP_ENABLE_VERTEX_ATTRIB_ARRAY, 4) w_u32(&_c, (uint32_t)index); EMIT_END()
-}
-
-void glDisableVertexAttribArray(GLuint index) {
-    EMIT_BEGIN(OP_DISABLE_VERTEX_ATTRIB_ARRAY, 4) w_u32(&_c, (uint32_t)index); EMIT_END()
-}
-
-void glVertexAttribPointer(GLuint index, GLint size, GLenum type,
-                           GLboolean normalized, GLsizei stride,
-                           const void *pointer) {
-    /* `pointer` is a buffer offset when a VBO is bound (the only mode
-     * WebGL2 supports — client arrays aren't part of the WebGL surface). */
+static void emit_vertex_attrib_pointer(GLuint index, GLint size, GLenum type,
+                                       GLboolean normalized, GLsizei stride,
+                                       const void *pointer) {
     EMIT_BEGIN(OP_VERTEX_ATTRIB_POINTER, 24)
     w_u32(&_c, (uint32_t)index);
     w_i32(&_c, (int32_t)size);
@@ -261,13 +567,141 @@ void glVertexAttribPointer(GLuint index, GLint size, GLenum type,
     EMIT_END()
 }
 
+void glEnableVertexAttribArray(GLuint index) {
+    EMIT_BEGIN(OP_ENABLE_VERTEX_ATTRIB_ARRAY, 4) w_u32(&_c, (uint32_t)index); EMIT_END()
+    if (index < WPK_GL_MAX_VERTEX_ATTRIBS) g_vertex_attribs[index].enabled = GL_TRUE;
+}
+
+void glDisableVertexAttribArray(GLuint index) {
+    EMIT_BEGIN(OP_DISABLE_VERTEX_ATTRIB_ARRAY, 4) w_u32(&_c, (uint32_t)index); EMIT_END()
+    if (index < WPK_GL_MAX_VERTEX_ATTRIBS) g_vertex_attribs[index].enabled = GL_FALSE;
+}
+
+void glVertexAttribPointer(GLuint index, GLint size, GLenum type,
+                           GLboolean normalized, GLsizei stride,
+                           const void *pointer) {
+    /* `pointer` is a buffer offset when a VBO is bound (the only mode
+     * WebGL2 supports — client arrays aren't part of the WebGL surface). */
+    emit_vertex_attrib_pointer(index, size, type, normalized, stride, pointer);
+    if (index < WPK_GL_MAX_VERTEX_ATTRIBS) {
+        g_vertex_attribs[index].size = size;
+        g_vertex_attribs[index].type = type;
+        g_vertex_attribs[index].normalized = normalized;
+        g_vertex_attribs[index].stride = stride;
+        g_vertex_attribs[index].pointer = (uintptr_t)pointer;
+        g_vertex_attribs[index].buffer = g_bound_array_buffer;
+    }
+}
+
+static void upload_client_vertex_attribs(uint32_t max_vertex_index) {
+    if (!has_client_vertex_attribs()) return;
+
+    GLuint restore_array_buffer = g_bound_array_buffer;
+    for (uint32_t i = 0; i < WPK_GL_MAX_VERTEX_ATTRIBS; i++) {
+        struct wpk_vertex_attrib_state *a = &g_vertex_attribs[i];
+        if (!a->enabled || a->buffer != 0) continue;
+
+        uint32_t elem_size = attrib_element_size(a);
+        uint32_t stride = a->stride == 0 ? elem_size : (uint32_t)a->stride;
+        if (elem_size == 0 || stride == 0 || a->pointer == 0) continue;
+
+        size_t byte_len = (size_t)max_vertex_index * (size_t)stride + elem_size;
+        if (g_client_attrib_buffers[i] == 0)
+            glGenBuffers(1, &g_client_attrib_buffers[i]);
+
+        glBindBuffer(GL_ARRAY_BUFFER, g_client_attrib_buffers[i]);
+        glBufferData(GL_ARRAY_BUFFER, (GLsizeiptr)byte_len, (const void *)a->pointer, GL_STREAM_DRAW);
+        emit_vertex_attrib_pointer(i, a->size, a->type, a->normalized, a->stride, NULL);
+    }
+    glBindBuffer(GL_ARRAY_BUFFER, restore_array_buffer);
+}
+
+static uintptr_t upload_client_element_array(GLenum type, GLsizei count,
+                                             const void *indices,
+                                             uint32_t *max_vertex_index,
+                                             GLuint *restore_element_buffer,
+                                             int force_client_memory) {
+    *restore_element_buffer = g_bound_element_array_buffer;
+    if (!force_client_memory && g_bound_element_array_buffer != 0) {
+        *max_vertex_index = count > 0 ? (uint32_t)(count - 1) : 0;
+        return (uintptr_t)indices;
+    }
+
+    uint32_t index_size = index_component_size(type);
+    if (index_size == 0 || indices == NULL || count <= 0) {
+        *max_vertex_index = 0;
+        return (uintptr_t)indices;
+    }
+
+    *max_vertex_index = max_client_index(type, indices, count);
+    if (g_client_element_buffer == 0)
+        glGenBuffers(1, &g_client_element_buffer);
+
+    glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, g_client_element_buffer);
+    glBufferData(GL_ELEMENT_ARRAY_BUFFER, (GLsizeiptr)((size_t)count * index_size), indices, GL_STREAM_DRAW);
+    return 0;
+}
+
 void glDrawArrays(GLenum mode, GLint first, GLsizei count) {
+    if (has_client_vertex_attribs() && count > 0)
+        upload_client_vertex_attribs((uint32_t)(first + count - 1));
+
     EMIT_BEGIN(OP_DRAW_ARRAYS, 12)
     w_u32(&_c, (uint32_t)mode);
     w_i32(&_c, first);
     w_i32(&_c, (int32_t)count);
     EMIT_END()
 }
+
+void glDrawElements(GLenum mode, GLsizei count, GLenum type, const void *indices) {
+    uint32_t max_vertex_index = count > 0 ? (uint32_t)(count - 1) : 0;
+    GLuint restore_element_buffer = g_bound_element_array_buffer;
+    /* When a draw uses client vertex arrays, guest memory must be copied while
+     * the process is still inside glDrawElements. Otherwise a later GLIO_SUBMIT
+     * may replay from memory that the renderer's stream buffer has already
+     * reused. Large `indices` values are Kandelo linear-memory addresses here;
+     * small values remain valid element-buffer offsets. */
+    int force_client_memory = has_client_vertex_attribs()
+        && indices != NULL
+        && (uintptr_t)indices >= 65536u;
+    uintptr_t draw_offset = upload_client_element_array(type, count, indices,
+                                                        &max_vertex_index,
+                                                        &restore_element_buffer,
+                                                        force_client_memory);
+    upload_client_vertex_attribs(max_vertex_index);
+
+    EMIT_BEGIN(OP_DRAW_ELEMENTS, 16)
+    w_u32(&_c, (uint32_t)mode);
+    w_i32(&_c, (int32_t)count);
+    w_u32(&_c, (uint32_t)type);
+    w_u32(&_c, (uint32_t)draw_offset);
+    EMIT_END()
+
+    if (g_bound_element_array_buffer != restore_element_buffer)
+        glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, restore_element_buffer);
+}
+
+void glVertexAttrib4f(GLuint index, GLfloat x, GLfloat y, GLfloat z, GLfloat w) {
+    EMIT_BEGIN(OP_VERTEX_ATTRIB4F, 20)
+    w_u32(&_c, index);
+    w_f32(&_c, x); w_f32(&_c, y); w_f32(&_c, z); w_f32(&_c, w);
+    EMIT_END()
+}
+
+void glVertexAttrib4fv(GLuint index, const GLfloat *v) {
+    if (!v) return;
+    EMIT_BEGIN(OP_VERTEX_ATTRIB4FV, 20)
+    w_u32(&_c, index);
+    w_f32(&_c, v[0]); w_f32(&_c, v[1]); w_f32(&_c, v[2]); w_f32(&_c, v[3]);
+    EMIT_END()
+}
+
+void glVertexAttrib1f(GLuint index, GLfloat x) { glVertexAttrib4f(index, x, 0.0f, 0.0f, 1.0f); }
+void glVertexAttrib2f(GLuint index, GLfloat x, GLfloat y) { glVertexAttrib4f(index, x, y, 0.0f, 1.0f); }
+void glVertexAttrib3f(GLuint index, GLfloat x, GLfloat y, GLfloat z) { glVertexAttrib4f(index, x, y, z, 1.0f); }
+void glVertexAttrib1fv(GLuint index, const GLfloat *v) { if (v) glVertexAttrib1f(index, v[0]); }
+void glVertexAttrib2fv(GLuint index, const GLfloat *v) { if (v) glVertexAttrib2f(index, v[0], v[1]); }
+void glVertexAttrib3fv(GLuint index, const GLfloat *v) { if (v) glVertexAttrib3f(index, v[0], v[1], v[2]); }
 
 /* ----- sync queries ------------------------------------------------- */
 
@@ -295,6 +729,11 @@ static int _wpk_gl_query_into(uint32_t op,
         .reserved = 0,
     };
     int rc = ioctl(fd, GLIO_QUERY, &qi);
+    if (rc != 0 && g_query_error_logs < 20) {
+        fprintf(stderr, "love: GL query failed op=%u rc=%d errno=%d in=%u out=%u\n",
+                op, rc, errno, in_len, dst_len);
+        g_query_error_logs++;
+    }
     if (rc == 0 && dst_len) memcpy(dst, heap, dst_len);
     free(heap);
     return rc;
@@ -304,6 +743,70 @@ GLenum glGetError(void) {
     uint32_t out = 0;
     if (_wpk_gl_query_into(QOP_GET_ERROR, NULL, 0, &out, 4) != 0) return GL_NO_ERROR;
     return (GLenum)out;
+}
+
+const GLubyte *glGetString(GLenum name) {
+    static uint8_t out[4096];
+    uint32_t n = (uint32_t)name;
+    memset(out, 0, sizeof out);
+    if (_wpk_gl_query_into(QOP_GET_STRING, &n, 4, out, sizeof out) != 0) return (const GLubyte *)"";
+    uint32_t slen = 0;
+    memcpy(&slen, out, 4);
+    if (slen > sizeof out - 5) slen = sizeof out - 5;
+    memmove(out, out + 4, slen);
+    out[slen] = '\0';
+    return out;
+}
+
+static uint32_t query_value_count(GLenum pname) {
+    switch (pname) {
+    case GL_VIEWPORT:
+    case GL_SCISSOR_BOX:
+    case GL_COLOR_CLEAR_VALUE:
+    case GL_BLEND_COLOR:
+        return 4;
+    case GL_ALIASED_POINT_SIZE_RANGE:
+    case GL_ALIASED_LINE_WIDTH_RANGE:
+    case GL_DEPTH_RANGE:
+        return 2;
+    default:
+        return 1;
+    }
+}
+
+void glGetIntegerv(GLenum pname, GLint *data) {
+    if (!data) return;
+    uint32_t p = (uint32_t)pname;
+    uint32_t count = query_value_count(pname);
+    memset(data, 0, count * sizeof(GLint));
+    (void)_wpk_gl_query_into(QOP_GET_INTEGERV, &p, 4, data, count * sizeof(GLint));
+}
+
+void glGetFloatv(GLenum pname, GLfloat *data) {
+    if (!data) return;
+    uint32_t p = (uint32_t)pname;
+    uint32_t count = query_value_count(pname);
+    memset(data, 0, count * sizeof(GLfloat));
+    (void)_wpk_gl_query_into(QOP_GET_FLOATV, &p, 4, data, count * sizeof(GLfloat));
+}
+
+void glGetBooleanv(GLenum pname, GLboolean *data) {
+    if (!data) return;
+    GLint iv[4] = {0, 0, 0, 0};
+    uint32_t count = query_value_count(pname);
+    glGetIntegerv(pname, iv);
+    for (uint32_t i = 0; i < count; i++) data[i] = iv[i] ? GL_TRUE : GL_FALSE;
+}
+
+void glGetShaderPrecisionFormat(GLenum shadertype, GLenum precisiontype,
+                                GLint *range, GLint *precision) {
+    (void)shadertype;
+    (void)precisiontype;
+    if (range) {
+        range[0] = 127;
+        range[1] = 127;
+    }
+    if (precision) *precision = 23;
 }
 
 GLint glGetAttribLocation(GLuint program, const GLchar *name) {
@@ -320,10 +823,153 @@ GLint glGetAttribLocation(GLuint program, const GLchar *name) {
     return loc;
 }
 
+void glGetActiveAttrib(GLuint program, GLuint index, GLsizei bufSize,
+                       GLsizei *length, GLint *size, GLenum *type, GLchar *name) {
+    (void)program; (void)index;
+    if (length) *length = 0;
+    if (size) *size = 0;
+    if (type) *type = 0;
+    if (name && bufSize > 0) name[0] = '\0';
+}
+
+void glGetAttachedShaders(GLuint program, GLsizei maxCount, GLsizei *count, GLuint *shaders) {
+    (void)program; (void)maxCount; (void)shaders;
+    if (count) *count = 0;
+}
+
 /* ----- textures ----------------------------------------------------- */
 
 static uint32_t g_next_texture     = 1;
 static uint32_t g_next_framebuffer = 1;
+static uint32_t g_next_renderbuffer = 1;
+static uint32_t g_next_vertex_array = 1;
+
+#define WPK_GL_MAX_UNIFORM_META 512
+#define WPK_GL_UNIFORM_NAME_MAX 128
+
+struct uniform_meta {
+    GLuint program;
+    GLint location;
+    uint32_t values;
+    char name[WPK_GL_UNIFORM_NAME_MAX];
+};
+
+static struct uniform_meta g_uniform_meta[WPK_GL_MAX_UNIFORM_META];
+static uint32_t g_uniform_meta_count = 0;
+
+static uint32_t uniform_value_count(GLenum type) {
+    switch (type) {
+    case GL_FLOAT:
+    case GL_INT:
+    case GL_BOOL:
+    case GL_SAMPLER_2D:
+    case GL_SAMPLER_CUBE:
+        return 1;
+    case GL_FLOAT_VEC2:
+    case GL_INT_VEC2:
+    case GL_BOOL_VEC2:
+        return 2;
+    case GL_FLOAT_VEC3:
+    case GL_INT_VEC3:
+    case GL_BOOL_VEC3:
+        return 3;
+    case GL_FLOAT_VEC4:
+    case GL_INT_VEC4:
+    case GL_BOOL_VEC4:
+    case GL_FLOAT_MAT2:
+        return 4;
+    case GL_FLOAT_MAT3:
+        return 9;
+    case GL_FLOAT_MAT4:
+        return 16;
+    default:
+        return 1;
+    }
+}
+
+static int uniform_meta_name_equals(const char *a, const char *b) {
+    return strncmp(a, b, WPK_GL_UNIFORM_NAME_MAX) == 0;
+}
+
+static struct uniform_meta *find_uniform_meta_by_name(GLuint program, const char *name) {
+    if (!name) return NULL;
+    for (uint32_t i = 0; i < g_uniform_meta_count; i++) {
+        if (g_uniform_meta[i].program == program && uniform_meta_name_equals(g_uniform_meta[i].name, name))
+            return &g_uniform_meta[i];
+    }
+
+    char base[WPK_GL_UNIFORM_NAME_MAX];
+    size_t len = strnlen(name, sizeof base - 1);
+    if (len >= sizeof base) len = sizeof base - 1;
+    memcpy(base, name, len);
+    base[len] = '\0';
+    char *bracket = strchr(base, '[');
+    if (!bracket) return NULL;
+    *bracket = '\0';
+
+    for (uint32_t i = 0; i < g_uniform_meta_count; i++) {
+        if (g_uniform_meta[i].program == program && uniform_meta_name_equals(g_uniform_meta[i].name, base))
+            return &g_uniform_meta[i];
+    }
+    return NULL;
+}
+
+static struct uniform_meta *find_uniform_meta_by_location(GLuint program, GLint location) {
+    for (uint32_t i = 0; i < g_uniform_meta_count; i++) {
+        if (g_uniform_meta[i].program == program && g_uniform_meta[i].location == location)
+            return &g_uniform_meta[i];
+    }
+    return NULL;
+}
+
+static struct uniform_meta *alloc_uniform_meta(GLuint program, const char *name) {
+    struct uniform_meta *m = find_uniform_meta_by_name(program, name);
+    if (m) return m;
+    uint32_t slot = g_uniform_meta_count < WPK_GL_MAX_UNIFORM_META
+        ? g_uniform_meta_count++
+        : (program + (uint32_t)(uintptr_t)name) % WPK_GL_MAX_UNIFORM_META;
+    m = &g_uniform_meta[slot];
+    memset(m, 0, sizeof *m);
+    m->program = program;
+    m->location = -1;
+    if (name) {
+        strncpy(m->name, name, sizeof m->name - 1);
+        m->name[sizeof m->name - 1] = '\0';
+    }
+    return m;
+}
+
+static void remember_uniform_meta(GLuint program, const char *name, GLenum type) {
+    if (!name || name[0] == '\0') return;
+    uint32_t values = uniform_value_count(type);
+    struct uniform_meta *m = alloc_uniform_meta(program, name);
+    m->values = values;
+
+    size_t len = strnlen(name, WPK_GL_UNIFORM_NAME_MAX - 1);
+    if (len > 3 && strcmp(name + len - 3, "[0]") == 0) {
+        char base[WPK_GL_UNIFORM_NAME_MAX];
+        size_t base_len = len - 3;
+        if (base_len >= sizeof base) base_len = sizeof base - 1;
+        memcpy(base, name, base_len);
+        base[base_len] = '\0';
+        m = alloc_uniform_meta(program, base);
+        m->values = values;
+    }
+}
+
+static void link_uniform_location(GLuint program, const char *name, GLint location) {
+    if (location < 0) return;
+    struct uniform_meta *m = find_uniform_meta_by_name(program, name);
+    if (!m) m = alloc_uniform_meta(program, name);
+    if (m->values == 0) m->values = 1;
+    m->location = location;
+}
+
+static uint32_t uniform_values_for_location(GLuint program, GLint location) {
+    struct uniform_meta *m = find_uniform_meta_by_location(program, location);
+    if (!m || m->values == 0) return 1;
+    return m->values;
+}
 
 void glGenTextures(GLsizei n, GLuint *out) {
     if (n <= 0 || !out) return;
@@ -354,6 +1000,12 @@ void glBindTexture(GLenum target, GLuint tex) {
 void glActiveTexture(GLenum unit) {
     EMIT_BEGIN(OP_ACTIVE_TEXTURE, 4)
     w_u32(&_c, (uint32_t)unit);
+    EMIT_END()
+}
+
+void glGenerateMipmap(GLenum target) {
+    EMIT_BEGIN(OP_GENERATE_MIPMAP, 4)
+    w_u32(&_c, (uint32_t)target);
     EMIT_END()
 }
 
@@ -490,38 +1142,173 @@ void glTexParameteri(GLenum target, GLenum pname, GLint param) {
     EMIT_END()
 }
 
+void glTexParameterf(GLenum target, GLenum pname, GLfloat param) {
+    EMIT_BEGIN(OP_TEX_PARAMETERF, 12)
+    w_u32(&_c, (uint32_t)target);
+    w_u32(&_c, (uint32_t)pname);
+    w_f32(&_c, param);
+    EMIT_END()
+}
+
+void glTexParameteriv(GLenum target, GLenum pname, const GLint *params) {
+    if (params) glTexParameteri(target, pname, params[0]);
+}
+
+void glTexParameterfv(GLenum target, GLenum pname, const GLfloat *params) {
+    if (params) glTexParameterf(target, pname, params[0]);
+}
+
+void glCompressedTexImage2D(GLenum target, GLint level, GLenum internalformat,
+                            GLsizei width, GLsizei height, GLint border,
+                            GLsizei imageSize, const void *data) {
+    if (imageSize < 0 || (imageSize > 0 && !data)) return;
+    uint32_t dlen = (uint32_t)imageSize;
+    if (28u + dlen > WPK_GL_MAX_TLV_PAYLOAD) return;
+    EMIT_BEGIN(OP_COMPRESSED_TEX_IMAGE_2D, 28u + dlen)
+    w_u32(&_c, (uint32_t)target);
+    w_i32(&_c, level);
+    w_u32(&_c, (uint32_t)internalformat);
+    w_i32(&_c, width);
+    w_i32(&_c, height);
+    w_i32(&_c, border);
+    w_u32(&_c, dlen);
+    if (dlen > 0) { memcpy(_c, data, dlen); _c += dlen; }
+    EMIT_END()
+}
+
+void glCompressedTexSubImage2D(GLenum target, GLint level, GLint xoffset, GLint yoffset,
+                               GLsizei width, GLsizei height, GLenum format,
+                               GLsizei imageSize, const void *data) {
+    if (imageSize <= 0 || !data) return;
+    uint32_t dlen = (uint32_t)imageSize;
+    if (32u + dlen > WPK_GL_MAX_TLV_PAYLOAD) return;
+    EMIT_BEGIN(OP_COMPRESSED_TEX_SUB_IMAGE_2D, 32u + dlen)
+    w_u32(&_c, (uint32_t)target);
+    w_i32(&_c, level);
+    w_i32(&_c, xoffset);
+    w_i32(&_c, yoffset);
+    w_i32(&_c, width);
+    w_i32(&_c, height);
+    w_u32(&_c, (uint32_t)format);
+    w_u32(&_c, dlen);
+    memcpy(_c, data, dlen); _c += dlen;
+    EMIT_END()
+}
+
+void glCopyTexImage2D(GLenum target, GLint level, GLenum internalformat,
+                      GLint x, GLint y, GLsizei width, GLsizei height, GLint border) {
+    EMIT_BEGIN(OP_COPY_TEX_IMAGE_2D, 32)
+    w_u32(&_c, (uint32_t)target);
+    w_i32(&_c, level);
+    w_u32(&_c, (uint32_t)internalformat);
+    w_i32(&_c, x); w_i32(&_c, y); w_i32(&_c, width); w_i32(&_c, height); w_i32(&_c, border);
+    EMIT_END()
+}
+
+void glCopyTexSubImage2D(GLenum target, GLint level, GLint xoffset, GLint yoffset,
+                         GLint x, GLint y, GLsizei width, GLsizei height) {
+    EMIT_BEGIN(OP_COPY_TEX_SUB_IMAGE_2D, 32)
+    w_u32(&_c, (uint32_t)target);
+    w_i32(&_c, level);
+    w_i32(&_c, xoffset);
+    w_i32(&_c, yoffset);
+    w_i32(&_c, x);
+    w_i32(&_c, y);
+    w_i32(&_c, width);
+    w_i32(&_c, height);
+    EMIT_END()
+}
+
 /* ----- uniforms ----------------------------------------------------- */
 
 void glUniform1i(GLint location, GLint v) {
+    if (location < 0) return;
     EMIT_BEGIN(OP_UNIFORM1I, 8)
     w_i32(&_c, location);
     w_i32(&_c, v);
     EMIT_END()
 }
 void glUniform1f(GLint location, GLfloat v) {
+    if (location < 0) return;
     EMIT_BEGIN(OP_UNIFORM1F, 8)
     w_i32(&_c, location);
     w_f32(&_c, v);
     EMIT_END()
 }
 void glUniform2f(GLint location, GLfloat x, GLfloat y) {
+    if (location < 0) return;
     EMIT_BEGIN(OP_UNIFORM2F, 12)
     w_i32(&_c, location);
     w_f32(&_c, x); w_f32(&_c, y);
     EMIT_END()
 }
 void glUniform3f(GLint location, GLfloat x, GLfloat y, GLfloat z) {
+    if (location < 0) return;
     EMIT_BEGIN(OP_UNIFORM3F, 16)
     w_i32(&_c, location);
     w_f32(&_c, x); w_f32(&_c, y); w_f32(&_c, z);
     EMIT_END()
 }
 void glUniform4f(GLint location, GLfloat x, GLfloat y, GLfloat z, GLfloat w) {
+    if (location < 0) return;
     EMIT_BEGIN(OP_UNIFORM4F, 20)
     w_i32(&_c, location);
     w_f32(&_c, x); w_f32(&_c, y); w_f32(&_c, z); w_f32(&_c, w);
     EMIT_END()
 }
+
+static void emit_uniform_fv(uint16_t op, GLint location, GLsizei count,
+                            const GLfloat *value, uint32_t components) {
+    if (location < 0) return;
+    if (count <= 0 || !value) return;
+    uint32_t n = (uint32_t)count * components;
+    EMIT_BEGIN(op, 8u + n * 4u)
+    w_i32(&_c, location);
+    w_u32(&_c, (uint32_t)count);
+    for (uint32_t i = 0; i < n; i++) w_f32(&_c, value[i]);
+    EMIT_END()
+}
+
+static void emit_uniform_iv(uint16_t op, GLint location, GLsizei count,
+                            const GLint *value, uint32_t components) {
+    if (location < 0) return;
+    if (count <= 0 || !value) return;
+    uint32_t n = (uint32_t)count * components;
+    EMIT_BEGIN(op, 8u + n * 4u)
+    w_i32(&_c, location);
+    w_u32(&_c, (uint32_t)count);
+    for (uint32_t i = 0; i < n; i++) w_i32(&_c, value[i]);
+    EMIT_END()
+}
+
+static void emit_uniform_matrix(uint16_t op, GLint location, GLsizei count,
+                                GLboolean transpose, const GLfloat *value,
+                                uint32_t components) {
+    if (location < 0) return;
+    if (count <= 0 || !value) return;
+    uint32_t n = (uint32_t)count * components;
+    EMIT_BEGIN(op, 12u + n * 4u)
+    w_i32(&_c, location);
+    w_u32(&_c, (uint32_t)count);
+    w_u32(&_c, transpose ? 1u : 0u);
+    for (uint32_t i = 0; i < n; i++) w_f32(&_c, value[i]);
+    EMIT_END()
+}
+
+void glUniform1fv(GLint location, GLsizei count, const GLfloat *value) { emit_uniform_fv(OP_UNIFORM1FV, location, count, value, 1); }
+void glUniform2fv(GLint location, GLsizei count, const GLfloat *value) { emit_uniform_fv(OP_UNIFORM2FV, location, count, value, 2); }
+void glUniform3fv(GLint location, GLsizei count, const GLfloat *value) { emit_uniform_fv(OP_UNIFORM3FV, location, count, value, 3); }
+void glUniform4fv(GLint location, GLsizei count, const GLfloat *value) { emit_uniform_fv(OP_UNIFORM4FV, location, count, value, 4); }
+void glUniform1iv(GLint location, GLsizei count, const GLint *value) { emit_uniform_iv(OP_UNIFORM1IV, location, count, value, 1); }
+void glUniform2iv(GLint location, GLsizei count, const GLint *value) { emit_uniform_iv(OP_UNIFORM2IV, location, count, value, 2); }
+void glUniform3iv(GLint location, GLsizei count, const GLint *value) { emit_uniform_iv(OP_UNIFORM3IV, location, count, value, 3); }
+void glUniform4iv(GLint location, GLsizei count, const GLint *value) { emit_uniform_iv(OP_UNIFORM4IV, location, count, value, 4); }
+void glUniform2i(GLint location, GLint x, GLint y) { GLint v[2] = {x, y}; glUniform2iv(location, 1, v); }
+void glUniform3i(GLint location, GLint x, GLint y, GLint z) { GLint v[3] = {x, y, z}; glUniform3iv(location, 1, v); }
+void glUniform4i(GLint location, GLint x, GLint y, GLint z, GLint w) { GLint v[4] = {x, y, z, w}; glUniform4iv(location, 1, v); }
+void glUniformMatrix2fv(GLint location, GLsizei count, GLboolean transpose, const GLfloat *value) { emit_uniform_matrix(OP_UNIFORM_MATRIX2FV, location, count, transpose, value, 4); }
+void glUniformMatrix3fv(GLint location, GLsizei count, GLboolean transpose, const GLfloat *value) { emit_uniform_matrix(OP_UNIFORM_MATRIX3FV, location, count, transpose, value, 9); }
+void glUniformMatrix4fv(GLint location, GLsizei count, GLboolean transpose, const GLfloat *value) { emit_uniform_matrix(OP_UNIFORM_MATRIX4FV, location, count, transpose, value, 16); }
 
 /* ----- framebuffers ------------------------------------------------- */
 
@@ -536,10 +1323,108 @@ void glGenFramebuffers(GLsizei n, GLuint *out) {
     EMIT_END()
 }
 
+void glDeleteFramebuffers(GLsizei n, const GLuint *names) {
+    if (n <= 0 || !names) return;
+    EMIT_BEGIN(OP_DELETE_FRAMEBUFFERS, 4u + (uint32_t)n * 4u)
+    w_u32(&_c, (uint32_t)n);
+    for (GLsizei i = 0; i < n; i++) w_u32(&_c, names[i]);
+    EMIT_END()
+}
+
 void glBindFramebuffer(GLenum target, GLuint fb) {
     EMIT_BEGIN(OP_BIND_FRAMEBUFFER, 8)
     w_u32(&_c, (uint32_t)target);
     w_u32(&_c, fb);
+    EMIT_END()
+}
+
+void glGenRenderbuffers(GLsizei n, GLuint *out) {
+    if (n <= 0 || !out) return;
+    EMIT_BEGIN(OP_GEN_RENDERBUFFERS, 4u + (uint32_t)n * 4u)
+    w_u32(&_c, (uint32_t)n);
+    for (GLsizei i = 0; i < n; i++) {
+        out[i] = g_next_renderbuffer++;
+        w_u32(&_c, out[i]);
+    }
+    EMIT_END()
+}
+
+void glDeleteRenderbuffers(GLsizei n, const GLuint *names) {
+    if (n <= 0 || !names) return;
+    EMIT_BEGIN(OP_DELETE_RENDERBUFFERS, 4u + (uint32_t)n * 4u)
+    w_u32(&_c, (uint32_t)n);
+    for (GLsizei i = 0; i < n; i++) w_u32(&_c, names[i]);
+    EMIT_END()
+}
+
+void glBindRenderbuffer(GLenum target, GLuint rb) {
+    EMIT_BEGIN(OP_BIND_RENDERBUFFER, 8)
+    w_u32(&_c, (uint32_t)target);
+    w_u32(&_c, rb);
+    EMIT_END()
+}
+
+void glRenderbufferStorage(GLenum target, GLenum internalformat, GLsizei width, GLsizei height) {
+    EMIT_BEGIN(OP_RENDERBUFFER_STORAGE, 16)
+    w_u32(&_c, (uint32_t)target);
+    w_u32(&_c, (uint32_t)internalformat);
+    w_i32(&_c, width);
+    w_i32(&_c, height);
+    EMIT_END()
+}
+
+void glFramebufferRenderbuffer(GLenum target, GLenum attachment,
+                               GLenum renderbuffertarget, GLuint renderbuffer) {
+    EMIT_BEGIN(OP_FRAMEBUFFER_RENDERBUFFER, 16)
+    w_u32(&_c, (uint32_t)target);
+    w_u32(&_c, (uint32_t)attachment);
+    w_u32(&_c, (uint32_t)renderbuffertarget);
+    w_u32(&_c, renderbuffer);
+    EMIT_END()
+}
+
+void glDrawBuffer(GLenum buf) {
+    EMIT_BEGIN(OP_DRAW_BUFFER, 4)
+    w_u32(&_c, (uint32_t)buf);
+    EMIT_END()
+}
+
+void glDrawBuffers(GLsizei n, const GLenum *bufs) {
+    if (n <= 0 || !bufs) return;
+    EMIT_BEGIN(OP_DRAW_BUFFERS, 4u + (uint32_t)n * 4u)
+    w_u32(&_c, (uint32_t)n);
+    for (GLsizei i = 0; i < n; i++) w_u32(&_c, (uint32_t)bufs[i]);
+    EMIT_END()
+}
+
+void glReadBuffer(GLenum src) {
+    EMIT_BEGIN(OP_READ_BUFFER, 4)
+    w_u32(&_c, (uint32_t)src);
+    EMIT_END()
+}
+
+void glGenVertexArrays(GLsizei n, GLuint *out) {
+    if (n <= 0 || !out) return;
+    EMIT_BEGIN(OP_GEN_VERTEX_ARRAYS, 4u + (uint32_t)n * 4u)
+    w_u32(&_c, (uint32_t)n);
+    for (GLsizei i = 0; i < n; i++) {
+        out[i] = g_next_vertex_array++;
+        w_u32(&_c, out[i]);
+    }
+    EMIT_END()
+}
+
+void glDeleteVertexArrays(GLsizei n, const GLuint *names) {
+    if (n <= 0 || !names) return;
+    EMIT_BEGIN(OP_DELETE_VERTEX_ARRAYS, 4u + (uint32_t)n * 4u)
+    w_u32(&_c, (uint32_t)n);
+    for (GLsizei i = 0; i < n; i++) w_u32(&_c, names[i]);
+    EMIT_END()
+}
+
+void glBindVertexArray(GLuint array) {
+    EMIT_BEGIN(OP_BIND_VERTEX_ARRAY, 4)
+    w_u32(&_c, array);
     EMIT_END()
 }
 
@@ -576,6 +1461,7 @@ GLint glGetUniformLocation(GLuint program, const GLchar *name) {
     memcpy(in + 8, name, nlen);
     int32_t loc = -1;
     if (_wpk_gl_query_into(QOP_GET_UNIFORM_LOC, in, (uint32_t)(8 + nlen), &loc, 4) != 0) return -1;
+    link_uniform_location(program, name, loc);
     return loc;
 }
 
@@ -662,3 +1548,124 @@ void glGetProgramInfoLog(GLuint program, GLsizei bufSize, GLsizei *length, GLcha
     infoLog[copy] = '\0';
     if (length) *length = copy;
 }
+
+void glGetActiveUniform(GLuint program, GLuint index, GLsizei bufSize,
+                        GLsizei *length, GLint *size, GLenum *type, GLchar *name) {
+    if (length) *length = 0;
+    if (size) *size = 0;
+    if (type) *type = 0;
+    if (name && bufSize > 0) name[0] = '\0';
+    if (!name || bufSize <= 0) return;
+
+    uint8_t in[12];
+    uint32_t p = program, i = index, cap = (uint32_t)(bufSize - 1);
+    memcpy(in, &p, 4);
+    memcpy(in + 4, &i, 4);
+    memcpy(in + 8, &cap, 4);
+
+    uint8_t out[12 + 256];
+    if (_wpk_gl_query_into(QOP_GET_ACTIVE_UNIFORM, in, sizeof in, out, sizeof out) != 0) return;
+
+    uint32_t name_len = 0;
+    int32_t uniform_size = 0;
+    uint32_t uniform_type = 0;
+    memcpy(&name_len, out, 4);
+    memcpy(&uniform_size, out + 4, 4);
+    memcpy(&uniform_type, out + 8, 4);
+    if (name_len > sizeof out - 12) name_len = sizeof out - 12;
+    if (name_len > (uint32_t)(bufSize - 1)) name_len = (uint32_t)(bufSize - 1);
+    memcpy(name, out + 12, name_len);
+    name[name_len] = '\0';
+    remember_uniform_meta(program, name, (GLenum)uniform_type);
+    if (length) *length = (GLsizei)name_len;
+    if (size) *size = uniform_size;
+    if (type) *type = (GLenum)uniform_type;
+}
+
+void glGetUniformfv(GLuint program, GLint location, GLfloat *params) {
+    if (!params) return;
+    uint8_t in[8];
+    uint32_t p = program;
+    int32_t loc = location;
+    memcpy(in, &p, 4);
+    memcpy(in + 4, &loc, 4);
+    uint32_t values = uniform_values_for_location(program, location);
+    memset(params, 0, values * sizeof(GLfloat));
+    (void)_wpk_gl_query_into(QOP_GET_UNIFORMFV, in, sizeof in, params, values * sizeof(GLfloat));
+}
+
+void glGetUniformiv(GLuint program, GLint location, GLint *params) {
+    if (!params) return;
+    uint8_t in[8];
+    uint32_t p = program;
+    int32_t loc = location;
+    memcpy(in, &p, 4);
+    memcpy(in + 4, &loc, 4);
+    uint32_t values = uniform_values_for_location(program, location);
+    memset(params, 0, values * sizeof(GLint));
+    (void)_wpk_gl_query_into(QOP_GET_UNIFORMIV, in, sizeof in, params, values * sizeof(GLint));
+}
+
+void glGetTexParameterfv(GLenum target, GLenum pname, GLfloat *params) {
+    (void)target; (void)pname;
+    if (params) *params = 0.0f;
+}
+
+void glGetTexParameteriv(GLenum target, GLenum pname, GLint *params) {
+    (void)target; (void)pname;
+    if (params) *params = 0;
+}
+
+void glGetBufferParameteriv(GLenum target, GLenum pname, GLint *params) {
+    (void)target; (void)pname;
+    if (params) *params = 0;
+}
+
+void glGetFramebufferAttachmentParameteriv(GLenum target, GLenum attachment,
+                                           GLenum pname, GLint *params) {
+    (void)target; (void)attachment; (void)pname;
+    if (params) *params = 0;
+}
+
+void glGetRenderbufferParameteriv(GLenum target, GLenum pname, GLint *params) {
+    (void)target; (void)pname;
+    if (params) *params = 0;
+}
+
+void glGetVertexAttribfv(GLuint index, GLenum pname, GLfloat *params) {
+    (void)index; (void)pname;
+    if (params) *params = 0.0f;
+}
+
+void glGetVertexAttribiv(GLuint index, GLenum pname, GLint *params) {
+    (void)index; (void)pname;
+    if (params) *params = 0;
+}
+
+void glGetVertexAttribPointerv(GLuint index, GLenum pname, void **pointer) {
+    (void)index; (void)pname;
+    if (pointer) *pointer = NULL;
+}
+
+void glGetShaderSource(GLuint shader, GLsizei bufSize, GLsizei *length, GLchar *source) {
+    (void)shader;
+    if (length) *length = 0;
+    if (source && bufSize > 0) source[0] = '\0';
+}
+
+void glValidateProgram(GLuint program) { (void)program; }
+void glShaderBinary(GLsizei count, const GLuint *shaders, GLenum binaryFormat,
+                    const void *binary, GLsizei length) {
+    (void)count; (void)shaders; (void)binaryFormat; (void)binary; (void)length;
+}
+
+GLboolean glIsBuffer(GLuint buffer) { return buffer != 0 ? GL_TRUE : GL_FALSE; }
+GLboolean glIsEnabled(GLenum cap) { (void)cap; return GL_FALSE; }
+GLboolean glIsFramebuffer(GLuint framebuffer) { return framebuffer != 0 ? GL_TRUE : GL_FALSE; }
+GLboolean glIsProgram(GLuint program) { return program != 0 ? GL_TRUE : GL_FALSE; }
+GLboolean glIsRenderbuffer(GLuint renderbuffer) { return renderbuffer != 0 ? GL_TRUE : GL_FALSE; }
+GLboolean glIsShader(GLuint shader) { return shader != 0 ? GL_TRUE : GL_FALSE; }
+GLboolean glIsTexture(GLuint texture) { return texture != 0 ? GL_TRUE : GL_FALSE; }
+
+void glFinish(void) { _wpk_gl_flush(); }
+void glFlush(void) { _wpk_gl_flush(); }

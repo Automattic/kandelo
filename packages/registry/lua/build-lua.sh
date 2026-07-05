@@ -1,14 +1,13 @@
 #!/usr/bin/env bash
 #
-# Build Lua 5.1 as an embeddable static library for wasm32posix.
+# Build Lua as an embeddable static library for wasm32posix.
 
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
-SRC_DIR="$SCRIPT_DIR/lua-src"
-
-LUA_VERSION="${WASM_POSIX_DEP_VERSION:-${LUA_VERSION:-5.1.5}}"
+LUA_VERSION="${WASM_POSIX_DEP_VERSION:-${LUA_VERSION:-5.2.4}}"
+SRC_DIR="$SCRIPT_DIR/lua-$LUA_VERSION-src"
 INSTALL_DIR="${WASM_POSIX_DEP_OUT_DIR:-$SCRIPT_DIR/lua-install}"
 SOURCE_URL="${WASM_POSIX_DEP_SOURCE_URL:-https://www.lua.org/ftp/lua-$LUA_VERSION.tar.gz}"
 SOURCE_SHA256="${WASM_POSIX_DEP_SOURCE_SHA256:-}"
@@ -36,16 +35,17 @@ rm -rf "$BUILD_DIR" "$INSTALL_DIR"
 mkdir -p "$BUILD_DIR" "$INSTALL_DIR/lib" "$INSTALL_DIR/include" "$INSTALL_DIR/lib/pkgconfig"
 
 echo "==> Compiling Lua $LUA_VERSION..."
-LUA_SOURCES=(
-    lapi.c lauxlib.c lbaselib.c lcode.c ldblib.c ldebug.c ldo.c ldump.c
-    lfunc.c lgc.c linit.c liolib.c llex.c lmathlib.c lmem.c loadlib.c
-    lobject.c lopcodes.c loslib.c lparser.c lstate.c lstring.c lstrlib.c
-    ltable.c ltablib.c ltm.c lundump.c lvm.c lzio.c
+mapfile -t LUA_SOURCES < <(
+    cd "$SRC_DIR/src"
+    find . -maxdepth 1 -name '*.c' -print |
+        sed 's#^\./##' |
+        grep -Ev '^(lua|luac|print)\.c$' |
+        sort
 )
 OBJS=()
 for src in "${LUA_SOURCES[@]}"; do
     obj="$BUILD_DIR/${src%.c}.o"
-    wasm32posix-cc -O2 -I"$SRC_DIR/src" -c "$SRC_DIR/src/$src" -o "$obj"
+    wasm32posix-cc -O2 -DLUA_COMPAT_ALL -I"$SRC_DIR/src" -c "$SRC_DIR/src/$src" -o "$obj"
     OBJS+=("$obj")
 done
 
@@ -62,7 +62,8 @@ if [ -f "$SRC_DIR/src/lua.hpp" ]; then
     cp "$SRC_DIR/src/lua.hpp" "$INSTALL_DIR/include/"
 fi
 
-cat > "$INSTALL_DIR/lib/pkgconfig/lua5.1.pc" <<PCEOF
+PC_FILE="$INSTALL_DIR/lib/pkgconfig/lua${LUA_VERSION%.*}.pc"
+cat > "$PC_FILE" <<PCEOF
 prefix=$INSTALL_DIR
 libdir=\${prefix}/lib
 includedir=\${prefix}/include

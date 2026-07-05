@@ -6,8 +6,11 @@ import { GlContextRegistry } from "../src/webgl/registry.js";
 import {
   defaultShadow,
   GL_BLEND,
+  GL_BACK,
   GL_CULL_FACE,
   GL_DEPTH_TEST,
+  GL_FRONT,
+  GL_FRONT_AND_BACK,
   GL_PACK_ALIGNMENT,
   GL_POLYGON_OFFSET_FILL,
   GL_READ_FRAMEBUFFER,
@@ -23,9 +26,20 @@ class StubGl {
   scissor() {}
   enable() {}
   disable() {}
+  colorMask() {}
+  depthMask() {}
   blendFunc() {}
   blendFuncSeparate() {}
+  blendEquation() {}
+  blendEquationSeparate() {}
+  blendColor() {}
   depthFunc() {}
+  stencilFunc() {}
+  stencilFuncSeparate() {}
+  stencilMask() {}
+  stencilMaskSeparate() {}
+  stencilOp() {}
+  stencilOpSeparate() {}
   cullFace() {}
   frontFace() {}
   pixelStorei() {}
@@ -68,9 +82,24 @@ describe("GlShadowState — defaults", () => {
     expect(s.viewport).toEqual([0, 0, 0, 0]);
     expect(s.scissor).toEqual({ enabled: false, rect: [0, 0, 0, 0] });
     expect(s.clearColor).toEqual([0, 0, 0, 0]);
+    expect(s.colorMask).toEqual([true, true, true, true]);
     expect(s.depthTestEnabled).toBe(false);
     expect(s.depthFunc).toBe(0x0201);
+    expect(s.depthMask).toBe(true);
     expect(s.blendEnabled).toBe(false);
+    expect(s.blendFunc).toEqual({ srcRGB: 1, dstRGB: 0, srcA: 1, dstA: 0 });
+    expect(s.blendEquation).toEqual({ modeRGB: 0x8006, modeA: 0x8006 });
+    expect(s.blendColor).toEqual([0, 0, 0, 0]);
+    expect(s.stencil.front).toEqual({
+      func: 0x0207,
+      ref: 0,
+      valueMask: 0xFFFFFFFF,
+      writeMask: 0xFFFFFFFF,
+      fail: 0x1E00,
+      zfail: 0x1E00,
+      zpass: 0x1E00,
+    });
+    expect(s.stencil.back).toEqual(s.stencil.front);
     expect(s.cullFaceEnabled).toBe(false);
     expect(s.cullFace).toBe(0x0405);
     expect(s.frontFace).toBe(0x0901);
@@ -213,6 +242,31 @@ describe("cmdbuf decoder — shadow writes", () => {
     });
   });
 
+  it("blend equation and blend color ops write their shadow fields", () => {
+    const b = setupBinding();
+    let t = new Tlv(b.cmdbufView!.buffer);
+    let h = t.op(O.OP_BLEND_EQUATION, 4);
+    t.view.setUint32(h.p, 0x800A, true);
+    decodeAndDispatch(b, 0, t.p);
+    expect(b.shadow.blendEquation).toEqual({ modeRGB: 0x800A, modeA: 0x800A });
+
+    t = new Tlv(b.cmdbufView!.buffer);
+    h = t.op(O.OP_BLEND_EQUATION_SEPARATE, 8);
+    t.view.setUint32(h.p, 0x800B, true);
+    t.view.setUint32(h.p + 4, 0x8006, true);
+    decodeAndDispatch(b, 0, t.p);
+    expect(b.shadow.blendEquation).toEqual({ modeRGB: 0x800B, modeA: 0x8006 });
+
+    t = new Tlv(b.cmdbufView!.buffer);
+    h = t.op(O.OP_BLEND_COLOR, 16);
+    t.view.setFloat32(h.p, 0.125, true);
+    t.view.setFloat32(h.p + 4, 0.25, true);
+    t.view.setFloat32(h.p + 8, 0.5, true);
+    t.view.setFloat32(h.p + 12, 1.0, true);
+    decodeAndDispatch(b, 0, t.p);
+    expect(b.shadow.blendColor).toEqual([0.125, 0.25, 0.5, 1.0]);
+  });
+
   it("OP_DEPTH_FUNC / OP_CULL_FACE / OP_FRONT_FACE write their shadow fields", () => {
     const b = setupBinding();
     let t = new Tlv(b.cmdbufView!.buffer);
@@ -232,6 +286,93 @@ describe("cmdbuf decoder — shadow writes", () => {
     t.view.setUint32(h.p, 0x0900, true);
     decodeAndDispatch(b, 0, t.p);
     expect(b.shadow.frontFace).toBe(0x0900);
+  });
+
+  it("OP_COLOR_MASK and OP_DEPTH_MASK write their shadow fields", () => {
+    const b = setupBinding();
+    let t = new Tlv(b.cmdbufView!.buffer);
+    let h = t.op(O.OP_COLOR_MASK, 16);
+    t.view.setUint32(h.p, 0, true);
+    t.view.setUint32(h.p + 4, 1, true);
+    t.view.setUint32(h.p + 8, 0, true);
+    t.view.setUint32(h.p + 12, 1, true);
+    decodeAndDispatch(b, 0, t.p);
+    expect(b.shadow.colorMask).toEqual([false, true, false, true]);
+
+    t = new Tlv(b.cmdbufView!.buffer);
+    h = t.op(O.OP_DEPTH_MASK, 4);
+    t.view.setUint32(h.p, 0, true);
+    decodeAndDispatch(b, 0, t.p);
+    expect(b.shadow.depthMask).toBe(false);
+  });
+
+  it("stencil ops write shared and per-face shadow fields", () => {
+    const b = setupBinding();
+
+    let t = new Tlv(b.cmdbufView!.buffer);
+    let h = t.op(O.OP_STENCIL_FUNC, 12);
+    t.view.setUint32(h.p, 0x0202, true);
+    t.view.setInt32(h.p + 4, 3, true);
+    t.view.setUint32(h.p + 8, 0x0F, true);
+    decodeAndDispatch(b, 0, t.p);
+    expect(b.shadow.stencil.front.func).toBe(0x0202);
+    expect(b.shadow.stencil.front.ref).toBe(3);
+    expect(b.shadow.stencil.front.valueMask).toBe(0x0F);
+    expect(b.shadow.stencil.back.func).toBe(0x0202);
+    expect(b.shadow.stencil.back.ref).toBe(3);
+    expect(b.shadow.stencil.back.valueMask).toBe(0x0F);
+
+    t = new Tlv(b.cmdbufView!.buffer);
+    h = t.op(O.OP_STENCIL_FUNC_SEPARATE, 16);
+    t.view.setUint32(h.p, GL_BACK, true);
+    t.view.setUint32(h.p + 4, 0x0203, true);
+    t.view.setInt32(h.p + 8, 4, true);
+    t.view.setUint32(h.p + 12, 0xF0, true);
+    decodeAndDispatch(b, 0, t.p);
+    expect(b.shadow.stencil.front.func).toBe(0x0202);
+    expect(b.shadow.stencil.back.func).toBe(0x0203);
+    expect(b.shadow.stencil.back.ref).toBe(4);
+    expect(b.shadow.stencil.back.valueMask).toBe(0xF0);
+
+    t = new Tlv(b.cmdbufView!.buffer);
+    h = t.op(O.OP_STENCIL_MASK, 4);
+    t.view.setUint32(h.p, 0xAA, true);
+    decodeAndDispatch(b, 0, t.p);
+    expect(b.shadow.stencil.front.writeMask).toBe(0xAA);
+    expect(b.shadow.stencil.back.writeMask).toBe(0xAA);
+
+    t = new Tlv(b.cmdbufView!.buffer);
+    h = t.op(O.OP_STENCIL_MASK_SEPARATE, 8);
+    t.view.setUint32(h.p, GL_FRONT, true);
+    t.view.setUint32(h.p + 4, 0x55, true);
+    decodeAndDispatch(b, 0, t.p);
+    expect(b.shadow.stencil.front.writeMask).toBe(0x55);
+    expect(b.shadow.stencil.back.writeMask).toBe(0xAA);
+
+    t = new Tlv(b.cmdbufView!.buffer);
+    h = t.op(O.OP_STENCIL_OP, 12);
+    t.view.setUint32(h.p, 0x1E01, true);
+    t.view.setUint32(h.p + 4, 0x1E02, true);
+    t.view.setUint32(h.p + 8, 0x1E03, true);
+    decodeAndDispatch(b, 0, t.p);
+    expect(b.shadow.stencil.front.fail).toBe(0x1E01);
+    expect(b.shadow.stencil.front.zfail).toBe(0x1E02);
+    expect(b.shadow.stencil.front.zpass).toBe(0x1E03);
+    expect(b.shadow.stencil.back.fail).toBe(0x1E01);
+    expect(b.shadow.stencil.back.zfail).toBe(0x1E02);
+    expect(b.shadow.stencil.back.zpass).toBe(0x1E03);
+
+    t = new Tlv(b.cmdbufView!.buffer);
+    h = t.op(O.OP_STENCIL_OP_SEPARATE, 16);
+    t.view.setUint32(h.p, GL_FRONT_AND_BACK, true);
+    t.view.setUint32(h.p + 4, 0x1E00, true);
+    t.view.setUint32(h.p + 8, 0x1E01, true);
+    t.view.setUint32(h.p + 12, 0x1E02, true);
+    decodeAndDispatch(b, 0, t.p);
+    expect(b.shadow.stencil.front.fail).toBe(0x1E00);
+    expect(b.shadow.stencil.back.fail).toBe(0x1E00);
+    expect(b.shadow.stencil.front.zpass).toBe(0x1E02);
+    expect(b.shadow.stencil.back.zpass).toBe(0x1E02);
   });
 
   it("OP_PIXEL_STOREI writes unpack/pack alignment only on matching pnames", () => {

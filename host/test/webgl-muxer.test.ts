@@ -3,8 +3,10 @@ import { GlMuxer } from "../src/webgl/muxer.js";
 import {
   defaultShadow,
   GL_BLEND,
+  GL_BACK,
   GL_CULL_FACE,
   GL_DEPTH_TEST,
+  GL_FRONT,
   GL_FRAMEBUFFER,
   GL_PACK_ALIGNMENT,
   GL_POLYGON_OFFSET_FILL,
@@ -24,11 +26,21 @@ class RecordingGl {
   enable(c: number) { this.log.push(["enable", [c]]); }
   disable(c: number) { this.log.push(["disable", [c]]); }
   clearColor(...a: number[]) { this.log.push(["clearColor", a]); }
+  colorMask(...a: boolean[]) { this.log.push(["colorMask", a]); }
+  depthMask(v: boolean) { this.log.push(["depthMask", [v]]); }
   depthFunc(f: number) { this.log.push(["depthFunc", [f]]); }
+  stencilFuncSeparate(...a: number[]) { this.log.push(["stencilFuncSeparate", a]); }
+  stencilMaskSeparate(...a: number[]) { this.log.push(["stencilMaskSeparate", a]); }
+  stencilOpSeparate(...a: number[]) { this.log.push(["stencilOpSeparate", a]); }
+  blendEquationSeparate(...a: number[]) { this.log.push(["blendEquationSeparate", a]); }
+  blendColor(...a: number[]) { this.log.push(["blendColor", a]); }
   blendFuncSeparate(...a: number[]) { this.log.push(["blendFuncSeparate", a]); }
   cullFace(m: number) { this.log.push(["cullFace", [m]]); }
   frontFace(m: number) { this.log.push(["frontFace", [m]]); }
   useProgram(p: unknown) { this.log.push(["useProgram", [p]]); }
+  vertexAttrib4f(i: number, x: number, y: number, z: number, w: number) {
+    this.log.push(["vertexAttrib4f", [i, x, y, z, w]]);
+  }
   activeTexture(u: number) { this.log.push(["activeTexture", [u]]); }
   bindTexture(t: number, tex: unknown) { this.log.push(["bindTexture", [t, tex]]); }
   pixelStorei(p: number, v: number) { this.log.push(["pixelStorei", [p, v]]); }
@@ -116,7 +128,60 @@ describe("GlMuxer.switchTo", () => {
     expect(gl.callsOf("blendFuncSeparate")).toEqual([[0x0302, 0x0303, 1, 0]]);
   });
 
-  it("iterates only non-null texture units and ends with shadow.activeTexture", () => {
+  it("replays blend equation and constant blend color", () => {
+    const { gl, mux } = mk();
+    const t = newTarget();
+    t.shadow.blendEquation = { modeRGB: 0x800A, modeA: 0x800B };
+    t.shadow.blendColor = [0.1, 0.2, 0.3, 0.4];
+    mux.switchTo(t);
+    expect(gl.callsOf("blendEquationSeparate")).toEqual([[0x800A, 0x800B]]);
+    expect(gl.callsOf("blendColor").map((c) => (c as number[]).map((x) => +x.toFixed(3))))
+      .toEqual([[0.1, 0.2, 0.3, 0.4]]);
+  });
+
+  it("replays color/depth write masks and stencil state", () => {
+    const { gl, mux } = mk();
+    const t = newTarget();
+    t.shadow.colorMask = [false, true, false, true];
+    t.shadow.depthMask = false;
+    t.shadow.stencil.front = {
+      func: 0x0202,
+      ref: 3,
+      valueMask: 0x0F,
+      writeMask: 0xAA,
+      fail: 0x1E01,
+      zfail: 0x1E02,
+      zpass: 0x1E03,
+    };
+    t.shadow.stencil.back = {
+      func: 0x0203,
+      ref: 4,
+      valueMask: 0xF0,
+      writeMask: 0x55,
+      fail: 0x1E00,
+      zfail: 0x1E01,
+      zpass: 0x1E02,
+    };
+
+    mux.switchTo(t);
+
+    expect(gl.callsOf("colorMask")).toEqual([[false, true, false, true]]);
+    expect(gl.callsOf("depthMask")).toEqual([[false]]);
+    expect(gl.callsOf("stencilFuncSeparate")).toEqual([
+      [GL_FRONT, 0x0202, 3, 0x0F],
+      [GL_BACK, 0x0203, 4, 0xF0],
+    ]);
+    expect(gl.callsOf("stencilMaskSeparate")).toEqual([
+      [GL_FRONT, 0xAA],
+      [GL_BACK, 0x55],
+    ]);
+    expect(gl.callsOf("stencilOpSeparate")).toEqual([
+      [GL_FRONT, 0x1E01, 0x1E02, 0x1E03],
+      [GL_BACK, 0x1E00, 0x1E01, 0x1E02],
+    ]);
+  });
+
+  it("replays all texture units and ends with shadow.activeTexture", () => {
     const { gl, mux } = mk();
     const t = newTarget();
     const texA = { id: "A" } as unknown as WebGLTexture;
@@ -127,11 +192,25 @@ describe("GlMuxer.switchTo", () => {
     mux.switchTo(t);
 
     const activeCalls = gl.callsOf("activeTexture").map((c) => (c as number[])[0]);
-    expect(activeCalls).toEqual([GL_TEXTURE0 + 0, GL_TEXTURE0 + 2, GL_TEXTURE0 + 5]);
-    expect(gl.callsOf("bindTexture")).toEqual([
-      [GL_TEXTURE_2D, texA],
-      [GL_TEXTURE_2D, texC],
+    expect(activeCalls).toEqual([
+      ...Array.from({ length: t.shadow.textureUnits.length }, (_, i) => GL_TEXTURE0 + i),
+      GL_TEXTURE0 + 5,
     ]);
+    const textureCalls = gl.callsOf("bindTexture");
+    expect(textureCalls).toHaveLength(t.shadow.textureUnits.length);
+    expect(textureCalls[0]).toEqual([GL_TEXTURE_2D, texA]);
+    expect(textureCalls[1]).toEqual([GL_TEXTURE_2D, null]);
+    expect(textureCalls[2]).toEqual([GL_TEXTURE_2D, texC]);
+  });
+
+  it("replays disabled vertex attribute current values", () => {
+    const { gl, mux } = mk();
+    const t = newTarget();
+    t.shadow.vertexAttribValues.set(3, [0.498, 0.498, 0.498, 1]);
+
+    mux.switchTo(t);
+
+    expect(gl.callsOf("vertexAttrib4f")).toEqual([[3, 0.498, 0.498, 0.498, 1]]);
   });
 
   it("pixelStorei replays unpack and pack alignment", () => {

@@ -1276,12 +1276,17 @@ async function bootProfile(
 
     maybeUpdateWebReadiness();
 
+    const directKmsBoot = directKmsBootCommand(profile, presentation, effectiveBoot);
+
     if (profile.framebufferTest) {
       const fbtestWasmUrl = await optionalBinaryUrl([
         "../../../../../local-binaries/programs/wasm32/fbtest.wasm",
         "../../../../../binaries/programs/wasm32/fbtest.wasm",
       ], "fbtest.wasm");
       void spawnLazy(kernel, "/usr/local/bin/fbtest", fbtestWasmUrl, ["fbtest"], tick);
+    } else if (directKmsBoot) {
+      tick(`starting ${directKmsBoot.argv[0]} directly...`);
+      void spawnDirectBootCommand(kernel, directKmsBoot, tick);
     } else if (presentation?.autoCommand) {
       tick("starting configured command from bash...");
       void host.runShellCommand(presentation.autoCommand).catch((err) => {
@@ -1303,6 +1308,59 @@ async function bootProfile(
       await kernel.destroy().catch(() => {});
     }
     throw err;
+  }
+}
+
+type DirectBootCommand = {
+  argv: string[];
+  cwd?: string;
+  env: string[];
+  uid?: number;
+  gid?: number;
+};
+
+function directKmsBootCommand(
+  profile: LiveProfile,
+  presentation: DemoPresentation | undefined,
+  boot: BootDescriptor["boot"],
+): DirectBootCommand | null {
+  if (profile.init || !presentation?.autoCommand) return null;
+  if (!profile.descriptor.runtime.features.includes("kms")) return null;
+  if (boot.argv.length === 0) return null;
+
+  const program = boot.argv[0];
+  if (!program.startsWith("/")) return null;
+  if (program === "/bin/bash" || program === "/bin/sh") return null;
+
+  return {
+    argv: boot.argv.slice(),
+    cwd: boot.cwd,
+    env: envArray(boot.env),
+    uid: boot.uid,
+    gid: boot.gid,
+  };
+}
+
+async function spawnDirectBootCommand(
+  kernel: BrowserKernel,
+  boot: DirectBootCommand,
+  tick: (msg: string) => void,
+): Promise<void> {
+  try {
+    // Let React mount and transfer the KMS OffscreenCanvas after the host
+    // enters the running state, otherwise a fast EGL client can create its GL
+    // context before a scanout canvas exists.
+    await sleep(250);
+    const spawned = await kernel.spawnFromVfs(boot.argv[0], boot.argv, {
+      env: boot.env,
+      cwd: boot.cwd,
+      uid: boot.uid,
+      gid: boot.gid,
+    });
+    const code = await spawned.exit;
+    tick(`${boot.argv[0]} exited with code ${code}`);
+  } catch (err) {
+    tick(`direct boot command failed: ${err instanceof Error ? err.message : String(err)}`);
   }
 }
 

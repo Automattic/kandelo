@@ -29,6 +29,8 @@ export interface ModesetProps {
   onMaximize?: () => void;
   isMax?: boolean;
   onDockControlsChange?: (controls: React.ReactNode | null) => void;
+  autoFocus?: boolean;
+  focusToken?: number;
   /** CRTC to bind the canvas to. Defaults to 1 (the single CRTC the
    *  kernel currently advertises via MODE_GETRESOURCES). */
   crtcId?: number;
@@ -48,7 +50,7 @@ const ZERO_STATS: KmsStats = {
   lastFrameUs: 0,
 };
 
-export const Modeset: React.FC<ModesetProps> = ({ crtcId = 1, onDockControlsChange }) => {
+export const Modeset: React.FC<ModesetProps> = ({ autoFocus = false, focusToken = 0, crtcId = 1, onDockControlsChange }) => {
   const host = useKernelHost();
   const status = useStatus();
   const stageRef = React.useRef<HTMLDivElement>(null);
@@ -58,6 +60,11 @@ export const Modeset: React.FC<ModesetProps> = ({ crtcId = 1, onDockControlsChan
   const [stats, setStats] = React.useState<KmsStats>(ZERO_STATS);
   const [boundPid, setBoundPid] = React.useState<number | null>(null);
   const [focused, setFocused] = React.useState(false);
+  const statsRef = React.useRef<KmsStats>(ZERO_STATS);
+
+  React.useEffect(() => {
+    statsRef.current = stats;
+  }, [stats]);
 
   // Attach the canvas as soon as we have one and the kernel is up.
   React.useEffect(() => {
@@ -116,10 +123,17 @@ export const Modeset: React.FC<ModesetProps> = ({ crtcId = 1, onDockControlsChan
     const canvas = canvasRef.current;
     if (!canvas) return;
 
+    const activeFrameSize = () => {
+      const s = statsRef.current;
+      const width = s.width > 0 ? s.width : (canvas.width || MODESET_FB_W);
+      const height = s.height > 0 ? s.height : (canvas.height || MODESET_FB_H);
+      return { width, height };
+    };
+    const initialFrame = activeFrameSize();
     let prevCanvasX: number | null = null;
     let prevCanvasY: number | null = null;
-    let wasmCursorX = MODESET_FB_W / 2;
-    let wasmCursorY = MODESET_FB_H / 2;
+    let wasmCursorX = initialFrame.width / 2;
+    let wasmCursorY = initialFrame.height / 2;
     let buttons = 0;
     const buttonBit = (button: number) =>
       button === 0 ? 1 : button === 2 ? 2 : button === 1 ? 4 : 0;
@@ -130,25 +144,41 @@ export const Modeset: React.FC<ModesetProps> = ({ crtcId = 1, onDockControlsChan
     };
     const toCanvasCoords = (clientX: number, clientY: number) => {
       const rect = canvas.getBoundingClientRect();
+      const frame = activeFrameSize();
       return {
-        x: rect.width > 0 ? ((clientX - rect.left) * canvas.width) / rect.width : 0,
-        y: rect.height > 0 ? ((clientY - rect.top) * canvas.height) / rect.height : 0,
+        x: rect.width > 0 ? ((clientX - rect.left) * frame.width) / rect.width : 0,
+        y: rect.height > 0 ? ((clientY - rect.top) * frame.height) / rect.height : 0,
       };
     };
-    const sendDelta = (dx: number, dy: number) => {
-      if (dx === 0 && dy === 0) return;
-      injectChunkedMouseMotion(sink, dx, -dy, buttons);
-      wasmCursorX += dx;
-      wasmCursorY += dy;
+    const inputReady = () => handleRef.current?.getBoundPid() !== null;
+    const resetPointerTracking = () => {
+      prevCanvasX = null;
+      prevCanvasY = null;
+      const frame = activeFrameSize();
+      wasmCursorX = frame.width / 2;
+      wasmCursorY = frame.height / 2;
     };
-    const handlePointerAt = (canvasX: number, canvasY: number) => {
+    const sendDelta = (dx: number, dy: number): boolean => {
+      if (!inputReady()) {
+        resetPointerTracking();
+        return false;
+      }
+      if (dx === 0 && dy === 0) return true;
+      injectChunkedMouseMotion(sink, dx, -dy, buttons);
+      const frame = activeFrameSize();
+      wasmCursorX = Math.max(0, Math.min(frame.width - 1, wasmCursorX + dx));
+      wasmCursorY = Math.max(0, Math.min(frame.height - 1, wasmCursorY + dy));
+      return true;
+    };
+    const handlePointerAt = (canvasX: number, canvasY: number): boolean => {
       if (prevCanvasX === null || prevCanvasY === null) {
-        sendDelta(Math.round(canvasX - wasmCursorX), Math.round(canvasY - wasmCursorY));
+        if (!sendDelta(Math.round(canvasX - wasmCursorX), Math.round(canvasY - wasmCursorY))) return false;
       } else {
-        sendDelta(Math.round(canvasX - prevCanvasX), Math.round(canvasY - prevCanvasY));
+        if (!sendDelta(Math.round(canvasX - prevCanvasX), Math.round(canvasY - prevCanvasY))) return false;
       }
       prevCanvasX = canvasX;
       prevCanvasY = canvasY;
+      return true;
     };
     const onMouseEnter = (e: MouseEvent) => {
       const c = toCanvasCoords(e.clientX, e.clientY);
@@ -167,13 +197,18 @@ export const Modeset: React.FC<ModesetProps> = ({ crtcId = 1, onDockControlsChan
       if (bit === 0) return;
       canvas.focus();
       e.preventDefault();
+      const c = toCanvasCoords(e.clientX, e.clientY);
+      if (!handlePointerAt(c.x, c.y)) return;
       buttons |= bit;
       handleRef.current?.sendMouseEvent(0, 0, buttons);
     };
     const onMouseUp = (e: MouseEvent) => {
       const bit = buttonBit(e.button);
       if (bit === 0) return;
+      if ((buttons & bit) === 0) return;
       e.preventDefault();
+      const c = toCanvasCoords(e.clientX, e.clientY);
+      if (!handlePointerAt(c.x, c.y)) return;
       buttons &= ~bit;
       handleRef.current?.sendMouseEvent(0, 0, buttons);
     };
@@ -195,7 +230,7 @@ export const Modeset: React.FC<ModesetProps> = ({ crtcId = 1, onDockControlsChan
       canvas.removeEventListener("contextmenu", onContextMenu);
       doc.removeEventListener("mouseup", onMouseUp);
     };
-  }, [status]);
+  }, [boundPid, stats.height, stats.width, status]);
 
   React.useEffect(() => {
     if (status !== "running") return;
@@ -224,6 +259,14 @@ export const Modeset: React.FC<ModesetProps> = ({ crtcId = 1, onDockControlsChan
       canvas.removeEventListener("focus", onFocus);
     };
   }, [status]);
+
+  React.useEffect(() => {
+    if (!autoFocus || status !== "running" || error || boundPid === null) return;
+    const handle = window.requestAnimationFrame(() => {
+      canvasRef.current?.focus();
+    });
+    return () => window.cancelAnimationFrame(handle);
+  }, [autoFocus, boundPid, error, focusToken, status]);
 
   // Drain the stats SAB at 4 Hz. The numbers are advisory; rAF would
   // re-render every blit, which is overkill for a status panel.

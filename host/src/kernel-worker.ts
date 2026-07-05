@@ -2518,8 +2518,11 @@ export class CentralizedKernelWorker {
 
     // --- munmap: flush + clean up shared mapping tracking ---
     if (syscallNr === SYS_MUNMAP && retVal === 0) {
-      this.flushSharedMappings(channel, origArgs);
-      this.cleanupSharedMappings(channel.pid, origArgs[0] >>> 0, origArgs[1] >>> 0);
+      const addr = origArgs[0] >>> 0;
+      const len = origArgs[1] >>> 0;
+      const alignedLen = Math.ceil(len / WASM_PAGE_SIZE) * WASM_PAGE_SIZE;
+      this.flushSharedMappings(channel, [addr, alignedLen]);
+      this.cleanupSharedMappings(channel.pid, addr, alignedLen);
     }
 
     // --- Signal-death check ---

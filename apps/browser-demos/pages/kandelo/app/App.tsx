@@ -61,6 +61,7 @@ export const App: React.FC = () => {
   const [dockHeight, setDockHeight] = React.useState(0);
   const [dockLayout, setDockLayout] = React.useState<DockLayoutState>({ collapsed: false, fullWidth: false });
   const [demoGuideOpen, setDemoGuideOpen] = React.useState(demoGuide !== null);
+  const [demoFocusToken, setDemoFocusToken] = React.useState(0);
   const [demoDockControls, setDemoDockControls] = React.useState<React.ReactNode | null>(null);
   const [demoGuidePopup, setDemoGuidePopup] = React.useState<React.ReactNode | null>(null);
   const [internalsOpen, setInternalsOpen] = React.useState(false);
@@ -72,6 +73,7 @@ export const App: React.FC = () => {
   const [activeTerminalId, setActiveTerminalId] = React.useState("tty-1");
   const nextTerminalIndex = React.useRef(2);
   const autoOpenedDemoGuideKey = React.useRef<string | null>(null);
+  const demoGuideOpenRef = React.useRef(demoGuideOpen);
 
   const desc = host.getBootDescriptor();
   const resolvedThemeMode = theme.mode === "auto" ? systemThemeMode : theme.mode;
@@ -108,11 +110,25 @@ export const App: React.FC = () => {
   }, [demoGuide?.title, desc.id, dockPane]);
 
   React.useEffect(() => {
+    demoGuideOpenRef.current = demoGuideOpen;
+  }, [demoGuideOpen]);
+
+  React.useEffect(() => {
     setDemoDockControls(null);
     setDemoGuidePopup(null);
     setInternalsOpen(false);
     setThemeOpen(false);
   }, [desc.id]);
+
+  const requestDemoFocus = React.useCallback(() => {
+    setDemoFocusToken((token) => token + 1);
+  }, []);
+
+  const closeDemoGuide = React.useCallback(() => {
+    const wasOpen = demoGuideOpenRef.current;
+    setDemoGuideOpen(false);
+    if (wasOpen) requestDemoFocus();
+  }, [requestDemoFocus]);
 
   const closeDockPane = React.useCallback(() => {
     setDockPane(null);
@@ -134,11 +150,13 @@ export const App: React.FC = () => {
 
   const toggleDemoGuide = React.useCallback(() => {
     if (!demoGuide) return;
+    const wasOpen = demoGuideOpenRef.current;
     setDockPane(null);
     setInternalsOpen(false);
     setThemeOpen(false);
     setDemoGuideOpen((open) => !open);
-  }, [demoGuide]);
+    if (wasOpen) requestDemoFocus();
+  }, [demoGuide, requestDemoFocus]);
 
   const toggleInternals = React.useCallback(() => {
     if (!surface.canUseInternals) return;
@@ -210,7 +228,7 @@ export const App: React.FC = () => {
     "--kdock-height": `${dockHeight}px`,
   } as React.CSSProperties;
   const isTerminalView = !isEmpty && surface.activeView === "terminal";
-  const reserveDockSpace = isTerminalView || dockLayout.fullWidth;
+  const reserveDockSpace = !isEmpty && (surface.activeView === "demo" || isTerminalView || dockLayout.fullWidth);
   const appClassName = [
     "kapp",
     "kdocked-app",
@@ -240,7 +258,8 @@ export const App: React.FC = () => {
           <MachineView
             surface={surface}
             demoGuideOpen={demoGuideOpen}
-            onDemoGuideOpenChange={setDemoGuideOpen}
+            demoFocusToken={demoFocusToken}
+            onCloseDemoGuide={closeDemoGuide}
             onDemoDockControlsChange={setDemoDockControls}
             onDemoGuidePopupChange={setDemoGuidePopup}
             internalsTab={internalsTab}
@@ -300,7 +319,7 @@ export const App: React.FC = () => {
         onToggleGuide={toggleDemoGuide}
         onToggleInternals={toggleInternals}
         onToggleTheme={toggleTheme}
-        onCloseGuide={() => setDemoGuideOpen(false)}
+        onCloseGuide={closeDemoGuide}
         onCloseInternals={() => setInternalsOpen(false)}
         onCloseTheme={() => setThemeOpen(false)}
         onHeightChange={setDockHeight}
