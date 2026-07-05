@@ -5,6 +5,7 @@ export function useFittedCanvasStyle(
   canvasRef: React.RefObject<HTMLCanvasElement | null>,
   fallbackAspect: number,
   aspectOverride?: number,
+  maxScale?: number,
 ): React.CSSProperties {
   const [style, setStyle] = React.useState<React.CSSProperties>({});
 
@@ -18,7 +19,9 @@ export function useFittedCanvasStyle(
       if (rect.width <= 0 || rect.height <= 0) return;
       const aspect = validAspect(aspectOverride) ? aspectOverride : canvasAspect(canvas, fallbackAspect);
       const containerAspect = rect.width / rect.height;
-      const width = containerAspect > aspect ? rect.height * aspect : rect.width;
+      const fittedWidth = containerAspect > aspect ? rect.height * aspect : rect.width;
+      const cappedWidth = scaleCap(canvas, maxScale);
+      const width = cappedWidth === undefined ? fittedWidth : Math.min(fittedWidth, cappedWidth);
       const height = width / aspect;
       const nextWidth = Math.max(1, Math.floor(width));
       const nextHeight = Math.max(1, Math.floor(height));
@@ -48,7 +51,7 @@ export function useFittedCanvasStyle(
       mutationObserver.disconnect();
       window.removeEventListener("resize", update);
     };
-  }, [aspectOverride, canvasRef, containerRef, fallbackAspect]);
+  }, [aspectOverride, canvasRef, containerRef, fallbackAspect, maxScale]);
 
   return style;
 }
@@ -64,4 +67,11 @@ function canvasAspect(canvas: HTMLCanvasElement, fallbackAspect: number): number
 
 function validAspect(value: number | undefined): value is number {
   return value !== undefined && Number.isFinite(value) && value > 0;
+}
+
+function scaleCap(canvas: HTMLCanvasElement, maxScale: number | undefined): number | undefined {
+  if (!validAspect(maxScale)) return undefined;
+  const width = canvas.width;
+  if (width <= 0 || width === 300) return undefined;
+  return width * maxScale;
 }

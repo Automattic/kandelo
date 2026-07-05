@@ -830,6 +830,7 @@ describe("Kandelo demo config", () => {
             autoCommand: "/usr/local/bin/love /usr/local/share/love/BYTEPATH.love",
             kms: {
               connectorMode: { width: 480, height: 270 },
+              maxCssScale: 2,
             },
           },
         },
@@ -841,6 +842,7 @@ describe("Kandelo demo config", () => {
       width: 480,
       height: 270,
     });
+    expect(resolveDemoPresentation(config!, "bytepath")?.kms?.maxCssScale).toBe(2);
   });
 
   it("rejects invalid KMS connector mode metadata", () => {
@@ -863,6 +865,28 @@ describe("Kandelo demo config", () => {
     expect(config).not.toBeNull();
 
     expect(() => resolveDemoPresentation(config!, "bytepath")).toThrow("connectorMode.width");
+  });
+
+  it("rejects invalid KMS CSS scale metadata", () => {
+    const config = parseKandeloDemoConfig(JSON.stringify({
+      version: 1,
+      profiles: {
+        bytepath: {
+          presentation: {
+            bootPrimary: "syslog",
+            runningPrimary: ["kms", "terminal", "syslog"],
+            terminalAccess: "drawer",
+            internalsAccess: "drawer",
+            kms: {
+              maxCssScale: -1,
+            },
+          },
+        },
+      },
+    }));
+    expect(config).not.toBeNull();
+
+    expect(() => resolveDemoPresentation(config!, "bytepath")).toThrow("maxCssScale");
   });
 
   it("throws when profile metadata is incomplete", () => {

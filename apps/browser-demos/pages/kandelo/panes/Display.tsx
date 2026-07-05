@@ -43,6 +43,7 @@ export const Display = React.forwardRef<DisplayHandle, DisplayProps>(({
       <Modeset
         {...props}
         connectorMode={presentation?.kms?.connectorMode}
+        maxCssScale={presentation?.kms?.maxCssScale}
         onDockControlsChange={onDockControlsChange}
       />
     );

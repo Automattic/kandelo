@@ -392,6 +392,7 @@ export interface KmsConnectorMode {
 
 export interface KmsPresentationOptions {
   connectorMode?: KmsConnectorMode;
+  maxCssScale?: number;
 }
 
 export interface DemoPresentation {

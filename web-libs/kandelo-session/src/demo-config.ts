@@ -123,6 +123,7 @@ const ACTION_KINDS = new Set<DemoActionKind>([
   "web.wordpressLogin",
 ]);
 const MAX_KMS_CONNECTOR_MODE_DIMENSION = 16_384;
+const MAX_KMS_CSS_SCALE = 32;
 
 export function parseKandeloDemoConfig(text: string): KandeloDemoConfig | null {
   const value: unknown = JSON.parse(text);
@@ -222,6 +223,9 @@ function normalizeKmsPresentationOptions(value: unknown): { kms?: KmsPresentatio
       ),
     };
   }
+  if (value.maxCssScale !== undefined) {
+    kms.maxCssScale = kmsCssScale(value.maxCssScale, "presentation.kms.maxCssScale");
+  }
   return { kms };
 }
 
@@ -233,6 +237,18 @@ function kmsModeDimension(value: unknown, field: string): number {
     value > MAX_KMS_CONNECTOR_MODE_DIMENSION
   ) {
     throw new Error(`${field} must be an integer between 1 and ${MAX_KMS_CONNECTOR_MODE_DIMENSION}`);
+  }
+  return value;
+}
+
+function kmsCssScale(value: unknown, field: string): number {
+  if (
+    typeof value !== "number" ||
+    !Number.isFinite(value) ||
+    value <= 0 ||
+    value > MAX_KMS_CSS_SCALE
+  ) {
+    throw new Error(`${field} must be a finite number between 0 and ${MAX_KMS_CSS_SCALE}`);
   }
   return value;
 }

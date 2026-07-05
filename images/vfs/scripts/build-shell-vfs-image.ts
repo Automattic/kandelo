@@ -90,7 +90,7 @@ async function main() {
         guide: loveGuide(),
       },
       bytepath: {
-        presentation: kmsPresentation(BYTEPATH_COMMAND, { width: 480, height: 270 }),
+        presentation: kmsPresentation(BYTEPATH_COMMAND, { width: 480, height: 270 }, 2),
         guide: bytepathGuide(),
       },
       snkrx: {
@@ -121,6 +121,7 @@ function populateModesetRuntime(fs: MemoryFileSystem): void {
 function kmsPresentation(
   autoCommand: string,
   connectorMode?: { width: number; height: number },
+  maxCssScale?: number,
 ): DemoPresentationConfig {
   return {
     bootPrimary: "syslog",
@@ -128,7 +129,14 @@ function kmsPresentation(
     terminalAccess: "drawer",
     internalsAccess: "drawer",
     autoCommand,
-    ...(connectorMode ? { kms: { connectorMode } } : {}),
+    ...(connectorMode || maxCssScale
+      ? {
+          kms: {
+            ...(connectorMode ? { connectorMode } : {}),
+            ...(maxCssScale ? { maxCssScale } : {}),
+          },
+        }
+      : {}),
   };
 }
 

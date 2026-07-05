@@ -34,6 +34,8 @@ export interface ModesetProps {
   crtcId?: number;
   /** Virtual mode advertised by the browser KMS connector before page flips. */
   connectorMode?: KmsConnectorMode;
+  /** Maximum CSS pixels per backing-store pixel when fitting the KMS surface. */
+  maxCssScale?: number;
 }
 
 interface KmsStats {
@@ -55,6 +57,7 @@ export const Modeset: React.FC<ModesetProps> = ({
   focusToken = 0,
   crtcId = 1,
   connectorMode: configuredConnectorMode,
+  maxCssScale,
   onDockControlsChange,
 }) => {
   const host = useKernelHost();
@@ -302,6 +305,7 @@ export const Modeset: React.FC<ModesetProps> = ({
     canvasRef,
     connectorMode.width / connectorMode.height,
     scanoutAspect,
+    maxCssScale,
   );
   const statusLabel = hasFrame
     ? `${stats.width}×${stats.height} · ${stats.commitCount} flips · ${stats.lastFrameUs}µs · ${captureLabel}`
