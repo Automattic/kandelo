@@ -188,6 +188,15 @@ time and 0 in modules that do not contain plain-catch capture sites.
 internal `Runtime` struct, and `wpk_fork_unwind_begin` writes
 `buf + frames_start_offset` into `*(buf + 0)` on every invocation.
 
+After an unwind, the host compares this absolute `current_pos` with
+`buf + FORK_SAVE_BUFFER_SIZE` before sending `SYS_FORK`. A cursor beyond that
+end address means frame writes crossed into the adjacent syscall channel; the
+process fails with the required and reserved byte counts instead of creating a
+child from corrupted continuation state. This is detection, not prevention:
+the instrumented unwind has already written past the fixed reserve, so the host
+discards the process and its channel. Increasing or making the reserve elastic
+is a separate ABI layout change.
+
 For wasm32 (`P = 4`) with a module that declares three additional scalar
 mutable globals totaling 16 bytes (e.g. `__stack_pointer`, `__tls_base`, one
 user i64) and one fork-path function with a single `(catch $tag (param i32))`
