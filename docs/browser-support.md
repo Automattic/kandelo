@@ -117,6 +117,10 @@ connection in any nginx worker. The standalone nginx image runs with
 - Keyboard input: the demo page maps focused browser `KeyboardEvent` values to Linux input keycodes, encodes them as MEDIUMRAW bytes, and feeds them through `appendStdinData(pid, …)`; fbDOOM-style software decodes those bytes from the tty. Ctrl+Shift+Esc is reserved as the host escape from keyboard capture.
 - Limitations: `fork` does not auto-bind the child; multi-buffering / vsync via `FBIOPAN_DISPLAY` is a no-op.
 
+### KMS (`/dev/dri/card0`)
+- KMS presentation follows the framebuffer object currently bound to the CRTC. The browser modeset pane reads the scanout width/height from the kernel stats SAB, uses those dimensions for input scaling, and upscales the canvas with CSS to fit the available Kandelo surface.
+- The browser pane seeds an initial connector mode before a process binds a framebuffer, but the committed KMS FB is authoritative once `MODE_SETCRTC`/`PAGE_FLIP` has run.
+
 ### Mouse input (`/dev/input/mice`)
 - Demo pages attach `mousemove` / `mousedown` / `mouseup` listeners to the canvas and call `BrowserKernel.injectMouseEvent(dx, dy, buttons)`. The main thread posts a `mouse_inject` message to the kernel worker, which calls the kernel's `kernel_inject_mouse_event` export. The kernel encodes a 3-byte PS/2 frame and queues it on a global ring; user processes drain the queue via `read("/dev/input/mice", …)`.
 - **Pointer Lock recommended.** The DOOM demo calls `canvas.requestPointerLock()` on first click so the browser delivers unbounded relative motion (`MouseEvent.movementX/Y`). Without pointer lock, `clientX/Y` deltas clamp at the canvas edges and feel sluggish for first-person controls. Press `Esc` to release the lock.

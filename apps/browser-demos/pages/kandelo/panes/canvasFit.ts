@@ -4,6 +4,7 @@ export function useFittedCanvasStyle(
   containerRef: React.RefObject<HTMLElement | null>,
   canvasRef: React.RefObject<HTMLCanvasElement | null>,
   fallbackAspect: number,
+  aspectOverride?: number,
 ): React.CSSProperties {
   const [style, setStyle] = React.useState<React.CSSProperties>({});
 
@@ -15,7 +16,7 @@ export function useFittedCanvasStyle(
     const update = () => {
       const rect = container.getBoundingClientRect();
       if (rect.width <= 0 || rect.height <= 0) return;
-      const aspect = canvasAspect(canvas, fallbackAspect);
+      const aspect = validAspect(aspectOverride) ? aspectOverride : canvasAspect(canvas, fallbackAspect);
       const containerAspect = rect.width / rect.height;
       const width = containerAspect > aspect ? rect.height * aspect : rect.width;
       const height = width / aspect;
@@ -47,7 +48,7 @@ export function useFittedCanvasStyle(
       mutationObserver.disconnect();
       window.removeEventListener("resize", update);
     };
-  }, [canvasRef, containerRef, fallbackAspect]);
+  }, [aspectOverride, canvasRef, containerRef, fallbackAspect]);
 
   return style;
 }
@@ -59,4 +60,8 @@ function canvasAspect(canvas: HTMLCanvasElement, fallbackAspect: number): number
     return width / height;
   }
   return fallbackAspect;
+}
+
+function validAspect(value: number | undefined): value is number {
+  return value !== undefined && Number.isFinite(value) && value > 0;
 }
