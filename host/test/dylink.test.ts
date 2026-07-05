@@ -24,6 +24,7 @@ import { execFileSync } from "node:child_process";
 import { readFileSync, writeFileSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
+import { FORK_SAVE_BUFFER_SIZE } from "../src/process-memory";
 
 function hasCompiler(): boolean {
   try {
@@ -713,6 +714,7 @@ describe("side-module fork contract", () => {
       expect(sideFork()).toBe(41);
       expect(state()).toBe(1);
       expect(active?.forkBufAddr).toBe(lib.forkBufAddr);
+      expect(active?.forkBufSize).toBe(FORK_SAVE_BUFFER_SIZE);
 
       unwindEnd();
       forkResult = expectedForkResult;
