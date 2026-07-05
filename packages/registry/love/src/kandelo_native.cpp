@@ -53,8 +53,8 @@ struct NativeState {
   std::string root;
   int width = 960;
   int height = 540;
-  int pixelWidth = 1920;
-  int pixelHeight = 1080;
+  int pixelWidth = 960;
+  int pixelHeight = 540;
   SwapCallback swap = nullptr;
 };
 
@@ -380,6 +380,8 @@ public:
   bool setWindow(int width, int height, love::window::WindowSettings *settings) override {
     if (width > 0) this->width = width;
     if (height > 0) this->height = height;
+    pixelWidth = this->width;
+    pixelHeight = this->height;
     if (settings != nullptr) this->settings = *settings;
     if (this->settings.refreshrate <= 0.0) this->settings.refreshrate = 60.0;
     kandelo_love_set_native_window_size(this->width, this->height);
@@ -413,6 +415,8 @@ public:
   bool onSizeChanged(int width, int height) override {
     this->width = width;
     this->height = height;
+    pixelWidth = this->width;
+    pixelHeight = this->height;
     kandelo_love_set_native_window_size(this->width, this->height);
     return true;
   }
@@ -514,8 +518,8 @@ private:
   love::graphics::Graphics *graphics = nullptr;
   int width = 960;
   int height = 540;
-  int pixelWidth = 1920;
-  int pixelHeight = 1080;
+  int pixelWidth = 960;
+  int pixelHeight = 540;
   int posX = 0;
   int posY = 0;
   int display = 0;
