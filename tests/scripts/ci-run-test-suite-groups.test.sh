@@ -1374,6 +1374,16 @@ grep -Fxq "test -p xtask --target fixture-host" "$CARGO_CAPTURE" || {
     cat "$CARGO_CAPTURE" >&2
     exit 1
 }
+: > "$CARGO_CAPTURE"
+PATH="$FIXTURE/bin:$PATH" \
+    bash "$FIXTURE/scripts/ci-run-test-suite.sh" cargo-workspace all
+grep -Fxq \
+    "test --workspace --exclude xtask --target fixture-host" \
+    "$CARGO_CAPTURE" || {
+    echo "ci-run-test-suite.sh did not dispatch cargo-workspace" >&2
+    cat "$CARGO_CAPTURE" >&2
+    exit 1
+}
 
 for workflow in \
     "$REPO_ROOT/.github/workflows/staging-build.yml" \
@@ -1416,7 +1426,7 @@ for workflow in \
             print suite ":" kernel_only
         }
     ')
-    expected_early_rows=$'cargo-kernel:true\nfork-instrument:true\ncargo-xtask:false'
+    expected_early_rows=$'cargo-workspace:true\ncargo-xtask:false'
     if [ "$early_rows" != "$expected_early_rows" ]; then
         echo "$(basename "$workflow"): unexpected early Cargo suite matrix:" >&2
         printf '%s\n' "$early_rows" >&2
@@ -1474,7 +1484,7 @@ force_rebuild_rows=$(sed -n \
         print suite ":" group
     }
 ')
-expected_force_rebuild_rows=$'cargo-kernel:all\nfork-instrument:all\ncargo-xtask:all\nvitest:1/2\nvitest:2/2\nvitest:resource-isolated\nlibc:functional-regression\nlibc:math\nposix:all\nsortix:include\nsortix:basic\nsortix:runtime'
+expected_force_rebuild_rows=$'cargo-workspace:all\ncargo-xtask:all\nvitest:1/2\nvitest:2/2\nvitest:resource-isolated\nlibc:functional-regression\nlibc:math\nposix:all\nsortix:include\nsortix:basic\nsortix:runtime'
 if [ "$force_rebuild_rows" != "$expected_force_rebuild_rows" ]; then
     echo "force-rebuild.yml: unexpected test-suite matrix:" >&2
     printf '%s\n' "$force_rebuild_rows" >&2
