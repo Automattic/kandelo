@@ -923,11 +923,10 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - suite: cargo-kernel
-            label: cargo-kernel
-            kernel_only: true
-          - suite: fork-instrument
-            label: fork-instrument
+          - suite: cargo-workspace
+            label: cargo-workspace
+            # Closed-by-default coverage for every workspace crate except
+            # independently gated xtask, including integration-test crates.
             kernel_only: true
           - suite: cargo-xtask
             label: cargo-xtask

@@ -818,15 +818,11 @@ jobs:
       # remove serial work while `test-gate` still aggregates every cell.
       matrix:
         include:
-          - suite: cargo-kernel
-            label: cargo-kernel
+          - suite: cargo-workspace
+            label: cargo-workspace
             group: all
-            needs_submodules: false
-            needs_toolchain: false
-            needs_workspace: false
-          - suite: fork-instrument
-            label: fork-instrument
-            group: all
+            # Cover every workspace crate except independently gated xtask.
+            # New crates are included without another matrix allow-list edit.
             needs_submodules: false
             needs_toolchain: false
             needs_workspace: false
