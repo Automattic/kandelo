@@ -39,6 +39,13 @@ Non-goals: not reviving the custom `oras` blob path; not a TS/Rust reimplementat
 - GHCR namespace mirrors the tap (≈ `ghcr.io/automattic/kandelo-homebrew/<formula>`; exact path = owed source-verification).
 - **No binaries in git.** Bottle *bytes* → GHCR; only bottle *blocks* (text DSL) + Formulae → the tap git repo. This is exactly what Homebrew does.
 
+**Formulae + recipes → the tap; whole-move package PRs (2026-07-05, Brandon)**
+- The tap is the **sole home and sole edit point** for full package definitions: `Formula/<name>.rb` **plus** the build recipe (`packages/registry/<name>/` — build script, `package.toml`, `build.toml`, demos). The main-repo `homebrew/kandelo-homebrew/` fixture is **retired**; formulae stop landing there. Parity end-state: the tap is a real Homebrew tap of real from-source formulae; `Automattic/kandelo` is the platform they build on.
+- **Mechanics:** fork the recipes into the tap now; **whole-move** package-definition PRs to the tap (recipe+formula co-locate ⇒ no split). The few *platform* PRs that only incidentally touch formulae (framebuffer/browser-smoke #819/#817/#816) stay in main and **shed** their formula edits.
+- **Transition discipline (avoids drift):** tap = single edit point; main keeps a **synced/referenced** copy of the recipes (subtree or generated sync, mechanism TBD) so main's rootfs/VFS/CI builds keep working — `packages/registry` is load-bearing for those today. **Retire main's copy only when brew-in-Kandelo lets main consume packages from the tap.**
+- **Open design points:** tap layout for recipes relative to `Formula/`; the tap→main SDK/xtask dependency wiring (correct parity shape); the sync mechanism.
+- **First instance:** #814 (`ruby.rb` + `packages/registry/ruby/`) whole-moves to the tap (must NOT merge to `Automattic/kandelo`).
+
 **Tooling**
 - Produce bytes with `brew … --build-bottle` + `brew bottle`.
 - Publish to GHCR with **`skopeo`** via `brew pr-upload` / `pr-pull` (Homebrew's own uploader — `Homebrew/brew` `github_packages.rb`). `skopeo` is a **publish-side** dep only (install side = plain OCI HTTP).
@@ -98,7 +105,7 @@ Parity-first, native-only publish + brew-in-Kandelo consume:
 
 ## 6. Next steps
 
-1. Resolve **sequencing** (kd-yuef transitional vs wait-for-brew-in-Kandelo) — pending Brandon's read on the Ruby timeline.
+1. **Migrate Formulae + build recipes → the tap** (Brandon-confirmed 2026-07-05): design tap layout + sync mechanism; fork recipes; whole-move package PRs starting with #814; retire the main fixture; coordinate with mayor (convoy-owned PRs). See §3. *(Sequencing is RESOLVED — wait for brew-in-Kandelo; see §4.)*
 2. Consolidate the **Recommendation** facet.
 3. **Doc-correction:** fix `docs/plans/2026-07-01-homebrew-builtin-vs-custom-bottle-publishing-research.md` + the kd-1i0u note — guest `brew install` is **in-scope** (not "VFS builder is terminal consumer"); `:any` (not `:any_skip_relocation`); **native GHCR/parity**; supersede "do not adopt `test-bot`/`pr-pull`" (adopt the PR→merge→`pr-pull` split); pour = brew-in-Kandelo; lazy = option 3.
 4. **Verification pass** against `Homebrew/brew` source (§4.5).
