@@ -6,7 +6,7 @@ cd "$REPO_ROOT"
 
 suite="${1:-}"
 if [ -z "$suite" ]; then
-    echo "usage: $0 <cargo-kernel|fork-instrument|vitest|browser|libc|posix|sortix>" >&2
+    echo "usage: $0 <cargo-workspace|vitest|browser|libc|posix|sortix>" >&2
     exit 2
 fi
 
@@ -44,13 +44,21 @@ run_timed() {
 }
 
 case "$suite" in
-    cargo-kernel)
+    cargo-workspace)
+        # Host-run unit + integration tests for every workspace crate EXCEPT
+        # xtask: kandelo (kernel), fork-instrument, wasm-posix-shared,
+        # wasm-posix-userspace, wasm-local-root-spill. `--workspace` is
+        # closed-by-default: a new crate under crates/ is gated with no
+        # allow-list edit, and each crate's integration tests run too (no
+        # `--lib`, which would silently run 0 tests for a bin-only crate such
+        # as wasm-local-root-spill). xtask is excluded because it is gated
+        # separately as the always-run `cargo-xtask` suite -- it lives under
+        # tools/ (outside the kernel change-scope) and its regressions are
+        # independent of kernel changes. `--target <host>` is REQUIRED: the
+        # default wasm32-unknown-unknown target has no host test runner, and
+        # host-only deps (getrandom; xtask's ring/zstd) do not cross-compile.
         HOST_TARGET="$(host_target)"
-        cargo test -p kandelo --target "$HOST_TARGET" --lib
-        ;;
-    fork-instrument)
-        HOST_TARGET="$(host_target)"
-        cargo test -p fork-instrument --target "$HOST_TARGET"
+        cargo test --workspace --exclude xtask --target "$HOST_TARGET"
         ;;
     vitest)
         install_node_deps
