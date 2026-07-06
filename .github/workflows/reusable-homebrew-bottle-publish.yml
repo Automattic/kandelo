@@ -62,7 +62,7 @@ jobs:
       bottle-root-prefix: ${{ steps.release.outputs.bottle-root-prefix }}
     steps:
       - name: Checkout Kandelo workflow source
-        uses: actions/checkout@v6.0.2
+        uses: actions/checkout@v7.0.0
         with:
           repository: ${{ inputs.kandelo-repository }}
           ref: ${{ inputs.kandelo-ref }}
@@ -70,7 +70,7 @@ jobs:
           submodules: false
 
       - name: Checkout tap
-        uses: actions/checkout@v6.0.2
+        uses: actions/checkout@v7.0.0
         with:
           repository: ${{ inputs.tap-repository }}
           ref: ${{ inputs.tap-ref }}
@@ -150,14 +150,14 @@ jobs:
       actions: read
     steps:
       - name: Checkout tap
-        uses: actions/checkout@v6.0.2
+        uses: actions/checkout@v7.0.0
         with:
           repository: ${{ inputs.tap-repository }}
           ref: ${{ inputs.tap-ref }}
           path: tap
 
       - name: Checkout Kandelo workflow source
-        uses: actions/checkout@v6.0.2
+        uses: actions/checkout@v7.0.0
         with:
           repository: ${{ inputs.kandelo-repository }}
           ref: ${{ inputs.kandelo-ref }}
@@ -203,7 +203,7 @@ jobs:
           use-flakehub: false
 
       - name: Cache Cargo and xtask
-        uses: actions/cache@v5
+        uses: actions/cache@v6
         with:
           path: |
             ~/.cargo/registry
