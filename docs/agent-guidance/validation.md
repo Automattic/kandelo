@@ -20,8 +20,7 @@ Core validation surface:
 
 | Suite | Command | Primary evidence for |
 |---|---|---|
-| Kernel unit tests | `cargo test -p kandelo --target <host-target> --lib` | Kernel logic changes |
-| Fork instrument tests | `cargo test -p fork-instrument --target <host-target>` | Fork instrumentation/tooling changes |
+| Workspace Rust tests | `cargo test --workspace --exclude xtask --target <host-target>` | Any change under `crates/`: kernel, fork-instrument, shared, userspace, wasm-local-root-spill, and future workspace crates. `--target` is required because the default wasm32 target has no host runner; xtask has its own always-run suite. |
 | Package-system automation tests | `cargo test -p xtask --target <host-target>` | `tools/xtask/**` changes: package resolver, binaries-dir placement, cache/output artifact validation, archive staging + canonical filename |
 | Host integration tests | `cd host && npx vitest run` | Host/runtime behavior |
 | Browser app/runtime tests | `cd apps/browser-demos && npx playwright test --grep-invert "@slow" --project=chromium` | Browser host, UI, demo, service worker, VFS image behavior |
@@ -35,7 +34,7 @@ Core validation surface:
 For CI-shaped local runs, prefer:
 
 ```bash
-bash scripts/dev-shell.sh bash scripts/ci-run-test-suite.sh <cargo-kernel|cargo-xtask|fork-instrument|vitest|browser|libc|posix|sortix> [group]
+bash scripts/dev-shell.sh bash scripts/ci-run-test-suite.sh <cargo-workspace|cargo-xtask|vitest|browser|libc|posix|sortix> [group]
 ```
 
 The optional group reproduces CI's deterministic suite partitions. Vitest
