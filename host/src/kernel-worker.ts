@@ -3038,10 +3038,17 @@ export class CentralizedKernelWorker {
         }
       }
     }
-    // 2. Blocked pollers watching this pipe
-    for (const [key, entry] of this.pendingPollRetries) {
-      if (pidFilter !== undefined && entry.channel.pid !== pidFilter) continue;
-      if (!entry.pipeIndices.includes(pipeIdx)) continue;
+    // 2. Blocked pollers watching this pipe. Snapshot-and-skip-if-replaced:
+    //    retrySyscall runs synchronously and a re-parking wait re-inserts the
+    //    same channelOffset key, which a raw for..of over the live Map would
+    //    revisit forever (see wakeBlockedPoll / sendSignalToProcess).
+    const pollMatches = Array.from(this.pendingPollRetries.entries()).filter(
+      ([, e]) =>
+        (pidFilter === undefined || e.channel.pid === pidFilter) &&
+        e.pipeIndices.includes(pipeIdx),
+    );
+    for (const [key, entry] of pollMatches) {
+      if (this.pendingPollRetries.get(key) !== entry) continue;
       if (entry.timer !== null) clearTimeout(entry.timer);
       this.pendingPollRetries.delete(key);
       if (this.processes.has(entry.channel.pid)) {
@@ -6961,9 +6968,22 @@ export class CentralizedKernelWorker {
       );
     }
 
-    // 2. Pending ppoll/poll retry — wake ALL threads for this pid
-    for (const [key, pollEntry] of this.pendingPollRetries) {
-      if (pollEntry.channel.pid !== targetPid) continue;
+    // 2. Pending ppoll/poll retry — wake ALL threads for this pid.
+    //    Snapshot-and-skip-if-replaced: retrySyscall runs handleSyscall
+    //    synchronously, and a non-interruptible blocking wait (notably
+    //    accept(), which has no EINTR path) re-inserts the SAME
+    //    channelOffset key via pendingPollRetries.set when it re-parks on
+    //    EAGAIN. JS Map iterators are not snapshots — a deleted-then-
+    //    reinserted key reappears at the tail and the raw for..of would
+    //    revisit it forever, livelocking the whole kernel worker thread.
+    //    Mirror wakeBlockedPoll / wakeAllBlockedRetries. (Regression:
+    //    SIGCHLD to a forking daemon's master parked in accept() —
+    //    e.g. msmtpd delivering WordPress mail — wedged the kernel.)
+    const pollMatches = Array.from(this.pendingPollRetries.entries()).filter(
+      ([, e]) => e.channel.pid === targetPid,
+    );
+    for (const [key, pollEntry] of pollMatches) {
+      if (this.pendingPollRetries.get(key) !== pollEntry) continue;
       if (pollEntry.timer) clearTimeout(pollEntry.timer);
       this.pendingPollRetries.delete(key);
       if (this.processes.has(targetPid)) {
@@ -6971,9 +6991,12 @@ export class CentralizedKernelWorker {
       }
     }
 
-    // 3. Pending select/pselect6 retries
-    for (const [key, selectEntry] of this.pendingSelectRetries) {
-      if (selectEntry.channel.pid !== targetPid) continue;
+    // 3. Pending select/pselect6 retries (same snapshot rationale).
+    const selectMatches = Array.from(this.pendingSelectRetries.entries()).filter(
+      ([, e]) => e.channel.pid === targetPid,
+    );
+    for (const [key, selectEntry] of selectMatches) {
+      if (this.pendingSelectRetries.get(key) !== selectEntry) continue;
       clearTimeout(selectEntry.timer);
       clearImmediate(selectEntry.timer);
       this.pendingSelectRetries.delete(key);
