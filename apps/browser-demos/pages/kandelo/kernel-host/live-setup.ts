@@ -1191,7 +1191,12 @@ async function bootProfile(
         message: "Waiting for services",
       });
       try {
-        await setupServiceWorkerFetchBridge(SW_URL, APP_PREFIX, kernel, HTTP_PORT, {
+        // Unique id for this machine instance. Scopes the service worker's
+        // cookie jar so sessions never share cookies. Temporary instances get a
+        // fresh random id per boot; when machines become persistable this is
+        // where their durable id would be passed instead.
+        const sessionId = crypto.randomUUID();
+        await setupServiceWorkerFetchBridge(SW_URL, APP_PREFIX, kernel, HTTP_PORT, sessionId, {
           timeoutMs: 90_000,
           debugLog: (line) => tick(line),
           onPendingRequests: (count) => {

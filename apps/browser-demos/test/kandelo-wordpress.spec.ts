@@ -24,6 +24,28 @@ async function dismissDockPopover(page: Page) {
   }
 }
 
+/**
+ * Read the persisted cookie jar for the (single) active session. The SW stores
+ * it under a session-scoped key `cookie-jar-<sessionId>` in the sw-bridge-config
+ * cache, so find that entry rather than a fixed key.
+ */
+async function readPersistedCookieJar(
+  page: Page,
+): Promise<Array<{ name: string; path: string }>> {
+  return page.evaluate(async () => {
+    const cache = await caches.open("sw-bridge-config");
+    const keys = await cache.keys();
+    const jarReq = keys.find((r) =>
+      (new URL(r.url).pathname.split("/").pop() ?? "").startsWith("cookie-jar-"),
+    );
+    if (!jarReq) return [];
+    const resp = await cache.match(jarReq);
+    if (!resp) return [];
+    const records = JSON.parse(await resp.text());
+    return Array.isArray(records) ? records : [];
+  });
+}
+
 /** Boot the WordPress demo and sign into wp-admin. Returns the app frame. */
 async function loginToWpAdmin(page: Page) {
   await gotoOrSkip(page, "/?demo=wordpress-mariadb");
@@ -141,14 +163,7 @@ test("@slow Kandelo WordPress login survives a service worker restart", async ({
   // Expires), so before the fix they lived only in memory and were lost
   // whenever the browser terminated the idle service worker — logging the user
   // out a minute or two after signing in.
-  const persistedCookieNames = await page.evaluate(async () => {
-    const resp = await (await caches.open("sw-bridge-config")).match("cookie-jar");
-    if (!resp) return [] as string[];
-    const records = JSON.parse(await resp.text());
-    return Array.isArray(records)
-      ? records.map((c: { name: string }) => c.name)
-      : [];
-  });
+  const persistedCookieNames = (await readPersistedCookieJar(page)).map((c) => c.name);
   expect(
     persistedCookieNames.some((name) => name.startsWith("wordpress_logged_in_")),
     `persisted cookie jar: ${JSON.stringify(persistedCookieNames)}`,
@@ -232,19 +247,14 @@ test("@slow Kandelo WordPress auth cookie is retained for every cookie path", as
   // identified by name AND path (RFC 6265), so a cookie jar keyed by name alone
   // collapses the two into one — dropping auth for the plugins subtree. Read the
   // persisted jar and confirm the auth cookie survives for both paths.
-  const authCookiePaths = await page.evaluate(async () => {
-    const resp = await (await caches.open("sw-bridge-config")).match("cookie-jar");
-    if (!resp) return [] as string[];
-    const records = JSON.parse(await resp.text());
-    return (Array.isArray(records) ? records : [])
-      .filter(
-        (c: { name: string }) =>
-          c.name.startsWith("wordpress_") &&
-          !c.name.startsWith("wordpress_logged_in_") &&
-          c.name !== "wordpress_test_cookie",
-      )
-      .map((c: { path: string }) => c.path);
-  });
+  const authCookiePaths = (await readPersistedCookieJar(page))
+    .filter(
+      (c) =>
+        c.name.startsWith("wordpress_") &&
+        !c.name.startsWith("wordpress_logged_in_") &&
+        c.name !== "wordpress_test_cookie",
+    )
+    .map((c) => c.path);
 
   expect(
     authCookiePaths.some((p) => p.includes("/wp-admin")),
@@ -255,3 +265,4 @@ test("@slow Kandelo WordPress auth cookie is retained for every cookie path", as
     `auth cookie paths: ${JSON.stringify(authCookiePaths)}`,
   ).toBe(true);
 });
+
