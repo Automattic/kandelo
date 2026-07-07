@@ -62,11 +62,14 @@ export async function ensureServiceWorkerReady(swUrl: string): Promise<ServiceWo
  *
  * @param swUrl     — URL of the service worker script (e.g. "/demo/service-worker.js")
  * @param appPrefix — URL prefix the SW intercepts (e.g. "/demo/app/")
+ * @param sessionId — unique id for this Kandelo machine instance; scopes the
+ *                    SW cookie jar so sessions never share cookies
  * @returns The initialized HttpBridgeHost, or null if service workers are unavailable
  */
 export async function initServiceWorkerBridge(
   swUrl: string,
   appPrefix: string,
+  sessionId: string,
 ): Promise<HttpBridgeHost | null> {
   if (!("serviceWorker" in navigator)) {
     return null;
@@ -80,7 +83,7 @@ export async function initServiceWorkerBridge(
     const reply = new MessageChannel();
     reply.port1.onmessage = () => resolve();
     controller.postMessage(
-      { type: "init-bridge", appPrefix },
+      { type: "init-bridge", appPrefix, sessionId },
       [bridge.getSwPort(), reply.port2],
     );
   });
