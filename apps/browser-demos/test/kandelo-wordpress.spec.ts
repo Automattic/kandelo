@@ -169,6 +169,14 @@ test("@slow Kandelo WordPress login survives a service worker restart", async ({
     `persisted cookie jar: ${JSON.stringify(persistedCookieNames)}`,
   ).toBe(true);
 
+  // The SW jar is the ONLY cookie store: the browser's own cookie store must
+  // stay empty so Kandelo cookies never accumulate there across sessions.
+  const browserCookies = await page.context().cookies();
+  expect(
+    browserCookies.length,
+    `browser cookie store: ${JSON.stringify(browserCookies.map((c) => c.name))}`,
+  ).toBe(0);
+
   // Force the service worker to shut down, discarding all in-memory state
   // (the cookie jar included). The next request revives it, which must
   // restore the session from the persisted jar rather than fall back to

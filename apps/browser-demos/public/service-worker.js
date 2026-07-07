@@ -916,18 +916,18 @@ if (typeof window !== "undefined") {
           if (
             lower === "transfer-encoding" ||
             lower === "connection" ||
-            lower === "keep-alive"
+            lower === "keep-alive" ||
+            // Never hand Set-Cookie back to the browser. The SW cookie jar
+            // (captured above via storeCookies) is the authoritative store and
+            // replays cookies on outgoing requests. Forwarding Set-Cookie would
+            // let the browser persist Kandelo cookies in its own cookie store,
+            // where they would accumulate across sessions and outlive the
+            // machine instance they belong to.
+            lower === "set-cookie"
           ) {
             continue;
           }
-          if (lower === "set-cookie") {
-            var cookies = bridgeResp.headers[key].split("\n");
-            for (var c = 0; c < cookies.length; c++) {
-              respHeaders.append(key, cookies[c]);
-            }
-          } else {
-            respHeaders.set(key, bridgeResp.headers[key]);
-          }
+          respHeaders.set(key, bridgeResp.headers[key]);
         }
 
         // Rewrite redirect Location: match protocol to request (avoid mixed
