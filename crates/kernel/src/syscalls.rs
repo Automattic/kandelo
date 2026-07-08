@@ -158,6 +158,32 @@ impl VirtualDevice {
             }
         }
     }
+
+    /// `st_rdev` for the device node — a Linux-encoded `dev_t`
+    /// (`makedev`). Only the evdev nodes carry one today: they are the
+    /// single input surface a userspace consumer identifies purely by
+    /// devnum. libinput's path backend `stat()`s the node, keeps only
+    /// `st_rdev`, and calls `udev_device_new_from_devnum(rdev)`, so
+    /// `/dev/input/event{N}` must be uniquely stat-identifiable. Linux
+    /// puts evdev on char major 13, minor 64+N. Other virtual nodes
+    /// report 0 until a consumer needs to distinguish them by devnum.
+    pub fn rdev(self) -> u64 {
+        match self {
+            VirtualDevice::InputEvent { device } => makedev(13, 64 + device as u32),
+            _ => 0,
+        }
+    }
+}
+
+/// Encode a `dev_t` the way musl's `sys/sysmacros.h` `makedev` does, so
+/// userspace `major()`/`minor()` decode the same `(major, minor)` back.
+const fn makedev(major: u32, minor: u32) -> u64 {
+    let major = major as u64;
+    let minor = minor as u64;
+    ((major & 0xffff_f000) << 32)
+        | ((major & 0x0000_0fff) << 8)
+        | ((minor & 0xffff_ff00) << 12)
+        | (minor & 0x0000_00ff)
 }
 
 /// Check if a resolved path is a virtual device node.
@@ -251,6 +277,7 @@ fn synthetic_file_stat(path: &[u8], uid: u32, gid: u32) -> Option<WasmStat> {
         st_ctime_sec: 0,
         st_ctime_nsec: 0,
         _pad: 0,
+        st_rdev: 0,
     })
 }
 
@@ -1615,7 +1642,10 @@ fn handle_dri_card_ioctl(
 
 /// `EVIOCG*` ioctl surface for `/dev/input/event{0,1}`. Unknown
 /// requests return `ENOTTY` (not `EINVAL`) so SDL2's evdev probe keeps
-/// walking instead of fataling on the first unsupported call.
+/// walking instead of fataling on the first unsupported call. libevdev
+/// (PR5) is stricter: `libevdev_set_fd` issues the phys/uniq/prop and
+/// key/led/switch state reads during construction and fatals on an
+/// unexpected errno, so those are answered explicitly below.
 fn handle_input_ioctl(
     proc: &mut Process,
     ofd_idx: usize,
@@ -1717,6 +1747,29 @@ fn handle_input_ioctl(
             }
             Ok(())
         }
+        // Physical-location / unique-id strings: virtual devices have
+        // none. libevdev tolerates ENOENT here ("unset"); any other errno
+        // is fatal to libevdev_new_from_fd, so ENOTTY would abort it.
+        n if (n == EVIOCGPHYS_NR || n == EVIOCGUNIQ_NR) && dir == 2 => {
+            Err(Errno::ENOENT)
+        }
+        // Current-state bitmaps: no input properties, no keys/buttons
+        // latched, no LEDs, no switches. Real Linux always answers these
+        // (they never return ENOTTY); libevdev treats a failure other than
+        // EINVAL (props) / never (key/led/sw) as fatal. Zero-fill = the
+        // honest current state.
+        n if (n == EVIOCGPROP_NR
+            || n == EVIOCGKEY_NR
+            || n == EVIOCGLED_NR
+            || n == EVIOCGSW_NR)
+            && dir == 2 =>
+        {
+            let len = size.min(buf.len());
+            for b in buf[..len].iter_mut() {
+                *b = 0;
+            }
+            Ok(())
+        }
         0x90 if dir == 1 => {
             if buf.len() < 4 {
                 return Err(Errno::EINVAL);
@@ -1803,6 +1856,7 @@ fn virtual_device_stat(dev: VirtualDevice, uid: u32, gid: u32) -> WasmStat {
         st_ctime_sec: 0,
         st_ctime_nsec: 0,
         _pad: 0,
+        st_rdev: dev.rdev(),
     }
 }
 
@@ -3832,6 +3886,7 @@ pub fn sys_fstat(proc: &mut Process, host: &mut dyn HostIO, fd: i32) -> Result<W
             st_ctime_sec: 0,
             st_ctime_nsec: 0,
             _pad: 0,
+            st_rdev: 0,
         })
     } else if ofd.file_type == FileType::CharDevice {
         if let Some(dev) = VirtualDevice::from_host_handle(ofd.host_handle) {
@@ -3855,6 +3910,7 @@ pub fn sys_fstat(proc: &mut Process, host: &mut dyn HostIO, fd: i32) -> Result<W
                 st_ctime_sec: 0,
                 st_ctime_nsec: 0,
                 _pad: 0,
+                st_rdev: 0,
             });
         }
         // Other char devices — delegate to host. VFS is the source of truth
@@ -3877,6 +3933,7 @@ pub fn sys_fstat(proc: &mut Process, host: &mut dyn HostIO, fd: i32) -> Result<W
             st_ctime_sec: 0,
             st_ctime_nsec: 0,
             _pad: 0,
+            st_rdev: 0,
         })
     } else if ofd.file_type == FileType::MemFd {
         let memfd_idx = (-(ofd.host_handle + 1)) as usize;
@@ -3900,6 +3957,7 @@ pub fn sys_fstat(proc: &mut Process, host: &mut dyn HostIO, fd: i32) -> Result<W
             st_ctime_sec: 0,
             st_ctime_nsec: 0,
             _pad: 0,
+            st_rdev: 0,
         })
     } else if ofd.host_handle == SYNTHETIC_FILE_HANDLE {
         synthetic_file_stat(&ofd.path, proc.euid, proc.egid).ok_or(Errno::EBADF)
@@ -3946,6 +4004,7 @@ pub fn sys_fstat(proc: &mut Process, host: &mut dyn HostIO, fd: i32) -> Result<W
                 st_ctime_sec: 0,
                 st_ctime_nsec: 0,
                 _pad: 0,
+                st_rdev: 0,
             }),
         )
     } else {
@@ -4256,6 +4315,7 @@ fn match_pty_stat(resolved: &[u8], uid: u32, gid: u32) -> Option<WasmStat> {
             st_ctime_sec: 0,
             st_ctime_nsec: 0,
             _pad: 0,
+            st_rdev: 0,
         })
     } else {
         None
@@ -4287,6 +4347,7 @@ pub fn sys_stat(proc: &mut Process, host: &mut dyn HostIO, path: &[u8]) -> Resul
             st_ctime_sec: 0,
             st_ctime_nsec: 0,
             _pad: 0,
+            st_rdev: 0,
         });
     }
     if let Some(entry) = crate::procfs::match_procfs(&resolved, proc.pid) {
@@ -4317,6 +4378,7 @@ pub fn sys_stat(proc: &mut Process, host: &mut dyn HostIO, path: &[u8]) -> Resul
                 st_ctime_sec: 0,
                 st_ctime_nsec: 0,
                 _pad: 0,
+                st_rdev: 0,
             });
         }
     }
@@ -4355,6 +4417,7 @@ pub fn sys_lstat(
             st_ctime_sec: 0,
             st_ctime_nsec: 0,
             _pad: 0,
+            st_rdev: 0,
         });
     }
     if let Some(entry) = crate::procfs::match_procfs(&resolved, proc.pid) {
@@ -4385,6 +4448,7 @@ pub fn sys_lstat(
                 st_ctime_sec: 0,
                 st_ctime_nsec: 0,
                 _pad: 0,
+                st_rdev: 0,
             });
         }
     }
@@ -8615,6 +8679,7 @@ pub fn sys_fstatat(
             st_ctime_sec: 0,
             st_ctime_nsec: 0,
             _pad: 0,
+            st_rdev: 0,
         });
     }
     if let Some(entry) = crate::procfs::match_procfs(&resolved, proc.pid) {
@@ -8646,6 +8711,7 @@ pub fn sys_fstatat(
                 st_ctime_sec: 0,
                 st_ctime_nsec: 0,
                 _pad: 0,
+                st_rdev: 0,
             });
         }
     }
@@ -11417,6 +11483,7 @@ mod tests {
             st_ctime_sec: 0,
             st_ctime_nsec: 0,
             _pad: 0,
+            st_rdev: 0,
         }
     }
 
@@ -11576,6 +11643,7 @@ mod tests {
                 st_ctime_sec: 0,
                 st_ctime_nsec: 0,
                 _pad: 0,
+                st_rdev: 0,
             })
         }
 
@@ -11604,6 +11672,7 @@ mod tests {
                 st_ctime_sec: 0,
                 st_ctime_nsec: 0,
                 _pad: 0,
+                st_rdev: 0,
             })
         }
 
@@ -11633,6 +11702,7 @@ mod tests {
                 st_ctime_sec: 0,
                 st_ctime_nsec: 0,
                 _pad: 0,
+                st_rdev: 0,
             })
         }
 
@@ -16566,6 +16636,7 @@ mod tests {
                 st_ctime_sec: 0,
                 st_ctime_nsec: 0,
                 _pad: 0,
+                st_rdev: 0,
             })
         }
         fn host_stat(&mut self, path: &[u8]) -> Result<WasmStat, Errno> {
@@ -16586,6 +16657,7 @@ mod tests {
                 st_ctime_sec: 0,
                 st_ctime_nsec: 0,
                 _pad: 0,
+                st_rdev: 0,
             })
         }
         fn host_lstat(&mut self, path: &[u8]) -> Result<WasmStat, Errno> {
@@ -16607,6 +16679,7 @@ mod tests {
                 st_ctime_sec: 0,
                 st_ctime_nsec: 0,
                 _pad: 0,
+                st_rdev: 0,
             })
         }
         fn host_mkdir(&mut self, path: &[u8], _mode: u32) -> Result<(), Errno> {
@@ -19267,6 +19340,7 @@ mod tests {
                     st_ctime_sec: 0,
                     st_ctime_nsec: 0,
                     _pad: 0,
+                    st_rdev: 0,
                 })
             }
             fn host_mkdir(&mut self, _p: &[u8], _m: u32) -> Result<(), Errno> {
@@ -19510,6 +19584,7 @@ mod tests {
                     st_ctime_sec: 0,
                     st_ctime_nsec: 0,
                     _pad: 0,
+                    st_rdev: 0,
                 })
             }
             fn host_mkdir(&mut self, _p: &[u8], _m: u32) -> Result<(), Errno> {
@@ -19754,6 +19829,7 @@ mod tests {
                     st_ctime_sec: 0,
                     st_ctime_nsec: 0,
                     _pad: 0,
+                    st_rdev: 0,
                 })
             }
             fn host_mkdir(&mut self, _p: &[u8], _m: u32) -> Result<(), Errno> {
@@ -20617,6 +20693,26 @@ mod tests {
             wasm_posix_shared::mode::S_IFCHR
         );
         assert_eq!(st.st_ino, VirtualDevice::Fb0.ino());
+        // Non-evdev nodes report no rdev yet.
+        assert_eq!(st.st_rdev, 0);
+    }
+
+    #[test]
+    fn evdev_nodes_stat_with_distinct_char_1364_1365_rdev() {
+        // libinput's path backend identifies an evdev node purely by the
+        // st_rdev it stat()s, so event0/event1 must be distinct and match
+        // the Linux evdev convention (char major 13, minor 64+N).
+        let kbd = virtual_device_stat(VirtualDevice::InputEvent { device: 0 }, 0, 0);
+        let ptr = virtual_device_stat(VirtualDevice::InputEvent { device: 1 }, 0, 0);
+        assert_eq!(kbd.st_rdev, makedev(13, 64));
+        assert_eq!(ptr.st_rdev, makedev(13, 65));
+        assert_ne!(kbd.st_rdev, ptr.st_rdev);
+        // makedev must round-trip through musl's major()/minor() decode.
+        let (major, minor) = (13u64, 64u64);
+        let rdev = kbd.st_rdev;
+        let dec_major = (rdev >> 8) & 0xfff;
+        let dec_minor = (rdev & 0xff) | ((rdev >> 12) & 0xffff_ff00);
+        assert_eq!((dec_major, dec_minor), (major, minor));
     }
 
     #[test]
@@ -23130,6 +23226,37 @@ mod tests {
         // Restore the default so other tests running in parallel see
         // the boot value.
         crate::input::set_canvas_dims(1280, 720);
+    }
+
+    #[test]
+    fn evioc_gphys_and_guniq_return_enoent() {
+        // Virtual devices have no physical location / unique-id node.
+        // libevdev tolerates ENOENT here; ENOTTY would fatal its probe.
+        use wasm_posix_shared::input::{EVIOCGPHYS_NR, EVIOCGUNIQ_NR};
+        let (mut proc, mut host, fd) = open_evdev(620, b"/dev/input/event0");
+        let mut buf = [0u8; 64];
+        for nr in [EVIOCGPHYS_NR, EVIOCGUNIQ_NR] {
+            let req = evioc(2, nr, buf.len() as u32);
+            let err = sys_ioctl(&mut proc, &mut host, fd, req, &mut buf).unwrap_err();
+            assert_eq!(err, Errno::ENOENT);
+        }
+    }
+
+    #[test]
+    fn evioc_gprop_gkey_gled_gsw_return_zeroed_state() {
+        // No input properties, no keys latched, no LEDs, no switches:
+        // the honest current state is all-zero, and the ioctl succeeds
+        // (real Linux never returns ENOTTY for these).
+        use wasm_posix_shared::input::{
+            EVIOCGKEY_NR, EVIOCGLED_NR, EVIOCGPROP_NR, EVIOCGSW_NR,
+        };
+        let (mut proc, mut host, fd) = open_evdev(621, b"/dev/input/event0");
+        for nr in [EVIOCGPROP_NR, EVIOCGKEY_NR, EVIOCGLED_NR, EVIOCGSW_NR] {
+            let mut buf = [0xffu8; 16];
+            let req = evioc(2, nr, buf.len() as u32);
+            sys_ioctl(&mut proc, &mut host, fd, req, &mut buf).unwrap();
+            assert_eq!(buf, [0u8; 16], "nr={nr:#x} must zero-fill the state buffer");
+        }
     }
 
     #[test]

@@ -267,6 +267,74 @@ if ls "$REPO_ROOT"/programs/xkb_*.c >/dev/null 2>&1; then
     done
 fi
 
+# Resolve libevdev and symlink its archive + public header into the sysroot
+# when there are any libevdev_*.c programs to build. Same cached-resolve
+# contract as the libwayland/libxkbcommon blocks above. libevdev is the
+# foundation of the real libinput port (PR5). See
+# docs/plans/2026-07-08-dri-wayland-compositor-plan.md §5 (PR5).
+if ls "$REPO_ROOT"/programs/libevdev_*.c >/dev/null 2>&1; then
+    echo "==> Resolving libevdev for evdev programs..."
+    HOST_TRIPLE="$(rustc -vV | awk '/^host/ {print $2}')"
+    (cd "$REPO_ROOT" && cargo run -p xtask --target "$HOST_TRIPLE" --quiet -- build-deps resolve libevdev >/dev/null)
+    LIBEVDEV_PREFIX="$(cd "$REPO_ROOT" && cargo run -p xtask --target "$HOST_TRIPLE" --quiet -- build-deps path libevdev)"
+
+    ln -sfn "$LIBEVDEV_PREFIX/lib/libevdev.a" "$SYSROOT/lib/libevdev.a"
+    mkdir -p "$SYSROOT/include/libevdev"
+    ln -sfn "$LIBEVDEV_PREFIX/include/libevdev/libevdev.h" "$SYSROOT/include/libevdev/libevdev.h"
+fi
+
+# Resolve mtdev and symlink its archive + headers into the sysroot when
+# there are any mtdev_*.c programs to build. mtdev is the link-only
+# multitouch dependency of the real libinput port (PR5). Same
+# cached-resolve contract as the blocks above. See
+# docs/plans/2026-07-08-dri-wayland-compositor-plan.md §5 (PR5b).
+if ls "$REPO_ROOT"/programs/mtdev_*.c >/dev/null 2>&1; then
+    echo "==> Resolving mtdev for mtdev programs..."
+    HOST_TRIPLE="$(rustc -vV | awk '/^host/ {print $2}')"
+    (cd "$REPO_ROOT" && cargo run -p xtask --target "$HOST_TRIPLE" --quiet -- build-deps resolve mtdev >/dev/null)
+    MTDEV_PREFIX="$(cd "$REPO_ROOT" && cargo run -p xtask --target "$HOST_TRIPLE" --quiet -- build-deps path mtdev)"
+
+    ln -sfn "$MTDEV_PREFIX/lib/libmtdev.a" "$SYSROOT/lib/libmtdev.a"
+    ln -sfn "$MTDEV_PREFIX/include/mtdev.h" "$SYSROOT/include/mtdev.h"
+    ln -sfn "$MTDEV_PREFIX/include/mtdev-plumbing.h" "$SYSROOT/include/mtdev-plumbing.h"
+fi
+
+# Resolve libudev and symlink its archive + header into the sysroot when
+# there are any libudev_*.c programs to build. libudev is the input_id
+# classification shim the real libinput port (PR5) needs to accept
+# devices. Same cached-resolve contract as the blocks above. See
+# docs/plans/2026-07-08-dri-wayland-compositor-plan.md §5 (PR5b).
+if ls "$REPO_ROOT"/programs/libudev_*.c >/dev/null 2>&1; then
+    echo "==> Resolving libudev for libudev programs..."
+    HOST_TRIPLE="$(rustc -vV | awk '/^host/ {print $2}')"
+    (cd "$REPO_ROOT" && cargo run -p xtask --target "$HOST_TRIPLE" --quiet -- build-deps resolve libudev >/dev/null)
+    LIBUDEV_PREFIX="$(cd "$REPO_ROOT" && cargo run -p xtask --target "$HOST_TRIPLE" --quiet -- build-deps path libudev)"
+
+    ln -sfn "$LIBUDEV_PREFIX/lib/libudev.a" "$SYSROOT/lib/libudev.a"
+    ln -sfn "$LIBUDEV_PREFIX/include/libudev.h" "$SYSROOT/include/libudev.h"
+fi
+
+# Resolve libinput (real 1.25.0) for the libinput smoke. Unlike the
+# libinput-lite stub SDL2 links (see the sdl2 block), this is the real
+# path-backend library the Wayland compositor will use (PR5c). The smoke is
+# built in a dedicated pass after the program loop (build_program can't add
+# the real header's -I), and links the real archive from its cache prefix by
+# full path — deliberately NOT via $SYSROOT/lib/libinput.a, which belongs to
+# the lite stub — so the two libinput consumers never collide. Its deps
+# (libevdev + libudev shim + mtdev stub) resolve transitively; we capture
+# each prefix for the smoke's link line. See
+# docs/plans/2026-07-08-dri-wayland-compositor-plan.md §5 (PR5c).
+LIBINPUT_REAL_PREFIX=""
+if ls "$REPO_ROOT"/programs/libinput_smoke.c >/dev/null 2>&1; then
+    echo "==> Resolving libinput (real 1.25.0) for the libinput smoke..."
+    HOST_TRIPLE="$(rustc -vV | awk '/^host/ {print $2}')"
+    (cd "$REPO_ROOT" && cargo run -p xtask --target "$HOST_TRIPLE" --quiet -- build-deps resolve libinput >/dev/null)
+    LIBINPUT_REAL_PREFIX="$(cd "$REPO_ROOT" && cargo run -p xtask --target "$HOST_TRIPLE" --quiet -- build-deps path libinput)"
+    LIBINPUT_LIBEVDEV_PREFIX="$(cd "$REPO_ROOT" && cargo run -p xtask --target "$HOST_TRIPLE" --quiet -- build-deps path libevdev)"
+    LIBINPUT_LIBUDEV_PREFIX="$(cd "$REPO_ROOT" && cargo run -p xtask --target "$HOST_TRIPLE" --quiet -- build-deps path libudev)"
+    LIBINPUT_MTDEV_PREFIX="$(cd "$REPO_ROOT" && cargo run -p xtask --target "$HOST_TRIPLE" --quiet -- build-deps path mtdev)"
+fi
+
 echo "Building user programs..."
 for src in "$REPO_ROOT/programs/"*.c; do
     [ -f "$src" ] || continue
@@ -312,6 +380,26 @@ for src in "$REPO_ROOT/programs/"*.c; do
             build_program "$src" "$OUT_DIR_32" \
                 "$SYSROOT/lib/libxkbcommon.a"
             ;;
+        libevdev_smoke.c)
+            # evdev capability probe + event decode against the libevdev port.
+            build_program "$src" "$OUT_DIR_32" \
+                "$SYSROOT/lib/libevdev.a"
+            ;;
+        mtdev_smoke.c)
+            # Link-only proof of the mtdev stub + not-protocol-A check.
+            build_program "$src" "$OUT_DIR_32" \
+                "$SYSROOT/lib/libmtdev.a"
+            ;;
+        libudev_input_id_smoke.c)
+            # input_id classification through the libudev shim's real API.
+            build_program "$src" "$OUT_DIR_32" \
+                "$SYSROOT/lib/libudev.a"
+            ;;
+        libinput_smoke.c)
+            # Real libinput 1.25.0 path backend — built in a dedicated pass
+            # after this loop (needs the real <libinput.h> include + its full
+            # dep set, kept isolated from the libinput-lite stub). Skip here.
+            ;;
         sdl2_kmsdrm_smoke.c)
             # SDL2 KMSDRM backend links statically against libdrm + libgbm.
             # Audio + evdev objects are present in libSDL2.a too but the
@@ -338,6 +426,28 @@ for src in "$REPO_ROOT/programs/"*.c; do
             ;;
     esac
 done
+
+# libinput smoke — real libinput 1.25.0. Dedicated compile/link (not
+# build_program): it needs the real <libinput.h> from the resolved prefix,
+# kept off the sysroot so $SYSROOT/lib/libinput.a stays the libinput-lite
+# stub SDL2 links. -I on the real prefix wins over the sysroot's stale lite
+# libinput.h. Link order: dependents before dependencies (libinput →
+# libevdev / libudev / mtdev → libc). See PR5c.
+if [ -n "$LIBINPUT_REAL_PREFIX" ] && [ -f "$REPO_ROOT/programs/libinput_smoke.c" ]; then
+    libinput_wasm="$OUT_DIR_32/libinput_smoke.wasm"
+    echo "  Compiling libinput_smoke (real libinput 1.25.0)..."
+    "$CC" "${CFLAGS[@]}" "-I$LIBINPUT_REAL_PREFIX/include" \
+        "$REPO_ROOT/programs/libinput_smoke.c" \
+        "${LINK_PRE_LIBS[@]}" \
+        "$LIBINPUT_REAL_PREFIX/lib/libinput.a" \
+        "$LIBINPUT_LIBEVDEV_PREFIX/lib/libevdev.a" \
+        "$LIBINPUT_LIBUDEV_PREFIX/lib/libudev.a" \
+        "$LIBINPUT_MTDEV_PREFIX/lib/libmtdev.a" \
+        "${LINK_POST_LIBS[@]}" \
+        -o "$libinput_wasm"
+    "$FORK_INSTRUMENT" "$libinput_wasm" -o "$libinput_wasm.instr"
+    mv "$libinput_wasm.instr" "$libinput_wasm"
+fi
 
 for src in "$REPO_ROOT/programs/"*.cpp; do
     [ -f "$src" ] || continue

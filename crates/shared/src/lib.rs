@@ -39,7 +39,16 @@ pub mod host_abi;
 ///     shrinks 64→56 (mapped at MMAP_OFFSET_STATUS_NEW =
 ///     `__snd_pcm_mmap_status64`). `WpkAlsaPcmMmapControl` shrinks
 ///     64→12 (= `__snd_pcm_mmap_control64`).
-pub const ABI_VERSION: u32 = 16;
+/// 17: `WasmStat` grows 88→96 with a trailing `st_rdev: u64` (offset 88,
+///     the slot the libc `struct kstat` already reserved). Virtual
+///     device nodes now report a Linux-encoded `dev_t` — `/dev/input/event{N}`
+///     is char major 13, minor 64+N — so a `stat().st_rdev` uniquely
+///     identifies an evdev node. Required by the real libinput path
+///     backend (`udev_device_new_from_devnum`), which is handed only the
+///     `st_rdev` and must recover the devnode from it. Also folds in the
+///     other DRI-branch ABI changes accumulated since v16 (the WpkDrm/Gl
+///     struct removals and syscall-descriptor edits) under one bump.
+pub const ABI_VERSION: u32 = 17;
 
 /// Syscall numbers for the POSIX kernel interface.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -736,7 +745,10 @@ pub mod channel {
 /// Stat structure for the Wasm POSIX interface.
 ///
 /// Uses `repr(C)` for a stable, predictable memory layout that can be
-/// shared across the Wasm shared-memory boundary.
+/// shared across the Wasm shared-memory boundary. 96 bytes total; the
+/// libc side reads it into `struct kstat` (see
+/// `libc/musl-overlay/arch/*/kstat.h`), whose `st_rdev` sits at offset
+/// 88 to match `st_rdev` below.
 #[derive(Debug, Clone, Copy)]
 #[repr(C)]
 pub struct WasmStat {
@@ -754,6 +766,12 @@ pub struct WasmStat {
     pub st_ctime_sec: u64,
     pub st_ctime_nsec: u32,
     pub _pad: u32,
+    /// Device ID for a special file (char/block device), encoded like
+    /// Linux `dev_t` (see musl `makedev`). 0 for anything that is not a
+    /// device node. Offset 88 — kept last so the layout through
+    /// `st_ctime_nsec`/`_pad` is unchanged; the libc `struct kstat`
+    /// already reserves `st_rdev` at this offset.
+    pub st_rdev: u64,
 }
 
 /// Directory entry structure for the Wasm POSIX interface.
@@ -2736,6 +2754,34 @@ pub mod input {
     /// `EVIOCGABS(axis)` — `_IOR('E', 0x40 + axis, WpkInputAbsinfo)`.
     /// `axis` is a small integer (`ABS_X = 0`, `ABS_Y = 1`, …).
     pub const EVIOCGABS_NR_BASE: u32 = 0x40;
+
+    // Variable-length device-introspection reads (`_IOC(_IOC_READ, 'E',
+    // nr, len)`), matched on `nr`. libevdev's `libevdev_set_fd` issues
+    // every one of these during construction and treats most as fatal on
+    // failure (see docs/plans/2026-07-08-dri-wayland-compositor-plan.md
+    // §5 PR5). Our virtual devices have no phys/uniq node, no input
+    // properties, and no keys/LEDs/switches currently latched, so the
+    // kernel answers with the honest empty state.
+
+    /// `EVIOCGPHYS(len)` — physical location string. Virtual devices have
+    /// none; the kernel returns `ENOENT`, which libevdev treats as "unset".
+    pub const EVIOCGPHYS_NR: u32 = 0x07;
+
+    /// `EVIOCGUNIQ(len)` — unique identifier string. As with phys, unset →
+    /// `ENOENT`.
+    pub const EVIOCGUNIQ_NR: u32 = 0x08;
+
+    /// `EVIOCGPROP(len)` — `INPUT_PROP_*` bitmap. No properties → zeroed.
+    pub const EVIOCGPROP_NR: u32 = 0x09;
+
+    /// `EVIOCGKEY(len)` — currently-pressed key/button state bitmap.
+    pub const EVIOCGKEY_NR: u32 = 0x18;
+
+    /// `EVIOCGLED(len)` — current LED state bitmap.
+    pub const EVIOCGLED_NR: u32 = 0x19;
+
+    /// `EVIOCGSW(len)` — current switch state bitmap.
+    pub const EVIOCGSW_NR: u32 = 0x1b;
 
     /// `_IOW('E', 0x90, int)` = `0x4004_4590`.
     pub const EVIOCGRAB: u32 = 0x4004_4590;

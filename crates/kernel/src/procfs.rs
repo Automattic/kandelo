@@ -439,6 +439,7 @@ pub fn procfs_stat(entry: &ProcfsEntry, content_size: u64, follow_symlinks: bool
             st_ctime_sec: 0,
             st_ctime_nsec: 0,
             _pad: 0,
+            st_rdev: 0,
         };
     }
 
@@ -459,6 +460,7 @@ pub fn procfs_stat(entry: &ProcfsEntry, content_size: u64, follow_symlinks: bool
             st_ctime_sec: 0,
             st_ctime_nsec: 0,
             _pad: 0,
+            st_rdev: 0,
         };
     }
 
@@ -479,6 +481,7 @@ pub fn procfs_stat(entry: &ProcfsEntry, content_size: u64, follow_symlinks: bool
         st_ctime_sec: 0,
         st_ctime_nsec: 0,
         _pad: 0,
+        st_rdev: 0,
     }
 }
 

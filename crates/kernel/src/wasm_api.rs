@@ -298,6 +298,7 @@ impl HostIO for WasmHostIO {
             st_ctime_sec: 0,
             st_ctime_nsec: 0,
             _pad: 0,
+            st_rdev: 0,
         };
         let stat_ptr = &mut stat as *mut WasmStat as *mut u8;
         let result = unsafe { host_fstat(handle, stat_ptr) };
@@ -321,6 +322,7 @@ impl HostIO for WasmHostIO {
             st_ctime_sec: 0,
             st_ctime_nsec: 0,
             _pad: 0,
+            st_rdev: 0,
         };
         let stat_ptr = &mut stat as *mut WasmStat as *mut u8;
         let result = unsafe { host_stat(path.as_ptr(), path.len() as u32, stat_ptr) };
@@ -344,6 +346,7 @@ impl HostIO for WasmHostIO {
             st_ctime_sec: 0,
             st_ctime_nsec: 0,
             _pad: 0,
+            st_rdev: 0,
         };
         let stat_ptr = &mut stat as *mut WasmStat as *mut u8;
         let result = unsafe { host_lstat(path.as_ptr(), path.len() as u32, stat_ptr) };

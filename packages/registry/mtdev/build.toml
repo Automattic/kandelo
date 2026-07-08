@@ -1,0 +1,19 @@
+script_path = "packages/registry/mtdev/build-mtdev.sh"
+repo_url    = "https://github.com/Automattic/kandelo.git"
+commit      = "126f07f12"
+revision    = 1
+
+# The bundled stub source + headers ARE the package (no upstream fetch),
+# so all three are part of the cache key: editing any of them must
+# invalidate cached archives so consumers rebuild against the new bytes.
+# They are tracked in git, so the resolver can hash them on a clean
+# checkout.
+inputs = [
+  "packages/registry/mtdev/build-mtdev.sh",
+  "packages/registry/mtdev/src/mtdev_stub.c",
+  "packages/registry/mtdev/include/mtdev.h",
+  "packages/registry/mtdev/include/mtdev-plumbing.h",
+]
+
+[binary]
+index_url = "https://github.com/Automattic/kandelo/releases/download/binaries-abi-v{abi}/index.toml"

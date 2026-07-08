@@ -1,11 +1,12 @@
 /* bits/stat.h — wasm64posix struct stat
  *
- * The kernel's WasmStat writes the first 88 bytes of this structure
- * (through st_ctim). The remaining fields (st_rdev, st_blksize,
- * st_blocks) are populated by musl's fstatat conversion logic or
- * remain zero.
+ * The kernel's WasmStat writes the first 96 bytes of this structure
+ * (through st_rdev). st_rdev carries a Linux-encoded dev_t for device
+ * nodes (e.g. /dev/input/event0 = 13:64). The remaining fields
+ * (st_blksize, st_blocks) are populated by musl's fstatat conversion
+ * logic or remain zero.
  *
- * Field layout through st_ctim MUST match crates/shared/src/lib.rs.
+ * Field layout through st_rdev MUST match crates/shared/src/lib.rs.
  */
 
 struct stat {
@@ -19,8 +20,8 @@ struct stat {
 	struct timespec    st_atim;         /* offset 40  (16 bytes on wasm64) */
 	struct timespec    st_mtim;         /* offset 56  (16 bytes) */
 	struct timespec    st_ctim;         /* offset 72  (16 bytes) */
-	/* --- end of kernel WasmStat (88 bytes) --- */
-	unsigned long long st_rdev;         /* offset 88 */
+	unsigned long long st_rdev;         /* offset 88, from kernel WasmStat */
+	/* --- end of kernel WasmStat (96 bytes) --- */
 	int                st_blksize;      /* offset 96 */
 	long long          st_blocks;       /* offset 100 (pad to 104? or 108) */
 };
