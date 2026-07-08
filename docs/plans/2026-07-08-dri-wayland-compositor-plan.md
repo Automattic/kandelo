@@ -97,6 +97,18 @@ Reusable across the port regardless of protocol (already scheduled by the
 old plan's Phases A/B): real **libxkbcommon**, real **libinput**, KMS master,
 EGL / `gbm_surface`, prime-fd + `SCM_RIGHTS`, the GL multiplexer.
 
+**PR4 result (2026-07-08).** `libxkbcommon` 1.7.0 is ported to wasm32
+(`packages/registry/libxkbcommon/`, `libxkbcommon.a`). Pinned to 1.7.0 —
+the last release with a stable standalone dist tarball (newer releases are
+GitHub-only auto-archives with less durable checksums); the TEXT_V1 keymap
+format the port needs is version-stable. Built with the alsa-lib /
+libwayland pattern (bypass meson; compile the core TUs against a
+hand-curated `config.h`), with `bison` (flake.nix) generating the xkbcomp
+parser. Gate: `host/test/libxkbcommon-smoke.test.ts` runs
+`programs/xkb_smoke.c` — compiles a self-contained keymap with
+`xkb_keymap_new_from_string` and translates keycodes+modifiers to
+keysyms/UTF-8 (base `a`, Shift→`A`, EuroSign round-trip) under the kernel.
+
 ---
 
 ## §4. The libffi de-risk (crux of the whole pivot)
@@ -151,7 +163,7 @@ Client and compositor land as a stack of small PRs. v1 target is milestone
 | **PR1** | **libffi Wayland-scoped shim** (`packages/registry/libffi/`) + trampoline proof. ← *this branch* |
 | PR2 | `wayland-scanner` (host tool) + `wayland-protocols` (XML data) packages |
 | PR3 | `libwayland` (client + server) wasm32 port, linked against the PR1 shim |
-| PR4 | real `libxkbcommon` port (keymap translation; compositor + clients link it) |
+| PR4 | real `libxkbcommon` port (keymap translation; compositor + clients link it). **DONE.** |
 | PR5 | real `libinput` port (replaces `libinput-lite` stub: gestures, palm rejection, multi-device) |
 | PR6 | `examples/programs/wlcompositor/` — PID-2 server: core + `wl_shm` + `xdg_shell` + `wl_seat` + `wl_output` |
 | **PR7** | `examples/libs/libkwl/` toolkit + `wlterm` — **BROWSER GATE, milestone D′** |

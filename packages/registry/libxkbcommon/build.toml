@@ -1,0 +1,17 @@
+script_path = "packages/registry/libxkbcommon/build-libxkbcommon.sh"
+repo_url    = "https://github.com/Automattic/kandelo.git"
+commit      = "38670846e"
+revision    = 1
+
+# The hand-curated config.h is part of the cache key: editing it (e.g.
+# flipping a HAVE_* to track a sysroot change) must invalidate cached
+# archives so consumers rebuild against the corrected feature set. The
+# build script + config.h are tracked in git (the fetched `*-src/` tree
+# is gitignored), so the resolver can hash them on a clean checkout.
+inputs = [
+  "packages/registry/libxkbcommon/build-libxkbcommon.sh",
+  "packages/registry/libxkbcommon/src/config.h",
+]
+
+[binary]
+index_url = "https://github.com/Automattic/kandelo/releases/download/binaries-abi-v{abi}/index.toml"
