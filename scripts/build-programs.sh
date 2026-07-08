@@ -250,6 +250,23 @@ if ls "$REPO_ROOT"/programs/wl_*.c >/dev/null 2>&1; then
     done
 fi
 
+# Resolve libxkbcommon and symlink its archive + public headers into the
+# sysroot when there are any xkb_*.c programs to build. Same cached-resolve
+# contract as the libwayland block above. See
+# docs/plans/2026-07-08-dri-wayland-compositor-plan.md (PR4).
+if ls "$REPO_ROOT"/programs/xkb_*.c >/dev/null 2>&1; then
+    echo "==> Resolving libxkbcommon for XKB programs..."
+    HOST_TRIPLE="$(rustc -vV | awk '/^host/ {print $2}')"
+    (cd "$REPO_ROOT" && cargo run -p xtask --target "$HOST_TRIPLE" --quiet -- build-deps resolve libxkbcommon >/dev/null)
+    LIBXKB_PREFIX="$(cd "$REPO_ROOT" && cargo run -p xtask --target "$HOST_TRIPLE" --quiet -- build-deps path libxkbcommon)"
+
+    ln -sfn "$LIBXKB_PREFIX/lib/libxkbcommon.a" "$SYSROOT/lib/libxkbcommon.a"
+    mkdir -p "$SYSROOT/include/xkbcommon"
+    for h in "$LIBXKB_PREFIX/include/xkbcommon"/*.h; do
+        ln -sfn "$h" "$SYSROOT/include/xkbcommon/$(basename "$h")"
+    done
+fi
+
 echo "Building user programs..."
 for src in "$REPO_ROOT/programs/"*.c; do
     [ -f "$src" ] || continue
@@ -289,6 +306,11 @@ for src in "$REPO_ROOT/programs/"*.c; do
                 "$SYSROOT/lib/libwayland-server.a" \
                 "$SYSROOT/lib/libwayland-client.a" \
                 "$SYSROOT/lib/libffi.a"
+            ;;
+        xkb_smoke.c)
+            # Keymap compile + state translation against the libxkbcommon port.
+            build_program "$src" "$OUT_DIR_32" \
+                "$SYSROOT/lib/libxkbcommon.a"
             ;;
         sdl2_kmsdrm_smoke.c)
             # SDL2 KMSDRM backend links statically against libdrm + libgbm.
