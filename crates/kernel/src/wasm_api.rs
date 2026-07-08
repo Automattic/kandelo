@@ -7458,6 +7458,38 @@ pub extern "C" fn kernel_getsockopt(
         return result;
     }
 
+    // Handle struct ucred { pid_t pid; uid_t uid; gid_t gid; } (SO_PEERCRED).
+    // 12 bytes, three little-endian u32s. libwayland's wl_client_create fails
+    // outright if this errors, so every accepted Wayland client depends on it.
+    if level == SOL_SOCKET && optname == SO_PEERCRED {
+        let result = match syscalls::sys_getsockopt_peercred(proc, fd) {
+            Ok((pid, uid, gid)) => {
+                let avail = if !optlen_ptr.is_null() {
+                    unsafe { *optlen_ptr as usize }
+                } else {
+                    12
+                };
+                let write_len = avail.min(12);
+                let ucred = [pid, uid, gid];
+                let bytes: &[u8] = unsafe {
+                    slice::from_raw_parts(ucred.as_ptr() as *const u8, 12)
+                };
+                let out = unsafe { slice::from_raw_parts_mut(optval_ptr, write_len) };
+                out.copy_from_slice(&bytes[..write_len]);
+                if !optlen_ptr.is_null() {
+                    unsafe {
+                        *optlen_ptr = write_len as u32;
+                    }
+                }
+                0
+            }
+            Err(e) => -(e as i32),
+        };
+        let mut host = WasmHostIO;
+        deliver_pending_signals(proc, &mut host);
+        return result;
+    }
+
     // Handle struct timeval options (SO_RCVTIMEO, SO_SNDTIMEO)
     if level == SOL_SOCKET && (optname == SO_RCVTIMEO || optname == SO_SNDTIMEO) {
         let result = match syscalls::sys_getsockopt_timeout(proc, fd, optname) {

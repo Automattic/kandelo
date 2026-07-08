@@ -811,12 +811,6 @@ export const SYSCALL_ARGS: Record<number, SyscallArgDesc[]> = {
     { argIndex: 1, direction: "out", size: { type: "fixed", size: 4 } },
     { argIndex: 2, direction: "out", size: { type: "fixed", size: 4 } },
   ],
-  137: [
-    { argIndex: 1, direction: "in", size: { type: "arg", argIndex: 2 } },
-  ],
-  138: [
-    { argIndex: 1, direction: "inout", size: { type: "arg", argIndex: 2 } },
-  ],
   139: [
     { argIndex: 1, direction: "out", size: { type: "fixed", size: 4 } },
     { argIndex: 3, direction: "out", size: { type: "fixed", size: 32 } },

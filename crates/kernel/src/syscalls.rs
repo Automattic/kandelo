@@ -7181,6 +7181,24 @@ pub fn sys_getsockopt_timeout(proc: &Process, fd: i32, optname: u32) -> Result<u
     })
 }
 
+/// Peer credentials for `SO_PEERCRED`, as `(pid, uid, gid)`.
+///
+/// This kernel is single-user and tracks no per-connection peer identity, so it
+/// reports the querying process's own credentials. For the canonical libwayland
+/// setup (a socketpair, or same-process connect/accept) the peer *is* this
+/// process, so the values are exact; libwayland uses them informationally
+/// (`wl_client_get_credentials`), not for dispatch.
+pub fn sys_getsockopt_peercred(proc: &Process, fd: i32) -> Result<(u32, u32, u32), Errno> {
+    let entry = proc.fd_table.get(fd)?;
+    let ofd = proc.ofd_table.get(entry.ofd_ref.0).ok_or(Errno::EBADF)?;
+    if ofd.file_type != FileType::Socket {
+        return Err(Errno::ENOTSOCK);
+    }
+    let sock_idx = (-(ofd.host_handle + 1)) as usize;
+    proc.sockets.get(sock_idx).ok_or(Errno::EBADF)?;
+    Ok((proc.pid, proc.uid, proc.gid))
+}
+
 /// Set socket option value.
 pub fn sys_setsockopt(
     proc: &mut Process,
@@ -14033,6 +14051,46 @@ mod tests {
         use wasm_posix_shared::socket::*;
         let result = sys_getsockopt(&mut proc, 0, SOL_SOCKET, SO_TYPE);
         assert_eq!(result, Err(Errno::ENOTSOCK));
+    }
+
+    #[test]
+    fn test_getsockopt_peercred_socketpair() {
+        // libwayland's server calls SO_PEERCRED on every accepted client and
+        // refuses it on error. For the canonical socketpair setup the peer is
+        // this same process, so pid/uid/gid are the querying process's own.
+        let mut proc = Process::new(7);
+        let mut host = MockHostIO::new();
+        use wasm_posix_shared::socket::*;
+        let (fd0, fd1) = sys_socketpair(&mut proc, &mut host, AF_UNIX, SOCK_STREAM, 0).unwrap();
+        // Process::new defaults to root (uid=gid=0); pid is what we passed.
+        assert_eq!(sys_getsockopt_peercred(&proc, fd0), Ok((7, 0, 0)));
+        assert_eq!(sys_getsockopt_peercred(&proc, fd1), Ok((7, 0, 0)));
+    }
+
+    #[test]
+    fn test_getsockopt_peercred_reflects_credentials() {
+        // The reported credentials track the process's current uid/gid after a
+        // privilege drop, not a hardcoded 0/0.
+        let mut proc = Process::new(42);
+        proc.uid = 1000;
+        proc.gid = 1000;
+        let mut host = MockHostIO::new();
+        use wasm_posix_shared::socket::*;
+        let fd = sys_socket(&mut proc, &mut host, AF_UNIX, SOCK_STREAM, 0).unwrap();
+        assert_eq!(sys_getsockopt_peercred(&proc, fd), Ok((42, 1000, 1000)));
+    }
+
+    #[test]
+    fn test_getsockopt_peercred_not_socket() {
+        // fd 1 (stdout) is a char device, not a socket → ENOTSOCK.
+        let proc = Process::new(1);
+        assert_eq!(sys_getsockopt_peercred(&proc, 1), Err(Errno::ENOTSOCK));
+    }
+
+    #[test]
+    fn test_getsockopt_peercred_bad_fd() {
+        let proc = Process::new(1);
+        assert_eq!(sys_getsockopt_peercred(&proc, 999), Err(Errno::EBADF));
     }
 
     #[test]

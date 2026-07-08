@@ -587,6 +587,10 @@ pub mod socket {
     pub const SO_TYPE: u32 = 3;
     pub const SO_DOMAIN: u32 = 39;
     pub const SO_ACCEPTCONN: u32 = 30;
+    /// `SO_PEERCRED` (Linux value). Returns `struct ucred { pid, uid, gid }`
+    /// for a connected AF_UNIX socket. libwayland's `wl_client_create` calls
+    /// this on every accepted client and fails if it errors.
+    pub const SO_PEERCRED: u32 = 17;
     pub const SHUT_RD: u32 = 0;
     pub const SHUT_WR: u32 = 1;
     pub const SHUT_RDWR: u32 = 2;

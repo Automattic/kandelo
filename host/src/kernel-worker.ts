@@ -808,6 +808,12 @@ export class CentralizedKernelWorker {
    *  to convert epoll_pwait to poll without calling kernel_handle_channel
    *  (which crashes in Chrome for epoll_pwait due to a suspected V8 bug). */
   private epollInterests = new Map<string, Array<{ fd: number; events: number; data: bigint }>>();
+  /** Absolute expiry (ms, Date.now basis) for an in-flight blocking
+   *  epoll_pwait, keyed by channelOffset. Persisted because wakeup-driven
+   *  re-entries (retrySyscall) re-dispatch with no deadline arg; without this
+   *  they would reset the timeout on every readiness poke and a drained fd set
+   *  would never time out. Cleared when the wait completes. */
+  private epollWaitDeadlines = new Map<number, number>();
   private lockTable: SharedLockTable | null = null;
   /** Per-process shared memory mappings: pid → Map<addr, {segId, size}> */
   private shmMappings = new Map<number, Map<number, { segId: number; size: number }>>();
@@ -1535,6 +1541,13 @@ export class CentralizedKernelWorker {
       if (key.startsWith(`${pid}:`)) {
         this.epollInterests.delete(key);
       }
+    }
+
+    // Drop any in-flight epoll_pwait deadlines for this process's channels so
+    // a channelOffset reused by a future process can't inherit a stale (often
+    // already-expired) deadline and return 0 immediately.
+    for (const [offset, entry] of this.pendingPollRetries) {
+      if (entry.channel.pid === pid) this.epollWaitDeadlines.delete(offset);
     }
 
     this.releaseAdvisoryLocksForPid(pid);
@@ -4550,7 +4563,41 @@ export class CentralizedKernelWorker {
     const timeoutMs = origArgs[3];
     // origArgs[4] = sigmask ptr (process-space), origArgs[5] = sigset size
 
+    // Establish the finite-timeout deadline once, then reuse the persisted one
+    // on retry re-entries (see epollWaitDeadlines). timeoutMs === 0 →
+    // non-blocking (handled below); < 0 → wait forever (no deadline).
+    let effectiveDeadline = -1;
+    if (timeoutMs > 0) {
+      effectiveDeadline =
+        this.epollWaitDeadlines.get(channel.channelOffset) ??
+        Date.now() + timeoutMs;
+      this.epollWaitDeadlines.set(channel.channelOffset, effectiveDeadline);
+    }
+    const expired = effectiveDeadline > 0 && Date.now() >= effectiveDeadline;
+    // Clear the persisted deadline when the wait resolves (any non-retry exit).
+    const clearDeadline = () => this.epollWaitDeadlines.delete(channel.channelOffset);
+    const scheduleEpollRetry = (pipeIndices: number[], acceptIndices?: number[]) => {
+      const retryFn = () => {
+        this.pendingPollRetries.delete(channel.channelOffset);
+        if (this.processes.has(channel.pid)) {
+          this.handleEpollPwait(channel, syscallNr, origArgs);
+        }
+      };
+      const delay =
+        effectiveDeadline > 0
+          ? Math.max(1, Math.min(10, effectiveDeadline - Date.now()))
+          : 10;
+      const timer = setTimeout(retryFn, delay);
+      this.pendingPollRetries.set(channel.channelOffset, {
+        timer,
+        channel,
+        pipeIndices,
+        acceptIndices,
+      });
+    };
+
     if (maxevents <= 0) {
+      clearDeadline();
       this.completeChannelRaw(channel, -22, 22); // -EINVAL
       this.relistenChannel(channel);
       return;
@@ -4559,28 +4606,22 @@ export class CentralizedKernelWorker {
     const key = `${channel.pid}:${epfd}`;
     const interests = this.epollInterests.get(key);
     if (!interests) {
+      clearDeadline();
       this.completeChannelRaw(channel, -9, 9); // -EBADF
       this.relistenChannel(channel);
       return;
     }
 
     if (interests.length === 0) {
-      // No interests registered — return 0 immediately for timeout=0,
-      // or block (EAGAIN) for non-zero timeout.
-      if (timeoutMs === 0) {
+      // No interests registered — return 0 immediately for timeout=0 or once
+      // a finite timeout has elapsed; otherwise retry with delay.
+      if (timeoutMs === 0 || expired) {
+        clearDeadline();
         this.completeChannelRaw(channel, 0, 0);
         this.relistenChannel(channel);
         return;
       }
-      // For non-zero timeout with no interests, retry with delay to avoid starvation
-      const retryFn = () => {
-        this.pendingPollRetries.delete(channel.channelOffset);
-        if (this.processes.has(channel.pid)) {
-          this.handleEpollPwait(channel, syscallNr, origArgs);
-        }
-      };
-      const timer = setTimeout(retryFn, 10);
-      this.pendingPollRetries.set(channel.channelOffset, { timer, channel, pipeIndices: [] });
+      scheduleEpollRetry([]);
       return;
     }
 
@@ -4601,6 +4642,7 @@ export class CentralizedKernelWorker {
 
     if (pollfdSize > CH_DATA_SIZE) {
       // Too many fds — unlikely but handle gracefully
+      clearDeadline();
       this.completeChannelRaw(channel, -22, 22); // -EINVAL
       this.relistenChannel(channel);
       return;
@@ -4650,6 +4692,7 @@ export class CentralizedKernelWorker {
 
     // If poll returned error (not EAGAIN), propagate it
     if (retVal < 0 && errVal !== EAGAIN) {
+      clearDeadline();
       this.completeChannelRaw(channel, retVal, errVal);
       this.relistenChannel(channel);
       return;
@@ -4681,14 +4724,17 @@ export class CentralizedKernelWorker {
 
     // If we got events, return them
     if (readyCount > 0) {
+      clearDeadline();
       this.completeChannelRaw(channel, readyCount, 0);
       this.relistenChannel(channel);
       return;
     }
 
-    // No events ready — handle timeout
-    if (timeoutMs === 0) {
-      // Non-blocking: return 0 events
+    // No events ready — handle timeout. Non-blocking (timeout=0) or an
+    // elapsed finite timeout returns 0 events (epoll_wait's timeout path);
+    // otherwise block and retry.
+    if (timeoutMs === 0 || expired) {
+      clearDeadline();
       this.completeChannelRaw(channel, 0, 0);
       this.relistenChannel(channel);
       return;
@@ -4696,22 +4742,10 @@ export class CentralizedKernelWorker {
 
     // Blocking: retry via setTimeout to avoid starving other processes.
     // Pipe-based wakeup (via wakeAllBlockedRetries) provides instant wakeup
-    // when data arrives; setTimeout is only a fallback.
+    // when data arrives; setTimeout is only a fallback. The retry re-checks
+    // the deadline so a permanently-drained fd set eventually returns 0.
     const { pipeIndices, acceptIndices } = this.resolveEpollReadinessIndices(channel.pid);
-
-    const retryFn = () => {
-      this.pendingPollRetries.delete(channel.channelOffset);
-      if (this.processes.has(channel.pid)) {
-        this.handleEpollPwait(channel, syscallNr, origArgs);
-      }
-    };
-    const timer = setTimeout(retryFn, 10);
-    this.pendingPollRetries.set(channel.channelOffset, {
-      timer,
-      channel,
-      pipeIndices,
-      acceptIndices,
-    });
+    scheduleEpollRetry(pipeIndices, acceptIndices);
   }
 
   // ---- Network interface ioctl host-side handlers ----
