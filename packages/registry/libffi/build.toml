@@ -1,0 +1,7 @@
+script_path = "packages/registry/libffi/build-libffi.sh"
+repo_url    = "https://github.com/Automattic/kandelo.git"
+commit      = "1dc10fcc1761475964c0108628a800c3c5e468e5"
+revision    = 1
+
+[binary]
+index_url = "https://github.com/Automattic/kandelo/releases/download/binaries-abi-v{abi}/index.toml"
