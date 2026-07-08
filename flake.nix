@@ -72,6 +72,19 @@
             pkgs.git
             pkgs.binaryen
             pkgs.wabt
+            # wayland-scanner — host code generator for the Wayland DRI
+            # port (docs/plans/2026-07-08-dri-wayland-compositor-plan.md).
+            # It turns protocol XML (packages/registry/wayland-protocols/)
+            # into C marshalling glue that consumers compile to wasm32.
+            # This is the split `-bin` derivation (just the generator, no
+            # libwayland), so it is darwin+linux clean — unlike the full
+            # `wayland` library, whose meta.badPlatforms includes darwin
+            # and which we therefore do NOT add here (it is Linux-only and
+            # would break `nix develop` on the team's Macs). Pinned to
+            # 1.24.0 via nixpkgs-25.11; PR3's libwayland must pin the same
+            # wayland version so its runtime matches the generated glue.
+            # Consumers declare it as a `[[host_tools]]` prerequisite.
+            pkgs.wayland-scanner
             # cbindgen — required by Mozilla's JS/SpiderMonkey configure
             # path once Rust support is enabled.
             pkgs.rust-cbindgen
