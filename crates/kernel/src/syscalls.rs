@@ -6541,6 +6541,19 @@ fn udp_socket_accepts_datagram(
 }
 
 fn udp_queue_datagram(sock: &mut crate::socket::SocketInfo, datagram: crate::socket::Datagram) {
+    // This is a fixed internal queue limit; SO_RCVBUF is currently advisory.
+    // UDP is unreliable, so a full receive queue drops the incoming datagram
+    // while preserving the order of datagrams that were already accepted.
+    if sock.dgram_queue.len() >= UDP_DATAGRAM_QUEUE_LIMIT {
+        return;
+    }
+    sock.dgram_queue.push(datagram);
+}
+
+fn unix_queue_datagram(sock: &mut crate::socket::SocketInfo, datagram: crate::socket::Datagram) {
+    // Preserve the existing bounded AF_UNIX behavior. Unlike UDP, Unix
+    // datagrams are reliable on Linux and ultimately need sender backpressure
+    // rather than silent tail-drop; that requires a separate blocking design.
     if sock.dgram_queue.len() >= UDP_DATAGRAM_QUEUE_LIMIT {
         sock.dgram_queue.remove(0);
     }
@@ -6943,7 +6956,7 @@ fn unix_dgram_send_to_sock(
     {
         return Err(Errno::ECONNREFUSED);
     }
-    udp_queue_datagram(target, datagram);
+    unix_queue_datagram(target, datagram);
     Ok(buf.len())
 }
 
@@ -20383,6 +20396,70 @@ mod tests {
         for fd in [accepted4, client4, server4, refused4, duplicate6, server6] {
             sys_close(&mut proc, &mut host, fd).unwrap();
         }
+    }
+
+    #[test]
+    fn test_udp_recv_queue_tail_drops_on_overflow() {
+        use wasm_posix_shared::socket::*;
+
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+
+        // Receiver bound to 127.0.0.1:ephemeral.
+        let recv_fd = sys_socket(&mut proc, &mut host, AF_INET, SOCK_DGRAM, 0).unwrap();
+        let mut baddr = [0u8; 16];
+        baddr[0] = 2;
+        sys_bind(&mut proc, &mut host, recv_fd, &baddr).unwrap();
+        let mut gsa = [0u8; 16];
+        sys_getsockname(&proc, recv_fd, &mut gsa).unwrap();
+        let port = [gsa[2], gsa[3]];
+
+        // Sender.
+        let send_fd = sys_socket(&mut proc, &mut host, AF_INET, SOCK_DGRAM, 0).unwrap();
+        let mut saddr = [0u8; 16];
+        saddr[0] = 2;
+        sys_bind(&mut proc, &mut host, send_fd, &saddr).unwrap();
+
+        // Send LIMIT + 2 sequence-numbered datagrams to 127.0.0.1:port.
+        for sequence in 0..UDP_DATAGRAM_QUEUE_LIMIT + 2 {
+            let mut dest = [0u8; 16];
+            dest[0] = 2;
+            dest[2] = port[0];
+            dest[3] = port[1];
+            dest[4] = 127;
+            dest[7] = 1;
+            assert_eq!(
+                sys_sendto(
+                    &mut proc,
+                    &mut host,
+                    send_fd,
+                    &(sequence as u32).to_le_bytes(),
+                    0,
+                    &dest,
+                )
+                .unwrap(),
+                4,
+            );
+        }
+
+        // The already-queued datagrams survive in order.
+        for expected in 0..UDP_DATAGRAM_QUEUE_LIMIT {
+            let mut buf = [0u8; 4];
+            let mut from = [0u8; 16];
+            let (n, from_len) =
+                sys_recvfrom(&mut proc, &mut host, recv_fd, &mut buf, 0, &mut from).unwrap();
+            assert_eq!(n, 4);
+            assert_eq!(from_len, 16);
+            assert_eq!(u32::from_le_bytes(buf), expected as u32);
+        }
+
+        // The two incoming datagrams sent after the queue filled were dropped.
+        let mut buf = [0u8; 4];
+        let mut from = [0u8; 16];
+        assert_eq!(
+            sys_recvfrom(&mut proc, &mut host, recv_fd, &mut buf, 0, &mut from).unwrap_err(),
+            Errno::EAGAIN,
+        );
     }
 
     // ── Threading tests ──────────────────────────────────────────────
