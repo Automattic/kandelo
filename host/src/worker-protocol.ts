@@ -37,8 +37,10 @@ export interface CentralizedWorkerInitMessage {
   cwd?: string;
   /** If true, this is a fork child — drive wpk_fork_rewind_begin instead of normal _start */
   isForkChild?: boolean;
-  /** Address of the fork save-buffer in memory (used for fork child rewind) */
+  /** Address of the fork save-buffer in memory. */
   forkBufAddr?: number;
+  /** Usable size of the fork save-buffer at `forkBufAddr`. */
+  forkSaveBufferSize?: number;
   /**
    * Entry-point override for fork children created by a non-main thread.
    *
@@ -71,6 +73,10 @@ export interface CentralizedThreadInitMessage {
   programModule?: WebAssembly.Module;
   memory: WebAssembly.Memory;
   channelOffset: number;
+  /** Address of this thread's fork save-buffer in memory. */
+  forkBufAddr?: number;
+  /** Usable size of the fork save-buffer at `forkBufAddr`. */
+  forkSaveBufferSize?: number;
   fnPtr: number;
   argPtr: number;
   stackPtr: number;

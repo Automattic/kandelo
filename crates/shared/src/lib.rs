@@ -26,7 +26,7 @@ pub mod host_abi;
 ///     the shared point of contact for all programs.
 /// 16: process creation takes explicit stdio descriptor kinds and removes the
 ///     post-creation stdin pipe mutation export.
-pub const ABI_VERSION: u32 = 16;
+pub const ABI_VERSION: u32 = 17;
 
 /// Syscall numbers for the POSIX kernel interface.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -942,6 +942,10 @@ pub mod process_memory {
 
     /// Size of one fork save buffer in bytes.
     pub const FORK_SAVE_BUFFER_SIZE: u32 = 16 * 1024;
+
+    /// Larger fork save buffer reserved for binaries that opt in to the
+    /// `_wpk_fork_active_bytes` frame counter.
+    pub const ELASTIC_FORK_SAVE_BUFFER_SIZE: u32 = 128 * 1024;
 
     /// Main-thread fork-save/scratch page, relative to `controlBasePage`.
     pub const MAIN_FORK_SAVE_PAGE: u32 = 0;

@@ -98,7 +98,10 @@ fn nested_of(instr: &Instr) -> Vec<InstrSeqId> {
     match instr {
         Instr::Block(Block { seq }) => vec![*seq],
         Instr::Loop(Loop { seq }) => vec![*seq],
-        Instr::IfElse(IfElse { consequent, alternative }) => vec![*consequent, *alternative],
+        Instr::IfElse(IfElse {
+            consequent,
+            alternative,
+        }) => vec![*consequent, *alternative],
         Instr::TryTable(TryTable { seq, .. }) => vec![*seq],
         Instr::Try(Try { seq, .. }) => vec![*seq],
         _ => vec![],
@@ -136,10 +139,12 @@ fn has_br_table_in(module: &Module, export_name: &str) -> bool {
 /// `<fn>_post_table` per fork-path function.
 #[allow(dead_code)] // used by the ignored trampoline_* tests in 2.3
 fn has_table_with_prefix(module: &Module, prefix: &str) -> bool {
-    module
-        .tables
-        .iter()
-        .any(|t| t.name.as_deref().map(|n| n.starts_with(prefix)).unwrap_or(false))
+    module.tables.iter().any(|t| {
+        t.name
+            .as_deref()
+            .map(|n| n.starts_with(prefix))
+            .unwrap_or(false)
+    })
 }
 
 // ---------------------------------------------------------------------

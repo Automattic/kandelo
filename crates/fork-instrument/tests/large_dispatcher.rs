@@ -159,11 +159,7 @@ fn dispatcher_call_count(bytes: &[u8]) -> usize {
         panic!("dispatcher should be local");
     };
     let mut count = 0usize;
-    fn walk(
-        func: &LocalFunction,
-        seq: walrus::ir::InstrSeqId,
-        count: &mut usize,
-    ) {
+    fn walk(func: &LocalFunction, seq: walrus::ir::InstrSeqId, count: &mut usize) {
         for (instr, _) in &func.block(seq).instrs {
             if matches!(instr, Instr::Call(_) | Instr::CallIndirect(_)) {
                 *count += 1;

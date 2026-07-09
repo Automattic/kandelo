@@ -11,8 +11,8 @@
 //! - Independently validating via wasmparser that the emitted module
 //!   is well-formed.
 
-use fork_instrument::{Options, instrument};
 use fork_instrument::runtime::names;
+use fork_instrument::{Options, instrument};
 use walrus::{ExportItem, Module, ValType};
 
 fn instrument_wat(wat_src: &str) -> Vec<u8> {
@@ -21,9 +21,8 @@ fn instrument_wat(wat_src: &str) -> Vec<u8> {
 }
 
 fn validate(bytes: &[u8]) {
-    let mut validator = wasmparser::Validator::new_with_features(
-        wasmparser::WasmFeatures::default(),
-    );
+    let mut validator =
+        wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::default());
     validator.validate_all(bytes).expect("valid wasm");
 }
 
@@ -107,6 +106,44 @@ fn injects_buf_global_matches_memory_ptr_width_wasm64() {
 }
 
 #[test]
+fn frame_counter_export_is_opt_in_and_saved_for_rewind() {
+    let bytes = wat::parse_str(EMPTY_MODULE_WITH_FORK).unwrap();
+
+    let mut default_module = Module::from_buffer(&bytes).unwrap();
+    let default_runtime = fork_instrument::runtime::inject_runtime(&mut default_module, 0, false);
+    assert!(
+        default_runtime.active_bytes_global.is_none(),
+        "default instrumentation must not allocate the active-byte counter",
+    );
+    assert!(
+        default_module
+            .exports
+            .iter()
+            .all(|e| e.name != names::GLOBAL_ACTIVE_BYTES),
+        "default instrumentation must not export the active-byte counter",
+    );
+
+    let mut counted_module = Module::from_buffer(&bytes).unwrap();
+    let counted_runtime = fork_instrument::runtime::inject_runtime(&mut counted_module, 0, true);
+    let active = counted_runtime
+        .active_bytes_global
+        .expect("frame_counter=true should allocate active-byte global");
+    let export = counted_module
+        .exports
+        .iter()
+        .find(|e| e.name == names::GLOBAL_ACTIVE_BYTES)
+        .expect("active-byte global export missing");
+    assert!(
+        matches!(export.item, ExportItem::Global(g) if g == active),
+        "active-byte export should point at the allocated global",
+    );
+    assert!(
+        counted_runtime.saved_globals.iter().any(|g| g.id == active),
+        "active-byte global must be in the save/restore list so fork children balance REWIND decrements",
+    );
+}
+
+#[test]
 fn exports_unwind_begin_taking_ptr() {
     let bytes = instrument_wat(EMPTY_MODULE_WITH_FORK);
     let module = Module::from_buffer(&bytes).unwrap();
@@ -174,10 +211,7 @@ use walrus::ir::Instr;
 
 /// Helper: count `Store` / `Load` instructions in the body of the
 /// named export by re-parsing the instrumented module.
-fn export_body_instr_counts(
-    module: &Module,
-    export: &str,
-) -> (usize, usize) {
+fn export_body_instr_counts(module: &Module, export: &str) -> (usize, usize) {
     let id = match module
         .exports
         .iter()
@@ -223,8 +257,7 @@ fn unwind_begin_stores_one_per_saved_global() {
     // state+buf globals are added *after* the scan so they are also
     // excluded. Plus Phase 7 Task 1 adds one store for `current_pos` at
     // buf+0. Expected: 1 (current_pos) + 2 (saved globals) = 3 stores.
-    let (stores, loads) =
-        export_body_instr_counts(&module, names::EXPORT_UNWIND_BEGIN);
+    let (stores, loads) = export_body_instr_counts(&module, names::EXPORT_UNWIND_BEGIN);
     assert_eq!(
         stores, 3,
         "unwind_begin should store current_pos + one per saved global",
@@ -237,8 +270,7 @@ fn rewind_begin_loads_one_per_saved_global() {
     let bytes = instrument_wat(MODULE_WITH_EXTRA_GLOBAL);
     let module = Module::from_buffer(&bytes).unwrap();
 
-    let (stores, loads) =
-        export_body_instr_counts(&module, names::EXPORT_REWIND_BEGIN);
+    let (stores, loads) = export_body_instr_counts(&module, names::EXPORT_REWIND_BEGIN);
     assert_eq!(loads, 2, "rewind_begin should load each saved global");
     assert_eq!(stores, 0, "rewind_begin never writes the save buffer");
 }
@@ -249,7 +281,7 @@ fn saved_globals_metadata_reports_declared_order() {
     // metadata — the high-level `instrument` fn hides it.
     let bytes = wat::parse_str(MODULE_WITH_EXTRA_GLOBAL).unwrap();
     let mut module = Module::from_buffer(&bytes).unwrap();
-    let runtime = inject_runtime(&mut module, 0);
+    let runtime = inject_runtime(&mut module, 0, false);
 
     // Exactly two saved globals, in declaration order: user_stack, then user_tls.
     assert_eq!(runtime.saved_globals.len(), 2);
@@ -265,7 +297,7 @@ fn saved_globals_metadata_reports_declared_order() {
 fn module_with_no_extra_globals_has_empty_saved_globals() {
     let bytes = wat::parse_str(EMPTY_MODULE_WITH_FORK).unwrap();
     let mut module = Module::from_buffer(&bytes).unwrap();
-    let runtime = inject_runtime(&mut module, 0);
+    let runtime = inject_runtime(&mut module, 0, false);
 
     assert!(
         runtime.saved_globals.is_empty(),
@@ -286,7 +318,7 @@ fn wasm64_saved_globals_use_16_byte_header() {
     "#;
     let bytes = wat::parse_str(wat).unwrap();
     let mut module = Module::from_buffer(&bytes).unwrap();
-    let runtime = inject_runtime(&mut module, 0);
+    let runtime = inject_runtime(&mut module, 0, false);
 
     // wasm64 → header 2 * 8 = 16 bytes.
     assert_eq!(runtime.saved_globals.len(), 1);
@@ -307,7 +339,7 @@ fn ref_typed_mutable_globals_are_skipped_in_4e() {
     "#;
     let bytes = wat::parse_str(wat).unwrap();
     let mut module = Module::from_buffer(&bytes).unwrap();
-    let runtime = inject_runtime(&mut module, 0);
+    let runtime = inject_runtime(&mut module, 0, false);
 
     // Only the i32 scalar should have been picked up.
     assert_eq!(runtime.saved_globals.len(), 1);
@@ -379,10 +411,9 @@ fn unwind_begin_writes_frames_start_offset_wasm32() {
     let value_instr = &instrs[store_idx - 1];
     match value_instr {
         Instr::Const(c) => match c.value {
-            walrus::ir::Value::I32(v) => assert_eq!(
-                v, 8,
-                "wasm32 empty-globals frames_start_offset is 2*4 = 8",
-            ),
+            walrus::ir::Value::I32(v) => {
+                assert_eq!(v, 8, "wasm32 empty-globals frames_start_offset is 2*4 = 8",)
+            }
             other => panic!("expected I32 const, got {other:?}"),
         },
         other => panic!("expected Const immediately before store, got {other:?}"),
@@ -452,7 +483,7 @@ fn b1_scratch_size_is_zero_for_module_without_plain_catch() {
     "#;
     let bytes = wat::parse_str(wat).unwrap();
     let mut module = Module::from_buffer(&bytes).unwrap();
-    let runtime = inject_runtime(&mut module, 0);
+    let runtime = inject_runtime(&mut module, 0, false);
     assert_eq!(runtime.b1_scratch_size, 0);
     assert_eq!(
         runtime.b1_scratch_base, runtime.frames_start_offset,
@@ -472,10 +503,10 @@ fn b1_scratch_size_shifts_frames_start_offset() {
     "#;
     let bytes = wat::parse_str(wat).unwrap();
     let mut module_a = Module::from_buffer(&bytes).unwrap();
-    let runtime_a = inject_runtime(&mut module_a, 0);
+    let runtime_a = inject_runtime(&mut module_a, 0, false);
 
     let mut module_b = Module::from_buffer(&bytes).unwrap();
-    let runtime_b = inject_runtime(&mut module_b, 16);
+    let runtime_b = inject_runtime(&mut module_b, 16, false);
 
     assert_eq!(runtime_b.b1_scratch_size, 16);
     assert_eq!(
@@ -497,7 +528,7 @@ fn b1_scratch_size_rounded_up_to_8_alignment() {
     let wat = r#"(module (memory 1))"#;
     let bytes = wat::parse_str(wat).unwrap();
     let mut module = Module::from_buffer(&bytes).unwrap();
-    let runtime = inject_runtime(&mut module, 5);
+    let runtime = inject_runtime(&mut module, 5, false);
     assert_eq!(runtime.b1_scratch_size, 8, "5 rounds up to 8");
     assert_eq!(
         runtime.frames_start_offset - runtime.b1_scratch_base,

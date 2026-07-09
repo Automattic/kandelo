@@ -94,12 +94,11 @@ import type {
   WorkerToHostMessage,
 } from "./worker-protocol";
 import { ThreadPageAllocator } from "./thread-allocator";
-import { CH_TOTAL_SIZE, DEFAULT_MAX_PAGES, PAGES_PER_THREAD } from "./constants";
+import { CH_TOTAL_SIZE, DEFAULT_MAX_PAGES } from "./constants";
 import {
   computeProcessMemoryLayout,
   createProcessMemory,
   DEFAULT_PROCESS_THREAD_SLOTS,
-  FORK_SAVE_BUFFER_SIZE,
   type ProcessMemoryLayout,
 } from "./process-memory";
 import type {
@@ -108,7 +107,6 @@ import type {
 } from "./browser-kernel-protocol";
 
 const PAGE_SIZE = 65536;
-const FORK_BUF_SIZE = FORK_SAVE_BUFFER_SIZE;
 
 // State
 let kernelWorker: CentralizedKernelWorker;
@@ -448,8 +446,12 @@ function threadAllocatorForLayout(
     maxPageExclusive: layout.threadArenaEndPage,
     ptrWidth,
     reservedSlots: layout.threadSlotCount,
+    forkSaveBufferSize: layout.forkSaveBufferSize,
+    forkSaveBufferPages: layout.forkSaveBufferPages,
+    forkSaveSparePages: layout.forkSaveSparePages,
+    pagesPerSlot: layout.pagesPerThreadSlot,
     reserveSlotStartPage: () =>
-      kernelWorker.reserveHostRegion(pid, PAGES_PER_THREAD * PAGE_SIZE) / PAGE_SIZE,
+      kernelWorker.reserveHostRegion(pid, layout.pagesPerThreadSlot * PAGE_SIZE) / PAGE_SIZE,
   });
 }
 
@@ -919,6 +921,8 @@ async function handleSpawn(msg: Extract<MainToKernelMessage, { type: "spawn" }>)
       programBytes,
       memory,
       channelOffset,
+      forkBufAddr: layout.forkSaveBufferOffset,
+      forkSaveBufferSize: layout.forkSaveBufferSize,
       env: msg.env ?? defaultEnv,
       argv: msg.argv,
       cwd: msg.cwd,
@@ -1073,7 +1077,7 @@ async function handleFork(
 
   const forkBufAddr = threadFork
     ? threadFork.forkBufAddr
-    : childChannelOffset - FORK_BUF_SIZE;
+    : childLayout.forkSaveBufferOffset;
   const childInitData: CentralizedWorkerInitMessage = {
     type: "centralized_init",
     pid: childPid,
@@ -1084,6 +1088,9 @@ async function handleFork(
     channelOffset: childChannelOffset,
     isForkChild: true,
     forkBufAddr,
+    forkSaveBufferSize: threadFork
+      ? threadFork.forkSaveBufferSize
+      : childLayout.forkSaveBufferSize,
     forkChildThreadFnPtr: threadFork?.fnPtr,
     forkChildThreadArgPtr: threadFork?.argPtr,
     ptrWidth,
@@ -1177,6 +1184,8 @@ async function handleExec(
     programBytes: bytes,
     memory: newMemory,
     channelOffset: newChannelOffset,
+    forkBufAddr: newLayout.forkSaveBufferOffset,
+    forkSaveBufferSize: newLayout.forkSaveBufferSize,
     argv: launchArgv,
     env: envp,
     ptrWidth,
@@ -1284,6 +1293,8 @@ async function handlePosixSpawn(
     programBytes,
     memory: newMemory,
     channelOffset: newChannelOffset,
+    forkBufAddr: newLayout.forkSaveBufferOffset,
+    forkSaveBufferSize: newLayout.forkSaveBufferSize,
     argv,
     env: envp,
     ptrWidth,
@@ -1350,7 +1361,13 @@ async function handleClone(
   // Register fnPtr/argPtr so handleFork can route a fork() from this
   // thread back through its entry point. Mirrors handleClone in
   // host/src/node-kernel-worker-entry.ts.
-  kernelWorker.addChannel(pid, alloc.channelOffset, tid, fnPtr, argPtr);
+  kernelWorker.addChannel(pid, alloc.channelOffset, tid, fnPtr, argPtr, {
+    forkBufAddr: alloc.forkBufAddr,
+    forkSaveBufferSize: alloc.forkSaveBufferSize,
+    slotStart: alloc.slotStartPage * PAGE_SIZE,
+    slotLen: alloc.slotLen,
+    tlsOffset: alloc.tlsOffset,
+  });
 
   const threadInitData: CentralizedThreadInitMessage = {
     type: "centralized_thread_init",
@@ -1360,6 +1377,8 @@ async function handleClone(
     programModule: threadModule,
     memory,
     channelOffset: alloc.channelOffset,
+    forkBufAddr: alloc.forkBufAddr,
+    forkSaveBufferSize: alloc.forkSaveBufferSize,
     fnPtr,
     argPtr,
     stackPtr,

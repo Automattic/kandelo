@@ -372,6 +372,10 @@ fn render_ts_module() -> String {
         shared::process_memory::FORK_SAVE_BUFFER_SIZE
     ));
     out.push_str(&format!(
+        "export const PROCESS_MEMORY_ELASTIC_FORK_SAVE_BUFFER_SIZE = {} as const;\n",
+        shared::process_memory::ELASTIC_FORK_SAVE_BUFFER_SIZE
+    ));
+    out.push_str(&format!(
         "export const PROCESS_MEMORY_MAIN_FORK_SAVE_PAGE = {} as const;\n",
         shared::process_memory::MAIN_FORK_SAVE_PAGE
     ));
@@ -827,6 +831,10 @@ fn process_memory_layout() -> Value {
     m.insert(
         "fork_save_buffer_size".into(),
         json!(pm::FORK_SAVE_BUFFER_SIZE),
+    );
+    m.insert(
+        "elastic_fork_save_buffer_size".into(),
+        json!(pm::ELASTIC_FORK_SAVE_BUFFER_SIZE),
     );
     m.insert(
         "main_control".into(),

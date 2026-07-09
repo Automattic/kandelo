@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   CHANNEL_PAGES,
   DEFAULT_PROCESS_THREAD_SLOTS,
+  ELASTIC_FORK_SAVE_BUFFER_SIZE,
   FORK_SAVE_BUFFER_SIZE,
   PROCESS_MMAP_BASE,
   PROCESS_THREAD_SLOTS_USE_HOST_DEFAULT,
@@ -59,6 +60,22 @@ function wasmWithThreadSlotDeclaration(value: number): ArrayBuffer {
   ]).buffer;
 }
 
+function wasmWithForkActiveBytesCounter(): ArrayBuffer {
+  return new Uint8Array([
+    0x00, 0x61, 0x73, 0x6d,
+    0x01, 0x00, 0x00, 0x00,
+    ...section(6, [
+      0x01,
+      0x7f, 0x01,
+      0x41, 0x00, 0x0b,
+    ]),
+    ...section(7, [
+      0x01,
+      ...nameBytes("_wpk_fork_active_bytes"), 0x03, 0x00,
+    ]),
+  ]).buffer;
+}
+
 describe("process memory layout", () => {
   it("starts shared process memory below the configured maximum", () => {
     const heapBase = 0x00120000;
@@ -91,6 +108,11 @@ describe("process memory layout", () => {
     });
 
     expect(layout.channelPage).toBe(layout.controlBase / WASM_PAGE_SIZE + 1);
+    expect(layout.forkSaveBufferOffset).toBe(layout.channelOffset - FORK_SAVE_BUFFER_SIZE);
+    expect(layout.forkSaveBufferSize).toBe(FORK_SAVE_BUFFER_SIZE);
+    expect(layout.forkSaveBufferPages).toBe(1);
+    expect(layout.forkSaveSparePages).toBe(0);
+    expect(layout.pagesPerThreadSlot).toBe(PAGES_PER_THREAD);
     expect(layout.channelOffset - FORK_SAVE_BUFFER_SIZE).toBeGreaterThanOrEqual(layout.controlBase);
     expect(layout.firstThreadSlotPage).toBe(layout.channelPage + CHANNEL_PAGES);
     expect(layout.firstThreadBasePage).toBe(layout.firstThreadSlotPage + 2);
@@ -100,6 +122,29 @@ describe("process memory layout", () => {
     expect(layout.brkBase).toBe(layout.controlEnd);
     expect(layout.mmapBase).toBe(layout.brkBase);
     expect(layout.brkLimit).toBe(layout.maxAddr);
+  });
+
+  it("reserves an elastic fork buffer for frame-counter instrumented programs", () => {
+    const heapBase = 0x00120000;
+    const layout = computeProcessMemoryLayout({
+      ptrWidth: 4,
+      heapBase,
+      minPages: Math.ceil(heapBase / WASM_PAGE_SIZE),
+      maxPages: DEFAULT_MAX_PAGES,
+      programBytes: wasmWithForkActiveBytesCounter(),
+    });
+
+    expect(layout.forkSaveBufferSize).toBe(ELASTIC_FORK_SAVE_BUFFER_SIZE);
+    expect(layout.forkSaveBufferPages).toBe(2);
+    expect(layout.forkSaveSparePages).toBe(1);
+    expect(layout.pagesPerThreadSlot).toBe(6);
+    expect(layout.channelPage).toBe(layout.controlBase / WASM_PAGE_SIZE + 3);
+    expect(layout.forkSaveBufferOffset).toBe(layout.channelOffset - ELASTIC_FORK_SAVE_BUFFER_SIZE);
+    expect(layout.forkSaveBufferOffset - layout.controlBase).toBe(WASM_PAGE_SIZE);
+    expect(layout.firstThreadSlotPage).toBe(layout.channelPage + CHANNEL_PAGES);
+    expect(layout.firstThreadBasePage).toBe(layout.firstThreadSlotPage + 4);
+    expect(layout.threadArenaEndPage).toBe(layout.firstThreadSlotPage);
+    expect(layout.controlEnd).toBe(layout.threadArenaEndPage * WASM_PAGE_SIZE);
   });
 
   it("fails fast when maxPages cannot fit an explicitly preallocated thread slab", () => {
@@ -124,7 +169,7 @@ describe("process memory layout", () => {
 
     expect(layout.initialPages).toBeLessThanOrEqual(256);
     expect(layout.threadSlotCount).toBe(2);
-    expect(layout.threadArenaEndPage).toBe(layout.firstThreadSlotPage + 2 * PAGES_PER_THREAD);
+    expect(layout.threadArenaEndPage).toBe(layout.firstThreadSlotPage + 2 * layout.pagesPerThreadSlot);
     expect(layout.initialPages).toBe(layout.threadArenaEndPage);
     expect(layout.maxAddr).toBe(256 * WASM_PAGE_SIZE);
   });

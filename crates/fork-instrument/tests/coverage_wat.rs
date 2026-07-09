@@ -185,7 +185,11 @@ fn f_03_anyref_on_fork_path_rejects_with_diagnostic() {
             drop
             (i32.const 0)))
     "#;
-    assert_instrument_rejects(wat, "F-03 anyref", &["fork-instrument 4f", "not yet supported"]);
+    assert_instrument_rejects(
+        wat,
+        "F-03 anyref",
+        &["fork-instrument 4f", "not yet supported"],
+    );
 }
 
 #[test]
@@ -209,7 +213,11 @@ fn f_04_struct_ref_on_fork_path_rejects_with_diagnostic() {
             drop
             (i32.const 0)))
     "#;
-    assert_instrument_rejects(wat, "F-04 struct ref", &["fork-instrument 4f", "not yet supported"]);
+    assert_instrument_rejects(
+        wat,
+        "F-04 struct ref",
+        &["fork-instrument 4f", "not yet supported"],
+    );
 }
 
 // ---------------------------------------------------------------------

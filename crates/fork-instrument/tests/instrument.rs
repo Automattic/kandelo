@@ -15,13 +15,13 @@
 //! Both schemes share the same frame layout and the entry-block shape
 //! `[preamble-ifelse, Block($unwind_save), postamble]`.
 
-use std::collections::HashSet;
+use std::{collections::HashSet, fs, process::Command};
 
 use fork_instrument::runtime::names as runtime_names;
-use fork_instrument::{instrument, Options};
+use fork_instrument::{Options, instrument};
 use walrus::{
-    ir::{self, Instr, InstrSeqId},
     ExportItem, FunctionId, FunctionKind, LocalFunction, Module,
+    ir::{self, Instr, InstrSeqId},
 };
 
 // --- Helpers ----------------------------------------------------------
@@ -33,6 +33,11 @@ fn parse_wat(wat_src: &str) -> Vec<u8> {
 fn instrument_wat(wat_src: &str) -> Vec<u8> {
     let bytes = parse_wat(wat_src);
     instrument(&bytes, &Options::default()).expect("instrument")
+}
+
+fn instrument_wat_with_options(wat_src: &str, opts: &Options) -> Vec<u8> {
+    let bytes = parse_wat(wat_src);
+    instrument(&bytes, opts).expect("instrument")
 }
 
 fn validate(bytes: &[u8]) {
@@ -519,7 +524,7 @@ fn multivalue_return_wraps_and_validates() {
 #[test]
 fn instrument_functions_returns_rewritten_set() {
     use fork_instrument::call_graph;
-    use fork_instrument::instrument::{instrument_functions, B1ScratchPlan};
+    use fork_instrument::instrument::{B1ScratchPlan, instrument_functions};
     use fork_instrument::runtime::inject_runtime;
 
     let bytes = wat::parse_str(FIXTURE_TRANSITIVE).unwrap();
@@ -528,7 +533,7 @@ fn instrument_functions_returns_rewritten_set() {
     let seed =
         call_graph::find_import_func(&module, "kernel.kernel_fork").expect("seed import present");
     let fork_path = call_graph::reaching_closure(&module, seed);
-    let runtime = inject_runtime(&mut module, 0);
+    let runtime = inject_runtime(&mut module, 0, false);
     let b1_plan = B1ScratchPlan::default();
     let rewritten = instrument_functions(&mut module, &runtime, &fork_path, &b1_plan);
 
@@ -668,6 +673,201 @@ fn call_site_post_sequence_sets_call_idx_and_checks_unwinding() {
             InstrKind::IfElse,    // then stores frame.call_index and branches
             InstrKind::Return,    // normal-path exit
         ],
+    );
+}
+
+#[test]
+fn frame_counter_reports_live_frame_bytes_and_balances_across_rewind() {
+    let wat = r#"
+        (module
+          (import "kernel" "kernel_fork" (func $fork (result i32)))
+          (memory (export "memory") 1)
+          (func $inner (result i32)
+            call $fork)
+          (func $outer (result i32)
+            call $inner)
+          (func $_start (export "_start") (result i32)
+            call $outer))
+    "#;
+    let bytes = instrument_wat_with_options(
+        wat,
+        &Options {
+            frame_counter: true,
+            ..Default::default()
+        },
+    );
+    validate(&bytes);
+
+    let wasm_path = std::env::temp_dir().join(format!(
+        "kandelo-frame-counter-{}-{}.wasm",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("system clock before unix epoch")
+            .as_nanos()
+    ));
+    fs::write(&wasm_path, &bytes).expect("write instrumented wasm");
+
+    let script = r#"
+const fs = require("node:fs");
+const assert = require("node:assert/strict");
+
+const wasmPath = process.argv[process.argv.length - 1];
+const bytes = fs.readFileSync(wasmPath);
+const FORK_BUF = 4096;
+const EXPECTED_LIVE_FRAME_BYTES = 48;
+
+async function makeHarness(initialForkResult) {
+  let instance;
+  let forkResult = initialForkResult;
+  const snapshots = [];
+  const imports = {
+    kernel: {
+      kernel_fork() {
+        assert(instance, "instance must be assigned before kernel_fork runs");
+        const state = instance.exports.wpk_fork_state();
+        if (state === 2) {
+          instance.exports.wpk_fork_rewind_end();
+          return forkResult;
+        }
+        snapshots.push(Number(instance.exports._wpk_fork_active_bytes.value));
+        instance.exports.wpk_fork_unwind_begin(FORK_BUF);
+        return 0;
+      },
+    },
+  };
+  const result = await WebAssembly.instantiate(bytes, imports);
+  instance = result.instance;
+  return {
+    instance,
+    snapshots,
+    setForkResult(value) {
+      forkResult = value;
+    },
+  };
+}
+
+(async () => {
+  const parent = await makeHarness(77);
+  assert.equal(Number(parent.instance.exports._wpk_fork_active_bytes.value), 0);
+
+  parent.instance.exports._start();
+  assert.deepEqual(parent.snapshots, [EXPECTED_LIVE_FRAME_BYTES]);
+  assert.equal(
+    Number(parent.instance.exports._wpk_fork_active_bytes.value),
+    EXPECTED_LIVE_FRAME_BYTES,
+  );
+  assert.equal(parent.instance.exports.wpk_fork_state(), 1);
+
+  const savedMemory = new Uint8Array(parent.instance.exports.memory.buffer).slice();
+
+  parent.instance.exports.wpk_fork_unwind_end();
+  parent.instance.exports.wpk_fork_rewind_begin(FORK_BUF);
+  assert.equal(
+    Number(parent.instance.exports._wpk_fork_active_bytes.value),
+    EXPECTED_LIVE_FRAME_BYTES,
+  );
+  assert.equal(parent.instance.exports._start(), 77);
+  assert.equal(Number(parent.instance.exports._wpk_fork_active_bytes.value), 0);
+  assert.equal(parent.instance.exports.wpk_fork_state(), 0);
+
+  const child = await makeHarness(0);
+  new Uint8Array(child.instance.exports.memory.buffer).set(savedMemory);
+  child.instance.exports.wpk_fork_rewind_begin(FORK_BUF);
+  assert.equal(
+    Number(child.instance.exports._wpk_fork_active_bytes.value),
+    EXPECTED_LIVE_FRAME_BYTES,
+  );
+  assert.equal(child.instance.exports._start(), 0);
+  assert.equal(Number(child.instance.exports._wpk_fork_active_bytes.value), 0);
+  assert.equal(child.instance.exports.wpk_fork_state(), 0);
+  assert.deepEqual(child.snapshots, []);
+})().catch((err) => {
+  console.error(err && err.stack ? err.stack : err);
+  process.exit(1);
+});
+"#;
+
+    let output = Command::new("node")
+        .arg("-e")
+        .arg(script)
+        .arg(&wasm_path)
+        .output()
+        .expect("run node WebAssembly harness");
+    let _ = fs::remove_file(&wasm_path);
+
+    assert!(
+        output.status.success(),
+        "node WebAssembly harness failed\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
+    );
+}
+
+#[test]
+fn host_parsed_marker_exports_are_not_rewritten_even_when_they_reach_fork() {
+    let wat = r#"
+        (module
+          (import "kernel" "kernel_fork" (func $fork (result i32)))
+          (memory (export "memory") 1)
+          (global $__tls_base (export "__tls_base") i32 (i32.const 1024))
+
+          (func $__wasm_call_ctors
+            call $fork
+            drop)
+
+          (func $__abi_version_actual (result i32)
+            i32.const 17)
+          (func $__abi_version (export "__abi_version") (result i32)
+            call $__wasm_call_ctors
+            call $__abi_version_actual)
+
+          (func $__wasm_posix_thread_slots_actual (result i32)
+            i32.const -1)
+          (func $__wasm_posix_thread_slots (export "__wasm_posix_thread_slots") (result i32)
+            call $__wasm_call_ctors
+            call $__wasm_posix_thread_slots_actual)
+
+          (func $__get_channel_base_addr_actual (result i32)
+            i32.const 32
+            global.get $__tls_base
+            i32.add)
+          (func $__get_channel_base_addr (export "__get_channel_base_addr") (result i32)
+            call $__wasm_call_ctors
+            call $__get_channel_base_addr_actual)
+
+          (func $_start (export "_start") (result i32)
+            call $__wasm_call_ctors
+            i32.const 0))
+    "#;
+
+    let bytes = instrument_wat_with_options(
+        wat,
+        &Options {
+            frame_counter: true,
+            ..Default::default()
+        },
+    );
+    validate(&bytes);
+    let module = Module::from_buffer(&bytes).unwrap();
+
+    for marker in [
+        "__abi_version",
+        "__wasm_posix_thread_slots",
+        "__get_channel_base_addr",
+    ] {
+        let kinds = entry_instr_kinds(&module, func_by_name(&module, marker));
+        assert_eq!(
+            kinds,
+            vec![InstrKind::Call, InstrKind::Call],
+            "{marker} must keep its raw wasm-ld marker wrapper shape for host byte parsing",
+        );
+    }
+
+    let start_kinds = entry_instr_kinds(&module, func_by_name(&module, "_start"));
+    assert!(
+        start_kinds.contains(&InstrKind::Block),
+        "_start still reaches fork and should be instrumented",
     );
 }
 

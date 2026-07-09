@@ -33,7 +33,8 @@ kernel. Specifically, any of the following requires an `ABI_VERSION` bump:
   (`WasmStat`, `WasmDirent`, `WasmFlock`, `WasmTimespec`, `WasmPollFd`,
   `WasmStatfs`), or changing a field's type in a way that shifts offsets
   or span.
-- Changing the five `wpk_fork_*` export names or the save-buffer /
+- Changing the five required `wpk_fork_*` export names, the optional
+  `_wpk_fork_active_bytes` frame-counter contract, or the save-buffer /
   frame format emitted by
   [`wasm-fork-instrument`](fork-instrumentation.md) into every
   fork-using user program. The kernel does not read these exports
@@ -98,9 +99,9 @@ captures:
   adapters: manifest layout, host adapter protocol version, required
   worker feature bits, and required/optional kernel exports.
 - `process_memory_layout` — Rust-owned process memory layout metadata:
-  Wasm page size, default process memory settings, main control pages,
-  pthread slot page offsets, and the process-wasm thread-slot declaration
-  contract.
+  Wasm page size, default process memory settings, default and elastic
+  fork-save reserve sizes, main control pages, pthread slot page offsets,
+  and the process-wasm thread-slot declaration contract.
 - `custom_sections` — names of wasm custom sections that participate in
   the ABI (currently `wasm-posix-abi` for the per-binary version).
 - `process_expected_globals` — globals every user process instance is

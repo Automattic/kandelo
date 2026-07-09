@@ -11,8 +11,8 @@
 use std::collections::{HashMap, HashSet, VecDeque};
 
 use walrus::ir::{
-    self, dfs_in_order, BinaryOp, Call, Instr, InstrLocId, InstrSeqId, ReturnCall, TableCopy,
-    TableFill, TableGrow, TableInit, TableSet, Visitor,
+    self, BinaryOp, Call, Instr, InstrLocId, InstrSeqId, ReturnCall, TableCopy, TableFill,
+    TableGrow, TableInit, TableSet, Visitor, dfs_in_order,
 };
 use walrus::{
     ConstExpr, ElementId, ElementItems, ElementKind, FunctionId, ImportKind, LocalFunction, Module,

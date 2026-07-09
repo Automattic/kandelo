@@ -20,9 +20,8 @@ fn compile(wat_src: &str) -> Vec<u8> {
 fn validate(bytes: &[u8]) -> Result<(), wasmparser::BinaryReaderError> {
     // Independent validator (not walrus) — confirms the emitted bytes
     // are well-formed per the core spec.
-    let mut validator = wasmparser::Validator::new_with_features(
-        wasmparser::WasmFeatures::default(),
-    );
+    let mut validator =
+        wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::default());
     validator.validate_all(bytes).map(|_| ())
 }
 

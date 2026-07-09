@@ -24,4 +24,17 @@ if [ ! -x "$TOOL" ]; then
     bash "$REPO_ROOT/scripts/build-fork-instrument-tool.sh"
 fi
 
-exec "$TOOL" "$@"
+extra_args=()
+case "${WASM_POSIX_FORK_FRAME_COUNTER:-}" in
+    ""|0|false|False|FALSE)
+        ;;
+    1|true|True|TRUE)
+        extra_args+=(--frame-counter)
+        ;;
+    *)
+        echo "ERROR: WASM_POSIX_FORK_FRAME_COUNTER must be 1/true or 0/false, got '${WASM_POSIX_FORK_FRAME_COUNTER}'." >&2
+        exit 1
+        ;;
+esac
+
+exec "$TOOL" "${extra_args[@]}" "$@"

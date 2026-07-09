@@ -11,7 +11,7 @@ import type {
   WorkerToHostMessage,
 } from "./worker-protocol";
 import { DynamicLinker, type LoadedSharedLibrary } from "./dylink";
-import { extractAbiVersion } from "./constants";
+import { extractAbiVersion, WPK_FORK_ACTIVE_BYTES_EXPORT } from "./constants";
 import {
   ABI_SYSCALLS,
   CHANNEL_STATUS_IDLE,
@@ -196,6 +196,7 @@ export interface DlopenSupport {
 function buildDlopenImports(
   memory: WebAssembly.Memory,
   channelOffset: number,
+  forkBufAddr: number,
   getTable: () => WebAssembly.Table | undefined,
   getStackPointer: () => WebAssembly.Global | undefined,
   getInstance: () => WebAssembly.Instance | undefined,
@@ -207,7 +208,6 @@ function buildDlopenImports(
   const encoder = new TextEncoder();
   const n = (v: number | bigint): number => typeof v === "bigint" ? Number(v) : v;
 
-  const forkBufAddr = channelOffset - FORK_BUF_SIZE;
   const headOffset = ptrWidth === 8 ? DLOPEN_HEAD_OFFSET_WASM64 : DLOPEN_HEAD_OFFSET_WASM32;
   const headSlot = forkBufAddr - headOffset;
   const entrySize = ptrWidth === 8 ? DLOPEN_ENTRY_SIZE_WASM64 : DLOPEN_ENTRY_SIZE_WASM32;
@@ -685,8 +685,9 @@ function buildImportObject(
   return importObject;
 }
 
-/** Size of the fork save buffer used by wpk_fork_* instrumentation */
+/** Compatibility fork-save size for binaries without the frame counter opt-in. */
 const FORK_BUF_SIZE = FORK_SAVE_BUFFER_SIZE;
+const FORK_SAVE_BUFFER_HEADROOM = 4096;
 
 /**
  * Detect a fork-continuation save-buffer overrun after an unwind completes.
@@ -695,12 +696,11 @@ const FORK_BUF_SIZE = FORK_SAVE_BUFFER_SIZE;
  * base of the save buffer (`forkBufAddr + 0`) — seeded to `frames_start_offset`
  * and advanced by every saved frame, so after unwind it is the high-water byte
  * offset the unwind wrote to (see crates/fork-instrument/src/runtime.rs,
- * `emit_unwind_begin`). The buffer is only `FORK_BUF_SIZE` bytes and sits
- * immediately below the syscall channel (`forkBufAddr = channelOffset -
- * FORK_BUF_SIZE`), so `current_pos > FORK_BUF_SIZE` means the unwind overran
- * the buffer and clobbered channel memory. Frames grow upward, away from
- * offset 0, so the base word holding `current_pos` is never itself clobbered
- * and stays readable here.
+ * `emit_unwind_begin`). The save region sits immediately below the syscall
+ * channel, and `current_pos > forkBufSize` means the unwind overran the
+ * reserved bytes and clobbered following control memory. Frames grow upward,
+ * away from offset 0, so the base word holding `current_pos` is never itself
+ * clobbered and stays readable here.
  *
  * The instrumented unwind carries no bounds check of its own — runtime.rs
  * documents the requirement `frames_start_offset + Σframe ≤ buffer_size` but
@@ -713,12 +713,44 @@ export function forkSaveBufferOverrun(
   memory: WebAssembly.Memory,
   forkBufAddr: number,
   ptrWidth: 4 | 8,
+  forkBufSize: number = FORK_BUF_SIZE,
 ): number {
   const view = new DataView(memory.buffer);
   const currentPos = ptrWidth === 8
     ? Number(view.getBigUint64(forkBufAddr, true))
     : view.getUint32(forkBufAddr, true);
-  return currentPos > FORK_BUF_SIZE ? currentPos - FORK_BUF_SIZE : 0;
+  return currentPos > forkBufSize ? currentPos - forkBufSize : 0;
+}
+
+function activeForkFrameBytes(instance: WebAssembly.Instance): number | null {
+  const active = instance.exports[WPK_FORK_ACTIVE_BYTES_EXPORT];
+  if (!(active instanceof WebAssembly.Global)) return null;
+  const value = Number(active.value);
+  if (!Number.isFinite(value) || value < 0) {
+    throw new Error(
+      `fork() frame counter ${WPK_FORK_ACTIVE_BYTES_EXPORT} is invalid: ${String(active.value)}`,
+    );
+  }
+  return value;
+}
+
+function verifyForkSaveBufferCapacity(
+  instance: WebAssembly.Instance,
+  forkBufSize: number,
+  pidLabel: string,
+): void {
+  const activeBytes = activeForkFrameBytes(instance);
+  if (activeBytes == null) return;
+  const requiredBytes = activeBytes + FORK_SAVE_BUFFER_HEADROOM;
+  if (requiredBytes > forkBufSize) {
+    throw new Error(
+      `${pidLabel}: fork() continuation save buffer too small before unwind — ` +
+        `live fork frames need ${activeBytes} bytes plus ` +
+        `${FORK_SAVE_BUFFER_HEADROOM} bytes headroom, but this process reserved ` +
+        `${forkBufSize} bytes. Rebuild with a larger fork-save reserve or reduce ` +
+        `the stack at fork().`,
+    );
+  }
 }
 
 // Slot below forkBufAddr that stores the head pointer of the dlopen
@@ -913,7 +945,8 @@ export async function centralizedWorkerMain(
     const hasForkInstrumentation = hasCompleteForkInstrumentation(moduleExports, pid);
     // Fork state — captured by kernel_fork closure
     let forkResult = 0;
-    const forkBufAddr = channelOffset - FORK_BUF_SIZE;
+    const forkBufAddr = initData.forkBufAddr ?? channelOffset - FORK_BUF_SIZE;
+    const forkBufSize = initData.forkSaveBufferSize ?? FORK_BUF_SIZE;
 
     if (hasForkInstrumentation) {
       // Override kernel_fork with fork-instrumentation-aware version.
@@ -936,6 +969,7 @@ export async function centralizedWorkerMain(
         // wpk_fork_unwind_begin self-initializes current_pos and snapshots
         // saved_globals (including __tls_base and __stack_pointer) into the
         // buffer — the host no longer pre-seeds the header.
+        verifyForkSaveBufferCapacity(processInstance, forkBufSize, `pid=${pid}`);
         (processInstance.exports.wpk_fork_unwind_begin as (addr: number) => void)(forkBufAddr);
         return 0; // ignored during unwind
       };
@@ -944,6 +978,7 @@ export async function centralizedWorkerMain(
       const dlopenSupport = buildDlopenImports(
         memory,
         channelOffset,
+        forkBufAddr,
         () => processInstance?.exports.__indirect_function_table as WebAssembly.Table | undefined,
         () => processInstance?.exports.__stack_pointer as WebAssembly.Global | undefined,
         () => processInstance ?? undefined,
@@ -1053,20 +1088,17 @@ export async function centralizedWorkerMain(
             // Unwind completed (fork) — finalize and send SYS_FORK.
             unwindEnd();
 
-            // The unwind writes saved frames into a fixed FORK_BUF_SIZE buffer
-            // that abuts the syscall channel. If the call stack at fork() was
-            // too deep/wide, those writes overran into the channel. Fail
-            // truthfully here rather than sending a fork on a corrupt channel
-            // and spawning a child whose continuation buffer is already
-            // clobbered (which otherwise surfaces as an unexplained trap or a
-            // child worker that never makes progress). The process is torn
-            // down after this throw, discarding the corrupted channel.
-            const overrun = forkSaveBufferOverrun(memory, forkBufAddr, ptrWidth);
+            // If the call stack at fork() was too deep/wide for this process's
+            // fork-save reserve, the unwind may have overrun into following
+            // control memory. Fail truthfully here rather than sending a fork
+            // on a corrupt channel and spawning a child whose continuation
+            // buffer is already clobbered.
+            const overrun = forkSaveBufferOverrun(memory, forkBufAddr, ptrWidth, forkBufSize);
             if (overrun > 0) {
               throw new Error(
                 `pid=${pid}: fork() continuation save buffer overflow — the ` +
-                  `call stack at fork() needed ${FORK_BUF_SIZE + overrun} bytes ` +
-                  `but only ${FORK_BUF_SIZE} (FORK_SAVE_BUFFER_SIZE) are ` +
+                  `call stack at fork() needed ${forkBufSize + overrun} bytes ` +
+                  `but only ${forkBufSize} bytes are ` +
                   `reserved; the stack is too deep/wide to fork here. This is a ` +
                   `platform limit of the fork continuation buffer, not a defect ` +
                   `in the program.`,
@@ -1115,6 +1147,7 @@ export async function centralizedWorkerMain(
       const dlopenSupport = buildDlopenImports(
         memory,
         channelOffset,
+        forkBufAddr,
         () => processInstance?.exports.__indirect_function_table as WebAssembly.Table | undefined,
         () => processInstance?.exports.__stack_pointer as WebAssembly.Global | undefined,
         () => processInstance ?? undefined,
@@ -1780,7 +1813,8 @@ export async function centralizedThreadWorkerMain(
 
     const moduleExports = WebAssembly.Module.exports(module);
     const hasForkInstrumentation = hasCompleteForkInstrumentation(moduleExports, pid);
-    const forkBufAddr = channelOffset - FORK_BUF_SIZE;
+    const forkBufAddr = initData.forkBufAddr ?? channelOffset - FORK_BUF_SIZE;
+    const forkBufSize = initData.forkSaveBufferSize ?? FORK_BUF_SIZE;
     let forkResult = 0;
 
     let kernelThreadExitStatus: number | null = null;
@@ -1804,6 +1838,11 @@ export async function centralizedThreadWorkerMain(
           return forkResult;
         }
 
+        verifyForkSaveBufferCapacity(
+          threadInstance,
+          forkBufSize,
+          `pid=${pid} tid=${tid}`,
+        );
         (threadInstance.exports.wpk_fork_unwind_begin as (addr: number) => void)(forkBufAddr);
         return 0;
       };
@@ -1891,15 +1930,15 @@ export async function centralizedThreadWorkerMain(
         const forkState = getState();
         if (forkState === 1) {
           unwindEnd();
-          // See the main-process fork path: a too-deep/wide stack overruns the
-          // fixed save buffer into the channel. Detect and fail truthfully.
-          const overrun = forkSaveBufferOverrun(memory, forkBufAddr, ptrWidth);
+          // See the main-process fork path: a too-deep/wide stack can overrun
+          // the process's save buffer into following control memory.
+          const overrun = forkSaveBufferOverrun(memory, forkBufAddr, ptrWidth, forkBufSize);
           if (overrun > 0) {
             throw new Error(
               `pid=${pid} tid=${tid}: fork() continuation save buffer ` +
                 `overflow — the call stack at fork() needed ` +
-                `${FORK_BUF_SIZE + overrun} bytes but only ${FORK_BUF_SIZE} ` +
-                `(FORK_SAVE_BUFFER_SIZE) are reserved; too deep/wide to fork ` +
+                `${forkBufSize + overrun} bytes but only ${forkBufSize} ` +
+                `bytes are reserved; too deep/wide to fork ` +
                 `from this thread. Platform limit, not a program defect.`,
             );
           }

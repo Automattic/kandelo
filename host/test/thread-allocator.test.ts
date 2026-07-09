@@ -1,6 +1,10 @@
 import { describe, it, expect } from "vitest";
 import { ThreadPageAllocator } from "../src/thread-allocator";
 import { WASM_PAGE_SIZE, PAGES_PER_THREAD, CH_TOTAL_SIZE } from "../src/constants";
+import {
+  ELASTIC_FORK_SAVE_BUFFER_SIZE,
+  FORK_SAVE_BUFFER_SIZE,
+} from "../src/process-memory";
 
 const MAX_PAGES = 256;
 const FIRST_THREAD_SLOT_PAGE = 24;
@@ -27,6 +31,9 @@ describe("ThreadPageAllocator", () => {
     expect(t.channelOffset).toBe((FIRST_THREAD_SLOT_PAGE + 2) * WASM_PAGE_SIZE);
     expect(t.tlsOffset).toBe(FIRST_THREAD_SLOT_PAGE * WASM_PAGE_SIZE);
     expect(t.forkSaveOffset).toBe((FIRST_THREAD_SLOT_PAGE + 1) * WASM_PAGE_SIZE);
+    expect(t.forkBufAddr).toBe(t.channelOffset - FORK_SAVE_BUFFER_SIZE);
+    expect(t.forkSaveBufferSize).toBe(FORK_SAVE_BUFFER_SIZE);
+    expect(t.slotLen).toBe(PAGES_PER_THREAD * WASM_PAGE_SIZE);
   });
 
   it("allocates consecutive threads upward", () => {
@@ -122,6 +129,31 @@ describe("ThreadPageAllocator", () => {
     expect(mem.buffer.byteLength).toBeLessThan(MAX_PAGES * WASM_PAGE_SIZE);
   });
 
+  it("places elastic fork buffers with a spare control page below them", () => {
+    const pagesPerSlot = 6;
+    const alloc = new ThreadPageAllocator({
+      firstSlotStartPage: FIRST_THREAD_SLOT_PAGE,
+      maxPageExclusive: THREAD_ARENA_END_PAGE,
+      forkSaveBufferSize: ELASTIC_FORK_SAVE_BUFFER_SIZE,
+      forkSaveBufferPages: 2,
+      forkSaveSparePages: 1,
+      pagesPerSlot,
+    });
+    const mem = makeMemory();
+
+    const t = alloc.allocate(mem);
+
+    expect(t.slotStartPage).toBe(FIRST_THREAD_SLOT_PAGE);
+    expect(t.tlsOffset).toBe(FIRST_THREAD_SLOT_PAGE * WASM_PAGE_SIZE);
+    expect(t.forkSaveOffset).toBe((FIRST_THREAD_SLOT_PAGE + 2) * WASM_PAGE_SIZE);
+    expect(t.channelOffset).toBe((FIRST_THREAD_SLOT_PAGE + 4) * WASM_PAGE_SIZE);
+    expect(t.forkBufAddr).toBe(t.channelOffset - ELASTIC_FORK_SAVE_BUFFER_SIZE);
+    expect(t.forkBufAddr - t.slotStartPage * WASM_PAGE_SIZE).toBe(2 * WASM_PAGE_SIZE);
+    expect(t.forkSaveBufferSize).toBe(ELASTIC_FORK_SAVE_BUFFER_SIZE);
+    expect(t.slotLen).toBe(pagesPerSlot * WASM_PAGE_SIZE);
+    expect(mem.buffer.byteLength).toBe((t.slotStartPage + pagesPerSlot) * WASM_PAGE_SIZE);
+  });
+
   it("throws when the thread control arena is exhausted", () => {
     const alloc = new ThreadPageAllocator({
       firstSlotStartPage: 24,
@@ -183,5 +215,34 @@ describe("ThreadPageAllocator", () => {
     expect(reused.slotStartPage).toBe(t1.slotStartPage);
     expect(t2.slotStartPage).toBe(128 + PAGES_PER_THREAD);
     expect(reservations).toBe(2);
+  });
+
+  it("dynamically reserves elastic slots using the configured slot span", () => {
+    const pagesPerSlot = 6;
+    let nextPage = 128;
+    const alloc = new ThreadPageAllocator({
+      firstSlotStartPage: FIRST_THREAD_SLOT_PAGE,
+      maxPageExclusive: FIRST_THREAD_SLOT_PAGE,
+      reservedSlots: 2,
+      forkSaveBufferSize: ELASTIC_FORK_SAVE_BUFFER_SIZE,
+      forkSaveBufferPages: 2,
+      forkSaveSparePages: 1,
+      pagesPerSlot,
+      reserveSlotStartPage: () => {
+        const page = nextPage;
+        nextPage += pagesPerSlot;
+        return page;
+      },
+    });
+    const mem = makeMemory();
+
+    const t1 = alloc.allocate(mem);
+    const t2 = alloc.allocate(mem);
+
+    expect(t1.slotStartPage).toBe(128);
+    expect(t1.channelOffset).toBe((128 + 4) * WASM_PAGE_SIZE);
+    expect(t2.slotStartPage).toBe(128 + pagesPerSlot);
+    expect(t2.channelOffset).toBe((128 + pagesPerSlot + 4) * WASM_PAGE_SIZE);
+    expect(mem.buffer.byteLength).toBe((t2.slotStartPage + pagesPerSlot) * WASM_PAGE_SIZE);
   });
 });

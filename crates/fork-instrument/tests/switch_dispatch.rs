@@ -9,8 +9,8 @@
 //! - **posix_spawn-class**: code between call sites must NOT re-execute,
 //!   including shadow-stack manipulation.
 
-use fork_instrument::{instrument, Options};
-use walrus::{ir::*, FunctionId, FunctionKind, ImportKind, LocalFunction, Module};
+use fork_instrument::{Options, instrument};
+use walrus::{FunctionId, FunctionKind, ImportKind, LocalFunction, Module, ir::*};
 
 fn validate(bytes: &[u8]) {
     let mut validator =

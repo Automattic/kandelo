@@ -37,6 +37,7 @@ import {
   PROCESS_MEMORY_DEFAULT_INITIAL_PAGES,
   PROCESS_MEMORY_DEFAULT_MAX_PAGES,
   PROCESS_MEMORY_DEFAULT_THREAD_SLOTS,
+  PROCESS_MEMORY_ELASTIC_FORK_SAVE_BUFFER_SIZE,
   PROCESS_MEMORY_FALLBACK_BRK_BASE,
   PROCESS_MEMORY_FORK_SAVE_BUFFER_SIZE,
   PROCESS_MEMORY_LEGACY_MMAP_BASE,
@@ -189,6 +190,8 @@ describe("generated host ABI bindings", () => {
     const layout = snapshot.process_memory_layout;
     expect(PROCESS_MEMORY_WASM_PAGE_SIZE).toBe(layout.wasm_page_size);
     expect(PROCESS_MEMORY_FORK_SAVE_BUFFER_SIZE).toBe(layout.fork_save_buffer_size);
+    expect(PROCESS_MEMORY_ELASTIC_FORK_SAVE_BUFFER_SIZE)
+      .toBe(layout.elastic_fork_save_buffer_size);
     expect(PROCESS_MEMORY_DEFAULT_INITIAL_PAGES).toBe(layout.defaults.initial_pages);
     expect(PROCESS_MEMORY_DEFAULT_MAX_PAGES).toBe(layout.defaults.max_pages);
     expect(PROCESS_MEMORY_DEFAULT_THREAD_SLOTS).toBe(layout.defaults.thread_slots);

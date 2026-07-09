@@ -55,6 +55,13 @@ pub const STATE_REWINDING: i32 = 2;
 pub mod names {
     pub const GLOBAL_STATE: &str = "_wpk_fork_state";
     pub const GLOBAL_BUF: &str = "_wpk_fork_buf";
+    /// Optional (opt-in via `--frame-counter`): a running total of the
+    /// live fork-path frames' save sizes. Maintained on the NORMAL path
+    /// of each instrumented function so the host can read the exact bytes
+    /// the next unwind will need — before it runs — and size the save
+    /// buffer accordingly (grow-before-unwind). Exported so the host can
+    /// read it in `kernel_fork`.
+    pub const GLOBAL_ACTIVE_BYTES: &str = "_wpk_fork_active_bytes";
 
     pub const EXPORT_UNWIND_BEGIN: &str = "wpk_fork_unwind_begin";
     pub const EXPORT_UNWIND_END: &str = "wpk_fork_unwind_end";
@@ -80,6 +87,12 @@ pub struct Runtime {
     pub state_global: GlobalId,
     pub buf_global: GlobalId,
     pub buf_type: ValType,
+
+    /// Present only when `--frame-counter` was passed: the exported
+    /// `_wpk_fork_active_bytes` global that per-function instrumentation
+    /// increments/decrements. `None` means the counter is disabled and no
+    /// per-function accounting is emitted (byte-identical to the default).
+    pub active_bytes_global: Option<GlobalId>,
 
     pub unwind_begin: FunctionId,
     pub unwind_end: FunctionId,
@@ -164,14 +177,31 @@ fn zero_const(ptr_ty: ValType) -> ConstExpr {
 /// after `inject_runtime` returns would silently desync the const and
 /// the host-visible offset. Computing the B1 plan first and passing
 /// the size in keeps everything consistent.
-pub fn inject_runtime(module: &mut Module, b1_scratch_size: u32) -> Runtime {
+pub fn inject_runtime(module: &mut Module, b1_scratch_size: u32, frame_counter: bool) -> Runtime {
     let ptr_ty = ptr_type(module);
     let memory = module.memories.iter().next().map(|m| m.id());
 
+    // Optional frame-size counter (opt-in). An i32 is sufficient: the save
+    // buffer is bounded well under 4 GiB. It is deliberately added before the
+    // saveable-globals scan so rewind restores the pre-fork live-frame total
+    // in fork children; the REWIND normal-return path then decrements it back
+    // to zero just like the parent.
+    let active_bytes_global = if frame_counter {
+        Some(module.globals.add_local(
+            ValType::I32,
+            /* mutable */ true,
+            /* shared */ false,
+            ConstExpr::Value(Value::I32(0)),
+        ))
+    } else {
+        None
+    };
+
     // --- Saveable globals scan ---
     //
-    // Capture mutable scalar globals *before* adding our two runtime
-    // globals so we don't snapshot them.
+    // Capture mutable scalar globals *before* adding the state/buf runtime
+    // globals so we don't snapshot them. The optional active-bytes global is
+    // intentionally already present; it must round-trip through rewind.
     //
     // Buffer header (for both wasm32 and wasm64):
     //   +0     P    current_pos
@@ -259,15 +289,16 @@ pub fn inject_runtime(module: &mut Module, b1_scratch_size: u32) -> Runtime {
     let state = emit_state_fn(module, state_global);
 
     // --- Exports ---
-    module
-        .exports
-        .add(names::EXPORT_UNWIND_BEGIN, unwind_begin);
+    module.exports.add(names::EXPORT_UNWIND_BEGIN, unwind_begin);
     module.exports.add(names::EXPORT_UNWIND_END, unwind_end);
-    module
-        .exports
-        .add(names::EXPORT_REWIND_BEGIN, rewind_begin);
+    module.exports.add(names::EXPORT_REWIND_BEGIN, rewind_begin);
     module.exports.add(names::EXPORT_REWIND_END, rewind_end);
     module.exports.add(names::EXPORT_STATE, state);
+
+    if let Some(g) = active_bytes_global {
+        module.exports.add(names::GLOBAL_ACTIVE_BYTES, g);
+        module.globals.get_mut(g).name = Some(names::GLOBAL_ACTIVE_BYTES.into());
+    }
 
     module.globals.get_mut(state_global).name = Some(names::GLOBAL_STATE.into());
     module.globals.get_mut(buf_global).name = Some(names::GLOBAL_BUF.into());
@@ -281,6 +312,7 @@ pub fn inject_runtime(module: &mut Module, b1_scratch_size: u32) -> Runtime {
         state_global,
         buf_global,
         buf_type: ptr_ty,
+        active_bytes_global,
         unwind_begin,
         unwind_end,
         rewind_begin,
@@ -401,16 +433,14 @@ fn emit_save_globals(
     saved_globals: &[SavedGlobal],
 ) {
     for sg in saved_globals {
-        body.global_get(buf_global)
-            .global_get(sg.id)
-            .store(
-                memory,
-                store_kind_for(sg.ty),
-                MemArg {
-                    align: natural_align(sg.ty),
-                    offset: sg.offset as u64,
-                },
-            );
+        body.global_get(buf_global).global_get(sg.id).store(
+            memory,
+            store_kind_for(sg.ty),
+            MemArg {
+                align: natural_align(sg.ty),
+                offset: sg.offset as u64,
+            },
+        );
     }
 }
 

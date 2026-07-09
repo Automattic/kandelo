@@ -144,7 +144,13 @@ fn build_dispatch_tree_just_over_two_levels_promotes_to_three() {
     assert_eq!(root_children.len(), 2);
     assert_eq!(root_children[0].start(), 0);
     assert_eq!(root_children[0].end(), 1024);
-    assert_eq!(root_children[1], DispatchTree::Leaf { start: 1024, end: 1025 });
+    assert_eq!(
+        root_children[1],
+        DispatchTree::Leaf {
+            start: 1024,
+            end: 1025
+        }
+    );
 
     // Left child must itself be the full two-level shape.
     let DispatchTree::Internal {
@@ -172,10 +178,7 @@ fn build_dispatch_tree_partition_covers_every_index_disjointly() {
         for (start, end) in &leaves {
             assert_eq!(*start, cursor, "N={n}: leaf gap at {cursor} → {start}");
             assert!(start < end, "N={n}: empty leaf [{start}, {end})");
-            assert!(
-                end - start <= 32,
-                "N={n}: oversize leaf [{start}, {end})",
-            );
+            assert!(end - start <= 32, "N={n}: oversize leaf [{start}, {end})",);
             cursor = *end;
         }
         assert_eq!(cursor, n, "N={n}: leaves cover only {cursor}/{n}");
@@ -228,8 +231,8 @@ fn max_depth_bounded_by_log_of_n_times_bucket_size() {
     const LEAF_EXTRA: usize = 3;
     let bucket_size = 32usize;
     for &n in &[
-        1usize, 8, 32, 33, 64, 100, 1024, 1025, 2_000, 5_000, 32_768, 32_769,
-        100_000, 1_000_000, 10_000_000,
+        1usize, 8, 32, 33, 64, 100, 1024, 1025, 2_000, 5_000, 32_768, 32_769, 100_000, 1_000_000,
+        10_000_000,
     ] {
         let tree = build_dispatch_tree(n, bucket_size);
         let levels = (ceil_log(n, bucket_size) as usize).max(1);
@@ -270,7 +273,9 @@ fn simulate_decode(tree: &DispatchTree, call_idx: usize) -> Option<(usize, usize
             span_per_child,
         } => {
             let child_idx = (call_idx - tree.start()) / span_per_child;
-            children.get(child_idx).and_then(|c| simulate_decode(c, call_idx))
+            children
+                .get(child_idx)
+                .and_then(|c| simulate_decode(c, call_idx))
         }
     }
 }
@@ -280,8 +285,8 @@ fn decode_every_k_lands_in_correct_leaf() {
     for &n in &[33usize, 64, 100, 200, 1024, 1025, 2_000, 5_000] {
         let tree = build_dispatch_tree(n, BUCKET_SIZE);
         for k in 0..n {
-            let (start, end) = simulate_decode(&tree, k)
-                .unwrap_or_else(|| panic!("N={n}: K={k} → None"));
+            let (start, end) =
+                simulate_decode(&tree, k).unwrap_or_else(|| panic!("N={n}: K={k} → None"));
             assert!(
                 start <= k && k < end,
                 "N={n}: K={k} landed in [{start}, {end})",
@@ -302,17 +307,13 @@ fn max_depth_property_holds_for_power_of_bucket_size_progression() {
     let bucket_size = 32usize;
     let m = bucket_size;
     let expected: [(usize, usize); 4] = [
-        (32, 35),      // 1 level (leaf only)
-        (1024, 67),    // 2 levels
-        (32_768, 99),  // 3 levels
+        (32, 35),         // 1 level (leaf only)
+        (1024, 67),       // 2 levels
+        (32_768, 99),     // 3 levels
         (1_048_576, 131), // 4 levels
     ];
     for (n, want) in expected {
         let tree = build_dispatch_tree(n, m);
-        assert_eq!(
-            tree.max_depth(),
-            want,
-            "N={n}: expected depth {want}",
-        );
+        assert_eq!(tree.max_depth(), want, "N={n}: expected depth {want}",);
     }
 }

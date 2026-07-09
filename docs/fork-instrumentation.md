@@ -20,7 +20,7 @@ For motivation, tradeoffs, and the rollout plan that led here, read
 for the post-rollout switch-dispatch redesign and non-fork-path-call gating
 that fix the kernel-side-effect re-fire bug, read
 [`plans/2026-04-22-fork-instrument-switch-dispatch-redesign.md`](plans/2026-04-22-fork-instrument-switch-dispatch-redesign.md).
-ABI version: `12` (see
+ABI version: `17` (see
 [`crates/shared/src/lib.rs`](../crates/shared/src/lib.rs) — see
 [abi-versioning.md](abi-versioning.md) for the policy).
 
@@ -76,8 +76,8 @@ The host drives the state machine externally. User code never writes to
 
 ## Exported ABI
 
-The tool injects five exports into every instrumented module. Names are
-exact — they are part of the kernel ABI and tracked by the snapshot check
+The tool injects five required exports into every instrumented module. Names
+are exact — they are part of the kernel ABI and tracked by the snapshot check
 (see [abi-versioning.md](abi-versioning.md)).
 
 ```
@@ -116,6 +116,43 @@ user state. The host does **not** need to pre-seed the buffer header — it only
 needs to allocate a buffer at least as large as the instrumented module's
 `frames_start_offset` plus its worst-case frame-data footprint.
 
+### Optional frame counter
+
+Passing `--frame-counter` to `wasm-fork-instrument` injects and exports one
+additional mutable i32 global:
+
+```
+_wpk_fork_active_bytes
+```
+
+The default is off; unflagged output keeps the legacy five-export surface. For
+flagged modules, every fork-instrumented function adds its frame size to the
+global only on NORMAL descent into a fork path and subtracts that same size only
+on the normal-return path. UNWIND skips the subtract because the frame is being
+saved; REWIND resumes past the add and then flows through the subtract, so both
+parent and child return the counter to zero after fork replay.
+
+The active-bytes global is included in the saved mutable-scalar globals block.
+This matters for fork children: a freshly instantiated child starts globals at
+their initial values, so `wpk_fork_rewind_begin` must restore the live counter
+before the REWIND path reaches the balancing subtract.
+
+The host uses the presence of `_wpk_fork_active_bytes` as the opt-in signal for
+the elastic fork-save reserve. `host/src/process-memory.ts` gives such programs
+a larger fork-save region and `host/src/worker-main.ts` verifies, before
+calling `wpk_fork_unwind_begin`, that the current live frame bytes plus a small
+headroom fit in that process's reserved buffer. The existing post-unwind
+`current_pos` overrun detector remains the backstop.
+
+Build scripts can enable the flag through the shared wrapper:
+
+```
+WASM_POSIX_FORK_FRAME_COUNTER=1 scripts/run-wasm-fork-instrument.sh app.wasm -o app.wasm.instr
+```
+
+Do not set that environment variable globally for all packages without a reason;
+it intentionally changes the process memory layout for the instrumented binary.
+
 ## Host Threading Contract
 
 The save buffer belongs to the channel that issued `SYS_FORK`. For a main-thread
@@ -125,15 +162,16 @@ fork this is the process worker's channel, and the child enters `_start` before
 For `fork()` from a pthread worker, the host must preserve the pthread entry
 context as well as the buffer:
 
-- `CentralizedKernelWorker.addChannel(pid, offset, tid, fnPtr, argPtr)` records
-  the pthread entry table index and userdata for each thread channel.
+- `CentralizedKernelWorker.addChannel(pid, offset, tid, fnPtr, argPtr, control)`
+  records the pthread entry table index, userdata, and the exact thread-control
+  slot metadata for each thread channel.
 - `centralizedThreadWorkerMain` overrides `kernel_fork` for instrumented modules
   and drives `wpk_fork_unwind_begin` / `wpk_fork_state` /
-  `wpk_fork_rewind_begin` around the pthread function, using
-  `channelOffset - FORK_BUF_SIZE` as that thread's save buffer.
+  `wpk_fork_rewind_begin` around the pthread function, using that thread's
+  layout-provided save-buffer address and size.
 - `handleFork` passes a `ForkFromThreadContext` through the host `onFork`
-  callback. Node and browser hosts copy `forkBufAddr`, `fnPtr`, and `argPtr`
-  into the child init message.
+  callback. Node and browser hosts copy `forkBufAddr`, `forkSaveBufferSize`,
+  `fnPtr`, and `argPtr` into the child init message.
 - The same context carries the caller's exact dynamic pthread slot range
   (`slotStart`, `slotLen`). After the kernel clones the child process state,
   the host calls `kernel_reserve_host_region_at(childPid, slotStart, slotLen)`

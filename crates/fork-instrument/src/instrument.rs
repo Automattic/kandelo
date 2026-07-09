@@ -114,17 +114,31 @@
 use std::collections::{HashMap, HashSet};
 
 use walrus::{
+    AbstractHeapType, ExportItem, FunctionId, FunctionKind, HeapType, LocalFunction, LocalId,
+    MemoryId, Module, RefType, TableId, TagId, TypeId, ValType,
     ir::{
         AtomicWidth, BinaryOp, Binop, Block, Br, BrTable, Call, CallIndirect, Const, GlobalGet,
-        IfElse, Instr, InstrLocId, InstrSeqId, InstrSeqType, LegacyCatch, LoadKind, LocalGet,
-        LocalSet, LocalTee, Loop, MemArg, RefAsNonNull, RefIsNull, RefNull, Return, StoreKind,
-        TableGet, TableSet, Throw, ThrowRef, TryTable, TryTableCatch, UnaryOp, Unreachable, Value,
+        GlobalSet, IfElse, Instr, InstrLocId, InstrSeqId, InstrSeqType, LegacyCatch, LoadKind,
+        LocalGet, LocalSet, LocalTee, Loop, MemArg, RefAsNonNull, RefIsNull, RefNull, Return,
+        StoreKind, TableGet, TableSet, Throw, ThrowRef, TryTable, TryTableCatch, UnaryOp,
+        Unreachable, Value,
     },
-    AbstractHeapType, FunctionId, FunctionKind, HeapType, LocalFunction, LocalId, MemoryId, Module,
-    RefType, TableId, TagId, TypeId, ValType,
 };
 
 use crate::runtime::{self, Runtime};
+
+const HOST_PARSED_MARKER_EXPORTS: &[&str] = &[
+    "__abi_version",
+    "__wasm_posix_thread_slots",
+    "__get_channel_base_addr",
+];
+
+pub(crate) fn is_host_parsed_marker_function(module: &Module, id: FunctionId) -> bool {
+    module.exports.iter().any(|export| {
+        HOST_PARSED_MARKER_EXPORTS.contains(&export.name.as_str())
+            && matches!(export.item, ExportItem::Function(func) if func == id)
+    })
+}
 
 /// Instrument every function in `fork_path` that we can instrument.
 ///
@@ -149,6 +163,7 @@ pub fn instrument_functions(
         .iter()
         .copied()
         .filter(|id| !runtime_funcs.contains(id))
+        .filter(|id| !is_host_parsed_marker_function(module, *id))
         .filter(|id| matches!(module.funcs.get(*id).kind, FunctionKind::Local(_)))
         .collect();
     targets.sort();
@@ -588,6 +603,7 @@ fn instrument_one_function_switch(
         memory,
         ptr_ty,
         catch_state_locals,
+        frame_size,
     );
 
     // Postamble lives outside $unwind_save, in the entry block, right
@@ -662,6 +678,11 @@ fn instrument_one_function_switch(
         );
     } else {
         debug_assert!(b1_slots.is_empty());
+    }
+
+    if n_calls > 0 {
+        let local = local_mut(module, func_id);
+        insert_active_bytes_decrement_before_returns(local, runtime, frame_size);
     }
 }
 
@@ -2291,6 +2312,7 @@ fn populate_dispatch_structure(
     memory: MemoryId,
     ptr_ty: ValType,
     catch_state_locals: Option<CatchStateLocals>,
+    frame_size: u32,
 ) {
     let n_calls = call_sites.len();
 
@@ -2323,6 +2345,7 @@ fn populate_dispatch_structure(
         memory,
         ptr_ty,
         catch_state_locals,
+        frame_size,
     );
 }
 
@@ -2347,6 +2370,7 @@ fn emit_dispatch_node(
     memory: MemoryId,
     ptr_ty: ValType,
     catch_state_locals: Option<CatchStateLocals>,
+    frame_size: u32,
 ) {
     match node {
         DispatchTree::Leaf { start, end } => emit_leaf_dispatch(
@@ -2366,6 +2390,7 @@ fn emit_dispatch_node(
             memory,
             ptr_ty,
             catch_state_locals,
+            frame_size,
         ),
         DispatchTree::Internal {
             children,
@@ -2387,6 +2412,7 @@ fn emit_dispatch_node(
             memory,
             ptr_ty,
             catch_state_locals,
+            frame_size,
         ),
     }
 }
@@ -2427,6 +2453,7 @@ fn emit_internal_dispatch(
     memory: MemoryId,
     ptr_ty: ValType,
     catch_state_locals: Option<CatchStateLocals>,
+    frame_size: u32,
 ) {
     let b = children.len();
     debug_assert!(b >= 2, "internal dispatch node must have >= 2 children");
@@ -2489,6 +2516,7 @@ fn emit_internal_dispatch(
             memory,
             ptr_ty,
             catch_state_locals,
+            frame_size,
         );
     }
 
@@ -2517,6 +2545,7 @@ fn emit_internal_dispatch(
         memory,
         ptr_ty,
         catch_state_locals,
+        frame_size,
     );
 }
 
@@ -2544,6 +2573,7 @@ fn emit_leaf_dispatch(
     memory: MemoryId,
     ptr_ty: ValType,
     catch_state_locals: Option<CatchStateLocals>,
+    frame_size: u32,
 ) {
     debug_assert!(
         leaf_end > leaf_start,
@@ -2579,6 +2609,7 @@ fn emit_leaf_dispatch(
             }),
         );
         if leaf_start == 0 {
+            emit_active_bytes_adjust(s, runtime, frame_size, ActiveBytesOp::Add);
             for (instr, loc) in &chunks[leaf_start] {
                 s.push((instr.clone(), *loc));
             }
@@ -3112,6 +3143,92 @@ fn emit_post_call_via_local(
         call_idx as u32,
         unwind_save,
     );
+}
+
+#[derive(Clone, Copy)]
+enum ActiveBytesOp {
+    Add,
+    Sub,
+}
+
+fn emit_active_bytes_adjust(
+    out: &mut Vec<(Instr, InstrLocId)>,
+    runtime: &Runtime,
+    frame_size: u32,
+    op: ActiveBytesOp,
+) {
+    let Some(global) = runtime.active_bytes_global else {
+        return;
+    };
+    let frame_size =
+        i32::try_from(frame_size).expect("fork frame size must fit in the i32 active-byte counter");
+    push_instr(out, Instr::GlobalGet(GlobalGet { global }));
+    push_instr(
+        out,
+        Instr::Const(Const {
+            value: Value::I32(frame_size),
+        }),
+    );
+    push_instr(
+        out,
+        Instr::Binop(Binop {
+            op: match op {
+                ActiveBytesOp::Add => BinaryOp::I32Add,
+                ActiveBytesOp::Sub => BinaryOp::I32Sub,
+            },
+        }),
+    );
+    push_instr(out, Instr::GlobalSet(GlobalSet { global }));
+}
+
+fn is_function_return(instr: &Instr) -> bool {
+    matches!(
+        instr,
+        Instr::Return(_)
+            | Instr::ReturnCall(_)
+            | Instr::ReturnCallIndirect(_)
+            | Instr::ReturnCallRef(_)
+    )
+}
+
+fn collect_reachable_seq_ids(f: &LocalFunction, seq: InstrSeqId, out: &mut Vec<InstrSeqId>) {
+    if out.contains(&seq) {
+        return;
+    }
+    out.push(seq);
+    for (instr, _) in &f.block(seq).instrs {
+        for child in nested_seqs(instr) {
+            collect_reachable_seq_ids(f, child, out);
+        }
+    }
+}
+
+fn insert_active_bytes_decrement_before_returns(
+    local: &mut LocalFunction,
+    runtime: &Runtime,
+    frame_size: u32,
+) {
+    if runtime.active_bytes_global.is_none() {
+        return;
+    }
+
+    let mut seqs = Vec::new();
+    collect_reachable_seq_ids(local, local.entry_block(), &mut seqs);
+    for seq_id in seqs {
+        let instrs = &mut local.block_mut(seq_id).instrs;
+        if !instrs.iter().any(|(instr, _)| is_function_return(instr)) {
+            continue;
+        }
+        let old = std::mem::take(instrs);
+        let mut new_instrs = Vec::with_capacity(old.len() + 4);
+        for (instr, loc) in old {
+            if is_function_return(&instr) {
+                emit_active_bytes_adjust(&mut new_instrs, runtime, frame_size, ActiveBytesOp::Sub);
+            }
+            new_instrs.push((instr, loc));
+        }
+        *instrs = new_instrs;
+    }
 }
 
 // ----------------------------------------------------------------------
@@ -3836,7 +3953,9 @@ pub fn plan_b1_scratch(module: &Module, targets: &[FunctionId]) -> B1ScratchPlan
             let mut slots: Vec<PlainCatchArmSlot> = Vec::with_capacity(arm_list.len());
             for arm in arm_list {
                 debug_assert!(
-                    arm.operand_tys.iter().all(|t| !matches!(t, ValType::Ref(_))),
+                    arm.operand_tys
+                        .iter()
+                        .all(|t| !matches!(t, ValType::Ref(_))),
                     "B1 plan_b1_scratch invariant: caller must filter ref-payload arms via Stage 2 \
                      b2_carveout (excluded from fork-path) before reaching the planner. Affected \
                      function has a tag with a ref-typed operand."
@@ -6333,6 +6452,11 @@ fn instrument_one_function_nested_switch(
         catch_state_locals,
         unwind_save,
         &result_types,
+        if runtime.active_bytes_global.is_some() {
+            Some(frame_size)
+        } else {
+            None
+        },
     );
 
     // Build postamble — same as switch-dispatch.
@@ -6407,6 +6531,11 @@ fn instrument_one_function_nested_switch(
         );
     } else {
         debug_assert!(b1_slots.is_empty());
+    }
+
+    if n_calls > 0 {
+        let local = local_mut(module, func_id);
+        insert_active_bytes_decrement_before_returns(local, runtime, frame_size);
     }
 }
 
@@ -6617,6 +6746,7 @@ fn transform_region_seq(
         catch_state_locals,
         unwind_save,
         false, // don't append `return` at end
+        None,
     );
 
     // Sub-commit 2.6c: prepend LocalSets for the body's declared
@@ -6657,6 +6787,7 @@ fn transform_entry_region(
     catch_state_locals: Option<CatchStateLocals>,
     unwind_save: InstrSeqId,
     _result_types: &[ValType],
+    active_frame_size: Option<u32>,
 ) {
     let original: Vec<(Instr, InstrLocId)> = std::mem::take(&mut local.block_mut(seq_id).instrs);
 
@@ -6729,6 +6860,7 @@ fn transform_entry_region(
         catch_state_locals,
         unwind_save,
         true, // append `return` for normal-path exit
+        active_frame_size,
     );
 }
 
@@ -7088,6 +7220,7 @@ fn populate_region_dispatch_structure(
     catch_state_locals: Option<CatchStateLocals>,
     unwind_save: InstrSeqId,
     append_return: bool,
+    active_frame_size: Option<u32>,
 ) {
     let n_landings = landings.len();
     if n_landings == 0 {
@@ -7109,6 +7242,9 @@ fn populate_region_dispatch_structure(
         let s = &mut local.block_mut(post_seqs[0]).instrs;
         if let Some(d) = dispatch_seq {
             push_instr(s, Instr::Block(Block { seq: d }));
+        }
+        if let Some(frame_size) = active_frame_size {
+            emit_active_bytes_adjust(s, runtime, frame_size, ActiveBytesOp::Add);
         }
         for (instr, loc) in &chunks[0] {
             s.push((instr.clone(), *loc));

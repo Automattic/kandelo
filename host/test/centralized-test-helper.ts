@@ -13,11 +13,10 @@ import { resolveBinary } from "../src/binary-resolver";
 import { NodePlatformIO } from "../src/platform/node";
 import { NodeWorkerAdapter } from "../src/worker-adapter";
 import { ThreadPageAllocator } from "../src/thread-allocator";
-import { detectPtrWidth, extractHeapBase, PAGES_PER_THREAD, WASM_PAGE_SIZE } from "../src/constants";
+import { detectPtrWidth, extractHeapBase, WASM_PAGE_SIZE } from "../src/constants";
 import {
   computeProcessMemoryLayout,
   createProcessMemory,
-  FORK_SAVE_BUFFER_SIZE,
   type ProcessMemoryLayout,
 } from "../src/process-memory";
 import { NodeKernelHost } from "../src/node-kernel-host";
@@ -55,10 +54,14 @@ function threadAllocatorForLayout(
   reserveSlotStartPage?: () => number,
 ): ThreadPageAllocator {
   return new ThreadPageAllocator({
-    firstBasePage: layout.firstThreadBasePage,
+    firstSlotStartPage: layout.firstThreadSlotPage,
     maxPageExclusive: layout.threadArenaEndPage,
     ptrWidth,
     reservedSlots: layout.threadSlotCount,
+    forkSaveBufferSize: layout.forkSaveBufferSize,
+    forkSaveBufferPages: layout.forkSaveBufferPages,
+    forkSaveSparePages: layout.forkSaveSparePages,
+    pagesPerSlot: layout.pagesPerThreadSlot,
     reserveSlotStartPage,
   });
 }
@@ -66,7 +69,7 @@ function threadAllocatorForLayout(
 function createFreshProcessMemory(
   programBytes: ArrayBuffer,
   ptrWidth: 4 | 8,
-  reserveSlotStartPage?: () => number,
+  reserveSlotStartPageForLayout?: (layout: ProcessMemoryLayout) => () => number,
 ): {
   memory: WebAssembly.Memory;
   layout: ProcessMemoryLayout;
@@ -84,7 +87,11 @@ function createFreshProcessMemory(
   return {
     memory,
     layout,
-    threadAllocator: threadAllocatorForLayout(layout, ptrWidth, reserveSlotStartPage),
+    threadAllocator: threadAllocatorForLayout(
+      layout,
+      ptrWidth,
+      reserveSlotStartPageForLayout?.(layout),
+    ),
   };
 }
 
@@ -331,10 +338,9 @@ async function runOnMainThread(options: RunProgramOptions): Promise<RunProgramRe
           mmapBase: childLayout.mmapBase,
         });
 
-        const FORK_BUF_SIZE = FORK_SAVE_BUFFER_SIZE;
         const forkBufAddr = threadFork
           ? threadFork.forkBufAddr
-          : childChannelOffset - FORK_BUF_SIZE;
+          : childLayout.forkSaveBufferOffset;
 
         const parentProgram = processProgramBytes.get(parentPid) ?? programBytes;
 
@@ -347,6 +353,9 @@ async function runOnMainThread(options: RunProgramOptions): Promise<RunProgramRe
           channelOffset: childChannelOffset,
           isForkChild: true,
           forkBufAddr,
+          forkSaveBufferSize: threadFork
+            ? threadFork.forkSaveBufferSize
+            : childLayout.forkSaveBufferSize,
           forkChildThreadFnPtr: threadFork?.fnPtr,
           forkChildThreadArgPtr: threadFork?.argPtr,
           ptrWidth: parentPtrWidth,
@@ -359,10 +368,11 @@ async function runOnMainThread(options: RunProgramOptions): Promise<RunProgramRe
         threadAllocators.set(childPid, threadAllocatorForLayout(
           childLayout,
           parentPtrWidth,
-          () => kernelWorker.reserveHostRegion(
-            childPid,
-            PAGES_PER_THREAD * WASM_PAGE_SIZE,
-          ) / WASM_PAGE_SIZE,
+          () =>
+            kernelWorker.reserveHostRegion(
+              childPid,
+              childLayout.pagesPerThreadSlot * WASM_PAGE_SIZE,
+            ) / WASM_PAGE_SIZE,
         ));
         processPtrWidths.set(childPid, parentPtrWidth);
         childWorker.on("error", (err: Error) => {
@@ -400,10 +410,11 @@ async function runOnMainThread(options: RunProgramOptions): Promise<RunProgramRe
         } = createFreshProcessMemory(
           newProgramBytes,
           newPtrWidth,
-          () => kernelWorker.reserveHostRegion(
-            execPid,
-            PAGES_PER_THREAD * WASM_PAGE_SIZE,
-          ) / WASM_PAGE_SIZE,
+          newLayout =>
+            () => kernelWorker.reserveHostRegion(
+              execPid,
+              newLayout.pagesPerThreadSlot * WASM_PAGE_SIZE,
+            ) / WASM_PAGE_SIZE,
         );
         const newChannelOffset = newLayout.channelOffset;
 
@@ -426,6 +437,8 @@ async function runOnMainThread(options: RunProgramOptions): Promise<RunProgramRe
           programBytes: newProgramBytes,
           memory: newMemory,
           channelOffset: newChannelOffset,
+          forkBufAddr: newLayout.forkSaveBufferOffset,
+          forkSaveBufferSize: newLayout.forkSaveBufferSize,
           argv,
           env: envp,
           ptrWidth: newPtrWidth,
@@ -444,7 +457,13 @@ async function runOnMainThread(options: RunProgramOptions): Promise<RunProgramRe
         if (!threadAllocator) throw new Error(`Unknown thread allocator for pid ${clonePid}`);
         const clonePtrWidth = processPtrWidths.get(clonePid) ?? ptrWidth;
         const alloc = threadAllocator.allocate(memory);
-        kernelWorker.addChannel(clonePid, alloc.channelOffset, tid, fnPtr, argPtr);
+        kernelWorker.addChannel(clonePid, alloc.channelOffset, tid, fnPtr, argPtr, {
+          forkBufAddr: alloc.forkBufAddr,
+          forkSaveBufferSize: alloc.forkSaveBufferSize,
+          slotStart: alloc.slotStartPage * WASM_PAGE_SIZE,
+          slotLen: alloc.slotLen,
+          tlsOffset: alloc.tlsOffset,
+        });
 
         const threadInitData: CentralizedThreadInitMessage = {
           type: "centralized_thread_init",
@@ -453,11 +472,14 @@ async function runOnMainThread(options: RunProgramOptions): Promise<RunProgramRe
           programBytes: processProgramBytes.get(clonePid) ?? programBytes,
           memory,
           channelOffset: alloc.channelOffset,
+          forkBufAddr: alloc.forkBufAddr,
+          forkSaveBufferSize: alloc.forkSaveBufferSize,
           fnPtr,
           argPtr,
           stackPtr,
           tlsPtr,
           ctidPtr,
+          tlsOffset: alloc.tlsOffset,
           tlsAllocAddr: alloc.tlsAllocAddr,
           ptrWidth: clonePtrWidth,
         };
@@ -526,10 +548,11 @@ async function runOnMainThread(options: RunProgramOptions): Promise<RunProgramRe
   } = createFreshProcessMemory(
     programBytes,
     ptrWidth,
-    () => kernelWorker.reserveHostRegion(
-      pid,
-      PAGES_PER_THREAD * WASM_PAGE_SIZE,
-    ) / WASM_PAGE_SIZE,
+    initialLayout =>
+      () => kernelWorker.reserveHostRegion(
+        pid,
+        initialLayout.pagesPerThreadSlot * WASM_PAGE_SIZE,
+      ) / WASM_PAGE_SIZE,
   );
   const channelOffset = layout.channelOffset;
 
@@ -558,6 +581,8 @@ async function runOnMainThread(options: RunProgramOptions): Promise<RunProgramRe
     programBytes,
     memory,
     channelOffset,
+    forkBufAddr: layout.forkSaveBufferOffset,
+    forkSaveBufferSize: layout.forkSaveBufferSize,
     env: options.env,
     argv: options.argv ?? [options.programPath],
     ptrWidth,

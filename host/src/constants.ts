@@ -280,6 +280,9 @@ export const WPK_FORK_EXPORTS = [
   "wpk_fork_state",
 ] as const;
 
+/** Optional export emitted by `wasm-fork-instrument --frame-counter`. */
+export const WPK_FORK_ACTIVE_BYTES_EXPORT = "_wpk_fork_active_bytes";
+
 /**
  * Return import names in `module.field` form. This is intentionally a small
  * section parser rather than `new WebAssembly.Module(...)` so release/resolver
@@ -395,6 +398,10 @@ export function wasmImportsKernelFork(programBytes: ArrayBuffer): boolean {
 export function wasmHasCompleteForkInstrumentation(programBytes: ArrayBuffer): boolean {
   const exports = new Set(readWasmExportNames(programBytes));
   return WPK_FORK_EXPORTS.every((name) => exports.has(name));
+}
+
+export function wasmHasForkActiveBytesCounter(programBytes: ArrayBuffer): boolean {
+  return readWasmExportNames(programBytes).includes(WPK_FORK_ACTIVE_BYTES_EXPORT);
 }
 
 export function wasmIsRelocatableObject(programBytes: ArrayBuffer): boolean {

@@ -43,28 +43,37 @@ struct Cli {
     /// hand-maintained onlylists.
     #[arg(long)]
     discover_only: bool,
+
+    /// Emit the `_wpk_fork_active_bytes` running counter so the host can
+    /// size the fork save buffer to the exact live-frame total before each
+    /// unwind (elastic buffer / grow-before-unwind). Off by default; enable
+    /// for deep/wide-stack fork users such as GTK applications.
+    #[arg(long)]
+    frame_counter: bool,
 }
 
 fn main() -> Result<()> {
     let cli = Cli::parse();
 
-    let input = fs::read(&cli.input)
-        .with_context(|| format!("reading input: {}", cli.input.display()))?;
+    let input =
+        fs::read(&cli.input).with_context(|| format!("reading input: {}", cli.input.display()))?;
 
     let opts = Options {
         entry_import: cli.entry,
+        frame_counter: cli.frame_counter,
     };
 
     if cli.discover_only {
-        let analysis = analyze(&input, &opts)
-            .with_context(|| format!("analyzing {}", cli.input.display()))?;
+        let analysis =
+            analyze(&input, &opts).with_context(|| format!("analyzing {}", cli.input.display()))?;
         print_analysis_json(&analysis);
         return Ok(());
     }
 
-    let output_path = cli.output.as_ref().ok_or_else(|| {
-        anyhow::anyhow!("--output is required unless --discover-only is set")
-    })?;
+    let output_path = cli
+        .output
+        .as_ref()
+        .ok_or_else(|| anyhow::anyhow!("--output is required unless --discover-only is set"))?;
 
     let output = instrument(&input, &opts)
         .with_context(|| format!("instrumenting {}", cli.input.display()))?;
@@ -81,7 +90,11 @@ fn print_analysis_json(analysis: &fork_instrument::Analysis) {
     println!("{{");
     println!("  \"fork_path\": [");
     for (i, entry) in analysis.fork_path.iter().enumerate() {
-        let comma = if i + 1 == analysis.fork_path.len() { "" } else { "," };
+        let comma = if i + 1 == analysis.fork_path.len() {
+            ""
+        } else {
+            ","
+        };
         println!(
             "    {{ \"name\": {}, \"is_import\": {} }}{}",
             json_string(&entry.name),

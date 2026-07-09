@@ -2,17 +2,16 @@ import {
   CH_TOTAL_SIZE,
   DEFAULT_MAX_PAGES,
   extractThreadSlotDeclaration,
+  wasmHasForkActiveBytesCounter,
   WASM_PAGE_SIZE,
 } from "./constants";
 import {
   PROCESS_MEMORY_DEFAULT_INITIAL_PAGES,
   PROCESS_MEMORY_DEFAULT_THREAD_SLOTS,
+  PROCESS_MEMORY_ELASTIC_FORK_SAVE_BUFFER_SIZE,
   PROCESS_MEMORY_FALLBACK_BRK_BASE,
   PROCESS_MEMORY_FORK_SAVE_BUFFER_SIZE,
   PROCESS_MEMORY_LEGACY_MMAP_BASE,
-  PROCESS_MEMORY_MAIN_CHANNEL_PRIMARY_PAGE,
-  PROCESS_MEMORY_PAGES_PER_THREAD_SLOT,
-  PROCESS_MEMORY_THREAD_SLOT_CHANNEL_PRIMARY_PAGE,
   PROCESS_MEMORY_THREAD_SLOTS_USE_HOST_DEFAULT,
 } from "./generated/abi";
 
@@ -31,6 +30,8 @@ export const DEFAULT_PROCESS_THREAD_SLOTS = PROCESS_MEMORY_DEFAULT_THREAD_SLOTS;
 export const PROCESS_THREAD_SLOTS_USE_HOST_DEFAULT =
   PROCESS_MEMORY_THREAD_SLOTS_USE_HOST_DEFAULT;
 export const FORK_SAVE_BUFFER_SIZE = PROCESS_MEMORY_FORK_SAVE_BUFFER_SIZE;
+export const ELASTIC_FORK_SAVE_BUFFER_SIZE =
+  PROCESS_MEMORY_ELASTIC_FORK_SAVE_BUFFER_SIZE;
 export const CHANNEL_PAGES = Math.ceil(CH_TOTAL_SIZE / WASM_PAGE_SIZE);
 
 export interface ProcessMemoryLayout {
@@ -44,6 +45,16 @@ export interface ProcessMemoryLayout {
   controlEnd: number;
   /** Main thread syscall channel byte offset. */
   channelOffset: number;
+  /** Address of the fork save buffer for the main thread. */
+  forkSaveBufferOffset: number;
+  /** Usable fork save buffer size for this process. */
+  forkSaveBufferSize: number;
+  /** Whole pages reserved for the usable fork save buffer. */
+  forkSaveBufferPages: number;
+  /** Spare pages below the usable fork buffer for host control slots. */
+  forkSaveSparePages: number;
+  /** Pages consumed by each pthread control slot. */
+  pagesPerThreadSlot: number;
   /** Page containing the main thread syscall channel header. */
   channelPage: number;
   /** Initial program break after host-owned control pages. */
@@ -76,6 +87,8 @@ export interface ProcessMemoryLayoutOptions {
   threadSlots?: number;
   /** Preallocate the full pthread control slab. Defaults to dynamic slots. */
   preallocateThreadSlots?: boolean;
+  /** Override the fork save buffer size. Defaults to elastic size for flagged programs. */
+  forkSaveBufferSize?: number;
   /** @deprecated brk and mmap are coordinated by the kernel allocator. */
   brkReservePages?: number;
 }
@@ -200,6 +213,13 @@ function validateThreadSlotCount(threadSlotCount: number, label: string): number
   return threadSlotCount;
 }
 
+function validateForkSaveBufferSize(size: number): number {
+  if (!Number.isInteger(size) || size <= 0) {
+    throw new Error(`invalid fork save buffer size: ${size}`);
+  }
+  return size;
+}
+
 export function resolveProcessThreadSlotCount(
   programBytes: ArrayBuffer | undefined,
   hostDefaultThreadSlots: number = DEFAULT_PROCESS_THREAD_SLOTS,
@@ -241,28 +261,39 @@ export function computeProcessMemoryLayout(
   const controlBase = pageAlignUp(firstFreeByte);
   const controlBasePage = controlBase / WASM_PAGE_SIZE;
 
+  const forkSaveBufferSize = validateForkSaveBufferSize(
+    options.forkSaveBufferSize ??
+      (options.programBytes && wasmHasForkActiveBytesCounter(options.programBytes)
+        ? ELASTIC_FORK_SAVE_BUFFER_SIZE
+        : FORK_SAVE_BUFFER_SIZE),
+  );
+  const forkSaveBufferPages = Math.max(1, Math.ceil(forkSaveBufferSize / WASM_PAGE_SIZE));
+  const forkSaveSparePages = forkSaveBufferSize > FORK_SAVE_BUFFER_SIZE ? 1 : 0;
+  const pagesPerThreadSlot = 1 + forkSaveSparePages + forkSaveBufferPages + CHANNEL_PAGES;
+
   const threadSlotCount = options.threadSlots !== undefined
     ? validateThreadSlotCount(options.threadSlots, "process thread slot count")
     : resolveProcessThreadSlotCount(options.programBytes, options.defaultThreadSlots);
 
   // Main thread layout:
-  //   controlBasePage   - main fork-save/scratch page
+  //   controlBasePage.. - optional spare page(s), then fork-save pages
   //   channelPage       - main syscall channel primary page
   //   channelPage+1     - main syscall channel spill page
   //
   // Pthread slots are addressed with positive offsets from slot start:
   //   slot+0            - TLS/control page
-  //   slot+1            - per-thread fork-save/scratch page
-  //   slot+2            - syscall channel primary page
-  //   slot+3            - syscall channel spill page
-  const channelPage = controlBasePage + PROCESS_MEMORY_MAIN_CHANNEL_PRIMARY_PAGE;
+  //   slot+1..          - optional spare page(s), then fork-save pages
+  //   slot+N            - syscall channel primary page
+  //   slot+N+1          - syscall channel spill page
+  const channelPage = controlBasePage + forkSaveSparePages + forkSaveBufferPages;
   const channelOffset = channelPage * WASM_PAGE_SIZE;
+  const forkSaveBufferOffset = channelOffset - forkSaveBufferSize;
   const firstThreadSlotPage = channelPage + CHANNEL_PAGES;
   const firstThreadBasePage =
-    firstThreadSlotPage + PROCESS_MEMORY_THREAD_SLOT_CHANNEL_PRIMARY_PAGE;
+    firstThreadSlotPage + 1 + forkSaveSparePages + forkSaveBufferPages;
   const threadArenaEndPage =
     firstThreadSlotPage + (
-      options.preallocateThreadSlots ? threadSlotCount * PROCESS_MEMORY_PAGES_PER_THREAD_SLOT : 0
+      options.preallocateThreadSlots ? threadSlotCount * pagesPerThreadSlot : 0
     );
 
   const initialPages = Math.max(
@@ -285,6 +316,11 @@ export function computeProcessMemoryLayout(
     controlBase,
     controlEnd: brkBase,
     channelOffset,
+    forkSaveBufferOffset,
+    forkSaveBufferSize,
+    forkSaveBufferPages,
+    forkSaveSparePages,
+    pagesPerThreadSlot,
     channelPage,
     brkBase,
     mmapBase: brkBase,

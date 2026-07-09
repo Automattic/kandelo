@@ -43,7 +43,7 @@ import { ThreadPageAllocator } from "./thread-allocator";
 import { patchWasmForThread } from "./worker-main";
 import { ThreadExitCoordinator } from "./thread-exit-coordinator";
 import { detectPtrWidth, extractHeapBase, isWasmModuleBytes } from "./constants";
-import { CH_TOTAL_SIZE, DEFAULT_MAX_PAGES, PAGES_PER_THREAD, WASM_PAGE_SIZE } from "./constants";
+import { CH_TOTAL_SIZE, DEFAULT_MAX_PAGES, WASM_PAGE_SIZE } from "./constants";
 import {
   classifiedSignalOrFallback,
   classifiedTrapExitStatus,
@@ -55,7 +55,6 @@ import {
   computeProcessMemoryLayout,
   createProcessMemory,
   DEFAULT_PROCESS_THREAD_SLOTS,
-  FORK_SAVE_BUFFER_SIZE,
   type ProcessMemoryLayout,
 } from "./process-memory";
 import type { PlatformIO } from "./types";
@@ -323,8 +322,13 @@ function threadAllocatorForLayout(
     maxPageExclusive: layout.threadArenaEndPage,
     ptrWidth,
     reservedSlots: layout.threadSlotCount,
+    forkSaveBufferSize: layout.forkSaveBufferSize,
+    forkSaveBufferPages: layout.forkSaveBufferPages,
+    forkSaveSparePages: layout.forkSaveSparePages,
+    pagesPerSlot: layout.pagesPerThreadSlot,
     reserveSlotStartPage: () =>
-      kernelWorker.reserveHostRegion(pid, PAGES_PER_THREAD * WASM_PAGE_SIZE) / WASM_PAGE_SIZE,
+      kernelWorker.reserveHostRegion(pid, layout.pagesPerThreadSlot * WASM_PAGE_SIZE) /
+        WASM_PAGE_SIZE,
   });
 }
 
@@ -709,6 +713,8 @@ function handleSpawn(msg: SpawnMessage) {
       programModule: msg.programModule,
       memory,
       channelOffset,
+      forkBufAddr: layout.forkSaveBufferOffset,
+      forkSaveBufferSize: layout.forkSaveBufferSize,
       env: msg.env,
       argv: msg.argv,
       ptrWidth,
@@ -792,10 +798,9 @@ async function handleFork(
     mmapBase: childLayout.mmapBase,
   });
 
-  const FORK_BUF_SIZE = FORK_SAVE_BUFFER_SIZE;
   const forkBufAddr = threadFork
     ? threadFork.forkBufAddr
-    : childChannelOffset - FORK_BUF_SIZE;
+    : childLayout.forkSaveBufferOffset;
 
   const childInitData: CentralizedWorkerInitMessage = {
     type: "centralized_init",
@@ -807,6 +812,9 @@ async function handleFork(
     channelOffset: childChannelOffset,
     isForkChild: true,
     forkBufAddr,
+    forkSaveBufferSize: threadFork
+      ? threadFork.forkSaveBufferSize
+      : childLayout.forkSaveBufferSize,
     forkChildThreadFnPtr: threadFork?.fnPtr,
     forkChildThreadArgPtr: threadFork?.argPtr,
     ptrWidth,
@@ -893,6 +901,8 @@ async function handleExec(
     programBytes,
     memory: newMemory,
     channelOffset: newChannelOffset,
+    forkBufAddr: newLayout.forkSaveBufferOffset,
+    forkSaveBufferSize: newLayout.forkSaveBufferSize,
     argv: launchArgv,
     env: envp,
     ptrWidth: newPtrWidth,
@@ -1002,6 +1012,8 @@ async function handlePosixSpawn(
     programBytes,
     memory,
     channelOffset,
+    forkBufAddr: layout.forkSaveBufferOffset,
+    forkSaveBufferSize: layout.forkSaveBufferSize,
     argv,
     env: envp,
     ptrWidth,
@@ -1071,7 +1083,13 @@ async function handleClone(
   // Register fnPtr/argPtr so that handleFork can route a fork() from
   // this thread back through its entry point (see ForkFromThreadContext
   // in kernel-worker.ts).
-  kernelWorker.addChannel(pid, alloc.channelOffset, tid, fnPtr, argPtr);
+  kernelWorker.addChannel(pid, alloc.channelOffset, tid, fnPtr, argPtr, {
+    forkBufAddr: alloc.forkBufAddr,
+    forkSaveBufferSize: alloc.forkSaveBufferSize,
+    slotStart: alloc.slotStartPage * WASM_PAGE_SIZE,
+    slotLen: alloc.slotLen,
+    tlsOffset: alloc.tlsOffset,
+  });
 
   const threadInitData: CentralizedThreadInitMessage = {
     type: "centralized_thread_init",
@@ -1081,6 +1099,8 @@ async function handleClone(
     programModule: threadModule,
     memory,
     channelOffset: alloc.channelOffset,
+    forkBufAddr: alloc.forkBufAddr,
+    forkSaveBufferSize: alloc.forkSaveBufferSize,
     fnPtr,
     argPtr,
     stackPtr,

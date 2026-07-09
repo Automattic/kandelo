@@ -1,5 +1,5 @@
 {
-  "abi_version": 16,
+  "abi_version": 17,
   "channel_buffers": {
     "data_offset": 72,
     "data_size": 65536,
@@ -113,7 +113,7 @@
   },
   "host_adapter": {
     "manifest": {
-      "abi_version": 16,
+      "abi_version": 17,
       "channel_data_offset": 72,
       "channel_data_size": 65536,
       "channel_header_size": 72,
@@ -2948,6 +2948,7 @@
       "max_pages": 16384,
       "thread_slots": 1024
     },
+    "elastic_fork_save_buffer_size": 131072,
     "fork_save_buffer_size": 16384,
     "legacy": {
       "fallback_brk_base": 16777216,

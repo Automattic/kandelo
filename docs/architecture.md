@@ -209,7 +209,7 @@ This mechanism is critical: the process worker blocks on `Atomics.wait` while th
 Fork uses the in-tree `wasm-fork-instrument` tool to snapshot the Wasm call stack (details in [fork-instrumentation.md](fork-instrumentation.md)):
 
 1. User calls `fork()` → musl → `__syscall(SYS_clone, ...)` → glue
-2. Host's `kernel_fork` override calls `wpk_fork_unwind_begin(buf)`. The tool-injected export sets state to UNWINDING, initializes `current_pos = frames_start_offset` at `*(buf+0)`, and snapshots every mutable scalar global (including `__tls_base` and `__stack_pointer`) into the buffer's `saved_globals[]` area.
+2. Host's `kernel_fork` override verifies the process's fork-save reserve when the optional `_wpk_fork_active_bytes` counter is present, then calls `wpk_fork_unwind_begin(buf)`. The tool-injected export sets state to UNWINDING, initializes `current_pos = frames_start_offset` at `*(buf+0)`, and snapshots every mutable scalar global (including `__tls_base` and `__stack_pointer`) into the buffer's `saved_globals[]` area.
 3. The return-to-caller chain unwinds; each instrumented function's postamble writes its frame to the buffer and bumps `current_pos`.
 4. Once `_start` returns (top-of-stack), the host sends SYS_FORK through the channel.
 5. Kernel's `kernel_fork_process` copies fd table, signals, env, CWD, etc.
@@ -319,25 +319,27 @@ Address           Region
 0x00110000        Global base (--global-base=1114112)
 __heap_base       First linker-free byte exported by the program
 control_base      Host-owned low control slab
-                  - main page 0: fork-save/scratch
-                  - main page 1: syscall channel primary page
-                  - main page 2: syscall channel spill page
+                  - optional host-control spare page(s)
+                  - main fork-save buffer page(s)
+                  - syscall channel primary page
+                  - syscall channel spill page
 control_end       End of host-owned control slab
 brk_base          Initial brk; brk(0) returns this address
 mmap_base         First automatic mmap address; normally equals brk_base
 ...               Guest-managed brk/mmap address space, with dynamic
                   host-reserved pthread slots interleaved as needed
                   - slot page 0: TLS/control
-                  - slot page 1: fork-save/scratch
-                  - slot page 2: syscall channel primary page
-                  - slot page 3: syscall channel spill page
+                  - optional host-control spare page(s)
+                  - fork-save buffer page(s)
+                  - syscall channel primary page
+                  - syscall channel spill page
 ...
 MAX_PAGES         End of memory (1GB default)
 ```
 
 For current binaries, `control_base` is page-aligned from the larger of the imported-memory minimum and the program's `__heap_base`. The host installs only the main control pages before `_start` can run, then calls `kernel_set_brk_base(pid, control_end)` and `kernel_set_mmap_base(pid, control_end)`. `__heap_base` is therefore treated as "first byte available to the host layout" rather than the value returned by guest `brk(0)`.
 
-The Rust ABI declaration in `crates/shared/src/lib.rs` is the source of truth for this layout and is mirrored into `abi/snapshot.json` plus generated TypeScript constants. The main control area uses three Wasm pages: fork-save/scratch, syscall channel primary, and syscall channel spill. Each pthread slot is four Wasm pages addressed from the slot start: TLS/control, per-thread fork-save/scratch, syscall channel primary, and syscall channel spill. Pthread workers share the process `WebAssembly.Memory`; the host gives each worker a distinct dynamically reserved slot and returns the slot to that process's allocator after thread exit.
+The Rust ABI declaration in `crates/shared/src/lib.rs` is the source of truth for this layout and is mirrored into `abi/snapshot.json` plus generated TypeScript constants. Unflagged binaries use the compatibility layout: one fork-save page followed by syscall channel primary and spill pages, and each pthread slot uses four pages addressed from the slot start. Binaries that export the optional `_wpk_fork_active_bytes` fork frame counter get an elastic fork-save reserve: a spare host-control page below a larger fork-save buffer, followed by the same two syscall channel pages. Pthread workers share the process `WebAssembly.Memory`; the host gives each worker a distinct dynamically reserved slot with the owning process's fork-save size and returns the slot to that process's allocator after thread exit.
 
 Processes may export `__wasm_posix_thread_slots` to declare their maximum concurrent pthread count. A value of `-1` uses the host default, `0` allows no pthreads, and a positive value sets the exact per-process limit. The kernel worker creation options expose `defaultThreadSlots` for the `-1`/missing-export case. The built-in default is 1024: an intentionally arbitrary high limit meant to avoid pthread availability problems for most programs now that slots are reserved on demand. Hosts can lower or raise it with `defaultThreadSlots` when they need a different resource policy. This limit is a resource-control guard, not a static memory reservation.
 
@@ -357,7 +359,7 @@ The dynamic slot rules follow that POSIX shape:
 - the child worker uses the copied pthread fork-save buffer and enters the saved pthread function before `wpk_fork_rewind_begin` replays to the fork call site;
 - all other parent pthread slots become ordinary copied memory bytes in the child and may be reused later by child `brk`, `mmap`, or new pthread slots.
 
-Retaining the caller slot instead of migrating its TLS into the main control prefix keeps fork replay simple: `wpk_fork_rewind_begin` restores the saved `__tls_base`, `__stack_pointer`, and other mutable globals exactly as the calling thread wrote them. The cost is one retained 256 KiB address-space reservation for fork-from-pthread children.
+Retaining the caller slot instead of migrating its TLS into the main control prefix keeps fork replay simple: `wpk_fork_rewind_begin` restores the saved `__tls_base`, `__stack_pointer`, and other mutable globals exactly as the calling thread wrote them. The cost is one retained address-space reservation for fork-from-pthread children; its size follows that process's pthread slot layout.
 
 ### Heap initialization (brk)
 
@@ -743,6 +745,8 @@ post-link pass — after any `wasm-opt -O2`. Build scripts call
 prebuilt `tools/bin/wasm-fork-instrument` is absent. The tool auto-discovers
 fork-path functions via call-graph analysis from the `kernel.kernel_fork`
 import; no onlylist is needed. Legacy Asyncify artifacts are not supported.
+Fork-heavy programs that need an elastic save buffer can opt in to the frame
+counter with `WASM_POSIX_FORK_FRAME_COUNTER=1 scripts/run-wasm-fork-instrument.sh ...`.
 
 ### Package system
 

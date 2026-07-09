@@ -29,12 +29,22 @@ pub struct Options {
     /// `kernel.kernel_fork`). Future phases read this to seed the
     /// call-graph discovery; Phase 1 ignores it.
     pub entry_import: String,
+
+    /// Opt-in: emit the `_wpk_fork_active_bytes` running counter and the
+    /// per-function accounting that maintains it, so the host can size the
+    /// fork save buffer to the exact live-frame total before each unwind
+    /// (grow-before-unwind / elastic buffer). Off by default: programs with
+    /// shallow, narrow fork stacks (the vast majority) never approach the
+    /// buffer limit and shouldn't pay for the counter. Enable it for
+    /// deep/wide-stack fork users (GTK apps, etc.).
+    pub frame_counter: bool,
 }
 
 impl Default for Options {
     fn default() -> Self {
         Self {
             entry_import: "kernel.kernel_fork".into(),
+            frame_counter: false,
         }
     }
 }
@@ -53,8 +63,7 @@ pub struct Analysis {
 /// Phase 2 scope: direct-call closure only. Phase 3 extends to
 /// indirect calls.
 pub fn analyze(input: &[u8], opts: &Options) -> Result<Analysis> {
-    let module = walrus::Module::from_buffer(input)
-        .context("failed to parse input wasm module")?;
+    let module = walrus::Module::from_buffer(input).context("failed to parse input wasm module")?;
 
     let Some(entry) = call_graph::find_import_func(&module, &opts.entry_import) else {
         bail!(
@@ -84,8 +93,8 @@ pub fn analyze(input: &[u8], opts: &Options) -> Result<Analysis> {
 /// tool is invoked by build scripts across programs that may or may
 /// not use `fork()`.
 pub fn instrument(input: &[u8], opts: &Options) -> Result<Vec<u8>> {
-    let mut module = walrus::Module::from_buffer(input)
-        .context("failed to parse input wasm module")?;
+    let mut module =
+        walrus::Module::from_buffer(input).context("failed to parse input wasm module")?;
 
     // Discover the fork-path closure *before* we mutate the module so
     // the runtime's own injected functions are not mistaken for
@@ -117,11 +126,12 @@ pub fn instrument(input: &[u8], opts: &Options) -> Result<Vec<u8>> {
     let mut fork_path_targets: Vec<walrus::FunctionId> = fork_path
         .iter()
         .copied()
+        .filter(|id| !instrument::is_host_parsed_marker_function(&module, *id))
         .filter(|id| matches!(module.funcs.get(*id).kind, walrus::FunctionKind::Local(_)))
         .collect();
     fork_path_targets.sort();
     let b1_plan = instrument::plan_b1_scratch(&module, &fork_path_targets);
-    let runtime = runtime::inject_runtime(&mut module, b1_plan.total_bytes);
+    let runtime = runtime::inject_runtime(&mut module, b1_plan.total_bytes, opts.frame_counter);
 
     // Phase 4b: structural wrap of each fork-path function's body.
     // No-op when `fork_path` is empty (module doesn't use fork).

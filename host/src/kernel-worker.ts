@@ -53,15 +53,12 @@ import {
   CH_SYSCALL,
   CH_TOTAL_SIZE,
   HOST_INTERCEPTED_SYSCALLS,
-  PROCESS_MEMORY_PAGES_PER_THREAD_SLOT,
-  PROCESS_MEMORY_THREAD_SLOT_CHANNEL_PRIMARY_PAGE,
   SYSCALL_ARGS,
   type SyscallArgDesc,
 } from "./generated/abi";
 import { validateKernelHostAdapterManifest } from "./host-adapter-manifest";
 import { WASM_PAGE_SIZE } from "./constants";
 import {
-  FORK_SAVE_BUFFER_SIZE,
   PROCESS_MMAP_BASE,
   growMemoryToCover,
 } from "./process-memory";
@@ -85,15 +82,6 @@ function concatChunksLocal(chunks: Uint8Array[]): Uint8Array {
 const CH_IDLE = CHANNEL_STATUS_IDLE;
 const CH_PENDING = CHANNEL_STATUS_PENDING;
 const CH_COMPLETE = CHANNEL_STATUS_COMPLETE;
-
-/**
- * Size of the wpk_fork save buffer. Each channel reserves
- * `[channelOffset - FORK_BUF_SIZE, channelOffset)` for the unwind frames and
- * saved globals that the instrumented module writes during fork(). Must match
- * the constant in `worker-main.ts` and the onFork handlers in
- * node-kernel-worker-entry.ts / browser-kernel-worker-entry.ts.
- */
-const FORK_BUF_SIZE = FORK_SAVE_BUFFER_SIZE;
 
 /** Errno values */
 const EAGAIN = 11;
@@ -516,7 +504,7 @@ type WaitPollResult =
  *   `addChannel`. The child Worker uses these to enter the thread
  *   function directly (skipping `_start`).
  * - `forkBufAddr`: the wpk_fork buffer address corresponding to the
- *   *thread's* channel — i.e. `thread_channelOffset - FORK_BUF_SIZE`.
+ *   *thread's* channel.
  *   In the child's memory copy this offset holds the saved frames and globals
  *   the parent thread wrote during its wpk_fork unwind.
  * - `slotStart`/`slotLen`: the dynamic pthread control reservation that
@@ -527,8 +515,17 @@ export interface ForkFromThreadContext {
   fnPtr: number;
   argPtr: number;
   forkBufAddr: number;
+  forkSaveBufferSize: number;
   slotStart: number;
   slotLen: number;
+}
+
+interface ThreadChannelControl {
+  forkBufAddr: number;
+  forkSaveBufferSize: number;
+  slotStart: number;
+  slotLen: number;
+  tlsOffset: number;
 }
 
 export interface ResolvedSpawnProgram {
@@ -694,7 +691,10 @@ export class CentralizedKernelWorker {
    * `pid:channelOffset` like `channelTids`; entries are cleared by
    * `removeChannel` and the thread-exit path.
    */
-  private threadForkContexts = new Map<string, { fnPtr: number; argPtr: number }>();
+  private threadForkContexts = new Map<string, ThreadChannelControl & {
+    fnPtr: number;
+    argPtr: number;
+  }>();
   /** Tracks the pid currently being serviced by kernel_handle_channel */
   private currentHandlePid = 0;
   /**
@@ -1721,6 +1721,7 @@ export class CentralizedKernelWorker {
     tid?: number,
     threadFnPtr?: number,
     threadArgPtr?: number,
+    threadControl?: ThreadChannelControl,
   ): void {
     const registration = this.processes.get(pid);
     if (!registration) throw new Error(`Process ${pid} not registered`);
@@ -1740,9 +1741,17 @@ export class CentralizedKernelWorker {
       this.channelTids.set(`${pid}:${channelOffset}`, tid);
     }
     if (threadFnPtr !== undefined && threadArgPtr !== undefined) {
+      if (!threadControl) {
+        throw new Error("thread fork context requires explicit thread control metadata");
+      }
       this.threadForkContexts.set(`${pid}:${channelOffset}`, {
         fnPtr: threadFnPtr,
         argPtr: threadArgPtr,
+        forkBufAddr: threadControl.forkBufAddr,
+        forkSaveBufferSize: threadControl.forkSaveBufferSize,
+        slotStart: threadControl.slotStart,
+        slotLen: threadControl.slotLen,
+        tlsOffset: threadControl.tlsOffset,
       });
     }
 
@@ -1752,7 +1761,7 @@ export class CentralizedKernelWorker {
     const setMaxAddr = this.kernelInstance!.exports.kernel_set_max_addr as
       ((pid: number, maxAddr: KernelPointer) => number) | undefined;
     if (setMaxAddr && !registration.explicitMaxAddr) {
-      const tlsPageAddr = channelOffset - 2 * WASM_PAGE_SIZE;
+      const tlsPageAddr = threadControl?.tlsOffset ?? channelOffset - 2 * WASM_PAGE_SIZE;
       if (tlsPageAddr >= PROCESS_MMAP_BASE) {
         setMaxAddr(pid, this.toKernelPtr(tlsPageAddr));
       }
@@ -5739,16 +5748,14 @@ export class CentralizedKernelWorker {
     // correctly.
     const threadKey = `${parentPid}:${channel.channelOffset}`;
     const threadCtx = this.threadForkContexts.get(threadKey);
-    const callerSlotStart =
-      channel.channelOffset - PROCESS_MEMORY_THREAD_SLOT_CHANNEL_PRIMARY_PAGE * WASM_PAGE_SIZE;
-    const callerSlotLen = PROCESS_MEMORY_PAGES_PER_THREAD_SLOT * WASM_PAGE_SIZE;
     const threadFork: ForkFromThreadContext | undefined = threadCtx
       ? {
           fnPtr: threadCtx.fnPtr,
           argPtr: threadCtx.argPtr,
-          forkBufAddr: channel.channelOffset - FORK_BUF_SIZE,
-          slotStart: callerSlotStart,
-          slotLen: callerSlotLen,
+          forkBufAddr: threadCtx.forkBufAddr,
+          forkSaveBufferSize: threadCtx.forkSaveBufferSize,
+          slotStart: threadCtx.slotStart,
+          slotLen: threadCtx.slotLen,
         }
       : undefined;
 
@@ -7381,7 +7388,8 @@ export class CentralizedKernelWorker {
     if (registration.explicitMaxAddr) return null;
     let floor: number | null = null;
     for (const ch of registration.channels) {
-      const tlsPageAddr = ch.channelOffset - 2 * WASM_PAGE_SIZE;
+      const threadCtx = this.threadForkContexts.get(`${ch.pid}:${ch.channelOffset}`);
+      const tlsPageAddr = threadCtx?.tlsOffset ?? ch.channelOffset - 2 * WASM_PAGE_SIZE;
       if (tlsPageAddr >= PROCESS_MMAP_BASE) {
         floor = floor === null ? tlsPageAddr : Math.min(floor, tlsPageAddr);
       }
