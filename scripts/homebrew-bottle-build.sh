@@ -114,13 +114,28 @@ export HOMEBREW_NO_INSTALL_CLEANUP="${HOMEBREW_NO_INSTALL_CLEANUP:-1}"
 export HOMEBREW_NO_ANALYTICS="${HOMEBREW_NO_ANALYTICS:-1}"
 export HOMEBREW_DEVELOPER="${HOMEBREW_DEVELOPER:-1}"
 export KANDELO_HOMEBREW_ARCH="$ARCH"
+export HOMEBREW_KANDELO_BOTTLE_TAG="$BOTTLE_TAG"
+export KANDELO_HOMEBREW_BOTTLE_TAG="$BOTTLE_TAG"
 export KANDELO_HOMEBREW_KANDELO_ROOT="$KANDELO_ROOT"
 export HOMEBREW_KANDELO_ARCH="$ARCH"
 export HOMEBREW_KANDELO_ROOT="$KANDELO_ROOT"
 export HOMEBREW_KANDELO_NODE="$(command -v node)"
 export HOMEBREW_KANDELO_LLVM_BIN="${LLVM_BIN:-${WASM_POSIX_LLVM_DIR:-}}"
+export HOMEBREW_KANDELO_BUILD_PATH="$PATH"
 
-"$BREW_BIN" tap "$TAP_NAME" "$TAP_ROOT"
+if [ ! -d "$TAP_SOURCE/.git" ]; then
+  TAP_SOURCE="$WORK_DIR/tap-source"
+  mkdir -p "$TAP_SOURCE"
+  rsync -a --exclude .git "$TAP_ROOT/" "$TAP_SOURCE/"
+  git -C "$TAP_SOURCE" init -q
+  git -C "$TAP_SOURCE" config user.name "kandelo-homebrew-local"
+  git -C "$TAP_SOURCE" config user.email "kandelo-homebrew-local@example.invalid"
+  git -C "$TAP_SOURCE" add .
+  git -C "$TAP_SOURCE" commit -q -m "stage Kandelo Homebrew tap"
+fi
+
+"$BREW_BIN" tap "$TAP_NAME" "$TAP_SOURCE"
+"$BREW_BIN" trust "$TAP_NAME"
 FORMULA_REF="$TAP_NAME/$FORMULA"
 TAPPED_TAP_ROOT="$("$BREW_BIN" --repository "$TAP_NAME")"
 TAPPED_FORMULA_PATH="$TAPPED_TAP_ROOT/Formula/$FORMULA.rb"
@@ -137,6 +152,10 @@ formula_has_bottle_tag() {
 if ! same_file "$FORMULA_PATH" "$TAPPED_FORMULA_PATH"; then
   mkdir -p "$(dirname "$TAPPED_FORMULA_PATH")"
   cp "$FORMULA_PATH" "$TAPPED_FORMULA_PATH"
+  if [ -d "$TAP_ROOT/Kandelo/formula_support" ]; then
+    mkdir -p "$TAPPED_TAP_ROOT/Kandelo"
+    rsync -a "$TAP_ROOT/Kandelo/formula_support/" "$TAPPED_TAP_ROOT/Kandelo/formula_support/"
+  fi
 fi
 
 brew_install_build_bottle() {
@@ -187,6 +206,17 @@ cp "${bottle_archives[0]}" "$OUT_DIR/bottles/"
 
 BOTTLE_JSON="$OUT_DIR/bottles/$(basename "${bottle_jsons[0]}")"
 BOTTLE_ARCHIVE="$OUT_DIR/bottles/$(basename "${bottle_archives[0]}")"
+REMOTE_BOTTLE_FILENAME="$(
+  "$BREW_BIN" ruby -rjson -e '
+    json_path, bottle_tag = ARGV
+    data = JSON.parse(File.read(json_path))
+    tag = data.values.first.fetch("bottle").fetch("tags").fetch(bottle_tag)
+    puts tag.fetch("filename")
+  ' "$BOTTLE_JSON" "$BOTTLE_TAG"
+)"
+if [ -n "$REMOTE_BOTTLE_FILENAME" ] && [ "$REMOTE_BOTTLE_FILENAME" != "$(basename "$BOTTLE_ARCHIVE")" ]; then
+  cp "$BOTTLE_ARCHIVE" "$OUT_DIR/bottles/$REMOTE_BOTTLE_FILENAME"
+fi
 
 (
   cd "$TAP_ROOT"

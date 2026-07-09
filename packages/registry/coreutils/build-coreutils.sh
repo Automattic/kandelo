@@ -1,16 +1,17 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Build GNU coreutils 9.5 for wasm32-posix-kernel.
+# Build GNU coreutils for wasm32-posix-kernel.
 #
 # Uses the SDK's wasm32posix-configure wrapper for cross-compilation.
 # Output: packages/registry/coreutils/bin/*.wasm
 
-COREUTILS_VERSION="${COREUTILS_VERSION:-9.5}"
+COREUTILS_VERSION="${COREUTILS_VERSION:-${WASM_POSIX_DEP_VERSION:-9.6}}"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
-SRC_DIR="$SCRIPT_DIR/coreutils-src"
-BIN_DIR="$SCRIPT_DIR/bin"
+WORK_DIR="${WASM_POSIX_DEP_WORK_DIR:-$SCRIPT_DIR}"
+SRC_DIR="${WASM_POSIX_DEP_SOURCE_DIR:-$WORK_DIR/coreutils-src}"
+BIN_DIR="${WASM_POSIX_DEP_OUT_DIR:-$SCRIPT_DIR/bin}"
 SYSROOT="$REPO_ROOT/sysroot"
 
 # --- Prerequisites ---
@@ -30,8 +31,17 @@ export WASM_POSIX_SYSROOT="$SYSROOT"
 if [ ! -d "$SRC_DIR" ]; then
     echo "==> Downloading coreutils $COREUTILS_VERSION..."
     TARBALL="coreutils-${COREUTILS_VERSION}.tar.xz"
-    URL="https://ftpmirror.gnu.org/gnu/coreutils/${TARBALL}"
+    URL="${WASM_POSIX_DEP_SOURCE_URL:-https://ftpmirror.gnu.org/gnu/coreutils/${TARBALL}}"
     curl --retry 10 --retry-delay 5 --retry-max-time 300 --retry-all-errors -fsSL "$URL" -o "/tmp/$TARBALL"
+    if [ -n "${WASM_POSIX_DEP_SOURCE_SHA256:-}" ]; then
+        actual_sha256="$(shasum -a 256 "/tmp/$TARBALL" | awk '{print $1}')"
+        if [ "$actual_sha256" != "$WASM_POSIX_DEP_SOURCE_SHA256" ]; then
+            echo "ERROR: checksum mismatch for $URL" >&2
+            echo "expected: $WASM_POSIX_DEP_SOURCE_SHA256" >&2
+            echo "actual:   $actual_sha256" >&2
+            exit 1
+        fi
+    fi
     mkdir -p "$SRC_DIR"
     tar xJf "/tmp/$TARBALL" -C "$SRC_DIR" --strip-components=1
     rm "/tmp/$TARBALL"
@@ -217,6 +227,11 @@ if [ ! -f Makefile ]; then
     export ac_cv_func_getattrat=no
     export ac_cv_func_pstat_getprocvm=no
     export ac_cv_func_mquery=no
+    export ac_cv_func_tzalloc=no
+    export ac_cv_func_localtime_rz=no
+    export ac_cv_func_mktime_z=no
+    export ac_cv_func_strftime_z=no
+    export gl_cv_onwards_func_tzalloc=no
 
     # Wasm32 type sizes
     export ac_cv_sizeof_long=4
@@ -269,4 +284,4 @@ echo "Binary: $BIN_DIR/coreutils.wasm"
 # Install into local-binaries/ so the resolver picks the freshly-built
 # binary over the fetched release.
 source "$REPO_ROOT/scripts/install-local-binary.sh"
-install_local_binary coreutils "$SCRIPT_DIR/bin/coreutils.wasm"
+install_local_binary coreutils "$BIN_DIR/coreutils.wasm"

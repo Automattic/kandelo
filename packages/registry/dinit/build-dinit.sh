@@ -8,12 +8,23 @@
 # Output: packages/registry/dinit/bin/dinit (and dinitctl, dinitcheck)
 set -euo pipefail
 
-DINIT_VERSION="${DINIT_VERSION:-v0.19.4}"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
+# shellcheck source=/dev/null
+source "$REPO_ROOT/sdk/activate.sh"
+
+DINIT_VERSION="${DINIT_VERSION:-${WASM_POSIX_DEP_VERSION:-0.19.4}}"
+case "$DINIT_VERSION" in
+    v*) DINIT_TAG="$DINIT_VERSION" ;;
+    *) DINIT_TAG="v$DINIT_VERSION" ;;
+esac
 SYSROOT="$REPO_ROOT/sysroot"
-SRC_DIR="$SCRIPT_DIR/dinit-src"
-BIN_DIR="$SCRIPT_DIR/bin"
+WORK_DIR="${WASM_POSIX_DEP_WORK_DIR:-$SCRIPT_DIR}"
+SRC_DIR="${WASM_POSIX_DEP_SOURCE_DIR:-$WORK_DIR/dinit-src}"
+BIN_DIR="${WASM_POSIX_DEP_OUT_DIR:-$SCRIPT_DIR/bin}"
+SOURCE_URL="${WASM_POSIX_DEP_SOURCE_URL:-https://github.com/davmac314/dinit/archive/refs/tags/${DINIT_TAG}.tar.gz}"
+SOURCE_SHA256="${WASM_POSIX_DEP_SOURCE_SHA256:-}"
+mkdir -p "$WORK_DIR" "$BIN_DIR"
 
 source "$REPO_ROOT/scripts/wasm-artifact-guards.sh"
 
@@ -69,43 +80,51 @@ if ! command -v wasm32posix-c++ &>/dev/null; then
 fi
 
 LIBCXX_DIR="${WASM_POSIX_DEP_LIBCXX_DIR:-}"
+LIBCXX_INCLUDE_DIR="$SYSROOT/include/c++/v1"
+LIBCXX_LIB_DIR="$SYSROOT/lib"
 if [ -n "$LIBCXX_DIR" ]; then
-    copy_dep_file() {
-        local src="$1"
-        local dst="$2"
-
-        if [ -e "$dst" ] && [ ! -L "$dst" ] && cmp -s "$src" "$dst"; then
-            return
-        fi
-
-        rm -f "$dst"
-        cp "$src" "$dst"
-    }
-
-    mkdir -p "$SYSROOT/lib" "$SYSROOT/include/c++"
-    copy_dep_file "$LIBCXX_DIR/lib/libc++.a" "$SYSROOT/lib/libc++.a"
-    copy_dep_file "$LIBCXX_DIR/lib/libc++abi.a" "$SYSROOT/lib/libc++abi.a"
-
-    LIBCXX_INCLUDE_SRC="$LIBCXX_DIR/include/c++/v1"
-    LIBCXX_INCLUDE_DST="$SYSROOT/include/c++/v1"
-    if [ ! -d "$LIBCXX_INCLUDE_DST" ] \
-        || [ "$(cd "$LIBCXX_INCLUDE_SRC" && pwd -P)" != "$(cd "$LIBCXX_INCLUDE_DST" && pwd -P)" ]; then
-        rm -rf "$LIBCXX_INCLUDE_DST"
-        cp -RL "$LIBCXX_INCLUDE_SRC" "$LIBCXX_INCLUDE_DST"
-    fi
+    LIBCXX_INCLUDE_DIR="$LIBCXX_DIR/include/c++/v1"
+    LIBCXX_LIB_DIR="$LIBCXX_DIR/lib"
 fi
 
-if [ ! -f "$SYSROOT/lib/libc++.a" ]; then
-    echo "ERROR: libc++.a not found in $SYSROOT/lib/" >&2
+if [ ! -f "$LIBCXX_LIB_DIR/libc++.a" ]; then
+    echo "ERROR: libc++.a not found in $LIBCXX_LIB_DIR/" >&2
+    echo "       Resolve the declared libcxx dependency first." >&2
+    exit 1
+fi
+if [ ! -f "$LIBCXX_LIB_DIR/libc++abi.a" ]; then
+    echo "ERROR: libc++abi.a not found in $LIBCXX_LIB_DIR/" >&2
+    echo "       Resolve the declared libcxx dependency first." >&2
+    exit 1
+fi
+if [ ! -d "$LIBCXX_INCLUDE_DIR" ]; then
+    echo "ERROR: libc++ headers not found at $LIBCXX_INCLUDE_DIR/" >&2
     echo "       Resolve the declared libcxx dependency first." >&2
     exit 1
 fi
 
 # --- Download source ---
 if [ ! -d "$SRC_DIR" ]; then
-    echo "==> Downloading dinit $DINIT_VERSION..."
-    git clone --depth 1 --branch "$DINIT_VERSION" \
-        https://github.com/davmac314/dinit.git "$SRC_DIR"
+    echo "==> Downloading dinit $DINIT_TAG..."
+    case "$SOURCE_URL" in
+        *.git|git://*)
+            git clone --depth 1 --branch "$DINIT_TAG" "$SOURCE_URL" "$SRC_DIR"
+            ;;
+        *)
+            tmpdir="$(mktemp -d "${TMPDIR:-/tmp}/kandelo-dinit-src.XXXXXX")"
+            trap 'rm -rf "$tmpdir"' EXIT
+            TARBALL="$tmpdir/dinit-${DINIT_TAG}.tar.gz"
+            curl --retry 10 --retry-delay 5 --retry-max-time 300 --retry-all-errors -fsSL "$SOURCE_URL" -o "$TARBALL"
+            if [ -n "$SOURCE_SHA256" ]; then
+                echo "==> Verifying source sha256..."
+                echo "$SOURCE_SHA256  $TARBALL" | shasum -a 256 -c -
+            fi
+            mkdir -p "$SRC_DIR"
+            tar xzf "$TARBALL" -C "$SRC_DIR" --strip-components=1
+            trap - EXIT
+            rm -rf "$tmpdir"
+            ;;
+    esac
 fi
 
 cd "$SRC_DIR"
@@ -133,15 +152,14 @@ LDFLAGS_FOR_BUILD =
 
 # Target flags. dinit uses C++ exceptions in its client code (dinitctl,
 # dinit-monitor) so we cannot disable them. Add libc++ include path
-# explicitly since the wasm32posix toolchain does not auto-include it;
-# the library is picked up at link time via -lc++ -lc++abi.
-CPPFLAGS = -D_POSIX_C_SOURCE=200809L -isystem $SYSROOT/include/c++/v1
+# explicitly since the wasm32posix toolchain does not auto-include it.
+CPPFLAGS = -D_POSIX_C_SOURCE=200809L -isystem $LIBCXX_INCLUDE_DIR -isystem $SYSROOT/include
 CXXFLAGS = -std=c++14 -O2 -Wall -Wextra
 CFLAGS = -O2 -Wall
 
-# Link flags (target). Explicit -L because the SDK wrapper does not
-# auto-add the sysroot lib path during link.
-LDFLAGS_BASE = -L$SYSROOT/lib -lc++ -lc++abi
+# Link flags (target). Put the declared libcxx prefix first so package-manager
+# builds do not need to mutate the shared repo sysroot.
+LDFLAGS_BASE = -L$LIBCXX_LIB_DIR -L$SYSROOT/lib -lc++ -lc++abi
 
 # Path/install
 SBINDIR = /sbin
@@ -173,8 +191,12 @@ EOF
 
 # --- Build ---
 echo "==> Building dinit (this may take a minute)..."
-make clean 2>&1 | tail -5 || true
-make -j"$(sysctl -n hw.ncpu 2>/dev/null || nproc)" 2>&1 | tail -30
+make clean 2>&1 | tee "$WORK_DIR/dinit-clean.log" | tail -5 || true
+MAKE_JOBS="${WASM_POSIX_MAKE_JOBS:-$(sysctl -n hw.ncpu 2>/dev/null || nproc)}"
+if ! make -j"$MAKE_JOBS" 2>&1 | tee "$WORK_DIR/dinit-build.log" | tail -120; then
+    echo "ERROR: dinit build failed; see $WORK_DIR/dinit-build.log" >&2
+    exit 1
+fi
 
 # --- Collect binaries ---
 echo "==> Collecting binaries..."

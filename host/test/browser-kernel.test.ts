@@ -89,6 +89,24 @@ async function makeRootfsImageBuffer(): Promise<ArrayBuffer> {
   ) as ArrayBuffer;
 }
 
+async function waitForWorker(index = 0): Promise<MockWorker> {
+  for (let i = 0; i < 50; i++) {
+    const worker = MockWorker.instances[index];
+    if (worker) return worker;
+    await new Promise((r) => setTimeout(r, 0));
+  }
+  throw new Error(`worker ${index} was not created`);
+}
+
+async function waitForMessage(worker: MockWorker, type: string): Promise<any> {
+  for (let i = 0; i < 50; i++) {
+    const message = worker.lastMessage(type);
+    if (message) return message;
+    await new Promise((r) => setTimeout(r, 0));
+  }
+  throw new Error(`worker message ${type} was not sent`);
+}
+
 describe("BrowserKernel", () => {
   beforeEach(() => {
     MockWorker.instances = [];
@@ -170,14 +188,12 @@ describe("BrowserKernel", () => {
     let resolved = false;
     void initPromise.then(() => { resolved = true; });
 
-    await new Promise((r) => setTimeout(r, 0));
-    const w = MockWorker.instances[0]!;
-    expect(w.lastMessage("init")).toBeDefined();
+    const w = await waitForWorker();
+    await waitForMessage(w, "init");
     w.simulateMessage({ type: "ready" });
     await new Promise((r) => setTimeout(r, 0));
 
-    const lazy = w.lastMessage("register_lazy_files");
-    expect(lazy).toBeDefined();
+    const lazy = await waitForMessage(w, "register_lazy_files");
     expect(typeof lazy.requestId).toBe("number");
     expect(lazy.entries).toMatchObject([
       { path: "/bin/lazy", url: "/assets/lazy.wasm", size: 123 },
@@ -202,12 +218,11 @@ describe("BrowserKernel", () => {
     const kernel = new BrowserKernel({ memfs });
     const initPromise = kernel.init(new ArrayBuffer(8));
 
-    await new Promise((r) => setTimeout(r, 0));
-    const w = MockWorker.instances[0]!;
+    const w = await waitForWorker();
     w.simulateMessage({ type: "ready" });
     await new Promise((r) => setTimeout(r, 0));
 
-    const lazy = w.lastMessage("register_lazy_files");
+    const lazy = await waitForMessage(w, "register_lazy_files");
     w.simulateMessage({
       type: "response",
       requestId: lazy.requestId,

@@ -10,8 +10,9 @@ set -euo pipefail
 UNZIP_VERSION="${UNZIP_VERSION:-60}"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
-SRC_DIR="$SCRIPT_DIR/unzip-src"
-BIN_DIR="$SCRIPT_DIR/bin"
+WORK_DIR="${WASM_POSIX_DEP_WORK_DIR:-$SCRIPT_DIR}"
+SRC_DIR="${WASM_POSIX_DEP_SOURCE_DIR:-$WORK_DIR/unzip-src}"
+BIN_DIR="${WASM_POSIX_DEP_OUT_DIR:-$SCRIPT_DIR/bin}"
 SYSROOT="$REPO_ROOT/sysroot"
 
 # --- Prerequisites ---
@@ -31,8 +32,17 @@ export WASM_POSIX_SYSROOT="$SYSROOT"
 if [ ! -d "$SRC_DIR" ]; then
     echo "==> Downloading unzip $UNZIP_VERSION..."
     TARBALL="unzip${UNZIP_VERSION}.tar.gz"
-    URL="https://downloads.sourceforge.net/infozip/${TARBALL}"
+    URL="${WASM_POSIX_DEP_SOURCE_URL:-https://downloads.sourceforge.net/infozip/${TARBALL}}"
     curl --retry 10 --retry-delay 5 --retry-max-time 300 --retry-all-errors -fsSL -L "$URL" -o "/tmp/$TARBALL"
+    if [ -n "${WASM_POSIX_DEP_SOURCE_SHA256:-}" ]; then
+        actual_sha256="$(shasum -a 256 "/tmp/$TARBALL" | awk '{print $1}')"
+        if [ "$actual_sha256" != "$WASM_POSIX_DEP_SOURCE_SHA256" ]; then
+            echo "ERROR: checksum mismatch for $URL" >&2
+            echo "expected: $WASM_POSIX_DEP_SOURCE_SHA256" >&2
+            echo "actual:   $actual_sha256" >&2
+            exit 1
+        fi
+    fi
     mkdir -p "$SRC_DIR"
     tar xzf "/tmp/$TARBALL" -C "$SRC_DIR" --strip-components=1
     rm "/tmp/$TARBALL"
@@ -70,4 +80,4 @@ echo "Binary: $BIN_DIR/unzip.wasm"
 # Install into local-binaries/ so the resolver picks the freshly-built
 # binary over the fetched release.
 source "$REPO_ROOT/scripts/install-local-binary.sh"
-install_local_binary unzip "$SCRIPT_DIR/bin/unzip.wasm"
+install_local_binary unzip "$BIN_DIR/unzip.wasm"

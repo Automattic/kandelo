@@ -324,10 +324,52 @@ function applyLinkEntry(
       if (kind(sourceStat) !== S_IFDIR) {
         fail(pkg, `directory link source ${entry.source} is not a directory`);
       }
-      ensureDirRecursive(fs, targetPath);
-      fs.chmod(targetPath, parseManifestMode(entry, sourceStat));
+      copyDirectoryLink(fs, pkg, sourcePath, targetPath, parseManifestMode(entry, sourceStat));
       return;
     }
+  }
+}
+
+function copyDirectoryLink(
+  fs: MemoryFileSystem,
+  pkg: HomebrewVfsPackagePlan,
+  sourcePath: string,
+  targetPath: string,
+  targetMode: number,
+): void {
+  ensureDirRecursive(fs, targetPath);
+  fs.chmod(targetPath, targetMode);
+
+  const dir = fs.opendir(sourcePath);
+  try {
+    for (;;) {
+      const entry = fs.readdir(dir);
+      if (entry === null) break;
+      if (entry.name === "." || entry.name === "..") continue;
+
+      const childSource = `${sourcePath}/${entry.name}`;
+      const childTarget = `${targetPath}/${entry.name}`;
+      const childStat = fs.lstat(childSource);
+      const childKind = kind(childStat);
+
+      if (tryLstat(fs, childTarget) !== null) {
+        fail(pkg, `directory link target child already exists at ${childTarget}`);
+      }
+
+      if (childKind === S_IFDIR) {
+        copyDirectoryLink(fs, pkg, childSource, childTarget, childStat.mode & MODE_BITS);
+      } else if (childKind === S_IFREG) {
+        ensureParentDir(fs, childTarget);
+        writeVfsBinary(fs, childTarget, readVfsFile(fs, childSource), childStat.mode & MODE_BITS);
+      } else if (childKind === S_IFLNK) {
+        ensureParentDir(fs, childTarget);
+        fs.symlink(fs.readlink(childSource), childTarget);
+      } else {
+        fail(pkg, `directory link source child ${childSource} has unsupported file type`);
+      }
+    }
+  } finally {
+    fs.closedir(dir);
   }
 }
 
