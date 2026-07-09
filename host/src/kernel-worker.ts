@@ -97,6 +97,8 @@ const FORK_BUF_SIZE = FORK_SAVE_BUFFER_SIZE;
 
 /** Errno values */
 const EAGAIN = 11;
+const EALREADY = 114;
+const EINPROGRESS = 115;
 const ETIMEDOUT = 110;
 const EINTR_ERRNO = 4;
 
@@ -2557,6 +2559,27 @@ export class CentralizedKernelWorker {
         console.error(logEntry + " = -1 (EAGAIN, will retry)");
       }
       this.handleBlockingRetry(channel, syscallNr, origArgs);
+      return;
+    }
+
+    // In-flight non-blocking connect: the kernel reports EINPROGRESS on the
+    // first call and EALREADY while the handshake is still pending. For a
+    // non-blocking socket these are the POSIX-correct results and are returned
+    // to the guest as-is; for a blocking socket they mean "keep waiting", so we
+    // route them into the same retry loop as EAGAIN.
+    if (
+      retVal === -1 &&
+      syscallNr === SYS_CONNECT &&
+      (errVal === EINPROGRESS || errVal === EALREADY)
+    ) {
+      const isFdNonblock = this.kernelInstance!.exports.kernel_is_fd_nonblock as
+        ((pid: number, fd: number) => number) | undefined;
+      const nonblock = isFdNonblock ? isFdNonblock(channel.pid, origArgs[0]) === 1 : false;
+      if (nonblock) {
+        this.completeChannel(channel, syscallNr, origArgs, SYSCALL_ARGS[syscallNr], -1, errVal);
+      } else {
+        this.handleBlockingRetry(channel, syscallNr, origArgs);
+      }
       return;
     }
 

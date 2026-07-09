@@ -7425,7 +7425,8 @@ pub fn sys_connect(
                 // until the TCP handshake either completes or errors. EAGAIN
                 // surfaces while still in flight.
                 let net_handle = sock_idx as i32;
-                if sock.state != SocketState::Connecting {
+                let was_connecting = sock.state == SocketState::Connecting;
+                if !was_connecting {
                     host.host_net_connect(net_handle, &ip, port)?;
                     let sock = proc.sockets.get_mut(sock_idx).ok_or(Errno::EBADF)?;
                     sock.state = SocketState::Connecting;
@@ -7437,7 +7438,18 @@ pub fn sys_connect(
                         sock.state = SocketState::Connected;
                         Ok(())
                     }
-                    Err(Errno::EAGAIN) => Err(Errno::EAGAIN),
+                    // Handshake still in flight. POSIX reports EINPROGRESS on the
+                    // first (non-completing) call and EALREADY on subsequent
+                    // calls while connecting — never EAGAIN. The host layer maps
+                    // these to a blocking retry for blocking sockets and returns
+                    // them to userspace for non-blocking sockets.
+                    Err(Errno::EAGAIN) => {
+                        if was_connecting {
+                            Err(Errno::EALREADY)
+                        } else {
+                            Err(Errno::EINPROGRESS)
+                        }
+                    }
                     Err(e) => {
                         let sock = proc.sockets.get_mut(sock_idx).ok_or(Errno::EBADF)?;
                         sock.state = SocketState::Closed;
@@ -11086,6 +11098,11 @@ mod tests {
         /// Override for `gl_submit`'s return value (0 = success, negative
         /// = errno). Defaults to 0.
         gl_submit_rc: i32,
+        /// When true, model an external TCP connect whose handshake is still in
+        /// flight: `host_net_connect` succeeds (kickoff) and
+        /// `host_net_connect_status` reports EAGAIN. Defaults to false, which
+        /// keeps the historical "connect refused" behavior.
+        net_connect_in_flight: bool,
     }
 
     impl MockHostIO {
@@ -11109,6 +11126,7 @@ mod tests {
                 gl_unbind_calls: Vec::new(),
                 gbm_bo_bind_rc: 0,
                 gl_submit_rc: 0,
+                net_connect_in_flight: false,
             }
         }
 
@@ -11469,10 +11487,18 @@ mod tests {
             _addr: &[u8],
             _port: u16,
         ) -> Result<(), Errno> {
-            Err(Errno::ECONNREFUSED)
+            if self.net_connect_in_flight {
+                Ok(())
+            } else {
+                Err(Errno::ECONNREFUSED)
+            }
         }
         fn host_net_connect_status(&mut self, _handle: i32) -> Result<(), Errno> {
-            Err(Errno::ECONNREFUSED)
+            if self.net_connect_in_flight {
+                Err(Errno::EAGAIN)
+            } else {
+                Err(Errno::ECONNREFUSED)
+            }
         }
         fn host_net_send(
             &mut self,
@@ -17655,6 +17681,42 @@ mod tests {
         assert_eq!(&buf[..data_len], b"hello UDP");
         assert_eq!(addr_len, 16);
         assert_eq!(from_addr[0], 2); // AF_INET
+    }
+
+    #[test]
+    fn test_nonblocking_connect_reports_einprogress_then_ealready() {
+        // A non-blocking external TCP connect whose handshake cannot complete
+        // synchronously must report EINPROGRESS on the first call and EALREADY
+        // while still in flight — never EAGAIN (which POSIX/Linux do not use for
+        // connect). Async clients gate on `errno == EINPROGRESS`.
+        use wasm_posix_shared::socket::*;
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        host.net_connect_in_flight = true; // handshake never completes
+
+        let fd = sys_socket(&mut proc, &mut host, AF_INET, SOCK_STREAM, 0).unwrap();
+
+        // sockaddr_in for a non-loopback, non-virtual destination (203.0.113.5:80)
+        // so connect takes the external host-backed path.
+        let mut addr = [0u8; 16];
+        addr[0] = 2; // AF_INET
+        let port_be = 80u16.to_be_bytes();
+        addr[2] = port_be[0];
+        addr[3] = port_be[1];
+        addr[4] = 203;
+        addr[5] = 0;
+        addr[6] = 113;
+        addr[7] = 5;
+
+        let first = sys_connect(&mut proc, &mut host, fd, &addr).unwrap_err();
+        assert_eq!(first, Errno::EINPROGRESS, "first connect should be EINPROGRESS");
+
+        let second = sys_connect(&mut proc, &mut host, fd, &addr).unwrap_err();
+        assert_eq!(
+            second,
+            Errno::EALREADY,
+            "in-flight connect should be EALREADY, not EAGAIN"
+        );
     }
 
     // ── Threading tests ──────────────────────────────────────────────
