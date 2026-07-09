@@ -46,6 +46,56 @@ rustc -vV | awk '/^host/ {print $2}'
 `scripts/ci-run-test-suite.sh` does not currently expose an `abi` suite; run
 `bash scripts/check-abi-version.sh` separately for ABI-adjacent changes.
 
+## Preparing a fresh checkout or worktree to run the suites
+
+The Vitest, browser, libc, posix, and sortix suites need built artifacts and
+submodules that a fresh checkout — and every new `git worktree` — does **not**
+inherit. Missing artifacts surface as `Binary not found: …/kernel.wasm` (or a
+program `.wasm`), `sysroot not found`, or `libc/musl/src: No such file`. These
+are not "cannot validate" conditions. Build or fetch what is missing:
+
+1. **Submodules** (musl, libc-test, os-test) — worktrees do not check them out:
+   ```bash
+   git submodule update --init --recursive
+   ```
+   If `libc/musl` exists but is not a valid checkout (a stray dir from a partial
+   build blocks the clone), reset it: `rm -rf libc/musl && git submodule update
+   --init libc/musl`.
+2. **musl sysroot** — one-time, ~20s; required before `build.sh` can compile the
+   user programs and rootfs:
+   ```bash
+   scripts/dev-shell.sh bash scripts/build-musl.sh
+   ```
+3. **Kernel wasm + host + rootfs** — ~1.5min; produces `local-binaries/kernel.wasm`
+   (the binary resolver prefers it over `binaries/`) and `host/wasm/rootfs.vfs`:
+   ```bash
+   scripts/dev-shell.sh bash build.sh
+   ```
+4. **Node dependencies** — `node_modules` are per-checkout, and both the repo
+   root (the conformance runners load `tsx` from root) and `host/` are needed:
+   ```bash
+   npm ci            # root — provides tsx used by run-sortix/posix/libc-tests.sh
+   (cd host && npm ci)
+   ```
+5. **Prebuilt test binaries** the source build does not produce (e.g.
+   `programs/wasm64/hello64.wasm`, used by a few Vitest cases):
+   ```bash
+   scripts/dev-shell.sh bash scripts/fetch-binaries.sh
+   ```
+
+After that the full suites run. Do **not** report "I can't run Vitest / the
+conformance suites / the browser" because a fresh worktree lacks artifacts —
+build or fetch them with the steps above, then run the suite and report the real
+result. If a suite genuinely cannot run (no network for `fetch-binaries.sh`, no
+display for browser tests, etc.), name the exact step that failed and why; that
+is different from validation being impossible.
+
+After editing kernel Rust, rebuild the kernel wasm (`bash build.sh`) before the
+Vitest/conformance suites — they load `local-binaries/kernel.wasm`, so a stale
+wasm silently runs your OLD kernel code. `bash build.sh` does not rebuild musl;
+after editing `libc/musl-overlay/` or `libc/glue/channel_syscall.c`, run
+`scripts/build-musl.sh` first.
+
 The table names primary evidence, not a universal checklist. Choose the suites
 that support the claim you will make, broaden coverage when a change crosses
 contract boundaries, and report anything relevant that was not run.
