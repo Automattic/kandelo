@@ -6675,9 +6675,20 @@ pub fn sys_send(
 
     match sock.domain {
         SocketDomain::Inet | SocketDomain::Inet6 => {
-            // Loopback path: use pipe buffers if available
+            // Loopback path: use pipe buffers if available.
             if sock.send_buf_idx.is_some() {
-                return sys_write(proc, host, fd, buf);
+                // MSG_NOSIGNAL must suppress the SIGPIPE that a write to a
+                // broken loopback peer would otherwise raise (mirrors the
+                // AF_UNIX branch below). Writing to a closed pipe still returns
+                // EPIPE; only the signal is suppressed.
+                let nosignal = flags & MSG_NOSIGNAL != 0;
+                let sigpipe_was_pending =
+                    proc.signals.is_pending(wasm_posix_shared::signal::SIGPIPE);
+                let result = sys_write(proc, host, fd, buf);
+                if nosignal && !sigpipe_was_pending {
+                    proc.signals.clear(wasm_posix_shared::signal::SIGPIPE);
+                }
+                return result;
             }
             let net_handle = sock.host_net_handle.ok_or(Errno::ENOTCONN)?;
             host.host_net_send(net_handle, buf, flags)
@@ -13656,6 +13667,47 @@ mod tests {
         let result = sys_send(&mut proc, &mut host, fd0, b"test", MSG_NOSIGNAL);
         assert_eq!(result, Err(Errno::EPIPE));
         assert!(!proc.signals.is_pending(wasm_posix_shared::signal::SIGPIPE));
+    }
+
+    #[test]
+    fn test_send_msg_nosignal_inet_loopback() {
+        // MSG_NOSIGNAL must be honored on a broken AF_INET *loopback* stream,
+        // not only on AF_UNIX. Before the fix the INET loopback path called
+        // sys_write directly and raised SIGPIPE despite MSG_NOSIGNAL.
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        use wasm_posix_shared::socket::*;
+
+        // Server: socket → bind 127.0.0.1:8080 → listen.
+        let server_fd = sys_socket(&mut proc, &mut host, AF_INET, SOCK_STREAM, 0).unwrap();
+        let mut addr = [0u8; 16];
+        addr[0] = 2; // AF_INET
+        addr[2] = 0x1F;
+        addr[3] = 0x90; // port 8080
+        sys_bind(&mut proc, &mut host, server_fd, &addr).unwrap();
+        sys_listen(&mut proc, &mut host, server_fd, 5).unwrap();
+
+        // Client: connect to 127.0.0.1:8080 (same-process loopback).
+        let client_fd = sys_socket(&mut proc, &mut host, AF_INET, SOCK_STREAM, 0).unwrap();
+        let mut connect_addr = [0u8; 16];
+        connect_addr[0] = 2;
+        connect_addr[2] = 0x1F;
+        connect_addr[3] = 0x90;
+        connect_addr[4] = 127;
+        connect_addr[7] = 1;
+        sys_connect(&mut proc, &mut host, client_fd, &connect_addr).unwrap();
+
+        // Server accepts, then closes its end so the client's peer is broken.
+        let accepted_fd = sys_accept(&mut proc, &mut host, server_fd).unwrap();
+        sys_close(&mut proc, &mut host, accepted_fd).unwrap();
+
+        // send(MSG_NOSIGNAL) on the loopback stream: EPIPE, but no SIGPIPE.
+        let result = sys_send(&mut proc, &mut host, client_fd, b"test", MSG_NOSIGNAL);
+        assert_eq!(result, Err(Errno::EPIPE));
+        assert!(
+            !proc.signals.is_pending(wasm_posix_shared::signal::SIGPIPE),
+            "MSG_NOSIGNAL must suppress SIGPIPE on AF_INET loopback"
+        );
     }
 
     #[test]
