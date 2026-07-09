@@ -449,6 +449,93 @@ if [ -n "$LIBINPUT_REAL_PREFIX" ] && [ -f "$REPO_ROOT/programs/libinput_smoke.c"
     mv "$libinput_wasm.instr" "$libinput_wasm"
 fi
 
+# Wayland compositor (PR6): a standalone libwayland *server* (wlcompositor)
+# plus a raw libwayland-client test client (wlclient-test), built as two
+# binaries. Both compile in the xdg-shell protocol glue that wayland-scanner
+# (flake) generates from the vendored XML; the server also links real
+# libinput (PR5) + libxkbcommon (PR4) + libgbm/libdrm for card0 compositing.
+# Dedicated pass (not build_program): it needs the generated -I dir, the real
+# <libinput.h> from its cache prefix, and a multi-archive link line. Files
+# live under programs/wlcompositor/ so the flat programs/*.c loop doesn't
+# pick them up. See docs/plans/2026-07-08-dri-wayland-compositor-plan.md
+# §5 (PR6).
+if ls "$REPO_ROOT"/programs/wlcompositor/*.c >/dev/null 2>&1; then
+    echo "==> Building wlcompositor (Wayland server + test client)..."
+    HOST_TRIPLE="$(rustc -vV | awk '/^host/ {print $2}')"
+    wlc_resolve() { (cd "$REPO_ROOT" && cargo run -p xtask --target "$HOST_TRIPLE" --quiet -- build-deps resolve "$1" >/dev/null); }
+    wlc_path() { (cd "$REPO_ROOT" && cargo run -p xtask --target "$HOST_TRIPLE" --quiet -- build-deps path "$1"); }
+
+    wlc_resolve libwayland
+    wlc_resolve libxkbcommon
+    wlc_resolve libinput
+    WLC_LIBWL="$(wlc_path libwayland)"
+    WLC_LIBFFI="$(wlc_path libffi)"
+    WLC_LIBXKB="$(wlc_path libxkbcommon)"
+    WLC_LIBINPUT="$(wlc_path libinput)"
+    WLC_LIBEVDEV="$(wlc_path libevdev)"
+    WLC_LIBUDEV="$(wlc_path libudev)"
+    WLC_MTDEV="$(wlc_path mtdev)"
+
+    # Public headers on the sysroot include path (idempotent — the wl_*/xkb_*
+    # blocks above symlink the same paths; the archives too).
+    for h in "$WLC_LIBWL/include"/wayland-*.h; do
+        ln -sfn "$h" "$SYSROOT/include/$(basename "$h")"
+    done
+    ln -sfn "$WLC_LIBFFI/lib/libffi.a"            "$SYSROOT/lib/libffi.a"
+    ln -sfn "$WLC_LIBWL/lib/libwayland-server.a"  "$SYSROOT/lib/libwayland-server.a"
+    ln -sfn "$WLC_LIBWL/lib/libwayland-client.a"  "$SYSROOT/lib/libwayland-client.a"
+    ln -sfn "$WLC_LIBXKB/lib/libxkbcommon.a"      "$SYSROOT/lib/libxkbcommon.a"
+    mkdir -p "$SYSROOT/include/xkbcommon"
+    for h in "$WLC_LIBXKB/include/xkbcommon"/*.h; do
+        ln -sfn "$h" "$SYSROOT/include/xkbcommon/$(basename "$h")"
+    done
+
+    # Generate xdg-shell {server,client} headers + shared private-code from
+    # the vendored protocol XML. Kept out of programs/ so it isn't globbed.
+    WLC_GEN="$REPO_ROOT/local-binaries/wlcompositor-gen"
+    mkdir -p "$WLC_GEN"
+    XDG_XML="$REPO_ROOT/packages/registry/wayland-protocols/xml/xdg-shell.xml"
+    wayland-scanner private-code  "$XDG_XML" "$WLC_GEN/xdg-shell-protocol.c"
+    wayland-scanner server-header "$XDG_XML" "$WLC_GEN/xdg-shell-server-protocol.h"
+    wayland-scanner client-header "$XDG_XML" "$WLC_GEN/xdg-shell-client-protocol.h"
+
+    # Server. Link order: dependents (compositor + xdg glue) before
+    # dependencies; libffi last so wl_closure_invoke's ffi_call resolves.
+    comp_wasm="$OUT_DIR_32/wlcompositor.wasm"
+    echo "  Compiling wlcompositor (server)..."
+    "$CC" "${CFLAGS[@]}" "-I$WLC_GEN" "-I$WLC_LIBINPUT/include" \
+        "$REPO_ROOT/programs/wlcompositor/wlcompositor.c" \
+        "$WLC_GEN/xdg-shell-protocol.c" \
+        "${LINK_PRE_LIBS[@]}" \
+        "$SYSROOT/lib/libwayland-server.a" \
+        "$SYSROOT/lib/libxkbcommon.a" \
+        "$WLC_LIBINPUT/lib/libinput.a" \
+        "$WLC_LIBEVDEV/lib/libevdev.a" \
+        "$WLC_LIBUDEV/lib/libudev.a" \
+        "$WLC_MTDEV/lib/libmtdev.a" \
+        "$SYSROOT/lib/libgbm.a" "$SYSROOT/lib/libdrm.a" \
+        "$SYSROOT/lib/libffi.a" \
+        "${LINK_POST_LIBS[@]}" \
+        -o "$comp_wasm"
+    "$FORK_INSTRUMENT" "$comp_wasm" -o "$comp_wasm.instr"
+    mv "$comp_wasm.instr" "$comp_wasm"
+
+    # Client.
+    client_wasm="$OUT_DIR_32/wlclient-test.wasm"
+    echo "  Compiling wlclient-test (client)..."
+    "$CC" "${CFLAGS[@]}" "-I$WLC_GEN" \
+        "$REPO_ROOT/programs/wlcompositor/wlclient-test.c" \
+        "$WLC_GEN/xdg-shell-protocol.c" \
+        "${LINK_PRE_LIBS[@]}" \
+        "$SYSROOT/lib/libwayland-client.a" \
+        "$SYSROOT/lib/libgbm.a" "$SYSROOT/lib/libdrm.a" \
+        "$SYSROOT/lib/libffi.a" \
+        "${LINK_POST_LIBS[@]}" \
+        -o "$client_wasm"
+    "$FORK_INSTRUMENT" "$client_wasm" -o "$client_wasm.instr"
+    mv "$client_wasm.instr" "$client_wasm"
+fi
+
 for src in "$REPO_ROOT/programs/"*.cpp; do
     [ -f "$src" ] || continue
     build_cpp_program "$src" "$OUT_DIR_32"

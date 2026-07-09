@@ -4479,13 +4479,15 @@ export class CentralizedKernelWorker {
     const fd = origArgs[2];
     const eventPtr = origArgs[3]; // pointer in process memory
 
-    // Read epoll_event from process memory: { events: u32, data: u64 } = 12 bytes
+    // musl's `struct epoll_event` is __packed__ only on x86_64; on wasm32 it is
+    // unpacked → 16 bytes: events@0, pad@4, data@8. Reading data at offset 4
+    // desyncs multi-event epoll_wait results (i>=1).
     let events = 0;
     let data = 0n;
     if (eventPtr !== 0) {
       const pv = new DataView(channel.memory.buffer, eventPtr);
       events = pv.getUint32(0, true);
-      data = pv.getBigUint64(4, true);
+      data = pv.getBigUint64(8, true);
     }
 
     // Call kernel — copy event struct to scratch
@@ -4493,10 +4495,11 @@ export class CentralizedKernelWorker {
     const kernelMem = this.getKernelMem();
     const dataStart = this.scratchOffset + CH_DATA;
 
-    // Copy 12-byte epoll_event to kernel scratch
+    // Copy the full 16 bytes: the wasm kernel re-reads data at offset 8, so the
+    // pad + high dword must survive the hop through scratch.
     if (eventPtr !== 0) {
       const processMem = new Uint8Array(channel.memory.buffer);
-      kernelMem.set(processMem.subarray(eventPtr, eventPtr + 12), dataStart);
+      kernelMem.set(processMem.subarray(eventPtr, eventPtr + 16), dataStart);
     }
 
     kernelView.setUint32(CH_SYSCALL, SYS_EPOLL_CTL, true);
@@ -4713,10 +4716,11 @@ export class CentralizedKernelWorker {
           if (revents & POLLERR) epEvents |= EPOLLERR;
           if (revents & POLLHUP) epEvents |= EPOLLHUP;
 
-          // Write epoll_event to process memory: { events: u32, data: u64 } = 12 bytes
-          const evOff = eventsPtr + readyCount * 12;
+          // 16-byte stride, data@8 — the wasm32 layout (see handleEpollCtl).
+          // A 12-byte stride desyncs every event from readyCount>=1 onward.
+          const evOff = eventsPtr + readyCount * 16;
           processView.setUint32(evOff, epEvents, true);
-          processView.setBigUint64(evOff + 4, interests[i].data, true);
+          processView.setBigUint64(evOff + 8, interests[i].data, true);
           readyCount++;
         }
       }

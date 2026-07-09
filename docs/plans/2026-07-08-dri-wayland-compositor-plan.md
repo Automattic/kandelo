@@ -259,7 +259,7 @@ Client and compositor land as a stack of small PRs. v1 target is milestone
 | PR3 | `libwayland` (client + server) wasm32 port, linked against the PR1 shim |
 | PR4 | real `libxkbcommon` port (keymap translation; compositor + clients link it). **DONE.** |
 | PR5 | real `libinput` port (gestures, palm rejection, multi-device). Lands as a bottom-up sub-stack — **PR5a `libevdev` (DONE)**, **PR5b `mtdev` stub + `libudev`/`input_id` shim (DONE)**, **PR5c `libinput` 1.25.0 core (DONE)** — since real libinput builds on all three (the original one-line scope omitted libevdev + mtdev). The real `libinput` serves the compositor; SDL2 keeps `libinput-lite` (it references no libinput symbols). |
-| PR6 | `examples/programs/wlcompositor/` — PID-2 server: core + `wl_shm` + `xdg_shell` + `wl_seat` + `wl_output` |
+| PR6 | `programs/wlcompositor/` — PID-2 server: core + `wl_shm` + `xdg_shell` + `wl_seat` + `wl_output`. **DONE.** Two-process smoke gate (`host/test/wlcompositor-smoke.test.ts`) drives a real client through connect → bind-all-globals → keymap fd-pass → xdg configure → shared-buffer composite (red pixel proof) → KMS flip → injected key+button delivery. Uncovered + fixed two kernel bugs: nested epoll readiness (epoll-on-epoll) and the `epoll_event` wasm32 layout (see §8.3). |
 | **PR7** | `examples/libs/libkwl/` toolkit + `wlterm` — **BROWSER GATE, milestone D′** |
 | PR8 | `wlfm` (file manager) + `xdg_popup` |
 | PR9 | `wlpanel` + `wlbeep` |
@@ -278,8 +278,12 @@ client-side decoration (CSD).**
 
 ### Compositor design (PR6)
 
-Run `libwayland`'s `wl_event_loop` on epoll. Register: the listen socket
-(`/run/wayland-0`), the `card0` DRM fd, and the libinput fd. A `wl_shm`
+Run `libwayland`'s `wl_event_loop` on epoll. Register: the listen socket,
+the `card0` DRM fd, and the libinput fd. **Socket path (PR6):** the compositor
+binds `/tmp/wayland-0` (and writes its keymap to `/tmp/wlcompositor-keymap.xkb`),
+not the plan's original `/run/wayland-0` — `/` is a read-only rootfs and
+`/var/run` is `root:root 0755` (`EACCES` for a non-root uid), while `/tmp` is
+`1777` world-writable. Recorded in a code comment in `wlcompositor.c`. A `wl_shm`
 buffer is a client dumb-bo prime-fd received over `SCM_RIGHTS`. v1
 compositing = CPU blit each committed surface into the `gbm_surface` scanout
 bo + KMS `PAGE_FLIP`; gate on `gbm_surface_has_free_buffers`; pace clients via
@@ -327,12 +331,22 @@ to the focused client, **not** special-cased by the compositor.
 
 ## §8. Open verification items (resolve during PR3/PR6 — NOT blockers to start)
 
-1. Server-side `mmap` of a received prime-fd OFD (else use the
-   `gbm_bo_import` path for `wl_shm`).
+1. **EXERCISED (PR6).** Server-side access to a received prime-fd OFD. The
+   compositor uses the `gbm_bo_import(GBM_BO_IMPORT_FD)` + `gbm_bo_map` path for
+   `wl_shm` (not raw `mmap` of the fd — file/memfd `MAP_SHARED` is not shared
+   cross-process; only the DRI BoRegistry is). This required carrying the
+   prime-bo sidecar across `SCM_RIGHTS`: `InFlightFd` now holds an optional
+   `prime_bo` (`pipe.rs`), `extract_scm_rights` captures it, and
+   `install_scm_rights_fds` re-increments the bo refcount at install time
+   (`wasm_api.rs`). The smoke gate proves it end-to-end via `COMPOSITE_SAMPLE
+   px=0x00ff0000` (a client-painted red pixel composited in the server).
 2. A DRM `event_ring` write wakes a parked `epoll_wait` on `card0` (else the
    1 ms host fallback covers liveness).
-3. libffi shim sufficiency for the full closure argument set (fd / array /
-   string args) — see §4.
+3. **EXERCISED (PR6).** libffi shim sufficiency for the full closure argument
+   set. The compositor dispatches real fd / string / array closure args
+   end-to-end (keymap fd over `wl_keyboard.keymap`, surface/toplevel requests,
+   `wl_array` for keyboard state) through `wl_closure_invoke → ffi_call` with no
+   shim gaps observed — see §4.
 
 ### Gaps discovered + fixed during PR3 (libwayland port)
 
@@ -351,8 +365,27 @@ libwayland is the first consumer to hit:
    was both wrong and unused for input; removed the two entries from
    `host_abi.rs`. Host-internal marshaling metadata only — not user-facing ABI.
 3. **`epoll_event` layout** — on wasm32 the struct is *unpacked* (size 16,
-   `data` at offset 8); the kernel's `epoll_ctl`/`epoll_pwait` used a packed
-   12-byte / offset-4 layout. Fixed in `wasm_api.rs`.
+   `data` at offset 8; musl only applies `__packed__` on x86_64); the kernel
+   used a packed 12-byte / offset-4 layout. **This was documented as "fixed in
+   `wasm_api.rs`" during PR3 but was actually incomplete**, and it was the true
+   root cause of the PR6 wlcompositor input crash (see below). The authoritative
+   epoll path for the running system is host-side — `handleEpollCtl` /
+   `handleEpollPwait` in `host/src/kernel-worker.ts` — and it *also* carried the
+   12/offset-4 layout, which the PR3 note missed. The bug is latent for
+   single-event waits: at `i == 0` both the 12- and 16-byte strides start at
+   offset 0 and the offset-4 read/write happen to cancel (the pointer lands in,
+   and is read from, the high dword), so socket-driven `wl_event_loop` dispatch
+   worked all the way to `CLIENT_READY`. It only bites at `i >= 1`, where the
+   12-vs-16 stride desyncs and a second ready fd's `data` reads back as **0** →
+   a NULL `struct libinput_source *` in libinput's `libinput_dispatch` loop
+   (`source->dispatch(source->user_data)` traps with a `call_indirect` null /
+   signature mismatch). libinput registers three fds in its own epoll (timer +
+   two evdev nodes), so injected input is the first workload to make two fire at
+   once. **Fixed for real in PR6**, consistently across all four marshalling
+   sites: `wasm_api.rs` `kernel_epoll_ctl`/`kernel_epoll_pwait` and
+   `kernel-worker.ts` `handleEpollCtl`/`handleEpollPwait` (16-byte stride, data
+   at offset 8, full 16-byte scratch copy). Regression-covered by a kernel unit
+   test (`test_epoll_pwait_multiple_events_data`) and the PR6 smoke gate.
 4. **epoll_pwait finite-timeout hang** — the host converts epoll_pwait to a
    non-blocking poll and retries on a timer, but never honored the timeout:
    a drained fd set (the `[PARK]` case) retried forever. Added a per-channel
