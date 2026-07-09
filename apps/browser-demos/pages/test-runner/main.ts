@@ -6,6 +6,11 @@
  * and returns { exitCode, stdout, stderr }.
  */
 import { BrowserKernel } from "@host/browser-kernel-host";
+import {
+  createBuildFsWithEtc,
+  finalizeKernelOwnedImage,
+  settleWebKitReclaim,
+} from "../../lib/kernel-owned-boot";
 import kernelWasmUrl from "@kernel-wasm?url";
 import dashWasmUrl from "@binaries/programs/wasm32/dash.wasm?url";
 import coreutilsWasmUrl from "@binaries/programs/wasm32/coreutils.wasm?url";
@@ -71,7 +76,7 @@ function writeFileToFs(fs: import("@host/browser-kernel-host").BrowserKernel["fs
 }
 
 /** Populate VFS with actual executable binaries and symlinks for exec. */
-function populateExecBinaries(fs: import("@host/browser-kernel-host").BrowserKernel["fs"]): void {
+function populateExecBinaries(fs: import("@host/vfs/memory-fs").MemoryFileSystem): void {
   for (const dir of ["/bin", "/usr", "/usr/bin", "/usr/local", "/usr/local/bin"]) {
     try { fs.mkdir(dir, 0o755); } catch { /* exists */ }
   }
@@ -146,7 +151,37 @@ async function init() {
     let stderr = "";
     let combined = "";
 
+    // Assemble the test image (exec binaries + /etc + any data files) in a
+    // transient build FS, then hand ownership to the kernel worker so the main
+    // thread holds no VFS SharedArrayBuffer across the per-test loop.
+    const buildFs = await createBuildFsWithEtc();
+    populateExecBinaries(buildFs);
+    if (options?.dataFiles) {
+      for (const file of options.dataFiles) {
+        // Ensure parent directories exist
+        const parts = file.path.split("/").filter(Boolean);
+        let dirPath = "";
+        for (let i = 0; i < parts.length - 1; i++) {
+          dirPath += "/" + parts[i];
+          try {
+            buildFs.mkdir(dirPath, 0o755);
+          } catch {
+            // Directory may already exist
+          }
+        }
+        // Write the file — use wasmBytes if flagged, otherwise use provided data
+        const fileData = file.useWasmBytes
+          ? new Uint8Array(wasmBytes)
+          : new Uint8Array(file.data!);
+        const fd = buildFs.open(file.path, 0x241 /* O_WRONLY|O_CREAT|O_TRUNC */, 0o755);
+        buildFs.write(fd, fileData, null, fileData.length);
+        buildFs.close(fd);
+      }
+    }
+    const vfsImage = await finalizeKernelOwnedImage(buildFs);
+
     const kernel = new BrowserKernel({
+      kernelOwnedFs: true,
       onStdout: (data: Uint8Array) => {
         const text = new TextDecoder().decode(data);
         stdout += text;
@@ -160,32 +195,7 @@ async function init() {
     });
 
     try {
-      await kernel.init(kernelWasmBytes!);
-      populateExecBinaries(kernel.fs);
-
-      // Populate VFS with data files if provided
-      if (options?.dataFiles) {
-        for (const file of options.dataFiles) {
-          // Ensure parent directories exist
-          const parts = file.path.split("/").filter(Boolean);
-          let dirPath = "";
-          for (let i = 0; i < parts.length - 1; i++) {
-            dirPath += "/" + parts[i];
-            try {
-              kernel.fs.mkdir(dirPath, 0o755);
-            } catch {
-              // Directory may already exist
-            }
-          }
-          // Write the file — use wasmBytes if flagged, otherwise use provided data
-          const fileData = file.useWasmBytes
-            ? new Uint8Array(wasmBytes)
-            : new Uint8Array(file.data!);
-          const fd = kernel.fs.open(file.path, 0x241 /* O_WRONLY|O_CREAT|O_TRUNC */, 0o755);
-          kernel.fs.write(fd, fileData, null, fileData.length);
-          kernel.fs.close(fd);
-        }
-      }
+      await kernel.initFromImage({ kernelWasm: kernelWasmBytes!, vfsImage });
 
       // Run the test with a timeout
       const cwd = options?.cwd;
@@ -203,6 +213,7 @@ async function init() {
     } finally {
       // Clean up to free memory for the next test
       await kernel.destroy();
+      await settleWebKitReclaim();
       window.__testCount++;
     }
   };

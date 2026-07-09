@@ -149,6 +149,11 @@ const workerTeardowns = new Set<Promise<void>>();
 const threadedProcessPids = new Set<number>();
 const THREADED_WORKER_TERMINATION_SETTLE_MS = 250;
 const NODE_PROCESS_WORKER_TERMINATION_SETTLE_MS = 2000;
+// On destroy we wake every Atomics.wait-blocked worker so it cooperatively
+// exits (WebKit's Worker.terminate() can't free a blocked worker). These bound
+// the wait for those workers to run their exit path and drain.
+const DESTROY_KILL_DRAIN_TIMEOUT_MS = 1500;
+const DESTROY_KILL_DRAIN_POLL_MS = 15;
 
 /**
  * Workers we deliberately terminated — exec, exit, top-level destroy. The
@@ -546,69 +551,6 @@ function createFreshProcessMemory(
   };
 }
 
-/**
- * Copy `/etc/*` files from a freshly-loaded `rootfs.vfs` image into the
- * given memfs. Existing files are NOT overwritten — the demo keeps any
- * /etc files it wrote itself (e.g. `/etc/profile`, `/etc/gitconfig`).
- *
- * This is the legacy-SAB-path counterpart to mounting rootfs.vfs at /:
- * because the legacy path keeps a single demo-controlled SAB at /, we
- * physically copy the canonical /etc files in instead of layering a
- * second mount. The kernel's `synthetic_file_content` shim that used
- * to serve these paths in-kernel was removed in PR 4/5.
- */
-function overlayEtcFromRootfs(target: MemoryFileSystem, rootfsImage: Uint8Array): void {
-  const source = MemoryFileSystem.fromImage(rootfsImage);
-
-  // Ensure /etc exists in the target.
-  try { target.mkdir("/etc", 0o755); } catch { /* exists */ }
-
-  let dh: number;
-  try { dh = source.opendir("/etc"); }
-  catch { return; /* no /etc in image — nothing to overlay */ }
-
-  try {
-    while (true) {
-      const entry = source.readdir(dh);
-      if (entry === null) break;
-      if (entry.name === "." || entry.name === "..") continue;
-      const sourcePath = `/etc/${entry.name}`;
-      const targetPath = sourcePath;
-
-      // Skip if the demo already wrote this file — preserve demo intent.
-      let exists = false;
-      try { target.stat(targetPath); exists = true; } catch {}
-      if (exists) continue;
-
-      // Only handle regular files for now; the canonical images/rootfs/etc/*
-      // is flat (no subdirs, no symlinks).
-      const st = source.stat(sourcePath);
-      const isRegular = (st.mode & 0xf000) === 0x8000;
-      if (!isRegular) continue;
-
-      // Read full content (sequential — pass null offset for read/write
-      // semantics rather than pread/pwrite).
-      const fdR = source.open(sourcePath, 0, 0); // O_RDONLY
-      const size = st.size;
-      const buf = new Uint8Array(size);
-      let read = 0;
-      while (read < size) {
-        const n = source.read(fdR, buf.subarray(read), null, size - read);
-        if (n <= 0) break;
-        read += n;
-      }
-      source.close(fdR);
-
-      // Write into target.
-      const fdW = target.open(targetPath, 0o1101 /* O_WRONLY|O_CREAT|O_TRUNC */, st.mode & 0o777);
-      if (read > 0) target.write(fdW, buf.subarray(0, read), null, read);
-      target.close(fdW);
-    }
-  } finally {
-    source.closedir(dh);
-  }
-}
-
 function resolveLazyUrl(base: string, url: string): string {
   if (/^[a-z][a-z0-9+.-]*:/i.test(url) || url.startsWith("/")) return url;
   return base.replace(/\/?$/, "/") + url;
@@ -637,44 +579,23 @@ async function handleInit(msg: Extract<MainToKernelMessage, { type: "init" }>) {
   // control if the spec dictated additional scratch mounts.
   const shmfs = MemoryFileSystem.fromExisting(msg.shmSab);
   const devfs = new DeviceFileSystem();
-  let mounts: MountConfig[];
-  if (msg.vfsImage) {
-    const specMounts = resolveForBrowser(DEFAULT_MOUNT_SPEC, msg.vfsImage);
-    const rootMount = specMounts.find((m) => m.mountPoint === "/");
-    if (!rootMount) throw new Error("DEFAULT_MOUNT_SPEC missing / mount");
-    memfs = rootMount.backend as MemoryFileSystem;
-    if (msg.lazyUrlBase) {
-      memfs.rewriteLazyFileUrls((url) => resolveLazyUrl(msg.lazyUrlBase!, url));
-      memfs.rewriteLazyArchiveUrls((url) => resolveLazyUrl(msg.lazyUrlBase!, url));
-    }
-    mounts = [
-      { mountPoint: "/dev/shm", backend: shmfs },
-      { mountPoint: "/dev", backend: devfs },
-      ...specMounts,
-    ];
-  } else if (msg.fsSab) {
-    memfs = MemoryFileSystem.fromExisting(msg.fsSab);
-    // Overlay /etc/* from the canonical rootfs.vfs onto the SAB-backed
-    // memfs. PR 4/5 removed `synthetic_file_content` from the kernel —
-    // without this overlay, programs that call getpwnam/gethostbyname
-    // (bash, git, curl, tar, nano, …) fail on legacy-SAB demos. Files
-    // the demo already wrote (e.g. /etc/profile in shell.vfs) are not
-    // overwritten.
-    if (msg.rootfsImage) {
-      try {
-        overlayEtcFromRootfs(memfs, msg.rootfsImage);
-      } catch (e) {
-        console.error("[kernel-worker] Failed to overlay /etc from rootfs.vfs:", e);
-      }
-    }
-    mounts = [
-      { mountPoint: "/dev/shm", backend: shmfs },
-      { mountPoint: "/dev", backend: devfs },
-      { mountPoint: "/", backend: memfs },
-    ];
-  } else {
-    throw new Error("init: vfsImage or fsSab required");
+  // The kernel worker OWNS the VFS: rebuild it from the demo's image bytes and
+  // apply DEFAULT_MOUNT_SPEC (/ from the image + scratch mounts for /tmp,
+  // /var/*, /home/user, /root, /srv). /etc is part of the image, baked in by
+  // the demo (see apps/browser-demos/lib/kernel-owned-boot.ts).
+  const specMounts = resolveForBrowser(DEFAULT_MOUNT_SPEC, msg.vfsImage);
+  const rootMount = specMounts.find((m) => m.mountPoint === "/");
+  if (!rootMount) throw new Error("DEFAULT_MOUNT_SPEC missing / mount");
+  memfs = rootMount.backend as MemoryFileSystem;
+  if (msg.lazyUrlBase) {
+    memfs.rewriteLazyFileUrls((url) => resolveLazyUrl(msg.lazyUrlBase!, url));
+    memfs.rewriteLazyArchiveUrls((url) => resolveLazyUrl(msg.lazyUrlBase!, url));
   }
+  const mounts: MountConfig[] = [
+    { mountPoint: "/dev/shm", backend: shmfs },
+    { mountPoint: "/dev", backend: devfs },
+    ...specMounts,
+  ];
   memfs.subscribeLazyDownloads((event) => {
     post({ type: "lazy_download", event });
   });
@@ -1508,6 +1429,35 @@ async function finishProcessExit(
 
 // ── Terminate ──
 
+// Read a file out of the kernel-owned VFS and return its bytes (or null if it
+// does not exist / is not readable). This is the main thread's only window
+// into the worker-owned FS — used by demos that collect artifacts a process
+// wrote (e.g. sqlite-test's result DB/logs) now that the main thread no longer
+// shares the VFS SharedArrayBuffer.
+function handleReadVfsFile(msg: Extract<MainToKernelMessage, { type: "read_vfs_file" }>) {
+  if (!memfs) { respond(msg.requestId, null); return; }
+  try {
+    const st = memfs.stat(msg.path);
+    const size = Number(st.size);
+    const fd = memfs.open(msg.path, 0 /* O_RDONLY */, 0);
+    try {
+      const out = new Uint8Array(size);
+      let off = 0;
+      while (off < size) {
+        const n = memfs.read(fd, out.subarray(off), null, size - off);
+        if (n <= 0) break;
+        off += n;
+      }
+      // Copy into a plain (non-shared) ArrayBuffer so it structured-clones back.
+      respond(msg.requestId, out.slice(0, off));
+    } finally {
+      memfs.close(fd);
+    }
+  } catch {
+    respond(msg.requestId, null);
+  }
+}
+
 async function handleTerminateProcess(msg: Extract<MainToKernelMessage, { type: "terminate_process" }>) {
   const pid = msg.pid;
 
@@ -1665,10 +1615,34 @@ function handlePickListenerTarget(msg: Extract<MainToKernelMessage, { type: "pic
 }
 
 async function handleDestroy(msg: Extract<MainToKernelMessage, { type: "destroy" }>) {
-  // Terminate all process + thread workers, then clear every per-pid
-  // map. Mirrors handleDestroy in node-kernel-worker-entry.ts —
-  // without the threadWorkers / ptyByPid clears, those maps stay
-  // populated across kernel rebuilds (e.g. iframe reload) and leak.
+  // Phase 1 — wake every Atomics.wait-blocked worker so it cooperatively
+  // exits. On WebKit, `Worker.terminate()` cannot kill (or free the memory of)
+  // a worker parked in `Atomics.wait` on its syscall channel — the state every
+  // idle/blocked process worker sits in — so terminating them directly leaks
+  // their threads + committed working set and each image switch OOMs Safari.
+  // killAllBlockedForTeardown completes each blocked syscall with EINTR + a
+  // queued SIGKILL; the guest glue then runs `_exit`, the worker returns to its
+  // JS event loop (via {exit}), and it becomes reclaimable.
+  try { kernelWorker.killAllBlockedForTeardown(); } catch (e) {
+    console.error(`[kernel-worker] killAllBlockedForTeardown failed: ${e}`);
+  }
+
+  // Phase 2 — drain. The woken workers run their exit path and post `{exit}`,
+  // which fires handleExit → removes them from `processes` and terminates them
+  // while idle (reclaimed). Wait for that, bounded.
+  const drainDeadline = Date.now() + DESTROY_KILL_DRAIN_TIMEOUT_MS;
+  while (processes.size > 0 && Date.now() < drainDeadline) {
+    await delay(DESTROY_KILL_DRAIN_POLL_MS);
+  }
+  if (processes.size > 0) {
+    console.warn(`[kernel-worker] destroy drain timed out with ${processes.size} process(es) still live; force-terminating`);
+  }
+
+  // Phase 3 — terminate any stragglers (non-blocked workers, or any that
+  // didn't exit in time) + thread workers, then clear every per-pid map.
+  // Mirrors handleDestroy in node-kernel-worker-entry.ts — without the
+  // threadWorkers / ptyByPid clears, those maps stay populated across kernel
+  // rebuilds (e.g. iframe reload) and leak.
   for (const [pid, info] of processes) {
     if (info.worker) {
       await terminateThreadWorkers(pid);
@@ -1893,6 +1867,7 @@ sw.onmessage = (e: MessageEvent) => {
       break;
     case "spawn": void handleSpawn(msg); break;
     case "terminate_process": void handleTerminateProcess(msg); break;
+    case "read_vfs_file": handleReadVfsFile(msg); break;
     case "append_stdin_data": kernelWorker.appendStdinData(msg.pid, msg.data); break;
     case "set_stdin_data": kernelWorker.setStdinData(msg.pid, msg.data); break;
     case "pty_write": handlePtyWrite(msg); break;

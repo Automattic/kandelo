@@ -87,6 +87,20 @@ export class FramebufferRegistry {
     for (const l of this.listeners) l(pid, "unbind");
   }
 
+  /**
+   * Drop every binding. Each binding's `view` is a typed array over a
+   * process's shared `WebAssembly.Memory`; retaining it past kernel
+   * teardown pins that (up to 1 GiB-max) memory on the main thread and
+   * blocks reclamation. Emits an "unbind" per pid so renderers detach.
+   */
+  clear(): void {
+    const pids = [...this.bindings.keys()];
+    this.bindings.clear();
+    for (const pid of pids) {
+      for (const l of this.listeners) l(pid, "unbind");
+    }
+  }
+
   get(pid: number): FbBinding | undefined {
     return this.bindings.get(pid);
   }

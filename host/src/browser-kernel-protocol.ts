@@ -19,30 +19,14 @@ export interface InitMessage {
   kernelWasmBytes: ArrayBuffer;
   /**
    * Pre-built VFS image bytes from MemoryFileSystem.saveImage(). The worker
-   * constructs its own memfs via MemoryFileSystem.fromImage(). When this is
-   * present, the kernel owns the FS — no SAB is shared with the main thread,
-   * and `kernel.fs` is unavailable.
+   * constructs and OWNS its own memfs via MemoryFileSystem.fromImage() — no
+   * VFS SAB is shared with the main thread. Demos that need `/etc/{passwd,
+   * group,hosts,services}` bake it into the image (see
+   * apps/browser-demos/lib/kernel-owned-boot.ts::overlayEtcFromRootfs).
    */
-  vfsImage?: Uint8Array;
+  vfsImage: Uint8Array;
   /** Base URL for relative lazy file/archive URLs stored in vfsImage. */
   lazyUrlBase?: string;
-  /**
-   * @deprecated — legacy path. Kept until all demos migrate to vfsImage.
-   * Pre-formatted SharedFS SAB shared with the main thread (so demos can
-   * pre-populate via the now-deprecated `kernel.fs` accessor).
-   */
-  fsSab?: SharedArrayBuffer;
-  /**
-   * Canonical rootfs.vfs bytes. Always sent so the worker can overlay
-   * `/etc/{passwd,group,hosts,services,...}` onto whichever VFS the demo
-   * builds — the kernel's old `synthetic_file_content` shim was removed
-   * in PR 4/5, so without this overlay programs that call `getpwnam`,
-   * `gethostbyname`, etc. would fail on legacy-SAB demos.
-   *
-   * Files that already exist in the demo's VFS (e.g. an `/etc/profile`
-   * the shell demo writes itself) are NOT overwritten.
-   */
-  rootfsImage?: Uint8Array;
   shmSab: SharedArrayBuffer;
   workerEntryUrl: string;
   bridgePort?: MessagePort;
@@ -97,6 +81,12 @@ export interface TerminateProcessMessage {
   requestId: number;
   pid: number;
   status: number;
+}
+
+export interface ReadVfsFileMessage {
+  type: "read_vfs_file";
+  requestId: number;
+  path: string;
 }
 
 export interface AppendStdinDataMessage {
@@ -330,6 +320,7 @@ export type MainToKernelMessage =
   | InitMessage
   | SpawnMessage
   | TerminateProcessMessage
+  | ReadVfsFileMessage
   | AppendStdinDataMessage
   | SetStdinDataMessage
   | PtyWriteMessage

@@ -10,7 +10,6 @@
 import {
   MemoryFileSystem,
   type LazyDownloadEvent,
-  type LazyFileEntry,
 } from "./vfs/memory-fs";
 import { FramebufferRegistry } from "./framebuffer/registry";
 import type { ProcessSnapshot, SyscallTraceEvent } from "./kernel-worker";
@@ -18,7 +17,6 @@ import type {
   MainToKernelMessage,
   KernelToMainMessage,
 } from "./browser-kernel-protocol";
-import { registerLazyVfsMetadata } from "./browser-kernel-lazy-registration";
 import type { HttpRequest, HttpResponse } from "./networking/in-kernel-http";
 
 export type { HttpRequest, HttpResponse };
@@ -31,11 +29,6 @@ import { DEFAULT_MAX_PAGES } from "./constants";
 export interface BrowserKernelOptions {
   /** Maximum concurrent workers (default: 4) */
   maxWorkers?: number;
-  /** Initial SharedArrayBuffer size for MemoryFileSystem (default: 16MB).
-   *  The VFS grows automatically on demand up to maxFsSize. */
-  fsSize?: number;
-  /** Maximum VFS size the SharedArrayBuffer can grow to (default: 4x fsSize). */
-  maxFsSize?: number;
   /** Maximum wasm memory pages per process (default: 16384 = 1GB). This caps
    *  guest brk/mmap growth; initial process memory is computed separately. */
   maxMemoryPages?: number;
@@ -66,16 +59,12 @@ export interface BrowserKernelOptions {
   onProcessEvent?: (event: { kind: "spawn" | "exec" | "exit"; pid: number; ppid?: number; exitStatus?: number }) => void;
   /** Pre-compiled thread module for clone(). Avoids recompiling large wasm for each thread. */
   threadModule?: WebAssembly.Module;
-  /** Pre-built MemoryFileSystem (e.g. from a VFS image). When provided, skips
-   *  SAB creation, mkfs, and standard directory/services setup — uses the
-   *  provided filesystem as-is.
-   *  @deprecated — use {@link BrowserKernel.boot} with `vfsImage` instead. */
-  memfs?: MemoryFileSystem;
-  /** When true, the kernel worker owns the VFS exclusively. The constructor
-   *  skips fsSab allocation; `kernel.fs` is unavailable; the demo passes a
-   *  pre-built `vfsImage` to {@link BrowserKernel.boot}. This is the target
-   *  architecture — `kernel.fs` and `memfs` will be removed once all demos
-   *  migrate. */
+  /** The kernel worker always owns the VFS exclusively: the main thread holds
+   *  no VFS SharedArrayBuffer, so it is reclaimed by `Worker.terminate()` and
+   *  never accumulates across image switches (Safari OOM fix). Demos build a
+   *  VFS image with {@link MemoryFileSystem} + `saveImage()` and pass it to
+   *  {@link BrowserKernel.boot} / {@link BrowserKernel.initFromImage}. Accepted
+   *  for backward compatibility; the value is ignored (there is no other mode). */
   kernelOwnedFs?: boolean;
   /** Debug: log every syscall to the kernel-worker console. Noisy. */
   enableSyscallLog?: boolean;
@@ -119,12 +108,8 @@ export interface BrowserKernelBootOptions {
 
 export class BrowserKernel {
   private kernelWorkerHandle!: Worker;
-  /** Set when `kernelOwnedFs` is true — main thread has no FS access. */
-  private kernelOwnedFs: boolean;
-  /** undefined in `kernelOwnedFs` mode. */
-  private memfs?: MemoryFileSystem;
-  /** undefined in `kernelOwnedFs` mode. */
-  private fsSab?: SharedArrayBuffer;
+  /** POSIX shared-memory / semaphore SAB shared with the kernel worker. Small
+   *  and fixed (1 MiB); the live VFS is owned by the worker, not here. */
   private shmSab: SharedArrayBuffer;
   private maxPages: number;
   /**
@@ -139,7 +124,7 @@ export class BrowserKernel {
    */
   nextPid = 100;
   private options: Required<
-    Pick<BrowserKernelOptions, "maxWorkers" | "fsSize" | "env">
+    Pick<BrowserKernelOptions, "maxWorkers" | "env">
   > &
     BrowserKernelOptions;
   private exitResolvers = new Map<number, (status: number) => void>();
@@ -158,13 +143,11 @@ export class BrowserKernel {
    * PtyTerminal calls onPtyOutput. Drained when a callback registers. */
   private pendingPtyOutput = new Map<number, Uint8Array[]>();
   private lazyDownloadListeners = new Set<(event: LazyDownloadEvent) => void>();
-  private offMemfsLazyDownloads: (() => void) | null = null;
 
   constructor(options: BrowserKernelOptions = {}) {
     this.maxPages = options.maxMemoryPages ?? DEFAULT_MAX_PAGES;
     this.options = {
       maxWorkers: 4,
-      fsSize: 16 * 1024 * 1024,
       env: [
         "HOME=/root",
         "TMPDIR=/tmp",
@@ -178,98 +161,11 @@ export class BrowserKernel {
       ...options,
     };
 
+    // The kernel worker owns the VFS. The main thread allocates only the
+    // small shared-memory SAB (POSIX shm/semaphores), never a VFS buffer, so
+    // nothing large accumulates on the main thread across image switches.
     this.shmSab = new SharedArrayBuffer(1024 * 1024);
     MemoryFileSystem.create(this.shmSab); // format shm SAB for kernel worker
-    this.kernelOwnedFs = options.kernelOwnedFs ?? false;
-
-    if (this.kernelOwnedFs) {
-      // Kernel-owned FS — main thread doesn't allocate fsSab/memfs at all.
-      // The demo will pass `vfsImage` bytes to boot(), and the worker
-      // builds its own memfs from those bytes.
-    } else if (options.memfs) {
-      // Use pre-built filesystem — skip SAB creation, mkfs, and directory setup
-      this.memfs = options.memfs;
-      this.fsSab = options.memfs.sharedBuffer;
-    } else {
-      const fsSize = this.options.fsSize;
-      const maxFsSize = this.options.maxFsSize ?? fsSize * 4;
-      const SharedArrayBufferCtor = SharedArrayBuffer as new (
-        byteLength: number,
-        options?: { maxByteLength?: number },
-      ) => SharedArrayBuffer;
-      this.fsSab = new SharedArrayBufferCtor(fsSize, { maxByteLength: maxFsSize });
-      this.memfs = MemoryFileSystem.create(this.fsSab, maxFsSize);
-
-      // Create standard directories. The legacy SAB path starts from a
-      // bare memfs — demos populate everything else themselves. Once a
-      // demo migrates to `boot()` with a `vfsImage`, /etc/services and
-      // friends come from the rootfs image via DEFAULT_MOUNT_SPEC and
-      // these mkdirs become redundant.
-      this.memfs.mkdir("/tmp", 0o777);
-      this.memfs.mkdir("/home", 0o755);
-      this.memfs.mkdirWithOwner("/home/user", 0o755, 1000, 1000);
-      this.memfs.mkdir("/root", 0o700);
-      this.memfs.mkdir("/dev", 0o755);
-      this.memfs.mkdir("/etc", 0o755);
-    }
-
-    if (this.memfs) {
-      this.offMemfsLazyDownloads = this.memfs.subscribeLazyDownloads((event) => {
-        this.emitLazyDownload(event);
-      });
-    }
-  }
-
-  /**
-   * Access the underlying MemoryFileSystem for pre-populating files.
-   * @deprecated — only available when `kernelOwnedFs` is false. New demos
-   * should build a `vfsImage` and call {@link BrowserKernel.boot} instead.
-   * Throws when `kernelOwnedFs` is true.
-   */
-  get fs(): MemoryFileSystem {
-    if (!this.memfs) {
-      throw new Error(
-        "kernel.fs is unavailable in kernelOwnedFs mode. Build a vfsImage with " +
-        "MemoryFileSystem + saveImage() and pass it to kernel.boot() instead.",
-      );
-    }
-    return this.memfs;
-  }
-
-  /**
-   * Initialize the kernel by spawning the dedicated kernel worker.
-   * Legacy path — uses the SAB-shared `kernel.fs` for pre-population.
-   * Throws when `kernelOwnedFs` is true; use {@link BrowserKernel.boot} instead.
-   */
-  async init(kernelWasmBytes?: ArrayBuffer): Promise<void> {
-    if (this.kernelOwnedFs) {
-      throw new Error("kernel.init() is not available in kernelOwnedFs mode. Use kernel.boot() with a vfsImage.");
-    }
-    // Always fetch the canonical rootfs.vfs alongside the kernel wasm so
-    // the worker can overlay /etc/{passwd,group,hosts,services,...} onto
-    // the demo's SAB-backed memfs. Synthetic in-kernel content for those
-    // paths was removed in PR 4/5 — without this overlay programs that
-    // call getpwnam/gethostbyname fail on legacy-SAB demos.
-    const [wasmBytes, rootfsVfsBuf] = await Promise.all([
-      kernelWasmBytes
-        ? Promise.resolve(kernelWasmBytes)
-        : fetch(kernelWasmUrl).then((r) => r.arrayBuffer()),
-      fetch(rootfsVfsUrl).then((r) => r.arrayBuffer()),
-    ]);
-
-    await this.bootWorker({
-      kernelWasmBytes: wasmBytes,
-      fsSab: this.fsSab!,
-      rootfsImage: new Uint8Array(rootfsVfsBuf),
-    });
-
-    await registerLazyVfsMetadata(this.memfs!, async (message) => {
-      const requestId = this.nextRequestId++;
-      await this.request(requestId, {
-        ...message,
-        requestId,
-      });
-    });
   }
 
   /**
@@ -280,15 +176,29 @@ export class BrowserKernel {
    * Demos build the VFS image on the main thread using MemoryFileSystem +
    * the helpers in `host/src/vfs/image-helpers`, call `saveImage()` for
    * bytes, then pass them here.
-   *
-   * Requires `kernelOwnedFs: true` in the constructor options.
    */
   async boot(options: BrowserKernelBootOptions): Promise<{ pid: number; exit: Promise<number> }> {
-    if (!this.kernelOwnedFs) {
-      throw new Error(
-        "kernel.boot() requires kernelOwnedFs: true in BrowserKernel constructor options.",
-      );
-    }
+    await this.initFromImage(options);
+
+    // Spawn the first process — kernel worker assigns the pid and returns
+    // it in the response. Pid is the single source of truth in the worker.
+    return this.spawnFirstProcess(options);
+  }
+
+  /**
+   * Load a pre-built VFS image into the kernel worker WITHOUT spawning a
+   * first process. The worker builds and takes ownership of the FS; the main
+   * thread holds no FS SharedArrayBuffer, so the whole VFS is reclaimed when
+   * the kernel worker is terminated (no dependence on main-thread GC — the
+   * fix for the Safari image-switch OOM). Spawn processes afterward with
+   * {@link spawnFromVfs}, or call {@link boot} to load + spawn a first process
+   * in one step.
+   */
+  async initFromImage(options: {
+    kernelWasm?: ArrayBuffer;
+    vfsImage: Uint8Array | "default";
+    lazyUrlBase?: string;
+  }): Promise<void> {
     const [wasmBytes, vfsImage] = await Promise.all([
       options.kernelWasm
         ? Promise.resolve(options.kernelWasm)
@@ -305,22 +215,16 @@ export class BrowserKernel {
       vfsImage,
       lazyUrlBase: options.lazyUrlBase ?? import.meta.env.BASE_URL,
     });
-
-    // Spawn the first process — kernel worker assigns the pid and returns
-    // it in the response. Pid is the single source of truth in the worker.
-    return this.spawnFirstProcess(options);
   }
 
   /**
-   * Internal: set up the worker, attach handlers, send init, await ready.
-   * Both `init()` (legacy fsSab path) and `boot()` (vfsImage path) call here.
+   * Internal: set up the kernel worker, attach handlers, send the init
+   * message (with the demo's `vfsImage`), and await ready.
    */
   private async bootWorker(opts: {
     kernelWasmBytes: ArrayBuffer;
-    fsSab?: SharedArrayBuffer;
-    vfsImage?: Uint8Array;
+    vfsImage: Uint8Array;
     lazyUrlBase?: string;
-    rootfsImage?: Uint8Array;
   }): Promise<void> {
     // Create the kernel worker
     this.kernelWorkerHandle = new Worker(kernelWorkerEntryUrl, { type: "module" });
@@ -379,10 +283,8 @@ export class BrowserKernel {
       const initMsg: MainToKernelMessage = {
         type: "init",
         kernelWasmBytes: transferBuf,
-        fsSab: opts.fsSab,
         vfsImage: opts.vfsImage,
         lazyUrlBase: opts.lazyUrlBase,
-        rootfsImage: opts.rootfsImage,
         shmSab: this.shmSab,
         workerEntryUrl,
         config: {
@@ -801,39 +703,6 @@ export class BrowserKernel {
     }) as Promise<{ pid: number; fd: number } | null>;
   }
 
-  /**
-   * Register lazy files: creates stubs in the VFS and forwards metadata
-   * to the kernel worker so it can materialize on demand via sync XHR.
-   */
-  registerLazyFiles(entries: Array<{ path: string; url: string; size: number; mode?: number }>): void {
-    const fs = this.fs;
-    const lazyEntries: LazyFileEntry[] = [];
-    for (const e of entries) {
-      const ino = fs.registerLazyFile(e.path, e.url, e.size, e.mode);
-      lazyEntries.push({ ino, path: e.path, url: e.url, size: e.size });
-    }
-    const requestId = this.nextRequestId++;
-    void this.request(requestId, {
-      type: "register_lazy_files",
-      requestId,
-      entries: lazyEntries,
-    }).catch((err) => {
-      console.error("[BrowserKernel] Failed to register lazy VFS files:", err);
-    });
-  }
-
-  /**
-   * Async-materialize a lazy file (or archive-backed file). Useful for
-   * data files (not exec targets) the program will open via the VFS —
-   * exec paths get auto-materialized by the kernel worker, but
-   * arbitrary opens go through the kernel's synchronous read path.
-   * Returns true if a fetch happened, false if already materialized
-   * or not lazy.
-   */
-  async ensureMaterialized(path: string): Promise<boolean> {
-    return this.fs.ensureMaterialized(path);
-  }
-
   /** Append data to a process's stdin buffer. */
   appendStdinData(pid: number, data: Uint8Array): void {
     this.sendToKernel({ type: "append_stdin_data", pid, data });
@@ -964,6 +833,23 @@ export class BrowserKernel {
     if (resolver) resolver(status);
   }
 
+  /**
+   * Read a file out of the kernel-owned VFS from the main thread. Returns the
+   * bytes, or `null` if the path does not exist / is not readable. This is the
+   * only main-thread window into the worker-owned FS — use it to collect
+   * artifacts a process wrote (the main thread no longer shares the VFS
+   * SharedArrayBuffer in kernel-owned mode).
+   */
+  async readFileFromVfs(path: string): Promise<Uint8Array | null> {
+    const requestId = this.nextRequestId++;
+    const result = await this.request(requestId, {
+      type: "read_vfs_file",
+      requestId,
+      path,
+    });
+    return (result as Uint8Array | null) ?? null;
+  }
+
   /** Destroy the kernel and release all resources. */
   async destroy(): Promise<void> {
     const requestId = this.nextRequestId++;
@@ -976,9 +862,18 @@ export class BrowserKernel {
     this.pendingRequests.clear();
     this.ptyOutputCallbacks.clear();
     this.options.onHttpBridgePendingRequests?.(0);
-    this.offMemfsLazyDownloads?.();
-    this.offMemfsLazyDownloads = null;
     this.lazyDownloadListeners.clear();
+    // Release every main-thread reference to shared buffers this kernel held.
+    // `fbMemoryByPid`/`framebuffers` retain typed-array views over process
+    // `WebAssembly.Memory` (up to 1 GiB max each) posted from the worker for
+    // framebuffer demos; `pendingPtyOutput` holds buffered PTY chunks. On
+    // WebKit these are reclaimed only when the page drops them — terminating
+    // the worker does not, because the main thread is a co-owner. Leaving
+    // them set makes reclamation depend on the whole BrowserKernel being GC'd
+    // (and pins the memory outright if anything still references this kernel).
+    this.fbMemoryByPid.clear();
+    this.framebuffers.clear();
+    this.pendingPtyOutput.clear();
   }
 
   // ── Private helpers ──

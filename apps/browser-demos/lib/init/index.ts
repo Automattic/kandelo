@@ -18,12 +18,8 @@ export {
   ensureDirRecursive,
 } from "./vfs-utils";
 
-// Shell binary population
-export {
-  populateShellBinaries,
-  COREUTILS_NAMES,
-  type BinaryDef,
-} from "./shell-binaries";
+// Shell binary metadata
+export { COREUTILS_NAMES } from "./shell-binaries";
 
 // Service worker bridge
 export { initServiceWorkerBridge } from "./service-worker-bridge";

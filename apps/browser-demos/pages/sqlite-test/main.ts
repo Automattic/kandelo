@@ -6,6 +6,7 @@
 import { BrowserKernel } from "@host/browser-kernel-host";
 import { MemoryFileSystem } from "@host/vfs/memory-fs";
 import { writeVfsFile } from "@host/vfs/image-helpers";
+import { finalizeKernelOwnedImage, settleWebKitReclaim } from "../../lib/kernel-owned-boot";
 import kernelWasmUrl from "@kernel-wasm?url";
 
 declare global {
@@ -61,14 +62,6 @@ function readVfsFile(fs: MemoryFileSystem, path: string): Uint8Array {
   }
 }
 
-function tryReadVfsFile(fs: MemoryFileSystem, path: string): Uint8Array | null {
-  try {
-    return readVfsFile(fs, path);
-  } catch {
-    return null;
-  }
-}
-
 function base64Encode(bytes: Uint8Array): string {
   let binary = "";
   const chunkSize = 0x8000;
@@ -79,7 +72,9 @@ function base64Encode(bytes: Uint8Array): string {
   return btoa(binary);
 }
 
-function collectArtifacts(fs: MemoryFileSystem): SqliteTestResult["artifacts"] {
+async function collectArtifactsFromKernel(
+  kernel: BrowserKernel,
+): Promise<SqliteTestResult["artifacts"]> {
   const artifacts: NonNullable<SqliteTestResult["artifacts"]> = [];
   for (const path of [
     "/sqlite/testrunner.db",
@@ -89,7 +84,8 @@ function collectArtifacts(fs: MemoryFileSystem): SqliteTestResult["artifacts"] {
     "/sqlite/testrunner.log",
     "/sqlite/testrunner_build.log",
   ]) {
-    const bytes = tryReadVfsFile(fs, path);
+    // The kernel owns the VFS; read result files back over the RPC bridge.
+    const bytes = await kernel.readFileFromVfs(path);
     if (bytes) artifacts.push({ path, base64: base64Encode(bytes) });
   }
   return artifacts.length > 0 ? artifacts : undefined;
@@ -152,19 +148,12 @@ async function init() {
       const line = lines.at(-1);
       if (line) console.info(`[sqlite-progress] ${line}`);
     };
-    const fs = createFs();
-    const readArtifacts = () => collectArtifacts(fs);
-    const publishArtifactSnapshot = () => {
-      const sink = window.__sqliteArtifactSnapshot;
-      if (!sink) return;
-      void Promise.resolve(sink({
-        durationMs: Math.round(performance.now() - start),
-        artifacts: readArtifacts(),
-      })).catch(() => {});
-    };
-    const artifactTimer = window.setInterval(publishArtifactSnapshot, 5000);
+    // Assemble the test image in a transient build FS, then hand ownership to
+    // the kernel worker (kernelOwnedFs) so the main thread holds no VFS
+    // SharedArrayBuffer across the per-test loop (Safari OOM fix).
+    const buildFs = createFs();
     if (argv[1] === "kandelo-testrunner.tcl") {
-      writeVfsFile(fs, "/sqlite/kandelo-testrunner.tcl", [
+      writeVfsFile(buildFs, "/sqlite/kandelo-testrunner.tcl", [
         "set ::tcl_platform(os) OpenBSD",
         "set ::tcl_platform(platform) unix",
         "set argv0 test/testrunner.tcl",
@@ -172,17 +161,30 @@ async function init() {
         "",
       ].join("\n"), 0o644);
     }
+    const vfsImage = await finalizeKernelOwnedImage(buildFs);
     const kernel = new BrowserKernel({
-      memfs: fs,
+      kernelOwnedFs: true,
       maxWorkers: 4,
       enableSyscallLog: import.meta.env.VITE_SQLITE_BROWSER_SYSCALL_LOG === "1",
       syscallLogPtrWidth: sqliteSyscallLogPtrWidth(),
       onStdout: (data) => { appendStdout(new TextDecoder().decode(data)); },
       onStderr: (data) => { stderr += new TextDecoder().decode(data); },
     });
+    const readArtifacts = () => collectArtifactsFromKernel(kernel);
+    const publishArtifactSnapshot = () => {
+      const sink = window.__sqliteArtifactSnapshot;
+      if (!sink) return;
+      void readArtifacts()
+        .then((artifacts) => sink({
+          durationMs: Math.round(performance.now() - start),
+          artifacts,
+        }))
+        .catch(() => {});
+    };
+    const artifactTimer = window.setInterval(publishArtifactSnapshot, 5000);
 
     try {
-      await kernel.init(kernelBytes!);
+      await kernel.initFromImage({ kernelWasm: kernelBytes!, vfsImage });
       const textDecoder = new TextDecoder();
       const exitCode = await Promise.race([
         kernel.spawn(testfixtureBytes!, argv, {
@@ -213,7 +215,7 @@ async function init() {
         stdout,
         stderr,
         durationMs: Math.round(performance.now() - start),
-        artifacts: readArtifacts(),
+        artifacts: await readArtifacts(),
       };
     } catch (err: any) {
       const message = err?.message || String(err);
@@ -224,12 +226,13 @@ async function init() {
         stderr,
         error: message.includes("TIMEOUT") ? "TIMEOUT" : message,
         durationMs: Math.round(performance.now() - start),
-        artifacts: readArtifacts(),
+        artifacts: await readArtifacts(),
       };
     } finally {
       window.clearInterval(artifactTimer);
       publishArtifactSnapshot();
       await kernel.destroy().catch(() => {});
+      await settleWebKitReclaim();
     }
   }
 

@@ -13,6 +13,11 @@
  */
 import { BrowserKernel } from "@host/browser-kernel-host";
 import { MemoryFileSystem } from "../../../../host/src/vfs/memory-fs";
+import {
+  createEmptyBuildFs,
+  finalizeKernelOwnedImage,
+  settleWebKitReclaim,
+} from "../../lib/kernel-owned-boot";
 import { writeVfsFile } from "../../lib/init/vfs-utils";
 import { MySqlBrowserClient } from "../../lib/mysql-client";
 
@@ -225,22 +230,21 @@ async function runProgram(
   argv: string[],
 ): Promise<{ exitCode: number; stdout: string }> {
   let stdout = "";
+  const vfsImage = await finalizeKernelOwnedImage(createEmptyBuildFs());
   const kernel = new BrowserKernel({
+    kernelOwnedFs: true,
     maxWorkers: 4,
-    fsSize: 4 * 1024 * 1024,
     onStdout: (data) => { stdout += new TextDecoder().decode(data); },
     onStderr: () => {},
   });
   try {
-    await kernel.init();
-
-    // Create /tmp for file benchmarks (may already exist after init)
-    try { kernel.fs.mkdir("/tmp", 0o777); } catch {};
-
+    // /tmp and friends are worker-provided scratch mounts in kernel-owned mode.
+    await kernel.initFromImage({ vfsImage });
     const exitCode = await kernel.spawn(programBytes, argv);
     return { exitCode, stdout };
   } finally {
     try { await kernel.destroy(); } catch {}
+    await settleWebKitReclaim();
   }
 }
 
@@ -255,26 +259,26 @@ async function runProgramWithExecMap(
   execMap: Array<{ path: string; url: string; size: number }>,
 ): Promise<{ exitCode: number; stdout: string }> {
   let stdout = "";
+  // Bake the exec-map entries into the image as lazy files; the worker fetches
+  // them on demand when the child execs them.
+  const buildFs = createEmptyBuildFs();
+  for (const e of execMap) {
+    buildFs.registerLazyFile(e.path, e.url, e.size, 0o755);
+  }
+  const vfsImage = await finalizeKernelOwnedImage(buildFs);
   const kernel = new BrowserKernel({
+    kernelOwnedFs: true,
     maxWorkers: 4,
-    fsSize: 4 * 1024 * 1024,
     onStdout: (data) => { stdout += new TextDecoder().decode(data); },
     onStderr: () => {},
   });
   try {
-    await kernel.init();
-    try { kernel.fs.mkdir("/tmp", 0o777); } catch {};
-
-    if (execMap.length > 0) {
-      kernel.registerLazyFiles(execMap.map(e => ({
-        path: e.path, url: e.url, size: e.size, mode: 0o755,
-      })));
-    }
-
+    await kernel.initFromImage({ vfsImage });
     const exitCode = await kernel.spawn(programBytes, argv);
     return { exitCode, stdout };
   } finally {
     try { await kernel.destroy(); } catch {}
+    await settleWebKitReclaim();
   }
 }
 
@@ -426,12 +430,13 @@ async function runErlangRing(): Promise<Record<string, number>> {
   let lastOutputTime = 0;
   let outputSeen = false;
 
-  const memfs = MemoryFileSystem.fromImage(new Uint8Array(vfsImageBuf), {
+  const buildFs = MemoryFileSystem.fromImage(new Uint8Array(vfsImageBuf), {
     maxByteLength: 256 * 1024 * 1024,
   });
+  const vfsImage = await finalizeKernelOwnedImage(buildFs);
 
   const kernel = new BrowserKernel({
-    memfs,
+    kernelOwnedFs: true,
     onStdout: (data) => {
       stdout += new TextDecoder().decode(data);
       lastOutputTime = Date.now();
@@ -439,7 +444,7 @@ async function runErlangRing(): Promise<Record<string, number>> {
     },
     onStderr: () => {},
   });
-  await kernel.init(kernelBytes);
+  await kernel.initFromImage({ kernelWasm: kernelBytes, vfsImage });
 
   // Spawn BEAM with ring benchmark
   log("  Running ring benchmark (100 rounds x 1000 processes)...");
@@ -475,6 +480,7 @@ async function runErlangRing(): Promise<Record<string, number>> {
   });
 
   try { await kernel.destroy(); } catch { /* already destroyed */ }
+  await settleWebKitReclaim();
 
   // Parse metrics from stdout
   const metrics = parseMetrics(stdout);
@@ -560,14 +566,21 @@ async function runWordPress(): Promise<Record<string, number>> {
     vfsResp.arrayBuffer(),
   ]);
 
-  // Restore MemoryFileSystem from the pre-built VFS image
-  const memfs = MemoryFileSystem.fromImage(new Uint8Array(vfsImageBuf), {
+  // Assemble the image in a transient build FS: base WP image + config +
+  // dynamic wp-config/mu-plugin, minus any stale database. The kernel worker
+  // then owns the live VFS (kernelOwnedFs).
+  const buildFs = MemoryFileSystem.fromImage(new Uint8Array(vfsImageBuf), {
     maxByteLength: 1024 * 1024 * 1024,
   });
-  writeVfsFile(memfs, "/etc/php-fpm.conf", PATCHED_PHP_FPM_CONF);
+  writeVfsFile(buildFs, "/etc/php-fpm.conf", PATCHED_PHP_FPM_CONF);
+  writeVfsFile(buildFs, "/var/www/html/wp-config.php", WP_CONFIG_PHP);
+  writeVfsFile(buildFs, "/var/www/html/wp-content/mu-plugins/wasm-optimizations.php", MU_PLUGIN_PHP);
+  // Remove any pre-existing database so WordPress starts fresh
+  try { buildFs.unlink("/var/www/html/wp-content/database/wordpress.db"); } catch { /* not present */ }
+  const vfsImage = await finalizeKernelOwnedImage(buildFs);
 
   const kernel = new BrowserKernel({
-    memfs,
+    kernelOwnedFs: true,
     maxWorkers: 12,
     maxMemoryPages: 4096,
     onStdout: () => {},
@@ -575,15 +588,8 @@ async function runWordPress(): Promise<Record<string, number>> {
   });
 
   const tBoot = performance.now();
-  await kernel.init(kernelBytes);
+  await kernel.initFromImage({ kernelWasm: kernelBytes, vfsImage });
   try {
-
-  // Write dynamic wp-config.php
-  writeVfsFile(kernel.fs, "/var/www/html/wp-config.php", WP_CONFIG_PHP);
-  writeVfsFile(kernel.fs, "/var/www/html/wp-content/mu-plugins/wasm-optimizations.php", MU_PLUGIN_PHP);
-
-  // Remove any pre-existing database so WordPress starts fresh
-  try { kernel.fs.unlink("/var/www/html/wp-content/database/wordpress.db"); } catch { /* not present */ }
 
   // Spawn PHP-FPM
   log("  Starting PHP-FPM...");
@@ -650,6 +656,7 @@ async function runWordPress(): Promise<Record<string, number>> {
   return results;
   } finally {
     try { await kernel.destroy(); } catch {}
+    await settleWebKitReclaim();
   }
 }
 
@@ -703,23 +710,24 @@ async function runMariaDbWithEngine(engine: string, arch: MariaDbArch = "wasm32"
     fetchWasm(kernelWasmUrl),
     vfsResp.arrayBuffer(),
   ]);
-  const memfs = MemoryFileSystem.fromImage(new Uint8Array(vfsImageBuf), {
+  const buildFs = MemoryFileSystem.fromImage(new Uint8Array(vfsImageBuf), {
     maxByteLength: 1024 * 1024 * 1024,
   });
-  const mariadbBytes = await readVfsBytes(memfs, "/usr/sbin/mariadbd");
-  const bootstrapSql = await readVfsText(memfs, "/etc/mariadb/bootstrap.sql");
+  const mariadbBytes = await readVfsBytes(buildFs, "/usr/sbin/mariadbd");
+  const bootstrapSql = await readVfsText(buildFs, "/etc/mariadb/bootstrap.sql");
+  const vfsImage = await finalizeKernelOwnedImage(buildFs);
 
   // ── Bootstrap ──
   log("  Running bootstrap...");
   const tBootstrap = performance.now();
 
   const bootstrapKernel = new BrowserKernel({
-    memfs,
+    kernelOwnedFs: true,
     maxWorkers: 12,
     onStdout: () => {},
     onStderr: () => {},
   });
-  await bootstrapKernel.init(kernelBytes);
+  await bootstrapKernel.initFromImage({ kernelWasm: kernelBytes, vfsImage });
   let client: MySqlBrowserClient | null = null;
   try {
 
@@ -826,6 +834,7 @@ async function runMariaDbWithEngine(engine: string, arch: MariaDbArch = "wasm32"
   } finally {
     try { client?.close(); } catch {}
     try { await bootstrapKernel.destroy(); } catch {}
+    await settleWebKitReclaim();
   }
 }
 

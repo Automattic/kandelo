@@ -5,6 +5,11 @@
  * and exposes window.__runGitClone(url) for Playwright to call.
  */
 import { BrowserKernel } from "@host/browser-kernel-host";
+import {
+  createBuildFsWithEtc,
+  finalizeKernelOwnedImage,
+  settleWebKitReclaim,
+} from "../../lib/kernel-owned-boot";
 import kernelWasmUrl from "@kernel-wasm?url";
 import gitWasmUrl from "@binaries/programs/wasm32/git/git.wasm?url";
 import gitRemoteHttpWasmUrl from "@binaries/programs/wasm32/git/git-remote-http.wasm?url";
@@ -29,7 +34,7 @@ const DEMO_HOME = "/home/user";
 
 /** Write a binary file to the virtual filesystem. */
 function writeFileToFs(
-  fs: BrowserKernel["fs"],
+  fs: import("@host/vfs/memory-fs").MemoryFileSystem,
   path: string,
   data: ArrayBuffer,
 ): void {
@@ -61,7 +66,37 @@ async function init() {
     let stdout = "";
     let stderr = "";
 
+    // Bake the git binaries + /etc into a transient build FS, then hand the
+    // live VFS to the kernel worker (kernelOwnedFs) so the main thread holds no
+    // VFS SharedArrayBuffer across the per-clone loop.
+    const gitExecPath = "/usr/libexec/git-core";
+    const buildFs = await createBuildFsWithEtc();
+    for (const dir of [
+      "/usr",
+      "/usr/libexec",
+      "/usr/libexec/git-core",
+      "/usr/bin",
+      "/home",
+      DEMO_HOME,
+    ]) {
+      try {
+        buildFs.mkdir(dir, 0o755);
+      } catch {
+        /* exists */
+      }
+    }
+    buildFs.chown(DEMO_HOME, DEMO_UID, DEMO_GID);
+    buildFs.chmod(DEMO_HOME, 0o755);
+
+    writeFileToFs(buildFs, `${gitExecPath}/git`, gitBytes!);
+    writeFileToFs(buildFs, `${gitExecPath}/git-remote-http`, gitRemoteHttpBytes!);
+    // Also write to /usr/bin for PATH-based resolution
+    writeFileToFs(buildFs, "/usr/bin/git", gitBytes!);
+    writeFileToFs(buildFs, "/usr/bin/git-remote-http", gitRemoteHttpBytes!);
+    const vfsImage = await finalizeKernelOwnedImage(buildFs);
+
     const kernel = new BrowserKernel({
+      kernelOwnedFs: true,
       onStdout: (data: Uint8Array) => {
         stdout += new TextDecoder().decode(data);
       },
@@ -71,40 +106,7 @@ async function init() {
     });
 
     try {
-      await kernel.init(kernelWasmBytes!);
-
-      // Write git binaries to VFS at paths git will exec
-      const gitExecPath = "/usr/libexec/git-core";
-      for (const dir of [
-        "/usr",
-        "/usr/libexec",
-        "/usr/libexec/git-core",
-        "/usr/bin",
-        "/home",
-        DEMO_HOME,
-      ]) {
-        try {
-          kernel.fs.mkdir(dir, 0o755);
-        } catch {
-          /* exists */
-        }
-      }
-      kernel.fs.chown(DEMO_HOME, DEMO_UID, DEMO_GID);
-      kernel.fs.chmod(DEMO_HOME, 0o755);
-
-      writeFileToFs(kernel.fs, `${gitExecPath}/git`, gitBytes!);
-      writeFileToFs(
-        kernel.fs,
-        `${gitExecPath}/git-remote-http`,
-        gitRemoteHttpBytes!,
-      );
-      // Also write to /usr/bin for PATH-based resolution
-      writeFileToFs(kernel.fs, "/usr/bin/git", gitBytes!);
-      writeFileToFs(
-        kernel.fs,
-        "/usr/bin/git-remote-http",
-        gitRemoteHttpBytes!,
-      );
+      await kernel.initFromImage({ kernelWasm: kernelWasmBytes!, vfsImage });
 
       const cloneDir = "/tmp/git-clone";
       const env = [
@@ -140,6 +142,7 @@ async function init() {
       return { exitCode, stdout, stderr };
     } finally {
       await kernel.destroy();
+      await settleWebKitReclaim();
     }
   };
 

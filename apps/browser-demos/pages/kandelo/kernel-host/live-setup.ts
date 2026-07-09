@@ -22,6 +22,10 @@ import {
 } from "../../../lib/init/wordpress-mariadb-readiness";
 import { MemoryFileSystem } from "../../../../../host/src/vfs/memory-fs";
 import {
+  finalizeKernelOwnedImage,
+  settleWebKitReclaim,
+} from "../../../lib/kernel-owned-boot";
+import {
   ensureDirRecursive,
   writeVfsBinary,
   writeVfsFile,
@@ -274,13 +278,10 @@ const LIVE_DEMO_IDS = [
 
 type LiveDemoId = typeof LIVE_DEMO_IDS[number];
 
+// Kernel teardown reclamation (transient image-build buffers) lives in the
+// shared helper so every kernel-owned demo shares one implementation.
 async function settleAfterKernelDestroy(): Promise<void> {
-  const ua = navigator.userAgent;
-  const isWebKitLikeBrowser = /AppleWebKit/i.test(ua)
-    && !/(Chrome|Chromium|CriOS|Edg|OPR|Firefox|FxiOS)/i.test(ua);
-  if (!isWebKitLikeBrowser) return;
-  await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
-  await new Promise<void>((resolve) => window.setTimeout(resolve, 1_000));
+  await settleWebKitReclaim();
 }
 
 const LIVE_PROFILE_SPECS: Record<LiveDemoId, LiveProfileSpec> = {
@@ -916,12 +917,12 @@ function stripAnsi(text: string): string {
 
 function startDinitStartingPoller(options: {
   kernel: BrowserKernel;
-  memfs: MemoryFileSystem;
+  hasDinitctl: boolean;
   tracker: DinitBootStatusTracker;
   isCurrent: () => boolean;
   shouldStop?: () => boolean;
 }): () => void {
-  if (!vfsPathExists(options.memfs, DINITCTL_PATH)) return () => {};
+  if (!options.hasDinitctl) return () => {};
 
   let stopped = false;
   void (async () => {
@@ -929,10 +930,9 @@ function startDinitStartingPoller(options: {
     let failures = 0;
     while (!stopped && options.isCurrent() && Date.now() < deadline) {
       if (options.shouldStop?.()) break;
-      if (!vfsPathExists(options.memfs, DINITCTL_SOCKET_PATH)) {
-        await delay(DINIT_STARTING_POLL_INTERVAL_MS);
-        continue;
-      }
+      // The kernel owns the FS now, so the main thread can't stat the dinit
+      // control socket. readDinitctlList probes it via an in-kernel
+      // `dinitctl list`, which returns null until the socket is up.
       let output: string | null = null;
       try {
         output = await readDinitctlList(options.kernel);
@@ -1080,7 +1080,14 @@ async function bootProfile(
     ABI_VERSION,
     `${profile.id}.vfs.zst`,
   );
-  const memfs = MemoryFileSystem.fromImage(new Uint8Array(vfsBytes), {
+  // Assemble the demo image in a TRANSIENT build-time filesystem. Its
+  // SharedArrayBuffer never becomes the machine's live VFS — after
+  // `saveImage()` it is dropped, and the kernel worker rebuilds+owns the live
+  // FS from the serialized bytes (kernelOwnedFs). This keeps the main thread
+  // out of the live-VFS ownership set so WebKit reclaims it on teardown via
+  // Worker.terminate() rather than lazy GC — the root fix for the Safari
+  // image-switch OOM.
+  const buildFs = MemoryFileSystem.fromImage(new Uint8Array(vfsBytes), {
     maxByteLength: profile.maxVfsByteLength,
   });
   if (
@@ -1088,30 +1095,37 @@ async function bootProfile(
     profile.id === "wordpress-sqlite" ||
     profile.id === "wordpress-mariadb"
   ) {
-    writeVfsFile(memfs, "/etc/php-fpm.conf", PATCHED_PHP_FPM_CONF);
-    ensureDirRecursive(memfs, "/var/cache/opcache");
+    writeVfsFile(buildFs, "/etc/php-fpm.conf", PATCHED_PHP_FPM_CONF);
+    ensureDirRecursive(buildFs, "/var/cache/opcache");
   }
   if (profile.id === "wordpress-sqlite") {
-    patchWordPressRuntimeConfig(memfs, "sqlite");
+    patchWordPressRuntimeConfig(buildFs, "sqlite");
   } else if (profile.id === "wordpress-mariadb") {
-    patchMariaDbUnixSocketConfig(memfs);
-    patchWordPressRuntimeConfig(memfs, "mariadb");
+    patchMariaDbUnixSocketConfig(buildFs);
+    patchWordPressRuntimeConfig(buildFs, "mariadb");
   }
-  memfs.rewriteLazyArchiveUrls(resolveShellLazyArchiveUrl);
-  rewriteShellLazyFileUrls(memfs);
+  buildFs.rewriteLazyArchiveUrls(resolveShellLazyArchiveUrl);
+  rewriteShellLazyFileUrls(buildFs);
   if (profile.includeNodeUtility) {
-    rewriteNodeLazyFileUrl(memfs);
+    rewriteNodeLazyFileUrl(buildFs);
   }
   if (profile.init?.programUrl) {
     tick(`staging ${profile.init.argv[0]}...`);
     const bytes = await fetch(profile.init.programUrl)
       .then(failOn(profile.init.argv[0]))
       .then((r) => r.arrayBuffer());
-    ensureDirRecursive(memfs, dirname(profile.init.argv[0]));
-    writeVfsBinary(memfs, profile.init.argv[0], new Uint8Array(bytes), 0o755);
+    ensureDirRecursive(buildFs, dirname(profile.init.argv[0]));
+    writeVfsBinary(buildFs, profile.init.argv[0], new Uint8Array(bytes), 0o755);
   }
-  ensureDemoHomes(memfs);
-  const imageConfig = readImageConfig(memfs);
+  ensureDemoHomes(buildFs);
+  // Bake the shell + gallery-software binaries into the image before the
+  // worker takes ownership. In the legacy path these were written into a
+  // main-thread-shared memfs *after* boot via `kernel.fs`; the kernel-owned FS
+  // has no main-thread handle, so they must be part of the image bytes.
+  stageShellUtilities(buildFs, dashBytes, bashBytes);
+  stageSoftwareBinaries(buildFs, softwareBinaries);
+  const hasDinitctl = vfsPathExists(buildFs, DINITCTL_PATH);
+  const imageConfig = readImageConfig(buildFs);
   const rawPresentation = (imageConfig ? resolveDemoPresentation(imageConfig, profile.id) : null)
     ?? builtinDemoPresentation(profile.id)
     ?? genericPresentation;
@@ -1122,7 +1136,17 @@ async function bootProfile(
   host.setDemoGuide(demoGuide);
   const imageAssets = imageConfig ? resolveDemoAssets(imageConfig, profile.id) : [];
   const assets = imageAssets.length > 0 ? imageAssets : builtinDemoAssets(profile.id);
-  await stageConfiguredAssets(memfs, assets, tick);
+  await stageConfiguredAssets(buildFs, assets, tick);
+  assertCurrent();
+
+  // Serialize the assembled image to transferable bytes, then let `buildFs`
+  // go out of scope. `saveImage()` emits raw (uncompressed) bytes that
+  // `MemoryFileSystem.fromImage` restores directly in the worker.
+  tick("assembling kernel-owned VFS image...");
+  // Serialize to transferable bytes + register the transient build buffer for
+  // reclamation tracking, then let `buildFs` fall out of scope when bootProfile
+  // returns. `settleAfterKernelDestroy` reclaims it on WebKit.
+  const vfsImageBytes = await finalizeKernelOwnedImage(buildFs);
   assertCurrent();
 
   tick("instantiating kernel...");
@@ -1145,7 +1169,7 @@ async function bootProfile(
   let stopDinitStartingPoller = () => {};
   try {
     kernel = new BrowserKernel({
-      memfs,
+      kernelOwnedFs: true,
       maxWorkers: profile.init?.maxWorkers ?? 4,
       maxMemoryPages: profile.init?.maxMemoryPages,
       onStdout: (data) => recordProcessOutput(data, "stdout"),
@@ -1163,12 +1187,10 @@ async function bootProfile(
           });
       },
     });
-    await kernel.init(kernelBytes);
-    assertCurrent();
-
-    tick("staging shell utilities...");
-    stageShellUtilities(kernel, dashBytes, bashBytes);
-    stageSoftwareBinaries(kernel, softwareBinaries);
+    await kernel.initFromImage({
+      kernelWasm: kernelBytes,
+      vfsImage: vfsImageBytes,
+    });
     assertCurrent();
     host.attachKernel(kernel);
     const shellIdentity = shellIdentityForProfile(profile, profile.init ? undefined : effectiveBoot);
@@ -1216,23 +1238,24 @@ async function bootProfile(
 
     if (profile.init) {
       const initArgv = effectiveBoot.argv.length > 0 ? effectiveBoot.argv : profile.init.argv;
-      const initBytes = readVfsFile(memfs, initArgv[0]);
       tick(`spawning ${initArgv[0]}...`);
-      void kernel.spawn(initBytes, initArgv, {
+      // The init binary lives in the kernel-owned VFS; spawn it by path rather
+      // than shipping bytes the kernel already has.
+      const { exit: initExit } = await kernel.spawnFromVfs(initArgv[0], initArgv, {
         env: mergeEnvArrays(profile.init.env ?? [], envArray(effectiveBoot.env)),
         cwd: effectiveBoot.cwd || profile.init.cwd || ROOT_HOME,
         uid: effectiveBoot.uid ?? profile.init.uid ?? ROOT_UID,
         gid: effectiveBoot.gid ?? profile.init.gid ?? ROOT_GID,
-        onStarted: () => {
-          stopDinitStartingPoller = startDinitStartingPoller({
-            kernel: kernel!,
-            memfs,
-            tracker: dinitBootTracker,
-            isCurrent,
-            shouldStop: () => webReadiness.ready,
-          });
-        },
-      }).then(
+        stdin: new Uint8Array(),
+      });
+      stopDinitStartingPoller = startDinitStartingPoller({
+        kernel,
+        hasDinitctl,
+        tracker: dinitBootTracker,
+        isCurrent,
+        shouldStop: () => webReadiness.ready,
+      });
+      void initExit.then(
         (code) => {
           stopDinitStartingPoller();
           stopDinitStartingPoller = () => {};
@@ -1302,19 +1325,19 @@ function genericPresentationForProfile(profile: LiveProfile): DemoPresentation {
 }
 
 function stageShellUtilities(
-  kernel: BrowserKernel,
+  fs: MemoryFileSystem,
   dashBytes: ArrayBuffer,
   bashBytes: ArrayBuffer,
 ): void {
-  ensureDemoHomes(kernel.fs);
-  ensureDirRecursive(kernel.fs, "/bin");
-  ensureDirRecursive(kernel.fs, "/usr/bin");
-  writeVfsBinary(kernel.fs, "/bin/dash", new Uint8Array(dashBytes), 0o755);
-  try { kernel.fs.symlink("/bin/dash", "/bin/sh"); } catch { /* exists */ }
-  try { kernel.fs.symlink("/bin/dash", "/usr/bin/dash"); } catch { /* exists */ }
-  try { kernel.fs.symlink("/bin/dash", "/usr/bin/sh"); } catch { /* exists */ }
-  writeVfsBinary(kernel.fs, "/bin/bash", new Uint8Array(bashBytes), 0o755);
-  try { kernel.fs.symlink("/bin/bash", "/usr/bin/bash"); } catch { /* exists */ }
+  ensureDemoHomes(fs);
+  ensureDirRecursive(fs, "/bin");
+  ensureDirRecursive(fs, "/usr/bin");
+  writeVfsBinary(fs, "/bin/dash", new Uint8Array(dashBytes), 0o755);
+  try { fs.symlink("/bin/dash", "/bin/sh"); } catch { /* exists */ }
+  try { fs.symlink("/bin/dash", "/usr/bin/dash"); } catch { /* exists */ }
+  try { fs.symlink("/bin/dash", "/usr/bin/sh"); } catch { /* exists */ }
+  writeVfsBinary(fs, "/bin/bash", new Uint8Array(bashBytes), 0o755);
+  try { fs.symlink("/bin/bash", "/usr/bin/bash"); } catch { /* exists */ }
 }
 
 function rewriteNodeLazyFileUrl(fs: MemoryFileSystem): void {
@@ -1498,15 +1521,15 @@ async function loadSoftwareBinaries(
 }
 
 function stageSoftwareBinaries(
-  kernel: BrowserKernel,
+  fs: MemoryFileSystem,
   binaries: Array<{ spec: SoftwareBinary; bytes: Uint8Array }>,
 ): void {
   for (const { spec, bytes } of binaries) {
-    ensureDirRecursive(kernel.fs, dirname(spec.installPath));
-    writeVfsBinary(kernel.fs, spec.installPath, bytes, 0o755);
+    ensureDirRecursive(fs, dirname(spec.installPath));
+    writeVfsBinary(fs, spec.installPath, bytes, 0o755);
     for (const symlinkPath of spec.symlinks ?? []) {
-      ensureDirRecursive(kernel.fs, dirname(symlinkPath));
-      try { kernel.fs.symlink(spec.installPath, symlinkPath); } catch { /* exists */ }
+      ensureDirRecursive(fs, dirname(symlinkPath));
+      try { fs.symlink(spec.installPath, symlinkPath); } catch { /* exists */ }
     }
   }
 }

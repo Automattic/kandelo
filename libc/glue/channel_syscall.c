@@ -216,6 +216,36 @@ static void __deliver_pending_signal(uintptr_t base)
     uint32_t signum  = *sig_signum_ptr;
     if (signum == 0) return;
 
+    /* Cooperative hard-exit for host teardown.
+     *
+     * SIGKILL is never delivered to the guest in normal operation — it is
+     * uncatchable, so the kernel enforces its default terminate action itself
+     * and never writes it into the channel signal slot. The host therefore
+     * uses a queued SIGKILL as an unambiguous "exit now" instruction: on
+     * teardown it wakes each blocked worker and queues SIGKILL so this runs.
+     *
+     * We must reach the exit path that ends in a wasm trap so the worker
+     * returns to its JS event loop and the host can actually reclaim it. This
+     * matters because WebKit's Worker.terminate() cannot free a worker parked
+     * in Atomics.wait on the syscall channel — the state every blocked process
+     * worker sits in.
+     *
+     * Crucially we do NOT call musl _exit() here: on this port _exit() issues
+     * SYS_exit_group over the channel (which returns normally) and then spins
+     * `for (;;) __syscall(SYS_exit)`, re-parking the worker in Atomics.wait —
+     * exactly the un-reclaimable state we are trying to escape. Instead we call
+     * the kernel_exit import directly. worker-main services the SYS_EXIT, then
+     * the _Noreturn import is followed by an `unreachable` trap that worker-main
+     * catches as a clean exit, unwinding the wasm and idling the worker so the
+     * host terminate() can reclaim its thread + memory. Without this, each image
+     * switch leaks a machine's worth of un-killable worker threads and Safari
+     * OOMs. */
+    if (signum == 9 /* SIGKILL */) {
+        extern _Noreturn void kernel_exit(int32_t status)
+            __attribute__((import_module("kernel"), import_name("kernel_exit")));
+        kernel_exit(128 + 9);
+    }
+
     uint32_t handler = *sig_handler_ptr;
     uint32_t flags   = *sig_flags_ptr;
 

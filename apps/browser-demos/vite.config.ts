@@ -463,6 +463,7 @@ const defaultDemoInputs = {
 const demoInputs = {
   ...defaultDemoInputs,
   "sqlite-test": path.resolve(__dirname, "pages/sqlite-test/index.html"),
+  benchmark: path.resolve(__dirname, "pages/benchmark/index.html"),
   // The perl, python, ruby, erlang, texlive, and redis package entries
   // are not bundled into this static build while their slow builds
   // live in kandelo-software. The root gallery fetches that
