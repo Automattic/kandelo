@@ -106,6 +106,18 @@ const OPTIONAL_BINARY_URLS = {
   ...import.meta.glob("../../../../../binaries/programs/wasm32/sdl2.wasm", {
     query: "?url", import: "default",
   }),
+  ...import.meta.glob("../../../../../local-binaries/programs/wasm32/wlcompositor.wasm", {
+    query: "?url", import: "default",
+  }),
+  ...import.meta.glob("../../../../../binaries/programs/wasm32/wlcompositor.wasm", {
+    query: "?url", import: "default",
+  }),
+  ...import.meta.glob("../../../../../local-binaries/programs/wasm32/wlterm.wasm", {
+    query: "?url", import: "default",
+  }),
+  ...import.meta.glob("../../../../../binaries/programs/wasm32/wlterm.wasm", {
+    query: "?url", import: "default",
+  }),
 } as Record<string, () => Promise<string>>;
 
 async function optionalBinaryUrl(relPaths: string[], label: string): Promise<string> {
@@ -260,6 +272,7 @@ const LIVE_DEMO_IDS = [
   "doom",
   "modeset",
   "sdl2",
+  "wayland",
 ] as const;
 
 type LiveDemoId = typeof LIVE_DEMO_IDS[number];
@@ -351,6 +364,10 @@ const LIVE_PROFILE_SPECS: Record<LiveDemoId, LiveProfileSpec> = {
     image: "shell",
     features: ["kms"],
   },
+  wayland: {
+    image: "shell",
+    features: ["kms"],
+  },
 };
 
 const DEMO_ALIASES: Record<string, LiveDemoId> = {
@@ -410,6 +427,16 @@ interface LiveProfile {
    * fragment shader rendered alongside it — and runs until ESC quits.
    */
   sdl2Demo: boolean;
+  /**
+   * Stage the Wayland stack — `wlcompositor` (a wl_shm/xdg_shell server
+   * that drives /dev/dri/card0 via KMS) plus its `wlterm` client (a
+   * libkwl VT100 terminal running a forkpty'd dash) — attach a
+   * `BrowserInputSource`, then spawn the compositor and the terminal.
+   * The compositor composites the client to card0; the Modeset pane
+   * picks up PAGE_FLIP, and keyboard input routes through the compositor
+   * to the shell. Runs until the terminal's shell exits.
+   */
+  waylandDemo: boolean;
 }
 
 interface WebReadinessState {
@@ -706,6 +733,7 @@ function customVfsProfile(
     framebufferTest: fb === "test",
     modesetDemo: false,
     sdl2Demo: false,
+    waylandDemo: false,
   };
 }
 
@@ -727,6 +755,7 @@ function profileFor(id: string, fb?: FbDemo): LiveProfile {
       framebufferTest: false,
       modesetDemo: false,
       sdl2Demo: false,
+      waylandDemo: false,
     };
   }
 
@@ -760,6 +789,7 @@ function profileFor(id: string, fb?: FbDemo): LiveProfile {
     framebufferTest: fb === "test",
     modesetDemo: normalized === "modeset",
     sdl2Demo: normalized === "sdl2",
+    waylandDemo: normalized === "wayland",
   };
 }
 
@@ -1407,6 +1437,85 @@ async function bootProfile(
           audioDriver?.stop(0);
         }
       })();
+    } else if (profile.waylandDemo) {
+      // The Wayland stack needs: both binaries staged into the VFS, the
+      // input source attached so keystrokes reach the compositor's
+      // libinput (event0) and route through to the shell, the compositor
+      // spawned as the KMS master (it opens /dev/dri/card0 and drives
+      // PAGE_FLIP — the Modeset pane picks it up), and finally the wlterm
+      // client run from bash. dash is already staged by
+      // stageShellUtilities, so wlterm's forkpty'd execvp("dash") resolves
+      // via PATH. The demo runs until the terminal's shell exits.
+      const kernelForWayland = kernel;
+      void (async () => {
+        try {
+          const compositorUrl = await optionalBinaryUrl([
+            "../../../../../local-binaries/programs/wasm32/wlcompositor.wasm",
+            "../../../../../binaries/programs/wasm32/wlcompositor.wasm",
+          ], "wlcompositor.wasm");
+          const wltermUrl = await optionalBinaryUrl([
+            "../../../../../local-binaries/programs/wasm32/wlterm.wasm",
+            "../../../../../binaries/programs/wasm32/wlterm.wasm",
+          ], "wlterm.wasm");
+          tick("staging wayland binaries...");
+          const compBytes = await fetch(compositorUrl)
+            .then(failOn("wlcompositor.wasm"))
+            .then((r) => r.arrayBuffer());
+          const termBytes = await fetch(wltermUrl)
+            .then(failOn("wlterm.wasm"))
+            .then((r) => r.arrayBuffer());
+          ensureDirRecursive(kernelForWayland.fs, "/usr/local/bin");
+          writeVfsBinary(
+            kernelForWayland.fs,
+            "/usr/local/bin/wlcompositor",
+            new Uint8Array(compBytes),
+            0o755,
+          );
+          writeVfsBinary(
+            kernelForWayland.fs,
+            "/usr/local/bin/wlterm",
+            new Uint8Array(termBytes),
+            0o755,
+          );
+
+          // Keyboard on event0 → compositor libinput → wl_keyboard →
+          // wlterm → dash. The POINTER is owned by the Modeset pane
+          // (sendPointerAbs → event1), so disable this source's pointer
+          // feed (its window-relative coords would fight the pane's). A
+          // terminal has no wheel use, so wheel is off too. Dims match the
+          // compositor's card0 output (1920×1080, matching
+          // host/src/dri/kms-registry.ts and the Modeset canvas).
+          tick("attaching input source...");
+          const WL_FB_W = 1920;
+          const WL_FB_H = 1080;
+          kernelForWayland.attachInputSource(
+            new BrowserInputSource(window, { pointer: false, wheel: false }),
+            { width: WL_FB_W, height: WL_FB_H },
+          );
+
+          // Spawn the compositor in the background. wlterm retries its
+          // connect to /tmp/wayland-0, so it tolerates the compositor not
+          // yet having bound the socket — no explicit barrier needed.
+          tick("running wlcompositor...");
+          void kernelForWayland.spawn(compBytes, ["wlcompositor"], {
+            env: SHELL_ENV,
+            cwd: DEMO_HOME,
+            uid: DEMO_UID,
+            gid: DEMO_GID,
+          }).then(
+            () => tick("wlcompositor exited"),
+            (err: unknown) =>
+              tick(`wlcompositor failed: ${err instanceof Error ? err.message : String(err)}`),
+          );
+
+          tick("running wlterm...");
+          await host.runShellCommand("/usr/local/bin/wlterm");
+          tick("wlterm exited");
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : String(err);
+          tick(`wayland failed: ${msg}`);
+        }
+      })();
     } else if (presentation?.autoCommand) {
       tick("starting configured command from bash...");
       void host.runShellCommand(presentation.autoCommand).catch((err) => {
@@ -1453,6 +1562,7 @@ function genericPresentationForProfile(profile: LiveProfile): DemoPresentation {
   if (
     profile.modesetDemo
     || profile.sdl2Demo
+    || profile.waylandDemo
     || profile.descriptor.runtime.features.includes("kms")
   ) {
     return genericDemoPresentation("kms");

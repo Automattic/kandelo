@@ -171,6 +171,23 @@ time and 0 in modules that do not contain plain-catch capture sites.
 internal `Runtime` struct, and `wpk_fork_unwind_begin` writes it into
 `*(buf + 0)` on every invocation.
 
+`current_pos` is a **buffer-relative byte offset**, not an absolute linear-memory
+address. A frame therefore lives at the absolute address `_wpk_fork_buf +
+current_pos`; the postamble (frame write, `UNWINDING`) and preamble (frame read,
+`REWINDING`) must both add `_wpk_fork_buf` when turning `current_pos` into a
+pointer. Advancing the cursor stays in offset space: `*(buf + 0) := *(buf + 0) +
+frame_size`.
+
+> **Historical bug (fixed 2026-07-09).** The postamble/preamble helpers once used
+> `current_pos` **directly as an absolute address** — dropping the `+
+> _wpk_fork_buf` add — so every frame was written to absolute low memory (addr
+> `16..`) instead of inside the save buffer. Small programs survived by luck
+> (their low memory is unused scratch that the whole-memory fork copy preserves),
+> but a larger program (`wlterm`) collided with live data, corrupting a
+> `call_indirect` funcidx and trapping with `table index out of bounds` during
+> the child rewind replay. The invariant above (`frame @ _wpk_fork_buf +
+> current_pos`) is what makes the two access sites agree.
+
 For wasm32 (`P = 4`) with a module that declares three additional scalar
 mutable globals totaling 16 bytes (e.g. `__stack_pointer`, `__tls_base`, one
 user i64) and one fork-path function with a single `(catch $tag (param i32))`

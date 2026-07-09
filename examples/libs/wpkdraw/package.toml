@@ -1,0 +1,31 @@
+# wpkdraw — thin CPU rasterizer + font engine for non-SDL2 Kandelo apps.
+#
+# Recipe-shape metadata for consistency with packages/registry/*, but
+# wpkdraw is NOT resolved by `cargo xtask build-deps` — it is in-tree
+# source with no upstream tarball and no CI-published binary. It is built
+# inline by scripts/build-programs.sh via ./build.sh, which installs
+# lib/libwpkdraw.a + include/wpkdraw/ into the wasm32 sysroot.
+#
+# Consumers: libkwl (examples/libs/libkwl), wlterm (programs/wlterm), and
+# later seed apps. Buffer-target only — draws into caller-owned ARGB8888
+# memory (a wl_shm back buffer); the compositor owns the screen.
+
+kind = "library"
+
+name = "wpkdraw"
+version = "0.1.0"
+kernel_abi = 17
+depends_on = []
+
+[source]
+type = "local" # in-tree; no upstream
+
+[license]
+spdx = "MIT"
+
+[build]
+script_path = "examples/libs/wpkdraw/build.sh"
+
+[outputs]
+libs = ["lib/libwpkdraw.a"]
+headers = ["include/wpkdraw"]

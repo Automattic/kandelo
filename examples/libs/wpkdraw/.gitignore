@@ -1,0 +1,3 @@
+# Build scratch + the font header generated from the vendored .ttf.
+build/
+third_party/wpk_font_ttf.h

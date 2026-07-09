@@ -175,6 +175,20 @@ build_cpp_program() {
     mv "$wasm.instr" "$wasm"
 }
 
+# libwpkdraw (PR7): in-tree CPU rasterizer + font engine. Built inline
+# (NOT via the resolver — it walks packages/registry/ only, and wpkdraw is
+# pure in-tree source with no upstream tarball). build.sh installs
+# lib/libwpkdraw.a + include/wpkdraw/ into the sysroot; consumers
+# (wpkdraw_smoke, kwldemo, wlterm) then link libwpkdraw.a and #include
+# <wpkdraw/…> off the sysroot include path. Runs before the flat program
+# loop so the wpkdraw_smoke.c case branch below can link it. See
+# docs/plans/2026-07-09-dri-pr7-libkwl-wlterm-plan.md §3.
+WPKDRAW_DIR="$REPO_ROOT/examples/libs/wpkdraw"
+if [ -d "$WPKDRAW_DIR/src" ]; then
+    echo "==> Building libwpkdraw (CPU rasterizer)..."
+    CC="$CC" AR="$LLVM_BIN/llvm-ar" bash "$WPKDRAW_DIR/build.sh" "$SYSROOT"
+fi
+
 # Resolve libcxx and symlink its outputs into the sysroot if there are
 # any .cpp programs to build. Skip the resolver entirely when libc++.a
 # is already present so repeat runs are fast.
@@ -351,6 +365,17 @@ for src in "$REPO_ROOT/programs/"*.c; do
         libdrm-kms-smoke.c)
             build_program "$src" "$OUT_DIR_32" \
                 "$SYSROOT/lib/libdrm.a"
+            ;;
+        wpkdraw_smoke.c)
+            # PR7 Phase 1: links the in-tree CPU rasterizer built above.
+            # Headers resolve from $SYSROOT/include/wpkdraw/.
+            build_program "$src" "$OUT_DIR_32" \
+                "$SYSROOT/lib/libwpkdraw.a"
+            ;;
+        kwldemo.c)
+            # PR7 Phase 2: links libkwl — built in a dedicated pass after the
+            # wlcompositor block (which resolves the wayland/xkb archives and
+            # generates the xdg-shell client header libkwl needs). Skip here.
             ;;
         libinput_stub_smoke.c)
             build_program "$src" "$OUT_DIR_32" \
@@ -534,6 +559,82 @@ if ls "$REPO_ROOT"/programs/wlcompositor/*.c >/dev/null 2>&1; then
         -o "$client_wasm"
     "$FORK_INSTRUMENT" "$client_wasm" -o "$client_wasm.instr"
     mv "$client_wasm.instr" "$client_wasm"
+fi
+
+# libkwl (PR7 Phase 2): in-tree Wayland toolkit over libwayland-client.
+# Built inline (NOT via the resolver — packages/registry/ only). Runs AFTER
+# the wlcompositor block above so the wayland-client / xkbcommon / gbm /
+# drm / ffi archives are already symlinked into the sysroot and the
+# generated xdg-shell-client-protocol.h exists under local-binaries/
+# wlcompositor-gen (libkwl includes it). build.sh installs lib/libkwl.a +
+# include/kwl.h; the kwldemo consumer then links libkwl + libwpkdraw + the
+# wayland stack. See docs/plans/2026-07-09-dri-pr7-libkwl-wlterm-plan.md §4.
+LIBKWL_DIR="$REPO_ROOT/examples/libs/libkwl"
+KWL_GEN="$REPO_ROOT/local-binaries/wlcompositor-gen"
+if [ -d "$LIBKWL_DIR/src" ]; then
+    if [ ! -f "$KWL_GEN/xdg-shell-client-protocol.h" ]; then
+        echo "Error: $KWL_GEN/xdg-shell-client-protocol.h missing — the" >&2
+        echo "wlcompositor build pass must run before libkwl." >&2
+        exit 1
+    fi
+    echo "==> Building libkwl (Wayland toolkit)..."
+    CC="$CC" AR="$LLVM_BIN/llvm-ar" XDG_SHELL_INCLUDE="$KWL_GEN" \
+        bash "$LIBKWL_DIR/build.sh" "$SYSROOT"
+
+    # kwldemo (PR7 Phase 2 gate): a libkwl button+label window driven against
+    # wlcompositor. Link order: dependents before deps — kwldemo + xdg glue,
+    # then libkwl (calls wpk_*/wl_*/xkb_*), then libwpkdraw, then the wayland
+    # stack, libffi last so wl_closure_invoke's ffi_call resolves.
+    if [ -f "$REPO_ROOT/programs/kwldemo.c" ]; then
+        kwldemo_wasm="$OUT_DIR_32/kwldemo.wasm"
+        echo "  Compiling kwldemo (libkwl gate)..."
+        "$CC" "${CFLAGS[@]}" "-I$KWL_GEN" \
+            "$REPO_ROOT/programs/kwldemo.c" \
+            "$KWL_GEN/xdg-shell-protocol.c" \
+            "${LINK_PRE_LIBS[@]}" \
+            "$SYSROOT/lib/libkwl.a" \
+            "$SYSROOT/lib/libwpkdraw.a" \
+            "$SYSROOT/lib/libwayland-client.a" \
+            "$SYSROOT/lib/libxkbcommon.a" \
+            "$SYSROOT/lib/libgbm.a" "$SYSROOT/lib/libdrm.a" \
+            "$SYSROOT/lib/libffi.a" \
+            "${LINK_POST_LIBS[@]}" \
+            -o "$kwldemo_wasm"
+        "$FORK_INSTRUMENT" "$kwldemo_wasm" -o "$kwldemo_wasm.instr"
+        mv "$kwldemo_wasm.instr" "$kwldemo_wasm"
+    fi
+fi
+
+# wlterm (PR7 Phase 3): a real terminal — a libkwl window + an in-tree VT100
+# core (vt100.c) + a forkpty'd shell. Dedicated pass (like wlcompositor):
+# multi-source link (wlterm.c + vt100.c + the generated xdg-shell glue) plus
+# the libkwl/wpkdraw/wayland/xkb archives, and fork-instrumentation is
+# MANDATORY because forkpty() forks (CLAUDE.md fork policy — must not
+# silently degrade). Files live under programs/wlterm/ so the flat loop skips
+# them. See docs/plans/2026-07-09-dri-pr7-libkwl-wlterm-plan.md §5.
+if ls "$REPO_ROOT"/programs/wlterm/*.c >/dev/null 2>&1; then
+    if [ ! -f "$SYSROOT/lib/libkwl.a" ]; then
+        echo "Error: libkwl.a missing — the libkwl pass must run before wlterm." >&2
+        exit 1
+    fi
+    echo "==> Building wlterm (libkwl terminal + VT100 + forkpty)..."
+    wlterm_wasm="$OUT_DIR_32/wlterm.wasm"
+    "$CC" "${CFLAGS[@]}" "-I$KWL_GEN" \
+        "$REPO_ROOT/programs/wlterm/wlterm.c" \
+        "$REPO_ROOT/programs/wlterm/vt100.c" \
+        "$KWL_GEN/xdg-shell-protocol.c" \
+        "${LINK_PRE_LIBS[@]}" \
+        "$SYSROOT/lib/libkwl.a" \
+        "$SYSROOT/lib/libwpkdraw.a" \
+        "$SYSROOT/lib/libwayland-client.a" \
+        "$SYSROOT/lib/libxkbcommon.a" \
+        "$SYSROOT/lib/libgbm.a" "$SYSROOT/lib/libdrm.a" \
+        "$SYSROOT/lib/libffi.a" \
+        "${LINK_POST_LIBS[@]}" \
+        -o "$wlterm_wasm"
+    # forkpty() forks — instrumentation is required, not optional.
+    "$FORK_INSTRUMENT" "$wlterm_wasm" -o "$wlterm_wasm.instr"
+    mv "$wlterm_wasm.instr" "$wlterm_wasm"
 fi
 
 for src in "$REPO_ROOT/programs/"*.cpp; do

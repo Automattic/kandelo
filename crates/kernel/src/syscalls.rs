@@ -2657,12 +2657,17 @@ pub fn sys_read(
         FileType::PtyMaster => {
             let pty_idx = host_handle as usize;
             let pty = crate::pty::get_pty(pty_idx).ok_or(Errno::EIO)?;
-            if pty.slave_refs == 0 {
-                return Ok(0); // EOF — slave side closed
-            }
             let n = pty.master_read(buf);
             if n > 0 {
                 return Ok(n);
+            }
+            // Drain any buffered output BEFORE reporting EOF: a shell that
+            // writes its final bytes and exits in one go leaves the output
+            // buffer non-empty with slave_refs already 0. Returning EOF here
+            // would silently drop that last output (e.g. a terminal losing
+            // the tail of a command's result). Only signal EOF once drained.
+            if pty.slave_refs == 0 {
+                return Ok(0); // EOF — slave side closed, buffer empty
             }
             Err(Errno::EAGAIN)
         }
@@ -12089,6 +12094,34 @@ mod tests {
 
         // fd 3 should now be EBADF
         assert_eq!(proc.fd_table.get(fd), Err(Errno::EBADF));
+    }
+
+    #[test]
+    fn test_pty_master_read_drains_output_after_slave_close() {
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+
+        let master = sys_open(&mut proc, &mut host, b"/dev/ptmx", O_RDWR, 0).unwrap();
+        let pty_idx = {
+            let entry = proc.fd_table.get(master).unwrap();
+            proc.ofd_table.get(entry.ofd_ref.0).unwrap().host_handle as usize
+        };
+        crate::pty::get_pty(pty_idx).unwrap().locked = false; // unlockpt
+
+        let slave_path = format!("/dev/pts/{pty_idx}");
+        let slave = sys_open(&mut proc, &mut host, slave_path.as_bytes(), O_RDWR, 0).unwrap();
+        sys_write(&mut proc, &mut host, slave, b"bye").unwrap();
+        sys_close(&mut proc, &mut host, slave).unwrap();
+
+        // Output buffered before the slave closed must drain before EOF — a
+        // program that writes its final bytes and exits in one go must not
+        // lose them.
+        let mut buf = [0u8; 16];
+        let n = sys_read(&mut proc, &mut host, master, &mut buf).unwrap();
+        assert_eq!(&buf[..n], b"bye");
+        assert_eq!(sys_read(&mut proc, &mut host, master, &mut buf).unwrap(), 0);
+
+        sys_close(&mut proc, &mut host, master).unwrap();
     }
 
     #[test]
