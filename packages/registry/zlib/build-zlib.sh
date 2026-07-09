@@ -18,16 +18,23 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-SRC_DIR="$SCRIPT_DIR/zlib-src"
+WORK_DIR="${WASM_POSIX_DEP_WORK_DIR:-$SCRIPT_DIR}"
+SRC_DIR="$WORK_DIR/zlib-src"
 
 # --- Inputs from resolver, with legacy fallbacks ---
 ZLIB_VERSION="${WASM_POSIX_DEP_VERSION:-${ZLIB_VERSION:-1.3.1}}"
-INSTALL_DIR="${WASM_POSIX_DEP_OUT_DIR:-$SCRIPT_DIR/zlib-install}"
+INSTALL_DIR="${WASM_POSIX_DEP_OUT_DIR:-$WORK_DIR/zlib-install}"
 SOURCE_URL="${WASM_POSIX_DEP_SOURCE_URL:-https://github.com/madler/zlib/releases/download/v${ZLIB_VERSION}/zlib-${ZLIB_VERSION}.tar.gz}"
 SOURCE_SHA256="${WASM_POSIX_DEP_SOURCE_SHA256:-}"
+TARGET_ARCH="${WASM_POSIX_DEP_TARGET_ARCH:-wasm32}"
+case "$TARGET_ARCH" in
+    wasm32) TOOL_PREFIX="wasm32posix" ;;
+    wasm64) TOOL_PREFIX="wasm64posix" ;;
+    *) echo "ERROR: unsupported WASM_POSIX_DEP_TARGET_ARCH=$TARGET_ARCH" >&2; exit 1 ;;
+esac
 
-if ! command -v wasm32posix-cc &>/dev/null; then
-    echo "ERROR: wasm32posix-cc not found. Run 'npm link' in sdk/ first." >&2
+if ! command -v "${TOOL_PREFIX}-cc" &>/dev/null; then
+    echo "ERROR: ${TOOL_PREFIX}-cc not found. Run sdk/activate.sh first." >&2
     exit 1
 fi
 
@@ -54,18 +61,18 @@ cd "$SRC_DIR"
 rm -rf "$INSTALL_DIR"
 
 echo "==> Configuring zlib for Wasm..."
-CC=wasm32posix-cc AR=wasm32posix-ar RANLIB=wasm32posix-ranlib \
-    LDSHARED="wasm32posix-cc -shared" \
+CC="${TOOL_PREFIX}-cc" AR="${TOOL_PREFIX}-ar" RANLIB="${TOOL_PREFIX}-ranlib" \
+    LDSHARED="${TOOL_PREFIX}-cc -shared" \
     ./configure --static --prefix="$INSTALL_DIR"
 
 # On macOS, zlib's configure uses 'libtool' which is the Xcode one — not wasm-aware.
 # Patch the Makefile to use wasm32posix-ar instead.
 echo "==> Patching Makefile for Wasm ar..."
 sed -i.bak \
-    -e 's|^AR=.*|AR=wasm32posix-ar|' \
+    -e "s|^AR=.*|AR=${TOOL_PREFIX}-ar|" \
     -e 's|^ARFLAGS=.*|ARFLAGS=rcs|' \
-    -e 's|^RANLIB=.*|RANLIB=wasm32posix-ranlib|' \
-    -e 's|libtool -o|wasm32posix-ar rcs|g' \
+    -e "s|^RANLIB=.*|RANLIB=${TOOL_PREFIX}-ranlib|" \
+    -e "s|libtool -o|${TOOL_PREFIX}-ar rcs|g" \
     Makefile && rm -f Makefile.bak
 
 echo "==> Building zlib..."

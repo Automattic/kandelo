@@ -14,14 +14,21 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
-SRC_DIR="$SCRIPT_DIR/sqlite-src"
+WORK_DIR="${WASM_POSIX_DEP_WORK_DIR:-$SCRIPT_DIR}"
+SRC_DIR="$WORK_DIR/sqlite-src"
 
 # --- Resolver contract (with legacy fallbacks) ---
 SQLITE_VERSION="${WASM_POSIX_DEP_VERSION:-${SQLITE_VERSION:-3.49.1}}"
-INSTALL_DIR="${WASM_POSIX_DEP_OUT_DIR:-$SCRIPT_DIR/sqlite-install}"
+INSTALL_DIR="${WASM_POSIX_DEP_OUT_DIR:-$WORK_DIR/sqlite-install}"
 # Legacy default URL uses the packed version form (3.49.1 → 3490100).
 SOURCE_URL="${WASM_POSIX_DEP_SOURCE_URL:-https://www.sqlite.org/2025/sqlite-amalgamation-3490100.zip}"
 SOURCE_SHA256="${WASM_POSIX_DEP_SOURCE_SHA256:-}"
+TARGET_ARCH="${WASM_POSIX_DEP_TARGET_ARCH:-wasm32}"
+case "$TARGET_ARCH" in
+    wasm32) TOOL_PREFIX="wasm32posix" ;;
+    wasm64) TOOL_PREFIX="wasm64posix" ;;
+    *) echo "ERROR: unsupported WASM_POSIX_DEP_TARGET_ARCH=$TARGET_ARCH" >&2; exit 1 ;;
+esac
 
 # CLI is a consumer artifact, not a library. Skip it when invoked via
 # the resolver — it would waste cache space and the consumer-side
@@ -29,8 +36,8 @@ SOURCE_SHA256="${WASM_POSIX_DEP_SOURCE_SHA256:-}"
 BUILD_CLI=1
 [ -n "${WASM_POSIX_DEP_OUT_DIR:-}" ] && BUILD_CLI=0
 
-if ! command -v wasm32posix-cc &>/dev/null; then
-    echo "ERROR: wasm32posix-cc not found. Run 'npm link' in sdk/ first." >&2
+if ! command -v "${TOOL_PREFIX}-cc" &>/dev/null; then
+    echo "ERROR: ${TOOL_PREFIX}-cc not found. Run sdk/activate.sh first." >&2
     exit 1
 fi
 
@@ -68,10 +75,10 @@ SQLITE_CFLAGS="-O2 \
 # --- Compile library ---
 echo "==> Compiling SQLite for Wasm..."
 # shellcheck disable=SC2086
-wasm32posix-cc -c $SQLITE_CFLAGS \
+"${TOOL_PREFIX}-cc" -c $SQLITE_CFLAGS \
     "$SRC_DIR/sqlite3.c" -o "$SRC_DIR/sqlite3.o"
 
-wasm32posix-ar rcs "$SRC_DIR/libsqlite3.a" "$SRC_DIR/sqlite3.o"
+"${TOOL_PREFIX}-ar" rcs "$SRC_DIR/libsqlite3.a" "$SRC_DIR/sqlite3.o"
 
 # --- Install library into INSTALL_DIR ---
 echo "==> Installing to $INSTALL_DIR..."
@@ -98,7 +105,7 @@ if [ "$BUILD_CLI" = "1" ]; then
     echo "==> Building sqlite3 CLI..."
     mkdir -p "$INSTALL_DIR/bin"
     # shellcheck disable=SC2086
-    wasm32posix-cc $SQLITE_CFLAGS \
+    "${TOOL_PREFIX}-cc" $SQLITE_CFLAGS \
         "$SRC_DIR/shell.c" "$SRC_DIR/sqlite3.c" \
         -o "$INSTALL_DIR/bin/sqlite3.wasm" -lm
 

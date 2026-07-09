@@ -13,14 +13,22 @@ set -euo pipefail
 
 OTP_VERSION="${OTP_VERSION:-28.2}"
 OTP_TAG="OTP-${OTP_VERSION}"
+SOURCE_URL="${WASM_POSIX_DEP_SOURCE_URL:-https://github.com/erlang/otp/archive/refs/tags/${OTP_TAG}.tar.gz}"
+SOURCE_SHA256="${WASM_POSIX_DEP_SOURCE_SHA256:-}"
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
-SRC_DIR="$SCRIPT_DIR/erlang-src"
-HOST_BUILD_DIR="$SCRIPT_DIR/erlang-host-build"
-CROSS_BUILD_DIR="$SCRIPT_DIR/erlang-cross-build"
-INSTALL_DIR="$SCRIPT_DIR/erlang-install"
-SYSROOT="$REPO_ROOT/sysroot"
+WORK_DIR="${WASM_POSIX_DEP_WORK_DIR:-$SCRIPT_DIR}"
+SRC_DIR="$WORK_DIR/erlang-src"
+HOST_BUILD_DIR="$WORK_DIR/erlang-host-build"
+CROSS_BUILD_DIR="$WORK_DIR/erlang-cross-build"
+INSTALL_DIR="$WORK_DIR/erlang-install"
+ARTIFACT_DIR="${WASM_POSIX_DEP_OUT_DIR:-$SCRIPT_DIR}"
+# Worktree-local SDK on PATH (no global npm link required).
+# shellcheck source=/dev/null
+source "$REPO_ROOT/sdk/activate.sh"
+SYSROOT="${WASM_POSIX_SYSROOT:-$REPO_ROOT/sysroot}"
+export WASM_POSIX_SYSROOT="$SYSROOT"
 
 NPROC="$(sysctl -n hw.ncpu 2>/dev/null || nproc)"
 
@@ -31,7 +39,7 @@ if [ ! -f "$SYSROOT/lib/libc.a" ]; then
 fi
 
 if ! command -v wasm32posix-cc &>/dev/null; then
-    echo "ERROR: wasm32posix-cc not found. Run 'npm link' in sdk/ first." >&2
+    echo "ERROR: wasm32posix-cc not found after sourcing sdk/activate.sh." >&2
     exit 1
 fi
 
@@ -52,11 +60,14 @@ echo "==> Host Erlang: OTP $HOST_OTP_REL ($(erl -eval 'io:format("~s", [erlang:s
 # --- Download OTP source ---
 if [ ! -d "$SRC_DIR" ]; then
     echo "==> Downloading Erlang/OTP ${OTP_VERSION}..."
-    TARBALL="otp_src_${OTP_VERSION}.tar.gz"
-    URL="https://github.com/erlang/otp/releases/download/${OTP_TAG}/${TARBALL}"
-    curl --retry 10 --retry-delay 5 --retry-max-time 300 --retry-all-errors -fsSL "$URL" -o "/tmp/$TARBALL"
+    TARBALL="$(basename "$SOURCE_URL")"
+    curl --retry 10 --retry-delay 5 --retry-max-time 300 --retry-all-errors -fsSL "$SOURCE_URL" -o "/tmp/$TARBALL"
+    if [ -n "$SOURCE_SHA256" ]; then
+        echo "==> Verifying source sha256..."
+        echo "$SOURCE_SHA256  /tmp/$TARBALL" | shasum -a 256 -c -
+    fi
     mkdir -p "$SRC_DIR"
-    tar xzf "/tmp/$TARBALL" -C "$SRC_DIR" --strip-components=1
+    tar xf "/tmp/$TARBALL" -C "$SRC_DIR" --strip-components=1
     rm "/tmp/$TARBALL"
     echo "==> Source extracted to $SRC_DIR"
 fi
@@ -87,7 +98,7 @@ if [ ! -f "$HOST_BUILD_DIR/bootstrap/bin/erlc" ]; then
 fi
 
 # --- Phase 2: Create config.site for cross-compilation ---
-CONFIG_SITE="$SCRIPT_DIR/config.site-wasm32-posix"
+CONFIG_SITE="$WORK_DIR/config.site-wasm32-posix"
 cat > "$CONFIG_SITE" << 'SITE_EOF'
 # config.site for Erlang/OTP cross-compilation to wasm32-posix
 #
@@ -353,7 +364,7 @@ LIBS="" \
     erl_xcomp_posix_memalign=yes \
     erl_xcomp_after_morecore_hook=no \
     erl_xcomp_code_model_small=no \
-    2>&1 | tee "$SCRIPT_DIR/configure.log" | tail -50
+    2>&1 | tee "$WORK_DIR/configure.log" | tail -50
 
 echo "==> Configure complete. Patching config.h files..."
 
@@ -553,7 +564,7 @@ fi
 echo "==> Starting build..."
 
 # Build
-make -j"$NPROC" 2>&1 | tee "$SCRIPT_DIR/build.log" | tail -50
+make -j"$NPROC" 2>&1 | tee "$WORK_DIR/build.log" | tail -50
 
 echo "==> Build complete. Creating release..."
 
@@ -565,8 +576,8 @@ BEAM_BIN=$(find "$INSTALL_DIR" -name "beam.smp" -o -name "beam" 2>/dev/null | he
 if [ -n "$BEAM_BIN" ]; then
     echo "==> Erlang/OTP built successfully!"
     ls -lh "$BEAM_BIN"
-    cp "$BEAM_BIN" "$SCRIPT_DIR/beam.wasm"
-    echo "==> BEAM emulator: $SCRIPT_DIR/beam.wasm"
+    cp "$BEAM_BIN" "$WORK_DIR/beam.wasm"
+    echo "==> BEAM emulator: $WORK_DIR/beam.wasm"
 else
     echo "==> Looking for BEAM in build tree..."
     find "$SRC_DIR/bin" "$SRC_DIR/erts" -name "beam*" -type f 2>/dev/null | head -10
@@ -582,9 +593,10 @@ echo "==> Install directory: $INSTALL_DIR"
 # (renamed from beam.wasm) + erlang-otp.tar.zst. Both land under
 # local-binaries/programs/<arch>/erlang/ (multi-output subdir layout
 # matching the resolver's `place_binaries_symlinks` mirror).
-cp "$SCRIPT_DIR/beam.wasm" "$SCRIPT_DIR/erlang.wasm"
+mkdir -p "$ARTIFACT_DIR"
+cp "$WORK_DIR/beam.wasm" "$ARTIFACT_DIR/erlang.wasm"
 source "$REPO_ROOT/scripts/install-local-binary.sh"
-install_local_binary erlang "$SCRIPT_DIR/erlang.wasm"
+install_local_binary erlang "$ARTIFACT_DIR/erlang.wasm"
 
 # --- Pack OTP runtime tree for the erlang-vfs demo ---
 # erlang-vfs needs the compiled .beam files for the bundled OTP apps
@@ -611,7 +623,7 @@ for sub in "${OTP_SUBDIRS[@]}"; do
     mkdir -p "$OTP_STAGE/$(dirname "$sub")"
     cp -R "$src" "$OTP_STAGE/$sub"
 done
-OTP_TARBALL="$SCRIPT_DIR/erlang-otp.tar.zst"
+OTP_TARBALL="$ARTIFACT_DIR/erlang-otp.tar.zst"
 rm -f "$OTP_TARBALL"
 tar --zstd -cf "$OTP_TARBALL" -C "$OTP_STAGE" .
 
