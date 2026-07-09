@@ -83,9 +83,14 @@ describe("SDL2 playground — editor + audio + sound-shader end-to-end", () => {
          *   1. a typing key (KEY_A) so the debounce timer arms,
          *   2. F5 to exercise the "user file missing" branch,
          *   3. ESC to quit.
-         * The 300 ms gap after KEY_A guarantees the
-         * AUTO_RECOMPILE_DEBOUNCE_MS=250 deadline fires inside the
-         * main loop before ESC tears the process down. */
+         * After KEY_A, wait for the recompile breadcrumb itself rather
+         * than sleeping a fixed 300 ms: on a slow CI runner the app's
+         * init can outlast wall-clock sleeps, so every queued key would
+         * drain in one SDL_PollEvent burst — and the F2 mode switch
+         * below cancels a still-pending debounce (last_edit_ts = 0),
+         * which is correct app behavior. Only injecting the next key
+         * after the recompile logs keeps the debounce observable at any
+         * loop speed. */
         await waitFor(stdout, "sdl2: editor loaded", 5_000);
         await waitFor(stdout, "sdl2: text-atlas baked", 5_000);
 
@@ -94,7 +99,8 @@ describe("SDL2 playground — editor + audio + sound-shader end-to-end", () => {
         await new Promise((r) => setTimeout(r, 10));
         host.injectInputEvent(0, EV_KEY, KEY_A, 0);
         host.injectInputEvent(0, EV_SYN, SYN_REPORT, 0);
-        await new Promise((r) => setTimeout(r, 300));
+        /* AUTO_RECOMPILE_DEBOUNCE_MS=250 fires inside the main loop. */
+        await waitFor(stdout, "sdl2: editor recompile", 10_000);
 
         host.injectInputEvent(0, EV_KEY, KEY_F5, 1);
         host.injectInputEvent(0, EV_SYN, SYN_REPORT, 0);

@@ -31,7 +31,7 @@ async function syslogText(page: Page): Promise<string> {
 }
 
 test("Kandelo sdl2 demo (Phase 4: editor left + plasma right, ESC-quits)", async ({ page }) => {
-  test.setTimeout(120_000);
+  test.setTimeout(240_000);
 
   await gotoOrSkip(page, "/?demo=sdl2");
 
@@ -43,6 +43,20 @@ test("Kandelo sdl2 demo (Phase 4: editor left + plasma right, ESC-quits)", async
   await openSurface(page, "Demo");
   const canvas = page.locator(".kmachine-primary-slot:not(.is-hidden) canvas").first();
   await expect(canvas).toBeVisible({ timeout: 10_000 });
+
+  /* Wait for the app's FIRST presented frame before sampling anything.
+   * "running sdl2" only means the process launched: between that and
+   * the first drmModePageFlip sit EGL/WebGL2 context creation, shader
+   * compiles, the text-atlas bake, and the sound-shader tile
+   * prerender + readback — under CI's software GL (SwiftShader) that
+   * init can outlast the whole sampling window, so sampling
+   * immediately just screenshots the Modeset pane's static
+   * "waiting for PAGE_FLIP" placeholder and fails as "not animating".
+   * The pane unmounts the placeholder exactly when the KMS stats SAB
+   * reports the first flip. */
+  await expect(
+    page.getByText(/Waiting for a process to drmModePageFlip/),
+  ).toBeHidden({ timeout: 90_000 });
 
   /* The Modeset pane uses transferControlToOffscreen (see
    * apps/browser-demos/pages/kandelo/panes/Modeset.tsx), which makes
@@ -68,24 +82,29 @@ test("Kandelo sdl2 demo (Phase 4: editor left + plasma right, ESC-quits)", async
     width: Math.floor(bb.width / 2),
     height: bb.height,
   };
-  for (let i = 0; i < 6; i++) {
-    await page.waitForTimeout(500);
-    const full = await canvas.screenshot();
-    const left = await page.screenshot({ clip: leftClip });
-    fullSizes.push(full.byteLength);
-    leftSizes.push(left.byteLength);
-  }
+  /* Sample until byte-size variance appears instead of a fixed
+   * 6×500 ms schedule: under software GL the app may present only a
+   * few frames per second, so animation evidence needs a deadline,
+   * not a fixed sample count. */
+  await expect
+    .poll(
+      async () => {
+        await page.waitForTimeout(500);
+        const full = await canvas.screenshot();
+        const left = await page.screenshot({ clip: leftClip });
+        fullSizes.push(full.byteLength);
+        leftSizes.push(left.byteLength);
+        return Math.max(...fullSizes) - Math.min(...fullSizes);
+      },
+      { timeout: 30_000, message: "right pane not animating (no PNG byte-size variance within 30 s)" },
+    )
+    .toBeGreaterThan(400);
   for (const sz of fullSizes) {
     expect(
       sz,
       `canvas frame too small (blank?); fullSizes=${fullSizes.join(",")}`,
     ).toBeGreaterThan(3_500);
   }
-  const spread = Math.max(...fullSizes) - Math.min(...fullSizes);
-  expect(
-    spread,
-    `right pane not animating; fullSizes=${fullSizes.join(",")}`,
-  ).toBeGreaterThan(400);
   /* Left half should be much bigger than a flat-gray PNG because
    * Inconsolata glyphs add high-frequency detail. A flat-color
    * rectangle of this size compresses to a few hundred bytes; with
