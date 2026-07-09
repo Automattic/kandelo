@@ -10527,6 +10527,158 @@ pub fn inject_udp_datagram_into(
     -(Errno::ECONNREFUSED as i32)
 }
 
+/// Owned routing facts captured after a successful process-local UDP send.
+///
+/// The exported Wasm wrappers finish using their borrowed [`Process`] before
+/// re-entering the machine-wide process table to complete cross-process
+/// loopback delivery. Keeping only scalar identity and address data across
+/// that boundary prevents two mutable references to the same process state.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct CrossProcessLoopbackUdpRoute {
+    sender_pid: u32,
+    sender_sock_idx: usize,
+    sender_uid: u32,
+    sender_gid: u32,
+    connected: bool,
+    dst_addr: [u8; 4],
+    dst_port: u16,
+    src_addr: [u8; 4],
+    src_port: u16,
+}
+
+/// Capture an IPv4 loopback route after `send`, `sendto`, or `sendmsg` has
+/// completed its process-local work.
+pub(crate) fn cross_process_loopback_udp_route(
+    proc: &Process,
+    fd: i32,
+    addr: Option<&[u8]>,
+) -> Option<CrossProcessLoopbackUdpRoute> {
+    use crate::socket::{SocketDomain, SocketState, SocketType};
+
+    let ofd_idx = resolve_io_ofd(proc, fd).ok()?;
+    let ofd = proc.ofd_table.get(ofd_idx)?;
+    if ofd.file_type != FileType::Socket {
+        return None;
+    }
+    let sender_sock_idx = (-(ofd.host_handle + 1)) as usize;
+    let sock = proc.sockets.get(sender_sock_idx)?;
+    if sock.domain != SocketDomain::Inet || sock.sock_type != SocketType::Dgram {
+        return None;
+    }
+
+    let (dst_addr, dst_port) = match addr.filter(|addr| !addr.is_empty()) {
+        Some(addr) => parse_sockaddr_in(addr).ok()?,
+        None if sock.state == SocketState::Connected => (sock.peer_addr, sock.peer_port),
+        None => return None,
+    };
+    let dst_addr = udp_canonical_dst_addr(dst_addr);
+    if !is_loopback_addr(dst_addr) {
+        return None;
+    }
+    let src_addr = if sock.bind_addr == [0; 4] {
+        udp_route_local_addr(dst_addr)
+    } else {
+        sock.bind_addr
+    };
+
+    Some(CrossProcessLoopbackUdpRoute {
+        sender_pid: proc.pid,
+        sender_sock_idx,
+        sender_uid: proc.uid,
+        sender_gid: proc.gid,
+        connected: sock.state == SocketState::Connected,
+        dst_addr,
+        dst_port,
+        src_addr,
+        src_port: sock.bind_port,
+    })
+}
+
+/// Deliver one successful IPv4 loopback send to an accepting socket owned by
+/// another process on this machine.
+///
+/// Process-local UDP delivery already chooses one accepting endpoint. If the
+/// sender owns such an endpoint, it has already received the datagram and this
+/// function must not duplicate it into an inherited or `SO_REUSEADDR` peer.
+/// Otherwise, choose the first accepting foreign endpoint by the same registry
+/// order. A full UDP queue still counts as delivery because UDP drops incoming
+/// datagrams rather than reporting receiver backpressure to the sender.
+pub(crate) fn deliver_cross_process_loopback_udp(
+    table: &mut crate::process_table::ProcessTable,
+    route: CrossProcessLoopbackUdpRoute,
+    data: &[u8],
+) -> bool {
+    use crate::socket::Datagram;
+
+    let endpoints = crate::socket::udp_lookup(route.dst_addr, route.dst_port);
+    let sender_already_received = table.get(route.sender_pid).is_some_and(|sender| {
+        endpoints.iter().any(|endpoint| {
+            endpoint.pid == route.sender_pid
+                && sender
+                    .sockets
+                    .get(endpoint.sock_idx)
+                    .is_some_and(|sock| {
+                        udp_socket_accepts_datagram(sock, route.src_addr, route.src_port)
+                    })
+        })
+    });
+    if sender_already_received {
+        return false;
+    }
+
+    let mut delivered = false;
+    for endpoint in endpoints {
+        if endpoint.pid == route.sender_pid {
+            continue;
+        }
+        let Some(target) = table.get_mut(endpoint.pid) else {
+            continue;
+        };
+        let accepts = target
+            .sockets
+            .get(endpoint.sock_idx)
+            .is_some_and(|sock| {
+                udp_socket_accepts_datagram(sock, route.src_addr, route.src_port)
+            });
+        if !accepts {
+            continue;
+        }
+        let Some(socket) = target.sockets.get_mut(endpoint.sock_idx) else {
+            continue;
+        };
+        udp_queue_datagram(socket, || Datagram {
+            data: data.to_vec(),
+            src_addr: route.src_addr,
+            src_addr6: [0; 16],
+            dst_addr: route.dst_addr,
+            dst_addr6: [0; 16],
+            src_port: route.src_port,
+            // Socket indices are process-local and cannot name the sender from
+            // the receiving process.
+            src_sock_idx: None,
+            ipv6_tclass: 0,
+            src_pid: route.sender_pid,
+            src_uid: route.sender_uid,
+            src_gid: route.sender_gid,
+            ancillary_fds: Vec::new(),
+        });
+        delivered = true;
+        break;
+    }
+
+    if delivered && route.connected {
+        // The process-local send records ECONNREFUSED when it cannot see a
+        // receiver in its own socket arena. Cross-process delivery proves that
+        // provisional error false for this send.
+        if let Some(sender) = table.get_mut(route.sender_pid) {
+            if let Some(socket) = sender.sockets.get_mut(route.sender_sock_idx) {
+                socket.connect_error = 0;
+            }
+        }
+    }
+    delivered
+}
+
 /// getsockname -- get local socket address.
 ///
 /// For AF_INET sockets, writes a full 16-byte sockaddr_in:
@@ -33203,6 +33355,141 @@ mod tests {
         assert_eq!(&buf[..data_len], b"hello UDP");
         assert_eq!(addr_len, 16);
         assert_eq!(from_addr[0], 2); // AF_INET
+    }
+
+    #[test]
+    fn test_udp_loopback_cross_process() {
+        use wasm_posix_shared::socket::*;
+
+        struct UdpProcessCleanup([u32; 2]);
+        impl Drop for UdpProcessCleanup {
+            fn drop(&mut self) {
+                for pid in self.0 {
+                    crate::socket::udp_cleanup_process(pid);
+                }
+            }
+        }
+
+        let mut table = crate::process_table::ProcessTable::new();
+        let sender_pid = table.create_process().unwrap();
+        let receiver_pid = table.create_process().unwrap();
+        let _cleanup = UdpProcessCleanup([sender_pid, receiver_pid]);
+        let mut host = MockHostIO::new();
+
+        let (recv_fd, destination) = {
+            let receiver = table.get_mut(receiver_pid).unwrap();
+            let recv_fd = sys_socket(receiver, &mut host, AF_INET, SOCK_DGRAM, 0).unwrap();
+            let mut bind_addr = [0u8; 16];
+            bind_addr[0] = AF_INET as u8;
+            sys_bind(receiver, &mut host, recv_fd, &bind_addr).unwrap();
+
+            let mut destination = [0u8; 16];
+            sys_getsockname(receiver, recv_fd, &mut destination).unwrap();
+            destination[4..8].copy_from_slice(&[127, 0, 0, 1]);
+            (recv_fd, destination)
+        };
+        let send_fd = {
+            let sender = table.get_mut(sender_pid).unwrap();
+            sys_socket(sender, &mut host, AF_INET, SOCK_DGRAM, 0).unwrap()
+        };
+
+        let route = {
+            let sender = table.get_mut(sender_pid).unwrap();
+            assert_eq!(
+                sys_sendto(
+                    sender,
+                    &mut host,
+                    send_fd,
+                    b"cross-process sendto",
+                    0,
+                    &destination,
+                )
+                .unwrap(),
+                20,
+            );
+            cross_process_loopback_udp_route(sender, send_fd, Some(&destination)).unwrap()
+        };
+        assert!(deliver_cross_process_loopback_udp(
+            &mut table,
+            route,
+            b"cross-process sendto",
+        ));
+
+        let mut payload = [0u8; 64];
+        let mut source = [0u8; 16];
+        {
+            let receiver = table.get_mut(receiver_pid).unwrap();
+            let (len, addr_len) = sys_recvfrom(
+                receiver,
+                &mut host,
+                recv_fd,
+                &mut payload,
+                0,
+                &mut source,
+            )
+            .unwrap();
+            assert_eq!(&payload[..len], b"cross-process sendto");
+            assert_eq!(addr_len, 16);
+            assert_eq!(&source[4..8], &[127, 0, 0, 1]);
+            assert_ne!(u16::from_be_bytes([source[2], source[3]]), 0);
+        }
+
+        // Connected UDP initially records ECONNREFUSED when its process-local
+        // arena has no receiver. Successful machine-wide delivery must clear
+        // that provisional error so the next send does not fail spuriously.
+        let route = {
+            let sender = table.get_mut(sender_pid).unwrap();
+            sys_connect(sender, &mut host, send_fd, &destination).unwrap();
+            assert_eq!(
+                sys_send(sender, &mut host, send_fd, b"connected one", 0).unwrap(),
+                13,
+            );
+            cross_process_loopback_udp_route(sender, send_fd, None).unwrap()
+        };
+        assert!(deliver_cross_process_loopback_udp(
+            &mut table,
+            route,
+            b"connected one",
+        ));
+        {
+            let sender = table.get_mut(sender_pid).unwrap();
+            assert_eq!(
+                sys_getsockopt(sender, send_fd, SOL_SOCKET, SO_ERROR).unwrap(),
+                0,
+            );
+            assert_eq!(
+                sys_send(sender, &mut host, send_fd, b"connected two", 0).unwrap(),
+                13,
+            );
+        }
+
+        let route = {
+            let sender = table.get(sender_pid).unwrap();
+            cross_process_loopback_udp_route(sender, send_fd, None).unwrap()
+        };
+        assert!(deliver_cross_process_loopback_udp(
+            &mut table,
+            route,
+            b"connected two",
+        ));
+        {
+            let receiver = table.get_mut(receiver_pid).unwrap();
+            for expected in [b"connected one".as_slice(), b"connected two".as_slice()] {
+                let (len, _) = sys_recvfrom(
+                    receiver,
+                    &mut host,
+                    recv_fd,
+                    &mut payload,
+                    0,
+                    &mut source,
+                )
+                .unwrap();
+                assert_eq!(&payload[..len], expected);
+            }
+            sys_close(receiver, &mut host, recv_fd).unwrap();
+        }
+        let sender = table.get_mut(sender_pid).unwrap();
+        sys_close(sender, &mut host, send_fd).unwrap();
     }
 
     #[test]
