@@ -188,6 +188,29 @@ function log(msg: string) {
   console.log(msg);
 }
 
+const PROFILE_BENCHMARKS = new URLSearchParams(location.search).has("profile");
+
+async function dumpSysprof(kernel: BrowserKernel): Promise<void> {
+  if (!PROFILE_BENCHMARKS) return;
+  kernel.sysprofDump();
+  await new Promise((r) => setTimeout(r, 250));
+}
+
+async function waitForListener(
+  kernel: BrowserKernel,
+  port: number,
+  timeoutMs = 30_000,
+  intervalMs = 50,
+): Promise<{ pid: number; fd: number }> {
+  const deadline = performance.now() + timeoutMs;
+  while (performance.now() < deadline) {
+    const target = await kernel.pickListenerTarget(port);
+    if (target) return target;
+    await new Promise((r) => setTimeout(r, intervalMs));
+  }
+  throw new Error(`timed out waiting for listener on port ${port}`);
+}
+
 async function fetchWasm(url: string): Promise<ArrayBuffer> {
   const resp = await fetch(url);
   if (!resp.ok) throw new Error(`Failed to fetch ${url}: ${resp.status}`);
@@ -570,84 +593,83 @@ async function runWordPress(): Promise<Record<string, number>> {
     memfs,
     maxWorkers: 12,
     maxMemoryPages: 4096,
-    onStdout: () => {},
+    onStdout: (data) => { if (PROFILE_BENCHMARKS) log(new TextDecoder().decode(data).trimEnd()); },
     onStderr: () => {},
   });
 
   const tBoot = performance.now();
   await kernel.init(kernelBytes);
   try {
+    if (PROFILE_BENCHMARKS) kernel.sysprofStart();
 
-  // Write dynamic wp-config.php
-  writeVfsFile(kernel.fs, "/var/www/html/wp-config.php", WP_CONFIG_PHP);
-  writeVfsFile(kernel.fs, "/var/www/html/wp-content/mu-plugins/wasm-optimizations.php", MU_PLUGIN_PHP);
+    // Write dynamic wp-config.php
+    writeVfsFile(kernel.fs, "/var/www/html/wp-config.php", WP_CONFIG_PHP);
+    writeVfsFile(kernel.fs, "/var/www/html/wp-content/mu-plugins/wasm-optimizations.php", MU_PLUGIN_PHP);
 
-  // Remove any pre-existing database so WordPress starts fresh
-  try { kernel.fs.unlink("/var/www/html/wp-content/database/wordpress.db"); } catch { /* not present */ }
+    // Remove any pre-existing database so WordPress starts fresh
+    try { kernel.fs.unlink("/var/www/html/wp-content/database/wordpress.db"); } catch { /* not present */ }
 
-  // Spawn PHP-FPM
-  log("  Starting PHP-FPM...");
-  await kernel.spawnFromVfs("/usr/sbin/php-fpm", [
-    "/usr/sbin/php-fpm", "-y", "/etc/php-fpm.conf", "-c", "/dev/null", "--nodaemonize",
-  ]);
-  // Wait for PHP-FPM to be ready
-  await new Promise((r) => setTimeout(r, 5000));
+    // Spawn PHP-FPM
+    log("  Starting PHP-FPM...");
+    await kernel.spawnFromVfs("/usr/sbin/php-fpm", [
+      "/usr/sbin/php-fpm", "-y", "/etc/php-fpm.conf", "-c", "/dev/null", "--nodaemonize",
+    ]);
+    await waitForListener(kernel, 9000);
 
-  // Spawn nginx
-  log("  Starting nginx...");
-  await kernel.spawnFromVfs("/usr/sbin/nginx", [
-    "/usr/sbin/nginx", "-p", "/etc/nginx", "-c", "nginx.conf",
-  ]);
-  // Wait for nginx to be ready
-  await new Promise((r) => setTimeout(r, 3000));
+    // Spawn nginx
+    log("  Starting nginx...");
+    await kernel.spawnFromVfs("/usr/sbin/nginx", [
+      "/usr/sbin/nginx", "-p", "/etc/nginx", "-c", "nginx.conf",
+    ]);
+    const target = await waitForListener(kernel, 8080);
 
-  results.boot_ms = performance.now() - tBoot;
-  log(`  Boot complete: ${results.boot_ms.toFixed(0)}ms`);
+    results.boot_ms = performance.now() - tBoot;
+    await dumpSysprof(kernel);
+    log(`  Boot complete: ${results.boot_ms.toFixed(0)}ms`);
 
-  // Measure HTTP first response via injected TCP connection to nginx
-  log("  Sending HTTP request to nginx...");
-  const tHttp = performance.now();
-  const target = await kernel.pickListenerTarget(8080);
-  if (!target) {
-    throw new Error("nginx did not listen on port 8080");
-  }
+    // Measure HTTP first response via injected TCP connection to nginx
+    log("  Sending HTTP request to nginx...");
+    if (PROFILE_BENCHMARKS) kernel.sysprofStart();
+    const tHttp = performance.now();
 
-  const recvPipeIdx = await kernel.injectConnection(
-    target.pid, target.fd, [127, 0, 0, 1],
-    Math.floor(Math.random() * 60000) + 1024,
-  );
-  if (recvPipeIdx < 0) {
-    throw new Error("failed to inject HTTP connection");
-  }
-
-  const sendPipeIdx = recvPipeIdx + 1;
-  try {
-    const httpReq = new TextEncoder().encode(
-      "GET / HTTP/1.0\r\nHost: localhost\r\nConnection: close\r\n\r\n",
+    const recvPipeIdx = await kernel.injectConnection(
+      target.pid, target.fd, [127, 0, 0, 1],
+      Math.floor(Math.random() * 60000) + 1024,
     );
-    await kernel.pipeWrite(0, recvPipeIdx, httpReq);
-    kernel.wakeBlockedReaders(recvPipeIdx);
-
-    // Wait for first bytes of HTTP response (time to first byte)
-    const deadline = Date.now() + 180_000;
-    while (Date.now() < deadline) {
-      const data = await kernel.pipeRead(0, sendPipeIdx);
-      if (data && data.length > 0) {
-        results.http_first_response_ms = performance.now() - tHttp;
-        break;
-      }
-      await new Promise((r) => setTimeout(r, 100));
+    if (recvPipeIdx < 0) {
+      throw new Error("failed to inject HTTP connection");
     }
-  } finally {
-    kernel.pipeCloseWrite(0, recvPipeIdx);
-    kernel.pipeCloseRead(0, sendPipeIdx);
-  }
 
-  if (results.http_first_response_ms == null) {
-    throw new Error("timed out waiting for WordPress HTTP response");
-  }
+    const sendPipeIdx = recvPipeIdx + 1;
+    try {
+      const httpReq = new TextEncoder().encode(
+        "GET / HTTP/1.0\r\nHost: localhost\r\nConnection: close\r\n\r\n",
+      );
+      await kernel.pipeWrite(0, recvPipeIdx, httpReq);
+      kernel.wakeBlockedReaders(recvPipeIdx);
 
-  return results;
+      // Wait for first bytes of HTTP response (time to first byte)
+      const deadline = Date.now() + 180_000;
+      while (Date.now() < deadline) {
+        const data = await kernel.pipeRead(0, sendPipeIdx);
+        if (data && data.length > 0) {
+          results.http_first_response_ms = performance.now() - tHttp;
+          break;
+        }
+        await new Promise((r) => setTimeout(r, 100));
+      }
+    } finally {
+      kernel.pipeCloseWrite(0, recvPipeIdx);
+      kernel.pipeCloseRead(0, sendPipeIdx);
+    }
+
+    if (results.http_first_response_ms == null) {
+      throw new Error("timed out waiting for WordPress HTTP response");
+    }
+
+    await dumpSysprof(kernel);
+
+    return results;
   } finally {
     try { await kernel.destroy(); } catch {}
   }
@@ -656,10 +678,21 @@ async function runWordPress(): Promise<Record<string, number>> {
 // ─── mariadb ────────────────────────────────────────────────────────────────
 
 type MariaDbArch = "wasm32" | "wasm64";
+const MYSQL_UID = 101;
+const MYSQL_GID = 101;
+
+function ensureMariaDbWritableDataDirs(fs: MemoryFileSystem): void {
+  for (const dir of ["/data", "/data/mysql", "/data/tmp", "/data/test"]) {
+    try { fs.mkdir(dir, 0o775); } catch { /* already exists */ }
+    fs.chown(dir, MYSQL_UID, MYSQL_GID);
+    fs.chmod(dir, 0o775);
+  }
+  try { fs.mkdir("/tmp", 0o1777); } catch { /* already exists */ }
+  fs.chmod("/tmp", 0o1777);
+}
 
 async function runMariaDbWithEngine(engine: string, arch: MariaDbArch = "wasm32"): Promise<Record<string, number>> {
   const results: Record<string, number> = {};
-  const suiteSuffix = arch === "wasm64" ? "-64" : "";
   const buildHint = arch === "wasm64"
     ? "bash images/vfs/scripts/build-mariadb-vfs-image.sh --wasm64"
     : "bash images/vfs/scripts/build-mariadb-vfs-image.sh";
@@ -706,6 +739,7 @@ async function runMariaDbWithEngine(engine: string, arch: MariaDbArch = "wasm32"
   const memfs = MemoryFileSystem.fromImage(new Uint8Array(vfsImageBuf), {
     maxByteLength: 1024 * 1024 * 1024,
   });
+  ensureMariaDbWritableDataDirs(memfs);
   const mariadbBytes = await readVfsBytes(memfs, "/usr/sbin/mariadbd");
   const bootstrapSql = await readVfsText(memfs, "/etc/mariadb/bootstrap.sql");
 
@@ -716,113 +750,108 @@ async function runMariaDbWithEngine(engine: string, arch: MariaDbArch = "wasm32"
   const bootstrapKernel = new BrowserKernel({
     memfs,
     maxWorkers: 12,
-    onStdout: () => {},
-    onStderr: () => {},
+    onStdout: (data) => { if (PROFILE_BENCHMARKS) log(new TextDecoder().decode(data).trimEnd()); },
+    onStderr: (data) => { if (PROFILE_BENCHMARKS) log(new TextDecoder().decode(data).trimEnd()); },
   });
   await bootstrapKernel.init(kernelBytes);
   let client: MySqlBrowserClient | null = null;
   try {
+    if (PROFILE_BENCHMARKS) bootstrapKernel.sysprofStart();
 
-  const bootstrapStdin = new TextEncoder().encode(bootstrapSql);
-  bootstrapKernel.spawn(mariadbBytes, [
-    "mariadbd", "--no-defaults", "--bootstrap",
-    "--user=mysql",
-    "--datadir=/data", "--tmpdir=/data/tmp",
-    ...engineArgs,
-    "--skip-grant-tables",
-    "--key-buffer-size=1048576", "--table-open-cache=10",
-    "--sort-buffer-size=262144", "--skip-networking", "--log-warnings=0",
-  ], { stdin: bootstrapStdin });
+    const bootstrapStdin = new TextEncoder().encode(bootstrapSql);
+    bootstrapKernel.spawn(mariadbBytes, [
+      "mariadbd", "--no-defaults", "--bootstrap",
+      "--user=mysql",
+      "--datadir=/data", "--tmpdir=/data/tmp",
+      ...engineArgs,
+      "--skip-grant-tables",
+      "--key-buffer-size=1048576", "--table-open-cache=10",
+      "--sort-buffer-size=262144", "--skip-networking", "--log-warnings=0",
+    ], { stdin: bootstrapStdin });
 
-  // Wait for bootstrap stdin to be consumed
-  const bootstrapPid = (bootstrapKernel as any).nextPid - 1;
-  for (let i = 0; i < 1200; i++) {
-    try {
-      const consumed = await bootstrapKernel.isStdinConsumed(bootstrapPid);
-      if (consumed) {
-        await new Promise((r) => setTimeout(r, 2000));
+    // Wait for bootstrap stdin to be consumed
+    const bootstrapPid = (bootstrapKernel as any).nextPid - 1;
+    const bootstrapPolls = PROFILE_BENCHMARKS ? 120 : 1200;
+    for (let i = 0; i < bootstrapPolls; i++) {
+      try {
+        const consumed = await bootstrapKernel.isStdinConsumed(bootstrapPid);
+        if (consumed) {
+          await new Promise((r) => setTimeout(r, 2000));
+          break;
+        }
+      } catch { break; }
+      await new Promise((r) => setTimeout(r, 500));
+    }
+    try { await bootstrapKernel.terminateProcess(bootstrapPid); } catch {}
+
+    results.bootstrap_ms = performance.now() - tBootstrap;
+    await dumpSysprof(bootstrapKernel);
+    log(`  Bootstrap: ${results.bootstrap_ms.toFixed(0)}ms`);
+
+    // ── Server ──
+    log("  Starting server...");
+    const serverExit = bootstrapKernel.spawn(mariadbBytes, [
+      "mariadbd", "--no-defaults",
+      "--user=mysql",
+      "--datadir=/data", "--tmpdir=/data/tmp",
+      ...engineArgs,
+      "--skip-grant-tables",
+      "--key-buffer-size=1048576", "--table-open-cache=10",
+      "--sort-buffer-size=262144", "--skip-networking=0",
+      "--port=3306", "--bind-address=0.0.0.0", "--socket=",
+      "--max-connections=10",
+    ]);
+    void serverExit;
+
+    // Wait for port 3306
+    log("  Waiting for server to accept connections...");
+    const tServer = performance.now();
+    await waitForListener(bootstrapKernel, 3306, 120_000);
+    results.server_ready_ms = performance.now() - tServer;
+    log(`  Server ready: ${results.server_ready_ms.toFixed(0)}ms`);
+
+    // Connect MySQL client with retries
+    for (let attempt = 1; attempt <= 10; attempt++) {
+      try {
+        client = await MySqlBrowserClient.connect(bootstrapKernel, 3306);
         break;
+      } catch {
+        if (attempt === 10) throw new Error("MySQL handshake failed after 10 attempts");
+        await new Promise((r) => setTimeout(r, 2000));
       }
-    } catch { break; }
-    await new Promise((r) => setTimeout(r, 500));
-  }
-  try { await bootstrapKernel.terminateProcess(bootstrapPid); } catch {}
-
-  results.bootstrap_ms = performance.now() - tBootstrap;
-  log(`  Bootstrap: ${results.bootstrap_ms.toFixed(0)}ms`);
-
-  // ── Server ──
-  log("  Starting server...");
-  const serverExit = bootstrapKernel.spawn(mariadbBytes, [
-    "mariadbd", "--no-defaults",
-    "--user=mysql",
-    "--datadir=/data", "--tmpdir=/data/tmp",
-    ...engineArgs,
-    "--skip-grant-tables",
-    "--key-buffer-size=1048576", "--table-open-cache=10",
-    "--sort-buffer-size=262144", "--skip-networking=0",
-    "--port=3306", "--bind-address=0.0.0.0", "--socket=",
-    "--max-connections=10",
-  ]);
-  void serverExit;
-
-  // Wait for port 3306
-  log("  Waiting for server to accept connections...");
-  let listenerReady = false;
-  for (let i = 0; i < 120; i++) {
-    const target = await bootstrapKernel.pickListenerTarget(3306);
-    if (target) {
-      listenerReady = true;
-      break;
     }
-    await new Promise((r) => setTimeout(r, 1000));
-  }
-  if (!listenerReady) {
-    throw new Error(`mariadb-${engine.toLowerCase()}${suiteSuffix} did not listen on port 3306`);
-  }
 
-  // Connect MySQL client with retries
-  for (let attempt = 1; attempt <= 10; attempt++) {
-    try {
-      client = await MySqlBrowserClient.connect(bootstrapKernel, 3306);
-      break;
-    } catch {
-      if (attempt === 10) throw new Error("MySQL handshake failed after 10 attempts");
-      await new Promise((r) => setTimeout(r, 2000));
+    if (!client) throw new Error("Failed to connect MySQL client");
+
+    // ── Queries ──
+    log("  Running CREATE TABLE...");
+    const t1 = performance.now();
+    await client.query("CREATE DATABASE IF NOT EXISTS bench");
+    await client.query(`CREATE TABLE bench.t1 (id INT PRIMARY KEY AUTO_INCREMENT, name VARCHAR(100), value INT) ENGINE=${engine}`);
+    await client.query(`CREATE TABLE bench.t2 (id INT PRIMARY KEY AUTO_INCREMENT, t1_id INT, data VARCHAR(200)) ENGINE=${engine}`);
+    results.query_create_ms = performance.now() - t1;
+
+    log("  Running INSERT (100 rows)...");
+    const t2 = performance.now();
+    for (let i = 0; i < 100; i++) {
+      await client.query(`INSERT INTO bench.t1 (name, value) VALUES ('item_${i}', ${i * 10})`);
     }
-  }
+    for (let i = 0; i < 100; i++) {
+      await client.query(`INSERT INTO bench.t2 (t1_id, data) VALUES (${i + 1}, 'data_for_item_${i}')`);
+    }
+    results.query_insert_ms = performance.now() - t2;
 
-  if (!client) throw new Error("Failed to connect MySQL client");
+    log("  Running SELECT...");
+    const t3 = performance.now();
+    await client.query("SELECT * FROM bench.t1 WHERE value > 500 AND value < 800");
+    results.query_select_ms = performance.now() - t3;
 
-  // ── Queries ──
-  log("  Running CREATE TABLE...");
-  const t1 = performance.now();
-  await client.query("CREATE DATABASE IF NOT EXISTS bench");
-  await client.query(`CREATE TABLE bench.t1 (id INT PRIMARY KEY AUTO_INCREMENT, name VARCHAR(100), value INT) ENGINE=${engine}`);
-  await client.query(`CREATE TABLE bench.t2 (id INT PRIMARY KEY AUTO_INCREMENT, t1_id INT, data VARCHAR(200)) ENGINE=${engine}`);
-  results.query_create_ms = performance.now() - t1;
+    log("  Running JOIN...");
+    const t4 = performance.now();
+    await client.query("SELECT t1.name, t2.data FROM bench.t1 t1 JOIN bench.t2 t2 ON t1.id = t2.t1_id WHERE t1.value > 500");
+    results.query_join_ms = performance.now() - t4;
 
-  log("  Running INSERT (100 rows)...");
-  const t2 = performance.now();
-  for (let i = 0; i < 100; i++) {
-    await client.query(`INSERT INTO bench.t1 (name, value) VALUES ('item_${i}', ${i * 10})`);
-  }
-  for (let i = 0; i < 100; i++) {
-    await client.query(`INSERT INTO bench.t2 (t1_id, data) VALUES (${i + 1}, 'data_for_item_${i}')`);
-  }
-  results.query_insert_ms = performance.now() - t2;
-
-  log("  Running SELECT...");
-  const t3 = performance.now();
-  await client.query("SELECT * FROM bench.t1 WHERE value > 500 AND value < 800");
-  results.query_select_ms = performance.now() - t3;
-
-  log("  Running JOIN...");
-  const t4 = performance.now();
-  await client.query("SELECT t1.name, t2.data FROM bench.t1 t1 JOIN bench.t2 t2 ON t1.id = t2.t1_id WHERE t1.value > 500");
-  results.query_join_ms = performance.now() - t4;
-
-  return results;
+    return results;
   } finally {
     try { client?.close(); } catch {}
     try { await bootstrapKernel.destroy(); } catch {}

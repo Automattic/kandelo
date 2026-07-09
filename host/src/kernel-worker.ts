@@ -3878,8 +3878,10 @@ export class CentralizedKernelWorker {
     }
 
     // Event-driven wakeup for accept/accept4: register the listening socket's
-    // accept-readiness token so local connect/injected connection wakes the
-    // accept immediately instead of waiting for the fallback timer.
+    // accept-readiness token and park until a local connect/injected
+    // connection queues WAKE_ACCEPT. POSIX blocking accept() has no polling
+    // requirement, so do not arm a periodic fallback timer; cancellation,
+    // process cleanup, and explicit wake paths remove this entry.
     if (syscallNr === SYS_ACCEPT || syscallNr === SYS_ACCEPT4) {
       const fd = origArgs[0];
       const getAcceptWakeIdx = this.kernelInstance!.exports.kernel_get_fd_accept_wake_idx as
@@ -3887,15 +3889,8 @@ export class CentralizedKernelWorker {
       if (getAcceptWakeIdx) {
         const acceptIdx = getAcceptWakeIdx(channel.pid, fd);
         if (acceptIdx >= 0) {
-          const retryFn = () => {
-            this.pendingPollRetries.delete(channel.channelOffset);
-            if (this.processes.has(channel.pid)) {
-              this.retrySyscall(channel);
-            }
-          };
-          const timer = setTimeout(retryFn, 10);
           this.pendingPollRetries.set(channel.channelOffset, {
-            timer,
+            timer: null,
             channel,
             pipeIndices: [],
             acceptIndices: [acceptIdx],
@@ -7702,8 +7697,11 @@ export class CentralizedKernelWorker {
     const sendPipeIdx = recvPipeIdx + 1;
     const GLOBAL_PIPE_PID = 0;
 
-    // Wake any pending poll on the target so accept() fires immediately.
-    // Without this we'd wait for the next 5s poll fallback timer.
+    // Wake any pending poll/accept on the target so accept() fires
+    // immediately. kernel_inject_connection queues a WAKE_ACCEPT event, but
+    // this host-side path is not followed by a normal syscall boundary where
+    // wake events are usually drained.
+    this.drainAndProcessWakeupEvents();
     this.wakeTargetPollNow(target.pid);
     this.scheduleWakeBlockedRetries();
 
@@ -7896,7 +7894,10 @@ export class CentralizedKernelWorker {
 
     // Wake any blocked poll/accept anywhere — the listener's shared
     // accept queue now has a new entry, and any worker sharing the
-    // listener can pick it up. Broad wake covers all of them.
+    // listener can pick it up. Drain the queued WAKE_ACCEPT event because
+    // this direct host-side injection has no syscall-return boundary.
+    this.drainAndProcessWakeupEvents();
+    // Broad wake covers any legacy waiters not keyed by the accept token.
     this.scheduleWakeBlockedRetries();
 
     const sendPipeIdx = recvPipeIdx + 1;
@@ -8092,6 +8093,11 @@ export class CentralizedKernelWorker {
       remote.port,
     );
     if (recvPipeIdx < 0) return -recvPipeIdx;
+
+    // See the in-kernel HTTP path above: direct host-side injection must drain
+    // the queued accept wake because no guest syscall returns to do it for us.
+    this.drainAndProcessWakeupEvents();
+    this.scheduleWakeBlockedRetries();
 
     const sendPipeIdx = recvPipeIdx + 1;
     const GLOBAL_PIPE_PID = 0;
