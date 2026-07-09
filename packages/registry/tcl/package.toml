@@ -1,12 +1,12 @@
 kind = "program"
 name = "tcl"
-version = "9.0.1"
+version = "8.6.16"
 kernel_abi = 7
 depends_on = []
 
 [source]
-url = "https://github.com/tcltk/tcl/archive/refs/tags/core-9-0-1.tar.gz"
-sha256 = "053ce8cdc632a6484f6a1416524fb66b614cd13e77366ad2722bc205d53eff95"
+url = "https://prdownloads.sourceforge.net/tcl/tcl8.6.16-src.tar.gz"
+sha256 = "91cb8fa61771c63c262efb553059b7c7ad6757afa5857af6265e4b0bdc2a14a5"
 
 [license]
 spdx = "TCL"
