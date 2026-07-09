@@ -8541,6 +8541,9 @@ pub extern "C" fn kernel_sendmsg(fd: i32, msg_ptr: *const u8, flags: u32, retry_
             Ok(n) => n as i32,
             Err(e) => -(e as i32),
         };
+    let cross_process_udp = (result >= 0)
+        .then(|| syscalls::cross_process_loopback_udp_route(proc, fd, addr))
+        .flatten();
     if result == -(Errno::EAGAIN as i32) {
         if let Err(error) = syscalls::ensure_blocking_retry_ofd_binding(
             proc,
@@ -8558,6 +8561,7 @@ pub extern "C" fn kernel_sendmsg(fd: i32, msg_ptr: *const u8, flags: u32, retry_
     syscalls::drain_deferred_scm_rights_releases(advisory_locks, &mut host);
 
     deliver_pending_signals_for_known_tid(proc, advisory_locks, &mut host, tid);
+    complete_cross_process_loopback_udp(cross_process_udp, buf);
     result
 }
 
@@ -9690,6 +9694,24 @@ fn cross_process_unix_connect(
     Ok(())
 }
 
+/// Finish a machine-local IPv4 UDP send after all direct references into the
+/// process table have reached their last use.
+///
+/// WHY: `get_process*()` returns mutable references backed by the global
+/// `UnsafeCell`. Re-entering `PROCESS_TABLE` while one of those references is
+/// still live could alias the sender. Callers therefore capture only an owned
+/// route, finish retry/signal cleanup, and invoke this helper last.
+fn complete_cross_process_loopback_udp(
+    route: Option<syscalls::CrossProcessLoopbackUdpRoute>,
+    data: &[u8],
+) {
+    let Some(route) = route else {
+        return;
+    };
+    let table = unsafe { &mut *PROCESS_TABLE.0.get() };
+    syscalls::deliver_cross_process_loopback_udp(table, route, data);
+}
+
 #[cfg(test)]
 mod socket_wrapper_tests {
     use super::{cross_process_unix_connect, write_getsockopt_bytes, WasmHostIO};
@@ -9769,7 +9791,11 @@ pub extern "C" fn kernel_send(fd: i32, buf_ptr: *const u8, buf_len: u32, flags: 
         Ok(n) => n as i32,
         Err(e) => -(e as i32),
     };
+    let cross_process_udp = (result >= 0)
+        .then(|| syscalls::cross_process_loopback_udp_route(proc, fd, None))
+        .flatten();
     deliver_pending_signals_with_locks(proc, advisory_locks, &mut host);
+    complete_cross_process_loopback_udp(cross_process_udp, buf);
     result
 }
 
@@ -10236,7 +10262,17 @@ pub extern "C" fn kernel_sendto(
         Ok(n) => n as i32,
         Err(e) => -(e as i32),
     };
+    let cross_process_udp = (result >= 0)
+        .then(|| {
+            syscalls::cross_process_loopback_udp_route(
+                proc,
+                fd,
+                (!addr.is_empty()).then_some(addr),
+            )
+        })
+        .flatten();
     deliver_pending_signals_with_locks(proc, advisory_locks, &mut host);
+    complete_cross_process_loopback_udp(cross_process_udp, buf);
     result
 }
 
