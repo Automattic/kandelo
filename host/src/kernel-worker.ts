@@ -169,6 +169,16 @@ const SIOCGIFADDR = 0x8915;
 /** Ioctl syscall number */
 const SYS_IOCTL = ABI_SYSCALLS.Ioctl;
 
+/** Decode the user-buffer byte length for an `ioctl_encoded` arg spec.
+ *  Linux's `_IOC()` packs the size in bits 16..29 of the request word
+ *  (a 14-bit field). Legacy ioctls (FIONBIO, KDGKBTYPE, …) encode
+ *  size=0 — the floor exists to ensure callers can still pass a
+ *  small payload through. Exported for unit testing the boundary. */
+export function computeIoctlEncodedSize(req: number, floor: number): number {
+  const enc = ((req >>> 0) >>> 16) & 0x3fff;
+  return enc > floor ? enc : floor;
+}
+
 /** Syscall numbers for memory management */
 const SYS_MMAP = ABI_SYSCALLS.Mmap;
 const SYS_MUNMAP = ABI_SYSCALLS.Munmap;
@@ -835,6 +845,20 @@ export class CentralizedKernelWorker {
    *  accepts it (an `ImageDataArray` rejects SAB-backed views). */
   private kmsScratchBytes = new Map<number, Uint8ClampedArray<ArrayBuffer>>();
   private vblankTimer: ReturnType<typeof setInterval> | null = null;
+  /** kernel_kms_commit_count(1) at the previous vblank tick — the pump
+   *  broad-wakes blocked pollers only when this changes (a PAGE_FLIP was
+   *  queued since the last tick, so the drain just wrote a FLIP_COMPLETE
+   *  event someone may be polling for). Without the gate the pump would
+   *  broad-wake every blocked poll/select in the machine 60×/s forever,
+   *  and each re-dispatch used to re-arm the full timeout — starving
+   *  select-based sleeps (mariadbd bootstrap hung this way). */
+  private lastVblankCommits = 0n;
+  /** One-tick wake carry: a flip queued after this tick's drain but
+   *  before the commit-count read bumps the count now, while its
+   *  FLIP_COMPLETE event is only written by the NEXT tick's drain.
+   *  Waking one extra tick past the last count change covers that
+   *  window without reverting to unconditional wakes. */
+  private vblankWakeCarry = false;
 
   constructor(
     private config: KernelConfig,
@@ -852,6 +876,10 @@ export class CentralizedKernelWorker {
       // pid has no canvas bound yet; the kernel-worker's KMS registry
       // is the single source of truth for `crtc_id → OffscreenCanvas`.
       getKmsCanvas: (crtcId: number) => this.kmsCanvases.get(crtcId),
+      firstKmsCanvasCrtc: () => {
+        for (const id of this.kmsCanvases.keys()) return id;
+        return undefined;
+      },
       markKmsCanvasGlOwned: (crtcId: number) => {
         this.kmsContextMode.set(crtcId, "webgl2");
       },
@@ -2254,8 +2282,13 @@ export class CentralizedKernelWorker {
           if (derefPtr === 0) continue;
           size = processMem[derefPtr] | (processMem[derefPtr + 1] << 8)
                | (processMem[derefPtr + 2] << 16) | (processMem[derefPtr + 3] << 24);
-        } else {
+        } else if (desc.size.type === "ioctl_encoded") {
+          size = computeIoctlEncodedSize(origArgs[desc.size.argIndex], desc.size.floor);
+        } else if (desc.size.type === "fixed") {
           size = desc.size.size;
+        } else {
+          // Should not reach here — exhaustive over the SyscallArgSizeSpec union.
+          size = 0;
         }
 
         if (size <= 0) continue;
@@ -2610,8 +2643,12 @@ export class CentralizedKernelWorker {
           if (derefPtr === 0) continue;
           size = processMem[derefPtr] | (processMem[derefPtr + 1] << 8)
                | (processMem[derefPtr + 2] << 16) | (processMem[derefPtr + 3] << 24);
-        } else {
+        } else if (desc.size.type === "ioctl_encoded") {
+          size = computeIoctlEncodedSize(origArgs[desc.size.argIndex], desc.size.floor);
+        } else if (desc.size.type === "fixed") {
           size = desc.size.size;
+        } else {
+          size = 0;
         }
 
         if (size <= 0) continue;
@@ -3223,11 +3260,13 @@ export class CentralizedKernelWorker {
       clearTimeout(entry.timer);
       clearImmediate(entry.timer);
       // Re-dispatch to the right handler — SYS_SELECT and SYS_PSELECT6 have
-      // different time-struct shapes (timeval vs timespec).
+      // different time-struct shapes (timeval vs timespec). Pass the
+      // original deadline through: re-reading the guest time-struct
+      // would re-arm the full timeout on every wake.
       if (entry.syscallNr === SYS_SELECT) {
-        this.handleSelect(entry.channel, entry.origArgs);
+        this.handleSelect(entry.channel, entry.origArgs, entry.deadline);
       } else {
-        this.handlePselect6(entry.channel, entry.origArgs);
+        this.handlePselect6(entry.channel, entry.origArgs, entry.deadline);
       }
     }
 
@@ -3525,6 +3564,18 @@ export class CentralizedKernelWorker {
     origArgs: number[],
   ): void {
     if (!this.processes.has(channel.pid)) return;
+
+    // ioctl EAGAIN is a non-blocking transient error (e.g. ALSA WRITEI
+    // on a full PCM ring) — propagate it to userspace instead of
+    // entering the default retry loop. The blocking-retry path would
+    // re-fire the ioctl forever while SDL2's polled-audio loop sits
+    // suspended waiting for SDL_PumpAudioDevices to return; SDL2's own
+    // EAGAIN branch (packages/registry/sdl2/patches/
+    // 0002-polling-audio-eagain.patch) is what must see the errno.
+    if (syscallNr === SYS_IOCTL) {
+      this.completeChannel(channel, syscallNr, origArgs, SYSCALL_ARGS[syscallNr], -1, EAGAIN);
+      return;
+    }
 
     // Futex wait: use Atomics.waitAsync on the target address in process memory
     if (syscallNr === SYS_FUTEX) {
@@ -4050,7 +4101,21 @@ export class CentralizedKernelWorker {
    * own code is `select(0, NULL, NULL, NULL, &tv)` (mysys/my_sleep.c) — the
    * pure-sleep case, fast-path'd to a setTimeout.
    */
-  private handleSelect(channel: ChannelInfo, origArgs: number[]): void {
+  /**
+   * `deadlineOverride` carries the original absolute deadline across
+   * re-dispatches (broad wakes, per-pid signal wakes, and this handler's
+   * own retry timer). Without it every re-dispatch would re-read the
+   * guest timeval — which the kernel never decrements — and re-arm the
+   * FULL timeout, so any recurring broad-wake source (e.g. the vblank
+   * pump while a DRM client is flipping) starves select-based sleeps
+   * forever. POSIX requires the timeout to be measured from the
+   * original call.
+   */
+  private handleSelect(
+    channel: ChannelInfo,
+    origArgs: number[],
+    deadlineOverride?: number,
+  ): void {
     const FD_SET_SIZE = 128;
     const nfds = origArgs[0];
     const readPtr = origArgs[1];
@@ -4085,20 +4150,27 @@ export class CentralizedKernelWorker {
         this.completeChannel(channel, SYS_SELECT, origArgs, undefined, 0, 0);
         return;
       }
-      const finite = timeoutMs > 0;
+      const deadline = deadlineOverride !== undefined
+        ? deadlineOverride
+        : (timeoutMs > 0 ? Date.now() + timeoutMs : -1);
+      if (deadline > 0 && Date.now() >= deadline) {
+        this.completeChannel(channel, SYS_SELECT, origArgs, undefined, 0, 0);
+        return;
+      }
+      const finite = deadline > 0;
       const timer = finite
         ? setTimeout(() => {
             this.pendingSelectRetries.delete(channel.channelOffset);
             if (this.processes.has(channel.pid)) {
               this.completeChannel(channel, SYS_SELECT, origArgs, undefined, 0, 0);
             }
-          }, timeoutMs)
+          }, Math.max(1, deadline - Date.now()))
         : (null as any);
       this.pendingSelectRetries.set(channel.channelOffset, {
         timer,
         channel,
         origArgs,
-        deadline: finite ? Date.now() + timeoutMs : -1,
+        deadline,
         needsSignalSafeWake: false,
         syscallNr: SYS_SELECT,
       });
@@ -4178,7 +4250,13 @@ export class CentralizedKernelWorker {
         this.completeChannel(channel, SYS_SELECT, origArgs, undefined, 0, 0);
         return;
       }
-      const deadline = timeoutMs > 0 ? Date.now() + timeoutMs : -1;
+      const deadline = deadlineOverride !== undefined
+        ? deadlineOverride
+        : (timeoutMs > 0 ? Date.now() + timeoutMs : -1);
+      if (deadline > 0 && Date.now() >= deadline) {
+        this.completeChannel(channel, SYS_SELECT, origArgs, undefined, 0, 0);
+        return;
+      }
       const retryFn = () => {
         this.pendingSelectRetries.delete(channel.channelOffset);
         if (!this.processes.has(channel.pid)) return;
@@ -4186,9 +4264,9 @@ export class CentralizedKernelWorker {
           this.completeChannel(channel, SYS_SELECT, origArgs, undefined, 0, 0);
           return;
         }
-        this.handleSelect(channel, origArgs);
+        this.handleSelect(channel, origArgs, deadline);
       };
-      const finite = timeoutMs > 0;
+      const finite = deadline > 0;
       const remainingMs = finite ? Math.max(deadline - Date.now(), 1) : 50;
       const timer = setTimeout(retryFn, Math.min(remainingMs, 50));
       this.pendingSelectRetries.set(channel.channelOffset, {
@@ -4201,7 +4279,12 @@ export class CentralizedKernelWorker {
     this.completeChannel(channel, SYS_SELECT, origArgs, undefined, retVal, errVal);
   }
 
-  private handlePselect6(channel: ChannelInfo, origArgs: number[]): void {
+  /** See handleSelect for the `deadlineOverride` re-dispatch contract. */
+  private handlePselect6(
+    channel: ChannelInfo,
+    origArgs: number[],
+    deadlineOverride?: number,
+  ): void {
     const FD_SET_SIZE = 128;
     const processMem = new Uint8Array(channel.memory.buffer);
     const kernelMem = this.getKernelMem();
@@ -4325,7 +4408,13 @@ export class CentralizedKernelWorker {
         return;
       }
 
-      const deadline = timeoutMs > 0 ? Date.now() + timeoutMs : -1;
+      const deadline = deadlineOverride !== undefined
+        ? deadlineOverride
+        : (timeoutMs > 0 ? Date.now() + timeoutMs : -1);
+      if (deadline > 0 && Date.now() >= deadline) {
+        this.completeChannel(channel, SYS_PSELECT6, origArgs, undefined, 0, 0);
+        return;
+      }
       // pselect6 with a non-null sigmask pointer has the same late-signal
       // race as ppoll. See scheduleWakeBlockedRetriesDeferred.
       const needsSignalSafeWake = maskDataPtr !== 0;
@@ -4334,13 +4423,13 @@ export class CentralizedKernelWorker {
       // With finite timeout: sleep for that duration.
       // With infinite timeout: block until signal (wakeAllBlockedRetries).
       if (nfds === 0) {
-        if (timeoutMs > 0) {
+        if (deadline > 0) {
           const timer = setTimeout(() => {
             this.pendingSelectRetries.delete(channel.channelOffset);
             if (this.processes.has(channel.pid)) {
               this.completeChannel(channel, SYS_PSELECT6, origArgs, undefined, 0, 0);
             }
-          }, timeoutMs);
+          }, Math.max(1, deadline - Date.now()));
           this.pendingSelectRetries.set(channel.channelOffset, {
             timer, channel, origArgs, deadline, needsSignalSafeWake, syscallNr: SYS_PSELECT6,
           });
@@ -4363,7 +4452,7 @@ export class CentralizedKernelWorker {
           this.completeChannel(channel, SYS_PSELECT6, origArgs, undefined, 0, 0);
           return;
         }
-        this.handlePselect6(channel, origArgs);
+        this.handlePselect6(channel, origArgs, deadline);
       };
       const timer = setImmediate(retryFn);
       this.pendingSelectRetries.set(channel.channelOffset, {
@@ -6899,9 +6988,9 @@ export class CentralizedKernelWorker {
       this.pendingSelectRetries.delete(key);
       if (!this.processes.has(targetPid)) continue;
       if (selectEntry.syscallNr === SYS_SELECT) {
-        this.handleSelect(selectEntry.channel, selectEntry.origArgs);
+        this.handleSelect(selectEntry.channel, selectEntry.origArgs, selectEntry.deadline);
       } else {
-        this.handlePselect6(selectEntry.channel, selectEntry.origArgs);
+        this.handlePselect6(selectEntry.channel, selectEntry.origArgs, selectEntry.deadline);
       }
     }
   }
@@ -7467,6 +7556,30 @@ export class CentralizedKernelWorker {
   }
 
   /**
+   * Allocate a 4-byte slot inside kernel-visible memory for the
+   * SAB-backed `appl_ptr` mirror, bind it for `pcmId`, and return its
+   * `(buffer, byteOffset)` window so the AudioWorklet can view it as
+   * `new Int32Array(buffer, byteOffset, 1)`. Returns `null` if the
+   * kernel allocator declined. See `BrowserKernelHost.attachAudioDriver`
+   * for the producer (kernel mirrors on every WRITEI) / consumer
+   * (worklet reads via `Atomics.load`) wiring — this replaces the
+   * 10 ms `getApplPtr` poll that caused the §C jitter.
+   */
+  audioInitApplPtrSab(
+    pcmId: number,
+  ): { buffer: SharedArrayBuffer | ArrayBuffer; byteOffset: number } | null {
+    // 4-byte aligned: `kernel_alloc_scratch` returns 8-byte-aligned
+    // addresses (it's the kernel's bump allocator), so this works
+    // for an `Int32Array` view without extra padding.
+    const base = this.kernel.audioAllocRing(4);
+    if (base === 0) return null;
+    this.kernel.audioInitApplPtrSab(pcmId, base);
+    const buffer = this.kernel.getKernelMemoryBuffer();
+    if (!buffer) return null;
+    return { buffer, byteOffset: base };
+  }
+
+  /**
    * Forward an audio period tick from the host AudioDriver into the
    * kernel: advances `mmap_status.hw_ptr`, detects XRUN, wakes any
    * process parked on `POLLOUT` against `/dev/snd/pcmC0D<pcmId>p`.
@@ -7484,6 +7597,20 @@ export class CentralizedKernelWorker {
    */
   audioGetApplPtr(pcmId: number): number {
     return this.kernel.audioGetApplPtr(pcmId);
+  }
+
+  /**
+   * Read-only probes for host-side audio instrumentation: `hw_ptr`
+   * advance rate confirms the period-tick feedback loop is running;
+   * `state` exposes PREPARED → RUNNING → XRUN transitions so mid-
+   * playback stalls can be diagnosed.
+   */
+  audioGetHwPtr(pcmId: number): number {
+    return this.kernel.audioGetHwPtr(pcmId);
+  }
+
+  audioGetState(pcmId: number): number {
+    return this.kernel.audioGetState(pcmId);
   }
 
   /**
@@ -8600,6 +8727,29 @@ export class CentralizedKernelWorker {
     const vblankFn = this.kernelInstance?.exports.kernel_vblank as
       (() => void) | undefined;
     vblankFn?.();
+    // kernel_vblank just drained any pending page-flips into each open
+    // card0 fd's `event_ring`. Wake blocked DRM poll() callers now
+    // instead of letting them spin on the 50 ms generic safety-net
+    // retry — without this hook the C-side frame loop is capped at
+    // ~20 fps (1/50 ms) even though we tick at 60 Hz, and demos lag
+    // visibly unless something else (mouse input, etc.) triggers a
+    // wake. Same broad-wake mechanism as `injectMouseEvent`.
+    //
+    // Gate the wake on actual page-flip activity (see lastVblankCommits/
+    // vblankWakeCarry): the pump runs unconditionally in every kernel
+    // worker, and an unconditional 60 Hz broad wake re-dispatches every
+    // blocked poll/select in the machine forever — even in workloads
+    // with no DRM client at all. crtc 1 is the only crtc the KMS
+    // surface supports today (see crates/kernel/src/dri/mod.rs).
+    const commitsFn = this.kernelInstance?.exports.kernel_kms_commit_count as
+      ((crtcId: number) => bigint) | undefined;
+    const commits = commitsFn?.(1) ?? 0n;
+    const flipped = commits !== this.lastVblankCommits;
+    this.lastVblankCommits = commits;
+    if (flipped || this.vblankWakeCarry) {
+      this.scheduleWakeBlockedRetries();
+    }
+    this.vblankWakeCarry = flipped;
     // 2D-blit path. Runs only for CRTCs the embedder explicitly opted
     // into `mode: "2d"`. The pump never touches the canvas in "auto"
     // or "webgl2" mode — touching it with `getContext("2d")` would

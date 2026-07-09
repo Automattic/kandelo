@@ -107,6 +107,20 @@ export interface KernelLike {
    */
   injectMouseEvent?(dx: number, dy: number, buttons: number): void;
   /**
+   * Inject one evdev record into `/dev/input/event{0,1}`. `device` is
+   * 0 for the keyboard, 1 for the pointer; the remaining fields mirror
+   * Linux `struct input_event` (`ev_type`, `code`, `value`). Used to
+   * feed absolute-position pointer events to programs that read evdev
+   * (e.g. SDL2's KMSDRM backend on `/dev/input/event1`) rather than
+   * the PS/2 `/dev/input/mice` node `injectMouseEvent` targets.
+   */
+  injectInputEvent?(
+    device: 0 | 1,
+    ev_type: number,
+    code: number,
+    value: number,
+  ): void;
+  /**
    * Hand an `OffscreenCanvas` to the kernel worker as the scanout
    * target for KMS CRTC `crtcId`. Optional `stats` SAB receives
    * blit + page-flip telemetry. `opts.mode` declares how the canvas
@@ -333,6 +347,17 @@ export interface KmsDisplayHandle {
    *  positive Y up). `buttons` uses PS/2 bits: bit0=left, bit1=right,
    *  bit2=middle. No-op when the wrapped kernel lacks mouse injection. */
   sendMouseEvent(dx: number, dy: number, buttons: number): void;
+  /** Inject an absolute-position pointer update into evdev
+   *  `/dev/input/event1`. `x`/`y` are framebuffer pixels (origin
+   *  top-left, matching the canvas drawing buffer); `buttons` uses the
+   *  same bitmask as `sendMouseEvent` (bit0=left, bit1=right,
+   *  bit2=middle). This is the path SDL2's KMSDRM/evdev backend reads —
+   *  `sendMouseEvent` only feeds the PS/2 `/dev/input/mice` node, which
+   *  evdev consumers like SDL2 ignore. The handle tracks button state
+   *  internally so callers can pass the full bitmask every call and
+   *  only press/release transitions are emitted. No-op when the wrapped
+   *  kernel lacks evdev injection. */
+  sendPointerAbs(x: number, y: number, buttons: number): void;
   /** Detach the canvas. Subsequent vblank ticks no-op for this CRTC. */
   close(): void;
 }
@@ -1537,11 +1562,49 @@ export class LiveKernelHost implements KernelHost {
     const offscreen = canvas.transferControlToOffscreen();
     this.kernel.kmsAttachCanvas(crtcId, offscreen, statsSab, opts);
     const kernel = this.kernel;
+    // evdev codes for the pointer path (struct input_event).
+    const EV_SYN = 0x00, EV_KEY = 0x01, EV_REL = 0x02;
+    const SYN_REPORT = 0x00, REL_X = 0x00, REL_Y = 0x01;
+    const BTN_LEFT = 0x110, BTN_RIGHT = 0x111, BTN_MIDDLE = 0x112;
+    // event1 advertises REL_X+REL_Y, so SDL's evdev backend classifies
+    // it as a *relative* mouse and ignores EV_ABS entirely
+    // (SDL_evdev.c: `relative_mouse = test_bit(REL_X) && test_bit(REL_Y)`,
+    // and the ABS_X handler only stores position when `!relative_mouse`).
+    // To position absolutely we peg the relative integrator into the
+    // top-left corner with an over-large negative delta — SDL clamps the
+    // result to the window — then move to the target. Emulating an
+    // absolute device through relative deltas this way is the only path
+    // that reaches SDL without re-spec'ing the kernel's input device.
+    const PEG = 4096; // larger than any framebuffer axis, so the clamp pegs to 0
+    let prevButtons = 0;
     const handle: KmsDisplayHandle = {
       crtcId,
       stats,
       sendMouseEvent: (dx, dy, buttons) => {
         kernel.injectMouseEvent?.(dx, dy, buttons);
+      },
+      sendPointerAbs: (x, y, buttons) => {
+        const inject = kernel.injectInputEvent;
+        if (!inject) return;
+        const rx = Math.round(x), ry = Math.round(y);
+        // Frame 1: peg the relative cursor to (0,0).
+        inject.call(kernel, 1, EV_REL, REL_X, -PEG);
+        inject.call(kernel, 1, EV_REL, REL_Y, -PEG);
+        inject.call(kernel, 1, EV_SYN, SYN_REPORT, 0);
+        // Frame 2: move to the absolute target. SDL flushes motion on
+        // this SYN, so its cursor sits at (rx, ry) before any button.
+        inject.call(kernel, 1, EV_REL, REL_X, rx);
+        inject.call(kernel, 1, EV_REL, REL_Y, ry);
+        inject.call(kernel, 1, EV_SYN, SYN_REPORT, 0);
+        // Frame 3: button transitions — now they register at (rx, ry).
+        const changed = buttons ^ prevButtons;
+        if (changed) {
+          if (changed & 1) inject.call(kernel, 1, EV_KEY, BTN_LEFT, buttons & 1 ? 1 : 0);
+          if (changed & 2) inject.call(kernel, 1, EV_KEY, BTN_RIGHT, buttons & 2 ? 1 : 0);
+          if (changed & 4) inject.call(kernel, 1, EV_KEY, BTN_MIDDLE, buttons & 4 ? 1 : 0);
+          inject.call(kernel, 1, EV_SYN, SYN_REPORT, 0);
+          prevButtons = buttons;
+        }
       },
       close: () => {
         // The worker auto-stops the pump tick for unused CRTCs on the

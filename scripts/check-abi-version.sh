@@ -87,8 +87,12 @@ version_bumped=0
 snapshot_changed=0
 if git rev-parse --verify --quiet "$base_ref" >/dev/null ; then
     if ! git diff --quiet "$base_ref" -- crates/shared/src/lib.rs 2>/dev/null ; then
-        if git diff "$base_ref" -- crates/shared/src/lib.rs \
-            | grep -qE '^\+pub const ABI_VERSION: u32 = ' ; then
+        # Process substitution (not a pipe) so `grep -q` exiting on first
+        # match can't SIGPIPE `git diff` into a non-zero status that
+        # `set -o pipefail` would then propagate — that race made a large
+        # lib.rs diff spuriously report "ABI_VERSION not bumped".
+        if grep -qE '^\+pub const ABI_VERSION: u32 = ' \
+            < <(git diff "$base_ref" -- crates/shared/src/lib.rs) ; then
             version_bumped=1
         fi
     fi

@@ -41,7 +41,7 @@ use crate::audio::wait;
 /// worklet can gate `hwPtr` advance on producer progress (silence
 /// past `appl_ptr`). Returns 0 when no OFD is bound.
 pub fn current_appl_ptr(pcm_id: u32) -> i64 {
-    let mut result: i64 = 0;
+    let mut result: u32 = 0;
     crate::process_table::with_processes(|procs| {
         for proc in procs {
             for (_idx, ofd) in proc.ofd_table.iter_mut() {
@@ -53,6 +53,58 @@ pub fn current_appl_ptr(pcm_id: u32) -> i64 {
                     if ctl.appl_ptr > result {
                         result = ctl.appl_ptr;
                     }
+                }
+            }
+        }
+    });
+    result as i64
+}
+
+/// Read the current `mmap_status.hw_ptr` for any OFD bound to `pcm_id`
+/// (max across matches). Backs
+/// [`crate::wasm_api::kernel_audio_get_hw_ptr`] — a read-only probe
+/// used by host-side instrumentation to confirm the period tick is
+/// advancing `hw_ptr` in lockstep with producer progress. Returns 0
+/// when no OFD is bound.
+pub fn current_hw_ptr(pcm_id: u32) -> i64 {
+    let mut result: u32 = 0;
+    crate::process_table::with_processes(|procs| {
+        for proc in procs {
+            for (_idx, ofd) in proc.ofd_table.iter_mut() {
+                let Some(audio) = ofd.audio_mut() else { continue };
+                if audio.pcm_id != pcm_id {
+                    continue;
+                }
+                if let Some(status) = audio.mmap_status.as_ref() {
+                    if status.hw_ptr > result {
+                        result = status.hw_ptr;
+                    }
+                }
+            }
+        }
+    });
+    result as i64
+}
+
+/// Read the current `state` (SNDRV_PCM_STATE_*) for any OFD bound to
+/// `pcm_id` (first match wins). Backs
+/// [`crate::wasm_api::kernel_audio_get_state`] — host-side
+/// instrumentation watches for the PREPARED → RUNNING → XRUN
+/// transition to diagnose mid-playback feedback-loop breakdowns.
+/// Returns `SNDRV_PCM_STATE_OPEN` (0) when no OFD is bound.
+pub fn current_state(pcm_id: u32) -> u32 {
+    let mut result: u32 = wasm_posix_shared::audio::SNDRV_PCM_STATE_OPEN;
+    let mut found = false;
+    crate::process_table::with_processes(|procs| {
+        for proc in procs {
+            for (_idx, ofd) in proc.ofd_table.iter_mut() {
+                let Some(audio) = ofd.audio_mut() else { continue };
+                if audio.pcm_id != pcm_id {
+                    continue;
+                }
+                if !found {
+                    result = audio.state;
+                    found = true;
                 }
             }
         }
@@ -73,9 +125,9 @@ pub fn tick(pcm_id: u32, frames_consumed: u32, tv_sec: i64, tv_nsec: i64) {
                     continue;
                 }
                 if let Some(status) = audio.mmap_status.as_mut() {
-                    status.hw_ptr = status.hw_ptr.saturating_add(frames_consumed as i64);
+                    status.hw_ptr = status.hw_ptr.wrapping_add(frames_consumed);
                     status.tstamp_sec = tv_sec;
-                    status.tstamp_nsec = tv_nsec;
+                    status.tstamp_nsec = tv_nsec as i32;
                     let new_hw_ptr = status.hw_ptr;
                     // `status` borrow ends here so `audio.mmap_control`
                     // and `audio.state` can be touched mutably.

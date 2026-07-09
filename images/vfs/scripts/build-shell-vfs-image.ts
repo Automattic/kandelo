@@ -8,17 +8,12 @@
  *
  * Usage: npx tsx images/vfs/scripts/build-shell-vfs-image.ts
  */
-import { existsSync, readFileSync } from "node:fs";
-import path from "node:path";
-import { fileURLToPath } from "node:url";
+import { readFileSync } from "node:fs";
 
-const SCRIPT_DIR = path.dirname(fileURLToPath(import.meta.url));
 import { resolveBinary } from "../../../host/src/binary-resolver";
 import { MemoryFileSystem } from "../../../host/src/vfs/memory-fs";
 import {
-  ensureDirRecursive,
   saveImage,
-  walkAndWrite,
   writeVfsBinary,
 } from "./vfs-image-helpers";
 import { populateShellEnvironment, resolveVfsArtifact } from "./shell-vfs-build";
@@ -56,8 +51,6 @@ async function main() {
 
   console.log("Populating Doom runtime...");
   populateDoomRuntime(fs);
-  console.log("Populating espeak-ng runtime...");
-  populateEspeakRuntime(fs);
   writeKandeloDemoConfig(fs, {
     version: 1,
     profiles: {
@@ -91,29 +84,4 @@ main().catch((err) => {
 function populateDoomRuntime(fs: MemoryFileSystem): void {
   const fbdoomBytes = readFileSync(resolveVfsArtifact("programs/fbdoom.wasm", "fbdoom"));
   writeVfsBinary(fs, "/usr/local/bin/fbdoom", new Uint8Array(fbdoomBytes), 0o755);
-}
-
-function populateEspeakRuntime(fs: MemoryFileSystem): void {
-  const espeakBytes = readFileSync(resolveVfsArtifact("programs/espeak-ng.wasm", "espeak-ng"));
-  writeVfsBinary(fs, "/usr/bin/espeak-ng", new Uint8Array(espeakBytes), 0o755);
-
-  // espeak-ng's PATH_ESPEAK_DATA macro is baked at build time to
-  // /usr/share/espeak-ng-data (set via CMAKE_INSTALL_PREFIX=/usr in
-  // build-espeak-ng.sh). The runtime walks lang/<group>/<voice>,
-  // voices/!v/*, phondata, phonindex, phontab, intonations, and per-
-  // language *_dict files — copying the whole tree is the simplest
-  // shape and the trimmed English-only data dir is only ~1.9 MB.
-  const dataDir = path.join(
-    SCRIPT_DIR,
-    "../../../packages/registry/espeak-ng/espeak-ng-install/share/espeak-ng-data",
-  );
-  if (!existsSync(dataDir)) {
-    throw new Error(
-      `populateEspeakRuntime: espeak-ng-data not found at ${dataDir}. ` +
-        `Run \`bash packages/registry/espeak-ng/build-espeak-ng.sh\` first.`,
-    );
-  }
-  ensureDirRecursive(fs, "/usr/share/espeak-ng-data");
-  const fileCount = walkAndWrite(fs, dataDir, "/usr/share/espeak-ng-data");
-  console.log(`  staged ${fileCount} espeak-ng-data files at /usr/share/espeak-ng-data`);
 }

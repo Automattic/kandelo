@@ -33,7 +33,9 @@
  * flag (see handoff-58 — v1 simplification). We still pass the flag
  * to match real DRM semantics and to match what SDL2 KMSDRM does.
  */
+#include <errno.h>
 #include <fcntl.h>
+#include <poll.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -131,11 +133,24 @@ int main(int argc, char **argv) {
     ctx.version = 2;
     ctx.page_flip_handler = on_flip;
 
+    /* Upstream libdrm's drmHandleEvent() does a single read(fd, ...)
+     * and assumes Linux's blocking-mode read(/dev/dri/cardN) parks the
+     * caller until the kernel's vblank pump delivers an event. Our
+     * kernel returns 0 immediately on an empty event ring (centralized
+     * mode has no SYS_READ EAGAIN-retry plumbing), so a bare
+     * drmHandleEvent races the vblank tick: it returns without
+     * dispatching, the queued flip stays pending, and the next
+     * drmModePageFlip hits EBUSY. Real consumers (SDL2 KMSDRM,
+     * weston, mutter) already poll() first; do the same here. */
+    struct pollfd pfd = { .fd = card, .events = POLLIN };
     for (int i = 0; i < frames; i++) {
         if (drmModePageFlip(card, crtc_id, fb_id,
                             DRM_MODE_PAGE_FLIP_EVENT,
                             (void *)(uintptr_t) i) < 0)
             FAIL("drmModePageFlip");
+        int pr;
+        do { pr = poll(&pfd, 1, -1); } while (pr < 0 && errno == EINTR);
+        if (pr < 0) FAIL("poll");
         if (drmHandleEvent(card, &ctx) < 0)
             FAIL("drmHandleEvent");
     }

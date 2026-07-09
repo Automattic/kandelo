@@ -204,6 +204,10 @@ test("Kandelo shell demo runs bash, vim, and NetHack", async ({ page }) => {
   await gotoOrSkip(page, "/?demo=shell");
   await waitForReady(page);
   await expect(page.locator(".xterm-rows").first()).toBeVisible({ timeout: 120_000 });
+  // Input typed before bash's first prompt is legitimately discarded by the
+  // boot chain's startup typeahead flush (tcflush), so wait for the prompt
+  // like the other terminal tests do.
+  await waitForTerminalContent(page, /kandelo\$ ?/, 120_000);
 
   await runTerminalCommand(
     page,

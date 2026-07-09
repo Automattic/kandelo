@@ -734,7 +734,14 @@ jobs:
             # existing `[binary]` pin in package.toml; prepare-merge
             # just refuses to redo the work. Remove an entry here
             # (and mirror in staging-build.yml) to re-enable rebuilds.
-            disabled_pkgs=" cpython erlang erlang-vfs perl perl-vfs python-vfs redis ruby texlive "
+            #
+            # espeak-ng is disabled for a different reason: its port is
+            # still WIP (placeholder source pin, vendored pcaudiolib-src
+            # not committed) so it has no published archive to consume
+            # and cannot resolve on a clean checkout. Keep it out of the
+            # matrix and the fetch gate until the port lands a real
+            # source pin + published binary.
+            disabled_pkgs=" cpython erlang erlang-vfs perl perl-vfs python-vfs redis ruby texlive espeak-ng "
 
             for pkg_dir in packages/registry/*/; do
               pkg=$(basename "$pkg_dir")
@@ -1307,7 +1314,7 @@ jobs:
 
       - name: Materialize binaries
         env:
-          WASM_POSIX_FETCH_SKIP_PKGS: cpython erlang erlang-vfs perl perl-vfs python-vfs redis ruby texlive
+          WASM_POSIX_FETCH_SKIP_PKGS: cpython erlang erlang-vfs perl perl-vfs python-vfs redis ruby texlive espeak-ng
         # Resolve against the durable release plus local file://
         # overlays for newly built archives. Runtime-only PRs can still
         # reach this overlay path when preflight detects durable index

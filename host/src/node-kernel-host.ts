@@ -396,6 +396,32 @@ export class NodeKernelHost {
   }
 
   /**
+   * Read-only probes mirroring `BrowserKernel.audioGetHwPtr` /
+   * `audioGetState` for dual-host parity (CLAUDE.md §"Two hosts").
+   * `NodeAudioDriver` does not currently poll them, but vitest specs
+   * and future Node-side drivers can.
+   */
+  async audioGetHwPtr(pcmId: number): Promise<number> {
+    const requestId = this._nextRequestId++;
+    const result = await this.request(requestId, {
+      type: "audio_get_hw_ptr",
+      requestId,
+      pcmId,
+    });
+    return result as number;
+  }
+
+  async audioGetState(pcmId: number): Promise<number> {
+    const requestId = this._nextRequestId++;
+    const result = await this.request(requestId, {
+      type: "audio_get_state",
+      requestId,
+      pcmId,
+    });
+    return result as number;
+  }
+
+  /**
    * Wire an `AudioDriver` into the kernel: allocates a SAB ring,
    * registers it, then starts the driver with a `kernelTick` callback
    * that funnels each period boundary into `kernel_audio_period_tick`.

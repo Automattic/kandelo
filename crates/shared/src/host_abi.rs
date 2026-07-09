@@ -34,6 +34,12 @@ pub enum SyscallArgSize {
     Deref { arg_index: u8 },
     /// Fixed byte length.
     Fixed { size: u32 },
+    /// Linux `_IOC_SIZE` convention: byte length is bits 16..29 of the
+    /// argument at `arg_index` (typically the ioctl request number),
+    /// clamped to at least `floor`. Legacy ioctls encode `size = 0` so
+    /// the floor provides a safe default for handlers that need a few
+    /// bytes (FIONBIO, KDGKBTYPE, etc.).
+    IoctlEncoded { arg_index: u8, floor: u32 },
 }
 
 /// One pointer argument descriptor for host-side marshalling.
@@ -96,6 +102,15 @@ macro_rules! deref {
 macro_rules! fixed {
     ($size:expr) => {
         SyscallArgSize::Fixed { size: $size }
+    };
+}
+
+macro_rules! ioctl_encoded {
+    ($arg_index:expr, $floor:expr) => {
+        SyscallArgSize::IoctlEncoded {
+            arg_index: $arg_index,
+            floor: $floor,
+        }
     };
 }
 
@@ -248,7 +263,10 @@ pub const SYSCALL_ARG_DESCRIPTORS: &[SyscallArgDescriptor] = &[
     entry!(Syscall::Openat as u32, [desc!(1, In, cstring!())]),
     entry!(Syscall::Tcgetattr as u32, [desc!(1, Out, fixed!(256))]),
     entry!(Syscall::Tcsetattr as u32, [desc!(2, In, fixed!(256))]),
-    entry!(Syscall::Ioctl as u32, [desc!(2, InOut, fixed!(256))]),
+    entry!(
+        Syscall::Ioctl as u32,
+        [desc!(2, InOut, ioctl_encoded!(1, 256))]
+    ),
     entry!(Syscall::Uname as u32, [desc!(0, Out, fixed!(390))]),
     entry!(Syscall::Pipe2 as u32, [desc!(0, Out, fixed!(8))]),
     entry!(

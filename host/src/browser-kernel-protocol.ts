@@ -306,6 +306,42 @@ export interface AudioGetApplPtrRequestMessage {
   pcmId: number;
 }
 
+/**
+ * Read-only probes paired with `audio_get_appl_ptr` for host-side
+ * audio instrumentation. `audio_get_hw_ptr` exposes
+ * `mmap_status.hw_ptr` so a probe can confirm the period tick is
+ * advancing the kernel-side consumer pointer in lockstep with the
+ * AudioWorklet. `audio_get_state` exposes `SNDRV_PCM_STATE_*` so a
+ * probe can watch for PREPARED → RUNNING → XRUN transitions when a
+ * mid-playback stall is reported. Reply via `ResponseMessage` with a
+ * `number`.
+ */
+export interface AudioGetHwPtrRequestMessage {
+  type: "audio_get_hw_ptr";
+  requestId: number;
+  pcmId: number;
+}
+
+export interface AudioGetStateRequestMessage {
+  type: "audio_get_state";
+  requestId: number;
+  pcmId: number;
+}
+
+/**
+ * Main-thread → kernel-worker request to allocate the 4-byte
+ * SAB-backed `appl_ptr` mirror for `pcmId` and bind it via
+ * `kernel_audio_init_appl_ptr_sab`. Worker replies with
+ * `{ buffer, byteOffset }` so the host can hand the slot to the
+ * AudioWorklet. See §C of
+ * `docs/plans/2026-06-17-sdl2-browser-rendering-handoff-3.md`.
+ */
+export interface AudioAllocApplPtrSabRequestMessage {
+  type: "audio_alloc_appl_ptr_sab";
+  requestId: number;
+  pcmId: number;
+}
+
 export interface RegisterLazyArchivesMessage {
   type: "register_lazy_archives";
   entries: Array<{
@@ -428,6 +464,9 @@ export type MainToKernelMessage =
   | AudioAllocRingRequestMessage
   | AudioPeriodTickMessage
   | AudioGetApplPtrRequestMessage
+  | AudioGetHwPtrRequestMessage
+  | AudioGetStateRequestMessage
+  | AudioAllocApplPtrSabRequestMessage
   | EnumProcsRequestMessage
   | ReadProcMapsRequestMessage
   | SetSyscallTraceMessage

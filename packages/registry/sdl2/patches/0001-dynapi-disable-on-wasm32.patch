@@ -1,0 +1,27 @@
+From: kandelo wasm32 port <kandelo@local>
+Subject: [PATCH] dynapi: disable on wasm32 — no platform branch in SDL_dynapi.c
+
+src/dynapi/SDL_dynapi.c only knows about Windows, Apple, Linux ELF (via
+`__attribute__((constructor))`), HAIKU and a few other platforms. On
+wasm32 we have neither of those mechanisms — clang errors with `Please
+define your platform.` Defining DYNAPI_NEEDS_DLOPEN via -D won't work:
+SDL_config.h sets HAVE_DLOPEN=1 (musl exposes dlopen), so the
+NEEDS_DLOPEN branch is bypassed.
+
+Add a `__wasm__` case to SDL_dynapi.h that disables SDL_DYNAMIC_API at
+compile time. Dynamic API would be dead weight here anyway — SDL2 is
+linked statically into every wasm32 binary; there's no dlopen ABI
+contract to preserve.
+
+--- a/src/dynapi/SDL_dynapi.h
++++ b/src/dynapi/SDL_dynapi.h
+@@ -68,6 +68,8 @@
+ #elif defined(__3DS__)
+ #define SDL_DYNAMIC_API 0 /* devkitARM doesn't support dynamic linking */
+ #elif defined(DYNAPI_NEEDS_DLOPEN) && !defined(HAVE_DLOPEN)
+ #define SDL_DYNAMIC_API 0 /* we need dlopen(), but don't have it.... */
++#elif defined(__wasm__) /* statically linked into each wasm32 binary */
++#define SDL_DYNAMIC_API 0
+ #endif
+
+ /* everyone else. This is where we turn on the API if nothing forced it off. */

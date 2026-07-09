@@ -54,6 +54,14 @@ CFLAGS=(
     -fno-trapping-math
     -mllvm -wasm-enable-sjlj
     -mllvm -wasm-use-legacy-eh=false
+    # Upstream libdrm installs public headers under `include/libdrm/`
+    # (matches the `--cflags` pkg-config flag). Programs `#include
+    # <xf86drm.h>` from there. `include/drm/` is the UAPI dir that
+    # xf86drm.h itself transitively pulls in via `#include <drm.h>`;
+    # both dirs must be on the search path or the upstream header
+    # fan-out doesn't resolve. Harmless when the dirs are absent.
+    -I"$SYSROOT/include/libdrm"
+    -I"$SYSROOT/include/drm"
 )
 
 LINK_PRE_LIBS=(
@@ -184,6 +192,40 @@ if ls "$REPO_ROOT/programs/"*.cpp >/dev/null 2>&1; then
     fi
 fi
 
+# Resolve SDL2 and symlink its outputs (and its deps' outputs) into
+# the sysroot if there are any sdl2_*_smoke.c programs or any source
+# under programs/sdl2/ to build. We re-resolve + re-symlink on every
+# run because SDL2 has transitive deps (alsa-lib, libdrm,
+# libinput-lite) whose cache dirs shift independently when their
+# `build.toml.revision` bumps. The previous fast-path guarded on
+# `libSDL2.a` only, so a dep bump produced a fresh sdl2 cache while
+# the sysroot symlinks for libasound.a / libdrm.a / libinput.a stayed
+# pointing at the pre-bump caches — programs then linked against
+# stale dep archives.
+# See docs/plans/2026-06-16-dri-kandelo-port-handoff-54.md §B4.
+# The resolver is idempotent + cached, so re-running it is cheap when
+# nothing changed.
+if ls "$REPO_ROOT"/programs/sdl2_*.c >/dev/null 2>&1 \
+        || ls "$REPO_ROOT"/programs/sdl2/*.c >/dev/null 2>&1; then
+    echo "==> Resolving sdl2 (and deps) for SDL2 programs..."
+    HOST_TRIPLE="$(rustc -vV | awk '/^host/ {print $2}')"
+    (cd "$REPO_ROOT" && cargo run -p xtask --target "$HOST_TRIPLE" --quiet -- build-deps resolve sdl2 >/dev/null)
+    SDL2_PREFIX="$(cd "$REPO_ROOT" && cargo run -p xtask --target "$HOST_TRIPLE" --quiet -- build-deps path sdl2)"
+    ALSA_PREFIX="$(cd "$REPO_ROOT" && cargo run -p xtask --target "$HOST_TRIPLE" --quiet -- build-deps path alsa-lib)"
+    LIBDRM_PREFIX_SDL2="$(cd "$REPO_ROOT" && cargo run -p xtask --target "$HOST_TRIPLE" --quiet -- build-deps path libdrm)"
+    LIBINPUT_PREFIX="$(cd "$REPO_ROOT" && cargo run -p xtask --target "$HOST_TRIPLE" --quiet -- build-deps path libinput-lite)"
+
+    ln -sfn "$SDL2_PREFIX/lib/libSDL2.a"       "$SYSROOT/lib/libSDL2.a"
+    ln -sfn "$ALSA_PREFIX/lib/libasound.a"     "$SYSROOT/lib/libasound.a"
+    ln -sfn "$LIBDRM_PREFIX_SDL2/lib/libdrm.a" "$SYSROOT/lib/libdrm.a"
+    ln -sfn "$LIBINPUT_PREFIX/lib/libinput.a"  "$SYSROOT/lib/libinput.a"
+
+    mkdir -p "$SYSROOT/include/SDL2"
+    for h in "$SDL2_PREFIX/include/SDL2"/*.h; do
+        ln -sfn "$h" "$SYSROOT/include/SDL2/$(basename "$h")"
+    done
+fi
+
 echo "Building user programs..."
 for src in "$REPO_ROOT/programs/"*.c; do
     [ -f "$src" ] || continue
@@ -201,6 +243,39 @@ for src in "$REPO_ROOT/programs/"*.c; do
             build_program "$src" "$OUT_DIR_32" \
                 "$SYSROOT/lib/libdrm.a"
             ;;
+        libinput_stub_smoke.c)
+            build_program "$src" "$OUT_DIR_32" \
+                "$SYSROOT/lib/libinput.a"
+            ;;
+        gbm_surface_smoke.c)
+            build_program "$src" "$OUT_DIR_32" \
+                "$SYSROOT/lib/libgbm.a" "$SYSROOT/lib/libdrm.a"
+            ;;
+        alsa_lib_smoke.c)
+            build_program "$src" "$OUT_DIR_32" \
+                "$SYSROOT/lib/libasound.a"
+            ;;
+        sdl2_kmsdrm_smoke.c)
+            # SDL2 KMSDRM backend links statically against libdrm + libgbm.
+            # Audio + evdev objects are present in libSDL2.a too but the
+            # smoke calls SDL_Init(SDL_INIT_VIDEO) only, so the audio /
+            # input archives don't need to be on the link line.
+            build_program "$src" "$OUT_DIR_32" \
+                "$SYSROOT/lib/libSDL2.a" \
+                "$SYSROOT/lib/libgbm.a" "$SYSROOT/lib/libdrm.a"
+            ;;
+        sdl2_alsa_smoke.c)
+            build_program "$src" "$OUT_DIR_32" \
+                "$SYSROOT/lib/libSDL2.a" \
+                "$SYSROOT/lib/libasound.a" \
+                "$SYSROOT/lib/libgbm.a" "$SYSROOT/lib/libdrm.a"
+            ;;
+        sdl2_evdev_smoke.c)
+            build_program "$src" "$OUT_DIR_32" \
+                "$SYSROOT/lib/libSDL2.a" \
+                "$SYSROOT/lib/libinput.a" \
+                "$SYSROOT/lib/libgbm.a" "$SYSROOT/lib/libdrm.a"
+            ;;
         *)
             build_program "$src" "$OUT_DIR_32"
             ;;
@@ -211,6 +286,62 @@ for src in "$REPO_ROOT/programs/"*.cpp; do
     [ -f "$src" ] || continue
     build_cpp_program "$src" "$OUT_DIR_32"
 done
+
+# SDL2 playground app — every .c under programs/sdl2/ links into the
+# single sdl2.wasm binary. Multi-source clang invocation: clang
+# accepts the sources together with the libc/glue prelude and the
+# full SDL2 + dependency archive set, then we run fork-instrument on
+# the result. Link set: libSDL2 + libasound + libinput + libgbm +
+# libdrm plus libEGL / libGLESv2 (the SDL_opengles2 header bundle
+# transitively pulls <GLES2/gl2.h> but the per-file grep in
+# build_program only catches direct top-level EGL/GLES includes).
+if ls "$REPO_ROOT"/programs/sdl2/*.c >/dev/null 2>&1; then
+    # Regenerate the Inconsolata TTF→C byte-array header if missing or
+    # older than the .ttf. The .h is git-ignored; the .ttf is the
+    # source of truth (see programs/sdl2/third_party/NOTICE.md).
+    sdl2_ttf="$REPO_ROOT/programs/sdl2/third_party/Inconsolata-Regular.ttf"
+    sdl2_ttf_h="$REPO_ROOT/programs/sdl2/third_party/inconsolata_ttf.h"
+    if [ -f "$sdl2_ttf" ]; then
+        if [ ! -f "$sdl2_ttf_h" ] || [ "$sdl2_ttf" -nt "$sdl2_ttf_h" ]; then
+            echo "  Regenerating inconsolata_ttf.h from $(basename "$sdl2_ttf")..."
+            python3 - "$sdl2_ttf" "$sdl2_ttf_h" <<'PY'
+import sys, pathlib
+src = pathlib.Path(sys.argv[1]).read_bytes()
+dst = pathlib.Path(sys.argv[2])
+# 16 bytes per line keeps each token whole and the file ~6× the .ttf
+# size — well under what clang chokes on.
+PER_LINE = 16
+lines = [
+    ",".join(f"0x{b:02x}" for b in src[i:i + PER_LINE])
+    for i in range(0, len(src), PER_LINE)
+]
+dst.write_text(
+    "/* Auto-generated from Inconsolata-Regular.ttf by "
+    "scripts/build-programs.sh. */\n"
+    "/* See programs/sdl2/third_party/NOTICE.md for license. */\n"
+    "#pragma once\n"
+    f"static const unsigned char inconsolata_ttf[] = {{\n"
+    + ",\n".join(lines) + "\n};\n"
+    f"static const unsigned int inconsolata_ttf_len = {len(src)};\n"
+)
+PY
+        fi
+    fi
+    sdl2_sources=("$REPO_ROOT"/programs/sdl2/*.c)
+    sdl2_wasm="$OUT_DIR_32/sdl2.wasm"
+    echo "  Compiling sdl2 (multi-source: ${#sdl2_sources[@]} file(s))..."
+    "$CC" "${CFLAGS[@]}" "${sdl2_sources[@]}" \
+        "${LINK_PRE_LIBS[@]}" \
+        "$SYSROOT/lib/libSDL2.a" \
+        "$SYSROOT/lib/libasound.a" \
+        "$SYSROOT/lib/libinput.a" \
+        "$SYSROOT/lib/libgbm.a" "$SYSROOT/lib/libdrm.a" \
+        "$SYSROOT/lib/libEGL.a" "$SYSROOT/lib/libGLESv2.a" \
+        "${LINK_POST_LIBS[@]}" \
+        -o "$sdl2_wasm"
+    "$FORK_INSTRUMENT" "$sdl2_wasm" -o "$sdl2_wasm.instr"
+    mv "$sdl2_wasm.instr" "$sdl2_wasm"
+fi
 
 echo "Building example programs..."
 for src in "$REPO_ROOT/examples/"*.c; do

@@ -602,6 +602,16 @@ The kernel does **not** mix or synthesize audio. The user program (DOOM's mixer 
 
 Single-open semantics match the typical OSS exclusive-grab model. Owner ownership is released on `close` of the last `/dev/dsp` fd, on `execve`, and on process exit; the ring is flushed at the same time so a successor open hears silence rather than the tail of the previous program. ABI version bumped 7 → 8 to register the new `kernel_drain_audio(i64, i32) -> i32` export plus the three readouts `kernel_audio_sample_rate / channels / pending`. The OSS ioctl encodings live in `crates/shared/src/lib.rs::oss`.
 
+## ALSA PCM (`/dev/snd/pcmC0D0p`, `/dev/snd/controlC0`)
+
+The kernel exposes the upstream ALSA UAPI struct surface so unmodified alsa-lib + SDL2 (and any other ALSA consumer) talks to the kernel directly, with no `/dev/dsp` translation layer. Crates/kernel/src/audio/pcm_ioctl.rs handles the hw_params / sw_params / prepare / start / writei state machine; `ctl_ioctl.rs` handles the `/dev/snd/controlC0` PVERSION + PCM_PREFER_SUBDEVICE that alsa-lib fans before opening the PCM fd. ioctl request words use the standard `_IOC()` encoding; the host extracts the byte length from bits 16..29 of the request to know how many bytes to marshal between the user buffer and kernel scratch (`computeIoctlEncodedSize` in `host/src/kernel-worker.ts`, with a floor for legacy size-0 ioctls like FIONBIO).
+
+Audio threads are disabled (`--disable-pthreads`); SDL2 ports running against the kernel use the polling driver introduced in the SDL2 port (`packages/registry/sdl2/patches/0002-polling-audio-eagain.patch`). The application's main loop calls `SDL_PumpAudioDevices()` once per frame — that drives the audio callback synchronously and writes one buffer into the kernel ring per pump. The ALSA backend treats `-EAGAIN` from `snd_pcm_writei` as "ring full, retry next pump" instead of blocking — the kernel's per-quantum PCM tick (`crates/kernel/src/audio/tick.rs`) advances `hw_ptr` independently. The polling driver caps simultaneous open devices at 8; the 9th open returns `SDL_SetError` so callers see a clear failure, not silent drop.
+
+## DRM/KMS (`/dev/dri/card0`, `/dev/dri/renderD128`)
+
+`crates/kernel/src/syscalls.rs` handles DRM_IOCTL_VERSION, MODE_GETRESOURCES, MODE_GETCONNECTOR, MODE_GETENCODER, MODE_GETCRTC, MODE_SETCRTC, MODE_GETPLANE_RESOURCES, MODE_ADDFB / RMFB / DIRTYFB, MODE_PAGE_FLIP, and the dumb-buffer creation+mmap path. Programs compiled against the upstream `libdrm` (vendored under `packages/registry/libdrm/`) link cleanly; SDL2's KMSDRM backend uses the same surface unmodified. `host_kms_mode_info` returns a 1024×768@60 VESA mode flagged PREFERRED so KMSDRM's mode-selection loop picks it up; the connector-id parameter is plumbed through but v1 advertises a single connector. `libc/glue/libgbm_stub.c` implements a 2-BO scanout ring (lock_front_buffer / release_buffer / has_free_buffers / destroy) on top of the dumb-buffer surface so KMSDRM's swap chain has somewhere to hand off frames. The `libEGL.a` / `libGLESv2.a` stubs (in `libc/glue/`) route GLES commands through the `/dev/dri/renderD128` cmdbuf to the host's WebGL2 bridge.
+
 ## Signal Subsystem
 
 Signals are delivered at syscall boundaries. When a process has a pending signal:

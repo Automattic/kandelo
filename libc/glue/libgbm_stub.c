@@ -9,24 +9,34 @@
  *
  * Surface implemented (v1):
  *   - gbm_create_device / gbm_device_destroy
+ *   - gbm_device_is_format_supported (32-bpp fourccs)
  *   - gbm_bo_create        (linear, 32-bpp formats only)
  *   - gbm_bo_destroy
  *   - gbm_bo_get_fd        (PRIME export → handle-to-fd)
  *   - gbm_bo_import        (GBM_BO_IMPORT_FD: fd-to-handle)
  *   - gbm_bo_map / gbm_bo_unmap   (single-plane mmap)
+ *   - gbm_bo_write         (map + memcpy)
+ *   - gbm_bo_set/get_user_data (opaque pointer with destroy cb)
  *   - accessors: get_width / get_height / get_stride / get_format
  *                / get_bpp / get_modifier / get_handle / get_device
+ *
+ * Surface scanout (added for SDL2 KMSDRM):
+ *   - gbm_surface_create / gbm_surface_create_with_modifiers /
+ *     gbm_surface_create_with_modifiers2
+ *   - gbm_surface_lock_front_buffer / gbm_surface_release_buffer
+ *   - gbm_surface_has_free_buffers / gbm_surface_destroy
+ *
+ * The surface holds a fixed-size two-BO ring (double-buffer);
+ * lock_front_buffer hands out an unused BO and release_buffer
+ * returns it. Modifiers other than DRM_FORMAT_MOD_LINEAR are
+ * ignored — every BO is linear, CPU-shared, single-plane.
  *
  * Declared in <gbm.h> but intentionally NOT implemented (consumers
  * calling these get link-time undefined-symbol errors):
  *   gbm_bo_create_with_modifiers*, gbm_bo_get_*_for_plane,
  *   gbm_bo_get_plane_count, gbm_bo_get_offset, gbm_bo_get_handle_for_plane,
- *   gbm_bo_write, gbm_bo_set/get_user_data, gbm_surface_*,
  *   gbm_device_get_fd, gbm_device_get_backend_name,
- *   gbm_device_is_format_supported,
  *   gbm_device_get_format_modifier_plane_count, gbm_format_get_name.
- * Phase C v1 is deliberately minimal — every BO is linear,
- * CPU-shared, single-plane, with the DRM_FORMAT_MOD_LINEAR modifier.
  */
 
 #include <gbm.h>
@@ -56,6 +66,21 @@ struct gbm_bo {
     uint64_t modifier;        /* DRM_FORMAT_MOD_LINEAR for v1 */
     void *map_addr;           /* lazy: set by gbm_bo_map */
     size_t map_len;
+    void *user_data;
+    void (*user_data_destroy)(struct gbm_bo *, void *);
+    struct gbm_surface *surface;  /* non-NULL when owned by a surface ring */
+};
+
+#define WPK_GBM_SURFACE_BO_COUNT 2
+
+struct gbm_surface {
+    struct gbm_device *dev;
+    uint32_t width, height;
+    uint32_t format;
+    uint32_t flags;
+    struct gbm_bo *bos[WPK_GBM_SURFACE_BO_COUNT];
+    int in_use[WPK_GBM_SURFACE_BO_COUNT];
+    int next;                /* round-robin cursor for lock_front_buffer */
 };
 
 static uint32_t format_bpp(uint32_t fourcc) {
@@ -248,6 +273,11 @@ void gbm_bo_unmap(struct gbm_bo *bo, void *map_data) {
 
 void gbm_bo_destroy(struct gbm_bo *bo) {
     if (!bo) return;
+    if (bo->user_data_destroy) {
+        bo->user_data_destroy(bo, bo->user_data);
+        bo->user_data = NULL;
+        bo->user_data_destroy = NULL;
+    }
     if (bo->map_addr) {
         munmap(bo->map_addr, bo->map_len);
         bo->map_addr = NULL;
@@ -255,6 +285,49 @@ void gbm_bo_destroy(struct gbm_bo *bo) {
     }
     drmCloseBufferHandle(bo->dev->fd, bo->handle);
     free(bo);
+}
+
+int gbm_bo_write(struct gbm_bo *bo, const void *buf, size_t count) {
+    if (!bo || !buf) {
+        errno = EINVAL;
+        return -1;
+    }
+    if ((uint64_t) count > bo->size) {
+        errno = EINVAL;
+        return -1;
+    }
+    /* Reuse the lazy-mapped pointer when present; otherwise mmap
+     * the dumb buffer and copy.  gbm_bo_map's flags+rect args are
+     * ignored in v1, so passing zeros + NULLs is fine. */
+    void *addr = bo->map_addr;
+    int mapped_here = 0;
+    if (!addr) {
+        addr = gbm_bo_map(bo, 0, 0, bo->width, bo->height, 0, NULL, NULL);
+        if (!addr) {
+            return -1;
+        }
+        mapped_here = 1;
+    }
+    memcpy(addr, buf, count);
+    if (mapped_here) {
+        /* Hold the mapping — repeated writes are common from
+         * cursor / icon uploads. gbm_bo_destroy will unmap. */
+    }
+    return 0;
+}
+
+void gbm_bo_set_user_data(struct gbm_bo *bo, void *data,
+                          void (*destroy_user_data)(struct gbm_bo *, void *)) {
+    if (!bo) return;
+    if (bo->user_data_destroy && bo->user_data) {
+        bo->user_data_destroy(bo, bo->user_data);
+    }
+    bo->user_data = data;
+    bo->user_data_destroy = destroy_user_data;
+}
+
+void *gbm_bo_get_user_data(struct gbm_bo *bo) {
+    return bo ? bo->user_data : NULL;
 }
 
 uint32_t gbm_bo_get_width(struct gbm_bo *bo)    { return bo->width;    }
@@ -272,4 +345,156 @@ union gbm_bo_handle gbm_bo_get_handle(struct gbm_bo *bo) {
     union gbm_bo_handle h;
     h.u32 = bo->handle;
     return h;
+}
+
+int gbm_device_is_format_supported(struct gbm_device *gbm,
+                                   uint32_t format, uint32_t flags) {
+    (void) gbm; (void) flags;
+    /* Match format_bpp's set — the only formats the kernel's
+     * CREATE_DUMB path accepts. SDL2 KMSDRM probes ARGB8888 with
+     * GBM_BO_USE_SCANOUT|GBM_BO_USE_RENDERING; cursor probes use
+     * ARGB8888 with USE_CURSOR|USE_WRITE. Both fall under the same
+     * underlying linear dumb buffer in v1. */
+    return format_bpp(format) ? 1 : 0;
+}
+
+/* ----- gbm_surface_* (double-buffered scanout ring) ---------------
+ *
+ * SDL2's KMSDRM backend wants a gbm_surface it can hand to
+ * eglCreateWindowSurface and then drive page-flipping via
+ * gbm_surface_lock_front_buffer / release_buffer.  The mesa
+ * implementation backs each surface with a small ring of BOs that
+ * EGL renders into and KMS scans out from.
+ *
+ * Our v1 mirrors that with a fixed two-BO ring, which is enough for
+ * a single-window double-buffered demo.  The BOs are allocated
+ * eagerly so consumers always observe the same width/height/stride
+ * across lock cycles.  Repeated lock without an intervening release
+ * (or a release without a prior lock) returns NULL — that matches
+ * mesa's behaviour when the ring is exhausted.
+ */
+
+static struct gbm_bo *surface_alloc_bo(struct gbm_surface *s) {
+    /* Map GBM_BO_USE_* flags onto the kernel-side DUMB path; v1
+     * accepts any flag combination because all BOs are linear
+     * CPU-shared dumbs. */
+    struct gbm_bo *bo = gbm_bo_create(s->dev, s->width, s->height,
+                                      s->format, s->flags);
+    if (bo) {
+        bo->surface = s;
+    }
+    return bo;
+}
+
+struct gbm_surface *gbm_surface_create(struct gbm_device *gbm,
+                                       uint32_t width, uint32_t height,
+                                       uint32_t format, uint32_t flags) {
+    if (!gbm || !width || !height || !format_bpp(format)) {
+        errno = EINVAL;
+        return NULL;
+    }
+    struct gbm_surface *s = (struct gbm_surface *) calloc(1, sizeof(*s));
+    if (!s) {
+        errno = ENOMEM;
+        return NULL;
+    }
+    s->dev    = gbm;
+    s->width  = width;
+    s->height = height;
+    s->format = format;
+    s->flags  = flags;
+    for (int i = 0; i < WPK_GBM_SURFACE_BO_COUNT; i++) {
+        s->bos[i] = surface_alloc_bo(s);
+        if (!s->bos[i]) {
+            int save = errno;
+            for (int j = 0; j < i; j++) {
+                s->bos[j]->surface = NULL;
+                gbm_bo_destroy(s->bos[j]);
+            }
+            free(s);
+            errno = save;
+            return NULL;
+        }
+    }
+    return s;
+}
+
+struct gbm_surface *
+gbm_surface_create_with_modifiers(struct gbm_device *gbm,
+                                  uint32_t width, uint32_t height,
+                                  uint32_t format,
+                                  const uint64_t *modifiers,
+                                  const unsigned int count) {
+    (void) modifiers; (void) count;
+    /* v1 only emits DRM_FORMAT_MOD_LINEAR; ignoring caller-supplied
+     * modifier set matches the documented mesa fallback when no
+     * requested modifier is available. */
+    return gbm_surface_create(gbm, width, height, format,
+                              GBM_BO_USE_SCANOUT | GBM_BO_USE_RENDERING);
+}
+
+struct gbm_surface *
+gbm_surface_create_with_modifiers2(struct gbm_device *gbm,
+                                   uint32_t width, uint32_t height,
+                                   uint32_t format,
+                                   const uint64_t *modifiers,
+                                   const unsigned int count,
+                                   uint32_t flags) {
+    (void) modifiers; (void) count;
+    return gbm_surface_create(gbm, width, height, format, flags);
+}
+
+struct gbm_bo *gbm_surface_lock_front_buffer(struct gbm_surface *surface) {
+    if (!surface) {
+        errno = EINVAL;
+        return NULL;
+    }
+    /* Hand out the next free BO in round-robin order.  Consumers
+     * are expected to release the previous frame's BO before
+     * locking the next; if both BOs are in use we return NULL +
+     * EBUSY (mesa returns NULL in the equivalent ring-exhausted
+     * case). */
+    for (int i = 0; i < WPK_GBM_SURFACE_BO_COUNT; i++) {
+        int idx = (surface->next + i) % WPK_GBM_SURFACE_BO_COUNT;
+        if (!surface->in_use[idx]) {
+            surface->in_use[idx] = 1;
+            surface->next = (idx + 1) % WPK_GBM_SURFACE_BO_COUNT;
+            return surface->bos[idx];
+        }
+    }
+    errno = EBUSY;
+    return NULL;
+}
+
+void gbm_surface_release_buffer(struct gbm_surface *surface, struct gbm_bo *bo) {
+    if (!surface || !bo) return;
+    for (int i = 0; i < WPK_GBM_SURFACE_BO_COUNT; i++) {
+        if (surface->bos[i] == bo) {
+            surface->in_use[i] = 0;
+            return;
+        }
+    }
+    /* Releasing a BO that doesn't belong to this surface is a
+     * caller bug; mesa silently ignores. */
+}
+
+int gbm_surface_has_free_buffers(struct gbm_surface *surface) {
+    if (!surface) return 0;
+    int free_count = 0;
+    for (int i = 0; i < WPK_GBM_SURFACE_BO_COUNT; i++) {
+        if (!surface->in_use[i]) free_count++;
+    }
+    return free_count;
+}
+
+void gbm_surface_destroy(struct gbm_surface *surface) {
+    if (!surface) return;
+    for (int i = 0; i < WPK_GBM_SURFACE_BO_COUNT; i++) {
+        if (surface->bos[i]) {
+            surface->bos[i]->surface = NULL;
+            gbm_bo_destroy(surface->bos[i]);
+            surface->bos[i] = NULL;
+        }
+    }
+    free(surface);
 }

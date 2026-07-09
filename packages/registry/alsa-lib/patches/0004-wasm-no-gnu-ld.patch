@@ -1,0 +1,18 @@
+--- a/include/local.h
++++ b/include/local.h
+@@ -279,9 +279,15 @@
+ 
+ /*
+  */
++#if defined(__wasm__) || defined(__wasm32__) || defined(__wasm64__)
++/* wasm-ld does not implement the .gnu.warning.SYMBOL section or the
++ * .stabs directive used by glibc's link_warning machinery. Leave
++ * link_warning() defined as the no-op fallback further down. */
++#else
+ #define HAVE_GNU_LD
+ #define HAVE_ELF
+ #define HAVE_ASM_PREVIOUS_DIRECTIVE
++#endif
+ 
+ /* Stolen from libc-symbols.h in GNU glibc */
+ 

@@ -34,16 +34,36 @@ export class BrowserInputSource implements InputSource {
   private dispatch: ((ev: InputEvent) => void) | null = null;
   private bindings: Array<[EventTarget, string, EventListener]> = [];
 
-  constructor(private target: EventTarget = window) {}
+  /**
+   * @param target  Event source to bind to (defaults to `window`).
+   * @param opts.pointer  When `false`, the pointer-motion/button handlers
+   *   are not bound. Used when another surface owns the pointer feed (e.g.
+   *   the kandelo Modeset pane injects framebuffer-absolute coordinates
+   *   into `/dev/input/event1` itself, and a second window-relative feed
+   *   here would fight it).
+   * @param opts.wheel  Overrides whether the wheel handler is bound.
+   *   Defaults to following `pointer`. Wheel events are `REL_WHEEL` and do
+   *   NOT carry absolute coordinates, so they don't conflict with a pane
+   *   that owns absolute positioning — `{ pointer: false, wheel: true }`
+   *   lets that pane keep the pointer while the wheel still scrolls.
+   */
+  constructor(
+    private target: EventTarget = window,
+    private opts: { pointer?: boolean; wheel?: boolean } = {},
+  ) {}
 
   start(dispatch: (ev: InputEvent) => void): void {
     this.dispatch = dispatch;
     this.bind("keydown", this.onKeyDown);
     this.bind("keyup", this.onKeyUp);
-    this.bind("pointermove", this.onPointerMove);
-    this.bind("pointerdown", this.onPointerDown);
-    this.bind("pointerup", this.onPointerUp);
-    this.bind("wheel", this.onWheel);
+    if (this.opts.pointer !== false) {
+      this.bind("pointermove", this.onPointerMove);
+      this.bind("pointerdown", this.onPointerDown);
+      this.bind("pointerup", this.onPointerUp);
+    }
+    if (this.opts.wheel ?? this.opts.pointer !== false) {
+      this.bind("wheel", this.onWheel);
+    }
     // `pointerlockchange` only fires on document, never on window — so
     // it can't go through this.bind which is parametric over `target`.
     // Tracked in `bindings` for symmetric removal in stop().

@@ -1367,5 +1367,11 @@ port.on("message", (msg: MainToKernelMessage) => {
     case "audio_get_appl_ptr":
       respond(msg.requestId, kernelWorker.audioGetApplPtr(msg.pcmId));
       break;
+    case "audio_get_hw_ptr":
+      respond(msg.requestId, kernelWorker.audioGetHwPtr(msg.pcmId));
+      break;
+    case "audio_get_state":
+      respond(msg.requestId, kernelWorker.audioGetState(msg.pcmId));
+      break;
   }
 });

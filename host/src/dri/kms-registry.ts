@@ -9,6 +9,43 @@ export type HostFb = {
   pitch: number;
 };
 
+/** Build a `struct drm_mode_modeinfo` (68 B) describing the default
+ *  videomode the virtual KMS connector advertises. Kandelo's KMS surface
+ *  has no real fixed mode — programs render into whatever dumb buffer
+ *  they create — but `DRM_IOCTL_MODE_GETCONNECTOR` consumers (SDL2's
+ *  KMSDRM backend in particular) reject connectors whose first mode has
+ *  zero hdisplay/vdisplay with "Couldn't get a valid connector
+ *  videomode." We advertise 1920x1080@60 to match the OffscreenCanvas
+ *  attribute dimensions hardcoded by the Modeset pane (1920×1080); a
+ *  programs that picks up the preferred mode (SDL2 KMSDRM) creates a
+ *  framebuffer that fills the canvas instead of rendering into a sub-
+ *  rectangle and leaving the rest of the pane bare-background. */
+export function buildVirtualConnectorMode(_connectorId: number): Uint8Array {
+  const out = new Uint8Array(68);
+  const view = new DataView(out.buffer);
+  // 1920x1080@60 — CTA-861 standard timing.
+  view.setUint32(0, 148500, true);        // clock kHz
+  view.setUint16(4, 1920, true);          // hdisplay
+  view.setUint16(6, 2008, true);          // hsync_start
+  view.setUint16(8, 2052, true);          // hsync_end
+  view.setUint16(10, 2200, true);         // htotal
+  view.setUint16(12, 0, true);            // hskew
+  view.setUint16(14, 1080, true);         // vdisplay
+  view.setUint16(16, 1084, true);         // vsync_start
+  view.setUint16(18, 1089, true);         // vsync_end
+  view.setUint16(20, 1125, true);         // vtotal
+  view.setUint16(22, 0, true);            // vscan
+  view.setUint32(24, 60, true);           // vrefresh
+  view.setUint32(28, 0, true);            // flags
+  // DRM_MODE_TYPE_PREFERRED (1<<3) | DRM_MODE_TYPE_DRIVER (1<<6).
+  view.setUint32(32, (1 << 3) | (1 << 6), true);
+  const name = "1920x1080";               // name[32], NUL-padded
+  for (let i = 0; i < name.length && i < 31; i++) {
+    out[36 + i] = name.charCodeAt(i);
+  }
+  return out;
+}
+
 export class KmsRegistry {
   private fbs = new Map<number, HostFb>();
   private crtcBindings = new Map<number, number>();

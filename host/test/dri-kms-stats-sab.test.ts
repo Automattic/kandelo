@@ -99,11 +99,14 @@ describe("CentralizedKernelWorker KMS stats SAB", () => {
   it("tickVblank leaves slots 5/6 alone when the SAB is the legacy 5-slot size", () => {
     const kernel = makeKernel();
     stubScanout(kernel, 16, 16);
+    // kernel_kms_commit_count is read on EVERY tick now (it gates the
+    // vblank broad wake on real page-flip activity), so it can't be a
+    // throwing sentinel anymore. kernel_kms_last_frame_us is only read
+    // by the slots-5/6 stats branch — keep it throwing to prove the
+    // branch is skipped for an undersized SAB.
     (kernel as unknown as { kernelInstance: unknown }).kernelInstance = {
       exports: {
-        kernel_kms_commit_count: (_crtc: number) => {
-          throw new Error("should not be called for a 5-slot SAB");
-        },
+        kernel_kms_commit_count: (_crtc: number) => 42n,
         kernel_kms_last_frame_us: (_crtc: number) => {
           throw new Error("should not be called for a 5-slot SAB");
         },
@@ -136,11 +139,12 @@ describe("CentralizedKernelWorker KMS stats SAB", () => {
 
   it("attachKmsStats leaves slots 5/6 untouched when the SAB is too small", () => {
     const kernel = makeKernel();
+    // See above: kernel_kms_commit_count now feeds the vblank wake gate
+    // on every tick; kernel_kms_last_frame_us stays the throwing
+    // sentinel for the slots-5/6 branch.
     (kernel as unknown as { kernelInstance: unknown }).kernelInstance = {
       exports: {
-        kernel_kms_commit_count: (_crtc: number) => {
-          throw new Error("should not be called for a 5-slot SAB");
-        },
+        kernel_kms_commit_count: (_crtc: number) => 42n,
         kernel_kms_last_frame_us: (_crtc: number) => {
           throw new Error("should not be called for a 5-slot SAB");
         },

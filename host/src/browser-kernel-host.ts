@@ -926,6 +926,58 @@ export class BrowserKernel {
   }
 
   /**
+   * Read-only probes paired with `audioGetApplPtr` for host-side
+   * instrumentation. `audioGetHwPtr` reports the kernel-side consumer
+   * pointer (`mmap_status.hw_ptr` — the period tick should advance it
+   * in lockstep with the AudioWorklet); `audioGetState` reports
+   * `SNDRV_PCM_STATE_*` so the probe can detect a PREPARED → RUNNING
+   * → XRUN transition during a stall investigation.
+   */
+  async audioGetHwPtr(pcmId: number): Promise<number> {
+    const requestId = this.nextRequestId++;
+    const result = await this.request(requestId, {
+      type: "audio_get_hw_ptr",
+      requestId,
+      pcmId,
+    });
+    return result as number;
+  }
+
+  async audioGetState(pcmId: number): Promise<number> {
+    const requestId = this.nextRequestId++;
+    const result = await this.request(requestId, {
+      type: "audio_get_state",
+      requestId,
+      pcmId,
+    });
+    return result as number;
+  }
+
+  /**
+   * Allocate the 4-byte SAB-backed `appl_ptr` mirror for `pcmId` and
+   * bind it kernel-side. Returns the slot's `(buffer, byteOffset)` so
+   * the host can pass an `Int32Array` view into the AudioWorklet —
+   * the worklet reads it via `Atomics.load` on every quantum,
+   * eliminating the 10 ms `getApplPtr` poll round-trip whose latency
+   * caused the §C silence emissions. See
+   * `docs/plans/2026-06-17-sdl2-browser-rendering-handoff-3.md`.
+   */
+  async audioAllocApplPtrSab(
+    pcmId: number,
+  ): Promise<{ buffer: SharedArrayBuffer | ArrayBuffer; byteOffset: number }> {
+    const requestId = this.nextRequestId++;
+    const result = await this.request(requestId, {
+      type: "audio_alloc_appl_ptr_sab",
+      requestId,
+      pcmId,
+    });
+    return result as {
+      buffer: SharedArrayBuffer | ArrayBuffer;
+      byteOffset: number;
+    };
+  }
+
+  /**
    * Wire an `AudioDriver` into the kernel: allocates a SAB ring,
    * registers it, then starts the driver with a `kernelTick` callback
    * that funnels each period boundary into `kernel_audio_period_tick`.
@@ -953,14 +1005,21 @@ export class BrowserKernel {
     const periodFrames = opts.periodFrames ?? 1024;
     const ringBytes = opts.ringBytes ?? 64 * 1024;
     const ring = await this.audioAllocRing(pcmId, ringBytes);
-    // The browser driver wants a synchronous returns-number callback
-    // (no awaits inside the AudioWorklet `process()` call path) — but
-    // the kernel runs in a worker, so `audioGetApplPtr` is async. We
-    // cache the latest value here and refresh it on each invocation;
-    // returns the previous cached value while the next request is in
-    // flight. The cache always converges within one poll interval
-    // (10 ms) which is far below one ALSA period (~46 ms @ 22050 Hz),
-    // so the worklet sees fresh enough producer progress.
+    // SAB-backed `appl_ptr` mirror — the kernel writes the current
+    // producer pointer on every WRITEI; the worklet reads it via
+    // `Atomics.load` on every quantum. Replaces the prior 10 ms
+    // `audioGetApplPtr` poll + `postMessage` chain whose cumulative
+    // latency caused the §C silence emissions (handoff-3).
+    const applPtrSab = await this.audioAllocApplPtrSab(pcmId).catch(() => {
+      // Older kernels without the export keep working via the legacy
+      // poll fallback below.
+      return null;
+    });
+    // Kept for `BrowserAudioDriver.stop()`'s drain math (one final
+    // read after the producer is done — no hot-path latency
+    // concern). Also serves as the legacy fallback when no
+    // `applPtrSab` is bound (caller-managed cache, same shape as
+    // before).
     let cachedApplPtr = 0;
     let inFlight = false;
     const getApplPtr = (id: number): number => {
@@ -987,6 +1046,7 @@ export class BrowserKernel {
       ring,
       (id, frames) => this.audioPeriodTick(id, frames),
       getApplPtr,
+      applPtrSab ?? undefined,
     );
   }
 

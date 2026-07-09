@@ -1,0 +1,62 @@
+--- a/src/pcm/pcm.c
++++ b/src/pcm/pcm.c
+@@ -2666,24 +2666,42 @@ static int snd_pcm_open_noupdate(snd_pcm_t **pcmp, snd_config_t *root,
+ 				 const char *name, snd_pcm_stream_t stream,
+ 				 int mode, int hop)
+ {
+-	int err;
+-	snd_config_t *pcm_conf;
+-	const char *str;
+-
+-	err = snd_config_search_definition(root, "pcm", name, &pcm_conf);
+-	if (err < 0) {
+-		SNDERR("Unknown PCM %s", name);
+-		return err;
+-	}
+-	if (snd_config_get_string(pcm_conf, &str) >= 0)
+-		err = snd_pcm_open_noupdate(pcmp, root, str, stream, mode,
+-					    hop + 1);
+-	else {
+-		snd_config_set_hop(pcm_conf, hop);
+-		err = snd_pcm_open_conf(pcmp, name, root, pcm_conf, stream, mode);
++	/* wasm32-posix-kernel subset build: bypass the snd_config_*
++	 * configuration tree entirely. The runtime config parser
++	 * (conf.c) and confmisc.c are not compiled in this build, so
++	 * the original implementation's snd_config_search_definition()
++	 * + snd_pcm_open_conf() path cannot be linked. The kernel only
++	 * exposes /dev/snd/pcmC0D0[pc] (plan 6 A2); SDL2 and the
++	 * smoke tests call snd_pcm_open() with "default", "hw", or
++	 * "hw:N,M" — map those directly onto snd_pcm_hw_open().
++	 */
++	int card = 0, device = 0;
++
++	(void) root;
++	(void) hop;
++
++	if (name == NULL ||
++	    strcmp(name, "default") == 0 ||
++	    strcmp(name, "hw") == 0 ||
++	    strcmp(name, "plughw") == 0) {
++		card = 0;
++		device = 0;
++	} else if (strncmp(name, "hw:", 3) == 0 ||
++		   strncmp(name, "plughw:", 7) == 0) {
++		const char *p = strchr(name, ':') + 1;
++		char *endp;
++		card = (int) strtol(p, &endp, 10);
++		p = endp;
++		if (*p == ',')
++			device = (int) strtol(p + 1, NULL, 10);
++	} else {
++		SNDERR("PCM '%s' not supported in subset build "
++		       "(use 'default' or 'hw:N,M')", name);
++		return -ENOENT;
+ 	}
+-	snd_config_delete(pcm_conf);
+-	return err;
++
++	return snd_pcm_hw_open(pcmp, name, card, device, -1,
++			       stream, mode, 0, 0);
+ }
+
+ /**

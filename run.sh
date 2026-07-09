@@ -1565,7 +1565,15 @@ BROWSER_EXTERNAL_GALLERY_PKGS=(cpython python-vfs perl perl-vfs ruby erlang erla
 # the SpiderMonkey JS shell package directly. `spidermonkey-node` carries the
 # browser UI's Node-compatible runtime; `build_node` installs that same
 # runtime at `programs/node.wasm` for the Kandelo Node preset.
-BROWSER_FETCH_SKIP_PKGS=(spidermonkey node)
+#
+# espeak-ng is skipped because its port is still WIP: package.toml pins a
+# placeholder all-zero source sha and build.toml lists gitignored vendored
+# sources (pcaudiolib-src/) as cache-key inputs, so the resolver cannot hash
+# it on a clean checkout and no archive is published in any binaries-abi-v*
+# index. No browser gallery entry consumes it. Remove it here (and from the
+# disabled/skip lists in staging-build.yml + prepare-merge.yml) once the port
+# lands a real source pin + published binary.
+BROWSER_FETCH_SKIP_PKGS=(spidermonkey node espeak-ng)
 
 # All targets needed for the Kandelo browser UI and retained browser labs.
 # Each entry's `has_X` short-circuits when its release binary is in

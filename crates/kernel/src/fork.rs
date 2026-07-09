@@ -434,28 +434,20 @@ fn write_audio_state(
         Some(s) => {
             w.write_u8(1)?;
             w.write_u32(s.state)?;
-            w.write_u32(s._pad0)?;
-            w.write_i64(s.hw_ptr)?;
+            w.write_u32(s.hw_ptr)?;
             w.write_i64(s.tstamp_sec)?;
-            w.write_i64(s.tstamp_nsec)?;
+            w.write_i32(s.tstamp_nsec)?;
             w.write_u32(s.suspended_state)?;
-            w.write_u32(s.audio_tstamp_data)?;
             w.write_i64(s.audio_tstamp_sec)?;
-            w.write_i64(s.audio_tstamp_nsec)?;
-            for &b in &s._reserved_tail {
-                w.write_u8(b)?;
-            }
+            w.write_i32(s.audio_tstamp_nsec)?;
         }
     }
     match audio.mmap_control.as_deref() {
         None => w.write_u8(0)?,
         Some(c) => {
             w.write_u8(1)?;
-            w.write_i64(c.appl_ptr)?;
-            w.write_i64(c.avail_min)?;
-            for &b in &c._reserved {
-                w.write_u8(b)?;
-            }
+            w.write_u32(c.appl_ptr)?;
+            w.write_u32(c.avail_min)?;
         }
     }
     w.write_u32(audio.pcm_id)?;
@@ -640,29 +632,25 @@ fn read_audio_state(
                 0 => None,
                 1 => {
                     let s_state = r.read_u32()?;
-                    let pad0 = r.read_u32()?;
-                    let hw_ptr = r.read_i64()?;
+                    let hw_ptr = r.read_u32()?;
                     let tstamp_sec = r.read_i64()?;
-                    let tstamp_nsec = r.read_i64()?;
+                    let tstamp_nsec = r.read_i32()?;
                     let suspended_state = r.read_u32()?;
-                    let audio_tstamp_data = r.read_u32()?;
                     let audio_tstamp_sec = r.read_i64()?;
-                    let audio_tstamp_nsec = r.read_i64()?;
-                    let mut tail = [0u8; 8];
-                    for byte in tail.iter_mut() {
-                        *byte = r.read_u8()?;
-                    }
+                    let audio_tstamp_nsec = r.read_i32()?;
                     Some(alloc::boxed::Box::new(WpkAlsaPcmMmapStatus {
                         state: s_state,
-                        _pad0: pad0,
+                        _pad1: 0,
                         hw_ptr,
+                        _pad_after_hw_ptr: 0,
                         tstamp_sec,
                         tstamp_nsec,
+                        _tstamp_pad: 0,
                         suspended_state,
-                        audio_tstamp_data,
+                        _pad3: 0,
                         audio_tstamp_sec,
                         audio_tstamp_nsec,
-                        _reserved_tail: tail,
+                        _audio_tstamp_pad: 0,
                     }))
                 }
                 _ => return Err(Errno::EINVAL),
@@ -670,16 +658,12 @@ fn read_audio_state(
             let mmap_control = match r.read_u8()? {
                 0 => None,
                 1 => {
-                    let appl_ptr = r.read_i64()?;
-                    let avail_min = r.read_i64()?;
-                    let mut reserved = [0u8; 48];
-                    for byte in reserved.iter_mut() {
-                        *byte = r.read_u8()?;
-                    }
+                    let appl_ptr = r.read_u32()?;
+                    let avail_min = r.read_u32()?;
                     Some(alloc::boxed::Box::new(WpkAlsaPcmMmapControl {
                         appl_ptr,
                         avail_min,
-                        _reserved: reserved,
+                        _pad_after: 0,
                     }))
                 }
                 _ => return Err(Errno::EINVAL),
@@ -2807,7 +2791,7 @@ mod tests {
             mmap_control: Some(alloc::boxed::Box::new(WpkAlsaPcmMmapControl {
                 appl_ptr: 1536,
                 avail_min: 1024,
-                _reserved: [0u8; 48],
+                _pad_after: 0,
             })),
             pcm_id: 0,
         }

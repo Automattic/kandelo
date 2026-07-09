@@ -19,7 +19,7 @@ import { SharedPipeBuffer } from "./shared-pipe-buffer";
 import { SharedLockTable } from "./shared-lock-table";
 import { FramebufferRegistry } from "./framebuffer/registry";
 import { GbmBoRegistry } from "./dri/registry";
-import { KmsRegistry } from "./dri/kms-registry";
+import { KmsRegistry, buildVirtualConnectorMode } from "./dri/kms-registry";
 import { GlContextRegistry } from "./webgl/registry";
 import { decodeAndDispatch } from "./webgl/bridge";
 import { runGlQuery } from "./webgl/query";
@@ -139,6 +139,12 @@ export interface KernelCallbacks {
    * legacy "embedder must call attachCanvas manually" path alive.
    */
   getKmsCanvas?: (crtcId: number) => OffscreenCanvas | HTMLCanvasElement | undefined;
+  /**
+   * Return any one registered KMS scanout crtc id, or undefined if
+   * none. Used by callers that just need a default canvas binding
+   * without iterating the full registry.
+   */
+  firstKmsCanvasCrtc?: () => number | undefined;
   /**
    * Notify the embedder that GL has claimed the canvas for `crtcId`.
    * The KMS vblank pump uses this to skip the CPU `putImageData` blit
@@ -459,6 +465,50 @@ export class WasmPosixKernel {
       | undefined;
     if (!fn) return 0;
     return Number(fn(pcmId));
+  }
+
+  /**
+   * Bind a 4-byte SAB-backed mirror slot for `appl_ptr` at kernel
+   * address `base` (allocated via `audioAllocRing`). After this call,
+   * every `SNDRV_PCM_IOCTL_WRITEI_FRAMES` mirrors the new `appl_ptr`
+   * into the slot so the AudioWorklet can read it lock-free via
+   * `Atomics.load`. Silently dropped if the kernel module is not
+   * instantiated yet.
+   */
+  audioInitApplPtrSab(pcmId: number, base: number): void {
+    const fn = this.instance?.exports?.kernel_audio_init_appl_ptr_sab as
+      | ((pcmId: number, base: bigint) => void)
+      | undefined;
+    if (!fn) return;
+    fn(pcmId, BigInt(base));
+  }
+
+  /**
+   * Current `mmap_status.hw_ptr` for any OFD bound to `pcmId`. Used
+   * by host-side instrumentation to confirm the period-tick feedback
+   * loop is advancing. 0 if no OFD is bound or the kernel is not
+   * instantiated.
+   */
+  audioGetHwPtr(pcmId: number): number {
+    const fn = this.instance?.exports?.kernel_audio_get_hw_ptr as
+      | ((pcmId: number) => bigint)
+      | undefined;
+    if (!fn) return 0;
+    return Number(fn(pcmId));
+  }
+
+  /**
+   * Current PCM state (PREPARED / RUNNING / XRUN / …) for any OFD
+   * bound to `pcmId`. Used by host-side instrumentation to diagnose
+   * mid-playback transitions. 0 if no OFD is bound or the kernel is
+   * not instantiated.
+   */
+  audioGetState(pcmId: number): number {
+    const fn = this.instance?.exports?.kernel_audio_get_state as
+      | ((pcmId: number) => number)
+      | undefined;
+    if (!fn) return 0;
+    return fn(pcmId);
   }
 
   /**
@@ -856,7 +906,18 @@ export class WasmPosixKernel {
             // is about to call eglCreateContext would silently no-op
             // every shader compile/link/draw because `b.canvas` stays
             // null and `b.gl` is never built.
-            const crtc = this.kms.masterCrtcForPid(pid);
+            //
+            // Fall back to `firstKmsCanvasCrtc` when no FB is bound yet:
+            // SDL2's KMSDRM backend calls `eglCreateContext` BEFORE its
+            // first `drmModeAddFB`/`drmModeSetCrtc`, so `masterCrtcForPid`
+            // returns null at this point. The embedder has already
+            // registered exactly one scanout canvas; we attach to it
+            // unconditionally as long as this pid actually holds DRM
+            // master (no canvas hand-off to non-master programs).
+            let crtc = this.kms.masterCrtcForPid(pid);
+            if (crtc == null && this.kms.isMasterPid(pid)) {
+              crtc = this.callbacks.firstKmsCanvasCrtc?.() ?? null;
+            }
             if (crtc != null) {
               const canvas = this.callbacks.getKmsCanvas?.(crtc);
               if (canvas) {
@@ -893,6 +954,16 @@ export class WasmPosixKernel {
             ctx.getExtension("EXT_color_buffer_float");
             ctx.getExtension("OES_texture_float_linear");
             ctx.getExtension("EXT_float_blend");
+            // Seed the shadow viewport with the actual WebGL2 default
+            // (the canvas drawing-buffer dimensions). Without this seed,
+            // `defaultShadow()`'s `[0,0,0,0]` propagates through
+            // `GlMuxer.switchTo` on first frame and clobbers WebGL2's
+            // implicit default viewport — programs that never call
+            // `glViewport` (SDL2's KMSDRM/OpenGLES backend leaves it
+            // implicit; modeset.c sets it explicitly so the bug stays
+            // hidden there) then draw into a 0×0 region and produce a
+            // blank canvas even though every other op succeeds.
+            b.shadow.viewport = [0, 0, b.canvas.width, b.canvas.height];
           }
           b.gl = ctx;
         },
@@ -1021,8 +1092,11 @@ export class WasmPosixKernel {
             return -14;
           }
         },
-        host_kms_mode_info: (_connector_id: number, out_ptr: bigint): void => {
-          this.writeKernelBytes(Number(out_ptr), new Uint8Array(68));
+        host_kms_mode_info: (connector_id: number, out_ptr: bigint): void => {
+          this.writeKernelBytes(
+            Number(out_ptr),
+            buildVirtualConnectorMode(connector_id),
+          );
         },
         host_kms_addfb: (
           _pid: number,

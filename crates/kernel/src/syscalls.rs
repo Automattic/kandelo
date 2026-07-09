@@ -1376,6 +1376,72 @@ fn handle_dri_card_ioctl(
             }
             Ok(())
         }
+        DRM_IOCTL_MODE_ADDFB => {
+            if buf.len() < core::mem::size_of::<WpkDrmModeFbCmd>() {
+                return Err(Errno::EINVAL);
+            }
+            let mut req: WpkDrmModeFbCmd =
+                unsafe { core::ptr::read_unaligned(buf.as_ptr() as *const _) };
+            if req.width == 0 || req.height == 0 {
+                return Err(Errno::EINVAL);
+            }
+            // Map the legacy (depth, bpp) pair to the fourcc the rest
+            // of the FB path speaks. SDL2's KMSDRM backend passes
+            // (24, 32) for an opaque XRGB8888 surface.
+            let pixel_format = match (req.depth, req.bpp) {
+                (24, 32) => DRM_FORMAT_XRGB8888,
+                (32, 32) => DRM_FORMAT_ARGB8888,
+                (16, 16) => DRM_FORMAT_RGB565,
+                _ => return Err(Errno::EINVAL),
+            };
+            let bo_id = *dri_state(proc, ofd_idx)?
+                .handles
+                .get(&req.handle)
+                .ok_or(Errno::ENOENT)?;
+            let bo_stride = crate::dri::with_registry(|r| r.get(bo_id).map(|b| b.stride))
+                .ok_or(Errno::ENOENT)?;
+            if req.pitch != bo_stride {
+                return Err(Errno::EINVAL);
+            }
+            let fb_id = {
+                let kms = kms_state_mut(proc, ofd_idx)?;
+                let id = kms.next_fb_id.checked_add(1).ok_or(Errno::ENOMEM)?;
+                kms.next_fb_id = id;
+                kms.fbs.insert(
+                    id,
+                    crate::ofd::KmsFb {
+                        bo_id,
+                        width: req.width,
+                        height: req.height,
+                        pixel_format,
+                        stride: req.pitch,
+                    },
+                );
+                id
+            };
+            crate::dri::with_registry(|r| r.incref(bo_id));
+            let rc = host.kms_addfb(
+                pid,
+                fb_id,
+                bo_id,
+                req.width,
+                req.height,
+                pixel_format,
+                req.pitch,
+            );
+            if rc < 0 {
+                if let Ok(kms) = kms_state_mut(proc, ofd_idx) {
+                    kms.fbs.remove(&fb_id);
+                }
+                let _ = crate::dri::with_registry(|r| r.decref(bo_id));
+                return Err(Errno::ENOMEM);
+            }
+            req.fb_id = fb_id;
+            unsafe {
+                core::ptr::write_unaligned(buf.as_mut_ptr() as *mut _, req);
+            }
+            Ok(())
+        }
         DRM_IOCTL_MODE_ADDFB2 => {
             if buf.len() < core::mem::size_of::<WpkDrmModeFbCmd2>() {
                 return Err(Errno::EINVAL);
@@ -8030,12 +8096,12 @@ fn poll_check(proc: &mut Process, host: &mut dyn HostIO, fds: &mut [WasmPollFd])
                         let appl = audio
                             .mmap_control
                             .as_ref()
-                            .map(|c| c.appl_ptr)
+                            .map(|c| c.appl_ptr as i64)
                             .unwrap_or(0);
                         let hw_ptr = audio
                             .mmap_status
                             .as_ref()
-                            .map(|s| s.hw_ptr)
+                            .map(|s| s.hw_ptr as i64)
                             .unwrap_or(0);
                         let avail_min = audio
                             .sw_params
@@ -8960,6 +9026,15 @@ pub fn sys_ioctl(
                 proc, host, ofd_idx, request, buf,
             );
         }
+    }
+
+    // --- /dev/snd/controlC0 ioctls — minimum SNDRV_CTL_* surface
+    //     for alsa-lib's hw-plugin open path (PVERSION + PCM_PREFER_
+    //     SUBDEVICE). Other CTL requests fall through to ENOTTY.
+    if let Some(result) =
+        crate::audio::ctl_ioctl::handle_alsa_ctl_ioctl(proc, host, ofd_idx, request, buf)
+    {
+        return result;
     }
 
     // --- Linux VT keyboard ioctls (KDGKBTYPE / KDGKBMODE / KDSKBMODE) ---
@@ -14374,8 +14449,8 @@ mod tests {
         proc: &mut Process,
         state: u32,
         buffer_size: u64,
-        appl_ptr: i64,
-        hw_ptr: i64,
+        appl_ptr: u32,
+        hw_ptr: u32,
         avail_min: u64,
     ) -> i32 {
         use crate::ofd::{AlsaFdState, FileType, HwParamsCache, PcmDir, SwParamsCache};

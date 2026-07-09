@@ -60,6 +60,14 @@ export default defineConfig({
     poolOptions: {
       forks: {
         maxForks: process.env.CI ? 1 : 4,
+        // Cached user binaries (PHP, WordPress, Erlang, MariaDB,
+        // SpiderMonkey) are compiled with -fwasm-exceptions and
+        // embed the `exn` value type. Node 24 keeps the wasm-exnref
+        // proposal behind a flag, and NODE_OPTIONS doesn't accept
+        // --experimental-* flags — it must land on the fork's
+        // execArgv so WebAssembly.compile in the test child accepts
+        // those modules.
+        execArgv: ["--experimental-wasm-exnref"],
       },
     },
   },

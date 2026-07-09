@@ -11,7 +11,11 @@
  * (`host/test/instrumented-audio-driver.test.ts`) pins forwarding of
  * every argument the `AudioDriver` interface declares.
  */
-import type { AudioDriver, AudioRing } from "./audio-driver.js";
+import type {
+  AudioApplPtrSab,
+  AudioDriver,
+  AudioRing,
+} from "./audio-driver.js";
 
 export interface InstrumentedAudioDriver extends AudioDriver {
   framesConsumed(): number;
@@ -31,6 +35,7 @@ export function instrumentAudioDriver(
       ring: AudioRing,
       kernelTick: (id: number, frames: number) => void,
       getApplPtr: (id: number) => number,
+      applPtrSab?: AudioApplPtrSab,
     ): Promise<void> {
       await inner.start(
         pcmId,
@@ -44,6 +49,7 @@ export function instrumentAudioDriver(
           kernelTick(id, frames);
         },
         getApplPtr,
+        applPtrSab,
       );
     },
     stop(pcmId: number): void {
