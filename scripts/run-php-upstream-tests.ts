@@ -20,11 +20,13 @@ import {
   mkdtempSync,
   readdirSync,
   readFileSync,
+  realpathSync,
   rmSync,
   statSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
+import { fileURLToPath } from "node:url";
 import {
   basename,
   delimiter,
@@ -33,17 +35,20 @@ import {
   join,
   relative,
   resolve,
+  sep,
 } from "node:path";
 import { NodeKernelHost } from "../host/src/node-kernel-host";
 import { tryResolveBinary } from "../host/src/binary-resolver";
 import { ABI_SYSCALL_NAMES } from "../host/src/generated/abi";
 import { ensureSourceExtract } from "../images/vfs/scripts/source-extract-helper";
+import { preparePhpTestFixtures } from "../images/vfs/scripts/php-test-fixtures";
 
 const REPO_ROOT = resolve(new URL(".", import.meta.url).pathname, "..");
 const LOCAL_PHP_SRC = join(REPO_ROOT, "packages/registry/php/php-src");
-const PHP_TEST_VFS = join(
-  REPO_ROOT,
-  "apps/browser-demos/public/php-test.vfs.zst",
+const BROWSER_PUBLIC_DIR = join(REPO_ROOT, "apps/browser-demos/public");
+const PHP_TEST_VFS = resolve(
+  process.env.PHP_TEST_VFS_OUT ??
+    join(REPO_ROOT, "apps/browser-demos/public/php-test.vfs.zst"),
 );
 const BROWSER_DIR = join(REPO_ROOT, "apps/browser-demos");
 const VITE_HOST = "127.0.0.1";
@@ -81,6 +86,8 @@ const RUN_TESTS_BASE_INI = [
   "opcache.jit_hot_side_exit=1",
   "zend.assertions=1",
   "zend.exception_ignore_args=0",
+  "zend.exception_string_param_max_len=15",
+  "short_open_tag=0",
 ];
 
 const FAILURE_SNIPPET_BYTES = Math.max(
@@ -99,22 +106,25 @@ const BROWSER_WASM_STACK_JS_FLAGS = [
 ].join(" ");
 
 type HostKind = "node" | "browser";
-type TestStatus =
+export type TestStatus =
   | "pass"
   | "fail"
+  | "bork"
+  | "warn"
   | "skip"
   | "xfail"
   | "xpass"
   | "unsupported"
   | "time";
 
-interface PhptTest {
+export interface PhptTest {
   path: string;
   rel: string;
+  sourceRoot: string;
   sections: Record<string, string>;
 }
 
-interface PhpRunResult {
+export interface PhpRunResult {
   exitCode: number;
   stdout: string;
   stderr: string;
@@ -123,7 +133,7 @@ interface PhpRunResult {
   durationMs: number;
 }
 
-interface TestResult {
+export interface TestResult {
   test: string;
   status: TestStatus;
   time_ms: number;
@@ -131,7 +141,7 @@ interface TestResult {
   detail?: string;
 }
 
-interface PhpRunner {
+export interface PhpRunner {
   loadExtensionIniArgs(requiredExtensions: string[]): string[];
   runScript(opts: {
     test: PhptTest;
@@ -141,8 +151,6 @@ interface PhpRunner {
     scriptArgs?: string[];
     env: string[];
     stdin?: string;
-    stdinIsPipe?: boolean;
-    pipeStdio?: number[];
     waitForChildOutput?: boolean;
     timeoutMs: number;
   }): Promise<PhpRunResult>;
@@ -151,114 +159,6 @@ interface PhpRunner {
 }
 
 let tempCounter = 0;
-let nodeToolDir: string | null = null;
-
-function ensureNodeToolDir(): string {
-  if (nodeToolDir) return nodeToolDir;
-  nodeToolDir = mkdtempSync(join(tmpdir(), "kandelo-php-tools-"));
-  writeFileSync(
-    join(nodeToolDir, "pgrep"),
-    `#!/bin/sh
-if [ "$1" != "-P" ] || [ -z "$2" ]; then
-  exit 1
-fi
-want_ppid=$2
-for stat in /proc/[0-9]*/stat; do
-  [ -r "$stat" ] || continue
-  line=$(cat "$stat" 2>/dev/null) || continue
-  pid=\${line%% *}
-  after=\${line#*) }
-  set -- $after
-  ppid=$2
-  if [ "$ppid" = "$want_ppid" ]; then
-    printf '%s\\n' "$pid"
-  fi
-done
-`,
-    { mode: 0o755 },
-  );
-  writeFileSync(
-    join(nodeToolDir, "ps"),
-    `#!/bin/sh
-pids=
-format=
-while [ "$#" -gt 0 ]; do
-  case "$1" in
-    -p)
-      shift
-      pids=$1
-      ;;
-    -o)
-      shift
-      format=$1
-      ;;
-    *)
-      ;;
-  esac
-  shift
-done
-
-if [ -z "$pids" ]; then
-  exit 1
-fi
-
-[ -n "$format" ] || format=pid,command
-header=1
-case "$format" in
-  *=*)
-    header=0
-    ;;
-esac
-
-fields=$(printf '%s' "$format" | tr ',' ' ')
-pid_list=$(printf '%s' "$pids" | tr ',' ' ')
-
-if [ "$header" = 1 ]; then
-  out=
-  for field in $fields; do
-    field=\${field%=}
-    case "$field" in
-      pid) label=PID ;;
-      nice|ni) label=NICE ;;
-      command|comm|args) label=COMMAND ;;
-      *) label=$(printf '%s' "$field" | tr '[:lower:]' '[:upper:]') ;;
-    esac
-    out="$out\${out:+ }$label"
-  done
-  printf '%s\\n' "$out"
-fi
-
-found=0
-for pid in $pid_list; do
-  stat=/proc/$pid/stat
-  [ -r "$stat" ] || continue
-  line=$(cat "$stat" 2>/dev/null) || continue
-  comm=\${line#*(}
-  comm=\${comm%)*}
-  after=\${line#*) }
-  set -- $after
-  nice=\${17:-0}
-  row=
-  for field in $fields; do
-    field=\${field%=}
-    case "$field" in
-      pid) value=$pid ;;
-      nice|ni) value=$nice ;;
-      command|comm|args) value=$comm ;;
-      *) value= ;;
-    esac
-    row="$row\${row:+ }$value"
-  done
-  printf '%s\\n' "$row"
-  found=1
-done
-
-[ "$found" = 1 ]
-`,
-    { mode: 0o755 },
-  );
-  return nodeToolDir;
-}
 
 const PASSTHROUGH_ENV_NAMES = [
   "NO_INTERACTION",
@@ -335,7 +235,7 @@ function resolvePhpFpmBinary(phpPath: string): string | null {
   return existsSync(sibling) ? sibling : null;
 }
 
-function resolvePhpSource(): string {
+export function resolvePhpSource(): string {
   const explicit = process.env.PHP_SOURCE_DIR;
   if (explicit) return resolve(explicit);
   return ensureSourceExtract(
@@ -359,7 +259,7 @@ function parsePhpt(path: string, sourceRoot: string): PhptTest {
     const end = i + 1 < matches.length ? matches[i + 1].index! : text.length;
     sections[name] = text.slice(start, end).replace(/^\r?\n/, "");
   }
-  return { path, rel: relative(sourceRoot, path), sections };
+  return { path, rel: relative(sourceRoot, path), sourceRoot, sections };
 }
 
 function walkPhpt(dir: string, out: string[] = []): string[] {
@@ -381,6 +281,7 @@ function walkPhpt(dir: string, out: string[] = []): string[] {
 }
 
 function discoverTests(sourceRoot: string, selectors: string[]): PhptTest[] {
+  const realSourceRoot = realpathSync(sourceRoot);
   const files: string[] = [];
   if (selectors.length === 0) {
     walkPhpt(sourceRoot, files);
@@ -391,41 +292,54 @@ function discoverTests(sourceRoot: string, selectors: string[]): PhptTest[] {
         : resolve(sourceRoot, selector);
       if (!existsSync(resolved))
         throw new Error(`PHPT selector not found: ${selector}`);
-      const st = statSync(resolved);
-      if (st.isDirectory()) walkPhpt(resolved, files);
-      else files.push(resolved);
+      const realResolved = realpathSync(resolved);
+      const rel = relative(realSourceRoot, realResolved);
+      if (rel === ".." || rel.startsWith(`..${sep}`) || isAbsolute(rel)) {
+        throw new Error(`PHPT selector escapes php-src: ${selector}`);
+      }
+      const st = statSync(realResolved);
+      if (st.isDirectory()) walkPhpt(realResolved, files);
+      else if (realResolved.endsWith(".phpt")) files.push(realResolved);
+      else throw new Error(`PHPT selector is not a .phpt file: ${selector}`);
     }
   }
   return [...new Set(files)].sort().map((path) => parsePhpt(path, sourceRoot));
 }
 
-function splitArgs(input: string | undefined): string[] {
+export function splitArgs(input: string | undefined): string[] {
   if (!input) return [];
   const out: string[] = [];
   let current = "";
+  let tokenStarted = false;
   let quote: "'" | '"' | null = null;
   let escape = false;
   for (const ch of input.trim()) {
     if (escape) {
       current += ch;
+      tokenStarted = true;
       escape = false;
     } else if (ch === "\\") {
+      tokenStarted = true;
       escape = true;
     } else if (quote) {
       if (ch === quote) quote = null;
       else current += ch;
     } else if (ch === "'" || ch === '"') {
+      tokenStarted = true;
       quote = ch;
     } else if (/\s/.test(ch)) {
-      if (current) {
+      if (tokenStarted) {
         out.push(current);
         current = "";
+        tokenStarted = false;
       }
     } else {
       current += ch;
+      tokenStarted = true;
     }
   }
-  if (current) out.push(current);
+  if (escape) current += "\\";
+  if (tokenStarted) out.push(current);
   return out;
 }
 
@@ -450,7 +364,14 @@ function expandSectionPlaceholders(value: string, test: PhptTest): string {
     .replaceAll("{PWD}", guestTestDir(test))
     .replaceAll("{TMP}", "/tmp")
     .replace(/\{MAIL:([^}]+)\}/g, (_match, path) => `tee ${path} >/dev/null`)
-    .replace(/\{ENV:([^}]+)\}/g, (_match, name) => process.env[name] ?? "");
+    .replace(/\{ENV:([^}]+)\}/g, (_match, name) => {
+      if (name !== "TEST_NON_ROOT_USER") {
+        throw new Error(
+          `${test.rel}: unsupported host environment placeholder {ENV:${name}}`,
+        );
+      }
+      return process.env[name] ?? "";
+    });
 }
 
 function iniArgs(ini: string | undefined, test: PhptTest): string[] {
@@ -488,16 +409,6 @@ function envArgs(env: string | undefined, test: PhptTest): string[] {
   return args;
 }
 
-function captureStdioFds(test: PhptTest): number[] {
-  const capture = test.sections.CAPTURE_STDIO;
-  if (capture === undefined) return [];
-  const fds: number[] = [];
-  if (/\bSTDIN\b/i.test(capture)) fds.push(0);
-  if (/\bSTDOUT\b/i.test(capture)) fds.push(1);
-  if (/\bSTDERR\b/i.test(capture)) fds.push(2);
-  return fds;
-}
-
 function passthroughEnvArgs(): string[] {
   return PASSTHROUGH_ENV_NAMES.flatMap((name) =>
     process.env[name] === undefined ? [] : [`${name}=${process.env[name]}`],
@@ -505,17 +416,9 @@ function passthroughEnvArgs(): string[] {
 }
 
 function defaultPhpTestEnvArgs(): string[] {
-  // Mirror upstream php-src run-tests.php's baseline CGI-ish environment for
-  // ordinary FILE tests. Several CLI PHPT fixtures intentionally inspect
-  // $_SERVER['REQUEST_METHOD'] / REQUEST_URI without using a CGI section.
+  // Stable harness inputs shared by all sections. php-src's CGI-like request
+  // variables are section-specific and are added by envForSection().
   return [
-    "REDIRECT_STATUS=",
-    "QUERY_STRING=",
-    "PATH_TRANSLATED=",
-    "SCRIPT_FILENAME=",
-    "REQUEST_METHOD=GET",
-    "CONTENT_TYPE=",
-    "CONTENT_LENGTH=",
     // Kandelo runs FPM and its helper clients under emulation, so PHP-FPM
     // startup notices can legitimately take longer than php-src's native
     // three-second tester default (especially with OPcache preloading).
@@ -525,7 +428,6 @@ function defaultPhpTestEnvArgs(): string[] {
     `TEST_FPM_READ_WRITE_TIMEOUT_MS=${process.env.TEST_FPM_READ_WRITE_TIMEOUT_MS ?? "20000"}`,
     "TEST_FPM_EXTENSION_DIR=/usr/lib/php/extensions",
     `TEST_NON_ROOT_USER=${process.env.TEST_NON_ROOT_USER ?? "nobody"}`,
-    "TZ=",
   ];
 }
 
@@ -548,12 +450,6 @@ function mergeEnvArgs(...groups: string[][]): string[] {
     }
   }
   return [...merged.values()];
-}
-
-function isFlakyTest(test: PhptTest): boolean {
-  if (test.sections.FLAKY !== undefined) return true;
-  const file = test.sections.FILE ?? "";
-  return /\b(?:disk_free_space|hrtime|microtime|sleep|usleep)\s*\(/i.test(file);
 }
 
 function phptConflictTokens(test: PhptTest): string[] {
@@ -605,10 +501,6 @@ function requiresExclusiveScheduling(conflicts: string[]): boolean {
   // upstream timing assumptions into false connection-refused failures. Run
   // server tests exclusively rather than skipping or patching them.
   return conflicts.includes("server");
-}
-
-function isFlakyOutput(output: string): boolean {
-  return /\b(?:404: page not found|address already in use|connection refused|deadlock|mailbox already exists|timed out)\b/i.test(output);
 }
 
 function shellEscape(value: string): string {
@@ -663,211 +555,6 @@ function sharedExtensionPathsForPhp(phpPath: string): Map<string, string> {
   return out;
 }
 
-function staticExtensionsForPhpSource(sourceRoot: string): Set<string> {
-  const out = new Set<string>();
-  for (const file of ["internal_functions.c", "internal_functions_cli.c"]) {
-    const internalFunctions = join(sourceRoot, "main", file);
-    if (!existsSync(internalFunctions)) continue;
-    const text = readFileSync(internalFunctions, "utf8");
-    for (const match of text.matchAll(/\bphpext_([A-Za-z0-9_]+)_ptr\b/g)) {
-      out.add(normalizeExtensionName(match[1]));
-    }
-  }
-  return out;
-}
-
-function preparePhpTestFixtures(sourceRoot: string): void {
-  // PHP 8.3.15's upstream SNI PHPT fixtures expired on 2026-04-02. Do not
-  // fake guest time to make them pass: that would compromise Kandelo as a
-  // general POSIX platform. Instead, treat this as test-fixture maintenance
-  // and copy equivalent long-lived certificates into the local test tree
-  // before discovery/VFS packaging.
-  const fixtureDir = join(REPO_ROOT, "tests/php-fixtures/openssl-sni-2036");
-  const destDir = join(sourceRoot, "ext/openssl/tests");
-  if (!existsSync(fixtureDir) || !existsSync(destDir)) return;
-  for (const entry of readdirSync(fixtureDir)) {
-    if (!entry.startsWith("sni_server_") || !entry.endsWith(".pem")) continue;
-    cpSync(join(fixtureDir, entry), join(destDir, entry));
-  }
-
-  // PHP 8.3.15's FPM test fixtures need small harness-side maintenance under
-  // Kandelo:
-  // - ext/opcache/tests/preload_user_004.phpt calls FPM\Tester::getLogLines(),
-  //   but the shipped FPM tester helper does not define that method.
-  // - logreader.inc has a native three-second default that is too short for
-  //   OPcache preload startup under emulation.
-  // - fcgi.inc has a native five-second client read/write timeout; under
-  //   wasm emulation, OPcache preload requests can legitimately take longer
-  //   while still producing the correct FastCGI response.
-  //
-  // These changes only affect the copied PHPT fixture tree used by the
-  // harness. They do not change PHP runtime behavior or Kandelo kernel
-  // behavior.
-  const fpmTester = join(sourceRoot, "sapi/fpm/tests/tester.inc");
-  if (existsSync(fpmTester)) {
-    const text = readFileSync(fpmTester, "utf8");
-    if (text.includes("class Tester")) {
-      const marker = "    /**\n     * Expect no log lines to be logged.\n";
-      const method = `    /**\n     * Return currently available FPM log lines.\n     *\n     * @param int $timeoutSeconds Seconds to wait for the first line.\n     * @param int $timeoutMicroseconds Additional microseconds to wait for the first line.\n     *\n     * @return array\n     * @throws \\Exception\n     */\n    public function getLogLines(int $timeoutSeconds = 3, int $timeoutMicroseconds = 0): array\n    {\n        $configuredTimeout = getenv('TEST_FPM_LOG_TIMEOUT_SECONDS');\n        if ($configuredTimeout !== false && is_numeric($configuredTimeout)) {\n            $timeoutSeconds = max($timeoutSeconds, (int) $configuredTimeout);\n        }\n\n        $lines = [];\n        $line = $this->logReader->getLine($timeoutSeconds, $timeoutMicroseconds);\n        while ($line !== null) {\n            if ($line !== '') {\n                $lines[] = $line;\n            }\n            $line = $this->logReader->getLine(timeoutSeconds: 0, timeoutMicroseconds: 1000);\n        }\n\n        return $lines;\n    }\n\n`;
-      let next = text;
-      if (text.includes("function getLogLines(")) {
-        const start = text.indexOf("    /**\n     * Return currently available FPM log lines.");
-        const end = text.indexOf(marker, start);
-        if (start < 0 || end <= start) {
-          throw new Error(
-            `Unable to update PHP FPM tester fixture: getLogLines block not found in ${fpmTester}`,
-          );
-        }
-        next = text.slice(0, start) + method + text.slice(end);
-      } else {
-        if (!text.includes(marker)) {
-          throw new Error(
-            `Unable to patch PHP FPM tester fixture: marker not found in ${fpmTester}`,
-          );
-        }
-        next = text.replace(marker, method + marker);
-      }
-      if (!next.includes("TEST_FPM_CHECK_CONNECTION_ATTEMPTS")) {
-        const from = `    ) {\n        $i = 0;\n        do {`;
-        const to = `    ) {\n        $configuredAttempts = getenv('TEST_FPM_CHECK_CONNECTION_ATTEMPTS');\n        if ($configuredAttempts !== false && is_numeric($configuredAttempts)) {\n            $attempts = max($attempts, (int) $configuredAttempts);\n        }\n\n        $i = 0;\n        do {`;
-        if (!next.includes(from)) {
-          throw new Error(
-            `Unable to patch PHP FPM tester fixture: checkConnection marker not found in ${fpmTester}`,
-          );
-        }
-        next = next.replace(from, to);
-      }
-      if (!next.includes("$cmd .= ' --allow-to-run-as-root';")) {
-        const from = `$cmd           = self::findExecutable() . " -n $configTestArg -y $configFile 2>&1";`;
-        const to = `$cmd           = self::findExecutable() . " -n $configTestArg -y $configFile";\n        if (getenv('TEST_FPM_RUN_AS_ROOT')) {\n            $cmd .= ' --allow-to-run-as-root';\n        }\n        $cmd .= " 2>&1";`;
-        if (!next.includes(from)) {
-          throw new Error(
-            `Unable to patch PHP FPM tester fixture: testConfig command marker not found in ${fpmTester}`,
-          );
-        }
-        next = next.replace(from, to);
-      }
-      if (!next.includes("file_exists($extensionDir . '/' . $extension . '.so')")) {
-        const from = `            foreach ($extensions as $extension) {\n                $cmd[] = '-dextension=' . $extension;\n            }`;
-        const to = `            foreach ($extensions as $extension) {\n                if (file_exists($extensionDir . '/' . $extension . '.so')) {\n                    $cmd[] = '-dextension=' . $extension;\n                }\n            }`;
-        if (!next.includes(from)) {
-          throw new Error(
-            `Unable to patch PHP FPM tester fixture: extension loading marker not found in ${fpmTester}`,
-          );
-        }
-        next = next.replace(from, to);
-      }
-      if (next !== text) writeFileSync(fpmTester, next, "utf8");
-    }
-  }
-
-  const fpmLogReader = join(sourceRoot, "sapi/fpm/tests/logreader.inc");
-  if (existsSync(fpmLogReader)) {
-    const text = readFileSync(fpmLogReader, "utf8");
-    if (!text.includes("TEST_FPM_LOG_TIMEOUT_SECONDS")) {
-      const from = `if (is_null($timeoutSeconds) && is_null($timeoutMicroseconds)) {\n            $timeoutSeconds      = 3;\n            $timeoutMicroseconds = 0;\n        }`;
-      const to = `if (is_null($timeoutSeconds) && is_null($timeoutMicroseconds)) {\n            $configuredTimeout = getenv('TEST_FPM_LOG_TIMEOUT_SECONDS');\n            $timeoutSeconds = $configuredTimeout !== false && is_numeric($configuredTimeout)\n                ? max(3, (int) $configuredTimeout)\n                : 3;\n            $timeoutMicroseconds = 0;\n        }`;
-      if (!text.includes(from)) {
-        throw new Error(
-          `Unable to patch PHP FPM logreader fixture: marker not found in ${fpmLogReader}`,
-        );
-      }
-      writeFileSync(fpmLogReader, text.replace(from, to), "utf8");
-    }
-  }
-
-  const fpmFcgi = join(sourceRoot, "sapi/fpm/tests/fcgi.inc");
-  if (existsSync(fpmFcgi)) {
-    const text = readFileSync(fpmFcgi, "utf8");
-    if (!text.includes("TEST_FPM_READ_WRITE_TIMEOUT_MS")) {
-      const from = `        $this->transport = $transport;\n    }`;
-      const to = `        $this->transport = $transport;\n\n        $configuredTimeout = getenv('TEST_FPM_READ_WRITE_TIMEOUT_MS');\n        if ($configuredTimeout !== false && is_numeric($configuredTimeout)) {\n            $this->_readWriteTimeout = max($this->_readWriteTimeout, (int) $configuredTimeout);\n        }\n    }`;
-      if (!text.includes(from)) {
-        throw new Error(
-          `Unable to patch PHP FPM FastCGI fixture: constructor marker not found in ${fpmFcgi}`,
-        );
-      }
-      writeFileSync(fpmFcgi, text.replace(from, to), "utf8");
-    }
-  }
-
-  const fpmIpv4Fallback = join(sourceRoot, "sapi/fpm/tests/socket-ipv4-fallback.phpt");
-  if (existsSync(fpmIpv4Fallback)) {
-    const text = readFileSync(fpmIpv4Fallback, "utf8");
-    const from = "Address already in use \\(\\d+\\)";
-    const to = "Address (?:already )?in use \\(\\d+\\)";
-    if (text.includes(from) && !text.includes(to)) {
-      // musl's strerror(EADDRINUSE) is "Address in use" while glibc's is
-      // "Address already in use". Both describe the same POSIX errno, so make
-      // this fixture regex libc-portable rather than changing Kandelo/libc
-      // message strings to match one C library.
-      writeFileSync(fpmIpv4Fallback, text.replace(from, to), "utf8");
-    }
-  }
-
-  const mysqliFakeServer = join(sourceRoot, "ext/mysqli/tests/fake_server.inc");
-  if (existsSync(mysqliFakeServer)) {
-    const text = readFileSync(mysqliFakeServer, "utf8");
-    if (!text.includes("MYSQLI_FAKE_SERVER_DRAIN_IDLE_MS")) {
-      const from = `    public function read($bytes_len = 1024)
-    {
-        // wait 20ms to fill the buffer
-        usleep(20000);
-        $data = fread($this->conn, $bytes_len);
-        if ($data) {
-            fprintf(STDERR, "[*] Received: %s\\n", bin2hex($data));
-        }
-    }`;
-      const to = `    public function read($bytes_len = 1024)
-    {
-        // wait 20ms to fill the buffer
-        usleep(20000);
-        $data = fread($this->conn, $bytes_len);
-
-        if ($data && $bytes_len > 1024) {
-            // Large reads in this fake MySQL server are used to drain the
-            // connection tail after the client reacts to a crafted packet.
-            // fread() on a POSIX stream may return as soon as any bytes are
-            // available; it is not required to wait for later client writes to
-            // coalesce into the same TCP segment. Native php-src runs usually
-            // see the final COM_STMT_CLOSE and COM_QUIT together after the
-            // fixed sleep above, but the browser host can schedule the guest
-            // peer more slowly. Keep draining for a short idle window and print
-            // one Received line so the fixture remains semantically identical
-            // without relying on transport coalescing.
-            $idleMs = getenv('MYSQLI_FAKE_SERVER_DRAIN_IDLE_MS');
-            $idleMs = $idleMs !== false && is_numeric($idleMs) ? max(0, (int) $idleMs) : 250;
-            $deadline = microtime(true) + ($idleMs / 1000);
-            $wasBlocking = stream_get_meta_data($this->conn)['blocked'] ?? true;
-            stream_set_blocking($this->conn, false);
-            try {
-                while (strlen($data) < $bytes_len && microtime(true) < $deadline) {
-                    usleep(10000);
-                    $chunk = fread($this->conn, $bytes_len - strlen($data));
-                    if ($chunk !== false && $chunk !== '') {
-                        $data .= $chunk;
-                        $deadline = microtime(true) + ($idleMs / 1000);
-                    }
-                }
-            } finally {
-                stream_set_blocking($this->conn, $wasBlocking);
-            }
-        }
-
-        if ($data) {
-            fprintf(STDERR, "[*] Received: %s\\n", bin2hex($data));
-        }
-    }`;
-      if (!text.includes(from)) {
-        throw new Error(
-          `Unable to patch PHP mysqli fake_server fixture: read() marker not found in ${mysqliFakeServer}`,
-        );
-      }
-      writeFileSync(mysqliFakeServer, text.replace(from, to), "utf8");
-    }
-  }
-}
-
 function loadExtensionIniArgs(
   requiredExtensions: string[],
   availableSharedExtensions: Set<string>,
@@ -886,11 +573,20 @@ function loadExtensionIniArgs(
       name === "opcache" || name === "xdebug" ? "zend_extension" : "extension";
     args.push("-d", `${directive}=${guestExtensionDir}/${name}.so`);
     if (name === "opcache") {
-      // The Kandelo PHP package builds opcache as a shared Zend extension but
-      // defaults opcache.enable to 0 for demos that do not opt in. Upstream
-      // php-src PHPTs that request --EXTENSIONS-- opcache assume the upstream
-      // default active extension unless a test's --INI-- overrides it.
-      args.push("-d", "opcache.enable=1");
+      // Kandelo has no cross-process MAP_SHARED yet, so the packaged extension
+      // rejects the normal SHM mode. Exercise its supported file-cache-only
+      // boundary explicitly; individual PHPT --INI-- sections can still expose
+      // unsupported SHM assumptions as real failures.
+      args.push(
+        "-d",
+        "opcache.enable=1",
+        "-d",
+        "opcache.enable_cli=1",
+        "-d",
+        "opcache.file_cache=/tmp",
+        "-d",
+        "opcache.file_cache_only=1",
+      );
     }
   }
   return args;
@@ -902,7 +598,6 @@ function normalizeOutput(text: string): string {
   // NUL bytes, unlike JavaScript String#trim().
   return text
     .replace(/\r\n/g, "\n")
-    .replace(/\r/g, "\n")
     .replace(/^[\x00\t\n\v\r ]+|[\x00\t\n\v\r ]+$/g, "");
 }
 
@@ -914,7 +609,7 @@ function replaceExpectfPlaceholders(text: string): string {
   return text.replace(/%[easSAwidxfc0]/g, (token) => {
     switch (token) {
       case "%e":
-        return "[/\\\\]";
+        return "/";
       case "%s":
         return "[^\\r\\n]+";
       case "%S":
@@ -932,7 +627,7 @@ function replaceExpectfPlaceholders(text: string): string {
       case "%x":
         return "[0-9a-fA-F]+";
       case "%f":
-        return "[+-]?(?:(?:\\d+\\.\\d*)|(?:\\d*\\.\\d+)|(?:\\d+))(?:[Ee][+-]?\\d+)?";
+        return "[+-]?(?:\\d+|(?=\\.\\d))(?:\\.\\d+)?(?:[Ee][+-]?\\d+)?";
       case "%c":
         return ".";
       case "%0":
@@ -943,13 +638,22 @@ function replaceExpectfPlaceholders(text: string): string {
   });
 }
 
+function pcrePatternToJs(pattern: string): string {
+  // PHP's PCRE \R token has no JavaScript equivalent. Preserve its generic
+  // newline semantics rather than letting JS interpret it as a literal "R".
+  return pattern.replace(
+    /\\R/g,
+    "(?:\\r\\n|[\\n\\r\\v\\f\\x85\\u2028\\u2029])",
+  );
+}
+
 function expectfToRegExp(expectf: string): RegExp {
   let out = "";
   for (let i = 0; i < expectf.length; i++) {
     if (expectf.startsWith("%r", i)) {
       const end = expectf.indexOf("%r", i + 2);
       if (end !== -1) {
-        out += `(${expectf.slice(i + 2, end)})`;
+        out += `(${pcrePatternToJs(expectf.slice(i + 2, end))})`;
         i = end + 1;
         continue;
       }
@@ -963,7 +667,7 @@ function expectfToRegExp(expectf: string): RegExp {
   return new RegExp(`^${replaceExpectfPlaceholders(out)}$`, "s");
 }
 
-function compareExpectation(
+export function compareExpectation(
   test: PhptTest,
   actualRaw: string,
 ): { ok: boolean; detail?: string } {
@@ -981,17 +685,22 @@ function compareExpectation(
   if (test.sections.EXPECTF !== undefined) {
     const expected = normalizeOutput(test.sections.EXPECTF);
     const re = expectfToRegExp(expected);
+    const matched = re.test(actual);
     return {
-      ok: re.test(actual),
-      detail: re.test(actual) ? undefined : "EXPECTF pattern did not match",
+      ok: matched,
+      detail: matched ? undefined : "EXPECTF pattern did not match",
     };
   }
   if (test.sections.EXPECTREGEX !== undefined) {
     const expected = normalizeOutput(test.sections.EXPECTREGEX);
-    const re = new RegExp(expected, "s");
+    // php-src's run-tests.php wraps EXPECTREGEX in ^...$ before matching.
+    // Leaving it unanchored would let otherwise unexpected prefix/suffix
+    // output turn a failing PHPT into a false pass.
+    const re = new RegExp(`^${pcrePatternToJs(expected)}$`, "s");
+    const matched = re.test(actual);
     return {
-      ok: re.test(actual),
-      detail: re.test(actual) ? undefined : "EXPECTREGEX pattern did not match",
+      ok: matched,
+      detail: matched ? undefined : "EXPECTREGEX pattern did not match",
     };
   }
   return { ok: false, detail: "no supported EXPECT section" };
@@ -1003,14 +712,61 @@ function failureSnippet(actualOutput: string): string {
     .replace(/\n/g, "\\n");
 }
 
+function fileExternalPath(test: PhptTest): string | null {
+  const raw = test.sections.FILE_EXTERNAL?.trim();
+  if (!raw) return null;
+  if (isAbsolute(raw)) {
+    throw new Error(`${test.rel}: FILE_EXTERNAL must be relative to the PHPT`);
+  }
+  const candidate = resolve(dirname(test.path), raw);
+  const lexicalRel = relative(test.sourceRoot, candidate);
+  if (
+    lexicalRel === ".." ||
+    lexicalRel.startsWith(`..${sep}`) ||
+    isAbsolute(lexicalRel)
+  ) {
+    throw new Error(`${test.rel}: FILE_EXTERNAL escapes php-src: ${raw}`);
+  }
+  if (!existsSync(candidate)) return candidate;
+  const realCandidate = realpathSync(candidate);
+  const realRoot = realpathSync(test.sourceRoot);
+  const realRel = relative(realRoot, realCandidate);
+  if (realRel === ".." || realRel.startsWith(`..${sep}`) || isAbsolute(realRel)) {
+    throw new Error(
+      `${test.rel}: FILE_EXTERNAL resolves outside php-src: ${raw}`,
+    );
+  }
+  return realCandidate;
+}
+
 function unsupportedReason(test: PhptTest): string | null {
+  if (test.sections.CAPTURE_STDIO !== undefined) {
+    const capture = test.sections.CAPTURE_STDIO.toUpperCase();
+    if (
+      !capture.includes("STDIN") ||
+      !capture.includes("STDOUT") ||
+      !capture.includes("STDERR")
+    ) {
+      return "partial CAPTURE_STDIO requires per-descriptor inheritance in the host spawn contract";
+    }
+  }
+  const requiredExtensions = extensionArgs(test.sections.EXTENSIONS).map(
+    normalizeExtensionName,
+  );
+  if (requiredExtensions.includes("opcache")) {
+    const ini = test.sections.INI ?? "";
+    const fileCacheOnly = /^\s*opcache\.file_cache_only\s*=\s*(?:1|on|yes|true)\s*$/im.test(
+      ini,
+    );
+    const fileCachePath = /^\s*opcache\.file_cache\s*=\s*\S+\s*$/im.test(ini);
+    if (!fileCacheOnly || !fileCachePath) {
+      return "opcache SHM mode requires unsupported cross-process MAP_SHARED; only explicit file-cache-only PHPTs are supported";
+    }
+  }
   if (test.sections.REDIRECTTEST !== undefined)
     return "REDIRECTTEST is not supported by the Kandelo PHPT harness yet";
-  if (
-    test.sections.PHPDBG !== undefined &&
-    !process.env.TEST_PHPDBG_EXECUTABLE
-  ) {
-    return "phpdbg not available";
+  if (test.sections.PHPDBG !== undefined) {
+    return "PHPDBG requires the phpdbg SAPI and command-stream handling, which the Kandelo PHPT harness does not provide yet";
   }
   const source = `${test.sections.SKIPIF ?? ""}\n${test.sections.FILE ?? ""}\n${test.sections.FILEEOF ?? ""}`;
   if (
@@ -1049,7 +805,7 @@ function unsupportedReason(test: PhptTest): string | null {
   }
   if (
     test.sections.FILE_EXTERNAL !== undefined &&
-    !existsSync(join(dirname(test.path), test.sections.FILE_EXTERNAL.trim()))
+    !existsSync(fileExternalPath(test) ?? "")
   ) {
     return `FILE_EXTERNAL target not found: ${test.sections.FILE_EXTERNAL.trim()}`;
   }
@@ -1063,14 +819,15 @@ function unsupportedReason(test: PhptTest): string | null {
   return null;
 }
 
-function testScript(test: PhptTest): string {
+export function testScript(test: PhptTest): string {
   if (test.sections.FILE !== undefined) return test.sections.FILE;
-  if (test.sections.FILEEOF !== undefined) return test.sections.FILEEOF;
+  if (test.sections.FILEEOF !== undefined) {
+    return test.sections.FILEEOF.replace(/[\r\n]+$/, "");
+  }
   if (test.sections.FILE_EXTERNAL !== undefined) {
-    return readFileSync(
-      join(dirname(test.path), test.sections.FILE_EXTERNAL.trim()),
-      "latin1",
-    );
+    const externalPath = fileExternalPath(test);
+    if (!externalPath) return "";
+    return readFileSync(externalPath, "latin1");
   }
   return "";
 }
@@ -1109,11 +866,84 @@ function guestScriptPath(
     : `/php-src/${scriptName}`;
 }
 
+const UNSET_FOR_AUXILIARY_SECTIONS = new Set([
+  "QUERY_STRING",
+  "PATH_TRANSLATED",
+  "SCRIPT_FILENAME",
+  "REQUEST_METHOD",
+]);
+
+function withoutEnvNames(env: string[], names: Set<string>): string[] {
+  return env.filter((entry) => {
+    const eq = entry.indexOf("=");
+    return eq < 0 || !names.has(entry.slice(0, eq));
+  });
+}
+
+function hasEnvName(env: string[], name: string): boolean {
+  return env.some((entry) => entry.startsWith(`${name}=`));
+}
+
+function envForSection(
+  test: PhptTest,
+  kind: "skipif" | "file" | "clean",
+  env: string[],
+): string[] {
+  // Match php-src 8.3's run_test() mutations. Empty values are absent because
+  // PHP's POSIX envp builder drops them. SKIPIF explicitly unsets only the
+  // request/path quartet after applying --ENV--.
+  if (kind === "skipif") {
+    return withoutEnvNames(env, UNSET_FOR_AUXILIARY_SECTIONS);
+  }
+
+  // FILE clears content metadata, forces an ordinary CLI request method and
+  // redirect status, and preserves --ENV-- query/script paths when supplied.
+  if (kind === "file") {
+    const fileEnv = withoutEnvNames(
+      env,
+      new Set([
+        "REDIRECT_STATUS",
+        "REQUEST_METHOD",
+        "CONTENT_TYPE",
+        "CONTENT_LENGTH",
+        "HTTP_COOKIE",
+      ]),
+    );
+    const scriptName = phptGeneratedScriptName(test, kind);
+    const scriptPath = guestScriptPath(test, test.sourceRoot, scriptName);
+    return mergeEnvArgs(fileEnv, [
+      "REDIRECT_STATUS=1",
+      ...(hasEnvName(fileEnv, "PATH_TRANSLATED")
+        ? []
+        : [`PATH_TRANSLATED=${scriptPath}`]),
+      ...(hasEnvName(fileEnv, "SCRIPT_FILENAME")
+        ? []
+        : [`SCRIPT_FILENAME=${scriptPath}`]),
+      "REQUEST_METHOD=GET",
+    ]);
+  }
+
+  // CLEAN inherits FILE's redirect status and cleared content metadata, then
+  // explicitly unsets the same request/path quartet as SKIPIF.
+  return mergeEnvArgs(
+    withoutEnvNames(
+      env,
+      new Set([
+        ...UNSET_FOR_AUXILIARY_SECTIONS,
+        "REDIRECT_STATUS",
+        "CONTENT_TYPE",
+        "CONTENT_LENGTH",
+        "HTTP_COOKIE",
+      ]),
+    ),
+    ["REDIRECT_STATUS=1"],
+  );
+}
+
 class NodePhpRunner implements PhpRunner {
   private virtualPhpPath: string;
   private host: NodeKernelHost | null = null;
   private phpBytes: ArrayBuffer | null = null;
-  private fpmBytes: ArrayBuffer | null = null;
   private binaryMountRoot: string | null = null;
   private extensionMountRoot: string | null = null;
   private testsSinceReset = 0;
@@ -1185,10 +1015,6 @@ class NodePhpRunner implements PhpRunner {
   private async ensureHost(): Promise<NodeKernelHost> {
     if (this.host) return this.host;
     this.phpBytes = loadBytes(this.phpPath);
-    this.fpmBytes =
-      this.phpFpmPath && existsSync(this.phpFpmPath)
-        ? loadBytes(this.phpFpmPath)
-        : null;
     const binaryMountRoot = this.ensureBinaryMountRoot();
     const extensionMountRoot = this.ensureExtensionMountRoot();
     const host = new NodeKernelHost({
@@ -1209,8 +1035,6 @@ class NodePhpRunner implements PhpRunner {
         {
           mountPoint: "/php-src",
           hostPath: this.sourceRoot,
-          uid: this.runUid,
-          gid: this.runGid ?? this.runUid,
         },
         {
           mountPoint: "/kandelo-bin",
@@ -1220,11 +1044,6 @@ class NodePhpRunner implements PhpRunner {
         {
           mountPoint: "/usr/lib",
           hostPath: extensionMountRoot,
-          readonly: true,
-        },
-        {
-          mountPoint: "/kandelo-test-bin",
-          hostPath: ensureNodeToolDir(),
           readonly: true,
         },
       ],
@@ -1241,18 +1060,6 @@ class NodePhpRunner implements PhpRunner {
           this.activeOutput.stderr += text;
           this.activeOutput.output += text;
         }
-      },
-      onResolveExec: (path) => {
-        const base = path.split("/").pop();
-        if (
-          base === "php" ||
-          base === "php.wasm" ||
-          base === basename(this.phpPath)
-        )
-          return this.phpBytes;
-        if (base === "php-fpm" || base === "php-fpm.wasm")
-          return this.fpmBytes;
-        return null;
       },
     });
     await host.init();
@@ -1319,8 +1126,6 @@ class NodePhpRunner implements PhpRunner {
     scriptArgs?: string[];
     env: string[];
     stdin?: string;
-    stdinIsPipe?: boolean;
-    pipeStdio?: number[];
     waitForChildOutput?: boolean;
     timeoutMs: number;
   }): Promise<PhpRunResult> {
@@ -1336,12 +1141,10 @@ class NodePhpRunner implements PhpRunner {
     if (!this.phpBytes) throw new Error("PHP wasm bytes not loaded");
     const output = { stdout: "", stderr: "", output: "" };
     this.activeOutput = output;
-    // PHPT execution provides a finite stdin stream. Tests without an
-    // explicit --STDIN-- section get immediate EOF, but keep fd 0 terminal-like
-    // unless the PHPT explicitly redirects/captures it. Upstream run-tests.php
-    // distinguishes "terminal with no input" from a pipe for isatty/fstat.
+    // PHPT execution is non-interactive: finite stdin and captured stdout and
+    // stderr are all created as pipes by the host before the process starts.
+    // Tests without an explicit --STDIN-- section receive immediate EOF.
     const stdin = Buffer.from(opts.stdin ?? "", "latin1");
-    const stdinIsPipe = opts.stdinIsPipe ?? true;
     let timeoutId: ReturnType<typeof setTimeout> | undefined;
     let pid: number | null = null;
     try {
@@ -1364,15 +1167,13 @@ class NodePhpRunner implements PhpRunner {
             "USERNAME=kandelo",
             "LOGNAME=kandelo",
             "TMPDIR=/tmp",
-            "PATH=/kandelo-test-bin:/bin:/usr/bin:/usr/local/bin",
+            "PATH=/bin:/usr/bin:/usr/local/bin",
             `TEST_PHP_SRCDIR=/php-src`,
             `TEST_PHP_EXECUTABLE=${this.virtualPhpPath}`,
             `TEST_PHP_EXECUTABLE_ESCAPED=${shellEscape(this.virtualPhpPath)}`,
             ...opts.env,
           ],
           stdin,
-          stdinIsPipe,
-          pipeStdio: opts.pipeStdio,
           uid: this.runUid,
           gid: this.runGid,
           onStarted: (startedPid) => {
@@ -1483,15 +1284,20 @@ class NodePhpRunner implements PhpRunner {
 function copySourceRootForNodeRunner(sourceRoot: string, index: number): string {
   const copyRoot = mkdtempSync(join(tmpdir(), `kandelo-php-src-${index}-`));
   rmSync(copyRoot, { recursive: true, force: true });
-  cpSync(sourceRoot, copyRoot, {
-    recursive: true,
-    dereference: false,
-    filter: (path) => {
-      const base = basename(path);
-      return base !== ".git" && base !== ".deps" && base !== ".libs";
-    },
-  });
-  return copyRoot;
+  try {
+    cpSync(sourceRoot, copyRoot, {
+      recursive: true,
+      dereference: false,
+      filter: (path) => {
+        const base = basename(path);
+        return base !== ".git" && base !== ".deps" && base !== ".libs";
+      },
+    });
+    return copyRoot;
+  } catch (err) {
+    rmSync(copyRoot, { recursive: true, force: true });
+    throw err;
+  }
 }
 
 function makeSourceTreeWritableByGuest(sourceRoot: string): void {
@@ -1514,7 +1320,18 @@ function makeSourceTreeWritableByGuest(sourceRoot: string): void {
   }
 }
 
+function phpTestVfsPublicUrl(): string {
+  const rel = relative(BROWSER_PUBLIC_DIR, PHP_TEST_VFS);
+  if (rel === ".." || rel.startsWith(`..${sep}`) || isAbsolute(rel)) {
+    throw new Error(
+      `PHP_TEST_VFS_OUT must be inside ${BROWSER_PUBLIC_DIR} for browser runs: ${PHP_TEST_VFS}`,
+    );
+  }
+  return rel.split(sep).join("/");
+}
+
 async function startViteServer(): Promise<ChildProcess> {
+  const vfsPublicUrl = phpTestVfsPublicUrl();
   return new Promise((resolvePromise, reject) => {
     const viteBin = join(BROWSER_DIR, "node_modules", ".bin", "vite");
     const useLocalVite = existsSync(viteBin);
@@ -1533,7 +1350,11 @@ async function startViteServer(): Promise<ChildProcess> {
       {
         cwd: BROWSER_DIR,
         stdio: ["ignore", "pipe", "pipe"],
-        env: { ...process.env, KANDELO_BROWSER_DEMO_INPUTS: "php-test" },
+        env: {
+          ...process.env,
+          KANDELO_BROWSER_DEMO_INPUTS: "php-test",
+          VITE_PHP_TEST_VFS_URL: vfsPublicUrl,
+        },
       },
     );
     let started = false;
@@ -1590,12 +1411,14 @@ class BrowserPhpRunner implements PhpRunner {
   private vite: ChildProcess | null = null;
   private browser: Browser | null = null;
   private page: Page | null = null;
-  private runs = 0;
+  private activeTestId: string | null = null;
+  private activeTestSections = 0;
 
   constructor(
     private sourceRoot: string,
     private rebuildVfs: boolean,
     private availableSharedExtensions: Set<string>,
+    private ownsSourceRoot = false,
     private runUid?: number,
     private runGid?: number,
   ) {}
@@ -1609,14 +1432,43 @@ class BrowserPhpRunner implements PhpRunner {
   }
 
   async init(): Promise<void> {
-    if (this.rebuildVfs || !existsSync(PHP_TEST_VFS)) {
+    const builder = join(
+      REPO_ROOT,
+      "images/vfs/scripts/build-php-test-vfs-image.sh",
+    );
+    const builderEnv = { ...process.env, PHP_SOURCE_DIR: this.sourceRoot };
+    const expectedFingerprint = execFileSync(
+      "bash",
+      [builder, "--print-fingerprint"],
+      {
+        cwd: REPO_ROOT,
+        env: builderEnv,
+        encoding: "utf8",
+      },
+    ).trim();
+    let recordedFingerprint: string | undefined;
+    try {
+      const metadata = JSON.parse(
+        readFileSync(`${PHP_TEST_VFS}.meta.json`, "utf8"),
+      );
+      if (metadata?.version === 1 && typeof metadata.fingerprint === "string") {
+        recordedFingerprint = metadata.fingerprint;
+      }
+    } catch {
+      recordedFingerprint = undefined;
+    }
+    if (
+      this.rebuildVfs ||
+      !existsSync(PHP_TEST_VFS) ||
+      recordedFingerprint !== expectedFingerprint
+    ) {
       execFileSync(
         "bash",
-        [join(REPO_ROOT, "images/vfs/scripts/build-php-test-vfs-image.sh")],
+        [builder],
         {
           cwd: REPO_ROOT,
           stdio: "inherit",
-          env: { ...process.env, PHP_SOURCE_DIR: this.sourceRoot },
+          env: builderEnv,
         },
       );
     }
@@ -1674,21 +1526,20 @@ class BrowserPhpRunner implements PhpRunner {
     scriptArgs?: string[];
     env: string[];
     stdin?: string;
-    stdinIsPipe?: boolean;
-    pipeStdio?: number[];
     waitForChildOutput?: boolean;
     timeoutMs: number;
   }): Promise<PhpRunResult> {
     if (!this.page) throw new Error("browser page not ready");
-    if (this.runs > 0 && this.runs % 20 === 0) {
-      await this.page.context().close();
-      await this.reloadPage();
+    if (this.activeTestId !== opts.test.rel) {
+      this.activeTestId = opts.test.rel;
+      this.activeTestSections = 0;
     }
-    this.runs++;
+    const retryCanStartFromFreshImage = this.activeTestSections === 0;
 
     const scriptName = phptGeneratedScriptName(opts.test, opts.kind);
     const scriptPath = guestScriptPath(opts.test, this.sourceRoot, scriptName);
     const request = {
+      testId: opts.test.rel,
       scriptPath,
       script: opts.script,
       argv: [...opts.argv, scriptPath, ...(opts.scriptArgs ?? [])],
@@ -1706,8 +1557,6 @@ class BrowserPhpRunner implements PhpRunner {
       uid: this.runUid,
       gid: this.runGid,
       stdin: opts.stdin ?? "",
-      stdinIsPipe: opts.stdinIsPipe ?? true,
-      pipeStdio: opts.pipeStdio,
       waitForChildOutput: opts.waitForChildOutput,
       timeoutMs: opts.timeoutMs,
     };
@@ -1715,16 +1564,20 @@ class BrowserPhpRunner implements PhpRunner {
     for (let attempt = 0; attempt < 2; attempt++) {
       const start = performance.now();
       try {
-        const evaluatePromise = this.page.evaluate(
+        const page = this.page;
+        if (!page) throw new Error("browser page not ready");
+        const evaluatePromise = page.evaluate(
           async ({ request }) => (window as any).__runPhpScript(request),
           { request },
         );
         void evaluatePromise.catch(() => {});
-        return await withTimeout(
+        const result = await withTimeout(
           evaluatePromise,
           opts.timeoutMs + 10_000,
           "browser PHPT run",
         );
+        this.activeTestSections++;
+        return result;
       } catch (err: any) {
         const message = err?.message || String(err);
         const timedOut = /browser PHPT run timed out/.test(message);
@@ -1747,11 +1600,12 @@ class BrowserPhpRunner implements PhpRunner {
           /Execution context was destroyed|Target page, context or browser has been closed|Navigation failed/i.test(
             message,
           );
-        if (attempt === 0 && recoverable) {
+        if (recoverable) {
           await this.page
             ?.context()
             .close()
             .catch(() => {});
+          this.page = null;
           try {
             await this.reloadPage();
           } catch (reloadErr: any) {
@@ -1763,7 +1617,9 @@ class BrowserPhpRunner implements PhpRunner {
               durationMs: Math.round(performance.now() - start),
             };
           }
-          continue;
+          if (attempt === 0 && retryCanStartFromFreshImage) {
+            continue;
+          }
         }
         return {
           exitCode: -1,
@@ -1775,6 +1631,11 @@ class BrowserPhpRunner implements PhpRunner {
       }
     }
     throw new Error("unreachable");
+  }
+
+  async endTest(): Promise<void> {
+    this.activeTestId = null;
+    this.activeTestSections = 0;
   }
 
   async close(): Promise<void> {
@@ -1807,14 +1668,98 @@ class BrowserPhpRunner implements PhpRunner {
       });
       this.vite = null;
     }
+    if (this.ownsSourceRoot) {
+      rmSync(this.sourceRoot, { recursive: true, force: true });
+    }
   }
 }
 
-async function runPhpt(
+export async function probeLoadedExtensions(
+  runner: PhpRunner,
+  sourceRoot: string,
+  sharedExtensions: Set<string>,
+  timeoutMs: number,
+): Promise<Set<string>> {
+  const marker = "__KANDELO_PHP_EXTENSIONS__";
+  const endMarker = "__KANDELO_PHP_EXTENSIONS_END__";
+  const probe: PhptTest = {
+    path: join(sourceRoot, ".kandelo-extension-probe.phpt"),
+    rel: ".kandelo-extension-probe.phpt",
+    sourceRoot,
+    sections: {},
+  };
+  const result = await runner.runScript({
+    test: probe,
+    kind: "file",
+    script: `<?php echo "${marker}", json_encode(array_values(get_loaded_extensions())), "${endMarker}"; ?>`,
+    argv: [
+      ...baseIniArgs(),
+      ...runner.loadExtensionIniArgs([...sharedExtensions]),
+    ],
+    env: defaultPhpTestEnvArgs(),
+    timeoutMs: Math.max(30_000, timeoutMs),
+  });
+  const output = result.output ?? `${result.stdout}${result.stderr}`;
+  if (result.error || result.exitCode !== 0) {
+    throw new Error(
+      `PHP extension probe failed${result.error ? `: ${result.error}` : ` with exit ${result.exitCode}`}${
+        output ? `; output: ${failureSnippet(output)}` : ""
+      }`,
+    );
+  }
+  const start = output.lastIndexOf(marker);
+  const end = start < 0 ? -1 : output.indexOf(endMarker, start + marker.length);
+  if (start < 0 || end < 0) {
+    throw new Error(
+      `PHP extension probe returned malformed output: ${failureSnippet(output)}`,
+    );
+  }
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(output.slice(start + marker.length, end));
+  } catch (err: any) {
+    throw new Error(
+      `PHP extension probe returned invalid JSON: ${err?.message || String(err)}`,
+    );
+  }
+  if (!Array.isArray(parsed) || parsed.some((name) => typeof name !== "string")) {
+    throw new Error("PHP extension probe did not return a string array");
+  }
+  const loaded = new Set(parsed.map((name) => normalizeExtensionName(name)));
+  const missingShared = [...sharedExtensions].filter((name) => !loaded.has(name));
+  if (missingShared.length > 0) {
+    throw new Error(
+      `packaged PHP extension(s) failed to load: ${missingShared.join(", ")}`,
+    );
+  }
+  return loaded;
+}
+
+export async function runPhpt(
   test: PhptTest,
   runner: PhpRunner,
   availableExtensions: Set<string>,
   timeoutMs: number,
+): Promise<TestResult> {
+  return runPhptAttempt(test, runner, availableExtensions, timeoutMs, false);
+}
+
+function phptMayRetry(test: PhptTest, output: string): boolean {
+  if (test.sections.FLAKY !== undefined) return true;
+  const source = test.sections.FILE ?? "";
+  if (/\b(?:disk_free_space|hrtime|microtime|sleep|usleep)\(/i.test(source)) {
+    return true;
+  }
+  return /\b(?:404: page not found|address already in use|connection refused|deadlock|mailbox already exists|timed out)\b/i
+    .test(normalizeOutput(output));
+}
+
+async function runPhptAttempt(
+  test: PhptTest,
+  runner: PhpRunner,
+  availableExtensions: Set<string>,
+  timeoutMs: number,
+  retried: boolean,
 ): Promise<TestResult> {
   const start = performance.now();
   const unsupported = unsupportedReason(test);
@@ -1835,12 +1780,6 @@ async function runPhpt(
   const defaultIniArgs = baseIniArgs();
   const testIniArgs = iniArgs(test.sections.INI, test);
   const args = splitArgs(test.sections.ARGS);
-  const pipeStdio = captureStdioFds(test);
-  const stdinIsPipe =
-    test.sections.STDIN !== undefined ||
-    test.sections.CAPTURE_STDIO === undefined ||
-    pipeStdio.includes(0);
-
   const requiredExtensions = extensionArgs(test.sections.EXTENSIONS);
   const extensionIniArgs = runner.loadExtensionIniArgs(requiredExtensions);
   const missingRequiredExtensions = requiredExtensions.filter(
@@ -1860,6 +1799,11 @@ async function runPhpt(
     ...commonEnv,
     `TEST_PHP_EXTRA_ARGS=${shellArgs(testArgv)}`,
   ];
+  let skipXfailReason: string | undefined;
+  let skipWarning: string | undefined;
+  let skipInfo: string | undefined;
+  let skipFlakyReason: string | undefined;
+  let skipXleakReason: string | undefined;
   if (test.sections.SKIPIF !== undefined) {
     const skip = await runner.runScript({
       test,
@@ -1869,12 +1813,27 @@ async function runPhpt(
       // --INI-- block. Keep that ordering so resource-probing SKIPIF sections
       // are not distorted by settings meant only for the main FILE body.
       argv: preTestArgv,
-      env: envWithExtraArgs,
-      pipeStdio,
-      stdinIsPipe,
+      env: envForSection(test, "skipif", envWithExtraArgs),
       timeoutMs,
     });
-    const skipOutput = normalizeOutput(`${skip.stdout}${skip.stderr}`);
+    let skipOutput = normalizeOutput(
+      skip.output ?? `${skip.stdout}${skip.stderr}`,
+    );
+    // SkipCache in php-src treats a leading lowercase `nocache` directive as
+    // empty output after using it to disable cache reuse for that SKIPIF.
+    if (skipOutput.startsWith("nocache")) skipOutput = "";
+    if (skip.error) {
+      return {
+        test: test.rel,
+        status: skip.error === "TIMEOUT" ? "time" : "fail",
+        time_ms: skip.durationMs,
+        reason:
+          skip.error === "TIMEOUT"
+            ? "SKIPIF timed out"
+            : `SKIPIF host error: ${skip.error}`,
+        detail: skipOutput ? `partial output: ${failureSnippet(skipOutput)}` : undefined,
+      };
+    }
     if (/^(?:skip|skipped)\b/i.test(skipOutput)) {
       return {
         test: test.rel,
@@ -1883,20 +1842,27 @@ async function runPhpt(
         reason: skipOutput,
       };
     }
-    if (/^xfail\b/i.test(skipOutput)) {
+    const infoMatch = skipOutput.match(/^info\s*(.+)/i);
+    const warnMatch = skipOutput.match(/^warn\s+(.+)/i);
+    if (infoMatch) {
+      skipInfo = infoMatch[1];
+    } else if (warnMatch) {
+      skipWarning = warnMatch[1];
+    } else if (/^xfail/i.test(skipOutput)) {
+      // Match run-tests.php: SKIPIF may synthesize an XFAIL section, but FILE
+      // still runs and determines whether the result is XFAIL or XPASS.
+      skipXfailReason = skipOutput.slice(5).trim();
+    } else if (/^xleak/i.test(skipOutput)) {
+      skipXleakReason = skipOutput.slice(5).trim();
+    } else if (/^flaky/i.test(skipOutput)) {
+      skipFlakyReason = skipOutput.slice(5).trim();
+    } else if (skipOutput !== "") {
       return {
         test: test.rel,
-        status: "xfail",
+        status: "bork",
         time_ms: Math.round(performance.now() - start),
-        reason: skipOutput,
-      };
-    }
-    if (skip.error === "TIMEOUT") {
-      return {
-        test: test.rel,
-        status: "time",
-        time_ms: skip.durationMs,
-        reason: "SKIPIF timed out",
+        reason: "invalid output from SKIPIF",
+        detail: failureSnippet(skipOutput),
       };
     }
   }
@@ -1908,26 +1874,25 @@ async function runPhpt(
       script: testScript(test),
       argv: testArgv,
       scriptArgs: args,
-      env: envWithExtraArgs,
+      env: envForSection(test, "file", envWithExtraArgs),
       stdin: test.sections.STDIN,
-      stdinIsPipe,
-      pipeStdio,
       waitForChildOutput: /\b(?:pcntl_fork|pcntl_rfork|forkx|proc_open|popen)\s*\(/.test(
         test.sections.FILE ?? "",
       ),
       timeoutMs,
     });
 
-  let main = await runMain();
+  const main = await runMain();
 
   let ok = false;
   let detail = main.error;
   let actualOutput = main.output ?? `${main.stdout}${main.stderr}`;
-  if (main.error === "TIMEOUT" && actualOutput) {
-    const snippet = failureSnippet(actualOutput);
-    detail = `TIMEOUT; partial actual: ${snippet}`;
-  }
-  if (main.error !== "TIMEOUT") {
+  if (main.error) {
+    detail = main.error;
+    if (actualOutput) {
+      detail += `; partial actual: ${failureSnippet(actualOutput)}`;
+    }
+  } else {
     const compared = compareExpectation(test, actualOutput);
     // PHPTs often intentionally trigger fatal errors; upstream run-tests.php
     // treats matching output as the authority rather than requiring exit 0.
@@ -1935,52 +1900,91 @@ async function runPhpt(
     detail = compared.detail;
     if (!ok && detail) {
       const snippet = failureSnippet(actualOutput);
-      const errorDetail = main.error ? `; error=${main.error}` : "";
-      detail = `${detail}; exit=${main.exitCode}${errorDetail}; actual: ${snippet}`;
+      detail = `${detail}; exit=${main.exitCode}; actual: ${snippet}`;
     }
   }
+  const mainMatched = ok;
 
-  if (
-    !ok &&
-    main.error !== "TIMEOUT" &&
-    (isFlakyTest(test) || isFlakyOutput(actualOutput))
-  ) {
-    main = await runMain();
-    actualOutput = main.output ?? `${main.stdout}${main.stderr}`;
-    detail = main.error;
-    if (main.error !== "TIMEOUT") {
-      const compared = compareExpectation(test, actualOutput);
-      ok = compared.ok;
-      detail = compared.detail;
-      if (!ok && detail) {
-        const snippet = failureSnippet(actualOutput);
-        const errorDetail = main.error ? `; error=${main.error}` : "";
-        detail = `${detail}; exit=${main.exitCode}${errorDetail}; actual: ${snippet}`;
-      }
-    }
-  }
-
+  let cleanFailure: string | undefined;
+  let cleanTimedOut = false;
+  let cleanBorked = false;
   if (test.sections.CLEAN !== undefined) {
-    await runner
-      .runScript({
+    try {
+      const clean = await runner.runScript({
         test,
         kind: "clean",
         script: test.sections.CLEAN,
         // CLEAN runs with the same pre-test INI baseline as SKIPIF upstream.
         argv: preTestArgv,
-        env: envWithExtraArgs,
-        pipeStdio,
-        stdinIsPipe,
+        env: envForSection(test, "clean", envWithExtraArgs),
         timeoutMs: Math.min(timeoutMs, 30_000),
-      })
-      .catch(() => {});
+      });
+      const cleanOutput = normalizeOutput(
+        clean.output ?? `${clean.stdout}${clean.stderr}`,
+      );
+      if (clean.error || clean.exitCode !== 0) {
+        cleanTimedOut = clean.error === "TIMEOUT";
+        cleanFailure = clean.error
+          ? `CLEAN host error: ${clean.error}`
+          : `CLEAN exited ${clean.exitCode}`;
+        if (cleanOutput) {
+          cleanFailure += `; output: ${failureSnippet(cleanOutput)}`;
+        }
+      } else if (cleanOutput && mainMatched) {
+        // run-tests.php treats output from an otherwise-successful CLEAN
+        // section as a malformed test, not a passing cleanup.
+        cleanBorked = true;
+        cleanFailure = `invalid output from CLEAN: ${failureSnippet(cleanOutput)}`;
+      }
+    } catch (err: any) {
+      cleanFailure = `CLEAN harness error: ${err?.message || String(err)}`;
+    }
+  }
+  if (
+    !retried &&
+    !main.error &&
+    !cleanFailure &&
+    !mainMatched &&
+    (skipFlakyReason !== undefined || phptMayRetry(test, actualOutput))
+  ) {
+    // php-src reruns the complete PHPT once, including SKIPIF and CLEAN. Do
+    // not let a retry hide host, timeout, or cleanup infrastructure failures.
+    return runPhptAttempt(test, runner, availableExtensions, timeoutMs, true);
+  }
+  if (cleanFailure) {
+    ok = false;
+    detail = detail ? `${detail}; ${cleanFailure}` : cleanFailure;
   }
 
-  const isXfail = test.sections.XFAIL !== undefined;
+  const isXfail =
+    test.sections.XFAIL !== undefined || skipXfailReason !== undefined;
+  const xfailReason =
+    test.sections.XFAIL !== undefined
+      ? normalizeOutput(test.sections.XFAIL)
+      : skipXfailReason;
+  const skipContext =
+    skipInfo !== undefined
+      ? `SKIPIF info: ${skipInfo}`
+      : skipFlakyReason !== undefined
+        ? `SKIPIF flaky: ${skipFlakyReason || "no reason given"}`
+        : skipXleakReason !== undefined
+          ? `SKIPIF xleak: ${skipXleakReason || "no reason given"}`
+          : undefined;
   let status: TestStatus;
-  if (main.error === "TIMEOUT") status = isXfail ? "xfail" : "time";
-  else if (ok) status = isXfail ? "xpass" : "pass";
+  if (cleanBorked) status = "bork";
+  else if (cleanFailure) status = cleanTimedOut ? "time" : "fail";
+  else if (main.error === "TIMEOUT") status = "time";
+  else if (main.error) status = "fail";
+  // PHP 8.3's run-tests.php reports WARN for a matching test after a warned
+  // SKIPIF. A mismatch is a combined WARN&FAIL upstream; this single-status
+  // harness must retain FAIL so the aggregate command cannot exit success.
+  else if (skipWarning !== undefined && ok) status = "warn";
+  else if (ok) status = isXfail ? "xpass" : retried ? "warn" : "pass";
   else status = isXfail ? "xfail" : "fail";
+
+  const warningContext = skipWarning
+    ? `SKIPIF warning: ${skipWarning}`
+    : undefined;
 
   return {
     test: test.rel,
@@ -1988,8 +1992,16 @@ async function runPhpt(
     time_ms: Math.round(performance.now() - start),
     reason:
       status === "xfail"
-        ? normalizeOutput(test.sections.XFAIL ?? "expected failure")
-        : undefined,
+        ? [xfailReason || "expected failure", warningContext]
+            .filter((value): value is string => value !== undefined)
+            .join("; ")
+        : status === "warn"
+          ? retried && ok
+            ? "test passed on retry attempt"
+            : [warningContext, !ok && isXfail ? xfailReason : undefined]
+                .filter((value): value is string => value !== undefined)
+                .join("; ")
+          : warningContext ?? skipContext,
     detail,
   };
 }
@@ -2009,6 +2021,8 @@ Options:
                         (default: PHP_TEST_RUN_UID; root when unset)
   --run-gid <n>         Run guest PHP processes as gid n
                         (default: PHP_TEST_RUN_GID; root when unset)
+  --allow-unsupported   Keep an inventory run successful when its only
+                        non-passing results are unsupported harness features
   --host-reset-interval <n>
                         Reboot each Node-host Kandelo kernel after n PHPTs
                         per worker to reclaim host-side Wasm memory
@@ -2019,6 +2033,7 @@ Options:
   --json                Emit JSON lines
   --report              Write docs/php-upstream-test-report.md
   --rebuild-vfs         Rebuild php-test.vfs.zst before browser runs
+  --print-source-dir    Resolve php-src from package metadata/cache and exit
 
 Environment:
   PHP_WASM              Path to php.wasm
@@ -2056,6 +2071,8 @@ async function main() {
   let json = false;
   let report = false;
   let rebuildVfs = false;
+  let allowUnsupported = false;
+  let printSourceDir = false;
   const selectors: string[] = [];
 
   for (let i = 0; i < args.length; i++) {
@@ -2115,6 +2132,10 @@ async function main() {
       report = true;
     } else if (arg === "--rebuild-vfs") {
       rebuildVfs = true;
+    } else if (arg === "--allow-unsupported") {
+      allowUnsupported = true;
+    } else if (arg === "--print-source-dir") {
+      printSourceDir = true;
     } else if (arg.startsWith("--")) {
       throw new Error(`unknown option: ${arg}`);
     } else {
@@ -2122,147 +2143,169 @@ async function main() {
     }
   }
 
-  const sourceRoot = resolvePhpSource();
-  preparePhpTestFixtures(sourceRoot);
-  const phpPath = resolvePhpBinary();
-  const phpFpmPath = resolvePhpFpmBinary(phpPath);
-  const sharedExtensionPaths = sharedExtensionPathsForPhp(phpPath);
-  const availableSharedExtensions = new Set(sharedExtensionPaths.keys());
-  const availableExtensions = new Set([
-    ...staticExtensionsForPhpSource(sourceRoot),
-    ...availableSharedExtensions,
-  ]);
-  let tests = discoverTests(sourceRoot, selectors);
-  if (shard !== null) {
-    tests = tests.filter((_, idx) => idx % shard!.total === shard!.index - 1);
-  }
-  if (offset > 0) tests = tests.slice(offset);
-  if (limit !== null) tests = tests.slice(0, limit);
-  if (host === "browser" && jobs !== 1) {
-    throw new Error("--jobs is currently supported only by the node host");
+  if (printSourceDir) {
+    console.log(resolvePhpSource());
+    return;
   }
 
-  if (!json) {
-    console.error("===== PHP PHPT runtime tests =====");
-    console.error(`Host: ${host}`);
-    console.error(`php-src: ${sourceRoot}`);
-    console.error(`PHP wasm: ${phpPath}`);
-    if (phpFpmPath) {
-      console.error(`PHP-FPM wasm: ${phpFpmPath}`);
-    }
-    if (availableSharedExtensions.size > 0) {
-      console.error(
-        `Shared extensions: ${[...availableSharedExtensions].join(", ")}`,
-      );
-    }
-    if (shard !== null) {
-      console.error(`Shard: ${shard.index}/${shard.total}`);
-    }
-    if (offset > 0) console.error(`Offset: ${offset}`);
-    if (jobs > 1) console.error(`Jobs: ${jobs}`);
-    if (host === "node") {
-      console.error(`Node host reset interval: ${hostResetInterval}`);
-      console.error(
-        `Node TCP/DNS bridge: ${enableTcpNetwork ? "enabled" : "disabled"}`,
-      );
-    }
-    if (runUid !== undefined || runGid !== undefined) {
-      console.error(
-        `Guest credentials: uid=${runUid ?? 0} gid=${runGid ?? runUid ?? 0}`,
-      );
-    }
-    console.error(`Tests: ${tests.length}`);
-    console.error("");
-  }
-
+  const sourceInputRoot = resolvePhpSource();
+  // Fixture maintenance and generated PHPT section files must never modify a
+  // caller-supplied or content-addressed php-src checkout. Prepare one
+  // harness-owned source tree, then give parallel Node runners their own
+  // copies of that already-prepared tree.
+  const sourceRoot = copySourceRootForNodeRunner(sourceInputRoot, 0);
   const runners: PhpRunner[] = [];
-  if (host === "browser") {
-    const runner = new BrowserPhpRunner(
+  try {
+    preparePhpTestFixtures(
       sourceRoot,
-      rebuildVfs,
-      availableSharedExtensions,
-      runUid,
-      runGid,
+      join(REPO_ROOT, "tests/php-fixtures"),
     );
-    await runner.init();
-    runners.push(runner);
-  } else {
-    for (let i = 0; i < jobs; i++) {
-      const runnerSourceRoot =
-        jobs === 1 && runUid === undefined && runGid === undefined
-          ? sourceRoot
-          : copySourceRootForNodeRunner(sourceRoot, i + 1);
-      if (runUid !== undefined || runGid !== undefined) {
-        makeSourceTreeWritableByGuest(runnerSourceRoot);
+    const phpPath = resolvePhpBinary();
+    const phpFpmPath = resolvePhpFpmBinary(phpPath);
+    const sharedExtensionPaths = sharedExtensionPathsForPhp(phpPath);
+    const availableSharedExtensions = new Set(sharedExtensionPaths.keys());
+    let tests = discoverTests(sourceRoot, selectors);
+    if (shard !== null) {
+      tests = tests.filter((_, idx) => idx % shard!.total === shard!.index - 1);
+    }
+    if (offset > 0) tests = tests.slice(offset);
+    if (limit !== null) tests = tests.slice(0, limit);
+    if (host === "browser" && jobs !== 1) {
+      throw new Error("--jobs is currently supported only by the node host");
+    }
+
+    if (!json) {
+      console.error("===== PHP PHPT runtime tests =====");
+      console.error(`Host: ${host}`);
+      console.error(`php-src input: ${sourceInputRoot}`);
+      console.error(`php-src harness copy: ${sourceRoot}`);
+      console.error(`PHP wasm: ${phpPath}`);
+      if (phpFpmPath) {
+        console.error(`PHP-FPM wasm: ${phpFpmPath}`);
       }
-      runners.push(
-        new NodePhpRunner(
+      if (availableSharedExtensions.size > 0) {
+        console.error(
+          `Shared extensions: ${[...availableSharedExtensions].join(", ")}`,
+        );
+      }
+      if (shard !== null) {
+        console.error(`Shard: ${shard.index}/${shard.total}`);
+      }
+      if (offset > 0) console.error(`Offset: ${offset}`);
+      if (jobs > 1) console.error(`Jobs: ${jobs}`);
+      if (host === "node") {
+        console.error(`Node host reset interval: ${hostResetInterval}`);
+        console.error(
+          `Node TCP/DNS bridge: ${enableTcpNetwork ? "enabled" : "disabled"}`,
+        );
+      }
+      if (runUid !== undefined || runGid !== undefined) {
+        console.error(
+          `Guest credentials: uid=${runUid ?? 0} gid=${runGid ?? runUid ?? 0}`,
+        );
+      }
+      console.error(`Tests: ${tests.length}`);
+      console.error("");
+    }
+
+    if (host === "browser") {
+      const runner = new BrowserPhpRunner(
+        sourceRoot,
+        rebuildVfs,
+        availableSharedExtensions,
+        true,
+        runUid,
+        runGid,
+      );
+      runners.push(runner);
+      await runner.init();
+    } else {
+      for (let i = 0; i < jobs; i++) {
+        const runnerSourceRoot =
+          i === 0 ? sourceRoot : copySourceRootForNodeRunner(sourceRoot, i + 1);
+        const runner = new NodePhpRunner(
           runnerSourceRoot,
           phpPath,
           phpFpmPath,
           sharedExtensionPaths,
-          runnerSourceRoot !== sourceRoot,
+          true,
           hostResetInterval,
           enableTcpNetwork,
           runUid,
           runGid,
-        ),
-      );
-    }
-  }
-
-  const counts: Record<TestStatus, number> = {
-    pass: 0,
-    fail: 0,
-    skip: 0,
-    xfail: 0,
-    xpass: 0,
-    unsupported: 0,
-    time: 0,
-  };
-  const results: TestResult[] = new Array(tests.length);
-  let completed = 0;
-  const pendingTests = new Set(tests.map((_test, index) => index));
-  const activeConflicts = new Set<string>();
-  let activeTests = 0;
-  let exclusiveActive = false;
-  let schedulerWaiters: Array<() => void> = [];
-
-  async function acquireTest(): Promise<{
-    index: number;
-    conflicts: string[];
-  } | null> {
-    while (true) {
-      if (pendingTests.size === 0) return null;
-      for (const index of pendingTests) {
-        const conflicts = phptConflictTokens(tests[index]);
-        const exclusive = requiresExclusiveScheduling(conflicts);
-        if (exclusiveActive || (exclusive && activeTests > 0)) {
-          continue;
+        );
+        runners.push(runner);
+        if (runUid !== undefined || runGid !== undefined) {
+          makeSourceTreeWritableByGuest(runnerSourceRoot);
         }
-        if (conflicts.some((conflict) => activeConflicts.has(conflict))) {
-          continue;
-        }
-        pendingTests.delete(index);
-        for (const conflict of conflicts) activeConflicts.add(conflict);
-        activeTests++;
-        if (exclusive) exclusiveActive = true;
-        return { index, conflicts };
       }
-      await new Promise<void>((resolve) => schedulerWaiters.push(resolve));
     }
-  }
+    const availableExtensions = await probeLoadedExtensions(
+      runners[0],
+      sourceRoot,
+      availableSharedExtensions,
+      timeoutMs,
+    );
+    if (!json) {
+      console.error(
+        `Loaded extensions: ${[...availableExtensions].sort().join(", ")}`,
+      );
+      console.error("");
+    }
 
-  function releaseTest(conflicts: string[]) {
-    for (const conflict of conflicts) activeConflicts.delete(conflict);
-    if (requiresExclusiveScheduling(conflicts)) exclusiveActive = false;
-    activeTests = Math.max(0, activeTests - 1);
-    const waiters = schedulerWaiters;
-    schedulerWaiters = [];
-    for (const wake of waiters) wake();
-  }
+    const counts: Record<TestStatus, number> = {
+      pass: 0,
+      fail: 0,
+      bork: 0,
+      warn: 0,
+      skip: 0,
+      xfail: 0,
+      xpass: 0,
+      unsupported: 0,
+      time: 0,
+    };
+    const results: TestResult[] = new Array(tests.length);
+    let completed = 0;
+    const pendingTests = new Set(tests.map((_test, index) => index));
+    const activeConflicts = new Set<string>();
+    let activeTests = 0;
+    let exclusiveActive = false;
+    let schedulerWaiters: Array<() => void> = [];
 
-  try {
+    async function acquireTest(): Promise<{
+      index: number;
+      conflicts: string[];
+    } | null> {
+      while (true) {
+        if (pendingTests.size === 0) return null;
+        for (const index of pendingTests) {
+          const conflicts = phptConflictTokens(tests[index]);
+          const exclusive = requiresExclusiveScheduling(conflicts);
+          if (exclusiveActive || (exclusive && activeTests > 0)) {
+            continue;
+          }
+          if (conflicts.some((conflict) => activeConflicts.has(conflict))) {
+            continue;
+          }
+          pendingTests.delete(index);
+          for (const conflict of conflicts) activeConflicts.add(conflict);
+          activeTests++;
+          if (exclusive) exclusiveActive = true;
+          return { index, conflicts };
+        }
+        await new Promise<void>((resolve) => schedulerWaiters.push(resolve));
+      }
+    }
+
+    function releaseTest(conflicts: string[]) {
+      for (const conflict of conflicts) activeConflicts.delete(conflict);
+      if (requiresExclusiveScheduling(conflicts)) exclusiveActive = false;
+      activeTests = Math.max(0, activeTests - 1);
+      const waiters = schedulerWaiters;
+      schedulerWaiters = [];
+      for (const wake of waiters) wake();
+    }
+
     await Promise.all(
       runners.map(async (runner) => {
         while (true) {
@@ -2295,88 +2338,102 @@ async function main() {
         }
       }),
     );
+
+    const completedResults = results.filter((result): result is TestResult => {
+      return result !== undefined;
+    });
+    if (completedResults.length !== tests.length) {
+      for (let i = 0; i < tests.length; i++) {
+        if (results[i] === undefined) {
+          const result: TestResult = {
+            test: tests[i].rel,
+            status: "time",
+            time_ms: 0,
+            reason: "harness did not record a result",
+          };
+          results[i] = result;
+          counts.time++;
+        }
+      }
+    }
+
+    if (report) {
+      const reportPath = join(REPO_ROOT, "docs/php-upstream-test-report.md");
+      mkdirSync(dirname(reportPath), { recursive: true });
+      const lines = [
+        "# PHP PHPT Runtime Test Report",
+        "",
+        `Host: ${host}`,
+        `Generated: ${new Date().toISOString()}`,
+        "",
+        "| Status | Count |",
+        "|--------|-------|",
+        ...Object.entries(counts).map(
+          ([status, count]) => `| ${status.toUpperCase()} | ${count} |`,
+        ),
+        `| **TOTAL** | **${results.length}** |`,
+        "",
+        "## Non-Passing Results",
+        "",
+        ...results
+          .filter((r) => !["pass", "skip", "xfail"].includes(r.status))
+          .map(
+            (r) =>
+              `- ${r.status.toUpperCase()} \`${r.test}\`${r.reason ? `: ${r.reason}` : ""}${r.detail ? ` (${r.detail})` : ""}`,
+          ),
+        "",
+      ];
+      writeFileSync(reportPath, `${lines.join("\n")}\n`);
+      if (!json) console.error(`Report written to: ${reportPath}`);
+    }
+
+    if (!json) {
+      console.error("");
+      console.error("===== Results =====");
+      for (const status of [
+        "pass",
+        "fail",
+        "bork",
+        "warn",
+        "skip",
+        "xfail",
+        "xpass",
+        "unsupported",
+        "time",
+      ] as const) {
+        console.error(`${status.toUpperCase().padEnd(11)} ${counts[status]}`);
+      }
+      console.error(`TOTAL       ${results.length}`);
+    }
+
+    if (
+      counts.fail > 0 ||
+      counts.bork > 0 ||
+      counts.xpass > 0 ||
+      (!allowUnsupported && counts.unsupported > 0) ||
+      counts.time > 0
+    ) {
+      process.exitCode = 1;
+    }
   } finally {
     await Promise.all(
       runners.map((runner) =>
         runner.close().catch(() => {
           // Keep shutdown best-effort so one wedged worker does not hide
-          // already-recorded PHPT results.
+          // already-recorded PHPT results or other cleanup.
         }),
       ),
     );
-  }
-
-  const completedResults = results.filter((result): result is TestResult => {
-    return result !== undefined;
-  });
-  if (completedResults.length !== tests.length) {
-    for (let i = 0; i < tests.length; i++) {
-      if (results[i] === undefined) {
-        const result: TestResult = {
-          test: tests[i].rel,
-          status: "time",
-          time_ms: 0,
-          reason: "harness did not record a result",
-        };
-        results[i] = result;
-        counts.time++;
-      }
-    }
-  }
-
-  if (report) {
-    const reportPath = join(REPO_ROOT, "docs/php-upstream-test-report.md");
-    mkdirSync(dirname(reportPath), { recursive: true });
-    const lines = [
-      "# PHP PHPT Runtime Test Report",
-      "",
-      `Host: ${host}`,
-      `Generated: ${new Date().toISOString()}`,
-      "",
-      "| Status | Count |",
-      "|--------|-------|",
-      ...Object.entries(counts).map(
-        ([status, count]) => `| ${status.toUpperCase()} | ${count} |`,
-      ),
-      `| **TOTAL** | **${results.length}** |`,
-      "",
-      "## Non-Passing Results",
-      "",
-      ...results
-        .filter((r) => !["pass", "skip", "xfail"].includes(r.status))
-        .map(
-          (r) =>
-            `- ${r.status.toUpperCase()} \`${r.test}\`${r.reason ? `: ${r.reason}` : ""}${r.detail ? ` (${r.detail})` : ""}`,
-        ),
-      "",
-    ];
-    writeFileSync(reportPath, `${lines.join("\n")}\n`);
-    if (!json) console.error(`Report written to: ${reportPath}`);
-  }
-
-  if (!json) {
-    console.error("");
-    console.error("===== Results =====");
-    for (const status of [
-      "pass",
-      "fail",
-      "skip",
-      "xfail",
-      "xpass",
-      "unsupported",
-      "time",
-    ] as const) {
-      console.error(`${status.toUpperCase().padEnd(11)} ${counts[status]}`);
-    }
-    console.error(`TOTAL       ${results.length}`);
-  }
-
-  if (counts.fail > 0 || counts.xpass > 0 || counts.time > 0) {
-    process.exit(1);
+    rmSync(sourceRoot, { recursive: true, force: true });
   }
 }
 
-main().catch((err) => {
-  console.error(err);
-  process.exit(1);
-});
+if (
+  process.argv[1] &&
+  resolve(process.argv[1]) === fileURLToPath(import.meta.url)
+) {
+  main().catch((err) => {
+    console.error(err);
+    process.exitCode = 1;
+  });
+}
