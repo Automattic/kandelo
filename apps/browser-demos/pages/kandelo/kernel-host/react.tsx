@@ -11,7 +11,7 @@ import type {
   KernelHost, MachineStatus, DmesgLine, Snapshot, WebPreviewState, DemoPresentation,
   SurfaceAvailability, GalleryItem, GalleryTab, LazyDownloadEvent,
 } from "../../../../../web-libs/kandelo-session/src/kernel-host";
-import type { DemoGuideConfig } from "../../../../../web-libs/kandelo-session/src/demo-config";
+import type { DemoGuideConfig, DemoIngestConfig } from "../../../../../web-libs/kandelo-session/src/demo-config";
 
 const KernelHostContext = React.createContext<KernelHost | null>(null);
 const LAZY_DOWNLOAD_COMPLETE_VISIBLE_MS = 2400;
@@ -170,6 +170,16 @@ export function useDemoGuide(): DemoGuideConfig | null {
   React.useEffect(() => {
     setState(host.getDemoGuide());
     return host.subscribeDemoGuide(setState);
+  }, [host]);
+  return state;
+}
+
+export function useDemoIngest(): DemoIngestConfig | null {
+  const host = useKernelHost();
+  const [state, setState] = React.useState<DemoIngestConfig | null>(() => host.getDemoIngest());
+  React.useEffect(() => {
+    setState(host.getDemoIngest());
+    return host.subscribeDemoIngest(setState);
   }, [host]);
   return state;
 }

@@ -3,6 +3,7 @@ import type {
   DemoActionGroupConfig,
   DemoAssetConfig,
   DemoGuideConfig,
+  DemoIngestConfig,
 } from "./demo-config";
 import { genericDemoPresentation } from "./demo-config";
 import type { DemoPresentation } from "./kernel-host";
@@ -10,6 +11,24 @@ import type { DemoPresentation } from "./kernel-host";
 export const DOOM_COMMAND = "/usr/local/bin/fbdoom -iwad /doom1.wad";
 export const DOOM_WAD_URL = "https://distro.ibiblio.org/slitaz/sources/packages/d/doom1.wad";
 export const DOOM_WAD_SHA256 = "1d7d43be501e67d927e415e0b8f3e29c3bf33075e859721816f652a526cac771";
+
+// "Bring your own WAD": an uploaded IWAD lands at this fixed path and fbDOOM is
+// relaunched against it, replacing the shareware doom1.wad the demo boots with.
+// The uploaded filename never appears in either string — the destination and
+// the relaunch command are both fixed. See demo-ingest.ts for the mechanism.
+export const DOOM_USER_WAD_PATH = "/user.wad";
+export const DOOM_USER_WAD_COMMAND = `/usr/local/bin/fbdoom -iwad ${DOOM_USER_WAD_PATH}`;
+
+/** IWADs run large — shareware doom1 is ~4 MiB, full commercial IWADs ~12-30 MiB. */
+const DOOM_MAX_WAD_BYTES = 32 * 1024 * 1024;
+
+export const DOOM_INGEST: DemoIngestConfig = {
+  accept: [".wad"],
+  targetPath: DOOM_USER_WAD_PATH,
+  maxBytes: DOOM_MAX_WAD_BYTES,
+  label: "Load WAD",
+  onLoad: { restart: DOOM_USER_WAD_COMMAND },
+};
 
 const shellScript = `echo "Hello from a Kandelo guided script"
 uname -a
@@ -103,6 +122,19 @@ export function builtinDemoAssets(profileId: string): DemoAssetConfig[] {
       devCorsProxy: true,
     },
   ];
+}
+
+/**
+ * Fallback for images built before `/etc/kandelo/demo.json` carried an
+ * `ingest` block. The image's own descriptor always wins.
+ */
+export function builtinDemoIngest(profileId: string): DemoIngestConfig | null {
+  switch (profileId) {
+    case "doom":
+      return DOOM_INGEST;
+    default:
+      return null;
+  }
 }
 
 export function shellGuide(): DemoGuideConfig {

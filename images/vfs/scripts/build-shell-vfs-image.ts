@@ -25,6 +25,7 @@ import {
 } from "./kandelo-demo-config";
 import {
   DOOM_COMMAND,
+  DOOM_INGEST,
   DOOM_WAD_SHA256,
   DOOM_WAD_URL,
   shellGuide,
@@ -71,6 +72,9 @@ async function main() {
             devCorsProxy: true,
           }),
         ],
+        // Lets the demo run a WAD the user supplies, replacing the shareware
+        // IWAD. See web-libs/kandelo-session/src/demo-ingest.ts.
+        ingest: DOOM_INGEST,
       },
       modeset: {
         presentation: kmsPresentation("/usr/local/bin/modeset"),

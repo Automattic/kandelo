@@ -1,4 +1,4 @@
-import type { DemoGuideConfig } from "./demo-config";
+import type { DemoGuideConfig, DemoIngestConfig } from "./demo-config";
 
 // KernelHost — the contract between Kandelo session UI and the kernel/host runtime.
 //
@@ -41,6 +41,18 @@ export interface FileSystemLike {
   /** Returns next entry or null at end-of-dir. */
   readdir(handle: number): { name: string; type: number; ino: number } | null;
   closedir(handle: number): void;
+
+  // ── Mutating ops ────────────────────────────────────────────────────────
+  //
+  // Optional because not every kernel exposes a writable synchronous VFS to
+  // the main thread: the kernel-owned-FS boot path leaves `kernel.fs`
+  // undefined entirely. Callers must probe and surface a real failure rather
+  // than silently dropping the write (see LiveKernelHost.writeFile).
+
+  /** Returns bytes written. */
+  write?(handle: number, buffer: Uint8Array, offset: number | null, length: number): number;
+  /** Throws EEXIST when the directory is already present. */
+  mkdir?(path: string, mode: number): void;
 }
 
 /**
@@ -110,6 +122,13 @@ export interface KernelLike {
    * bindings; write-based bindings (fbDOOM) don't reach into this.
    */
   getProcessMemory?(pid: number): WebAssembly.Memory | undefined;
+  /**
+   * Deliver a POSIX signal to `pid` through the kernel's signal path (not a
+   * host-side worker teardown). Resolves false when the process is already
+   * gone. Used to stop a process that owns a single-owner device — e.g. the
+   * /dev/fb0 holder — before launching its replacement.
+   */
+  signalProcess?(pid: number, signum: number): Promise<boolean>;
   /**
    * Append bytes to a process's stdin buffer. Used by the framebuffer
    * input path so DOM key events on the canvas reach the fb-bound
@@ -549,6 +568,20 @@ export interface KernelHost {
   readFileText(path: string): Promise<string>;
   readDir(path: string): Promise<VfsDirent[]>;
   stat(path: string): Promise<VfsDirent | null>;
+  /**
+   * Write `bytes` to `path` in the live guest VFS, creating parent
+   * directories. Rejects when the attached kernel exposes no writable
+   * synchronous VFS. Callers are responsible for validating both the path and
+   * the payload — this is a raw capability, not a policy layer.
+   */
+  writeFile(path: string, bytes: Uint8Array, mode?: number): Promise<void>;
+
+  // process control
+  /**
+   * Deliver a POSIX signal to `pid`. Resolves false when the process no longer
+   * exists. Rejects when the attached kernel cannot signal.
+   */
+  signalProcess(pid: number, signum: number): Promise<boolean>;
 
   // inspector
   enumProcs(): Promise<ProcessInfo[]>;
@@ -588,6 +621,9 @@ export interface KernelHost {
   subscribeSurfaceAvailability(cb: (state: SurfaceAvailability) => void): () => void;
   getDemoGuide(): DemoGuideConfig | null;
   subscribeDemoGuide(cb: (state: DemoGuideConfig | null) => void): () => void;
+  /** File-ingest capability declared by the current VFS image, if any. */
+  getDemoIngest(): DemoIngestConfig | null;
+  subscribeDemoIngest(cb: (state: DemoIngestConfig | null) => void): () => void;
 
   // sharing
   snapshot(opts?: SnapshotOptions): Promise<Snapshot>;
@@ -788,6 +824,7 @@ export class LiveKernelHost implements KernelHost {
   private surfaceListeners = new ListenerSet<SurfaceAvailability>();
   private galleryListeners = new ListenerSet<void>();
   private demoGuideListeners = new ListenerSet<DemoGuideConfig | null>();
+  private demoIngestListeners = new ListenerSet<DemoIngestConfig | null>();
 
   private _descriptor: BootDescriptor;
   private presentation: DemoPresentation;
@@ -795,6 +832,7 @@ export class LiveKernelHost implements KernelHost {
   private galleryItems: GalleryItem[];
   private webPreview: WebPreviewState | null = null;
   private demoGuide: DemoGuideConfig | null = null;
+  private demoIngest: DemoIngestConfig | null = null;
   private surfaceAvailability: SurfaceAvailability = { ...DEFAULT_SURFACE_AVAILABILITY };
   private offFramebufferAvailability: (() => void) | null = null;
   private offLazyDownloads: (() => void) | null = null;
@@ -884,6 +922,7 @@ export class LiveKernelHost implements KernelHost {
     this.refreshFramebufferAvailability();
     this.setSurfaceAvailability({ web: false, kms: false });
     this.setDemoGuide(null);
+    this.setDemoIngest(null);
   }
 
   /** Configure the program attachPty spawns by default. */
@@ -908,6 +947,12 @@ export class LiveKernelHost implements KernelHost {
   setDemoGuide(guide: DemoGuideConfig | null): void {
     this.demoGuide = guide ? structuredClone(guide) : null;
     this.demoGuideListeners.emit(this.getDemoGuide());
+  }
+
+  /** Update the optional file-ingest capability exposed by the current image. */
+  setDemoIngest(ingest: DemoIngestConfig | null): void {
+    this.demoIngest = ingest ? structuredClone(ingest) : null;
+    this.demoIngestListeners.emit(this.getDemoIngest());
   }
 
   /**
@@ -1122,6 +1167,7 @@ export class LiveKernelHost implements KernelHost {
     this.offLazyDownloads = null;
     this.setSurfaceAvailability({ terminal: false, framebuffer: false, web: false, kms: false });
     this.setDemoGuide(null);
+    this.setDemoIngest(null);
     await this.kernel?.destroy?.();
   }
 
@@ -1330,6 +1376,51 @@ export class LiveKernelHost implements KernelHost {
 
   async readFileText(path: string): Promise<string> {
     return new TextDecoder().decode(await this.readFile(path));
+  }
+
+  /**
+   * Write into the live guest VFS. The kernel worker holds a MemoryFileSystem
+   * over the same SharedArrayBuffer, so the bytes are visible to the guest as
+   * soon as this returns — no reboot, no image rebuild.
+   *
+   * Mirrors writeVfsBinary/ensureDirRecursive in host/src/vfs/image-helpers.ts.
+   * We reimplement rather than import: this file deliberately depends on no
+   * host/ module, describing only the structural surface it needs (same reason
+   * readFileSync below is local).
+   */
+  async writeFile(path: string, bytes: Uint8Array, mode = 0o644): Promise<void> {
+    const fs = this.requireFs();
+    if (!fs.write || !fs.mkdir) {
+      throw new Error(
+        `LiveKernelHost.writeFile(${path}): the attached kernel exposes no ` +
+        `writable synchronous VFS (kernel-owned FS boot path).`,
+      );
+    }
+    ensureDirRecursiveSync(fs, parentDir(path));
+    const handle = fs.open(path, O_WRONLY_CREAT_TRUNC, mode);
+    try {
+      let off = 0;
+      while (off < bytes.length) {
+        const n = fs.write(handle, bytes.subarray(off), null, bytes.length - off);
+        if (n <= 0) {
+          throw new Error(`short write to ${path} at offset ${off} of ${bytes.length}`);
+        }
+        off += n;
+      }
+    } finally {
+      fs.close(handle);
+    }
+  }
+
+  // ── KernelHost: process control ─────────────────────────────────────────
+
+  async signalProcess(pid: number, signum: number): Promise<boolean> {
+    if (!this.kernel?.signalProcess) {
+      throw new Error(
+        "LiveKernelHost.signalProcess: the attached kernel cannot deliver signals.",
+      );
+    }
+    return this.kernel.signalProcess(pid, signum);
   }
 
   async readDir(path: string): Promise<VfsDirent[]> {
@@ -1778,6 +1869,14 @@ export class LiveKernelHost implements KernelHost {
     return this.demoGuide ? structuredClone(this.demoGuide) : null;
   }
 
+  getDemoIngest(): DemoIngestConfig | null {
+    return this.demoIngest ? structuredClone(this.demoIngest) : null;
+  }
+
+  subscribeDemoIngest(cb: (state: DemoIngestConfig | null) => void): () => void {
+    return this.demoIngestListeners.add(cb);
+  }
+
   subscribeDemoGuide(cb: (state: DemoGuideConfig | null) => void): () => void {
     return this.demoGuideListeners.add(cb);
   }
@@ -1818,6 +1917,23 @@ export class LiveKernelHost implements KernelHost {
 // posix open flags — copied locally to avoid a dependency on the host's
 // channel.ts constants. O_RDONLY = 0.
 const O_RDONLY = 0;
+// O_WRONLY | O_CREAT | O_TRUNC
+const O_WRONLY_CREAT_TRUNC = 0o1101;
+
+/** Directory component of an absolute path. "/data/user.bin" → "/data". */
+function parentDir(path: string): string {
+  const idx = path.lastIndexOf("/");
+  return idx <= 0 ? "/" : path.slice(0, idx);
+}
+
+/** mkdir -p. Each mkdir throws EEXIST when the component already exists. */
+function ensureDirRecursiveSync(fs: FileSystemLike, path: string): void {
+  let current = "";
+  for (const part of path.split("/").filter(Boolean)) {
+    current += "/" + part;
+    try { fs.mkdir!(current, 0o755); } catch { /* exists */ }
+  }
+}
 
 function readFileSync(fs: FileSystemLike, path: string): Uint8Array {
   const st = fs.stat(path);

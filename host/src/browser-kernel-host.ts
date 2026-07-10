@@ -855,6 +855,22 @@ export class BrowserKernel {
   }
 
   /**
+   * Deliver a POSIX signal to `pid`. Resolves false when the process is gone
+   * (ESRCH). Unlike {@link terminateProcess}, which tears down the wasm worker
+   * from the host, this runs the kernel's signal path, so the target's
+   * disposition and the kernel's exit cleanup both apply.
+   */
+  async signalProcess(pid: number, signum: number): Promise<boolean> {
+    const requestId = this.nextRequestId++;
+    return this.request(requestId, {
+      type: "signal_process",
+      requestId,
+      pid,
+      signum,
+    }) as Promise<boolean>;
+  }
+
+  /**
    * Push a mouse event into the kernel's `/dev/input/mice` queue. Pass
    * deltas in PS/2 sign convention (positive-right, positive-up — invert
    * the browser's deltaY before calling) and a button bitmask
