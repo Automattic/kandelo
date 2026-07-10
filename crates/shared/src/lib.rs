@@ -601,6 +601,7 @@ pub mod flags {
     pub const O_DIRECTORY: u32 = 0o200000;
     pub const O_NOFOLLOW: u32 = 0o400000;
     pub const O_CLOEXEC: u32 = 0o2000000;
+    pub const O_PATH: u32 = 0o10000000;
     pub const O_CLOFORK: u32 = 0o40000000;
     pub const AT_FDCWD: i32 = -100;
     pub const AT_SYMLINK_NOFOLLOW: u32 = 0x100;

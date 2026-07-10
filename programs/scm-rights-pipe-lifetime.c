@@ -1,10 +1,50 @@
 #include <errno.h>
+#include <fcntl.h>
+#include <poll.h>
 #include <signal.h>
 #include <stdio.h>
 #include <string.h>
 #include <sys/resource.h>
 #include <sys/socket.h>
+#include <sys/stat.h>
 #include <unistd.h>
+
+static int reset_fifo(const char *path) {
+    if (unlink(path) < 0 && errno != ENOENT)
+        return -1;
+    return mkfifo(path, 0600);
+}
+
+static int is_fifo_fd(int fd) {
+    struct stat status;
+    return fstat(fd, &status) == 0 && S_ISFIFO(status.st_mode);
+}
+
+static int has_hangup(int fd) {
+    struct pollfd pfd = {
+        .fd = fd,
+        .events = POLLIN | POLLOUT,
+    };
+    return poll(&pfd, 1, 0) == 1 && (pfd.revents & POLLHUP) != 0;
+}
+
+static int discard_rights_message(int socket_fd) {
+    char byte = 0;
+    struct iovec iov = {
+        .iov_base = &byte,
+        .iov_len = sizeof(byte),
+    };
+    struct msghdr message = {
+        .msg_iov = &iov,
+        .msg_iovlen = 1,
+    };
+    if (recvmsg(socket_fd, &message, 0) != 1 ||
+        (message.msg_flags & MSG_CTRUNC) == 0) {
+        errno = EIO;
+        return -1;
+    }
+    return 0;
+}
 
 static int send_fds(int socket_fd, const int *fds, size_t count) {
     if (count == 0 || count > 2) {
@@ -336,6 +376,212 @@ static int receiver_emfile_partially_installs_and_releases(void) {
            close(carrier[0]) | close(carrier[1]);
 }
 
+static int transferred_fifo_path_survives_sender_close_and_unlink(void) {
+    const char *path = "/tmp/scm-rights-fifo-path";
+    int carrier[2];
+    if (reset_fifo(path) < 0 || socketpair(AF_UNIX, SOCK_STREAM, 0, carrier) < 0)
+        return -1;
+
+    int path_fd = open(path, O_PATH);
+    if (path_fd < 0 || send_fd(carrier[0], path_fd) < 0 || close(path_fd) < 0 ||
+        unlink(path) < 0) {
+        return -1;
+    }
+
+    int received = receive_fd(carrier[1]);
+    if (received < 0 || !is_fifo_fd(received)) {
+        errno = EIO;
+        return -1;
+    }
+    return close(received) | close(carrier[0]) | close(carrier[1]);
+}
+
+static int transferred_fifo_reader_preserves_hangup_cohort(void) {
+    const char *path = "/tmp/scm-rights-fifo-reader";
+    int carrier[2];
+    if (reset_fifo(path) < 0 || socketpair(AF_UNIX, SOCK_STREAM, 0, carrier) < 0)
+        return -1;
+
+    int reader = open(path, O_RDONLY | O_NONBLOCK);
+    int writer = open(path, O_WRONLY | O_NONBLOCK);
+    if (reader < 0 || writer < 0 || send_fd(carrier[0], reader) < 0 ||
+        close(reader) < 0) {
+        return -1;
+    }
+
+    int received = receive_fd(carrier[1]);
+    char byte = 0;
+    if (received < 0 || close(writer) < 0 || !has_hangup(received) ||
+        read(received, &byte, sizeof(byte)) != 0) {
+        errno = EIO;
+        return -1;
+    }
+    return close(received) | close(carrier[0]) | close(carrier[1]) |
+           unlink(path);
+}
+
+static int transferred_fifo_writer_survives_sender_close(void) {
+    const char *path = "/tmp/scm-rights-fifo-writer";
+    int carrier[2];
+    if (reset_fifo(path) < 0 || socketpair(AF_UNIX, SOCK_STREAM, 0, carrier) < 0)
+        return -1;
+
+    int reader = open(path, O_RDONLY | O_NONBLOCK);
+    int writer = open(path, O_WRONLY | O_NONBLOCK);
+    if (reader < 0 || writer < 0 || send_fd(carrier[0], writer) < 0 ||
+        close(writer) < 0) {
+        return -1;
+    }
+
+    int received = receive_fd(carrier[1]);
+    char payload[6];
+    char extra = 0;
+    if (received < 0 || write(received, "writer", 6) != 6 ||
+        read(reader, payload, sizeof(payload)) != (ssize_t)sizeof(payload) ||
+        memcmp(payload, "writer", sizeof(payload)) != 0 || close(received) < 0 ||
+        read(reader, &extra, sizeof(extra)) != 0) {
+        errno = EIO;
+        return -1;
+    }
+    return close(reader) | close(carrier[0]) | close(carrier[1]) | unlink(path);
+}
+
+static int transferred_fifo_read_write_survives_sender_close(void) {
+    const char *path = "/tmp/scm-rights-fifo-rw";
+    int carrier[2];
+    if (reset_fifo(path) < 0 || socketpair(AF_UNIX, SOCK_STREAM, 0, carrier) < 0)
+        return -1;
+
+    int read_write = open(path, O_RDWR | O_NONBLOCK);
+    if (read_write < 0 || send_fd(carrier[0], read_write) < 0 ||
+        close(read_write) < 0) {
+        return -1;
+    }
+
+    int received = receive_fd(carrier[1]);
+    char payload[2];
+    if (received < 0 || write(received, "rw", 2) != 2 ||
+        read(received, payload, sizeof(payload)) != (ssize_t)sizeof(payload) ||
+        memcmp(payload, "rw", sizeof(payload)) != 0) {
+        errno = EIO;
+        return -1;
+    }
+    return close(received) | close(carrier[0]) | close(carrier[1]) |
+           unlink(path);
+}
+
+static int discarded_fifo_references_are_released(void) {
+    const char *path = "/tmp/scm-rights-fifo-discard";
+
+    // A discarded path-only right must not keep an unlinked FIFO alive.
+    for (int i = 0; i < 32; ++i) {
+        int carrier[2];
+        if (reset_fifo(path) < 0 ||
+            socketpair(AF_UNIX, SOCK_STREAM, 0, carrier) < 0) {
+            return -1;
+        }
+        int path_fd = open(path, O_PATH);
+        if (path_fd < 0 || send_fd(carrier[0], path_fd) < 0 ||
+            close(path_fd) < 0 || unlink(path) < 0 ||
+            discard_rights_message(carrier[1]) < 0 || close(carrier[0]) < 0 ||
+            close(carrier[1]) < 0) {
+            return -1;
+        }
+    }
+
+    // A discarded read-only right releases both its endpoint and FIFO cohort.
+    int carrier[2];
+    if (reset_fifo(path) < 0 || socketpair(AF_UNIX, SOCK_STREAM, 0, carrier) < 0)
+        return -1;
+    int reader = open(path, O_RDONLY | O_NONBLOCK);
+    int writer = open(path, O_WRONLY | O_NONBLOCK);
+    if (reader < 0 || writer < 0 || send_fd(carrier[0], reader) < 0 ||
+        close(reader) < 0 || discard_rights_message(carrier[1]) < 0) {
+        return -1;
+    }
+    errno = 0;
+    if (write(writer, "dropped", 7) != -1 || errno != EPIPE || close(writer) < 0 ||
+        close(carrier[0]) < 0 || close(carrier[1]) < 0 || unlink(path) < 0) {
+        return -1;
+    }
+
+    // A discarded write right exposes EOF and HUP to the remaining reader.
+    if (reset_fifo(path) < 0 || socketpair(AF_UNIX, SOCK_STREAM, 0, carrier) < 0)
+        return -1;
+    reader = open(path, O_RDONLY | O_NONBLOCK);
+    writer = open(path, O_WRONLY | O_NONBLOCK);
+    char byte = 0;
+    if (reader < 0 || writer < 0 || send_fd(carrier[0], writer) < 0 ||
+        close(writer) < 0 || discard_rights_message(carrier[1]) < 0 ||
+        !has_hangup(reader) || read(reader, &byte, sizeof(byte)) != 0 ||
+        close(reader) < 0 || close(carrier[0]) < 0 || close(carrier[1]) < 0 ||
+        unlink(path) < 0) {
+        errno = EIO;
+        return -1;
+    }
+
+    // O_RDWR owns both endpoints but is not a read-only cohort member.
+    if (reset_fifo(path) < 0 || socketpair(AF_UNIX, SOCK_STREAM, 0, carrier) < 0)
+        return -1;
+    reader = open(path, O_RDONLY | O_NONBLOCK);
+    int read_write = open(path, O_RDWR | O_NONBLOCK);
+    if (reader < 0 || read_write < 0 || send_fd(carrier[0], read_write) < 0 ||
+        close(read_write) < 0 || discard_rights_message(carrier[1]) < 0 ||
+        !has_hangup(reader) || read(reader, &byte, sizeof(byte)) != 0 ||
+        close(reader) < 0 || close(carrier[0]) < 0 || close(carrier[1]) < 0 ||
+        unlink(path) < 0) {
+        errno = EIO;
+        return -1;
+    }
+    return 0;
+}
+
+static int fifo_emfile_installs_path_and_releases_reader(void) {
+    const char *path = "/tmp/scm-rights-fifo-emfile";
+    int carrier[2];
+    if (reset_fifo(path) < 0 || socketpair(AF_UNIX, SOCK_STREAM, 0, carrier) < 0)
+        return -1;
+
+    // Open the path first so its recycled descriptor is the only slot below
+    // the temporary RLIMIT_NOFILE ceiling.
+    int path_fd = open(path, O_PATH);
+    int reader = open(path, O_RDONLY | O_NONBLOCK);
+    int writer = open(path, O_WRONLY | O_NONBLOCK);
+    int sent[2] = {path_fd, reader};
+    if (path_fd < 0 || reader < 0 || writer < 0 ||
+        send_fds(carrier[0], sent, 2) < 0 || close(path_fd) < 0 ||
+        close(reader) < 0) {
+        return -1;
+    }
+
+    struct rlimit saved;
+    if (getrlimit(RLIMIT_NOFILE, &saved) < 0)
+        return -1;
+    struct rlimit limited = saved;
+    limited.rlim_cur = (rlim_t)path_fd + 1;
+    if (setrlimit(RLIMIT_NOFILE, &limited) < 0)
+        return -1;
+
+    int received[2] = {-1, -1};
+    int message_flags = 0;
+    int count = receive_fds_with_flags(carrier[1], received, 2, &message_flags);
+    int receive_errno = errno;
+    if (setrlimit(RLIMIT_NOFILE, &saved) < 0)
+        return -1;
+    if (count != 1 || (message_flags & MSG_CTRUNC) == 0 ||
+        !is_fifo_fd(received[0])) {
+        errno = receive_errno ? receive_errno : EMFILE;
+        return -1;
+    }
+
+    errno = 0;
+    if (write(writer, "released", 8) != -1 || errno != EPIPE) {
+        return -1;
+    }
+    return close(received[0]) | close(writer) | close(carrier[0]) |
+           close(carrier[1]) | unlink(path);
+}
+
 int main(void) {
     if (signal(SIGPIPE, SIG_IGN) == SIG_ERR ||
         transferred_endpoint_survives_sender_close() < 0 ||
@@ -345,10 +591,16 @@ int main(void) {
         reachable_socket_right_cycles_deliver() < 0 ||
         abandoned_socket_right_cycles_are_collected() < 0 ||
         receiver_control_truncation_installs_prefix_and_releases_excess() < 0 ||
-        receiver_emfile_partially_installs_and_releases() < 0) {
+        receiver_emfile_partially_installs_and_releases() < 0 ||
+        transferred_fifo_path_survives_sender_close_and_unlink() < 0 ||
+        transferred_fifo_reader_preserves_hangup_cohort() < 0 ||
+        transferred_fifo_writer_survives_sender_close() < 0 ||
+        transferred_fifo_read_write_survives_sender_close() < 0 ||
+        discarded_fifo_references_are_released() < 0 ||
+        fifo_emfile_installs_path_and_releases_reader() < 0) {
         perror("scm-rights-pipe-lifetime");
         return 1;
     }
-    puts("PASS: SCM_RIGHTS owns pipe endpoints in flight and after receipt");
+    puts("PASS: SCM_RIGHTS owns pipe and FIFO references in flight and after receipt");
     return 0;
 }

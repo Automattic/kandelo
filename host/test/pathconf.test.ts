@@ -19,6 +19,7 @@ import {
 } from "../src/vfs/sharedfs-vendor";
 import type { StatResult } from "../src/types";
 import { runCentralizedProgram } from "./centralized-test-helper";
+import { ensureWasm64ExampleFixture } from "./wasm64-example-fixture";
 
 const repoRoot = join(dirname(fileURLToPath(import.meta.url)), "../..");
 
@@ -216,6 +217,9 @@ describe("pathconf guest ABI", () => {
   it.each([".wasm", ".wasm64.wasm"])(
     "preserves values, errno, and pointer safety (%s)",
     async (suffix) => {
+      if (suffix === ".wasm64.wasm") {
+        ensureWasm64ExampleFixture("pathconf_test.c");
+      }
       const result = await runCentralizedProgram({
         programPath: join(repoRoot, `examples/pathconf_test${suffix}`),
         argv: ["pathconf-test"],

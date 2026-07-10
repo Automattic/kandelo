@@ -1,5 +1,6 @@
 extern crate alloc;
 
+use alloc::collections::BTreeSet;
 use alloc::vec::Vec;
 use wasm_posix_shared::Errno;
 
@@ -18,10 +19,11 @@ pub struct FdEntry {
 ///
 /// Maps integer file descriptors to open file description references.
 /// Guarantees lowest-available-fd allocation (POSIX requirement).
-#[derive(Clone)]
 pub struct FdTable {
     /// Sparse table: index is the fd number, `None` means the slot is free.
     entries: Vec<Option<FdEntry>>,
+    /// Slots claimed by an in-progress open but not yet visible to fd lookup.
+    reserved: BTreeSet<usize>,
     /// Maximum number of file descriptors allowed.
     max_fds: usize,
 }
@@ -37,6 +39,7 @@ impl FdTable {
     pub fn with_max(max_fds: usize) -> Self {
         FdTable {
             entries: Vec::new(),
+            reserved: BTreeSet::new(),
             max_fds,
         }
     }
@@ -64,7 +67,7 @@ impl FdTable {
 
         // Search for a free slot starting at min_fd.
         for i in min..self.entries.len() {
-            if self.entries[i].is_none() {
+            if self.entries[i].is_none() && !self.reserved.contains(&i) {
                 if i >= self.max_fds {
                     return Err(Errno::EMFILE);
                 }
@@ -85,6 +88,52 @@ impl FdTable {
         }
         self.entries.push(Some(FdEntry { ofd_ref, fd_flags }));
         Ok(next as i32)
+    }
+
+    /// Reserve the lowest available descriptor number without exposing an fd.
+    pub fn reserve(&mut self) -> Result<i32, Errno> {
+        for i in 0..self.entries.len() {
+            if self.entries[i].is_none() && !self.reserved.contains(&i) {
+                if i >= self.max_fds {
+                    return Err(Errno::EMFILE);
+                }
+                self.reserved.insert(i);
+                return Ok(i as i32);
+            }
+        }
+
+        let next = self.entries.len();
+        if next >= self.max_fds {
+            return Err(Errno::EMFILE);
+        }
+        self.entries.push(None);
+        self.reserved.insert(next);
+        Ok(next as i32)
+    }
+
+    /// Publish an entry into a slot previously claimed by [`Self::reserve`].
+    pub fn install_reserved(
+        &mut self,
+        fd: i32,
+        ofd_ref: OpenFileDescRef,
+        fd_flags: u32,
+    ) -> Result<(), Errno> {
+        let idx = usize::try_from(fd).map_err(|_| Errno::EBADF)?;
+        if idx >= self.entries.len()
+            || self.entries[idx].is_some()
+            || !self.reserved.remove(&idx)
+        {
+            return Err(Errno::EBADF);
+        }
+        self.entries[idx] = Some(FdEntry { ofd_ref, fd_flags });
+        Ok(())
+    }
+
+    /// Release an in-progress descriptor allocation.
+    pub fn release_reserved(&mut self, fd: i32) -> bool {
+        usize::try_from(fd)
+            .ok()
+            .is_some_and(|idx| self.reserved.remove(&idx))
     }
 
     /// Close a file descriptor, returning the OFD reference it pointed to.
@@ -127,7 +176,11 @@ impl FdTable {
 
     /// Reconstruct an FdTable from raw entries. Used by fork deserialization.
     pub fn from_raw(entries: Vec<Option<FdEntry>>, max_fds: usize) -> Self {
-        FdTable { entries, max_fds }
+        FdTable {
+            entries,
+            reserved: BTreeSet::new(),
+            max_fds,
+        }
     }
 
     /// Returns the max_fds limit.
@@ -161,9 +214,23 @@ impl FdTable {
             self.entries.push(None);
         }
 
+        if self.reserved.contains(&idx) {
+            return Err(Errno::EBUSY);
+        }
+
         let old = self.entries[idx].take().map(|e| e.ofd_ref);
         self.entries[idx] = Some(FdEntry { ofd_ref, fd_flags });
         Ok(old)
+    }
+}
+
+impl Clone for FdTable {
+    fn clone(&self) -> Self {
+        FdTable {
+            entries: self.entries.clone(),
+            reserved: BTreeSet::new(),
+            max_fds: self.max_fds,
+        }
     }
 }
 
@@ -230,6 +297,42 @@ mod tests {
         // Table is now full (4 of 4)
         let result = table.alloc(OpenFileDescRef(11), 0);
         assert_eq!(result, Err(Errno::EMFILE));
+    }
+
+    #[test]
+    fn reserved_slot_is_invisible_and_excluded_from_allocation() {
+        let mut table = FdTable::with_max(5);
+        table.preopen_stdio();
+        let reserved = table.reserve().unwrap();
+        assert_eq!(reserved, 3);
+        assert_eq!(table.get(reserved), Err(Errno::EBADF));
+        assert_eq!(
+            table.set_at(reserved, OpenFileDescRef(99), 0),
+            Err(Errno::EBUSY),
+        );
+
+        let visible = table.alloc(OpenFileDescRef(10), 0).unwrap();
+        assert_eq!(visible, 4);
+        assert_eq!(table.reserve(), Err(Errno::EMFILE));
+
+        table
+            .install_reserved(reserved, OpenFileDescRef(11), FD_CLOEXEC)
+            .unwrap();
+        assert_eq!(table.get(reserved).unwrap().ofd_ref, OpenFileDescRef(11));
+    }
+
+    #[test]
+    fn reservations_can_be_released_and_are_not_cloned() {
+        let mut table = FdTable::new();
+        table.preopen_stdio();
+        let reserved = table.reserve().unwrap();
+
+        let mut inherited = table.clone();
+        assert_eq!(inherited.alloc(OpenFileDescRef(20), 0).unwrap(), reserved);
+
+        assert!(table.release_reserved(reserved));
+        assert!(!table.release_reserved(reserved));
+        assert_eq!(table.alloc(OpenFileDescRef(21), 0).unwrap(), reserved);
     }
 
     #[test]

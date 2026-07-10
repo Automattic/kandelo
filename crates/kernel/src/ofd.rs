@@ -4,7 +4,7 @@ use alloc::boxed::Box;
 use alloc::collections::{BTreeMap, VecDeque};
 use alloc::vec::Vec;
 use core::cell::UnsafeCell;
-use wasm_posix_shared::flags::{O_APPEND, O_NONBLOCK};
+use wasm_posix_shared::flags::{O_APPEND, O_NONBLOCK, O_PATH};
 
 // ── Global host handle refcount table ──
 //
@@ -211,6 +211,13 @@ pub struct OpenFileDesc {
 }
 
 impl OpenFileDesc {
+    /// Whether this OFD is a pathname capability rather than an I/O handle.
+    /// Operations that act directly on an fd must reject path-only OFDs unless
+    /// their contract explicitly accepts O_PATH/O_SEARCH descriptors.
+    pub fn is_path_only(&self) -> bool {
+        self.status_flags & O_PATH != 0
+    }
+
     /// Access the `DriFdState` for renderD128- or card0-backed OFDs.
     /// Returns `None` for prime-bo OFDs and non-DRI fds.
     pub fn dri(&self) -> Option<&DriFdState> {

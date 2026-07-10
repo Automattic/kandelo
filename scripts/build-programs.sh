@@ -316,9 +316,9 @@ if [ -f "$SYSROOT64/lib/libc.a" ]; then
     done
 
     # Keep the memory64 wait-lifecycle browser fixture on the same owned build
-    # path as its wasm32 counterpart. Vitest also compiles this file in global
-    # setup, but browser-only and packed CI workspaces must not depend on that
-    # earlier runner having left a generated artifact behind. This fixture
+    # path as its wasm32 counterpart. The owning Vitest builds this fixture on
+    # demand, but browser-only and packed CI workspaces must not depend on a
+    # prior test runner having left a generated artifact behind. This fixture
     # deliberately uses posix_spawn rather than fork because fork rewind
     # instrumentation is currently a wasm32 artifact contract.
     wait_lifecycle_src="$REPO_ROOT/examples/wait_lifecycle_test.c"

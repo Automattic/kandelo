@@ -48,6 +48,19 @@ fn oflags_to_fd_flags(oflags: u32) -> u32 {
     fd_flags
 }
 
+/// Reject operations that require an I/O-capable open file description.
+/// Metadata queries, descriptor duplication/flags, `fchdir`, and `*at`
+/// pathname resolution deliberately do not call this helper.
+fn require_io_fd(proc: &Process, fd: i32) -> Result<(), Errno> {
+    let entry = proc.fd_table.get(fd)?;
+    let ofd = proc.ofd_table.get(entry.ofd_ref.0).ok_or(Errno::EBADF)?;
+    if ofd.is_path_only() {
+        Err(Errno::EBADF)
+    } else {
+        Ok(())
+    }
+}
+
 /// Parse a byte slice as an ASCII unsigned integer.
 fn parse_ascii_usize(bytes: &[u8]) -> Option<usize> {
     if bytes.is_empty() {
@@ -701,6 +714,7 @@ pub(crate) fn commit_exec_state(
         proc.signals.blocked = caller.signals.blocked;
         proc.main_thread_signals = caller.signals;
     }
+    cancel_fifo_opens_for_process(proc);
 
     let cloexec_fds: Vec<i32> = proc
         .fd_table
@@ -1852,6 +1866,9 @@ fn namespace_lstat_raw(
     if is_devfs_namespace_path(path) && !is_host_backed_devfs_path(path) {
         return Err(Errno::ENOENT);
     }
+    if let Some(st) = fifo_path_stat_raw(host, path, false)? {
+        return Ok(st);
+    }
     host.host_lstat(path)
 }
 
@@ -1885,6 +1902,12 @@ fn append_path_component(path: &mut Vec<u8>, component: &[u8]) {
         path.push(b'/');
     }
     path.extend_from_slice(component);
+}
+
+fn directory_entry_path(directory: &[u8], name: &[u8]) -> Vec<u8> {
+    let mut path = directory.to_vec();
+    append_path_component(&mut path, name);
+    path
 }
 
 fn pop_path_component(path: &mut Vec<u8>) {
@@ -2191,6 +2214,13 @@ fn check_sticky_child(proc: &Process, host: &mut dyn HostIO, path: &[u8]) -> Res
 }
 
 fn open_access_mask(oflags: u32, st: &WasmStat) -> u32 {
+    if oflags & O_PATH != 0 {
+        return if st.st_mode & S_IFMT == S_IFDIR {
+            X_OK
+        } else {
+            0
+        };
+    }
     let mut amode = match oflags & O_ACCMODE {
         O_WRONLY => W_OK,
         O_RDWR => R_OK | W_OK,
@@ -2251,6 +2281,289 @@ fn requested_id_allowed(current_real: u32, current_effective: u32, requested: u3
     requested == 0xFFFFFFFF || requested == current_real || requested == current_effective
 }
 
+fn fifo_open_owner(proc: &Process) -> u64 {
+    let tid = crate::process_table::current_tid();
+    let guest_tid = if tid == 0 { proc.pid } else { tid };
+    ((proc.pid as u64) << 32) | guest_tid as u64
+}
+
+pub(crate) fn cancel_fifo_open_for_owner(proc: &mut Process, owner: u64) -> bool {
+    let cancelled = unsafe { crate::pipe::global_pipe_table().cancel_fifo_open(owner) };
+    let Some(waiter) = cancelled else {
+        return false;
+    };
+    let released = proc.fd_table.release_reserved(waiter.reserved_fd);
+    debug_assert!(released, "FIFO waiter lost its reserved descriptor");
+    true
+}
+
+fn cancel_fifo_opens_for_process(proc: &mut Process) {
+    let waiters =
+        unsafe { crate::pipe::global_pipe_table().cancel_fifo_opens_for_process(proc.pid) };
+    for waiter in waiters {
+        let released = proc.fd_table.release_reserved(waiter.reserved_fd);
+        debug_assert!(released, "FIFO waiter lost its reserved descriptor");
+    }
+}
+
+fn has_caught_signal_for_current_thread(proc: &Process) -> bool {
+    let tid = crate::process_table::current_tid();
+    let guest_tid = if tid == 0 { proc.pid } else { tid };
+    let mut deliverable = proc.deliverable_for(guest_tid);
+    while deliverable != 0 {
+        let signum = deliverable.trailing_zeros() + 1;
+        if matches!(
+            proc.signals.get_handler(signum),
+            crate::signal::SignalHandler::Handler(_)
+        ) {
+            return true;
+        }
+        deliverable &= !(1u64 << (signum - 1));
+    }
+    false
+}
+
+fn close_fifo_open_endpoint(pipe_idx: usize, side: crate::pipe::FifoOpenSide) {
+    let pipes = unsafe { crate::pipe::global_pipe_table() };
+    if let Some(pipe) = pipes.get_mut(pipe_idx) {
+        let kind = match side {
+            crate::pipe::FifoOpenSide::Reader => crate::pipe::InFlightPipeRefKind::Read {
+                // A failed install never joined the read-only cohort.
+                fifo_read_only: false,
+            },
+            crate::pipe::FifoOpenSide::Writer => crate::pipe::InFlightPipeRefKind::Write,
+        };
+        pipe.close_reference(kind);
+    }
+    pipes.free_if_closed(pipe_idx);
+}
+
+fn install_fifo_open(
+    proc: &mut Process,
+    pipe_idx: usize,
+    path: Vec<u8>,
+    status_flags: u32,
+    fd_flags: u32,
+    side: crate::pipe::FifoOpenSide,
+    reserved_fd: Option<i32>,
+) -> Result<i32, Errno> {
+    let pipe_handle = -((pipe_idx as i64) + 1);
+    let ofd_idx = proc
+        .ofd_table
+        .create(FileType::Pipe, status_flags, pipe_handle, path);
+    let installed_fd = match reserved_fd {
+        Some(fd) => proc
+            .fd_table
+            .install_reserved(fd, OpenFileDescRef(ofd_idx), fd_flags)
+            .map(|()| fd),
+        None => proc.fd_table.alloc(OpenFileDescRef(ofd_idx), fd_flags),
+    };
+    match installed_fd {
+        Ok(fd) => {
+            let Some(pipe) = (unsafe { crate::pipe::global_pipe_table().get_mut(pipe_idx) }) else {
+                let _ = proc.fd_table.free(fd);
+                proc.ofd_table.dec_ref(ofd_idx);
+                return Err(Errno::EIO);
+            };
+            pipe.publish_fifo_open(side);
+            Ok(fd)
+        }
+        Err(error) => {
+            proc.ofd_table.dec_ref(ofd_idx);
+            if let Some(fd) = reserved_fd {
+                proc.fd_table.release_reserved(fd);
+            }
+            close_fifo_open_endpoint(pipe_idx, side);
+            Err(error)
+        }
+    }
+}
+
+/// Continue one logical blocking FIFO open before resolving its original
+/// pathname again. The marker may have been renamed or unlinked while the
+/// thread slept; its reserved endpoint, not the old spelling, owns the wait.
+fn resume_fifo_open(proc: &mut Process) -> Result<Option<i32>, Errno> {
+    let owner = fifo_open_owner(proc);
+    if unsafe { crate::pipe::global_pipe_table() }
+        .find_fifo_open(owner)
+        .is_none()
+    {
+        return Ok(None);
+    }
+    if has_caught_signal_for_current_thread(proc) {
+        cancel_fifo_open_for_owner(proc, owner);
+        return Err(Errno::EINTR);
+    }
+    let ready = unsafe { crate::pipe::global_pipe_table().take_ready_fifo_open(owner) };
+    let Some((pipe_idx, waiter)) = ready else {
+        return Err(Errno::EAGAIN);
+    };
+    install_fifo_open(
+        proc,
+        pipe_idx,
+        waiter.path,
+        waiter.status_flags,
+        waiter.fd_flags,
+        waiter.side,
+        Some(waiter.reserved_fd),
+    )
+    .map(Some)
+}
+
+fn try_open_fifo(
+    proc: &mut Process,
+    host: &mut dyn HostIO,
+    resolved: &[u8],
+    oflags: u32,
+    exclusive_create: bool,
+) -> Result<Option<i32>, Errno> {
+    let Some(pipe_idx) = unsafe { crate::fifo::global_fifo_table() }.lookup(resolved) else {
+        return Ok(None);
+    };
+    if exclusive_create {
+        return Err(Errno::EEXIST);
+    }
+    if oflags & O_DIRECTORY != 0 {
+        return Err(Errno::ENOTDIR);
+    }
+    if oflags & O_PATH != 0 {
+        check_search_path(proc, host, resolved)?;
+        let status_flags = oflags & !CREATION_FLAGS;
+        let fd_flags = oflags_to_fd_flags(oflags);
+        let pipe_handle = -((pipe_idx as i64) + 1);
+        let kind = crate::pipe::InFlightPipeRefKind::Path;
+        unsafe { crate::pipe::global_pipe_table().get_mut(pipe_idx) }
+            .ok_or(Errno::EIO)?
+            .add_reference(kind);
+        let ofd_idx = proc.ofd_table.create(
+            FileType::Pipe,
+            status_flags,
+            pipe_handle,
+            resolved.to_vec(),
+        );
+        return match proc.fd_table.alloc(OpenFileDescRef(ofd_idx), fd_flags) {
+            Ok(fd) => Ok(Some(fd)),
+            Err(error) => {
+                proc.ofd_table.dec_ref(ofd_idx);
+                if let Some(pipe) = unsafe { crate::pipe::global_pipe_table().get_mut(pipe_idx) } {
+                    pipe.close_reference(kind);
+                }
+                unsafe { crate::pipe::global_pipe_table().free_if_closed(pipe_idx) };
+                Err(error)
+            }
+        };
+    }
+    check_open_permissions(proc, host, resolved, oflags)?;
+
+    let access_mode = oflags & O_ACCMODE;
+    if !matches!(access_mode, O_RDONLY | O_WRONLY | O_RDWR) {
+        return Err(Errno::EINVAL);
+    }
+    let nonblocking = oflags & O_NONBLOCK != 0;
+    let owner = fifo_open_owner(proc);
+    let status_flags = oflags & !CREATION_FLAGS;
+    let fd_flags = oflags_to_fd_flags(oflags);
+    let mut reserved_side = None;
+    {
+        let pipe = unsafe { crate::pipe::global_pipe_table().get_mut(pipe_idx) }
+            .ok_or(Errno::EIO)?;
+        let ready = match access_mode {
+            O_RDONLY if nonblocking => true,
+            O_RDONLY => pipe.is_write_end_open(),
+            O_WRONLY if nonblocking => {
+                if !pipe.has_readers() {
+                    return Err(Errno::ENXIO);
+                }
+                true
+            }
+            O_WRONLY => pipe.has_readers(),
+            O_RDWR => true,
+            _ => unreachable!(),
+        };
+        if !ready {
+            if has_caught_signal_for_current_thread(proc) {
+                return Err(Errno::EINTR);
+            }
+            let side = if access_mode == O_RDONLY {
+                crate::pipe::FifoOpenSide::Reader
+            } else {
+                crate::pipe::FifoOpenSide::Writer
+            };
+            let reserved_fd = proc.fd_table.reserve()?;
+            if !pipe.reserve_fifo_open(
+                owner,
+                side,
+                resolved.to_vec(),
+                status_flags,
+                fd_flags,
+                reserved_fd,
+            ) {
+                proc.fd_table.release_reserved(reserved_fd);
+                return Err(Errno::EIO);
+            }
+            return Err(Errno::EAGAIN);
+        }
+
+        match access_mode {
+            O_RDONLY => {
+                pipe.add_reference(crate::pipe::InFlightPipeRefKind::Read {
+                    // publish_fifo_open joins the cohort after fd allocation.
+                    fifo_read_only: false,
+                });
+                reserved_side = Some(crate::pipe::FifoOpenSide::Reader);
+            }
+            O_WRONLY => {
+                pipe.add_reference(crate::pipe::InFlightPipeRefKind::Write);
+                reserved_side = Some(crate::pipe::FifoOpenSide::Writer);
+            }
+            O_RDWR => {
+                pipe.add_reference(crate::pipe::InFlightPipeRefKind::ReadWrite);
+            }
+            _ => unreachable!(),
+        }
+    }
+
+    if access_mode == O_RDWR {
+        let pipe_handle = -((pipe_idx as i64) + 1);
+        let ofd_idx = proc.ofd_table.create(
+            FileType::Pipe,
+            status_flags,
+            pipe_handle,
+            resolved.to_vec(),
+        );
+        return match proc.fd_table.alloc(OpenFileDescRef(ofd_idx), fd_flags) {
+            Ok(fd) => {
+                let Some(pipe) = (unsafe { crate::pipe::global_pipe_table().get_mut(pipe_idx) })
+                else {
+                    let _ = proc.fd_table.free(fd);
+                    proc.ofd_table.dec_ref(ofd_idx);
+                    return Err(Errno::EIO);
+                };
+                pipe.publish_fifo_read_write_open();
+                Ok(Some(fd))
+            }
+            Err(error) => {
+                proc.ofd_table.dec_ref(ofd_idx);
+                if let Some(pipe) = unsafe { crate::pipe::global_pipe_table().get_mut(pipe_idx) } {
+                    pipe.close_reference(crate::pipe::InFlightPipeRefKind::ReadWrite);
+                }
+                unsafe { crate::pipe::global_pipe_table().free_if_closed(pipe_idx) };
+                Err(error)
+            }
+        };
+    }
+    install_fifo_open(
+        proc,
+        pipe_idx,
+        resolved.to_vec(),
+        status_flags,
+        fd_flags,
+        reserved_side.expect("single-ended FIFO open records its side"),
+        None,
+    )
+    .map(Some)
+}
+
 /// Open a file, returning the new file descriptor number.
 pub fn sys_open(
     proc: &mut Process,
@@ -2259,6 +2572,9 @@ pub fn sys_open(
     oflags: u32,
     mode: u32,
 ) -> Result<i32, Errno> {
+    if let Some(fd) = resume_fifo_open(proc)? {
+        return Ok(fd);
+    }
     let effective_mode = if oflags & O_CREAT != 0 {
         mode & !proc.umask
     } else {
@@ -2378,6 +2694,10 @@ pub fn sys_open(
             return Ok(fd);
         }
         return Err(Errno::ENXIO);
+    }
+
+    if let Some(fd) = try_open_fifo(proc, host, &resolved, oflags, exclusive_create)? {
+        return Ok(fd);
     }
 
     // Procfs (/proc/...) — in-kernel virtual filesystem
@@ -2518,11 +2838,8 @@ pub fn sys_close(proc: &mut Process, host: &mut dyn HostIO, fd: i32) -> Result<(
                     let pipe_idx = (-(host_handle + 1)) as usize;
                     let pipe = unsafe { crate::pipe::global_pipe_table().get_mut(pipe_idx) };
                     if let Some(pipe) = pipe {
-                        let access_mode = status_flags & O_ACCMODE;
-                        if access_mode == O_RDONLY {
-                            pipe.close_read_end();
-                        } else {
-                            pipe.close_write_end();
+                        if let Some(kind) = pipe.reference_kind(status_flags) {
+                            pipe.close_reference(kind);
                         }
                         // Free pipe slot if both endpoints are closed
                         unsafe { crate::pipe::global_pipe_table().free_if_closed(pipe_idx) };
@@ -2745,7 +3062,7 @@ pub fn sys_read(
 
     // Check that the fd is open for reading (access mode != O_WRONLY).
     let access_mode = ofd.status_flags & O_ACCMODE;
-    if access_mode == O_WRONLY {
+    if ofd.is_path_only() || access_mode == O_WRONLY {
         return Err(Errno::EBADF);
     }
 
@@ -2768,8 +3085,8 @@ pub fn sys_read(
                     if n > 0 {
                         return Ok(n);
                     }
-                    if !pipe.is_write_end_open() {
-                        return Ok(0); // EOF — write end closed
+                    if pipe.read_end_has_eof() {
+                        return Ok(0);
                     }
                 }
                 return Err(Errno::EAGAIN);
@@ -3103,7 +3420,7 @@ pub fn sys_write(
 
     // Check that the fd is open for writing (access mode != O_RDONLY).
     let access_mode = ofd.status_flags & O_ACCMODE;
-    if access_mode == O_RDONLY {
+    if ofd.is_path_only() || access_mode == O_RDONLY {
         return Err(Errno::EBADF);
     }
 
@@ -3373,6 +3690,7 @@ pub fn sys_lseek(
     offset: i64,
     whence: u32,
 ) -> Result<i64, Errno> {
+    require_io_fd(proc, fd)?;
     let entry = proc.fd_table.get(fd)?;
     let ofd_idx = entry.ofd_ref.0;
 
@@ -3586,6 +3904,7 @@ pub fn sys_pread(
     buf: &mut [u8],
     offset: i64,
 ) -> Result<usize, Errno> {
+    require_io_fd(proc, fd)?;
     if offset < 0 {
         return Err(Errno::EINVAL);
     }
@@ -3725,17 +4044,18 @@ pub(crate) fn write_operation_budget(
 ) -> Result<usize, Errno> {
     let entry = proc.fd_table.get(fd)?;
     let ofd_idx = entry.ofd_ref.0;
-    let (file_type, status_flags, host_handle, current_offset) = {
+    let (file_type, status_flags, host_handle, current_offset, path_only) = {
         let ofd = proc.ofd_table.get(ofd_idx).ok_or(Errno::EBADF)?;
         (
             ofd.file_type,
             ofd.status_flags,
             ofd.host_handle,
             ofd.offset,
+            ofd.is_path_only(),
         )
     };
 
-    if status_flags & O_ACCMODE == O_RDONLY {
+    if path_only || status_flags & O_ACCMODE == O_RDONLY {
         return Err(Errno::EBADF);
     }
     if requested_len == 0 {
@@ -3776,7 +4096,7 @@ fn validate_transfer_input(proc: &Process, fd: i32, offset: Option<i64>) -> Resu
         .ofd_table
         .get(entry.ofd_ref.0)
         .ok_or(Errno::EBADF)?;
-    if ofd.status_flags & O_ACCMODE == O_WRONLY {
+    if ofd.is_path_only() || ofd.status_flags & O_ACCMODE == O_WRONLY {
         return Err(Errno::EBADF);
     }
     if matches!(offset, Some(value) if value < 0) {
@@ -3808,6 +4128,7 @@ pub fn sys_pwrite(
     buf: &[u8],
     offset: i64,
 ) -> Result<usize, Errno> {
+    require_io_fd(proc, fd)?;
     if offset < 0 {
         return Err(Errno::EINVAL);
     }
@@ -3870,6 +4191,7 @@ pub fn sys_preadv(
     iovecs: &mut [&mut [u8]],
     offset: i64,
 ) -> Result<usize, Errno> {
+    require_io_fd(proc, fd)?;
     let mut total = 0usize;
     let mut cur_offset = offset;
     for buf in iovecs.iter_mut() {
@@ -3951,11 +4273,11 @@ pub fn sys_sendfile(
     offset: i64,
     count: usize,
 ) -> Result<usize, Errno> {
+    validate_transfer_input(proc, in_fd, (offset >= 0).then_some(offset))?;
+    let writable_len = write_operation_budget(proc, host, out_fd, None, count)?;
     if count == 0 {
         return Ok(0);
     }
-    validate_transfer_input(proc, in_fd, (offset >= 0).then_some(offset))?;
-    let writable_len = write_operation_budget(proc, host, out_fd, None, count)?;
     let mut total = 0usize;
     let mut buf = [0u8; 4096];
     let mut cur_offset = offset;
@@ -4022,11 +4344,11 @@ pub fn sys_copy_file_range(
     off_out: Option<i64>,
     len: usize,
 ) -> Result<usize, Errno> {
+    validate_transfer_input(proc, fd_in, off_in)?;
+    let writable_len = write_operation_budget(proc, host, fd_out, off_out, len)?;
     if len == 0 {
         return Ok(0);
     }
-    validate_transfer_input(proc, fd_in, off_in)?;
-    let writable_len = write_operation_budget(proc, host, fd_out, off_out, len)?;
     let mut total = 0usize;
     let mut buf = [0u8; 4096];
     let mut cur_off_in = off_in.unwrap_or(-1);
@@ -4291,6 +4613,23 @@ pub fn sys_fstat(proc: &mut Process, host: &mut dyn HostIO, fd: i32) -> Result<W
 
     let ofd = proc.ofd_table.get(ofd_idx).ok_or(Errno::EBADF)?;
 
+    if ofd.file_type == FileType::Pipe && ofd.host_handle < 0 {
+        let pipe_idx = (-(ofd.host_handle + 1)) as usize;
+        let is_fifo = unsafe { crate::pipe::global_pipe_table().get(pipe_idx) }
+            .is_some_and(crate::pipe::PipeBuffer::is_fifo);
+        if is_fifo {
+            let live_path = unsafe { crate::fifo::global_fifo_table() }.path_for_pipe(pipe_idx);
+            if let Some(live_path) = live_path {
+                if let Ok(Some(st)) = fifo_path_stat_raw(host, &live_path, true) {
+                    return Ok(st);
+                }
+            }
+            return unsafe { crate::pipe::global_pipe_table().get(pipe_idx) }
+                .and_then(crate::pipe::PipeBuffer::fifo_metadata)
+                .ok_or(Errno::EIO);
+        }
+    }
+
     if matches!(
         ofd.file_type,
         FileType::Pipe
@@ -4493,6 +4832,10 @@ pub fn sys_fcntl(proc: &mut Process, fd: i32, cmd: u32, arg: u32) -> Result<i32,
         F_SETFL => {
             let entry = proc.fd_table.get(fd)?;
             let ofd_idx = entry.ofd_ref.0;
+            let ofd = proc.ofd_table.get(ofd_idx).ok_or(Errno::EBADF)?;
+            if ofd.is_path_only() {
+                return Err(Errno::EBADF);
+            }
             proc.ofd_table.set_status_flags(ofd_idx, arg);
             Ok(0)
         }
@@ -4500,6 +4843,9 @@ pub fn sys_fcntl(proc: &mut Process, fd: i32, cmd: u32, arg: u32) -> Result<i32,
             let entry = proc.fd_table.get(fd)?;
             let ofd_idx = entry.ofd_ref.0;
             let ofd = proc.ofd_table.get_mut(ofd_idx).ok_or(Errno::EBADF)?;
+            if ofd.is_path_only() {
+                return Err(Errno::EBADF);
+            }
             ofd.owner_pid = arg;
             Ok(0)
         }
@@ -4507,6 +4853,9 @@ pub fn sys_fcntl(proc: &mut Process, fd: i32, cmd: u32, arg: u32) -> Result<i32,
             let entry = proc.fd_table.get(fd)?;
             let ofd_idx = entry.ofd_ref.0;
             let ofd = proc.ofd_table.get(ofd_idx).ok_or(Errno::EBADF)?;
+            if ofd.is_path_only() {
+                return Err(Errno::EBADF);
+            }
             Ok(ofd.owner_pid as i32)
         }
         F_GETLK | F_SETLK | F_SETLKW => {
@@ -4531,6 +4880,9 @@ pub fn sys_fcntl_lock(
     let ofd_idx = entry.ofd_ref.0;
     let (host_handle, file_type, status_flags, local_offset, path) = {
         let ofd = proc.ofd_table.get(ofd_idx).ok_or(Errno::EBADF)?;
+        if ofd.is_path_only() {
+            return Err(Errno::EBADF);
+        }
         (
             ofd.host_handle,
             ofd.file_type,
@@ -4780,6 +5132,81 @@ fn unix_socket_path_stat(
     Ok(Some(st))
 }
 
+fn fifo_path_stat_raw(
+    host: &mut dyn HostIO,
+    resolved: &[u8],
+    follow: bool,
+) -> Result<Option<WasmStat>, Errno> {
+    let pipe_idx = match unsafe { crate::fifo::global_fifo_table() }.lookup(resolved) {
+        Some(pipe_idx) => pipe_idx,
+        None => return Ok(None),
+    };
+    let mut st = if follow {
+        host.host_stat(resolved)?
+    } else {
+        host.host_lstat(resolved)?
+    };
+    st.st_mode = wasm_posix_shared::mode::S_IFIFO | (st.st_mode & 0o7777);
+    st.st_size = 0;
+    let pipe = unsafe { crate::pipe::global_pipe_table().get_mut(pipe_idx) }
+        .ok_or(Errno::EIO)?;
+    st.st_nlink = pipe.fifo_name_count();
+    pipe.update_fifo_metadata(st);
+    Ok(Some(st))
+}
+
+fn fifo_path_stat(
+    proc: &Process,
+    host: &mut dyn HostIO,
+    resolved: &[u8],
+    follow: bool,
+) -> Result<Option<WasmStat>, Errno> {
+    if unsafe { crate::fifo::global_fifo_table() }
+        .lookup(resolved)
+        .is_none()
+    {
+        return Ok(None);
+    }
+    check_search_path(proc, host, resolved)?;
+    fifo_path_stat_raw(host, resolved, follow)
+}
+
+fn named_fifo_pipe_idx(proc: &Process, fd: i32) -> Result<Option<usize>, Errno> {
+    let entry = proc.fd_table.get(fd)?;
+    let ofd = proc.ofd_table.get(entry.ofd_ref.0).ok_or(Errno::EBADF)?;
+    if ofd.file_type != FileType::Pipe || ofd.host_handle >= 0 {
+        return Ok(None);
+    }
+    let pipe_idx = (-(ofd.host_handle + 1)) as usize;
+    let is_fifo = unsafe { crate::pipe::global_pipe_table().get(pipe_idx) }
+        .is_some_and(crate::pipe::PipeBuffer::is_fifo);
+    Ok(is_fifo.then_some(pipe_idx))
+}
+
+fn update_fifo_metadata(
+    pipe_idx: usize,
+    update: impl FnOnce(&mut WasmStat) -> Result<(), Errno>,
+) -> Result<(), Errno> {
+    let pipe = unsafe { crate::pipe::global_pipe_table().get_mut(pipe_idx) }
+        .ok_or(Errno::EIO)?;
+    let mut metadata = pipe.fifo_metadata().ok_or(Errno::EIO)?;
+    update(&mut metadata)?;
+    metadata.st_mode = S_IFIFO | (metadata.st_mode & 0o7777);
+    metadata.st_nlink = pipe.fifo_name_count();
+    metadata.st_size = 0;
+    pipe.update_fifo_metadata(metadata);
+    Ok(())
+}
+
+fn realtime_timestamp(host: &mut dyn HostIO) -> Result<(u64, u32), Errno> {
+    let (sec, nsec) =
+        host.host_clock_gettime(wasm_posix_shared::clock::CLOCK_REALTIME)?;
+    Ok((
+        u64::try_from(sec).map_err(|_| Errno::EINVAL)?,
+        u32::try_from(nsec).map_err(|_| Errno::EINVAL)?,
+    ))
+}
+
 pub fn sys_stat(proc: &mut Process, host: &mut dyn HostIO, path: &[u8]) -> Result<WasmStat, Errno> {
     let resolved = resolve_namespace_path(proc, host, path, PathResolveOptions::FOLLOW)?.path;
     if let Some(dev) = match_virtual_device(&resolved) {
@@ -4817,6 +5244,9 @@ pub fn sys_stat(proc: &mut Process, host: &mut dyn HostIO, path: &[u8]) -> Resul
         }
     }
     if let Some(st) = synthetic_file_stat(&resolved, proc.euid, proc.egid) {
+        return Ok(st);
+    }
+    if let Some(st) = fifo_path_stat(proc, host, &resolved, true)? {
         return Ok(st);
     }
     if let Some(st) = unix_socket_path_stat(proc, host, &resolved, true)? {
@@ -4871,6 +5301,9 @@ pub fn sys_lstat(
     if let Some(st) = synthetic_file_stat(&resolved, proc.euid, proc.egid) {
         return Ok(st);
     }
+    if let Some(st) = fifo_path_stat(proc, host, &resolved, false)? {
+        return Ok(st);
+    }
     if let Some(st) = unix_socket_path_stat(proc, host, &resolved, false)? {
         return Ok(st);
     }
@@ -4903,11 +5336,190 @@ pub fn sys_rmdir(proc: &mut Process, host: &mut dyn HostIO, path: &[u8]) -> Resu
     host.host_rmdir(&resolved)
 }
 
+/// Create a named FIFO (`mkfifo` / `mknod(S_IFIFO)`). A FIFO is a named kernel
+/// pipe: registered by canonical path so a later `open()` connects a read or
+/// write end with real pipe semantics (block/EAGAIN/EOF). See `crate::fifo`.
+pub fn sys_mkfifo(
+    proc: &mut Process,
+    host: &mut dyn HostIO,
+    path: &[u8],
+    mode: u32,
+) -> Result<(), Errno> {
+    let resolved =
+        resolve_namespace_path(proc, host, path, PathResolveOptions::CREATE_ENTRY)?;
+    make_fifo(proc, host, resolved, mode)
+}
+
+/// `mkfifoat` / `mknodat(S_IFIFO)`: like [`sys_mkfifo`] but relative to `dirfd`.
+pub fn sys_mkfifoat(
+    proc: &mut Process,
+    host: &mut dyn HostIO,
+    dirfd: i32,
+    path: &[u8],
+    mode: u32,
+) -> Result<(), Errno> {
+    let resolved = resolve_at_path(
+        proc,
+        host,
+        dirfd,
+        path,
+        PathResolveOptions::CREATE_ENTRY,
+    )?;
+    make_fifo(proc, host, resolved, mode)
+}
+
+fn make_fifo(
+    proc: &Process,
+    host: &mut dyn HostIO,
+    resolved: ResolvedNamespacePath,
+    mode: u32,
+) -> Result<(), Errno> {
+    if resolved.stat.is_some() {
+        return Err(Errno::EEXIST);
+    }
+    ensure_host_mutable_namespace_path(&resolved.path)?;
+    check_parent_writable(proc, host, &resolved.path)?;
+
+    let effective_mode = mode & !proc.umask;
+    let flags = O_CREAT | O_EXCL | O_WRONLY;
+    let handle = host.host_open(&resolved.path, flags, effective_mode)?;
+    if let Err(error) = host.host_chown(&resolved.path, proc.euid, proc.egid) {
+        let _ = host.host_close(handle);
+        let _ = host.host_unlink(&resolved.path);
+        return Err(error);
+    }
+    if let Err(error) = host.host_close(handle) {
+        let _ = host.host_unlink(&resolved.path);
+        return Err(error);
+    }
+
+    let mut metadata = match host.host_stat(&resolved.path) {
+        Ok(metadata) => metadata,
+        Err(error) => {
+            let _ = host.host_unlink(&resolved.path);
+            return Err(error);
+        }
+    };
+    metadata.st_mode = wasm_posix_shared::mode::S_IFIFO | (metadata.st_mode & 0o7777);
+    metadata.st_size = 0;
+    let pipe = crate::pipe::PipeBuffer::new_fifo(
+        crate::pipe::DEFAULT_PIPE_CAPACITY,
+        metadata,
+    );
+    let pipe_idx = unsafe { crate::pipe::global_pipe_table().alloc(pipe) };
+    if !unsafe { crate::fifo::global_fifo_table() }.register(resolved.path.clone(), pipe_idx) {
+        unsafe { crate::pipe::global_pipe_table().remove_fifo_name(pipe_idx) };
+        let _ = host.host_unlink(&resolved.path);
+        return Err(Errno::EEXIST);
+    }
+    Ok(())
+}
+
+fn unlink_host_entry(host: &mut dyn HostIO, resolved: &[u8]) -> Result<(), Errno> {
+    match host.host_unlink(resolved) {
+        Err(Errno::EPERM) => {
+            // Linux returns EISDIR when unlinking a directory; macOS returns EPERM.
+            // musl's remove() depends on EISDIR to fall through to rmdir().
+            if let Ok(st) = host.host_stat(resolved) {
+                if st.st_mode & wasm_posix_shared::mode::S_IFMT
+                    == wasm_posix_shared::mode::S_IFDIR
+                {
+                    return Err(Errno::EISDIR);
+                }
+            }
+            Err(Errno::EPERM)
+        }
+        other => other,
+    }
+}
+
+fn unlink_fifo_marker(host: &mut dyn HostIO, resolved: &[u8]) -> Option<Result<(), Errno>> {
+    let pipe_idx = unsafe { crate::fifo::global_fifo_table() }.lookup(resolved)?;
+    let result = (|| {
+        fifo_path_stat_raw(host, resolved, false)?.ok_or(Errno::EIO)?;
+        let (ctime_sec, ctime_nsec) = realtime_timestamp(host)?;
+        unlink_host_entry(host, resolved)?;
+
+        let removed = unsafe { crate::fifo::global_fifo_table() }.remove(resolved);
+        if removed != Some(pipe_idx) {
+            return Err(Errno::EIO);
+        }
+        unsafe { crate::pipe::global_pipe_table() }
+            .remove_fifo_name_at(pipe_idx, ctime_sec, ctime_nsec);
+        Ok(())
+    })();
+    Some(result)
+}
+
+fn rekey_fifo_names_after_rename(
+    oldpath: &[u8],
+    newpath: &[u8],
+    displaced_ctime: Option<(u64, u32)>,
+) {
+    let registry = unsafe { crate::fifo::global_fifo_table() };
+    let old_pipe = registry.lookup(oldpath);
+    let new_pipe = registry.lookup(newpath);
+    // rename(old, new) is a no-op when both names are hard links to the same
+    // inode. Preserve both aliases and their namespace reference counts.
+    if old_pipe.is_some() && old_pipe == new_pipe {
+        return;
+    }
+    let replaced = registry.rename_path(oldpath, newpath);
+    debug_assert!(replaced.is_empty() || displaced_ctime.is_some());
+    let pipes = unsafe { crate::pipe::global_pipe_table() };
+    for pipe_idx in replaced {
+        if let Some((ctime_sec, ctime_nsec)) = displaced_ctime {
+            pipes.remove_fifo_name_at(pipe_idx, ctime_sec, ctime_nsec);
+        } else {
+            pipes.remove_fifo_name(pipe_idx);
+        }
+    }
+}
+
+fn refresh_displaced_fifo_before_rename(
+    host: &mut dyn HostIO,
+    oldpath: &[u8],
+    newpath: &[u8],
+) -> Result<Option<(u64, u32)>, Errno> {
+    let registry = unsafe { crate::fifo::global_fifo_table() };
+    let old_pipe = registry.lookup(oldpath);
+    let new_pipe = registry.lookup(newpath);
+    if new_pipe.is_some() && new_pipe != old_pipe {
+        fifo_path_stat_raw(host, newpath, false)?.ok_or(Errno::EIO)?;
+        return realtime_timestamp(host).map(Some);
+    }
+    Ok(None)
+}
+
+fn register_fifo_hardlink(
+    host: &mut dyn HostIO,
+    oldpath: &[u8],
+    newpath: &[u8],
+) -> Result<(), Errno> {
+    let Some(pipe_idx) = unsafe { crate::fifo::global_fifo_table() }.lookup(oldpath) else {
+        return Ok(());
+    };
+    if !unsafe { crate::fifo::global_fifo_table() }.register(newpath.to_vec(), pipe_idx) {
+        let _ = host.host_unlink(newpath);
+        return Err(Errno::EIO);
+    }
+    let pipe = unsafe { crate::pipe::global_pipe_table().get_mut(pipe_idx) }.ok_or_else(|| {
+        unsafe { crate::fifo::global_fifo_table() }.remove(newpath);
+        let _ = host.host_unlink(newpath);
+        Errno::EIO
+    })?;
+    pipe.add_fifo_name();
+    Ok(())
+}
+
 pub fn sys_unlink(proc: &mut Process, host: &mut dyn HostIO, path: &[u8]) -> Result<(), Errno> {
     let resolved = resolve_namespace_path(proc, host, path, PathResolveOptions::NOFOLLOW)?.path;
     ensure_host_mutable_namespace_path(&resolved)?;
     check_parent_writable(proc, host, &resolved)?;
     check_sticky_child(proc, host, &resolved)?;
+    if let Some(result) = unlink_fifo_marker(host, &resolved) {
+        return result;
+    }
     // AF_UNIX bind() creates a real host inode, so unlink must remove both the
     // registry entry and the inode. ENOENT from host_unlink is tolerated because
     // some hosts (test mocks) don't track the inode.
@@ -4924,20 +5536,7 @@ pub fn sys_unlink(proc: &mut Process, host: &mut dyn HostIO, path: &[u8]) -> Res
             }
         }
     }
-    match host.host_unlink(&resolved) {
-        Err(Errno::EPERM) => {
-            // Linux returns EISDIR when unlinking a directory; macOS returns EPERM.
-            // musl's remove() depends on EISDIR to fall through to rmdir().
-            if let Ok(st) = host.host_stat(&resolved) {
-                if st.st_mode & wasm_posix_shared::mode::S_IFMT == wasm_posix_shared::mode::S_IFDIR
-                {
-                    return Err(Errno::EISDIR);
-                }
-            }
-            Err(Errno::EPERM)
-        }
-        other => other,
-    }
+    unlink_host_entry(host, &resolved)
 }
 
 pub fn sys_rename(
@@ -4965,7 +5564,9 @@ pub fn sys_rename(
     if host.host_lstat(&new).is_ok() {
         check_sticky_child(proc, host, &new)?;
     }
+    let displaced_ctime = refresh_displaced_fifo_before_rename(host, &old, &new)?;
     host.host_rename(&old, &new)?;
+    rekey_fifo_names_after_rename(&old, &new, displaced_ctime);
     let registry = unsafe { crate::unix_socket::global_unix_socket_registry() };
     if registry.rename_path(&old, &new) {
         crate::wakeup::push_datagram_writable();
@@ -4985,7 +5586,8 @@ pub fn sys_link(
     ensure_host_mutable_namespace_path(&new)?;
     check_search_path(proc, host, &old)?;
     check_parent_writable(proc, host, &new)?;
-    host.host_link(&old, &new)
+    host.host_link(&old, &new)?;
+    register_fifo_hardlink(host, &old, &new)
 }
 
 pub fn sys_symlink(
@@ -5228,6 +5830,7 @@ pub fn sys_readdir(
         .ok_or(Errno::EBADF)?;
     let host_handle = stream.host_handle;
     let synth_state = stream.synth_dot_state;
+    let stream_path = stream.path.clone();
 
     // Synthesize "." and ".." entries before host entries
     if synth_state < 2 {
@@ -5259,7 +5862,7 @@ pub fn sys_readdir(
     }
 
     match host.host_readdir(host_handle, name_buf)? {
-        Some((d_ino, d_type, name_len)) => {
+        Some((d_ino, host_d_type, name_len)) => {
             // Skip host "." and ".." entries (we already synthesized them)
             if name_len == 1 && name_buf[0] == b'.' {
                 // Recurse to get the next entry
@@ -5270,6 +5873,15 @@ pub fn sys_readdir(
             }
 
             // Write WasmDirent to dirent_buf if it fits
+            let entry_path = directory_entry_path(&stream_path, &name_buf[..name_len]);
+            let d_type = if unsafe { crate::fifo::global_fifo_table() }
+                .lookup(&entry_path)
+                .is_some()
+            {
+                1 // DT_FIFO
+            } else {
+                host_d_type
+            };
             let dirent = WasmDirent {
                 d_ino,
                 d_type,
@@ -5408,6 +6020,10 @@ pub fn sys_getdents64(
     let entry = proc.fd_table.get(fd)?;
     let ofd_idx = entry.ofd_ref.0;
     let ofd = proc.ofd_table.get(ofd_idx).ok_or(Errno::EBADF)?;
+
+    if ofd.is_path_only() {
+        return Err(Errno::EBADF);
+    }
 
     if ofd.file_type != FileType::Directory {
         return Err(Errno::ENOTDIR);
@@ -5639,7 +6255,7 @@ pub fn sys_getdents64(
 
     loop {
         match host.host_readdir(dir_handle, &mut name_buf)? {
-            Some((d_ino, d_type, name_len)) => {
+            Some((d_ino, host_d_type, name_len)) => {
                 // Skip host "." and ".." entries (we already synthesized them)
                 if (name_len == 1 && name_buf[0] == b'.')
                     || (name_len == 2 && name_buf[0] == b'.' && name_buf[1] == b'.')
@@ -5647,13 +6263,22 @@ pub fn sys_getdents64(
                     continue;
                 }
 
+                let entry_path = directory_entry_path(&path, &name_buf[..name_len]);
+                let d_type = if unsafe { crate::fifo::global_fifo_table() }
+                    .lookup(&entry_path)
+                    .is_some()
+                {
+                    1 // DT_FIFO
+                } else {
+                    host_d_type as u8
+                };
                 entry_offset += 1;
                 let written = write_dirent64(
                     buf,
                     pos,
                     d_ino,
                     entry_offset,
-                    d_type as u8,
+                    d_type,
                     &name_buf[..name_len],
                 );
                 if written == 0 {
@@ -6398,6 +7023,38 @@ pub fn sys_clock_nanosleep(
     }
 }
 
+const UTIME_NOW: i64 = 0x3fff_ffff;
+const UTIME_OMIT: i64 = 0x3fff_fffe;
+
+/// Check the two POSIX timestamp authorization modes and report whether the
+/// request can change either timestamp. An all-UTIME_OMIT request is a no-op
+/// after descriptor/path validation and requires no ownership or write access.
+fn check_utimens_permissions(
+    proc: &Process,
+    st: &WasmStat,
+    times: Option<&[WasmTimespec; 2]>,
+) -> Result<bool, Errno> {
+    let both_omit = times.is_some_and(|ts| {
+        ts[0].tv_nsec == UTIME_OMIT && ts[1].tv_nsec == UTIME_OMIT
+    });
+    if both_omit {
+        return Ok(false);
+    }
+
+    let both_now = times.is_some_and(|ts| {
+        ts[0].tv_nsec == UTIME_NOW && ts[1].tv_nsec == UTIME_NOW
+    });
+    if times.is_none() || both_now {
+        if proc.euid == 0 || proc.euid == st.st_uid || has_access(proc, st, W_OK) {
+            return Ok(true);
+        }
+        return Err(Errno::EACCES);
+    }
+
+    check_owner_or_root(proc, st)?;
+    Ok(true)
+}
+
 /// Set file timestamps. Delegates to host.
 pub fn sys_utimensat(
     proc: &mut Process,
@@ -6407,17 +7064,6 @@ pub fn sys_utimensat(
     times: Option<&[WasmTimespec; 2]>,
     _flags: u32,
 ) -> Result<(), Errno> {
-    // When path is empty (NULL from userspace), operate on dirfd directly.
-    // This is how futimens(fd, times) works: utimensat(fd, NULL, times, 0).
-    let resolved = if path.is_empty() && dirfd != wasm_posix_shared::flags::AT_FDCWD {
-        let entry = proc.fd_table.get(dirfd)?;
-        let ofd = proc.ofd_table.get(entry.ofd_ref.0).ok_or(Errno::EBADF)?;
-        ofd.path.clone()
-    } else {
-        resolve_at_path(proc, host, dirfd, path, PathResolveOptions::FOLLOW)?.path
-    };
-    ensure_host_mutable_namespace_path(&resolved)?;
-
     // Default: set both to current time
     let (atime_sec, atime_nsec, mtime_sec, mtime_nsec) = if let Some(ts) = times {
         (ts[0].tv_sec, ts[0].tv_nsec, ts[1].tv_sec, ts[1].tv_nsec)
@@ -6427,9 +7073,109 @@ pub fn sys_utimensat(
         (sec, nsec, sec, nsec)
     };
 
+    // When path is empty (NULL from userspace), operate on dirfd directly.
+    // This is how futimens(fd, times) works: utimensat(fd, NULL, times, 0).
+    if path.is_empty() && dirfd != wasm_posix_shared::flags::AT_FDCWD {
+        let entry = proc.fd_table.get(dirfd)?;
+        let ofd = proc.ofd_table.get(entry.ofd_ref.0).ok_or(Errno::EBADF)?;
+        if ofd.is_path_only() {
+            return Err(Errno::EBADF);
+        }
+        if let Some(pipe_idx) = named_fifo_pipe_idx(proc, dirfd)? {
+            let st = sys_fstat(proc, host, dirfd)?;
+            if !check_utimens_permissions(proc, &st, times)? {
+                return Ok(());
+            }
+            if let Some(live_path) =
+                unsafe { crate::fifo::global_fifo_table() }.path_for_pipe(pipe_idx)
+            {
+                host.host_utimensat(
+                    &live_path,
+                    atime_sec,
+                    atime_nsec,
+                    mtime_sec,
+                    mtime_nsec,
+                )?;
+                let refreshed = host.host_stat(&live_path)?;
+                return update_fifo_metadata(pipe_idx, |metadata| {
+                    metadata.st_atime_sec = refreshed.st_atime_sec;
+                    metadata.st_atime_nsec = refreshed.st_atime_nsec;
+                    metadata.st_mtime_sec = refreshed.st_mtime_sec;
+                    metadata.st_mtime_nsec = refreshed.st_mtime_nsec;
+                    metadata.st_ctime_sec = refreshed.st_ctime_sec;
+                    metadata.st_ctime_nsec = refreshed.st_ctime_nsec;
+                    Ok(())
+                });
+            }
+
+            let changes_atime = atime_nsec != UTIME_OMIT;
+            let changes_mtime = mtime_nsec != UTIME_OMIT;
+            let now = if changes_atime || changes_mtime {
+                Some(host.host_clock_gettime(0)?)
+            } else {
+                None
+            };
+            return update_fifo_metadata(pipe_idx, |metadata| {
+                let normalize = |current_sec: u64,
+                                 current_nsec: u32,
+                                 requested_sec: i64,
+                                 requested_nsec: i64|
+                 -> Result<(u64, u32), Errno> {
+                    match requested_nsec {
+                        UTIME_OMIT => Ok((current_sec, current_nsec)),
+                        UTIME_NOW => {
+                            let (sec, nsec) = now.ok_or(Errno::EINVAL)?;
+                            Ok((
+                                u64::try_from(sec).map_err(|_| Errno::EINVAL)?,
+                                u32::try_from(nsec).map_err(|_| Errno::EINVAL)?,
+                            ))
+                        }
+                        0..=999_999_999 => Ok((
+                            u64::try_from(requested_sec).map_err(|_| Errno::EINVAL)?,
+                            u32::try_from(requested_nsec).map_err(|_| Errno::EINVAL)?,
+                        )),
+                        _ => Err(Errno::EINVAL),
+                    }
+                };
+                let (new_atime_sec, new_atime_nsec) = normalize(
+                    metadata.st_atime_sec,
+                    metadata.st_atime_nsec,
+                    atime_sec,
+                    atime_nsec,
+                )?;
+                let (new_mtime_sec, new_mtime_nsec) = normalize(
+                    metadata.st_mtime_sec,
+                    metadata.st_mtime_nsec,
+                    mtime_sec,
+                    mtime_nsec,
+                )?;
+                metadata.st_atime_sec = new_atime_sec;
+                metadata.st_atime_nsec = new_atime_nsec;
+                metadata.st_mtime_sec = new_mtime_sec;
+                metadata.st_mtime_nsec = new_mtime_nsec;
+                if let Some((sec, nsec)) = now {
+                    metadata.st_ctime_sec = u64::try_from(sec).map_err(|_| Errno::EINVAL)?;
+                    metadata.st_ctime_nsec = u32::try_from(nsec).map_err(|_| Errno::EINVAL)?;
+                }
+                Ok(())
+            });
+        }
+    }
+
+    let resolved = if path.is_empty() && dirfd != wasm_posix_shared::flags::AT_FDCWD {
+        let entry = proc.fd_table.get(dirfd)?;
+        let ofd = proc.ofd_table.get(entry.ofd_ref.0).ok_or(Errno::EBADF)?;
+        ofd.path.clone()
+    } else {
+        resolve_at_path(proc, host, dirfd, path, PathResolveOptions::FOLLOW)?.path
+    };
+    ensure_host_mutable_namespace_path(&resolved)?;
+
     check_search_path(proc, host, &resolved)?;
     let st = host.host_stat(&resolved)?;
-    check_owner_or_root(proc, &st)?;
+    if !check_utimens_permissions(proc, &st, times)? {
+        return Ok(());
+    }
     host.host_utimensat(&resolved, atime_sec, atime_nsec, mtime_sec, mtime_nsec)
 }
 
@@ -6643,6 +7389,9 @@ pub fn sys_mmap(
         // must request exactly that length.
         let entry = proc.fd_table.get(fd)?;
         let ofd = proc.ofd_table.get(entry.ofd_ref.0).ok_or(Errno::EBADF)?;
+        if ofd.is_path_only() {
+            return Err(Errno::EBADF);
+        }
         if ofd.file_type == FileType::CharDevice
             && VirtualDevice::from_host_handle(ofd.host_handle) == Some(VirtualDevice::Fb0)
         {
@@ -10257,6 +11006,12 @@ fn poll_check(proc: &mut Process, host: &mut dyn HostIO, fds: &mut [WasmPollFd])
             }
         };
 
+        if ofd.is_path_only() {
+            pollfd.revents = POLLNVAL;
+            ready_count += 1;
+            continue;
+        }
+
         let mut revents: i16 = 0;
 
         match ofd.file_type {
@@ -10375,14 +11130,33 @@ fn poll_check(proc: &mut Process, host: &mut dyn HostIO, fds: &mut [WasmPollFd])
                     let pipe_idx = (-(ofd.host_handle + 1)) as usize;
                     let pipe = unsafe { crate::pipe::global_pipe_table().get(pipe_idx) };
                     if let Some(pipe) = pipe {
-                        if pollfd.events & POLLIN != 0 && pipe.available() > 0 {
-                            revents |= POLLIN;
-                        }
-                        if pollfd.events & POLLOUT != 0 && pipe.free_space() > 0 {
-                            revents |= POLLOUT;
-                        }
-                        if !pipe.is_write_end_open() {
-                            revents |= POLLHUP;
+                        match ofd.status_flags & O_ACCMODE {
+                            O_RDONLY => {
+                                if pollfd.events & POLLIN != 0 && pipe.available() > 0 {
+                                    revents |= POLLIN;
+                                }
+                                if pipe.read_end_has_hangup() {
+                                    revents |= POLLHUP;
+                                }
+                            }
+                            O_WRONLY => {
+                                if !pipe.has_readers() {
+                                    revents |= POLLERR;
+                                } else if pollfd.events & POLLOUT != 0
+                                    && pipe.free_space() > 0
+                                {
+                                    revents |= POLLOUT;
+                                }
+                            }
+                            O_RDWR => {
+                                if pollfd.events & POLLIN != 0 && pipe.available() > 0 {
+                                    revents |= POLLIN;
+                                }
+                                if pollfd.events & POLLOUT != 0 && pipe.free_space() > 0 {
+                                    revents |= POLLOUT;
+                                }
+                            }
+                            _ => revents |= POLLERR,
                         }
                     }
                 }
@@ -10625,6 +11399,9 @@ pub fn sys_openat(
     oflags: u32,
     mode: u32,
 ) -> Result<i32, Errno> {
+    if let Some(fd) = resume_fifo_open(proc)? {
+        return Ok(fd);
+    }
     let exclusive_create = oflags & O_CREAT != 0 && oflags & O_EXCL != 0;
     let resolve_options = PathResolveOptions {
         follow_final_symlink: oflags & O_NOFOLLOW == 0 && !exclusive_create,
@@ -10734,6 +11511,10 @@ pub fn sys_openat(
             return Ok(fd);
         }
         return Err(Errno::ENXIO);
+    }
+
+    if let Some(fd) = try_open_fifo(proc, host, &resolved, oflags, exclusive_create)? {
+        return Ok(fd);
     }
 
     // Procfs (/proc/...) — in-kernel virtual filesystem
@@ -10873,6 +11654,14 @@ pub fn sys_fstatat(
     if let Some(st) = synthetic_file_stat(&resolved, proc.euid, proc.egid) {
         return Ok(st);
     }
+    if let Some(st) = fifo_path_stat(
+        proc,
+        host,
+        &resolved,
+        flags & AT_SYMLINK_NOFOLLOW == 0,
+    )? {
+        return Ok(st);
+    }
     if let Some(st) =
         unix_socket_path_stat(proc, host, &resolved, flags & AT_SYMLINK_NOFOLLOW == 0)?
     {
@@ -10909,6 +11698,9 @@ pub fn sys_unlinkat(
         host.host_rmdir(&resolved)
     } else {
         check_sticky_child(proc, host, &resolved)?;
+        if let Some(result) = unlink_fifo_marker(host, &resolved) {
+            return result;
+        }
         // AF_UNIX bind() creates a host inode; remove both the registry
         // entry and the inode. (Same as sys_unlink.)
         {
@@ -10921,20 +11713,7 @@ pub fn sys_unlinkat(
                 }
             }
         }
-        match host.host_unlink(&resolved) {
-            Err(Errno::EPERM) => {
-                // Linux returns EISDIR when unlinking a directory; macOS returns EPERM.
-                if let Ok(st) = host.host_stat(&resolved) {
-                    if st.st_mode & wasm_posix_shared::mode::S_IFMT
-                        == wasm_posix_shared::mode::S_IFDIR
-                    {
-                        return Err(Errno::EISDIR);
-                    }
-                }
-                Err(Errno::EPERM)
-            }
-            other => other,
-        }
+        unlink_host_entry(host, &resolved)
     }
 }
 
@@ -10984,7 +11763,10 @@ pub fn sys_renameat(
     if host.host_lstat(&new_resolved).is_ok() {
         check_sticky_child(proc, host, &new_resolved)?;
     }
+    let displaced_ctime =
+        refresh_displaced_fifo_before_rename(host, &old_resolved, &new_resolved)?;
     host.host_rename(&old_resolved, &new_resolved)?;
+    rekey_fifo_names_after_rename(&old_resolved, &new_resolved, displaced_ctime);
     let registry = unsafe { crate::unix_socket::global_unix_socket_registry() };
     if registry.rename_path(&old_resolved, &new_resolved) {
         crate::wakeup::push_datagram_writable();
@@ -11090,6 +11872,10 @@ pub fn sys_ioctl(
 
     let entry = proc.fd_table.get(fd)?;
     let ofd_idx = entry.ofd_ref.0;
+    let ofd = proc.ofd_table.get(ofd_idx).ok_or(Errno::EBADF)?;
+    if ofd.is_path_only() {
+        return Err(Errno::EBADF);
+    }
 
     // FIONBIO — toggle O_NONBLOCK on the OFD status_flags
     if request == 0x5421 {
@@ -12649,6 +13435,7 @@ pub fn sys_ftruncate(
     fd: i32,
     length: i64,
 ) -> Result<(), Errno> {
+    require_io_fd(proc, fd)?;
     if length < 0 {
         return Err(Errno::EINVAL);
     }
@@ -12715,6 +13502,7 @@ pub fn sys_fallocate(
     offset: i64,
     len: i64,
 ) -> Result<(), Errno> {
+    require_io_fd(proc, fd)?;
     if offset < 0 || len <= 0 {
         return Err(Errno::EINVAL);
     }
@@ -12733,6 +13521,7 @@ pub fn sys_fallocate(
 
 /// fsync -- synchronize file state to storage.
 pub fn sys_fsync(proc: &mut Process, host: &mut dyn HostIO, fd: i32) -> Result<(), Errno> {
+    require_io_fd(proc, fd)?;
     let entry = proc.fd_table.get(fd)?;
     let ofd_idx = entry.ofd_ref.0;
     let ofd = proc.ofd_table.get(ofd_idx).ok_or(Errno::EBADF)?;
@@ -12751,6 +13540,13 @@ pub fn sys_truncate(
     path: &[u8],
     length: i64,
 ) -> Result<(), Errno> {
+    let resolved = resolve_namespace_path(proc, host, path, PathResolveOptions::FOLLOW)?;
+    if resolved
+        .stat
+        .is_some_and(|stat| stat.st_mode & S_IFMT == S_IFIFO)
+    {
+        return Err(Errno::EINVAL);
+    }
     let fd = sys_open(proc, host, path, O_WRONLY, 0)?;
     let result = sys_ftruncate(proc, host, fd, length);
     let _ = sys_close(proc, host, fd);
@@ -12770,6 +13566,31 @@ pub fn sys_fchmod(
     fd: i32,
     mode: u32,
 ) -> Result<(), Errno> {
+    let entry = proc.fd_table.get(fd)?;
+    let ofd = proc.ofd_table.get(entry.ofd_ref.0).ok_or(Errno::EBADF)?;
+    if ofd.is_path_only() {
+        return Err(Errno::EBADF);
+    }
+    if let Some(pipe_idx) = named_fifo_pipe_idx(proc, fd)? {
+        let st = sys_fstat(proc, host, fd)?;
+        check_owner_or_root(proc, &st)?;
+        let ctime = if let Some(live_path) =
+            unsafe { crate::fifo::global_fifo_table() }.path_for_pipe(pipe_idx)
+        {
+            host.host_chmod(&live_path, mode)?;
+            None
+        } else {
+            Some(realtime_timestamp(host)?)
+        };
+        return update_fifo_metadata(pipe_idx, |metadata| {
+            metadata.st_mode = S_IFIFO | (mode & 0o7777);
+            if let Some((ctime_sec, ctime_nsec)) = ctime {
+                metadata.st_ctime_sec = ctime_sec;
+                metadata.st_ctime_nsec = ctime_nsec;
+            }
+            Ok(())
+        });
+    }
     let entry = proc.fd_table.get(fd)?;
     let ofd_idx = entry.ofd_ref.0;
     let ofd = proc.ofd_table.get(ofd_idx).ok_or(Errno::EBADF)?;
@@ -12798,6 +13619,32 @@ pub fn sys_fchown(
     uid: u32,
     gid: u32,
 ) -> Result<(), Errno> {
+    let entry = proc.fd_table.get(fd)?;
+    let ofd = proc.ofd_table.get(entry.ofd_ref.0).ok_or(Errno::EBADF)?;
+    if ofd.is_path_only() {
+        return Err(Errno::EBADF);
+    }
+    if let Some(pipe_idx) = named_fifo_pipe_idx(proc, fd)? {
+        let st = sys_fstat(proc, host, fd)?;
+        let (uid, gid) = prepare_chown_ids(proc, &st, uid, gid)?;
+        let ctime = if let Some(live_path) =
+            unsafe { crate::fifo::global_fifo_table() }.path_for_pipe(pipe_idx)
+        {
+            host.host_chown(&live_path, uid, gid)?;
+            None
+        } else {
+            Some(realtime_timestamp(host)?)
+        };
+        return update_fifo_metadata(pipe_idx, |metadata| {
+            metadata.st_uid = uid;
+            metadata.st_gid = gid;
+            if let Some((ctime_sec, ctime_nsec)) = ctime {
+                metadata.st_ctime_sec = ctime_sec;
+                metadata.st_ctime_nsec = ctime_nsec;
+            }
+            Ok(())
+        });
+    }
     let entry = proc.fd_table.get(fd)?;
     let ofd_idx = entry.ofd_ref.0;
     let ofd = proc.ofd_table.get(ofd_idx).ok_or(Errno::EBADF)?;
@@ -12862,6 +13709,7 @@ pub fn sys_readv(
     fd: i32,
     buffers: &mut [&mut [u8]],
 ) -> Result<usize, Errno> {
+    require_io_fd(proc, fd)?;
     let mut total = 0usize;
     for buf in buffers.iter_mut() {
         if buf.is_empty() {
@@ -13042,7 +13890,8 @@ pub fn sys_linkat(
     ensure_host_mutable_namespace_path(&new_resolved)?;
     check_search_path(proc, host, &old_resolved)?;
     check_parent_writable(proc, host, &new_resolved)?;
-    host.host_link(&old_resolved, &new_resolved)
+    host.host_link(&old_resolved, &new_resolved)?;
+    register_fifo_hardlink(host, &old_resolved, &new_resolved)
 }
 
 /// symlinkat -- create symbolic link relative to directory fd.
@@ -13671,7 +14520,7 @@ mod tests {
     use super::*;
     use crate::process::ProcessState;
     use wasm_posix_shared::mode::{S_IFDIR, S_IFLNK, S_IFMT, S_IFREG};
-    use wasm_posix_shared::poll::{POLLIN, POLLOUT};
+    use wasm_posix_shared::poll::{POLLHUP, POLLIN, POLLOUT};
 
     fn terminal_process(pid: u32) -> Process {
         Process::new_with_stdio(pid, crate::process::StdioConfig::terminal())
@@ -13681,6 +14530,7 @@ mod tests {
     /// The registry uses UnsafeCell internally and is not thread-safe, so tests
     /// that call sys_bind/sys_connect for AF_UNIX must hold this lock.
     static UNIX_REGISTRY_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    static FIFO_REGISTRY_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
     static THREAD_IDENTITY_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
     #[test]
@@ -13834,10 +14684,12 @@ mod tests {
         sigsuspend_error: bool,
         clock_time: (i64, i64),
         clock_error: Option<Errno>,
+        clock_gettime_calls: usize,
         /// Per-path owner overrides for host_stat / host_lstat. Mirrors how a real
         /// host-side VFS owns ownership; tests use `set_file_with_owner` to seed.
         file_owners: std::collections::HashMap<Vec<u8>, (u32, u32)>,
         file_modes: std::collections::HashMap<Vec<u8>, u32>,
+        file_times: std::collections::HashMap<Vec<u8>, (u64, u32, u64, u32)>,
         /// Per-handle owner mapping captured at host_open time so host_fstat
         /// returns the same owners host_stat would for the path.
         handle_owners: std::collections::HashMap<i64, (u32, u32)>,
@@ -13890,8 +14742,10 @@ mod tests {
                 sigsuspend_error: false,
                 clock_time: (1234567890, 123456789),
                 clock_error: None,
+                clock_gettime_calls: 0,
                 file_owners: std::collections::HashMap::new(),
                 file_modes: std::collections::HashMap::new(),
+                file_times: std::collections::HashMap::new(),
                 handle_owners: std::collections::HashMap::new(),
                 handle_paths: std::collections::HashMap::new(),
                 missing_paths: std::collections::HashSet::new(),
@@ -14023,6 +14877,12 @@ mod tests {
                         .unwrap_or_else(|| test_default_mode(path))
                 })
                 .unwrap_or(S_IFREG | 0o644);
+            let (atime_sec, atime_nsec, mtime_sec, mtime_nsec) = self
+                .handle_paths
+                .get(&handle)
+                .and_then(|path| self.file_times.get(path))
+                .copied()
+                .unwrap_or((0, 0, 0, 0));
             Ok(WasmStat {
                 st_dev: 0,
                 st_ino: 0,
@@ -14031,10 +14891,10 @@ mod tests {
                 st_uid: uid,
                 st_gid: gid,
                 st_size: self.stat_size,
-                st_atime_sec: 0,
-                st_atime_nsec: 0,
-                st_mtime_sec: 0,
-                st_mtime_nsec: 0,
+                st_atime_sec: atime_sec,
+                st_atime_nsec: atime_nsec,
+                st_mtime_sec: mtime_sec,
+                st_mtime_nsec: mtime_nsec,
                 st_ctime_sec: 0,
                 st_ctime_nsec: 0,
                 _pad: 0,
@@ -14051,6 +14911,11 @@ mod tests {
                 .copied()
                 .unwrap_or_else(|| test_default_mode(path));
             let (uid, gid) = self.file_owners.get(path).copied().unwrap_or((0, 0));
+            let (atime_sec, atime_nsec, mtime_sec, mtime_nsec) = self
+                .file_times
+                .get(path)
+                .copied()
+                .unwrap_or((0, 0, 0, 0));
             Ok(WasmStat {
                 st_dev: 0,
                 st_ino: 1,
@@ -14059,10 +14924,10 @@ mod tests {
                 st_uid: uid,
                 st_gid: gid,
                 st_size: 1024,
-                st_atime_sec: 0,
-                st_atime_nsec: 0,
-                st_mtime_sec: 0,
-                st_mtime_nsec: 0,
+                st_atime_sec: atime_sec,
+                st_atime_nsec: atime_nsec,
+                st_mtime_sec: mtime_sec,
+                st_mtime_nsec: mtime_nsec,
                 st_ctime_sec: 0,
                 st_ctime_nsec: 0,
                 _pad: 0,
@@ -14082,6 +14947,11 @@ mod tests {
             };
             let mode = self.file_modes.get(path).copied().unwrap_or(mode);
             let (uid, gid) = self.file_owners.get(path).copied().unwrap_or((0, 0));
+            let (atime_sec, atime_nsec, mtime_sec, mtime_nsec) = self
+                .file_times
+                .get(path)
+                .copied()
+                .unwrap_or((0, 0, 0, 0));
             Ok(WasmStat {
                 st_dev: 0,
                 st_ino: 2,
@@ -14090,10 +14960,10 @@ mod tests {
                 st_uid: uid,
                 st_gid: gid,
                 st_size: 1024,
-                st_atime_sec: 0,
-                st_atime_nsec: 0,
-                st_mtime_sec: 0,
-                st_mtime_nsec: 0,
+                st_atime_sec: atime_sec,
+                st_atime_nsec: atime_nsec,
+                st_mtime_sec: mtime_sec,
+                st_mtime_nsec: mtime_nsec,
                 st_ctime_sec: 0,
                 st_ctime_nsec: 0,
                 _pad: 0,
@@ -14134,13 +15004,92 @@ mod tests {
         fn host_rmdir(&mut self, _path: &[u8]) -> Result<(), Errno> {
             Ok(())
         }
-        fn host_unlink(&mut self, _path: &[u8]) -> Result<(), Errno> {
+        fn host_unlink(&mut self, path: &[u8]) -> Result<(), Errno> {
+            if self.missing_paths.contains(path) {
+                return Err(Errno::ENOENT);
+            }
+            self.file_modes.remove(path);
+            self.file_owners.remove(path);
+            self.file_times.remove(path);
+            self.symlink_targets.remove(path);
+            self.missing_paths.insert(path.to_vec());
             Ok(())
         }
-        fn host_rename(&mut self, _oldpath: &[u8], _newpath: &[u8]) -> Result<(), Errno> {
+        fn host_rename(&mut self, oldpath: &[u8], newpath: &[u8]) -> Result<(), Errno> {
+            if self.missing_paths.contains(oldpath) {
+                return Err(Errno::ENOENT);
+            }
+
+            let old_mode = self
+                .file_modes
+                .get(oldpath)
+                .copied()
+                .unwrap_or_else(|| test_default_mode(oldpath));
+            let moved_modes: Vec<_> = self
+                .file_modes
+                .iter()
+                .filter_map(|(path, value)| {
+                    crate::fifo::rebase_path(path, oldpath, newpath)
+                        .map(|rebased| (path.clone(), rebased, *value))
+                })
+                .collect();
+            for (from, to, value) in moved_modes {
+                self.file_modes.remove(&from);
+                self.file_modes.insert(to, value);
+            }
+            let moved_owners: Vec<_> = self
+                .file_owners
+                .iter()
+                .filter_map(|(path, value)| {
+                    crate::fifo::rebase_path(path, oldpath, newpath)
+                        .map(|rebased| (path.clone(), rebased, *value))
+                })
+                .collect();
+            for (from, to, value) in moved_owners {
+                self.file_owners.remove(&from);
+                self.file_owners.insert(to, value);
+            }
+            let moved_times: Vec<_> = self
+                .file_times
+                .iter()
+                .filter_map(|(path, value)| {
+                    crate::fifo::rebase_path(path, oldpath, newpath)
+                        .map(|rebased| (path.clone(), rebased, *value))
+                })
+                .collect();
+            for (from, to, value) in moved_times {
+                self.file_times.remove(&from);
+                self.file_times.insert(to, value);
+            }
+            if !self.file_modes.contains_key(newpath) {
+                self.file_modes.insert(newpath.to_vec(), old_mode);
+            }
+            self.missing_paths.insert(oldpath.to_vec());
+            self.missing_paths.remove(newpath);
+            for handle_path in self.handle_paths.values_mut() {
+                if let Some(rebased) = crate::fifo::rebase_path(handle_path, oldpath, newpath) {
+                    *handle_path = rebased;
+                }
+            }
             Ok(())
         }
-        fn host_link(&mut self, _oldpath: &[u8], _newpath: &[u8]) -> Result<(), Errno> {
+        fn host_link(&mut self, oldpath: &[u8], newpath: &[u8]) -> Result<(), Errno> {
+            if self.missing_paths.contains(oldpath) {
+                return Err(Errno::ENOENT);
+            }
+            let mode = self
+                .file_modes
+                .get(oldpath)
+                .copied()
+                .unwrap_or_else(|| test_default_mode(oldpath));
+            self.file_modes.insert(newpath.to_vec(), mode);
+            if let Some(owner) = self.file_owners.get(oldpath).copied() {
+                self.file_owners.insert(newpath.to_vec(), owner);
+            }
+            if let Some(times) = self.file_times.get(oldpath).copied() {
+                self.file_times.insert(newpath.to_vec(), times);
+            }
+            self.missing_paths.remove(newpath);
             Ok(())
         }
         fn host_symlink(&mut self, target: &[u8], linkpath: &[u8]) -> Result<(), Errno> {
@@ -14228,6 +15177,7 @@ mod tests {
         }
 
         fn host_clock_gettime(&mut self, _clock_id: u32) -> Result<(i64, i64), Errno> {
+            self.clock_gettime_calls += 1;
             if let Some(err) = self.clock_error {
                 return Err(err);
             }
@@ -14311,12 +15261,43 @@ mod tests {
         }
         fn host_utimensat(
             &mut self,
-            _path: &[u8],
-            _atime_sec: i64,
-            _atime_nsec: i64,
-            _mtime_sec: i64,
-            _mtime_nsec: i64,
+            path: &[u8],
+            atime_sec: i64,
+            atime_nsec: i64,
+            mtime_sec: i64,
+            mtime_nsec: i64,
         ) -> Result<(), Errno> {
+            if self.missing_paths.contains(path) {
+                return Err(Errno::ENOENT);
+            }
+            const UTIME_NOW: i64 = 0x3fff_ffff;
+            const UTIME_OMIT: i64 = 0x3fff_fffe;
+            let current = self.file_times.get(path).copied().unwrap_or((0, 0, 0, 0));
+            let now = self.clock_time;
+            let normalize = |current_sec: u64,
+                             current_nsec: u32,
+                             requested_sec: i64,
+                             requested_nsec: i64|
+             -> Result<(u64, u32), Errno> {
+                match requested_nsec {
+                    UTIME_OMIT => Ok((current_sec, current_nsec)),
+                    UTIME_NOW => Ok((
+                        u64::try_from(now.0).map_err(|_| Errno::EINVAL)?,
+                        u32::try_from(now.1).map_err(|_| Errno::EINVAL)?,
+                    )),
+                    0..=999_999_999 => Ok((
+                        u64::try_from(requested_sec).map_err(|_| Errno::EINVAL)?,
+                        u32::try_from(requested_nsec).map_err(|_| Errno::EINVAL)?,
+                    )),
+                    _ => Err(Errno::EINVAL),
+                }
+            };
+            let atime = normalize(current.0, current.1, atime_sec, atime_nsec)?;
+            let mtime = normalize(current.2, current.3, mtime_sec, mtime_nsec)?;
+            self.file_times.insert(
+                path.to_vec(),
+                (atime.0, atime.1, mtime.0, mtime.1),
+            );
             Ok(())
         }
         fn host_waitpid(&mut self, _pid: i32, _options: u32) -> Result<(i32, i32), Errno> {
@@ -14908,6 +15889,793 @@ mod tests {
         let n = sys_read(&mut proc, &mut host, read_fd, &mut buf).unwrap();
         assert_eq!(n, 5);
         assert_eq!(&buf[..5], b"hello");
+    }
+
+    fn create_test_fifo(proc: &mut Process, host: &mut MockHostIO, path: &[u8], mode: u32) {
+        host.set_missing_path(path);
+        sys_mkfifo(proc, host, path, mode).unwrap();
+    }
+
+    fn assert_path_only_io_rejected(proc: &mut Process, host: &mut MockHostIO, fd: i32) {
+        let mut byte = [0u8; 1];
+        assert_eq!(sys_read(proc, host, fd, &mut byte), Err(Errno::EBADF));
+        assert_eq!(sys_write(proc, host, fd, b"x"), Err(Errno::EBADF));
+        assert_eq!(sys_pread(proc, host, fd, &mut byte, 0), Err(Errno::EBADF));
+        assert_eq!(sys_pwrite(proc, host, fd, b"x", 0), Err(Errno::EBADF));
+        assert_eq!(sys_pread(proc, host, fd, &mut byte, -1), Err(Errno::EBADF));
+        assert_eq!(sys_pwrite(proc, host, fd, b"x", -1), Err(Errno::EBADF));
+        assert_eq!(sys_lseek(proc, host, fd, 0, SEEK_SET), Err(Errno::EBADF));
+
+        let mut read_iovecs: [&mut [u8]; 1] = [&mut byte];
+        assert_eq!(
+            sys_preadv(proc, host, fd, &mut read_iovecs, 0),
+            Err(Errno::EBADF),
+        );
+        assert_eq!(
+            sys_readv(proc, host, fd, &mut read_iovecs),
+            Err(Errno::EBADF),
+        );
+        assert_eq!(sys_pwritev(proc, host, fd, &[b"x"], 0), Err(Errno::EBADF));
+        assert_eq!(sys_writev(proc, host, fd, &[b"x"]), Err(Errno::EBADF));
+        assert_eq!(sys_getdents64(proc, host, fd, &mut [0u8; 64]), Err(Errno::EBADF));
+
+        let peer_fd = sys_open(proc, host, b"/tmp/path-only-io-peer", O_RDWR, 0).unwrap();
+        assert_eq!(sys_sendfile(proc, host, peer_fd, fd, 0, 1), Err(Errno::EBADF));
+        assert_eq!(sys_sendfile(proc, host, fd, peer_fd, -1, 1), Err(Errno::EBADF));
+        assert_eq!(
+            sys_copy_file_range(proc, host, fd, Some(0), peer_fd, Some(0), 1),
+            Err(Errno::EBADF),
+        );
+        assert_eq!(
+            sys_copy_file_range(proc, host, peer_fd, Some(0), fd, Some(0), 1),
+            Err(Errno::EBADF),
+        );
+        assert_eq!(
+            sys_splice(proc, host, fd, None, peer_fd, None, 1, 0),
+            Err(Errno::EBADF),
+        );
+        sys_close(proc, host, peer_fd).unwrap();
+
+        assert_eq!(sys_ftruncate(proc, host, fd, 0), Err(Errno::EBADF));
+        assert_eq!(sys_fallocate(proc, host, fd, 0, 1), Err(Errno::EBADF));
+        assert_eq!(sys_fsync(proc, host, fd), Err(Errno::EBADF));
+        assert_eq!(sys_fdatasync(proc, host, fd), Err(Errno::EBADF));
+        assert_eq!(
+            sys_mmap(proc, host, 0, 4096, 1, 0x02, fd, 0),
+            Err(Errno::EBADF),
+        );
+
+        assert_eq!(sys_fcntl(proc, fd, F_SETFL, O_NONBLOCK), Err(Errno::EBADF));
+        assert_eq!(sys_fcntl(proc, fd, F_SETOWN, 1), Err(Errno::EBADF));
+        assert_eq!(sys_fcntl(proc, fd, F_GETOWN, 0), Err(Errno::EBADF));
+        let mut flock = WasmFlock {
+            l_type: F_WRLCK as i16,
+            l_whence: SEEK_SET as i16,
+            _pad1: 0,
+            l_start: 0,
+            l_len: 0,
+            l_pid: proc.pid,
+            _pad2: 0,
+        };
+        assert_eq!(
+            sys_fcntl_lock(proc, fd, F_SETLK, &mut flock, host),
+            Err(Errno::EBADF),
+        );
+        assert_eq!(sys_flock(proc, fd, LOCK_EX, host), Err(Errno::EBADF));
+
+        let mut ioctl_value = 1i32.to_le_bytes();
+        assert_eq!(
+            sys_ioctl(proc, host, fd, 0x5421, &mut ioctl_value),
+            Err(Errno::EBADF),
+        );
+
+        assert_ne!(sys_fcntl(proc, fd, F_GETFL, 0).unwrap() as u32 & O_PATH, 0);
+        let fd_flags = sys_fcntl(proc, fd, F_GETFD, 0).unwrap() as u32;
+        assert_eq!(sys_fcntl(proc, fd, F_SETFD, fd_flags | FD_CLOEXEC), Ok(0));
+        let duplicate = sys_dup(proc, fd).unwrap();
+        sys_close(proc, host, duplicate).unwrap();
+    }
+
+    #[test]
+    fn fifo_nonblocking_read_reports_eof_before_hangup() {
+        let _guard = FIFO_REGISTRY_LOCK.lock().unwrap();
+        let _thread_guard = THREAD_IDENTITY_LOCK.lock().unwrap();
+        set_test_current_tid(0);
+        let mut proc = Process::new(81_001);
+        let mut host = MockHostIO::new();
+        let fifo = b"/tmp/fifo_nonblocking_eof";
+        create_test_fifo(&mut proc, &mut host, fifo, 0o666);
+
+        let rfd = sys_open(&mut proc, &mut host, fifo, O_RDONLY | O_NONBLOCK, 0).unwrap();
+        let mut buf = [0u8; 8];
+        assert_eq!(sys_read(&mut proc, &mut host, rfd, &mut buf), Ok(0));
+        let mut pollfd = [WasmPollFd { fd: rfd, events: POLLIN, revents: 0 }];
+        assert_eq!(sys_poll(&mut proc, &mut host, &mut pollfd, 0), Ok(0));
+        assert_eq!(pollfd[0].revents & POLLHUP, 0);
+
+        let wfd = sys_open(&mut proc, &mut host, fifo, O_WRONLY | O_NONBLOCK, 0).unwrap();
+        sys_close(&mut proc, &mut host, wfd).unwrap();
+        pollfd[0].revents = 0;
+        assert_eq!(sys_poll(&mut proc, &mut host, &mut pollfd, 0), Ok(1));
+        assert_ne!(pollfd[0].revents & POLLHUP, 0);
+
+        sys_close(&mut proc, &mut host, rfd).unwrap();
+        sys_unlink(&mut proc, &mut host, fifo).unwrap();
+    }
+
+    #[test]
+    fn fifo_path_only_open_never_becomes_an_io_endpoint() {
+        use wasm_posix_shared::flags::AT_FDCWD;
+        use wasm_posix_shared::poll::POLLNVAL;
+
+        let _guard = FIFO_REGISTRY_LOCK.lock().unwrap();
+        let _thread_guard = THREAD_IDENTITY_LOCK.lock().unwrap();
+        set_test_current_tid(0);
+        let mut proc = Process::new(81_005);
+        let mut host = MockHostIO::new();
+        let fifo = b"/tmp/fifo_path_only";
+        create_test_fifo(&mut proc, &mut host, fifo, 0);
+        let pipe_idx = unsafe { crate::fifo::global_fifo_table() }
+            .lookup(fifo)
+            .unwrap();
+
+        let fd = sys_open(&mut proc, &mut host, fifo, O_PATH, 0).unwrap();
+        let pipe = unsafe { crate::pipe::global_pipe_table().get(pipe_idx) }.unwrap();
+        assert!(!pipe.has_readers());
+        assert!(!pipe.is_write_end_open());
+        assert_eq!(
+            sys_fstat(&mut proc, &mut host, fd).unwrap().st_mode & S_IFMT,
+            S_IFIFO,
+        );
+        assert_path_only_io_rejected(&mut proc, &mut host, fd);
+        let mut pollfd = [WasmPollFd { fd, events: POLLIN, revents: 0 }];
+        assert_eq!(sys_poll(&mut proc, &mut host, &mut pollfd, 0), Ok(1));
+        assert_eq!(pollfd[0].revents, POLLNVAL);
+        let times = [
+            WasmTimespec { tv_sec: 1, tv_nsec: 2 },
+            WasmTimespec { tv_sec: 3, tv_nsec: 4 },
+        ];
+        assert_eq!(
+            sys_fchmod(&mut proc, &mut host, fd, 0o600),
+            Err(Errno::EBADF),
+        );
+        assert_eq!(
+            sys_fchown(&mut proc, &mut host, fd, 1, 2),
+            Err(Errno::EBADF),
+        );
+        assert_eq!(
+            sys_utimensat(&mut proc, &mut host, fd, b"", Some(&times), 0),
+            Err(Errno::EBADF),
+        );
+
+        host.clock_time = (1_500_000_000, 987_654_321);
+        sys_unlink(&mut proc, &mut host, fifo).unwrap();
+        let unlinked = sys_fstat(&mut proc, &mut host, fd).unwrap();
+        assert_eq!(unlinked.st_nlink, 0);
+        assert_eq!(unlinked.st_ctime_sec, 1_500_000_000);
+        assert_eq!(unlinked.st_ctime_nsec, 987_654_321);
+        sys_close(&mut proc, &mut host, fd).unwrap();
+        assert!(unsafe { crate::pipe::global_pipe_table().get(pipe_idx) }.is_none());
+
+        create_test_fifo(&mut proc, &mut host, fifo, 0);
+        let fd = sys_openat(&mut proc, &mut host, AT_FDCWD, fifo, O_PATH, 0).unwrap();
+        assert_eq!(
+            sys_fstat(&mut proc, &mut host, fd).unwrap().st_mode & S_IFMT,
+            S_IFIFO,
+        );
+        sys_close(&mut proc, &mut host, fd).unwrap();
+        sys_unlink(&mut proc, &mut host, fifo).unwrap();
+    }
+
+    #[test]
+    fn regular_path_only_fd_rejects_direct_operations() {
+        let mut proc = Process::new(81_006);
+        let mut host = MockHostIO::new();
+        let fd = sys_open(&mut proc, &mut host, b"/tmp/path-only", O_PATH, 0).unwrap();
+        let times = [
+            WasmTimespec { tv_sec: 1, tv_nsec: 2 },
+            WasmTimespec { tv_sec: 3, tv_nsec: 4 },
+        ];
+
+        assert!(sys_fstat(&mut proc, &mut host, fd).is_ok());
+        assert_path_only_io_rejected(&mut proc, &mut host, fd);
+        assert_eq!(
+            sys_fchmod(&mut proc, &mut host, fd, 0o600),
+            Err(Errno::EBADF),
+        );
+        assert_eq!(
+            sys_fchown(&mut proc, &mut host, fd, 1, 2),
+            Err(Errno::EBADF),
+        );
+        assert_eq!(
+            sys_utimensat(&mut proc, &mut host, fd, b"", Some(&times), 0),
+            Err(Errno::EBADF),
+        );
+        sys_close(&mut proc, &mut host, fd).unwrap();
+    }
+
+    #[test]
+    fn fifo_futimens_uses_posix_permission_modes() {
+        let _guard = FIFO_REGISTRY_LOCK.lock().unwrap();
+        let _thread_guard = THREAD_IDENTITY_LOCK.lock().unwrap();
+        set_test_current_tid(0);
+        let mut proc = Process::new(81_007);
+        proc.euid = 0;
+        proc.egid = 0;
+        proc.umask = 0;
+        let mut host = MockHostIO::new();
+        let fifo = b"/tmp/fifo_futimens_permissions";
+        create_test_fifo(&mut proc, &mut host, fifo, 0o666);
+        let fd = sys_open(&mut proc, &mut host, fifo, O_RDWR, 0).unwrap();
+
+        proc.euid = 1000;
+        proc.egid = 1000;
+        host.clock_time = (1_500_000_010, 123_456_789);
+        assert_eq!(sys_utimensat(&mut proc, &mut host, fd, b"", None, 0), Ok(()));
+        let updated = sys_fstat(&mut proc, &mut host, fd).unwrap();
+        assert_eq!(updated.st_atime_sec, 1_500_000_010);
+        assert_eq!(updated.st_mtime_sec, 1_500_000_010);
+
+        let explicit = [
+            WasmTimespec { tv_sec: 11, tv_nsec: 12 },
+            WasmTimespec { tv_sec: 21, tv_nsec: 22 },
+        ];
+        assert_eq!(
+            sys_utimensat(&mut proc, &mut host, fd, b"", Some(&explicit), 0),
+            Err(Errno::EPERM),
+        );
+
+        let omitted = [
+            WasmTimespec { tv_sec: -1, tv_nsec: UTIME_OMIT },
+            WasmTimespec { tv_sec: -1, tv_nsec: UTIME_OMIT },
+        ];
+        assert_eq!(
+            sys_utimensat(&mut proc, &mut host, fd, b"", Some(&omitted), 0),
+            Ok(()),
+        );
+        let unchanged = sys_fstat(&mut proc, &mut host, fd).unwrap();
+        assert_eq!(
+            (
+                unchanged.st_atime_sec,
+                unchanged.st_atime_nsec,
+                unchanged.st_mtime_sec,
+                unchanged.st_mtime_nsec,
+                unchanged.st_ctime_sec,
+                unchanged.st_ctime_nsec,
+            ),
+            (
+                updated.st_atime_sec,
+                updated.st_atime_nsec,
+                updated.st_mtime_sec,
+                updated.st_mtime_nsec,
+                updated.st_ctime_sec,
+                updated.st_ctime_nsec,
+            ),
+        );
+
+        proc.euid = 0;
+        proc.egid = 0;
+        sys_close(&mut proc, &mut host, fd).unwrap();
+        sys_unlink(&mut proc, &mut host, fifo).unwrap();
+    }
+
+    #[test]
+    fn fifo_blocking_open_reserves_and_transfers_real_endpoints() {
+        let _guard = FIFO_REGISTRY_LOCK.lock().unwrap();
+        let _thread_guard = THREAD_IDENTITY_LOCK.lock().unwrap();
+        set_test_current_tid(0);
+        let mut creator = Process::new(81_010);
+        let mut reader = Process::new(81_011);
+        let mut writer = Process::new(81_012);
+        let mut host = MockHostIO::new();
+        let fifo = b"/tmp/fifo_blocking_reservation";
+        create_test_fifo(&mut creator, &mut host, fifo, 0o660);
+
+        assert_eq!(
+            sys_open(&mut reader, &mut host, fifo, O_RDONLY, 0),
+            Err(Errno::EAGAIN),
+        );
+        let wfd = sys_open(&mut writer, &mut host, fifo, O_WRONLY, 0).unwrap();
+        // Retry is tied to the reserved inode, not a newly resolved pathname.
+        let rfd = sys_open(
+            &mut reader,
+            &mut host,
+            b"/this/path/does/not/exist",
+            O_RDONLY,
+            0,
+        )
+        .unwrap();
+
+        assert_eq!(sys_write(&mut writer, &mut host, wfd, b"hello"), Ok(5));
+        let mut buf = [0u8; 8];
+        assert_eq!(sys_read(&mut reader, &mut host, rfd, &mut buf), Ok(5));
+        assert_eq!(&buf[..5], b"hello");
+
+        sys_unlink(&mut creator, &mut host, fifo).unwrap();
+        assert_eq!(sys_fstat(&mut reader, &mut host, rfd).unwrap().st_nlink, 0);
+        assert_eq!(sys_write(&mut writer, &mut host, wfd, b"x"), Ok(1));
+        assert_eq!(sys_read(&mut reader, &mut host, rfd, &mut buf), Ok(1));
+        sys_close(&mut writer, &mut host, wfd).unwrap();
+        assert_eq!(sys_read(&mut reader, &mut host, rfd, &mut buf), Ok(0));
+        sys_close(&mut reader, &mut host, rfd).unwrap();
+    }
+
+    #[test]
+    fn fifo_blocking_open_reserves_fd_before_rendezvous() {
+        let _guard = FIFO_REGISTRY_LOCK.lock().unwrap();
+        let _thread_guard = THREAD_IDENTITY_LOCK.lock().unwrap();
+        set_test_current_tid(0);
+        let mut creator = Process::new(81_020);
+        let mut reader = Process::new(81_021);
+        let mut writer = Process::new(81_022);
+        let mut host = MockHostIO::new();
+        let fifo = b"/tmp/fifo_emfile_rendezvous";
+        create_test_fifo(&mut creator, &mut host, fifo, 0o600);
+
+        reader.fd_table.set_max_fds(3);
+        assert_eq!(
+            sys_open(&mut reader, &mut host, fifo, O_RDONLY, 0),
+            Err(Errno::EMFILE),
+        );
+        assert_eq!(
+            sys_open(
+                &mut writer,
+                &mut host,
+                fifo,
+                O_WRONLY | O_NONBLOCK,
+                0,
+            ),
+            Err(Errno::ENXIO),
+        );
+
+        reader.fd_table.set_max_fds(5);
+        assert_eq!(
+            sys_open(&mut reader, &mut host, fifo, O_RDONLY, 0),
+            Err(Errno::EAGAIN),
+        );
+        set_test_current_tid(81_099);
+        let other_fd =
+            sys_open(&mut reader, &mut host, b"/tmp/other", O_RDONLY, 0).unwrap();
+        assert_eq!(other_fd, 4);
+        set_test_current_tid(0);
+
+        writer.fd_table.set_max_fds(4);
+        let wfd = sys_open(&mut writer, &mut host, fifo, O_WRONLY, 0).unwrap();
+        let rfd = sys_open(&mut reader, &mut host, fifo, O_RDONLY, 0).unwrap();
+        assert_eq!(rfd, 3);
+        assert_eq!(sys_write(&mut writer, &mut host, wfd, b"x"), Ok(1));
+        let mut byte = [0u8; 1];
+        assert_eq!(sys_read(&mut reader, &mut host, rfd, &mut byte), Ok(1));
+        assert_eq!(byte, *b"x");
+
+        sys_close(&mut reader, &mut host, other_fd).unwrap();
+        sys_close(&mut reader, &mut host, rfd).unwrap();
+        sys_close(&mut writer, &mut host, wfd).unwrap();
+        sys_unlink(&mut creator, &mut host, fifo).unwrap();
+    }
+
+    #[test]
+    fn fifo_fd_metadata_survives_rename_and_unlink() {
+        let _guard = FIFO_REGISTRY_LOCK.lock().unwrap();
+        let _thread_guard = THREAD_IDENTITY_LOCK.lock().unwrap();
+        set_test_current_tid(0);
+        let mut proc = Process::new(81_030);
+        proc.euid = 0;
+        proc.egid = 0;
+        let mut host = MockHostIO::new();
+        let old = b"/tmp/fifo_metadata_old";
+        let new = b"/tmp/fifo_metadata_new";
+        create_test_fifo(&mut proc, &mut host, old, 0o640);
+        host.set_missing_path(new);
+        let fd = sys_open(&mut proc, &mut host, old, O_RDWR | O_CLOEXEC, 0).unwrap();
+
+        sys_fchmod(&mut proc, &mut host, fd, 0o620).unwrap();
+        sys_fchown(&mut proc, &mut host, fd, 123, 456).unwrap();
+        let first_times = [
+            WasmTimespec { tv_sec: 11, tv_nsec: 12 },
+            WasmTimespec { tv_sec: 21, tv_nsec: 22 },
+        ];
+        sys_utimensat(&mut proc, &mut host, fd, b"", Some(&first_times), 0).unwrap();
+        sys_rename(&mut proc, &mut host, old, new).unwrap();
+
+        let renamed = sys_fstat(&mut proc, &mut host, fd).unwrap();
+        assert_eq!(renamed.st_mode & 0o7777, 0o620);
+        assert_eq!((renamed.st_uid, renamed.st_gid), (123, 456));
+        assert_eq!((renamed.st_atime_sec, renamed.st_mtime_sec), (11, 21));
+
+        sys_unlink(&mut proc, &mut host, new).unwrap();
+        host.clock_time = (1_500_000_001, 111_222_333);
+        let clock_calls = host.clock_gettime_calls;
+        sys_fchmod(&mut proc, &mut host, fd, 0o600).unwrap();
+        let chmodded = sys_fstat(&mut proc, &mut host, fd).unwrap();
+        assert_eq!(host.clock_gettime_calls, clock_calls + 1);
+        assert_eq!(chmodded.st_ctime_sec, 1_500_000_001);
+        assert_eq!(chmodded.st_ctime_nsec, 111_222_333);
+
+        host.clock_time = (1_500_000_002, 444_555_666);
+        let clock_calls = host.clock_gettime_calls;
+        sys_fchown(&mut proc, &mut host, fd, 321, 654).unwrap();
+        let chowned = sys_fstat(&mut proc, &mut host, fd).unwrap();
+        assert_eq!(host.clock_gettime_calls, clock_calls + 1);
+        assert_eq!(chowned.st_ctime_sec, 1_500_000_002);
+        assert_eq!(chowned.st_ctime_nsec, 444_555_666);
+
+        let second_times = [
+            WasmTimespec { tv_sec: 31, tv_nsec: 32 },
+            WasmTimespec { tv_sec: 41, tv_nsec: 42 },
+        ];
+        sys_utimensat(&mut proc, &mut host, fd, b"", Some(&second_times), 0).unwrap();
+        let unlinked = sys_fstat(&mut proc, &mut host, fd).unwrap();
+        assert_eq!(unlinked.st_nlink, 0);
+        assert_eq!(unlinked.st_mode & 0o7777, 0o600);
+        assert_eq!((unlinked.st_uid, unlinked.st_gid), (321, 654));
+        assert_eq!((unlinked.st_atime_sec, unlinked.st_mtime_sec), (31, 41));
+        sys_close(&mut proc, &mut host, fd).unwrap();
+    }
+
+    #[test]
+    fn fifo_displaced_by_rename_keeps_latest_path_metadata() {
+        use wasm_posix_shared::flags::AT_FDCWD;
+
+        let _guard = FIFO_REGISTRY_LOCK.lock().unwrap();
+        let _thread_guard = THREAD_IDENTITY_LOCK.lock().unwrap();
+        set_test_current_tid(0);
+        let mut proc = Process::new(81_035);
+        let mut host = MockHostIO::new();
+
+        let regular_source = b"/tmp/regular_source";
+        let fifo_destination = b"/tmp/fifo_destination";
+        host.set_missing_path(regular_source);
+        let regular_fd = sys_open(
+            &mut proc,
+            &mut host,
+            regular_source,
+            O_WRONLY | O_CREAT | O_EXCL,
+            0o600,
+        )
+        .unwrap();
+        sys_close(&mut proc, &mut host, regular_fd).unwrap();
+        create_test_fifo(&mut proc, &mut host, fifo_destination, 0o600);
+        let displaced_fd = sys_open(
+            &mut proc,
+            &mut host,
+            fifo_destination,
+            O_RDWR,
+            0,
+        )
+        .unwrap();
+        sys_chmod(&mut proc, &mut host, fifo_destination, 0o612).unwrap();
+
+        host.clock_time = (1_600_000_001, 123_456_789);
+        let clock_calls = host.clock_gettime_calls;
+        sys_rename(
+            &mut proc,
+            &mut host,
+            regular_source,
+            fifo_destination,
+        )
+        .unwrap();
+        let displaced = sys_fstat(&mut proc, &mut host, displaced_fd).unwrap();
+        assert_eq!(host.clock_gettime_calls, clock_calls + 1);
+        assert_eq!(displaced.st_mode & 0o7777, 0o612);
+        assert_eq!(displaced.st_nlink, 0);
+        assert_eq!(displaced.st_ctime_sec, 1_600_000_001);
+        assert_eq!(displaced.st_ctime_nsec, 123_456_789);
+        sys_close(&mut proc, &mut host, displaced_fd).unwrap();
+        sys_unlink(&mut proc, &mut host, fifo_destination).unwrap();
+
+        let fifo_source = b"/tmp/fifo_source";
+        create_test_fifo(&mut proc, &mut host, fifo_source, 0o600);
+        create_test_fifo(&mut proc, &mut host, fifo_destination, 0o600);
+        let displaced_fd = sys_open(
+            &mut proc,
+            &mut host,
+            fifo_destination,
+            O_RDWR,
+            0,
+        )
+        .unwrap();
+        sys_chmod(&mut proc, &mut host, fifo_destination, 0o624).unwrap();
+
+        host.clock_time = (1_600_000_002, 234_567_890);
+        let clock_calls = host.clock_gettime_calls;
+        sys_rename(&mut proc, &mut host, fifo_source, fifo_destination).unwrap();
+        let displaced = sys_fstat(&mut proc, &mut host, displaced_fd).unwrap();
+        assert_eq!(host.clock_gettime_calls, clock_calls + 1);
+        assert_eq!(displaced.st_mode & 0o7777, 0o624);
+        assert_eq!(displaced.st_nlink, 0);
+        assert_eq!(displaced.st_ctime_sec, 1_600_000_002);
+        assert_eq!(displaced.st_ctime_nsec, 234_567_890);
+        sys_close(&mut proc, &mut host, displaced_fd).unwrap();
+        sys_unlink(&mut proc, &mut host, fifo_destination).unwrap();
+
+        let regular_source_at = b"/tmp/regular_source_at";
+        let fifo_destination_at = b"/tmp/fifo_destination_at";
+        host.set_missing_path(regular_source_at);
+        let regular_fd = sys_open(
+            &mut proc,
+            &mut host,
+            regular_source_at,
+            O_WRONLY | O_CREAT | O_EXCL,
+            0o600,
+        )
+        .unwrap();
+        sys_close(&mut proc, &mut host, regular_fd).unwrap();
+        create_test_fifo(&mut proc, &mut host, fifo_destination_at, 0o600);
+        let displaced_fd = sys_open(
+            &mut proc,
+            &mut host,
+            fifo_destination_at,
+            O_RDWR,
+            0,
+        )
+        .unwrap();
+        sys_chmod(&mut proc, &mut host, fifo_destination_at, 0o642).unwrap();
+
+        host.clock_time = (1_600_000_003, 345_678_901);
+        let clock_calls = host.clock_gettime_calls;
+        sys_renameat(
+            &mut proc,
+            &mut host,
+            AT_FDCWD,
+            regular_source_at,
+            AT_FDCWD,
+            fifo_destination_at,
+        )
+        .unwrap();
+        let displaced = sys_fstat(&mut proc, &mut host, displaced_fd).unwrap();
+        assert_eq!(host.clock_gettime_calls, clock_calls + 1);
+        assert_eq!(displaced.st_mode & 0o7777, 0o642);
+        assert_eq!(displaced.st_nlink, 0);
+        assert_eq!(displaced.st_ctime_sec, 1_600_000_003);
+        assert_eq!(displaced.st_ctime_nsec, 345_678_901);
+        sys_close(&mut proc, &mut host, displaced_fd).unwrap();
+        sys_unlink(&mut proc, &mut host, fifo_destination_at).unwrap();
+    }
+
+    #[test]
+    fn fifo_writer_first_open_wakes_all_waiting_writers() {
+        let _guard = FIFO_REGISTRY_LOCK.lock().unwrap();
+        let _thread_guard = THREAD_IDENTITY_LOCK.lock().unwrap();
+        let mut creator = Process::new(81_040);
+        let mut writers = Process::new(81_041);
+        let mut reader = Process::new(81_042);
+        let mut host = MockHostIO::new();
+        let fifo = b"/tmp/fifo_writer_first";
+        create_test_fifo(&mut creator, &mut host, fifo, 0o660);
+
+        for tid in [81_101, 81_102] {
+            set_test_current_tid(tid);
+            assert_eq!(
+                sys_open(&mut writers, &mut host, fifo, O_WRONLY, 0),
+                Err(Errno::EAGAIN),
+            );
+        }
+
+        set_test_current_tid(0);
+        let rfd = sys_open(&mut reader, &mut host, fifo, O_RDONLY, 0).unwrap();
+        let mut writer_fds = Vec::new();
+        for tid in [81_101, 81_102] {
+            set_test_current_tid(tid);
+            writer_fds.push(
+                sys_open(
+                    &mut writers,
+                    &mut host,
+                    b"/renamed/while/waiting",
+                    O_WRONLY,
+                    0,
+                )
+                .unwrap(),
+            );
+        }
+        set_test_current_tid(0);
+
+        for (fd, byte) in writer_fds.iter().copied().zip([b'a', b'b']) {
+            assert_eq!(sys_write(&mut writers, &mut host, fd, &[byte]), Ok(1));
+        }
+        let mut buf = [0u8; 2];
+        assert_eq!(sys_read(&mut reader, &mut host, rfd, &mut buf), Ok(2));
+        assert_eq!(&buf, b"ab");
+
+        for fd in writer_fds {
+            sys_close(&mut writers, &mut host, fd).unwrap();
+        }
+        assert_eq!(sys_read(&mut reader, &mut host, rfd, &mut buf), Ok(0));
+        sys_close(&mut reader, &mut host, rfd).unwrap();
+        sys_unlink(&mut creator, &mut host, fifo).unwrap();
+    }
+
+    #[test]
+    fn fifo_caught_signal_cancels_blocked_open_reservation() {
+        use wasm_posix_shared::signal::SIGUSR1;
+
+        let _guard = FIFO_REGISTRY_LOCK.lock().unwrap();
+        let _thread_guard = THREAD_IDENTITY_LOCK.lock().unwrap();
+        set_test_current_tid(0);
+        let mut creator = Process::new(81_050);
+        let mut reader = Process::new(81_051);
+        let mut writer = Process::new(81_052);
+        let mut host = MockHostIO::new();
+        let fifo = b"/tmp/fifo_signal_cancel";
+        create_test_fifo(&mut creator, &mut host, fifo, 0o600);
+
+        reader
+            .signals
+            .set_handler(SIGUSR1, crate::signal::SignalHandler::Handler(42))
+            .unwrap();
+        assert_eq!(
+            sys_open(&mut reader, &mut host, fifo, O_RDONLY, 0),
+            Err(Errno::EAGAIN),
+        );
+        reader.signals.raise(SIGUSR1);
+        assert_eq!(
+            sys_open(&mut reader, &mut host, fifo, O_RDONLY, 0),
+            Err(Errno::EINTR),
+        );
+        let released_fd = reader.fd_table.reserve().unwrap();
+        assert_eq!(released_fd, 3);
+        assert!(reader.fd_table.release_reserved(released_fd));
+        assert_eq!(
+            sys_open(&mut writer, &mut host, fifo, O_WRONLY | O_NONBLOCK, 0),
+            Err(Errno::ENXIO),
+        );
+
+        sys_unlink(&mut creator, &mut host, fifo).unwrap();
+    }
+
+    #[test]
+    fn fifo_exec_cancels_blocked_open_and_releases_reserved_fd() {
+        let _guard = FIFO_REGISTRY_LOCK.lock().unwrap();
+        let _thread_guard = THREAD_IDENTITY_LOCK.lock().unwrap();
+        set_test_current_tid(0);
+        let mut creator = Process::new(81_055);
+        let mut opener = Process::new(81_056);
+        let mut peer = Process::new(81_057);
+        let mut host = MockHostIO::new();
+        let fifo = b"/tmp/fifo_exec_cancel";
+        create_test_fifo(&mut creator, &mut host, fifo, 0o600);
+
+        assert_eq!(
+            sys_open(&mut opener, &mut host, fifo, O_RDONLY, 0),
+            Err(Errno::EAGAIN),
+        );
+        commit_exec_state(&mut opener, &mut host, 0).unwrap();
+        let released_fd = opener.fd_table.reserve().unwrap();
+        assert_eq!(released_fd, 3);
+        assert!(opener.fd_table.release_reserved(released_fd));
+        assert_eq!(
+            sys_open(&mut peer, &mut host, fifo, O_WRONLY | O_NONBLOCK, 0),
+            Err(Errno::ENXIO),
+        );
+
+        sys_unlink(&mut creator, &mut host, fifo).unwrap();
+    }
+
+    #[test]
+    fn fifo_hardlink_and_recreated_name_keep_distinct_pipe_identities() {
+        let _guard = FIFO_REGISTRY_LOCK.lock().unwrap();
+        let _thread_guard = THREAD_IDENTITY_LOCK.lock().unwrap();
+        set_test_current_tid(0);
+        let mut proc = Process::new(81_060);
+        let mut host = MockHostIO::new();
+        let original = b"/tmp/fifo_original";
+        let alias = b"/tmp/fifo_alias";
+        create_test_fifo(&mut proc, &mut host, original, 0o640);
+        host.set_missing_path(alias);
+        sys_link(&mut proc, &mut host, original, alias).unwrap();
+        assert_eq!(sys_stat(&mut proc, &mut host, original).unwrap().st_nlink, 2);
+        assert_eq!(sys_stat(&mut proc, &mut host, alias).unwrap().st_nlink, 2);
+
+        sys_unlink(&mut proc, &mut host, original).unwrap();
+        assert_eq!(sys_stat(&mut proc, &mut host, alias).unwrap().st_nlink, 1);
+        create_test_fifo(&mut proc, &mut host, original, 0o600);
+
+        let old_fd = sys_open(&mut proc, &mut host, alias, O_RDWR | O_NONBLOCK, 0).unwrap();
+        let new_fd = sys_open(
+            &mut proc,
+            &mut host,
+            original,
+            O_RDWR | O_NONBLOCK,
+            0,
+        )
+        .unwrap();
+        assert_eq!(sys_write(&mut proc, &mut host, old_fd, b"old"), Ok(3));
+        let mut buf = [0u8; 3];
+        assert_eq!(
+            sys_read(&mut proc, &mut host, new_fd, &mut buf),
+            Err(Errno::EAGAIN),
+        );
+        assert_eq!(sys_read(&mut proc, &mut host, old_fd, &mut buf), Ok(3));
+        assert_eq!(&buf, b"old");
+
+        sys_close(&mut proc, &mut host, old_fd).unwrap();
+        sys_close(&mut proc, &mut host, new_fd).unwrap();
+        sys_unlink(&mut proc, &mut host, alias).unwrap();
+        sys_unlink(&mut proc, &mut host, original).unwrap();
+    }
+
+    #[test]
+    fn fifo_directory_entries_report_dt_fifo() {
+        let _guard = FIFO_REGISTRY_LOCK.lock().unwrap();
+        let _thread_guard = THREAD_IDENTITY_LOCK.lock().unwrap();
+        set_test_current_tid(0);
+        let mut proc = Process::new(81_070);
+        let mut host = MockHostIO::new();
+        let fifo = b"/tmp/test.txt";
+        create_test_fifo(&mut proc, &mut host, fifo, 0o600);
+
+        let dir = sys_opendir(&mut proc, &mut host, b"/tmp").unwrap();
+        let mut dirent_buf = [0u8; core::mem::size_of::<WasmDirent>()];
+        let mut name_buf = [0u8; 256];
+        for _ in 0..2 {
+            assert_eq!(
+                sys_readdir(&mut proc, &mut host, dir, &mut dirent_buf, &mut name_buf),
+                Ok(1),
+            );
+        }
+        assert_eq!(
+            sys_readdir(&mut proc, &mut host, dir, &mut dirent_buf, &mut name_buf),
+            Ok(1),
+        );
+        assert_eq!(&name_buf[..8], b"test.txt");
+        assert_eq!(
+            u32::from_le_bytes(dirent_buf[8..12].try_into().unwrap()),
+            1,
+        );
+        sys_closedir(&mut proc, &mut host, dir).unwrap();
+
+        host.dir_entry_index = 0;
+        let fd = sys_open(
+            &mut proc,
+            &mut host,
+            b"/tmp",
+            O_RDONLY | O_DIRECTORY,
+            0,
+        )
+        .unwrap();
+        let mut entries = [0u8; 512];
+        let len = sys_getdents64(&mut proc, &mut host, fd, &mut entries).unwrap();
+        let mut pos = 0usize;
+        let mut found_fifo = false;
+        while pos < len {
+            let reclen = u16::from_le_bytes(entries[pos + 16..pos + 18].try_into().unwrap())
+                as usize;
+            assert!(reclen >= 20 && pos + reclen <= len);
+            let name_end = entries[pos + 19..pos + reclen]
+                .iter()
+                .position(|byte| *byte == 0)
+                .map(|offset| pos + 19 + offset)
+                .unwrap_or(pos + reclen);
+            if &entries[pos + 19..name_end] == b"test.txt" {
+                assert_eq!(entries[pos + 18], 1);
+                found_fifo = true;
+            }
+            pos += reclen;
+        }
+        assert!(found_fifo);
+        sys_close(&mut proc, &mut host, fd).unwrap();
+        sys_unlink(&mut proc, &mut host, fifo).unwrap();
+    }
+
+    #[test]
+    fn fifo_truncate_fails_without_starting_an_open_rendezvous() {
+        let _guard = FIFO_REGISTRY_LOCK.lock().unwrap();
+        let _thread_guard = THREAD_IDENTITY_LOCK.lock().unwrap();
+        set_test_current_tid(0);
+        let mut proc = Process::new(81_080);
+        let mut host = MockHostIO::new();
+        let fifo = b"/tmp/fifo_truncate";
+        create_test_fifo(&mut proc, &mut host, fifo, 0o600);
+
+        assert_eq!(
+            sys_truncate(&mut proc, &mut host, fifo, 0),
+            Err(Errno::EINVAL),
+        );
+        assert!(unsafe { crate::pipe::global_pipe_table() }
+            .find_fifo_open(fifo_open_owner(&proc))
+            .is_none());
+
+        sys_unlink(&mut proc, &mut host, fifo).unwrap();
     }
 
     #[test]

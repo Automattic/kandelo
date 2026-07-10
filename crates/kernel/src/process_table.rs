@@ -144,11 +144,8 @@ pub(crate) fn bump_inherited_resource_refcounts(
         if ofd.file_type == FileType::Pipe && ofd.host_handle < 0 {
             let pipe_idx = (-(ofd.host_handle + 1)) as usize;
             if let Some(pipe) = pipe_table.get_mut(pipe_idx) {
-                let access_mode = ofd.status_flags & O_ACCMODE;
-                if access_mode == wasm_posix_shared::flags::O_RDONLY {
-                    pipe.add_reader();
-                } else {
-                    pipe.add_writer();
+                if let Some(kind) = pipe.reference_kind(ofd.status_flags) {
+                    pipe.add_reference(kind);
                 }
             }
         }
@@ -244,6 +241,11 @@ fn build_fork_pipe_replay(child: &Process) -> Vec<(i32, i32)> {
         if let Some(ofd) = child.ofd_table.get(entry.ofd_ref.0) {
             if ofd.file_type == FileType::Pipe && ofd.host_handle < 0 {
                 let pipe_idx = (-(ofd.host_handle + 1)) as usize;
+                if unsafe { crate::pipe::global_pipe_table().get(pipe_idx) }
+                    .is_some_and(crate::pipe::PipeBuffer::is_fifo)
+                {
+                    continue;
+                }
                 let access_mode = ofd.status_flags & O_ACCMODE;
                 let pair = pipe_fd_pairs.entry(pipe_idx).or_insert((-1, -1));
                 if access_mode == wasm_posix_shared::flags::O_RDONLY {
@@ -343,6 +345,7 @@ impl ProcessTable {
         retain_limbo_leader: bool,
     ) -> Option<RemoveProcessResult> {
         let proc = self.processes.remove(&pid)?;
+        let _ = unsafe { crate::pipe::global_pipe_table().cancel_fifo_opens_for_process(pid) };
         let mut host_closes: Vec<i64> = Vec::new();
         let mut host_dir_closes: Vec<i64> = Vec::new();
         let mut host_net_closes: Vec<i32> = Vec::new();
@@ -356,11 +359,8 @@ impl ProcessTable {
             if ofd.file_type == FileType::Pipe && ofd.host_handle < 0 {
                 let pipe_idx = (-(ofd.host_handle + 1)) as usize;
                 if let Some(pipe) = pipe_table.get_mut(pipe_idx) {
-                    let access_mode = ofd.status_flags & O_ACCMODE;
-                    if access_mode == wasm_posix_shared::flags::O_RDONLY {
-                        pipe.close_read_end();
-                    } else {
-                        pipe.close_write_end();
+                    if let Some(kind) = pipe.reference_kind(ofd.status_flags) {
+                        pipe.close_reference(kind);
                     }
                 }
                 pipe_table.free_if_closed(pipe_idx);
