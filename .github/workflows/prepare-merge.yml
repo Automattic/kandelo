@@ -617,16 +617,8 @@ jobs:
         with:
           submodules: libc/musl
 
-      - name: Install Nix
-        uses: DeterminateSystems/nix-installer-action@ef8a148080ab6020fd15196c2084a2eea5ff2d25 # v22
-        with:
-          github-token: ""
-
-      - name: Cache Nix store + flake eval
-        uses: DeterminateSystems/magic-nix-cache-action@908b263ff629f4cc17666315b7fd3ec127c6244d # v14
-        with:
-          use-gha-cache: false
-          use-flakehub: false
+      - name: Set up Nix
+        uses: ./.github/actions/setup-nix
 
       - name: Warm Nix dev shell
         run: bash scripts/dev-shell.sh true
@@ -1281,16 +1273,8 @@ jobs:
             exit 1
           fi
 
-      - name: Install Nix
-        uses: DeterminateSystems/nix-installer-action@ef8a148080ab6020fd15196c2084a2eea5ff2d25 # v22
-        with:
-          github-token: ""
-
-      - name: Cache Nix store + flake eval
-        uses: DeterminateSystems/magic-nix-cache-action@908b263ff629f4cc17666315b7fd3ec127c6244d # v14
-        with:
-          use-gha-cache: false
-          use-flakehub: false
+      - name: Set up Nix
+        uses: ./.github/actions/setup-nix
 
       - name: Install host npm deps
         run: |
@@ -1400,18 +1384,9 @@ jobs:
             exit 1
           fi
 
-      - name: Install Nix
+      - name: Set up Nix
         if: steps.suite.outputs.skip != 'true'
-        uses: DeterminateSystems/nix-installer-action@ef8a148080ab6020fd15196c2084a2eea5ff2d25 # v22
-        with:
-          github-token: ""
-
-      - name: Cache Nix store + flake eval
-        if: steps.suite.outputs.skip != 'true'
-        uses: DeterminateSystems/magic-nix-cache-action@908b263ff629f4cc17666315b7fd3ec127c6244d # v14
-        with:
-          use-gha-cache: false
-          use-flakehub: false
+        uses: ./.github/actions/setup-nix
 
       - name: Run ${{ matrix.label }} suite
         if: steps.suite.outputs.skip != 'true'
@@ -1495,16 +1470,8 @@ jobs:
           fi
           echo "merge_base_sha=$BASE_SHA" >> "$GITHUB_OUTPUT"
 
-      - name: Install Nix
-        uses: DeterminateSystems/nix-installer-action@ef8a148080ab6020fd15196c2084a2eea5ff2d25 # v22
-        with:
-          github-token: ""
-
-      - name: Cache Nix store + flake eval
-        uses: DeterminateSystems/magic-nix-cache-action@908b263ff629f4cc17666315b7fd3ec127c6244d # v14
-        with:
-          use-gha-cache: false
-          use-flakehub: false
+      - name: Set up Nix
+        uses: ./.github/actions/setup-nix
 
       - name: Download toolchain sysroots artifact
         uses: actions/download-artifact@v8
@@ -1763,18 +1730,9 @@ jobs:
         with:
           submodules: ${{ matrix.submodules }}
 
-      - name: Install Nix
+      - name: Set up Nix
         if: steps.suite.outputs.skip != 'true'
-        uses: DeterminateSystems/nix-installer-action@ef8a148080ab6020fd15196c2084a2eea5ff2d25 # v22
-        with:
-          github-token: ""
-
-      - name: Cache Nix store + flake eval
-        if: steps.suite.outputs.skip != 'true'
-        uses: DeterminateSystems/magic-nix-cache-action@908b263ff629f4cc17666315b7fd3ec127c6244d # v14
-        with:
-          use-gha-cache: false
-          use-flakehub: false
+        uses: ./.github/actions/setup-nix
 
       - name: Download toolchain sysroots artifact
         if: steps.suite.outputs.skip != 'true' && matrix.needs_toolchain == true

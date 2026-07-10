@@ -185,16 +185,8 @@ jobs:
         with:
           submodules: libc/musl
 
-      - name: Install Nix
-        uses: DeterminateSystems/nix-installer-action@ef8a148080ab6020fd15196c2084a2eea5ff2d25 # v22
-        with:
-          github-token: ""
-
-      - name: Cache Nix store + flake eval
-        uses: DeterminateSystems/magic-nix-cache-action@908b263ff629f4cc17666315b7fd3ec127c6244d # v14
-        with:
-          use-gha-cache: false
-          use-flakehub: false
+      - name: Set up Nix
+        uses: ./.github/actions/setup-nix
 
       - name: Warm Nix dev shell
         run: bash scripts/dev-shell.sh true
@@ -363,16 +355,8 @@ jobs:
           git config --global url."https://github.com/".insteadOf "git@github.com:"
           git submodule update --init --depth 1 libc/musl
 
-      - name: Install Nix
-        uses: DeterminateSystems/nix-installer-action@ef8a148080ab6020fd15196c2084a2eea5ff2d25 # v22
-        with:
-          github-token: ""
-
-      - name: Cache Nix store + flake eval
-        uses: DeterminateSystems/magic-nix-cache-action@908b263ff629f4cc17666315b7fd3ec127c6244d # v14
-        with:
-          use-gha-cache: false
-          use-flakehub: false
+      - name: Set up Nix
+        uses: ./.github/actions/setup-nix
 
       - name: Check libcxx LLVM version
         run: bash scripts/dev-shell.sh bash scripts/check-libcxx-toolchain-version.sh
@@ -466,16 +450,8 @@ jobs:
         with:
           submodules: libc/musl
 
-      - name: Install Nix
-        uses: DeterminateSystems/nix-installer-action@ef8a148080ab6020fd15196c2084a2eea5ff2d25 # v22
-        with:
-          github-token: ""
-
-      - name: Cache Nix store + flake eval
-        uses: DeterminateSystems/magic-nix-cache-action@908b263ff629f4cc17666315b7fd3ec127c6244d # v14
-        with:
-          use-gha-cache: false
-          use-flakehub: false
+      - name: Set up Nix
+        uses: ./.github/actions/setup-nix
 
       - name: Download toolchain sysroots artifact
         uses: actions/download-artifact@v8
@@ -593,16 +569,8 @@ jobs:
         with:
           submodules: libc/musl
 
-      - name: Install Nix
-        uses: DeterminateSystems/nix-installer-action@ef8a148080ab6020fd15196c2084a2eea5ff2d25 # v22
-        with:
-          github-token: ""
-
-      - name: Cache Nix store + flake eval
-        uses: DeterminateSystems/magic-nix-cache-action@908b263ff629f4cc17666315b7fd3ec127c6244d # v14
-        with:
-          use-gha-cache: false
-          use-flakehub: false
+      - name: Set up Nix
+        uses: ./.github/actions/setup-nix
 
       - name: Download toolchain sysroots artifact
         uses: actions/download-artifact@v8
@@ -802,16 +770,8 @@ jobs:
           git config --global url."https://github.com/".insteadOf "git@github.com:"
           git submodule update --init --depth 1 libc/musl tests/libc/libc-test tests/sortix/os-test
 
-      - name: Install Nix
-        uses: DeterminateSystems/nix-installer-action@ef8a148080ab6020fd15196c2084a2eea5ff2d25 # v22
-        with:
-          github-token: ""
-
-      - name: Cache Nix store + flake eval
-        uses: DeterminateSystems/magic-nix-cache-action@908b263ff629f4cc17666315b7fd3ec127c6244d # v14
-        with:
-          use-gha-cache: false
-          use-flakehub: false
+      - name: Set up Nix
+        uses: ./.github/actions/setup-nix
 
       - name: Download toolchain sysroots artifact
         uses: actions/download-artifact@v8
@@ -933,16 +893,8 @@ jobs:
           git config --global url."https://github.com/".insteadOf "git@github.com:"
           git submodule update --init --depth 1 libc/musl tests/libc/libc-test tests/sortix/os-test
 
-      - name: Install Nix
-        uses: DeterminateSystems/nix-installer-action@ef8a148080ab6020fd15196c2084a2eea5ff2d25 # v22
-        with:
-          github-token: ""
-
-      - name: Cache Nix store + flake eval
-        uses: DeterminateSystems/magic-nix-cache-action@908b263ff629f4cc17666315b7fd3ec127c6244d # v14
-        with:
-          use-gha-cache: false
-          use-flakehub: false
+      - name: Set up Nix
+        uses: ./.github/actions/setup-nix
 
       - name: Download toolchain sysroots artifact
         if: matrix.needs_toolchain == true

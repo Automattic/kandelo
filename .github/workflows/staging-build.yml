@@ -61,6 +61,7 @@ jobs:
         github.event.label.name == 'skip-staging-tests'
       )
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     permissions:
       contents: read
     outputs:
@@ -108,6 +109,7 @@ jobs:
         needs.change-scope.outputs.test_gate_required == 'true'
       )
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     permissions:
       contents: read           # gh release view (target tag probe)
       statuses: write          # post pending merge-gate status with helpful description
@@ -134,16 +136,8 @@ jobs:
         with:
           submodules: libc/musl
 
-      - name: Install Nix
-        uses: DeterminateSystems/nix-installer-action@ef8a148080ab6020fd15196c2084a2eea5ff2d25 # v22
-        with:
-          github-token: ""
-
-      - name: Cache Nix store + flake eval
-        uses: DeterminateSystems/magic-nix-cache-action@908b263ff629f4cc17666315b7fd3ec127c6244d # v14
-        with:
-          use-gha-cache: false
-          use-flakehub: false
+      - name: Set up Nix
+        uses: ./.github/actions/setup-nix
 
       - name: Warm Nix dev shell
         run: bash scripts/dev-shell.sh true
@@ -448,6 +442,7 @@ jobs:
       needs.change-scope.outputs.test_gate_required == 'false' &&
       needs.change-scope.outputs.skip_staging_tests != 'true'
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     permissions:
       statuses: write
     env:
@@ -472,6 +467,7 @@ jobs:
       (needs.change-scope.outputs.package_staging_required == 'true' ||
        needs.change-scope.outputs.test_gate_required == 'true')
     runs-on: ubuntu-latest
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@v7.0.0
         with:
@@ -498,6 +494,7 @@ jobs:
     needs: [preflight, toolchain-cache]
     if: ${{ needs.preflight.result == 'success' && needs.toolchain-cache.result == 'success' && needs.preflight.outputs.library_matrix != '[]' }}
     runs-on: ubuntu-latest
+    timeout-minutes: 45
     permissions:
       actions: read      # download toolchain artifact
       contents: write    # state-lock git push + gh release create/upload
@@ -574,6 +571,7 @@ jobs:
     # resolve time, which is the correct behavior.
     if: ${{ !cancelled() && needs.preflight.result == 'success' && needs.toolchain-cache.result == 'success' && needs.preflight.outputs.program_matrix != '[]' }}
     runs-on: ubuntu-latest
+    timeout-minutes: 60
     permissions:
       actions: read      # download toolchain + library artifacts
       contents: write    # state-lock git push + gh release create/upload
@@ -644,6 +642,7 @@ jobs:
     needs: [preflight]
     if: ${{ needs.preflight.result == 'success' && needs.preflight.outputs.repair_index == 'true' }}
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     permissions:
       actions: read      # verify a previous state-lock owner is terminal
       contents: write    # state-lock git push + gh release create/upload
@@ -655,16 +654,8 @@ jobs:
         with:
           ref: ${{ github.event.pull_request.head.sha }}
 
-      - name: Install Nix
-        uses: DeterminateSystems/nix-installer-action@ef8a148080ab6020fd15196c2084a2eea5ff2d25 # v22
-        with:
-          github-token: ""
-
-      - name: Cache Nix store + flake eval
-        uses: DeterminateSystems/magic-nix-cache-action@908b263ff629f4cc17666315b7fd3ec127c6244d # v14
-        with:
-          use-gha-cache: false
-          use-flakehub: false
+      - name: Set up Nix
+        uses: ./.github/actions/setup-nix
 
       - name: Repair staging index metadata
         run: |
@@ -695,16 +686,8 @@ jobs:
         with:
           ref: ${{ github.event.pull_request.head.sha }}
 
-      - name: Install Nix
-        uses: DeterminateSystems/nix-installer-action@ef8a148080ab6020fd15196c2084a2eea5ff2d25 # v22
-        with:
-          github-token: ""
-
-      - name: Cache Nix store + flake eval
-        uses: DeterminateSystems/magic-nix-cache-action@908b263ff629f4cc17666315b7fd3ec127c6244d # v14
-        with:
-          use-gha-cache: false
-          use-flakehub: false
+      - name: Set up Nix
+        uses: ./.github/actions/setup-nix
 
       - name: Install host npm deps
         run: |
@@ -783,18 +766,9 @@ jobs:
         with:
           ref: ${{ github.event.pull_request.head.sha }}
 
-      - name: Install Nix
+      - name: Set up Nix
         if: steps.suite.outputs.skip != 'true'
-        uses: DeterminateSystems/nix-installer-action@ef8a148080ab6020fd15196c2084a2eea5ff2d25 # v22
-        with:
-          github-token: ""
-
-      - name: Cache Nix store + flake eval
-        if: steps.suite.outputs.skip != 'true'
-        uses: DeterminateSystems/magic-nix-cache-action@908b263ff629f4cc17666315b7fd3ec127c6244d # v14
-        with:
-          use-gha-cache: false
-          use-flakehub: false
+        uses: ./.github/actions/setup-nix
 
       - name: Run ${{ matrix.label }} suite
         if: steps.suite.outputs.skip != 'true'
@@ -826,6 +800,7 @@ jobs:
       (needs.lib-matrix-build.result == 'success' || needs.lib-matrix-build.result == 'skipped') &&
       (needs.matrix-build.result == 'success' || needs.matrix-build.result == 'skipped')
     runs-on: ubuntu-latest
+    timeout-minutes: 45
     permissions:
       actions: read
       contents: read
@@ -841,16 +816,8 @@ jobs:
         with:
           ref: ${{ github.event.pull_request.head.sha }}
 
-      - name: Install Nix
-        uses: DeterminateSystems/nix-installer-action@ef8a148080ab6020fd15196c2084a2eea5ff2d25 # v22
-        with:
-          github-token: ""
-
-      - name: Cache Nix store + flake eval
-        uses: DeterminateSystems/magic-nix-cache-action@908b263ff629f4cc17666315b7fd3ec127c6244d # v14
-        with:
-          use-gha-cache: false
-          use-flakehub: false
+      - name: Set up Nix
+        uses: ./.github/actions/setup-nix
 
       - name: Download toolchain sysroots artifact
         uses: actions/download-artifact@v8
@@ -1004,6 +971,7 @@ jobs:
       !cancelled() &&
       needs.test-gate-prepare.result == 'success'
     runs-on: ubuntu-latest
+    timeout-minutes: 75
     permissions:
       actions: read
       contents: read
@@ -1102,18 +1070,9 @@ jobs:
         with:
           submodules: ${{ matrix.submodules }}
 
-      - name: Install Nix
+      - name: Set up Nix
         if: steps.suite.outputs.skip != 'true'
-        uses: DeterminateSystems/nix-installer-action@ef8a148080ab6020fd15196c2084a2eea5ff2d25 # v22
-        with:
-          github-token: ""
-
-      - name: Cache Nix store + flake eval
-        if: steps.suite.outputs.skip != 'true'
-        uses: DeterminateSystems/magic-nix-cache-action@908b263ff629f4cc17666315b7fd3ec127c6244d # v14
-        with:
-          use-gha-cache: false
-          use-flakehub: false
+        uses: ./.github/actions/setup-nix
 
       - name: Download toolchain sysroots artifact
         if: steps.suite.outputs.skip != 'true' && matrix.needs_toolchain == true
@@ -1167,6 +1126,7 @@ jobs:
       !cancelled() &&
       needs.test-gate-prepare.result != 'skipped'
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     permissions:
       statuses: write
     env:
@@ -1248,6 +1208,7 @@ jobs:
     needs: [preflight, lib-matrix-build, matrix-build]
     if: always() && needs.preflight.result == 'success' && (needs.preflight.outputs.library_matrix != '[]' || needs.preflight.outputs.program_matrix != '[]')
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     concurrency:
       group: phase-b-1-publish-${{ needs.preflight.outputs.target_tag }}
       cancel-in-progress: false

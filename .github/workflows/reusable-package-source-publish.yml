@@ -46,9 +46,17 @@ jobs:
           submodules: false
 
       - name: Install Nix
+        # Keep in sync with .github/actions/setup-nix. This workflow is
+        # workflow_call-only and checks the repo out into a subpath, so the
+        # workspace root has no ./.github/actions to reference.
         uses: DeterminateSystems/nix-installer-action@ef8a148080ab6020fd15196c2084a2eea5ff2d25 # v22
         with:
           github-token: ""
+          extra-conf: |
+            connect-timeout = 10
+            stalled-download-timeout = 90
+            http-connections = 10
+            max-substitution-jobs = 8
 
       - name: Cache Nix store + flake eval
         uses: DeterminateSystems/magic-nix-cache-action@908b263ff629f4cc17666315b7fd3ec127c6244d # v14

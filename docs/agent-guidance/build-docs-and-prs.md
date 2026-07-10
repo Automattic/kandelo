@@ -25,6 +25,22 @@ flake, but it is not the verification contract. For build or test results you
 intend to claim, use `scripts/dev-shell.sh` or run the command from a shell
 entered through `scripts/dev-shell.sh bash`.
 
+`scripts/dev-shell.sh` realizes the shell closure with `--command true` before
+running your command, and aborts if Nix starts building the toolchain from
+source. That is not build work: it means the binary cache is unhealthy, and
+Nix has silently fallen back to bootstrapping `stdenv` (bootstrap-tools,
+binutils, gcc, glibc), which takes hours and never fails on its own. The
+script retries against a recovered cache and then reports the substituter as
+the failure it is. Set `WASM_POSIX_ALLOW_SOURCE_BOOTSTRAP=1` only when you
+genuinely intend to bootstrap on a system `cache.nixos.org` does not serve.
+
+CI installs Nix through `.github/actions/setup-nix`, the single place where
+substituter settings live. The three `reusable-*.yml` workflows are
+`workflow_call`-only and check this repo out into a subpath, so they cannot
+reference a relative action and duplicate those settings inline; keep the two
+in sync. Every `staging-build.yml` job also carries `timeout-minutes`, so a
+degraded substituter fails fast rather than burning a six-hour runner.
+
 When already inside `scripts/dev-shell.sh bash`, run the build commands
 directly:
 
