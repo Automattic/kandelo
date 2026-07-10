@@ -1,4 +1,4 @@
-import type { DemoGuideConfig } from "./demo-config";
+import type { DemoGuideConfig, DemoIngestConfig } from "./demo-config";
 import { advanceLazyDownloadSummary } from "./lazy-download";
 
 // KernelHost — the contract between Kandelo session UI and the kernel/host runtime.
@@ -126,8 +126,8 @@ export interface LazyDownloadSummary extends LazyDownloadEvent {
 }
 
 export interface KernelLike {
-  /** Synchronous VFS the kernel-worker sees. */
-  readonly fs: FileSystemLike;
+  /** Legacy synchronous VFS surface; worker-owned hosts intentionally omit it. */
+  readonly fs?: FileSystemLike;
   /** /dev/fb0 binding registry. Used by attachFramebuffer. */
   readonly framebuffers?: FramebufferRegistryLike;
   /**
@@ -135,6 +135,19 @@ export interface KernelLike {
    * bindings; write-based bindings (fbDOOM) don't reach into this.
    */
   getProcessMemory?(pid: number): WebAssembly.Memory | undefined;
+  /**
+   * Deliver a POSIX signal to `pid` through the kernel's signal path (not a
+   * host-side worker teardown). Resolves false when the process is already
+   * gone. Used to stop a process that owns a single-owner device — e.g. the
+   * /dev/fb0 holder — before launching its replacement.
+   */
+  signalProcess?(pid: number, signum: number): Promise<boolean>;
+  /**
+   * Write `bytes` to `path` in the kernel-owned VFS. Its parent must already
+   * exist. The kernel worker owns the filesystem, so this is an async
+   * round-trip (unlike the deprecated synchronous {@link fs}).
+   */
+  writeFileToVfs?(path: string, bytes: Uint8Array, mode?: number): Promise<void>;
   /**
    * Append bytes to a process's stdin buffer. Used by the framebuffer
    * input path so DOM key events on the canvas reach the fb-bound
@@ -581,6 +594,8 @@ export interface KernelHost {
 
   // shell / pty
   attachPty(path?: string, opts?: { cols: number; rows: number }): Promise<PtyHandle>;
+  /** Resolve after a command has been written, without waiting for a prompt. */
+  dispatchShellCommand(command: string): Promise<void>;
   runShellCommand(command: string): Promise<void>;
 
   // VFS / procfs
@@ -588,6 +603,19 @@ export interface KernelHost {
   readFileText(path: string): Promise<string>;
   readDir(path: string): Promise<VfsDirent[]>;
   stat(path: string): Promise<VfsDirent | null>;
+  /**
+   * Write `bytes` to `path` in the live guest VFS. The parent directory must
+   * already exist. Callers are responsible for validating both the path and
+   * the payload — this is a raw capability, not a policy layer.
+   */
+  writeFile(path: string, bytes: Uint8Array, mode?: number): Promise<void>;
+
+  // process control
+  /**
+   * Deliver a POSIX signal to `pid`. Resolves false when the process no longer
+   * exists. Rejects when the attached kernel cannot signal.
+   */
+  signalProcess(pid: number, signum: number): Promise<boolean>;
 
   // inspector
   enumProcs(): Promise<ProcessInfo[]>;
@@ -627,6 +655,9 @@ export interface KernelHost {
   subscribeSurfaceAvailability(cb: (state: SurfaceAvailability) => void): () => void;
   getDemoGuide(): DemoGuideConfig | null;
   subscribeDemoGuide(cb: (state: DemoGuideConfig | null) => void): () => void;
+  /** File-ingest capability declared by the current VFS image, if any. */
+  getDemoIngest(): DemoIngestConfig | null;
+  subscribeDemoIngest(cb: (state: DemoIngestConfig | null) => void): () => void;
 
   // sharing
   snapshot(opts?: SnapshotOptions): Promise<Snapshot>;
@@ -832,6 +863,7 @@ export class LiveKernelHost implements KernelHost {
   private surfaceListeners = new ListenerSet<SurfaceAvailability>();
   private galleryListeners = new ListenerSet<void>();
   private demoGuideListeners = new ListenerSet<DemoGuideConfig | null>();
+  private demoIngestListeners = new ListenerSet<DemoIngestConfig | null>();
 
   private _descriptor: BootDescriptor;
   private presentation: DemoPresentation;
@@ -839,6 +871,7 @@ export class LiveKernelHost implements KernelHost {
   private galleryItems: GalleryItem[];
   private webPreview: WebPreviewState | null = null;
   private demoGuide: DemoGuideConfig | null = null;
+  private demoIngest: DemoIngestConfig | null = null;
   private surfaceAvailability: SurfaceAvailability = { ...DEFAULT_SURFACE_AVAILABILITY };
   private offFramebufferAvailability: (() => void) | null = null;
   private offLazyDownloads: (() => void) | null = null;
@@ -928,6 +961,7 @@ export class LiveKernelHost implements KernelHost {
     this.refreshFramebufferAvailability();
     this.setSurfaceAvailability({ web: false, kms: false });
     this.setDemoGuide(null);
+    this.setDemoIngest(null);
   }
 
   /** Configure the program attachPty spawns by default. */
@@ -957,14 +991,18 @@ export class LiveKernelHost implements KernelHost {
     this.demoGuideListeners.emit(this.getDemoGuide());
   }
 
-  /**
-   * Write a command into the persistent PTY-backed shell. Owner code uses
-   * this for demos like Doom where the app should visibly originate from a
-   * real terminal command even when the terminal drawer starts closed.
-   */
-  async runShellCommand(command: string): Promise<void> {
+  /** Update the optional file-ingest capability exposed by the current image. */
+  setDemoIngest(ingest: DemoIngestConfig | null): void {
+    this.demoIngest = ingest ? structuredClone(ingest) : null;
+    this.demoIngestListeners.emit(this.getDemoIngest());
+  }
+
+  private async startShellCommand(
+    command: string,
+  ): Promise<{ completion: Promise<void> }> {
     const sessionKey = "/dev/pts/0";
-    const previousCommandDone = this.ptyCommandQueues.get(sessionKey) ?? Promise.resolve();
+    const previousCommandDone =
+      this.ptyCommandQueues.get(sessionKey) ?? Promise.resolve();
     let resolveCommandDone!: () => void;
     let rejectCommandDone!: (err: unknown) => void;
     const commandDone = new Promise<void>((resolve, reject) => {
@@ -983,7 +1021,11 @@ export class LiveKernelHost implements KernelHost {
       await previousCommandDone.catch(() => {});
       const pty = await this.attachPty(sessionKey, { cols: 100, rows: 30 });
       const prompt = this.shell ? shellPrompt(this.shell) : null;
-      await waitForPtyReadiness(pty, { includeHistory: true, timeoutMs: 1200, prompt }).catch(() => {});
+      await waitForPtyReadiness(pty, {
+        includeHistory: true,
+        timeoutMs: 1200,
+        prompt,
+      }).catch(() => {});
       const completion = waitForPtyReadiness(pty, {
         includeHistory: false,
         timeoutMs: 300_000,
@@ -991,11 +1033,26 @@ export class LiveKernelHost implements KernelHost {
       });
       void completion.then(resolveCommandDone, rejectCommandDone);
       pty.write(command.endsWith("\n") ? command : `${command}\n`);
-      await commandDone;
+      return { completion: commandDone };
     } catch (err) {
       rejectCommandDone(err);
       throw err;
     }
+  }
+
+  /**
+   * Write a command into the persistent PTY-backed shell and resolve once the
+   * write has succeeded. This is the truthful dispatch surface for long-lived
+   * foreground programs that intentionally do not return to a shell prompt.
+   */
+  async dispatchShellCommand(command: string): Promise<void> {
+    await this.startShellCommand(command);
+  }
+
+  /** Write a command and wait until the shell presents its next prompt. */
+  async runShellCommand(command: string): Promise<void> {
+    const { completion } = await this.startShellCommand(command);
+    await completion;
   }
 
   /** Update the status and fan out to subscribers. */
@@ -1180,6 +1237,7 @@ export class LiveKernelHost implements KernelHost {
     this.offLazyDownloads = null;
     this.setSurfaceAvailability({ terminal: false, framebuffer: false, web: false, kms: false });
     this.setDemoGuide(null);
+    this.setDemoIngest(null);
     await this.kernel?.destroy?.();
   }
 
@@ -1412,6 +1470,32 @@ export class LiveKernelHost implements KernelHost {
     return new TextDecoder().decode(await this.readFile(path));
   }
 
+  /**
+   * Create or replace one live guest file through the VFS-owning worker. The
+   * parent must already exist. Completion proves that the worker closed the
+   * file and applied its requested mode; no reboot or image rebuild is needed.
+   */
+  async writeFile(path: string, bytes: Uint8Array, mode = 0o644): Promise<void> {
+    if (!this.kernel?.writeFileToVfs) {
+      throw new Error(
+        `LiveKernelHost.writeFile(${path}): the attached kernel cannot write ` +
+        `to the VFS (no writeFileToVfs).`,
+      );
+    }
+    await this.kernel.writeFileToVfs(path, bytes, mode);
+  }
+
+  // ── KernelHost: process control ─────────────────────────────────────────
+
+  async signalProcess(pid: number, signum: number): Promise<boolean> {
+    if (!this.kernel?.signalProcess) {
+      throw new Error(
+        "LiveKernelHost.signalProcess: the attached kernel cannot deliver signals.",
+      );
+    }
+    return this.kernel.signalProcess(pid, signum);
+  }
+
   async readDir(path: string): Promise<VfsDirent[]> {
     const fs = this.requireFs();
     const names = loadIdNameMaps(fs);
@@ -1481,10 +1565,9 @@ export class LiveKernelHost implements KernelHost {
   }
 
   private requireFs(): FileSystemLike {
-    if (!this.kernel) {
+    if (!this.kernel?.fs) {
       throw new Error(
-        "LiveKernelHost: no kernel attached. " +
-        "Call attachKernel() before reading the VFS.",
+        "LiveKernelHost: the attached kernel has no synchronous VFS surface.",
       );
     }
     return this.kernel.fs;
@@ -1500,8 +1583,10 @@ export class LiveKernelHost implements KernelHost {
     // version and the kernel ship together (ABI ≥ 9).
     if (this.kernel?.enumProcs) {
       const snaps = await this.kernel.enumProcs();
-      const names = loadIdNameMaps(this.kernel.fs);
-      return snaps.map((s) => toProcessInfo(s, names.users));
+      const users = this.kernel.fs
+        ? loadIdNameMaps(this.kernel.fs).users
+        : new Map<number, string>([[0, "root"]]);
+      return snaps.map((s) => toProcessInfo(s, users));
     }
     const fs = this.requireFs();
     const names = loadIdNameMaps(fs);
@@ -1858,6 +1943,14 @@ export class LiveKernelHost implements KernelHost {
 
   getDemoGuide(): DemoGuideConfig | null {
     return this.demoGuide ? structuredClone(this.demoGuide) : null;
+  }
+
+  getDemoIngest(): DemoIngestConfig | null {
+    return this.demoIngest ? structuredClone(this.demoIngest) : null;
+  }
+
+  subscribeDemoIngest(cb: (state: DemoIngestConfig | null) => void): () => void {
+    return this.demoIngestListeners.add(cb);
   }
 
   subscribeDemoGuide(cb: (state: DemoGuideConfig | null) => void): () => void {

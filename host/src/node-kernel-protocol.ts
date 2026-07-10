@@ -216,6 +216,15 @@ export interface ReadVfsFileMessage {
   path: string;
 }
 
+/** Create or replace one regular file through the worker-owned VFS. */
+export interface WriteVfsFileMessage {
+  type: "write_vfs_file";
+  requestId: number;
+  path: string;
+  data: Uint8Array;
+  mode: number;
+}
+
 /** Request the kernel's per-process fork counter. The kernel-worker entry
  * forwards this to `kernel_get_fork_count` and posts a `response` message
  * with `result` set to a `bigint` (u64 as BigInt). Used by the spawn
@@ -236,6 +245,14 @@ export interface GetKernelMemoryPagesRequestMessage {
 export interface GetSpawnScratchCapacityRequestMessage {
   type: "get_spawn_scratch_capacity";
   requestId: number;
+}
+
+/** Deliver `signum` to `pid`. Responds `true` when the process existed. */
+export interface SignalProcessMessage {
+  type: "signal_process";
+  requestId: number;
+  pid: number;
+  signum: number;
 }
 
 export interface ResolveExecResponseMessage {
@@ -326,9 +343,11 @@ export type MainToKernelMessage =
   | DestroyMessage
   | ExportRootfsImageMessage
   | ReadVfsFileMessage
+  | WriteVfsFileMessage
   | GetForkCountRequestMessage
   | GetKernelMemoryPagesRequestMessage
   | GetSpawnScratchCapacityRequestMessage
+  | SignalProcessMessage
   | ResolveExecResponseMessage
   | EnumProcsRequestMessage
   | ReadProcMapsRequestMessage

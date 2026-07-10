@@ -61,6 +61,7 @@ import {
   genericDemoPresentation,
   resolveDemoAssets,
   resolveDemoGuide,
+  resolveDemoIngest,
   resolveDemoPresentation,
   type DemoAssetConfig,
   type KandeloDemoConfig,
@@ -1530,6 +1531,11 @@ async function bootProfile(
     (imageConfig ? resolveDemoGuide(imageConfig, profile.id) : null) ??
     builtinDemoGuide(profile.id);
   host.setDemoGuide(demoGuide);
+  // Ingest is an image-owned capability. Absence is valid and must not be
+  // replaced with a package- or profile-name-specific UI promise.
+  host.setDemoIngest(
+    imageConfig ? resolveDemoIngest(imageConfig, profile.id) : null,
+  );
   const imageAssets = imageConfig
     ? resolveDemoAssets(imageConfig, profile.id)
     : [];
