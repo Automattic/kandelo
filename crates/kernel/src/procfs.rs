@@ -63,9 +63,9 @@ pub enum ProcfsEntry {
     Cwd(u32),          // /proc/<pid>/cwd (symlink)
     Exe(u32),          // /proc/<pid>/exe (symlink)
     Root_(u32),        // /proc/<pid>/root (symlink)
-    NetDir,            // /proc/net
-    NetTcp,            // /proc/net/tcp
-    NetUnix,           // /proc/net/unix
+    NetDir(Option<u32>),  // /proc/net or /proc/<pid>/net
+    NetTcp(Option<u32>),  // /proc/net/tcp or /proc/<pid>/net/tcp
+    NetUnix(Option<u32>), // /proc/net/unix or /proc/<pid>/net/unix
 }
 
 impl ProcfsEntry {
@@ -90,7 +90,7 @@ impl ProcfsEntry {
                 | ProcfsEntry::PidDir(_)
                 | ProcfsEntry::FdDir(_)
                 | ProcfsEntry::FdInfoDir(_)
-                | ProcfsEntry::NetDir
+                | ProcfsEntry::NetDir(_)
         )
     }
 }
@@ -106,9 +106,32 @@ pub const MOUNTS_CONTENT: &[u8] =
 const MOUNTINFO_CONTENT: &[u8] =
     b"1 0 0:1 / / rw - kandelo-vfs kandelo-root rw\n2 1 0:2 / /proc rw,nosuid,nodev,noexec - proc proc rw,nosuid,nodev,noexec\n3 1 0:3 / /dev rw,nosuid - devfs devfs rw,nosuid\n";
 
-/// Extract the pid from a ProcfsEntry (0 for root/net entries).
-pub fn entry_pid(entry: &ProcfsEntry) -> u32 {
-    entry_ids(entry).0
+/// Return the process scope of an entry, if it is under `/proc/<pid>`.
+///
+/// `Option` is intentional: PID 0 is a process-scoped path that must be
+/// validated and rejected, not a sentinel for a global procfs entry.
+pub fn entry_pid(entry: &ProcfsEntry) -> Option<u32> {
+    match entry {
+        ProcfsEntry::PidDir(pid)
+        | ProcfsEntry::PidMounts(pid)
+        | ProcfsEntry::PidMountinfo(pid)
+        | ProcfsEntry::FdDir(pid)
+        | ProcfsEntry::FdInfoDir(pid)
+        | ProcfsEntry::Stat(pid)
+        | ProcfsEntry::Status(pid)
+        | ProcfsEntry::Cmdline(pid)
+        | ProcfsEntry::Environ(pid)
+        | ProcfsEntry::Maps(pid)
+        | ProcfsEntry::Cwd(pid)
+        | ProcfsEntry::Exe(pid)
+        | ProcfsEntry::Root_(pid) => Some(*pid),
+        ProcfsEntry::FdLink(pid, _) | ProcfsEntry::FdInfo(pid, _) => Some(*pid),
+        ProcfsEntry::NetDir(pid) | ProcfsEntry::NetTcp(pid) | ProcfsEntry::NetUnix(pid) => *pid,
+        ProcfsEntry::Root
+        | ProcfsEntry::Mounts
+        | ProcfsEntry::SelfLink
+        | ProcfsEntry::ThreadSelfLink => None,
+    }
 }
 
 // ── Path matching ───────────────────────────────────────────────────────────
@@ -181,7 +204,7 @@ pub fn match_procfs(path: &[u8], current_pid: u32) -> Option<ProcfsEntry> {
             (current_pid, &after[1..])
         }
     } else if rest == b"net" || rest.starts_with(b"net/") {
-        return match_net_path(rest);
+        return match_net_path(rest, None);
     } else {
         match_pid_path(rest)
     };
@@ -245,7 +268,7 @@ fn match_pid_subpath(pid: u32, remainder: &[u8]) -> Option<ProcfsEntry> {
                 let fd_str = &rem[7..];
                 parse_i32(fd_str).map(|fd| ProcfsEntry::FdInfo(pid, fd))
             } else if rem == b"net" || rem.starts_with(b"net/") {
-                match_net_path(rem)
+                match_net_path(rem, Some(pid))
             } else {
                 None
             }
@@ -254,14 +277,14 @@ fn match_pid_subpath(pid: u32, remainder: &[u8]) -> Option<ProcfsEntry> {
 }
 
 /// Match /proc/net/* paths.
-fn match_net_path(rest: &[u8]) -> Option<ProcfsEntry> {
+fn match_net_path(rest: &[u8], pid: Option<u32>) -> Option<ProcfsEntry> {
     if rest == b"net" || rest == b"net/" {
-        return Some(ProcfsEntry::NetDir);
+        return Some(ProcfsEntry::NetDir(pid));
     }
     if rest.starts_with(b"net/") {
         match &rest[4..] {
-            b"tcp" => return Some(ProcfsEntry::NetTcp),
-            b"unix" => return Some(ProcfsEntry::NetUnix),
+            b"tcp" => return Some(ProcfsEntry::NetTcp(pid)),
+            b"unix" => return Some(ProcfsEntry::NetUnix(pid)),
             _ => return None,
         }
     }
@@ -446,7 +469,6 @@ pub fn procfs_stat(entry: &ProcfsEntry, content_size: u64, follow_symlinks: bool
             st_ctime_sec: 0,
             st_ctime_nsec: 0,
             _pad: 0,
-            ..WasmStat::default()
         };
     }
 
@@ -467,7 +489,6 @@ pub fn procfs_stat(entry: &ProcfsEntry, content_size: u64, follow_symlinks: bool
             st_ctime_sec: 0,
             st_ctime_nsec: 0,
             _pad: 0,
-            ..WasmStat::default()
         };
     }
 
@@ -488,7 +509,6 @@ pub fn procfs_stat(entry: &ProcfsEntry, content_size: u64, follow_symlinks: bool
         st_ctime_sec: 0,
         st_ctime_nsec: 0,
         _pad: 0,
-        ..WasmStat::default()
     }
 }
 
@@ -514,9 +534,9 @@ fn entry_ids(entry: &ProcfsEntry) -> (u32, u8) {
         ProcfsEntry::Cwd(pid) => (*pid, 16),
         ProcfsEntry::Exe(pid) => (*pid, 17),
         ProcfsEntry::Root_(pid) => (*pid, 18),
-        ProcfsEntry::NetDir => (0, 19),
-        ProcfsEntry::NetTcp => (0, 20),
-        ProcfsEntry::NetUnix => (0, 21),
+        ProcfsEntry::NetDir(pid) => (pid.unwrap_or(0), 19),
+        ProcfsEntry::NetTcp(pid) => (pid.unwrap_or(0), 20),
+        ProcfsEntry::NetUnix(pid) => (pid.unwrap_or(0), 21),
     }
 }
 
@@ -568,8 +588,7 @@ pub fn procfs_open(
 
     if entry.is_dir() {
         // Validate that the target pid exists for pid-scoped directories
-        let target_pid = entry_pid(entry);
-        if target_pid != 0 {
+        if let Some(target_pid) = entry_pid(entry) {
             validate_pid(proc, target_pid)?;
         }
         let ofd_idx = proc.ofd_table.create(
@@ -640,10 +659,16 @@ fn generate_content(proc: &Process, entry: &ProcfsEntry) -> Result<Vec<u8>, Errn
             validate_pid(proc, *pid)?;
             Ok(MOUNTINFO_CONTENT.to_vec())
         }
-        ProcfsEntry::NetTcp => {
+        ProcfsEntry::NetTcp(pid) => {
+            if let Some(pid) = pid {
+                validate_pid(proc, *pid)?;
+            }
             Ok(b"  sl  local_address rem_address   st tx_queue rx_queue tr tm->when retrnsmt   uid  timeout inode\n".to_vec())
         }
-        ProcfsEntry::NetUnix => {
+        ProcfsEntry::NetUnix(pid) => {
+            if let Some(pid) = pid {
+                validate_pid(proc, *pid)?;
+            }
             Ok(b"Num       RefCount Protocol Flags    Type St Inode Path\n".to_vec())
         }
         _ => Err(Errno::ENOENT),
@@ -675,8 +700,7 @@ fn validate_pid(proc: &Process, pid: u32) -> Result<(), Errno> {
 /// validation as `procfs_open`, otherwise probes such as
 /// `test -r /proc/123/stat` incorrectly succeed for already-reaped pids.
 pub fn validate_entry(proc: &Process, entry: &ProcfsEntry) -> Result<(), Errno> {
-    let pid = entry_pid(entry);
-    if pid != 0 {
+    if let Some(pid) = entry_pid(entry) {
         validate_pid(proc, pid)?;
     }
     Ok(())
@@ -908,9 +932,10 @@ fn dir_entries(
                 }
             }
         }
-        ProcfsEntry::NetDir => {
-            entries.push((b"tcp".to_vec(), DT_REG, procfs_ino(0, 20)));
-            entries.push((b"unix".to_vec(), DT_REG, procfs_ino(0, 21)));
+        ProcfsEntry::NetDir(pid) => {
+            let ino_pid = pid.unwrap_or(0);
+            entries.push((b"tcp".to_vec(), DT_REG, procfs_ino(ino_pid, 20)));
+            entries.push((b"unix".to_vec(), DT_REG, procfs_ino(ino_pid, 21)));
         }
         _ => return Err(Errno::ENOTDIR),
     }
@@ -1044,12 +1069,33 @@ mod tests {
     #[test]
     fn test_match_procfs_net() {
         assert_eq!(match_procfs(b"/proc/mounts", 1), Some(ProcfsEntry::Mounts));
-        assert_eq!(match_procfs(b"/proc/net", 1), Some(ProcfsEntry::NetDir));
-        assert_eq!(match_procfs(b"/proc/net/tcp", 1), Some(ProcfsEntry::NetTcp));
+        assert_eq!(
+            match_procfs(b"/proc/net", 1),
+            Some(ProcfsEntry::NetDir(None))
+        );
+        assert_eq!(
+            match_procfs(b"/proc/net/tcp", 1),
+            Some(ProcfsEntry::NetTcp(None))
+        );
         assert_eq!(
             match_procfs(b"/proc/net/unix", 1),
-            Some(ProcfsEntry::NetUnix)
+            Some(ProcfsEntry::NetUnix(None))
         );
+        assert_eq!(
+            match_procfs(b"/proc/42/net", 1),
+            Some(ProcfsEntry::NetDir(Some(42)))
+        );
+        assert_eq!(
+            match_procfs(b"/proc/42/net/tcp", 1),
+            Some(ProcfsEntry::NetTcp(Some(42)))
+        );
+    }
+
+    #[test]
+    fn test_entry_pid_distinguishes_global_entries_from_pid_zero() {
+        assert_eq!(entry_pid(&ProcfsEntry::NetDir(None)), None);
+        assert_eq!(entry_pid(&ProcfsEntry::PidDir(0)), Some(0));
+        assert_eq!(entry_pid(&ProcfsEntry::NetDir(Some(0))), Some(0));
     }
 
     #[test]
