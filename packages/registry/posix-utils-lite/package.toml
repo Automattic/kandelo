@@ -5,12 +5,12 @@ kernel_abi = 7
 depends_on = []
 
 [source]
-url = "https://github.com/brandonpayton/kandelo"
+url = "https://github.com/Automattic/kandelo"
 sha256 = "0000000000000000000000000000000000000000000000000000000000000000"
 
 [license]
 spdx = "GPL-2.0-or-later"
-url = "https://github.com/brandonpayton/kandelo/blob/main/COPYING"
+url = "https://github.com/Automattic/kandelo/blob/main/COPYING"
 
 [build]
 script_path = "packages/registry/posix-utils-lite/build-posix-utils-lite.sh"
@@ -118,6 +118,10 @@ wasm = "patch.wasm"
 [[outputs]]
 name = "pax"
 wasm = "pax.wasm"
+
+[[outputs]]
+name = "pgrep"
+wasm = "pgrep.wasm"
 
 [[outputs]]
 name = "ps"
