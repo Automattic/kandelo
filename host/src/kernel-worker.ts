@@ -6911,6 +6911,20 @@ export class CentralizedKernelWorker {
   }
 
   /**
+   * Deliver a signal to `pid` on behalf of the host (a UI action, not a guest
+   * syscall). Returns false when no such process exists, mirroring ESRCH, so
+   * callers can report a truthful failure instead of assuming delivery.
+   *
+   * Disposition is the kernel's: an unhandled SIGTERM terminates the target
+   * and the kernel's exit path releases whatever it held (fds, /dev/fb0).
+   */
+  signalProcess(pid: number, signum: number): boolean {
+    if (!this.processes.has(pid)) return false;
+    this.sendSignalToProcess(pid, signum);
+    return true;
+  }
+
+  /**
    * Queue a signal on a target process in the kernel by invoking SYS_KILL
    * through kernel_handle_channel. The signal is queued in the kernel's
    * ProcessTable and will be delivered via dequeueSignalForDelivery on the

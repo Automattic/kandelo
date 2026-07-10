@@ -114,6 +114,14 @@ export interface GetForkCountRequestMessage {
   pid: number;
 }
 
+/** Deliver `signum` to `pid`. Responds `true` when the process existed. */
+export interface SignalProcessMessage {
+  type: "signal_process";
+  requestId: number;
+  pid: number;
+  signum: number;
+}
+
 export interface ResolveExecResponseMessage {
   type: "resolve_exec_response";
   requestId: number;
@@ -190,6 +198,7 @@ export type MainToKernelMessage =
   | TerminateProcessMessage
   | DestroyMessage
   | GetForkCountRequestMessage
+  | SignalProcessMessage
   | ResolveExecResponseMessage
   | EnumProcsRequestMessage
   | ReadProcMapsRequestMessage

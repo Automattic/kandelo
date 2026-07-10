@@ -348,6 +348,22 @@ export class NodeKernelHost {
   }
 
   /**
+   * Deliver a POSIX signal to `pid`. Resolves false when the process is gone
+   * (ESRCH). Mirrors `BrowserKernel.signalProcess`: unlike `terminateProcess`
+   * this goes through the kernel's signal path, so disposition and exit
+   * cleanup apply.
+   */
+  async signalProcess(pid: number, signum: number): Promise<boolean> {
+    const requestId = this._nextRequestId++;
+    return await this.request(requestId, {
+      type: "signal_process",
+      requestId,
+      pid,
+      signum,
+    }) as boolean;
+  }
+
+  /**
    * Snapshot the kernel's process table — one row per live process. Used
    * by Kandelo's Inspector → Procs tab. Mirrors `BrowserKernel.enumProcs`.
    */

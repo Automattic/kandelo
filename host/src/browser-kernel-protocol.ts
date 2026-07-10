@@ -183,6 +183,14 @@ export interface IsStdinConsumedMessage {
   pid: number;
 }
 
+/** Deliver `signum` to `pid`. Responds `true` when the process existed. */
+export interface SignalProcessMessage {
+  type: "signal_process";
+  requestId: number;
+  pid: number;
+  signum: number;
+}
+
 export interface PickListenerTargetMessage {
   type: "pick_listener_target";
   requestId: number;
@@ -343,6 +351,7 @@ export type MainToKernelMessage =
   | WakeBlockedReadersMessage
   | WakeBlockedWritersMessage
   | IsStdinConsumedMessage
+  | SignalProcessMessage
   | PickListenerTargetMessage
   | DestroyMessage
   | RegisterPtyOutputMessage
