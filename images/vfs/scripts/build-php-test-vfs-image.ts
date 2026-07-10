@@ -308,10 +308,19 @@ async function main() {
     console.log("==> Building PHP PHPT test VFS image");
     console.log(`  php-src input: ${phpSourceInput}`);
 
-    const fs = MemoryFileSystem.fromImage(
+    let fs = MemoryFileSystem.fromImage(
       new Uint8Array(readFileSync(ROOTFS_VFS)),
       { maxByteLength: FS_MAX_BYTES },
     );
+    const baseStats = fs.statfs("/");
+    const baseMaxBytes = baseStats.blocks * baseStats.bsize;
+    if (baseMaxBytes < FS_MAX_BYTES) {
+      console.log(
+        `  Rebasing rootfs capacity from ${Math.round(baseMaxBytes / 1024 / 1024)} MiB ` +
+          `to ${Math.round(FS_MAX_BYTES / 1024 / 1024)} MiB...`,
+      );
+      fs = fs.rebaseToNewFileSystem(FS_MAX_BYTES);
+    }
     ensureDirRecursive(fs, "/usr/local/bin");
     ensureDirRecursive(fs, "/usr/local/sbin");
     ensureDirRecursive(fs, "/usr/lib/php/extensions");
