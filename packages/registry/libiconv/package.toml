@@ -6,9 +6,9 @@ name = "libiconv"
 version = "1.17"
 kernel_abi = 7
 depends_on = []
-# PHP depends on libiconv. Keep both wasm widths available for transitive
-# consumers that build broader runtime stacks.
-arches = ["wasm32", "wasm64"]
+# The build script currently uses the wasm32 SDK explicitly. Do not advertise
+# a wasm64 artifact until the recipe is architecture-aware and validated.
+arches = ["wasm32"]
 
 [source]
 url = "https://ftp.gnu.org/pub/gnu/libiconv/libiconv-1.17.tar.gz"

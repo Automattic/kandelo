@@ -15,12 +15,33 @@ set -euo pipefail
 # CFLAGS/LDFLAGS are set to FPM's stricter requirements. CLI ships
 # with the same flags for debuggability.
 
-PHP_VERSION="${PHP_VERSION:-8.3.15}"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-SRC_DIR="$SCRIPT_DIR/php-src"
-INSTALL_DIR="$SCRIPT_DIR/php-install"
-
 REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
+PHP_VERSION="${WASM_POSIX_DEP_VERSION:-${PHP_VERSION:-8.3.15}}"
+SOURCE_URL="${WASM_POSIX_DEP_SOURCE_URL:-https://www.php.net/distributions/php-${PHP_VERSION}.tar.gz}"
+SOURCE_SHA256="${WASM_POSIX_DEP_SOURCE_SHA256:-67073c3c9c56c86461e0715d9e1806af5ddffe8e6e2eb9781f7923bbb5bd67fa}"
+TARGET_ARCH="${WASM_POSIX_DEP_TARGET_ARCH:-wasm32}"
+WORK_DIR="$(mktemp -d "${TMPDIR:-/tmp}/kandelo-php.XXXXXX")"
+cleanup() {
+    status=$?
+    trap - EXIT
+    if [ "${WASM_POSIX_KEEP_BUILD_DIR:-0}" = "1" ]; then
+        echo "==> Preserving PHP build directory: $WORK_DIR" >&2
+    else
+        rm -rf "$WORK_DIR"
+    fi
+    exit "$status"
+}
+trap cleanup EXIT
+SRC_DIR="$WORK_DIR/source"
+BIN_DIR="${WASM_POSIX_DEP_OUT_DIR:-$SCRIPT_DIR/bin}"
+CONFIG_CACHE="$WORK_DIR/config.cache"
+GUEST_PREFIX="/usr"
+
+if [ "$TARGET_ARCH" != "wasm32" ]; then
+    echo "ERROR: PHP currently supports only wasm32, got $TARGET_ARCH" >&2
+    exit 1
+fi
 # Worktree-local SDK on PATH (no global npm link required).
 # shellcheck source=/dev/null
 source "$REPO_ROOT/sdk/activate.sh"
@@ -37,7 +58,7 @@ export WASM_POSIX_SYSROOT="$SYSROOT"
 HOST_TARGET="$(rustc -vV | awk '/^host/ {print $2}')"
 resolve_dep() {
     local name="$1"
-    (cd "$REPO_ROOT" && cargo run -p xtask --target "$HOST_TARGET" --quiet -- build-deps resolve "$name")
+    (cd "$REPO_ROOT" && cargo run -p xtask --target "$HOST_TARGET" --quiet -- build-deps --arch "$TARGET_ARCH" resolve "$name")
 }
 
 ZLIB_PREFIX="${WASM_POSIX_DEP_ZLIB_DIR:-}"
@@ -86,14 +107,33 @@ LIBXML_LIBS_VALUE="-L$LIBXML2_PREFIX/lib -lxml2 -L$LIBICONV_PREFIX/lib -liconv -
 ICONV_CFLAGS_VALUE="-I$LIBICONV_PREFIX/include"
 ICONV_LIBS_VALUE="-L$LIBICONV_PREFIX/lib -liconv -lcharset"
 
-if [ ! -d "$SRC_DIR" ]; then
-    echo "==> Downloading PHP $PHP_VERSION..."
-    TARBALL="php-${PHP_VERSION}.tar.gz"
-    curl --retry 10 --retry-delay 5 --retry-max-time 300 --retry-all-errors -fsSL "https://www.php.net/distributions/${TARBALL}" -o "/tmp/${TARBALL}"
-    mkdir -p "$SRC_DIR"
-    tar xzf "/tmp/${TARBALL}" -C "$SRC_DIR" --strip-components=1
-    rm "/tmp/${TARBALL}"
-fi
+prefix_map_flags() {
+    local producer_path="$1"
+    local stable_path="$2"
+    printf '%s' "-ffile-prefix-map=$producer_path=$stable_path -fdebug-prefix-map=$producer_path=$stable_path -fmacro-prefix-map=$producer_path=$stable_path"
+}
+
+# Shared modules retain line-table directory entries after linking, unlike the
+# optimized CLI/FPM binaries. Map every producer-controlled absolute prefix so
+# package artifacts do not encode the checkout, cache, or temporary build path.
+REPRODUCIBLE_PREFIX_MAPS="$(prefix_map_flags "$WORK_DIR" /usr/src/php-build)"
+REPRODUCIBLE_PREFIX_MAPS+=" $(prefix_map_flags "$REPO_ROOT" /usr/src/kandelo)"
+REPRODUCIBLE_PREFIX_MAPS+=" $(prefix_map_flags "$ZLIB_PREFIX" /usr/src/kandelo-deps/zlib)"
+REPRODUCIBLE_PREFIX_MAPS+=" $(prefix_map_flags "$SQLITE_PREFIX" /usr/src/kandelo-deps/sqlite)"
+REPRODUCIBLE_PREFIX_MAPS+=" $(prefix_map_flags "$OPENSSL_PREFIX" /usr/src/kandelo-deps/openssl)"
+REPRODUCIBLE_PREFIX_MAPS+=" $(prefix_map_flags "$LIBXML2_PREFIX" /usr/src/kandelo-deps/libxml2)"
+REPRODUCIBLE_PREFIX_MAPS+=" $(prefix_map_flags "$LIBICONV_PREFIX" /usr/src/kandelo-deps/libiconv)"
+
+echo "==> Downloading PHP $PHP_VERSION..."
+TARBALL="$WORK_DIR/php.tar.gz"
+curl --retry 10 --retry-delay 5 --retry-max-time 300 --retry-all-errors -fsSL "$SOURCE_URL" -o "$TARBALL"
+echo "==> Verifying source sha256..."
+echo "$SOURCE_SHA256  $TARBALL" | shasum -a 256 -c -
+mkdir -p "$SRC_DIR"
+tar xzf "$TARBALL" -C "$SRC_DIR" --strip-components=1
+
+rm -rf "$BIN_DIR"
+mkdir -p "$BIN_DIR"
 
 cd "$SRC_DIR"
 
@@ -146,6 +186,40 @@ if [ -f Zend/zend_globals.h ] \
 #endif\
 /* wasm-zend-max-execution-timers include patch applied */' Zend/zend_globals.h
     rm -f Zend/zend_globals.h.bak
+fi
+
+# The Wasm timeout path below is driven by a host-side cooperative timer. PHP's
+# native implementation requires Linux SIGEV_THREAD_ID delivery, which Kandelo
+# does not implement, so keep the native entry points as no-ops and make the
+# cooperative hook the sole owner of Wasm max-execution timers.
+if [ -f Zend/zend_max_execution_timer.c ] \
+   && ! grep -q "wasm native max-execution timer disabled" Zend/zend_max_execution_timer.c; then
+    python3 - <<'PY'
+from pathlib import Path
+
+p = Path("Zend/zend_max_execution_timer.c")
+s = p.read_text()
+opening = "#ifdef ZEND_MAX_EXECUTION_TIMERS\n\n"
+replacement = (
+    opening
+    + "#if defined(__wasm32__) || defined(__wasm64__)\n\n"
+    + "#include \"zend.h\"\n\n"
+    + "/* wasm native max-execution timer disabled; zend_execute_API.c owns the host hook */\n"
+    + "ZEND_API void zend_max_execution_timer_init(void) {}\n"
+    + "void zend_max_execution_timer_settime(zend_long seconds) { (void) seconds; }\n"
+    + "void zend_max_execution_timer_shutdown(void) {}\n\n"
+    + "#else\n\n"
+)
+if s.count(opening) != 1:
+    raise SystemExit("Zend timer patch: expected one ZEND_MAX_EXECUTION_TIMERS guard")
+s = s.replace(opening, replacement, 1)
+closing = "\n#endif\n"
+index = s.rfind(closing)
+if index < 0:
+    raise SystemExit("Zend timer patch: final guard not found")
+s = s[:index] + "\n#endif /* wasm native timer */" + s[index:]
+p.write_text(s)
+PY
 fi
 
 # WebAssembly cannot receive native async POSIX signals while a process worker
@@ -444,6 +518,41 @@ p.write_text(s)
 PY
 fi
 
+# The cooperative Wasm timeout does not use SIGRTMIN. Keep PHP from replacing
+# or unblocking the application's SIGRTMIN disposition merely because a caller
+# asks zend_set_timeout() to reset the native timer signal handler.
+if [ -f Zend/zend_execute_API.c ] \
+   && ! grep -q "wasm-vm-interrupt-no-sigrtmin patch applied" Zend/zend_execute_API.c; then
+    python3 - <<'PY'
+from pathlib import Path
+
+p = Path("Zend/zend_execute_API.c")
+s = p.read_text()
+block = """\tif (reset_signals) {
+\t\tsigset_t sigset;
+\t\tstruct sigaction act;
+
+\t\tact.sa_sigaction = zend_timeout_handler;
+\t\tsigemptyset(&act.sa_mask);
+\t\tact.sa_flags = SA_ONSTACK | SA_SIGINFO;
+\t\tsigaction(SIGRTMIN, &act, NULL);
+\t\tsigemptyset(&sigset);
+\t\tsigaddset(&sigset, SIGRTMIN);
+\t\tsigprocmask(SIG_UNBLOCK, &sigset, NULL);
+\t}
+"""
+replacement = (
+    "# if !defined(__wasm32__) && !defined(__wasm64__)\n"
+    + block
+    + "# endif\n"
+    + "\t/* wasm-vm-interrupt-no-sigrtmin patch applied */\n"
+)
+if s.count(block) != 1:
+    raise SystemExit("Zend SIGRTMIN patch: expected one native max-timer signal block")
+p.write_text(s.replace(block, replacement, 1))
+PY
+fi
+
 # PHP's DBA extension keeps an in-process lock guard because some platforms
 # allow same-process read/write opens that the extension wants to reject. For
 # DB-lock mode, upstream replaces info->path with the stream's opened_path only
@@ -558,58 +667,52 @@ p.write_text(s)
 PY
 fi
 
-# opcache's MAP_ANON shared-memory probe is an AC_RUN_IFELSE that fails
-# under cross-compilation; the fallback only sets have_shm_mmap_anon=yes
-# for *linux* hosts (configure ext/opcache/config.m4). Without this
-# patch, configure rejects --enable-opcache with "No supported shared
-# memory caching support". For our wasm target the runtime semantics
-# are fine: each php-fpm worker is its own wasm instance, so an
-# MAP_SHARED|MAP_ANON allocation is naturally per-process — exactly the
-# per-worker opcache the user wants. Flip the cross-compile fallback's
-# *) branch from "no" to "yes" so opcache builds. The pattern
-# "      have_shm_mmap_anon=no" followed by "      ;;" appears only in
-# that fallback (the AC_RUN_IFELSE failure branch is one-line:
-# `e) have_shm_mmap_anon=no ;;`).
+# PHP requires one shared-memory backend to be compiled even when callers use
+# opcache.file_cache_only=1. The MAP_ANON backend is the only viable build-time
+# choice for this target, but Kandelo does not yet provide cross-process
+# MAP_SHARED: the normal opcache SHM mode would therefore give FPM workers
+# divergent cache/lock state. Enable the backend only so the file-cache path can
+# be built, then add a target guard below that rejects opcache startup unless
+# file-cache-only mode is explicitly configured. This is a documented runtime
+# boundary, not a claim that the configure probe's fork-sharing semantics pass.
 if [ -f configure ] && ! grep -q "wasm-opcache patch applied" configure; then
     perl -i.bak -0pe 's/      have_shm_mmap_anon=no\n      ;;/      have_shm_mmap_anon=yes\n      ;; # wasm-opcache patch applied/' configure
     rm -f configure.bak
 fi
 
+if [ -f ext/opcache/ZendAccelerator.c ] \
+   && ! grep -q "kandelo-opcache-file-cache-only" ext/opcache/ZendAccelerator.c; then
+    python3 - <<'PY'
+from pathlib import Path
+
+p = Path("ext/opcache/ZendAccelerator.c")
+s = p.read_text()
+marker = "\tfile_cache_only = ZCG(accel_directives).file_cache_only;\n"
+guard = """#if defined(__wasm__) /* kandelo-opcache-file-cache-only */
+\tif (!ZCG(accel_directives).file_cache_only) {
+\t\taccel_startup_ok = false;
+\t\tzend_accel_error_noreturn(
+\t\t\tACCEL_LOG_FATAL,
+\t\t\t\"Kandelo requires opcache.file_cache_only=1 because cross-process MAP_SHARED is unavailable.\");
+\t\treturn SUCCESS;
+\t}
+#endif
+\tfile_cache_only = ZCG(accel_directives).file_cache_only;
+"""
+if marker not in s:
+    raise SystemExit("opcache file-cache-only guard: startup marker not found")
+p.write_text(s.replace(marker, guard, 1))
+PY
+fi
+
 # PHP's configure enables Zend max-execution timers only on Linux hosts even
-# when --enable-zend-max-execution-timers is explicitly requested. Kandelo's
-# wasm target provides the Linux timer_create/timer_settime ABI, including the
-# Linux SIGEV_THREAD_ID notification mode used by Zend, so allow wasm targets
-# through the same configure gate. The follow-up timer_create probe still
-# decides whether the feature is actually compiled in.
+# when --enable-zend-max-execution-timers is explicitly requested. Allow Wasm
+# through that compile-time gate because the target-specific implementation
+# above replaces Linux SIGEV_THREAD_ID with Kandelo's cooperative host hook;
+# this does not claim that native thread-targeted timer delivery is available.
 if [ -f configure ] && ! grep -q "wasm-zend-max-execution-timers patch applied" configure; then
     perl -i.bak -0pe "s/  \\*linux\\*\\) :\\n     ;; #\\(\\n  \\*\\) :\\n    ZEND_MAX_EXECUTION_TIMERS='no' ;;/  *linux*|wasm32*|wasm64*) :\\n     ;; #(\\n  *) :\\n    ZEND_MAX_EXECUTION_TIMERS='no' ;; # wasm-zend-max-execution-timers patch applied/" configure
     rm -f configure.bak
-fi
-
-# Default opcache.enable to "0" (was "1"). Rationale: PHP's built-in dev
-# server (`php -S`) uses the cli-server SAPI, which IS in opcache's
-# supported_sapis list (only the bare `cli` SAPI is gated by
-# `opcache.enable_cli`). With the upstream default of "1", every CLI
-# invocation under cli-server pays opcache MINIT cost (128MB SHM
-# allocation + per-request validation) — heavy enough to push the
-# wordpress-site-editor E2E test (packages/registry/wordpress/test/) past its
-# 10-minute install deadline on CI runners. Our LAMP/WP/nginx-php
-# php-fpm demos explicitly set opcache.enable=1 in /etc/php.ini, so
-# flipping the compile-time default to "0" preserves the per-worker
-# bytecode-cache win for FPM while leaving CLI / cli-server behavior
-# pre-PR-identical.
-if [ -f ext/opcache/zend_accelerator_module.c ] \
-   && ! grep -q "wasm-opcache enable=0 patch applied" ext/opcache/zend_accelerator_module.c; then
-    sed -i.bak \
-        -e 's|STD_PHP_INI_BOOLEAN("opcache.enable"             , "1"|STD_PHP_INI_BOOLEAN("opcache.enable"             , "0"|' \
-        ext/opcache/zend_accelerator_module.c
-    # Drop a marker comment so re-running the patch is idempotent.
-    if ! grep -q "wasm-opcache enable=0 patch applied" ext/opcache/zend_accelerator_module.c; then
-        sed -i.bak2 '/STD_PHP_INI_BOOLEAN("opcache.enable"             , "0"/i\
-/* wasm-opcache enable=0 patch applied — see packages/registry/php/build-php.sh */
-' ext/opcache/zend_accelerator_module.c
-    fi
-    rm -f ext/opcache/zend_accelerator_module.c.bak ext/opcache/zend_accelerator_module.c.bak2
 fi
 
 # ext/sockets gates its Linux classic-BPF socket option implementation only on
@@ -633,11 +736,9 @@ PY
 fi
 
 echo "==> Configuring PHP for Wasm (CLI + FPM, single tree)..."
-# Drop a stale config.cache from a previous build whose env (CPPFLAGS,
-# PKG_CONFIG_PATH, etc.) may not match this run. autoconf would
-# otherwise reject the cache with "changes in the environment can
-# compromise the build" — recovering requires a fresh cache anyway.
-rm -f "$SCRIPT_DIR/config.cache"
+# Keep autoconf's cache inside the disposable build directory. Package builds
+# must not race on or leave generated state in the registry recipe directory.
+rm -f "$CONFIG_CACHE"
 if [ -f Makefile ] && ! grep -q 'ext/zend_test' Makefile; then
     echo "==> Existing PHP Makefile lacks zend_test shared-extension rules; reconfiguring..."
     rm -f Makefile config.cache
@@ -661,6 +762,10 @@ if [ -f Makefile ]; then
 fi
 if [ -f Makefile ] && ! grep -q '#define ICONV_ALIASED_LIBICONV 1' main/php_config.h 2>/dev/null; then
     echo "==> Existing PHP Makefile does not use GNU libiconv aliases; reconfiguring..."
+    rm -f Makefile config.cache
+fi
+if [ -f Makefile ] && ! grep -q '^#define PHP_OS "Kandelo"$' main/php_config.h 2>/dev/null; then
+    echo "==> Existing PHP Makefile embeds the build host OS; reconfiguring..."
     rm -f Makefile config.cache
 fi
 if [ ! -f Makefile ]; then
@@ -727,6 +832,7 @@ if [ ! -f Makefile ]; then
     LIBXML_LIBS="$LIBXML_LIBS_VALUE" \
     ICONV_CFLAGS="$ICONV_CFLAGS_VALUE" \
     ICONV_LIBS="$ICONV_LIBS_VALUE" \
+    PHP_UNAME="Kandelo wasm32-posix-kernel" \
     ac_cv_lib_iconv_libiconv=yes \
     wasm32posix-configure \
         --disable-all \
@@ -777,9 +883,13 @@ if [ ! -f Makefile ]; then
         --enable-simplexml \
         --enable-xmlreader \
         --enable-xmlwriter \
-        --cache-file="$SCRIPT_DIR/config.cache" \
-        --prefix="$INSTALL_DIR" \
-        CFLAGS="-O2 -gline-tables-only -DZEND_USE_ASM_ARITHMETIC=0"
+        --cache-file="$CONFIG_CACHE" \
+        --prefix="$GUEST_PREFIX" \
+        --sysconfdir=/etc \
+        --localstatedir=/var \
+        --with-config-file-path=/etc \
+        --with-config-file-scan-dir=/etc/php.d \
+        CFLAGS="-O2 -gline-tables-only $REPRODUCIBLE_PREFIX_MAPS -DZEND_USE_ASM_ARITHMETIC=0"
     # CFLAGS includes -gline-tables-only for debug stack traces.
     # The debug-trace value is worth keeping. CLI inherits the same
     # flags; it just produces a slightly larger binary.
@@ -805,6 +915,8 @@ if [ ! -f Makefile ]; then
         -e 's/^#define HAVE_RAND_EGD 1/\/* #undef HAVE_RAND_EGD *\//' \
         -e 's/^#define HAVE_FORKX 1/\/* #undef HAVE_FORKX *\//' \
         -e 's/^#define HAVE_RFORK 1/\/* #undef HAVE_RFORK *\//' \
+        -e 's/^#define PHP_OS .*/#define PHP_OS "Kandelo"/' \
+        -e 's/^#define PHP_UNAME .*/#define PHP_UNAME "Kandelo wasm32-posix-kernel"/' \
         main/php_config.h && rm -f main/php_config.h.bak
 
     # Do not bake the host build prefix into PHP's runtime extension_dir.
@@ -814,6 +926,7 @@ if [ ! -f Makefile ]; then
     # normal PHP invocations like `php -n -d extension=phar.so` work without
     # requiring absolute, harness-specific extension paths.
     sed -i.bak \
+        -e 's|^#define CONFIGURE_COMMAND .*|#define CONFIGURE_COMMAND "Kandelo reproducible package build"|' \
         -e 's|^#define PHP_EXTENSION_DIR .*|#define PHP_EXTENSION_DIR       "/usr/lib/php/extensions"|' \
         main/build-defs.h && rm -f main/build-defs.h.bak
 
@@ -842,15 +955,16 @@ fi
 
 if [ -f main/build-defs.h ]; then
     sed -i.bak \
+        -e 's|^#define CONFIGURE_COMMAND .*|#define CONFIGURE_COMMAND "Kandelo reproducible package build"|' \
         -e 's|^#define PHP_EXTENSION_DIR .*|#define PHP_EXTENSION_DIR       "/usr/lib/php/extensions"|' \
         main/build-defs.h && rm -f main/build-defs.h.bak
 fi
 
-# SQLite's feature probes can be distorted by cross-linker behavior even when
-# the resolved library has the symbol. Keep the PHP build config aligned with
-# the Kandelo SQLite package: sqlite3_expanded_sql() is always present in our
-# SQLite 3.49.x build, and column metadata is enabled by the SQLite package so
-# pdo_sqlite can expose table names without leaving unresolved imports.
+# SQLite's feature probes can be distorted by the cross-linker's permitted
+# undefined imports. Keep PHP aligned with the actual Kandelo SQLite package:
+# sqlite3_expanded_sql() is present, while column metadata and runtime loadable
+# extensions are intentionally omitted. Do not turn those missing producer
+# symbols into fictional env imports in php.wasm.
 # PHP's fopencookie probe is also distorted by wasm cross-linking. Kandelo's
 # musl sysroot provides fopencookie(3), and PHP uses it for generic stream →
 # stdio casts rather than requiring every user stream wrapper to implement its
@@ -858,11 +972,14 @@ fi
 if [ -f main/php_config.h ]; then
     sed -i.bak \
         -e 's|^/\* #undef HAVE_SQLITE3_EXPANDED_SQL \*/|#define HAVE_SQLITE3_EXPANDED_SQL 1|' \
-        -e 's|^/\* #undef HAVE_SQLITE3_COLUMN_TABLE_NAME \*/|#define HAVE_SQLITE3_COLUMN_TABLE_NAME 1|' \
+        -e 's|^#define HAVE_SQLITE3_COLUMN_TABLE_NAME 1|/* #undef HAVE_SQLITE3_COLUMN_TABLE_NAME */|' \
+        -e 's|^/\* #undef SQLITE_OMIT_LOAD_EXTENSION \*/|#define SQLITE_OMIT_LOAD_EXTENSION 1|' \
         -e 's|^/\* #undef HAVE_FOPENCOOKIE \*/|#define HAVE_FOPENCOOKIE 1|' \
         -e 's|^/\* #undef HAVE_PRCTL \*/|#define HAVE_PRCTL 1|' \
         -e 's|^#define HAVE_FORKX 1|/* #undef HAVE_FORKX */|' \
         -e 's|^#define HAVE_RFORK 1|/* #undef HAVE_RFORK */|' \
+        -e 's|^#define PHP_OS .*|#define PHP_OS "Kandelo"|' \
+        -e 's|^#define PHP_UNAME .*|#define PHP_UNAME "Kandelo wasm32-posix-kernel"|' \
         main/php_config.h && rm -f main/php_config.h.bak
     # PHP's generated object dependencies do not reliably notice the
     # php_config.h feature override above after an incremental rebuild. Force
@@ -905,9 +1022,22 @@ FORK_INSTRUMENT="$REPO_ROOT/scripts/run-wasm-fork-instrument.sh"
 # and feed the PIC objects to the SDK's `wasm32posix-cc -shared`,
 # which routes through `wasm-ld --shared --experimental-pic`.
 echo "==> Building opcache.so (Zend extension)..."
-make -j"$(sysctl -n hw.ncpu 2>/dev/null || nproc)" EXTRA_CFLAGS="$EXTRA_INC_LIBXML" ext/opcache/opcache.la || true
-mkdir -p "$SCRIPT_DIR/bin"
-wasm32posix-cc -shared -fPIC -o "$SCRIPT_DIR/bin/opcache.so" \
+make -j"$(sysctl -n hw.ncpu 2>/dev/null || nproc)" \
+    EXTRA_CFLAGS="$EXTRA_INC_LIBXML" \
+    ext/opcache/ZendAccelerator.lo \
+    ext/opcache/zend_accelerator_blacklist.lo \
+    ext/opcache/zend_accelerator_debug.lo \
+    ext/opcache/zend_accelerator_hash.lo \
+    ext/opcache/zend_accelerator_module.lo \
+    ext/opcache/zend_persist.lo \
+    ext/opcache/zend_persist_calc.lo \
+    ext/opcache/zend_file_cache.lo \
+    ext/opcache/zend_shared_alloc.lo \
+    ext/opcache/zend_accelerator_util_funcs.lo \
+    ext/opcache/shared_alloc_shm.lo \
+    ext/opcache/shared_alloc_mmap.lo \
+    ext/opcache/shared_alloc_posix.lo
+wasm32posix-cc -shared -fPIC -o "$BIN_DIR/opcache.so" \
     ext/opcache/.libs/ZendAccelerator.o \
     ext/opcache/.libs/zend_accelerator_blacklist.o \
     ext/opcache/.libs/zend_accelerator_debug.o \
@@ -922,9 +1052,9 @@ wasm32posix-cc -shared -fPIC -o "$SCRIPT_DIR/bin/opcache.so" \
     ext/opcache/.libs/shared_alloc_mmap.o \
     ext/opcache/.libs/shared_alloc_posix.o
 echo "==> Applying fork instrumentation to opcache.so side module..."
-"$FORK_INSTRUMENT" "$SCRIPT_DIR/bin/opcache.so" -o "$SCRIPT_DIR/bin/opcache.so.instr" --entry env.fork
-mv "$SCRIPT_DIR/bin/opcache.so.instr" "$SCRIPT_DIR/bin/opcache.so"
-echo "==> opcache.so: $(wc -c < "$SCRIPT_DIR/bin/opcache.so") bytes"
+"$FORK_INSTRUMENT" "$BIN_DIR/opcache.so" -o "$BIN_DIR/opcache.so.instr" --entry env.fork
+mv "$BIN_DIR/opcache.so.instr" "$BIN_DIR/opcache.so"
+echo "==> opcache.so: $(wc -c < "$BIN_DIR/opcache.so") bytes"
 
 # Build Phar as a shared extension too. The PHP package intentionally keeps
 # shared extensions loadable through normal `extension=...` INI directives so
@@ -932,8 +1062,18 @@ echo "==> opcache.so: $(wc -c < "$SCRIPT_DIR/bin/opcache.so") bytes"
 # a general PHP runtime. Shipping phar.so avoids relying on a statically linked
 # Phar module while still letting callers decide whether to load it.
 echo "==> Building phar.so (extension)..."
-make -j"$(sysctl -n hw.ncpu 2>/dev/null || nproc)" EXTRA_CFLAGS="$EXTRA_INC_LIBXML" ext/phar/phar.la || true
-wasm32posix-cc -shared -fPIC -o "$SCRIPT_DIR/bin/phar.so" \
+make -j"$(sysctl -n hw.ncpu 2>/dev/null || nproc)" \
+    EXTRA_CFLAGS="$EXTRA_INC_LIBXML" \
+    ext/phar/util.lo \
+    ext/phar/tar.lo \
+    ext/phar/zip.lo \
+    ext/phar/stream.lo \
+    ext/phar/func_interceptors.lo \
+    ext/phar/dirstream.lo \
+    ext/phar/phar.lo \
+    ext/phar/phar_object.lo \
+    ext/phar/phar_path_check.lo
+wasm32posix-cc -shared -fPIC -o "$BIN_DIR/phar.so" \
     ext/phar/.libs/dirstream.o \
     ext/phar/.libs/func_interceptors.o \
     ext/phar/.libs/phar.o \
@@ -943,22 +1083,27 @@ wasm32posix-cc -shared -fPIC -o "$SCRIPT_DIR/bin/phar.so" \
     ext/phar/.libs/tar.o \
     ext/phar/.libs/util.o \
     ext/phar/.libs/zip.o
-echo "==> phar.so: $(wc -c < "$SCRIPT_DIR/bin/phar.so") bytes"
+echo "==> phar.so: $(wc -c < "$BIN_DIR/phar.so") bytes"
 
 # Build zend_test as a normal shared extension. Upstream php-src uses this
 # extension to exercise engine edge cases through --EXTENSIONS--. Shipping it
 # as an opt-in module keeps the PHP runtime general-purpose while letting the
 # PHPT harness run those tests without pretending the extension is present.
 echo "==> Building zend_test.so (extension)..."
-make -j"$(sysctl -n hw.ncpu 2>/dev/null || nproc)" EXTRA_CFLAGS="$EXTRA_INC_LIBXML" ext/zend_test/zend_test.la || true
-wasm32posix-cc -shared -fPIC -o "$SCRIPT_DIR/bin/zend_test.so" \
+make -j"$(sysctl -n hw.ncpu 2>/dev/null || nproc)" \
+    EXTRA_CFLAGS="$EXTRA_INC_LIBXML" \
+    ext/zend_test/test.lo \
+    ext/zend_test/observer.lo \
+    ext/zend_test/fiber.lo \
+    ext/zend_test/iterators.lo \
+    ext/zend_test/object_handlers.lo
+wasm32posix-cc -shared -fPIC -o "$BIN_DIR/zend_test.so" \
     ext/zend_test/.libs/*.o
-echo "==> zend_test.so: $(wc -c < "$SCRIPT_DIR/bin/zend_test.so") bytes"
+echo "==> zend_test.so: $(wc -c < "$BIN_DIR/zend_test.so") bytes"
 
 # Copy to bin/ with .wasm extension (needed for Vite browser demos)
-mkdir -p "$SCRIPT_DIR/bin"
-cp sapi/cli/php "$SCRIPT_DIR/bin/php.wasm"
-cp sapi/fpm/php-fpm "$SCRIPT_DIR/bin/php-fpm.wasm"
+cp sapi/cli/php "$BIN_DIR/php.wasm"
+cp sapi/fpm/php-fpm "$BIN_DIR/php-fpm.wasm"
 
 # CLI and FPM both retain libc paths that can reach kernel_fork
 # (system/popen/fork wrappers for CLI, worker forks for FPM), so both
@@ -968,31 +1113,35 @@ cp sapi/fpm/php-fpm "$SCRIPT_DIR/bin/php-fpm.wasm"
 # invalidate them. wasm-fork-instrument auto-discovers fork paths via
 # call-graph analysis; no onlylist file is required.
 WASM_OPT="$(command -v wasm-opt 2>/dev/null || true)"
-if [ -n "$WASM_OPT" ]; then
-    echo "==> Optimizing CLI binary with wasm-opt -O2..."
-    "$WASM_OPT" -O2 "$SCRIPT_DIR/bin/php.wasm" -o "$SCRIPT_DIR/bin/php.wasm"
-
-    echo "==> Optimizing FPM binary with wasm-opt -O2..."
-    "$WASM_OPT" -O2 "$SCRIPT_DIR/bin/php-fpm.wasm" -o "$SCRIPT_DIR/bin/php-fpm.wasm"
+if [ -z "$WASM_OPT" ]; then
+    echo "ERROR: wasm-opt is required for deterministic PHP package outputs" >&2
+    exit 1
 fi
+echo "==> Optimizing CLI binary with wasm-opt -O2..."
+"$WASM_OPT" -O2 "$BIN_DIR/php.wasm" -o "$BIN_DIR/php.wasm"
+
+echo "==> Optimizing FPM binary with wasm-opt -O2..."
+"$WASM_OPT" -O2 "$BIN_DIR/php-fpm.wasm" -o "$BIN_DIR/php-fpm.wasm"
 
 echo "==> Applying fork instrumentation to CLI..."
-"$FORK_INSTRUMENT" "$SCRIPT_DIR/bin/php.wasm" -o "$SCRIPT_DIR/bin/php.wasm.instr"
-mv "$SCRIPT_DIR/bin/php.wasm.instr" "$SCRIPT_DIR/bin/php.wasm"
+"$FORK_INSTRUMENT" "$BIN_DIR/php.wasm" -o "$BIN_DIR/php.wasm.instr"
+mv "$BIN_DIR/php.wasm.instr" "$BIN_DIR/php.wasm"
 
 echo "==> Applying fork instrumentation to FPM..."
-"$FORK_INSTRUMENT" "$SCRIPT_DIR/bin/php-fpm.wasm" -o "$SCRIPT_DIR/bin/php-fpm.wasm.instr"
-mv "$SCRIPT_DIR/bin/php-fpm.wasm.instr" "$SCRIPT_DIR/bin/php-fpm.wasm"
+"$FORK_INSTRUMENT" "$BIN_DIR/php-fpm.wasm" -o "$BIN_DIR/php-fpm.wasm.instr"
+mv "$BIN_DIR/php-fpm.wasm.instr" "$BIN_DIR/php-fpm.wasm"
 
-chmod 0755 "$SCRIPT_DIR/bin/php.wasm" "$SCRIPT_DIR/bin/php-fpm.wasm"
+chmod 0755 "$BIN_DIR/php.wasm" "$BIN_DIR/php-fpm.wasm"
 
-ls -la "$SCRIPT_DIR/bin/php.wasm" "$SCRIPT_DIR/bin/php-fpm.wasm"
+ls -la "$BIN_DIR/php.wasm" "$BIN_DIR/php-fpm.wasm"
 
 # Install into local-binaries/ so the resolver picks the freshly-built
 # binaries over the fetched release.
-source "$REPO_ROOT/scripts/install-local-binary.sh"
-install_local_binary php "$SCRIPT_DIR/bin/php.wasm"     php.wasm
-install_local_binary php "$SCRIPT_DIR/bin/php-fpm.wasm" php-fpm.wasm
-install_local_binary php "$SCRIPT_DIR/bin/opcache.so"
-install_local_binary php "$SCRIPT_DIR/bin/phar.so"
-install_local_binary php "$SCRIPT_DIR/bin/zend_test.so"
+if [ -z "${WASM_POSIX_DEP_OUT_DIR:-}" ]; then
+    source "$REPO_ROOT/scripts/install-local-binary.sh"
+    install_local_binary php "$BIN_DIR/php.wasm" php.wasm
+    install_local_binary php "$BIN_DIR/php-fpm.wasm" php-fpm.wasm
+    install_local_binary php "$BIN_DIR/opcache.so"
+    install_local_binary php "$BIN_DIR/phar.so"
+    install_local_binary php "$BIN_DIR/zend_test.so"
+fi
