@@ -5,6 +5,7 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <limits.h>
+#include <regex.h>
 #include <stdarg.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -419,6 +420,7 @@ struct ps_fields {
     int pid;
     int nice;
     int command;
+    int header;
 };
 
 static int ps_pid_selected(long pid, long *pids, int npids) {
@@ -459,13 +461,29 @@ static int ps_add_pid_list(const char *arg, long *pids, int *npids, int max_pids
     }
 }
 
-static void ps_parse_fields(const char *arg, struct ps_fields *fields) {
+static int ps_parse_fields(const char *arg, struct ps_fields *fields) {
     fields->pid = 0;
     fields->nice = 0;
     fields->command = 0;
+    fields->header = 1;
+    int selected_fields = 0;
+    int empty_headers = 0;
 
     char *copy = xstrdup(arg);
     for (char *tok = strtok(copy, ", "); tok; tok = strtok(NULL, ", ")) {
+        char *header = strchr(tok, '=');
+        if (header) {
+            // Support the empty-column-header form used by procps, for
+            // example `ps -o pid=`. Custom non-empty labels are outside this
+            // compact utility's supported surface.
+            if (header[1] != '\0') {
+                free(copy);
+                return -1;
+            }
+            *header = '\0';
+            fields->header = 0;
+            empty_headers++;
+        }
         if (streq(tok, "pid")) {
             fields->pid = 1;
         } else if (streq(tok, "nice") || streq(tok, "ni")) {
@@ -473,16 +491,54 @@ static void ps_parse_fields(const char *arg, struct ps_fields *fields) {
         } else if (streq(tok, "comm") || streq(tok, "command") ||
                    streq(tok, "args")) {
             fields->command = 1;
+        } else {
+            free(copy);
+            return -1;
         }
+        selected_fields++;
     }
     if (!fields->pid && !fields->nice && !fields->command) {
-        fields->pid = 1;
-        fields->command = 1;
+        free(copy);
+        return -1;
+    }
+    if (empty_headers > 0 && empty_headers != selected_fields) {
+        free(copy);
+        return -1;
     }
     free(copy);
+    return 0;
 }
 
-static int ps_read_stat(long pid, char *comm, size_t comm_len, long *nice_value) {
+static int pgrep_add_parent_list(const char *arg, long *parents,
+                                 int *nparents, int max_parents) {
+    if (!arg || !*arg) {
+        return -1;
+    }
+    const char *p = arg;
+    for (;;) {
+        if (*nparents >= max_parents) {
+            return -1;
+        }
+        errno = 0;
+        char *end = NULL;
+        long parent = strtol(p, &end, 10);
+        if (errno != 0 || end == p || parent < 0 ||
+            (*end != '\0' && *end != ',')) {
+            return -1;
+        }
+        parents[(*nparents)++] = parent;
+        if (*end == '\0') {
+            return 0;
+        }
+        p = end + 1;
+        if (*p == '\0') {
+            return -1;
+        }
+    }
+}
+
+static int ps_read_stat(long pid, char *comm, size_t comm_len, long *ppid_value,
+                        long *nice_value) {
     char path[PATH_MAX];
     snprintf(path, sizeof(path), "/proc/%ld/stat", pid);
     FILE *f = fopen(path, "r");
@@ -516,17 +572,21 @@ static int ps_read_stat(long pid, char *comm, size_t comm_len, long *nice_value)
     int index = 0;
     for (char *tok = strtok_r(suffix, " \t\r\n", &save); tok;
         tok = strtok_r(NULL, " \t\r\n", &save), index++) {
-        if (index == 16) {
+        if (index == 1 || index == 16) {
             char *end = NULL;
             errno = 0;
             long parsed = strtol(tok, &end, 10);
             if (errno != 0 || end == tok || *end != '\0') {
                 return -1;
             }
-            if (nice_value) {
+            if (index == 1 && ppid_value) {
+                *ppid_value = parsed;
+            } else if (index == 16 && nice_value) {
                 *nice_value = parsed;
             }
-            return 0;
+            if (index == 16) {
+                return 0;
+            }
         }
     }
     return -1;
@@ -551,6 +611,9 @@ static void ps_read_cmdline(long pid, char *cmd, size_t cmd_len) {
 }
 
 static void ps_print_header(const struct ps_fields *fields) {
+    if (!fields->header) {
+        return;
+    }
     if (fields->pid) {
         printf("%5s", "PID");
     }
@@ -580,7 +643,7 @@ static void ps_print_row(const struct ps_fields *fields, long pid, long nice_val
 static int util_ps(int argc, char **argv) {
     long selected_pids[64];
     int nselected = 0;
-    struct ps_fields fields = {1, 0, 1};
+    struct ps_fields fields = {1, 0, 1, 1};
 
     for (int i = 1; i < argc; i++) {
         if (streq(argv[i], "-p") || streq(argv[i], "--pid")) {
@@ -601,9 +664,15 @@ static int util_ps(int argc, char **argv) {
                 fprintf(stderr, "ps: option requires a format\n");
                 return 2;
             }
-            ps_parse_fields(argv[++i], &fields);
+            if (ps_parse_fields(argv[++i], &fields) != 0) {
+                fprintf(stderr, "ps: unsupported format\n");
+                return 2;
+            }
         } else if (strncmp(argv[i], "-o", 2) == 0 && argv[i][2]) {
-            ps_parse_fields(argv[i] + 2, &fields);
+            if (ps_parse_fields(argv[i] + 2, &fields) != 0) {
+                fprintf(stderr, "ps: unsupported format\n");
+                return 2;
+            }
         } else if (!streq(argv[i], "-A") && !streq(argv[i], "-e")) {
             fprintf(stderr, "ps: unsupported option: %s\n", argv[i]);
             return 2;
@@ -630,7 +699,7 @@ static int util_ps(int argc, char **argv) {
         char cmd[256] = "";
         char comm[256] = "";
         long nice_value = 0;
-        if (ps_read_stat(pid, comm, sizeof(comm), &nice_value) != 0) {
+        if (ps_read_stat(pid, comm, sizeof(comm), NULL, &nice_value) != 0) {
             // The process may have exited between readdir() and fopen(). Do
             // not fabricate a row or a nice value for a vanished process.
             continue;
@@ -646,6 +715,101 @@ static int util_ps(int argc, char **argv) {
     }
     closedir(proc);
     return nselected > 0 && matched == 0 ? 1 : 0;
+}
+
+static int util_pgrep(int argc, char **argv) {
+    long selected_parents[64];
+    int nselected = 0;
+    const char *pattern = NULL;
+
+    for (int i = 1; i < argc; i++) {
+        if (streq(argv[i], "-P") || streq(argv[i], "--parent")) {
+            if (i + 1 >= argc ||
+                pgrep_add_parent_list(argv[++i], selected_parents, &nselected,
+                                      (int)(sizeof(selected_parents) /
+                                            sizeof(selected_parents[0]))) != 0) {
+                fprintf(stderr, "pgrep: invalid parent pid list\n");
+                return 2;
+            }
+        } else if (strncmp(argv[i], "-P", 2) == 0 && argv[i][2]) {
+            if (pgrep_add_parent_list(argv[i] + 2, selected_parents,
+                                      &nselected,
+                                      (int)(sizeof(selected_parents) /
+                                            sizeof(selected_parents[0]))) != 0) {
+                fprintf(stderr, "pgrep: invalid parent pid list\n");
+                return 2;
+            }
+        } else if (argv[i][0] == '-') {
+            fprintf(stderr, "pgrep: unsupported option: %s\n", argv[i]);
+            return 2;
+        } else if (!pattern) {
+            pattern = argv[i];
+        } else {
+            fprintf(stderr, "pgrep: too many patterns\n");
+            return 2;
+        }
+    }
+
+    if (nselected == 0 && !pattern) {
+        fprintf(stderr, "pgrep: usage: pgrep -P parent-list [pattern]\n");
+        return 2;
+    }
+
+    regex_t regex;
+    int has_regex = 0;
+    if (pattern) {
+        int regex_error = regcomp(&regex, pattern, REG_EXTENDED | REG_NOSUB);
+        if (regex_error != 0) {
+            char message[256];
+            regerror(regex_error, &regex, message, sizeof(message));
+            fprintf(stderr, "pgrep: %s\n", message);
+            return 2;
+        }
+        has_regex = 1;
+    }
+
+    DIR *proc = opendir("/proc");
+    if (!proc) {
+        perror("pgrep: /proc");
+        if (has_regex) {
+            regfree(&regex);
+        }
+        return 3;
+    }
+
+    int matched = 0;
+    struct dirent *de;
+    while ((de = readdir(proc)) != NULL) {
+        char *end = NULL;
+        long pid = strtol(de->d_name, &end, 10);
+        if (!end || *end != '\0') {
+            continue;
+        }
+        if (pid == (long)getpid()) {
+            // Like native pgrep, do not report the pgrep process itself when
+            // its parent happens to match the requested parent filter.
+            continue;
+        }
+        char comm[256] = "";
+        long ppid = 0;
+        if (ps_read_stat(pid, comm, sizeof(comm), &ppid, NULL) != 0) {
+            continue;
+        }
+        if (nselected > 0 &&
+            !ps_pid_selected(ppid, selected_parents, nselected)) {
+            continue;
+        }
+        if (has_regex && regexec(&regex, comm, 0, NULL, 0) != 0) {
+            continue;
+        }
+        printf("%ld\n", pid);
+        matched = 1;
+    }
+    closedir(proc);
+    if (has_regex) {
+        regfree(&regex);
+    }
+    return matched ? 0 : 1;
 }
 
 static int util_renice(int argc, char **argv) {
@@ -1975,6 +2139,7 @@ static int dispatch(const char *name, int argc, char **argv) {
     if (streq(name, "nm")) return util_nm(argc, argv);
     if (streq(name, "patch")) return util_patch(argc, argv);
     if (streq(name, "pax")) return util_pax(argc, argv);
+    if (streq(name, "pgrep")) return util_pgrep(argc, argv);
     if (streq(name, "ps")) return util_ps(argc, argv);
     if (streq(name, "renice")) return util_renice(argc, argv);
     if (streq(name, "strings")) return util_strings(argc, argv);

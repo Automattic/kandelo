@@ -8,8 +8,10 @@ import { BrowserKernel } from "@host/browser-kernel-host";
 import { MemoryFileSystem } from "@host/vfs/memory-fs";
 import { ensureDirRecursive, writeVfsBinary } from "@host/vfs/image-helpers";
 import kernelWasmUrl from "@kernel-wasm?url";
+import { rewriteShellLazyFileUrls } from "../../lib/init/shell-lazy-files";
 
 interface RunPhpScriptRequest {
+  testId: string;
   scriptPath: string;
   script: string;
   argv: string[];
@@ -18,8 +20,6 @@ interface RunPhpScriptRequest {
   uid?: number;
   gid?: number;
   stdin?: string;
-  stdinIsPipe?: boolean;
-  pipeStdio?: number[];
   waitForChildOutput?: boolean;
   timeoutMs?: number;
 }
@@ -43,6 +43,8 @@ declare global {
 let kernelBytes: ArrayBuffer | null = null;
 let vfsImageBytes: Uint8Array | null = null;
 let phpBytes: ArrayBuffer | null = null;
+let activeTestFs: MemoryFileSystem | null = null;
+const guestWritableFileSystems = new WeakSet<MemoryFileSystem>();
 
 function readVfsFile(fs: MemoryFileSystem, path: string): Uint8Array {
   const st = fs.stat(path);
@@ -63,9 +65,22 @@ function readVfsFile(fs: MemoryFileSystem, path: string): Uint8Array {
 
 function createFs(): MemoryFileSystem {
   if (!vfsImageBytes) throw new Error("PHP test VFS image not loaded");
-  return MemoryFileSystem.fromImage(vfsImageBytes, {
+  const fs = MemoryFileSystem.fromImage(vfsImageBytes, {
     maxByteLength: 2 * 1024 * 1024 * 1024,
   });
+  // This legacy shared-SAB runner registers lazy-file metadata from the
+  // restored image directly, so resolve canonical rootfs placeholders to
+  // Vite-managed asset URLs before BrowserKernel.init() forwards them.
+  rewriteShellLazyFileUrls(fs);
+  return fs;
+}
+
+function fsForTest(_testId: string): MemoryFileSystem {
+  // php-src's native runner and the Node host keep one source tree for the
+  // complete run. Preserve that lifetime so cross-test residue and broken
+  // CLEAN sections remain observable instead of being hidden by a fresh VFS.
+  if (!activeTestFs) activeTestFs = createFs();
+  return activeTestFs;
 }
 
 function ensureParent(fs: MemoryFileSystem, path: string): void {
@@ -73,50 +88,47 @@ function ensureParent(fs: MemoryFileSystem, path: string): void {
   if (slash > 0) ensureDirRecursive(fs, path.slice(0, slash));
 }
 
-function parentPath(path: string): string {
-  const slash = path.lastIndexOf("/");
-  return slash > 0 ? path.slice(0, slash) : "/";
-}
-
-function makeDirectoryWritableByGuest(
+function makeTreeWritableByGuest(
   fs: MemoryFileSystem,
   path: string,
-  uid: number,
-  gid: number,
 ): void {
-  try {
-    const st = fs.lstat(path);
-    // The harness prepares an ephemeral php-src image per PHPT section.
-    // When the guest process intentionally runs as a non-root uid, make the
-    // source root and the current PHPT directory writable by that guest just
-    // like the Node-host harness does for copied source trees. This changes
-    // only test fixture ownership/mode; kernel credential checks still decide
-    // whether user-mode operations are allowed.
-    if ((st.mode & 0o170000) !== 0o040000) return;
-    fs.chown(path, uid, gid);
+  const st = fs.lstat(path);
+  const kind = st.mode & 0o170000;
+  if (kind === 0o120000) return;
+  if (kind === 0o040000) {
     fs.chmod(path, 0o777);
-  } catch {
-    // Missing paths will be reported by the actual PHP process or by the
-    // script write below. This helper is best-effort fixture setup.
+    const dh = fs.opendir(path);
+    try {
+      for (;;) {
+        const entry = fs.readdir(dh);
+        if (!entry) break;
+        if (entry.name === "." || entry.name === "..") continue;
+        makeTreeWritableByGuest(
+          fs,
+          path === "/" ? `/${entry.name}` : `${path}/${entry.name}`,
+        );
+      }
+    } finally {
+      fs.closedir(dh);
+    }
+    return;
   }
+  fs.chmod(path, (st.mode & 0o111) | 0o666);
 }
 
 function prepareGuestWritableWorkspace(
   fs: MemoryFileSystem,
-  scriptPath: string,
+  _scriptPath: string,
   uid?: number,
   gid?: number,
 ): void {
   if (uid == null && gid == null) return;
-  const effectiveUid = uid ?? 0;
-  const effectiveGid = gid ?? effectiveUid;
-  makeDirectoryWritableByGuest(fs, "/php-src", effectiveUid, effectiveGid);
-  makeDirectoryWritableByGuest(
-    fs,
-    parentPath(scriptPath),
-    effectiveUid,
-    effectiveGid,
-  );
+  if (guestWritableFileSystems.has(fs)) return;
+  // Match Node's copied-source contract: directories are world-writable and
+  // files retain execute bits while becoming writable. Do this once per VFS,
+  // before any section mutates it.
+  makeTreeWritableByGuest(fs, "/php-src");
+  guestWritableFileSystems.add(fs);
 }
 
 function binaryStringToBytes(value: string): Uint8Array {
@@ -136,29 +148,23 @@ function bytesToBinaryString(data: Uint8Array): string {
   return out;
 }
 
-function corsProxyUrlPrefix(): string {
-  const base = import.meta.env.BASE_URL ?? "/";
-  const normalized = base.startsWith("/") ? base : `/${base}`;
-  const proxyPath = `${normalized.endsWith("/") ? normalized : `${normalized}/`}__kandelo_cors_proxy`;
-  const proxyUrl = new URL(proxyPath, window.location.href);
-  proxyUrl.searchParams.set("url", "");
-  return proxyUrl.href;
-}
-
 function delay(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 async function init() {
+  const baseUrl = import.meta.env.BASE_URL ?? "/";
+  const vfsFile = import.meta.env.VITE_PHP_TEST_VFS_URL ?? "php-test.vfs.zst";
+  const vfsUrl = `${baseUrl.endsWith("/") ? baseUrl : `${baseUrl}/`}${vfsFile}`;
   const [kernelBuf, imageBuf] = await Promise.all([
     fetch(kernelWasmUrl).then((r) => {
       if (!r.ok) throw new Error(`kernel fetch failed: ${r.status}`);
       return r.arrayBuffer();
     }),
-    fetch("/php-test.vfs.zst").then((r) => {
+    fetch(vfsUrl).then((r) => {
       if (!r.ok) {
         throw new Error(
-          `php-test.vfs.zst not found (${r.status}). Run: bash images/vfs/scripts/build-php-test-vfs-image.sh`,
+          `${vfsFile} not found (${r.status}). Run: bash images/vfs/scripts/build-php-test-vfs-image.sh`,
         );
       }
       return r.arrayBuffer();
@@ -169,13 +175,28 @@ async function init() {
   vfsImageBytes = new Uint8Array(imageBuf);
   const fs = createFs();
   const php = readVfsFile(fs, "/usr/local/bin/php");
-  phpBytes = php.buffer.slice(php.byteOffset, php.byteOffset + php.byteLength);
+  const phpCopy = new Uint8Array(php.byteLength);
+  phpCopy.set(php);
+  phpBytes = phpCopy.buffer;
 
   window.__runPhpScript = async (request: RunPhpScriptRequest) => {
     const start = performance.now();
-    const fs = createFs();
+    // SKIPIF, FILE, and CLEAN are sections of one upstream PHPT execution and
+    // must observe the same filesystem mutations. Start from a fresh image
+    // only when the runner advances to a different test.
+    const fs = fsForTest(request.testId);
     prepareGuestWritableWorkspace(fs, request.scriptPath, request.uid, request.gid);
     ensureParent(fs, request.scriptPath);
+    let previousScript: { bytes: Uint8Array; mode: number } | null = null;
+    try {
+      const st = fs.lstat(request.scriptPath);
+      previousScript = {
+        bytes: readVfsFile(fs, request.scriptPath),
+        mode: st.mode & 0o7777,
+      };
+    } catch {
+      previousScript = null;
+    }
     writeVfsBinary(fs, request.scriptPath, binaryStringToBytes(request.script), 0o644);
 
     let stdout = "";
@@ -184,7 +205,6 @@ async function init() {
     const kernel = new BrowserKernel({
       memfs: fs,
       maxWorkers: 4,
-      corsProxyUrl: corsProxyUrlPrefix(),
       onStdout: (data) => {
         const text = bytesToBinaryString(data);
         stdout += text;
@@ -214,8 +234,6 @@ async function init() {
           cwd: request.cwd,
           env,
           stdin,
-          stdinIsPipe: request.stdinIsPipe,
-          pipeStdio: request.pipeStdio,
           uid: request.uid,
           gid: request.gid,
         }),
@@ -258,6 +276,21 @@ async function init() {
       };
     } finally {
       await kernel.destroy().catch(() => {});
+      if (previousScript) {
+        writeVfsBinary(
+          fs,
+          request.scriptPath,
+          previousScript.bytes,
+          previousScript.mode,
+        );
+        fs.chmod(request.scriptPath, previousScript.mode);
+      } else {
+        try {
+          fs.unlink(request.scriptPath);
+        } catch {
+          // The guest may already have removed its generated script.
+        }
+      }
     }
   };
 

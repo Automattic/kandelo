@@ -74,6 +74,7 @@ import posixNgettextWasmUrl from "@binaries/programs/wasm32/posix-utils-lite/nge
 import posixNmWasmUrl from "@binaries/programs/wasm32/posix-utils-lite/nm.wasm?url";
 import posixPatchWasmUrl from "@binaries/programs/wasm32/posix-utils-lite/patch.wasm?url";
 import posixPaxWasmUrl from "@binaries/programs/wasm32/posix-utils-lite/pax.wasm?url";
+import posixPgrepWasmUrl from "@binaries/programs/wasm32/posix-utils-lite/pgrep.wasm?url";
 import posixPsWasmUrl from "@binaries/programs/wasm32/posix-utils-lite/ps.wasm?url";
 import posixReniceWasmUrl from "@binaries/programs/wasm32/posix-utils-lite/renice.wasm?url";
 import posixStringsWasmUrl from "@binaries/programs/wasm32/posix-utils-lite/strings.wasm?url";
@@ -170,6 +171,7 @@ const ROOTFS_LAZY_ASSET_URLS = new Map<string, string>([
   ["binaries/programs/wasm32/posix-utils-lite/nm.wasm", posixNmWasmUrl],
   ["binaries/programs/wasm32/posix-utils-lite/patch.wasm", posixPatchWasmUrl],
   ["binaries/programs/wasm32/posix-utils-lite/pax.wasm", posixPaxWasmUrl],
+  ["binaries/programs/wasm32/posix-utils-lite/pgrep.wasm", posixPgrepWasmUrl],
   ["binaries/programs/wasm32/posix-utils-lite/ps.wasm", posixPsWasmUrl],
   ["binaries/programs/wasm32/posix-utils-lite/renice.wasm", posixReniceWasmUrl],
   ["binaries/programs/wasm32/posix-utils-lite/strings.wasm", posixStringsWasmUrl],

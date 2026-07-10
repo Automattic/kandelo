@@ -9,188 +9,115 @@
  * The Playwright-side runner parses each .phpt file and writes transient
  * PHP scripts into the restored image before spawning /usr/local/bin/php.
  */
-import { cpSync, existsSync, readFileSync, readdirSync, statSync, writeFileSync } from "node:fs";
-import { dirname, join, relative } from "node:path";
+import {
+  cpSync,
+  existsSync,
+  lstatSync,
+  mkdtempSync,
+  readFileSync,
+  readdirSync,
+  readlinkSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from "node:fs";
+import { createHash, type Hash } from "node:crypto";
+import { tmpdir } from "node:os";
+import { delimiter, dirname, join, relative } from "node:path";
+import { fileURLToPath } from "node:url";
 import { MemoryFileSystem } from "../../../host/src/vfs/memory-fs";
 import {
-  ensureDir,
   ensureDirRecursive,
-  symlink,
-  writeVfsFile,
   writeVfsBinary,
 } from "../../../host/src/vfs/image-helpers";
 import { findRepoRoot, tryResolveBinary } from "../../../host/src/binary-resolver";
+import { preparePhpTestFixtures } from "./php-test-fixtures";
 import { ensureSourceExtract } from "./source-extract-helper";
 import { saveImage, walkAndWrite } from "./vfs-image-helpers";
 
 const REPO_ROOT = findRepoRoot();
+const PHP_FIXTURE_ROOT = join(REPO_ROOT, "tests/php-fixtures");
 const LOCAL_PHP_SRC = join(REPO_ROOT, "packages/registry/php/php-src");
 const PHP_WASM = process.env.PHP_WASM
   ?? tryResolveBinary("programs/php/php.wasm")
   ?? join(LOCAL_PHP_SRC, "sapi/cli/php");
 const OPCACHE_SO = process.env.PHP_OPCACHE_SO
   ?? tryResolveBinary("programs/php/opcache.so");
-const PHP_EXTENSION_DIR = process.env.PHP_EXTENSION_DIR
-  ?? (OPCACHE_SO ? dirname(OPCACHE_SO) : undefined);
-const DASH_WASM = process.env.DASH_WASM
-  ?? tryResolveBinary("programs/dash.wasm");
-const COREUTILS_WASM = process.env.COREUTILS_WASM
-  ?? tryResolveBinary("programs/coreutils.wasm");
-const SED_WASM = process.env.SED_WASM
-  ?? tryResolveBinary("programs/sed.wasm");
-const GREP_WASM = process.env.GREP_WASM
-  ?? tryResolveBinary("programs/grep.wasm");
+const PHP_EXTENSION_DIRS = [
+  dirname(PHP_WASM),
+  ...((process.env.PHP_EXTENSION_DIR ?? "")
+    .split(delimiter)
+    .map((path) => path.trim())
+    .filter(Boolean)),
+];
+const PHP_FPM_WASM = process.env.PHP_FPM_WASM
+  ?? tryResolveBinary("programs/php/php-fpm.wasm");
+const ROOTFS_VFS = process.env.ROOTFS_VFS
+  ?? tryResolveBinary("programs/rootfs/rootfs.vfs")
+  ?? join(REPO_ROOT, "host/wasm/rootfs.vfs");
 const OUT_FILE = process.env.PHP_TEST_VFS_OUT
   ?? join(REPO_ROOT, "apps/browser-demos/public/php-test.vfs.zst");
-const FS_INITIAL_BYTES = Number(process.env.PHP_TEST_VFS_INITIAL_BYTES ?? 256 * 1024 * 1024);
 const FS_MAX_BYTES = Number(process.env.PHP_TEST_VFS_MAX_BYTES ?? 2 * 1024 * 1024 * 1024);
+const META_FILE = `${OUT_FILE}.meta.json`;
 
-const ETC_PASSWD = [
-  "root:x:0:0:root:/root:/bin/sh",
-  "nobody:x:65534:65534:nobody:/nonexistent:/usr/sbin/nologin",
-  "user:x:1000:1000:user:/home/user:/bin/sh",
-  "",
-].join("\n");
+function hashInputPath(
+  hash: Hash,
+  label: string,
+  path: string | null | undefined,
+): void {
+  hash.update(`input\0${label}\0`);
+  if (!path || !existsSync(path)) {
+    hash.update("missing\0");
+    return;
+  }
+  const root = path;
+  const visit = (current: string) => {
+    const st = lstatSync(current);
+    const rel = relative(root, current) || ".";
+    hash.update(`${rel}\0${st.mode & 0o7777}\0`);
+    if (st.isSymbolicLink()) {
+      hash.update(`link\0${readlinkSync(current)}\0`);
+    } else if (st.isDirectory()) {
+      hash.update("dir\0");
+      for (const entry of readdirSync(current).sort()) {
+        if (entry === ".git" || entry === ".deps" || entry === ".libs") continue;
+        visit(join(current, entry));
+      }
+    } else if (st.isFile()) {
+      hash.update("file\0");
+      hash.update(readFileSync(current));
+    } else {
+      hash.update("unsupported\0");
+    }
+  };
+  visit(path);
+}
 
-const ETC_GROUP = [
-  "root:x:0:",
-  "nogroup:x:65534:",
-  "nobody:x:65534:",
-  "user:x:1000:",
-  "",
-].join("\n");
-
-const ETC_SERVICES = readFileSync(
-  join(REPO_ROOT, "images/rootfs/etc/services"),
-  "utf8",
-);
-
-const COREUTILS_NAMES = [
-  "arch", "b2sum", "base32", "base64", "basename", "basenc", "cat",
-  "chcon", "chgrp", "chmod", "chown", "chroot", "cksum", "comm", "cp",
-  "csplit", "cut", "date", "dd", "df", "dir", "dircolors", "dirname",
-  "du", "echo", "env", "expand", "expr", "factor", "false", "fmt",
-  "fold", "groups", "head", "hostid", "id", "install", "join", "link",
-  "ln", "logname", "ls", "md5sum", "mkdir", "mkfifo", "mknod", "mktemp",
-  "mv", "nice", "nl", "nohup", "nproc", "numfmt", "od", "paste",
-  "pathchk", "pr", "printenv", "printf", "ptx", "pwd", "readlink",
-  "realpath", "rm", "rmdir", "runcon", "seq", "sha1sum", "sha224sum",
-  "sha256sum", "sha384sum", "sha512sum", "shred", "shuf", "sleep",
-  "sort", "split", "stat", "stty", "sum", "sync", "tac", "tail",
-  "tee", "test", "timeout", "touch", "tr", "true", "truncate", "tsort",
-  "tty", "uname", "unexpand", "uniq", "unlink", "vdir", "wc", "whoami",
-  "yes",
-];
-
-const PGREP_SCRIPT = `#!/bin/sh
-if [ "$1" != "-P" ] || [ -z "$2" ]; then
-  exit 2
-fi
-want_ppid=$2
-found=1
-for stat in /proc/[0-9]*/stat; do
-  [ -r "$stat" ] || continue
-  line=$(cat "$stat" 2>/dev/null) || continue
-  pid=\${line%% *}
-  after=\${line#*) }
-  set -- $after
-  ppid=$2
-  if [ "$ppid" = "$want_ppid" ]; then
-    printf '%s\\n' "$pid"
-    found=0
-  fi
-done
-exit "$found"
-`;
-
-const PS_SCRIPT = `#!/bin/sh
-pids=
-format=
-while [ "$#" -gt 0 ]; do
-  case "$1" in
-    -p|--pid)
-      shift
-      pids=$1
-      ;;
-    -p*)
-      pids=\${1#-p}
-      ;;
-    -o|--format)
-      shift
-      format=$1
-      ;;
-    -o*)
-      format=\${1#-o}
-      ;;
-    *)
-      ;;
-  esac
-  shift
-done
-
-[ -n "$format" ] || format=pid,command
-header=1
-case "$format" in
-  *=*)
-    header=0
-    ;;
-esac
-
-fields=$(printf '%s' "$format" | tr ',' ' ')
-if [ -n "$pids" ]; then
-  pid_list=$(printf '%s' "$pids" | tr ',' ' ')
-else
-  pid_list=
-  for proc_dir in /proc/[0-9]*; do
-    [ -d "$proc_dir" ] || continue
-    pid_list="$pid_list \${proc_dir#/proc/}"
-  done
-fi
-
-if [ "$header" = 1 ]; then
-  out=
-  for field in $fields; do
-    field=\${field%=}
-    case "$field" in
-      pid) label=PID ;;
-      nice|ni) label=NICE ;;
-      comm|command|args) label=COMMAND ;;
-      *) label=$(printf '%s' "$field" | tr '[:lower:]' '[:upper:]') ;;
-    esac
-    out="$out\${out:+ }$label"
-  done
-  printf '%s\\n' "$out"
-fi
-
-found=0
-for pid in $pid_list; do
-  stat=/proc/$pid/stat
-  [ -r "$stat" ] || continue
-  line=$(cat "$stat" 2>/dev/null) || continue
-  comm=\${line#*(}
-  comm=\${comm%)*}
-  after=\${line#*) }
-  set -- $after
-  nice=\${17:-0}
-  cmd=$(tr '\\000' ' ' < /proc/$pid/cmdline 2>/dev/null)
-  [ -n "$cmd" ] || cmd=$comm
-  row=
-  for field in $fields; do
-    field=\${field%=}
-    case "$field" in
-      pid) value=$pid ;;
-      nice|ni) value=$nice ;;
-      comm|command|args) value=$cmd ;;
-      *) value= ;;
-    esac
-    row="$row\${row:+ }$value"
-  done
-  printf '%s\\n' "$row"
-  found=1
-done
-
-[ "$found" = 1 ]
-`;
+function phpTestVfsFingerprint(sourceRoot: string): string {
+  const hash = createHash("sha256");
+  hash.update(`php-test-vfs-v2\0max=${FS_MAX_BYTES}\0`);
+  hashInputPath(hash, "builder", fileURLToPath(import.meta.url));
+  hashInputPath(
+    hash,
+    "fixture-preparation",
+    join(dirname(fileURLToPath(import.meta.url)), "php-test-fixtures.ts"),
+  );
+  hashInputPath(
+    hash,
+    "helpers",
+    join(dirname(fileURLToPath(import.meta.url)), "vfs-image-helpers.ts"),
+  );
+  hashInputPath(hash, "source", sourceRoot);
+  hashInputPath(hash, "fixtures", PHP_FIXTURE_ROOT);
+  hashInputPath(hash, "rootfs", ROOTFS_VFS);
+  hashInputPath(hash, "php", PHP_WASM);
+  hashInputPath(hash, "php-fpm", PHP_FPM_WASM);
+  for (const [index, extensionDir] of PHP_EXTENSION_DIRS.entries()) {
+    hashInputPath(hash, `extensions-${index}`, extensionDir);
+  }
+  hashInputPath(hash, "opcache", OPCACHE_SO);
+  return hash.digest("hex");
+}
 
 function resolvePhpSource(): string {
   return process.env.PHP_SOURCE_DIR
@@ -277,91 +204,22 @@ function copySupportFiles(
     const relPath = relDir ? `${relDir}/${entry}` : entry;
     if (shouldExclude(sourceRoot, relPath)) continue;
     const full = join(dir, entry);
-    try {
-      if (!statSync(full).isFile()) continue;
-      writeVfsBinary(fs, `${destDir}/${entry}`, new Uint8Array(readFileSync(full)), 0o644);
+    const st = lstatSync(full);
+    const dest = `${destDir}/${entry}`;
+    if (st.isSymbolicLink()) {
+      fs.symlink(readlinkSync(full), dest);
       count++;
-    } catch {
-      // Skip unreadable or disappearing support files, matching walkAndWrite.
+    } else if (st.isFile()) {
+      writeVfsBinary(
+        fs,
+        dest,
+        new Uint8Array(readFileSync(full)),
+        st.mode & 0o7777,
+      );
+      count++;
     }
   }
   return count;
-}
-
-function preparePhpTestFixtures(sourceRoot: string): void {
-  const fixtureDir = join(REPO_ROOT, "tests/php-fixtures/openssl-sni-2036");
-  const destDir = join(sourceRoot, "ext/openssl/tests");
-  if (existsSync(fixtureDir) && existsSync(destDir)) {
-    for (const entry of readdirSync(fixtureDir)) {
-      if (!entry.startsWith("sni_server_") || !entry.endsWith(".pem")) continue;
-      cpSync(join(fixtureDir, entry), join(destDir, entry));
-    }
-  }
-
-  const mysqliFakeServer = join(sourceRoot, "ext/mysqli/tests/fake_server.inc");
-  if (existsSync(mysqliFakeServer)) {
-    const text = readFileSync(mysqliFakeServer, "utf8");
-    if (!text.includes("MYSQLI_FAKE_SERVER_DRAIN_IDLE_MS")) {
-      const from = `    public function read($bytes_len = 1024)
-    {
-        // wait 20ms to fill the buffer
-        usleep(20000);
-        $data = fread($this->conn, $bytes_len);
-        if ($data) {
-            fprintf(STDERR, "[*] Received: %s\\n", bin2hex($data));
-        }
-    }`;
-      const to = `    public function read($bytes_len = 1024)
-    {
-        // wait 20ms to fill the buffer
-        usleep(20000);
-        $data = fread($this->conn, $bytes_len);
-
-        if ($data && $bytes_len > 1024) {
-            // Large reads in this fake MySQL server are used to drain the
-            // connection tail after the client reacts to a crafted packet.
-            // fread() on a POSIX stream may return as soon as any bytes are
-            // available; it is not required to wait for later client writes to
-            // coalesce into the same TCP segment. Native php-src runs usually
-            // see the final COM_STMT_CLOSE and COM_QUIT together after the
-            // fixed sleep above, but the browser host can schedule the guest
-            // peer more slowly. Keep draining for a short idle window and print
-            // one Received line so the fixture remains semantically identical
-            // without relying on transport coalescing.
-            $idleMs = getenv('MYSQLI_FAKE_SERVER_DRAIN_IDLE_MS');
-            $idleMs = $idleMs !== false && is_numeric($idleMs) ? max(0, (int) $idleMs) : 250;
-            $deadline = microtime(true) + ($idleMs / 1000);
-            $wasBlocking = stream_get_meta_data($this->conn)['blocked'] ?? true;
-            stream_set_blocking($this->conn, false);
-            try {
-                while (strlen($data) < $bytes_len && microtime(true) < $deadline) {
-                    usleep(10000);
-                    $chunk = fread($this->conn, $bytes_len - strlen($data));
-                    if ($chunk !== false && $chunk !== '') {
-                        $data .= $chunk;
-                        $deadline = microtime(true) + ($idleMs / 1000);
-                    }
-                }
-            } finally {
-                stream_set_blocking($this->conn, $wasBlocking);
-            }
-        }
-
-        if ($data) {
-            fprintf(STDERR, "[*] Received: %s\\n", bin2hex($data));
-        }
-    }`;
-      if (!text.includes(from)) {
-        throw new Error(
-          `Unable to patch PHP mysqli fake_server fixture: read() marker not found in ${mysqliFakeServer}`,
-        );
-      }
-      // The source tree is a local extracted test fixture, not tracked PHP
-      // package source. Patch it before packing the browser VFS so browser and
-      // Node PHPT runs exercise the same transport-tolerant fixture behavior.
-      writeFileSync(mysqliFakeServer, text.replace(from, to), "utf8");
-    }
-  }
 }
 
 function shouldExclude(sourceRoot: string, relPath: string): boolean {
@@ -410,129 +268,127 @@ function isGeneratedPhptArtifact(sourceRoot: string, relPath: string): boolean {
     if (stem && existsSync(join(sourceRoot, dir, `${stem}.phpt`))) return true;
   }
 
-  // PHPTs commonly leave archives/databases named after the test stem when a
-  // run is interrupted before --CLEAN--. Those files are execution products,
-  // not source fixtures; baking them into the browser image changes future
-  // test initial state (for example PharData opens an existing corrupt .zip
-  // instead of creating a new archive). Keep same-stem PHPT artifacts out of
-  // the immutable browser VFS image while preserving unrelated helper files.
-  const artifact = base.match(/^(.+?)(\.(?:\d+\.)*(?:phar|tar|zip|db|sqlite|sqlite3)(?:\.[A-Za-z0-9_-]+)*)$/);
-  if (!artifact) return false;
-  return existsSync(join(sourceRoot, dir, `${artifact[1]}.phpt`));
+  // Same-stem archives and databases are often committed PHPT fixtures. The
+  // staging-copy lifecycle prevents this builder from contaminating its source
+  // tree, so filename heuristics must not discard those legitimate inputs.
+  return false;
 }
 
 async function main() {
   if (!existsSync(PHP_WASM)) {
     throw new Error(`PHP wasm not found at ${PHP_WASM}. Run: bash packages/registry/php/build-php.sh`);
   }
-  if (!DASH_WASM || !existsSync(DASH_WASM)) {
-    throw new Error("dash.wasm not found. Run: scripts/fetch-binaries.sh or set DASH_WASM");
-  }
-  if (!COREUTILS_WASM || !existsSync(COREUTILS_WASM)) {
-    throw new Error("coreutils.wasm not found. Run: scripts/fetch-binaries.sh or set COREUTILS_WASM");
-  }
-  if (!SED_WASM || !existsSync(SED_WASM)) {
-    throw new Error("sed.wasm not found. Run: scripts/fetch-binaries.sh or set SED_WASM");
-  }
-  if (!GREP_WASM || !existsSync(GREP_WASM)) {
-    throw new Error("grep.wasm not found. Run: scripts/fetch-binaries.sh or set GREP_WASM");
-  }
-  const phpSrc = resolvePhpSource();
-  if (!existsSync(phpSrc)) {
-    throw new Error(`php-src not found at ${phpSrc}`);
-  }
-  preparePhpTestFixtures(phpSrc);
-
-  console.log("==> Building PHP PHPT test VFS image");
-  console.log(`  php-src: ${phpSrc}`);
-
-  const sab = new SharedArrayBuffer(FS_INITIAL_BYTES, { maxByteLength: FS_MAX_BYTES });
-  const fs = MemoryFileSystem.create(sab, FS_MAX_BYTES);
-  for (const dir of [
-    "/tmp", "/home", "/root", "/dev", "/etc", "/bin", "/usr", "/usr/bin",
-    "/usr/lib", "/usr/lib/php", "/usr/lib/php/extensions",
-    "/usr/local", "/usr/local/bin", "/php-src",
-  ]) {
-    ensureDir(fs, dir);
-  }
-  fs.chmod("/tmp", 0o1777);
-  writeVfsFile(fs, "/etc/passwd", ETC_PASSWD);
-  writeVfsFile(fs, "/etc/group", ETC_GROUP);
-  writeVfsFile(fs, "/etc/services", ETC_SERVICES);
-
-  writeVfsBinary(fs, "/usr/bin/dash", new Uint8Array(readFileSync(DASH_WASM)));
-  symlink(fs, "/usr/bin/dash", "/bin/sh");
-  symlink(fs, "/usr/bin/dash", "/bin/dash");
-
-  writeVfsBinary(fs, "/usr/bin/coreutils", new Uint8Array(readFileSync(COREUTILS_WASM)));
-  for (const name of COREUTILS_NAMES) {
-    symlink(fs, "/usr/bin/coreutils", `/bin/${name}`);
-    symlink(fs, "/usr/bin/coreutils", `/usr/bin/${name}`);
-  }
-  symlink(fs, "/usr/bin/coreutils", "/bin/[");
-  symlink(fs, "/usr/bin/coreutils", "/usr/bin/[");
-
-  writeVfsBinary(fs, "/usr/bin/sed", new Uint8Array(readFileSync(SED_WASM)));
-  symlink(fs, "/usr/bin/sed", "/bin/sed");
-
-  writeVfsBinary(fs, "/usr/bin/grep", new Uint8Array(readFileSync(GREP_WASM)));
-  symlink(fs, "/usr/bin/grep", "/bin/grep");
-  symlink(fs, "/usr/bin/grep", "/usr/bin/egrep");
-  symlink(fs, "/usr/bin/grep", "/bin/egrep");
-  symlink(fs, "/usr/bin/grep", "/usr/bin/fgrep");
-  symlink(fs, "/usr/bin/grep", "/bin/fgrep");
-
-  writeVfsFile(fs, "/usr/bin/pgrep", PGREP_SCRIPT, 0o755);
-  symlink(fs, "/usr/bin/pgrep", "/bin/pgrep");
-  writeVfsFile(fs, "/usr/bin/ps", PS_SCRIPT, 0o755);
-  symlink(fs, "/usr/bin/ps", "/bin/ps");
-
-  writeVfsBinary(fs, "/usr/local/bin/php", new Uint8Array(readFileSync(PHP_WASM)));
-  if (PHP_EXTENSION_DIR && existsSync(PHP_EXTENSION_DIR)) {
-    for (const entry of readdirSync(PHP_EXTENSION_DIR)) {
-      if (!entry.endsWith(".so")) continue;
-      const src = join(PHP_EXTENSION_DIR, entry);
-      writeVfsBinary(
-        fs,
-        `/usr/lib/php/extensions/${entry}`,
-        new Uint8Array(readFileSync(src)),
-      );
-    }
-  }
-  if (OPCACHE_SO && existsSync(OPCACHE_SO)) {
-    // PHP_OPCACHE_SO is the explicit harness override for the OPcache side
-    // module. Honor it even when PHP_EXTENSION_DIR also contains an
-    // opcache.so; otherwise browser PHPT runs can silently package a stale
-    // or non-side-module opcache under the canonical extension path while the
-    // runner advertises OPcache as available.
-    writeVfsBinary(
-      fs,
-      "/usr/lib/php/extensions/opcache.so",
-      new Uint8Array(readFileSync(OPCACHE_SO)),
+  if (!ROOTFS_VFS || !existsSync(ROOTFS_VFS)) {
+    throw new Error(
+      `rootfs.vfs not found at ${ROOTFS_VFS}. Build the rootfs package or set ROOTFS_VFS`,
     );
   }
-
-  const phptDirs = collectPhptDirs(phpSrc);
-  const supportDirs = collectPhptSupportDirs(phpSrc, phptDirs);
-  console.log(`  Writing ${phptDirs.length} PHPT directories...`);
-  let fileCount = 0;
-  for (const dir of phptDirs) {
-    const rel = relative(phpSrc, dir);
-    const dest = rel ? `/php-src/${rel}` : "/php-src";
-    ensureDirRecursive(fs, dirname(dest));
-    fileCount += walkAndWrite(fs, dir, dest, {
-      exclude: (childRel) => shouldExclude(phpSrc, rel ? `${rel}/${childRel}` : childRel),
+  const phpSourceInput = resolvePhpSource();
+  if (!existsSync(phpSourceInput)) {
+    throw new Error(`php-src not found at ${phpSourceInput}`);
+  }
+  const fingerprint = phpTestVfsFingerprint(phpSourceInput);
+  if (process.argv.includes("--print-fingerprint")) {
+    process.stdout.write(`${fingerprint}\n`);
+    return;
+  }
+  const stagingRoot = mkdtempSync(join(tmpdir(), "kandelo-php-vfs-source-"));
+  const phpSrc = join(stagingRoot, "php-src");
+  try {
+    cpSync(phpSourceInput, phpSrc, {
+      recursive: true,
+      dereference: false,
+      filter: (path) => {
+        const base = path.split(/[\\/]/).pop();
+        return base !== ".git" && base !== ".deps" && base !== ".libs";
+      },
     });
-  }
-  if (supportDirs.length > 0) {
-    console.log(`  Writing ${supportDirs.length} PHPT support directories...`);
-    for (const dir of supportDirs) {
-      fileCount += copySupportFiles(fs, phpSrc, dir);
-    }
-  }
-  console.log(`    ${fileCount} files`);
+    preparePhpTestFixtures(phpSrc, PHP_FIXTURE_ROOT);
 
-  await saveImage(fs, OUT_FILE);
+    console.log("==> Building PHP PHPT test VFS image");
+    console.log(`  php-src input: ${phpSourceInput}`);
+
+    const fs = MemoryFileSystem.fromImage(
+      new Uint8Array(readFileSync(ROOTFS_VFS)),
+      { maxByteLength: FS_MAX_BYTES },
+    );
+    ensureDirRecursive(fs, "/usr/local/bin");
+    ensureDirRecursive(fs, "/usr/local/sbin");
+    ensureDirRecursive(fs, "/usr/lib/php/extensions");
+    ensureDirRecursive(fs, "/php-src");
+
+    writeVfsBinary(fs, "/usr/local/bin/php", new Uint8Array(readFileSync(PHP_WASM)));
+    if (PHP_FPM_WASM && existsSync(PHP_FPM_WASM)) {
+      writeVfsBinary(
+        fs,
+        "/usr/local/sbin/php-fpm",
+        new Uint8Array(readFileSync(PHP_FPM_WASM)),
+      );
+    }
+    for (const extensionDir of PHP_EXTENSION_DIRS) {
+      if (!existsSync(extensionDir)) continue;
+      for (const entry of readdirSync(extensionDir)) {
+        if (!entry.endsWith(".so")) continue;
+        const src = join(extensionDir, entry);
+        writeVfsBinary(
+          fs,
+          `/usr/lib/php/extensions/${entry}`,
+          new Uint8Array(readFileSync(src)),
+        );
+      }
+    }
+    if (OPCACHE_SO && existsSync(OPCACHE_SO)) {
+      // PHP_OPCACHE_SO is the explicit harness override for the OPcache side
+      // module. Honor it even when PHP_EXTENSION_DIR also contains an
+      // opcache.so; otherwise browser PHPT runs can silently package a stale
+      // or non-side-module opcache under the canonical extension path while the
+      // runner advertises OPcache as available.
+      writeVfsBinary(
+        fs,
+        "/usr/lib/php/extensions/opcache.so",
+        new Uint8Array(readFileSync(OPCACHE_SO)),
+      );
+    }
+
+    const phptDirs = collectPhptDirs(phpSrc);
+    const supportDirs = collectPhptSupportDirs(phpSrc, phptDirs);
+    console.log(`  Writing ${phptDirs.length} PHPT directories...`);
+    let fileCount = 0;
+    for (const dir of phptDirs) {
+      const rel = relative(phpSrc, dir);
+      const dest = rel ? `/php-src/${rel}` : "/php-src";
+      ensureDirRecursive(fs, dirname(dest));
+      fileCount += walkAndWrite(fs, dir, dest, {
+        exclude: (childRel) => shouldExclude(phpSrc, rel ? `${rel}/${childRel}` : childRel),
+        preserveMode: true,
+        preserveSymlinks: true,
+        failOnError: true,
+      });
+    }
+    if (supportDirs.length > 0) {
+      console.log(`  Writing ${supportDirs.length} PHPT support directories...`);
+      for (const dir of supportDirs) {
+        fileCount += copySupportFiles(fs, phpSrc, dir);
+      }
+    }
+    console.log(`    ${fileCount} files`);
+
+    await saveImage(fs, OUT_FILE);
+    writeFileSync(
+      META_FILE,
+      `${JSON.stringify(
+        {
+          version: 1,
+          fingerprint,
+          generatedAt: new Date().toISOString(),
+        },
+        null,
+        2,
+      )}\n`,
+    );
+  } finally {
+    rmSync(stagingRoot, { recursive: true, force: true });
+  }
 }
 
 main().catch((err) => {
