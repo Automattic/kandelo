@@ -56,6 +56,11 @@ case "$suite" in
         install_node_deps
         npx --prefix host playwright install chromium
         (cd host && npx vitest run)
+        # [JSC-TERMINATE-ATOMICS-WAIT-LEAK] Re-run the teardown-reclamation tests
+        # on JSC (Bun) as well as V8, since the workaround exists for JSC (Safari
+        # and Bun) and is a no-op on V8. `bun` comes from the flake dev shell.
+        # See docs/jsc-terminate-atomics-wait-workaround.md.
+        (cd host && bun x vitest run test/teardown-reclaim.test.ts test/pthread.test.ts)
         ;;
     browser)
         install_node_deps

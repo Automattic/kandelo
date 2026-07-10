@@ -120,12 +120,22 @@ the target Safari/Bun versions using the repro above and
 
 ## Validation (while the workaround is in place)
 
-- Host vitest exercises the Node host teardown path.
+- **Cross-engine teardown test** (`host/test/teardown-reclaim.test.ts`): spawns a
+  daemon parked in a blocking syscall (`examples/block-forever.c`), destroys the
+  kernel, and asserts it was woken into a cooperative exit (status 137 = 128 +
+  SIGKILL) rather than force-terminated. Runs under **both** V8 and JSC:
+  ```
+  cd host && npm run test:teardown:engines   # vitest on Node, then `bun x vitest`
+  ```
+  `pthread.test.ts` ("preserves exit(0)… while the main thread is blocked") also
+  runs under both and covers the already-exited-process guard. `bun` is provided
+  by the flake dev shell.
+- Host vitest (Node/V8) also exercises the teardown path throughout the suite
+  (it's how `runCentralizedProgram` tears down every process).
 - Playwright WebKit: kernel-owned WordPress boot/destroy loop — threads flat,
   RSS converges to a bounded plateau (before the fix: +~11 threads and
-  +~900–1100 MiB per switch, monotonic). See
+  +~900–1100 MiB per switch, monotonic). This is the only check that measures
+  actual memory/thread reclamation (the in-process tests assert the cooperative
+  path ran, not the OS-level reclaim). See
   `~/notes/Agent-logs/2026-07-08-safari-image-switch-oom.md` and PR
   [Automattic/kandelo#863](https://github.com/Automattic/kandelo/pull/863).
-- Bun: run the Node host teardown under `bun` and confirm the same flat result
-  (this is the parity case that motivated applying the workaround to the Node
-  entry).

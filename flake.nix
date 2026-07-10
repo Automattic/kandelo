@@ -55,6 +55,12 @@
             # memory64 on, matching the host Macs the team develops
             # on (homebrew node 24/25).
             pkgs.nodejs_24
+            # Bun: a JavaScriptCore-based runtime. We ship it so the host's
+            # teardown reclamation path can be exercised on JSC (the same engine
+            # as Safari) in addition to V8 (Node): `npm run test:teardown:engines`
+            # in host/ runs host/test/teardown-reclaim.test.ts under both. See
+            # docs/jsc-terminate-atomics-wait-workaround.md.
+            pkgs.bun
             # Host Erlang for the OTP cross-build bootstrap. Use the
             # minimal interpreter set so CI does not pull in wxWidgets,
             # WebKitGTK, and Xorg just to run `erl`/`erlc`.
