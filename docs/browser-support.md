@@ -517,6 +517,34 @@ Any extra files needed by an image-declared `autoCommand` can be declared in
 `assets`; the loader stages those paths generically and hash-verifies them when
 `sha256` is provided.
 
+A profile may also declare one fixed-path file-ingest capability. The current
+Kandelo browser UI presents it on the framebuffer surface as a file picker and
+drop target:
+
+```json
+{
+  "ingest": {
+    "accept": [".wad"],
+    "targetPath": "/user.wad",
+    "maxBytes": 33554432,
+    "label": "Load WAD",
+    "onLoad": {
+      "restart": "/usr/local/bin/fbdoom -iwad /user.wad"
+    }
+  }
+}
+```
+
+The image, not the uploaded filename or profile name, owns `targetPath` and the
+optional restart command. The path must be absolute and normalized, its parent
+must already exist, extensions are matched case-insensitively, and `maxBytes`
+cannot exceed 64 MiB. The browser checks both the file's declared size and the
+actual buffer length. It writes before stopping a current device owner, then
+uses the kernel signal path and bounded process/device waits before dispatching
+the image-owned command. Write, signal, timeout, and command-dispatch failures
+remain visible. An absent `ingest` block means the image exposes no upload
+capability; the loader does not infer one from a package or profile name.
+
 The runtime treats this file as untrusted image input. It must be a regular
 file no larger than 256 KiB, contain valid UTF-8 and JSON, and use a supported
 version. The loader validates every profile before using any of them, so a

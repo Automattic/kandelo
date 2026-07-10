@@ -17,7 +17,10 @@ import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { pathToFileURL } from "node:url";
 import { createRequire } from "node:module";
-import { Worker as NodeThreadWorker } from "node:worker_threads";
+import {
+  Worker as NodeThreadWorker,
+  type Transferable,
+} from "node:worker_threads";
 import { resolveBinary } from "./binary-resolver";
 import type {
   HostDiagnostic,
@@ -724,6 +727,22 @@ export class NodeKernelHost {
   }
 
   /**
+   * Deliver a POSIX signal to `pid`. Resolves false when the process is gone
+   * (ESRCH). Mirrors `BrowserKernel.signalProcess`: unlike `terminateProcess`
+   * this goes through the kernel's signal path, so disposition and exit
+   * cleanup apply.
+   */
+  async signalProcess(pid: number, signum: number): Promise<boolean> {
+    const requestId = this._nextRequestId++;
+    return await this.request(requestId, {
+      type: "signal_process",
+      requestId,
+      pid,
+      signum,
+    }) as boolean;
+  }
+
+  /**
    * Snapshot the kernel's process table — one row per live process. Used
    * by Kandelo's Inspector → Procs tab. Mirrors `BrowserKernel.enumProcs`.
    */
@@ -851,6 +870,34 @@ export class NodeKernelHost {
   }
 
   /**
+   * Create or replace a regular file in the worker-owned VFS. The parent
+   * directory must already exist, matching the browser host's raw mutation
+   * capability.
+   */
+  async writeFileToVfs(
+    path: string,
+    data: Uint8Array,
+    mode = 0o644,
+  ): Promise<void> {
+    if (!this.initialized) {
+      throw new Error("VFS write requires an initialized kernel");
+    }
+    const requestId = this._nextRequestId++;
+    const owned = data.slice();
+    await this.request(
+      requestId,
+      {
+        type: "write_vfs_file",
+        requestId,
+        path,
+        data: owned,
+        mode: mode & 0o7777,
+      },
+      [owned.buffer],
+    );
+  }
+
+  /**
    * Serialize the quiescent worker-owned root filesystem for a later boot.
    * The root image is durable; boot-scoped scratch and device mounts are not.
    * Callers must wait for every guest process to exit before invoking this.
@@ -926,19 +973,26 @@ export class NodeKernelHost {
 
   // ── Private ──
 
-  private sendToWorker(msg: MainToKernelMessage): void {
+  private sendToWorker(
+    msg: MainToKernelMessage,
+    transfer?: readonly Transferable[],
+  ): void {
     if (this.kernelFatalError !== null) throw this.kernelFatalError;
-    this.worker.postMessage(msg);
+    this.worker.postMessage(msg, transfer);
   }
 
-  private request(requestId: number, msg: MainToKernelMessage): Promise<any> {
+  private request(
+    requestId: number,
+    msg: MainToKernelMessage,
+    transfer?: readonly Transferable[],
+  ): Promise<any> {
     return new Promise((resolve, reject) => {
       if (this.kernelFatalError !== null) {
         reject(this.kernelFatalError);
         return;
       }
       this.pendingRequests.set(requestId, { resolve, reject });
-      this.sendToWorker(msg);
+      this.sendToWorker(msg, transfer);
     });
   }
 

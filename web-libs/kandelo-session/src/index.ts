@@ -6,3 +6,4 @@ export * from "./demo-config";
 export * from "./demo-config-vfs";
 export * from "./demo-guides";
 export * from "./shell-config";
+export * from "./demo-ingest";

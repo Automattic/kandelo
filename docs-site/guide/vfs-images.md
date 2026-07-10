@@ -152,7 +152,9 @@ Images consumed by the Kandelo UI can include:
 /etc/kandelo/demo.json
 ```
 
-This file lets the image declare presentation preferences, guide actions, companion HTML, assets, and automatic commands. Build scripts in this repo write it with:
+This file lets the image declare presentation preferences, guide actions,
+companion HTML, assets, automatic commands, and an optional fixed-path file
+ingest. Build scripts in this repo write it with:
 
 ```ts
 writeKandeloDemoConfig(fs, {
@@ -180,6 +182,13 @@ writeKandeloDemoConfig(fs, {
             ],
           },
         ],
+      },
+      ingest: {
+        accept: [".rom"],
+        targetPath: "/inputs/game.rom",
+        maxBytes: 8 * 1024 * 1024,
+        label: "Load ROM",
+        onLoad: { restart: "emulator /inputs/game.rom" },
       },
     },
   },

@@ -2995,9 +2995,8 @@ jq --arg sha "$artifact_sha" --argjson bytes "$artifact_bytes" \
   '.state = "sealed" | .image = {sha256: $sha, bytes: $bytes}' \
   "$LAZY_ARTIFACT_LOCK" >"$fixture_lock"
 pending_fixture_lock="$TMP_ROOT/lazy-shell-pending-artifact-lock.json"
-# WHY: the checked-in lock advances from pending to sealed after a reviewed
-# artifact is reproduced. Keep testing the pre-publication fail-closed state
-# explicitly instead of making this test depend on that release phase.
+# WHY: test the pre-publication fail-closed state explicitly without making
+# this fixture depend on whether the checked-in release is pending or sealed.
 jq '.state = "pending" | .image = null' \
   "$LAZY_ARTIFACT_LOCK" >"$pending_fixture_lock"
 bash "$LAZY_ARTIFACT_CHECKER" \

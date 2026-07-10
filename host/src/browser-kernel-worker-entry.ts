@@ -3033,6 +3033,19 @@ function handleIsStdinConsumed(msg: Extract<MainToKernelMessage, { type: "is_std
   respond(msg.requestId, kernelWorker.isStdinConsumed(msg.pid));
 }
 
+function handleSignalProcess(
+  msg: Extract<MainToKernelMessage, { type: "signal_process" }>,
+) {
+  try {
+    respond(
+      msg.requestId,
+      kernelWorker.signalProcess(msg.pid, msg.signum),
+    );
+  } catch (error) {
+    respondError(msg.requestId, formatError(error));
+  }
+}
+
 function handlePickListenerTarget(
   msg: Extract<MainToKernelMessage, { type: "pick_listener_target" }>,
 ) {
@@ -3404,6 +3417,7 @@ sw.onmessage = (e: MessageEvent) => {
     case "wake_blocked_readers": handleWakeBlockedReaders(msg); break;
     case "wake_blocked_writers": handleWakeBlockedWriters(msg); break;
     case "is_stdin_consumed": handleIsStdinConsumed(msg); break;
+    case "signal_process": handleSignalProcess(msg); break;
     case "pick_listener_target": handlePickListenerTarget(msg); break;
     case "http_request": handleHttpRequestMessage(msg); break;
     case "destroy": void handleDestroy(msg); break;

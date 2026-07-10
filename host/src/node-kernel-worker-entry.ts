@@ -2749,6 +2749,61 @@ async function handleReadVfsFile(
   }
 }
 
+function handleWriteVfsFile(
+  msg: Extract<MainToKernelMessage, { type: "write_vfs_file" }>,
+) {
+  const io = vfsExecIO;
+  if (!io) {
+    respondError(msg.requestId, "VFS is not initialized");
+    return;
+  }
+  let releaseMutation: (() => void) | undefined;
+  let fd: number | null = null;
+  try {
+    releaseMutation = rootfsSnapshotGate.beginMutation(
+      "write a rootfs file",
+    );
+    fd = io.open(
+      msg.path,
+      0o1101 /* O_WRONLY | O_CREAT | O_TRUNC */,
+      msg.mode & 0o7777,
+    );
+    let offset = 0;
+    while (offset < msg.data.byteLength) {
+      const written = io.write(
+        fd,
+        msg.data.subarray(offset),
+        null,
+        msg.data.byteLength - offset,
+      );
+      if (written <= 0) {
+        throw new Error(`Short write while staging ${msg.path}`);
+      }
+      offset += written;
+    }
+    io.close(fd);
+    fd = null;
+    // open(O_CREAT) preserves an existing file's mode. Apply the caller's
+    // requested mode explicitly so replacement and creation behave alike.
+    io.chmod(msg.path, msg.mode & 0o7777);
+    respond(msg.requestId, true);
+  } catch (error) {
+    if (fd !== null) {
+      try {
+        io.close(fd);
+      } catch {
+        // Preserve the write failure as the useful error.
+      }
+    }
+    respondError(
+      msg.requestId,
+      error instanceof Error ? error.message : String(error),
+    );
+  } finally {
+    releaseMutation?.();
+  }
+}
+
 // --- Message dispatch ---
 
 port.on("message", (msg: MainToKernelMessage) => {
@@ -2834,6 +2889,17 @@ port.on("message", (msg: MainToKernelMessage) => {
     case "read_vfs_file":
       void handleReadVfsFile(msg);
       break;
+    case "write_vfs_file":
+      handleWriteVfsFile(msg);
+      break;
+    case "signal_process": {
+      try {
+        respond(msg.requestId, kernelWorker.signalProcess(msg.pid, msg.signum));
+      } catch (err) {
+        respondError(msg.requestId, (err as Error)?.message ?? String(err));
+      }
+      break;
+    }
     case "get_fork_count": {
       // Round-trip access to the kernel's per-process fork counter for
       // tests asserting SYS_SPAWN didn't fall back to fork. Result is a
