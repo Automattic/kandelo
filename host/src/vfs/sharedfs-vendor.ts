@@ -207,7 +207,7 @@ export class SharedFS {
     const sizeBytes = buffer.byteLength;
     if (sizeBytes < BLOCK_SIZE * 16) throw new SFSError(EINVAL);
 
-    const totalBlocks = Math.floor(sizeBytes / BLOCK_SIZE);
+    let totalBlocks = Math.floor(sizeBytes / BLOCK_SIZE);
     const maxBlocks = maxSizeBytes
       ? Math.floor(maxSizeBytes / BLOCK_SIZE)
       : totalBlocks * 4;
@@ -229,7 +229,23 @@ export class SharedFS {
     const inodeTableStart = blockBitmapStart + blockBitmapBlocks;
     const dataStart = inodeTableStart + inodeTableBlocks;
 
-    if (dataStart >= totalBlocks) throw new SFSError(ENOSPC);
+    if (dataStart >= totalBlocks) {
+      // A growable filesystem sizes its inode and block bitmaps for the
+      // configured maximum, not just the current buffer length. Large maxima
+      // can therefore require more metadata blocks than fit in a deliberately
+      // small initial buffer. Grow enough to format the metadata plus the root
+      // directory; ordinary data allocation remains lazy after mkfs.
+      const minimumBytes = (dataStart + 1) * BLOCK_SIZE;
+      try {
+        (buffer as SharedArrayBuffer & { grow(size: number): void }).grow(
+          minimumBytes,
+        );
+      } catch {
+        throw new SFSError(ENOSPC);
+      }
+      totalBlocks = Math.floor(buffer.byteLength / BLOCK_SIZE);
+      if (dataStart >= totalBlocks) throw new SFSError(ENOSPC);
+    }
 
     // Zero the buffer
     new Uint8Array(buffer).fill(0);
