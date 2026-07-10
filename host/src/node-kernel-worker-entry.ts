@@ -92,6 +92,9 @@ let rootfsMemfs: MemoryFileSystem | null = null;
  *  worker constructs a `VirtualPlatformIO` from the default mount spec. */
 let sessionDir: string | null = null;
 const ENOEXEC = 8;
+// [JSC-TERMINATE-ATOMICS-WAIT-LEAK] destroy-time drain bounds; see handleDestroy.
+const DESTROY_KILL_DRAIN_TIMEOUT_MS = 1500;
+const DESTROY_KILL_DRAIN_POLL_MS = 15;
 const SSL_CERT_FILE_PATH = "/etc/ssl/certs/ca-certificates.crt";
 const OPENSSL_DEFAULT_CERT_FILE_PATH = "/etc/ssl/cert.pem";
 
@@ -1233,6 +1236,38 @@ async function handleTerminate(msg: TerminateProcessMessage) {
 // --- Destroy ---
 
 async function handleDestroy(msg: { requestId: number }) {
+  // [JSC-TERMINATE-ATOMICS-WAIT-LEAK] — WORKAROUND, remove when the engine bug
+  // is fixed; see docs/jsc-terminate-atomics-wait-workaround.md.
+  //
+  // On JSC-based runtimes, `Worker.terminate()` cannot free a worker parked in
+  // Atomics.wait on its syscall channel — the state every blocked process/thread
+  // worker sits in — so terminating them directly leaks their threads + committed
+  // memory. This host entry backs BOTH Node.js (V8) and Bun (JSC); on Bun the
+  // leak is live, so we must first wake every blocked worker into a cooperative
+  // exit (killAllBlockedForTeardown queues SIGKILL + EINTR; the guest glue runs
+  // kernel_exit → wasm trap → the worker idles → terminate() reclaims it). This
+  // is harmless on V8, so we do it unconditionally rather than sniff the engine,
+  // matching the browser host (which does the same and is likewise a no-op cost
+  // on Chrome/V8). Phases mirror browser-kernel-worker-entry.ts handleDestroy.
+  let woken = new Set<number>();
+  try { woken = kernelWorker.killAllBlockedForTeardown(); } catch (e) {
+    console.error(`[node-kernel-worker] killAllBlockedForTeardown failed: ${e}`);
+  }
+  // Drain only for the pids we woke — a process we did not wake (e.g. one
+  // already exited via a sibling thread) never posts {exit} and is
+  // force-terminated below instead of waited on.
+  const drainDeadline = Date.now() + DESTROY_KILL_DRAIN_TIMEOUT_MS;
+  const stillDraining = () => {
+    for (const pid of woken) if (processes.has(pid)) return true;
+    return false;
+  };
+  while (stillDraining() && Date.now() < drainDeadline) {
+    await new Promise((r) => setTimeout(r, DESTROY_KILL_DRAIN_POLL_MS));
+  }
+  if (stillDraining()) {
+    console.warn(`[node-kernel-worker] destroy drain timed out with woken process(es) still live; force-terminating`);
+  }
+
   const processEntries = [...processes.entries()];
   for (const [pid, info] of processEntries) {
     await terminateThreadWorkers(pid);

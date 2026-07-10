@@ -218,6 +218,9 @@ static void __deliver_pending_signal(uintptr_t base)
 
     /* Cooperative hard-exit for host teardown.
      *
+     * [JSC-TERMINATE-ATOMICS-WAIT-LEAK] — WORKAROUND, remove when the engine bug
+     * is fixed; see docs/jsc-terminate-atomics-wait-workaround.md.
+     *
      * SIGKILL is never delivered to the guest in normal operation — it is
      * uncatchable, so the kernel enforces its default terminate action itself
      * and never writes it into the channel signal slot. The host therefore
@@ -226,9 +229,10 @@ static void __deliver_pending_signal(uintptr_t base)
      *
      * We must reach the exit path that ends in a wasm trap so the worker
      * returns to its JS event loop and the host can actually reclaim it. This
-     * matters because WebKit's Worker.terminate() cannot free a worker parked
-     * in Atomics.wait on the syscall channel — the state every blocked process
-     * worker sits in.
+     * matters because on JSC (Safari, and Bun) Worker.terminate() cannot free a
+     * worker parked in Atomics.wait on the syscall channel — the state every
+     * blocked process worker sits in. (V8 — Chrome, Node — reclaims such workers
+     * on terminate, so this path is simply never exercised there.)
      *
      * Crucially we do NOT call musl _exit() here: on this port _exit() issues
      * SYS_exit_group over the channel (which returns normally) and then spins

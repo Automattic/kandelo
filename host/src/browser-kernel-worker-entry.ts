@@ -149,9 +149,10 @@ const workerTeardowns = new Set<Promise<void>>();
 const threadedProcessPids = new Set<number>();
 const THREADED_WORKER_TERMINATION_SETTLE_MS = 250;
 const NODE_PROCESS_WORKER_TERMINATION_SETTLE_MS = 2000;
-// On destroy we wake every Atomics.wait-blocked worker so it cooperatively
-// exits (WebKit's Worker.terminate() can't free a blocked worker). These bound
-// the wait for those workers to run their exit path and drain.
+// [JSC-TERMINATE-ATOMICS-WAIT-LEAK] On destroy we wake every Atomics.wait-blocked
+// worker so it cooperatively exits (on JSC — Safari and Bun — Worker.terminate()
+// can't free a blocked worker). These bound the wait for those workers to run
+// their exit path and drain. See docs/jsc-terminate-atomics-wait-workaround.md.
 const DESTROY_KILL_DRAIN_TIMEOUT_MS = 1500;
 const DESTROY_KILL_DRAIN_POLL_MS = 15;
 
@@ -1615,27 +1616,37 @@ function handlePickListenerTarget(msg: Extract<MainToKernelMessage, { type: "pic
 }
 
 async function handleDestroy(msg: Extract<MainToKernelMessage, { type: "destroy" }>) {
-  // Phase 1 — wake every Atomics.wait-blocked worker so it cooperatively
-  // exits. On WebKit, `Worker.terminate()` cannot kill (or free the memory of)
-  // a worker parked in `Atomics.wait` on its syscall channel — the state every
-  // idle/blocked process worker sits in — so terminating them directly leaks
-  // their threads + committed working set and each image switch OOMs Safari.
-  // killAllBlockedForTeardown completes each blocked syscall with EINTR + a
-  // queued SIGKILL; the guest glue then runs `_exit`, the worker returns to its
-  // JS event loop (via {exit}), and it becomes reclaimable.
-  try { kernelWorker.killAllBlockedForTeardown(); } catch (e) {
+  // Phase 1 — wake every Atomics.wait-blocked worker so it cooperatively exits.
+  // [JSC-TERMINATE-ATOMICS-WAIT-LEAK] — WORKAROUND, remove when the engine bug is
+  // fixed; see docs/jsc-terminate-atomics-wait-workaround.md.
+  // On JSC (Safari, and Bun), `Worker.terminate()` cannot kill (or free the
+  // memory of) a worker parked in `Atomics.wait` on its syscall channel — the
+  // state every idle/blocked process worker sits in — so terminating them
+  // directly leaks their threads + committed working set and each image switch
+  // OOMs Safari. killAllBlockedForTeardown completes each blocked syscall with
+  // EINTR + a queued SIGKILL; the guest glue then runs kernel_exit, the worker
+  // returns to its JS event loop (via {exit}), and it becomes reclaimable. A
+  // no-op cost on V8 (Chrome), so it runs unconditionally.
+  let woken = new Set<number>();
+  try { woken = kernelWorker.killAllBlockedForTeardown(); } catch (e) {
     console.error(`[kernel-worker] killAllBlockedForTeardown failed: ${e}`);
   }
 
   // Phase 2 — drain. The woken workers run their exit path and post `{exit}`,
   // which fires handleExit → removes them from `processes` and terminates them
-  // while idle (reclaimed). Wait for that, bounded.
+  // while idle (reclaimed). Wait only for the pids we woke — a process we did
+  // not wake (e.g. one already exited via a sibling thread) never posts `{exit}`
+  // and is force-terminated below instead of waited on. Bounded.
   const drainDeadline = Date.now() + DESTROY_KILL_DRAIN_TIMEOUT_MS;
-  while (processes.size > 0 && Date.now() < drainDeadline) {
+  const stillDraining = () => {
+    for (const pid of woken) if (processes.has(pid)) return true;
+    return false;
+  };
+  while (stillDraining() && Date.now() < drainDeadline) {
     await delay(DESTROY_KILL_DRAIN_POLL_MS);
   }
-  if (processes.size > 0) {
-    console.warn(`[kernel-worker] destroy drain timed out with ${processes.size} process(es) still live; force-terminating`);
+  if (stillDraining()) {
+    console.warn(`[kernel-worker] destroy drain timed out with woken process(es) still live; force-terminating`);
   }
 
   // Phase 3 — terminate any stragglers (non-blocked workers, or any that
