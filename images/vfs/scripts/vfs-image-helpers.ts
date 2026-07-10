@@ -3,7 +3,14 @@
  * from host/src/vfs/image-helpers.ts so demo runtime code can share them.
  * The Node-only helpers (host-disk walk, save-to-file) live here.
  */
-import { readFileSync, readdirSync, lstatSync, writeFileSync, mkdirSync } from "fs";
+import {
+  readFileSync,
+  readdirSync,
+  readlinkSync,
+  lstatSync,
+  writeFileSync,
+  mkdirSync,
+} from "fs";
 import { join, relative } from "path";
 import { zstdCompressSync, constants as zlibConstants } from "node:zlib";
 import type {
@@ -25,6 +32,9 @@ import { writeVfsBinary, ensureDirRecursive } from "../../../host/src/vfs/image-
 
 export interface WalkOptions {
   exclude?: (relPath: string) => boolean;
+  preserveMode?: boolean;
+  preserveSymlinks?: boolean;
+  failOnError?: boolean;
 }
 
 /**
@@ -48,18 +58,29 @@ export function walkAndWrite(
 
       try {
         const lstat = lstatSync(full);
-        if (lstat.isSymbolicLink()) continue;
-        if (lstat.isDirectory()) {
-          if (opts?.exclude?.(rel)) continue;
+        if (opts?.exclude?.(rel)) continue;
+        if (lstat.isSymbolicLink()) {
+          if (opts?.preserveSymlinks) {
+            ensureDirRecursive(fs, mountPath.slice(0, mountPath.lastIndexOf("/")) || "/");
+            fs.symlink(readlinkSync(full), mountPath);
+            count++;
+          }
+        } else if (lstat.isDirectory()) {
           ensureDirRecursive(fs, mountPath);
+          if (opts?.preserveMode) fs.chmod(mountPath, lstat.mode & 0o7777);
           walk(full);
         } else if (lstat.isFile()) {
-          if (opts?.exclude?.(rel)) continue;
           const data = readFileSync(full);
-          writeVfsBinary(fs, mountPath, new Uint8Array(data), 0o644);
+          writeVfsBinary(
+            fs,
+            mountPath,
+            new Uint8Array(data),
+            opts?.preserveMode ? lstat.mode & 0o7777 : 0o644,
+          );
           count++;
         }
-      } catch {
+      } catch (err) {
+        if (opts?.failOnError) throw err;
         // Skip unreadable files
       }
     }
@@ -146,8 +167,10 @@ function assertNoStaleWasmArtifacts(fs: MemoryFileSystem, kernelAbi: number): vo
       continue;
     }
     if (!isWasm(bytes)) continue;
+    const artifactBytes = new Uint8Array(bytes.byteLength);
+    artifactBytes.set(bytes);
     const reasons = describeWasmArtifactPolicyFailures(
-      bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength),
+      artifactBytes.buffer,
       { expectedAbi: kernelAbi },
     );
     if (reasons.length > 0) failures.push(`${path}: ${reasons.join("; ")}`);

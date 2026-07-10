@@ -426,6 +426,11 @@ path = "/usr/bin/pax"
 aliases = ["/bin/pax"]
 
 [[packages.outputs]]
+binary = "programs/wasm32/posix-utils-lite/pgrep.wasm"
+path = "/usr/bin/pgrep"
+aliases = ["/bin/pgrep"]
+
+[[packages.outputs]]
 binary = "programs/wasm32/posix-utils-lite/ps.wasm"
 path = "/usr/bin/ps"
 aliases = ["/bin/ps"]

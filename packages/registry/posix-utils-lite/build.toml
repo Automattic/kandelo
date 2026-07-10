@@ -1,7 +1,7 @@
 script_path = "packages/registry/posix-utils-lite/build-posix-utils-lite.sh"
-repo_url    = "https://github.com/brandonpayton/kandelo.git"
-commit      = "13930e1d2352048372847b6ec6cede8ebb25b5f8"
-revision    = 3
+repo_url    = "https://github.com/Automattic/kandelo.git"
+commit      = "UNPUBLISHED"
+revision    = 4
 
 [binary]
 index_url = "https://github.com/Automattic/kandelo/releases/download/binaries-abi-v{abi}/index.toml"
