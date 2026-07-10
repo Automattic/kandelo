@@ -4073,6 +4073,7 @@ pub fn sys_stat(proc: &mut Process, host: &mut dyn HostIO, path: &[u8]) -> Resul
         });
     }
     if let Some(entry) = crate::procfs::match_procfs(&resolved, proc.pid) {
+        crate::procfs::validate_entry(proc, &entry)?;
         return Ok(crate::procfs::procfs_stat(&entry, 0, true));
     }
     if let Some(st) = crate::devfs::match_devfs_stat(&resolved, proc.euid, proc.egid) {
@@ -4122,6 +4123,7 @@ pub fn sys_lstat(
         });
     }
     if let Some(entry) = crate::procfs::match_procfs(&resolved, proc.pid) {
+        crate::procfs::validate_entry(proc, &entry)?;
         return Ok(crate::procfs::procfs_stat(&entry, 0, false));
     }
     if let Some(st) = crate::devfs::match_devfs_stat(&resolved, proc.euid, proc.egid) {
@@ -4243,6 +4245,7 @@ pub fn sys_readlink(
 
     // Procfs symlinks — /proc/self, /proc/self/fd/N, /proc/self/cwd, /proc/self/exe, etc.
     if let Some(entry) = crate::procfs::match_procfs(&resolved, proc.pid) {
+        crate::procfs::validate_entry(proc, &entry)?;
         if entry.is_symlink() {
             return crate::procfs::procfs_readlink(proc, &entry, buf);
         }
@@ -4299,7 +4302,8 @@ pub fn sys_access(
     {
         return Ok(());
     }
-    if crate::procfs::match_procfs(&resolved, proc.pid).is_some() {
+    if let Some(entry) = crate::procfs::match_procfs(&resolved, proc.pid) {
+        crate::procfs::validate_entry(proc, &entry)?;
         // Procfs entries are read-only: allow R_OK/F_OK/X_OK(dirs), deny W_OK
         if amode & 0o2 != 0 {
             return Err(Errno::EACCES);
@@ -4317,6 +4321,7 @@ pub fn sys_chdir(proc: &mut Process, host: &mut dyn HostIO, path: &[u8]) -> Resu
     let resolved = crate::path::resolve_path(path, &proc.cwd);
     // Check virtual filesystems first (procfs, devfs), then fall through to host
     if let Some(entry) = crate::procfs::match_procfs(&resolved, proc.pid) {
+        crate::procfs::validate_entry(proc, &entry)?;
         let st = crate::procfs::procfs_stat(&entry, 0, true);
         if st.st_mode & wasm_posix_shared::mode::S_IFMT != wasm_posix_shared::mode::S_IFDIR {
             return Err(Errno::ENOTDIR);
@@ -4658,20 +4663,26 @@ pub fn sys_getdents64(
         // Check if this is a cross-process directory (e.g. /proc/<other_pid>/fd)
         #[cfg(any(target_arch = "wasm32", target_arch = "wasm64"))]
         if let Some(entry) = crate::procfs::match_procfs(&path, proc.pid) {
-            let target_pid = crate::procfs::entry_pid(&entry);
-            if target_pid != 0 && target_pid != proc.pid {
-                if let Some((bytes, new_offset, exhausted)) =
-                    crate::wasm_api::procfs_getdents64_for_pid(target_pid, &path, buf, entry_offset)
-                {
-                    if let Some(ofd) = proc.ofd_table.get_mut(ofd_idx) {
-                        ofd.dir_entry_offset = new_offset;
-                        if exhausted {
-                            ofd.dir_host_handle = -2;
+            if let Some(target_pid) = crate::procfs::entry_pid(&entry) {
+                if target_pid != proc.pid {
+                    if let Some((bytes, new_offset, exhausted)) =
+                        crate::wasm_api::procfs_getdents64_for_pid(
+                            target_pid,
+                            &path,
+                            buf,
+                            entry_offset,
+                        )
+                    {
+                        if let Some(ofd) = proc.ofd_table.get_mut(ofd_idx) {
+                            ofd.dir_entry_offset = new_offset;
+                            if exhausted {
+                                ofd.dir_host_handle = -2;
+                            }
                         }
+                        return Ok(bytes);
                     }
-                    return Ok(bytes);
+                    return Err(Errno::ENOENT);
                 }
-                return Err(Errno::ENOENT);
             }
         }
 
@@ -8277,6 +8288,7 @@ pub fn sys_fstatat(
         });
     }
     if let Some(entry) = crate::procfs::match_procfs(&resolved, proc.pid) {
+        crate::procfs::validate_entry(proc, &entry)?;
         let follow = flags & AT_SYMLINK_NOFOLLOW == 0;
         return Ok(crate::procfs::procfs_stat(&entry, 0, follow));
     }
@@ -10188,7 +10200,8 @@ pub fn sys_faccessat(
     {
         return Ok(());
     }
-    if crate::procfs::match_procfs(&resolved, proc.pid).is_some() {
+    if let Some(entry) = crate::procfs::match_procfs(&resolved, proc.pid) {
+        crate::procfs::validate_entry(proc, &entry)?;
         if amode & 0o2 != 0 {
             return Err(Errno::EACCES);
         }
@@ -10290,6 +10303,7 @@ pub fn sys_readlinkat(
 
     // Procfs symlinks — /proc/self, /proc/self/fd/N, /proc/self/cwd, etc.
     if let Some(entry) = crate::procfs::match_procfs(&resolved, proc.pid) {
+        crate::procfs::validate_entry(proc, &entry)?;
         if entry.is_symlink() {
             return crate::procfs::procfs_readlink(proc, &entry, buf);
         }
@@ -20210,6 +20224,74 @@ mod tests {
             sys_access(&mut proc, &mut host, b"/proc/self/stat", 2).unwrap_err(),
             Errno::EACCES,
         );
+    }
+
+    #[test]
+    fn test_procfs_metadata_rejects_missing_pid_scopes() {
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        let missing_paths: &[&[u8]] = &[
+            b"/proc/0",
+            b"/proc/999",
+            b"/proc/999/stat",
+            b"/proc/999/net",
+            b"/proc/999/net/tcp",
+        ];
+
+        for path in missing_paths {
+            assert_eq!(
+                sys_stat(&mut proc, &mut host, path).unwrap_err(),
+                Errno::ENOENT
+            );
+            assert_eq!(
+                sys_lstat(&mut proc, &mut host, path).unwrap_err(),
+                Errno::ENOENT
+            );
+            assert_eq!(
+                sys_access(&mut proc, &mut host, path, 0),
+                Err(Errno::ENOENT)
+            );
+            assert_eq!(
+                sys_fstatat(&mut proc, &mut host, AT_FDCWD, path, 0).unwrap_err(),
+                Errno::ENOENT
+            );
+            assert_eq!(
+                sys_faccessat(&mut proc, &mut host, AT_FDCWD, path, 0, 0),
+                Err(Errno::ENOENT)
+            );
+            let mut link_buf = [0u8; 64];
+            assert_eq!(
+                sys_readlink(&mut proc, &mut host, path, &mut link_buf).unwrap_err(),
+                Errno::ENOENT
+            );
+            assert_eq!(
+                sys_readlinkat(&mut proc, &mut host, AT_FDCWD, path, &mut link_buf).unwrap_err(),
+                Errno::ENOENT
+            );
+        }
+
+        assert_eq!(
+            sys_chdir(&mut proc, &mut host, b"/proc/999"),
+            Err(Errno::ENOENT)
+        );
+        assert_eq!(
+            sys_chdir(&mut proc, &mut host, b"/proc/999/net"),
+            Err(Errno::ENOENT)
+        );
+    }
+
+    #[test]
+    fn test_procfs_metadata_accepts_global_and_live_pid_net_paths() {
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+
+        for path in [b"/proc/net".as_slice(), b"/proc/1/net".as_slice()] {
+            let st = sys_stat(&mut proc, &mut host, path).unwrap();
+            assert_eq!(st.st_mode & S_IFMT, S_IFDIR);
+        }
+
+        let st = sys_stat(&mut proc, &mut host, b"/proc/1/net/tcp").unwrap();
+        assert_eq!(st.st_mode & S_IFMT, S_IFREG);
     }
 
     #[test]

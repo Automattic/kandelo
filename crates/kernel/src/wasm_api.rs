@@ -1058,7 +1058,7 @@ use crate::process_table::GLOBAL_PROCESS_TABLE as PROCESS_TABLE;
 /// Get all active PIDs from the process table.
 pub(crate) fn procfs_all_pids() -> Vec<u32> {
     let table = unsafe { &*PROCESS_TABLE.0.get() };
-    table.all_pids()
+    table.procfs_pids()
 }
 
 /// Generate procfs content for a foreign process (cross-process access).
@@ -1101,7 +1101,7 @@ pub(crate) fn procfs_getdents64_for_pid(
 ) -> Option<(usize, i64, bool)> {
     let table = unsafe { &*PROCESS_TABLE.0.get() };
     let proc = table.get(pid)?;
-    let pids = table.all_pids();
+    let pids = table.procfs_pids();
     crate::procfs::procfs_getdents64(proc, ofd_path, buf, offset, &pids).ok()
 }
 

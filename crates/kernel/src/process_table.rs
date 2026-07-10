@@ -846,9 +846,23 @@ impl ProcessTable {
         self.processes.get(&pid)
     }
 
-    /// Collect all active PIDs.
+    /// Collect every retained PID, including internal limbo identities.
     pub fn all_pids(&self) -> Vec<u32> {
         self.processes.keys().copied().collect()
+    }
+
+    /// Collect PIDs that should be visible through procfs.
+    ///
+    /// Exited processes remain visible as zombies until their parent reaps
+    /// them. Limbo entries are already reaped and retained only as internal
+    /// process-group/session identities, so exposing them as `/proc/<pid>`
+    /// would resurrect a process that no longer exists.
+    pub fn procfs_pids(&self) -> Vec<u32> {
+        self.processes
+            .iter()
+            .filter(|(_, proc)| proc.state != ProcessState::Limbo)
+            .map(|(&pid, _)| pid)
+            .collect()
     }
 
     /// Collect PIDs of all processes in a given process group.
@@ -982,12 +996,22 @@ mod wait_tests {
         table.processes.get_mut(&102).unwrap().pgid = 101;
         table.processes.get_mut(&101).unwrap().state = ProcessState::Exited;
 
+        assert!(
+            table.procfs_pids().contains(&101),
+            "an unreaped zombie remains visible through procfs"
+        );
+
         table.reap_process(101).expect("reap group leader");
 
         let limbo = table.get(101).expect("limbo leader retained");
         assert_eq!(limbo.state, ProcessState::Limbo);
         assert_eq!(limbo.pgid, 101);
         assert_eq!(limbo.ppid, 100);
+        assert!(table.all_pids().contains(&101));
+        assert!(
+            !table.procfs_pids().contains(&101),
+            "a reaped limbo identity must not remain visible through procfs"
+        );
 
         table.processes.get_mut(&102).unwrap().state = ProcessState::Exited;
         table.reap_process(102).expect("reap final member");
