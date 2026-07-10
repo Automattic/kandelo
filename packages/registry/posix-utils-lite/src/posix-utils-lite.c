@@ -433,16 +433,29 @@ static int ps_pid_selected(long pid, long *pids, int npids) {
     return 0;
 }
 
-static void ps_add_pid_list(const char *arg, long *pids, int *npids, int max_pids) {
+static int ps_add_pid_list(const char *arg, long *pids, int *npids, int max_pids) {
+    if (!arg || !*arg) {
+        return -1;
+    }
     const char *p = arg;
-    while (*p && *npids < max_pids) {
+    for (;;) {
+        if (*npids >= max_pids) {
+            return -1;
+        }
+        errno = 0;
         char *end = NULL;
         long pid = strtol(p, &end, 10);
-        if (end == p) {
-            break;
+        if (errno != 0 || end == p || pid <= 0 || (*end != '\0' && *end != ',')) {
+            return -1;
         }
         pids[(*npids)++] = pid;
-        p = (*end == ',') ? end + 1 : end;
+        if (*end == '\0') {
+            return 0;
+        }
+        p = end + 1;
+        if (*p == '\0') {
+            return -1;
+        }
     }
 }
 
@@ -502,10 +515,16 @@ static int ps_read_stat(long pid, char *comm, size_t comm_len, long *nice_value)
     char *save = NULL;
     int index = 0;
     for (char *tok = strtok_r(suffix, " \t\r\n", &save); tok;
-         tok = strtok_r(NULL, " \t\r\n", &save), index++) {
+        tok = strtok_r(NULL, " \t\r\n", &save), index++) {
         if (index == 16) {
+            char *end = NULL;
+            errno = 0;
+            long parsed = strtol(tok, &end, 10);
+            if (errno != 0 || end == tok || *end != '\0') {
+                return -1;
+            }
             if (nice_value) {
-                *nice_value = strtol(tok, NULL, 10);
+                *nice_value = parsed;
             }
             return 0;
         }
@@ -564,25 +583,40 @@ static int util_ps(int argc, char **argv) {
     struct ps_fields fields = {1, 0, 1};
 
     for (int i = 1; i < argc; i++) {
-        if ((streq(argv[i], "-p") || streq(argv[i], "--pid")) && i + 1 < argc) {
-            ps_add_pid_list(argv[++i], selected_pids, &nselected,
-                            (int)(sizeof(selected_pids) / sizeof(selected_pids[0])));
+        if (streq(argv[i], "-p") || streq(argv[i], "--pid")) {
+            if (i + 1 >= argc ||
+                ps_add_pid_list(argv[++i], selected_pids, &nselected,
+                                (int)(sizeof(selected_pids) / sizeof(selected_pids[0]))) != 0) {
+                fprintf(stderr, "ps: invalid pid list\n");
+                return 2;
+            }
         } else if (strncmp(argv[i], "-p", 2) == 0 && argv[i][2]) {
-            ps_add_pid_list(argv[i] + 2, selected_pids, &nselected,
-                            (int)(sizeof(selected_pids) / sizeof(selected_pids[0])));
-        } else if ((streq(argv[i], "-o") || streq(argv[i], "--format")) && i + 1 < argc) {
+            if (ps_add_pid_list(argv[i] + 2, selected_pids, &nselected,
+                                (int)(sizeof(selected_pids) / sizeof(selected_pids[0]))) != 0) {
+                fprintf(stderr, "ps: invalid pid list\n");
+                return 2;
+            }
+        } else if (streq(argv[i], "-o") || streq(argv[i], "--format")) {
+            if (i + 1 >= argc) {
+                fprintf(stderr, "ps: option requires a format\n");
+                return 2;
+            }
             ps_parse_fields(argv[++i], &fields);
         } else if (strncmp(argv[i], "-o", 2) == 0 && argv[i][2]) {
             ps_parse_fields(argv[i] + 2, &fields);
+        } else if (!streq(argv[i], "-A") && !streq(argv[i], "-e")) {
+            fprintf(stderr, "ps: unsupported option: %s\n", argv[i]);
+            return 2;
         }
     }
 
     DIR *proc = opendir("/proc");
-    ps_print_header(&fields);
     if (!proc) {
-        ps_print_row(&fields, (long)getpid(), 0, program_name(argv[0]));
-        return 0;
+        perror("ps: /proc");
+        return 1;
     }
+    ps_print_header(&fields);
+    int matched = 0;
     struct dirent *de;
     while ((de = readdir(proc)) != NULL) {
         char *end = NULL;
@@ -596,7 +630,11 @@ static int util_ps(int argc, char **argv) {
         char cmd[256] = "";
         char comm[256] = "";
         long nice_value = 0;
-        ps_read_stat(pid, comm, sizeof(comm), &nice_value);
+        if (ps_read_stat(pid, comm, sizeof(comm), &nice_value) != 0) {
+            // The process may have exited between readdir() and fopen(). Do
+            // not fabricate a row or a nice value for a vanished process.
+            continue;
+        }
         if (cmd[0] == '\0') {
             ps_read_cmdline(pid, cmd, sizeof(cmd));
         }
@@ -604,9 +642,10 @@ static int util_ps(int argc, char **argv) {
             snprintf(cmd, sizeof(cmd), "%s", comm);
         }
         ps_print_row(&fields, pid, nice_value, cmd);
+        matched++;
     }
     closedir(proc);
-    return 0;
+    return nselected > 0 && matched == 0 ? 1 : 0;
 }
 
 static int util_renice(int argc, char **argv) {
