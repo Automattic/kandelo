@@ -137,6 +137,39 @@ describe("Rust-owned process wait lifecycle", () => {
     expect(worker.relistenChannel).toHaveBeenCalledWith(channel);
   });
 
+  it("consumes a pre-enqueue cancel only for the exact FIFO open retry", () => {
+    const memory = createSharedMemory();
+    const channel = createChannel(7, memory);
+    const worker = createWorkerHarness({});
+    worker.pendingCancels = new Set([channel]);
+    worker.cancelParkedFifoOpen = vi.fn(() => true);
+    worker.completeChannelRaw = vi.fn();
+    worker.relistenChannel = vi.fn();
+
+    expect(worker.interruptPendingFifoOpenCancellation(
+      channel,
+      ABI_SYSCALLS.Getpid,
+    )).toBe(false);
+    expect(worker.pendingCancels.has(channel)).toBe(true);
+    expect(worker.cancelParkedFifoOpen).not.toHaveBeenCalled();
+
+    expect(worker.interruptPendingFifoOpenCancellation(
+      channel,
+      ABI_SYSCALLS.Open,
+    )).toBe(true);
+    expect(worker.pendingCancels.has(channel)).toBe(false);
+    expect(worker.cancelParkedFifoOpen).toHaveBeenCalledOnce();
+    expect(worker.completeChannelRaw).toHaveBeenCalledOnce();
+    expect(worker.completeChannelRaw).toHaveBeenCalledWith(channel, -4, 4);
+    expect(worker.relistenChannel).toHaveBeenCalledOnce();
+
+    expect(worker.interruptPendingFifoOpenCancellation(
+      channel,
+      ABI_SYSCALLS.Open,
+    )).toBe(false);
+    expect(worker.completeChannelRaw).toHaveBeenCalledOnce();
+  });
+
   it("wait4 WNOHANG completes without queuing when Rust reports no event", () => {
     const worker = createWorkerHarness({ kernel_wait_child_poll: vi.fn(() => 0) });
     worker.kernelMemory = createSharedMemory();
@@ -775,11 +808,17 @@ describe("Rust-owned process wait lifecycle", () => {
       options: 0,
       syscallNr: ABI_SYSCALLS.Wait4,
     }];
+    worker.runSyntheticMemorySyscall = vi.fn(() => ({ retVal: 0, errVal: 0 }));
     worker.completeChannelRaw = vi.fn();
     worker.relistenChannel = vi.fn();
 
     worker.handleThreadCancel(caller, [99]);
 
+    expect(worker.runSyntheticMemorySyscall).toHaveBeenCalledWith(
+      caller,
+      ABI_SYSCALLS.ThreadCancel,
+      [99],
+    );
     expect(worker.waitingForChild).toEqual([]);
     expect(worker.pendingCancels.has(target)).toBe(true);
     expect(worker.completeChannelRaw).toHaveBeenNthCalledWith(1, caller, 0, 0);

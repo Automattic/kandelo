@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { runCentralizedProgram } from "./centralized-test-helper";
+import { ensureWasm64ExampleFixture } from "./wasm64-example-fixture";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -20,6 +21,7 @@ describe("POSIX child wait lifecycle", () => {
   });
 
   it("uses memory64 wait layouts through same-arch non-forking posix_spawn", async () => {
+    ensureWasm64ExampleFixture("wait_lifecycle_test.c");
     const program = join(
       __dirname,
       "../../examples/wait_lifecycle_test.wasm64.wasm",

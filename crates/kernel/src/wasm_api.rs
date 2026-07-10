@@ -3969,14 +3969,16 @@ fn dispatch_channel_syscall(nr: u32, args: &[i64; 6]) -> i32 {
         249 => 0, // SYS_INOTIFY_RM_WATCH: no-op success
 
         // --- mknod/mknodat: create regular files and FIFOs ---
-        // S_IFIFO nodes are created as regular files (sufficient for basic
-        // mkfifo/mknod tests that don't actually use FIFO I/O semantics).
+        // S_IFIFO nodes are real named pipes (see `crate::fifo`); other node
+        // types fall through to a regular-file marker.
         271 => {
             // SYS_MKNOD: (path, mode, dev)
             let path = a1 as *const u8;
             let mode = a2 as u32;
             let file_type = mode & 0o170000;
-            if file_type != 0 && file_type != 0o100000 && file_type != 0o010000 {
+            if file_type == 0o010000 {
+                kernel_mkfifo(path, unsafe { cstr_len(path) }, mode & 0o7777)
+            } else if file_type != 0 && file_type != 0o100000 {
                 -(Errno::EPERM as i32)
             } else {
                 kernel_mknod(path, unsafe { cstr_len(path) }, mode & 0o7777)
@@ -3987,7 +3989,9 @@ fn dispatch_channel_syscall(nr: u32, args: &[i64; 6]) -> i32 {
             let path = a2 as *const u8;
             let mode = a3 as u32;
             let file_type = mode & 0o170000;
-            if file_type != 0 && file_type != 0o100000 && file_type != 0o010000 {
+            if file_type == 0o010000 {
+                kernel_mkfifoat(a1, path, unsafe { cstr_len(path) }, mode & 0o7777)
+            } else if file_type != 0 && file_type != 0o100000 {
                 -(Errno::EPERM as i32)
             } else {
                 kernel_mknodat(a1, path, unsafe { cstr_len(path) }, mode & 0o7777)
@@ -4290,13 +4294,12 @@ fn dispatch_channel_syscall(nr: u32, args: &[i64; 6]) -> i32 {
             0
         }
         415 => {
-            // SYS_THREAD_CANCEL: (target_tid) — host-intercepted; defensive no-op.
-            // The host's kernel-worker.ts routes this syscall entirely on the TS
-            // side because the target's wait state (futex waitAsync, pipe retry
-            // registrations, poll/select timers) lives outside the kernel wasm.
-            // If we reach here it means the intercept was bypassed; return 0 so
-            // pthread_cancel still appears to have succeeded rather than failing
-            // the whole thread with ENOSYS.
+            // SYS_THREAD_CANCEL: (target_tid). Host-owned wait state is woken
+            // in kernel-worker.ts; release kernel-owned FIFO open reservations
+            // here so the interrupted target cannot leave a phantom endpoint.
+            let (_gkl, proc) = unsafe { get_process() };
+            let owner = ((proc.pid as u64) << 32) | a1 as u32 as u64;
+            syscalls::cancel_fifo_open_for_owner(proc, owner);
             0
         }
 
@@ -4724,6 +4727,28 @@ fn kernel_mknod(path_ptr: *const u8, path_len: u32, mode: u32) -> i32 {
             let _ = syscalls::sys_close(proc, &mut host, fd);
             0
         }
+        Err(e) => -(e as i32),
+    }
+}
+
+/// mkfifo / mknod(S_IFIFO) — create a named FIFO (real pipe semantics).
+fn kernel_mkfifo(path_ptr: *const u8, path_len: u32, mode: u32) -> i32 {
+    let (_gkl, proc) = unsafe { get_process() };
+    let path = unsafe { slice::from_raw_parts(path_ptr, path_len as usize) };
+    let mut host = WasmHostIO;
+    match syscalls::sys_mkfifo(proc, &mut host, path, mode) {
+        Ok(()) => 0,
+        Err(e) => -(e as i32),
+    }
+}
+
+/// mkfifoat / mknodat(S_IFIFO) — create a named FIFO relative to a directory fd.
+fn kernel_mkfifoat(dirfd: i32, path_ptr: *const u8, path_len: u32, mode: u32) -> i32 {
+    let (_gkl, proc) = unsafe { get_process() };
+    let path = unsafe { slice::from_raw_parts(path_ptr, path_len as usize) };
+    let mut host = WasmHostIO;
+    match syscalls::sys_mkfifoat(proc, &mut host, dirfd, path, mode) {
+        Ok(()) => 0,
         Err(e) => -(e as i32),
     }
 }
@@ -6522,8 +6547,23 @@ fn extract_scm_rights(
                             host_handle: ofd.host_handle,
                             offset: ofd.offset,
                             path: ofd.path.clone(),
+                            pipe_ref_kind: None,
                             socket: None,
                         };
+
+                        // Serialize the resource ownership while the sender's
+                        // OFD and backing pipe are both authoritative. FIFO
+                        // path and read-cohort ownership cannot be recovered
+                        // from O_ACCMODE at receive or discard time.
+                        if ofd.file_type == crate::ofd::FileType::Pipe
+                            && ofd.host_handle < 0
+                        {
+                            let pipe_idx = (-(ofd.host_handle + 1)) as usize;
+                            in_flight.pipe_ref_kind = unsafe {
+                                crate::pipe::global_pipe_table().get(pipe_idx)
+                            }
+                            .and_then(|pipe| pipe.reference_kind(ofd.status_flags));
+                        }
 
                         // For socket FDs, serialize socket state
                         if ofd.file_type == crate::ofd::FileType::Socket {
@@ -10362,8 +10402,10 @@ pub extern "C" fn kernel_get_robust_list(_pid: u32, _head_ptr: usize, _len_ptr: 
 /// Removes the thread from the process's thread table.
 #[unsafe(no_mangle)]
 pub extern "C" fn kernel_thread_exit(pid: u32, tid: u32) -> i32 {
+    let owner = ((pid as u64) << 32) | tid as u64;
     let pt = unsafe { &mut *PROCESS_TABLE.0.get() };
     if let Some(proc) = pt.get_mut(pid) {
+        syscalls::cancel_fifo_open_for_owner(proc, owner);
         proc.remove_thread(tid);
     }
     0

@@ -2809,6 +2809,7 @@ export class CentralizedKernelWorker {
    * No guest result is published: the channel generation is being removed.
    */
   private retireExactChannelAsyncState(channel: ChannelInfo): void {
+    this.cancelParkedFifoOpen(channel);
     this.discardStoppedChannelState(channel);
     this.resumePreparedSignals?.delete(channel);
     this.pendingCancels?.delete(channel);
@@ -4936,8 +4937,59 @@ export class CentralizedKernelWorker {
     }
     if (!blocked) return false;
 
+    this.cancelParkedFifoOpen(channel);
     this.removePendingPipeReader(channel);
     this.removePendingPipeWriter(channel);
+    this.completeChannelRaw(channel, -EINTR_ERRNO, EINTR_ERRNO);
+    this.relistenChannel(channel);
+    return true;
+  }
+
+  /** Release a kernel-owned FIFO rendezvous before a host path retires or
+   * completes the parked open without re-entering the original syscall. */
+  private cancelParkedFifoOpen(channel: ChannelInfo): boolean {
+    if (!this.kernelInstance || !this.kernelMemory) return false;
+    if (!this.isProcessExecutionActive(channel.pid)) return false;
+    let syscallNr: number;
+    try {
+      syscallNr = new DataView(
+        channel.memory.buffer,
+        channel.channelOffset,
+      ).getUint32(CH_SYSCALL, true);
+    } catch {
+      return false;
+    }
+    if (syscallNr !== SYS_OPEN && syscallNr !== SYS_OPENAT) return false;
+    try {
+      const result = this.runSyntheticMemorySyscall(
+        channel,
+        SYS_THREAD_CANCEL,
+        [this.guestTidForChannel(channel)],
+      );
+      return result.errVal === 0;
+    } catch {
+      // Process/thread teardown also owns idempotent kernel-side cleanup.
+      return false;
+    }
+  }
+
+  /**
+   * Consume a cancellation request that won the race with FIFO-open retry
+   * registration. Only open/openat reach this path: non-cancellation-point
+   * syscalls must leave the token for their next real cancellation point.
+   */
+  private interruptPendingFifoOpenCancellation(
+    channel: ChannelInfo,
+    syscallNr: number,
+  ): boolean {
+    if (syscallNr !== SYS_OPEN && syscallNr !== SYS_OPENAT) return false;
+    if (!this.pendingCancels.has(channel)) return false;
+
+    // handleBlockingRetry is entered only after the kernel reserved the FIFO
+    // endpoint and returned EAGAIN. Release that exact reservation before the
+    // channel is completed, then retire the one-shot host cancellation token.
+    if (!this.cancelParkedFifoOpen(channel)) return false;
+    this.pendingCancels.delete(channel);
     this.completeChannelRaw(channel, -EINTR_ERRNO, EINTR_ERRNO);
     this.relistenChannel(channel);
     return true;
@@ -5974,6 +6026,10 @@ export class CentralizedKernelWorker {
     const targetTid = origArgs[0];
     const registration = this.processes.get(channel.pid);
 
+    // Reuse the existing syscall ABI to release any kernel-owned FIFO-open
+    // reservation before waking the target's host-owned retry state.
+    this.runSyntheticMemorySyscall(channel, SYS_THREAD_CANCEL, [targetTid]);
+
     // Always complete the caller's syscall first so pthread_cancel returns.
     this.completeChannelRaw(channel, 0, 0);
     this.relistenChannel(channel);
@@ -5993,9 +6049,10 @@ export class CentralizedKernelWorker {
     }
     if (!target) return;
 
-    // Arm the host-side pre-enqueue guard used by wait and futex. The guest
-    // pthread_t cancel bit remains authoritative for untracked operations and
-    // is checked by __syscall_cp before/after their next cancellation point.
+    // Arm the host-side pre-enqueue guard used by wait, futex, and FIFO open.
+    // The guest pthread_t cancel bit remains authoritative for untracked
+    // operations and is checked by __syscall_cp before/after their next
+    // cancellation point.
     this.pendingCancels.add(target);
 
     // If the target has already parked in a tracked blocking wait, wake
@@ -6212,6 +6269,12 @@ export class CentralizedKernelWorker {
     origArgs: number[],
   ): void {
     if (!this.isRegisteredChannel(channel)) return;
+
+    // pthread_cancel can be handled after the target submitted open/openat
+    // but before this retry path records the kernel-owned FIFO rendezvous.
+    // Retire that reservation and complete the cancellation point instead of
+    // parking a retry that no later cancellation dispatch can discover.
+    if (this.interruptPendingFifoOpenCancellation(channel, syscallNr)) return;
 
     // Futex wait: use Atomics.waitAsync on the target address in process memory
     if (syscallNr === SYS_FUTEX) {

@@ -106,6 +106,8 @@ int *__errno_location(void);
 #define EFAULT 14
 #define EINTR 4
 #define EINVAL 22
+#define SYS_OPEN 1
+#define SYS_OPENAT 69
 #define SYS_SIGACTION 36
 #define SYS_WAIT4 139
 #define SYS_WAITID 288
@@ -230,15 +232,18 @@ int vfork(void)
 static long __do_syscall(long n, long long a1, long long a2, long long a3,
                          long long a4, long long a5, long long a6);
 extern long __syscall_cp_check(long r);
+extern int __syscall_cp_cancel_pending_disabled(void);
 
-static uint32_t __deliver_pending_signal(uintptr_t base)
+static uint32_t __deliver_pending_signal(uintptr_t base, int *delivered)
 {
+    *delivered = 0;
     uint32_t *sig_signum_ptr  = (uint32_t *)(uintptr_t)(base + CH_SIG_SIGNUM);
     uint32_t *sig_handler_ptr = (uint32_t *)(uintptr_t)(base + CH_SIG_HANDLER);
     uint32_t *sig_flags_ptr   = (uint32_t *)(uintptr_t)(base + CH_SIG_FLAGS);
 
     uint32_t signum  = *sig_signum_ptr;
     if (signum == 0) return 0;
+    *delivered = 1;
 
     /* Cooperative hard-exit for host teardown.
      *
@@ -431,6 +436,7 @@ static long __do_syscall_impl(long n, long long a1, long long a2, long long a3,
     long result;
     int32_t err;
     uint32_t delivered_flags;
+    int delivered_signal;
 
 restart_wait_syscall:
     base = get_channel_base();
@@ -520,16 +526,21 @@ restart_wait_syscall:
      * a Handler signal is deliverable. We invoke the handler here,
      * synchronously before returning to the caller, matching POSIX
      * semantics (raise() doesn't return until signal handler completes). */
-    delivered_flags = __deliver_pending_signal(get_channel_base());
+    delivered_flags = __deliver_pending_signal(
+        get_channel_base(),
+        &delivered_signal
+    );
 
-    /* wait4()/waitid() are host-deferred, so a caught signal completes the
-     * channel with EINTR in order to run its handler on this guest thread.
+    /* wait4()/waitid() and blocking FIFO open/openat are host-deferred, so a
+     * caught signal completes the channel with EINTR in order to run its handler.
      * SA_RESTART makes that interruption transparent: after the handler and
-     * mask restoration finish, submit the same wait operation again. Keep the
+     * mask restoration finish, submit the same operation again. Keep the
      * retry list deliberately narrow; several other EINTR-returning calls have
      * timeout/cancellation rules that forbid this generic treatment. */
-    if (err == EINTR && (delivered_flags & SA_RESTART) != 0 &&
-        (n == SYS_WAIT4 || n == SYS_WAITID)) {
+    if (err == EINTR && delivered_signal &&
+        (delivered_flags & SA_RESTART) != 0 &&
+        (n == SYS_WAIT4 || n == SYS_WAITID ||
+         n == SYS_OPEN || n == SYS_OPENAT)) {
         /* __syscall_cp's outer cancellation check has not run yet. A signal
          * handler may have enabled a cancellation that was already pending,
          * or the host may have used this EINTR completion to wake a canceled
@@ -541,6 +552,19 @@ restart_wait_syscall:
             if (checked != -(long)EINTR)
                 return checked;
         }
+        goto restart_wait_syscall;
+    }
+
+    /* pthread_cancel wakes a host-deferred FIFO open with EINTR so an enabled
+     * target can unwind through __syscall_cp_check. If cancellation is
+     * disabled, POSIX requires the request to remain pending while open keeps
+     * blocking. The host has already released the exact FIFO reservation, so
+     * resubmit the operation to establish a fresh waiter. A separate
+     * delivered_signal bit is essential here: sigaction flags may legitimately
+     * be zero, and a real non-SA_RESTART handler must leave EINTR observable. */
+    if (err == EINTR && cancellation_point && !delivered_signal &&
+        (n == SYS_OPEN || n == SYS_OPENAT) &&
+        __syscall_cp_cancel_pending_disabled()) {
         goto restart_wait_syscall;
     }
 

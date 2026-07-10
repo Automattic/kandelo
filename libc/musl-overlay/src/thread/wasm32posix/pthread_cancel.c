@@ -108,6 +108,17 @@ hidden long __syscall_cp_check(long r)
 	return -ECANCELED;
 }
 
+/* True only for the cancellation-disabled state that must keep a deferred
+ * cancellation-point operation blocked. channel_syscall.c uses this after a
+ * handler-free host cancellation wake; enabled and masked states must instead
+ * unwind through __syscall_cp_check. */
+hidden int __syscall_cp_cancel_pending_disabled(void)
+{
+	pthread_t self = __pthread_self();
+	return self->cancel &&
+		self->canceldisable == PTHREAD_CANCEL_DISABLE;
+}
+
 int pthread_cancel(pthread_t t)
 {
 	/* Record the pending cancel.  Visible to the target thread on its
