@@ -30,6 +30,7 @@ function projectRootOrSdk(): string {
 
 export interface Toolchain {
   llvmDir: string;
+  lldMajor: number | null;
   cc: string;
   cxx: string;
   ar: string;
@@ -135,6 +136,15 @@ export function findGlueDir(): string {
   return resolve(projectRootOrSdk(), 'libc', 'glue');
 }
 
+export async function resolveLldMajor(llvmDir: string): Promise<number> {
+  const result = await run(join(llvmDir, 'wasm-ld'), ['--version']);
+  const match = `${result.stdout}\n${result.stderr}`.match(/\bLLD\s+(\d+)/i);
+  if (result.exitCode !== 0 || !match) {
+    throw new Error(`Could not determine wasm-ld version in ${llvmDir}`);
+  }
+  return Number(match[1]);
+}
+
 export async function resolveToolchain(arch: WasmArch = 'wasm32'): Promise<Toolchain> {
   const llvmDir = await findLlvmDir();
   const sysroot = findSysroot(arch);
@@ -144,6 +154,7 @@ export async function resolveToolchain(arch: WasmArch = 'wasm32'): Promise<Toolc
 
   return {
     llvmDir,
+    lldMajor: null,
     cc: join(llvmDir, 'clang'),
     cxx: join(llvmDir, 'clang++'),
     ar: join(llvmDir, 'llvm-ar'),

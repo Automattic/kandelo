@@ -31,6 +31,7 @@ export function buildConfigureEnv(arch: WasmArch = 'wasm32'): Record<string, str
     NM: `${prefix}-nm`,
     STRIP: `${prefix}-strip`,
     PKG_CONFIG: `${prefix}-pkg-config`,
+    WASM_POSIX_TARGET_ARCH: arch,
     CFLAGS: process.env.CFLAGS ?? '',
     CXXFLAGS: process.env.CXXFLAGS ?? '',
     LDFLAGS: process.env.LDFLAGS ?? '',

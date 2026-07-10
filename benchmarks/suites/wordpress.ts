@@ -63,6 +63,8 @@ function phpOpcacheArgs(): string[] {
     "-d", "zend_extension=opcache",
     "-d", "opcache.enable=1",
     "-d", "opcache.enable_cli=1",
+    "-d", "opcache.file_cache=/tmp",
+    "-d", "opcache.file_cache_only=1",
     "-d", "opcache.memory_consumption=128",
     "-d", "opcache.validate_timestamps=0",
   ];

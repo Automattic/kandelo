@@ -1,7 +1,7 @@
 #!/usr/bin/env -S node --experimental-strip-types
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { resolveToolchain, type Toolchain } from '../lib/toolchain.ts';
+import { resolveLldMajor, resolveToolchain, type Toolchain } from '../lib/toolchain.ts';
 import {
   compileFlags,
   filterArgs,
@@ -57,10 +57,19 @@ export function buildClangArgs(userArgs: string[], toolchain: Toolchain, arch: W
   if (parsed.pic) args.push('-fPIC');
 
   if (linking) {
+    // Keep clang and lld in the same resolved LLVM tree. Without an explicit
+    // linker path, clang can pick an unrelated ambient wasm-ld whose defaults
+    // differ from the repository-pinned toolchain.
+    args.push(`-fuse-ld=${join(toolchain.llvmDir, 'wasm-ld')}`);
     if (parsed.shared) {
       // Shared library build: no CRT, no libc, no syscall glue
       args.push(...SHARED_LINK_FLAGS);
     } else {
+      if (toolchain.lldMajor === null) {
+        throw new Error(
+          'wasm-ld version is unresolved; call prepareExecutableLinker() before building executable link arguments',
+        );
+      }
       // Executable build: link CRT, libc, and syscall glue
       const threadSlots = inferThreadSlotDeclaration(parsed, userArgs, {
         readFile: (path) => {
@@ -85,6 +94,10 @@ export function buildClangArgs(userArgs: string[], toolchain: Toolchain, arch: W
       args.push(
         join(toolchain.sysroot, 'lib', 'crt1.o'),
         join(toolchain.sysroot, 'lib', 'libc.a'),
+        // LLD 22 made --stack-first the default; LLD 21 neither defaults to
+        // it nor accepts --no-stack-first. Preserve Kandelo's established
+        // stack-after-data layout explicitly only where the option exists.
+        ...(toolchain.lldMajor >= 22 ? ['-Wl,--no-stack-first'] : []),
         ...linkFlags(arch),
       );
     }
@@ -93,10 +106,24 @@ export function buildClangArgs(userArgs: string[], toolchain: Toolchain, arch: W
   return args;
 }
 
+export async function prepareExecutableLinker(
+  userArgs: string[],
+  toolchain: Toolchain,
+  arch: WasmArch = 'wasm32',
+): Promise<void> {
+  const { filtered } = filterArgs(userArgs, arch);
+  const parsed = parseArgs(filtered);
+  if (needsLinking(parsed) && !parsed.shared) {
+    toolchain.lldMajor = await resolveLldMajor(toolchain.llvmDir);
+  }
+}
+
 async function main(): Promise<void> {
   const arch = detectArch();
   const toolchain = await resolveToolchain(arch);
-  const args = buildClangArgs(process.argv.slice(2), toolchain, arch);
+  const userArgs = process.argv.slice(2);
+  await prepareExecutableLinker(userArgs, toolchain, arch);
+  const args = buildClangArgs(userArgs, toolchain, arch);
   const exitCode = await runPassthrough(toolchain.cc, args);
   process.exit(exitCode);
 }

@@ -44,11 +44,11 @@ SYSROOT="${WASM_POSIX_SYSROOT:-/usr/wasm32posix/sysroot}"
 GLUE_DIR="${WASM_POSIX_GLUE_DIR:-/usr/wasm32posix/glue}"
 GLUE_OBJ_DIR="${WASM_POSIX_GLUE_OBJ_DIR:-/usr/wasm32posix/glue-objects}"
 RESOURCE_DIR="${WASM_POSIX_CLANG_RESOURCE_DIR:-/usr/lib/llvm/lib/clang/21}"
-WASM_LD="$(find_tool wasm-ld || true)"
+WASM_LD="${TOOL_DIR}/wasm-ld"
 
 [[ -f "${SYSROOT}/lib/libc.a" ]] || die "missing ${SYSROOT}/lib/libc.a"
 [[ -f "${GLUE_DIR}/channel_syscall.c" ]] || die "missing ${GLUE_DIR}/channel_syscall.c"
-[[ -n "$WASM_LD" ]] || die "wasm-ld not found; set WASM_POSIX_LLVM_DIR"
+[[ -x "$WASM_LD" ]] || die "matching wasm-ld not found beside $CLANG; set WASM_POSIX_LLVM_DIR to a complete LLVM toolchain"
 
 linking=1
 shared=0
@@ -294,6 +294,13 @@ if [[ "$SDK_CXX" -eq 1 ]]; then
   stdlib_inputs+=("${SYSROOT}/lib/libc++.a" "${SYSROOT}/lib/libc++abi.a")
 fi
 
+lld_major="$("$WASM_LD" --version | sed -nE 's/.*LLD ([0-9]+).*/\1/p' | head -1)"
+[[ "$lld_major" =~ ^[0-9]+$ ]] || die "could not determine wasm-ld version"
+if (( lld_major >= 22 )); then
+  # LLD 22 changed its default to --stack-first. Preserve the established
+  # stack-after-data layout; LLD 21 does not accept this negative option.
+  exe_link_flags+=(-Wl,--no-stack-first)
+fi
 append_ld_flags "${exe_link_flags[@]}"
 "$WASM_LD" -m wasm32 -L"${SYSROOT}/lib" \
   "${object_inputs[@]}" "${compiled_objects[@]}" "${glue_inputs[@]}" \
