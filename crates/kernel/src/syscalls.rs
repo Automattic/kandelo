@@ -4032,9 +4032,6 @@ fn unix_socket_path_stat(
         host.host_lstat(resolved)?
     };
     st.st_mode = wasm_posix_shared::mode::S_IFSOCK | (st.st_mode & 0o7777);
-    if st.st_nlink == 0 {
-        st.st_nlink = 1;
-    }
     Ok(Some(st))
 }
 
@@ -7063,7 +7060,16 @@ pub fn sys_bind(
             // rebased branch.)
             use wasm_posix_shared::flags::{O_CREAT, O_EXCL, O_WRONLY};
             check_open_permissions(proc, host, &resolved, O_CREAT | O_EXCL | O_WRONLY)?;
-            let h = match host.host_open(&resolved, O_CREAT | O_EXCL | O_WRONLY, 0o600) {
+            // Linux pathname sockets start with every permission bit enabled,
+            // filtered through the creating process's umask. The backing VFS
+            // inode owns these bits so later chmod/stat operations observe one
+            // authoritative value.
+            let socket_mode = 0o777 & !proc.umask;
+            let h = match host.host_open(
+                &resolved,
+                O_CREAT | O_EXCL | O_WRONLY,
+                socket_mode,
+            ) {
                 Ok(h) => h,
                 Err(Errno::EEXIST) => return Err(Errno::EADDRINUSE),
                 Err(e) => return Err(e),
@@ -16618,10 +16624,21 @@ mod tests {
 
     #[test]
     fn test_stat_unix_socket_path() {
+        use wasm_posix_shared::flags::AT_FDCWD;
+        use wasm_posix_shared::mode::{S_IFMT, S_IFSOCK};
+
+        fn assert_socket_metadata(st: WasmStat, mode: u32, uid: u32, gid: u32) {
+            assert_eq!(st.st_mode & S_IFMT, S_IFSOCK);
+            assert_eq!(st.st_mode & 0o7777, mode);
+            assert_eq!(st.st_uid, uid);
+            assert_eq!(st.st_gid, gid);
+        }
+
         let _lock = UNIX_REGISTRY_LOCK.lock().unwrap();
         let mut proc = Process::new(1);
         let mut host = MockHostIO::new();
         proc.pid = 9020;
+        proc.umask = 0o027;
         let fd = sys_socket(&mut proc, &mut host, 1, 1, 0).unwrap();
         let mut addr = [0u8; 110];
         addr[0] = 1;
@@ -16629,18 +16646,44 @@ mod tests {
         addr[2..2 + path.len()].copy_from_slice(path);
         sys_bind(&mut proc, &mut host, fd, &addr[..2 + path.len() + 1]).unwrap();
 
-        let st = sys_stat(&mut proc, &mut host, b"/tmp/stat.sock").unwrap();
-        assert_eq!(
-            st.st_mode & wasm_posix_shared::mode::S_IFMT,
-            wasm_posix_shared::mode::S_IFSOCK
+        assert_socket_metadata(
+            sys_stat(&mut proc, &mut host, path).unwrap(),
+            0o750,
+            0,
+            0,
         );
+        assert_socket_metadata(
+            sys_lstat(&mut proc, &mut host, path).unwrap(),
+            0o750,
+            0,
+            0,
+        );
+        assert_socket_metadata(
+            sys_fstatat(&mut proc, &mut host, AT_FDCWD, path, 0).unwrap(),
+            0o750,
+            0,
+            0,
+        );
+
+        sys_chmod(&mut proc, &mut host, path, 0o640).unwrap();
         sys_chown(&mut proc, &mut host, b"/tmp/stat.sock", 1234, 5678).unwrap();
-        let st = sys_stat(&mut proc, &mut host, b"/tmp/stat.sock").unwrap();
-        assert_eq!(st.st_uid, 1234);
-        assert_eq!(st.st_gid, 5678);
-        assert_eq!(
-            st.st_mode & wasm_posix_shared::mode::S_IFMT,
-            wasm_posix_shared::mode::S_IFSOCK
+        assert_socket_metadata(
+            sys_stat(&mut proc, &mut host, path).unwrap(),
+            0o640,
+            1234,
+            5678,
+        );
+        assert_socket_metadata(
+            sys_lstat(&mut proc, &mut host, path).unwrap(),
+            0o640,
+            1234,
+            5678,
+        );
+        assert_socket_metadata(
+            sys_fstatat(&mut proc, &mut host, AT_FDCWD, path, 0).unwrap(),
+            0o640,
+            1234,
+            5678,
         );
 
         // Cleanup
