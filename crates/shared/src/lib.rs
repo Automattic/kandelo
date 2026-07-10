@@ -26,7 +26,9 @@ pub mod host_abi;
 ///     the shared point of contact for all programs.
 /// 16: process creation takes explicit stdio descriptor kinds and removes the
 ///     post-creation stdin pipe mutation export.
-pub const ABI_VERSION: u32 = 16;
+/// 17: fork frame cursors are absolute save-buffer addresses, isolating
+///     concurrent pthread unwind payloads.
+pub const ABI_VERSION: u32 = 17;
 
 /// Syscall numbers for the POSIX kernel interface.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

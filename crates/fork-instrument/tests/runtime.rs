@@ -344,9 +344,9 @@ fn export_entry_instrs(module: &Module, export: &str) -> Vec<Instr> {
 }
 
 #[test]
-fn unwind_begin_writes_frames_start_offset_wasm32() {
-    // After Phase 7 Task 1, wpk_fork_unwind_begin must write
-    // `frames_start_offset` to `*(buf + 0)` as its first memory store.
+fn unwind_begin_writes_absolute_frames_start_wasm32() {
+    // wpk_fork_unwind_begin must write `buf + frames_start_offset` to
+    // `*(buf + 0)` as its first memory store.
     // For EMPTY_MODULE_WITH_FORK (no pre-existing mutable scalar
     // globals), frames_start_offset == 2 * sizeof(ptr) == 8 for wasm32.
     let bytes = instrument_wat(EMPTY_MODULE_WITH_FORK);
@@ -354,8 +354,8 @@ fn unwind_begin_writes_frames_start_offset_wasm32() {
 
     let instrs = export_entry_instrs(&module, names::EXPORT_UNWIND_BEGIN);
 
-    // Find the first Store instruction. The i32 const immediately
-    // before it should equal frames_start_offset (8).
+    // Find the first Store instruction. Its value must be the buffer
+    // parameter plus frames_start_offset (8).
     let store_idx = instrs
         .iter()
         .position(|i| matches!(i, Instr::Store(_)))
@@ -374,10 +374,17 @@ fn unwind_begin_writes_frames_start_offset_wasm32() {
     assert_eq!(store.arg.offset, 0, "store to buf + 0");
     assert_eq!(store.arg.align, 4, "natural alignment for i32 pointer");
 
-    // The const pushed immediately before the store is the value being
-    // stored; the local.get for `buf` is pushed before that.
-    let value_instr = &instrs[store_idx - 1];
-    match value_instr {
+    assert!(
+        matches!(
+            &instrs[store_idx - 1],
+            Instr::Binop(walrus::ir::Binop {
+                op: walrus::ir::BinaryOp::I32Add,
+            })
+        ),
+        "wasm32 current_pos must add the buffer base",
+    );
+    let offset_instr = &instrs[store_idx - 2];
+    match offset_instr {
         Instr::Const(c) => match c.value {
             walrus::ir::Value::I32(v) => assert_eq!(
                 v, 8,
@@ -385,12 +392,24 @@ fn unwind_begin_writes_frames_start_offset_wasm32() {
             ),
             other => panic!("expected I32 const, got {other:?}"),
         },
-        other => panic!("expected Const immediately before store, got {other:?}"),
+        other => panic!("expected frame offset const before add, got {other:?}"),
     }
+    let value_base = match &instrs[store_idx - 3] {
+        Instr::LocalGet(get) => get.local,
+        other => panic!("expected buffer base before frame offset, got {other:?}"),
+    };
+    let store_base = match &instrs[store_idx - 4] {
+        Instr::LocalGet(get) => get.local,
+        other => panic!("expected store address before value, got {other:?}"),
+    };
+    assert_eq!(
+        store_base, value_base,
+        "store and cursor use the same buffer base",
+    );
 }
 
 #[test]
-fn unwind_begin_writes_frames_start_offset_wasm64() {
+fn unwind_begin_writes_absolute_frames_start_wasm64() {
     // Same as above but for a memory64 module. Store kind must be I64,
     // align 8, value 16 (2 * 8 with no saved globals).
     let wat = r#"
@@ -421,8 +440,17 @@ fn unwind_begin_writes_frames_start_offset_wasm64() {
     assert_eq!(store.arg.offset, 0, "store to buf + 0");
     assert_eq!(store.arg.align, 8, "natural alignment for i64 pointer");
 
-    let value_instr = &instrs[store_idx - 1];
-    match value_instr {
+    assert!(
+        matches!(
+            &instrs[store_idx - 1],
+            Instr::Binop(walrus::ir::Binop {
+                op: walrus::ir::BinaryOp::I64Add,
+            })
+        ),
+        "wasm64 current_pos must add the buffer base",
+    );
+    let offset_instr = &instrs[store_idx - 2];
+    match offset_instr {
         Instr::Const(c) => match c.value {
             walrus::ir::Value::I64(v) => assert_eq!(
                 v, 16,
@@ -430,8 +458,20 @@ fn unwind_begin_writes_frames_start_offset_wasm64() {
             ),
             other => panic!("expected I64 const, got {other:?}"),
         },
-        other => panic!("expected Const immediately before store, got {other:?}"),
+        other => panic!("expected frame offset const before add, got {other:?}"),
     }
+    let value_base = match &instrs[store_idx - 3] {
+        Instr::LocalGet(get) => get.local,
+        other => panic!("expected buffer base before frame offset, got {other:?}"),
+    };
+    let store_base = match &instrs[store_idx - 4] {
+        Instr::LocalGet(get) => get.local,
+        other => panic!("expected store address before value, got {other:?}"),
+    };
+    assert_eq!(
+        store_base, value_base,
+        "store and cursor use the same buffer base",
+    );
 }
 
 // ======================================================================

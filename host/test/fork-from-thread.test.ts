@@ -19,6 +19,10 @@ import { tryResolveBinary } from "../src/binary-resolver";
 
 const forkFromThreadBinary = tryResolveBinary("programs/fork-from-thread.wasm");
 const hasFork = !!forkFromThreadBinary;
+const concurrentForkBinary = tryResolveBinary(
+  "programs/fork-from-concurrent-threads.wasm",
+);
+const hasConcurrentFork = !!concurrentForkBinary;
 
 describe("fork-from-non-main-thread", () => {
   it.skipIf(!hasFork)("a pthread_create'd thread can fork(), child resumes at the fork site", async () => {
@@ -47,4 +51,18 @@ describe("fork-from-non-main-thread", () => {
     // the child to a normal exit.
     expect(result.stdout).toContain("PASS");
   });
+
+  it.skipIf(!hasConcurrentFork)(
+    "concurrent pthread forks keep their continuation frames isolated",
+    async () => {
+      const result = await runCentralizedProgram({
+        programPath: concurrentForkBinary!,
+        argv: ["fork-from-concurrent-threads"],
+        timeout: 60_000,
+      });
+
+      expect(result.exitCode, `stderr=${result.stderr}\nstdout=${result.stdout}`).toBe(0);
+      expect(result.stdout).toContain("PASS: 16 concurrent fork pairs");
+    },
+  );
 });
