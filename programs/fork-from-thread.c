@@ -3,7 +3,9 @@
 // A pthread_create'd worker thread invokes fork() directly. The child
 // must inherit the worker thread's call stack as its sole thread and
 // resume execution at the fork() call site with fork() returning 0.
-// The parent thread resumes with the child's pid.
+// The parent thread resumes with the child's pid. The child then forks a
+// grandchild before exec, so the inherited thread-function entry root and
+// continuation buffer must be propagated across more than one generation.
 //
 // This exercises the host runtime's fork-from-non-main-thread path:
 // the thread worker drives a wpk_fork unwind/SYS_FORK/rewind cycle,
@@ -14,7 +16,8 @@
 // Expected output on PASS:
 //   THREAD_STARTED
 //   PRE_FORK_THREAD
-//   CHILD_THREAD: ok
+//   GRANDCHILD_THREAD: ok
+//   CHILD_THREAD: grandchild=<pid>
 //   PARENT_THREAD: child=<pid>
 //   PASS
 
@@ -40,7 +43,25 @@ static void *forking_thread(void *arg) {
         return NULL;
     }
     if (pid == 0) {
-        printf("CHILD_THREAD: ok\n");
+        pid_t grandchild = fork();
+        if (grandchild < 0) {
+            printf("FAIL: child fork errno=%d\n", errno);
+            fflush(stdout);
+            _exit(1);
+        }
+        if (grandchild == 0) {
+            printf("GRANDCHILD_THREAD: ok\n");
+            fflush(stdout);
+            _exit(0);
+        }
+        int grandchild_status = 0;
+        if (waitpid(grandchild, &grandchild_status, 0) < 0 ||
+            !WIFEXITED(grandchild_status) || WEXITSTATUS(grandchild_status) != 0) {
+            printf("FAIL: grandchild status=%d errno=%d\n", grandchild_status, errno);
+            fflush(stdout);
+            _exit(1);
+        }
+        printf("CHILD_THREAD: grandchild=%d\n", grandchild);
         fflush(stdout);
         _exit(0);
     }
