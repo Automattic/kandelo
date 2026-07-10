@@ -5,7 +5,17 @@ large guest software on both Node.js and browser hosts where possible.
 
 Status date: 2026-06-16.
 
-## Current Status
+> **PHP evidence provenance:** the PHP counts in this document were imported
+> from the pre-split source PR at commit `bc13ad8631a2`, based on the older
+> platform stack. They combine chronological chunks with targeted reruns and
+> are historical evidence, not results for PR #740, Batch 2, or the current
+> repository head. Replace them only after an exact-tip Batch 2 run records its
+> source, package, ABI, host, browser, command, and durable per-test outcomes.
+> The current harness also records normal opcache SHM tests and partial
+> `CAPTURE_STDIO` descriptor-inheritance tests as explicit unsupported platform
+> boundaries; historical counts predate those truthfulness corrections.
+
+## Historical Status Snapshot
 
 | Project | What is wired today | Node host status | Browser host status |
 |---------|---------------------|------------------|---------------------|
@@ -19,18 +29,18 @@ Status date: 2026-06-16.
 
 Logs from the 2026-05-28 full runs are under `test-runs/software-unit-tests/`.
 
-## 2026-06-16 PHP PHPT Node Current-Head Full Run
+## 2026-06-16 PHP PHPT Node Source-PR Full Run
 
 php-src discovery finds **19,017** `.phpt` files from PHP **8.3.15**. The
-current-head Node run on PR #2 completed the full discovered set. The aggregate
+source-PR Node run completed the full discovered set. The aggregate
 uses chronological chunk results plus targeted reruns for tests whose earlier
 results were invalidated by harness or external-service issues:
 
 | Host | Scope | Pass | XFAIL | XPASS | Fail | Timeout | Skip | Unsupported | Untested | Total |
 | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| Node | Chunked `--all`, current PR head `bc13ad8631a2` | 14,554 | 9 | 1 | 0 | 0 | 3,987 | 466 | 0 | 19,017 |
+| Node | Chunked `--all`, historical source-PR head `bc13ad8631a2` | 14,554 | 9 | 1 | 0 | 0 | 3,987 | 466 | 0 | 19,017 |
 
-The bounded final segment used the restartable chunk harness. The chunk wrapper defaults to `--host node` and can also checkpoint browser runs with `--host browser`; use `--rebuild-vfs` for browser after changing `PHP_WASM`, `PHP_OPCACHE_SO`, or `PHP_EXTENSION_DIR` so shared extensions such as `zend_test.so` are present in the image. The VFS builder honors an explicit `PHP_OPCACHE_SO` by writing it to `/usr/lib/php/extensions/opcache.so` after scanning `PHP_EXTENSION_DIR`, so a stale directory entry cannot override the requested OPcache side module:
+The bounded final segment used the restartable chunk harness. The chunk wrapper defaults to `--host node` and can also checkpoint browser runs with `--host browser`. Browser runs fingerprint the PHP source, binaries, extensions, rootfs, and VFS builder inputs and rebuild the image when they change; `--rebuild-vfs` remains an explicit force-rebuild option. The VFS builder honors an explicit `PHP_OPCACHE_SO` by writing it to `/usr/lib/php/extensions/opcache.so` after scanning `PHP_EXTENSION_DIR`, so a stale directory entry cannot override the requested OPcache side module:
 
 ```bash
 TEST_NON_ROOT_USER=nobody \
@@ -237,7 +247,7 @@ SKIP_SLOW_TESTS=1 SKIP_ONLINE_TESTS=1 SKIP_PERF_SENSITIVE=1 \
 # => PASS
 ```
 
-Current WIP kernel/host fixes in this handoff:
+Kernel/host fixes present in that historical source-PR handoff:
 
 - POSIX wait status encoding now distinguishes normal exits from signal deaths.
   Normal `_exit(status)` is masked to 8 bits and reported to `waitpid(2)` as
@@ -256,7 +266,7 @@ Current WIP kernel/host fixes in this handoff:
 - Centralized host/kernel calls that pass guest pointers now route through the
   host pointer-width helper instead of hard-coded `BigInt` arguments.
 
-Current WIP PHP harness fixes in this handoff:
+PHP harness fixes present in that historical source-PR handoff:
 
 - Node `--jobs N` uses one copied php-src tree per worker, avoiding cross-test
   contamination from generated `.php`/`.clean.php` files and tests that mutate
@@ -324,15 +334,16 @@ PHP binary built by `packages/registry/php/build-php.sh` (PHP 8.3.15). The
 node host mounts the source tree at `/php-src`, mounts the PHP binary
 directory at `/kandelo-bin`, and runs tests from `/php-src` to match upstream
 `run-tests.php` working-directory semantics. The browser host uses the
-`php-test` Vite page and `apps/browser-demos/public/php-test.vfs.zst`; rebuild
-that image after changing the PHP source, PHP binary, kernel, shell, or
-utility binary inputs.
+`php-test` Vite page and `apps/browser-demos/public/php-test.vfs.zst`. The
+harness fingerprints the inputs and rebuilds a stale image automatically;
+`--rebuild-vfs` forces a rebuild when diagnosing the builder itself.
 
 Recommended commands while iterating:
 
 ```bash
-# Expanded ext/standard PHPT tranche that currently passes cleanly on both
-# supported hosts: 537 total, 466 pass, 70 skip, 1 unsupported.
+# Historical source-PR command and result for an ext/standard tranche:
+# 537 total, 466 pass, 70 skip, 1 unsupported. Rerun before citing it for the
+# current tree.
 SKIP_SLOW_TESTS=1 SKIP_ONLINE_TESTS=1 scripts/run-php-upstream-tests.sh \
   --host node \
   ext/standard/tests/time ext/standard/tests/versioning \
@@ -358,8 +369,8 @@ SKIP_SLOW_TESTS=1 SKIP_ONLINE_TESTS=1 scripts/run-php-upstream-tests.sh \
   ext/standard/tests/serialize \
   --timeout 60000 --json
 
-# Full ext/standard strings directory, now clean on both supported hosts:
-# 716 total, 663 pass, 53 skip.
+# Historical source-PR result for ext/standard strings:
+# 716 total, 663 pass, 53 skip. Rerun before citing it for the current tree.
 SKIP_SLOW_TESTS=1 SKIP_ONLINE_TESTS=1 scripts/run-php-upstream-tests.sh \
   --host node ext/standard/tests/strings --timeout 60000 --json
 
@@ -367,8 +378,8 @@ LD_LIBRARY_PATH=/tmp/pw-deps/root/usr/lib/x86_64-linux-gnu \
 SKIP_SLOW_TESTS=1 SKIP_ONLINE_TESTS=1 scripts/run-php-upstream-tests.sh \
   --host browser ext/standard/tests/strings --timeout 60000 --json
 
-# Full ext/standard array directory, now clean on both supported hosts:
-# 817 total, 802 pass, 15 skip.
+# Historical source-PR result for ext/standard array:
+# 817 total, 802 pass, 15 skip. Rerun before citing it for the current tree.
 SKIP_SLOW_TESTS=1 SKIP_ONLINE_TESTS=1 scripts/run-php-upstream-tests.sh \
   --host node ext/standard/tests/array --timeout 60000 --json
 
@@ -392,12 +403,15 @@ scripts/run-php-upstream-tests.sh \
   --host browser --rebuild-vfs --limit 3 --timeout 90000 --json
 ```
 
-The browser VFS builder resolves `php.wasm`, `dash.wasm`, and
-`coreutils.wasm`, and `sed.wasm` via the normal binary resolver. If a local
-binary cache is stale, set `PHP_WASM`, `DASH_WASM`, `COREUTILS_WASM`, or
-`SED_WASM` explicitly.
+The browser VFS builder layers PHP and the PHPT source tree onto the canonical
+`rootfs.vfs`, so shell and utility coverage comes from the same packaged rootfs
+used by other Kandelo hosts. Set `ROOTFS_VFS` or `PHP_WASM` only when testing an
+explicit alternate artifact. The browser page rewrites the rootfs's relative
+lazy executable URLs to Vite-managed assets before the legacy shared-filesystem
+runner registers them with the kernel worker.
 
-Kernel/POSIX fixes found by PHPT so far in the current PR:
+Historical kernel/POSIX fixes found by the pre-split PHPT effort (not all are
+part of PR #740 or its current landing branch):
 
 - Pathname resolution must be component-wise. Kandelo no longer collapses
   `missing/..` lexically before the backend can report `ENOENT`.
@@ -426,8 +440,13 @@ Kernel/POSIX fixes found by PHPT so far in the current PR:
   removes edge NUL bytes for EXPECT matching, PHPT source/output bytes are
   preserved instead of UTF-8 decoded, EXPECTF `%r...%r` regex spans and
   percent placeholders follow upstream substitution ordering, flaky PHPTs retry
-  once, and selected upstream control env vars such as `SKIP_SLOW_TESTS` pass
-  through to guest PHP.
+  once, matching tests after SKIPIF `warn` output are classified `WARN`, and a
+  warned mismatch retains failure status plus warning context so the aggregate
+  command cannot hide the mismatch. Selected upstream control env vars such as
+  `SKIP_SLOW_TESTS` pass through to guest PHP.
+- Kandelo deliberately reports a passing PHP `--XFAIL--` as `XPASS` and makes
+  it fail the harness command. Upstream PHP 8.3 reports that case as `WARN`;
+  Kandelo's stricter policy keeps stale expected-failure annotations visible.
 - Stream/socket behavior now covers the standard cases exercised by PHP's
   stream suite: abstract AF_UNIX addresses are not filesystem-backed, UDP
   `INADDR_ANY` destinations route to loopback, AF_INET6 loopback sockaddrs are

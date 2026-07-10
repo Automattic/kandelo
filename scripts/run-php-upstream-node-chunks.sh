@@ -3,11 +3,11 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
-PHP_SRC="${PHP_SOURCE_DIR:-$REPO_ROOT/packages/registry/php/php-src}"
+PHP_SRC="${PHP_SOURCE_DIR:-}"
 
 host="${PHP_TEST_HOST:-node}"
 chunk_size="${PHP_TEST_CHUNK_SIZE:-500}"
-jobs="${PHP_TEST_JOBS:-4}"
+jobs="${PHP_TEST_JOBS:-}"
 timeout_ms="${PHP_TEST_TIMEOUT_MS:-600000}"
 host_reset_interval="${PHP_TEST_HOST_RESET_INTERVAL:-25}"
 run_uid="${PHP_TEST_RUN_UID:-}"
@@ -30,12 +30,13 @@ Usage: scripts/run-php-upstream-node-chunks.sh [options]
 Run the full php-src PHPT suite on a Kandelo host in restartable chunks.
 Each chunk invokes scripts/run-php-upstream-tests.sh in a fresh Node.js process.
 This prevents long monolithic Node-host runs from accumulating host/Wasm memory
-and gives browser-host runs resumable checkpoints.
+and gives browser-host runs resumable checkpoints. Unsupported harness features
+remain explicit in the summary but do not stop this inventory-oriented wrapper.
 
 Options:
   --host <node|browser>        Kandelo host to run (default: PHP_TEST_HOST or node)
   --chunk-size <n>             Tests per chunk (default: PHP_TEST_CHUNK_SIZE or 500)
-  --jobs <n>                   PHPT concurrency inside each chunk (default: PHP_TEST_JOBS or 4)
+  --jobs <n>                   PHPT concurrency (default: PHP_TEST_JOBS, else Node 4 / browser 1)
   --timeout <ms>               Per PHPT section timeout (default: PHP_TEST_TIMEOUT_MS or 600000)
   --host-reset-interval <n>    Kernel reboot interval per worker (default: PHP_TEST_HOST_RESET_INTERVAL or 25)
   --run-uid <n>                Run guest PHP processes as uid n (default: PHP_TEST_RUN_UID)
@@ -48,7 +49,7 @@ Options:
   -h, --help                   Show this help
 
 Environment:
-  PHP_SOURCE_DIR               php-src checkout (default: packages/registry/php/php-src)
+  PHP_SOURCE_DIR               php-src checkout (default: package metadata/cache resolver)
   PHP_TEST_HOST                Host default for --host (node or browser)
   PHP_WASM                     PHP wasm binary (default resolved by downstream harness)
   PHP_OPCACHE_SO               opcache.so path when testing opcache (recommended)
@@ -85,6 +86,13 @@ while [ "$#" -gt 0 ]; do
   esac
 done
 
+if [ -z "$jobs" ]; then
+  case "$host" in
+    browser) jobs=1 ;;
+    *) jobs=4 ;;
+  esac
+fi
+
 for numeric in chunk_size jobs timeout_ms host_reset_interval start_offset; do
   value="${!numeric}"
   case "$value" in
@@ -103,7 +111,14 @@ case "$host" in
   node|browser) ;;
   *) die "--host must be node or browser, got: $host" ;;
 esac
+if [ -z "$PHP_SRC" ]; then
+  PHP_SRC="$(
+    cd "$REPO_ROOT"
+    npx tsx scripts/run-php-upstream-tests.ts --print-source-dir | tail -n 1
+  )"
+fi
 [ -d "$PHP_SRC" ] || die "PHP_SOURCE_DIR not found: $PHP_SRC"
+export PHP_SOURCE_DIR="$PHP_SRC"
 
 if [ -z "$out_dir" ]; then
   out_dir="/tmp/kandelo-php-$host-chunks-$(date -u +%Y%m%d%H%M%S)"
@@ -150,6 +165,8 @@ total = int(sys.argv[2])
 counts = Counter({
     "pass": 0,
     "fail": 0,
+    "bork": 0,
+    "warn": 0,
     "skip": 0,
     "xfail": 0,
     "xpass": 0,
@@ -202,7 +219,7 @@ lines = [
     "| Status | Count |",
     "|---|---:|",
 ]
-for key in ["pass", "fail", "skip", "xfail", "xpass", "unsupported", "time"]:
+for key in ["pass", "fail", "bork", "warn", "skip", "xfail", "xpass", "unsupported", "time"]:
     lines.append(f"| {key} | {counts[key]} |")
 lines.extend(["", "## Non-passing/non-xfail results", ""])
 for r in nonpassing:
@@ -251,6 +268,7 @@ while [ "$offset" -lt "$total" ]; do
     --jobs "$jobs" \
     --timeout "$timeout_ms" \
     --host-reset-interval "$host_reset_interval" \
+    --allow-unsupported \
     "${extra_args[@]}" \
     --json \
     > "$jsonl" 2> "$stderr"
