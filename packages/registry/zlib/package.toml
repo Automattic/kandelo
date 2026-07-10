@@ -7,8 +7,8 @@ name = "zlib"
 version = "1.3.1"
 kernel_abi = 7
 depends_on = []
-# Opt into wasm64 because PHP/MariaDB depend on it transitively.
-# See memory/wasm64-build-policy.md.
+# zlib is one of the low-level packages that opts into both target arches;
+# see the `arches` policy in docs/package-management.md.
 arches = ["wasm32", "wasm64"]
 
 [source]

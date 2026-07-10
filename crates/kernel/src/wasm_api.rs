@@ -21,7 +21,7 @@ use wasm_posix_shared::fd_flags::FD_CLOEXEC;
 use wasm_posix_shared::{Errno, WasmDirent, WasmStat, WasmStatfs, WasmTimespec};
 
 use crate::ofd::FileType;
-use crate::process::{HostIO, Process, StdioConfig, StdioKind};
+use crate::process::{normalize_posix_timer_signo, HostIO, Process, StdioConfig, StdioKind};
 use crate::syscalls;
 
 // ---------------------------------------------------------------------------
@@ -8997,8 +8997,6 @@ pub extern "C" fn kernel_getitimer(which: u32, curr_ptr: *mut u8) -> i32 {
 // POSIX timers (timer_create / timer_settime / timer_gettime / etc.)
 // ---------------------------------------------------------------------------
 
-/// SIGEV_SIGNAL = 0, SIGEV_NONE = 1.
-const SIGEV_SIGNAL: u32 = 0;
 /// TIMER_ABSTIME flag for timer_settime.
 const TIMER_ABSTIME: i32 = 1;
 
@@ -9017,7 +9015,7 @@ pub extern "C" fn kernel_timer_create(
 
     // Parse sigevent (default: SIGEV_SIGNAL with SIGALRM)
     let (sigev_signo, sigev_value, sigev_notify) = if sevp_ptr.is_null() {
-        (14u32, 0i32, SIGEV_SIGNAL) // default: SIGALRM
+        (14u32, 0i32, 0u32) // default: SIGALRM with SIGEV_SIGNAL
     } else {
         let buf = unsafe { slice::from_raw_parts(sevp_ptr, 16) };
         let value = i32::from_le_bytes(buf[0..4].try_into().unwrap());
@@ -9026,10 +9024,10 @@ pub extern "C" fn kernel_timer_create(
         (signo, value, notify)
     };
 
-    // Only SIGEV_SIGNAL and SIGEV_NONE are supported
-    if sigev_notify != SIGEV_SIGNAL && sigev_notify != 1 {
-        return -(Errno::EINVAL as i32);
-    }
+    let sigev_signo = match normalize_posix_timer_signo(sigev_notify, sigev_signo) {
+        Ok(signo) => signo,
+        Err(errno) => return -(errno as i32),
+    };
 
     // Allocate timer slot
     let timer_id = {

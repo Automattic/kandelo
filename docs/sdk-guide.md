@@ -163,6 +163,7 @@ wasm32posix-cc -shared -fPIC plugin.c -o plugin.so
 -Wl,--shared-memory                # Enable SharedArrayBuffer
 -Wl,--max-memory=1073741824        # 1GB max memory
 -Wl,--global-base=1114112          # Data segment start
+-Wl,--no-stack-first               # LLVM 22+: preserve stack-after-data layout
 -Wl,--allow-undefined              # Host imports are resolved at load time
 -Wl,--export-table                 # Export function table (for dlopen)
 -Wl,--export=__stack_pointer       # Required for fork/thread support

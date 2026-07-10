@@ -469,6 +469,34 @@ pub struct PosixTimerState {
     pub overrun: i32,
 }
 
+/// Normalize the guest sigevent notification into the signal number passed to
+/// the host timer. SIGEV_NONE uses zero internally; SIGEV_SIGNAL must name a
+/// real signal so it cannot silently become a no-notification timer.
+const SIGEV_SIGNAL: u32 = 0;
+const SIGEV_NONE: u32 = 1;
+
+pub(crate) fn normalize_posix_timer_signo(
+    sigev_notify: u32,
+    sigev_signo: u32,
+) -> Result<u32, Errno> {
+    match sigev_notify {
+        SIGEV_NONE => Ok(0),
+        SIGEV_SIGNAL if (1..=64).contains(&sigev_signo) => Ok(sigev_signo),
+        _ => Err(Errno::EINVAL),
+    }
+}
+
+#[cfg(test)]
+#[test]
+fn posix_timer_notification_validates_and_normalizes_signals() {
+    assert_eq!(normalize_posix_timer_signo(SIGEV_NONE, 14).unwrap(), 0);
+    assert_eq!(normalize_posix_timer_signo(SIGEV_SIGNAL, 1).unwrap(), 1);
+    assert_eq!(normalize_posix_timer_signo(SIGEV_SIGNAL, 64).unwrap(), 64);
+    assert!(normalize_posix_timer_signo(SIGEV_SIGNAL, 0).is_err());
+    assert!(normalize_posix_timer_signo(SIGEV_SIGNAL, 65).is_err());
+    assert!(normalize_posix_timer_signo(4, 14).is_err());
+}
+
 /// Per-signalfd state: the set of signals to watch.
 #[derive(Debug, Clone)]
 pub struct SignalFdState {

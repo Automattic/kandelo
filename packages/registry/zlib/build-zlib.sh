@@ -1,83 +1,93 @@
 #!/usr/bin/env bash
-#
-# Build zlib for wasm32-posix-kernel.
-#
-# Honors the dep-resolver build-script contract (see
-# docs/dependency-management.md). When invoked via
-# `cargo xtask build-deps resolve zlib`, these env vars are set by the
-# resolver and the build installs into the shared cache:
-#
-#     WASM_POSIX_DEP_OUT_DIR        # where to `make install`
-#     WASM_POSIX_DEP_VERSION        # upstream version
-#     WASM_POSIX_DEP_SOURCE_URL     # tarball URL
-#     WASM_POSIX_DEP_SOURCE_SHA256  # expected sha256 of the tarball
-#
-# For ad-hoc / legacy invocation (`bash build-zlib.sh` with no resolver),
-# the script falls back to the in-tree `zlib-install/` layout.
+# Build zlib as an exact, relocatable resolver package.
 
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-SRC_DIR="$SCRIPT_DIR/zlib-src"
+REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
+WORK_DIR="$(mktemp -d "${TMPDIR:-/tmp}/kandelo-zlib.XXXXXX")"
+trap 'rm -rf "$WORK_DIR"' EXIT
+SRC_DIR="$WORK_DIR/source"
 
-# --- Inputs from resolver, with legacy fallbacks ---
+# shellcheck source=/dev/null
+source "$REPO_ROOT/sdk/activate.sh"
+
 ZLIB_VERSION="${WASM_POSIX_DEP_VERSION:-${ZLIB_VERSION:-1.3.1}}"
 INSTALL_DIR="${WASM_POSIX_DEP_OUT_DIR:-$SCRIPT_DIR/zlib-install}"
 SOURCE_URL="${WASM_POSIX_DEP_SOURCE_URL:-https://github.com/madler/zlib/releases/download/v${ZLIB_VERSION}/zlib-${ZLIB_VERSION}.tar.gz}"
-SOURCE_SHA256="${WASM_POSIX_DEP_SOURCE_SHA256:-}"
+SOURCE_SHA256="${WASM_POSIX_DEP_SOURCE_SHA256:-9a93b2b7dfdac77ceba5a558a580e74667dd6fede4585b91eefb60f03b72df23}"
+TARGET_ARCH="${WASM_POSIX_DEP_TARGET_ARCH:-wasm32}"
 
-if ! command -v wasm32posix-cc &>/dev/null; then
-    echo "ERROR: wasm32posix-cc not found. Run 'npm link' in sdk/ first." >&2
-    exit 1
-fi
+case "$TARGET_ARCH" in
+    wasm32)
+        SYSROOT="${WASM_POSIX_SYSROOT:-$REPO_ROOT/sysroot}"
+        ;;
+    wasm64)
+        SYSROOT="${WASM_POSIX_SYSROOT:-$REPO_ROOT/sysroot64}"
+        ;;
+    *)
+        echo "ERROR: zlib supports wasm32 and wasm64, got $TARGET_ARCH" >&2
+        exit 1
+        ;;
+esac
+export WASM_POSIX_SYSROOT="$SYSROOT"
 
-# --- Fetch + verify source ---
-if [ ! -d "$SRC_DIR" ]; then
-    echo "==> Downloading zlib $ZLIB_VERSION..."
-    TARBALL="zlib-${ZLIB_VERSION}.tar.gz"
-    curl --retry 10 --retry-delay 5 --retry-max-time 300 --retry-all-errors -fsSL "$SOURCE_URL" -o "/tmp/$TARBALL"
-    if [ -n "$SOURCE_SHA256" ]; then
-        echo "==> Verifying source sha256..."
-        echo "$SOURCE_SHA256  /tmp/$TARBALL" | shasum -a 256 -c -
-    else
-        echo "==> (no SOURCE_SHA256 declared; skipping verification)"
-    fi
-    mkdir -p "$SRC_DIR"
-    tar xzf "/tmp/$TARBALL" -C "$SRC_DIR" --strip-components=1
-    rm "/tmp/$TARBALL"
-fi
+CC="${TARGET_ARCH}posix-cc"
+AR="${TARGET_ARCH}posix-ar"
+RANLIB="${TARGET_ARCH}posix-ranlib"
+for tool in "$CC" "$AR" "$RANLIB"; do
+    command -v "$tool" >/dev/null || {
+        echo "ERROR: $tool not found after sourcing sdk/activate.sh" >&2
+        exit 1
+    }
+done
+
+echo "==> Downloading zlib $ZLIB_VERSION..."
+TARBALL="$WORK_DIR/zlib.tar.gz"
+curl --retry 10 --retry-delay 5 --retry-max-time 300 --retry-all-errors -fsSL "$SOURCE_URL" -o "$TARBALL"
+echo "==> Verifying source sha256..."
+echo "$SOURCE_SHA256  $TARBALL" | shasum -a 256 -c -
+mkdir -p "$SRC_DIR"
+tar xzf "$TARBALL" -C "$SRC_DIR" --strip-components=1
 
 cd "$SRC_DIR"
+echo "==> Configuring zlib for $TARGET_ARCH..."
+CC="$CC" AR="$AR" RANLIB="$RANLIB" \
+    LDSHARED="$CC -shared" \
+    ./configure --static --prefix=/usr
 
-# `make install` writes into $INSTALL_DIR. Clean first so a cache-miss
-# rebuild doesn't mix old + new artifacts inside the resolver's temp dir.
-rm -rf "$INSTALL_DIR"
-
-echo "==> Configuring zlib for Wasm..."
-CC=wasm32posix-cc AR=wasm32posix-ar RANLIB=wasm32posix-ranlib \
-    LDSHARED="wasm32posix-cc -shared" \
-    ./configure --static --prefix="$INSTALL_DIR"
-
-# On macOS, zlib's configure uses 'libtool' which is the Xcode one — not wasm-aware.
-# Patch the Makefile to use wasm32posix-ar instead.
-echo "==> Patching Makefile for Wasm ar..."
+# On macOS zlib's configure may select Xcode libtool. Pin the SDK archiver.
 sed -i.bak \
-    -e 's|^AR=.*|AR=wasm32posix-ar|' \
+    -e "s|^AR=.*|AR=$AR|" \
     -e 's|^ARFLAGS=.*|ARFLAGS=rcs|' \
-    -e 's|^RANLIB=.*|RANLIB=wasm32posix-ranlib|' \
-    -e 's|libtool -o|wasm32posix-ar rcs|g' \
-    Makefile && rm -f Makefile.bak
+    -e "s|^RANLIB=.*|RANLIB=$RANLIB|" \
+    -e "s|libtool -o|$AR rcs|g" \
+    Makefile
+rm -f Makefile.bak
 
 echo "==> Building zlib..."
 make -j"$(sysctl -n hw.ncpu 2>/dev/null || nproc)" libz.a
 
-echo "==> Installing to $INSTALL_DIR..."
-make install
+echo "==> Staging declared package outputs..."
+rm -rf "$INSTALL_DIR"
+mkdir -p "$INSTALL_DIR/lib/pkgconfig" "$INSTALL_DIR/include"
+cp libz.a "$INSTALL_DIR/lib/"
+cp zlib.h zconf.h "$INSTALL_DIR/include/"
+cat > "$INSTALL_DIR/lib/pkgconfig/zlib.pc" <<PCEOF
+prefix=\${pcfiledir}/../..
+exec_prefix=\${prefix}
+libdir=\${exec_prefix}/lib
+sharedlibdir=\${libdir}
+includedir=\${prefix}/include
 
-if [ -f "$INSTALL_DIR/lib/libz.a" ]; then
-    echo "==> zlib build complete!"
-    ls -lh "$INSTALL_DIR/lib/libz.a"
-else
-    echo "ERROR: Build failed — library not found" >&2
-    exit 1
-fi
+Name: zlib
+Description: zlib compression library
+Version: $ZLIB_VERSION
+Requires:
+Libs: -L\${libdir} -lz
+Cflags: -I\${includedir}
+PCEOF
+
+test -f "$INSTALL_DIR/lib/libz.a"
+echo "==> zlib build complete!"
+ls -lh "$INSTALL_DIR/lib/libz.a"

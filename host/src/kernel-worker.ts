@@ -86,6 +86,11 @@ const CH_IDLE = CHANNEL_STATUS_IDLE;
 const CH_PENDING = CHANNEL_STATUS_PENDING;
 const CH_COMPLETE = CHANNEL_STATUS_COMPLETE;
 
+/** SIGEV_NONE crosses the host timer boundary as signal number zero. */
+export function shouldDeliverPosixTimerSignal(signo: number): boolean {
+  return Number.isInteger(signo) && signo > 0 && signo <= 64;
+}
+
 /**
  * Size of the wpk_fork save buffer. Each channel reserves
  * `[channelOffset - FORK_BUF_SIZE, channelOffset)` for the unwind frames and
@@ -1002,7 +1007,13 @@ export class CentralizedKernelWorker {
               this.posixTimers.delete(key);
               return;
             }
-            this.sendSignalToProcess(pid, signo);
+            // SIGEV_NONE is represented by signo 0 at the host boundary.
+            // Do not route it through kill(pid, 0): although that queues no
+            // signal, the generic delivery path can still wake a blocked
+            // syscall as if a notification had occurred.
+            if (shouldDeliverPosixTimerSignal(signo)) {
+              this.sendSignalToProcess(pid, signo);
+            }
 
             // Set up repeating interval if needed
             if (intervalMs > 0) {
@@ -1013,12 +1024,14 @@ export class CentralizedKernelWorker {
                   this.posixTimers.delete(key);
                   return;
                 }
-                // Check if signal is already pending (overrun) or new cycle
-                const intervalFire = this.kernelInstance!.exports
-                  .kernel_posix_timer_interval_fire as ((pid: number, timerId: number) => number) | undefined;
-                const alreadyPending = intervalFire ? intervalFire(pid, timerId) : 0;
-                if (!alreadyPending) {
-                  this.sendSignalToProcess(pid, signo);
+                if (shouldDeliverPosixTimerSignal(signo)) {
+                  // Check if signal is already pending (overrun) or new cycle.
+                  const intervalFire = this.kernelInstance!.exports
+                    .kernel_posix_timer_interval_fire as ((pid: number, timerId: number) => number) | undefined;
+                  const alreadyPending = intervalFire ? intervalFire(pid, timerId) : 0;
+                  if (!alreadyPending) {
+                    this.sendSignalToProcess(pid, signo);
+                  }
                 }
               }, intervalMs);
               const entry = this.posixTimers.get(key);

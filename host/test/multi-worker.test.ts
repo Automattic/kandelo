@@ -4,7 +4,11 @@
 // setNextChildPid, and fork flow.
 import { describe, it, expect, vi } from "vitest";
 import { readFileSync } from "node:fs";
-import { CAPTURED_STDIO, CentralizedKernelWorker } from "../src/kernel-worker";
+import {
+  CAPTURED_STDIO,
+  CentralizedKernelWorker,
+  shouldDeliverPosixTimerSignal,
+} from "../src/kernel-worker";
 import { resolveBinary } from "../src/binary-resolver";
 import { NodePlatformIO } from "../src/platform/node";
 import { SharedLockTable } from "../src/shared-lock-table";
@@ -59,6 +63,12 @@ function registerProcess(
 }
 
 describe("CentralizedKernelWorker Process Management", () => {
+  it("does not deliver SIGEV_NONE as a signal-zero wakeup", () => {
+    expect(shouldDeliverPosixTimerSignal(0)).toBe(false);
+    expect(shouldDeliverPosixTimerSignal(14)).toBe(true);
+    expect(shouldDeliverPosixTimerSignal(65)).toBe(false);
+  });
+
   it("releases host-backed advisory locks when deactivating an exited process", () => {
     const pid = 126;
     const peerPid = 127;
