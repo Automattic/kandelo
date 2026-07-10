@@ -13697,6 +13697,27 @@ mod tests {
     }
 
     #[test]
+    fn test_send_external_tcp_epipe_raises_sigpipe() {
+        // Default flags (no MSG_NOSIGNAL): an EPIPE from the host bridge on an
+        // external TCP send must raise SIGPIPE, mirroring sys_write's path.
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        use wasm_posix_shared::socket::*;
+
+        host.net_connect_result = Ok(());
+        host.net_connect_status_result = Ok(());
+        host.net_send_result = Err(Errno::EPIPE);
+
+        let fd = sys_socket(&mut proc, &mut host, AF_INET, SOCK_STREAM, 0).unwrap();
+        let addr = [2, 0, 0, 80, 93, 184, 216, 34, 0, 0, 0, 0, 0, 0, 0, 0];
+        sys_connect(&mut proc, &mut host, fd, &addr).unwrap();
+
+        let result = sys_send(&mut proc, &mut host, fd, b"test", 0);
+        assert_eq!(result, Err(Errno::EPIPE));
+        assert!(proc.signals.is_pending(wasm_posix_shared::signal::SIGPIPE));
+    }
+
+    #[test]
     fn test_send_not_connected() {
         let mut proc = Process::new(1);
         let mut host = MockHostIO::new();
