@@ -10,6 +10,9 @@ SRC="$SCRIPT_DIR/src/posix-utils-lite.c"
 BIN_DIR="$SCRIPT_DIR/bin"
 SYSROOT="$REPO_ROOT/sysroot"
 
+# Keep direct and resolver-driven builds pinned to this worktree's SDK.
+source "$REPO_ROOT/sdk/activate.sh"
+
 UTILITIES=(
   ar asa cal cflow compress ctags cxref ed ex fuser gencat getconf gettext
   iconv ipcrm ipcs lex locale logger man more msgfmt ngettext nm patch pax

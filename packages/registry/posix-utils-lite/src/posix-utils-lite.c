@@ -415,13 +415,208 @@ static int util_logger(int argc, char **argv) {
     return 0;
 }
 
-static int util_ps(int argc, char **argv) {
-    DIR *proc = opendir("/proc");
-    puts("  PID COMMAND");
-    if (!proc) {
-        printf("%5ld %s\n", (long)getpid(), program_name(argv[0]));
-        return 0;
+struct ps_fields {
+    int pid;
+    int nice;
+    int command;
+};
+
+static int ps_pid_selected(long pid, long *pids, int npids) {
+    if (npids == 0) {
+        return 1;
     }
+    for (int i = 0; i < npids; i++) {
+        if (pids[i] == pid) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
+static int ps_add_pid_list(const char *arg, long *pids, int *npids, int max_pids) {
+    if (!arg || !*arg) {
+        return -1;
+    }
+    const char *p = arg;
+    for (;;) {
+        if (*npids >= max_pids) {
+            return -1;
+        }
+        errno = 0;
+        char *end = NULL;
+        long pid = strtol(p, &end, 10);
+        if (errno != 0 || end == p || pid <= 0 || (*end != '\0' && *end != ',')) {
+            return -1;
+        }
+        pids[(*npids)++] = pid;
+        if (*end == '\0') {
+            return 0;
+        }
+        p = end + 1;
+        if (*p == '\0') {
+            return -1;
+        }
+    }
+}
+
+static void ps_parse_fields(const char *arg, struct ps_fields *fields) {
+    fields->pid = 0;
+    fields->nice = 0;
+    fields->command = 0;
+
+    char *copy = xstrdup(arg);
+    for (char *tok = strtok(copy, ", "); tok; tok = strtok(NULL, ", ")) {
+        if (streq(tok, "pid")) {
+            fields->pid = 1;
+        } else if (streq(tok, "nice") || streq(tok, "ni")) {
+            fields->nice = 1;
+        } else if (streq(tok, "comm") || streq(tok, "command") ||
+                   streq(tok, "args")) {
+            fields->command = 1;
+        }
+    }
+    if (!fields->pid && !fields->nice && !fields->command) {
+        fields->pid = 1;
+        fields->command = 1;
+    }
+    free(copy);
+}
+
+static int ps_read_stat(long pid, char *comm, size_t comm_len, long *nice_value) {
+    char path[PATH_MAX];
+    snprintf(path, sizeof(path), "/proc/%ld/stat", pid);
+    FILE *f = fopen(path, "r");
+    if (!f) {
+        return -1;
+    }
+    char line[1024];
+    if (!fgets(line, sizeof(line), f)) {
+        fclose(f);
+        return -1;
+    }
+    fclose(f);
+
+    char *open = strchr(line, '(');
+    char *close = strrchr(line, ')');
+    if (!open || !close || close <= open) {
+        return -1;
+    }
+    size_t n = (size_t)(close - open - 1);
+    if (n >= comm_len) {
+        n = comm_len - 1;
+    }
+    memcpy(comm, open + 1, n);
+    comm[n] = '\0';
+
+    // Fields after comm begin with field 3 (state).  Nice is field 19, so it
+    // is token index 16 in this suffix.  This follows Linux /proc/<pid>/stat
+    // and matches the kernel procfs generator.
+    char *suffix = close + 2;
+    char *save = NULL;
+    int index = 0;
+    for (char *tok = strtok_r(suffix, " \t\r\n", &save); tok;
+        tok = strtok_r(NULL, " \t\r\n", &save), index++) {
+        if (index == 16) {
+            char *end = NULL;
+            errno = 0;
+            long parsed = strtol(tok, &end, 10);
+            if (errno != 0 || end == tok || *end != '\0') {
+                return -1;
+            }
+            if (nice_value) {
+                *nice_value = parsed;
+            }
+            return 0;
+        }
+    }
+    return -1;
+}
+
+static void ps_read_cmdline(long pid, char *cmd, size_t cmd_len) {
+    char path[PATH_MAX];
+    snprintf(path, sizeof(path), "/proc/%ld/cmdline", pid);
+    FILE *f = fopen(path, "rb");
+    cmd[0] = '\0';
+    if (!f) {
+        return;
+    }
+    size_t n = fread(cmd, 1, cmd_len - 1, f);
+    fclose(f);
+    for (size_t i = 0; i < n; i++) {
+        if (cmd[i] == '\0') {
+            cmd[i] = ' ';
+        }
+    }
+    cmd[n] = '\0';
+}
+
+static void ps_print_header(const struct ps_fields *fields) {
+    if (fields->pid) {
+        printf("%5s", "PID");
+    }
+    if (fields->nice) {
+        printf("%s%4s", fields->pid ? " " : "", "NICE");
+    }
+    if (fields->command) {
+        printf("%s%s", (fields->pid || fields->nice) ? " " : "", "COMMAND");
+    }
+    putchar('\n');
+}
+
+static void ps_print_row(const struct ps_fields *fields, long pid, long nice_value,
+                         const char *cmd) {
+    if (fields->pid) {
+        printf("%5ld", pid);
+    }
+    if (fields->nice) {
+        printf("%s%4ld", fields->pid ? " " : "", nice_value);
+    }
+    if (fields->command) {
+        printf("%s%s", (fields->pid || fields->nice) ? " " : "", cmd && cmd[0] ? cmd : "?");
+    }
+    putchar('\n');
+}
+
+static int util_ps(int argc, char **argv) {
+    long selected_pids[64];
+    int nselected = 0;
+    struct ps_fields fields = {1, 0, 1};
+
+    for (int i = 1; i < argc; i++) {
+        if (streq(argv[i], "-p") || streq(argv[i], "--pid")) {
+            if (i + 1 >= argc ||
+                ps_add_pid_list(argv[++i], selected_pids, &nselected,
+                                (int)(sizeof(selected_pids) / sizeof(selected_pids[0]))) != 0) {
+                fprintf(stderr, "ps: invalid pid list\n");
+                return 2;
+            }
+        } else if (strncmp(argv[i], "-p", 2) == 0 && argv[i][2]) {
+            if (ps_add_pid_list(argv[i] + 2, selected_pids, &nselected,
+                                (int)(sizeof(selected_pids) / sizeof(selected_pids[0]))) != 0) {
+                fprintf(stderr, "ps: invalid pid list\n");
+                return 2;
+            }
+        } else if (streq(argv[i], "-o") || streq(argv[i], "--format")) {
+            if (i + 1 >= argc) {
+                fprintf(stderr, "ps: option requires a format\n");
+                return 2;
+            }
+            ps_parse_fields(argv[++i], &fields);
+        } else if (strncmp(argv[i], "-o", 2) == 0 && argv[i][2]) {
+            ps_parse_fields(argv[i] + 2, &fields);
+        } else if (!streq(argv[i], "-A") && !streq(argv[i], "-e")) {
+            fprintf(stderr, "ps: unsupported option: %s\n", argv[i]);
+            return 2;
+        }
+    }
+
+    DIR *proc = opendir("/proc");
+    if (!proc) {
+        perror("ps: /proc");
+        return 1;
+    }
+    ps_print_header(&fields);
+    int matched = 0;
     struct dirent *de;
     while ((de = readdir(proc)) != NULL) {
         char *end = NULL;
@@ -429,32 +624,28 @@ static int util_ps(int argc, char **argv) {
         if (!end || *end != '\0') {
             continue;
         }
-        char path[PATH_MAX];
-        snprintf(path, sizeof(path), "/proc/%ld/cmdline", pid);
-        FILE *f = fopen(path, "rb");
+        if (!ps_pid_selected(pid, selected_pids, nselected)) {
+            continue;
+        }
         char cmd[256] = "";
-        if (f) {
-            size_t n = fread(cmd, 1, sizeof(cmd) - 1, f);
-            fclose(f);
-            for (size_t i = 0; i < n; i++) {
-                if (cmd[i] == '\0') {
-                    cmd[i] = ' ';
-                }
-            }
-            cmd[n] = '\0';
+        char comm[256] = "";
+        long nice_value = 0;
+        if (ps_read_stat(pid, comm, sizeof(comm), &nice_value) != 0) {
+            // The process may have exited between readdir() and fopen(). Do
+            // not fabricate a row or a nice value for a vanished process.
+            continue;
         }
         if (cmd[0] == '\0') {
-            snprintf(path, sizeof(path), "/proc/%ld/stat", pid);
-            f = fopen(path, "r");
-            if (f) {
-                fscanf(f, "%*d (%255[^)])", cmd);
-                fclose(f);
-            }
+            ps_read_cmdline(pid, cmd, sizeof(cmd));
         }
-        printf("%5ld %s\n", pid, cmd[0] ? cmd : "?");
+        if (cmd[0] == '\0' && comm[0] != '\0') {
+            snprintf(cmd, sizeof(cmd), "%s", comm);
+        }
+        ps_print_row(&fields, pid, nice_value, cmd);
+        matched++;
     }
     closedir(proc);
-    return 0;
+    return nselected > 0 && matched == 0 ? 1 : 0;
 }
 
 static int util_renice(int argc, char **argv) {

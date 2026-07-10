@@ -109,6 +109,7 @@ Kandelo uses a single kernel Wasm instance that holds a `ProcessTable` and serve
 | `getgid()` / `getegid()` | Full | Simulated; defaults to gid=0 (root). Configurable via setgid/setegid. |
 | `setuid()` / `seteuid()` | Full | POSIX semantics (no saved-set-uid tracked). As root: setuid sets both uid and euid; seteuid sets any euid. Non-root: setuid only to own uid; seteuid only to own ruid. Returns EPERM otherwise. |
 | `setgid()` / `setegid()` | Full | POSIX semantics mirroring setuid — gated on euid==0 for privileged changes. Returns EPERM for non-root trying to change to a foreign gid. |
+| `getpriority()` / `setpriority()` | Partial | Stores a per-process nice value; WebAssembly has no host CPU scheduler to apply it to. Linux-compatible `/proc/<pid>/stat` exposes scheduler priority in field 18 and nice in field 19. Procfs metadata operations reject missing or reaped PID scopes. |
 | `getpgrp()` | Full | Returns process group ID (simulated, defaults to pid). |
 | `setpgid()` | Partial | Sets process group ID. pid=0 means self. pgid=0 means use target pid. Only supports setting own pgid; other processes return ESRCH. |
 | `getsid()` | Full | Returns session ID (simulated, defaults to pid). pid=0 means self. |

@@ -33,7 +33,9 @@ pub mod host_abi;
 ///     it, matching the signal contract of local stream writes.
 /// 20: mremap rejects unsupported flag bits instead of silently accepting
 ///     them under the existing syscall number.
-pub const ABI_VERSION: u32 = 20;
+/// 21: missing, PID-zero, and reaped procfs paths report ENOENT instead of
+///     returning synthetic success through stat/access/path operations.
+pub const ABI_VERSION: u32 = 21;
 
 /// Syscall numbers for the POSIX kernel interface.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
