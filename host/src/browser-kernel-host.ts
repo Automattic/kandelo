@@ -964,6 +964,22 @@ export class BrowserKernel {
   }
 
   /**
+   * Deliver a POSIX signal to `pid`. Resolves false when the process is gone
+   * (ESRCH). Unlike {@link terminateProcess}, which tears down the wasm worker
+   * from the host, this runs the kernel's signal path, so the target's
+   * disposition and the kernel's exit cleanup both apply.
+   */
+  async signalProcess(pid: number, signum: number): Promise<boolean> {
+    const requestId = this.nextRequestId++;
+    return this.request(requestId, {
+      type: "signal_process",
+      requestId,
+      pid,
+      signum,
+    }) as Promise<boolean>;
+  }
+
+  /**
    * Push a mouse event into the kernel's `/dev/input/mice` queue. Pass
    * deltas in PS/2 sign convention (positive-right, positive-up — invert
    * the browser's deltaY before calling) and a button bitmask
@@ -1123,9 +1139,9 @@ export class BrowserKernel {
 
   /**
    * Create or replace a regular file in the worker-owned VFS. The mutation is
-   * performed by the kernel worker, preserving exclusive VFS ownership; call
-   * this only while guest processes that could access the path are stopped.
-   * The parent directory must already exist.
+   * performed by the kernel worker, preserving exclusive VFS ownership. The
+   * parent directory must already exist, and callers must coordinate access
+   * with guest processes that may use the same path.
    */
   async writeFileToVfs(
     path: string,

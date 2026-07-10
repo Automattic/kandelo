@@ -59,11 +59,12 @@ inputs = [
 ]
 repo_url    = "https://github.com/Automattic/kandelo.git"
 commit      = "UNPUBLISHED"
-revision    = 25
-# WHY: this recipe is bound to the admitted ABI-42 flat selection and emits the
-# sealed lazy product directly. It no longer depends on the retired lazy shell
-# campaign or its unpublished derived artifact lock.
-publication_state = "ready"
+revision    = 23
+# WHY: the guest Homebrew source and image-owned demo metadata both changed
+# shell inputs, so the previous sealed VFS identity is no longer valid. Keep
+# normal resolution closed until this exact revision 23 input set is rebuilt,
+# reviewed, and sealed through the package workflow.
+publication_state = "pending"
 
 [binary]
 index_url = "https://github.com/Automattic/kandelo/releases/download/binaries-abi-v{abi}/index.toml"

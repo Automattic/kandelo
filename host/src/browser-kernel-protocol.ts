@@ -148,6 +148,7 @@ export interface ReadVfsFileMessage {
 export interface WriteVfsFileMessage {
   type: "write_vfs_file";
   requestId: number;
+  /** Normalized absolute guest path whose parent already exists. */
   path: string;
   data: Uint8Array;
   mode: number;
@@ -252,6 +253,14 @@ export interface IsStdinConsumedMessage {
   type: "is_stdin_consumed";
   requestId: number;
   pid: number;
+}
+
+/** Deliver `signum` to `pid`. Responds `true` when the process existed. */
+export interface SignalProcessMessage {
+  type: "signal_process";
+  requestId: number;
+  pid: number;
+  signum: number;
 }
 
 export interface PickListenerTargetMessage {
@@ -431,6 +440,7 @@ export type MainToKernelMessage =
   | WakeBlockedReadersMessage
   | WakeBlockedWritersMessage
   | IsStdinConsumedMessage
+  | SignalProcessMessage
   | PickListenerTargetMessage
   | DestroyMessage
   | RegisterPtyOutputMessage
