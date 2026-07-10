@@ -24787,6 +24787,50 @@ export class CentralizedKernelWorker {
   }
 
   /**
+   * Deliver one host-originated signal through the authoritative kernel
+   * ProcessTable. A temporarily detached host worker during exec does not make
+   * the process disappear, so the host registration map cannot answer this
+   * existence question truthfully.
+   */
+  signalProcess(pid: number, signum: number): boolean {
+    if (!this.#initialized) throw new Error("Kernel not initialized");
+    if (!Number.isSafeInteger(pid) || pid <= 0 || pid > MAX_KERNEL_TASK_ID) {
+      throw new RangeError(`Invalid kernel process ID ${pid}`);
+    }
+    if (!Number.isSafeInteger(signum) || signum < 0 || signum > 64) {
+      throw new RangeError(`Invalid POSIX signal number ${signum}`);
+    }
+    if (this.#kernelFatalError !== null) throw this.#kernelFatalError;
+    if (this.#kernelEntryGate.shouldDeferVoidIngress) {
+      throw new KernelReentrantEntryError(
+        `host signal delivery pid=${pid}`,
+      );
+    }
+
+    let accepted: boolean | undefined;
+    const deferred = this.#runOrDeferKernelEntry(
+      `host signal delivery pid=${pid}`,
+      (entry) => {
+        accepted = this.#generateHostSignalWithinKernelEntry(
+          pid,
+          signum,
+          entry,
+        );
+        if (accepted && signum !== 0) {
+          this.sendSignalToProcess(pid, signum, false, entry);
+        }
+        return undefined;
+      },
+    );
+    if (deferred || accepted === undefined) {
+      throw new KernelReentrantEntryError(
+        `host signal delivery pid=${pid}`,
+      );
+    }
+    return accepted;
+  }
+
+  /**
    * Interrupt the exact host-owned futex selected for one caught signal.
    *
    * The dequeue must precede the host wake: it both proves that this TID owns
@@ -24869,33 +24913,14 @@ export class CentralizedKernelWorker {
     // old worker registration while the same kernel Process (and its alarm)
     // remains alive. Queuing directly in the ProcessTable prevents a timer
     // that expires in that handoff window from being lost.
-
-    if (queueSignal) {
-      const generateHostSignal = this.#kernelInstanceForEntry(entry).exports
-        .kernel_generate_host_signal as
-          ((pid: number, signal: number) => number) | undefined;
-      if (typeof generateHostSignal !== "function") {
-        this.#failBlockingRetryProtocol(
-          "kernel host-signal generation export is unavailable",
-        );
-      }
-      let result: number;
-      try {
-        result = generateHostSignal(targetPid, signum);
-      } catch (error) {
-        this.#rethrowKernelEntryFatal(error);
-        this.#failBlockingRetryProtocol(
-          `kernel host-signal generation trapped for pid ${targetPid}`,
-          error,
-        );
-      }
-      if (result === -ESRCH) return;
-      if (!Number.isSafeInteger(result) || result !== 0) {
-        this.#failBlockingRetryProtocol(
-          `kernel rejected host signal ${signum} for pid ${targetPid}: ${result}`,
-        );
-      }
-    }
+    if (
+      queueSignal
+      && !this.#generateHostSignalWithinKernelEntry(
+        targetPid,
+        signum,
+        entry,
+      )
+    ) return;
 
     if (queueSignal) this.wakePendingSignalWaits(targetPid, signum);
 
@@ -25011,6 +25036,44 @@ export class CentralizedKernelWorker {
       // exact channel through its public root after this scope unwinds.
       this.retrySyscall(selectEntry.channel);
     }
+  }
+
+  /**
+   * Generate a host-owned signal while exact kernel-entry authority is live.
+   * The boolean preserves ESRCH as an ordinary, truthful race outcome; every
+   * other nonzero result is a host/kernel protocol failure after callers have
+   * validated the PID and signal ranges.
+   */
+  #generateHostSignalWithinKernelEntry(
+    targetPid: number,
+    signum: number,
+    entry: KernelWorkerEntryContext,
+  ): boolean {
+    const generateHostSignal = this.#kernelInstanceForEntry(entry).exports
+      .kernel_generate_host_signal as
+        ((pid: number, signal: number) => number) | undefined;
+    if (typeof generateHostSignal !== "function") {
+      this.#failBlockingRetryProtocol(
+        "kernel host-signal generation export is unavailable",
+      );
+    }
+    let result: number;
+    try {
+      result = generateHostSignal(targetPid, signum);
+    } catch (error) {
+      this.#rethrowKernelEntryFatal(error);
+      this.#failBlockingRetryProtocol(
+        `kernel host-signal generation trapped for pid ${targetPid}`,
+        error,
+      );
+    }
+    if (result === -ESRCH) return false;
+    if (!Number.isSafeInteger(result) || result !== 0) {
+      this.#failBlockingRetryProtocol(
+        `kernel rejected host signal ${signum} for pid ${targetPid}: ${result}`,
+      );
+    }
+    return true;
   }
 
   // -----------------------------------------------------------------------

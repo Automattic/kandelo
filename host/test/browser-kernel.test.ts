@@ -735,6 +735,30 @@ describe("BrowserKernel", () => {
     expect(await readPromise).toEqual(bytes);
   });
 
+  it("signalProcess round-trips through the browser kernel worker", async () => {
+    const BrowserKernel = await loadBrowserKernel();
+    const kernel = new BrowserKernel({ kernelOwnedFs: true });
+    const initPromise = kernel.initFromImage({
+      kernelWasm: new ArrayBuffer(8),
+      vfsImage: new Uint8Array(0),
+    });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    const worker = MockWorker.instances[0]!;
+    worker.simulateMessage({ type: "ready" });
+    await initPromise;
+
+    const signalPromise = kernel.signalProcess(41, 15);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    const signal = worker.lastMessage("signal_process");
+    expect(signal).toMatchObject({ pid: 41, signum: 15 });
+    worker.simulateMessage({
+      type: "response",
+      requestId: signal.requestId,
+      result: true,
+    });
+    await expect(signalPromise).resolves.toBe(true);
+  });
+
   it("mutates files through the VFS-owning worker with lossless snapshots", async () => {
     const BrowserKernel = await loadBrowserKernel();
     const kernel = new BrowserKernel({ kernelOwnedFs: true });

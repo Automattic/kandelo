@@ -129,6 +129,9 @@ describe("NodeKernelHost rootfs export contract", () => {
     await expect(host.readFileFromVfs("/missing")).rejects.toThrow(
       "VFS read requires an initialized kernel",
     );
+    await expect(
+      host.writeFileToVfs("/tmp/file", new Uint8Array([1])),
+    ).rejects.toThrow("VFS write requires an initialized kernel");
     await expect(host.exportRootfsImage()).rejects.toThrow(
       "rootfs export requires an initialized kernel",
     );
@@ -142,6 +145,9 @@ describe("NodeKernelHost rootfs export contract", () => {
       try {
         await host.init(asArrayBuffer(new Uint8Array(readFileSync(kernelPath!))));
         await expect(host.readFileFromVfs("/missing")).resolves.toBeNull();
+        await expect(
+          host.writeFileToVfs("/tmp/file", new Uint8Array([1])),
+        ).rejects.toThrow("VFS is not initialized");
         await expect(host.exportRootfsImage()).rejects.toThrow(
           "rootfs export requires a VFS-backed kernel",
         );
@@ -160,6 +166,11 @@ describe("NodeKernelHost rootfs export contract", () => {
       let exported: Uint8Array;
       try {
         await first.init(asArrayBuffer(kernel));
+        const staged = new Uint8Array([9, 8, 7, 6]);
+        await first.writeFileToVfs("/var/lib/ingested", staged, 0o620);
+        await expect(
+          first.readFileFromVfs("/var/lib/ingested"),
+        ).resolves.toEqual(staged);
         exported = await first.exportRootfsImage();
       } finally {
         await first.destroy();
@@ -171,6 +182,10 @@ describe("NodeKernelHost rootfs export contract", () => {
         readFile(restored, "/var/lib/persisted-state"),
       )).toBe("survives reboot\n");
       expect(restored.stat("/var/lib/persisted-state").mode & 0o7777).toBe(0o640);
+      expect(readFile(restored, "/var/lib/ingested")).toEqual(
+        new Uint8Array([9, 8, 7, 6]),
+      );
+      expect(restored.stat("/var/lib/ingested").mode & 0o7777).toBe(0o620);
       expect(restored.exportLazyEntries()).toEqual([expect.objectContaining({
         path: "/opt/lazy-tool",
         url: "https://packages.example.test/lazy-tool.wasm",
