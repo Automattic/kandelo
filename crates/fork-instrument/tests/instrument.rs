@@ -684,7 +684,7 @@ fn host_parsed_marker_exports_are_not_rewritten_even_when_they_reach_fork() {
             drop)
 
           (func $__abi_version_actual (result i32)
-            i32.const 17)
+            i32.const 18)
           (func $__abi_version (export "__abi_version") (result i32)
             call $__wasm_call_ctors
             call $__abi_version_actual)
