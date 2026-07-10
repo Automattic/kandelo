@@ -672,6 +672,67 @@ fn call_site_post_sequence_sets_call_idx_and_checks_unwinding() {
 }
 
 #[test]
+fn host_parsed_marker_exports_are_not_rewritten_even_when_they_reach_fork() {
+    let wat = r#"
+        (module
+          (import "kernel" "kernel_fork" (func $fork (result i32)))
+          (memory (export "memory") 1)
+          (global $__tls_base (export "__tls_base") i32 (i32.const 1024))
+
+          (func $__wasm_call_ctors
+            call $fork
+            drop)
+
+          (func $__abi_version_actual (result i32)
+            i32.const 17)
+          (func $__abi_version (export "__abi_version") (result i32)
+            call $__wasm_call_ctors
+            call $__abi_version_actual)
+
+          (func $__wasm_posix_thread_slots_actual (result i32)
+            i32.const -1)
+          (func $__wasm_posix_thread_slots (export "__wasm_posix_thread_slots") (result i32)
+            call $__wasm_call_ctors
+            call $__wasm_posix_thread_slots_actual)
+
+          (func $__get_channel_base_addr_actual (result i32)
+            i32.const 32
+            global.get $__tls_base
+            i32.add)
+          (func $__get_channel_base_addr (export "__get_channel_base_addr") (result i32)
+            call $__wasm_call_ctors
+            call $__get_channel_base_addr_actual)
+
+          (func $_start (export "_start") (result i32)
+            call $__wasm_call_ctors
+            i32.const 0))
+    "#;
+
+    let bytes = instrument_wat(wat);
+    validate(&bytes);
+    let module = Module::from_buffer(&bytes).unwrap();
+
+    for marker in [
+        "__abi_version",
+        "__wasm_posix_thread_slots",
+        "__get_channel_base_addr",
+    ] {
+        let kinds = entry_instr_kinds(&module, func_by_name(&module, marker));
+        assert_eq!(
+            kinds,
+            vec![InstrKind::Call, InstrKind::Call],
+            "{marker} must keep its raw wasm-ld marker wrapper shape for host byte parsing",
+        );
+    }
+
+    let start_kinds = entry_instr_kinds(&module, func_by_name(&module, "_start"));
+    assert!(
+        start_kinds.contains(&InstrKind::Block),
+        "_start still reaches fork and should be instrumented",
+    );
+}
+
+#[test]
 fn call_with_pure_args_replays_tail_without_spill_locals() {
     let bytes = instrument_wat(FIXTURE_CALL_WITH_ARGS);
     validate(&bytes);

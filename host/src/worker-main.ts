@@ -196,6 +196,7 @@ export interface DlopenSupport {
 function buildDlopenImports(
   memory: WebAssembly.Memory,
   channelOffset: number,
+  forkBufAddr: number,
   getTable: () => WebAssembly.Table | undefined,
   getStackPointer: () => WebAssembly.Global | undefined,
   getInstance: () => WebAssembly.Instance | undefined,
@@ -207,7 +208,6 @@ function buildDlopenImports(
   const encoder = new TextEncoder();
   const n = (v: number | bigint): number => typeof v === "bigint" ? Number(v) : v;
 
-  const forkBufAddr = channelOffset - FORK_BUF_SIZE;
   const headOffset = ptrWidth === 8 ? DLOPEN_HEAD_OFFSET_WASM64 : DLOPEN_HEAD_OFFSET_WASM32;
   const headSlot = forkBufAddr - headOffset;
   const entrySize = ptrWidth === 8 ? DLOPEN_ENTRY_SIZE_WASM64 : DLOPEN_ENTRY_SIZE_WASM32;
@@ -880,7 +880,7 @@ export async function centralizedWorkerMain(
     const hasForkInstrumentation = hasCompleteForkInstrumentation(moduleExports, pid);
     // Fork state — captured by kernel_fork closure
     let forkResult = 0;
-    const forkBufAddr = channelOffset - FORK_BUF_SIZE;
+    const forkBufAddr = initData.forkBufAddr ?? channelOffset - FORK_BUF_SIZE;
 
     if (hasForkInstrumentation) {
       // Override kernel_fork with fork-instrumentation-aware version.
@@ -911,6 +911,7 @@ export async function centralizedWorkerMain(
       const dlopenSupport = buildDlopenImports(
         memory,
         channelOffset,
+        forkBufAddr,
         () => processInstance?.exports.__indirect_function_table as WebAssembly.Table | undefined,
         () => processInstance?.exports.__stack_pointer as WebAssembly.Global | undefined,
         () => processInstance ?? undefined,
@@ -1062,6 +1063,7 @@ export async function centralizedWorkerMain(
       const dlopenSupport = buildDlopenImports(
         memory,
         channelOffset,
+        forkBufAddr,
         () => processInstance?.exports.__indirect_function_table as WebAssembly.Table | undefined,
         () => processInstance?.exports.__stack_pointer as WebAssembly.Global | undefined,
         () => processInstance ?? undefined,

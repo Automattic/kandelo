@@ -99,6 +99,12 @@ const SSL_CERT_FILE_PATH = "/etc/ssl/certs/ca-certificates.crt";
 const OPENSSL_DEFAULT_CERT_FILE_PATH = "/etc/ssl/cert.pem";
 
 // Process tracking
+interface ForkReplayContext {
+  fnPtr: number;
+  argPtr: number;
+  forkBufAddr: number;
+}
+
 interface ProcessInfo {
   memory: WebAssembly.Memory;
   programBytes: ArrayBuffer;
@@ -108,6 +114,8 @@ interface ProcessInfo {
   ptrWidth: 4 | 8;
   layout: ProcessMemoryLayout;
   threadAllocator: ThreadPageAllocator;
+  /** Non-_start continuation root inherited from a pthread fork until exec. */
+  forkReplayContext?: ForkReplayContext;
 }
 const processes = new Map<number, ProcessInfo>();
 const processTeardowns = new Map<number, Promise<void>>();
@@ -796,9 +804,14 @@ async function handleFork(
   });
 
   const FORK_BUF_SIZE = FORK_SAVE_BUFFER_SIZE;
-  const forkBufAddr = threadFork
-    ? threadFork.forkBufAddr
-    : childChannelOffset - FORK_BUF_SIZE;
+  const forkReplayContext: ForkReplayContext | undefined = threadFork
+    ? {
+        fnPtr: threadFork.fnPtr,
+        argPtr: threadFork.argPtr,
+        forkBufAddr: threadFork.forkBufAddr,
+      }
+    : parentInfo.forkReplayContext;
+  const forkBufAddr = forkReplayContext?.forkBufAddr ?? childChannelOffset - FORK_BUF_SIZE;
 
   const childInitData: CentralizedWorkerInitMessage = {
     type: "centralized_init",
@@ -810,8 +823,8 @@ async function handleFork(
     channelOffset: childChannelOffset,
     isForkChild: true,
     forkBufAddr,
-    forkChildThreadFnPtr: threadFork?.fnPtr,
-    forkChildThreadArgPtr: threadFork?.argPtr,
+    forkChildThreadFnPtr: forkReplayContext?.fnPtr,
+    forkChildThreadArgPtr: forkReplayContext?.argPtr,
     ptrWidth,
     kernelAbiVersion: kernelWorker.getKernelAbiVersion(),
   };
@@ -826,6 +839,7 @@ async function handleFork(
     ptrWidth,
     layout: childLayout,
     threadAllocator: threadAllocatorForLayout(childLayout, ptrWidth, childPid),
+    forkReplayContext,
   });
 
   childWorker.on("error", (err: Error) => finalizeUnexpectedWorkerError(childPid, childWorker, "worker error", err));

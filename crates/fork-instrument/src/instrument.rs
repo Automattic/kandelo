@@ -120,11 +120,24 @@ use walrus::{
         LocalSet, LocalTee, Loop, MemArg, RefAsNonNull, RefIsNull, RefNull, Return, StoreKind,
         TableGet, TableSet, Throw, ThrowRef, TryTable, TryTableCatch, UnaryOp, Unreachable, Value,
     },
-    AbstractHeapType, FunctionId, FunctionKind, HeapType, LocalFunction, LocalId, MemoryId, Module,
-    RefType, TableId, TagId, TypeId, ValType,
+    AbstractHeapType, ExportItem, FunctionId, FunctionKind, HeapType, LocalFunction, LocalId,
+    MemoryId, Module, RefType, TableId, TagId, TypeId, ValType,
 };
 
 use crate::runtime::{self, Runtime};
+
+const HOST_PARSED_MARKER_EXPORTS: &[&str] = &[
+    "__abi_version",
+    "__wasm_posix_thread_slots",
+    "__get_channel_base_addr",
+];
+
+fn is_host_parsed_marker_function(module: &Module, id: FunctionId) -> bool {
+    module.exports.iter().any(|export| {
+        HOST_PARSED_MARKER_EXPORTS.contains(&export.name.as_str())
+            && matches!(export.item, ExportItem::Function(func) if func == id)
+    })
+}
 
 /// Instrument every function in `fork_path` that we can instrument.
 ///
@@ -149,6 +162,7 @@ pub fn instrument_functions(
         .iter()
         .copied()
         .filter(|id| !runtime_funcs.contains(id))
+        .filter(|id| !is_host_parsed_marker_function(module, *id))
         .filter(|id| matches!(module.funcs.get(*id).kind, FunctionKind::Local(_)))
         .collect();
     targets.sort();
