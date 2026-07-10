@@ -9,6 +9,7 @@ pub mod audio;
 pub mod devfs;
 pub mod dri;
 pub mod fd;
+pub mod fifo;
 pub mod fork;
 pub mod ipc;
 pub mod lock;

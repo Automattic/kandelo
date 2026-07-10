@@ -3861,14 +3861,16 @@ fn dispatch_channel_syscall(nr: u32, args: &[i64; 6]) -> i32 {
         249 => 0, // SYS_INOTIFY_RM_WATCH: no-op success
 
         // --- mknod/mknodat: create regular files and FIFOs ---
-        // S_IFIFO nodes are created as regular files (sufficient for basic
-        // mkfifo/mknod tests that don't actually use FIFO I/O semantics).
+        // S_IFIFO nodes are real named pipes (see `crate::fifo`); other node
+        // types fall through to a regular-file marker.
         271 => {
             // SYS_MKNOD: (path, mode, dev)
             let path = a1 as *const u8;
             let mode = a2 as u32;
             let file_type = mode & 0o170000;
-            if file_type != 0 && file_type != 0o100000 && file_type != 0o010000 {
+            if file_type == 0o010000 {
+                kernel_mkfifo(path, unsafe { cstr_len(path) }, mode & 0o7777)
+            } else if file_type != 0 && file_type != 0o100000 {
                 -(Errno::EPERM as i32)
             } else {
                 kernel_mknod(path, unsafe { cstr_len(path) }, mode & 0o7777)
@@ -3879,7 +3881,9 @@ fn dispatch_channel_syscall(nr: u32, args: &[i64; 6]) -> i32 {
             let path = a2 as *const u8;
             let mode = a3 as u32;
             let file_type = mode & 0o170000;
-            if file_type != 0 && file_type != 0o100000 && file_type != 0o010000 {
+            if file_type == 0o010000 {
+                kernel_mkfifoat(a1, path, unsafe { cstr_len(path) }, mode & 0o7777)
+            } else if file_type != 0 && file_type != 0o100000 {
                 -(Errno::EPERM as i32)
             } else {
                 kernel_mknodat(a1, path, unsafe { cstr_len(path) }, mode & 0o7777)
@@ -4609,6 +4613,26 @@ fn kernel_mknod(path_ptr: *const u8, path_len: u32, mode: u32) -> i32 {
             let _ = syscalls::sys_close(proc, &mut host, fd);
             0
         }
+        Err(e) => -(e as i32),
+    }
+}
+
+/// mkfifo / mknod(S_IFIFO) — create a named FIFO (real pipe semantics).
+fn kernel_mkfifo(path_ptr: *const u8, path_len: u32, _mode: u32) -> i32 {
+    let (_gkl, proc) = unsafe { get_process() };
+    let path = unsafe { slice::from_raw_parts(path_ptr, path_len as usize) };
+    match syscalls::sys_mkfifo(proc, path) {
+        Ok(()) => 0,
+        Err(e) => -(e as i32),
+    }
+}
+
+/// mkfifoat / mknodat(S_IFIFO) — create a named FIFO relative to a directory fd.
+fn kernel_mkfifoat(dirfd: i32, path_ptr: *const u8, path_len: u32, _mode: u32) -> i32 {
+    let (_gkl, proc) = unsafe { get_process() };
+    let path = unsafe { slice::from_raw_parts(path_ptr, path_len as usize) };
+    match syscalls::sys_mkfifoat(proc, dirfd, path) {
+        Ok(()) => 0,
         Err(e) => -(e as i32),
     }
 }

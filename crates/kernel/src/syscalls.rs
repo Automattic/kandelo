@@ -1897,6 +1897,34 @@ pub fn sys_open(
         return Err(Errno::ENXIO);
     }
 
+    // Named FIFO (mkfifo / mknod S_IFIFO) — connect a read or write end to the
+    // shared kernel pipe registered at this path. This gives process
+    // substitution (`read < <(cmd)`) real pipe semantics instead of reading an
+    // empty regular file (premature EOF). See `crate::fifo`.
+    if let Some(pipe_idx) = unsafe { crate::fifo::global_fifo_table() }.lookup(&resolved) {
+        let access_mode = oflags & O_ACCMODE;
+        let pipe_handle = -((pipe_idx as i64) + 1);
+        {
+            let pipe = unsafe { crate::pipe::global_pipe_table().get_mut(pipe_idx) }
+                .ok_or(Errno::ENOENT)?;
+            match access_mode {
+                O_WRONLY => pipe.add_writer(),
+                O_RDWR => {
+                    pipe.add_reader();
+                    pipe.add_writer();
+                }
+                _ => pipe.add_reader(), // O_RDONLY
+            }
+        }
+        let status_flags = oflags & !CREATION_FLAGS;
+        let ofd_idx =
+            proc.ofd_table
+                .create(FileType::Pipe, status_flags, pipe_handle, resolved);
+        let fd_flags = oflags_to_fd_flags(oflags);
+        let fd = proc.fd_table.alloc(OpenFileDescRef(ofd_idx), fd_flags)?;
+        return Ok(fd);
+    }
+
     // Procfs (/proc/...) — in-kernel virtual filesystem
     if let Some(entry) = crate::procfs::match_procfs(&resolved, proc.pid) {
         return crate::procfs::procfs_open(proc, &entry, resolved, oflags);
@@ -2248,7 +2276,14 @@ pub fn sys_read(
                         return Ok(n);
                     }
                     if !pipe.is_write_end_open() {
-                        return Ok(0); // EOF — write end closed
+                        // A FIFO with no writer yet must block (POSIX: a reader
+                        // waits for a writer) rather than reporting EOF —
+                        // otherwise a reader that opens before the writer's
+                        // worker connects gets a premature EOF. Fall through to
+                        // EAGAIN so the reader parks until a writer writes.
+                        if !(pipe.is_fifo() && !pipe.writer_ever_opened()) {
+                            return Ok(0); // EOF — all writers closed
+                        }
                     }
                 }
                 return Err(Errno::EAGAIN);
@@ -4046,6 +4081,9 @@ pub fn sys_stat(proc: &mut Process, host: &mut dyn HostIO, path: &[u8]) -> Resul
     if let Some(st) = synthetic_file_stat(&resolved, proc.euid, proc.egid) {
         return Ok(st);
     }
+    if let Some(st) = fifo_stat(&resolved, proc.euid, proc.egid) {
+        return Ok(st);
+    }
     // Check Unix socket registry
     {
         let registry = unsafe { crate::unix_socket::global_unix_socket_registry() };
@@ -4114,6 +4152,9 @@ pub fn sys_lstat(
     if let Some(st) = synthetic_file_stat(&resolved, proc.euid, proc.egid) {
         return Ok(st);
     }
+    if let Some(st) = fifo_stat(&resolved, proc.euid, proc.egid) {
+        return Ok(st);
+    }
     // Check Unix socket registry
     {
         let registry = unsafe { crate::unix_socket::global_unix_socket_registry() };
@@ -4162,8 +4203,68 @@ pub fn sys_rmdir(proc: &mut Process, host: &mut dyn HostIO, path: &[u8]) -> Resu
     host.host_rmdir(&resolved)
 }
 
+/// Create a named FIFO (`mkfifo` / `mknod(S_IFIFO)`). A FIFO is a named kernel
+/// pipe: registered by canonical path so a later `open()` connects a read or
+/// write end with real pipe semantics (block/EAGAIN/EOF). See `crate::fifo`.
+pub fn sys_mkfifo(proc: &mut Process, path: &[u8]) -> Result<(), Errno> {
+    let resolved = resolve_path(path, &proc.cwd);
+    make_fifo(resolved)
+}
+
+/// `mkfifoat` / `mknodat(S_IFIFO)`: like [`sys_mkfifo`] but relative to `dirfd`.
+pub fn sys_mkfifoat(proc: &mut Process, dirfd: i32, path: &[u8]) -> Result<(), Errno> {
+    let resolved = resolve_at_path(proc, dirfd, path)?;
+    make_fifo(resolved)
+}
+
+/// If `resolved` names a FIFO (registered via mkfifo/mknod S_IFIFO), return
+/// its stat with `S_IFIFO` set. A FIFO has no backing VFS inode, so `stat`
+/// must report it from the FIFO registry.
+fn fifo_stat(resolved: &[u8], uid: u32, gid: u32) -> Option<WasmStat> {
+    if unsafe { crate::fifo::global_fifo_table() }.lookup(resolved).is_some() {
+        Some(WasmStat {
+            st_dev: 0,
+            st_ino: 0x4649_464F, // "FIFO"
+            st_mode: wasm_posix_shared::mode::S_IFIFO | 0o600,
+            st_nlink: 1,
+            st_uid: uid,
+            st_gid: gid,
+            st_size: 0,
+            st_atime_sec: 0,
+            st_atime_nsec: 0,
+            st_mtime_sec: 0,
+            st_mtime_nsec: 0,
+            st_ctime_sec: 0,
+            st_ctime_nsec: 0,
+            _pad: 0,
+        })
+    } else {
+        None
+    }
+}
+
+fn make_fifo(resolved: alloc::vec::Vec<u8>) -> Result<(), Errno> {
+    let fifo_table = unsafe { crate::fifo::global_fifo_table() };
+    // mknod is exclusive: fail if a FIFO already exists at this path. (A
+    // pre-existing regular file/dir is not detected here; shells stat() first
+    // and mknod over an existing VFS path is rare.)
+    if fifo_table.lookup(&resolved).is_some() {
+        return Err(Errno::EEXIST);
+    }
+    let pipe = crate::pipe::PipeBuffer::new_fifo(crate::pipe::DEFAULT_PIPE_CAPACITY);
+    let pipe_idx = unsafe { crate::pipe::global_pipe_table().alloc(pipe) };
+    fifo_table.register(resolved, pipe_idx);
+    Ok(())
+}
+
 pub fn sys_unlink(proc: &mut Process, host: &mut dyn HostIO, path: &[u8]) -> Result<(), Errno> {
     let resolved = resolve_path(path, &proc.cwd);
+    // Named FIFO: remove the name and free the backing pipe once no fds remain
+    // open (open fds keep working until closed — POSIX unlink semantics).
+    if let Some(pipe_idx) = unsafe { crate::fifo::global_fifo_table() }.remove(&resolved) {
+        unsafe { crate::pipe::global_pipe_table().free_fifo(pipe_idx) };
+        return Ok(());
+    }
     check_parent_writable(proc, host, &resolved)?;
     check_sticky_child(proc, host, &resolved)?;
     // AF_UNIX bind() creates a real host inode, so unlink must remove both the
@@ -8142,6 +8243,34 @@ pub fn sys_openat(
         return Err(Errno::ENXIO);
     }
 
+    // Named FIFO (mkfifo / mknod S_IFIFO) — connect a read or write end to the
+    // shared kernel pipe registered at this path. This gives process
+    // substitution (`read < <(cmd)`) real pipe semantics instead of reading an
+    // empty regular file (premature EOF). See `crate::fifo`.
+    if let Some(pipe_idx) = unsafe { crate::fifo::global_fifo_table() }.lookup(&resolved) {
+        let access_mode = oflags & O_ACCMODE;
+        let pipe_handle = -((pipe_idx as i64) + 1);
+        {
+            let pipe = unsafe { crate::pipe::global_pipe_table().get_mut(pipe_idx) }
+                .ok_or(Errno::ENOENT)?;
+            match access_mode {
+                O_WRONLY => pipe.add_writer(),
+                O_RDWR => {
+                    pipe.add_reader();
+                    pipe.add_writer();
+                }
+                _ => pipe.add_reader(), // O_RDONLY
+            }
+        }
+        let status_flags = oflags & !CREATION_FLAGS;
+        let ofd_idx =
+            proc.ofd_table
+                .create(FileType::Pipe, status_flags, pipe_handle, resolved);
+        let fd_flags = oflags_to_fd_flags(oflags);
+        let fd = proc.fd_table.alloc(OpenFileDescRef(ofd_idx), fd_flags)?;
+        return Ok(fd);
+    }
+
     // Procfs (/proc/...) — in-kernel virtual filesystem
     if let Some(entry) = crate::procfs::match_procfs(&resolved, proc.pid) {
         return crate::procfs::procfs_open(proc, &entry, resolved, oflags);
@@ -8255,6 +8384,9 @@ pub fn sys_fstatat(
     if let Some(st) = synthetic_file_stat(&resolved, proc.euid, proc.egid) {
         return Ok(st);
     }
+    if let Some(st) = fifo_stat(&resolved, proc.euid, proc.egid) {
+        return Ok(st);
+    }
     // Check Unix socket registry
     {
         let registry = unsafe { crate::unix_socket::global_unix_socket_registry() };
@@ -8300,6 +8432,13 @@ pub fn sys_unlinkat(
     use wasm_posix_shared::flags::AT_REMOVEDIR;
 
     let resolved = resolve_at_path(proc, dirfd, path)?;
+    // Named FIFO: remove the name and free the backing pipe once idle.
+    if flags & AT_REMOVEDIR == 0 {
+        if let Some(pipe_idx) = unsafe { crate::fifo::global_fifo_table() }.remove(&resolved) {
+            unsafe { crate::pipe::global_pipe_table().free_fifo(pipe_idx) };
+            return Ok(());
+        }
+    }
     check_parent_writable(proc, host, &resolved)?;
     if flags & AT_REMOVEDIR != 0 {
         check_sticky_child(proc, host, &resolved)?;
@@ -11945,6 +12084,45 @@ mod tests {
         let n = sys_read(&mut proc, &mut host, read_fd, &mut buf).unwrap();
         assert_eq!(n, 5);
         assert_eq!(&buf[..5], b"hello");
+    }
+
+    #[test]
+    fn test_fifo_named_pipe_semantics() {
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        let fifo = b"/tmp/fifo_semantics_unit_test";
+
+        // mkfifo(S_IFIFO): stat reports S_IFIFO even though there is no VFS
+        // inode (the fix — previously mknod created a plain regular file).
+        sys_mkfifo(&mut proc, fifo).unwrap();
+        let st = sys_stat(&mut proc, &mut host, fifo).unwrap();
+        assert_eq!(st.st_mode & S_IFIFO, S_IFIFO);
+
+        // A reader that opens before any writer must BLOCK (EAGAIN), not get a
+        // premature EOF. This is the exact process-substitution failure
+        // (`read < <(cmd)`) the fix resolves.
+        let rfd = sys_open(&mut proc, &mut host, fifo, O_RDONLY, 0).unwrap();
+        let mut buf = [0u8; 16];
+        assert_eq!(sys_read(&mut proc, &mut host, rfd, &mut buf), Err(Errno::EAGAIN));
+
+        // Once a writer opens and writes, the reader gets the data.
+        let wfd = sys_open(&mut proc, &mut host, fifo, O_WRONLY, 0).unwrap();
+        assert_eq!(sys_write(&mut proc, &mut host, wfd, b"hello").unwrap(), 5);
+        let n = sys_read(&mut proc, &mut host, rfd, &mut buf).unwrap();
+        assert_eq!(&buf[..n], b"hello");
+
+        // Empty-but-writer-open reads still block (EAGAIN), not EOF.
+        assert_eq!(sys_read(&mut proc, &mut host, rfd, &mut buf), Err(Errno::EAGAIN));
+
+        // After the last writer closes, the reader sees EOF (0).
+        sys_close(&mut proc, &mut host, wfd).unwrap();
+        assert_eq!(sys_read(&mut proc, &mut host, rfd, &mut buf).unwrap(), 0);
+
+        // Unlink removes the FIFO name; a later stat no longer reports S_IFIFO.
+        sys_close(&mut proc, &mut host, rfd).unwrap();
+        sys_unlink(&mut proc, &mut host, fifo).unwrap();
+        let st2 = sys_stat(&mut proc, &mut host, fifo).unwrap();
+        assert_eq!(st2.st_mode & S_IFIFO, 0);
     }
 
     #[test]

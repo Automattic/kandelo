@@ -62,6 +62,16 @@ pub struct PipeBuffer {
     write_count: u32,
     /// Index of this pipe in the PipeTable (for wakeup events).
     pipe_idx: u32,
+    /// True if this pipe backs a named FIFO (see `crate::fifo`). FIFO pipes
+    /// persist across all fds closing (freed only on unlink), so
+    /// `is_fully_closed` never frees them.
+    is_fifo: bool,
+    /// True once a writer has ever opened this pipe. A FIFO reader must not
+    /// treat "no writer" as EOF before the first writer connects — otherwise a
+    /// reader that opens before the writer's worker starts gets a premature
+    /// EOF. Anonymous pipes always have a writer at creation, so this stays
+    /// meaningful only for FIFOs.
+    writer_ever_opened: bool,
     /// Ancillary data queue for SCM_RIGHTS FD passing.
     /// Each entry is a batch of FDs sent with one sendmsg call.
     ancillary_fds: VecDeque<Vec<InFlightFd>>,
@@ -80,8 +90,31 @@ impl PipeBuffer {
             read_count: 1,
             write_count: 1,
             pipe_idx: 0,
+            is_fifo: false,
+            writer_ever_opened: true,
             ancillary_fds: VecDeque::new(),
         }
+    }
+
+    /// Create a FIFO backing buffer with no endpoints open yet. Endpoints are
+    /// attached as processes `open()` the FIFO by path (see `crate::fifo`).
+    pub fn new_fifo(capacity: usize) -> Self {
+        let mut pipe = Self::new(capacity);
+        pipe.read_count = 0;
+        pipe.write_count = 0;
+        pipe.is_fifo = true;
+        pipe.writer_ever_opened = false;
+        pipe
+    }
+
+    /// True if this pipe backs a named FIFO.
+    pub fn is_fifo(&self) -> bool {
+        self.is_fifo
+    }
+
+    /// True once a writer has ever opened this pipe.
+    pub fn writer_ever_opened(&self) -> bool {
+        self.writer_ever_opened
     }
 
     /// Total capacity of the buffer.
@@ -197,6 +230,7 @@ impl PipeBuffer {
     /// Add a writer reference (e.g., after fork or dup).
     pub fn add_writer(&mut self) {
         self.write_count += 1;
+        self.writer_ever_opened = true;
     }
 
     /// Returns true if the read end is still open (any readers remain).
@@ -210,8 +244,13 @@ impl PipeBuffer {
     }
 
     /// Returns true if both endpoints are closed and the pipe can be freed.
+    ///
+    /// FIFO-backing pipes are exempt: a FIFO persists in the filesystem
+    /// namespace until unlinked, even when no fds are currently open, so a
+    /// later `open()` reconnects to the same buffer. FIFO pipes are freed
+    /// explicitly via [`PipeTable::free_fifo`] on unlink.
     pub fn is_fully_closed(&self) -> bool {
-        self.read_count == 0 && self.write_count == 0
+        self.read_count == 0 && self.write_count == 0 && !self.is_fifo
     }
 
     /// Push ancillary FDs (SCM_RIGHTS) to be delivered with the next recvmsg.
@@ -310,6 +349,20 @@ impl PipeTable {
     /// Free a pipe buffer slot if both endpoints are closed.
     pub fn free_if_closed(&mut self, idx: usize) {
         if let Some(Some(pipe)) = self.pipes.get(idx) {
+            if pipe.is_fully_closed() {
+                self.pipes[idx] = None;
+                self.free_list.push(idx);
+            }
+        }
+    }
+
+    /// Free a FIFO-backing pipe slot on unlink, but only once no endpoints
+    /// remain open (POSIX: unlinking a FIFO removes the name; open fds keep
+    /// working until closed). Clears the FIFO exemption so a subsequent close
+    /// frees it via `free_if_closed`; frees immediately if already idle.
+    pub fn free_fifo(&mut self, idx: usize) {
+        if let Some(Some(pipe)) = self.pipes.get_mut(idx) {
+            pipe.is_fifo = false;
             if pipe.is_fully_closed() {
                 self.pipes[idx] = None;
                 self.free_list.push(idx);
