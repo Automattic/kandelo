@@ -1459,6 +1459,36 @@ function handleReadVfsFile(msg: Extract<MainToKernelMessage, { type: "read_vfs_f
   }
 }
 
+// O_WRONLY | O_CREAT | O_TRUNC — write a fresh copy of the file.
+const O_WRONLY_CREAT_TRUNC = 0o1101;
+
+function handleWriteVfsFile(msg: Extract<MainToKernelMessage, { type: "write_vfs_file" }>) {
+  if (!memfs) { respondError(msg.requestId, "no filesystem"); return; }
+  try {
+    // mkdir -p the parent directory. Each component throws EEXIST when present.
+    const parent = msg.path.slice(0, Math.max(0, msg.path.lastIndexOf("/")));
+    let current = "";
+    for (const part of parent.split("/").filter(Boolean)) {
+      current += "/" + part;
+      try { memfs.mkdir(current, 0o755); } catch { /* exists */ }
+    }
+    const fd = memfs.open(msg.path, O_WRONLY_CREAT_TRUNC, msg.mode);
+    try {
+      let off = 0;
+      while (off < msg.bytes.length) {
+        const n = memfs.write(fd, msg.bytes.subarray(off), null, msg.bytes.length - off);
+        if (n <= 0) throw new Error(`short write at offset ${off} of ${msg.bytes.length}`);
+        off += n;
+      }
+    } finally {
+      memfs.close(fd);
+    }
+    respond(msg.requestId, true);
+  } catch (err) {
+    respondError(msg.requestId, (err as Error)?.message ?? String(err));
+  }
+}
+
 async function handleTerminateProcess(msg: Extract<MainToKernelMessage, { type: "terminate_process" }>) {
   const pid = msg.pid;
 
@@ -1607,6 +1637,10 @@ function handleWakeBlockedWriters(msg: Extract<MainToKernelMessage, { type: "wak
 function handleIsStdinConsumed(msg: Extract<MainToKernelMessage, { type: "is_stdin_consumed" }>) {
   const kw = kernelWorker as any;
   respond(msg.requestId, kw.stdinFinite.has(msg.pid) && !kw.stdinBuffers.has(msg.pid));
+}
+
+function handleSignalProcess(msg: Extract<MainToKernelMessage, { type: "signal_process" }>) {
+  respond(msg.requestId, kernelWorker.signalProcess(msg.pid, msg.signum));
 }
 
 function handlePickListenerTarget(msg: Extract<MainToKernelMessage, { type: "pick_listener_target" }>) {
@@ -1893,6 +1927,8 @@ sw.onmessage = (e: MessageEvent) => {
     case "wake_blocked_readers": handleWakeBlockedReaders(msg); break;
     case "wake_blocked_writers": handleWakeBlockedWriters(msg); break;
     case "is_stdin_consumed": handleIsStdinConsumed(msg); break;
+    case "signal_process": handleSignalProcess(msg); break;
+    case "write_vfs_file": handleWriteVfsFile(msg); break;
     case "pick_listener_target": handlePickListenerTarget(msg); break;
     case "http_request": handleHttpRequestMessage(msg); break;
     case "destroy": void handleDestroy(msg); break;

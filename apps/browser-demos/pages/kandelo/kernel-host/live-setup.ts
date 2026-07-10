@@ -48,6 +48,7 @@ import {
   parseKandeloDemoConfig,
   resolveDemoAssets,
   resolveDemoGuide,
+  resolveDemoIngest,
   resolveDemoPresentation,
   type DemoAssetConfig,
   type KandeloDemoConfig,
@@ -55,6 +56,7 @@ import {
 import {
   builtinDemoAssets,
   builtinDemoGuide,
+  builtinDemoIngest,
   builtinDemoPresentation,
 } from "../../../../../web-libs/kandelo-session/src/demo-guides";
 import { PRESET_LIBRARY } from "../presets";
@@ -1134,6 +1136,9 @@ async function bootProfile(
   const demoGuide = (imageConfig ? resolveDemoGuide(imageConfig, profile.id) : null)
     ?? builtinDemoGuide(profile.id);
   host.setDemoGuide(demoGuide);
+  const demoIngest = (imageConfig ? resolveDemoIngest(imageConfig, profile.id) : null)
+    ?? builtinDemoIngest(profile.id);
+  host.setDemoIngest(demoIngest);
   const imageAssets = imageConfig ? resolveDemoAssets(imageConfig, profile.id) : [];
   const assets = imageAssets.length > 0 ? imageAssets : builtinDemoAssets(profile.id);
   await stageConfiguredAssets(buildFs, assets, tick);

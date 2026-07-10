@@ -15,7 +15,7 @@
 // or press Ctrl+Shift+Esc to move focus back to the UI.
 
 import * as React from "react";
-import { useKernelHost, useStatus } from "../kernel-host/react";
+import { useDemoIngest, useKernelHost, useStatus } from "../kernel-host/react";
 import {
   attachLinuxMediumRawKeyboard,
   attachPointerLockMouse,
@@ -25,6 +25,12 @@ import type {
   AudioOutputHandle,
   FramebufferHandle,
 } from "../../../../../web-libs/kandelo-session/src/kernel-host";
+import {
+  IngestError,
+  runDemoIngest,
+  waitForProcessExit,
+  type IngestPhase,
+} from "../../../../../web-libs/kandelo-session/src/demo-ingest";
 import { useFittedCanvasStyle } from "./canvasFit";
 
 export interface FramebufferProps {
@@ -39,6 +45,7 @@ export interface FramebufferProps {
 export const Framebuffer: React.FC<FramebufferProps> = ({ autoFocus = false, onDockControlsChange }) => {
   const host = useKernelHost();
   const status = useStatus();
+  const ingest = useDemoIngest();
   const stageRef = React.useRef<HTMLDivElement>(null);
   const canvasRef = React.useRef<HTMLCanvasElement>(null);
   const handleRef = React.useRef<FramebufferHandle | null>(null);
@@ -48,6 +55,10 @@ export const Framebuffer: React.FC<FramebufferProps> = ({ autoFocus = false, onD
   const [boundPid, setBoundPid] = React.useState<number | null>(null);
   const [focused, setFocused] = React.useState(false);
   const [mouseCaptured, setMouseCaptured] = React.useState(false);
+  const [ingestPhase, setIngestPhase] = React.useState<IngestPhase | null>(null);
+  const [ingestName, setIngestName] = React.useState<string | null>(null);
+  const [ingestError, setIngestError] = React.useState<string | null>(null);
+  const [dragActive, setDragActive] = React.useState(false);
 
   React.useEffect(() => {
     if (status !== "running") return;
@@ -155,6 +166,69 @@ export const Framebuffer: React.FC<FramebufferProps> = ({ autoFocus = false, onD
     mouseRef.current?.requestCapture();
   };
 
+  // /dev/fb0 is single-owner: the kernel returns EBUSY on a second open. The
+  // replacement emulator therefore cannot start until the outgoing one has
+  // both exited *and* had its binding torn down by the kernel's exit path.
+  // Those are two separate observations, so wait for both before relaunching.
+  const waitForFbRelease = React.useCallback((pid: number): Promise<void> => {
+    const handle = handleRef.current;
+    const unbound = new Promise<void>((resolve) => {
+      if (!handle || handle.getBoundPid() !== pid) {
+        resolve();
+        return;
+      }
+      const off = handle.onBoundPidChange((next) => {
+        if (next !== pid) {
+          off();
+          resolve();
+        }
+      });
+    });
+    return Promise.all([waitForProcessExit(host, pid), unbound]).then(() => {});
+  }, [host]);
+
+  /** Resolve once some process has bound /dev/fb0 again. */
+  const waitForFbBind = React.useCallback((): Promise<void> => {
+    const handle = handleRef.current;
+    return new Promise<void>((resolve) => {
+      if (!handle || handle.getBoundPid() !== null) {
+        resolve();
+        return;
+      }
+      const off = handle.onBoundPidChange((next) => {
+        if (next !== null) {
+          off();
+          resolve();
+        }
+      });
+    });
+  }, []);
+
+  const ingestFile = React.useCallback(async (file: File) => {
+    if (!ingest || ingestPhase !== null) return;
+    setIngestError(null);
+    setIngestName(file.name);
+    try {
+      await runDemoIngest(host, ingest, file, {
+        targetPid: handleRef.current?.getBoundPid() ?? null,
+        waitForRelease: waitForFbRelease,
+        onPhase: setIngestPhase,
+      });
+      // runDemoIngest returns as soon as the relaunch is dispatched; keep the
+      // indicator up until the new process actually owns the framebuffer.
+      await waitForFbBind();
+    } catch (err) {
+      setIngestError(
+        err instanceof IngestError ? err.message
+          : err instanceof Error ? err.message
+          : String(err),
+      );
+    } finally {
+      setIngestPhase(null);
+      setIngestName(null);
+    }
+  }, [host, ingest, ingestPhase, waitForFbBind, waitForFbRelease]);
+
   const showCanvas = status === "running" && !error;
   const showHint = showCanvas && boundPid === null;
   const captureLabel = mouseCaptured
@@ -163,13 +237,24 @@ export const Framebuffer: React.FC<FramebufferProps> = ({ autoFocus = false, onD
     ? "captured · click locks mouse"
     : boundPid !== null ? "click to play" : "waiting for /dev/fb0";
   const canvasStyle = useFittedCanvasStyle(stageRef, canvasRef, 16 / 10);
+  const busy = ingestPhase !== null;
   const dockControls = React.useMemo(() => (
     <DemoSurfaceDockControls
       title={`FRAMEBUFFER · /DEV/FB0${boundPid !== null ? ` · pid ${boundPid}` : ""}`}
       status={captureLabel}
       active={focused || mouseCaptured}
-    />
-  ), [boundPid, captureLabel, focused, mouseCaptured]);
+    >
+      {ingest && status === "running" && (
+        <IngestControl
+          accept={ingest.accept}
+          label={ingest.label ?? "Load file"}
+          busy={busy}
+          busyLabel={ingestName ? `loading ${ingestName}…` : "loading…"}
+          onFile={ingestFile}
+        />
+      )}
+    </DemoSurfaceDockControls>
+  ), [boundPid, busy, captureLabel, focused, ingest, ingestFile, ingestName, mouseCaptured, status]);
 
   React.useEffect(() => {
     if (!onDockControlsChange) return;
@@ -177,8 +262,32 @@ export const Framebuffer: React.FC<FramebufferProps> = ({ autoFocus = false, onD
     return () => onDockControlsChange(null);
   }, [dockControls, onDockControlsChange]);
 
+  // Drag-and-drop is an enhancement over the always-present dock button, so it
+  // is wired only when the image declares an ingest capability.
+  const dropHandlers = ingest && status === "running" ? {
+    onDragOver: (e: React.DragEvent) => {
+      e.preventDefault();
+      if (!busy) setDragActive(true);
+    },
+    onDragLeave: (e: React.DragEvent) => {
+      if (e.currentTarget.contains(e.relatedTarget as Node | null)) return;
+      setDragActive(false);
+    },
+    onDrop: (e: React.DragEvent) => {
+      e.preventDefault();
+      setDragActive(false);
+      const file = e.dataTransfer.files?.[0];
+      if (file) void ingestFile(file);
+    },
+  } : {};
+
   return (
-    <div className="kframebuffer-surface" ref={stageRef}>
+    <div
+      className="kframebuffer-surface"
+      ref={stageRef}
+      data-drag-active={dragActive ? "true" : "false"}
+      {...dropHandlers}
+    >
       <canvas
         ref={canvasRef}
         className="kframebuffer-canvas"
@@ -209,6 +318,34 @@ export const Framebuffer: React.FC<FramebufferProps> = ({ autoFocus = false, onD
           Waiting for a process to bind /dev/fb0.
         </div>
       )}
+      {dragActive && !busy && (
+        <div className="kframebuffer-dropzone" data-testid="fb-dropzone">
+          Drop {ingest?.accept.join(" / ")} to load
+        </div>
+      )}
+      {busy && (
+        <div className="kframebuffer-toast" data-testid="fb-ingest-busy">
+          {ingestName ? `loading ${ingestName}…` : "loading…"}
+        </div>
+      )}
+      {ingestError && !busy && (
+        <div
+          className="kframebuffer-toast"
+          data-error="true"
+          data-testid="fb-ingest-error"
+          role="alert"
+        >
+          {ingestError}
+          <button
+            type="button"
+            className="kframebuffer-toast-dismiss"
+            onClick={() => setIngestError(null)}
+            aria-label="Dismiss error"
+          >
+            ×
+          </button>
+        </div>
+      )}
       {(error || status !== "running") && (
         <div style={{
           fontFamily: "var(--k-font-mono)",
@@ -230,11 +367,54 @@ export const DemoSurfaceDockControls: React.FC<{
   title: string;
   status: string;
   active?: boolean;
-}> = ({ title, status, active = false }) => (
+  children?: React.ReactNode;
+}> = ({ title, status, active = false, children }) => (
   <div className="kdemo-surface-controls">
     <span className="kdemo-surface-title">{title}</span>
+    <span className="kdemo-surface-spacer" />
+    {children}
     <span className="kdemo-surface-badge" data-active={active ? "true" : "false"}>
       {status}
     </span>
   </div>
 );
+
+/**
+ * The primary ingest path: a real <input type="file">, so it works on every
+ * platform including touch, where drag-and-drop does not exist.
+ */
+const IngestControl: React.FC<{
+  accept: string[];
+  label: string;
+  busy: boolean;
+  busyLabel: string;
+  onFile: (file: File) => void;
+}> = ({ accept, label, busy, busyLabel, onFile }) => {
+  const inputRef = React.useRef<HTMLInputElement>(null);
+  return (
+    <>
+      <input
+        ref={inputRef}
+        type="file"
+        accept={accept.join(",")}
+        data-testid="fb-ingest-input"
+        style={{ display: "none" }}
+        onChange={(e) => {
+          const file = e.target.files?.[0];
+          // Reset so re-picking the same file fires change again.
+          e.target.value = "";
+          if (file) onFile(file);
+        }}
+      />
+      <button
+        type="button"
+        className="kdemo-surface-action"
+        data-testid="fb-ingest-button"
+        disabled={busy}
+        onClick={() => inputRef.current?.click()}
+      >
+        {busy ? busyLabel : label}
+      </button>
+    </>
+  );
+};

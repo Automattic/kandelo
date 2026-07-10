@@ -1,4 +1,4 @@
-import type { DemoGuideConfig } from "./demo-config";
+import type { DemoGuideConfig, DemoIngestConfig } from "./demo-config";
 
 // KernelHost — the contract between Kandelo session UI and the kernel/host runtime.
 //
@@ -110,6 +110,20 @@ export interface KernelLike {
    * bindings; write-based bindings (fbDOOM) don't reach into this.
    */
   getProcessMemory?(pid: number): WebAssembly.Memory | undefined;
+  /**
+   * Deliver a POSIX signal to `pid` through the kernel's signal path (not a
+   * host-side worker teardown). Resolves false when the process is already
+   * gone. Used to stop a process that owns a single-owner device — e.g. the
+   * /dev/fb0 holder — before launching its replacement.
+   */
+  signalProcess?(pid: number, signum: number): Promise<boolean>;
+  /**
+   * Write `bytes` to `path` in the kernel-owned VFS, creating parent
+   * directories. The kernel worker owns the filesystem, so this is an async
+   * round-trip (unlike the deprecated synchronous {@link fs}). Rejects if the
+   * write fails.
+   */
+  writeFileToVfs?(path: string, bytes: Uint8Array, mode?: number): Promise<void>;
   /**
    * Append bytes to a process's stdin buffer. Used by the framebuffer
    * input path so DOM key events on the canvas reach the fb-bound
@@ -549,6 +563,20 @@ export interface KernelHost {
   readFileText(path: string): Promise<string>;
   readDir(path: string): Promise<VfsDirent[]>;
   stat(path: string): Promise<VfsDirent | null>;
+  /**
+   * Write `bytes` to `path` in the live guest VFS, creating parent
+   * directories. Rejects when the attached kernel exposes no writable
+   * synchronous VFS. Callers are responsible for validating both the path and
+   * the payload — this is a raw capability, not a policy layer.
+   */
+  writeFile(path: string, bytes: Uint8Array, mode?: number): Promise<void>;
+
+  // process control
+  /**
+   * Deliver a POSIX signal to `pid`. Resolves false when the process no longer
+   * exists. Rejects when the attached kernel cannot signal.
+   */
+  signalProcess(pid: number, signum: number): Promise<boolean>;
 
   // inspector
   enumProcs(): Promise<ProcessInfo[]>;
@@ -588,6 +616,9 @@ export interface KernelHost {
   subscribeSurfaceAvailability(cb: (state: SurfaceAvailability) => void): () => void;
   getDemoGuide(): DemoGuideConfig | null;
   subscribeDemoGuide(cb: (state: DemoGuideConfig | null) => void): () => void;
+  /** File-ingest capability declared by the current VFS image, if any. */
+  getDemoIngest(): DemoIngestConfig | null;
+  subscribeDemoIngest(cb: (state: DemoIngestConfig | null) => void): () => void;
 
   // sharing
   snapshot(opts?: SnapshotOptions): Promise<Snapshot>;
@@ -788,6 +819,7 @@ export class LiveKernelHost implements KernelHost {
   private surfaceListeners = new ListenerSet<SurfaceAvailability>();
   private galleryListeners = new ListenerSet<void>();
   private demoGuideListeners = new ListenerSet<DemoGuideConfig | null>();
+  private demoIngestListeners = new ListenerSet<DemoIngestConfig | null>();
 
   private _descriptor: BootDescriptor;
   private presentation: DemoPresentation;
@@ -795,6 +827,7 @@ export class LiveKernelHost implements KernelHost {
   private galleryItems: GalleryItem[];
   private webPreview: WebPreviewState | null = null;
   private demoGuide: DemoGuideConfig | null = null;
+  private demoIngest: DemoIngestConfig | null = null;
   private surfaceAvailability: SurfaceAvailability = { ...DEFAULT_SURFACE_AVAILABILITY };
   private offFramebufferAvailability: (() => void) | null = null;
   private offLazyDownloads: (() => void) | null = null;
@@ -884,6 +917,7 @@ export class LiveKernelHost implements KernelHost {
     this.refreshFramebufferAvailability();
     this.setSurfaceAvailability({ web: false, kms: false });
     this.setDemoGuide(null);
+    this.setDemoIngest(null);
   }
 
   /** Configure the program attachPty spawns by default. */
@@ -908,6 +942,12 @@ export class LiveKernelHost implements KernelHost {
   setDemoGuide(guide: DemoGuideConfig | null): void {
     this.demoGuide = guide ? structuredClone(guide) : null;
     this.demoGuideListeners.emit(this.getDemoGuide());
+  }
+
+  /** Update the optional file-ingest capability exposed by the current image. */
+  setDemoIngest(ingest: DemoIngestConfig | null): void {
+    this.demoIngest = ingest ? structuredClone(ingest) : null;
+    this.demoIngestListeners.emit(this.getDemoIngest());
   }
 
   /**
@@ -1122,6 +1162,7 @@ export class LiveKernelHost implements KernelHost {
     this.offLazyDownloads = null;
     this.setSurfaceAvailability({ terminal: false, framebuffer: false, web: false, kms: false });
     this.setDemoGuide(null);
+    this.setDemoIngest(null);
     await this.kernel?.destroy?.();
   }
 
@@ -1330,6 +1371,37 @@ export class LiveKernelHost implements KernelHost {
 
   async readFileText(path: string): Promise<string> {
     return new TextDecoder().decode(await this.readFile(path));
+  }
+
+  /**
+   * Write into the live guest VFS. The kernel worker holds a MemoryFileSystem
+   * over the same SharedArrayBuffer, so the bytes are visible to the guest as
+   * soon as this returns — no reboot, no image rebuild.
+   *
+   * Mirrors writeVfsBinary/ensureDirRecursive in host/src/vfs/image-helpers.ts.
+   * We reimplement rather than import: this file deliberately depends on no
+   * host/ module, describing only the structural surface it needs (same reason
+   * readFileSync below is local).
+   */
+  async writeFile(path: string, bytes: Uint8Array, mode = 0o644): Promise<void> {
+    if (!this.kernel?.writeFileToVfs) {
+      throw new Error(
+        `LiveKernelHost.writeFile(${path}): the attached kernel cannot write ` +
+        `to the VFS (no writeFileToVfs).`,
+      );
+    }
+    await this.kernel.writeFileToVfs(path, bytes, mode);
+  }
+
+  // ── KernelHost: process control ─────────────────────────────────────────
+
+  async signalProcess(pid: number, signum: number): Promise<boolean> {
+    if (!this.kernel?.signalProcess) {
+      throw new Error(
+        "LiveKernelHost.signalProcess: the attached kernel cannot deliver signals.",
+      );
+    }
+    return this.kernel.signalProcess(pid, signum);
   }
 
   async readDir(path: string): Promise<VfsDirent[]> {
@@ -1776,6 +1848,14 @@ export class LiveKernelHost implements KernelHost {
 
   getDemoGuide(): DemoGuideConfig | null {
     return this.demoGuide ? structuredClone(this.demoGuide) : null;
+  }
+
+  getDemoIngest(): DemoIngestConfig | null {
+    return this.demoIngest ? structuredClone(this.demoIngest) : null;
+  }
+
+  subscribeDemoIngest(cb: (state: DemoIngestConfig | null) => void): () => void {
+    return this.demoIngestListeners.add(cb);
   }
 
   subscribeDemoGuide(cb: (state: DemoGuideConfig | null) => void): () => void {

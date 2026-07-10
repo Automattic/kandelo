@@ -724,6 +724,22 @@ export class BrowserKernel {
   }
 
   /**
+   * Deliver a POSIX signal to `pid`. Resolves false when the process is gone
+   * (ESRCH). Unlike {@link terminateProcess}, which tears down the wasm worker
+   * from the host, this runs the kernel's signal path, so the target's
+   * disposition and the kernel's exit cleanup both apply.
+   */
+  async signalProcess(pid: number, signum: number): Promise<boolean> {
+    const requestId = this.nextRequestId++;
+    return this.request(requestId, {
+      type: "signal_process",
+      requestId,
+      pid,
+      signum,
+    }) as Promise<boolean>;
+  }
+
+  /**
    * Push a mouse event into the kernel's `/dev/input/mice` queue. Pass
    * deltas in PS/2 sign convention (positive-right, positive-up — invert
    * the browser's deltaY before calling) and a button bitmask
@@ -848,6 +864,23 @@ export class BrowserKernel {
       path,
     });
     return (result as Uint8Array | null) ?? null;
+  }
+
+  /**
+   * Write `bytes` to `path` in the kernel-owned VFS, creating parent
+   * directories. Rejects (via the worker's error response) if the write fails.
+   * The counterpart to {@link readFileFromVfs}; the main thread no longer
+   * shares the VFS SharedArrayBuffer, so the write happens in the worker.
+   */
+  async writeFileToVfs(path: string, bytes: Uint8Array, mode = 0o644): Promise<void> {
+    const requestId = this.nextRequestId++;
+    await this.request(requestId, {
+      type: "write_vfs_file",
+      requestId,
+      path,
+      bytes,
+      mode,
+    });
   }
 
   /** Destroy the kernel and release all resources. */
