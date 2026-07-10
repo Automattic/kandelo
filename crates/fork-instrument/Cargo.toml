@@ -25,11 +25,13 @@ anyhow = "1"
 # clap — argument parsing. `derive` feature for #[derive(Parser)].
 clap = { version = "4", features = ["derive"] }
 
-[dev-dependencies]
 # wasmparser — independent validator used in tests to confirm walrus
-# output round-trips cleanly through a separate implementation.
+# output round-trips cleanly through a separate implementation. The
+# instrumenter also uses its section ranges to keep a leading dylink.0 section
+# first when Walrus re-emits a shared module.
 wasmparser = "0.247"
 
+[dev-dependencies]
 # wasmprinter — byte-level wasm-to-WAT for assertions that walrus's IR
 # can't see (notably post-Br "unreachable" code that walrus's parser
 # strips on round-trip but is preserved in the actual wasm bytes).
