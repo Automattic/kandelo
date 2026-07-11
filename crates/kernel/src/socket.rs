@@ -646,14 +646,14 @@ pub struct SocketInfo {
     pub peer_addr6: [u8; 16],
     /// Peer port (for connected AF_INET sockets).
     pub peer_port: u16,
-    /// Pending connection socket indices (for listening sockets).
-    /// Used by AF_UNIX same-process sys_connect, which pre-allocates the
-    /// accepted SocketInfo and pushes its index here.
+    /// Legacy pending connection socket indices for manually constructed or
+    /// pre-shared-queue listeners. Normal AF_UNIX, AF_INET, and AF_INET6
+    /// stream listeners use `shared_backlog_idx` instead.
     pub listen_backlog: Vec<usize>,
-    /// Index into the global SHARED_LISTENER_BACKLOG_TABLE for AF_INET/AF_INET6
-    /// listening sockets. Set by sys_listen for INET sockets so all
-    /// fork-inherited copies of the listener share a single accept queue.
-    /// `None` for AF_UNIX or before listen() is called.
+    /// Index into the global SHARED_LISTENER_BACKLOG_TABLE for stream
+    /// listeners. Set by sys_listen so fork/spawn-inherited AF_UNIX, AF_INET,
+    /// and AF_INET6 listener copies share one accept queue. `None` before
+    /// listen() is called.
     pub shared_backlog_idx: Option<usize>,
     /// Host-visible wake token for listener readiness. Assigned by listen()
     /// and cloned across fork/spawn so every inherited listener fd waits on
@@ -753,13 +753,14 @@ impl SocketInfo {
 ///
 /// Discarded in the child:
 ///   * `dgram_queue` — buffered UDP datagrams.
+///   * `netlink_queue` — buffered netlink datagrams.
 ///   * `oob_byte` — pending TCP out-of-band byte.
-///   * `listen_backlog` — pre-accepted AF_UNIX same-process connections.
+///   * `listen_backlog` — legacy pre-accepted connections.
 ///     Indices reference other entries in this process's SocketTable; if
 ///     both parent and child kept them, both could `accept()` the same
-///     pending connection. After fork/spawn, the parent retains them;
-///     child gets fresh state. New connections that arrive post-fork are
-///     added to whichever process the connecting peer wires up to.
+///     pending connection. Normal stream listeners use the shared backlog;
+///     this inline fallback remains only with the parent.
+///   * `connect_error` — cached host-delegated connect failure state.
 ///
 /// Everything else is value-cloned. `host_net_handle` and
 /// `shared_backlog_idx` are still inherited; the cross-process refcount
@@ -799,7 +800,7 @@ impl Clone for SocketInfo {
             recv_timeout_us: self.recv_timeout_us,
             send_timeout_us: self.send_timeout_us,
             bind_path: self.bind_path.clone(),
-            connect_error: 0, // fork transitions Connecting → Closed; no error to inherit
+            connect_error: 0, // don't inherit a cached host-delegated failure
         }
     }
 }
