@@ -458,13 +458,11 @@ long __syscall6(long n, long long a1, long long a2, long long a3, long long a4, 
 extern void __testcancel(void);
 extern long __syscall_cp_check(long r);
 
-long __syscall_cp(long n, long a1, long a2, long a3, long a4, long a5,
-                  long a6)
+long __syscall_cp(long n, long long a1, long long a2, long long a3,
+                  long long a4, long long a5, long long a6)
 {
     __testcancel();
-    long r = __do_syscall((long long)n, (long long)a1, (long long)a2,
-                          (long long)a3, (long long)a4, (long long)a5,
-                          (long long)a6);
+    long r = __do_syscall(n, a1, a2, a3, a4, a5, a6);
     return __syscall_cp_check(r);
 }
 
