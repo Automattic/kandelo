@@ -1188,6 +1188,15 @@ fn ensure_memory_covers(_end_addr: usize) {
     // No-op on non-Wasm targets (tests)
 }
 
+fn terminate_process_by_signal(proc: &mut Process, host: &mut WasmHostIO, signum: u32) {
+    proc.sigsuspend_saved_mask = None;
+    for thread in &mut proc.threads {
+        thread.signals.sigsuspend_saved_mask = None;
+    }
+    syscalls::sys_exit(proc, host, 0);
+    proc.exit_signal = signum & 0x7f;
+}
+
 // 3c. Signal delivery at syscall boundaries
 // ---------------------------------------------------------------------------
 
@@ -1195,7 +1204,6 @@ fn ensure_memory_covers(_end_addr: usize) {
 fn deliver_pending_signals(proc: &mut Process, host: &mut WasmHostIO) {
     use crate::signal::{DefaultAction, SignalHandler, default_action};
     let tid = crate::process_table::current_tid();
-    let _ = host;
     loop {
         // Caught signals are delivered by the glue code via
         // kernel_dequeue_signal; default and ignored signals are consumed here.
@@ -1214,8 +1222,7 @@ fn deliver_pending_signals(proc: &mut Process, host: &mut WasmHostIO) {
                 let _ = dequeue_signal_for(proc, tid, signum);
                 match default_action(signum) {
                     DefaultAction::Terminate | DefaultAction::CoreDump => {
-                        proc.state = crate::process::ProcessState::Exited;
-                        proc.exit_status = 128 + signum as i32;
+                        terminate_process_by_signal(proc, host, signum);
                     }
                     _ => {}
                 }
@@ -1660,13 +1667,35 @@ pub extern "C" fn kernel_clear_fork_child(pid: u32) -> i32 {
     }
 }
 
-/// Get process exit status.
-/// Returns exit_status if process is exited, -1 if still alive, -ESRCH if not found.
+/// Get the shell-style process exit status used by the host lifecycle scan.
+/// Returns a normal exit code, 128+signal for signal termination, -1 while
+/// alive, or -ESRCH when the process does not exist.
 #[unsafe(no_mangle)]
 pub extern "C" fn kernel_get_process_exit_status(pid: u32) -> i32 {
     let table = unsafe { &*PROCESS_TABLE.0.get() };
     match table.get(pid) {
-        Some(proc) if proc.state == crate::process::ProcessState::Exited => proc.exit_status,
+        Some(proc) if proc.state == crate::process::ProcessState::Exited => {
+            if proc.exit_signal != 0 {
+                128 + proc.exit_signal as i32
+            } else {
+                proc.exit_status
+            }
+        }
+        Some(_) => -1,
+        None => -(Errno::ESRCH as i32),
+    }
+}
+
+/// Return the signal that terminated an exited process, or zero for a normal
+/// exit. Returns -1 while the process is alive and -ESRCH when it is absent.
+/// Hosts use this explicit cause instead of guessing from high exit codes.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_get_process_exit_signal(pid: u32) -> i32 {
+    let table = unsafe { &*PROCESS_TABLE.0.get() };
+    match table.get(pid) {
+        Some(proc) if proc.state == crate::process::ProcessState::Exited => {
+            proc.exit_signal as i32
+        }
         Some(_) => -1,
         None => -(Errno::ESRCH as i32),
     }
@@ -1689,9 +1718,13 @@ pub extern "C" fn kernel_get_parent_pid(pid: u32) -> i32 {
 #[unsafe(no_mangle)]
 pub extern "C" fn kernel_mark_process_signaled(pid: u32, signum: u32) -> i32 {
     let table = unsafe { &mut *PROCESS_TABLE.0.get() };
-    match table.mark_process_signaled(pid, signum) {
-        Ok(()) => 0,
-        Err(e) => -(e as i32),
+    match table.get_mut(pid) {
+        Some(proc) => {
+            let mut host = WasmHostIO;
+            terminate_process_by_signal(proc, &mut host, signum);
+            0
+        }
+        None => -(Errno::ESRCH as i32),
     }
 }
 
@@ -2133,13 +2166,8 @@ pub extern "C" fn kernel_dequeue_signal(pid: u32, out_ptr: *mut u8) -> i32 {
                 let _ = dequeue_signal_for(proc, tid, signum);
                 match default_action(signum) {
                     DefaultAction::Terminate | DefaultAction::CoreDump => {
-                        // Process is dying; clear sigsuspend state
-                        proc.sigsuspend_saved_mask = None;
-                        for t in proc.threads.iter_mut() {
-                            t.signals.sigsuspend_saved_mask = None;
-                        }
-                        proc.state = crate::process::ProcessState::Exited;
-                        proc.exit_status = 128 + signum as i32;
+                        let mut host = WasmHostIO;
+                        terminate_process_by_signal(proc, &mut host, signum);
                         return 0;
                     }
                     _ => continue,
@@ -6960,7 +6988,8 @@ pub extern "C" fn kernel_exit(status: i32) -> ! {
         if unsafe { host_is_thread_worker() } != 0 {
             // Thread exit: don't destroy shared process state (FDs, pipes, etc.).
             // Just set exit status and return — the glue will trap via unreachable.
-            proc.exit_status = status;
+            proc.exit_status = status & 0xff;
+            proc.exit_signal = 0;
             // Drop GKL guard before trapping
         } else {
             let mut host = WasmHostIO;

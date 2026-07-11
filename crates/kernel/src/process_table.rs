@@ -510,6 +510,7 @@ impl ProcessTable {
         limbo.is_session_leader = proc.is_session_leader;
         limbo.state = ProcessState::Limbo;
         limbo.exit_status = proc.exit_status;
+        limbo.exit_signal = proc.exit_signal;
         limbo.cwd = proc.cwd.clone();
         limbo.environ = proc.environ.clone();
         limbo.argv = proc.argv.clone();
@@ -909,7 +910,8 @@ impl ProcessTable {
     pub fn mark_process_signaled(&mut self, pid: u32, signum: u32) -> Result<(), Errno> {
         let proc = self.processes.get_mut(&pid).ok_or(Errno::ESRCH)?;
         proc.state = ProcessState::Exited;
-        proc.exit_status = 128 + signum as i32;
+        proc.exit_status = 0;
+        proc.exit_signal = signum & 0x7f;
         Ok(())
     }
 
@@ -939,7 +941,7 @@ impl ProcessTable {
             if child.state == ProcessState::Exited {
                 return Ok(Some((
                     child_pid,
-                    Self::wait_status_from_exit_status(child.exit_status),
+                    Self::wait_status_from_process(child),
                 )));
             }
         }
@@ -980,11 +982,11 @@ impl ProcessTable {
         child.pgid == target_pgid
     }
 
-    fn wait_status_from_exit_status(exit_status: i32) -> i32 {
-        if exit_status >= 128 {
-            (exit_status - 128) & 0x7f
+    fn wait_status_from_process(proc: &Process) -> i32 {
+        if proc.exit_signal != 0 {
+            (proc.exit_signal as i32) & 0x7f
         } else {
-            (exit_status & 0xff) << 8
+            (proc.exit_status & 0xff) << 8
         }
     }
 }
@@ -1301,6 +1303,23 @@ mod tests {
         table.processes.get_mut(&11).unwrap().ppid = 10;
 
         assert_eq!(table.poll_waitable_child(10, 11).unwrap(), Some((11, 15)));
+    }
+
+    #[test]
+    fn poll_waitable_child_preserves_high_normal_exit_status() {
+        let mut table = ProcessTable::new();
+        table.create_process(10).unwrap();
+        table.create_process(11).unwrap();
+        let child = table.processes.get_mut(&11).unwrap();
+        child.ppid = 10;
+        child.state = ProcessState::Exited;
+        child.exit_status = 255;
+        child.exit_signal = 0;
+
+        assert_eq!(
+            table.poll_waitable_child(10, -1).unwrap(),
+            Some((11, 255 << 8))
+        );
     }
 
     #[test]

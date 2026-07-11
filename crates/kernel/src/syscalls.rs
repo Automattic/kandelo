@@ -5507,7 +5507,8 @@ pub fn sys_exit(proc: &mut Process, host: &mut dyn HostIO, status: i32) {
     fallback_lock_table(proc).remove_all_for_pid(pid);
 
     proc.state = ProcessState::Exited;
-    proc.exit_status = status;
+    proc.exit_status = status & 0xff;
+    proc.exit_signal = 0;
 }
 
 /// Get the current time from the specified clock.
@@ -14012,6 +14013,7 @@ mod tests {
 
         assert_eq!(proc.state, ProcessState::Exited);
         assert_eq!(proc.exit_status, 42);
+        assert_eq!(proc.exit_signal, 0);
 
         // All fds should be closed - trying to read from fd should fail
         let mut buf = [0u8; 10];
@@ -14026,6 +14028,18 @@ mod tests {
         sys_exit(&mut proc, &mut host, 0);
         assert_eq!(proc.state, ProcessState::Exited);
         assert_eq!(proc.exit_status, 0);
+    }
+
+    #[test]
+    fn test_exit_keeps_only_the_low_status_byte() {
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        proc.exit_signal = 15;
+
+        sys_exit(&mut proc, &mut host, 0x1ff);
+
+        assert_eq!(proc.exit_status, 255);
+        assert_eq!(proc.exit_signal, 0);
     }
 
     #[test]
