@@ -7048,6 +7048,13 @@ pub extern "C" fn kernel_listen(fd: i32, backlog: u32) -> i32 {
     result
 }
 
+/// Return whether `flags` contains only the accept4 flags this kernel supports.
+fn accept4_flags_are_valid(flags: u32) -> bool {
+    use wasm_posix_shared::socket::{SOCK_CLOEXEC, SOCK_NONBLOCK};
+
+    flags & !(SOCK_CLOEXEC | SOCK_NONBLOCK) == 0
+}
+
 /// Accept a connection with flags. Returns new fd or negative errno.
 /// Flags: SOCK_CLOEXEC, SOCK_NONBLOCK (same values as socket()).
 #[unsafe(no_mangle)]
@@ -7063,6 +7070,10 @@ pub extern "C" fn kernel_accept4(
 
     let (_gkl, proc) = unsafe { get_process() };
     let mut host = WasmHostIO;
+    if !accept4_flags_are_valid(flags) {
+        deliver_pending_signals(proc, &mut host);
+        return -(Errno::EINVAL as i32);
+    }
     let result = match syscalls::sys_accept(proc, &mut host, fd) {
         Ok(new_fd) => {
             // Apply SOCK_CLOEXEC flag
@@ -7181,6 +7192,12 @@ pub extern "C" fn kernel_connect(fd: i32, addr_ptr: *const u8, addr_len: u32) ->
                 } else {
                     -(Errno::ECONNREFUSED as i32)
                 }
+            } else if family == 10 && addr_len >= 28 {
+                // AF_INET6 loopback
+                match cross_process_loopback_connect6(proc, fd, addr) {
+                    Ok(()) => 0,
+                    Err(e) => -(e as i32),
+                }
             } else {
                 -(Errno::ECONNREFUSED as i32)
             }
@@ -7197,7 +7214,8 @@ pub extern "C" fn kernel_connect(fd: i32, addr_ptr: *const u8, addr_len: u32) ->
 /// target port, then creates global pipe pairs to connect the two processes.
 fn cross_process_loopback_connect(proc: &mut Process, fd: i32, addr: &[u8]) -> Result<(), Errno> {
     use crate::pipe::PipeBuffer;
-    use crate::socket::{SocketState, SocketType};
+    use crate::socket::{SocketDomain, SocketState, SocketType};
+    use wasm_posix_shared::socket::{IPPROTO_IPV6, IPV6_V6ONLY};
 
     let port = u16::from_be_bytes([addr[2], addr[3]]);
     let ip = [addr[4], addr[5], addr[6], addr[7]];
@@ -7205,23 +7223,20 @@ fn cross_process_loopback_connect(proc: &mut Process, fd: i32, addr: &[u8]) -> R
     // Get the client socket info
     let entry = proc.fd_table.get(fd)?;
     let ofd = proc.ofd_table.get(entry.ofd_ref.0).ok_or(Errno::EBADF)?;
+    if ofd.file_type != FileType::Socket {
+        return Err(Errno::ENOTSOCK);
+    }
     let sock_idx = (-(ofd.host_handle + 1)) as usize;
-
-    // For UDP DGRAM connect, just record peer address (no cross-process search needed)
-    {
-        let sock = proc.sockets.get(sock_idx).ok_or(Errno::EBADF)?;
-        if sock.sock_type == SocketType::Dgram {
-            let client = proc.sockets.get_mut(sock_idx).ok_or(Errno::EBADF)?;
-            client.state = SocketState::Connected;
-            client.peer_addr = ip;
-            client.peer_port = port;
-            return Ok(());
-        }
+    let client_sock = proc.sockets.get(sock_idx).ok_or(Errno::EBADF)?;
+    if client_sock.domain != SocketDomain::Inet || client_sock.sock_type != SocketType::Stream {
+        return Err(Errno::ECONNREFUSED);
     }
 
     // Search ALL processes for a listener on the target port
-    let table = unsafe { &mut *PROCESS_TABLE.0.get() };
     let my_pid = proc.pid;
+    // Do not read through `proc` after reborrowing the containing global
+    // process table.
+    let table = unsafe { &mut *PROCESS_TABLE.0.get() };
 
     // Find the listener process and socket index
     let mut listener_pid: Option<u32> = None;
@@ -7240,7 +7255,16 @@ fn cross_process_loopback_connect(proc: &mut Process, fd: i32, addr: &[u8]) -> R
                 if s.state == SocketState::Listening
                     && s.bind_port == port
                     && s.sock_type == SocketType::Stream
-                    && (s.bind_addr == [0, 0, 0, 0] || s.bind_addr == [127, 0, 0, 1])
+                    && match s.domain {
+                        SocketDomain::Inet => {
+                            s.bind_addr == [0, 0, 0, 0] || s.bind_addr == ip
+                        }
+                        SocketDomain::Inet6 => {
+                            s.bind_addr6 == [0; 16]
+                                && s.get_option(IPPROTO_IPV6, IPV6_V6ONLY).unwrap_or(0) == 0
+                        }
+                        SocketDomain::Unix => false,
+                    }
                 {
                     listener_pid = Some(pid);
                     listener_sock_idx = Some(idx);
@@ -7309,6 +7333,8 @@ fn cross_process_loopback_connect(proc: &mut Process, fd: i32, addr: &[u8]) -> R
 
     let pc = crate::socket::PendingConnection {
         peer_addr: client_addr,
+        peer_addr6: [0; 16],
+        peer_is_ipv6: false,
         peer_port: client_port,
         recv_pipe_idx: pipe_a_idx, // server reads client's writes
         send_pipe_idx: pipe_b_idx, // server writes to client's reads
@@ -7321,6 +7347,125 @@ fn cross_process_loopback_connect(proc: &mut Process, fd: i32, addr: &[u8]) -> R
         crate::wakeup::push_accept(idx);
     }
 
+    Ok(())
+}
+
+/// Cross-process AF_INET6 loopback connect. The listener's shared backlog
+/// carries a native IPv6 peer address so accept/getpeername retain the family
+/// and do not collapse the connection onto the IPv4 host bridge.
+fn cross_process_loopback_connect6(
+    proc: &mut Process,
+    fd: i32,
+    addr: &[u8],
+) -> Result<(), Errno> {
+    use crate::pipe::PipeBuffer;
+    use crate::socket::{SocketDomain, SocketState, SocketType};
+
+    let port = u16::from_be_bytes([addr[2], addr[3]]);
+    let mut ip = [0u8; 16];
+    ip.copy_from_slice(&addr[8..24]);
+    let loopback = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1];
+    if ip == [0; 16] {
+        ip = loopback;
+    }
+    if ip != loopback {
+        return Err(Errno::ECONNREFUSED);
+    }
+
+    let entry = proc.fd_table.get(fd)?;
+    let ofd = proc.ofd_table.get(entry.ofd_ref.0).ok_or(Errno::EBADF)?;
+    if ofd.file_type != FileType::Socket {
+        return Err(Errno::ENOTSOCK);
+    }
+    let sock_idx = (-(ofd.host_handle + 1)) as usize;
+    let client_sock = proc.sockets.get(sock_idx).ok_or(Errno::EBADF)?;
+    if client_sock.domain != SocketDomain::Inet6 || client_sock.sock_type != SocketType::Stream {
+        return Err(Errno::ECONNREFUSED);
+    }
+
+    let my_pid = proc.pid;
+    // Do not read through `proc` after reborrowing the containing global
+    // process table.
+    let table = unsafe { &mut *PROCESS_TABLE.0.get() };
+    let mut listener = None;
+    for (&pid, target_proc) in table.processes.iter().rev() {
+        if pid == my_pid {
+            continue;
+        }
+        for idx in 0..target_proc.sockets.len() {
+            let Some(sock) = target_proc.sockets.get(idx) else {
+                continue;
+            };
+            if sock.domain == SocketDomain::Inet6
+                && sock.sock_type == SocketType::Stream
+                && sock.state == SocketState::Listening
+                && sock.bind_port == port
+                && (sock.bind_addr6 == [0; 16] || sock.bind_addr6 == ip)
+            {
+                listener = Some((pid, idx));
+                break;
+            }
+        }
+        if listener.is_some() {
+            break;
+        }
+    }
+    let (listener_pid, listener_sock_idx) = listener.ok_or(Errno::ECONNREFUSED)?;
+
+    let pipe_table = unsafe { crate::pipe::global_pipe_table() };
+    let pipe_a_idx = pipe_table.alloc(PipeBuffer::new(65536));
+    let pipe_b_idx = pipe_table.alloc(PipeBuffer::new(65536));
+
+    let client_proc = table.get_mut(my_pid).ok_or(Errno::ESRCH)?;
+    let client_sock = client_proc.sockets.get(sock_idx).ok_or(Errno::EBADF)?;
+    let client_addr6 = if client_sock.bind_addr6 == [0; 16] {
+        loopback
+    } else {
+        client_sock.bind_addr6
+    };
+    let mut client_port = client_sock.bind_port;
+    if client_port == 0 {
+        client_port = client_proc.next_ephemeral_port;
+        client_proc.next_ephemeral_port = client_proc.next_ephemeral_port.wrapping_add(1);
+        if client_proc.next_ephemeral_port == 0 {
+            client_proc.next_ephemeral_port = 49152;
+        }
+    }
+    let client = client_proc.sockets.get_mut(sock_idx).ok_or(Errno::EBADF)?;
+    client.send_buf_idx = Some(pipe_a_idx);
+    client.recv_buf_idx = Some(pipe_b_idx);
+    client.state = SocketState::Connected;
+    client.peer_addr6 = ip;
+    client.peer_port = port;
+    client.global_pipes = true;
+    if client.bind_port == 0 {
+        client.bind_addr6 = loopback;
+        client.bind_port = client_port;
+    }
+
+    let listener_proc = table.get_mut(listener_pid).ok_or(Errno::ESRCH)?;
+    let listener_sock = listener_proc
+        .sockets
+        .get(listener_sock_idx)
+        .ok_or(Errno::ECONNREFUSED)?;
+    let shared_idx = listener_sock
+        .shared_backlog_idx
+        .ok_or(Errno::ECONNREFUSED)?;
+    let accept_wake_idx = listener_sock.accept_wake_idx;
+    let pending = crate::socket::PendingConnection {
+        peer_addr: [0; 4],
+        peer_addr6: client_addr6,
+        peer_is_ipv6: true,
+        peer_port: client_port,
+        recv_pipe_idx: pipe_a_idx,
+        send_pipe_idx: pipe_b_idx,
+    };
+    if !unsafe { crate::socket::shared_listener_backlog_table().push(shared_idx, pending) } {
+        return Err(Errno::ECONNREFUSED);
+    }
+    if let Some(idx) = accept_wake_idx {
+        crate::wakeup::push_accept(idx);
+    }
     Ok(())
 }
 
@@ -7354,25 +7499,38 @@ fn cross_process_unix_connect(proc: &mut Process, fd: i32, addr: &[u8]) -> Resul
         crate::path::resolve_path(&path_bytes[..path_end], &proc.cwd)
     };
 
+    // Only AF_UNIX stream sockets can enter the cross-process stream-pipe
+    // connection path. In particular, never reinterpret a datagram socket as
+    // a stream merely because its registry lookup found another process.
+    let entry = proc.fd_table.get(fd)?;
+    let ofd = proc.ofd_table.get(entry.ofd_ref.0).ok_or(Errno::EBADF)?;
+    if ofd.file_type != FileType::Socket {
+        return Err(Errno::ENOTSOCK);
+    }
+    let sock_idx = (-(ofd.host_handle + 1)) as usize;
+    let client = proc.sockets.get(sock_idx).ok_or(Errno::EBADF)?;
+    // sys_connect already returned ECONNREFUSED for this attempt. Datagram
+    // routing is deliberately not retried through the stream-only
+    // cross-process path: doing so would rewrite the truthful datagram error
+    // to EPROTOTYPE at the exported syscall boundary.
+    if client.domain == SocketDomain::Unix && client.sock_type == SocketType::Dgram {
+        return Err(Errno::ECONNREFUSED);
+    }
+    if client.domain != SocketDomain::Unix || client.sock_type != SocketType::Stream {
+        return Err(Errno::EPROTOTYPE);
+    }
+
     // Look up in global registry
     let registry = unsafe { crate::unix_socket::global_unix_socket_registry() };
     let entry = registry.lookup(&resolved).ok_or(Errno::ECONNREFUSED)?;
     let listener_pid = entry.pid;
     let listener_sock_idx = entry.sock_idx;
 
-    // Get client socket info
-    let entry = proc.fd_table.get(fd)?;
-    let ofd = proc.ofd_table.get(entry.ofd_ref.0).ok_or(Errno::EBADF)?;
-    let sock_idx = (-(ofd.host_handle + 1)) as usize;
-
-    // Allocate global pipe pair
-    let pipe_table = unsafe { crate::pipe::global_pipe_table() };
-    let pipe_a_idx = pipe_table.alloc(PipeBuffer::new(65536));
-    let pipe_b_idx = pipe_table.alloc(PipeBuffer::new(65536));
-
     // Access process table for cross-process operation
-    let table = unsafe { &mut *PROCESS_TABLE.0.get() };
     let my_pid = proc.pid;
+    // Do not read through `proc` after reborrowing the containing global
+    // process table.
+    let table = unsafe { &mut *PROCESS_TABLE.0.get() };
 
     // Verify listener exists and is listening
     let listener_proc = table.get_mut(listener_pid).ok_or(Errno::ECONNREFUSED)?;
@@ -7380,9 +7538,18 @@ fn cross_process_unix_connect(proc: &mut Process, fd: i32, addr: &[u8]) -> Resul
         .sockets
         .get(listener_sock_idx)
         .ok_or(Errno::ECONNREFUSED)?;
-    if listener.state != SocketState::Listening {
+    if listener.domain != SocketDomain::Unix
+        || listener.sock_type != SocketType::Stream
+        || listener.state != SocketState::Listening
+    {
         return Err(Errno::ECONNREFUSED);
     }
+
+    // Allocate pipes only after both endpoints have been validated, so a
+    // stale or wrong-type registry entry cannot leak global pipe slots.
+    let pipe_table = unsafe { crate::pipe::global_pipe_table() };
+    let pipe_a_idx = pipe_table.alloc(PipeBuffer::new(65536));
+    let pipe_b_idx = pipe_table.alloc(PipeBuffer::new(65536));
 
     // Create accepted socket in the listener's process
     let mut accepted_sock = SocketInfo::new(SocketDomain::Unix, SocketType::Stream, 0);
@@ -7413,6 +7580,71 @@ fn cross_process_unix_connect(proc: &mut Process, fd: i32, addr: &[u8]) -> Resul
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod socket_wrapper_tests {
+    use super::{cross_process_unix_connect, write_getsockopt_bytes};
+    use crate::errno::Errno;
+    use crate::fd::OpenFileDescRef;
+    use crate::ofd::FileType;
+    use crate::process::Process;
+    use crate::socket::{SocketDomain, SocketInfo, SocketType};
+    use wasm_posix_shared::flags::O_RDWR;
+
+    #[test]
+    fn unix_datagram_cross_process_retry_preserves_connrefused() {
+        let mut proc = Process::new(9040);
+        let sock_idx =
+            proc.sockets
+                .alloc(SocketInfo::new(SocketDomain::Unix, SocketType::Dgram, 0));
+        let ofd_idx = proc.ofd_table.create(
+            FileType::Socket,
+            O_RDWR,
+            -((sock_idx as i64) + 1),
+            b"/dev/socket".to_vec(),
+        );
+        let fd = proc
+            .fd_table
+            .alloc(OpenFileDescRef(ofd_idx), 0)
+            .unwrap();
+        let addr = [1, 0, b'/', b't', b'm', b'p', b'/', b'm', b'i', b's', b's'];
+
+        assert_eq!(
+            cross_process_unix_connect(&mut proc, fd, &addr),
+            Err(Errno::ECONNREFUSED),
+        );
+    }
+
+    #[test]
+    fn getsockopt_copy_honors_short_and_unaligned_lengths() {
+        let mut out = [0xaau8; 4];
+        let mut length = 2u32;
+        write_getsockopt_bytes(out.as_mut_ptr(), &mut length, &[1, 2, 3, 4]).unwrap();
+        assert_eq!(out, [1, 2, 0xaa, 0xaa]);
+        assert_eq!(length, 2);
+
+        let mut unaligned_storage = [0u8; 5];
+        unaligned_storage[1..5].copy_from_slice(&3u32.to_ne_bytes());
+        let unaligned_length = unsafe { unaligned_storage.as_mut_ptr().add(1).cast::<u32>() };
+        write_getsockopt_bytes(out.as_mut_ptr(), unaligned_length, &[5, 6, 7, 8]).unwrap();
+        assert_eq!(&out[..3], &[5, 6, 7]);
+        assert_eq!(&unaligned_storage[1..5], &3u32.to_ne_bytes());
+    }
+
+    #[test]
+    fn getsockopt_copy_rejects_null_guest_pointers() {
+        let mut out = [0u8; 4];
+        let mut length = 4u32;
+        assert_eq!(
+            write_getsockopt_bytes(core::ptr::null_mut(), &mut length, &[1, 2, 3, 4]),
+            Err(Errno::EFAULT),
+        );
+        assert_eq!(
+            write_getsockopt_bytes(out.as_mut_ptr(), core::ptr::null_mut(), &[1, 2, 3, 4]),
+            Err(Errno::EFAULT),
+        );
+    }
 }
 
 /// Send data on a socket. Returns bytes sent or negative errno.
@@ -7456,6 +7688,30 @@ pub extern "C" fn kernel_shutdown(fd: i32, how: u32) -> i32 {
     result
 }
 
+/// Copy a socket option to the caller without exceeding its guest buffer.
+///
+/// `optlen` is a value-result parameter: the input bounds the copy and the
+/// output reports the number of bytes actually copied, including truncation.
+/// Both pointers are required for these option shapes.
+fn write_getsockopt_bytes(
+    optval_ptr: *mut u8,
+    optlen_ptr: *mut u32,
+    value: &[u8],
+) -> Result<(), Errno> {
+    if optval_ptr.is_null() || optlen_ptr.is_null() {
+        return Err(Errno::EFAULT);
+    }
+
+    let available = unsafe { core::ptr::read_unaligned(optlen_ptr) as usize };
+    let write_len = available.min(value.len());
+    if write_len > 0 {
+        let out = unsafe { slice::from_raw_parts_mut(optval_ptr, write_len) };
+        out.copy_from_slice(&value[..write_len]);
+    }
+    unsafe { core::ptr::write_unaligned(optlen_ptr, write_len as u32) };
+    Ok(())
+}
+
 /// Get socket option. Returns 0 on success, negative errno on error.
 /// Writes the option value to optval_ptr. optlen_ptr points to buffer size
 /// on input, receives actual written size on output.
@@ -7473,26 +7729,10 @@ pub extern "C" fn kernel_getsockopt(
     // Handle struct tcp_info (TCP_INFO)
     if level == IPPROTO_TCP && optname == TCP_INFO {
         let result = match syscalls::sys_getsockopt_tcp_info(proc, fd) {
-            Ok(info_buf) => {
-                let avail = if !optlen_ptr.is_null() {
-                    unsafe { *optlen_ptr as usize }
-                } else {
-                    syscalls::TCP_INFO_SIZE
-                };
-                let write_len = if avail < syscalls::TCP_INFO_SIZE {
-                    avail
-                } else {
-                    syscalls::TCP_INFO_SIZE
-                };
-                let out = unsafe { slice::from_raw_parts_mut(optval_ptr, write_len) };
-                out.copy_from_slice(&info_buf[..write_len]);
-                if !optlen_ptr.is_null() {
-                    unsafe {
-                        *optlen_ptr = write_len as u32;
-                    }
-                }
-                0
-            }
+            Ok(info_buf) => match write_getsockopt_bytes(optval_ptr, optlen_ptr, &info_buf) {
+                Ok(()) => 0,
+                Err(e) => -(e as i32),
+            },
             Err(e) => -(e as i32),
         };
         let mut host = WasmHostIO;
@@ -7504,25 +7744,13 @@ pub extern "C" fn kernel_getsockopt(
     if level == SOL_SOCKET && optname == SO_LINGER {
         let result = match syscalls::sys_getsockopt_linger(proc, fd) {
             Ok((l_onoff, l_linger)) => {
-                let avail = if !optlen_ptr.is_null() {
-                    unsafe { *optlen_ptr as usize }
-                } else {
-                    8
-                };
-                let write_len = avail.min(8);
                 let mut tmp = [0u8; 8];
                 tmp[0..4].copy_from_slice(&l_onoff.to_le_bytes());
                 tmp[4..8].copy_from_slice(&l_linger.to_le_bytes());
-                if write_len > 0 {
-                    let out = unsafe { slice::from_raw_parts_mut(optval_ptr, write_len) };
-                    out.copy_from_slice(&tmp[..write_len]);
+                match write_getsockopt_bytes(optval_ptr, optlen_ptr, &tmp) {
+                    Ok(()) => 0,
+                    Err(e) => -(e as i32),
                 }
-                if !optlen_ptr.is_null() {
-                    unsafe {
-                        *optlen_ptr = 8;
-                    }
-                }
-                0
             }
             Err(e) => -(e as i32),
         };
@@ -7535,27 +7763,14 @@ pub extern "C" fn kernel_getsockopt(
     if level == SOL_SOCKET && optname == SO_BINDTODEVICE {
         let result = match syscalls::sys_getsockopt_bindtodevice(proc, fd) {
             Ok(name) => {
-                let needed = if name.is_empty() { 0 } else { name.len() + 1 };
-                let avail = if !optlen_ptr.is_null() {
-                    unsafe { *optlen_ptr as usize }
-                } else {
-                    needed
-                };
-                let write_len = avail.min(needed);
-                if write_len > 0 {
-                    let out = unsafe { slice::from_raw_parts_mut(optval_ptr, write_len) };
-                    let name_copy = write_len.min(name.len());
-                    out[..name_copy].copy_from_slice(&name[..name_copy]);
-                    if write_len > name_copy {
-                        out[name_copy] = 0;
-                    }
+                let mut value = name;
+                if !value.is_empty() {
+                    value.push(0);
                 }
-                if !optlen_ptr.is_null() {
-                    unsafe {
-                        *optlen_ptr = needed as u32;
-                    }
+                match write_getsockopt_bytes(optval_ptr, optlen_ptr, &value) {
+                    Ok(()) => 0,
+                    Err(e) => -(e as i32),
                 }
-                0
             }
             Err(e) => -(e as i32),
         };
@@ -7567,27 +7782,12 @@ pub extern "C" fn kernel_getsockopt(
     // Handle string-valued TCP_CONGESTION.
     if level == IPPROTO_TCP && optname == TCP_CONGESTION {
         let result = match syscalls::sys_getsockopt_tcp_congestion(proc, fd) {
-            Ok(name) => {
-                let avail = if !optlen_ptr.is_null() {
-                    unsafe { *optlen_ptr as usize }
-                } else {
-                    name.len() + 1
-                };
-                let write_len = avail.min(name.len() + 1);
-                if write_len > 0 {
-                    let out = unsafe { slice::from_raw_parts_mut(optval_ptr, write_len) };
-                    let name_copy = write_len.min(name.len());
-                    out[..name_copy].copy_from_slice(&name[..name_copy]);
-                    if write_len > name_copy {
-                        out[name_copy] = 0;
-                    }
+            Ok(mut name) => {
+                name.push(0);
+                match write_getsockopt_bytes(optval_ptr, optlen_ptr, &name) {
+                    Ok(()) => 0,
+                    Err(e) => -(e as i32),
                 }
-                if !optlen_ptr.is_null() {
-                    unsafe {
-                        *optlen_ptr = (name.len() + 1) as u32;
-                    }
-                }
-                0
             }
             Err(e) => -(e as i32),
         };
@@ -7602,15 +7802,13 @@ pub extern "C" fn kernel_getsockopt(
             Ok(timeout_us) => {
                 let tv_sec = (timeout_us / 1_000_000) as i64;
                 let tv_usec = (timeout_us % 1_000_000) as i64;
-                let buf = unsafe { slice::from_raw_parts_mut(optval_ptr, 16) };
-                buf[0..8].copy_from_slice(&tv_sec.to_le_bytes());
-                buf[8..16].copy_from_slice(&tv_usec.to_le_bytes());
-                if !optlen_ptr.is_null() {
-                    unsafe {
-                        *optlen_ptr = 16;
-                    }
+                let mut value = [0u8; 16];
+                value[0..8].copy_from_slice(&tv_sec.to_le_bytes());
+                value[8..16].copy_from_slice(&tv_usec.to_le_bytes());
+                match write_getsockopt_bytes(optval_ptr, optlen_ptr, &value) {
+                    Ok(()) => 0,
+                    Err(e) => -(e as i32),
                 }
-                0
             }
             Err(e) => -(e as i32),
         };
@@ -7621,17 +7819,10 @@ pub extern "C" fn kernel_getsockopt(
 
     let result = match syscalls::sys_getsockopt(proc, fd, level, optname) {
         Ok(val) => {
-            // Write as u32 (4 bytes) for int-valued options
-            let val_ptr = optval_ptr as *mut u32;
-            unsafe {
-                *val_ptr = val;
+            match write_getsockopt_bytes(optval_ptr, optlen_ptr, &val.to_le_bytes()) {
+                Ok(()) => 0,
+                Err(e) => -(e as i32),
             }
-            if !optlen_ptr.is_null() {
-                unsafe {
-                    *optlen_ptr = 4;
-                }
-            }
-            0
         }
         Err(e) => -(e as i32),
     };
@@ -7796,7 +7987,9 @@ pub extern "C" fn kernel_setsockopt(
                         ))
                     }
                 }
-                IP_BLOCK_SOURCE | IP_UNBLOCK_SOURCE | IP_ADD_SOURCE_MEMBERSHIP
+                IP_BLOCK_SOURCE
+                | IP_UNBLOCK_SOURCE
+                | IP_ADD_SOURCE_MEMBERSHIP
                 | IP_DROP_SOURCE_MEMBERSHIP => {
                     if buf.len() < 12 {
                         Err(Errno::EINVAL)
@@ -7808,17 +8001,29 @@ pub extern "C" fn kernel_setsockopt(
                         ))
                     }
                 }
-                MCAST_JOIN_GROUP | MCAST_LEAVE_GROUP => Ok((
-                    parse_sockaddr_in_at(4)?,
-                    parse_ifindex_at(0)?,
-                    None,
-                )),
-                MCAST_BLOCK_SOURCE | MCAST_UNBLOCK_SOURCE | MCAST_JOIN_SOURCE_GROUP
-                | MCAST_LEAVE_SOURCE_GROUP => Ok((
-                    parse_sockaddr_in_at(4)?,
-                    parse_ifindex_at(0)?,
-                    Some(parse_sockaddr_in_at(132)?),
-                )),
+                MCAST_JOIN_GROUP | MCAST_LEAVE_GROUP => {
+                    let (group_offset, _) =
+                        syscalls::multicast_group_request_offsets(buf, false)?;
+                    Ok((
+                        parse_sockaddr_in_at(group_offset)?,
+                        parse_ifindex_at(0)?,
+                        None,
+                    ))
+                }
+                MCAST_BLOCK_SOURCE
+                | MCAST_UNBLOCK_SOURCE
+                | MCAST_JOIN_SOURCE_GROUP
+                | MCAST_LEAVE_SOURCE_GROUP => {
+                    let (group_offset, source_offset) =
+                        syscalls::multicast_group_request_offsets(buf, true)?;
+                    Ok((
+                        parse_sockaddr_in_at(group_offset)?,
+                        parse_ifindex_at(0)?,
+                        Some(parse_sockaddr_in_at(
+                            source_offset.expect("source request has source offset"),
+                        )?),
+                    ))
+                }
                 _ => unreachable!(),
             }
         })();
@@ -9876,7 +10081,7 @@ pub extern "C" fn kernel_inject_connection(
     }
     let shared_idx = match sock.shared_backlog_idx {
         Some(i) => i,
-        // Should always be set for AF_INET listeners (sys_listen allocates
+        // Should always be set for AF_INET/AF_INET6 listeners (sys_listen allocates
         // it). Defensive: refuse the inject rather than fall back to a
         // per-process backlog that fork siblings can't see.
         None => return -(Errno::EINVAL as i32),
@@ -9899,6 +10104,8 @@ pub extern "C" fn kernel_inject_connection(
             peer_addr_c as u8,
             peer_addr_d as u8,
         ],
+        peer_addr6: [0; 16],
+        peer_is_ipv6: false,
         peer_port: peer_port as u16,
         recv_pipe_idx,
         send_pipe_idx,
