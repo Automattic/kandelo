@@ -129,6 +129,12 @@ contract activate in the same ABI-bump commit. Changing the meaning or encoding
 of these capability claims changes fork replay assumptions and must follow the
 ABI-versioning policy.
 
+The current constituent source still declares ABI 16, so its compatibility
+fallback is active. The mandatory ABI-17 branch is staged in the runtime but is
+not a claim that ABI 17 has landed: activation is deferred to the aggregate
+ABI 16-to-17 reconciliation commit, which must bump `ABI_VERSION` and regenerate
+`abi/snapshot.json` together.
+
 `ptr` is `i32` on wasm32 user programs and `i64` on wasm64 user programs. The
 tool picks the pointer width from the module's primary memory — a memory64
 memory yields `i64`, anything else yields `i32`.
