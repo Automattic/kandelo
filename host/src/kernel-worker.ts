@@ -915,8 +915,8 @@ export class CentralizedKernelWorker {
   private alarmTimers = new Map<number, ReturnType<typeof setTimeout>>();
   /** POSIX timers: "pid:timerId" → {timeout, interval?, signo} */
   private posixTimers = new Map<string, { timeout: ReturnType<typeof setTimeout>; interval?: ReturnType<typeof setInterval>; signo: number }>();
-  /** Pending sleep timers per process: pid → {timer, channel, syscallNr, origArgs, retVal, errVal} */
-  private pendingSleeps = new Map<number, {
+  /** Pending sleep timers keyed by exact process/thread channel generation. */
+  private pendingSleeps = new Map<ChannelInfo, {
     timer: ReturnType<typeof setTimeout>;
     channel: ChannelInfo;
     syscallNr: number;
@@ -1648,13 +1648,13 @@ export class CentralizedKernelWorker {
     // pending we complete the sleep with EINTR so the glue can dispatch it.
     // Skipped pids (no signal queued) keep their original sleep deadline.
     const EINTR = 4;
-    for (const [pid, entry] of Array.from(this.pendingSleeps.entries())) {
+    for (const [sleepChannel, entry] of Array.from(this.pendingSleeps.entries())) {
       if (!this.isRegisteredChannel(entry.channel)) continue;
       this.dequeueSignalForDelivery(entry.channel);
       const view = new DataView(entry.channel.memory.buffer, entry.channel.channelOffset);
       if (view.getUint32(CH_SIG_SIGNUM, true) > 0) {
         clearTimeout(entry.timer);
-        this.pendingSleeps.delete(pid);
+        this.pendingSleeps.delete(sleepChannel);
         this.completeChannel(
           entry.channel, entry.syscallNr, entry.origArgs,
           SYSCALL_ARGS[entry.syscallNr], -1, EINTR,
@@ -1870,6 +1870,7 @@ export class CentralizedKernelWorker {
     // Clean up pending pipe readers/writers
     this.cleanupPendingPipeReaders(pid);
     this.cleanupPendingPipeWriters(pid);
+    this.cancelPendingSleepsForProcess(pid);
     // Clean up socket timeout timers for this process
     for (const [ch, timer] of this.socketTimeoutTimers) {
       if (ch.pid === pid) {
@@ -1943,6 +1944,14 @@ export class CentralizedKernelWorker {
     this.lockTable.removeLocksByPid(pid);
   }
 
+  private cancelPendingSleepsForProcess(pid: number): void {
+    for (const [channel, sleep] of this.pendingSleeps) {
+      if (channel.pid !== pid) continue;
+      clearTimeout(sleep.timer);
+      this.pendingSleeps.delete(channel);
+    }
+  }
+
   deactivateProcess(pid: number): void {
     this.releaseAllSharedMemoryForProcess(pid);
     this.activeChannels = this.activeChannels.filter((ch) => ch.pid !== pid);
@@ -1965,12 +1974,8 @@ export class CentralizedKernelWorker {
         this.posixTimers.delete(key);
       }
     }
-    // Cancel any pending sleep timer for this process
-    const sleepTimer = this.pendingSleeps.get(pid);
-    if (sleepTimer) {
-      clearTimeout(sleepTimer.timer);
-      this.pendingSleeps.delete(pid);
-    }
+    // Cancel pending sleeps for every thread in this process.
+    this.cancelPendingSleepsForProcess(pid);
     // Clean up pending poll retries
     this.cleanupPendingPollRetries(pid);
     // Clean up pending select retries
@@ -2379,11 +2384,7 @@ export class CentralizedKernelWorker {
     this.waitingForChild = this.waitingForChild.filter(
       (waiter) => waiter.parentPid !== pid,
     );
-    const sleep = this.pendingSleeps.get(pid);
-    if (sleep) {
-      clearTimeout(sleep.timer);
-      this.pendingSleeps.delete(pid);
-    }
+    this.cancelPendingSleepsForProcess(pid);
     for (const [channel, wait] of this.pendingFutexWaits) {
       if (channel.pid !== pid) continue;
       this.pendingFutexWaits.delete(channel);
@@ -2523,6 +2524,13 @@ export class CentralizedKernelWorker {
   removeChannel(pid: number, channelOffset: number): void {
     const registration = this.processes.get(pid);
     if (!registration) return;
+
+    for (const channel of registration.channels) {
+      if (channel.channelOffset !== channelOffset) continue;
+      const sleep = this.pendingSleeps.get(channel);
+      if (sleep) clearTimeout(sleep.timer);
+      this.pendingSleeps.delete(channel);
+    }
 
     registration.channels = registration.channels.filter(
       (ch) => ch.channelOffset !== channelOffset,
@@ -5268,14 +5276,14 @@ export class CentralizedKernelWorker {
 
     if (delayMs > 0) {
       const timer = setTimeout(() => {
-        const pending = this.pendingSleeps.get(channel.pid);
+        const pending = this.pendingSleeps.get(channel);
         if (pending?.timer !== timer || pending.channel !== channel) return;
-        this.pendingSleeps.delete(channel.pid);
+        this.pendingSleeps.delete(channel);
         if (this.isRegisteredChannel(channel)) {
           this.completeSleepWithSignalCheck(channel, syscallNr, origArgs, retVal, errVal);
         }
       }, delayMs);
-      this.pendingSleeps.set(channel.pid, { timer, channel, syscallNr, origArgs, retVal, errVal });
+      this.pendingSleeps.set(channel, { timer, channel, syscallNr, origArgs, retVal, errVal });
       return true;
     }
 
@@ -7984,8 +7992,7 @@ export class CentralizedKernelWorker {
       if (this.hostReaped.has(pid)) continue; // already reaped this generation
 
       // Cancel any pending blocking-syscall timers — the process is gone.
-      const ps = this.pendingSleeps.get(pid);
-      if (ps) { clearTimeout(ps.timer); this.pendingSleeps.delete(pid); }
+      this.cancelPendingSleepsForProcess(pid);
 
       const proc = this.processes.get(pid);
       const ch = proc?.channels[0];
@@ -8541,10 +8548,13 @@ export class CentralizedKernelWorker {
     // Signal is deliverable — wake any blocking syscall for this process
 
     // 1. Pending sleep (nanosleep, usleep, clock_nanosleep)
-    const pendingSleep = this.pendingSleeps.get(targetPid);
-    if (pendingSleep) {
+    const pendingSleepMatch = Array.from(this.pendingSleeps.entries()).find(
+      ([channel]) => channel.pid === targetPid,
+    );
+    if (pendingSleepMatch) {
+      const [sleepChannel, pendingSleep] = pendingSleepMatch;
       clearTimeout(pendingSleep.timer);
-      this.pendingSleeps.delete(targetPid);
+      this.pendingSleeps.delete(sleepChannel);
       this.completeSleepWithSignalCheck(
         pendingSleep.channel, pendingSleep.syscallNr, pendingSleep.origArgs,
         pendingSleep.retVal, pendingSleep.errVal,
