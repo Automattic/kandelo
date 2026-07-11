@@ -1,14 +1,15 @@
 #!/usr/bin/env bash
-# Refresh packages/registry/openssl/cacert.pem from curl.se's mirror of Mozilla's
-# root CA bundle. Run manually when bumping the bundle. The fetched bytes are
-# checked in; the kernel embeds them via include_bytes! and serves them at
-# /etc/ssl/cert.pem to wasm processes (see crates/kernel/src/syscalls.rs).
+# Refresh the canonical rootfs CA bundle from curl.se's mirror of Mozilla's
+# root certificates. Run manually when bumping the bundle. The fetched bytes
+# are checked in and scripts/build-rootfs.sh installs them at OpenSSL's default
+# /etc/ssl/cert.pem path and the conventional ca-certificates.crt path.
 #
 # Source upstream: https://curl.se/docs/caextract.html
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-DEST="$SCRIPT_DIR/cacert.pem"
+REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+DEST="$REPO_ROOT/images/rootfs/etc/ssl/cert.pem"
 URL="https://curl.se/ca/cacert.pem"
 
 echo "==> Fetching $URL"

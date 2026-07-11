@@ -102,8 +102,6 @@ let rootfsMemfs: MemoryFileSystem | null = null;
  *  worker constructs a `VirtualPlatformIO` from the default mount spec. */
 let sessionDir: string | null = null;
 const ENOEXEC = 8;
-const SSL_CERT_FILE_PATH = "/etc/ssl/certs/ca-certificates.crt";
-const OPENSSL_DEFAULT_CERT_FILE_PATH = "/etc/ssl/cert.pem";
 
 // Process tracking
 interface ProcessInfo {
@@ -582,36 +580,6 @@ async function resolveExecutableForLaunch(
 
 // --- Init ---
 
-function writeMemfsFile(fs: MemoryFileSystem, path: string, bytes: Uint8Array): void {
-  const fd = fs.open(path, 0o1101, 0o644);
-  try {
-    fs.write(fd, bytes, 0, bytes.byteLength);
-  } finally {
-    fs.close(fd);
-  }
-}
-
-function installDefaultCaBundle(fs: MemoryFileSystem): void {
-  const certPath = join(findRepoRoot(), "packages", "registry", "openssl", "cacert.pem");
-  let certBytes: Uint8Array;
-  try {
-    certBytes = readFileSync(certPath);
-  } catch (e) {
-    console.error("[node-kernel-worker] Failed to read default CA bundle:", e);
-    return;
-  }
-
-  try {
-    for (const dir of ["/etc", "/etc/ssl", "/etc/ssl/certs"]) {
-      try { fs.mkdir(dir, 0o755); } catch { /* exists */ }
-    }
-    writeMemfsFile(fs, SSL_CERT_FILE_PATH, certBytes);
-    writeMemfsFile(fs, OPENSSL_DEFAULT_CERT_FILE_PATH, certBytes);
-  } catch (e) {
-    console.error("[node-kernel-worker] Failed to write default CA bundle to VFS:", e);
-  }
-}
-
 /**
  * Materialise the default mount spec into a `VirtualPlatformIO` backed by
  * the rootfs image at `/` and per-boot host-fs scratch dirs everywhere
@@ -657,7 +625,6 @@ function buildVirtualPlatformIO(
     ? rootMount.backend
     : null;
   if (rootfsMemfs) {
-    installDefaultCaBundle(rootfsMemfs);
     ensureMountParentDirectories(rootfsMemfs, extras.map((m) => m.mountPoint));
   }
   return new VirtualPlatformIO(mounts, new NodeTimeProvider());

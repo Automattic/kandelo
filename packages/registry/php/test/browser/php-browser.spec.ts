@@ -27,18 +27,43 @@ const hasPhpWasm = [
   join(repoRoot, "binaries/programs/wasm32/php/php.wasm"),
   join(repoRoot, "packages/registry/php/php-src/sapi/cli/php"),
 ].some((candidate) => existsSync(candidate));
+const hasRootfsVfs = existsSync(join(repoRoot, "host/wasm/rootfs.vfs"));
 
 test.skip(!hasKernelWasm, "kernel.wasm is not built or fetched");
 test.skip(!hasPhpWasm, "php.wasm is not built or fetched");
+test.skip(!hasRootfsVfs, "rootfs.vfs is not built");
 
-test("PHP CLI runs in the browser (inline, file, session, SQLite, fileinfo, XML, extensions)", async ({ page }) => {
+test("PHP CLI runs in the browser (inline, file, session, SQLite, fileinfo, XML, OpenSSL, extensions)", async ({
+  page,
+}) => {
+  const runtimeErrors: string[] = [];
+  page.on("console", (msg) => {
+    if (msg.type() === "error") runtimeErrors.push(`console: ${msg.text()}`);
+  });
+  page.on("pageerror", (error) => {
+    runtimeErrors.push(`pageerror: ${error.message}`);
+  });
+  page.on("requestfailed", (request) => {
+    runtimeErrors.push(
+      `requestfailed: ${request.url()} ${request.failure()?.errorText ?? "failed"}`,
+    );
+  });
+  page.on("response", (response) => {
+    if (response.status() >= 400) {
+      runtimeErrors.push(`response: ${response.status()} ${response.url()}`);
+    }
+  });
+
   await page.goto("/");
 
   // Wait for all tests to finish (up to 120s — multiple sequential PHP runs)
   await page.waitForFunction(
     () => {
       const status = document.getElementById("status");
-      return status && (status.textContent === "done" || status.textContent === "error");
+      return (
+        status &&
+        (status.textContent === "done" || status.textContent === "error")
+      );
     },
     { timeout: 120_000 },
   );
@@ -54,6 +79,8 @@ test("PHP CLI runs in the browser (inline, file, session, SQLite, fileinfo, XML,
   }
 
   expect(status).toBe("done");
+  expect(exitCode).toBe("0");
+  expect(stderr).toBe("");
 
   const results = JSON.parse(resultsText!);
 
@@ -79,4 +106,8 @@ test("PHP CLI runs in the browser (inline, file, session, SQLite, fileinfo, XML,
 
   // SimpleXML
   expect(results.xml).toContain("xml-ok");
+
+  // OpenSSL defaults are present in rootfs.vfs and key + CSR generation succeeds.
+  expect(results.openssl).toContain("openssl-defaults-ok");
+  expect(runtimeErrors).toEqual([]);
 });
