@@ -183,6 +183,7 @@
       }
     ],
     "optional_kernel_exports": [
+      "kernel_get_process_exit_signal",
       "kernel_reserve_host_region",
       "kernel_reserve_host_region_at",
       "kernel_set_cwd",
