@@ -1232,14 +1232,21 @@ export function loadSharedLibrarySync(
  * dlclose API that maps to C runtime calls.
  */
 export class DynamicLinker {
+  private static readonly MAIN_PROGRAM_HANDLE = 1;
   private options: LoadSharedLibraryOptions;
-  private handleCounter = 1;
+  private handleCounter = DynamicLinker.MAIN_PROGRAM_HANDLE + 1;
   private handleMap = new Map<number, LoadedSharedLibrary>();
   private lastError: string | null = null;
 
   constructor(options: LoadSharedLibraryOptions) {
     validateLongjmpConfiguration(options);
     this.options = options;
+  }
+
+  /** Return the stable opaque handle used by dlopen(NULL, ...). */
+  dlopenMain(): number {
+    this.lastError = null;
+    return DynamicLinker.MAIN_PROGRAM_HANDLE;
   }
 
   /** Open a shared library. Returns a handle (>0) or 0 on error.
@@ -1263,32 +1270,10 @@ export class DynamicLinker {
     }
   }
 
-  /** Look up a symbol by name. Returns the function or address, or null. */
-  dlsym(handle: number, symbolName: string): Function | number | null {
-    const lib = this.handleMap.get(handle);
-    if (!lib) {
-      this.lastError = "invalid handle";
-      return null;
-    }
-
-    const exp = lib.exports[symbolName];
-    if (exp === undefined) {
-      // Also check global symbol table (symbol may come from a dependency)
-      const global = this.options.globalSymbols.get(symbolName);
-      if (global === undefined) {
-        this.lastError = `symbol not found: ${symbolName}`;
-        return null;
-      }
-      if (typeof global === "function") {
-        this.lastError = null;
-        return global;
-      }
-      if (global instanceof WebAssembly.Global) {
-        this.lastError = null;
-        return global.value as number;
-      }
-    }
-
+  private symbolAddress(
+    symbolName: string,
+    exp: Function | WebAssembly.Global | undefined,
+  ): number | null {
     if (typeof exp === "function") {
       // Return the table index for this function (C function pointers are table indices)
       const table = this.options.table;
@@ -1308,15 +1293,40 @@ export class DynamicLinker {
 
     if (exp instanceof WebAssembly.Global) {
       this.lastError = null;
-      return (exp as WebAssembly.Global).value as number;
+      return Number(exp.value);
     }
 
     this.lastError = `symbol not found: ${symbolName}`;
     return null;
   }
 
+  /** Look up a symbol by name. Returns its function-table index or data address. */
+  dlsym(handle: number, symbolName: string): number | null {
+    if (handle === DynamicLinker.MAIN_PROGRAM_HANDLE || handle === 0) {
+      return this.symbolAddress(symbolName, this.options.globalSymbols.get(symbolName));
+    }
+
+    const lib = this.handleMap.get(handle);
+    if (!lib) {
+      this.lastError = "invalid handle";
+      return null;
+    }
+
+    const exp = lib.exports[symbolName];
+    return this.symbolAddress(
+      symbolName,
+      typeof exp === "function" || exp instanceof WebAssembly.Global
+        ? exp
+        : this.options.globalSymbols.get(symbolName),
+    );
+  }
+
   /** Close a library handle. Returns 0 on success. */
   dlclose(handle: number): number {
+    if (handle === DynamicLinker.MAIN_PROGRAM_HANDLE) {
+      this.lastError = null;
+      return 0;
+    }
     if (!this.handleMap.has(handle)) {
       this.lastError = "invalid handle";
       return -1;
