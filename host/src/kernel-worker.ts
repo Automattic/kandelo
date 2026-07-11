@@ -447,6 +447,12 @@ interface ChannelInfo {
    *  retry/sleep/fork/exec path. Prevents the poller from re-entering a
    *  channel that is already in flight. Only used when usePolling=true. */
   handling?: boolean;
+  /** Absolute Date.now() deadline retained for the lifetime of one blocked
+   *  poll/ppoll call. -1 means the call has an infinite timeout. */
+  pollDeadline?: number;
+  /** Host-only timeout substituted on the final kernel pass. The guest's
+   *  original poll/ppoll arguments remain untouched. */
+  pollTimeoutOverride?: number;
 }
 
 /** Info about a registered process. */
@@ -2404,6 +2410,13 @@ export class CentralizedKernelWorker {
       }
     }
 
+    if (
+      (syscallNr === SYS_POLL || syscallNr === SYS_PPOLL)
+      && channel.pollTimeoutOverride !== undefined
+    ) {
+      adjustedArgs[2] = channel.pollTimeoutOverride;
+    }
+
     // Write adjusted args to kernel scratch
     kernelView.setUint32(CH_SYSCALL, syscallNr, true);
     for (let i = 0; i < CH_ARGS_COUNT; i++) {
@@ -2666,6 +2679,10 @@ export class CentralizedKernelWorker {
     retVal: number,
     errVal: number,
   ): void {
+    if (syscallNr === SYS_POLL || syscallNr === SYS_PPOLL) {
+      channel.pollDeadline = undefined;
+      channel.pollTimeoutOverride = undefined;
+    }
     const processView = new DataView(channel.memory.buffer, channel.channelOffset);
 
     // Copy output data from kernel scratch back to process memory
@@ -2992,6 +3009,8 @@ export class CentralizedKernelWorker {
    * Used for thread exit where we need to unblock the worker.
    */
   private completeChannelRaw(channel: ChannelInfo, retVal: number, errVal: number): void {
+    channel.pollDeadline = undefined;
+    channel.pollTimeoutOverride = undefined;
     // Clear handling flag (channel is done — poller can pick it up for next syscall)
     channel.handling = false;
 
@@ -3708,6 +3727,13 @@ export class CentralizedKernelWorker {
     }
   }
 
+  /** Finish an expired poll/ppoll through the kernel so it clears revents
+   *  and restores any temporary ppoll signal mask before host completion. */
+  private finalizePollTimeout(channel: ChannelInfo): void {
+    channel.pollTimeoutOverride = 0;
+    this.retrySyscall(channel);
+  }
+
   private handleBlockingRetry(
     channel: ChannelInfo,
     syscallNr: number,
@@ -3771,7 +3797,20 @@ export class CentralizedKernelWorker {
         }
       }
       if (timeoutMs === 0) {
-        this.completeChannel(channel, syscallNr, origArgs, SYSCALL_ARGS[syscallNr], 0, 0);
+        this.finalizePollTimeout(channel);
+        return;
+      }
+
+      // Keep one absolute deadline for the entire blocked syscall. Safety
+      // timers and readiness wakes re-enter handleSyscall with the original
+      // timeout argument still in the channel; deriving a fresh deadline on
+      // each entry would make a quiet finite poll wait forever.
+      const now = Date.now();
+      const deadline = channel.pollDeadline
+        ?? (timeoutMs > 0 ? now + timeoutMs : -1);
+      channel.pollDeadline = deadline;
+      if (deadline > 0 && now >= deadline) {
+        this.finalizePollTimeout(channel);
         return;
       }
 
@@ -3779,36 +3818,35 @@ export class CentralizedKernelWorker {
       const { pipeIndices, acceptIndices } =
         this.resolvePollReadinessIndices(channel.pid, origArgs);
 
-      // For finite timeout, track the deadline so we return 0 (timeout) when it
-      // expires instead of retrying forever. The nfds=0 case (pure sleep) is
-      // optimized to skip retries entirely — just wait for the deadline.
+      // The nfds=0 case (pure sleep) is optimized to skip safety retries and
+      // wait for the remaining time to the same absolute deadline.
       const nfds = origArgs[1]; // poll(fds, nfds, ...) / ppoll(fds, nfds, ...)
       if (timeoutMs > 0 && nfds === 0) {
         // Pure sleep: no fds to poll, just wait for timeout
+        const remainingMs = Math.max(1, deadline - Date.now());
         const timer = setTimeout(() => {
           this.pendingPollRetries.delete(channel.channelOffset);
           if (this.processes.has(channel.pid)) {
-            this.completeChannel(channel, syscallNr, origArgs, SYSCALL_ARGS[syscallNr], 0, 0);
+            this.finalizePollTimeout(channel);
           }
-        }, timeoutMs);
+        }, remainingMs);
         this.pendingPollRetries.set(channel.channelOffset, {
           timer,
           channel,
           pipeIndices,
           acceptIndices,
           needsSignalSafeWake,
-          deadline: Date.now() + timeoutMs,
+          deadline,
         });
         return;
       }
 
-      const deadline = timeoutMs > 0 ? Date.now() + timeoutMs : -1;
       const retryFn = () => {
         this.pendingPollRetries.delete(channel.channelOffset);
         if (!this.processes.has(channel.pid)) return;
         // Check deadline for finite timeout
         if (deadline > 0 && Date.now() >= deadline) {
-          this.completeChannel(channel, syscallNr, origArgs, SYSCALL_ARGS[syscallNr], 0, 0);
+          this.finalizePollTimeout(channel);
           return;
         }
         this.retrySyscall(channel);

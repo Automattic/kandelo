@@ -214,7 +214,10 @@ Finite `poll()`/`ppoll()` and `select()`/`pselect6()` waits retain one deadline
 from the first attempt. Targeted pipe wakeups, safety retries, and other host
 retry cycles use the remaining duration; they do not start the caller's timeout
 again. This keeps unrelated host activity from extending a finite wait
-indefinitely.
+indefinitely. Except for a descriptor-free `select()` used only as a sleep,
+expiry is finalized by one zero-timeout kernel pass. That pass clears readiness
+outputs and restores any temporary `ppoll()`/`pselect6()` signal mask before
+the host completes the channel.
 
 ## Multi-Process Model
 

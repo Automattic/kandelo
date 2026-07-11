@@ -15719,6 +15719,41 @@ mod tests {
     }
 
     #[test]
+    fn test_ppoll_zero_timeout_clears_revents_and_restores_mask() {
+        use wasm_posix_shared::poll::POLLIN;
+
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        host.host_fd_revents = Some(0);
+        let rfd = add_fallback_pipe_fd(&mut proc, 0, O_RDONLY);
+        let mut fds = [WasmPollFd {
+            fd: rfd,
+            events: POLLIN,
+            revents: POLLIN,
+        }];
+        let original_mask = crate::signal::sig_bit(2);
+        let temporary_mask = crate::signal::sig_bit(3);
+        proc.signals.blocked = original_mask;
+
+        assert_eq!(
+            sys_ppoll(
+                &mut proc,
+                &mut host,
+                &mut fds,
+                0,
+                Some(temporary_mask),
+            ),
+            Ok(0),
+        );
+        assert_eq!(fds[0].revents, 0);
+        assert_eq!(proc.signals.blocked, original_mask);
+        assert_eq!(
+            proc.sigsuspend_saved_mask_for(crate::process_table::current_tid()),
+            None,
+        );
+    }
+
+    #[test]
     fn test_host_pipe_epipe_raises_sigpipe() {
         let mut proc = Process::new(1);
         let mut host = MockHostIO::new();
