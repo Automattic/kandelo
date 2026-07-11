@@ -1706,6 +1706,14 @@ fn check_access_for_ids(uid: u32, gid: u32, st: &WasmStat, amode: u32) -> Result
     }
 }
 
+/// `PATH_MAX` includes the terminating NUL; caller pathnames and bounded
+/// symlink substitutions may therefore contain at most 4095 bytes. Internal
+/// canonical paths may be longer when resolving a short relative pathname
+/// from a deep CWD. Component limits are byte limits as required by the guest
+/// ABI, not JavaScript UTF-16 code-unit limits in a host backend.
+const NAMESPACE_PATH_MAX: usize = 4096;
+const NAMESPACE_NAME_MAX: usize = 255;
+
 #[derive(Clone, Copy)]
 struct PathResolveOptions {
     follow_final_symlink: bool,
@@ -1836,7 +1844,7 @@ fn namespace_readlink_raw(
     host: &mut dyn HostIO,
     path: &[u8],
 ) -> Result<Vec<u8>, Errno> {
-    let mut target = alloc::vec![0u8; 4096];
+    let mut target = alloc::vec![0u8; NAMESPACE_PATH_MAX];
     let len = if let Some(entry) = crate::procfs::match_procfs(path, proc.pid) {
         crate::procfs::validate_entry(proc, &entry)?;
         if !entry.is_symlink() {
@@ -1846,6 +1854,9 @@ fn namespace_readlink_raw(
     } else {
         host.host_readlink(path, &mut target)?
     };
+    if len >= NAMESPACE_PATH_MAX {
+        return Err(Errno::ENAMETOOLONG);
+    }
     target.truncate(len);
     if target.is_empty() {
         return Err(Errno::ENOENT);
@@ -1871,6 +1882,19 @@ fn pop_path_component(path: &mut Vec<u8>) {
     }
 }
 
+fn substituted_path_len(target: &[u8], pending: &VecDeque<Vec<u8>>) -> Option<usize> {
+    let mut len = target.len();
+    let mut needs_separator = target.last() != Some(&b'/');
+    for component in pending {
+        if needs_separator {
+            len = len.checked_add(1)?;
+        }
+        len = len.checked_add(component.len())?;
+        needs_separator = true;
+    }
+    Some(len)
+}
+
 /// Resolve a pathname through Kandelo's global namespace one component at a
 /// time. Backends only receive canonical candidates, so `..` can cross mount
 /// roots and symlink targets can cross mounts without being trapped in the
@@ -1885,6 +1909,9 @@ fn resolve_namespace_path_from(
     if path.is_empty() {
         return Err(Errno::ENOENT);
     }
+    if path.len() >= NAMESPACE_PATH_MAX {
+        return Err(Errno::ENAMETOOLONG);
+    }
 
     let absolute = crate::path::make_absolute(path, base);
     if absolute.first() != Some(&b'/') {
@@ -1897,6 +1924,12 @@ fn resolve_namespace_path_from(
         .filter(|component| !component.is_empty())
         .map(|component| component.to_vec())
         .collect();
+    if pending
+        .iter()
+        .any(|component| component.len() > NAMESPACE_NAME_MAX)
+    {
+        return Err(Errno::ENAMETOOLONG);
+    }
     if pending.back().map(Vec::as_slice) == Some(b".")
         || pending.back().map(Vec::as_slice) == Some(b"..")
     {
@@ -1979,7 +2012,6 @@ fn resolve_namespace_path_from(
                 final_stat = Some(namespace_lstat_raw(proc, host, &resolved)?);
                 continue;
             }
-            let target = namespace_readlink_raw(proc, host, &candidate)?;
             // `/proc/<pid>/fd/N` is a Linux-style magic link whose OFD may not
             // have a traversable pathname at all (pipe, socket, memfd, ...).
             // Preserve final fd-link metadata for procfs handling instead of
@@ -1996,6 +2028,13 @@ fn resolve_namespace_path_from(
                 final_stat = Some(stat);
                 continue;
             }
+            let target = namespace_readlink_raw(proc, host, &candidate)?;
+            if substituted_path_len(&target, &pending)
+                .ok_or(Errno::ENAMETOOLONG)?
+                >= NAMESPACE_PATH_MAX
+            {
+                return Err(Errno::ENAMETOOLONG);
+            }
             let had_remainder = !pending.is_empty();
             if !had_remainder && target.len() > 1 && target.last() == Some(&b'/') {
                 require_directory = true;
@@ -2010,6 +2049,12 @@ fn resolve_namespace_path_from(
                 .filter(|part| !part.is_empty())
                 .map(|part| part.to_vec())
                 .collect();
+            if target_components
+                .iter()
+                .any(|component| component.len() > NAMESPACE_NAME_MAX)
+            {
+                return Err(Errno::ENAMETOOLONG);
+            }
             for part in target_components.into_iter().rev() {
                 pending.push_front(part);
             }
@@ -12282,32 +12327,201 @@ pub fn sys_sysconf(name: i32) -> Result<i64, Errno> {
     }
 }
 
-/// pathconf -- get configurable pathname variable values.
-///
-/// Returns POSIX-required compile-time constants for the given name.
-/// The path is not validated (we return the same values regardless).
-pub fn sys_pathconf(_path: &[u8], name: i32) -> Result<i64, Errno> {
-    pathconf_value(name)
+fn validate_pathconf_name(name: i32) -> Result<(), Errno> {
+    if wasm_posix_shared::pathconf::ABI_NAMES
+        .iter()
+        .any(|(_, value)| *value == name)
+    {
+        Ok(())
+    } else {
+        Err(Errno::EINVAL)
+    }
 }
 
-/// fpathconf -- get configurable pathname variable values for an open fd.
-pub fn sys_fpathconf(proc: &Process, fd: i32, name: i32) -> Result<i64, Errno> {
-    let _ = proc.fd_table.get(fd)?;
-    pathconf_value(name)
-}
+fn filesystem_pathconf_value(
+    name: i32,
+    supports_symlinks: bool,
+    timestamp_resolution_ns: Option<i64>,
+) -> Result<Option<i64>, Errno> {
+    use wasm_posix_shared::pathconf as pc;
 
-fn pathconf_value(name: i32) -> Result<i64, Errno> {
     match name {
-        1 => Ok(14),   // _PC_LINK_MAX
-        2 => Ok(13),   // _PC_MAX_CANON
-        3 => Ok(255),  // _PC_MAX_INPUT
-        4 => Ok(255),  // _PC_NAME_MAX
-        5 => Ok(4096), // _PC_PATH_MAX
-        6 => Ok(4096), // _PC_PIPE_BUF
-        7 => Ok(1),    // _PC_CHOWN_RESTRICTED
-        8 => Ok(1),    // _PC_NO_TRUNC
-        9 => Ok(0),    // _PC_VDISABLE
+        pc::LINK_MAX => Ok(None),
+        pc::NAME_MAX => Ok(Some(NAMESPACE_NAME_MAX as i64)),
+        pc::PATH_MAX => Ok(Some(NAMESPACE_PATH_MAX as i64)),
+        // Authorization is enforced by the kernel for every namespace
+        // backend, including backends without persistent ownership metadata.
+        pc::CHOWN_RESTRICTED => Ok(Some(1)),
+        pc::NO_TRUNC => Ok(Some(1)),
+        pc::SYNC_IO
+        | pc::PRIO_IO
+        | pc::FILESIZEBITS
+        | pc::REC_INCR_XFER_SIZE
+        | pc::REC_MAX_XFER_SIZE
+        | pc::REC_MIN_XFER_SIZE
+        | pc::REC_XFER_ALIGN
+        | pc::ALLOC_SIZE_MIN
+        | pc::SYMLINK_MAX
+        | pc::FALLOC => Ok(None),
+        pc::POSIX2_SYMLINKS => Ok(supports_symlinks.then_some(1)),
+        pc::TEXTDOMAIN_MAX => Ok(Some(NAMESPACE_NAME_MAX as i64)),
+        pc::TIMESTAMP_RESOLUTION => Ok(timestamp_resolution_ns),
+        pc::MAX_CANON
+        | pc::MAX_INPUT
+        | pc::PIPE_BUF
+        | pc::VDISABLE
+        | pc::SOCK_MAXBUF
+        | pc::ASYNC_IO => Err(Errno::EINVAL),
         _ => Err(Errno::EINVAL),
+    }
+}
+
+fn terminal_pathconf_value(name: i32) -> Result<Option<i64>, Errno> {
+    use wasm_posix_shared::pathconf as pc;
+
+    match name {
+        pc::MAX_CANON | pc::MAX_INPUT => Ok(None),
+        pc::VDISABLE => Ok(Some(0)),
+        _ => virtual_filesystem_pathconf_value(name),
+    }
+}
+
+fn virtual_filesystem_pathconf_value(name: i32) -> Result<Option<i64>, Errno> {
+    filesystem_pathconf_value(name, false, None)
+}
+
+/// `pathconf` validates and follows the pathname through the global namespace,
+/// then asks the selected backend for values that depend on that filesystem.
+/// `None` is a successful indeterminate/unsupported-option result and must be
+/// returned to libc as `-1` without changing errno.
+pub fn sys_pathconf(
+    proc: &Process,
+    host: &mut dyn HostIO,
+    path: &[u8],
+    name: i32,
+) -> Result<Option<i64>, Errno> {
+    validate_pathconf_name(name)?;
+    let resolved_entry = resolve_namespace_path(proc, host, path, PathResolveOptions::FOLLOW)?;
+    if name == wasm_posix_shared::pathconf::ASYNC_IO
+        && resolved_entry
+            .stat
+            .is_some_and(|stat| stat.st_mode & S_IFMT == S_IFREG)
+    {
+        // Kandelo's musl implements AIO through guest pthreads over the same
+        // pread/pwrite/fsync path on every host backend.
+        return Ok(Some(1));
+    }
+    let resolved = resolved_entry.path;
+
+    if let Some(fd) = match_dev_fd(&resolved) {
+        return sys_fpathconf(proc, host, fd, name);
+    }
+    if let Some(crate::procfs::ProcfsEntry::FdLink(pid, fd)) =
+        crate::procfs::match_procfs(&resolved, proc.pid)
+    {
+        if pid == proc.pid {
+            return sys_fpathconf(proc, host, fd, name);
+        }
+    }
+
+    if resolved == b"/dev/tty" {
+        let controlling_fd = proc
+            .fd_table
+            .iter()
+            .find_map(|(fd, entry)| {
+                proc.ofd_table
+                    .get(entry.ofd_ref.0)
+                    .is_some_and(|ofd| ofd.file_type == FileType::PtySlave)
+                    .then_some(fd)
+            })
+            .or_else(|| proc.fd_table.get(0).ok().map(|_| 0));
+        return controlling_fd
+            .ok_or(Errno::ENXIO)
+            .and_then(|fd| sys_fpathconf(proc, host, fd, name));
+    }
+    if resolved == b"/dev/ptmx" || resolved.starts_with(b"/dev/pts/") {
+        return terminal_pathconf_value(name);
+    }
+    if is_procfs_namespace_path(&resolved)
+        || (is_devfs_namespace_path(&resolved) && !is_host_backed_devfs_path(&resolved))
+    {
+        return virtual_filesystem_pathconf_value(name);
+    }
+    if synthetic_file_content(&resolved).is_some() {
+        return host.host_pathconf(b"/", name);
+    }
+
+    host.host_pathconf(&resolved, name)
+}
+
+/// `fpathconf` uses the live OFD/backend identity. It never re-resolves the
+/// remembered pathname, so an open file remains queryable after rename or
+/// unlink.
+pub fn sys_fpathconf(
+    proc: &Process,
+    host: &mut dyn HostIO,
+    fd: i32,
+    name: i32,
+) -> Result<Option<i64>, Errno> {
+    use wasm_posix_shared::pathconf as pc;
+
+    validate_pathconf_name(name)?;
+    let entry = proc.fd_table.get(fd)?;
+    let ofd = proc.ofd_table.get(entry.ofd_ref.0).ok_or(Errno::EBADF)?;
+    let file_type = ofd.file_type;
+    let host_handle = ofd.host_handle;
+    let path = ofd.path.clone();
+
+    if name == pc::ASYNC_IO
+        && (file_type == FileType::MemFd
+            || (file_type == FileType::Regular && host_handle < 0))
+    {
+        return Ok(Some(1));
+    }
+
+    if synthetic_file_content(&path).is_some() {
+        // Synthetic dynamic files live in the root mount's namespace even
+        // though they have no host handle of their own. Match pathconf and
+        // the existing statfs/fstatfs policy by querying the root backend.
+        return host.host_pathconf(b"/", name);
+    }
+
+    match file_type {
+        FileType::Pipe => {
+            if name == pc::PIPE_BUF {
+                return Ok((host_handle < 0).then_some(crate::pipe::PIPE_BUF as i64));
+            }
+            Err(Errno::EINVAL)
+        }
+        FileType::PtyMaster | FileType::PtySlave => terminal_pathconf_value(name),
+        FileType::Socket => {
+            if name == pc::SOCK_MAXBUF {
+                // Socket buffering varies across in-kernel and host/browser
+                // backends; no authoritative maximum is enforced globally.
+                Ok(None)
+            } else {
+                Err(Errno::EINVAL)
+            }
+        }
+        FileType::MemFd => filesystem_pathconf_value(name, false, None),
+        FileType::Regular | FileType::Directory | FileType::CharDevice => {
+            if file_type == FileType::CharDevice
+                && matches!(path.as_slice(), b"/dev/stdin" | b"/dev/stdout" | b"/dev/stderr")
+            {
+                terminal_pathconf_value(name)
+            } else if is_procfs_namespace_path(&path)
+                || (is_devfs_namespace_path(&path) && !is_host_backed_devfs_path(&path))
+            {
+                virtual_filesystem_pathconf_value(name)
+            } else if host_handle >= 0 {
+                host.host_fpathconf(host_handle, name)
+            } else {
+                virtual_filesystem_pathconf_value(name)
+            }
+        }
+        FileType::EventFd | FileType::Epoll | FileType::TimerFd | FileType::SignalFd => {
+            Err(Errno::EINVAL)
+        }
     }
 }
 
@@ -13498,6 +13712,10 @@ mod tests {
         seek_end: i64,
         seek_calls: Vec<(i64, i64, u32)>,
         stat_size: u64,
+        pathconf_result: Result<Option<i64>, Errno>,
+        fpathconf_result: Result<Option<i64>, Errno>,
+        pathconf_calls: Vec<(Vec<u8>, i32)>,
+        fpathconf_calls: Vec<(i64, i32)>,
     }
 
     impl MockHostIO {
@@ -13537,6 +13755,10 @@ mod tests {
                 seek_end: 0,
                 seek_calls: Vec::new(),
                 stat_size: 1024,
+                pathconf_result: Ok(Some(255)),
+                fpathconf_result: Ok(Some(4096)),
+                pathconf_calls: Vec::new(),
+                fpathconf_calls: Vec::new(),
             }
         }
 
@@ -13725,6 +13947,20 @@ mod tests {
                 .get(path)
                 .copied()
                 .unwrap_or_else(default_statfs))
+        }
+
+        fn host_pathconf(&mut self, path: &[u8], name: i32) -> Result<Option<i64>, Errno> {
+            self.pathconf_calls.push((path.to_vec(), name));
+            self.pathconf_result
+        }
+
+        fn host_fpathconf(
+            &mut self,
+            handle: i64,
+            name: i32,
+        ) -> Result<Option<i64>, Errno> {
+            self.fpathconf_calls.push((handle, name));
+            self.fpathconf_result
         }
 
         fn host_mkdir(&mut self, path: &[u8], mode: u32) -> Result<(), Errno> {
@@ -19652,32 +19888,391 @@ mod tests {
 
     // ---- pathconf/fpathconf tests ----
 
-    #[test]
-    fn test_pathconf_name_max() {
-        assert_eq!(sys_pathconf(b"/tmp/foo", 4), Ok(255)); // _PC_NAME_MAX
+    fn namespace_boundary_path(final_component_len: usize, final_is_dir: bool) -> Vec<u8> {
+        let mut path = vec![b'/'];
+        for index in 0..15 {
+            if index > 0 {
+                path.push(b'/');
+            }
+            path.extend(std::iter::repeat_n(b'd', 252));
+            path.extend_from_slice(b"dir");
+        }
+        path.push(b'/');
+        if final_is_dir {
+            path.extend(std::iter::repeat_n(b'd', final_component_len - 3));
+            path.extend_from_slice(b"dir");
+        } else {
+            path.extend(std::iter::repeat_n(b'f', final_component_len));
+        }
+        path
     }
 
     #[test]
-    fn test_pathconf_pipe_buf() {
-        assert_eq!(sys_pathconf(b"/tmp/foo", 6), Ok(4096)); // _PC_PIPE_BUF
-    }
+    fn test_pathconf_delegates_resolved_path_and_value() {
+        use wasm_posix_shared::pathconf as pc;
 
-    #[test]
-    fn test_pathconf_invalid_name() {
-        assert_eq!(sys_pathconf(b"/tmp/foo", 999), Err(Errno::EINVAL));
-    }
-
-    #[test]
-    fn test_fpathconf_valid_fd() {
         let proc = Process::new(1);
-        // fd 0 is pre-opened (stdin)
-        assert_eq!(sys_fpathconf(&proc, 0, 5), Ok(4096)); // _PC_PATH_MAX
+        let mut host = MockHostIO::new();
+        host.pathconf_result = Ok(Some(123));
+
+        assert_eq!(
+            sys_pathconf(&proc, &mut host, b"/tmp/foo", pc::NAME_MAX),
+            Ok(Some(123))
+        );
+        assert_eq!(host.pathconf_calls, vec![(b"/tmp/foo".to_vec(), pc::NAME_MAX)]);
     }
 
     #[test]
-    fn test_fpathconf_invalid_fd() {
+    fn test_pathconf_preserves_indeterminate_result() {
+        use wasm_posix_shared::pathconf as pc;
+
         let proc = Process::new(1);
-        assert_eq!(sys_fpathconf(&proc, 99, 5), Err(Errno::EBADF));
+        let mut host = MockHostIO::new();
+        host.pathconf_result = Ok(None);
+
+        assert_eq!(
+            sys_pathconf(&proc, &mut host, b"/tmp/foo", pc::LINK_MAX),
+            Ok(None)
+        );
+    }
+
+    #[test]
+    fn test_pathconf_async_io_is_supported_for_regular_files_only() {
+        use wasm_posix_shared::pathconf as pc;
+
+        let proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        assert_eq!(
+            sys_pathconf(&proc, &mut host, b"/tmp/foo", pc::ASYNC_IO),
+            Ok(Some(1))
+        );
+        assert!(host.pathconf_calls.is_empty());
+
+        host.pathconf_result = Err(Errno::EINVAL);
+        assert_eq!(
+            sys_pathconf(&proc, &mut host, b"/tmp", pc::ASYNC_IO),
+            Err(Errno::EINVAL)
+        );
+    }
+
+    #[test]
+    fn test_pathconf_validates_name_before_path() {
+        let proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        host.set_missing_path(b"/missing");
+
+        assert_eq!(
+            sys_pathconf(&proc, &mut host, b"/missing", 999),
+            Err(Errno::EINVAL)
+        );
+        assert!(host.pathconf_calls.is_empty());
+    }
+
+    #[test]
+    fn test_pathconf_reports_missing_path() {
+        use wasm_posix_shared::pathconf as pc;
+
+        let proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        host.set_missing_path(b"/missing");
+
+        assert_eq!(
+            sys_pathconf(&proc, &mut host, b"/missing", pc::PATH_MAX),
+            Err(Errno::ENOENT)
+        );
+        assert!(host.pathconf_calls.is_empty());
+    }
+
+    #[test]
+    fn test_namespace_component_limit_is_enforced_in_bytes() {
+        use wasm_posix_shared::pathconf as pc;
+
+        let proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        let mut accepted = vec![b'/'];
+        accepted.extend(std::iter::repeat_n(b'a', 255));
+        assert_eq!(
+            sys_pathconf(&proc, &mut host, &accepted, pc::NAME_MAX),
+            Ok(Some(255))
+        );
+
+        let mut rejected = vec![b'/'];
+        rejected.extend(std::iter::repeat_n(b'a', 256));
+        assert_eq!(
+            sys_pathconf(&proc, &mut host, &rejected, pc::NAME_MAX),
+            Err(Errno::ENAMETOOLONG)
+        );
+
+        let mut utf8 = vec![b'/'];
+        for _ in 0..128 {
+            utf8.extend_from_slice("é".as_bytes());
+        }
+        assert_eq!(
+            sys_pathconf(&proc, &mut host, &utf8, pc::NAME_MAX),
+            Err(Errno::ENAMETOOLONG)
+        );
+    }
+
+    #[test]
+    fn test_namespace_path_limit_includes_terminating_nul() {
+        use wasm_posix_shared::pathconf as pc;
+
+        let proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        host.pathconf_result = Ok(Some(NAMESPACE_PATH_MAX as i64));
+        let accepted = namespace_boundary_path(254, false);
+        assert_eq!(accepted.len(), 4095);
+        assert_eq!(
+            sys_pathconf(&proc, &mut host, &accepted, pc::PATH_MAX),
+            Ok(Some(NAMESPACE_PATH_MAX as i64))
+        );
+
+        let rejected = namespace_boundary_path(255, false);
+        assert_eq!(rejected.len(), 4096);
+        assert_eq!(
+            sys_pathconf(&proc, &mut host, &rejected, pc::PATH_MAX),
+            Err(Errno::ENAMETOOLONG)
+        );
+    }
+
+    #[test]
+    fn test_namespace_rejects_symlink_expansion_past_path_max() {
+        use wasm_posix_shared::pathconf as pc;
+
+        let proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        let long_directory = namespace_boundary_path(254, true);
+        assert_eq!(long_directory.len(), 4095);
+        host.set_symlink(b"/link", &long_directory);
+        assert_eq!(
+            sys_pathconf(&proc, &mut host, b"/link/child", pc::PATH_MAX),
+            Err(Errno::ENAMETOOLONG)
+        );
+    }
+
+    #[test]
+    fn test_namespace_allows_short_relative_path_from_deep_cwd() {
+        use wasm_posix_shared::pathconf as pc;
+
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        host.pathconf_result = Ok(Some(NAMESPACE_PATH_MAX as i64));
+        proc.cwd = namespace_boundary_path(254, true);
+        assert_eq!(proc.cwd.len(), 4095);
+
+        assert_eq!(
+            sys_pathconf(&proc, &mut host, b".", pc::PATH_MAX),
+            Ok(Some(NAMESPACE_PATH_MAX as i64))
+        );
+        let mut child = proc.cwd.clone();
+        child.extend_from_slice(b"/child");
+        assert_eq!(
+            sys_pathconf(&proc, &mut host, b"child", pc::PATH_MAX),
+            Ok(Some(NAMESPACE_PATH_MAX as i64))
+        );
+        assert_eq!(
+            host.pathconf_calls,
+            vec![
+                (proc.cwd.clone(), pc::PATH_MAX),
+                (child, pc::PATH_MAX),
+            ]
+        );
+    }
+
+    #[test]
+    fn test_fpathconf_uses_live_host_handle_after_path_disappears() {
+        use wasm_posix_shared::pathconf as pc;
+
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        let fd = sys_open(&mut proc, &mut host, b"/tmp/foo", O_RDONLY, 0).unwrap();
+        host.set_missing_path(b"/tmp/foo");
+        host.fpathconf_result = Ok(Some(4096));
+
+        assert_eq!(
+            sys_fpathconf(&proc, &mut host, fd, pc::PATH_MAX),
+            Ok(Some(4096))
+        );
+        assert_eq!(host.fpathconf_calls, vec![(100, pc::PATH_MAX)]);
+        assert!(host.pathconf_calls.is_empty());
+    }
+
+    #[test]
+    fn test_fpathconf_invalid_fd_does_not_call_host() {
+        use wasm_posix_shared::pathconf as pc;
+
+        let proc = Process::new(1);
+        let mut host = MockHostIO::new();
+
+        assert_eq!(
+            sys_fpathconf(&proc, &mut host, 99, pc::PATH_MAX),
+            Err(Errno::EBADF)
+        );
+        assert!(host.fpathconf_calls.is_empty());
+    }
+
+    #[test]
+    fn test_fpathconf_kernel_pipe_reports_pipe_buf_without_host() {
+        use wasm_posix_shared::pathconf as pc;
+
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        let (read_fd, _) = sys_pipe(&mut proc).unwrap();
+
+        assert_eq!(
+            sys_fpathconf(&proc, &mut host, read_fd, pc::PIPE_BUF),
+            Ok(Some(crate::pipe::PIPE_BUF as i64))
+        );
+        assert!(host.fpathconf_calls.is_empty());
+    }
+
+    #[test]
+    fn test_fpathconf_host_pipe_leaves_pipe_buf_indeterminate() {
+        use wasm_posix_shared::pathconf as pc;
+
+        let proc = Process::new(1);
+        let mut host = MockHostIO::new();
+
+        assert_eq!(
+            sys_fpathconf(&proc, &mut host, 0, pc::PIPE_BUF),
+            Ok(None)
+        );
+        assert!(host.fpathconf_calls.is_empty());
+    }
+
+    #[test]
+    fn test_fpathconf_async_io_regular_and_memfd_support() {
+        use wasm_posix_shared::pathconf as pc;
+
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        host.fpathconf_result = Ok(Some(1));
+        let regular = sys_open(&mut proc, &mut host, b"/tmp/foo", O_RDONLY, 0).unwrap();
+        let memfd = sys_memfd_create(&mut proc, b"pathconf", 0).unwrap();
+        let (pipe, _) = sys_pipe(&mut proc).unwrap();
+
+        assert_eq!(
+            sys_fpathconf(&proc, &mut host, regular, pc::ASYNC_IO),
+            Ok(Some(1))
+        );
+        assert_eq!(
+            sys_fpathconf(&proc, &mut host, memfd, pc::ASYNC_IO),
+            Ok(Some(1))
+        );
+        assert_eq!(
+            sys_fpathconf(&proc, &mut host, pipe, pc::ASYNC_IO),
+            Err(Errno::EINVAL)
+        );
+        assert_eq!(host.fpathconf_calls, vec![(100, pc::ASYNC_IO)]);
+    }
+
+    #[test]
+    fn test_fpathconf_terminal_stdio_reports_terminal_and_namespace_values() {
+        use wasm_posix_shared::pathconf as pc;
+
+        let proc = terminal_process(1);
+        let mut host = MockHostIO::new();
+
+        assert_eq!(
+            sys_fpathconf(&proc, &mut host, 0, pc::MAX_CANON),
+            Ok(None)
+        );
+        assert_eq!(
+            sys_fpathconf(&proc, &mut host, 0, pc::VDISABLE),
+            Ok(Some(0))
+        );
+        assert_eq!(
+            sys_fpathconf(&proc, &mut host, 0, pc::PATH_MAX),
+            Ok(Some(NAMESPACE_PATH_MAX as i64))
+        );
+        assert!(host.fpathconf_calls.is_empty());
+    }
+
+    #[test]
+    fn test_pathconf_dev_stdin_uses_terminal_ofd() {
+        use wasm_posix_shared::pathconf as pc;
+
+        let proc = terminal_process(1);
+        let mut host = MockHostIO::new();
+
+        assert_eq!(
+            sys_pathconf(&proc, &mut host, b"/dev/stdin", pc::VDISABLE),
+            Ok(Some(0))
+        );
+        assert!(host.pathconf_calls.is_empty());
+    }
+
+    #[test]
+    fn test_pathconf_dev_tty_matches_controlling_stdio_kind() {
+        use wasm_posix_shared::pathconf as pc;
+
+        let captured = Process::new(1);
+        let mut captured_host = MockHostIO::new();
+        assert_eq!(
+            sys_pathconf(&captured, &mut captured_host, b"/dev/tty", pc::PIPE_BUF),
+            Ok(None)
+        );
+        assert_eq!(
+            sys_pathconf(&captured, &mut captured_host, b"/dev/tty", pc::VDISABLE),
+            Err(Errno::EINVAL)
+        );
+
+        let terminal = terminal_process(2);
+        let mut terminal_host = MockHostIO::new();
+        assert_eq!(
+            sys_pathconf(&terminal, &mut terminal_host, b"/dev/tty", pc::VDISABLE),
+            Ok(Some(0))
+        );
+    }
+
+    #[test]
+    fn test_fpathconf_socket_buffer_limit_is_indeterminate() {
+        use wasm_posix_shared::pathconf as pc;
+        use wasm_posix_shared::socket::{AF_UNIX, SOCK_STREAM};
+
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        let (fd, _) = sys_socketpair(&mut proc, &mut host, AF_UNIX, SOCK_STREAM, 0).unwrap();
+
+        assert_eq!(
+            sys_fpathconf(&proc, &mut host, fd, pc::SOCK_MAXBUF),
+            Ok(None)
+        );
+        assert!(host.fpathconf_calls.is_empty());
+    }
+
+    #[test]
+    fn test_synthetic_pathconf_and_fpathconf_use_root_backend() {
+        use wasm_posix_shared::pathconf as pc;
+
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        host.pathconf_result = Ok(Some(777));
+
+        assert_eq!(
+            sys_pathconf(&proc, &mut host, b"/etc/mtab", pc::PATH_MAX),
+            Ok(Some(777))
+        );
+        let fd = sys_open(&mut proc, &mut host, b"/etc/mtab", O_RDONLY, 0).unwrap();
+        assert_eq!(
+            sys_fpathconf(&proc, &mut host, fd, pc::PATH_MAX),
+            Ok(Some(777))
+        );
+        assert_eq!(
+            host.pathconf_calls,
+            vec![(b"/".to_vec(), pc::PATH_MAX), (b"/".to_vec(), pc::PATH_MAX)]
+        );
+        assert!(host.fpathconf_calls.is_empty());
+    }
+
+    #[test]
+    fn test_pathconf_name_table_is_complete_and_unique() {
+        let mut values = std::collections::HashSet::new();
+        for &(_, value) in wasm_posix_shared::pathconf::ABI_NAMES {
+            assert!(validate_pathconf_name(value).is_ok());
+            assert!(values.insert(value), "duplicate pathconf value {value}");
+        }
+        assert_eq!(values.len(), 24);
     }
 
     // ---- getsockname/getpeername tests ----

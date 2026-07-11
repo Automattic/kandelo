@@ -996,16 +996,18 @@ static long __do_syscall(long n, long a1, long a2, long a3,
     case SYS_SYSCONF:
         return (long)kernel_sysconf((int32_t)a1);
 
-    /* pathconf — (path, name) */
+    /* pathconf — (path, name, int64_t *value) */
     case SYS_PATHCONF: {
         const char *p = (const char *)(uintptr_t)a1;
         return (long)kernel_pathconf((const uint8_t *)p, slen(p),
-                                     (int32_t)a2);
+                                     (int32_t)a2,
+                                     (int64_t *)(uintptr_t)a3);
     }
 
-    /* fpathconf — (fd, name) */
+    /* fpathconf — (fd, name, int64_t *value) */
     case SYS_FPATHCONF:
-        return (long)kernel_fpathconf((int32_t)a1, (int32_t)a2);
+        return (long)kernel_fpathconf((int32_t)a1, (int32_t)a2,
+                                      (int64_t *)(uintptr_t)a3);
 
     /* realpath — (path, buf, buflen) */
     case SYS_REALPATH: {

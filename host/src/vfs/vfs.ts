@@ -1,4 +1,10 @@
-import type { NetworkIO, PlatformIO, StatResult, StatfsResult } from "../types";
+import type {
+  NetworkIO,
+  PathconfValue,
+  PlatformIO,
+  StatResult,
+  StatfsResult,
+} from "../types";
 import type { FileSystemBackend, MountConfig, TimeProvider } from "./types";
 
 interface MountEntry {
@@ -158,6 +164,11 @@ export class VirtualPlatformIO implements PlatformIO {
     return info.backend.fstat(info.localHandle);
   }
 
+  fpathconf(handle: number, name: number): PathconfValue {
+    const info = this.getFileHandle(handle);
+    return info.backend.fpathconf(info.localHandle, name);
+  }
+
   ftruncate(handle: number, length: number): void {
     const info = this.getFileHandle(handle);
     info.backend.ftruncate(info.localHandle, length);
@@ -193,6 +204,11 @@ export class VirtualPlatformIO implements PlatformIO {
   statfs(path: string): StatfsResult {
     const { backend, relativePath } = this.resolve(path);
     return backend.statfs(relativePath);
+  }
+
+  pathconf(path: string, name: number): PathconfValue {
+    const { backend, relativePath } = this.resolve(path);
+    return backend.pathconf(relativePath, name);
   }
 
   mkdir(path: string, mode: number): void {

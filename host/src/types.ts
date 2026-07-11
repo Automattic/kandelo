@@ -40,6 +40,9 @@ export interface StatfsResult {
   flags: number;
 }
 
+/** `null` represents a successful indeterminate/unsupported-option result. */
+export type PathconfValue = number | null;
+
 export interface PlatformIO {
   open(path: string, flags: number, mode: number): number;
   close(handle: number): number;
@@ -57,6 +60,7 @@ export interface PlatformIO {
   ): number;
   seek(handle: number, offset: number, whence: number): number;
   fstat(handle: number): StatResult;
+  fpathconf(handle: number, name: number): PathconfValue;
 
   /**
    * Qualify a filesystem-reported inode within this PlatformIO instance.
@@ -73,6 +77,7 @@ export interface PlatformIO {
   stat(path: string): StatResult;
   lstat(path: string): StatResult;
   statfs(path: string): StatfsResult;
+  pathconf(path: string, name: number): PathconfValue;
   mkdir(path: string, mode: number): void;
   rmdir(path: string): void;
   unlink(path: string): void;

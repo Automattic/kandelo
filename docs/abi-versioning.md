@@ -24,7 +24,8 @@ kernel. Specifically, any of the following requires an `ABI_VERSION` bump:
 - Removing, renaming, or reassigning a syscall number.
 - Changing an existing syscall argument descriptor used by the host for
   pointer marshalling, including direction, size source, multipliers,
-  fixed byte lengths, pointer nullability, or return-value copy adjustments.
+  fixed byte lengths, pointer nullability/requiredness, or return-value copy
+  adjustments.
 - Changing the channel header layout (field offsets or sizes in
   [`crates/shared/src/lib.rs`](../crates/shared/src/lib.rs)
   `channel` module).
@@ -43,6 +44,9 @@ kernel. Specifically, any of the following requires an `ABI_VERSION` bump:
   including the wasm32 cancellation-point `__syscall_cp` path. These are not
   currently visible in the structural snapshot, but stale objects and archives
   can otherwise link with incompatible Wasm function signatures.
+- Adding or changing a required kernel-Wasm host import. Kernel imports are not
+  yet present in the structural snapshot, so reviewers must track this surface
+  explicitly and coordinate the host implementation in the same ABI epoch.
 - Changing the name, version, encoding, or role semantics of the
   `kandelo.wpk_fork.capabilities` custom section. The host uses these claims to
   decide whether a main/side-module pair can safely coordinate fork replay.
@@ -114,8 +118,10 @@ captures:
   the core enum.
 - `syscall_arg_descriptors` — host marshalling descriptors for pointer
   arguments, including direction, size source, size multipliers/additions,
-  fixed byte lengths, pointer nullability, and any return-value-based
-  copy-back adjustment.
+  fixed byte lengths, pointer nullability/requiredness, and any
+  return-value-based copy-back adjustment.
+- `pathconf_names` — the shared numeric `_PC_*` vocabulary consumed by the
+  kernel, generated host bindings, and libc wrappers.
 - `host_adapter` — Rust-owned boot manifest metadata consumed by host
   adapters: manifest layout, host adapter protocol version, required
   worker feature bits, and required/optional kernel exports.
