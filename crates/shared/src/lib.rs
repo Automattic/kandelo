@@ -636,6 +636,7 @@ pub mod socket {
     pub const IPV6_TCLASS: u32 = 67;
     pub const MSG_OOB: u32 = 1;
     pub const MSG_PEEK: u32 = 2;
+    pub const MSG_TRUNC: u32 = 0x20;
     pub const MSG_DONTWAIT: u32 = 64;
     pub const MSG_NOSIGNAL: u32 = 0x4000;
 }
