@@ -251,21 +251,24 @@ pub(crate) fn maybe_release_fb0(pid: u32) {
     );
 }
 
+/// True iff `proc` still has an open fd referencing `device`.
+///
+/// Iterate the authoritative fd table rather than assuming the default
+/// 1024-descriptor limit: `RLIMIT_NOFILE` and `F_DUPFD` can place a surviving
+/// alias at a much higher number.
+fn proc_has_virtual_device_fd(proc: &Process, device: VirtualDevice) -> bool {
+    use crate::ofd::FileType;
+    proc.fd_table.iter().any(|(_, entry)| {
+        proc.ofd_table.get(entry.ofd_ref.0).is_some_and(|ofd| {
+            ofd.file_type == FileType::CharDevice
+                && VirtualDevice::from_host_handle(ofd.host_handle) == Some(device)
+        })
+    })
+}
+
 /// True iff `proc` still has an open fd referencing `/dev/fb0`.
 fn proc_has_fb0_fd(proc: &Process) -> bool {
-    use crate::ofd::FileType;
-    for fd_i in 0..1024i32 {
-        if let Ok(entry) = proc.fd_table.get(fd_i) {
-            if let Some(ofd) = proc.ofd_table.get(entry.ofd_ref.0) {
-                if ofd.file_type == FileType::CharDevice
-                    && VirtualDevice::from_host_handle(ofd.host_handle) == Some(VirtualDevice::Fb0)
-                {
-                    return true;
-                }
-            }
-        }
-    }
-    false
+    proc_has_virtual_device_fd(proc, VirtualDevice::Fb0)
 }
 
 /// Try to claim `/dev/input/mice` for the calling process.
@@ -304,19 +307,7 @@ pub(crate) fn maybe_release_mice(pid: u32) {
 
 /// True iff `proc` still has an open fd referencing `/dev/input/mice`.
 fn proc_has_mice_fd(proc: &Process) -> bool {
-    use crate::ofd::FileType;
-    for fd_i in 0..1024i32 {
-        if let Ok(entry) = proc.fd_table.get(fd_i) {
-            if let Some(ofd) = proc.ofd_table.get(entry.ofd_ref.0) {
-                if ofd.file_type == FileType::CharDevice
-                    && VirtualDevice::from_host_handle(ofd.host_handle) == Some(VirtualDevice::Mice)
-                {
-                    return true;
-                }
-            }
-        }
-    }
-    false
+    proc_has_virtual_device_fd(proc, VirtualDevice::Mice)
 }
 
 /// Try to claim `/dev/dsp` for the calling process.
@@ -355,19 +346,7 @@ pub(crate) fn maybe_release_dsp(pid: u32) {
 
 /// True iff `proc` still has an open fd referencing `/dev/dsp`.
 fn proc_has_dsp_fd(proc: &Process) -> bool {
-    use crate::ofd::FileType;
-    for fd_i in 0..1024i32 {
-        if let Ok(entry) = proc.fd_table.get(fd_i) {
-            if let Some(ofd) = proc.ofd_table.get(entry.ofd_ref.0) {
-                if ofd.file_type == FileType::CharDevice
-                    && VirtualDevice::from_host_handle(ofd.host_handle) == Some(VirtualDevice::Dsp)
-                {
-                    return true;
-                }
-            }
-        }
-    }
-    false
+    proc_has_virtual_device_fd(proc, VirtualDevice::Dsp)
 }
 
 /// Handle ioctl on `/dev/dsp`.
@@ -680,23 +659,88 @@ fn release_process_dri_mappings(proc: &mut Process, host: &mut dyn HostIO) {
 }
 
 pub(crate) fn release_exec_image_state(proc: &mut Process, host: &mut dyn HostIO) {
-    // /dev/fb0 cleanup: exec wipes the binding. Tell the host before
-    // its memory snapshot of the process is invalidated, then drop the
-    // global ownership claim so the new image can re-acquire if it
-    // needs the device.
+    // /dev/fb0 cleanup: exec wipes the address-space binding. Tell the host
+    // before its memory snapshot is invalidated, but retain device ownership
+    // while a non-CLOEXEC fb fd remains open in this same process.
     if proc.fb_binding.is_some() {
         host.unbind_framebuffer(proc.pid as i32);
         proc.fb_binding = None;
-        maybe_release_fb0(proc.pid);
+        if !proc_has_fb0_fd(proc) {
+            maybe_release_fb0(proc.pid);
+        }
     }
-    // /dev/input/mice cleanup: exec also drops mouse ownership. The
-    // post-exec image starts with a clean queue — no stale packets from
-    // the parent program survive across exec.
-    maybe_release_mice(proc.pid);
-    // /dev/dsp cleanup: same — drop ownership and flush any queued PCM
-    // so a post-exec program doesn't hear the tail of its predecessor.
-    maybe_release_dsp(proc.pid);
+    // Mouse and DSP state belongs to their surviving open descriptions, not
+    // the discarded Wasm image. A CLOEXEC close (or the eventual last close)
+    // releases ownership and drains the corresponding queue.
     release_process_dri_mappings(proc, host);
+}
+
+/// Commit the exec-defined state transition without cloning descriptor-backed
+/// kernel objects through a wire format.
+pub(crate) fn commit_exec_state(
+    proc: &mut Process,
+    host: &mut dyn HostIO,
+    caller_tid: u32,
+) -> Result<(), Errno> {
+    if proc.state != crate::process::ProcessState::Running {
+        return Err(Errno::ESRCH);
+    }
+    if caller_tid != 0 && caller_tid != proc.pid {
+        let thread_index = proc
+            .threads
+            .iter()
+            .position(|thread| thread.tid == caller_tid)
+            .ok_or(Errno::ESRCH)?;
+        let caller = proc.threads.remove(thread_index);
+        proc.signals.promote_exec_thread(caller.signals);
+    }
+
+    let cloexec_fds: Vec<i32> = proc
+        .fd_table
+        .iter()
+        .filter(|(_, entry)| entry.fd_flags & FD_CLOEXEC != 0)
+        .map(|(fd, _)| fd)
+        .collect();
+    for fd in cloexec_fds {
+        let _ = sys_close(proc, host, fd);
+    }
+    for stream in proc.dir_streams.iter_mut().filter_map(Option::take) {
+        let _ = host.host_closedir(stream.host_handle);
+    }
+
+    release_exec_image_state(proc, host);
+    proc.signals.reset_dispositions_for_exec();
+
+    // Kernel-backed process-shared primitives outlive the process address
+    // space, but this image's participation in them does not. Drop stale
+    // mutex ownership and cond/barrier waiter entries before the memory and
+    // sibling-thread state that could complete those operations disappears.
+    unsafe { crate::pshared::global_pshared_table() }.cleanup_process(proc.pid);
+
+    // Reset state owned by the discarded address space or its threads. Open
+    // descriptions and their backing tables, terminal queues, CWD, IDs,
+    // rlimits, locks, and alarm/ITIMER_REAL state remain in place.
+    proc.memory = crate::memory::MemoryManager::new();
+    proc.state = crate::process::ProcessState::Running;
+    proc.exit_status = 0;
+    proc.exit_signal = 0;
+    proc.thread_name = [0; 16];
+    proc.threads.clear();
+    proc.next_tid = 0;
+    proc.sigsuspend_saved_mask = None;
+    proc.alt_stack_sp = 0;
+    proc.alt_stack_flags = 2; // SS_DISABLE
+    proc.alt_stack_size = 0;
+    proc.alt_stack_depth = 0;
+    proc.posix_timers.clear();
+    proc.fork_child = false;
+    proc.fork_exec_path = None;
+    proc.fork_exec_argv = None;
+    proc.fork_fd_actions.clear();
+    proc.fork_pipe_replay.clear();
+    proc.fork_count = 0;
+    proc.has_exec = true;
+    Ok(())
 }
 
 /// Release a per-fd handle (DESTROY_DUMB / GEM_CLOSE): drops the
@@ -1873,18 +1917,17 @@ pub fn sys_open(
     // /dev/tty — open controlling terminal (alias for current session's PTY or stdin)
     if resolved == b"/dev/tty" {
         // Check if any open fd refers to a PTY slave — use that
-        for fd_i in 0..1024i32 {
-            if let Ok(entry) = proc.fd_table.get(fd_i as i32) {
-                if let Some(ofd) = proc.ofd_table.get(entry.ofd_ref.0) {
-                    if ofd.file_type == FileType::PtySlave {
-                        // Dup this fd
-                        proc.ofd_table.inc_ref(entry.ofd_ref.0);
-                        let fd_flags = oflags_to_fd_flags(oflags);
-                        let fd = proc.fd_table.alloc(entry.ofd_ref, fd_flags)?;
-                        return Ok(fd);
-                    }
-                }
-            }
+        let pty_ofd = proc.fd_table.iter().find_map(|(_, entry)| {
+            proc.ofd_table
+                .get(entry.ofd_ref.0)
+                .is_some_and(|ofd| ofd.file_type == FileType::PtySlave)
+                .then_some(entry.ofd_ref)
+        });
+        if let Some(ofd_ref) = pty_ofd {
+            proc.ofd_table.inc_ref(ofd_ref.0);
+            let fd_flags = oflags_to_fd_flags(oflags);
+            let fd = proc.fd_table.alloc(ofd_ref, fd_flags)?;
+            return Ok(fd);
         }
         // Fallback: dup stdin (fd 0) as the controlling terminal
         if let Ok(entry) = proc.fd_table.get(0) {
@@ -5487,9 +5530,10 @@ pub fn sys_sigprocmask(proc: &mut Process, how: u32, set: u64) -> Result<u64, Er
 pub fn sys_exit(proc: &mut Process, host: &mut dyn HostIO, status: i32) {
     release_process_dri_mappings(proc, host);
 
-    // Close all file descriptors
-    let max_fd = 1024; // Use a reasonable upper bound
-    for fd in 0..max_fd {
+    // Snapshot the sparse table because sys_close mutates it. RLIMIT_NOFILE
+    // and F_DUPFD can place live descriptors above the default 1024 slots.
+    let open_fds: Vec<i32> = proc.fd_table.iter().map(|(fd, _)| fd).collect();
+    for fd in open_fds {
         let _ = sys_close(proc, host, fd);
     }
 
@@ -5796,6 +5840,21 @@ pub fn sys_unsetenv(proc: &mut Process, name: &[u8]) -> Result<(), Errno> {
     Ok(())
 }
 
+/// The host's generic MAP_SHARED tracker must be restricted to descriptors
+/// whose `pwrite` path reaches persistent host storage. Device mappings and
+/// in-kernel regular-looking files own their state elsewhere.
+pub(crate) fn fd_supports_mmap_writeback(proc: &Process, fd: i32) -> bool {
+    let Ok(entry) = proc.fd_table.get(fd) else {
+        return false;
+    };
+    let Some(ofd) = proc.ofd_table.get(entry.ofd_ref.0) else {
+        return false;
+    };
+    ofd.file_type == FileType::Regular
+        && ofd.host_handle >= 0
+        && (ofd.status_flags & O_ACCMODE) == O_RDWR
+}
+
 /// mmap -- supports anonymous, file-backed MAP_PRIVATE and MAP_SHARED mappings.
 /// File-backed mappings are allocated as anonymous regions; the host populates
 /// them from the file and (for MAP_SHARED) writes back on msync/munmap.
@@ -6070,6 +6129,33 @@ pub fn sys_brk(proc: &mut Process, addr: usize) -> usize {
 /// Returns success (no-op) so callers like Zend's allocator don't fail.
 pub fn sys_mprotect(_proc: &Process, _addr: usize, _len: usize, _prot: u32) -> Result<(), Errno> {
     Ok(())
+}
+
+pub(crate) fn listener_accept_wake_for_entry(
+    proc: &Process,
+    entry: &crate::fd::FdEntry,
+) -> Option<u32> {
+    use crate::socket::SocketState;
+
+    let ofd = proc.ofd_table.get(entry.ofd_ref.0)?;
+    if ofd.file_type != FileType::Socket || ofd.host_handle >= 0 {
+        return None;
+    }
+    let sock_idx = (-(ofd.host_handle + 1)) as usize;
+    let sock = proc.sockets.get(sock_idx)?;
+    if sock.state != SocketState::Listening {
+        return None;
+    }
+    sock.accept_wake_idx
+}
+
+pub(crate) fn find_listener_fd_by_accept_wake(
+    proc: &Process,
+    wake_idx: u32,
+) -> Option<i32> {
+    proc.fd_table.iter().find_map(|(fd, entry)| {
+        (listener_accept_wake_for_entry(proc, entry) == Some(wake_idx)).then_some(fd)
+    })
 }
 
 /// Create a socket, returning the new fd.
@@ -9785,17 +9871,17 @@ pub fn sys_openat(
 
     // /dev/tty — open controlling terminal
     if resolved == b"/dev/tty" {
-        for fd_i in 0..1024i32 {
-            if let Ok(entry) = proc.fd_table.get(fd_i as i32) {
-                if let Some(ofd) = proc.ofd_table.get(entry.ofd_ref.0) {
-                    if ofd.file_type == FileType::PtySlave {
-                        proc.ofd_table.inc_ref(entry.ofd_ref.0);
-                        let fd_flags = oflags_to_fd_flags(oflags);
-                        let fd = proc.fd_table.alloc(entry.ofd_ref, fd_flags)?;
-                        return Ok(fd);
-                    }
-                }
-            }
+        let pty_ofd = proc.fd_table.iter().find_map(|(_, entry)| {
+            proc.ofd_table
+                .get(entry.ofd_ref.0)
+                .is_some_and(|ofd| ofd.file_type == FileType::PtySlave)
+                .then_some(entry.ofd_ref)
+        });
+        if let Some(ofd_ref) = pty_ofd {
+            proc.ofd_table.inc_ref(ofd_ref.0);
+            let fd_flags = oflags_to_fd_flags(oflags);
+            let fd = proc.fd_table.alloc(ofd_ref, fd_flags)?;
+            return Ok(fd);
         }
         if let Ok(entry) = proc.fd_table.get(0) {
             let ofd_ref = entry.ofd_ref;
@@ -11494,7 +11580,7 @@ pub fn sys_uname(buf: &mut [u8]) -> Result<(), Errno> {
 /// sysconf — get configurable system variables
 pub fn sys_sysconf(name: i32) -> Result<i64, Errno> {
     match name {
-        0 => Ok(4096),   // _SC_ARG_MAX
+        0 => Ok(4 * 1024 * 1024), // _SC_ARG_MAX: host exec argv+env aggregate cap
         1 => Ok(0),      // _SC_CHILD_MAX (unspecified)
         2 => Ok(100),    // _SC_CLK_TCK
         4 => Ok(1024),   // _SC_OPEN_MAX
@@ -12769,6 +12855,7 @@ mod tests {
         net_send_result: Result<usize, Errno>,
         net_connect_calls: Vec<(i32, Vec<u8>, u16)>,
         net_listen_calls: Vec<(i32, u16, [u8; 4])>,
+        closed_dir_handles: Vec<i64>,
     }
 
     impl MockHostIO {
@@ -12797,6 +12884,7 @@ mod tests {
                 net_send_result: Err(Errno::ENOTCONN),
                 net_connect_calls: Vec::new(),
                 net_listen_calls: Vec::new(),
+                closed_dir_handles: Vec::new(),
             }
         }
 
@@ -13058,7 +13146,8 @@ mod tests {
             }
         }
 
-        fn host_closedir(&mut self, _handle: i64) -> Result<(), Errno> {
+        fn host_closedir(&mut self, handle: i64) -> Result<(), Errno> {
+            self.closed_dir_handles.push(handle);
             Ok(())
         }
 
@@ -14099,6 +14188,22 @@ mod tests {
     }
 
     #[test]
+    fn test_exit_closes_fd_above_default_nofile_limit() {
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        sys_setrlimit(&mut proc, 7, 4096, 4096).unwrap();
+        let low_fd =
+            sys_open(&mut proc, &mut host, b"/tmp/high-fd", O_RDWR | O_CREAT, 0o644).unwrap();
+        let high_fd = sys_fcntl(&mut proc, low_fd, F_DUPFD, 2048).unwrap();
+        sys_close(&mut proc, &mut host, low_fd).unwrap();
+
+        sys_exit(&mut proc, &mut host, 0);
+
+        assert_eq!(high_fd, 2048);
+        assert_eq!(proc.fd_table.get(high_fd), Err(Errno::EBADF));
+    }
+
+    #[test]
     fn test_exit_with_zero_status() {
         let mut proc = Process::new(1);
         let mut host = MockHostIO::new();
@@ -14964,6 +15069,44 @@ mod tests {
     }
 
     #[test]
+    fn mmap_writeback_capability_requires_a_writable_host_regular_file() {
+        fn install_fd(
+            proc: &mut Process,
+            file_type: FileType,
+            flags: u32,
+            host_handle: i64,
+        ) -> i32 {
+            let ofd = proc.ofd_table.create(
+                file_type,
+                flags,
+                host_handle,
+                b"/mapped".to_vec(),
+            );
+            proc.fd_table.alloc(OpenFileDescRef(ofd), 0).unwrap()
+        }
+
+        let mut proc = Process::new(41);
+        let host_rdwr = install_fd(&mut proc, FileType::Regular, O_RDWR, 50);
+        let host_wronly = install_fd(&mut proc, FileType::Regular, O_WRONLY, 51);
+        let host_rdonly = install_fd(&mut proc, FileType::Regular, O_RDONLY, 52);
+        let invalid_access = install_fd(&mut proc, FileType::Regular, O_ACCMODE, 54);
+        let synthetic = install_fd(&mut proc, FileType::Regular, O_RDWR, -100);
+        let memfd = install_fd(&mut proc, FileType::MemFd, O_RDWR, -1);
+        let device = install_fd(&mut proc, FileType::CharDevice, O_RDWR, -5);
+        let directory = install_fd(&mut proc, FileType::Directory, O_RDWR, 53);
+
+        assert!(fd_supports_mmap_writeback(&proc, host_rdwr));
+        assert!(!fd_supports_mmap_writeback(&proc, host_wronly));
+        assert!(!fd_supports_mmap_writeback(&proc, host_rdonly));
+        assert!(!fd_supports_mmap_writeback(&proc, invalid_access));
+        assert!(!fd_supports_mmap_writeback(&proc, synthetic));
+        assert!(!fd_supports_mmap_writeback(&proc, memfd));
+        assert!(!fd_supports_mmap_writeback(&proc, device));
+        assert!(!fd_supports_mmap_writeback(&proc, directory));
+        assert!(!fd_supports_mmap_writeback(&proc, 999));
+    }
+
+    #[test]
     fn test_munmap() {
         let mut proc = Process::new(1);
         let mut host = MockHostIO::new();
@@ -15074,6 +15217,29 @@ mod tests {
     }
 
     #[test]
+    fn listener_wake_resolver_finds_fd_above_default_nofile_limit() {
+        use crate::socket::SocketState;
+        use wasm_posix_shared::socket::{AF_INET, SOCK_STREAM};
+
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        sys_setrlimit(&mut proc, 7, 4096, 4096).unwrap();
+        let low_fd = sys_socket(&mut proc, &mut host, AF_INET, SOCK_STREAM, 0).unwrap();
+        let sock_idx = test_socket_idx(&proc, low_fd);
+        let listener = proc.sockets.get_mut(sock_idx).unwrap();
+        listener.state = SocketState::Listening;
+        listener.accept_wake_idx = Some(77);
+
+        let high_fd = sys_fcntl(&mut proc, low_fd, F_DUPFD, 2048).unwrap();
+        assert_eq!(high_fd, 2048);
+        sys_close(&mut proc, &mut host, low_fd).unwrap();
+
+        assert_eq!(find_listener_fd_by_accept_wake(&proc, 77), Some(high_fd));
+        assert_eq!(find_listener_fd_by_accept_wake(&proc, 78), None);
+        sys_close(&mut proc, &mut host, high_fd).unwrap();
+    }
+
+    #[test]
     fn test_socket_unsupported_domain() {
         let mut proc = Process::new(1);
         let mut host = MockHostIO::new();
@@ -15115,6 +15281,404 @@ mod tests {
         let n = sys_read(&mut proc, &mut host, fd0, &mut buf).unwrap();
         assert_eq!(n, 5);
         assert_eq!(&buf, b"world");
+    }
+
+    #[test]
+    fn exec_transfer_keeps_connected_socket_and_queued_bytes() {
+        use wasm_posix_shared::socket::*;
+
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        let (writer, reader) =
+            sys_socketpair(&mut proc, &mut host, AF_UNIX, SOCK_STREAM, 0).unwrap();
+        sys_write(&mut proc, &mut host, writer, b"queued before exec").unwrap();
+
+        let pid = proc.pid;
+        commit_exec_state(&mut proc, &mut host, pid).unwrap();
+
+        let mut buf = [0u8; 18];
+        let n = sys_read(&mut proc, &mut host, reader, &mut buf).unwrap();
+        assert_eq!(n, buf.len());
+        assert_eq!(&buf, b"queued before exec");
+        sys_close(&mut proc, &mut host, writer).unwrap();
+        sys_close(&mut proc, &mut host, reader).unwrap();
+    }
+
+    #[test]
+    fn exec_cannot_resurrect_an_exited_process() {
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        proc.state = crate::process::ProcessState::Exited;
+        proc.exit_status = 23;
+        let pid = proc.pid;
+
+        assert_eq!(
+            commit_exec_state(&mut proc, &mut host, pid),
+            Err(Errno::ESRCH),
+        );
+        assert_eq!(proc.state, crate::process::ProcessState::Exited);
+        assert_eq!(proc.exit_status, 23);
+        assert!(!proc.has_exec);
+    }
+
+    #[test]
+    fn exec_keeps_queued_unix_accept_state_through_surviving_listener_dup() {
+        let _lock = UNIX_REGISTRY_LOCK.lock().unwrap();
+        use wasm_posix_shared::socket::{AF_UNIX, SOCK_CLOEXEC, SOCK_STREAM};
+
+        const PID: u32 = 0x6eec_0010;
+        let path = b"/tmp/exec-listener-survives.sock";
+        let resolved = crate::path::resolve_path(path, b"/");
+        unsafe { crate::unix_socket::global_unix_socket_registry() }.unregister(&resolved);
+
+        let mut proc = Process::new(PID);
+        let mut host = MockHostIO::new();
+        let cloexec_listener =
+            sys_socket(&mut proc, &mut host, AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0)
+                .unwrap();
+        let addr = test_unix_addr(path);
+        sys_bind(&mut proc, &mut host, cloexec_listener, &addr).unwrap();
+        sys_listen(&mut proc, &mut host, cloexec_listener, 4).unwrap();
+
+        // dup() clears FD_CLOEXEC while retaining the same open file
+        // description and listener identity.
+        let listener = sys_dup(&mut proc, cloexec_listener).unwrap();
+        assert_eq!(proc.fd_table.get(listener).unwrap().fd_flags, 0);
+
+        let client = sys_socket(&mut proc, &mut host, AF_UNIX, SOCK_STREAM, 0).unwrap();
+        sys_connect(&mut proc, &mut host, client, &addr).unwrap();
+        let listener_sock_idx = test_socket_idx(&proc, listener);
+        let shared_idx = proc
+            .sockets
+            .get(listener_sock_idx)
+            .unwrap()
+            .shared_backlog_idx
+            .unwrap();
+        assert_eq!(
+            unsafe { crate::socket::shared_listener_backlog_table() }.len(shared_idx),
+            1
+        );
+
+        commit_exec_state(&mut proc, &mut host, PID).unwrap();
+
+        assert!(proc.fd_table.get(cloexec_listener).is_err());
+        assert_eq!(test_socket_idx(&proc, listener), listener_sock_idx);
+        let backlog = &unsafe { crate::socket::shared_listener_backlog_table() }.entries
+            [shared_idx];
+        assert!(backlog.in_use);
+        assert_eq!(backlog.ref_count, 1);
+        assert_eq!(backlog.queue.len(), 1);
+        assert!(unsafe { crate::unix_socket::global_unix_socket_registry() }
+            .lookup(&resolved)
+            .is_some());
+
+        let accepted = sys_accept(&mut proc, &mut host, listener).unwrap();
+        assert_eq!(sys_send(&mut proc, &mut host, client, b"after exec", 0), Ok(10));
+        let mut buf = [0u8; 10];
+        assert_eq!(
+            sys_recv(&mut proc, &mut host, accepted, &mut buf, 0),
+            Ok(buf.len())
+        );
+        assert_eq!(&buf, b"after exec");
+
+        sys_close(&mut proc, &mut host, accepted).unwrap();
+        sys_close(&mut proc, &mut host, client).unwrap();
+        sys_close(&mut proc, &mut host, listener).unwrap();
+        unsafe { crate::unix_socket::global_unix_socket_registry() }.unregister(&resolved);
+    }
+
+    #[test]
+    fn exec_cloexec_last_unix_listener_abandons_queued_connection() {
+        let _lock = UNIX_REGISTRY_LOCK.lock().unwrap();
+        use wasm_posix_shared::signal::SIGPIPE;
+        use wasm_posix_shared::socket::{AF_UNIX, SOCK_CLOEXEC, SOCK_STREAM};
+
+        const PID: u32 = 0x6eec_0011;
+        let path = b"/tmp/exec-listener-closes.sock";
+        let resolved = crate::path::resolve_path(path, b"/");
+        unsafe { crate::unix_socket::global_unix_socket_registry() }.unregister(&resolved);
+
+        let mut proc = Process::new(PID);
+        let mut host = MockHostIO::new();
+        let listener =
+            sys_socket(&mut proc, &mut host, AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0)
+                .unwrap();
+        let addr = test_unix_addr(path);
+        sys_bind(&mut proc, &mut host, listener, &addr).unwrap();
+        sys_listen(&mut proc, &mut host, listener, 4).unwrap();
+
+        let client = sys_socket(&mut proc, &mut host, AF_UNIX, SOCK_STREAM, 0).unwrap();
+        sys_connect(&mut proc, &mut host, client, &addr).unwrap();
+        let listener_sock_idx = test_socket_idx(&proc, listener);
+        let shared_idx = proc
+            .sockets
+            .get(listener_sock_idx)
+            .unwrap()
+            .shared_backlog_idx
+            .unwrap();
+        let (recv_pipe_idx, send_pipe_idx) = {
+            let backlog = &unsafe { crate::socket::shared_listener_backlog_table() }.entries
+                [shared_idx];
+            assert!(backlog.in_use);
+            assert_eq!(backlog.ref_count, 1);
+            assert_eq!(backlog.queue.len(), 1);
+            (
+                backlog.queue[0].recv_pipe_idx,
+                backlog.queue[0].send_pipe_idx,
+            )
+        };
+
+        commit_exec_state(&mut proc, &mut host, PID).unwrap();
+
+        assert!(proc.fd_table.get(listener).is_err());
+        assert!(proc.sockets.get(listener_sock_idx).is_none());
+        assert!(unsafe { crate::unix_socket::global_unix_socket_registry() }
+            .lookup(&resolved)
+            .is_none());
+        let backlog = &unsafe { crate::socket::shared_listener_backlog_table() }.entries
+            [shared_idx];
+        assert!(!backlog.in_use);
+        assert_eq!(backlog.ref_count, 0);
+        assert!(backlog.queue.is_empty());
+
+        let pipes = unsafe { crate::pipe::global_pipe_table() };
+        assert!(!pipes.get(recv_pipe_idx).unwrap().has_readers());
+        assert!(!pipes.get(send_pipe_idx).unwrap().is_write_end_open());
+        assert_eq!(
+            sys_send(&mut proc, &mut host, client, b"orphaned", 0),
+            Err(Errno::EPIPE)
+        );
+        assert!(proc.signals.is_pending(SIGPIPE));
+        let mut buf = [0u8; 1];
+        assert_eq!(sys_recv(&mut proc, &mut host, client, &mut buf, 0), Ok(0));
+
+        sys_close(&mut proc, &mut host, client).unwrap();
+        let pipes = unsafe { crate::pipe::global_pipe_table() };
+        assert!(pipes.get(recv_pipe_idx).is_none());
+        assert!(pipes.get(send_pipe_idx).is_none());
+    }
+
+    #[test]
+    fn exec_keeps_eventfd_epoll_timerfd_signalfd_and_memfd_state() {
+        use wasm_posix_shared::signal::SIGINT;
+
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+
+        let eventfd = sys_eventfd2(&mut proc, 5, O_NONBLOCK).unwrap();
+        let epollfd = sys_epoll_create1(&mut proc, 0).unwrap();
+        sys_epoll_ctl(&mut proc, epollfd, 1, eventfd, POLLIN as u32, 0xfeed).unwrap();
+
+        host.clock_time = (100, 0);
+        let timerfd = sys_timerfd_create(&mut proc, 0, O_NONBLOCK).unwrap();
+        sys_timerfd_settime(&mut proc, &mut host, timerfd, 0, 0, 0, 5, 0).unwrap();
+
+        let signal_mask = crate::signal::sig_bit(SIGINT);
+        let signalfd = sys_signalfd4(&mut proc, -1, signal_mask, O_NONBLOCK).unwrap();
+        proc.signals.raise(SIGINT);
+
+        let memfd = sys_memfd_create(&mut proc, b"exec-state", 0).unwrap();
+        sys_write(&mut proc, &mut host, memfd, b"before exec").unwrap();
+        sys_lseek(&mut proc, &mut host, memfd, 7, SEEK_SET).unwrap();
+
+        let pid = proc.pid;
+        commit_exec_state(&mut proc, &mut host, pid).unwrap();
+
+        let (count, events) =
+            sys_epoll_pwait(&mut proc, &mut host, epollfd, 1, 0, None).unwrap();
+        assert_eq!(count, 1);
+        assert_eq!(events[0].1, 0xfeed);
+
+        let mut counter = [0u8; 8];
+        sys_read(&mut proc, &mut host, eventfd, &mut counter).unwrap();
+        assert_eq!(u64::from_le_bytes(counter), 5);
+
+        host.clock_time = (106, 0);
+        let mut expirations = [0u8; 8];
+        sys_read(&mut proc, &mut host, timerfd, &mut expirations).unwrap();
+        assert_eq!(u64::from_le_bytes(expirations), 1);
+
+        let mut signal_info = [0u8; 128];
+        sys_read(&mut proc, &mut host, signalfd, &mut signal_info).unwrap();
+        assert_eq!(u32::from_le_bytes(signal_info[0..4].try_into().unwrap()), SIGINT);
+
+        let mut suffix = [0u8; 4];
+        sys_read(&mut proc, &mut host, memfd, &mut suffix).unwrap();
+        assert_eq!(&suffix, b"exec");
+
+        for fd in [epollfd, eventfd, timerfd, signalfd, memfd] {
+            sys_close(&mut proc, &mut host, fd).unwrap();
+        }
+    }
+
+    #[test]
+    fn exec_closes_only_cloexec_alias_and_keeps_backing_object() {
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        let cloexec_fd = sys_eventfd2(&mut proc, 19, O_CLOEXEC).unwrap();
+        let retained_fd = sys_dup(&mut proc, cloexec_fd).unwrap();
+        assert_eq!(proc.fd_table.get(retained_fd).unwrap().fd_flags, 0);
+
+        let pid = proc.pid;
+        commit_exec_state(&mut proc, &mut host, pid).unwrap();
+
+        assert!(proc.fd_table.get(cloexec_fd).is_err());
+        let mut value = [0u8; 8];
+        sys_read(&mut proc, &mut host, retained_fd, &mut value).unwrap();
+        assert_eq!(u64::from_le_bytes(value), 19);
+        sys_close(&mut proc, &mut host, retained_fd).unwrap();
+        assert!(proc.eventfds[0].is_none());
+    }
+
+    #[test]
+    fn exec_cloexec_pipe_writer_leaves_buffer_then_eof() {
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        let (reader, writer) = sys_pipe(&mut proc).unwrap();
+        sys_write(&mut proc, &mut host, writer, b"queued").unwrap();
+        proc.fd_table.get_mut(writer).unwrap().fd_flags |= FD_CLOEXEC;
+
+        let pid = proc.pid;
+        commit_exec_state(&mut proc, &mut host, pid).unwrap();
+
+        assert!(proc.fd_table.get(writer).is_err());
+        let mut buf = [0u8; 6];
+        assert_eq!(sys_read(&mut proc, &mut host, reader, &mut buf), Ok(6));
+        assert_eq!(&buf, b"queued");
+        assert_eq!(sys_read(&mut proc, &mut host, reader, &mut buf), Ok(0));
+        sys_close(&mut proc, &mut host, reader).unwrap();
+    }
+
+    #[test]
+    fn exec_promotes_calling_thread_signals_and_resets_image_state() {
+        use crate::process::{PosixTimerState, ThreadInfo};
+        use crate::signal::SignalHandler;
+        use wasm_posix_shared::signal::{SIGINT, SIGTERM};
+
+        let mut proc = Process::new(10);
+        let mut host = MockHostIO::new();
+        let mut caller = ThreadInfo::new(11, 0, 0, 0);
+        caller.signals.blocked = crate::signal::sig_bit(SIGTERM);
+        caller.signals.raise_with_value(32, 101);
+        caller.signals.raise_with_value(32, 202);
+        proc.add_thread(caller);
+        proc.add_thread(ThreadInfo::new(12, 0, 0, 0));
+        proc.signals
+            .set_handler(SIGINT, SignalHandler::Handler(0x1234))
+            .unwrap();
+        proc.alarm_deadline_ns = 8_000_000_000;
+        proc.alarm_interval_ns = 1_000_000_000;
+        proc.posix_timers.push(Some(PosixTimerState {
+            clock_id: 0,
+            sigev_signo: SIGINT,
+            sigev_value: 0,
+            interval_sec: 1,
+            interval_nsec: 0,
+            value_sec: 1,
+            value_nsec: 0,
+            overrun: 0,
+        }));
+
+        commit_exec_state(&mut proc, &mut host, 11).unwrap();
+
+        assert!(proc.threads.is_empty());
+        assert_eq!(proc.signals.blocked, crate::signal::sig_bit(SIGTERM));
+        assert_eq!(proc.signals.get_handler(SIGINT), SignalHandler::Default);
+        assert_eq!(proc.signals.consume_one(32), (101, -1));
+        assert_eq!(proc.signals.consume_one(32), (202, -1));
+        assert_eq!(proc.alarm_deadline_ns, 8_000_000_000);
+        assert_eq!(proc.alarm_interval_ns, 1_000_000_000);
+        assert!(proc.posix_timers.is_empty());
+        assert!(proc.has_exec);
+    }
+
+    #[test]
+    fn exec_removes_discarded_pshared_participation() {
+        use crate::pshared::{MUTEX_TYPE_NORMAL, PTHREAD_BARRIER_SERIAL_THREAD};
+
+        const EXEC_PID: u32 = 0x6eec_0001;
+        const PEER_A: u32 = 0x6eec_0002;
+        const PEER_B: u32 = 0x6eec_0003;
+
+        let (owned_mutex, cond_mutex, cond, barrier) = {
+            let table = unsafe { crate::pshared::global_pshared_table() };
+            let owned_mutex = table.mutex_init(MUTEX_TYPE_NORMAL);
+            let cond_mutex = table.mutex_init(MUTEX_TYPE_NORMAL);
+            let cond = table.cond_init();
+            let barrier = table.barrier_init(2).unwrap();
+
+            table.mutex_lock(owned_mutex, EXEC_PID).unwrap();
+            table.mutex_lock(cond_mutex, EXEC_PID).unwrap();
+            table
+                .cond_wait_begin(cond, cond_mutex, EXEC_PID)
+                .unwrap();
+            assert_eq!(table.barrier_wait(barrier, EXEC_PID), Err(Errno::EAGAIN));
+            (owned_mutex, cond_mutex, cond, barrier)
+        };
+
+        let mut proc = Process::new(EXEC_PID);
+        let mut host = MockHostIO::new();
+        commit_exec_state(&mut proc, &mut host, EXEC_PID).unwrap();
+
+        let table = unsafe { crate::pshared::global_pshared_table() };
+        assert_eq!(table.mutex_lock(owned_mutex, PEER_A), Ok(()));
+        assert_eq!(table.cond_signal(cond), Ok(0));
+        assert_eq!(table.barrier_wait(barrier, PEER_A), Err(Errno::EAGAIN));
+        assert_eq!(
+            table.barrier_wait(barrier, PEER_B),
+            Ok(PTHREAD_BARRIER_SERIAL_THREAD)
+        );
+        assert_eq!(table.barrier_wait(barrier, PEER_A), Ok(0));
+
+        table.mutex_unlock(owned_mutex, PEER_A).unwrap();
+        table.mutex_destroy(owned_mutex).unwrap();
+        table.mutex_destroy(cond_mutex).unwrap();
+        table.cond_destroy(cond).unwrap();
+        table.barrier_destroy(barrier).unwrap();
+    }
+
+    #[test]
+    fn exec_closes_dir_stream_but_keeps_raw_directory_fd_position() {
+        use crate::process::DirStream;
+
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        let ofd_idx = proc.ofd_table.create(
+            FileType::Directory,
+            O_RDONLY,
+            55,
+            b"/tmp".to_vec(),
+        );
+        {
+            let ofd = proc.ofd_table.get_mut(ofd_idx).unwrap();
+            ofd.dir_host_handle = 77;
+            ofd.dir_synth_state = 2;
+            ofd.dir_entry_offset = 9;
+        }
+        let dir_fd = proc
+            .fd_table
+            .alloc(OpenFileDescRef(ofd_idx), 0)
+            .unwrap();
+        proc.dir_streams.push(Some(DirStream {
+            host_handle: 88,
+            path: b"/tmp".to_vec(),
+            position: 4,
+            synth_dot_state: 2,
+        }));
+
+        let pid = proc.pid;
+        commit_exec_state(&mut proc, &mut host, pid).unwrap();
+
+        assert!(proc.dir_streams.iter().all(Option::is_none));
+        assert_eq!(host.closed_dir_handles, vec![88]);
+        let entry = proc.fd_table.get(dir_fd).unwrap();
+        let ofd = proc.ofd_table.get(entry.ofd_ref.0).unwrap();
+        assert_eq!(ofd.dir_host_handle, 77);
+        assert_eq!(ofd.dir_synth_state, 2);
+        assert_eq!(ofd.dir_entry_offset, 9);
+
+        sys_close(&mut proc, &mut host, dir_fd).unwrap();
+        assert_eq!(host.closed_dir_handles, vec![88, 77]);
     }
 
     #[test]
@@ -16770,6 +17334,11 @@ mod tests {
     #[test]
     fn test_sysconf_open_max() {
         assert_eq!(sys_sysconf(4), Ok(1024)); // _SC_OPEN_MAX
+    }
+
+    #[test]
+    fn test_sysconf_arg_max_matches_exec_metadata_boundary() {
+        assert_eq!(sys_sysconf(0), Ok(4 * 1024 * 1024)); // _SC_ARG_MAX
     }
 
     #[test]
@@ -24474,7 +25043,7 @@ mod tests {
     }
 
     #[test]
-    fn execve_releases_fb_binding_and_unbinds() {
+    fn execve_unbinds_fb_mapping_but_keeps_open_fd_owner() {
         use core::sync::atomic::Ordering;
         use wasm_posix_shared::flags::O_RDWR;
         use wasm_posix_shared::mmap::{MAP_SHARED, PROT_READ, PROT_WRITE};
@@ -24499,6 +25068,11 @@ mod tests {
         sys_execve(&mut proc, &mut host, b"/bin/sh").unwrap();
         assert!(proc.fb_binding.is_none());
         assert_eq!(host.unbind_framebuffer_calls, alloc::vec![proc.pid as i32]);
+        assert_eq!(
+            crate::process_table::FB0_OWNER.load(Ordering::SeqCst),
+            proc.pid as i32
+        );
+        sys_close(&mut proc, &mut host, fd).unwrap();
         assert_eq!(crate::process_table::FB0_OWNER.load(Ordering::SeqCst), -1);
     }
 
@@ -24661,7 +25235,7 @@ mod tests {
     }
 
     #[test]
-    fn exec_clears_mice_owner() {
+    fn exec_keeps_mice_owner_and_queue_for_open_fd() {
         use core::sync::atomic::Ordering;
         let _g = MICE_OWNER_LOCK.lock().unwrap();
         reset_mice_state();
@@ -24676,11 +25250,53 @@ mod tests {
 
         crate::mouse::inject_event(2, 2, 0);
         sys_execve(&mut proc, &mut host, b"/bin/sh").unwrap();
-        assert_eq!(crate::mouse::MICE_OWNER.load(Ordering::SeqCst), -1);
-        assert!(
-            !crate::mouse::has_data(),
-            "exec should reset the queue when releasing ownership"
+        assert_eq!(
+            crate::mouse::MICE_OWNER.load(Ordering::SeqCst),
+            proc.pid as i32
         );
+        assert!(
+            crate::mouse::has_data(),
+            "exec should retain packets behind a surviving open fd"
+        );
+        sys_close(&mut proc, &mut host, _fd).unwrap();
+    }
+
+    #[test]
+    fn exec_keeps_device_state_through_surviving_high_fd_alias() {
+        use core::sync::atomic::Ordering;
+        let _g = MICE_OWNER_LOCK.lock().unwrap();
+        reset_mice_state();
+
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        sys_setrlimit(&mut proc, 7, 4096, 4096).unwrap();
+        let cloexec_fd =
+            sys_open(&mut proc, &mut host, b"/dev/input/mice", O_RDONLY, 0).unwrap();
+        proc.fd_table.get_mut(cloexec_fd).unwrap().fd_flags = FD_CLOEXEC;
+        let retained_fd = sys_fcntl(&mut proc, cloexec_fd, F_DUPFD, 2048).unwrap();
+        assert_eq!(retained_fd, 2048);
+
+        crate::mouse::inject_event(7, -3, 1);
+        let pid = proc.pid;
+        commit_exec_state(&mut proc, &mut host, pid).unwrap();
+
+        assert!(proc.fd_table.get(cloexec_fd).is_err());
+        assert!(proc.fd_table.get(retained_fd).is_ok());
+        assert_eq!(
+            crate::mouse::MICE_OWNER.load(Ordering::SeqCst),
+            proc.pid as i32
+        );
+        let mut packet = [0u8; 3];
+        assert_eq!(
+            sys_read(&mut proc, &mut host, retained_fd, &mut packet),
+            Ok(3)
+        );
+        assert_eq!(packet[1] as i8, 7);
+        assert_eq!(packet[2] as i8, -3);
+
+        sys_close(&mut proc, &mut host, retained_fd).unwrap();
+        assert_eq!(crate::mouse::MICE_OWNER.load(Ordering::SeqCst), -1);
+        assert!(!crate::mouse::has_data());
     }
 
     // -----------------------------------------------------------------
@@ -24883,7 +25499,7 @@ mod tests {
     }
 
     #[test]
-    fn exec_clears_dsp_owner() {
+    fn exec_keeps_dsp_owner_and_ring_for_open_fd() {
         use core::sync::atomic::Ordering;
         let _g = DSP_OWNER_LOCK.lock().unwrap();
         reset_dsp_state();
@@ -24898,12 +25514,16 @@ mod tests {
 
         sys_write(&mut proc, &mut host, _fd, &[5, 5, 5, 5]).unwrap();
         sys_execve(&mut proc, &mut host, b"/bin/sh").unwrap();
-        assert_eq!(crate::audio::DSP_OWNER.load(Ordering::SeqCst), -1);
+        assert_eq!(
+            crate::audio::DSP_OWNER.load(Ordering::SeqCst),
+            proc.pid as i32
+        );
         assert_eq!(
             crate::audio::pending_bytes(),
-            0,
-            "exec should drain the ring when releasing ownership"
+            4,
+            "exec should retain samples behind a surviving open fd"
         );
+        sys_close(&mut proc, &mut host, _fd).unwrap();
     }
 
     // -----------------------------------------------------------------

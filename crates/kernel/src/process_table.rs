@@ -210,18 +210,16 @@ fn bump_inherited_resource_refcounts(parent_pid: u32, child: &Process) {
 fn build_fork_pipe_replay(child: &Process) -> Vec<(i32, i32)> {
     use alloc::collections::BTreeMap;
     let mut pipe_fd_pairs: BTreeMap<usize, (i32, i32)> = BTreeMap::new();
-    for fd in 0..1024i32 {
-        if let Ok(entry) = child.fd_table.get(fd) {
-            if let Some(ofd) = child.ofd_table.get(entry.ofd_ref.0) {
-                if ofd.file_type == FileType::Pipe && ofd.host_handle < 0 {
-                    let pipe_idx = (-(ofd.host_handle + 1)) as usize;
-                    let access_mode = ofd.status_flags & O_ACCMODE;
-                    let pair = pipe_fd_pairs.entry(pipe_idx).or_insert((-1, -1));
-                    if access_mode == wasm_posix_shared::flags::O_RDONLY {
-                        pair.0 = fd;
-                    } else {
-                        pair.1 = fd;
-                    }
+    for (fd, entry) in child.fd_table.iter() {
+        if let Some(ofd) = child.ofd_table.get(entry.ofd_ref.0) {
+            if ofd.file_type == FileType::Pipe && ofd.host_handle < 0 {
+                let pipe_idx = (-(ofd.host_handle + 1)) as usize;
+                let access_mode = ofd.status_flags & O_ACCMODE;
+                let pair = pipe_fd_pairs.entry(pipe_idx).or_insert((-1, -1));
+                if access_mode == wasm_posix_shared::flags::O_RDONLY {
+                    pair.0 = fd;
+                } else {
+                    pair.1 = fd;
                 }
             }
         }
@@ -587,6 +585,9 @@ impl ProcessTable {
         }
         let serialized_parent = {
             let parent = self.processes.get(&parent_pid).ok_or(Errno::ESRCH)?;
+            if parent.state != crate::process::ProcessState::Running {
+                return Err(Errno::ESRCH);
+            }
             serialize_fork_state_with_growing_buffer(parent)?
         };
 
@@ -641,6 +642,9 @@ impl ProcessTable {
         // Snapshot inheritable parent state under an immutable borrow.
         let inherit = {
             let parent = self.processes.get(&parent_pid).ok_or(Errno::ESRCH)?;
+            if parent.state != crate::process::ProcessState::Running {
+                return Err(Errno::ESRCH);
+            }
             // Compute the SIG_IGN-disposition bitmask for signals 1..=64.
             let mut ignored_signals: u64 = 0;
             for sig in 1u32..=64 {
@@ -1088,6 +1092,55 @@ pub fn current_pid() -> u32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn fork_pipe_replay_includes_fds_above_default_nofile_limit() {
+        use crate::fd::OpenFileDescRef;
+        use wasm_posix_shared::flags::{O_RDONLY, O_WRONLY};
+
+        let mut child = Process::new(100);
+        child.fd_table.set_max_fds(4096);
+        let read_ofd = child
+            .ofd_table
+            .create(FileType::Pipe, O_RDONLY, -1, b"pipe-read".to_vec());
+        let write_ofd = child
+            .ofd_table
+            .create(FileType::Pipe, O_WRONLY, -1, b"pipe-write".to_vec());
+        let read_fd = child
+            .fd_table
+            .alloc_at_min(OpenFileDescRef(read_ofd), 0, 2048)
+            .unwrap();
+        let write_fd = child
+            .fd_table
+            .alloc_at_min(OpenFileDescRef(write_ofd), 0, 2049)
+            .unwrap();
+
+        assert_eq!(build_fork_pipe_replay(&child), vec![(read_fd, write_fd)]);
+    }
+
+    #[test]
+    fn exited_parent_cannot_fork_or_spawn() {
+        use crate::process::test_host::NoopHost;
+        use crate::spawn::SpawnAttrs;
+
+        let mut table = ProcessTable::new();
+        table.create_process(100).unwrap();
+        table.get_mut(100).unwrap().state = crate::process::ProcessState::Exited;
+
+        assert_eq!(table.fork_process(100, 101), Err(Errno::ESRCH));
+        let mut host = NoopHost;
+        assert_eq!(
+            table.spawn_child(
+                100,
+                &[b"/bin/child".as_slice()],
+                &[],
+                &[],
+                &SpawnAttrs::empty(),
+                &mut host,
+            ),
+            Err(Errno::ESRCH),
+        );
+    }
 
     #[test]
     fn process_exit_closes_tcp_pipes_orderly() {
