@@ -216,6 +216,51 @@ fn match_dev_fd(path: &[u8]) -> Option<i32> {
     None
 }
 
+/// Return the target text exposed by readlink for a devfs descriptor alias.
+fn dev_fd_link_target<'a>(
+    proc: &'a Process,
+    path: &[u8],
+    target_fd: i32,
+) -> Result<&'a [u8], Errno> {
+    match path {
+        b"/dev/stdin" => Ok(b"/dev/fd/0"),
+        b"/dev/stdout" => Ok(b"/dev/fd/1"),
+        b"/dev/stderr" => Ok(b"/dev/fd/2"),
+        _ => {
+            let entry = proc.fd_table.get(target_fd).map_err(|_| Errno::ENOENT)?;
+            let ofd = proc
+                .ofd_table
+                .get(entry.ofd_ref.0)
+                .ok_or(Errno::ENOENT)?;
+            Ok(&ofd.path)
+        }
+    }
+}
+
+fn dev_fd_lstat(proc: &Process, path: &[u8], target_fd: i32) -> Result<WasmStat, Errno> {
+    let target = dev_fd_link_target(proc, path, target_fd)?;
+    Ok(crate::devfs::devfs_symlink_stat(
+        path,
+        target.len(),
+        proc.euid,
+        proc.egid,
+    ))
+}
+
+fn stat_dev_fd(
+    proc: &mut Process,
+    host: &mut dyn HostIO,
+    target_fd: i32,
+) -> Result<WasmStat, Errno> {
+    sys_fstat(proc, host, target_fd).map_err(|err| {
+        if err == Errno::EBADF {
+            Errno::ENOENT
+        } else {
+            err
+        }
+    })
+}
+
 /// Try to claim `/dev/fb0` for the calling process.
 ///
 /// `/dev/fb0` is single-owner: at most one process at a time can have an
@@ -1806,6 +1851,9 @@ pub fn sys_open(
 
     // /dev/fd/N and /dev/stdin|stdout|stderr — dup an existing fd
     if let Some(target_fd) = match_dev_fd(&resolved) {
+        if oflags & O_NOFOLLOW != 0 {
+            return Err(Errno::ELOOP);
+        }
         let entry = proc.fd_table.get(target_fd)?;
         let ofd_ref = entry.ofd_ref;
         proc.ofd_table.inc_ref(ofd_ref.0);
@@ -4018,24 +4066,8 @@ pub fn sys_stat(proc: &mut Process, host: &mut dyn HostIO, path: &[u8]) -> Resul
     if let Some(st) = match_pty_stat(&resolved, proc.euid, proc.egid) {
         return Ok(st);
     }
-    if match_dev_fd(&resolved).is_some() {
-        use wasm_posix_shared::mode::S_IFCHR;
-        return Ok(WasmStat {
-            st_dev: 5,
-            st_ino: 0,
-            st_mode: S_IFCHR | 0o666,
-            st_nlink: 1,
-            st_uid: proc.euid,
-            st_gid: proc.egid,
-            st_size: 0,
-            st_atime_sec: 0,
-            st_atime_nsec: 0,
-            st_mtime_sec: 0,
-            st_mtime_nsec: 0,
-            st_ctime_sec: 0,
-            st_ctime_nsec: 0,
-            _pad: 0,
-        });
+    if let Some(target_fd) = match_dev_fd(&resolved) {
+        return stat_dev_fd(proc, host, target_fd);
     }
     if let Some(entry) = crate::procfs::match_procfs(&resolved, proc.pid) {
         return Ok(crate::procfs::procfs_stat(&entry, 0, true));
@@ -4086,24 +4118,8 @@ pub fn sys_lstat(
     if let Some(st) = match_pty_stat(&resolved, proc.euid, proc.egid) {
         return Ok(st);
     }
-    if match_dev_fd(&resolved).is_some() {
-        use wasm_posix_shared::mode::S_IFCHR;
-        return Ok(WasmStat {
-            st_dev: 5,
-            st_ino: 0,
-            st_mode: S_IFCHR | 0o666,
-            st_nlink: 1,
-            st_uid: proc.euid,
-            st_gid: proc.egid,
-            st_size: 0,
-            st_atime_sec: 0,
-            st_atime_nsec: 0,
-            st_mtime_sec: 0,
-            st_mtime_nsec: 0,
-            st_ctime_sec: 0,
-            st_ctime_nsec: 0,
-            _pad: 0,
-        });
+    if let Some(target_fd) = match_dev_fd(&resolved) {
+        return dev_fd_lstat(proc, &resolved, target_fd);
     }
     if let Some(entry) = crate::procfs::match_procfs(&resolved, proc.pid) {
         return Ok(crate::procfs::procfs_stat(&entry, 0, false));
@@ -4251,6 +4267,13 @@ pub fn sys_readlink(
         }
         // Not a symlink — EINVAL per POSIX
         return Err(Errno::EINVAL);
+    }
+
+    if let Some(target_fd) = match_dev_fd(&resolved) {
+        let target = dev_fd_link_target(proc, &resolved, target_fd)?;
+        let n = buf.len().min(target.len());
+        buf[..n].copy_from_slice(&target[..n]);
+        return Ok(n);
     }
 
     check_search_path(proc, host, &resolved)?;
@@ -8054,6 +8077,9 @@ pub fn sys_openat(
 
     // /dev/fd/N and /dev/stdin|stdout|stderr — dup an existing fd
     if let Some(target_fd) = match_dev_fd(&resolved) {
+        if oflags & O_NOFOLLOW != 0 {
+            return Err(Errno::ELOOP);
+        }
         let entry = proc.fd_table.get(target_fd)?;
         let ofd_ref = entry.ofd_ref;
         proc.ofd_table.inc_ref(ofd_ref.0);
@@ -8226,24 +8252,11 @@ pub fn sys_fstatat(
     if let Some(dev) = match_virtual_device(&resolved) {
         return Ok(virtual_device_stat(dev, proc.euid, proc.egid));
     }
-    if match_dev_fd(&resolved).is_some() {
-        use wasm_posix_shared::mode::S_IFCHR;
-        return Ok(WasmStat {
-            st_dev: 5,
-            st_ino: 0,
-            st_mode: S_IFCHR | 0o666,
-            st_nlink: 1,
-            st_uid: proc.euid,
-            st_gid: proc.egid,
-            st_size: 0,
-            st_atime_sec: 0,
-            st_atime_nsec: 0,
-            st_mtime_sec: 0,
-            st_mtime_nsec: 0,
-            st_ctime_sec: 0,
-            st_ctime_nsec: 0,
-            _pad: 0,
-        });
+    if let Some(target_fd) = match_dev_fd(&resolved) {
+        if flags & AT_SYMLINK_NOFOLLOW != 0 {
+            return dev_fd_lstat(proc, &resolved, target_fd);
+        }
+        return stat_dev_fd(proc, host, target_fd);
     }
     if let Some(entry) = crate::procfs::match_procfs(&resolved, proc.pid) {
         let follow = flags & AT_SYMLINK_NOFOLLOW == 0;
@@ -10282,6 +10295,13 @@ pub fn sys_readlinkat(
         return Err(Errno::EINVAL);
     }
 
+    if let Some(target_fd) = match_dev_fd(&resolved) {
+        let target = dev_fd_link_target(proc, &resolved, target_fd)?;
+        let n = buf.len().min(target.len());
+        buf[..n].copy_from_slice(&target[..n]);
+        return Ok(n);
+    }
+
     check_search_path(proc, host, &resolved)?;
     host.host_readlink(&resolved, buf)
 }
@@ -10735,7 +10755,7 @@ fn virtual_statfs_for_path(resolved: &[u8], pid: u32) -> Option<WasmStatfs> {
         || resolved == b"/dev/ptmx"
         || resolved == b"/dev/tty"
         || resolved.starts_with(b"/dev/pts/")
-        || resolved.starts_with(b"/dev/fd/")
+        || match_dev_fd(resolved).is_some()
     {
         return Some(devfs_statfs());
     }
@@ -17276,11 +17296,62 @@ mod tests {
     }
 
     #[test]
-    fn test_stat_dev_fd_path() {
+    fn test_dev_fd_stat_follows_descriptor_but_lstat_reports_symlink() {
         let mut proc = Process::new(1);
         let mut host = MockHostIO::new();
-        let st = sys_stat(&mut proc, &mut host, b"/dev/fd/0").unwrap();
-        assert_eq!(st.st_mode & 0xF000, wasm_posix_shared::mode::S_IFCHR);
+        let fd_stat = sys_fstat(&mut proc, &mut host, 0).unwrap();
+
+        for path in [b"/dev/stdin".as_slice(), b"/dev/fd/0".as_slice()] {
+            let path_stat = sys_stat(&mut proc, &mut host, path).unwrap();
+            assert_eq!(path_stat.st_dev, fd_stat.st_dev);
+            assert_eq!(path_stat.st_ino, fd_stat.st_ino);
+            assert_eq!(path_stat.st_mode, fd_stat.st_mode);
+
+            let at_stat = sys_fstatat(&mut proc, &mut host, AT_FDCWD, path, 0).unwrap();
+            assert_eq!(at_stat.st_dev, fd_stat.st_dev);
+            assert_eq!(at_stat.st_ino, fd_stat.st_ino);
+            assert_eq!(at_stat.st_mode, fd_stat.st_mode);
+
+            let link_stat = sys_lstat(&mut proc, &mut host, path).unwrap();
+            assert_eq!(link_stat.st_mode & S_IFMT, S_IFLNK);
+            let nofollow_stat = sys_fstatat(
+                &mut proc,
+                &mut host,
+                AT_FDCWD,
+                path,
+                AT_SYMLINK_NOFOLLOW,
+            )
+            .unwrap();
+            assert_eq!(nofollow_stat.st_ino, link_stat.st_ino);
+            assert_eq!(nofollow_stat.st_mode, link_stat.st_mode);
+        }
+    }
+
+    #[test]
+    fn test_dev_fd_alias_follows_arbitrary_open_descriptor() {
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        let fd = sys_open(&mut proc, &mut host, b"/dev/null", O_RDONLY, 0).unwrap();
+        let path = alloc::format!("/dev/fd/{fd}").into_bytes();
+
+        let fd_stat = sys_fstat(&mut proc, &mut host, fd).unwrap();
+        let path_stat = sys_stat(&mut proc, &mut host, &path).unwrap();
+        assert_eq!(path_stat.st_dev, fd_stat.st_dev);
+        assert_eq!(path_stat.st_ino, fd_stat.st_ino);
+        assert_eq!(path_stat.st_mode, fd_stat.st_mode);
+
+        let mut buf = [0u8; 32];
+        let n = sys_readlink(&mut proc, &mut host, &path, &mut buf).unwrap();
+        assert_eq!(&buf[..n], b"/dev/null");
+    }
+
+    #[test]
+    fn test_dev_stdio_readlink_targets_dev_fd() {
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        let mut buf = [0u8; 32];
+        let n = sys_readlink(&mut proc, &mut host, b"/dev/stdin", &mut buf).unwrap();
+        assert_eq!(&buf[..n], b"/dev/fd/0");
     }
 
     #[test]
@@ -17439,6 +17510,33 @@ mod tests {
         let ofd_ref_0 = proc.fd_table.get(0).unwrap().ofd_ref.0;
         let ofd_ref_new = proc.fd_table.get(fd).unwrap().ofd_ref.0;
         assert_eq!(ofd_ref_0, ofd_ref_new);
+    }
+
+    #[test]
+    fn test_open_dev_fd_nofollow_rejects_symlink() {
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        assert_eq!(
+            sys_open(
+                &mut proc,
+                &mut host,
+                b"/dev/stdin",
+                O_RDONLY | O_NOFOLLOW,
+                0,
+            ),
+            Err(Errno::ELOOP),
+        );
+        assert_eq!(
+            sys_openat(
+                &mut proc,
+                &mut host,
+                AT_FDCWD,
+                b"/dev/fd/0",
+                O_RDONLY | O_NOFOLLOW,
+                0,
+            ),
+            Err(Errno::ELOOP),
+        );
     }
 
     #[test]
