@@ -338,6 +338,11 @@
     },
     {
       "kind": "func",
+      "name": "kernel_clear_process_metadata",
+      "signature": "(i32,i32) -> (i32)"
+    },
+    {
+      "kind": "func",
       "name": "kernel_clock_getres",
       "signature": "(i32,i32) -> (i32)"
     },
@@ -458,8 +463,18 @@
     },
     {
       "kind": "func",
+      "name": "kernel_exec_prepare",
+      "signature": "(i32,i32) -> (i32)"
+    },
+    {
+      "kind": "func",
       "name": "kernel_exec_setup",
       "signature": "(i32) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_exec_setup_for_thread",
+      "signature": "(i32,i32) -> (i32)"
     },
     {
       "kind": "func",
@@ -518,8 +533,23 @@
     },
     {
       "kind": "func",
+      "name": "kernel_fd_is_open",
+      "signature": "(i32,i32) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_fd_supports_mmap_writeback",
+      "signature": "(i32,i32) -> (i32)"
+    },
+    {
+      "kind": "func",
       "name": "kernel_fdatasync",
       "signature": "(i32) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_find_listener_fd_by_accept_wake",
+      "signature": "(i32,i32) -> (i32)"
     },
     {
       "kind": "func",
@@ -1140,6 +1170,11 @@
       "kind": "func",
       "name": "kernel_push_argv",
       "signature": "(i32,i32) -> ()"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_push_process_metadata_entry",
+      "signature": "(i32,i32,i32,i32) -> (i32)"
     },
     {
       "kind": "func",

@@ -31,6 +31,28 @@ describe("MAP_SHARED host interval tracking", () => {
       len: 0x28000,
     });
   });
+
+  it("retains mapping-level writeback eligibility after mprotect", () => {
+    const worker = createWorker();
+    worker.sharedMappings.set(9, new Map([
+      [0x40000, {
+        fd: 5,
+        fileOffset: 0x1000,
+        len: 0x30000,
+        writable: false,
+      }],
+    ]));
+
+    worker.updateSharedMappingProtection(9, 0x50000, 0x10000, true);
+    worker.updateSharedMappingProtection(9, 0x50000, 0x10000, false);
+
+    expect(worker.sharedMappings.get(9)!.get(0x40000)).toEqual({
+      fd: 5,
+      fileOffset: 0x1000,
+      len: 0x30000,
+      writable: true,
+    });
+  });
 });
 
 function createWorker(): any {

@@ -17,7 +17,6 @@ extern crate alloc;
 use alloc::vec::Vec;
 use core::slice;
 
-use wasm_posix_shared::fd_flags::FD_CLOEXEC;
 use wasm_posix_shared::{Errno, WasmDirent, WasmStat, WasmStatfs, WasmTimespec};
 
 use crate::ofd::FileType;
@@ -1496,6 +1495,46 @@ pub extern "C" fn kernel_set_process_argv(pid: u32, data_ptr: *const u8, data_le
     }
 }
 
+/// Clear one process string vector before bounded, entry-at-a-time replacement.
+///
+/// `kind == 0` selects argv and `kind == 1` selects the environment. The host
+/// uses this together with `kernel_push_process_metadata_entry` instead of
+/// copying an arbitrarily large NUL-joined payload into its fixed-size scratch
+/// allocation. Clearing without any subsequent pushes deliberately represents
+/// an empty vector, which is required when exec installs an empty environment.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_clear_process_metadata(pid: u32, kind: u32) -> i32 {
+    let table = unsafe { &mut *PROCESS_TABLE.0.get() };
+    let Some(proc) = table.get_mut(pid) else {
+        return -(Errno::ESRCH as i32);
+    };
+    match proc.clear_metadata(kind) {
+        Ok(()) => 0,
+        Err(e) => -(e as i32),
+    }
+}
+
+/// Append one argv or environment entry from the host's bounded scratch area.
+/// Empty entries are preserved; entry boundaries are supplied by the call
+/// itself rather than inferred from NUL bytes.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_push_process_metadata_entry(
+    pid: u32,
+    kind: u32,
+    data_ptr: *const u8,
+    data_len: u32,
+) -> i32 {
+    let table = unsafe { &mut *PROCESS_TABLE.0.get() };
+    let Some(proc) = table.get_mut(pid) else {
+        return -(Errno::ESRCH as i32);
+    };
+    let data = unsafe { core::slice::from_raw_parts(data_ptr, data_len as usize) };
+    match proc.push_metadata_entry(kind, data) {
+        Ok(()) => 0,
+        Err(e) => -(e as i32),
+    }
+}
+
 fn finish_removed_process(pid: u32, result: crate::process_table::RemoveProcessResult) {
     use core::sync::atomic::Ordering;
 
@@ -1933,6 +1972,28 @@ pub extern "C" fn kernel_get_fd_path(pid: u32, fd: i32, buf_ptr: *mut u8, buf_le
     }
 }
 
+/// Return 1 when `fd` names a live descriptor in `pid`, 0 when it does not,
+/// and a negative errno when the process itself is absent.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_fd_is_open(pid: u32, fd: i32) -> i32 {
+    let table = unsafe { &mut *PROCESS_TABLE.0.get() };
+    match table.get(pid) {
+        Some(proc) => i32::from(proc.fd_table.get(fd).is_ok()),
+        None => -(Errno::ESRCH as i32),
+    }
+}
+
+/// Return 1 when `fd` can back host-persisted MAP_SHARED writeback, 0 for an
+/// unsupported or absent descriptor, and `-ESRCH` when `pid` is absent.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_fd_supports_mmap_writeback(pid: u32, fd: i32) -> i32 {
+    let table = unsafe { &*PROCESS_TABLE.0.get() };
+    match table.get(pid) {
+        Some(proc) => i32::from(syscalls::fd_supports_mmap_writeback(proc, fd)),
+        None => -(Errno::ESRCH as i32),
+    }
+}
+
 /// Snapshot the process table for the host (Kandelo Inspector → Procs tab,
 /// and any host that wants a `ps`-equivalent view without spawning a user
 /// process). Walks every active pid and writes a compact, length-prefixed
@@ -2225,114 +2286,107 @@ fn dequeue_signal_for(
 }
 
 /// Handle exec semantics on a process in the process table.
-/// Serializes the process as exec state (closes CLOEXEC, resets handlers), then
-/// re-creates the process from that sanitized state.
+/// Closes CLOEXEC descriptors and resets image-specific state in place so
+/// surviving kernel objects retain their exact identity and queues.
 /// Returns 0 on success, negative errno on error.
 #[unsafe(no_mangle)]
 pub extern "C" fn kernel_exec_setup(pid: u32) -> i32 {
-    let table = unsafe { &mut *PROCESS_TABLE.0.get() };
-    {
-        let proc = match table.get_mut(pid) {
-            Some(p) => p,
-            None => return -(Errno::ESRCH as i32),
-        };
+    kernel_exec_setup_inner(pid, pid)
+}
 
-        // Apply pending fork fd actions (from posix_spawn) before exec.
-        // These are dup2/close ops that rearrange fds (e.g., pipe write end → fd 1)
-        // and must take effect before CLOEXEC removal during exec serialization.
-        if !proc.fork_fd_actions.is_empty() {
-            let actions: alloc::vec::Vec<_> = proc.fork_fd_actions.drain(..).collect();
-            let mut host = WasmHostIO;
-            for action in actions {
-                use crate::process::FdAction;
-                match action {
-                    FdAction::Dup2 { old_fd, new_fd } => {
-                        if let Err(e) = syscalls::sys_dup2(proc, &mut host, old_fd, new_fd) {
-                            return -(e as i32);
-                        }
-                    }
-                    FdAction::Close { fd } => {
-                        if let Err(e) = syscalls::sys_close(proc, &mut host, fd) {
-                            return -(e as i32);
-                        }
-                    }
-                    FdAction::Open {
-                        fd,
-                        ref path,
-                        flags,
-                        mode,
-                    } => {
-                        match syscalls::sys_open(proc, &mut host, path, flags as u32, mode as u32) {
-                            Ok(opened_fd) => {
-                                if opened_fd != fd {
-                                    if let Err(e) =
-                                        syscalls::sys_dup2(proc, &mut host, opened_fd, fd)
-                                    {
-                                        return -(e as i32);
-                                    }
-                                    let _ = syscalls::sys_close(proc, &mut host, opened_fd);
-                                }
-                            }
-                            Err(e) => return -(e as i32),
-                        }
-                    }
+/// Thread-aware exec setup. When a pthread invokes exec, its signal mask and
+/// directed pending signals become the surviving process thread's state.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_exec_setup_for_thread(pid: u32, caller_tid: u32) -> i32 {
+    kernel_exec_setup_inner(pid, caller_tid)
+}
+
+/// Validate the exec caller and apply any deferred posix_spawn file actions.
+///
+/// The host calls this before it starts the irreversible address-space
+/// transition. Keeping these fallible operations separate means a bad caller
+/// tid or failed file action cannot strand a process after its old image has
+/// already been discarded.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_exec_prepare(pid: u32, caller_tid: u32) -> i32 {
+    match prepare_exec_state(pid, caller_tid) {
+        Ok(()) => 0,
+        Err(e) => -(e as i32),
+    }
+}
+
+fn prepare_exec_state(pid: u32, caller_tid: u32) -> Result<(), Errno> {
+    let table = unsafe { &mut *PROCESS_TABLE.0.get() };
+    let proc = table.get_mut(pid).ok_or(Errno::ESRCH)?;
+
+    if proc.state != crate::process::ProcessState::Running {
+        return Err(Errno::ESRCH);
+    }
+
+    if caller_tid != 0
+        && caller_tid != pid
+        && !proc.threads.iter().any(|thread| thread.tid == caller_tid)
+    {
+        return Err(Errno::ESRCH);
+    }
+
+    // Apply pending fork fd actions (from posix_spawn) before exec.
+    // These are dup2/close/open operations that rearrange descriptors (for
+    // example, a pipe write end onto fd 1) and must precede CLOEXEC removal.
+    let actions: alloc::vec::Vec<_> = proc.fork_fd_actions.drain(..).collect();
+    let mut host = WasmHostIO;
+    for action in actions {
+        use crate::process::FdAction;
+        match action {
+            FdAction::Dup2 { old_fd, new_fd } => {
+                syscalls::sys_dup2(proc, &mut host, old_fd, new_fd)?;
+            }
+            FdAction::Close { fd } => {
+                syscalls::sys_close(proc, &mut host, fd)?;
+            }
+            FdAction::Open {
+                fd,
+                ref path,
+                flags,
+                mode,
+            } => {
+                let opened_fd =
+                    syscalls::sys_open(proc, &mut host, path, flags as u32, mode as u32)?;
+                if opened_fd != fd {
+                    syscalls::sys_dup2(proc, &mut host, opened_fd, fd)?;
+                    let _ = syscalls::sys_close(proc, &mut host, opened_fd);
                 }
             }
         }
     }
+    Ok(())
+}
 
-    // Size and serialize the replacement descriptor before destructive exec
-    // cleanup. The serializer already filters CLOEXEC descriptors; doing this
-    // first means a bounded-buffer ENOMEM leaves the old image intact.
-    let buf = {
-        let proc = match table.get(pid) {
-            Some(p) => p,
+fn kernel_exec_setup_inner(pid: u32, caller_tid: u32) -> i32 {
+    // Compatibility fallback for hosts that have not adopted the explicit
+    // prepare step yet. New hosts call kernel_exec_prepare first, leaving no
+    // actions here; validating twice is deliberate and harmless.
+    let has_pending_actions = {
+        let table = unsafe { &mut *PROCESS_TABLE.0.get() };
+        match table.get(pid) {
+            Some(proc) => !proc.fork_fd_actions.is_empty(),
             None => return -(Errno::ESRCH as i32),
-        };
-        match crate::fork::serialize_exec_state_with_growing_buffer(proc) {
-            Ok(buf) => buf,
-            Err(e) => return -(e as i32),
         }
     };
-
-    // Close CLOEXEC fds after successful serialization so pipe/host-handle
-    // refcounts are decremented before the old Process is replaced. The
-    // serialized descriptor omits them, matching POSIX exec semantics.
-    {
-        let proc = match table.get_mut(pid) {
-            Some(p) => p,
-            None => return -(Errno::ESRCH as i32),
-        };
-        let cloexec_fds: alloc::vec::Vec<i32> = proc
-            .fd_table
-            .iter()
-            .filter(|(_, entry)| entry.fd_flags & FD_CLOEXEC != 0)
-            .map(|(fd, _)| fd)
-            .collect();
-        let mut host = WasmHostIO;
-        for fd in cloexec_fds {
-            let _ = syscalls::sys_close(proc, &mut host, fd);
+    if has_pending_actions {
+        if let Err(e) = prepare_exec_state(pid, caller_tid) {
+            return -(e as i32);
         }
     }
 
-    {
-        let proc = match table.get_mut(pid) {
-            Some(p) => p,
-            None => return -(Errno::ESRCH as i32),
-        };
-        let mut host = WasmHostIO;
-        syscalls::release_exec_image_state(proc, &mut host);
-    }
-
-    // Deserialize back to replace the process with exec-sanitized version
-    match crate::fork::deserialize_exec_state(&buf, pid) {
-        Ok(new_proc) => {
-            table.get_mut(pid).map(|p| {
-                *p = new_proc;
-                p.has_exec = true;
-            });
-            0
-        }
+    let table = unsafe { &mut *PROCESS_TABLE.0.get() };
+    let proc = match table.get_mut(pid) {
+        Some(proc) => proc,
+        None => return -(Errno::ESRCH as i32),
+    };
+    let mut host = WasmHostIO;
+    match syscalls::commit_exec_state(proc, &mut host, caller_tid) {
+        Ok(()) => 0,
         Err(e) => -(e as i32),
     }
 }
@@ -10424,34 +10478,31 @@ pub extern "C" fn kernel_get_fd_pipe_idx(pid: u32, fd: i32) -> i32 {
 /// Returns -1 if the fd is not a listening socket with a wake token.
 #[unsafe(no_mangle)]
 pub extern "C" fn kernel_get_fd_accept_wake_idx(pid: u32, fd: i32) -> i32 {
-    use crate::ofd::FileType;
-    use crate::socket::SocketState;
-
     let table = unsafe { &*PROCESS_TABLE.0.get() };
-    let proc = match table.get(pid) {
-        Some(p) => p,
-        None => return -1,
-    };
-    let entry = match proc.fd_table.get(fd) {
-        Ok(e) => e,
-        Err(_) => return -1,
-    };
-    let ofd = match proc.ofd_table.get(entry.ofd_ref.0) {
-        Some(o) => o,
-        None => return -1,
-    };
-    if ofd.file_type != FileType::Socket {
+    let Some(proc) = table.get(pid) else {
         return -1;
-    }
-    let sock_idx = (-(ofd.host_handle + 1)) as usize;
-    let sock = match proc.sockets.get(sock_idx) {
-        Some(s) => s,
-        None => return -1,
     };
-    if sock.state != SocketState::Listening {
+    let Ok(entry) = proc.fd_table.get(fd) else {
         return -1;
-    }
-    sock.accept_wake_idx.map(|idx| idx as i32).unwrap_or(-1)
+    };
+    syscalls::listener_accept_wake_for_entry(proc, entry)
+        .map(|idx| idx as i32)
+        .unwrap_or(-1)
+}
+
+/// Find the lowest live listener fd carrying `wake_idx` in `pid`.
+///
+/// The wake token identifies the shared listener/open-description state across
+/// descriptor aliases. Iterating the kernel fd table lets the host remap a
+/// listener mirror after exec closes a CLOEXEC alias without guessing the
+/// process's current `RLIMIT_NOFILE` ceiling.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_find_listener_fd_by_accept_wake(pid: u32, wake_idx: u32) -> i32 {
+    let table = unsafe { &*PROCESS_TABLE.0.get() };
+    table
+        .get(pid)
+        .and_then(|proc| syscalls::find_listener_fd_by_accept_wake(proc, wake_idx))
+        .unwrap_or(-1)
 }
 
 /// Check if a file descriptor has O_NONBLOCK set.

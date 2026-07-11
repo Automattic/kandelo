@@ -146,6 +146,110 @@ describe("CentralizedKernelWorker Process Management", () => {
     );
   });
 
+  it("inherits child fd mirrors when the parent channel becomes stale during fork", async () => {
+    const parentPid = 77;
+    const memory = new WebAssembly.Memory({ initial: 4, maximum: 4, shared: true });
+    const oldChannel = { pid: parentPid, channelOffset: WASM_PAGE_SIZE, memory };
+    const replacementChannel = {
+      pid: parentPid,
+      channelOffset: 2 * WASM_PAGE_SIZE,
+      memory,
+    };
+    const completeChannel = vi.fn();
+    let finishFork!: (offsets: number[]) => void;
+    const forkLaunch = new Promise<number[]>((resolve) => {
+      finishFork = resolve;
+    });
+    const close = vi.fn();
+    const listener = {
+      server: { close },
+      pid: parentPid,
+      port: 8080,
+      connections: new Set(),
+    };
+    const kw = Object.assign(Object.create(CentralizedKernelWorker.prototype), {
+      callbacks: { onFork: vi.fn(() => forkLaunch) },
+      nextChildPid: 100,
+      processes: new Map([[parentPid, { channels: [replacementChannel] }]]),
+      threadForkContexts: new Map(),
+      sharedMappings: new Map(),
+      tcpListenerTargets: new Map([[8080, [{ pid: parentPid, fd: 4 }]]]),
+      tcpListenerRRIndex: new Map([[8080, 0]]),
+      tcpVirtualListenerKeys: new Map(),
+      tcpListeners: new Map([[`${parentPid}:4`, listener]]),
+      tcpConnections: new Map(),
+      shmMappings: new Map(),
+      io: { network: undefined },
+      epollInterests: new Map([[`${parentPid}:6`, [
+        { fd: 8, events: 1, data: 11n },
+      ]]]),
+      completeChannel,
+      kernelInstance: {
+        exports: {
+          kernel_fork_process: vi.fn(() => 0),
+          kernel_clear_fork_child: vi.fn(() => 0),
+          kernel_reset_signal_mask: vi.fn(() => 0),
+        },
+      },
+    }) as CentralizedKernelWorker;
+
+    (kw as any).handleFork(oldChannel, [0]);
+    expect((kw as any).tcpListenerTargets.get(8080)).toContainEqual({ pid: 100, fd: 4 });
+    (kw as any).cleanupTcpListeners(parentPid);
+    expect(close).not.toHaveBeenCalled();
+    expect((kw as any).tcpListeners.has("100:4")).toBe(true);
+    finishFork([WASM_PAGE_SIZE]);
+    await Promise.resolve();
+
+    expect((kw as any).tcpListenerTargets.get(8080)).toEqual([{ pid: 100, fd: 4 }]);
+    expect((kw as any).epollInterests.get("100:6")).toEqual([
+      { fd: 8, events: 1, data: 11n },
+    ]);
+    expect(completeChannel).not.toHaveBeenCalled();
+  });
+
+  it("removes eager child registrations and mirrors when fork worker launch fails", async () => {
+    const parentPid = 77;
+    const memory = new WebAssembly.Memory({ initial: 4, maximum: 4, shared: true });
+    const channel = { pid: parentPid, channelOffset: WASM_PAGE_SIZE, memory };
+    const completeChannel = vi.fn();
+    const deactivateProcess = vi.fn();
+    const removeProcess = vi.fn(() => 0);
+    const kw = Object.assign(Object.create(CentralizedKernelWorker.prototype), {
+      callbacks: { onFork: vi.fn(() => Promise.reject(new Error("launch failed"))) },
+      nextChildPid: 100,
+      processes: new Map([[parentPid, { channels: [channel] }]]),
+      threadForkContexts: new Map(),
+      tcpListenerTargets: new Map([[8080, [{ pid: parentPid, fd: 4 }]]]),
+      epollInterests: new Map(),
+      completeChannel,
+      deactivateProcess,
+      kernelInstance: {
+        exports: {
+          kernel_fork_process: vi.fn(() => 0),
+          kernel_clear_fork_child: vi.fn(() => 0),
+          kernel_reset_signal_mask: vi.fn(() => 0),
+          kernel_remove_process: removeProcess,
+        },
+      },
+    }) as CentralizedKernelWorker;
+
+    (kw as any).handleFork(channel, [0]);
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(deactivateProcess).toHaveBeenCalledWith(100);
+    expect(removeProcess).toHaveBeenCalledWith(100);
+    expect(completeChannel).toHaveBeenCalledWith(
+      channel,
+      HOST_INTERCEPTED_SYSCALLS.SYS_FORK,
+      [0],
+      undefined,
+      -1,
+      12,
+    );
+  });
+
   it("completes pthread SYS_EXIT channels (clearing the exiting guest's atomic-wait waiter) even when the host terminates the worker", () => {
     // Regression guard for the reused-slot notify-steal deadlock. On thread
     // exit the kernel must flip the channel status word off CH_PENDING
@@ -315,6 +419,7 @@ describe("CentralizedKernelWorker Process Management", () => {
         resolveClone = resolve;
       });
     });
+    const channel = { pid, channelOffset: mainChannelOffset, memory };
 
     const kw = Object.assign(Object.create(CentralizedKernelWorker.prototype), {
       callbacks: { onClone },
@@ -327,7 +432,7 @@ describe("CentralizedKernelWorker Process Management", () => {
       scratchOffset: 0,
       currentHandlePid: 0,
       processes: new Map([
-        [pid, { channels: [{ channelOffset: mainChannelOffset }] }],
+        [pid, { channels: [channel] }],
       ]),
       threadCtidPtrs,
       completeChannel: vi.fn(),
@@ -344,7 +449,7 @@ describe("CentralizedKernelWorker Process Management", () => {
     });
 
     (kw as any).handleClone(
-      { pid, channelOffset: mainChannelOffset, memory },
+      channel,
       [0, stackPtr, 0, tlsPtr, ctidPtr, 0],
     );
 
@@ -353,6 +458,67 @@ describe("CentralizedKernelWorker Process Management", () => {
     resolveClone(tid);
     await Promise.resolve();
     expect((kw as any).completeChannel).toHaveBeenCalled();
+  });
+
+  it("does not erase replacement clear-TID metadata from a stale clone completion", async () => {
+    const pid = 126;
+    const tid = 79;
+    const oldMemory = new WebAssembly.Memory({
+      initial: 16,
+      maximum: 16,
+      shared: true,
+    });
+    const newMemory = new WebAssembly.Memory({
+      initial: 16,
+      maximum: 16,
+      shared: true,
+    });
+    const channelOffset = WASM_PAGE_SIZE;
+    const oldChannel = { pid, channelOffset, memory: oldMemory };
+    const newChannel = { pid, channelOffset, memory: newMemory };
+    const processView = new DataView(oldMemory.buffer, channelOffset);
+    processView.setUint32(CH_DATA, 11, true);
+    processView.setUint32(CH_DATA + 4, 22, true);
+    const kernelMemory = new WebAssembly.Memory({ initial: 1, maximum: 1 });
+    const kernelView = new DataView(kernelMemory.buffer);
+    const threadCtidPtrs = new Map<string, number>();
+    let resolveClone!: (value: number) => void;
+    const onClone = vi.fn(() => new Promise<number>((resolve) => {
+      resolveClone = resolve;
+    }));
+    const completeChannel = vi.fn();
+    const kw = Object.assign(Object.create(CentralizedKernelWorker.prototype), {
+      callbacks: { onClone },
+      kernel: { toKernelPtr: (value: number | bigint) => Number(value) },
+      kernelMemory,
+      scratchOffset: 0,
+      currentHandlePid: 0,
+      processes: new Map([[pid, { channels: [oldChannel] }]]),
+      threadCtidPtrs,
+      completeChannel,
+      bindKernelTidForChannel: vi.fn(),
+      kernelInstance: {
+        exports: {
+          kernel_handle_channel: vi.fn(() => {
+            kernelView.setBigInt64(CH_RETURN, BigInt(tid), true);
+            kernelView.setUint32(CH_ERRNO, 0, true);
+            return 0;
+          }),
+        },
+      },
+    });
+
+    (kw as any).handleClone(
+      oldChannel,
+      [0, 0x00800000, 0, 0x00900000, 0x00040000, 0],
+    );
+    (kw as any).processes.set(pid, { channels: [newChannel] });
+    threadCtidPtrs.set(`${pid}:${tid}`, 0x00050000);
+    resolveClone(tid);
+    await Promise.resolve();
+
+    expect(threadCtidPtrs.get(`${pid}:${tid}`)).toBe(0x00050000);
+    expect(completeChannel).not.toHaveBeenCalled();
   });
 
   it("does not lower compact process max_addr when adding dynamic pthread channels", () => {

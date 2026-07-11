@@ -72,7 +72,8 @@ Until one of those ships, this remains a fundamental wasm limitation. The kernel
 | `fork()` | `wasm-fork-instrument`-based, fully working |
 | `sigaltstack` | Shadow stack swap via inline asm (PR #174) |
 | `dlopen()` / `dlsym()` | Dynamic Wasm module linker (host/src/dylink.ts) |
-| `exec()` / `posix_spawn()` | Full host-side exec with CWD resolution (PR #167, #178) |
+| `exec()` | In-place host-side replacement with CWD resolution; partial descriptor, signal-attribution, and closed-fd MAP_SHARED cases are tracked in [posix-status.md](posix-status.md) |
+| `posix_spawn()` | Non-forking host-side spawn with CWD resolution and file actions |
 | SysV IPC | Host-side handlers (PR #146) |
 | POSIX mqueues | Host-side handlers (PR #147) |
 | POSIX timers | setitimer/getitimer (PR #148) |
