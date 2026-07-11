@@ -7,6 +7,12 @@
 # compilation (link tests fail, run tests impossible). Values reflect our
 # musl libc + selected Wasm target.
 #
+# The configure wrapper identifies that userland to GNU build systems as
+# wasm*-unknown-linux-musl because config.sub only accepts musl with a Linux
+# kernel component. LLVM code generation remains wasm*-unknown-unknown. The
+# configure identity selects musl libc contracts; it does not promise Linux
+# kernel behavior or define __linux__ in compiled programs.
+#
 # IMPORTANT: Function availability is based on what musl libc provides
 # (i.e., what links), NOT on kernel implementation completeness. If
 # `wasm32posix-nm sysroot/lib/libc.a | grep ' T funcname'` shows the

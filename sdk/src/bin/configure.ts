@@ -4,7 +4,7 @@ import { resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { runPassthrough } from '../lib/exec.ts';
 import { isMain } from '../lib/is-main.ts';
-import { type WasmArch, detectArch, hostTriple, toolPrefix } from '../lib/arch.ts';
+import { type WasmArch, autoconfHostTriple, detectArch, toolPrefix } from '../lib/arch.ts';
 
 const __configure_filename = fileURLToPath(import.meta.url);
 const SDK_ROOT = resolve(dirname(__configure_filename), '../..');
@@ -41,7 +41,7 @@ export function buildConfigureEnv(arch: WasmArch = 'wasm32'): Record<string, str
 
 export function buildConfigureArgs(userArgs: string[], arch: WasmArch = 'wasm32'): string[] {
   return [
-    `--host=${hostTriple(arch)}`,
+    `--host=${autoconfHostTriple(arch)}`,
     '--prefix=/usr',
     ...userArgs,
   ];

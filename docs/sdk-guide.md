@@ -275,8 +275,16 @@ This sets:
 - `RANLIB=wasm32posix-ranlib`
 - `NM=wasm32posix-nm`
 - `STRIP=wasm32posix-strip`
-- `--host=wasm32-unknown-none`
+- `--host=wasm32-unknown-linux-musl`
 - `--build` (auto-detected from host system)
+
+The `--host` tuple describes Kandelo's musl userland to GNU build systems.
+GNU `config.sub` only accepts musl when paired with a Linux kernel component,
+so this is the canonical tuple that lets Autoconf and gnulib select musl ABI
+and libc behavior. It is not the compiler code-generation triple and does not
+promise a Linux kernel: `wasm32posix-cc` continues to invoke Clang with
+`--target=wasm32-unknown-unknown`, and Kandelo's documented POSIX surface
+remains authoritative.
 
 The wrapper also loads `sdk/config.site`. That file is authoritative for
 shared target facts that cross-compilation cannot discover reliably, including
