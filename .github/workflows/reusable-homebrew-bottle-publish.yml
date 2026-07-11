@@ -907,8 +907,11 @@ jobs:
           cd kandelo
           # shellcheck disable=SC1091
           . "$RUNNER_TEMP/homebrew-verified-input/receipt.env"
+          merged_tap="$RUNNER_TEMP/homebrew-merged-tap"
+          rm -rf "$merged_tap"
+          cp -a "$GITHUB_WORKSPACE/tap" "$merged_tap"
           merge_args=(
-            --tap-root "$GITHUB_WORKSPACE/tap"
+            --tap-root "$merged_tap"
             --tap-repository "$TAP_REPOSITORY"
             --formula "$FORMULA"
             --arch "$ARCH"
@@ -918,9 +921,12 @@ jobs:
             --expected-cellar "$BOTTLE_RELOCATION_CELLAR"
           )
           bash scripts/dev-shell.sh bash scripts/homebrew-merge-bottle-json.sh "${merge_args[@]}"
-          changed="$(git -C "$GITHUB_WORKSPACE/tap" diff --name-only)"
+          changed="$(git -C "$merged_tap" diff --name-only)"
           [ "$changed" = "Formula/$FORMULA.rb" ] || {
             echo "::error::bottle merge changed files outside Formula/$FORMULA.rb"; exit 1;
+          }
+          [ -z "$(git -C "$GITHUB_WORKSPACE/tap" status --short)" ] || {
+            echo "::error::bottle merge modified the archived source tap"; exit 1;
           }
 
       - name: Select exact anonymous bottle bytes for runtime validation
@@ -965,14 +971,15 @@ jobs:
           . "$RUNNER_TEMP/homebrew-verified-input/receipt.env"
           # shellcheck disable=SC1091
           . "$RUNNER_TEMP/homebrew-verified-input/runtime.env"
-          export KANDELO_HOMEBREW_TAP_ROOT="$GITHUB_WORKSPACE/tap"
+          export KANDELO_HOMEBREW_TAP_ROOT="$RUNNER_TEMP/homebrew-merged-tap"
+          export KANDELO_HOMEBREW_FORMULA_SOURCE_ROOT="$GITHUB_WORKSPACE/tap"
           export KANDELO_HOMEBREW_SIDECAR_ROOT="$RUNNER_TEMP/homebrew-sidecars"
           export KANDELO_HOMEBREW_FORMULA="$FORMULA"
           export KANDELO_HOMEBREW_ARCH="$ARCH"
           export KANDELO_HOMEBREW_RELEASE_TAG="$RELEASE_TAG"
           export KANDELO_HOMEBREW_TAP_REPOSITORY="$TAP_REPOSITORY"
           export KANDELO_HOMEBREW_BOTTLE_ARCHIVE="$RUNTIME_BOTTLE"
-          export KANDELO_HOMEBREW_BOTTLE_JSON="$BOTTLE_JSON"
+          export KANDELO_HOMEBREW_BOTTLE_JSON="$RUNNER_TEMP/homebrew-build-handoff/bottle.json"
           export KANDELO_HOMEBREW_BOTTLE_URL="$BOTTLE_URL"
           export KANDELO_HOMEBREW_BOTTLE_SHA256="$BOTTLE_SHA256"
           export KANDELO_HOMEBREW_BOTTLE_BYTES="$BOTTLE_BYTES"
@@ -988,14 +995,15 @@ jobs:
           . "$RUNNER_TEMP/homebrew-verified-input/receipt.env"
           # shellcheck disable=SC1091
           . "$RUNNER_TEMP/homebrew-verified-input/runtime.env"
-          export KANDELO_HOMEBREW_TAP_ROOT="$GITHUB_WORKSPACE/tap"
+          export KANDELO_HOMEBREW_TAP_ROOT="$RUNNER_TEMP/homebrew-merged-tap"
+          export KANDELO_HOMEBREW_FORMULA_SOURCE_ROOT="$GITHUB_WORKSPACE/tap"
           export KANDELO_HOMEBREW_SIDECAR_ROOT="$RUNNER_TEMP/homebrew-sidecars"
           export KANDELO_HOMEBREW_FORMULA="$FORMULA"
           export KANDELO_HOMEBREW_ARCH="$ARCH"
           export KANDELO_HOMEBREW_RELEASE_TAG="$RELEASE_TAG"
           export KANDELO_HOMEBREW_TAP_REPOSITORY="$TAP_REPOSITORY"
           export KANDELO_HOMEBREW_BOTTLE_ARCHIVE="$RUNTIME_BOTTLE"
-          export KANDELO_HOMEBREW_BOTTLE_JSON="$BOTTLE_JSON"
+          export KANDELO_HOMEBREW_BOTTLE_JSON="$RUNNER_TEMP/homebrew-build-handoff/bottle.json"
           export KANDELO_HOMEBREW_BOTTLE_URL="$BOTTLE_URL"
           export KANDELO_HOMEBREW_BOTTLE_SHA256="$BOTTLE_SHA256"
           export KANDELO_HOMEBREW_BOTTLE_BYTES="$BOTTLE_BYTES"
@@ -1123,13 +1131,23 @@ jobs:
         run: |
           set -euo pipefail
           publish_handoff="$RUNNER_TEMP/homebrew-publish-handoff"
-          mkdir -p "$publish_handoff/build" "$publish_handoff/sidecars"
-          for file in manifest.json bottle.json bottle.tar.gz; do
-            cp "$RUNNER_TEMP/homebrew-build-handoff/$file" "$publish_handoff/build/$file"
-          done
+          # shellcheck disable=SC1091
+          . "$RUNNER_TEMP/homebrew-verified-input/receipt.env"
+          # shellcheck disable=SC1091
+          . "$RUNNER_TEMP/homebrew-verified-input/runtime.env"
+          mkdir -p "$publish_handoff/build" "$publish_handoff/composition"
+          cp "$RUNNER_TEMP/homebrew-build-handoff/manifest.json" "$publish_handoff/build/manifest.json"
+          cp "$RUNNER_TEMP/homebrew-build-handoff/bottle.json" "$publish_handoff/build/bottle.json"
+          cp "$RUNTIME_BOTTLE" "$publish_handoff/build/bottle.tar.gz"
           cp "$RUNNER_TEMP/homebrew-upload-receipt/receipt.json" "$publish_handoff/receipt.json"
-          cp -a "$RUNNER_TEMP/homebrew-sidecars/Formula" "$publish_handoff/sidecars/"
-          cp -a "$RUNNER_TEMP/homebrew-sidecars/Kandelo" "$publish_handoff/sidecars/"
+          jq -e '
+            (.packages | length) == 1 and
+            (.packages[0].bottles | length) == 1
+          ' "$RUNNER_TEMP/homebrew-sidecars/sidecars-input.json" >/dev/null
+          jq -S '
+            .packages[0].bottles[0].bottle_file = "../build/bottle.tar.gz"
+          ' "$RUNNER_TEMP/homebrew-sidecars/sidecars-input.json" \
+            >"$publish_handoff/composition/sidecars-input.json"
           cd kandelo
           payload_args=(
             --handoff "$publish_handoff"
@@ -1259,16 +1277,6 @@ jobs:
             )
             bash scripts/dev-shell.sh bash scripts/homebrew-validate-publish-handoff.sh "${payload_args[@]}"
 
-            validation_tap="$RUNNER_TEMP/homebrew-finalizer-validation-tap"
-            cp -a "$GITHUB_WORKSPACE/tap-base" "$validation_tap"
-            rsync -a "$RUNNER_TEMP/homebrew-publish-handoff/sidecars/Formula/" "$validation_tap/Formula/"
-            rsync -a "$RUNNER_TEMP/homebrew-publish-handoff/sidecars/Kandelo/" "$validation_tap/Kandelo/"
-            host="$(bash scripts/dev-shell.sh rustc -vV | awk '/^host/ {print $2}')"
-            validation_args=(
-              cargo run --release -p xtask --target "$host" --quiet --
-              homebrew-validate --tap-root "$validation_tap"
-            )
-            bash scripts/dev-shell.sh "${validation_args[@]}"
           } 2> >(tee "$error_file" >&2)
 
       - name: Checkout tap publication branch after payload validation
@@ -1300,7 +1308,7 @@ jobs:
             cd kandelo
             publish_args=(
               --tap-root "$GITHUB_WORKSPACE/tap-publish"
-              --sidecar-root "$RUNNER_TEMP/homebrew-publish-handoff/sidecars"
+              --publication-handoff "$RUNNER_TEMP/homebrew-publish-handoff"
               --formula "$KANDELO_HOMEBREW_FORMULA"
               --arch "$KANDELO_HOMEBREW_ARCH"
               --release-tag "$KANDELO_HOMEBREW_RELEASE_TAG"
