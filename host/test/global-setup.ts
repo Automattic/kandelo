@@ -27,6 +27,7 @@ const TEST_PROGRAMS = [
   "lseek_invalid_test.c",
   "environment_lifecycle_test.c",
   "chown_sentinel_test.c",
+  "unix_listener_exec_test.c",
   "putenv_test.c",
   "getaddrinfo_test.c",
   "sysv_ipc_test.c",
@@ -50,6 +51,7 @@ const TEST_PROGRAMS = [
 
 const FORK_INSTRUMENTED_PROGRAMS = new Set([
   "environment_lifecycle_test.c",
+  "unix_listener_exec_test.c",
 ]);
 
 /** WAT fixtures used by host runtime tests. */
@@ -88,7 +90,12 @@ export async function setup() {
         });
         execFileSync(
           "bash",
-          [join(repoRoot, "scripts/run-wasm-fork-instrument.sh"), linked, "-o", out],
+          [
+            join(repoRoot, "scripts/run-wasm-fork-instrument.sh"),
+            linked,
+            "-o",
+            out,
+          ],
           { cwd: repoRoot, stdio: "pipe" },
         );
       } finally {
