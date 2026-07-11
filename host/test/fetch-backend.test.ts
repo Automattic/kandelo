@@ -105,18 +105,23 @@ describe("FetchNetworkBackend", () => {
 
     it("returns numeric IPv4 literals without synthesizing a DNS address", () => {
       const backend = new FetchNetworkBackend();
+      expect(Array.from(backend.getaddrinfo("2130706433"))).toEqual([127, 0, 0, 1]);
+      expect(Array.from(backend.getaddrinfo("127.1"))).toEqual([127, 0, 0, 1]);
+      expect(Array.from(backend.getaddrinfo("127.1.1"))).toEqual([127, 1, 0, 1]);
       expect(Array.from(backend.getaddrinfo("127.0.0.1"))).toEqual([127, 0, 0, 1]);
-      expect(Array.from(backend.getaddrinfo("1.2.3"))).toEqual([1, 2, 0, 3]);
     });
 
     it("rejects malformed numeric IPv4 literals", () => {
       const backend = new FetchNetworkBackend();
+      expect(() => backend.getaddrinfo("4294967296")).toThrow("ENOENT");
+      expect(() => backend.getaddrinfo("1..2")).toThrow("ENOENT");
       expect(() => backend.getaddrinfo("9999.9999.9999.9999")).toThrow("ENOENT");
       expect(() => backend.getaddrinfo("1.2.3.256")).toThrow("ENOENT");
     });
 
     it("rejects syntactically invalid DNS names", () => {
       const backend = new FetchNetworkBackend();
+      expect(backend.getaddrinfo("example.com.")).toHaveLength(4);
       expect(() => backend.getaddrinfo(".toto.toto.toto")).toThrow("ENOENT");
       expect(() => backend.getaddrinfo(`www.${"x".repeat(100)}.com`)).toThrow("ENOENT");
     });
@@ -191,18 +196,23 @@ describe("TlsNetworkBackend HTTP proxy path", () => {
   describe("getaddrinfo", () => {
     it("returns numeric IPv4 literals without synthesizing a DNS address", () => {
       const backend = new TlsNetworkBackend();
+      expect(Array.from(backend.getaddrinfo("2130706433"))).toEqual([127, 0, 0, 1]);
+      expect(Array.from(backend.getaddrinfo("127.1"))).toEqual([127, 0, 0, 1]);
+      expect(Array.from(backend.getaddrinfo("127.1.1"))).toEqual([127, 1, 0, 1]);
       expect(Array.from(backend.getaddrinfo("127.0.0.1"))).toEqual([127, 0, 0, 1]);
-      expect(Array.from(backend.getaddrinfo("1.2.3"))).toEqual([1, 2, 0, 3]);
     });
 
     it("rejects malformed numeric IPv4 literals", () => {
       const backend = new TlsNetworkBackend();
+      expect(() => backend.getaddrinfo("4294967296")).toThrow("ENOENT");
+      expect(() => backend.getaddrinfo("1..2")).toThrow("ENOENT");
       expect(() => backend.getaddrinfo("9999.9999.9999.9999")).toThrow("ENOENT");
       expect(() => backend.getaddrinfo("1.2.3.256")).toThrow("ENOENT");
     });
 
     it("rejects syntactically invalid DNS names", () => {
       const backend = new TlsNetworkBackend();
+      expect(backend.getaddrinfo("example.com.")).toHaveLength(4);
       expect(() => backend.getaddrinfo(".toto.toto.toto")).toThrow("ENOENT");
       expect(() => backend.getaddrinfo(`www.${"x".repeat(100)}.com`)).toThrow("ENOENT");
     });
