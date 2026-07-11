@@ -66,11 +66,13 @@ export const EPERM = -1;
 export const ENOENT = -2;
 export const EIO = -5;
 export const EBADF = -9;
+export const EBUSY = -16;
 export const EEXIST = -17;
 export const ENOTDIR = -20;
 export const EISDIR = -21;
 export const EINVAL = -22;
 export const EMFILE = -24;
+export const EFBIG = -27;
 export const ENOSPC = -28;
 export const ENAMETOOLONG = -36;
 export const ENOTEMPTY = -39;
@@ -93,6 +95,7 @@ const SB_BLOCK_BITMAP_BLOCKS = 48;
 const SB_INODE_TABLE_BLOCKS = 52;
 const SB_GENERATION = 56;
 const SB_GLOBAL_LOCK = 60;
+const SB_NAMESPACE_LOCK = 64;
 const SB_MAX_SIZE_BLOCKS = 68;
 const SB_GROW_CHUNK_BLOCKS = 72;
 
@@ -111,7 +114,9 @@ const INO_UID = 96; // u32
 const INO_GID = 100; // u32
 const INO_GENERATION = 104; // uint64, incremented when an inode slot is allocated
 const INO_OPEN_COUNT = 112; // u32, open fd references
-// 116-127 reserved for future fields (flags, xattrs, etc.)
+const INO_DIR_SEQUENCE = 116; // u32, incremented after every directory mutation
+const INO_DATA_SEQUENCE = 120; // u32, incremented after explicit data mutation
+// 124-127 reserved for future fields (flags, xattrs, etc.)
 
 // FD entry layout
 const FD_INO = 4;
@@ -122,12 +127,16 @@ const FD_IS_DIR = 20;
 // Lock bits
 const WRITER_BIT = 0x80000000 | 0; // -2147483648 as int32
 const READER_MASK = 0x7fffffff | 0;
+const MAX_FILE_BLOCKS =
+  DIRECT_BLOCKS + PTRS_PER_BLOCK + PTRS_PER_BLOCK * PTRS_PER_BLOCK;
+const MAX_FILE_SIZE = MAX_FILE_BLOCKS * BLOCK_SIZE;
 
 // ── Types ────────────────────────────────────────────────────────────
 
 export interface StatResult {
   ino: number;
   generation: number;
+  dataSequence: number;
   mode: number;
   linkCount: number;
   size: number;
@@ -147,6 +156,25 @@ export interface SharedFsStats {
   maxName: number;
 }
 
+export interface SharedFsIdentityState {
+  ino: number;
+  generation: number;
+  dataSequence: number;
+  paths: string[];
+}
+
+export interface NamespaceEntryIdentity {
+  ino: number;
+  generation: number;
+  linkCount: number;
+  mode: number;
+}
+
+export interface RenameIdentityResult {
+  source: NamespaceEntryIdentity;
+  replaced?: NamespaceEntryIdentity;
+}
+
 interface DirIndexEntry {
   ino: number;
   abs: number;
@@ -156,6 +184,7 @@ interface DirIndexEntry {
 
 interface DirIndex {
   generation: number;
+  mutationSequence: number;
   size: number;
   entries: Map<string, DirIndexEntry>;
   free: Array<{ abs: number; recLen: number }>;
@@ -165,11 +194,13 @@ const ERROR_MESSAGES: Record<number, string> = {
   [ENOENT]: "No such file or directory",
   [EIO]: "I/O error",
   [EBADF]: "Bad file descriptor",
+  [EBUSY]: "Device or resource busy",
   [EEXIST]: "File exists",
   [ENOTDIR]: "Not a directory",
   [EISDIR]: "Is a directory",
   [EINVAL]: "Invalid argument",
   [EMFILE]: "Too many open files",
+  [EFBIG]: "File too large",
   [ENOSPC]: "No space left on device",
   [ENAMETOOLONG]: "File name too long",
   [ENOTEMPTY]: "Directory not empty",
@@ -191,6 +222,10 @@ export class SFSError extends Error {
 const encoder = new TextEncoder();
 const decoder = new TextDecoder();
 const DOTDOT_BYTES = encoder.encode("..");
+
+function isReservedDirectoryName(name: string): boolean {
+  return name === "." || name === "..";
+}
 
 /**
  * Safely decode a Uint8Array that may be backed by SharedArrayBuffer.
@@ -216,13 +251,14 @@ export class SharedFS {
   private dirIndexes = new Map<number, DirIndex>();
   private blockAllocHint = 0;
   private inodeAllocHint = 2;
+  private atomicsWaitAllowed: boolean | undefined;
 
   /**
    * Directory operations are stored in ext2-style variable-length entries.
-   * Linear scans are fine for normal directories, but workloads such as
-   * PHP's bug36365 test create tens of thousands of files in one directory.
-   * Build an in-memory name index once a directory reaches this size so
-   * creates/stat lookups stay near O(1) instead of O(n²).
+   * Workloads such as PHP's bug36365 test create tens of thousands of files in
+   * one directory. Once a directory reaches this threshold, retain validated
+   * entry locations so each repeated exact-name lookup does not rescan every
+   * preceding variable-length record.
    */
   private static readonly DIR_INDEX_MIN_SIZE = 64 * 1024;
 
@@ -246,14 +282,11 @@ export class SharedFS {
     // Size inodes for max capacity so we don't run out after growth
     let totalInodes = Math.floor(maxBlocks / 4);
     if (totalInodes < 32) totalInodes = 32;
-    totalInodes =
-      Math.ceil(totalInodes / INODES_PER_BLOCK) * INODES_PER_BLOCK;
+    totalInodes = Math.ceil(totalInodes / INODES_PER_BLOCK) * INODES_PER_BLOCK;
 
     const inodeBitmapBlocks = Math.ceil(totalInodes / (BLOCK_SIZE * 8));
     const blockBitmapBlocks = Math.ceil(maxBlocks / (BLOCK_SIZE * 8));
-    const inodeTableBlocks = Math.ceil(
-      (totalInodes * INODE_SIZE) / BLOCK_SIZE,
-    );
+    const inodeTableBlocks = Math.ceil((totalInodes * INODE_SIZE) / BLOCK_SIZE);
 
     const inodeBitmapStart = 1;
     const blockBitmapStart = inodeBitmapStart + inodeBitmapBlocks;
@@ -353,15 +386,163 @@ export class SharedFS {
     return fs;
   }
 
-  static mount(buffer: SharedArrayBuffer): SharedFS {
+  static mount(
+    buffer: SharedArrayBuffer,
+    options?: { restoreImage?: boolean },
+  ): SharedFS {
     const fs = new SharedFS(buffer);
     if (fs.r32(SB_MAGIC) !== MAGIC) throw new SFSError(EINVAL, "Bad magic");
     if (fs.r32(SB_VERSION) !== VERSION)
       throw new SFSError(EINVAL, "Bad version");
     if (fs.r32(SB_BLOCK_SIZE) !== BLOCK_SIZE)
       throw new SFSError(EINVAL, "Bad block size");
+    if (options?.restoreImage) fs.resetRestoredRuntimeState();
     fs.resetAllocationHints();
     return fs;
+  }
+
+  /**
+   * Return a portable, quiescent copy of the filesystem bytes.
+   *
+   * File descriptors and inode locks are process-runtime state, not VFS image
+   * state. Refuse to snapshot while descriptors are live, then clear all lock
+   * words in the copy so a restored image cannot inherit a dead worker's lock.
+   */
+  snapshotBytes(): Uint8Array {
+    return this.withNamespaceLock(() => this.snapshotBytesUnlocked());
+  }
+
+  snapshotState(): {
+    bytes: Uint8Array;
+    identities: Map<string, SharedFsIdentityState>;
+  } {
+    return this.withNamespaceLock(() => {
+      // Validate quiescence and copy first. With the namespace lock held, no
+      // new descriptor can appear while the matching path identities are
+      // collected for lazy metadata.
+      const bytes = this.snapshotBytesUnlocked();
+      return { bytes, identities: this.collectIdentityStateUnlocked() };
+    });
+  }
+
+  identityState(): Map<string, SharedFsIdentityState> {
+    return this.withNamespaceLock(() => this.collectIdentityStateUnlocked());
+  }
+
+  private snapshotBytesUnlocked(): Uint8Array {
+    for (let fd = 0; fd < MAX_FDS; fd++) {
+      const base = FD_TABLE_OFFSET + fd * FD_ENTRY_SIZE;
+      if (Atomics.load(this.i32, base >> 2) !== 0) {
+        throw new SFSError(
+          EBUSY,
+          "Cannot save a VFS image with open descriptors",
+        );
+      }
+    }
+
+    const totalInodes = this.r32(SB_TOTAL_INODES);
+    for (let ino = 0; ino < totalInodes; ino++) {
+      const off = this.inodeOffset(ino);
+      if (this.r32(off + INO_OPEN_COUNT) !== 0) {
+        throw new SFSError(
+          EBUSY,
+          "Cannot save a VFS image with open inode references",
+        );
+      }
+    }
+
+    const copy = new Uint8Array(this.buffer.byteLength);
+    copy.set(this.u8);
+    const view = new DataView(copy.buffer);
+    view.setUint32(SB_GLOBAL_LOCK, 0, true);
+    view.setUint32(SB_NAMESPACE_LOCK, 0, true);
+    copy.fill(0, FD_TABLE_OFFSET, BLOCK_SIZE);
+
+    for (let ino = 0; ino < totalInodes; ino++) {
+      const off = this.inodeOffset(ino);
+      view.setUint32(off + INO_LOCK_STATE, 0, true);
+      view.setUint32(off + INO_OPEN_COUNT, 0, true);
+    }
+    return copy;
+  }
+
+  private collectIdentityStateUnlocked(): Map<string, SharedFsIdentityState> {
+    const identities = new Map<string, SharedFsIdentityState>();
+    const directories: Array<{ ino: number; path: string }> = [
+      { ino: ROOT_INO, path: "/" },
+    ];
+    const visitedDirectories = new Set<number>();
+
+    while (directories.length > 0) {
+      const directory = directories.pop()!;
+      if (visitedDirectories.has(directory.ino)) throw new SFSError(EIO);
+      visitedDirectories.add(directory.ino);
+
+      const inoOff = this.inodeOffset(directory.ino);
+      if ((this.r32(inoOff + INO_MODE) & S_IFMT) !== S_IFDIR) {
+        throw new SFSError(EIO);
+      }
+      const dirSize = this.r64(inoOff + INO_SIZE);
+      let pos = 0;
+      while (pos < dirSize) {
+        const fileBlock = Math.floor(pos / BLOCK_SIZE);
+        const blockOff = pos % BLOCK_SIZE;
+        const phys = this.inodeBlockMap(directory.ino, fileBlock, false);
+        if (phys <= 0) throw new SFSError(EIO);
+        const blockBase = phys * BLOCK_SIZE;
+        const remain = Math.min(dirSize - pos, BLOCK_SIZE - blockOff);
+
+        let off = blockOff;
+        while (off < blockOff + remain) {
+          const abs = blockBase + off;
+          const entIno = this.r32(abs);
+          const recLen = this.view.getUint16(abs + 4, true);
+          const nameLen = this.view.getUint16(abs + 6, true);
+          if (!this.isValidDirEntry(off, blockOff + remain, recLen, nameLen)) {
+            throw new SFSError(EIO);
+          }
+          if (entIno !== 0) {
+            if (!this.inodeIsAllocated(entIno)) throw new SFSError(EIO);
+            const name = safeDecode(
+              this.u8.subarray(
+                abs + DIRENT_HEADER_SIZE,
+                abs + DIRENT_HEADER_SIZE + nameLen,
+              ),
+            );
+            if (name !== "." && name !== "..") {
+              const childPath =
+                directory.path === "/"
+                  ? `/${name}`
+                  : `${directory.path}/${name}`;
+              const childOff = this.inodeOffset(entIno);
+              const generation = this.r64(childOff + INO_GENERATION);
+              const key = `${entIno}:${generation}`;
+              let identity = identities.get(key);
+              if (!identity) {
+                identity = {
+                  ino: entIno,
+                  generation,
+                  dataSequence:
+                    Atomics.load(
+                      this.i32,
+                      (childOff + INO_DATA_SEQUENCE) >> 2,
+                    ) >>> 0,
+                  paths: [],
+                };
+                identities.set(key, identity);
+              }
+              identity.paths.push(childPath);
+              if ((this.r32(childOff + INO_MODE) & S_IFMT) === S_IFDIR) {
+                directories.push({ ino: entIno, path: childPath });
+              }
+            }
+          }
+          off += recLen;
+        }
+        pos += remain;
+      }
+    }
+    return identities;
   }
 
   statfs(): SharedFsStats {
@@ -405,6 +586,32 @@ export class SharedFS {
     this.view.setBigUint64(off, BigInt(v), true);
   }
 
+  /**
+   * Wait for a shared lock word to change.
+   *
+   * Browser main threads forbid Atomics.wait(). The legacy shared-filesystem
+   * BrowserKernel path still exposes synchronous MemoryFileSystem methods on
+   * that thread, so fall back to atomic polling while the independently
+   * scheduled kernel worker finishes its short critical section. Preferred
+   * kernel-owned browser boots never exercise this fallback.
+   */
+  private waitForAtomicChange(index: number, expected: number): void {
+    if (this.atomicsWaitAllowed !== false) {
+      try {
+        Atomics.wait(this.i32, index, expected);
+        this.atomicsWaitAllowed = true;
+        return;
+      } catch (error) {
+        if (!(error instanceof TypeError)) throw error;
+        this.atomicsWaitAllowed = false;
+      }
+    }
+    while (Atomics.load(this.i32, index) === expected) {
+      // Synchronous SharedFS cannot yield a Promise here. The lock owner is a
+      // different worker, so atomic polling does not prevent its progress.
+    }
+  }
+
   private resetAllocationHints(): void {
     this.blockAllocHint = this.findNextFreeBlockHint();
     this.inodeAllocHint = this.findNextFreeInodeHint();
@@ -440,7 +647,7 @@ export class SharedFS {
     for (;;) {
       const old = Atomics.compareExchange(this.i32, idx, 0, 1);
       if (old === 0) return;
-      Atomics.wait(this.i32, idx, 1);
+      this.waitForAtomicChange(idx, 1);
     }
   }
 
@@ -448,6 +655,67 @@ export class SharedFS {
     const idx = SB_GLOBAL_LOCK >> 2;
     Atomics.store(this.i32, idx, 0);
     Atomics.notify(this.i32, idx, Infinity);
+  }
+
+  // ── Namespace lock (path resolution and mutation) ───────────────
+
+  private namespaceLock(): void {
+    const idx = SB_NAMESPACE_LOCK >> 2;
+    for (;;) {
+      const old = Atomics.compareExchange(this.i32, idx, 0, 1);
+      if (old === 0) return;
+      this.waitForAtomicChange(idx, 1);
+    }
+  }
+
+  private namespaceUnlock(): void {
+    const idx = SB_NAMESPACE_LOCK >> 2;
+    Atomics.store(this.i32, idx, 0);
+    Atomics.notify(this.i32, idx, Infinity);
+  }
+
+  private withNamespaceLock<T>(operation: () => T): T {
+    this.namespaceLock();
+    try {
+      return operation();
+    } finally {
+      this.namespaceUnlock();
+    }
+  }
+
+  /** Reset process-local runtime state after copying a portable image. */
+  private resetRestoredRuntimeState(): void {
+    // The buffer is private to fromImage(), so stale locks can be cleared
+    // directly before any lock-taking operation is attempted.
+    Atomics.store(this.i32, SB_GLOBAL_LOCK >> 2, 0);
+    Atomics.store(this.i32, SB_NAMESPACE_LOCK >> 2, 0);
+    this.u8.fill(0, FD_TABLE_OFFSET, BLOCK_SIZE);
+
+    const totalInodes = this.r32(SB_TOTAL_INODES);
+    const ibStart = this.r32(SB_INODE_BITMAP_START) * BLOCK_SIZE;
+    for (let ino = 0; ino < totalInodes; ino++) {
+      const off = this.inodeOffset(ino);
+      this.w32(off + INO_LOCK_STATE, 0);
+      this.w32(off + INO_OPEN_COUNT, 0);
+      if (ino < 2) continue;
+      const word = this.r32(ibStart + (ino >> 5) * 4);
+      if ((word & (1 << (ino & 31))) === 0) continue;
+      if (this.r32(off + INO_LINK_COUNT) !== 0) continue;
+
+      const mode = this.r32(off + INO_MODE);
+      const size = this.r64(off + INO_SIZE);
+      if ((mode & S_IFMT) === S_IFLNK && size <= INLINE_SYMLINK_SIZE) {
+        this.u8.fill(
+          0,
+          off + INO_DIRECT,
+          off + INO_DIRECT + INLINE_SYMLINK_SIZE,
+        );
+        this.w64(off + INO_SIZE, 0);
+      } else {
+        this.inodeTruncate(ino, 0);
+      }
+      this.inodeFree(ino);
+    }
   }
 
   // ── Block allocator ──────────────────────────────────────────────
@@ -607,6 +875,7 @@ export class SharedFS {
 
     for (;;) {
       const word = Atomics.load(this.i32, idx);
+      if ((word & (1 << bit)) === 0) throw new SFSError(EIO);
       const desired = word & ~(1 << bit);
       const old = Atomics.compareExchange(this.i32, idx, word, desired);
       if (old === word) break;
@@ -615,9 +884,16 @@ export class SharedFS {
     if (ino >= 2 && ino < this.inodeAllocHint) this.inodeAllocHint = ino;
   }
 
-  private inodeAddOpenRef(ino: number): void {
-    const idx = (this.inodeOffset(ino) + INO_OPEN_COUNT) >> 2;
-    Atomics.add(this.i32, idx, 1);
+  private inodeAddOpenRef(ino: number): boolean {
+    this.inodeWriteLock(ino);
+    try {
+      const off = this.inodeOffset(ino);
+      if (this.r32(off + INO_LINK_COUNT) === 0) return false;
+      this.w32(off + INO_OPEN_COUNT, this.r32(off + INO_OPEN_COUNT) + 1);
+      return true;
+    } finally {
+      this.inodeWriteUnlock(ino);
+    }
   }
 
   private inodeDropOpenRef(ino: number): void {
@@ -676,15 +952,10 @@ export class SharedFS {
     for (;;) {
       const cur = Atomics.load(this.i32, lockIdx);
       if (cur & WRITER_BIT) {
-        Atomics.wait(this.i32, lockIdx, cur);
+        this.waitForAtomicChange(lockIdx, cur);
         continue;
       }
-      const old = Atomics.compareExchange(
-        this.i32,
-        lockIdx,
-        cur,
-        cur + 1,
-      );
+      const old = Atomics.compareExchange(this.i32, lockIdx, cur, cur + 1);
       if (old === cur) return;
     }
   }
@@ -702,15 +973,10 @@ export class SharedFS {
     for (;;) {
       const cur = Atomics.load(this.i32, lockIdx);
       if (cur !== 0) {
-        Atomics.wait(this.i32, lockIdx, cur);
+        this.waitForAtomicChange(lockIdx, cur);
         continue;
       }
-      const old = Atomics.compareExchange(
-        this.i32,
-        lockIdx,
-        0,
-        WRITER_BIT,
-      );
+      const old = Atomics.compareExchange(this.i32, lockIdx, 0, WRITER_BIT);
       if (old === 0) return;
     }
   }
@@ -745,18 +1011,26 @@ export class SharedFS {
     fileBlock -= DIRECT_BLOCKS;
     if (fileBlock < PTRS_PER_BLOCK) {
       let ind = this.r32(inoOff + INO_INDIRECT);
+      let allocatedIndirect = false;
       if (ind === 0) {
         if (!allocate) return 0;
         ind = this.blockAllocWithGrow();
         if (ind < 0) return ind;
         this.w32(inoOff + INO_INDIRECT, ind);
+        allocatedIndirect = true;
       }
       const ptrOff = ind * BLOCK_SIZE + fileBlock * 4;
       const ptr = this.r32(ptrOff);
       if (ptr !== 0) return ptr;
       if (!allocate) return 0;
       const blk = this.blockAllocWithGrow();
-      if (blk < 0) return blk;
+      if (blk < 0) {
+        if (allocatedIndirect) {
+          this.w32(inoOff + INO_INDIRECT, 0);
+          this.blockFree(ind);
+        }
+        return blk;
+      }
       this.w32(ptrOff, blk);
       return blk;
     }
@@ -768,20 +1042,30 @@ export class SharedFS {
       const idx2 = fileBlock % PTRS_PER_BLOCK;
 
       let dind = this.r32(inoOff + INO_DOUBLE_INDIRECT);
+      let allocatedDoubleIndirect = false;
       if (dind === 0) {
         if (!allocate) return 0;
         dind = this.blockAllocWithGrow();
         if (dind < 0) return dind;
         this.w32(inoOff + INO_DOUBLE_INDIRECT, dind);
+        allocatedDoubleIndirect = true;
       }
 
       const l1Off = dind * BLOCK_SIZE + idx1 * 4;
       let l1 = this.r32(l1Off);
+      let allocatedFirstLevel = false;
       if (l1 === 0) {
         if (!allocate) return 0;
         l1 = this.blockAllocWithGrow();
-        if (l1 < 0) return l1;
+        if (l1 < 0) {
+          if (allocatedDoubleIndirect) {
+            this.w32(inoOff + INO_DOUBLE_INDIRECT, 0);
+            this.blockFree(dind);
+          }
+          return l1;
+        }
         this.w32(l1Off, l1);
+        allocatedFirstLevel = true;
       }
 
       const l2Off = l1 * BLOCK_SIZE + idx2 * 4;
@@ -789,7 +1073,17 @@ export class SharedFS {
       if (ptr !== 0) return ptr;
       if (!allocate) return 0;
       const blk = this.blockAllocWithGrow();
-      if (blk < 0) return blk;
+      if (blk < 0) {
+        if (allocatedFirstLevel) {
+          this.w32(l1Off, 0);
+          this.blockFree(l1);
+        }
+        if (allocatedDoubleIndirect) {
+          this.w32(inoOff + INO_DOUBLE_INDIRECT, 0);
+          this.blockFree(dind);
+        }
+        return blk;
+      }
       this.w32(l2Off, blk);
       return blk;
     }
@@ -844,7 +1138,7 @@ export class SharedFS {
     const inoOff = this.inodeOffset(ino);
     const size = this.r64(inoOff + INO_SIZE);
     if (offset > size) {
-      this.zeroInodeRange(ino, size, offset);
+      this.zeroOldEofTail(ino, size);
     }
 
     let totalWritten = 0;
@@ -857,7 +1151,10 @@ export class SharedFS {
       if (chunk > count) chunk = count;
 
       const phys = this.inodeBlockMap(ino, fileBlock, true);
-      if (phys < 0) return totalWritten > 0 ? totalWritten : phys;
+      if (phys < 0) {
+        if (totalWritten === 0) return phys;
+        break;
+      }
 
       const dstOff = phys * BLOCK_SIZE + blockOff;
       this.u8.set(src.subarray(srcPos, srcPos + chunk), dstOff);
@@ -868,13 +1165,14 @@ export class SharedFS {
       totalWritten += chunk;
     }
 
-    if (offset > this.r64(inoOff + INO_SIZE)) {
+    if (totalWritten > 0 && offset > this.r64(inoOff + INO_SIZE)) {
       this.w64(inoOff + INO_SIZE, offset);
     }
     if (totalWritten > 0) {
       const now = Date.now();
       this.w64(inoOff + INO_MTIME, now);
       this.w64(inoOff + INO_CTIME, now);
+      Atomics.add(this.i32, (inoOff + INO_DATA_SEQUENCE) >> 2, 1);
     }
     return totalWritten;
   }
@@ -893,6 +1191,21 @@ export class SharedFS {
     }
   }
 
+  /**
+   * Zero only the allocated tail of the old EOF block. Sparse extension does
+   * not need to walk logical holes: absent blocks already read as zero and a
+   * newly allocated block is cleared by blockAlloc().
+   */
+  private zeroOldEofTail(ino: number, oldSize: number): void {
+    const blockOff = oldSize % BLOCK_SIZE;
+    if (blockOff === 0) return;
+    const fileBlock = Math.floor(oldSize / BLOCK_SIZE);
+    const phys = this.inodeBlockMap(ino, fileBlock, false);
+    if (phys <= 0) return;
+    const start = phys * BLOCK_SIZE + blockOff;
+    this.u8.fill(0, start, phys * BLOCK_SIZE + BLOCK_SIZE);
+  }
+
   private freeBlocksFrom(ino: number, fromBlock: number): void {
     const inoOff = this.inodeOffset(ino);
 
@@ -908,8 +1221,7 @@ export class SharedFS {
     // Single indirect
     const ind = this.r32(inoOff + INO_INDIRECT);
     if (ind) {
-      const start =
-        fromBlock > DIRECT_BLOCKS ? fromBlock - DIRECT_BLOCKS : 0;
+      const start = fromBlock > DIRECT_BLOCKS ? fromBlock - DIRECT_BLOCKS : 0;
       for (let i = start; i < PTRS_PER_BLOCK; i++) {
         const ptrOff = ind * BLOCK_SIZE + i * 4;
         const ptr = this.r32(ptrOff);
@@ -959,19 +1271,24 @@ export class SharedFS {
     }
   }
 
-  private inodeTruncate(ino: number, newSize: number): void {
+  private inodeTruncate(
+    ino: number,
+    newSize: number,
+    forceDataMutation = false,
+  ): void {
     const inoOff = this.inodeOffset(ino);
     const curSize = this.r64(inoOff + INO_SIZE);
     const sizeChanged = newSize !== curSize;
     if (newSize >= curSize) {
       if (newSize > curSize) {
-        this.zeroInodeRange(ino, curSize, newSize);
+        this.zeroOldEofTail(ino, curSize);
       }
       this.w64(inoOff + INO_SIZE, newSize);
-      if (sizeChanged) {
+      if (sizeChanged || forceDataMutation) {
         const now = Date.now();
         this.w64(inoOff + INO_MTIME, now);
         this.w64(inoOff + INO_CTIME, now);
+        Atomics.add(this.i32, (inoOff + INO_DATA_SEQUENCE) >> 2, 1);
       }
       return;
     }
@@ -985,11 +1302,17 @@ export class SharedFS {
     const keepBlocks = Math.ceil(newSize / BLOCK_SIZE);
     this.freeBlocksFrom(ino, keepBlocks);
     this.w64(inoOff + INO_SIZE, newSize);
-    if (sizeChanged) {
+    if (sizeChanged || forceDataMutation) {
       const now = Date.now();
       this.w64(inoOff + INO_MTIME, now);
       this.w64(inoOff + INO_CTIME, now);
+      Atomics.add(this.i32, (inoOff + INO_DATA_SEQUENCE) >> 2, 1);
     }
+  }
+
+  private validateFileSize(size: number): void {
+    if (!Number.isSafeInteger(size) || size < 0) throw new SFSError(EINVAL);
+    if (size > MAX_FILE_SIZE) throw new SFSError(EFBIG);
   }
 
   // ── Directory operations ─────────────────────────────────────────
@@ -999,6 +1322,13 @@ export class SharedFS {
     const now = Date.now();
     this.w64(inoOff + INO_MTIME, now);
     this.w64(inoOff + INO_CTIME, now);
+    const mutationSequence =
+      (Atomics.add(this.i32, (inoOff + INO_DIR_SEQUENCE) >> 2, 1) + 1) >>> 0;
+    const index = this.dirIndexes.get(dirIno);
+    if (index) {
+      index.mutationSequence = mutationSequence;
+      index.size = this.r64(inoOff + INO_SIZE);
+    }
   }
 
   private dirNameKey(name: Uint8Array): string {
@@ -1014,9 +1344,32 @@ export class SharedFS {
     return true;
   }
 
+  private isValidDirEntry(
+    off: number,
+    endOff: number,
+    recLen: number,
+    nameLen: number,
+  ): boolean {
+    return (
+      recLen >= DIRENT_HEADER_SIZE &&
+      recLen % 4 === 0 &&
+      off + recLen <= endOff &&
+      nameLen <= recLen - DIRENT_HEADER_SIZE
+    );
+  }
+
+  private inodeIsAllocated(ino: number): boolean {
+    const totalInodes = this.r32(SB_TOTAL_INODES);
+    if (ino <= 0 || ino >= totalInodes) return false;
+    const ibStart = this.r32(SB_INODE_BITMAP_START) * BLOCK_SIZE;
+    const word = Atomics.load(this.i32, (ibStart >> 2) + (ino >> 5));
+    return (word & (1 << (ino & 31))) !== 0;
+  }
+
   private rebuildDirIndex(
     dirIno: number,
     generation: number,
+    mutationSequence: number,
     dirSize: number,
   ): DirIndex | number {
     const entries = new Map<string, DirIndexEntry>();
@@ -1040,9 +1393,11 @@ export class SharedFS {
         const recLen = this.view.getUint16(abs + 4, true);
         const entNameLen = this.view.getUint16(abs + 6, true);
 
-        if (recLen === 0) return EIO;
+        if (!this.isValidDirEntry(off, blockOff + remain, recLen, entNameLen))
+          return EIO;
 
         if (entIno !== 0) {
+          if (!this.inodeIsAllocated(entIno)) return EIO;
           const name = safeDecode(
             this.u8.subarray(
               abs + DIRENT_HEADER_SIZE,
@@ -1064,7 +1419,13 @@ export class SharedFS {
       pos += remain;
     }
 
-    const index = { generation, size: dirSize, entries, free };
+    const index = {
+      generation,
+      mutationSequence,
+      size: dirSize,
+      entries,
+      free,
+    };
     this.dirIndexes.set(dirIno, index);
     return index;
   }
@@ -1073,10 +1434,13 @@ export class SharedFS {
     const inoOff = this.inodeOffset(dirIno);
     const dirSize = this.r64(inoOff + INO_SIZE);
     const generation = this.r64(inoOff + INO_GENERATION);
+    const mutationSequence =
+      Atomics.load(this.i32, (inoOff + INO_DIR_SEQUENCE) >> 2) >>> 0;
     const cached = this.dirIndexes.get(dirIno);
     if (
       cached &&
       cached.generation === generation &&
+      cached.mutationSequence === mutationSequence &&
       cached.size === dirSize
     ) {
       return cached;
@@ -1084,7 +1448,7 @@ export class SharedFS {
     if (cached) this.dirIndexes.delete(dirIno);
 
     if (dirSize < SharedFS.DIR_INDEX_MIN_SIZE) return null;
-    return this.rebuildDirIndex(dirIno, generation, dirSize);
+    return this.rebuildDirIndex(dirIno, generation, mutationSequence, dirSize);
   }
 
   private updateDirIndexAdd(
@@ -1181,6 +1545,7 @@ export class SharedFS {
       // in-process indexes cannot resurrect an externally removed name.
       if (
         this.r32(entry.abs) === entry.ino &&
+        this.inodeIsAllocated(entry.ino) &&
         this.view.getUint16(entry.abs + 4, true) === entry.recLen &&
         this.view.getUint16(entry.abs + 6, true) === entry.nameLen &&
         this.dirEntryNameMatches(entry.abs, name)
@@ -1213,7 +1578,8 @@ export class SharedFS {
         const recLen = this.view.getUint16(abs + 4, true);
         const entNameLen = this.view.getUint16(abs + 6, true);
 
-        if (recLen === 0) return EIO;
+        if (!this.isValidDirEntry(off, blockOff + remain, recLen, entNameLen))
+          return EIO;
 
         if (entIno !== 0 && entNameLen === name.length) {
           let match = true;
@@ -1223,7 +1589,10 @@ export class SharedFS {
               break;
             }
           }
-          if (match) return entIno;
+          if (match) {
+            if (!this.inodeIsAllocated(entIno)) return EIO;
+            return entIno;
+          }
         }
         off += recLen;
       }
@@ -1245,7 +1614,13 @@ export class SharedFS {
     while (off < endOff) {
       const abs = blockBase + off;
       const recLen = this.view.getUint16(abs + 4, true);
-      if (recLen === 0 || off + recLen > endOff) return -1;
+      if (
+        recLen < DIRENT_HEADER_SIZE ||
+        recLen % 4 !== 0 ||
+        off + recLen > endOff
+      ) {
+        return -1;
+      }
       lastAbs = abs;
       off += recLen;
     }
@@ -1267,19 +1642,15 @@ export class SharedFS {
     let appendPos = dirSize;
     let fileBlock = Math.floor(appendPos / BLOCK_SIZE);
     let blockOff = appendPos % BLOCK_SIZE;
+    let reservedPhys = 0;
 
     if (blockOff !== 0 && blockOff + needed > BLOCK_SIZE) {
       // Entry doesn't fit in remaining space — skip to next block.
       const gap = BLOCK_SIZE - blockOff;
+      let padPhys = 0;
       if (gap >= DIRENT_HEADER_SIZE) {
-        // Write a padding entry (ino=0) to fill the gap
-        const padPhys = this.inodeBlockMap(dirIno, fileBlock, false);
-        if (padPhys > 0) {
-          const padAbs = padPhys * BLOCK_SIZE + blockOff;
-          this.w32(padAbs, 0);
-          this.view.setUint16(padAbs + 4, gap, true);
-          this.view.setUint16(padAbs + 6, 0, true);
-        }
+        padPhys = this.inodeBlockMap(dirIno, fileBlock, false);
+        if (padPhys <= 0) return EIO;
       } else {
         if (lastEntAbs < 0) {
           lastEntAbs = this.findLastDirEntryInBlock(
@@ -1288,13 +1659,25 @@ export class SharedFS {
             blockOff,
           );
         }
-        if (lastEntAbs >= 0) {
-          // Gap too small for a padding entry — extend last entry's recLen
-          const oldRecLen = this.view.getUint16(lastEntAbs + 4, true);
-          const newRecLen = oldRecLen + gap;
-          this.view.setUint16(lastEntAbs + 4, newRecLen, true);
-          this.updateDirIndexRecLen(dirIno, lastEntAbs, newRecLen);
-        }
+        if (lastEntAbs < 0) return EIO;
+      }
+
+      // Reserve the destination block before changing the old tail. If the
+      // allocation fails, the directory remains byte-for-byte unchanged.
+      reservedPhys = this.inodeBlockMap(dirIno, fileBlock + 1, true);
+      if (reservedPhys < 0) return reservedPhys;
+      if (gap >= DIRENT_HEADER_SIZE) {
+        // Write a padding entry (ino=0) to fill the gap
+        const padAbs = padPhys * BLOCK_SIZE + blockOff;
+        this.w32(padAbs, 0);
+        this.view.setUint16(padAbs + 4, gap, true);
+        this.view.setUint16(padAbs + 6, 0, true);
+      } else {
+        // Gap too small for a padding entry — extend last entry's recLen
+        const oldRecLen = this.view.getUint16(lastEntAbs + 4, true);
+        const newRecLen = oldRecLen + gap;
+        this.view.setUint16(lastEntAbs + 4, newRecLen, true);
+        this.updateDirIndexRecLen(dirIno, lastEntAbs, newRecLen);
       }
       appendPos = (fileBlock + 1) * BLOCK_SIZE;
       fileBlock++;
@@ -1304,7 +1687,7 @@ export class SharedFS {
     // Need a new block?
     let phys: number;
     if (blockOff === 0) {
-      phys = this.inodeBlockMap(dirIno, fileBlock, true);
+      phys = reservedPhys || this.inodeBlockMap(dirIno, fileBlock, true);
       if (phys < 0) return phys;
     } else {
       phys = this.inodeBlockMap(dirIno, fileBlock, false);
@@ -1333,9 +1716,8 @@ export class SharedFS {
     if (index) {
       if (this.useDirIndexFreeSlot(index, dirIno, name, childIno)) return 0;
 
-      // Large indexed directories favor append-only growth when no indexed
-      // deleted slot is available. A full scan to discover slack on every
-      // create would reintroduce the O(n²) behavior the index avoids.
+      // When no indexed deleted slot is available, append instead of scanning
+      // every existing record again solely to discover internal slack.
       return this.dirAppendEntry(dirIno, name, childIno);
     }
 
@@ -1365,7 +1747,13 @@ export class SharedFS {
         const recLen = this.view.getUint16(abs + 4, true);
         const entNameLen = this.view.getUint16(abs + 6, true);
 
-        if (recLen === 0) return EIO;
+        if (
+          recLen < DIRENT_HEADER_SIZE ||
+          recLen % 4 !== 0 ||
+          off + recLen > blockOff + remain ||
+          entNameLen > recLen - DIRENT_HEADER_SIZE
+        )
+          return EIO;
 
         if (entIno === 0 && recLen >= needed) {
           // Reuse deleted entry
@@ -1448,7 +1836,8 @@ export class SharedFS {
         const recLen = this.view.getUint16(abs + 4, true);
         const entNameLen = this.view.getUint16(abs + 6, true);
 
-        if (recLen === 0) return EIO;
+        if (!this.isValidDirEntry(off, blockOff + remain, recLen, entNameLen))
+          return EIO;
 
         if (entIno !== 0 && entNameLen === name.length) {
           let match = true;
@@ -1492,6 +1881,7 @@ export class SharedFS {
       ) {
         this.w32(entry.abs, childIno);
         entry.ino = childIno;
+        this.touchDirectoryMutation(dirIno);
         return 0;
       }
 
@@ -1520,7 +1910,8 @@ export class SharedFS {
         const recLen = this.view.getUint16(abs + 4, true);
         const entNameLen = this.view.getUint16(abs + 6, true);
 
-        if (recLen === 0) return EIO;
+        if (!this.isValidDirEntry(off, blockOff + remain, recLen, entNameLen))
+          return EIO;
 
         if (entIno !== 0 && entNameLen === name.length) {
           let match = true;
@@ -1532,6 +1923,7 @@ export class SharedFS {
           }
           if (match) {
             this.w32(abs, childIno);
+            this.touchDirectoryMutation(dirIno);
             this.updateDirIndexAdd(dirIno, name, childIno, abs, recLen);
             return 0;
           }
@@ -1552,7 +1944,7 @@ export class SharedFS {
       const fileBlock = Math.floor(pos / BLOCK_SIZE);
       const blockOff = pos % BLOCK_SIZE;
       const phys = this.inodeBlockMap(dirIno, fileBlock, false);
-      if (phys <= 0) return true;
+      if (phys <= 0) throw new SFSError(EIO);
 
       const blockBase = phys * BLOCK_SIZE;
       let remain = dirSize - pos;
@@ -1565,12 +1957,17 @@ export class SharedFS {
         const recLen = this.view.getUint16(abs + 4, true);
         const entNameLen = this.view.getUint16(abs + 6, true);
 
-        if (recLen === 0) break;
+        if (
+          recLen < DIRENT_HEADER_SIZE ||
+          recLen % 4 !== 0 ||
+          off + recLen > blockOff + remain ||
+          entNameLen > recLen - DIRENT_HEADER_SIZE
+        )
+          throw new SFSError(EIO);
 
         if (entIno !== 0) {
           // Skip "." and ".."
-          if (entNameLen === 1 && this.u8[abs + DIRENT_HEADER_SIZE] === 0x2e)
-          {
+          if (entNameLen === 1 && this.u8[abs + DIRENT_HEADER_SIZE] === 0x2e) {
             off += recLen;
             continue;
           }
@@ -1599,11 +1996,11 @@ export class SharedFS {
       if (cur === ROOT_INO) return false;
 
       const parent = this.dirLookup(cur, DOTDOT_BYTES);
-      if (parent < 0 || parent === cur) return false;
+      if (parent < 0 || parent === cur) throw new SFSError(EIO);
       cur = parent;
     }
 
-    return true;
+    throw new SFSError(EIO);
   }
 
   // ── Path resolution ──────────────────────────────────────────────
@@ -1620,12 +2017,17 @@ export class SharedFS {
       const part = parts[pi];
       if (part.length > MAX_NAME) return ENAMETOOLONG;
 
-      const inoOff = this.inodeOffset(ino);
-      const mode = this.r32(inoOff + INO_MODE);
-      if ((mode & S_IFMT) !== S_IFDIR) return ENOTDIR;
-
       const nameBytes = encoder.encode(part);
-      const childIno = this.dirLookup(ino, nameBytes);
+      let childIno: number;
+      this.inodeReadLock(ino);
+      try {
+        const inoOff = this.inodeOffset(ino);
+        const mode = this.r32(inoOff + INO_MODE);
+        if ((mode & S_IFMT) !== S_IFDIR) return ENOTDIR;
+        childIno = this.dirLookup(ino, nameBytes);
+      } finally {
+        this.inodeReadUnlock(ino);
+      }
       if (childIno < 0) return childIno;
 
       // Check if child is symlink
@@ -1657,18 +2059,14 @@ export class SharedFS {
           if (target.startsWith("/")) {
             // Absolute symlink — restart from root
             ino = ROOT_INO;
-            const targetParts = target
-              .split("/")
-              .filter((p) => p.length > 0);
+            const targetParts = target.split("/").filter((p) => p.length > 0);
             const remaining = parts.slice(pi + 1);
             parts.length = 0;
             parts.push(...targetParts, ...remaining);
             pi = -1; // will be incremented to 0
           } else {
             // Relative symlink — splice into remaining path
-            const targetParts = target
-              .split("/")
-              .filter((p) => p.length > 0);
+            const targetParts = target.split("/").filter((p) => p.length > 0);
             const remaining = parts.slice(pi + 1);
             parts.length = pi;
             parts.push(...targetParts, ...remaining);
@@ -1720,16 +2118,17 @@ export class SharedFS {
         this.w64(base + FD_OFFSET, 0);
         this.w32(base + FD_FLAGS, flags);
         this.w32(base + FD_IS_DIR, isDir ? 1 : 0);
-        this.inodeAddOpenRef(ino);
+        if (!this.inodeAddOpenRef(ino)) {
+          Atomics.store(this.i32, idx, 0);
+          return ENOENT;
+        }
         return i;
       }
     }
     return EMFILE;
   }
 
-  private fdGet(
-    fd: number,
-  ): {
+  private fdGet(fd: number): {
     base: number;
     ino: number;
     offset: number;
@@ -1763,6 +2162,7 @@ export class SharedFS {
     return {
       ino,
       generation: this.r64(off + INO_GENERATION),
+      dataSequence: this.r32(off + INO_DATA_SEQUENCE),
       mode: this.r32(off + INO_MODE),
       linkCount: this.r32(off + INO_LINK_COUNT),
       size: this.r64(off + INO_SIZE),
@@ -1774,9 +2174,121 @@ export class SharedFS {
     };
   }
 
+  private namespaceEntryIdentity(ino: number): NamespaceEntryIdentity {
+    const off = this.inodeOffset(ino);
+    return {
+      ino,
+      generation: this.r64(off + INO_GENERATION),
+      linkCount: this.r32(off + INO_LINK_COUNT),
+      mode: this.r32(off + INO_MODE),
+    };
+  }
+
   // ── Public API: File operations ──────────────────────────────────
 
   open(path: string, flags: number, createMode: number = 0o644): number {
+    return this.withNamespaceLock(() =>
+      this.openUnlocked(path, flags, createMode),
+    );
+  }
+
+  /**
+   * Atomically create or truncate an empty lazy-file stub and capture the
+   * exact data identity produced by that truncation. Existing callers rely on
+   * lazy registration replacing a path, while the inode lock ensures a peer
+   * write either precedes the truncation or advances the captured sequence
+   * after it.
+   */
+  createLazyStub(path: string, mode: number): StatResult {
+    return this.withNamespaceLock(() => {
+      const fd = this.openUnlocked(path, O_WRONLY | O_CREAT, mode);
+      try {
+        const entry = this.fdGet(fd);
+        if (!entry) throw new SFSError(EBADF);
+        this.inodeWriteLock(entry.ino);
+        try {
+          this.inodeTruncate(entry.ino, 0, true);
+          return this.buildStat(entry.ino);
+        } finally {
+          this.inodeWriteUnlock(entry.ino);
+        }
+      } finally {
+        this.closeUnlocked(fd);
+      }
+    });
+  }
+
+  /**
+   * Atomically replace a lazy stub only if the path still names the exact
+   * inode content generation observed before an asynchronous fetch.
+   */
+  replaceIfIdentity(
+    path: string,
+    expectedIno: number,
+    expectedGeneration: number,
+    expectedDataSequence: number,
+    data: Uint8Array,
+  ): boolean {
+    return this.withNamespaceLock(() => {
+      // Lazy access follows symlinks, so conditionally replace the resolved
+      // regular target while still validating its exact inode/data identity.
+      const ino = this.pathResolve(path, true);
+      if (ino < 0 || ino !== expectedIno) return false;
+      const off = this.inodeOffset(ino);
+      if (
+        this.r64(off + INO_GENERATION) !== expectedGeneration ||
+        this.r32(off + INO_DATA_SEQUENCE) !== expectedDataSequence
+      )
+        return false;
+      if ((this.r32(off + INO_MODE) & S_IFMT) !== S_IFREG) return false;
+      this.validateFileSize(data.byteLength);
+
+      this.inodeWriteLock(ino);
+      try {
+        // Descriptor-based writes do not take the namespace lock. Revalidate
+        // after acquiring the inode lock so a concurrent guest mutation that
+        // won the race cannot be overwritten by stale fetched bytes.
+        if (
+          this.r64(off + INO_GENERATION) !== expectedGeneration ||
+          this.r32(off + INO_DATA_SEQUENCE) !== expectedDataSequence
+        )
+          return false;
+        // Lazy backing is attached only to an untouched empty stub. Refuse to
+        // replace any concrete content even if malformed metadata happens to
+        // carry its current sequence.
+        if (this.r64(off + INO_SIZE) !== 0) return false;
+
+        const originalMtime = this.r64(off + INO_MTIME);
+        const originalCtime = this.r64(off + INO_CTIME);
+
+        this.inodeTruncate(ino, 0, true);
+        const written =
+          data.byteLength > 0
+            ? this.inodeWriteData(ino, 0, data, data.byteLength)
+            : 0;
+        if (written !== data.byteLength) {
+          this.inodeTruncate(ino, 0, true);
+          Atomics.store(
+            this.i32,
+            (off + INO_DATA_SEQUENCE) >> 2,
+            expectedDataSequence,
+          );
+          this.w64(off + INO_MTIME, originalMtime);
+          this.w64(off + INO_CTIME, originalCtime);
+          throw new SFSError(written < 0 ? written : ENOSPC);
+        }
+        return true;
+      } finally {
+        this.inodeWriteUnlock(ino);
+      }
+    });
+  }
+
+  private openUnlocked(
+    path: string,
+    flags: number,
+    createMode: number = 0o644,
+  ): number {
     const accMode = flags & O_ACCMODE;
     const creating = (flags & O_CREAT) !== 0;
     const exclusive = (flags & O_EXCL) !== 0;
@@ -1835,7 +2347,7 @@ export class SharedFS {
     }
 
     // O_DIRECTORY: reject non-directories
-    if ((flags & O_DIRECTORY) && (mode & S_IFMT) !== S_IFDIR) {
+    if (flags & O_DIRECTORY && (mode & S_IFMT) !== S_IFDIR) {
       throw new SFSError(ENOTDIR);
     }
 
@@ -1843,7 +2355,7 @@ export class SharedFS {
     if (flags & O_TRUNC) {
       if ((mode & S_IFMT) === S_IFDIR) throw new SFSError(EISDIR);
       this.inodeWriteLock(ino);
-      this.inodeTruncate(ino, 0);
+      this.inodeTruncate(ino, 0, true);
       this.inodeWriteUnlock(ino);
     }
 
@@ -1854,6 +2366,10 @@ export class SharedFS {
   }
 
   close(fd: number): void {
+    this.withNamespaceLock(() => this.closeUnlocked(fd));
+  }
+
+  private closeUnlocked(fd: number): void {
     const entry = this.fdGet(fd);
     if (!entry) throw new SFSError(EBADF);
     this.fdFree(fd);
@@ -1898,6 +2414,12 @@ export class SharedFS {
         const inoOff = this.inodeOffset(entry.ino);
         offset = this.r64(inoOff + INO_SIZE);
       }
+      if (!Number.isSafeInteger(offset) || offset < 0) {
+        throw new SFSError(EINVAL);
+      }
+      if (offset > MAX_FILE_SIZE || data.length > MAX_FILE_SIZE - offset) {
+        throw new SFSError(EFBIG);
+      }
 
       const nwritten = this.inodeWriteData(
         entry.ino,
@@ -1905,6 +2427,7 @@ export class SharedFS {
         data,
         data.length,
       );
+      if (nwritten < 0) return nwritten;
       // Update offset
       const base = FD_TABLE_OFFSET + fd * FD_ENTRY_SIZE;
       this.w64(base + FD_OFFSET, offset + nwritten);
@@ -1931,7 +2454,7 @@ export class SharedFS {
       throw new SFSError(EINVAL);
     }
 
-    if (newOffset < 0) throw new SFSError(EINVAL);
+    this.validateFileSize(newOffset);
 
     const base = FD_TABLE_OFFSET + fd * FD_ENTRY_SIZE;
     this.w64(base + FD_OFFSET, newOffset);
@@ -1942,10 +2465,11 @@ export class SharedFS {
     const entry = this.fdGet(fd);
     if (!entry) throw new SFSError(EBADF);
     if ((entry.flags & O_ACCMODE) === O_RDONLY) throw new SFSError(EBADF);
+    this.validateFileSize(length);
 
     this.inodeWriteLock(entry.ino);
     try {
-      this.inodeTruncate(entry.ino, length);
+      this.inodeTruncate(entry.ino, length, true);
     } finally {
       this.inodeWriteUnlock(entry.ino);
     }
@@ -1965,6 +2489,10 @@ export class SharedFS {
   // ── Public API: Path operations ──────────────────────────────────
 
   stat(path: string): StatResult {
+    return this.withNamespaceLock(() => this.statUnlocked(path));
+  }
+
+  private statUnlocked(path: string): StatResult {
     const ino = this.pathResolve(path, true);
     if (ino < 0) throw new SFSError(ino);
     this.inodeReadLock(ino);
@@ -1976,6 +2504,10 @@ export class SharedFS {
   }
 
   lstat(path: string): StatResult {
+    return this.withNamespaceLock(() => this.lstatUnlocked(path));
+  }
+
+  private lstatUnlocked(path: string): StatResult {
     const ino = this.pathResolve(path, false); // don't follow symlinks
     if (ino < 0) throw new SFSError(ino);
     this.inodeReadLock(ino);
@@ -1986,7 +2518,11 @@ export class SharedFS {
     }
   }
 
-  unlink(path: string): void {
+  unlink(path: string): NamespaceEntryIdentity {
+    return this.withNamespaceLock(() => this.unlinkUnlocked(path));
+  }
+
+  private unlinkUnlocked(path: string): NamespaceEntryIdentity {
     const { parentIno, name } = this.pathResolveParent(path);
     const nameBytes = encoder.encode(name);
     const requiresDirectory = path.length > 1 && path.endsWith("/");
@@ -2002,6 +2538,7 @@ export class SharedFS {
         throw new SFSError(ENOTDIR);
       }
       if ((mode & S_IFMT) === S_IFDIR) throw new SFSError(EISDIR);
+      const removed = this.namespaceEntryIdentity(childIno);
 
       const rc = this.dirRemoveEntry(parentIno, nameBytes);
       if (rc < 0) throw new SFSError(rc);
@@ -2014,16 +2551,27 @@ export class SharedFS {
         this.inodeWriteUnlock(childIno);
       }
       if (shouldFree) this.inodeFree(childIno);
+      return removed;
     } finally {
       this.inodeWriteUnlock(parentIno);
     }
   }
 
-  rename(oldPath: string, newPath: string): void {
+  rename(oldPath: string, newPath: string): RenameIdentityResult {
+    return this.withNamespaceLock(() => this.renameUnlocked(oldPath, newPath));
+  }
+
+  private renameUnlocked(
+    oldPath: string,
+    newPath: string,
+  ): RenameIdentityResult {
     const { parentIno: oldParent, name: oldName } =
       this.pathResolveParent(oldPath);
     const { parentIno: newParent, name: newName } =
       this.pathResolveParent(newPath);
+    if (isReservedDirectoryName(oldName) || isReservedDirectoryName(newName)) {
+      throw new SFSError(EINVAL);
+    }
     const oldNameBytes = encoder.encode(oldName);
     const newNameBytes = encoder.encode(newName);
     const oldRequiresDirectory = oldPath.length > 1 && oldPath.endsWith("/");
@@ -2041,6 +2589,7 @@ export class SharedFS {
       const srcOff = this.inodeOffset(srcIno);
       const srcMode = this.r32(srcOff + INO_MODE);
       const srcType = srcMode & S_IFMT;
+      const source = this.namespaceEntryIdentity(srcIno);
 
       if (
         (oldRequiresDirectory || newRequiresDirectory) &&
@@ -2053,56 +2602,59 @@ export class SharedFS {
         throw new SFSError(EINVAL);
       }
 
-      // Remove any existing entry at destination
+      // Replace an existing destination entry in place. Removing it before
+      // allocating/inserting the source can destroy the destination when the
+      // rename later fails with ENOSPC.
       const existingIno = this.dirLookup(newParent, newNameBytes);
       let removedExistingDirectory = false;
+      let replaced: NamespaceEntryIdentity | undefined;
       if (existingIno >= 0) {
         if (existingIno === srcIno) {
-          return;
+          return { source, replaced: source };
         }
+        replaced = this.namespaceEntryIdentity(existingIno);
         const existOff = this.inodeOffset(existingIno);
         const existMode = this.r32(existOff + INO_MODE);
         const existType = existMode & S_IFMT;
 
-        if (srcType === S_IFDIR) {
-          if (existType !== S_IFDIR) throw new SFSError(ENOTDIR);
-
-          let shouldFreeExisting = false;
-          this.inodeWriteLock(existingIno);
-          try {
-            if (!this.dirIsEmpty(existingIno)) throw new SFSError(ENOTEMPTY);
-            const rc = this.dirRemoveEntry(newParent, newNameBytes);
-            if (rc < 0) throw new SFSError(rc);
-            shouldFreeExisting = this.inodeOrphanLocked(existingIno);
-          } finally {
-            this.inodeWriteUnlock(existingIno);
-          }
-          if (shouldFreeExisting) this.inodeFree(existingIno);
-          removedExistingDirectory = true;
-        } else {
-          if (existType === S_IFDIR) {
-            throw new SFSError(newRequiresDirectory ? ENOTDIR : EISDIR);
-          }
-
-          const rc = this.dirRemoveEntry(newParent, newNameBytes);
-          if (rc < 0) throw new SFSError(rc);
-          let shouldFreeExisting = false;
-          this.inodeWriteLock(existingIno);
-          try {
-            shouldFreeExisting = this.inodeDropLinkRefLocked(existingIno);
-          } finally {
-            this.inodeWriteUnlock(existingIno);
-          }
-          if (shouldFreeExisting) this.inodeFree(existingIno);
+        if (srcType === S_IFDIR && existType !== S_IFDIR) {
+          throw new SFSError(ENOTDIR);
         }
+        if (srcType !== S_IFDIR && existType === S_IFDIR) {
+          throw new SFSError(EISDIR);
+        }
+
+        let shouldFreeExisting = false;
+        const existingAlreadyLocked =
+          existingIno === oldParent || existingIno === newParent;
+        if (!existingAlreadyLocked) this.inodeWriteLock(existingIno);
+        try {
+          if (existType === S_IFDIR && !this.dirIsEmpty(existingIno)) {
+            throw new SFSError(ENOTEMPTY);
+          }
+          const replaceRc = this.dirReplaceEntryIno(
+            newParent,
+            newNameBytes,
+            srcIno,
+          );
+          if (replaceRc < 0) throw new SFSError(replaceRc);
+          shouldFreeExisting =
+            existType === S_IFDIR
+              ? this.inodeOrphanLocked(existingIno)
+              : this.inodeDropLinkRefLocked(existingIno);
+        } finally {
+          if (!existingAlreadyLocked) this.inodeWriteUnlock(existingIno);
+        }
+        if (shouldFreeExisting) this.inodeFree(existingIno);
+        removedExistingDirectory = existType === S_IFDIR;
+      } else {
+        const addRc = this.dirAddEntry(newParent, newNameBytes, srcIno);
+        if (addRc < 0) throw new SFSError(addRc);
       }
 
-      // Add entry in new directory
-      const rc = this.dirAddEntry(newParent, newNameBytes, srcIno);
-      if (rc < 0) throw new SFSError(rc);
-
       // Remove entry from old directory
-      this.dirRemoveEntry(oldParent, oldNameBytes);
+      const removeRc = this.dirRemoveEntry(oldParent, oldNameBytes);
+      if (removeRc < 0) throw new SFSError(removeRc);
 
       // Update link counts for directory renames
       if (srcType === S_IFDIR) {
@@ -2146,6 +2698,7 @@ export class SharedFS {
           this.r32(newPOff + INO_LINK_COUNT) - 1,
         );
       }
+      return { source, replaced };
     } finally {
       if (first !== second) this.inodeWriteUnlock(second);
       this.inodeWriteUnlock(first);
@@ -2153,6 +2706,10 @@ export class SharedFS {
   }
 
   mkdir(path: string, mode: number = 0o755): void {
+    this.withNamespaceLock(() => this.mkdirUnlocked(path, mode));
+  }
+
+  private mkdirUnlocked(path: string, mode: number = 0o755): void {
     const { parentIno, name } = this.pathResolveParent(path);
     const nameBytes = encoder.encode(name);
 
@@ -2218,7 +2775,12 @@ export class SharedFS {
   }
 
   rmdir(path: string): void {
+    this.withNamespaceLock(() => this.rmdirUnlocked(path));
+  }
+
+  private rmdirUnlocked(path: string): void {
     const { parentIno, name } = this.pathResolveParent(path);
+    if (isReservedDirectoryName(name)) throw new SFSError(EINVAL);
     const nameBytes = encoder.encode(name);
 
     this.inodeWriteLock(parentIno);
@@ -2235,7 +2797,8 @@ export class SharedFS {
       try {
         if (!this.dirIsEmpty(childIno)) throw new SFSError(ENOTEMPTY);
 
-        this.dirRemoveEntry(parentIno, nameBytes);
+        const removeRc = this.dirRemoveEntry(parentIno, nameBytes);
+        if (removeRc < 0) throw new SFSError(removeRc);
         shouldFree = this.inodeOrphanLocked(childIno);
       } finally {
         this.inodeWriteUnlock(childIno);
@@ -2251,6 +2814,10 @@ export class SharedFS {
   }
 
   symlink(target: string, linkPath: string): void {
+    this.withNamespaceLock(() => this.symlinkUnlocked(target, linkPath));
+  }
+
+  private symlinkUnlocked(target: string, linkPath: string): void {
     const { parentIno, name } = this.pathResolveParent(linkPath);
     const nameBytes = encoder.encode(name);
     const targetBytes = encoder.encode(target);
@@ -2279,14 +2846,25 @@ export class SharedFS {
           targetBytes,
           targetBytes.length,
         );
-        if (written < 0) {
+        if (written !== targetBytes.length) {
+          if (written > 0) this.inodeTruncate(newIno, 0);
           this.inodeFree(newIno);
-          throw new SFSError(written);
+          throw new SFSError(written < 0 ? written : ENOSPC);
         }
       }
 
       const rc = this.dirAddEntry(parentIno, nameBytes, newIno);
       if (rc < 0) {
+        if (targetBytes.length <= INLINE_SYMLINK_SIZE) {
+          this.u8.fill(
+            0,
+            newOff + INO_DIRECT,
+            newOff + INO_DIRECT + INLINE_SYMLINK_SIZE,
+          );
+          this.w64(newOff + INO_SIZE, 0);
+        } else {
+          this.inodeTruncate(newIno, 0);
+        }
         this.inodeFree(newIno);
         throw new SFSError(rc);
       }
@@ -2296,14 +2874,17 @@ export class SharedFS {
   }
 
   chmod(path: string, mode: number): void {
+    this.withNamespaceLock(() => this.chmodUnlocked(path, mode));
+  }
+
+  private chmodUnlocked(path: string, mode: number): void {
     const ino = this.pathResolve(path, true);
     if (ino < 0) throw new SFSError(ino);
     this.inodeWriteLock(ino);
     try {
       const off = this.inodeOffset(ino);
       const oldMode = this.r32(off + INO_MODE);
-      const fileType = (mode & S_IFMT) || (oldMode & S_IFMT);
-      this.w32(off + INO_MODE, fileType | (mode & 0o7777));
+      this.w32(off + INO_MODE, (oldMode & S_IFMT) | (mode & 0o7777));
       this.w64(off + INO_CTIME, Date.now());
     } finally {
       this.inodeWriteUnlock(ino);
@@ -2317,8 +2898,7 @@ export class SharedFS {
     try {
       const off = this.inodeOffset(entry.ino);
       const oldMode = this.r32(off + INO_MODE);
-      const fileType = (mode & S_IFMT) || (oldMode & S_IFMT);
-      this.w32(off + INO_MODE, fileType | (mode & 0o7777));
+      this.w32(off + INO_MODE, (oldMode & S_IFMT) | (mode & 0o7777));
       this.w64(off + INO_CTIME, Date.now());
     } finally {
       this.inodeWriteUnlock(entry.ino);
@@ -2326,6 +2906,10 @@ export class SharedFS {
   }
 
   chown(path: string, uid: number, gid: number): void {
+    this.withNamespaceLock(() => this.chownUnlocked(path, uid, gid));
+  }
+
+  private chownUnlocked(path: string, uid: number, gid: number): void {
     const ino = this.pathResolve(path, true); // POSIX chown follows symlinks
     if (ino < 0) throw new SFSError(ino);
     this.inodeWriteLock(ino);
@@ -2356,6 +2940,10 @@ export class SharedFS {
   }
 
   lchown(path: string, uid: number, gid: number): void {
+    this.withNamespaceLock(() => this.lchownUnlocked(path, uid, gid));
+  }
+
+  private lchownUnlocked(path: string, uid: number, gid: number): void {
     const ino = this.pathResolve(path, false); // no-follow: chowns the symlink itself
     if (ino < 0) throw new SFSError(ino);
     this.inodeWriteLock(ino);
@@ -2369,7 +2957,25 @@ export class SharedFS {
     }
   }
 
-  utimens(path: string, atimeSec: number, atimeNsec: number, mtimeSec: number, mtimeNsec: number): void {
+  utimens(
+    path: string,
+    atimeSec: number,
+    atimeNsec: number,
+    mtimeSec: number,
+    mtimeNsec: number,
+  ): void {
+    this.withNamespaceLock(() =>
+      this.utimensUnlocked(path, atimeSec, atimeNsec, mtimeSec, mtimeNsec),
+    );
+  }
+
+  private utimensUnlocked(
+    path: string,
+    atimeSec: number,
+    atimeNsec: number,
+    mtimeSec: number,
+    mtimeNsec: number,
+  ): void {
     const ino = this.pathResolve(path, true);
     if (ino < 0) throw new SFSError(ino);
     this.inodeWriteLock(ino);
@@ -2379,11 +2985,17 @@ export class SharedFS {
       const UTIME_OMIT = 0x3ffffffe;
       const now = Date.now();
       if (atimeNsec !== UTIME_OMIT) {
-        const atimeMs = atimeNsec === UTIME_NOW ? now : atimeSec * 1000 + Math.floor(atimeNsec / 1_000_000);
+        const atimeMs =
+          atimeNsec === UTIME_NOW
+            ? now
+            : atimeSec * 1000 + Math.floor(atimeNsec / 1_000_000);
         this.w64(off + INO_ATIME, atimeMs);
       }
       if (mtimeNsec !== UTIME_OMIT) {
-        const mtimeMs = mtimeNsec === UTIME_NOW ? now : mtimeSec * 1000 + Math.floor(mtimeNsec / 1_000_000);
+        const mtimeMs =
+          mtimeNsec === UTIME_NOW
+            ? now
+            : mtimeSec * 1000 + Math.floor(mtimeNsec / 1_000_000);
         this.w64(off + INO_MTIME, mtimeMs);
       }
       this.w64(off + INO_CTIME, now);
@@ -2392,8 +3004,19 @@ export class SharedFS {
     }
   }
 
-  link(existingPath: string, newPath: string): void {
-    const srcIno = this.pathResolve(existingPath, true);
+  link(existingPath: string, newPath: string): NamespaceEntryIdentity {
+    return this.withNamespaceLock(() =>
+      this.linkUnlocked(existingPath, newPath),
+    );
+  }
+
+  private linkUnlocked(
+    existingPath: string,
+    newPath: string,
+  ): NamespaceEntryIdentity {
+    // Select POSIX link(2)'s permitted no-follow behavior for a final
+    // symlink, which also matches linkat() when AT_SYMLINK_FOLLOW is clear.
+    const srcIno = this.pathResolve(existingPath, false);
     if (srcIno < 0) throw new SFSError(srcIno);
     const srcOff = this.inodeOffset(srcIno);
     const srcMode = this.r32(srcOff + INO_MODE);
@@ -2416,12 +3039,20 @@ export class SharedFS {
       } finally {
         this.inodeWriteUnlock(srcIno);
       }
+      return {
+        ...this.namespaceEntryIdentity(srcIno),
+        linkCount: this.r32(srcOff + INO_LINK_COUNT),
+      };
     } finally {
       this.inodeWriteUnlock(parentIno);
     }
   }
 
   readlink(path: string): string {
+    return this.withNamespaceLock(() => this.readlinkUnlocked(path));
+  }
+
+  private readlinkUnlocked(path: string): string {
     const ino = this.pathResolve(path, false);
     if (ino < 0) throw new SFSError(ino);
 
@@ -2449,6 +3080,10 @@ export class SharedFS {
   // ── Public API: Directory reading ────────────────────────────────
 
   opendir(path: string): number {
+    return this.withNamespaceLock(() => this.opendirUnlocked(path));
+  }
+
+  private opendirUnlocked(path: string): number {
     const ino = this.pathResolve(path, true);
     if (ino < 0) throw new SFSError(ino);
 
@@ -2461,7 +3096,11 @@ export class SharedFS {
     return dd;
   }
 
-  readdirEntry(
+  readdirEntry(dd: number): { name: string; stat: StatResult } | null {
+    return this.withNamespaceLock(() => this.readdirEntryUnlocked(dd));
+  }
+
+  private readdirEntryUnlocked(
     dd: number,
   ): { name: string; stat: StatResult } | null {
     const entry = this.fdGet(dd);
@@ -2475,14 +3114,22 @@ export class SharedFS {
       const fileBlock = Math.floor(pos / BLOCK_SIZE);
       const blockOff = pos % BLOCK_SIZE;
       const phys = this.inodeBlockMap(entry.ino, fileBlock, false);
-      if (phys <= 0) return null;
+      if (phys <= 0) throw new SFSError(EIO);
 
       const abs = phys * BLOCK_SIZE + blockOff;
       const entIno = this.r32(abs);
       const recLen = this.view.getUint16(abs + 4, true);
       const entNameLen = this.view.getUint16(abs + 6, true);
 
-      if (recLen === 0) return null;
+      if (
+        !this.isValidDirEntry(
+          blockOff,
+          Math.min(BLOCK_SIZE, blockOff + dirSize - pos),
+          recLen,
+          entNameLen,
+        )
+      )
+        throw new SFSError(EIO);
 
       // Advance offset — update both the SAB (persistent) and the local
       // snapshot so the while loop progresses past deleted entries (entIno=0).
@@ -2491,6 +3138,10 @@ export class SharedFS {
       this.w64(base + FD_OFFSET, pos + recLen);
 
       if (entIno !== 0) {
+        if (entIno >= this.r32(SB_TOTAL_INODES)) throw new SFSError(EIO);
+        const ibStart = this.r32(SB_INODE_BITMAP_START) * BLOCK_SIZE;
+        const word = this.r32(ibStart + (entIno >> 5) * 4);
+        if ((word & (1 << (entIno & 31))) === 0) throw new SFSError(EIO);
         const nameStr = safeDecode(
           this.u8.subarray(
             abs + DIRENT_HEADER_SIZE,
