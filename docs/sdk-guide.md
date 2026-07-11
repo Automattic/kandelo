@@ -137,6 +137,13 @@ wasm32posix-cc -ldl main.c -o main.wasm
 wasm32posix-cc -shared -fPIC plugin.c -o plugin.so
 ```
 
+Executables that expose their own symbols to loaded modules or resolve them
+through `dlopen(NULL, ...)` / `dlsym(RTLD_DEFAULT, ...)` must also link with
+`-Wl,--export-dynamic`. Symbols intended for lookup must have default
+visibility, either through `__attribute__((visibility("default")))` on the
+public API or a scoped `-fvisibility=default` build flag. `RTLD_NEXT` lookup is
+not currently supported.
+
 ## What the SDK Does
 
 ### Compiler flags injected automatically

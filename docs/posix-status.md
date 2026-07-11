@@ -599,7 +599,9 @@ These PHP needs are well-handled by the current kernel:
 - Memory: anonymous mmap, munmap, brk
 - Multi-process: fork (kernel syscall), exec (host-initiated), waitpid (kernel syscall)
 - Networking: AF_INET TCP (connect, bind, listen, accept, send, recv), getaddrinfo
-- Dynamic linking: dlopen, dlsym, dlclose, dlerror (Wasm dylink)
+- Dynamic linking: dlopen (including the main-program handle), dlsym
+  (including RTLD_DEFAULT), dlclose, dlerror (Wasm dylink). RTLD_NEXT lookup
+  is not currently supported.
 - POSIX timers: timer_create, timer_settime, timer_gettime, timer_delete
 - System info: uname, sysconf, umask, getrlimit/setrlimit
 

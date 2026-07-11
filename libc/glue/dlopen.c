@@ -53,10 +53,22 @@ void *dlopen(const char *path, int flags) {
     (void)flags;
 
     if (!path) {
-        /* dlopen(NULL, ...) returns a handle to the main program.
-         * TODO: implement RTLD_DEFAULT support. */
-        set_dl_error("dlopen(NULL) not yet supported");
-        return NULL;
+        /* An empty host request returns an opaque handle for the main
+         * program's global symbol scope. */
+        int handle = __wasm_dlopen(NULL, 0, NULL, 0);
+        if (handle <= 0) {
+            int elen = __wasm_dlerror(dl_error_buf, (int)sizeof(dl_error_buf) - 1);
+            if (elen > 0) {
+                dl_error_buf[elen] = '\0';
+                dl_error_set = 1;
+            } else {
+                set_dl_error("cannot open main program");
+            }
+            return NULL;
+        }
+
+        dl_error_set = 0;
+        return (void *)(long)handle;
     }
 
     /* Stat to get file size */
@@ -122,11 +134,12 @@ void *dlopen(const char *path, int flags) {
 }
 
 void *dlsym(void *handle, const char *name) {
-    if (!handle || !name) {
+    if (!name) {
         set_dl_error("invalid arguments to dlsym");
         return NULL;
     }
 
+    /* A zero handle is RTLD_DEFAULT: search the main program's global scope. */
     int h = (int)(long)handle;
     int result = __wasm_dlsym(h, name, (int)strlen(name));
 
