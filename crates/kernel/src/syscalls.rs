@@ -5994,12 +5994,13 @@ pub fn sys_munmap(
     if addr & 0xFFFF != 0 {
         return Err(Errno::EINVAL);
     }
+    let aligned_len = len.checked_add(0xFFFF).ok_or(Errno::EINVAL)? & !0xFFFF;
     // POSIX: addresses in [addr, addr+len) must be within the valid address space.
     // Reject if the range overflows or extends beyond Wasm linear memory limits.
-    if addr.checked_add(len).is_none() {
+    if addr.checked_add(aligned_len).is_none() {
         return Err(Errno::EINVAL);
     }
-    if proc.memory.overlaps_host_reserved_region(addr, len) {
+    if proc.memory.overlaps_host_reserved_region(addr, aligned_len) {
         return Err(Errno::EINVAL);
     }
 
@@ -6008,7 +6009,7 @@ pub fn sys_munmap(
     // munmap so the host stops reading the region before its address
     // space is freed.
     let fb_release = if let Some(b) = proc.fb_binding {
-        let end = addr.saturating_add(len);
+        let end = addr.saturating_add(aligned_len);
         let b_end = b.addr.saturating_add(b.len);
         addr <= b.addr && end >= b_end
     } else {
@@ -6026,7 +6027,7 @@ pub fn sys_munmap(
     // GL cmdbuf cleanup: any munmap overlap invalidates the host's
     // single cmdbuf view for this pid. The GL session itself may remain
     // initialized, but it must mmap the cmdbuf again before submitting.
-    unbind_gl_cmdbufs_in_range(proc, host, addr, len);
+    unbind_gl_cmdbufs_in_range(proc, host, addr, aligned_len);
 
     // DRI bo cleanup: drop every binding overlapped by [addr, addr+len)
     // and tell the host so it stops mirroring the region before the
@@ -6037,7 +6038,7 @@ pub fn sys_munmap(
     let pid = proc.pid as i32;
     let mut released: alloc::vec::Vec<crate::process::DriBoBinding> = alloc::vec::Vec::new();
     proc.dri_bindings.retain(|b| {
-        if ranges_overlap(addr, len, b.addr, b.len) {
+        if ranges_overlap(addr, aligned_len, b.addr, b.len) {
             released.push(*b);
             false
         } else {
@@ -6050,7 +6051,7 @@ pub fn sys_munmap(
 
     // Linux munmap succeeds (returns 0) even if no mappings overlap the range,
     // as long as the address is valid and page-aligned.
-    proc.memory.munmap(addr, len);
+    proc.memory.munmap(addr, aligned_len);
     Ok(())
 }
 
@@ -14892,6 +14893,18 @@ mod tests {
         let mut host = MockHostIO::new();
         let addr = sys_mmap(&mut proc, &mut host, 0, 4096, 3, 0x22, -1, 0).unwrap();
         sys_munmap(&mut proc, &mut host, addr, 0x10000).unwrap();
+    }
+
+    #[test]
+    fn test_munmap_rounds_length_before_releasing_pages() {
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        let addr = sys_mmap(&mut proc, &mut host, 0, 0x20000, 3, 0x22, -1, 0).unwrap();
+
+        sys_munmap(&mut proc, &mut host, addr, 0x10001).unwrap();
+
+        assert!(!proc.memory.is_mapped(addr));
+        assert!(!proc.memory.is_mapped(addr + 0x10000));
     }
 
     #[test]

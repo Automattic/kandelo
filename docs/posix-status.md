@@ -171,10 +171,10 @@ Kandelo uses a single kernel Wasm instance that holds a `ProcessTable` and serve
 
 | Function | Status | Notes |
 |----------|--------|-------|
-| `mmap()` | Partial | Anonymous, file-backed MAP_PRIVATE, and file-backed MAP_SHARED. Page-aligned (64KB Wasm pages). MAP_FIXED supported. Host populates file-backed regions via pread; MAP_SHARED regions are flushed on msync via pwrite. |
+| `mmap()` | Partial | Anonymous, file-backed MAP_PRIVATE, and file-backed MAP_SHARED. Page-aligned (64KB Wasm pages). MAP_FIXED is supported; usable non-fixed address hints are preferred without replacing occupied mappings. The host populates file-backed regions via pread; MAP_SHARED regions are flushed on msync via pwrite. |
 | `msync()` | Full | Flushes MAP_SHARED regions back to the file via pwrite. No-op for MAP_PRIVATE (correct per POSIX). |
 | `shm_open()` / `shm_unlink()` | Full | musl maps to `/dev/shm/` paths; host rewrites to tmpdir on macOS. Works with MAP_SHARED mmap. |
-| `munmap()` | Full | Removes tracked region. Page-aligned address required. Partial munmap supported: front trim, back trim, and middle split. |
+| `munmap()` | Full | Removes tracked regions. The address must be 64KB-page-aligned; the length is rounded up to the next Wasm page. Partial munmap supports front trim, back trim, and middle split, including matching host-side MAP_SHARED tracking. |
 | `brk()` / `sbrk()` | Partial | Kernel-managed program break. Initial break installed by host from the program's `__heap_base` export via `kernel_set_brk_base` (16MB hardcoded fallback for binaries without `__heap_base`). Growing and shrinking supported. Inherited on `fork`; **reset** on `exec` and re-installed from the new program's `__heap_base` (POSIX-correct). |
 | `mprotect()` | Partial | Returns success (no-op). Wasm linear memory has no page-level protection, so protection changes are silently accepted. |
 | `memfd_create()` | Full | In-kernel anonymous file backed by Vec. MFD_CLOEXEC and MFD_ALLOW_SEALING flags. Supports read, write, lseek, ftruncate, fstat, mmap. |
