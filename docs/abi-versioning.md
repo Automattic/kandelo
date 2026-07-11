@@ -53,6 +53,11 @@ a present marker as authoritative. ABI 17 and later require the role marker.
 Do not make absence an error on ABI 16: mandatory enforcement must land in the
 same commit as the ABI 16-to-17 bump and regenerated snapshot.
 
+The current constituent branch remains ABI 16. Its runtime contains the
+ABI-17 enforcement path, but that path is intentionally inactive until the
+aggregate integration change performs the single ABI 16-to-17 reconciliation,
+bumps `ABI_VERSION`, and regenerates the snapshot in that same commit.
+
 Pure internal refactors (renaming a kernel-side function, reorganizing
 a source file, tightening a bound in a non-ABI type) are *not* ABI
 changes and do not require a bump.
