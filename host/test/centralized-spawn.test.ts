@@ -45,9 +45,10 @@ describe("non-forking posix_spawn", () => {
     expect(result.stdout).toContain("OK");
     // The spawn child is hello.wasm, which prints its greeting.
     expect(result.stdout).toContain("Hello from musl");
-    // GUARDRAIL: spawn must not increment the parent's fork counter.
-    // A non-zero value here means SYS_SPAWN silently fell back to fork.
-    expect(result.forkCount).toBe(0n);
+    // GUARDRAIL: sample while the parent is live, immediately after its
+    // guest child is created. A non-zero value means SYS_SPAWN silently
+    // fell back to fork; a missing-pid sentinel means sampling was too late.
+    expect(result.forkCountSamples).toEqual([0n]);
   });
 
   it("covers spawnp / file actions / SETPGROUP", async () => {
@@ -72,8 +73,10 @@ describe("non-forking posix_spawn", () => {
       expect(result.stdout, `missing 'OK ${subtest}' in stdout`).toContain(`OK ${subtest}`);
     }
     expect(result.stdout).toContain("ALL OK");
-    // GUARDRAIL: three posix_spawn calls and zero fork bumps.
-    expect(result.forkCount).toBe(0n);
+    // GUARDRAIL: the two successful calls each create a child. The first
+    // (spawnp) fails before child creation, but a fork bump there would remain
+    // visible because fork_count is monotonic and taint both later samples.
+    expect(result.forkCountSamples).toEqual([0n, 0n]);
   });
 
   it("reports ENOEXEC for non-Wasm spawn targets before launching a worker", async () => {

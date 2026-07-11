@@ -51,6 +51,7 @@ import {
   SIGSEGV,
 } from "./trap-signals";
 import { threadWorkerFailureDisposition } from "./thread-worker-disposition";
+import { reapHostOwnedExitedProcess } from "./host-owned-process-reap";
 import {
   computeProcessMemoryLayout,
   createProcessMemory,
@@ -240,12 +241,21 @@ async function finalizeProcessWorker(
     // Idempotent via `hostReaped`: when the kernel already processed
     // a clean SYS_EXIT_GROUP for this pid, this is a no-op.
     try { kernelWorker.notifyHostProcessCrashed(pid, crashSignum); } catch { /* best-effort */ }
-    try { kernelWorker.deactivateProcess(pid); } catch { /* best-effort */ }
+    try {
+      kernelWorker.deactivateProcess(pid);
+    } catch (err) {
+      console.error(`[node-kernel-worker] failed to deactivate pid ${pid}: ${err}`);
+    }
     processes.delete(pid);
     threadModuleCache.delete(pid);
     ptyByPid.delete(pid);
     await terminateThreadWorkers(pid);
     await terminateTrackedWorker(worker);
+    try {
+      reapHostOwnedExitedProcess(kernelWorker.getKernelInstance(), pid);
+    } catch (err) {
+      console.error(`[node-kernel-worker] failed to reap host-owned pid ${pid}: ${err}`);
+    }
   }
   reportProcessExit(pid, exitStatus);
 }
@@ -1191,11 +1201,20 @@ async function finishProcessExit(pid: number, exitStatus: number): Promise<void>
 
     // Deactivate process (zombie until reaped or destroy) after worker
     // termination so no further guest syscalls can arrive on its channel.
-    kernelWorker.deactivateProcess(pid);
+    try {
+      kernelWorker.deactivateProcess(pid);
+    } catch (err) {
+      console.error(`[node-kernel-worker] failed to deactivate pid ${pid}: ${err}`);
+    }
 
     processes.delete(pid);
     threadModuleCache.delete(pid);
     ptyByPid.delete(pid);
+    try {
+      reapHostOwnedExitedProcess(kernelWorker.getKernelInstance(), pid);
+    } catch (err) {
+      console.error(`[node-kernel-worker] failed to reap host-owned pid ${pid}: ${err}`);
+    }
   })();
   processTeardowns.set(pid, teardown);
 

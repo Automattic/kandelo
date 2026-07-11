@@ -273,9 +273,11 @@ PATH-relative names.
 
 The implementation is regression-guarded by a per-process counter:
 `kernel_get_fork_count(pid)` returns the number of times that pid has
-called `kernel_fork_process`. The vitest harness asserts this stays at
-0 across a `posix_spawn` — any non-zero value means the path silently
-fell back to fork.
+called `kernel_fork_process`. The vitest harness snapshots this monotonic
+counter after each guest child-creation event, while the parent still exists,
+and asserts every sample is 0. Any non-zero value means the path silently fell
+back to fork. Sampling before parent exit is required because the host reaps a
+completed top-level process after consuming its exit status.
 
 **Browser parity:**
 
@@ -297,6 +299,29 @@ fell back to fork.
 * The structural source-text test (`host/test/spawn-host-parity.test.ts`)
   remains as a fast-CI tripwire for someone removing one of the
   parallel wires.
+
+### Host-owned top-level process lifecycle
+
+Processes launched directly by the Node or browser host, rather than by a guest
+parent, are registered as children of the host-parent `ppid=0` sentinel. Their
+exit status is consumed by the host's spawn result or exit promise, so there is
+no guest process that can call `waitpid()` for them. After the process and
+thread workers have terminated and their syscall channels are deactivated, the
+host asks Rust to reap the exited `(parent=0, child=pid)` entry. Rust verifies
+both the parent relationship and exited state before releasing the executable
+process record and wait status. If the process is a group leader with live
+members, Rust retains only its resource-free `Limbo` group identity until the
+group empties.
+
+This cleanup is intentionally narrower than hiding zombies or reaping every
+process during host teardown. A process with a guest parent does not satisfy the
+`ppid=0` check and remains an exited zombie until that parent consumes its
+status through `wait()`/`waitpid()`.
+
+This cleanup also does not implement orphan adoption. Kandelo does not yet
+reparent a guest descendant when its parent exits, so such a descendant can
+still become an unreapable zombie after it exits. That existing process-
+lifecycle gap is separate from reaping direct host-owned launches.
 
 ### clone() (threads)
 
