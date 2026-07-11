@@ -372,6 +372,7 @@ describe("CentralizedKernelWorker Process Management", () => {
         [pid, { memory, channels: [{ channelOffset: mainChannelOffset }, channel] }],
       ]),
       activeChannels: [channel],
+      pendingSleeps: new Map(),
       channelTids: new Map([[`${pid}:${threadChannelOffset}`, tid]]),
       threadForkContexts: new Map([
         [`${pid}:${threadChannelOffset}`, { fnPtr: 1, argPtr: 2 }],
