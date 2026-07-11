@@ -227,12 +227,14 @@ script that a source build uses, but the resulting bottle is selected by
 Homebrew's formula version, formula `revision`, bottle `rebuild`, bottle tag,
 and `bottle do` block.
 
-Kandelo still records the package `cache_key_sha` in Homebrew sidecar metadata
-so VFS tooling can reject stale bottle bytes. When package output bytes change,
-move the appropriate Homebrew formula revision or bottle rebuild so Homebrew
-fetches new bytes. Bump `build.toml` `revision` only when the Kandelo package
-archive cache key should change. Do not bump it for formula-only docs, tap
-metadata, or browser-gallery wording.
+Kandelo records `cache_key_sha` in Homebrew sidecar metadata so VFS tooling can
+reject stale bottle bytes. For a Homebrew bottle this key is the verified
+bottle archive SHA-256, independent of whether the formula still has a legacy
+package-registry entry. When package output bytes change, move the appropriate
+Homebrew formula revision or bottle rebuild so Homebrew fetches new bytes. Bump
+`build.toml` `revision` only when a legacy Kandelo package archive cache key
+should change. Do not bump it for formula-only docs, tap metadata, or
+browser-gallery wording.
 
 See [docs/homebrew-publishing.md](homebrew-publishing.md) for the Homebrew
 formula, sidecar, GHCR, VFS, and runtime validation contract.

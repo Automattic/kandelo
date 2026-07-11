@@ -4,6 +4,7 @@ use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::process::Command;
 
 use crate::repo_root;
 
@@ -226,7 +227,7 @@ impl Validator<'_> {
 
         self.validate_formula_top_level(package_name, &formula_metadata, metadata);
         self.validate_formula_sidecar_matches_package(package_name, package, &formula_metadata);
-        self.validate_formula_file(package_name, package, &formula_metadata);
+        self.validate_formula_file(package_name, package, metadata);
         self.validate_bottles(package_name, package, &formula_metadata, metadata);
     }
 
@@ -280,7 +281,12 @@ impl Validator<'_> {
         }
     }
 
-    fn validate_formula_file(&mut self, package_name: &str, package: &Value, formula: &Value) {
+    fn validate_formula_file(
+        &mut self,
+        package_name: &str,
+        package: &Value,
+        metadata: &Value,
+    ) {
         let Some(formula_path_rel) = string_at(package, "/formula_path") else {
             return;
         };
@@ -297,30 +303,85 @@ impl Validator<'_> {
             ));
             return;
         }
-        let actual_sha = match sha256_file(&formula_path) {
-            Ok(sha) => sha,
-            Err(e) => {
+
+        if let Err(error) = validate_formula_structure_with_ripper(&formula_path) {
+            self.err(format!(
+                "package {package_name}: Formula structure is not canonical static data: {error}"
+            ));
+            return;
+        }
+
+        let source = match fs::read_to_string(&formula_path) {
+            Ok(source) => source,
+            Err(error) => {
                 self.err(format!(
-                    "package {package_name}: cannot hash formula_path {:?}: {e}",
-                    formula_path_rel
+                    "package {package_name}: cannot read formula_path {formula_path_rel:?}: {error}"
                 ));
                 return;
             }
         };
-
-        for (label, value) in [("metadata", package), ("formula", formula)] {
-            let Some(bottles) = value.get("bottles").and_then(Value::as_array) else {
-                continue;
-            };
-            for (i, bottle) in bottles.iter().enumerate() {
-                if let Some(recorded_sha) = string_at(bottle, "/built_from/formula_sha256") {
-                    if recorded_sha != actual_sha {
-                        self.err(format!(
-                            "{label} package {package_name} bottle #{i}: formula_sha256 {recorded_sha:?} does not match actual {actual_sha}"
-                        ));
-                    }
+        let bottle_block = match parse_formula_bottle_block(&source) {
+            Ok(block) => block,
+            Err(error) => {
+                self.err(format!(
+                    "package {package_name}: Formula bottle block is not canonical static data: {error}"
+                ));
+                return;
+            }
+        };
+        let mut expected_tags = BTreeMap::new();
+        if let Some(bottles) = package.get("bottles").and_then(Value::as_array) {
+            for (index, bottle) in bottles.iter().enumerate() {
+                let Some(tag) = string_at(bottle, "/bottle_tag") else {
+                    continue;
+                };
+                let sha_pointer = if string_at(bottle, "/status") == Some("success") {
+                    "/sha256"
+                } else {
+                    "/fallback_sha256"
+                };
+                let Some(sha256) = string_at(bottle, sha_pointer) else {
+                    continue;
+                };
+                if expected_tags
+                    .insert(tag.to_string(), sha256.to_string())
+                    .is_some()
+                {
+                    self.err(format!(
+                        "package {package_name}: metadata bottle #{index} duplicates Formula tag {tag:?}"
+                    ));
                 }
             }
+        }
+
+        match bottle_block {
+            None if !expected_tags.is_empty() => self.err(format!(
+                "package {package_name}: Formula bottle tags are absent but metadata advertises {expected_tags:?}"
+            )),
+            Some(block) => {
+                let expected_root = string_at(metadata, "/tap_repository").map(|repository| {
+                    format!("https://ghcr.io/v2/{}", repository.to_ascii_lowercase())
+                });
+                if expected_root.as_deref() != Some(block.root_url.as_str()) {
+                    self.err(format!(
+                        "package {package_name}: Formula bottle root_url {:?} does not match tap repository root {expected_root:?}",
+                        block.root_url
+                    ));
+                }
+                if u64_at(package, "/bottle_rebuild") != Some(block.rebuild) {
+                    self.err(format!(
+                        "package {package_name}: Formula bottle rebuild {} does not match metadata bottle_rebuild",
+                        block.rebuild
+                    ));
+                }
+                if block.tags != expected_tags {
+                    self.err(format!(
+                        "package {package_name}: Formula bottle tags {:?} do not match metadata bottles {expected_tags:?}",
+                        block.tags
+                    ));
+                }
+            }
+            None => {}
         }
     }
 
@@ -451,7 +512,7 @@ impl Validator<'_> {
         label: &str,
         package: &Value,
         bottle: &Value,
-        metadata: &Value,
+        _metadata: &Value,
     ) {
         let Some(path) = provenance_report_path(package, bottle) else {
             return;
@@ -493,26 +554,25 @@ impl Validator<'_> {
                 ));
             }
         }
-        for (provenance_ptr, metadata_ptr) in [
-            ("/repositories/kandelo_repository", "/kandelo_repository"),
-            ("/repositories/kandelo_commit", "/kandelo_commit"),
-            ("/repositories/tap_repository", "/tap_repository"),
-            ("/repositories/tap_commit", "/tap_commit"),
+        for (provenance_ptr, bottle_ptr) in [
+            (
+                "/repositories/kandelo_repository",
+                "/built_from/kandelo_repository",
+            ),
+            (
+                "/repositories/kandelo_commit",
+                "/built_from/kandelo_commit",
+            ),
+            (
+                "/repositories/tap_repository",
+                "/built_from/tap_repository",
+            ),
+            ("/repositories/tap_commit", "/built_from/tap_commit"),
+            ("/formula/sha256", "/built_from/formula_sha256"),
         ] {
-            if provenance.pointer(provenance_ptr) != metadata.pointer(metadata_ptr) {
+            if provenance.pointer(provenance_ptr) != bottle.pointer(bottle_ptr) {
                 self.err(format!(
-                    "{label}: provenance {provenance_ptr} does not match metadata {metadata_ptr}"
-                ));
-            }
-        }
-
-        if let Some(formula_path) = string_at(package, "/formula_path") {
-            let expected = self
-                .resolve_tap_path(label, formula_path)
-                .and_then(|path| sha256_file(&path).ok());
-            if expected.as_deref() != string_at(&provenance, "/formula/sha256") {
-                self.err(format!(
-                    "{label}: provenance /formula/sha256 does not match formula_path hash"
+                    "{label}: provenance {provenance_ptr} does not match metadata bottle {bottle_ptr}"
                 ));
             }
         }
@@ -673,7 +733,29 @@ impl Validator<'_> {
             ));
             return None;
         }
-        Some(self.options.tap_root.join(rel))
+        let mut path = self.options.tap_root.clone();
+        for segment in rel.split('/') {
+            path.push(segment);
+            match fs::symlink_metadata(&path) {
+                Ok(metadata) if metadata.file_type().is_symlink() => {
+                    self.err(format!(
+                        "{label}: path {rel:?} traverses symlink {}",
+                        path.display()
+                    ));
+                    return None;
+                }
+                Ok(_) => {}
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => break,
+                Err(error) => {
+                    self.err(format!(
+                        "{label}: cannot inspect path component {}: {error}",
+                        path.display()
+                    ));
+                    return None;
+                }
+            }
+        }
+        Some(path)
     }
 
     fn add_schema_errors(&mut self, label: &str, errors: Vec<String>) {
@@ -704,6 +786,126 @@ fn sha256_file(path: &Path) -> Result<String, String> {
     let mut hasher = Sha256::new();
     hasher.update(&bytes);
     Ok(format!("{:x}", hasher.finalize()))
+}
+
+#[derive(Debug, PartialEq, Eq)]
+struct FormulaBottleBlock {
+    root_url: String,
+    rebuild: u64,
+    tags: BTreeMap<String, String>,
+}
+
+fn validate_formula_structure_with_ripper(path: &Path) -> Result<(), String> {
+    let script = repo_root().join("scripts/homebrew-formula-source-digest.rb");
+    let output = Command::new("ruby")
+        .arg(&script)
+        .arg(path)
+        .output()
+        .map_err(|error| format!("run {}: {error}", script.display()))?;
+    if output.status.success() {
+        return Ok(());
+    }
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let detail = stderr.trim();
+    if detail.is_empty() {
+        Err(format!(
+            "{} exited with status {}",
+            script.display(),
+            output.status
+        ))
+    } else {
+        Err(detail.to_string())
+    }
+}
+
+fn parse_formula_bottle_block(source: &str) -> Result<Option<FormulaBottleBlock>, String> {
+    if !source.ends_with('\n') || source.contains('\r') {
+        return Err("Formula must use LF lines and end with a newline".to_string());
+    }
+    let lines: Vec<&str> = source.lines().collect();
+    let starts: Vec<usize> = lines
+        .iter()
+        .enumerate()
+        .filter_map(|(index, line)| (*line == "  bottle do").then_some(index))
+        .collect();
+    if starts.len() > 1 {
+        return Err("multiple bottle blocks".to_string());
+    }
+    let Some(start) = starts.first().copied() else {
+        return Ok(None);
+    };
+    let end = ((start + 1)..lines.len())
+        .find(|index| lines[*index] == "  end")
+        .ok_or_else(|| "unterminated bottle block".to_string())?;
+
+    let mut root_url = None;
+    let mut rebuild = 0;
+    let mut rebuild_seen = false;
+    let mut tags = BTreeMap::new();
+    for line in &lines[(start + 1)..end] {
+        if let Some(value) = line
+            .strip_prefix("    root_url \"")
+            .and_then(|value| value.strip_suffix('"'))
+        {
+            if root_url.is_some() || !value.starts_with("https://ghcr.io/v2/") {
+                return Err("invalid or duplicate root_url".to_string());
+            }
+            root_url = Some(value.to_string());
+            continue;
+        }
+        if let Some(value) = line.strip_prefix("    rebuild ") {
+            if rebuild_seen {
+                return Err("duplicate rebuild".to_string());
+            }
+            rebuild = value
+                .parse::<u64>()
+                .map_err(|_| "invalid rebuild".to_string())?;
+            if rebuild == 0 || rebuild.to_string() != value {
+                return Err("rebuild must be a canonical positive integer".to_string());
+            }
+            rebuild_seen = true;
+            continue;
+        }
+        if let Some(value) = line.strip_prefix("    sha256 cellar: ") {
+            let (cellar, tagged_sha) = value
+                .split_once(", ")
+                .ok_or_else(|| "invalid sha256 line".to_string())?;
+            if !matches!(
+                cellar,
+                ":any" | ":any_skip_relocation" | "\"/home/linuxbrew/.linuxbrew/Cellar\""
+            ) {
+                return Err("invalid bottle cellar".to_string());
+            }
+            let (tag, quoted_sha) = tagged_sha
+                .split_once(": \"")
+                .ok_or_else(|| "invalid sha256 tag".to_string())?;
+            let sha256 = quoted_sha
+                .strip_suffix('"')
+                .ok_or_else(|| "invalid sha256 quoting".to_string())?;
+            if !matches!(tag, "wasm32_kandelo" | "wasm64_kandelo") {
+                return Err(format!("invalid bottle tag {tag:?}"));
+            }
+            if sha256.len() != 64
+                || !sha256
+                    .bytes()
+                    .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+            {
+                return Err(format!("invalid sha256 for {tag}"));
+            }
+            if tags.insert(tag.to_string(), sha256.to_string()).is_some() {
+                return Err(format!("duplicate bottle tag {tag}"));
+            }
+            continue;
+        }
+        return Err(format!("unsupported bottle content {line:?}"));
+    }
+    let root_url = root_url.ok_or_else(|| "missing root_url".to_string())?;
+    Ok(Some(FormulaBottleBlock {
+        root_url,
+        rebuild,
+        tags,
+    }))
 }
 
 fn provenance_normalized_sha256(provenance: &Value) -> Option<String> {
@@ -817,7 +1019,17 @@ mod tests {
         fn new() -> Self {
             let dir = tempfile::tempdir().unwrap();
             let tap_root = dir.path().to_path_buf();
-            let formula_text = "class Hello < Formula\n  desc \"Fixture\"\nend\n";
+            let formula_text = concat!(
+                "class Hello < Formula\n",
+                "  desc \"Fixture\"\n",
+                "\n",
+                "  bottle do\n",
+                "    root_url \"https://ghcr.io/v2/automattic/kandelo-homebrew\"\n",
+                "    sha256 cellar: :any_skip_relocation, wasm32_kandelo: ",
+                "\"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\"\n",
+                "  end\n",
+                "end\n",
+            );
             let formula_sha = {
                 let mut hasher = Sha256::new();
                 hasher.update(formula_text.as_bytes());
@@ -1058,5 +1270,92 @@ mod tests {
         fixture.write();
         let report = fixture.validate();
         assert!(report.errors.join("\n").contains("formula_sha256"));
+    }
+
+    #[test]
+    fn rejects_formula_bottle_tag_missing_from_metadata() {
+        let fixture = Fixture::new();
+        let path = fixture.tap_root.join("Formula/hello.rb");
+        let source = fs::read_to_string(&path).unwrap();
+        write_text(
+            &path,
+            &source.replace(
+                "  end\nend\n",
+                concat!(
+                    "    sha256 cellar: :any_skip_relocation, wasm64_kandelo: ",
+                    "\"dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd\"\n",
+                    "  end\nend\n",
+                ),
+            ),
+        );
+
+        let report = fixture.validate();
+        assert!(
+            report
+                .errors
+                .join("\n")
+                .contains("Formula bottle tags")
+        );
+    }
+
+    #[test]
+    fn rejects_formula_bottle_digest_drift() {
+        let fixture = Fixture::new();
+        let path = fixture.tap_root.join("Formula/hello.rb");
+        let source = fs::read_to_string(&path).unwrap();
+        write_text(
+            &path,
+            &source.replace(
+                "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+                "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+            ),
+        );
+
+        let report = fixture.validate();
+        assert!(
+            report
+                .errors
+                .join("\n")
+                .contains("do not match metadata bottles")
+        );
+    }
+
+    #[test]
+    fn rejects_formula_bottle_root_drift() {
+        let fixture = Fixture::new();
+        let path = fixture.tap_root.join("Formula/hello.rb");
+        let source = fs::read_to_string(&path).unwrap();
+        write_text(
+            &path,
+            &source.replace(
+                "https://ghcr.io/v2/automattic/kandelo-homebrew",
+                "https://ghcr.io/v2/attacker/wrong-tap",
+            ),
+        );
+
+        let report = fixture.validate();
+        assert!(
+            report
+                .errors
+                .join("\n")
+                .contains("does not match tap repository root")
+        );
+    }
+
+    #[test]
+    fn rejects_extra_noncanonical_formula_bottle_call() {
+        let fixture = Fixture::new();
+        let path = fixture.tap_root.join("Formula/hello.rb");
+        let source = fs::read_to_string(&path).unwrap();
+        let source_without_class_end = source.strip_suffix("end\n").unwrap();
+        write_text(
+            &path,
+            &format!(
+                "{source_without_class_end}  bottle {{ system \"false\" }}\nend\n"
+            ),
+        );
+
+        let report = fixture.validate();
+        assert!(report.errors.join("\n").contains("noncanonical bottle block"));
     }
 }

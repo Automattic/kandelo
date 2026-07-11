@@ -178,21 +178,30 @@ EOF
 assert_generator_rejects_mismatched_homebrew_commit() {
   local brew_repo="$TMPDIR/generator-brew-repo"
   local brew_bin="$TMPDIR/generator-bin/brew"
+  local brew_prefix="$TMPDIR/generator-prefix"
   local sidecars="$TMPDIR/generator-sidecars"
   local err="$TMPDIR/generator-brew-commit.err"
-  local abi
+  local bottle="$TMPDIR/generator-bottle.tar.gz"
+  local bottle_json="$TMPDIR/generator-bottle.json"
+  local bottle_sha bottle_bytes abi
 
-  mkdir -p "$brew_repo" "$(dirname "$brew_bin")"
+  mkdir -p "$brew_repo/Formula" "$(dirname "$brew_bin")" "$brew_prefix"
   git -C "$brew_repo" init -q
   git -C "$brew_repo" config user.name "Kandelo Test"
   git -C "$brew_repo" config user.email "kandelo-test@example.invalid"
   printf 'reviewed brew\n' >"$brew_repo/README.md"
-  git -C "$brew_repo" add README.md
+  printf 'class Hello < Formula\nend\n' >"$brew_repo/Formula/hello.rb"
+  git -C "$brew_repo" add README.md Formula/hello.rb
   git -C "$brew_repo" commit -q -m "reviewed brew"
+  printf 'bottle\n' >"$bottle"
+  printf '{}\n' >"$bottle_json"
+  bottle_sha="$(sha256sum "$bottle" 2>/dev/null | awk '{print $1}' || shasum -a 256 "$bottle" | awk '{print $1}')"
+  bottle_bytes="$(wc -c <"$bottle" | tr -d '[:space:]')"
   cat >"$brew_bin" <<EOF
 #!/usr/bin/env bash
 case "\${1:-}" in
   --repository) printf '%s\n' '$brew_repo' ;;
+  --prefix) printf '%s\n' '$brew_prefix' ;;
   --version) printf '%s\n' 'Homebrew test' ;;
   *) exit 2 ;;
 esac
@@ -203,17 +212,18 @@ EOF
 
   if HOMEBREW_BREW_FILE="$brew_bin" \
     HOMEBREW_BREW_COMMIT="0000000000000000000000000000000000000000" \
+    KANDELO_HOMEBREW_PATCH_FILE="$TMPDIR/generator-missing.patch" \
     KANDELO_HOMEBREW_TAP_ROOT="$brew_repo" \
     KANDELO_HOMEBREW_SIDECAR_ROOT="$sidecars" \
     KANDELO_HOMEBREW_FORMULA="hello" \
     KANDELO_HOMEBREW_ARCH="wasm32" \
     KANDELO_HOMEBREW_RELEASE_TAG="bottles-abi-v${abi}" \
     KANDELO_HOMEBREW_TAP_REPOSITORY="Automattic/kandelo-homebrew" \
-    KANDELO_HOMEBREW_BOTTLE_ARCHIVE="$TMPDIR/missing-bottle.tar.gz" \
-    KANDELO_HOMEBREW_BOTTLE_JSON="$TMPDIR/missing-bottle.json" \
-    KANDELO_HOMEBREW_BOTTLE_URL="https://ghcr.io/v2/automattic/kandelo-homebrew/hello/blobs/sha256:0000000000000000000000000000000000000000000000000000000000000000" \
-    KANDELO_HOMEBREW_BOTTLE_SHA256="0000000000000000000000000000000000000000000000000000000000000000" \
-    KANDELO_HOMEBREW_BOTTLE_BYTES="1" \
+    KANDELO_HOMEBREW_BOTTLE_ARCHIVE="$bottle" \
+    KANDELO_HOMEBREW_BOTTLE_JSON="$bottle_json" \
+    KANDELO_HOMEBREW_BOTTLE_URL="https://ghcr.io/v2/automattic/kandelo-homebrew/hello/blobs/sha256:${bottle_sha}" \
+    KANDELO_HOMEBREW_BOTTLE_SHA256="$bottle_sha" \
+    KANDELO_HOMEBREW_BOTTLE_BYTES="$bottle_bytes" \
     bash "$REPO_ROOT/scripts/homebrew-generate-sidecars-from-env.sh" \
       >/dev/null 2>"$err"; then
     fail "sidecar generator accepted a Homebrew checkout that differed from the reviewed commit"
@@ -229,10 +239,19 @@ make_build_handoff() {
   local source_dir="${handoff}.source"
   local bottle="$source_dir/hello--2.12.1.wasm32_kandelo.bottle.tar.gz"
   local bottle_json="$source_dir/hello--2.12.1.wasm32_kandelo.bottle.json"
+  local bottle_stage="$source_dir/stage/hello/2.12.1"
   local sha256
 
-  mkdir -p "$source_dir"
-  printf 'trusted bottle bytes\n' | gzip -n >"$bottle"
+  mkdir -p "$bottle_stage/.brew" "$bottle_stage/bin"
+  cat >"$bottle_stage/.brew/hello.rb" <<'EOF'
+class Hello < Formula
+  desc "reviewed fixture"
+end
+EOF
+  printf '{}\n' >"$bottle_stage/INSTALL_RECEIPT.json"
+  printf '#!/bin/sh\necho hello\n' >"$bottle_stage/bin/hello"
+  chmod +x "$bottle_stage/bin/hello"
+  tar -czf "$bottle" -C "$source_dir/stage" hello
   sha256="$(sha256sum "$bottle" 2>/dev/null | awk '{print $1}' || shasum -a 256 "$bottle" | awk '{print $1}')"
   jq -n --arg sha256 "$sha256" '{
     "automattic/kandelo-homebrew/hello": {
@@ -240,6 +259,8 @@ make_build_handoff() {
         name: "hello",
         path: "Library/Taps/automattic/homebrew-kandelo-homebrew/Formula/hello.rb",
         pkg_version: "2.12.1",
+        tap_git_path: "Formula/hello.rb",
+        tap_git_revision: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
         desc: "this artifact-only field must not reach Homebrew merge"
       },
       bottle: {
@@ -249,7 +270,10 @@ make_build_handoff() {
         tags: {
           wasm32_kandelo: {
             local_filename: "hello--2.12.1.wasm32_kandelo.bottle.tar.gz",
-            sha256: $sha256
+            sha256: $sha256,
+            tab: {runtime_dependencies: []},
+            path_exec_files: ["bin/hello"],
+            all_files: [".brew/hello.rb", "INSTALL_RECEIPT.json", "bin/hello"]
           }
         }
       }
@@ -583,10 +607,17 @@ assert_upload_receipt_is_bound_to_build_handoff() {
 make_publish_handoff() {
   local handoff="$1" tap_root="$2"
   local build_stage="${handoff}.build"
-  local bottle_sha bottle_bytes bottle_url formula_sha link_name provenance_name
+  local bottle_sha bottle_bytes bottle_url formula_sha
 
+  rm -rf "$handoff" "$tap_root" "$build_stage"
+  mkdir -p "$tap_root/Formula" "$handoff/composition"
+  cat >"$tap_root/Formula/hello.rb" <<'EOF'
+class Hello < Formula
+  desc "reviewed fixture"
+end
+EOF
+  formula_sha="$(sha256sum "$tap_root/Formula/hello.rb" 2>/dev/null | awk '{print $1}' || shasum -a 256 "$tap_root/Formula/hello.rb" | awk '{print $1}')"
   make_build_handoff "$build_stage"
-  mkdir -p "$handoff"
   mv "$build_stage" "$handoff/build"
   bash "$REPO_ROOT/scripts/homebrew-ghcr-upload.sh" \
     --tap-repository Automattic/kandelo-homebrew \
@@ -602,77 +633,9 @@ make_publish_handoff() {
   bottle_sha="$(jq -r '.bottle.sha256' "$handoff/receipt.json")"
   bottle_bytes="$(jq -r '.bottle.bytes' "$handoff/receipt.json")"
   bottle_url="$(jq -r '.bottle.url' "$handoff/receipt.json")"
-  link_name="hello-2.12.1-rebuild0-wasm32.json"
-  provenance_name="hello-2.12.1-rebuild0-wasm32.provenance.json"
-
-  mkdir -p "$tap_root/Formula"
-  cat >"$tap_root/Formula/hello.rb" <<'EOF'
-class Hello < Formula
-  desc "reviewed fixture"
-end
-EOF
-
-  mkdir -p \
-    "$handoff/sidecars/Formula" \
-    "$handoff/sidecars/Kandelo/formula" \
-    "$handoff/sidecars/Kandelo/link" \
-    "$handoff/sidecars/Kandelo/reports"
-  cat >"$handoff/sidecars/Formula/hello.rb" <<EOF
-class Hello < Formula
-  desc "reviewed fixture"
-
-  bottle do
-    root_url "https://ghcr.io/v2/automattic/kandelo-homebrew"
-    sha256 cellar: :any_skip_relocation, wasm32_kandelo: "$bottle_sha"
-  end
-end
-EOF
-  formula_sha="$(sha256sum "$handoff/sidecars/Formula/hello.rb" 2>/dev/null | awk '{print $1}' || shasum -a 256 "$handoff/sidecars/Formula/hello.rb" | awk '{print $1}')"
-
-  jq -n \
+  jq -nS \
     --arg sha "$bottle_sha" --arg bytes "$bottle_bytes" --arg url "$bottle_url" \
-    --arg formula_sha "$formula_sha" --arg link "Kandelo/link/$link_name" '{
-      schema: 1,
-      tap_repository: "Automattic/kandelo-homebrew",
-      tap_name: "automattic/kandelo-homebrew",
-      tap_commit: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-      kandelo_abi: 18,
-      source_metadata: "Kandelo/metadata.json",
-      name: "hello",
-      full_name: "automattic/kandelo-homebrew/hello",
-      version: "2.12.1",
-      formula_revision: 0,
-      bottle_rebuild: 0,
-      formula_path: "Formula/hello.rb",
-      dependencies: [],
-      bottles: [{
-        arch: "wasm32",
-        bottle_tag: "wasm32_kandelo",
-        kandelo_abi: 18,
-        cellar: "/home/linuxbrew/.linuxbrew/Cellar",
-        prefix: "/home/linuxbrew/.linuxbrew",
-        url: $url,
-        sha256: $sha,
-        bytes: ($bytes | tonumber),
-        cache_key_sha: $sha,
-        link_manifest: $link,
-        runtime_support: ["node"],
-        browser_compatible: false,
-        fork_instrumentation: "not-required",
-        status: "success",
-        built_from: {
-          kandelo_repository: "Automattic/kandelo",
-          kandelo_commit: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
-          tap_repository: "Automattic/kandelo-homebrew",
-          tap_commit: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-          formula_sha256: $formula_sha
-        }
-      }]
-    }' >"$handoff/sidecars/Kandelo/formula/hello.json"
-
-  jq -n \
-    --arg sha "$bottle_sha" --arg bytes "$bottle_bytes" --arg url "$bottle_url" \
-    --arg formula_sha "$formula_sha" --arg link "Kandelo/link/$link_name" '{
+    --arg formula_sha "$formula_sha" '{
       schema: 1,
       tap_repository: "Automattic/kandelo-homebrew",
       tap_name: "automattic/kandelo-homebrew",
@@ -681,6 +644,8 @@ EOF
       kandelo_commit: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
       kandelo_abi: 18,
       release_tag: "bottles-abi-v18",
+      generated_at: "2026-07-12T00:00:00Z",
+      generator: "workflow fixture",
       packages: [{
         name: "hello",
         full_name: "automattic/kandelo-homebrew/hello",
@@ -688,75 +653,41 @@ EOF
         formula_revision: 0,
         bottle_rebuild: 0,
         formula_path: "Formula/hello.rb",
-        formula_metadata: "Kandelo/formula/hello.json",
+        formula_source_sha256: $formula_sha,
         dependencies: [],
         bottles: [{
           arch: "wasm32",
           bottle_tag: "wasm32_kandelo",
-          kandelo_abi: 18,
           cellar: "/home/linuxbrew/.linuxbrew/Cellar",
           prefix: "/home/linuxbrew/.linuxbrew",
-          url: $url,
-          sha256: $sha,
-          bytes: ($bytes | tonumber),
-          cache_key_sha: $sha,
-          link_manifest: $link,
+          runtime_support: ["node"],
+          browser_compatible: false,
+          fork_instrumentation: "not-required",
           status: "success",
-          built_from: {
-            kandelo_repository: "Automattic/kandelo",
-            kandelo_commit: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
-            tap_repository: "Automattic/kandelo-homebrew",
-            tap_commit: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-            formula_sha256: $formula_sha
-          }
+          built_by: "https://example.invalid/actions/runs/1",
+          built_at: "2026-07-12T00:00:00Z",
+          bottle_file: "../build/bottle.tar.gz",
+          url: $url,
+          cache_key_sha: $sha,
+          payload_root: "hello/2.12.1",
+          links: [{type: "symlink", source: "bin/hello", target: "bin/hello"}],
+          receipts: [".brew/hello.rb", "INSTALL_RECEIPT.json"],
+          env: {PATH_prepend: ["bin"]},
+          build: {
+            github_run: "https://example.invalid/actions/runs/1",
+            job: "verify-bottle",
+            runner_os: "linux",
+            brew_version: "Homebrew fixture",
+            dev_shell: "scripts/dev-shell.sh",
+            sdk_fingerprint: "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+            sysroot_fingerprint: "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+          },
+          validation: {outcome_lists: [{
+            name: "schema", status: "success", passed: ["fixture"], failed: [], skipped: []
+          }]}
         }]
       }]
-    }' >"$handoff/sidecars/Kandelo/metadata.json"
-
-  jq -n --arg sha "$bottle_sha" --arg bytes "$bottle_bytes" --arg url "$bottle_url" '{
-    schema: 1,
-    package: "hello",
-    version: "2.12.1",
-    arch: "wasm32",
-    kandelo_abi: 18,
-    prefix: "/home/linuxbrew/.linuxbrew",
-    cellar: "/home/linuxbrew/.linuxbrew/Cellar",
-    keg: "/home/linuxbrew/.linuxbrew/Cellar/hello/2.12.1",
-    bottle: {url: $url, sha256: $sha, bytes: ($bytes | tonumber), cache_key_sha: $sha},
-    links: [], receipts: [], env: {PATH_prepend: ["bin"]}
-  }' >"$handoff/sidecars/Kandelo/link/$link_name"
-
-  jq -n \
-    --arg sha "$bottle_sha" --arg bytes "$bottle_bytes" --arg url "$bottle_url" \
-    --arg formula_sha "$formula_sha" '{
-      schema: 1,
-      subject: {package: "hello", version: "2.12.1", arch: "wasm32", bottle_rebuild: 0, kandelo_abi: 18},
-      repositories: {
-        kandelo_repository: "Automattic/kandelo",
-        kandelo_commit: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
-        tap_repository: "Automattic/kandelo-homebrew",
-        tap_commit: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
-      },
-      formula: {path: "Formula/hello.rb", sha256: $formula_sha},
-      bottle: {
-        url: $url, sha256: $sha, bytes: ($bytes | tonumber), cache_key_sha: $sha,
-        bottle_tag: "wasm32_kandelo", cellar: "/home/linuxbrew/.linuxbrew/Cellar",
-        prefix: "/home/linuxbrew/.linuxbrew"
-      },
-      build: {}, validation: {}, metadata: {}
-    }' >"$handoff/sidecars/Kandelo/reports/$provenance_name"
-}
-
-refresh_publish_formula_sha() {
-  local handoff="$1" formula_sha tmp
-  formula_sha="$(sha256sum "$handoff/sidecars/Formula/hello.rb" 2>/dev/null | awk '{print $1}' || shasum -a 256 "$handoff/sidecars/Formula/hello.rb" | awk '{print $1}')"
-  tmp="$TMPDIR/refresh-formula.json"
-  jq --arg sha "$formula_sha" '(.bottles[]?.built_from.formula_sha256) = $sha' "$handoff/sidecars/Kandelo/formula/hello.json" >"$tmp"
-  mv "$tmp" "$handoff/sidecars/Kandelo/formula/hello.json"
-  jq --arg sha "$formula_sha" '(.packages[]?.bottles[]?.built_from.formula_sha256) = $sha' "$handoff/sidecars/Kandelo/metadata.json" >"$tmp"
-  mv "$tmp" "$handoff/sidecars/Kandelo/metadata.json"
-  jq --arg sha "$formula_sha" '.formula.sha256 = $sha' "$handoff/sidecars/Kandelo/reports/"*.provenance.json >"$tmp"
-  mv "$tmp" "$handoff/sidecars/Kandelo/reports/"*.provenance.json
+    }' >"$handoff/composition/sidecars-input.json"
 }
 
 validate_publish_handoff() {
@@ -774,7 +705,7 @@ validate_publish_handoff() {
 }
 
 assert_publish_handoff_is_exact_inert_data() {
-  local handoff tap_root tmp link
+  local handoff tap_root tmp external before after err
 
   handoff="$TMPDIR/publish-handoff-valid"
   tap_root="$TMPDIR/publish-handoff-valid-tap"
@@ -784,99 +715,107 @@ assert_publish_handoff_is_exact_inert_data() {
   handoff="$TMPDIR/publish-handoff-extra"
   tap_root="$TMPDIR/publish-handoff-extra-tap"
   make_publish_handoff "$handoff" "$tap_root"
-  printf 'untrusted\n' >"$handoff/sidecars/run.sh"
+  printf 'untrusted\n' >"$handoff/run.sh"
   if validate_publish_handoff "$handoff" "$tap_root" >/dev/null 2>&1; then
-    fail "publish handoff validator accepted an extra executable sidecar"
+    fail "publish handoff validator accepted an extra top-level executable"
   fi
 
   handoff="$TMPDIR/publish-handoff-symlink"
   tap_root="$TMPDIR/publish-handoff-symlink-tap"
   make_publish_handoff "$handoff" "$tap_root"
-  rm "$handoff/sidecars/Kandelo/formula/hello.json"
-  ln -s ../metadata.json "$handoff/sidecars/Kandelo/formula/hello.json"
+  rm "$handoff/composition/sidecars-input.json"
+  ln -s ../receipt.json "$handoff/composition/sidecars-input.json"
   if validate_publish_handoff "$handoff" "$tap_root" >/dev/null 2>&1; then
-    fail "publish handoff validator accepted a symlinked sidecar"
+    fail "publish handoff validator accepted a symlinked composition input"
   fi
 
-  handoff="$TMPDIR/publish-handoff-link-name"
-  tap_root="$TMPDIR/publish-handoff-link-name-tap"
+  handoff="$TMPDIR/publish-handoff-extra-field"
+  tap_root="$TMPDIR/publish-handoff-extra-field-tap"
   make_publish_handoff "$handoff" "$tap_root"
-  link="$(find "$handoff/sidecars/Kandelo/link" -type f -print -quit)"
-  mv "$link" "$handoff/sidecars/Kandelo/link/hello-2.12.1-rebuild0-wasm64.json"
+  tmp="$TMPDIR/publish-handoff-extra-field.json"
+  jq '.untrusted = "command"' "$handoff/composition/sidecars-input.json" >"$tmp"
+  mv "$tmp" "$handoff/composition/sidecars-input.json"
   if validate_publish_handoff "$handoff" "$tap_root" >/dev/null 2>&1; then
-    fail "publish handoff validator accepted a link filename for another architecture"
+    fail "publish handoff validator accepted an unknown composition field"
   fi
 
-  handoff="$TMPDIR/publish-handoff-formula"
-  tap_root="$TMPDIR/publish-handoff-formula-tap"
+  handoff="$TMPDIR/publish-handoff-formula-drift"
+  tap_root="$TMPDIR/publish-handoff-formula-drift-tap"
   make_publish_handoff "$handoff" "$tap_root"
   tmp="$TMPDIR/publish-handoff-formula.rb"
   sed 's/desc "reviewed fixture"/desc "artifact-mutated code"/' \
-    "$handoff/sidecars/Formula/hello.rb" >"$tmp"
-  mv "$tmp" "$handoff/sidecars/Formula/hello.rb"
+    "$tap_root/Formula/hello.rb" >"$tmp"
+  mv "$tmp" "$tap_root/Formula/hello.rb"
   if validate_publish_handoff "$handoff" "$tap_root" >/dev/null 2>&1; then
-    fail "publish handoff validator accepted Formula code that differs from the reviewed tap"
+    fail "publish handoff validator accepted Formula source drift"
   fi
 
-  handoff="$TMPDIR/publish-handoff-root"
-  tap_root="$TMPDIR/publish-handoff-root-tap"
+  handoff="$TMPDIR/publish-handoff-bottle-path"
+  tap_root="$TMPDIR/publish-handoff-bottle-path-tap"
   make_publish_handoff "$handoff" "$tap_root"
-  tmp="$TMPDIR/publish-handoff-root.rb"
-  sed 's|root_url "https://ghcr.io/v2/automattic/kandelo-homebrew"|root_url "https://example.invalid/bottles"|' \
-    "$handoff/sidecars/Formula/hello.rb" >"$tmp"
-  mv "$tmp" "$handoff/sidecars/Formula/hello.rb"
+  tmp="$TMPDIR/publish-handoff-bottle-path.json"
+  jq '.packages[0].bottles[0].bottle_file = "../../outside.tar.gz"' \
+    "$handoff/composition/sidecars-input.json" >"$tmp"
+  mv "$tmp" "$handoff/composition/sidecars-input.json"
   if validate_publish_handoff "$handoff" "$tap_root" >/dev/null 2>&1; then
-    fail "publish handoff validator accepted a Formula bottle root that differs from the plan"
+    fail "publish handoff validator accepted a bottle path outside the handoff"
   fi
 
-  handoff="$TMPDIR/publish-handoff-duplicate-selected-tag"
-  tap_root="$TMPDIR/publish-handoff-duplicate-selected-tag-tap"
+  handoff="$TMPDIR/publish-handoff-wrong-sha"
+  tap_root="$TMPDIR/publish-handoff-wrong-sha-tap"
   make_publish_handoff "$handoff" "$tap_root"
-  tmp="$TMPDIR/publish-handoff-duplicate-selected-tag.rb"
-  awk '
-    { print }
-    /wasm32_kandelo:/ {
-      print "    sha256 cellar: :any_skip_relocation, wasm32_kandelo: \"0000000000000000000000000000000000000000000000000000000000000000\""
-    }
-  ' "$handoff/sidecars/Formula/hello.rb" >"$tmp"
-  mv "$tmp" "$handoff/sidecars/Formula/hello.rb"
-  refresh_publish_formula_sha "$handoff"
+  tmp="$TMPDIR/publish-handoff-wrong-sha.json"
+  jq '.packages[0].bottles[0].cache_key_sha = "0000000000000000000000000000000000000000000000000000000000000000"' \
+    "$handoff/composition/sidecars-input.json" >"$tmp"
+  mv "$tmp" "$handoff/composition/sidecars-input.json"
   if validate_publish_handoff "$handoff" "$tap_root" >/dev/null 2>&1; then
-    fail "publish handoff validator accepted a duplicate selected bottle tag"
+    fail "publish handoff validator accepted bottle digest drift"
   fi
 
-  handoff="$TMPDIR/publish-handoff-mutated-sibling-tag"
-  tap_root="$TMPDIR/publish-handoff-mutated-sibling-tag-tap"
+  handoff="$TMPDIR/publish-handoff-large-input"
+  tap_root="$TMPDIR/publish-handoff-large-input-tap"
   make_publish_handoff "$handoff" "$tap_root"
-  cat >"$tap_root/Formula/hello.rb" <<'EOF'
-class Hello < Formula
-  desc "reviewed fixture"
-  bottle do
-    root_url "https://ghcr.io/v2/automattic/kandelo-homebrew"
-    sha256 cellar: :any_skip_relocation, wasm64_kandelo: "1111111111111111111111111111111111111111111111111111111111111111"
-  end
-end
-EOF
-  tmp="$TMPDIR/publish-handoff-mutated-sibling-tag.rb"
-  awk '
-    { print }
-    /wasm32_kandelo:/ {
-      print "    sha256 cellar: :any_skip_relocation, wasm64_kandelo: \"2222222222222222222222222222222222222222222222222222222222222222\""
-    }
-  ' "$handoff/sidecars/Formula/hello.rb" >"$tmp"
-  mv "$tmp" "$handoff/sidecars/Formula/hello.rb"
-  refresh_publish_formula_sha "$handoff"
+  truncate -s 4194305 "$handoff/composition/sidecars-input.json"
   if validate_publish_handoff "$handoff" "$tap_root" >/dev/null 2>&1; then
-    fail "publish handoff validator accepted a changed reviewed sibling bottle tag"
+    fail "publish handoff validator accepted oversized composition input"
   fi
 
-  handoff="$TMPDIR/publish-handoff-large-metadata"
-  tap_root="$TMPDIR/publish-handoff-large-metadata-tap"
+  handoff="$TMPDIR/publish-handoff-tap-symlink"
+  tap_root="$TMPDIR/publish-handoff-tap-symlink-tap"
+  external="$TMPDIR/publish-handoff-external-formula.rb"
+  err="$TMPDIR/publish-handoff-tap-symlink.err"
   make_publish_handoff "$handoff" "$tap_root"
-  truncate -s 16777217 "$handoff/sidecars/Kandelo/metadata.json"
-  if validate_publish_handoff "$handoff" "$tap_root" >/dev/null 2>&1; then
-    fail "publish handoff validator accepted oversized metadata JSON"
+  cp "$tap_root/Formula/hello.rb" "$external"
+  rm "$tap_root/Formula/hello.rb"
+  ln -s "$external" "$tap_root/Formula/hello.rb"
+  before="$(sha256sum "$external" 2>/dev/null || shasum -a 256 "$external")"
+  if validate_publish_handoff "$handoff" "$tap_root" >/dev/null 2>"$err"; then
+    fail "publish handoff validator accepted a symlink in the tap Formula tree"
   fi
+  grep -F "symlink" "$err" >/dev/null ||
+    fail "publish handoff validator did not explain the tap symlink"
+
+  git -C "$tap_root" init -q
+  git -C "$tap_root" config user.name "Kandelo Test"
+  git -C "$tap_root" config user.email "kandelo-test@example.invalid"
+  git -C "$tap_root" add Formula
+  git -C "$tap_root" commit -q -m "add symlinked Formula fixture"
+  if bash "$REPO_ROOT/scripts/homebrew-publish-sidecars.sh" \
+    --kandelo-root "$REPO_ROOT" \
+    --tap-root "$tap_root" \
+    --publication-handoff "$handoff" \
+    --formula hello \
+    --arch wasm32 \
+    --release-tag bottles-abi-v18 \
+    --status success \
+    --tap-commit aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa \
+    --kandelo-commit bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb \
+    --dry-run \
+    --no-lock >/dev/null 2>"$err"; then
+    fail "sidecar publisher accepted a tracked symlink in the tap Formula tree"
+  fi
+  after="$(sha256sum "$external" 2>/dev/null || shasum -a 256 "$external")"
+  [ "$before" = "$after" ] || fail "sidecar publisher wrote through the tap Formula symlink"
 }
 
 assert_bottle_build_trusts_selected_tap() {
@@ -1254,6 +1193,80 @@ assert_publisher_trust_contract() {
   ruby "$REPO_ROOT/scripts/check-homebrew-publish-workflow-trust.rb"
 }
 
+assert_formula_composition_is_static_and_lossless() {
+  local planned="$TMPDIR/formula-planned.rb"
+  local current="$TMPDIR/formula-current.rb"
+  local composed="$TMPDIR/formula-composed.rb"
+  local malicious="$TMPDIR/formula-malicious.rb"
+  local planned_digest current_digest
+
+  cat >"$planned" <<'EOF'
+class Hello < Formula
+  desc "reviewed fixture"
+end
+EOF
+  cat >"$current" <<'EOF'
+class Hello < Formula
+  desc "reviewed fixture"
+
+  bottle do
+    root_url "https://ghcr.io/v2/automattic/kandelo-homebrew"
+    sha256 cellar: :any_skip_relocation, wasm64_kandelo: "1111111111111111111111111111111111111111111111111111111111111111"
+  end
+end
+EOF
+  planned_digest="$(ruby "$REPO_ROOT/scripts/homebrew-formula-source-digest.rb" "$planned")"
+  current_digest="$(ruby "$REPO_ROOT/scripts/homebrew-formula-source-digest.rb" "$current")"
+  [ "$planned_digest" = "$current_digest" ] ||
+    fail "Formula source digest treated a static sibling bottle as source drift"
+
+  ruby "$REPO_ROOT/scripts/homebrew-compose-formula-bottle.rb" \
+    "$current" "$planned" \
+    https://ghcr.io/v2/automattic/kandelo-homebrew \
+    0 wasm32_kandelo any_skip_relocation \
+    2222222222222222222222222222222222222222222222222222222222222222 \
+    preserve \
+    "$composed"
+  grep -F 'wasm32_kandelo: "2222222222222222222222222222222222222222222222222222222222222222"' \
+    "$composed" >/dev/null || fail "Formula composer omitted the selected bottle tag"
+  grep -F 'wasm64_kandelo: "1111111111111111111111111111111111111111111111111111111111111111"' \
+    "$composed" >/dev/null || fail "Formula composer dropped the refreshed sibling bottle tag"
+
+  ruby "$REPO_ROOT/scripts/homebrew-compose-formula-bottle.rb" \
+    "$current" "$planned" \
+    https://ghcr.io/v2/automattic/kandelo-homebrew \
+    1 wasm32_kandelo any_skip_relocation \
+    2222222222222222222222222222222222222222222222222222222222222222 \
+    discard \
+    "$composed"
+  grep -F 'rebuild 1' "$composed" >/dev/null ||
+    fail "Formula composer did not apply the transitioned bottle rebuild"
+  if grep -F 'wasm64_kandelo: "1111111111111111111111111111111111111111111111111111111111111111"' \
+    "$composed" >/dev/null; then
+    fail "Formula composer retained a sibling bottle across an identity transition"
+  fi
+
+  cat >"$malicious" <<'EOF'
+class Hello < Formula
+  desc "reviewed fixture"
+  bottle { system "touch", "/tmp/untrusted" }
+end
+EOF
+  if ruby "$REPO_ROOT/scripts/homebrew-formula-source-digest.rb" "$malicious" \
+    >/dev/null 2>&1; then
+    fail "Formula source digest accepted a noncanonical executable bottle block"
+  fi
+  if ruby "$REPO_ROOT/scripts/homebrew-compose-formula-bottle.rb" \
+    "$malicious" "$planned" \
+    https://ghcr.io/v2/automattic/kandelo-homebrew \
+    0 wasm32_kandelo any_skip_relocation \
+    2222222222222222222222222222222222222222222222222222222222222222 \
+    preserve \
+    "$composed" >/dev/null 2>&1; then
+    fail "Formula composer accepted a noncanonical executable bottle block"
+  fi
+}
+
 assert_matrix
 assert_matrix_skips_unchanged_cache_key
 assert_upload_dry_run
@@ -1271,6 +1284,7 @@ assert_failed_payload_rejects_success_status
 assert_rollback_preserves_metadata
 assert_rollback_deletion_requires_reason
 bash "$REPO_ROOT/scripts/test-homebrew-patched-launcher.sh"
+assert_formula_composition_is_static_and_lossless
 assert_publisher_trust_contract
 
 echo "test-homebrew-publish-workflow.sh: ok"

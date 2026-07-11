@@ -207,21 +207,31 @@ commit, ABI namespace, derived bottle root, and formula matrix, each
    only output is a strict data receipt identifying the uploaded digest URL,
    SHA-256, byte count, and image tag.
 3. `verify-bottle` is read-only and starts from fresh exact source checkouts. It
-   revalidates the build handoff and receipt, reconstructs minimal canonical
-   bottle JSON instead of trusting arbitrary artifact fields, fetches the full
-   Kandelo ABI runtime graph, builds the VFS image, and runs the runtime and
-   browser gates. It uses the locally built bottle in dry-run mode. In write
-   mode it discards that bottle as runtime evidence and instead anonymously
-   downloads the GHCR digest URL, then rechecks SHA-256 and byte count. The
-   trusted in-tree generator produces the Formula update and `Kandelo/`
-   sidecars. The resulting publication handoff is an exact, data-only layout;
-   downstream jobs never execute artifact-provided scripts or environment
-   files.
+   revalidates the build handoff and receipt, fetches the full Kandelo ABI
+   runtime graph, builds the VFS image, and runs the runtime and browser gates.
+   It uses the locally built bottle in dry-run mode. In write mode it discards
+   that bottle as runtime evidence and instead anonymously downloads the GHCR
+   digest URL, then rechecks SHA-256 and byte count. This is the only
+   post-build role that evaluates the reviewed Formula through Homebrew. The
+   trusted generator combines Homebrew's rich bottle receipt and `brew info`
+   output to derive formula identity, declared direct dependencies, keg link
+   paths, and fork-instrumentation evidence. It generates a full candidate tap
+   for validation, but the publication handoff contains only the strict build
+   files, upload receipt, selected runtime bottle bytes, and one package-scoped
+   `composition/sidecars-input.json`. Downstream jobs never execute
+   artifact-provided scripts, Formulae, or environment files.
 4. `finalize-tap` runs only for a write publication and receives only
    `contents: write`. On another fresh runner it validates the complete
    publication handoff as inert data against the exact base tap before checking
-   out with push credentials. Only then may the trusted publisher compose and
-   push the Formula update, sidecars, and provenance under the tap state lock.
+   out with push credentials. The publisher then acquires the tap state lock,
+   refreshes `main`, verifies that the exact archived Formula is still an
+   ancestor and that its bottle-excluded source digest has not changed,
+   statically composes the selected bottle tag, and regenerates aggregate
+   sidecars from refreshed tap metadata. A sibling-architecture tag is retained
+   only when the refreshed metadata proves the same ABI, version, formula
+   revision, and bottle rebuild. It does not load Formula Ruby or run Homebrew
+   in the credentialed role. Only the composed and fully validated Formula
+   update, sidecars, and provenance are pushed.
 
 Tap writes use a tap-wide state lock, an attached `main` checkout, an explicit
 remote-main refresh, and an explicit `HEAD:refs/heads/main` push. The workflow
@@ -393,11 +403,13 @@ gallery publication requires a separate immutable asset contract.
   install is validated.
 - Do not delete GHCR bottle blobs as the normal recovery path. Prefer marking a
   failed attempt and preserving last-green fallback metadata.
-- Do not merge or enable the privileged tap caller until publication composes
-  peer and sibling-architecture sidecars under the tap lock and rejects formula
-  source changes after planning. This activation prerequisite is tracked by
-  `Automattic/kandelo#885`; a global lock alone does not make stale aggregate
-  sidecars safe.
+- Publication must compose peer packages and same-identity sibling-architecture
+  bottle tags from refreshed tap state while holding the tap lock. Identity
+  transitions discard all old sibling tags before publishing the selected
+  architecture. Formula source changes after planning, noncanonical bottle
+  blocks, Formula root/tag/digest disagreement with the tap sidecars, or
+  symlinks in refreshed `Formula/` and `Kandelo/` state must fail publication;
+  a global lock alone does not make stale aggregate sidecars safe.
 - Do not publish a new formula's tap metadata until its GHCR package passes the
   anonymous digest readback. New GHCR packages are private by default; changing
   package visibility is an explicit operator action, not a workflow side effect.
@@ -406,10 +418,8 @@ gallery publication requires a separate immutable asset contract.
 ## Current Gaps
 
 The implemented path covers a trusted bottle build, GHCR upload plus anonymous
-readback, sidecar validation, verified VFS image building, browser smoke, and
-diagnostic gallery gating. Privileged tap activation remains gated on lossless
-under-lock sidecar composition and formula-source drift protection in
-`Automattic/kandelo#885`. Public visibility provisioning for new GHCR packages,
-immutable gallery release
-publication, broader package coverage, general guest `brew install`, and full
-operator runbooks remain separate work.
+readback, sidecar validation, verified VFS image building, browser smoke,
+diagnostic gallery gating, and lossless under-lock tap composition with Formula
+source-drift rejection. Public visibility provisioning for new GHCR packages,
+immutable gallery release publication, broader package coverage, general guest
+`brew install`, and full operator runbooks remain separate work.
