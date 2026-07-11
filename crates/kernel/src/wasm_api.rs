@@ -7368,6 +7368,8 @@ fn cross_process_loopback_connect(proc: &mut Process, fd: i32, addr: &[u8]) -> R
         peer_addr6: [0; 16],
         peer_is_ipv6: false,
         peer_port: client_port,
+        peer_pid: 0,
+        peer_sock_idx: None,
         recv_pipe_idx: pipe_a_idx, // server reads client's writes
         send_pipe_idx: pipe_b_idx, // server writes to client's reads
     };
@@ -7489,6 +7491,8 @@ fn cross_process_loopback_connect6(
         peer_addr6: client_addr6,
         peer_is_ipv6: true,
         peer_port: client_port,
+        peer_pid: 0,
+        peer_sock_idx: None,
         recv_pipe_idx: pipe_a_idx,
         send_pipe_idx: pipe_b_idx,
     };
@@ -7508,7 +7512,7 @@ fn cross_process_loopback_connect6(
 /// (possibly in a different process).
 fn cross_process_unix_connect(proc: &mut Process, fd: i32, addr: &[u8]) -> Result<(), Errno> {
     use crate::pipe::PipeBuffer;
-    use crate::socket::{SocketDomain, SocketInfo, SocketState, SocketType};
+    use crate::socket::{SocketDomain, SocketState, SocketType};
 
     // Parse path from sockaddr_un
     if addr.len() < 3 {
@@ -7576,6 +7580,10 @@ fn cross_process_unix_connect(proc: &mut Process, fd: i32, addr: &[u8]) -> Resul
     {
         return Err(Errno::ECONNREFUSED);
     }
+    let shared_idx = listener
+        .shared_backlog_idx
+        .ok_or(Errno::ECONNREFUSED)?;
+    let accept_wake_idx = listener.accept_wake_idx;
 
     // Allocate pipes only after both endpoints have been validated, so a
     // stale or wrong-type registry entry cannot leak global pipe slots.
@@ -7583,21 +7591,21 @@ fn cross_process_unix_connect(proc: &mut Process, fd: i32, addr: &[u8]) -> Resul
     let pipe_a_idx = pipe_table.alloc(PipeBuffer::new(65536));
     let pipe_b_idx = pipe_table.alloc(PipeBuffer::new(65536));
 
-    // Create accepted socket in the listener's process
-    let mut accepted_sock = SocketInfo::new(SocketDomain::Unix, SocketType::Stream, 0);
-    accepted_sock.state = SocketState::Connected;
-    accepted_sock.recv_buf_idx = Some(pipe_a_idx);
-    accepted_sock.send_buf_idx = Some(pipe_b_idx);
-    accepted_sock.global_pipes = true;
-    let accepted_idx = listener_proc.sockets.alloc(accepted_sock);
-
-    // Push to listener's backlog
-    let listener = listener_proc
-        .sockets
-        .get_mut(listener_sock_idx)
-        .ok_or(Errno::EBADF)?;
-    listener.listen_backlog.push(accepted_idx);
-    let accept_wake_idx = listener.accept_wake_idx;
+    let pending = crate::socket::PendingConnection {
+        peer_addr: [0; 4],
+        peer_addr6: [0; 16],
+        peer_is_ipv6: false,
+        peer_port: 0,
+        peer_pid: my_pid,
+        peer_sock_idx: Some(sock_idx),
+        recv_pipe_idx: pipe_a_idx,
+        send_pipe_idx: pipe_b_idx,
+    };
+    if !unsafe { crate::socket::shared_listener_backlog_table().push(shared_idx, pending) } {
+        pipe_table.discard_unclaimed(pipe_a_idx);
+        pipe_table.discard_unclaimed(pipe_b_idx);
+        return Err(Errno::ECONNREFUSED);
+    }
 
     // Set up client socket (in current process)
     let client_proc = table.get_mut(my_pid).ok_or(Errno::ESRCH)?;
@@ -7605,6 +7613,7 @@ fn cross_process_unix_connect(proc: &mut Process, fd: i32, addr: &[u8]) -> Resul
     client.send_buf_idx = Some(pipe_a_idx);
     client.recv_buf_idx = Some(pipe_b_idx);
     client.state = SocketState::Connected;
+    client.peer_idx = None;
     client.global_pipes = true;
 
     if let Some(idx) = accept_wake_idx {
@@ -10152,14 +10161,16 @@ pub extern "C" fn kernel_inject_connection(
         peer_addr6: [0; 16],
         peer_is_ipv6: false,
         peer_port: peer_port as u16,
+        peer_pid: 0,
+        peer_sock_idx: None,
         recv_pipe_idx,
         send_pipe_idx,
     };
     let pushed = unsafe { crate::socket::shared_listener_backlog_table().push(shared_idx, pc) };
     if !pushed {
         // Slot was freed (last listener closed concurrently) — release pipes
-        pipe_table.free_if_closed(recv_pipe_idx);
-        pipe_table.free_if_closed(send_pipe_idx);
+        pipe_table.discard_unclaimed(recv_pipe_idx);
+        pipe_table.discard_unclaimed(send_pipe_idx);
         return -(Errno::EBADF as i32);
     }
 

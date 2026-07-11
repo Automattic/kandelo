@@ -361,6 +361,16 @@ impl PipeTable {
         }
     }
 
+    /// Release both endpoints of a newly allocated buffer that was never
+    /// published to a socket or host bridge, then make its slot reusable.
+    pub fn discard_unclaimed(&mut self, idx: usize) {
+        if let Some(pipe) = self.get_mut(idx) {
+            pipe.close_read_end();
+            pipe.close_write_end();
+        }
+        self.free_if_closed(idx);
+    }
+
     /// Total number of slots (including freed).
     pub fn len(&self) -> usize {
         self.pipes.len()
@@ -597,5 +607,16 @@ mod tests {
         // Slot 0 should be reusable
         let idx3 = table.alloc(PipeBuffer::new(64));
         assert_eq!(idx3, 0);
+    }
+
+    #[test]
+    fn test_pipe_table_discards_unclaimed_slot() {
+        let mut table = PipeTable::new();
+        let idx = table.alloc(PipeBuffer::new(64));
+
+        table.discard_unclaimed(idx);
+
+        assert_eq!(table.count_active(), 0);
+        assert_eq!(table.alloc(PipeBuffer::new(64)), idx);
     }
 }
