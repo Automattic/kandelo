@@ -23,8 +23,17 @@ export function targetTriple(arch: WasmArch): string {
   return `${arch}-unknown-unknown`;
 }
 
-export function hostTriple(arch: WasmArch): string {
-  return `${arch}-unknown-none`;
+/**
+ * GNU build-system identity for Kandelo's musl userland.
+ *
+ * This is deliberately separate from targetTriple(): config.sub requires a
+ * Linux kernel component for a musl tuple, while LLVM does not support that
+ * tuple for Wasm code generation. The value lets Autoconf and gnulib select
+ * musl ABI and libc behavior; it does not claim that Kandelo has a Linux
+ * kernel or define __linux__ for compiled programs.
+ */
+export function autoconfHostTriple(arch: WasmArch): string {
+  return `${arch}-unknown-linux-musl`;
 }
 
 export function toolPrefix(arch: WasmArch): string {

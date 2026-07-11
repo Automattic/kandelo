@@ -89,8 +89,12 @@ function gnulibSiteFacts(overrides: Record<string, string> = {}): string[] {
 describe('buildConfigureArgs', () => {
   it('includes --host and --prefix', () => {
     const args = buildConfigureArgs([]);
-    expect(args).toContain('--host=wasm32-unknown-none');
+    expect(args).toContain('--host=wasm32-unknown-linux-musl');
     expect(args).toContain('--prefix=/usr');
+  });
+
+  it('uses the musl userland identity for wasm64 as well', () => {
+    expect(buildConfigureArgs([], 'wasm64')).toContain('--host=wasm64-unknown-linux-musl');
   });
 
   it('forwards extra user args', () => {
