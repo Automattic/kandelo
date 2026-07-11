@@ -17,6 +17,7 @@ import coreutilsWasmUrl from "@binaries/programs/wasm32/coreutils.wasm?url";
 import grepWasmUrl from "@binaries/programs/wasm32/grep.wasm?url";
 import sedWasmUrl from "@binaries/programs/wasm32/sed.wasm?url";
 import genCatWasmUrl from "@binaries/programs/wasm32/posix-utils-lite/gencat.wasm?url";
+import { COREUTILS_NAMES } from "../../lib/init/shell-binaries";
 
 interface DataFile {
   path: string;
@@ -49,23 +50,6 @@ let coreutilsBytes: ArrayBuffer | null = null;
 let grepBytes: ArrayBuffer | null = null;
 let sedBytes: ArrayBuffer | null = null;
 let genCatBytes: ArrayBuffer | null = null;
-
-const COREUTILS_NAMES = [
-  "arch", "b2sum", "base32", "base64", "basename", "basenc", "cat",
-  "chcon", "chgrp", "chmod", "chown", "chroot", "cksum", "comm", "cp",
-  "csplit", "cut", "date", "dd", "df", "dir", "dircolors", "dirname",
-  "du", "echo", "env", "expand", "expr", "factor", "false", "fmt",
-  "fold", "groups", "head", "hostid", "id", "install", "join", "link",
-  "ln", "logname", "ls", "md5sum", "mkdir", "mkfifo", "mknod", "mktemp",
-  "mv", "nice", "nl", "nohup", "nproc", "numfmt", "od", "paste",
-  "pathchk", "pr", "printenv", "printf", "ptx", "pwd", "readlink",
-  "realpath", "rm", "rmdir", "runcon", "seq", "sha1sum", "sha224sum",
-  "sha256sum", "sha384sum", "sha512sum", "shred", "shuf", "sleep",
-  "sort", "split", "stat", "stty", "sum", "sync", "tac", "tail",
-  "tee", "test", "timeout", "touch", "tr", "true", "truncate", "tsort",
-  "tty", "uname", "unexpand", "uniq", "unlink", "vdir", "wc", "whoami",
-  "yes",
-];
 
 /** Write a binary file to the virtual filesystem. */
 function writeFileToFs(fs: import("@host/browser-kernel-host").BrowserKernel["fs"], path: string, data: ArrayBuffer): void {

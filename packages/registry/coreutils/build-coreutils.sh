@@ -1,15 +1,15 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Build GNU coreutils 9.5 for wasm32-posix-kernel.
+# Build GNU coreutils 9.6 for wasm32-posix-kernel.
 #
 # Uses the SDK's wasm32posix-configure wrapper for cross-compilation.
 # Output: packages/registry/coreutils/bin/*.wasm
 
-COREUTILS_VERSION="${COREUTILS_VERSION:-9.5}"
+COREUTILS_VERSION="${COREUTILS_VERSION:-9.6}"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
-SRC_DIR="$SCRIPT_DIR/coreutils-src"
+SRC_DIR="$SCRIPT_DIR/coreutils-${COREUTILS_VERSION}-src"
 BIN_DIR="$SCRIPT_DIR/bin"
 SYSROOT="$REPO_ROOT/sysroot"
 
@@ -41,8 +41,10 @@ fi
 cd "$SRC_DIR"
 
 # --- Configure ---
-if [ ! -f Makefile ]; then
-    echo "==> Configuring coreutils for wasm32..."
+# Rerun configure even when this source tree was built before. Package recipe
+# changes can alter the multicall member set without changing the upstream
+# version, and an old Makefile must never define the published command surface.
+echo "==> Configuring coreutils for wasm32..."
 
     # GNU coreutils + gnulib does hundreds of configure tests.
     # Cross-compilation link-based tests fail, so we override with correct
@@ -228,15 +230,15 @@ if [ ! -f Makefile ]; then
     wasm32posix-configure \
         --disable-nls \
         --without-selinux \
-        --without-gmp \
+        --without-libgmp \
         --disable-acl \
         --disable-xattr \
         --enable-single-binary=symlinks \
+        --enable-install-program=arch \
         --enable-no-install-program=stdbuf,pinky,who,users,uptime \
         2>&1 | tail -30
 
     echo "==> Configure complete."
-fi
 
 # --- Build ---
 echo "==> Building coreutils..."

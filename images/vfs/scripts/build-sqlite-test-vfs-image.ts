@@ -18,6 +18,7 @@ import {
 } from "../../../host/src/vfs/image-helpers";
 import { findRepoRoot, tryResolveBinary } from "../../../host/src/binary-resolver";
 import { saveImage, walkAndWrite } from "./vfs-image-helpers";
+import { COREUTILS_NAMES } from "../lib/init/shell-binaries";
 
 const REPO_ROOT = findRepoRoot();
 const SQLITE_DIR = join(REPO_ROOT, "packages/registry/sqlite");
@@ -31,11 +32,7 @@ const COREUTILS_PATH = tryResolveBinary("programs/coreutils.wasm");
 const OUT_FILE = process.env.SQLITE_TEST_VFS_OUT
   ?? join(REPO_ROOT, "apps/browser-demos/public/sqlite-test.vfs.zst");
 
-const COREUTILS_SYMLINK_NAMES = [
-  "cat", "chmod", "cp", "date", "dirname", "echo", "env", "expr", "false",
-  "head", "ln", "ls", "mkdir", "mv", "pwd", "rm", "rmdir", "sed", "sleep",
-  "sort", "tail", "tee", "test", "touch", "tr", "true", "uname", "wc", "[",
-];
+const COREUTILS_SYMLINK_NAMES = [...COREUTILS_NAMES, "["];
 
 function checkPrereqs(): void {
   const missing: string[] = [];
