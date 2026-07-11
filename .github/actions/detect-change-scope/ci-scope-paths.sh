@@ -55,7 +55,7 @@ package_publish_flow_changed_files() {
 binary_materialization_changed_files() {
   grep -E \
     -e '^tools/xtask/src/(index_toml|remote_fetch|util)\.rs$' \
-    -e '^scripts/(fetch-binaries|install-local-binary|materialize-pr-overlays|resolve-binary)\.sh$' \
+    -e '^scripts/(fetch-binaries|install-local-binary|materialize-pr-overlays|resolve-binary|wasm-artifact-guards)\.sh$' \
     -e '^tests/package-system/' \
     || true
 }
