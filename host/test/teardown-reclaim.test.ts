@@ -19,6 +19,7 @@ import { describe, it, expect } from "vitest";
 import { readFileSync, existsSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { ABI_SYSCALLS } from "../src/generated/abi";
 import { NodeKernelHost } from "../src/node-kernel-host";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -37,39 +38,70 @@ function loadWasm(path: string): ArrayBuffer {
 // crash status instead.
 const COOPERATIVE_EXIT_STATUS = 137;
 
-describe.skipIf(!hasBinary)("teardown reclamation of Atomics.wait-blocked workers", () => {
-  it("wakes a blocked daemon to a cooperative exit on destroy", async () => {
-    const exits = new Map<number, number | undefined>();
-    const host = new NodeKernelHost({
-      maxWorkers: 4,
-      onProcessEvent: (e) => {
-        if (e.kind === "exit") exits.set(e.pid, e.exitStatus);
-      },
-    });
-    await host.init();
+describe.skipIf(!hasBinary)(
+  "teardown reclamation of Atomics.wait-blocked workers",
+  () => {
+    it("wakes a blocked daemon to a cooperative exit on destroy", async () => {
+      const exits = new Map<number, number | undefined>();
+      const host = new NodeKernelHost({
+        maxWorkers: 4,
+        onProcessEvent: (e) => {
+          if (e.kind === "exit") exits.set(e.pid, e.exitStatus);
+        },
+      });
+      await host.init();
 
-    let pid = -1;
-    // Do NOT await its exit — it parks in nanosleep (Atomics.wait on its
-    // channel) and never exits on its own.
-    void host
-      .spawn(loadWasm(blockForeverBinary), ["block-forever"], {
-        onStarted: (p) => { pid = p; },
-      })
-      .catch(() => {});
+      let pid = -1;
+      let blockedPid = -1;
+      let destroyed = false;
+      let unsubscribe: (() => void) | undefined = host.subscribeSyscalls(
+        (event) => {
+          if (
+            event.nr === ABI_SYSCALLS.Nanosleep ||
+            event.nr === ABI_SYSCALLS.ClockNanosleep
+          ) {
+            blockedPid = event.pid;
+          }
+        },
+      );
 
-    for (let i = 0; i < 200 && pid < 0; i++) await delay(20);
-    expect(pid).toBeGreaterThan(0);
-    await delay(250); // ensure it has reached the blocking nanosleep
+      try {
+        // Do NOT await its exit — it parks in nanosleep (Atomics.wait on its
+        // channel) and never exits on its own.
+        void host
+          .spawn(loadWasm(blockForeverBinary), ["block-forever"], {
+            onStarted: (p) => {
+              pid = p;
+            },
+          })
+          .catch(() => {});
 
-    const t0 = Date.now();
-    await host.destroy();
-    const destroyMs = Date.now() - t0;
+        for (let i = 0; i < 200 && pid < 0; i++) await delay(20);
+        expect(pid).toBeGreaterThan(0);
 
-    // The daemon exited (it never does on its own), via the cooperative
-    // kernel_exit path (137), not a force-terminate; and the drain resolved
-    // promptly rather than after the ~1.5s force-terminate fallback.
-    expect(exits.has(pid)).toBe(true);
-    expect(exits.get(pid)).toBe(COOPERATIVE_EXIT_STATUS);
-    expect(destroyMs).toBeLessThan(1500);
-  }, 20_000);
-});
+        // onStarted fires when the process worker is launched, before the guest
+        // necessarily reaches sleep(). Wait for the kernel worker to observe the
+        // blocking syscall instead of assuming a fixed delay is long enough.
+        for (let i = 0; i < 500 && blockedPid < 0; i++) await delay(20);
+        expect(blockedPid).toBe(pid);
+        unsubscribe();
+        unsubscribe = undefined;
+
+        const t0 = Date.now();
+        await host.destroy();
+        destroyed = true;
+        const destroyMs = Date.now() - t0;
+
+        // The daemon exited (it never does on its own), via the cooperative
+        // kernel_exit path (137), not a force-terminate; and the drain resolved
+        // promptly rather than after the ~1.5s force-terminate fallback.
+        expect(exits.has(pid)).toBe(true);
+        expect(exits.get(pid)).toBe(COOPERATIVE_EXIT_STATUS);
+        expect(destroyMs).toBeLessThan(1500);
+      } finally {
+        unsubscribe?.();
+        if (!destroyed) await host.destroy().catch(() => {});
+      }
+    }, 20_000);
+  },
+);
