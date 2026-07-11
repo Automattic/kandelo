@@ -133,9 +133,23 @@ impl MemoryManager {
             });
             hint
         } else {
-            // Find first gap in [mmap_base, max_addr) that fits aligned_len.
-            // Mappings are kept sorted by address.
-            match self.find_gap(aligned_len) {
+            // A non-null address without MAP_FIXED is a placement hint. Wasm
+            // mappings use 64 KiB pages, so mirror mmap's page-boundary
+            // behavior by rounding the hint down and using it only when the
+            // complete range is available. An unusable hint falls back to
+            // the ordinary first-fit search without replacing anything.
+            let rounded_hint = hint & !0xFFFF;
+            let hinted_addr = if rounded_hint >= self.mmap_base.max(self.program_break)
+                && self.can_grow_at(rounded_hint, aligned_len)
+            {
+                Some(rounded_hint)
+            } else {
+                None
+            };
+
+            // Find the first gap in [mmap_base, max_addr) when the hint is
+            // absent or unusable. Mappings are kept sorted by address.
+            match hinted_addr.or_else(|| self.find_gap(aligned_len)) {
                 Some(a) => a,
                 None => return wasm_posix_shared::mmap::MAP_FAILED,
             }
@@ -267,7 +281,11 @@ impl MemoryManager {
         if len == 0 {
             return false;
         }
-        let unmap_end = addr.saturating_add(len);
+        let aligned_len = match len.checked_add(0xFFFF) {
+            Some(value) => value & !0xFFFF,
+            None => return false,
+        };
+        let unmap_end = addr.saturating_add(aligned_len);
         let mut found = false;
         let mut new_mappings: Vec<MappedRegion> = Vec::new();
 
@@ -648,6 +666,47 @@ mod tests {
             MAP_PRIVATE | MAP_ANONYMOUS,
         );
         assert_eq!(addr2, addr + 0x10000);
+    }
+
+    #[test]
+    fn test_mmap_non_fixed_prefers_free_address_hint() {
+        let mut mm = MemoryManager::new();
+        let rw = PROT_READ | PROT_WRITE;
+        let anon = MAP_PRIVATE | MAP_ANONYMOUS;
+        let base = MemoryManager::MMAP_BASE;
+
+        assert_eq!(mm.mmap_anonymous(base, 0x10000, rw, anon | MAP_FIXED), base);
+        assert_eq!(
+            mm.mmap_anonymous(base + 0x20000, 0x10000, rw, anon | MAP_FIXED),
+            base + 0x20000
+        );
+
+        // Prefer a usable hint even though an earlier first-fit gap exists,
+        // and round an unaligned hint down to the Wasm page boundary.
+        assert_eq!(
+            mm.mmap_anonymous(base + 0x30042, 0x10000, rw, anon),
+            base + 0x30000
+        );
+
+        // An occupied hint must not replace the existing mapping.
+        assert_eq!(
+            mm.mmap_anonymous(base + 0x20000, 0x10000, rw, anon),
+            base + 0x10000
+        );
+        assert!(mm.is_mapped(base + 0x20000));
+    }
+
+    #[test]
+    fn test_munmap_rounds_length_up_to_wasm_page() {
+        let mut mm = MemoryManager::new();
+        let rw = PROT_READ | PROT_WRITE;
+        let anon = MAP_PRIVATE | MAP_ANONYMOUS;
+        let addr = mm.mmap_anonymous(0, 0x20000, rw, anon);
+
+        assert!(mm.munmap(addr, 0x10001));
+        assert!(!mm.is_mapped(addr));
+        assert!(!mm.is_mapped(addr + 0x10000));
+        assert_eq!(mm.mmap_anonymous(0, 0x20000, rw, anon), addr);
     }
 
     #[test]
