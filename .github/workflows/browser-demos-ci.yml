@@ -64,6 +64,7 @@ jobs:
             test/coi.spec.ts \
             test/browser-kernel-lazy-registration.spec.ts \
             test/wasm-trap-signal.spec.ts \
+            test/homebrew-framebuffer.spec.ts \
             --project=chromium \
             --project=firefox \
             --project=webkit

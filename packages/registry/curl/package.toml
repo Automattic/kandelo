@@ -29,4 +29,5 @@ script_path = "packages/registry/curl/build-curl.sh"
 
 [[outputs]]
 name = "curl"
+fork_instrumentation = "not-required"
 wasm = "curl.wasm"

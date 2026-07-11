@@ -4,15 +4,19 @@
 # framebuffer mmap; the canvas renderer (host/src/framebuffer/canvas-renderer.ts)
 # consumes them.
 #
-# Output: packages/registry/fbdoom/fbdoom.wasm
+# Output: $WASM_POSIX_DEP_OUT_DIR/fbdoom.wasm when invoked by the
+# package resolver, or packages/registry/fbdoom/fbdoom.wasm otherwise.
 #
 # Usage: bash packages/registry/fbdoom/build-fbdoom.sh
 set -euo pipefail
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$HERE/../../.." && pwd)"
-SRC="$HERE/fbdoom-src"
-CDOOM_SRC="$HERE/chocolate-doom-src"
+WORK_DIR="${WASM_POSIX_DEP_WORK_DIR:-$HERE}"
+OUT_DIR="${WASM_POSIX_DEP_OUT_DIR:-$HERE}"
+SRC="$WORK_DIR/fbdoom-src"
+CDOOM_SRC="$WORK_DIR/chocolate-doom-src"
+OUT="$OUT_DIR/fbdoom.wasm"
 
 # Pin to chocolate-doom 3.1.0. fbDOOM stripped its OPL/MIDI/MUS sources
 # when removing SDL; we vendor them back so the music path compiles.
@@ -22,6 +26,8 @@ CDOOM_COMMIT="35fb1372d10756ca27eca05665bd8a7cebc71c05" # chocolate-doom-3.1.0
 # (which may point at a sibling worktree without our linux/fb.h overlay).
 source "$REPO_ROOT/sdk/activate.sh"
 export WASM_POSIX_SYSROOT="$REPO_ROOT/sysroot"
+
+mkdir -p "$WORK_DIR" "$OUT_DIR"
 
 if [ ! -d "$SRC" ]; then
     echo "==> Cloning maximevince/fbDOOM..."
@@ -101,13 +107,13 @@ make CC=wasm32posix-cc \
      LIBS="-lm" \
      NOSDL=1
 
-cp fbdoom "$HERE/fbdoom.wasm"
+cp fbdoom "$OUT"
 
 # fbDOOM doesn't fork — no wasm-fork-instrument step needed.
 # (vs other ports here: dash forks via popen/system, so its build-dash.sh
 # runs `wasm-fork-instrument` for the fork path.)
 
-ls -la "$HERE/fbdoom.wasm"
+ls -la "$OUT"
 echo "==> fbdoom.wasm built."
 
 # Install into local-binaries/ (resolver priority 1) and the resolver
@@ -124,4 +130,4 @@ echo "==> fbdoom.wasm built."
 # caches it via the Cache API — see apps/browser-demos/pages/doom/main.ts.
 cd "$REPO_ROOT"
 source "$REPO_ROOT/scripts/install-local-binary.sh"
-install_local_binary fbdoom "$HERE/fbdoom.wasm" fbdoom.wasm
+install_local_binary fbdoom "$OUT" fbdoom.wasm

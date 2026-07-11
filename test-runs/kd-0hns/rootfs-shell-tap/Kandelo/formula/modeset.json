@@ -1,0 +1,45 @@
+{
+  "bottle_rebuild": 0,
+  "bottles": [
+    {
+      "arch": "wasm32",
+      "bottle_tag": "wasm32_kandelo",
+      "browser_compatible": true,
+      "built_at": "2026-06-30T14:09:17Z",
+      "built_by": "https://github.com/local/kandelo/actions/runs/local",
+      "built_from": {
+        "formula_sha256": "1747945d62ab174951721bc844fce55ffece7765ed123ed7ca3c449479d9d8a0",
+        "kandelo_commit": "1ab41fe2ad5553f4fa4bb0223f2d804b13149578",
+        "kandelo_repository": "Automattic/kandelo",
+        "tap_commit": "1ab41fe2ad5553f4fa4bb0223f2d804b13149578",
+        "tap_repository": "Automattic/kandelo-homebrew"
+      },
+      "bytes": 42724,
+      "cache_key_sha": "d3fc05bf7b73121ad1d49c447b755154ebff60f6e0baac959cf54107617aac66",
+      "cellar": "/home/linuxbrew/.linuxbrew/Cellar",
+      "fork_instrumentation": "not-required",
+      "kandelo_abi": 16,
+      "link_manifest": "Kandelo/link/modeset-0.1.0-rebuild0-wasm32.json",
+      "prefix": "/home/linuxbrew/.linuxbrew",
+      "runtime_support": [
+        "browser",
+        "node"
+      ],
+      "sha256": "48002a330c17971fed6d7edf71872e0cce9552c8bfb3b18813092f936e14ca88",
+      "status": "success",
+      "url": "https://ghcr.io/v2/automattic/kandelo-homebrew/modeset/blobs/sha256:48002a330c17971fed6d7edf71872e0cce9552c8bfb3b18813092f936e14ca88"
+    }
+  ],
+  "dependencies": [],
+  "formula_path": "Formula/modeset.rb",
+  "formula_revision": 0,
+  "full_name": "automattic/kandelo-homebrew/modeset",
+  "kandelo_abi": 16,
+  "name": "modeset",
+  "schema": 1,
+  "source_metadata": "Kandelo/metadata.json",
+  "tap_commit": "1ab41fe2ad5553f4fa4bb0223f2d804b13149578",
+  "tap_name": "automattic/kandelo-homebrew",
+  "tap_repository": "Automattic/kandelo-homebrew",
+  "version": "0.1.0"
+}

@@ -11,9 +11,11 @@ SHA256="20cd58b58dd007acf7b937fa1a1e21f3afb3e9ef5bbcfb8b4f5650deadc64db4"
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
-SRC_DIR="$SCRIPT_DIR/msmtp-src"
-BIN_DIR="$SCRIPT_DIR/bin"
+WORK_DIR="${WASM_POSIX_DEP_WORK_DIR:-$SCRIPT_DIR}"
+SRC_DIR="$WORK_DIR/msmtp-src"
+BIN_DIR="${WASM_POSIX_DEP_OUT_DIR:-$SCRIPT_DIR/bin}"
 OUT="$BIN_DIR/msmtpd.wasm"
+TARBALL_PATH="$WORK_DIR/$TARBALL"
 
 if [ -f "$OUT" ]; then
     echo "==> Reusing existing msmtpd artifact in $BIN_DIR (skip rebuild)."
@@ -27,14 +29,15 @@ if ! command -v wasm32posix-cc >/dev/null 2>&1; then
     exit 1
 fi
 
-if [ ! -f "$SCRIPT_DIR/$TARBALL" ]; then
+mkdir -p "$WORK_DIR"
+if [ ! -f "$TARBALL_PATH" ]; then
     echo "==> Downloading msmtp $VERSION..."
     curl --retry 10 --retry-delay 5 --retry-max-time 300 --retry-all-errors -fsSL \
-        -o "$SCRIPT_DIR/$TARBALL" \
+        -o "$TARBALL_PATH" \
         "$URL"
 fi
 
-actual_sha="$(shasum -a 256 "$SCRIPT_DIR/$TARBALL" | awk '{print $1}')"
+actual_sha="$(shasum -a 256 "$TARBALL_PATH" | awk '{print $1}')"
 if [ "$actual_sha" != "$SHA256" ]; then
     echo "ERROR: checksum mismatch for $TARBALL" >&2
     echo "  expected: $SHA256" >&2
@@ -45,8 +48,8 @@ fi
 if [ ! -d "$SRC_DIR/src" ]; then
     echo "==> Extracting msmtp $VERSION..."
     rm -rf "$SRC_DIR"
-    tar xf "$SCRIPT_DIR/$TARBALL" -C "$SCRIPT_DIR"
-    mv "$SCRIPT_DIR/msmtp-$VERSION" "$SRC_DIR"
+    tar xf "$TARBALL_PATH" -C "$WORK_DIR"
+    mv "$WORK_DIR/msmtp-$VERSION" "$SRC_DIR"
 fi
 
 cd "$SRC_DIR/src"
@@ -86,14 +89,8 @@ wasm32posix-cc \
     netrc.c \
     -o "$OUT"
 
-FORK_INSTRUMENT="$REPO_ROOT/tools/bin/wasm-fork-instrument"
-if [ ! -x "$FORK_INSTRUMENT" ]; then
-    echo "ERROR: wasm-fork-instrument not found at $FORK_INSTRUMENT." >&2
-    exit 1
-fi
-
 echo "==> Applying wasm-fork-instrument to msmtpd.wasm..."
-"$FORK_INSTRUMENT" "$OUT" -o "$OUT.instr"
+"$REPO_ROOT/scripts/run-wasm-fork-instrument.sh" "$OUT" -o "$OUT.instr"
 mv "$OUT.instr" "$OUT"
 ls -lh "$OUT"
 

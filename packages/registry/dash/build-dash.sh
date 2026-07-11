@@ -9,7 +9,9 @@ set -euo pipefail
 DASH_VERSION="${DASH_VERSION:-0.5.12}"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
-SRC_DIR="$SCRIPT_DIR/dash-src"
+WORK_DIR="${WASM_POSIX_DEP_WORK_DIR:-$SCRIPT_DIR}"
+SRC_DIR="$WORK_DIR/dash-src"
+BIN_DIR="${WASM_POSIX_DEP_OUT_DIR:-$SCRIPT_DIR/bin}"
 SYSROOT="$REPO_ROOT/sysroot"
 
 # --- Prerequisites ---
@@ -167,17 +169,17 @@ mv "$DASH_BIN.instr" "$DASH_BIN"
 echo "==> dash built successfully!"
 
 # Copy to bin/ with .wasm extension (consistent with coreutils/grep/sed, needed for Vite)
-mkdir -p "$SCRIPT_DIR/bin"
-cp "$DASH_BIN" "$SCRIPT_DIR/bin/dash.wasm"
+mkdir -p "$BIN_DIR"
+cp "$DASH_BIN" "$BIN_DIR/dash.wasm"
 
 # Install into local-binaries/ so the resolver picks it up as an override.
 source "$REPO_ROOT/scripts/install-local-binary.sh"
-install_local_binary dash "$SCRIPT_DIR/bin/dash.wasm"
+install_local_binary dash "$BIN_DIR/dash.wasm"
 # sh ships as an alias for dash in the release; install the same bytes
 # under that name so `programs/sh.wasm` also resolves locally.
-install_local_binary sh "$SCRIPT_DIR/bin/dash.wasm"
+install_local_binary sh "$BIN_DIR/dash.wasm"
 
-ls -lh "$SCRIPT_DIR/bin/dash.wasm"
+ls -lh "$BIN_DIR/dash.wasm"
 echo ""
 echo "Run with:"
 echo "  npx tsx packages/registry/shell/demo/serve.ts"

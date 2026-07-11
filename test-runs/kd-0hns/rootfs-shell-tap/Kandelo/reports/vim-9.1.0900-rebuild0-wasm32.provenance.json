@@ -1,0 +1,113 @@
+{
+  "bottle": {
+    "bottle_tag": "wasm32_kandelo",
+    "bytes": 7794122,
+    "cache_key_sha": "4a2a54d3a4c1052e2d484be6f8f25661bd233c49b9f0eecca5fd7040bcc222ba",
+    "cellar": "/home/linuxbrew/.linuxbrew/Cellar",
+    "prefix": "/home/linuxbrew/.linuxbrew",
+    "sha256": "778be8fe04ce0439b260ed72c9bd81b163c60badd9e61c864864828198fee6ae",
+    "url": "https://ghcr.io/v2/automattic/kandelo-homebrew/vim/blobs/sha256:778be8fe04ce0439b260ed72c9bd81b163c60badd9e61c864864828198fee6ae"
+  },
+  "build": {
+    "brew_version": "Homebrew 6.0.5",
+    "dev_shell": "scripts/dev-shell.sh",
+    "github_run": "https://github.com/local/kandelo/actions/runs/local",
+    "job": "local",
+    "runner_os": "local",
+    "sdk_fingerprint": "a7ef0c406359039ee25d54e4f8baee3afdc857cdbcac5df9a065ef875b3a3b48",
+    "sysroot_fingerprint": "d19b801e0da64ff3415019de982ee194ef093de68e1a08d25f41a82f07bcca98"
+  },
+  "formula": {
+    "path": "Formula/vim.rb",
+    "sha256": "e0baeb2e530ebe112b576454901dca51d48bc862bf7ed2972b19821afe095c7b"
+  },
+  "metadata": {
+    "formula_json": {
+      "path": "Kandelo/formula/vim.json",
+      "sha256": "47d2e2a6229d1fd3c277f0151b49a0386b94aa93d6153c6f5fe2e60e4f241e47"
+    },
+    "link_manifest_json": {
+      "path": "Kandelo/link/vim-9.1.0900-rebuild0-wasm32.json",
+      "sha256": "89dfb3608c1ec96d07556269b4df48a6103934d2a876c1d6213f046690bc329d"
+    },
+    "metadata_json": {
+      "path": "Kandelo/metadata.json",
+      "sha256": "09973d75c369f192036c606ed88ee777e5a82f1a7475d9edfd7fb14f49683e38"
+    },
+    "provenance_json": {
+      "path": "Kandelo/reports/vim-9.1.0900-rebuild0-wasm32.provenance.json",
+      "sha256": "5dd1de15effdca911f833944c142171fe73c2b0de7391e2704bb7b99ecd14f48"
+    }
+  },
+  "repositories": {
+    "kandelo_commit": "1ab41fe2ad5553f4fa4bb0223f2d804b13149578",
+    "kandelo_repository": "Automattic/kandelo",
+    "tap_commit": "1ab41fe2ad5553f4fa4bb0223f2d804b13149578",
+    "tap_repository": "Automattic/kandelo-homebrew"
+  },
+  "schema": 1,
+  "subject": {
+    "arch": "wasm32",
+    "bottle_rebuild": 0,
+    "kandelo_abi": 16,
+    "package": "vim",
+    "version": "9.1.0900"
+  },
+  "validation": {
+    "outcome_lists": [
+      {
+        "failed": [],
+        "name": "schema",
+        "passed": [
+          "Kandelo/metadata.json",
+          "Kandelo/formula/vim.json",
+          "Kandelo/link/vim-9.1.0900-rebuild0-wasm32.json",
+          "Kandelo/reports/vim-9.1.0900-rebuild0-wasm32.provenance.json"
+        ],
+        "skipped": [],
+        "status": "success"
+      },
+      {
+        "failed": [],
+        "name": "homebrew_audit",
+        "passed": [],
+        "skip_reason": "Tap audit can run in the trusted tap publication gate.",
+        "skipped": [
+          "brew audit was not part of this local dry-run verification"
+        ],
+        "status": "skipped"
+      },
+      {
+        "failed": [],
+        "name": "bottle_build",
+        "passed": [
+          "brew install --build-bottle",
+          "brew test",
+          "brew bottle --json --no-rebuild",
+          "brew bottle --merge --write --no-commit"
+        ],
+        "skipped": [],
+        "status": "success"
+      },
+      {
+        "failed": [],
+        "name": "node_smoke",
+        "passed": [
+          "Formula test ran vim through node --import tsx/esm examples/run-example.ts"
+        ],
+        "skipped": [],
+        "status": "success"
+      },
+      {
+        "failed": [],
+        "name": "browser_smoke",
+        "passed": [],
+        "skip_reason": "browser smoke not run in this local bottle verification pass; Node formula smoke passed",
+        "skipped": [
+          "browser smoke not run in this local bottle verification pass; Node formula smoke passed"
+        ],
+        "status": "skipped"
+      }
+    ]
+  }
+}
