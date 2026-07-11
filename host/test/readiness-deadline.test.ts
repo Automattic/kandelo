@@ -180,6 +180,7 @@ function createEpollSignalHarness(
       ["42:7", hasInterest ? [{ fd: 3, events: 0x001, data: 99n }] : []],
     ]),
     pendingPollRetries: new Map(),
+    pendingSleeps: new Map(),
     bindKernelTidForChannel: vi.fn(),
     completeChannelRaw,
     relistenChannel,
