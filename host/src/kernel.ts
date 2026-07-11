@@ -97,7 +97,73 @@ function clampU16(value: number): number {
  * numeric codes from SFSError (2, 17, etc.).
  * Returns -EIO for unknown errors.
  */
-function negErrno(err: unknown): number {
+const NEG_ERRNO_BY_NAME: Readonly<Record<string, number>> = {
+  EPERM: -1,
+  ENOENT: -2,
+  ESRCH: -3,
+  EINTR: -4,
+  EIO: -5,
+  ENXIO: -6,
+  E2BIG: -7,
+  ENOEXEC: -8,
+  EBADF: -9,
+  ECHILD: -10,
+  EAGAIN: -11,
+  EWOULDBLOCK: -11,
+  ENOMEM: -12,
+  EACCES: -13,
+  EFAULT: -14,
+  EBUSY: -16,
+  EEXIST: -17,
+  EXDEV: -18,
+  ENODEV: -19,
+  ENOTDIR: -20,
+  EISDIR: -21,
+  EINVAL: -22,
+  ENFILE: -23,
+  EMFILE: -24,
+  ENOTTY: -25,
+  ETXTBSY: -26,
+  EFBIG: -27,
+  ENOSPC: -28,
+  ESPIPE: -29,
+  EROFS: -30,
+  EMLINK: -31,
+  EPIPE: -32,
+  ERANGE: -34,
+  EDEADLK: -35,
+  ENAMETOOLONG: -36,
+  ENOSYS: -38,
+  ENOTEMPTY: -39,
+  ELOOP: -40,
+  ENOMSG: -42,
+  EIDRM: -43,
+  ENODATA: -61,
+  EOVERFLOW: -75,
+  ENOTSOCK: -88,
+  EDESTADDRREQ: -89,
+  EMSGSIZE: -90,
+  EPROTOTYPE: -91,
+  ENOPROTOOPT: -92,
+  EPROTONOSUPPORT: -93,
+  EOPNOTSUPP: -95,
+  ENOTSUP: -95,
+  EAFNOSUPPORT: -97,
+  EADDRINUSE: -98,
+  EADDRNOTAVAIL: -99,
+  ENETUNREACH: -101,
+  ECONNABORTED: -103,
+  ECONNRESET: -104,
+  EISCONN: -106,
+  ENOTCONN: -107,
+  ESHUTDOWN: -108,
+  ETIMEDOUT: -110,
+  ECONNREFUSED: -111,
+  EALREADY: -114,
+  EINPROGRESS: -115,
+};
+
+export function negErrno(err: unknown): number {
   if (err && typeof err === "object" && "code" in err) {
     const code = (err as { code: string | number }).code;
     // Numeric errno (e.g. SFSError from MemoryFileSystem/SharedFS)
@@ -105,46 +171,24 @@ function negErrno(err: unknown): number {
     if (typeof code === "number" && code !== 0) {
       return code < 0 ? code : -code;
     }
-    // String error code (Node.js fs errors)
-    switch (code) {
-      case "ENOENT": return -2;
-      case "EACCES": return -13;
-      case "EPERM": return -1;
-      case "EEXIST": return -17;
-      case "ENOTDIR": return -20;
-      case "EISDIR": return -21;
-      case "EINVAL": return -22;
-      case "ENOSPC": return -28;
-      case "EROFS": return -30;
-      case "ENOTEMPTY": return -39;
-      case "ELOOP": return -40;
-      case "ENAMETOOLONG": return -36;
-      case "EBADF": return -9;
-      case "EMFILE": return -24;
-      case "ENFILE": return -23;
-      case "EBUSY": return -16;
-      case "EXDEV": return -18;
-      case "ENODEV": return -19;
-      case "EFAULT": return -14;
-      case "ETXTBSY": return -26;
+    if (typeof code === "string") {
+      const mapped = NEG_ERRNO_BY_NAME[code];
+      if (mapped !== undefined) return mapped;
+    }
+  }
+  if (err && typeof err === "object" && "errno" in err) {
+    const errno = (err as { errno: unknown }).errno;
+    if (typeof errno === "number" && Number.isInteger(errno) && errno !== 0) {
+      return errno < 0 ? errno : -errno;
     }
   }
   // Check error message for errno names (e.g. plain Error("ENOENT") from DeviceFS)
   if (err instanceof Error) {
-    const msg = err.message;
-    if (msg.startsWith("ENOENT")) return -2;
-    if (msg.startsWith("EACCES")) return -13;
-    if (msg.startsWith("EPERM")) return -1;
-    if (msg.startsWith("EEXIST")) return -17;
-    if (msg.startsWith("ENOTDIR")) return -20;
-    if (msg.startsWith("EISDIR")) return -21;
-    if (msg.startsWith("EINVAL")) return -22;
-    if (msg.startsWith("ENOSPC")) return -28;
-    if (msg.startsWith("ENOTEMPTY")) return -39;
-    if (msg.startsWith("EBADF")) return -9;
-    if (msg.startsWith("ENOSYS")) return -38;
-    if (msg.startsWith("ENXIO")) return -6;
-    if (msg.startsWith("EXDEV")) return -18;
+    const name = /^([A-Z][A-Z0-9_]*)\b/.exec(err.message)?.[1];
+    if (name !== undefined) {
+      const mapped = NEG_ERRNO_BY_NAME[name];
+      if (mapped !== undefined) return mapped;
+    }
   }
   return -5; // EIO
 }
