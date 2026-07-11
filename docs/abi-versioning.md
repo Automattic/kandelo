@@ -39,10 +39,19 @@ kernel. Specifically, any of the following requires an `ABI_VERSION` bump:
   fork-using user program. The kernel does not read these exports
   directly, but the host runtime in `host/src/worker-main.ts` does —
   a rename here silently breaks fork for every already-built binary.
+- Changing the name, version, encoding, or role semantics of the
+  `kandelo.wpk_fork.capabilities` custom section. The host uses these claims to
+  decide whether a main/side-module pair can safely coordinate fork replay.
 - Renaming the ABI custom section or the process-expected globals.
 - Changing the meaning of a syscall argument, errno, or blocking
   behavior without changing its signature. **This is not caught
   structurally — reviewers must flag it and bump anyway.**
+
+The fork-capability section has an explicit ABI transition rule. ABI 16 accepts
+an absent section through the pre-existing five-export fallback, while treating
+a present marker as authoritative. ABI 17 and later require the role marker.
+Do not make absence an error on ABI 16: mandatory enforcement must land in the
+same commit as the ABI 16-to-17 bump and regenerated snapshot.
 
 Pure internal refactors (renaming a kernel-side function, reorganizing
 a source file, tightening a bound in a non-ABI type) are *not* ABI

@@ -220,6 +220,16 @@ Fork uses the in-tree `wasm-fork-instrument` tool to snapshot the Wasm call stac
 
 The instrumentation handles LLVM's new-EH `try_table` output correctly, including fork from inside C++ catch handlers. See [fork-instrumentation.md](fork-instrumentation.md) for the current guarantees and documented unanticipated Wasm-level carve-outs.
 
+A fork reached directly inside an instrumented dlopened side module uses two
+ordered state machines and two save buffers: side then main during unwind, main
+then side during rewind. Versioned fork-instrument capability metadata lets
+marker-present artifacts prove their role; ABI 16 retains its legacy
+five-export fallback, while ABI 17 makes those role claims mandatory and
+rejects stale call-graph artifacts. Dlopen replay records both the parent's
+memory base and exact table base, including null gaps left by failed loads. The
+supported direct-main-to-side boundary and the remaining opaque cross-side
+callback limitation are specified in [fork-instrumentation.md](fork-instrumentation.md#fork-from-a-dlopened-side-module).
+
 ### exec()
 
 1. User calls `execve(path, argv, envp)` → kernel returns exec request to host
