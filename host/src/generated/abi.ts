@@ -296,6 +296,7 @@ export const ABI_SYSCALLS = {
   Sendfile: 294,
   Preadv: 295,
   Pwritev: 296,
+  Lchown: 299,
   Fallocate: 308,
   TimerCreate: 326,
   TimerSettime: 327,
@@ -507,6 +508,7 @@ export const ABI_SYSCALL_NAMES: Record<number, string> = {
   294: "sendfile",
   295: "preadv",
   296: "pwritev",
+  299: "lchown",
   308: "fallocate",
   326: "timer_create",
   327: "timer_settime",
@@ -553,6 +555,7 @@ export interface SyscallArgDesc {
   argIndex: number;
   direction: SyscallArgDirection;
   size: SyscallArgSizeSpec;
+  nullable?: boolean;
   copyRetvalAdd?: number;
 }
 
@@ -792,7 +795,7 @@ export const SYSCALL_ARGS: Record<number, SyscallArgDesc[]> = {
     { argIndex: 2, direction: "in", size: { type: "fixed", size: 16 } },
   ],
   125: [
-    { argIndex: 1, direction: "in", size: { type: "cstring" } },
+    { argIndex: 1, direction: "in", size: { type: "cstring" }, nullable: true },
     { argIndex: 2, direction: "in", size: { type: "fixed", size: 32 } },
   ],
   129: [
@@ -876,6 +879,9 @@ export const SYSCALL_ARGS: Record<number, SyscallArgDesc[]> = {
   ],
   272: [
     { argIndex: 1, direction: "in", size: { type: "cstring" } },
+  ],
+  299: [
+    { argIndex: 0, direction: "in", size: { type: "cstring" } },
   ],
   326: [
     { argIndex: 1, direction: "in", size: { type: "fixed", size: 16 } },

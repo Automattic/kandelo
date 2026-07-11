@@ -24,7 +24,7 @@ kernel. Specifically, any of the following requires an `ABI_VERSION` bump:
 - Removing, renaming, or reassigning a syscall number.
 - Changing an existing syscall argument descriptor used by the host for
   pointer marshalling, including direction, size source, multipliers,
-  fixed byte lengths, or return-value copy adjustments.
+  fixed byte lengths, pointer nullability, or return-value copy adjustments.
 - Changing the channel header layout (field offsets or sizes in
   [`crates/shared/src/lib.rs`](../crates/shared/src/lib.rs)
   `channel` module).
@@ -114,7 +114,8 @@ captures:
   the core enum.
 - `syscall_arg_descriptors` — host marshalling descriptors for pointer
   arguments, including direction, size source, size multipliers/additions,
-  fixed byte lengths, and any return-value-based copy-back adjustment.
+  fixed byte lengths, pointer nullability, and any return-value-based
+  copy-back adjustment.
 - `host_adapter` — Rust-owned boot manifest metadata consumed by host
   adapters: manifest layout, host adapter protocol version, required
   worker feature bits, and required/optional kernel exports.

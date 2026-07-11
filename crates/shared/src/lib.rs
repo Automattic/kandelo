@@ -1228,6 +1228,7 @@ pub mod abi {
         pub const SYS_SENDFILE: u32 = 294;
         pub const SYS_PREADV: u32 = 295;
         pub const SYS_PWRITEV: u32 = 296;
+        pub const SYS_LCHOWN: u32 = 299;
         pub const SYS_FALLOCATE: u32 = 308;
         pub const SYS_TIMER_CREATE: u32 = 326;
         pub const SYS_TIMER_SETTIME: u32 = 327;
@@ -1411,6 +1412,10 @@ pub mod abi {
             AbiSyscallNumber {
                 name: "Pwritev",
                 number: SYS_PWRITEV,
+            },
+            AbiSyscallNumber {
+                name: "Lchown",
+                number: SYS_LCHOWN,
             },
             AbiSyscallNumber {
                 name: "Fallocate",
