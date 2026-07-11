@@ -104,9 +104,15 @@ export const SHELL_LAZY_BINARY_SPECS = [
   { id: "zip", resolverPath: "programs/zip.wasm", vfsPath: "/usr/bin/zip", symlinks: ["/bin/zip"] },
   {
     id: "unzip",
-    resolverPath: "programs/unzip.wasm",
+    resolverPath: "programs/unzip/unzip.wasm",
     vfsPath: "/usr/bin/unzip",
-    symlinks: ["/bin/unzip", "/usr/bin/zipinfo", "/bin/zipinfo", "/usr/bin/funzip", "/bin/funzip"],
+    symlinks: ["/bin/unzip", "/usr/bin/zipinfo", "/bin/zipinfo"],
+  },
+  {
+    id: "funzip",
+    resolverPath: "programs/unzip/funzip.wasm",
+    vfsPath: "/usr/bin/funzip",
+    symlinks: ["/bin/funzip"],
   },
   { id: "lsof", resolverPath: "programs/lsof.wasm", vfsPath: "/usr/bin/lsof", symlinks: ["/bin/lsof"] },
   { id: "nano", resolverPath: "programs/nano.wasm", vfsPath: "/usr/bin/nano", symlinks: ["/bin/nano"] },

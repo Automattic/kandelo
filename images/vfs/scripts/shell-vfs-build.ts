@@ -400,8 +400,7 @@ function populateDemoExtendedSymlinks(fs: MemoryFileSystem): void {
   symlink(fs, "/usr/bin/unzip", "/bin/unzip");
   symlink(fs, "/usr/bin/unzip", "/usr/bin/zipinfo");
   symlink(fs, "/usr/bin/unzip", "/bin/zipinfo");
-  symlink(fs, "/usr/bin/unzip", "/usr/bin/funzip");
-  symlink(fs, "/usr/bin/unzip", "/bin/funzip");
+  symlink(fs, "/usr/bin/funzip", "/bin/funzip");
 
   symlink(fs, "/usr/bin/nano", "/bin/nano");
   symlink(fs, "/usr/bin/vim", "/bin/vim");
@@ -441,7 +440,8 @@ function populateDemoExtendedBinaries(fs: MemoryFileSystem): void {
     { relPath: "programs/xz.wasm",                   vfsPath: "/usr/bin/xz" },
     { relPath: "programs/zstd.wasm",                 vfsPath: "/usr/bin/zstd" },
     { relPath: "programs/zip.wasm",                  vfsPath: "/usr/bin/zip" },
-    { relPath: "programs/unzip.wasm",                vfsPath: "/usr/bin/unzip" },
+    { relPath: "programs/unzip/unzip.wasm",          vfsPath: "/usr/bin/unzip" },
+    { relPath: "programs/unzip/funzip.wasm",         vfsPath: "/usr/bin/funzip" },
     { relPath: "programs/nano.wasm",                 vfsPath: "/usr/bin/nano" },
     { relPath: "programs/lsof.wasm",                 vfsPath: "/usr/bin/lsof" },
   ];

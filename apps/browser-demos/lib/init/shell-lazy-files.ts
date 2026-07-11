@@ -45,7 +45,8 @@ import bzip2WasmUrl from "@binaries/programs/wasm32/bzip2.wasm?url";
 import xzWasmUrl from "@binaries/programs/wasm32/xz.wasm?url";
 import zstdWasmUrl from "@binaries/programs/wasm32/zstd.wasm?url";
 import zipWasmUrl from "@binaries/programs/wasm32/zip.wasm?url";
-import unzipWasmUrl from "@binaries/programs/wasm32/unzip.wasm?url";
+import unzipWasmUrl from "@binaries/programs/wasm32/unzip/unzip.wasm?url";
+import funzipWasmUrl from "@binaries/programs/wasm32/unzip/funzip.wasm?url";
 import lsofWasmUrl from "@binaries/programs/wasm32/lsof.wasm?url";
 import nanoWasmUrl from "@binaries/programs/wasm32/nano.wasm?url";
 import posixArWasmUrl from "@binaries/programs/wasm32/posix-utils-lite/ar.wasm?url";
@@ -106,6 +107,7 @@ const SHELL_LAZY_ASSET_URLS: Record<(typeof SHELL_LAZY_BINARY_SPECS)[number]["id
   zstd: zstdWasmUrl,
   zip: zipWasmUrl,
   unzip: unzipWasmUrl,
+  funzip: funzipWasmUrl,
   lsof: lsofWasmUrl,
   nano: nanoWasmUrl,
 };
