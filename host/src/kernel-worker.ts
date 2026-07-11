@@ -5382,6 +5382,21 @@ export class CentralizedKernelWorker {
    * own code is `select(0, NULL, NULL, NULL, &tv)` (mysys/my_sleep.c) — the
    * pure-sleep case, fast-path'd to a setTimeout.
    */
+  private completeSelectSignalOutcome(
+    channel: ChannelInfo,
+    syscallNr: number,
+    origArgs: number[],
+    interruptCaughtSignal: boolean,
+  ): boolean {
+    const deliveredSignal = this.dequeueSignalForDelivery(channel, true);
+    if (this.finishSignalTermination(channel)) return true;
+    if (interruptCaughtSignal && deliveredSignal > 0) {
+      this.completeChannel(channel, syscallNr, origArgs, undefined, -1, EINTR_ERRNO);
+      return true;
+    }
+    return false;
+  }
+
   private handleSelect(channel: ChannelInfo, origArgs: number[]): void {
     const FD_SET_SIZE = 128;
     const nfds = origArgs[0];
@@ -5417,6 +5432,7 @@ export class CentralizedKernelWorker {
     // (handleKill -> scheduleWakeBlockedRetries -> wakeAllBlockedRetries
     // already iterates pendingSelectRetries entries).
     if (nfds === 0 && readPtr === 0 && writePtr === 0 && exceptPtr === 0) {
+      if (this.completeSelectSignalOutcome(channel, SYS_SELECT, origArgs, true)) return;
       if (kernelTimeoutMs === 0) {
         this.completeChannel(channel, SYS_SELECT, origArgs, undefined, 0, 0);
         return;
@@ -5508,8 +5524,12 @@ export class CentralizedKernelWorker {
       }
     }
 
-    this.dequeueSignalForDelivery(channel);
-    if (this.finishSignalTermination(channel)) return;
+    if (this.completeSelectSignalOutcome(
+      channel,
+      SYS_SELECT,
+      origArgs,
+      retVal === -1 && errVal === EAGAIN,
+    )) return;
 
     // EAGAIN retry for blocking select. Mirrors handlePselect6.
     if (retVal === -1 && errVal === EAGAIN) {
@@ -5660,9 +5680,12 @@ export class CentralizedKernelWorker {
       }
     }
 
-    // Handle signal delivery
-    this.dequeueSignalForDelivery(channel);
-    if (this.finishSignalTermination(channel)) return;
+    if (this.completeSelectSignalOutcome(
+      channel,
+      SYS_PSELECT6,
+      origArgs,
+      retVal === -1 && errVal === EAGAIN,
+    )) return;
 
     // Handle EAGAIN retry for blocking select
     if (retVal === -1 && errVal === EAGAIN) {
