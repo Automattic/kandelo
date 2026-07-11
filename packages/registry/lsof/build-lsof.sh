@@ -8,7 +8,8 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
 SRC="$REPO_ROOT/examples/lsof.c"
-OUT_BIN="$SCRIPT_DIR/lsof.wasm"
+OUT_DIR="${WASM_POSIX_DEP_OUT_DIR:-$SCRIPT_DIR}"
+OUT_BIN="$OUT_DIR/lsof.wasm"
 
 if [ ! -f "$SRC" ]; then
     echo "ERROR: source not found at $SRC" >&2
@@ -82,6 +83,7 @@ LINK_FLAGS=(
 )
 
 echo "==> Building lsof.wasm from $SRC"
+mkdir -p "$OUT_DIR"
 "$CC" "${CFLAGS[@]}" "$SRC" "${LINK_FLAGS[@]}" -o "$OUT_BIN"
 
 if [ -n "$WASM_OPT" ]; then
