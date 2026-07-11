@@ -44,8 +44,8 @@ Kandelo uses a single kernel Wasm instance that holds a `ProcessTable` and serve
 | `close()` | Partial | Ref-counted OFD cleanup. Host handle closed when last ref dropped. Releases all fcntl advisory locks on the file (POSIX-compliant). EINTR not yet handled. |
 | `read()` | Partial | Host-delegated for files. Pipe/socket reads from kernel ring buffer with blocking when empty (EINTR on signal). Short reads permitted. O_NONBLOCK returns EAGAIN. |
 | `pread()` | Partial | Host-delegated via seek-read-restore. Not atomic (single-threaded safe only). Rejects pipes/sockets with ESPIPE. |
-| `write()` | Partial | Host-delegated for files. Pipe writes to kernel ring buffer with blocking when full (EINTR on signal). EPIPE + SIGPIPE on closed read end (POSIX-compliant). O_APPEND seeks to end before write. RLIMIT_FSIZE enforced (EFBIG + SIGXFSZ). |
-| `pwrite()` | Partial | Host-delegated via seek-write-restore. Not atomic (single-threaded safe only). Rejects pipes/sockets with ESPIPE. |
+| `write()` | Partial | Host-delegated for files. Pipe writes to kernel ring buffer with blocking when full (EINTR on signal). EPIPE + SIGPIPE on closed read end (POSIX-compliant). O_APPEND seeks to end before write. For regular files and memfds, RLIMIT_FSIZE is calculated once per logical operation: a crossing operation returns the prefix that fits without a signal; a later non-empty operation with no room fails with EFBIG and generates thread-directed SIGXFSZ. |
+| `pwrite()` | Partial | Host-delegated via seek-write-restore. Not atomic (single-threaded safe only). Rejects pipes/sockets with ESPIPE. Uses the same operation-wide RLIMIT_FSIZE rule as write without changing the OFD cursor. |
 | `lseek()` | Full | SEEK_SET, SEEK_CUR, SEEK_END all implemented. SEEK_END delegates to host for file size calculation. A seek whose resulting offset would be negative fails with EINVAL without changing the open-file-description offset; arithmetic or host-number overflow fails with EOVERFLOW. |
 | `dup()` | Full | Lowest available fd. FD_CLOEXEC cleared. Shares OFD with original. |
 | `dup2()` | Full | Atomic close-and-dup. Same-fd no-op. FD_CLOEXEC cleared. |
@@ -53,21 +53,21 @@ Kandelo uses a single kernel Wasm instance that holds a `ProcessTable` and serve
 | `pipe()` | Partial | Kernel-space ring buffer (64KB). PIPE_BUF=4096 atomicity is guaranteed by serialized kernel syscalls. O_NONBLOCK returns EAGAIN. Forked descriptors retain the same global pipe backing even though their per-process OFD metadata is copied. |
 | `pipe2()` | Full | Like pipe with O_NONBLOCK and O_CLOEXEC flag support. |
 | `readv()` | Full | Scatter read. Iterates over iovec array calling sys_read for each buffer. Stops on short read or EOF. |
-| `writev()` | Full | Gather write. Iterates over iovec array calling sys_write for each buffer. Stops on short write. |
+| `writev()` | Full | Gather write. Enforces aggregate count and RLIMIT_FSIZE once across the full iovec operation, including host scratch-buffer decomposition, then stops on a short underlying write. |
 | `fstat()` | Partial | Host-delegated for regular files. Pipe returns S_IFIFO | 0o600. Full struct stat populated. |
-| `ftruncate()` | Partial | Host-delegated for regular files with write access. Validates length >= 0. Rejects non-regular fds. |
+| `ftruncate()` | Partial | Host-delegated for regular files, with in-kernel memfd support. Requires write access, validates length >= 0, rejects non-regular fds, and enforces RLIMIT_FSIZE before changing either backing. |
 | `fsync()` | Partial | Host-delegated for regular files. Rejects non-regular fds (pipes, sockets). |
 | `fdatasync()` | Partial | Alias for fsync(). No metadata distinction in Wasm environment. |
 | `truncate()` | Partial | Path-based. Opens file O_WRONLY, calls ftruncate, closes. |
 | `fchmod()` | Partial | Regular files and directories update VFS metadata. Rejects pipes/sockets. Node host-backed files never receive native mode changes after creation. |
 | `fchown()` | Partial | Regular files and directories update VFS metadata. `(uid_t)-1` and `(gid_t)-1` preserve the corresponding current ID without bypassing descriptor, authorization, or backend-error checks. Actual changes remain restricted to effective uid 0; the current owner may issue the raw `(-1, -1)` no-change request. Kernel-owned non-file descriptors still accept the call as a no-op, and Node host-backed ownership changes stay virtual. |
 | `preadv()` | Full | Scatter-gather read at offset. Iterates iovec entries calling pread for each. Stops on short read or EOF. |
-| `pwritev()` | Full | Scatter-gather write at offset. Iterates iovec entries calling pwrite for each. Stops on short write. |
+| `pwritev()` | Full | Scatter-gather write at offset. Enforces aggregate count and RLIMIT_FSIZE once across the full iovec operation, then stops on a short underlying write. |
 | `preadv2()` / `pwritev2()` | Partial | Delegates to preadv/pwritev. Extra flags parameter ignored. |
-| `sendfile()` | Full | Emulated with read+write loop (no zero-copy in Wasm). Supports offset parameter for positioned read from input fd. |
-| `fallocate()` | Stub | Returns 0 (no-op). File space managed by host. |
-| `copy_file_range()` | Full | Emulated with pread+pwrite loop. Supports optional offsets for both input and output fds. Cross-fd copy between regular files, pipes, and sockets. |
-| `splice()` | Full | Emulated with pread+pwrite loop. Supports pipe-to-file, file-to-pipe, and pipe-to-pipe transfers with optional offsets. |
+| `sendfile()` | Full | Emulated with read+write loop (no zero-copy in Wasm). Supports an optional positioned input offset. The output RLIMIT_FSIZE budget is fixed before input is consumed, so a limit-induced short transfer advances the input only by the returned count. |
+| `fallocate()` | Partial | Mode 0 extends through ftruncate when needed, including RLIMIT_FSIZE enforcement; allocation guarantees and nonzero modes are not implemented. |
+| `copy_file_range()` | Full | Emulated with pread+pwrite loop. Supports optional offsets for both input and output fds. The output RLIMIT_FSIZE budget is fixed before input is consumed. |
+| `splice()` | Full | Emulated through the copy loop with optional offsets. The output RLIMIT_FSIZE budget is fixed before input is consumed. |
 | `tee()` / `vmsplice()` | Stub | Returns ENOSYS. |
 | `readahead()` | Stub | Returns 0 (no-op advisory). |
 | `fstatat()` | Full | AT_FDCWD delegates to stat/lstat. AT_SYMLINK_NOFOLLOW supported. Real dirfd supported via stored OFD paths. |
@@ -371,7 +371,7 @@ All virtual devices return synthetic `stat()` with `S_IFCHR | 0666`, determinist
 | `sysconf()` | Partial | Handles _SC_CHILD_MAX, _SC_CLK_TCK=100, _SC_PAGE_SIZE=65536, _SC_OPEN_MAX=1024, _SC_NPROCESSORS_ONLN=1, _SC_NPROCESSORS_CONF=1, _SC_MONOTONIC_CLOCK=1, _SC_THREAD_SAFE_FUNCTIONS=1, plus 100+ POSIX.1-2024 constants via musl overlay. Unknown names return EINVAL. |
 | `umask()` | Full | Set file creation mask, returns previous mask. Default 0o022. Applied in open() and mkdir(). Masked to 0o777. |
 | `getrlimit()` | Full | Returns (soft, hard) resource limits. Defaults: NOFILE=(1024,4096), STACK=(8MB,infinity), others infinity. |
-| `setrlimit()` | Partial | Sets resource limits. Validates soft <= hard. RLIMIT_NOFILE enforced via FdTable max_fds sync. RLIMIT_FSIZE enforced in write()/ftruncate() (EFBIG + SIGXFSZ). |
+| `setrlimit()` | Partial | Sets resource limits and validates soft <= hard. RLIMIT_NOFILE updates the fd-table ceiling. RLIMIT_FSIZE covers regular-file and memfd write/pwrite, vectored, transfer, truncate, and mode-0 fallocate paths with partial-to-limit results and thread-directed SIGXFSZ only when no byte can be written. Other resource limits remain advisory or unsupported. |
 | `getrusage()` | Partial | Returns zeroed rusage struct (144 bytes). RUSAGE_SELF and RUSAGE_CHILDREN supported. No actual resource tracking in Wasm. |
 | `pathconf()` | Full | Returns POSIX compile-time constants: _PC_NAME_MAX=255, _PC_PATH_MAX=4096, _PC_PIPE_BUF=4096, _PC_LINK_MAX=14, etc. |
 | `fpathconf()` | Full | Same as pathconf() but validates fd exists first. Returns EBADF for invalid fd. |
@@ -406,7 +406,7 @@ Systematic audit of all subsystems against POSIX specifications. Gaps are catego
 
 | Gap | Subsystem | Description |
 |-----|-----------|-------------|
-| **RLIMIT_FSIZE partial enforcement** | rlimits | write() and ftruncate() check FSIZE limit (EFBIG + SIGXFSZ). truncate() delegates to ftruncate so also enforced. |
+| ~~**RLIMIT_FSIZE partial enforcement**~~ | rlimits | **Resolved for implemented write and size-changing operations.** Scalar, vectored, host-chunked, transfer, regular-file, memfd, truncate, and mode-0 fallocate paths share one operation-boundary contract. Pipes, terminals, sockets, and other non-size-bearing objects remain unaffected. |
 | **setpgid() self-only** | process | Only supports setting own pgid. Setting another process's pgid returns ESRCH. |
 | ~~**realpath() no symlink resolution**~~ | filesystem | **Resolved.** Now resolves symlinks via iterative lstat/readlink with ELOOP after 40 resolutions. |
 | **Socket options partially no-op** | socket | `SO_REUSEADDR` affects UDP bind conflicts, and `SO_BROADCAST` enforces the IPv4 limited-broadcast permission gate, but actual broadcast delivery remains unavailable. `SO_RCVBUF` and `SO_SNDBUF` are accepted/stored without resizing queues or pipe buffers; `getsockopt()` reports the fixed default. `SO_KEEPALIVE`, `SO_RCVTIMEO`, `SO_SNDTIMEO`, and `TCP_NODELAY` remain accepted/stored with limited or no data-path effect. Enabled `SO_LINGER` is rejected rather than stored as a no-op. |

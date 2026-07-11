@@ -6462,6 +6462,67 @@ export class CentralizedKernelWorker {
     this.finishNetworkIoctl(channel);
   }
 
+  /**
+   * Ask the kernel for one logical write's complete byte budget before the
+   * host splits it across scratch-buffer calls. A negative result has already
+   * generated any required SIGXFSZ in the calling thread; this method finishes
+   * that syscall boundary and returns null.
+   */
+  private prepareWriteOperationBudget(
+    channel: ChannelInfo,
+    fd: number,
+    offset: number,
+    requestedLen: number,
+    positioned: boolean,
+  ): number | null {
+    const prepare = this.kernelInstance!.exports.kernel_prepare_write_operation as
+      | ((pid: number, fd: number, offset: bigint, len: number, positioned: number) => bigint)
+      | undefined;
+    if (!prepare) {
+      throw new Error(
+        "kernel ABI is missing kernel_prepare_write_operation for chunked writes",
+      );
+    }
+
+    let result: number;
+    this.currentHandlePid = channel.pid;
+    this.bindKernelTidForChannel(channel);
+    try {
+      result = Number(
+        prepare(channel.pid, fd, BigInt(offset), requestedLen, positioned ? 1 : 0),
+      );
+    } catch (err) {
+      console.error(
+        `[prepareWriteOperationBudget] kernel threw for pid=${channel.pid}:`,
+        err,
+      );
+      this.completeChannelRaw(channel, -1, EIO);
+      this.relistenChannel(channel);
+      return null;
+    } finally {
+      this.currentHandlePid = 0;
+    }
+
+    if (this.finishSignalTermination(channel)) return null;
+
+    if (!Number.isSafeInteger(result) || result > requestedLen) {
+      console.error(
+        `[prepareWriteOperationBudget] invalid kernel budget ${result} for request ${requestedLen}`,
+      );
+      this.completeChannelRaw(channel, -1, EIO);
+      this.relistenChannel(channel);
+      return null;
+    }
+    if (result < 0) {
+      this.dequeueSignalForDelivery(channel);
+      if (this.finishSignalTermination(channel)) return null;
+      this.completeChannelRaw(channel, -1, -result);
+      this.relistenChannel(channel);
+      return null;
+    }
+    return result;
+  }
+
   private handleWritev(channel: ChannelInfo, syscallNr: number, origArgs: number[]): void {
     const fd = origArgs[0];
     const iovPtr = origArgs[1];
@@ -6478,6 +6539,12 @@ export class CentralizedKernelWorker {
     const pw = this.getPtrWidth(channel.pid);
     const iovEntrySize = pw === 8 ? 16 : 8;
 
+    if (iovcnt <= 0 || iovcnt > 1024) {
+      this.completeChannelRaw(channel, -1, EINVAL);
+      this.relistenChannel(channel);
+      return;
+    }
+
     // Read iov entries from process memory
     interface IovEntry { base: number; len: number }
     const entries: IovEntry[] = [];
@@ -6493,6 +6560,11 @@ export class CentralizedKernelWorker {
       }
       entries.push({ base, len });
       totalData += len;
+    }
+    if (!Number.isSafeInteger(totalData) || totalData > 0x7FFFFFFF) {
+      this.completeChannelRaw(channel, -1, EINVAL);
+      this.relistenChannel(channel);
+      return;
     }
 
     // Max data that fits in scratch: CH_DATA_SIZE minus space for iov entries
@@ -6537,6 +6609,7 @@ export class CentralizedKernelWorker {
         this.currentHandlePid = 0;
       }
 
+      this.dequeueSignalForDelivery(channel);
       if (this.finishSignalTermination(channel)) return;
 
       const retVal = Number(kernelView.getBigInt64(CH_RETURN, true));
@@ -6558,18 +6631,32 @@ export class CentralizedKernelWorker {
         (offset: KernelPointer, pid: number) => number;
       const isPwritev = syscallNr === SYS_PWRITEV;
       let fileOffset = isPwritev
-        ? (origArgs[3] | 0) + (origArgs[4] | 0) * 0x100000000
+        ? (origArgs[3] >>> 0) + (origArgs[4] | 0) * 0x100000000
         : 0;
+      const operationLen = this.prepareWriteOperationBudget(
+        channel,
+        fd,
+        fileOffset,
+        totalData,
+        isPwritev,
+      );
+      if (operationLen === null) return;
       let totalWritten = 0;
       let gotEagain = false;
+      let firstError: { retVal: number; errVal: number } | null = null;
       const maxChunk = CH_DATA_SIZE - 8; // space for 1 iov entry (8B) + data
 
       for (const entry of entries) {
+        if (totalWritten >= operationLen) break;
         if (entry.len === 0) continue;
         let entryWritten = 0;
 
-        while (entryWritten < entry.len) {
-          const chunkLen = Math.min(entry.len - entryWritten, maxChunk);
+        while (entryWritten < entry.len && totalWritten < operationLen) {
+          const chunkLen = Math.min(
+            entry.len - entryWritten,
+            maxChunk,
+            operationLen - totalWritten,
+          );
           const kernelBuf = dataStart + 8; // single iov entry at dataStart, data after
 
           // Copy data from process to kernel scratch
@@ -6612,6 +6699,8 @@ export class CentralizedKernelWorker {
           if (retVal === -1) {
             if (errVal === EAGAIN && totalWritten === 0) {
               gotEagain = true;
+            } else if (totalWritten === 0) {
+              firstError = { retVal, errVal };
             }
             break;
           }
@@ -6627,10 +6716,21 @@ export class CentralizedKernelWorker {
       }
 
       if (gotEagain) {
+        this.dequeueSignalForDelivery(channel);
+        if (this.finishSignalTermination(channel)) return;
         this.handleBlockingRetry(channel, syscallNr, origArgs);
         return;
       }
+      if (firstError) {
+        this.dequeueSignalForDelivery(channel);
+        if (this.finishSignalTermination(channel)) return;
+        this.completeChannelRaw(channel, firstError.retVal, firstError.errVal);
+        this.relistenChannel(channel);
+        return;
+      }
 
+      this.dequeueSignalForDelivery(channel);
+      if (this.finishSignalTermination(channel)) return;
       this.handleSharedMappingsAfterFileSyscall(
         channel, syscallNr, origArgs, totalWritten, 0,
       );
@@ -6648,9 +6748,26 @@ export class CentralizedKernelWorker {
     const fd = origArgs[0];
     const bufPtr = origArgs[1];
     const totalLen = origArgs[2];
+    if (
+      !Number.isSafeInteger(totalLen) ||
+      totalLen < 0 ||
+      totalLen > 0x7FFFFFFF
+    ) {
+      this.completeChannelRaw(channel, -1, EINVAL);
+      this.relistenChannel(channel);
+      return;
+    }
     const isPwrite = syscallNr === SYS_PWRITE;
     // pwrite offset is a single i64 arg (arg index 3)
     let fileOffset = isPwrite ? origArgs[3] : 0;
+    const operationLen = this.prepareWriteOperationBudget(
+      channel,
+      fd,
+      fileOffset,
+      totalLen,
+      isPwrite,
+    );
+    if (operationLen === null) return;
 
     const processMem = new Uint8Array(channel.memory.buffer);
     const kernelMem = this.getKernelMem();
@@ -6661,8 +6778,8 @@ export class CentralizedKernelWorker {
 
     let totalWritten = 0;
 
-    while (totalWritten < totalLen) {
-      const chunkLen = Math.min(totalLen - totalWritten, CH_DATA_SIZE);
+    while (totalWritten < operationLen) {
+      const chunkLen = Math.min(operationLen - totalWritten, CH_DATA_SIZE);
 
       // Copy chunk from process memory to kernel scratch
       kernelMem.set(
@@ -6707,6 +6824,8 @@ export class CentralizedKernelWorker {
 
       if (retVal === -1 && errVal === EAGAIN) {
         if (totalWritten > 0) {
+          this.dequeueSignalForDelivery(channel);
+          if (this.finishSignalTermination(channel)) return;
           this.handleSharedMappingsAfterFileSyscall(
             channel, syscallNr, origArgs, totalWritten, 0,
           );
@@ -6715,11 +6834,15 @@ export class CentralizedKernelWorker {
           this.relistenChannel(channel);
           return;
         }
+        this.dequeueSignalForDelivery(channel);
+        if (this.finishSignalTermination(channel)) return;
         this.handleBlockingRetry(channel, syscallNr, origArgs);
         return;
       }
 
       if (errVal !== 0 || retVal <= 0) {
+        this.dequeueSignalForDelivery(channel);
+        if (this.finishSignalTermination(channel)) return;
         if (totalWritten > 0) {
           this.handleSharedMappingsAfterFileSyscall(
             channel, syscallNr, origArgs, totalWritten, 0,
