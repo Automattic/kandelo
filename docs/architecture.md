@@ -224,7 +224,7 @@ The instrumentation handles LLVM's new-EH `try_table` output correctly, includin
 
 1. User calls `execve(path, argv, envp)` → kernel returns exec request to host
 2. Host resolves `path` to a Wasm binary (via filesystem or program map)
-3. `kernel_exec_setup` closes CLOEXEC fds, resets signals, and **resets the program break** (POSIX/Linux behavior — the prior program's brk does not carry over)
+3. `kernel_exec_setup` first serializes the retained process descriptor into a bounded, growable buffer (64 KiB up to 4 MiB), then closes CLOEXEC fds, resets signals, and **resets the program break** (POSIX/Linux behavior — the prior program's brk does not carry over). Allocation failure is reported before destructive cleanup.
 4. Host terminates the old worker
 5. Host creates fresh `WebAssembly.Memory` and re-registers the PID
 6. Host parses the new binary's `__heap_base` export and calls `kernel_set_brk_base(pid, __heap_base)` so `brk(0)` returns a value above the new program's data + stack region
