@@ -14,8 +14,9 @@ set -euo pipefail
 LESS_VERSION="${LESS_VERSION:-661}"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
-SRC_DIR="$SCRIPT_DIR/less-src"
-BIN_DIR="$SCRIPT_DIR/bin"
+WORK_DIR="${WASM_POSIX_DEP_WORK_DIR:-$SCRIPT_DIR}"
+SRC_DIR="$WORK_DIR/less-src"
+BIN_DIR="${WASM_POSIX_DEP_OUT_DIR:-$SCRIPT_DIR/bin}"
 SYSROOT="$REPO_ROOT/sysroot"
 
 # --- Prerequisites ---
@@ -32,7 +33,7 @@ fi
 export WASM_POSIX_SYSROOT="$SYSROOT"
 
 # --- Build termcap stub library ---
-TERMCAP_DIR="$SCRIPT_DIR/libtermcap"
+TERMCAP_DIR="$WORK_DIR/libtermcap"
 if [ ! -f "$TERMCAP_DIR/libtermcap.a" ]; then
     echo "==> Building termcap stub library..."
     mkdir -p "$TERMCAP_DIR/include"
@@ -124,4 +125,4 @@ echo "Binary: $BIN_DIR/less.wasm"
 # Install into local-binaries/ so the resolver picks the freshly-built
 # binary over the fetched release.
 source "$REPO_ROOT/scripts/install-local-binary.sh"
-[ -f "$SCRIPT_DIR/bin/less.wasm" ] && install_local_binary less "$SCRIPT_DIR/bin/less.wasm" || true
+[ -f "$BIN_DIR/less.wasm" ] && install_local_binary less "$BIN_DIR/less.wasm" || true

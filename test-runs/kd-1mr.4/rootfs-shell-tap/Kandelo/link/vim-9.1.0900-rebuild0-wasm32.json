@@ -1,0 +1,33 @@
+{
+  "arch": "wasm32",
+  "bottle": {
+    "bytes": 7794122,
+    "cache_key_sha": "4a2a54d3a4c1052e2d484be6f8f25661bd233c49b9f0eecca5fd7040bcc222ba",
+    "payload_root": "vim/9.1.0900",
+    "sha256": "778be8fe04ce0439b260ed72c9bd81b163c60badd9e61c864864828198fee6ae",
+    "url": "https://ghcr.io/v2/automattic/kandelo-homebrew/vim/blobs/sha256:778be8fe04ce0439b260ed72c9bd81b163c60badd9e61c864864828198fee6ae"
+  },
+  "cellar": "/home/linuxbrew/.linuxbrew/Cellar",
+  "env": {
+    "PATH_prepend": [
+      "bin"
+    ]
+  },
+  "kandelo_abi": 16,
+  "keg": "/home/linuxbrew/.linuxbrew/Cellar/vim/9.1.0900",
+  "links": [
+    {
+      "source": "bin/vim",
+      "target": "bin/vim",
+      "type": "symlink"
+    }
+  ],
+  "package": "vim",
+  "prefix": "/home/linuxbrew/.linuxbrew",
+  "receipts": [
+    ".brew/vim.rb",
+    "INSTALL_RECEIPT.json"
+  ],
+  "schema": 1,
+  "version": "9.1.0900"
+}

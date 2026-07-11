@@ -11,8 +11,12 @@ set -euo pipefail
 BASH_VERSION_PKG="${BASH_VERSION_PKG:-5.2.37}"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
-SRC_DIR="$SCRIPT_DIR/bash-src"
-BIN_DIR="$SCRIPT_DIR/bin"
+# WASM_POSIX_DEP_WORK_DIR / _OUT_DIR let a sandboxed caller (the Homebrew
+# Formula) keep the source tree and final binary in writable build dirs;
+# both default to the in-tree layout for the normal resolver/release build.
+WORK_DIR="${WASM_POSIX_DEP_WORK_DIR:-$SCRIPT_DIR}"
+SRC_DIR="$WORK_DIR/bash-src"
+BIN_DIR="${WASM_POSIX_DEP_OUT_DIR:-$SCRIPT_DIR/bin}"
 SYSROOT="$REPO_ROOT/sysroot"
 
 # --- Prerequisites ---
