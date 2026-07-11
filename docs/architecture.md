@@ -209,7 +209,7 @@ This mechanism is critical: the process worker blocks on `Atomics.wait` while th
 Fork uses the in-tree `wasm-fork-instrument` tool to snapshot the Wasm call stack (details in [fork-instrumentation.md](fork-instrumentation.md)):
 
 1. User calls `fork()` → musl → `__syscall(SYS_clone, ...)` → glue
-2. Host's `kernel_fork` override calls `wpk_fork_unwind_begin(buf)`. The tool-injected export sets state to UNWINDING, initializes `current_pos = frames_start_offset` at `*(buf+0)`, and snapshots every mutable scalar global (including `__tls_base` and `__stack_pointer`) into the buffer's `saved_globals[]` area.
+2. Host's `kernel_fork` override calls `wpk_fork_unwind_begin(buf)`. The tool-injected export sets state to UNWINDING, initializes the absolute frame cursor `current_pos = buf + frames_start_offset` at `*(buf+0)`, and snapshots every mutable scalar global (including `__tls_base` and `__stack_pointer`) into the buffer's `saved_globals[]` area.
 3. The return-to-caller chain unwinds; each instrumented function's postamble writes its frame to the buffer and bumps `current_pos`.
 4. Once `_start` returns (top-of-stack), the host sends SYS_FORK through the channel.
 5. Kernel's `kernel_fork_process` copies fd table, signals, env, CWD, etc.

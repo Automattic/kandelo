@@ -276,6 +276,12 @@ async function runInWorkerThread(options: RunProgramOptions): Promise<RunProgram
 // Main-thread mode (fallback for custom PlatformIO)
 // ---------------------------------------------------------------------------
 
+interface ForkReplayContext {
+  fnPtr: number;
+  argPtr: number;
+  forkBufAddr: number;
+}
+
 async function runOnMainThread(options: RunProgramOptions): Promise<RunProgramResult> {
   const kernelWasmBytes = loadKernelWasm();
   const programBytes = loadProgramWasm(options.programPath);
@@ -301,6 +307,7 @@ async function runOnMainThread(options: RunProgramOptions): Promise<RunProgramRe
   const processLayouts = new Map<number, ProcessMemoryLayout>();
   const threadAllocators = new Map<number, ThreadPageAllocator>();
   const processPtrWidths = new Map<number, 4 | 8>();
+  const forkReplayContexts = new Map<number, ForkReplayContext>();
 
   const pid = 100;
 
@@ -332,9 +339,14 @@ async function runOnMainThread(options: RunProgramOptions): Promise<RunProgramRe
         });
 
         const FORK_BUF_SIZE = FORK_SAVE_BUFFER_SIZE;
-        const forkBufAddr = threadFork
-          ? threadFork.forkBufAddr
-          : childChannelOffset - FORK_BUF_SIZE;
+        const forkReplayContext: ForkReplayContext | undefined = threadFork
+          ? {
+              fnPtr: threadFork.fnPtr,
+              argPtr: threadFork.argPtr,
+              forkBufAddr: threadFork.forkBufAddr,
+            }
+          : forkReplayContexts.get(parentPid);
+        const forkBufAddr = forkReplayContext?.forkBufAddr ?? childChannelOffset - FORK_BUF_SIZE;
 
         const parentProgram = processProgramBytes.get(parentPid) ?? programBytes;
 
@@ -347,8 +359,8 @@ async function runOnMainThread(options: RunProgramOptions): Promise<RunProgramRe
           channelOffset: childChannelOffset,
           isForkChild: true,
           forkBufAddr,
-          forkChildThreadFnPtr: threadFork?.fnPtr,
-          forkChildThreadArgPtr: threadFork?.argPtr,
+          forkChildThreadFnPtr: forkReplayContext?.fnPtr,
+          forkChildThreadArgPtr: forkReplayContext?.argPtr,
           ptrWidth: parentPtrWidth,
         };
 
@@ -365,12 +377,14 @@ async function runOnMainThread(options: RunProgramOptions): Promise<RunProgramRe
           ) / WASM_PAGE_SIZE,
         ));
         processPtrWidths.set(childPid, parentPtrWidth);
+        if (forkReplayContext) forkReplayContexts.set(childPid, forkReplayContext);
         childWorker.on("error", (err: Error) => {
           kernelWorker.unregisterProcess(childPid);
           workers.delete(childPid);
           processLayouts.delete(childPid);
           threadAllocators.delete(childPid);
           processPtrWidths.delete(childPid);
+          forkReplayContexts.delete(childPid);
         });
 
         return [childChannelOffset];
@@ -418,6 +432,7 @@ async function runOnMainThread(options: RunProgramOptions): Promise<RunProgramRe
         processLayouts.set(execPid, newLayout);
         threadAllocators.set(execPid, newThreadAllocator);
         processPtrWidths.set(execPid, newPtrWidth);
+        forkReplayContexts.delete(execPid);
 
         const initData: CentralizedWorkerInitMessage = {
           type: "centralized_init",
@@ -485,6 +500,7 @@ async function runOnMainThread(options: RunProgramOptions): Promise<RunProgramRe
           processLayouts.delete(exitPid);
           threadAllocators.delete(exitPid);
           processPtrWidths.delete(exitPid);
+          forkReplayContexts.delete(exitPid);
           const w = workers.get(exitPid);
           if (w) {
             w.terminate().catch(() => {});
@@ -497,6 +513,7 @@ async function runOnMainThread(options: RunProgramOptions): Promise<RunProgramRe
           processLayouts.delete(exitPid);
           threadAllocators.delete(exitPid);
           processPtrWidths.delete(exitPid);
+          forkReplayContexts.delete(exitPid);
           const w = workers.get(exitPid);
           if (w) {
             w.terminate().catch(() => {});

@@ -85,7 +85,7 @@ wpk_fork_unwind_begin(buf: ptr) -> ()
   Precondition:  state == NORMAL
   Postcondition: state := UNWINDING
                  _wpk_fork_buf := buf
-                 *(buf + 0) := frames_start_offset   (self-initialized)
+                 *(buf + 0) := buf + frames_start_offset
                  All mutable scalar globals snapshotted into buf.
 
 wpk_fork_unwind_end() -> ()
@@ -111,16 +111,23 @@ tool picks the pointer width from the module's primary memory — a memory64
 memory yields `i64`, anything else yields `i32`.
 
 Important Phase 7 behavior: `wpk_fork_unwind_begin` self-initializes
-`*(buf + 0)` with the correct `frames_start_offset` value before touching any
-user state. The host does **not** need to pre-seed the buffer header — it only
-needs to allocate a buffer at least as large as the instrumented module's
-`frames_start_offset` plus its worst-case frame-data footprint.
+`*(buf + 0)` with the absolute address `buf + frames_start_offset` before
+touching any user state. The host does **not** need to pre-seed the buffer
+header — it only needs to allocate a buffer at least as large as the
+instrumented module's `frames_start_offset` plus its worst-case frame-data
+footprint.
 
 ## Host Threading Contract
 
 The save buffer belongs to the channel that issued `SYS_FORK`. For a main-thread
 fork this is the process worker's channel, and the child enters `_start` before
 `wpk_fork_rewind_begin` replays to the saved call site.
+
+`current_pos` is an absolute linear-memory address inside that channel's save
+buffer, not an offset from address zero. This is load-bearing for pthreads:
+thread instances share linear memory, so relative frame addresses would make
+simultaneous fork unwinds overwrite one process-wide low-memory payload even
+though their buffer headers are distinct.
 
 For `fork()` from a pthread worker, the host must preserve the pthread entry
 context as well as the buffer:
@@ -143,6 +150,11 @@ context as well as the buffer:
   indirect-function table instead of `_start`, then starts REWIND from the
   thread's copied buffer. `_start` is not in that call chain and cannot reach
   the saved fork site.
+- That pthread entry function, argument, and buffer remain the child's
+  continuation root until `exec` replaces the process image. If the child
+  forks again first, the host propagates the same root and buffer to the
+  grandchild; launching the grandchild at `_start` or rewinding the main-thread
+  buffer would replay a call chain that was never saved.
 
 The child does not inherit every parent pthread reservation. POSIX fork resumes
 only the calling thread, so dead parent pthread slots become ordinary copied
@@ -151,9 +163,10 @@ memory bytes in the child and can be reused by later child `brk`, `mmap`, or
 move the saved `__tls_base`, thread-local state, and fork-save buffer during
 rewind.
 
-This path is covered by `host/test/fork-instrument-coverage.test.ts` P-06
-(`pthread_create` worker calls `fork`) and K-03 (`pthread_cleanup_push` handler
-calls `fork`).
+This path is covered by `host/test/fork-from-thread.test.ts` (including a second
+fork in the child before exec), `host/test/fork-instrument-coverage.test.ts`
+P-06 (`pthread_create` worker calls `fork`), and K-03
+(`pthread_cleanup_push` handler calls `fork`).
 
 ## Save buffer format
 
@@ -165,15 +178,15 @@ time and 0 in modules that do not contain plain-catch capture sites.
 
 | Offset            | Size | Field                 | Purpose                                |
 |-------------------|------|-----------------------|----------------------------------------|
-| `+0`              | `P`  | `current_pos`         | Next free byte for frame data          |
+| `+0`              | `P`  | `current_pos`         | Absolute address of next frame byte    |
 | `+P`              | `P`  | `end_pos`             | Reserved; not read or written today    |
 | `+2P`             | `N`  | `saved_globals[]`     | Mutable scalar globals, decl. order    |
 | `+2P + N`         | `B`  | `b1_scratch[]`        | Plain-catch operand stash (see B1)     |
 | `+2P + N + B`     | var  | frame data            | Frames grow upward from here           |
 
 `frames_start_offset = 2P + N + B`. It is exposed as metadata on the tool's
-internal `Runtime` struct, and `wpk_fork_unwind_begin` writes it into
-`*(buf + 0)` on every invocation.
+internal `Runtime` struct, and `wpk_fork_unwind_begin` writes
+`buf + frames_start_offset` into `*(buf + 0)` on every invocation.
 
 For wasm32 (`P = 4`) with a module that declares three additional scalar
 mutable globals totaling 16 bytes (e.g. `__stack_pointer`, `__tls_base`, one
@@ -787,6 +800,12 @@ algorithm in `crates/fork-instrument/src/call_graph.rs`:
 
 The output is a function-set `S` that gets instrumented. All other functions
 pass through unmodified.
+
+The host-parsed marker exports `__abi_version`,
+`__wasm_posix_thread_slots`, and `__get_channel_base_addr` also remain
+unmodified even if call-graph discovery includes them in `S`. The host reads
+their wasm-ld wrapper bodies directly and does not use them as fork
+continuation roots.
 
 The indirect-call step is a may-analysis, but it is slot-sensitive when the
 Wasm proves enough facts. Active element segments with constant offsets

@@ -27,7 +27,7 @@
 //! reservation, 0 when no fork-path function has a plain catch):
 //!
 //! ```text
-//! +0          P     current_pos        Next free byte for frame data
+//! +0          P     current_pos        Absolute address of next free frame byte
 //! +P          P     end_pos            One past end of buffer
 //! +2P         N     saved_globals[]    Mutable scalar globals, declaration order
 //! +2P+N       B     b1_scratch[]       Per-arm scratch tuples (Stage 1 B1)
@@ -35,13 +35,13 @@
 //! ```
 //!
 //! `frames_start_offset` in [`Runtime`] exposes `2P + N + B` so the
-//! host can initialize `current_pos` correctly at unwind time.
+//! runtime can initialize `current_pos` to `buf + frames_start_offset`.
 //! `b1_scratch_base` exposes `2P + N` (== `frames_start_offset` when
 //! `B == 0`) and `b1_scratch_size` exposes `B` (rounded up to 8).
 
 use walrus::{
     ConstExpr, FunctionBuilder, FunctionId, GlobalId, InstrSeqBuilder, MemoryId, Module, ValType,
-    ir::{LoadKind, MemArg, StoreKind, Value},
+    ir::{BinaryOp, LoadKind, MemArg, StoreKind, Value},
 };
 
 /// State machine values: must agree with the contract in
@@ -94,9 +94,9 @@ pub struct Runtime {
     /// Byte offset at which frame data begins. Includes any space
     /// reserved for B1's plain-catch scratch area
     /// (see `b1_scratch_base` / `b1_scratch_size`).
-    /// The host must initialize `current_pos` (the i32/i64 at offset
-    /// 0 of the buffer) to this value before driving unwind, and the
-    /// buffer must be sized such that
+    /// `wpk_fork_unwind_begin` adds the save-buffer base to this value
+    /// before storing the absolute `current_pos` pointer at offset 0.
+    /// The buffer must be sized such that
     /// `frames_start_offset + sum_of_frame_sizes <= buffer_size`.
     pub frames_start_offset: u32,
 
@@ -296,8 +296,8 @@ pub fn inject_runtime(module: &mut Module, b1_scratch_size: u32) -> Runtime {
 /// Emit `wpk_fork_unwind_begin(buf: ptr) -> ()`:
 /// 1. `_wpk_fork_state := UNWINDING`
 /// 2. `_wpk_fork_buf := buf`
-/// 3. `*(buf + 0) := frames_start_offset` — seed `current_pos` so the
-///    host is buffer-geometry-agnostic and just allocates a buffer.
+/// 3. `*(buf + 0) := buf + frames_start_offset` — seed the absolute
+///    `current_pos` pointer while keeping the host buffer-geometry-agnostic.
 /// 4. For each saved global `g` at offset `off`:
 ///        `*(buf + off) = g`
 ///
@@ -325,17 +325,22 @@ fn emit_unwind_begin(
             .global_set(buf_global);
 
         if let Some(mem) = memory {
-            // Step 3: seed current_pos at buf + 0 with frames_start_offset.
-            // The value must be pushed as the pointer-width integer type
-            // matching the memory (i32 on wasm32, i64 on wasm64) so the
-            // store kind agrees with the stack type.
+            // Step 3: seed current_pos at buf + 0 with the absolute frame
+            // start address. Frame save/restore treats current_pos as a
+            // linear-memory pointer, so storing only the relative offset
+            // would make every pthread instance share the same low-memory
+            // frame payload.
             body.local_get(buf_param);
             match ptr_ty {
                 ValType::I32 => {
-                    body.i32_const(frames_start_offset as i32);
+                    body.local_get(buf_param)
+                        .i32_const(frames_start_offset as i32)
+                        .binop(BinaryOp::I32Add);
                 }
                 ValType::I64 => {
-                    body.i64_const(frames_start_offset as i64);
+                    body.local_get(buf_param)
+                        .i64_const(frames_start_offset as i64)
+                        .binop(BinaryOp::I64Add);
                 }
                 other => unreachable!("unsupported ptr_ty: {other:?}"),
             }
