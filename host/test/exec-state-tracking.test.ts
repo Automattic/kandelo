@@ -3,7 +3,13 @@ import {
   CentralizedKernelWorker,
   isCurrentProcessGeneration,
 } from "../src/kernel-worker";
-import { CH_ARG_SIZE, CH_ARGS, CH_DATA_SIZE, CH_RETURN } from "../src/generated/abi";
+import {
+  ABI_SYSCALLS,
+  CH_ARG_SIZE,
+  CH_ARGS,
+  CH_DATA_SIZE,
+  CH_RETURN,
+} from "../src/generated/abi";
 
 describe("exec host-state transition", () => {
   it("rejects an async continuation from a replaced process generation", () => {
@@ -50,6 +56,7 @@ describe("exec host-state transition", () => {
       const threadChannel = createChannel(7, memory, 256);
       const otherChannel = createChannel(8, otherMemory, 0);
       const sleepTimer = setTimeout(() => {}, 60_000);
+      const threadSleepTimer = setTimeout(() => {}, 60_000);
       const otherSleepTimer = setTimeout(() => {}, 60_000);
       const worker = createWorker({
         processes: new Map([
@@ -62,8 +69,9 @@ describe("exec host-state transition", () => {
           { parentPid: 8, channel: otherChannel },
         ],
         pendingSleeps: new Map([
-          [7, { timer: sleepTimer, channel: mainChannel }],
-          [8, { timer: otherSleepTimer, channel: otherChannel }],
+          [mainChannel, { timer: sleepTimer, channel: mainChannel }],
+          [threadChannel, { timer: threadSleepTimer, channel: threadChannel }],
+          [otherChannel, { timer: otherSleepTimer, channel: otherChannel }],
         ]),
         pendingFutexWaits: new Map([
           [threadChannel, { futexIndex: 4 }],
@@ -96,8 +104,9 @@ describe("exec host-state transition", () => {
       expect(worker.waitingForChild).toEqual([
         { parentPid: 8, channel: otherChannel },
       ]);
-      expect(worker.pendingSleeps.has(7)).toBe(false);
-      expect(worker.pendingSleeps.has(8)).toBe(true);
+      expect(worker.pendingSleeps.has(mainChannel)).toBe(false);
+      expect(worker.pendingSleeps.has(threadChannel)).toBe(false);
+      expect(worker.pendingSleeps.has(otherChannel)).toBe(true);
       expect(worker.pendingFutexWaits.has(threadChannel)).toBe(false);
       expect(worker.pendingFutexWaits.has(otherChannel)).toBe(true);
       expect(worker.pendingCancels.has(threadChannel)).toBe(false);
@@ -130,6 +139,47 @@ describe("exec host-state transition", () => {
     expect(() => worker.addChannel(7, 512, 11, 1, 2, oldMemory))
       .toThrow(/changed memory generation/);
     expect(worker.processes.get(7).channels).toEqual([]);
+  });
+
+  it("keeps concurrent sleeps independent across one process's threads", async () => {
+    vi.useFakeTimers();
+    try {
+      const memory = new WebAssembly.Memory({ initial: 3, maximum: 3, shared: true });
+      const mainChannel = createChannel(7, memory, 0);
+      const threadChannel = createChannel(7, memory, 0x10000);
+      const completeSleep = vi.fn();
+      const worker = createWorker({
+        processes: new Map([[7, {
+          channels: [mainChannel, threadChannel],
+          memory,
+        }]]),
+        completeSleepWithSignalCheck: completeSleep,
+      });
+
+      expect(worker.handleSleepDelay(
+        mainChannel, ABI_SYSCALLS.Usleep, [50_000], 0, 0,
+      )).toBe(true);
+      expect(worker.handleSleepDelay(
+        threadChannel, ABI_SYSCALLS.Usleep, [10_000], 0, 0,
+      )).toBe(true);
+      expect(worker.pendingSleeps.size).toBe(2);
+
+      await vi.advanceTimersByTimeAsync(10);
+      expect(completeSleep).toHaveBeenCalledTimes(1);
+      expect(completeSleep).toHaveBeenLastCalledWith(
+        threadChannel, ABI_SYSCALLS.Usleep, [10_000], 0, 0,
+      );
+      expect(worker.pendingSleeps.has(mainChannel)).toBe(true);
+
+      await vi.advanceTimersByTimeAsync(40);
+      expect(completeSleep).toHaveBeenCalledTimes(2);
+      expect(completeSleep).toHaveBeenLastCalledWith(
+        mainChannel, ABI_SYSCALLS.Usleep, [50_000], 0, 0,
+      );
+      expect(worker.pendingSleeps.size).toBe(0);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("drops a stale retry before consulting replacement process state", () => {
