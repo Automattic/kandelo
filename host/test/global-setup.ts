@@ -26,6 +26,7 @@ const TEST_PROGRAMS = [
   "select_signal_test.c",
   "lseek_invalid_test.c",
   "environment_lifecycle_test.c",
+  "chown_sentinel_test.c",
   "putenv_test.c",
   "getaddrinfo_test.c",
   "sysv_ipc_test.c",

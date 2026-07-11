@@ -60,7 +60,7 @@ Kandelo uses a single kernel Wasm instance that holds a `ProcessTable` and serve
 | `fdatasync()` | Partial | Alias for fsync(). No metadata distinction in Wasm environment. |
 | `truncate()` | Partial | Path-based. Opens file O_WRONLY, calls ftruncate, closes. |
 | `fchmod()` | Partial | Regular files and directories update VFS metadata. Rejects pipes/sockets. Node host-backed files never receive native mode changes after creation. |
-| `fchown()` | Partial | Regular files and directories update VFS metadata. Rejects pipes/sockets. Node host-backed files never receive native ownership changes. |
+| `fchown()` | Partial | Regular files and directories update VFS metadata. `(uid_t)-1` and `(gid_t)-1` preserve the corresponding current ID without bypassing descriptor, authorization, or backend-error checks. Actual changes remain restricted to effective uid 0; the current owner may issue the raw `(-1, -1)` no-change request. Kernel-owned non-file descriptors still accept the call as a no-op, and Node host-backed ownership changes stay virtual. |
 | `preadv()` | Full | Scatter-gather read at offset. Iterates iovec entries calling pread for each. Stops on short read or EOF. |
 | `pwritev()` | Full | Scatter-gather write at offset. Iterates iovec entries calling pwrite for each. Stops on short write. |
 | `preadv2()` / `pwritev2()` | Partial | Delegates to preadv/pwritev. Extra flags parameter ignored. |
@@ -77,7 +77,7 @@ Kandelo uses a single kernel Wasm instance that holds a `ProcessTable` and serve
 | `renameat()` | Full | Both dirfds supported (AT_FDCWD, absolute, or real dirfd). |
 | `faccessat()` | Full | AT_FDCWD delegates to access(). Absolute paths and real dirfd supported. |
 | `fchmodat()` | Full | AT_FDCWD delegates to chmod(). AT_SYMLINK_NOFOLLOW accepted. Real dirfd supported. |
-| `fchownat()` | Full | AT_FDCWD delegates to chown(). Real dirfd supported. |
+| `fchownat()` | Partial | AT_FDCWD and real dirfds are supported, including unchanged-ID sentinels. `AT_SYMLINK_NOFOLLOW` is not yet honored, and actual ownership changes remain restricted to effective uid 0. |
 | `linkat()` | Full | Both dirfds supported (AT_FDCWD, absolute, or real dirfd). |
 | `symlinkat()` | Full | Target stored as-is. Linkpath resolved via dirfd. Real dirfd supported. |
 | `readlinkat()` | Full | AT_FDCWD delegates to readlink(). Real dirfd supported. |
@@ -199,7 +199,7 @@ Kandelo uses a single kernel Wasm instance that holds a `ProcessTable` and serve
 | `link()` / `unlink()` | Partial | Host-delegated. Relative paths resolved via kernel cwd. |
 | `rename()` | Partial | Host-delegated. Both paths resolved via kernel cwd. |
 | `stat()` / `lstat()` | Partial | Host-delegated. stat follows symlinks, lstat does not. Registered AF_UNIX pathname sockets preserve the backing VFS inode's uid, gid, permissions, timestamps, and link count while reporting `S_IFSOCK`. |
-| `chmod()` / `chown()` | Partial | VFS metadata updates. Node host-backed files receive native mode only at file/directory creation; later mode changes and all ownership changes stay virtual. Browser memory-backed mounts store metadata in the VFS. |
+| `chmod()` / `chown()` | Partial | VFS metadata updates. `chown()` preserves either unchanged-ID sentinel, validates the target and authorization before delegating even same-value requests, restricts actual changes to effective uid 0, and permits raw `(-1, -1)` only to the current owner or root. Owner group changes and supplementary-group authorization remain incomplete. Node host-backed files receive native mode only at file/directory creation; later mode changes and all ownership changes stay virtual. Browser memory-backed mounts store metadata in the VFS. |
 | `access()` | Partial | Host-delegated. Checks real filesystem permissions. |
 | `realpath()` | Full | Resolves path against cwd, normalizes `.`/`..`, resolves symlinks via iterative lstat/readlink (ELOOP after 40 resolutions), verifies existence. |
 | `symlink()` / `readlink()` | Partial | Host-delegated. Symlink target stored as-is, linkpath resolved. |

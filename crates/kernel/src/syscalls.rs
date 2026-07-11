@@ -4367,6 +4367,32 @@ pub fn sys_chmod(
     host.host_chmod(&resolved, mode)
 }
 
+const CHOWN_ID_UNCHANGED: u32 = u32::MAX;
+
+fn prepare_chown_ids(
+    proc: &Process,
+    st: &WasmStat,
+    uid: u32,
+    gid: u32,
+) -> Result<(u32, u32), Errno> {
+    let both_unchanged = uid == CHOWN_ID_UNCHANGED && gid == CHOWN_ID_UNCHANGED;
+    if proc.euid != 0 && !(both_unchanged && proc.euid == st.st_uid) {
+        return Err(Errno::EPERM);
+    }
+    Ok((
+        if uid == CHOWN_ID_UNCHANGED {
+            st.st_uid
+        } else {
+            uid
+        },
+        if gid == CHOWN_ID_UNCHANGED {
+            st.st_gid
+        } else {
+            gid
+        },
+    ))
+}
+
 pub fn sys_chown(
     proc: &mut Process,
     host: &mut dyn HostIO,
@@ -4375,10 +4401,9 @@ pub fn sys_chown(
     gid: u32,
 ) -> Result<(), Errno> {
     let resolved = resolve_path(path, &proc.cwd);
-    if proc.euid != 0 {
-        return Err(Errno::EPERM);
-    }
     check_search_path(proc, host, &resolved)?;
+    let st = host.host_stat(&resolved)?;
+    let (uid, gid) = prepare_chown_ids(proc, &st, uid, gid)?;
     host.host_chown(&resolved, uid, gid)
 }
 
@@ -11781,9 +11806,8 @@ pub fn sys_fchown(
 
     match ofd.file_type {
         FileType::Regular | FileType::Directory => {
-            if proc.euid != 0 {
-                return Err(Errno::EPERM);
-            }
+            let st = host.host_fstat(ofd.host_handle)?;
+            let (uid, gid) = prepare_chown_ids(proc, &st, uid, gid)?;
             host.host_fchown(ofd.host_handle, uid, gid)
         }
         // Match sys_fchmod above — accept the call on all fd types so
@@ -11974,10 +11998,9 @@ pub fn sys_fchownat(
     _flags: u32,
 ) -> Result<(), Errno> {
     let resolved = resolve_at_path(proc, dirfd, path)?;
-    if proc.euid != 0 {
-        return Err(Errno::EPERM);
-    }
     check_search_path(proc, host, &resolved)?;
+    let st = host.host_stat(&resolved)?;
+    let (uid, gid) = prepare_chown_ids(proc, &st, uid, gid)?;
     host.host_chown(&resolved, uid, gid)
 }
 
@@ -12876,6 +12899,8 @@ mod tests {
         net_send_result: Result<usize, Errno>,
         net_connect_calls: Vec<(i32, Vec<u8>, u16)>,
         net_listen_calls: Vec<(i32, u16, [u8; 4])>,
+        chown_calls: Vec<(Vec<u8>, u32, u32)>,
+        fchown_calls: Vec<(i64, u32, u32)>,
         closed_handles: Vec<i64>,
         closed_dir_handles: Vec<i64>,
     }
@@ -12907,6 +12932,8 @@ mod tests {
                 net_send_result: Err(Errno::ENOTCONN),
                 net_connect_calls: Vec::new(),
                 net_listen_calls: Vec::new(),
+                chown_calls: Vec::new(),
+                fchown_calls: Vec::new(),
                 closed_handles: Vec::new(),
                 closed_dir_handles: Vec::new(),
             }
@@ -13128,6 +13155,7 @@ mod tests {
             // Mirror the host VFS: chown updates owner state. A subsequent
             // host_stat(path) must return the new uid/gid. Tests rely on this
             // to verify sys_chown propagates through to the host VFS.
+            self.chown_calls.push((path.to_vec(), uid, gid));
             self.file_owners.insert(path.to_vec(), (uid, gid));
             for (handle, handle_path) in &self.handle_paths {
                 if handle_path.as_slice() == path {
@@ -13206,6 +13234,7 @@ mod tests {
             // file_owners; without a reverse map we update the per-handle
             // overlay so host_fstat returns the new owner. Tests that also
             // care about host_stat(path) after fchown can use sys_chown.
+            self.fchown_calls.push((handle, uid, gid));
             self.handle_owners.insert(handle, (uid, gid));
             Ok(())
         }
@@ -13951,6 +13980,111 @@ mod tests {
         assert_eq!(st.st_gid, 2000, "sys_chown gid did not reach host VFS");
     }
 
+    #[test]
+    fn test_sys_chown_preserves_sentinels_and_delegates_same_ids() {
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        host.set_file_with_owner(b"/owned", 1000, 2000, 0o644, b"hi");
+
+        sys_chown(
+            &mut proc,
+            &mut host,
+            b"/owned",
+            CHOWN_ID_UNCHANGED,
+            3000,
+        )
+        .unwrap();
+        sys_chown(
+            &mut proc,
+            &mut host,
+            b"/owned",
+            4000,
+            CHOWN_ID_UNCHANGED,
+        )
+        .unwrap();
+        // An explicit request for the current IDs is not the (-1, -1)
+        // sentinel case: it must still reach the backend for ctime, set-ID,
+        // and filesystem error semantics.
+        sys_chown(&mut proc, &mut host, b"/owned", 4000, 3000).unwrap();
+        sys_chown(
+            &mut proc,
+            &mut host,
+            b"/owned",
+            CHOWN_ID_UNCHANGED,
+            CHOWN_ID_UNCHANGED,
+        )
+        .unwrap();
+
+        assert_eq!(
+            host.chown_calls,
+            vec![
+                (b"/owned".to_vec(), 1000, 3000),
+                (b"/owned".to_vec(), 4000, 3000),
+                (b"/owned".to_vec(), 4000, 3000),
+                (b"/owned".to_vec(), 4000, 3000),
+            ],
+        );
+    }
+
+    #[test]
+    fn test_sys_chown_both_sentinels_require_owner_and_validate_path() {
+        let mut proc = Process::new(1);
+        proc.euid = 1000;
+        let mut host = MockHostIO::new();
+        host.set_file_with_owner(b"/owned", 1000, 2000, 0o644, b"hi");
+
+        sys_chown(
+            &mut proc,
+            &mut host,
+            b"/owned",
+            CHOWN_ID_UNCHANGED,
+            CHOWN_ID_UNCHANGED,
+        )
+        .unwrap();
+        assert_eq!(
+            host.chown_calls,
+            vec![(b"/owned".to_vec(), 1000, 2000)],
+        );
+
+        proc.euid = 2000;
+        assert_eq!(
+            sys_chown(
+                &mut proc,
+                &mut host,
+                b"/owned",
+                CHOWN_ID_UNCHANGED,
+                CHOWN_ID_UNCHANGED,
+            ),
+            Err(Errno::EPERM),
+        );
+        assert_eq!(
+            sys_chown(&mut proc, &mut host, b"/owned", 1000, 2000),
+            Err(Errno::EPERM),
+        );
+        assert_eq!(
+            sys_chown(
+                &mut proc,
+                &mut host,
+                b"/owned",
+                CHOWN_ID_UNCHANGED,
+                2000,
+            ),
+            Err(Errno::EPERM),
+        );
+
+        host.set_missing_path(b"/missing");
+        assert_eq!(
+            sys_chown(
+                &mut proc,
+                &mut host,
+                b"/missing",
+                CHOWN_ID_UNCHANGED,
+                CHOWN_ID_UNCHANGED,
+            ),
+            Err(Errno::ENOENT),
+        );
+    }
+
     /// sys_fchown must propagate uid/gid into the host VFS via the open file
     /// handle so that a subsequent sys_fstat returns the new values.
     #[test]
@@ -13963,6 +14097,46 @@ mod tests {
         let st = sys_fstat(&mut proc, &mut host, fd).unwrap();
         assert_eq!(st.st_uid, 3000, "sys_fchown uid did not reach host VFS");
         assert_eq!(st.st_gid, 4000, "sys_fchown gid did not reach host VFS");
+    }
+
+    #[test]
+    fn test_sys_fchown_preserves_each_sentinel_and_validates_fd() {
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        host.set_file_with_owner(b"/fd-owned", 10, 20, 0o644, b"hi");
+        let fd = sys_open(&mut proc, &mut host, b"/fd-owned", O_RDONLY, 0).unwrap();
+
+        sys_fchown(&mut proc, &mut host, fd, CHOWN_ID_UNCHANGED, 30).unwrap();
+        sys_fchown(&mut proc, &mut host, fd, 40, CHOWN_ID_UNCHANGED).unwrap();
+        proc.euid = 40;
+        sys_fchown(
+            &mut proc,
+            &mut host,
+            fd,
+            CHOWN_ID_UNCHANGED,
+            CHOWN_ID_UNCHANGED,
+        )
+        .unwrap();
+
+        let handle = proc
+            .ofd_table
+            .get(proc.fd_table.get(fd).unwrap().ofd_ref.0)
+            .unwrap()
+            .host_handle;
+        assert_eq!(
+            host.fchown_calls,
+            vec![(handle, 10, 30), (handle, 40, 30), (handle, 40, 30)],
+        );
+        assert_eq!(
+            sys_fchown(
+                &mut proc,
+                &mut host,
+                999,
+                CHOWN_ID_UNCHANGED,
+                CHOWN_ID_UNCHANGED,
+            ),
+            Err(Errno::EBADF),
+        );
     }
 
     /// sys_fchownat with AT_FDCWD shares its propagation path with sys_chown
@@ -13979,6 +14153,43 @@ mod tests {
         let st = sys_stat(&mut proc, &mut host, b"/baz").unwrap();
         assert_eq!(st.st_uid, 5000, "sys_fchownat uid did not reach host VFS");
         assert_eq!(st.st_gid, 6000, "sys_fchownat gid did not reach host VFS");
+    }
+
+    #[test]
+    fn test_sys_fchownat_preserves_each_sentinel() {
+        use wasm_posix_shared::flags::AT_FDCWD;
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        host.set_file_with_owner(b"/at-owned", 70, 80, 0o644, b"hi");
+
+        sys_fchownat(
+            &mut proc,
+            &mut host,
+            AT_FDCWD,
+            b"/at-owned",
+            CHOWN_ID_UNCHANGED,
+            90,
+            0,
+        )
+        .unwrap();
+        sys_fchownat(
+            &mut proc,
+            &mut host,
+            AT_FDCWD,
+            b"/at-owned",
+            100,
+            CHOWN_ID_UNCHANGED,
+            0,
+        )
+        .unwrap();
+
+        assert_eq!(
+            host.chown_calls,
+            vec![
+                (b"/at-owned".to_vec(), 70, 90),
+                (b"/at-owned".to_vec(), 100, 90),
+            ],
+        );
     }
 
     #[test]
