@@ -1,8 +1,9 @@
 //! Wakeup event buffer for kernel-driven poll/select notification.
 //!
-//! When pipe operations or listener accept queues change readiness state,
-//! events are pushed into a global buffer. The host drains this buffer after
-//! each syscall to wake only the specific waiters that are affected.
+//! When pipe operations, listener accept queues, or AF_UNIX datagram send
+//! state changes readiness, events are pushed into a global buffer. The host
+//! drains this buffer after each syscall and wakes targeted waiters where an
+//! identity is available or performs a bounded broad retry otherwise.
 
 use alloc::vec::Vec;
 use core::cell::UnsafeCell;
@@ -15,6 +16,14 @@ pub const WAKE_WRITABLE: u8 = 2;
 
 /// Listener accept queue received a pending connection.
 pub const WAKE_ACCEPT: u8 = 4;
+
+/// AF_UNIX datagram send readiness or its immediate result changed.
+///
+/// Datagram writers do not have a pipe index that the host can target. The
+/// host therefore retries untargeted blocked sends and issues a broad
+/// readiness wake for poll/select/epoll operations when capacity,
+/// associations, shutdown, close, or pathname state changes.
+pub const WAKE_DATAGRAM_WRITABLE: u8 = 8;
 
 /// A readiness change event.
 #[derive(Debug, Clone, Copy)]
@@ -55,6 +64,12 @@ pub fn push(idx: u32, wake_type: u8) {
 /// Push an accept-readiness event for a listening socket.
 pub fn push_accept(accept_idx: u32) {
     push(accept_idx, WAKE_ACCEPT);
+}
+
+/// Notify the host that AF_UNIX datagram send readiness or its immediate
+/// outcome may have changed.
+pub fn push_datagram_writable() {
+    push(0, WAKE_DATAGRAM_WRITABLE);
 }
 
 /// Drain all pending wakeup events, writing them to the output buffer.
@@ -101,10 +116,11 @@ mod tests {
         push(5, WAKE_READABLE);
         push(10, WAKE_WRITABLE);
         push_accept(12);
+        push_datagram_writable();
 
-        let mut buf = [0u8; 20];
+        let mut buf = [0u8; 25];
         let count = drain(&mut buf, 10);
-        assert_eq!(count, 3);
+        assert_eq!(count, 4);
 
         // Event 0: pipe_idx=5, WAKE_READABLE
         assert_eq!(u32::from_le_bytes([buf[0], buf[1], buf[2], buf[3]]), 5);
@@ -117,6 +133,10 @@ mod tests {
         // Event 2: idx=12, WAKE_ACCEPT
         assert_eq!(u32::from_le_bytes([buf[10], buf[11], buf[12], buf[13]]), 12);
         assert_eq!(buf[14], WAKE_ACCEPT);
+
+        // Event 3: broad datagram-writable readiness change.
+        assert_eq!(u32::from_le_bytes([buf[15], buf[16], buf[17], buf[18]]), 0);
+        assert_eq!(buf[19], WAKE_DATAGRAM_WRITABLE);
 
         // Buffer should be empty now
         let count2 = drain(&mut buf, 10);
