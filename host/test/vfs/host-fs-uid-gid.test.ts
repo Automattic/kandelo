@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
-import { chmodSync, fstatSync, mkdtempSync, rmSync, statSync, writeFileSync, mkdirSync } from "node:fs";
+import { chmodSync, fstatSync, lstatSync, mkdtempSync, rmSync, statSync, symlinkSync, writeFileSync, mkdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { HostFileSystem } from "../../src/vfs/host-fs";
@@ -84,6 +84,33 @@ describe("HostFileSystem uid/gid normalization", () => {
     expect(virtual.gid).toBe(5678);
     expect(nativeAfter.uid).toBe(nativeBefore.uid);
     expect(nativeAfter.gid).toBe(nativeBefore.gid);
+  });
+
+  it("lchown updates only symlink metadata, including for dangling links", () => {
+    const targetPath = join(root, "lchown-target.txt");
+    const linkPath = join(root, "lchown-link");
+    const danglingPath = join(root, "lchown-dangling");
+    writeFileSync(targetPath, "target");
+    symlinkSync("lchown-target.txt", linkPath);
+    symlinkSync("missing-target", danglingPath);
+    const nativeLinkBefore = lstatSync(linkPath);
+    const nativeTargetBefore = statSync(targetPath);
+
+    const hfs = new HostFileSystem(root);
+    hfs.lchown("/lchown-link", 1234, 5678);
+    hfs.lchown("/lchown-dangling", 2345, 6789);
+
+    expect(hfs.lstat("/lchown-link")).toMatchObject({ uid: 1234, gid: 5678 });
+    expect(hfs.stat("/lchown-link")).toMatchObject({ uid: 0, gid: 0 });
+    expect(hfs.lstat("/lchown-dangling")).toMatchObject({ uid: 2345, gid: 6789 });
+    expect(lstatSync(linkPath)).toMatchObject({
+      uid: nativeLinkBefore.uid,
+      gid: nativeLinkBefore.gid,
+    });
+    expect(statSync(targetPath)).toMatchObject({
+      uid: nativeTargetBefore.uid,
+      gid: nativeTargetBefore.gid,
+    });
   });
 
   it("fchmod and fchown update virtual metadata without native changes", () => {

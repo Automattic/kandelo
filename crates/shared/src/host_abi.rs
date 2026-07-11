@@ -42,6 +42,8 @@ pub struct SyscallArgDesc {
     pub arg_index: u8,
     pub direction: SyscallArgDirection,
     pub size: SyscallArgSize,
+    /// Whether a null pointer is a valid request to omit this argument.
+    pub nullable: bool,
     /// Extra bytes to copy back when an output `Arg`-sized buffer's copied
     /// length is based on the syscall return value. `msgrcv` returns only
     /// `mtext` length, but the scratch buffer also includes the leading mtype.
@@ -105,6 +107,16 @@ macro_rules! desc {
             arg_index: $arg_index,
             direction: SyscallArgDirection::$direction,
             size: $size,
+            nullable: false,
+            copy_retval_add: 0,
+        }
+    };
+    ($arg_index:expr, $direction:ident, $size:expr, nullable) => {
+        SyscallArgDesc {
+            arg_index: $arg_index,
+            direction: SyscallArgDirection::$direction,
+            size: $size,
+            nullable: true,
             copy_retval_add: 0,
         }
     };
@@ -113,6 +125,7 @@ macro_rules! desc {
             arg_index: $arg_index,
             direction: SyscallArgDirection::$direction,
             size: $size,
+            nullable: false,
             copy_retval_add: $copy_retval_add,
         }
     };
@@ -316,7 +329,7 @@ pub const SYSCALL_ARG_DESCRIPTORS: &[SyscallArgDescriptor] = &[
     entry!(
         Syscall::Utimensat as u32,
         [
-            desc!(1, In, cstring!()),
+            desc!(1, In, cstring!(), nullable),
             desc!(2, In, fixed!(WASM_TIMESPEC_SIZE * 2)),
         ]
     ),
@@ -415,6 +428,7 @@ pub const SYSCALL_ARG_DESCRIPTORS: &[SyscallArgDescriptor] = &[
     ),
     entry!(extra_syscalls::SYS_MKNOD, [desc!(0, In, cstring!())]),
     entry!(extra_syscalls::SYS_MKNODAT, [desc!(1, In, cstring!())]),
+    entry!(extra_syscalls::SYS_LCHOWN, [desc!(0, In, cstring!())]),
     entry!(
         extra_syscalls::SYS_TIMER_CREATE,
         [desc!(1, In, fixed!(16)), desc!(2, Out, fixed!(4)),]
@@ -508,6 +522,16 @@ mod tests {
             }
         );
         assert_eq!(msgrcv.copy_retval_add, 4);
+
+        let lchown = find(extra_syscalls::SYS_LCHOWN).args[0];
+        assert_eq!(lchown.arg_index, 0);
+        assert_eq!(lchown.direction, SyscallArgDirection::In);
+        assert_eq!(lchown.size, SyscallArgSize::CString);
+        assert!(!lchown.nullable);
+
+        let utimensat_path = find(Syscall::Utimensat as u32).args[0];
+        assert_eq!(utimensat_path.size, SyscallArgSize::CString);
+        assert!(utimensat_path.nullable);
 
         let semop = find(extra_syscalls::SYS_SEMOP).args[0].size;
         assert_eq!(
