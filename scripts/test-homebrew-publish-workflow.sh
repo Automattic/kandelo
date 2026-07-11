@@ -879,6 +879,96 @@ EOF
   fi
 }
 
+assert_bottle_build_trusts_selected_tap() {
+  local tap="$TMPDIR/bottle-trust-tap"
+  local brew_repo="$TMPDIR/bottle-trust-brew-repo"
+  local brew_prefix="$TMPDIR/bottle-trust-prefix"
+  local fake_brew="$TMPDIR/bottle-trust-brew"
+  local out="$TMPDIR/bottle-trust-out"
+  local log="$TMPDIR/bottle-trust.log"
+  local caller_config="$TMPDIR/caller-homebrew-config"
+  make_tap "$tap"
+  mkdir -p "$brew_repo" "$brew_prefix" "$caller_config"
+
+  cat >"$fake_brew" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+if [ -n "${XDG_CONFIG_HOME:-}" ]; then
+  export HOMEBREW_USER_CONFIG_HOME="$XDG_CONFIG_HOME/homebrew"
+fi
+printf '%s|%s\n' "${HOMEBREW_USER_CONFIG_HOME:-}" "$*" >>"$FAKE_BREW_LOG"
+case "${1:-}" in
+  --prefix)
+    printf '%s\n' "$FAKE_BREW_PREFIX"
+    ;;
+  --repository)
+    if [ "$#" -eq 1 ]; then
+      printf '%s\n' "$FAKE_BREW_REPOSITORY"
+    else
+      printf '%s\n' "$FAKE_TAP_ROOT"
+    fi
+    ;;
+  tap)
+    ;;
+  trust)
+    [ "${2:-}" = "--tap" ]
+    [ "${3:-}" = "automattic/kandelo-homebrew" ]
+    [ -d "${HOMEBREW_USER_CONFIG_HOME:-}" ]
+    permissions="$(stat -c %a "$HOMEBREW_USER_CONFIG_HOME" 2>/dev/null || stat -f %Lp "$HOMEBREW_USER_CONFIG_HOME")"
+    [ "$permissions" = "700" ]
+    case "$HOMEBREW_USER_CONFIG_HOME" in
+      */xdg-config/homebrew) ;;
+      *) exit 43 ;;
+    esac
+    ;;
+  install)
+    exit 42
+    ;;
+  *)
+    exit 44
+    ;;
+esac
+EOF
+  chmod +x "$fake_brew"
+
+  if FAKE_BREW_LOG="$log" \
+    FAKE_BREW_PREFIX="$brew_prefix" \
+    FAKE_BREW_REPOSITORY="$brew_repo" \
+    FAKE_TAP_ROOT="$tap" \
+    HOMEBREW_BREW_FILE="$fake_brew" \
+    XDG_CONFIG_HOME="$caller_config" \
+    bash "$REPO_ROOT/scripts/homebrew-bottle-build.sh" \
+      --tap-root "$tap" \
+      --tap-repository Automattic/kandelo-homebrew \
+      --formula hello \
+      --arch wasm32 \
+      --out "$out" \
+      --bottle-root-url https://example.invalid/bottles \
+      >/dev/null 2>&1; then
+    fail "bottle trust fixture unexpectedly completed its sentinel install"
+  fi
+
+  local tap_line trust_line install_line trust_config first_config
+  tap_line="$(grep -n '|tap automattic/kandelo-homebrew ' "$log" | cut -d: -f1)"
+  trust_line="$(grep -n '|trust --tap automattic/kandelo-homebrew$' "$log" | cut -d: -f1)"
+  install_line="$(grep -n '|install --build-bottle --formula automattic/kandelo-homebrew/hello$' "$log" | cut -d: -f1)"
+  [ -n "$tap_line" ] && [ -n "$trust_line" ] && [ -n "$install_line" ] ||
+    fail "bottle build did not tap, trust, and install the selected tap"
+  [ "$tap_line" -lt "$trust_line" ] && [ "$trust_line" -lt "$install_line" ] ||
+    fail "bottle build did not trust the selected tap before formula evaluation"
+
+  trust_config="$(grep '|trust --tap automattic/kandelo-homebrew$' "$log" | cut -d'|' -f1)"
+  first_config="$(head -n1 "$log" | cut -d'|' -f1)"
+  [ -n "$trust_config" ] || fail "bottle build trust used no isolated config store"
+  [ "$first_config" = "$trust_config" ] ||
+    fail "launcher discovery ran outside the build-local Homebrew config store"
+  [ "$trust_config" != "$caller_config/homebrew" ] ||
+    fail "bottle build reused the caller's Homebrew config store"
+  [ ! -e "$trust_config" ] || fail "build-local Homebrew config survived cleanup"
+  [ -z "$(find "$caller_config" -mindepth 1 -print -quit)" ] ||
+    fail "bottle build mutated the caller's Homebrew config store"
+}
+
 assert_failure_preserves_metadata() {
   local tap="$TMPDIR/failure-tap"
   make_tap "$tap"
@@ -1168,6 +1258,7 @@ assert_matrix
 assert_matrix_skips_unchanged_cache_key
 assert_upload_dry_run
 assert_upload_push_uses_relative_layer_path
+assert_bottle_build_trusts_selected_tap
 assert_generator_rejects_mismatched_homebrew_commit
 assert_build_handoff_is_minimal_and_validated
 assert_build_handoff_rejects_untrusted_content
