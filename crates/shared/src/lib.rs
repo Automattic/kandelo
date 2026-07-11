@@ -1136,6 +1136,7 @@ pub mod abi {
         "kernel_alloc_scratch",
         "kernel_create_process",
         "kernel_create_process_with_stdio",
+        "kernel_get_process_exit_signal",
         "kernel_get_parent_pid",
         "kernel_handle_channel",
         "kernel_host_adapter_manifest_len",

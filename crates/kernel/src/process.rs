@@ -539,7 +539,11 @@ pub struct Process {
     /// POSIX uses this flag (not `sid == pid`) to gate setpgid EPERM checks.
     pub is_session_leader: bool,
     pub state: ProcessState,
+    /// Low 8-bit status supplied to `_exit()`/`exit_group()` for a normal
+    /// exit. Signal termination is recorded separately in `exit_signal` so
+    /// normal statuses 128..=255 remain distinguishable to waiters.
     pub exit_status: i32,
+    pub exit_signal: u32,
     pub fd_table: FdTable,
     pub ofd_table: OfdTable,
     pub lock_table: LockTable,
@@ -728,6 +732,7 @@ impl Process {
             is_session_leader: false,
             state: ProcessState::Running,
             exit_status: 0,
+            exit_signal: 0,
             fd_table,
             ofd_table,
             lock_table: LockTable::new(),

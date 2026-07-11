@@ -121,6 +121,27 @@ describe("Rust-owned process wait lifecycle", () => {
     expect(worker.sharedMappings.has(42)).toBe(false);
   });
 
+  it("uses the explicit termination signal instead of classifying high exit codes", () => {
+    const exitSignals = new Map([[42, 0], [43, 15]]);
+    const worker = createWorkerHarness({
+      kernel_get_process_exit_signal: vi.fn((pid: number) => exitSignals.get(pid) ?? -1),
+    });
+    const normalChannel = createChannel(42, createSharedMemory());
+    const signaledChannel = createChannel(43, createSharedMemory());
+    worker.processes = new Map([
+      [42, { channels: [normalChannel] }],
+      [43, { channels: [signaledChannel] }],
+    ]);
+    worker.pendingSleeps = new Map();
+    worker.hostReaped = new Set();
+    worker.handleProcessTerminated = vi.fn();
+
+    worker.reapKilledProcessesAfterSyscall();
+
+    expect(worker.handleProcessTerminated).toHaveBeenCalledOnce();
+    expect(worker.handleProcessTerminated).toHaveBeenCalledWith(signaledChannel);
+  });
+
   it("SA_NOCLDWAIT auto-reaps through Rust without SIGCHLD", () => {
     const reapExitedChild = vi.fn(() => 0);
     const worker = createWorkerHarness({
