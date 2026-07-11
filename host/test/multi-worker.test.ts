@@ -76,6 +76,8 @@ describe("CentralizedKernelWorker Process Management", () => {
       alarmTimers: new Map(),
       posixTimers: new Map(),
       pendingSleeps: new Map(),
+      pendingSignalWaits: new Map(),
+      signalWaitDeadlines: new Map(),
       lockTable,
       cleanupPendingPollRetries: vi.fn(),
       cleanupPendingSelectRetries: vi.fn(),
@@ -219,6 +221,8 @@ describe("CentralizedKernelWorker Process Management", () => {
         [`${pid}:${threadChannelOffset}`, { fnPtr: 1, argPtr: 2 }],
       ]),
       threadCtidPtrs: new Map([[`${pid}:${tid}`, ctidPtr]]),
+      pendingSignalWaits: new Map(),
+      signalWaitDeadlines: new Map(),
       notifyThreadExit: vi.fn(),
     }) as CentralizedKernelWorker;
 

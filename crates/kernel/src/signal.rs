@@ -76,7 +76,7 @@ pub fn default_action(signum: u32) -> DefaultAction {
 /// cause the pending signal to be discarded." Also: "Setting a signal action to
 /// SIG_DFL for a signal that is pending and whose default action is to ignore the
 /// signal (for example, SIGCHLD), shall cause the pending signal to be discarded."
-fn should_discard_pending(signum: u32, handler: &SignalHandler) -> bool {
+pub(crate) fn should_discard_pending(signum: u32, handler: &SignalHandler) -> bool {
     match handler {
         SignalHandler::Ignore => true,
         SignalHandler::Default => default_action(signum) == DefaultAction::Ignore,
@@ -84,13 +84,68 @@ fn should_discard_pending(signum: u32, handler: &SignalHandler) -> bool {
     }
 }
 
-/// Queued RT signal entry: signal number + optional si_value.
+/// Queued signal instance and its siginfo metadata.
 #[derive(Debug, Clone, Copy)]
 pub struct RtSigEntry {
     pub signum: u32,
     pub si_value: i32,
     /// SI_QUEUE (-1) if sent via sigqueue(), SI_USER (0) if via kill()/raise().
     pub si_code: i32,
+    /// Owning POSIX timer for SI_TIMER notifications.
+    pub timer_id: Option<u32>,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct PendingSignalInfo {
+    pub si_value: i32,
+    pub si_code: i32,
+    pub timer_id: Option<u32>,
+}
+
+fn consume_pending_info(
+    pending: &mut u64,
+    queue: &mut VecDeque<RtSigEntry>,
+    signum: u32,
+) -> PendingSignalInfo {
+    if signum == 0 || signum >= NSIG {
+        return PendingSignalInfo::default();
+    }
+
+    let info = if let Some(pos) = queue.iter().position(|entry| entry.signum == signum) {
+        let entry = queue.remove(pos).expect("queued signal index remains valid");
+        PendingSignalInfo {
+            si_value: entry.si_value,
+            si_code: entry.si_code,
+            timer_id: entry.timer_id,
+        }
+    } else {
+        PendingSignalInfo::default()
+    };
+
+    if !queue.iter().any(|entry| entry.signum == signum) {
+        *pending &= !sig_bit(signum);
+    }
+    info
+}
+
+fn remove_timer_info(
+    pending: &mut u64,
+    queue: &mut VecDeque<RtSigEntry>,
+    timer_id: u32,
+) -> bool {
+    let signum = match queue
+        .iter()
+        .find(|entry| entry.timer_id == Some(timer_id))
+        .map(|entry| entry.signum)
+    {
+        Some(signum) => signum,
+        None => return false,
+    };
+    queue.retain(|entry| entry.timer_id != Some(timer_id));
+    if !queue.iter().any(|entry| entry.signum == signum) {
+        *pending &= !sig_bit(signum);
+    }
+    true
 }
 
 /// Per-thread signal state: pending signals + blocked mask + RT queue.
@@ -112,7 +167,7 @@ pub struct PerThreadSignalState {
     /// Standard signals (1-31) coalesce; RT signals (32-63) set the bit and
     /// queue one entry per raise in [`rt_queue`].
     pub pending: u64,
-    /// Queue of RT-signal (and sigqueue-style standard-signal) entries
+    /// Queue of RT-signal and metadata-bearing standard-signal entries
     /// directed at this thread. Parallel bookkeeping to [`SignalState::rt_queue`].
     pub rt_queue: VecDeque<RtSigEntry>,
     /// Saved blocked mask during sigsuspend / ppoll / pselect (per-thread).
@@ -146,28 +201,68 @@ impl PerThreadSignalState {
         if signum == 0 || signum >= NSIG {
             return false;
         }
-        self.pending |= sig_bit(signum);
         if signum >= SIGRTMIN {
             // RT signals: always queue (multiple instances allowed)
             self.rt_queue.push_back(RtSigEntry {
                 signum,
                 si_value,
                 si_code,
+                timer_id: None,
             });
-        } else if si_code != 0 {
-            // Standard signal from sigqueue: store metadata (coalesced).
-            if let Some(entry) = self.rt_queue.iter_mut().find(|e| e.signum == signum) {
+        } else if let Some(entry) = self
+            .rt_queue
+            .iter_mut()
+            .find(|entry| entry.signum == signum && entry.timer_id.is_none())
+        {
+            // Standard non-timer signals coalesce independently of timer
+            // notifications using the same signal number.
+            if si_code != 0 {
                 entry.si_value = si_value;
                 entry.si_code = si_code;
-            } else {
-                self.rt_queue.push_back(RtSigEntry {
-                    signum,
-                    si_value,
-                    si_code,
-                });
             }
+        } else {
+            self.rt_queue.push_back(RtSigEntry {
+                signum,
+                si_value,
+                si_code,
+                timer_id: None,
+            });
         }
+        self.pending |= sig_bit(signum);
         true
+    }
+
+    pub(crate) fn raise_timer(&mut self, signum: u32, si_value: i32, timer_id: u32) -> bool {
+        if signum == 0 || signum >= NSIG {
+            return false;
+        }
+        if signum < SIGRTMIN
+            && (self.pending & sig_bit(signum)) != 0
+            && !self.rt_queue.iter().any(|entry| entry.signum == signum)
+        {
+            self.rt_queue.push_back(RtSigEntry {
+                signum,
+                si_value: 0,
+                si_code: 0,
+                timer_id: None,
+            });
+        }
+        self.pending |= sig_bit(signum);
+        self.rt_queue.push_back(RtSigEntry {
+            signum,
+            si_value,
+            si_code: -2,
+            timer_id: Some(timer_id),
+        });
+        true
+    }
+
+    pub(crate) fn consume_one_info(&mut self, signum: u32) -> PendingSignalInfo {
+        consume_pending_info(&mut self.pending, &mut self.rt_queue, signum)
+    }
+
+    pub(crate) fn remove_timer_notification(&mut self, timer_id: u32) -> bool {
+        remove_timer_info(&mut self.pending, &mut self.rt_queue, timer_id)
     }
 
     /// Clear all pending instances of a signal from this thread's pending set.
@@ -176,6 +271,10 @@ impl PerThreadSignalState {
             self.pending &= !sig_bit(signum);
             self.rt_queue.retain(|e| e.signum != signum);
         }
+    }
+
+    pub fn is_pending(&self, signum: u32) -> bool {
+        signum > 0 && signum < NSIG && (self.pending & sig_bit(signum)) != 0
     }
 
     /// Check whether a signal is blocked by this thread.
@@ -197,20 +296,8 @@ impl PerThreadSignalState {
         if signum >= NSIG {
             return None;
         }
-        let (mut si_value, mut si_code) = (0i32, 0i32);
-        if let Some(pos) = self.rt_queue.iter().position(|e| e.signum == signum) {
-            si_value = self.rt_queue[pos].si_value;
-            si_code = self.rt_queue[pos].si_code;
-            self.rt_queue.remove(pos);
-        }
-        if signum >= SIGRTMIN {
-            if !self.rt_queue.iter().any(|e| e.signum == signum) {
-                self.pending &= !sig_bit(signum);
-            }
-        } else {
-            self.pending &= !sig_bit(signum);
-        }
-        Some((signum, si_value, si_code))
+        let info = self.consume_one_info(signum);
+        Some((signum, info.si_value, info.si_code))
     }
 }
 
@@ -315,29 +402,59 @@ impl SignalState {
         if signum == 0 || signum >= 65 {
             return false;
         }
-        self.pending |= sig_bit(signum);
         if signum >= SIGRTMIN {
             // RT signals: always queue (multiple instances allowed)
             self.rt_queue.push_back(RtSigEntry {
                 signum,
                 si_value,
                 si_code,
+                timer_id: None,
             });
-        } else if si_code != 0 {
-            // Standard signal from sigqueue (si_code=SI_QUEUE=-1): store metadata
-            // so si_value/si_code are preserved on delivery. Only one entry per
-            // standard signal (coalesced), so replace any existing entry.
-            if let Some(entry) = self.rt_queue.iter_mut().find(|e| e.signum == signum) {
+        } else if let Some(entry) = self
+            .rt_queue
+            .iter_mut()
+            .find(|entry| entry.signum == signum && entry.timer_id.is_none())
+        {
+            // Standard non-timer signals coalesce independently of timer
+            // notifications using the same signal number.
+            if si_code != 0 {
                 entry.si_value = si_value;
                 entry.si_code = si_code;
-            } else {
-                self.rt_queue.push_back(RtSigEntry {
-                    signum,
-                    si_value,
-                    si_code,
-                });
             }
+        } else {
+            self.rt_queue.push_back(RtSigEntry {
+                signum,
+                si_value,
+                si_code,
+                timer_id: None,
+            });
         }
+        self.pending |= sig_bit(signum);
+        true
+    }
+
+    pub(crate) fn raise_timer(&mut self, signum: u32, si_value: i32, timer_id: u32) -> bool {
+        if signum == 0 || signum >= NSIG {
+            return false;
+        }
+        if signum < SIGRTMIN
+            && (self.pending & sig_bit(signum)) != 0
+            && !self.rt_queue.iter().any(|entry| entry.signum == signum)
+        {
+            self.rt_queue.push_back(RtSigEntry {
+                signum,
+                si_value: 0,
+                si_code: 0,
+                timer_id: None,
+            });
+        }
+        self.pending |= sig_bit(signum);
+        self.rt_queue.push_back(RtSigEntry {
+            signum,
+            si_value,
+            si_code: -2,
+            timer_id: Some(timer_id),
+        });
         true
     }
 
@@ -363,6 +480,17 @@ impl SignalState {
         self.pending
     }
 
+    pub(crate) fn pending_timer_ids(&self, signum: u32) -> impl Iterator<Item = u32> + '_ {
+        self.rt_queue
+            .iter()
+            .filter(move |entry| entry.signum == signum)
+            .filter_map(|entry| entry.timer_id)
+    }
+
+    pub(crate) fn remove_timer_notification(&mut self, timer_id: u32) -> bool {
+        remove_timer_info(&mut self.pending, &mut self.rt_queue, timer_id)
+    }
+
     /// Clear a signal from the pending set.
     /// Removes all queued instances (RT or standard sigqueue metadata).
     pub fn clear_pending(&mut self, signum: u32) {
@@ -377,26 +505,8 @@ impl SignalState {
     /// For RT signals, removes one queued instance; clears pending bit only when
     /// no more instances remain. For standard signals, clears the pending bit.
     /// Returns (si_value, si_code) of the consumed signal instance.
-    pub fn consume_one(&mut self, signum: u32) -> (i32, i32) {
-        if signum == 0 || signum >= NSIG {
-            return (0, 0);
-        }
-        let (mut si_value, mut si_code) = (0i32, 0i32);
-        if let Some(pos) = self.rt_queue.iter().position(|e| e.signum == signum) {
-            si_value = self.rt_queue[pos].si_value;
-            si_code = self.rt_queue[pos].si_code;
-            self.rt_queue.remove(pos);
-        }
-        if signum >= SIGRTMIN {
-            // RT signals: only clear pending bit when all instances consumed
-            if !self.rt_queue.iter().any(|e| e.signum == signum) {
-                self.pending &= !sig_bit(signum);
-            }
-        } else {
-            // Standard signals: always clear pending bit (coalesced)
-            self.pending &= !sig_bit(signum);
-        }
-        (si_value, si_code)
+    pub fn consume_one(&mut self, signum: u32) -> PendingSignalInfo {
+        consume_pending_info(&mut self.pending, &mut self.rt_queue, signum)
     }
 
     /// Check if a signal is blocked.
@@ -434,29 +544,8 @@ impl SignalState {
         }
         // trailing_zeros gives 0-based bit position; signal number = bit + 1
         let signum = deliverable.trailing_zeros() + 1;
-        let (mut si_value, mut si_code) = (0i32, 0i32);
-        if signum >= SIGRTMIN {
-            // RT signal: dequeue one instance from the queue
-            if let Some(pos) = self.rt_queue.iter().position(|e| e.signum == signum) {
-                si_value = self.rt_queue[pos].si_value;
-                si_code = self.rt_queue[pos].si_code;
-                self.rt_queue.remove(pos);
-            }
-            // Only clear the pending bit if no more instances remain
-            if !self.rt_queue.iter().any(|e| e.signum == signum) {
-                self.pending &= !sig_bit(signum);
-            }
-        } else {
-            // Standard signal: clear from pending bitmask
-            self.pending &= !sig_bit(signum);
-            // Check for sigqueue metadata (stored in rt_queue for standard signals too)
-            if let Some(pos) = self.rt_queue.iter().position(|e| e.signum == signum) {
-                si_value = self.rt_queue[pos].si_value;
-                si_code = self.rt_queue[pos].si_code;
-                self.rt_queue.remove(pos);
-            }
-        }
-        Some((signum, si_value, si_code))
+        let info = self.consume_one(signum);
+        Some((signum, info.si_value, info.si_code))
     }
 
     /// Check if the next deliverable signal has SA_RESTART set.
@@ -508,14 +597,15 @@ impl SignalState {
         for (i, h) in handlers.iter().enumerate() {
             actions[i].handler = *h;
         }
-        // Reconstruct RT queue from pending bits (one instance per signal)
+        // Reconstruct one queued instance for each preserved pending signal.
         let mut rt_queue = VecDeque::new();
-        for sig in SIGRTMIN..SIGRTMAX_PLUS1 {
+        for sig in 1..SIGRTMAX_PLUS1 {
             if (pending & sig_bit(sig)) != 0 {
                 rt_queue.push_back(RtSigEntry {
                     signum: sig,
                     si_value: 0,
                     si_code: 0,
+                    timer_id: None,
                 });
             }
         }
@@ -771,6 +861,73 @@ mod tests {
         state.set_handler(SIGRTMIN, SignalHandler::Ignore).unwrap();
         assert!(!state.is_pending(SIGRTMIN));
         assert_eq!(state.dequeue(), None);
+    }
+
+    #[test]
+    fn test_timer_notifications_are_queued_per_timer() {
+        let mut state = SignalState::new();
+        state.raise_timer(SIGUSR1, 41, 3);
+        state.raise_timer(SIGUSR1, 42, 4);
+
+        let first = state.consume_one(SIGUSR1);
+        assert_eq!(first.si_code, -2);
+        assert_eq!(first.si_value, 41);
+        assert_eq!(first.timer_id, Some(3));
+        assert!(state.is_pending(SIGUSR1));
+
+        let second = state.consume_one(SIGUSR1);
+        assert_eq!(second.si_code, -2);
+        assert_eq!(second.si_value, 42);
+        assert_eq!(second.timer_id, Some(4));
+        assert!(!state.is_pending(SIGUSR1));
+    }
+
+    #[test]
+    fn test_removing_one_timer_preserves_other_pending_notification() {
+        let mut state = SignalState::new();
+        state.raise_timer(SIGUSR1, 41, 3);
+        state.raise_timer(SIGUSR1, 42, 4);
+
+        assert!(state.remove_timer_notification(3));
+        assert!(state.is_pending(SIGUSR1));
+        let remaining = state.consume_one(SIGUSR1);
+        assert_eq!(remaining.timer_id, Some(4));
+        assert_eq!(remaining.si_value, 42);
+        assert!(!state.is_pending(SIGUSR1));
+    }
+
+    #[test]
+    fn test_timer_and_sigqueue_metadata_do_not_collide() {
+        let mut state = SignalState::new();
+        state.raise_timer(SIGUSR1, 41, 3);
+        state.raise_with_value(SIGUSR1, 99);
+
+        let timer = state.consume_one(SIGUSR1);
+        assert_eq!(timer.timer_id, Some(3));
+        assert_eq!(timer.si_code, -2);
+        assert_eq!(timer.si_value, 41);
+        assert!(state.is_pending(SIGUSR1));
+
+        let queued = state.consume_one(SIGUSR1);
+        assert_eq!(queued.timer_id, None);
+        assert_eq!(queued.si_code, -1);
+        assert_eq!(queued.si_value, 99);
+        assert!(!state.is_pending(SIGUSR1));
+    }
+
+    #[test]
+    fn test_removing_timer_preserves_plain_standard_signal() {
+        let mut state = SignalState::new();
+        state.raise_timer(SIGUSR1, 41, 3);
+        state.raise(SIGUSR1);
+
+        assert!(state.remove_timer_notification(3));
+        assert!(state.is_pending(SIGUSR1));
+        let plain = state.consume_one(SIGUSR1);
+        assert_eq!(plain.timer_id, None);
+        assert_eq!(plain.si_code, 0);
+        assert_eq!(plain.si_value, 0);
+        assert!(!state.is_pending(SIGUSR1));
     }
 
     #[test]

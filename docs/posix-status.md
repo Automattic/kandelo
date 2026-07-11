@@ -161,7 +161,7 @@ Kandelo uses a single kernel Wasm instance that holds a `ProcessTable` and serve
 | `alarm()` | Full | Sets SIGALRM timer via host setTimeout. Returns previous remaining seconds. alarm(0) cancels. Not inherited by fork, canceled by exec. |
 | `setitimer()` | Full | ITIMER_REAL: sets alarm deadline + interval via host_set_alarm. ITIMER_VIRTUAL/ITIMER_PROF: no-op (no CPU time tracking). Fixes musl's alarm() which internally calls setitimer. |
 | `getitimer()` | Full | ITIMER_REAL: returns stored interval + remaining time from deadline. ITIMER_VIRTUAL/ITIMER_PROF: returns zero. |
-| `sigtimedwait()` | Full | Checks pending signals in mask, dequeues lowest. Returns si_signo, si_code (SI_USER/SI_QUEUE), and si_value in siginfo_t. Polls with 1ms sleep on timeout. Returns EAGAIN on timeout. |
+| `sigtimedwait()` | Full | Checks the calling thread's directed and process-shared pending signals, dequeues the lowest match, and returns signal-specific `siginfo_t` metadata, including timer ID and overrun for `SI_TIMER`. Host-originated signals wake matching blocked thread channels immediately; finite retries preserve the original deadline and timeout expiry returns EAGAIN. |
 | `sigqueue()` / `rt_sigqueueinfo()` | Full | Sends signal with si_value. RT signals (32-63) are queued with FIFO ordering; standard signals (1-31) coalesced. si_code set to SI_QUEUE (-1). |
 | `rt_sigreturn()` | Stub | Returns 0. Signal trampoline handled by host. |
 | `signalfd()` / `signalfd4()` | Full | Creates a file descriptor for accepting signals. Reads return `signalfd_siginfo` structs (128 bytes) for pending signals matching the mask. Supports poll() for readiness. |
@@ -287,10 +287,10 @@ shortcuts.
 | `inotify_init()` / `inotify_init1()` | Stub | Returns ENOSYS. |
 | `inotify_add_watch()` / `inotify_rm_watch()` | Stub | Returns EBADF. |
 | `fanotify_init()` / `fanotify_mark()` | Stub | Returns ENOSYS. |
-| `timer_create()` | Full | CLOCK_REALTIME and CLOCK_MONOTONIC. SIGEV_SIGNAL delivery with si_value. Per-process timer table (max 32). |
+| `timer_create()` | Partial | On wasm32, supports CLOCK_REALTIME and CLOCK_MONOTONIC with SIGEV_SIGNAL, SIGEV_NONE, and POSIX SIGEV_THREAD through musl's thread-directed SIGEV_THREAD_ID helper. Expirations preserve SI_TIMER, si_value, timer ID, and overrun metadata on both Node and browser hosts. wasm64 sigevent marshalling is not yet implemented. |
 | `timer_settime()` / `timer_gettime()` | Full | Absolute (TIMER_ABSTIME) and relative time. Interval timers with automatic rearming. Host setTimeout-based delivery. |
-| `timer_getoverrun()` | Full | Tracks overrun count when signal is still pending at next interval fire. Reset on successful signal delivery. |
-| `timer_delete()` | Full | Cancels timer and removes from per-process table. |
+| `timer_getoverrun()` | Full | Tracks overruns per timer while its notification remains pending and reports the count associated with the most recently accepted notification. |
+| `timer_delete()` | Full | Cancels the host timer, removes its queued notification before slot reuse, and removes it from the per-process table. |
 
 ## IPC (System V & POSIX Message Queues)
 

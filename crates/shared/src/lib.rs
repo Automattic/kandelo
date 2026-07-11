@@ -1106,6 +1106,7 @@ pub mod abi {
     ];
 
     pub const HOST_ADAPTER_OPTIONAL_KERNEL_EXPORTS: &[&str] = &[
+        "kernel_posix_timer_fire",
         "kernel_reserve_host_region",
         "kernel_reserve_host_region_at",
         "kernel_set_cwd",

@@ -203,6 +203,12 @@ for src in "$REPO_ROOT/programs/"*.c; do
             build_program "$src" "$OUT_DIR_32" \
                 "$SYSROOT/lib/libdrm.a"
             ;;
+        posix-timer-thread.c)
+            # Keep the fixture's pthread capacity small so its timer-helper
+            # churn test proves detached helpers are actually reclaimed.
+            build_program "$src" "$OUT_DIR_32" \
+                -DWASM_POSIX_THREAD_SLOT_DECL=8
+            ;;
         *)
             build_program "$src" "$OUT_DIR_32"
             ;;

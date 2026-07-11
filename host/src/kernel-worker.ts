@@ -125,6 +125,9 @@ const SIGNAL_SAFE_POLL_WAKE_DELAY_MS = 50;
 
 /** Syscall numbers for signals */
 const SYS_KILL = ABI_SYSCALLS.Kill;
+// wasm32/wasm64 musl route pthread-directed signals through tkill(2).
+// The kernel dispatcher and both target syscall headers assign it number 204.
+const SYS_TKILL = 204;
 
 /** Syscall numbers for fork/exec/clone */
 const SYS_EXECVE = HOST_INTERCEPTED_SYSCALLS.SYS_EXECVE;
@@ -735,6 +738,17 @@ export class CentralizedKernelWorker {
     retVal: number;
     errVal: number;
   }>();
+  /** Threads blocked in rt_sigtimedwait, keyed by `pid:channelOffset`. */
+  private pendingSignalWaits = new Map<string, {
+    timer: ReturnType<typeof setTimeout>;
+    channel: ChannelInfo;
+    origArgs: number[];
+  }>();
+  /** Finite rt_sigtimedwait deadlines retained across wake-driven retries. */
+  private signalWaitDeadlines = new Map<
+    string,
+    { pid: number; deadline: number }
+  >();
   /** Maps "pid:tid" to ctidPtr for CLONE_CHILD_CLEARTID on thread exit */
   private threadCtidPtrs = new Map<string, number>();
   /** TCP listeners: "pid:fd" → { server, pid, port, connections } */
@@ -1002,7 +1016,7 @@ export class CentralizedKernelWorker {
               this.posixTimers.delete(key);
               return;
             }
-            this.sendSignalToProcess(pid, signo);
+            this.firePosixTimer(pid, timerId, signo, false);
 
             // Set up repeating interval if needed
             if (intervalMs > 0) {
@@ -1013,13 +1027,7 @@ export class CentralizedKernelWorker {
                   this.posixTimers.delete(key);
                   return;
                 }
-                // Check if signal is already pending (overrun) or new cycle
-                const intervalFire = this.kernelInstance!.exports
-                  .kernel_posix_timer_interval_fire as ((pid: number, timerId: number) => number) | undefined;
-                const alreadyPending = intervalFire ? intervalFire(pid, timerId) : 0;
-                if (!alreadyPending) {
-                  this.sendSignalToProcess(pid, signo);
-                }
+                this.firePosixTimer(pid, timerId, signo, true);
               }, intervalMs);
               const entry = this.posixTimers.get(key);
               if (entry) entry.interval = iv;
@@ -1556,6 +1564,7 @@ export class CentralizedKernelWorker {
     this.cleanupPendingPollRetries(pid);
     // Clean up pending select retries
     this.cleanupPendingSelectRetries(pid);
+    this.cleanupPendingSignalWaits(pid);
     // Clean up pending pipe readers/writers
     this.cleanupPendingPipeReaders(pid);
     this.cleanupPendingPipeWriters(pid);
@@ -1661,6 +1670,7 @@ export class CentralizedKernelWorker {
     this.cleanupPendingPollRetries(pid);
     // Clean up pending select retries
     this.cleanupPendingSelectRetries(pid);
+    this.cleanupPendingSignalWaits(pid);
     // Clean up network listeners/endpoints for this process
     this.cleanupUdpBindings(pid);
     this.cleanupTcpListeners(pid);
@@ -1692,6 +1702,7 @@ export class CentralizedKernelWorker {
     // Clean up pending blocking retries (the old program's syscalls are dead)
     this.cleanupPendingPollRetries(pid);
     this.cleanupPendingSelectRetries(pid);
+    this.cleanupPendingSignalWaits(pid);
     this.cleanupPendingPipeReaders(pid);
     this.cleanupPendingPipeWriters(pid);
     for (const [ch, timer] of this.socketTimeoutTimers) {
@@ -1774,6 +1785,14 @@ export class CentralizedKernelWorker {
    * Remove a channel from a process registration (e.g. when a thread exits).
    */
   removeChannel(pid: number, channelOffset: number): void {
+    const signalWaitKey = `${pid}:${channelOffset}`;
+    const signalWait = this.pendingSignalWaits.get(signalWaitKey);
+    if (signalWait) {
+      clearTimeout(signalWait.timer);
+      this.pendingSignalWaits.delete(signalWaitKey);
+    }
+    this.signalWaitDeadlines.delete(signalWaitKey);
+
     const registration = this.processes.get(pid);
     if (!registration) return;
 
@@ -2429,6 +2448,9 @@ export class CentralizedKernelWorker {
       // channel with -EIO to unblock the process rather than deadlocking.
       if (logging) console.error(logEntry + " = KERNEL THROW");
       console.error(`[handleSyscall] kernel threw for pid=${channel.pid} syscall=${syscallNr} args=[${origArgs}]:`, err);
+      if (syscallNr === SYS_RT_SIGTIMEDWAIT) {
+        this.signalWaitDeadlines.delete(`${channel.pid}:${channel.channelOffset}`);
+      }
       this.completeChannelRaw(channel, -5, 5); // -EIO
       this.relistenChannel(channel);
       return;
@@ -2454,6 +2476,9 @@ export class CentralizedKernelWorker {
     // Read return value and errno from kernel scratch
     const retVal = Number(kernelView.getBigInt64(CH_RETURN, true));
     const errVal = kernelView.getUint32(CH_ERRNO, true);
+    if (syscallNr === SYS_RT_SIGTIMEDWAIT && !(retVal === -1 && errVal === EAGAIN)) {
+      this.signalWaitDeadlines.delete(`${channel.pid}:${channel.channelOffset}`);
+    }
 
     // --- Process memory growth for brk/mmap/mremap ---
     // The kernel's ensure_memory_covers() grows the KERNEL's Wasm memory, not
@@ -2600,6 +2625,16 @@ export class CentralizedKernelWorker {
       this.reapKilledProcessesAfterSyscall();
     }
 
+    // tkill carries a thread-directed signal. Wake only the matching thread's
+    // sigtimedwait so musl helper threads (including POSIX timer helpers) do
+    // not wait for their periodic fallback retry.
+    if (retVal === 0 && errVal === 0 && syscallNr === SYS_TKILL) {
+      this.wakePendingSignalWaits(
+        channel.pid,
+        origArgs[1] >>> 0,
+        origArgs[0] >>> 0,
+      );
+    }
 
     // --- Normal completion ---
     if (logging) {
@@ -2792,11 +2827,14 @@ export class CentralizedKernelWorker {
     for (const e of this.pendingPollRetries.values()) if (e.timer) clearTimeout(e.timer);
     for (const e of this.pendingSelectRetries.values()) if (e.timer) clearTimeout(e.timer);
     for (const e of this.pendingSleeps.values()) clearTimeout(e.timer);
+    for (const e of this.pendingSignalWaits.values()) clearTimeout(e.timer);
     this.pendingPipeReaders.clear();
     this.pendingPipeWriters.clear();
     this.pendingPollRetries.clear();
     this.pendingSelectRetries.clear();
     this.pendingSleeps.clear();
+    this.pendingSignalWaits.clear();
+    this.signalWaitDeadlines.clear();
     this.pendingFutexWaits.clear();
 
     // Wake every channel (process main threads + pthreads) that is parked in
@@ -3836,14 +3874,14 @@ export class CentralizedKernelWorker {
         // NULL timeout = wait indefinitely. Use long retry interval since
         // signals arrive via kernel_kill, not organically. In the browser,
         // short retries starve the event loop when multiple threads are active
-        // (e.g. MariaDB's signal handler thread). 500ms is adequate because
-        // cross-process signals are rare, and immediate delivery for kill()
-        // works via scheduleWakeBlockedRetries.
-        setTimeout(() => {
-          if (this.processes.has(channel.pid)) {
-            this.retrySyscall(channel);
-          }
+        // (e.g. MariaDB's signal handler thread). Targeted signal paths wake
+        // this registration immediately; 500ms remains a safety net.
+        const key = `${channel.pid}:${channel.channelOffset}`;
+        const timer = setTimeout(() => {
+          this.pendingSignalWaits.delete(key);
+          if (this.processes.has(channel.pid)) this.retrySyscall(channel);
         }, 500);
+        this.pendingSignalWaits.set(key, { timer, channel, origArgs });
         return;
       }
       const pv = new DataView(channel.memory.buffer, timeoutPtr);
@@ -3852,14 +3890,30 @@ export class CentralizedKernelWorker {
       const nsec = Number(pv.getBigInt64(8, true));
       const timeoutMs = sec * 1000 + Math.floor(nsec / 1_000_000);
       const EAGAIN_ERRNO = 11;
+      const key = `${channel.pid}:${channel.channelOffset}`;
       if (timeoutMs <= 0) {
+        this.signalWaitDeadlines.delete(key);
         this.completeChannel(channel, syscallNr, origArgs, SYSCALL_ARGS[syscallNr], -1, EAGAIN_ERRNO);
       } else {
-        setTimeout(() => {
+        const existingDeadline = this.signalWaitDeadlines.get(key);
+        const deadline = existingDeadline?.deadline ?? performance.now() + timeoutMs;
+        if (!existingDeadline) {
+          this.signalWaitDeadlines.set(key, { pid: channel.pid, deadline });
+        }
+        const remainingMs = deadline - performance.now();
+        if (remainingMs <= 0) {
+          this.signalWaitDeadlines.delete(key);
+          this.completeChannel(channel, syscallNr, origArgs, SYSCALL_ARGS[syscallNr], -1, EAGAIN_ERRNO);
+          return;
+        }
+        const timer = setTimeout(() => {
+          this.pendingSignalWaits.delete(key);
+          this.signalWaitDeadlines.delete(key);
           if (this.processes.has(channel.pid)) {
             this.completeChannel(channel, syscallNr, origArgs, SYSCALL_ARGS[syscallNr], -1, EAGAIN_ERRNO);
           }
-        }, timeoutMs);
+        }, remainingMs);
+        this.pendingSignalWaits.set(key, { timer, channel, origArgs });
       }
       return;
     }
@@ -4048,6 +4102,7 @@ export class CentralizedKernelWorker {
     if (getExitStatus) {
       const exitStatus = getExitStatus(channel.pid);
       if (exitStatus >= 128) {
+        this.signalWaitDeadlines.delete(`${channel.pid}:${channel.channelOffset}`);
         this.handleProcessTerminated(channel);
         return;
       }
@@ -7019,44 +7074,119 @@ export class CentralizedKernelWorker {
   }
 
   /**
+   * Ask the kernel to queue one host-scheduled POSIX timer expiration, then
+   * wake the exact signal-waiting thread selected by the timer's sigevent.
+   * Older kernels lack the additive export and retain the process-wide path.
+   */
+  private firePosixTimer(
+    pid: number,
+    timerId: number,
+    signum: number,
+    isInterval: boolean,
+  ): void {
+    const fire = this.kernelInstance?.exports.kernel_posix_timer_fire as
+      ((pid: number, timerId: number) => number) | undefined;
+    if (!fire) {
+      if (isInterval) {
+        const intervalFire = this.kernelInstance?.exports
+          .kernel_posix_timer_interval_fire as
+          ((pid: number, timerId: number) => number) | undefined;
+        if (intervalFire?.(pid, timerId)) return;
+      }
+      this.sendSignalToProcess(pid, signum);
+      return;
+    }
+
+    const targetTid = fire(pid, timerId);
+    if (targetTid < 0) return;
+
+    if (targetTid > 0) {
+      this.wakePendingSignalWaits(pid, signum, targetTid);
+      return;
+    }
+
+    this.wakePendingSignalWaits(pid, signum);
+    this.sendSignalToProcess(pid, signum, false);
+  }
+
+  /** Wake rt_sigtimedwait callers whose mask accepts this signal. */
+  private wakePendingSignalWaits(
+    pid: number,
+    signum: number,
+    targetTid?: number,
+  ): void {
+    const matches = Array.from(this.pendingSignalWaits.entries()).filter(([, entry]) => {
+      if (entry.channel.pid !== pid) return false;
+      const channelTid = this.channelTids.get(`${pid}:${entry.channel.channelOffset}`) ?? pid;
+      if (targetTid !== undefined && channelTid !== targetTid) return false;
+
+      const maskPtr = entry.origArgs[0] >>> 0;
+      if (maskPtr === 0 || signum <= 0 || signum > 64) return false;
+      const mask = new DataView(entry.channel.memory.buffer).getBigUint64(maskPtr, true);
+      return (mask & (1n << BigInt(signum - 1))) !== 0n;
+    });
+
+    for (const [key, entry] of matches) {
+      if (this.pendingSignalWaits.get(key) !== entry) continue;
+      clearTimeout(entry.timer);
+      this.pendingSignalWaits.delete(key);
+      if (this.processes.has(pid)) this.retrySyscall(entry.channel);
+    }
+  }
+
+  private cleanupPendingSignalWaits(pid: number): void {
+    for (const [key, entry] of this.pendingSignalWaits) {
+      if (entry.channel.pid !== pid) continue;
+      clearTimeout(entry.timer);
+      this.pendingSignalWaits.delete(key);
+      this.signalWaitDeadlines.delete(key);
+    }
+    for (const [key, entry] of this.signalWaitDeadlines) {
+      if (entry.pid === pid) this.signalWaitDeadlines.delete(key);
+    }
+  }
+
+  /**
    * Queue a signal on a target process in the kernel by invoking SYS_KILL
    * through kernel_handle_channel. The signal is queued in the kernel's
    * ProcessTable and will be delivered via dequeueSignalForDelivery on the
    * target process's next syscall completion.
    */
-  private sendSignalToProcess(targetPid: number, signum: number): void {
+  private sendSignalToProcess(targetPid: number, signum: number, queueSignal = true): void {
     if (!this.kernelInstance || !this.kernelMemory) return;
 
     // Verify the target process exists in the kernel
     if (!this.processes.has(targetPid)) return;
 
-    const kernelView = new DataView(this.kernelMemory.buffer, this.scratchOffset);
-    // Write SYS_KILL into scratch: kill(targetPid, signum)
-    kernelView.setUint32(CH_SYSCALL, SYS_KILL, true);
-    kernelView.setBigInt64(CH_ARGS, BigInt(targetPid), true);       // arg0 = pid
-    kernelView.setBigInt64(CH_ARGS + 1 * CH_ARG_SIZE, BigInt(signum), true);      // arg1 = sig
-    for (let i = 2; i < CH_ARGS_COUNT; i++) {
-      kernelView.setBigInt64(CH_ARGS + i * CH_ARG_SIZE, 0n, true);
+    if (queueSignal) {
+      const kernelView = new DataView(this.kernelMemory.buffer, this.scratchOffset);
+      // Write SYS_KILL into scratch: kill(targetPid, signum)
+      kernelView.setUint32(CH_SYSCALL, SYS_KILL, true);
+      kernelView.setBigInt64(CH_ARGS, BigInt(targetPid), true);       // arg0 = pid
+      kernelView.setBigInt64(CH_ARGS + 1 * CH_ARG_SIZE, BigInt(signum), true);      // arg1 = sig
+      for (let i = 2; i < CH_ARGS_COUNT; i++) {
+        kernelView.setBigInt64(CH_ARGS + i * CH_ARG_SIZE, 0n, true);
+      }
+
+      const handleChannel = this.kernelInstance.exports.kernel_handle_channel as
+        (offset: KernelPointer, pid: number) => number;
+      this.currentHandlePid = targetPid;
+      // Host-originated process signals are shared deliveries. Force tid=0
+      // so the kernel does not consult state from a prior thread dispatch.
+      const setTid = this.kernelInstance.exports.kernel_set_current_tid as
+        ((tid: number) => void) | undefined;
+      if (setTid) setTid(0);
+      try {
+        handleChannel(this.toKernelPtr(this.scratchOffset), targetPid);
+      } catch (err) {
+        // Non-fatal — signal delivery is best-effort from the host side
+        console.error(`[sendSignalToProcess] kernel threw for pid=${targetPid} sig=${signum}: ${err}`);
+      } finally {
+        this.currentHandlePid = 0;
+      }
     }
 
-    const handleChannel = this.kernelInstance.exports.kernel_handle_channel as
-      (offset: KernelPointer, pid: number) => number;
-    this.currentHandlePid = targetPid;
-    // Host-originated signal (SIGCHLD, SIGALRM, timer, etc.) is always a
-    // "shared" delivery — it lands on the process's pending queue, not a
-    // specific thread's. Force tid=0 so the kernel doesn't consult any
-    // per-thread state left over from a prior dispatch.
-    const setTid = this.kernelInstance.exports.kernel_set_current_tid as
-      ((tid: number) => void) | undefined;
-    if (setTid) setTid(0);
-    try {
-      handleChannel(this.toKernelPtr(this.scratchOffset), targetPid);
-    } catch (err) {
-      // Non-fatal — signal delivery is best-effort from the host side
-      console.error(`[sendSignalToProcess] kernel threw for pid=${targetPid} sig=${signum}: ${err}`);
-    } finally {
-      this.currentHandlePid = 0;
-    }
+    if (queueSignal) this.wakePendingSignalWaits(targetPid, signum);
 
     // Check if the signal is deliverable (not blocked by the process)
     const isBlocked = (this.kernelInstance!.exports.kernel_is_signal_blocked as

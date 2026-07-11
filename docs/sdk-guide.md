@@ -154,6 +154,10 @@ wasm32posix-cc -shared -fPIC plugin.c -o plugin.so
 --sysroot=<path>                   # musl sysroot
 ```
 
+The musl objects in the SDK sysroot are compiled with the same Wasm exception
+handling and SjLj lowering flags, so libc calls to `setjmp`/`longjmp` do not
+leave unresolved host imports in linked programs.
+
 ### Linker flags injected automatically
 
 ```

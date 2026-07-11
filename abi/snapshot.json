@@ -183,6 +183,7 @@
       }
     ],
     "optional_kernel_exports": [
+      "kernel_posix_timer_fire",
       "kernel_reserve_host_region",
       "kernel_reserve_host_region_at",
       "kernel_set_cwd",
@@ -1074,6 +1075,11 @@
       "kind": "func",
       "name": "kernel_poll",
       "signature": "(i32,i32,i32) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_posix_timer_fire",
+      "signature": "(i32,i32) -> (i32)"
     },
     {
       "kind": "func",
