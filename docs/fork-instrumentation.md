@@ -106,6 +106,29 @@ wpk_fork_state() -> i32
   Returns current state. Exported for host-side assertions.
 ```
 
+The five exports identify the state-machine ABI, but they do not prove which
+import seeded call-graph discovery. The tool therefore also emits the custom
+section `kandelo.wpk_fork.capabilities`. Its two-byte payload is
+`[version, flags]`; version 1 defines:
+
+- bit 0 (`0x01`): the module was instrumented with `--entry env.fork`, so an
+  `env.fork`-importing side module has complete side-entry coverage;
+- bit 1 (`0x02`): a default-entry main module imported Kandelo's dynamic-linker
+  functions and conservatively instrumented every `call_indirect` boundary
+  plus its direct callers.
+
+Capability enforcement follows the compiled kernel ABI. ABI 16 predates this
+section, so an artifact with no section retains the legacy five-export fallback
+and can still coordinate a main/side-module fork. If an ABI-16 artifact does
+carry the section, its marker is authoritative and malformed, unknown, or
+role-inconsistent claims fail loudly. Starting with ABI 17, the
+role-appropriate bit is mandatory: generic five-export artifacts and binaries
+produced by the older call-graph pass fail with a rebuild diagnostic. This
+threshold ensures that mandatory enforcement and the incompatible artifact
+contract activate in the same ABI-bump commit. Changing the meaning or encoding
+of these capability claims changes fork replay assumptions and must follow the
+ABI-versioning policy.
+
 `ptr` is `i32` on wasm32 user programs and `i64` on wasm64 user programs. The
 tool picks the pointer width from the module's primary memory — a memory64
 memory yields `i64`, anything else yields `i32`.
@@ -167,6 +190,42 @@ This path is covered by `host/test/fork-from-thread.test.ts` (including a second
 fork in the child before exec), `host/test/fork-instrument-coverage.test.ts`
 P-06 (`pthread_create` worker calls `fork`), and K-03
 (`pthread_cleanup_push` handler calls `fork`).
+
+## Fork from a dlopened side module
+
+The supported dynamic-linking shape is a direct main-module `call_indirect`
+into one side-module instance whose call stack reaches `env.fork`:
+
+1. Instrument the main program normally. If it imports Kandelo's dlopen host
+   functions, the tool marks and preserves all possible dynamic indirect-call
+   boundaries.
+2. Instrument the fork-capable side module with `--entry env.fork`. It receives
+   its own fork save buffer and versioned side-entry capability.
+3. The process worker unwinds the side module, then the main module. Fork replay
+   restores dlopen instances at their exact memory and table bases, rewinds the
+   main module, then rewinds the active side module.
+
+The main fork trampoline is captured before side exports enter the symbol
+table, so a later extension cannot interpose the coordinator's `fork` target.
+Failed dlopen attempts may leave non-shrinkable null table gaps; each successful
+archive entry records its exact parent table base, and child replay pads to and
+validates that base.
+
+The loader preserves ordinary independent multi-extension loading. When a
+fork-capable extension participates, it rejects statically visible
+side-to-side function/GOT linkage and side-originated `dlopen`/`dlsym`, because
+an intervening side-module frame would need a third ordered unwind. Opaque
+function pointers passed through main-module memory or the shared table cannot
+currently be attributed to their originating module; using such a pointer to
+create a side A -> side B -> fork path is unsupported and is not yet guaranteed
+to fail before control-flow corruption. A future module-activation protocol is
+required to close that residual. Fork from a pthread into a dlopened side
+module is also unsupported; pthread workers do not install the side-module
+coordinator.
+
+Every participating module still uses the fixed 16 KiB save-buffer limit
+described below. A dynamically allocated side buffer avoids overlap with the
+main control slab but does not make deep/unbounded frame use safe.
 
 ## Save buffer format
 

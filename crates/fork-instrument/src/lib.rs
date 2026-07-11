@@ -15,11 +15,19 @@
 //! - Phase 7: production rollout
 
 use anyhow::{bail, ensure, Context, Result};
+use walrus::RawCustomSection;
 use wasmparser::{Parser, Payload};
 
 pub mod call_graph;
 pub mod instrument;
 pub mod runtime;
+
+/// Versioned artifact claim emitted by `wasm-fork-instrument` and consumed by
+/// the host before it enables cross-module fork coordination.
+pub const FORK_CAPABILITIES_SECTION: &str = "kandelo.wpk_fork.capabilities";
+pub const FORK_CAPABILITIES_VERSION: u8 = 1;
+pub const FORK_CAP_SIDE_ENTRY: u8 = 1 << 0;
+pub const FORK_CAP_DYLINK_MAIN: u8 = 1 << 1;
 
 /// Options controlling instrumentation. Fields will grow as phases
 /// land; a `Default` implementation keeps call sites stable.
@@ -92,10 +100,28 @@ pub fn instrument(input: &[u8], opts: &Options) -> Result<Vec<u8>> {
     // the runtime's own injected functions are not mistaken for
     // fork-path callers. (They can't reach the seed anyway, but the
     // earlier-is-simpler ordering keeps the invariant trivially.)
-    let fork_path = match call_graph::find_import_func(&module, &opts.entry_import) {
+    let entry = call_graph::find_import_func(&module, &opts.entry_import);
+    let fork_path = match entry {
         Some(seed) => call_graph::reaching_closure(&module, seed),
         None => Default::default(),
     };
+
+    // The five wpk_fork_* exports prove only that some instrumentation runtime
+    // was injected. They do not prove which import seeded the transformed call
+    // graph or whether a dlopen-capable main used the conservative dynamic
+    // call_indirect boundary. Emit a separate, versioned claim for exactly the
+    // transformations performed in this invocation so the host can reject
+    // stale or generically instrumented artifacts instead of mis-resuming.
+    let mut fork_capabilities = 0;
+    if entry.is_some() && opts.entry_import == "env.fork" {
+        fork_capabilities |= FORK_CAP_SIDE_ENTRY;
+    }
+    if entry.is_some()
+        && opts.entry_import == "kernel.kernel_fork"
+        && call_graph::has_dynamic_linker_imports(&module)
+    {
+        fork_capabilities |= FORK_CAP_DYLINK_MAIN;
+    }
 
     // Phase 4a: runtime scaffolding. Always injected so the module's
     // exported ABI is stable regardless of whether any caller was
@@ -127,6 +153,20 @@ pub fn instrument(input: &[u8], opts: &Options) -> Result<Vec<u8>> {
     // Phase 4b: structural wrap of each fork-path function's body.
     // No-op when `fork_path` is empty (module doesn't use fork).
     instrument::instrument_functions(&mut module, &runtime, &fork_path, &b1_plan);
+
+    loop {
+        let existing = module
+            .customs
+            .iter()
+            .find(|(_, section)| section.name() == FORK_CAPABILITIES_SECTION)
+            .map(|(id, _)| id);
+        let Some(existing) = existing else { break };
+        module.customs.delete(existing);
+    }
+    module.customs.add(RawCustomSection {
+        name: FORK_CAPABILITIES_SECTION.into(),
+        data: vec![FORK_CAPABILITIES_VERSION, fork_capabilities],
+    });
 
     // Historical phase list (Phase 4b/4c/4d/4e/4f/5/6) was an artefact
     // of guard-dispatch's body-rewriting approach. Post-commit-4 those

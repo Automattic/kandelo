@@ -10,7 +10,14 @@ import type {
   CentralizedThreadInitMessage,
   WorkerToHostMessage,
 } from "./worker-protocol";
-import { DynamicLinker, type LoadedSharedLibrary } from "./dylink";
+import {
+  DynamicLinker,
+  FORK_CAP_DYLINK_MAIN,
+  forkInstrumentRoleAvailable,
+  readForkInstrumentCapabilityClaim,
+  type LoadedSharedLibrary,
+  type SideModuleForkState,
+} from "./dylink";
 import { extractAbiVersion } from "./constants";
 import {
   ABI_SYSCALLS,
@@ -180,6 +187,12 @@ export interface DlopenSupport {
    *  fork-child path AFTER setupChannelBase and BEFORE the wpk_fork
    *  rewind into _start. */
   replayDlopens: () => void;
+  /** Finish the one active side-module unwind after the main image unwinds. */
+  completeSideModuleForkUnwind: () => void;
+  /** Begin the active side-module rewind after fork-child dlopen replay. */
+  beginSideModuleForkRewind: () => void;
+  /** Reject a leaked active side-module identity on a normal main return. */
+  assertNoActiveSideModuleFork: () => void;
 }
 
 /**
@@ -201,15 +214,21 @@ function buildDlopenImports(
   getStackPointer: () => WebAssembly.Global | undefined,
   getInstance: () => WebAssembly.Instance | undefined,
   ptrWidth: 4 | 8,
+  mainHasDylinkForkRole: boolean,
 ): DlopenSupport {
   let linker: DynamicLinker | null = null;
   const loadedLibraries = new Map<string, LoadedSharedLibrary>();
+  let activeSideFork: SideModuleForkState | null = null;
   const decoder = new TextDecoder();
   const encoder = new TextEncoder();
   const n = (v: number | bigint): number => typeof v === "bigint" ? Number(v) : v;
 
   const headOffset = ptrWidth === 8 ? DLOPEN_HEAD_OFFSET_WASM64 : DLOPEN_HEAD_OFFSET_WASM32;
+  const sideForkOffset = ptrWidth === 8
+    ? DLOPEN_ACTIVE_SIDE_FORK_OFFSET_WASM64
+    : DLOPEN_ACTIVE_SIDE_FORK_OFFSET_WASM32;
   const headSlot = forkBufAddr - headOffset;
+  const activeSideForkSlot = forkBufAddr - sideForkOffset;
   const entrySize = ptrWidth === 8 ? DLOPEN_ENTRY_SIZE_WASM64 : DLOPEN_ENTRY_SIZE_WASM32;
 
   const readPtr = (view: DataView, addr: number): number =>
@@ -218,6 +237,7 @@ function buildDlopenImports(
     if (ptrWidth === 8) view.setBigUint64(addr, BigInt(value), true);
     else view.setUint32(addr, value, true);
   };
+  const linkerAllocations = new Map<number, { rawAddr: number; length: number }>();
 
   // The kernel mmap allocator. Shared with the linker, but also used
   // directly by persistArchiveEntry to obtain blocks for the archive.
@@ -245,7 +265,37 @@ function buildDlopenImports(
     if (err || result < 0) {
       throw new Error(`dlopen: mmap(${requested}) failed errno=${err || -result}`);
     }
-    return alignUp(n(result), Math.max(align, 1));
+    const aligned = alignUp(n(result), Math.max(align, 1));
+    linkerAllocations.set(aligned, { rawAddr: n(result), length: requested });
+    return aligned;
+  };
+
+  const deallocateMemory = (addr: number, _size: number): void => {
+    const allocation = linkerAllocations.get(addr);
+    if (!allocation) {
+      throw new Error(`dlopen rollback: unknown allocation 0x${addr.toString(16)}`);
+    }
+    const view = new DataView(memory.buffer);
+    const base = channelOffset;
+    view.setInt32(base + CH_SYSCALL, ABI_SYSCALLS.Munmap, true);
+    view.setBigInt64(base + CH_ARGS + 0 * CH_ARG_SIZE, BigInt(allocation.rawAddr), true);
+    view.setBigInt64(base + CH_ARGS + 1 * CH_ARG_SIZE, BigInt(allocation.length), true);
+    for (let i = 2; i < 6; i++) {
+      view.setBigInt64(base + CH_ARGS + i * CH_ARG_SIZE, 0n, true);
+    }
+
+    const i32 = new Int32Array(memory.buffer);
+    Atomics.store(i32, (base + CH_STATUS) / 4, CHANNEL_STATUS_PENDING);
+    Atomics.notify(i32, (base + CH_STATUS) / 4, 1);
+    while (Atomics.wait(i32, (base + CH_STATUS) / 4, CHANNEL_STATUS_PENDING) === "ok") { /* wait */ }
+
+    const result = Number(view.getBigInt64(base + CH_RETURN, true));
+    const err = view.getUint32(base + CH_ERRNO, true);
+    Atomics.store(i32, (base + CH_STATUS) / 4, CHANNEL_STATUS_IDLE);
+    if (err || result < 0) {
+      throw new Error(`dlopen rollback: munmap failed errno=${err || -result}`);
+    }
+    linkerAllocations.delete(addr);
   };
 
   const getLinker = (): DynamicLinker => {
@@ -275,14 +325,68 @@ function buildDlopenImports(
       }
     }
 
+    const mainModuleSymbols = new Set(globalSymbols.keys());
+    const mainFork = inst?.exports.fork;
+    const mainForkState = inst?.exports.wpk_fork_state;
+    const sideModuleFork = mainHasDylinkForkRole
+      && typeof mainFork === "function"
+      && typeof mainForkState === "function"
+      ? {
+          setActiveFork: (state: SideModuleForkState) => {
+            const persisted = readPtr(new DataView(memory.buffer), activeSideForkSlot);
+            if (activeSideFork || persisted !== 0) {
+              throw new Error(
+                `${state.name}: nested or concurrent side-module fork is unsupported`,
+              );
+            }
+            activeSideFork = state;
+            writePtr(new DataView(memory.buffer), activeSideForkSlot, state.forkBufAddr);
+          },
+          clearActiveFork: (state: SideModuleForkState) => {
+            const view = new DataView(memory.buffer);
+            const persisted = readPtr(view, activeSideForkSlot);
+            if (
+              !activeSideFork
+              || activeSideFork.name !== state.name
+              || activeSideFork.instance !== state.instance
+              || activeSideFork.forkBufAddr !== state.forkBufAddr
+              || persisted !== state.forkBufAddr
+            ) {
+              throw new Error(`${state.name}: stale side-module fork identity during rewind`);
+            }
+            activeSideFork = null;
+            writePtr(view, activeSideForkSlot, 0);
+          },
+          invokeMainFork: (expectedStateAfter: 0 | 1): number => {
+            const result = Number((mainFork as () => number)());
+            const actualState = Number((mainForkState as () => number)());
+            if (actualState !== expectedStateAfter) {
+              throw new Error(
+                `main-module fork transition ended in state ${actualState}; ` +
+                  `expected ${expectedStateAfter}`,
+              );
+            }
+            return result;
+          },
+        }
+      : undefined;
+
     linker = new DynamicLinker({
       memory,
       table,
       stackPointer: sp,
       allocateMemory,
+      deallocateMemory,
       globalSymbols,
       got: new Map(),
       loadedLibraries,
+      mainModuleSymbols,
+      sideModuleFork,
+      sideModuleForkUnavailableReason: !mainHasDylinkForkRole
+        ? "main module lacks the versioned dlopen-main fork capability; rebuild it with the current wasm-fork-instrument"
+        : sideModuleFork
+          ? undefined
+          : "main module does not export the fork trampoline and wpk_fork_state required for side-module fork",
     });
     return linker;
   };
@@ -291,7 +395,13 @@ function buildDlopenImports(
   // entry is one mmap block: struct, then name UTF-8 (padded to 8-byte
   // alignment), then the side-module wasm bytes. Pointers are absolute
   // — fork's memcpy preserves the parent's address space.
-  const persistArchiveEntry = (name: string, bytes: Uint8Array, memoryBase: number): void => {
+  const persistArchiveEntry = (
+    name: string,
+    bytes: Uint8Array,
+    memoryBase: number,
+    tableBase: number,
+    sideForkBufAddr: number,
+  ): void => {
     const nameBytes = encoder.encode(name);
     const nameLen = nameBytes.length;
     const nameAligned = (nameLen + 7) & ~7;
@@ -309,6 +419,8 @@ function buildDlopenImports(
       view.setBigUint64(entry + 24, BigInt(bytesPtr), true);
       view.setBigUint64(entry + 32, BigInt(bytes.length), true);
       view.setBigUint64(entry + 40, BigInt(memoryBase), true);
+      view.setBigUint64(entry + 48, BigInt(tableBase), true);
+      view.setBigUint64(entry + 56, BigInt(sideForkBufAddr), true);
     } else {
       view.setUint32(entry + 0, 0, true);
       view.setUint32(entry + 4, namePtr, true);
@@ -316,6 +428,8 @@ function buildDlopenImports(
       view.setUint32(entry + 12, bytesPtr, true);
       view.setUint32(entry + 16, bytes.length, true);
       view.setUint32(entry + 20, memoryBase, true);
+      view.setUint32(entry + 24, tableBase, true);
+      view.setUint32(entry + 28, sideForkBufAddr, true);
     }
 
     new Uint8Array(memory.buffer, namePtr, nameLen).set(nameBytes);
@@ -349,7 +463,14 @@ function buildDlopenImports(
     const lk = getLinker();
 
     while (cursor !== 0) {
-      let next: number, namePtr: number, nameLen: number, bytesPtr: number, bytesLen: number, memoryBase: number;
+      let next: number;
+      let namePtr: number;
+      let nameLen: number;
+      let bytesPtr: number;
+      let bytesLen: number;
+      let memoryBase: number;
+      let tableBase: number;
+      let sideForkBufAddr: number;
       if (ptrWidth === 8) {
         next = Number(view.getBigUint64(cursor + 0, true));
         namePtr = Number(view.getBigUint64(cursor + 8, true));
@@ -357,6 +478,8 @@ function buildDlopenImports(
         bytesPtr = Number(view.getBigUint64(cursor + 24, true));
         bytesLen = Number(view.getBigUint64(cursor + 32, true));
         memoryBase = Number(view.getBigUint64(cursor + 40, true));
+        tableBase = Number(view.getBigUint64(cursor + 48, true));
+        sideForkBufAddr = Number(view.getBigUint64(cursor + 56, true));
       } else {
         next = view.getUint32(cursor + 0, true);
         namePtr = view.getUint32(cursor + 4, true);
@@ -364,6 +487,8 @@ function buildDlopenImports(
         bytesPtr = view.getUint32(cursor + 12, true);
         bytesLen = view.getUint32(cursor + 16, true);
         memoryBase = view.getUint32(cursor + 20, true);
+        tableBase = view.getUint32(cursor + 24, true);
+        sideForkBufAddr = view.getUint32(cursor + 28, true);
       }
 
       // Copy name + bytes out of shared memory before passing to
@@ -376,12 +501,92 @@ function buildDlopenImports(
       const bytesCopy = new Uint8Array(new Uint8Array(memory.buffer, bytesPtr, bytesLen));
 
       // DynamicLinker.dlopenSync returns 0 on error, >0 on success.
-      const handle = lk.dlopenSync(name, bytesCopy, { memoryBase });
+      const handle = lk.dlopenSync(name, bytesCopy, {
+        memoryBase,
+        tableBase,
+        forkBufAddr: sideForkBufAddr || undefined,
+      });
       if (handle === 0) {
         throw new Error(`dlopen(${name}): ${lk.dlerror() || "unknown"}`);
       }
+      if (sideForkBufAddr !== 0) {
+        const loaded = loadedLibraries.get(name);
+        if (!loaded || loaded.forkBufAddr !== sideForkBufAddr) {
+          throw new Error(`${name}: fork replay restored a mismatched save buffer`);
+        }
+      }
 
       cursor = next;
+    }
+  };
+
+  const findActiveSideFork = (): SideModuleForkState | null => {
+    const persisted = readPtr(new DataView(memory.buffer), activeSideForkSlot);
+    if (persisted === 0) {
+      if (activeSideFork) {
+        throw new Error(`${activeSideFork.name}: active side fork lost its persisted identity`);
+      }
+      return null;
+    }
+    if (activeSideFork) {
+      if (activeSideFork.forkBufAddr !== persisted) {
+        throw new Error(`${activeSideFork.name}: active side fork buffer identity changed`);
+      }
+      return activeSideFork;
+    }
+
+    const matches = Array.from(loadedLibraries.values()).filter(
+      (loaded) => loaded.forkBufAddr === persisted,
+    );
+    if (matches.length !== 1) {
+      throw new Error(
+        `fork replay could not resolve active side-module buffer 0x${persisted.toString(16)}`,
+      );
+    }
+    const loaded = matches[0]!;
+    activeSideFork = {
+      name: loaded.name,
+      instance: loaded.instance,
+      forkBufAddr: persisted,
+    };
+    return activeSideFork;
+  };
+
+  const sideForkState = (state: SideModuleForkState): number =>
+    Number((state.instance.exports.wpk_fork_state as () => number)());
+
+  const completeSideModuleForkUnwind = (): void => {
+    const state = findActiveSideFork();
+    if (!state) return;
+    if (sideForkState(state) !== 1) {
+      throw new Error(`${state.name}: expected UNWINDING before side-module unwind completion`);
+    }
+    (state.instance.exports.wpk_fork_unwind_end as () => void)();
+    if (sideForkState(state) !== 0) {
+      throw new Error(`${state.name}: side-module unwind did not return to NORMAL`);
+    }
+  };
+
+  const beginSideModuleForkRewind = (): void => {
+    const state = findActiveSideFork();
+    if (!state) return;
+    if (sideForkState(state) !== 0) {
+      throw new Error(`${state.name}: expected NORMAL before side-module rewind`);
+    }
+    (state.instance.exports.wpk_fork_rewind_begin as (addr: number) => void)(
+      state.forkBufAddr,
+    );
+    if (sideForkState(state) !== 2) {
+      throw new Error(`${state.name}: side-module rewind did not enter REWINDING`);
+    }
+  };
+
+  const assertNoActiveSideModuleFork = (): void => {
+    const persisted = readPtr(new DataView(memory.buffer), activeSideForkSlot);
+    if (activeSideFork || persisted !== 0) {
+      throw new Error(
+        `${activeSideFork?.name ?? "unknown side module"}: main image returned with an active side-module fork`,
+      );
     }
   };
 
@@ -408,7 +613,13 @@ function buildDlopenImports(
         if (!loaded) {
           throw new Error(`__wasm_dlopen(${name}): handle=${handle} but loadedLibraries lookup failed`);
         }
-        persistArchiveEntry(name, bytesCopy, loaded.memoryBase);
+        persistArchiveEntry(
+          name,
+          bytesCopy,
+          loaded.memoryBase,
+          loaded.tableBase,
+          loaded.forkBufAddr ?? 0,
+        );
       }
       return handle;
     },
@@ -437,7 +648,13 @@ function buildDlopenImports(
     },
   };
 
-  return { imports, replayDlopens };
+  return {
+    imports,
+    replayDlopens,
+    completeSideModuleForkUnwind,
+    beginSideModuleForkRewind,
+    assertNoActiveSideModuleFork,
+  };
 }
 
 /**
@@ -694,8 +911,10 @@ const FORK_BUF_SIZE = FORK_SAVE_BUFFER_SIZE;
 // wpk_fork rewind.
 const DLOPEN_HEAD_OFFSET_WASM32 = 12;
 const DLOPEN_HEAD_OFFSET_WASM64 = 24;
-const DLOPEN_ENTRY_SIZE_WASM32 = 24;
-const DLOPEN_ENTRY_SIZE_WASM64 = 48;
+const DLOPEN_ACTIVE_SIDE_FORK_OFFSET_WASM32 = 16;
+const DLOPEN_ACTIVE_SIDE_FORK_OFFSET_WASM64 = 32;
+const DLOPEN_ENTRY_SIZE_WASM32 = 32;
+const DLOPEN_ENTRY_SIZE_WASM64 = 64;
 
 const WPK_FORK_EXPORTS = [
   "wpk_fork_unwind_begin",
@@ -878,6 +1097,11 @@ export async function centralizedWorkerMain(
     // and reject stale legacy fork artifacts before they can run.
     const moduleExports = WebAssembly.Module.exports(module);
     const hasForkInstrumentation = hasCompleteForkInstrumentation(moduleExports, pid);
+    const forkCapabilityClaim = readForkInstrumentCapabilityClaim(module);
+    const hasDylinkForkRole = forkInstrumentRoleAvailable(
+      forkCapabilityClaim,
+      FORK_CAP_DYLINK_MAIN,
+    );
     // Fork state — captured by kernel_fork closure
     let forkResult = 0;
     const forkBufAddr = initData.forkBufAddr ?? channelOffset - FORK_BUF_SIZE;
@@ -916,6 +1140,7 @@ export async function centralizedWorkerMain(
         () => processInstance?.exports.__stack_pointer as WebAssembly.Global | undefined,
         () => processInstance ?? undefined,
         ptrWidth,
+        hasDylinkForkRole,
       );
       const importObject = buildImportObject(module, memory, kernelImports, channelOffset, dlopenSupport.imports,
         () => processInstance ?? undefined, ptrWidth);
@@ -1001,6 +1226,7 @@ export async function centralizedWorkerMain(
               }
               replayedForkChildDlopens = true;
             }
+            dlopenSupport.beginSideModuleForkRewind();
             needsRewind = false;
           }
 
@@ -1020,6 +1246,7 @@ export async function centralizedWorkerMain(
           if (forkState === 1) {
             // Unwind completed (fork) — finalize and send SYS_FORK.
             unwindEnd();
+            dlopenSupport.completeSideModuleForkUnwind();
 
             // Send SYS_FORK through the channel now that memory has the
             // fork save buffer populated (saved_globals + frames).
@@ -1033,6 +1260,7 @@ export async function centralizedWorkerMain(
           }
 
           // Normal return — program finished
+          dlopenSupport.assertNoActiveSideModuleFork();
           if (kernelExitStatus === null) {
             kernelImports.kernel_exit(0);
             exitCode = kernelExitStatus ?? 0;
@@ -1068,6 +1296,7 @@ export async function centralizedWorkerMain(
         () => processInstance?.exports.__stack_pointer as WebAssembly.Global | undefined,
         () => processInstance ?? undefined,
         ptrWidth,
+        false,
       );
       const importObject = buildImportObject(module, memory, kernelImports, channelOffset, dlopenSupport.imports,
         () => processInstance ?? undefined, ptrWidth);
