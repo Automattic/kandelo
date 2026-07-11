@@ -9,7 +9,7 @@ export const COREUTILS_NAMES = [
   "chcon", "chgrp", "chmod", "chown", "chroot", "cksum", "comm", "cp",
   "csplit", "cut", "date", "dd", "df", "dir", "dircolors", "dirname",
   "du", "echo", "env", "expand", "expr", "factor", "false", "fmt",
-  "fold", "groups", "head", "hostid", "id", "install", "join", "link",
+  "fold", "groups", "head", "hostid", "id", "install", "join", "kill", "link",
   "ln", "logname", "ls", "md5sum", "mkdir", "mkfifo", "mknod", "mktemp",
   "mv", "nice", "nl", "nohup", "nproc", "numfmt", "od", "paste",
   "pathchk", "pr", "printenv", "printf", "ptx", "pwd", "readlink",

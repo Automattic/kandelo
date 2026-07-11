@@ -130,6 +130,7 @@ aliases = [
   "/usr/bin/id", "/bin/id",
   "/usr/bin/install", "/bin/install",
   "/usr/bin/join", "/bin/join",
+  "/usr/bin/kill", "/bin/kill",
   "/usr/bin/link", "/bin/link",
   "/usr/bin/ln", "/bin/ln",
   "/usr/bin/logname", "/bin/logname",
