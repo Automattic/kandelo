@@ -22,9 +22,9 @@
 //! Like `/dev/fb0` and `/dev/input/mice`, `/dev/dsp` is single-open. A
 //! second `open` from a different pid is `EBUSY`. Re-opens by the
 //! current owner are accepted (matches the typical OSS exclusive-grab
-//! model). Owner is released when the process closes its last `/dev/dsp`
-//! fd, or exits, or `execve`s — at which point the ring is also
-//! cleared so a successor open starts from silence.
+//! model). A non-CLOEXEC fd retains ownership and queued samples across
+//! `execve`; last close or process exit releases ownership and clears the
+//! ring so a successor open starts from silence.
 //!
 //! ## Backpressure
 //!
@@ -127,8 +127,8 @@ pub fn pending_bytes() -> usize {
     ring().len()
 }
 
-/// Drop all buffered samples. Called on process exit / exec by the
-/// owner, and by `SNDCTL_DSP_RESET`.
+/// Drop all buffered samples. Called when the owner exits or closes its last
+/// fd, and by `SNDCTL_DSP_RESET`.
 pub fn reset() {
     ring().clear();
 }

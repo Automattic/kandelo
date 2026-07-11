@@ -299,6 +299,50 @@ impl SignalState {
         Ok(old)
     }
 
+    /// Apply exec disposition rules without rebuilding pending-signal state.
+    ///
+    /// Caught dispositions reset to default and ignored dispositions remain
+    /// ignored. All per-action flags and masks belong to the old image and are
+    /// cleared, including metadata attached to SIG_DFL and SIG_IGN entries.
+    /// The process blocked mask, pending bitset, RT queue multiplicity, and
+    /// queued siginfo metadata deliberately remain untouched.
+    pub fn reset_dispositions_for_exec(&mut self) {
+        for action in self.actions.iter_mut().skip(1) {
+            let handler = if matches!(action.handler, SignalHandler::Ignore) {
+                SignalHandler::Ignore
+            } else {
+                SignalHandler::Default
+            };
+            *action = SignalAction {
+                handler,
+                flags: 0,
+                mask: 0,
+            };
+        }
+    }
+
+    /// Promote the calling pthread's signal mask and directed pending queue
+    /// when exec collapses a multithreaded process to that one thread.
+    pub fn promote_exec_thread(&mut self, thread: PerThreadSignalState) {
+        self.blocked = thread.blocked;
+        self.pending |= thread.pending;
+        for entry in thread.rt_queue {
+            if entry.signum >= SIGRTMIN {
+                self.rt_queue.push_back(entry);
+            } else if let Some(existing) = self
+                .rt_queue
+                .iter_mut()
+                .find(|queued| queued.signum == entry.signum)
+            {
+                // Standard signals coalesce. Prefer the calling thread's
+                // siginfo because it was specifically directed there.
+                *existing = entry;
+            } else {
+                self.rt_queue.push_back(entry);
+            }
+        }
+    }
+
     /// Mark a signal as pending (via kill/raise — SI_USER).
     /// Standard signals (1-31) are coalesced. RT signals (32-63) are queued.
     /// Bit position = signum - 1 (musl convention: signal N uses bit N-1).
@@ -688,6 +732,53 @@ mod tests {
         let current = state.get_action(SIGINT);
         assert_eq!(current.flags, wasm_posix_shared::signal::SA_RESTART);
         assert_eq!(current.mask, 0x04);
+    }
+
+    #[test]
+    fn test_exec_resets_action_metadata_and_preserves_only_ignore() {
+        let mut state = SignalState::new();
+        state
+            .set_action(
+                SIGINT,
+                SignalAction {
+                    handler: SignalHandler::Handler(42),
+                    flags: wasm_posix_shared::signal::SA_RESTART,
+                    mask: 0x04,
+                },
+            )
+            .unwrap();
+        state
+            .set_action(
+                SIGTERM,
+                SignalAction {
+                    handler: SignalHandler::Ignore,
+                    flags: wasm_posix_shared::signal::SA_RESTART,
+                    mask: 0x08,
+                },
+            )
+            .unwrap();
+        state.actions[wasm_posix_shared::signal::SIGCHLD as usize] = SignalAction {
+            handler: SignalHandler::Default,
+            flags: wasm_posix_shared::signal::SA_NOCLDWAIT,
+            mask: 0x10,
+        };
+
+        state.reset_dispositions_for_exec();
+
+        let caught = state.get_action(SIGINT);
+        assert!(matches!(caught.handler, SignalHandler::Default));
+        assert_eq!(caught.flags, 0);
+        assert_eq!(caught.mask, 0);
+
+        let ignored = state.get_action(SIGTERM);
+        assert!(matches!(ignored.handler, SignalHandler::Ignore));
+        assert_eq!(ignored.flags, 0);
+        assert_eq!(ignored.mask, 0);
+
+        let defaulted = state.get_action(wasm_posix_shared::signal::SIGCHLD);
+        assert!(matches!(defaulted.handler, SignalHandler::Default));
+        assert_eq!(defaulted.flags, 0);
+        assert_eq!(defaulted.mask, 0);
     }
 
     #[test]

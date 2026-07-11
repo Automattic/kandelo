@@ -679,6 +679,9 @@ impl StdioConfig {
     }
 }
 
+pub(crate) const PROCESS_METADATA_ARGV: u32 = 0;
+pub(crate) const PROCESS_METADATA_ENVIRONMENT: u32 = 1;
+
 impl Process {
     /// Create a new process with captured, pipe-backed stdio.
     pub fn new(pid: u32) -> Self {
@@ -1003,6 +1006,32 @@ impl Process {
         }
         out
     }
+
+    fn metadata_vector_mut(&mut self, kind: u32) -> Result<&mut Vec<Vec<u8>>, Errno> {
+        match kind {
+            PROCESS_METADATA_ARGV => Ok(&mut self.argv),
+            PROCESS_METADATA_ENVIRONMENT => Ok(&mut self.environ),
+            _ => Err(Errno::EINVAL),
+        }
+    }
+
+    pub(crate) fn clear_metadata(&mut self, kind: u32) -> Result<(), Errno> {
+        self.metadata_vector_mut(kind)?.clear();
+        Ok(())
+    }
+
+    pub(crate) fn push_metadata_entry(&mut self, kind: u32, entry: &[u8]) -> Result<(), Errno> {
+        let mut owned = Vec::new();
+        owned
+            .try_reserve_exact(entry.len())
+            .map_err(|_| Errno::ENOMEM)?;
+        owned.extend_from_slice(entry);
+
+        let entries = self.metadata_vector_mut(kind)?;
+        entries.try_reserve(1).map_err(|_| Errno::ENOMEM)?;
+        entries.push(owned);
+        Ok(())
+    }
 }
 
 /// A `HostIO` impl that returns sensible defaults for the methods our
@@ -1230,6 +1259,30 @@ mod tests {
     fn fork_count_starts_at_zero() {
         let proc = Process::new(1);
         assert_eq!(proc.fork_count(), 0);
+    }
+
+    #[test]
+    fn metadata_entry_transport_preserves_empty_values_and_empty_environment() {
+        let mut proc = Process::new(77);
+        proc.argv = vec![b"old".to_vec()];
+        proc.environ = vec![b"OLD=value".to_vec()];
+
+        proc.clear_metadata(PROCESS_METADATA_ARGV).unwrap();
+        proc.push_metadata_entry(PROCESS_METADATA_ARGV, b"new")
+            .unwrap();
+        proc.push_metadata_entry(PROCESS_METADATA_ARGV, b"")
+            .unwrap();
+        proc.clear_metadata(PROCESS_METADATA_ENVIRONMENT).unwrap();
+
+        assert_eq!(proc.argv, vec![b"new".to_vec(), Vec::new()]);
+        assert!(proc.environ.is_empty());
+    }
+
+    #[test]
+    fn metadata_entry_transport_rejects_unknown_vector_kind() {
+        let mut proc = Process::new(78);
+        assert_eq!(proc.clear_metadata(99), Err(Errno::EINVAL));
+        assert_eq!(proc.push_metadata_entry(99, b"value"), Err(Errno::EINVAL));
     }
 
     #[test]

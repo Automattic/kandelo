@@ -27,6 +27,7 @@ import type { PlatformIO } from "../src/types";
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
 const MAX_PAGES = 16384;
+const SIGSEGV = 11;
 const CH_TOTAL_SIZE = 72 + 65536;
 
 function createSharedProcessMemory(
@@ -389,23 +390,16 @@ async function runOnMainThread(options: RunProgramOptions): Promise<RunProgramRe
 
         return [childChannelOffset];
       },
-      onExec: async (execPid, path, argv, envp) => {
+      onExec: async (execPid, path, argv, envp, callerTid) => {
         const wasmPath = options.execPrograms?.get(path);
         if (!wasmPath) return -2;
+        if (!kernelWorker.supportsExecMetadataReplacement()) return -38;
 
         const newProgramBytes = loadProgramWasm(wasmPath);
         const newPtrWidth = detectPtrWidth(newProgramBytes);
-
-        const setupResult = kernelWorker.kernelExecSetup(execPid);
-        if (setupResult < 0) return setupResult;
-
-        kernelWorker.prepareProcessForExec(execPid);
-
-        const oldWorker = workers.get(execPid);
-        if (oldWorker) {
-          await oldWorker.terminate().catch(() => {});
-          workers.delete(execPid);
-        }
+        const sourcePtrWidth = processPtrWidths.get(execPid) ?? newPtrWidth;
+        const metadataResult = kernelWorker.validateExecMetadata(argv, envp, sourcePtrWidth);
+        if (metadataResult < 0) return metadataResult;
 
         const {
           memory: newMemory,
@@ -421,45 +415,97 @@ async function runOnMainThread(options: RunProgramOptions): Promise<RunProgramRe
         );
         const newChannelOffset = newLayout.channelOffset;
 
-        kernelWorker.registerProcess(execPid, newMemory, [newChannelOffset], {
-          skipKernelCreate: true,
-          ptrWidth: newPtrWidth,
-          brkBase: newLayout.brkBase,
-          mmapBase: newLayout.mmapBase,
-          maxAddr: newLayout.maxAddr,
-        });
-        processProgramBytes.set(execPid, newProgramBytes);
-        processLayouts.set(execPid, newLayout);
-        threadAllocators.set(execPid, newThreadAllocator);
-        processPtrWidths.set(execPid, newPtrWidth);
-        forkReplayContexts.delete(execPid);
+        const prepareResult = kernelWorker.kernelExecPrepare(execPid, callerTid);
+        if (prepareResult < 0) return prepareResult;
+        const addressSpaceResult = kernelWorker.prepareAddressSpaceForExec(execPid);
+        if (addressSpaceResult < 0) return addressSpaceResult;
+        let replacementWorker: ReturnType<NodeWorkerAdapter["createWorker"]> | undefined;
+        try {
+          const setupResult = kernelWorker.kernelExecSetup(execPid, callerTid);
+          if (setupResult < 0) return setupResult;
+          kernelWorker.prepareProcessForExec(execPid);
 
-        const initData: CentralizedWorkerInitMessage = {
-          type: "centralized_init",
-          pid: execPid,
-          ppid: 0,
-          programBytes: newProgramBytes,
-          memory: newMemory,
-          channelOffset: newChannelOffset,
-          argv,
-          env: envp,
-          ptrWidth: newPtrWidth,
-        };
+          const finalizeResult = kernelWorker.finalizeAddressSpaceForExec(execPid);
+          if (finalizeResult < 0) {
+            throw new Error("failed to detach the discarded address space");
+          }
 
-        const newWorker = workerAdapter.createWorker(initData);
-        workers.set(execPid, newWorker);
-        newWorker.on("error", (err: Error) => {
-          console.error(`[exec] worker error for pid ${execPid}:`, err);
-        });
+          const oldWorker = workers.get(execPid);
+          if (oldWorker) {
+            await oldWorker.terminate().catch(() => {});
+            workers.delete(execPid);
+          }
+          if (kernelWorker.finalizeExecHandoffTermination(execPid) > 0) return 0;
 
-        return 0;
+          kernelWorker.registerProcess(execPid, newMemory, [newChannelOffset], {
+            skipKernelCreate: true,
+            ptrWidth: newPtrWidth,
+            metadataPtrWidth: sourcePtrWidth,
+            brkBase: newLayout.brkBase,
+            mmapBase: newLayout.mmapBase,
+            maxAddr: newLayout.maxAddr,
+            argv,
+            env: envp,
+          });
+          processProgramBytes.set(execPid, newProgramBytes);
+          processLayouts.set(execPid, newLayout);
+          threadAllocators.set(execPid, newThreadAllocator);
+          processPtrWidths.set(execPid, newPtrWidth);
+          forkReplayContexts.delete(execPid);
+
+          const initData: CentralizedWorkerInitMessage = {
+            type: "centralized_init",
+            pid: execPid,
+            ppid: 0,
+            programBytes: newProgramBytes,
+            memory: newMemory,
+            channelOffset: newChannelOffset,
+            argv,
+            env: envp,
+            ptrWidth: newPtrWidth,
+          };
+
+          replacementWorker = workerAdapter.createWorker(initData);
+          workers.set(execPid, replacementWorker);
+          replacementWorker.on("error", (err: Error) => {
+            console.error(`[exec] worker error for pid ${execPid}:`, err);
+          });
+          kernelWorker.finishProcessExecHandoff(execPid);
+          return 0;
+        } catch (err) {
+          try { kernelWorker.prepareProcessForExec(execPid); } catch { /* best-effort */ }
+          if (replacementWorker && workers.get(execPid) !== replacementWorker) {
+            await replacementWorker.terminate().catch(() => {});
+          }
+          const currentWorker = workers.get(execPid);
+          if (currentWorker) {
+            await currentWorker.terminate().catch(() => {});
+            workers.delete(execPid);
+          }
+          try { kernelWorker.notifyHostProcessCrashed(execPid, SIGSEGV); } catch { /* best-effort */ }
+          try { kernelWorker.deactivateProcess(execPid); } catch { /* best-effort */ }
+          processProgramBytes.delete(execPid);
+          processLayouts.delete(execPid);
+          threadAllocators.delete(execPid);
+          processPtrWidths.delete(execPid);
+          forkReplayContexts.delete(execPid);
+          const message = err instanceof Error ? err.message : String(err);
+          stderr += `[exec] post-commit transition failed: ${message}\n`;
+          if (execPid === pid) resolveExit(128 + SIGSEGV);
+          return 0;
+        }
       },
       onClone: async (clonePid, tid, fnPtr, argPtr, stackPtr, tlsPtr, ctidPtr, memory) => {
         const threadAllocator = threadAllocators.get(clonePid);
         if (!threadAllocator) throw new Error(`Unknown thread allocator for pid ${clonePid}`);
         const clonePtrWidth = processPtrWidths.get(clonePid) ?? ptrWidth;
         const alloc = threadAllocator.allocate(memory);
-        kernelWorker.addChannel(clonePid, alloc.channelOffset, tid, fnPtr, argPtr);
+        try {
+          kernelWorker.addChannel(clonePid, alloc.channelOffset, tid, fnPtr, argPtr, memory);
+        } catch (err) {
+          threadAllocator.free(alloc.basePage);
+          throw err;
+        }
 
         const threadInitData: CentralizedThreadInitMessage = {
           type: "centralized_thread_init",

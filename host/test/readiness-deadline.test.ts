@@ -82,7 +82,7 @@ describe("finite readiness deadlines", () => {
     const worker: any = Object.assign(Object.create(CentralizedKernelWorker.prototype), {
       processes: new Map([[channel.pid, { channels: [channel] }]]),
       pendingPollRetries: new Map(),
-      pendingSelectRetries: new Map([[channel.channelOffset, entry]]),
+      pendingSelectRetries: new Map([[channel, entry]]),
       pendingPipeReaders: new Map(),
       pendingPipeWriters: new Map(),
       wakeScheduled: false,
@@ -101,7 +101,7 @@ describe("finite readiness deadlines", () => {
     expect(earlyFallback).not.toHaveBeenCalled();
     expect(worker.handlePselect6).toHaveBeenCalledOnce();
     expect(worker.handlePselect6).toHaveBeenCalledWith(channel, entry.origArgs);
-    expect(worker.pendingSelectRetries.has(channel.channelOffset)).toBe(false);
+    expect(worker.pendingSelectRetries.has(channel)).toBe(false);
     expect(worker.wakeAllBlockedRetries).toHaveBeenCalledOnce();
   });
 });

@@ -6,7 +6,7 @@
  * `sendSignalToProcess` / `notifyPipeReadable` iterate `pendingPollRetries`
  * and, for each matching entry, delete it and synchronously `retrySyscall`.
  * A blocked `accept()` re-runs, returns EAGAIN, and re-registers under the
- * SAME `channelOffset` key. A raw `for..of` over the live Map revisits the
+ * SAME channel key. A raw `for..of` over the live Map revisits the
  * re-inserted entry forever (JS Map iterators are not snapshots), spinning
  * the single kernel-worker thread and wedging the whole machine.
  *
@@ -61,7 +61,7 @@ describe("signal delivery to a process blocked in accept()", () => {
 
     worker.processes.set(targetPid, { channels: [channel] });
 
-    // The accept()'s parked-retry entry, keyed by channelOffset (matches
+    // The accept()'s parked-retry entry, keyed by exact channel (matches
     // handleBlockingRetry's registration for SYS_ACCEPT).
     const makeEntry = () => ({
       timer: null,
@@ -69,7 +69,7 @@ describe("signal delivery to a process blocked in accept()", () => {
       pipeIndices: [],
       acceptIndices: [7],
     });
-    worker.pendingPollRetries.set(channelOffset, makeEntry());
+    worker.pendingPollRetries.set(channel, makeEntry());
 
     // Model accept() re-parking: every retry re-inserts the SAME key, exactly
     // as the real EAGAIN path does. Cap the re-insertions so a *regressed*
@@ -79,7 +79,7 @@ describe("signal delivery to a process blocked in accept()", () => {
     worker.retrySyscall = vi.fn(() => {
       retryCount++;
       if (retryCount < 5000) {
-        worker.pendingPollRetries.set(channelOffset, makeEntry());
+        worker.pendingPollRetries.set(channel, makeEntry());
       }
     });
 
@@ -103,12 +103,12 @@ describe("signal delivery to a process blocked in accept()", () => {
     worker.scheduleWakeBlockedRetries = () => {};
 
     const makeEntry = () => ({ timer: null, channel, pipeIndices: [pipeIdx], acceptIndices: [] });
-    worker.pendingPollRetries.set(channelOffset, makeEntry());
+    worker.pendingPollRetries.set(channel, makeEntry());
 
     let retryCount = 0;
     worker.retrySyscall = vi.fn(() => {
       retryCount++;
-      if (retryCount < 5000) worker.pendingPollRetries.set(channelOffset, makeEntry());
+      if (retryCount < 5000) worker.pendingPollRetries.set(channel, makeEntry());
     });
 
     worker.notifyPipeReadable(pipeIdx);
