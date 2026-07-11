@@ -57,6 +57,9 @@ The current constituent branch remains ABI 16. Its runtime contains the
 ABI-17 enforcement path, but that path is intentionally inactive until the
 aggregate integration change performs the single ABI 16-to-17 reconciliation,
 bumps `ABI_VERSION`, and regenerates the snapshot in that same commit.
+For the same reason, `kernel_get_process_exit_signal` is an optional runtime
+probe on ABI 16 rather than a required host-adapter export. Requiring it belongs
+in that ABI-17 reconciliation, not under the existing ABI number.
 
 Pure internal refactors (renaming a kernel-side function, reorganizing
 a source file, tightening a bound in a non-ABI type) are *not* ABI
