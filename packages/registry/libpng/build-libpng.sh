@@ -21,21 +21,37 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
-SRC_DIR="$SCRIPT_DIR/libpng-src"
+
+# shellcheck source=/dev/null
+source "$REPO_ROOT/sdk/activate.sh"
 
 # --- Inputs from resolver, with legacy fallbacks ---
 LIBPNG_VERSION="${WASM_POSIX_DEP_VERSION:-${LIBPNG_VERSION:-1.6.43}}"
 INSTALL_DIR="${WASM_POSIX_DEP_OUT_DIR:-$SCRIPT_DIR/libpng-install}"
+WORK_DIR="${WASM_POSIX_DEP_WORK_DIR:-$SCRIPT_DIR}"
+TARGET_ARCH="${WASM_POSIX_DEP_TARGET_ARCH:-wasm32}"
 SOURCE_URL="${WASM_POSIX_DEP_SOURCE_URL:-https://download.sourceforge.net/libpng/libpng-${LIBPNG_VERSION}.tar.xz}"
 SOURCE_SHA256="${WASM_POSIX_DEP_SOURCE_SHA256:-}"
+
+if [ "$TARGET_ARCH" != "wasm32" ]; then
+    echo "ERROR: libpng is currently packaged for wasm32 only, got $TARGET_ARCH" >&2
+    exit 2
+fi
+
+TOOL_PREFIX="wasm32posix"
+CC="${TOOL_PREFIX}-cc"
+AR="${TOOL_PREFIX}-ar"
+RANLIB="${TOOL_PREFIX}-ranlib"
+SRC_DIR="$WORK_DIR/libpng-src"
+SOURCE_MARKER="$SRC_DIR/.kandelo-libpng-source"
 
 # autoconf bakes --prefix into the Makefile. A rerun from a different
 # INSTALL_DIR would install into the wrong path, so always build in a
 # fresh dir rather than reusing a stale libpng-build/.
-BUILD_DIR="$SCRIPT_DIR/libpng-build"
+BUILD_DIR="$WORK_DIR/libpng-build"
 
-if ! command -v wasm32posix-cc &>/dev/null; then
-    echo "ERROR: wasm32posix-cc not found. Run 'npm link' in sdk/ first." >&2
+if ! command -v "$CC" &>/dev/null; then
+    echo "ERROR: $CC not found after sourcing sdk/activate.sh." >&2
     exit 1
 fi
 
@@ -43,6 +59,7 @@ fi
 # Resolver surfaces the direct-dep install path via contract env var.
 # Legacy mode falls back to the sysroot artifact.
 SYSROOT="${WASM_POSIX_SYSROOT:-$REPO_ROOT/sysroot}"
+export WASM_POSIX_SYSROOT="$SYSROOT"
 ZLIB_PREFIX="${WASM_POSIX_DEP_ZLIB_DIR:-}"
 if [ -z "$ZLIB_PREFIX" ]; then
     if [ -f "$SYSROOT/lib/libz.a" ]; then
@@ -54,9 +71,17 @@ if [ -z "$ZLIB_PREFIX" ]; then
 fi
 
 # --- Fetch + verify source ---
+expected_marker="$(printf '%s\n%s\n%s\n' "$LIBPNG_VERSION" "$SOURCE_URL" "$SOURCE_SHA256")"
+if [ -d "$SRC_DIR" ] && [ "$(cat "$SOURCE_MARKER" 2>/dev/null || true)" != "$expected_marker" ]; then
+    echo "==> Existing libpng source does not match requested version/source; cleaning..."
+    rm -rf "$SRC_DIR"
+fi
+
 if [ ! -d "$SRC_DIR" ]; then
     echo "==> Downloading libpng $LIBPNG_VERSION..."
-    TARBALL="/tmp/libpng-${LIBPNG_VERSION}.tar.xz"
+    tmpdir="$(mktemp -d "${TMPDIR:-/tmp}/kandelo-libpng-src.XXXXXX")"
+    trap 'rm -rf "$tmpdir"' EXIT
+    TARBALL="$tmpdir/libpng-${LIBPNG_VERSION}.tar.xz"
     curl --retry 10 --retry-delay 5 --retry-max-time 300 --retry-all-errors -fsSL "$SOURCE_URL" -o "$TARBALL"
     if [ -n "$SOURCE_SHA256" ]; then
         echo "==> Verifying source sha256..."
@@ -66,7 +91,9 @@ if [ ! -d "$SRC_DIR" ]; then
     fi
     mkdir -p "$SRC_DIR"
     tar xf "$TARBALL" -C "$SRC_DIR" --strip-components=1
-    rm "$TARBALL"
+    printf '%s\n' "$expected_marker" > "$SOURCE_MARKER"
+    trap - EXIT
+    rm -rf "$tmpdir"
 fi
 
 # Fresh build + install dir each run. The cache path varies per key
@@ -85,9 +112,9 @@ echo "==> Configuring libpng for wasm32 (zlib at $ZLIB_PREFIX)..."
         --enable-static \
         --disable-shared \
         --with-zlib-prefix="$ZLIB_PREFIX" \
-        CC=wasm32posix-cc \
-        AR=wasm32posix-ar \
-        RANLIB=wasm32posix-ranlib \
+        CC="$CC" \
+        AR="$AR" \
+        RANLIB="$RANLIB" \
         CPPFLAGS="-I$ZLIB_PREFIX/include" \
         LDFLAGS="-L$ZLIB_PREFIX/lib"
 
