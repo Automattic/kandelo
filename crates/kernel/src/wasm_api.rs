@@ -6603,7 +6603,11 @@ pub extern "C" fn kernel_recvmsg(fd: i32, msg_ptr: *mut u8, flags: u32) -> i32 {
     let base = u32::from_le_bytes([iov[0], iov[1], iov[2], iov[3]]) as usize;
     let len = u32::from_le_bytes([iov[4], iov[5], iov[6], iov[7]]) as usize;
 
-    let buf = unsafe { slice::from_raw_parts_mut(base as *mut u8, len) };
+    let buf = if len == 0 {
+        &mut []
+    } else {
+        unsafe { slice::from_raw_parts_mut(base as *mut u8, len) }
+    };
 
     // Use recvfrom if msg_name is provided (to fill source address)
     let result = if name_ptr != 0 && name_len > 0 {
@@ -7666,7 +7670,13 @@ pub extern "C" fn kernel_send(fd: i32, buf_ptr: *const u8, buf_len: u32, flags: 
 pub extern "C" fn kernel_recv(fd: i32, buf_ptr: *mut u8, buf_len: u32, flags: u32) -> i32 {
     let (_gkl, proc) = unsafe { get_process() };
     let mut host = WasmHostIO;
-    let buf = unsafe { slice::from_raw_parts_mut(buf_ptr, buf_len as usize) };
+    // A zero-length output is not assigned scratch space by the host. Avoid
+    // treating the unchanged guest pointer as a kernel-memory pointer.
+    let buf = if buf_len == 0 {
+        &mut []
+    } else {
+        unsafe { slice::from_raw_parts_mut(buf_ptr, buf_len as usize) }
+    };
     let result = match syscalls::sys_recv(proc, &mut host, fd, buf, flags) {
         Ok(n) => n as i32,
         Err(e) => -(e as i32),
@@ -8123,7 +8133,14 @@ pub extern "C" fn kernel_recvfrom(
 ) -> i32 {
     let (_gkl, proc) = unsafe { get_process() };
     let mut host = WasmHostIO;
-    let buf = unsafe { slice::from_raw_parts_mut(buf_ptr, buf_len as usize) };
+    // The generic host marshaller leaves a zero-sized pointer unadjusted.
+    // Construct a real empty slice instead of interpreting that guest-memory
+    // address inside the kernel instance.
+    let buf = if buf_len == 0 {
+        &mut []
+    } else {
+        unsafe { slice::from_raw_parts_mut(buf_ptr, buf_len as usize) }
+    };
     // addrlen_ptr is a channel-rewritten pointer to a u32 containing the buffer size
     let addr_len = if !addrlen_ptr.is_null() {
         unsafe { *addrlen_ptr }
