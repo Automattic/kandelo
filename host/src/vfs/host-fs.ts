@@ -45,11 +45,11 @@ export function translateOpenFlags(linuxFlags: number): number {
   if (linuxFlags & L_O_TRUNC) native |= fs.constants.O_TRUNC;
   if (linuxFlags & L_O_APPEND) native |= fs.constants.O_APPEND;
   if (linuxFlags & L_O_NONBLOCK) native |= fs.constants.O_NONBLOCK;
-  if ((linuxFlags & L_O_DIRECTORY) && fs.constants.O_DIRECTORY)
+  if (linuxFlags & L_O_DIRECTORY && fs.constants.O_DIRECTORY)
     native |= fs.constants.O_DIRECTORY;
-  if ((linuxFlags & L_O_NOFOLLOW) && fs.constants.O_NOFOLLOW)
+  if (linuxFlags & L_O_NOFOLLOW && fs.constants.O_NOFOLLOW)
     native |= fs.constants.O_NOFOLLOW;
-  if ((linuxFlags & L_O_NOCTTY) && fs.constants.O_NOCTTY)
+  if (linuxFlags & L_O_NOCTTY && fs.constants.O_NOCTTY)
     native |= fs.constants.O_NOCTTY;
   // O_LARGEFILE and O_CLOEXEC have no Node.js equivalent; ignored.
 
@@ -91,8 +91,6 @@ export class HostFileSystem implements FileSystemBackend {
   private dirHandles = new Map<number, fs.Dir>();
   private nextDirHandle = 1;
   private metadata: NativeMetadataOverlay;
-  private dirPathCache = new Map<string, string>();
-  private readonly maxDirPathCacheEntries = 4096;
 
   constructor(
     rootPath: string,
@@ -104,7 +102,10 @@ export class HostFileSystem implements FileSystemBackend {
       ? fs.realpathSync(resolvedRoot)
       : resolvedRoot;
     this.guestMountPoint = this.normalizeGuestMountPoint(guestMountPoint);
-    this.metadata = new NativeMetadataOverlay(options.uid ?? 0, options.gid ?? 0);
+    this.metadata = new NativeMetadataOverlay(
+      options.uid ?? 0,
+      options.gid ?? 0,
+    );
   }
 
   /**
@@ -118,6 +119,11 @@ export class HostFileSystem implements FileSystemBackend {
    * up as a directory first. Lexical normalization would incorrectly collapse
    * that to `existing/file`.
    *
+   * Resolved prefixes are deliberately not cached. A host-backed tree can be
+   * changed externally or through another mount of the same directory; using
+   * a stale prefix after a directory-to-symlink replacement would bypass the
+   * component checks below.
+   *
    * Native symlink targets are stored as guest strings. When following a
    * symlink whose target is absolute and still inside this mount, translate it
    * back to a mount-relative path before continuing. This preserves readlink(2)
@@ -125,34 +131,18 @@ export class HostFileSystem implements FileSystemBackend {
    */
   private safePath(relative: string, followFinal = true): string {
     const hadTrailingSlash = relative.length > 1 && /\/+$/.test(relative);
-    const originalParts = this.pathParts(relative);
     let current = this.rootPath;
-    let pending = [...originalParts];
-    let processed: string[] = [];
+    let pending = this.pathParts(relative);
     let symlinkDepth = 0;
-    let cacheable = !originalParts.includes("..");
-
-    if (cacheable) {
-      for (let i = originalParts.length; i > 0; i--) {
-        const cached = this.dirPathCache.get(originalParts.slice(0, i).join("/"));
-        if (cached === undefined) continue;
-        current = cached;
-        pending = originalParts.slice(i);
-        processed = originalParts.slice(0, i);
-        break;
-      }
-    }
 
     while (pending.length > 0) {
       const part = pending.shift()!;
       if (part === ".") continue;
       if (part === "..") {
-        cacheable = false;
         if (current === this.rootPath) {
           throw new Error("EACCES: path traversal blocked");
         }
         current = nodePath.dirname(current);
-        processed.pop();
         continue;
       }
 
@@ -172,8 +162,8 @@ export class HostFileSystem implements FileSystemBackend {
       }
 
       if (shouldFollow && lst.isSymbolicLink()) {
-        cacheable = false;
-        if (++symlinkDepth > 40) throw new Error("ELOOP: too many symbolic links");
+        if (++symlinkDepth > 40)
+          throw new Error("ELOOP: too many symbolic links");
         const target = fs.readlinkSync(candidate, "utf8");
         if (target.startsWith("/")) {
           const mountRelative = this.guestAbsoluteToMountRelative(target);
@@ -195,14 +185,16 @@ export class HostFileSystem implements FileSystemBackend {
       if (!isFinal) {
         current = fs.realpathSync(candidate);
         this.assertWithinRoot(current);
-        processed.push(part);
-        if (cacheable) this.setCachedDirPath(processed, current);
       } else {
         current = candidate;
       }
     }
 
-    if (hadTrailingSlash && current !== this.rootPath && !current.endsWith(nodePath.sep)) {
+    if (
+      hadTrailingSlash &&
+      current !== this.rootPath &&
+      !current.endsWith(nodePath.sep)
+    ) {
       // Keep a final separator for native fs calls. POSIX requires a
       // trailing slash to resolve the preceding component as a directory; the
       // native call then returns ENOTDIR for regular files while still
@@ -211,19 +203,6 @@ export class HostFileSystem implements FileSystemBackend {
     }
     this.assertWithinRoot(current);
     return current;
-  }
-
-  private setCachedDirPath(parts: string[], nativePath: string): void {
-    if (parts.length === 0) return;
-    this.dirPathCache.set(parts.join("/"), nativePath);
-    if (this.dirPathCache.size > this.maxDirPathCacheEntries) {
-      const oldest = this.dirPathCache.keys().next().value;
-      if (oldest !== undefined) this.dirPathCache.delete(oldest);
-    }
-  }
-
-  private clearDirPathCache(): void {
-    this.dirPathCache.clear();
   }
 
   private normalizeGuestMountPoint(mountPoint: string): string {
@@ -252,7 +231,11 @@ export class HostFileSystem implements FileSystemBackend {
   private assertWithinRoot(path: string): void {
     const rel = nodePath.relative(this.rootPath, path);
     if (rel === "") return;
-    if (rel.startsWith("..") || nodePath.isAbsolute(rel)) {
+    if (
+      rel === ".." ||
+      rel.startsWith(`..${nodePath.sep}`) ||
+      nodePath.isAbsolute(rel)
+    ) {
       throw new Error("EACCES: path traversal blocked");
     }
   }
@@ -271,7 +254,10 @@ export class HostFileSystem implements FileSystemBackend {
   // ── File handle operations ───────────────────────────────────
 
   open(path: string, flags: number, mode: number): number {
-    const nativePath = this.safePath(path, (flags & 0o400000) === 0);
+    const noFollowFinal =
+      (flags & 0o400000) !== 0 ||
+      ((flags & 0o100) !== 0 && (flags & 0o200) !== 0);
+    const nativePath = this.safePath(path, !noFollowFinal);
     const created = (flags & 0o100) !== 0 && !fs.existsSync(nativePath);
     const fd = fs.openSync(nativePath, translateOpenFlags(flags), mode);
     if (created) this.metadata.chmod(fs.fstatSync(fd), mode);
@@ -307,7 +293,8 @@ export class HostFileSystem implements FileSystemBackend {
   ): number {
     const pos = offset ?? this.fdPositions.get(handle) ?? 0;
     const bytesWritten = fs.writeSync(handle, buffer, 0, length, pos);
-    if (bytesWritten > 0) this.metadata.noteNativeContentChange(fs.fstatSync(handle));
+    if (bytesWritten > 0)
+      this.metadata.noteNativeContentChange(fs.fstatSync(handle));
     if (offset === null) {
       this.fdPositions.set(handle, pos + bytesWritten);
     }
@@ -369,7 +356,7 @@ export class HostFileSystem implements FileSystemBackend {
   }
 
   mkdir(path: string, mode: number): void {
-    const nativePath = this.safePath(path);
+    const nativePath = this.safePath(path, false);
     fs.mkdirSync(nativePath, { mode });
     this.metadata.chmod(fs.statSync(nativePath), mode);
   }
@@ -378,7 +365,6 @@ export class HostFileSystem implements FileSystemBackend {
     const nativePath = this.safePath(path, false);
     const stat = fs.lstatSync(nativePath);
     fs.rmdirSync(nativePath);
-    this.clearDirPathCache();
     this.metadata.forget(stat);
   }
 
@@ -386,7 +372,6 @@ export class HostFileSystem implements FileSystemBackend {
     const nativePath = this.safePath(path, false);
     const stat = fs.lstatSync(nativePath);
     fs.unlinkSync(nativePath);
-    if (stat.isSymbolicLink()) this.clearDirPathCache();
     if (stat.nlink <= 1) this.metadata.forget(stat);
   }
 
@@ -397,12 +382,18 @@ export class HostFileSystem implements FileSystemBackend {
       replaced = fs.lstatSync(nativeNewPath);
     } catch {}
     fs.renameSync(this.safePath(oldPath, false), nativeNewPath);
-    this.clearDirPathCache();
-    if (replaced !== undefined && replaced.nlink <= 1) this.metadata.forget(replaced);
+    if (replaced !== undefined && replaced.nlink <= 1)
+      this.metadata.forget(replaced);
   }
 
   link(existingPath: string, newPath: string): void {
-    fs.linkSync(this.safePath(existingPath), this.safePath(newPath));
+    // Resolve intermediate components ourselves, but leave the final source
+    // component to native link(2). POSIX permits link() either to follow a
+    // final symlink or to link the symlink inode; native hosts differ here.
+    fs.linkSync(
+      this.safePath(existingPath, false),
+      this.safePath(newPath, false),
+    );
   }
 
   symlink(target: string, path: string): void {
@@ -425,25 +416,33 @@ export class HostFileSystem implements FileSystemBackend {
     this.metadata.access(fs.statSync(this.safePath(path)), mode);
   }
 
-  utimensat(path: string, atimeSec: number, atimeNsec: number, mtimeSec: number, mtimeNsec: number): void {
+  utimensat(
+    path: string,
+    atimeSec: number,
+    atimeNsec: number,
+    mtimeSec: number,
+    mtimeNsec: number,
+  ): void {
     const nativePath = this.safePath(path);
     if (atimeNsec === UTIME_OMIT && mtimeNsec === UTIME_OMIT) return;
 
     const stat = fs.statSync(nativePath);
     const current = this.metadata.toStatResult(stat);
     const nowMs = Date.now();
-    const atimeMs = atimeNsec === UTIME_OMIT
-      ? current.atimeMs
-      : atimeNsec === UTIME_NOW
-        ? nowMs
-        : atimeSec * 1000 + Math.floor(atimeNsec / 1_000_000);
-    const mtimeMs = mtimeNsec === UTIME_OMIT
-      ? current.mtimeMs
-      : mtimeNsec === UTIME_NOW
-        ? nowMs
-        : mtimeSec * 1000 + Math.floor(mtimeNsec / 1_000_000);
+    const atimeMs =
+      atimeNsec === UTIME_OMIT
+        ? current.atimeMs
+        : atimeNsec === UTIME_NOW
+          ? nowMs
+          : atimeSec * 1000 + Math.floor(atimeNsec / 1_000_000);
+    const mtimeMs =
+      mtimeNsec === UTIME_OMIT
+        ? current.mtimeMs
+        : mtimeNsec === UTIME_NOW
+          ? nowMs
+          : mtimeSec * 1000 + Math.floor(mtimeNsec / 1_000_000);
     fs.utimesSync(nativePath, atimeMs / 1000, mtimeMs / 1000);
-    this.metadata.utimens(stat, atimeMs, mtimeMs, fs.statSync(nativePath).ctimeMs);
+    this.metadata.utimens(stat, atimeMs, mtimeMs, fs.statSync(nativePath));
   }
 
   // ── Directory iteration ─────────────────────────────────────
@@ -462,12 +461,18 @@ export class HostFileSystem implements FileSystemBackend {
     if (!entry) return null;
 
     let dtype = 0; // DT_UNKNOWN
-    if (entry.isFile()) dtype = 8; // DT_REG
-    else if (entry.isDirectory()) dtype = 4; // DT_DIR
-    else if (entry.isSymbolicLink()) dtype = 10; // DT_LNK
-    else if (entry.isFIFO()) dtype = 1; // DT_FIFO
-    else if (entry.isSocket()) dtype = 12; // DT_SOCK
-    else if (entry.isCharacterDevice()) dtype = 2; // DT_CHR
+    if (entry.isFile())
+      dtype = 8; // DT_REG
+    else if (entry.isDirectory())
+      dtype = 4; // DT_DIR
+    else if (entry.isSymbolicLink())
+      dtype = 10; // DT_LNK
+    else if (entry.isFIFO())
+      dtype = 1; // DT_FIFO
+    else if (entry.isSocket())
+      dtype = 12; // DT_SOCK
+    else if (entry.isCharacterDevice())
+      dtype = 2; // DT_CHR
     else if (entry.isBlockDevice()) dtype = 6; // DT_BLK
 
     return { name: entry.name, type: dtype, ino: 0 };
