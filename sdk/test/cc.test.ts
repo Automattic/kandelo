@@ -55,6 +55,12 @@ describe('buildClangArgs', () => {
       .toBe('-Wl,-z,stack-size=16777216');
   });
 
+  it('-ldl selects the functional dynamic-loading glue', () => {
+    const args = buildClangArgs(['foo.c', '-ldl', '-o', 'foo.wasm'], toolchain);
+    expect(args).not.toContain('-ldl');
+    expect(args).toContain('/tmp/glue/dlopen.c');
+  });
+
   it('link-only: object files without -c get link flags plus compile flags for glue', () => {
     const args = buildClangArgs(['foo.o', 'bar.o', '-o', 'out.wasm'], toolchain);
     expect(args).toContain('-Wl,--entry=_start');

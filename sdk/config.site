@@ -411,6 +411,7 @@ ac_cv_func_close_range=${ac_cv_func_close_range=no}
 ac_cv_func_closefrom=${ac_cv_func_closefrom=no}
 ac_cv_func_closesocket=${ac_cv_func_closesocket=no}
 ac_cv_func_dlopen=${ac_cv_func_dlopen=no}
+ac_cv_func_directio=${ac_cv_func_directio=no}
 ac_cv_func_fdwalk=${ac_cv_func_fdwalk=no}
 ac_cv_func_getcontext=${ac_cv_func_getcontext=no}
 ac_cv_func_getpass_r=${ac_cv_func_getpass_r=no}
@@ -453,7 +454,17 @@ ac_cv_func_lsetxattr=${ac_cv_func_lsetxattr=no}
 ac_cv_func_removexattr=${ac_cv_func_removexattr=no}
 ac_cv_func_setxattr=${ac_cv_func_setxattr=no}
 
-ac_cv_lib_dl_dlopen=${ac_cv_lib_dl_dlopen=no}
+# Dynamic loading is provided by Kandelo's SDK glue when a link requests
+# -ldl. The musl archive's weak dlfcn stubs link successfully but only report
+# "Dynamic loading not supported", so an unadorned AC_CHECK_FUNC result is not
+# a functional capability. Force AC_SEARCH_LIBS callers through the SDK's
+# explicit library-selection path instead of accepting the weak stub.
+ac_cv_func_dlopen=${ac_cv_func_dlopen=no}
+ac_cv_lib_dl_dlopen=${ac_cv_lib_dl_dlopen=yes}
+ac_cv_search_dlclose=${ac_cv_search_dlclose=-ldl}
+ac_cv_search_dlerror=${ac_cv_search_dlerror=-ldl}
+ac_cv_search_dlopen=${ac_cv_search_dlopen=-ldl}
+ac_cv_search_dlsym=${ac_cv_search_dlsym=-ldl}
 
 # ─── Headers ───────────────────────────────────────────────────────────────────
 # Verified via: find sysroot/include -name '*.h'
@@ -655,4 +666,3 @@ ac_cv_lib_crypto_HMAC_Update=${ac_cv_lib_crypto_HMAC_Update=yes}
 ac_cv_lib_crypto_HMAC_Init_ex=${ac_cv_lib_crypto_HMAC_Init_ex=yes}
 ac_cv_lib_ssl_SSL_connect=${ac_cv_lib_ssl_SSL_connect=yes}
 ac_cv_lib_crypto_EVP_DigestInit_ex=${ac_cv_lib_crypto_EVP_DigestInit_ex=yes}
-ac_cv_lib_dl_dlopen=${ac_cv_lib_dl_dlopen=yes}
