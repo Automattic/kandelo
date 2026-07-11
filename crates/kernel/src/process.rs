@@ -580,14 +580,8 @@ pub struct Process {
     pub threads: Vec<ThreadInfo>,
     /// Next thread ID to allocate.
     pub next_tid: u32,
-    /// Eventfd instances owned by this process.
-    pub eventfds: Vec<Option<EventFdState>>,
     /// Epoll instances owned by this process.
     pub epolls: Vec<Option<EpollInstance>>,
-    /// Timerfd instances owned by this process.
-    pub timerfds: Vec<Option<TimerFdState>>,
-    /// Signalfd instances owned by this process.
-    pub signalfds: Vec<Option<SignalFdState>>,
     /// POSIX timers (timer_create / timer_settime).
     pub posix_timers: Vec<Option<PosixTimerState>>,
     /// Alternate signal stack (sigaltstack): ss_sp, ss_flags, ss_size.
@@ -602,10 +596,6 @@ pub struct Process {
     /// from this list to return the correct FDs when the child re-runs
     /// code before fork(). Empty in non-fork-child processes.
     pub fork_pipe_replay: Vec<(i32, i32)>,
-    /// In-memory file buffers for memfd_create fds.
-    pub memfds: Vec<Option<Vec<u8>>>,
-    /// Content buffers for open procfs files (snapshot at open time).
-    pub procfs_bufs: Vec<Option<Vec<u8>>>,
     /// True if this process has called exec (for POSIX setpgid EACCES check).
     pub has_exec: bool,
     /// Live mmap of `/dev/fb0`, if any. `Some` between successful
@@ -762,18 +752,13 @@ impl Process {
             next_ephemeral_port: 49152,
             threads: Vec::new(),
             next_tid: 0, // will be set to pid + 1 after pid is known
-            eventfds: Vec::new(),
             epolls: Vec::new(),
-            timerfds: Vec::new(),
-            signalfds: Vec::new(),
             posix_timers: Vec::new(),
             alt_stack_sp: 0,
             alt_stack_flags: 2, // SS_DISABLE
             alt_stack_size: 0,
             alt_stack_depth: 0,
             fork_pipe_replay: Vec::new(),
-            memfds: Vec::new(),
-            procfs_bufs: Vec::new(),
             has_exec: false,
             fb_binding: None,
             dri_bindings: Vec::new(),

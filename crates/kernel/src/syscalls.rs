@@ -2187,11 +2187,7 @@ pub fn sys_close(proc: &mut Process, host: &mut dyn HostIO, fd: i32) -> Result<(
                 }
             }
             FileType::EventFd => {
-                // Free the eventfd state
-                let efd_idx = (-(host_handle + 1)) as usize;
-                if let Some(slot) = proc.eventfds.get_mut(efd_idx) {
-                    *slot = None;
-                }
+                crate::descriptor_backing::release_for_ofd(file_type, host_handle);
             }
             FileType::Epoll => {
                 let ep_idx = (-(host_handle + 1)) as usize;
@@ -2200,22 +2196,13 @@ pub fn sys_close(proc: &mut Process, host: &mut dyn HostIO, fd: i32) -> Result<(
                 }
             }
             FileType::TimerFd => {
-                let tfd_idx = (-(host_handle + 1)) as usize;
-                if let Some(slot) = proc.timerfds.get_mut(tfd_idx) {
-                    *slot = None;
-                }
+                crate::descriptor_backing::release_for_ofd(file_type, host_handle);
             }
             FileType::SignalFd => {
-                let sfd_idx = (-(host_handle + 1)) as usize;
-                if let Some(slot) = proc.signalfds.get_mut(sfd_idx) {
-                    *slot = None;
-                }
+                crate::descriptor_backing::release_for_ofd(file_type, host_handle);
             }
             FileType::MemFd => {
-                let memfd_idx = (-(host_handle + 1)) as usize;
-                if let Some(slot) = proc.memfds.get_mut(memfd_idx) {
-                    *slot = None;
-                }
+                crate::descriptor_backing::release_for_ofd(file_type, host_handle);
             }
             FileType::PtyMaster => {
                 let pty_idx = host_handle as usize;
@@ -2245,11 +2232,10 @@ pub fn sys_close(proc: &mut Process, host: &mut dyn HostIO, fd: i32) -> Result<(
                     let _ = host.host_closedir(dir_host_handle);
                 }
                 // Procfs buffers: free the content buffer
-                if crate::procfs::is_procfs_buf_handle(host_handle) {
-                    let buf_idx = crate::procfs::procfs_buf_idx(host_handle);
-                    if let Some(slot) = proc.procfs_bufs.get_mut(buf_idx) {
-                        *slot = None;
-                    }
+                if file_type == FileType::Regular
+                    && crate::procfs::is_procfs_buf_handle(host_handle)
+                {
+                    crate::descriptor_backing::release_for_ofd(file_type, host_handle);
                 } else if host_handle == crate::procfs::PROCFS_DIR_HANDLE
                     || host_handle == crate::devfs::DEVFS_DIR_HANDLE
                 {
@@ -2407,24 +2393,16 @@ pub fn sys_read(
             let tfd_idx = (-(host_handle + 1)) as usize;
             // Compute expirations lazily
             let (now_sec, now_nsec) = host.host_clock_gettime(0)?;
-            if let Some(Some(tfd)) = proc.timerfds.get_mut(tfd_idx) {
+            let count = crate::descriptor_backing::with_timerfds(|table| {
+                let tfd = table.get_mut(tfd_idx).ok_or(Errno::EBADF)?;
                 timerfd_compute_expirations(tfd, now_sec, now_nsec);
-            }
-            let tfd = proc
-                .timerfds
-                .get_mut(tfd_idx)
-                .and_then(|s| s.as_mut())
-                .ok_or(Errno::EBADF)?;
-            if tfd.expirations == 0 {
-                return Err(Errno::EAGAIN);
-            }
-            let tfd = proc
-                .timerfds
-                .get_mut(tfd_idx)
-                .and_then(|s| s.as_mut())
-                .ok_or(Errno::EBADF)?;
-            let count = tfd.expirations;
-            tfd.expirations = 0;
+                if tfd.expirations == 0 {
+                    return Err(Errno::EAGAIN);
+                }
+                let count = tfd.expirations;
+                tfd.expirations = 0;
+                Ok(count)
+            })?;
             buf[..8].copy_from_slice(&count.to_le_bytes());
             Ok(8)
         }
@@ -2435,25 +2413,10 @@ pub fn sys_read(
                 return Err(Errno::EINVAL);
             }
             let sfd_idx = (-(host_handle + 1)) as usize;
-            let mask = proc
-                .signalfds
-                .get(sfd_idx)
-                .and_then(|s| s.as_ref())
-                .ok_or(Errno::EBADF)?
-                .mask;
+            let mask = crate::descriptor_backing::with_signalfds(|table| {
+                table.get(sfd_idx).map(|sfd| sfd.mask).ok_or(Errno::EBADF)
+            })?;
             // Find a pending signal matching the mask
-            let pending = proc.signals.pending_mask();
-            let matching = pending & mask;
-            if matching == 0 {
-                return Err(Errno::EAGAIN);
-            }
-            // Re-read mask and find signal
-            let mask = proc
-                .signalfds
-                .get(sfd_idx)
-                .and_then(|s| s.as_ref())
-                .ok_or(Errno::EBADF)?
-                .mask;
             let pending = proc.signals.pending_mask();
             let matching = pending & mask;
             if matching == 0 {
@@ -2476,27 +2439,20 @@ pub fn sys_read(
                 return Err(Errno::EINVAL);
             }
             let efd_idx = (-(host_handle + 1)) as usize;
-            let efd = proc
-                .eventfds
-                .get_mut(efd_idx)
-                .and_then(|s| s.as_mut())
-                .ok_or(Errno::EBADF)?;
-            if efd.counter == 0 {
-                return Err(Errno::EAGAIN);
-            }
-            let efd = proc
-                .eventfds
-                .get_mut(efd_idx)
-                .and_then(|s| s.as_mut())
-                .ok_or(Errno::EBADF)?;
-            let value = if efd.semaphore {
-                efd.counter -= 1;
-                1u64
-            } else {
-                let v = efd.counter;
-                efd.counter = 0;
-                v
-            };
+            let value = crate::descriptor_backing::with_eventfds(|table| {
+                let efd = table.get_mut(efd_idx).ok_or(Errno::EBADF)?;
+                if efd.counter == 0 {
+                    return Err(Errno::EAGAIN);
+                }
+                if efd.semaphore {
+                    efd.counter -= 1;
+                    Ok(1u64)
+                } else {
+                    let value = efd.counter;
+                    efd.counter = 0;
+                    Ok(value)
+                }
+            })?;
             buf[..8].copy_from_slice(&value.to_le_bytes());
             Ok(8)
         }
@@ -2619,45 +2575,35 @@ pub fn sys_read(
                 }
             }
             // procfs: read from snapshot buffer
-            if crate::procfs::is_procfs_buf_handle(host_handle) {
+            if file_type == FileType::Regular && crate::procfs::is_procfs_buf_handle(host_handle) {
                 let buf_idx = crate::procfs::procfs_buf_idx(host_handle);
-                let ofd = proc.ofd_table.get(ofd_idx).ok_or(Errno::EBADF)?;
-                let offset = ofd.offset as usize;
-                let data = proc
-                    .procfs_bufs
-                    .get(buf_idx)
-                    .and_then(|s| s.as_ref())
-                    .ok_or(Errno::EBADF)?;
-                if offset >= data.len() {
-                    return Ok(0); // EOF
-                }
-                let remaining = &data[offset..];
-                let n = buf.len().min(remaining.len());
-                buf[..n].copy_from_slice(&remaining[..n]);
-                let ofd = proc.ofd_table.get_mut(ofd_idx).ok_or(Errno::EBADF)?;
-                ofd.offset += n as i64;
-                return Ok(n);
+                return crate::descriptor_backing::with_procfs_bufs(|table| {
+                    let backing = table.get_mut(buf_idx).ok_or(Errno::EBADF)?;
+                    let offset = usize::try_from(backing.offset).map_err(|_| Errno::EOVERFLOW)?;
+                    if offset >= backing.data.len() {
+                        return Ok(0);
+                    }
+                    let n = buf.len().min(backing.data.len() - offset);
+                    buf[..n].copy_from_slice(&backing.data[offset..offset + n]);
+                    backing.offset += n as i64;
+                    Ok(n)
+                });
             }
 
             // memfd: read from in-memory buffer
             if file_type == FileType::MemFd {
                 let memfd_idx = (-(host_handle + 1)) as usize;
-                let ofd = proc.ofd_table.get(ofd_idx).ok_or(Errno::EBADF)?;
-                let offset = ofd.offset as usize;
-                let data = proc
-                    .memfds
-                    .get(memfd_idx)
-                    .and_then(|s| s.as_ref())
-                    .ok_or(Errno::EBADF)?;
-                if offset >= data.len() {
-                    return Ok(0); // EOF
-                }
-                let remaining = &data[offset..];
-                let n = buf.len().min(remaining.len());
-                buf[..n].copy_from_slice(&remaining[..n]);
-                let ofd = proc.ofd_table.get_mut(ofd_idx).ok_or(Errno::EBADF)?;
-                ofd.offset += n as i64;
-                return Ok(n);
+                return crate::descriptor_backing::with_memfds(|table| {
+                    let backing = table.get_mut(memfd_idx).ok_or(Errno::EBADF)?;
+                    let offset = usize::try_from(backing.offset).map_err(|_| Errno::EOVERFLOW)?;
+                    if offset >= backing.data.len() {
+                        return Ok(0);
+                    }
+                    let n = buf.len().min(backing.data.len() - offset);
+                    buf[..n].copy_from_slice(&backing.data[offset..offset + n]);
+                    backing.offset += n as i64;
+                    Ok(n)
+                });
             }
 
             if host_handle == SYNTHETIC_FILE_HANDLE {
@@ -2816,21 +2762,15 @@ pub fn sys_write(
                 return Err(Errno::EINVAL);
             }
             let efd_idx = (-(host_handle + 1)) as usize;
-            let efd = proc
-                .eventfds
-                .get_mut(efd_idx)
-                .and_then(|s| s.as_mut())
-                .ok_or(Errno::EBADF)?;
-            let max_val = u64::MAX - 1;
-            if efd.counter > max_val - value {
-                return Err(Errno::EAGAIN);
-            }
-            let efd = proc
-                .eventfds
-                .get_mut(efd_idx)
-                .and_then(|s| s.as_mut())
-                .ok_or(Errno::EBADF)?;
-            efd.counter += value;
+            crate::descriptor_backing::with_eventfds(|table| {
+                let efd = table.get_mut(efd_idx).ok_or(Errno::EBADF)?;
+                let max_val = u64::MAX - 1;
+                if efd.counter > max_val - value {
+                    return Err(Errno::EAGAIN);
+                }
+                efd.counter += value;
+                Ok(())
+            })?;
             Ok(8)
         }
         FileType::PtyMaster => {
@@ -2861,21 +2801,17 @@ pub fn sys_write(
             // memfd: write to in-memory buffer
             if file_type == FileType::MemFd {
                 let memfd_idx = (-(host_handle + 1)) as usize;
-                let ofd = proc.ofd_table.get(ofd_idx).ok_or(Errno::EBADF)?;
-                let offset = ofd.offset as usize;
-                let data = proc
-                    .memfds
-                    .get_mut(memfd_idx)
-                    .and_then(|s| s.as_mut())
-                    .ok_or(Errno::EBADF)?;
-                let end = offset + buf.len();
-                if end > data.len() {
-                    data.resize(end, 0);
-                }
-                data[offset..end].copy_from_slice(buf);
-                let ofd = proc.ofd_table.get_mut(ofd_idx).ok_or(Errno::EBADF)?;
-                ofd.offset += buf.len() as i64;
-                return Ok(buf.len());
+                return crate::descriptor_backing::with_memfds(|table| {
+                    let backing = table.get_mut(memfd_idx).ok_or(Errno::EBADF)?;
+                    let offset = usize::try_from(backing.offset).map_err(|_| Errno::EOVERFLOW)?;
+                    let end = offset.checked_add(buf.len()).ok_or(Errno::EFBIG)?;
+                    if end > backing.data.len() {
+                        backing.data.resize(end, 0);
+                    }
+                    backing.data[offset..end].copy_from_slice(buf);
+                    backing.offset += buf.len() as i64;
+                    Ok(buf.len())
+                });
             }
 
             // Virtual character devices — handle in-kernel
@@ -3079,23 +3015,26 @@ pub fn sys_lseek(
     }
 
     // Procfs file buffers: compute offset against snapshot length
-    if crate::procfs::is_procfs_buf_handle(ofd.host_handle) {
+    if ofd.file_type == FileType::Regular && crate::procfs::is_procfs_buf_handle(ofd.host_handle) {
         let buf_idx = crate::procfs::procfs_buf_idx(ofd.host_handle);
-        let size = proc
-            .procfs_bufs
-            .get(buf_idx)
-            .and_then(|s| s.as_ref())
-            .map_or(0, |d| d.len() as i64);
+        let size = crate::descriptor_backing::with_procfs_bufs(|table| {
+            table
+                .get(buf_idx)
+                .map(|backing| backing.data.len() as i64)
+                .ok_or(Errno::EBADF)
+        })?;
+        let current =
+            crate::descriptor_backing::current_offset(ofd.file_type, ofd.host_handle, ofd.offset)?;
         let new_pos = match whence {
             SEEK_SET => offset,
-            SEEK_CUR => ofd.offset + offset,
-            SEEK_END => size + offset,
+            SEEK_CUR => current.checked_add(offset).ok_or(Errno::EOVERFLOW)?,
+            SEEK_END => size.checked_add(offset).ok_or(Errno::EOVERFLOW)?,
             _ => return Err(Errno::EINVAL),
         };
         if new_pos < 0 {
             return Err(Errno::EINVAL);
         }
-        ofd.offset = new_pos;
+        crate::descriptor_backing::set_current_offset(ofd.file_type, ofd.host_handle, new_pos)?;
         return Ok(new_pos);
     }
 
@@ -3104,7 +3043,7 @@ pub fn sys_lseek(
         let new_pos = match whence {
             SEEK_SET => offset,
             SEEK_CUR => ofd.offset + offset,
-            SEEK_END => size + offset,
+            SEEK_END => size.checked_add(offset).ok_or(Errno::EOVERFLOW)?,
             _ => return Err(Errno::EINVAL),
         };
         if new_pos < 0 {
@@ -3117,21 +3056,24 @@ pub fn sys_lseek(
     // MemFd: compute offset against in-memory buffer
     if ofd.file_type == FileType::MemFd {
         let memfd_idx = (-(ofd.host_handle + 1)) as usize;
-        let size = proc
-            .memfds
-            .get(memfd_idx)
-            .and_then(|s| s.as_ref())
-            .map_or(0, |d| d.len() as i64);
+        let size = crate::descriptor_backing::with_memfds(|table| {
+            table
+                .get(memfd_idx)
+                .map(|backing| backing.data.len() as i64)
+                .ok_or(Errno::EBADF)
+        })?;
+        let current =
+            crate::descriptor_backing::current_offset(ofd.file_type, ofd.host_handle, ofd.offset)?;
         let new_pos = match whence {
             SEEK_SET => offset,
-            SEEK_CUR => ofd.offset + offset,
+            SEEK_CUR => current.checked_add(offset).ok_or(Errno::EOVERFLOW)?,
             SEEK_END => size + offset,
             _ => return Err(Errno::EINVAL),
         };
         if new_pos < 0 {
             return Err(Errno::EINVAL);
         }
-        ofd.offset = new_pos;
+        crate::descriptor_backing::set_current_offset(ofd.file_type, ofd.host_handle, new_pos)?;
         return Ok(new_pos);
     }
 
@@ -3197,13 +3139,42 @@ pub fn sys_pread(
 
     if host_handle == SYNTHETIC_FILE_HANDLE {
         let data = synthetic_file_content(&ofd.path).ok_or(Errno::EBADF)?;
-        let start = offset as usize;
+        let start = usize::try_from(offset).map_err(|_| Errno::EOVERFLOW)?;
         if start >= data.len() {
             return Ok(0);
         }
         let n = buf.len().min(data.len() - start);
         buf[..n].copy_from_slice(&data[start..start + n]);
         return Ok(n);
+    }
+
+    if ofd.file_type == FileType::Regular && crate::procfs::is_procfs_buf_handle(host_handle) {
+        let start = usize::try_from(offset).map_err(|_| Errno::EOVERFLOW)?;
+        return crate::descriptor_backing::with_procfs_bufs(|table| {
+            let backing = table
+                .get(crate::procfs::procfs_buf_idx(host_handle))
+                .ok_or(Errno::EBADF)?;
+            if start >= backing.data.len() {
+                return Ok(0);
+            }
+            let n = buf.len().min(backing.data.len() - start);
+            buf[..n].copy_from_slice(&backing.data[start..start + n]);
+            Ok(n)
+        });
+    }
+
+    if ofd.file_type == FileType::MemFd {
+        let memfd_idx = (-(host_handle + 1)) as usize;
+        let start = usize::try_from(offset).map_err(|_| Errno::EOVERFLOW)?;
+        return crate::descriptor_backing::with_memfds(|table| {
+            let backing = table.get(memfd_idx).ok_or(Errno::EBADF)?;
+            if start >= backing.data.len() {
+                return Ok(0);
+            }
+            let n = buf.len().min(backing.data.len() - start);
+            buf[..n].copy_from_slice(&backing.data[start..start + n]);
+            Ok(n)
+        });
     }
 
     // Seek to the requested offset, read, then restore.
@@ -3251,6 +3222,20 @@ pub fn sys_pwrite(
 
     let host_handle = ofd.host_handle;
     let saved_offset = ofd.offset;
+
+    if ofd.file_type == FileType::MemFd {
+        let memfd_idx = (-(host_handle + 1)) as usize;
+        let start = usize::try_from(offset).map_err(|_| Errno::EOVERFLOW)?;
+        let end = start.checked_add(buf.len()).ok_or(Errno::EFBIG)?;
+        return crate::descriptor_backing::with_memfds(|table| {
+            let backing = table.get_mut(memfd_idx).ok_or(Errno::EBADF)?;
+            if end > backing.data.len() {
+                backing.data.resize(end, 0);
+            }
+            backing.data[start..end].copy_from_slice(buf);
+            Ok(buf.len())
+        });
+    }
 
     host.host_seek(host_handle, offset, SEEK_SET)?;
     let n = host.host_write(host_handle, buf)?;
@@ -3726,11 +3711,12 @@ pub fn sys_fstat(proc: &mut Process, host: &mut dyn HostIO, fd: i32) -> Result<W
         })
     } else if ofd.file_type == FileType::MemFd {
         let memfd_idx = (-(ofd.host_handle + 1)) as usize;
-        let size = proc
-            .memfds
-            .get(memfd_idx)
-            .and_then(|s| s.as_ref())
-            .map_or(0, |d| d.len() as u64);
+        let size = crate::descriptor_backing::with_memfds(|table| {
+            table
+                .get(memfd_idx)
+                .map(|backing| backing.data.len() as u64)
+                .ok_or(Errno::EBADF)
+        })?;
         Ok(WasmStat {
             st_dev: 0,
             st_ino: 0x4D454D00 + memfd_idx as u64, // "MEM\0" + index
@@ -3749,13 +3735,16 @@ pub fn sys_fstat(proc: &mut Process, host: &mut dyn HostIO, fd: i32) -> Result<W
         })
     } else if ofd.host_handle == SYNTHETIC_FILE_HANDLE {
         synthetic_file_stat(&ofd.path, proc.euid, proc.egid).ok_or(Errno::EBADF)
-    } else if crate::procfs::is_procfs_buf_handle(ofd.host_handle) {
+    } else if ofd.file_type == FileType::Regular
+        && crate::procfs::is_procfs_buf_handle(ofd.host_handle)
+    {
         let buf_idx = crate::procfs::procfs_buf_idx(ofd.host_handle);
-        let size = proc
-            .procfs_bufs
-            .get(buf_idx)
-            .and_then(|s| s.as_ref())
-            .map_or(0, |d| d.len() as u64);
+        let size = crate::descriptor_backing::with_procfs_bufs(|table| {
+            table
+                .get(buf_idx)
+                .map(|backing| backing.data.len() as u64)
+                .ok_or(Errno::EBADF)
+        })?;
         if let Some(entry) = crate::procfs::match_procfs(&ofd.path, proc.pid) {
             Ok(crate::procfs::procfs_stat(&entry, size, true))
         } else {
@@ -3883,15 +3872,17 @@ pub fn sys_fcntl_lock(
 
     let entry = proc.fd_table.get(fd)?;
     let ofd_idx = entry.ofd_ref.0;
-    let (host_handle, status_flags, offset, path) = {
+    let (host_handle, file_type, status_flags, local_offset, path) = {
         let ofd = proc.ofd_table.get(ofd_idx).ok_or(Errno::EBADF)?;
         (
             ofd.host_handle,
+            ofd.file_type,
             ofd.status_flags,
             ofd.offset,
             ofd.path.clone(),
         )
     };
+    let offset = crate::descriptor_backing::current_offset(file_type, host_handle, local_offset)?;
 
     // OFD locks use the OFD index as lock owner (not PID).
     // Map OFD and POSIX (5/6/7) commands to the internal lock constants (12/13/14).
@@ -3916,8 +3907,8 @@ pub fn sys_fcntl_lock(
 
     // Resolve start offset based on whence
     let start = match flock.l_whence {
-        0 => flock.l_start,          // SEEK_SET
-        1 => offset + flock.l_start, // SEEK_CUR
+        0 => flock.l_start,                                              // SEEK_SET
+        1 => offset.checked_add(flock.l_start).ok_or(Errno::EOVERFLOW)?, // SEEK_CUR
         2 => {
             // SEEK_END: resolve relative to file size
             if host_handle >= 0 {
@@ -9454,11 +9445,17 @@ fn poll_check(proc: &mut Process, host: &mut dyn HostIO, fds: &mut [WasmPollFd])
         match ofd.file_type {
             FileType::EventFd => {
                 let efd_idx = (-(ofd.host_handle + 1)) as usize;
-                if let Some(Some(efd)) = proc.eventfds.get(efd_idx) {
-                    if pollfd.events & POLLIN != 0 && efd.counter > 0 {
+                if let Some((counter, semaphore_room)) =
+                    crate::descriptor_backing::with_eventfds(|table| {
+                        table
+                            .get(efd_idx)
+                            .map(|efd| (efd.counter, efd.counter < u64::MAX - 1))
+                    })
+                {
+                    if pollfd.events & POLLIN != 0 && counter > 0 {
                         revents |= POLLIN;
                     }
-                    if pollfd.events & POLLOUT != 0 && efd.counter < u64::MAX - 1 {
+                    if pollfd.events & POLLOUT != 0 && semaphore_room {
                         revents |= POLLOUT;
                     }
                 }
@@ -9468,17 +9465,21 @@ fn poll_check(proc: &mut Process, host: &mut dyn HostIO, fds: &mut [WasmPollFd])
             }
             FileType::TimerFd => {
                 let tfd_idx = (-(ofd.host_handle + 1)) as usize;
-                if let Some(Some(tfd)) = proc.timerfds.get(tfd_idx) {
+                if let Some(expirations) = crate::descriptor_backing::with_timerfds(|table| {
+                    table.get(tfd_idx).map(|tfd| tfd.expirations)
+                }) {
                     // Check if timer has expired (lazy: just check expirations counter)
-                    if pollfd.events & POLLIN != 0 && tfd.expirations > 0 {
+                    if pollfd.events & POLLIN != 0 && expirations > 0 {
                         revents |= POLLIN;
                     }
                 }
             }
             FileType::SignalFd => {
                 let sfd_idx = (-(ofd.host_handle + 1)) as usize;
-                if let Some(Some(sfd)) = proc.signalfds.get(sfd_idx) {
-                    let matching = proc.signals.pending_mask() & sfd.mask;
+                if let Some(mask) = crate::descriptor_backing::with_signalfds(|table| {
+                    table.get(sfd_idx).map(|sfd| sfd.mask)
+                }) {
+                    let matching = proc.signals.pending_mask() & mask;
                     if pollfd.events & POLLIN != 0 && matching != 0 {
                         revents |= POLLIN;
                     }
@@ -10956,27 +10957,7 @@ pub fn sys_eventfd2(proc: &mut Process, initval: u32, flags: u32) -> Result<i32,
         semaphore,
     };
 
-    // Allocate eventfd slot (reuse freed slots)
-    let efd_idx = {
-        let mut found = None;
-        for (i, slot) in proc.eventfds.iter().enumerate() {
-            if slot.is_none() {
-                found = Some(i);
-                break;
-            }
-        }
-        match found {
-            Some(i) => {
-                proc.eventfds[i] = Some(state);
-                i
-            }
-            None => {
-                let i = proc.eventfds.len();
-                proc.eventfds.push(Some(state));
-                i
-            }
-        }
-    };
+    let efd_idx = crate::descriptor_backing::with_eventfds(|table| table.alloc(state));
 
     // Eventfd handle is negative: -(efd_idx + 1)
     let efd_handle = -((efd_idx as i64) + 1);
@@ -10999,7 +10980,7 @@ pub fn sys_eventfd2(proc: &mut Process, initval: u32, flags: u32) -> Result<i32,
         Ok(fd) => Ok(fd),
         Err(e) => {
             proc.ofd_table.dec_ref(ofd_idx);
-            proc.eventfds[efd_idx] = None;
+            crate::descriptor_backing::with_eventfds(|table| table.release(efd_idx));
             Err(e)
         }
     }
@@ -11279,26 +11260,7 @@ pub fn sys_timerfd_create(proc: &mut Process, clock_id: u32, flags: u32) -> Resu
         expirations: 0,
     };
 
-    let tfd_idx = {
-        let mut found = None;
-        for (i, slot) in proc.timerfds.iter().enumerate() {
-            if slot.is_none() {
-                found = Some(i);
-                break;
-            }
-        }
-        match found {
-            Some(i) => {
-                proc.timerfds[i] = Some(state);
-                i
-            }
-            None => {
-                let i = proc.timerfds.len();
-                proc.timerfds.push(Some(state));
-                i
-            }
-        }
-    };
+    let tfd_idx = crate::descriptor_backing::with_timerfds(|table| table.alloc(state));
 
     let handle = -((tfd_idx as i64) + 1);
     let mut status_flags = O_RDWR;
@@ -11316,7 +11278,7 @@ pub fn sys_timerfd_create(proc: &mut Process, clock_id: u32, flags: u32) -> Resu
         Ok(fd) => Ok(fd),
         Err(e) => {
             proc.ofd_table.dec_ref(ofd_idx);
-            proc.timerfds[tfd_idx] = None;
+            crate::descriptor_backing::with_timerfds(|table| table.release(tfd_idx));
             Err(e)
         }
     }
@@ -11342,51 +11304,67 @@ pub fn sys_timerfd_settime(
         return Err(Errno::EINVAL);
     }
     let tfd_idx = (-(ofd.host_handle + 1)) as usize;
-    let tfd = proc
-        .timerfds
-        .get_mut(tfd_idx)
-        .and_then(|s| s.as_mut())
-        .ok_or(Errno::EBADF)?;
-
-    let old = (
-        tfd.interval_sec,
-        tfd.interval_nsec,
-        tfd.value_sec,
-        tfd.value_nsec,
-    );
 
     const TFD_TIMER_ABSTIME: u32 = 1;
 
-    if value_sec == 0 && value_nsec == 0 {
-        // Disarm the timer
-        tfd.interval_sec = 0;
-        tfd.interval_nsec = 0;
-        tfd.value_sec = 0;
-        tfd.value_nsec = 0;
-        tfd.expirations = 0;
-    } else {
-        tfd.interval_sec = interval_sec;
-        tfd.interval_nsec = interval_nsec;
-        if flags & TFD_TIMER_ABSTIME != 0 {
-            tfd.value_sec = value_sec;
-            tfd.value_nsec = value_nsec;
+    // The clock import is an external callback boundary. Snapshot the timer's
+    // immutable clock id under the backing lock, release it for the host call,
+    // then reacquire only for the final linearizable state update. Holding the
+    // non-reentrant backing spinlock across HostIO would deadlock if a host
+    // implementation ever called back into timerfd handling.
+    let relative_now = if value_sec != 0 || value_nsec != 0 {
+        if flags & TFD_TIMER_ABSTIME == 0 {
+            let clock_id = crate::descriptor_backing::with_timerfds(|table| {
+                table
+                    .get(tfd_idx)
+                    .map(|tfd| tfd.clock_id)
+                    .ok_or(Errno::EBADF)
+            })?;
+            Some(host.host_clock_gettime(clock_id)?)
         } else {
-            // Relative: add current time
-            let clock_id = tfd.clock_id;
-            let (now_sec, now_nsec) = host.host_clock_gettime(clock_id)?;
-            let mut total_nsec = now_nsec + value_nsec;
-            let mut total_sec = now_sec + value_sec;
-            if total_nsec >= 1_000_000_000 {
-                total_sec += total_nsec / 1_000_000_000;
-                total_nsec %= 1_000_000_000;
-            }
-            tfd.value_sec = total_sec;
-            tfd.value_nsec = total_nsec;
+            None
         }
-        tfd.expirations = 0;
-    }
+    } else {
+        None
+    };
 
-    Ok(old)
+    crate::descriptor_backing::with_timerfds(|table| {
+        let tfd = table.get_mut(tfd_idx).ok_or(Errno::EBADF)?;
+        let old = (
+            tfd.interval_sec,
+            tfd.interval_nsec,
+            tfd.value_sec,
+            tfd.value_nsec,
+        );
+
+        if value_sec == 0 && value_nsec == 0 {
+            tfd.interval_sec = 0;
+            tfd.interval_nsec = 0;
+            tfd.value_sec = 0;
+            tfd.value_nsec = 0;
+            tfd.expirations = 0;
+        } else {
+            tfd.interval_sec = interval_sec;
+            tfd.interval_nsec = interval_nsec;
+            if flags & TFD_TIMER_ABSTIME != 0 {
+                tfd.value_sec = value_sec;
+                tfd.value_nsec = value_nsec;
+            } else {
+                let (now_sec, now_nsec) = relative_now.ok_or(Errno::EIO)?;
+                let mut total_nsec = now_nsec + value_nsec;
+                let mut total_sec = now_sec + value_sec;
+                if total_nsec >= 1_000_000_000 {
+                    total_sec += total_nsec / 1_000_000_000;
+                    total_nsec %= 1_000_000_000;
+                }
+                tfd.value_sec = total_sec;
+                tfd.value_nsec = total_nsec;
+            }
+            tfd.expirations = 0;
+        }
+
+        Ok(old)
+    })
 }
 
 /// timerfd_gettime — get remaining time until next expiration.
@@ -11401,19 +11379,27 @@ pub fn sys_timerfd_gettime(
         return Err(Errno::EINVAL);
     }
     let tfd_idx = (-(ofd.host_handle + 1)) as usize;
-    let tfd = proc
-        .timerfds
-        .get(tfd_idx)
-        .and_then(|s| s.as_ref())
-        .ok_or(Errno::EBADF)?;
+    let snapshot = crate::descriptor_backing::with_timerfds(|table| {
+        table.get(tfd_idx).map(|tfd| {
+            (
+                tfd.clock_id,
+                tfd.interval_sec,
+                tfd.interval_nsec,
+                tfd.value_sec,
+                tfd.value_nsec,
+            )
+        })
+    })
+    .ok_or(Errno::EBADF)?;
+    let (clock_id, interval_sec, interval_nsec, timer_sec, timer_nsec) = snapshot;
 
-    if tfd.value_sec == 0 && tfd.value_nsec == 0 {
+    if timer_sec == 0 && timer_nsec == 0 {
         return Ok((0, 0, 0, 0));
     }
 
-    let (now_sec, now_nsec) = host.host_clock_gettime(tfd.clock_id)?;
-    let mut remain_sec = tfd.value_sec - now_sec;
-    let mut remain_nsec = tfd.value_nsec - now_nsec;
+    let (now_sec, now_nsec) = host.host_clock_gettime(clock_id)?;
+    let mut remain_sec = timer_sec - now_sec;
+    let mut remain_nsec = timer_nsec - now_nsec;
     if remain_nsec < 0 {
         remain_sec -= 1;
         remain_nsec += 1_000_000_000;
@@ -11422,7 +11408,7 @@ pub fn sys_timerfd_gettime(
         remain_sec = 0;
         remain_nsec = 0;
     }
-    Ok((tfd.interval_sec, tfd.interval_nsec, remain_sec, remain_nsec))
+    Ok((interval_sec, interval_nsec, remain_sec, remain_nsec))
 }
 
 /// Helper: compute timerfd expirations lazily.
@@ -11486,38 +11472,18 @@ pub fn sys_signalfd4(proc: &mut Process, fd: i32, mask: u64, flags: u32) -> Resu
             return Err(Errno::EINVAL);
         }
         let sfd_idx = (-(ofd.host_handle + 1)) as usize;
-        let sfd = proc
-            .signalfds
-            .get_mut(sfd_idx)
-            .and_then(|s| s.as_mut())
-            .ok_or(Errno::EBADF)?;
-        sfd.mask = mask;
+        crate::descriptor_backing::with_signalfds(|table| {
+            let sfd = table.get_mut(sfd_idx).ok_or(Errno::EBADF)?;
+            sfd.mask = mask;
+            Ok(())
+        })?;
         return Ok(fd);
     }
 
     // Create new signalfd
     let state = SignalFdState { mask };
 
-    let sfd_idx = {
-        let mut found = None;
-        for (i, slot) in proc.signalfds.iter().enumerate() {
-            if slot.is_none() {
-                found = Some(i);
-                break;
-            }
-        }
-        match found {
-            Some(i) => {
-                proc.signalfds[i] = Some(state);
-                i
-            }
-            None => {
-                let i = proc.signalfds.len();
-                proc.signalfds.push(Some(state));
-                i
-            }
-        }
-    };
+    let sfd_idx = crate::descriptor_backing::with_signalfds(|table| table.alloc(state));
 
     let handle = -((sfd_idx as i64) + 1);
     let mut status_flags = O_RDONLY;
@@ -11535,7 +11501,7 @@ pub fn sys_signalfd4(proc: &mut Process, fd: i32, mask: u64, flags: u32) -> Resu
         Ok(fd) => Ok(fd),
         Err(e) => {
             proc.ofd_table.dec_ref(ofd_idx);
-            proc.signalfds[sfd_idx] = None;
+            crate::descriptor_backing::with_signalfds(|table| table.release(sfd_idx));
             Err(e)
         }
     }
@@ -11649,12 +11615,12 @@ pub fn sys_ftruncate(
     // MemFd: truncate in-memory buffer
     if ofd.file_type == FileType::MemFd {
         let memfd_idx = (-(ofd.host_handle + 1)) as usize;
-        let data = proc
-            .memfds
-            .get_mut(memfd_idx)
-            .and_then(|s| s.as_mut())
-            .ok_or(Errno::EBADF)?;
-        data.resize(length as usize, 0);
+        let new_len = usize::try_from(length).map_err(|_| Errno::EFBIG)?;
+        crate::descriptor_backing::with_memfds(|table| {
+            let backing = table.get_mut(memfd_idx).ok_or(Errno::EBADF)?;
+            backing.data.resize(new_len, 0);
+            Ok(())
+        })?;
         return Ok(());
     }
 
@@ -12678,9 +12644,9 @@ pub fn sys_memfd_create(proc: &mut Process, name: &[u8], flags: u32) -> Result<i
         return Err(Errno::EINVAL);
     }
 
-    // Allocate a memfd slot
-    let memfd_idx = proc.memfds.len();
-    proc.memfds.push(Some(Vec::new()));
+    let memfd_idx = crate::descriptor_backing::with_memfds(|table| {
+        table.alloc(crate::descriptor_backing::MemFdBacking::new())
+    });
 
     // Create OFD with MemFd file type.
     // Use negative host_handle encoding: -(memfd_idx + 1)
@@ -12698,10 +12664,17 @@ pub fn sys_memfd_create(proc: &mut Process, name: &[u8], flags: u32) -> Result<i
     } else {
         0
     };
-    let fd = proc
+    match proc
         .fd_table
-        .alloc(crate::fd::OpenFileDescRef(ofd_idx), cloexec)?;
-    Ok(fd)
+        .alloc(crate::fd::OpenFileDescRef(ofd_idx), cloexec)
+    {
+        Ok(fd) => Ok(fd),
+        Err(err) => {
+            proc.ofd_table.dec_ref(ofd_idx);
+            crate::descriptor_backing::with_memfds(|table| table.release(memfd_idx));
+            Err(err)
+        }
+    }
 }
 
 #[cfg(test)]
@@ -12827,6 +12800,7 @@ mod tests {
         sigsuspend_signal: u32,
         sigsuspend_error: bool,
         clock_time: (i64, i64),
+        clock_error: Option<Errno>,
         /// Per-path owner overrides for host_stat / host_lstat. Mirrors how a real
         /// host-side VFS owns ownership; tests use `set_file_with_owner` to seed.
         file_owners: std::collections::HashMap<Vec<u8>, (u32, u32)>,
@@ -12855,6 +12829,7 @@ mod tests {
         net_send_result: Result<usize, Errno>,
         net_connect_calls: Vec<(i32, Vec<u8>, u16)>,
         net_listen_calls: Vec<(i32, u16, [u8; 4])>,
+        closed_handles: Vec<i64>,
         closed_dir_handles: Vec<i64>,
     }
 
@@ -12868,6 +12843,7 @@ mod tests {
                 sigsuspend_signal: 0,
                 sigsuspend_error: false,
                 clock_time: (1234567890, 123456789),
+                clock_error: None,
                 file_owners: std::collections::HashMap::new(),
                 file_modes: std::collections::HashMap::new(),
                 handle_owners: std::collections::HashMap::new(),
@@ -12884,6 +12860,7 @@ mod tests {
                 net_send_result: Err(Errno::ENOTCONN),
                 net_connect_calls: Vec::new(),
                 net_listen_calls: Vec::new(),
+                closed_handles: Vec::new(),
                 closed_dir_handles: Vec::new(),
             }
         }
@@ -12943,7 +12920,8 @@ mod tests {
             Ok(handle)
         }
 
-        fn host_close(&mut self, _handle: i64) -> Result<(), Errno> {
+        fn host_close(&mut self, handle: i64) -> Result<(), Errno> {
+            self.closed_handles.push(handle);
             Ok(())
         }
 
@@ -13152,6 +13130,9 @@ mod tests {
         }
 
         fn host_clock_gettime(&mut self, _clock_id: u32) -> Result<(i64, i64), Errno> {
+            if let Some(err) = self.clock_error {
+                return Err(err);
+            }
             Ok(self.clock_time)
         }
 
@@ -14544,6 +14525,936 @@ mod tests {
         ofd.host_handle
     }
 
+    fn descriptor_backing_idx(proc: &Process, fd: i32) -> usize {
+        let entry = proc.fd_table.get(fd).unwrap();
+        let ofd = proc.ofd_table.get(entry.ofd_ref.0).unwrap();
+        if ofd.file_type == FileType::Regular
+            && crate::procfs::is_procfs_buf_handle(ofd.host_handle)
+        {
+            crate::procfs::procfs_buf_idx(ofd.host_handle)
+        } else {
+            (-(ofd.host_handle + 1)) as usize
+        }
+    }
+
+    fn descriptor_backing_ref_count(file_type: FileType, idx: usize) -> Option<u32> {
+        match file_type {
+            FileType::EventFd => {
+                crate::descriptor_backing::with_eventfds(|table| table.ref_count(idx))
+            }
+            FileType::TimerFd => {
+                crate::descriptor_backing::with_timerfds(|table| table.ref_count(idx))
+            }
+            FileType::SignalFd => {
+                crate::descriptor_backing::with_signalfds(|table| table.ref_count(idx))
+            }
+            FileType::MemFd => crate::descriptor_backing::with_memfds(|table| table.ref_count(idx)),
+            FileType::Regular => {
+                crate::descriptor_backing::with_procfs_bufs(|table| table.ref_count(idx))
+            }
+            _ => None,
+        }
+    }
+
+    fn descriptor_backing_generation(file_type: FileType, idx: usize) -> Option<u64> {
+        match file_type {
+            FileType::EventFd => {
+                crate::descriptor_backing::with_eventfds(|table| table.generation(idx))
+            }
+            FileType::TimerFd => {
+                crate::descriptor_backing::with_timerfds(|table| table.generation(idx))
+            }
+            FileType::SignalFd => {
+                crate::descriptor_backing::with_signalfds(|table| table.generation(idx))
+            }
+            FileType::MemFd => {
+                crate::descriptor_backing::with_memfds(|table| table.generation(idx))
+            }
+            FileType::Regular => {
+                crate::descriptor_backing::with_procfs_bufs(|table| table.generation(idx))
+            }
+            _ => None,
+        }
+    }
+
+    fn assert_descriptor_backing_released(file_type: FileType, idx: usize, generation: u64) {
+        assert_ne!(
+            descriptor_backing_generation(file_type, idx),
+            Some(generation),
+            "the original backing identity must no longer be live"
+        );
+    }
+
+    #[test]
+    fn shared_eventfd_backing_survives_fork_and_spawn_without_aliasing() {
+        use crate::process_table::ProcessTable;
+        use crate::spawn::SpawnAttrs;
+
+        const PARENT: u32 = 970_100;
+        const FORK_CHILD: u32 = 970_101;
+        let mut table = ProcessTable::new();
+        let mut host = MockHostIO::new();
+        table.create_process(PARENT).unwrap();
+
+        let inherited_fd = sys_eventfd2(table.get_mut(PARENT).unwrap(), 0, O_NONBLOCK).unwrap();
+        let backing_idx = descriptor_backing_idx(table.get(PARENT).unwrap(), inherited_fd);
+        let backing_generation =
+            descriptor_backing_generation(FileType::EventFd, backing_idx).unwrap();
+        table.fork_process(PARENT, FORK_CHILD).unwrap();
+        let spawn_child = table
+            .spawn_child(PARENT, &[], &[], &[], &SpawnAttrs::empty(), &mut host)
+            .unwrap();
+        assert_eq!(
+            descriptor_backing_ref_count(FileType::EventFd, backing_idx),
+            Some(3)
+        );
+
+        let fresh_fd = sys_eventfd2(table.get_mut(FORK_CHILD).unwrap(), 33, O_NONBLOCK).unwrap();
+        assert_ne!(
+            fd_host_handle(table.get(FORK_CHILD).unwrap(), inherited_fd),
+            fd_host_handle(table.get(FORK_CHILD).unwrap(), fresh_fd),
+            "a child-created eventfd must not reuse an inherited live backing"
+        );
+
+        sys_write(
+            table.get_mut(FORK_CHILD).unwrap(),
+            &mut host,
+            inherited_fd,
+            &9u64.to_le_bytes(),
+        )
+        .unwrap();
+        let mut value = [0u8; 8];
+        sys_read(
+            table.get_mut(spawn_child).unwrap(),
+            &mut host,
+            inherited_fd,
+            &mut value,
+        )
+        .unwrap();
+        assert_eq!(u64::from_le_bytes(value), 9);
+        assert_eq!(
+            sys_read(
+                table.get_mut(PARENT).unwrap(),
+                &mut host,
+                inherited_fd,
+                &mut value,
+            ),
+            Err(Errno::EAGAIN),
+            "consuming through one descendant must drain the shared counter"
+        );
+
+        sys_close(table.get_mut(PARENT).unwrap(), &mut host, inherited_fd).unwrap();
+        assert_eq!(
+            descriptor_backing_ref_count(FileType::EventFd, backing_idx),
+            Some(2)
+        );
+        table.remove_process(FORK_CHILD).unwrap();
+        assert_eq!(
+            descriptor_backing_ref_count(FileType::EventFd, backing_idx),
+            Some(1)
+        );
+
+        sys_write(
+            table.get_mut(spawn_child).unwrap(),
+            &mut host,
+            inherited_fd,
+            &4u64.to_le_bytes(),
+        )
+        .unwrap();
+        sys_read(
+            table.get_mut(spawn_child).unwrap(),
+            &mut host,
+            inherited_fd,
+            &mut value,
+        )
+        .unwrap();
+        assert_eq!(u64::from_le_bytes(value), 4);
+        sys_close(table.get_mut(spawn_child).unwrap(), &mut host, inherited_fd).unwrap();
+        assert_descriptor_backing_released(FileType::EventFd, backing_idx, backing_generation);
+        table.remove_process(spawn_child).unwrap();
+        table.remove_process(PARENT).unwrap();
+    }
+
+    #[test]
+    fn shared_timerfd_backing_survives_fork_and_spawn_without_aliasing() {
+        use crate::process_table::ProcessTable;
+        use crate::spawn::SpawnAttrs;
+
+        const PARENT: u32 = 970_200;
+        const FORK_CHILD: u32 = 970_201;
+        let mut table = ProcessTable::new();
+        let mut host = MockHostIO::new();
+        host.clock_time = (100, 0);
+        table.create_process(PARENT).unwrap();
+        let inherited_fd =
+            sys_timerfd_create(table.get_mut(PARENT).unwrap(), 0, O_NONBLOCK).unwrap();
+        let backing_idx = descriptor_backing_idx(table.get(PARENT).unwrap(), inherited_fd);
+        let backing_generation =
+            descriptor_backing_generation(FileType::TimerFd, backing_idx).unwrap();
+        table.fork_process(PARENT, FORK_CHILD).unwrap();
+        let spawn_child = table
+            .spawn_child(PARENT, &[], &[], &[], &SpawnAttrs::empty(), &mut host)
+            .unwrap();
+
+        sys_timerfd_settime(
+            table.get_mut(FORK_CHILD).unwrap(),
+            &mut host,
+            inherited_fd,
+            0,
+            0,
+            0,
+            5,
+            0,
+        )
+        .unwrap();
+        assert_eq!(
+            sys_timerfd_gettime(table.get_mut(spawn_child).unwrap(), &mut host, inherited_fd,)
+                .unwrap(),
+            (0, 0, 5, 0)
+        );
+        let fresh_fd =
+            sys_timerfd_create(table.get_mut(spawn_child).unwrap(), 0, O_NONBLOCK).unwrap();
+        assert_ne!(
+            fd_host_handle(table.get(spawn_child).unwrap(), inherited_fd),
+            fd_host_handle(table.get(spawn_child).unwrap(), fresh_fd)
+        );
+
+        host.clock_time = (106, 0);
+        let mut count = [0u8; 8];
+        sys_read(
+            table.get_mut(PARENT).unwrap(),
+            &mut host,
+            inherited_fd,
+            &mut count,
+        )
+        .unwrap();
+        assert_eq!(u64::from_le_bytes(count), 1);
+        assert_eq!(
+            sys_read(
+                table.get_mut(FORK_CHILD).unwrap(),
+                &mut host,
+                inherited_fd,
+                &mut count,
+            ),
+            Err(Errno::EAGAIN)
+        );
+
+        table.remove_process(PARENT).unwrap();
+        table.remove_process(FORK_CHILD).unwrap();
+        table.remove_process(spawn_child).unwrap();
+        assert_descriptor_backing_released(FileType::TimerFd, backing_idx, backing_generation);
+    }
+
+    #[test]
+    fn shared_signalfd_mask_keeps_pending_queues_process_local() {
+        use crate::process_table::ProcessTable;
+        use crate::spawn::SpawnAttrs;
+        use wasm_posix_shared::signal::{SIGINT, SIGTERM, SIGUSR1};
+
+        const PARENT: u32 = 970_300;
+        const FORK_CHILD: u32 = 970_301;
+        let mut table = ProcessTable::new();
+        let mut host = MockHostIO::new();
+        table.create_process(PARENT).unwrap();
+        let inherited_fd = sys_signalfd4(
+            table.get_mut(PARENT).unwrap(),
+            -1,
+            1u64 << (SIGINT - 1),
+            O_NONBLOCK,
+        )
+        .unwrap();
+        let backing_idx = descriptor_backing_idx(table.get(PARENT).unwrap(), inherited_fd);
+        let backing_generation =
+            descriptor_backing_generation(FileType::SignalFd, backing_idx).unwrap();
+        table.fork_process(PARENT, FORK_CHILD).unwrap();
+        let spawn_child = table
+            .spawn_child(PARENT, &[], &[], &[], &SpawnAttrs::empty(), &mut host)
+            .unwrap();
+
+        let usr1_mask = 1u64 << (SIGUSR1 - 1);
+        sys_signalfd4(
+            table.get_mut(FORK_CHILD).unwrap(),
+            inherited_fd,
+            usr1_mask,
+            0,
+        )
+        .unwrap();
+        table.get_mut(PARENT).unwrap().signals.raise(SIGUSR1);
+        table.get_mut(spawn_child).unwrap().signals.raise(SIGUSR1);
+
+        let mut info = [0u8; 128];
+        assert_eq!(
+            sys_read(
+                table.get_mut(FORK_CHILD).unwrap(),
+                &mut host,
+                inherited_fd,
+                &mut info,
+            ),
+            Err(Errno::EAGAIN),
+            "the shared mask must not merge per-process pending queues"
+        );
+        sys_read(
+            table.get_mut(spawn_child).unwrap(),
+            &mut host,
+            inherited_fd,
+            &mut info,
+        )
+        .unwrap();
+        assert_eq!(u32::from_le_bytes(info[..4].try_into().unwrap()), SIGUSR1);
+        sys_read(
+            table.get_mut(PARENT).unwrap(),
+            &mut host,
+            inherited_fd,
+            &mut info,
+        )
+        .unwrap();
+        assert_eq!(u32::from_le_bytes(info[..4].try_into().unwrap()), SIGUSR1);
+
+        let fresh_fd = sys_signalfd4(
+            table.get_mut(FORK_CHILD).unwrap(),
+            -1,
+            1u64 << (SIGTERM - 1),
+            O_NONBLOCK,
+        )
+        .unwrap();
+        assert_ne!(
+            fd_host_handle(table.get(FORK_CHILD).unwrap(), inherited_fd),
+            fd_host_handle(table.get(FORK_CHILD).unwrap(), fresh_fd)
+        );
+
+        table.remove_process(PARENT).unwrap();
+        table.remove_process(FORK_CHILD).unwrap();
+        table.remove_process(spawn_child).unwrap();
+        assert_descriptor_backing_released(FileType::SignalFd, backing_idx, backing_generation);
+    }
+
+    #[test]
+    fn shared_memfd_data_and_cursor_survive_fork_and_spawn() {
+        use crate::process_table::ProcessTable;
+        use crate::spawn::SpawnAttrs;
+
+        const PARENT: u32 = 970_400;
+        const FORK_CHILD: u32 = 970_401;
+        let mut table = ProcessTable::new();
+        let mut host = MockHostIO::new();
+        table.create_process(PARENT).unwrap();
+        let inherited_fd = sys_memfd_create(table.get_mut(PARENT).unwrap(), b"shared", 0).unwrap();
+        let backing_idx = descriptor_backing_idx(table.get(PARENT).unwrap(), inherited_fd);
+        let backing_generation =
+            descriptor_backing_generation(FileType::MemFd, backing_idx).unwrap();
+        sys_write(
+            table.get_mut(PARENT).unwrap(),
+            &mut host,
+            inherited_fd,
+            b"abcdef",
+        )
+        .unwrap();
+        sys_lseek(
+            table.get_mut(PARENT).unwrap(),
+            &mut host,
+            inherited_fd,
+            0,
+            SEEK_SET,
+        )
+        .unwrap();
+        table.fork_process(PARENT, FORK_CHILD).unwrap();
+        let spawn_child = table
+            .spawn_child(PARENT, &[], &[], &[], &SpawnAttrs::empty(), &mut host)
+            .unwrap();
+
+        let mut pair = [0u8; 2];
+        sys_read(
+            table.get_mut(PARENT).unwrap(),
+            &mut host,
+            inherited_fd,
+            &mut pair,
+        )
+        .unwrap();
+        assert_eq!(&pair, b"ab");
+        sys_read(
+            table.get_mut(FORK_CHILD).unwrap(),
+            &mut host,
+            inherited_fd,
+            &mut pair,
+        )
+        .unwrap();
+        assert_eq!(&pair, b"cd");
+        sys_read(
+            table.get_mut(spawn_child).unwrap(),
+            &mut host,
+            inherited_fd,
+            &mut pair,
+        )
+        .unwrap();
+        assert_eq!(&pair, b"ef");
+
+        sys_pwrite(
+            table.get_mut(FORK_CHILD).unwrap(),
+            &mut host,
+            inherited_fd,
+            b"ZZ",
+            1,
+        )
+        .unwrap();
+        let mut all = [0u8; 6];
+        sys_pread(
+            table.get_mut(spawn_child).unwrap(),
+            &mut host,
+            inherited_fd,
+            &mut all,
+            0,
+        )
+        .unwrap();
+        assert_eq!(&all, b"aZZdef");
+        assert_eq!(
+            sys_lseek(
+                table.get_mut(PARENT).unwrap(),
+                &mut host,
+                inherited_fd,
+                0,
+                SEEK_CUR,
+            )
+            .unwrap(),
+            6,
+            "positioned I/O must not move the shared cursor"
+        );
+
+        sys_ftruncate(
+            table.get_mut(spawn_child).unwrap(),
+            &mut host,
+            inherited_fd,
+            4,
+        )
+        .unwrap();
+        assert_eq!(
+            sys_fstat(table.get_mut(PARENT).unwrap(), &mut host, inherited_fd)
+                .unwrap()
+                .st_size,
+            4
+        );
+
+        let fresh_fd = sys_memfd_create(table.get_mut(FORK_CHILD).unwrap(), b"fresh", 0).unwrap();
+        assert_ne!(
+            fd_host_handle(table.get(FORK_CHILD).unwrap(), inherited_fd),
+            fd_host_handle(table.get(FORK_CHILD).unwrap(), fresh_fd)
+        );
+        sys_write(
+            table.get_mut(FORK_CHILD).unwrap(),
+            &mut host,
+            fresh_fd,
+            b"independent",
+        )
+        .unwrap();
+        let mut truncated = [0u8; 4];
+        sys_pread(
+            table.get_mut(PARENT).unwrap(),
+            &mut host,
+            inherited_fd,
+            &mut truncated,
+            0,
+        )
+        .unwrap();
+        assert_eq!(&truncated, b"aZZd");
+
+        table.remove_process(PARENT).unwrap();
+        table.remove_process(FORK_CHILD).unwrap();
+        table.remove_process(spawn_child).unwrap();
+        assert_descriptor_backing_released(FileType::MemFd, backing_idx, backing_generation);
+    }
+
+    #[test]
+    fn inherited_memfd_seek_cur_lock_and_fdinfo_use_peer_advanced_cursor() {
+        use crate::process_table::ProcessTable;
+
+        let _locks = enter_fallback_lock_test();
+        const PARENT: u32 = 970_450;
+        const CHILD: u32 = 970_451;
+        let mut table = ProcessTable::new();
+        let mut host = MockHostIO::new();
+        table.create_process(PARENT).unwrap();
+        let fd = sys_memfd_create(table.get_mut(PARENT).unwrap(), b"cursor-lock", 0).unwrap();
+        sys_write(table.get_mut(PARENT).unwrap(), &mut host, fd, b"abcdefgh").unwrap();
+        sys_lseek(table.get_mut(PARENT).unwrap(), &mut host, fd, 0, SEEK_SET).unwrap();
+        table.fork_process(PARENT, CHILD).unwrap();
+
+        let mut prefix = [0u8; 3];
+        sys_read(table.get_mut(CHILD).unwrap(), &mut host, fd, &mut prefix).unwrap();
+        assert_eq!(&prefix, b"abc");
+        let fdinfo = crate::procfs::generate_fdinfo(table.get(PARENT).unwrap(), fd).unwrap();
+        assert!(
+            core::str::from_utf8(&fdinfo).unwrap().contains("pos:\t3\n"),
+            "fdinfo must report the peer-advanced shared cursor"
+        );
+
+        let mut parent_lock = WasmFlock {
+            l_type: F_WRLCK as i16,
+            l_whence: SEEK_CUR as i16,
+            _pad1: 0,
+            l_start: 2,
+            l_len: 1,
+            l_pid: 0,
+            _pad2: 0,
+        };
+        sys_fcntl_lock(
+            table.get_mut(PARENT).unwrap(),
+            fd,
+            F_SETLK,
+            &mut parent_lock,
+            &mut host,
+        )
+        .unwrap();
+
+        let mut query = WasmFlock {
+            l_type: F_WRLCK as i16,
+            l_whence: SEEK_SET as i16,
+            _pad1: 0,
+            l_start: 5,
+            l_len: 1,
+            l_pid: 0,
+            _pad2: 0,
+        };
+        sys_fcntl_lock(
+            table.get_mut(CHILD).unwrap(),
+            fd,
+            F_GETLK,
+            &mut query,
+            &mut host,
+        )
+        .unwrap();
+        assert_eq!(query.l_type as u32, F_WRLCK);
+        assert_eq!(query.l_start, 5);
+        assert_eq!(query.l_pid, PARENT);
+
+        table.remove_process(CHILD).unwrap();
+        table.remove_process(PARENT).unwrap();
+    }
+
+    #[test]
+    fn shared_procfs_snapshot_and_cursor_survive_fork_and_spawn() {
+        use crate::process_table::ProcessTable;
+        use crate::spawn::SpawnAttrs;
+
+        const PARENT: u32 = 970_500;
+        const FORK_CHILD: u32 = 970_501;
+        let mut table = ProcessTable::new();
+        let mut host = MockHostIO::new();
+        table.create_process(PARENT).unwrap();
+        table.get_mut(PARENT).unwrap().argv = vec![b"parent-program".to_vec()];
+        let expected = crate::procfs::generate_stat(table.get(PARENT).unwrap());
+        let inherited_fd = crate::procfs::procfs_open(
+            table.get_mut(PARENT).unwrap(),
+            &crate::procfs::ProcfsEntry::Stat(PARENT),
+            b"/proc/self/stat".to_vec(),
+            0,
+        )
+        .unwrap();
+        let backing_idx = descriptor_backing_idx(table.get(PARENT).unwrap(), inherited_fd);
+        let backing_generation =
+            descriptor_backing_generation(FileType::Regular, backing_idx).unwrap();
+
+        let mut first = [0u8; 7];
+        sys_read(
+            table.get_mut(PARENT).unwrap(),
+            &mut host,
+            inherited_fd,
+            &mut first,
+        )
+        .unwrap();
+        assert_eq!(&first, &expected[..7]);
+        table.fork_process(PARENT, FORK_CHILD).unwrap();
+        let spawn_child = table
+            .spawn_child(
+                PARENT,
+                &[b"spawn-program"],
+                &[],
+                &[],
+                &SpawnAttrs::empty(),
+                &mut host,
+            )
+            .unwrap();
+
+        let mut second = [0u8; 9];
+        sys_read(
+            table.get_mut(FORK_CHILD).unwrap(),
+            &mut host,
+            inherited_fd,
+            &mut second,
+        )
+        .unwrap();
+        assert_eq!(&second, &expected[7..16]);
+        let fdinfo =
+            crate::procfs::generate_fdinfo(table.get(PARENT).unwrap(), inherited_fd).unwrap();
+        assert!(
+            core::str::from_utf8(&fdinfo)
+                .unwrap()
+                .contains("pos:\t16\n")
+        );
+        let mut third = [0u8; 11];
+        sys_read(
+            table.get_mut(spawn_child).unwrap(),
+            &mut host,
+            inherited_fd,
+            &mut third,
+        )
+        .unwrap();
+        assert_eq!(&third, &expected[16..27]);
+
+        let fresh_expected = crate::procfs::generate_stat(table.get(spawn_child).unwrap());
+        let fresh_fd = crate::procfs::procfs_open(
+            table.get_mut(spawn_child).unwrap(),
+            &crate::procfs::ProcfsEntry::Stat(spawn_child),
+            b"/proc/self/stat".to_vec(),
+            0,
+        )
+        .unwrap();
+        assert_ne!(
+            fd_host_handle(table.get(spawn_child).unwrap(), inherited_fd),
+            fd_host_handle(table.get(spawn_child).unwrap(), fresh_fd)
+        );
+        let mut fresh_prefix = [0u8; 12];
+        sys_read(
+            table.get_mut(spawn_child).unwrap(),
+            &mut host,
+            fresh_fd,
+            &mut fresh_prefix,
+        )
+        .unwrap();
+        assert_eq!(&fresh_prefix, &fresh_expected[..12]);
+
+        let mut fourth = [0u8; 5];
+        sys_read(
+            table.get_mut(PARENT).unwrap(),
+            &mut host,
+            inherited_fd,
+            &mut fourth,
+        )
+        .unwrap();
+        assert_eq!(&fourth, &expected[27..32]);
+
+        table.remove_process(PARENT).unwrap();
+        table.remove_process(FORK_CHILD).unwrap();
+        table.remove_process(spawn_child).unwrap();
+        assert_descriptor_backing_released(FileType::Regular, backing_idx, backing_generation);
+    }
+
+    #[test]
+    fn fork_clofork_filter_recomputes_ofd_refs_and_backing_lifetime() {
+        use crate::process_table::ProcessTable;
+
+        const PARENT: u32 = 970_600;
+        const CHILD: u32 = 970_601;
+        let mut table = ProcessTable::new();
+        let mut host = MockHostIO::new();
+        table.create_process(PARENT).unwrap();
+        let clo_fork_fd = sys_eventfd2(table.get_mut(PARENT).unwrap(), 1, 0).unwrap();
+        let inherited_alias = sys_dup(table.get_mut(PARENT).unwrap(), clo_fork_fd).unwrap();
+        let backing_idx = descriptor_backing_idx(table.get(PARENT).unwrap(), clo_fork_fd);
+        let backing_generation =
+            descriptor_backing_generation(FileType::EventFd, backing_idx).unwrap();
+        table
+            .get_mut(PARENT)
+            .unwrap()
+            .fd_table
+            .get_mut(clo_fork_fd)
+            .unwrap()
+            .fd_flags |= FD_CLOFORK;
+
+        table.fork_process(PARENT, CHILD).unwrap();
+        let child = table.get(CHILD).unwrap();
+        assert!(child.fd_table.get(clo_fork_fd).is_err());
+        let child_entry = child.fd_table.get(inherited_alias).unwrap();
+        assert_eq!(
+            child
+                .ofd_table
+                .get(child_entry.ofd_ref.0)
+                .unwrap()
+                .ref_count,
+            1,
+            "fork must recompute local OFD refs after filtering CLOFORK aliases"
+        );
+        assert_eq!(
+            descriptor_backing_ref_count(FileType::EventFd, backing_idx),
+            Some(2)
+        );
+
+        sys_close(table.get_mut(CHILD).unwrap(), &mut host, inherited_alias).unwrap();
+        assert_eq!(
+            descriptor_backing_ref_count(FileType::EventFd, backing_idx),
+            Some(1)
+        );
+        sys_close(table.get_mut(PARENT).unwrap(), &mut host, clo_fork_fd).unwrap();
+        assert_eq!(
+            descriptor_backing_ref_count(FileType::EventFd, backing_idx),
+            Some(1),
+            "closing one local alias must not drop the process's OFD reference"
+        );
+        sys_close(table.get_mut(PARENT).unwrap(), &mut host, inherited_alias).unwrap();
+        assert_descriptor_backing_released(FileType::EventFd, backing_idx, backing_generation);
+        table.remove_process(CHILD).unwrap();
+        table.remove_process(PARENT).unwrap();
+    }
+
+    #[test]
+    fn spawn_cloexec_and_action_rollback_balance_all_shared_backings() {
+        use crate::process_table::ProcessTable;
+        use crate::spawn::{FileAction, SpawnAttrs};
+        use wasm_posix_shared::signal::SIGINT;
+
+        const PARENT: u32 = 970_700;
+        let mut table = ProcessTable::new();
+        let mut host = MockHostIO::new();
+        table.create_process(PARENT).unwrap();
+
+        let eventfd = sys_eventfd2(table.get_mut(PARENT).unwrap(), 0, O_CLOEXEC).unwrap();
+        let timerfd = sys_timerfd_create(table.get_mut(PARENT).unwrap(), 0, O_CLOEXEC).unwrap();
+        let signalfd = sys_signalfd4(
+            table.get_mut(PARENT).unwrap(),
+            -1,
+            1u64 << (SIGINT - 1),
+            O_CLOEXEC,
+        )
+        .unwrap();
+        let memfd = sys_memfd_create(table.get_mut(PARENT).unwrap(), b"cloexec", 1).unwrap();
+        let procfd = crate::procfs::procfs_open(
+            table.get_mut(PARENT).unwrap(),
+            &crate::procfs::ProcfsEntry::Stat(PARENT),
+            b"/proc/self/stat".to_vec(),
+            O_CLOEXEC,
+        )
+        .unwrap();
+        let tracked = [
+            (eventfd, FileType::EventFd),
+            (timerfd, FileType::TimerFd),
+            (signalfd, FileType::SignalFd),
+            (memfd, FileType::MemFd),
+            (procfd, FileType::Regular),
+        ]
+        .map(|(fd, file_type)| {
+            let idx = descriptor_backing_idx(table.get(PARENT).unwrap(), fd);
+            (
+                fd,
+                file_type,
+                idx,
+                descriptor_backing_generation(file_type, idx).unwrap(),
+            )
+        });
+
+        let child = table
+            .spawn_child(PARENT, &[], &[], &[], &SpawnAttrs::empty(), &mut host)
+            .unwrap();
+        for (fd, file_type, idx, _) in tracked {
+            assert!(table.get(child).unwrap().fd_table.get(fd).is_err());
+            assert_eq!(descriptor_backing_ref_count(file_type, idx), Some(1));
+        }
+
+        let err = table
+            .spawn_child(
+                PARENT,
+                &[],
+                &[],
+                &[FileAction::Dup2 { srcfd: 999, fd: 1 }],
+                &SpawnAttrs::empty(),
+                &mut host,
+            )
+            .unwrap_err();
+        assert_eq!(err, Errno::EBADF);
+        for (_, file_type, idx, _) in tracked {
+            assert_eq!(
+                descriptor_backing_ref_count(file_type, idx),
+                Some(1),
+                "failed spawn must roll back every inherited backing ref"
+            );
+        }
+
+        table.remove_process(child).unwrap();
+        for (fd, _, _, _) in tracked {
+            sys_close(table.get_mut(PARENT).unwrap(), &mut host, fd).unwrap();
+        }
+        for (_, file_type, idx, generation) in tracked {
+            assert_descriptor_backing_released(file_type, idx, generation);
+        }
+        table.remove_process(PARENT).unwrap();
+    }
+
+    #[test]
+    fn legacy_exec_transfers_survivor_and_releases_cloexec_only_backing() {
+        use crate::process_table::ProcessTable;
+
+        const PID: u32 = 970_800;
+        let mut old = Process::new(PID);
+        let mut host = MockHostIO::new();
+        let removed_fd = sys_eventfd2(&mut old, 11, O_CLOEXEC).unwrap();
+        let retained_fd = sys_eventfd2(&mut old, 22, 0).unwrap();
+        let filtered_alias = sys_dup(&mut old, retained_fd).unwrap();
+        old.fd_table.get_mut(filtered_alias).unwrap().fd_flags |= FD_CLOEXEC;
+        let removed_idx = descriptor_backing_idx(&old, removed_fd);
+        let removed_generation =
+            descriptor_backing_generation(FileType::EventFd, removed_idx).unwrap();
+        let retained_idx = descriptor_backing_idx(&old, retained_fd);
+
+        let serialized = crate::fork::serialize_exec_state_with_growing_buffer(&old).unwrap();
+        let replacement = crate::fork::deserialize_exec_state(&serialized, PID).unwrap();
+        assert!(replacement.fd_table.get(removed_fd).is_err());
+        assert!(replacement.fd_table.get(filtered_alias).is_err());
+        let retained_ofd_idx = replacement.fd_table.get(retained_fd).unwrap().ofd_ref.0;
+        assert_eq!(
+            replacement
+                .ofd_table
+                .get(retained_ofd_idx)
+                .unwrap()
+                .ref_count,
+            1
+        );
+
+        let mut table = ProcessTable::new();
+        table.processes.insert(PID, old);
+        table.replace_legacy_exec_process(PID, replacement).unwrap();
+        assert_descriptor_backing_released(FileType::EventFd, removed_idx, removed_generation);
+        assert_eq!(
+            descriptor_backing_ref_count(FileType::EventFd, retained_idx),
+            Some(1),
+            "the replacement must transfer, not duplicate, the survivor's ownership ref"
+        );
+
+        let mut value = [0u8; 8];
+        sys_read(
+            table.get_mut(PID).unwrap(),
+            &mut host,
+            retained_fd,
+            &mut value,
+        )
+        .unwrap();
+        assert_eq!(u64::from_le_bytes(value), 22);
+        sys_close(table.get_mut(PID).unwrap(), &mut host, retained_fd).unwrap();
+        table.remove_process(PID).unwrap();
+    }
+
+    #[test]
+    fn legacy_fork_into_fresh_table_keeps_host_handle_single_owned() {
+        use crate::process_table::ProcessTable;
+
+        const PARENT: u32 = 970_810;
+        const CHILD: u32 = 970_811;
+        const HOST_HANDLE: i64 = 9_708_110;
+
+        let mut source = Process::new(PARENT);
+        let ofd_idx = source.ofd_table.create(
+            FileType::Regular,
+            O_RDWR,
+            HOST_HANDLE,
+            b"/fresh-kernel-handle".to_vec(),
+        );
+        let fd = source
+            .fd_table
+            .alloc(OpenFileDescRef(ofd_idx), 0)
+            .unwrap();
+        let mut serialized = vec![0u8; 64 * 1024];
+        let written = crate::fork::serialize_fork_state(&source, &mut serialized).unwrap();
+        let child = crate::fork::deserialize_fork_state(&serialized[..written], CHILD).unwrap();
+        assert_eq!(child.ppid, PARENT);
+
+        let mut table = ProcessTable::new();
+        table.insert_legacy_fork_process(child).unwrap();
+        let mut host = MockHostIO::new();
+        sys_close(table.get_mut(CHILD).unwrap(), &mut host, fd).unwrap();
+        assert_eq!(host.closed_handles, vec![HOST_HANDLE]);
+    }
+
+    #[test]
+    fn legacy_fork_into_fresh_table_rejects_reused_special_backing() {
+        use crate::process_table::ProcessTable;
+
+        const OWNER: u32 = 970_820;
+        const CHILD: u32 = 970_821;
+        let mut owner = Process::new(OWNER);
+        let owner_fd = sys_eventfd2(&mut owner, 37, 0).unwrap();
+        let backing_idx = descriptor_backing_idx(&owner, owner_fd);
+        let generation =
+            descriptor_backing_generation(FileType::EventFd, backing_idx).unwrap();
+
+        // Model a stale serialized child whose stable index now names another
+        // process's live object. A fresh-table legacy install has no parent
+        // ownership to transfer and must reject rather than add a reference.
+        let mut child = Process::new(CHILD);
+        child.ppid = 999_999;
+        let stale_handle = -((backing_idx as i64) + 1);
+        let stale_ofd = child.ofd_table.create(
+            FileType::EventFd,
+            O_RDWR,
+            stale_handle,
+            b"/dev/eventfd".to_vec(),
+        );
+        child
+            .fd_table
+            .alloc(OpenFileDescRef(stale_ofd), 0)
+            .unwrap();
+
+        let mut table = ProcessTable::new();
+        assert_eq!(table.insert_legacy_fork_process(child), Err(Errno::EBADF));
+        assert!(table.get(CHILD).is_none());
+        assert_eq!(
+            descriptor_backing_ref_count(FileType::EventFd, backing_idx),
+            Some(1)
+        );
+        assert_eq!(
+            descriptor_backing_generation(FileType::EventFd, backing_idx),
+            Some(generation)
+        );
+
+        let mut host = MockHostIO::new();
+        let mut value = [0u8; 8];
+        sys_read(&mut owner, &mut host, owner_fd, &mut value).unwrap();
+        assert_eq!(u64::from_le_bytes(value), 37);
+        sys_close(&mut owner, &mut host, owner_fd).unwrap();
+    }
+
+    #[test]
+    fn legacy_exec_into_fresh_table_rejects_reused_special_backing() {
+        use crate::process_table::ProcessTable;
+
+        const OWNER: u32 = 970_830;
+        const EXEC_PID: u32 = 970_831;
+        let mut owner = Process::new(OWNER);
+        let owner_fd = sys_eventfd2(&mut owner, 41, 0).unwrap();
+        let backing_idx = descriptor_backing_idx(&owner, owner_fd);
+        let generation =
+            descriptor_backing_generation(FileType::EventFd, backing_idx).unwrap();
+
+        let mut replacement = Process::new(EXEC_PID);
+        let stale_handle = -((backing_idx as i64) + 1);
+        let stale_ofd = replacement.ofd_table.create(
+            FileType::EventFd,
+            O_RDWR,
+            stale_handle,
+            b"/dev/eventfd".to_vec(),
+        );
+        replacement
+            .fd_table
+            .alloc(OpenFileDescRef(stale_ofd), 0)
+            .unwrap();
+
+        let mut table = ProcessTable::new();
+        assert_eq!(
+            table.replace_legacy_exec_process(EXEC_PID, replacement),
+            Err(Errno::EBADF)
+        );
+        assert!(table.get(EXEC_PID).is_none());
+        assert_eq!(
+            descriptor_backing_ref_count(FileType::EventFd, backing_idx),
+            Some(1)
+        );
+        assert_eq!(
+            descriptor_backing_generation(FileType::EventFd, backing_idx),
+            Some(generation)
+        );
+
+        let mut host = MockHostIO::new();
+        let mut value = [0u8; 8];
+        sys_read(&mut owner, &mut host, owner_fd, &mut value).unwrap();
+        assert_eq!(u64::from_le_bytes(value), 41);
+        sys_close(&mut owner, &mut host, owner_fd).unwrap();
+    }
+
     #[test]
     fn test_fcntl_setlk_fallback_conflict_reports_would_block() {
         let _guard = enter_fallback_lock_test();
@@ -15517,6 +16428,13 @@ mod tests {
         let mut host = MockHostIO::new();
         let cloexec_fd = sys_eventfd2(&mut proc, 19, O_CLOEXEC).unwrap();
         let retained_fd = sys_dup(&mut proc, cloexec_fd).unwrap();
+        let backing_idx = {
+            let entry = proc.fd_table.get(retained_fd).unwrap();
+            let ofd = proc.ofd_table.get(entry.ofd_ref.0).unwrap();
+            (-(ofd.host_handle + 1)) as usize
+        };
+        let backing_generation =
+            descriptor_backing_generation(FileType::EventFd, backing_idx).unwrap();
         assert_eq!(proc.fd_table.get(retained_fd).unwrap().fd_flags, 0);
 
         let pid = proc.pid;
@@ -15527,7 +16445,7 @@ mod tests {
         sys_read(&mut proc, &mut host, retained_fd, &mut value).unwrap();
         assert_eq!(u64::from_le_bytes(value), 19);
         sys_close(&mut proc, &mut host, retained_fd).unwrap();
-        assert!(proc.eventfds[0].is_none());
+        assert_descriptor_backing_released(FileType::EventFd, backing_idx, backing_generation);
     }
 
     #[test]
@@ -22736,12 +23654,18 @@ mod tests {
         let mut proc = Process::new(1);
         let mut host = MockHostIO::new();
         let fd = sys_eventfd2(&mut proc, 42, 0).unwrap();
+        let backing_idx = {
+            let entry = proc.fd_table.get(fd).unwrap();
+            let ofd = proc.ofd_table.get(entry.ofd_ref.0).unwrap();
+            (-(ofd.host_handle + 1)) as usize
+        };
+        let backing_generation =
+            descriptor_backing_generation(FileType::EventFd, backing_idx).unwrap();
 
         // Close the eventfd
         sys_close(&mut proc, &mut host, fd).unwrap();
 
-        // eventfd slot should be freed
-        assert!(proc.eventfds[0].is_none());
+        assert_descriptor_backing_released(FileType::EventFd, backing_idx, backing_generation);
     }
 
     #[test]
@@ -22874,6 +23798,46 @@ mod tests {
         assert_eq!(insec, 0);
         assert_eq!(vsec, 5); // 5 seconds remaining
         assert_eq!(vnsec, 0);
+    }
+
+    #[test]
+    fn test_timerfd_settime_host_error_leaves_backing_unchanged() {
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        let fd = sys_timerfd_create(&mut proc, 0, 0).unwrap();
+        let backing_idx = descriptor_backing_idx(&proc, fd);
+
+        sys_timerfd_settime(&mut proc, &mut host, fd, 1, 2, 3, 110, 4).unwrap();
+        let before = crate::descriptor_backing::with_timerfds(|table| {
+            let timer = table.get(backing_idx).unwrap();
+            (
+                timer.interval_sec,
+                timer.interval_nsec,
+                timer.value_sec,
+                timer.value_nsec,
+                timer.expirations,
+            )
+        });
+
+        host.clock_error = Some(Errno::EIO);
+        assert_eq!(
+            sys_timerfd_settime(&mut proc, &mut host, fd, 0, 9, 8, 7, 6),
+            Err(Errno::EIO)
+        );
+        let after = crate::descriptor_backing::with_timerfds(|table| {
+            let timer = table.get(backing_idx).unwrap();
+            (
+                timer.interval_sec,
+                timer.interval_nsec,
+                timer.value_sec,
+                timer.value_nsec,
+                timer.expirations,
+            )
+        });
+        assert_eq!(after, before);
+
+        host.clock_error = None;
+        sys_close(&mut proc, &mut host, fd).unwrap();
     }
 
     #[test]
