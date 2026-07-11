@@ -32,6 +32,7 @@ import {
 import {
   describeWasmArtifactPolicyFailures,
   extractAbiVersion,
+  readWasmFunctionArity,
   readWasmImportDescriptors,
   WASM_PAGE_SIZE,
 } from "./constants";
@@ -4595,7 +4596,9 @@ export function patchWasmForThread(bytes: ArrayBuffer): ArrayBuffer {
   numFuncImports = readWasmImportDescriptors(bytes)
     .filter((entry) => entry.kind === "function").length;
 
-  // Find the constructor function by looking at the exported helper wrappers.
+  // Find the constructor function from executable linker evidence. Custom
+  // name sections are optional debug metadata and cannot authorize a body
+  // rewrite.
   // Plain lld output puts `call $__wasm_call_ctors` first. After
   // wasm-fork-instrument, wrappers have a rewind prolog before the original
   // body, so scan instructions and choose the call target shared by the known
@@ -4757,7 +4760,21 @@ export function patchWasmForThread(bytes: ArrayBuffer): ArrayBuffer {
     return calls;
   }
 
-  // Find the Code section and identify a call target shared by LLVM helper exports.
+  const ctorCandidates = new Map<number, string[]>();
+  const addCtorCandidate = (index: number | undefined, source: string): void => {
+    if (index === undefined) return;
+    const sources = ctorCandidates.get(index) ?? [];
+    sources.push(source);
+    ctorCandidates.set(index, sources);
+  };
+  addCtorCandidate(
+    exportFuncIndicesByName.get("__wasm_call_ctors"),
+    "function export",
+  );
+
+  // Find the Code section and identify a call target shared by LLVM helper
+  // exports. Instrumented wrappers can have a rewind prolog, so a shared
+  // executable target is stronger evidence than a fixed instruction offset.
   for (const sec of sections) {
     if (sec.id === 10 && exportedFuncIndices.length > 0) {
       const helperNames = [
@@ -4800,29 +4817,46 @@ export function patchWasmForThread(bytes: ArrayBuffer): ArrayBuffer {
         }
       }
 
-      if (best) {
-        ctorFuncIndex = best.target;
-      } else {
-        // Fallback for very small legacy binaries: use the first call in an
-        // exported function whose body starts with that call.
-        for (const funcIndex of exportedFuncIndices) {
-          const bounds = getInstructionStartAndEnd(sec, funcIndex);
-          if (!bounds || src[bounds.start] !== 0x10) continue;
+      if (best) addCtorCandidate(best.target, "shared linker wrappers");
+
+      // A validated ABI marker is itself a linker wrapper in small legacy
+      // modules. Its leading direct call is authoritative even when there is
+      // no second helper export with which to intersect it.
+      const abiMarkerIndex = exportFuncIndicesByName.get("__abi_version");
+      if (abiMarkerIndex !== undefined && extractAbiVersion(bytes) !== null) {
+        const bounds = getInstructionStartAndEnd(sec, abiMarkerIndex);
+        if (bounds && src[bounds.start] === 0x10) {
           const [target] = readLEB128(src, bounds.start + 1);
-          if (target >= numFuncImports) {
-            ctorFuncIndex = target;
-            break;
-          }
+          addCtorCandidate(target, "__abi_version linker wrapper");
         }
       }
       break;
     }
   }
 
+  if (ctorCandidates.size > 1) {
+    const evidence = [...ctorCandidates]
+      .map(([index, sources]) => `${index} (${sources.join(", ")})`)
+      .join("; ");
+    throw new Error(`Conflicting __wasm_call_ctors evidence: ${evidence}`);
+  }
+  ctorFuncIndex = ctorCandidates.keys().next().value ?? -1;
+
   const ctorCodeEntry =
     ctorFuncIndex >= 0 ? ctorFuncIndex - numFuncImports : -1;
-  if (ctorFuncIndex < 0) {
-    // No ctor found — still strip start section but can't neuter the ctor body
+  if (ctorFuncIndex >= 0) {
+    const arity = readWasmFunctionArity(bytes, ctorFuncIndex);
+    if (ctorCodeEntry < 0 || arity === null) {
+      throw new Error(
+        `__wasm_call_ctors function ${ctorFuncIndex} has no defined function body`,
+      );
+    }
+    if (arity.parameters !== 0 || arity.results !== 0) {
+      throw new Error(
+        `__wasm_call_ctors function ${ctorFuncIndex} must have type () -> (), `
+          + `found ${arity.parameters} parameter(s) and ${arity.results} result(s)`,
+      );
+    }
   }
 
   // Build output: always skip Start section; optionally neuter constructor function
