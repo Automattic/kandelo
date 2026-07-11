@@ -81,6 +81,11 @@ Injected TCP pipes live in the kernel's global pipe table (`pid == 0` for
 connection in any nginx worker. The standalone nginx image runs with
 `master_process on` and `worker_processes 2`.
 
+AF_UNIX stream listeners use the same shared-queue ownership model. This is the
+path used by pre-fork PHP-FPM workers: a connection is queued once and whichever
+worker wins `accept()` materializes its own connected socket around the global
+pipe pair.
+
 ## Capabilities
 
 ### Multi-Process
