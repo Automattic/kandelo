@@ -8,6 +8,7 @@ import type { TcpConnectionPeer, UdpDatagram } from "../src/types";
 
 const POLLIN = 0x0001;
 const POLLOUT = 0x0004;
+const POLLERR = 0x0008;
 const POLLHUP = 0x0010;
 
 describe("LocalVirtualNetwork", () => {
@@ -89,6 +90,7 @@ describe("LocalVirtualNetwork", () => {
     net.detachMachine("server");
 
     const revents = client.poll!(7, POLLIN | POLLOUT);
+    expect(revents & POLLERR).toBe(POLLERR);
     expect(revents & POLLIN).toBe(POLLIN);
     expect(revents & POLLOUT).toBe(0);
     expect(revents & POLLHUP).toBe(POLLHUP);
@@ -106,7 +108,7 @@ describe("LocalVirtualNetwork", () => {
     }
   });
 
-  it("models TCP close as orderly FIN before later reset", () => {
+  it("drains queued TCP data before FIN and keeps an orphaned receive sink", () => {
     const net = new LocalVirtualNetwork();
     const server = net.attachMachine({ id: "server", address: [10, 88, 0, 2] });
     const client = net.attachMachine({ id: "client", address: [10, 88, 0, 3] });
@@ -123,16 +125,39 @@ describe("LocalVirtualNetwork", () => {
     expect(client.connectStatus(7)).toBe(0);
     expect(accepted).not.toBeNull();
 
+    expect(accepted!.send(new TextEncoder().encode("queued"), 0)).toBe(6);
     accepted!.close();
 
+    expect(new TextDecoder().decode(client.recv(7, 16, 0))).toBe("queued");
     expect(client.recv(7, 16, 0)).toHaveLength(0);
-    expect(client.send(7, new TextEncoder().encode("after-fin"), 0)).toBe(9);
-    try {
-      client.send(7, new TextEncoder().encode("after-reset"), 0);
-      throw new Error("second send after closed peer unexpectedly succeeded");
-    } catch (error) {
-      expect((error as Error & { errno?: number }).errno).toBe(VIRTUAL_NETWORK_ERRNO.ECONNRESET);
-    }
+    const revents = client.poll!(7, POLLIN | POLLOUT);
+    expect(revents & POLLIN).toBe(POLLIN);
+    expect(revents & POLLOUT).toBe(POLLOUT);
+    expect(client.send(7, new TextEncoder().encode("after-fin-one"), 0)).toBe(13);
+    expect(client.send(7, new TextEncoder().encode("after-fin-two"), 0)).toBe(13);
+    client.close(7);
+  });
+
+  it("keeps the receive direction usable after SHUT_WR", () => {
+    const net = new LocalVirtualNetwork();
+    const server = net.attachMachine({ id: "server", address: [10, 88, 0, 2] });
+    const client = net.attachMachine({ id: "client", address: [10, 88, 0, 3] });
+    let accepted: TcpConnectionPeer | null = null;
+
+    expect(server.listenTcp!("srv:1", new Uint8Array([10, 88, 0, 2]), 8080, {
+      accept(peer) {
+        accepted = peer;
+        return 0;
+      },
+    })).toBe(0);
+
+    client.connect(7, new Uint8Array([10, 88, 0, 2]), 8080);
+    expect(client.connectStatus(7)).toBe(0);
+    accepted!.shutdown(1);
+
+    expect(client.recv(7, 16, 0)).toHaveLength(0);
+    expect(client.send(7, new TextEncoder().encode("still-readable"), 0)).toBe(14);
+    expect(new TextDecoder().decode(accepted!.recv(16, 0))).toBe("still-readable");
   });
 
   it("routes UDP datagrams and preserves source metadata", () => {

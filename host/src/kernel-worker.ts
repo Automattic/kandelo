@@ -748,6 +748,8 @@ export class CentralizedKernelWorker {
    *  workers), incoming connections are distributed among them. */
   private tcpListenerTargets = new Map<number, Array<{pid: number, fd: number}>>();
   private tcpListenerRRIndex = new Map<number, number>();
+  /** Virtual-network listener registration key for each shared TCP port. */
+  private tcpVirtualListenerKeys = new Map<number, string>();
   /** UDP virtual-network endpoint bindings: "pid:sockIdx" */
   private udpBindings = new Set<string>();
   /** Separate scratch buffer for TCP data pumping */
@@ -3030,9 +3032,8 @@ export class CentralizedKernelWorker {
    *      (`pendingPipeReaders`).
    *   2. Wake any process blocked in poll/ppoll/pselect6 whose
    *      `pipeIndices` includes this pipe (`pendingPollRetries`).
-   *      Pass `pidFilter` to restrict the wake to a single owning
-   *      pid — used by the Node TCP bridge when dispatching an
-   *      inbound connection to a specific listener.
+   *      Pass `pidFilter` only when ownership cannot be shared. Accepted TCP
+   *      pipes omit it because fork children can inherit the same connection.
    *   3. Schedule a broad wake (`scheduleWakeBlockedRetries`) for
    *      everything else.
    *
@@ -7569,18 +7570,28 @@ export class CentralizedKernelWorker {
       targets.push({ pid, fd });
     }
 
-    if (this.io.network?.listenTcp) {
+    if (this.io.network?.listenTcp && !this.tcpVirtualListenerKeys.has(port)) {
       const result = this.io.network.listenTcp(
         key,
         new Uint8Array(addr),
         port,
         {
-          accept: (peer, _local, remote) =>
-            this.handleIncomingVirtualTcpConnection(pid, fd, peer, remote),
+          accept: (peer, _local, remote) => {
+            const target = this.pickListenerTarget(port);
+            if (!target) return 113; // EHOSTUNREACH
+            return this.handleIncomingVirtualTcpConnection(
+              target.pid,
+              target.fd,
+              peer,
+              remote,
+            );
+          },
         },
       );
       if (result !== 0) {
         console.warn(`virtual TCP listener registration failed on port ${port}: errno ${result}`);
+      } else {
+        this.tcpVirtualListenerKeys.set(port, key);
       }
     }
 
@@ -7930,10 +7941,14 @@ export class CentralizedKernelWorker {
       (pid: number, pipeIdx: number) => number;
     const pipeIsReadOpen = this.kernelInstance!.exports.kernel_pipe_is_read_open as
       (pid: number, pipeIdx: number) => number;
-
+    const pipeHasReaders = this.kernelInstance!.exports.kernel_pipe_has_readers as
+      (pid: number, pipeIdx: number) => number;
     // Queue for incoming TCP data (written to recv pipe)
     const inboundQueue: Buffer[] = [];
     let clientEnded = false;
+    let clientClosed = false;
+    let guestWriteEnded = false;
+    let recvPipeWriteClosed = false;
     let pumpPending = false;
     let cleaned = false;
 
@@ -7942,15 +7957,30 @@ export class CentralizedKernelWorker {
     const pipeIsWriteOpen = this.kernelInstance!.exports.kernel_pipe_is_write_open as
       (pid: number, pipeIdx: number) => number;
 
+    const closeRecvPipeWrite = () => {
+      if (recvPipeWriteClosed) return;
+      recvPipeWriteClosed = true;
+      pipeCloseWrite(GLOBAL_PIPE_PID, recvPipeIdx);
+      // EOF is readable state even when the peer sent no data.
+      this.notifyPipeReadable(recvPipeIdx);
+    };
+
     // Drain inbound queue into recv pipe
     const drainInbound = () => {
+      if (pipeIsReadOpen(GLOBAL_PIPE_PID, recvPipeIdx) === 0) {
+        inboundQueue.length = 0;
+        if (clientEnded) closeRecvPipeWrite();
+        return;
+      }
       const mem = this.getKernelMem();
+      let wroteAny = false;
       while (inboundQueue.length > 0) {
         const chunk = inboundQueue[0]!;
         const toWrite = Math.min(chunk.length, 65536);
         mem.set(chunk.subarray(0, toWrite), scratchOffset);
         const written = pipeWrite(GLOBAL_PIPE_PID, recvPipeIdx, this.toKernelPtr(scratchOffset), toWrite);
         if (written <= 0) break; // Pipe full, retry next pump
+        wroteAny = true;
         if (written >= chunk.length) {
           inboundQueue.shift();
         } else {
@@ -7958,7 +7988,10 @@ export class CentralizedKernelWorker {
         }
       }
       if (clientEnded && inboundQueue.length === 0) {
-        pipeCloseWrite(GLOBAL_PIPE_PID, recvPipeIdx);
+        closeRecvPipeWrite();
+      }
+      if (wroteAny) {
+        this.notifyPipeReadable(recvPipeIdx);
       }
     };
 
@@ -7978,6 +8011,9 @@ export class CentralizedKernelWorker {
           clientSocket.write(outData);
         }
       }
+      if (totalRead > 0) {
+        this.notifyPipeWritable(sendPipeIdx);
+      }
       return totalRead;
     };
 
@@ -7993,20 +8029,30 @@ export class CentralizedKernelWorker {
 
     const pump = () => {
       pumpPending = false;
-      if (cleaned || !this.processes.has(pid)) {
-        cleanup();
-        return;
-      }
+      if (cleaned) return;
 
       drainInbound();
       const readN = drainOutbound();
 
-      // Check if PHP closed its write end of the send pipe
       const writeOpen = pipeIsWriteOpen(GLOBAL_PIPE_PID, sendPipeIdx);
-      if (writeOpen === 0 && readN === 0) {
-        if (!clientSocket.destroyed) {
+      const hasReaders = pipeHasReaders(GLOBAL_PIPE_PID, recvPipeIdx);
+      if (writeOpen === 0 && readN === 0 && !guestWriteEnded) {
+        guestWriteEnded = true;
+        if (!clientSocket.destroyed && !clientSocket.writableEnded) {
+          // SHUT_WR is a half-close: send FIN after queued bytes but keep the
+          // real receive half alive until the guest closes it or the peer ends.
           clientSocket.end();
         }
+      }
+      if (writeOpen === 0 && hasReaders <= 0) {
+        cleanup();
+        return;
+      }
+      if (guestWriteEnded && clientEnded && inboundQueue.length === 0) {
+        cleanup();
+        return;
+      }
+      if (clientClosed && inboundQueue.length === 0) {
         cleanup();
         return;
       }
@@ -8023,14 +8069,9 @@ export class CentralizedKernelWorker {
 
     // Incoming TCP data → write directly to recv pipe, queue overflow
     clientSocket.on("data", (chunk: Buffer) => {
+      if (cleaned) return;
       inboundQueue.push(chunk);
-      if (!this.processes.has(pid)) { cleanup(); return; }
       drainInbound();
-      // Wake readers + pollers watching this recv pipe + broad wake.
-      // The pid filter limits the targeted poll wake to this listener
-      // pid (the recvPipeIdx is per-connection so any matching poller
-      // is necessarily owned by this pid; the filter is defensive).
-      this.notifyPipeReadable(recvPipeIdx, pid);
       // Schedule pump to handle outbound + close detection
       schedulePump();
     });
@@ -8043,10 +8084,18 @@ export class CentralizedKernelWorker {
     clientSocket.on("error", () => {
       clientEnded = true;
       clientSocket.destroy();
+      cleanup();
     });
 
     clientSocket.on("close", () => {
       connections.delete(clientSocket);
+      clientClosed = true;
+      clientEnded = true;
+      // A clean close can arrive while pre-FIN bytes are still queued because
+      // the guest receive pipe is full. Let the pump deliver those bytes
+      // before releasing the pipe ends. The error path above remains an
+      // immediate reset/abort.
+      schedulePump();
     });
 
     // Register this connection for piggyback flushing
@@ -8061,12 +8110,14 @@ export class CentralizedKernelWorker {
     const cleanup = () => {
       if (cleaned) return;
       cleaned = true;
+      inboundQueue.length = 0;
       // Close the host's ends of both pipes:
       //   recvPipe: host is the writer → close write end
       //   sendPipe: host is the reader → close read end
-      pipeCloseWrite(GLOBAL_PIPE_PID, recvPipeIdx);
+      closeRecvPipeWrite();
       pipeCloseRead(GLOBAL_PIPE_PID, sendPipeIdx);
-      connections.delete(clientSocket);
+      // A closed host read end makes any parked guest writer fail with EPIPE.
+      this.notifyPipeWritable(sendPipeIdx);
       // Remove from tcpConnections tracking
       const arr = this.tcpConnections?.get(pid);
       if (arr) {
@@ -8075,14 +8126,9 @@ export class CentralizedKernelWorker {
         if (arr.length === 0) this.tcpConnections?.delete(pid);
       }
       if (!clientSocket.destroyed) {
-        // A guest close(2) on a TCP socket should be an orderly close (FIN)
-        // after queued data, not an immediate reset. Preserve that for the
-        // host bridge so protocols layered above TCP can finish their own
-        // shutdown handshakes.
-        clientSocket.end();
-        clientSocket.setTimeout(1_000, () => {
-          if (!clientSocket.destroyed) clientSocket.destroy();
-        });
+        // Flush queued bytes, send FIN, then release the Node handle. The
+        // operating system owns subsequent TCP close-state timing.
+        clientSocket.destroySoon();
       }
     };
   }
@@ -8125,43 +8171,73 @@ export class CentralizedKernelWorker {
       (pid: number, pipeIdx: number) => number;
     const pipeIsWriteOpen = this.kernelInstance.exports.kernel_pipe_is_write_open as
       (pid: number, pipeIdx: number) => number;
+    const pipeIsReadOpen = this.kernelInstance.exports.kernel_pipe_is_read_open as
+      (pid: number, pipeIdx: number) => number;
+    const pipeHasReaders = this.kernelInstance.exports.kernel_pipe_has_readers as
+      (pid: number, pipeIdx: number) => number;
 
     let cleaned = false;
+    let recvPipeWriteClosed = false;
+    let guestReadShutdown = false;
+    let guestWriteEnded = false;
+    let pendingInbound: Uint8Array | null = null;
     let pumpPending = false;
     const scratchOffset = this.tcpScratchOffset;
+
+    const closeRecvPipeWrite = () => {
+      if (recvPipeWriteClosed) return;
+      recvPipeWriteClosed = true;
+      pipeCloseWrite(GLOBAL_PIPE_PID, recvPipeIdx);
+    };
 
     const cleanup = () => {
       if (cleaned) return;
       cleaned = true;
-      pipeCloseWrite(GLOBAL_PIPE_PID, recvPipeIdx);
+      closeRecvPipeWrite();
       pipeCloseRead(GLOBAL_PIPE_PID, sendPipeIdx);
       peer.close();
-      this.notifyPipeReadable(recvPipeIdx, pid);
+      this.notifyPipeReadable(recvPipeIdx);
       this.notifyPipeWritable(sendPipeIdx);
       this.scheduleWakeBlockedRetries();
     };
 
     const drainInbound = () => {
+      if (pipeIsReadOpen(GLOBAL_PIPE_PID, recvPipeIdx) === 0) {
+        pendingInbound = null;
+        if (!guestReadShutdown) {
+          guestReadShutdown = true;
+          peer.shutdown(0);
+        }
+        return;
+      }
       for (;;) {
         let data: Uint8Array;
-        try {
-          data = peer.recv(65536, 0);
-        } catch (e: any) {
-          if (e?.errno === 11) return;
-          cleanup();
-          return;
+        if (pendingInbound) {
+          data = pendingInbound;
+        } else {
+          try {
+            data = peer.recv(65536, 0);
+          } catch (e: any) {
+            if (e?.errno === 11) return;
+            cleanup();
+            return;
+          }
         }
         if (data.length === 0) {
-          pipeCloseWrite(GLOBAL_PIPE_PID, recvPipeIdx);
-          this.notifyPipeReadable(recvPipeIdx, pid);
+          pendingInbound = null;
+          closeRecvPipeWrite();
+          this.notifyPipeReadable(recvPipeIdx);
           return;
         }
         const written = this.writePipeChunked(pipeWrite, GLOBAL_PIPE_PID, recvPipeIdx, data);
         if (written < data.length) {
-          // The pipe is full. A later pump tick will retry once the guest reads.
+          // `peer.recv` consumes bytes, so retain the unwritten suffix while
+          // the guest receive pipe is full and retry it on a later pump tick.
+          pendingInbound = data.subarray(written);
           return;
         }
-        this.notifyPipeReadable(recvPipeIdx, pid);
+        pendingInbound = null;
+        this.notifyPipeReadable(recvPipeIdx);
       }
     };
 
@@ -8185,16 +8261,19 @@ export class CentralizedKernelWorker {
       if (cleaned) {
         return;
       }
-      if (!this.processes.has(pid)) {
-        drainOutbound();
+      drainInbound();
+      drainOutbound();
+      const writeOpen = pipeIsWriteOpen(GLOBAL_PIPE_PID, sendPipeIdx);
+      const hasReaders = pipeHasReaders(GLOBAL_PIPE_PID, recvPipeIdx);
+      if (writeOpen === 0 && !guestWriteEnded) {
+        guestWriteEnded = true;
         peer.shutdown(1);
+      }
+      if (writeOpen === 0 && hasReaders <= 0) {
         cleanup();
         return;
       }
-      drainInbound();
-      drainOutbound();
-      if (pipeIsWriteOpen(GLOBAL_PIPE_PID, sendPipeIdx) === 0) {
-        peer.shutdown(1);
+      if (guestWriteEnded && recvPipeWriteClosed) {
         cleanup();
         return;
       }
@@ -8270,24 +8349,38 @@ export class CentralizedKernelWorker {
       if (filtered.length === 0) {
         this.tcpListenerTargets.delete(port);
         this.tcpListenerRRIndex.delete(port);
+        const virtualKey = this.tcpVirtualListenerKeys.get(port);
+        if (virtualKey) {
+          this.io.network?.closeTcpListener?.(virtualKey);
+          this.tcpVirtualListenerKeys.delete(port);
+        }
       } else {
         this.tcpListenerTargets.set(port, filtered);
       }
     }
 
-    for (const [key, entry] of this.tcpListeners) {
-      if (entry.pid === pid) {
-        this.io.network?.closeTcpListener?.(key);
-        // Only close the server if no other processes share this port
-        const hasOtherTargets = this.tcpListenerTargets.has(entry.port);
-        if (!hasOtherTargets) {
-          entry.server.close();
-          for (const conn of entry.connections) {
-            conn.destroy();
-          }
-          entry.connections.clear();
+    const keyPrefix = `${pid}:`;
+    for (const [key, entry] of Array.from(this.tcpListeners)) {
+      if (!key.startsWith(keyPrefix)) continue;
+      this.tcpListeners.delete(key);
+      // Accepted sockets have independent pipe ownership and may still belong
+      // to a fork child. Their pumps close them when the final pipe references
+      // disappear; listener teardown only stops new accepts.
+      const remainingTargets = this.tcpListenerTargets.get(entry.port);
+      if (!remainingTargets || remainingTargets.length === 0) {
+        entry.server.close();
+      } else {
+        // Fork inheritance adds listener targets without re-running listen(2).
+        // Keep the shared server reachable under a surviving owner's key so
+        // final-owner cleanup can close it instead of leaking the port.
+        const replacement = remainingTargets[0]!;
+        const replacementKey = `${replacement.pid}:${replacement.fd}`;
+        if (!this.tcpListeners.has(replacementKey)) {
+          this.tcpListeners.set(replacementKey, {
+            ...entry,
+            pid: replacement.pid,
+          });
         }
-        this.tcpListeners.delete(key);
       }
     }
     this.tcpConnections.delete(pid);

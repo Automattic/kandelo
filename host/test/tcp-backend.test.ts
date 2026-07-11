@@ -94,7 +94,7 @@ describe("TcpNetworkBackend", () => {
 
     await expect(accepted).resolves.toEqual({ data: "hello", ended: true });
   });
-  it("allows a write after peer FIN until the reset is observed", async () => {
+  it("keeps the real writable half open after peer FIN", async () => {
     let acceptedSocket!: net.Socket;
     let resolveAccepted!: () => void;
     let resolveAfterFin!: (value: string) => void;
@@ -106,7 +106,7 @@ describe("TcpNetworkBackend", () => {
       acceptedSocket = socket;
       socket.on("data", (chunk) => {
         chunks.push(chunk);
-        if (Buffer.concat(chunks).toString("utf8").includes("after-fin")) {
+        if (Buffer.concat(chunks).toString("utf8").includes("after-fin-two")) {
           resolveAfterFin(Buffer.concat(chunks).toString("utf8"));
         }
       });
@@ -139,11 +139,43 @@ describe("TcpNetworkBackend", () => {
       await new Promise((resolve) => setTimeout(resolve, 5));
     }
 
-    expect(backend.send(8, new TextEncoder().encode("after-fin"), 0)).toBe(9);
-    await expect(afterFin).resolves.toBe("before-finafter-fin");
+    expect(backend.send(8, new TextEncoder().encode("after-fin-one"), 0)).toBe(13);
+    expect(backend.send(8, new TextEncoder().encode("after-fin-two"), 0)).toBe(13);
+    await expect(afterFin).resolves.toBe("before-finafter-fin-oneafter-fin-two");
 
     backend.close(8);
     acceptedSocket.destroy();
   });
 
+  it("reports a real reset without fabricating a successful write", async () => {
+    let acceptedSocket!: net.Socket;
+    let resolveAccepted!: () => void;
+    const accepted = new Promise<void>((resolve) => { resolveAccepted = resolve; });
+    const server = net.createServer({ allowHalfOpen: true }, (socket) => {
+      acceptedSocket = socket;
+      resolveAccepted();
+    });
+    servers.push(server);
+
+    await new Promise<void>((resolve, reject) => {
+      server.once("error", reject);
+      server.listen(0, "127.0.0.1", () => resolve());
+    });
+
+    const backend = new TcpNetworkBackend();
+    backend.connect(9, LOOPBACK, (server.address() as net.AddressInfo).port);
+    await waitForConnected(backend, 9);
+    await accepted;
+    acceptedSocket.resetAndDestroy();
+
+    const deadline = Date.now() + 2_000;
+    while ((backend.poll(9, 0x0008) & 0x0008) === 0) {
+      if (Date.now() > deadline) throw new Error("reset observation timed out");
+      await new Promise((resolve) => setTimeout(resolve, 5));
+    }
+
+    expect(() => backend.send(9, new TextEncoder().encode("after-reset"), 0))
+      .toThrowError(/ECONNRESET/);
+    backend.close(9);
+  });
 });

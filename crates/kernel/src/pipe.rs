@@ -60,12 +60,11 @@ pub struct PipeBuffer {
     len: usize,
     read_count: u32,
     write_count: u32,
-    /// TCP close(2) is an orderly FIN on the socket's write side.  The peer may
-    /// still successfully write once after observing EOF before the reset is
-    /// reported on a later operation.  Pipe-backed TCP uses this bit to keep a
-    /// final synthetic read reference open, accept and discard one peer write,
-    /// then close the read end so subsequent writes see EPIPE.
-    orphaned_read_accept_once: bool,
+    /// The receive half of a normally closed TCP endpoint remains as an
+    /// orphaned discard sink until the peer closes its write half. This models
+    /// TCP's simplex FIN without inventing a fixed number of successful writes
+    /// after EOF.
+    orphaned_read: bool,
     /// Index of this pipe in the PipeTable (for wakeup events).
     pipe_idx: u32,
     /// Ancillary data queue for SCM_RIGHTS FD passing.
@@ -85,7 +84,7 @@ impl PipeBuffer {
             len: 0,
             read_count: 1,
             write_count: 1,
-            orphaned_read_accept_once: false,
+            orphaned_read: false,
             pipe_idx: 0,
             ancillary_fds: VecDeque::new(),
         }
@@ -116,6 +115,9 @@ impl PipeBuffer {
     /// Performs a partial write if the buffer does not have enough free space
     /// for all of `data`. Returns 0 if the buffer is full.
     pub fn write(&mut self, data: &[u8]) -> usize {
+        if self.read_count == 0 {
+            return if self.orphaned_read { data.len() } else { 0 };
+        }
         let cap = self.capacity();
         let n = data.len().min(self.free_space());
         if n == 0 {
@@ -184,50 +186,39 @@ impl PipeBuffer {
 
     /// Close one read end of the pipe. Decrements the read reference count.
     pub fn close_read_end(&mut self) {
-        self.orphaned_read_accept_once = false;
         self.read_count = self.read_count.saturating_sub(1);
+        if self.read_count == 0 {
+            self.orphaned_read = false;
+            self.head = 0;
+            self.tail = 0;
+            self.len = 0;
+        }
         // Read end closed → pipe became writable (writers get EPIPE/SIGPIPE)
         crate::wakeup::push(self.pipe_idx, crate::wakeup::WAKE_WRITABLE);
     }
 
-    /// Close a TCP read end with orderly-close semantics.
+    /// Close one TCP read end with orderly-close semantics.
     ///
-    /// If this is the last read reference, keep a synthetic reference open so
-    /// the peer's first post-FIN write can succeed locally and be discarded,
-    /// matching normal TCP behavior.  If there are still duplicated readers,
-    /// just drop this reference; another descriptor can still consume data.
-    pub fn close_read_end_graceful_once(&mut self) {
-        if self.read_count > 1 {
-            self.close_read_end();
-            return;
+    /// The last real reader becomes an orphaned discard sink while a writer is
+    /// still open. This is the pipe-backed equivalent of an operating system
+    /// retaining a TCP control block after the application closes its socket.
+    /// Explicit read shutdown uses `close_read_end` instead.
+    pub fn close_read_end_orderly(&mut self) {
+        self.read_count = self.read_count.saturating_sub(1);
+        if self.read_count == 0 {
+            self.head = 0;
+            self.tail = 0;
+            self.len = 0;
+            self.orphaned_read = self.write_count > 0;
         }
-        if self.read_count == 1 {
-            self.orphaned_read_accept_once = true;
-            crate::wakeup::push(self.pipe_idx, crate::wakeup::WAKE_WRITABLE);
-        }
-    }
-
-    /// Consume the synthetic graceful-close read reference, if present.
-    ///
-    /// The caller should return a successful write to userspace and discard the
-    /// bytes.  Later writes will observe the now-closed read end and fail with
-    /// EPIPE/SIGPIPE.
-    pub fn take_orphaned_read_accept_once(&mut self) -> bool {
-        if self.orphaned_read_accept_once && self.read_count > 0 {
-            self.orphaned_read_accept_once = false;
-            self.read_count = self.read_count.saturating_sub(1);
-            crate::wakeup::push(self.pipe_idx, crate::wakeup::WAKE_WRITABLE);
-            return true;
-        }
-        false
+        crate::wakeup::push(self.pipe_idx, crate::wakeup::WAKE_WRITABLE);
     }
 
     /// Close one write end of the pipe. Decrements the write reference count.
     pub fn close_write_end(&mut self) {
         self.write_count = self.write_count.saturating_sub(1);
-        if self.write_count == 0 && self.orphaned_read_accept_once {
-            self.orphaned_read_accept_once = false;
-            self.read_count = 0;
+        if self.write_count == 0 {
+            self.orphaned_read = false;
         }
         // Write end closed → pipe became readable (readers get EOF)
         crate::wakeup::push(self.pipe_idx, crate::wakeup::WAKE_READABLE);
@@ -235,6 +226,7 @@ impl PipeBuffer {
 
     /// Add a reader reference (e.g., after fork or dup).
     pub fn add_reader(&mut self) {
+        self.orphaned_read = false;
         self.read_count += 1;
     }
 
@@ -245,6 +237,14 @@ impl PipeBuffer {
 
     /// Returns true if the read end is still open (any readers remain).
     pub fn is_read_end_open(&self) -> bool {
+        self.read_count > 0 || self.orphaned_read
+    }
+
+    /// Returns true if an application-owned reader remains.
+    ///
+    /// Unlike `is_read_end_open`, this excludes TCP's orphaned discard sink so
+    /// host bridges can distinguish SHUT_WR from a final close.
+    pub fn has_readers(&self) -> bool {
         self.read_count > 0
     }
 
@@ -255,7 +255,7 @@ impl PipeBuffer {
 
     /// Returns true if both endpoints are closed and the pipe can be freed.
     pub fn is_fully_closed(&self) -> bool {
-        self.read_count == 0 && self.write_count == 0
+        self.read_count == 0 && self.write_count == 0 && !self.orphaned_read
     }
 
     /// Push ancillary FDs (SCM_RIGHTS) to be delivered with the next recvmsg.
@@ -539,6 +539,43 @@ mod tests {
         // Close both writers
         pipe.close_write_end();
         assert!(!pipe.is_fully_closed());
+        pipe.close_write_end();
+        assert!(pipe.is_fully_closed());
+    }
+
+    #[test]
+    fn test_orderly_read_close_discards_until_last_writer_closes() {
+        let mut pipe = PipeBuffer::new(8);
+
+        pipe.close_read_end_orderly();
+        assert!(pipe.is_read_end_open());
+        assert!(!pipe.has_readers());
+        assert_eq!(pipe.write(b"first"), 5);
+        assert_eq!(pipe.write(b"larger than capacity"), 20);
+        assert_eq!(pipe.available(), 0);
+        assert!(!pipe.is_fully_closed());
+
+        pipe.close_write_end();
+        assert!(!pipe.is_read_end_open());
+        assert!(pipe.is_fully_closed());
+    }
+
+    #[test]
+    fn test_orderly_read_close_preserves_other_real_readers() {
+        let mut pipe = PipeBuffer::new(8);
+        pipe.add_reader();
+
+        pipe.close_read_end_orderly();
+        assert!(pipe.has_readers());
+        assert_eq!(pipe.write(b"live"), 4);
+        let mut buf = [0u8; 4];
+        assert_eq!(pipe.read(&mut buf), 4);
+        assert_eq!(&buf, b"live");
+
+        pipe.close_read_end_orderly();
+        assert!(!pipe.has_readers());
+        assert_eq!(pipe.write(b"discarded"), 9);
+        assert_eq!(pipe.available(), 0);
         pipe.close_write_end();
         assert!(pipe.is_fully_closed());
     }
