@@ -366,7 +366,7 @@ pub fn generate_status(proc: &Process) -> Vec<u8> {
         proc.egid,
         count_open_fds(&proc.fd_table),
         1 + proc.threads.len(), // main thread + spawned threads
-        proc.signals.pending_mask(),
+        proc.pending_for(proc.pid),
         proc.signals.blocked,
     );
     content.into_bytes()
@@ -1131,12 +1131,15 @@ mod tests {
         let mut proc = Process::new(1);
         proc.argv.push(b"init".to_vec());
         proc.umask = 0o022;
+        proc.signals.raise(2);
+        proc.main_thread_signals.raise(25);
 
         let status = generate_status(&proc);
         let status_str = core::str::from_utf8(&status).unwrap();
         assert!(status_str.contains("Name:\tinit\n"));
         assert!(status_str.contains("Pid:\t1\n"));
         assert!(status_str.contains("Umask:\t0022\n"));
+        assert!(status_str.contains("SigPnd:\t0000000001000002\n"));
     }
 
     #[test]
