@@ -6456,6 +6456,46 @@ pub fn inject_udp_datagram_into(
     -(Errno::ECONNREFUSED as i32)
 }
 
+/// Deliver a loopback UDP datagram to a socket bound in a **different** process
+/// than the sender.
+///
+/// `udp_send_datagram` holds a single `&mut Process` and can only deliver within
+/// the sender's own process, so a `sendto(127.0.0.1)` addressed to a socket in
+/// another process on the same machine is otherwise dropped. The wasm_api
+/// dispatch layer (which owns the global [`ProcessTable`]) calls this after the
+/// same-process attempt, mirroring `cross_process_loopback_connect` for TCP.
+///
+/// A loopback UDP port is bound in exactly one process (the global bind-conflict
+/// checks reject duplicates without `SO_REUSEADDR`), and endpoints owned by
+/// `sender_pid` are skipped here, so this never double-delivers a datagram that
+/// `udp_send_datagram` already queued same-process.
+///
+/// Returns `true` if the datagram was delivered to at least one endpoint.
+pub fn deliver_cross_process_loopback_udp(
+    table: &mut crate::process_table::ProcessTable,
+    sender_pid: u32,
+    dst_addr: [u8; 4],
+    dst_port: u16,
+    src_addr: [u8; 4],
+    src_port: u16,
+    data: &[u8],
+) -> bool {
+    let target_pids: Vec<u32> = crate::socket::udp_lookup(dst_addr, dst_port)
+        .into_iter()
+        .filter(|endpoint| endpoint.pid != sender_pid)
+        .map(|endpoint| endpoint.pid)
+        .collect();
+    let mut delivered = false;
+    for pid in target_pids {
+        if let Some(target) = table.get_mut(pid) {
+            if inject_udp_datagram_into(target, dst_addr, dst_port, src_addr, src_port, data) == 0 {
+                delivered = true;
+            }
+        }
+    }
+    delivered
+}
+
 /// getsockname -- get local socket address.
 ///
 /// For AF_INET sockets, writes a full 16-byte sockaddr_in:
@@ -17655,6 +17695,86 @@ mod tests {
         assert_eq!(&buf[..data_len], b"hello UDP");
         assert_eq!(addr_len, 16);
         assert_eq!(from_addr[0], 2); // AF_INET
+    }
+
+    #[test]
+    fn test_udp_loopback_cross_process() {
+        // Two processes on one machine (one kernel). A datagram sent to
+        // 127.0.0.1 from process A must reach a socket bound to that port in
+        // process B. `udp_send_datagram` alone only delivers same-process; this
+        // exercises the cross-process delivery primitive the wasm_api dispatch
+        // layer invokes after the same-process attempt.
+        use wasm_posix_shared::socket::*;
+
+        let mut table = crate::process_table::ProcessTable::new();
+        table.create_process(10).unwrap(); // sender
+        table.create_process(20).unwrap(); // receiver
+        let mut host = MockHostIO::new();
+
+        // Explicit ports (not ephemeral) so parallel tests sharing the global
+        // UDP endpoint table cannot collide.
+        let recv_port: u16 = 54991;
+        let src_port: u16 = 54992;
+
+        // Receiver in proc 20: bind UDP on 0.0.0.0:recv_port.
+        let recv_fd = {
+            let recv = table.get_mut(20).unwrap();
+            let fd = sys_socket(recv, &mut host, AF_INET, SOCK_DGRAM, 0).unwrap();
+            let mut addr = [0u8; 16];
+            addr[0] = 2; // AF_INET
+            let pbe = recv_port.to_be_bytes();
+            addr[2] = pbe[0];
+            addr[3] = pbe[1];
+            sys_bind(recv, &mut host, fd, &addr).unwrap();
+            fd
+        };
+
+        // Sender in proc 10: bind a source socket on 0.0.0.0:src_port.
+        {
+            let send = table.get_mut(10).unwrap();
+            let fd = sys_socket(send, &mut host, AF_INET, SOCK_DGRAM, 0).unwrap();
+            let mut addr = [0u8; 16];
+            addr[0] = 2;
+            let pbe = src_port.to_be_bytes();
+            addr[2] = pbe[0];
+            addr[3] = pbe[1];
+            sys_bind(send, &mut host, fd, &addr).unwrap();
+        }
+
+        // Cross-process delivery — what kernel_sendto runs after sys_sendto's
+        // same-process (no-op here) attempt.
+        let delivered = deliver_cross_process_loopback_udp(
+            &mut table,
+            10,
+            [127, 0, 0, 1],
+            recv_port,
+            [127, 0, 0, 1],
+            src_port,
+            b"xproc UDP",
+        );
+        assert!(
+            delivered,
+            "cross-process loopback UDP datagram should be delivered"
+        );
+
+        // Receiver reads it back, with the loopback source address/port.
+        {
+            let recv = table.get_mut(20).unwrap();
+            let mut buf = [0u8; 64];
+            let mut from = [0u8; 16];
+            let (n, alen) =
+                sys_recvfrom(recv, &mut host, recv_fd, &mut buf, 0, &mut from).unwrap();
+            assert_eq!(&buf[..n], b"xproc UDP");
+            assert_eq!(alen, 16);
+            assert_eq!([from[4], from[5], from[6], from[7]], [127, 0, 0, 1]);
+            assert_eq!(u16::from_be_bytes([from[2], from[3]]), src_port);
+        }
+
+        // A receiver in the *sender's own* process on the same port must not
+        // exist for this test's port, so no double-delivery concern; clean up
+        // the global endpoint registrations for other tests.
+        crate::socket::udp_cleanup_process(10);
+        crate::socket::udp_cleanup_process(20);
     }
 
     // ── Threading tests ──────────────────────────────────────────────

@@ -6391,9 +6391,13 @@ pub extern "C" fn kernel_sendmsg(fd: i32, msg_ptr: *const u8, flags: u32) -> i32
     let buf = unsafe { slice::from_raw_parts(base as *const u8, len) };
 
     // If msg_name is set, use sendto with the destination address
-    let result = if name_ptr != 0 && name_len > 0 {
-        let addr = unsafe { slice::from_raw_parts(name_ptr as *const u8, name_len) };
-        match syscalls::sys_sendto(proc, &mut host, fd, buf, flags, addr) {
+    let name_addr: &[u8] = if name_ptr != 0 && name_len > 0 {
+        unsafe { slice::from_raw_parts(name_ptr as *const u8, name_len) }
+    } else {
+        &[]
+    };
+    let result = if !name_addr.is_empty() {
+        match syscalls::sys_sendto(proc, &mut host, fd, buf, flags, name_addr) {
             Ok(n) => n as i32,
             Err(e) => -(e as i32),
         }
@@ -6403,6 +6407,10 @@ pub extern "C" fn kernel_sendmsg(fd: i32, msg_ptr: *const u8, flags: u32) -> i32
             Err(e) => -(e as i32),
         }
     };
+    if result >= 0 {
+        // Cross-process loopback UDP: destination from msg_name, else connected peer.
+        cross_process_loopback_udp(proc, fd, name_addr, buf);
+    }
 
     // If data was sent successfully and we have ancillary FDs, push them to the pipe
     if result > 0 && !ancillary_fds.is_empty() {
@@ -7395,6 +7403,70 @@ fn cross_process_unix_connect(proc: &mut Process, fd: i32, addr: &[u8]) -> Resul
     Ok(())
 }
 
+/// After a same-process UDP send, deliver a loopback datagram to a socket bound
+/// in another process on this machine.
+///
+/// `sys_sendto`/`sys_send` only reach the sender's own process; without this,
+/// `sendto(127.0.0.1)` between two processes on one machine is silently dropped
+/// (TCP already handles the analogous case via `cross_process_loopback_connect`).
+/// No-op unless `fd` is an AF_INET DGRAM socket whose effective destination is a
+/// `127.x` address. `addr` is the explicit sendto/sendmsg destination sockaddr,
+/// or empty for a connected `send` (in which case the connected peer is used).
+fn cross_process_loopback_udp(proc: &mut Process, fd: i32, addr: &[u8], data: &[u8]) {
+    use crate::ofd::FileType;
+    use crate::socket::{SocketDomain, SocketType};
+
+    // Resolve the sending socket (read everything out of `proc` before touching
+    // the global process table below — the two alias the same storage).
+    let Ok(entry) = proc.fd_table.get(fd) else {
+        return;
+    };
+    let Some(ofd) = proc.ofd_table.get(entry.ofd_ref.0) else {
+        return;
+    };
+    if ofd.file_type != FileType::Socket {
+        return;
+    }
+    let sock_idx = (-(ofd.host_handle + 1)) as usize;
+    let Some(sock) = proc.sockets.get(sock_idx) else {
+        return;
+    };
+    if sock.domain != SocketDomain::Inet || sock.sock_type != SocketType::Dgram {
+        return;
+    }
+
+    // Destination: explicit addr (sendto / sendmsg-with-name) or connected peer.
+    let (dst_addr, dst_port) = if addr.len() >= 8 && u16::from_le_bytes([addr[0], addr[1]]) == 2 {
+        (
+            [addr[4], addr[5], addr[6], addr[7]],
+            u16::from_be_bytes([addr[2], addr[3]]),
+        )
+    } else {
+        (sock.peer_addr, sock.peer_port)
+    };
+    if dst_addr[0] != 127 {
+        return; // only loopback uses the in-kernel cross-process path
+    }
+
+    // Source: the sender's bound address/port. An unconnected socket auto-binds
+    // to INADDR_ANY; report it as 127.0.0.1 so the receiver's recvfrom sees a
+    // loopback source, matching real loopback semantics.
+    let src_port = sock.bind_port;
+    let src_addr = if sock.bind_addr == [0, 0, 0, 0] {
+        [127, 0, 0, 1]
+    } else {
+        sock.bind_addr
+    };
+    let my_pid = proc.pid;
+
+    // Switch to the global process table to reach the target process. `proc` is
+    // not used again past this point (it aliases the table).
+    let table = unsafe { &mut *PROCESS_TABLE.0.get() };
+    syscalls::deliver_cross_process_loopback_udp(
+        table, my_pid, dst_addr, dst_port, src_addr, src_port, data,
+    );
+}
+
 /// Send data on a socket. Returns bytes sent or negative errno.
 #[unsafe(no_mangle)]
 pub extern "C" fn kernel_send(fd: i32, buf_ptr: *const u8, buf_len: u32, flags: u32) -> i32 {
@@ -7405,6 +7477,10 @@ pub extern "C" fn kernel_send(fd: i32, buf_ptr: *const u8, buf_len: u32, flags: 
         Ok(n) => n as i32,
         Err(e) => -(e as i32),
     };
+    if result >= 0 {
+        // Connected UDP `send`: destination is the connected peer.
+        cross_process_loopback_udp(proc, fd, &[], buf);
+    }
     deliver_pending_signals(proc, &mut host);
     result
 }
@@ -7624,6 +7700,9 @@ pub extern "C" fn kernel_sendto(
         Ok(n) => n as i32,
         Err(e) => -(e as i32),
     };
+    if result >= 0 {
+        cross_process_loopback_udp(proc, fd, addr, buf);
+    }
     deliver_pending_signals(proc, &mut host);
     result
 }
