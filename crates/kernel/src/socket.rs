@@ -868,15 +868,12 @@ impl SocketTable {
 // accept queue across parent and children — any process can accept a
 // pending connection. Our SocketInfo lives in per-process tables, so a
 // naive fork+accept model would give each process its own backlog. To
-// match POSIX semantics for AF_INET/AF_INET6 listeners (the typical fork-server
-// pattern: nginx master + workers), we keep the actual pending queue
+// match POSIX semantics for AF_INET, AF_INET6, and AF_UNIX listeners (the
+// typical pre-fork server pattern), we keep the actual pending queue
 // in this global table and reference it by index from each forked
 // SocketInfo copy.
-//
-// AF_UNIX same-process listeners still use the inline `listen_backlog`
-// field (sys_connect pre-allocates the accepted SocketInfo there).
 
-/// A pending TCP connection waiting in a shared accept queue.
+/// A pending stream connection waiting in a shared accept queue.
 pub struct PendingConnection {
     pub peer_addr: [u8; 4],
     pub peer_addr6: [u8; 16],
@@ -885,6 +882,11 @@ pub struct PendingConnection {
     /// is converted to an IPv4-mapped address at accept time.
     pub peer_is_ipv6: bool,
     pub peer_port: u16,
+    /// Process-local peer identity, used only when the accepting process is
+    /// also the AF_UNIX client owner. Pipe identity is revalidated before it
+    /// is installed so a recycled socket slot cannot receive stale OOB data.
+    pub peer_pid: u32,
+    pub peer_sock_idx: Option<usize>,
     /// Recv pipe index (in the global pipe table). Host writes incoming
     /// TCP data here; the accepting process reads from it.
     pub recv_pipe_idx: usize,
@@ -945,19 +947,34 @@ impl SharedBacklogTable {
         }
     }
 
-    /// Decrement the reference count. If it reaches zero, free the slot
-    /// (queue is dropped — pending connections are lost, matching what
-    /// happens when the last process holding a listener fd closes it).
+    /// Decrement the reference count. If it reaches zero, free the slot and
+    /// close the server endpoints owned by queued, not-yet-accepted
+    /// connections.
     pub fn dec_ref(&mut self, idx: usize) {
+        let mut abandoned = Vec::new();
         if let Some(entry) = self.entries.get_mut(idx) {
             if !entry.in_use {
                 return;
             }
             entry.ref_count = entry.ref_count.saturating_sub(1);
             if entry.ref_count == 0 {
-                entry.queue.clear();
+                abandoned = core::mem::take(&mut entry.queue);
                 entry.in_use = false;
             }
+        }
+        if abandoned.is_empty() {
+            return;
+        }
+        let pipes = unsafe { crate::pipe::global_pipe_table() };
+        for pending in abandoned {
+            if let Some(pipe) = pipes.get_mut(pending.recv_pipe_idx) {
+                pipe.close_read_end();
+            }
+            pipes.free_if_closed(pending.recv_pipe_idx);
+            if let Some(pipe) = pipes.get_mut(pending.send_pipe_idx) {
+                pipe.close_write_end();
+            }
+            pipes.free_if_closed(pending.send_pipe_idx);
         }
     }
 
