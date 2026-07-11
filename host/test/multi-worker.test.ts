@@ -301,6 +301,120 @@ describe("CentralizedKernelWorker Process Management", () => {
     expect((kw as any).completeChannel).toHaveBeenCalled();
   });
 
+  it("publishes clone success before releasing the initialized thread worker", async () => {
+    const pid = 127;
+    const mainChannelOffset = WASM_PAGE_SIZE;
+    const tid = 80;
+    const ptidPtr = 0x00030000;
+    const memory = new WebAssembly.Memory({ initial: 16, maximum: 16, shared: true });
+    const processView = new DataView(memory.buffer, mainChannelOffset);
+    processView.setUint32(CH_DATA, 11, true);
+    processView.setUint32(CH_DATA + 4, 22, true);
+    new DataView(memory.buffer).setInt32(ptidPtr, -1, true);
+
+    const kernelMemory = new WebAssembly.Memory({ initial: 1, maximum: 1 });
+    const kernelView = new DataView(kernelMemory.buffer);
+    const completeChannel = vi.fn();
+    const start = vi.fn(() => {
+      expect(completeChannel).toHaveBeenCalledTimes(1);
+      expect(new DataView(memory.buffer).getInt32(ptidPtr, true)).toBe(tid);
+    });
+    const onClone = vi.fn(async () => ({ tid, start }));
+
+    const kw = Object.assign(Object.create(CentralizedKernelWorker.prototype), {
+      callbacks: { onClone },
+      kernel: { toKernelPtr: (value: number | bigint) => Number(value) },
+      kernelMemory,
+      scratchOffset: 0,
+      currentHandlePid: 0,
+      processes: new Map([[pid, { channels: [{ channelOffset: mainChannelOffset }] }]]),
+      threadCtidPtrs: new Map(),
+      completeChannel,
+      bindKernelTidForChannel: vi.fn(),
+      kernelInstance: {
+        exports: {
+          kernel_handle_channel: vi.fn(() => {
+            kernelView.setBigInt64(CH_RETURN, BigInt(tid), true);
+            kernelView.setUint32(CH_ERRNO, 0, true);
+            return 0;
+          }),
+        },
+      },
+    });
+
+    const CLONE_PARENT_SETTID = 0x00100000;
+    (kw as any).handleClone(
+      { pid, channelOffset: mainChannelOffset, memory },
+      [CLONE_PARENT_SETTID, 0x00800000, ptidPtr, 0x00900000, 0, 0],
+    );
+
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(start).toHaveBeenCalledTimes(1);
+  });
+
+  it("rolls back the provisional kernel thread when its Worker cannot launch", async () => {
+    const pid = 128;
+    const mainChannelOffset = WASM_PAGE_SIZE;
+    const tid = 81;
+    const ptidPtr = 0x00030000;
+    const ctidPtr = 0x00040000;
+    const memory = new WebAssembly.Memory({ initial: 16, maximum: 16, shared: true });
+    const processView = new DataView(memory.buffer, mainChannelOffset);
+    processView.setUint32(CH_DATA, 11, true);
+    processView.setUint32(CH_DATA + 4, 22, true);
+    new DataView(memory.buffer).setInt32(ptidPtr, -1, true);
+
+    const kernelMemory = new WebAssembly.Memory({ initial: 1, maximum: 1 });
+    const kernelView = new DataView(kernelMemory.buffer);
+    const completeChannel = vi.fn();
+    const notifyThreadExit = vi.fn();
+    const onClone = vi.fn(async () => {
+      throw new WebAssembly.CompileError("invalid thread module");
+    });
+    const threadCtidPtrs = new Map<string, number>();
+
+    const kw = Object.assign(Object.create(CentralizedKernelWorker.prototype), {
+      callbacks: { onClone },
+      kernel: { toKernelPtr: (value: number | bigint) => Number(value) },
+      kernelMemory,
+      scratchOffset: 0,
+      currentHandlePid: 0,
+      processes: new Map([[pid, { channels: [{ channelOffset: mainChannelOffset }] }]]),
+      threadCtidPtrs,
+      completeChannel,
+      notifyThreadExit,
+      bindKernelTidForChannel: vi.fn(),
+      kernelInstance: {
+        exports: {
+          kernel_handle_channel: vi.fn(() => {
+            kernelView.setBigInt64(CH_RETURN, BigInt(tid), true);
+            kernelView.setUint32(CH_ERRNO, 0, true);
+            return 0;
+          }),
+        },
+      },
+    });
+
+    const CLONE_PARENT_SETTID = 0x00100000;
+    const args = [CLONE_PARENT_SETTID, 0x00800000, ptidPtr, 0x00900000, ctidPtr, 0];
+    (kw as any).handleClone({ pid, channelOffset: mainChannelOffset, memory }, args);
+
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(notifyThreadExit).toHaveBeenCalledWith(pid, tid);
+    expect(threadCtidPtrs.has(`${pid}:${tid}`)).toBe(false);
+    expect(new DataView(memory.buffer).getInt32(ptidPtr, true)).toBe(-1);
+    expect(completeChannel).toHaveBeenCalledWith(
+      expect.anything(),
+      ABI_SYSCALLS.Clone,
+      args,
+      undefined,
+      -1,
+      11,
+    );
+  });
+
   it("does not lower compact process max_addr when adding dynamic pthread channels", () => {
     const setMaxAddr = vi.fn(() => 0);
     const kw = Object.assign(Object.create(CentralizedKernelWorker.prototype), {

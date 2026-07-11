@@ -300,12 +300,13 @@ fell back to fork.
 
 ### clone() (threads)
 
-1. User calls `clone(CLONE_VM | CLONE_THREAD, ...)` → kernel returns clone request
-2. Host asks the kernel to reserve one dynamic pthread control slot in the same process address space
-3. Host grows the process `WebAssembly.Memory` only far enough to cover that slot
-4. Host spawns a new worker that shares the parent's `WebAssembly.Memory`
-5. Thread worker runs `centralizedThreadWorkerMain`, calls `__wasm_thread_init` to set up TLS
-6. Thread starts executing the given function pointer with the given argument
+1. User calls `clone(CLONE_VM | CLONE_THREAD, ...)`; the kernel provisionally allocates a TID.
+2. Host asks the kernel to reserve one dynamic pthread control slot in the same process address space.
+3. Host grows the process `WebAssembly.Memory` only far enough to cover that slot.
+4. Host builds the thread module: it removes `__wasm_init_memory`'s start section and only neutralizes `__wasm_call_ctors` when an exact export, name-section entry, or the preserved `__abi_version` linker wrapper identifies that function. A C module with no constructors is not otherwise rewritten.
+5. Host spawns a new worker that shares the parent's `WebAssembly.Memory`.
+6. Thread worker runs `centralizedThreadWorkerMain`, initializes TLS, stack, and channel state, resolves the requested table entry, and reports `thread_ready` without executing it yet.
+7. The kernel worker publishes clone's TID and `CLONE_PARENT_SETTID` result, then releases the worker to execute the function pointer. A setup failure before `thread_ready` rolls back the provisional kernel thread, channel, control slot, and Worker before clone returns `EAGAIN`.
 
 Threads share memory with the parent (CLONE_VM) but have their own channel, fork-save scratch page, and TLS/control page.
 

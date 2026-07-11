@@ -20,6 +20,7 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { CAPTURED_STDIO, CentralizedKernelWorker, TERMINAL_STDIO } from "./kernel-worker";
 import type {
+  CloneLaunchResult,
   ForkFromThreadContext,
   ResolvedSpawnProgram,
   SpawnProgramResolution,
@@ -1061,7 +1062,7 @@ async function handleClone(
   tlsPtr: number,
   ctidPtr: number,
   memory: WebAssembly.Memory,
-): Promise<number> {
+): Promise<CloneLaunchResult> {
   const processInfo = processes.get(pid);
   if (!processInfo) throw new Error(`Unknown pid ${pid} for clone`);
 
@@ -1109,7 +1110,14 @@ async function handleClone(
     kernelAbiVersion: kernelWorker.getKernelAbiVersion(),
   };
 
-  const threadWorker = workerAdapter.createWorker(threadInitData);
+  let threadWorker: ReturnType<NodeWorkerAdapter["createWorker"]>;
+  try {
+    threadWorker = workerAdapter.createWorker(threadInitData);
+  } catch (error) {
+    kernelWorker.removeChannel(pid, alloc.channelOffset);
+    processInfo.threadAllocator.free(alloc.basePage);
+    throw error;
+  }
   if (!threadWorkers.has(pid)) threadWorkers.set(pid, []);
   const threadEntry: ThreadWorkerInfo = {
     worker: threadWorker,
@@ -1129,6 +1137,7 @@ async function handleClone(
     if (threads) {
       const idx = threads.indexOf(threadEntry);
       if (idx >= 0) threads.splice(idx, 1);
+      if (threads.length === 0) threadWorkers.delete(pid);
     }
   };
   const terminateThreadEntry = (): Promise<void> => {
@@ -1139,9 +1148,37 @@ async function handleClone(
   };
   threadExits.register(pid, alloc.channelOffset, terminateThreadEntry);
 
-  const failThread = (reason: string) => {
+  let launchState: "pending" | "ready" | "failed" = "pending";
+  let finished = false;
+  let resolveLaunch!: (result: CloneLaunchResult) => void;
+  let rejectLaunch!: (error: Error) => void;
+  const launchPromise = new Promise<CloneLaunchResult>((resolve, reject) => {
+    resolveLaunch = resolve;
+    rejectLaunch = reject;
+  });
+
+  const reportThreadFailure = (reason: string) => {
     const text = `[kernel-worker] pid=${pid} tid=${tid}: ${reason}\n`;
     post({ type: "stderr", pid, data: new TextEncoder().encode(text) });
+  };
+
+  const failLaunch = (reason: string): boolean => {
+    if (launchState !== "pending") return false;
+    launchState = "failed";
+    finished = true;
+    reportThreadFailure(reason);
+    kernelWorker.removeChannel(pid, alloc.channelOffset);
+    void terminateThreadEntry().then(
+      () => rejectLaunch(new Error(reason)),
+      (error) => rejectLaunch(error instanceof Error ? error : new Error(String(error))),
+    );
+    return true;
+  };
+
+  const failThread = (reason: string) => {
+    if (failLaunch(reason) || finished) return;
+    finished = true;
+    reportThreadFailure(reason);
     const disposition = threadWorkerFailureDisposition(reason);
     kernelWorker.finalizeThreadExit(pid, tid, alloc.channelOffset);
     void terminateThreadEntry();
@@ -1152,15 +1189,35 @@ async function handleClone(
   };
   threadWorker.on("message", (msg: unknown) => {
     const m = msg as WorkerToHostMessage;
-    if (m.type === "thread_exit") {
+    if (m.type === "thread_ready" && m.pid === pid && m.tid === tid) {
+      if (launchState !== "pending") return;
+      launchState = "ready";
+      resolveLaunch({
+        tid,
+        start: () => {
+          if (finished) return;
+          try {
+            threadWorker.postMessage({ type: "thread_start", pid, tid });
+          } catch (error) {
+            failThread(`unable to start initialized worker: ${error}`);
+          }
+        },
+      });
+    } else if (m.type === "thread_exit") {
+      if (failLaunch("worker exited before reporting thread readiness")) return;
+      finished = true;
       void terminateThreadEntry();
     } else if (m.type === "error") {
       failThread(m.message);
     }
   });
   threadWorker.on("error", (err: Error) => failThread(`worker error: ${err.message ?? err}`));
+  threadWorker.on("exit", (code: number) => {
+    if (finished || intentionallyTerminated.has(threadWorker as object)) return;
+    failThread(`worker exited before thread completion (code=${code})`);
+  });
 
-  return tid;
+  return launchPromise;
 }
 
 function handleThreadExit(pid: number, channelOffset: number): boolean {

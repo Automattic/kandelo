@@ -470,6 +470,16 @@ describe("fork_instrument_coverage / P-* process & threading", () => {
       execPrograms: echoExecMap,
     });
   });
+
+  // P-10: a fork child creates its first pthread. This is the Tcl notifier
+  // restart shape: patch the child program into a thread module, start the
+  // thread worker, and reclaim it before the child exits.
+  it("P-10 fork child creates and joins a pthread", async () => {
+    await runFixture("programs/p_10_fork_child_creates_thread.wasm", {
+      contains: ["PRE_FORK", "CHILD_THREAD: ok", "CHILD: joined", "PASS: P-10"],
+      timeout: 10_000,
+    });
+  });
 });
 
 // ---------------------------------------------------------------------------

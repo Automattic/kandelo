@@ -548,6 +548,12 @@ export interface SpawnResolveError {
 
 export type SpawnProgramResolution = ArrayBuffer | ResolvedSpawnProgram | SpawnResolveError;
 
+export interface CloneLaunchResult {
+  tid: number;
+  /** Release the initialized Worker only after clone's result is visible. */
+  start: () => void;
+}
+
 function isSpawnResolveError(
   resolution: SpawnProgramResolution,
 ): resolution is SpawnResolveError {
@@ -629,9 +635,11 @@ export interface CentralizedKernelCallbacks {
 
   /**
    * Called when a process calls clone (thread creation). The callback should
-   * spawn a thread Worker sharing the parent's Memory. Returns the TID.
+   * initialize a thread Worker sharing the parent's Memory. A launch result's
+   * start callback is invoked only after clone success is visible to the guest.
+   * Numeric returns remain accepted for hosts without the two-phase handshake.
    */
-  onClone?: (pid: number, tid: number, fnPtr: number, argPtr: number, stackPtr: number, tlsPtr: number, ctidPtr: number, memory: WebAssembly.Memory) => Promise<number>;
+  onClone?: (pid: number, tid: number, fnPtr: number, argPtr: number, stackPtr: number, tlsPtr: number, ctidPtr: number, memory: WebAssembly.Memory) => Promise<number | CloneLaunchResult>;
 
   /**
    * Called after a pthread channel reaches SYS_EXIT and the kernel worker has
@@ -6320,16 +6328,12 @@ export class CentralizedKernelWorker {
 
     const tid = retVal;
 
-    // CLONE_PARENT_SETTID: write TID to ptid_ptr in process memory.
-    // The host writes this because ptid_ptr is in process memory, not kernel
-    // memory.
+    // The host writes CLONE_PARENT_SETTID because ptid_ptr is in process
+    // memory, not kernel memory. Delay it until the backing Worker is ready:
+    // Linux only publishes the child TID when clone succeeds.
     const CLONE_PARENT_SETTID = 0x00100000;
     const flags = origArgs[0];
     const ptidPtr = origArgs[2];
-    if (flags & CLONE_PARENT_SETTID && ptidPtr !== 0) {
-      const procView = new DataView(channel.memory.buffer);
-      procView.setInt32(ptidPtr, tid, true);
-    }
 
     // Read fnPtr and argPtr from the channel's CH_DATA area (written by kernel_clone stub)
     // These are always written as u32 by the glue (even on wasm64, table indices are i32)
@@ -6348,7 +6352,10 @@ export class CentralizedKernelWorker {
 
     this.callbacks.onClone(
       channel.pid, tid, fnPtr, argPtr, stackPtr, tlsPtr, ctidPtr, channel.memory,
-    ).then((assignedTid) => {
+    ).then((launchResult) => {
+      const assignedTid = typeof launchResult === "number"
+        ? launchResult
+        : launchResult.tid;
       if (!this.processes.has(channel.pid)) {
         if (ctidPtr !== 0) {
           this.threadCtidPtrs.delete(`${channel.pid}:${tid}`);
@@ -6359,13 +6366,24 @@ export class CentralizedKernelWorker {
         this.threadCtidPtrs.delete(`${channel.pid}:${tid}`);
         this.threadCtidPtrs.set(`${channel.pid}:${assignedTid}`, ctidPtr);
       }
+      if (flags & CLONE_PARENT_SETTID && ptidPtr !== 0) {
+        const procView = new DataView(channel.memory.buffer);
+        procView.setInt32(ptidPtr, assignedTid, true);
+      }
       this.completeChannel(channel, SYS_CLONE, origArgs, undefined, assignedTid, 0);
+      if (typeof launchResult !== "number") launchResult.start();
     }).catch((err) => {
       if (ctidPtr !== 0) {
         this.threadCtidPtrs.delete(`${channel.pid}:${tid}`);
       }
       console.error(`[kernel-worker] onClone failed: ${err}`);
-      this.completeChannel(channel, SYS_CLONE, origArgs, undefined, -1, 12); // ENOMEM
+      // kernel_clone provisionally allocated ThreadInfo before the host could
+      // instantiate the backing Worker. Roll it back on launch failure so
+      // signals, /proc state, and future TID allocation reflect reality.
+      this.notifyThreadExit(channel.pid, tid);
+      if (this.processes.has(channel.pid)) {
+        this.completeChannel(channel, SYS_CLONE, origArgs, undefined, -1, 11); // EAGAIN
+      }
     });
   }
 
