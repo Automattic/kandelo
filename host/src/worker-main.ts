@@ -11,10 +11,12 @@ import type {
   WorkerToHostMessage,
 } from "./worker-protocol";
 import {
+  createLongjmpTag,
   DynamicLinker,
   FORK_CAP_DYLINK_MAIN,
   forkInstrumentRoleAvailable,
   readForkInstrumentCapabilityClaim,
+  requireLongjmpTag,
   type LoadedSharedLibrary,
   type SideModuleForkState,
 } from "./dylink";
@@ -213,6 +215,7 @@ function buildDlopenImports(
   getStackPointer: () => WebAssembly.Global | undefined,
   getInstance: () => WebAssembly.Instance | undefined,
   ptrWidth: 4 | 8,
+  longjmpTag: WebAssembly.Tag | undefined,
   mainHasDylinkForkRole: boolean,
 ): DlopenSupport {
   let linker: DynamicLinker | null = null;
@@ -312,7 +315,7 @@ function buildDlopenImports(
     // not be shadowed by main exports.
     const RESERVED = new Set([
       "memory", "__indirect_function_table",
-      "__memory_base", "__table_base", "__stack_pointer",
+      "__memory_base", "__table_base", "__stack_pointer", "__c_longjmp",
     ]);
     const globalSymbols = new Map<string, Function | WebAssembly.Global>();
     const inst = getInstance();
@@ -380,6 +383,8 @@ function buildDlopenImports(
       globalSymbols,
       got: new Map(),
       loadedLibraries,
+      longjmpTag,
+      ptrWidth,
       mainModuleSymbols,
       sideModuleFork,
       sideModuleForkUnavailableReason: !mainHasDylinkForkRole
@@ -668,6 +673,7 @@ function buildImportObject(
   dlopenImports?: Record<string, WebAssembly.ExportValue>,
   getInstance?: () => WebAssembly.Instance | undefined,
   ptrWidth: 4 | 8 = 4,
+  longjmpTag?: WebAssembly.Tag,
   postVmInterruptTimer?: (
     timedOutPtr: number,
     vmInterruptPtr: number,
@@ -692,14 +698,14 @@ function buildImportObject(
     }
   }
 
-  // llvm/lld ≥22 emit __c_longjmp as a tag import for setjmp users; instantiation fails silently without it.
+  // LLVM/lld >= 22 import this tag for setjmp users. The process owns its
+  // identity so a longjmp thrown through a side module can be caught by the
+  // main image (and vice versa).
   if (moduleImports.some(i => i.module === "env" && i.name === "__c_longjmp" && (i.kind as string) === "tag")) {
-    const Tag = (WebAssembly as typeof WebAssembly & {
-      Tag?: new (descriptor: { parameters: string[] }) => WebAssembly.Tag;
-    }).Tag;
-    if (Tag) {
-      envImports.__c_longjmp = new Tag({ parameters: ["i32"] }) as unknown as WebAssembly.ExportValue;
-    }
+    envImports.__c_longjmp = requireLongjmpTag(
+      longjmpTag,
+      "process module",
+    ) as unknown as WebAssembly.ExportValue;
   }
 
   // Add dlopen imports if provided
@@ -1109,6 +1115,7 @@ export async function centralizedWorkerMain(
     }
 
     // --- SDK module path (existing) ---
+    const processLongjmpTag = createLongjmpTag(ptrWidth);
     let kernelExitStatus: number | null = null;
     const kernelImports = buildKernelImports(
       memory,
@@ -1164,10 +1171,11 @@ export async function centralizedWorkerMain(
         () => processInstance?.exports.__stack_pointer as WebAssembly.Global | undefined,
         () => processInstance ?? undefined,
         ptrWidth,
+        processLongjmpTag,
         hasDylinkForkRole,
       );
       const importObject = buildImportObject(module, memory, kernelImports, channelOffset, dlopenSupport.imports,
-        () => processInstance ?? undefined, ptrWidth,
+        () => processInstance ?? undefined, ptrWidth, processLongjmpTag,
         (timedOutPtr, vmInterruptPtr, seconds) => {
           port.postMessage({
             type: "vm_interrupt_timer",
@@ -1328,10 +1336,11 @@ export async function centralizedWorkerMain(
         () => processInstance?.exports.__stack_pointer as WebAssembly.Global | undefined,
         () => processInstance ?? undefined,
         ptrWidth,
+        processLongjmpTag,
         false,
       );
       const importObject = buildImportObject(module, memory, kernelImports, channelOffset, dlopenSupport.imports,
-        () => processInstance ?? undefined, ptrWidth,
+        () => processInstance ?? undefined, ptrWidth, processLongjmpTag,
         (timedOutPtr, vmInterruptPtr, seconds) => {
           port.postMessage({
             type: "vm_interrupt_timer",
@@ -2035,8 +2044,9 @@ export async function centralizedThreadWorkerMain(
         );
       };
     }
+    const threadLongjmpTag = createLongjmpTag(ptrWidth);
     const importObject = buildImportObject(module, memory, kernelImports, channelOffset, undefined,
-      () => threadInstance, ptrWidth,
+      () => threadInstance, ptrWidth, threadLongjmpTag,
       (timedOutPtr, vmInterruptPtr, seconds) => {
         port.postMessage({
           type: "vm_interrupt_timer",

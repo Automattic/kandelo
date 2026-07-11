@@ -11,8 +11,10 @@
  * See docs/plans/2026-04-30-external-kernel-http-request-interface.md.
  */
 import type { HttpRequest, HttpResponse } from "./networking/in-kernel-http";
+import type { HostDiagnosticMessage } from "./host-diagnostic";
 
 export type { HttpRequest, HttpResponse };
+export type { HostDiagnostic } from "./host-diagnostic";
 
 // ── Main Thread → Kernel Worker ──
 
@@ -266,6 +268,7 @@ export type KernelToMainMessage =
   | ExitMessage
   | StdoutMessage
   | StderrMessage
+  | HostDiagnosticMessage
   | PtyOutputMessage
   | ResolveExecRequestMessage
   | ProcEventMessage;

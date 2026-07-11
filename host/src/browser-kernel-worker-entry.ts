@@ -96,6 +96,7 @@ import {
   removeThreadWorkerRegistryEntry,
   threadWorkerFailureDisposition,
 } from "./thread-worker-disposition";
+import { VmInterruptTimerManager } from "./vm-interrupt-timer";
 import type {
   CentralizedWorkerInitMessage,
   CentralizedThreadInitMessage,
@@ -111,6 +112,7 @@ import {
   type ProcessMemoryLayout,
 } from "./process-memory";
 import type {
+  HostDiagnostic,
   MainToKernelMessage,
   KernelToMainMessage,
 } from "./browser-kernel-protocol";
@@ -151,14 +153,9 @@ interface ProcessInfo {
 }
 const processes = new Map<number, ProcessInfo>();
 const processTeardowns = new Map<ProcessInfo["worker"], Promise<void>>();
-interface VmInterruptTimer {
-  timer?: ReturnType<typeof setTimeout>;
-  process: ProcessInfo;
-  deadlineMs: number;
-  timedOutPtr: number;
-  vmInterruptPtr: number;
-}
-const vmInterruptTimers = new Map<number, VmInterruptTimer>();
+const vmInterruptTimers = new VmInterruptTimerManager<ProcessInfo>(
+  (pid) => processes.get(pid),
+);
 // Includes standalone thread-worker teardown promises that may outlive the
 // process map entry they came from.
 const workerTeardowns = new Set<Promise<void>>();
@@ -202,7 +199,18 @@ async function resolveExecutableForLaunch(
   const shebang = parseShebang(bytes);
   if (!shebang) {
     if (!isWasmModuleBytes(bytes)) return { errno: ENOEXEC };
-    return { programBytes: bytes, argv };
+    let programModule: WebAssembly.Module;
+    try {
+      programModule = await WebAssembly.compile(bytes);
+    } catch (error) {
+      if (error instanceof WebAssembly.CompileError) return { errno: ENOEXEC };
+      throw error;
+    }
+    const declaredAbi = extractAbiVersion(bytes);
+    if (declaredAbi !== null && declaredAbi !== kernelWorker.getKernelAbiVersion()) {
+      return { errno: ENOEXEC };
+    }
+    return { programBytes: bytes, programModule, argv };
   }
 
   const scriptArgv = [
@@ -228,59 +236,14 @@ const threadWorkers = new Map<number, ThreadWorkerInfo[]>();
 const threadExits = new ThreadExitCoordinator();
 const reportedNonzeroProcessExits = new Set<number>();
 
-function clearVmInterruptTimer(pid: number): void {
-  const entry = vmInterruptTimers.get(pid);
-  if (entry?.timer !== undefined) clearTimeout(entry.timer);
-  vmInterruptTimers.delete(pid);
-}
-
-function scheduleVmInterruptTimer(pid: number, entry: VmInterruptTimer): void {
-  if (vmInterruptTimers.get(pid) !== entry || processes.get(pid) !== entry.process) return;
-  const remainingMs = entry.deadlineMs - performance.now();
-  if (remainingMs <= 0) {
-    vmInterruptTimers.delete(pid);
-    const flags = new Uint8Array(entry.process.memory.buffer);
-    Atomics.store(flags, entry.timedOutPtr, 1);
-    Atomics.store(flags, entry.vmInterruptPtr, 1);
-    return;
-  }
-  entry.timer = setTimeout(() => {
-    entry.timer = undefined;
-    scheduleVmInterruptTimer(pid, entry);
-  }, Math.min(0x7fffffff, Math.max(1, remainingMs)));
-}
-
 function handleVmInterruptTimer(msg: {
   pid: number;
   timedOutPtr: number;
   vmInterruptPtr: number;
   seconds: number;
-}): void {
-  clearVmInterruptTimer(msg.pid);
-  if (!(msg.seconds > 0)) return;
-  const process = processes.get(msg.pid);
-  if (!process || !Number.isFinite(msg.seconds)) return;
-  const flags = new Uint8Array(process.memory.buffer);
-  if (
-    !Number.isSafeInteger(msg.timedOutPtr) ||
-    msg.timedOutPtr < 0 ||
-    msg.timedOutPtr >= flags.length ||
-    !Number.isSafeInteger(msg.vmInterruptPtr) ||
-    msg.vmInterruptPtr < 0 ||
-    msg.vmInterruptPtr >= flags.length
-  ) return;
-  // The process worker can be stuck in a CPU-bound Wasm loop, so a timer in
-  // that worker cannot set cooperative runtime interrupt flags. Run the timer
-  // from this kernel worker instead; the process memory is shared, matching
-  // the Node host's VM-interrupt timer path.
-  const entry: VmInterruptTimer = {
-    process,
-    deadlineMs: performance.now() + msg.seconds * 1000,
-    timedOutPtr: msg.timedOutPtr,
-    vmInterruptPtr: msg.vmInterruptPtr,
-  };
-  vmInterruptTimers.set(msg.pid, entry);
-  scheduleVmInterruptTimer(msg.pid, entry);
+}, pid: number, process: ProcessInfo): void {
+  if (msg.pid !== pid) return;
+  vmInterruptTimers.handleRequest(pid, process, msg);
 }
 
 function delay(ms: number): Promise<void> {
@@ -316,7 +279,12 @@ function reportNonzeroProcessExitDiagnostic(
     `[kernel-worker] nonzero process exit pid=${pid} status=${status} source=${source} argv=${JSON.stringify(info?.argv ?? [])}` +
     (serviceLog ? `\n${serviceLog}` : "") +
     `\n${syscalls}`;
-  console.warn(diagnostic);
+  reportHostDiagnostic({
+    pid,
+    status,
+    source,
+    message: diagnostic,
+  }, "warn");
 }
 
 function readServiceLogForProcess(argv: readonly string[] | undefined): string | null {
@@ -383,6 +351,15 @@ function post(msg: KernelToMainMessage, transfer?: Transferable[]) {
   (globalThis as any).postMessage(msg, transfer ?? []);
 }
 
+function reportHostDiagnostic(
+  diagnostic: HostDiagnostic,
+  level: "error" | "warn" = "error",
+): void {
+  if (level === "warn") console.warn(diagnostic.message);
+  else console.error(diagnostic.message);
+  post({ type: "host_diagnostic", ...diagnostic });
+}
+
 function reportBridgePendingRequests(): void {
   post({ type: "http_bridge_pending", count: activeBridgeRequests.size });
 }
@@ -439,11 +416,10 @@ function respondErrorIfRequested(
 }
 
 function reportWorkerProtocolError(message: string): void {
-  console.error(`[kernel-worker] ${message}`);
-  post({
-    type: "stderr",
+  reportHostDiagnostic({
     pid: 0,
-    data: new TextEncoder().encode(`[kernel-worker] ${message}\n`),
+    source: "worker protocol",
+    message: `[kernel-worker] ${message}`,
   });
 }
 
@@ -1057,8 +1033,6 @@ function installProcessWorkerListeners(
     const message = `[kernel-worker] pid=${pid} ${source} -> forcing exit ${status}`;
     if (status === 0 && source === "worker-main exit message") {
       console.debug(message);
-    } else {
-      console.warn(message);
     }
     reportNonzeroProcessExitDiagnostic(pid, status, source);
     handleExit(pid, status, crashSignum, worker);
@@ -1072,9 +1046,15 @@ function installProcessWorkerListeners(
   //   m.status — worker-main posted {type:"exit"}, normal exit path.
   worker.on("error", (err: Error) => {
     if (intentionallyTerminated.has(worker as object)) return;
-    console.error(`[kernel-worker] Worker error pid=${pid}:`, err.message);
     const signum = classifiedSignalOrFallback(err);
-    finalize(signalExitStatus(signum), "worker.onerror", signum);
+    const status = signalExitStatus(signum);
+    reportHostDiagnostic({
+      pid,
+      status,
+      source: "worker.onerror",
+      message: `[kernel-worker] worker error pid=${pid}: ${err.message}`,
+    });
+    finalize(status, "worker.onerror", signum);
   });
   worker.on("exit", (code: number) => {
     // BrowserWorkerHandle synthesizes an "exit" event when the underlying
@@ -1092,27 +1072,23 @@ function installProcessWorkerListeners(
   });
   worker.on("message", (msg: unknown) => {
     if (intentionallyTerminated.has(worker as object)) return;
-    if (processes.get(pid)?.worker !== worker) return;
+    const process = processes.get(pid);
+    if (!process || process.worker !== worker) return;
     const m = msg as WorkerToHostMessage;
     if (m.type === "error") {
-      console.error(`[kernel-worker] Process error pid=${pid}:`, m.message);
-      // Forward to host stderr so the demo log shows the actual failure
-      // ("Kernel worker failed: ..." with the wasm trap or
-      // instantiation error). Without this, a process death in the
-      // browser is invisible to the user — only console.error in the
-      // kernel-worker scope, which most users don't open. Mirrors the
-      // Node-side handleSpawn message-listener stderr forwarding.
-      const errBytes = new TextEncoder().encode(
-        `[process-worker] ${m.message ?? "unknown error"}\n`,
-      );
-      post({ type: "stderr", pid, data: errBytes });
       const signum = classifiedSignalOrFallback(m.message);
-      finalize(classifiedTrapExitStatus(m.message) ?? -1, "worker-main error message", signum);
+      const status = classifiedTrapExitStatus(m.message) ?? -1;
+      reportHostDiagnostic({
+        pid,
+        status,
+        source: "worker-main error message",
+        message: `[process-worker] ${m.message ?? "unknown error"}`,
+      });
+      finalize(status, "worker-main error message", signum);
     } else if (m.type === "exit") {
       finalize(m.status ?? 0, "worker-main exit message");
     } else if (m.type === "vm_interrupt_timer") {
-      if (m.pid !== pid) return;
-      handleVmInterruptTimer(m);
+      handleVmInterruptTimer(m, pid, process);
     }
   });
 }
@@ -1214,18 +1190,7 @@ async function handleExec(
   const resolved = await resolveExecutableForLaunch(path, argv);
   if (!resolved) return -2; // ENOENT
   if ("errno" in resolved) return -resolved.errno;
-  const { programBytes: bytes, argv: launchArgv } = resolved;
-  let programModule: WebAssembly.Module;
-  try {
-    programModule = await WebAssembly.compile(bytes);
-  } catch (e) {
-    if (e instanceof WebAssembly.CompileError) return -8; // ENOEXEC
-    throw e;
-  }
-  const declaredAbi = extractAbiVersion(bytes);
-  if (declaredAbi !== null && declaredAbi !== kernelWorker.getKernelAbiVersion()) {
-    return -8;
-  }
+  const { programBytes: bytes, programModule, argv: launchArgv } = resolved;
   // Preallocate the replacement address space before the irreversible commit.
   const ptrWidth = detectPtrWidth(bytes);
   const metadataResult = kernelWorker.validateExecMetadata(
@@ -1259,7 +1224,7 @@ async function handleExec(
   try {
     const setupResult = kernelWorker.kernelExecSetup(pid, callerTid);
     if (setupResult < 0) return setupResult;
-    clearVmInterruptTimer(pid);
+    vmInterruptTimers.clear(pid);
 
     // Invalidate the discarded image synchronously at the commit point. This
     // keeps stale clone/listener continuations out even if later detach or
@@ -1359,10 +1324,11 @@ async function handleExec(
 
     const message = err instanceof Error ? err.message : String(err);
     try {
-      post({
-        type: "stderr",
+      reportHostDiagnostic({
         pid,
-        data: new TextEncoder().encode(`[exec] post-commit transition failed: ${message}\n`),
+        status: signalExitStatus(SIGSEGV),
+        source: "exec post-commit transition",
+        message: `[exec] post-commit transition failed: ${message}`,
       });
     } catch {
       // A closed host port must not prevent kernel-side reap.
@@ -1381,9 +1347,9 @@ async function handleExec(
  * Handle SYS_SPAWN (non-forking posix_spawn) on the browser host.
  *
  * The kernel has already constructed the child Process descriptor under
- * `childPid` with attrs and file actions applied. This callback resolves
- * `path` to bytes via the shared MemoryFileSystem, allocates a fresh
- * Memory for the child, registers it with the kernel
+ * `childPid` with attrs and file actions applied. This callback receives the
+ * preflight's compiled program, allocates a fresh Memory for the child, and
+ * registers it with the kernel
  * (`skipKernelCreate: true` — kernel did its half), and spawns a Worker.
  *
  * Distinct from handleExec (which replaces the calling worker) and
@@ -1398,9 +1364,9 @@ async function handleExec(
 /**
  * Pre-flight resolver — see node-kernel-worker-entry.ts:handlePosixSpawnResolve.
  * Browser-side equivalent: materialize the lazy file (async fetch via
- * the memfs lazy-loader, avoiding sync-XHR + SW deadlocks) then read its
- * contents from the VFS. Side-effect-free; safe to call on PATH search
- * iterations that may not resolve.
+ * the memfs lazy-loader, avoiding sync-XHR + SW deadlocks), reads its
+ * contents from the VFS, follows shebangs, and compiles the final Wasm
+ * module. Safe to call before the kernel applies spawn file actions.
  */
 async function handlePosixSpawnResolve(
   path: string,
@@ -1410,31 +1376,23 @@ async function handlePosixSpawnResolve(
 }
 
 /**
- * Launch a worker for a SYS_SPAWN child whose program bytes have already
- * been resolved by `handlePosixSpawnResolve`. Mirrors the Node entry's
- * `handlePosixSpawn`.
+ * Launch a worker for a SYS_SPAWN child whose program has already been
+ * resolved and compiled by `handlePosixSpawnResolve`. Mirrors the Node
+ * entry's `handlePosixSpawn`.
  */
 async function handlePosixSpawn(
   childPid: number,
-  programBytes: ArrayBuffer,
-  argv: string[],
+  program: ResolvedSpawnProgram,
   envp: string[],
 ): Promise<number> {
   await waitForProcessTeardowns();
 
-  let programModule: WebAssembly.Module;
-  try {
-    programModule = await WebAssembly.compile(programBytes);
-  } catch (e) {
-    if (e instanceof WebAssembly.CompileError) return -8; // ENOEXEC
-    throw e;
-  }
-
-  // Compilation and unrelated teardown waits yield to the event loop. Keep a
-  // successfully created zombie, but never resurrect it with a new Worker.
+  // Unrelated teardown waits yield to the event loop. Keep a successfully
+  // created zombie, but never resurrect it with a new Worker.
   if (!kernelWorker.shouldLaunchPendingChild(childPid)) return 0;
   post({ type: "proc_event", kind: "spawn", pid: childPid });
 
+  const { programBytes, programModule, argv } = program;
   const ptrWidth = detectPtrWidth(programBytes);
   const {
     memory: newMemory,
@@ -1535,10 +1493,10 @@ async function handleClone(
     alloc = processInfo.threadAllocator.allocate(memory);
   } catch (e) {
     const message = e instanceof Error ? e.message : String(e);
-    post({
-      type: "stderr",
+    reportHostDiagnostic({
       pid,
-      data: new TextEncoder().encode(`[kernel-worker] pid=${pid}: ${message}\n`),
+      source: "clone allocation",
+      message: `[kernel-worker] pid=${pid}: ${message}`,
     });
     throw e;
   }
@@ -1619,9 +1577,15 @@ async function handleClone(
       void terminateThreadEntry();
       return;
     }
-    const text = `[kernel-worker] pid=${pid} tid=${tid}: ${reason}\n`;
-    post({ type: "stderr", pid, data: new TextEncoder().encode(text) });
     const disposition = threadWorkerFailureDisposition(reason);
+    reportHostDiagnostic({
+      pid,
+      status: disposition.kind === "guest-fatal-trap"
+        ? disposition.exitStatus
+        : undefined,
+      source: "thread worker failure",
+      message: `[kernel-worker] pid=${pid} tid=${tid}: ${reason}`,
+    });
     kernelWorker.finalizeThreadExit(pid, tid, alloc.channelOffset);
     void terminateThreadEntry();
     if (disposition.kind === "guest-fatal-trap") {
@@ -1643,11 +1607,10 @@ async function handleClone(
       failThread((m as { message?: string }).message ?? "thread error");
     } else if (m.type === "vm_interrupt_timer") {
       if (!isCurrentThreadGeneration() || m.pid !== pid) return;
-      handleVmInterruptTimer(m);
+      handleVmInterruptTimer(m, pid, processInfo);
     }
   });
   threadWorker.on("error", (err: Error) => {
-    console.error(`[kernel-worker] thread worker error pid=${pid} tid=${tid}:`, err.message);
     failThread(`worker error: ${err.message ?? err}`);
   });
 
@@ -1681,7 +1644,7 @@ async function finishProcessExit(
   const info = processes.get(pid);
   if (!info || info.worker !== expectedWorker) return;
   if (processTeardowns.has(expectedWorker)) return;
-  clearVmInterruptTimer(pid);
+  vmInterruptTimers.clear(pid);
 
   reportNonzeroProcessExitDiagnostic(pid, exitStatus, "kernel process exit");
   const threadedSettleMs = threadedProcessPids.has(pid)
@@ -1742,7 +1705,7 @@ async function finishProcessExit(
 
 async function handleTerminateProcess(msg: Extract<MainToKernelMessage, { type: "terminate_process" }>) {
   const pid = msg.pid;
-  clearVmInterruptTimer(pid);
+  vmInterruptTimers.clear(pid);
 
   // Terminate thread workers
   const threads = threadWorkers.get(pid);
@@ -1917,10 +1880,7 @@ async function handleDestroy(msg: Extract<MainToKernelMessage, { type: "destroy"
       );
     }
   }
-  for (const entry of vmInterruptTimers.values()) {
-    if (entry.timer !== undefined) clearTimeout(entry.timer);
-  }
-  vmInterruptTimers.clear();
+  vmInterruptTimers.clearAll();
   processes.clear();
   threadModuleCache.clear();
   threadWorkers.clear();
@@ -2202,6 +2162,12 @@ sw.onmessage = (e: MessageEvent) => {
       kernelWorker.attachKmsStats(msg.crtcId, msg.stats);
       break;
     default: {
+      // Every typed MainToKernelMessage must have a case above. Browser
+      // tooling also sends a few deliberately out-of-band control messages,
+      // which remain handled below after the compile-time exhaustiveness
+      // check.
+      const exhaustive: never = msg;
+      void exhaustive;
       // Handle non-protocol messages (e.g., bridge port transfer)
       const raw = e.data as any;
       if (raw?.type === "sysprof_start") {
@@ -2254,7 +2220,11 @@ sw.onmessage = (e: MessageEvent) => {
           };
         }
       } else {
-        console.warn("[kernel-worker] Unknown message type:", raw?.type);
+        reportHostDiagnostic({
+          pid: 0,
+          source: "worker protocol",
+          message: `[kernel-worker] unknown main-thread message type: ${String(raw?.type)}`,
+        }, "warn");
       }
     }
   }

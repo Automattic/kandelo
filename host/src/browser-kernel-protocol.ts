@@ -9,8 +9,12 @@ import type {
   HttpResponse,
 } from "./networking/in-kernel-http";
 import type { LazyDownloadEvent } from "./vfs/memory-fs";
+import type {
+  HostDiagnosticMessage,
+} from "./host-diagnostic";
 
 export type { HttpRequest, HttpResponse };
+export type { HostDiagnostic } from "./host-diagnostic";
 
 // ── Main Thread → Kernel Worker ──
 
@@ -498,6 +502,7 @@ export type KernelToMainMessage =
   | ExitMessage
   | StdoutMessage
   | StderrMessage
+  | HostDiagnosticMessage
   | PtyOutputMessage
   | ListenTcpMessage
   | FbBindMessage

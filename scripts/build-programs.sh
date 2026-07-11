@@ -264,9 +264,12 @@ if [ -f "$SYSROOT64/lib/libc.a" ]; then
         -Wl,--export=__tls_align
         -Wl,--export=__stack_pointer
         -Wl,--export=__wasm_thread_init
+        -Wl,--export=__abi_version
     )
 
-    for src in "$REPO_ROOT/programs/"hello64.c; do
+    for src in \
+        "$REPO_ROOT/programs/"hello64.c \
+        "$REPO_ROOT/programs/"ifhwaddr.c; do
         [ -f "$src" ] || continue
         local_name=$(basename "$src" .c)
         echo "  Compiling $local_name (wasm64)..."
