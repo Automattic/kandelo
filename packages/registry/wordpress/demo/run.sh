@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 #
 # Build (if needed) and run WordPress on kandelo.
-# Uses PHP's built-in web server + SQLite for storage.
+# Uses the WordPress service VFS (dinit + nginx + PHP-FPM + SQLite).
 #
 # Usage:
 #   bash packages/registry/wordpress/demo/run.sh [port]
@@ -30,24 +30,15 @@ else
     echo "--- SDK tools: OK ---"
 fi
 
-# Step 3: PHP CLI binary (builds sqlite, zlib as needed)
-PHP_BINARY="$REPO_ROOT/packages/registry/php/php-src/sapi/cli/php"
-if [ ! -f "$PHP_BINARY" ]; then
-    echo "--- Building PHP CLI + dependencies ---"
-    bash "$REPO_ROOT/packages/registry/php/build-php.sh"
+# Step 3: WordPress service VFS image
+if ! "$REPO_ROOT/scripts/resolve-binary.sh" programs/wordpress.vfs.zst >/dev/null 2>&1; then
+    echo "--- Building WordPress VFS image ---"
+    bash "$REPO_ROOT/run.sh" build wp-vfs
 else
-    echo "--- PHP CLI: OK ---"
+    echo "--- WordPress VFS image: OK ---"
 fi
 
-# Step 4: WordPress + SQLite plugin
-if [ ! -f "$SCRIPT_DIR/../wordpress/wp-settings.php" ]; then
-    echo "--- Downloading WordPress ---"
-    bash "$SCRIPT_DIR/../setup.sh"
-else
-    echo "--- WordPress: OK ---"
-fi
-
-# Step 5: Host dependencies
+# Step 4: Host dependencies
 if [ ! -d "$REPO_ROOT/node_modules" ]; then
     echo "--- Installing host dependencies ---"
     cd "$REPO_ROOT" && npm install && cd "$REPO_ROOT"
