@@ -331,6 +331,7 @@ async function runOnMainThread(options: RunProgramOptions): Promise<RunProgramRe
           maxAddr: childLayout.maxAddr,
           mmapBase: childLayout.mmapBase,
         });
+        kernelWorker.inheritProcessSharedMappings(parentPid, childPid);
 
         const FORK_BUF_SIZE = FORK_SAVE_BUFFER_SIZE;
         const forkBufAddr = threadFork
@@ -366,12 +367,30 @@ async function runOnMainThread(options: RunProgramOptions): Promise<RunProgramRe
           ) / WASM_PAGE_SIZE,
         ));
         processPtrWidths.set(childPid, parentPtrWidth);
-        childWorker.on("error", (err: Error) => {
-          kernelWorker.unregisterProcess(childPid);
+        const finalizeChildWorkerError = (reason: unknown): void => {
+          // Match the production hosts: an unexpected worker failure is a
+          // signal-style process death, not an unregister that makes the
+          // child disappear while its parent remains blocked in waitpid().
+          // The worker identity guard also prevents a late event from an old
+          // generation tearing down a replacement process after exec.
+          if (workers.get(childPid) !== childWorker) return;
+          const message = reason instanceof Error ? reason.message : String(reason);
+          stderr += `[fork child ${childPid}] ${message}\n`;
+          try { kernelWorker.notifyHostProcessCrashed(childPid, SIGSEGV); } catch { /* best-effort */ }
+          try { kernelWorker.deactivateProcess(childPid); } catch { /* best-effort */ }
           workers.delete(childPid);
+          processProgramBytes.delete(childPid);
           processLayouts.delete(childPid);
           threadAllocators.delete(childPid);
           processPtrWidths.delete(childPid);
+          childWorker.terminate().catch(() => {});
+        };
+        childWorker.on("error", finalizeChildWorkerError);
+        childWorker.on("message", (msg: unknown) => {
+          const m = msg as WorkerToHostMessage;
+          if (m.type === "error" && m.pid === childPid) {
+            finalizeChildWorkerError(m.message);
+          }
         });
 
         return [childChannelOffset];

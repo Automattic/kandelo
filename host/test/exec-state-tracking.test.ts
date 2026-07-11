@@ -666,12 +666,24 @@ describe("exec host-state transition", () => {
     new Uint8Array(memory.buffer, 0x1000, 4).set([1, 2, 3, 4]);
     const kernelMemory = new WebAssembly.Memory({ initial: 2 });
     const writeChunk = vi.fn(() => 4);
+    const readChunk = vi.fn((_id: number, _offset: number, outPtr: number, len: number) => {
+      new Uint8Array(kernelMemory.buffer, outPtr, len).fill(0);
+      return len;
+    });
     const detach = vi.fn(() => 0);
     const worker = createWorker({
       processes: new Map([[7, { channels: [{ pid: 7, memory }], memory }]]),
       shmMappings: new Map([[7, new Map([
-        [0x1000, { segId: 3, size: 4 }],
+        [0x1000, {
+          segId: 3,
+          size: 4,
+          readOnly: false,
+          snapshot: new Uint8Array(4),
+          seenVersion: 0,
+        }],
       ])]]),
+      shmSegmentVersions: new Map([[3, 0]]),
+      currentHandlePid: 0,
       kernelMemory,
       scratchOffset: 0,
       getKernelMem: () => new Uint8Array(kernelMemory.buffer),
@@ -679,6 +691,7 @@ describe("exec host-state transition", () => {
       kernelInstance: {
         exports: {
           kernel_set_current_pid: vi.fn(),
+          kernel_ipc_shm_read_chunk: readChunk,
           kernel_ipc_shm_write_chunk: writeChunk,
           kernel_ipc_shmdt: detach,
         },
