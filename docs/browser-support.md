@@ -94,8 +94,11 @@ connection in any nginx worker. The standalone nginx image runs with
 - Used by MariaDB (5 threads), Redis (3 background threads)
 
 ### Networking
-- POSIX AF_INET TCP and UDP inside the kernel, including local loopback and virtual machine-to-machine networking
+- POSIX AF_INET TCP and UDP inside the kernel, including local loopback and virtual IPv4 machine-to-machine networking
+- Partial AF_INET6 streams and datagrams for `::`/`::1`; loopback streams have a cross-process path, while datagrams remain process-local, and neither provides external or virtual-network IPv6
+- In-kernel IPv4/IPv6 loopback datagrams, AF_UNIX datagrams, and IPv4 multicast are process-local; machine-wide datagram routing is still pending
 - `LocalVirtualNetwork` attaches multiple browser Kandelo machines to virtual IPv4 addresses in one browser session
+- Browser networking backends preserve valid decimal one-, two-, three-, and four-component IPv4 forms, reject malformed/overflowing numeric forms, enforce ASCII host-label syntax and DNS length limits, and synthesize IPv4 addresses only for acceptable hostnames; they do not provide AF_INET6 DNS/transport
 - GNU Netcat (`nc`) and `curl` run against those virtual sockets in the network lab at `/pages/network/`
 - Service worker cookie jar for session persistence (WordPress)
 - nginx serves static files and proxies to PHP-FPM via loopback TCP

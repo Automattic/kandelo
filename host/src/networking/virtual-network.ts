@@ -7,6 +7,7 @@ import type {
   UdpReceiveTarget,
 } from "../types";
 import { EagainError } from "./fetch-backend";
+import { parseNumericIpv4Hostname, validateDnsHostname } from "./hostname";
 
 const EADDRINUSE = 98;
 const EADDRNOTAVAIL = 99;
@@ -211,10 +212,9 @@ export class LocalVirtualNetwork {
   }
 
   resolve(hostname: string): Uint8Array | null {
-    const direct = hostname.match(/^(\d+)\.(\d+)\.(\d+)\.(\d+)$/);
-    if (direct) {
-      return new Uint8Array(direct.slice(1).map((part) => Number(part)));
-    }
+    const direct = parseNumericIpv4Hostname(hostname);
+    if (direct) return direct;
+    validateDnsHostname(hostname);
     const addr = this.hostnames.get(hostname);
     return addr ? copyAddr(addr) : null;
   }
