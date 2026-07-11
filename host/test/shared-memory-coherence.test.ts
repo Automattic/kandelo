@@ -113,6 +113,31 @@ describe("anonymous MAP_SHARED coherence", () => {
     expect((h.kw as any).sharedMappings.get(h.childPid).size).toBe(1);
   });
 
+  it("refreshes a sole parent after its child publishes and detaches", () => {
+    const h = anonymousHarness();
+    (h.kw as any).sharedMappings.delete(h.peerPid);
+    h.backing.refCount = 1;
+    h.kw.inheritProcessSharedMappings(h.parentPid, h.childPid);
+
+    const child = new Uint8Array(h.childMemory.buffer);
+    child[h.mapAddr + 17] = 0x6d;
+    (h.kw as any).syncAnonymousSharedMappingsFromProcess(
+      (h.kw as any).processes.get(h.childPid),
+    );
+    expect(h.backing.bytes[17]).toBe(0x6d);
+    expect(h.backing.refCount).toBe(2);
+
+    (h.kw as any).releaseAllSharedMemoryForProcess(h.childPid);
+    expect(h.backing.refCount).toBe(1);
+
+    const parent = new Uint8Array(h.parentMemory.buffer);
+    expect(parent[h.mapAddr + 17]).toBe(0);
+    (h.kw as any).syncAnonymousSharedMappingsFromProcess(
+      (h.kw as any).processes.get(h.parentPid),
+    );
+    expect(parent[h.mapAddr + 17]).toBe(0x6d);
+  });
+
   it("publishes and releases backing references exactly once at teardown", () => {
     const h = anonymousHarness();
     new Uint8Array(h.parentMemory.buffer)[h.mapAddr + 3] = 0x55;

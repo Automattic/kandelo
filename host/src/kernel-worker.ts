@@ -3639,12 +3639,13 @@ export class CentralizedKernelWorker {
   /**
    * Dequeue one pending Handler signal from the kernel and write delivery
    * info to the process channel. The glue code (channel_syscall.c) reads
-   * this after the syscall returns and invokes the handler.
+   * this after the syscall returns and invokes the handler. Returns the
+   * handler signal number, or zero when no caught handler was dequeued.
    */
-  private dequeueSignalForDelivery(channel: ChannelInfo): void {
+  private dequeueSignalForDelivery(channel: ChannelInfo): number {
     const dequeueSignal = this.kernelInstance!.exports
       .kernel_dequeue_signal as ((pid: number, outPtr: KernelPointer) => number) | undefined;
-    if (!dequeueSignal) return;
+    if (!dequeueSignal) return 0;
 
     // Use the signal area in kernel scratch as the output buffer
     const sigOutOffset = this.scratchOffset + CH_SIG_BASE;
@@ -3659,10 +3660,12 @@ export class CentralizedKernelWorker {
         kernelMem.subarray(sigOutOffset, sigOutOffset + 44),
         channel.channelOffset + CH_SIG_BASE,
       );
+      return sigResult;
     } else {
       // Clear entire signal delivery area in process channel (48 bytes)
       const sigStart = channel.channelOffset + CH_SIG_BASE;
       new Uint8Array(channel.memory.buffer, sigStart, 48).fill(0);
+      return 0;
     }
   }
 
@@ -5870,6 +5873,21 @@ export class CentralizedKernelWorker {
     this.completeChannel(channel, SYS_EPOLL_CTL, origArgs, undefined, retVal, errVal);
   }
 
+  /** Complete or reap an epoll wait when its kernel signal boundary fired. */
+  private completeEpollSignalOutcome(channel: ChannelInfo): boolean {
+    const deliveredSignal = this.dequeueSignalForDelivery(channel);
+    if (this.getProcessExitSignal(channel.pid) > 0) {
+      this.handleProcessTerminated(channel);
+      return true;
+    }
+    if (deliveredSignal > 0) {
+      this.completeChannelRaw(channel, -EINTR_ERRNO, EINTR_ERRNO);
+      this.relistenChannel(channel);
+      return true;
+    }
+    return false;
+  }
+
   /**
    * Handle epoll_pwait / epoll_wait entirely on the host side.
    * Converts the epoll interest list to a poll syscall, calls
@@ -5899,6 +5917,10 @@ export class CentralizedKernelWorker {
     }
 
     if (interests.length === 0) {
+      // No poll call follows for an empty interest set, so explicitly service
+      // the signal boundary before parking or returning a timeout result.
+      if (this.completeEpollSignalOutcome(channel)) return;
+
       // No interests registered — return 0 immediately for timeout=0,
       // or block (EAGAIN) for non-zero timeout.
       if (timeoutMs === 0) {
@@ -5992,8 +6014,14 @@ export class CentralizedKernelWorker {
     const retVal = Number(kernelView.getBigInt64(CH_RETURN, true));
     const errVal = kernelView.getUint32(CH_ERRNO, true);
 
-    // Handle signal delivery
-    this.dequeueSignalForDelivery(channel);
+    // This host-side emulation performs a nonblocking poll and owns the
+    // wait/retry loop, so it must preserve the syscall-boundary signal
+    // outcome that kernel_handle_channel would normally return to the guest.
+    // A default terminating action leaves an exited kernel Process and must
+    // reap the worker without waking guest code. A caught handler interrupts
+    // epoll with EINTR so the glue can run the copied handler metadata before
+    // the application decides whether to restart the wait.
+    if (this.completeEpollSignalOutcome(channel)) return;
 
     // If poll returned error (not EAGAIN), propagate it
     if (retVal < 0 && errVal !== EAGAIN) {
@@ -8785,9 +8813,12 @@ export class CentralizedKernelWorker {
       if (!mapping.backingKey || !mapping.snapshot) continue;
       const backing = this.anonymousSharedBackings?.get(mapping.backingKey);
       if (!backing || mapAddr + mapping.len > processMem.length) continue;
-      if (!options.force && backing.refCount <= 1) continue;
-
       const wasStale = (mapping.seenVersion ?? 0) !== backing.version;
+      // A sole current observer can defer scanning its private Wasm memory,
+      // but a sole *stale* observer must still import a publication made by a
+      // child or peer before that other mapping detached.
+      if (!options.force && backing.refCount <= 1 && !wasStale) continue;
+
       let changed = false;
       if (mapping.writable) {
         for (let offset = 0; offset < mapping.len; offset += 4096) {

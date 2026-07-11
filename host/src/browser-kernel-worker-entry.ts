@@ -92,7 +92,10 @@ import {
   signalExitStatus,
   SIGSEGV,
 } from "./trap-signals";
-import { threadWorkerFailureDisposition } from "./thread-worker-disposition";
+import {
+  removeThreadWorkerRegistryEntry,
+  threadWorkerFailureDisposition,
+} from "./thread-worker-disposition";
 import type {
   CentralizedWorkerInitMessage,
   CentralizedThreadInitMessage,
@@ -1453,11 +1456,7 @@ async function handleClone(
     if (belongsToCurrentProcessImage()) {
       threadExits.release(pid, alloc.channelOffset);
     }
-    const threads = threadWorkers.get(pid);
-    if (threads) {
-      const idx = threads.indexOf(threadEntry);
-      if (idx >= 0) threads.splice(idx, 1);
-    }
+    removeThreadWorkerRegistryEntry(threadWorkers, pid, threadEntry);
   };
   const terminateThreadEntry = (): Promise<void> => {
     if (!threadEntry.termination) {
