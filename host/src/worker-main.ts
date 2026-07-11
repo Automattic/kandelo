@@ -1537,38 +1537,9 @@ export function patchWasmForThread(bytes: ArrayBuffer): ArrayBuffer {
     ctorCandidates.set(index, sources);
   };
 
+  // Custom name sections are optional debug metadata and cannot authorize a
+  // function-body rewrite. Use only executable linker semantics as evidence.
   addCtorCandidate(exportFuncIndicesByName.get("__wasm_call_ctors"), "function export");
-
-  // Unstripped modules can retain the exact synthetic function name even when
-  // it is not exported. Fork instrumentation appends to this same name map.
-  for (const sec of sections) {
-    if (sec.id !== 0) continue;
-    let pos = sec.contentOffset;
-    let customName: string;
-    [customName, pos] = readName(pos);
-    if (customName !== "name") continue;
-    const sectionEnd = sec.contentOffset + sec.contentSize;
-    while (pos < sectionEnd) {
-      const subsectionId = src[pos++];
-      const [subsectionSize, sizeBytes] = readLEB128(src, pos);
-      pos += sizeBytes;
-      const subsectionEnd = pos + subsectionSize;
-      if (subsectionId === 1) {
-        const [nameCount, countBytes] = readLEB128(src, pos);
-        pos += countBytes;
-        for (let i = 0; i < nameCount; i++) {
-          const [funcIndex, indexBytes] = readLEB128(src, pos);
-          pos += indexBytes;
-          let functionName: string;
-          [functionName, pos] = readName(pos);
-          if (functionName === "__wasm_call_ctors") {
-            addCtorCandidate(funcIndex, "name section");
-          }
-        }
-      }
-      pos = subsectionEnd;
-    }
-  }
 
   const abiMarkerIndex = exportFuncIndicesByName.get("__abi_version");
   if (abiMarkerIndex !== undefined && extractAbiVersion(bytes) !== null) {

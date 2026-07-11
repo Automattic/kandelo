@@ -26,6 +26,7 @@ function moduleBytes(options: {
   functionTypes: number[];
   bodies: number[][];
   exports: Array<{ name: string; index: number }>;
+  functionNames?: Array<{ name: string; index: number }>;
   start?: number;
 }): ArrayBuffer {
   const bytes = [0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00];
@@ -61,6 +62,21 @@ function moduleBytes(options: {
     codeContent.push(...uleb(body.length), ...body);
   }
   bytes.push(...section(10, codeContent));
+  if (options.functionNames) {
+    const functionNameMap = [
+      ...uleb(options.functionNames.length),
+      ...options.functionNames.flatMap((entry) => [
+        ...uleb(entry.index),
+        ...name(entry.name),
+      ]),
+    ];
+    bytes.push(...section(0, [
+      ...name("name"),
+      0x01,
+      ...uleb(functionNameMap.length),
+      ...functionNameMap,
+    ]));
+  }
   return new Uint8Array(bytes).buffer;
 }
 
@@ -108,6 +124,25 @@ describe("patchWasmForThread", () => {
     expect(WebAssembly.validate(patched)).toBe(true);
     const { instance } = await WebAssembly.instantiate(patched);
     expect((instance.exports.__abi_version as () => number)()).toBe(18);
+  });
+
+  it("does not rewrite a function identified only by spoofed name metadata", async () => {
+    const original = moduleBytes({
+      types: [VOID, I32_RESULT],
+      functionTypes: [0, 0, 1],
+      bodies: [
+        [],
+        [0x00],
+        [0x10, 0x01, 0x41, 0x12],
+      ],
+      exports: [{ name: "invoke_spoof", index: 2 }],
+      functionNames: [{ name: "__wasm_call_ctors", index: 1 }],
+    });
+
+    const patched = patchWasmForThread(original);
+    expect(WebAssembly.validate(patched)).toBe(true);
+    const { instance } = await WebAssembly.instantiate(patched);
+    expect(() => (instance.exports.invoke_spoof as () => number)()).toThrow(/unreachable/);
   });
 
   it("rejects constructor evidence that does not point to a () -> () function", () => {
