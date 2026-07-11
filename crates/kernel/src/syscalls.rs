@@ -6550,14 +6550,18 @@ fn udp_queue_datagram(sock: &mut crate::socket::SocketInfo, datagram: crate::soc
     sock.dgram_queue.push(datagram);
 }
 
-fn unix_queue_datagram(sock: &mut crate::socket::SocketInfo, datagram: crate::socket::Datagram) {
-    // Preserve the existing bounded AF_UNIX behavior. Unlike UDP, Unix
-    // datagrams are reliable on Linux and ultimately need sender backpressure
-    // rather than silent tail-drop; that requires a separate blocking design.
+fn unix_queue_datagram(
+    sock: &mut crate::socket::SocketInfo,
+    datagram: crate::socket::Datagram,
+) -> Result<(), Errno> {
+    // AF_UNIX datagrams are reliable. EAGAIN enters the host's ordinary
+    // blocking-write retry path, while O_NONBLOCK or MSG_DONTWAIT exposes it
+    // directly to the caller.
     if sock.dgram_queue.len() >= UDP_DATAGRAM_QUEUE_LIMIT {
-        sock.dgram_queue.remove(0);
+        return Err(Errno::EAGAIN);
     }
     sock.dgram_queue.push(datagram);
+    Ok(())
 }
 
 fn udp_take_socket_error(proc: &mut Process, sock_idx: usize) -> Result<(), Errno> {
@@ -6956,7 +6960,7 @@ fn unix_dgram_send_to_sock(
     {
         return Err(Errno::ECONNREFUSED);
     }
-    unix_queue_datagram(target, datagram);
+    unix_queue_datagram(target, datagram)?;
     Ok(buf.len())
 }
 
@@ -9349,7 +9353,19 @@ fn poll_check(proc: &mut Process, host: &mut dyn HostIO, fds: &mut [WasmPollFd])
                         {
                             revents |= POLLIN;
                         }
-                        if pollfd.events & POLLOUT != 0 && !sock.shut_wr {
+                        let unix_peer_queue_full = sock.domain
+                            == crate::socket::SocketDomain::Unix
+                            && sock.state == SocketState::Connected
+                            && sock
+                                .peer_idx
+                                .and_then(|peer_idx| proc.sockets.get(peer_idx))
+                                .is_some_and(|peer| {
+                                    peer.dgram_queue.len() >= UDP_DATAGRAM_QUEUE_LIMIT
+                                });
+                        if pollfd.events & POLLOUT != 0
+                            && !sock.shut_wr
+                            && !unix_peer_queue_full
+                        {
                             revents |= POLLOUT;
                         }
                     }
@@ -20109,6 +20125,99 @@ mod tests {
     }
 
     #[test]
+    fn test_unix_dgram_full_queue_backpressures_without_reordering() {
+        let _lock = UNIX_REGISTRY_LOCK.lock().unwrap();
+        let mut proc = Process::new(9052);
+        let mut host = MockHostIO::new();
+        use wasm_posix_shared::socket::*;
+
+        let recv_fd = sys_socket(&mut proc, &mut host, AF_UNIX, SOCK_DGRAM, 0).unwrap();
+        let mut addr = [0u8; 64];
+        addr[0] = AF_UNIX as u8;
+        let path = b"/tmp/udg-overflow.sock";
+        addr[2..2 + path.len()].copy_from_slice(path);
+        let addr = &addr[..2 + path.len() + 1];
+        sys_bind(&mut proc, &mut host, recv_fd, addr).unwrap();
+
+        let send_fd = sys_socket(&mut proc, &mut host, AF_UNIX, SOCK_DGRAM, 0).unwrap();
+        sys_connect(&mut proc, &mut host, send_fd, addr).unwrap();
+        for sequence in 0..UDP_DATAGRAM_QUEUE_LIMIT {
+            assert_eq!(
+                sys_write(
+                    &mut proc,
+                    &mut host,
+                    send_fd,
+                    &(sequence as u32).to_le_bytes(),
+                )
+                .unwrap(),
+                4,
+            );
+        }
+        assert_eq!(
+            sys_write(
+                &mut proc,
+                &mut host,
+                send_fd,
+                &(UDP_DATAGRAM_QUEUE_LIMIT as u32).to_le_bytes(),
+            )
+            .unwrap_err(),
+            Errno::EAGAIN,
+        );
+
+        use wasm_posix_shared::poll::POLLOUT;
+        let mut pollfd = WasmPollFd {
+            fd: send_fd,
+            events: POLLOUT,
+            revents: 0,
+        };
+        assert_eq!(
+            sys_poll(
+                &mut proc,
+                &mut host,
+                core::slice::from_mut(&mut pollfd),
+                0,
+            )
+            .unwrap(),
+            0,
+        );
+        assert_eq!(pollfd.revents, 0);
+
+        let mut buf = [0u8; 4];
+        assert_eq!(sys_read(&mut proc, &mut host, recv_fd, &mut buf).unwrap(), 4);
+        assert_eq!(u32::from_le_bytes(buf), 0);
+        assert_eq!(
+            sys_poll(
+                &mut proc,
+                &mut host,
+                core::slice::from_mut(&mut pollfd),
+                0,
+            )
+            .unwrap(),
+            1,
+        );
+        assert_ne!(pollfd.revents & POLLOUT, 0);
+        assert_eq!(
+            sys_write(
+                &mut proc,
+                &mut host,
+                send_fd,
+                &(UDP_DATAGRAM_QUEUE_LIMIT as u32).to_le_bytes(),
+            )
+            .unwrap(),
+            4,
+        );
+
+        for expected in 1..=UDP_DATAGRAM_QUEUE_LIMIT {
+            assert_eq!(sys_read(&mut proc, &mut host, recv_fd, &mut buf).unwrap(), 4);
+            assert_eq!(u32::from_le_bytes(buf), expected as u32);
+        }
+
+        sys_close(&mut proc, &mut host, send_fd).unwrap();
+        sys_close(&mut proc, &mut host, recv_fd).unwrap();
+        unsafe { crate::unix_socket::global_unix_socket_registry() }.cleanup_process(9052);
+    }
+
+    #[test]
     fn test_unix_dgram_rejects_stream_target() {
         let _lock = UNIX_REGISTRY_LOCK.lock().unwrap();
         let mut proc = Process::new(9026);
@@ -20402,7 +20511,7 @@ mod tests {
     fn test_udp_recv_queue_tail_drops_on_overflow() {
         use wasm_posix_shared::socket::*;
 
-        let mut proc = Process::new(1);
+        let mut proc = Process::new(9051);
         let mut host = MockHostIO::new();
 
         // Receiver bound to 127.0.0.1:ephemeral.
@@ -20460,6 +20569,8 @@ mod tests {
             sys_recvfrom(&mut proc, &mut host, recv_fd, &mut buf, 0, &mut from).unwrap_err(),
             Errno::EAGAIN,
         );
+        sys_close(&mut proc, &mut host, send_fd).unwrap();
+        sys_close(&mut proc, &mut host, recv_fd).unwrap();
     }
 
     // ── Threading tests ──────────────────────────────────────────────
