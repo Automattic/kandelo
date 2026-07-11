@@ -51,6 +51,8 @@ const MAX_SOCKET_OPTIONS: usize = 4096;
 const MAX_SOCKET_STRING_LEN: usize = 256;
 const MAX_IPV4_MULTICAST_MEMBERSHIPS: usize = 4096;
 const MAX_IPV4_MULTICAST_SOURCES: usize = 4096;
+const INITIAL_EXEC_STATE_BUFFER_LEN: usize = 64 * 1024;
+const MAX_EXEC_STATE_BUFFER_LEN: usize = 4 * 1024 * 1024;
 
 // ── Writer helper ───────────────────────────────────────────────────────────
 
@@ -1538,6 +1540,28 @@ pub fn serialize_exec_state(proc: &Process, buf: &mut [u8]) -> Result<usize, Err
     Ok(w.pos)
 }
 
+/// Serialize exec state without imposing the historical 64 KiB temporary
+/// limit. Growth is bounded so a malformed or unexpectedly large process
+/// descriptor fails truthfully with ENOMEM instead of exhausting kernel Wasm
+/// memory.
+pub fn serialize_exec_state_with_growing_buffer(proc: &Process) -> Result<Vec<u8>, Errno> {
+    let mut len = INITIAL_EXEC_STATE_BUFFER_LEN;
+
+    loop {
+        let mut buf = alloc::vec![0u8; len];
+        match serialize_exec_state(proc, &mut buf) {
+            Ok(written) => {
+                buf.truncate(written);
+                return Ok(buf);
+            }
+            Err(Errno::ENOMEM) if len < MAX_EXEC_STATE_BUFFER_LEN => {
+                len = len.saturating_mul(2).min(MAX_EXEC_STATE_BUFFER_LEN);
+            }
+            Err(err) => return Err(err),
+        }
+    }
+}
+
 // ── Exec Deserialize ────────────────────────────────────────────────────────
 
 /// Deserialize process state from an exec buffer.
@@ -1965,6 +1989,29 @@ mod tests {
         assert_eq!(restored.pid, 1);
         assert_eq!(restored.ppid, 0); // default ppid
         assert_eq!(restored.signals.pending, 0);
+    }
+
+    #[test]
+    fn test_exec_state_grows_for_large_environment() {
+        let mut proc = Process::new(1);
+        proc.environ = (0..1200)
+            .map(|_| {
+                let mut var = b"KDE_LONG_ENV=".to_vec();
+                var.extend(core::iter::repeat_n(b'x', 80));
+                var
+            })
+            .collect();
+
+        let mut old_limit_buf = alloc::vec![0u8; INITIAL_EXEC_STATE_BUFFER_LEN];
+        assert_eq!(
+            serialize_exec_state(&proc, &mut old_limit_buf),
+            Err(Errno::ENOMEM),
+        );
+
+        let serialized = serialize_exec_state_with_growing_buffer(&proc).unwrap();
+        assert!(serialized.len() > INITIAL_EXEC_STATE_BUFFER_LEN);
+        let restored = deserialize_exec_state(&serialized, 1).unwrap();
+        assert_eq!(restored.environ, proc.environ);
     }
 
     #[test]
