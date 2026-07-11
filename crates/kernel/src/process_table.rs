@@ -106,8 +106,9 @@ struct SpawnInheritFromParent {
 /// out from under the child.
 ///
 /// The function operates only on global tables and the child's own state,
-/// so it does not need access to `ProcessTable`.
-fn bump_inherited_resource_refcounts(child: &Process) {
+/// so it does not need access to `ProcessTable`. `parent_pid` identifies the
+/// exact source owner when copying machine-wide INET binding ownership.
+fn bump_inherited_resource_refcounts(parent_pid: u32, child: &Process) {
     let pipe_table = unsafe { crate::pipe::global_pipe_table() };
 
     // Pipe-OFDs (host_handle is the negative-encoded global pipe index).
@@ -177,7 +178,7 @@ fn bump_inherited_resource_refcounts(child: &Process) {
         }
     }
 
-    // Shared listener backlog (AF_INET listeners) and host_net_handle
+    // Shared listener backlog (AF_INET/AF_INET6 listeners) and host_net_handle
     // (connected AF_INET sockets): increment one ref per socket entry that
     // carries one. close() and process exit each drop one ref; last-drop
     // either frees the listener slot or calls host_net_close. Iterates
@@ -187,11 +188,16 @@ fn bump_inherited_resource_refcounts(child: &Process) {
     let backlog_table = unsafe { crate::socket::shared_listener_backlog_table() };
     for sock_idx in 0..child.sockets.len() {
         if let Some(sock) = child.sockets.get(sock_idx) {
+            crate::socket::inherit_inet_binding_owners(parent_pid, child.pid, sock_idx);
             if let Some(shared_idx) = sock.shared_backlog_idx {
                 backlog_table.add_ref(shared_idx);
             }
             if let Some(net_handle) = sock.host_net_handle {
                 crate::socket::host_net_handle_fork_ref(net_handle);
+            }
+            if let Some(path) = sock.bind_path.as_deref() {
+                let registry = unsafe { crate::unix_socket::global_unix_socket_registry() };
+                registry.add_owner(path, child.pid, sock_idx);
             }
         }
     }
@@ -443,7 +449,9 @@ impl ProcessTable {
 
         // Clean up AF_INET bind table entries for sockets the process held.
         crate::socket::udp_cleanup_process(pid);
+        crate::socket::udp6_cleanup_process(pid);
         crate::socket::tcp_cleanup_process(pid);
+        crate::socket::tcp6_cleanup_process(pid);
 
         // Release any PTHREAD_PROCESS_SHARED primitives owned by this pid
         // so peers aren't wedged on mutexes or waiter queues.
@@ -573,7 +581,7 @@ impl ProcessTable {
         // Bump cross-process refcounts on inherited fd state (host handles,
         // global pipes, PTYs, socket-pipes). Identical to spawn's needs —
         // factored out into a free helper.
-        bump_inherited_resource_refcounts(&child);
+        bump_inherited_resource_refcounts(parent_pid, &child);
 
         // Build fork-only `fork_pipe_replay` (fork replay needs it to
         // return the same fds as the parent did when re-running
@@ -731,7 +739,7 @@ impl ProcessTable {
         // Bump cross-process refcounts on the inherited fd state. The same
         // helper fork uses — this is the genuinely-shared concern.
         let child_ref = self.processes.get(&child_pid).unwrap();
-        bump_inherited_resource_refcounts(child_ref);
+        bump_inherited_resource_refcounts(parent_pid, child_ref);
 
         // Apply file actions in forward order against the child. Any failure
         // rolls back the partial child via remove_process — which runs the
@@ -1065,6 +1073,28 @@ pub fn current_pid() -> u32 {
 mod tests {
     use super::*;
 
+    fn install_bound_udp4_socket(table: &mut ProcessTable, pid: u32, port: u16) -> usize {
+        use crate::socket::{SocketDomain, SocketInfo, SocketState, SocketType};
+
+        let sock_idx = {
+            let proc = table.processes.get_mut(&pid).unwrap();
+            let mut socket = SocketInfo::new(SocketDomain::Inet, SocketType::Dgram, 17);
+            socket.state = SocketState::Bound;
+            socket.bind_addr = [127, 0, 0, 1];
+            socket.bind_port = port;
+            proc.sockets.alloc(socket)
+        };
+        crate::socket::udp_register(pid, sock_idx, [127, 0, 0, 1], port, false).unwrap();
+        sock_idx
+    }
+
+    fn assert_udp_owner(port: u16, pid: u32, sock_idx: usize, present: bool) {
+        let present_in_lookup = crate::socket::udp_lookup([127, 0, 0, 1], port)
+            .iter()
+            .any(|target| target.pid == pid && target.sock_idx == sock_idx);
+        assert_eq!(present_in_lookup, present);
+    }
+
     #[test]
     fn fork_process_grows_state_buffer_for_large_parent_state() {
         const LARGE_FD_COUNT: usize = 80;
@@ -1110,6 +1140,79 @@ mod tests {
         assert_eq!(child.ppid, 100);
         assert_eq!(child_ofd.file_type, FileType::MemFd);
         assert_eq!(child_ofd.path.len(), LARGE_PATH_LEN);
+    }
+
+    #[test]
+    fn fork_inherits_udp_binding_owner_before_parent_exit() {
+        const PARENT: u32 = 930_001;
+        const CHILD: u32 = 930_002;
+        const PORT: u16 = 64_905;
+
+        crate::socket::udp_cleanup_process(PARENT);
+        crate::socket::udp_cleanup_process(CHILD);
+        let mut table = ProcessTable::new();
+        table.create_process(PARENT).unwrap();
+        let sock_idx = install_bound_udp4_socket(&mut table, PARENT, PORT);
+
+        table.fork_process(PARENT, CHILD).unwrap();
+        assert_udp_owner(PORT, PARENT, sock_idx, true);
+        assert_udp_owner(PORT, CHILD, sock_idx, true);
+
+        table.remove_process(PARENT).unwrap();
+        assert_udp_owner(PORT, PARENT, sock_idx, false);
+        assert_udp_owner(PORT, CHILD, sock_idx, true);
+        assert!(!crate::socket::udp_can_bind(
+            930_003,
+            0,
+            [127, 0, 0, 1],
+            PORT,
+            false
+        ));
+
+        table.remove_process(CHILD).unwrap();
+        assert!(crate::socket::udp_lookup([127, 0, 0, 1], PORT).is_empty());
+        assert!(crate::socket::udp_can_bind(
+            930_003,
+            0,
+            [127, 0, 0, 1],
+            PORT,
+            false
+        ));
+    }
+
+    #[test]
+    fn spawn_inherits_udp_binding_owner_before_parent_exit() {
+        use crate::process::test_host::NoopHost;
+        use crate::spawn::SpawnAttrs;
+
+        const PARENT: u32 = 940_001;
+        const PORT: u16 = 64_906;
+
+        crate::socket::udp_cleanup_process(PARENT);
+        let mut table = ProcessTable::new();
+        table.create_process(PARENT).unwrap();
+        let sock_idx = install_bound_udp4_socket(&mut table, PARENT, PORT);
+        let mut host = NoopHost;
+
+        let child_pid = table
+            .spawn_child(
+                PARENT,
+                &[b"/bin/child".as_slice()],
+                &[],
+                &[],
+                &SpawnAttrs::empty(),
+                &mut host,
+            )
+            .unwrap();
+        assert_udp_owner(PORT, PARENT, sock_idx, true);
+        assert_udp_owner(PORT, child_pid, sock_idx, true);
+
+        table.remove_process(PARENT).unwrap();
+        assert_udp_owner(PORT, PARENT, sock_idx, false);
+        assert_udp_owner(PORT, child_pid, sock_idx, true);
+
+        table.remove_process(child_pid).unwrap();
+        assert!(crate::socket::udp_lookup([127, 0, 0, 1], PORT).is_empty());
     }
 
     #[test]
