@@ -1733,7 +1733,10 @@ export class CentralizedKernelWorker {
     // Use the pre-allocated scratch area in kernel memory
     const buf = new Uint8Array(this.kernelMemory!.buffer);
     buf.set(encoded, this.scratchOffset);
-    kernelSetCwd(pid, this.toKernelPtr(this.scratchOffset), encoded.length);
+    const result = kernelSetCwd(pid, this.toKernelPtr(this.scratchOffset), encoded.length);
+    if (result < 0) {
+      throw new Error(`setCwd failed for pid ${pid}: errno ${-result}`);
+    }
   }
 
   /**

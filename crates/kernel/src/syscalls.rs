@@ -1,5 +1,6 @@
 extern crate alloc;
 
+use alloc::collections::VecDeque;
 use alloc::vec::Vec;
 use wasm_posix_shared::Errno;
 use wasm_posix_shared::access::{R_OK, W_OK, X_OK};
@@ -8,7 +9,7 @@ use wasm_posix_shared::fd_flags::{FD_CLOEXEC, FD_CLOFORK};
 use wasm_posix_shared::flags::*;
 use wasm_posix_shared::flock_op::*;
 use wasm_posix_shared::lock_type::*;
-use wasm_posix_shared::mode::{S_IFCHR, S_IFDIR, S_IFIFO, S_IFMT, S_IFREG};
+use wasm_posix_shared::mode::{S_IFCHR, S_IFDIR, S_IFIFO, S_IFLNK, S_IFMT, S_IFREG};
 use wasm_posix_shared::rlimit::{RLIM_INFINITY, RLIMIT_FSIZE};
 use wasm_posix_shared::seek::*;
 use wasm_posix_shared::{WasmFlock, WasmPollFd, WasmStat, WasmStatfs, WasmTimespec};
@@ -1705,6 +1706,369 @@ fn check_access_for_ids(uid: u32, gid: u32, st: &WasmStat, amode: u32) -> Result
     }
 }
 
+#[derive(Clone, Copy)]
+struct PathResolveOptions {
+    follow_final_symlink: bool,
+    allow_missing_final: bool,
+    allow_missing_directory: bool,
+    use_real_ids: bool,
+}
+
+impl PathResolveOptions {
+    const FOLLOW: Self = Self {
+        follow_final_symlink: true,
+        allow_missing_final: false,
+        allow_missing_directory: false,
+        use_real_ids: false,
+    };
+
+    const NOFOLLOW: Self = Self {
+        follow_final_symlink: false,
+        allow_missing_final: false,
+        allow_missing_directory: false,
+        use_real_ids: false,
+    };
+
+    const CREATE_ENTRY: Self = Self {
+        follow_final_symlink: false,
+        allow_missing_final: true,
+        allow_missing_directory: false,
+        use_real_ids: false,
+    };
+
+    const CREATE_DIRECTORY: Self = Self {
+        follow_final_symlink: false,
+        allow_missing_final: true,
+        allow_missing_directory: true,
+        use_real_ids: false,
+    };
+}
+
+#[derive(Debug)]
+struct ResolvedNamespacePath {
+    path: Vec<u8>,
+    stat: Option<WasmStat>,
+}
+
+fn dev_fd_path_stat(proc: &Process) -> WasmStat {
+    WasmStat {
+        st_dev: 5,
+        st_ino: 0,
+        st_mode: S_IFCHR | 0o666,
+        st_nlink: 1,
+        st_uid: proc.euid,
+        st_gid: proc.egid,
+        st_size: 0,
+        st_atime_sec: 0,
+        st_atime_nsec: 0,
+        st_mtime_sec: 0,
+        st_mtime_nsec: 0,
+        st_ctime_sec: 0,
+        st_ctime_nsec: 0,
+        _pad: 0,
+    }
+}
+
+fn is_procfs_namespace_path(path: &[u8]) -> bool {
+    path == b"/proc" || path.starts_with(b"/proc/")
+}
+
+fn is_devfs_namespace_path(path: &[u8]) -> bool {
+    path == b"/dev" || path.starts_with(b"/dev/")
+}
+
+fn is_host_backed_devfs_path(path: &[u8]) -> bool {
+    path == b"/dev/shm" || path.starts_with(b"/dev/shm/")
+}
+
+/// Inspect one canonical namespace path without following its final symlink.
+/// Parent components have already been resolved by `resolve_namespace_path_from`.
+fn namespace_lstat_raw(
+    proc: &Process,
+    host: &mut dyn HostIO,
+    path: &[u8],
+) -> Result<WasmStat, Errno> {
+    if let Some(entry) = crate::procfs::match_procfs(path, proc.pid) {
+        crate::procfs::validate_entry(proc, &entry)?;
+        return Ok(crate::procfs::procfs_stat(&entry, 0, false));
+    }
+    // `/proc` is wholly kernel-owned. Unknown names must not fall through to
+    // a rootfs backend where they could expose or mutate a hidden inode.
+    if is_procfs_namespace_path(path) {
+        return Err(Errno::ENOENT);
+    }
+    // `/dev/shm` is a higher-priority writable host mount on both Node and
+    // browser. Its root metadata must come from that mount rather than the
+    // synthetic devfs directory fallback.
+    if path == b"/dev/shm" {
+        match host.host_lstat(path) {
+            Ok(stat) if stat.st_mode & S_IFMT == S_IFDIR => return Ok(stat),
+            Ok(_) | Err(Errno::ENOENT) => {}
+            Err(error) => return Err(error),
+        }
+    }
+    if let Some(st) = crate::devfs::match_devfs_stat(path, proc.euid, proc.egid) {
+        return Ok(st);
+    }
+    if let Some(dev) = match_virtual_device(path) {
+        return Ok(virtual_device_stat(dev, proc.euid, proc.egid));
+    }
+    if let Some(st) = match_pty_stat(path, proc.euid, proc.egid) {
+        return Ok(st);
+    }
+    if match_dev_fd(path).is_some() {
+        return Ok(dev_fd_path_stat(proc));
+    }
+    if let Some(st) = synthetic_file_stat(path, proc.euid, proc.egid) {
+        return Ok(st);
+    }
+    // Like procfs, kernel devfs owns its namespace. `/dev/shm` is the one
+    // explicit host-backed subtree; unknown names elsewhere must not reveal a
+    // hidden rootfs entry.
+    if is_devfs_namespace_path(path) && !is_host_backed_devfs_path(path) {
+        return Err(Errno::ENOENT);
+    }
+    host.host_lstat(path)
+}
+
+fn namespace_readlink_raw(
+    proc: &Process,
+    host: &mut dyn HostIO,
+    path: &[u8],
+) -> Result<Vec<u8>, Errno> {
+    let mut target = alloc::vec![0u8; 4096];
+    let len = if let Some(entry) = crate::procfs::match_procfs(path, proc.pid) {
+        crate::procfs::validate_entry(proc, &entry)?;
+        if !entry.is_symlink() {
+            return Err(Errno::EINVAL);
+        }
+        crate::procfs::procfs_readlink(proc, &entry, &mut target)?
+    } else {
+        host.host_readlink(path, &mut target)?
+    };
+    target.truncate(len);
+    if target.is_empty() {
+        return Err(Errno::ENOENT);
+    }
+    Ok(target)
+}
+
+fn append_path_component(path: &mut Vec<u8>, component: &[u8]) {
+    if path.len() > 1 {
+        path.push(b'/');
+    }
+    path.extend_from_slice(component);
+}
+
+fn pop_path_component(path: &mut Vec<u8>) {
+    if path.len() <= 1 {
+        path.clear();
+        path.push(b'/');
+        return;
+    }
+    if let Some(pos) = path.iter().rposition(|&byte| byte == b'/') {
+        path.truncate(pos.max(1));
+    }
+}
+
+/// Resolve a pathname through Kandelo's global namespace one component at a
+/// time. Backends only receive canonical candidates, so `..` can cross mount
+/// roots and symlink targets can cross mounts without being trapped in the
+/// backend selected from the input spelling.
+fn resolve_namespace_path_from(
+    proc: &Process,
+    host: &mut dyn HostIO,
+    path: &[u8],
+    base: &[u8],
+    options: PathResolveOptions,
+) -> Result<ResolvedNamespacePath, Errno> {
+    if path.is_empty() {
+        return Err(Errno::ENOENT);
+    }
+
+    let absolute = crate::path::make_absolute(path, base);
+    if absolute.first() != Some(&b'/') {
+        return Err(Errno::ENOENT);
+    }
+
+    let mut require_directory = absolute.len() > 1 && absolute.last() == Some(&b'/');
+    let mut pending: VecDeque<Vec<u8>> = absolute
+        .split(|&byte| byte == b'/')
+        .filter(|component| !component.is_empty())
+        .map(|component| component.to_vec())
+        .collect();
+    if pending.back().map(Vec::as_slice) == Some(b".")
+        || pending.back().map(Vec::as_slice) == Some(b"..")
+    {
+        require_directory = true;
+    }
+
+    let root_stat = namespace_lstat_raw(proc, host, b"/")?;
+    if root_stat.st_mode & S_IFMT != S_IFDIR {
+        return Err(Errno::ENOTDIR);
+    }
+    let (search_uid, search_gid) = if options.use_real_ids {
+        (proc.uid, proc.gid)
+    } else {
+        (proc.euid, proc.egid)
+    };
+    check_access_for_ids(search_uid, search_gid, &root_stat, X_OK)?;
+
+    let mut resolved = alloc::vec![b'/'];
+    let mut final_stat = Some(root_stat);
+    let mut symlink_count = 0u32;
+
+    while let Some(component) = pending.pop_front() {
+        if component == b"." {
+            continue;
+        }
+        if component == b".." {
+            pop_path_component(&mut resolved);
+            let stat = namespace_lstat_raw(proc, host, &resolved)?;
+            if !pending.is_empty() {
+                if stat.st_mode & S_IFMT != S_IFDIR {
+                    return Err(Errno::ENOTDIR);
+                }
+                check_access_for_ids(search_uid, search_gid, &stat, X_OK)?;
+            }
+            final_stat = Some(stat);
+            continue;
+        }
+
+        let is_final = pending.is_empty();
+        let mut candidate = resolved.clone();
+        append_path_component(&mut candidate, &component);
+        let stat = match namespace_lstat_raw(proc, host, &candidate) {
+            Ok(stat) => stat,
+            Err(Errno::ENOENT) if is_final && options.allow_missing_final => {
+                if is_procfs_namespace_path(&candidate)
+                    || (is_devfs_namespace_path(&candidate)
+                        && !is_host_backed_devfs_path(&candidate))
+                {
+                    return Err(Errno::EROFS);
+                }
+                if require_directory && !options.allow_missing_directory {
+                    return Err(Errno::ENOENT);
+                }
+                return Ok(ResolvedNamespacePath {
+                    path: candidate,
+                    stat: None,
+                });
+            }
+            Err(error) => return Err(error),
+        };
+
+        let follow_symlink = stat.st_mode & S_IFMT == S_IFLNK
+            && (!is_final || options.follow_final_symlink || require_directory);
+        if follow_symlink {
+            symlink_count += 1;
+            if symlink_count > 40 {
+                return Err(Errno::ELOOP);
+            }
+            let procfs_entry = crate::procfs::match_procfs(&candidate, proc.pid);
+            // Kandelo currently models thread-self process files through the
+            // process-level procfs entries rather than a separate
+            // `/proc/<pid>/task/<tid>` tree. Resolve the link to that truthful
+            // implemented identity while readlink(2) continues to expose the
+            // Linux-compatible textual target.
+            if matches!(
+                procfs_entry,
+                Some(crate::procfs::ProcfsEntry::ThreadSelfLink)
+            ) {
+                resolved = alloc::format!("/proc/{}", proc.pid).into_bytes();
+                final_stat = Some(namespace_lstat_raw(proc, host, &resolved)?);
+                continue;
+            }
+            let target = namespace_readlink_raw(proc, host, &candidate)?;
+            // `/proc/<pid>/fd/N` is a Linux-style magic link whose OFD may not
+            // have a traversable pathname at all (pipe, socket, memfd, ...).
+            // Preserve final fd-link metadata for procfs handling instead of
+            // feeding its descriptive OFD path to a filesystem backend.
+            // Directory-fd traversal through procfs remains a documented gap.
+            if matches!(
+                procfs_entry,
+                Some(crate::procfs::ProcfsEntry::FdLink(_, _))
+            ) {
+                if !is_final || require_directory {
+                    return Err(Errno::ENOTDIR);
+                }
+                resolved = candidate;
+                final_stat = Some(stat);
+                continue;
+            }
+            let had_remainder = !pending.is_empty();
+            if !had_remainder && target.len() > 1 && target.last() == Some(&b'/') {
+                require_directory = true;
+            }
+            if target.first() == Some(&b'/') {
+                resolved.clear();
+                resolved.push(b'/');
+                final_stat = Some(root_stat);
+            }
+            let target_components: Vec<Vec<u8>> = target
+                .split(|&byte| byte == b'/')
+                .filter(|part| !part.is_empty())
+                .map(|part| part.to_vec())
+                .collect();
+            for part in target_components.into_iter().rev() {
+                pending.push_front(part);
+            }
+            continue;
+        }
+
+        if !is_final || require_directory {
+            if stat.st_mode & S_IFMT != S_IFDIR {
+                return Err(Errno::ENOTDIR);
+            }
+            check_access_for_ids(search_uid, search_gid, &stat, X_OK)?;
+        }
+        resolved = candidate;
+        final_stat = Some(stat);
+    }
+
+    let stat = match final_stat {
+        Some(stat) if resolved == b"/" => stat,
+        _ => namespace_lstat_raw(proc, host, &resolved)?,
+    };
+    if require_directory && stat.st_mode & S_IFMT != S_IFDIR {
+        return Err(Errno::ENOTDIR);
+    }
+    Ok(ResolvedNamespacePath {
+        path: resolved,
+        stat: Some(stat),
+    })
+}
+
+fn resolve_namespace_path(
+    proc: &Process,
+    host: &mut dyn HostIO,
+    path: &[u8],
+    options: PathResolveOptions,
+) -> Result<ResolvedNamespacePath, Errno> {
+    resolve_namespace_path_from(proc, host, path, &proc.cwd, options)
+}
+
+/// Resolve an existing pathname to the canonical global namespace spelling.
+/// Kept crate-visible for exported syscall wrappers that must retry an
+/// operation after the ordinary syscall path releases its host borrow.
+pub(crate) fn resolve_existing_namespace_path(
+    proc: &Process,
+    host: &mut dyn HostIO,
+    path: &[u8],
+) -> Result<Vec<u8>, Errno> {
+    Ok(resolve_namespace_path(proc, host, path, PathResolveOptions::FOLLOW)?.path)
+}
+
+fn ensure_host_mutable_namespace_path(path: &[u8]) -> Result<(), Errno> {
+    if is_procfs_namespace_path(path)
+        || (is_devfs_namespace_path(path) && !is_host_backed_devfs_path(path))
+        || synthetic_file_content(path).is_some()
+    {
+        return Err(Errno::EROFS);
+    }
+    Ok(())
+}
+
 fn parent_path(path: &[u8]) -> Vec<u8> {
     if path == b"/" {
         return alloc::vec![b'/'];
@@ -1716,7 +2080,7 @@ fn parent_path(path: &[u8]) -> Vec<u8> {
 }
 
 fn check_search_dir(proc: &Process, host: &mut dyn HostIO, path: &[u8]) -> Result<(), Errno> {
-    let st = host.host_stat(path)?;
+    let st = namespace_lstat_raw(proc, host, path)?;
     if st.st_mode & S_IFMT != S_IFDIR {
         return Err(Errno::ENOTDIR);
     }
@@ -1746,18 +2110,18 @@ fn check_search_dir_chain(proc: &Process, host: &mut dyn HostIO, dir: &[u8]) -> 
 fn check_parent_writable(proc: &Process, host: &mut dyn HostIO, path: &[u8]) -> Result<(), Errno> {
     let parent = parent_path(path);
     check_search_dir_chain(proc, host, &parent)?;
-    let st = host.host_stat(&parent)?;
+    let st = namespace_lstat_raw(proc, host, &parent)?;
     check_access(proc, &st, W_OK | X_OK)
 }
 
 fn check_sticky_child(proc: &Process, host: &mut dyn HostIO, path: &[u8]) -> Result<(), Errno> {
     let parent = parent_path(path);
-    let parent_st = host.host_stat(&parent)?;
+    let parent_st = namespace_lstat_raw(proc, host, &parent)?;
     if parent_st.st_mode & S_ISVTX == 0 || proc.euid == 0 {
         return Ok(());
     }
 
-    let child_st = host.host_lstat(path)?;
+    let child_st = namespace_lstat_raw(proc, host, path)?;
     if proc.euid == parent_st.st_uid || proc.euid == child_st.st_uid {
         Ok(())
     } else {
@@ -1839,7 +2203,29 @@ pub fn sys_open(
     } else {
         mode
     };
-    let resolved = crate::path::resolve_path(path, &proc.cwd);
+    let exclusive_create = oflags & O_CREAT != 0 && oflags & O_EXCL != 0;
+    let resolve_options = PathResolveOptions {
+        // O_CREAT|O_EXCL must observe an existing final symlink itself and
+        // fail with EEXIST rather than following a dangling link and creating
+        // its target.
+        follow_final_symlink: oflags & O_NOFOLLOW == 0 && !exclusive_create,
+        allow_missing_final: oflags & O_CREAT != 0,
+        allow_missing_directory: false,
+        use_real_ids: false,
+    };
+    let resolved_entry = resolve_namespace_path(proc, host, path, resolve_options)?;
+    if resolved_entry
+        .stat
+        .is_some_and(|stat| stat.st_mode & S_IFMT == S_IFLNK)
+    {
+        if exclusive_create {
+            return Err(Errno::EEXIST);
+        }
+        if oflags & O_NOFOLLOW != 0 {
+            return Err(Errno::ELOOP);
+        }
+    }
+    let resolved = resolved_entry.path;
 
     // /dev/fd/N and /dev/stdin|stdout|stderr — dup an existing fd
     if let Some(target_fd) = match_dev_fd(&resolved) {
@@ -1939,7 +2325,9 @@ pub fn sys_open(
     }
 
     // Devfs (/dev, /dev/pts, etc.) — in-kernel directory listing
-    if crate::devfs::match_devfs_dir(&resolved).is_some() {
+    if !is_host_backed_devfs_path(&resolved)
+        && crate::devfs::match_devfs_dir(&resolved).is_some()
+    {
         return crate::devfs::devfs_open_dir(proc, resolved, oflags);
     }
 
@@ -4257,7 +4645,6 @@ pub fn sys_flock(
     sys_fcntl_lock(proc, fd, cmd, &mut flock, host)
 }
 
-use crate::path::resolve_path;
 use crate::process::{DirStream, ProcessState};
 use wasm_posix_shared::WasmDirent;
 
@@ -4312,7 +4699,7 @@ fn unix_socket_path_stat(
 }
 
 pub fn sys_stat(proc: &mut Process, host: &mut dyn HostIO, path: &[u8]) -> Result<WasmStat, Errno> {
-    let resolved = resolve_path(path, &proc.cwd);
+    let resolved = resolve_namespace_path(proc, host, path, PathResolveOptions::FOLLOW)?.path;
     if let Some(dev) = match_virtual_device(&resolved) {
         return Ok(virtual_device_stat(dev, proc.euid, proc.egid));
     }
@@ -4342,8 +4729,10 @@ pub fn sys_stat(proc: &mut Process, host: &mut dyn HostIO, path: &[u8]) -> Resul
         crate::procfs::validate_entry(proc, &entry)?;
         return Ok(crate::procfs::procfs_stat(&entry, 0, true));
     }
-    if let Some(st) = crate::devfs::match_devfs_stat(&resolved, proc.euid, proc.egid) {
-        return Ok(st);
+    if !is_host_backed_devfs_path(&resolved) {
+        if let Some(st) = crate::devfs::match_devfs_stat(&resolved, proc.euid, proc.egid) {
+            return Ok(st);
+        }
     }
     if let Some(st) = synthetic_file_stat(&resolved, proc.euid, proc.egid) {
         return Ok(st);
@@ -4362,7 +4751,7 @@ pub fn sys_lstat(
     host: &mut dyn HostIO,
     path: &[u8],
 ) -> Result<WasmStat, Errno> {
-    let resolved = resolve_path(path, &proc.cwd);
+    let resolved = resolve_namespace_path(proc, host, path, PathResolveOptions::NOFOLLOW)?.path;
     if let Some(dev) = match_virtual_device(&resolved) {
         return Ok(virtual_device_stat(dev, proc.euid, proc.egid));
     }
@@ -4392,8 +4781,10 @@ pub fn sys_lstat(
         crate::procfs::validate_entry(proc, &entry)?;
         return Ok(crate::procfs::procfs_stat(&entry, 0, false));
     }
-    if let Some(st) = crate::devfs::match_devfs_stat(&resolved, proc.euid, proc.egid) {
-        return Ok(st);
+    if !is_host_backed_devfs_path(&resolved) {
+        if let Some(st) = crate::devfs::match_devfs_stat(&resolved, proc.euid, proc.egid) {
+            return Ok(st);
+        }
     }
     if let Some(st) = synthetic_file_stat(&resolved, proc.euid, proc.egid) {
         return Ok(st);
@@ -4413,7 +4804,9 @@ pub fn sys_mkdir(
     path: &[u8],
     mode: u32,
 ) -> Result<(), Errno> {
-    let resolved = resolve_path(path, &proc.cwd);
+    let resolved =
+        resolve_namespace_path(proc, host, path, PathResolveOptions::CREATE_DIRECTORY)?.path;
+    ensure_host_mutable_namespace_path(&resolved)?;
     let effective_mode = mode & !proc.umask;
     check_parent_writable(proc, host, &resolved)?;
     host.host_mkdir(&resolved, effective_mode)?;
@@ -4421,14 +4814,16 @@ pub fn sys_mkdir(
 }
 
 pub fn sys_rmdir(proc: &mut Process, host: &mut dyn HostIO, path: &[u8]) -> Result<(), Errno> {
-    let resolved = resolve_path(path, &proc.cwd);
+    let resolved = resolve_namespace_path(proc, host, path, PathResolveOptions::NOFOLLOW)?.path;
+    ensure_host_mutable_namespace_path(&resolved)?;
     check_parent_writable(proc, host, &resolved)?;
     check_sticky_child(proc, host, &resolved)?;
     host.host_rmdir(&resolved)
 }
 
 pub fn sys_unlink(proc: &mut Process, host: &mut dyn HostIO, path: &[u8]) -> Result<(), Errno> {
-    let resolved = resolve_path(path, &proc.cwd);
+    let resolved = resolve_namespace_path(proc, host, path, PathResolveOptions::NOFOLLOW)?.path;
+    ensure_host_mutable_namespace_path(&resolved)?;
     check_parent_writable(proc, host, &resolved)?;
     check_sticky_child(proc, host, &resolved)?;
     // AF_UNIX bind() creates a real host inode, so unlink must remove both the
@@ -4469,15 +4864,31 @@ pub fn sys_rename(
     oldpath: &[u8],
     newpath: &[u8],
 ) -> Result<(), Errno> {
-    let old = resolve_path(oldpath, &proc.cwd);
-    let new = resolve_path(newpath, &proc.cwd);
+    let old_entry = resolve_namespace_path(proc, host, oldpath, PathResolveOptions::NOFOLLOW)?;
+    let new_options = if old_entry
+        .stat
+        .is_some_and(|stat| stat.st_mode & S_IFMT == S_IFDIR)
+    {
+        PathResolveOptions::CREATE_DIRECTORY
+    } else {
+        PathResolveOptions::CREATE_ENTRY
+    };
+    let new = resolve_namespace_path(proc, host, newpath, new_options)?.path;
+    let old = old_entry.path;
+    ensure_host_mutable_namespace_path(&old)?;
+    ensure_host_mutable_namespace_path(&new)?;
     check_parent_writable(proc, host, &old)?;
     check_parent_writable(proc, host, &new)?;
     check_sticky_child(proc, host, &old)?;
     if host.host_lstat(&new).is_ok() {
         check_sticky_child(proc, host, &new)?;
     }
-    host.host_rename(&old, &new)
+    host.host_rename(&old, &new)?;
+    let registry = unsafe { crate::unix_socket::global_unix_socket_registry() };
+    if registry.rename_path(&old, &new) {
+        crate::wakeup::push_datagram_writable();
+    }
+    Ok(())
 }
 
 pub fn sys_link(
@@ -4486,8 +4897,10 @@ pub fn sys_link(
     oldpath: &[u8],
     newpath: &[u8],
 ) -> Result<(), Errno> {
-    let old = resolve_path(oldpath, &proc.cwd);
-    let new = resolve_path(newpath, &proc.cwd);
+    let old = resolve_namespace_path(proc, host, oldpath, PathResolveOptions::NOFOLLOW)?.path;
+    let new = resolve_namespace_path(proc, host, newpath, PathResolveOptions::CREATE_ENTRY)?.path;
+    ensure_host_mutable_namespace_path(&old)?;
+    ensure_host_mutable_namespace_path(&new)?;
     check_search_path(proc, host, &old)?;
     check_parent_writable(proc, host, &new)?;
     host.host_link(&old, &new)
@@ -4500,7 +4913,9 @@ pub fn sys_symlink(
     linkpath: &[u8],
 ) -> Result<(), Errno> {
     // Note: symlink target is stored as-is (not resolved), but linkpath is resolved
-    let link = resolve_path(linkpath, &proc.cwd);
+    let link =
+        resolve_namespace_path(proc, host, linkpath, PathResolveOptions::CREATE_ENTRY)?.path;
+    ensure_host_mutable_namespace_path(&link)?;
     check_parent_writable(proc, host, &link)?;
     host.host_symlink(target, &link)
 }
@@ -4511,7 +4926,7 @@ pub fn sys_readlink(
     path: &[u8],
     buf: &mut [u8],
 ) -> Result<usize, Errno> {
-    let resolved = resolve_path(path, &proc.cwd);
+    let resolved = resolve_namespace_path(proc, host, path, PathResolveOptions::NOFOLLOW)?.path;
 
     // Procfs symlinks — /proc/self, /proc/self/fd/N, /proc/self/cwd, /proc/self/exe, etc.
     if let Some(entry) = crate::procfs::match_procfs(&resolved, proc.pid) {
@@ -4533,7 +4948,8 @@ pub fn sys_chmod(
     path: &[u8],
     mode: u32,
 ) -> Result<(), Errno> {
-    let resolved = resolve_path(path, &proc.cwd);
+    let resolved = resolve_namespace_path(proc, host, path, PathResolveOptions::FOLLOW)?.path;
+    ensure_host_mutable_namespace_path(&resolved)?;
     check_search_path(proc, host, &resolved)?;
     let st = host.host_stat(&resolved)?;
     check_owner_or_root(proc, &st)?;
@@ -4573,7 +4989,8 @@ pub fn sys_chown(
     uid: u32,
     gid: u32,
 ) -> Result<(), Errno> {
-    let resolved = resolve_path(path, &proc.cwd);
+    let resolved = resolve_namespace_path(proc, host, path, PathResolveOptions::FOLLOW)?.path;
+    ensure_host_mutable_namespace_path(&resolved)?;
     check_search_path(proc, host, &resolved)?;
     let st = host.host_stat(&resolved)?;
     let (uid, gid) = prepare_chown_ids(proc, &st, uid, gid)?;
@@ -4586,60 +5003,40 @@ pub fn sys_access(
     path: &[u8],
     amode: u32,
 ) -> Result<(), Errno> {
-    let resolved = resolve_path(path, &proc.cwd);
     if amode & !(R_OK | W_OK | X_OK) != 0 {
         return Err(Errno::EINVAL);
     }
-    if match_virtual_device(&resolved).is_some()
-        || match_dev_fd(&resolved).is_some()
-        || match_pty_stat(&resolved, 0, 0).is_some()
-        || crate::devfs::match_devfs_dir(&resolved).is_some()
+    let resolved = resolve_namespace_path(
+        proc,
+        host,
+        path,
+        PathResolveOptions {
+            use_real_ids: true,
+            ..PathResolveOptions::FOLLOW
+        },
+    )?;
+    if amode & W_OK != 0
+        && (is_procfs_namespace_path(&resolved.path)
+            || synthetic_file_content(&resolved.path).is_some())
     {
-        return Ok(());
+        return Err(Errno::EACCES);
     }
-    if let Some(entry) = crate::procfs::match_procfs(&resolved, proc.pid) {
-        crate::procfs::validate_entry(proc, &entry)?;
-        // Procfs entries are read-only: allow R_OK/F_OK/X_OK(dirs), deny W_OK
-        if amode & 0o2 != 0 {
-            return Err(Errno::EACCES);
-        }
-        return Ok(());
-    }
-    check_search_path(proc, host, &resolved)?;
-    let st = host.host_stat(&resolved)?;
+    let st = resolved.stat.ok_or(Errno::ENOENT)?;
     check_access_for_ids(proc.uid, proc.gid, &st, amode)
 }
 
 /// Change the current working directory.
-/// Validates that the path exists and is a directory via host_stat.
+/// Resolves through the global namespace, then validates the directory and
+/// search permission before storing its canonical pathname.
 pub fn sys_chdir(proc: &mut Process, host: &mut dyn HostIO, path: &[u8]) -> Result<(), Errno> {
-    let resolved = crate::path::resolve_path(path, &proc.cwd);
-    // Check virtual filesystems first (procfs, devfs), then fall through to host
-    if let Some(entry) = crate::procfs::match_procfs(&resolved, proc.pid) {
-        crate::procfs::validate_entry(proc, &entry)?;
-        let st = crate::procfs::procfs_stat(&entry, 0, true);
-        if st.st_mode & wasm_posix_shared::mode::S_IFMT != wasm_posix_shared::mode::S_IFDIR {
-            return Err(Errno::ENOTDIR);
-        }
-        proc.cwd = resolved;
-        return Ok(());
-    }
-    if let Some(st) = crate::devfs::match_devfs_stat(&resolved, proc.euid, proc.egid) {
-        if st.st_mode & wasm_posix_shared::mode::S_IFMT != wasm_posix_shared::mode::S_IFDIR {
-            return Err(Errno::ENOTDIR);
-        }
-        proc.cwd = resolved;
-        return Ok(());
-    }
-    // Validate the path exists and is a directory
-    check_search_path(proc, host, &resolved)?;
-    let stat = host.host_stat(&resolved)?;
+    let resolved = resolve_namespace_path(proc, host, path, PathResolveOptions::FOLLOW)?;
+    let stat = resolved.stat.ok_or(Errno::ENOENT)?;
     let file_type = stat.st_mode & wasm_posix_shared::mode::S_IFMT;
     if file_type != wasm_posix_shared::mode::S_IFDIR {
         return Err(Errno::ENOTDIR);
     }
     check_access(proc, &stat, X_OK)?;
-    proc.cwd = resolved;
+    proc.cwd = resolved.path;
     Ok(())
 }
 
@@ -4657,7 +5054,15 @@ pub fn sys_fchdir(proc: &mut Process, fd: i32) -> Result<(), Errno> {
 /// Get the current working directory.
 /// Writes the cwd path to `buf` and returns the number of bytes written.
 /// Returns ERANGE if the buffer is too small.
-pub fn sys_getcwd(proc: &Process, buf: &mut [u8]) -> Result<usize, Errno> {
+pub fn sys_getcwd(
+    proc: &Process,
+    host: &mut dyn HostIO,
+    buf: &mut [u8],
+) -> Result<usize, Errno> {
+    let stat = namespace_lstat_raw(proc, host, &proc.cwd)?;
+    if stat.st_mode & S_IFMT != S_IFDIR {
+        return Err(Errno::ENOENT);
+    }
     // Linux getcwd returns the path WITH a null terminator and the length
     // includes the null byte.  musl expects this convention.
     let needed = proc.cwd.len() + 1; // +1 for NUL
@@ -4671,17 +5076,26 @@ pub fn sys_getcwd(proc: &Process, buf: &mut [u8]) -> Result<usize, Errno> {
 
 /// Open a directory for reading. Returns a directory stream handle.
 pub fn sys_opendir(proc: &mut Process, host: &mut dyn HostIO, path: &[u8]) -> Result<i32, Errno> {
-    let resolved = crate::path::resolve_path(path, &proc.cwd);
-    check_search_path(proc, host, &resolved)?;
-    let st = host.host_stat(&resolved)?;
+    let resolved = resolve_namespace_path(proc, host, path, PathResolveOptions::FOLLOW)?;
+    let st = resolved.stat.ok_or(Errno::ENOENT)?;
     if st.st_mode & S_IFMT != S_IFDIR {
         return Err(Errno::ENOTDIR);
     }
     check_access(proc, &st, R_OK | X_OK)?;
-    let host_handle = host.host_opendir(&resolved)?;
+    if is_procfs_namespace_path(&resolved.path)
+        || (is_devfs_namespace_path(&resolved.path)
+            && !is_host_backed_devfs_path(&resolved.path))
+    {
+        // Kernel-owned procfs/devfs directory iteration is implemented by
+        // open(O_DIRECTORY)+getdents64. This legacy directory-stream API has
+        // no synthetic-stream sentinel, so fail truthfully instead of routing
+        // the name into a hidden host directory.
+        return Err(Errno::EOPNOTSUPP);
+    }
+    let host_handle = host.host_opendir(&resolved.path)?;
     let stream = DirStream {
         host_handle,
-        path: resolved,
+        path: resolved.path,
         position: 0,
         synth_dot_state: 0,
     };
@@ -5362,7 +5776,7 @@ pub fn sys_execve(proc: &mut Process, host: &mut dyn HostIO, path: &[u8]) -> Res
     }
     // Resolve and validate before tearing down mappings. POSIX exec
     // failure must leave the current image intact.
-    let resolved = crate::path::resolve_path(path, &proc.cwd);
+    let resolved = resolve_namespace_path(proc, host, path, PathResolveOptions::FOLLOW)?.path;
     check_exec_path(proc, host, &resolved)?;
     release_exec_image_state(proc, host);
     host.host_exec(&resolved)
@@ -5394,23 +5808,8 @@ pub fn sys_execveat(
         host.host_exec(&exec_path)
     } else if path.is_empty() {
         Err(Errno::ENOENT)
-    } else if path[0] == b'/' {
-        // Absolute path — ignore dirfd
-        check_exec_path(proc, host, path)?;
-        release_exec_image_state(proc, host);
-        host.host_exec(path)
     } else {
-        // Relative path — resolve against dirfd or CWD
-        let base = if dirfd == -100 {
-            // AT_FDCWD
-            proc.cwd.clone()
-        } else {
-            let entry = proc.fd_table.get(dirfd)?;
-            let ofd_idx = entry.ofd_ref.0;
-            let ofd = proc.ofd_table.get(ofd_idx).ok_or(Errno::EBADF)?;
-            ofd.path.clone()
-        };
-        let resolved = crate::path::resolve_path(path, &base);
+        let resolved = resolve_at_path(proc, host, dirfd, path, PathResolveOptions::FOLLOW)?.path;
         check_exec_path(proc, host, &resolved)?;
         release_exec_image_state(proc, host);
         host.host_exec(&resolved)
@@ -5881,8 +6280,9 @@ pub fn sys_utimensat(
         let ofd = proc.ofd_table.get(entry.ofd_ref.0).ok_or(Errno::EBADF)?;
         ofd.path.clone()
     } else {
-        resolve_at_path(proc, dirfd, path)?
+        resolve_at_path(proc, host, dirfd, path, PathResolveOptions::FOLLOW)?.path
     };
+    ensure_host_mutable_namespace_path(&resolved)?;
 
     // Default: set both to current time
     let (atime_sec, atime_nsec, mtime_sec, mtime_nsec) = if let Some(ts) = times {
@@ -8583,7 +8983,13 @@ pub fn sys_bind(
                     return Err(Errno::EINVAL);
                 }
                 (
-                    crate::path::resolve_path(&path_bytes[..path_end], &proc.cwd),
+                    resolve_namespace_path(
+                        proc,
+                        host,
+                        &path_bytes[..path_end],
+                        PathResolveOptions::CREATE_ENTRY,
+                    )?
+                    .path,
                     false,
                 )
             };
@@ -9278,7 +9684,13 @@ pub fn sys_connect(
                     if path_end == 0 {
                         return Err(Errno::EINVAL);
                     }
-                    crate::path::resolve_path(&path_bytes[..path_end], &proc.cwd)
+                    resolve_namespace_path(
+                        proc,
+                        host,
+                        &path_bytes[..path_end],
+                        PathResolveOptions::FOLLOW,
+                    )?
+                    .path
                 };
                 let registry = unsafe { crate::unix_socket::global_unix_socket_registry() };
                 let peer = registry.lookup(&resolved).ok_or(Errno::ECONNREFUSED)?;
@@ -9343,7 +9755,13 @@ pub fn sys_connect(
                 if path_end == 0 {
                     return Err(Errno::EINVAL);
                 }
-                crate::path::resolve_path(&path_bytes[..path_end], &proc.cwd)
+                resolve_namespace_path(
+                    proc,
+                    host,
+                    &path_bytes[..path_end],
+                    PathResolveOptions::FOLLOW,
+                )?
+                .path
             };
 
             // Look up the path in the global Unix socket registry
@@ -9453,7 +9871,7 @@ pub fn sys_getaddrinfo(
 /// bound DGRAM socket and pushes the datagram to its queue.
 pub fn sys_sendto(
     proc: &mut Process,
-    _host: &mut dyn HostIO,
+    host: &mut dyn HostIO,
     fd: i32,
     buf: &[u8],
     flags: u32,
@@ -9471,7 +9889,7 @@ pub fn sys_sendto(
 
     if addr.is_empty() {
         if sock.state == SocketState::Connected {
-            return sys_send(proc, _host, fd, buf, flags);
+            return sys_send(proc, host, fd, buf, flags);
         }
         return Err(Errno::EDESTADDRREQ);
     }
@@ -9483,7 +9901,7 @@ pub fn sys_sendto(
     let result = match sock.domain {
         SocketDomain::Inet => {
             let (dst_ip, dst_port) = parse_sockaddr_in(addr)?;
-            udp_send_datagram(proc, _host, sock_idx, buf, dst_ip, dst_port)
+            udp_send_datagram(proc, host, sock_idx, buf, dst_ip, dst_port)
         }
         SocketDomain::Inet6 => {
             let (dst_ip, dst_port) = parse_sockaddr_in6(addr)?;
@@ -9507,7 +9925,13 @@ pub fn sys_sendto(
                 if path_end == 0 {
                     return Err(Errno::EINVAL);
                 }
-                crate::path::resolve_path(&path_bytes[..path_end], &proc.cwd)
+                resolve_namespace_path(
+                    proc,
+                    host,
+                    &path_bytes[..path_end],
+                    PathResolveOptions::FOLLOW,
+                )?
+                .path
             };
             let registry = unsafe { crate::unix_socket::global_unix_socket_registry() };
             let peer = registry.lookup(&resolved).ok_or(Errno::ECONNREFUSED)?;
@@ -9996,18 +10420,23 @@ pub fn sys_usleep(_proc: &mut Process, host: &mut dyn HostIO, usec: u32) -> Resu
     host.host_nanosleep(sec, nsec)
 }
 
-/// Resolve a path relative to a directory fd.
-/// - Absolute paths: returned as-is (dirfd ignored)
-/// - AT_FDCWD: resolved relative to cwd
-/// - Real dirfd: resolved relative to the directory's stored path
-fn resolve_at_path(proc: &Process, dirfd: i32, path: &[u8]) -> Result<alloc::vec::Vec<u8>, Errno> {
+/// Resolve a path relative to a directory fd through the global namespace.
+/// Absolute paths ignore `dirfd`; relative paths use either cwd or the
+/// canonical path captured by the directory OFD.
+fn resolve_at_path(
+    proc: &Process,
+    host: &mut dyn HostIO,
+    dirfd: i32,
+    path: &[u8],
+    options: PathResolveOptions,
+) -> Result<ResolvedNamespacePath, Errno> {
     use wasm_posix_shared::flags::AT_FDCWD;
 
     if !path.is_empty() && path[0] == b'/' {
-        return Ok(path.to_vec());
+        return resolve_namespace_path(proc, host, path, options);
     }
     if dirfd == AT_FDCWD {
-        return Ok(crate::path::resolve_path(path, &proc.cwd));
+        return resolve_namespace_path(proc, host, path, options);
     }
 
     let entry = proc.fd_table.get(dirfd)?;
@@ -10015,8 +10444,9 @@ fn resolve_at_path(proc: &Process, dirfd: i32, path: &[u8]) -> Result<alloc::vec
     if ofd.file_type != FileType::Directory {
         return Err(Errno::ENOTDIR);
     }
+    let base = ofd.path.clone();
 
-    Ok(crate::path::resolve_path(path, &ofd.path))
+    resolve_namespace_path_from(proc, host, path, &base, options)
 }
 
 /// Open a file relative to a directory file descriptor.
@@ -10032,7 +10462,26 @@ pub fn sys_openat(
     oflags: u32,
     mode: u32,
 ) -> Result<i32, Errno> {
-    let resolved = resolve_at_path(proc, dirfd, path)?;
+    let exclusive_create = oflags & O_CREAT != 0 && oflags & O_EXCL != 0;
+    let resolve_options = PathResolveOptions {
+        follow_final_symlink: oflags & O_NOFOLLOW == 0 && !exclusive_create,
+        allow_missing_final: oflags & O_CREAT != 0,
+        allow_missing_directory: false,
+        use_real_ids: false,
+    };
+    let resolved_entry = resolve_at_path(proc, host, dirfd, path, resolve_options)?;
+    if resolved_entry
+        .stat
+        .is_some_and(|stat| stat.st_mode & S_IFMT == S_IFLNK)
+    {
+        if exclusive_create {
+            return Err(Errno::EEXIST);
+        }
+        if oflags & O_NOFOLLOW != 0 {
+            return Err(Errno::ELOOP);
+        }
+    }
+    let resolved = resolved_entry.path;
 
     // /dev/fd/N and /dev/stdin|stdout|stderr — dup an existing fd
     if let Some(target_fd) = match_dev_fd(&resolved) {
@@ -10130,7 +10579,9 @@ pub fn sys_openat(
     }
 
     // Devfs (/dev, /dev/pts, etc.) — in-kernel directory listing
-    if crate::devfs::match_devfs_dir(&resolved).is_some() {
+    if !is_host_backed_devfs_path(&resolved)
+        && crate::devfs::match_devfs_dir(&resolved).is_some()
+    {
         return crate::devfs::devfs_open_dir(proc, resolved, oflags);
     }
 
@@ -10204,7 +10655,12 @@ pub fn sys_fstatat(
 ) -> Result<WasmStat, Errno> {
     use wasm_posix_shared::flags::AT_SYMLINK_NOFOLLOW;
 
-    let resolved = resolve_at_path(proc, dirfd, path)?;
+    let options = if flags & AT_SYMLINK_NOFOLLOW != 0 {
+        PathResolveOptions::NOFOLLOW
+    } else {
+        PathResolveOptions::FOLLOW
+    };
+    let resolved = resolve_at_path(proc, host, dirfd, path, options)?.path;
     if let Some(dev) = match_virtual_device(&resolved) {
         return Ok(virtual_device_stat(dev, proc.euid, proc.egid));
     }
@@ -10232,8 +10688,10 @@ pub fn sys_fstatat(
         let follow = flags & AT_SYMLINK_NOFOLLOW == 0;
         return Ok(crate::procfs::procfs_stat(&entry, 0, follow));
     }
-    if let Some(st) = crate::devfs::match_devfs_stat(&resolved, proc.euid, proc.egid) {
-        return Ok(st);
+    if !is_host_backed_devfs_path(&resolved) {
+        if let Some(st) = crate::devfs::match_devfs_stat(&resolved, proc.euid, proc.egid) {
+            return Ok(st);
+        }
     }
     if let Some(st) = synthetic_file_stat(&resolved, proc.euid, proc.egid) {
         return Ok(st);
@@ -10265,7 +10723,9 @@ pub fn sys_unlinkat(
 ) -> Result<(), Errno> {
     use wasm_posix_shared::flags::AT_REMOVEDIR;
 
-    let resolved = resolve_at_path(proc, dirfd, path)?;
+    let resolved =
+        resolve_at_path(proc, host, dirfd, path, PathResolveOptions::NOFOLLOW)?.path;
+    ensure_host_mutable_namespace_path(&resolved)?;
     check_parent_writable(proc, host, &resolved)?;
     if flags & AT_REMOVEDIR != 0 {
         check_sticky_child(proc, host, &resolved)?;
@@ -10309,7 +10769,9 @@ pub fn sys_mkdirat(
     path: &[u8],
     mode: u32,
 ) -> Result<(), Errno> {
-    let resolved = resolve_at_path(proc, dirfd, path)?;
+    let resolved =
+        resolve_at_path(proc, host, dirfd, path, PathResolveOptions::CREATE_DIRECTORY)?.path;
+    ensure_host_mutable_namespace_path(&resolved)?;
     let effective_mode = mode & !proc.umask;
     check_parent_writable(proc, host, &resolved)?;
     host.host_mkdir(&resolved, effective_mode)?;
@@ -10325,15 +10787,32 @@ pub fn sys_renameat(
     newdirfd: i32,
     newpath: &[u8],
 ) -> Result<(), Errno> {
-    let old_resolved = resolve_at_path(proc, olddirfd, oldpath)?;
-    let new_resolved = resolve_at_path(proc, newdirfd, newpath)?;
+    let old_entry =
+        resolve_at_path(proc, host, olddirfd, oldpath, PathResolveOptions::NOFOLLOW)?;
+    let new_options = if old_entry
+        .stat
+        .is_some_and(|stat| stat.st_mode & S_IFMT == S_IFDIR)
+    {
+        PathResolveOptions::CREATE_DIRECTORY
+    } else {
+        PathResolveOptions::CREATE_ENTRY
+    };
+    let new_resolved = resolve_at_path(proc, host, newdirfd, newpath, new_options)?.path;
+    let old_resolved = old_entry.path;
+    ensure_host_mutable_namespace_path(&old_resolved)?;
+    ensure_host_mutable_namespace_path(&new_resolved)?;
     check_parent_writable(proc, host, &old_resolved)?;
     check_parent_writable(proc, host, &new_resolved)?;
     check_sticky_child(proc, host, &old_resolved)?;
     if host.host_lstat(&new_resolved).is_ok() {
         check_sticky_child(proc, host, &new_resolved)?;
     }
-    host.host_rename(&old_resolved, &new_resolved)
+    host.host_rename(&old_resolved, &new_resolved)?;
+    let registry = unsafe { crate::unix_socket::global_unix_socket_registry() };
+    if registry.rename_path(&old_resolved, &new_resolved) {
+        crate::wakeup::push_datagram_writable();
+    }
+    Ok(())
 }
 
 /// tcgetattr -- get terminal attributes (custom syscall 70).
@@ -12106,8 +12585,6 @@ pub fn sys_setrlimit(proc: &mut Process, resource: u32, soft: u64, hard: u64) ->
 }
 
 /// faccessat -- check file accessibility relative to directory fd.
-///
-/// Only AT_FDCWD and absolute paths are currently supported.
 pub fn sys_faccessat(
     proc: &mut Process,
     host: &mut dyn HostIO,
@@ -12116,32 +12593,26 @@ pub fn sys_faccessat(
     amode: u32,
     flags: u32,
 ) -> Result<(), Errno> {
-    let resolved = resolve_at_path(proc, dirfd, path)?;
     if amode & !(R_OK | W_OK | X_OK) != 0 {
         return Err(Errno::EINVAL);
     }
     if flags & !(AT_EACCESS | wasm_posix_shared::flags::AT_SYMLINK_NOFOLLOW) != 0 {
         return Err(Errno::EINVAL);
     }
-    if match_virtual_device(&resolved).is_some()
-        || match_dev_fd(&resolved).is_some()
-        || crate::devfs::match_devfs_dir(&resolved).is_some()
-    {
-        return Ok(());
-    }
-    if let Some(entry) = crate::procfs::match_procfs(&resolved, proc.pid) {
-        crate::procfs::validate_entry(proc, &entry)?;
-        if amode & 0o2 != 0 {
-            return Err(Errno::EACCES);
-        }
-        return Ok(());
-    }
-    check_search_path(proc, host, &resolved)?;
-    let st = if flags & wasm_posix_shared::flags::AT_SYMLINK_NOFOLLOW != 0 {
-        host.host_lstat(&resolved)?
+    let mut options = if flags & wasm_posix_shared::flags::AT_SYMLINK_NOFOLLOW != 0 {
+        PathResolveOptions::NOFOLLOW
     } else {
-        host.host_stat(&resolved)?
+        PathResolveOptions::FOLLOW
     };
+    options.use_real_ids = flags & AT_EACCESS == 0;
+    let resolved = resolve_at_path(proc, host, dirfd, path, options)?;
+    if amode & W_OK != 0
+        && (is_procfs_namespace_path(&resolved.path)
+            || synthetic_file_content(&resolved.path).is_some())
+    {
+        return Err(Errno::EACCES);
+    }
+    let st = resolved.stat.ok_or(Errno::ENOENT)?;
     let (uid, gid) = if flags & AT_EACCESS != 0 {
         (proc.euid, proc.egid)
     } else {
@@ -12162,7 +12633,9 @@ pub fn sys_fchmodat(
     mode: u32,
     _flags: u32,
 ) -> Result<(), Errno> {
-    let resolved = resolve_at_path(proc, dirfd, path)?;
+    let resolved =
+        resolve_at_path(proc, host, dirfd, path, PathResolveOptions::FOLLOW)?.path;
+    ensure_host_mutable_namespace_path(&resolved)?;
     check_search_path(proc, host, &resolved)?;
     let st = host.host_stat(&resolved)?;
     check_owner_or_root(proc, &st)?;
@@ -12179,7 +12652,9 @@ pub fn sys_fchownat(
     gid: u32,
     _flags: u32,
 ) -> Result<(), Errno> {
-    let resolved = resolve_at_path(proc, dirfd, path)?;
+    let resolved =
+        resolve_at_path(proc, host, dirfd, path, PathResolveOptions::FOLLOW)?.path;
+    ensure_host_mutable_namespace_path(&resolved)?;
     check_search_path(proc, host, &resolved)?;
     let st = host.host_stat(&resolved)?;
     let (uid, gid) = prepare_chown_ids(proc, &st, uid, gid)?;
@@ -12194,10 +12669,19 @@ pub fn sys_linkat(
     oldpath: &[u8],
     newdirfd: i32,
     newpath: &[u8],
-    _flags: u32,
+    flags: u32,
 ) -> Result<(), Errno> {
-    let old_resolved = resolve_at_path(proc, olddirfd, oldpath)?;
-    let new_resolved = resolve_at_path(proc, newdirfd, newpath)?;
+    const AT_SYMLINK_FOLLOW: u32 = 0x400;
+    let old_options = if flags & AT_SYMLINK_FOLLOW != 0 {
+        PathResolveOptions::FOLLOW
+    } else {
+        PathResolveOptions::NOFOLLOW
+    };
+    let old_resolved = resolve_at_path(proc, host, olddirfd, oldpath, old_options)?.path;
+    let new_resolved =
+        resolve_at_path(proc, host, newdirfd, newpath, PathResolveOptions::CREATE_ENTRY)?.path;
+    ensure_host_mutable_namespace_path(&old_resolved)?;
+    ensure_host_mutable_namespace_path(&new_resolved)?;
     check_search_path(proc, host, &old_resolved)?;
     check_parent_writable(proc, host, &new_resolved)?;
     host.host_link(&old_resolved, &new_resolved)
@@ -12214,7 +12698,9 @@ pub fn sys_symlinkat(
     newdirfd: i32,
     linkpath: &[u8],
 ) -> Result<(), Errno> {
-    let resolved_link = resolve_at_path(proc, newdirfd, linkpath)?;
+    let resolved_link =
+        resolve_at_path(proc, host, newdirfd, linkpath, PathResolveOptions::CREATE_ENTRY)?.path;
+    ensure_host_mutable_namespace_path(&resolved_link)?;
     check_parent_writable(proc, host, &resolved_link)?;
     host.host_symlink(target, &resolved_link)
 }
@@ -12227,7 +12713,8 @@ pub fn sys_readlinkat(
     path: &[u8],
     buf: &mut [u8],
 ) -> Result<usize, Errno> {
-    let resolved = resolve_at_path(proc, dirfd, path)?;
+    let resolved =
+        resolve_at_path(proc, host, dirfd, path, PathResolveOptions::NOFOLLOW)?.path;
 
     // Procfs symlinks — /proc/self, /proc/self/fd/N, /proc/self/cwd, etc.
     if let Some(entry) = crate::procfs::match_procfs(&resolved, proc.pid) {
@@ -12501,126 +12988,16 @@ pub fn sys_setpriority(proc: &mut Process, which: i32, who: u32, prio: i32) -> R
 
 /// realpath -- resolve a pathname to a canonical absolute form.
 ///
-/// Resolves the path against cwd, normalizes `.` and `..` components,
-/// and resolves symlinks by walking each path component with lstat/readlink.
-/// Returns ELOOP after 40 symlink resolutions.
+/// Uses the same component walker as pathname syscalls so mount crossings,
+/// synthetic namespaces, trailing components, and symlink limits all share
+/// one definition of canonical identity.
 pub fn sys_realpath(
     proc: &mut Process,
     host: &mut dyn HostIO,
     path: &[u8],
     buf: &mut [u8],
 ) -> Result<usize, Errno> {
-    use crate::path::{normalize_path, resolve_path};
-
-    if path.is_empty() {
-        return Err(Errno::ENOENT);
-    }
-
-    const MAX_SYMLINKS: u32 = 40;
-    let mut symlink_count: u32 = 0;
-
-    // Make absolute and normalize
-    let absolute = resolve_path(path, &proc.cwd);
-    let normalized = normalize_path(&absolute);
-
-    // Split into components and resolve each
-    let mut resolved = Vec::new();
-    resolved.push(b'/');
-
-    // Collect components (skip empty from split)
-    let components: Vec<&[u8]> = normalized[1..]
-        .split(|&b| b == b'/')
-        .filter(|c| !c.is_empty())
-        .collect();
-
-    let mut i = 0;
-    let mut remaining_components: Vec<Vec<u8>> = components.iter().map(|c| c.to_vec()).collect();
-
-    while i < remaining_components.len() {
-        let component = remaining_components[i].clone();
-        i += 1;
-
-        // Build the candidate path: resolved + "/" + component
-        let mut candidate = resolved.clone();
-        if candidate.len() > 1 {
-            candidate.push(b'/');
-        }
-        candidate.extend_from_slice(&component);
-
-        // lstat to check if this component is a symlink
-        check_search_path(proc, host, &candidate)?;
-        match host.host_lstat(&candidate) {
-            Ok(stat) => {
-                // S_IFLNK = 0o120000 = 0xA000
-                if (stat.st_mode & 0o170000) == 0o120000 {
-                    // It's a symlink — resolve it
-                    symlink_count += 1;
-                    if symlink_count > MAX_SYMLINKS {
-                        return Err(Errno::ELOOP);
-                    }
-
-                    let mut link_target = [0u8; 4096];
-                    let link_len = host.host_readlink(&candidate, &mut link_target)?;
-                    let target = &link_target[..link_len];
-
-                    if target.is_empty() {
-                        return Err(Errno::ENOENT);
-                    }
-
-                    // Collect remaining components after this one
-                    let rest: Vec<Vec<u8>> = remaining_components[i..].to_vec();
-
-                    if target[0] == b'/' {
-                        // Absolute symlink: restart from root
-                        resolved.clear();
-                        resolved.push(b'/');
-                        let target_norm = normalize_path(target);
-                        let mut new_components: Vec<Vec<u8>> = target_norm[1..]
-                            .split(|&b| b == b'/')
-                            .filter(|c| !c.is_empty())
-                            .map(|c| c.to_vec())
-                            .collect();
-                        new_components.extend(rest);
-                        remaining_components = new_components;
-                        i = 0;
-                    } else {
-                        // Relative symlink: resolve relative to current resolved dir
-                        let mut new_components: Vec<Vec<u8>> = target
-                            .split(|&b| b == b'/')
-                            .filter(|c| !c.is_empty())
-                            .map(|c| c.to_vec())
-                            .collect();
-                        new_components.extend(rest);
-                        remaining_components = new_components;
-                        i = 0;
-                    }
-                } else {
-                    // Not a symlink — add to resolved path
-                    if component == b".." {
-                        // Go up one level
-                        if let Some(pos) = resolved.iter().rposition(|&b| b == b'/') {
-                            if pos == 0 {
-                                resolved.truncate(1); // stay at root
-                            } else {
-                                resolved.truncate(pos);
-                            }
-                        }
-                    } else if component != b"." {
-                        if resolved.len() > 1 {
-                            resolved.push(b'/');
-                        }
-                        resolved.extend_from_slice(&component);
-                    }
-                }
-            }
-            Err(e) => return Err(e),
-        }
-    }
-
-    // Final existence check
-    check_search_path(proc, host, &resolved)?;
-    host.host_stat(&resolved)?;
-
+    let resolved = resolve_namespace_path(proc, host, path, PathResolveOptions::FOLLOW)?.path;
     let len = resolved.len();
     if buf.len() < len {
         return Err(Errno::ERANGE);
@@ -12687,7 +13064,8 @@ fn virtual_statfs_for_path(resolved: &[u8], pid: u32) -> Option<WasmStatfs> {
     {
         return Some(procfs_statfs());
     }
-    if crate::devfs::match_devfs_dir(resolved).is_some()
+    if (!is_host_backed_devfs_path(resolved)
+        && crate::devfs::match_devfs_dir(resolved).is_some())
         || match_virtual_device(resolved).is_some()
         || resolved == b"/dev/ptmx"
         || resolved == b"/dev/tty"
@@ -12713,8 +13091,7 @@ pub fn sys_statfs(
     host: &mut dyn HostIO,
     path: &[u8],
 ) -> Result<WasmStatfs, Errno> {
-    let resolved = crate::path::resolve_path(path, &proc.cwd);
-    let _ = sys_stat(proc, host, path)?;
+    let resolved = resolve_namespace_path(proc, host, path, PathResolveOptions::FOLLOW)?.path;
 
     if let Some(statfs) = virtual_statfs_for_path(&resolved, proc.pid) {
         return Ok(statfs);
@@ -13063,6 +13440,8 @@ mod tests {
         handle_owners: std::collections::HashMap<i64, (u32, u32)>,
         handle_paths: std::collections::HashMap<i64, Vec<u8>>,
         missing_paths: std::collections::HashSet<Vec<u8>>,
+        symlink_targets: std::collections::HashMap<Vec<u8>, Vec<u8>>,
+        lstat_paths: Vec<Vec<u8>>,
         statfs_by_path: std::collections::HashMap<Vec<u8>, WasmStatfs>,
         /// Recorded `(pid, bo_id, addr, len)` for every `gbm_bo_bind` call so
         /// the DRI mmap path can be asserted against.
@@ -13107,6 +13486,8 @@ mod tests {
                 handle_owners: std::collections::HashMap::new(),
                 handle_paths: std::collections::HashMap::new(),
                 missing_paths: std::collections::HashSet::new(),
+                symlink_targets: std::collections::HashMap::new(),
+                lstat_paths: Vec::new(),
                 statfs_by_path: std::collections::HashMap::new(),
                 gbm_bo_bind_calls: Vec::new(),
                 gbm_bo_unbind_calls: Vec::new(),
@@ -13157,6 +13538,13 @@ mod tests {
 
         fn set_missing_path(&mut self, path: &[u8]) {
             self.missing_paths.insert(path.to_vec());
+        }
+
+        fn set_symlink(&mut self, path: &[u8], target: &[u8]) {
+            self.missing_paths.remove(path);
+            self.file_modes.insert(path.to_vec(), S_IFLNK | 0o777);
+            self.symlink_targets
+                .insert(path.to_vec(), target.to_vec());
         }
 
         fn set_statfs(&mut self, path: &[u8], statfs: WasmStatfs) {
@@ -13267,9 +13655,11 @@ mod tests {
         }
 
         fn host_lstat(&mut self, path: &[u8]) -> Result<WasmStat, Errno> {
-            // Return S_IFLNK for paths containing "link" (for symlink tests),
-            // otherwise return regular file/directory mode.
-            let is_symlink = path.windows(4).any(|w| w == b"link");
+            self.lstat_paths.push(path.to_vec());
+            if self.missing_paths.contains(path) {
+                return Err(Errno::ENOENT);
+            }
+            let is_symlink = self.symlink_targets.contains_key(path);
             let mode = if is_symlink {
                 S_IFLNK | 0o777
             } else {
@@ -13324,12 +13714,17 @@ mod tests {
         fn host_link(&mut self, _oldpath: &[u8], _newpath: &[u8]) -> Result<(), Errno> {
             Ok(())
         }
-        fn host_symlink(&mut self, _target: &[u8], _linkpath: &[u8]) -> Result<(), Errno> {
+        fn host_symlink(&mut self, target: &[u8], linkpath: &[u8]) -> Result<(), Errno> {
+            self.set_symlink(linkpath, target);
             Ok(())
         }
 
-        fn host_readlink(&mut self, _path: &[u8], buf: &mut [u8]) -> Result<usize, Errno> {
-            let target = b"/target";
+        fn host_readlink(&mut self, path: &[u8], buf: &mut [u8]) -> Result<usize, Errno> {
+            let target = self
+                .symlink_targets
+                .get(path)
+                .map(Vec::as_slice)
+                .unwrap_or(b"/target");
             let n = buf.len().min(target.len());
             buf[..n].copy_from_slice(&target[..n]);
             Ok(n)
@@ -14093,6 +14488,7 @@ mod tests {
     fn test_lstat_returns_symlink_info() {
         let mut proc = Process::new(1);
         let mut host = MockHostIO::new();
+        host.set_symlink(b"/tmp/link", b"/target");
         let stat = sys_lstat(&mut proc, &mut host, b"/tmp/link").unwrap();
         assert_eq!(stat.st_mode & S_IFLNK, S_IFLNK);
     }
@@ -14405,6 +14801,7 @@ mod tests {
     fn test_readlink_returns_target() {
         let mut proc = Process::new(1);
         let mut host = MockHostIO::new();
+        host.set_symlink(b"/tmp/link", b"/target");
         let mut buf = [0u8; 256];
         let n = sys_readlink(&mut proc, &mut host, b"/tmp/link", &mut buf).unwrap();
         assert_eq!(&buf[..n], b"/target");
@@ -14435,8 +14832,9 @@ mod tests {
     #[test]
     fn test_getcwd_returns_initial_cwd() {
         let proc = Process::new(1);
+        let mut host = MockHostIO::new();
         let mut buf = [0u8; 256];
-        let n = sys_getcwd(&proc, &mut buf).unwrap();
+        let n = sys_getcwd(&proc, &mut host, &mut buf).unwrap();
         // Linux convention: returned length includes the NUL terminator
         assert_eq!(&buf[..n], b"/\0");
     }
@@ -14447,7 +14845,7 @@ mod tests {
         let mut host = MockHostIO::new();
         sys_chdir(&mut proc, &mut host, b"/tmp").unwrap();
         let mut buf = [0u8; 256];
-        let n = sys_getcwd(&proc, &mut buf).unwrap();
+        let n = sys_getcwd(&proc, &mut host, &mut buf).unwrap();
         assert_eq!(&buf[..n], b"/tmp\0");
     }
 
@@ -14460,8 +14858,188 @@ mod tests {
         // Then chdir to "subdir" relative (resolves to /tmp/subdir, ends with "dir")
         sys_chdir(&mut proc, &mut host, b"subdir").unwrap();
         let mut buf = [0u8; 256];
-        let n = sys_getcwd(&proc, &mut buf).unwrap();
+        let n = sys_getcwd(&proc, &mut host, &mut buf).unwrap();
         assert_eq!(&buf[..n], b"/tmp/subdir\0");
+    }
+
+    #[test]
+    fn pathname_resolution_does_not_erase_missing_or_nondirectory_components() {
+        let mut proc = Process::new(1);
+        proc.cwd = b"/work".to_vec();
+        let mut host = MockHostIO::new();
+        host.set_dir_with_owner(b"/work", 0, 0, 0o755);
+        host.set_missing_path(b"/work/missing");
+        host.set_file_with_owner(b"/regular", 0, 0, 0o644, b"");
+
+        assert_eq!(
+            sys_stat(&mut proc, &mut host, b"missing/../file").unwrap_err(),
+            Errno::ENOENT,
+        );
+        assert_eq!(
+            sys_stat(&mut proc, &mut host, b"/regular/.").unwrap_err(),
+            Errno::ENOTDIR,
+        );
+    }
+
+    #[test]
+    fn chdir_stores_physical_path_after_symlink_and_dotdot() {
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        for path in [b"/a".as_slice(), b"/x".as_slice(), b"/x/y".as_slice()] {
+            host.set_dir_with_owner(path, 0, 0, 0o755);
+        }
+        host.set_symlink(b"/a/link", b"/x/y");
+
+        sys_chdir(&mut proc, &mut host, b"/a/link/..").unwrap();
+        assert_eq!(proc.cwd, b"/x");
+
+        let stat = sys_stat(&mut proc, &mut host, b"/a/link/").unwrap();
+        assert_eq!(stat.st_mode & S_IFMT, S_IFDIR);
+    }
+
+    #[test]
+    fn namespace_backends_never_receive_dotdot_components() {
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        host.set_dir_with_owner(b"/tmp", 0, 0, 0o755);
+        host.set_dir_with_owner(b"/etc", 0, 0, 0o755);
+        host.set_file_with_owner(b"/etc/file", 0, 0, 0o644, b"");
+
+        sys_stat(&mut proc, &mut host, b"/tmp/../etc/file").unwrap();
+        assert!(host.lstat_paths.iter().all(|path| !path.windows(2).any(|w| w == b"..")));
+        assert!(host.lstat_paths.iter().any(|path| path == b"/etc/file"));
+    }
+
+    #[test]
+    fn open_enforces_final_symlink_flags_before_host_delegation() {
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        host.set_symlink(b"/tmp/link", b"/missing-target");
+        host.set_missing_path(b"/missing-target");
+
+        assert_eq!(
+            sys_open(&mut proc, &mut host, b"/tmp/link", O_RDONLY | O_NOFOLLOW, 0),
+            Err(Errno::ELOOP),
+        );
+        assert_eq!(
+            sys_open(
+                &mut proc,
+                &mut host,
+                b"/tmp/link",
+                O_WRONLY | O_CREAT | O_EXCL,
+                0o600,
+            ),
+            Err(Errno::EEXIST),
+        );
+    }
+
+    #[test]
+    fn access_uses_real_ids_for_component_search() {
+        let mut proc = Process::new(1);
+        proc.uid = 1000;
+        proc.gid = 1000;
+        proc.euid = 0;
+        proc.egid = 0;
+        let mut host = MockHostIO::new();
+        host.set_dir_with_owner(b"/secret", 0, 0, 0o700);
+        host.set_file_with_owner(b"/secret/file", 0, 0, 0o644, b"");
+
+        assert_eq!(
+            sys_access(&mut proc, &mut host, b"/secret/file", R_OK),
+            Err(Errno::EACCES),
+        );
+        assert!(sys_stat(&mut proc, &mut host, b"/secret/file").is_ok());
+
+        proc.uid = 0;
+        proc.gid = 0;
+        proc.euid = 1000;
+        proc.egid = 1000;
+        host.set_dir_with_owner(b"/root-only", 0, 0, 0o700);
+        host.set_file_with_owner(b"/root-only/file", 0, 0, 0o644, b"");
+
+        assert!(sys_access(&mut proc, &mut host, b"/root-only/file", R_OK).is_ok());
+        assert!(
+            sys_faccessat(
+                &mut proc,
+                &mut host,
+                AT_FDCWD,
+                b"/root-only/file",
+                R_OK,
+                0,
+            )
+            .is_ok()
+        );
+        assert_eq!(
+            sys_faccessat(
+                &mut proc,
+                &mut host,
+                AT_FDCWD,
+                b"/root-only/file",
+                R_OK,
+                AT_EACCESS,
+            ),
+            Err(Errno::EACCES),
+        );
+    }
+
+    #[test]
+    fn rename_allows_missing_trailing_slash_only_for_directory_source() {
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        host.set_dir_with_owner(b"/tmp/old-dir", 0, 0, 0o755);
+        host.set_file_with_owner(b"/tmp/old-file", 0, 0, 0o644, b"");
+        host.set_missing_path(b"/tmp/new-dir");
+        host.set_missing_path(b"/tmp/new-file");
+
+        assert!(sys_rename(&mut proc, &mut host, b"/tmp/old-dir", b"/tmp/new-dir/").is_ok());
+        assert_eq!(
+            sys_rename(&mut proc, &mut host, b"/tmp/old-file", b"/tmp/new-file/"),
+            Err(Errno::ENOENT),
+        );
+    }
+
+    #[test]
+    fn unix_socket_registry_uses_canonical_namespace_path() {
+        use wasm_posix_shared::socket::{AF_UNIX, SOCK_DGRAM};
+
+        let _guard = UNIX_REGISTRY_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        host.set_dir_with_owner(b"/tmp/a", 0, 0, 0o755);
+        host.set_missing_path(b"/tmp/socket");
+
+        let aliased = test_unix_addr(b"/tmp/a/../socket");
+        let canonical = test_unix_addr(b"/tmp/socket");
+        let server = sys_socket(&mut proc, &mut host, AF_UNIX, SOCK_DGRAM, 0).unwrap();
+        sys_bind(&mut proc, &mut host, server, &aliased).unwrap();
+
+        assert!(unsafe { crate::unix_socket::global_unix_socket_registry() }
+            .contains(b"/tmp/socket"));
+        assert!(!unsafe { crate::unix_socket::global_unix_socket_registry() }
+            .contains(b"/tmp/a/../socket"));
+
+        let client = sys_socket(&mut proc, &mut host, AF_UNIX, SOCK_DGRAM, 0).unwrap();
+        sys_connect(&mut proc, &mut host, client, &canonical).unwrap();
+
+        host.set_missing_path(b"/tmp/renamed-socket");
+        sys_rename(
+            &mut proc,
+            &mut host,
+            b"/tmp/socket",
+            b"/tmp/renamed-socket",
+        )
+        .unwrap();
+        host.set_missing_path(b"/tmp/socket");
+        host.missing_paths.remove(b"/tmp/renamed-socket".as_slice());
+        assert!(!unsafe { crate::unix_socket::global_unix_socket_registry() }
+            .contains(b"/tmp/socket"));
+        assert!(unsafe { crate::unix_socket::global_unix_socket_registry() }
+            .contains(b"/tmp/renamed-socket"));
+
+        let renamed = test_unix_addr(b"/tmp/renamed-socket");
+        let second_client = sys_socket(&mut proc, &mut host, AF_UNIX, SOCK_DGRAM, 0).unwrap();
+        sys_connect(&mut proc, &mut host, second_client, &renamed).unwrap();
+        sys_unlink(&mut proc, &mut host, b"/tmp/renamed-socket").unwrap();
     }
 
     #[test]
@@ -14479,7 +15057,7 @@ mod tests {
         let mut host = MockHostIO::new();
         sys_chdir(&mut proc, &mut host, b"/tmp").unwrap();
         let mut buf = [0u8; 2]; // too small for "/tmp"
-        let result = sys_getcwd(&proc, &mut buf);
+        let result = sys_getcwd(&proc, &mut host, &mut buf);
         assert_eq!(result, Err(Errno::ERANGE));
     }
 
@@ -18396,6 +18974,7 @@ mod tests {
     fn test_fstatat_symlink_nofollow() {
         let mut proc = Process::new(1);
         let mut host = MockHostIO::new();
+        host.set_symlink(b"/tmp/link", b"/target");
         let result = sys_fstatat(
             &mut proc,
             &mut host,
@@ -19915,6 +20494,7 @@ mod tests {
     fn test_readlinkat_at_fdcwd() {
         let mut proc = Process::new(1);
         let mut host = MockHostIO::new();
+        host.set_symlink(b"/some/link", b"/target");
         let mut buf = [0u8; 256];
         let result = sys_readlinkat(&mut proc, &mut host, -100, b"/some/link", &mut buf);
         // MockHostIO host_readlink returns placeholder data
@@ -20893,7 +21473,7 @@ mod tests {
         let dirfd = open_dir_fd(&mut proc, &mut host, b"/var/dir");
         let result = sys_faccessat(&mut proc, &mut host, dirfd, b"file", 0, 0);
         assert!(result.is_ok());
-        assert_eq!(host.last_stat_path, b"/var/dir/file");
+        assert_eq!(host.last_lstat_path, b"/var/dir/file");
     }
 
     #[test]
@@ -26472,7 +27052,64 @@ mod tests {
         let st = sys_stat(&mut proc, &mut host, b"/etc/mtab").unwrap();
         assert_eq!(st.st_mode & S_IFMT, S_IFREG);
         assert_eq!(st.st_size as usize, crate::procfs::MOUNTS_CONTENT.len());
+        assert!(sys_access(&mut proc, &mut host, b"/etc/mtab", R_OK).is_ok());
+        assert_eq!(
+            sys_access(&mut proc, &mut host, b"/etc/mtab", W_OK),
+            Err(Errno::EACCES),
+        );
 
+        sys_close(&mut proc, &mut host, fd).unwrap();
+    }
+
+    #[test]
+    fn kernel_owned_namespaces_do_not_fall_through_to_hidden_host_entries() {
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        host.set_missing_path(b"/proc/new");
+        host.set_missing_path(b"/dev/new");
+
+        assert_eq!(
+            sys_open(
+                &mut proc,
+                &mut host,
+                b"/proc/new",
+                O_CREAT | O_WRONLY,
+                0o600,
+            ),
+            Err(Errno::EROFS),
+        );
+        assert_eq!(
+            sys_mkdir(&mut proc, &mut host, b"/dev/new", 0o755),
+            Err(Errno::EROFS),
+        );
+        assert_eq!(
+            sys_unlink(&mut proc, &mut host, b"/dev/null"),
+            Err(Errno::EROFS),
+        );
+        assert_eq!(
+            sys_unlink(&mut proc, &mut host, b"/etc/mtab"),
+            Err(Errno::EROFS),
+        );
+        assert!(sys_stat(&mut proc, &mut host, b"/etc/mtab").is_ok());
+    }
+
+    #[test]
+    fn dev_shm_uses_writable_host_mount_metadata() {
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        host.set_dir_with_owner(b"/dev/shm", 0, 0, 0o1777);
+        host.set_missing_path(b"/dev/shm/object");
+
+        let stat = sys_stat(&mut proc, &mut host, b"/dev/shm").unwrap();
+        assert_eq!(stat.st_mode & 0o7777, 0o1777);
+        let fd = sys_open(
+            &mut proc,
+            &mut host,
+            b"/dev/shm/object",
+            O_CREAT | O_RDWR,
+            0o600,
+        )
+        .unwrap();
         sys_close(&mut proc, &mut host, fd).unwrap();
     }
 
@@ -26523,6 +27160,21 @@ mod tests {
         let mut buf = [0u8; 64];
         let n = sys_readlink(&mut proc, &mut host, b"/proc/self", &mut buf).unwrap();
         assert_eq!(&buf[..n], b"42");
+    }
+
+    #[test]
+    fn test_procfs_thread_self_text_and_component_resolution() {
+        let mut proc = Process::new(42);
+        let mut host = MockHostIO::new();
+        let mut buf = [0u8; 64];
+
+        let n = sys_readlink(&mut proc, &mut host, b"/proc/thread-self", &mut buf).unwrap();
+        assert_eq!(&buf[..n], b"42/task/42");
+
+        let stat = sys_stat(&mut proc, &mut host, b"/proc/thread-self/status").unwrap();
+        assert_eq!(stat.st_mode & S_IFMT, S_IFREG);
+        let dir = sys_stat(&mut proc, &mut host, b"/proc/thread-self").unwrap();
+        assert_eq!(dir.st_mode & S_IFMT, S_IFDIR);
     }
 
     #[test]
@@ -26593,6 +27245,10 @@ mod tests {
         assert_eq!(
             sys_access(&mut proc, &mut host, b"/proc/self/stat", 2).unwrap_err(),
             Errno::EACCES,
+        );
+        assert_eq!(
+            sys_access(&mut proc, &mut host, b"/proc/self/stat", X_OK),
+            Err(Errno::EACCES),
         );
     }
 

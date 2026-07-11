@@ -1,6 +1,29 @@
 extern crate alloc;
 use alloc::vec::Vec;
 
+/// Make a pathname absolute without interpreting any of its components.
+///
+/// Pathname resolution is stateful: `missing/..` must look up `missing`, and
+/// a `..` after a symlink applies to the symlink target rather than to the
+/// spelling of the input. Callers that need POSIX resolution must therefore
+/// preserve `.`, `..`, repeated separators, and a final slash until the
+/// namespace walker has examined them.
+pub fn make_absolute(path: &[u8], cwd: &[u8]) -> Vec<u8> {
+    if path.is_empty() {
+        return Vec::new();
+    }
+    if path[0] == b'/' {
+        return path.to_vec();
+    }
+
+    let mut absolute = cwd.to_vec();
+    if absolute.last() != Some(&b'/') {
+        absolute.push(b'/');
+    }
+    absolute.extend_from_slice(path);
+    absolute
+}
+
 /// Resolve a path against a working directory.
 /// If path is absolute (starts with '/'), normalize and return it.
 /// If path is relative, prepend cwd + '/' and normalize.
@@ -54,6 +77,16 @@ mod tests {
     fn test_absolute_path_unchanged() {
         let resolved = resolve_path(b"/home/user/file.txt", b"/working/dir");
         assert_eq!(resolved, b"/home/user/file.txt");
+    }
+
+    #[test]
+    fn test_make_absolute_preserves_resolution_components() {
+        assert_eq!(
+            make_absolute(b"missing/../file/.", b"/working/dir"),
+            b"/working/dir/missing/../file/."
+        );
+        assert_eq!(make_absolute(b"/a//b/../", b"/ignored"), b"/a//b/../");
+        assert!(make_absolute(b"", b"/working/dir").is_empty());
     }
 
     #[test]

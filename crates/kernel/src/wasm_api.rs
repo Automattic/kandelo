@@ -1439,14 +1439,17 @@ pub extern "C" fn kernel_reserve_host_region_at(pid: u32, addr: usize, len: usiz
 
 /// Set the working directory for a process.
 /// Called by host to set the initial cwd before the process starts.
-/// Returns 0 on success, -ESRCH if pid not found.
+/// Returns 0 on success or a negative errno if the process/path is invalid.
 #[unsafe(no_mangle)]
 pub extern "C" fn kernel_set_cwd(pid: u32, path_ptr: *const u8, path_len: u32) -> i32 {
     let table = unsafe { &mut *PROCESS_TABLE.0.get() };
     if let Some(proc) = table.get_mut(pid) {
         let path = unsafe { core::slice::from_raw_parts(path_ptr, path_len as usize) };
-        proc.cwd = path.to_vec();
-        0
+        let mut host = WasmHostIO;
+        match syscalls::sys_chdir(proc, &mut host, path) {
+            Ok(()) => 0,
+            Err(error) => -(error as i32),
+        }
     } else {
         -(Errno::ESRCH as i32)
     }
@@ -5420,11 +5423,11 @@ pub extern "C" fn kernel_fchdir(fd: i32) -> i32 {
 pub extern "C" fn kernel_getcwd(buf_ptr: *mut u8, buf_len: u32) -> i32 {
     let (_gkl, proc) = unsafe { get_process() };
     let buf = unsafe { slice::from_raw_parts_mut(buf_ptr, buf_len as usize) };
-    let result = match syscalls::sys_getcwd(proc, buf) {
+    let mut host = WasmHostIO;
+    let result = match syscalls::sys_getcwd(proc, &mut host, buf) {
         Ok(n) => n as i32,
         Err(e) => -(e as i32),
     };
-    let mut host = WasmHostIO;
     deliver_pending_signals(proc, &mut host);
     result
 }
@@ -7287,7 +7290,7 @@ pub extern "C" fn kernel_connect(fd: i32, addr_ptr: *const u8, addr_len: u32) ->
             let family = u16::from_le_bytes([addr[0], addr[1]]);
             if family == 1 {
                 // AF_UNIX — try cross-process connect
-                match cross_process_unix_connect(proc, fd, addr) {
+                match cross_process_unix_connect(proc, &mut host, fd, addr) {
                     Ok(()) => 0,
                     Err(e) => -(e as i32),
                 }
@@ -7588,7 +7591,12 @@ fn cross_process_loopback_connect6(
 /// Looks up the target path in the global UnixSocketRegistry, then creates
 /// global pipe pairs to connect the client (current process) to the listener
 /// (possibly in a different process).
-fn cross_process_unix_connect(proc: &mut Process, fd: i32, addr: &[u8]) -> Result<(), Errno> {
+fn cross_process_unix_connect(
+    proc: &mut Process,
+    host: &mut dyn HostIO,
+    fd: i32,
+    addr: &[u8],
+) -> Result<(), Errno> {
     use crate::pipe::PipeBuffer;
     use crate::socket::{SocketDomain, SocketState, SocketType};
 
@@ -7610,7 +7618,7 @@ fn cross_process_unix_connect(proc: &mut Process, fd: i32, addr: &[u8]) -> Resul
         if path_end == 0 {
             return Err(Errno::ECONNREFUSED);
         }
-        crate::path::resolve_path(&path_bytes[..path_end], &proc.cwd)
+        syscalls::resolve_existing_namespace_path(proc, host, &path_bytes[..path_end])?
     };
 
     // Only AF_UNIX stream sockets can enter the cross-process stream-pipe
@@ -7703,7 +7711,7 @@ fn cross_process_unix_connect(proc: &mut Process, fd: i32, addr: &[u8]) -> Resul
 
 #[cfg(test)]
 mod socket_wrapper_tests {
-    use super::{cross_process_unix_connect, write_getsockopt_bytes};
+    use super::{WasmHostIO, cross_process_unix_connect, write_getsockopt_bytes};
     use crate::errno::Errno;
     use crate::fd::OpenFileDescRef;
     use crate::ofd::FileType;
@@ -7727,10 +7735,13 @@ mod socket_wrapper_tests {
             .fd_table
             .alloc(OpenFileDescRef(ofd_idx), 0)
             .unwrap();
-        let addr = [1, 0, b'/', b't', b'm', b'p', b'/', b'm', b'i', b's', b's'];
+        // Abstract names do not touch HostIO, which keeps this wrapper test
+        // focused on the retry's socket-type guard.
+        let addr = [1, 0, 0, b'm', b'i', b's', b's'];
+        let mut host = WasmHostIO;
 
         assert_eq!(
-            cross_process_unix_connect(&mut proc, fd, &addr),
+            cross_process_unix_connect(&mut proc, &mut host, fd, &addr),
             Err(Errno::ECONNREFUSED),
         );
     }
