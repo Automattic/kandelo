@@ -644,9 +644,11 @@ async function handleStat(isLstat: boolean): Promise<void> {
 
     // Try file
     const fileHandle = await dir.getFileHandle(name);
-    const syncHandle = await fileHandle.createSyncAccessHandle();
-    const size = syncHandle.getSize();
-    syncHandle.close();
+    // A file may already have a live synchronous access handle. OPFS permits
+    // only one such handle per file, so stat must use the snapshot API rather
+    // than attempting to acquire a second handle just to read the size.
+    const file = await fileHandle.getFile();
+    const size = file.size;
 
     const now = Date.now();
     channel.writeStatResult({

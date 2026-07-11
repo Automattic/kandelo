@@ -461,6 +461,12 @@ fn render_ts_module() -> String {
     }
     out.push_str("} as const;\n\n");
 
+    out.push_str("export const PATHCONF_NAMES = {\n");
+    for (name, number) in shared::pathconf::ABI_NAMES {
+        out.push_str(&format!("  {name}: {number},\n"));
+    }
+    out.push_str("} as const;\n\n");
+
     out.push_str("export const ABI_SYSCALL_NAMES: Record<number, string> = {\n");
     for (number, name) in all_syscall_log_names() {
         out.push_str(&format!("  {number}: {name:?},\n"));
@@ -478,6 +484,7 @@ fn render_ts_module() -> String {
     out.push_str("  direction: SyscallArgDirection;\n");
     out.push_str("  size: SyscallArgSizeSpec;\n");
     out.push_str("  nullable?: boolean;\n");
+    out.push_str("  required?: boolean;\n");
     out.push_str("  copyRetvalAdd?: number;\n");
     out.push_str("}\n\n");
 
@@ -503,6 +510,9 @@ fn ts_syscall_arg_desc(desc: &shared::host_abi::SyscallArgDesc) -> String {
     );
     if desc.nullable {
         s.push_str(", nullable: true");
+    }
+    if desc.required {
+        s.push_str(", required: true");
     }
     if desc.copy_retval_add != 0 {
         s.push_str(&format!(", copyRetvalAdd: {}", desc.copy_retval_add));
@@ -667,6 +677,7 @@ fn build_snapshot(kernel_wasm: &std::path::Path) -> Result<JsonMap, String> {
 
     root.insert("marshalled_structs".into(), marshalled_structs());
     root.insert("syscalls".into(), syscalls());
+    root.insert("pathconf_names".into(), pathconf_names());
     root.insert(
         "host_intercepted_syscalls".into(),
         host_intercepted_syscalls(),
@@ -1285,6 +1296,14 @@ fn syscalls() -> Value {
     Value::Array(list)
 }
 
+fn pathconf_names() -> Value {
+    let mut names: JsonMap = BTreeMap::new();
+    for (name, number) in shared::pathconf::ABI_NAMES {
+        names.insert((*name).into(), json!(number));
+    }
+    Value::Object(names.into_iter().collect())
+}
+
 #[derive(Debug, Clone, Copy)]
 struct HostInterceptedSyscall {
     constant_name: &'static str,
@@ -1517,6 +1536,9 @@ fn syscall_arg_desc_json(desc: &shared::host_abi::SyscallArgDesc) -> Value {
     m.insert("size".into(), syscall_arg_size_json(desc.size));
     if desc.nullable {
         m.insert("nullable".into(), json!(true));
+    }
+    if desc.required {
+        m.insert("required".into(), json!(true));
     }
     if desc.copy_retval_add != 0 {
         m.insert("copyRetvalAdd".into(), json!(desc.copy_retval_add));
@@ -2085,6 +2107,22 @@ mod tests {
         );
     }
 
+    #[test]
+    fn generated_typescript_contains_pathconf_names_and_required_outputs() {
+        let rendered = render_ts_module();
+        assert!(rendered.contains("export const PATHCONF_NAMES = {"));
+        assert!(rendered.contains("  PATH_MAX: 4,"));
+        assert!(rendered.contains("  TIMESTAMP_RESOLUTION: 23,"));
+        assert!(rendered.contains(
+            "{ argIndex: 2, direction: \"out\", size: { type: \"fixed\", size: 8 }, required: true }"
+        ));
+
+        let names = pathconf_names();
+        assert_eq!(names["LINK_MAX"], json!(0));
+        assert_eq!(names["TIMESTAMP_RESOLUTION"], json!(23));
+        assert_eq!(names.as_object().unwrap().len(), 24);
+    }
+
     fn base_snapshot() -> Value {
         json!({
             "abi_version": 10,
@@ -2264,6 +2302,19 @@ mod tests {
         let old = base_snapshot();
         let mut new = old.clone();
         new["syscall_arg_descriptors"]["1"][0]["direction"] = json!("out");
+
+        let report = classify_compat_change(&old, &new).unwrap();
+        assert_eq!(
+            report.breaking,
+            vec!["changed syscall_arg_descriptors entry \"1\""]
+        );
+    }
+
+    #[test]
+    fn making_existing_syscall_pointer_required_is_breaking() {
+        let old = base_snapshot();
+        let mut new = old.clone();
+        new["syscall_arg_descriptors"]["1"][0]["required"] = json!(true);
 
         let report = classify_compat_change(&old, &new).unwrap();
         assert_eq!(

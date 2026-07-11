@@ -9,7 +9,8 @@
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import type { PlatformIO, StatResult, StatfsResult } from "../types";
+import type { PathconfValue, PlatformIO, StatResult, StatfsResult } from "../types";
+import { filesystemPathconf } from "../pathconf";
 import { nativeStatfs, translateOpenFlags } from "../vfs/host-fs";
 import { NativeMetadataOverlay } from "./native-metadata";
 
@@ -166,6 +167,20 @@ export class NodePlatformIO implements PlatformIO {
     return this.metadata.toStatResult(fs.fstatSync(handle));
   }
 
+  fpathconf(handle: number, name: number): PathconfValue {
+    // Validate the live descriptor rather than re-resolving its original
+    // pathname. This keeps fpathconf valid after rename or unlink.
+    const stat = this.fstat(handle);
+    return filesystemPathconf(
+      stat,
+      name,
+      {
+        supportsSymlinks: true,
+        timestampResolutionNs: 1_000_000,
+      },
+    );
+  }
+
   fileIdentity(_path: string, dev: bigint, ino: bigint): string | null {
     // Native inode numbers are filesystem-scoped and therefore preserve
     // aliases reached through separate hard-link paths. An absent inode is
@@ -185,6 +200,19 @@ export class NodePlatformIO implements PlatformIO {
 
   statfs(path: string): StatfsResult {
     return nativeStatfs(this.rewritePath(path));
+  }
+
+  pathconf(path: string, name: number): PathconfValue {
+    const nativePath = this.rewritePath(path);
+    const stat = this.metadata.toStatResult(fs.statSync(nativePath));
+    return filesystemPathconf(
+      stat,
+      name,
+      {
+        supportsSymlinks: true,
+        timestampResolutionNs: 1_000_000,
+      },
+    );
   }
 
   mkdir(path: string, mode: number): void {

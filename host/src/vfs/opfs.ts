@@ -5,7 +5,8 @@
  * then block with Atomics.wait() until the OpfsProxyWorker completes
  * the async OPFS operation.
  */
-import type { StatResult, StatfsResult } from "../types";
+import type { PathconfValue, StatResult, StatfsResult } from "../types";
+import { filesystemPathconf } from "../pathconf";
 import type { FileSystemBackend, DirEntry } from "./types";
 import { OpfsChannel, OpfsChannelStatus, OpfsOpcode } from "./opfs-channel";
 
@@ -130,6 +131,14 @@ export class OpfsFileSystem implements FileSystemBackend {
     return this.channel.readStatResult();
   }
 
+  fpathconf(handle: number, name: number): PathconfValue {
+    const stat = this.fstat(handle);
+    return filesystemPathconf(stat, name, {
+      supportsSymlinks: false,
+      timestampResolutionNs: null,
+    });
+  }
+
   ftruncate(handle: number, length: number): void {
     this.channel.setArg(0, handle);
     this.setI64Arg(1, length);
@@ -171,6 +180,14 @@ export class OpfsFileSystem implements FileSystemBackend {
     this.channel.setArg(0, pathLen);
     this.call(OpfsOpcode.STATFS);
     return this.channel.readStatfsResult();
+  }
+
+  pathconf(path: string, name: number): PathconfValue {
+    const stat = this.stat(path);
+    return filesystemPathconf(stat, name, {
+      supportsSymlinks: false,
+      timestampResolutionNs: null,
+    });
   }
 
   mkdir(path: string, mode: number): void {

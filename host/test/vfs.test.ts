@@ -84,6 +84,10 @@ function createMockBackend(): FileSystemBackend & { calls: string[] } {
       calls.push(`fstat:${h}`);
       return { ...dummyStat };
     },
+    fpathconf: (h, name) => {
+      calls.push(`fpathconf:${h}:${name}`);
+      return 4096;
+    },
     ftruncate: (h, l) => {
       calls.push(`ftruncate:${h}`);
     },
@@ -107,6 +111,10 @@ function createMockBackend(): FileSystemBackend & { calls: string[] } {
     statfs: (p) => {
       calls.push(`statfs:${p}`);
       return { ...dummyStatfs };
+    },
+    pathconf: (p, name) => {
+      calls.push(`pathconf:${p}:${name}`);
+      return 4096;
     },
     mkdir: (p, m) => {
       calls.push(`mkdir:${p}`);
