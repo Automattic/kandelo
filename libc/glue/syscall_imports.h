@@ -514,10 +514,11 @@ KERNEL_IMPORT(kernel_sysconf)
 int64_t kernel_sysconf(int32_t name);
 
 KERNEL_IMPORT(kernel_pathconf)
-int64_t kernel_pathconf(const uint8_t *path_ptr, uint32_t path_len, int32_t name);
+int32_t kernel_pathconf(const uint8_t *path_ptr, uint32_t path_len, int32_t name,
+                        int64_t *value_ptr);
 
 KERNEL_IMPORT(kernel_fpathconf)
-int64_t kernel_fpathconf(int32_t fd, int32_t name);
+int32_t kernel_fpathconf(int32_t fd, int32_t name, int64_t *value_ptr);
 
 KERNEL_IMPORT(kernel_realpath)
 int32_t kernel_realpath(const uint8_t *path_ptr, uint32_t path_len,

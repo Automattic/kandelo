@@ -523,9 +523,9 @@ pid_t gettid(void);
 #define _XOPEN_UUCP                   (-1)
 
 /* Feature test macros — supported or partially supported features */
-#define _POSIX_PRIORITIZED_IO          _POSIX_VERSION
+#define _POSIX_PRIORITIZED_IO          (-1)
 #define _POSIX_PRIORITY_SCHEDULING     _POSIX_VERSION
-#define _POSIX_SYNCHRONIZED_IO         _POSIX_VERSION
+#define _POSIX_SYNCHRONIZED_IO         (-1)
 #define _POSIX2_C_DEV                  (-1)
 #define _POSIX2_SW_DEV                 (-1)
 #define _XOPEN_CRYPT                   1

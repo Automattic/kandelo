@@ -1,4 +1,5 @@
-import type { StatResult, StatfsResult } from "../types";
+import type { PathconfValue, StatResult, StatfsResult } from "../types";
+import { filesystemPathconf } from "../pathconf";
 import type { FileSystemBackend, DirEntry } from "./types";
 import { DEVFS_SUPER_MAGIC, zeroCapacityStatfs } from "../statfs";
 
@@ -156,6 +157,14 @@ export class DeviceFileSystem implements FileSystemBackend {
     };
   }
 
+  fpathconf(handle: number, name: number): PathconfValue {
+    const stat = this.fstat(handle);
+    return filesystemPathconf(stat, name, {
+      supportsSymlinks: false,
+      timestampResolutionNs: null,
+    });
+  }
+
   ftruncate(_handle: number, _length: number): void {}
   fsync(_handle: number): void {}
   fchmod(_handle: number, _mode: number): void {}
@@ -196,6 +205,14 @@ export class DeviceFileSystem implements FileSystemBackend {
     const stats = zeroCapacityStatfs(DEVFS_SUPER_MAGIC, 5);
     stats.files = this.devices.size + SUBDIRS.length + EXTRA_ENTRIES.length;
     return stats;
+  }
+
+  pathconf(path: string, name: number): PathconfValue {
+    const stat = this.stat(path);
+    return filesystemPathconf(stat, name, {
+      supportsSymlinks: false,
+      timestampResolutionNs: null,
+    });
   }
 
   mkdir(_path: string, _mode: number): void {

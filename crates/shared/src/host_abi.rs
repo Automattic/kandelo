@@ -44,6 +44,8 @@ pub struct SyscallArgDesc {
     pub size: SyscallArgSize,
     /// Whether a null pointer is a valid request to omit this argument.
     pub nullable: bool,
+    /// Whether a non-C-string pointer must be non-null.
+    pub required: bool,
     /// Extra bytes to copy back when an output `Arg`-sized buffer's copied
     /// length is based on the syscall return value. `msgrcv` returns only
     /// `mtext` length, but the scratch buffer also includes the leading mtype.
@@ -108,6 +110,7 @@ macro_rules! desc {
             direction: SyscallArgDirection::$direction,
             size: $size,
             nullable: false,
+            required: false,
             copy_retval_add: 0,
         }
     };
@@ -117,6 +120,17 @@ macro_rules! desc {
             direction: SyscallArgDirection::$direction,
             size: $size,
             nullable: true,
+            required: false,
+            copy_retval_add: 0,
+        }
+    };
+    ($arg_index:expr, $direction:ident, $size:expr, required) => {
+        SyscallArgDesc {
+            arg_index: $arg_index,
+            direction: SyscallArgDirection::$direction,
+            size: $size,
+            nullable: false,
+            required: true,
             copy_retval_add: 0,
         }
     };
@@ -126,6 +140,7 @@ macro_rules! desc {
             direction: SyscallArgDirection::$direction,
             size: $size,
             nullable: false,
+            required: false,
             copy_retval_add: $copy_retval_add,
         }
     };
@@ -307,6 +322,17 @@ pub const SYSCALL_ARG_DESCRIPTORS: &[SyscallArgDescriptor] = &[
         [desc!(0, In, cstring!()), desc!(1, Out, arg!(2)),]
     ),
     entry!(Syscall::Sigsuspend as u32, [desc!(0, In, fixed!(8))]),
+    entry!(
+        Syscall::Pathconf as u32,
+        [
+            desc!(0, In, cstring!()),
+            desc!(2, Out, fixed!(8), required),
+        ]
+    ),
+    entry!(
+        Syscall::Fpathconf as u32,
+        [desc!(2, Out, fixed!(8), required)]
+    ),
     entry!(
         Syscall::Getsockname as u32,
         [desc!(1, Out, deref!(2)), desc!(2, InOut, fixed!(4)),]
@@ -532,6 +558,20 @@ mod tests {
         let utimensat_path = find(Syscall::Utimensat as u32).args[0];
         assert_eq!(utimensat_path.size, SyscallArgSize::CString);
         assert!(utimensat_path.nullable);
+
+        let pathconf = find(Syscall::Pathconf as u32).args;
+        assert_eq!(pathconf[0].size, SyscallArgSize::CString);
+        assert!(!pathconf[0].nullable);
+        assert_eq!(pathconf[1].arg_index, 2);
+        assert_eq!(pathconf[1].direction, SyscallArgDirection::Out);
+        assert_eq!(pathconf[1].size, SyscallArgSize::Fixed { size: 8 });
+        assert!(pathconf[1].required);
+
+        let fpathconf = find(Syscall::Fpathconf as u32).args[0];
+        assert_eq!(fpathconf.arg_index, 2);
+        assert_eq!(fpathconf.direction, SyscallArgDirection::Out);
+        assert_eq!(fpathconf.size, SyscallArgSize::Fixed { size: 8 });
+        assert!(fpathconf.required);
 
         let semop = find(extra_syscalls::SYS_SEMOP).args[0].size;
         assert_eq!(

@@ -1,5 +1,6 @@
 import { decompress as zstdDecompress } from "fzstd";
-import type { StatResult, StatfsResult } from "../types";
+import type { PathconfValue, StatResult, StatfsResult } from "../types";
+import { filesystemPathconf } from "../pathconf";
 import { SFFS_SUPER_MAGIC } from "../statfs";
 import type { FileSystemBackend, DirEntry } from "./types";
 import {
@@ -1568,6 +1569,14 @@ export class MemoryFileSystem implements FileSystemBackend {
     return this.adaptStatWithLazySize(this.fs.fstat(handle));
   }
 
+  fpathconf(handle: number, name: number): PathconfValue {
+    const stat = this.fstat(handle);
+    return filesystemPathconf(stat, name, {
+      supportsSymlinks: true,
+      timestampResolutionNs: 1_000_000,
+    });
+  }
+
   ftruncate(handle: number, length: number): void {
     this.fs.ftruncate(handle, length);
     this.invalidateLazyData(this.fs.fstat(handle));
@@ -1607,6 +1616,14 @@ export class MemoryFileSystem implements FileSystemBackend {
       frsize: stats.blockSize,
       flags: 0,
     };
+  }
+
+  pathconf(path: string, name: number): PathconfValue {
+    const stat = this.stat(path);
+    return filesystemPathconf(stat, name, {
+      supportsSymlinks: true,
+      timestampResolutionNs: 1_000_000,
+    });
   }
 
   mkdir(path: string, mode: number): void {

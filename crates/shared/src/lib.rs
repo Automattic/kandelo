@@ -317,6 +317,65 @@ impl Syscall {
     }
 }
 
+/// ABI-visible names accepted by `pathconf()` and `fpathconf()`.
+///
+/// These values are consumed by libc, the kernel, and the generated host
+/// bindings. Keep the numeric contract centralized here rather than copying
+/// the `_PC_*` numbering into each layer.
+pub mod pathconf {
+    pub const LINK_MAX: i32 = 0;
+    pub const MAX_CANON: i32 = 1;
+    pub const MAX_INPUT: i32 = 2;
+    pub const NAME_MAX: i32 = 3;
+    pub const PATH_MAX: i32 = 4;
+    pub const PIPE_BUF: i32 = 5;
+    pub const CHOWN_RESTRICTED: i32 = 6;
+    pub const NO_TRUNC: i32 = 7;
+    pub const VDISABLE: i32 = 8;
+    pub const SYNC_IO: i32 = 9;
+    pub const ASYNC_IO: i32 = 10;
+    pub const PRIO_IO: i32 = 11;
+    pub const SOCK_MAXBUF: i32 = 12;
+    pub const FILESIZEBITS: i32 = 13;
+    pub const REC_INCR_XFER_SIZE: i32 = 14;
+    pub const REC_MAX_XFER_SIZE: i32 = 15;
+    pub const REC_MIN_XFER_SIZE: i32 = 16;
+    pub const REC_XFER_ALIGN: i32 = 17;
+    pub const ALLOC_SIZE_MIN: i32 = 18;
+    pub const SYMLINK_MAX: i32 = 19;
+    pub const POSIX2_SYMLINKS: i32 = 20;
+    pub const FALLOC: i32 = 21;
+    pub const TEXTDOMAIN_MAX: i32 = 22;
+    pub const TIMESTAMP_RESOLUTION: i32 = 23;
+
+    pub const ABI_NAMES: &[(&str, i32)] = &[
+        ("LINK_MAX", LINK_MAX),
+        ("MAX_CANON", MAX_CANON),
+        ("MAX_INPUT", MAX_INPUT),
+        ("NAME_MAX", NAME_MAX),
+        ("PATH_MAX", PATH_MAX),
+        ("PIPE_BUF", PIPE_BUF),
+        ("CHOWN_RESTRICTED", CHOWN_RESTRICTED),
+        ("NO_TRUNC", NO_TRUNC),
+        ("VDISABLE", VDISABLE),
+        ("SYNC_IO", SYNC_IO),
+        ("ASYNC_IO", ASYNC_IO),
+        ("PRIO_IO", PRIO_IO),
+        ("SOCK_MAXBUF", SOCK_MAXBUF),
+        ("FILESIZEBITS", FILESIZEBITS),
+        ("REC_INCR_XFER_SIZE", REC_INCR_XFER_SIZE),
+        ("REC_MAX_XFER_SIZE", REC_MAX_XFER_SIZE),
+        ("REC_MIN_XFER_SIZE", REC_MIN_XFER_SIZE),
+        ("REC_XFER_ALIGN", REC_XFER_ALIGN),
+        ("ALLOC_SIZE_MIN", ALLOC_SIZE_MIN),
+        ("SYMLINK_MAX", SYMLINK_MAX),
+        ("POSIX2_SYMLINKS", POSIX2_SYMLINKS),
+        ("FALLOC", FALLOC),
+        ("TEXTDOMAIN_MAX", TEXTDOMAIN_MAX),
+        ("TIMESTAMP_RESOLUTION", TIMESTAMP_RESOLUTION),
+    ];
+}
+
 /// Status of the shared-memory syscall channel.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u32)]

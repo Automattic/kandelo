@@ -7,8 +7,9 @@
 
 import * as fs from "node:fs";
 import * as nodePath from "node:path";
-import type { StatResult, StatfsResult } from "../types";
+import type { PathconfValue, StatResult, StatfsResult } from "../types";
 import { NativeMetadataOverlay } from "../platform/native-metadata";
+import { filesystemPathconf } from "../pathconf";
 import type { FileSystemBackend, DirEntry } from "./types";
 import { DEFAULT_STATFS_BLOCK_SIZE, DEFAULT_STATFS_NAMELEN } from "../statfs";
 
@@ -344,6 +345,21 @@ export class HostFileSystem implements FileSystemBackend {
     return this.toStatResult(fs.fstatSync(handle));
   }
 
+  fpathconf(handle: number, name: number): PathconfValue {
+    // Validate the live descriptor. The remaining values are Kandelo
+    // namespace/backend capabilities and do not depend on a remembered path,
+    // so this remains valid after the opened file is renamed or unlinked.
+    const stat = this.fstat(handle);
+    return filesystemPathconf(
+      stat,
+      name,
+      {
+        supportsSymlinks: true,
+        timestampResolutionNs: 1_000_000,
+      },
+    );
+  }
+
   ftruncate(handle: number, length: number): void {
     fs.ftruncateSync(handle, length);
     this.metadata.noteNativeContentChange(fs.fstatSync(handle));
@@ -373,6 +389,19 @@ export class HostFileSystem implements FileSystemBackend {
 
   statfs(path: string): StatfsResult {
     return nativeStatfs(this.safePath(path));
+  }
+
+  pathconf(path: string, name: number): PathconfValue {
+    const nativePath = this.safePath(path);
+    const stat = this.toStatResult(fs.statSync(nativePath));
+    return filesystemPathconf(
+      stat,
+      name,
+      {
+        supportsSymlinks: true,
+        timestampResolutionNs: 1_000_000,
+      },
+    );
   }
 
   mkdir(path: string, mode: number): void {
