@@ -74,6 +74,10 @@ export interface BrowserKernelOptions {
   syscallLogPtrWidth?: 4 | 8;
   /** Forwarded to TlsNetworkBackendOptions.dnsAliases. */
   dnsAliases?: Record<string, string>;
+  /** Forwarded to TlsNetworkBackendOptions.corsProxyUrl. Required when the
+   *  browser worker is not controlled by a service worker and external HTTP
+   *  requests must use an application-provided CORS proxy. */
+  corsProxyUrl?: string;
 }
 
 /** Options for {@link BrowserKernel.boot}. */
@@ -295,6 +299,7 @@ export class BrowserKernel {
           enableSyscallLog: this.options.enableSyscallLog,
           syscallLogPtrWidth: this.options.syscallLogPtrWidth,
           dnsAliases: this.options.dnsAliases,
+          corsProxyUrl: this.options.corsProxyUrl,
         },
       };
       this.kernelWorkerHandle.postMessage(initMsg, [transferBuf]);

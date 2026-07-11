@@ -166,7 +166,8 @@ export interface TlsMitmConnection {
 
 export interface TlsNetworkBackendOptions {
   /** CORS proxy URL prefix.
-   *  Browser demos normally leave this unset and rely on the service worker.
+   *  Service-worker-controlled apps may leave this unset. Embedders whose
+   *  worker fetches are not intercepted must provide a CORS proxy explicitly.
    *  Prefixes ending in bare `?` receive the raw target URL, matching the
    *  main proxy; `?url=`-style prefixes receive a percent-encoded target. */
   corsProxyUrl?: string;
