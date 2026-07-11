@@ -67,34 +67,45 @@ fn main() -> Result<()> {
     let output_path = cli.output.as_ref().ok_or_else(|| {
         anyhow::anyhow!("--output is required unless --discover-only is set")
     })?;
+    // Capture this before writing: `--output` is allowed to name the input
+    // file, and output creation/truncation must not become the source of truth
+    // for the executable mode we are preserving.
+    let input_mode = input_mode(&cli.input)?;
 
     let output = instrument(&input, &opts)
         .with_context(|| format!("instrumenting {}", cli.input.display()))?;
 
     fs::write(output_path, &output)
         .with_context(|| format!("writing output: {}", output_path.display()))?;
-    preserve_input_permissions(&cli.input, output_path)?;
+    preserve_input_mode(input_mode, output_path)?;
 
     Ok(())
 }
 
 #[cfg(unix)]
-fn preserve_input_permissions(input_path: &Path, output_path: &Path) -> Result<()> {
-    let input_mode = fs::metadata(input_path)
+fn input_mode(input_path: &Path) -> Result<u32> {
+    let mode = fs::metadata(input_path)
         .with_context(|| format!("stat input for permissions: {}", input_path.display()))?
         .permissions()
         .mode();
-    let mut output_permissions = fs::metadata(output_path)
-        .with_context(|| format!("stat output for permissions: {}", output_path.display()))?
-        .permissions();
-    output_permissions.set_mode(input_mode);
-    fs::set_permissions(output_path, output_permissions)
+    Ok(mode)
+}
+
+#[cfg(not(unix))]
+fn input_mode(_input_path: &Path) -> Result<()> {
+    Ok(())
+}
+
+#[cfg(unix)]
+fn preserve_input_mode(input_mode: u32, output_path: &Path) -> Result<()> {
+    let permissions = fs::Permissions::from_mode(input_mode);
+    fs::set_permissions(output_path, permissions)
         .with_context(|| format!("setting output permissions: {}", output_path.display()))?;
     Ok(())
 }
 
 #[cfg(not(unix))]
-fn preserve_input_permissions(_input_path: &Path, _output_path: &Path) -> Result<()> {
+fn preserve_input_mode(_input_mode: (), _output_path: &Path) -> Result<()> {
     Ok(())
 }
 
