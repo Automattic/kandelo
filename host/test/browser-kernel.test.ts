@@ -147,6 +147,70 @@ describe("BrowserKernel", () => {
     expect(await exit).toBe(7);
   });
 
+  describe("spawnFromVfs stdin", () => {
+    async function bootedKernel() {
+      const BrowserKernel = await loadBrowserKernel();
+      const kernel = new BrowserKernel({ kernelOwnedFs: true });
+      const bootPromise = kernel.boot({
+        kernelWasm: new ArrayBuffer(8),
+        vfsImage: new Uint8Array(0),
+        argv: ["/init"],
+      });
+      await new Promise((resolve) => setTimeout(resolve, 0));
+
+      const worker = MockWorker.instances[0]!;
+      worker.simulateMessage({ type: "ready" });
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      const initSpawn = worker.lastMessage("spawn");
+      worker.simulateMessage({
+        type: "response",
+        requestId: initSpawn.requestId,
+        result: 100,
+      });
+      await bootPromise;
+      return { kernel, worker };
+    }
+
+    async function spawnAndCapture(
+      options?: Parameters<
+        Awaited<ReturnType<typeof bootedKernel>>["kernel"]["spawnFromVfs"]
+      >[2],
+    ) {
+      const { kernel, worker } = await bootedKernel();
+      const processPromise = kernel.spawnFromVfs("/usr/local/bin/tool", ["tool"], options);
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      const spawn = worker.lastMessage("spawn");
+      worker.simulateMessage({
+        type: "response",
+        requestId: spawn.requestId,
+        result: 101,
+      });
+      await processPromise;
+      return spawn;
+    }
+
+    it("sends immediate EOF when non-PTY stdin is omitted", async () => {
+      const spawn = await spawnAndCapture();
+
+      expect(spawn.stdin).toBeInstanceOf(Uint8Array);
+      expect(spawn.stdin).toHaveLength(0);
+    });
+
+    it("preserves an explicit finite stdin buffer", async () => {
+      const stdin = new Uint8Array([1, 2, 3]);
+      const spawn = await spawnAndCapture({ stdin });
+
+      expect(spawn.stdin).toEqual(stdin);
+    });
+
+    it("leaves omitted PTY stdin open", async () => {
+      const spawn = await spawnAndCapture({ pty: true });
+
+      expect(spawn.pty).toBe(true);
+      expect(spawn.stdin).toBeUndefined();
+    });
+  });
+
   it("readFileFromVfs round-trips a path to the worker and back", async () => {
     const BrowserKernel = await loadBrowserKernel();
     const kernel = new BrowserKernel({ kernelOwnedFs: true });

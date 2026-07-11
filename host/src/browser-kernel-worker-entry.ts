@@ -88,6 +88,7 @@ import {
   SIGSEGV,
 } from "./trap-signals";
 import { threadWorkerFailureDisposition } from "./thread-worker-disposition";
+import { reapHostOwnedExitedProcess } from "./host-owned-process-reap";
 import type {
   CentralizedWorkerInitMessage,
   CentralizedThreadInitMessage,
@@ -1412,6 +1413,7 @@ async function finishProcessExit(
     // exit promises, and no further guest syscalls can arrive on this
     // channel once the worker is gone.
     kernelWorker.deactivateProcess(pid);
+    reapHostOwnedExitedProcess(kernelInstance, pid);
 
     processes.delete(pid);
     threadModuleCache.delete(pid);

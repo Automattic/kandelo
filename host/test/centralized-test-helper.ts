@@ -130,12 +130,6 @@ export interface RunProgramOptions {
   /** Callback invoked after the process starts.
    *  Use this to call appendStdinData() for interactive stdin testing. */
   onStarted?: (kernelProxy: KernelStdinProxy, pid: number) => void | Promise<void>;
-  /** If `true`, the helper queries `kernel_get_fork_count(pid)` after the
-   *  program exits and surfaces the value on `RunProgramResult.forkCount`.
-   *  Used by the non-forking-spawn regression tests. Worker-thread mode
-   *  only (NodeKernelHost.getForkCount); main-thread mode falls back to
-   *  reading from the kernel instance directly. */
-  captureForkCount?: boolean;
   /** Use the canonical rootfs image in worker-thread mode. Defaults to true. */
   useDefaultRootfs?: boolean;
 }
@@ -146,10 +140,6 @@ export interface RunProgramResult {
   stderr: string;
   /** Raw stdout bytes (for binary output like compressed data) */
   stdoutBytes: Uint8Array;
-  /** Per-process fork counter for the spawned process, captured immediately
-   *  before the kernel is destroyed. Only populated when
-   *  `captureForkCount: true` is set on the run options. */
-  forkCount?: bigint;
 }
 
 /**
@@ -219,11 +209,7 @@ async function runInWorkerThread(options: RunProgramOptions): Promise<RunProgram
 
   await host.init();
 
-  // Capture the spawned pid so we can read kernel-side fork_count before
-  // destroy. The user-supplied onStarted (if any) still runs.
-  let capturedPid: number | undefined;
   const onStartedWrapper = (pid: number) => {
-    capturedPid = pid;
     if (!options.onStarted) return;
     const proxy: KernelStdinProxy = {
       appendStdinData(stdinPid: number, data: Uint8Array) {
@@ -250,12 +236,8 @@ async function runInWorkerThread(options: RunProgramOptions): Promise<RunProgram
   });
 
   let exitCode: number;
-  let forkCount: bigint | undefined;
   try {
     exitCode = await Promise.race([exitPromise, timeoutPromise]);
-    if (options.captureForkCount && capturedPid !== undefined) {
-      forkCount = await host.getForkCount(capturedPid);
-    }
   } finally {
     if (timeoutId !== undefined) clearTimeout(timeoutId);
     await host.destroy().catch(() => {});
@@ -269,7 +251,7 @@ async function runInWorkerThread(options: RunProgramOptions): Promise<RunProgram
     offset += chunk.length;
   }
 
-  return { exitCode, stdout, stderr, stdoutBytes, forkCount };
+  return { exitCode, stdout, stderr, stdoutBytes };
 }
 
 // ---------------------------------------------------------------------------

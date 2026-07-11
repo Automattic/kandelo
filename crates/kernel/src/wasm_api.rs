@@ -715,6 +715,17 @@ impl HostIO for WasmHostIO {
         }
     }
 
+    fn host_fd_poll(&mut self, handle: i64, events: i16) -> Result<i16, Errno> {
+        if handle < 0 || handle > i32::MAX as i64 {
+            return Err(Errno::EBADF);
+        }
+        // Network handles occupy the nonnegative host_net_poll namespace.
+        // Encode delegated fds as their bitwise complement so fd 0 cannot be
+        // confused with network handle 0. No new Wasm import is needed.
+        let tagged_handle = !(handle as i32);
+        self.host_net_poll(tagged_handle, events)
+    }
+
     fn host_net_close(&mut self, handle: i32) -> Result<(), Errno> {
         let result = unsafe { host_net_close(handle) };
         i32_to_result(result)

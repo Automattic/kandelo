@@ -2621,8 +2621,14 @@ pub fn sys_write(
         FileType::Pipe => {
             if host_handle >= 0 {
                 // Host-delegated pipe (cross-process): use host_write
-                let n = host.host_write(host_handle, buf)?;
-                Ok(n)
+                match host.host_write(host_handle, buf) {
+                    Ok(n) => Ok(n),
+                    Err(Errno::EPIPE) => {
+                        proc.signals.raise(wasm_posix_shared::signal::SIGPIPE);
+                        Err(Errno::EPIPE)
+                    }
+                    Err(err) => Err(err),
+                }
             } else {
                 // Kernel pipe
                 const PIPE_BUF: usize = 4096;
@@ -7819,12 +7825,20 @@ fn poll_check(proc: &mut Process, host: &mut dyn HostIO, fds: &mut [WasmPollFd])
             }
             FileType::Pipe => {
                 if ofd.host_handle >= 0 {
-                    // Host-delegated pipe: report as ready (non-blocking)
-                    if pollfd.events & POLLIN != 0 {
-                        revents |= POLLIN;
-                    }
-                    if pollfd.events & POLLOUT != 0 {
-                        revents |= POLLOUT;
+                    // The host owns both captured stdin and SharedPipeBuffer
+                    // state, so it is the authority on whether data, EOF, or
+                    // write capacity is currently observable. In particular,
+                    // an open-but-empty pipe is not readable.
+                    match host.host_fd_poll(ofd.host_handle, pollfd.events) {
+                        Ok(host_revents) => {
+                            // POLLERR/POLLHUP/POLLNVAL are reported even when
+                            // they were not requested; other bits must have
+                            // appeared in the caller's requested event mask.
+                            revents |= host_revents
+                                & (pollfd.events | POLLERR | POLLHUP | POLLNVAL);
+                        }
+                        Err(Errno::EBADF) => revents |= POLLNVAL,
+                        Err(_) => revents |= POLLERR,
                     }
                 } else {
                     // Kernel pipe
@@ -11105,6 +11119,10 @@ mod tests {
         /// Override for `gl_submit`'s return value (0 = success, negative
         /// = errno). Defaults to 0.
         gl_submit_rc: i32,
+        /// Optional delegated-fd readiness response. None preserves the
+        /// legacy mock behavior of returning the requested event mask.
+        host_fd_revents: Option<i16>,
+        host_write_error: Option<Errno>,
     }
 
     impl MockHostIO {
@@ -11128,6 +11146,8 @@ mod tests {
                 gl_unbind_calls: Vec::new(),
                 gbm_bo_bind_rc: 0,
                 gl_submit_rc: 0,
+                host_fd_revents: None,
+                host_write_error: None,
             }
         }
 
@@ -11198,7 +11218,14 @@ mod tests {
         }
 
         fn host_write(&mut self, _handle: i64, buf: &[u8]) -> Result<usize, Errno> {
+            if let Some(err) = self.host_write_error {
+                return Err(err);
+            }
             Ok(buf.len())
+        }
+
+        fn host_fd_poll(&mut self, _handle: i64, events: i16) -> Result<i16, Errno> {
+            Ok(self.host_fd_revents.unwrap_or(events))
         }
 
         fn host_seek(&mut self, _handle: i64, _offset: i64, _whence: u32) -> Result<i64, Errno> {
@@ -15608,6 +15635,100 @@ mod tests {
         );
         assert_eq!(result, Ok(1));
         assert_ne!(writefds[byte] & (1 << bit), 0);
+    }
+
+    #[test]
+    fn test_select_host_pipe_uses_host_readiness_and_eof() {
+        use wasm_posix_shared::poll::{POLLHUP, POLLIN};
+
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        let rfd = add_fallback_pipe_fd(&mut proc, 0, O_RDONLY);
+        let byte = rfd as usize / 8;
+        let bit = rfd as usize % 8;
+
+        host.host_fd_revents = Some(0);
+        let mut readfds = [0u8; 128];
+        readfds[byte] = 1 << bit;
+        assert_eq!(
+            sys_select(
+                &mut proc,
+                &mut host,
+                rfd + 1,
+                Some(&mut readfds),
+                None,
+                None,
+                100,
+            ),
+            Err(Errno::EAGAIN),
+        );
+        assert_eq!(readfds[byte] & (1 << bit), 0);
+
+        for revents in [POLLIN, POLLHUP] {
+            host.host_fd_revents = Some(revents);
+            readfds[byte] = 1 << bit;
+            assert_eq!(
+                sys_select(
+                    &mut proc,
+                    &mut host,
+                    rfd + 1,
+                    Some(&mut readfds),
+                    None,
+                    None,
+                    100,
+                ),
+                Ok(1),
+            );
+            assert_ne!(readfds[byte] & (1 << bit), 0);
+        }
+    }
+
+    #[test]
+    fn test_pselect_zero_timeout_clears_sets_and_restores_mask() {
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        host.host_fd_revents = Some(0);
+        let rfd = add_fallback_pipe_fd(&mut proc, 0, O_RDONLY);
+        let byte = rfd as usize / 8;
+        let bit = rfd as usize % 8;
+        let mut readfds = [0u8; 128];
+        readfds[byte] = 1 << bit;
+        let original_mask = crate::signal::sig_bit(2);
+        let temporary_mask = crate::signal::sig_bit(3);
+        proc.signals.blocked = original_mask;
+
+        assert_eq!(
+            sys_pselect6(
+                &mut proc,
+                &mut host,
+                rfd + 1,
+                Some(&mut readfds),
+                None,
+                None,
+                0,
+                Some(temporary_mask),
+            ),
+            Ok(0),
+        );
+        assert_eq!(readfds[byte] & (1 << bit), 0);
+        assert_eq!(proc.signals.blocked, original_mask);
+        assert_eq!(
+            proc.sigsuspend_saved_mask_for(crate::process_table::current_tid()),
+            None,
+        );
+    }
+
+    #[test]
+    fn test_host_pipe_epipe_raises_sigpipe() {
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        host.host_write_error = Some(Errno::EPIPE);
+        let wfd = add_fallback_pipe_fd(&mut proc, 1, O_WRONLY);
+
+        assert_eq!(sys_write(&mut proc, &mut host, wfd, b"x"), Err(Errno::EPIPE));
+        assert!(proc
+            .signals
+            .is_pending(wasm_posix_shared::signal::SIGPIPE));
     }
 
     #[test]

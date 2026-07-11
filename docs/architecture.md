@@ -202,6 +202,20 @@ Some syscalls (read from empty pipe, accept on socket, poll with timeout) cannot
 
 This mechanism is critical: the process worker blocks on `Atomics.wait` while the host manages async retry via `Atomics.waitAsync`.
 
+Captured standard input is represented in the kernel as a pipe but its bytes
+live in host state. Readiness for that host-delegated pipe therefore comes from
+the same buffered/EOF state used by `host_read`: buffered bytes and finite EOF
+are read-ready, while an open incremental-input stream with no bytes is not.
+Reporting every host pipe as readable would make `select()` wake only for the
+following `read()` to return `EAGAIN`, creating a retry loop instead of real
+pipe semantics.
+
+Finite `poll()`/`ppoll()` and `select()`/`pselect6()` waits retain one deadline
+from the first attempt. Targeted pipe wakeups, safety retries, and other host
+retry cycles use the remaining duration; they do not start the caller's timeout
+again. This keeps unrelated host activity from extending a finite wait
+indefinitely.
+
 ## Multi-Process Model
 
 ### fork()
@@ -273,9 +287,11 @@ PATH-relative names.
 
 The implementation is regression-guarded by a per-process counter:
 `kernel_get_fork_count(pid)` returns the number of times that pid has
-called `kernel_fork_process`. The vitest harness asserts this stays at
-0 across a `posix_spawn` — any non-zero value means the path silently
-fell back to fork.
+called `kernel_fork_process`. The Rust `ProcessTable::spawn_child` regression
+asserts this stays at 0 across a `posix_spawn`, while the Node end-to-end test
+exercises the complete spawn/wait path and the host-parity test pins both
+worker-entry `onSpawn` wires. A completed top-level host process is reaped, so
+post-exit counter queries are intentionally not used as evidence.
 
 **Browser parity:**
 
@@ -297,6 +313,23 @@ fell back to fork.
 * The structural source-text test (`host/test/spawn-host-parity.test.ts`)
   remains as a fast-CI tripwire for someone removing one of the
   parallel wires.
+
+### Host-owned top-level process lifecycle
+
+Processes launched directly by the Node or browser host, rather than by a guest
+parent, are registered as children of the host-owned `ppid=0` namespace. Their
+exit status is consumed by the host's spawn result/exit promise, so there is no
+guest process that can call `waitpid()` for them. After the process and thread
+workers have been torn down and their syscall channels deactivated, the host
+asks Rust to reap the exited `(parent=0, child=pid)` entry. Rust verifies both
+the parent relationship and exited state before removing it.
+
+This cleanup is intentionally narrower than hiding zombies or reaping every
+process during host teardown. A process with a guest parent does not satisfy the
+`ppid=0` check and remains an exited zombie until that parent consumes its
+status through `wait()`/`waitpid()`. Procfs therefore continues to expose
+unreaped guest-child zombies, while completed host-owned launches do not
+accumulate entries after their host worker is gone.
 
 ### clone() (threads)
 

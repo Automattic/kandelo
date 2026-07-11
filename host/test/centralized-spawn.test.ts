@@ -1,10 +1,11 @@
 /**
- * Non-forking posix_spawn — basic flow + fork-counter regression guardrail.
+ * Non-forking posix_spawn — Node host end-to-end flow.
  *
- * The guardrail is the load-bearing assertion: SYS_SPAWN must NOT bump
- * the parent's `fork_count`. If it does, the spawn path is silently
- * falling back to `kernel_fork_process` (which does bump the counter)
- * and the whole "non-forking" claim of this PR is wrong.
+ * The authoritative fork-counter invariant is covered while the parent is
+ * live by the Rust `spawn_child_basic_inherits_cwd_and_returns_pid` test.
+ * Querying that counter after this helper resolves is invalid: top-level
+ * host processes are reaped when their exit status is consumed. The source
+ * parity test separately pins both Node and browser `onSpawn` wiring.
  *
  * Companion smoke C program: `examples/spawn-smoke.c`.
  */
@@ -25,7 +26,7 @@ const spawnCoverageWasm = join(repoRoot, "examples", "spawn-coverage.wasm");
 const spawnPauseWasm = join(repoRoot, "examples", "spawn-pause.wasm");
 
 describe("non-forking posix_spawn", () => {
-  it("runs spawn-smoke and the parent's fork_count stays 0", async () => {
+  it("runs spawn-smoke through the Node host", async () => {
     // Spawn a child program that lives in examples/ — keeps the test free
     // of the binaries-cache fetch. spawn-smoke takes the child path as
     // argv[1] and just exec-equivalents it via posix_spawn + waitpid.
@@ -37,7 +38,6 @@ describe("non-forking posix_spawn", () => {
       ]),
       useDefaultRootfs: false,
       timeout: 30_000,
-      captureForkCount: true,
     });
 
     expect(result.exitCode).toBe(0);
@@ -45,9 +45,6 @@ describe("non-forking posix_spawn", () => {
     expect(result.stdout).toContain("OK");
     // The spawn child is hello.wasm, which prints its greeting.
     expect(result.stdout).toContain("Hello from musl");
-    // GUARDRAIL: spawn must not increment the parent's fork counter.
-    // A non-zero value here means SYS_SPAWN silently fell back to fork.
-    expect(result.forkCount).toBe(0n);
   });
 
   it("covers spawnp / file actions / SETPGROUP", async () => {
@@ -64,7 +61,6 @@ describe("non-forking posix_spawn", () => {
       ]),
       useDefaultRootfs: false,
       timeout: 60_000,
-      captureForkCount: true,
     });
 
     expect(result.exitCode, `stderr=${result.stderr}\nstdout=${result.stdout}`).toBe(0);
@@ -72,8 +68,6 @@ describe("non-forking posix_spawn", () => {
       expect(result.stdout, `missing 'OK ${subtest}' in stdout`).toContain(`OK ${subtest}`);
     }
     expect(result.stdout).toContain("ALL OK");
-    // GUARDRAIL: three posix_spawn calls and zero fork bumps.
-    expect(result.forkCount).toBe(0n);
   });
 
   it("reports ENOEXEC for non-Wasm spawn targets before launching a worker", async () => {

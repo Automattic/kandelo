@@ -443,12 +443,15 @@ export class BrowserKernel {
       uid?: number;
       gid?: number;
       pty?: boolean;
+      /** Finite stdin buffer. If omitted for a non-PTY spawn, stdin is
+       * immediately at EOF. */
       stdin?: Uint8Array;
       ptyCols?: number;
       ptyRows?: number;
     },
   ): Promise<{ pid: number; exit: Promise<number> }> {
     const requestId = this.nextRequestId++;
+    const stdin = options?.stdin ?? (!options?.pty ? new Uint8Array() : undefined);
     const pid = await this.request(requestId, {
       type: "spawn",
       requestId,
@@ -461,7 +464,7 @@ export class BrowserKernel {
       pty: options?.pty,
       ptyCols: options?.ptyCols,
       ptyRows: options?.ptyRows,
-      stdin: options?.stdin,
+      stdin,
       maxPages: this.maxPages,
     }) as number;
 

@@ -114,6 +114,15 @@ pub trait HostIO {
         let _ = handle;
         Ok(events)
     }
+    /// Query readiness for a host-delegated file descriptor.
+    ///
+    /// Native hosts that do not distinguish delegated descriptor readiness
+    /// retain the legacy ready behavior. `WasmHostIO` overrides this and uses
+    /// a tagged call over the existing `host_net_poll` ABI import.
+    fn host_fd_poll(&mut self, handle: i64, events: i16) -> Result<i16, Errno> {
+        let _ = handle;
+        Ok(events)
+    }
     fn host_net_close(&mut self, handle: i32) -> Result<(), Errno>;
     /// Notify the host that an AF_INET socket is now listening, so the host
     /// can open a real TCP server on the given port.
