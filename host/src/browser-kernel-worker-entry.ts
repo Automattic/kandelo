@@ -75,6 +75,7 @@ import type { KernelPointer } from "./kernel";
 import { BrowserWorkerAdapter } from "./worker-adapter-browser";
 import { VirtualPlatformIO } from "./vfs/vfs";
 import { MemoryFileSystem } from "./vfs/memory-fs";
+import { overlayEtcFromRootfs } from "./vfs/rootfs-overlay";
 import { DeviceFileSystem } from "./vfs/device-fs";
 import { BrowserTimeProvider } from "./vfs/time";
 import {
@@ -595,69 +596,6 @@ function createFreshProcessMemory(
   };
 }
 
-/**
- * Copy `/etc/*` files from a freshly-loaded `rootfs.vfs` image into the
- * given memfs. Existing files are NOT overwritten — the demo keeps any
- * /etc files it wrote itself (e.g. `/etc/profile`, `/etc/gitconfig`).
- *
- * This is the legacy-SAB-path counterpart to mounting rootfs.vfs at /:
- * because the legacy path keeps a single demo-controlled SAB at /, we
- * physically copy the canonical /etc files in instead of layering a
- * second mount. The kernel's `synthetic_file_content` shim that used
- * to serve these paths in-kernel was removed in PR 4/5.
- */
-function overlayEtcFromRootfs(target: MemoryFileSystem, rootfsImage: Uint8Array): void {
-  const source = MemoryFileSystem.fromImage(rootfsImage);
-
-  // Ensure /etc exists in the target.
-  try { target.mkdir("/etc", 0o755); } catch { /* exists */ }
-
-  let dh: number;
-  try { dh = source.opendir("/etc"); }
-  catch { return; /* no /etc in image — nothing to overlay */ }
-
-  try {
-    while (true) {
-      const entry = source.readdir(dh);
-      if (entry === null) break;
-      if (entry.name === "." || entry.name === "..") continue;
-      const sourcePath = `/etc/${entry.name}`;
-      const targetPath = sourcePath;
-
-      // Skip if the demo already wrote this file — preserve demo intent.
-      let exists = false;
-      try { target.stat(targetPath); exists = true; } catch {}
-      if (exists) continue;
-
-      // Only handle regular files for now; the canonical images/rootfs/etc/*
-      // is flat (no subdirs, no symlinks).
-      const st = source.stat(sourcePath);
-      const isRegular = (st.mode & 0xf000) === 0x8000;
-      if (!isRegular) continue;
-
-      // Read full content (sequential — pass null offset for read/write
-      // semantics rather than pread/pwrite).
-      const fdR = source.open(sourcePath, 0, 0); // O_RDONLY
-      const size = st.size;
-      const buf = new Uint8Array(size);
-      let read = 0;
-      while (read < size) {
-        const n = source.read(fdR, buf.subarray(read), null, size - read);
-        if (n <= 0) break;
-        read += n;
-      }
-      source.close(fdR);
-
-      // Write into target.
-      const fdW = target.open(targetPath, 0o1101 /* O_WRONLY|O_CREAT|O_TRUNC */, st.mode & 0o777);
-      if (read > 0) target.write(fdW, buf.subarray(0, read), null, read);
-      target.close(fdW);
-    }
-  } finally {
-    source.closedir(dh);
-  }
-}
-
 function resolveLazyUrl(base: string, url: string): string {
   if (/^[a-z][a-z0-9+.-]*:/i.test(url) || url.startsWith("/")) return url;
   return base.replace(/\/?$/, "/") + url;
@@ -703,19 +641,15 @@ async function handleInit(msg: Extract<MainToKernelMessage, { type: "init" }>) {
     ];
   } else if (msg.fsSab) {
     memfs = MemoryFileSystem.fromExisting(msg.fsSab);
-    // Overlay /etc/* from the canonical rootfs.vfs onto the SAB-backed
-    // memfs. PR 4/5 removed `synthetic_file_content` from the kernel —
-    // without this overlay, programs that call getpwnam/gethostbyname
-    // (bash, git, curl, tar, nano, …) fail on legacy-SAB demos. Files
-    // the demo already wrote (e.g. /etc/profile in shell.vfs) are not
-    // overwritten.
-    if (msg.rootfsImage) {
-      try {
-        overlayEtcFromRootfs(memfs, msg.rootfsImage);
-      } catch (e) {
-        console.error("[kernel-worker] Failed to overlay /etc from rootfs.vfs:", e);
-      }
+    // Recursively overlay /etc/** from the canonical rootfs.vfs onto the
+    // SAB-backed memfs. Static `/etc` content is image-owned; the kernel only
+    // retains the dynamic `/etc/mtab` exception. Without this overlay, programs
+    // that call getpwnam/gethostbyname or load OpenSSL defaults fail on
+    // legacy-SAB demos. Files the demo already wrote are not overwritten.
+    if (!msg.rootfsImage) {
+      throw new Error("legacy fsSab init requires canonical rootfs.vfs bytes");
     }
+    overlayEtcFromRootfs(memfs, msg.rootfsImage);
     mounts = [
       { mountPoint: "/dev/shm", backend: shmfs },
       { mountPoint: "/dev", backend: devfs },

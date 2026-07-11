@@ -146,23 +146,14 @@ fn fallback_lock_table(_proc: &mut Process) -> &mut LockTable {
     unsafe { crate::lock::global_fallback_lock_table() }
 }
 
-/// Mozilla CA root bundle, vendored from <https://curl.se/ca/cacert.pem>.
-/// Served at `/etc/ssl/cert.pem` so OpenSSL's `SSL_CTX_set_default_verify_paths`
-/// (which the wasm sysroot was built with `--openssldir=/etc/ssl`) finds a
-/// trust store without depending on the host filesystem. ~220 KB, refreshed
-/// manually via `packages/registry/openssl/fetch-cacert.sh`.
-const CACERT_PEM: &[u8] = include_bytes!("../../../packages/registry/openssl/cacert.pem");
-
-/// Return static content for synthetic files that are not owned by rootfs.vfs.
+/// Return content for dynamic files that cannot be owned by rootfs.vfs.
 ///
-/// Keep NSS-style files (`/etc/passwd`, `/etc/group`, `/etc/hosts`, etc.) in
-/// rootfs.vfs so the mounted image remains the source of truth. The vendored
-/// CA bundle stays synthetic because OpenSSL's default path needs to be present
-/// even for minimal VFS images that do not carry a full `/etc` tree.
+/// Static `/etc` policy and data, including OpenSSL configuration and trust
+/// roots, belong to the mounted image. `/etc/mtab` is the exception because it
+/// reports the running kernel's mount state rather than immutable image data.
 fn synthetic_file_content(path: &[u8]) -> Option<&'static [u8]> {
     match path {
         b"/etc/mtab" => Some(crate::procfs::MOUNTS_CONTENT),
-        b"/etc/ssl/cert.pem" => Some(CACERT_PEM),
         _ => None,
     }
 }
@@ -25944,6 +25935,23 @@ mod tests {
         assert_eq!(st.st_size as usize, crate::procfs::MOUNTS_CONTENT.len());
 
         sys_close(&mut proc, &mut host, fd).unwrap();
+    }
+
+    #[test]
+    fn test_static_ssl_files_are_owned_by_the_host_vfs() {
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        host.set_dir_with_owner(b"/etc/ssl", 0, 0, 0o755);
+        for path in [
+            b"/etc/ssl/cert.pem".as_slice(),
+            b"/etc/ssl/openssl.cnf".as_slice(),
+        ] {
+            host.set_missing_path(path);
+            assert_eq!(
+                sys_stat(&mut proc, &mut host, path).unwrap_err(),
+                Errno::ENOENT,
+            );
+        }
     }
 
     #[test]
