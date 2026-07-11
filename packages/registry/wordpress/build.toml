@@ -6,6 +6,7 @@ inputs = [
   "images/vfs/scripts/build-wp-vfs-image.sh",
   "images/vfs/scripts/build-wp-vfs-image.ts",
   "images/vfs/scripts/dinit-image-helpers.ts",
+  "images/rootfs/etc/services",
   "images/vfs/scripts/kandelo-demo-config.ts",
   "images/vfs/scripts/kandelo-demo-guides.ts",
   "images/vfs/scripts/opcache-prewarm.ts",
@@ -28,7 +29,7 @@ inputs = [
 ]
 repo_url    = "https://github.com/brandonpayton/kandelo.git"
 commit      = "8c53383229fab78f97b098c3207a655159c03041"
-revision    = 7
+revision    = 8
 
 [binary]
 index_url = "https://github.com/Automattic/kandelo/releases/download/binaries-abi-v{abi}/index.toml"
