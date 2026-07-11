@@ -81,8 +81,11 @@ for `system: :kandelo` and maps the supported prefix and cellar to:
 /home/linuxbrew/.linuxbrew/Cellar
 ```
 
-Trusted CI applies this patch to a temporary Homebrew worktree. Do not patch a
-developer's host Homebrew checkout in place.
+Trusted CI applies this patch to a temporary Homebrew worktree. A short-lived
+launcher symlink under the selected Homebrew prefix loads that worktree while
+preserving the selected prefix and Cellar, so ordinary host build-dependency
+bottles remain usable. The launcher and worktree are removed when the bottle
+build exits. Do not patch a developer's host Homebrew checkout in place.
 
 Verify the patch against a Homebrew checkout with:
 
@@ -186,12 +189,14 @@ commit, ABI namespace, derived bottle root, and formula matrix, each
 `(formula, arch)` entry crosses four separate runner roles:
 
 1. `build-and-test` is read-only. It checks out the exact inputs and reviewed
-   Homebrew/brew commit, exposes Brew through the canonical
-   `/home/linuxbrew/.linuxbrew` prefix, builds the required Kandelo pieces, and
-   executes the Formula build and test without publisher credentials. Its
-   strict handoff contains only `manifest.json`, Homebrew's bottle JSON, and
-   one gzip bottle archive. It contains no Formula source, scripts, environment
-   files, or credentials.
+   Homebrew/brew commit, and exposes the patched temporary Homebrew worktree
+   through a short-lived launcher under the canonical
+   `/home/linuxbrew/.linuxbrew` prefix. This preserves the selected prefix and
+   Cellar so ordinary host build-dependency bottles remain usable. The job then
+   builds the required Kandelo pieces and executes the Formula build and test
+   without publisher credentials. Its strict handoff contains only
+   `manifest.json`, Homebrew's bottle JSON, and one gzip bottle archive. It
+   contains no Formula source, scripts, environment files, or credentials.
 2. `upload-bottle` runs only for a write publication and receives only
    `packages: write`. On a fresh runner it validates the strict build handoff
    against the plan before exposing the token to an isolated ORAS upload. Its
@@ -401,6 +406,9 @@ gallery publication requires a separate immutable asset contract.
 ## Operational Boundaries
 
 - Do not evaluate Formula Ruby in host or browser VFS tooling.
+- Use a disposable Homebrew prefix for local bottle builds. The trusted CI
+  runner is disposable; a local run installs the target formula and any missing
+  build dependencies into the prefix selected by `HOMEBREW_BREW_FILE`.
 - Do not treat a successful bottle build as browser support.
 - Do not mark `browser_compatible = true` without browser smoke evidence.
 - Do not use Homebrew sidecars to weaken Kandelo ABI or cache-key checks.
