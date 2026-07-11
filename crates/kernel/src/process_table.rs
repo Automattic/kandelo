@@ -851,6 +851,19 @@ impl ProcessTable {
         self.processes.keys().copied().collect()
     }
 
+    /// Collect PIDs that represent user-visible procfs processes.
+    ///
+    /// Running processes and unreaped Exited zombies remain visible. Limbo
+    /// records are resource-free process-group identity placeholders, not
+    /// processes, so exposing them as `/proc/<pid>` would invent state.
+    pub fn procfs_pids(&self) -> Vec<u32> {
+        self.processes
+            .iter()
+            .filter(|(_, process)| process.state != ProcessState::Limbo)
+            .map(|(&pid, _)| pid)
+            .collect()
+    }
+
     /// Collect PIDs of all processes in a given process group.
     pub fn pids_in_group(&self, pgid: u32) -> Vec<u32> {
         self.processes
@@ -956,6 +969,18 @@ impl ProcessTable {
 #[cfg(test)]
 mod wait_tests {
     use super::*;
+
+    #[test]
+    fn procfs_pids_retain_zombies_but_exclude_limbo_placeholders() {
+        let mut table = ProcessTable::new();
+        table.create_process(100).unwrap();
+        table.create_process(101).unwrap();
+        table.processes.get_mut(&100).unwrap().state = ProcessState::Exited;
+        table.processes.get_mut(&1).unwrap().state = ProcessState::Limbo;
+
+        assert_eq!(table.procfs_pids(), vec![100, 101]);
+        assert_eq!(table.all_pids(), vec![1, 100, 101]);
+    }
 
     #[test]
     fn spawn_pid_allocation_does_not_reuse_reaped_pid() {

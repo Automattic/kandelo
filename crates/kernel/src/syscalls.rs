@@ -2621,8 +2621,14 @@ pub fn sys_write(
         FileType::Pipe => {
             if host_handle >= 0 {
                 // Host-delegated pipe (cross-process): use host_write
-                let n = host.host_write(host_handle, buf)?;
-                Ok(n)
+                match host.host_write(host_handle, buf) {
+                    Ok(n) => Ok(n),
+                    Err(Errno::EPIPE) => {
+                        proc.signals.raise(wasm_posix_shared::signal::SIGPIPE);
+                        Err(Errno::EPIPE)
+                    }
+                    Err(err) => Err(err),
+                }
             } else {
                 // Kernel pipe
                 const PIPE_BUF: usize = 4096;
@@ -3659,23 +3665,25 @@ pub fn sys_fstat(proc: &mut Process, host: &mut dyn HostIO, fd: i32) -> Result<W
             .and_then(|s| s.as_ref())
             .map_or(0, |d| d.len() as u64);
         if let Some(entry) = crate::procfs::match_procfs(&ofd.path, proc.pid) {
-            Ok(crate::procfs::procfs_stat(&entry, size, true))
+            crate::procfs::procfs_stat_for_process(proc, &entry, size, true)
         } else {
-            Ok(crate::procfs::procfs_stat(
+            crate::procfs::procfs_stat_for_process(
+                proc,
                 &crate::procfs::ProcfsEntry::Stat(proc.pid),
                 size,
                 true,
-            ))
+            )
         }
     } else if ofd.host_handle == crate::procfs::PROCFS_DIR_HANDLE {
         if let Some(entry) = crate::procfs::match_procfs(&ofd.path, proc.pid) {
-            Ok(crate::procfs::procfs_stat(&entry, 0, true))
+            crate::procfs::procfs_stat_for_process(proc, &entry, 0, true)
         } else {
-            Ok(crate::procfs::procfs_stat(
+            crate::procfs::procfs_stat_for_process(
+                proc,
                 &crate::procfs::ProcfsEntry::Root,
                 0,
                 true,
-            ))
+            )
         }
     } else if ofd.host_handle == crate::devfs::DEVFS_DIR_HANDLE {
         Ok(
@@ -4038,7 +4046,7 @@ pub fn sys_stat(proc: &mut Process, host: &mut dyn HostIO, path: &[u8]) -> Resul
         });
     }
     if let Some(entry) = crate::procfs::match_procfs(&resolved, proc.pid) {
-        return Ok(crate::procfs::procfs_stat(&entry, 0, true));
+        return crate::procfs::procfs_stat_for_process(proc, &entry, 0, true);
     }
     if let Some(st) = crate::devfs::match_devfs_stat(&resolved, proc.euid, proc.egid) {
         return Ok(st);
@@ -4106,7 +4114,7 @@ pub fn sys_lstat(
         });
     }
     if let Some(entry) = crate::procfs::match_procfs(&resolved, proc.pid) {
-        return Ok(crate::procfs::procfs_stat(&entry, 0, false));
+        return crate::procfs::procfs_stat_for_process(proc, &entry, 0, false);
     }
     if let Some(st) = crate::devfs::match_devfs_stat(&resolved, proc.euid, proc.egid) {
         return Ok(st);
@@ -4302,9 +4310,13 @@ pub fn sys_access(
     {
         return Ok(());
     }
-    if crate::procfs::match_procfs(&resolved, proc.pid).is_some() {
-        // Procfs entries are read-only: allow R_OK/F_OK/X_OK(dirs), deny W_OK
-        if amode & 0o2 != 0 {
+    if let Some(entry) = crate::procfs::match_procfs(&resolved, proc.pid) {
+        // Validate the parsed PID/TID before preserving procfs's existing
+        // read/execute access behavior.
+        crate::procfs::procfs_stat_for_process(proc, &entry, 0, true)?;
+        // Procfs is mounted read-only even for uid 0; mode-bit privilege
+        // bypass must not turn W_OK into a writable-filesystem claim.
+        if amode & W_OK != 0 {
             return Err(Errno::EACCES);
         }
         return Ok(());
@@ -4320,7 +4332,7 @@ pub fn sys_chdir(proc: &mut Process, host: &mut dyn HostIO, path: &[u8]) -> Resu
     let resolved = crate::path::resolve_path(path, &proc.cwd);
     // Check virtual filesystems first (procfs, devfs), then fall through to host
     if let Some(entry) = crate::procfs::match_procfs(&resolved, proc.pid) {
-        let st = crate::procfs::procfs_stat(&entry, 0, true);
+        let st = crate::procfs::procfs_stat_for_process(proc, &entry, 0, true)?;
         if st.st_mode & wasm_posix_shared::mode::S_IFMT != wasm_posix_shared::mode::S_IFDIR {
             return Err(Errno::ENOTDIR);
         }
@@ -7813,12 +7825,20 @@ fn poll_check(proc: &mut Process, host: &mut dyn HostIO, fds: &mut [WasmPollFd])
             }
             FileType::Pipe => {
                 if ofd.host_handle >= 0 {
-                    // Host-delegated pipe: report as ready (non-blocking)
-                    if pollfd.events & POLLIN != 0 {
-                        revents |= POLLIN;
-                    }
-                    if pollfd.events & POLLOUT != 0 {
-                        revents |= POLLOUT;
+                    // The host owns both captured stdin and SharedPipeBuffer
+                    // state, so it is the authority on whether data, EOF, or
+                    // write capacity is currently observable. In particular,
+                    // an open-but-empty pipe is not readable.
+                    match host.host_fd_poll(ofd.host_handle, pollfd.events) {
+                        Ok(host_revents) => {
+                            // POLLERR/POLLHUP/POLLNVAL are reported even when
+                            // they were not requested; other bits must have
+                            // appeared in the caller's requested event mask.
+                            revents |= host_revents
+                                & (pollfd.events | POLLERR | POLLHUP | POLLNVAL);
+                        }
+                        Err(Errno::EBADF) => revents |= POLLNVAL,
+                        Err(_) => revents |= POLLERR,
                     }
                 } else {
                     // Kernel pipe
@@ -8247,7 +8267,7 @@ pub fn sys_fstatat(
     }
     if let Some(entry) = crate::procfs::match_procfs(&resolved, proc.pid) {
         let follow = flags & AT_SYMLINK_NOFOLLOW == 0;
-        return Ok(crate::procfs::procfs_stat(&entry, 0, follow));
+        return crate::procfs::procfs_stat_for_process(proc, &entry, 0, follow);
     }
     if let Some(st) = crate::devfs::match_devfs_stat(&resolved, proc.euid, proc.egid) {
         return Ok(st);
@@ -8938,9 +8958,15 @@ pub fn sys_ioctl(
 }
 
 /// prctl — process control operations.
-/// PR_SET_NAME (15) stores thread name, PR_GET_NAME (16) returns it.
+/// PR_SET_NAME (15) stores the calling thread's name, PR_GET_NAME (16)
+/// returns it.
 /// All other operations are no-ops returning success.
-pub fn sys_prctl(proc: &mut Process, option: u32, _arg2: u32, buf: &mut [u8]) -> Result<(), Errno> {
+pub fn sys_prctl(
+    proc: &mut Process,
+    tid: u32,
+    option: u32,
+    buf: &mut [u8],
+) -> Result<(), Errno> {
     const PR_SET_NAME: u32 = 15;
     const PR_GET_NAME: u32 = 16;
 
@@ -8953,15 +8979,17 @@ pub fn sys_prctl(proc: &mut Process, option: u32, _arg2: u32, buf: &mut [u8]) ->
                 .position(|&b| b == 0)
                 .unwrap_or(buf.len())
                 .min(15);
-            proc.thread_name = [0u8; 16];
-            proc.thread_name[..name_len].copy_from_slice(&buf[..name_len]);
+            let thread_name = proc.thread_name_for_mut(tid).ok_or(Errno::ESRCH)?;
+            *thread_name = [0u8; 16];
+            thread_name[..name_len].copy_from_slice(&buf[..name_len]);
             Ok(())
         }
         PR_GET_NAME => {
             if buf.len() < 16 {
                 return Err(Errno::EINVAL);
             }
-            buf[..16].copy_from_slice(&proc.thread_name);
+            let thread_name = proc.thread_name_for(tid).ok_or(Errno::ESRCH)?;
+            buf[..16].copy_from_slice(thread_name);
             Ok(())
         }
         _ => Ok(()), // no-op for unrecognized operations
@@ -9115,8 +9143,13 @@ pub fn sys_clone(
     // channel mailbox but the kernel stores masks by TID.
     let caller_tid = crate::process_table::current_tid();
     let inherited_blocked = proc.blocked_for(caller_tid);
+    let inherited_thread_name = proc
+        .thread_name_for(caller_tid)
+        .copied()
+        .unwrap_or(proc.thread_name);
     let mut thread_info = ThreadInfo::new(tid, effective_ctid, stack_ptr, effective_tls);
     thread_info.signals.blocked = inherited_blocked;
+    thread_info.thread_name = inherited_thread_name;
     proc.add_thread(thread_info);
 
     let _ = flags & CLONE_PARENT_SETTID;
@@ -11086,6 +11119,10 @@ mod tests {
         /// Override for `gl_submit`'s return value (0 = success, negative
         /// = errno). Defaults to 0.
         gl_submit_rc: i32,
+        /// Optional delegated-fd readiness response. None preserves the
+        /// legacy mock behavior of returning the requested event mask.
+        host_fd_revents: Option<i16>,
+        host_write_error: Option<Errno>,
     }
 
     impl MockHostIO {
@@ -11109,6 +11146,8 @@ mod tests {
                 gl_unbind_calls: Vec::new(),
                 gbm_bo_bind_rc: 0,
                 gl_submit_rc: 0,
+                host_fd_revents: None,
+                host_write_error: None,
             }
         }
 
@@ -11179,7 +11218,14 @@ mod tests {
         }
 
         fn host_write(&mut self, _handle: i64, buf: &[u8]) -> Result<usize, Errno> {
+            if let Some(err) = self.host_write_error {
+                return Err(err);
+            }
             Ok(buf.len())
+        }
+
+        fn host_fd_poll(&mut self, _handle: i64, events: i16) -> Result<i16, Errno> {
+            Ok(self.host_fd_revents.unwrap_or(events))
         }
 
         fn host_seek(&mut self, _handle: i64, _offset: i64, _whence: u32) -> Result<i64, Errno> {
@@ -14555,18 +14601,47 @@ mod tests {
         let mut proc = Process::new(1);
         let mut buf = [0u8; 16];
         buf[..5].copy_from_slice(b"hello");
-        sys_prctl(&mut proc, 15, 0, &mut buf).unwrap(); // PR_SET_NAME
+        sys_prctl(&mut proc, 0, 15, &mut buf).unwrap(); // PR_SET_NAME
         let mut out = [0u8; 16];
-        sys_prctl(&mut proc, 16, 0, &mut out).unwrap(); // PR_GET_NAME
+        sys_prctl(&mut proc, 0, 16, &mut out).unwrap(); // PR_GET_NAME
         assert_eq!(&out[..5], b"hello");
         assert_eq!(out[5], 0);
+    }
+
+    #[test]
+    fn test_prctl_worker_name_does_not_replace_process_name() {
+        use crate::process::ThreadInfo;
+
+        let mut proc = Process::new(42);
+        proc.argv.push(b"lxpanel".to_vec());
+
+        let mut leader_name = [0u8; 16];
+        leader_name[..7].copy_from_slice(b"lxpanel");
+        sys_prctl(&mut proc, 0, 15, &mut leader_name).unwrap();
+
+        proc.add_thread(ThreadInfo::new(43, 0, 0, 0));
+        let mut worker_name = [0u8; 16];
+        worker_name[..13].copy_from_slice(b"menu-cache-io");
+        sys_prctl(&mut proc, 43, 15, &mut worker_name).unwrap();
+
+        let mut leader_out = [0u8; 16];
+        sys_prctl(&mut proc, 0, 16, &mut leader_out).unwrap();
+        assert_eq!(&leader_out[..7], b"lxpanel");
+
+        let mut worker_out = [0u8; 16];
+        sys_prctl(&mut proc, 43, 16, &mut worker_out).unwrap();
+        assert_eq!(&worker_out[..13], b"menu-cache-io");
+
+        let stat = crate::procfs::generate_stat(&proc);
+        let stat = core::str::from_utf8(&stat).unwrap();
+        assert!(stat.starts_with("42 (lxpanel) R "));
     }
 
     #[test]
     fn test_prctl_unknown_is_noop() {
         let mut proc = Process::new(1);
         let mut buf = [0u8; 16];
-        assert!(sys_prctl(&mut proc, 999, 0, &mut buf).is_ok());
+        assert!(sys_prctl(&mut proc, 0, 999, &mut buf).is_ok());
     }
 
     #[test]
@@ -15560,6 +15635,135 @@ mod tests {
         );
         assert_eq!(result, Ok(1));
         assert_ne!(writefds[byte] & (1 << bit), 0);
+    }
+
+    #[test]
+    fn test_select_host_pipe_uses_host_readiness_and_eof() {
+        use wasm_posix_shared::poll::{POLLHUP, POLLIN};
+
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        let rfd = add_fallback_pipe_fd(&mut proc, 0, O_RDONLY);
+        let byte = rfd as usize / 8;
+        let bit = rfd as usize % 8;
+
+        host.host_fd_revents = Some(0);
+        let mut readfds = [0u8; 128];
+        readfds[byte] = 1 << bit;
+        assert_eq!(
+            sys_select(
+                &mut proc,
+                &mut host,
+                rfd + 1,
+                Some(&mut readfds),
+                None,
+                None,
+                100,
+            ),
+            Err(Errno::EAGAIN),
+        );
+        assert_eq!(readfds[byte] & (1 << bit), 0);
+
+        for revents in [POLLIN, POLLHUP] {
+            host.host_fd_revents = Some(revents);
+            readfds[byte] = 1 << bit;
+            assert_eq!(
+                sys_select(
+                    &mut proc,
+                    &mut host,
+                    rfd + 1,
+                    Some(&mut readfds),
+                    None,
+                    None,
+                    100,
+                ),
+                Ok(1),
+            );
+            assert_ne!(readfds[byte] & (1 << bit), 0);
+        }
+    }
+
+    #[test]
+    fn test_pselect_zero_timeout_clears_sets_and_restores_mask() {
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        host.host_fd_revents = Some(0);
+        let rfd = add_fallback_pipe_fd(&mut proc, 0, O_RDONLY);
+        let byte = rfd as usize / 8;
+        let bit = rfd as usize % 8;
+        let mut readfds = [0u8; 128];
+        readfds[byte] = 1 << bit;
+        let original_mask = crate::signal::sig_bit(2);
+        let temporary_mask = crate::signal::sig_bit(3);
+        proc.signals.blocked = original_mask;
+
+        assert_eq!(
+            sys_pselect6(
+                &mut proc,
+                &mut host,
+                rfd + 1,
+                Some(&mut readfds),
+                None,
+                None,
+                0,
+                Some(temporary_mask),
+            ),
+            Ok(0),
+        );
+        assert_eq!(readfds[byte] & (1 << bit), 0);
+        assert_eq!(proc.signals.blocked, original_mask);
+        assert_eq!(
+            proc.sigsuspend_saved_mask_for(crate::process_table::current_tid()),
+            None,
+        );
+    }
+
+    #[test]
+    fn test_ppoll_zero_timeout_clears_revents_and_restores_mask() {
+        use wasm_posix_shared::poll::POLLIN;
+
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        host.host_fd_revents = Some(0);
+        let rfd = add_fallback_pipe_fd(&mut proc, 0, O_RDONLY);
+        let mut fds = [WasmPollFd {
+            fd: rfd,
+            events: POLLIN,
+            revents: POLLIN,
+        }];
+        let original_mask = crate::signal::sig_bit(2);
+        let temporary_mask = crate::signal::sig_bit(3);
+        proc.signals.blocked = original_mask;
+
+        assert_eq!(
+            sys_ppoll(
+                &mut proc,
+                &mut host,
+                &mut fds,
+                0,
+                Some(temporary_mask),
+            ),
+            Ok(0),
+        );
+        assert_eq!(fds[0].revents, 0);
+        assert_eq!(proc.signals.blocked, original_mask);
+        assert_eq!(
+            proc.sigsuspend_saved_mask_for(crate::process_table::current_tid()),
+            None,
+        );
+    }
+
+    #[test]
+    fn test_host_pipe_epipe_raises_sigpipe() {
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        host.host_write_error = Some(Errno::EPIPE);
+        let wfd = add_fallback_pipe_fd(&mut proc, 1, O_WRONLY);
+
+        assert_eq!(sys_write(&mut proc, &mut host, wfd, b"x"), Err(Errno::EPIPE));
+        assert!(proc
+            .signals
+            .is_pending(wasm_posix_shared::signal::SIGPIPE));
     }
 
     #[test]
@@ -17703,7 +17907,10 @@ mod tests {
 
     #[test]
     fn test_clone_thread_allocates_kernel_thread() {
+        let _guard = THREAD_IDENTITY_LOCK.lock().unwrap();
+        set_test_current_tid(0);
         let mut proc = Process::new(1);
+        proc.thread_name[..6].copy_from_slice(b"leader");
         let mut host = MockHostIO::new();
         const CLONE_VM: u32 = 0x00000100;
         const CLONE_THREAD: u32 = 0x00010000;
@@ -17711,7 +17918,9 @@ mod tests {
         let result = sys_clone(&mut proc, &mut host, 0, 0x8000, flags, 0, 0, 0, 0);
         let tid = result.expect("thread-style clone should allocate a tid");
         assert!(tid > 0);
-        assert!(proc.get_thread(tid as u32).is_some());
+        let thread = proc.get_thread(tid as u32).unwrap();
+        assert_eq!(&thread.thread_name[..6], b"leader");
+        set_test_current_tid(0);
     }
 
     #[test]

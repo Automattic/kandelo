@@ -92,7 +92,7 @@ See [docs/architecture.md](docs/architecture.md) for the full architecture refer
 | Time | clock_gettime, gettimeofday, nanosleep, utimensat, timer_create/settime/gettime/delete |
 | Terminal | Full PTY support (/dev/ptmx + /dev/pts/N), line discipline, canonical/raw mode, 16 terminal ioctls |
 | Virtual devices | /dev/null, /dev/zero, /dev/urandom, /dev/full, /dev/fd/N, /dev/tty, /dev/ptmx, /dev/pts/* |
-| Procfs | /proc/self, /proc/\<pid\>/stat, status, cmdline, environ, maps, fd/\*, /proc/net/tcp, unix |
+| Procfs (partial Linux compatibility) | /proc/stat, /proc/meminfo, /proc/self, /proc/\<pid\>/{stat,status,statm,task,cmdline,environ,maps,fd/\*}, /proc/net/{tcp,unix}; virtual size is logical address-space size, while CPU, RSS, and system-memory zeroes mean accounting is unavailable |
 | IPC | SysV msg queues, semaphores, shared memory; POSIX mqueues |
 | Event/Notification | eventfd, timerfd, signalfd |
 | Poll/Select | poll, ppoll, pselect6, epoll (host-intercepted in browser) |

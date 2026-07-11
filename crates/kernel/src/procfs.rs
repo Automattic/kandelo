@@ -44,28 +44,33 @@ fn procfs_buf_handle(idx: usize) -> i64 {
 /// A parsed procfs path entry.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ProcfsEntry {
-    Root,              // /proc
-    Mounts,            // /proc/mounts
-    SelfLink,          // /proc/self (symlink → /proc/<pid>)
-    ThreadSelfLink,    // /proc/thread-self (symlink)
-    PidDir(u32),       // /proc/<pid>
-    PidMounts(u32),    // /proc/<pid>/mounts
-    PidMountinfo(u32), // /proc/<pid>/mountinfo
-    FdDir(u32),        // /proc/<pid>/fd
-    FdLink(u32, i32),  // /proc/<pid>/fd/<N> (symlink)
-    FdInfoDir(u32),    // /proc/<pid>/fdinfo
-    FdInfo(u32, i32),  // /proc/<pid>/fdinfo/<N>
-    Stat(u32),         // /proc/<pid>/stat
-    Status(u32),       // /proc/<pid>/status
-    Cmdline(u32),      // /proc/<pid>/cmdline
-    Environ(u32),      // /proc/<pid>/environ
-    Maps(u32),         // /proc/<pid>/maps
-    Cwd(u32),          // /proc/<pid>/cwd (symlink)
-    Exe(u32),          // /proc/<pid>/exe (symlink)
-    Root_(u32),        // /proc/<pid>/root (symlink)
-    NetDir,            // /proc/net
-    NetTcp,            // /proc/net/tcp
-    NetUnix,           // /proc/net/unix
+    Root,                 // /proc
+    Mounts,               // /proc/mounts
+    SystemStat,           // /proc/stat
+    Meminfo,              // /proc/meminfo
+    SelfLink,             // /proc/self (symlink → /proc/<pid>)
+    ThreadSelfLink,       // /proc/thread-self (symlink)
+    PidDir(u32),          // /proc/<pid>
+    PidMounts(u32),       // /proc/<pid>/mounts
+    PidMountinfo(u32),    // /proc/<pid>/mountinfo
+    FdDir(u32),           // /proc/<pid>/fd
+    FdLink(u32, i32),     // /proc/<pid>/fd/<N> (symlink)
+    FdInfoDir(u32),       // /proc/<pid>/fdinfo
+    FdInfo(u32, i32),     // /proc/<pid>/fdinfo/<N>
+    Stat(u32),            // /proc/<pid>/stat
+    Statm(u32),           // /proc/<pid>/statm
+    Status(u32),          // /proc/<pid>/status
+    Cmdline(u32),         // /proc/<pid>/cmdline
+    Environ(u32),         // /proc/<pid>/environ
+    Maps(u32),            // /proc/<pid>/maps
+    Cwd(u32),             // /proc/<pid>/cwd (symlink)
+    Exe(u32),             // /proc/<pid>/exe (symlink)
+    Root_(u32),           // /proc/<pid>/root (symlink)
+    TaskDir(u32),         // /proc/<pid>/task
+    TaskTidDir(u32, u32), // /proc/<pid>/task/<tid>
+    NetDir,               // /proc/net
+    NetTcp,               // /proc/net/tcp
+    NetUnix,              // /proc/net/unix
 }
 
 impl ProcfsEntry {
@@ -90,6 +95,8 @@ impl ProcfsEntry {
                 | ProcfsEntry::PidDir(_)
                 | ProcfsEntry::FdDir(_)
                 | ProcfsEntry::FdInfoDir(_)
+                | ProcfsEntry::TaskDir(_)
+                | ProcfsEntry::TaskTidDir(_, _)
                 | ProcfsEntry::NetDir
         )
     }
@@ -105,6 +112,26 @@ pub const MOUNTS_CONTENT: &[u8] =
 
 const MOUNTINFO_CONTENT: &[u8] =
     b"1 0 0:1 / / rw - kandelo-vfs kandelo-root rw\n2 1 0:2 / /proc rw,nosuid,nodev,noexec - proc proc rw,nosuid,nodev,noexec\n3 1 0:3 / /dev rw,nosuid - devfs devfs rw,nosuid\n";
+
+/// Aggregate CPU accounting is not available on Kandelo's current hosts.
+///
+/// Linux procfs consumers interpret a present all-zero CPU line as no measured
+/// CPU time. These zeroes deliberately mean "accounting unavailable" here;
+/// they do not claim that the system is idle or that no work has run.
+pub const SYSTEM_STAT_CONTENT: &[u8] = b"cpu  0 0 0 0 0 0 0 0 0 0\n";
+
+/// Physical-memory and page-cache accounting is not available on Kandelo's
+/// current hosts.
+///
+/// Every exported counter is therefore zero. In this procfs implementation a
+/// zero `MemTotal` explicitly means that system memory accounting is
+/// unavailable, not that Kandelo has a zero-byte physical machine.
+pub const MEMINFO_CONTENT: &[u8] = b"MemTotal:       0 kB\n\
+MemFree:        0 kB\n\
+MemAvailable:   0 kB\n\
+Buffers:        0 kB\n\
+Cached:         0 kB\n\
+SReclaimable:   0 kB\n";
 
 /// Extract the pid from a ProcfsEntry (0 for root/net entries).
 pub fn entry_pid(entry: &ProcfsEntry) -> u32 {
@@ -153,8 +180,11 @@ pub fn match_procfs(path: &[u8], current_pid: u32) -> Option<ProcfsEntry> {
     }
     let rest = &rest[1..]; // after "/proc/"
 
-    if rest == b"mounts" {
-        return Some(ProcfsEntry::Mounts);
+    match rest {
+        b"mounts" => return Some(ProcfsEntry::Mounts),
+        b"stat" => return Some(ProcfsEntry::SystemStat),
+        b"meminfo" => return Some(ProcfsEntry::Meminfo),
+        _ => {}
     }
 
     // /proc/self/... → resolve to current pid
@@ -226,6 +256,7 @@ fn match_pid_subpath(pid: u32, remainder: &[u8]) -> Option<ProcfsEntry> {
 
     match rem {
         b"stat" => Some(ProcfsEntry::Stat(pid)),
+        b"statm" => Some(ProcfsEntry::Statm(pid)),
         b"status" => Some(ProcfsEntry::Status(pid)),
         b"cmdline" => Some(ProcfsEntry::Cmdline(pid)),
         b"environ" => Some(ProcfsEntry::Environ(pid)),
@@ -237,6 +268,7 @@ fn match_pid_subpath(pid: u32, remainder: &[u8]) -> Option<ProcfsEntry> {
         b"root" => Some(ProcfsEntry::Root_(pid)),
         b"fd" => Some(ProcfsEntry::FdDir(pid)),
         b"fdinfo" => Some(ProcfsEntry::FdInfoDir(pid)),
+        b"task" => Some(ProcfsEntry::TaskDir(pid)),
         _ => {
             if rem.starts_with(b"fd/") {
                 let fd_str = &rem[3..];
@@ -244,6 +276,9 @@ fn match_pid_subpath(pid: u32, remainder: &[u8]) -> Option<ProcfsEntry> {
             } else if rem.starts_with(b"fdinfo/") {
                 let fd_str = &rem[7..];
                 parse_i32(fd_str).map(|fd| ProcfsEntry::FdInfo(pid, fd))
+            } else if rem.starts_with(b"task/") {
+                let tid_str = &rem[5..];
+                parse_u32(tid_str).map(|tid| ProcfsEntry::TaskTidDir(pid, tid))
             } else if rem == b"net" || rem.starts_with(b"net/") {
                 match_net_path(rem)
             } else {
@@ -270,6 +305,41 @@ fn match_net_path(rest: &[u8]) -> Option<ProcfsEntry> {
 
 // ── Content generators ──────────────────────────────────────────────────────
 
+/// Kandelo's logical process page size is the WebAssembly page size.
+pub const LOGICAL_PAGE_SIZE: u64 = 65_536;
+
+/// Return the logical virtual bytes represented by kernel-owned process state.
+///
+/// The prefix through the current program break represents the loaded program,
+/// stack, and brk heap. Active guest mmap regions are unioned with that prefix
+/// so a fixed mapping below the break is not counted twice. This is logical
+/// address-space accounting only and does not claim physical residency. The
+/// required main control prefix below brk is part of this logical linear-memory
+/// prefix; separately reserved host ranges above brk are not counted unless
+/// they are also represented by a guest mapping.
+pub(crate) fn logical_virtual_bytes(proc: &Process) -> u64 {
+    let mut total = proc.memory.get_brk() as u64;
+    let mut covered_until = total;
+
+    // MemoryManager keeps mappings sorted and non-overlapping. Retain the union
+    // calculation here so the answer also remains correct for a fixed mapping
+    // that overlaps the prefix through brk.
+    for mapping in proc.memory.mappings() {
+        let start = mapping.addr as u64;
+        let end = start.saturating_add(mapping.len as u64);
+        if end <= covered_until {
+            continue;
+        }
+        total = total.saturating_add(end - start.max(covered_until));
+        covered_until = end;
+    }
+    total
+}
+
+fn logical_virtual_pages(proc: &Process) -> u64 {
+    logical_virtual_bytes(proc).div_ceil(LOGICAL_PAGE_SIZE)
+}
+
 /// Generate /proc/<pid>/stat content.
 pub fn generate_stat(proc: &Process) -> Vec<u8> {
     use alloc::format;
@@ -281,15 +351,43 @@ pub fn generate_stat(proc: &Process) -> Vec<u8> {
         'Z'
     };
 
-    // Linux /proc/pid/stat format (simplified):
-    // pid (comm) state ppid pgrp session tty_nr tpgid flags
-    // minflt cminflt majflt cmajflt utime stime cutime cstime
-    // priority nice num_threads itrealvalue starttime vsize rss ...
-    let line = format!(
-        "{} ({}) {} {} {} {} 0 0 0 0 0 0 0 0 0 0 {} 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0\n",
-        proc.pid, name, state, proc.ppid, proc.pgid, proc.sid, proc.nice,
-    );
+    // Linux /proc/pid/stat has 52 fields. Kandelo exposes authoritative
+    // identity, nice, thread count, and logical vsize. CPU time, scheduler
+    // priority, start time, and RSS remain zero because those values are not
+    // tracked; zero here is an explicit unavailable value, not invented usage.
+    let mut fields = Vec::with_capacity(52);
+    fields.push(format!("{}", proc.pid)); // 1 pid
+    fields.push(format!("({})", name)); // 2 comm
+    fields.push(format!("{}", state)); // 3 state
+    fields.push(format!("{}", proc.ppid)); // 4 ppid
+    fields.push(format!("{}", proc.pgid)); // 5 pgrp
+    fields.push(format!("{}", proc.sid)); // 6 session
+    for _ in 7..=18 {
+        fields.push("0".into());
+    }
+    fields.push(format!("{}", proc.nice)); // 19 nice
+    fields.push(format!("{}", 1 + proc.threads.len())); // 20 num_threads
+    fields.push("0".into()); // 21 itrealvalue
+    fields.push("0".into()); // 22 starttime (unavailable)
+    fields.push(format!("{}", logical_virtual_bytes(proc))); // 23 vsize
+    fields.push("0".into()); // 24 rss (unavailable)
+    while fields.len() < 52 {
+        fields.push("0".into());
+    }
+    let mut line = fields.join(" ");
+    line.push('\n');
     line.into_bytes()
+}
+
+/// Generate `/proc/<pid>/statm` in Linux's seven-field page-count shape.
+///
+/// Only field 1 (logical virtual pages) is backed by kernel state. Resident,
+/// shared, text, library, data/stack, and dirty-page accounting are unavailable
+/// on current hosts and are deliberately reported as zero.
+pub fn generate_statm(proc: &Process) -> Vec<u8> {
+    use alloc::format;
+
+    format!("{} 0 0 0 0 0 0\n", logical_virtual_pages(proc)).into_bytes()
 }
 
 /// Generate /proc/<pid>/status content.
@@ -304,6 +402,7 @@ pub fn generate_status(proc: &Process) -> Vec<u8> {
         "Z (zombie)"
     };
 
+    let logical_kib = logical_virtual_bytes(proc).div_ceil(1024);
     let content = format!(
         "Name:\t{}\n\
          Umask:\t{:04o}\n\
@@ -316,7 +415,8 @@ pub fn generate_status(proc: &Process) -> Vec<u8> {
          Uid:\t{}\t{}\t{}\t{}\n\
          Gid:\t{}\t{}\t{}\t{}\n\
          FDSize:\t{}\n\
-         VmSize:\t0 kB\n\
+         VmSize:\t{} kB\n\
+         VmRSS:\t0 kB\n\
          Threads:\t{}\n\
          SigPnd:\t{:016x}\n\
          SigBlk:\t{:016x}\n",
@@ -335,6 +435,7 @@ pub fn generate_status(proc: &Process) -> Vec<u8> {
         proc.egid,
         proc.egid,
         count_open_fds(&proc.fd_table),
+        logical_kib,
         1 + proc.threads.len(), // main thread + spawned threads
         proc.signals.pending_mask(),
         proc.signals.blocked,
@@ -419,18 +520,44 @@ fn procfs_ino(pid: u32, entry_type: u8) -> u64 {
     0x50_00_0000u64 | ((pid as u64) << 8) | (entry_type as u64)
 }
 
-/// Build a synthetic WasmStat for a procfs entry.
-/// `content_size` is used for regular file st_size (pass 0 for dirs/symlinks).
-pub fn procfs_stat(entry: &ProcfsEntry, content_size: u64, follow_symlinks: bool) -> WasmStat {
+/// Task-directory inode that remains unique for a `(pid, tid)` pair.
+fn procfs_task_ino(pid: u32, tid: u32) -> u64 {
+    0x51_00_0000_0000_0000u64 | ((pid as u64) << 32) | tid as u64
+}
+
+fn entry_ino(entry: &ProcfsEntry) -> u64 {
+    match entry {
+        ProcfsEntry::TaskTidDir(pid, tid) => procfs_task_ino(*pid, *tid),
+        _ => {
+            let (pid, entry_type) = entry_ids(entry);
+            procfs_ino(pid, entry_type)
+        }
+    }
+}
+
+/// Build procfs metadata with authoritative ownership for a PID-scoped entry.
+/// Global procfs nodes remain owned by root regardless of the supplied owner.
+fn procfs_stat_owned(
+    entry: &ProcfsEntry,
+    content_size: u64,
+    follow_symlinks: bool,
+    owner_uid: u32,
+    owner_gid: u32,
+) -> WasmStat {
+    let (st_uid, st_gid) = if entry_pid(entry) == 0 {
+        (0, 0)
+    } else {
+        (owner_uid, owner_gid)
+    };
+
     if entry.is_symlink() && !follow_symlinks {
-        let (pid, etype) = entry_ids(entry);
         return WasmStat {
             st_dev: 0x50,
-            st_ino: procfs_ino(pid, etype),
+            st_ino: entry_ino(entry),
             st_mode: S_IFLNK | 0o777,
             st_nlink: 1,
-            st_uid: 0,
-            st_gid: 0,
+            st_uid,
+            st_gid,
             st_size: 0,
             st_atime_sec: 0,
             st_atime_nsec: 0,
@@ -443,14 +570,13 @@ pub fn procfs_stat(entry: &ProcfsEntry, content_size: u64, follow_symlinks: bool
     }
 
     if entry.is_dir() {
-        let (pid, etype) = entry_ids(entry);
         return WasmStat {
             st_dev: 0x50,
-            st_ino: procfs_ino(pid, etype),
+            st_ino: entry_ino(entry),
             st_mode: S_IFDIR | 0o555,
             st_nlink: 2,
-            st_uid: 0,
-            st_gid: 0,
+            st_uid,
+            st_gid,
             st_size: 0,
             st_atime_sec: 0,
             st_atime_nsec: 0,
@@ -463,14 +589,13 @@ pub fn procfs_stat(entry: &ProcfsEntry, content_size: u64, follow_symlinks: bool
     }
 
     // Regular file
-    let (pid, etype) = entry_ids(entry);
     WasmStat {
         st_dev: 0x50,
-        st_ino: procfs_ino(pid, etype),
+        st_ino: entry_ino(entry),
         st_mode: S_IFREG | 0o444,
         st_nlink: 1,
-        st_uid: 0,
-        st_gid: 0,
+        st_uid,
+        st_gid,
         st_size: content_size,
         st_atime_sec: 0,
         st_atime_nsec: 0,
@@ -482,11 +607,48 @@ pub fn procfs_stat(entry: &ProcfsEntry, content_size: u64, follow_symlinks: bool
     }
 }
 
+/// Validate a procfs entry and synthesize metadata using its target process's
+/// effective credentials. Stat-family syscall call sites should use this
+/// helper rather than treating every syntactically valid procfs path as root-
+/// owned and existent.
+pub fn procfs_stat_for_process(
+    caller: &Process,
+    entry: &ProcfsEntry,
+    content_size: u64,
+    follow_symlinks: bool,
+) -> Result<WasmStat, Errno> {
+    validate_entry(caller, entry)?;
+    let target_pid = entry_pid(entry);
+    let (uid, gid) = if target_pid == 0 {
+        (0, 0)
+    } else if target_pid == caller.pid {
+        (caller.euid, caller.egid)
+    } else {
+        #[cfg(any(target_arch = "wasm32", target_arch = "wasm64"))]
+        {
+            crate::wasm_api::procfs_credentials_for_pid(target_pid).ok_or(Errno::ENOENT)?
+        }
+        #[cfg(not(any(target_arch = "wasm32", target_arch = "wasm64")))]
+        {
+            return Err(Errno::ENOENT);
+        }
+    };
+    Ok(procfs_stat_owned(
+        entry,
+        content_size,
+        follow_symlinks,
+        uid,
+        gid,
+    ))
+}
+
 /// Extract (pid, entry_type_id) for inode generation.
 fn entry_ids(entry: &ProcfsEntry) -> (u32, u8) {
     match entry {
         ProcfsEntry::Root => (0, 0),
         ProcfsEntry::Mounts => (0, 1),
+        ProcfsEntry::SystemStat => (0, 22),
+        ProcfsEntry::Meminfo => (0, 23),
         ProcfsEntry::SelfLink => (0, 2),
         ProcfsEntry::ThreadSelfLink => (0, 3),
         ProcfsEntry::PidDir(pid) => (*pid, 4),
@@ -497,6 +659,7 @@ fn entry_ids(entry: &ProcfsEntry) -> (u32, u8) {
         ProcfsEntry::FdInfoDir(pid) => (*pid, 9),
         ProcfsEntry::FdInfo(pid, _) => (*pid, 10),
         ProcfsEntry::Stat(pid) => (*pid, 11),
+        ProcfsEntry::Statm(pid) => (*pid, 24),
         ProcfsEntry::Status(pid) => (*pid, 12),
         ProcfsEntry::Cmdline(pid) => (*pid, 13),
         ProcfsEntry::Environ(pid) => (*pid, 14),
@@ -504,6 +667,8 @@ fn entry_ids(entry: &ProcfsEntry) -> (u32, u8) {
         ProcfsEntry::Cwd(pid) => (*pid, 16),
         ProcfsEntry::Exe(pid) => (*pid, 17),
         ProcfsEntry::Root_(pid) => (*pid, 18),
+        ProcfsEntry::TaskDir(pid) => (*pid, 25),
+        ProcfsEntry::TaskTidDir(pid, _) => (*pid, 26),
         ProcfsEntry::NetDir => (0, 19),
         ProcfsEntry::NetTcp => (0, 20),
         ProcfsEntry::NetUnix => (0, 21),
@@ -557,11 +722,7 @@ pub fn procfs_open(
     }
 
     if entry.is_dir() {
-        // Validate that the target pid exists for pid-scoped directories
-        let target_pid = entry_pid(entry);
-        if target_pid != 0 {
-            validate_pid(proc, target_pid)?;
-        }
+        validate_entry(proc, entry)?;
         let ofd_idx = proc.ofd_table.create(
             FileType::Directory,
             status_flags,
@@ -591,12 +752,17 @@ pub fn procfs_open(
 /// Generate content for a procfs regular file entry.
 fn generate_content(proc: &Process, entry: &ProcfsEntry) -> Result<Vec<u8>, Errno> {
     match entry {
-        ProcfsEntry::Stat(pid) | ProcfsEntry::Status(pid) | ProcfsEntry::Cmdline(pid)
-        | ProcfsEntry::Environ(pid) | ProcfsEntry::Maps(pid) => {
+        ProcfsEntry::Stat(pid)
+        | ProcfsEntry::Statm(pid)
+        | ProcfsEntry::Status(pid)
+        | ProcfsEntry::Cmdline(pid)
+        | ProcfsEntry::Environ(pid)
+        | ProcfsEntry::Maps(pid) => {
             validate_pid(proc, *pid)?;
             if *pid == proc.pid {
                 match entry {
                     ProcfsEntry::Stat(_) => Ok(generate_stat(proc)),
+                    ProcfsEntry::Statm(_) => Ok(generate_statm(proc)),
                     ProcfsEntry::Status(_) => Ok(generate_status(proc)),
                     ProcfsEntry::Cmdline(_) => Ok(generate_cmdline(proc)),
                     ProcfsEntry::Environ(_) => Ok(generate_environ(proc)),
@@ -622,6 +788,8 @@ fn generate_content(proc: &Process, entry: &ProcfsEntry) -> Result<Vec<u8>, Errn
             }
         }
         ProcfsEntry::Mounts => Ok(MOUNTS_CONTENT.to_vec()),
+        ProcfsEntry::SystemStat => Ok(SYSTEM_STAT_CONTENT.to_vec()),
+        ProcfsEntry::Meminfo => Ok(MEMINFO_CONTENT.to_vec()),
         ProcfsEntry::PidMounts(pid) => {
             validate_pid(proc, *pid)?;
             Ok(MOUNTS_CONTENT.to_vec())
@@ -655,6 +823,38 @@ fn validate_pid(proc: &Process, pid: u32) -> Result<(), Errno> {
         }
     }
     Err(Errno::ENOENT)
+}
+
+fn process_has_tid(proc: &Process, tid: u32) -> bool {
+    tid == proc.pid || proc.threads.iter().any(|thread| thread.tid == tid)
+}
+
+/// Validate that a parsed procfs entry names authoritative process/thread
+/// state. Global entries always validate; PID-scoped entries require a visible
+/// (non-Limbo) process, and task TID directories additionally require that the
+/// TID belongs to that process.
+pub fn validate_entry(proc: &Process, entry: &ProcfsEntry) -> Result<(), Errno> {
+    let pid = entry_pid(entry);
+    if pid == 0 {
+        return Ok(());
+    }
+    validate_pid(proc, pid)?;
+
+    if let ProcfsEntry::TaskTidDir(_, tid) = entry {
+        if pid == proc.pid {
+            if process_has_tid(proc, *tid) {
+                return Ok(());
+            }
+        } else {
+            #[cfg(any(target_arch = "wasm32", target_arch = "wasm64"))]
+            if crate::wasm_api::procfs_tid_exists(pid, *tid) {
+                return Ok(());
+            }
+        }
+        return Err(Errno::ENOENT);
+    }
+
+    Ok(())
 }
 
 /// Allocate a procfs buffer slot, reusing freed slots.
@@ -835,8 +1035,10 @@ fn dir_entries(
 
     match entry {
         ProcfsEntry::Root => {
-            // /proc: self (symlink), numeric PIDs (dirs), mounts (file), net (dir)
+            // /proc: global files, self links, numeric PIDs, and net.
             entries.push((b"mounts".to_vec(), DT_REG, procfs_ino(0, 1)));
+            entries.push((b"stat".to_vec(), DT_REG, procfs_ino(0, 22)));
+            entries.push((b"meminfo".to_vec(), DT_REG, procfs_ino(0, 23)));
             entries.push((b"self".to_vec(), DT_LNK, procfs_ino(0, 2)));
             entries.push((b"thread-self".to_vec(), DT_LNK, procfs_ino(0, 3)));
             for &pid in pids {
@@ -850,6 +1052,7 @@ fn dir_entries(
             entries.push((b"fd".to_vec(), DT_DIR, procfs_ino(pid, 7)));
             entries.push((b"fdinfo".to_vec(), DT_DIR, procfs_ino(pid, 9)));
             entries.push((b"stat".to_vec(), DT_REG, procfs_ino(pid, 11)));
+            entries.push((b"statm".to_vec(), DT_REG, procfs_ino(pid, 24)));
             entries.push((b"status".to_vec(), DT_REG, procfs_ino(pid, 12)));
             entries.push((b"cmdline".to_vec(), DT_REG, procfs_ino(pid, 13)));
             entries.push((b"environ".to_vec(), DT_REG, procfs_ino(pid, 14)));
@@ -859,6 +1062,7 @@ fn dir_entries(
             entries.push((b"cwd".to_vec(), DT_LNK, procfs_ino(pid, 16)));
             entries.push((b"exe".to_vec(), DT_LNK, procfs_ino(pid, 17)));
             entries.push((b"root".to_vec(), DT_LNK, procfs_ino(pid, 18)));
+            entries.push((b"task".to_vec(), DT_DIR, procfs_ino(pid, 25)));
             entries.push((b"net".to_vec(), DT_DIR, procfs_ino(pid, 19)));
         }
         ProcfsEntry::FdDir(pid) => {
@@ -882,6 +1086,27 @@ fn dir_entries(
                     }
                 }
             }
+        }
+        ProcfsEntry::TaskDir(pid) => {
+            if pid != proc.pid {
+                return Err(Errno::ENOENT);
+            }
+            let main_name = format!("{}", pid).into_bytes();
+            entries.push((main_name, DT_DIR, procfs_task_ino(pid, pid)));
+            for thread in &proc.threads {
+                if thread.tid == pid {
+                    continue;
+                }
+                let name = format!("{}", thread.tid).into_bytes();
+                entries.push((name, DT_DIR, procfs_task_ino(pid, thread.tid)));
+            }
+        }
+        ProcfsEntry::TaskTidDir(pid, tid) => {
+            if pid != proc.pid || !process_has_tid(proc, tid) {
+                return Err(Errno::ENOENT);
+            }
+            // A task directory is intentionally minimal today; `.` and `..`
+            // are emitted by procfs_getdents64 itself.
         }
         ProcfsEntry::NetDir => {
             entries.push((b"tcp".to_vec(), DT_REG, procfs_ino(0, 20)));
@@ -936,12 +1161,20 @@ fn count_open_fds(fd_table: &crate::fd::FdTable) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::process::Process;
+    use crate::process::{Process, ThreadInfo};
 
     #[test]
     fn test_match_procfs_root() {
         assert_eq!(match_procfs(b"/proc", 1), Some(ProcfsEntry::Root));
         assert_eq!(match_procfs(b"/proc/", 1), Some(ProcfsEntry::Root));
+        assert_eq!(
+            match_procfs(b"/proc/stat", 1),
+            Some(ProcfsEntry::SystemStat)
+        );
+        assert_eq!(
+            match_procfs(b"/proc/meminfo", 1),
+            Some(ProcfsEntry::Meminfo)
+        );
     }
 
     #[test]
@@ -950,6 +1183,14 @@ mod tests {
         assert_eq!(
             match_procfs(b"/proc/self/stat", 42),
             Some(ProcfsEntry::Stat(42))
+        );
+        assert_eq!(
+            match_procfs(b"/proc/self/statm", 42),
+            Some(ProcfsEntry::Statm(42))
+        );
+        assert_eq!(
+            match_procfs(b"/proc/self/task/43", 42),
+            Some(ProcfsEntry::TaskTidDir(42, 43))
         );
         assert_eq!(
             match_procfs(b"/proc/self/mounts", 42),
@@ -971,6 +1212,10 @@ mod tests {
         assert_eq!(
             match_procfs(b"/proc/42/stat", 1),
             Some(ProcfsEntry::Stat(42))
+        );
+        assert_eq!(
+            match_procfs(b"/proc/42/statm", 1),
+            Some(ProcfsEntry::Statm(42))
         );
         assert_eq!(
             match_procfs(b"/proc/42/status", 1),
@@ -1014,6 +1259,14 @@ mod tests {
             match_procfs(b"/proc/42/fdinfo/7", 1),
             Some(ProcfsEntry::FdInfo(42, 7))
         );
+        assert_eq!(
+            match_procfs(b"/proc/42/task", 1),
+            Some(ProcfsEntry::TaskDir(42))
+        );
+        assert_eq!(
+            match_procfs(b"/proc/42/task/43", 1),
+            Some(ProcfsEntry::TaskTidDir(42, 43))
+        );
     }
 
     #[test]
@@ -1042,11 +1295,32 @@ mod tests {
         proc.sid = 1;
         proc.nice = 5;
         proc.argv.push(b"test_program".to_vec());
+        proc.add_thread(ThreadInfo::new(43, 0, 0, 0));
+        let mapped = proc.memory.mmap_anonymous(0, 1, 3, 0);
+        assert_ne!(mapped, wasm_posix_shared::mmap::MAP_FAILED);
 
         let stat = generate_stat(&proc);
         let stat_str = core::str::from_utf8(&stat).unwrap();
-        assert!(stat_str.starts_with("42 (test_program) R 1 42 1"));
-        assert!(stat_str.contains(" 5 ")); // nice value
+        let fields: Vec<&str> = stat_str.split_whitespace().collect();
+        assert_eq!(fields.len(), 52);
+        assert_eq!(&fields[..6], &["42", "(test_program)", "R", "1", "42", "1"]);
+        assert_eq!(fields[13], "0"); // field 14: utime unavailable
+        assert_eq!(fields[14], "0"); // field 15: stime unavailable
+        assert_eq!(fields[18], "5"); // field 19: nice
+        assert_eq!(fields[19], "2"); // field 20: main + worker thread
+        assert_eq!(fields[21], "0"); // field 22: starttime unavailable
+        assert_eq!(fields[22], "16842752"); // field 23: 16 MiB brk prefix + 64 KiB mmap
+        assert_eq!(fields[23], "0"); // field 24: RSS unavailable
+    }
+
+    #[test]
+    fn test_generate_statm_reports_only_logical_virtual_pages() {
+        let mut proc = Process::new(42);
+        let mapped = proc.memory.mmap_anonymous(0, 1, 3, 0);
+        assert_ne!(mapped, wasm_posix_shared::mmap::MAP_FAILED);
+
+        let statm = generate_statm(&proc);
+        assert_eq!(core::str::from_utf8(&statm).unwrap(), "257 0 0 0 0 0 0\n");
     }
 
     #[test]
@@ -1054,12 +1328,32 @@ mod tests {
         let mut proc = Process::new(1);
         proc.argv.push(b"init".to_vec());
         proc.umask = 0o022;
+        proc.add_thread(ThreadInfo::new(2, 0, 0, 0));
 
         let status = generate_status(&proc);
         let status_str = core::str::from_utf8(&status).unwrap();
         assert!(status_str.contains("Name:\tinit\n"));
         assert!(status_str.contains("Pid:\t1\n"));
         assert!(status_str.contains("Umask:\t0022\n"));
+        assert!(status_str.contains("VmSize:\t16384 kB\n"));
+        assert!(status_str.contains("VmRSS:\t0 kB\n"));
+        assert!(status_str.contains("Threads:\t2\n"));
+    }
+
+    #[test]
+    fn test_global_accounting_files_use_documented_unavailable_zeroes() {
+        let proc = Process::new(1);
+        let system_stat = generate_content(&proc, &ProcfsEntry::SystemStat).unwrap();
+        assert_eq!(system_stat, SYSTEM_STAT_CONTENT);
+        assert_eq!(system_stat, b"cpu  0 0 0 0 0 0 0 0 0 0\n");
+
+        let meminfo = generate_content(&proc, &ProcfsEntry::Meminfo).unwrap();
+        assert_eq!(meminfo, MEMINFO_CONTENT);
+        let text = core::str::from_utf8(&meminfo).unwrap();
+        assert!(text.contains("MemTotal:       0 kB\n"));
+        assert!(text.contains("MemFree:        0 kB\n"));
+        assert!(text.contains("MemAvailable:   0 kB\n"));
+        assert!(text.contains("Cached:         0 kB\n"));
     }
 
     #[test]
@@ -1103,7 +1397,7 @@ mod tests {
     #[test]
     fn test_procfs_stat_dir() {
         let entry = ProcfsEntry::Root;
-        let st = procfs_stat(&entry, 0, true);
+        let st = procfs_stat_owned(&entry, 0, true, 0, 0);
         assert_eq!(st.st_mode, S_IFDIR | 0o555);
         assert_eq!(st.st_dev, 0x50);
     }
@@ -1111,16 +1405,69 @@ mod tests {
     #[test]
     fn test_procfs_stat_symlink_nofollow() {
         let entry = ProcfsEntry::SelfLink;
-        let st = procfs_stat(&entry, 0, false);
+        let st = procfs_stat_owned(&entry, 0, false, 0, 0);
         assert_eq!(st.st_mode, S_IFLNK | 0o777);
     }
 
     #[test]
     fn test_procfs_stat_regular() {
         let entry = ProcfsEntry::Stat(1);
-        let st = procfs_stat(&entry, 100, true);
+        let st = procfs_stat_owned(&entry, 100, true, 0, 0);
         assert_eq!(st.st_mode, S_IFREG | 0o444);
         assert_eq!(st.st_size, 100);
+    }
+
+    #[test]
+    fn test_procfs_stat_uses_target_effective_credentials() {
+        let mut proc = Process::new(42);
+        proc.euid = 1000;
+        proc.egid = 100;
+
+        let st = procfs_stat_for_process(&proc, &ProcfsEntry::Stat(42), 100, true).unwrap();
+        assert_eq!(st.st_uid, 1000);
+        assert_eq!(st.st_gid, 100);
+
+        let global = procfs_stat_for_process(&proc, &ProcfsEntry::Meminfo, 100, true).unwrap();
+        assert_eq!(global.st_uid, 0);
+        assert_eq!(global.st_gid, 0);
+
+        assert!(matches!(
+            procfs_stat_for_process(&proc, &ProcfsEntry::Stat(99), 0, true),
+            Err(Errno::ENOENT)
+        ));
+        assert!(matches!(
+            procfs_stat_for_process(&proc, &ProcfsEntry::TaskTidDir(42, 99), 0, true),
+            Err(Errno::ENOENT)
+        ));
+    }
+
+    #[test]
+    fn test_task_entries_and_tid_validation_use_process_threads() {
+        let mut proc = Process::new(42);
+        proc.add_thread(ThreadInfo::new(43, 0, 0, 0));
+        proc.add_thread(ThreadInfo::new(44, 0, 0, 0));
+
+        let entries = dir_entries(&proc, b"/proc/42/task", &[42]).unwrap();
+        let names: Vec<&[u8]> = entries.iter().map(|(name, _, _)| name.as_slice()).collect();
+        assert_eq!(
+            names,
+            vec![b"42".as_slice(), b"43".as_slice(), b"44".as_slice()]
+        );
+        assert!(validate_entry(&proc, &ProcfsEntry::TaskTidDir(42, 42)).is_ok());
+        assert!(validate_entry(&proc, &ProcfsEntry::TaskTidDir(42, 43)).is_ok());
+        assert_eq!(
+            validate_entry(&proc, &ProcfsEntry::TaskTidDir(42, 99)),
+            Err(Errno::ENOENT)
+        );
+        assert!(
+            dir_entries(&proc, b"/proc/42/task/43", &[42])
+                .unwrap()
+                .is_empty()
+        );
+        assert_eq!(
+            dir_entries(&proc, b"/proc/42/task/99", &[42]),
+            Err(Errno::ENOENT)
+        );
     }
 
     #[test]
@@ -1186,8 +1533,8 @@ mod tests {
             procfs_getdents64(&proc, b"/proc", &mut buf, 0, &pids).unwrap();
         assert!(bytes > 0);
         assert!(exhausted);
-        // Should have: . , .. , mounts, self, thread-self, 1, net = 7 entries
-        assert_eq!(offset, 7);
+        // . , .. , mounts, stat, meminfo, self, thread-self, 1, net = 9
+        assert_eq!(offset, 9);
     }
 
     #[test]
@@ -1198,9 +1545,22 @@ mod tests {
             procfs_getdents64(&proc, b"/proc/1", &mut buf, 0, &[1]).unwrap();
         assert!(bytes > 0);
         assert!(exhausted);
-        // . , .. , fd, fdinfo, stat, status, cmdline, environ, maps,
-        // mounts, mountinfo, cwd, exe, root, net = 15
-        assert_eq!(offset, 15);
+        // . , .. , fd, fdinfo, stat, statm, status, cmdline, environ, maps,
+        // mounts, mountinfo, cwd, exe, root, task, net = 17
+        assert_eq!(offset, 17);
+    }
+
+    #[test]
+    fn test_procfs_getdents64_task_dir() {
+        let mut proc = Process::new(42);
+        proc.add_thread(ThreadInfo::new(43, 0, 0, 0));
+        let mut buf = [0u8; 4096];
+        let (bytes, offset, exhausted) =
+            procfs_getdents64(&proc, b"/proc/42/task", &mut buf, 0, &[42]).unwrap();
+        assert!(bytes > 0);
+        assert!(exhausted);
+        // . , .. , 42, 43
+        assert_eq!(offset, 4);
     }
 
     #[test]

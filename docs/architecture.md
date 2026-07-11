@@ -202,6 +202,23 @@ Some syscalls (read from empty pipe, accept on socket, poll with timeout) cannot
 
 This mechanism is critical: the process worker blocks on `Atomics.wait` while the host manages async retry via `Atomics.waitAsync`.
 
+Captured standard input is represented in the kernel as a pipe but its bytes
+live in host state. Readiness for that host-delegated pipe therefore comes from
+the same buffered/EOF state used by `host_read`: buffered bytes and finite EOF
+are read-ready, while an open incremental-input stream with no bytes is not.
+Reporting every host pipe as readable would make `select()` wake only for the
+following `read()` to return `EAGAIN`, creating a retry loop instead of real
+pipe semantics.
+
+Finite `poll()`/`ppoll()` and `select()`/`pselect6()` waits retain one deadline
+from the first attempt. Targeted pipe wakeups, safety retries, and other host
+retry cycles use the remaining duration; they do not start the caller's timeout
+again. This keeps unrelated host activity from extending a finite wait
+indefinitely. Except for a descriptor-free `select()` used only as a sleep,
+expiry is finalized by one zero-timeout kernel pass. That pass clears readiness
+outputs and restores any temporary `ppoll()`/`pselect6()` signal mask before
+the host completes the channel.
+
 ## Multi-Process Model
 
 ### fork()
@@ -273,9 +290,11 @@ PATH-relative names.
 
 The implementation is regression-guarded by a per-process counter:
 `kernel_get_fork_count(pid)` returns the number of times that pid has
-called `kernel_fork_process`. The vitest harness asserts this stays at
-0 across a `posix_spawn` — any non-zero value means the path silently
-fell back to fork.
+called `kernel_fork_process`. The Rust `ProcessTable::spawn_child` regression
+asserts this stays at 0 across a `posix_spawn`, while the Node end-to-end test
+exercises the complete spawn/wait path and the host-parity test pins both
+worker-entry `onSpawn` wires. A completed top-level host process is reaped, so
+post-exit counter queries are intentionally not used as evidence.
 
 **Browser parity:**
 
@@ -298,6 +317,23 @@ fell back to fork.
   remains as a fast-CI tripwire for someone removing one of the
   parallel wires.
 
+### Host-owned top-level process lifecycle
+
+Processes launched directly by the Node or browser host, rather than by a guest
+parent, are registered as children of the host-owned `ppid=0` namespace. Their
+exit status is consumed by the host's spawn result/exit promise, so there is no
+guest process that can call `waitpid()` for them. After the process and thread
+workers have been torn down and their syscall channels deactivated, the host
+asks Rust to reap the exited `(parent=0, child=pid)` entry. Rust verifies both
+the parent relationship and exited state before removing it.
+
+This cleanup is intentionally narrower than hiding zombies or reaping every
+process during host teardown. A process with a guest parent does not satisfy the
+`ppid=0` check and remains an exited zombie until that parent consumes its
+status through `wait()`/`waitpid()`. Procfs therefore continues to expose
+unreaped guest-child zombies, while completed host-owned launches do not
+accumulate entries after their host worker is gone.
+
 ### clone() (threads)
 
 1. User calls `clone(CLONE_VM | CLONE_THREAD, ...)` → kernel returns clone request
@@ -308,6 +344,16 @@ fell back to fork.
 6. Thread starts executing the given function pointer with the given argument
 
 Threads share memory with the parent (CLONE_VM) but have their own channel, fork-save scratch page, and TLS/control page.
+
+### Procfs process view and accounting boundaries
+
+Kandelo exposes a deliberately partial Linux-compatible procfs backed by the authoritative `ProcessTable`. `/proc` includes global `/proc/stat` and `/proc/meminfo` nodes and per-process nodes such as `/proc/<pid>/stat`, `status`, `statm`, and `task`. PID-scoped nodes use the target process's effective uid and gid as their filesystem owner; global nodes remain root-owned. The visible PID set includes running processes and unreaped exited zombies. It excludes `ProcessState::Limbo` entries, which retain process-group identity after the user-visible process and its resources are gone.
+
+Virtual size is logical address-space accounting, not physical memory accounting. `logical_virtual_bytes` counts the contiguous address-space prefix through the current program break (including the loaded program, stack, and required main control pages), then adds the union of active guest `mmap` ranges without double-counting overlaps. Host-reserved ranges above the break are excluded unless they are also active guest mappings. The result is reported as bytes in `/proc/<pid>/stat`, rounded-up kilobytes in `status`'s `VmSize`, and 64 KiB logical pages in the first field of `statm`.
+
+CPU time, physical residency, and system-memory/cache accounting are not implemented. Consequently, the CPU counters in `/proc/stat`, RSS-related process fields (including `VmRSS` and fields 2-7 of `statm`), and memory totals in `/proc/meminfo` are zero placeholders that explicitly mean **unavailable**, not measured zero usage. `/proc/<pid>/task` enumerates the main PID and registered worker-thread TIDs, but this does not imply complete Linux procfs coverage.
+
+Processor-count queries are separate from procfs accounting. On the normal musl path, `sysconf(_SC_NPROCESSORS_CONF)` and `sysconf(_SC_NPROCESSORS_ONLN)` derive their result from `sched_getaffinity()`; Kandelo currently exposes only logical CPU 0, so both return 1. That logical topology does not supply CPU-usage accounting.
 
 ## Memory Layout
 

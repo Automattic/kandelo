@@ -40,6 +40,7 @@ const TEST_PROGRAMS = [
   "mount_probe_test.c",
   "getpwent_smoke.c",
   "thread-exit-group.c",
+  "procfs_accounting_test.c",
 ];
 
 /** WAT fixtures used by host/test/wasi-shim.test.ts. */

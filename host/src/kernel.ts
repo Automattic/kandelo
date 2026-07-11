@@ -171,8 +171,10 @@ export interface KernelCallbacks {
   onUdpUnbind?: (handle: number) => number;
   onStdout?: (data: Uint8Array) => void;
   onStderr?: (data: Uint8Array) => void;
-  /** Read up to maxLen bytes from stdin. Return a Uint8Array with available data, or empty/null for EOF. */
+  /** Read up to maxLen bytes from stdin. Empty means not ready; null means EOF. */
   onStdin?: (maxLen: number) => Uint8Array | null;
+  /** Return poll(2) revents for the current process's captured stdin. */
+  onStdinPoll?: (events: number) => number;
   /**
    * Resolve the wasm `Memory` for `pid`. The GL bridge reads cmdbuf bytes
    * directly out of the process's Memory SAB on `host_gl_submit` and
@@ -1108,9 +1110,13 @@ export class WasmPosixKernel {
     // Check shared pipe registry
     const readEntry = this.sharedPipes.get(h);
     if (readEntry) {
+      if (readEntry.end !== "read") return -9; // -EBADF
       const mem = this.getMemoryBuffer();
       const dst = new Uint8Array(mem.buffer, bufPtr, bufLen);
-      return readEntry.pipe.read(dst);
+      const n = readEntry.pipe.read(dst);
+      if (n > 0 || bufLen === 0) return n;
+      // Empty with a live writer is a blocking condition, not EOF.
+      return readEntry.pipe.isWriteOpen() ? -11 : 0;
     }
 
     // stdin
@@ -1152,7 +1158,18 @@ export class WasmPosixKernel {
     // Check shared pipe registry
     const writeEntry = this.sharedPipes.get(h);
     if (writeEntry) {
-      return writeEntry.pipe.write(data);
+      const PIPE_BUF = 4096;
+      if (writeEntry.end !== "write") return -9; // -EBADF
+      if (!writeEntry.pipe.isReadOpen()) return -32; // -EPIPE
+      const free = writeEntry.pipe.capacity() - writeEntry.pipe.available();
+      // POSIX requires writes up to PIPE_BUF to be atomic. Do not let the
+      // ring's partial-write primitive expose a short write for that range.
+      if (bufLen <= PIPE_BUF && free < bufLen) return -11; // -EAGAIN
+      const n = writeEntry.pipe.write(data);
+      if (n > 0 || bufLen === 0) return n;
+      // A full pipe blocks while its reader remains open. Re-check the read
+      // end after the write attempt so a concurrent close reports EPIPE.
+      return writeEntry.pipe.isReadOpen() ? -11 : -32;
     }
 
     // stdout / stderr — callback → process → console fallback chain
@@ -2380,6 +2397,11 @@ export class WasmPosixKernel {
   }
 
   private hostNetPoll(handle: number, events: number): number {
+    // The Rust Wasm adapter tags delegated file descriptors as bitwise-
+    // complemented (negative) handles. Real network handles remain
+    // nonnegative, including network handle 0.
+    if (handle < 0) return this.hostFdPoll(~handle, events);
+
     const POLLIN = 0x0001;
     const POLLOUT = 0x0004;
     if (!this.io.network) return -107; // -ENOTCONN
@@ -2392,6 +2414,46 @@ export class WasmPosixKernel {
       if (typeof e?.errno === "number") return -Math.abs(e.errno);
       return -104; // -ECONNRESET
     }
+  }
+
+  private hostFdPoll(handle: number, events: number): number {
+    const POLLIN = 0x0001;
+    const POLLOUT = 0x0004;
+    const POLLERR = 0x0008;
+    const POLLHUP = 0x0010;
+    const POLLNVAL = 0x0020;
+
+    const pipeEntry = this.sharedPipes.get(handle);
+    if (pipeEntry) {
+      if (pipeEntry.end === "read") {
+        let revents = 0;
+        if ((events & POLLIN) !== 0 && pipeEntry.pipe.available() > 0) {
+          revents |= POLLIN;
+        }
+        // EOF is readable and poll reports HUP even when it was not requested.
+        if (!pipeEntry.pipe.isWriteOpen()) revents |= POLLHUP;
+        return revents;
+      }
+
+      if (!pipeEntry.pipe.isReadOpen()) return POLLERR;
+      return (events & POLLOUT) !== 0
+        && pipeEntry.pipe.available() < pipeEntry.pipe.capacity()
+        ? POLLOUT
+        : 0;
+    }
+
+    // Captured stdio is represented as host-delegated pipes in the kernel.
+    // Stdin readiness is per-process, so the kernel worker supplies it while
+    // currentHandlePid identifies the process whose syscall is in flight.
+    if (handle === 0) {
+      if (!this.callbacks.onStdinPoll) return POLLHUP;
+      return this.callbacks.onStdinPoll(events)
+        & (POLLIN | POLLOUT | POLLERR | POLLHUP | POLLNVAL);
+    }
+    if (handle === 1 || handle === 2) {
+      return events & POLLOUT;
+    }
+    return -9; // -EBADF: the kernel fd outlived its host-owned resource
   }
 
   private hostNetClose(handle: number): number {

@@ -715,6 +715,17 @@ impl HostIO for WasmHostIO {
         }
     }
 
+    fn host_fd_poll(&mut self, handle: i64, events: i16) -> Result<i16, Errno> {
+        if handle < 0 || handle > i32::MAX as i64 {
+            return Err(Errno::EBADF);
+        }
+        // Network handles occupy the nonnegative host_net_poll namespace.
+        // Encode delegated fds as their bitwise complement so fd 0 cannot be
+        // confused with network handle 0. No new Wasm import is needed.
+        let tagged_handle = !(handle as i32);
+        self.host_net_poll(tagged_handle, events)
+    }
+
     fn host_net_close(&mut self, handle: i32) -> Result<(), Errno> {
         let result = unsafe { host_net_close(handle) };
         i32_to_result(result)
@@ -1055,10 +1066,31 @@ use crate::process_table::GLOBAL_PROCESS_TABLE as PROCESS_TABLE;
 // SAFETY: Only called while inside kernel_handle_channel, where syscall
 // dispatch is serialized by the host.
 
-/// Get all active PIDs from the process table.
+/// Get all user-visible procfs PIDs from the process table.
 pub(crate) fn procfs_all_pids() -> Vec<u32> {
     let table = unsafe { &*PROCESS_TABLE.0.get() };
-    table.all_pids()
+    table.procfs_pids()
+}
+
+/// Return effective credentials for a user-visible procfs process.
+pub(crate) fn procfs_credentials_for_pid(pid: u32) -> Option<(u32, u32)> {
+    let table = unsafe { &*PROCESS_TABLE.0.get() };
+    let proc = table.get(pid)?;
+    if proc.state == crate::process::ProcessState::Limbo {
+        return None;
+    }
+    Some((proc.euid, proc.egid))
+}
+
+/// Return whether `tid` is the main thread or a registered worker thread of a
+/// user-visible procfs process.
+pub(crate) fn procfs_tid_exists(pid: u32, tid: u32) -> bool {
+    let table = unsafe { &*PROCESS_TABLE.0.get() };
+    let Some(proc) = table.get(pid) else {
+        return false;
+    };
+    proc.state != crate::process::ProcessState::Limbo
+        && (tid == pid || proc.threads.iter().any(|thread| thread.tid == tid))
 }
 
 /// Generate procfs content for a foreign process (cross-process access).
@@ -1070,8 +1102,12 @@ pub(crate) fn procfs_generate_for_pid(
 ) -> Option<Vec<u8>> {
     let table = unsafe { &*PROCESS_TABLE.0.get() };
     let proc = table.get(pid)?;
+    if proc.state == crate::process::ProcessState::Limbo {
+        return None;
+    }
     match entry {
         crate::procfs::ProcfsEntry::Stat(_) => Some(crate::procfs::generate_stat(proc)),
+        crate::procfs::ProcfsEntry::Statm(_) => Some(crate::procfs::generate_statm(proc)),
         crate::procfs::ProcfsEntry::Status(_) => Some(crate::procfs::generate_status(proc)),
         crate::procfs::ProcfsEntry::Cmdline(_) => Some(crate::procfs::generate_cmdline(proc)),
         crate::procfs::ProcfsEntry::Environ(_) => Some(crate::procfs::generate_environ(proc)),
@@ -1089,6 +1125,9 @@ pub(crate) fn procfs_readlink_for_pid(
 ) -> Option<usize> {
     let table = unsafe { &*PROCESS_TABLE.0.get() };
     let proc = table.get(pid)?;
+    if proc.state == crate::process::ProcessState::Limbo {
+        return None;
+    }
     crate::procfs::procfs_readlink(proc, entry, buf).ok()
 }
 
@@ -1101,7 +1140,10 @@ pub(crate) fn procfs_getdents64_for_pid(
 ) -> Option<(usize, i64, bool)> {
     let table = unsafe { &*PROCESS_TABLE.0.get() };
     let proc = table.get(pid)?;
-    let pids = table.all_pids();
+    if proc.state == crate::process::ProcessState::Limbo {
+        return None;
+    }
+    let pids = table.procfs_pids();
     crate::procfs::procfs_getdents64(proc, ofd_path, buf, offset, &pids).ok()
 }
 
@@ -1918,7 +1960,7 @@ pub extern "C" fn kernel_get_fd_path(pid: u32, fd: i32, buf_ptr: *mut u8, buf_le
 ///     u32  ppid
 ///     u32  uid             -- effective uid for ps-style USER display
 ///     u32  gid             -- effective gid
-///     u64  vsize_bytes    -- sum of mmap-region sizes
+///     u64  vsize_bytes    -- kernel-tracked logical virtual bytes
 ///     u32  state          -- 'R' (running) or 'Z' (zombie) as ASCII
 ///     u32  comm_len
 ///     u32  cmdline_len
@@ -1974,7 +2016,7 @@ pub extern "C" fn kernel_enum_procs(out_ptr: *mut u8, out_len: u32) -> i32 {
         let cmdline = crate::procfs::generate_cmdline(proc);
         let comm = process_name_bytes(proc);
         let state: u32 = b'R' as u32;
-        let vsize: u64 = proc.memory.mappings().iter().map(|r| r.len as u64).sum();
+        let vsize = crate::procfs::logical_virtual_bytes(proc);
 
         write_u32(buf, &mut off, proc.pid);
         write_u32(buf, &mut off, proc.ppid);
@@ -7878,6 +7920,7 @@ pub extern "C" fn kernel_ioctl(fd: i32, request: u32, buf_ptr: *mut u8, buf_len:
 #[unsafe(no_mangle)]
 pub extern "C" fn kernel_prctl(option: u32, arg2: u32, _arg3: *mut u8, _arg4: u32) -> i32 {
     let (_gkl, proc) = unsafe { get_process() };
+    let tid = crate::process_table::current_tid();
     // For PR_SET_NAME (15) and PR_GET_NAME (16), arg2 is the pointer to
     // a 16-byte name buffer.  The other prctl args are option-specific and
     // may be garbage for options that don't use them.
@@ -7888,7 +7931,7 @@ pub extern "C" fn kernel_prctl(option: u32, arg2: u32, _arg3: *mut u8, _arg4: u3
     } else {
         &mut []
     };
-    let result = match syscalls::sys_prctl(proc, option, arg2, buf) {
+    let result = match syscalls::sys_prctl(proc, tid, option, buf) {
         Ok(()) => 0,
         Err(e) => -(e as i32),
     };

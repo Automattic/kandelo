@@ -319,7 +319,7 @@ export interface ProcessSnapshot {
   /** Effective user/group IDs for ps-style USER display. */
   uid: number;
   gid: number;
-  /** Sum of mmap-region sizes for this process, in bytes. */
+  /** Kernel-tracked logical virtual address-space size, in bytes; not RSS. */
   vsizeBytes: number;
   /** Current WebAssembly.Memory buffer size for this process, in bytes. */
   memoryBytes?: number;
@@ -447,6 +447,12 @@ interface ChannelInfo {
    *  retry/sleep/fork/exec path. Prevents the poller from re-entering a
    *  channel that is already in flight. Only used when usePolling=true. */
   handling?: boolean;
+  /** Absolute Date.now() deadline retained for the lifetime of one blocked
+   *  poll/ppoll call. -1 means the call has an infinite timeout. */
+  pollDeadline?: number;
+  /** Host-only timeout substituted on the final kernel pass. The guest's
+   *  original poll/ppoll arguments remain untouched. */
+  pollTimeoutOverride?: number;
 }
 
 /** Info about a registered process. */
@@ -928,6 +934,9 @@ export class CentralizedKernelWorker {
         }
         return chunk;
       },
+      onStdinPoll: (events: number): number => {
+        return this.stdinPollEvents(this.currentHandlePid, events);
+      },
       onAlarm: (seconds: number): number => {
         const pid = this.currentHandlePid;
         if (pid === 0) return 0;
@@ -1242,6 +1251,20 @@ export class CentralizedKernelWorker {
   setStdinData(pid: number, data: Uint8Array): void {
     this.stdinBuffers.set(pid, { data, offset: 0 });
     this.stdinFinite.add(pid); // EOF after data is consumed
+  }
+
+  /** Compute captured-stdin readiness from the same per-process state as read. */
+  private stdinPollEvents(pid: number, events: number): number {
+    const POLLIN = 0x0001;
+    const POLLHUP = 0x0010;
+    const buf = this.stdinBuffers.get(pid);
+    const remaining = buf ? buf.data.length - buf.offset : 0;
+    let revents = 0;
+    if ((events & POLLIN) !== 0 && remaining > 0) revents |= POLLIN;
+    // A finite input source has no future writers. Buffered bytes and HUP can
+    // coexist; once the bytes drain, HUP alone makes read/select observe EOF.
+    if (this.stdinFinite.has(pid)) revents |= POLLHUP;
+    return revents;
   }
 
   /**
@@ -2387,6 +2410,13 @@ export class CentralizedKernelWorker {
       }
     }
 
+    if (
+      (syscallNr === SYS_POLL || syscallNr === SYS_PPOLL)
+      && channel.pollTimeoutOverride !== undefined
+    ) {
+      adjustedArgs[2] = channel.pollTimeoutOverride;
+    }
+
     // Write adjusted args to kernel scratch
     kernelView.setUint32(CH_SYSCALL, syscallNr, true);
     for (let i = 0; i < CH_ARGS_COUNT; i++) {
@@ -2649,6 +2679,10 @@ export class CentralizedKernelWorker {
     retVal: number,
     errVal: number,
   ): void {
+    if (syscallNr === SYS_POLL || syscallNr === SYS_PPOLL) {
+      channel.pollDeadline = undefined;
+      channel.pollTimeoutOverride = undefined;
+    }
     const processView = new DataView(channel.memory.buffer, channel.channelOffset);
 
     // Copy output data from kernel scratch back to process memory
@@ -2975,6 +3009,8 @@ export class CentralizedKernelWorker {
    * Used for thread exit where we need to unblock the worker.
    */
   private completeChannelRaw(channel: ChannelInfo, retVal: number, errVal: number): void {
+    channel.pollDeadline = undefined;
+    channel.pollTimeoutOverride = undefined;
     // Clear handling flag (channel is done — poller can pick it up for next syscall)
     channel.handling = false;
 
@@ -3397,9 +3433,9 @@ export class CentralizedKernelWorker {
       // Re-dispatch to the right handler — SYS_SELECT and SYS_PSELECT6 have
       // different time-struct shapes (timeval vs timespec).
       if (entry.syscallNr === SYS_SELECT) {
-        this.handleSelect(entry.channel, entry.origArgs);
+        this.handleSelect(entry.channel, entry.origArgs, entry.deadline);
       } else {
-        this.handlePselect6(entry.channel, entry.origArgs);
+        this.handlePselect6(entry.channel, entry.origArgs, entry.deadline);
       }
     }
 
@@ -3691,6 +3727,13 @@ export class CentralizedKernelWorker {
     }
   }
 
+  /** Finish an expired poll/ppoll through the kernel so it clears revents
+   *  and restores any temporary ppoll signal mask before host completion. */
+  private finalizePollTimeout(channel: ChannelInfo): void {
+    channel.pollTimeoutOverride = 0;
+    this.retrySyscall(channel);
+  }
+
   private handleBlockingRetry(
     channel: ChannelInfo,
     syscallNr: number,
@@ -3754,7 +3797,20 @@ export class CentralizedKernelWorker {
         }
       }
       if (timeoutMs === 0) {
-        this.completeChannel(channel, syscallNr, origArgs, SYSCALL_ARGS[syscallNr], 0, 0);
+        this.finalizePollTimeout(channel);
+        return;
+      }
+
+      // Keep one absolute deadline for the entire blocked syscall. Safety
+      // timers and readiness wakes re-enter handleSyscall with the original
+      // timeout argument still in the channel; deriving a fresh deadline on
+      // each entry would make a quiet finite poll wait forever.
+      const now = Date.now();
+      const deadline = channel.pollDeadline
+        ?? (timeoutMs > 0 ? now + timeoutMs : -1);
+      channel.pollDeadline = deadline;
+      if (deadline > 0 && now >= deadline) {
+        this.finalizePollTimeout(channel);
         return;
       }
 
@@ -3762,36 +3818,35 @@ export class CentralizedKernelWorker {
       const { pipeIndices, acceptIndices } =
         this.resolvePollReadinessIndices(channel.pid, origArgs);
 
-      // For finite timeout, track the deadline so we return 0 (timeout) when it
-      // expires instead of retrying forever. The nfds=0 case (pure sleep) is
-      // optimized to skip retries entirely — just wait for the deadline.
+      // The nfds=0 case (pure sleep) is optimized to skip safety retries and
+      // wait for the remaining time to the same absolute deadline.
       const nfds = origArgs[1]; // poll(fds, nfds, ...) / ppoll(fds, nfds, ...)
       if (timeoutMs > 0 && nfds === 0) {
         // Pure sleep: no fds to poll, just wait for timeout
+        const remainingMs = Math.max(1, deadline - Date.now());
         const timer = setTimeout(() => {
           this.pendingPollRetries.delete(channel.channelOffset);
           if (this.processes.has(channel.pid)) {
-            this.completeChannel(channel, syscallNr, origArgs, SYSCALL_ARGS[syscallNr], 0, 0);
+            this.finalizePollTimeout(channel);
           }
-        }, timeoutMs);
+        }, remainingMs);
         this.pendingPollRetries.set(channel.channelOffset, {
           timer,
           channel,
           pipeIndices,
           acceptIndices,
           needsSignalSafeWake,
-          deadline: Date.now() + timeoutMs,
+          deadline,
         });
         return;
       }
 
-      const deadline = timeoutMs > 0 ? Date.now() + timeoutMs : -1;
       const retryFn = () => {
         this.pendingPollRetries.delete(channel.channelOffset);
         if (!this.processes.has(channel.pid)) return;
         // Check deadline for finite timeout
         if (deadline > 0 && Date.now() >= deadline) {
-          this.completeChannel(channel, syscallNr, origArgs, SYSCALL_ARGS[syscallNr], 0, 0);
+          this.finalizePollTimeout(channel);
           return;
         }
         this.retrySyscall(channel);
@@ -4222,7 +4277,11 @@ export class CentralizedKernelWorker {
    * own code is `select(0, NULL, NULL, NULL, &tv)` (mysys/my_sleep.c) — the
    * pure-sleep case, fast-path'd to a setTimeout.
    */
-  private handleSelect(channel: ChannelInfo, origArgs: number[]): void {
+  private handleSelect(
+    channel: ChannelInfo,
+    origArgs: number[],
+    existingDeadline?: number,
+  ): void {
     const FD_SET_SIZE = 128;
     const nfds = origArgs[0];
     const readPtr = origArgs[1];
@@ -4246,6 +4305,15 @@ export class CentralizedKernelWorker {
       if (timeoutMs < 0) timeoutMs = 0;
     }
 
+    const deadline = existingDeadline
+      ?? (timeoutMs > 0 ? Date.now() + timeoutMs : -1);
+    const deadlineExpired = existingDeadline !== undefined
+      && deadline > 0
+      && Date.now() >= deadline;
+    const remainingTimeoutMs = deadline > 0
+      ? Math.max(deadline - Date.now(), 0)
+      : timeoutMs;
+
     // Pure-sleep fast path: select(0, NULL, NULL, NULL, &tv) is `my_sleep`.
     // The kernel can't tell us anything new — there are no fds to poll —
     // so we just wait the timeout and return 0. Tracked in
@@ -4253,24 +4321,24 @@ export class CentralizedKernelWorker {
     // (handleKill -> scheduleWakeBlockedRetries -> wakeAllBlockedRetries
     // already iterates pendingSelectRetries entries).
     if (nfds === 0 && readPtr === 0 && writePtr === 0 && exceptPtr === 0) {
-      if (timeoutMs === 0) {
+      if (timeoutMs === 0 || deadlineExpired) {
         this.completeChannel(channel, SYS_SELECT, origArgs, undefined, 0, 0);
         return;
       }
-      const finite = timeoutMs > 0;
+      const finite = deadline > 0;
       const timer = finite
         ? setTimeout(() => {
             this.pendingSelectRetries.delete(channel.channelOffset);
             if (this.processes.has(channel.pid)) {
               this.completeChannel(channel, SYS_SELECT, origArgs, undefined, 0, 0);
             }
-          }, timeoutMs)
+          }, remainingTimeoutMs)
         : (null as any);
       this.pendingSelectRetries.set(channel.channelOffset, {
         timer,
         channel,
         origArgs,
-        deadline: finite ? Date.now() + timeoutMs : -1,
+        deadline,
         needsSignalSafeWake: false,
         syscallNr: SYS_SELECT,
       });
@@ -4307,7 +4375,7 @@ export class CentralizedKernelWorker {
     kernelView.setBigInt64(CH_ARGS + 1 * CH_ARG_SIZE, BigInt(readPtr !== 0 ? dataStart : 0), true);
     kernelView.setBigInt64(CH_ARGS + 2 * CH_ARG_SIZE, BigInt(writePtr !== 0 ? dataStart + FD_SET_SIZE : 0), true);
     kernelView.setBigInt64(CH_ARGS + 3 * CH_ARG_SIZE, BigInt(exceptPtr !== 0 ? dataStart + 2 * FD_SET_SIZE : 0), true);
-    kernelView.setBigInt64(CH_ARGS + 4 * CH_ARG_SIZE, BigInt(timeoutMs), true);
+    kernelView.setBigInt64(CH_ARGS + 4 * CH_ARG_SIZE, BigInt(remainingTimeoutMs), true);
 
     const handleChannel = this.kernelInstance!.exports.kernel_handle_channel as
       (offset: KernelPointer, pid: number) => number;
@@ -4350,17 +4418,12 @@ export class CentralizedKernelWorker {
         this.completeChannel(channel, SYS_SELECT, origArgs, undefined, 0, 0);
         return;
       }
-      const deadline = timeoutMs > 0 ? Date.now() + timeoutMs : -1;
       const retryFn = () => {
         this.pendingSelectRetries.delete(channel.channelOffset);
         if (!this.processes.has(channel.pid)) return;
-        if (deadline > 0 && Date.now() >= deadline) {
-          this.completeChannel(channel, SYS_SELECT, origArgs, undefined, 0, 0);
-          return;
-        }
-        this.handleSelect(channel, origArgs);
+        this.handleSelect(channel, origArgs, deadline);
       };
-      const finite = timeoutMs > 0;
+      const finite = deadline > 0;
       const remainingMs = finite ? Math.max(deadline - Date.now(), 1) : 50;
       const timer = setTimeout(retryFn, Math.min(remainingMs, 50));
       this.pendingSelectRetries.set(channel.channelOffset, {
@@ -4373,7 +4436,11 @@ export class CentralizedKernelWorker {
     this.completeChannel(channel, SYS_SELECT, origArgs, undefined, retVal, errVal);
   }
 
-  private handlePselect6(channel: ChannelInfo, origArgs: number[]): void {
+  private handlePselect6(
+    channel: ChannelInfo,
+    origArgs: number[],
+    existingDeadline?: number,
+  ): void {
     const FD_SET_SIZE = 128;
     const processMem = new Uint8Array(channel.memory.buffer);
     const kernelMem = this.getKernelMem();
@@ -4413,6 +4480,12 @@ export class CentralizedKernelWorker {
       timeoutMs = sec * 1000 + Math.floor(nsec / 1000000);
     }
 
+    const deadline = existingDeadline
+      ?? (timeoutMs > 0 ? Date.now() + timeoutMs : -1);
+    const remainingTimeoutMs = deadline > 0
+      ? Math.max(deadline - Date.now(), 0)
+      : timeoutMs;
+
     // Decode sigmask: pselect6 arg6 → pointer to {sigset_t *mask, size_t size}
     // On wasm32: {u32 mask_ptr, u32 size} = 8 bytes
     // On wasm64: {u64 mask_ptr, u64 size} = 16 bytes
@@ -4449,7 +4522,7 @@ export class CentralizedKernelWorker {
     kernelView.setBigInt64(CH_ARGS + 1 * CH_ARG_SIZE, BigInt(readPtr !== 0 ? dataStart : 0), true);
     kernelView.setBigInt64(CH_ARGS + 2 * CH_ARG_SIZE, BigInt(writePtr !== 0 ? dataStart + FD_SET_SIZE : 0), true);
     kernelView.setBigInt64(CH_ARGS + 3 * CH_ARG_SIZE, BigInt(exceptPtr !== 0 ? dataStart + 2 * FD_SET_SIZE : 0), true);
-    kernelView.setBigInt64(CH_ARGS + 4 * CH_ARG_SIZE, BigInt(timeoutMs), true);
+    kernelView.setBigInt64(CH_ARGS + 4 * CH_ARG_SIZE, BigInt(remainingTimeoutMs), true);
     kernelView.setBigInt64(CH_ARGS + 5 * CH_ARG_SIZE, BigInt(kernelMaskPtr), true);
 
     const handleChannel = this.kernelInstance!.exports.kernel_handle_channel as
@@ -4497,7 +4570,6 @@ export class CentralizedKernelWorker {
         return;
       }
 
-      const deadline = timeoutMs > 0 ? Date.now() + timeoutMs : -1;
       // pselect6 with a non-null sigmask pointer has the same late-signal
       // race as ppoll. See scheduleWakeBlockedRetriesDeferred.
       const needsSignalSafeWake = maskDataPtr !== 0;
@@ -4510,9 +4582,9 @@ export class CentralizedKernelWorker {
           const timer = setTimeout(() => {
             this.pendingSelectRetries.delete(channel.channelOffset);
             if (this.processes.has(channel.pid)) {
-              this.completeChannel(channel, SYS_PSELECT6, origArgs, undefined, 0, 0);
+              this.handlePselect6(channel, origArgs, deadline);
             }
-          }, timeoutMs);
+          }, Math.max(deadline - Date.now(), 0));
           this.pendingSelectRetries.set(channel.channelOffset, {
             timer, channel, origArgs, deadline, needsSignalSafeWake, syscallNr: SYS_PSELECT6,
           });
@@ -4531,13 +4603,10 @@ export class CentralizedKernelWorker {
       const retryFn = () => {
         this.pendingSelectRetries.delete(channel.channelOffset);
         if (!this.processes.has(channel.pid)) return;
-        if (deadline > 0 && Date.now() >= deadline) {
-          this.completeChannel(channel, SYS_PSELECT6, origArgs, undefined, 0, 0);
-          return;
-        }
-        this.handlePselect6(channel, origArgs);
+        this.handlePselect6(channel, origArgs, deadline);
       };
-      const timer = setImmediate(retryFn);
+      const remainingMs = deadline > 0 ? Math.max(deadline - Date.now(), 1) : 50;
+      const timer = setTimeout(retryFn, Math.min(remainingMs, 50));
       this.pendingSelectRetries.set(channel.channelOffset, {
         timer, channel, origArgs, deadline, needsSignalSafeWake, syscallNr: SYS_PSELECT6,
       });
@@ -7110,9 +7179,9 @@ export class CentralizedKernelWorker {
       this.pendingSelectRetries.delete(key);
       if (!this.processes.has(targetPid)) continue;
       if (selectEntry.syscallNr === SYS_SELECT) {
-        this.handleSelect(selectEntry.channel, selectEntry.origArgs);
+        this.handleSelect(selectEntry.channel, selectEntry.origArgs, selectEntry.deadline);
       } else {
-        this.handlePselect6(selectEntry.channel, selectEntry.origArgs);
+        this.handlePselect6(selectEntry.channel, selectEntry.origArgs, selectEntry.deadline);
       }
     }
   }

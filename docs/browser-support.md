@@ -107,7 +107,11 @@ connection in any nginx worker. The standalone nginx image runs with
 
 ### Terminal
 - PTY support with full line discipline
-- Interactive stdin via `appendStdinData` for incremental input
+- Omitted stdin on a non-PTY `boot`, `spawn`, or `spawnFromVfs` launch is a
+  finite empty input stream (immediate EOF); an explicit input buffer is finite
+  and ends in EOF as well
+- Interactive launches deliberately kept open use `appendStdinData` for
+  incremental input; PTY launches remain attached to their terminal stream
 - xterm.js integration via `PtyTerminal`
 
 ### Framebuffer (`/dev/fb0`)
