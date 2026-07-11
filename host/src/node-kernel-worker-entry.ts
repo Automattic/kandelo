@@ -712,6 +712,7 @@ async function handleInit(msg: InitMessage) {
 // --- Spawn ---
 
 function handleSpawn(msg: SpawnMessage) {
+  let registeredPid: number | undefined;
   try {
     // Allocate PID internally — skip any PIDs already occupied by fork children
     while (processes.has(nextSpawnPid)) {
@@ -741,11 +742,12 @@ function handleSpawn(msg: SpawnMessage) {
       maxAddr: layout.maxAddr,
       stdio: msg.pty ? TERMINAL_STDIO : CAPTURED_STDIO,
     });
+    registeredPid = pid;
 
+    kernelWorker.setCredentials(pid, { uid: msg.uid, gid: msg.gid });
     if (msg.cwd) {
       kernelWorker.setCwd(pid, msg.cwd);
     }
-    kernelWorker.setCredentials(pid, { uid: msg.uid, gid: msg.gid });
 
     if (msg.maxAddr != null) {
       kernelWorker.setMaxAddr(pid, msg.maxAddr);
@@ -821,9 +823,13 @@ function handleSpawn(msg: SpawnMessage) {
     });
 
     installCrashSafetyNet(worker, pid);
+    registeredPid = undefined;
 
     respond(msg.requestId, pid);
   } catch (e) {
+    if (registeredPid !== undefined) {
+      kernelWorker.unregisterProcess(registeredPid);
+    }
     respondError(msg.requestId, String(e));
   }
 }

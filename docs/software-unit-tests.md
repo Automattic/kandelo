@@ -427,7 +427,9 @@ part of PR #740 or its current landing branch):
 - Empty pathnames now fail with `ENOENT` instead of resolving to the current
   directory.
 - `getcwd(2)` validates that the current working directory still exists and
-  returns `ENOENT` after it is removed.
+  returns `ENOENT` after it is removed. Cwd and directory OFDs remain
+  pathname-backed, not inode-backed: rename/unlink followed by recreation can
+  make that stored spelling identify a different directory.
 - `chdir(2)` stores a canonical current working directory after successful
   component-wise resolution, so later `getcwd(2)` does not expose literal `.`
   or `..` path components.
