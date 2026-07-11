@@ -7,8 +7,10 @@
 import { describe, it, expect } from "vitest";
 import { runCentralizedProgram } from "../../../../host/test/centralized-test-helper";
 import { tryResolveBinary } from "../../../../host/src/binary-resolver";
+import { COREUTILS_NAMES } from "../../../../images/vfs/lib/init/shell-binaries";
 
 const coreutilsBinary = tryResolveBinary("programs/coreutils.wasm");
+const dashBinary = tryResolveBinary("programs/dash.wasm");
 
 const hasCoreutils = !!coreutilsBinary;
 
@@ -40,6 +42,46 @@ describe.skipIf(!hasCoreutils)("GNU coreutils", () => {
     });
     expect(result.exitCode).toBe(1);
   });
+
+  it("arch reports the wasm32 machine", async () => {
+    const result = await runCentralizedProgram({
+      programPath: coreutilsBinary!,
+      argv: ["arch"],
+      timeout: 10_000,
+    });
+    expect(result.exitCode).toBe(0);
+    expect(result.stdout.trim()).toBe("wasm32");
+  });
+
+  it("kill is included in the multicall binary", async () => {
+    const result = await runCentralizedProgram({
+      programPath: coreutilsBinary!,
+      argv: ["kill", "--version"],
+      timeout: 10_000,
+    });
+    expect(result.exitCode).toBe(0);
+    expect(result.stdout).toContain("kill (GNU coreutils) 9.6");
+  });
+
+  it.skipIf(!dashBinary)(
+    "executes arch and kill through /bin aliases",
+    async () => {
+      const execPrograms = new Map(
+        COREUTILS_NAMES.map(
+          (name) => [`/bin/${name}`, coreutilsBinary!] as const,
+        ),
+      );
+      const result = await runCentralizedProgram({
+        programPath: dashBinary!,
+        argv: ["dash", "-c", "/bin/arch; /bin/kill --version"],
+        execPrograms,
+        timeout: 10_000,
+      });
+      expect(result.exitCode).toBe(0);
+      expect(result.stdout).toContain("wasm32\n");
+      expect(result.stdout).toContain("kill (GNU coreutils) 9.6");
+    },
+  );
 
   it("printf formats output", async () => {
     const result = await runCentralizedProgram({

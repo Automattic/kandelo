@@ -16,6 +16,7 @@ import { readFileSync, existsSync, statSync } from "fs";
 import { resolve, dirname, isAbsolute, relative } from "path";
 import { NodeKernelHost } from "../host/src/node-kernel-host";
 import { tryResolveBinary } from "../host/src/binary-resolver";
+import { COREUTILS_NAMES } from "../images/vfs/lib/init/shell-binaries";
 
 const repoRoot = resolve(dirname(new URL(import.meta.url).pathname), "..");
 
@@ -61,15 +62,7 @@ const testfixtureWasm = tryResolveBinary("programs/sqlite/testfixture.wasm");
 const mysqltestWasm = tryResolveBinary("programs/mariadb/mysqltest.wasm");
 const echoWasm = tryResolveBinary("programs/echo.wasm") ?? resolve(repoRoot, "examples/echo.wasm");
 
-// GNU coreutils multi-call binary supports all of these as argv[0]
-const coreutilsNames = [
-    "cat", "ls", "cp", "mv", "rm", "mkdir", "rmdir", "ln", "chmod", "chown",
-    "head", "tail", "wc", "sort", "uniq", "tr", "cut", "paste", "tee",
-    "true", "false", "yes", "env", "printenv", "printf", "expr", "test", "[",
-    "basename", "dirname", "readlink", "realpath", "stat", "touch", "date",
-    "sleep", "id", "whoami", "uname", "hostname", "pwd", "dd", "od", "md5sum",
-    "sha256sum", "base64", "seq", "factor", "nproc", "du", "df",
-];
+const coreutilsNames = [...COREUTILS_NAMES, "["];
 
 // Values may be null when a program isn't fetched/built locally.
 // Consumers filter out null entries before use.

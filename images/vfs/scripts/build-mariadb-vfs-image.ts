@@ -24,10 +24,11 @@ import {
   writeVfsBinary,
   symlink,
 } from "../../../host/src/vfs/image-helpers";
-import { resolveBinary, tryResolveBinary, findRepoRoot } from "../../../host/src/binary-resolver";
+import { resolveBinary, findRepoRoot } from "../../../host/src/binary-resolver";
 import { saveImage } from "./vfs-image-helpers";
 import { addDinitInit, type DinitService } from "./dinit-image-helpers";
 import { ensureSourceExtract } from "./source-extract-helper";
+import { COREUTILS_NAMES } from "../lib/init/shell-binaries";
 
 const REPO_ROOT = findRepoRoot();
 const useWasm64 = process.argv.includes("--wasm64");
@@ -52,24 +53,15 @@ const SYSTEM_DATA_PATH = existsSync(join(MARIADB_LEGACY_INSTALL, "share/mysql/my
   ? join(MARIADB_LEGACY_INSTALL, "share/mysql/mysql_system_tables_data.sql")
   : join(MARIADB_SOURCE, "scripts/mysql_system_tables_data.sql");
 const DASH_PATH = resolveBinary("programs/dash.wasm");
-// Coreutils is baked into the VFS so users get an immediate `ls`/`cat`
-// in the shell demo without waiting for a lazy-load fetch. Not strictly
-// required by the bootstrap wrapper (which is just `exec mariadbd < sql`).
-const COREUTILS_PATH = tryResolveBinary("programs/coreutils.wasm");
+// Coreutils is a declared package dependency and is baked into the VFS so
+// every emitted symlink has a real multicall target.
+const COREUTILS_PATH = resolveBinary("programs/coreutils.wasm");
 
 const OUT_FILE = useWasm64
   ? join(REPO_ROOT, "apps/browser-demos/public/mariadb-64.vfs.zst")
   : join(REPO_ROOT, "apps/browser-demos/public/mariadb.vfs.zst");
 
-const COREUTILS_SYMLINK_NAMES = [
-  "ls", "cat", "cp", "mv", "rm", "echo", "mkdir", "rmdir", "touch", "pwd",
-  "head", "tail", "wc", "sort", "uniq", "cut", "tr", "date", "basename",
-  "dirname", "chmod", "chown", "ln", "readlink", "true", "false", "yes",
-  "sleep", "env", "printenv", "id", "whoami", "hostname", "uname", "stat",
-  "df", "du", "tee", "nl", "paste", "tac", "rev", "expand", "unexpand",
-  "fold", "fmt", "pr", "od", "hexdump", "xxd", "sha256sum", "sha512sum",
-  "md5sum", "seq", "test", "[",
-];
+const COREUTILS_SYMLINK_NAMES = [...COREUTILS_NAMES, "["];
 
 function commonMariadbArgs(engine: string): string[] {
   return [
@@ -175,13 +167,7 @@ async function main() {
     symlink(fs, "/bin/dash", "/usr/bin/dash");
     symlink(fs, "/bin/dash", "/usr/bin/sh");
   }
-  // Bake coreutils.wasm so the shell demo has `ls`/`cat`/etc. without
-  // waiting for a lazy-load fetch on first invocation.
-  if (COREUTILS_PATH && existsSync(COREUTILS_PATH)) {
-    writeVfsBinary(fs, "/bin/coreutils", new Uint8Array(readFileSync(COREUTILS_PATH)));
-  } else {
-    console.warn("  Warning: coreutils.wasm not found — shell demo will lack /bin/ls etc.");
-  }
+  writeVfsBinary(fs, "/bin/coreutils", new Uint8Array(readFileSync(COREUTILS_PATH)));
   for (const name of COREUTILS_SYMLINK_NAMES) {
     symlink(fs, "/bin/coreutils", `/bin/${name}`);
     symlink(fs, "/bin/coreutils", `/usr/bin/${name}`);

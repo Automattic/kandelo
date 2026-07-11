@@ -1702,6 +1702,7 @@ clean_target() {
             warn "Cleaned bash" ;;
         coreutils)
             rm -rf "$REPO_ROOT/packages/registry/coreutils/coreutils-src" \
+                   "$REPO_ROOT"/packages/registry/coreutils/coreutils-*-src \
                    "$REPO_ROOT/packages/registry/coreutils/bin"
             warn "Cleaned coreutils" ;;
         grep)

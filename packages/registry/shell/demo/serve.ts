@@ -15,6 +15,7 @@ import { resolve, dirname } from "path";
 import { fileURLToPath } from "url";
 import { NodeKernelHost } from "../../../../host/src/node-kernel-host";
 import { tryResolveBinary } from "../../../../host/src/binary-resolver";
+import { COREUTILS_NAMES } from "../../../../images/vfs/lib/init/shell-binaries";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const repoRoot = resolve(__dirname, "../../../..");
@@ -63,29 +64,13 @@ async function main() {
   // Load coreutils single binary (if available)
   const coreutilsBinary = tryResolveBinary("programs/coreutils.wasm");
   if (coreutilsBinary) {
-    const coreutilsNames = [
-      "arch", "b2sum", "base32", "base64", "basename", "basenc", "cat",
-      "chcon", "chgrp", "chmod", "chown", "chroot", "cksum", "comm", "cp",
-      "csplit", "cut", "date", "dd", "df", "dir", "dircolors", "dirname",
-      "du", "echo", "env", "expand", "expr", "factor", "false", "fmt",
-      "fold", "groups", "head", "hostid", "id", "install", "join", "link",
-      "ln", "logname", "ls", "md5sum", "mkdir", "mkfifo", "mknod", "mktemp",
-      "mv", "nice", "nl", "nohup", "nproc", "numfmt", "od", "paste",
-      "pathchk", "pr", "printenv", "printf", "ptx", "pwd", "readlink",
-      "realpath", "rm", "rmdir", "runcon", "seq", "sha1sum", "sha224sum",
-      "sha256sum", "sha384sum", "sha512sum", "shred", "shuf", "sleep",
-      "sort", "split", "stat", "stty", "sum", "sync", "tac", "tail",
-      "tee", "test", "timeout", "touch", "tr", "true", "truncate", "tsort",
-      "tty", "uname", "unexpand", "uniq", "unlink", "vdir", "wc", "whoami",
-      "yes",
-    ];
-    for (const name of coreutilsNames) {
+    for (const name of COREUTILS_NAMES) {
       execPrograms[`/bin/${name}`] = coreutilsBinary;
       execPrograms[`/usr/bin/${name}`] = coreutilsBinary;
     }
     execPrograms["/bin/["] = coreutilsBinary;
     execPrograms["/usr/bin/["] = coreutilsBinary;
-    console.error(`Loaded ${coreutilsNames.length} coreutils commands`);
+    console.error(`Loaded ${COREUTILS_NAMES.length} coreutils commands`);
   }
 
   // Load GNU grep (if available)
