@@ -3659,23 +3659,25 @@ pub fn sys_fstat(proc: &mut Process, host: &mut dyn HostIO, fd: i32) -> Result<W
             .and_then(|s| s.as_ref())
             .map_or(0, |d| d.len() as u64);
         if let Some(entry) = crate::procfs::match_procfs(&ofd.path, proc.pid) {
-            Ok(crate::procfs::procfs_stat(&entry, size, true))
+            crate::procfs::procfs_stat_for_process(proc, &entry, size, true)
         } else {
-            Ok(crate::procfs::procfs_stat(
+            crate::procfs::procfs_stat_for_process(
+                proc,
                 &crate::procfs::ProcfsEntry::Stat(proc.pid),
                 size,
                 true,
-            ))
+            )
         }
     } else if ofd.host_handle == crate::procfs::PROCFS_DIR_HANDLE {
         if let Some(entry) = crate::procfs::match_procfs(&ofd.path, proc.pid) {
-            Ok(crate::procfs::procfs_stat(&entry, 0, true))
+            crate::procfs::procfs_stat_for_process(proc, &entry, 0, true)
         } else {
-            Ok(crate::procfs::procfs_stat(
+            crate::procfs::procfs_stat_for_process(
+                proc,
                 &crate::procfs::ProcfsEntry::Root,
                 0,
                 true,
-            ))
+            )
         }
     } else if ofd.host_handle == crate::devfs::DEVFS_DIR_HANDLE {
         Ok(
@@ -4038,7 +4040,7 @@ pub fn sys_stat(proc: &mut Process, host: &mut dyn HostIO, path: &[u8]) -> Resul
         });
     }
     if let Some(entry) = crate::procfs::match_procfs(&resolved, proc.pid) {
-        return Ok(crate::procfs::procfs_stat(&entry, 0, true));
+        return crate::procfs::procfs_stat_for_process(proc, &entry, 0, true);
     }
     if let Some(st) = crate::devfs::match_devfs_stat(&resolved, proc.euid, proc.egid) {
         return Ok(st);
@@ -4106,7 +4108,7 @@ pub fn sys_lstat(
         });
     }
     if let Some(entry) = crate::procfs::match_procfs(&resolved, proc.pid) {
-        return Ok(crate::procfs::procfs_stat(&entry, 0, false));
+        return crate::procfs::procfs_stat_for_process(proc, &entry, 0, false);
     }
     if let Some(st) = crate::devfs::match_devfs_stat(&resolved, proc.euid, proc.egid) {
         return Ok(st);
@@ -4302,9 +4304,13 @@ pub fn sys_access(
     {
         return Ok(());
     }
-    if crate::procfs::match_procfs(&resolved, proc.pid).is_some() {
-        // Procfs entries are read-only: allow R_OK/F_OK/X_OK(dirs), deny W_OK
-        if amode & 0o2 != 0 {
+    if let Some(entry) = crate::procfs::match_procfs(&resolved, proc.pid) {
+        // Validate the parsed PID/TID before preserving procfs's existing
+        // read/execute access behavior.
+        crate::procfs::procfs_stat_for_process(proc, &entry, 0, true)?;
+        // Procfs is mounted read-only even for uid 0; mode-bit privilege
+        // bypass must not turn W_OK into a writable-filesystem claim.
+        if amode & W_OK != 0 {
             return Err(Errno::EACCES);
         }
         return Ok(());
@@ -4320,7 +4326,7 @@ pub fn sys_chdir(proc: &mut Process, host: &mut dyn HostIO, path: &[u8]) -> Resu
     let resolved = crate::path::resolve_path(path, &proc.cwd);
     // Check virtual filesystems first (procfs, devfs), then fall through to host
     if let Some(entry) = crate::procfs::match_procfs(&resolved, proc.pid) {
-        let st = crate::procfs::procfs_stat(&entry, 0, true);
+        let st = crate::procfs::procfs_stat_for_process(proc, &entry, 0, true)?;
         if st.st_mode & wasm_posix_shared::mode::S_IFMT != wasm_posix_shared::mode::S_IFDIR {
             return Err(Errno::ENOTDIR);
         }
@@ -8247,7 +8253,7 @@ pub fn sys_fstatat(
     }
     if let Some(entry) = crate::procfs::match_procfs(&resolved, proc.pid) {
         let follow = flags & AT_SYMLINK_NOFOLLOW == 0;
-        return Ok(crate::procfs::procfs_stat(&entry, 0, follow));
+        return crate::procfs::procfs_stat_for_process(proc, &entry, 0, follow);
     }
     if let Some(st) = crate::devfs::match_devfs_stat(&resolved, proc.euid, proc.egid) {
         return Ok(st);

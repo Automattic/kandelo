@@ -1055,10 +1055,31 @@ use crate::process_table::GLOBAL_PROCESS_TABLE as PROCESS_TABLE;
 // SAFETY: Only called while inside kernel_handle_channel, where syscall
 // dispatch is serialized by the host.
 
-/// Get all active PIDs from the process table.
+/// Get all user-visible procfs PIDs from the process table.
 pub(crate) fn procfs_all_pids() -> Vec<u32> {
     let table = unsafe { &*PROCESS_TABLE.0.get() };
-    table.all_pids()
+    table.procfs_pids()
+}
+
+/// Return effective credentials for a user-visible procfs process.
+pub(crate) fn procfs_credentials_for_pid(pid: u32) -> Option<(u32, u32)> {
+    let table = unsafe { &*PROCESS_TABLE.0.get() };
+    let proc = table.get(pid)?;
+    if proc.state == crate::process::ProcessState::Limbo {
+        return None;
+    }
+    Some((proc.euid, proc.egid))
+}
+
+/// Return whether `tid` is the main thread or a registered worker thread of a
+/// user-visible procfs process.
+pub(crate) fn procfs_tid_exists(pid: u32, tid: u32) -> bool {
+    let table = unsafe { &*PROCESS_TABLE.0.get() };
+    let Some(proc) = table.get(pid) else {
+        return false;
+    };
+    proc.state != crate::process::ProcessState::Limbo
+        && (tid == pid || proc.threads.iter().any(|thread| thread.tid == tid))
 }
 
 /// Generate procfs content for a foreign process (cross-process access).
@@ -1070,8 +1091,12 @@ pub(crate) fn procfs_generate_for_pid(
 ) -> Option<Vec<u8>> {
     let table = unsafe { &*PROCESS_TABLE.0.get() };
     let proc = table.get(pid)?;
+    if proc.state == crate::process::ProcessState::Limbo {
+        return None;
+    }
     match entry {
         crate::procfs::ProcfsEntry::Stat(_) => Some(crate::procfs::generate_stat(proc)),
+        crate::procfs::ProcfsEntry::Statm(_) => Some(crate::procfs::generate_statm(proc)),
         crate::procfs::ProcfsEntry::Status(_) => Some(crate::procfs::generate_status(proc)),
         crate::procfs::ProcfsEntry::Cmdline(_) => Some(crate::procfs::generate_cmdline(proc)),
         crate::procfs::ProcfsEntry::Environ(_) => Some(crate::procfs::generate_environ(proc)),
@@ -1089,6 +1114,9 @@ pub(crate) fn procfs_readlink_for_pid(
 ) -> Option<usize> {
     let table = unsafe { &*PROCESS_TABLE.0.get() };
     let proc = table.get(pid)?;
+    if proc.state == crate::process::ProcessState::Limbo {
+        return None;
+    }
     crate::procfs::procfs_readlink(proc, entry, buf).ok()
 }
 
@@ -1101,7 +1129,10 @@ pub(crate) fn procfs_getdents64_for_pid(
 ) -> Option<(usize, i64, bool)> {
     let table = unsafe { &*PROCESS_TABLE.0.get() };
     let proc = table.get(pid)?;
-    let pids = table.all_pids();
+    if proc.state == crate::process::ProcessState::Limbo {
+        return None;
+    }
+    let pids = table.procfs_pids();
     crate::procfs::procfs_getdents64(proc, ofd_path, buf, offset, &pids).ok()
 }
 
@@ -1918,7 +1949,7 @@ pub extern "C" fn kernel_get_fd_path(pid: u32, fd: i32, buf_ptr: *mut u8, buf_le
 ///     u32  ppid
 ///     u32  uid             -- effective uid for ps-style USER display
 ///     u32  gid             -- effective gid
-///     u64  vsize_bytes    -- sum of mmap-region sizes
+///     u64  vsize_bytes    -- kernel-tracked logical virtual bytes
 ///     u32  state          -- 'R' (running) or 'Z' (zombie) as ASCII
 ///     u32  comm_len
 ///     u32  cmdline_len
@@ -1974,7 +2005,7 @@ pub extern "C" fn kernel_enum_procs(out_ptr: *mut u8, out_len: u32) -> i32 {
         let cmdline = crate::procfs::generate_cmdline(proc);
         let comm = process_name_bytes(proc);
         let state: u32 = b'R' as u32;
-        let vsize: u64 = proc.memory.mappings().iter().map(|r| r.len as u64).sum();
+        let vsize = crate::procfs::logical_virtual_bytes(proc);
 
         write_u32(buf, &mut off, proc.pid);
         write_u32(buf, &mut off, proc.ppid);

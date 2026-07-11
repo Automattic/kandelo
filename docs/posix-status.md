@@ -147,6 +147,21 @@ Kandelo uses a single kernel Wasm instance that holds a `ProcessTable` and serve
 | `getcontext()` / `setcontext()` / `makecontext()` / `swapcontext()` | Unsupported | Userspace stack-switching primitives, deprecated in POSIX.1-2008, not planned. See the "ucontext API unsupported" row under [Wasm-Inherent gaps](#wasm-inherent--gaps-that-cannot-be-fully-resolved-in-wasm) for rationale. |
 | `fork()` called from a C++/Ruby exception catch handler | Full | B1 stages 1+2 + Phase 6 catch-handler resume machinery (per-arm scratch space in the save buffer, multi-arm rewind dispatch, `$capture`-block emission, rewind-throw stub via `_wpk_fork_exnref_stash`) close fork-from-plain-catch under **modern wasm-EH lowering** (`try_table` / `catch_ref` / `throw_ref`). The fierce-wire mega-PR (PR #307) commit 9 + 2026-05-14 followup flipped the SDK + libcxx (revision 4) to modern EH explicitly (LLVM 21's `-wasm-use-legacy-eh` defaults to `true`, so removing the prior `=true` override silently kept legacy lowering — the explicit `=false` is required). Test coverage in `host/test/fork-instrument-coverage.test.ts`: C-02 fork-in-catch, C-03 multi-arm catch, C-04 throw-from-outside, C-05 modern EH single typed catch, C-06 modern multi-target `*_ref`, C-07 modern multi-arm plain, C-10 fork in both try body + handler, C-11 post-catch fork (SpiderMonkey-spike test (b)), S-08 throw-from-outside + fork-in-catch — all 9 PASS. Combined with C-01 (fork-in-try-body), the catch-handler coverage is comprehensive for both legacy-EH-pattern and modern-EH-pattern C++. Funcref/externref catch operands (A4) remain on the not-yet-supported list — see [docs/fork-instrumentation.md §Not guaranteed](fork-instrumentation.md#not-guaranteed-unsupported-patterns). |
 
+### Procfs (Linux compatibility, not POSIX)
+
+Procfs is a deliberately partial Linux-compatibility surface, not a POSIX API. Existing identity, environment, mapping, fd, and network nodes remain available; the accounting-related surface has these limits:
+
+| Surface | Status | Notes |
+|---------|--------|-------|
+| `/proc/stat` | Partial | Exposes a Linux-shaped aggregate CPU line. All CPU counters are zero because CPU-time accounting is unavailable; they do not mean measured zero work. |
+| `/proc/meminfo` | Partial | Exposes the expected memory/cache headings with zero values. Zero means physical system-memory accounting is unavailable, not that the machine has zero bytes. |
+| `/proc/<pid>/stat` and `status` | Partial | Identity, nice value, thread count, and logical virtual size are authoritative. CPU-time and RSS fields remain zero because those measurements are unavailable. |
+| `/proc/<pid>/statm` | Partial | Field 1 reports logical virtual size in 64 KiB pages. Resident, shared, text, library, data/stack, and dirty fields (2-7) are zero placeholders for unavailable accounting. |
+| `/proc/<pid>/task` | Partial | Enumerates the main PID and registered worker-thread TIDs. This is the implemented task view, not a claim of complete Linux per-thread procfs semantics. |
+| PID visibility and ownership | Partial | Running processes and unreaped zombies are visible. Resource-free `Limbo` process-group placeholders are excluded. Every PID-scoped node is owned by the target process's effective uid and gid; global nodes are root-owned. |
+
+The virtual-size value is logical address-space size: the prefix through the current program break plus the non-overlapping union of active guest mappings. It is not resident or physical memory usage.
+
 ## Signals
 
 | Function | Status | Notes |
@@ -362,7 +377,7 @@ All virtual devices return synthetic `stat()` with `S_IFCHR | 0666`, determinist
 | Function | Status | Notes |
 |----------|--------|-------|
 | `uname()` | Full | Returns sysname="wasm-posix", nodename="localhost", release="1.0.0", version="kandelo", machine="wasm32". 5 x 65-byte null-terminated strings. |
-| `sysconf()` | Partial | Handles _SC_CHILD_MAX, _SC_CLK_TCK=100, _SC_PAGE_SIZE=65536, _SC_OPEN_MAX=1024, _SC_NPROCESSORS_ONLN=1, _SC_NPROCESSORS_CONF=1, _SC_MONOTONIC_CLOCK=1, _SC_THREAD_SAFE_FUNCTIONS=1, plus 100+ POSIX.1-2024 constants via musl overlay. Unknown names return EINVAL. |
+| `sysconf()` | Partial | Handles _SC_CHILD_MAX, _SC_CLK_TCK=100, _SC_PAGE_SIZE=65536, _SC_OPEN_MAX=1024, _SC_MONOTONIC_CLOCK=1, _SC_THREAD_SAFE_FUNCTIONS=1, plus 100+ POSIX.1-2024 constants via the musl overlay. For the normal `_SC_NPROCESSORS_CONF` and `_SC_NPROCESSORS_ONLN` queries, musl counts `sched_getaffinity()` bits; Kandelo exposes logical CPU 0 only, so both return 1. Unknown names return EINVAL. |
 | `umask()` | Full | Set file creation mask, returns previous mask. Default 0o022. Applied in open() and mkdir(). Masked to 0o777. |
 | `getrlimit()` | Full | Returns (soft, hard) resource limits. Defaults: NOFILE=(1024,4096), STACK=(8MB,infinity), others infinity. |
 | `setrlimit()` | Partial | Sets resource limits. Validates soft <= hard. RLIMIT_NOFILE enforced via FdTable max_fds sync. RLIMIT_FSIZE enforced in write()/ftruncate() (EFBIG + SIGXFSZ). |

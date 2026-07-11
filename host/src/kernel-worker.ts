@@ -319,7 +319,7 @@ export interface ProcessSnapshot {
   /** Effective user/group IDs for ps-style USER display. */
   uid: number;
   gid: number;
-  /** Sum of mmap-region sizes for this process, in bytes. */
+  /** Kernel-tracked logical virtual address-space size, in bytes; not RSS. */
   vsizeBytes: number;
   /** Current WebAssembly.Memory buffer size for this process, in bytes. */
   memoryBytes?: number;

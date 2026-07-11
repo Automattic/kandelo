@@ -309,6 +309,16 @@ fell back to fork.
 
 Threads share memory with the parent (CLONE_VM) but have their own channel, fork-save scratch page, and TLS/control page.
 
+### Procfs process view and accounting boundaries
+
+Kandelo exposes a deliberately partial Linux-compatible procfs backed by the authoritative `ProcessTable`. `/proc` includes global `/proc/stat` and `/proc/meminfo` nodes and per-process nodes such as `/proc/<pid>/stat`, `status`, `statm`, and `task`. PID-scoped nodes use the target process's effective uid and gid as their filesystem owner; global nodes remain root-owned. The visible PID set includes running processes and unreaped exited zombies. It excludes `ProcessState::Limbo` entries, which retain process-group identity after the user-visible process and its resources are gone.
+
+Virtual size is logical address-space accounting, not physical memory accounting. `logical_virtual_bytes` counts the contiguous address-space prefix through the current program break (including the loaded program, stack, and required main control pages), then adds the union of active guest `mmap` ranges without double-counting overlaps. Host-reserved ranges above the break are excluded unless they are also active guest mappings. The result is reported as bytes in `/proc/<pid>/stat`, rounded-up kilobytes in `status`'s `VmSize`, and 64 KiB logical pages in the first field of `statm`.
+
+CPU time, physical residency, and system-memory/cache accounting are not implemented. Consequently, the CPU counters in `/proc/stat`, RSS-related process fields (including `VmRSS` and fields 2-7 of `statm`), and memory totals in `/proc/meminfo` are zero placeholders that explicitly mean **unavailable**, not measured zero usage. `/proc/<pid>/task` enumerates the main PID and registered worker-thread TIDs, but this does not imply complete Linux procfs coverage.
+
+Processor-count queries are separate from procfs accounting. On the normal musl path, `sysconf(_SC_NPROCESSORS_CONF)` and `sysconf(_SC_NPROCESSORS_ONLN)` derive their result from `sched_getaffinity()`; Kandelo currently exposes only logical CPU 0, so both return 1. That logical topology does not supply CPU-usage accounting.
+
 ## Memory Layout
 
 Each process has a WebAssembly linear memory (shared, up to 1GB by default). The host does not instantiate that memory at the maximum size. It creates the memory large enough for the wasm import minimum plus the main-thread control pages, then grows it after successful guest allocation syscalls or after dynamically reserving a pthread control slot.
