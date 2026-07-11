@@ -518,6 +518,20 @@ association, shutdown, close, and pathname changes wake blocked writers and
 writable readiness waiters so they can observe either capacity or the new
 immediate error.
 
+IPv4 limited broadcast (`255.255.255.255`) is permission-gated: a datagram
+send without `SO_BROADCAST` fails with `EACCES`. Kandelo does not provide raw
+broadcast delivery, so enabling the option only passes that gate; the send then
+reaches the active routing/backend boundary. Directed broadcast addresses are
+not modeled.
+
+For AF_INET, AF_INET6, and AF_UNIX datagrams, Linux's input `MSG_TRUNC`
+extension reports the original datagram length while copying no more than the
+supplied buffer. Without `MSG_PEEK`, the datagram is consumed and any uncopied
+suffix is discarded; with `MSG_PEEK`, it remains queued. This receive-side
+truncation does not weaken AF_UNIX send reliability or its full-queue
+backpressure contract above. The current `recvmsg()` wrapper does not populate
+output `msg_flags`, so it cannot report output `MSG_TRUNC` there.
+
 Loopback addresses are scoped to one Kandelo machine, but not every socket path is machine-wide yet. IPv4 and IPv6 loopback TCP and AF_UNIX streams have explicit cross-process paths. Current in-kernel IPv4/IPv6 loopback datagrams, AF_UNIX datagrams, and IPv4 multicast delivery are confined to the sending process. Forked sockets retain their kernel-local bind reservations and local lookup targets, but host-backed UDP endpoint registrations are not yet shared or transferred between processes. AF_INET6 represents `sockaddr_in6`, supports `::`/`::1`, and models dual-stack wildcard stream-port reservation, but it has no external or virtual-network IPv6 transport and no IPv6 multicast delivery. AF_INET6 datagrams therefore report `IPV6_V6ONLY=1`; disabling it fails until dual-stack datagram routing exists.
 
 Routed virtual IPv4 addresses are explicit backend addresses. For example, the browser network lab attaches separate machines to addresses such as `10.88.0.2`, `10.88.0.3`, and `10.88.0.4`; traffic to `127.0.0.1` stays inside one machine, while traffic to those virtual addresses can cross machines through the backend.
