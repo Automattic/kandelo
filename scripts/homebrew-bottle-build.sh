@@ -8,6 +8,8 @@ FORMULA=""
 ARCH=""
 OUT_DIR=""
 BOTTLE_ROOT_URL=""
+BUILD_USER="${KANDELO_HOMEBREW_BUILD_USER:-}"
+SHARED_TEMP="${KANDELO_HOMEBREW_SHARED_TEMP:-}"
 
 usage() {
   cat >&2 <<'EOF'
@@ -18,7 +20,10 @@ absolute Homebrew executable named by HOMEBREW_BREW_FILE, avoiding host PATH
 leakage while still using the Homebrew installation provided by the workflow.
 The Homebrew checkout is patched in a temporary worktree. A short-lived
 launcher symlink under the selected Homebrew prefix keeps that prefix and its
-Cellar intact while loading code from the patched worktree.
+Cellar intact while loading code from the patched worktree. CI also requires a
+dedicated build user, protected systemd/sudo process boundaries, and a
+root-provisioned shared temporary directory through the KANDELO_HOMEBREW_*
+workflow environment.
 EOF
 }
 
@@ -87,11 +92,27 @@ KANDELO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 PATCH_FILE="$KANDELO_ROOT/homebrew/patches/0001-add-kandelo-wasm-bottle-tags.patch"
 . "$KANDELO_ROOT/scripts/homebrew-patched-launcher.sh"
 mkdir -p "$OUT_DIR/bottles"
-WORK_DIR="$(mktemp -d)"
+if [ -n "$BUILD_USER" ]; then
+  if [ ! -d "$SHARED_TEMP" ] || [ -L "$SHARED_TEMP" ]; then
+    echo "homebrew-bottle-build.sh: isolated Formula execution requires a real shared temp root" >&2
+    exit 2
+  fi
+  SHARED_TEMP="$(cd "$SHARED_TEMP" && pwd -P)"
+  WORK_DIR="$(mktemp -d "$SHARED_TEMP/homebrew-build.XXXXXX")"
+else
+  WORK_DIR="$(mktemp -d)"
+fi
+CONTROL_DIR="$(mktemp -d "$OUT_DIR/.control.XXXXXX")"
+chmod 0700 "$CONTROL_DIR"
 
 cleanup() {
   homebrew_patched_launcher_cleanup
-  rm -rf "$WORK_DIR"
+  rm -rf "$CONTROL_DIR"
+  if [ -n "$BUILD_USER" ] && [ -n "${KANDELO_HOMEBREW_SUDO_BIN:-}" ]; then
+    "$KANDELO_HOMEBREW_SUDO_BIN" rm -rf "$WORK_DIR" >/dev/null 2>&1 || true
+  else
+    rm -rf "$WORK_DIR"
+  fi
 }
 trap cleanup EXIT
 
@@ -121,27 +142,52 @@ export HOMEBREW_KANDELO_ROOT="$KANDELO_ROOT"
 export HOMEBREW_KANDELO_NODE="$(command -v node)"
 export HOMEBREW_KANDELO_LLVM_BIN="${LLVM_BIN:-${WASM_POSIX_LLVM_DIR:-}}"
 
+unset HOMEBREW_KANDELO_BOTTLE_TAG KANDELO_HOMEBREW_BOTTLE_TAG
+
+run_brew_for_kandelo_bottles() {
+  HOMEBREW_KANDELO_BOTTLE_TAG="$BOTTLE_TAG" \
+  KANDELO_HOMEBREW_BOTTLE_TAG="$BOTTLE_TAG" \
+    "$@"
+}
+
+INSTALL_LOG="$CONTROL_DIR/brew-install.log"
+DEPENDENCY_LIST="$CONTROL_DIR/same-tap-dependencies.txt"
+DEPENDENCY_PROVENANCE="$OUT_DIR/dependency-provenance.json"
+: >"$INSTALL_LOG"
+: >"$DEPENDENCY_LIST"
+for attempt in 1 2 3; do
+  : >"$CONTROL_DIR/brew-install-attempt-${attempt}.log"
+done
+chmod 0600 "$INSTALL_LOG" "$DEPENDENCY_LIST" \
+  "$CONTROL_DIR"/brew-install-attempt-*.log
+
 "$BREW_BIN" tap "$TAP_NAME" "$TAP_ROOT"
 "$BREW_BIN" trust --tap "$TAP_NAME"
 FORMULA_REF="$TAP_NAME/$FORMULA"
 TAPPED_TAP_ROOT="$("$BREW_BIN" --repository "$TAP_NAME")"
 TAPPED_FORMULA_PATH="$TAPPED_TAP_ROOT/Formula/$FORMULA.rb"
-INSTALL_LOG="$WORK_DIR/brew-install.log"
-DEPENDENCY_LIST="$WORK_DIR/same-tap-dependencies.txt"
-DEPENDENCY_PROVENANCE="$OUT_DIR/dependency-provenance.json"
 
 same_file() {
   [ -e "$1" ] && [ -e "$2" ] && [ "$1" -ef "$2" ]
 }
 
-formula_has_bottle_tag() {
-  local formula_path="$1"
-  [ -f "$formula_path" ] && grep -Eq "${BOTTLE_TAG}: \"[0-9a-f]{64}\"" "$formula_path"
-}
-
 if ! same_file "$FORMULA_PATH" "$TAPPED_FORMULA_PATH"; then
   mkdir -p "$(dirname "$TAPPED_FORMULA_PATH")"
   cp "$FORMULA_PATH" "$TAPPED_FORMULA_PATH"
+fi
+
+if [ -n "$BUILD_USER" ]; then
+  # Formula helpers deliberately remove stale compiled host output before
+  # loading TypeScript sources. Do that while the workflow identity still owns
+  # the checkout; the isolated build identity receives no source write access.
+  rm -rf "$KANDELO_ROOT/host/dist"
+  homebrew_patched_launcher_isolate "$BUILD_USER" "$WORK_DIR" "$KANDELO_ROOT" "$TAP_ROOT"
+  homebrew_assert_tree_not_writable_by_user "$BUILD_USER" "$OUT_DIR"
+  homebrew_assert_tree_not_replaceable_by_user "$BUILD_USER" "$OUT_DIR"
+  BREW_BIN="$HOMEBREW_PATCHED_BREW_BIN"
+elif [ "${GITHUB_ACTIONS:-}" = "true" ]; then
+  echo "homebrew-bottle-build.sh: CI Formula execution requires KANDELO_HOMEBREW_BUILD_USER" >&2
+  exit 2
 fi
 
 # `brew install --build-bottle` forces only the selected formula to build from
@@ -172,7 +218,7 @@ while IFS= read -r dependency; do
     echo "homebrew-bottle-build.sh: invalid same-tap dependency: $dependency" >&2
     exit 2
   fi
-  run_brew_logged "$BREW_BIN" install \
+  run_brew_logged run_brew_for_kandelo_bottles "$BREW_BIN" install \
     --force-bottle \
     --as-dependency \
     --ignore-dependencies \
@@ -183,7 +229,7 @@ brew_install_build_bottle() {
   local attempt status log
   status=1
   for attempt in 1 2 3; do
-    log="$WORK_DIR/brew-install-attempt-${attempt}.log"
+    log="$CONTROL_DIR/brew-install-attempt-${attempt}.log"
     set +e
     "$BREW_BIN" install --build-bottle --formula "$FORMULA_REF" 2>&1 |
       tee "$log" |
@@ -207,9 +253,8 @@ brew_install_build_bottle() {
   cd "$WORK_DIR"
   brew_install_build_bottle
   "$BREW_BIN" test "$FORMULA_REF"
-  HOMEBREW_KANDELO_BOTTLE_TAG="$BOTTLE_TAG" \
-  KANDELO_HOMEBREW_BOTTLE_TAG="$BOTTLE_TAG" \
-    "$BREW_BIN" bottle --json --no-rebuild --root-url "$BOTTLE_ROOT_URL" "$FORMULA_REF"
+  run_brew_for_kandelo_bottles "$BREW_BIN" bottle \
+    --json --no-rebuild --root-url "$BOTTLE_ROOT_URL" "$FORMULA_REF"
 )
 
 TAP_COMMIT="$(git -C "$TAP_ROOT" rev-parse HEAD)"
@@ -226,6 +271,11 @@ python3 "$KANDELO_ROOT/scripts/homebrew-dependency-provenance.py" capture \
   --expected-dependencies "$DEPENDENCY_LIST" \
   --install-log "$INSTALL_LOG" \
   --out "$DEPENDENCY_PROVENANCE"
+
+if [ -n "$BUILD_USER" ]; then
+  homebrew_patched_launcher_teardown "$BUILD_USER"
+  homebrew_patched_launcher_verify_isolation
+fi
 
 mapfile -t bottle_jsons < <(find "$WORK_DIR" -maxdepth 1 -type f -name '*.bottle.json' -print | sort)
 mapfile -t bottle_archives < <(find "$WORK_DIR" -maxdepth 1 -type f \( -name '*.bottle.tar.gz' -o -name '*.bottle.tar.zst' \) -print | sort)
@@ -244,26 +294,6 @@ cp "${bottle_archives[0]}" "$OUT_DIR/bottles/"
 
 BOTTLE_JSON="$OUT_DIR/bottles/$(basename "${bottle_jsons[0]}")"
 BOTTLE_ARCHIVE="$OUT_DIR/bottles/$(basename "${bottle_archives[0]}")"
-
-(
-  cd "$TAP_ROOT"
-  HOMEBREW_KANDELO_BOTTLE_TAG="$BOTTLE_TAG" \
-  KANDELO_HOMEBREW_BOTTLE_TAG="$BOTTLE_TAG" \
-    "$BREW_BIN" bottle --merge --write --no-commit "$BOTTLE_JSON"
-)
-
-if [ ! -f "$TAPPED_FORMULA_PATH" ]; then
-  echo "homebrew-bottle-build.sh: merged formula not found: $TAPPED_FORMULA_PATH" >&2
-  exit 1
-fi
-if formula_has_bottle_tag "$FORMULA_PATH"; then
-  :
-elif formula_has_bottle_tag "$TAPPED_FORMULA_PATH"; then
-  cp "$TAPPED_FORMULA_PATH" "$FORMULA_PATH"
-else
-  echo "homebrew-bottle-build.sh: bottle merge did not write $BOTTLE_TAG to $FORMULA_PATH" >&2
-  exit 1
-fi
 
 {
   printf 'FORMULA=%q\n' "$FORMULA"

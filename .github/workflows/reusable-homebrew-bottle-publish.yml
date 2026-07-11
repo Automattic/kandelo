@@ -180,6 +180,7 @@ jobs:
         shell: bash
         env:
           ARCHES: ${{ inputs.arches }}
+          EXPECTED_ABI: ${{ steps.release.outputs.abi }}
           EXPECTED_CACHE_KEYS_JSON: ${{ inputs.expected-cache-keys }}
           FORCE_REBUILD: ${{ inputs.force }}
           FORMULAE: ${{ inputs.formulae }}
@@ -191,6 +192,7 @@ jobs:
             printf '%s\n' "$EXPECTED_CACHE_KEYS_JSON" >"$expected_file"
             jq empty "$expected_file"
             expected_args+=(--expected-cache-keys "$expected_file")
+            expected_args+=(--expected-abi "$EXPECTED_ABI")
           fi
           if [ "$FORCE_REBUILD" = "true" ]; then
             expected_args+=(--force)
@@ -300,7 +302,6 @@ jobs:
             echo "HOMEBREW_NO_ANALYTICS=1"
             echo "HOMEBREW_DEVELOPER=1"
           } >> "$GITHUB_ENV"
-          echo "$brew_prefix/bin" >> "$GITHUB_PATH"
           export HOMEBREW_BREW_FILE="$brew_bin"
           export HOMEBREW_CACHE="$homebrew_cache"
           export HOMEBREW_TEMP="$homebrew_temp"
@@ -341,6 +342,8 @@ jobs:
 
       - name: Build Kandelo sysroot
         shell: bash
+        env:
+          KANDELO_HOMEBREW_ARCH: ${{ matrix.arch }}
         run: |
           set -euo pipefail
           cd kandelo
@@ -362,12 +365,28 @@ jobs:
             exit 1
           fi
           bash scripts/dev-shell.sh bash scripts/build-musl.sh
+          case "$KANDELO_HOMEBREW_ARCH" in
+            wasm32) ;;
+            wasm64)
+              bash scripts/dev-shell.sh bash scripts/build-musl.sh --arch wasm64posix
+              ;;
+            *)
+              echo "::error::unsupported Kandelo Homebrew architecture: $KANDELO_HOMEBREW_ARCH"
+              exit 2
+              ;;
+          esac
 
       - name: Build Kandelo kernel
         shell: bash
         run: |
           cd kandelo
           bash scripts/dev-shell.sh bash packages/registry/kernel/build-kernel.sh
+
+      - name: Build fork-instrument host tool
+        shell: bash
+        run: |
+          cd kandelo
+          bash scripts/dev-shell.sh bash scripts/build-fork-instrument-tool.sh
 
       - name: Materialize shell-script runtime for Formula tests
         shell: bash
@@ -401,6 +420,100 @@ jobs:
             PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1 npm ci --no-audit --no-fund
           '
 
+      - name: Create isolated Formula execution identity
+        id: formula-identity
+        shell: bash
+        run: |
+          set -euo pipefail
+          build_user="kandelo-homebrew-build"
+          build_home="/home/$build_user"
+          sudo_bin="/usr/bin/sudo"
+          systemd_run_bin="/usr/bin/systemd-run"
+          systemctl_bin="/usr/bin/systemctl"
+          getent_bin="/usr/bin/getent"
+          pgrep_bin="/usr/bin/pgrep"
+          pkill_bin="/usr/bin/pkill"
+          useradd_bin="/usr/sbin/useradd"
+          userdel_bin="/usr/sbin/userdel"
+          sudo_mode="$(stat -c '%a' "$sudo_bin" 2>/dev/null || true)"
+          if [ ! -f "$sudo_bin" ] || [ -L "$sudo_bin" ] || [ ! -x "$sudo_bin" ] || \
+             [ "$(stat -c '%u' "$sudo_bin" 2>/dev/null || true)" != "0" ] || \
+             ! [[ "$sudo_mode" =~ ^[0-7]{3,4}$ ]] || \
+             [ $((8#$sudo_mode & 0022)) -ne 0 ]; then
+            echo "::error::runner sudo boundary is unavailable"; exit 2
+          fi
+          for protected_bin in "$systemd_run_bin" "$systemctl_bin" "$getent_bin" "$pgrep_bin" \
+            "$useradd_bin" "$userdel_bin"; do
+            protected_mode="$(stat -c '%a' "$protected_bin" 2>/dev/null || true)"
+            if [ ! -f "$protected_bin" ] || [ -L "$protected_bin" ] || \
+               [ ! -x "$protected_bin" ] || \
+               [ "$(stat -c '%u' "$protected_bin" 2>/dev/null || true)" != "0" ] || \
+               ! [[ "$protected_mode" =~ ^[0-7]{3,4}$ ]] || \
+               [ $((8#$protected_mode & 0022)) -ne 0 ]; then
+              echo "::error::protected process boundary is unavailable: $protected_bin"; exit 2
+            fi
+          done
+          pkill_target="$(readlink -f -- "$pkill_bin" 2>/dev/null || true)"
+          pkill_parent="$(dirname "$pkill_bin")"
+          pkill_parent_mode="$(stat -c '%a' "$pkill_parent" 2>/dev/null || true)"
+          if [ -L "$pkill_bin" ]; then
+            if [ "$pkill_target" != "$pgrep_bin" ] || \
+               [ "$(stat -c '%u' "$pkill_bin" 2>/dev/null || true)" != "0" ] || \
+               [ "$(stat -c '%u' "$pkill_parent" 2>/dev/null || true)" != "0" ] || \
+               ! [[ "$pkill_parent_mode" =~ ^[0-7]{3,4}$ ]] || \
+               [ $((8#$pkill_parent_mode & 0022)) -ne 0 ]; then
+              echo "::error::protected pkill boundary is unavailable: $pkill_bin"; exit 2
+            fi
+          else
+            pkill_mode="$(stat -c '%a' "$pkill_bin" 2>/dev/null || true)"
+            if [ ! -f "$pkill_bin" ] || [ ! -x "$pkill_bin" ] || \
+               [ "$(stat -c '%u' "$pkill_bin" 2>/dev/null || true)" != "0" ] || \
+               ! [[ "$pkill_mode" =~ ^[0-7]{3,4}$ ]] || \
+               [ $((8#$pkill_mode & 0022)) -ne 0 ]; then
+              echo "::error::protected pkill boundary is unavailable: $pkill_bin"; exit 2
+            fi
+          fi
+          [ -d /run/systemd/system ] || {
+            echo "::error::runner systemd manager is unavailable"; exit 2;
+          }
+          "$sudo_bin" -n true || {
+            echo "::error::runner cannot establish the privileged process boundary"; exit 2;
+          }
+          "$sudo_bin" -n -- "$systemctl_bin" show --property=Version --value >/dev/null || {
+            echo "::error::runner systemd manager is unavailable"; exit 2;
+          }
+          "$systemd_run_bin" --help | grep -F -- '--expand-environment=' >/dev/null || {
+            echo "::error::runner systemd cannot preserve exact Brew arguments"; exit 2;
+          }
+          if id "$build_user" >/dev/null 2>&1; then
+            echo "::error::reserved Formula build user already exists"; exit 2
+          fi
+          "$sudo_bin" -n -- "$useradd_bin" --system --user-group --create-home \
+            --home-dir "$build_home" --shell /usr/sbin/nologin "$build_user"
+          echo "created=true" >> "$GITHUB_OUTPUT"
+          [ "$(id -u "$build_user")" != "$(id -u)" ] || {
+            echo "::error::Formula build identity is not isolated"; exit 2;
+          }
+          if "$sudo_bin" -n -u "$build_user" -- "$sudo_bin" -n true >/dev/null 2>&1; then
+            echo "::error::Formula build identity unexpectedly has sudo access"; exit 2
+          fi
+          shared_temp="$(mktemp -d /tmp/kandelo-homebrew.XXXXXX)"
+          "$sudo_bin" chown root:root "$shared_temp"
+          "$sudo_bin" chmod 1777 "$shared_temp"
+          mkdir "$shared_temp/cache" "$shared_temp/tmp"
+          {
+            echo "KANDELO_HOMEBREW_BUILD_USER=$build_user"
+            echo "KANDELO_HOMEBREW_SHARED_TEMP=$shared_temp"
+            echo "KANDELO_HOMEBREW_SUDO_BIN=$sudo_bin"
+            echo "KANDELO_HOMEBREW_SYSTEMD_RUN_BIN=$systemd_run_bin"
+            echo "KANDELO_HOMEBREW_SYSTEMCTL_BIN=$systemctl_bin"
+            echo "KANDELO_HOMEBREW_GETENT_BIN=$getent_bin"
+            echo "KANDELO_HOMEBREW_PGREP_BIN=$pgrep_bin"
+            echo "KANDELO_HOMEBREW_PKILL_BIN=$pkill_bin"
+            echo "HOMEBREW_CACHE=$shared_temp/cache"
+            echo "HOMEBREW_TEMP=$shared_temp/tmp"
+          } >> "$GITHUB_ENV"
+
       - name: Build and test Homebrew bottle without publisher credentials
         shell: bash
         env:
@@ -416,15 +529,39 @@ jobs:
               echo "::error::unprivileged bottle build received $secret_name"; exit 2;
             }
           done
-          [ "$(command -v brew)" = "$HOMEBREW_BREW_FILE" ] || {
-            echo "::error::PATH does not select the reviewed Homebrew executable"; exit 2;
+          [ "$(readlink -f "$HOMEBREW_BREW_FILE")" = \
+            "$GITHUB_WORKSPACE/homebrew-prefix/Homebrew/bin/brew" ] || {
+            echo "::error::absolute Homebrew executable differs from the reviewed checkout"; exit 2;
           }
-          [ "$(git -C "$(brew --repository)" rev-parse HEAD)" = "$HOMEBREW_BREW_COMMIT" ] || {
+          [ "$(git -C "$("$HOMEBREW_BREW_FILE" --repository)" rev-parse HEAD)" = \
+            "$HOMEBREW_BREW_COMMIT" ] || {
             echo "::error::active Homebrew checkout differs from the reviewed commit"; exit 2;
           }
           bottle_out="$RUNNER_TEMP/homebrew-bottle"
           mkdir -p "$bottle_out"
           cd "$GITHUB_WORKSPACE/kandelo"
+
+          workflow_command_token="$(/usr/bin/od -An -N32 -tx1 /dev/urandom | \
+            /usr/bin/tr -d ' \n')"
+          [[ "$workflow_command_token" =~ ^[0-9a-f]{64}$ ]] || {
+            echo "::error::could not create the workflow-command boundary"; exit 2;
+          }
+          workflow_commands_stopped=0
+          resume_workflow_commands() {
+            if [ "$workflow_commands_stopped" = "1" ]; then
+              printf '::%s::\n' "$workflow_command_token"
+              workflow_commands_stopped=0
+            fi
+          }
+          restore_workflow_commands_on_exit() {
+            status="$?"
+            set +e
+            resume_workflow_commands
+            exit "$status"
+          }
+          trap restore_workflow_commands_on_exit EXIT
+          workflow_commands_stopped=1
+          printf '::stop-commands::%s\n' "$workflow_command_token"
           bash scripts/dev-shell.sh bash scripts/homebrew-bottle-build.sh \
             --tap-root "$GITHUB_WORKSPACE/tap" \
             --tap-repository "$KANDELO_HOMEBREW_TAP_REPOSITORY" \
@@ -432,16 +569,100 @@ jobs:
             --arch "$KANDELO_HOMEBREW_ARCH" \
             --out "$bottle_out" \
             --bottle-root-url "$KANDELO_HOMEBREW_BOTTLE_ROOT_URL"
+          resume_workflow_commands
+          trap - EXIT
+
+      - name: Retire isolated Formula execution identity
+        if: ${{ always() && steps.formula-identity.outputs.created == 'true' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          build_user="kandelo-homebrew-build"
+          build_uid="$(id -u "$build_user")"
+          sudo_bin="/usr/bin/sudo"
+          systemctl_bin="/usr/bin/systemctl"
+          pgrep_bin="/usr/bin/pgrep"
+          pkill_bin="/usr/bin/pkill"
+          userdel_bin="/usr/sbin/userdel"
+          slice="kandelo-homebrew-build-${build_uid}.slice"
+
+          uid_has_processes() {
+            local status
+            if "$sudo_bin" -n -- "$pgrep_bin" -u "$build_uid" >/dev/null 2>&1; then
+              return 0
+            else
+              status="$?"
+            fi
+            [ "$status" -eq 1 ] && return 1
+            echo "::error::could not inspect Formula build identity processes"
+            return 2
+          }
+
+          "$sudo_bin" -n -- "$systemctl_bin" stop "$slice" >/dev/null 2>&1 || true
+          "$sudo_bin" -n -- "$pkill_bin" -TERM -u "$build_uid" >/dev/null 2>&1 || true
+          for ((attempt = 0; attempt < 50; attempt++)); do
+            if uid_has_processes; then
+              sleep 0.1
+              continue
+            else
+              status="$?"
+            fi
+            [ "$status" -eq 1 ] && break
+            exit "$status"
+          done
+          if uid_has_processes; then
+            "$sudo_bin" -n -- "$pkill_bin" -KILL -u "$build_uid" >/dev/null 2>&1 || true
+            sleep 1
+          else
+            status="$?"
+            [ "$status" -eq 1 ] || exit "$status"
+          fi
+          if uid_has_processes; then
+            echo "::error::Formula build identity still owns live processes"
+            exit 1
+          else
+            status="$?"
+            [ "$status" -eq 1 ] || exit "$status"
+          fi
+          "$sudo_bin" -n -- "$userdel_bin" -r "$build_user"
+          if id "$build_user" >/dev/null 2>&1; then
+            echo "::error::Formula build identity still exists after retirement"
+            exit 1
+          fi
+
+      - name: Checkout exact post-build Kandelo validator source
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+          repository: ${{ inputs.kandelo-repository }}
+          ref: ${{ needs.plan.outputs.kandelo-sha }}
+          path: kandelo-postbuild
+          submodules: false
+
+      - name: Checkout exact post-build tap source
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+          repository: ${{ inputs.tap-repository }}
+          ref: ${{ needs.plan.outputs.tap-sha }}
+          path: tap-reviewed
 
       - name: Recheck reviewed sources after Formula execution
         shell: bash
         env:
           FORMULA: ${{ matrix.formula }}
           HOMEBREW_BREW_COMMIT: 34c40c18ffa2029b611b61c73273e32c003d0842
+          KANDELO_SHA: ${{ needs.plan.outputs.kandelo-sha }}
           TAP_REPOSITORY: ${{ inputs.tap-repository }}
           TAP_SHA: ${{ needs.plan.outputs.tap-sha }}
         run: |
           set -euo pipefail
+          [ "$(git -C "$GITHUB_WORKSPACE/kandelo-postbuild" rev-parse HEAD)" = "$KANDELO_SHA" ] || {
+            echo "::error::post-build Kandelo validator differs from the plan"; exit 2;
+          }
+          [ "$(git -C "$GITHUB_WORKSPACE/tap-reviewed" rev-parse HEAD)" = "$TAP_SHA" ] || {
+            echo "::error::post-build tap source differs from the plan"; exit 2;
+          }
           brew_repository="$GITHUB_WORKSPACE/homebrew-prefix/Homebrew"
           [ "$(git -C "$brew_repository" rev-parse HEAD)" = "$HOMEBREW_BREW_COMMIT" ] || {
             echo "::error::Homebrew moved during formula execution"; exit 2;
@@ -449,12 +670,13 @@ jobs:
           [ -z "$(git -C "$brew_repository" status --short --untracked-files=no)" ] || {
             echo "::error::formula execution modified reviewed Homebrew tracked files"; exit 2;
           }
-          cd "$GITHUB_WORKSPACE/kandelo"
+          cd "$GITHUB_WORKSPACE/kandelo-postbuild"
           bash scripts/dev-shell.sh bash scripts/homebrew-validate-formula-source-closure.sh \
             --tap-root "$GITHUB_WORKSPACE/tap" \
             --tap-repository "$TAP_REPOSITORY" \
             --formula "$FORMULA" \
-            --base-ref "$TAP_SHA"
+            --base-ref "$TAP_SHA" \
+            --reviewed-tap-root "$GITHUB_WORKSPACE/tap-reviewed"
 
       - name: Create strict bottle data handoff
         shell: bash
@@ -468,7 +690,7 @@ jobs:
           KANDELO_HOMEBREW_TAP_REPOSITORY: ${{ inputs.tap-repository }}
         run: |
           set -euo pipefail
-          cd "$GITHUB_WORKSPACE/kandelo"
+          cd "$GITHUB_WORKSPACE/kandelo-postbuild"
           # shellcheck disable=SC1091
           . "$RUNNER_TEMP/homebrew-bottle/build.env"
           bash scripts/dev-shell.sh bash scripts/homebrew-create-build-handoff.sh \
@@ -482,6 +704,12 @@ jobs:
             --bottle "$BOTTLE_ARCHIVE" \
             --bottle-json "$BOTTLE_JSON" \
             --dependency-provenance "$DEPENDENCY_PROVENANCE" \
+            --forbidden-root "$GITHUB_WORKSPACE" \
+            --forbidden-root "$(dirname "$GITHUB_WORKSPACE")" \
+            --forbidden-root "$RUNNER_TEMP" \
+            --forbidden-root "$KANDELO_HOMEBREW_SHARED_TEMP" \
+            --forbidden-root "$HOMEBREW_TEMP" \
+            --forbidden-root "/home/$KANDELO_HOMEBREW_BUILD_USER" \
             --out "$RUNNER_TEMP/homebrew-build-handoff"
 
       - name: Upload strict bottle build handoff
@@ -581,6 +809,10 @@ jobs:
             --tap-commit "$KANDELO_HOMEBREW_TAP_COMMIT"
             --kandelo-commit "$KANDELO_HOMEBREW_KANDELO_COMMIT"
             --bottle-root-url "$KANDELO_HOMEBREW_BOTTLE_ROOT_URL"
+            --forbidden-root "$GITHUB_WORKSPACE"
+            --forbidden-root "$(dirname "$GITHUB_WORKSPACE")"
+            --forbidden-root "$RUNNER_TEMP"
+            --forbidden-root "/home/kandelo-homebrew-build"
             --out-env "$RUNNER_TEMP/homebrew-validated-build.env"
           )
           bash scripts/dev-shell.sh bash scripts/homebrew-validate-build-handoff.sh "${validation_args[@]}"
@@ -632,6 +864,10 @@ jobs:
             --tap-commit "$KANDELO_HOMEBREW_TAP_COMMIT"
             --kandelo-commit "$KANDELO_HOMEBREW_KANDELO_COMMIT"
             --bottle-root-url "$KANDELO_HOMEBREW_BOTTLE_ROOT_URL"
+            --forbidden-root "$GITHUB_WORKSPACE"
+            --forbidden-root "$(dirname "$GITHUB_WORKSPACE")"
+            --forbidden-root "$RUNNER_TEMP"
+            --forbidden-root "/home/kandelo-homebrew-build"
           )
           bash scripts/dev-shell.sh bash scripts/homebrew-validate-upload-receipt.sh "${receipt_args[@]}"
 
@@ -680,23 +916,14 @@ jobs:
           ref: ${{ needs.plan.outputs.tap-sha }}
           path: tap
 
-      - name: Checkout reviewed Homebrew implementation
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
-        with:
-          persist-credentials: false
-          repository: Homebrew/brew
-          ref: 34c40c18ffa2029b611b61c73273e32c003d0842
-          path: homebrew-prefix/Homebrew
-
       - name: Verify fresh verifier source snapshots
         shell: bash
         env:
-          HOMEBREW_BREW_COMMIT: 34c40c18ffa2029b611b61c73273e32c003d0842
           KANDELO_SHA: ${{ needs.plan.outputs.kandelo-sha }}
           TAP_SHA: ${{ needs.plan.outputs.tap-sha }}
         run: |
           set -euo pipefail
-          for sha in "$KANDELO_SHA" "$TAP_SHA" "$HOMEBREW_BREW_COMMIT"; do
+          for sha in "$KANDELO_SHA" "$TAP_SHA"; do
             [[ "$sha" =~ ^[0-9a-f]{40}$ ]] || {
               echo "::error::invalid planned source commit"; exit 2;
             }
@@ -706,60 +933,6 @@ jobs:
           }
           [ "$(git -C tap rev-parse HEAD)" = "$TAP_SHA" ] || {
             echo "::error::tap verifier source differs from the plan"; exit 2;
-          }
-          [ "$(git -C homebrew-prefix/Homebrew rev-parse HEAD)" = "$HOMEBREW_BREW_COMMIT" ] || {
-            echo "::error::Homebrew verifier source differs from the reviewed commit"; exit 2;
-          }
-
-      - name: Activate reviewed Homebrew implementation
-        shell: bash
-        env:
-          ARCH: ${{ matrix.arch }}
-          FORMULA: ${{ matrix.formula }}
-          HOMEBREW_BREW_COMMIT: 34c40c18ffa2029b611b61c73273e32c003d0842
-        run: |
-          set -euo pipefail
-          brew_prefix="/home/linuxbrew/.linuxbrew"
-          brew_repository="$GITHUB_WORKSPACE/homebrew-prefix/Homebrew"
-          [ "$(git -C "$brew_repository" rev-parse HEAD)" = "$HOMEBREW_BREW_COMMIT" ] || {
-            echo "::error::Homebrew checkout differs from the reviewed commit"; exit 2;
-          }
-          [ -z "$(git -C "$brew_repository" status --short --untracked-files=no)" ] || {
-            echo "::error::reviewed Homebrew checkout has tracked modifications"; exit 2;
-          }
-          mkdir -p "$brew_prefix/bin"
-          rm -f "$brew_prefix/bin/brew"
-          ln -s "$brew_repository/bin/brew" "$brew_prefix/bin/brew"
-          brew_bin="$brew_prefix/bin/brew"
-          homebrew_cache="$RUNNER_TEMP/homebrew-verify-cache-$FORMULA-$ARCH"
-          homebrew_temp="$RUNNER_TEMP/homebrew-verify-temp-$FORMULA-$ARCH"
-          mkdir -p "$homebrew_cache" "$homebrew_temp"
-          {
-            echo "HOMEBREW_BREW_FILE=$brew_bin"
-            echo "HOMEBREW_BREW_COMMIT=$HOMEBREW_BREW_COMMIT"
-            echo "HOMEBREW_CACHE=$homebrew_cache"
-            echo "HOMEBREW_TEMP=$homebrew_temp"
-            echo "HOMEBREW_NO_AUTO_UPDATE=1"
-            echo "HOMEBREW_NO_INSTALL_CLEANUP=1"
-            echo "HOMEBREW_NO_ANALYTICS=1"
-            echo "HOMEBREW_DEVELOPER=1"
-          } >> "$GITHUB_ENV"
-          echo "$brew_prefix/bin" >> "$GITHUB_PATH"
-          export HOMEBREW_BREW_FILE="$brew_bin"
-          export HOMEBREW_CACHE="$homebrew_cache"
-          export HOMEBREW_TEMP="$homebrew_temp"
-          export HOMEBREW_NO_AUTO_UPDATE=1
-          export HOMEBREW_NO_INSTALL_CLEANUP=1
-          export HOMEBREW_NO_ANALYTICS=1
-          export HOMEBREW_DEVELOPER=1
-          [ "$(readlink -f "$brew_bin")" = "$brew_repository/bin/brew" ] || {
-            echo "::error::Homebrew executable does not resolve into the reviewed checkout"; exit 2;
-          }
-          [ "$("$brew_bin" --prefix)" = "$brew_prefix" ] || {
-            echo "::error::Homebrew prefix is not the canonical Linuxbrew prefix"; exit 2;
-          }
-          [ "$("$brew_bin" --cellar)" = "$brew_prefix/Cellar" ] || {
-            echo "::error::Homebrew cellar is not the canonical Linuxbrew cellar"; exit 2;
           }
 
       - name: Install Nix
@@ -821,6 +994,10 @@ jobs:
             --kandelo-commit "$KANDELO_HOMEBREW_KANDELO_COMMIT"
             --bottle-root-url "$KANDELO_HOMEBREW_BOTTLE_ROOT_URL"
             --tap-root "$GITHUB_WORKSPACE/tap"
+            --forbidden-root "$GITHUB_WORKSPACE"
+            --forbidden-root "$(dirname "$GITHUB_WORKSPACE")"
+            --forbidden-root "$RUNNER_TEMP"
+            --forbidden-root "/home/kandelo-homebrew-build"
             --out-env "$RUNNER_TEMP/homebrew-verified-input/build.env"
             --out-bottle-json "$RUNNER_TEMP/homebrew-verified-input/bottle.json"
           )
@@ -871,6 +1048,10 @@ jobs:
             --tap-commit "$KANDELO_HOMEBREW_TAP_COMMIT"
             --kandelo-commit "$KANDELO_HOMEBREW_KANDELO_COMMIT"
             --bottle-root-url "$KANDELO_HOMEBREW_BOTTLE_ROOT_URL"
+            --forbidden-root "$GITHUB_WORKSPACE"
+            --forbidden-root "$(dirname "$GITHUB_WORKSPACE")"
+            --forbidden-root "$RUNNER_TEMP"
+            --forbidden-root "/home/kandelo-homebrew-build"
             --out-env "$RUNNER_TEMP/homebrew-verified-input/receipt.env"
             --out-bottle-json "$RUNNER_TEMP/homebrew-verified-input/bottle.json"
           )
@@ -885,6 +1066,8 @@ jobs:
 
       - name: Build Kandelo sysroot for sidecar evidence
         shell: bash
+        env:
+          KANDELO_HOMEBREW_ARCH: ${{ matrix.arch }}
         run: |
           set -euo pipefail
           cd kandelo
@@ -905,6 +1088,16 @@ jobs:
             echo "::error::failed to fetch libc/musl"; exit 1;
           }
           bash scripts/dev-shell.sh bash scripts/build-musl.sh
+          case "$KANDELO_HOMEBREW_ARCH" in
+            wasm32) ;;
+            wasm64)
+              bash scripts/dev-shell.sh bash scripts/build-musl.sh --arch wasm64posix
+              ;;
+            *)
+              echo "::error::unsupported Kandelo Homebrew architecture: $KANDELO_HOMEBREW_ARCH"
+              exit 2
+              ;;
+          esac
 
       - name: Build exact Kandelo kernel
         shell: bash
@@ -931,7 +1124,7 @@ jobs:
           cd kandelo
           bash scripts/dev-shell.sh bash scripts/fetch-binaries.sh --fetch-only
 
-      - name: Merge only reconstructed bottle metadata into the fresh tap
+      - name: Compose only reconstructed bottle metadata into the fresh tap
         shell: bash
         run: |
           set -euo pipefail
@@ -946,6 +1139,7 @@ jobs:
             --tap-repository "$TAP_REPOSITORY"
             --formula "$FORMULA"
             --arch "$ARCH"
+            --release-tag "$RELEASE_TAG"
             --bottle-json "$BOTTLE_JSON"
             --expected-sha256 "$BOTTLE_SHA256"
             --expected-root-url "$BOTTLE_ROOT_URL"
@@ -995,6 +1189,8 @@ jobs:
 
       - name: Generate sidecars from the selected bottle
         shell: bash
+        env:
+          HOMEBREW_BREW_COMMIT: 34c40c18ffa2029b611b61c73273e32c003d0842
         run: |
           set -euo pipefail
           cd kandelo
@@ -1010,15 +1206,27 @@ jobs:
           export KANDELO_HOMEBREW_RELEASE_TAG="$RELEASE_TAG"
           export KANDELO_HOMEBREW_TAP_REPOSITORY="$TAP_REPOSITORY"
           export KANDELO_HOMEBREW_BOTTLE_ARCHIVE="$RUNTIME_BOTTLE"
-          export KANDELO_HOMEBREW_BOTTLE_JSON="$RUNNER_TEMP/homebrew-build-handoff/bottle.json"
+          export KANDELO_HOMEBREW_BOTTLE_JSON="$RUNNER_TEMP/homebrew-verified-input/bottle.json"
+          export KANDELO_HOMEBREW_BOTTLE_ROOT_URL="$BOTTLE_ROOT_URL"
           export KANDELO_HOMEBREW_BOTTLE_URL="$BOTTLE_URL"
           export KANDELO_HOMEBREW_BOTTLE_SHA256="$BOTTLE_SHA256"
           export KANDELO_HOMEBREW_BOTTLE_BYTES="$BOTTLE_BYTES"
-          bash scripts/dev-shell.sh bash scripts/homebrew-generate-sidecars-from-env.sh
+          export KANDELO_HOMEBREW_DEPENDENCY_PROVENANCE="$DEPENDENCY_PROVENANCE"
+          export KANDELO_HOMEBREW_FORBIDDEN_ROOTS_JSON="$(jq -cn \
+            --arg github_workspace "$GITHUB_WORKSPACE" \
+            --arg runner_workspace "$(dirname "$GITHUB_WORKSPACE")" \
+            --arg runner_temp "$RUNNER_TEMP" \
+            --arg build_home "/home/kandelo-homebrew-build" \
+            '[$github_workspace, $runner_workspace, $runner_temp, $build_home]')"
+          bash scripts/dev-shell.sh env \
+            KANDELO_HOMEBREW_FORBIDDEN_ROOTS_JSON="$KANDELO_HOMEBREW_FORBIDDEN_ROOTS_JSON" \
+            bash scripts/homebrew-generate-sidecars-from-env.sh
 
       - name: Build and strictly smoke the hello browser image
         if: ${{ matrix.formula == 'hello' && matrix.arch == 'wasm32' }}
         shell: bash
+        env:
+          HOMEBREW_BREW_COMMIT: 34c40c18ffa2029b611b61c73273e32c003d0842
         run: |
           set -euo pipefail
           cd kandelo
@@ -1034,11 +1242,21 @@ jobs:
           export KANDELO_HOMEBREW_RELEASE_TAG="$RELEASE_TAG"
           export KANDELO_HOMEBREW_TAP_REPOSITORY="$TAP_REPOSITORY"
           export KANDELO_HOMEBREW_BOTTLE_ARCHIVE="$RUNTIME_BOTTLE"
-          export KANDELO_HOMEBREW_BOTTLE_JSON="$RUNNER_TEMP/homebrew-build-handoff/bottle.json"
+          export KANDELO_HOMEBREW_BOTTLE_JSON="$RUNNER_TEMP/homebrew-verified-input/bottle.json"
+          export KANDELO_HOMEBREW_BOTTLE_ROOT_URL="$BOTTLE_ROOT_URL"
           export KANDELO_HOMEBREW_BOTTLE_URL="$BOTTLE_URL"
           export KANDELO_HOMEBREW_BOTTLE_SHA256="$BOTTLE_SHA256"
           export KANDELO_HOMEBREW_BOTTLE_BYTES="$BOTTLE_BYTES"
-          bash scripts/dev-shell.sh bash -c '
+          export KANDELO_HOMEBREW_DEPENDENCY_PROVENANCE="$DEPENDENCY_PROVENANCE"
+          export KANDELO_HOMEBREW_FORBIDDEN_ROOTS_JSON="$(jq -cn \
+            --arg github_workspace "$GITHUB_WORKSPACE" \
+            --arg runner_workspace "$(dirname "$GITHUB_WORKSPACE")" \
+            --arg runner_temp "$RUNNER_TEMP" \
+            --arg build_home "/home/kandelo-homebrew-build" \
+            '[$github_workspace, $runner_workspace, $runner_temp, $build_home]')"
+          bash scripts/dev-shell.sh env \
+            KANDELO_HOMEBREW_FORBIDDEN_ROOTS_JSON="$KANDELO_HOMEBREW_FORBIDDEN_ROOTS_JSON" \
+            bash -c '
             set -euo pipefail
             browser_vfs_root="$RUNNER_TEMP/homebrew-browser-vfs"
             browser_gallery_root="$RUNNER_TEMP/homebrew-browser-gallery"
@@ -1132,8 +1350,8 @@ jobs:
       - name: Recheck trusted verifier sources after runtime execution
         shell: bash
         env:
-          HOMEBREW_BREW_COMMIT: 34c40c18ffa2029b611b61c73273e32c003d0842
           KANDELO_SHA: ${{ needs.plan.outputs.kandelo-sha }}
+          TAP_SHA: ${{ needs.plan.outputs.tap-sha }}
         run: |
           set -euo pipefail
           [ "$(git -C kandelo rev-parse HEAD)" = "$KANDELO_SHA" ] || {
@@ -1142,11 +1360,11 @@ jobs:
           [ -z "$(git -C kandelo status --short --untracked-files=no)" ] || {
             echo "::error::runtime validation modified reviewed Kandelo tracked files"; exit 1;
           }
-          [ "$(git -C homebrew-prefix/Homebrew rev-parse HEAD)" = "$HOMEBREW_BREW_COMMIT" ] || {
-            echo "::error::Homebrew source moved during runtime validation"; exit 1;
+          [ "$(git -C tap rev-parse HEAD)" = "$TAP_SHA" ] || {
+            echo "::error::tap verifier source moved during runtime validation"; exit 1;
           }
-          [ -z "$(git -C homebrew-prefix/Homebrew status --short --untracked-files=no)" ] || {
-            echo "::error::runtime validation modified reviewed Homebrew tracked files"; exit 1;
+          [ -z "$(git -C tap status --short --untracked-files=no)" ] || {
+            echo "::error::runtime validation modified reviewed tap tracked files"; exit 1;
           }
 
       - name: Package validated data-only publication handoff
@@ -1192,6 +1410,10 @@ jobs:
             --tap-commit "$KANDELO_HOMEBREW_TAP_COMMIT"
             --kandelo-commit "$KANDELO_HOMEBREW_KANDELO_COMMIT"
             --bottle-root-url "$KANDELO_HOMEBREW_BOTTLE_ROOT_URL"
+            --forbidden-root "$GITHUB_WORKSPACE"
+            --forbidden-root "$(dirname "$GITHUB_WORKSPACE")"
+            --forbidden-root "$RUNNER_TEMP"
+            --forbidden-root "/home/kandelo-homebrew-build"
           )
           bash scripts/dev-shell.sh bash scripts/homebrew-validate-publish-handoff.sh "${payload_args[@]}"
 
@@ -1308,6 +1530,10 @@ jobs:
               --tap-commit "$KANDELO_HOMEBREW_TAP_COMMIT"
               --kandelo-commit "$KANDELO_HOMEBREW_KANDELO_COMMIT"
               --bottle-root-url "$KANDELO_HOMEBREW_BOTTLE_ROOT_URL"
+              --forbidden-root "$GITHUB_WORKSPACE"
+              --forbidden-root "$(dirname "$GITHUB_WORKSPACE")"
+              --forbidden-root "$RUNNER_TEMP"
+              --forbidden-root "/home/kandelo-homebrew-build"
             )
             bash scripts/dev-shell.sh bash scripts/homebrew-validate-publish-handoff.sh "${payload_args[@]}"
 

@@ -17,10 +17,11 @@ BOTTLE=""
 BOTTLE_JSON=""
 DEPENDENCY_PROVENANCE=""
 OUT_DIR=""
+FORBIDDEN_ROOTS=()
 
 usage() {
   cat >&2 <<'EOF'
-usage: scripts/homebrew-create-build-handoff.sh --formula <name> --arch <wasm32|wasm64> --release-tag <tag> --tap-repository <owner/repo> --tap-commit <sha> --kandelo-commit <sha> --bottle-root-url <url> --bottle <path> --bottle-json <path> --dependency-provenance <path> --out <dir>
+usage: scripts/homebrew-create-build-handoff.sh --formula <name> --arch <wasm32|wasm64> --release-tag <tag> --tap-repository <owner/repo> --tap-commit <sha> --kandelo-commit <sha> --bottle-root-url <url> --bottle <path> --bottle-json <path> --dependency-provenance <path> --out <dir> --forbidden-root <absolute-path> [--forbidden-root <absolute-path> ...]
 
 Creates a handoff containing only manifest.json, bottle.json, one bottle
 archive, and bounded dependency-pour provenance. Formula sources, environment
@@ -41,10 +42,23 @@ while [ "$#" -gt 0 ]; do
     --bottle-json) BOTTLE_JSON="${2:-}"; shift 2 ;;
     --dependency-provenance) DEPENDENCY_PROVENANCE="${2:-}"; shift 2 ;;
     --out) OUT_DIR="${2:-}"; shift 2 ;;
+    --forbidden-root)
+      [ "$#" -ge 2 ] && [ -n "$2" ] || {
+        echo "homebrew-create-build-handoff.sh: --forbidden-root requires a value" >&2
+        exit 2
+      }
+      FORBIDDEN_ROOTS+=("$2")
+      shift 2
+      ;;
     -h|--help) usage; exit 0 ;;
     *) echo "homebrew-create-build-handoff.sh: unknown flag $1" >&2; usage; exit 2 ;;
   esac
 done
+
+if [ "${#FORBIDDEN_ROOTS[@]}" -eq 0 ]; then
+  echo "homebrew-create-build-handoff.sh: at least one --forbidden-root is required" >&2
+  exit 2
+fi
 
 require() {
   local name="$1" value="$2"
@@ -257,6 +271,10 @@ jq -nS \
     }
   ' >"$OUT_DIR/manifest.json"
 
+validation_args=()
+for forbidden_root in "${FORBIDDEN_ROOTS[@]}"; do
+  validation_args+=(--forbidden-root "$forbidden_root")
+done
 bash "$SCRIPT_ROOT/homebrew-validate-build-handoff.sh" \
   --handoff "$OUT_DIR" \
   --formula "$FORMULA" \
@@ -265,6 +283,7 @@ bash "$SCRIPT_ROOT/homebrew-validate-build-handoff.sh" \
   --tap-repository "$TAP_REPOSITORY" \
   --tap-commit "$TAP_COMMIT" \
   --kandelo-commit "$KANDELO_COMMIT" \
-  --bottle-root-url "$BOTTLE_ROOT_URL" >/dev/null
+  --bottle-root-url "$BOTTLE_ROOT_URL" \
+  "${validation_args[@]}" >/dev/null
 
 echo "homebrew-create-build-handoff.sh: created $OUT_DIR"

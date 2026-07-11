@@ -26,40 +26,64 @@ rebuild = Integer(rebuild_text, 10)
 
 BottleBlock = Struct.new(:range, :root_url, :rebuild, :tags)
 
+method_name = nil
+method_name = lambda do |node|
+  next nil unless node.is_a?(Array)
+
+  case node.first
+  when :method_add_arg, :method_add_block
+    method_name.call(node[1])
+  when :fcall, :vcall
+    token = node[1]
+    token[1] if token.is_a?(Array) && token.first == :@ident
+  when :command
+    token = node[1]
+    token[1] if token.is_a?(Array) && token.first == :@ident
+  end
+end
+
 parse_formula = lambda do |path|
   source = File.binread(path)
   syntax_tree = Ripper.sexp(source)
   abort "could not parse Formula source: #{path}" if syntax_tree.nil?
   abort "Formula source contains CRLF or a missing final newline: #{path}" unless source.end_with?("\n") && !source.include?("\r")
 
-  method_name = lambda do |node|
-    next nil unless node.is_a?(Array)
-
-    case node.first
-    when :method_add_arg, :method_add_block
-      method_name.call(node[1])
-    when :fcall, :vcall
-      token = node[1]
-      token[1] if token.is_a?(Array) && token.first == :@ident
-    when :command
-      token = node[1]
-      token[1] if token.is_a?(Array) && token.first == :@ident
-    end
-  end
-  bottle_nodes = 0
-  count_bottle_nodes = nil
-  count_bottle_nodes = lambda do |node|
+  bottle_nodes = []
+  formula_classes = []
+  inspect_structure = nil
+  inspect_structure = lambda do |node|
     next unless node.is_a?(Array)
 
-    bottle_nodes += 1 if node.first == :method_add_block && method_name.call(node[1]) == "bottle"
-    node.each { |child| count_bottle_nodes.call(child) }
+    bottle_nodes << node if node.first == :method_add_block && method_name.call(node[1]) == "bottle"
+    if node.first == :class
+      superclass = node[2]
+      superclass_token = superclass[1] if superclass.is_a?(Array) && superclass.first == :var_ref
+      if superclass_token.is_a?(Array) && superclass_token.first == :@const &&
+         superclass_token[1] == "Formula"
+        formula_classes << node
+      end
+    end
+    node.each { |child| inspect_structure.call(child) }
   end
-  count_bottle_nodes.call(syntax_tree)
+  inspect_structure.call(syntax_tree)
+  abort "Formula source must define exactly one Formula subclass: #{path}" unless formula_classes.length == 1
+  class_body = formula_classes.fetch(0)[3]
+  class_statements = if class_body.is_a?(Array) && class_body.first == :bodystmt &&
+                        class_body.drop(2).all?(&:nil?)
+    class_body[1]
+  end
+  abort "Formula class has no canonical body: #{path}" unless class_statements.is_a?(Array)
+  direct_bottle_nodes = class_statements.select do |statement|
+    statement.is_a?(Array) && statement.first == :method_add_block &&
+      method_name.call(statement[1]) == "bottle"
+  end
 
   lines = source.lines
   starts = lines.each_index.select { |index| lines[index] == "  bottle do\n" }
   abort "Formula source has multiple bottle blocks: #{path}" if starts.length > 1
-  abort "Formula source contains a noncanonical bottle block: #{path}" unless bottle_nodes == starts.length
+  unless bottle_nodes.length == starts.length && direct_bottle_nodes.length == starts.length
+    abort "Formula source contains a bottle block outside the direct Formula class body: #{path}"
+  end
 
   block = nil
   if starts.length == 1
@@ -129,8 +153,47 @@ rendered << "  end\n"
 if current
   current_lines[current.range] = rendered
 else
-  class_end = current_lines.rindex("end\n")
-  abort "Formula source lacks a final class end: #{current_path}" if class_end.nil?
+  candidates = current_lines.each_index.select { |index| current_lines[index] == "end\n" }
+  valid_candidates = candidates.select do |class_end|
+    candidate_lines = current_lines.dup
+    insertion = rendered.dup
+    insertion.unshift("\n") unless class_end.positive? && candidate_lines[class_end - 1] == "\n"
+    insertion << "\n"
+    candidate_lines.insert(class_end, *insertion)
+    syntax_tree = Ripper.sexp(candidate_lines.join)
+    next false if syntax_tree.nil?
+
+    formula_classes = []
+    visit = nil
+    visit = lambda do |node|
+      next unless node.is_a?(Array)
+
+      if node.first == :class
+        superclass = node[2]
+        superclass_token = superclass[1] if superclass.is_a?(Array) && superclass.first == :var_ref
+        if superclass_token.is_a?(Array) && superclass_token.first == :@const &&
+           superclass_token[1] == "Formula"
+          formula_classes << node
+        end
+      end
+      node.each { |child| visit.call(child) }
+    end
+    visit.call(syntax_tree)
+    next false unless formula_classes.length == 1
+
+    body = formula_classes.fetch(0)[3]
+    statements = if body.is_a?(Array) && body.first == :bodystmt && body.drop(2).all?(&:nil?)
+      body[1]
+    end
+    statements.is_a?(Array) && statements.count do |statement|
+      statement.is_a?(Array) && statement.first == :method_add_block &&
+        method_name.call(statement[1]) == "bottle"
+    end == 1
+  end
+  unless valid_candidates.length == 1
+    abort "Formula source lacks one structurally unambiguous Formula class end: #{current_path}"
+  end
+  class_end = valid_candidates.fetch(0)
   insertion = rendered.dup
   insertion.unshift("\n") unless class_end.positive? && current_lines[class_end - 1] == "\n"
   insertion << "\n"

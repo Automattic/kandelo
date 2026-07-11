@@ -44,6 +44,9 @@ The reusable trusted publisher lives in the main Kandelo repository at
 called by the tap repository after its formulae exist. The normal tap caller is
 `.github/workflows/publish-bottles.yml`, displayed as
 **Publish Kandelo bottles**.
+The protected dispatch events are `publish-kandelo-bottles`,
+`dry-run-kandelo-bottles`, and `maintain-kandelo-bottles`; publish and dry-run
+requests must include nonempty Formula and architecture selections.
 
 The caller grants the maximum permission ceiling. Four fresh runner roles then
 downgrade it: a read-only build/test job, a `packages: write` uploader without
@@ -52,6 +55,10 @@ tap write access, a read-only anonymous/runtime verifier, and a
 schedule the uploader or finalizer. Jobs exchange strict, bounded data
 handoffs; Formula builds cannot pass scripts, environment files, or credentials
 to a privileged runner.
+Before GHCR credentials are exposed, the uploader validates the complete bottle
+archive as inert data. Every Wasm member, regardless of mode or path, must match
+the selected Kandelo ABI and memory width and satisfy the fork-instrumentation
+contract; relocatable Wasm objects are not bottle process payloads.
 
 The build job produces the local Homebrew bottle. A dry verifier consumes those
 local bytes, while a write verifier anonymously reads back the exact GHCR
@@ -80,7 +87,8 @@ documented with both the deleted package URL and the operational reason.
 
 Parallel peer and sibling-architecture publications compose against refreshed
 tap state under the shared lock, and Formula source drift after planning aborts
-publication. New GHCR packages are private by default. Changing one to public
+publication. Older-ABI handoffs and lower bottle rebuilds for the same package
+identity are rejected under that lock. New GHCR packages are private by default. Changing one to public
 is an explicit approval boundary; the workflow does not change package
 visibility. A write publication cannot finalize until its bottle passes
 anonymous digest readback.

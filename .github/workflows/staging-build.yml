@@ -478,6 +478,15 @@ jobs:
       - name: Prepare package toolchain
         uses: ./.github/actions/package-toolchain
 
+      - name: Install JavaScript dependencies for tap-native Homebrew validation
+        run: |
+          bash scripts/dev-shell.sh bash -c '
+            PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1 npm ci --no-audit --no-fund
+          '
+
+      - name: Validate tap-native Homebrew sidecars and pour planning
+        run: bash scripts/dev-shell.sh bash scripts/test-homebrew-tap-native-sidecars.sh
+
   # Library wave — kind=library packages build first. Each runner
   # uploads its archive as `<lib>-<arch>` so the program wave below
   # can pull them via package.pr.toml file:// overlays. This dedupes

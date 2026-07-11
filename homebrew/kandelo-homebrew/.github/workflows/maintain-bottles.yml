@@ -1,0 +1,24 @@
+name: Maintain Kandelo bottles
+
+on:
+  repository_dispatch:
+    types: [maintain-kandelo-bottles]
+
+jobs:
+  maintain:
+    permissions:
+      actions: read
+      contents: write
+      packages: write
+    uses: Automattic/kandelo/.github/workflows/reusable-homebrew-bottle-maintenance.yml@main
+    with:
+      mode: ${{ github.event.client_payload.mode || 'rebuild' }}
+      formulae: ${{ github.event.client_payload.formulae }}
+      arches: ${{ github.event.client_payload.arches || 'wasm32' }}
+      release-tag: ${{ github.event.client_payload.release_tag || '' }}
+      expected-cache-keys: ${{ github.event.client_payload.expected_cache_keys || '' }}
+      force: ${{ github.event.client_payload.force || false }}
+      rollback-reason: ${{ github.event.client_payload.rollback_reason || '' }}
+      rollback-ref: ${{ github.event.client_payload.rollback_ref || '' }}
+      deleted-package-url: ${{ github.event.client_payload.deleted_package_url || '' }}
+      deletion-reason: ${{ github.event.client_payload.deletion_reason || '' }}

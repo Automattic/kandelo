@@ -13,10 +13,11 @@ KANDELO_COMMIT=""
 BOTTLE_ROOT_URL=""
 OUT_ENV=""
 OUT_BOTTLE_JSON=""
+FORBIDDEN_ROOTS=()
 
 usage() {
   cat >&2 <<'EOF'
-usage: scripts/homebrew-validate-upload-receipt.sh --receipt <json> --handoff <dir> --formula <name> --arch <wasm32|wasm64> --release-tag <tag> --tap-repository <owner/repo> --tap-commit <sha> --kandelo-commit <sha> --bottle-root-url <url> [--out-env <path>] [--out-bottle-json <path>]
+usage: scripts/homebrew-validate-upload-receipt.sh --receipt <json> --handoff <dir> --formula <name> --arch <wasm32|wasm64> --release-tag <tag> --tap-repository <owner/repo> --tap-commit <sha> --kandelo-commit <sha> --bottle-root-url <url> --forbidden-root <absolute-path> [--forbidden-root <absolute-path> ...] [--out-env <path>] [--out-bottle-json <path>]
 
 Revalidates the build handoff, then checks the strict upload receipt against
 the plan identity and the handoff's recomputed bottle digest and byte count.
@@ -36,10 +37,23 @@ while [ "$#" -gt 0 ]; do
     --bottle-root-url) BOTTLE_ROOT_URL="${2:-}"; shift 2 ;;
     --out-env) OUT_ENV="${2:-}"; shift 2 ;;
     --out-bottle-json) OUT_BOTTLE_JSON="${2:-}"; shift 2 ;;
+    --forbidden-root)
+      [ "$#" -ge 2 ] && [ -n "$2" ] || {
+        echo "homebrew-validate-upload-receipt.sh: --forbidden-root requires a value" >&2
+        exit 2
+      }
+      FORBIDDEN_ROOTS+=("$2")
+      shift 2
+      ;;
     -h|--help) usage; exit 0 ;;
     *) echo "homebrew-validate-upload-receipt.sh: unknown flag $1" >&2; usage; exit 2 ;;
   esac
 done
+
+if [ "${#FORBIDDEN_ROOTS[@]}" -eq 0 ]; then
+  echo "homebrew-validate-upload-receipt.sh: at least one --forbidden-root is required" >&2
+  exit 2
+fi
 
 require() {
   local name="$1" value="$2"
@@ -87,6 +101,9 @@ build_validation_args=(
   --bottle-root-url "$BOTTLE_ROOT_URL"
   --out-env "$build_env"
 )
+for forbidden_root in "${FORBIDDEN_ROOTS[@]}"; do
+  build_validation_args+=(--forbidden-root "$forbidden_root")
+done
 bash "$SCRIPT_ROOT/homebrew-validate-build-handoff.sh" \
   "${build_validation_args[@]}" >/dev/null
 # shellcheck disable=SC1090

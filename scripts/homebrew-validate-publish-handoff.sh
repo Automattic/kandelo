@@ -11,10 +11,11 @@ TAP_COMMIT=""
 KANDELO_COMMIT=""
 BOTTLE_ROOT_URL=""
 TAP_ROOT=""
+FORBIDDEN_ROOTS=()
 
 usage() {
   cat >&2 <<'EOF'
-usage: scripts/homebrew-validate-publish-handoff.sh --handoff <dir> --formula <name> --arch <wasm32|wasm64> --release-tag <tag> --tap-repository <owner/repo> --tap-commit <sha> --kandelo-commit <sha> --bottle-root-url <url> --tap-root <dir>
+usage: scripts/homebrew-validate-publish-handoff.sh --handoff <dir> --formula <name> --arch <wasm32|wasm64> --release-tag <tag> --tap-repository <owner/repo> --tap-commit <sha> --kandelo-commit <sha> --bottle-root-url <url> --tap-root <dir> --forbidden-root <absolute-path> [--forbidden-root <absolute-path> ...]
 
 Checks the exact build/receipt/composition artifact grammar and cross-validates
 all publication data without loading Formula Ruby or executing package code.
@@ -32,10 +33,23 @@ while [ "$#" -gt 0 ]; do
     --kandelo-commit) KANDELO_COMMIT="${2:-}"; shift 2 ;;
     --bottle-root-url) BOTTLE_ROOT_URL="${2:-}"; shift 2 ;;
     --tap-root) TAP_ROOT="${2:-}"; shift 2 ;;
+    --forbidden-root)
+      [ "$#" -ge 2 ] && [ -n "$2" ] || {
+        echo "homebrew-validate-publish-handoff.sh: --forbidden-root requires a value" >&2
+        exit 2
+      }
+      FORBIDDEN_ROOTS+=("$2")
+      shift 2
+      ;;
     -h|--help) usage; exit 0 ;;
     *) echo "homebrew-validate-publish-handoff.sh: unknown flag $1" >&2; usage; exit 2 ;;
   esac
 done
+
+if [ "${#FORBIDDEN_ROOTS[@]}" -eq 0 ]; then
+  echo "homebrew-validate-publish-handoff.sh: at least one --forbidden-root is required" >&2
+  exit 2
+fi
 
 require() {
   local name="$1" value="$2"
@@ -119,41 +133,6 @@ assert_static_tap_tree() {
   fi
 }
 
-sibling_bottle_policy() {
-  local metadata="$1" name="$2" version="$3" formula_revision="$4" rebuild="$5" abi="$6"
-  if [ ! -e "$metadata" ]; then
-    printf '%s\n' discard
-    return 0
-  fi
-  if [ ! -f "$metadata" ] || [ -L "$metadata" ]; then
-    echo "homebrew-validate-publish-handoff.sh: tap metadata is not a regular file" >&2
-    return 1
-  fi
-
-  jq -er \
-    --arg name "$name" \
-    --arg version "$version" \
-    --argjson formula_revision "$formula_revision" \
-    --argjson rebuild "$rebuild" \
-    --argjson abi "$abi" '
-      if type != "object" or (.packages | type) != "array" then
-        error("tap metadata lacks a packages array")
-      else
-        [.packages[] | select(.name == $name)] as $matches |
-        if ($matches | length) > 1 then
-          error("tap metadata contains duplicate package identities")
-        elif .kandelo_abi == $abi and ($matches | length) == 1 and
-             $matches[0].version == $version and
-             $matches[0].formula_revision == $formula_revision and
-             $matches[0].bottle_rebuild == $rebuild then
-          "preserve"
-        else
-          "discard"
-        end
-      end
-    ' "$metadata"
-}
-
 assert_static_tap_tree "$TAP_ROOT" "tap root"
 BUILD_ROOT="$HANDOFF/build"
 RECEIPT="$HANDOFF/receipt.json"
@@ -198,7 +177,13 @@ done < <(find "$HANDOFF" -mindepth 1 -print0)
 
 SCRIPT_ROOT="$(cd "$(dirname "$0")" && pwd -P)"
 # shellcheck source=/dev/null
+. "$SCRIPT_ROOT/homebrew-sibling-bottle-policy.sh"
+# shellcheck source=/dev/null
 . "$SCRIPT_ROOT/homebrew-publication-limits.sh"
+receipt_validation_args=()
+for forbidden_root in "${FORBIDDEN_ROOTS[@]}"; do
+  receipt_validation_args+=(--forbidden-root "$forbidden_root")
+done
 bash "$SCRIPT_ROOT/homebrew-validate-upload-receipt.sh" \
   --receipt "$RECEIPT" \
   --handoff "$BUILD_ROOT" \
@@ -208,7 +193,8 @@ bash "$SCRIPT_ROOT/homebrew-validate-upload-receipt.sh" \
   --tap-repository "$TAP_REPOSITORY" \
   --tap-commit "$TAP_COMMIT" \
   --kandelo-commit "$KANDELO_COMMIT" \
-  --bottle-root-url "$BOTTLE_ROOT_URL" >/dev/null
+  --bottle-root-url "$BOTTLE_ROOT_URL" \
+  "${receipt_validation_args[@]}" >/dev/null
 
 python3 "$SCRIPT_ROOT/homebrew-dependency-provenance.py" validate \
   --input "$BUILD_ROOT/dependency-provenance.json" \
@@ -309,9 +295,9 @@ if [ "$(sha256_file "$TAP_FORMULA")" != "$FORMULA_SOURCE_SHA" ]; then
 fi
 
 BOTTLE_RELOCATION_CELLAR="$(jq -r '.bottle.cellar' "$BUILD_ROOT/manifest.json")"
-SIBLING_POLICY="$(sibling_bottle_policy \
+SIBLING_POLICY="$(homebrew_sibling_bottle_policy \
   "$TAP_ROOT/Kandelo/metadata.json" "$FORMULA" "$VERSION" "$FORMULA_REVISION" \
-  "$BOTTLE_REBUILD" "$ABI_VERSION")"
+  "$BOTTLE_REBUILD" "$ABI_VERSION" "homebrew-validate-publish-handoff.sh")"
 VALIDATION_TMP="$(mktemp -d)"
 cleanup() { rm -rf "$VALIDATION_TMP"; }
 trap cleanup EXIT

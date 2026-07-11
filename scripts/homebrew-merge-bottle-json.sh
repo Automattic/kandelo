@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# Merge one validated bottle JSON document into a clean tap checkout.
+# Compose one validated bottle JSON document into a clean tap checkout without
+# loading Formula Ruby or invoking Homebrew.
 set -euo pipefail
 
 TAP_ROOT=""
@@ -10,10 +11,11 @@ BOTTLE_JSON=""
 EXPECTED_SHA256=""
 EXPECTED_ROOT_URL=""
 EXPECTED_CELLAR=""
+RELEASE_TAG=""
 
 usage() {
   cat >&2 <<'EOF'
-usage: scripts/homebrew-merge-bottle-json.sh --tap-root <dir> --tap-repository <owner/repo> --formula <name> --arch <wasm32|wasm64> --bottle-json <path> --expected-sha256 <sha256> --expected-root-url <url> --expected-cellar <any|any_skip_relocation|canonical-cellar>
+usage: scripts/homebrew-merge-bottle-json.sh --tap-root <dir> --tap-repository <owner/repo> --formula <name> --arch <wasm32|wasm64> --release-tag <bottles-abi-vN> --bottle-json <path> --expected-sha256 <sha256> --expected-root-url <url> --expected-cellar <any|any_skip_relocation|canonical-cellar>
 EOF
 }
 
@@ -23,6 +25,7 @@ while [ "$#" -gt 0 ]; do
     --tap-repository) TAP_REPOSITORY="${2:-}"; shift 2 ;;
     --formula) FORMULA="${2:-}"; shift 2 ;;
     --arch) ARCH="${2:-}"; shift 2 ;;
+    --release-tag) RELEASE_TAG="${2:-}"; shift 2 ;;
     --bottle-json) BOTTLE_JSON="${2:-}"; shift 2 ;;
     --expected-sha256) EXPECTED_SHA256="${2:-}"; shift 2 ;;
     --expected-root-url) EXPECTED_ROOT_URL="${2:-}"; shift 2 ;;
@@ -32,7 +35,7 @@ while [ "$#" -gt 0 ]; do
   esac
 done
 
-for name in TAP_ROOT TAP_REPOSITORY FORMULA ARCH BOTTLE_JSON EXPECTED_SHA256 EXPECTED_ROOT_URL EXPECTED_CELLAR; do
+for name in TAP_ROOT TAP_REPOSITORY FORMULA ARCH RELEASE_TAG BOTTLE_JSON EXPECTED_SHA256 EXPECTED_ROOT_URL EXPECTED_CELLAR; do
   if [ -z "${!name}" ]; then
     echo "homebrew-merge-bottle-json.sh: ${name,,} is required" >&2
     exit 2
@@ -58,6 +61,10 @@ case "$ARCH" in
   wasm32|wasm64) ;;
   *) echo "homebrew-merge-bottle-json.sh: invalid architecture" >&2; exit 2 ;;
 esac
+if ! [[ "$RELEASE_TAG" =~ ^bottles-abi-v[0-9]+$ ]]; then
+  echo "homebrew-merge-bottle-json.sh: invalid release tag" >&2
+  exit 2
+fi
 if ! [[ "$EXPECTED_SHA256" =~ ^[0-9a-f]{64}$ ]]; then
   echo "homebrew-merge-bottle-json.sh: invalid expected sha256" >&2
   exit 2
@@ -70,7 +77,8 @@ fi
 TAP_ROOT="$(cd "$TAP_ROOT" && pwd)"
 BOTTLE_JSON="$(cd "$(dirname "$BOTTLE_JSON")" && pwd)/$(basename "$BOTTLE_JSON")"
 FORMULA_PATH="$TAP_ROOT/Formula/$FORMULA.rb"
-if [ ! -f "$FORMULA_PATH" ] || [ ! -f "$BOTTLE_JSON" ]; then
+if [ ! -f "$FORMULA_PATH" ] || [ -L "$FORMULA_PATH" ] || \
+   [ ! -f "$BOTTLE_JSON" ] || [ -L "$BOTTLE_JSON" ]; then
   echo "homebrew-merge-bottle-json.sh: formula or bottle JSON is missing" >&2
   exit 2
 fi
@@ -87,51 +95,49 @@ jq -e \
     (to_entries[0].value.formula.name == $formula) and
     (to_entries[0].value.bottle.root_url == $root) and
     (to_entries[0].value.bottle.cellar == $cellar) and
+    (to_entries[0].value.bottle.rebuild | type == "number" and . >= 0 and floor == .) and
+    (to_entries[0].value.bottle.tags | keys == [$tag]) and
+    (to_entries[0].value.bottle.tags[$tag] | keys == ["sha256"]) and
     (to_entries[0].value.bottle.tags[$tag].sha256 == $sha)
   ' "$BOTTLE_JSON" >/dev/null || {
     echo "homebrew-merge-bottle-json.sh: bottle JSON identity or digest mismatch" >&2
     exit 1
   }
 
-BREW_BIN="${HOMEBREW_BREW_FILE:-}"
-if [ -z "$BREW_BIN" ] || [ ! -x "$BREW_BIN" ]; then
-  echo "homebrew-merge-bottle-json.sh: HOMEBREW_BREW_FILE is required" >&2
-  exit 2
-fi
 KANDELO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-PATCH_FILE="${KANDELO_HOMEBREW_PATCH_FILE:-$KANDELO_ROOT/homebrew/patches/0001-add-kandelo-wasm-bottle-tags.patch}"
-. "$KANDELO_ROOT/scripts/homebrew-patched-launcher.sh"
-WORK_DIR="$(mktemp -d)"
+# shellcheck source=/dev/null
+. "$KANDELO_ROOT/scripts/homebrew-sibling-bottle-policy.sh"
+COMPOSER="$KANDELO_ROOT/scripts/homebrew-compose-formula-bottle.rb"
+COMPOSED_FORMULA="$(mktemp "$TAP_ROOT/Formula/.${FORMULA}.XXXXXX")"
 
 cleanup() {
-  homebrew_patched_launcher_cleanup
-  rm -rf "$WORK_DIR"
+  rm -f "$COMPOSED_FORMULA"
 }
 trap cleanup EXIT
 
-export XDG_CONFIG_HOME="$WORK_DIR/xdg-config"
-mkdir -p "$XDG_CONFIG_HOME/homebrew"
-chmod 0700 "$XDG_CONFIG_HOME" "$XDG_CONFIG_HOME/homebrew"
-homebrew_patched_launcher_prepare "$BREW_BIN" "$PATCH_FILE" "$WORK_DIR"
-BREW_BIN="$HOMEBREW_PATCHED_BREW_BIN"
-
-TAP_NAME="$(printf '%s' "$TAP_REPOSITORY" | tr '[:upper:]' '[:lower:]')"
-"$BREW_BIN" tap "$TAP_NAME" "$TAP_ROOT"
-"$BREW_BIN" trust --tap "$TAP_NAME"
-TAPPED_ROOT="$("$BREW_BIN" --repository "$TAP_NAME")"
-TAPPED_FORMULA="$TAPPED_ROOT/Formula/$FORMULA.rb"
-if [ ! "$FORMULA_PATH" -ef "$TAPPED_FORMULA" ]; then
-  cp "$FORMULA_PATH" "$TAPPED_FORMULA"
+REBUILD="$(jq -er '.[] | .bottle.rebuild' "$BOTTLE_JSON")"
+PKG_VERSION="$(jq -er '.[] | .formula.pkg_version' "$BOTTLE_JSON")"
+FORMULA_REVISION=0
+if [[ "$PKG_VERSION" =~ _([1-9][0-9]*)$ ]]; then
+  FORMULA_REVISION="${BASH_REMATCH[1]}"
 fi
-(
-  cd "$TAP_ROOT"
-  HOMEBREW_KANDELO_BOTTLE_TAG="$TAG" \
-  KANDELO_HOMEBREW_BOTTLE_TAG="$TAG" \
-    "$BREW_BIN" bottle --merge --write --no-commit --keep-old "$BOTTLE_JSON"
-)
-if [ ! "$FORMULA_PATH" -ef "$TAPPED_FORMULA" ]; then
-  cp "$TAPPED_FORMULA" "$FORMULA_PATH"
-fi
+ABI_VERSION="${RELEASE_TAG#bottles-abi-v}"
+SIBLING_POLICY="$(homebrew_sibling_bottle_policy \
+  "$TAP_ROOT/Kandelo/metadata.json" "$FORMULA" "$PKG_VERSION" \
+  "$FORMULA_REVISION" "$REBUILD" "$ABI_VERSION" \
+  "homebrew-merge-bottle-json.sh")"
+ruby "$COMPOSER" \
+  "$FORMULA_PATH" \
+  "$FORMULA_PATH" \
+  "$EXPECTED_ROOT_URL" \
+  "$REBUILD" \
+  "$TAG" \
+  "$EXPECTED_CELLAR" \
+  "$EXPECTED_SHA256" \
+  "$SIBLING_POLICY" \
+  "$COMPOSED_FORMULA"
+chmod --reference="$FORMULA_PATH" "$COMPOSED_FORMULA"
+mv "$COMPOSED_FORMULA" "$FORMULA_PATH"
 
 grep -F "root_url \"$EXPECTED_ROOT_URL\"" "$FORMULA_PATH" >/dev/null || {
   echo "homebrew-merge-bottle-json.sh: merged Formula root URL mismatch" >&2

@@ -5,9 +5,20 @@ REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 TMPDIR="$(mktemp -d)"
 TMPDIR="$(cd "$TMPDIR" && pwd -P)"
 . "$REPO_ROOT/scripts/homebrew-patched-launcher.sh"
+ISOLATION_BUILD_USER=""
+ISOLATION_ROOT=""
 
 cleanup() {
   homebrew_patched_launcher_cleanup
+  if [ -n "$ISOLATION_BUILD_USER" ] && id "$ISOLATION_BUILD_USER" >/dev/null 2>&1; then
+    /usr/bin/sudo -n -- /usr/bin/pkill -KILL -u "$(id -u "$ISOLATION_BUILD_USER")" \
+      >/dev/null 2>&1 || true
+    /usr/bin/sudo -n -- /usr/sbin/userdel -r "$ISOLATION_BUILD_USER" \
+      >/dev/null 2>&1 || true
+  fi
+  if [ -n "$ISOLATION_ROOT" ]; then
+    /usr/bin/sudo -n -- rm -rf "$ISOLATION_ROOT" >/dev/null 2>&1 || true
+  fi
   rm -rf "$TMPDIR"
 }
 trap cleanup EXIT
@@ -52,6 +63,42 @@ case "${1:-}" in
     ;;
   --cellar) printf '%s/Cellar\n' "$prefix" ;;
   --repository) printf '%s\n' "$repository" ;;
+  spawn-daemon)
+    marker="$2"
+    started="$3"
+    (/usr/bin/setsid bash -c \
+      'printf started >"$2"; trap "" HUP; sleep 2; printf survived >"$1"' \
+      bash "$marker" "$started" \
+      </dev/null >/dev/null 2>&1 &)
+    for ((attempt = 0; attempt < 50; attempt++)); do
+      [ -e "$started" ] && exit 0
+      sleep 0.02
+    done
+    exit 1
+    ;;
+  assert-no-new-privileges)
+    awk '$1 == "NoNewPrivs:" { found = 1; if ($2 != 1) exit 1 } END { if (!found) exit 1 }' \
+      /proc/self/status
+    ;;
+  assert-identity)
+    [ "$(/usr/bin/id -u)" = "$2" ]
+    [ "$(/usr/bin/id -g)" = "$3" ]
+    ;;
+  assert-working-directory)
+    [ "$(pwd -P)" = "$2" ]
+    ;;
+  assert-argv)
+    [ "$#" -eq 6 ]
+    [ "$2" = "" ]
+    [ "$3" = "with spaces" ]
+    [ "$4" = '$dollar' ]
+    [ "$5" = '%percent' ]
+    [ "$6" = $'line one\nline two' ]
+    ;;
+  assert-bottle-tags)
+    [ "${HOMEBREW_KANDELO_BOTTLE_TAG:-}" = "$2" ]
+    [ "${KANDELO_HOMEBREW_BOTTLE_TAG:-}" = "$3" ]
+    ;;
   *) exit 2 ;;
 esac
 EOF
@@ -111,5 +158,117 @@ if find "$prefix/bin" -maxdepth 1 -type l -name '.kandelo-brew-*' -print -quit |
 fi
 [ "$(cat "$prefix/marker.txt")" = "unpatched" ] || fail "failed prepare modified the original repository"
 [ -z "$(git -C "$prefix" status --short)" ] || fail "failed prepare left the original repository dirty"
+
+process_probe_dir="$TMPDIR/process-probe"
+mkdir -p "$process_probe_dir"
+cat >"$process_probe_dir/sudo" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+[ "${1:-}" = "-n" ] && shift
+[ "${1:-}" = "--" ] && shift
+exec "$@"
+EOF
+cat >"$process_probe_dir/pgrep" <<'EOF'
+#!/usr/bin/env bash
+exit "${FAKE_PGREP_STATUS:?}"
+EOF
+chmod +x "$process_probe_dir/sudo" "$process_probe_dir/pgrep"
+HOMEBREW_PATCHED_SUDO_BIN="$process_probe_dir/sudo"
+HOMEBREW_PATCHED_PGREP_BIN="$process_probe_dir/pgrep"
+HOMEBREW_PATCHED_BUILD_UID=1234
+for expected_status in 0 1 2; do
+  export FAKE_PGREP_STATUS="$expected_status"
+  if homebrew_patched_launcher_uid_has_processes 2>/dev/null; then
+    actual_status=0
+  else
+    actual_status="$?"
+  fi
+  [ "$actual_status" -eq "$expected_status" ] ||
+    fail "process inspection status $expected_status was reported as $actual_status"
+done
+HOMEBREW_PATCHED_SUDO_BIN=""
+HOMEBREW_PATCHED_PGREP_BIN=""
+HOMEBREW_PATCHED_BUILD_UID=""
+
+if [ "$(uname -s)" = "Linux" ] && [ -x /usr/bin/sudo ] && \
+   [ -x /usr/bin/systemd-run ] && [ -x /usr/bin/systemctl ] && \
+   [ -x /usr/bin/getent ] && [ -x /usr/bin/pgrep ] && [ -x /usr/bin/pkill ] && \
+   [ -x /usr/bin/setsid ] && \
+   [ -d /run/systemd/system ] && /usr/bin/sudo -n true >/dev/null 2>&1; then
+  ISOLATION_BUILD_USER="kandelo-hb-$$-${RANDOM}"
+  ISOLATION_BUILD_USER="${ISOLATION_BUILD_USER:0:31}"
+  ISOLATION_ROOT="$(mktemp -d /tmp/kandelo-launcher-test.XXXXXX)"
+  /usr/bin/sudo -n -- chmod 1777 "$ISOLATION_ROOT"
+  isolated_repo="$ISOLATION_ROOT/repo"
+  isolated_prefix="$ISOLATION_ROOT/prefix"
+  isolated_work="$ISOLATION_ROOT/work"
+  isolated_cache="$ISOLATION_ROOT/cache"
+  isolated_temp="$ISOLATION_ROOT/temp"
+  isolated_kandelo="$ISOLATION_ROOT/kandelo"
+  isolated_tap="$ISOLATION_ROOT/tap"
+  isolated_home="/home/$ISOLATION_BUILD_USER"
+  daemon_marker="$isolated_work/detached-process-survived"
+  daemon_started="$isolated_work/detached-process-started"
+  mkdir -p "$isolated_repo/bin" "$isolated_prefix/bin" "$isolated_work" \
+    "$isolated_cache" "$isolated_temp" "$isolated_kandelo" "$isolated_tap"
+  mkdir "$isolated_kandelo/runner-control"
+  chmod 0700 "$isolated_kandelo/runner-control"
+  cp "$prefix/bin/brew" "$isolated_repo/bin/brew"
+  chmod +x "$isolated_repo/bin/brew"
+  printf 'unpatched\n' >"$isolated_repo/marker.txt"
+  git -C "$isolated_repo" init -q
+  git -C "$isolated_repo" config user.name "Kandelo Test"
+  git -C "$isolated_repo" config user.email "kandelo-test@example.invalid"
+  git -C "$isolated_repo" add .
+  git -C "$isolated_repo" commit -q -m fixture
+  ln -s "$isolated_repo/bin/brew" "$isolated_prefix/bin/brew"
+
+  /usr/bin/sudo -n -- /usr/sbin/useradd --system --user-group --create-home \
+    --home-dir "$isolated_home" --shell /usr/sbin/nologin "$ISOLATION_BUILD_USER"
+  export HOMEBREW_CACHE="$isolated_cache"
+  export HOMEBREW_TEMP="$isolated_temp"
+  export XDG_CONFIG_HOME="$isolated_work/xdg-config"
+  export KANDELO_HOMEBREW_SUDO_BIN=/usr/bin/sudo
+  export KANDELO_HOMEBREW_SYSTEMD_RUN_BIN=/usr/bin/systemd-run
+  export KANDELO_HOMEBREW_SYSTEMCTL_BIN=/usr/bin/systemctl
+  export KANDELO_HOMEBREW_GETENT_BIN=/usr/bin/getent
+  export KANDELO_HOMEBREW_PGREP_BIN=/usr/bin/pgrep
+  export KANDELO_HOMEBREW_PKILL_BIN=/usr/bin/pkill
+  mkdir -p "$XDG_CONFIG_HOME/homebrew"
+
+  homebrew_patched_launcher_prepare \
+    "$isolated_prefix/bin/brew" "$patch_file" "$isolated_work"
+  homebrew_patched_launcher_isolate \
+    "$ISOLATION_BUILD_USER" "$isolated_work" "$isolated_kandelo" "$isolated_tap"
+  "$HOMEBREW_PATCHED_BREW_BIN" assert-identity \
+    "$(id -u "$ISOLATION_BUILD_USER")" "$(id -g "$ISOLATION_BUILD_USER")"
+  "$HOMEBREW_PATCHED_BREW_BIN" assert-working-directory "$isolated_work"
+  "$HOMEBREW_PATCHED_BREW_BIN" assert-argv \
+    "" "with spaces" '$dollar' '%percent' $'line one\nline two'
+  "$HOMEBREW_PATCHED_BREW_BIN" assert-bottle-tags "" ""
+  HOMEBREW_KANDELO_BOTTLE_TAG=wasm32_kandelo \
+  KANDELO_HOMEBREW_BOTTLE_TAG=wasm32_kandelo \
+    "$HOMEBREW_PATCHED_BREW_BIN" assert-bottle-tags \
+      wasm32_kandelo wasm32_kandelo
+  "$HOMEBREW_PATCHED_BREW_BIN" assert-no-new-privileges
+  "$HOMEBREW_PATCHED_BREW_BIN" spawn-daemon "$daemon_marker" "$daemon_started"
+  [ -e "$daemon_started" ] || fail "detached Formula process never started"
+  sleep 3
+  [ ! -e "$daemon_marker" ] || fail "detached Formula process survived its transient service"
+  set +e
+  /usr/bin/sudo -n -- /usr/bin/pgrep -u "$(id -u "$ISOLATION_BUILD_USER")" \
+    >/dev/null 2>&1
+  pgrep_status="$?"
+  set -e
+  [ "$pgrep_status" -eq 1 ] || fail "Formula process check did not prove an empty UID"
+  homebrew_patched_launcher_teardown "$ISOLATION_BUILD_USER"
+  homebrew_patched_launcher_verify_isolation
+  homebrew_patched_launcher_cleanup
+  /usr/bin/sudo -n -- /usr/sbin/userdel -r "$ISOLATION_BUILD_USER"
+  ! id "$ISOLATION_BUILD_USER" >/dev/null 2>&1 || fail "Formula build identity survived retirement"
+  ISOLATION_BUILD_USER=""
+  /usr/bin/sudo -n -- rm -rf "$ISOLATION_ROOT"
+  ISOLATION_ROOT=""
+fi
 
 echo "test-homebrew-patched-launcher.sh: ok"

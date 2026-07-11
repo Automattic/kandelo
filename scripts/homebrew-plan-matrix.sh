@@ -7,18 +7,19 @@ FORMULAE="all"
 ARCHES="wasm32"
 METADATA_PATH=""
 EXPECTED_CACHE_KEYS=""
+EXPECTED_ABI=""
 FORCE=0
 
 usage() {
   cat >&2 <<'EOF'
-usage: scripts/homebrew-plan-matrix.sh --tap-root <tap-root> [--formulae <list|all>] [--arches <list>] [--metadata <path>] [--expected-cache-keys <path>] [--force]
+usage: scripts/homebrew-plan-matrix.sh --tap-root <tap-root> [--formulae <list|all>] [--arches <list>] [--metadata <path>] [--expected-cache-keys <path> --expected-abi <N>] [--force]
 
 Lists may be comma, space, or newline separated. Output is a JSON array of
 {"formula": "...", "arch": "..."} entries.
 
 When --expected-cache-keys is provided, entries whose current successful tap
-metadata already carries the expected cache key are skipped unless --force is
-set. The expected cache-key JSON may be either {"formula":"sha"} or
+metadata already carries the expected cache key under the exact expected ABI
+and release tag are skipped unless --force is set. The expected cache-key JSON may be either {"formula":"sha"} or
 {"formula":{"wasm32":"sha","wasm64":"sha"}}.
 EOF
 }
@@ -30,6 +31,7 @@ while [ "$#" -gt 0 ]; do
     --arches) ARCHES="${2:-}"; shift 2 ;;
     --metadata) METADATA_PATH="${2:-}"; shift 2 ;;
     --expected-cache-keys) EXPECTED_CACHE_KEYS="${2:-}"; shift 2 ;;
+    --expected-abi) EXPECTED_ABI="${2:-}"; shift 2 ;;
     --force) FORCE=1; shift ;;
     -h|--help) usage; exit 0 ;;
     *) echo "homebrew-plan-matrix.sh: unknown flag $1" >&2; usage; exit 2 ;;
@@ -45,11 +47,28 @@ if [ ! -d "$TAP_ROOT/Formula" ]; then
   echo "homebrew-plan-matrix.sh: $TAP_ROOT/Formula is not a directory" >&2
   exit 2
 fi
+if [ -z "$(printf '%s' "$FORMULAE" | tr -d ',[:space:]')" ]; then
+  echo "homebrew-plan-matrix.sh: formula selection must not be empty" >&2
+  exit 2
+fi
+if [ -z "$(printf '%s' "$ARCHES" | tr -d ',[:space:]')" ]; then
+  echo "homebrew-plan-matrix.sh: architecture selection must not be empty" >&2
+  exit 2
+fi
 if [ -z "$METADATA_PATH" ]; then
   METADATA_PATH="$TAP_ROOT/Kandelo/metadata.json"
 fi
 if [ -n "$EXPECTED_CACHE_KEYS" ] && [ ! -f "$EXPECTED_CACHE_KEYS" ]; then
   echo "homebrew-plan-matrix.sh: expected cache-key file does not exist: $EXPECTED_CACHE_KEYS" >&2
+  exit 2
+fi
+if [ -n "$EXPECTED_CACHE_KEYS" ]; then
+  if ! [[ "$EXPECTED_ABI" =~ ^[1-9][0-9]*$ ]] || [ "$EXPECTED_ABI" -gt 4294967295 ]; then
+    echo "homebrew-plan-matrix.sh: --expected-abi is required with cache keys and must be a positive u32" >&2
+    exit 2
+  fi
+elif [ -n "$EXPECTED_ABI" ]; then
+  echo "homebrew-plan-matrix.sh: --expected-abi requires --expected-cache-keys" >&2
   exit 2
 fi
 
@@ -132,7 +151,8 @@ fi
 jq -c \
   --argjson metadata "$metadata_json" \
   --argjson expected "$expected_json" \
-  --argjson force "$force_json" '
+  --argjson force "$force_json" \
+  --arg expected_abi "$EXPECTED_ABI" '
   def expected_key($formula; $arch):
     if $expected == null then
       null
@@ -145,7 +165,9 @@ jq -c \
     end;
 
   def current_key($formula; $arch):
-    if $metadata == null then
+    if $metadata == null or $expected_abi == "" or
+       $metadata.kandelo_abi != ($expected_abi | tonumber) or
+       $metadata.release_tag != ("bottles-abi-v" + $expected_abi) then
       null
     else
       [

@@ -7,6 +7,7 @@ REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 . "$REPO_ROOT/scripts/homebrew-publication-limits.sh"
 TMPDIR="$(mktemp -d)"
 trap 'rm -rf "$TMPDIR"' EXIT
+TEST_FORBIDDEN_ROOT="/trusted/publisher/build-root"
 
 fail() {
   echo "test-homebrew-publish-workflow.sh: $*" >&2
@@ -21,7 +22,7 @@ class Hello < Formula
 end
 EOF
   cat >"$tap/Kandelo/metadata.json" <<'EOF'
-{"last":"green"}
+{"kandelo_abi":15,"release_tag":"bottles-abi-v15","packages":[]}
 EOF
   git -C "$tap" init -q
   git -C "$tap" config user.name "Kandelo Test"
@@ -43,6 +44,14 @@ assert_matrix() {
     .[0] == {"formula":"hello","arch":"wasm32"} and
     .[1] == {"formula":"hello","arch":"wasm64"}
   ' >/dev/null || fail "unexpected matrix: $matrix"
+  if bash "$REPO_ROOT/scripts/homebrew-plan-matrix.sh" \
+    --tap-root "$tap" --formulae ' , ' --arches wasm32 >/dev/null 2>&1; then
+    fail "planner accepted an empty Formula selection"
+  fi
+  if bash "$REPO_ROOT/scripts/homebrew-plan-matrix.sh" \
+    --tap-root "$tap" --formulae hello --arches ' , ' >/dev/null 2>&1; then
+    fail "planner accepted an empty architecture selection"
+  fi
 }
 
 assert_matrix_skips_unchanged_cache_key() {
@@ -51,6 +60,8 @@ assert_matrix_skips_unchanged_cache_key() {
   make_tap "$tap"
   cat >"$tap/Kandelo/metadata.json" <<'EOF'
 {
+  "kandelo_abi": 40,
+  "release_tag": "bottles-abi-v40",
   "packages": [
     {
       "name": "hello",
@@ -83,7 +94,8 @@ EOF
     --tap-root "$tap" \
     --formulae "hello" \
     --arches "wasm64,wasm32" \
-    --expected-cache-keys "$expected")"
+    --expected-cache-keys "$expected" \
+    --expected-abi 40)"
   printf '%s\n' "$matrix" | jq -e '
     length == 1 and
     .[0] == {"formula":"hello","arch":"wasm64"}
@@ -94,12 +106,23 @@ EOF
     --formulae "hello" \
     --arches "wasm64,wasm32" \
     --expected-cache-keys "$expected" \
+    --expected-abi 40 \
     --force)"
   printf '%s\n' "$matrix" | jq -e '
     length == 2 and
     .[0] == {"formula":"hello","arch":"wasm32"} and
     .[1] == {"formula":"hello","arch":"wasm64"}
   ' >/dev/null || fail "expected force to include unchanged cache keys: $matrix"
+
+  matrix="$(bash "$REPO_ROOT/scripts/homebrew-plan-matrix.sh" \
+    --tap-root "$tap" \
+    --formulae "hello" \
+    --arches "wasm32" \
+    --expected-cache-keys "$expected" \
+    --expected-abi 41)"
+  printf '%s\n' "$matrix" | jq -e '
+    . == [{"formula":"hello","arch":"wasm32"}]
+  ' >/dev/null || fail "older-ABI cache metadata skipped the new ABI build: $matrix"
 }
 
 assert_upload_dry_run() {
@@ -177,45 +200,66 @@ EOF
   [ ! -e "$oras_config" ] || fail "oras registry auth survived the upload command"
 }
 
-assert_generator_rejects_mismatched_homebrew_commit() {
-  local brew_repo="$TMPDIR/generator-brew-repo"
-  local brew_bin="$TMPDIR/generator-bin/brew"
-  local brew_prefix="$TMPDIR/generator-prefix"
+assert_sysroot_fingerprint_is_arch_specific() {
+  local root="$TMPDIR/sysroot-fingerprint-root"
+  local err="$TMPDIR/sysroot-fingerprint.err"
+  local wasm32_sha wasm64_sha actual
+
+  mkdir -p "$root/sysroot/lib" "$root/sysroot64/lib"
+  printf 'wasm32 libc fixture\n' >"$root/sysroot/lib/libc.a"
+  printf 'distinct wasm64 libc fixture\n' >"$root/sysroot64/lib/libc.a"
+  wasm32_sha="$(shasum -a 256 "$root/sysroot/lib/libc.a" | awk '{print $1}')"
+  wasm64_sha="$(shasum -a 256 "$root/sysroot64/lib/libc.a" | awk '{print $1}')"
+
+  actual="$(bash "$REPO_ROOT/scripts/homebrew-sysroot-fingerprint.sh" \
+    --kandelo-root "$root" --arch wasm64)"
+  [ "$actual" = "$wasm64_sha" ] ||
+    fail "wasm64 sidecar evidence fingerprinted the wrong target sysroot"
+  [ "$actual" != "$wasm32_sha" ] ||
+    fail "wasm64 sidecar evidence silently fingerprinted the wasm32 sysroot"
+
+  rm "$root/sysroot64/lib/libc.a"
+  if bash "$REPO_ROOT/scripts/homebrew-sysroot-fingerprint.sh" \
+    --kandelo-root "$root" --arch wasm64 >/dev/null 2>"$err"; then
+    fail "wasm64 sidecar evidence accepted an absent sysroot64 libc"
+  fi
+  grep -F "selected wasm64 sysroot libc must be a regular non-symlink file" "$err" >/dev/null ||
+    fail "wasm64 sidecar evidence did not explain the absent sysroot64 libc"
+}
+
+assert_generator_validates_homebrew_commit_as_data() {
+  local tap="$TMPDIR/generator-tap"
   local sidecars="$TMPDIR/generator-sidecars"
   local err="$TMPDIR/generator-brew-commit.err"
   local bottle="$TMPDIR/generator-bottle.tar.gz"
   local bottle_json="$TMPDIR/generator-bottle.json"
-  local bottle_sha bottle_bytes abi
+  local provenance="$TMPDIR/generator-dependency-provenance.json"
+  local bottle_sha bottle_bytes abi nix_bin candidate
 
-  mkdir -p "$brew_repo/Formula" "$(dirname "$brew_bin")" "$brew_prefix"
-  git -C "$brew_repo" init -q
-  git -C "$brew_repo" config user.name "Kandelo Test"
-  git -C "$brew_repo" config user.email "kandelo-test@example.invalid"
-  printf 'reviewed brew\n' >"$brew_repo/README.md"
-  printf 'class Hello < Formula\nend\n' >"$brew_repo/Formula/hello.rb"
-  git -C "$brew_repo" add README.md Formula/hello.rb
-  git -C "$brew_repo" commit -q -m "reviewed brew"
+  mkdir -p "$tap/Formula"
+  printf 'class Hello < Formula\nend\n' >"$tap/Formula/hello.rb"
   printf 'bottle\n' >"$bottle"
   printf '{}\n' >"$bottle_json"
+  printf '{}\n' >"$provenance"
   bottle_sha="$(sha256sum "$bottle" 2>/dev/null | awk '{print $1}' || shasum -a 256 "$bottle" | awk '{print $1}')"
   bottle_bytes="$(wc -c <"$bottle" | tr -d '[:space:]')"
-  cat >"$brew_bin" <<EOF
-#!/usr/bin/env bash
-case "\${1:-}" in
-  --repository) printf '%s\n' '$brew_repo' ;;
-  --prefix) printf '%s\n' '$brew_prefix' ;;
-  --version) printf '%s\n' 'Homebrew test' ;;
-  *) exit 2 ;;
-esac
-EOF
-  chmod +x "$brew_bin"
   abi="$(sed -nE 's/^pub const ABI_VERSION: u32 = ([0-9]+);$/\1/p' \
     "$REPO_ROOT/crates/shared/src/lib.rs" | head -n1)"
+  nix_bin="$(command -v nix || true)"
+  if [ -z "$nix_bin" ]; then
+    for candidate in /nix/var/nix/profiles/default/bin/nix "$HOME/.nix-profile/bin/nix"; do
+      if [ -x "$candidate" ]; then
+        nix_bin="$candidate"
+        break
+      fi
+    done
+  fi
+  [ -n "$nix_bin" ] || fail "cannot exercise the dev-shell environment boundary without Nix"
 
-  if HOMEBREW_BREW_FILE="$brew_bin" \
-    HOMEBREW_BREW_COMMIT="0000000000000000000000000000000000000000" \
-    KANDELO_HOMEBREW_PATCH_FILE="$TMPDIR/generator-missing.patch" \
-    KANDELO_HOMEBREW_TAP_ROOT="$brew_repo" \
+  if PATH="$(dirname "$nix_bin"):$PATH" \
+    HOMEBREW_BREW_COMMIT="not-a-commit" \
+    KANDELO_HOMEBREW_TAP_ROOT="$tap" \
+    KANDELO_HOMEBREW_FORMULA_SOURCE_ROOT="$tap" \
     KANDELO_HOMEBREW_SIDECAR_ROOT="$sidecars" \
     KANDELO_HOMEBREW_FORMULA="hello" \
     KANDELO_HOMEBREW_ARCH="wasm32" \
@@ -223,15 +267,26 @@ EOF
     KANDELO_HOMEBREW_TAP_REPOSITORY="Automattic/kandelo-homebrew" \
     KANDELO_HOMEBREW_BOTTLE_ARCHIVE="$bottle" \
     KANDELO_HOMEBREW_BOTTLE_JSON="$bottle_json" \
+    KANDELO_HOMEBREW_BOTTLE_ROOT_URL="https://ghcr.io/v2/automattic/kandelo-homebrew" \
     KANDELO_HOMEBREW_BOTTLE_URL="https://ghcr.io/v2/automattic/kandelo-homebrew/hello/blobs/sha256:${bottle_sha}" \
     KANDELO_HOMEBREW_BOTTLE_SHA256="$bottle_sha" \
     KANDELO_HOMEBREW_BOTTLE_BYTES="$bottle_bytes" \
-    bash "$REPO_ROOT/scripts/homebrew-generate-sidecars-from-env.sh" \
-      >/dev/null 2>"$err"; then
-    fail "sidecar generator accepted a Homebrew checkout that differed from the reviewed commit"
+    KANDELO_HOMEBREW_DEPENDENCY_PROVENANCE="$provenance" \
+    KANDELO_HOMEBREW_FORBIDDEN_ROOTS_JSON='["/trusted/publisher/build-root"]' \
+    bash "$REPO_ROOT/scripts/dev-shell.sh" \
+      env KANDELO_HOMEBREW_FORBIDDEN_ROOTS_JSON='["/trusted/publisher/build-root"]' \
+      bash "$REPO_ROOT/scripts/homebrew-generate-sidecars-from-env.sh" \
+      >"$err" 2>&1; then
+    fail "sidecar generator accepted malformed Homebrew commit provenance"
   fi
-  grep -q "active Homebrew checkout differs" "$err" ||
-    fail "sidecar generator did not explain the Homebrew commit mismatch"
+  grep -F "invalid Homebrew commit: not-a-commit" "$err" >/dev/null || {
+    cat "$err" >&2
+    fail "sidecar generator did not explain malformed Homebrew commit provenance"
+  }
+  if grep -Eq 'HOMEBREW_BREW_FILE|brew info|bottle --merge|homebrew-patched-launcher' \
+    "$REPO_ROOT/scripts/homebrew-generate-sidecars-from-env.sh"; then
+    fail "post-build sidecar generator still evaluates Formula Ruby through Homebrew"
+  fi
   grep -F -- "--keep HOMEBREW_BREW_COMMIT" "$REPO_ROOT/scripts/dev-shell.sh" >/dev/null ||
     fail "dev shell does not preserve the reviewed Homebrew commit"
 }
@@ -258,9 +313,17 @@ class Hello < Formula
 end
 EOF
   fi
-  printf '{}\n' >"$bottle_stage/INSTALL_RECEIPT.json"
+  printf '{"runtime_dependencies":[]}\n' >"$bottle_stage/INSTALL_RECEIPT.json"
   printf '#!/bin/sh\necho hello\n' >"$bottle_stage/bin/hello"
   chmod +x "$bottle_stage/bin/hello"
+  cat >"$source_dir/hello.wat" <<'EOF'
+(module
+  (memory 1)
+  (func (export "__abi_version") (result i32) (i32.const 18))
+)
+EOF
+  wat2wasm "$source_dir/hello.wat" -o "$bottle_stage/bin/hello.wasm"
+  chmod +x "$bottle_stage/bin/hello.wasm"
   tar -czf "$bottle" -C "$source_dir/stage" hello
   sha256="$(sha256sum "$bottle" 2>/dev/null | awk '{print $1}' || shasum -a 256 "$bottle" | awk '{print $1}')"
   jq -n --arg sha256 "$sha256" '{
@@ -283,7 +346,7 @@ EOF
             sha256: $sha256,
             tab: {runtime_dependencies: []},
             path_exec_files: ["bin/hello"],
-            all_files: [".brew/hello.rb", "INSTALL_RECEIPT.json", "bin/hello"]
+            all_files: [".brew/hello.rb", "INSTALL_RECEIPT.json", "bin/hello", "bin/hello.wasm"]
           }
         }
       }
@@ -324,7 +387,26 @@ EOF
     --bottle "$bottle" \
     --bottle-json "$bottle_json" \
     --dependency-provenance "$dependency_provenance" \
+    --forbidden-root "$TEST_FORBIDDEN_ROOT" \
     --out "$handoff" >/dev/null
+}
+
+refresh_build_handoff_bottle_identity() {
+  local handoff="$1"
+  local archive="$handoff/bottle.tar.gz"
+  local sha256 bytes tmp
+  sha256="$(sha256sum "$archive" 2>/dev/null | awk '{print $1}' || shasum -a 256 "$archive" | awk '{print $1}')"
+  bytes="$(wc -c <"$archive" | tr -d '[:space:]')"
+  tmp="$handoff/manifest.json.tmp"
+  jq --arg sha256 "$sha256" --argjson bytes "$bytes" \
+    '.bottle.sha256 = $sha256 | .bottle.bytes = $bytes' \
+    "$handoff/manifest.json" >"$tmp"
+  mv "$tmp" "$handoff/manifest.json"
+  tmp="$handoff/bottle.json.tmp"
+  jq --arg sha256 "$sha256" \
+    '.[].bottle.tags.wasm32_kandelo.sha256 = $sha256' \
+    "$handoff/bottle.json" >"$tmp"
+  mv "$tmp" "$handoff/bottle.json"
 }
 
 validate_build_handoff() {
@@ -339,6 +421,7 @@ validate_build_handoff() {
     --tap-commit aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa \
     --kandelo-commit bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb \
     --bottle-root-url https://ghcr.io/v2/automattic/kandelo-homebrew \
+    --forbidden-root "$TEST_FORBIDDEN_ROOT" \
     "$@"
 }
 
@@ -410,7 +493,7 @@ assert_build_handoff_is_minimal_and_validated() {
 }
 
 assert_build_handoff_rejects_untrusted_content() {
-  local handoff err tmp zstd_bottle zstd_out invalid_gzip invalid_json invalid_out invalid_sha canonical_json
+  local handoff err tmp zstd_bottle zstd_out invalid_gzip invalid_json invalid_out invalid_sha canonical_json out_env archive_stage stale_wat
 
   handoff="$TMPDIR/build-handoff-zstd-seed"
   make_build_handoff "$handoff"
@@ -428,6 +511,7 @@ assert_build_handoff_rejects_untrusted_content() {
     --bottle "$zstd_bottle" \
     --bottle-json "${handoff}.source/hello--2.12.1.wasm32_kandelo.bottle.json" \
     --dependency-provenance "${handoff}.source/dependency-provenance.json" \
+    --forbidden-root "$TEST_FORBIDDEN_ROOT" \
     --out "$zstd_out" >/dev/null 2>&1; then
     fail "build handoff creator accepted a zstd bottle for the gzip-only publisher"
   fi
@@ -451,6 +535,7 @@ assert_build_handoff_rejects_untrusted_content() {
     --bottle "$invalid_gzip" \
     --bottle-json "$invalid_json" \
     --dependency-provenance "${handoff}.source/dependency-provenance.json" \
+    --forbidden-root "$TEST_FORBIDDEN_ROOT" \
     --out "$invalid_out" >/dev/null 2>&1; then
     fail "build handoff creator accepted non-gzip bytes under a gzip filename"
   fi
@@ -492,6 +577,70 @@ assert_build_handoff_rejects_untrusted_content() {
   if validate_build_handoff "$handoff" >/dev/null 2>&1; then
     fail "build handoff validator accepted modified bottle bytes"
   fi
+
+  handoff="$TMPDIR/build-handoff-link-escape"
+  make_build_handoff "$handoff"
+  archive_stage="$TMPDIR/build-handoff-link-escape.stage"
+  mkdir -p "$archive_stage"
+  tar -xzf "$handoff/bottle.tar.gz" -C "$archive_stage"
+  ln -s ../../../outside "$archive_stage/hello/2.12.1/bin/escape"
+  tar -czf "$handoff/bottle.tar.gz" -C "$archive_stage" hello
+  refresh_build_handoff_bottle_identity "$handoff"
+  out_env="$TMPDIR/build-handoff-link-escape.env"
+  err="$TMPDIR/build-handoff-link-escape.err"
+  if validate_build_handoff "$handoff" --out-env "$out_env" >/dev/null 2>"$err"; then
+    fail "build handoff validator accepted a bottle link escaping its payload"
+  fi
+  grep -q "escapes payload root" "$err" ||
+    fail "build handoff validator did not explain the escaping archive link"
+  [ ! -e "$out_env" ] ||
+    fail "build handoff validator produced uploader data for an unsafe archive"
+
+  handoff="$TMPDIR/build-handoff-build-root-leak"
+  make_build_handoff "$handoff"
+  archive_stage="$TMPDIR/build-handoff-build-root-leak.stage"
+  mkdir -p "$archive_stage"
+  tar -xzf "$handoff/bottle.tar.gz" -C "$archive_stage"
+  printf '#!/bin/sh\nsource_dir=%s/source\n' "$TEST_FORBIDDEN_ROOT" \
+    >"$archive_stage/hello/2.12.1/bin/hello"
+  tar -czf "$handoff/bottle.tar.gz" -C "$archive_stage" hello
+  refresh_build_handoff_bottle_identity "$handoff"
+  out_env="$TMPDIR/build-handoff-build-root-leak.env"
+  err="$TMPDIR/build-handoff-build-root-leak.err"
+  if validate_build_handoff "$handoff" --out-env "$out_env" >/dev/null 2>"$err"; then
+    fail "build handoff validator accepted an installed build-root leak"
+  fi
+  grep -F "bin/hello' contains forbidden build root '$TEST_FORBIDDEN_ROOT'" "$err" >/dev/null ||
+    fail "build handoff validator did not explain the installed build-root leak"
+  [ ! -e "$out_env" ] ||
+    fail "build handoff validator produced uploader data for a build-root leak"
+
+  handoff="$TMPDIR/build-handoff-stale-abi"
+  make_build_handoff "$handoff"
+  archive_stage="$TMPDIR/build-handoff-stale-abi.stage"
+  stale_wat="$TMPDIR/build-handoff-stale-abi.wat"
+  mkdir -p "$archive_stage"
+  tar -xzf "$handoff/bottle.tar.gz" -C "$archive_stage"
+  cat >"$stale_wat" <<'EOF'
+(module
+  (memory 1)
+  (func (export "__abi_version") (result i32) (i32.const 17))
+)
+EOF
+  wat2wasm "$stale_wat" \
+    -o "$archive_stage/hello/2.12.1/bin/hello.wasm"
+  chmod +x "$archive_stage/hello/2.12.1/bin/hello.wasm"
+  tar -czf "$handoff/bottle.tar.gz" -C "$archive_stage" hello
+  refresh_build_handoff_bottle_identity "$handoff"
+  out_env="$TMPDIR/build-handoff-stale-abi.env"
+  err="$TMPDIR/build-handoff-stale-abi.err"
+  if validate_build_handoff "$handoff" --out-env "$out_env" >/dev/null 2>"$err"; then
+    fail "build handoff validator accepted a stale executable ABI"
+  fi
+  grep -q "executable ABI 17 does not match expected ABI 18" "$err" ||
+    fail "build handoff validator did not explain the stale executable ABI"
+  [ ! -e "$out_env" ] ||
+    fail "build handoff validator produced uploader data for a stale executable ABI"
 
   handoff="$TMPDIR/build-handoff-dependency-tamper"
   make_build_handoff "$handoff"
@@ -593,6 +742,7 @@ assert_upload_receipt_is_bound_to_build_handoff() {
     --tap-commit aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa \
     --kandelo-commit bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb \
     --bottle-root-url https://ghcr.io/v2/automattic/kandelo-homebrew \
+    --forbidden-root "$TEST_FORBIDDEN_ROOT" \
     --out-env "$out_env" \
     --out-bottle-json "$canonical_json" >/dev/null
   (
@@ -614,6 +764,7 @@ assert_upload_receipt_is_bound_to_build_handoff() {
     --tap-commit aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa \
     --kandelo-commit bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb \
     --bottle-root-url https://ghcr.io/v2/automattic/kandelo-homebrew \
+    --forbidden-root "$TEST_FORBIDDEN_ROOT" \
     --out-env "$colliding_output" \
     --out-bottle-json "$colliding_output" >/dev/null 2>&1; then
     fail "upload receipt validator accepted colliding output paths"
@@ -631,7 +782,8 @@ assert_upload_receipt_is_bound_to_build_handoff() {
     --tap-repository Automattic/kandelo-homebrew \
     --tap-commit aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa \
     --kandelo-commit bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb \
-    --bottle-root-url https://ghcr.io/v2/automattic/kandelo-homebrew >/dev/null 2>&1; then
+    --bottle-root-url https://ghcr.io/v2/automattic/kandelo-homebrew \
+    --forbidden-root "$TEST_FORBIDDEN_ROOT" >/dev/null 2>&1; then
     fail "upload receipt validator accepted an undeclared field"
   fi
 
@@ -645,7 +797,8 @@ assert_upload_receipt_is_bound_to_build_handoff() {
     --tap-repository Automattic/kandelo-homebrew \
     --tap-commit aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa \
     --kandelo-commit bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb \
-    --bottle-root-url https://ghcr.io/v2/automattic/kandelo-homebrew >/dev/null 2>&1; then
+    --bottle-root-url https://ghcr.io/v2/automattic/kandelo-homebrew \
+    --forbidden-root "$TEST_FORBIDDEN_ROOT" >/dev/null 2>&1; then
     fail "upload receipt validator accepted a byte count not backed by the build handoff"
   fi
 
@@ -660,7 +813,8 @@ assert_upload_receipt_is_bound_to_build_handoff() {
     --tap-repository Automattic/kandelo-homebrew \
     --tap-commit aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa \
     --kandelo-commit bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb \
-    --bottle-root-url https://ghcr.io/v2/automattic/kandelo-homebrew >/dev/null 2>&1; then
+    --bottle-root-url https://ghcr.io/v2/automattic/kandelo-homebrew \
+    --forbidden-root "$TEST_FORBIDDEN_ROOT" >/dev/null 2>&1; then
     fail "upload receipt validator accepted a receipt larger than 64 KiB"
   fi
 }
@@ -991,7 +1145,36 @@ validate_publish_handoff() {
     --tap-commit aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa \
     --kandelo-commit bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb \
     --bottle-root-url https://ghcr.io/v2/automattic/kandelo-homebrew \
+    --forbidden-root "$TEST_FORBIDDEN_ROOT" \
     --tap-root "$tap_root"
+}
+
+rebind_publish_handoff_tap_commit() {
+  local handoff="$1" tap_commit="$2"
+  local file tmp dependency_sha
+  while IFS= read -r file; do
+    tmp="${file}.updated"
+    sed "s/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/$tap_commit/g" "$file" >"$tmp"
+    mv "$tmp" "$file"
+  done < <(find "$handoff" -type f -name '*.json' -print)
+  dependency_sha="$(sha256sum "$handoff/build/dependency-provenance.json" 2>/dev/null | awk '{print $1}' || \
+    shasum -a 256 "$handoff/build/dependency-provenance.json" | awk '{print $1}')"
+  tmp="$handoff/build/manifest.updated.json"
+  jq --arg sha "$dependency_sha" '.dependency_provenance.sha256 = $sha' \
+    "$handoff/build/manifest.json" >"$tmp"
+  mv "$tmp" "$handoff/build/manifest.json"
+}
+
+set_publish_handoff_rebuild() {
+  local handoff="$1" rebuild="$2" tmp
+  tmp="$handoff/build/bottle.updated.json"
+  jq --argjson rebuild "$rebuild" '.[].bottle.rebuild = $rebuild' \
+    "$handoff/build/bottle.json" >"$tmp"
+  mv "$tmp" "$handoff/build/bottle.json"
+  tmp="$handoff/composition/sidecars-input.updated.json"
+  jq --argjson rebuild "$rebuild" '.packages[0].bottle_rebuild = $rebuild' \
+    "$handoff/composition/sidecars-input.json" >"$tmp"
+  mv "$tmp" "$handoff/composition/sidecars-input.json"
 }
 
 assert_publish_handoff_is_exact_inert_data() {
@@ -1138,8 +1321,74 @@ assert_publish_handoff_is_exact_inert_data() {
   [ "$before" = "$after" ] || fail "sidecar publisher wrote through the tap Formula symlink"
 }
 
+assert_stale_bottle_rebuild_cannot_rewind_publication() {
+  local handoff="$TMPDIR/publish-rebuild-new"
+  local stale_handoff="$TMPDIR/publish-rebuild-stale"
+  local tap_root="$TMPDIR/publish-rebuild-tap"
+  local err="$TMPDIR/publish-rebuild-stale.err"
+  local planned before_formula before_metadata before_head after_formula after_metadata after_head
+
+  make_publish_handoff "$handoff" "$tap_root"
+  cp -a "$handoff" "$stale_handoff"
+  set_publish_handoff_rebuild "$handoff" 2
+  set_publish_handoff_rebuild "$stale_handoff" 1
+  git -C "$tap_root" init -q
+  git -C "$tap_root" config user.name "Kandelo Test"
+  git -C "$tap_root" config user.email "kandelo-test@example.invalid"
+  git -C "$tap_root" add .
+  git -C "$tap_root" commit -q -m "planned rebuild fixture"
+  planned="$(git -C "$tap_root" rev-parse HEAD)"
+  rebind_publish_handoff_tap_commit "$handoff" "$planned"
+  rebind_publish_handoff_tap_commit "$stale_handoff" "$planned"
+
+  bash "$REPO_ROOT/scripts/homebrew-publish-sidecars.sh" \
+    --kandelo-root "$REPO_ROOT" \
+    --tap-root "$tap_root" \
+    --publication-handoff "$handoff" \
+    --formula hello \
+    --arch wasm32 \
+    --release-tag bottles-abi-v18 \
+    --status success \
+    --tap-commit "$planned" \
+    --kandelo-commit bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb \
+    --dry-run \
+    --no-lock >/dev/null
+  jq -e '.packages[] | select(.name == "hello") | .bottle_rebuild == 2' \
+    "$tap_root/Kandelo/metadata.json" >/dev/null ||
+    fail "new bottle rebuild fixture did not publish rebuild 2"
+
+  before_formula="$(sha256sum "$tap_root/Formula/hello.rb" 2>/dev/null | awk '{print $1}' || shasum -a 256 "$tap_root/Formula/hello.rb" | awk '{print $1}')"
+  before_metadata="$(sha256sum "$tap_root/Kandelo/metadata.json" 2>/dev/null | awk '{print $1}' || shasum -a 256 "$tap_root/Kandelo/metadata.json" | awk '{print $1}')"
+  before_head="$(git -C "$tap_root" rev-parse HEAD)"
+  if bash "$REPO_ROOT/scripts/homebrew-publish-sidecars.sh" \
+    --kandelo-root "$REPO_ROOT" \
+    --tap-root "$tap_root" \
+    --publication-handoff "$stale_handoff" \
+    --formula hello \
+    --arch wasm32 \
+    --release-tag bottles-abi-v18 \
+    --status success \
+    --tap-commit "$planned" \
+    --kandelo-commit bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb \
+    --dry-run \
+    --no-lock >/dev/null 2>"$err"; then
+    fail "same-ABI publisher accepted an older bottle rebuild"
+  fi
+  grep -F "refusing stale hello bottle rebuild 1 after rebuild 2" "$err" >/dev/null ||
+    fail "same-ABI publisher did not explain the stale bottle rebuild"
+  after_formula="$(sha256sum "$tap_root/Formula/hello.rb" 2>/dev/null | awk '{print $1}' || shasum -a 256 "$tap_root/Formula/hello.rb" | awk '{print $1}')"
+  after_metadata="$(sha256sum "$tap_root/Kandelo/metadata.json" 2>/dev/null | awk '{print $1}' || shasum -a 256 "$tap_root/Kandelo/metadata.json" | awk '{print $1}')"
+  after_head="$(git -C "$tap_root" rev-parse HEAD)"
+  [ "$before_formula" = "$after_formula" ] ||
+    fail "stale bottle rebuild modified the published Formula"
+  [ "$before_metadata" = "$after_metadata" ] ||
+    fail "stale bottle rebuild modified published metadata"
+  [ "$before_head" = "$after_head" ] ||
+    fail "stale bottle rebuild created a tap commit"
+}
+
 assert_publish_dependencies_are_source_bound() {
-  local handoff tap_root tmp err
+  local handoff tap_root tmp err planned dep_sha file
 
   handoff="$TMPDIR/publish-dependencies-valid"
   tap_root="$TMPDIR/publish-dependencies-valid-tap"
@@ -1222,6 +1471,53 @@ assert_publish_dependencies_are_source_bound() {
   fi
   grep -F "declared_directly differs from the exact Formula" "$err" >/dev/null ||
     fail "publish handoff validator did not explain forged true directness"
+
+  handoff="$TMPDIR/publish-dependencies-concurrent-drift"
+  tap_root="$TMPDIR/publish-dependencies-concurrent-drift-tap"
+  err="$TMPDIR/publish-dependencies-concurrent-drift.err"
+  PUBLISH_HANDOFF_DEPENDENCY_MODE=valid \
+    PUBLISH_HANDOFF_SEED_DEPENDENCY_SIDECARS=1 \
+    make_publish_handoff "$handoff" "$tap_root"
+  git -C "$tap_root" init -q
+  git -C "$tap_root" config user.name "Kandelo Test"
+  git -C "$tap_root" config user.email "kandelo-test@example.invalid"
+  git -C "$tap_root" add .
+  git -C "$tap_root" commit -q -m "planned dependency closure"
+  planned="$(git -C "$tap_root" rev-parse HEAD)"
+
+  while IFS= read -r file; do
+    tmp="${file}.updated"
+    sed "s/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/$planned/g" "$file" >"$tmp"
+    mv "$tmp" "$file"
+  done < <(find "$handoff" -type f -name '*.json' -print)
+  dep_sha="$(sha256sum "$handoff/build/dependency-provenance.json" 2>/dev/null | awk '{print $1}' || \
+    shasum -a 256 "$handoff/build/dependency-provenance.json" | awk '{print $1}')"
+  tmp="$handoff/build/manifest.updated.json"
+  jq --arg sha "$dep_sha" '.dependency_provenance.sha256 = $sha' \
+    "$handoff/build/manifest.json" >"$tmp"
+  mv "$tmp" "$handoff/build/manifest.json"
+
+  sed 's/desc "direct dependency fixture"/desc "concurrently changed dependency source"/' \
+    "$tap_root/Formula/zlib.rb" >"$tmp"
+  mv "$tmp" "$tap_root/Formula/zlib.rb"
+  git -C "$tap_root" add Formula/zlib.rb
+  git -C "$tap_root" commit -q -m "change only dependency source"
+  if bash "$REPO_ROOT/scripts/homebrew-publish-sidecars.sh" \
+    --kandelo-root "$REPO_ROOT" \
+    --tap-root "$tap_root" \
+    --publication-handoff "$handoff" \
+    --formula hello \
+    --arch wasm32 \
+    --release-tag bottles-abi-v18 \
+    --status success \
+    --tap-commit "$planned" \
+    --kandelo-commit bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb \
+    --dry-run \
+    --no-lock >/dev/null 2>"$err"; then
+    fail "under-lock publisher accepted concurrent dependency Formula drift"
+  fi
+  grep -F "Formula digest differs from the exact tap" "$err" >/dev/null ||
+    fail "under-lock publisher did not explain concurrent dependency Formula drift"
 }
 
 assert_bottle_build_trusts_selected_tap() {
@@ -1231,9 +1527,12 @@ assert_bottle_build_trusts_selected_tap() {
   local fake_brew="$TMPDIR/bottle-trust-brew"
   local out="$TMPDIR/bottle-trust-out"
   local log="$TMPDIR/bottle-trust.log"
+  local ci_err="$TMPDIR/bottle-trust-ci.err"
   local caller_config="$TMPDIR/caller-homebrew-config"
+  local symlink_target="$TMPDIR/runner-write-target"
   make_tap "$tap"
   mkdir -p "$brew_repo" "$brew_prefix" "$caller_config"
+  printf 'sentinel\n' >"$symlink_target"
 
   cat >"$fake_brew" <<'EOF'
 #!/usr/bin/env bash
@@ -1267,8 +1566,16 @@ case "${1:-}" in
     esac
     ;;
   deps)
+    work_dir="${XDG_CONFIG_HOME%/xdg-config}"
+    ln -sfn "$FAKE_SYMLINK_TARGET" "$work_dir/brew-install.log"
+    ln -sfn "$FAKE_SYMLINK_TARGET" "$work_dir/brew-install-attempt-1.log"
     ;;
   install)
+    printf 'target-bottle-tags=%s|%s\n' \
+      "${HOMEBREW_KANDELO_BOTTLE_TAG:-}" "${KANDELO_HOMEBREW_BOTTLE_TAG:-}" \
+      >>"$FAKE_BREW_LOG"
+    printf '::add-mask::kandelo-formula-mask-sentinel\n'
+    printf 'Formula-controlled runner write attempt\n'
     exit 42
     ;;
   *)
@@ -1282,8 +1589,35 @@ EOF
     FAKE_BREW_PREFIX="$brew_prefix" \
     FAKE_BREW_REPOSITORY="$brew_repo" \
     FAKE_TAP_ROOT="$tap" \
+    FAKE_SYMLINK_TARGET="$symlink_target" \
+    HOMEBREW_BREW_FILE="$fake_brew" \
+    HOMEBREW_KANDELO_BOTTLE_TAG=caller-poison \
+    KANDELO_HOMEBREW_BOTTLE_TAG=caller-poison \
+    XDG_CONFIG_HOME="$caller_config" \
+    GITHUB_ACTIONS=true \
+    bash "$REPO_ROOT/scripts/homebrew-bottle-build.sh" \
+      --tap-root "$tap" \
+      --tap-repository Automattic/kandelo-homebrew \
+      --formula hello \
+      --arch wasm32 \
+      --out "$out" \
+      --bottle-root-url https://example.invalid/bottles \
+      >/dev/null 2>"$ci_err"; then
+    fail "CI bottle build ran without an isolated Formula identity"
+  fi
+  grep -F "CI Formula execution requires KANDELO_HOMEBREW_BUILD_USER" \
+    "$ci_err" >/dev/null ||
+    fail "CI bottle build did not explain its isolated-identity requirement"
+  : >"$log"
+
+  if FAKE_BREW_LOG="$log" \
+    FAKE_BREW_PREFIX="$brew_prefix" \
+    FAKE_BREW_REPOSITORY="$brew_repo" \
+    FAKE_TAP_ROOT="$tap" \
+    FAKE_SYMLINK_TARGET="$symlink_target" \
     HOMEBREW_BREW_FILE="$fake_brew" \
     XDG_CONFIG_HOME="$caller_config" \
+    GITHUB_ACTIONS= \
     bash "$REPO_ROOT/scripts/homebrew-bottle-build.sh" \
       --tap-root "$tap" \
       --tap-repository Automattic/kandelo-homebrew \
@@ -1301,6 +1635,8 @@ EOF
   install_line="$(grep -n '|install --build-bottle --formula automattic/kandelo-homebrew/hello$' "$log" | cut -d: -f1)"
   [ -n "$tap_line" ] && [ -n "$trust_line" ] && [ -n "$install_line" ] ||
     fail "bottle build did not tap, trust, and install the selected tap"
+  grep -Fx 'target-bottle-tags=|' "$log" >/dev/null ||
+    fail "target source build inherited the Kandelo bottle tag intended for bottle selection"
   [ "$tap_line" -lt "$trust_line" ] && [ "$trust_line" -lt "$install_line" ] ||
     fail "bottle build did not trust the selected tap before formula evaluation"
 
@@ -1314,6 +1650,8 @@ EOF
   [ ! -e "$trust_config" ] || fail "build-local Homebrew config survived cleanup"
   [ -z "$(find "$caller_config" -mindepth 1 -print -quit)" ] ||
     fail "bottle build mutated the caller's Homebrew config store"
+  [ "$(cat "$symlink_target")" = "sentinel" ] ||
+    fail "Formula-planted log symlink gained runner-owned output"
 }
 
 assert_bottle_build_forces_same_tap_dependencies() {
@@ -1349,6 +1687,9 @@ case "${1:-}" in
     ;;
   install)
     if [ "$*" = 'install --force-bottle --as-dependency --ignore-dependencies --formula automattic/kandelo-homebrew/zlib' ]; then
+      printf 'dependency-bottle-tags=%s|%s\n' \
+        "${HOMEBREW_KANDELO_BOTTLE_TAG:-}" "${KANDELO_HOMEBREW_BOTTLE_TAG:-}" \
+        >>"$FAKE_BREW_LOG"
       exit 42
     fi
     exit 43
@@ -1363,6 +1704,9 @@ EOF
     FAKE_BREW_REPOSITORY="$brew_repo" \
     FAKE_TAP_ROOT="$tap" \
     HOMEBREW_BREW_FILE="$fake_brew" \
+    HOMEBREW_KANDELO_BOTTLE_TAG=caller-poison \
+    KANDELO_HOMEBREW_BOTTLE_TAG=caller-poison \
+    GITHUB_ACTIONS= \
     bash "$REPO_ROOT/scripts/homebrew-bottle-build.sh" \
       --tap-root "$tap" \
       --tap-repository Automattic/kandelo-homebrew \
@@ -1378,6 +1722,8 @@ EOF
     fail "bottle build did not resolve the runtime dependency closure"
   grep -Fx 'install --force-bottle --as-dependency --ignore-dependencies --formula automattic/kandelo-homebrew/zlib' "$log" >/dev/null ||
     fail "bottle build did not force the selected same-tap dependency bottle"
+  grep -Fx 'dependency-bottle-tags=wasm32_kandelo|wasm32_kandelo' "$log" >/dev/null ||
+    fail "same-tap dependency bottle selection did not receive the Kandelo bottle tag"
   ! grep -F 'install --force-bottle' "$log" | grep -F 'cmake' >/dev/null ||
     fail "bottle build treated a host dependency as a Kandelo bottle"
   ! grep -F 'install --build-bottle' "$log" >/dev/null ||
@@ -1641,6 +1987,7 @@ class RichStatic < Formula
   end
 
   def install
+    prepare_package_specific_inputs
     verify_payload_contract
   end
 
@@ -1649,6 +1996,10 @@ class RichStatic < Formula
   def verify_payload_contract
     dependencies = [PAYLOAD_NAME]
     dependencies.fetch(0)
+  end
+
+  def prepare_package_specific_inputs
+    PAYLOAD_NAME
   end
 end
 RUBY
@@ -1822,6 +2173,7 @@ module KandeloFormulaSupport
 end
 RUBY
   cat >"$tap/Formula/support-ok.rb" <<'RUBY'
+require "digest"
 require (Tap.fetch("automattic", "kandelo-homebrew").path/"Kandelo/formula_support/kandelo_formula_support").to_s
 
 class SupportOk < Formula
@@ -1833,6 +2185,14 @@ RUBY
     "$tap" Automattic/kandelo-homebrew support-ok)"
   [ "$output" = $'automattic/kandelo-homebrew/dep-a\nautomattic/kandelo-homebrew/dep-b' ] ||
     fail "static Formula resolver rejected a canonical benign support module: $output"
+
+  cat >"$tap/Formula/unsupported-require.rb" <<'RUBY'
+require "pathname"
+
+class UnsupportedRequire < Formula
+end
+RUBY
+  expect_static_closure_failure unsupported-require "an unapproved top-level standard-library require"
 
   cat >"$tap/Kandelo/formula_support/kandelo_formula_support.rb" <<'RUBY'
 require "fileutils"
@@ -1979,8 +2339,16 @@ assert_success_payload_size_bounds_are_final() {
   local tap="$TMPDIR/oversized-sidecar-tap"
   local payload="$TMPDIR/oversized-sidecar-payload"
   local err="$TMPDIR/oversized-sidecar.err"
-  local link
+  local link metadata
   make_tap "$tap"
+  metadata="$TMPDIR/oversized-sidecar-metadata.json"
+  jq '.packages = [{
+    name: "hello",
+    version: "2.12.1",
+    formula_revision: 0,
+    bottle_rebuild: 0
+  }]' "$tap/Kandelo/metadata.json" >"$metadata"
+  mv "$metadata" "$tap/Kandelo/metadata.json"
   mkdir -p "$tap/Kandelo/formula" "$tap/Kandelo/link"
   printf '{}\n' >"$tap/Kandelo/formula/hello.json"
   printf '{}\n' >"$tap/Kandelo/link/hello-1-rebuild0-wasm32.json"
@@ -2301,11 +2669,22 @@ assert_formula_composition_is_static_and_lossless() {
   local current="$TMPDIR/formula-current.rb"
   local composed="$TMPDIR/formula-composed.rb"
   local malicious="$TMPDIR/formula-malicious.rb"
+  local unbottled="$TMPDIR/formula-unbottled.rb"
+  local data_formula="$TMPDIR/formula-data.rb"
+  local data_expected="$TMPDIR/formula-data-expected.rb"
+  local nested_bottle="$TMPDIR/formula-nested-bottle.rb"
+  local frozen_false="$TMPDIR/formula-frozen-false.rb"
+  local frozen_true="$TMPDIR/formula-frozen-true.rb"
   local planned_digest current_digest
 
   cat >"$planned" <<'EOF'
 class Hello < Formula
   desc "reviewed fixture"
+
+  bottle do
+    root_url "https://ghcr.io/v2/automattic/kandelo-homebrew"
+    sha256 cellar: :any_skip_relocation, wasm32_kandelo: "2222222222222222222222222222222222222222222222222222222222222222"
+  end
 end
 EOF
   cat >"$current" <<'EOF'
@@ -2322,6 +2701,35 @@ EOF
   current_digest="$(ruby "$REPO_ROOT/scripts/homebrew-formula-source-digest.rb" "$current")"
   [ "$planned_digest" = "$current_digest" ] ||
     fail "Formula source digest treated a static sibling bottle as source drift"
+
+  cat >"$unbottled" <<'EOF'
+class Hello < Formula
+  desc "reviewed fixture"
+end
+EOF
+  if [ "$(ruby "$REPO_ROOT/scripts/homebrew-formula-source-digest.rb" "$unbottled")" = "$current_digest" ]; then
+    fail "Formula source digest ignored bottle-block insertion or removal"
+  fi
+  ruby "$REPO_ROOT/scripts/homebrew-formula-source-digest.rb" \
+    --equivalent-excluding-bottle "$unbottled" "$current" >/dev/null ||
+    fail "Formula source comparison rejected composer-owned bottle insertion"
+
+  cat >"$frozen_false" <<'EOF'
+# frozen_string_literal: false
+class Hello < Formula
+  VALUE = "runtime semantics"
+end
+EOF
+  cat >"$frozen_true" <<'EOF'
+# frozen_string_literal: true
+class Hello < Formula
+  VALUE = "runtime semantics"
+end
+EOF
+  if [ "$(ruby "$REPO_ROOT/scripts/homebrew-formula-source-digest.rb" "$frozen_false")" = \
+       "$(ruby "$REPO_ROOT/scripts/homebrew-formula-source-digest.rb" "$frozen_true")" ]; then
+    fail "Formula source digest ignored a semantics-bearing magic comment"
+  fi
 
   ruby "$REPO_ROOT/scripts/homebrew-compose-formula-bottle.rb" \
     "$current" "$planned" \
@@ -2349,6 +2757,50 @@ EOF
     fail "Formula composer retained a sibling bottle across an identity transition"
   fi
 
+  cat >"$data_formula" <<'EOF'
+class Hello < Formula
+  desc "Formula with an embedded patch"
+  patch :DATA
+end
+
+__END__
+diff --git a/source.c b/source.c
+--- a/source.c
++++ b/source.c
+@@ -1 +1 @@
+-end
++patched
+EOF
+  cat >"$data_expected" <<'EOF'
+class Hello < Formula
+  desc "Formula with an embedded patch"
+  patch :DATA
+
+  bottle do
+    root_url "https://ghcr.io/v2/automattic/kandelo-homebrew"
+    sha256 cellar: :any_skip_relocation, wasm32_kandelo: "2222222222222222222222222222222222222222222222222222222222222222"
+  end
+
+end
+
+__END__
+diff --git a/source.c b/source.c
+--- a/source.c
++++ b/source.c
+@@ -1 +1 @@
+-end
++patched
+EOF
+  ruby "$REPO_ROOT/scripts/homebrew-compose-formula-bottle.rb" \
+    "$data_formula" "$data_formula" \
+    https://ghcr.io/v2/automattic/kandelo-homebrew \
+    0 wasm32_kandelo any_skip_relocation \
+    2222222222222222222222222222222222222222222222222222222222222222 \
+    discard \
+    "$composed"
+  cmp "$data_expected" "$composed" >/dev/null ||
+    fail "Formula composer did not insert before or preserve an embedded DATA patch"
+
   cat >"$malicious" <<'EOF'
 class Hello < Formula
   desc "reviewed fixture"
@@ -2368,10 +2820,35 @@ EOF
     "$composed" >/dev/null 2>&1; then
     fail "Formula composer accepted a noncanonical executable bottle block"
   fi
+
+  cat >"$nested_bottle" <<'EOF'
+class Hello < Formula
+  def install
+  bottle do
+    root_url "https://ghcr.io/v2/automattic/kandelo-homebrew"
+    sha256 cellar: :any_skip_relocation, wasm32_kandelo: "2222222222222222222222222222222222222222222222222222222222222222"
+  end
+  end
+end
+EOF
+  if ruby "$REPO_ROOT/scripts/homebrew-formula-source-digest.rb" "$nested_bottle" \
+    >/dev/null 2>&1; then
+    fail "Formula source digest accepted a bottle block inside an instance method"
+  fi
+  if ruby "$REPO_ROOT/scripts/homebrew-compose-formula-bottle.rb" \
+    "$nested_bottle" "$planned" \
+    https://ghcr.io/v2/automattic/kandelo-homebrew \
+    0 wasm32_kandelo any_skip_relocation \
+    2222222222222222222222222222222222222222222222222222222222222222 \
+    preserve \
+    "$composed" >/dev/null 2>&1; then
+    fail "Formula composer accepted a bottle block inside an instance method"
+  fi
 }
 
 assert_formula_source_closure_is_bound() {
   local tap="$TMPDIR/formula-source-closure-tap"
+  local reviewed="$TMPDIR/formula-source-closure-reviewed-tap"
   local err="$TMPDIR/formula-source-closure.err"
   local base
 
@@ -2381,11 +2858,45 @@ require (Tap.fetch("automattic", "kandelo-homebrew").path/"Kandelo/formula_suppo
 
 class Hello < Formula
   desc "reviewed fixture"
+
+  bottle do
+    root_url "https://ghcr.io/v2/automattic/kandelo-homebrew"
+    sha256 cellar: :any_skip_relocation, wasm32_kandelo: "2222222222222222222222222222222222222222222222222222222222222222"
+  end
+
   include KandeloFormulaSupport
 end
 EOF
+  cat >"$tap/Formula/escape.rb" <<'EOF'
+require (Tap.fetch("automattic", "kandelo-homebrew").path/"Kandelo/formula_support/kandelo_formula_support").to_s
+
+class Escape < Formula
+  include KandeloFormulaSupport
+
+  def install
+    require_relative "../Kandelo/other"
+  end
+end
+EOF
   cat >"$tap/Kandelo/formula_support/kandelo_formula_support.rb" <<'EOF'
+require "fileutils"
+require "json"
+require "shellwords"
+
 module KandeloFormulaSupport
+  def kandelo_runner_command
+    runner = Pathname(__dir__)/"run-network-wasm.ts"
+    command = +""
+    root = "/tmp/root"
+    command << "#{Shellwords.escape(runner.to_s)} #{Shellwords.escape(root)} "
+  end
+
+  def kandelo_runner_array
+    runner = Pathname(__dir__)/"run-network-wasm.ts"
+    command = [
+      "node", runner, "/tmp/root"
+    ].map { |arg| Shellwords.escape(arg.to_s) }.join(" ")
+  end
 end
 EOF
   printf 'export const reviewed = true;\n' \
@@ -2397,6 +2908,7 @@ EOF
   git -C "$tap" add .
   git -C "$tap" commit -q -m "review Formula source closure"
   base="$(git -C "$tap" rev-parse HEAD)"
+  git clone -q "$tap" "$reviewed"
 
   cat >"$tap/Formula/hello.rb" <<'EOF'
 require (Tap.fetch("automattic", "kandelo-homebrew").path/"Kandelo/formula_support/kandelo_formula_support").to_s
@@ -2417,6 +2929,255 @@ EOF
     --tap-repository Automattic/kandelo-homebrew \
     --formula hello \
     --base-ref "$base" >/dev/null
+  bash "$REPO_ROOT/scripts/homebrew-validate-formula-source-closure.sh" \
+    --tap-root "$tap" \
+    --tap-repository Automattic/kandelo-homebrew \
+    --formula hello \
+    --base-ref "$base" \
+    --reviewed-tap-root "$reviewed" >/dev/null
+  if bash "$REPO_ROOT/scripts/homebrew-validate-formula-source-closure.sh" \
+    --tap-root "$tap" \
+    --tap-repository Automattic/kandelo-homebrew \
+    --formula escape \
+    --base-ref "$base" >/dev/null 2>"$err"; then
+    fail "Formula source-closure validator accepted an extra local reference with canonical support"
+  fi
+  grep -F "Formula has an unsupported local source reference" "$err" >/dev/null ||
+    fail "Formula source-closure validator did not explain the extra local reference"
+  if ruby "$REPO_ROOT/scripts/homebrew-formula-runtime-closure.rb" \
+    "$tap" Automattic/kandelo-homebrew escape --declarations-json \
+    >/dev/null 2>"$err"; then
+    fail "static Formula parser accepted require_relative inside an install method"
+  fi
+  grep -F 'require_relative' "$err" >/dev/null ||
+    fail "static Formula parser did not explain the local reference"
+
+  local support_fixture="$tap/Kandelo/formula_support/kandelo_formula_support.rb"
+  local support_case support_expression
+  for support_case in \
+    missing traversal slash dynamic chained derived two_step_binary two_step_parent \
+    nested_to_s array_alias interpolated_alias array_first reflected reassigned duplicate; do
+    case "$support_case" in
+      missing) support_expression='Pathname(__dir__)/"missing-runner.ts"' ;;
+      traversal) support_expression='Pathname(__dir__)/"../other.rb"' ;;
+      slash) support_expression='Pathname(__dir__)/"nested/runner.ts"' ;;
+      dynamic) support_expression='Pathname(__dir__)/ENV.fetch("KANDELO_RUNNER")' ;;
+      chained) support_expression='Pathname(__dir__)/"run-network-wasm.ts"/"child"' ;;
+      derived) support_expression='(Pathname(__dir__)/"run-network-wasm.ts").parent/"other.rb"' ;;
+      two_step_binary) support_expression=$'Pathname(__dir__)/"run-network-wasm.ts"\n    runner/"child"' ;;
+      two_step_parent) support_expression=$'Pathname(__dir__)/"run-network-wasm.ts"\n    File.read(runner.parent.parent/"other.rb")' ;;
+      nested_to_s) support_expression=$'Pathname(__dir__)/"run-network-wasm.ts"\n    File.dirname(runner.to_s)' ;;
+      array_alias) support_expression=$'Pathname(__dir__)/"run-network-wasm.ts"\n    paths = [runner]\n    File.read(paths.first.parent.parent/"other.rb")' ;;
+      interpolated_alias) support_expression=$'Pathname(__dir__)/"run-network-wasm.ts"\n    text = "#{runner.to_s}"\n    Pathname(text).parent/"other.rb"' ;;
+      array_first) support_expression=$'Pathname(__dir__)/"run-network-wasm.ts"\n    [runner].first.parent.parent/"other.rb"' ;;
+      reflected) support_expression=$'Pathname(__dir__)/"run-network-wasm.ts"\n    binding.local_variable_set(:runner, Pathname("/tmp/other.rb"))' ;;
+      reassigned) support_expression=$'Pathname(__dir__)/"run-network-wasm.ts"\n    runner = Pathname("/tmp/other.rb")' ;;
+      duplicate) support_expression=$'Pathname(__dir__)/"run-network-wasm.ts"\n    runner = Pathname(__dir__)/"run-network-wasm.ts"' ;;
+    esac
+    cat >"$support_fixture" <<EOF
+require "fileutils"
+require "json"
+require "shellwords"
+
+module KandeloFormulaSupport
+  def kandelo_escape
+    runner = $support_expression
+    runner.to_s
+  end
+end
+EOF
+    if ruby "$REPO_ROOT/scripts/homebrew-formula-runtime-closure.rb" \
+      "$tap" Automattic/kandelo-homebrew hello --declarations-json \
+      >/dev/null 2>"$err"; then
+      fail "static Formula parser accepted a $support_case support path escape"
+    fi
+    case "$support_case" in
+      duplicate)
+        grep -F 'binds more than one local support child' "$err" >/dev/null ||
+          fail "static Formula parser did not explain the $support_case support path escape"
+        ;;
+      two_step_binary|two_step_parent|nested_to_s|array_alias|interpolated_alias|array_first|reassigned)
+        grep -F 'derives or reassigns bound support child' "$err" >/dev/null ||
+          fail "static Formula parser did not explain the $support_case support path escape"
+        ;;
+      reflected)
+        grep -F 'forbidden local source operation "binding"' "$err" >/dev/null ||
+          fail "static Formula parser did not explain the $support_case support path escape"
+        ;;
+      *)
+        grep -F 'forbidden local source operation "__dir__"' "$err" >/dev/null ||
+          fail "static Formula parser did not explain the $support_case support path escape"
+        ;;
+    esac
+  done
+
+  local wrapper_case support_method_body
+  for wrapper_case in \
+    nested_binding begin_binding if_binding wrapped_append wrapped_array wrapped_begin_append; do
+    case "$wrapper_case" in
+      nested_binding)
+        support_method_body=$'    outside =\n      runner = Pathname(__dir__)/"run-network-wasm.ts"\n    command = +""\n    root = "/tmp/root"\n    command << "#{Shellwords.escape(runner.to_s)} #{Shellwords.escape(root)} "\n    File.read(outside.parent/"other.rb")'
+        ;;
+      begin_binding)
+        support_method_body=$'    outside = begin\n      runner = Pathname(__dir__)/"run-network-wasm.ts"\n    end\n    command = +""\n    root = "/tmp/root"\n    command << "#{Shellwords.escape(runner.to_s)} #{Shellwords.escape(root)} "\n    File.read(outside.parent/"other.rb")'
+        ;;
+      if_binding)
+        support_method_body=$'    outside = if true\n      runner = Pathname(__dir__)/"run-network-wasm.ts"\n    end\n    command = +""\n    root = "/tmp/root"\n    command << "#{Shellwords.escape(runner.to_s)} #{Shellwords.escape(root)} "\n    File.read(outside.parent/"other.rb")'
+        ;;
+      wrapped_append)
+        support_method_body=$'    runner = Pathname(__dir__)/"run-network-wasm.ts"\n    command = +""\n    root = "/tmp/root"\n    outside = File.dirname(\n      command << "#{Shellwords.escape(runner.to_s)} #{Shellwords.escape(root)} "\n    )'
+        ;;
+      wrapped_array)
+        support_method_body=$'    runner = Pathname(__dir__)/"run-network-wasm.ts"\n    File.dirname(\n      command = [\n        "node", runner, "/tmp/root"\n      ].map { |arg| Shellwords.escape(arg.to_s) }.join(" ")\n    )'
+        ;;
+      wrapped_begin_append)
+        support_method_body=$'    runner = Pathname(__dir__)/"run-network-wasm.ts"\n    command = +""\n    root = "/tmp/root"\n    outside = begin\n      command << "#{Shellwords.escape(runner.to_s)} #{Shellwords.escape(root)} "\n    end'
+        ;;
+    esac
+    cat >"$support_fixture" <<EOF
+require "fileutils"
+require "json"
+require "shellwords"
+
+module KandeloFormulaSupport
+  def kandelo_escape
+$support_method_body
+  end
+end
+EOF
+    if ruby "$REPO_ROOT/scripts/homebrew-formula-runtime-closure.rb" \
+      "$tap" Automattic/kandelo-homebrew hello --declarations-json \
+      >/dev/null 2>"$err"; then
+      fail "static Formula parser accepted a $wrapper_case support path escape"
+    fi
+    case "$wrapper_case" in
+      nested_binding|begin_binding|if_binding)
+        grep -F 'forbidden local source operation "__dir__"' "$err" >/dev/null ||
+          fail "static Formula parser did not explain the $wrapper_case support path escape"
+        ;;
+      *)
+        grep -F 'derives or reassigns bound support child' "$err" >/dev/null ||
+          fail "static Formula parser did not explain the $wrapper_case support path escape"
+        ;;
+    esac
+  done
+  git -C "$tap" show "$base:Kandelo/formula_support/kandelo_formula_support.rb" \
+    >"$support_fixture"
+
+  cat >"$tap/Kandelo/formula_support/kandelo_formula_support.rb" <<'EOF'
+require "fileutils"
+require "json"
+require "shellwords"
+
+module KandeloFormulaSupport
+  def kandelo_escape
+    require_relative "../other"
+  end
+end
+EOF
+  cat >"$tap/Formula/escape.rb" <<'EOF'
+require (Tap.fetch("automattic", "kandelo-homebrew").path/"Kandelo/formula_support/kandelo_formula_support").to_s
+
+class Escape < Formula
+  include KandeloFormulaSupport
+
+  def install
+    kandelo_escape
+  end
+end
+EOF
+  cat >"$tap/Formula/data-escape.rb" <<'EOF'
+class DataEscape < Formula
+  def install
+    File.read(File.join(__dir__, "../Kandelo/options.txt"))
+  end
+end
+EOF
+  printf 'REVIEWED = true\n' >"$tap/Kandelo/other.rb"
+  printf 'reviewed=true\n' >"$tap/Kandelo/options.txt"
+  git -C "$tap" add Formula/escape.rb Formula/data-escape.rb \
+    Kandelo/formula_support/kandelo_formula_support.rb Kandelo/other.rb Kandelo/options.txt
+  git -C "$tap" commit -q -m "review support-local source reference"
+  local escape_base
+  escape_base="$(git -C "$tap" rev-parse HEAD)"
+  printf 'REVIEWED = false\n' >"$tap/Kandelo/other.rb"
+  printf 'reviewed=false\n' >"$tap/Kandelo/options.txt"
+  if bash "$REPO_ROOT/scripts/homebrew-validate-formula-source-closure.sh" \
+    --tap-root "$tap" \
+    --tap-repository Automattic/kandelo-homebrew \
+    --formula escape \
+    --base-ref "$escape_base" >/dev/null 2>"$err"; then
+    fail "Formula source-closure validator accepted a support method loading unbound tap source"
+  fi
+  grep -F 'forbidden local source operation "require_relative"' "$err" >/dev/null ||
+    fail "Formula source-closure validator did not explain the support-local source escape"
+  if ruby "$REPO_ROOT/scripts/homebrew-formula-runtime-closure.rb" \
+    "$tap" Automattic/kandelo-homebrew escape --declarations-json \
+    >/dev/null 2>"$err"; then
+    fail "static Formula parser accepted a support method loading unbound tap source"
+  fi
+  grep -F 'forbidden local source operation "require_relative"' "$err" >/dev/null ||
+    fail "static Formula parser did not explain the support-local source escape"
+  if bash "$REPO_ROOT/scripts/homebrew-validate-formula-source-closure.sh" \
+    --tap-root "$tap" \
+    --tap-repository Automattic/kandelo-homebrew \
+    --formula data-escape \
+    --base-ref "$escape_base" >/dev/null 2>"$err"; then
+    fail "Formula source-closure validator accepted an unbound tap-local data file"
+  fi
+  grep -F 'forbidden tap-local source operation "__dir__"' "$err" >/dev/null ||
+    fail "Formula source-closure validator did not explain the tap-local data escape"
+  if ruby "$REPO_ROOT/scripts/homebrew-formula-runtime-closure.rb" \
+    "$tap" Automattic/kandelo-homebrew data-escape --declarations-json \
+    >/dev/null 2>"$err"; then
+    fail "static Formula parser accepted an unbound tap-local data file"
+  fi
+  grep -F 'forbidden tap-local source operation "__dir__"' "$err" >/dev/null ||
+    fail "static Formula parser did not explain the tap-local data escape"
+  git -C "$tap" show "$base:Formula/escape.rb" >"$tap/Formula/escape.rb"
+  git -C "$tap" show "$base:Kandelo/formula_support/kandelo_formula_support.rb" \
+    >"$tap/Kandelo/formula_support/kandelo_formula_support.rb"
+  rm "$tap/Formula/data-escape.rb" "$tap/Kandelo/other.rb" "$tap/Kandelo/options.txt"
+  git -C "$tap" add -A Formula/escape.rb Formula/data-escape.rb Kandelo
+  git -C "$tap" commit -q -m "restore reviewed source closure"
+
+  printf 'module KandeloFormulaSupport\n  REVIEWED = false\nend\n' \
+    >"$reviewed/Kandelo/formula_support/kandelo_formula_support.rb"
+  if bash "$REPO_ROOT/scripts/homebrew-validate-formula-source-closure.sh" \
+    --tap-root "$tap" \
+    --tap-repository Automattic/kandelo-homebrew \
+    --formula hello \
+    --base-ref "$base" \
+    --reviewed-tap-root "$reviewed" >/dev/null 2>"$err"; then
+    fail "Formula source-closure validator accepted a dirty reviewed tap"
+  fi
+  grep -F "reviewed tap root must be clean" "$err" >/dev/null ||
+    fail "Formula source-closure validator did not explain reviewed-tap drift"
+  git -C "$reviewed" show HEAD:Kandelo/formula_support/kandelo_formula_support.rb \
+    >"$reviewed/Kandelo/formula_support/kandelo_formula_support.rb"
+
+  chmod +x "$tap/Formula/hello.rb"
+  if bash "$REPO_ROOT/scripts/homebrew-validate-formula-source-closure.sh" \
+    --tap-root "$tap" \
+    --tap-repository Automattic/kandelo-homebrew \
+    --formula hello \
+    --base-ref "$base" >/dev/null 2>"$err"; then
+    fail "Formula source-closure validator accepted working-tree mode drift"
+  fi
+  grep -F "Formula file mode changed after the bottle build" "$err" >/dev/null ||
+    fail "Formula source-closure validator did not explain working-tree mode drift"
+  git -C "$tap" add Formula/hello.rb
+  git -C "$tap" commit -q -m "change only Formula mode"
+  if bash "$REPO_ROOT/scripts/homebrew-validate-formula-source-closure.sh" \
+    --tap-root "$tap" \
+    --tap-repository Automattic/kandelo-homebrew \
+    --formula hello \
+    --base-ref "$base" >/dev/null 2>"$err"; then
+    fail "Formula source-closure validator accepted committed mode drift"
+  fi
+  chmod -x "$tap/Formula/hello.rb"
+  git -C "$tap" add Formula/hello.rb
+  git -C "$tap" commit -q -m "restore reviewed Formula mode"
 
   printf 'unreviewed helper payload\n' \
     >"$tap/Kandelo/formula_support/runtime-cache.tmp"
@@ -2437,8 +3198,12 @@ EOF
     >"$tap/Kandelo/formula_support/kandelo_formula_support.rb"
   git -C "$tap" add Kandelo/formula_support/kandelo_formula_support.rb
   git -C "$tap" commit -q -m "mutate only shared Formula support"
-  if ! git -C "$tap" diff --quiet "$base" HEAD -- Formula/hello.rb; then
-    fail "helper-only drift fixture changed the reviewed Formula"
+  git -C "$tap" show "$base:Formula/hello.rb" >"$TMPDIR/formula-source-closure-reviewed.rb"
+  if [ "$(ruby "$REPO_ROOT/scripts/homebrew-formula-source-digest.rb" \
+      "$TMPDIR/formula-source-closure-reviewed.rb")" != \
+       "$(ruby "$REPO_ROOT/scripts/homebrew-formula-source-digest.rb" \
+      "$tap/Formula/hello.rb")" ]; then
+    fail "helper-only drift fixture changed the reviewed Formula source"
   fi
   if bash "$REPO_ROOT/scripts/homebrew-validate-formula-source-closure.sh" \
     --tap-root "$tap" \
@@ -2449,6 +3214,16 @@ EOF
   fi
   grep -F "Formula support source changed after the bottle build" "$err" >/dev/null ||
     fail "Formula source-closure validator did not explain helper-only drift"
+  if bash "$REPO_ROOT/scripts/homebrew-validate-formula-source-closure.sh" \
+    --tap-root "$tap" \
+    --tap-repository Automattic/kandelo-homebrew \
+    --formula hello \
+    --base-ref "$base" \
+    --reviewed-tap-root "$reviewed" >/dev/null 2>"$err"; then
+    fail "Formula source-closure validator accepted helper drift against a fresh reviewed tap"
+  fi
+  grep -F "Formula support working tree changed after the bottle build" "$err" >/dev/null ||
+    fail "Formula source-closure validator did not compare against the fresh reviewed tap"
 
   grep -F "scripts/homebrew-validate-formula-source-closure.sh" \
     "$REPO_ROOT/scripts/homebrew-publish-sidecars.sh" >/dev/null ||
@@ -2459,15 +3234,17 @@ assert_matrix
 assert_matrix_skips_unchanged_cache_key
 assert_upload_dry_run
 assert_upload_push_uses_relative_layer_path
+assert_sysroot_fingerprint_is_arch_specific
 assert_bottle_build_trusts_selected_tap
 assert_bottle_build_forces_same_tap_dependencies
 assert_dependency_pour_provenance_is_bounded
 assert_static_formula_closure_is_fail_closed
-assert_generator_rejects_mismatched_homebrew_commit
+assert_generator_validates_homebrew_commit_as_data
 assert_build_handoff_is_minimal_and_validated
 assert_build_handoff_rejects_untrusted_content
 assert_upload_receipt_is_bound_to_build_handoff
 assert_publish_handoff_is_exact_inert_data
+assert_stale_bottle_rebuild_cannot_rewind_publication
 assert_publish_dependencies_are_source_bound
 assert_failure_preserves_metadata
 assert_success_payload_size_bounds_are_final
@@ -2476,7 +3253,10 @@ assert_write_publish_requires_attached_branch_and_pushes_explicit_ref
 assert_failed_payload_rejects_success_status
 assert_rollback_preserves_metadata
 assert_rollback_deletion_requires_reason
+bash "$REPO_ROOT/scripts/test-homebrew-sibling-bottle-policy.sh"
 bash "$REPO_ROOT/scripts/test-homebrew-patched-launcher.sh"
+bash "$REPO_ROOT/scripts/test-homebrew-inspect-bottle.sh"
+bash "$REPO_ROOT/scripts/test-homebrew-formula-runtime-closure.sh"
 assert_formula_composition_is_static_and_lossless
 assert_formula_source_closure_is_bound
 assert_publisher_trust_contract

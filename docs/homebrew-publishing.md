@@ -82,10 +82,28 @@ for `system: :kandelo` and maps the supported prefix and cellar to:
 ```
 
 Trusted CI applies this patch to a temporary Homebrew worktree. A short-lived
-launcher symlink under the selected Homebrew prefix loads that worktree while
-preserving the selected prefix and Cellar, so ordinary host build-dependency
-bottles remain usable. The launcher and worktree are removed when the bottle
-build exits. Do not patch a developer's host Homebrew checkout in place.
+root-owned launcher under the selected Homebrew prefix loads that worktree
+while preserving the selected prefix and Cellar, so ordinary host
+build-dependency bottles remain usable. Formulae execute as a dedicated
+unprivileged OS identity in one transient systemd service per Brew invocation.
+`KillMode=control-group` binds double-forked and session-detached descendants to
+that invocation, while `NoNewPrivileges=yes` prevents Formula processes from
+using set-user-ID or set-group-ID helpers to delegate later execution. The
+identity cannot write the patched worktree, its Git metadata, Kandelo source,
+tap source, or publication output. Before any bottle file is read, the builder
+tears down the service slice and proves through a privileged process-table read
+that the dedicated UID owns no live process. CI removes the dedicated account
+before fresh validator checkouts or handoff processing. The launcher and
+worktree are removed when the bottle build exits. Do not patch a developer's
+host Homebrew checkout in place.
+
+The transient-service containment above is the current official publisher's
+Linux security backend, not a Kandelo bottle target requirement. Local
+credentialless builds continue to use the ordinary POSIX path when no CI build
+identity is requested, and the produced Wasm bottles target Kandelo rather than
+the build host. Publishing from macOS, another POSIX host, or WSL is not yet a
+validated release path; it requires an isolation backend with the same source,
+process, account, and credential boundaries rather than a weaker fallback.
 
 Verify the patch against a Homebrew checkout with:
 
@@ -151,6 +169,13 @@ receipt facts. Raw logs do not cross the runner boundary. Fresh verifier and
 finalizer runners rehash each dependency Formula from the exact planned tap
 before accepting the bounded provenance.
 
+While holding the tap state lock, the finalizer repeats the complete static
+dependency-closure derivation against refreshed `main`. Every recorded
+dependency Formula digest and selected-architecture bottle tuple must still
+match. A dependency Formula or bottle change after planning therefore causes a
+truthful stale-build failure instead of publishing a consumer against a newer
+dependency graph.
+
 The exact same-tap closure resolved before installation must equal the closure
 recorded in the target receipt. A missing or unexpected receipt entry fails the
 build before any publication handoff is created.
@@ -178,17 +203,33 @@ For every closure member, the resolver also reads the canonical static
 digest, tag, and digest-bound URL. Fresh validation requires the submitted
 prior-bottle record to equal that exact tap data; a closure member with no
 selected-architecture bottle fails validation.
+Required or recommended dependencies outside the selected Kandelo tap are not
+portable runtime inputs and fail validation anywhere in the closure. Optional
+external declarations may remain static Formula metadata, but selecting one in
+an installed bottle receipt also fails closed.
 
 This non-evaluating boundary permits normal static Formula structure without
 executing it. `patch do` and `resource do` are limited to canonical literal
-metadata, class constants must be static data, and private instance helpers use
-an explicit reviewed name allowlist so Formula, Ruby initialization, and
-dependency hooks cannot be overridden. The
+metadata, the Formula top level permits only the approved `digest` and
+`shellwords` standard-library loads plus the canonical shared-support load,
+class constants must be static data, and private instance helpers use a
+structural lowercase-name, uniqueness, and visibility policy. Ruby
+initialization and Homebrew dependency hooks remain forbidden, while new
+package-private helper names do not require a Kandelo platform change. The
 shared `KandeloFormulaSupport` file is accepted only when its top level is the
 three standard-library requires plus a module containing static `KANDELO_`
 constants and unique `kandelo_` or `formula_opt_` instance methods. Load-time
 hooks, arbitrary class methods, dependency metaprogramming, and other
-executable class/module structures fail closed.
+executable class/module structures fail closed. Formula and support method ASTs
+also reject `require`, `load`, `require_relative`, `Tap` lookups, and
+`__dir__`/`__FILE__` discovery that could load tap-local bytes outside the
+source closure. A support method may bind exactly one regular, non-symlink
+direct child of the bound `Kandelo/formula_support` tree with the canonical
+`runner = Pathname(__dir__)/"literal-direct-child"` form. It must consume that
+binding exactly once through one of the runner command constructions validated
+by the publisher. Dynamic names, direct aliases, subdirectories, traversal,
+reassignment, reflection, and other direct path operations on the bound
+`runner` local remain forbidden.
 
 ## Trusted Publish Flow
 
@@ -232,7 +273,10 @@ Every call is fixed to a reviewed `repository_dispatch` workflow in
 `publish-bottles.yml` or `maintain-bottles.yml`; dry calls must come from
 `dry-run-bottles.yml`. The normal caller is displayed as
 **Publish Kandelo bottles**; do not restore the narrower legacy **Publish hello
-bottle** name.
+bottle** name. The three dispatch events are `publish-kandelo-bottles`,
+`dry-run-kandelo-bottles`, and `maintain-kandelo-bottles`. Publish and dry-run
+payloads must select at least one Formula and architecture; an absent or empty
+selection is an error, not a successful no-op.
 Write-capable publication is additionally fixed to `Automattic/kandelo@main`
 and `Automattic/kandelo-homebrew@main`. The bottle root is never caller-selected:
 the workflow rejects a non-empty `bottle-root-url` and derives
@@ -249,29 +293,65 @@ commit, ABI namespace, derived bottle root, and formula matrix, each
 
 1. `build-and-test` is read-only. It checks out the exact inputs and reviewed
    Homebrew/brew commit, and exposes the patched temporary Homebrew worktree
-   through a short-lived launcher under the canonical
+   through a root-owned launcher under the canonical
    `/home/linuxbrew/.linuxbrew` prefix. This preserves the selected prefix and
    Cellar so ordinary host build-dependency bottles remain usable. Within that
-   read-only build, Homebrew uses a build-local XDG configuration store and
-   trusts only the reviewed selected tap before evaluating its dependency
-   Formulae. The store is removed with the build work directory; the publisher
-   does not disable tap-trust enforcement or reuse persistent account state.
-   The job then builds the required Kandelo pieces. Before Formula execution it
-   uses the authoritative package resolver in fetch-only mode to materialize a
-   wasm32 base shell-script test runtime: Dash, Coreutils, Grep, and Sed. The
-   host resolver intentionally maps unqualified `programs/<tool>.wasm` paths to
-   wasm32 even for a wasm64 bottle matrix entry, so this runtime does not vary
-   with the Formula's target architecture. These binaries are Kandelo
+   read-only build, all Formula-evaluating Homebrew commands run as a distinct
+   unprivileged user. Kandelo, tap, and patched Homebrew source are recursively
+   non-writable and non-replaceable by that identity; only a root-provisioned
+   shared temporary root, Homebrew cache/temp, prefix, and build home are
+   writable. Dependency lists and install logs used by the workflow identity
+   live in a separate mode-0700 control directory under the protected output
+   root; Formula processes cannot preplant or replace those paths. The wrapper
+   uses an explicit host `sudo` boundary, a fixed
+   environment allowlist, and a transient systemd service with control-group
+   kill semantics and `NoNewPrivileges=yes` for every Brew invocation. A final
+   slice stop, UID-scoped termination, and privileged zero-process check occur
+   before bottle artifacts are read. CI then deletes the dedicated account
+   before fresh validator checkouts begin. Homebrew uses a build-local,
+   read-only XDG configuration store and trusts only the reviewed selected tap before
+   evaluating its dependency Formulae. The store is removed with the build
+   work directory; the publisher does not disable tap-trust enforcement or
+   reuse persistent account state. The GitHub workflow-command parser is
+   suspended around the complete builder invocation with a per-run 256-bit
+   token that is never exported into the dev shell or Formula environment; an
+   exit trap always restores parsing while preserving the builder status.
+   The job then builds the required Kandelo pieces. This includes the exact
+   reviewed `wasm-fork-instrument` host tool, so fork-using Formulae never depend
+   on Cargo or Rust being present in Homebrew's filtered build environment.
+   Before Formula execution it uses the authoritative package resolver in
+   fetch-only mode to materialize a wasm32 base shell-script test runtime: Dash,
+   Coreutils, Grep, and Sed. The host resolver intentionally maps
+   unqualified `programs/<tool>.wasm` paths to wasm32 even for a wasm64 bottle
+   matrix entry, so this runtime does not vary with the Formula's target
+   architecture. These binaries are Kandelo
    base-system prerequisites, not Formula dependencies or evidence for the
-   migrated package; source-build fallback is disabled. The job executes the
-   Formula build and test without publisher credentials. Its strict handoff
+   migrated package; source-build fallback is disabled. Sysroot setup likewise
+   always builds the wasm32 base sysroot, then additionally builds `sysroot64`
+   for a wasm64 matrix entry. Formula builds use the selected target sysroot,
+   and generated sidecars fingerprint that target's `libc.a`. The job executes the
+   Formula build and test without publisher credentials. The Kandelo bottle tag
+   is scoped to same-tap dependency pours and final bottle creation; target
+   source builds therefore continue to resolve declared native build and test
+   tools from host bottles. Its strict handoff
    contains only `manifest.json`, Homebrew's bottle JSON, one gzip bottle
    archive, and bounded `dependency-provenance.json`. It contains no Formula
    source, scripts, environment files, raw logs, or credentials. Before the
-   handoff is created, the job rechecks the selected Formula and its required
-   local source closure against the planned tap commit. Canonical bottle-block
-   metadata may differ, but tracked, untracked, ignored, mode, symlink, or
-   special-file drift under `Kandelo/formula_support` fails the build.
+   handoff is created, the job checks out fresh exact Kandelo validator source
+   and a fresh exact reviewed tap. It compares the Formula and required local
+   source closure against those checkouts, independently of Git state exposed
+   during Formula execution, and creates the handoff with the fresh validator.
+   The build step never writes a `bottle do` block into the tap. Source digests
+   hash every raw Formula byte except the structurally validated existing
+   bottle-block lines, so comments, magic pragmas, whitespace, heredocs, and
+   `__END__` data remain provenance-bearing. The pairwise source-closure check
+   separately recognizes only an exact canonical bottle-block insertion or
+   removal, including the separator blank line owned by the composer. This lets
+   the first architecture add the block without invalidating an already-built
+   sibling while continuing to compare every other byte exactly. Separate
+   checks reject Formula mode changes and any
+   tracked, untracked, ignored, mode, symlink, or special-file drift under
+   `Kandelo/formula_support`.
 
    The handoff remains explicitly bounded while supporting complete large
    packages: Homebrew bottle JSON is capped at 16 MiB, dependency provenance at
@@ -282,9 +362,24 @@ commit, ABI namespace, derived bottle root, and formula matrix, each
    truncating their file inventories or installed payloads.
    `scripts/homebrew-publication-limits.sh` owns these byte limits; creators,
    validators, and the final refreshed-tap publisher consume the same values.
+   The archive inspector also streams every byte of every regular member and
+   rejects any exact local build root supplied by the trusted workflow. The
+   build job supplies its GitHub workspace, runner-workspace parent, runner
+   temp, isolated shared/Homebrew temp roots, and dedicated build home while
+   those randomized paths are still known. Fresh uploader, verifier, and
+   finalizer jobs repeat the check with their trusted workspace, runner temp,
+   and build-home facts. Roots never come from the artifact handoff, and a
+   missing, relative, non-normalized, duplicate, or excessive root list fails
+   closed. Matching is streaming and includes chunk-boundary matches; it does
+   not weaken the declared archive-byte limit or buffer whole installed files.
+   The canonical Homebrew prefix and `opt` paths are deliberately not forbidden,
+   because bottle metadata may legitimately contain those relocation identities.
 2. `upload-bottle` runs only for a write publication and receives only
    `packages: write`. On a fresh runner it validates the strict build handoff
-   against the plan before exposing the token to an isolated ORAS upload. Its
+   against the plan before exposing the token to an isolated ORAS upload. This
+   includes bounded tar structure, link safety, receipt identity, local-build-root
+   absence across all regular members, and every Wasm member's ABI, memory width,
+   object kind, and fork instrumentation. Its
    only output is a strict data receipt identifying the uploaded digest URL,
    SHA-256, byte count, and image tag.
 3. `verify-bottle` is read-only and starts from fresh exact source checkouts. It
@@ -292,28 +387,42 @@ commit, ABI namespace, derived bottle root, and formula matrix, each
    runtime graph, builds the VFS image, and runs the runtime and browser gates.
    It uses the locally built bottle in dry-run mode. In write mode it discards
    that bottle as runtime evidence and instead anonymously downloads the GHCR
-   digest URL, then rechecks SHA-256 and byte count. This is the only
-   post-build role that evaluates the reviewed Formula through Homebrew. The
-   trusted generator combines Homebrew's rich bottle receipt and `brew info`
-   output to derive formula identity, declared direct dependencies, keg link
-   paths, and fork-instrumentation evidence. It generates a full candidate tap
-   for validation, but the publication handoff contains only the strict build
-   files, upload receipt, selected runtime bottle bytes, and one package-scoped
-   `composition/sidecars-input.json`. Downstream jobs never execute
-   artifact-provided scripts, Formulae, or environment files.
+   digest URL, then rechecks SHA-256 and byte count. No post-build role loads
+   Formula Ruby or invokes Homebrew. The verifier statically composes the
+   selected bottle block from reconstructed canonical metadata. A bounded
+   archive inspector independently derives the keg file inventory, executable
+   links, target receipt dependencies, archived Formula digest, and
+   fork-instrumentation state from the selected bottle bytes. Every regular
+   member beginning with Wasm magic is treated as a Kandelo process module,
+   independent of filename, mode, or wrapper layout. It must carry the exact
+   release ABI, one memory matching the bottle architecture, no relocatable
+   object marker, and complete fork exports when needed. A future bottle that
+   ships plugin or browser Wasm as data needs an explicit typed payload contract;
+   modes and paths are not trusted exemptions. The static
+   Formula declaration parser then cross-checks dependency categories and
+   directness against the validated build provenance and receipt. The verifier
+   generates a full candidate tap for validation, but the publication handoff
+   contains only the strict build files, upload receipt, selected runtime
+   bottle bytes, and one package-scoped `composition/sidecars-input.json`.
+   Downstream jobs never execute artifact-provided scripts, Formulae, or
+   environment files.
 4. `finalize-tap` runs only for a write publication and receives only
    `contents: write`. On another fresh runner it validates the complete
    publication handoff as inert data against the exact base tap before checking
    out with push credentials. The publisher then acquires the tap state lock,
    refreshes `main`, verifies that the planned tap commit is still an ancestor,
    and rechecks both the Formula's bottle-excluded source digest and any required
-   `Kandelo/formula_support` tree against that commit. It then statically
-   composes the selected bottle tag and regenerates aggregate sidecars from
-   refreshed tap metadata. A sibling-architecture tag is retained only when the
-   refreshed metadata proves the same ABI, version, formula revision, and bottle
-   rebuild. It does not load Formula Ruby or run Homebrew in the credentialed
-   role. Only the composed and fully validated Formula update, sidecars, and
-   provenance are pushed.
+   `Kandelo/formula_support` tree against that commit. It also rederives and
+   revalidates the complete dependency Formula and bottle closure against the
+   refreshed tap while the lock is held. It then statically composes the
+   selected bottle tag and regenerates aggregate sidecars from refreshed tap
+   metadata. A sibling-architecture tag is retained only when the refreshed
+   metadata proves the same ABI, version, formula revision, and bottle rebuild.
+   A stale handoff cannot move the tap to an older ABI or, for the same package
+   identity and ABI, to a lower bottle rebuild.
+   It does not load Formula Ruby or run Homebrew in the credentialed role. Only
+   the composed and fully validated Formula update, sidecars, and provenance are
+   pushed.
 
 Tap writes use a tap-wide state lock, an attached `main` checkout, an explicit
 remote-main refresh, and an explicit `HEAD:refs/heads/main` push. The workflow

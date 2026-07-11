@@ -17,10 +17,11 @@ BOTTLE_ROOT_URL=""
 OUT_ENV=""
 OUT_BOTTLE_JSON=""
 TAP_ROOT=""
+FORBIDDEN_ROOTS=()
 
 usage() {
   cat >&2 <<'EOF'
-usage: scripts/homebrew-validate-build-handoff.sh --handoff <dir> --formula <name> --arch <wasm32|wasm64> --release-tag <tag> --tap-repository <owner/repo> --tap-commit <sha> --kandelo-commit <sha> --bottle-root-url <url> [--tap-root <dir>] [--out-env <path>] [--out-bottle-json <path>]
+usage: scripts/homebrew-validate-build-handoff.sh --handoff <dir> --formula <name> --arch <wasm32|wasm64> --release-tag <tag> --tap-repository <owner/repo> --tap-commit <sha> --kandelo-commit <sha> --bottle-root-url <url> --forbidden-root <absolute-path> [--forbidden-root <absolute-path> ...] [--tap-root <dir>] [--out-env <path>] [--out-bottle-json <path>]
 
 Validates an untrusted build handoff against values from the publisher plan.
 The handoff must contain exactly manifest.json, bottle.json,
@@ -28,6 +29,8 @@ dependency-provenance.json, and the bottle archive named by the manifest.
 --out-env, when provided, is written outside the handoff only after every check
 succeeds. --out-bottle-json reconstructs the minimal metadata accepted by
 Homebrew; raw artifact JSON is never copied.
+Forbidden roots are trusted publisher inputs, not handoff data. Every regular
+archive member is scanned for each exact root before validated output is made.
 EOF
 }
 
@@ -41,6 +44,14 @@ while [ "$#" -gt 0 ]; do
     --tap-commit) TAP_COMMIT="${2:-}"; shift 2 ;;
     --kandelo-commit) KANDELO_COMMIT="${2:-}"; shift 2 ;;
     --bottle-root-url) BOTTLE_ROOT_URL="${2:-}"; shift 2 ;;
+    --forbidden-root)
+      [ "$#" -ge 2 ] && [ -n "$2" ] || {
+        echo "homebrew-validate-build-handoff.sh: --forbidden-root requires a value" >&2
+        exit 2
+      }
+      FORBIDDEN_ROOTS+=("$2")
+      shift 2
+      ;;
     --tap-root) TAP_ROOT="${2:-}"; shift 2 ;;
     --out-env) OUT_ENV="${2:-}"; shift 2 ;;
     --out-bottle-json) OUT_BOTTLE_JSON="${2:-}"; shift 2 ;;
@@ -48,6 +59,11 @@ while [ "$#" -gt 0 ]; do
     *) echo "homebrew-validate-build-handoff.sh: unknown flag $1" >&2; usage; exit 2 ;;
   esac
 done
+
+if [ "${#FORBIDDEN_ROOTS[@]}" -eq 0 ]; then
+  echo "homebrew-validate-build-handoff.sh: at least one --forbidden-root is required" >&2
+  exit 2
+fi
 
 require() {
   local name="$1" value="$2"
@@ -304,6 +320,20 @@ fi
 
 PKG_VERSION="$(jq -r --arg key "$FORMULA_KEY" '.[$key].formula.pkg_version' "$BOTTLE_JSON")"
 BOTTLE_REBUILD="$(jq -r --arg key "$FORMULA_KEY" '.[$key].bottle.rebuild' "$BOTTLE_JSON")"
+EXPECTED_ABI="${RELEASE_TAG#bottles-abi-v}"
+inspection_args=()
+for forbidden_root in "${FORBIDDEN_ROOTS[@]}"; do
+  inspection_args+=(--forbidden-root "$forbidden_root")
+done
+python3 "$SCRIPT_ROOT/homebrew-inspect-bottle.py" \
+  --archive "$BOTTLE_ARCHIVE" \
+  --formula "$FORMULA" \
+  --version "$PKG_VERSION" \
+  --expected-abi "$EXPECTED_ABI" \
+  --expected-arch "$ARCH" \
+  "${inspection_args[@]}" \
+  >/dev/null
+
 CANONICAL_BOTTLE_JSON=""
 if [ -n "$OUT_BOTTLE_JSON" ]; then
   bottle_json_parent="$(dirname "$OUT_BOTTLE_JSON")"

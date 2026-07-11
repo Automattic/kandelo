@@ -296,4 +296,28 @@ if PATH="$decoder_path" wasm_require_no_fork_instrumentation "$work/abi.wasm" >/
     exit 1
 fi
 
+cat >"$work/fake-fork-exports.wat" <<'WAT'
+(module
+  (import "kernel" "kernel_fork" (func $kernel_fork))
+  (memory 1)
+  (data (i32.const 0)
+    "wpk_fork_unwind_begin wpk_fork_unwind_end wpk_fork_rewind_begin wpk_fork_rewind_end wpk_fork_state")
+  (func (export "_start")
+    call $kernel_fork))
+WAT
+wat2wasm "$work/fake-fork-exports.wat" -o "$work/fake-fork-exports.wasm"
+if ! wasm_has_missing_fork_instrumentation "$work/fake-fork-exports.wasm"; then
+    echo "ERROR: fork guard accepted data-segment strings as instrumentation exports" >&2
+    exit 1
+fi
+if ! PATH=/usr/bin:/bin wasm_has_missing_fork_instrumentation "$work/fake-fork-exports.wasm"; then
+    echo "ERROR: decoder-free fork predicate accepted raw export-name strings" >&2
+    exit 1
+fi
+if PATH=/usr/bin:/bin wasm_require_fork_instrumentation_if_needed \
+    "$work/fake-fork-exports.wasm" >/dev/null 2>&1; then
+    echo "ERROR: decoder-free fork guard accepted raw export-name strings" >&2
+    exit 1
+fi
+
 echo "test-wasm-artifact-guards.sh: ok"
