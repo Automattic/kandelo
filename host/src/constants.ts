@@ -654,6 +654,8 @@ interface WasmExportEntry {
 }
 
 interface WasmForkArtifactFacts {
+  functionTypes: readonly (WasmFunctionSignature | undefined)[];
+  functionTypeIndices: readonly number[];
   functionImports: Map<string, WasmFunctionSignature[]>;
   functionImportEntries: WasmFunctionImportType[];
   globalImports: Map<string, WasmGlobalImportType[]>;
@@ -795,6 +797,8 @@ function readWasmForkArtifactFacts(programBytes: ArrayBuffer): WasmForkArtifactF
   const functionTypeIndices: number[] = [];
   const pendingFunctionExports: Array<{ name: string; index: number }> = [];
   const facts: WasmForkArtifactFacts = {
+    functionTypes,
+    functionTypeIndices,
     functionImports: new Map(),
     functionImportEntries: [],
     globalImports: new Map(),
@@ -2151,6 +2155,23 @@ export function readWasmFunctionImports(
         }),
     ),
   );
+}
+
+/** Return the exact parameter/result arity for one core function index. */
+export function readWasmFunctionArity(
+  programBytes: ArrayBuffer,
+  functionIndex: number,
+): Readonly<{ parameters: number; results: number }> | null {
+  if (!Number.isSafeInteger(functionIndex) || functionIndex < 0) return null;
+  const facts = readWasmForkArtifactFacts(programBytes);
+  const typeIndex = facts.functionTypeIndices[functionIndex];
+  if (typeIndex === undefined) return null;
+  const signature = facts.functionTypes[typeIndex];
+  if (signature === undefined) return null;
+  return Object.freeze({
+    parameters: signature.params.length,
+    results: signature.results.length,
+  });
 }
 
 export type DecodedWasmExternalKind =
