@@ -95,6 +95,15 @@ cleanup() {
 }
 trap cleanup EXIT
 
+# Formula dependencies are evaluated separately from the formula named on the
+# command line. Trust the reviewed tap as a whole, but keep every Brew call in
+# this build scoped away from user state. The launcher derives
+# HOMEBREW_USER_CONFIG_HOME from XDG_CONFIG_HOME, so set the isolated XDG root
+# before discovering the repository and prefix.
+export XDG_CONFIG_HOME="$WORK_DIR/xdg-config"
+mkdir -p "$XDG_CONFIG_HOME/homebrew"
+chmod 0700 "$XDG_CONFIG_HOME" "$XDG_CONFIG_HOME/homebrew"
+
 homebrew_patched_launcher_prepare "$BREW_BIN" "$PATCH_FILE" "$WORK_DIR"
 BREW_BIN="$HOMEBREW_PATCHED_BREW_BIN"
 
@@ -113,6 +122,7 @@ export HOMEBREW_KANDELO_NODE="$(command -v node)"
 export HOMEBREW_KANDELO_LLVM_BIN="${LLVM_BIN:-${WASM_POSIX_LLVM_DIR:-}}"
 
 "$BREW_BIN" tap "$TAP_NAME" "$TAP_ROOT"
+"$BREW_BIN" trust --tap "$TAP_NAME"
 FORMULA_REF="$TAP_NAME/$FORMULA"
 TAPPED_TAP_ROOT="$("$BREW_BIN" --repository "$TAP_NAME")"
 TAPPED_FORMULA_PATH="$TAPPED_TAP_ROOT/Formula/$FORMULA.rb"
