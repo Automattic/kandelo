@@ -343,11 +343,9 @@ export class WasmPosixKernel {
       } as unknown as WebAssembly.MemoryDescriptor);
     }
     return new WebAssembly.Memory({
-      // 24 pages = 1.5 MiB of initial address space. Must be >= the kernel
-      // wasm's declared minimum, which the linker derives from the data
-      // section. The Mozilla CA bundle (~220 KiB at /etc/ssl/cert.pem)
-      // pushes the kernel's minimum to 20 pages; 24 leaves headroom for
-      // future static data without re-tuning this every time.
+      // 24 pages = 1.5 MiB of initial address space. This must remain above
+      // the kernel Wasm's linker-derived minimum and leaves headroom for
+      // future static data without re-tuning host construction each time.
       initial: 24,
       maximum: 16384,
       shared: true,

@@ -506,19 +506,25 @@ The browser host layers two additional, host-specific mounts on top: `/dev/shm` 
 
 ### rootfs image as the source of truth
 
-`/etc/passwd`, `/etc/group`, `/etc/hosts`, `/etc/nsswitch.conf`, `/etc/resolv.conf`, etc. are real files inside `host/wasm/rootfs.vfs`, served through the `/` mount. There is no in-kernel synthetic-file shim: any program that calls `getpwnam`, `gethostbyname`, `getservbyname`, etc. reads the same bytes a `cat /etc/passwd` would.
+`/etc/passwd`, `/etc/group`, `/etc/hosts`, `/etc/nsswitch.conf`,
+`/etc/resolv.conf`, and static OpenSSL policy/trust files under `/etc/ssl` are
+real files inside `host/wasm/rootfs.vfs`, served through the `/` mount. Any
+program that calls `getpwnam`, `gethostbyname`, `getservbyname`, or OpenSSL's
+default configuration/trust lookup reads the same image bytes that `cat` would.
+The kernel synthesizes `/etc/mtab` because it reports live mount state; it does
+not synthesize static `/etc` policy or trust data.
 
 VFS images can also carry image-level metadata outside the guest file tree. The first declaration is `kernelAbi`, an exact `ABI_VERSION` requirement for images that carry ABI-bound Wasm programs. `MemoryFileSystem.readImageMetadata(image)` reads this declaration without materialising the filesystem, and `MemoryFileSystem.assertImageKernelAbi(image, abi)` validates it for callers that already know the running kernel ABI. Legacy/data-only images may omit the field.
 
 ### Node host
 
-`NodeKernelHost` accepts `rootfsImage: "default" | ArrayBuffer | Uint8Array | undefined`. With `"default"` (the path used by the vitest suite), the worker reads `host/wasm/rootfs.vfs`, applies `DEFAULT_MOUNT_SPEC` via `resolveForNode`, and constructs a `VirtualPlatformIO` for the kernel. Without it, the worker falls back to raw `NodePlatformIO` (every host path reachable) — kept for legacy callers that haven't migrated.
+`NodeKernelHost` accepts `rootfsImage: "default" | ArrayBuffer | Uint8Array | undefined`. With `"default"` (the path used by the vitest suite), the worker reads `host/wasm/rootfs.vfs`, applies `DEFAULT_MOUNT_SPEC` via `resolveForNode`, and constructs a `VirtualPlatformIO` for the kernel. The image supplies both `/etc/ssl/cert.pem` and `/etc/ssl/certs/ca-certificates.crt`; Node does not silently add them to caller-supplied images. Without a rootfs image, the worker falls back to raw `NodePlatformIO` (every host path reachable) — kept for legacy callers that haven't migrated.
 
 ### Browser host
 
-`BrowserKernel.boot({ vfsImage, ... })` is the kernel-owned VFS path. The worker restores the supplied image (per-demo `.vfs.zst`, typically built on top of the canonical rootfs as a base layer) into a `MemoryFileSystem`, applies `DEFAULT_MOUNT_SPEC` via `resolveForBrowser` (the image becomes the `/` mount; the seven scratch mounts come up empty), and layers `/dev/shm` + `/dev` on top.
+`BrowserKernel.boot({ vfsImage, ... })` is the kernel-owned VFS path. The worker restores the supplied image (per-demo `.vfs.zst`, typically built on top of the canonical rootfs as a base layer) into a `MemoryFileSystem`, applies `DEFAULT_MOUNT_SPEC` via `resolveForBrowser` (the image becomes the `/` mount; the seven scratch mounts come up empty), and layers `/dev/shm` + `/dev` on top. Browser networking then replaces `/etc/ssl/certs/ca-certificates.crt` with its generated per-session MITM root; the image-owned OpenSSL configuration and compiled-in `/etc/ssl/cert.pem` trust path remain unchanged.
 
-The legacy `kernel.spawn(programBytes, argv, { fsSab })` path is still supported for demos that own a single `MemoryFileSystem` SAB at `/` (used by `benchmark`, `erlang`, `shell`). To keep `getpwnam`/`gethostbyname` working on that path after `synthetic_file_content` was removed, the browser kernel worker overlays `/etc/*` from `rootfs.vfs` into the demo SAB at boot (`overlayEtcFromRootfs` in `host/src/browser-kernel-worker-entry.ts`), preserving any `/etc` files the demo wrote itself. This is a temporary bridge until those demos move to the `vfsImage` boot path.
+The legacy `kernel.spawn(programBytes, argv, { fsSab })` path is still supported for demos that own a single `MemoryFileSystem` SAB at `/` (used by `benchmark`, `erlang`, `shell`). To keep NSS and other static system policy available on that path, the browser kernel worker recursively merges `/etc/**` from `rootfs.vfs` into the demo SAB at boot (`overlayEtcFromRootfs` in `host/src/vfs/rootfs-overlay.ts`). Existing leaf files and symlinks remain demo-owned, while existing directories are traversed so missing canonical descendants such as `/etc/ssl/openssl.cnf` are still installed. This is a temporary bridge until those demos move to the `vfsImage` boot path.
 
 ### Lazy Files
 

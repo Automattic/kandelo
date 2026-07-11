@@ -1,9 +1,9 @@
 /**
  * Task 4.6 — getpwent + friends round-trip via the rootfs.vfs mount.
  *
- * After Task 4.5 removed `synthetic_file_content`, the only path for a
- * user program to read /etc/passwd, /etc/group, /etc/services et al. is
- * through the rootfs image mounted at / by the default Node host setup.
+ * After Task 4.5 removed static `/etc` interception from the kernel, the only
+ * path for a user program to read /etc/passwd, /etc/group, /etc/services et
+ * al. is through the rootfs image mounted at / by the default Node host setup.
  *
  * This test runs `examples/getpwent_smoke.wasm` (which calls the libc
  * NSS-style readers — getpwent/getpwnam/getpwuid/getgrent/getservbyname)
