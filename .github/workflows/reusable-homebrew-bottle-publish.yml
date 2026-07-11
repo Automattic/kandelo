@@ -202,16 +202,6 @@ jobs:
           use-gha-cache: false
           use-flakehub: false
 
-      - name: Cache Cargo and xtask
-        uses: actions/cache@v5
-        with:
-          path: |
-            ~/.cargo/registry
-            kandelo/target
-          key: kandelo-homebrew-publish-${{ runner.os }}-${{ hashFiles('kandelo/Cargo.lock', 'kandelo/tools/xtask/**') }}
-          restore-keys: |
-            kandelo-homebrew-publish-${{ runner.os }}-
-
       - name: Warm Kandelo dev shell
         shell: bash
         run: |
