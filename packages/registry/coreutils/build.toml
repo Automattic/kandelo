@@ -1,7 +1,7 @@
 script_path = "packages/registry/coreutils/build-coreutils.sh"
 repo_url    = "https://github.com/brandonpayton/kandelo.git"
 commit      = "8c53383229fab78f97b098c3207a655159c03041"
-revision    = 2
+revision    = 3
 
 [binary]
 index_url = "https://github.com/Automattic/kandelo/releases/download/binaries-abi-v{abi}/index.toml"
