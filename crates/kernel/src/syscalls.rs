@@ -27077,6 +27077,38 @@ mod tests {
     }
 
     #[test]
+    fn test_ppoll_zero_timeout_clears_revents_and_restores_mask() {
+        use wasm_posix_shared::poll::POLLIN;
+
+        let mut proc = Process::new(81_006);
+        let mut host = MockHostIO::new();
+        let tid = proc.pid;
+        proc.blocked_retries.bind_task(tid);
+        let original_mask = crate::signal::sig_bit(2);
+        let temporary_mask = crate::signal::sig_bit(3);
+        assert!(proc.set_blocked_for(tid, original_mask));
+        let mut fds = [WasmPollFd {
+            fd: -1,
+            events: POLLIN,
+            revents: POLLIN,
+        }];
+
+        assert_eq!(
+            sys_ppoll(
+                &mut proc,
+                &mut host,
+                &mut fds,
+                0,
+                Some(temporary_mask),
+            ),
+            Ok(0),
+        );
+        assert_eq!(fds[0].revents, 0);
+        assert_eq!(proc.blocked_for(tid), original_mask);
+        assert_eq!(proc.sigsuspend_saved_mask_for(tid), None);
+    }
+
+    #[test]
     fn test_poll_socket_pair() {
         let mut proc = Process::new(1);
         let mut host = MockHostIO::new();

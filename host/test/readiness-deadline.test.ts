@@ -54,7 +54,9 @@ interface ReadinessState {
     };
   }>;
   readonly hostReaped: Set<number>;
-  readonly pendingPollRetries: Map<TestChannel, unknown>;
+  readonly pendingPollRetries: Map<TestChannel, {
+    readonly deadline: number;
+  }>;
   readonly pendingSelectRetries: Map<TestChannel, {
     readonly deadline: number;
     readonly needsSignalSafeWake: boolean;
@@ -190,6 +192,9 @@ function createHarness(
     kernel_drain_wakeup_events: drainWakeupEvents,
     kernel_get_parent_pid: vi.fn(() => 0),
     kernel_get_process_exit_signal: vi.fn(() => exitSignal),
+    kernel_get_fd_pipe_idx: vi.fn((_pid: number, fd: number) =>
+      fd === 7 ? 99 : -1
+    ),
     kernel_handle_channel: handleChannel,
     kernel_set_current_tid: setCurrentTid,
   };
@@ -208,6 +213,7 @@ function createHarness(
         "kernel_drain_wakeup_events",
         "kernel_get_parent_pid",
         "kernel_get_process_exit_signal",
+        "kernel_get_fd_pipe_idx",
         "kernel_handle_channel",
         "kernel_set_current_tid",
       ],
@@ -386,6 +392,92 @@ describe("finite readiness deadlines", () => {
     );
     expect(retainedSnapshot?.dispatch.adjustedArgs[2]).toBe(120);
     expect(retainedSnapshot?.dispatch.readinessTimeoutMs).toBe(120);
+  });
+
+  it("does not extend an nfds=0 poll deadline across broad wakes", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(2_000);
+
+    const observedKernelTimeouts: number[] = [];
+    const harness = createHarness((_syscallNr, scratch) => {
+      const timeout = Number(
+        scratch.getBigInt64(CH_ARGS + 2 * CH_ARG_SIZE, true),
+      );
+      observedKernelTimeouts.push(timeout);
+      return timeout === 0
+        ? { retVal: 0, errVal: 0 }
+        : { retVal: -1, errVal: EAGAIN };
+    });
+    const args = syscallArgs(0, 0, 30);
+
+    dispatchSyscall(harness, ABI_SYSCALLS.Poll, args);
+    expect(harness.state.pendingPollRetries.get(harness.channel)?.deadline)
+      .toBe(2_030);
+
+    await vi.advanceTimersByTimeAsync(5);
+    harness.queueReadableWake();
+    harness.worker.testAuthority.drainWakeupEventsForTest();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(harness.state.pendingPollRetries.get(harness.channel)?.deadline)
+      .toBe(2_030);
+
+    await vi.advanceTimersByTimeAsync(7);
+    harness.queueReadableWake();
+    harness.worker.testAuthority.drainWakeupEventsForTest();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(harness.state.pendingPollRetries.get(harness.channel)?.deadline)
+      .toBe(2_030);
+
+    await vi.advanceTimersByTimeAsync(17);
+    expect(harness.completeChannel).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(1);
+    await Promise.resolve();
+
+    expect(observedKernelTimeouts.at(-1)).toBe(0);
+    expect(harness.completeChannel).toHaveBeenCalledOnce();
+    expect(harness.state.pendingPollRetries.size).toBe(0);
+  });
+
+  it("cancels the poll deadline after targeted readiness", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(3_000);
+
+    let attempts = 0;
+    const harness = createHarness((syscallNr) => {
+      expect(syscallNr).toBe(ABI_SYSCALLS.Poll);
+      attempts++;
+      return attempts === 1
+        ? { retVal: -1, errVal: EAGAIN }
+        : { retVal: 1, errVal: 0 };
+    });
+    const pollPointer = 1024;
+    const pollfd = new DataView(
+      harness.processMemory.buffer,
+      pollPointer,
+      STRUCT_SIZE_WASM_POLL_FD,
+    );
+    pollfd.setInt32(0, 7, true);
+    pollfd.setInt16(4, 0x001, true);
+    const args = syscallArgs(pollPointer, 1, 40);
+
+    dispatchSyscall(harness, ABI_SYSCALLS.Poll, args);
+    expect(harness.state.pendingPollRetries.get(harness.channel)?.deadline)
+      .toBe(3_040);
+
+    await vi.advanceTimersByTimeAsync(7);
+    harness.worker.notifyPipeReadable(99);
+    await Promise.resolve();
+
+    expect(attempts).toBe(2);
+    expect(harness.completeChannel).toHaveBeenCalledOnce();
+    expect(harness.completeChannel.mock.calls[0]!.slice(4, 6)).toEqual([
+      1,
+      0,
+    ]);
+    expect(harness.state.pendingPollRetries.size).toBe(0);
+
+    await vi.advanceTimersByTimeAsync(100);
+    expect(harness.completeChannel).toHaveBeenCalledOnce();
   });
 
   it("treats a final zero-time ppoll EAGAIN as timeout after mask cleanup", async () => {

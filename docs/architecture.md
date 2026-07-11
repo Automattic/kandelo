@@ -865,6 +865,15 @@ This mechanism is critical: asynchronous scheduling never owns a live scratch
 view, while Rust retains the resource identity and lifetime needed by the next
 synchronous entry.
 
+Finite `poll()`/`ppoll()` and `select()`/`pselect6()` waits retain one absolute
+deadline from their first attempt. Targeted readiness events, broad wakeups,
+and safety retries use the remaining duration instead of restarting the
+caller's timeout. Except for descriptor-free `select()` used only as a sleep,
+expiry performs one zero-time kernel pass. That pass makes the final readiness
+decision, clears readiness outputs, and restores any temporary `ppoll()` or
+`pselect6()` signal mask. The host rebuilds the pass from its immutable request
+snapshot; it does not overwrite the caller's original timeout or arguments.
+
 `F_SETLKW` uses the same parking mechanism with a narrower wake contract. A
 conflict returns the internal retry result, and the host parks only that lock
 request. Unlock, conversion, close, exit, and other Rust-side changes that may
