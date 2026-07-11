@@ -16,6 +16,26 @@ import { NativeMetadataOverlay } from "./native-metadata";
 const UTIME_NOW = 0x3fffffff;
 const UTIME_OMIT = 0x3ffffffe;
 
+function makeFsError(code: string, message: string): Error & { code: string } {
+  const error = new Error(`${code}: ${message}`) as Error & { code: string };
+  error.code = code;
+  return error;
+}
+
+function checkedSeekPosition(base: number, offset: number): number {
+  if (!Number.isSafeInteger(base) || !Number.isSafeInteger(offset)) {
+    throw makeFsError("EOVERFLOW", "seek offset is not exactly representable");
+  }
+  const position = base + offset;
+  if (!Number.isSafeInteger(position)) {
+    throw makeFsError("EOVERFLOW", "seek result is not exactly representable");
+  }
+  if (position < 0) {
+    throw makeFsError("EINVAL", "negative seek offset");
+  }
+  return position;
+}
+
 export class NodePlatformIO implements PlatformIO {
   private dirHandles = new Map<number, fs.Dir>();
   private nextDirHandle = 1;
@@ -116,21 +136,21 @@ export class NodePlatformIO implements PlatformIO {
     let newPos: number;
     switch (whence) {
       case 0: // SEEK_SET
-        newPos = offset;
+        newPos = checkedSeekPosition(0, offset);
         break;
       case 1: { // SEEK_CUR
         const cur = this.fdPositions.get(handle) ?? 0;
-        newPos = cur + offset;
+        newPos = checkedSeekPosition(cur, offset);
         break;
       }
       case 2: {
         // SEEK_END — compute from file size
         const stat = fs.fstatSync(handle);
-        newPos = stat.size + offset;
+        newPos = checkedSeekPosition(stat.size, offset);
         break;
       }
       default:
-        throw new Error(`Invalid whence value: ${whence}`);
+        throw makeFsError("EINVAL", `invalid whence value: ${whence}`);
     }
     this.fdPositions.set(handle, newPos);
     return newPos;

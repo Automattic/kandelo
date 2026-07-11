@@ -28,6 +28,27 @@ function listDir(fs: MemoryFileSystem, path: string): string[] {
 }
 
 describe("SharedFS sparse-file safety", () => {
+  it("rejects invalid seek results without changing the file offset", () => {
+    const fs = create();
+    const fd = fs.open("/seek", O_CREAT | O_RDWR | O_TRUNC, 0o644);
+    fs.write(fd, new TextEncoder().encode("abcdef"), null, 6);
+    expect(fs.seek(fd, 2, SEEK_SET)).toBe(2);
+
+    expect(() => fs.seek(fd, -1, SEEK_SET)).toThrow(/Invalid argument/);
+    expect(() => fs.seek(fd, 2 ** 53, SEEK_SET)).toThrow(
+      /Value too large for data type/,
+    );
+    expect(() => fs.seek(fd, Number.MAX_SAFE_INTEGER, 1)).toThrow(
+      /Value too large for data type/,
+    );
+    expect(fs.seek(fd, 0, 1)).toBe(2);
+
+    const byte = new Uint8Array(1);
+    expect(fs.read(fd, byte, null, 1)).toBe(1);
+    expect(byte[0]).toBe("c".charCodeAt(0));
+    fs.close(fd);
+  });
+
   it("extends a multi-gigabyte sparse file without scanning its holes", () => {
     const fs = create();
     const fd = fs.open("/sparse", O_CREAT | O_RDWR | O_TRUNC, 0o644);
