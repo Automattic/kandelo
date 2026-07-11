@@ -241,6 +241,9 @@ jobs:
             exit 1
           fi
           bash scripts/dev-shell.sh bash scripts/build-musl.sh
+          if [ "${{ matrix.arch }}" = "wasm64" ]; then
+            bash scripts/dev-shell.sh bash scripts/build-musl.sh --arch wasm64posix
+          fi
 
       - name: Build Kandelo kernel
         shell: bash

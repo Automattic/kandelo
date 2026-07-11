@@ -26,22 +26,50 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
-SRC_DIR="$SCRIPT_DIR/libxml2-src"
+
+# shellcheck source=/dev/null
+source "$REPO_ROOT/sdk/activate.sh"
 
 # --- Inputs from resolver, with legacy fallbacks ---
 LIBXML2_VERSION="${WASM_POSIX_DEP_VERSION:-${LIBXML2_VERSION:-2.13.8}}"
 LIBXML2_MAJOR_MINOR="${LIBXML2_VERSION%.*}"
 INSTALL_DIR="${WASM_POSIX_DEP_OUT_DIR:-$SCRIPT_DIR/libxml2-install}"
+WORK_DIR="${WASM_POSIX_DEP_WORK_DIR:-$SCRIPT_DIR}"
+TARGET_ARCH="${WASM_POSIX_DEP_TARGET_ARCH:-wasm32}"
 SOURCE_URL="${WASM_POSIX_DEP_SOURCE_URL:-https://download.gnome.org/sources/libxml2/${LIBXML2_MAJOR_MINOR}/libxml2-${LIBXML2_VERSION}.tar.xz}"
 SOURCE_SHA256="${WASM_POSIX_DEP_SOURCE_SHA256:-}"
 
-if ! command -v wasm32posix-cc &>/dev/null; then
-    echo "ERROR: wasm32posix-cc not found. Run 'npm link' in sdk/ first." >&2
+case "$TARGET_ARCH" in
+    wasm32)
+        TOOL_PREFIX="wasm32posix"
+        SYSROOT="${WASM_POSIX_SYSROOT:-$REPO_ROOT/sysroot}"
+        ;;
+    wasm64)
+        TOOL_PREFIX="wasm64posix"
+        SYSROOT="${WASM_POSIX_SYSROOT:-$REPO_ROOT/sysroot64}"
+        ;;
+    *)
+        echo "ERROR: unsupported WASM_POSIX_DEP_TARGET_ARCH=$TARGET_ARCH" >&2
+        exit 2
+        ;;
+esac
+
+CC="${TOOL_PREFIX}-cc"
+AR="${TOOL_PREFIX}-ar"
+CONFIGURE="${TOOL_PREFIX}-configure"
+SRC_DIR="$WORK_DIR/libxml2-src-$TARGET_ARCH"
+SOURCE_MARKER="$SRC_DIR/.kandelo-libxml2-source"
+export WASM_POSIX_SYSROOT="$SYSROOT"
+
+if ! command -v "$CC" &>/dev/null; then
+    echo "ERROR: $CC not found after sourcing sdk/activate.sh." >&2
     exit 1
 fi
 
-SYSROOT="${WASM_POSIX_SYSROOT:-$REPO_ROOT/sysroot}"
-export WASM_POSIX_SYSROOT="$SYSROOT"
+if [ ! -f "$SYSROOT/lib/libc.a" ]; then
+    echo "ERROR: sysroot not found at $SYSROOT. Run scripts/build-musl.sh for $TARGET_ARCH first." >&2
+    exit 1
+fi
 
 # --- Locate zlib ---
 # Resolver surfaces the direct-dep install path via contract env var.
@@ -61,11 +89,23 @@ if [ ! -f "$ZLIB_PREFIX/lib/libz.a" ]; then
     echo "ERROR: zlib not found at $ZLIB_PREFIX" >&2
     exit 1
 fi
+if [ ! -f "$ZLIB_PREFIX/include/zlib.h" ]; then
+    echo "ERROR: zlib headers not found at $ZLIB_PREFIX" >&2
+    exit 1
+fi
 
 # --- Fetch + verify source ---
+expected_marker="$(printf '%s\n%s\n%s\n' "$LIBXML2_VERSION" "$SOURCE_URL" "$SOURCE_SHA256")"
+if [ -d "$SRC_DIR" ] && [ "$(cat "$SOURCE_MARKER" 2>/dev/null || true)" != "$expected_marker" ]; then
+    echo "==> Existing libxml2 source does not match requested version/source; cleaning..."
+    rm -rf "$SRC_DIR"
+fi
+
 if [ ! -d "$SRC_DIR" ]; then
     echo "==> Downloading libxml2 $LIBXML2_VERSION..."
-    TARBALL="/tmp/libxml2-${LIBXML2_VERSION}.tar.xz"
+    tmpdir="$(mktemp -d "${TMPDIR:-/tmp}/kandelo-libxml2-src.XXXXXX")"
+    trap 'rm -rf "$tmpdir"' EXIT
+    TARBALL="$tmpdir/libxml2-${LIBXML2_VERSION}.tar.xz"
     curl --retry 10 --retry-delay 5 --retry-max-time 300 --retry-all-errors -fsSL "$SOURCE_URL" -o "$TARBALL"
     if [ -n "$SOURCE_SHA256" ]; then
         echo "==> Verifying source sha256..."
@@ -75,18 +115,20 @@ if [ ! -d "$SRC_DIR" ]; then
     fi
     mkdir -p "$SRC_DIR"
     tar xJf "$TARBALL" -C "$SRC_DIR" --strip-components=1
-    rm "$TARBALL"
+    printf '%s\n' "$expected_marker" > "$SOURCE_MARKER"
+    trap - EXIT
+    rm -rf "$tmpdir"
 fi
 
 cd "$SRC_DIR"
 
 # --- Configure (regenerate config.h against the current ZLIB_PREFIX) ---
 # Scrub any stale config so probes re-run. Cheap; no object-compile wasted.
-echo "==> Configuring libxml2 for Wasm (zlib at $ZLIB_PREFIX)..."
+echo "==> Configuring libxml2 for $TARGET_ARCH (zlib at $ZLIB_PREFIX)..."
 make distclean 2>/dev/null || true
 rm -f config.h config.status
 
-wasm32posix-configure \
+"$CONFIGURE" \
     --disable-shared --enable-static \
     --without-python --without-readline --without-iconv \
     --without-icu --without-lzma --without-http --without-ftp \
@@ -112,7 +154,7 @@ SOURCES=(
     schematron.c
 )
 
-CFLAGS="-O2 -DHAVE_CONFIG_H -I. -I./include"
+CFLAGS="-O2 -DHAVE_CONFIG_H -I. -I./include -I$ZLIB_PREFIX/include"
 
 echo "==> Compiling libxml2 source files..."
 OBJS=()
@@ -120,13 +162,13 @@ for src in "${SOURCES[@]}"; do
     if [ -f "$src" ]; then
         obj="${src%.c}.o"
         # shellcheck disable=SC2086
-        wasm32posix-cc $CFLAGS -c "$src" -o "$obj"
+        "$CC" $CFLAGS -c "$src" -o "$obj"
         OBJS+=("$obj")
     fi
 done
 
 echo "==> Creating libxml2.a (${#OBJS[@]} objects)..."
-wasm32posix-ar rcs libxml2.a "${OBJS[@]}"
+"$AR" rcs libxml2.a "${OBJS[@]}"
 
 # --- Install ---
 echo "==> Installing to $INSTALL_DIR..."
