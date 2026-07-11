@@ -3275,6 +3275,7 @@
       {
         "argIndex": 1,
         "direction": "in",
+        "nullable": true,
         "size": {
           "type": "cstring"
         }
@@ -3776,6 +3777,15 @@
     "272": [
       {
         "argIndex": 1,
+        "direction": "in",
+        "size": {
+          "type": "cstring"
+        }
+      }
+    ],
+    "299": [
+      {
+        "argIndex": 0,
         "direction": "in",
         "size": {
           "type": "cstring"
@@ -5192,6 +5202,10 @@
     {
       "name": "Pwritev",
       "number": 296
+    },
+    {
+      "name": "Lchown",
+      "number": 299
     },
     {
       "name": "Fallocate",

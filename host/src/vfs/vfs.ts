@@ -240,6 +240,11 @@ export class VirtualPlatformIO implements PlatformIO {
     backend.chown(relativePath, uid, gid);
   }
 
+  lchown(path: string, uid: number, gid: number): void {
+    const { backend, relativePath } = this.resolve(path);
+    backend.lchown(relativePath, uid, gid);
+  }
+
   access(path: string, mode: number): void {
     const { backend, relativePath } = this.resolve(path);
     backend.access(relativePath, mode);

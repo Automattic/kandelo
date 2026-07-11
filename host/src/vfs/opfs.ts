@@ -218,6 +218,11 @@ export class OpfsFileSystem implements FileSystemBackend {
     // OPFS has no ownership model
   }
 
+  lchown(_path: string, _uid: number, _gid: number): void {
+    // OPFS has neither symlinks nor an ownership model, so this has the same
+    // existing no-op boundary as chown.
+  }
+
   access(path: string, mode: number): void {
     this.channel.setArg(0, mode);
     const pathLen = this.channel.writeString(path);
