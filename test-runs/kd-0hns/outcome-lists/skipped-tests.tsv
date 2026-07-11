@@ -1,0 +1,5 @@
+test	reason
+bash	no Homebrew Formula in any convoy branch; requires authoring Formula/bash.rb + brew bottle build; also depends on ncurses (also missing)
+ncurses	no Homebrew Formula in any convoy branch; leaf dependency of bash and nethack; requires authoring Formula/ncurses.rb (10 outputs) + brew bottle build
+curl	no Homebrew Formula in any convoy branch; depends on libcurl+zlib+openssl (dependent/language runtime wave kd-xhdd/kd-yuef)
+nethack	no Homebrew Formula in any convoy branch; depends on ncurses (also missing); requires authoring Formula/nethack.rb + brew bottle build

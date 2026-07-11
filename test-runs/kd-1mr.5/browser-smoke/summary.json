@@ -1,0 +1,545 @@
+{
+  "suite": "Homebrew package browser VFS smoke",
+  "bead_id": "kd-1mr.5",
+  "started_at": "2026-07-01T06:43:48.112Z",
+  "completed_at": "2026-07-01T06:44:46.530Z",
+  "duration_ms": 58418,
+  "result_dir": "/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-1mr.5-certify-browser-rootfs-shell/test-runs/kd-1mr.5/browser-smoke",
+  "tap_root": "/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-1mr.5-certify-browser-rootfs-shell/test-runs/kd-0hns/rootfs-shell-tap",
+  "tap_commit": "37bcd20d847101859641daf6e4583c70d634cfae",
+  "arch": "wasm32",
+  "formulas": [
+    "dash",
+    "git",
+    "vim",
+    "less",
+    "lsof",
+    "modeset",
+    "nano",
+    "netcat",
+    "wget",
+    "fbdoom",
+    "bzip2",
+    "xz"
+  ],
+  "counts": {
+    "pass": 23,
+    "fail": 0,
+    "skip": 2
+  },
+  "outcomes": [
+    {
+      "name": "homebrew_browser_vfs_build_dash",
+      "status": "pass",
+      "durationMs": 491,
+      "details": "image=/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-1mr.5-certify-browser-rootfs-shell/test-runs/kd-1mr.5/browser-smoke/dash-wasm32/dash-wasm32-homebrew.vfs.zst; report=/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-1mr.5-certify-browser-rootfs-shell/test-runs/kd-1mr.5/browser-smoke/dash-wasm32/dash-wasm32-homebrew-vfs-report.json; browser_url=http://127.0.0.1:58172/__kandelo-homebrew-smoke/kd-1mr.5-20260701T064348095Z-55840/dash-wasm32-homebrew.vfs.zst",
+      "artifactPath": "/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-1mr.5-certify-browser-rootfs-shell/test-runs/kd-1mr.5/browser-smoke/dash-wasm32"
+    },
+    {
+      "name": "homebrew_browser_vfs_build_git",
+      "status": "pass",
+      "durationMs": 10024,
+      "details": "image=/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-1mr.5-certify-browser-rootfs-shell/test-runs/kd-1mr.5/browser-smoke/git-wasm32/git-wasm32-homebrew.vfs.zst; report=/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-1mr.5-certify-browser-rootfs-shell/test-runs/kd-1mr.5/browser-smoke/git-wasm32/git-wasm32-homebrew-vfs-report.json; browser_url=http://127.0.0.1:58172/__kandelo-homebrew-smoke/kd-1mr.5-20260701T064348095Z-55840/git-wasm32-homebrew.vfs.zst",
+      "artifactPath": "/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-1mr.5-certify-browser-rootfs-shell/test-runs/kd-1mr.5/browser-smoke/git-wasm32"
+    },
+    {
+      "name": "homebrew_browser_vfs_build_vim",
+      "status": "pass",
+      "durationMs": 21984,
+      "details": "image=/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-1mr.5-certify-browser-rootfs-shell/test-runs/kd-1mr.5/browser-smoke/vim-wasm32/vim-wasm32-homebrew.vfs.zst; report=/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-1mr.5-certify-browser-rootfs-shell/test-runs/kd-1mr.5/browser-smoke/vim-wasm32/vim-wasm32-homebrew-vfs-report.json; browser_url=http://127.0.0.1:58172/__kandelo-homebrew-smoke/kd-1mr.5-20260701T064348095Z-55840/vim-wasm32-homebrew.vfs.zst",
+      "artifactPath": "/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-1mr.5-certify-browser-rootfs-shell/test-runs/kd-1mr.5/browser-smoke/vim-wasm32"
+    },
+    {
+      "name": "homebrew_browser_vfs_build_less",
+      "status": "pass",
+      "durationMs": 418,
+      "details": "image=/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-1mr.5-certify-browser-rootfs-shell/test-runs/kd-1mr.5/browser-smoke/less-wasm32/less-wasm32-homebrew.vfs.zst; report=/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-1mr.5-certify-browser-rootfs-shell/test-runs/kd-1mr.5/browser-smoke/less-wasm32/less-wasm32-homebrew-vfs-report.json; browser_url=http://127.0.0.1:58172/__kandelo-homebrew-smoke/kd-1mr.5-20260701T064348095Z-55840/less-wasm32-homebrew.vfs.zst",
+      "artifactPath": "/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-1mr.5-certify-browser-rootfs-shell/test-runs/kd-1mr.5/browser-smoke/less-wasm32"
+    },
+    {
+      "name": "homebrew_browser_vfs_build_lsof",
+      "status": "pass",
+      "durationMs": 260,
+      "details": "image=/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-1mr.5-certify-browser-rootfs-shell/test-runs/kd-1mr.5/browser-smoke/lsof-wasm32/lsof-wasm32-homebrew.vfs.zst; report=/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-1mr.5-certify-browser-rootfs-shell/test-runs/kd-1mr.5/browser-smoke/lsof-wasm32/lsof-wasm32-homebrew-vfs-report.json; browser_url=http://127.0.0.1:58172/__kandelo-homebrew-smoke/kd-1mr.5-20260701T064348095Z-55840/lsof-wasm32-homebrew.vfs.zst",
+      "artifactPath": "/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-1mr.5-certify-browser-rootfs-shell/test-runs/kd-1mr.5/browser-smoke/lsof-wasm32"
+    },
+    {
+      "name": "homebrew_browser_vfs_build_modeset",
+      "status": "pass",
+      "durationMs": 265,
+      "details": "image=/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-1mr.5-certify-browser-rootfs-shell/test-runs/kd-1mr.5/browser-smoke/modeset-wasm32/modeset-wasm32-homebrew.vfs.zst; report=/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-1mr.5-certify-browser-rootfs-shell/test-runs/kd-1mr.5/browser-smoke/modeset-wasm32/modeset-wasm32-homebrew-vfs-report.json; browser_url=http://127.0.0.1:58172/__kandelo-homebrew-smoke/kd-1mr.5-20260701T064348095Z-55840/modeset-wasm32-homebrew.vfs.zst",
+      "artifactPath": "/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-1mr.5-certify-browser-rootfs-shell/test-runs/kd-1mr.5/browser-smoke/modeset-wasm32"
+    },
+    {
+      "name": "homebrew_browser_vfs_build_nano",
+      "status": "pass",
+      "durationMs": 873,
+      "details": "image=/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-1mr.5-certify-browser-rootfs-shell/test-runs/kd-1mr.5/browser-smoke/nano-wasm32/nano-wasm32-homebrew.vfs.zst; report=/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-1mr.5-certify-browser-rootfs-shell/test-runs/kd-1mr.5/browser-smoke/nano-wasm32/nano-wasm32-homebrew-vfs-report.json; browser_url=http://127.0.0.1:58172/__kandelo-homebrew-smoke/kd-1mr.5-20260701T064348095Z-55840/nano-wasm32-homebrew.vfs.zst",
+      "artifactPath": "/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-1mr.5-certify-browser-rootfs-shell/test-runs/kd-1mr.5/browser-smoke/nano-wasm32"
+    },
+    {
+      "name": "homebrew_browser_vfs_build_netcat",
+      "status": "pass",
+      "durationMs": 280,
+      "details": "image=/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-1mr.5-certify-browser-rootfs-shell/test-runs/kd-1mr.5/browser-smoke/netcat-wasm32/netcat-wasm32-homebrew.vfs.zst; report=/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-1mr.5-certify-browser-rootfs-shell/test-runs/kd-1mr.5/browser-smoke/netcat-wasm32/netcat-wasm32-homebrew-vfs-report.json; browser_url=http://127.0.0.1:58172/__kandelo-homebrew-smoke/kd-1mr.5-20260701T064348095Z-55840/netcat-wasm32-homebrew.vfs.zst",
+      "artifactPath": "/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-1mr.5-certify-browser-rootfs-shell/test-runs/kd-1mr.5/browser-smoke/netcat-wasm32"
+    },
+    {
+      "name": "homebrew_browser_vfs_build_wget",
+      "status": "pass",
+      "durationMs": 4733,
+      "details": "image=/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-1mr.5-certify-browser-rootfs-shell/test-runs/kd-1mr.5/browser-smoke/wget-wasm32/wget-wasm32-homebrew.vfs.zst; report=/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-1mr.5-certify-browser-rootfs-shell/test-runs/kd-1mr.5/browser-smoke/wget-wasm32/wget-wasm32-homebrew-vfs-report.json; browser_url=http://127.0.0.1:58172/__kandelo-homebrew-smoke/kd-1mr.5-20260701T064348095Z-55840/wget-wasm32-homebrew.vfs.zst",
+      "artifactPath": "/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-1mr.5-certify-browser-rootfs-shell/test-runs/kd-1mr.5/browser-smoke/wget-wasm32"
+    },
+    {
+      "name": "homebrew_browser_vfs_build_fbdoom",
+      "status": "pass",
+      "durationMs": 387,
+      "details": "image=/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-1mr.5-certify-browser-rootfs-shell/test-runs/kd-1mr.5/browser-smoke/fbdoom-wasm32/fbdoom-wasm32-homebrew.vfs.zst; report=/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-1mr.5-certify-browser-rootfs-shell/test-runs/kd-1mr.5/browser-smoke/fbdoom-wasm32/fbdoom-wasm32-homebrew-vfs-report.json; browser_url=http://127.0.0.1:58172/__kandelo-homebrew-smoke/kd-1mr.5-20260701T064348095Z-55840/fbdoom-wasm32-homebrew.vfs.zst",
+      "artifactPath": "/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-1mr.5-certify-browser-rootfs-shell/test-runs/kd-1mr.5/browser-smoke/fbdoom-wasm32"
+    },
+    {
+      "name": "homebrew_browser_vfs_build_bzip2",
+      "status": "pass",
+      "durationMs": 306,
+      "details": "image=/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-1mr.5-certify-browser-rootfs-shell/test-runs/kd-1mr.5/browser-smoke/bzip2-wasm32/bzip2-wasm32-homebrew.vfs.zst; report=/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-1mr.5-certify-browser-rootfs-shell/test-runs/kd-1mr.5/browser-smoke/bzip2-wasm32/bzip2-wasm32-homebrew-vfs-report.json; browser_url=http://127.0.0.1:58172/__kandelo-homebrew-smoke/kd-1mr.5-20260701T064348095Z-55840/bzip2-wasm32-homebrew.vfs.zst",
+      "artifactPath": "/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-1mr.5-certify-browser-rootfs-shell/test-runs/kd-1mr.5/browser-smoke/bzip2-wasm32"
+    },
+    {
+      "name": "homebrew_browser_vfs_build_xz",
+      "status": "pass",
+      "durationMs": 614,
+      "details": "image=/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-1mr.5-certify-browser-rootfs-shell/test-runs/kd-1mr.5/browser-smoke/xz-wasm32/xz-wasm32-homebrew.vfs.zst; report=/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-1mr.5-certify-browser-rootfs-shell/test-runs/kd-1mr.5/browser-smoke/xz-wasm32/xz-wasm32-homebrew-vfs-report.json; browser_url=http://127.0.0.1:58172/__kandelo-homebrew-smoke/kd-1mr.5-20260701T064348095Z-55840/xz-wasm32-homebrew.vfs.zst",
+      "artifactPath": "/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-1mr.5-certify-browser-rootfs-shell/test-runs/kd-1mr.5/browser-smoke/xz-wasm32"
+    },
+    {
+      "name": "browser_server_start",
+      "status": "pass",
+      "durationMs": 2868,
+      "details": "vite=http://127.0.0.1:58172; channel=chromium",
+      "artifactPath": "/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-1mr.5-certify-browser-rootfs-shell/test-runs/kd-1mr.5/browser-smoke/vite.log"
+    },
+    {
+      "name": "browser_smoke_dash_dash_command",
+      "status": "pass",
+      "durationMs": 1960,
+      "details": "command=/home/linuxbrew/.linuxbrew/bin/dash -c echo dash_browser_smoke_ok; url=http://127.0.0.1:58172/__kandelo-homebrew-smoke/kd-1mr.5-20260701T064348095Z-55840/dash-wasm32-homebrew.vfs.zst; output=/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-1mr.5-certify-browser-rootfs-shell/test-runs/kd-1mr.5/browser-smoke/dash-wasm32/dash_command-terminal.txt",
+      "artifactPath": "/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-1mr.5-certify-browser-rootfs-shell/test-runs/kd-1mr.5/browser-smoke/dash-wasm32/dash_command-terminal.txt"
+    },
+    {
+      "name": "browser_smoke_git_git_version",
+      "status": "pass",
+      "durationMs": 1527,
+      "details": "command=/home/linuxbrew/.linuxbrew/bin/git --version; url=http://127.0.0.1:58172/__kandelo-homebrew-smoke/kd-1mr.5-20260701T064348095Z-55840/git-wasm32-homebrew.vfs.zst; output=/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-1mr.5-certify-browser-rootfs-shell/test-runs/kd-1mr.5/browser-smoke/git-wasm32/git_version-terminal.txt",
+      "artifactPath": "/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-1mr.5-certify-browser-rootfs-shell/test-runs/kd-1mr.5/browser-smoke/git-wasm32/git_version-terminal.txt"
+    },
+    {
+      "name": "browser_smoke_vim_vim_version",
+      "status": "pass",
+      "durationMs": 1956,
+      "details": "command=/home/linuxbrew/.linuxbrew/bin/vim --version; url=http://127.0.0.1:58172/__kandelo-homebrew-smoke/kd-1mr.5-20260701T064348095Z-55840/vim-wasm32-homebrew.vfs.zst; output=/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-1mr.5-certify-browser-rootfs-shell/test-runs/kd-1mr.5/browser-smoke/vim-wasm32/vim_version-terminal.txt",
+      "artifactPath": "/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-1mr.5-certify-browser-rootfs-shell/test-runs/kd-1mr.5/browser-smoke/vim-wasm32/vim_version-terminal.txt"
+    },
+    {
+      "name": "browser_smoke_less_less_version",
+      "status": "pass",
+      "durationMs": 1369,
+      "details": "command=/home/linuxbrew/.linuxbrew/bin/less --version; url=http://127.0.0.1:58172/__kandelo-homebrew-smoke/kd-1mr.5-20260701T064348095Z-55840/less-wasm32-homebrew.vfs.zst; output=/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-1mr.5-certify-browser-rootfs-shell/test-runs/kd-1mr.5/browser-smoke/less-wasm32/less_version-terminal.txt",
+      "artifactPath": "/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-1mr.5-certify-browser-rootfs-shell/test-runs/kd-1mr.5/browser-smoke/less-wasm32/less_version-terminal.txt"
+    },
+    {
+      "name": "browser_smoke_lsof_lsof_help",
+      "status": "pass",
+      "durationMs": 1387,
+      "details": "command=/home/linuxbrew/.linuxbrew/bin/lsof -h; url=http://127.0.0.1:58172/__kandelo-homebrew-smoke/kd-1mr.5-20260701T064348095Z-55840/lsof-wasm32-homebrew.vfs.zst; output=/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-1mr.5-certify-browser-rootfs-shell/test-runs/kd-1mr.5/browser-smoke/lsof-wasm32/lsof_help-terminal.txt",
+      "artifactPath": "/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-1mr.5-certify-browser-rootfs-shell/test-runs/kd-1mr.5/browser-smoke/lsof-wasm32/lsof_help-terminal.txt"
+    },
+    {
+      "name": "browser_smoke_modeset_unsupported",
+      "status": "skip",
+      "durationMs": 0,
+      "details": "modeset requires a DRI/GLES framebuffer device (/dev/dri) not provided by the non-interactive terminal Homebrew browser smoke; certify via a dedicated browser framebuffer/device smoke",
+      "artifactPath": "/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-1mr.5-certify-browser-rootfs-shell/test-runs/kd-1mr.5/browser-smoke/modeset-wasm32/modeset-unsupported.txt"
+    },
+    {
+      "name": "browser_smoke_nano_nano_version",
+      "status": "pass",
+      "durationMs": 1292,
+      "details": "command=/home/linuxbrew/.linuxbrew/bin/nano --version; url=http://127.0.0.1:58172/__kandelo-homebrew-smoke/kd-1mr.5-20260701T064348095Z-55840/nano-wasm32-homebrew.vfs.zst; output=/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-1mr.5-certify-browser-rootfs-shell/test-runs/kd-1mr.5/browser-smoke/nano-wasm32/nano_version-terminal.txt",
+      "artifactPath": "/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-1mr.5-certify-browser-rootfs-shell/test-runs/kd-1mr.5/browser-smoke/nano-wasm32/nano_version-terminal.txt"
+    },
+    {
+      "name": "browser_smoke_netcat_netcat_help",
+      "status": "pass",
+      "durationMs": 1306,
+      "details": "command=/home/linuxbrew/.linuxbrew/bin/nc -h; url=http://127.0.0.1:58172/__kandelo-homebrew-smoke/kd-1mr.5-20260701T064348095Z-55840/netcat-wasm32-homebrew.vfs.zst; output=/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-1mr.5-certify-browser-rootfs-shell/test-runs/kd-1mr.5/browser-smoke/netcat-wasm32/netcat_help-terminal.txt",
+      "artifactPath": "/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-1mr.5-certify-browser-rootfs-shell/test-runs/kd-1mr.5/browser-smoke/netcat-wasm32/netcat_help-terminal.txt"
+    },
+    {
+      "name": "browser_smoke_wget_wget_version",
+      "status": "pass",
+      "durationMs": 1426,
+      "details": "command=/home/linuxbrew/.linuxbrew/bin/wget --version; url=http://127.0.0.1:58172/__kandelo-homebrew-smoke/kd-1mr.5-20260701T064348095Z-55840/wget-wasm32-homebrew.vfs.zst; output=/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-1mr.5-certify-browser-rootfs-shell/test-runs/kd-1mr.5/browser-smoke/wget-wasm32/wget_version-terminal.txt",
+      "artifactPath": "/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-1mr.5-certify-browser-rootfs-shell/test-runs/kd-1mr.5/browser-smoke/wget-wasm32/wget_version-terminal.txt"
+    },
+    {
+      "name": "browser_smoke_fbdoom_unsupported",
+      "status": "skip",
+      "durationMs": 0,
+      "details": "fbdoom requires IWAD game data and a framebuffer/audio device (/dev/fb0) not provided by the non-interactive terminal Homebrew browser smoke; certify via a dedicated browser framebuffer smoke",
+      "artifactPath": "/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-1mr.5-certify-browser-rootfs-shell/test-runs/kd-1mr.5/browser-smoke/fbdoom-wasm32/fbdoom-unsupported.txt"
+    },
+    {
+      "name": "browser_smoke_bzip2_bzip2_help",
+      "status": "pass",
+      "durationMs": 1269,
+      "details": "command=/home/linuxbrew/.linuxbrew/bin/bzip2 --help; url=http://127.0.0.1:58172/__kandelo-homebrew-smoke/kd-1mr.5-20260701T064348095Z-55840/bzip2-wasm32-homebrew.vfs.zst; output=/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-1mr.5-certify-browser-rootfs-shell/test-runs/kd-1mr.5/browser-smoke/bzip2-wasm32/bzip2_help-terminal.txt",
+      "artifactPath": "/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-1mr.5-certify-browser-rootfs-shell/test-runs/kd-1mr.5/browser-smoke/bzip2-wasm32/bzip2_help-terminal.txt"
+    },
+    {
+      "name": "browser_smoke_xz_xz_version",
+      "status": "pass",
+      "durationMs": 1246,
+      "details": "command=/home/linuxbrew/.linuxbrew/bin/xz --version; url=http://127.0.0.1:58172/__kandelo-homebrew-smoke/kd-1mr.5-20260701T064348095Z-55840/xz-wasm32-homebrew.vfs.zst; output=/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-1mr.5-certify-browser-rootfs-shell/test-runs/kd-1mr.5/browser-smoke/xz-wasm32/xz_version-terminal.txt",
+      "artifactPath": "/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-1mr.5-certify-browser-rootfs-shell/test-runs/kd-1mr.5/browser-smoke/xz-wasm32/xz_version-terminal.txt"
+    }
+  ],
+  "packages": [
+    {
+      "formula": "dash",
+      "arch": "wasm32",
+      "status": "success",
+      "required_cases": [
+        "dash_command"
+      ],
+      "browser_url": "http://127.0.0.1:58172/__kandelo-homebrew-smoke/kd-1mr.5-20260701T064348095Z-55840/dash-wasm32-homebrew.vfs.zst",
+      "vfs_image": "/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-1mr.5-certify-browser-rootfs-shell/test-runs/kd-1mr.5/browser-smoke/dash-wasm32/dash-wasm32-homebrew.vfs.zst",
+      "vfs_report": "/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-1mr.5-certify-browser-rootfs-shell/test-runs/kd-1mr.5/browser-smoke/dash-wasm32/dash-wasm32-homebrew-vfs-report.json",
+      "commands": [
+        "/home/linuxbrew/.linuxbrew/bin/dash -c echo dash_browser_smoke_ok"
+      ],
+      "argv": [
+        [
+          "/home/linuxbrew/.linuxbrew/bin/dash",
+          "-c",
+          "echo dash_browser_smoke_ok"
+        ]
+      ],
+      "passed": [
+        "browser_server_start: vite=http://127.0.0.1:58172; channel=chromium [/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-1mr.5-certify-browser-rootfs-shell/test-runs/kd-1mr.5/browser-smoke/vite.log]",
+        "homebrew_browser_vfs_build_dash: image=/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-1mr.5-certify-browser-rootfs-shell/test-runs/kd-1mr.5/browser-smoke/dash-wasm32/dash-wasm32-homebrew.vfs.zst; report=/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-1mr.5-certify-browser-rootfs-shell/test-runs/kd-1mr.5/browser-smoke/dash-wasm32/dash-wasm32-homebrew-vfs-report.json; browser_url=http://127.0.0.1:58172/__kandelo-homebrew-smoke/kd-1mr.5-20260701T064348095Z-55840/dash-wasm32-homebrew.vfs.zst [/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-1mr.5-certify-browser-rootfs-shell/test-runs/kd-1mr.5/browser-smoke/dash-wasm32]",
+        "browser_smoke_dash_dash_command: command=/home/linuxbrew/.linuxbrew/bin/dash -c echo dash_browser_smoke_ok; url=http://127.0.0.1:58172/__kandelo-homebrew-smoke/kd-1mr.5-20260701T064348095Z-55840/dash-wasm32-homebrew.vfs.zst; output=/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-1mr.5-certify-browser-rootfs-shell/test-runs/kd-1mr.5/browser-smoke/dash-wasm32/dash_command-terminal.txt [/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-1mr.5-certify-browser-rootfs-shell/test-runs/kd-1mr.5/browser-smoke/dash-wasm32/dash_command-terminal.txt]"
+      ],
+      "failed": [],
+      "skipped": []
+    },
+    {
+      "formula": "git",
+      "arch": "wasm32",
+      "status": "success",
+      "required_cases": [
+        "git_version"
+      ],
+      "browser_url": "http://127.0.0.1:58172/__kandelo-homebrew-smoke/kd-1mr.5-20260701T064348095Z-55840/git-wasm32-homebrew.vfs.zst",
+      "vfs_image": "/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-1mr.5-certify-browser-rootfs-shell/test-runs/kd-1mr.5/browser-smoke/git-wasm32/git-wasm32-homebrew.vfs.zst",
+      "vfs_report": "/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-1mr.5-certify-browser-rootfs-shell/test-runs/kd-1mr.5/browser-smoke/git-wasm32/git-wasm32-homebrew-vfs-report.json",
+      "commands": [
+        "/home/linuxbrew/.linuxbrew/bin/git --version"
+      ],
+      "argv": [
+        [
+          "/home/linuxbrew/.linuxbrew/bin/git",
+          "--version"
+        ]
+      ],
+      "passed": [
+        "browser_server_start: vite=http://127.0.0.1:58172; channel=chromium [/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-1mr.5-certify-browser-rootfs-shell/test-runs/kd-1mr.5/browser-smoke/vite.log]",
+        "homebrew_browser_vfs_build_git: image=/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-1mr.5-certify-browser-rootfs-shell/test-runs/kd-1mr.5/browser-smoke/git-wasm32/git-wasm32-homebrew.vfs.zst; report=/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-1mr.5-certify-browser-rootfs-shell/test-runs/kd-1mr.5/browser-smoke/git-wasm32/git-wasm32-homebrew-vfs-report.json; browser_url=http://127.0.0.1:58172/__kandelo-homebrew-smoke/kd-1mr.5-20260701T064348095Z-55840/git-wasm32-homebrew.vfs.zst [/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-1mr.5-certify-browser-rootfs-shell/test-runs/kd-1mr.5/browser-smoke/git-wasm32]",
+        "browser_smoke_git_git_version: command=/home/linuxbrew/.linuxbrew/bin/git --version; url=http://127.0.0.1:58172/__kandelo-homebrew-smoke/kd-1mr.5-20260701T064348095Z-55840/git-wasm32-homebrew.vfs.zst; output=/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-1mr.5-certify-browser-rootfs-shell/test-runs/kd-1mr.5/browser-smoke/git-wasm32/git_version-terminal.txt [/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-1mr.5-certify-browser-rootfs-shell/test-runs/kd-1mr.5/browser-smoke/git-wasm32/git_version-terminal.txt]"
+      ],
+      "failed": [],
+      "skipped": []
+    },
+    {
+      "formula": "vim",
+      "arch": "wasm32",
+      "status": "success",
+      "required_cases": [
+        "vim_version"
+      ],
+      "browser_url": "http://127.0.0.1:58172/__kandelo-homebrew-smoke/kd-1mr.5-20260701T064348095Z-55840/vim-wasm32-homebrew.vfs.zst",
+      "vfs_image": "/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-1mr.5-certify-browser-rootfs-shell/test-runs/kd-1mr.5/browser-smoke/vim-wasm32/vim-wasm32-homebrew.vfs.zst",
+      "vfs_report": "/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-1mr.5-certify-browser-rootfs-shell/test-runs/kd-1mr.5/browser-smoke/vim-wasm32/vim-wasm32-homebrew-vfs-report.json",
+      "commands": [
+        "/home/linuxbrew/.linuxbrew/bin/vim --version"
+      ],
+      "argv": [
+        [
+          "/home/linuxbrew/.linuxbrew/bin/vim",
+          "--version"
+        ]
+      ],
+      "passed": [
+        "browser_server_start: vite=http://127.0.0.1:58172; channel=chromium [/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-1mr.5-certify-browser-rootfs-shell/test-runs/kd-1mr.5/browser-smoke/vite.log]",
+        "homebrew_browser_vfs_build_vim: image=/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-1mr.5-certify-browser-rootfs-shell/test-runs/kd-1mr.5/browser-smoke/vim-wasm32/vim-wasm32-homebrew.vfs.zst; report=/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-1mr.5-certify-browser-rootfs-shell/test-runs/kd-1mr.5/browser-smoke/vim-wasm32/vim-wasm32-homebrew-vfs-report.json; browser_url=http://127.0.0.1:58172/__kandelo-homebrew-smoke/kd-1mr.5-20260701T064348095Z-55840/vim-wasm32-homebrew.vfs.zst [/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-1mr.5-certify-browser-rootfs-shell/test-runs/kd-1mr.5/browser-smoke/vim-wasm32]",
+        "browser_smoke_vim_vim_version: command=/home/linuxbrew/.linuxbrew/bin/vim --version; url=http://127.0.0.1:58172/__kandelo-homebrew-smoke/kd-1mr.5-20260701T064348095Z-55840/vim-wasm32-homebrew.vfs.zst; output=/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-1mr.5-certify-browser-rootfs-shell/test-runs/kd-1mr.5/browser-smoke/vim-wasm32/vim_version-terminal.txt [/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-1mr.5-certify-browser-rootfs-shell/test-runs/kd-1mr.5/browser-smoke/vim-wasm32/vim_version-terminal.txt]"
+      ],
+      "failed": [],
+      "skipped": []
+    },
+    {
+      "formula": "less",
+      "arch": "wasm32",
+      "status": "success",
+      "required_cases": [
+        "less_version"
+      ],
+      "browser_url": "http://127.0.0.1:58172/__kandelo-homebrew-smoke/kd-1mr.5-20260701T064348095Z-55840/less-wasm32-homebrew.vfs.zst",
+      "vfs_image": "/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-1mr.5-certify-browser-rootfs-shell/test-runs/kd-1mr.5/browser-smoke/less-wasm32/less-wasm32-homebrew.vfs.zst",
+      "vfs_report": "/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-1mr.5-certify-browser-rootfs-shell/test-runs/kd-1mr.5/browser-smoke/less-wasm32/less-wasm32-homebrew-vfs-report.json",
+      "commands": [
+        "/home/linuxbrew/.linuxbrew/bin/less --version"
+      ],
+      "argv": [
+        [
+          "/home/linuxbrew/.linuxbrew/bin/less",
+          "--version"
+        ]
+      ],
+      "passed": [
+        "browser_server_start: vite=http://127.0.0.1:58172; channel=chromium [/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-1mr.5-certify-browser-rootfs-shell/test-runs/kd-1mr.5/browser-smoke/vite.log]",
+        "homebrew_browser_vfs_build_less: image=/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-1mr.5-certify-browser-rootfs-shell/test-runs/kd-1mr.5/browser-smoke/less-wasm32/less-wasm32-homebrew.vfs.zst; report=/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-1mr.5-certify-browser-rootfs-shell/test-runs/kd-1mr.5/browser-smoke/less-wasm32/less-wasm32-homebrew-vfs-report.json; browser_url=http://127.0.0.1:58172/__kandelo-homebrew-smoke/kd-1mr.5-20260701T064348095Z-55840/less-wasm32-homebrew.vfs.zst [/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-1mr.5-certify-browser-rootfs-shell/test-runs/kd-1mr.5/browser-smoke/less-wasm32]",
+        "browser_smoke_less_less_version: command=/home/linuxbrew/.linuxbrew/bin/less --version; url=http://127.0.0.1:58172/__kandelo-homebrew-smoke/kd-1mr.5-20260701T064348095Z-55840/less-wasm32-homebrew.vfs.zst; output=/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-1mr.5-certify-browser-rootfs-shell/test-runs/kd-1mr.5/browser-smoke/less-wasm32/less_version-terminal.txt [/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-1mr.5-certify-browser-rootfs-shell/test-runs/kd-1mr.5/browser-smoke/less-wasm32/less_version-terminal.txt]"
+      ],
+      "failed": [],
+      "skipped": []
+    },
+    {
+      "formula": "lsof",
+      "arch": "wasm32",
+      "status": "success",
+      "required_cases": [
+        "lsof_help"
+      ],
+      "browser_url": "http://127.0.0.1:58172/__kandelo-homebrew-smoke/kd-1mr.5-20260701T064348095Z-55840/lsof-wasm32-homebrew.vfs.zst",
+      "vfs_image": "/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-1mr.5-certify-browser-rootfs-shell/test-runs/kd-1mr.5/browser-smoke/lsof-wasm32/lsof-wasm32-homebrew.vfs.zst",
+      "vfs_report": "/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-1mr.5-certify-browser-rootfs-shell/test-runs/kd-1mr.5/browser-smoke/lsof-wasm32/lsof-wasm32-homebrew-vfs-report.json",
+      "commands": [
+        "/home/linuxbrew/.linuxbrew/bin/lsof -h"
+      ],
+      "argv": [
+        [
+          "/home/linuxbrew/.linuxbrew/bin/lsof",
+          "-h"
+        ]
+      ],
+      "passed": [
+        "browser_server_start: vite=http://127.0.0.1:58172; channel=chromium [/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-1mr.5-certify-browser-rootfs-shell/test-runs/kd-1mr.5/browser-smoke/vite.log]",
+        "homebrew_browser_vfs_build_lsof: image=/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-1mr.5-certify-browser-rootfs-shell/test-runs/kd-1mr.5/browser-smoke/lsof-wasm32/lsof-wasm32-homebrew.vfs.zst; report=/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-1mr.5-certify-browser-rootfs-shell/test-runs/kd-1mr.5/browser-smoke/lsof-wasm32/lsof-wasm32-homebrew-vfs-report.json; browser_url=http://127.0.0.1:58172/__kandelo-homebrew-smoke/kd-1mr.5-20260701T064348095Z-55840/lsof-wasm32-homebrew.vfs.zst [/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-1mr.5-certify-browser-rootfs-shell/test-runs/kd-1mr.5/browser-smoke/lsof-wasm32]",
+        "browser_smoke_lsof_lsof_help: command=/home/linuxbrew/.linuxbrew/bin/lsof -h; url=http://127.0.0.1:58172/__kandelo-homebrew-smoke/kd-1mr.5-20260701T064348095Z-55840/lsof-wasm32-homebrew.vfs.zst; output=/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-1mr.5-certify-browser-rootfs-shell/test-runs/kd-1mr.5/browser-smoke/lsof-wasm32/lsof_help-terminal.txt [/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-1mr.5-certify-browser-rootfs-shell/test-runs/kd-1mr.5/browser-smoke/lsof-wasm32/lsof_help-terminal.txt]"
+      ],
+      "failed": [],
+      "skipped": []
+    },
+    {
+      "formula": "modeset",
+      "arch": "wasm32",
+      "status": "skipped",
+      "required_cases": [
+        "modeset_version"
+      ],
+      "browser_url": "http://127.0.0.1:58172/__kandelo-homebrew-smoke/kd-1mr.5-20260701T064348095Z-55840/modeset-wasm32-homebrew.vfs.zst",
+      "vfs_image": "/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-1mr.5-certify-browser-rootfs-shell/test-runs/kd-1mr.5/browser-smoke/modeset-wasm32/modeset-wasm32-homebrew.vfs.zst",
+      "vfs_report": "/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-1mr.5-certify-browser-rootfs-shell/test-runs/kd-1mr.5/browser-smoke/modeset-wasm32/modeset-wasm32-homebrew-vfs-report.json",
+      "commands": [
+        "/home/linuxbrew/.linuxbrew/bin/modeset --version"
+      ],
+      "argv": [
+        [
+          "/home/linuxbrew/.linuxbrew/bin/modeset",
+          "--version"
+        ]
+      ],
+      "passed": [
+        "browser_server_start: vite=http://127.0.0.1:58172; channel=chromium [/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-1mr.5-certify-browser-rootfs-shell/test-runs/kd-1mr.5/browser-smoke/vite.log]",
+        "homebrew_browser_vfs_build_modeset: image=/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-1mr.5-certify-browser-rootfs-shell/test-runs/kd-1mr.5/browser-smoke/modeset-wasm32/modeset-wasm32-homebrew.vfs.zst; report=/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-1mr.5-certify-browser-rootfs-shell/test-runs/kd-1mr.5/browser-smoke/modeset-wasm32/modeset-wasm32-homebrew-vfs-report.json; browser_url=http://127.0.0.1:58172/__kandelo-homebrew-smoke/kd-1mr.5-20260701T064348095Z-55840/modeset-wasm32-homebrew.vfs.zst [/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-1mr.5-certify-browser-rootfs-shell/test-runs/kd-1mr.5/browser-smoke/modeset-wasm32]"
+      ],
+      "failed": [],
+      "skipped": [
+        "browser_smoke_modeset_unsupported: modeset requires a DRI/GLES framebuffer device (/dev/dri) not provided by the non-interactive terminal Homebrew browser smoke; certify via a dedicated browser framebuffer/device smoke [/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-1mr.5-certify-browser-rootfs-shell/test-runs/kd-1mr.5/browser-smoke/modeset-wasm32/modeset-unsupported.txt]"
+      ],
+      "skip_reason": "modeset requires a DRI/GLES framebuffer device (/dev/dri) not provided by the non-interactive terminal Homebrew browser smoke; certify via a dedicated browser framebuffer/device smoke"
+    },
+    {
+      "formula": "nano",
+      "arch": "wasm32",
+      "status": "success",
+      "required_cases": [
+        "nano_version"
+      ],
+      "browser_url": "http://127.0.0.1:58172/__kandelo-homebrew-smoke/kd-1mr.5-20260701T064348095Z-55840/nano-wasm32-homebrew.vfs.zst",
+      "vfs_image": "/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-1mr.5-certify-browser-rootfs-shell/test-runs/kd-1mr.5/browser-smoke/nano-wasm32/nano-wasm32-homebrew.vfs.zst",
+      "vfs_report": "/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-1mr.5-certify-browser-rootfs-shell/test-runs/kd-1mr.5/browser-smoke/nano-wasm32/nano-wasm32-homebrew-vfs-report.json",
+      "commands": [
+        "/home/linuxbrew/.linuxbrew/bin/nano --version"
+      ],
+      "argv": [
+        [
+          "/home/linuxbrew/.linuxbrew/bin/nano",
+          "--version"
+        ]
+      ],
+      "passed": [
+        "browser_server_start: vite=http://127.0.0.1:58172; channel=chromium [/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-1mr.5-certify-browser-rootfs-shell/test-runs/kd-1mr.5/browser-smoke/vite.log]",
+        "homebrew_browser_vfs_build_nano: image=/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-1mr.5-certify-browser-rootfs-shell/test-runs/kd-1mr.5/browser-smoke/nano-wasm32/nano-wasm32-homebrew.vfs.zst; report=/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-1mr.5-certify-browser-rootfs-shell/test-runs/kd-1mr.5/browser-smoke/nano-wasm32/nano-wasm32-homebrew-vfs-report.json; browser_url=http://127.0.0.1:58172/__kandelo-homebrew-smoke/kd-1mr.5-20260701T064348095Z-55840/nano-wasm32-homebrew.vfs.zst [/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-1mr.5-certify-browser-rootfs-shell/test-runs/kd-1mr.5/browser-smoke/nano-wasm32]",
+        "browser_smoke_nano_nano_version: command=/home/linuxbrew/.linuxbrew/bin/nano --version; url=http://127.0.0.1:58172/__kandelo-homebrew-smoke/kd-1mr.5-20260701T064348095Z-55840/nano-wasm32-homebrew.vfs.zst; output=/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-1mr.5-certify-browser-rootfs-shell/test-runs/kd-1mr.5/browser-smoke/nano-wasm32/nano_version-terminal.txt [/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-1mr.5-certify-browser-rootfs-shell/test-runs/kd-1mr.5/browser-smoke/nano-wasm32/nano_version-terminal.txt]"
+      ],
+      "failed": [],
+      "skipped": []
+    },
+    {
+      "formula": "netcat",
+      "arch": "wasm32",
+      "status": "success",
+      "required_cases": [
+        "netcat_help"
+      ],
+      "browser_url": "http://127.0.0.1:58172/__kandelo-homebrew-smoke/kd-1mr.5-20260701T064348095Z-55840/netcat-wasm32-homebrew.vfs.zst",
+      "vfs_image": "/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-1mr.5-certify-browser-rootfs-shell/test-runs/kd-1mr.5/browser-smoke/netcat-wasm32/netcat-wasm32-homebrew.vfs.zst",
+      "vfs_report": "/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-1mr.5-certify-browser-rootfs-shell/test-runs/kd-1mr.5/browser-smoke/netcat-wasm32/netcat-wasm32-homebrew-vfs-report.json",
+      "commands": [
+        "/home/linuxbrew/.linuxbrew/bin/nc -h"
+      ],
+      "argv": [
+        [
+          "/home/linuxbrew/.linuxbrew/bin/nc",
+          "-h"
+        ]
+      ],
+      "passed": [
+        "browser_server_start: vite=http://127.0.0.1:58172; channel=chromium [/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-1mr.5-certify-browser-rootfs-shell/test-runs/kd-1mr.5/browser-smoke/vite.log]",
+        "homebrew_browser_vfs_build_netcat: image=/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-1mr.5-certify-browser-rootfs-shell/test-runs/kd-1mr.5/browser-smoke/netcat-wasm32/netcat-wasm32-homebrew.vfs.zst; report=/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-1mr.5-certify-browser-rootfs-shell/test-runs/kd-1mr.5/browser-smoke/netcat-wasm32/netcat-wasm32-homebrew-vfs-report.json; browser_url=http://127.0.0.1:58172/__kandelo-homebrew-smoke/kd-1mr.5-20260701T064348095Z-55840/netcat-wasm32-homebrew.vfs.zst [/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-1mr.5-certify-browser-rootfs-shell/test-runs/kd-1mr.5/browser-smoke/netcat-wasm32]",
+        "browser_smoke_netcat_netcat_help: command=/home/linuxbrew/.linuxbrew/bin/nc -h; url=http://127.0.0.1:58172/__kandelo-homebrew-smoke/kd-1mr.5-20260701T064348095Z-55840/netcat-wasm32-homebrew.vfs.zst; output=/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-1mr.5-certify-browser-rootfs-shell/test-runs/kd-1mr.5/browser-smoke/netcat-wasm32/netcat_help-terminal.txt [/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-1mr.5-certify-browser-rootfs-shell/test-runs/kd-1mr.5/browser-smoke/netcat-wasm32/netcat_help-terminal.txt]"
+      ],
+      "failed": [],
+      "skipped": []
+    },
+    {
+      "formula": "wget",
+      "arch": "wasm32",
+      "status": "success",
+      "required_cases": [
+        "wget_version"
+      ],
+      "browser_url": "http://127.0.0.1:58172/__kandelo-homebrew-smoke/kd-1mr.5-20260701T064348095Z-55840/wget-wasm32-homebrew.vfs.zst",
+      "vfs_image": "/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-1mr.5-certify-browser-rootfs-shell/test-runs/kd-1mr.5/browser-smoke/wget-wasm32/wget-wasm32-homebrew.vfs.zst",
+      "vfs_report": "/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-1mr.5-certify-browser-rootfs-shell/test-runs/kd-1mr.5/browser-smoke/wget-wasm32/wget-wasm32-homebrew-vfs-report.json",
+      "commands": [
+        "/home/linuxbrew/.linuxbrew/bin/wget --version"
+      ],
+      "argv": [
+        [
+          "/home/linuxbrew/.linuxbrew/bin/wget",
+          "--version"
+        ]
+      ],
+      "passed": [
+        "browser_server_start: vite=http://127.0.0.1:58172; channel=chromium [/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-1mr.5-certify-browser-rootfs-shell/test-runs/kd-1mr.5/browser-smoke/vite.log]",
+        "homebrew_browser_vfs_build_wget: image=/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-1mr.5-certify-browser-rootfs-shell/test-runs/kd-1mr.5/browser-smoke/wget-wasm32/wget-wasm32-homebrew.vfs.zst; report=/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-1mr.5-certify-browser-rootfs-shell/test-runs/kd-1mr.5/browser-smoke/wget-wasm32/wget-wasm32-homebrew-vfs-report.json; browser_url=http://127.0.0.1:58172/__kandelo-homebrew-smoke/kd-1mr.5-20260701T064348095Z-55840/wget-wasm32-homebrew.vfs.zst [/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-1mr.5-certify-browser-rootfs-shell/test-runs/kd-1mr.5/browser-smoke/wget-wasm32]",
+        "browser_smoke_wget_wget_version: command=/home/linuxbrew/.linuxbrew/bin/wget --version; url=http://127.0.0.1:58172/__kandelo-homebrew-smoke/kd-1mr.5-20260701T064348095Z-55840/wget-wasm32-homebrew.vfs.zst; output=/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-1mr.5-certify-browser-rootfs-shell/test-runs/kd-1mr.5/browser-smoke/wget-wasm32/wget_version-terminal.txt [/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-1mr.5-certify-browser-rootfs-shell/test-runs/kd-1mr.5/browser-smoke/wget-wasm32/wget_version-terminal.txt]"
+      ],
+      "failed": [],
+      "skipped": []
+    },
+    {
+      "formula": "fbdoom",
+      "arch": "wasm32",
+      "status": "skipped",
+      "required_cases": [
+        "fbdoom_version"
+      ],
+      "browser_url": "http://127.0.0.1:58172/__kandelo-homebrew-smoke/kd-1mr.5-20260701T064348095Z-55840/fbdoom-wasm32-homebrew.vfs.zst",
+      "vfs_image": "/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-1mr.5-certify-browser-rootfs-shell/test-runs/kd-1mr.5/browser-smoke/fbdoom-wasm32/fbdoom-wasm32-homebrew.vfs.zst",
+      "vfs_report": "/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-1mr.5-certify-browser-rootfs-shell/test-runs/kd-1mr.5/browser-smoke/fbdoom-wasm32/fbdoom-wasm32-homebrew-vfs-report.json",
+      "commands": [
+        "/home/linuxbrew/.linuxbrew/bin/fbdoom --version"
+      ],
+      "argv": [
+        [
+          "/home/linuxbrew/.linuxbrew/bin/fbdoom",
+          "--version"
+        ]
+      ],
+      "passed": [
+        "browser_server_start: vite=http://127.0.0.1:58172; channel=chromium [/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-1mr.5-certify-browser-rootfs-shell/test-runs/kd-1mr.5/browser-smoke/vite.log]",
+        "homebrew_browser_vfs_build_fbdoom: image=/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-1mr.5-certify-browser-rootfs-shell/test-runs/kd-1mr.5/browser-smoke/fbdoom-wasm32/fbdoom-wasm32-homebrew.vfs.zst; report=/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-1mr.5-certify-browser-rootfs-shell/test-runs/kd-1mr.5/browser-smoke/fbdoom-wasm32/fbdoom-wasm32-homebrew-vfs-report.json; browser_url=http://127.0.0.1:58172/__kandelo-homebrew-smoke/kd-1mr.5-20260701T064348095Z-55840/fbdoom-wasm32-homebrew.vfs.zst [/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-1mr.5-certify-browser-rootfs-shell/test-runs/kd-1mr.5/browser-smoke/fbdoom-wasm32]"
+      ],
+      "failed": [],
+      "skipped": [
+        "browser_smoke_fbdoom_unsupported: fbdoom requires IWAD game data and a framebuffer/audio device (/dev/fb0) not provided by the non-interactive terminal Homebrew browser smoke; certify via a dedicated browser framebuffer smoke [/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-1mr.5-certify-browser-rootfs-shell/test-runs/kd-1mr.5/browser-smoke/fbdoom-wasm32/fbdoom-unsupported.txt]"
+      ],
+      "skip_reason": "fbdoom requires IWAD game data and a framebuffer/audio device (/dev/fb0) not provided by the non-interactive terminal Homebrew browser smoke; certify via a dedicated browser framebuffer smoke"
+    },
+    {
+      "formula": "bzip2",
+      "arch": "wasm32",
+      "status": "success",
+      "required_cases": [
+        "bzip2_help"
+      ],
+      "browser_url": "http://127.0.0.1:58172/__kandelo-homebrew-smoke/kd-1mr.5-20260701T064348095Z-55840/bzip2-wasm32-homebrew.vfs.zst",
+      "vfs_image": "/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-1mr.5-certify-browser-rootfs-shell/test-runs/kd-1mr.5/browser-smoke/bzip2-wasm32/bzip2-wasm32-homebrew.vfs.zst",
+      "vfs_report": "/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-1mr.5-certify-browser-rootfs-shell/test-runs/kd-1mr.5/browser-smoke/bzip2-wasm32/bzip2-wasm32-homebrew-vfs-report.json",
+      "commands": [
+        "/home/linuxbrew/.linuxbrew/bin/bzip2 --help"
+      ],
+      "argv": [
+        [
+          "/home/linuxbrew/.linuxbrew/bin/bzip2",
+          "--help"
+        ]
+      ],
+      "passed": [
+        "browser_server_start: vite=http://127.0.0.1:58172; channel=chromium [/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-1mr.5-certify-browser-rootfs-shell/test-runs/kd-1mr.5/browser-smoke/vite.log]",
+        "homebrew_browser_vfs_build_bzip2: image=/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-1mr.5-certify-browser-rootfs-shell/test-runs/kd-1mr.5/browser-smoke/bzip2-wasm32/bzip2-wasm32-homebrew.vfs.zst; report=/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-1mr.5-certify-browser-rootfs-shell/test-runs/kd-1mr.5/browser-smoke/bzip2-wasm32/bzip2-wasm32-homebrew-vfs-report.json; browser_url=http://127.0.0.1:58172/__kandelo-homebrew-smoke/kd-1mr.5-20260701T064348095Z-55840/bzip2-wasm32-homebrew.vfs.zst [/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-1mr.5-certify-browser-rootfs-shell/test-runs/kd-1mr.5/browser-smoke/bzip2-wasm32]",
+        "browser_smoke_bzip2_bzip2_help: command=/home/linuxbrew/.linuxbrew/bin/bzip2 --help; url=http://127.0.0.1:58172/__kandelo-homebrew-smoke/kd-1mr.5-20260701T064348095Z-55840/bzip2-wasm32-homebrew.vfs.zst; output=/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-1mr.5-certify-browser-rootfs-shell/test-runs/kd-1mr.5/browser-smoke/bzip2-wasm32/bzip2_help-terminal.txt [/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-1mr.5-certify-browser-rootfs-shell/test-runs/kd-1mr.5/browser-smoke/bzip2-wasm32/bzip2_help-terminal.txt]"
+      ],
+      "failed": [],
+      "skipped": []
+    },
+    {
+      "formula": "xz",
+      "arch": "wasm32",
+      "status": "success",
+      "required_cases": [
+        "xz_version"
+      ],
+      "browser_url": "http://127.0.0.1:58172/__kandelo-homebrew-smoke/kd-1mr.5-20260701T064348095Z-55840/xz-wasm32-homebrew.vfs.zst",
+      "vfs_image": "/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-1mr.5-certify-browser-rootfs-shell/test-runs/kd-1mr.5/browser-smoke/xz-wasm32/xz-wasm32-homebrew.vfs.zst",
+      "vfs_report": "/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-1mr.5-certify-browser-rootfs-shell/test-runs/kd-1mr.5/browser-smoke/xz-wasm32/xz-wasm32-homebrew-vfs-report.json",
+      "commands": [
+        "/home/linuxbrew/.linuxbrew/bin/xz --version"
+      ],
+      "argv": [
+        [
+          "/home/linuxbrew/.linuxbrew/bin/xz",
+          "--version"
+        ]
+      ],
+      "passed": [
+        "browser_server_start: vite=http://127.0.0.1:58172; channel=chromium [/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-1mr.5-certify-browser-rootfs-shell/test-runs/kd-1mr.5/browser-smoke/vite.log]",
+        "homebrew_browser_vfs_build_xz: image=/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-1mr.5-certify-browser-rootfs-shell/test-runs/kd-1mr.5/browser-smoke/xz-wasm32/xz-wasm32-homebrew.vfs.zst; report=/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-1mr.5-certify-browser-rootfs-shell/test-runs/kd-1mr.5/browser-smoke/xz-wasm32/xz-wasm32-homebrew-vfs-report.json; browser_url=http://127.0.0.1:58172/__kandelo-homebrew-smoke/kd-1mr.5-20260701T064348095Z-55840/xz-wasm32-homebrew.vfs.zst [/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-1mr.5-certify-browser-rootfs-shell/test-runs/kd-1mr.5/browser-smoke/xz-wasm32]",
+        "browser_smoke_xz_xz_version: command=/home/linuxbrew/.linuxbrew/bin/xz --version; url=http://127.0.0.1:58172/__kandelo-homebrew-smoke/kd-1mr.5-20260701T064348095Z-55840/xz-wasm32-homebrew.vfs.zst; output=/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-1mr.5-certify-browser-rootfs-shell/test-runs/kd-1mr.5/browser-smoke/xz-wasm32/xz_version-terminal.txt [/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-1mr.5-certify-browser-rootfs-shell/test-runs/kd-1mr.5/browser-smoke/xz-wasm32/xz_version-terminal.txt]"
+      ],
+      "failed": [],
+      "skipped": []
+    }
+  ],
+  "artifacts": {
+    "passed": "/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-1mr.5-certify-browser-rootfs-shell/test-runs/kd-1mr.5/browser-smoke/outcome-lists/passed-tests.tsv",
+    "failed": "/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-1mr.5-certify-browser-rootfs-shell/test-runs/kd-1mr.5/browser-smoke/outcome-lists/failed-tests.tsv",
+    "skipped": "/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-1mr.5-certify-browser-rootfs-shell/test-runs/kd-1mr.5/browser-smoke/outcome-lists/skipped-tests.tsv",
+    "failures": "/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-1mr.5-certify-browser-rootfs-shell/test-runs/kd-1mr.5/browser-smoke/failures.json",
+    "current_run": "/Users/brandon/src/kandelo-gascity/worktrees/kandelo/kd-1mr.5-certify-browser-rootfs-shell/test-runs/kd-1mr.5/browser-smoke/current-run.json"
+  }
+}
