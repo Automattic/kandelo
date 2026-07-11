@@ -135,11 +135,11 @@ kernel hook.
 The process worker forwards each arm or cancellation request to its host's
 dedicated kernel worker. The kernel worker owns the JavaScript timer because a
 process worker executing a CPU-bound Wasm loop cannot service its own event
-loop. At the monotonic deadline the host atomically sets both bytes in the
-process's shared memory. Timer entries retain the exact process-generation
-object as well as the PID, so exec, exit, or PID reuse cannot redirect a stale
-callback into a replacement process. Deadlines beyond JavaScript's signed
-32-bit timer range are scheduled in bounded chunks.
+loop. At the monotonic deadline the host sets each flag byte with an atomic
+store in the process's shared memory. Timer entries retain the exact
+process-generation object as well as the PID, so exec, exit, or PID reuse
+cannot redirect a stale callback into a replacement process. Deadlines beyond
+JavaScript's signed 32-bit timer range are scheduled in bounded chunks.
 
 The imported function and its pointer-width-specific signature are part of
 the guest/host ABI. A package that starts importing it must raise its kernel
