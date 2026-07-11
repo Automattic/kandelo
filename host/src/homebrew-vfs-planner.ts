@@ -4,6 +4,19 @@ export type HomebrewBottleArch = "wasm32" | "wasm64";
 export type HomebrewRuntime = "node" | "browser";
 export type HomebrewBottleStatus = "success" | "failed" | "pending" | "building";
 export type HomebrewBottleSourceStatus = "success" | "fallback";
+export type HomebrewRuntimeStatusKind = "supported" | "unsupported" | "failed" | "not-validated";
+
+export interface HomebrewRuntimeArtifactPolicyFailure {
+  path: string;
+  failures: string[];
+}
+
+export interface HomebrewRuntimeStatus {
+  status: HomebrewRuntimeStatusKind;
+  reason_code?: string;
+  reason?: string;
+  artifact_policy_failures?: HomebrewRuntimeArtifactPolicyFailure[];
+}
 
 export interface HomebrewDependency {
   name: string;
@@ -17,6 +30,7 @@ export interface HomebrewMetadataBottle {
   cellar: string;
   prefix: string;
   runtime_support: HomebrewRuntime[];
+  runtime_status?: Partial<Record<HomebrewRuntime, HomebrewRuntimeStatus>>;
   browser_compatible: boolean;
   fork_instrumentation: string;
   status: HomebrewBottleStatus;
@@ -151,6 +165,30 @@ export class HomebrewVfsPlanError extends Error {
   }
 }
 
+export class HomebrewVfsUnsupportedError extends HomebrewVfsPlanError {
+  readonly packageName: string;
+  readonly arch: HomebrewBottleArch;
+  readonly runtime: HomebrewRuntime;
+  readonly runtimeStatus?: HomebrewRuntimeStatus;
+
+  constructor(args: {
+    packageName: string;
+    arch: HomebrewBottleArch;
+    runtime: HomebrewRuntime;
+    runtimeStatus?: HomebrewRuntimeStatus;
+  }) {
+    const reason = args.runtimeStatus?.reason_code
+      ? ` (${args.runtimeStatus.reason_code})`
+      : "";
+    super(`package ${quote(args.packageName)} bottle ${args.arch} does not support ${args.runtime}${reason}`);
+    this.name = "HomebrewVfsUnsupportedError";
+    this.packageName = args.packageName;
+    this.arch = args.arch;
+    this.runtime = args.runtime;
+    this.runtimeStatus = args.runtimeStatus;
+  }
+}
+
 interface SelectedBottle {
   metadataStatus: HomebrewBottleStatus;
   sourceStatus: HomebrewBottleSourceStatus;
@@ -164,7 +202,7 @@ interface SelectedBottle {
 
 const PACKAGE_RE = /^[a-z0-9][a-z0-9._-]*$/;
 const SHA256_RE = /^[0-9a-f]{64}$/;
-const SAFE_REL_SEGMENT_RE = /^[A-Za-z0-9._@%+=:-]+$/;
+const SAFE_REL_SEGMENT_RE = /^[A-Za-z0-9._@%+=:\[\]-]+$/;
 
 export async function planHomebrewVfs(
   metadataValue: unknown,
@@ -263,6 +301,7 @@ function parseMetadataBottle(value: unknown, label: string): HomebrewMetadataBot
   const runtimeSupport = requiredArray(bottle, "runtime_support", label).map((entry, index) =>
     parseRuntime(entry, `${label}.runtime_support[${index}]`)
   );
+  const runtimeStatus = parseRuntimeStatusByHost(bottle.runtime_status, `${label}.runtime_status`);
   const browserCompatible = requiredBoolean(bottle, "browser_compatible", label);
 
   return {
@@ -272,6 +311,7 @@ function parseMetadataBottle(value: unknown, label: string): HomebrewMetadataBot
     cellar: requiredString(bottle, "cellar", label),
     prefix: requiredString(bottle, "prefix", label),
     runtime_support: runtimeSupport,
+    runtime_status: runtimeStatus,
     browser_compatible: browserCompatible,
     fork_instrumentation: requiredString(bottle, "fork_instrumentation", label),
     status,
@@ -507,11 +547,49 @@ function validateBottleIdentity(
       `package ${quote(pkg.name)} bottle ${bottle.arch} has bottle_tag ${quote(bottle.bottle_tag)}, expected ${quote(expectedTag)}`,
     );
   }
+  validateRuntimeStatusConsistency(pkg, bottle);
   if (runtime !== undefined && !bottle.runtime_support.includes(runtime)) {
-    fail(`package ${quote(pkg.name)} bottle ${bottle.arch} does not support ${runtime}`);
+    throw new HomebrewVfsUnsupportedError({
+      packageName: pkg.name,
+      arch: bottle.arch,
+      runtime,
+      runtimeStatus: bottle.runtime_status?.[runtime],
+    });
   }
   if (runtime === "browser" && !bottle.browser_compatible) {
     fail(`package ${quote(pkg.name)} bottle ${bottle.arch} is not browser compatible`);
+  }
+}
+
+function validateRuntimeStatusConsistency(
+  pkg: HomebrewMetadataPackage,
+  bottle: HomebrewMetadataBottle,
+): void {
+  let hasArtifactPolicyFailures = false;
+  for (const runtime of ["node", "browser"] as const) {
+    const status = bottle.runtime_status?.[runtime];
+    const supportsRuntime = bottle.runtime_support.includes(runtime);
+    if (bottle.runtime_support.length === 0 && status === undefined) {
+      fail(`package ${quote(pkg.name)} bottle ${bottle.arch} empty runtime_support requires runtime_status.${runtime}`);
+    }
+    if (status === undefined) continue;
+
+    if (status.status === "supported" && !supportsRuntime) {
+      fail(`package ${quote(pkg.name)} bottle ${bottle.arch} runtime_status.${runtime}=supported requires runtime_support to include ${runtime}`);
+    }
+    if (status.status !== "supported" && supportsRuntime) {
+      fail(`package ${quote(pkg.name)} bottle ${bottle.arch} runtime_status.${runtime}=${status.status} is incompatible with runtime_support containing ${runtime}`);
+    }
+    if (status.status === "unsupported" && (!status.reason_code || !status.reason)) {
+      fail(`package ${quote(pkg.name)} bottle ${bottle.arch} runtime_status.${runtime}=unsupported requires reason_code and reason`);
+    }
+    if ((status.artifact_policy_failures?.length ?? 0) > 0) {
+      hasArtifactPolicyFailures = true;
+    }
+  }
+
+  if (hasArtifactPolicyFailures && bottle.runtime_support.length > 0) {
+    fail(`package ${quote(pkg.name)} bottle ${bottle.arch} artifact_policy_failures are incompatible with runtime_support`);
   }
 }
 
@@ -637,6 +715,67 @@ function parseArch(value: string, label: string): HomebrewBottleArch {
 function parseRuntime(value: unknown, label: string): HomebrewRuntime {
   if (value === "node" || value === "browser") return value;
   fail(`${label} must be node or browser`);
+}
+
+function parseRuntimeStatusByHost(
+  value: unknown,
+  label: string,
+): Partial<Record<HomebrewRuntime, HomebrewRuntimeStatus>> | undefined {
+  if (value === undefined) return undefined;
+  const record = requireRecord(value, label);
+  const out: Partial<Record<HomebrewRuntime, HomebrewRuntimeStatus>> = {};
+  for (const [host, statusValue] of Object.entries(record)) {
+    const runtime = parseRuntime(host, `${label} host`);
+    out[runtime] = parseRuntimeStatus(statusValue, `${label}.${host}`);
+  }
+  return out;
+}
+
+function parseRuntimeStatus(value: unknown, label: string): HomebrewRuntimeStatus {
+  const record = requireRecord(value, label);
+  const status = parseRuntimeStatusKind(requiredString(record, "status", label), `${label}.status`);
+  const reasonCode = optionalString(record, "reason_code", label);
+  const reason = optionalString(record, "reason", label);
+  const artifactPolicyFailures = parseArtifactPolicyFailures(
+    record.artifact_policy_failures,
+    `${label}.artifact_policy_failures`,
+  );
+  return {
+    status,
+    ...(reasonCode === undefined ? {} : { reason_code: reasonCode }),
+    ...(reason === undefined ? {} : { reason }),
+    ...(artifactPolicyFailures === undefined ? {} : { artifact_policy_failures: artifactPolicyFailures }),
+  };
+}
+
+function parseRuntimeStatusKind(value: string, label: string): HomebrewRuntimeStatusKind {
+  if (
+    value === "supported" ||
+    value === "unsupported" ||
+    value === "failed" ||
+    value === "not-validated"
+  ) {
+    return value;
+  }
+  fail(`${label} must be supported, unsupported, failed, or not-validated`);
+}
+
+function parseArtifactPolicyFailures(
+  value: unknown,
+  label: string,
+): HomebrewRuntimeArtifactPolicyFailure[] | undefined {
+  if (value === undefined) return undefined;
+  if (!Array.isArray(value)) fail(`${label} must be an array`);
+  return value.map((entry, index) => {
+    const record = requireRecord(entry, `${label}[${index}]`);
+    const path = requiredString(record, "path", `${label}[${index}]`);
+    validateRelativePath(path, `${label}[${index}].path`);
+    const failures = requiredArray(record, "failures", `${label}[${index}]`).map((failure, failureIndex) =>
+      requireStringValue(failure, `${label}[${index}].failures[${failureIndex}]`)
+    );
+    if (failures.length === 0) fail(`${label}[${index}].failures must not be empty`);
+    return { path, failures };
+  });
 }
 
 function parseStatus(value: string, label: string): HomebrewBottleStatus {

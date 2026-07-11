@@ -1,0 +1,45 @@
+{
+  "bottle_rebuild": 0,
+  "bottles": [
+    {
+      "arch": "wasm32",
+      "bottle_tag": "wasm32_kandelo",
+      "browser_compatible": true,
+      "built_at": "2026-06-30T03:05:02Z",
+      "built_by": "https://github.com/local/kandelo/actions/runs/local",
+      "built_from": {
+        "formula_sha256": "f0785634aa730b9e9d31700fa9341fb6cc6637589bb7a47cf7b5e3d2c6181639",
+        "kandelo_commit": "1ab41fe2ad5553f4fa4bb0223f2d804b13149578",
+        "kandelo_repository": "Automattic/kandelo",
+        "tap_commit": "1ab41fe2ad5553f4fa4bb0223f2d804b13149578",
+        "tap_repository": "Automattic/kandelo-homebrew"
+      },
+      "bytes": 62564,
+      "cache_key_sha": "49c19e83209e7954c9f8399262cd76d7e23868e4a022e4502f8668d4e0c9cd5f",
+      "cellar": "/home/linuxbrew/.linuxbrew/Cellar",
+      "fork_instrumentation": "not-required",
+      "kandelo_abi": 16,
+      "link_manifest": "Kandelo/link/bzip2-1.0.8-rebuild0-wasm32.json",
+      "prefix": "/home/linuxbrew/.linuxbrew",
+      "runtime_support": [
+        "browser",
+        "node"
+      ],
+      "sha256": "98468e8b210c247f40eb35e2c394bcdccbf18e1f9305fcc7946292327fe5167a",
+      "status": "success",
+      "url": "https://ghcr.io/v2/automattic/kandelo-homebrew/bzip2/blobs/sha256:98468e8b210c247f40eb35e2c394bcdccbf18e1f9305fcc7946292327fe5167a"
+    }
+  ],
+  "dependencies": [],
+  "formula_path": "Formula/bzip2.rb",
+  "formula_revision": 0,
+  "full_name": "automattic/kandelo-homebrew/bzip2",
+  "kandelo_abi": 16,
+  "name": "bzip2",
+  "schema": 1,
+  "source_metadata": "Kandelo/metadata.json",
+  "tap_commit": "1ab41fe2ad5553f4fa4bb0223f2d804b13149578",
+  "tap_name": "automattic/kandelo-homebrew",
+  "tap_repository": "Automattic/kandelo-homebrew",
+  "version": "1.0.8"
+}

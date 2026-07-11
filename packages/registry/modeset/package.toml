@@ -18,4 +18,5 @@ script_path = "packages/registry/modeset/build-modeset.sh"
 
 [[outputs]]
 name = "modeset"
+fork_instrumentation = "not-required"
 wasm = "modeset.wasm"

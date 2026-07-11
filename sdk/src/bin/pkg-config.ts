@@ -54,7 +54,8 @@ async function main(): Promise<void> {
   const arch = detectArch();
   const sysroot = findSysroot(arch);
   const env = buildPkgConfigEnv(process.env, sysroot);
-  const exitCode = await runPassthrough('pkg-config', process.argv.slice(2), env);
+  const pkgConfig = process.env.PKG_CONFIG || 'pkg-config';
+  const exitCode = await runPassthrough(pkgConfig, process.argv.slice(2), env);
   process.exit(exitCode);
 }
 

@@ -1,0 +1,22 @@
+{
+  "mode": "fb",
+  "binds": 1,
+  "unbinds": 0,
+  "writes": 1424,
+  "writeBytes": 91136000,
+  "kmsBlits": 0,
+  "kmsCommits": 0,
+  "boundPid": 100,
+  "width": 640,
+  "height": 400,
+  "fmt": "BGRA32",
+  "canvasNonBlankPixels": 249072,
+  "exitedEarly": false,
+  "exitCode": null,
+  "durationMs": 2472,
+  "stdoutTail": "",
+  "stderrTail": "",
+  "consoleErrors": [
+    "Failed to load resource: the server responded with a status of 404 (Not Found)"
+  ]
+}

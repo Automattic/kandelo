@@ -462,6 +462,8 @@ const defaultDemoInputs = {
 
 const demoInputs = {
   ...defaultDemoInputs,
+  "homebrew-smoke": path.resolve(__dirname, "pages/homebrew-smoke/index.html"),
+  "homebrew-fb-smoke": path.resolve(__dirname, "pages/homebrew-fb-smoke/index.html"),
   "sqlite-test": path.resolve(__dirname, "pages/sqlite-test/index.html"),
   benchmark: path.resolve(__dirname, "pages/benchmark/index.html"),
   // The perl, python, ruby, erlang, texlive, and redis package entries
