@@ -107,9 +107,12 @@ export interface TcpConnectionPeer {
   send(data: Uint8Array, flags: number): number;
   recv(maxLen: number, flags: number): Uint8Array;
   poll?(events: number): number;
+  /** Disable one or both directions without resetting the connection. */
   shutdown(how: number): void;
+  /** Orderly close: flush/FIN the write half and orphan the receive half. */
   close(): void;
-  abort?(): void;
+  /** Abort immediately and make both peers observe a connection reset. */
+  abort(): void;
 }
 
 export interface TcpListenTarget {
