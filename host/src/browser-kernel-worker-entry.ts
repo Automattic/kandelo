@@ -935,10 +935,12 @@ async function handleSpawn(msg: Extract<MainToKernelMessage, { type: "spawn" }>)
       argv: msg.argv,
     });
     const channelOffset = layout.channelOffset;
+    const launchEnv = msg.env ?? defaultEnv;
 
     kernelWorker.registerProcess(pid, memory, [channelOffset], {
       ptrWidth,
       argv: msg.argv,
+      env: launchEnv,
       brkBase: layout.brkBase,
       mmapBase: layout.mmapBase,
       maxAddr: layout.maxAddr,
@@ -974,7 +976,7 @@ async function handleSpawn(msg: Extract<MainToKernelMessage, { type: "spawn" }>)
       programBytes,
       memory,
       channelOffset,
-      env: msg.env ?? defaultEnv,
+      env: launchEnv,
       argv: msg.argv,
       cwd: msg.cwd,
       ptrWidth,
