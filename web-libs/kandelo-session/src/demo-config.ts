@@ -47,6 +47,34 @@ export interface DemoCompanionConfig {
   srcDoc: string;
 }
 
+/**
+ * What to do once an ingested file has landed at `targetPath`.
+ *
+ * `restart` is an author-provided shell command from the VFS image, never
+ * user input. The uploaded file's name never reaches it: the payload is
+ * always written to the fixed `targetPath`.
+ */
+export interface DemoIngestOnLoadConfig {
+  restart: string;
+}
+
+/**
+ * Declarative "bring your own file" capability for a demo — e.g. a NES ROM or
+ * a DOOM WAD. Content-neutral: the schema knows about extensions, a size cap,
+ * and one fixed destination, not about what the bytes mean.
+ */
+export interface DemoIngestConfig {
+  /** Lowercase extension allow-list, each including the dot (".nes"). */
+  accept: string[];
+  /** Fixed absolute destination. Never derived from the uploaded filename. */
+  targetPath: string;
+  /** Hard cap, enforced before any byte is written. */
+  maxBytes: number;
+  /** Human-facing control label, e.g. "Load ROM". */
+  label?: string;
+  onLoad?: DemoIngestOnLoadConfig;
+}
+
 export interface DemoGuideConfig {
   title: string;
   summary?: string;
@@ -59,6 +87,7 @@ export interface KandeloDemoProfileConfig {
   presentation?: DemoPresentationConfig;
   assets?: DemoAssetConfig[];
   guide?: DemoGuideConfig;
+  ingest?: DemoIngestConfig;
 }
 
 export interface KandeloDemoConfig {
@@ -66,6 +95,7 @@ export interface KandeloDemoConfig {
   presentation?: DemoPresentationConfig;
   assets?: DemoAssetConfig[];
   guide?: DemoGuideConfig;
+  ingest?: DemoIngestConfig;
   profiles?: Record<string, KandeloDemoProfileConfig>;
 }
 
@@ -165,6 +195,74 @@ export function resolveDemoGuide(
   return config.guide === undefined
     ? null
     : normalizeGuide(config.guide, "guide");
+}
+
+export function resolveDemoIngest(
+  config: KandeloDemoConfig,
+  profileId: string,
+): DemoIngestConfig | null {
+  const profile = profileConfig(config, profileId);
+  if (isRecord(profile) && profile.ingest !== undefined) {
+    return normalizeIngest(profile.ingest, `profiles.${profileId}.ingest`);
+  }
+  return config.ingest === undefined
+    ? null
+    : normalizeIngest(config.ingest, "ingest");
+}
+
+/** Upper bound on any image-declared cap, so a bad image can't ask the browser
+ *  to buffer an unbounded upload into the VFS. */
+const INGEST_MAX_BYTES_CEILING = 64 * 1024 * 1024;
+
+function normalizeIngest(value: unknown, field: string): DemoIngestConfig {
+  if (!isRecord(value)) {
+    throw new Error(`${field} must be an object`);
+  }
+
+  if (!Array.isArray(value.accept) || value.accept.length === 0) {
+    throw new Error(`${field}.accept must be a non-empty array`);
+  }
+  const accept = value.accept.map((ext, index) => {
+    const raw = requiredString(ext, `${field}.accept[${index}]`);
+    if (!raw.startsWith(".") || raw.length < 2 || raw.includes("/")) {
+      throw new Error(`${field}.accept[${index}] must be an extension like ".nes"`);
+    }
+    return raw.toLowerCase();
+  });
+
+  const targetPath = requiredString(value.targetPath, `${field}.targetPath`);
+  if (!targetPath.startsWith("/")) {
+    throw new Error(`${field}.targetPath must be absolute`);
+  }
+  // The write goes to this exact path, so a traversal here would escape the
+  // author's intended destination even though no user input reaches it.
+  if (targetPath.split("/").includes("..") || targetPath.endsWith("/")) {
+    throw new Error(`${field}.targetPath must be a normalized file path`);
+  }
+
+  const maxBytes = value.maxBytes;
+  if (typeof maxBytes !== "number" || !Number.isInteger(maxBytes) || maxBytes <= 0) {
+    throw new Error(`${field}.maxBytes must be a positive integer`);
+  }
+  if (maxBytes > INGEST_MAX_BYTES_CEILING) {
+    throw new Error(
+      `${field}.maxBytes exceeds the ${INGEST_MAX_BYTES_CEILING}-byte ceiling`,
+    );
+  }
+
+  const ingest: DemoIngestConfig = { accept, targetPath, maxBytes };
+  if (typeof value.label === "string" && value.label.length > 0) {
+    ingest.label = value.label;
+  }
+  if (value.onLoad !== undefined) {
+    if (!isRecord(value.onLoad)) {
+      throw new Error(`${field}.onLoad must be an object`);
+    }
+    ingest.onLoad = {
+      restart: requiredString(value.onLoad.restart, `${field}.onLoad.restart`),
+    };
+  }
+  return ingest;
 }
 
 function profileConfig(

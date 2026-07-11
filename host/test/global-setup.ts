@@ -37,6 +37,7 @@ const TEST_PROGRAMS = [
   "spawn-smoke.c",
   "spawn-coverage.c",
   "spawn-pause.c",
+  "signal-wait.c",
   "mount_probe_test.c",
   "getpwent_smoke.c",
   "thread-exit-group.c",

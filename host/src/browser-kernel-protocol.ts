@@ -89,6 +89,21 @@ export interface ReadVfsFileMessage {
   path: string;
 }
 
+/**
+ * Write `bytes` to `path` in the kernel-owned VFS, creating parent directories.
+ * Responds `true` on success or an error string. Used by the browser
+ * file-ingest flow to stage an uploaded file into the running guest's
+ * filesystem now that the main thread no longer shares the VFS
+ * SharedArrayBuffer.
+ */
+export interface WriteVfsFileMessage {
+  type: "write_vfs_file";
+  requestId: number;
+  path: string;
+  bytes: Uint8Array;
+  mode: number;
+}
+
 export interface AppendStdinDataMessage {
   type: "append_stdin_data";
   pid: number;
@@ -171,6 +186,14 @@ export interface IsStdinConsumedMessage {
   type: "is_stdin_consumed";
   requestId: number;
   pid: number;
+}
+
+/** Deliver `signum` to `pid`. Responds `true` when the process existed. */
+export interface SignalProcessMessage {
+  type: "signal_process";
+  requestId: number;
+  pid: number;
+  signum: number;
 }
 
 export interface PickListenerTargetMessage {
@@ -321,6 +344,7 @@ export type MainToKernelMessage =
   | SpawnMessage
   | TerminateProcessMessage
   | ReadVfsFileMessage
+  | WriteVfsFileMessage
   | AppendStdinDataMessage
   | SetStdinDataMessage
   | PtyWriteMessage
@@ -334,6 +358,7 @@ export type MainToKernelMessage =
   | WakeBlockedReadersMessage
   | WakeBlockedWritersMessage
   | IsStdinConsumedMessage
+  | SignalProcessMessage
   | PickListenerTargetMessage
   | DestroyMessage
   | RegisterPtyOutputMessage

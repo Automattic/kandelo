@@ -1351,6 +1351,14 @@ port.on("message", (msg: MainToKernelMessage) => {
     case "destroy":
       void handleDestroy(msg);
       break;
+    case "signal_process": {
+      try {
+        respond(msg.requestId, kernelWorker.signalProcess(msg.pid, msg.signum));
+      } catch (err) {
+        respondError(msg.requestId, (err as Error)?.message ?? String(err));
+      }
+      break;
+    }
     case "get_fork_count": {
       // Round-trip access to the kernel's per-process fork counter for
       // tests asserting SYS_SPAWN didn't fall back to fork. Result is a
