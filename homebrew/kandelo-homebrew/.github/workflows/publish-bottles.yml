@@ -1,4 +1,4 @@
-name: Publish hello bottle
+name: Publish Kandelo bottles
 
 on:
   workflow_dispatch:
