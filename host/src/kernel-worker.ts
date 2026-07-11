@@ -119,6 +119,8 @@ const EAGAIN = 11;
 const EEXIST = 17;
 const EFAULT = 14;
 const EIO = 5;
+const EINVAL = 22;
+const ENOMEM = 12;
 const ENAMETOOLONG = 36;
 const ETIMEDOUT = 110;
 const EINTR_ERRNO = 4;
@@ -235,6 +237,7 @@ const MSG_DONTWAIT = 0x0040;
 
 /** mmap flags */
 const MAP_SHARED = 0x01;
+const PROT_READ = 0x01;
 const PROT_WRITE = 0x02;
 const MAP_FIXED = 0x10;
 const MAP_ANONYMOUS = 0x20;
@@ -265,6 +268,7 @@ const SYS_CLOSE = ABI_SYSCALLS.Close;
 
 /** IPC constants (must match musl) */
 const IPC_64 = 0x100;
+const SHM_RDONLY = 0o10000;
 
 const F_GETLK = 5;
 const F_SETLK = 6;
@@ -508,6 +512,36 @@ interface ProcessRegistration {
    * max_addr as channels are added; dynamic pthread control slots must not.
    */
   explicitMaxAddr: boolean;
+}
+
+/**
+ * Host metadata for a MAP_SHARED interval. File mappings retain the existing
+ * fd-backed writeback path. Anonymous mappings additionally point at a
+ * host-owned backing and keep a snapshot of the bytes this process last saw.
+ */
+interface SharedMmapMapping {
+  fd: number;
+  fileOffset: number;
+  len: number;
+  writable: boolean;
+  backingKey?: string;
+  snapshot?: Uint8Array;
+  seenVersion?: number;
+}
+
+interface AnonymousSharedMmapBacking {
+  key: string;
+  bytes: Uint8Array;
+  refCount: number;
+  version: number;
+}
+
+interface SysvShmMapping {
+  segId: number;
+  size: number;
+  readOnly: boolean;
+  snapshot: Uint8Array;
+  seenVersion: number;
 }
 
 interface RegisterProcessOptions {
@@ -909,21 +943,21 @@ export class CentralizedKernelWorker {
     recvPipeIdx: number;
     schedulePump: () => void;
   }>>();
-  /** Per-process MAP_SHARED file-backed mappings: pid → Map<addr, info> */
-  private sharedMappings = new Map<number, Map<number, {
-    fd: number;
-    fileOffset: number;
-    len: number;
-    writable: boolean;
-  }>>();
+  /** Per-process MAP_SHARED mappings: pid → Map<addr, info>. */
+  private sharedMappings = new Map<number, Map<number, SharedMmapMapping>>();
+  /** Host-owned byte stores for anonymous MAP_SHARED mappings. */
+  private anonymousSharedBackings = new Map<string, AnonymousSharedMmapBacking>();
+  private nextAnonymousSharedBackingId = 1;
   /** Host-side mirror of epoll interest lists: "pid:epfd" → interests.
    *  Maintained by intercepting epoll_ctl results. Used by handleEpollPwait
    *  to convert epoll_pwait to poll without calling kernel_handle_channel
    *  (which crashes in Chrome for epoll_pwait due to a suspected V8 bug). */
   private epollInterests = new Map<string, Array<{ fd: number; events: number; data: bigint }>>();
   private lockTable: SharedLockTable | null = null;
-  /** Per-process shared memory mappings: pid → Map<addr, {segId, size}> */
-  private shmMappings = new Map<number, Map<number, { segId: number; size: number }>>();
+  /** Per-process SysV shared-memory attachments. */
+  private shmMappings = new Map<number, Map<number, SysvShmMapping>>();
+  /** Authoritative segment version, incremented after each merged publication. */
+  private shmSegmentVersions = new Map<number, number>();
 
   /** PTY index → pid mapping (for draining output after syscalls) */
   private ptyIndexByPid = new Map<number, number>();
@@ -1730,6 +1764,10 @@ export class CentralizedKernelWorker {
     const registration = this.processes.get(pid);
     if (!registration) return;
 
+    // Shared backing publication and SysV detach require the process memory and
+    // kernel Process to remain available, so do this before either is removed.
+    this.releaseAllSharedMemoryForProcess(pid);
+
     // Remove channels from active list
     this.activeChannels = this.activeChannels.filter((ch) => ch.pid !== pid);
 
@@ -1818,6 +1856,7 @@ export class CentralizedKernelWorker {
   }
 
   deactivateProcess(pid: number): void {
+    this.releaseAllSharedMemoryForProcess(pid);
     this.activeChannels = this.activeChannels.filter((ch) => ch.pid !== pid);
     this.processes.delete(pid);
     this.execHandoffPids?.delete(pid);
@@ -2162,61 +2201,25 @@ export class CentralizedKernelWorker {
       return hasShared || hasSysv ? -EIO : 0;
     }
 
-    const shared = this.sharedMappings.get(pid);
-    if (shared) {
-      for (const [addr, mapping] of shared) {
-        if (!mapping.writable) continue;
-        if (!this.pwriteFromProcessMemory(
-          channel,
-          mapping.fd,
-          addr,
-          mapping.len,
-          mapping.fileOffset,
-        )) return -EIO;
-      }
-    }
-
-    const sysv = this.shmMappings.get(pid);
-    if (sysv) {
-      const setCurrentPid = this.kernelInstance!.exports.kernel_set_current_pid as
-        ((pid: number) => void) | undefined;
-      const writeChunk = this.kernelInstance!.exports.kernel_ipc_shm_write_chunk as
-        (shmid: number, offset: number, dataPtr: KernelPointer, dataLen: number) => number;
-      const processMem = new Uint8Array(channel.memory.buffer);
-      const kernelMem = this.getKernelMem();
-      const chunkPtr = this.scratchOffset + CH_DATA;
-      const previousPid = this.currentHandlePid;
-
-      try {
-        this.currentHandlePid = pid;
-        if (setCurrentPid) setCurrentPid(pid);
-        for (const [addr, mapping] of sysv) {
-          if (addr + mapping.size > processMem.byteLength) return -EIO;
-          let transferred = 0;
-          while (transferred < mapping.size) {
-            const toWrite = Math.min(CH_DATA_SIZE, mapping.size - transferred);
-            kernelMem.set(
-              processMem.subarray(addr + transferred, addr + transferred + toWrite),
-              chunkPtr,
-            );
-            const written = writeChunk(
-              mapping.segId,
-              transferred,
-              this.toKernelPtr(chunkPtr),
-              toWrite,
-            );
-            if (written !== toWrite) return -EIO;
-            transferred += written;
-          }
+    try {
+      this.syncAnonymousSharedMappingsFromProcess(channel, { force: true });
+      const shared = this.sharedMappings.get(pid);
+      if (shared) {
+        for (const [addr, mapping] of shared) {
+          if (mapping.backingKey || !mapping.writable) continue;
+          if (!this.pwriteFromProcessMemory(
+            channel,
+            mapping.fd,
+            addr,
+            mapping.len,
+            mapping.fileOffset,
+          )) return -EIO;
         }
-      } catch {
-        return -EIO;
-      } finally {
-        if (setCurrentPid) setCurrentPid(previousPid);
-        this.currentHandlePid = previousPid;
       }
+      return this.syncSysvShmMappingsFromProcess(channel, { force: true }) ? 0 : -EIO;
+    } catch {
+      return -EIO;
     }
-    return 0;
   }
 
   /**
@@ -2225,27 +2228,27 @@ export class CentralizedKernelWorker {
    * the caller; returning to the discarded image is no longer possible.
    */
   finalizeAddressSpaceForExec(pid: number): number {
-    this.sharedMappings.delete(pid);
+    const shared = this.sharedMappings.get(pid);
+    if (shared) {
+      for (const mapping of shared.values()) this.releaseAnonymousSharedMapping(mapping);
+      this.sharedMappings.delete(pid);
+    }
 
     const sysv = this.shmMappings.get(pid);
     if (!sysv) return 0;
-    const setCurrentPid = this.kernelInstance!.exports.kernel_set_current_pid as
-      ((pid: number) => void) | undefined;
     const detach = this.kernelInstance!.exports.kernel_ipc_shmdt as
-      (shmid: number) => number;
-    const previousPid = this.currentHandlePid;
+      ((shmid: number) => number) | undefined;
     let result = 0;
     try {
-      this.currentHandlePid = pid;
-      if (setCurrentPid) setCurrentPid(pid);
-      for (const mapping of sysv.values()) {
-        if (detach(mapping.segId) < 0) result = -EIO;
-      }
+      if (!detach) return -EIO;
+      this.withKernelCurrentPid(pid, () => {
+        for (const mapping of sysv.values()) {
+          if (detach(mapping.segId) < 0) result = -EIO;
+        }
+      });
     } catch {
       result = -EIO;
     } finally {
-      if (setCurrentPid) setCurrentPid(previousPid);
-      this.currentHandlePid = previousPid;
       this.shmMappings.delete(pid);
     }
     return result;
@@ -2775,6 +2778,11 @@ export class CentralizedKernelWorker {
       logEntry = this.formatSyscallEntry(channel, syscallNr, origArgs);
     }
 
+    // Separate Wasm memories cannot observe MAP_SHARED/SysV writes directly.
+    // Treat every guest→kernel transition as a coherence boundary: merge only
+    // bytes changed since this process's snapshot, then import peer updates.
+    this.synchronizeSharedMemoryForBoundary(channel);
+
     // --- Intercept fork/exec/clone/exit before calling kernel ---
     // These syscalls need special async handling that can't go through
     // the blocking host_fork/host_exec imports.
@@ -3221,11 +3229,13 @@ export class CentralizedKernelWorker {
       console.error(`[BRK ALERT] pid=${channel.pid} brk returned 0x${(retVal >>> 0).toString(16)} — IN THREAD REGION!`);
     }
 
-    // --- File-backed mmap: populate mapped region with file data ---
+    // --- mmap backing: populate files and register shared-memory intervals ---
     if (syscallNr === SYS_MMAP && retVal > 0 && (retVal >>> 0) !== 0xffffffff) {
       const mmapFd = origArgs[4];
       const mmapFlags = origArgs[3] >>> 0;
-      if (mmapFd >= 0 && (mmapFlags & MAP_ANONYMOUS) === 0) {
+      if ((mmapFlags & MAP_SHARED) !== 0 && (mmapFlags & MAP_ANONYMOUS) !== 0) {
+        this.trackAnonymousSharedMapping(channel, retVal >>> 0, origArgs);
+      } else if (mmapFd >= 0 && (mmapFlags & MAP_ANONYMOUS) === 0) {
         this.populateMmapFromFile(channel, retVal >>> 0, origArgs);
         // Track MAP_SHARED file-backed mappings for msync writeback
         if ((mmapFlags & MAP_SHARED)
@@ -3480,6 +3490,10 @@ export class CentralizedKernelWorker {
       }
     }
 
+    // Host-copied syscall output can itself target shared memory. Publish it
+    // before waking the process and import peer writes from the syscall window.
+    this.synchronizeSharedMemoryForBoundary(channel);
+
     // Clear handling flag (channel is done — poller can pick it up for next syscall)
     channel.handling = false;
 
@@ -3733,6 +3747,8 @@ export class CentralizedKernelWorker {
    * Used for thread exit where we need to unblock the worker.
    */
   private completeChannelRaw(channel: ChannelInfo, retVal: number, errVal: number): void {
+    this.synchronizeSharedMemoryForBoundary(channel);
+
     // Clear handling flag (channel is done — poller can pick it up for next syscall)
     channel.handling = false;
 
@@ -6795,6 +6811,11 @@ export class CentralizedKernelWorker {
       }
     }
 
+    // The parent can be the only observer until fork. Publish its private Wasm
+    // view before the child copies memory and joins each shared backing.
+    this.syncAnonymousSharedMappingsFromProcess(channel, { force: true });
+    this.syncSysvShmMappingsFromProcess(channel, { force: true });
+
     // The kernel child is real before its host Worker launches. Install its
     // host-only fd mirrors synchronously so a sibling exec cannot remove the
     // parent's last listener and close the shared backend during onFork's
@@ -7472,6 +7493,10 @@ export class CentralizedKernelWorker {
       return;
     }
 
+    // Publish and detach while the process still owns its descriptors and
+    // before waking a parent waiter. Duplicate exit syscalls are harmless.
+    this.releaseAllSharedMemoryForProcess(channel.pid);
+
     // Run the kernel's exit path so it closes all FDs (including pipe
     // write ends). kernel_exit calls sys_exit then traps — catch the trap.
     {
@@ -7537,11 +7562,9 @@ export class CentralizedKernelWorker {
     // so a recycled pid (currently impossible with monotonic nextChildPid,
     // but defensive) starts fresh.
     if (this.hostReaped.has(exitingPid)) return;
+    this.releaseAllSharedMemoryForProcess(exitingPid);
     this.hostReaped.add(exitingPid);
     this.notifyParentOfExitedProcess(exitingPid);
-
-    // Clean up per-process state
-    this.sharedMappings.delete(exitingPid);
 
     // Do NOT complete the channel — the worker is blocked on Atomics.wait
     // and waking it would cause the C code to continue executing.
@@ -7580,9 +7603,9 @@ export class CentralizedKernelWorker {
     const markSignaled = this.kernelInstance!.exports.kernel_mark_process_signaled as
       ((pid: number, signum: number) => number) | undefined;
     if (markSignaled && markSignaled(pid, signum) < 0) return;
+    this.releaseAllSharedMemoryForProcess(pid);
     this.hostReaped.add(pid);
     this.notifyParentOfExitedProcess(pid);
-    this.sharedMappings.delete(pid);
   }
 
   /**
@@ -7637,9 +7660,9 @@ export class CentralizedKernelWorker {
     if (signal <= 0) return signal;
     if (this.hostReaped.has(pid)) return signal;
 
+    this.releaseAllSharedMemoryForProcess(pid);
     this.hostReaped.add(pid);
     this.notifyParentOfExitedProcess(pid);
-    this.sharedMappings.delete(pid);
     if (this.callbacks.onExit) {
       this.callbacks.onExit(pid, 128 + signal);
     }
@@ -8345,6 +8368,227 @@ export class CentralizedKernelWorker {
     }
   }
 
+  private trackAnonymousSharedMapping(
+    channel: ChannelInfo,
+    mapAddr: number,
+    origArgs: number[],
+  ): void {
+    const len = origArgs[1] >>> 0;
+    if (len === 0) return;
+    const processMem = new Uint8Array(channel.memory.buffer);
+    if (mapAddr + len > processMem.length) return;
+
+    const key = `anon:${channel.pid}:${mapAddr}:${this.nextAnonymousSharedBackingId++}`;
+    const initial = processMem.slice(mapAddr, mapAddr + len);
+    this.anonymousSharedBackings.set(key, {
+      key,
+      bytes: initial.slice(),
+      refCount: 1,
+      version: 0,
+    });
+
+    let pidMap = this.sharedMappings.get(channel.pid);
+    if (!pidMap) {
+      pidMap = new Map();
+      this.sharedMappings.set(channel.pid, pidMap);
+    }
+    pidMap.set(mapAddr, {
+      fd: -1,
+      fileOffset: 0,
+      len,
+      writable: (origArgs[2] & PROT_WRITE) !== 0,
+      backingKey: key,
+      snapshot: initial,
+      seenVersion: 0,
+    });
+  }
+
+  private synchronizeSharedMemoryForBoundary(
+    process: Pick<ChannelInfo, "pid" | "memory">,
+  ): void {
+    const registration = this.processes?.get(process.pid);
+    if (registration && registration.memory !== process.memory) return;
+    if (this.processes && !registration) return;
+    this.syncAnonymousSharedMappingsFromProcess(process);
+    this.syncSysvShmMappingsFromProcess(process);
+  }
+
+  /**
+   * Merge this process's anonymous MAP_SHARED writes into host-owned backings,
+   * then import the complete authoritative result. `seenVersion` is advanced
+   * only after both steps, so a stale process that publishes a disjoint write
+   * cannot accidentally mark unseen peer bytes as observed.
+   */
+  private syncAnonymousSharedMappingsFromProcess(
+    process: Pick<ChannelInfo, "pid" | "memory">,
+    options: { force?: boolean } = {},
+  ): void {
+    const pidMap = this.sharedMappings?.get(process.pid);
+    if (!pidMap) return;
+    const processMem = new Uint8Array(process.memory.buffer);
+
+    for (const [mapAddr, mapping] of pidMap) {
+      if (!mapping.backingKey || !mapping.snapshot) continue;
+      const backing = this.anonymousSharedBackings?.get(mapping.backingKey);
+      if (!backing || mapAddr + mapping.len > processMem.length) continue;
+      if (!options.force && backing.refCount <= 1) continue;
+
+      const wasStale = (mapping.seenVersion ?? 0) !== backing.version;
+      let changed = false;
+      if (mapping.writable) {
+        for (let offset = 0; offset < mapping.len; offset += 4096) {
+          const len = Math.min(4096, mapping.len - offset);
+          if (!this.rangeDiffersFromSnapshot(
+            processMem,
+            mapAddr + offset,
+            mapping.snapshot,
+            offset,
+            len,
+          )) continue;
+          if (this.mergeChangedByteRuns(
+            processMem,
+            mapAddr + offset,
+            mapping.snapshot,
+            offset,
+            backing.bytes,
+            mapping.fileOffset + offset,
+            len,
+          )) changed = true;
+        }
+      }
+      if (changed) backing.version++;
+
+      // A publisher may itself have been stale. Always reconcile after a
+      // publication, rather than assigning the new version to a partial view.
+      if (changed || wasStale) {
+        const latest = backing.bytes.slice(
+          mapping.fileOffset,
+          mapping.fileOffset + mapping.len,
+        );
+        processMem.set(latest, mapAddr);
+        mapping.snapshot = latest;
+      }
+      mapping.seenVersion = backing.version;
+    }
+  }
+
+  private mergeChangedByteRuns(
+    source: Uint8Array,
+    sourceOffset: number,
+    snapshot: Uint8Array,
+    snapshotOffset: number,
+    destination: Uint8Array,
+    destinationOffset: number,
+    len: number,
+  ): boolean {
+    let changed = false;
+    let i = 0;
+    while (i < len) {
+      while (i < len && source[sourceOffset + i] === snapshot[snapshotOffset + i]) i++;
+      if (i >= len) break;
+      const start = i;
+      do { i++; } while (
+        i < len && source[sourceOffset + i] !== snapshot[snapshotOffset + i]
+      );
+      destination.set(source.subarray(sourceOffset + start, sourceOffset + i), destinationOffset + start);
+      changed = true;
+    }
+    return changed;
+  }
+
+  private rangeDiffersFromSnapshot(
+    source: Uint8Array,
+    sourceOffset: number,
+    snapshot: Uint8Array,
+    snapshotOffset: number,
+    len: number,
+  ): boolean {
+    const sourceByteOffset = source.byteOffset + sourceOffset;
+    const snapshotByteOffset = snapshot.byteOffset + snapshotOffset;
+    if (((sourceByteOffset | snapshotByteOffset | len) & 3) === 0) {
+      const sourceWords = new Uint32Array(source.buffer, sourceByteOffset, len / 4);
+      const snapshotWords = new Uint32Array(snapshot.buffer, snapshotByteOffset, len / 4);
+      for (let i = 0; i < sourceWords.length; i++) {
+        if (sourceWords[i] !== snapshotWords[i]) return true;
+      }
+      return false;
+    }
+    for (let i = 0; i < len; i++) {
+      if (source[sourceOffset + i] !== snapshot[snapshotOffset + i]) return true;
+    }
+    return false;
+  }
+
+  private releaseAnonymousSharedMapping(mapping: SharedMmapMapping): void {
+    if (!mapping.backingKey) return;
+    const backing = this.anonymousSharedBackings?.get(mapping.backingKey);
+    if (!backing) return;
+    backing.refCount = Math.max(0, backing.refCount - 1);
+    if (backing.refCount === 0) this.anonymousSharedBackings.delete(backing.key);
+  }
+
+  /**
+   * Inherit host-side shared-memory metadata after the child process memory has
+   * been registered, but before its Worker starts executing.
+   */
+  inheritProcessSharedMappings(parentPid: number, childPid: number): void {
+    const child = this.processes.get(childPid);
+    if (!child) throw new Error(`Process ${childPid} is not registered`);
+
+    try {
+      const parentMap = this.sharedMappings.get(parentPid);
+      if (parentMap) {
+        const childMem = new Uint8Array(child.memory.buffer);
+        const childMap = new Map<number, SharedMmapMapping>();
+        for (const [mapAddr, mapping] of parentMap) {
+          // File/POSIX backing identity is intentionally deferred; inherit only
+          // anonymous mappings whose backing is already host-owned.
+          if (!mapping.backingKey) continue;
+          const backing = this.anonymousSharedBackings.get(mapping.backingKey);
+          if (!backing || mapAddr + mapping.len > childMem.length) {
+            throw new Error(`Cannot inherit shared mapping at 0x${mapAddr.toString(16)}`);
+          }
+          const latest = backing.bytes.slice(
+            mapping.fileOffset,
+            mapping.fileOffset + mapping.len,
+          );
+          childMem.set(latest, mapAddr);
+          backing.refCount++;
+          childMap.set(mapAddr, {
+            ...mapping,
+            snapshot: latest,
+            seenVersion: backing.version,
+          });
+        }
+        if (childMap.size > 0) this.sharedMappings.set(childPid, childMap);
+      }
+
+      this.inheritSysvShmMappings(parentPid, childPid);
+    } catch (err) {
+      this.releaseAllAnonymousSharedMappingsForProcess(childPid);
+      this.releaseAllSysvShmMappingsForProcess(childPid, false);
+      throw err;
+    }
+  }
+
+  private releaseAllAnonymousSharedMappingsForProcess(
+    pid: number,
+    publish: boolean = true,
+  ): void {
+    const registration = this.processes.get(pid);
+    if (publish && registration) {
+      this.syncAnonymousSharedMappingsFromProcess(registration, { force: true });
+    }
+    const pidMap = this.sharedMappings.get(pid);
+    if (!pidMap) return;
+    for (const [addr, mapping] of Array.from(pidMap)) {
+      if (!mapping.backingKey) continue;
+      this.releaseAnonymousSharedMapping(mapping);
+      pidMap.delete(addr);
+    }
+    if (pidMap.size === 0) this.sharedMappings.delete(pid);
+  }
+
   /**
    * Populate a file-backed mmap region by reading from the file fd via pread.
    * Called after the kernel allocates the anonymous region and the host zeroes it.
@@ -8415,6 +8659,10 @@ export class CentralizedKernelWorker {
     channel: ChannelInfo,
     origArgs: number[],
   ): void {
+    // msync/munmap/MAP_FIXED are explicit publication points for anonymous
+    // mappings too, including the single-observer-before-fork case.
+    this.syncAnonymousSharedMappingsFromProcess(channel, { force: true });
+
     const syncAddr = origArgs[0] >>> 0;
     const syncLen = origArgs[1] >>> 0;
     const pidMap = this.sharedMappings.get(channel.pid);
@@ -8423,6 +8671,7 @@ export class CentralizedKernelWorker {
     const syncEnd = syncAddr + syncLen;
 
     for (const [mapAddr, mapping] of pidMap) {
+      if (mapping.backingKey) continue;
       if (!mapping.writable) continue;
       const mapEnd = mapAddr + mapping.len;
       // Check overlap
@@ -8517,22 +8766,48 @@ export class CentralizedKernelWorker {
     const unmapEnd = addr + len;
     for (const [mapAddr, mapping] of Array.from(pidMap.entries())) {
       const mapEnd = mapAddr + mapping.len;
-      if (mapEnd <= addr || mapAddr >= unmapEnd) continue;
+      const overlapStart = Math.max(addr, mapAddr);
+      const overlapEnd = Math.min(unmapEnd, mapEnd);
+      if (overlapStart >= overlapEnd) continue;
 
-      pidMap.delete(mapAddr);
-      if (mapAddr < addr) {
-        pidMap.set(mapAddr, {
-          ...mapping,
-          len: addr - mapAddr,
-        });
+      if (overlapStart <= mapAddr && overlapEnd >= mapEnd) {
+        this.releaseAnonymousSharedMapping(mapping);
+        pidMap.delete(mapAddr);
+        continue;
       }
-      if (mapEnd > unmapEnd) {
-        pidMap.set(unmapEnd, {
-          ...mapping,
-          fileOffset: mapping.fileOffset + (unmapEnd - mapAddr),
-          len: mapEnd - unmapEnd,
-        });
+
+      if (overlapStart <= mapAddr) {
+        const trim = overlapEnd - mapAddr;
+        pidMap.delete(mapAddr);
+        mapping.fileOffset += trim;
+        mapping.len = mapEnd - overlapEnd;
+        if (mapping.snapshot) mapping.snapshot = mapping.snapshot.slice(trim);
+        if (mapping.len > 0) pidMap.set(overlapEnd, mapping);
+        else this.releaseAnonymousSharedMapping(mapping);
+        continue;
       }
+
+      if (overlapEnd >= mapEnd) {
+        mapping.len = overlapStart - mapAddr;
+        if (mapping.snapshot) mapping.snapshot = mapping.snapshot.slice(0, mapping.len);
+        continue;
+      }
+
+      const leftLen = overlapStart - mapAddr;
+      const rightSkip = overlapEnd - mapAddr;
+      const rightMapping: SharedMmapMapping = {
+        ...mapping,
+        fileOffset: mapping.fileOffset + rightSkip,
+        len: mapEnd - overlapEnd,
+        ...(mapping.snapshot ? { snapshot: mapping.snapshot.slice(rightSkip) } : {}),
+      };
+      mapping.len = leftLen;
+      if (mapping.snapshot) mapping.snapshot = mapping.snapshot.slice(0, leftLen);
+      if (mapping.backingKey) {
+        const backing = this.anonymousSharedBackings.get(mapping.backingKey);
+        if (backing) backing.refCount++;
+      }
+      pidMap.set(overlapEnd, rightMapping);
     }
 
     if (pidMap.size === 0) {
@@ -8551,7 +8826,34 @@ export class CentralizedKernelWorker {
     if (!pidMap || !mapping) return;
 
     pidMap.delete(oldAddr);
-    pidMap.set(newAddr, { ...mapping, len: newLen });
+    if (mapping.backingKey && mapping.snapshot) {
+      const backing = this.anonymousSharedBackings.get(mapping.backingKey);
+      const registration = this.processes.get(pid);
+      if (backing && registration) {
+        const required = mapping.fileOffset + newLen;
+        if (required > backing.bytes.length) {
+          const grown = new Uint8Array(required);
+          grown.set(backing.bytes);
+          const processMem = new Uint8Array(registration.memory.buffer);
+          if (newAddr + newLen <= processMem.length && newLen > mapping.len) {
+            grown.set(
+              processMem.subarray(newAddr + mapping.len, newAddr + newLen),
+              mapping.fileOffset + mapping.len,
+            );
+          }
+          backing.bytes = grown;
+          backing.version++;
+        }
+        const latest = backing.bytes.slice(mapping.fileOffset, mapping.fileOffset + newLen);
+        new Uint8Array(registration.memory.buffer).set(latest, newAddr);
+        mapping.snapshot = latest;
+        mapping.seenVersion = backing.version;
+      } else {
+        mapping.snapshot = mapping.snapshot.slice(0, newLen);
+      }
+    }
+    mapping.len = newLen;
+    pidMap.set(newAddr, mapping);
   }
 
   /** Keep writeback eligibility aligned with successful mprotect ranges. */
@@ -8573,6 +8875,298 @@ export class CentralizedKernelWorker {
       if (mapEnd <= addr || mapAddr >= protectEnd) continue;
       mapping.writable = true;
     }
+  }
+
+  private withKernelCurrentPid<T>(pid: number, operation: () => T): T {
+    const setCurrentPid = this.kernelInstance!.exports.kernel_set_current_pid as
+      ((pid: number) => void) | undefined;
+    const previousPid = this.currentHandlePid;
+    this.currentHandlePid = pid;
+    if (setCurrentPid) setCurrentPid(pid);
+    try {
+      return operation();
+    } finally {
+      this.currentHandlePid = previousPid;
+      if (setCurrentPid) setCurrentPid(previousPid);
+    }
+  }
+
+  private hasPeerSysvShmMapping(pid: number, mapAddr: number, segId: number): boolean {
+    for (const [otherPid, mappings] of this.shmMappings) {
+      for (const [otherAddr, mapping] of mappings) {
+        if (mapping.segId !== segId) continue;
+        if (otherPid === pid && otherAddr === mapAddr) continue;
+        return true;
+      }
+    }
+    return false;
+  }
+
+  private syncSysvShmMappingsFromProcess(
+    process: Pick<ChannelInfo, "pid" | "memory">,
+    options: { force?: boolean } = {},
+  ): boolean {
+    const pidMap = this.shmMappings?.get(process.pid);
+    if (!pidMap) return true;
+    const processMem = new Uint8Array(process.memory.buffer);
+    let success = true;
+    this.withKernelCurrentPid(process.pid, () => {
+      for (const [mapAddr, mapping] of pidMap) {
+        if (!options.force
+            && !this.hasPeerSysvShmMapping(process.pid, mapAddr, mapping.segId)) continue;
+        if (!this.mergeAndRefreshSysvShmMapping(processMem, mapAddr, mapping)) success = false;
+      }
+    });
+    return success;
+  }
+
+  /** Publish all current attachments before a new observer joins a segment. */
+  private syncSysvShmSegmentFromMappedProcesses(segId: number): void {
+    for (const [pid, mappings] of this.shmMappings) {
+      const registration = this.processes.get(pid);
+      if (!registration) continue;
+      const processMem = new Uint8Array(registration.memory.buffer);
+      this.withKernelCurrentPid(pid, () => {
+        for (const [mapAddr, mapping] of mappings) {
+          if (mapping.segId === segId) {
+            this.mergeAndRefreshSysvShmMapping(processMem, mapAddr, mapping);
+          }
+        }
+      });
+    }
+  }
+
+  private mappingDiffersFromSnapshot(
+    processMem: Uint8Array,
+    mapAddr: number,
+    snapshot: Uint8Array,
+    len: number,
+  ): boolean {
+    for (let offset = 0; offset < len; offset += 4096) {
+      const chunkLen = Math.min(4096, len - offset);
+      if (this.rangeDiffersFromSnapshot(
+        processMem,
+        mapAddr + offset,
+        snapshot,
+        offset,
+        chunkLen,
+      )) return true;
+    }
+    return false;
+  }
+
+  private mergeAndRefreshSysvShmMapping(
+    processMem: Uint8Array,
+    mapAddr: number,
+    mapping: SysvShmMapping,
+  ): boolean {
+    if (mapAddr + mapping.size > processMem.length) return false;
+    const currentVersion = this.shmSegmentVersions.get(mapping.segId) ?? 0;
+    const locallyChanged = !mapping.readOnly && this.mappingDiffersFromSnapshot(
+      processMem,
+      mapAddr,
+      mapping.snapshot,
+      mapping.size,
+    );
+    if (!locallyChanged && mapping.seenVersion === currentVersion) return true;
+
+    const authoritative = this.readSysvShmRange(mapping.segId, 0, mapping.size);
+    if (!authoritative) return false;
+    let published = false;
+    let success = true;
+    if (locallyChanged) {
+      for (let offset = 0; offset < mapping.size; offset += 4096) {
+        const chunkLen = Math.min(4096, mapping.size - offset);
+        if (!this.rangeDiffersFromSnapshot(
+          processMem,
+          mapAddr + offset,
+          mapping.snapshot,
+          offset,
+          chunkLen,
+        )) continue;
+        let i = 0;
+        while (i < chunkLen) {
+          while (
+            i < chunkLen
+            && processMem[mapAddr + offset + i] === mapping.snapshot[offset + i]
+          ) i++;
+          if (i >= chunkLen) break;
+          const start = i;
+          do { i++; } while (
+            i < chunkLen
+            && processMem[mapAddr + offset + i] !== mapping.snapshot[offset + i]
+          );
+          const bytes = processMem.subarray(
+            mapAddr + offset + start,
+            mapAddr + offset + i,
+          );
+          if (!this.writeSysvShmRange(mapping.segId, offset + start, bytes)) {
+            success = false;
+            break;
+          }
+          authoritative.set(bytes, offset + start);
+          published = true;
+        }
+        if (!success) break;
+      }
+    }
+
+    if (published) {
+      this.shmSegmentVersions.set(mapping.segId, currentVersion + 1);
+    }
+    processMem.set(authoritative, mapAddr);
+    mapping.snapshot = authoritative;
+    mapping.seenVersion = this.shmSegmentVersions.get(mapping.segId) ?? currentVersion;
+    return success;
+  }
+
+  private readSysvShmRange(segId: number, offset: number, len: number): Uint8Array | null {
+    const readChunk = this.kernelInstance!.exports.kernel_ipc_shm_read_chunk as
+      ((shmid: number, offset: number, outPtr: KernelPointer, maxLen: number) => number) | undefined;
+    if (!readChunk) return null;
+    const result = new Uint8Array(len);
+    let transferred = 0;
+    while (transferred < len) {
+      const toRead = Math.min(CH_DATA_SIZE, len - transferred);
+      const chunkPtr = this.scratchOffset + CH_DATA;
+      const nRead = readChunk(
+        segId,
+        offset + transferred,
+        this.toKernelPtr(chunkPtr),
+        toRead,
+      );
+      if (nRead < 0 || nRead > toRead) return null;
+      if (nRead === 0) break;
+      result.set(
+        new Uint8Array(this.kernelMemory!.buffer, chunkPtr, nRead),
+        transferred,
+      );
+      transferred += nRead;
+    }
+    return result;
+  }
+
+  private writeSysvShmRange(segId: number, offset: number, bytes: Uint8Array): boolean {
+    const writeChunk = this.kernelInstance!.exports.kernel_ipc_shm_write_chunk as
+      ((shmid: number, offset: number, dataPtr: KernelPointer, dataLen: number) => number) | undefined;
+    if (!writeChunk) return false;
+    let transferred = 0;
+    while (transferred < bytes.length) {
+      const toWrite = Math.min(CH_DATA_SIZE, bytes.length - transferred);
+      const chunkPtr = this.scratchOffset + CH_DATA;
+      new Uint8Array(this.kernelMemory!.buffer).set(
+        bytes.subarray(transferred, transferred + toWrite),
+        chunkPtr,
+      );
+      const written = writeChunk(
+        segId,
+        offset + transferred,
+        this.toKernelPtr(chunkPtr),
+        toWrite,
+      );
+      if (written <= 0 || written > toWrite) return false;
+      transferred += written;
+    }
+    return true;
+  }
+
+  private inheritSysvShmMappings(parentPid: number, childPid: number): void {
+    const parentMap = this.shmMappings.get(parentPid);
+    if (!parentMap || parentMap.size === 0) return;
+    const child = this.processes.get(childPid);
+    if (!child) throw new Error(`Process ${childPid} is not registered`);
+    const kernelShmat = this.kernelInstance!.exports.kernel_ipc_shmat as
+      ((shmid: number, shmaddr: number, flags: number) => number) | undefined;
+    const kernelShmdt = this.kernelInstance!.exports.kernel_ipc_shmdt as
+      ((shmid: number) => number) | undefined;
+    if (!kernelShmat || !kernelShmdt) throw new Error("Kernel lacks SysV SHM inheritance exports");
+
+    const childMem = new Uint8Array(child.memory.buffer);
+    const childMap = new Map<number, SysvShmMapping>();
+    this.withKernelCurrentPid(childPid, () => {
+      try {
+        for (const [mapAddr, mapping] of parentMap) {
+          if (mapAddr + mapping.size > childMem.length) {
+            throw new Error(`Cannot inherit SysV mapping at 0x${mapAddr.toString(16)}`);
+          }
+          const result = kernelShmat(
+            mapping.segId,
+            mapAddr,
+            mapping.readOnly ? SHM_RDONLY : 0,
+          );
+          if (result < 0 || result !== mapping.size) {
+            throw new Error(`SysV shmat inheritance failed for segment ${mapping.segId}`);
+          }
+          const latest = this.readSysvShmRange(mapping.segId, 0, mapping.size);
+          if (!latest) {
+            kernelShmdt(mapping.segId);
+            throw new Error(`Cannot read inherited SysV segment ${mapping.segId}`);
+          }
+          childMem.set(latest, mapAddr);
+          childMap.set(mapAddr, {
+            ...mapping,
+            snapshot: latest,
+            seenVersion: this.shmSegmentVersions.get(mapping.segId) ?? mapping.seenVersion,
+          });
+        }
+      } catch (err) {
+        for (const mapping of childMap.values()) kernelShmdt(mapping.segId);
+        childMap.clear();
+        throw err;
+      }
+    });
+    if (childMap.size > 0) this.shmMappings.set(childPid, childMap);
+  }
+
+  private releaseAllSysvShmMappingsForProcess(
+    pid: number,
+    publish: boolean = true,
+  ): void {
+    const pidMap = this.shmMappings?.get(pid);
+    if (!pidMap) return;
+    const registration = this.processes.get(pid);
+    if (publish && registration) {
+      this.syncSysvShmMappingsFromProcess(registration, { force: true });
+    }
+    const kernelShmdt = this.kernelInstance!.exports.kernel_ipc_shmdt as
+      ((shmid: number) => number) | undefined;
+    if (kernelShmdt) {
+      this.withKernelCurrentPid(pid, () => {
+        for (const mapping of pidMap.values()) kernelShmdt(mapping.segId);
+      });
+    }
+    this.shmMappings.delete(pid);
+  }
+
+  private releaseAllSharedMemoryForProcess(pid: number, publish: boolean = true): void {
+    const registration = this.processes?.get(pid);
+    const channel = registration?.channels[0];
+    if (publish && registration) {
+      this.syncAnonymousSharedMappingsFromProcess(registration, { force: true });
+      this.syncSysvShmMappingsFromProcess(registration, { force: true });
+      if (channel) {
+        const mappings = this.sharedMappings.get(pid);
+        if (mappings) {
+          for (const [addr, mapping] of mappings) {
+            if (mapping.backingKey || !mapping.writable) continue;
+            this.pwriteFromProcessMemory(
+              channel,
+              mapping.fd,
+              addr,
+              mapping.len,
+              mapping.fileOffset,
+            );
+          }
+        }
+      }
+    }
+
+    const mappings = this.sharedMappings?.get(pid);
+    if (mappings) {
+      for (const mapping of mappings.values()) this.releaseAnonymousSharedMapping(mapping);
+      this.sharedMappings?.delete(pid);
+    }
+    if (this.shmMappings) this.releaseAllSysvShmMappingsForProcess(pid, false);
   }
 
   /** Set the next child PID to allocate. */
@@ -9725,7 +10319,6 @@ export class CentralizedKernelWorker {
       }
     }
     this.tcpConnections.delete(pid);
-    this.shmMappings.delete(pid);
   }
 
   // =========================================================================
@@ -9847,16 +10440,49 @@ export class CentralizedKernelWorker {
     this.relistenChannel(channel);
   }
 
-  /** shmat: allocate address via kernel mmap, copy segment data to process memory */
+  private runSyntheticMemorySyscall(
+    channel: ChannelInfo,
+    syscallNr: number,
+    args: number[],
+  ): { retVal: number; errVal: number } {
+    const kernelView = new DataView(this.kernelMemory!.buffer, this.scratchOffset);
+    kernelView.setUint32(CH_SYSCALL, syscallNr, true);
+    for (let i = 0; i < CH_ARGS_COUNT; i++) {
+      kernelView.setBigInt64(CH_ARGS + i * CH_ARG_SIZE, BigInt(args[i] ?? 0), true);
+    }
+    const handleChannel = this.kernelInstance!.exports.kernel_handle_channel as
+      (offset: KernelPointer, pid: number) => number;
+    const previousPid = this.currentHandlePid;
+    this.currentHandlePid = channel.pid;
+    this.bindKernelTidForChannel(channel);
+    try {
+      handleChannel(this.toKernelPtr(this.scratchOffset), channel.pid);
+    } finally {
+      this.currentHandlePid = previousPid;
+    }
+    const resultView = new DataView(this.kernelMemory!.buffer, this.scratchOffset);
+    return {
+      retVal: Number(resultView.getBigInt64(CH_RETURN, true)),
+      errVal: resultView.getUint32(CH_ERRNO, true),
+    };
+  }
+
+  /** shmat: allocate a process interval and attach it to authoritative bytes. */
   private handleIpcShmat(channel: ChannelInfo, args: number[]): void {
-    const [shmid, _shmaddr, _flags] = args;
+    const [shmid, shmaddr, flags] = args;
 
-    // Set current pid for kernel_ipc_* exports
-    const setCurrentPid = this.kernelInstance!.exports.kernel_set_current_pid as ((pid: number) => void) | undefined;
-    if (setCurrentPid) setCurrentPid(channel.pid);
+    // A previously sole observer may not have published at ordinary boundaries.
+    // Force it current before this new attachment reads the segment.
+    this.syncSysvShmSegmentFromMappedProcesses(shmid);
 
-    const kernelShmat = this.kernelInstance!.exports.kernel_ipc_shmat as (shmid: number, shmaddr: number, flags: number) => number;
-    const sizeOrErr = kernelShmat(shmid, _shmaddr, _flags);
+    const kernelShmat = this.kernelInstance!.exports.kernel_ipc_shmat as
+      (shmid: number, shmaddr: number, flags: number) => number;
+    const kernelShmdt = this.kernelInstance!.exports.kernel_ipc_shmdt as
+      (shmid: number) => number;
+    const sizeOrErr = this.withKernelCurrentPid(
+      channel.pid,
+      () => kernelShmat(shmid, shmaddr, flags),
+    );
     if (sizeOrErr < 0) {
       this.completeChannelRaw(channel, sizeOrErr, -sizeOrErr);
       this.relistenChannel(channel);
@@ -9864,72 +10490,90 @@ export class CentralizedKernelWorker {
     }
     const size = sizeOrErr;
 
-    // Synthesize mmap to allocate virtual address space for this pid
-    const kernelView = new DataView(this.kernelMemory!.buffer, this.scratchOffset);
-    kernelView.setUint32(CH_SYSCALL, SYS_MMAP, true);
-    kernelView.setBigInt64(CH_ARGS + 0 * CH_ARG_SIZE, BigInt(0), true);          // addr hint = NULL
-    kernelView.setBigInt64(CH_ARGS + 1 * CH_ARG_SIZE, BigInt(size), true);        // length
-    kernelView.setBigInt64(CH_ARGS + 2 * CH_ARG_SIZE, BigInt(3), true);           // prot = PROT_READ|PROT_WRITE
-    kernelView.setBigInt64(CH_ARGS + 3 * CH_ARG_SIZE, BigInt(0x22), true);       // flags = MAP_PRIVATE|MAP_ANONYMOUS
-    kernelView.setBigInt64(CH_ARGS + 4 * CH_ARG_SIZE, BigInt(-1), true);         // fd = -1
-    kernelView.setBigInt64(CH_ARGS + 5 * CH_ARG_SIZE, BigInt(0), true);          // offset = 0
+    const readOnly = (flags & SHM_RDONLY) !== 0;
+    const prot = readOnly ? PROT_READ : PROT_READ | PROT_WRITE;
+    let allocatedAddr: number | null = null;
+    const rollback = () => {
+      if (allocatedAddr !== null) {
+        try { this.runSyntheticMemorySyscall(channel, SYS_MUNMAP, [allocatedAddr, size]); } catch {}
+      }
+      try {
+        this.withKernelCurrentPid(channel.pid, () => kernelShmdt(shmid));
+      } catch {}
+    };
 
-    const handleChannel = this.kernelInstance!.exports.kernel_handle_channel as (offset: KernelPointer, pid: number) => number;
-    this.currentHandlePid = channel.pid;
-    this.bindKernelTidForChannel(channel);
     try {
-      handleChannel(this.toKernelPtr(this.scratchOffset), channel.pid);
+      const mmap = this.runSyntheticMemorySyscall(channel, SYS_MMAP, [
+        shmaddr >>> 0,
+        size,
+        prot,
+        0x22, // MAP_PRIVATE | MAP_ANONYMOUS: host supplies sharing.
+        -1,
+        0,
+      ]);
+      if (mmap.retVal < 0) {
+        rollback();
+        const errno = mmap.errVal || ENOMEM;
+        this.completeChannelRaw(channel, -errno, errno);
+        this.relistenChannel(channel);
+        return;
+      }
+      allocatedAddr = mmap.retVal >>> 0;
+      // Unlike mmap, a non-null shmat address is not merely a fallback hint.
+      if (shmaddr !== 0 && allocatedAddr !== (shmaddr >>> 0)) {
+        rollback();
+        this.completeChannelRaw(channel, -EINVAL, EINVAL);
+        this.relistenChannel(channel);
+        return;
+      }
+
+      this.ensureProcessMemoryCovers(
+        channel.pid,
+        channel.memory,
+        SYS_MMAP,
+        allocatedAddr,
+        [shmaddr, size, prot, 0x22, -1, 0],
+      );
+      const snapshot = this.withKernelCurrentPid(
+        channel.pid,
+        () => this.readSysvShmRange(shmid, 0, size),
+      );
+      const processMem = new Uint8Array(channel.memory.buffer);
+      if (!snapshot || allocatedAddr + size > processMem.length) {
+        rollback();
+        this.completeChannelRaw(channel, -EIO, EIO);
+        this.relistenChannel(channel);
+        return;
+      }
+      processMem.set(snapshot, allocatedAddr);
+
+      let pidMappings = this.shmMappings.get(channel.pid);
+      if (!pidMappings) {
+        pidMappings = new Map();
+        this.shmMappings.set(channel.pid, pidMappings);
+      }
+      pidMappings.set(allocatedAddr, {
+        segId: shmid,
+        size,
+        readOnly,
+        snapshot,
+        seenVersion: this.shmSegmentVersions.get(shmid) ?? 0,
+      });
     } catch (err) {
       console.error(`[handleIpcShmat] mmap failed for pid=${channel.pid}:`, err);
-      this.completeChannelRaw(channel, -12, 12); // ENOMEM
-      this.relistenChannel(channel);
-      return;
-    } finally {
-      this.currentHandlePid = 0;
-    }
-
-    const addr = Number(kernelView.getBigInt64(CH_RETURN, true));
-    if (addr < 0) {
-      this.completeChannelRaw(channel, -12, 12); // ENOMEM
+      rollback();
+      this.completeChannelRaw(channel, -ENOMEM, ENOMEM);
       this.relistenChannel(channel);
       return;
     }
 
-    // Grow process memory to cover the allocated address
-    this.ensureProcessMemoryCovers(channel.pid, channel.memory, SYS_MMAP, addr, [0, size, 3, 0x22, -1, 0]);
-
-    // Transfer segment data from kernel to process memory via read_chunk
-    const readChunk = this.kernelInstance!.exports.kernel_ipc_shm_read_chunk as
-      (shmid: number, offset: number, outPtr: KernelPointer, maxLen: number) => number;
-    const processMem = new Uint8Array(channel.memory.buffer);
-    const kernelMem = this.getKernelMem();
-    const chunkSize = CH_DATA_SIZE;
-    const chunkPtr = this.scratchOffset + CH_DATA;
-    let transferred = 0;
-    while (transferred < size) {
-      const remaining = size - transferred;
-      const toRead = Math.min(remaining, chunkSize);
-      const nRead = readChunk(shmid, transferred, this.toKernelPtr(chunkPtr), toRead);
-      if (nRead <= 0) break;
-      processMem.set(kernelMem.subarray(chunkPtr, chunkPtr + nRead), (addr >>> 0) + transferred);
-      transferred += nRead;
-    }
-
-    // Track the mapping for shmdt
-    let pidMappings = this.shmMappings.get(channel.pid);
-    if (!pidMappings) {
-      pidMappings = new Map();
-      this.shmMappings.set(channel.pid, pidMappings);
-    }
-    pidMappings.set(addr >>> 0, { segId: shmid, size });
-
-    this.completeChannelRaw(channel, addr, 0);
+    this.completeChannelRaw(channel, allocatedAddr!, 0);
     this.relistenChannel(channel);
   }
 
-  /** shmdt: copy process memory back to segment, untrack mapping */
+  /** shmdt: publish this attachment, detach exactly once, and unmap it. */
   private handleIpcShmdt(channel: ChannelInfo, args: number[]): void {
-    const addr = args[0];
+    const addr = args[0] >>> 0;
     const pidMappings = this.shmMappings.get(channel.pid);
     if (!pidMappings) {
       this.completeChannelRaw(channel, -22, 22); // EINVAL
@@ -9943,37 +10587,37 @@ export class CentralizedKernelWorker {
       return;
     }
 
-    // Set current pid for kernel exports
-    const setCurrentPid = this.kernelInstance!.exports.kernel_set_current_pid as ((pid: number) => void) | undefined;
-    if (setCurrentPid) setCurrentPid(channel.pid);
-
-    // Sync process memory back to kernel segment via write_chunk
-    const writeChunk = this.kernelInstance!.exports.kernel_ipc_shm_write_chunk as
-      (shmid: number, offset: number, dataPtr: KernelPointer, dataLen: number) => number;
     const processMem = new Uint8Array(channel.memory.buffer);
-    const kernelMem = this.getKernelMem();
-    const chunkSize = CH_DATA_SIZE;
-    const chunkPtr = this.scratchOffset + CH_DATA;
-    let transferred = 0;
-    while (transferred < mapping.size) {
-      const remaining = mapping.size - transferred;
-      const toWrite = Math.min(remaining, chunkSize);
-      kernelMem.set(processMem.subarray(addr + transferred, addr + transferred + toWrite), chunkPtr);
-      const nWritten = writeChunk(mapping.segId, transferred, this.toKernelPtr(chunkPtr), toWrite);
-      if (nWritten <= 0) break;
-      transferred += nWritten;
+    const synced = this.withKernelCurrentPid(
+      channel.pid,
+      () => this.mergeAndRefreshSysvShmMapping(processMem, addr, mapping),
+    );
+    if (!synced) {
+      this.completeChannelRaw(channel, -EIO, EIO);
+      this.relistenChannel(channel);
+      return;
     }
 
-    // Kernel-side detach bookkeeping
-    const kernelShmdt = this.kernelInstance!.exports.kernel_ipc_shmdt as (shmid: number) => number;
-    const result = kernelShmdt(mapping.segId);
-
-    pidMappings.delete(addr);
+    const kernelShmdt = this.kernelInstance!.exports.kernel_ipc_shmdt as
+      (shmid: number) => number;
+    const result = this.withKernelCurrentPid(
+      channel.pid,
+      () => kernelShmdt(mapping.segId),
+    );
 
     if (result < 0) {
       this.completeChannelRaw(channel, result, -result);
     } else {
-      this.completeChannelRaw(channel, 0, 0);
+      pidMappings.delete(addr);
+      if (pidMappings.size === 0) this.shmMappings.delete(channel.pid);
+      let unmapFailed = false;
+      try {
+        const unmap = this.runSyntheticMemorySyscall(channel, SYS_MUNMAP, [addr, mapping.size]);
+        unmapFailed = unmap.retVal < 0;
+      } catch {
+        unmapFailed = true;
+      }
+      this.completeChannelRaw(channel, unmapFailed ? -EIO : 0, unmapFailed ? EIO : 0);
     }
     this.relistenChannel(channel);
   }

@@ -828,6 +828,7 @@ async function handleFork(
     maxAddr: childLayout.maxAddr,
     mmapBase: childLayout.mmapBase,
   });
+  kernelWorker.inheritProcessSharedMappings(parentPid, childPid);
 
   const FORK_BUF_SIZE = FORK_SAVE_BUFFER_SIZE;
   const forkReplayContext: ForkReplayContext | undefined = threadFork
