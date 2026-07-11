@@ -3,8 +3,16 @@
  * translation that bridges the kernel's POSIX namespace to Node `fs.*`.
  */
 
+import {
+  linkSync,
+  mkdtempSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, it, expect } from "vitest";
-import { translateWindowsDrivePath } from "../src/platform/node";
+import { NodePlatformIO, translateWindowsDrivePath } from "../src/platform/node";
 
 describe("translateWindowsDrivePath", () => {
   it("converts /C/foo → C:/foo", () => {
@@ -43,5 +51,43 @@ describe("translateWindowsDrivePath", () => {
 
   it("returns null for the root /", () => {
     expect(translateWindowsDrivePath("/")).toBeNull();
+  });
+});
+
+describe("NodePlatformIO file identity", () => {
+  it("preserves hard-link aliases and distinguishes another inode", () => {
+    const dir = mkdtempSync(join(tmpdir(), "kandelo-file-identity-"));
+    try {
+      const original = join(dir, "original");
+      const alias = join(dir, "alias");
+      const other = join(dir, "other");
+      writeFileSync(original, "one");
+      linkSync(original, alias);
+      writeFileSync(other, "two");
+
+      const io = new NodePlatformIO();
+      const originalStat = io.stat(original);
+      const aliasStat = io.stat(alias);
+      const otherStat = io.stat(other);
+      const originalIdentity = io.fileIdentity(
+        original,
+        BigInt(originalStat.dev),
+        BigInt(originalStat.ino),
+      );
+
+      expect(io.fileIdentity(
+        alias,
+        BigInt(aliasStat.dev),
+        BigInt(aliasStat.ino),
+      )).toBe(originalIdentity);
+      expect(io.fileIdentity(
+        other,
+        BigInt(otherStat.dev),
+        BigInt(otherStat.ino),
+      )).not.toBe(originalIdentity);
+      expect(io.fileIdentity(original, 0n, 0n)).toBeNull();
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });
