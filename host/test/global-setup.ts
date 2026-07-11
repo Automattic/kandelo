@@ -22,6 +22,7 @@ const fixturesDir = join(__dirname, "fixtures");
 /** C programs that tests depend on. */
 const TEST_PROGRAMS = [
   "clock_getcpuclockid_test.c",
+  "syscall_cp_offset_test.c",
   "putenv_test.c",
   "getaddrinfo_test.c",
   "sysv_ipc_test.c",
