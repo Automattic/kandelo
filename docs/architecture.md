@@ -510,9 +510,9 @@ AF_INET and AF_INET6 receive queues are currently bounded at 128 datagrams per
 socket. Once that fixed internal queue is full, a newly arriving UDP datagram
 is dropped and the already-queued datagrams retain their order. `SO_RCVBUF`
 is stored and reported but does not size this queue yet. AF_UNIX datagrams use
-the same bounded storage, but their overflow path still evicts the oldest
-message instead of applying the sender backpressure required for Linux-style
-reliable Unix datagrams.
+the same bounded storage but are reliable: a full receive queue makes the send
+enter the host's blocking retry path, or returns `EAGAIN` immediately for an
+`O_NONBLOCK` or `MSG_DONTWAIT` send, without discarding queued messages.
 
 Loopback addresses are scoped to one Kandelo machine, but not every socket path is machine-wide yet. IPv4 and IPv6 loopback TCP and AF_UNIX streams have explicit cross-process paths. Current in-kernel IPv4/IPv6 loopback datagrams, AF_UNIX datagrams, and IPv4 multicast delivery are confined to the sending process. Forked sockets retain their kernel-local bind reservations and local lookup targets, but host-backed UDP endpoint registrations are not yet shared or transferred between processes. AF_INET6 represents `sockaddr_in6`, supports `::`/`::1`, and models dual-stack wildcard stream-port reservation, but it has no external or virtual-network IPv6 transport and no IPv6 multicast delivery. AF_INET6 datagrams therefore report `IPV6_V6ONLY=1`; disabling it fails until dual-stack datagram routing exists.
 
