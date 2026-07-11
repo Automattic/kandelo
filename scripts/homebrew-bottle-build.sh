@@ -16,8 +16,9 @@ usage: scripts/homebrew-bottle-build.sh --tap-root <tap-root> [--tap-repository 
 This script is intended to run inside scripts/dev-shell.sh. It invokes the
 absolute Homebrew executable named by HOMEBREW_BREW_FILE, avoiding host PATH
 leakage while still using the Homebrew installation provided by the workflow.
-The Homebrew checkout is patched in a temporary worktree so Kandelo wasm bottle
-tags are generated without mutating a developer's host Homebrew checkout.
+The Homebrew checkout is patched in a temporary worktree. A short-lived
+launcher symlink under the selected Homebrew prefix keeps that prefix and its
+Cellar intact while loading code from the patched worktree.
 EOF
 }
 
@@ -84,27 +85,18 @@ fi
 
 KANDELO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 PATCH_FILE="$KANDELO_ROOT/homebrew/patches/0001-add-kandelo-wasm-bottle-tags.patch"
+. "$KANDELO_ROOT/scripts/homebrew-patched-launcher.sh"
 mkdir -p "$OUT_DIR/bottles"
 WORK_DIR="$(mktemp -d)"
-BREW_REPO=""
-BREW_OVERLAY=""
 
 cleanup() {
-  if [ -n "$BREW_REPO" ] && [ -n "$BREW_OVERLAY" ] && [ -d "$BREW_OVERLAY" ]; then
-    git -C "$BREW_REPO" worktree remove --force "$BREW_OVERLAY" >/dev/null 2>&1 || rm -rf "$BREW_OVERLAY"
-  fi
+  homebrew_patched_launcher_cleanup
   rm -rf "$WORK_DIR"
 }
 trap cleanup EXIT
 
-BREW_REPO="$("$BREW_BIN" --repository)"
-if [ -f "$PATCH_FILE" ] && git -C "$BREW_REPO" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
-  git -C "$BREW_REPO" apply --check "$PATCH_FILE"
-  BREW_OVERLAY="$WORK_DIR/homebrew-overlay"
-  git -C "$BREW_REPO" worktree add --detach "$BREW_OVERLAY" HEAD >/dev/null
-  git -C "$BREW_OVERLAY" apply --whitespace=nowarn "$PATCH_FILE"
-  BREW_BIN="$BREW_OVERLAY/bin/brew"
-fi
+homebrew_patched_launcher_prepare "$BREW_BIN" "$PATCH_FILE" "$WORK_DIR"
+BREW_BIN="$HOMEBREW_PATCHED_BREW_BIN"
 
 TAP_NAME="$(printf '%s' "$TAP_REPOSITORY" | tr '[:upper:]' '[:lower:]')"
 BOTTLE_TAG="${ARCH}_kandelo"
