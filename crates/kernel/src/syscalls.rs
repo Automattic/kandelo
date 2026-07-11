@@ -5547,12 +5547,35 @@ pub fn sys_exit(proc: &mut Process, host: &mut dyn HostIO, status: i32) {
 }
 
 /// Get the current time from the specified clock.
+fn is_encoded_process_cpu_clock_id(clock_id: u32) -> bool {
+    // musl/Linux encode process CPU clocks as (-pid-1)*8 + 2. Real encoded
+    // IDs are negative clockid_t values; checking only the low three bits
+    // would incorrectly accept positive IDs such as 10 (produced when an
+    // invalid negative pid is passed to clock_getcpuclockid()).
+    (clock_id as i32) < 0 && (clock_id & 7) == 2
+}
+
+fn host_clock_id(clock_id: u32) -> Result<u32, Errno> {
+    use wasm_posix_shared::clock::*;
+
+    match clock_id {
+        CLOCK_REALTIME | CLOCK_MONOTONIC | CLOCK_PROCESS_CPUTIME_ID
+        | CLOCK_THREAD_CPUTIME_ID | CLOCK_BOOTTIME => Ok(clock_id),
+        // clock_getcpuclockid() encodes a process clock as (-pid-1)*8 + 2.
+        // Kandelo does not yet account CPU time per process, so preserve the
+        // documented elapsed-time approximation without letting the host
+        // mistake an encoded ID for CLOCK_REALTIME.
+        id if is_encoded_process_cpu_clock_id(id) => Ok(CLOCK_PROCESS_CPUTIME_ID),
+        _ => Err(Errno::EINVAL),
+    }
+}
+
 pub fn sys_clock_gettime(
     _proc: &Process,
     host: &mut dyn HostIO,
     clock_id: u32,
 ) -> Result<WasmTimespec, Errno> {
-    let (sec, nsec) = host.host_clock_gettime(clock_id)?;
+    let (sec, nsec) = host.host_clock_gettime(host_clock_id(clock_id)?)?;
     Ok(WasmTimespec {
         tv_sec: sec,
         tv_nsec: nsec,
@@ -5581,7 +5604,7 @@ pub fn sys_clock_getres(_proc: &Process, clock_id: u32) -> Result<WasmTimespec, 
             tv_sec: 0,
             tv_nsec: 1_000_000,
         }), // 1ms
-        id if (id & 7) == 2 => {
+        id if is_encoded_process_cpu_clock_id(id) => {
             // Per-process CPU clock: clock_getcpuclockid encodes as (-pid-1)*8 + 2
             Ok(WasmTimespec {
                 tv_sec: 0,
@@ -5592,8 +5615,8 @@ pub fn sys_clock_getres(_proc: &Process, clock_id: u32) -> Result<WasmTimespec, 
     }
 }
 
-/// Sleep using a specific clock. Only relative (TIMER_RELTIME=0) mode
-/// is supported — absolute mode returns ENOTSUP.
+/// Sleep using a specific clock. For TIMER_ABSTIME, rewrite the requested
+/// deadline to the relative duration consumed by the host channel.
 pub fn sys_clock_nanosleep(
     _proc: &Process,
     host: &mut dyn HostIO,
@@ -15824,6 +15847,48 @@ mod tests {
     }
 
     #[test]
+    fn test_clock_gettime_supports_boottime_and_encoded_process_clock() {
+        let proc = Process::new(1);
+        let mut host = MockHostIO::new();
+
+        assert!(sys_clock_gettime(
+            &proc,
+            &mut host,
+            wasm_posix_shared::clock::CLOCK_BOOTTIME,
+        )
+        .is_ok());
+        // Linux's clock_getcpuclockid() encoding for PID 1.
+        assert!(sys_clock_gettime(&proc, &mut host, (-2_i32 * 8 + 2) as u32).is_ok());
+    }
+
+    #[test]
+    fn test_clock_gettime_rejects_unknown_clock() {
+        let proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        assert!(matches!(
+            sys_clock_gettime(&proc, &mut host, 0x7fff_ffff),
+            Err(Errno::EINVAL),
+        ));
+    }
+
+    #[test]
+    fn test_clock_calls_reject_positive_cpu_clock_bit_pattern() {
+        let proc = Process::new(1);
+        let mut host = MockHostIO::new();
+
+        // musl computes 10 for clock_getcpuclockid(-2). The kernel must return
+        // EINVAL so musl can translate that API result to ESRCH.
+        assert!(matches!(
+            sys_clock_gettime(&proc, &mut host, 10),
+            Err(Errno::EINVAL),
+        ));
+        assert!(matches!(
+            sys_clock_getres(&proc, 10),
+            Err(Errno::EINVAL),
+        ));
+    }
+
+    #[test]
     fn test_nanosleep_rejects_negative() {
         let proc = Process::new(1);
         let mut host = MockHostIO::new();
@@ -15854,6 +15919,31 @@ mod tests {
             tv_nsec: 500_000_000,
         };
         assert_eq!(sys_nanosleep(&proc, &mut host, &req), Ok(()));
+    }
+
+    #[test]
+    fn test_clock_nanosleep_boottime_absolute_uses_monotonic_equivalent() {
+        let proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        let req = WasmTimespec {
+            tv_sec: 1_234_567_891,
+            tv_nsec: 123_456_789,
+        };
+        let mut relative = [0_u8; 16];
+
+        assert_eq!(
+            sys_clock_nanosleep(
+                &proc,
+                &mut host,
+                wasm_posix_shared::clock::CLOCK_BOOTTIME,
+                1,
+                &req,
+                relative.as_mut_ptr(),
+            ),
+            Ok(()),
+        );
+        assert_eq!(i64::from_le_bytes(relative[0..8].try_into().unwrap()), 1);
+        assert_eq!(i64::from_le_bytes(relative[8..16].try_into().unwrap()), 0);
     }
 
     #[test]

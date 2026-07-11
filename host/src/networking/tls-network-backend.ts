@@ -146,17 +146,6 @@ function formatHttpResponse(
   return result;
 }
 
-function headersFromRawHeaderString(rawHeaders: string): Headers {
-  const headers = new Headers();
-  for (const line of rawHeaders.split(/\r?\n/)) {
-    if (!line) continue;
-    const colon = line.indexOf(":");
-    if (colon <= 0) continue;
-    headers.append(line.slice(0, colon).trim(), line.slice(colon + 1).trim());
-  }
-  return headers;
-}
-
 function corsProxyFetchUrl(corsProxyUrl: string, targetUrl: string): string {
   if (targetUrl.startsWith(corsProxyUrl)) {
     return targetUrl;
@@ -593,32 +582,6 @@ export class TlsNetworkBackend implements NetworkIO {
 
     const fetchBody: Uint8Array<ArrayBuffer> | undefined =
       body && body.length > 0 ? new Uint8Array(body) as Uint8Array<ArrayBuffer> : undefined;
-
-    const isWindowContext = typeof document !== "undefined";
-    if (typeof XMLHttpRequest !== "undefined" && !isWindowContext) {
-      try {
-        const xhr = new XMLHttpRequest();
-        xhr.open(method, url, false);
-        xhr.responseType = "arraybuffer";
-        for (const [key, value] of fetchHeaders) {
-          xhr.setRequestHeader(key, value);
-        }
-        xhr.send(fetchBody);
-        conn.responseBuf = formatHttpResponse(
-          xhr.status,
-          xhr.statusText,
-          headersFromRawHeaderString(xhr.getAllResponseHeaders()),
-          xhr.response ?? new ArrayBuffer(0),
-        );
-        conn.fetchDone = true;
-        conn.sendBuf = new Uint8Array(0);
-        return data.length;
-      } catch {
-        // Fall through to fetch when synchronous XHR is unavailable or rejected
-        // by the current browser context. Dedicated workers use the blocking
-        // path to match POSIX socket reads; other contexts retain async fetch.
-      }
-    }
 
     const doFetch = async () => {
       try {

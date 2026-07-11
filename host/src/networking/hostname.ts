@@ -93,12 +93,7 @@ export function validateSyntheticDnsHostname(
   ) {
     return;
   }
-  if (lowerName === "localhost") return;
-  if (
-    !lowerName.includes(".") ||
-    lowerName === "invalid" ||
-    lowerName.endsWith(".invalid")
-  ) {
+  if (lowerName === "invalid" || lowerName.endsWith(".invalid")) {
     throw nameNotFoundError(hostname);
   }
 }

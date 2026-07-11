@@ -15,6 +15,7 @@ import {
 import { FramebufferRegistry } from "./framebuffer/registry";
 import type { ProcessSnapshot, SyscallTraceEvent } from "./kernel-worker";
 import type {
+  HostDiagnostic,
   MainToKernelMessage,
   KernelToMainMessage,
 } from "./browser-kernel-protocol";
@@ -49,6 +50,8 @@ export interface BrowserKernelOptions {
   onStdout?: (data: Uint8Array) => void;
   /** Called when a process writes to stderr */
   onStderr?: (data: Uint8Array) => void;
+  /** Called for host-runtime diagnostics that are not guest stderr. */
+  onHostDiagnostic?: (diagnostic: HostDiagnostic) => void;
   /** Called when a process requests a TCP listener (for service worker bridging) */
   onListenTcp?: (pid: number, fd: number, port: number) => void;
   /** Called when the service-worker HTTP bridge gains or completes preview requests. */
@@ -333,13 +336,26 @@ export class BrowserKernel {
       this.handleWorkerMessage(e.data as KernelToMainMessage);
     };
     this.kernelWorkerHandle.onerror = (e: ErrorEvent) => {
-      console.error("[BrowserKernel] Kernel worker error:", e.message);
       const err = new Error(`Kernel worker error: ${e.message}`);
       for (const [, { reject }] of this.pendingRequests) {
         reject(err);
       }
       this.pendingRequests.clear();
       this.options.onHttpBridgePendingRequests?.(0);
+      const diagnostic: HostDiagnostic = {
+        pid: 0,
+        source: "kernel worker",
+        message: `[BrowserKernel] kernel worker error: ${e.message}`,
+      };
+      // A worker-level error cannot send a typed message itself. Preserve the
+      // same callback contract and a visible default without treating the
+      // failure as guest stderr.
+      console.error(diagnostic.message);
+      try {
+        this.options.onHostDiagnostic?.(diagnostic);
+      } catch (callbackError) {
+        console.error("[BrowserKernel] onHostDiagnostic callback failed:", callbackError);
+      }
     };
 
     await new Promise<void>((resolve, reject) => {
@@ -808,14 +824,18 @@ export class BrowserKernel {
 
   /**
    * Register lazy files: creates stubs in the VFS and forwards metadata
-   * to the kernel worker so it can materialize on demand via sync XHR.
+   * to the kernel worker so it can materialize asynchronously before use.
    */
   registerLazyFiles(entries: Array<{ path: string; url: string; size: number; mode?: number }>): void {
     const fs = this.fs;
     const lazyEntries: LazyFileEntry[] = [];
     for (const e of entries) {
-      const ino = fs.registerLazyFile(e.path, e.url, e.size, e.mode);
-      lazyEntries.push({ ino, path: e.path, url: e.url, size: e.size });
+      fs.registerLazyFile(e.path, e.url, e.size, e.mode);
+      const entry = fs.getLazyEntry(e.path);
+      if (!entry) {
+        throw new Error(`Failed to register lazy VFS file: ${e.path}`);
+      }
+      lazyEntries.push(entry);
     }
     const requestId = this.nextRequestId++;
     void this.request(requestId, {
@@ -1038,6 +1058,12 @@ export class BrowserKernel {
 
   private handleWorkerMessage(msg: KernelToMainMessage): void {
     switch (msg.type) {
+      case "ready":
+      case "init_error":
+        // The temporary boot listener resolves or rejects initialization. The
+        // permanent listener also receives these messages, so account for
+        // them explicitly rather than relying on an implicit fall-through.
+        break;
       case "response": {
         const pending = this.pendingRequests.get(msg.requestId);
         if (pending) {
@@ -1074,6 +1100,15 @@ export class BrowserKernel {
       case "stderr":
         this.options.onStderr?.(msg.data);
         break;
+      case "host_diagnostic": {
+        this.options.onHostDiagnostic?.({
+          pid: msg.pid,
+          source: msg.source,
+          message: msg.message,
+          ...(msg.status === undefined ? {} : { status: msg.status }),
+        });
+        break;
+      }
       case "pty_output": {
         const cb = this.ptyOutputCallbacks.get(msg.pid);
         if (cb) {
@@ -1120,6 +1155,17 @@ export class BrowserKernel {
       case "lazy_download":
         this.emitLazyDownload(msg.event);
         break;
+      default: {
+        // Keep this dispatch coupled to KernelToMainMessage as the protocol
+        // grows. Runtime values still originate outside TypeScript, so make a
+        // malformed/unknown worker message visible instead of dropping it.
+        const exhaustive: never = msg;
+        void exhaustive;
+        console.error(
+          `[BrowserKernel] unknown kernel-worker message type: ${String((msg as { type?: unknown }).type)}`,
+        );
+        break;
+      }
     }
   }
 
