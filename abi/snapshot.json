@@ -1052,6 +1052,11 @@
     },
     {
       "kind": "func",
+      "name": "kernel_pipe_has_readers",
+      "signature": "(i32,i32) -> (i32)"
+    },
+    {
+      "kind": "func",
       "name": "kernel_pipe_is_read_open",
       "signature": "(i32,i32) -> (i32)"
     },

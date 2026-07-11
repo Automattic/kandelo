@@ -52,7 +52,7 @@ class VirtualTcpPeer implements TcpConnectionPeer {
   private peer?: VirtualTcpPeer;
   private readClosed = false;
   private writeClosed = false;
-  private closed = false;
+  private orphanedReceive = false;
   private reset = false;
 
   pairWith(peer: VirtualTcpPeer): void {
@@ -70,20 +70,25 @@ class VirtualTcpPeer implements TcpConnectionPeer {
       err.errno = ECONNRESET;
       throw err;
     }
-    if (this.writeClosed || !this.peer || this.peer.readClosed || this.peer.reset) {
+    if (this.writeClosed || !this.peer) {
       const err = new Error("EPIPE") as Error & { errno?: number };
       err.errno = 32;
       throw err;
     }
-    // A peer close(2) on TCP is an orderly FIN for its write side, not an
-    // immediate refusal of incoming data. Linux commonly lets the first write
-    // after observing peer EOF succeed and reports the resulting reset on a
-    // later operation. Preserve that POSIX-compatible TCP behavior by accepting
-    // and discarding data sent to a fully closed peer, then marking this side
-    // reset for subsequent operations. Explicit SHUT_RD remains EPIPE via the
-    // readClosed check above.
-    if (this.peer.closed) {
-      this.reset = true;
+    if (this.peer.reset) {
+      const err = new Error("ECONNRESET") as Error & { errno?: number };
+      err.errno = ECONNRESET;
+      throw err;
+    }
+    if (this.peer.readClosed) {
+      const err = new Error("EPIPE") as Error & { errno?: number };
+      err.errno = 32;
+      throw err;
+    }
+    // Normal TCP close is simplex: the peer's FIN closes its write half while
+    // its orphaned receive half continues to consume packets. Keep an explicit
+    // discard sink rather than inventing a fixed successful-write count.
+    if (this.peer.orphanedReceive) {
       return data.length;
     }
     this.peer.enqueue(data.slice());
@@ -140,15 +145,15 @@ class VirtualTcpPeer implements TcpConnectionPeer {
   }
 
   close(): void {
-    this.closed = true;
     this.writeClosed = true;
+    this.orphanedReceive = true;
     this.recvBuf = new Uint8Array(0);
   }
 
   abort(): void {
-    this.closed = true;
     this.readClosed = true;
     this.writeClosed = true;
+    this.orphanedReceive = false;
     this.reset = true;
     this.recvBuf = new Uint8Array(0);
     this.peer?.resetPeer();
@@ -473,10 +478,7 @@ export class VirtualNetworkBackend implements NetworkIO {
   }
 
   resetAllConnections(): void {
-    for (const conn of this.connections.values()) {
-      if (typeof conn.abort === "function") conn.abort();
-      else conn.close();
-    }
+    for (const conn of this.connections.values()) conn.abort();
     this.connections.clear();
     this.connectErrors.clear();
   }
