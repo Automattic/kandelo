@@ -18,3 +18,7 @@ script_path = "packages/registry/unzip/build-unzip.sh"
 [[outputs]]
 name = "unzip"
 wasm = "unzip.wasm"
+
+[[outputs]]
+name = "funzip"
+wasm = "funzip.wasm"
