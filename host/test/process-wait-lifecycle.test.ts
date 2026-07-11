@@ -3,6 +3,7 @@ import { ABI_SYSCALLS } from "../src/generated/abi";
 import { CentralizedKernelWorker } from "../src/kernel-worker";
 
 const SIGCHLD = 17;
+const SIGTERM = 15;
 const WNOHANG = 1;
 
 describe("Rust-owned process wait lifecycle", () => {
@@ -119,6 +120,43 @@ describe("Rust-owned process wait lifecycle", () => {
     expect(worker.wakeWaitingParent).toHaveBeenCalledWith(7);
     expect(calls).toEqual(["mark", "signal", "wake"]);
     expect(worker.sharedMappings.has(42)).toBe(false);
+  });
+
+  it("marks a host crash reaped before shared-state teardown can re-enter", () => {
+    const worker = createWorkerHarness({
+      kernel_mark_process_signaled: vi.fn(() => 0),
+    });
+    worker.hostReaped = new Set();
+    worker.releaseAllSharedMemoryForProcess = vi.fn(() => {
+      expect(worker.hostReaped.has(42)).toBe(true);
+    });
+    worker.notifyParentOfExitedProcess = vi.fn();
+
+    worker.notifyHostProcessCrashed(42, 11);
+
+    expect(worker.releaseAllSharedMemoryForProcess).toHaveBeenCalledWith(42);
+    expect(worker.notifyParentOfExitedProcess).toHaveBeenCalledOnce();
+  });
+
+  it("does not overwrite signal death discovered during clean-exit writeback", () => {
+    let exitSignal = 0;
+    const kernelHandle = vi.fn();
+    const worker = createWorkerHarness({
+      kernel_get_process_exit_signal: vi.fn(() => exitSignal),
+      kernel_handle_channel: kernelHandle,
+    });
+    const channel = createChannel(42, createSharedMemory());
+    worker.processes = new Map([[42, { channels: [channel] }]]);
+    worker.hostReaped = new Set();
+    worker.releaseAllSharedMemoryForProcess = vi.fn(() => {
+      exitSignal = SIGTERM;
+    });
+    worker.handleProcessTerminated = vi.fn();
+
+    worker.handleExit(channel, ABI_SYSCALLS.ExitGroup, [0]);
+
+    expect(worker.handleProcessTerminated).toHaveBeenCalledWith(channel);
+    expect(kernelHandle).not.toHaveBeenCalled();
   });
 
   it("uses the explicit termination signal instead of classifying high exit codes", () => {
