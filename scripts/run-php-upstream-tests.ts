@@ -1035,6 +1035,12 @@ class NodePhpRunner implements PhpRunner {
         {
           mountPoint: "/php-src",
           hostPath: this.sourceRoot,
+          // The source tree is the PHPT workspace. Present it as owned by the
+          // guest account selected for this run so non-root FPM/CLI coverage
+          // exercises normal POSIX permission checks instead of a root-owned
+          // host mount.
+          uid: this.runUid,
+          gid: this.runGid,
         },
         {
           mountPoint: "/kandelo-bin",

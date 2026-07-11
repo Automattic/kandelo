@@ -13,6 +13,9 @@ import type { PlatformIO, StatResult, StatfsResult } from "../types";
 import { nativeStatfs, translateOpenFlags } from "../vfs/host-fs";
 import { NativeMetadataOverlay } from "./native-metadata";
 
+const UTIME_NOW = 0x3fffffff;
+const UTIME_OMIT = 0x3ffffffe;
+
 export class NodePlatformIO implements PlatformIO {
   private dirHandles = new Map<number, fs.Dir>();
   private nextDirHandle = 1;
@@ -236,7 +239,7 @@ export class NodePlatformIO implements PlatformIO {
         ? nowMs
         : mtimeSec * 1000 + Math.floor(mtimeNsec / 1_000_000);
     fs.utimesSync(nativePath, atimeMs / 1000, mtimeMs / 1000);
-    this.metadata.utimens(stat, atimeMs, mtimeMs, fs.statSync(nativePath).ctimeMs);
+    this.metadata.utimens(stat, atimeMs, mtimeMs, fs.statSync(nativePath));
   }
 
   opendir(path: string): number {

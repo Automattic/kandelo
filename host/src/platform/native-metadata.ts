@@ -13,6 +13,9 @@ interface VirtualMetadata {
   gid?: number;
   atimeMs?: number;
   mtimeMs?: number;
+  nativeAtimeMs?: number;
+  nativeMtimeMs?: number;
+  nativeCtimeMs?: number;
   ctimeMs?: number;
 }
 
@@ -33,6 +36,7 @@ export class NativeMetadataOverlay {
 
   toStatResult(s: Stats): StatResult {
     const metadata = this.entries.get(this.key(s));
+    if (metadata !== undefined) this.reconcileNativeTimes(metadata, s);
     return {
       dev: s.dev,
       ino: s.ino,
@@ -64,18 +68,25 @@ export class NativeMetadataOverlay {
     metadata.ctimeMs = Date.now();
   }
 
-  utimens(s: Stats, atimeMs: number, mtimeMs: number, ctimeMs = Date.now()): void {
+  utimens(
+    s: Stats,
+    atimeMs: number,
+    mtimeMs: number,
+    nativeAfter: Stats,
+  ): void {
     const metadata = this.metadataFor(s);
     metadata.atimeMs = atimeMs;
     metadata.mtimeMs = mtimeMs;
-    metadata.ctimeMs = Math.max(metadata.ctimeMs ?? 0, ctimeMs);
+    metadata.nativeAtimeMs = nativeAfter.atimeMs;
+    metadata.nativeMtimeMs = nativeAfter.mtimeMs;
+    metadata.nativeCtimeMs = nativeAfter.ctimeMs;
+    metadata.ctimeMs = Math.max(metadata.ctimeMs ?? 0, nativeAfter.ctimeMs);
   }
 
   noteNativeContentChange(s: Stats): void {
     const metadata = this.entries.get(this.key(s));
     if (metadata === undefined) return;
-    delete metadata.atimeMs;
-    delete metadata.mtimeMs;
+    this.clearTimeOverrides(metadata);
   }
 
   forget(s: Stats): void {
@@ -97,6 +108,38 @@ export class NativeMetadataOverlay {
       this.entries.set(key, metadata);
     }
     return metadata;
+  }
+
+  private reconcileNativeTimes(metadata: VirtualMetadata, s: Stats): void {
+    if (metadata.nativeCtimeMs === undefined) return;
+
+    const nativeMetadataChanged = s.ctimeMs !== metadata.nativeCtimeMs;
+    if (
+      nativeMetadataChanged ||
+      (metadata.nativeAtimeMs !== undefined && s.atimeMs !== metadata.nativeAtimeMs)
+    ) {
+      delete metadata.atimeMs;
+      delete metadata.nativeAtimeMs;
+    }
+    if (
+      nativeMetadataChanged ||
+      (metadata.nativeMtimeMs !== undefined && s.mtimeMs !== metadata.nativeMtimeMs)
+    ) {
+      delete metadata.mtimeMs;
+      delete metadata.nativeMtimeMs;
+    }
+
+    if (metadata.atimeMs === undefined && metadata.mtimeMs === undefined) {
+      delete metadata.nativeCtimeMs;
+    }
+  }
+
+  private clearTimeOverrides(metadata: VirtualMetadata): void {
+    delete metadata.atimeMs;
+    delete metadata.mtimeMs;
+    delete metadata.nativeAtimeMs;
+    delete metadata.nativeMtimeMs;
+    delete metadata.nativeCtimeMs;
   }
 
   private key(s: Stats): string {
