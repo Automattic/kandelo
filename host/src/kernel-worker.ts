@@ -102,6 +102,7 @@ const FORK_BUF_SIZE = FORK_SAVE_BUFFER_SIZE;
 
 /** Errno values */
 const EAGAIN = 11;
+const EEXIST = 17;
 const ETIMEDOUT = 110;
 const EINTR_ERRNO = 4;
 
@@ -6011,16 +6012,22 @@ export class CentralizedKernelWorker {
     }
 
     const parentPid = channel.pid;
-    // Skip pids that are already registered (e.g., pid 3 is nginx master)
-    while (this.processes.has(this.nextChildPid)) {
-      this.nextChildPid++;
-    }
-    const childPid = this.nextChildPid++;
-
-    // Clone the Process in the kernel's ProcessTable
+    // The host knows about live workers, while the kernel also owns zombie and
+    // limbo records until they are reaped. Retry candidates rejected with
+    // EEXIST so fork cannot collide with a kernel-owned pid that has no live
+    // host registration.
     const kernelForkProcess = this.kernelInstance!.exports.kernel_fork_process as
       (parentPid: number, childPid: number) => number;
-    const forkResult = kernelForkProcess(parentPid, childPid);
+    let childPid = 0;
+    let forkResult = -EEXIST;
+    for (let attempts = 0; attempts < 4096; attempts++) {
+      while (this.processes.has(this.nextChildPid)) {
+        this.nextChildPid++;
+      }
+      childPid = this.nextChildPid++;
+      forkResult = kernelForkProcess(parentPid, childPid);
+      if (forkResult === 0 || -forkResult !== EEXIST) break;
+    }
     if (forkResult < 0) {
       // Fork failed in kernel (e.g., ESRCH, ENOMEM)
       this.completeChannel(channel, SYS_FORK, _origArgs, undefined, -1, (-forkResult) >>> 0);
