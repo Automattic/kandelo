@@ -2427,7 +2427,12 @@ export class CentralizedKernelWorker {
     } catch (err) {
       // If the kernel throws (e.g., invalid memory access), complete the
       // channel with -EIO to unblock the process rather than deadlocking.
-      if (logging) console.error(logEntry + " = KERNEL THROW");
+      const recentSyscalls = this.dumpLastSyscalls(channel.pid);
+      const throwEntry = logEntry || this.formatSyscallEntry(channel, syscallNr, origArgs);
+      console.error(throwEntry + " = KERNEL THROW");
+      if (recentSyscalls) {
+        console.error(`[handleSyscall] recent syscalls for pid=${channel.pid}:\n${recentSyscalls}`);
+      }
       console.error(`[handleSyscall] kernel threw for pid=${channel.pid} syscall=${syscallNr} args=[${origArgs}]:`, err);
       this.completeChannelRaw(channel, -5, 5); // -EIO
       this.relistenChannel(channel);
