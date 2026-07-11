@@ -5546,7 +5546,6 @@ pub fn sys_exit(proc: &mut Process, host: &mut dyn HostIO, status: i32) {
     proc.exit_signal = 0;
 }
 
-/// Get the current time from the specified clock.
 fn is_encoded_process_cpu_clock_id(clock_id: u32) -> bool {
     // musl/Linux encode process CPU clocks as (-pid-1)*8 + 2. Real encoded
     // IDs are negative clockid_t values; checking only the low three bits
@@ -5561,6 +5560,13 @@ fn host_clock_id(clock_id: u32) -> Result<u32, Errno> {
     match clock_id {
         CLOCK_REALTIME | CLOCK_MONOTONIC | CLOCK_PROCESS_CPUTIME_ID
         | CLOCK_THREAD_CPUTIME_ID | CLOCK_BOOTTIME => Ok(clock_id),
+        // Linux exposes coarse variants to libc consumers such as MariaDB.
+        // Kandelo's hosts do not maintain separate coarse clock sources, so
+        // preserve the clock domain while using the corresponding canonical
+        // source. Returning EINVAL here leaves MariaDB spinning before its
+        // first filesystem operation.
+        CLOCK_REALTIME_COARSE => Ok(CLOCK_REALTIME),
+        CLOCK_MONOTONIC_COARSE => Ok(CLOCK_MONOTONIC),
         // clock_getcpuclockid() encodes a process clock as (-pid-1)*8 + 2.
         // Kandelo does not yet account CPU time per process, so preserve the
         // documented elapsed-time approximation without letting the host
@@ -5599,7 +5605,12 @@ pub fn sys_nanosleep(
 pub fn sys_clock_getres(_proc: &Process, clock_id: u32) -> Result<WasmTimespec, Errno> {
     use wasm_posix_shared::clock::*;
     match clock_id {
-        CLOCK_REALTIME | CLOCK_MONOTONIC | CLOCK_PROCESS_CPUTIME_ID | CLOCK_THREAD_CPUTIME_ID
+        CLOCK_REALTIME
+        | CLOCK_MONOTONIC
+        | CLOCK_PROCESS_CPUTIME_ID
+        | CLOCK_THREAD_CPUTIME_ID
+        | CLOCK_REALTIME_COARSE
+        | CLOCK_MONOTONIC_COARSE
         | CLOCK_BOOTTIME => Ok(WasmTimespec {
             tv_sec: 0,
             tv_nsec: 1_000_000,
@@ -15859,6 +15870,23 @@ mod tests {
         .is_ok());
         // Linux's clock_getcpuclockid() encoding for PID 1.
         assert!(sys_clock_gettime(&proc, &mut host, (-2_i32 * 8 + 2) as u32).is_ok());
+    }
+
+    #[test]
+    fn test_clock_calls_map_linux_coarse_clocks_to_supported_sources() {
+        use wasm_posix_shared::clock::{
+            CLOCK_MONOTONIC, CLOCK_MONOTONIC_COARSE, CLOCK_REALTIME, CLOCK_REALTIME_COARSE,
+        };
+
+        let proc = Process::new(1);
+        let mut host = MockHostIO::new();
+
+        assert_eq!(host_clock_id(CLOCK_REALTIME_COARSE), Ok(CLOCK_REALTIME));
+        assert_eq!(host_clock_id(CLOCK_MONOTONIC_COARSE), Ok(CLOCK_MONOTONIC),);
+        for clock_id in [CLOCK_REALTIME_COARSE, CLOCK_MONOTONIC_COARSE] {
+            assert!(sys_clock_gettime(&proc, &mut host, clock_id).is_ok());
+            assert!(sys_clock_getres(&proc, clock_id).is_ok());
+        }
     }
 
     #[test]
