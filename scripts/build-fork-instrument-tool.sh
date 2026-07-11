@@ -7,7 +7,11 @@ OUT_DIR="$REPO_ROOT/tools/bin"
 BIN="$OUT_DIR/wasm-fork-instrument"
 
 echo "==> Building wasm-fork-instrument for $HOST_TARGET..."
-cargo build --release -p fork-instrument --target "$HOST_TARGET"
+cargo build \
+    --manifest-path "$REPO_ROOT/Cargo.toml" \
+    --release \
+    -p fork-instrument \
+    --target "$HOST_TARGET"
 
 mkdir -p "$OUT_DIR"
 install -m 0755 \
