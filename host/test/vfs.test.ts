@@ -1,5 +1,11 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
-import { mkdtempSync, writeFileSync, readFileSync, rmSync } from "node:fs";
+import {
+  mkdirSync,
+  mkdtempSync,
+  writeFileSync,
+  readFileSync,
+  rmSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { VirtualPlatformIO } from "../src/vfs/vfs";
@@ -397,13 +403,24 @@ describe("VirtualPlatformIO cross-mount rename (EXDEV)", () => {
 
 describe("HostFileSystem path traversal", () => {
   it("rejects paths that escape rootPath", () => {
-    const hfs = new HostFileSystem("/tmp/sandbox");
-    expect(() => hfs.stat("/../../../etc/passwd")).toThrow("EACCES");
+    const root = mkdtempSync(join(tmpdir(), "kandelo-host-fs-traversal-"));
+    try {
+      const hfs = new HostFileSystem(root);
+      expect(() => hfs.stat("/../../../etc/passwd")).toThrow("EACCES");
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 
   it("rejects paths with embedded .. sequences", () => {
-    const hfs = new HostFileSystem("/tmp/sandbox");
-    expect(() => hfs.stat("/subdir/../../etc/passwd")).toThrow("EACCES");
+    const root = mkdtempSync(join(tmpdir(), "kandelo-host-fs-traversal-"));
+    try {
+      mkdirSync(join(root, "subdir"));
+      const hfs = new HostFileSystem(root);
+      expect(() => hfs.stat("/subdir/../../etc/passwd")).toThrow("EACCES");
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 });
 
@@ -543,6 +560,32 @@ describe("MemoryFileSystem", () => {
     mfs.closedir(dh);
     expect(dirIno).toBe(stat.ino);
     mfs.close(fd);
+  });
+
+  it("keeps large-directory indexes coherent across SharedFS instances", () => {
+    const sab = new SharedArrayBuffer(8 * 1024 * 1024);
+    const first = MemoryFileSystem.create(sab);
+    const second = MemoryFileSystem.fromExisting(sab);
+    first.mkdir("/bulk", 0o755);
+
+    const names: string[] = [];
+    for (let i = 0; i < 340; i++) {
+      const name = `/bulk/${String(i).padStart(4, "0")}-${"x".repeat(180)}`;
+      names.push(name);
+      const fd = first.open(name, O_CREAT | O_RDWR, 0o644);
+      first.close(fd);
+    }
+
+    // Populate the first mount's index, then reuse a deleted slot through a
+    // second mount without changing the directory's byte size.
+    expect(first.stat(names.at(-1)!).mode & 0xf000).toBe(0x8000);
+    second.unlink(names[100]);
+    const replacement = `/bulk/repl-${"y".repeat(180)}`;
+    const replacementFd = second.open(replacement, O_CREAT | O_RDWR, 0o644);
+    second.close(replacementFd);
+
+    expect(first.stat(replacement).mode & 0xf000).toBe(0x8000);
+    expect(() => first.stat(names[100])).toThrow(/No such file/);
   });
 
   it("honors O_CREAT|O_EXCL by failing when the final path already exists", () => {
@@ -699,6 +742,31 @@ describe("MemoryFileSystem", () => {
     mfs.rename("/new-parent/child", "/empty-dest");
     expect(mfs.stat("/empty-dest").mode & 0xf000).toBe(0x4000);
     expect(() => mfs.stat("/new-parent/child")).toThrow(/No such file/);
+  });
+
+  it("rejects rename and rmdir operands ending in dot or dot-dot", () => {
+    const sab = new SharedArrayBuffer(4 * 1024 * 1024);
+    const mfs = MemoryFileSystem.create(sab);
+    mfs.mkdir("/dir", 0o755);
+    mfs.mkdir("/dir/child", 0o755);
+
+    expect(() => mfs.rename("/dir/.", "/moved")).toThrow(/Invalid argument/);
+    expect(() => mfs.rename("/dir/child", "/dir/..")).toThrow(/Invalid argument/);
+    expect(() => mfs.rmdir("/dir/.")).toThrow(/Invalid argument/);
+    expect(() => mfs.rmdir("/dir/child/..")).toThrow(/Invalid argument/);
+    expect(mfs.stat("/dir/child").mode & 0xf000).toBe(0x4000);
+  });
+
+  it("chmod and fchmod preserve the inode file type", () => {
+    const sab = new SharedArrayBuffer(4 * 1024 * 1024);
+    const mfs = MemoryFileSystem.create(sab);
+    const fd = mfs.open("/regular", O_CREAT | O_RDWR, 0o644);
+
+    mfs.chmod("/regular", 0o040755);
+    expect(mfs.stat("/regular").mode & 0xf000).toBe(0x8000);
+    mfs.fchmod(fd, 0o040700);
+    expect(mfs.fstat(fd).mode & 0xf000).toBe(0x8000);
+    mfs.close(fd);
   });
 
   it("keeps an unlinked open file alive until close", () => {

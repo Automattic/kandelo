@@ -147,6 +147,93 @@ describe("BrowserKernel", () => {
     expect(await exit).toBe(7);
   });
 
+  it("delivers host diagnostics without contaminating guest stderr", async () => {
+    const BrowserKernel = await loadBrowserKernel();
+    const onHostDiagnostic = vi.fn();
+    const onStderr = vi.fn();
+    const kernel = new BrowserKernel({
+      kernelOwnedFs: true,
+      onHostDiagnostic,
+      onStderr,
+    });
+
+    const bootPromise = kernel.boot({
+      kernelWasm: new ArrayBuffer(8),
+      vfsImage: new Uint8Array(0),
+      argv: ["/init"],
+    });
+    await new Promise((r) => setTimeout(r, 0));
+    const worker = MockWorker.instances[0]!;
+    worker.simulateMessage({ type: "ready" });
+    await new Promise((r) => setTimeout(r, 0));
+    const spawn = worker.lastMessage("spawn");
+    worker.simulateMessage({
+      type: "response",
+      requestId: spawn.requestId,
+      result: 100,
+    });
+    await bootPromise;
+
+    worker.simulateMessage({
+      type: "host_diagnostic",
+      pid: 100,
+      status: 7,
+      source: "kernel process exit",
+      message: "[kernel-worker] nonzero process exit pid=100 status=7",
+    });
+
+    expect(onHostDiagnostic).toHaveBeenCalledOnce();
+    expect(onHostDiagnostic).toHaveBeenCalledWith({
+      pid: 100,
+      status: 7,
+      source: "kernel process exit",
+      message: "[kernel-worker] nonzero process exit pid=100 status=7",
+    });
+    expect(onStderr).not.toHaveBeenCalled();
+  });
+
+  it("reports a worker-level error as a host diagnostic, not guest stderr", async () => {
+    const BrowserKernel = await loadBrowserKernel();
+    const onHostDiagnostic = vi.fn();
+    const onStderr = vi.fn();
+    const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
+    const kernel = new BrowserKernel({
+      kernelOwnedFs: true,
+      onHostDiagnostic,
+      onStderr,
+    });
+
+    const bootPromise = kernel.boot({
+      kernelWasm: new ArrayBuffer(8),
+      vfsImage: new Uint8Array(0),
+      argv: ["/init"],
+    });
+    await new Promise((r) => setTimeout(r, 0));
+    const worker = MockWorker.instances[0]!;
+    worker.simulateMessage({ type: "ready" });
+    await new Promise((r) => setTimeout(r, 0));
+    const spawn = worker.lastMessage("spawn");
+    worker.simulateMessage({
+      type: "response",
+      requestId: spawn.requestId,
+      result: 100,
+    });
+    await bootPromise;
+
+    worker.onerror?.({ message: "worker crashed" });
+
+    expect(onHostDiagnostic).toHaveBeenCalledOnce();
+    expect(onHostDiagnostic).toHaveBeenCalledWith({
+      pid: 0,
+      source: "kernel worker",
+      message: "[BrowserKernel] kernel worker error: worker crashed",
+    });
+    expect(onStderr).not.toHaveBeenCalled();
+    expect(consoleError).toHaveBeenCalledWith(
+      "[BrowserKernel] kernel worker error: worker crashed",
+    );
+  });
+
   it("readFileFromVfs round-trips a path to the worker and back", async () => {
     const BrowserKernel = await loadBrowserKernel();
     const kernel = new BrowserKernel({ kernelOwnedFs: true });
