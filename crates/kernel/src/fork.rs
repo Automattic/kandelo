@@ -17,10 +17,10 @@
 
 extern crate alloc;
 
-use alloc::collections::BTreeSet;
+use alloc::collections::{BTreeMap, BTreeSet};
 use alloc::vec::Vec;
 use wasm_posix_shared::Errno;
-use wasm_posix_shared::fd_flags::FD_CLOEXEC;
+use wasm_posix_shared::fd_flags::{FD_CLOEXEC, FD_CLOFORK};
 
 use crate::fd::{FdEntry, FdTable, OpenFileDescRef};
 use crate::lock::LockTable;
@@ -679,7 +679,15 @@ pub fn serialize_fork_state(proc: &Process, buf: &mut [u8]) -> Result<usize, Err
 
     // ── FD table ──
     w.write_u32(proc.fd_table.max_fds() as u32)?;
-    let fd_entries: Vec<(i32, &FdEntry)> = proc.fd_table.iter().collect();
+    let fd_entries: Vec<(i32, &FdEntry)> = proc
+        .fd_table
+        .iter()
+        .filter(|(_, entry)| entry.fd_flags & FD_CLOFORK == 0)
+        .collect();
+    let mut inherited_ofd_refs: BTreeMap<usize, u32> = BTreeMap::new();
+    for (_, entry) in &fd_entries {
+        *inherited_ofd_refs.entry(entry.ofd_ref.0).or_insert(0) += 1;
+    }
     w.write_u32(fd_entries.len() as u32)?;
     for (fd_num, entry) in &fd_entries {
         w.write_u32(*fd_num as u32)?;
@@ -688,7 +696,11 @@ pub fn serialize_fork_state(proc: &Process, buf: &mut [u8]) -> Result<usize, Err
     }
 
     // ── OFD table ──
-    let ofd_entries: Vec<(usize, &OpenFileDesc)> = proc.ofd_table.iter().collect();
+    let ofd_entries: Vec<(usize, &OpenFileDesc)> = proc
+        .ofd_table
+        .iter()
+        .filter(|(index, _)| inherited_ofd_refs.contains_key(index))
+        .collect();
     w.write_u32(ofd_entries.len() as u32)?;
     for (index, ofd) in &ofd_entries {
         w.write_u32(*index as u32)?;
@@ -696,7 +708,7 @@ pub fn serialize_fork_state(proc: &Process, buf: &mut [u8]) -> Result<usize, Err
         w.write_u32(ofd.status_flags)?;
         w.write_i64(ofd.host_handle)?;
         w.write_i64(ofd.offset)?;
-        w.write_u32(ofd.ref_count)?;
+        w.write_u32(inherited_ofd_refs[index])?;
         w.write_u32(ofd.path.len() as u32)?;
         w.write_bytes(&ofd.path)?;
         // DRI sidecar — `preserve_master = false` because the master
@@ -1364,18 +1376,13 @@ pub fn deserialize_fork_state(buf: &[u8], child_pid: u32) -> Result<Process, Err
         next_ephemeral_port: 49152,
         threads: Vec::new(), // POSIX: child has single thread
         next_tid: 0,
-        eventfds: Vec::new(),
         epolls: Vec::new(),
-        timerfds: Vec::new(),
-        signalfds: Vec::new(),
         posix_timers: Vec::new(),
         alt_stack_sp: 0,
         alt_stack_flags: 2, // SS_DISABLE
         alt_stack_size: 0,
         alt_stack_depth: 0,
         fork_pipe_replay: Vec::new(),
-        memfds: Vec::new(),
-        procfs_bufs: Vec::new(),
         has_exec: false,
         // Fork children do NOT inherit the framebuffer binding. The
         // /dev/fb0 device is single-owner (FB0_OWNER); a forked child
@@ -1455,11 +1462,13 @@ pub fn serialize_exec_state(proc: &Process, buf: &mut [u8]) -> Result<usize, Err
         .filter(|(_, entry)| entry.fd_flags & FD_CLOEXEC == 0)
         .collect();
 
-    // Collect referenced OFD indices from the filtered FDs
-    let referenced_ofds: BTreeSet<usize> = fd_entries
-        .iter()
-        .map(|(_, entry)| entry.ofd_ref.0)
-        .collect();
+    // Recompute local OFD references from the surviving fd aliases. A
+    // CLOEXEC alias must not leave the replacement process with the parent's
+    // stale ref_count, otherwise its eventual last close cannot free the OFD.
+    let mut surviving_ofd_refs: BTreeMap<usize, u32> = BTreeMap::new();
+    for (_, entry) in &fd_entries {
+        *surviving_ofd_refs.entry(entry.ofd_ref.0).or_insert(0) += 1;
+    }
 
     w.write_u32(proc.fd_table.max_fds() as u32)?;
     w.write_u32(fd_entries.len() as u32)?;
@@ -1473,7 +1482,7 @@ pub fn serialize_exec_state(proc: &Process, buf: &mut [u8]) -> Result<usize, Err
     let ofd_entries: Vec<(usize, &OpenFileDesc)> = proc
         .ofd_table
         .iter()
-        .filter(|(index, _)| referenced_ofds.contains(index))
+        .filter(|(index, _)| surviving_ofd_refs.contains_key(index))
         .collect();
     w.write_u32(ofd_entries.len() as u32)?;
     for (index, ofd) in &ofd_entries {
@@ -1482,7 +1491,7 @@ pub fn serialize_exec_state(proc: &Process, buf: &mut [u8]) -> Result<usize, Err
         w.write_u32(ofd.status_flags)?;
         w.write_i64(ofd.host_handle)?;
         w.write_i64(ofd.offset)?;
-        w.write_u32(ofd.ref_count)?;
+        w.write_u32(surviving_ofd_refs[index])?;
         w.write_u32(ofd.path.len() as u32)?;
         w.write_bytes(&ofd.path)?;
         // DRI sidecar — `preserve_master = true` because exec keeps
@@ -1794,18 +1803,13 @@ pub fn deserialize_exec_state(buf: &[u8], pid: u32) -> Result<Process, Errno> {
         next_ephemeral_port: 49152,
         threads: Vec::new(), // exec resets to single thread
         next_tid: 0,
-        eventfds: Vec::new(),
         epolls: Vec::new(),
-        timerfds: Vec::new(),
-        signalfds: Vec::new(),
         posix_timers: Vec::new(),
         alt_stack_sp: 0,
         alt_stack_flags: 2, // SS_DISABLE
         alt_stack_size: 0,
         alt_stack_depth: 0,
         fork_pipe_replay: Vec::new(),
-        memfds: Vec::new(),
-        procfs_bufs: Vec::new(),
         has_exec: false,
         // exec wipes any prior framebuffer binding — the new program
         // must open and mmap /dev/fb0 itself.
@@ -2036,6 +2040,35 @@ mod tests {
         assert!(restored.fd_table.get(3).is_err());
         // fds 0,1,2 should still exist
         assert!(restored.fd_table.get(0).is_ok());
+    }
+
+    #[test]
+    fn exec_recomputes_ofd_ref_count_after_filtering_cloexec_alias() {
+        use wasm_posix_shared::fd_flags::FD_CLOEXEC;
+
+        let mut proc = Process::new(1);
+        let ofd_idx = proc.ofd_table.create(
+            crate::ofd::FileType::Regular,
+            0,
+            100,
+            b"/test/aliased".to_vec(),
+        );
+        let retained_fd = proc
+            .fd_table
+            .alloc(crate::fd::OpenFileDescRef(ofd_idx), 0)
+            .unwrap();
+        proc.ofd_table.inc_ref(ofd_idx);
+        let cloexec_fd = proc
+            .fd_table
+            .alloc(crate::fd::OpenFileDescRef(ofd_idx), FD_CLOEXEC)
+            .unwrap();
+        assert_eq!(proc.ofd_table.get(ofd_idx).unwrap().ref_count, 2);
+
+        let serialized = serialize_exec_state_with_growing_buffer(&proc).unwrap();
+        let restored = deserialize_exec_state(&serialized, proc.pid).unwrap();
+        assert!(restored.fd_table.get(retained_fd).is_ok());
+        assert!(restored.fd_table.get(cloexec_fd).is_err());
+        assert_eq!(restored.ofd_table.get(ofd_idx).unwrap().ref_count, 1);
     }
 
     #[test]

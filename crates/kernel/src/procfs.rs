@@ -424,9 +424,12 @@ pub fn generate_fdinfo(proc: &Process, fd: i32) -> Option<Vec<u8>> {
 
     let entry = proc.fd_table.get(fd).ok()?;
     let ofd = proc.ofd_table.get(entry.ofd_ref.0)?;
+    let offset =
+        crate::descriptor_backing::current_offset(ofd.file_type, ofd.host_handle, ofd.offset)
+            .ok()?;
     let content = format!(
         "pos:\t{}\nflags:\t{:o}\nmnt_id:\t0\n",
-        ofd.offset, ofd.status_flags,
+        offset, ofd.status_flags,
     );
     Some(content.into_bytes())
 }
@@ -544,7 +547,7 @@ fn entry_ids(entry: &ProcfsEntry) -> (u32, u8) {
 
 /// Open a procfs entry. Returns the fd number on success.
 ///
-/// - Regular files: generates content snapshot → stores in proc.procfs_bufs
+/// - Regular files: generates a refcounted content snapshot
 /// - Directories: creates OFD with PROCFS_DIR_HANDLE
 /// - Symlinks: returns ELOOP (caller should follow the link)
 pub fn procfs_open(
@@ -601,20 +604,33 @@ pub fn procfs_open(
         if let Some(ofd) = proc.ofd_table.get_mut(ofd_idx) {
             ofd.dir_host_handle = PROCFS_DIR_HANDLE;
         }
-        let fd = proc.fd_table.alloc(OpenFileDescRef(ofd_idx), fd_flags)?;
-        return Ok(fd);
+        return match proc.fd_table.alloc(OpenFileDescRef(ofd_idx), fd_flags) {
+            Ok(fd) => Ok(fd),
+            Err(err) => {
+                proc.ofd_table.dec_ref(ofd_idx);
+                Err(err)
+            }
+        };
     }
 
-    // Regular file: generate content and store in procfs_bufs
+    // Regular file: generate one snapshot backing per open file description.
     let content = generate_content(proc, entry)?;
-    let buf_idx = alloc_procfs_buf(proc, content);
+    let buf_idx = crate::descriptor_backing::with_procfs_bufs(|table| {
+        table.alloc(crate::descriptor_backing::ProcfsBacking::new(content))
+    });
     let host_handle = procfs_buf_handle(buf_idx);
 
     let ofd_idx =
         proc.ofd_table
             .create(FileType::Regular, status_flags, host_handle, resolved_path);
-    let fd = proc.fd_table.alloc(OpenFileDescRef(ofd_idx), fd_flags)?;
-    Ok(fd)
+    match proc.fd_table.alloc(OpenFileDescRef(ofd_idx), fd_flags) {
+        Ok(fd) => Ok(fd),
+        Err(err) => {
+            proc.ofd_table.dec_ref(ofd_idx);
+            crate::descriptor_backing::with_procfs_bufs(|table| table.release(buf_idx));
+            Err(err)
+        }
+    }
 }
 
 /// Generate content for a procfs regular file entry.
@@ -704,19 +720,6 @@ pub fn validate_entry(proc: &Process, entry: &ProcfsEntry) -> Result<(), Errno> 
         validate_pid(proc, pid)?;
     }
     Ok(())
-}
-
-/// Allocate a procfs buffer slot, reusing freed slots.
-fn alloc_procfs_buf(proc: &mut Process, data: Vec<u8>) -> usize {
-    for (i, slot) in proc.procfs_bufs.iter().enumerate() {
-        if slot.is_none() {
-            proc.procfs_bufs[i] = Some(data);
-            return i;
-        }
-    }
-    let idx = proc.procfs_bufs.len();
-    proc.procfs_bufs.push(Some(data));
-    idx
 }
 
 // ── Readlink handler ────────────────────────────────────────────────────────
@@ -1223,14 +1226,14 @@ mod tests {
         let fd = procfs_open(&mut proc, &entry, b"/proc/1/stat".to_vec(), 0).unwrap();
         assert!(fd >= 0);
 
-        // Verify buffer was stored
-        assert!(!proc.procfs_bufs.is_empty());
-        assert!(proc.procfs_bufs[0].is_some());
-
         // Verify OFD has procfs buf handle
         let fe = proc.fd_table.get(fd).unwrap();
         let ofd = proc.ofd_table.get(fe.ofd_ref.0).unwrap();
         assert!(is_procfs_buf_handle(ofd.host_handle));
+        assert!(crate::descriptor_backing::with_procfs_bufs(|table| table
+            .get(procfs_buf_idx(ofd.host_handle))
+            .is_some_and(|backing| !backing.data.is_empty())));
+        crate::descriptor_backing::release_for_ofd(ofd.file_type, ofd.host_handle);
     }
 
     #[test]

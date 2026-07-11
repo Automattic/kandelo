@@ -108,7 +108,28 @@ struct SpawnInheritFromParent {
 /// The function operates only on global tables and the child's own state,
 /// so it does not need access to `ProcessTable`. `parent_pid` identifies the
 /// exact source owner when copying machine-wide INET binding ownership.
-fn bump_inherited_resource_refcounts(parent_pid: u32, child: &Process) {
+pub(crate) fn bump_inherited_resource_refcounts(
+    parent_pid: u32,
+    child: &Process,
+) -> Result<(), Errno> {
+    // Backings for eventfd/timerfd/signalfd/memfd/procfs are indexed by the
+    // inherited OFD's stable negative handle. Add these fallible references
+    // first, rolling them back if a stale handle is encountered, before
+    // touching the older infallible global-resource refcounts below.
+    let mut shared_backings_bumped: Vec<(FileType, i64)> = Vec::new();
+    for (_idx, ofd) in child.ofd_table.iter() {
+        match crate::descriptor_backing::add_ref_for_ofd(ofd.file_type, ofd.host_handle) {
+            Ok(true) => shared_backings_bumped.push((ofd.file_type, ofd.host_handle)),
+            Ok(false) => {}
+            Err(err) => {
+                for (file_type, host_handle) in shared_backings_bumped.into_iter().rev() {
+                    crate::descriptor_backing::release_for_ofd(file_type, host_handle);
+                }
+                return Err(err);
+            }
+        }
+    }
+
     let pipe_table = unsafe { crate::pipe::global_pipe_table() };
 
     // Pipe-OFDs (host_handle is the negative-encoded global pipe index).
@@ -201,6 +222,8 @@ fn bump_inherited_resource_refcounts(parent_pid: u32, child: &Process) {
             }
         }
     }
+
+    Ok(())
 }
 
 /// Build the fork-only `fork_pipe_replay` table: a list of (read_fd,
@@ -362,6 +385,13 @@ impl ProcessTable {
                 }
                 _ => {}
             }
+        }
+
+        // Drop kernel-global eventfd/timerfd/signalfd/memfd/procfs backing
+        // references for every OFD the process still owns. Normal exit closes
+        // fds first; this also covers crash removal and spawn rollback.
+        for (_ofd_idx, ofd) in proc.ofd_table.iter() {
+            crate::descriptor_backing::release_for_ofd(ofd.file_type, ofd.host_handle);
         }
 
         // Clean up socket OFDs. Active TCP streams use the same orderly FIN
@@ -597,7 +627,7 @@ impl ProcessTable {
         // Bump cross-process refcounts on inherited fd state (host handles,
         // global pipes, PTYs, socket-pipes). Identical to spawn's needs —
         // factored out into a free helper.
-        bump_inherited_resource_refcounts(parent_pid, &child);
+        bump_inherited_resource_refcounts(parent_pid, &child)?;
 
         // Build fork-only `fork_pipe_replay` (fork replay needs it to
         // return the same fds as the parent did when re-running
@@ -613,6 +643,76 @@ impl ProcessTable {
             parent.increment_fork_count();
         }
 
+        Ok(())
+    }
+
+    /// Insert a process produced by the retained legacy fork-state ABI.
+    /// Unlike a raw map insert, this refuses to replace an existing pid and
+    /// either establishes same-instance inherited refs or preserves fresh-
+    /// kernel sole ownership before moving the process into the table.
+    #[cfg_attr(
+        not(any(target_arch = "wasm32", target_arch = "wasm64")),
+        allow(dead_code)
+    )]
+    pub(crate) fn insert_legacy_fork_process(&mut self, child: Process) -> Result<(), Errno> {
+        if self.processes.contains_key(&child.pid) {
+            return Err(Errno::EEXIST);
+        }
+
+        if self.processes.contains_key(&child.ppid) {
+            // Same-instance legacy install: the parent still owns every
+            // inherited resource, so establish the child's additional refs.
+            bump_inherited_resource_refcounts(child.ppid, &child)?;
+        } else {
+            // The retained ABI also initializes a fresh kernel instance where
+            // the parent Process is intentionally absent. Ordinary host-backed
+            // handles are sole-owned by that child and must not receive a
+            // phantom parent ref. Kernel-global descriptor backings are not
+            // serialized, however, so accepting one here could alias a reused
+            // slot; fail truthfully instead.
+            if child.ofd_table.iter().any(|(_, ofd)| {
+                crate::descriptor_backing::manages_ofd(ofd.file_type, ofd.host_handle)
+            }) {
+                return Err(Errno::EBADF);
+            }
+        }
+        self.processes.insert(child.pid, child);
+        Ok(())
+    }
+
+    /// Replace an existing process through the retained legacy exec-state
+    /// ABI, transferring one ownership reference for surviving descriptor
+    /// backings and releasing old CLOEXEC-only/orphaned OFDs exactly once.
+    #[cfg_attr(
+        not(any(target_arch = "wasm32", target_arch = "wasm64")),
+        allow(dead_code)
+    )]
+    pub(crate) fn replace_legacy_exec_process(
+        &mut self,
+        pid: u32,
+        replacement: Process,
+    ) -> Result<(), Errno> {
+        if replacement.pid != pid {
+            return Err(Errno::EINVAL);
+        }
+        if let Some(old) = self.processes.get(&pid) {
+            let removed = crate::descriptor_backing::removed_backings_for_exec(old, &replacement)?;
+            let old = self.processes.insert(pid, replacement).unwrap();
+            crate::descriptor_backing::release_backings(&removed);
+            drop(old);
+        } else {
+            // A fresh kernel instance has no old Process from which to
+            // transfer global backing ownership, and the retained wire format
+            // does not serialize those backing values. Reject them instead of
+            // letting a stale stable index alias this instance's current or
+            // future allocation at the same slot.
+            if replacement.ofd_table.iter().any(|(_, ofd)| {
+                crate::descriptor_backing::manages_ofd(ofd.file_type, ofd.host_handle)
+            }) {
+                return Err(Errno::EBADF);
+            }
+            self.processes.insert(pid, replacement);
+        }
         Ok(())
     }
 
@@ -753,12 +853,11 @@ impl ProcessTable {
             }
         }
 
-        self.processes.insert(child_pid, child);
-
         // Bump cross-process refcounts on the inherited fd state. The same
         // helper fork uses — this is the genuinely-shared concern.
-        let child_ref = self.processes.get(&child_pid).unwrap();
-        bump_inherited_resource_refcounts(parent_pid, child_ref);
+        bump_inherited_resource_refcounts(parent_pid, &child)?;
+
+        self.processes.insert(child_pid, child);
 
         // Apply file actions in forward order against the child. Any failure
         // rolls back the partial child via remove_process — which runs the
@@ -1094,6 +1193,38 @@ mod tests {
     use super::*;
 
     #[test]
+    fn legacy_state_install_rejects_collisions_but_allows_fresh_kernel_tables() {
+        let mut table = ProcessTable::new();
+        table.create_process(100).unwrap();
+        table.get_mut(100).unwrap().argv = alloc::vec![b"original".to_vec()];
+
+        let mut colliding_fork = Process::new(100);
+        colliding_fork.ppid = 100;
+        assert_eq!(
+            table.insert_legacy_fork_process(colliding_fork),
+            Err(Errno::EEXIST)
+        );
+        assert_eq!(table.get(100).unwrap().argv[0], b"original");
+
+        let mut child_without_local_parent = Process::new(101);
+        child_without_local_parent.ppid = 999;
+        table
+            .insert_legacy_fork_process(child_without_local_parent)
+            .unwrap();
+        assert_eq!(table.get(101).unwrap().ppid, 999);
+
+        table
+            .replace_legacy_exec_process(777, Process::new(777))
+            .unwrap();
+        assert!(table.get(777).is_some());
+        assert_eq!(
+            table.replace_legacy_exec_process(100, Process::new(102)),
+            Err(Errno::EINVAL)
+        );
+        assert_eq!(table.get(100).unwrap().argv[0], b"original");
+    }
+
+    #[test]
     fn fork_pipe_replay_includes_fds_above_default_nofile_limit() {
         use crate::fd::OpenFileDescRef;
         use wasm_posix_shared::flags::{O_RDONLY, O_WRONLY};
@@ -1225,7 +1356,7 @@ mod tests {
 
             for _ in 0..LARGE_FD_COUNT {
                 let path = alloc::vec![b'x'; LARGE_PATH_LEN];
-                let ofd_ref = parent.ofd_table.create(FileType::MemFd, 0, -1, path);
+                let ofd_ref = parent.ofd_table.create(FileType::Regular, 0, -10, path);
                 last_fd = parent
                     .fd_table
                     .alloc(crate::fd::OpenFileDescRef(ofd_ref), 0)
@@ -1254,7 +1385,7 @@ mod tests {
         let child_ofd = child.ofd_table.get(child_fd.ofd_ref.0).unwrap();
 
         assert_eq!(child.ppid, 100);
-        assert_eq!(child_ofd.file_type, FileType::MemFd);
+        assert_eq!(child_ofd.file_type, FileType::Regular);
         assert_eq!(child_ofd.path.len(), LARGE_PATH_LEN);
     }
 

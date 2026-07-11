@@ -4575,11 +4575,16 @@ pub extern "C" fn kernel_get_fork_state(buf_ptr: *mut u8, buf_len: u32) -> i32 {
 /// Initialize kernel from serialized fork state (child side).
 #[unsafe(no_mangle)]
 pub extern "C" fn kernel_init_from_fork(buf_ptr: *const u8, buf_len: u32, child_pid: u32) -> i32 {
+    let table = unsafe { &mut *PROCESS_TABLE.0.get() };
+    if table.get(child_pid).is_some() {
+        return -(Errno::EEXIST as i32);
+    }
     let buf = unsafe { core::slice::from_raw_parts(buf_ptr, buf_len as usize) };
     match crate::fork::deserialize_fork_state(buf, child_pid) {
         Ok(proc) => {
-            let table = unsafe { &mut *PROCESS_TABLE.0.get() };
-            table.processes.insert(child_pid, proc);
+            if let Err(e) = table.insert_legacy_fork_process(proc) {
+                return -(e as i32);
+            }
             table.set_current_pid(child_pid);
             0
         }
@@ -4604,11 +4609,13 @@ pub extern "C" fn kernel_get_exec_state(buf_ptr: *mut u8, buf_len: u32) -> i32 {
 /// Returns 0 on success, negative errno on error.
 #[unsafe(no_mangle)]
 pub extern "C" fn kernel_init_from_exec(buf_ptr: *const u8, buf_len: u32, pid: u32) -> i32 {
+    let table = unsafe { &mut *PROCESS_TABLE.0.get() };
     let buf = unsafe { core::slice::from_raw_parts(buf_ptr, buf_len as usize) };
     match crate::fork::deserialize_exec_state(buf, pid) {
         Ok(proc) => {
-            let table = unsafe { &mut *PROCESS_TABLE.0.get() };
-            table.processes.insert(pid, proc);
+            if let Err(e) = table.replace_legacy_exec_process(pid, proc) {
+                return -(e as i32);
+            }
             table.set_current_pid(pid);
             0
         }
