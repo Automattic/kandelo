@@ -623,10 +623,11 @@ These PHP needs are well-handled by the current kernel:
 - Memory: anonymous mmap, munmap, brk
 - Multi-process: fork (kernel syscall), exec (host-initiated), waitpid (kernel syscall)
 - Networking: AF_INET TCP (connect, bind, listen, accept, send, recv), getaddrinfo
-- Dynamic linking: dlopen, dlsym, dlclose, dlerror (Wasm dylink on the process
-  worker). Pthread workers cannot share the process's Wasm table/tag graph, so
-  pthread `dlopen` fails and pthread `fork` after a process dlopen returns
-  `ENOTSUP`.
+- Dynamic linking: dlopen (including the main-program handle), dlsym (including
+  RTLD_DEFAULT), dlclose, dlerror (Wasm dylink on the process worker). RTLD_NEXT
+  lookup is not currently supported. Pthread workers cannot share the process's
+  Wasm table/tag graph, so pthread `dlopen` fails and pthread `fork` after a
+  process dlopen returns `ENOTSUP`.
 - POSIX timers: `SIGEV_SIGNAL`, `SIGEV_NONE`, and `SIGEV_THREAD` timer creation,
   timer_settime, timer_gettime, overrun reporting, and deletion. Timer timing
   remains host-scheduled at millisecond granularity, and direct wasm64
