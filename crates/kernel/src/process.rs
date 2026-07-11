@@ -390,6 +390,8 @@ pub struct ThreadInfo {
     pub stack_ptr: usize,
     pub tls_ptr: usize,
     pub tidptr: usize, // set_tid_address pointer
+    /// Linux thread name set by `prctl(PR_SET_NAME)`.
+    pub thread_name: [u8; 16],
     /// Per-thread signal state: directed-pending set + blocked mask + RT queue.
     /// Handlers remain process-wide and live on [`Process::signals`].
     pub signals: PerThreadSignalState,
@@ -403,6 +405,7 @@ impl ThreadInfo {
             stack_ptr,
             tls_ptr,
             tidptr: 0,
+            thread_name: [0u8; 16],
             signals: PerThreadSignalState::new(),
         }
     }
@@ -820,6 +823,29 @@ impl Process {
     /// Find a thread by TID (mutable).
     pub fn get_thread_mut(&mut self, tid: u32) -> Option<&mut ThreadInfo> {
         self.threads.iter_mut().find(|t| t.tid == tid)
+    }
+
+    /// Return the Linux thread name storage for `tid`.
+    ///
+    /// The main thread's name remains on [`Process::thread_name`]. Worker
+    /// names live on their [`ThreadInfo`] records so a pthread rename cannot
+    /// change `/proc/<pid>/stat` for the thread-group leader.
+    pub fn thread_name_for(&self, tid: u32) -> Option<&[u8; 16]> {
+        if self.is_main_thread(tid) {
+            Some(&self.thread_name)
+        } else {
+            self.get_thread(tid).map(|thread| &thread.thread_name)
+        }
+    }
+
+    /// Mutable counterpart to [`Process::thread_name_for`].
+    pub fn thread_name_for_mut(&mut self, tid: u32) -> Option<&mut [u8; 16]> {
+        if self.is_main_thread(tid) {
+            Some(&mut self.thread_name)
+        } else {
+            self.get_thread_mut(tid)
+                .map(|thread| &mut thread.thread_name)
+        }
     }
 
     /// True if `tid` names the process's main thread. The main thread's TID

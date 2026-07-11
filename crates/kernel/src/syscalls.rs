@@ -8944,9 +8944,15 @@ pub fn sys_ioctl(
 }
 
 /// prctl — process control operations.
-/// PR_SET_NAME (15) stores thread name, PR_GET_NAME (16) returns it.
+/// PR_SET_NAME (15) stores the calling thread's name, PR_GET_NAME (16)
+/// returns it.
 /// All other operations are no-ops returning success.
-pub fn sys_prctl(proc: &mut Process, option: u32, _arg2: u32, buf: &mut [u8]) -> Result<(), Errno> {
+pub fn sys_prctl(
+    proc: &mut Process,
+    tid: u32,
+    option: u32,
+    buf: &mut [u8],
+) -> Result<(), Errno> {
     const PR_SET_NAME: u32 = 15;
     const PR_GET_NAME: u32 = 16;
 
@@ -8959,15 +8965,17 @@ pub fn sys_prctl(proc: &mut Process, option: u32, _arg2: u32, buf: &mut [u8]) ->
                 .position(|&b| b == 0)
                 .unwrap_or(buf.len())
                 .min(15);
-            proc.thread_name = [0u8; 16];
-            proc.thread_name[..name_len].copy_from_slice(&buf[..name_len]);
+            let thread_name = proc.thread_name_for_mut(tid).ok_or(Errno::ESRCH)?;
+            *thread_name = [0u8; 16];
+            thread_name[..name_len].copy_from_slice(&buf[..name_len]);
             Ok(())
         }
         PR_GET_NAME => {
             if buf.len() < 16 {
                 return Err(Errno::EINVAL);
             }
-            buf[..16].copy_from_slice(&proc.thread_name);
+            let thread_name = proc.thread_name_for(tid).ok_or(Errno::ESRCH)?;
+            buf[..16].copy_from_slice(thread_name);
             Ok(())
         }
         _ => Ok(()), // no-op for unrecognized operations
@@ -9121,8 +9129,13 @@ pub fn sys_clone(
     // channel mailbox but the kernel stores masks by TID.
     let caller_tid = crate::process_table::current_tid();
     let inherited_blocked = proc.blocked_for(caller_tid);
+    let inherited_thread_name = proc
+        .thread_name_for(caller_tid)
+        .copied()
+        .unwrap_or(proc.thread_name);
     let mut thread_info = ThreadInfo::new(tid, effective_ctid, stack_ptr, effective_tls);
     thread_info.signals.blocked = inherited_blocked;
+    thread_info.thread_name = inherited_thread_name;
     proc.add_thread(thread_info);
 
     let _ = flags & CLONE_PARENT_SETTID;
@@ -14561,18 +14574,47 @@ mod tests {
         let mut proc = Process::new(1);
         let mut buf = [0u8; 16];
         buf[..5].copy_from_slice(b"hello");
-        sys_prctl(&mut proc, 15, 0, &mut buf).unwrap(); // PR_SET_NAME
+        sys_prctl(&mut proc, 0, 15, &mut buf).unwrap(); // PR_SET_NAME
         let mut out = [0u8; 16];
-        sys_prctl(&mut proc, 16, 0, &mut out).unwrap(); // PR_GET_NAME
+        sys_prctl(&mut proc, 0, 16, &mut out).unwrap(); // PR_GET_NAME
         assert_eq!(&out[..5], b"hello");
         assert_eq!(out[5], 0);
+    }
+
+    #[test]
+    fn test_prctl_worker_name_does_not_replace_process_name() {
+        use crate::process::ThreadInfo;
+
+        let mut proc = Process::new(42);
+        proc.argv.push(b"lxpanel".to_vec());
+
+        let mut leader_name = [0u8; 16];
+        leader_name[..7].copy_from_slice(b"lxpanel");
+        sys_prctl(&mut proc, 0, 15, &mut leader_name).unwrap();
+
+        proc.add_thread(ThreadInfo::new(43, 0, 0, 0));
+        let mut worker_name = [0u8; 16];
+        worker_name[..13].copy_from_slice(b"menu-cache-io");
+        sys_prctl(&mut proc, 43, 15, &mut worker_name).unwrap();
+
+        let mut leader_out = [0u8; 16];
+        sys_prctl(&mut proc, 0, 16, &mut leader_out).unwrap();
+        assert_eq!(&leader_out[..7], b"lxpanel");
+
+        let mut worker_out = [0u8; 16];
+        sys_prctl(&mut proc, 43, 16, &mut worker_out).unwrap();
+        assert_eq!(&worker_out[..13], b"menu-cache-io");
+
+        let stat = crate::procfs::generate_stat(&proc);
+        let stat = core::str::from_utf8(&stat).unwrap();
+        assert!(stat.starts_with("42 (lxpanel) R "));
     }
 
     #[test]
     fn test_prctl_unknown_is_noop() {
         let mut proc = Process::new(1);
         let mut buf = [0u8; 16];
-        assert!(sys_prctl(&mut proc, 999, 0, &mut buf).is_ok());
+        assert!(sys_prctl(&mut proc, 0, 999, &mut buf).is_ok());
     }
 
     #[test]
@@ -17709,7 +17751,10 @@ mod tests {
 
     #[test]
     fn test_clone_thread_allocates_kernel_thread() {
+        let _guard = THREAD_IDENTITY_LOCK.lock().unwrap();
+        set_test_current_tid(0);
         let mut proc = Process::new(1);
+        proc.thread_name[..6].copy_from_slice(b"leader");
         let mut host = MockHostIO::new();
         const CLONE_VM: u32 = 0x00000100;
         const CLONE_THREAD: u32 = 0x00010000;
@@ -17717,7 +17762,9 @@ mod tests {
         let result = sys_clone(&mut proc, &mut host, 0, 0x8000, flags, 0, 0, 0, 0);
         let tid = result.expect("thread-style clone should allocate a tid");
         assert!(tid > 0);
-        assert!(proc.get_thread(tid as u32).is_some());
+        let thread = proc.get_thread(tid as u32).unwrap();
+        assert_eq!(&thread.thread_name[..6], b"leader");
+        set_test_current_tid(0);
     }
 
     #[test]

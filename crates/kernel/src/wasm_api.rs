@@ -7909,6 +7909,7 @@ pub extern "C" fn kernel_ioctl(fd: i32, request: u32, buf_ptr: *mut u8, buf_len:
 #[unsafe(no_mangle)]
 pub extern "C" fn kernel_prctl(option: u32, arg2: u32, _arg3: *mut u8, _arg4: u32) -> i32 {
     let (_gkl, proc) = unsafe { get_process() };
+    let tid = crate::process_table::current_tid();
     // For PR_SET_NAME (15) and PR_GET_NAME (16), arg2 is the pointer to
     // a 16-byte name buffer.  The other prctl args are option-specific and
     // may be garbage for options that don't use them.
@@ -7919,7 +7920,7 @@ pub extern "C" fn kernel_prctl(option: u32, arg2: u32, _arg3: *mut u8, _arg4: u3
     } else {
         &mut []
     };
-    let result = match syscalls::sys_prctl(proc, option, arg2, buf) {
+    let result = match syscalls::sys_prctl(proc, tid, option, buf) {
         Ok(()) => 0,
         Err(e) => -(e as i32),
     };
