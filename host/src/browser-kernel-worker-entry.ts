@@ -1091,6 +1091,7 @@ async function handleFork(
     maxAddr: childLayout.maxAddr,
     mmapBase: childLayout.mmapBase,
   });
+  kernelWorker.inheritProcessSharedMappings(parentPid, childPid);
 
   const forkBufAddr = threadFork
     ? threadFork.forkBufAddr
