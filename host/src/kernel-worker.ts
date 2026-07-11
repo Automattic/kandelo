@@ -2557,14 +2557,9 @@ export class CentralizedKernelWorker {
     // If deliver_pending_signals marked this process as Exited (e.g., abort()
     // raises SIGABRT with default action Terminate), don't complete the channel.
     // Instead, record signal-death wait status and terminate the worker.
-    const getExitStatus = this.kernelInstance!.exports
-      .kernel_get_process_exit_status as ((pid: number) => number) | undefined;
-    if (getExitStatus) {
-      const exitStatus = getExitStatus(channel.pid);
-      if (exitStatus >= 128) {
-        this.handleProcessTerminated(channel);
-        return;
-      }
+    if (this.getProcessExitSignal(channel.pid) > 0) {
+      this.handleProcessTerminated(channel);
+      return;
     }
 
     // --- POSIX mqueue notification ---
@@ -4068,14 +4063,9 @@ export class CentralizedKernelWorker {
     // Check if the process was killed by a signal while blocking.
     // This handles cases like sigsuspend + cross-process SIGABRT where
     // deliver_pending_signals marks the target as Exited.
-    const getExitStatus = this.kernelInstance!.exports
-      .kernel_get_process_exit_status as ((pid: number) => number) | undefined;
-    if (getExitStatus) {
-      const exitStatus = getExitStatus(channel.pid);
-      if (exitStatus >= 128) {
-        this.handleProcessTerminated(channel);
-        return;
-      }
+    if (this.getProcessExitSignal(channel.pid) > 0) {
+      this.handleProcessTerminated(channel);
+      return;
     }
 
     // The process channel still has the original args (we never wrote a response).
@@ -6547,10 +6537,8 @@ export class CentralizedKernelWorker {
     // and waking it would cause the C code to continue executing.
     // onExit will terminate the worker.
     if (this.callbacks.onExit) {
-      const getExitStatus = this.kernelInstance!.exports
-        .kernel_get_process_exit_status as ((pid: number) => number) | undefined;
-      const exitStatus = getExitStatus ? getExitStatus(exitingPid) : -1;
-      this.callbacks.onExit(exitingPid, exitStatus >= 128 ? exitStatus : -1);
+      const signal = this.getProcessExitSignal(exitingPid);
+      this.callbacks.onExit(exitingPid, signal > 0 ? 128 + signal : -1);
     }
   }
 
@@ -6595,21 +6583,16 @@ export class CentralizedKernelWorker {
    * at the kernel level but can leave the host-side blocked wait queue
    * asleep — wait4(-1) then blocks forever.
    *
-   * The kernel sets exit_status to 128 + signum for default Terminate
-   * actions. Anything < 0 means the process is still alive.
+   * The kernel exposes the termination signal separately from the normal exit
+   * status, so exit codes 128..255 cannot be mistaken for signal death.
    */
   private reapKilledProcessesAfterSyscall(): void {
-    const getExitStatus = this.kernelInstance!.exports
-      .kernel_get_process_exit_status as ((pid: number) => number) | undefined;
-    if (!getExitStatus) return;
-
     // Snapshot the registered pids so we can mutate this.processes safely
     // inside the loop (handleProcessTerminated calls onExit which can
     // remove entries).
     const pids = Array.from(this.processes.keys());
     for (const pid of pids) {
-      const status = getExitStatus(pid);
-      if (status < 128) continue;           // still alive, or normally exiting via SYS_EXIT
+      if (this.getProcessExitSignal(pid) <= 0) continue;
       if (this.hostReaped.has(pid)) continue; // already reaped this generation
 
       // Cancel any pending blocking-syscall timers — the process is gone.
@@ -6623,6 +6606,12 @@ export class CentralizedKernelWorker {
       // events fire close together.
       if (ch) this.handleProcessTerminated(ch);
     }
+  }
+
+  private getProcessExitSignal(pid: number): number {
+    const getExitSignal = this.kernelInstance!.exports
+      .kernel_get_process_exit_signal as (pid: number) => number;
+    return getExitSignal(pid);
   }
   /** Track pids the host has already reaped (prevents double-reaping
    *  when reapKilledProcessesAfterSyscall is called multiple times for
