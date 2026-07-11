@@ -38,6 +38,10 @@ ABI version: `12` (see
 - Do not keep compiler/linker flags solely for the retired legacy path. The
   fork instrumenter does not require preserved function names or onlylists; if
   a build keeps debug-info flags, it should be for a current diagnostic reason.
+- On Unix hosts, the CLI preserves the input Wasm file's permission mode on
+  its output, including when `--output` names the input file. Package build
+  scripts can therefore instrument installed executables in place without
+  making them non-executable.
 
 ## State machine
 
