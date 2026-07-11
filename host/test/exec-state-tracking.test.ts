@@ -9,6 +9,7 @@ import {
   CH_ARGS,
   CH_DATA_SIZE,
   CH_RETURN,
+  HOST_INTERCEPTED_SYSCALLS,
 } from "../src/generated/abi";
 
 describe("exec host-state transition", () => {
@@ -249,8 +250,8 @@ describe("exec host-state transition", () => {
     bytes.set(path, pathPtr);
     const blobPtr = 0x200;
     bytes.fill(0, blobPtr, blobPtr + 40);
-    let resolveProgram!: (value: ArrayBuffer) => void;
-    const program = new Promise<ArrayBuffer>((resolve) => {
+    let resolveProgram!: (value: ReturnType<typeof resolvedProgram>) => void;
+    const program = new Promise<ReturnType<typeof resolvedProgram>>((resolve) => {
       resolveProgram = resolve;
     });
     const kernelSpawn = vi.fn(() => 100);
@@ -270,13 +271,53 @@ describe("exec host-state transition", () => {
 
     worker.handleSpawn(channel, [pathPtr, path.length, blobPtr, 40, 0, 0]);
     worker.processes.get(7).channels = [];
-    resolveProgram(new ArrayBuffer(8));
+    resolveProgram(resolvedProgram());
     await Promise.resolve();
     await Promise.resolve();
 
     expect(kernelSpawn).not.toHaveBeenCalled();
     expect(onSpawn).not.toHaveBeenCalled();
     expect(completeChannel).not.toHaveBeenCalled();
+  });
+
+  it("rejects an unlaunchable spawn before creating a child or applying file actions", async () => {
+    const memory = new WebAssembly.Memory({ initial: 1, maximum: 1, shared: true });
+    const channel = createChannel(7, memory, 0);
+    const bytes = new Uint8Array(memory.buffer);
+    const pathPtr = 0x100;
+    const path = new TextEncoder().encode("/bin/malformed");
+    bytes.set(path, pathPtr);
+    const blobPtr = 0x200;
+    bytes.fill(0, blobPtr, blobPtr + 40);
+    const kernelSpawn = vi.fn(() => 100);
+    const onSpawn = vi.fn(async () => 0);
+    const completeChannel = vi.fn();
+    const worker = createWorker({
+      processes: new Map([[7, { channels: [channel], memory }]]),
+      callbacks: {
+        onResolveSpawn: vi.fn(async () => ({ errno: 8 })),
+        onSpawn,
+      },
+      completeChannel,
+      kernelInstance: {
+        exports: { kernel_spawn_process: kernelSpawn },
+      },
+    });
+
+    worker.handleSpawn(channel, [pathPtr, path.length, blobPtr, 40, 0, 0]);
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(kernelSpawn).not.toHaveBeenCalled();
+    expect(onSpawn).not.toHaveBeenCalled();
+    expect(completeChannel).toHaveBeenCalledWith(
+      channel,
+      HOST_INTERCEPTED_SYSCALLS.SYS_SPAWN,
+      [pathPtr, path.length, blobPtr, 40, 0, 0],
+      undefined,
+      -1,
+      8,
+    );
   });
 
   it("keeps a created spawn child but suppresses stale parent completion", async () => {
@@ -289,9 +330,11 @@ describe("exec host-state transition", () => {
     const kernelSpawn = vi.fn(() => 100);
     const removeProcess = vi.fn();
     const completeChannel = vi.fn();
+    const onSpawn = vi.fn(() => spawned);
+    const program = resolvedProgram();
     const worker = createWorker({
       processes: new Map([[7, { channels: [channel], memory }]]),
-      callbacks: { onSpawn: vi.fn(() => spawned) },
+      callbacks: { onSpawn },
       completeChannel,
       kernelMemory: new WebAssembly.Memory({ initial: 1 }),
       scratchOffset: 0,
@@ -311,10 +354,10 @@ describe("exec host-state transition", () => {
       0,
       new Uint8Array(40),
       40,
+      program,
       [],
-      [],
-      new ArrayBuffer(8),
     );
+    expect(onSpawn).toHaveBeenCalledWith(100, program, []);
     worker.processes.get(7).channels = [];
     finishSpawn(0);
     await Promise.resolve();
@@ -370,9 +413,8 @@ describe("exec host-state transition", () => {
       0,
       new Uint8Array(40),
       40,
+      resolvedProgram(),
       [],
-      [],
-      new ArrayBuffer(8),
     );
 
     expect(worker.tcpListenerTargets.get(8080)).toContainEqual({
@@ -1034,6 +1076,18 @@ function createWorker(overrides: Record<string, unknown>): any {
     io: { network: undefined },
     ...overrides,
   });
+}
+
+function resolvedProgram() {
+  const programBytes = Uint8Array.from([
+    0x00, 0x61, 0x73, 0x6d,
+    0x01, 0x00, 0x00, 0x00,
+  ]).buffer;
+  return {
+    programBytes,
+    programModule: new WebAssembly.Module(programBytes),
+    argv: [],
+  };
 }
 
 function createChannel(pid: number, memory: WebAssembly.Memory, channelOffset: number): any {

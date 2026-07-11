@@ -4,6 +4,7 @@
 
 import { describe, it, expect } from "vitest";
 import {
+  createLongjmpTag,
   parseDylinkSection,
   loadSharedLibrary,
   loadSharedLibrarySync,
@@ -70,13 +71,14 @@ function buildDylinkWat(
   forkCapabilities?: number,
   tableSize = 0,
   memorySize = 0,
+  wat2wasmFlags: string[] = [],
 ): Uint8Array {
   const dir = join(tmpdir(), "wasm-dylink-wat-test");
   mkdirSync(dir, { recursive: true });
   const watPath = join(dir, `${name}.wat`);
   const wasmPath = join(dir, `${name}.wasm`);
   writeFileSync(watPath, wat);
-  execFileSync("wat2wasm", ["--enable-threads", watPath, "-o", wasmPath], {
+  execFileSync("wat2wasm", ["--enable-threads", ...wat2wasmFlags, watPath, "-o", wasmPath], {
     stdio: "pipe",
   });
   const module = new Uint8Array(readFileSync(wasmPath));
@@ -102,6 +104,103 @@ function buildDylinkWat(
         new Uint8Array([FORK_CAPABILITIES_VERSION, forkCapabilities]),
       );
 }
+
+describe.skipIf(typeof WebAssembly.Tag !== "function")("longjmp tag identity", () => {
+  const cases = [
+    { ptrWidth: 4 as const, wasmType: "i32", value: 37 },
+    { ptrWidth: 8 as const, wasmType: "i64", value: 37n },
+  ];
+
+  it.each(cases)(
+    "shares one process-owned $wasmType tag with a side module",
+    ({ ptrWidth, wasmType, value }) => {
+      const wasmBytes = buildDylinkWat(`
+        (module
+          (import "env" "memory" (memory 1 100 shared))
+          (tag $longjmp (import "env" "__c_longjmp") (param ${wasmType}))
+          (func (export "throw_longjmp") (param $value ${wasmType})
+            local.get $value
+            throw $longjmp))
+      `, `longjmp-${wasmType}`, undefined, 0, 0, ["--enable-exceptions"]);
+      const options = createSideForkLoadOptions();
+      const longjmpTag = createLongjmpTag(ptrWidth)!;
+      options.ptrWidth = ptrWidth;
+      options.longjmpTag = longjmpTag;
+      // A same-named main export is not authoritative for this reserved tag.
+      options.globalSymbols.set("__c_longjmp", () => 0);
+
+      const lib = loadSharedLibrarySync(`liblongjmp-${wasmType}.so`, wasmBytes, options);
+      const throwLongjmp = lib.exports.throw_longjmp as (arg: number | bigint) => void;
+      let caught: unknown;
+      try {
+        throwLongjmp(value);
+      } catch (error) {
+        caught = error;
+      }
+
+      const WasmException = (WebAssembly as typeof WebAssembly & {
+        Exception: new (...args: unknown[]) => Error;
+      }).Exception;
+      expect(caught).toBeInstanceOf(WasmException);
+      const exception = caught as Error & {
+        is: (tag: WebAssembly.Tag) => boolean;
+        getArg: (tag: WebAssembly.Tag, index: number) => unknown;
+      };
+      expect(exception.is(longjmpTag)).toBe(true);
+      expect(exception.getArg(longjmpTag, 0)).toBe(value);
+    },
+  );
+
+  it.each(cases)(
+    "creates one pointer-width-aware $wasmType fallback for standalone linkers",
+    ({ ptrWidth, wasmType, value }) => {
+      const wasmBytes = buildDylinkWat(`
+        (module
+          (import "env" "memory" (memory 1 100 shared))
+          (tag $longjmp (import "env" "__c_longjmp") (param ${wasmType}))
+          (func (export "throw_longjmp") (param $value ${wasmType})
+            local.get $value
+            throw $longjmp))
+      `, `fallback-longjmp-${wasmType}`, undefined, 0, 0, ["--enable-exceptions"]);
+      const options = createSideForkLoadOptions();
+      options.ptrWidth = ptrWidth;
+
+      const first = loadSharedLibrarySync(`libfallback-${wasmType}-one.so`, wasmBytes, options);
+      const fallbackTag = options.longjmpTag!;
+      expect(fallbackTag).toBeInstanceOf(WebAssembly.Tag);
+      const second = loadSharedLibrarySync(`libfallback-${wasmType}-two.so`, wasmBytes, options);
+      expect(options.longjmpTag).toBe(fallbackTag);
+
+      for (const lib of [first, second]) {
+        let caught: unknown;
+        try {
+          (lib.exports.throw_longjmp as (arg: number | bigint) => void)(value);
+        } catch (error) {
+          caught = error;
+        }
+        const exception = caught as {
+          is: (tag: WebAssembly.Tag) => boolean;
+          getArg: (tag: WebAssembly.Tag, index: number) => unknown;
+        };
+        expect(exception.is(fallbackTag)).toBe(true);
+        expect(exception.getArg(fallbackTag, 0)).toBe(value);
+      }
+    },
+  );
+
+  it("rejects a lookalike tag before side-module instantiation", () => {
+    const wasmBytes = buildDylinkWat(`
+      (module
+        (import "env" "memory" (memory 1 100 shared))
+        (tag $longjmp (import "env" "__c_longjmp") (param i32)))
+    `, "invalid-longjmp-tag", undefined, 0, 0, ["--enable-exceptions"]);
+    const options = createSideForkLoadOptions();
+    options.longjmpTag = {} as WebAssembly.Tag;
+
+    expect(() => loadSharedLibrarySync("libinvalid-longjmp.so", wasmBytes, options))
+      .toThrow(/__c_longjmp must be an actual WebAssembly\.Tag/);
+  });
+});
 
 describe.skipIf(!hasCompiler())("dylink.0 parser", () => {
   it("parses a simple shared library", () => {
