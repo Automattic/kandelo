@@ -113,8 +113,10 @@ function currentModuleUrl(): string {
   return import.meta.url;
 }
 
-function nodeWorkerStackSizeMb(): number {
-  const raw = process.env.KANDELO_NODE_WORKER_STACK_SIZE_MB;
+/** @internal Exported so the host policy can be validated without spawning a worker. */
+export function nodeWorkerStackSizeMb(
+  raw = process.env.KANDELO_NODE_WORKER_STACK_SIZE_MB,
+): number {
   if (raw === undefined || raw === "") return DEFAULT_NODE_WORKER_STACK_SIZE_MB;
   const parsed = Number(raw);
   if (!Number.isFinite(parsed) || parsed <= 0) {
@@ -123,7 +125,11 @@ function nodeWorkerStackSizeMb(): number {
   return parsed;
 }
 
-function nodeWorkerOptions(workerData: unknown, options: WorkerOptions = {}): WorkerOptions {
+/** @internal Exported so tests can verify resource-limit composition. */
+export function nodeWorkerOptions(
+  workerData: unknown,
+  options: WorkerOptions = {},
+): WorkerOptions {
   return {
     ...options,
     workerData,

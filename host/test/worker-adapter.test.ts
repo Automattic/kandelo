@@ -1,5 +1,11 @@
+import { fileURLToPath } from "node:url";
 import { describe, it, expect } from "vitest";
-import { MockWorkerAdapter } from "../src/worker-adapter";
+import {
+  MockWorkerAdapter,
+  NodeWorkerAdapter,
+  nodeWorkerOptions,
+  nodeWorkerStackSizeMb,
+} from "../src/worker-adapter";
 
 describe("MockWorkerAdapter", () => {
   it("should create a worker handle and capture workerData", () => {
@@ -47,4 +53,76 @@ describe("MockWorkerAdapter", () => {
     handle.postMessage({ type: "terminate" });
     expect(adapter.lastWorker!.sentMessages).toEqual([{ type: "terminate" }]);
   });
+});
+
+describe("NodeWorkerAdapter stack policy", () => {
+  it("uses 32 MiB by default and validates explicit overrides", () => {
+    expect(nodeWorkerStackSizeMb(undefined)).toBe(32);
+    expect(nodeWorkerStackSizeMb("48")).toBe(48);
+    expect(() => nodeWorkerStackSizeMb("0")).toThrow(/invalid/);
+    expect(() => nodeWorkerStackSizeMb("-1")).toThrow(/invalid/);
+    expect(() => nodeWorkerStackSizeMb("not-a-number")).toThrow(/invalid/);
+  });
+
+  it("preserves other resource limits when setting the stack limit", () => {
+    expect(nodeWorkerOptions({ pid: 7 }, {
+      resourceLimits: { maxOldGenerationSizeMb: 64 },
+    })).toMatchObject({
+      workerData: { pid: 7 },
+      resourceLimits: {
+        maxOldGenerationSizeMb: 64,
+        stackSizeMb: 32,
+      },
+    });
+  });
+
+  it("runs a deeply recursive Wasm workload inside the configured worker stack", async () => {
+    const adapter = new NodeWorkerAdapter(
+      new URL("./fixtures/deep-wasm-recursion-worker.mjs", import.meta.url),
+    );
+    const worker = adapter.createWorker({
+      wasmPath: fileURLToPath(
+        new URL("./fixtures/deep-wasm-recursion.wasm", import.meta.url),
+      ),
+      depth: 300_000,
+    });
+
+    try {
+      const result = await new Promise<unknown>((resolve, reject) => {
+        worker.on("message", resolve);
+        worker.on("error", reject);
+        worker.on("exit", (code) => {
+          if (code !== 0) reject(new Error(`deep Wasm worker exited ${code}`));
+        });
+      });
+      expect(result).toEqual({ result: 300_000 });
+    } finally {
+      await worker.terminate();
+    }
+  }, 20_000);
+
+  it("supports the default four concurrent process-worker stack reservations", async () => {
+    const adapter = new NodeWorkerAdapter(
+      new URL("./fixtures/deep-wasm-recursion-worker.mjs", import.meta.url),
+    );
+    const wasmPath = fileURLToPath(
+      new URL("./fixtures/deep-wasm-recursion.wasm", import.meta.url),
+    );
+    const workers = Array.from({ length: 4 }, () =>
+      adapter.createWorker({ wasmPath, depth: 100_000 }));
+
+    try {
+      const results = await Promise.all(workers.map((worker) =>
+        new Promise<unknown>((resolve, reject) => {
+          worker.on("message", resolve);
+          worker.on("error", reject);
+          worker.on("exit", (code) => {
+            if (code !== 0) reject(new Error(`deep Wasm worker exited ${code}`));
+          });
+        })));
+      expect(results).toEqual(Array.from({ length: 4 }, () => ({ result: 100_000 })));
+    } finally {
+      await Promise.all(workers.map((worker) => worker.terminate()));
+    }
+  }, 20_000);
 });
