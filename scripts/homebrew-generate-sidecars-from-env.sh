@@ -4,11 +4,26 @@
 set -euo pipefail
 
 KANDELO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+# shellcheck source=/dev/null
+. "$KANDELO_ROOT/scripts/homebrew-publication-limits.sh"
 
 require_env() {
   local name="$1"
   if [ -z "${!name:-}" ]; then
     echo "homebrew-generate-sidecars-from-env.sh: $name is required" >&2
+    exit 2
+  fi
+}
+
+require_bounded_regular_file() {
+  local label="$1" path="$2" maximum="$3" size
+  if [ ! -f "$path" ] || [ -L "$path" ]; then
+    echo "homebrew-generate-sidecars-from-env.sh: $label must be a regular non-symlink file: $path" >&2
+    exit 2
+  fi
+  size="$(wc -c <"$path" | tr -d '[:space:]')"
+  if ! [[ "$size" =~ ^[0-9]+$ ]] || [ "$size" -gt "$maximum" ]; then
+    echo "homebrew-generate-sidecars-from-env.sh: $label exceeds $maximum bytes" >&2
     exit 2
   fi
 }
@@ -22,9 +37,13 @@ for name in \
   KANDELO_HOMEBREW_TAP_REPOSITORY \
   KANDELO_HOMEBREW_BOTTLE_ARCHIVE \
   KANDELO_HOMEBREW_BOTTLE_JSON \
+  KANDELO_HOMEBREW_BOTTLE_ROOT_URL \
   KANDELO_HOMEBREW_BOTTLE_URL \
   KANDELO_HOMEBREW_BOTTLE_SHA256 \
-  KANDELO_HOMEBREW_BOTTLE_BYTES; do
+  KANDELO_HOMEBREW_BOTTLE_BYTES \
+  KANDELO_HOMEBREW_DEPENDENCY_PROVENANCE \
+  KANDELO_HOMEBREW_FORBIDDEN_ROOTS_JSON \
+  HOMEBREW_BREW_COMMIT; do
   require_env "$name"
 done
 
@@ -42,20 +61,19 @@ HOST_TARGET="$(rustc -vV | awk '/^host/ {print $2}')"
 FORMULA_SOURCE_ROOT="${KANDELO_HOMEBREW_FORMULA_SOURCE_ROOT:-$KANDELO_HOMEBREW_TAP_ROOT}"
 FORMULA_PATH="$FORMULA_SOURCE_ROOT/Formula/$KANDELO_HOMEBREW_FORMULA.rb"
 MERGED_FORMULA_PATH="$KANDELO_HOMEBREW_TAP_ROOT/Formula/$KANDELO_HOMEBREW_FORMULA.rb"
-if [ ! -f "$FORMULA_PATH" ]; then
-  echo "homebrew-generate-sidecars-from-env.sh: build-source formula not found: $FORMULA_PATH" >&2
-  exit 2
-fi
-if [ ! -f "$MERGED_FORMULA_PATH" ]; then
-  echo "homebrew-generate-sidecars-from-env.sh: merged formula not found: $MERGED_FORMULA_PATH" >&2
-  exit 2
-fi
-if [ ! -f "$KANDELO_HOMEBREW_BOTTLE_ARCHIVE" ]; then
-  echo "homebrew-generate-sidecars-from-env.sh: bottle archive not found: $KANDELO_HOMEBREW_BOTTLE_ARCHIVE" >&2
-  exit 2
-fi
-if [ ! -f "$KANDELO_HOMEBREW_BOTTLE_JSON" ]; then
-  echo "homebrew-generate-sidecars-from-env.sh: bottle JSON not found: $KANDELO_HOMEBREW_BOTTLE_JSON" >&2
+require_bounded_regular_file \
+  "build-source Formula" "$FORMULA_PATH" "$HOMEBREW_MAX_FORMULA_BYTES"
+require_bounded_regular_file \
+  "merged Formula" "$MERGED_FORMULA_PATH" "$HOMEBREW_MAX_FORMULA_BYTES"
+require_bounded_regular_file \
+  "bottle archive" "$KANDELO_HOMEBREW_BOTTLE_ARCHIVE" "$HOMEBREW_MAX_BOTTLE_BYTES"
+require_bounded_regular_file \
+  "bottle JSON" "$KANDELO_HOMEBREW_BOTTLE_JSON" "$HOMEBREW_MAX_BOTTLE_JSON_BYTES"
+require_bounded_regular_file \
+  "dependency provenance" "$KANDELO_HOMEBREW_DEPENDENCY_PROVENANCE" \
+  "$HOMEBREW_MAX_DEPENDENCY_PROVENANCE_BYTES"
+if ! [[ "$HOMEBREW_BREW_COMMIT" =~ ^[0-9a-f]{40}$ ]]; then
+  echo "homebrew-generate-sidecars-from-env.sh: invalid Homebrew commit: $HOMEBREW_BREW_COMMIT" >&2
   exit 2
 fi
 
@@ -87,55 +105,26 @@ CACHE_KEY_SHA="$ACTUAL_BOTTLE_SHA256"
 
 FORMULA_SHA256="$(shasum -a 256 "$FORMULA_PATH" | awk '{print $1}')"
 TAP_NAME="$(printf '%s' "$KANDELO_HOMEBREW_TAP_REPOSITORY" | tr '[:upper:]' '[:lower:]')"
-BREW_BIN="${HOMEBREW_BREW_FILE:-brew}"
-BREW_INFO_WORK_DIR="$(mktemp -d)"
-FORMULA_INFO_JSON="$(mktemp "${TMPDIR:-/tmp}/kandelo-homebrew-formula-info.XXXXXX")"
-. "$KANDELO_ROOT/scripts/homebrew-patched-launcher.sh"
-
-cleanup() {
-  homebrew_patched_launcher_cleanup
-  rm -rf "$BREW_INFO_WORK_DIR"
-  rm -f "$FORMULA_INFO_JSON"
-}
-trap cleanup EXIT
-
-export XDG_CONFIG_HOME="$BREW_INFO_WORK_DIR/xdg-config"
-mkdir -p "$XDG_CONFIG_HOME/homebrew"
-chmod 0700 "$XDG_CONFIG_HOME" "$XDG_CONFIG_HOME/homebrew"
-PATCH_FILE="${KANDELO_HOMEBREW_PATCH_FILE:-$KANDELO_ROOT/homebrew/patches/0001-add-kandelo-wasm-bottle-tags.patch}"
-homebrew_patched_launcher_prepare "$BREW_BIN" "$PATCH_FILE" "$BREW_INFO_WORK_DIR"
-BREW_BIN="$HOMEBREW_PATCHED_BREW_BIN"
-ACTUAL_BREW_COMMIT="$(git -C "$HOMEBREW_PATCHED_REPO" rev-parse HEAD)"
-BREW_COMMIT="${HOMEBREW_BREW_COMMIT:-$ACTUAL_BREW_COMMIT}"
-if ! [[ "$BREW_COMMIT" =~ ^[0-9a-f]{40}$ ]]; then
-  echo "homebrew-generate-sidecars-from-env.sh: invalid Homebrew commit: $BREW_COMMIT" >&2
-  exit 2
-fi
-if [ "$ACTUAL_BREW_COMMIT" != "$BREW_COMMIT" ]; then
-  echo "homebrew-generate-sidecars-from-env.sh: active Homebrew checkout differs from $BREW_COMMIT" >&2
-  exit 1
-fi
 SDK_FINGERPRINT="$(shasum -a 256 "$KANDELO_ROOT/sdk/activate.sh" | awk '{print $1}')"
-SYSROOT_FINGERPRINT="$(shasum -a 256 "$KANDELO_ROOT/sysroot/lib/libc.a" | awk '{print $1}')"
-
-"$BREW_BIN" tap "$TAP_NAME" "$FORMULA_SOURCE_ROOT"
-"$BREW_BIN" trust --tap "$TAP_NAME"
-if BREW_VERSION_OUTPUT="$("$BREW_BIN" --version)"; then
-  :
-else
-  status=$?
-  echo "homebrew-generate-sidecars-from-env.sh: brew --version failed with status $status" >&2
-  exit 1
-fi
-BREW_VERSION="${BREW_VERSION_OUTPUT%%$'\n'*}"
-if [ -z "$BREW_VERSION" ]; then
-  echo "homebrew-generate-sidecars-from-env.sh: brew --version returned no version" >&2
-  exit 1
-fi
-BREW_VERSION="$BREW_VERSION (commit $BREW_COMMIT)"
-"$BREW_BIN" info --json=v2 --formula "$TAP_NAME/$KANDELO_HOMEBREW_FORMULA" > "$FORMULA_INFO_JSON"
+SYSROOT_FINGERPRINT="$(bash "$KANDELO_ROOT/scripts/homebrew-sysroot-fingerprint.sh" \
+  --kandelo-root "$KANDELO_ROOT" --arch "$KANDELO_HOMEBREW_ARCH")"
 TAP_COMMIT="$(git -C "$FORMULA_SOURCE_ROOT" rev-parse HEAD)"
 KANDELO_COMMIT="$(git -C "$KANDELO_ROOT" rev-parse HEAD)"
+for commit in "$TAP_COMMIT" "$KANDELO_COMMIT"; do
+  if ! [[ "$commit" =~ ^[0-9a-f]{40}$ ]]; then
+    echo "homebrew-generate-sidecars-from-env.sh: invalid source commit" >&2
+    exit 2
+  fi
+done
+python3 "$KANDELO_ROOT/scripts/homebrew-dependency-provenance.py" validate \
+  --input "$KANDELO_HOMEBREW_DEPENDENCY_PROVENANCE" \
+  --formula "$KANDELO_HOMEBREW_FORMULA" \
+  --arch "$KANDELO_HOMEBREW_ARCH" \
+  --tap-repository "$KANDELO_HOMEBREW_TAP_REPOSITORY" \
+  --tap-commit "$TAP_COMMIT" \
+  --bottle-root-url "$KANDELO_HOMEBREW_BOTTLE_ROOT_URL" \
+  --tap-root "$FORMULA_SOURCE_ROOT"
+BREW_VERSION="Homebrew source commit $HOMEBREW_BREW_COMMIT"
 GENERATED_AT="$(date -u +%FT%TZ)"
 RUN_URL="${GITHUB_SERVER_URL:-https://github.com}/${GITHUB_REPOSITORY:-local/kandelo}/actions/runs/${GITHUB_RUN_ID:-local}"
 INPUT_JSON="$KANDELO_HOMEBREW_SIDECAR_ROOT/sidecars-input.json"
@@ -146,7 +135,7 @@ if [ -d "$FORMULA_SOURCE_ROOT/Kandelo" ]; then
   rsync -a "$FORMULA_SOURCE_ROOT/Kandelo/" "$KANDELO_HOMEBREW_SIDECAR_ROOT/Kandelo/"
 fi
 export ABI_VERSION CACHE_KEY_SHA SDK_FINGERPRINT SYSROOT_FINGERPRINT FORMULA_SHA256 BREW_VERSION
-export TAP_COMMIT KANDELO_COMMIT GENERATED_AT RUN_URL TAP_NAME KANDELO_ROOT FORMULA_INFO_JSON
+export TAP_COMMIT KANDELO_COMMIT GENERATED_AT RUN_URL TAP_NAME KANDELO_ROOT FORMULA_SOURCE_ROOT
 
 python3 - "$INPUT_JSON" <<'PY'
 import json
@@ -155,53 +144,92 @@ import pathlib
 import re
 import subprocess
 import sys
-import tempfile
 
 out_path = pathlib.Path(sys.argv[1])
 formula = os.environ["KANDELO_HOMEBREW_FORMULA"]
 arch = os.environ["KANDELO_HOMEBREW_ARCH"]
 bottle_json_path = pathlib.Path(os.environ["KANDELO_HOMEBREW_BOTTLE_JSON"])
 bottle_archive_path = pathlib.Path(os.environ["KANDELO_HOMEBREW_BOTTLE_ARCHIVE"])
-formula_info_path = pathlib.Path(os.environ["FORMULA_INFO_JSON"])
+dependency_provenance_path = pathlib.Path(
+    os.environ["KANDELO_HOMEBREW_DEPENDENCY_PROVENANCE"]
+)
+try:
+    forbidden_roots = json.loads(os.environ["KANDELO_HOMEBREW_FORBIDDEN_ROOTS_JSON"])
+except json.JSONDecodeError as error:
+    raise SystemExit(f"forbidden roots are not valid JSON: {error}")
+if (
+    not isinstance(forbidden_roots, list)
+    or not forbidden_roots
+    or len(forbidden_roots) > 32
+    or any(not isinstance(root, str) or not root for root in forbidden_roots)
+):
+    raise SystemExit("forbidden roots must be a non-empty JSON string array of at most 32 entries")
 
 with bottle_json_path.open("r", encoding="utf-8") as f:
     bottle_json = json.load(f)
-with formula_info_path.open("r", encoding="utf-8") as f:
-    formula_info = json.load(f)
-if not isinstance(formula_info, dict):
-    raise SystemExit("brew info output must be a JSON object")
+with dependency_provenance_path.open("r", encoding="utf-8") as f:
+    dependency_provenance = json.load(f)
+if not isinstance(dependency_provenance, dict):
+    raise SystemExit("dependency provenance must be a JSON object")
 
-if len(bottle_json) != 1:
+if not isinstance(bottle_json, dict) or len(bottle_json) != 1:
     raise SystemExit(f"expected one formula in bottle JSON, got {len(bottle_json)}")
 formula_key, bottle_entry = next(iter(bottle_json.items()))
+if not isinstance(bottle_entry, dict) or set(bottle_entry) != {"formula", "bottle"}:
+    raise SystemExit("canonical bottle JSON entry has unexpected fields")
 bottle_formula = bottle_entry["formula"]
 bottle = bottle_entry["bottle"]
+if not isinstance(bottle_formula, dict) or set(bottle_formula) != {"name", "path", "pkg_version"}:
+    raise SystemExit("canonical bottle Formula metadata has unexpected fields")
+if not isinstance(bottle, dict) or set(bottle) != {"root_url", "cellar", "rebuild", "tags"}:
+    raise SystemExit("canonical bottle metadata has unexpected fields")
 tag_name = f"{arch}_kandelo"
+if not isinstance(bottle.get("tags"), dict) or set(bottle["tags"]) != {tag_name}:
+    raise SystemExit(f"canonical bottle JSON must contain only tag {tag_name}")
 tag = bottle["tags"].get(tag_name)
 if tag is None:
     raise SystemExit(f"bottle JSON lacks tag {tag_name}; tags={list(bottle['tags'])}")
+if not isinstance(tag, dict) or set(tag) != {"sha256"}:
+    raise SystemExit(f"canonical bottle tag {tag_name} has unexpected fields")
+root_url = bottle.get("root_url")
+if (
+    not isinstance(root_url, str)
+    or not re.fullmatch(r"https://ghcr\.io/v2/[a-z0-9._/-]+", root_url)
+    or root_url.endswith("/")
+    or root_url != os.environ["KANDELO_HOMEBREW_BOTTLE_ROOT_URL"]
+):
+    raise SystemExit("bottle JSON root URL does not match the selected publication root")
+if bottle.get("cellar") not in {
+    "any", "any_skip_relocation", "/home/linuxbrew/.linuxbrew/Cellar"
+}:
+    raise SystemExit("canonical bottle JSON has an invalid relocation cellar")
+rebuild = bottle.get("rebuild")
+if isinstance(rebuild, bool) or not isinstance(rebuild, int) or rebuild < 0:
+    raise SystemExit("canonical bottle JSON has an invalid rebuild")
 
 expected_full_name = f"{os.environ['TAP_NAME']}/{formula}"
-if formula_key.lower() != expected_full_name:
+if formula_key != formula:
     raise SystemExit(
-        f"bottle formula key {formula_key!r} does not match tap formula {expected_full_name!r}"
+        f"canonical bottle formula key {formula_key!r} does not match {formula!r}"
     )
 if bottle_formula.get("name") != formula:
     raise SystemExit(
         f"bottle formula name {bottle_formula.get('name')!r} does not match {formula!r}"
     )
-formula_path = f"Formula/{formula}.rb"
-if bottle_formula.get("tap_git_path") != formula_path:
+tap_owner, tap_repository = os.environ["TAP_NAME"].split("/", 1)
+formula_path = f"Library/Taps/{tap_owner}/homebrew-{tap_repository}/Formula/{formula}.rb"
+if bottle_formula.get("path") != formula_path:
     raise SystemExit(
-        f"bottle formula path {bottle_formula.get('tap_git_path')!r} does not match {formula_path!r}"
-    )
-if bottle_formula.get("tap_git_revision") != os.environ["TAP_COMMIT"]:
-    raise SystemExit(
-        f"bottle formula revision {bottle_formula.get('tap_git_revision')!r} "
-        f"does not match tap commit {os.environ['TAP_COMMIT']!r}"
+        f"bottle formula path {bottle_formula.get('path')!r} does not match {formula_path!r}"
     )
 if tag.get("sha256") != os.environ["CACHE_KEY_SHA"]:
     raise SystemExit("bottle JSON sha256 does not match the produced bottle archive")
+expected_bottle_url = (
+    f"{os.environ['KANDELO_HOMEBREW_BOTTLE_ROOT_URL']}/{formula}/blobs/"
+    f"sha256:{os.environ['CACHE_KEY_SHA']}"
+)
+if os.environ["KANDELO_HOMEBREW_BOTTLE_URL"] != expected_bottle_url:
+    raise SystemExit("bottle URL is not bound to the selected root, formula, and digest")
 
 def require_list(value, label):
     if not isinstance(value, list):
@@ -216,78 +244,205 @@ def require_relative_path(value, label):
         raise SystemExit(f"{label} is not a safe relative path: {value!r}")
     return value
 
-formulae = require_list(formula_info.get("formulae"), "brew info formulae")
-if formula_info.get("casks") != []:
-    raise SystemExit("brew info returned unexpected cask records")
-if len(formulae) != 1 or not isinstance(formulae[0], dict):
-    raise SystemExit(f"expected one formula from brew info, got {len(formulae)}")
-formula_record = formulae[0]
-if formula_record.get("name") != formula:
-    raise SystemExit(
-        f"brew info formula name {formula_record.get('name')!r} does not match {formula!r}"
+version = bottle_formula.get("pkg_version")
+if not isinstance(version, str) or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._+,-]{0,255}", version):
+    raise SystemExit("bottle formula pkg_version is invalid")
+revision_match = re.fullmatch(r".+_([1-9][0-9]*)", version)
+formula_revision = int(revision_match.group(1)) if revision_match else 0
+payload_root = f"{formula}/{version}"
+
+def run_json_command(command, label, maximum_bytes, timeout=None):
+    try:
+        result = subprocess.run(
+            command,
+            check=False,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=timeout,
+        )
+    except (OSError, subprocess.SubprocessError) as error:
+        raise SystemExit(f"cannot run {label}: {error}")
+    if len(result.stdout) > maximum_bytes or len(result.stderr) > maximum_bytes:
+        raise SystemExit(f"{label} output exceeds {maximum_bytes} bytes")
+    if result.returncode != 0:
+        stderr = result.stderr.decode("utf-8", errors="replace")
+        raise SystemExit(f"{label} failed: {stderr[:4096]}")
+    try:
+        return json.loads(result.stdout.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as error:
+        raise SystemExit(f"{label} did not return UTF-8 JSON: {error}")
+
+inspection_command = [
+    sys.executable,
+    str(
+        pathlib.Path(os.environ["KANDELO_ROOT"])
+        / "scripts/homebrew-inspect-bottle.py"
+    ),
+    "--archive",
+    str(bottle_archive_path),
+    "--formula",
+    formula,
+    "--version",
+    version,
+    "--expected-abi",
+    os.environ["ABI_VERSION"],
+    "--expected-arch",
+    os.environ["KANDELO_HOMEBREW_ARCH"],
+]
+for forbidden_root in forbidden_roots:
+    inspection_command.extend(("--forbidden-root", forbidden_root))
+inspection = run_json_command(
+    inspection_command,
+    "bounded bottle inspection",
+    64 * 1024 * 1024,
+)
+expected_inspection_keys = {
+    "schema", "abi_version", "arch", "payload_root", "all_files", "path_exec_files",
+    "runtime_dependencies", "formula_sha256", "fork_instrumentation",
+}
+if not isinstance(inspection, dict) or set(inspection) != expected_inspection_keys:
+    raise SystemExit("bounded bottle inspection returned an unexpected schema")
+if inspection.get("schema") != 1 or inspection.get("payload_root") != payload_root:
+    raise SystemExit("bounded bottle inspection identity does not match the selected bottle")
+if inspection.get("abi_version") != int(os.environ["ABI_VERSION"]):
+    raise SystemExit("bounded bottle inspection ABI does not match the selected release")
+if inspection.get("arch") != os.environ["KANDELO_HOMEBREW_ARCH"]:
+    raise SystemExit("bounded bottle inspection architecture does not match the selected bottle")
+if inspection.get("formula_sha256") != os.environ["FORMULA_SHA256"]:
+    raise SystemExit("archived Formula receipt does not match the exact selected tap Formula")
+fork_instrumentation = inspection.get("fork_instrumentation")
+if fork_instrumentation not in {"required", "not-required"}:
+    raise SystemExit("bounded bottle inspection returned invalid fork instrumentation")
+
+all_files_list = require_list(inspection.get("all_files"), "inspected all_files")
+all_files = {
+    require_relative_path(value, f"inspected all_files[{index}]")
+    for index, value in enumerate(all_files_list)
+}
+if len(all_files) != len(all_files_list) or all_files_list != sorted(all_files_list):
+    raise SystemExit("inspected all_files must be uniquely sorted")
+path_exec_files = [
+    require_relative_path(value, f"inspected path_exec_files[{index}]")
+    for index, value in enumerate(
+        require_list(inspection.get("path_exec_files"), "inspected path_exec_files")
     )
-if str(formula_record.get("full_name", "")).lower() != expected_full_name:
-    raise SystemExit(
-        f"brew info full name {formula_record.get('full_name')!r} "
-        f"does not match {expected_full_name!r}"
-    )
-if str(formula_record.get("tap", "")).lower() != os.environ["TAP_NAME"]:
-    raise SystemExit(
-        f"brew info tap {formula_record.get('tap')!r} "
-        f"does not match {os.environ['TAP_NAME']!r}"
-    )
-source_checksum = formula_record.get("ruby_source_checksum")
+]
+if path_exec_files != sorted(set(path_exec_files)):
+    raise SystemExit("inspected path_exec_files must be uniquely sorted")
+if not set(path_exec_files).issubset(all_files):
+    raise SystemExit("inspected path_exec_files are not bottle payload files")
+
+declarations = run_json_command(
+    [
+        "ruby",
+        str(
+            pathlib.Path(os.environ["KANDELO_ROOT"])
+            / "scripts/homebrew-formula-runtime-closure.rb"
+        ),
+        os.environ["FORMULA_SOURCE_ROOT"],
+        os.environ["KANDELO_HOMEBREW_TAP_REPOSITORY"],
+        formula,
+        "--declarations-json",
+    ],
+    "static Formula declaration inspection",
+    1024 * 1024,
+    timeout=120,
+)
+if not isinstance(declarations, dict) or set(declarations) != {
+    "schema", "tap", "formula", "full_name", "dependencies"
+}:
+    raise SystemExit("static Formula declarations returned an unexpected schema")
 if (
-    not isinstance(source_checksum, dict)
-    or source_checksum.get("sha256") != os.environ["FORMULA_SHA256"]
+    declarations.get("schema") != 1
+    or declarations.get("tap") != os.environ["TAP_NAME"]
+    or declarations.get("formula") != formula
+    or declarations.get("full_name") != expected_full_name
 ):
-    raise SystemExit("brew info formula checksum does not match the selected tap formula")
+    raise SystemExit("static Formula declaration identity does not match the selected Formula")
 
 tap_prefix = f"{os.environ['TAP_NAME']}/"
+same_tap_direct_declarations = set()
+required_external_declarations = set()
+recommended_external_declarations = set()
+seen_declarations = set()
+for index, declaration in enumerate(
+    require_list(declarations.get("dependencies"), "static Formula dependencies")
+):
+    if not isinstance(declaration, dict) or set(declaration) != {"kind", "name", "same_tap"}:
+        raise SystemExit(f"static Formula dependencies[{index}] has an unexpected schema")
+    name = declaration.get("name")
+    kind = declaration.get("kind")
+    same_tap = declaration.get("same_tap")
+    if not isinstance(name, str) or not name or len(name.encode("utf-8")) > 4096:
+        raise SystemExit(f"static Formula dependencies[{index}] has an invalid name")
+    if kind not in {"required", "recommended", "optional"} or not isinstance(same_tap, bool):
+        raise SystemExit(f"static Formula dependencies[{index}] has invalid classification")
+    normalized = name.lower()
+    if normalized in seen_declarations:
+        raise SystemExit(f"static Formula dependency {name!r} is duplicated")
+    seen_declarations.add(normalized)
+    if same_tap != normalized.startswith(tap_prefix):
+        raise SystemExit(f"static Formula dependency {name!r} has invalid tap classification")
+    if same_tap:
+        if name != normalized:
+            raise SystemExit(f"same-tap Formula dependency {name!r} is not normalized lowercase")
+        if kind != "optional":
+            same_tap_direct_declarations.add(name)
+    elif kind == "required":
+        required_external_declarations.add(normalized)
+    elif kind == "recommended":
+        recommended_external_declarations.add(normalized)
 
-def declared_runtime_dependencies(field, require_tap):
-    dependencies = {}
-    declared = require_list(formula_record.get(field), f"brew info {field}")
-    for index, full_name in enumerate(declared):
-        if not isinstance(full_name, str) or not full_name:
-            raise SystemExit(f"brew info {field}[{index}] is not a formula name")
-        normalized = full_name.lower()
-        if require_tap and not normalized.startswith(tap_prefix):
-            raise SystemExit(
-                f"brew info {field}[{index}] {full_name!r} is not a formula "
-                f"in {os.environ['TAP_NAME']}"
-            )
-        if not normalized.startswith(tap_prefix):
-            dependencies[normalized] = None
-            continue
-        name = normalized.rsplit("/", 1)[-1]
-        if not re.fullmatch(r"[a-z0-9][a-z0-9._-]*", name):
-            raise SystemExit(f"unsupported Homebrew dependency name {name!r}")
-        dependencies[normalized] = name
-    return dependencies
+if required_external_declarations:
+    raise SystemExit(
+        "required external Formula dependencies are unsupported: "
+        f"{sorted(required_external_declarations)}"
+    )
+if recommended_external_declarations:
+    raise SystemExit(
+        "recommended external Formula dependencies are unsupported: "
+        f"{sorted(recommended_external_declarations)}"
+    )
 
-required_dependencies = declared_runtime_dependencies("dependencies", True)
-selected_dependencies = dict(required_dependencies)
-conditional_external_dependencies = set()
-for field in ("recommended_dependencies", "optional_dependencies"):
-    for full_name, name in declared_runtime_dependencies(field, False).items():
-        if name is None:
-            conditional_external_dependencies.add(full_name)
-            continue
-        existing = selected_dependencies.get(full_name)
-        if existing is not None and existing != name:
-            raise SystemExit(f"conflicting declared runtime dependency {full_name!r}")
-        selected_dependencies[full_name] = name
+provenance_records = require_list(
+    dependency_provenance.get("dependencies"), "dependency provenance dependencies"
+)
+provenance_dependencies = {}
+for index, record in enumerate(provenance_records):
+    if not isinstance(record, dict):
+        raise SystemExit(f"dependency provenance dependencies[{index}] must be an object")
+    full_name = record.get("full_name")
+    name = record.get("name")
+    version_value = record.get("version")
+    declared_directly = record.get("declared_directly")
+    if full_name != f"{tap_prefix}{name}" or not isinstance(version_value, str):
+        raise SystemExit(f"dependency provenance dependencies[{index}] has invalid identity")
+    if not isinstance(declared_directly, bool) or full_name in provenance_dependencies:
+        raise SystemExit(f"dependency provenance dependencies[{index}] has invalid directness")
+    provenance_dependencies[full_name] = record
 
-tab = tag.get("tab")
-if not isinstance(tab, dict):
-    raise SystemExit(f"bottle tag {tag_name} lacks Homebrew installation metadata")
-runtime_dependencies = require_list(tab.get("runtime_dependencies"), "runtime_dependencies")
+provenance_direct_dependencies = {
+    full_name
+    for full_name, record in provenance_dependencies.items()
+    if record["declared_directly"]
+}
+if same_tap_direct_declarations != provenance_direct_dependencies:
+    missing = sorted(same_tap_direct_declarations - provenance_direct_dependencies)
+    unexpected = sorted(provenance_direct_dependencies - same_tap_direct_declarations)
+    raise SystemExit(
+        "validated direct dependency provenance differs from static Formula declarations "
+        f"(missing={missing}, unexpected={unexpected})"
+    )
+
+runtime_dependencies = require_list(
+    inspection.get("runtime_dependencies"), "inspected runtime_dependencies"
+)
 receipt_dependencies = {}
 seen_receipt_dependencies = set()
 for index, dep in enumerate(runtime_dependencies):
-    if not isinstance(dep, dict):
-        raise SystemExit(f"runtime_dependencies[{index}] must be an object")
+    if not isinstance(dep, dict) or set(dep) != {"declared_directly", "full_name", "version"}:
+        raise SystemExit(f"runtime_dependencies[{index}] has an unexpected schema")
     full_name = dep.get("full_name")
     if not isinstance(full_name, str) or not full_name:
         raise SystemExit(f"runtime_dependencies[{index}].full_name must be a non-empty string")
@@ -298,43 +453,38 @@ for index, dep in enumerate(runtime_dependencies):
     if normalized in seen_receipt_dependencies:
         raise SystemExit(f"duplicate runtime dependency {full_name!r} in bottle receipt")
     seen_receipt_dependencies.add(normalized)
-    version = dep.get("pkg_version") or dep.get("version")
-    if not isinstance(version, str) or not version:
+    version_value = dep.get("version")
+    if not isinstance(version_value, str) or not version_value:
         raise SystemExit(f"runtime dependency {full_name!r} lacks a version")
-    if normalized in conditional_external_dependencies and declared_directly:
+    if not normalized.startswith(tap_prefix):
         raise SystemExit(
-            f"selected runtime dependency {full_name!r} is outside {os.environ['TAP_NAME']}"
+            f"selected external runtime dependency {full_name!r} is outside "
+            f"{os.environ['TAP_NAME']}"
         )
-    if normalized not in selected_dependencies:
-        # Homebrew may inject Linux sandbox/build dependencies such as
-        # bubblewrap and libcap into source-build receipts. They are host build
-        # facts, not dependencies declared by the target formula.
-        continue
-    if not declared_directly:
-        raise SystemExit(
-            f"declared runtime dependency {full_name!r} is not direct in the receipt"
-        )
-    existing = receipt_dependencies.get(normalized)
-    if existing is not None and existing != version:
-        raise SystemExit(f"declared runtime dependency {full_name!r} has conflicting versions")
-    receipt_dependencies[normalized] = version
+    record = provenance_dependencies.get(normalized)
+    if record is None:
+        raise SystemExit(f"same-tap runtime dependency {full_name!r} lacks validated provenance")
+    if full_name != normalized:
+        raise SystemExit(f"same-tap runtime dependency {full_name!r} is not normalized lowercase")
+    if version_value != record["version"] or declared_directly != record["declared_directly"]:
+        raise SystemExit(f"runtime dependency {full_name!r} differs from validated provenance")
+    receipt_dependencies[normalized] = version_value
 
-missing_required = sorted(set(required_dependencies) - set(receipt_dependencies))
-if missing_required:
-    raise SystemExit(f"bottle receipt lacks declared runtime dependencies: {missing_required}")
-deps = [
-    {"name": selected_dependencies[full_name], "version": receipt_dependencies[full_name]}
-    for full_name in sorted(receipt_dependencies, key=lambda value: selected_dependencies[value])
-]
-
-all_files = {
-    require_relative_path(value, f"all_files[{index}]")
-    for index, value in enumerate(require_list(tag.get("all_files"), "all_files"))
-}
-path_exec_files = [
-    require_relative_path(value, f"path_exec_files[{index}]")
-    for index, value in enumerate(require_list(tag.get("path_exec_files"), "path_exec_files"))
-]
+if set(receipt_dependencies) != set(provenance_dependencies):
+    missing = sorted(set(provenance_dependencies) - set(receipt_dependencies))
+    unexpected = sorted(set(receipt_dependencies) - set(provenance_dependencies))
+    raise SystemExit(
+        "bottle receipt does not match validated same-tap dependency provenance "
+        f"(missing={missing}, unexpected={unexpected})"
+    )
+deps = sorted(
+    (
+        {"name": record["name"], "version": record["version"]}
+        for record in provenance_dependencies.values()
+        if record["declared_directly"]
+    ),
+    key=lambda dependency: dependency["name"],
+)
 
 def is_linkable_file(rel):
     parts = pathlib.PurePosixPath(rel).parts
@@ -366,67 +516,6 @@ receipts = [f".brew/{formula}.rb", "INSTALL_RECEIPT.json"]
 missing_receipts = [receipt for receipt in receipts if receipt not in all_files]
 if missing_receipts:
     raise SystemExit(f"bottle payload lacks required Homebrew receipts: {missing_receipts}")
-
-version = str(bottle_formula["pkg_version"])
-if not version:
-    raise SystemExit("bottle formula pkg_version must not be empty")
-revision_match = re.fullmatch(r".+_([1-9][0-9]*)", version)
-formula_revision = int(revision_match.group(1)) if revision_match else 0
-payload_root = f"{formula}/{version}"
-
-archive_members = {}
-listing = subprocess.run(
-    ["tar", "-tf", bottle_archive_path],
-    check=True,
-    stdout=subprocess.PIPE,
-    text=True,
-).stdout.splitlines()
-for member in listing:
-    normalized = member.removeprefix("./").rstrip("/")
-    if normalized:
-        archive_members[normalized] = member
-
-fork_exports = {
-    b"wpk_fork_unwind_begin",
-    b"wpk_fork_unwind_end",
-    b"wpk_fork_rewind_begin",
-    b"wpk_fork_rewind_end",
-    b"wpk_fork_state",
-}
-fork_instrumentation = "not-required"
-for rel in path_exec_files:
-    normalized = f"{payload_root}/{rel}"
-    member = archive_members.get(normalized)
-    if member is None:
-        raise SystemExit(f"bottle archive lacks executable payload member {normalized!r}")
-    data = subprocess.run(
-        ["tar", "-xOf", bottle_archive_path, member],
-        check=True,
-        stdout=subprocess.PIPE,
-    ).stdout
-    if not data.startswith(b"\0asm"):
-        continue
-    with tempfile.NamedTemporaryFile(suffix=".wasm") as wasm_file:
-        wasm_file.write(data)
-        wasm_file.flush()
-        dump = subprocess.run(
-            ["wasm-objdump", "-x", wasm_file.name],
-            check=True,
-            stdout=subprocess.PIPE,
-            text=True,
-        ).stdout
-    export_names = {
-        name.encode()
-        for name in re.findall(r'-> "([^"]+)"', dump)
-    }
-    if b"asyncify_" in data or any(name.startswith(b"asyncify_") for name in export_names):
-        raise SystemExit(f"bottle executable {rel!r} contains legacy Asyncify instrumentation")
-    present = fork_exports & export_names
-    if present and present != fork_exports:
-        missing = sorted(name.decode() for name in fork_exports - present)
-        raise SystemExit(f"bottle executable {rel!r} has incomplete fork instrumentation: {missing}")
-    if present == fork_exports:
-        fork_instrumentation = "required"
 
 browser_smoke_status = os.environ.get("KANDELO_HOMEBREW_BROWSER_SMOKE_STATUS", "skipped")
 if browser_smoke_status not in {"success", "skipped"}:
@@ -557,7 +646,7 @@ manifest = {
                                     "brew install --build-bottle",
                                     "brew test",
                                     "brew bottle --json --no-rebuild",
-                                    "brew bottle --merge --write --no-commit --keep-old",
+                                    "scripts/homebrew-merge-bottle-json.sh statically composed canonical bottle metadata",
                                 ],
                                 "failed": [],
                                 "skipped": [],

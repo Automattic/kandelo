@@ -6,6 +6,8 @@ set -euo pipefail
 KANDELO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 # shellcheck source=/dev/null
 . "$KANDELO_ROOT/scripts/homebrew-publication-limits.sh"
+# shellcheck source=/dev/null
+. "$KANDELO_ROOT/scripts/homebrew-sibling-bottle-policy.sh"
 TAP_ROOT=""
 SIDECAR_ROOT=""
 PUBLICATION_HANDOFF=""
@@ -276,41 +278,6 @@ assert_static_tap_tree() {
   fi
 }
 
-sibling_bottle_policy() {
-  local metadata="$1" name="$2" version="$3" formula_revision="$4" rebuild="$5" abi="$6"
-  if [ ! -e "$metadata" ]; then
-    printf '%s\n' discard
-    return 0
-  fi
-  if [ ! -f "$metadata" ] || [ -L "$metadata" ]; then
-    echo "homebrew-publish-sidecars.sh: refreshed metadata is not a regular file" >&2
-    return 1
-  fi
-
-  jq -er \
-    --arg name "$name" \
-    --arg version "$version" \
-    --argjson formula_revision "$formula_revision" \
-    --argjson rebuild "$rebuild" \
-    --argjson abi "$abi" '
-      if type != "object" or (.packages | type) != "array" then
-        error("refreshed metadata lacks a packages array")
-      else
-        [.packages[] | select(.name == $name)] as $matches |
-        if ($matches | length) > 1 then
-          error("refreshed metadata contains duplicate package identities")
-        elif .kandelo_abi == $abi and ($matches | length) == 1 and
-             $matches[0].version == $version and
-             $matches[0].formula_revision == $formula_revision and
-             $matches[0].bottle_rebuild == $rebuild then
-          "preserve"
-        else
-          "discard"
-        end
-      end
-    ' "$metadata"
-}
-
 compose_publication_handoff() {
   local handoff input manifest receipt bottle formula_path formula_sha
   local input_tap_commit input_kandelo_commit bottle_sha bottle_url bottle_bytes
@@ -402,6 +369,18 @@ compose_publication_handoff() {
     --formula "$FORMULA" \
     --base-ref "$input_tap_commit" >/dev/null
 
+  # Rebind the complete dependency closure to the refreshed tap while the
+  # state lock is held. Planned-commit ancestry alone does not prevent a
+  # dependency Formula or its bottle metadata from changing during a build.
+  python3 "$KANDELO_ROOT/scripts/homebrew-dependency-provenance.py" validate \
+    --input "$handoff/build/dependency-provenance.json" \
+    --formula "$FORMULA" \
+    --arch "$ARCH" \
+    --tap-repository "Automattic/kandelo-homebrew" \
+    --tap-commit "$input_tap_commit" \
+    --bottle-root-url "$bottle_root" \
+    --tap-root "$COMPOSE_ROOT"
+
   planned_formula="$COMPOSE_PARENT/planned-formula.rb"
   composed_formula="$COMPOSE_PARENT/composed-formula.rb"
   git -C "$COMPOSE_ROOT" show "$input_tap_commit:$formula_path" >"$planned_formula"
@@ -410,8 +389,14 @@ compose_publication_handoff() {
     exit 1
   }
   previous_metadata="$COMPOSE_ROOT/Kandelo/metadata.json"
-  sibling_policy="$(sibling_bottle_policy \
-    "$previous_metadata" "$FORMULA" "$version" "$formula_revision" "$rebuild" "$kandelo_abi")"
+  homebrew_assert_published_abi_not_newer \
+    "$previous_metadata" "$kandelo_abi" "homebrew-publish-sidecars.sh"
+  homebrew_assert_published_bottle_not_newer \
+    "$previous_metadata" "$FORMULA" "$version" "$formula_revision" "$rebuild" \
+    "$kandelo_abi" "homebrew-publish-sidecars.sh"
+  sibling_policy="$(homebrew_sibling_bottle_policy \
+    "$previous_metadata" "$FORMULA" "$version" "$formula_revision" "$rebuild" \
+    "$kandelo_abi" "homebrew-publish-sidecars.sh")"
 
   ruby "$KANDELO_ROOT/scripts/homebrew-compose-formula-bottle.rb" \
     "$COMPOSE_ROOT/$formula_path" \
@@ -463,6 +448,7 @@ compose_publication_handoff() {
 }
 
 copy_payload() {
+  local incoming_abi incoming_identity incoming_version incoming_formula_revision incoming_rebuild
   if [ -z "$SIDECAR_ROOT" ]; then
     echo "homebrew-publish-sidecars.sh: --sidecar-root is required for success" >&2
     exit 2
@@ -473,6 +459,32 @@ copy_payload() {
   fi
   assert_static_tap_tree "$SIDECAR_ROOT" "sidecar payload"
   assert_sidecar_size_bounds "$SIDECAR_ROOT"
+  incoming_abi="$(jq -er \
+    '.kandelo_abi | select(type == "number" and floor == . and . >= 1 and . <= 4294967295)' \
+    "$SIDECAR_ROOT/Kandelo/metadata.json")" || {
+      echo "homebrew-publish-sidecars.sh: incoming metadata has an invalid Kandelo ABI" >&2
+      exit 1
+    }
+  homebrew_assert_published_abi_not_newer \
+    "$TAP_ROOT/Kandelo/metadata.json" "$incoming_abi" "homebrew-publish-sidecars.sh"
+  incoming_identity="$(jq -er --arg formula "$FORMULA" '
+    [.packages[] | select(.name == $formula)] as $matches |
+    if ($matches | length) != 1 then
+      error("incoming metadata lacks a unique selected package")
+    else
+      $matches[0] |
+      [.version, .formula_revision, .bottle_rebuild] | @tsv
+    end
+  ' "$SIDECAR_ROOT/Kandelo/metadata.json")" || {
+    echo "homebrew-publish-sidecars.sh: incoming metadata has an invalid selected package identity" >&2
+    exit 1
+  }
+  IFS=$'\t' read -r incoming_version incoming_formula_revision incoming_rebuild \
+    <<<"$incoming_identity"
+  homebrew_assert_published_bottle_not_newer \
+    "$TAP_ROOT/Kandelo/metadata.json" "$FORMULA" "$incoming_version" \
+    "$incoming_formula_revision" "$incoming_rebuild" "$incoming_abi" \
+    "homebrew-publish-sidecars.sh"
   mkdir -p "$TAP_ROOT/Kandelo"
   rsync -a "$SIDECAR_ROOT/Kandelo/" "$TAP_ROOT/Kandelo/"
   if [ -d "$SIDECAR_ROOT/Formula" ]; then

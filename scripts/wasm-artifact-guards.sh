@@ -578,7 +578,10 @@ wasm_has_wpk_fork_export() {
         ' wasm-objdump -x "$path"
         return
     fi
-    grep -a -q "$name" "$path" 2>/dev/null
+    # Raw bytes cannot distinguish an export name from an unrelated data
+    # segment. Export completeness is a security/provenance predicate, so a
+    # missing structural decoder is unsafe rather than evidence of presence.
+    return 2
 }
 
 wasm_has_export() {
@@ -656,6 +659,22 @@ wasm_is_relocatable_object() {
         *.o) return 0 ;;
         *) return 1 ;;
     esac
+}
+
+wasm_memory_arch() {
+    local path="${1:-}"
+    wasm_is_binary "$path" || return 1
+    command -v wasm-objdump >/dev/null 2>&1 || return 2
+    _wasm_stream_awk '
+        / - memory\[[0-9]+\] pages:/ {
+            count += 1
+            arch = ($0 ~ / i64( |$)/) ? "wasm64" : "wasm32"
+        }
+        END {
+            if (count != 1) exit 2
+            print arch
+        }
+    ' wasm-objdump -x "$path"
 }
 
 wasm_has_any_wpk_fork_export() {

@@ -1,0 +1,24 @@
+name: Publish Kandelo bottles
+
+on:
+  repository_dispatch:
+    types: [publish-kandelo-bottles]
+
+jobs:
+  publish:
+    permissions:
+      actions: read
+      contents: write
+      packages: write
+    uses: Automattic/kandelo/.github/workflows/reusable-homebrew-bottle-publish.yml@main
+    with:
+      kandelo-repository: Automattic/kandelo
+      kandelo-ref: main
+      tap-repository: Automattic/kandelo-homebrew
+      tap-ref: main
+      formulae: ${{ github.event.client_payload.formulae }}
+      arches: ${{ github.event.client_payload.arches || 'wasm32' }}
+      release-tag: ${{ github.event.client_payload.release_tag || '' }}
+      expected-cache-keys: ${{ github.event.client_payload.expected_cache_keys || '' }}
+      force: ${{ github.event.client_payload.force || false }}
+      dry-run: false
