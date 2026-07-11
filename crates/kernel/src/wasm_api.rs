@@ -2242,8 +2242,8 @@ pub extern "C" fn kernel_dequeue_signal(pid: u32, out_ptr: *mut u8) -> i32 {
     }
 }
 
-/// Dequeue one pending instance of `signum` for the given thread. Prefers the
-/// thread's directed pending queue over the shared process-level queue —
+/// Dequeue one pending instance of `signum` for the given thread. Prefers that
+/// exact thread's directed pending queue over the shared process-level queue —
 /// POSIX requires that signals sent via `pthread_kill` / `tkill` / `tgkill`
 /// be delivered to that thread specifically, even when the shared queue also
 /// carries an instance of the same signal.
@@ -2255,33 +2255,7 @@ fn dequeue_signal_for(
     tid: u32,
     signum: u32,
 ) -> (u32, i32, i32) {
-    use crate::signal::sig_bit;
-    // Prefer per-thread directed delivery for non-main threads.
-    if !proc.is_main_thread(tid) {
-        if let Some(t) = proc.get_thread_mut(tid) {
-            if (t.signals.pending & sig_bit(signum)) != 0 {
-                // Pull the entry from the thread's rt_queue if present,
-                // then clear the pending bit exactly as `SignalState::dequeue`
-                // does (coalesced for standard signals; queued for RT).
-                let (mut si_value, mut si_code) = (0i32, 0i32);
-                if let Some(pos) = t.signals.rt_queue.iter().position(|e| e.signum == signum) {
-                    si_value = t.signals.rt_queue[pos].si_value;
-                    si_code = t.signals.rt_queue[pos].si_code;
-                    t.signals.rt_queue.remove(pos);
-                }
-                if signum >= crate::signal::SIGRTMIN {
-                    if !t.signals.rt_queue.iter().any(|e| e.signum == signum) {
-                        t.signals.pending &= !sig_bit(signum);
-                    }
-                } else {
-                    t.signals.pending &= !sig_bit(signum);
-                }
-                return (signum, si_value, si_code);
-            }
-        }
-    }
-    // Fall back to the shared process-level queue.
-    let (si_value, si_code) = proc.signals.consume_one(signum);
+    let (si_value, si_code) = proc.consume_signal_for(tid, signum).unwrap_or((0, 0));
     (signum, si_value, si_code)
 }
 
@@ -2818,7 +2792,9 @@ fn dispatch_channel_syscall(nr: u32, args: &[i64; 6]) -> i32 {
             if a1 != 0 {
                 let ptr = a1 as usize as *mut u8;
                 unsafe {
-                    let bytes = proc.signals.pending.to_le_bytes();
+                    let bytes = proc
+                        .pending_for(crate::process_table::current_tid())
+                        .to_le_bytes();
                     for i in 0..8 {
                         *ptr.add(i) = bytes[i];
                     }
@@ -3738,7 +3714,7 @@ fn dispatch_channel_syscall(nr: u32, args: &[i64; 6]) -> i32 {
                 let bytes = unsafe { slice::from_raw_parts(off_out_ptr, 8) };
                 Some(i64::from_le_bytes(bytes.try_into().unwrap()))
             };
-            match syscalls::sys_copy_file_range(
+            let result = match syscalls::sys_copy_file_range(
                 proc,
                 &mut host,
                 a1,
@@ -3766,7 +3742,9 @@ fn dispatch_channel_syscall(nr: u32, args: &[i64; 6]) -> i32 {
                     n as i32
                 }
                 Err(e) => -(e as i32),
-            }
+            };
+            deliver_pending_signals(proc, &mut host);
+            result
         }
 
         291 => {
@@ -3787,7 +3765,7 @@ fn dispatch_channel_syscall(nr: u32, args: &[i64; 6]) -> i32 {
                 let bytes = unsafe { slice::from_raw_parts(off_out_ptr, 8) };
                 Some(i64::from_le_bytes(bytes.try_into().unwrap()))
             };
-            match syscalls::sys_splice(
+            let result = match syscalls::sys_splice(
                 proc,
                 &mut host,
                 a1,
@@ -3813,7 +3791,9 @@ fn dispatch_channel_syscall(nr: u32, args: &[i64; 6]) -> i32 {
                     n as i32
                 }
                 Err(e) => -(e as i32),
-            }
+            };
+            deliver_pending_signals(proc, &mut host);
+            result
         }
         293 => 0, // SYS_READAHEAD: advisory, always succeed
         297 => kernel_preadv(a1, a2 as *mut u8, a3, a4 as u32, a5), // SYS_PREADV2 (ignore flags in a6)
@@ -3867,10 +3847,12 @@ fn dispatch_channel_syscall(nr: u32, args: &[i64; 6]) -> i32 {
                 let mut host = WasmHostIO;
                 let offset = args[2];
                 let len = args[3];
-                match syscalls::sys_fallocate(proc, &mut host, a1, offset, len) {
+                let result = match syscalls::sys_fallocate(proc, &mut host, a1, offset, len) {
                     Ok(()) => 0,
                     Err(e) => -(e as i32),
-                }
+                };
+                deliver_pending_signals(proc, &mut host);
+                result
             }
         }
         323 => 0, // SYS_SYNC_FILE_RANGE: advisory, no-op
@@ -4753,6 +4735,43 @@ pub extern "C" fn kernel_write(fd: i32, buf_ptr: *const u8, buf_len: u32) -> i32
     let result = match syscalls::sys_write(proc, &mut host, fd, buf) {
         Ok(n) => n as i32,
         Err(e) => -(e as i32),
+    };
+    deliver_pending_signals(proc, &mut host);
+    result
+}
+
+/// Resolve one logical write's operation-wide byte budget before the host
+/// decomposes it into scratch-buffer-sized kernel calls.
+///
+/// `positioned != 0` selects the supplied offset (pwrite/pwritev); otherwise
+/// the open-file-description cursor and O_APPEND state are authoritative.
+/// The host binds the calling TID before entering this export so SIGXFSZ is
+/// queued for the thread that issued the operation.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_prepare_write_operation(
+    pid: u32,
+    fd: i32,
+    offset: i64,
+    requested_len: u32,
+    positioned: u32,
+) -> i64 {
+    let _gkl = GklGuard::acquire();
+    let table = unsafe { &mut *PROCESS_TABLE.0.get() };
+    table.set_current_pid(pid);
+    let proc = match table.get_mut(pid) {
+        Some(proc) => proc,
+        None => return -(Errno::ESRCH as i64),
+    };
+    let mut host = WasmHostIO;
+    let result = match syscalls::write_operation_budget(
+        proc,
+        &mut host,
+        fd,
+        (positioned != 0).then_some(offset),
+        requested_len as usize,
+    ) {
+        Ok(len) => len as i64,
+        Err(e) => -(e as i64),
     };
     deliver_pending_signals(proc, &mut host);
     result
@@ -5846,8 +5865,7 @@ pub extern "C" fn kernel_raise(sig: u32) -> i32 {
 /// process. POSIX requires that directed signals go to that thread's pending
 /// queue, not the process-wide shared queue.
 ///
-/// - `tid == 0` or `tid == pid` targets the main thread (process-level
-///   pending, same as `raise`).
+/// - `tid == 0` or `tid == pid` targets the main thread's directed queue.
 /// - Other `tid` values look up the thread in `Process::threads` and raise
 ///   on its own per-thread pending queue.
 /// - Unknown `tid` → `-ESRCH`.
@@ -5887,14 +5905,13 @@ fn kernel_tkill_with_value(tid: u32, sig: u32, si_value: i32, si_code: i32) -> i
         return -(Errno::EINVAL as i32);
     }
 
-    // Main thread: route to process-level (shared) pending. This preserves
-    // existing behaviour for raise() on a single-threaded process.
+    // Main thread: use its directed queue rather than the process-shared set.
     if proc.is_main_thread(tid) {
         if sig > 0 {
             if si_code != 0 || si_value != 0 {
-                proc.signals.raise_with_value(sig, si_value);
+                proc.raise_for_thread_with_value(tid, sig, si_value);
             } else {
-                proc.signals.raise(sig);
+                proc.raise_for_thread(tid, sig);
             }
         }
         deliver_pending_signals(proc, &mut host);
@@ -8623,7 +8640,7 @@ pub extern "C" fn kernel_writev(fd: i32, iov_ptr: *const u8, iovcnt: i32) -> i32
             break 'done -(Errno::EINVAL as i32);
         }
 
-        let mut total: usize = 0;
+        let mut buffers = Vec::with_capacity(iovcnt as usize);
         for i in 0..iovcnt as usize {
             let iov = unsafe { iov_ptr.add(i * 8) };
             let base = unsafe { u32::from_le_bytes([*iov, *iov.add(1), *iov.add(2), *iov.add(3)]) };
@@ -8633,23 +8650,12 @@ pub extern "C" fn kernel_writev(fd: i32, iov_ptr: *const u8, iovcnt: i32) -> i32
             if len == 0 {
                 continue;
             }
-            let buf = unsafe { slice::from_raw_parts(base as *const u8, len as usize) };
-            match syscalls::sys_write(proc, &mut host, fd, buf) {
-                Ok(n) => {
-                    total += n;
-                    if n < len as usize {
-                        break;
-                    }
-                }
-                Err(e) => {
-                    if total > 0 {
-                        break 'done total as i32;
-                    }
-                    break 'done -(e as i32);
-                }
-            }
+            buffers.push(unsafe { slice::from_raw_parts(base as *const u8, len as usize) });
         }
-        total as i32
+        match syscalls::sys_writev(proc, &mut host, fd, &buffers) {
+            Ok(n) => n as i32,
+            Err(e) => -(e as i32),
+        }
     };
     deliver_pending_signals(proc, &mut host);
     result
@@ -8776,8 +8782,7 @@ pub extern "C" fn kernel_pwritev(
             break 'done -(Errno::EINVAL as i32);
         }
 
-        let mut total: usize = 0;
-        let mut cur_offset = offset;
+        let mut buffers = Vec::with_capacity(iovcnt as usize);
         for i in 0..iovcnt as usize {
             let iov = unsafe { iov_ptr.add(i * 8) };
             let base = unsafe { u32::from_le_bytes([*iov, *iov.add(1), *iov.add(2), *iov.add(3)]) };
@@ -8787,24 +8792,12 @@ pub extern "C" fn kernel_pwritev(
             if len == 0 {
                 continue;
             }
-            let buf = unsafe { slice::from_raw_parts(base as *const u8, len as usize) };
-            match syscalls::sys_pwrite(proc, &mut host, fd, buf, cur_offset) {
-                Ok(n) => {
-                    total += n;
-                    cur_offset += n as i64;
-                    if n < len as usize {
-                        break;
-                    }
-                }
-                Err(e) => {
-                    if total > 0 {
-                        break 'done total as i32;
-                    }
-                    break 'done -(e as i32);
-                }
-            }
+            buffers.push(unsafe { slice::from_raw_parts(base as *const u8, len as usize) });
         }
-        total as i32
+        match syscalls::sys_pwritev(proc, &mut host, fd, &buffers, offset) {
+            Ok(n) => n as i32,
+            Err(e) => -(e as i32),
+        }
     };
     deliver_pending_signals(proc, &mut host);
     result

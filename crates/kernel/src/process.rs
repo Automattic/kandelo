@@ -551,7 +551,13 @@ pub struct Process {
     pub sockets: SocketTable,
     pub cwd: Vec<u8>,
     pub dir_streams: Vec<Option<DirStream>>,
+    /// Process-directed pending signals and process-wide dispositions. The
+    /// blocked mask remains the main thread's mask for historical ABI reasons.
     pub signals: SignalState,
+    /// Signals directed to the main thread. Its blocked mask and sigsuspend
+    /// save slot remain in the historical Process fields; this state owns the
+    /// directed pending bits and siginfo queue only.
+    pub main_thread_signals: PerThreadSignalState,
     pub memory: MemoryManager,
     pub terminal: TerminalState,
     pub environ: Vec<Vec<u8>>,
@@ -734,6 +740,7 @@ impl Process {
             cwd: alloc::vec![b'/'],
             dir_streams: Vec::new(),
             signals: SignalState::new(),
+            main_thread_signals: PerThreadSignalState::new(),
             memory: MemoryManager::new(),
             terminal: TerminalState::new(),
             environ: Vec::new(),
@@ -845,8 +852,8 @@ impl Process {
 
     /// True if `tid` names the process's main thread. The main thread's TID
     /// equals the process PID (Linux convention) and is not tracked in
-    /// [`Process::threads`]; per-thread signal state for the main thread lives
-    /// in [`Process::signals`] instead.
+    /// [`Process::threads`]; its blocked mask lives in [`Process::signals`]
+    /// and its directed pending queue in [`Process::main_thread_signals`].
     ///
     /// `tid == 0` is also treated as "main thread" because the host uses 0
     /// for syscalls from the main channel (no thread worker is involved).
@@ -888,7 +895,7 @@ impl Process {
     /// unblocked.
     pub fn pending_for(&self, tid: u32) -> u64 {
         if self.is_main_thread(tid) {
-            self.signals.pending
+            self.signals.pending | self.main_thread_signals.pending
         } else {
             let thread_pending = self.get_thread(tid).map(|t| t.signals.pending).unwrap_or(0);
             self.signals.pending | thread_pending
@@ -904,7 +911,7 @@ impl Process {
         let bit = crate::signal::sig_bit(sig);
         let shared = (self.signals.pending & bit) != 0;
         if self.is_main_thread(tid) {
-            shared
+            shared || (self.main_thread_signals.pending & bit) != 0
         } else {
             let thread_bit = self
                 .get_thread(tid)
@@ -941,6 +948,76 @@ impl Process {
         let pending = self.pending_for(tid);
         let blocked = self.blocked_for(tid);
         pending & !blocked
+    }
+
+    /// Whether the lowest-numbered signal deliverable to `tid` carries
+    /// SA_RESTART. Dispositions are process-wide even for directed signals.
+    pub fn should_restart_for(&self, tid: u32) -> bool {
+        let deliverable = self.deliverable_for(tid);
+        if deliverable == 0 {
+            return false;
+        }
+        let signum = deliverable.trailing_zeros() + 1;
+        if signum >= wasm_posix_shared::signal::NSIG {
+            return false;
+        }
+        self.signals.get_action(signum).flags & wasm_posix_shared::signal::SA_RESTART != 0
+    }
+
+    /// Queue a signal for one exact thread. Main-thread-directed signals have
+    /// their own queue because `SignalState::pending` is process-shared.
+    pub fn raise_for_thread(&mut self, tid: u32, signum: u32) -> bool {
+        if self.is_main_thread(tid) {
+            self.main_thread_signals.raise(signum)
+        } else if let Some(thread) = self.get_thread_mut(tid) {
+            thread.signals.raise(signum)
+        } else {
+            false
+        }
+    }
+
+    /// Queue a signal with sigqueue metadata for one exact thread.
+    pub fn raise_for_thread_with_value(
+        &mut self,
+        tid: u32,
+        signum: u32,
+        si_value: i32,
+    ) -> bool {
+        if self.is_main_thread(tid) {
+            self.main_thread_signals
+                .raise_with_value(signum, si_value)
+        } else if let Some(thread) = self.get_thread_mut(tid) {
+            thread.signals.raise_with_value(signum, si_value)
+        } else {
+            false
+        }
+    }
+
+    /// Clear a directed signal from every thread. Used when a new
+    /// disposition requires pending instances to be discarded.
+    pub fn clear_directed_signal(&mut self, signum: u32) {
+        self.main_thread_signals.clear_pending(signum);
+        for thread in &mut self.threads {
+            thread.signals.clear_pending(signum);
+        }
+    }
+
+    /// Consume one pending instance visible to `tid`, preferring that exact
+    /// thread's directed queue before the shared process queue.
+    pub fn consume_signal_for(&mut self, tid: u32, signum: u32) -> Option<(i32, i32)> {
+        let directed = if self.is_main_thread(tid) {
+            self.main_thread_signals.consume_one(signum)
+        } else {
+            self.get_thread_mut(tid)
+                .and_then(|thread| thread.signals.consume_one(signum))
+        };
+        if directed.is_some() {
+            return directed;
+        }
+        if self.signals.pending & crate::signal::sig_bit(signum) == 0 {
+            return None;
+        }
+        Some(self.signals.consume_one(signum))
     }
 
     /// Read the saved sigsuspend/ppoll/pselect mask for TID.

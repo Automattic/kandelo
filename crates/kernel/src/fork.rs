@@ -27,17 +27,16 @@ use crate::lock::LockTable;
 use crate::memory::{MappedRegion, MemoryLayoutMetadata, MemoryManager};
 use crate::ofd::{FileType, OfdTable, OpenFileDesc};
 use crate::process::{Process, ProcessState};
-use crate::signal::{SignalAction, SignalHandler, SignalState};
+use crate::signal::{PerThreadSignalState, RtSigEntry, SignalAction, SignalHandler, SignalState};
 use crate::socket::SocketTable;
 use crate::terminal::{NCCS, TerminalState, WinSize};
 
 const FORK_MAGIC: u32 = 0x464F524B; // "FORK"
 const EXEC_MAGIC: u32 = 0x45584543; // "EXEC"
-// v10 preserves the durable socket state added with IPv6, structured socket
-// options, and IPv4 multicast support. In particular, fork children must not
-// inherit a connected/bound socket while silently losing its IPv6 addresses,
-// linger/device/congestion settings, or multicast memberships.
-const FORK_VERSION: u32 = 10;
+// v11 keeps the main thread's directed pending queue distinct from the shared
+// process queue across legacy exec. Fork children still start with no pending
+// signals, so the fork payload itself needs no new directed-signal section.
+const FORK_VERSION: u32 = 11;
 
 // Bounds for deserialization to prevent OOM from malformed buffers.
 const MAX_FDS: u32 = 65536;
@@ -51,6 +50,7 @@ const MAX_SOCKET_OPTIONS: usize = 4096;
 const MAX_SOCKET_STRING_LEN: usize = 256;
 const MAX_IPV4_MULTICAST_MEMBERSHIPS: usize = 4096;
 const MAX_IPV4_MULTICAST_SOURCES: usize = 4096;
+const MAX_DIRECTED_SIGNAL_QUEUE: u32 = 65536;
 const INITIAL_EXEC_STATE_BUFFER_LEN: usize = 64 * 1024;
 const MAX_EXEC_STATE_BUFFER_LEN: usize = 4 * 1024 * 1024;
 
@@ -237,6 +237,49 @@ impl<'a> Reader<'a> {
         }
         self.read_bytes(len)
     }
+}
+
+fn write_directed_signal_state(
+    w: &mut Writer<'_>,
+    state: &PerThreadSignalState,
+) -> Result<(), Errno> {
+    w.write_u64(state.pending)?;
+    let count = u32::try_from(state.rt_queue.len()).map_err(|_| Errno::E2BIG)?;
+    if count > MAX_DIRECTED_SIGNAL_QUEUE {
+        return Err(Errno::E2BIG);
+    }
+    w.write_u32(count)?;
+    for entry in &state.rt_queue {
+        w.write_u32(entry.signum)?;
+        w.write_i32(entry.si_value)?;
+        w.write_i32(entry.si_code)?;
+    }
+    Ok(())
+}
+
+fn read_directed_signal_state(r: &mut Reader<'_>) -> Result<PerThreadSignalState, Errno> {
+    let pending = r.read_u64()?;
+    let count = r.read_u32()?;
+    if count > MAX_DIRECTED_SIGNAL_QUEUE {
+        return Err(Errno::EINVAL);
+    }
+    let mut state = PerThreadSignalState::new();
+    state.pending = pending;
+    for _ in 0..count {
+        let signum = r.read_u32()?;
+        if signum == 0
+            || signum >= wasm_posix_shared::signal::NSIG
+            || pending & crate::signal::sig_bit(signum) == 0
+        {
+            return Err(Errno::EINVAL);
+        }
+        state.rt_queue.push_back(RtSigEntry {
+            signum,
+            si_value: r.read_i32()?,
+            si_code: r.read_i32()?,
+        });
+    }
+    Ok(state)
 }
 
 fn write_bounded_len(w: &mut Writer<'_>, len: usize, max: usize) -> Result<(), Errno> {
@@ -1358,6 +1401,7 @@ pub fn deserialize_fork_state(buf: &[u8], child_pid: u32) -> Result<Process, Err
         cwd,
         dir_streams: Vec::new(),
         signals,
+        main_thread_signals: PerThreadSignalState::new(),
         memory,
         terminal,
         environ,
@@ -1454,6 +1498,7 @@ pub fn serialize_exec_state(proc: &Process, buf: &mut [u8]) -> Result<usize, Err
 
     // Pending signals preserved for exec (unlike fork which clears them)
     w.write_u64(proc.signals.pending)?;
+    write_directed_signal_state(&mut w, &proc.main_thread_signals)?;
 
     // ── FD table (filter out CLOEXEC fds) ──
     let fd_entries: Vec<(i32, &FdEntry)> = proc
@@ -1622,6 +1667,7 @@ pub fn deserialize_exec_state(buf: &[u8], pid: u32) -> Result<Process, Errno> {
     // Read pending signals (exec preserves them, unlike fork)
     let pending = r.read_u64()?;
     let signals = SignalState::from_parts_with_pending(handlers, blocked, pending);
+    let main_thread_signals = read_directed_signal_state(&mut r)?;
 
     // ── FD table ──
     let max_fds = r.read_u32()? as usize;
@@ -1785,6 +1831,7 @@ pub fn deserialize_exec_state(buf: &[u8], pid: u32) -> Result<Process, Errno> {
         cwd,
         dir_streams: Vec::new(),
         signals,
+        main_thread_signals,
         memory,
         terminal,
         environ,
@@ -1849,6 +1896,7 @@ mod tests {
         assert_eq!(child.nice, proc.nice);
         assert_eq!(child.cwd, proc.cwd);
         assert_eq!(child.signals.pending, 0);
+        assert_eq!(child.main_thread_signals.pending, 0);
     }
 
     #[test]
@@ -1898,6 +1946,7 @@ mod tests {
             .set_handler(15, SignalHandler::Handler(42))
             .unwrap();
         proc.signals.blocked = 0x0000_0004;
+        proc.main_thread_signals.raise(25);
 
         let mut buf = vec![0u8; 64 * 1024];
         let written = serialize_fork_state(&proc, &mut buf).unwrap();
@@ -1907,6 +1956,8 @@ mod tests {
         assert_eq!(child.signals.get_handler(15), SignalHandler::Handler(42));
         assert_eq!(child.signals.blocked, 0x0000_0004);
         assert_eq!(child.signals.pending, 0);
+        assert_eq!(child.main_thread_signals.pending, 0);
+        assert_ne!(proc.main_thread_signals.pending, 0);
     }
 
     #[test]
@@ -1993,6 +2044,46 @@ mod tests {
         assert_eq!(restored.pid, 1);
         assert_eq!(restored.ppid, 0); // default ppid
         assert_eq!(restored.signals.pending, 0);
+        assert_eq!(restored.main_thread_signals.pending, 0);
+    }
+
+    #[test]
+    fn test_exec_preserves_main_directed_queue_separately() {
+        let mut proc = Process::new(1);
+        proc.main_thread_signals.raise(25);
+        proc.main_thread_signals.raise_with_value(32, 101);
+        proc.main_thread_signals.raise_with_value(32, 202);
+
+        let serialized = serialize_exec_state_with_growing_buffer(&proc).unwrap();
+        let mut restored = deserialize_exec_state(&serialized, proc.pid).unwrap();
+
+        assert_eq!(restored.signals.pending, 0);
+        assert!(restored.main_thread_signals.pending != 0);
+        assert_eq!(restored.main_thread_signals.consume_one(25), Some((0, 0)));
+        assert_eq!(
+            restored.main_thread_signals.consume_one(32),
+            Some((101, -1))
+        );
+        assert_eq!(
+            restored.main_thread_signals.consume_one(32),
+            Some((202, -1))
+        );
+        assert_eq!(restored.main_thread_signals.pending, 0);
+    }
+
+    #[test]
+    fn test_exec_rejects_oversized_main_directed_queue() {
+        let mut proc = Process::new(1);
+        for value in 0..=MAX_DIRECTED_SIGNAL_QUEUE {
+            assert!(proc
+                .main_thread_signals
+                .raise_with_value(32, value as i32));
+        }
+
+        assert_eq!(
+            serialize_exec_state_with_growing_buffer(&proc),
+            Err(Errno::E2BIG)
+        );
     }
 
     #[test]
