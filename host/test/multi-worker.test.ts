@@ -23,6 +23,7 @@ import {
   CH_DATA,
   CH_ERRNO,
   CH_RETURN,
+  HOST_INTERCEPTED_SYSCALLS,
 } from "../src/generated/abi";
 
 const MAX_PAGES = 1024; // 64 MiB: enough to prove initial < maximum.
@@ -100,6 +101,49 @@ describe("CentralizedKernelWorker Process Management", () => {
     expect((kw as any).processes.has(pid)).toBe(false);
     expect((kw as any).activeChannels).toEqual([{ pid: peerPid }]);
     expect((kw as any).hostReaped.has(pid)).toBe(false);
+  });
+
+  it("retries fork allocation when the kernel still owns a zombie pid", async () => {
+    const parentPid = 77;
+    const memory = new WebAssembly.Memory({ initial: 4, maximum: 4, shared: true });
+    const channel = { pid: parentPid, channelOffset: WASM_PAGE_SIZE, memory };
+    const kernelForkProcess = vi.fn((_parent: number, child: number) =>
+      child === 100 ? -17 : 0,
+    );
+    const completeChannel = vi.fn();
+    const onFork = vi.fn(() => Promise.resolve([WASM_PAGE_SIZE]));
+    const kw = Object.assign(Object.create(CentralizedKernelWorker.prototype), {
+      callbacks: { onFork },
+      nextChildPid: 100,
+      processes: new Map([[parentPid, { channels: [channel] }]]),
+      threadForkContexts: new Map(),
+      sharedMappings: new Map(),
+      tcpListenerTargets: new Map(),
+      epollInterests: new Map(),
+      completeChannel,
+      kernelInstance: {
+        exports: {
+          kernel_fork_process: kernelForkProcess,
+          kernel_clear_fork_child: vi.fn(() => 0),
+          kernel_reset_signal_mask: vi.fn(() => 0),
+        },
+      },
+    }) as CentralizedKernelWorker;
+
+    (kw as any).handleFork(channel, [0]);
+    await Promise.resolve();
+
+    expect(kernelForkProcess).toHaveBeenNthCalledWith(1, parentPid, 100);
+    expect(kernelForkProcess).toHaveBeenNthCalledWith(2, parentPid, 101);
+    expect(onFork).toHaveBeenCalledWith(parentPid, 101, memory, undefined);
+    expect(completeChannel).toHaveBeenCalledWith(
+      channel,
+      HOST_INTERCEPTED_SYSCALLS.SYS_FORK,
+      [0],
+      undefined,
+      101,
+      0,
+    );
   });
 
   it("completes pthread SYS_EXIT channels (clearing the exiting guest's atomic-wait waiter) even when the host terminates the worker", () => {
