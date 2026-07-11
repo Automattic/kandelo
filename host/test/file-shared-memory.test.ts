@@ -1262,6 +1262,25 @@ describe("file/POSIX MAP_SHARED page cache", () => {
     )).toBe(true);
   });
 
+  it("skips file-coherence hooks when no shared file backing exists", () => {
+    const h = createFileHarness();
+    const pid = h.pids[0];
+    const syncFile = vi.spyOn(h.kw as any, "syncFileSharedMappingsFromProcess");
+    const flushFd = vi.spyOn(h.kw as any, "flushSharedBackingForFd");
+    const invalidateFd = vi.spyOn(h.kw as any, "invalidateSharedMmapFdCache");
+
+    expect((h.kw as any).flushSharedMappingsBeforeFileSyscall(
+      h.channels.get(pid), ABI_SYSCALLS.Pwrite, [4, 0, 1, 0],
+    )).toBe(true);
+    (h.kw as any).handleSharedMappingsAfterFileSyscall(
+      h.channels.get(pid), ABI_SYSCALLS.Open, [0, 0], 4, 0,
+    );
+
+    expect(syncFile).not.toHaveBeenCalled();
+    expect(flushFd).not.toHaveBeenCalled();
+    expect(invalidateFd).not.toHaveBeenCalled();
+  });
+
   it("reaps a retained zero-reference backing after writeback recovers", () => {
     const h = createFileHarness();
     const pid = h.pids[0];
@@ -1282,9 +1301,8 @@ describe("file/POSIX MAP_SHARED page cache", () => {
     expect(h.close).not.toHaveBeenCalledWith(backing.handle);
 
     h.io.write.mockImplementation(write);
-    expect((h.kw as any).flushSharedBackingForFd(
-      h.channels.get(pid),
-      4,
+    expect((h.kw as any).flushSharedMappingsBeforeFileSyscall(
+      h.channels.get(pid), ABI_SYSCALLS.Pwrite, [4, 0, 1, 0],
     )).toBe(true);
     expect((h.kw as any).sharedMmapBackings.size).toBe(0);
     expect(h.close).toHaveBeenCalledWith(backing.handle);

@@ -8682,6 +8682,10 @@ export class CentralizedKernelWorker {
     const registration = this.processes?.get(process.pid);
     if (registration && registration.memory !== process.memory) return;
     if (this.processes && !registration) return;
+    if (
+      (this.sharedMappings?.size ?? 0) === 0
+      && (this.shmMappings?.size ?? 0) === 0
+    ) return;
     this.syncAnonymousSharedMappingsFromProcess(process);
     this.syncFileSharedMappingsFromProcess(process);
     this.syncSysvShmMappingsFromProcess(process);
@@ -9456,6 +9460,7 @@ export class CentralizedKernelWorker {
     syscallNr: number,
     origArgs: number[],
   ): boolean {
+    if ((this.sharedMmapBackings?.size ?? 0) === 0) return true;
     try {
       if (syscallNr === SYS_TRUNCATE) {
         const path = this.resolveSharedMmapPath(channel, origArgs[0]);
@@ -9639,6 +9644,7 @@ export class CentralizedKernelWorker {
     retVal: number,
     errVal: number,
   ): void {
+    if ((this.sharedMmapBackings?.size ?? 0) === 0) return;
     if (errVal !== 0) return;
     if ((syscallNr === SYS_OPEN || syscallNr === SYS_OPENAT) && retVal >= 0) {
       this.invalidateSharedMmapFdCache(channel.pid, retVal);

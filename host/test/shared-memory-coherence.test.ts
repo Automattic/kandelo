@@ -170,6 +170,60 @@ describe("anonymous MAP_SHARED coherence", () => {
 
     expect(h.backing.bytes[1]).toBe(0);
   });
+
+  it("skips coherence scans when no process has shared mappings", () => {
+    const pid = 51;
+    const process = { pid, memory: sharedMemory() };
+    const processes = new Map([[pid, process]]);
+    const getProcess = vi.spyOn(processes, "get");
+    const syncAnonymous = vi.fn();
+    const syncFile = vi.fn();
+    const syncSysv = vi.fn();
+    const kw = Object.assign(Object.create(CentralizedKernelWorker.prototype), {
+      processes,
+      sharedMappings: new Map(),
+      shmMappings: new Map(),
+      syncAnonymousSharedMappingsFromProcess: syncAnonymous,
+      syncFileSharedMappingsFromProcess: syncFile,
+      syncSysvShmMappingsFromProcess: syncSysv,
+    }) as CentralizedKernelWorker;
+
+    (kw as any).synchronizeSharedMemoryForBoundary(process);
+
+    expect(getProcess).toHaveBeenCalledWith(pid);
+    expect(syncAnonymous).not.toHaveBeenCalled();
+    expect(syncFile).not.toHaveBeenCalled();
+    expect(syncSysv).not.toHaveBeenCalled();
+  });
+
+  it.each(["POSIX", "SysV"])(
+    "runs coherence scans while %s shared mappings exist",
+    (mappingKind) => {
+      const pid = 52;
+      const process = { pid, memory: sharedMemory() };
+      const syncAnonymous = vi.fn();
+      const syncFile = vi.fn();
+      const syncSysv = vi.fn();
+      const kw = Object.assign(Object.create(CentralizedKernelWorker.prototype), {
+        processes: new Map([[pid, process]]),
+        sharedMappings: mappingKind === "POSIX"
+          ? new Map([[pid, new Map([[0x1000, {}]])]])
+          : new Map(),
+        shmMappings: mappingKind === "SysV"
+          ? new Map([[pid, new Map([[0x2000, {}]])]])
+          : new Map(),
+        syncAnonymousSharedMappingsFromProcess: syncAnonymous,
+        syncFileSharedMappingsFromProcess: syncFile,
+        syncSysvShmMappingsFromProcess: syncSysv,
+      }) as CentralizedKernelWorker;
+
+      (kw as any).synchronizeSharedMemoryForBoundary(process);
+
+      expect(syncAnonymous).toHaveBeenCalledWith(process);
+      expect(syncFile).toHaveBeenCalledWith(process);
+      expect(syncSysv).toHaveBeenCalledWith(process);
+    },
+  );
 });
 
 function sysvHarness() {
