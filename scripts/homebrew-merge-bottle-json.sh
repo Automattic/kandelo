@@ -99,25 +99,25 @@ if [ -z "$BREW_BIN" ] || [ ! -x "$BREW_BIN" ]; then
   exit 2
 fi
 KANDELO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-PATCH_FILE="$KANDELO_ROOT/homebrew/patches/0001-add-kandelo-wasm-bottle-tags.patch"
-BREW_REPO="$("$BREW_BIN" --repository)"
-BREW_OVERLAY="$(mktemp -d)"
+PATCH_FILE="${KANDELO_HOMEBREW_PATCH_FILE:-$KANDELO_ROOT/homebrew/patches/0001-add-kandelo-wasm-bottle-tags.patch}"
+. "$KANDELO_ROOT/scripts/homebrew-patched-launcher.sh"
+WORK_DIR="$(mktemp -d)"
 
 cleanup() {
-  if [ -d "$BREW_OVERLAY" ]; then
-    git -C "$BREW_REPO" worktree remove --force "$BREW_OVERLAY" >/dev/null 2>&1 || rm -rf "$BREW_OVERLAY"
-  fi
+  homebrew_patched_launcher_cleanup
+  rm -rf "$WORK_DIR"
 }
 trap cleanup EXIT
 
-git -C "$BREW_REPO" apply --check "$PATCH_FILE"
-rm -rf "$BREW_OVERLAY"
-git -C "$BREW_REPO" worktree add --detach "$BREW_OVERLAY" HEAD >/dev/null
-git -C "$BREW_OVERLAY" apply --whitespace=nowarn "$PATCH_FILE"
-BREW_BIN="$BREW_OVERLAY/bin/brew"
+export XDG_CONFIG_HOME="$WORK_DIR/xdg-config"
+mkdir -p "$XDG_CONFIG_HOME/homebrew"
+chmod 0700 "$XDG_CONFIG_HOME" "$XDG_CONFIG_HOME/homebrew"
+homebrew_patched_launcher_prepare "$BREW_BIN" "$PATCH_FILE" "$WORK_DIR"
+BREW_BIN="$HOMEBREW_PATCHED_BREW_BIN"
 
 TAP_NAME="$(printf '%s' "$TAP_REPOSITORY" | tr '[:upper:]' '[:lower:]')"
 "$BREW_BIN" tap "$TAP_NAME" "$TAP_ROOT"
+"$BREW_BIN" trust --tap "$TAP_NAME"
 TAPPED_ROOT="$("$BREW_BIN" --repository "$TAP_NAME")"
 TAPPED_FORMULA="$TAPPED_ROOT/Formula/$FORMULA.rb"
 if [ ! "$FORMULA_PATH" -ef "$TAPPED_FORMULA" ]; then
@@ -127,7 +127,7 @@ fi
   cd "$TAP_ROOT"
   HOMEBREW_KANDELO_BOTTLE_TAG="$TAG" \
   KANDELO_HOMEBREW_BOTTLE_TAG="$TAG" \
-    "$BREW_BIN" bottle --merge --write --no-commit "$BOTTLE_JSON"
+    "$BREW_BIN" bottle --merge --write --no-commit --keep-old "$BOTTLE_JSON"
 )
 if [ ! "$FORMULA_PATH" -ef "$TAPPED_FORMULA" ]; then
   cp "$TAPPED_FORMULA" "$FORMULA_PATH"

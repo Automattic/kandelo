@@ -17,8 +17,8 @@ BREW_COMMIT = "34c40c18ffa2029b611b61c73273e32c003d0842"
 PUBLISHER_PLAN_DIGEST = "5724fbd09d7c43ba63c5bfa58cb4e73d7f0c08247b029b49a3e4e940d0011bd5"
 PUBLISHER_BUILD_DIGEST = "7c4141acf50a353846fc87c9a8a9928efb5ba717e25793908f14c31b96045022"
 PUBLISHER_UPLOAD_DIGEST = "60a32b6c315cfbaa5b4035c67f1cbb76d17b17a6e20c4f3e06d72aa66af456bd"
-PUBLISHER_VERIFY_DIGEST = "2f1a0c6e76d6741f96a067f4f6a45daef3555e2fb20ff79dfdf083cd69f6e924"
-PUBLISHER_FINALIZE_DIGEST = "808e283806190e29b42c8a88db8db43af67d9100af84063ea486fe33205eb839"
+PUBLISHER_VERIFY_DIGEST = "8ec75a3dbdf3fc0df60672ef1d69d7a1e32beaa6e18cbeb91b513d289d95294c"
+PUBLISHER_FINALIZE_DIGEST = "ff194b4abd44c058c18a1a9175b9be3f02814302a19b0f2842c3c86ad025ee04"
 MAINTENANCE_VALIDATE_DIGEST = "9ab856fe40640172500d82b5179a096aa028763bf696aeac865d732298617a22"
 MAINTENANCE_ROLLBACK_DIGEST = "45ff220697da9604dbe69c82761f285ba2e3e5182ef0819360128b82dd169efc"
 
@@ -514,7 +514,10 @@ def check_publisher(workflow)
   [
     "scripts/homebrew-merge-bottle-json.sh", '--bottle-json "$BOTTLE_JSON"',
     '--expected-sha256 "$BOTTLE_SHA256"', '--expected-root-url "$BOTTLE_ROOT_URL"',
+    'merged_tap="$RUNNER_TEMP/homebrew-merged-tap"',
+    'cp -a "$GITHUB_WORKSPACE/tap" "$merged_tap"',
     '[ "$changed" = "Formula/$FORMULA.rb" ]',
+    'bottle merge modified the archived source tap',
   ].each do |fragment|
     check(merge_run.include?(fragment), "publisher canonical bottle merge lacks #{fragment}")
   end
@@ -537,8 +540,11 @@ def check_publisher(workflow)
   sidecar_run = named_step(verify_steps,
                            "Generate sidecars from the selected bottle").fetch("run")
   check(sidecar_run.include?('KANDELO_HOMEBREW_BOTTLE_ARCHIVE="$RUNTIME_BOTTLE"') &&
+        sidecar_run.include?('KANDELO_HOMEBREW_TAP_ROOT="$RUNNER_TEMP/homebrew-merged-tap"') &&
+        sidecar_run.include?('KANDELO_HOMEBREW_FORMULA_SOURCE_ROOT="$GITHUB_WORKSPACE/tap"') &&
+        sidecar_run.include?('KANDELO_HOMEBREW_BOTTLE_JSON="$RUNNER_TEMP/homebrew-build-handoff/bottle.json"') &&
         sidecar_run.include?("scripts/homebrew-generate-sidecars-from-env.sh"),
-        "publisher sidecars do not use the anonymously selected bottle bytes")
+        "publisher sidecars do not use archived Formula facts and the anonymously selected bottle")
   browser_run = named_step(verify_steps,
                            "Build and strictly smoke the hello browser image").fetch("run")
   [
@@ -552,11 +558,18 @@ def check_publisher(workflow)
   package_handoff_run = named_step(verify_steps,
                                    "Package validated data-only publication handoff").fetch("run")
   [
-    "for file in manifest.json bottle.json bottle.tar.gz", "receipt.json",
-    'sidecars/Formula', 'sidecars/Kandelo', "scripts/homebrew-validate-publish-handoff.sh",
+    'mkdir -p "$publish_handoff/build" "$publish_handoff/composition"',
+    'homebrew-build-handoff/manifest.json', 'homebrew-build-handoff/bottle.json',
+    'cp "$RUNTIME_BOTTLE" "$publish_handoff/build/bottle.tar.gz"', "receipt.json",
+    'homebrew-sidecars/sidecars-input.json',
+    '.packages[0].bottles[0].bottle_file = "../build/bottle.tar.gz"',
+    "scripts/homebrew-validate-publish-handoff.sh",
   ].each do |fragment|
     check(package_handoff_run.include?(fragment), "publisher publication handoff lacks #{fragment}")
   end
+  check(!package_handoff_run.include?("sidecars/Formula") &&
+        !package_handoff_run.include?("sidecars/Kandelo"),
+        "publisher publication handoff carries stale precomputed tap state")
   check(!package_handoff_run.match?(/(?:^|\s)(?:cp|rsync)[^\n]*(?:scripts?|\.env)(?:\s|\/|$)/),
         "publisher publication handoff includes executable or environment data")
 
@@ -567,9 +580,18 @@ def check_publisher(workflow)
   check(payload_validation["id"] == "validate-payload" &&
         payload_validation["continue-on-error"] == true &&
         payload_validation.fetch("run").include?("scripts/homebrew-validate-publish-handoff.sh") &&
-        payload_validation.fetch("run").include?('homebrew-validate --tap-root "$validation_tap"') &&
         finalize_steps.index(payload_validation) < finalize_steps.index(publish_checkout),
         "publisher finalizer does not validate the strict handoff before credentialed checkout")
+  publish_step = named_step(finalize_steps, "Publish validated sidecars under the tap state lock")
+  publish_run = publish_step.fetch("run")
+  check(publish_run.include?("scripts/homebrew-publish-sidecars.sh") &&
+        publish_run.include?('--publication-handoff "$RUNNER_TEMP/homebrew-publish-handoff"') &&
+        !publish_run.include?("--sidecar-root"),
+        "publisher finalizer bypasses under-lock package composition")
+  check(!finalize_steps.filter_map { |step| step["run"] }.join("\n").match?(/(?:^|\s)brew(?:\s|$)/) &&
+        !finalize_steps.filter_map { |step| step["run"] }.join("\n").include?(
+          "homebrew-generate-sidecars-from-env.sh"
+        ), "credentialed finalizer evaluates Homebrew or Formula code")
   check(finalize_steps.none? { |step| step["uses"] == UPLOAD_ACTION } &&
         finalize_steps.none? { |step| step["name"].to_s.downcase.include?("diagnostic") },
         "credentialed finalizer publishes diagnostics")

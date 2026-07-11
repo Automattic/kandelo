@@ -62,8 +62,10 @@ Homebrew bottle, not the package registry archive. The workflow retains browser
 gallery output as run-scoped diagnostics and does not publish sidecars or
 gallery assets to a GitHub Release.
 
-Only after the complete publication handoff is validated as inert data does the
-finalizer publish generated `Formula/` and `Kandelo/` state. Failed attempts go
+Only after the complete package-scoped publication handoff is validated as
+inert data does the finalizer acquire the tap lock, refresh tap state, compose
+the selected static Formula bottle tag, and regenerate `Kandelo/` state. It
+does not execute Formula Ruby or Homebrew with tap write credentials. Failed attempts go
 under `Kandelo/reports/failures/` without replacing last-green
 `Kandelo/metadata.json`. The bottle root is always derived from the lowercase
 tap repository identity; callers cannot override it.
@@ -76,13 +78,18 @@ Rollback mode records a report under `Kandelo/reports/rollbacks/` while
 preserving last-green metadata; package deletion is exceptional and must be
 documented with both the deleted package URL and the operational reason.
 
-The privileged caller must remain disabled until lossless under-lock peer and
-sibling-architecture sidecar composition plus Formula-source drift protection
-land in `Automattic/kandelo#885`. New GHCR packages are private by default.
-Changing one to public is an explicit approval boundary; the workflow does not
-change package visibility. A write publication cannot finalize until its bottle
-passes anonymous digest readback.
+Parallel peer and sibling-architecture publications compose against refreshed
+tap state under the shared lock, and Formula source drift after planning aborts
+publication. New GHCR packages are private by default. Changing one to public
+is an explicit approval boundary; the workflow does not change package
+visibility. A write publication cannot finalize until its bottle passes
+anonymous digest readback.
 
 Homebrew formula and bottle metadata remain the contract consumed by `brew`.
 Kandelo sidecar metadata is the bounded contract consumed by host VFS tooling,
 Node validation, browser/gallery gates, and publication audits.
+
+The trusted generator derives formula identity, direct runtime dependencies,
+and linkable keg files from Homebrew's produced bottle JSON. Tap-native
+formulae do not require duplicate `packages/registry/<name>` metadata in the
+main repository.

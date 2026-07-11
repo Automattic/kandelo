@@ -76,6 +76,8 @@ The semantic validator must still check cross-file and artifact facts:
 - metadata ABI matches the `bottles-abi-v<N>` namespace;
 - formula sidecars match their package entry in `metadata.json`;
 - bottle `arch` and `bottle_tag` agree;
+- Formula bottle root, tags, and SHA-256 digests exactly match the tap and the
+  successful or last-green fallback bottles in sidecar metadata;
 - browser-compatible entries have browser validation evidence;
 - link-manifest paths do not escape the Homebrew prefix;
 - link sources exist inside the verified bottle payload;
@@ -89,9 +91,10 @@ scripts/dev-shell.sh cargo xtask homebrew-validate \
   --tap-root /path/to/kandelo-homebrew
 ```
 
-The validator checks the current sidecar JSON, link-manifest consistency,
-provenance reports, and fallback link references. It does not fetch bottle
-bytes or evaluate Formula Ruby.
+The validator checks the current sidecar JSON, Ripper-parsed static Formula
+bottle structure and data, link-manifest consistency, provenance reports, and
+fallback link references. It does not fetch bottle bytes or evaluate Formula
+Ruby.
 
 ## VFS Planning
 

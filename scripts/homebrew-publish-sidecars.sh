@@ -6,6 +6,7 @@ set -euo pipefail
 KANDELO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 TAP_ROOT=""
 SIDECAR_ROOT=""
+PUBLICATION_HANDOFF=""
 FORMULA=""
 ARCH=""
 RELEASE_TAG=""
@@ -21,13 +22,16 @@ REPAIR_ONLY=0
 DRY_RUN=0
 NO_LOCK=0
 PUBLISH_BRANCH=""
+COMPOSE_PARENT=""
+COMPOSE_ROOT=""
 
 usage() {
   cat >&2 <<'EOF'
-usage: scripts/homebrew-publish-sidecars.sh --tap-root <tap-root> --formula <name> --arch <wasm32|wasm64> --release-tag <tag> --status <success|failed|rollback> [--kandelo-commit <sha>] [--tap-commit <sha>] [--sidecar-root <dir>] [--error <text>] [--reason <text>] [--rollback-ref <ref>] [--deleted-package-url <url> --deletion-reason <text>] [--repair-only] [--dry-run] [--no-lock]
+usage: scripts/homebrew-publish-sidecars.sh --tap-root <tap-root> --formula <name> --arch <wasm32|wasm64> --release-tag <tag> --status <success|failed|rollback> [--kandelo-commit <sha>] [--tap-commit <sha>] [--publication-handoff <dir>] [--sidecar-root <dir>] [--error <text>] [--reason <text>] [--rollback-ref <ref>] [--deleted-package-url <url> --deletion-reason <text>] [--repair-only] [--dry-run] [--no-lock]
 
-Success publishes a generated sidecar payload from --sidecar-root into the tap
-and validates it with xtask homebrew-validate. Failed and rollback attempts
+Success either composes a validated package-scoped --publication-handoff
+against refreshed tap state or publishes a generated --sidecar-root payload,
+then validates it with xtask homebrew-validate. Failed and rollback attempts
 either publish a validated non-success sidecar payload or, when --sidecar-root
 is absent, write an attempt report under Kandelo/reports while leaving
 metadata.json untouched so last-green metadata is preserved. Package deletion is
@@ -40,6 +44,7 @@ while [ "$#" -gt 0 ]; do
     --kandelo-root) KANDELO_ROOT="${2:-}"; shift 2 ;;
     --tap-root) TAP_ROOT="${2:-}"; shift 2 ;;
     --sidecar-root) SIDECAR_ROOT="${2:-}"; shift 2 ;;
+    --publication-handoff) PUBLICATION_HANDOFF="${2:-}"; shift 2 ;;
     --formula) FORMULA="${2:-}"; shift 2 ;;
     --arch) ARCH="${2:-}"; shift 2 ;;
     --release-tag) RELEASE_TAG="${2:-}"; shift 2 ;;
@@ -198,13 +203,232 @@ commit_and_push() {
 }
 
 run_validator() {
-  local host
+  local root="${1:-$TAP_ROOT}" host
   host="$(rustc -vV | awk '/^host/ {print $2}')"
   (
     cd "$KANDELO_ROOT"
     cargo run --release -p xtask --target "$host" --quiet -- \
-      homebrew-validate --tap-root "$TAP_ROOT"
+      homebrew-validate --tap-root "$root"
   )
+}
+
+sha256_file() {
+  if command -v sha256sum >/dev/null 2>&1; then
+    sha256sum "$1" | awk '{print $1}'
+  else
+    shasum -a 256 "$1" | awk '{print $1}'
+  fi
+}
+
+assert_static_tap_tree() {
+  local root="$1" label="$2" path bad bad_mode
+  for path in "$root/Formula" "$root/Kandelo"; do
+    if [ -L "$path" ] || { [ -e "$path" ] && [ ! -d "$path" ]; }; then
+      echo "homebrew-publish-sidecars.sh: $label contains a non-directory ${path#"$root/"} root" >&2
+      exit 1
+    fi
+    [ -d "$path" ] || continue
+    bad="$(find "$path" -mindepth 1 \( -type l -o \( ! -type f -a ! -type d \) \) -print -quit)"
+    if [ -n "$bad" ]; then
+      echo "homebrew-publish-sidecars.sh: $label contains a symlink or special file: ${bad#"$root/"}" >&2
+      exit 1
+    fi
+  done
+
+  if git -C "$root" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+    bad_mode="$(git -C "$root" ls-files -s -- Formula Kandelo |
+      awk '$1 != "100644" && $1 != "100755" { print; exit }')"
+    if [ -n "$bad_mode" ]; then
+      echo "homebrew-publish-sidecars.sh: $label contains an unsafe tracked object: $bad_mode" >&2
+      exit 1
+    fi
+  fi
+}
+
+sibling_bottle_policy() {
+  local metadata="$1" name="$2" version="$3" formula_revision="$4" rebuild="$5" abi="$6"
+  if [ ! -e "$metadata" ]; then
+    printf '%s\n' discard
+    return 0
+  fi
+  if [ ! -f "$metadata" ] || [ -L "$metadata" ]; then
+    echo "homebrew-publish-sidecars.sh: refreshed metadata is not a regular file" >&2
+    return 1
+  fi
+
+  jq -er \
+    --arg name "$name" \
+    --arg version "$version" \
+    --argjson formula_revision "$formula_revision" \
+    --argjson rebuild "$rebuild" \
+    --argjson abi "$abi" '
+      if type != "object" or (.packages | type) != "array" then
+        error("refreshed metadata lacks a packages array")
+      else
+        [.packages[] | select(.name == $name)] as $matches |
+        if ($matches | length) > 1 then
+          error("refreshed metadata contains duplicate package identities")
+        elif .kandelo_abi == $abi and ($matches | length) == 1 and
+             $matches[0].version == $version and
+             $matches[0].formula_revision == $formula_revision and
+             $matches[0].bottle_rebuild == $rebuild then
+          "preserve"
+        else
+          "discard"
+        end
+      end
+    ' "$metadata"
+}
+
+compose_publication_handoff() {
+  local handoff input manifest receipt bottle formula_path formula_sha
+  local input_tap_commit input_kandelo_commit bottle_sha bottle_url bottle_bytes
+  local bottle_root relocation_cellar rebuild tag planned_formula composed_formula
+  local planned_digest refreshed_digest host previous_metadata version formula_revision
+  local kandelo_abi sibling_policy formula_stage publish_stage kandelo_stage kandelo_previous
+  local -a sidecar_args
+
+  if [ -z "$PUBLICATION_HANDOFF" ] || [ ! -d "$PUBLICATION_HANDOFF" ] || [ -L "$PUBLICATION_HANDOFF" ]; then
+    echo "homebrew-publish-sidecars.sh: --publication-handoff must name a validated data directory" >&2
+    exit 2
+  fi
+  handoff="$(cd "$PUBLICATION_HANDOFF" && pwd -P)"
+  input="$handoff/composition/sidecars-input.json"
+  manifest="$handoff/build/manifest.json"
+  receipt="$handoff/receipt.json"
+  bottle="$handoff/build/bottle.tar.gz"
+  for file in "$input" "$manifest" "$receipt" "$bottle"; do
+    if [ ! -f "$file" ] || [ -L "$file" ]; then
+      echo "homebrew-publish-sidecars.sh: publication handoff lacks regular file ${file#"$handoff"/}" >&2
+      exit 1
+    fi
+  done
+
+  formula_path="$(jq -er '.packages[0].formula_path' "$input")"
+  formula_sha="$(jq -er '.packages[0].formula_source_sha256' "$input")"
+  input_tap_commit="$(jq -er '.tap_commit' "$input")"
+  input_kandelo_commit="$(jq -er '.kandelo_commit' "$input")"
+  version="$(jq -er '.packages[0].version | select(type == "string")' "$input")"
+  formula_revision="$(jq -er '.packages[0].formula_revision | select(type == "number" and . >= 0 and floor == .)' "$input")"
+  rebuild="$(jq -er '.packages[0].bottle_rebuild | select(type == "number" and . >= 0 and floor == .)' "$input")"
+  kandelo_abi="$(jq -er '.kandelo_abi | select(type == "number" and . >= 0 and floor == .)' "$input")"
+  tag="${ARCH}_kandelo"
+  bottle_sha="$(jq -er '.bottle.sha256' "$receipt")"
+  bottle_url="$(jq -er '.bottle.url' "$receipt")"
+  bottle_bytes="$(jq -er '.bottle.bytes' "$receipt")"
+  bottle_root="$(jq -er '.bottle_root_url' "$manifest")"
+  relocation_cellar="$(jq -er '.bottle.cellar' "$manifest")"
+
+  jq -e \
+    --arg formula "$FORMULA" --arg arch "$ARCH" --arg tag "$tag" \
+    --arg release_tag "$RELEASE_TAG" --arg tap_commit "$TAP_COMMIT" \
+    --arg kandelo_commit "$KANDELO_COMMIT" --arg sha "$bottle_sha" \
+    --arg url "$bottle_url" '
+      .schema == 1 and .release_tag == $release_tag and
+      .tap_repository == "Automattic/kandelo-homebrew" and
+      .tap_commit == $tap_commit and .kandelo_commit == $kandelo_commit and
+      (.packages | length) == 1 and
+      .packages[0].name == $formula and
+      .packages[0].formula_path == ("Formula/" + $formula + ".rb") and
+      (.packages[0].formula_source_sha256 | test("^[0-9a-f]{64}$")) and
+      (.packages[0].bottles | length) == 1 and
+      .packages[0].bottles[0].arch == $arch and
+      .packages[0].bottles[0].bottle_tag == $tag and
+      .packages[0].bottles[0].status == "success" and
+      .packages[0].bottles[0].bottle_file == "../build/bottle.tar.gz" and
+      .packages[0].bottles[0].cache_key_sha == $sha and
+      .packages[0].bottles[0].url == $url
+    ' "$input" >/dev/null || {
+      echo "homebrew-publish-sidecars.sh: publication composition input does not match the planned bottle" >&2
+      exit 1
+    }
+  [ "$input_tap_commit" = "$TAP_COMMIT" ] && [ "$input_kandelo_commit" = "$KANDELO_COMMIT" ] || {
+    echo "homebrew-publish-sidecars.sh: publication input source commits differ from the plan" >&2
+    exit 1
+  }
+  [ "$(sha256_file "$bottle")" = "$bottle_sha" ] || {
+    echo "homebrew-publish-sidecars.sh: publication bottle sha256 differs from its receipt" >&2
+    exit 1
+  }
+  [ "$(wc -c <"$bottle" | tr -d '[:space:]')" = "$bottle_bytes" ] || {
+    echo "homebrew-publish-sidecars.sh: publication bottle byte count differs from its receipt" >&2
+    exit 1
+  }
+
+  COMPOSE_PARENT="$(mktemp -d)"
+  COMPOSE_ROOT="$COMPOSE_PARENT/tap"
+  git -C "$TAP_ROOT" worktree add --detach "$COMPOSE_ROOT" HEAD >/dev/null
+  assert_static_tap_tree "$COMPOSE_ROOT" "refreshed composition tap"
+  if ! git -C "$COMPOSE_ROOT" cat-file -e "${input_tap_commit}^{commit}" 2>/dev/null ||
+     ! git -C "$COMPOSE_ROOT" merge-base --is-ancestor "$input_tap_commit" HEAD; then
+    echo "homebrew-publish-sidecars.sh: planned tap commit is not an ancestor of refreshed tap main" >&2
+    exit 1
+  fi
+
+  planned_formula="$COMPOSE_PARENT/planned-formula.rb"
+  composed_formula="$COMPOSE_PARENT/composed-formula.rb"
+  git -C "$COMPOSE_ROOT" show "$input_tap_commit:$formula_path" >"$planned_formula"
+  [ "$(sha256_file "$planned_formula")" = "$formula_sha" ] || {
+    echo "homebrew-publish-sidecars.sh: planned Formula bytes differ from archived bottle provenance" >&2
+    exit 1
+  }
+  planned_digest="$(ruby "$KANDELO_ROOT/scripts/homebrew-formula-source-digest.rb" "$planned_formula")"
+  refreshed_digest="$(ruby "$KANDELO_ROOT/scripts/homebrew-formula-source-digest.rb" "$COMPOSE_ROOT/$formula_path")"
+  [ "$planned_digest" = "$refreshed_digest" ] || {
+    echo "homebrew-publish-sidecars.sh: Formula source changed after the bottle build" >&2
+    exit 1
+  }
+
+  previous_metadata="$COMPOSE_ROOT/Kandelo/metadata.json"
+  sibling_policy="$(sibling_bottle_policy \
+    "$previous_metadata" "$FORMULA" "$version" "$formula_revision" "$rebuild" "$kandelo_abi")"
+
+  ruby "$KANDELO_ROOT/scripts/homebrew-compose-formula-bottle.rb" \
+    "$COMPOSE_ROOT/$formula_path" \
+    "$planned_formula" \
+    "$bottle_root" \
+    "$rebuild" \
+    "$tag" \
+    "$relocation_cellar" \
+    "$bottle_sha" \
+    "$sibling_policy" \
+    "$composed_formula"
+  mv "$composed_formula" "$COMPOSE_ROOT/$formula_path"
+
+  host="$(rustc -vV | awk '/^host/ {print $2}')"
+  sidecar_args=(
+    cargo run --release -p xtask --target "$host" --quiet --
+    homebrew-sidecars
+    --tap-root "$COMPOSE_ROOT"
+    --input "$input"
+  )
+  if [ -f "$previous_metadata" ]; then
+    sidecar_args+=(--previous-metadata "$previous_metadata")
+  fi
+  (cd "$KANDELO_ROOT" && "${sidecar_args[@]}")
+  assert_static_tap_tree "$COMPOSE_ROOT" "composed tap"
+  run_validator "$COMPOSE_ROOT"
+
+  assert_static_tap_tree "$TAP_ROOT" "refreshed publication tap"
+  formula_stage="$(mktemp "$TAP_ROOT/Formula/.${FORMULA}.publish.XXXXXX")"
+  publish_stage="$(mktemp -d "$TAP_ROOT/.homebrew-publish.XXXXXX")"
+  kandelo_stage="$publish_stage/Kandelo"
+  kandelo_previous="$TAP_ROOT/.Kandelo.previous.$$"
+  cp "$COMPOSE_ROOT/$formula_path" "$formula_stage"
+  cp -a "$COMPOSE_ROOT/Kandelo" "$kandelo_stage"
+  assert_static_tap_tree "$publish_stage" "staged publication tap"
+
+  if [ -e "$TAP_ROOT/Kandelo" ]; then
+    mv "$TAP_ROOT/Kandelo" "$kandelo_previous"
+  fi
+  if ! mv "$kandelo_stage" "$TAP_ROOT/Kandelo"; then
+    [ ! -e "$kandelo_previous" ] || mv "$kandelo_previous" "$TAP_ROOT/Kandelo"
+    exit 1
+  fi
+  mv "$formula_stage" "$TAP_ROOT/$formula_path"
+  rm -rf "$kandelo_previous"
+  rmdir "$publish_stage"
+  assert_static_tap_tree "$TAP_ROOT" "published tap"
 }
 
 copy_payload() {
@@ -350,14 +574,29 @@ write_rollback_report() {
   echo "homebrew-publish-sidecars.sh: wrote rollback report $report_path"
 }
 
+cleanup() {
+  if [ -n "$COMPOSE_ROOT" ] && [ -d "$COMPOSE_ROOT" ]; then
+    git -C "$TAP_ROOT" worktree remove --force "$COMPOSE_ROOT" >/dev/null 2>&1 || true
+  fi
+  if [ -n "$COMPOSE_PARENT" ]; then
+    rm -rf "$COMPOSE_PARENT"
+  fi
+  release_lock
+}
+
 acquire_lock
-trap release_lock EXIT
+trap cleanup EXIT
 refresh_tap
+assert_static_tap_tree "$TAP_ROOT" "refreshed publication tap"
 
 case "$STATUS" in
   success)
-    copy_payload
-    run_validator
+    if [ -n "$PUBLICATION_HANDOFF" ]; then
+      compose_publication_handoff
+    else
+      copy_payload
+      run_validator
+    fi
     if [ "$REPAIR_ONLY" = "1" ]; then
       commit_and_push "homebrew: repair ${FORMULA} ${ARCH} bottle sidecars"
     else
