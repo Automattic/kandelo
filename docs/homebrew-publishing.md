@@ -173,7 +173,11 @@ tag so metadata writes for the same `bottles-abi-v<N>` release serialize.
 
 Use `dry-run: true` for local or CI validation that must not push GHCR blobs,
 tap commits, or release assets. Dry runs still build bottles and validate the
-generated metadata shape.
+generated metadata shape. The publisher deliberately does not restore GitHub
+Actions dependency caches: selected tap and Kandelo refs are executable code,
+and a manually dispatched dry run can write Actions storage in the same
+repository scope as a later privileged publish. Run-scoped diagnostic artifacts
+remain available, but cached build output is not an input to bottle publication.
 
 ## Sidecar Metadata
 
