@@ -301,6 +301,33 @@ describe.skipIf(!hasCompiler())("DynamicLinker", () => {
     expect(linker.dlclose(handle)).toBe(0);
   });
 
+  it("reserves a stable handle for the main program symbol scope", () => {
+    const memory = new WebAssembly.Memory({ initial: 1, maximum: 100, shared: true });
+    const table = new WebAssembly.Table({ initial: 1, element: "anyfunc" });
+    const stackPointer = new WebAssembly.Global(
+      { value: "i32", mutable: true },
+      65536,
+    );
+    const mainData = new WebAssembly.Global({ value: "i32", mutable: false }, 0x2340);
+    const linker = new DynamicLinker({
+      memory,
+      table,
+      stackPointer,
+      heapPointer: { value: 1024 },
+      globalSymbols: new Map([["main_data", mainData]]),
+      got: new Map(),
+      loadedLibraries: new Map(),
+    });
+
+    const handle = linker.dlopenMain();
+    expect(handle).toBeGreaterThan(0);
+    expect(linker.dlopenMain()).toBe(handle);
+    expect(linker.dlsym(handle, "main_data")).toBe(0x2340);
+    expect(linker.dlsym(0, "main_data")).toBe(0x2340);
+    expect(linker.dlclose(handle)).toBe(0);
+    expect(linker.dlerror()).toBeNull();
+  });
+
   it("uses the supplied allocator for side-module memory", () => {
     const memory = new WebAssembly.Memory({ initial: 1, maximum: 100, shared: true });
     const table = new WebAssembly.Table({ initial: 1, element: "anyfunc" });

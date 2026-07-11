@@ -388,6 +388,13 @@ function buildDlopenImports(
   const imports: Record<string, WebAssembly.ExportValue> = {
     __wasm_dlopen: (bytesPtr: number, bytesLen: number,
                     namePtr: number, nameLen: number): number => {
+      // dlopen(NULL, ...) asks for the main program's global symbol scope.
+      // No module bytes are involved; return the linker's reserved opaque
+      // handle while preserving the existing host-import signature.
+      if (bytesLen === 0 && nameLen === 0) {
+        return getLinker().dlopenMain();
+      }
+
       const bytes = new Uint8Array(memory.buffer, bytesPtr, bytesLen);
       // Copy bytes since memory.buffer may detach during Wasm instantiation
       const bytesCopy = new Uint8Array(bytes);
