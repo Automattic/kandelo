@@ -88,6 +88,7 @@ import {
   SIGSEGV,
 } from "./trap-signals";
 import { threadWorkerFailureDisposition } from "./thread-worker-disposition";
+import { reapHostOwnedExitedProcess } from "./host-owned-process-reap";
 import type {
   CentralizedWorkerInitMessage,
   CentralizedThreadInitMessage,
@@ -1425,11 +1426,20 @@ async function finishProcessExit(
     // always deactivate after worker termination; the main thread tracks
     // exit promises, and no further guest syscalls can arrive on this
     // channel once the worker is gone.
-    kernelWorker.deactivateProcess(pid);
+    try {
+      kernelWorker.deactivateProcess(pid);
+    } catch (err) {
+      console.error(`[kernel-worker] failed to deactivate pid ${pid}: ${err}`);
+    }
 
     processes.delete(pid);
     threadModuleCache.delete(pid);
     ptyByPid.delete(pid);
+    try {
+      reapHostOwnedExitedProcess(kernelInstance, pid);
+    } catch (err) {
+      console.error(`[kernel-worker] failed to reap host-owned pid ${pid}: ${err}`);
+    }
   })();
   processTeardowns.set(pid, teardown);
 

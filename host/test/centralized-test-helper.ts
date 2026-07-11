@@ -130,11 +130,10 @@ export interface RunProgramOptions {
   /** Callback invoked after the process starts.
    *  Use this to call appendStdinData() for interactive stdin testing. */
   onStarted?: (kernelProxy: KernelStdinProxy, pid: number) => void | Promise<void>;
-  /** If `true`, the helper queries `kernel_get_fork_count(pid)` after the
-   *  program exits and surfaces the value on `RunProgramResult.forkCount`.
-   *  Used by the non-forking-spawn regression tests. Worker-thread mode
-   *  only (NodeKernelHost.getForkCount); main-thread mode falls back to
-   *  reading from the kernel instance directly. */
+  /** If `true`, the helper queries `kernel_get_fork_count(pid)` whenever
+   *  the running program creates a guest child and surfaces those live-parent
+   *  snapshots on `RunProgramResult.forkCountSamples`. Used by the
+   *  non-forking-spawn regression tests. Worker-thread mode only. */
   captureForkCount?: boolean;
   /** Use the canonical rootfs image in worker-thread mode. Defaults to true. */
   useDefaultRootfs?: boolean;
@@ -146,10 +145,10 @@ export interface RunProgramResult {
   stderr: string;
   /** Raw stdout bytes (for binary output like compressed data) */
   stdoutBytes: Uint8Array;
-  /** Per-process fork counter for the spawned process, captured immediately
-   *  before the kernel is destroyed. Only populated when
+  /** Per-process fork-counter snapshots captured after guest child-creation
+   *  events while the spawned parent still exists. Only populated when
    *  `captureForkCount: true` is set on the run options. */
-  forkCount?: bigint;
+  forkCountSamples?: bigint[];
 }
 
 /**
@@ -179,6 +178,8 @@ async function runInWorkerThread(options: RunProgramOptions): Promise<RunProgram
   let stdout = "";
   let stderr = "";
   const stdoutChunks: Uint8Array[] = [];
+  let capturedPid: number | undefined;
+  const forkCountSamplePromises: Promise<bigint>[] = [];
 
   // Convert execPrograms Map to plain object for the worker
   let execPrograms: Record<string, string> | undefined;
@@ -215,13 +216,26 @@ async function runInWorkerThread(options: RunProgramOptions): Promise<RunProgram
     onStderr: (_pid: number, data: Uint8Array) => {
       stderr += new TextDecoder().decode(data);
     },
+    onProcessEvent: (event) => {
+      // A top-level host spawn has event.pid === capturedPid (or arrives
+      // before onStarted captures it). Every other spawn is a guest child.
+      // Snapshot the monotonic parent counter now: host-owned top-level
+      // processes are correctly reaped before a post-exit query is reliable.
+      if (
+        options.captureForkCount &&
+        capturedPid !== undefined &&
+        event.kind === "spawn" &&
+        event.pid !== capturedPid
+      ) {
+        forkCountSamplePromises.push(host.getForkCount(capturedPid));
+      }
+    },
   });
 
   await host.init();
 
-  // Capture the spawned pid so we can read kernel-side fork_count before
-  // destroy. The user-supplied onStarted (if any) still runs.
-  let capturedPid: number | undefined;
+  // Capture the spawned pid so child process events can sample its
+  // kernel-side fork_count. The user-supplied onStarted (if any) still runs.
   const onStartedWrapper = (pid: number) => {
     capturedPid = pid;
     if (!options.onStarted) return;
@@ -250,11 +264,14 @@ async function runInWorkerThread(options: RunProgramOptions): Promise<RunProgram
   });
 
   let exitCode: number;
-  let forkCount: bigint | undefined;
+  let forkCountSamples: bigint[] | undefined;
   try {
     exitCode = await Promise.race([exitPromise, timeoutPromise]);
-    if (options.captureForkCount && capturedPid !== undefined) {
-      forkCount = await host.getForkCount(capturedPid);
+    if (options.captureForkCount) {
+      forkCountSamples = await Promise.all(forkCountSamplePromises);
+      if (forkCountSamples.length === 0) {
+        throw new Error("captureForkCount observed no guest child creation");
+      }
     }
   } finally {
     if (timeoutId !== undefined) clearTimeout(timeoutId);
@@ -269,7 +286,7 @@ async function runInWorkerThread(options: RunProgramOptions): Promise<RunProgram
     offset += chunk.length;
   }
 
-  return { exitCode, stdout, stderr, stdoutBytes, forkCount };
+  return { exitCode, stdout, stderr, stdoutBytes, forkCountSamples };
 }
 
 // ---------------------------------------------------------------------------
