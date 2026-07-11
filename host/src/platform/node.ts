@@ -142,6 +142,15 @@ export class NodePlatformIO implements PlatformIO {
     return this.metadata.toStatResult(fs.fstatSync(handle));
   }
 
+  fileIdentity(_path: string, dev: bigint, ino: bigint): string | null {
+    // Native inode numbers are filesystem-scoped and therefore preserve
+    // aliases reached through separate hard-link paths. An absent inode is
+    // not a stable object identity; callers must reject rather than fall back
+    // to a pathname that can be renamed or reused.
+    if (ino <= 0n || dev < 0n) return null;
+    return `node:${dev}:${ino}`;
+  }
+
   stat(path: string): StatResult {
     return this.metadata.toStatResult(fs.statSync(this.rewritePath(path)));
   }

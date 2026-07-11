@@ -238,6 +238,52 @@ describe("VirtualPlatformIO mount resolution", () => {
   });
 });
 
+describe("VirtualPlatformIO file identity", () => {
+  it("qualifies colliding inode numbers by backend", () => {
+    const root = createMockBackend();
+    const first = createMockBackend();
+    const second = createMockBackend();
+    const vfs = new VirtualPlatformIO(
+      [
+        { mountPoint: "/", backend: root },
+        { mountPoint: "/first", backend: first },
+        { mountPoint: "/second", backend: second },
+      ],
+      new NodeTimeProvider(),
+    );
+
+    expect(vfs.fileIdentity("/first/file", 0n, 2n)).not.toBe(
+      vfs.fileIdentity("/second/file", 0n, 2n),
+    );
+  });
+
+  it("uses one namespace when the same backend is mounted twice", () => {
+    const root = createMockBackend();
+    const shared = createMockBackend();
+    const vfs = new VirtualPlatformIO(
+      [
+        { mountPoint: "/", backend: root },
+        { mountPoint: "/one", backend: shared },
+        { mountPoint: "/two", backend: shared },
+      ],
+      new NodeTimeProvider(),
+    );
+
+    expect(vfs.fileIdentity("/one/alias", 0n, 7n)).toBe(
+      vfs.fileIdentity("/two/alias", 0n, 7n),
+    );
+  });
+
+  it("rejects a backend that supplies no stable inode", () => {
+    const vfs = new VirtualPlatformIO(
+      [{ mountPoint: "/", backend: createMockBackend() }],
+      new NodeTimeProvider(),
+    );
+
+    expect(vfs.fileIdentity("/file", 0n, 0n)).toBeNull();
+  });
+});
+
 // ---------------------------------------------------------------------------
 // 2. Handle mapping tests
 // ---------------------------------------------------------------------------

@@ -58,6 +58,17 @@ export interface PlatformIO {
   seek(handle: number, offset: number, whence: number): number;
   fstat(handle: number): StatResult;
 
+  /**
+   * Qualify a filesystem-reported inode within this PlatformIO instance.
+   *
+   * The path is used only to select the owning mount/backend; callers may
+   * pass the remembered path of an unlinked or renamed open file. Equal
+   * identities must name the same underlying file object, including through
+   * hard links. Return null when the backend cannot promise stable object
+   * identity (for example, a backend that reports no inode number).
+   */
+  fileIdentity?(path: string, dev: bigint, ino: bigint): string | null;
+
   // Path-based operations
   stat(path: string): StatResult;
   lstat(path: string): StatResult;
