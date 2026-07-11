@@ -279,6 +279,7 @@ export const ABI_SYSCALLS = {
   SchedYield: 229,
   SchedGetparam: 230,
   SchedRrGetInterval: 236,
+  SchedGetaffinity: 238,
   EpollCreate1: 239,
   EpollCtl: 240,
   EpollPwait: 241,
@@ -490,6 +491,7 @@ export const ABI_SYSCALL_NAMES: Record<number, string> = {
   229: "sched_yield",
   230: "sched_getparam",
   236: "sched_rr_get_interval",
+  238: "sched_getaffinity",
   239: "epoll_create1",
   240: "epoll_ctl",
   241: "epoll_pwait",
@@ -858,6 +860,9 @@ export const SYSCALL_ARGS: Record<number, SyscallArgDesc[]> = {
   ],
   236: [
     { argIndex: 1, direction: "out", size: { type: "fixed", size: 16 } },
+  ],
+  238: [
+    { argIndex: 2, direction: "out", size: { type: "arg", argIndex: 1 } },
   ],
   250: [
     { argIndex: 2, direction: "in", size: { type: "fixed", size: 16 } },

@@ -3752,7 +3752,7 @@ fn dispatch_channel_syscall(nr: u32, args: &[i64; 6]) -> i32 {
                     *b = 0;
                 }
                 mask[0] = 1; // CPU 0 available
-                0
+                size as i32
             }
         }
 

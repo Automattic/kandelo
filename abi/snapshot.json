@@ -3631,6 +3631,16 @@
         }
       }
     ],
+    "238": [
+      {
+        "argIndex": 2,
+        "direction": "out",
+        "size": {
+          "argIndex": 1,
+          "type": "arg"
+        }
+      }
+    ],
     "24": [
       {
         "argIndex": 0,
@@ -5077,6 +5087,10 @@
     {
       "name": "SchedRrGetInterval",
       "number": 236
+    },
+    {
+      "name": "SchedGetaffinity",
+      "number": 238
     },
     {
       "name": "EpollCreate1",

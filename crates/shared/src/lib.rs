@@ -1167,6 +1167,7 @@ pub mod abi {
         pub const SYS_SCHED_YIELD: u32 = 229;
         pub const SYS_SCHED_GETPARAM: u32 = 230;
         pub const SYS_SCHED_RR_GET_INTERVAL: u32 = 236;
+        pub const SYS_SCHED_GETAFFINITY: u32 = 238;
         pub const SYS_EPOLL_CREATE1: u32 = 239;
         pub const SYS_EPOLL_CTL: u32 = 240;
         pub const SYS_EPOLL_PWAIT: u32 = 241;
@@ -1302,6 +1303,10 @@ pub mod abi {
             AbiSyscallNumber {
                 name: "SchedRrGetInterval",
                 number: SYS_SCHED_RR_GET_INTERVAL,
+            },
+            AbiSyscallNumber {
+                name: "SchedGetaffinity",
+                number: SYS_SCHED_GETAFFINITY,
             },
             AbiSyscallNumber {
                 name: "EpollCreate1",

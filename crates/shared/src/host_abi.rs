@@ -405,6 +405,10 @@ pub const SYSCALL_ARG_DESCRIPTORS: &[SyscallArgDescriptor] = &[
         [desc!(1, Out, fixed!(WASM_TIMESPEC_SIZE))]
     ),
     entry!(
+        extra_syscalls::SYS_SCHED_GETAFFINITY,
+        [desc!(2, Out, arg!(1))]
+    ),
+    entry!(
         extra_syscalls::SYS_PRLIMIT64,
         [desc!(2, In, fixed!(16)), desc!(3, Out, fixed!(16)),]
     ),
@@ -515,6 +519,22 @@ mod tests {
             SyscallArgSize::Arg {
                 arg_index: 2,
                 multiplier: 6,
+                add: 0,
+            }
+        );
+    }
+
+    #[test]
+    fn sched_getaffinity_marshals_the_requested_cpuset() {
+        let descriptor = find(extra_syscalls::SYS_SCHED_GETAFFINITY);
+        assert_eq!(descriptor.args.len(), 1);
+        assert_eq!(descriptor.args[0].arg_index, 2);
+        assert_eq!(descriptor.args[0].direction, SyscallArgDirection::Out);
+        assert_eq!(
+            descriptor.args[0].size,
+            SyscallArgSize::Arg {
+                arg_index: 1,
+                multiplier: 1,
                 add: 0,
             }
         );
