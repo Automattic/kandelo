@@ -1,0 +1,279 @@
+{
+  "$schema": "./manifest.schema.json",
+  "schema": 1,
+  "owner": "kandelo-platform-artifacts",
+  "kandelo_repository": "Automattic/kandelo",
+  "kandelo_abi": 16,
+  "release_tag": "binaries-abi-v16",
+  "generator": "xtask platform-artifacts",
+  "artifacts": [
+    {
+      "id": "kernel",
+      "kind": "kernel_wasm",
+      "version": "0.1.0",
+      "target_arch": "wasm32",
+      "kandelo_abi": 16,
+      "status": {
+        "state": "success",
+        "reason": "Published in binaries-abi-v16; platform/artifacts/manifest.json is the durable owner for runtime materialization.",
+        "next_action": "Record replacement smoke evidence whenever the kernel platform artifact is republished."
+      },
+      "source": {
+        "repository": "Automattic/kandelo",
+        "commit": "in-tree"
+      },
+      "build": {
+        "script_path": "platform/artifacts/kernel/build-kernel.sh"
+      },
+      "inputs": [
+        "Cargo.lock",
+        "Cargo.toml",
+        "abi/snapshot.json",
+        "crates/kernel",
+        "crates/shared",
+        "platform/artifacts/kernel/build-kernel.sh",
+        "rust-toolchain.toml",
+        "scripts/wasm-artifact-guards.sh"
+      ],
+      "outputs": [
+        {
+          "source_paths": [
+            "local-binaries/kernel.wasm",
+            "target/wasm32-unknown-unknown/release/kandelo_kernel.wasm"
+          ],
+          "archive_paths": [
+            "artifacts/kandelo-kernel.wasm",
+            "kandelo-kernel.wasm"
+          ],
+          "binaries_path": "kernel.wasm",
+          "repo_paths": [
+            "host/wasm/kandelo-kernel.wasm"
+          ]
+        }
+      ],
+      "archive": {
+        "url": "https://github.com/Automattic/kandelo/releases/download/binaries-abi-v16/kernel-0.1.0-rev1-abi16-wasm32-4e5d7fff.tar.zst",
+        "sha256": "7f86467d2ae03d3cc8867d08a6128d36a468f878b11273b96896c6952fa31584",
+        "bytes": 268686,
+        "cache_key_sha": "4e5d7fff10fa3b1fd382b3fe6b37837aa567e6fcc93edcad69d88449057de663"
+      },
+      "fallback": {
+        "mode": "source-build",
+        "available": true,
+        "reason": "The in-tree kernel build script can regenerate local-binaries/kernel.wasm when no published platform archive is available."
+      },
+      "provenance": {
+        "cache_key_inputs": [
+          "kandelo_abi",
+          "target_arch",
+          "source.commit",
+          "inputs"
+        ]
+      },
+      "validation": {
+        "required": [
+          "abi_snapshot",
+          "kernel_exports",
+          "node_boot_smoke",
+          "browser_boot_smoke"
+        ],
+        "smoke_evidence": [
+          {
+            "id": "node_boot_smoke",
+            "surface": "node",
+            "command": "cd host && npx vitest run",
+            "status": "required"
+          },
+          {
+            "id": "browser_boot_smoke",
+            "surface": "browser",
+            "command": "./run.sh browser",
+            "status": "required"
+          }
+        ]
+      }
+    },
+    {
+      "id": "userspace",
+      "kind": "userspace_wasm",
+      "version": "0.1.0",
+      "target_arch": "wasm32",
+      "kandelo_abi": 16,
+      "status": {
+        "state": "success",
+        "reason": "Published in binaries-abi-v16; platform/artifacts/manifest.json is the durable owner for runtime materialization.",
+        "next_action": "Record replacement smoke evidence whenever the userspace platform artifact is republished."
+      },
+      "source": {
+        "repository": "Automattic/kandelo",
+        "commit": "in-tree"
+      },
+      "build": {
+        "script_path": "platform/artifacts/userspace/build-userspace.sh"
+      },
+      "inputs": [
+        "Cargo.lock",
+        "Cargo.toml",
+        "crates/shared",
+        "crates/userspace",
+        "platform/artifacts/userspace/build-userspace.sh",
+        "rust-toolchain.toml"
+      ],
+      "outputs": [
+        {
+          "source_paths": [
+            "local-binaries/userspace.wasm",
+            "target/wasm32-unknown-unknown/release/wasm_posix_userspace.wasm"
+          ],
+          "archive_paths": [
+            "artifacts/wasm_posix_userspace.wasm",
+            "wasm_posix_userspace.wasm"
+          ],
+          "binaries_path": "userspace.wasm",
+          "repo_paths": []
+        }
+      ],
+      "archive": {
+        "url": "https://github.com/Automattic/kandelo/releases/download/binaries-abi-v16/userspace-0.1.0-rev1-abi16-wasm32-ccc0889b.tar.zst",
+        "sha256": "5873fa22c3cfcc350c8d10229ccb1bf1985b74a11aa2f62256840f53ad518516",
+        "bytes": 646,
+        "cache_key_sha": "ccc0889bb158ad7b1c8ac9fd41aa011afa712cfc3ac3881218fcd1de7910d323"
+      },
+      "fallback": {
+        "mode": "source-build",
+        "available": true,
+        "reason": "The in-tree userspace build script can regenerate local-binaries/userspace.wasm when no published platform archive is available."
+      },
+      "provenance": {
+        "cache_key_inputs": [
+          "kandelo_abi",
+          "target_arch",
+          "source.commit",
+          "inputs"
+        ]
+      },
+      "validation": {
+        "required": [
+          "abi_match",
+          "node_boot_smoke",
+          "browser_boot_smoke"
+        ],
+        "smoke_evidence": [
+          {
+            "id": "node_boot_smoke",
+            "surface": "node",
+            "command": "cd host && npx vitest run",
+            "status": "required"
+          },
+          {
+            "id": "browser_boot_smoke",
+            "surface": "browser",
+            "command": "./run.sh browser",
+            "status": "required"
+          }
+        ]
+      }
+    },
+    {
+      "id": "kandelo-sdk",
+      "kind": "sdk_vfs",
+      "version": "0.1.0",
+      "target_arch": "wasm32",
+      "kandelo_abi": 16,
+      "status": {
+        "state": "success",
+        "reason": "Published in binaries-abi-v16; platform/artifacts/manifest.json is the durable owner for runtime materialization.",
+        "next_action": "Record replacement smoke evidence whenever the SDK VFS platform artifact is republished."
+      },
+      "source": {
+        "repository": "Automattic/kandelo",
+        "commit": "in-tree"
+      },
+      "build": {
+        "script_path": "platform/artifacts/kandelo-sdk/build-kandelo-sdk.sh"
+      },
+      "inputs": [
+        "host/src/constants.ts",
+        "host/src/statfs.ts",
+        "host/src/types.ts",
+        "host/src/vfs/image-helpers.ts",
+        "host/src/vfs/memory-fs.ts",
+        "host/src/vfs/sharedfs-vendor.ts",
+        "host/src/vfs/types.ts",
+        "host/src/vfs/zip.ts",
+        "images/vfs/scripts/build-kandelo-sdk-vfs-image.sh",
+        "images/vfs/scripts/build-kandelo-sdk-vfs-image.ts",
+        "images/vfs/scripts/vfs-image-helpers.ts",
+        "libc/glue",
+        "platform/artifacts/kandelo-sdk/build-kandelo-sdk.sh",
+        "sdk/activate.sh",
+        "sdk/bin",
+        "sdk/config.site",
+        "sdk/kandelo/bin",
+        "sdk/kandelo/licenses",
+        "sdk/package-lock.json",
+        "sdk/package.json",
+        "sdk/src",
+        "sdk/tsconfig.json"
+      ],
+      "outputs": [
+        {
+          "source_paths": [
+            "local-binaries/programs/wasm32/kandelo-sdk.vfs.zst",
+            "platform/artifacts/kandelo-sdk/kandelo-sdk.vfs.zst"
+          ],
+          "archive_paths": [
+            "artifacts/kandelo-sdk.vfs.zst",
+            "kandelo-sdk.vfs.zst"
+          ],
+          "binaries_path": "programs/wasm32/kandelo-sdk.vfs.zst",
+          "repo_paths": [
+            "local-binaries/platform/kandelo-sdk.vfs.zst"
+          ]
+        }
+      ],
+      "archive": {
+        "url": "https://github.com/Automattic/kandelo/releases/download/binaries-abi-v16/kandelo-sdk-0.1.0-rev1-abi16-wasm32-830eac74.tar.zst",
+        "sha256": "ffb213878c61385fb183bb955e11679799b8300448d38d180da6f8d4da095768",
+        "bytes": 1757020,
+        "cache_key_sha": "830eac748f60fb165c6c1bc334c2ab158fd7e3287f795055aa50862b03784e20"
+      },
+      "fallback": {
+        "mode": "source-build",
+        "available": true,
+        "reason": "The in-tree SDK VFS builder can regenerate the VFS image when sysroot and SDK inputs are present."
+      },
+      "provenance": {
+        "cache_key_inputs": [
+          "kandelo_abi",
+          "target_arch",
+          "source.commit",
+          "inputs",
+          "libcxx dependency bytes when provided"
+        ]
+      },
+      "validation": {
+        "required": [
+          "vfs_metadata_kernel_abi",
+          "sdk_wrapper_smoke",
+          "node_sdk_smoke",
+          "browser_sdk_smoke"
+        ],
+        "smoke_evidence": [
+          {
+            "id": "node_sdk_smoke",
+            "surface": "node",
+            "command": "scripts/run-posix-tests.sh",
+            "status": "required"
+          },
+          {
+            "id": "browser_sdk_smoke",
+            "surface": "browser",
+            "command": "./run.sh browser",
+            "status": "required"
+          }
+        ]
+      }
+    }
+  ]
+}

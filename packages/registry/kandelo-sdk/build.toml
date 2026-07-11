@@ -1,11 +1,10 @@
-script_path = "packages/registry/kandelo-sdk/build-kandelo-sdk.sh"
+script_path = "platform/artifacts/kandelo-sdk/build-kandelo-sdk.sh"
 inputs = [
-  "packages/registry/kandelo-sdk/build-kandelo-sdk.sh",
+  "platform/artifacts/kandelo-sdk/build-kandelo-sdk.sh",
   "images/vfs/scripts/build-kandelo-sdk-vfs-image.sh",
   "images/vfs/scripts/build-kandelo-sdk-vfs-image.ts",
   "images/vfs/scripts/vfs-image-helpers.ts",
   "libc/glue",
-  "scripts/install-local-binary.sh",
   "sdk/activate.sh",
   "sdk/bin",
   "sdk/config.site",
