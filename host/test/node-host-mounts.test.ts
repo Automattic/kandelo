@@ -14,6 +14,9 @@
  *   unmounted /no/such/mount returns ENOENT (proves the mount router
  *             enforces VFS-only-lens — no fallthrough to the host fs).
  *
+ *   path-resolution resolves symlinks and dot-dot component-wise across the
+ *             `/tmp` HostFS and root MemoryFS mount boundary.
+ *
  *   custom    overriding `io` opts out of the default mount setup —
  *             /etc/services is no longer reachable via the rootfs image.
  */
@@ -159,6 +162,65 @@ describe.skipIf(!haveProbe || !haveRootfs)("node-host default mount setup", () =
     expect(result.exitCode, result.stderr).toBe(0);
     // ENOENT is 2 on the wasm32 musl ABI used by user programs.
     expect(result.stdout).toContain("UNMOUNTED errno=2");
+  });
+
+  it("resolves pathname components across scratch and rootfs mounts", async () => {
+    const result = await runCentralizedProgram({
+      programPath: probeWasm,
+      argv: [
+        "mount_probe_test",
+        "path-resolution",
+        "/tmp/kandelo-path-resolution",
+      ],
+      timeout: 10_000,
+    });
+
+    expect(result.exitCode, result.stderr).toBe(0);
+    expect(result.stdout).toContain("PATH_RESOLUTION_PASS");
+    expect(result.stderr).toBe("");
+  });
+
+  it("rejects invalid initial cwd without leaking a registered process", async () => {
+    const program = readFileSync(probeWasm);
+    const programBytes = program.buffer.slice(
+      program.byteOffset,
+      program.byteOffset + program.byteLength,
+    );
+    const host = new NodeKernelHost({ rootfsImage: "default" });
+
+    try {
+      await host.init();
+      // The kernel creates its persistent init process when the first guest is
+      // registered, not when the worker itself is initialized. Warm that path
+      // before taking the baseline so the assertion below measures only the
+      // failed child registration.
+      expect(
+        await host.spawn(programBytes, [
+          "mount_probe_test",
+          "rootfs",
+          "/etc/services",
+        ]),
+      ).toBe(0);
+      const before = await host.enumProcs();
+
+      await expect(
+        host.spawn(programBytes, ["mount_probe_test", "rootfs", "/etc/services"], {
+          cwd: "/no/such/cwd",
+        }),
+      ).rejects.toThrow(/setCwd failed for pid \d+: errno 2/);
+      expect(await host.enumProcs()).toEqual(before);
+
+      await expect(
+        host.spawn(programBytes, ["mount_probe_test", "rootfs", "/etc/services"], {
+          cwd: "/root",
+          uid: 1000,
+          gid: 1000,
+        }),
+      ).rejects.toThrow(/setCwd failed for pid \d+: errno 13/);
+      expect(await host.enumProcs()).toEqual(before);
+    } finally {
+      await host.destroy();
+    }
   });
 
   it("custom `io` override bypasses the default mount setup", async () => {
