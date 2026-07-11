@@ -27,9 +27,8 @@ describe("ABI version marker", () => {
     bytes: Uint8Array,
   ): Promise<WebAssembly.Instance> {
     const ptrWidth = detectPtrWidth(toArrayBuffer(bytes));
-    // Match host/src/kernel.ts. The kernel wasm grows when we add
-    // synthetic data (e.g. /etc/ssl/cert.pem); 24 pages keeps headroom
-    // without re-tuning per change.
+    // Match host/src/kernel.ts. Keep headroom above the kernel Wasm's
+    // linker-derived minimum without re-tuning this test per change.
     const memory = ptrWidth === 8
       ? new WebAssembly.Memory({
           initial: 24n,

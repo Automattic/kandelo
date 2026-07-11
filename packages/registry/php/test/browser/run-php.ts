@@ -14,6 +14,7 @@ import {
   writeVfsFile,
 } from "../../../../../host/src/vfs/image-helpers";
 import kernelWasmUrl from "@kernel-wasm?url";
+import rootfsVfsUrl from "@rootfs-vfs?url";
 
 const stdoutEl = document.getElementById("stdout")!;
 const stderrEl = document.getElementById("stderr")!;
@@ -32,6 +33,7 @@ interface TestResult {
 async function runPhp(
   phpBytes: ArrayBuffer,
   kernelBytes: ArrayBuffer,
+  rootfsBytes: ArrayBuffer,
   files: Record<string, string>,
   argv: string[],
 ): Promise<TestResult> {
@@ -39,10 +41,9 @@ async function runPhp(
   let stderr = "";
   const decoder = new TextDecoder();
 
-  const memfs = MemoryFileSystem.create(
-    new SharedArrayBuffer(16 * 1024 * 1024, { maxByteLength: 64 * 1024 * 1024 }),
-    64 * 1024 * 1024,
-  );
+  const memfs = MemoryFileSystem.fromImage(new Uint8Array(rootfsBytes), {
+    maxByteLength: 256 * 1024 * 1024,
+  });
   for (const dir of ["/tmp", "/root", "/home", "/dev"]) ensureDir(memfs, dir);
   memfs.chmod("/tmp", 0o777);
   memfs.chmod("/root", 0o700);
@@ -58,32 +59,43 @@ async function runPhp(
     maxWorkers: 1,
     onStdout: (data) => { stdout += decoder.decode(data); },
     onStderr: (data) => { stderr += decoder.decode(data); },
+    onHostDiagnostic: (diagnostic) => {
+      stderr += `[host:${diagnostic.source} pid=${diagnostic.pid}${diagnostic.status === undefined ? "" : ` status=${diagnostic.status}`}] ${diagnostic.message}\n`;
+    },
   });
-  const { exit } = await kernel.boot({
-    kernelWasm: kernelBytes,
-    vfsImage,
-    argv: [PHP_PATH, ...argv.slice(1)],
-    env: [
-      "HOME=/root",
-      "TMPDIR=/tmp",
-      "TERM=xterm-256color",
-      "USER=root",
-      "LOGNAME=root",
-      "PATH=/usr/local/bin:/usr/bin:/bin",
-    ],
-    cwd: "/root",
-    uid: 0,
-    gid: 0,
-  });
-  const exitCode = await exit;
+  let exitCode: number;
+  try {
+    const { exit } = await kernel.boot({
+      kernelWasm: kernelBytes,
+      vfsImage,
+      argv: [PHP_PATH, ...argv.slice(1)],
+      env: [
+        "HOME=/root",
+        "TMPDIR=/tmp",
+        "TERM=xterm-256color",
+        "USER=root",
+        "LOGNAME=root",
+        "PATH=/usr/local/bin:/usr/bin:/bin",
+      ],
+      cwd: "/root",
+      uid: 0,
+      gid: 0,
+    });
+    exitCode = await exit;
+  } finally {
+    // `exit` is posted before worker teardown completes. Awaiting destroy also
+    // drains stdout/stderr messages that are still queued behind that signal.
+    await kernel.destroy();
+  }
 
   return { stdout, stderr, exitCode };
 }
 
 async function main() {
   try {
-    const [kernelBytes, phpBytes] = await Promise.all([
+    const [kernelBytes, rootfsBytes, phpBytes] = await Promise.all([
       fetch(kernelWasmUrl).then((r) => r.arrayBuffer()),
+      fetch(rootfsVfsUrl).then((r) => r.arrayBuffer()),
       fetch("/php.wasm").then((r) => r.arrayBuffer()),
     ]);
 
@@ -94,32 +106,36 @@ async function main() {
     };
 
     // Test 1: Hello World (inline)
-    const r1 = await runPhp(phpBytes, kernelBytes, files,
+    const r1 = await runPhp(phpBytes, kernelBytes, rootfsBytes, files,
       ["php", "-r", 'echo "Hello World\n";']);
 
     // Test 2: File-based execution
-    const r2 = await runPhp(phpBytes, kernelBytes, files,
+    const r2 = await runPhp(phpBytes, kernelBytes, rootfsBytes, files,
       ["php", "/home/script.php"]);
 
     // Test 3: Extensions (mbstring + ctype)
-    const r3 = await runPhp(phpBytes, kernelBytes, files,
+    const r3 = await runPhp(phpBytes, kernelBytes, rootfsBytes, files,
       ["php", "/home/ext_test.php"]);
 
     // Test 4: Session
-    const r4 = await runPhp(phpBytes, kernelBytes, files,
+    const r4 = await runPhp(phpBytes, kernelBytes, rootfsBytes, files,
       ["php", "-r", 'session_start(); echo strlen(session_id()) > 0 ? "session-ok" : "fail";']);
 
     // Test 5: SQLite3 in-memory
-    const r5 = await runPhp(phpBytes, kernelBytes, files,
+    const r5 = await runPhp(phpBytes, kernelBytes, rootfsBytes, files,
       ["php", "-r", '$db=new SQLite3(":memory:");$db->exec("CREATE TABLE t(v TEXT)");$db->exec("INSERT INTO t VALUES(\'sqlite-ok\')");echo $db->querySingle("SELECT v FROM t");']);
 
     // Test 6: fileinfo
-    const r6 = await runPhp(phpBytes, kernelBytes, files,
+    const r6 = await runPhp(phpBytes, kernelBytes, rootfsBytes, files,
       ["php", "-r", '$f=new finfo(FILEINFO_MIME_TYPE);echo $f->buffer("GIF89a");']);
 
     // Test 7: SimpleXML
-    const r7 = await runPhp(phpBytes, kernelBytes, files,
+    const r7 = await runPhp(phpBytes, kernelBytes, rootfsBytes, files,
       ["php", "-r", '$x=new SimpleXMLElement("<r><i>xml-ok</i></r>");echo $x->i;']);
+
+    // Test 8: rootfs OpenSSL defaults are present and key + CSR generation succeeds.
+    const r8 = await runPhp(phpBytes, kernelBytes, rootfsBytes, files,
+      ["php", "-r", '$k=openssl_pkey_new();$c=$k?openssl_csr_new(["commonName"=>"kandelo.test"],$k):false;if(!$k||!$c){while($e=openssl_error_string()){fwrite(STDERR,$e."\\n");}exit(1);}echo "openssl-defaults-ok";']);
 
     const results = {
       hello: r1.stdout.trim(),
@@ -129,11 +145,12 @@ async function main() {
       sqlite: r5.stdout.trim(),
       fileinfo: r6.stdout.trim(),
       xml: r7.stdout.trim(),
+      openssl: r8.stdout.trim(),
     };
 
     stdoutEl.textContent = r1.stdout;
-    stderrEl.textContent = [r1.stderr, r2.stderr, r3.stderr, r4.stderr, r5.stderr, r6.stderr, r7.stderr].filter(Boolean).join("\n---\n");
-    exitCodeEl.textContent = String(Math.max(r1.exitCode, r2.exitCode, r3.exitCode, r4.exitCode, r5.exitCode, r6.exitCode, r7.exitCode));
+    stderrEl.textContent = [r1.stderr, r2.stderr, r3.stderr, r4.stderr, r5.stderr, r6.stderr, r7.stderr, r8.stderr].filter(Boolean).join("\n---\n");
+    exitCodeEl.textContent = String(Math.max(r1.exitCode, r2.exitCode, r3.exitCode, r4.exitCode, r5.exitCode, r6.exitCode, r7.exitCode, r8.exitCode));
     resultsEl.textContent = JSON.stringify(results);
     statusEl.textContent = "done";
   } catch (e) {

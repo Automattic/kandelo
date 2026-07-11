@@ -191,6 +191,27 @@ describe.skipIf(!PHP_AVAILABLE)("PHP zlib + openssl on kandelo", () => {
         expect(stdout).toContain("openssl-ok");
         expect(exitCode).toBe(0);
     }, 60_000);
+
+    it("exposes rootfs OpenSSL defaults while key and CSR generation succeeds", async () => {
+        const { stdout, stderr, exitCode } = await runCentralizedProgram({
+            programPath: phpBinaryPath,
+            argv: ["php", "-r", `
+                $key = openssl_pkey_new();
+                $csr = $key ? openssl_csr_new(["commonName" => "kandelo.test"], $key) : false;
+                if (!$key || !$csr) {
+                    while ($error = openssl_error_string()) {
+                        fwrite(STDERR, $error . "\\n");
+                    }
+                    exit(1);
+                }
+                echo "openssl-defaults-ok";
+            `],
+            timeout: 120_000,
+        });
+        expect(stderr).toBe("");
+        expect(stdout).toContain("openssl-defaults-ok");
+        expect(exitCode).toBe(0);
+    }, 120_000);
 });
 
 describe.skipIf(!PHP_AVAILABLE)("PHP XML extensions on kandelo", () => {

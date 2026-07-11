@@ -952,9 +952,9 @@ export class BrowserKernel {
 
   // ── Private helpers ──
 
-  /** Ensure SSL cert env vars are present in the environment array.
-   *  These are needed because OpenSSL's compiled-in openssldir is a host
-   *  path that doesn't exist in the Wasm VFS. */
+  /** Ensure SSL cert env vars select the image-owned platform trust bundle.
+   *  OpenSSL's configured directory is `/etc/ssl`; browser sessions replace
+   *  only this CA-bundle path with their ephemeral MITM root. */
   private mergeEnv(env: string[]): string[] {
     const sslVars = [
       "SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt",
