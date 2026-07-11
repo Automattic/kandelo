@@ -1179,6 +1179,7 @@ assert_write_publish_requires_attached_branch_and_pushes_explicit_ref
 assert_failed_payload_rejects_success_status
 assert_rollback_preserves_metadata
 assert_rollback_deletion_requires_reason
+bash "$REPO_ROOT/scripts/test-homebrew-patched-launcher.sh"
 assert_publisher_trust_contract
 
 echo "test-homebrew-publish-workflow.sh: ok"
