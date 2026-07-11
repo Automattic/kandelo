@@ -204,7 +204,12 @@ const MSG_DONTWAIT = 0x0040;
 
 /** mmap flags */
 const MAP_SHARED = 0x01;
+const MAP_FIXED = 0x10;
 const MAP_ANONYMOUS = 0x20;
+
+function alignWasmPageLength(len: number): number {
+  return Math.ceil(len / WASM_PAGE_SIZE) * WASM_PAGE_SIZE;
+}
 
 /** Syscall numbers for scatter/gather I/O */
 const SYS_WRITEV = ABI_SYSCALLS.Writev;
@@ -2486,6 +2491,29 @@ export class CentralizedKernelWorker {
     const retVal = Number(kernelView.getBigInt64(CH_RETURN, true));
     const errVal = kernelView.getUint32(CH_ERRNO, true);
 
+    // MAP_FIXED replaces every mapping in the selected page range. Flush and
+    // detach any file-backed MAP_SHARED tracker before zeroing/populating the
+    // replacement so bytes from the old mapping are not lost or attributed to
+    // the new object.
+    if (
+      syscallNr === SYS_MMAP &&
+      retVal > 0 &&
+      (origArgs[3] & MAP_FIXED) !== 0
+    ) {
+      const replacementArgs = [
+        retVal >>> 0,
+        alignWasmPageLength(origArgs[1] >>> 0),
+      ];
+      this.flushSharedMappings(channel, replacementArgs);
+      this.cleanupSharedMappings(channel.pid, replacementArgs[0]!, replacementArgs[1]!);
+    }
+    if (syscallNr === SYS_MREMAP && retVal > 0) {
+      this.flushSharedMappings(channel, [
+        origArgs[0] >>> 0,
+        alignWasmPageLength(origArgs[1] >>> 0),
+      ]);
+    }
+
     // --- Process memory growth for brk/mmap/mremap ---
     // The kernel's ensure_memory_covers() grows the KERNEL's Wasm memory, not
     // the process's. We must grow the process's
@@ -2555,8 +2583,21 @@ export class CentralizedKernelWorker {
 
     // --- munmap: flush + clean up shared mapping tracking ---
     if (syscallNr === SYS_MUNMAP && retVal === 0) {
-      this.flushSharedMappings(channel, origArgs);
-      this.cleanupSharedMappings(channel.pid, origArgs[0] >>> 0, origArgs[1] >>> 0);
+      const unmapArgs = [
+        origArgs[0] >>> 0,
+        alignWasmPageLength(origArgs[1] >>> 0),
+      ];
+      this.flushSharedMappings(channel, unmapArgs);
+      this.cleanupSharedMappings(channel.pid, unmapArgs[0]!, unmapArgs[1]!);
+    }
+
+    if (syscallNr === SYS_MREMAP && retVal > 0) {
+      this.remapSharedMapping(
+        channel.pid,
+        origArgs[0] >>> 0,
+        retVal >>> 0,
+        origArgs[2] >>> 0,
+      );
     }
 
     // --- Signal-death check ---
@@ -7563,17 +7604,43 @@ export class CentralizedKernelWorker {
     if (!pidMap) return;
 
     const unmapEnd = addr + len;
-    for (const [mapAddr, mapping] of pidMap) {
+    for (const [mapAddr, mapping] of Array.from(pidMap.entries())) {
       const mapEnd = mapAddr + mapping.len;
-      // Remove if fully contained in unmap range
-      if (mapAddr >= addr && mapEnd <= unmapEnd) {
-        pidMap.delete(mapAddr);
+      if (mapEnd <= addr || mapAddr >= unmapEnd) continue;
+
+      pidMap.delete(mapAddr);
+      if (mapAddr < addr) {
+        pidMap.set(mapAddr, {
+          ...mapping,
+          len: addr - mapAddr,
+        });
+      }
+      if (mapEnd > unmapEnd) {
+        pidMap.set(unmapEnd, {
+          ...mapping,
+          fileOffset: mapping.fileOffset + (unmapEnd - mapAddr),
+          len: mapEnd - unmapEnd,
+        });
       }
     }
 
     if (pidMap.size === 0) {
       this.sharedMappings.delete(pid);
     }
+  }
+
+  private remapSharedMapping(
+    pid: number,
+    oldAddr: number,
+    newAddr: number,
+    newLen: number,
+  ): void {
+    const pidMap = this.sharedMappings.get(pid);
+    const mapping = pidMap?.get(oldAddr);
+    if (!pidMap || !mapping) return;
+
+    pidMap.delete(oldAddr);
+    pidMap.set(newAddr, { ...mapping, len: newLen });
   }
 
   /** Set the next child PID to allocate. */
