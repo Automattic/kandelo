@@ -391,10 +391,10 @@ proves and reserves only the 128-byte prefix the kernel can write.
 | `/dev/zero` | Full | Read fills buffer with zeros. Write discards data (returns count). |
 | `/dev/urandom` / `/dev/random` | Full | Read delegates to `host_getrandom()` (crypto.getRandomValues on host). Write discards. |
 | `/dev/full` | Full | Read fills buffer with zeros. Write returns ENOSPC. |
-| `/dev/fd/N` | Full | Open-time dup of fd N. Validates target fd exists (EBADF if not). |
-| `/dev/stdin` | Full | Alias for `/dev/fd/0`. |
-| `/dev/stdout` | Full | Alias for `/dev/fd/1`. |
-| `/dev/stderr` | Full | Alias for `/dev/fd/2`. |
+| `/dev/fd/N` | Full | Symlink-like descriptor alias. `open()` duplicates fd N; following `stat()`/`fstatat()` returns the same metadata as `fstat(N)`, while `lstat()`/`AT_SYMLINK_NOFOLLOW` reports the devfs symlink. `readlink()` returns the open file description's path. Opening validates the target fd exists (EBADF if not). |
+| `/dev/stdin` | Full | Symlink alias for `/dev/fd/0`; following metadata is fd 0 metadata. |
+| `/dev/stdout` | Full | Symlink alias for `/dev/fd/1`; following metadata is fd 1 metadata. |
+| `/dev/stderr` | Full | Symlink alias for `/dev/fd/2`; following metadata is fd 2 metadata. |
 | `/dev/tty` | Partial | Uses the first open PTY-slave OFD as the current controlling-terminal heuristic. When none is open, it currently falls back to fd 0 rather than returning ENXIO; `pathconf()` follows that same OFD selection and therefore does not advertise terminal variables for the captured, pipe-backed case. |
 | `/dev/ptmx` | Full | PTY master multiplexer. `open()` allocates a new PTY pair, returns master fd. |
 | `/dev/pts/*` | Full | PTY slave devices. `posix_openpt()` + `grantpt()` + `unlockpt()` + `ptsname()`. Full line discipline, canonical/raw mode, OPOST/ONLCR, 16 terminal ioctls. |
@@ -403,7 +403,7 @@ proves and reserves only the 128-byte prefix the kernel can write.
 | `/dev/dsp` | Full (write-only) | OSS-style PCM audio sink. Single-open (`EBUSY` for second pid). `write()` accepts interleaved 16-bit-LE PCM and buffers it in a 256 KiB ring; the host drains via the `kernel_drain_audio` wasm export and feeds a Web Audio `AudioContext`. ioctls: `SNDCTL_DSP_RESET`, `SNDCTL_DSP_SYNC`, `SNDCTL_DSP_SPEED` (clamp 4000–192000 Hz), `SNDCTL_DSP_STEREO` / `SNDCTL_DSP_CHANNELS` (1 or 2), `SNDCTL_DSP_SETFMT` (only `AFMT_S16_LE`), `SNDCTL_DSP_GETFMTS`, `SNDCTL_DSP_SETFRAGMENT` (accept-and-acknowledge). On overflow drops the *oldest whole frame* — never tears L/R alignment. Ownership and queued samples survive exec with a non-CLOEXEC fd; last close or exit releases and flushes them. `read()` returns 0 (EOF-like). `poll()` reports `POLLOUT` always, never `POLLIN`. No record path, no `mmap`-based zero-copy; DOOM's mixer is in user space. |
 | `/dev/shm/*` | Partial | POSIX shm objects are regular files used by `shm_open()`. Stable-identity backends support host-coordinated `MAP_SHARED` across processes at syscall boundaries; this is not immediate shared linear memory and does not make process-shared futexes work. |
 
-All virtual devices return synthetic `stat()` with `S_IFCHR | 0666`, deterministic inode numbers, and `st_dev=5`. Path interception in kernel before host delegation — no host filesystem changes needed. `access()` returns OK for all virtual devices.
+Character-device entries return synthetic `stat()` with deterministic inode numbers and `st_dev=5`. Descriptor aliases are devfs symlinks: following metadata comes from the referenced descriptor, and no-follow metadata uses a deterministic devfs inode. Path interception happens in the kernel before host delegation, so Node.js and browser hosts share the same behavior without host filesystem changes. `access()` returns OK for all virtual devices.
 
 ## Environment
 
