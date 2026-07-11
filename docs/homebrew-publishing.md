@@ -192,11 +192,15 @@ commit, ABI namespace, derived bottle root, and formula matrix, each
    Homebrew/brew commit, and exposes the patched temporary Homebrew worktree
    through a short-lived launcher under the canonical
    `/home/linuxbrew/.linuxbrew` prefix. This preserves the selected prefix and
-   Cellar so ordinary host build-dependency bottles remain usable. The job then
-   builds the required Kandelo pieces and executes the Formula build and test
-   without publisher credentials. Its strict handoff contains only
-   `manifest.json`, Homebrew's bottle JSON, and one gzip bottle archive. It
-   contains no Formula source, scripts, environment files, or credentials.
+   Cellar so ordinary host build-dependency bottles remain usable. Within that
+   read-only build, Homebrew uses a build-local XDG configuration store and
+   trusts only the reviewed selected tap before evaluating its dependency
+   Formulae. The store is removed with the build work directory; the publisher
+   does not disable tap-trust enforcement or reuse persistent account state.
+   The job then builds the required Kandelo pieces and executes the Formula
+   build and test without publisher credentials. Its strict handoff contains
+   only `manifest.json`, Homebrew's bottle JSON, and one gzip bottle archive.
+   It contains no Formula source, scripts, environment files, or credentials.
 2. `upload-bottle` runs only for a write publication and receives only
    `packages: write`. On a fresh runner it validates the strict build handoff
    against the plan before exposing the token to an isolated ORAS upload. Its
