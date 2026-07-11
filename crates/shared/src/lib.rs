@@ -1147,6 +1147,7 @@ pub mod abi {
     ];
 
     pub const HOST_ADAPTER_OPTIONAL_KERNEL_EXPORTS: &[&str] = &[
+        "kernel_get_process_exit_signal",
         "kernel_reserve_host_region",
         "kernel_reserve_host_region_at",
         "kernel_set_cwd",
