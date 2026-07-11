@@ -903,6 +903,10 @@ jobs:
             needs_submodules: false
             needs_toolchain: false
             needs_workspace: false
+          - suite: cargo-xtask
+            needs_submodules: false
+            needs_toolchain: false
+            needs_workspace: false
           - suite: vitest
             needs_submodules: false
             needs_toolchain: true

@@ -71,7 +71,7 @@ The layout is designed so later CI path filters can make conservative, explainab
 | `host/src/browser-*.ts`, `host/src/worker-adapter-browser.ts` | Browser host checks, browser UI/tests, host parity tests |
 | `host/src/vfs/**`, `host/src/networking/**`, `host/src/framebuffer/**` | Shared host/runtime checks plus affected package/browser checks |
 | `packages/registry/<name>/**` | That package build and `packages/registry/<name>/test/**` |
-| `packages/sets/**`, `tools/xtask/**`, `docs/package-management*.md` | Package-system automation checks |
+| `packages/sets/**`, `tools/xtask/**`, `docs/package-management*.md` | Package-system automation checks, including the `cargo test -p xtask` (`cargo-xtask`) unit-test suite |
 | `apps/browser-demos/**`, `web-libs/**` | Browser app build/tests and relevant package browser specs |
 | `images/**`, `tools/mkrootfs/**` | Rootfs/VFS image checks and consumers of those images |
 

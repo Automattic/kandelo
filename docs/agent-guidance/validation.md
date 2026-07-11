@@ -22,6 +22,7 @@ Core validation surface:
 |---|---|---|
 | Kernel unit tests | `cargo test -p kandelo --target <host-target> --lib` | Kernel logic changes |
 | Fork instrument tests | `cargo test -p fork-instrument --target <host-target>` | Fork instrumentation/tooling changes |
+| Package-system automation tests | `cargo test -p xtask --target <host-target>` | `tools/xtask/**` changes: package resolver, binaries-dir placement, cache/output artifact validation, archive staging + canonical filename |
 | Host integration tests | `cd host && npx vitest run` | Host/runtime behavior |
 | Browser app/runtime tests | `cd apps/browser-demos && npx playwright test --grep-invert "@slow" --project=chromium` | Browser host, UI, demo, service worker, VFS image behavior |
 | Browser lazy VFS contract | `cd apps/browser-demos && npx playwright test test/browser-kernel-lazy-registration.spec.ts --project=chromium --project=firefox --project=webkit` | Browser-host lazy VFS registration ordering, including Safari/WebKit |
@@ -34,7 +35,7 @@ Core validation surface:
 For CI-shaped local runs, prefer:
 
 ```bash
-bash scripts/dev-shell.sh bash scripts/ci-run-test-suite.sh <cargo-kernel|fork-instrument|vitest|browser|libc|posix|sortix>
+bash scripts/dev-shell.sh bash scripts/ci-run-test-suite.sh <cargo-kernel|cargo-xtask|fork-instrument|vitest|browser|libc|posix|sortix>
 ```
 
 For direct Cargo commands, compute `<host-target>` with:
