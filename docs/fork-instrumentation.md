@@ -229,9 +229,23 @@ function pointers passed through main-module memory or the shared table cannot
 currently be attributed to their originating module; using such a pointer to
 create a side A -> side B -> fork path is unsupported and is not yet guaranteed
 to fail before control-flow corruption. A future module-activation protocol is
-required to close that residual. Fork from a pthread into a dlopened side
-module is also unsupported; pthread workers do not install the side-module
-coordinator.
+required to close that residual.
+
+Pthread workers do not own the process worker's side-module instances, table,
+or exception-tag identities. `dlopen()` from a pthread consequently returns
+NULL with a precise `dlerror()`. Once the process main worker has published a
+dlopen archive entry, `fork()` from a pthread returns `ENOTSUP` without
+creating a child. A host-private atomic lock prevents main-worker dlopen from
+racing the pthread's archive check and is held through unwind, SYS_FORK/memory
+copy, and parent rewind; the child clears its copied lock before replay. Fork
+from a pthread remains supported while that process-wide archive is empty.
+
+For TLS-bearing side modules, each archive entry also preserves the live
+positive `__tls_base`. Replay restores only that mutable global using the
+process pointer type. It does not call `__wasm_init_tls`: the child memory copy
+already contains live TLS, and reinitialization would overwrite C++ landing-pad
+and application `thread_local` state. TLS-relative exports relocate from that
+base, while `__tls_size` and `__tls_align` remain scalar constants.
 
 Every participating module still uses the fixed 16 KiB save-buffer limit
 described below. A dynamically allocated side buffer avoids overlap with the

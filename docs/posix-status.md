@@ -615,7 +615,10 @@ These PHP needs are well-handled by the current kernel:
 - Memory: anonymous mmap, munmap, brk
 - Multi-process: fork (kernel syscall), exec (host-initiated), waitpid (kernel syscall)
 - Networking: AF_INET TCP (connect, bind, listen, accept, send, recv), getaddrinfo
-- Dynamic linking: dlopen, dlsym, dlclose, dlerror (Wasm dylink)
+- Dynamic linking: dlopen, dlsym, dlclose, dlerror (Wasm dylink on the process
+  worker). Pthread workers cannot share the process's Wasm table/tag graph, so
+  pthread `dlopen` fails and pthread `fork` after a process dlopen returns
+  `ENOTSUP`.
 - POSIX timers: partial `SIGEV_SIGNAL`/`SIGEV_NONE` timer_create, timer_settime,
   timer_gettime, timer_delete. The PHP package imports a cooperative Wasm host
   hook because native `SIGEV_THREAD_ID` delivery is unavailable; that package
@@ -639,7 +642,10 @@ These require features fundamentally unavailable in the Wasm architecture:
 
 - **Wasm FP exceptions (110 math tests):** WebAssembly has no floating-point exception flags (`fenv.h`). All `fe*` math tests fail. `long double` variants pass because they use software fp128.
 - **No pthread_cancel:** Wasm has no async cancellation mechanism or cancel-point assembly. `pthread_create` works; `pthread_cancel` does not.
-- **No dlopen/TLS:** `tls_get_new-dtv_dso` requires loading a shared library with TLS at runtime.
+- **No musl DTV expansion for arbitrary DSOs:** `tls_get_new-dtv_dso` requires
+  native-style per-thread dynamic TLS-vector growth. Kandelo can replay the
+  fixed TLS reservation of a Wasm side module across process `fork`, but that
+  does not implement musl's general pthread DTV contract.
 
 ### Linker Requirements for Signal Handlers
 

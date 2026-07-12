@@ -284,6 +284,8 @@ export interface LoadedSharedLibrary {
   name: string;
   /** Fork save buffer for an instrumented side module importing env.fork. */
   forkBufAddr?: number;
+  /** Thread-local-storage base captured from the parent instance. */
+  tlsBase?: number;
   /** Whether this module can originate a coordinated env.fork unwind. */
   forkCapable: boolean;
   /** Function/GOT.func imports used for conservative cross-side isolation. */
@@ -338,6 +340,11 @@ export interface DylinkReplayOptions {
   tableBase: number;
   /** Exact side-module save buffer copied from the fork parent. */
   forkBufAddr?: number;
+  /** Exact mutable `__tls_base` value from the fork parent. The child memory
+   *  already contains the parent's live TLS bytes, so replay restores only
+   *  this instance-local global and deliberately does not call
+   *  `__wasm_init_tls`, which would reset those bytes to the initial image. */
+  tlsBase?: number;
 }
 
 /**
@@ -368,6 +375,12 @@ export interface LoadSharedLibraryOptions {
    * is retained on this options object for subsequent loads.
    */
   longjmpTag?: WebAssembly.Tag;
+  /**
+   * Process-owned C++ exception tag shared by every C++ side module. C++
+   * exceptions crossing side-module calls require tag identity as well as a
+   * matching payload type, so this must not be allocated per dlopen.
+   */
+  cppExceptionTag?: WebAssembly.Tag;
   /** Process pointer width, which also determines the __c_longjmp payload. */
   ptrWidth?: 4 | 8;
   /** Immutable symbol names exported by the main module. */
@@ -401,6 +414,17 @@ export function createLongjmpTag(ptrWidth: 4 | 8): WebAssembly.Tag | undefined {
     : undefined;
 }
 
+/** Create the process-owned C++ exception tag for the target pointer width. */
+export function createCppExceptionTag(ptrWidth: 4 | 8): WebAssembly.Tag | undefined {
+  if (ptrWidth !== 4 && ptrWidth !== 8) {
+    throw new TypeError(`invalid process pointer width ${String(ptrWidth)}`);
+  }
+  const Tag = tagConstructor();
+  return Tag
+    ? new Tag({ parameters: [ptrWidth === 8 ? "i64" : "i32"] })
+    : undefined;
+}
+
 /** Reject lookalike values before handing an exception-tag import to Wasm. */
 export function requireLongjmpTag(value: unknown, context: string): WebAssembly.Tag {
   const Tag = tagConstructor();
@@ -409,6 +433,18 @@ export function requireLongjmpTag(value: unknown, context: string): WebAssembly.
   }
   if (!(value instanceof Tag)) {
     throw new TypeError(`${context}: __c_longjmp must be an actual WebAssembly.Tag`);
+  }
+  return value;
+}
+
+/** Reject lookalike values before handing the C++ tag import to Wasm. */
+export function requireCppExceptionTag(value: unknown, context: string): WebAssembly.Tag {
+  const Tag = tagConstructor();
+  if (!Tag) {
+    throw new Error(`${context}: this WebAssembly runtime does not support exception tags`);
+  }
+  if (!(value instanceof Tag)) {
+    throw new TypeError(`${context}: __cpp_exception must be an actual WebAssembly.Tag`);
   }
   return value;
 }
@@ -430,6 +466,17 @@ function resolveLongjmpTag(options: LoadSharedLibraryOptions): WebAssembly.Tag {
   const tag = createLongjmpTag(ptrWidth);
   options.longjmpTag = requireLongjmpTag(tag, "dynamic linker");
   return options.longjmpTag;
+}
+
+function resolveCppExceptionTag(options: LoadSharedLibraryOptions): WebAssembly.Tag {
+  validateLongjmpConfiguration(options);
+  if (options.cppExceptionTag !== undefined) {
+    return requireCppExceptionTag(options.cppExceptionTag, "dynamic linker");
+  }
+  const ptrWidth = options.ptrWidth ?? 4;
+  const tag = createCppExceptionTag(ptrWidth);
+  options.cppExceptionTag = requireCppExceptionTag(tag, "dynamic linker");
+  return options.cppExceptionTag;
 }
 
 const SIDE_DYNAMIC_LOOKUP_IMPORTS = new Set([
@@ -574,9 +621,8 @@ function instantiateSharedLibrary(
       && imp.name === "__cpp_exception"
       && (imp.kind as string) === "tag"
   );
-  const Tag = tagConstructor();
-  const cppExceptionTag = importsCppExceptionTag && Tag
-    ? new Tag({ parameters: ["i32"] })
+  const cppExceptionTag = importsCppExceptionTag
+    ? resolveCppExceptionTag(options)
     : undefined;
 
   if (presentForkExports.length > 0 && !hasCompleteForkInstrumentation) {
@@ -830,9 +876,6 @@ function instantiateSharedLibrary(
             case "__table_base": return tableBaseGlobal;
             case "__stack_pointer": return options.stackPointer;
             case "__c_longjmp": return longjmpTag;
-            // C++ exceptions are currently confined to one side module. A
-            // cross-module exception contract would instead need one
-            // process-owned tag shared with every participating module.
             case "__cpp_exception": return cppExceptionTag;
             case "fork":
               if (importsFork) return sideModuleForkImport;
@@ -874,6 +917,103 @@ function instantiateSharedLibrary(
     // Instantiate synchronously after validating the side-module fork contract.
     instance = new WebAssembly.Instance(module, imports);
 
+    // A threaded wasm-ld side module initializes its mutable __tls_base from
+    // __memory_base in the start function. Fork-child memory already carries
+    // the parent's `__wasm_init_memory_flag == 2`, so the fresh child instance
+    // skips that initialization and otherwise leaves __tls_base at zero.
+    // Capture the live parent value and restore it during replay without
+    // calling __wasm_init_tls: the latter would overwrite copied, live TLS
+    // state (including the C++ unwinder's landing-pad context) with .tdata.
+    const tlsSizeExport = instance.exports.__tls_size;
+    const tlsSize = tlsSizeExport instanceof WebAssembly.Global
+      ? Number(tlsSizeExport.value)
+      : 0;
+    let tlsBase: number | undefined;
+    if (metadata.tlsExports.size > 0 && !(tlsSizeExport instanceof WebAssembly.Global)) {
+      throw new Error(`${name}: TLS exports require an exported __tls_size global`);
+    }
+    if (!Number.isSafeInteger(tlsSize) || tlsSize < 0) {
+      throw new Error(`${name}: invalid side-module TLS size ${String(tlsSize)}`);
+    }
+    if (tlsSize > 0) {
+      const tlsBaseExport = instance.exports.__tls_base;
+      const tlsAlignExport = instance.exports.__tls_align;
+      if (!(tlsBaseExport instanceof WebAssembly.Global)) {
+        throw new Error(
+          `${name}: TLS-bearing side modules must export mutable __tls_base for fork replay`,
+        );
+      }
+      if (!(tlsAlignExport instanceof WebAssembly.Global)) {
+        throw new Error(`${name}: TLS-bearing side modules must export __tls_align`);
+      }
+      const tlsAlign = Number(tlsAlignExport.value);
+      if (
+        !Number.isSafeInteger(tlsAlign)
+        || tlsAlign <= 0
+        || (tlsAlign & (tlsAlign - 1)) !== 0
+      ) {
+        throw new Error(`${name}: invalid side-module TLS alignment ${String(tlsAlign)}`);
+      }
+
+      const initialRawTlsBase = tlsBaseExport.value;
+      const expectedTlsBaseType = (options.ptrWidth ?? 4) === 8 ? "bigint" : "number";
+      if (typeof initialRawTlsBase !== expectedTlsBaseType) {
+        throw new Error(
+          `${name}: __tls_base type does not match the ${(options.ptrWidth ?? 4) * 8}-bit process pointer width`,
+        );
+      }
+      try {
+        // A self-assignment is the only portable reflection available for
+        // distinguishing a mutable WebAssembly.Global from an immutable one.
+        tlsBaseExport.value = initialRawTlsBase;
+      } catch {
+        throw new Error(`${name}: exported __tls_base must be mutable for fork replay`);
+      }
+      if (replay) {
+        if (!Number.isSafeInteger(replay.tlsBase) || replay.tlsBase! <= 0) {
+          throw new Error(`${name}: fork replay is missing a valid side-module TLS base`);
+        }
+        try {
+          tlsBaseExport.value = typeof initialRawTlsBase === "bigint"
+            ? BigInt(replay.tlsBase!)
+            : replay.tlsBase!;
+        } catch {
+          throw new Error(`${name}: exported __tls_base must be mutable for fork replay`);
+        }
+      }
+      tlsBase = Number(tlsBaseExport.value);
+      // Address zero is reserved as the archive's explicit "no TLS" sentinel.
+      // A real TLS allocation cannot live there: the process memory allocator
+      // always returns a positive address and the null page must stay invalid.
+      if (!Number.isSafeInteger(tlsBase) || tlsBase <= 0) {
+        throw new Error(`${name}: invalid side-module TLS base ${String(tlsBase)}`);
+      }
+      if (tlsBase % tlsAlign !== 0) {
+        throw new Error(
+          `${name}: side-module TLS base 0x${tlsBase.toString(16)} is not aligned to ${tlsAlign}`,
+        );
+      }
+      const tlsEnd = tlsBase + tlsSize;
+      const moduleMemoryEnd = memoryBase + metadata.memorySize;
+      if (
+        !Number.isSafeInteger(tlsEnd)
+        || tlsBase < memoryBase
+        || tlsEnd > moduleMemoryEnd
+      ) {
+        throw new Error(
+          `${name}: TLS range 0x${tlsBase.toString(16)}..0x${tlsEnd.toString(16)} ` +
+            `escapes module reservation 0x${memoryBase.toString(16)}..0x${moduleMemoryEnd.toString(16)}`,
+        );
+      }
+      if (tlsEnd > options.memory.buffer.byteLength) {
+        throw new Error(
+          `${name}: TLS range 0x${tlsBase.toString(16)}..0x${tlsEnd.toString(16)} exceeds memory`,
+        );
+      }
+    } else if (replay?.tlsBase !== undefined) {
+      throw new Error(`${name}: fork replay supplied TLS state for a module without TLS`);
+    }
+
     // Relocate exports: data address globals need memoryBase added
     const relocatedExports: Record<string, WebAssembly.ExportValue> = {};
     for (const [exportName, exportValue] of Object.entries(instance.exports)) {
@@ -882,9 +1022,23 @@ function instantiateSharedLibrary(
           (exportValue as any).value = (exportValue as any).value;
           relocatedExports[exportName] = exportValue;
         } catch {
+          // These are scalar ABI facts, not data addresses.
+          if (exportName === "__tls_size" || exportName === "__tls_align") {
+            relocatedExports[exportName] = exportValue;
+            continue;
+          }
+          const rawValue = exportValue.value;
+          const relocationBase = metadata.tlsExports.has(exportName)
+            ? tlsBase
+            : memoryBase;
+          if (relocationBase === undefined) {
+            throw new Error(`${name}: TLS export ${exportName} has no live TLS base`);
+          }
           relocatedExports[exportName] = new WebAssembly.Global(
-            { value: "i32", mutable: false },
-            (exportValue as WebAssembly.Global).value + memoryBase,
+            { value: typeof rawValue === "bigint" ? "i64" : "i32", mutable: false },
+            typeof rawValue === "bigint"
+              ? rawValue + BigInt(relocationBase)
+              : rawValue + relocationBase,
           );
         }
       } else {
@@ -945,6 +1099,7 @@ function instantiateSharedLibrary(
       metadata,
       name,
       forkBufAddr: sideForkBufAddr || undefined,
+      tlsBase,
       forkCapable: importsFork,
       functionImports,
       functionExports,
