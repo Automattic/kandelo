@@ -208,17 +208,6 @@ if [ ! -f Makefile ]; then
     # RAND_egd was removed in OpenSSL 3.x
     export ac_cv_func_RAND_egd=no
 
-    # group_member is a glibc extension not in musl.
-    # wget uses it unconditionally in utils.c without #ifdef guard.
-    # Patch the source to add a declaration before use.
-    if ! grep -q 'group_member stub' "$SRC_DIR/src/utils.c"; then
-        sed -i.bak '/#include "wget.h"/a\
-/* musl lacks group_member(); stub always returns 0. group_member stub */\
-static inline int group_member(int gid) { (void)gid; return 0; }
-' "$SRC_DIR/src/utils.c"
-        rm -f "$SRC_DIR/src/utils.c.bak"
-    fi
-
     wasm32posix-configure \
         --disable-nls \
         --disable-iri \
