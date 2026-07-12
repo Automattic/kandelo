@@ -91,6 +91,7 @@ export interface PlatformIO {
   readlink(path: string): string;
   chmod(path: string, mode: number): void;
   chown(path: string, uid: number, gid: number): void;
+  lchown(path: string, uid: number, gid: number): void;
   access(path: string, mode: number): void;
   utimensat(path: string, atimeSec: number, atimeNsec: number, mtimeSec: number, mtimeNsec: number): void;
 

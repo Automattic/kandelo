@@ -132,6 +132,26 @@ const ENOTSUP = 95;
 const ETIMEDOUT = 110;
 const EINTR_ERRNO = 4;
 
+function cstringCopySize(
+  memory: Uint8Array,
+  ptr: number,
+  capacity: number,
+): { size: number } | { errno: number } {
+  if (!Number.isSafeInteger(ptr) || ptr <= 0 || ptr >= memory.length) {
+    return { errno: EFAULT };
+  }
+  if (capacity <= 0) return { errno: ENAMETOOLONG };
+
+  const memoryAvailable = memory.length - ptr;
+  const scanLength = Math.min(memoryAvailable, capacity);
+  const nul = memory.subarray(ptr, ptr + scanLength).indexOf(0);
+  if (nul >= 0) return { size: nul + 1 };
+
+  return {
+    errno: memoryAvailable < capacity ? EFAULT : ENAMETOOLONG,
+  };
+}
+
 /**
  * Maximum combined exec argv + environment representation: UTF-8 strings,
  * their terminating NUL bytes, and one source-width pointer per entry plus
@@ -3186,17 +3206,33 @@ export class CentralizedKernelWorker {
 
       for (const desc of argDescs) {
         const ptr = origArgs[desc.argIndex];
-        if (ptr === 0) continue; // null pointer, skip
+        if (
+          ptr === 0
+          && (desc.size.type !== "cstring" || desc.nullable === true)
+        ) {
+          continue;
+        }
 
         // Compute size of data to copy
         let size: number;
         if (desc.size.type === "cstring") {
-          // Read null-terminated string length from process memory
-          let len = 0;
-          while (processMem[ptr + len] !== 0 && len < CH_DATA_SIZE - dataOffset - 1) {
-            len++;
+          const result = cstringCopySize(
+            processMem,
+            ptr,
+            CH_DATA_SIZE - dataOffset,
+          );
+          if ("errno" in result) {
+            this.completeChannel(
+              channel,
+              syscallNr,
+              origArgs,
+              undefined,
+              -1,
+              result.errno,
+            );
+            return;
           }
-          size = len + 1; // include null terminator
+          size = result.size;
         } else if (desc.size.type === "arg") {
           size =
             origArgs[desc.size.argIndex] * (desc.size.multiplier ?? 1)

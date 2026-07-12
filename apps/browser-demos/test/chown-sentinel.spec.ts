@@ -8,7 +8,7 @@ const programPath = resolve(
   "../../../examples/chown_sentinel_test.wasm",
 );
 
-test("chown unchanged-ID sentinels preserve IDs and errors", async ({
+test("chown sentinels and no-follow link ownership work in Chromium", async ({
   page,
   baseURL,
   browserName,

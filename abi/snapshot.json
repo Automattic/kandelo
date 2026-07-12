@@ -1,5 +1,5 @@
 {
-  "abi_version": 32,
+  "abi_version": 33,
   "channel_buffers": {
     "data_offset": 72,
     "data_size": 65536,
@@ -113,7 +113,7 @@
   },
   "host_adapter": {
     "manifest": {
-      "abi_version": 32,
+      "abi_version": 33,
       "channel_data_offset": 72,
       "channel_data_size": 65536,
       "channel_header_size": 72,
@@ -3277,6 +3277,7 @@
       {
         "argIndex": 1,
         "direction": "in",
+        "nullable": true,
         "size": {
           "type": "cstring"
         }
@@ -3778,6 +3779,15 @@
     "272": [
       {
         "argIndex": 1,
+        "direction": "in",
+        "size": {
+          "type": "cstring"
+        }
+      }
+    ],
+    "299": [
+      {
+        "argIndex": 0,
         "direction": "in",
         "size": {
           "type": "cstring"
@@ -5194,6 +5204,10 @@
     {
       "name": "Pwritev",
       "number": 296
+    },
+    {
+      "name": "Lchown",
+      "number": 299
     },
     {
       "name": "Fallocate",

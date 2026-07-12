@@ -639,6 +639,9 @@ export class WasmPosixKernel {
         host_chown: (pathPtr: bigint, pathLen: number, uid: number, gid: number): number => {
           return this.hostChown(Number(pathPtr), pathLen, uid, gid);
         },
+        host_lchown: (pathPtr: bigint, pathLen: number, uid: number, gid: number): number => {
+          return this.hostLchown(Number(pathPtr), pathLen, uid, gid);
+        },
         host_access: (pathPtr: bigint, pathLen: number, amode: number): number => {
           return this.hostAccess(Number(pathPtr), pathLen, amode);
         },
@@ -1639,6 +1642,24 @@ export class WasmPosixKernel {
     try {
       const path = this.readPathFromMemory(pathPtr, pathLen);
       this.io.chown(path, uid, gid);
+      return 0;
+    } catch (e) {
+      return negErrno(e);
+    }
+  }
+
+  /**
+   * host_lchown(path_ptr, path_len, uid, gid) -> i32
+   */
+  private hostLchown(
+    pathPtr: number,
+    pathLen: number,
+    uid: number,
+    gid: number,
+  ): number {
+    try {
+      const path = this.readPathFromMemory(pathPtr, pathLen);
+      this.io.lchown(path, uid, gid);
       return 0;
     } catch (e) {
       return negErrno(e);

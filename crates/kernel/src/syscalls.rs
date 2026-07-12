@@ -4997,6 +4997,21 @@ pub fn sys_chown(
     host.host_chown(&resolved, uid, gid)
 }
 
+pub fn sys_lchown(
+    proc: &mut Process,
+    host: &mut dyn HostIO,
+    path: &[u8],
+    uid: u32,
+    gid: u32,
+) -> Result<(), Errno> {
+    let resolved = resolve_namespace_path(proc, host, path, PathResolveOptions::NOFOLLOW)?;
+    ensure_host_mutable_namespace_path(&resolved.path)?;
+    check_search_path(proc, host, &resolved.path)?;
+    let st = resolved.stat.ok_or(Errno::ENOENT)?;
+    let (uid, gid) = prepare_chown_ids(proc, &st, uid, gid)?;
+    host.host_lchown(&resolved.path, uid, gid)
+}
+
 pub fn sys_access(
     proc: &mut Process,
     host: &mut dyn HostIO,
@@ -12650,15 +12665,29 @@ pub fn sys_fchownat(
     path: &[u8],
     uid: u32,
     gid: u32,
-    _flags: u32,
+    flags: u32,
 ) -> Result<(), Errno> {
-    let resolved =
-        resolve_at_path(proc, host, dirfd, path, PathResolveOptions::FOLLOW)?.path;
-    ensure_host_mutable_namespace_path(&resolved)?;
-    check_search_path(proc, host, &resolved)?;
-    let st = host.host_stat(&resolved)?;
+    use wasm_posix_shared::flags::AT_SYMLINK_NOFOLLOW;
+
+    if flags & !AT_SYMLINK_NOFOLLOW != 0 {
+        return Err(Errno::EINVAL);
+    }
+    let nofollow = flags & AT_SYMLINK_NOFOLLOW != 0;
+    let options = if nofollow {
+        PathResolveOptions::NOFOLLOW
+    } else {
+        PathResolveOptions::FOLLOW
+    };
+    let resolved = resolve_at_path(proc, host, dirfd, path, options)?;
+    ensure_host_mutable_namespace_path(&resolved.path)?;
+    check_search_path(proc, host, &resolved.path)?;
+    let st = resolved.stat.ok_or(Errno::ENOENT)?;
     let (uid, gid) = prepare_chown_ids(proc, &st, uid, gid)?;
-    host.host_chown(&resolved, uid, gid)
+    if nofollow {
+        host.host_lchown(&resolved.path, uid, gid)
+    } else {
+        host.host_chown(&resolved.path, uid, gid)
+    }
 }
 
 /// linkat -- create hard link relative to directory fds.
@@ -13462,6 +13491,7 @@ mod tests {
         net_connect_calls: Vec<(i32, Vec<u8>, u16)>,
         net_listen_calls: Vec<(i32, u16, [u8; 4])>,
         chown_calls: Vec<(Vec<u8>, u32, u32)>,
+        lchown_calls: Vec<(Vec<u8>, u32, u32)>,
         fchown_calls: Vec<(i64, u32, u32)>,
         closed_handles: Vec<i64>,
         closed_dir_handles: Vec<i64>,
@@ -13500,6 +13530,7 @@ mod tests {
                 net_connect_calls: Vec::new(),
                 net_listen_calls: Vec::new(),
                 chown_calls: Vec::new(),
+                lchown_calls: Vec::new(),
                 fchown_calls: Vec::new(),
                 closed_handles: Vec::new(),
                 closed_dir_handles: Vec::new(),
@@ -13751,6 +13782,11 @@ mod tests {
                     self.handle_owners.insert(*handle, (uid, gid));
                 }
             }
+            Ok(())
+        }
+        fn host_lchown(&mut self, path: &[u8], uid: u32, gid: u32) -> Result<(), Errno> {
+            self.lchown_calls.push((path.to_vec(), uid, gid));
+            self.file_owners.insert(path.to_vec(), (uid, gid));
             Ok(())
         }
         fn host_access(&mut self, _path: &[u8], _amode: u32) -> Result<(), Errno> {
@@ -14676,6 +14712,80 @@ mod tests {
         );
     }
 
+    #[test]
+    fn test_sys_lchown_changes_final_link_without_changing_target() {
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        host.set_file_with_owner(b"/target", 10, 20, 0o644, b"target");
+        host.set_symlink(b"/link", b"/target");
+        host.file_owners.insert(b"/link".to_vec(), (30, 40));
+
+        sys_lchown(&mut proc, &mut host, b"/link", 50, 60).unwrap();
+
+        let link = sys_lstat(&mut proc, &mut host, b"/link").unwrap();
+        let target = sys_stat(&mut proc, &mut host, b"/link").unwrap();
+        assert_eq!((link.st_uid, link.st_gid), (50, 60));
+        assert_eq!((target.st_uid, target.st_gid), (10, 20));
+        assert_eq!(
+            host.lchown_calls,
+            vec![(b"/link".to_vec(), 50, 60)],
+        );
+        assert!(host.chown_calls.is_empty());
+    }
+
+    #[test]
+    fn test_sys_lchown_accepts_dangling_link_while_chown_follows() {
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        host.set_symlink(b"/dangling", b"/missing");
+        host.file_owners.insert(b"/dangling".to_vec(), (70, 80));
+        host.set_missing_path(b"/missing");
+
+        sys_lchown(&mut proc, &mut host, b"/dangling", 90, 100).unwrap();
+        assert_eq!(
+            sys_chown(&mut proc, &mut host, b"/dangling", 1, 2),
+            Err(Errno::ENOENT),
+        );
+        assert_eq!(
+            host.lchown_calls,
+            vec![(b"/dangling".to_vec(), 90, 100)],
+        );
+    }
+
+    #[test]
+    fn test_sys_lchown_sentinels_use_link_owner_and_still_delegate() {
+        let mut proc = Process::new(1);
+        proc.euid = 123;
+        let mut host = MockHostIO::new();
+        host.set_symlink(b"/owned-link", b"/target");
+        host.file_owners
+            .insert(b"/owned-link".to_vec(), (123, 456));
+        host.set_file_with_owner(b"/target", 999, 888, 0o644, b"target");
+
+        sys_lchown(
+            &mut proc,
+            &mut host,
+            b"/owned-link",
+            CHOWN_ID_UNCHANGED,
+            CHOWN_ID_UNCHANGED,
+        )
+        .unwrap();
+        assert_eq!(
+            host.lchown_calls,
+            vec![(b"/owned-link".to_vec(), 123, 456)],
+        );
+        assert_eq!(
+            sys_lchown(
+                &mut proc,
+                &mut host,
+                b"/owned-link",
+                CHOWN_ID_UNCHANGED,
+                777,
+            ),
+            Err(Errno::EPERM),
+        );
+    }
+
     /// sys_fchown must propagate uid/gid into the host VFS via the open file
     /// handle so that a subsequent sys_fstat returns the new values.
     #[test]
@@ -14780,6 +14890,36 @@ mod tests {
                 (b"/at-owned".to_vec(), 70, 90),
                 (b"/at-owned".to_vec(), 100, 90),
             ],
+        );
+    }
+
+    #[test]
+    fn test_sys_fchownat_selects_follow_or_nofollow_backend() {
+        use wasm_posix_shared::flags::{AT_FDCWD, AT_SYMLINK_NOFOLLOW};
+
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        host.set_file_with_owner(b"/target", 1, 2, 0o644, b"target");
+        host.set_symlink(b"/link", b"/target");
+        host.file_owners.insert(b"/link".to_vec(), (3, 4));
+
+        sys_fchownat(&mut proc, &mut host, AT_FDCWD, b"/link", 5, 6, 0).unwrap();
+        sys_fchownat(
+            &mut proc,
+            &mut host,
+            AT_FDCWD,
+            b"/link",
+            7,
+            8,
+            AT_SYMLINK_NOFOLLOW,
+        )
+        .unwrap();
+
+        assert_eq!(host.chown_calls, vec![(b"/target".to_vec(), 5, 6)]);
+        assert_eq!(host.lchown_calls, vec![(b"/link".to_vec(), 7, 8)]);
+        assert_eq!(
+            sys_fchownat(&mut proc, &mut host, AT_FDCWD, b"/link", 9, 10, 0x200),
+            Err(Errno::EINVAL),
         );
     }
 

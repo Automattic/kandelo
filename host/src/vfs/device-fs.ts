@@ -229,6 +229,8 @@ export class DeviceFileSystem implements FileSystemBackend {
   chmod(_path: string, _mode: number): void {}
   chown(_path: string, _uid: number, _gid: number): void {}
 
+  lchown(_path: string, _uid: number, _gid: number): void {}
+
   access(path: string, _mode: number): void {
     this.stat(path); // throws ENOENT if not found
   }
