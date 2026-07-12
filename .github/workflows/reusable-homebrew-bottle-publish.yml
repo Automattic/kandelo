@@ -369,6 +369,25 @@ jobs:
           cd kandelo
           bash scripts/dev-shell.sh bash packages/registry/kernel/build-kernel.sh
 
+      - name: Materialize shell-script runtime for Formula tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd kandelo
+          bash scripts/dev-shell.sh bash -c '
+            set -euo pipefail
+            host="$(rustc -vV | sed -n "s/^host: //p")"
+            [ -n "$host" ] || {
+              echo "unable to resolve the Rust host target" >&2
+              exit 2
+            }
+            for package in dash coreutils grep sed; do
+              cargo run --release -p xtask --target "$host" --quiet -- \
+                build-deps --arch wasm32 \
+                --binaries-dir "$PWD/binaries" --fetch-only resolve "$package"
+            done
+          '
+
       - name: Install JavaScript dependencies for formula tests
         shell: bash
         run: |
