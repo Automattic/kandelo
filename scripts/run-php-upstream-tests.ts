@@ -43,6 +43,7 @@ import { tryResolveBinary } from "../host/src/binary-resolver";
 import { ABI_SYSCALL_NAMES } from "../host/src/generated/abi";
 import { ensureSourceExtract } from "../images/vfs/scripts/source-extract-helper";
 import { preparePhpTestFixtures } from "../images/vfs/scripts/php-test-fixtures";
+import { resolvePackageRuntimeFile } from "./package-runtime-file";
 
 const REPO_ROOT = resolve(new URL(".", import.meta.url).pathname, "..");
 const LOCAL_PHP_SRC = join(REPO_ROOT, "packages/registry/php/php-src");
@@ -55,6 +56,7 @@ const BROWSER_DIR = join(REPO_ROOT, "apps/browser-demos");
 const VITE_HOST = "127.0.0.1";
 const VITE_PORT = Number(process.env.PHP_TEST_VITE_PORT ?? 5201);
 const BROWSER_EXTENSION_DIR = "/usr/lib/php/extensions";
+const PHP_ICU_RUNTIME = resolvePackageRuntimeFile(REPO_ROOT, "php", "icu.dat");
 const RUN_TESTS_BASE_INI = [
   "output_handler=",
   "open_basedir=",
@@ -988,6 +990,26 @@ class NodePhpRunner implements PhpRunner {
       // rejected by HostFileSystem's sandbox, so materialize the file bytes.
       copyFileSync(srcPath, destPath);
       chmodSync(destPath, 0o755);
+    }
+    if (this.sharedExtensionPaths.has("intl")) {
+      if (!PHP_ICU_RUNTIME) {
+        throw new Error(
+          "intl.so is available but the declared php:icu.dat runtime file is not materialized",
+        );
+      }
+      const mountPoint = "/usr/lib";
+      if (!PHP_ICU_RUNTIME.guestPath.startsWith(`${mountPoint}/`)) {
+        throw new Error(
+          `php:icu.dat guest path ${PHP_ICU_RUNTIME.guestPath} is outside ${mountPoint}`,
+        );
+      }
+      const runtimeDest = join(
+        root,
+        ...PHP_ICU_RUNTIME.guestPath.slice(mountPoint.length + 1).split("/"),
+      );
+      mkdirSync(dirname(runtimeDest), { recursive: true });
+      copyFileSync(PHP_ICU_RUNTIME.hostPath, runtimeDest);
+      chmodSync(runtimeDest, PHP_ICU_RUNTIME.mode);
     }
     this.extensionMountRoot = root;
     return root;

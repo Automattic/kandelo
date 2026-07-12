@@ -8,46 +8,48 @@
  * The browser harness runs multiple PHP tests (inline, file-based, extensions)
  * and reports all results as JSON in the #results element.
  *
- * Run: npx playwright test --config packages/registry/php/test/browser/playwright.config.ts
+ * Run the default suite:
+ *   npx playwright test --config packages/registry/php/test/browser/playwright.config.ts
+ * Both cases resolve their complete PHP package closure through the normal
+ * local/published binary mirrors.
  */
 
 import { test, expect } from "@playwright/test";
 import { existsSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { resolvePackageRuntimeFile } from "../../../../../scripts/package-runtime-file";
+import { tryResolveBinary } from "../../../../../host/src/binary-resolver";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const repoRoot = join(__dirname, "../../../../..");
-const hasKernelWasm = [
-  join(repoRoot, "local-binaries/kernel.wasm"),
-  join(repoRoot, "binaries/kernel.wasm"),
-].some((candidate) => existsSync(candidate));
-const hasPhpWasm = [
-  join(repoRoot, "local-binaries/programs/wasm32/php/php.wasm"),
-  join(repoRoot, "binaries/programs/wasm32/php/php.wasm"),
-  join(repoRoot, "packages/registry/php/php-src/sapi/cli/php"),
-].some((candidate) => existsSync(candidate));
-const hasZipSo = [
-  join(repoRoot, "local-binaries/programs/wasm32/php/zip.so"),
-  join(repoRoot, "binaries/programs/wasm32/php/zip.so"),
-  join(repoRoot, "packages/registry/php/bin/zip.so"),
-].some((candidate) => existsSync(candidate));
-const hasCurlSo = [
-  join(repoRoot, "local-binaries/programs/wasm32/php/curl.so"),
-  join(repoRoot, "binaries/programs/wasm32/php/curl.so"),
-  join(repoRoot, "packages/registry/php/bin/curl.so"),
-].some((candidate) => existsSync(candidate));
-const hasRootfsVfs = existsSync(join(repoRoot, "host/wasm/rootfs.vfs"));
+const hasKernelWasm = tryResolveBinary("kernel.wasm") != null;
+const hasPhpWasm = tryResolveBinary("programs/php/php.wasm") != null
+  || existsSync(join(repoRoot, "packages/registry/php/php-src/sapi/cli/php"));
+const hasZipSo = tryResolveBinary("programs/php/zip.so") != null
+  || existsSync(join(repoRoot, "packages/registry/php/bin/zip.so"));
+const hasCurlSo = tryResolveBinary("programs/php/curl.so") != null
+  || existsSync(join(repoRoot, "packages/registry/php/bin/curl.so"));
+const hasIntlSo = tryResolveBinary("programs/php/intl.so") != null
+  || existsSync(join(repoRoot, "packages/registry/php/bin/intl.so"));
+const phpIcuRuntime = resolvePackageRuntimeFile(repoRoot, "php", "icu.dat");
+if (hasIntlSo && !phpIcuRuntime) {
+  throw new Error(
+    "PHP intl.so is present but the declared php:icu.dat runtime file is not materialized",
+  );
+}
+const hasRootfsVfs = tryResolveBinary("rootfs.vfs") != null
+  || tryResolveBinary("programs/rootfs.vfs") != null;
 
 test.skip(!hasKernelWasm, "kernel.wasm is not built or fetched");
 test.skip(!hasPhpWasm, "php.wasm is not built or fetched");
-test.skip(!hasZipSo, "zip.so is not built or fetched");
-test.skip(!hasCurlSo, "curl.so is not built or fetched");
 test.skip(!hasRootfsVfs, "rootfs.vfs is not built");
 
 test("PHP CLI runs in the browser (inline, file, session, SQLite, fileinfo, XML, OpenSSL, extensions)", async ({
   page,
 }) => {
+  test.skip(!hasZipSo, "zip.so is not built or fetched");
+  test.skip(!hasCurlSo, "curl.so is not built or fetched");
   const runtimeErrors: string[] = [];
   page.on("console", (msg) => {
     if (msg.type() === "error") runtimeErrors.push(`console: ${msg.text()}`);
@@ -136,5 +138,53 @@ test("PHP CLI runs in the browser (inline, file, session, SQLite, fileinfo, XML,
     body: "kandelo-curl-ok\n",
     status: 200,
   });
+  expect(runtimeErrors).toEqual([]);
+});
+
+test("PHP intl and ICU data survive browser side-module fork replay", async ({ page }) => {
+  test.skip(!hasIntlSo, "intl.so is not built or fetched");
+
+  const runtimeErrors: string[] = [];
+  page.on("console", (msg) => {
+    if (msg.type() === "error") runtimeErrors.push(`console: ${msg.text()}`);
+  });
+  page.on("pageerror", (error) => {
+    runtimeErrors.push(`pageerror: ${error.message}`);
+  });
+  page.on("requestfailed", (request) => {
+    runtimeErrors.push(
+      `requestfailed: ${request.url()} ${request.failure()?.errorText ?? "failed"}`,
+    );
+  });
+  page.on("response", (response) => {
+    if (response.status() >= 400) {
+      runtimeErrors.push(`response: ${response.status()} ${response.url()}`);
+    }
+  });
+
+  await page.goto("/?intl=1");
+  await page.waitForFunction(
+    () => {
+      const status = document.getElementById("status");
+      return status?.textContent === "done" || status?.textContent === "error";
+    },
+    { timeout: 120_000 },
+  );
+
+  const status = await page.locator("#status").textContent();
+  const stderr = await page.locator("#stderr").textContent();
+  const resultsText = await page.locator("#results").textContent();
+  const exitCode = await page.locator("#exit-code").textContent();
+  if (status === "error" || exitCode !== "0") {
+    console.log("INTL STDERR:", stderr);
+    console.log("INTL RESULTS:", resultsText);
+  }
+
+  expect(status).toBe("done");
+  expect(exitCode).toBe("0");
+  expect(stderr).toBe("");
+  const results = JSON.parse(resultsText!);
+  expect(results.intlFork).toContain("child=French");
+  expect(results.intlFork).toContain("parent=French:apple,banana,cherry");
   expect(runtimeErrors).toEqual([]);
 });

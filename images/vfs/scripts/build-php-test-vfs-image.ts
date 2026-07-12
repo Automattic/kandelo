@@ -34,6 +34,7 @@ import { findRepoRoot, tryResolveBinary } from "../../../host/src/binary-resolve
 import { preparePhpTestFixtures } from "./php-test-fixtures";
 import { ensureSourceExtract } from "./source-extract-helper";
 import { saveImage, walkAndWrite } from "./vfs-image-helpers";
+import { resolvePackageRuntimeFile } from "../../../scripts/package-runtime-file";
 
 const REPO_ROOT = findRepoRoot();
 const PHP_FIXTURE_ROOT = join(REPO_ROOT, "tests/php-fixtures");
@@ -43,6 +44,7 @@ const PHP_WASM = process.env.PHP_WASM
   ?? join(LOCAL_PHP_SRC, "sapi/cli/php");
 const OPCACHE_SO = process.env.PHP_OPCACHE_SO
   ?? tryResolveBinary("programs/php/opcache.so");
+const ICU_RUNTIME = resolvePackageRuntimeFile(REPO_ROOT, "php", "icu.dat");
 const PHP_EXTENSION_DIRS = [
   dirname(PHP_WASM),
   ...((process.env.PHP_EXTENSION_DIR ?? "")
@@ -50,10 +52,16 @@ const PHP_EXTENSION_DIRS = [
     .map((path) => path.trim())
     .filter(Boolean)),
 ];
+const INTL_SO = tryResolveBinary("programs/php/intl.so")
+  ?? [...PHP_EXTENSION_DIRS]
+    .reverse()
+    .map((dir) => join(dir, "intl.so"))
+    .find((path) => existsSync(path));
 const PHP_FPM_WASM = process.env.PHP_FPM_WASM
   ?? tryResolveBinary("programs/php/php-fpm.wasm");
 const ROOTFS_VFS = process.env.ROOTFS_VFS
-  ?? tryResolveBinary("programs/rootfs/rootfs.vfs")
+  ?? tryResolveBinary("rootfs.vfs")
+  ?? tryResolveBinary("programs/rootfs.vfs")
   ?? join(REPO_ROOT, "host/wasm/rootfs.vfs");
 const OUT_FILE = process.env.PHP_TEST_VFS_OUT
   ?? join(REPO_ROOT, "apps/browser-demos/public/php-test.vfs.zst");
@@ -116,6 +124,13 @@ function phpTestVfsFingerprint(sourceRoot: string): string {
     hashInputPath(hash, `extensions-${index}`, extensionDir);
   }
   hashInputPath(hash, "opcache", OPCACHE_SO);
+  hashInputPath(hash, "intl", INTL_SO);
+  hashInputPath(hash, "intl-icu-data", ICU_RUNTIME?.hostPath);
+  if (ICU_RUNTIME) {
+    hash.update(
+      `runtime-contract\0${ICU_RUNTIME.artifact}\0${ICU_RUNTIME.guestPath}\0${ICU_RUNTIME.mode}\0`,
+    );
+  }
   return hash.digest("hex");
 }
 
@@ -283,6 +298,11 @@ async function main() {
       `rootfs.vfs not found at ${ROOTFS_VFS}. Build the rootfs package or set ROOTFS_VFS`,
     );
   }
+  if (INTL_SO && !ICU_RUNTIME) {
+    throw new Error(
+      "PHP intl.so is present but the declared php:icu.dat runtime file is not materialized",
+    );
+  }
   const phpSourceInput = resolvePhpSource();
   if (!existsSync(phpSourceInput)) {
     throw new Error(`php-src not found at ${phpSourceInput}`);
@@ -356,6 +376,21 @@ async function main() {
         fs,
         "/usr/lib/php/extensions/opcache.so",
         new Uint8Array(readFileSync(OPCACHE_SO)),
+      );
+    }
+    if (INTL_SO && ICU_RUNTIME) {
+      writeVfsBinary(
+        fs,
+        "/usr/lib/php/extensions/intl.so",
+        new Uint8Array(readFileSync(INTL_SO)),
+        0o755,
+      );
+      ensureDirRecursive(fs, dirname(ICU_RUNTIME.guestPath));
+      writeVfsBinary(
+        fs,
+        ICU_RUNTIME.guestPath,
+        new Uint8Array(readFileSync(ICU_RUNTIME.hostPath)),
+        ICU_RUNTIME.mode,
       );
     }
 
