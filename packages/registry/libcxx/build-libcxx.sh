@@ -103,7 +103,10 @@ if [ ! -d "$NIX_LIBUNWIND_SOURCE/libunwind" ]; then
 fi
 
 BUILD_DIR="$SCRIPT_DIR/build-${ARCH}"
-LLVM_SRC_DIR="$BUILD_DIR/llvm-source"
+# Assembled source tree lives OUTSIDE the build dirs so both the default
+# (static, non-PIC) build and the position-independent build below can share it
+# without one build's `rm -rf` deleting the other's source.
+LLVM_SRC_DIR="$SCRIPT_DIR/llvm-source-${ARCH}"
 
 # --- Verify prerequisites ---
 if [ ! -f "$SYSROOT/lib/libc.a" ]; then
@@ -134,12 +137,19 @@ echo "==> Building libc++ and libc++abi for ${ARCH}..."
 # against the modern ABI; consumers linking against this libcxx
 # archive must also compile with `-wasm-use-legacy-eh=false` (the
 # SDK's `compileFlags` was updated in lock-step).
-WASM_C_FLAGS="--target=${WASM_TARGET} -matomics -mbulk-memory -mexception-handling -mllvm -wasm-enable-sjlj -mllvm -wasm-use-legacy-eh=false -fexceptions -fno-trapping-math --sysroot=${SYSROOT} -O2 -DNDEBUG"
+#
+# LLVM records source/compilation paths in archive members. All assembled
+# sources and both variant build directories live under REPO_ROOT, so one
+# stable worktree mapping covers LLVM_SRC_DIR, BUILD_DIR, PIC_BUILD_DIR, the
+# generated smoke source, and sysroot paths for both PIC and non-PIC builds.
+# Without it, libc++abi.a and every side module absorbing it differ solely by
+# the caller's checkout path.
+REPRODUCIBLE_PREFIX_MAPS="-ffile-prefix-map=${REPO_ROOT}=/usr/src/kandelo -fdebug-prefix-map=${REPO_ROOT}=/usr/src/kandelo -fmacro-prefix-map=${REPO_ROOT}=/usr/src/kandelo"
+WASM_C_FLAGS="--target=${WASM_TARGET} -matomics -mbulk-memory -mexception-handling -mllvm -wasm-enable-sjlj -mllvm -wasm-use-legacy-eh=false -fexceptions -fno-trapping-math --sysroot=${SYSROOT} -O2 -DNDEBUG ${REPRODUCIBLE_PREFIX_MAPS}"
 
-# Always start with a fresh build tree so a cache-miss rebuild does
-# not mix old + new cmake artifacts.
-rm -rf "$BUILD_DIR"
-mkdir -p "$BUILD_DIR"
+# Start with a fresh source tree so a cache-miss rebuild does not mix old + new
+# artifacts. (Each build dir is cleaned by build_libcxx_variant below.)
+rm -rf "$LLVM_SRC_DIR"
 
 # Assemble the monorepo-shaped source tree expected by runtimes/CMakeLists.txt
 # from exact Nix source derivations. Nix's libcxx source carries runtimes/,
@@ -160,63 +170,77 @@ for entry in "$NIX_LIBCXX_SOURCE/runtimes"/*; do
 done
 ln -s "$NIX_LIBUNWIND_SOURCE/libunwind" "$LLVM_SRC_DIR/libunwind"
 
-cd "$BUILD_DIR"
-
-cmake -G "Unix Makefiles" -S "$LLVM_SRC_DIR/runtimes" \
-    -DLLVM_ENABLE_RUNTIMES="libcxx;libcxxabi;libunwind" \
-    -DCMAKE_SYSTEM_NAME=Generic \
-    -DCMAKE_SYSTEM_PROCESSOR="${ARCH}" \
-    -DCMAKE_C_COMPILER="$LLVM_CLANG" \
-    -DCMAKE_CXX_COMPILER="$LLVM_CLANG" \
-    -DCMAKE_AR="$LLVM_AR" \
-    -DCMAKE_RANLIB="$LLVM_RANLIB" \
-    -DCMAKE_NM="$LLVM_NM" \
-    -DCMAKE_C_COMPILER_TARGET="${WASM_TARGET}" \
-    -DCMAKE_CXX_COMPILER_TARGET="${WASM_TARGET}" \
-    -DCMAKE_C_FLAGS="${WASM_C_FLAGS}" \
-    -DCMAKE_CXX_FLAGS="${WASM_C_FLAGS}" \
-    -DCMAKE_SYSROOT="${SYSROOT}" \
-    -DCMAKE_TRY_COMPILE_TARGET_TYPE=STATIC_LIBRARY \
-    \
-    -DLIBCXX_ENABLE_SHARED=OFF \
-    -DLIBCXX_ENABLE_STATIC=ON \
-    -DLIBCXX_ENABLE_EXCEPTIONS=ON \
-    -DLIBCXX_ENABLE_RTTI=ON \
-    -DLIBCXX_HAS_MUSL_LIBC=ON \
-    -DLIBCXX_HAS_PTHREAD_API=ON \
-    -DLIBCXX_CXX_ABI=libcxxabi \
-    -DLIBCXX_INCLUDE_BENCHMARKS=OFF \
-    -DLIBCXX_INCLUDE_TESTS=OFF \
-    -DLIBCXX_ENABLE_FILESYSTEM=ON \
-    -DLIBCXX_ENABLE_MONOTONIC_CLOCK=ON \
-    -DLIBCXX_ENABLE_RANDOM_DEVICE=OFF \
-    -DLIBCXX_ENABLE_LOCALIZATION=ON \
-    -DLIBCXX_ENABLE_WIDE_CHARACTERS=ON \
-    -DLIBCXX_ENABLE_NEW_DELETE_DEFINITIONS=ON \
-    \
-    -DLIBCXXABI_ENABLE_SHARED=OFF \
-    -DLIBCXXABI_ENABLE_STATIC=ON \
-    -DLIBCXXABI_ENABLE_EXCEPTIONS=ON \
-    -DLIBCXXABI_USE_LLVM_UNWINDER=ON \
-    -DLIBCXXABI_ENABLE_STATIC_UNWINDER=ON \
-    -DLIBCXXABI_STATICALLY_LINK_UNWINDER_IN_STATIC_LIBRARY=ON \
-    -DLIBCXXABI_ENABLE_THREADS=ON \
-    -DLIBCXXABI_HAS_PTHREAD_API=ON \
-    -DLIBCXXABI_INCLUDE_TESTS=OFF \
-    \
-    -DLIBUNWIND_ENABLE_SHARED=OFF \
-    -DLIBUNWIND_ENABLE_STATIC=ON \
-    -DLIBUNWIND_ENABLE_THREADS=ON \
-    -DLIBUNWIND_USE_COMPILER_RT=OFF \
-    -DLIBUNWIND_INCLUDE_TESTS=OFF \
-    -DLIBUNWIND_HIDE_SYMBOLS=ON \
-    \
-    -DCMAKE_SIZEOF_VOID_P="${SIZEOF_VOID_P}" \
-    2>&1 | tail -20
-
-echo "==> Compiling (this may take a few minutes)..."
 NPROC="$(sysctl -n hw.ncpu 2>/dev/null || nproc)"
-make -j"$NPROC" cxx cxxabi unwind 2>&1 | tail -10
+
+# Configure + build libc++/libc++abi/libunwind into <build_dir> with the given
+# compile-flags string (plus any extra cmake args). Factored so the default
+# static archives and the position-independent variant (below) share ONE cmake
+# recipe and cannot drift apart.
+build_libcxx_variant() {
+    local variant_build_dir="$1"; shift
+    local variant_c_flags="$1"; shift
+    rm -rf "$variant_build_dir"
+    mkdir -p "$variant_build_dir"
+    ( cd "$variant_build_dir"
+      cmake -G "Unix Makefiles" -S "$LLVM_SRC_DIR/runtimes" \
+        -DLLVM_ENABLE_RUNTIMES="libcxx;libcxxabi;libunwind" \
+        -DCMAKE_SYSTEM_NAME=Generic \
+        -DCMAKE_SYSTEM_PROCESSOR="${ARCH}" \
+        -DCMAKE_C_COMPILER="$LLVM_CLANG" \
+        -DCMAKE_CXX_COMPILER="$LLVM_CLANG" \
+        -DCMAKE_AR="$LLVM_AR" \
+        -DCMAKE_RANLIB="$LLVM_RANLIB" \
+        -DCMAKE_NM="$LLVM_NM" \
+        -DCMAKE_C_COMPILER_TARGET="${WASM_TARGET}" \
+        -DCMAKE_CXX_COMPILER_TARGET="${WASM_TARGET}" \
+        -DCMAKE_C_FLAGS="${variant_c_flags}" \
+        -DCMAKE_CXX_FLAGS="${variant_c_flags}" \
+        -DCMAKE_SYSROOT="${SYSROOT}" \
+        -DCMAKE_TRY_COMPILE_TARGET_TYPE=STATIC_LIBRARY \
+        \
+        -DLIBCXX_ENABLE_SHARED=OFF \
+        -DLIBCXX_ENABLE_STATIC=ON \
+        -DLIBCXX_ENABLE_EXCEPTIONS=ON \
+        -DLIBCXX_ENABLE_RTTI=ON \
+        -DLIBCXX_HAS_MUSL_LIBC=ON \
+        -DLIBCXX_HAS_PTHREAD_API=ON \
+        -DLIBCXX_CXX_ABI=libcxxabi \
+        -DLIBCXX_INCLUDE_BENCHMARKS=OFF \
+        -DLIBCXX_INCLUDE_TESTS=OFF \
+        -DLIBCXX_ENABLE_FILESYSTEM=ON \
+        -DLIBCXX_ENABLE_MONOTONIC_CLOCK=ON \
+        -DLIBCXX_ENABLE_RANDOM_DEVICE=OFF \
+        -DLIBCXX_ENABLE_LOCALIZATION=ON \
+        -DLIBCXX_ENABLE_WIDE_CHARACTERS=ON \
+        -DLIBCXX_ENABLE_NEW_DELETE_DEFINITIONS=ON \
+        \
+        -DLIBCXXABI_ENABLE_SHARED=OFF \
+        -DLIBCXXABI_ENABLE_STATIC=ON \
+        -DLIBCXXABI_ENABLE_EXCEPTIONS=ON \
+        -DLIBCXXABI_USE_LLVM_UNWINDER=ON \
+        -DLIBCXXABI_ENABLE_STATIC_UNWINDER=ON \
+        -DLIBCXXABI_STATICALLY_LINK_UNWINDER_IN_STATIC_LIBRARY=ON \
+        -DLIBCXXABI_ENABLE_THREADS=ON \
+        -DLIBCXXABI_HAS_PTHREAD_API=ON \
+        -DLIBCXXABI_INCLUDE_TESTS=OFF \
+        \
+        -DLIBUNWIND_ENABLE_SHARED=OFF \
+        -DLIBUNWIND_ENABLE_STATIC=ON \
+        -DLIBUNWIND_ENABLE_THREADS=ON \
+        -DLIBUNWIND_USE_COMPILER_RT=OFF \
+        -DLIBUNWIND_INCLUDE_TESTS=OFF \
+        -DLIBUNWIND_HIDE_SYMBOLS=ON \
+        \
+        -DCMAKE_SIZEOF_VOID_P="${SIZEOF_VOID_P}" \
+        "$@" \
+        2>&1 | tail -20
+
+      echo "==> Compiling (this may take a few minutes)..."
+      make -j"$NPROC" cxx cxxabi unwind 2>&1 | tail -10 )
+}
+
+echo "==> Building default (static, non-PIC) libc++/libc++abi for ${ARCH}..."
+build_libcxx_variant "$BUILD_DIR" "${WASM_C_FLAGS}"
 
 # --- Install into the resolver's OUT_DIR ---
 echo "==> Installing to $INSTALL_DIR..."
@@ -298,7 +322,32 @@ if ! "$LLVM_CLANG" ${WASM_C_FLAGS} \
 fi
 echo "==> Header smoke compile passed."
 
+# --- Position-independent variant for wasm side modules ---
+# The default archives above are non-PIC, which is correct for the common case:
+# static linking into a main wasm module (php.wasm, mariadb, ruby). But a wasm
+# SIDE MODULE (built with `-shared --experimental-pic`, e.g. PHP's intl.so, which
+# statically absorbs libc++/libc++abi) requires EVERY input object to be
+# position-independent, or wasm-ld fails with "relocation R_WASM_MEMORY_ADDR_SLEB
+# cannot be used against symbol ...; recompile with -fPIC". Emit a parallel PIC
+# pair alongside the defaults. This is purely additive: libc++.a / libc++abi.a
+# and the header set above are untouched, so existing static consumers are
+# unaffected; only side-module consumers reach for the -pic archives.
+echo "==> Building position-independent libc++/libc++abi (for wasm side modules)..."
+PIC_BUILD_DIR="$SCRIPT_DIR/build-${ARCH}-pic"
+build_libcxx_variant "$PIC_BUILD_DIR" "${WASM_C_FLAGS} -fPIC" -DCMAKE_POSITION_INDEPENDENT_CODE=ON
+
+LIBCXX_PIC_A=$(find "$PIC_BUILD_DIR" -name "libc++.a" -not -path "*/CMakeFiles/*" | head -1)
+LIBCXXABI_PIC_A=$(find "$PIC_BUILD_DIR" -name "libc++abi.a" -not -path "*/CMakeFiles/*" | head -1)
+if [ -z "$LIBCXX_PIC_A" ] || [ -z "$LIBCXXABI_PIC_A" ]; then
+    echo "ERROR: PIC libraries not found under $PIC_BUILD_DIR" >&2
+    exit 1
+fi
+cp "$LIBCXX_PIC_A" "$INSTALL_DIR/lib/libc++-pic.a"
+cp "$LIBCXXABI_PIC_A" "$INSTALL_DIR/lib/libc++abi-pic.a"
+
 echo "==> Done!"
-echo "  libc++.a:    $(wc -c < "$INSTALL_DIR/lib/libc++.a" | tr -d ' ') bytes"
-echo "  libc++abi.a: $(wc -c < "$INSTALL_DIR/lib/libc++abi.a" | tr -d ' ') bytes"
-echo "  headers:     $INSTALL_DIR/include/c++/v1/"
+echo "  libc++.a:        $(wc -c < "$INSTALL_DIR/lib/libc++.a" | tr -d ' ') bytes"
+echo "  libc++abi.a:     $(wc -c < "$INSTALL_DIR/lib/libc++abi.a" | tr -d ' ') bytes"
+echo "  libc++-pic.a:    $(wc -c < "$INSTALL_DIR/lib/libc++-pic.a" | tr -d ' ') bytes"
+echo "  libc++abi-pic.a: $(wc -c < "$INSTALL_DIR/lib/libc++abi-pic.a" | tr -d ' ') bytes"
+echo "  headers:         $INSTALL_DIR/include/c++/v1/"

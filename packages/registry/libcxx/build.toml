@@ -1,13 +1,19 @@
 script_path = "packages/registry/libcxx/build-libcxx.sh"
-repo_url    = "https://github.com/brandonpayton/kandelo.git"
-commit      = "8c53383229fab78f97b098c3207a655159c03041"
+repo_url    = "https://github.com/Automattic/kandelo.git"
+commit      = "UNPUBLISHED"
 # Revision 4: libcxx + libcxxabi + libunwind rebuilt with
 # `-mllvm -wasm-use-legacy-eh=false` explicitly set.
 # Revision 5: libcxx builds only from flake.nix's exact Nix LLVM
 # source derivations, hard-fails on compiler/source version drift, and
 # installs headers from the build tree so the header set cannot drift
 # from the built library.
-revision    = 5
+# Revision 6: additionally emits position-independent libc++-pic.a /
+# libc++abi-pic.a (a second -fPIC build) so wasm side modules like PHP's
+# intl.so can statically absorb libc++. The non-PIC pair is unchanged.
+# Revision 7: map the worktree (including the assembled LLVM source and both
+# build variants) to a stable producer path so archives do not retain the
+# caller's absolute checkout directory.
+revision    = 7
 
 [binary]
 index_url = "https://github.com/Automattic/kandelo/releases/download/binaries-abi-v{abi}/index.toml"
