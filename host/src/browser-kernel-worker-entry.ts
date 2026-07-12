@@ -738,11 +738,11 @@ async function handleInit(msg: Extract<MainToKernelMessage, { type: "init" }>) {
   // In a dedicated worker, use Atomics.waitAsync directly — no V8 microtask
   // chain freeze bug (that's main-thread-only).
   kernelWorker.usePolling = false;
-  // Process a small batch of syscalls via microtask before yielding to the
-  // event loop via setImmediate. Batch size 8 is a good balance: it gives
-  // ~8x throughput vs batch-1 while still yielding frequently enough for
-  // pump timers, message handlers, and rendering to interleave.
-  (kernelWorker as any).relistenBatchSize = 8;
+  // Defer every relisten and already-PENDING dispatch through the
+  // MessageChannel-backed setImmediate queue so syscall handling and worker
+  // messages both keep progressing under multi-process bridge load.
+  // Notification remains event-driven through Atomics.waitAsync.
+  (kernelWorker as any).relistenBatchSize = 1;
 
   // Inject stdout/stderr/listen callbacks
   const kw = kernelWorker as any;

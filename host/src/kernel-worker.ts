@@ -5002,16 +5002,15 @@ export class CentralizedKernelWorker {
    * callbacks (setTimeout/setInterval) can fire — prevents event loop
    * starvation while keeping throughput close to Node.js native setImmediate.
    *
-   * In the browser (main thread), set relistenBatchSize=1 so every syscall
-   * yields via setImmediate. The browser setImmediate polyfill (MessageChannel)
-   * batches these efficiently while still allowing rendering frames between
-   * batches. Without this, microtask chains from multi-threaded programs
-   * (e.g. MariaDB's 5 threads) starve requestAnimationFrame and rendering.
+   * The dedicated browser worker sets relistenBatchSize=1 so every relisten
+   * is deferred through its MessageChannel-backed setImmediate queue. This
+   * lets worker messages and timers interleave with multi-process syscall
+   * traffic. Node.js retains the larger native-setImmediate batch.
    */
   private relistenCount = 0;
   /** How many syscalls to process via microtask before yielding to the event
-   *  loop via setImmediate. Default 64 is optimal for Node.js. Set to 1 in
-   *  browser environments where the kernel runs on the main thread. */
+   *  loop via setImmediate. Default 64 is tuned for Node.js. The dedicated
+   *  browser worker sets this to 1 so worker messages keep progressing. */
   relistenBatchSize = 64;
 
   /**
@@ -5024,9 +5023,9 @@ export class CentralizedKernelWorker {
    * timer clamp on setTimeout/setInterval), with periodic setTimeout
    * yields every 4ms to keep timers and rendering alive.
    *
-   * Enable this in browser environments where the kernel runs on the
-   * main thread. In Node.js (where setImmediate is native), the default
-   * event-driven mode (Atomics.waitAsync) is preferred.
+   * This remains a legacy opt-in for browser embeddings that run the kernel
+   * on the main thread. The dedicated browser worker and Node.js both keep
+   * the default event-driven Atomics.waitAsync mode.
    */
   usePolling = false;
   private pollMC: MessageChannel | null = null;
