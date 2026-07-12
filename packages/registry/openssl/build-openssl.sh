@@ -72,7 +72,6 @@ perl Configure "$CONFIGURE_TARGET" \
     no-ui-console \
     no-tests \
     no-apps \
-    no-autoerrinit \
     no-posix-io \
     --prefix=/usr \
     --openssldir=/etc/ssl \
