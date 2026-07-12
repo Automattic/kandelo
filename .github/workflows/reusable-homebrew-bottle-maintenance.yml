@@ -97,17 +97,32 @@ jobs:
       - name: Record rollback without replacing last-green metadata
         shell: bash
         env:
+          KANDELO_HOMEBREW_ARCH: ${{ inputs.arches }}
           KANDELO_HOMEBREW_ROLLBACK_REASON: ${{ inputs.rollback-reason }}
           KANDELO_HOMEBREW_ROLLBACK_REF: ${{ inputs.rollback-ref }}
           KANDELO_HOMEBREW_DELETED_PACKAGE_URL: ${{ inputs.deleted-package-url }}
           KANDELO_HOMEBREW_DELETION_REASON: ${{ inputs.deletion-reason }}
+          KANDELO_HOMEBREW_FORMULA: ${{ inputs.formulae }}
+          KANDELO_HOMEBREW_RELEASE_TAG: ${{ inputs.release-tag }}
         run: |
           set -euo pipefail
+          if ! [[ "$KANDELO_HOMEBREW_FORMULA" =~ ^[a-z0-9][a-z0-9._-]*$ ]]; then
+            echo "::error::invalid formula name for rollback"
+            exit 2
+          fi
+          case "$KANDELO_HOMEBREW_ARCH" in
+            wasm32|wasm64) ;;
+            *) echo "::error::invalid architecture for rollback"; exit 2 ;;
+          esac
+          if ! [[ "$KANDELO_HOMEBREW_RELEASE_TAG" =~ ^bottles-abi-v[0-9]+$ ]]; then
+            echo "::error::invalid bottle release tag for rollback"
+            exit 2
+          fi
           publish_args=(
             --tap-root "$GITHUB_WORKSPACE/tap"
-            --formula "${{ inputs.formulae }}"
-            --arch "${{ inputs.arches }}"
-            --release-tag "${{ inputs.release-tag }}"
+            --formula "$KANDELO_HOMEBREW_FORMULA"
+            --arch "$KANDELO_HOMEBREW_ARCH"
+            --release-tag "$KANDELO_HOMEBREW_RELEASE_TAG"
             --status rollback
             --reason "$KANDELO_HOMEBREW_ROLLBACK_REASON"
           )

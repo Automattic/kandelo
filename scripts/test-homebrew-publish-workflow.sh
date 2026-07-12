@@ -257,18 +257,49 @@ assert_rollback_deletion_requires_reason() {
     fail "rollback deletion did not explain missing deletion reason"
 }
 
+workflow_uses_actions_cache() {
+  grep -Eq "uses:[[:space:]]+['\"]?actions/cache(/restore)?@" "$@"
+}
+
+workflow_run_expressions() {
+  awk '
+    function indentation(line) {
+      match(line, /^[[:space:]]*/)
+      return RLENGTH
+    }
+    /^[[:space:]]+run:[[:space:]]+\|[+-]?[[:space:]]*$/ {
+      in_run = 1
+      run_indent = indentation($0)
+      next
+    }
+    in_run {
+      if ($0 !~ /^[[:space:]]*$/ && indentation($0) <= run_indent) {
+        in_run = 0
+      }
+      if (in_run && index($0, "${{") != 0) {
+        print FNR ":" $0
+      }
+    }
+  ' "$@"
+}
+
 assert_publisher_trust_contract() {
   local publisher="$REPO_ROOT/.github/workflows/reusable-homebrew-bottle-publish.yml"
   local maintenance="$REPO_ROOT/.github/workflows/reusable-homebrew-bottle-maintenance.yml"
+  local first_checkout_line
+  local inline_expressions
   local magic_nix
   local rebuild_job
+  local validation_line
 
   if grep -Eq '^[[:space:]]*permissions:' "$publisher"; then
     fail "reusable publisher requests permissions instead of inheriting its caller scope"
   fi
-  if grep -Eq 'uses:[[:space:]]+actions/cache(/restore)?@' "$publisher"; then
+  if workflow_uses_actions_cache "$publisher" "$maintenance"; then
     fail "reusable publisher consumes caller-writable Actions cache state"
   fi
+  printf '%s\n' 'uses: "actions/cache/restore@v4"' | workflow_uses_actions_cache ||
+    fail "publisher cache detector misses quoted restore actions"
   magic_nix="$(grep -F -A5 'uses: DeterminateSystems/magic-nix-cache-action@' "$publisher")"
   printf '%s\n' "$magic_nix" | grep -Fx '          use-gha-cache: false' >/dev/null ||
     fail "reusable publisher enables Magic Nix GitHub Actions caching"
@@ -279,6 +310,11 @@ assert_publisher_trust_contract() {
     "$publisher" >/dev/null || fail "Homebrew setup action is not pinned to the reviewed commit"
   grep -Fx '      - name: Validate caller trust boundary' "$publisher" >/dev/null ||
     fail "reusable publisher does not validate write-path refs before checkout"
+  validation_line="$(grep -nF '      - name: Validate caller trust boundary' "$publisher" | head -n1 | cut -d: -f1)"
+  first_checkout_line="$(grep -nE '^[[:space:]]+- name: Checkout ' "$publisher" | head -n1 | cut -d: -f1)"
+  if [ -z "$first_checkout_line" ] || [ "$validation_line" -ge "$first_checkout_line" ]; then
+    fail "reusable publisher does not validate caller trust before checkout"
+  fi
   grep -F '[ "$KANDELO_REF" = "main" ]' "$publisher" >/dev/null ||
     fail "reusable publisher does not constrain write publication to Kandelo main"
   grep -F '[ "$TAP_REF" = "main" ]' "$publisher" >/dev/null ||
@@ -316,6 +352,24 @@ assert_publisher_trust_contract() {
     fail "trusted maintenance does not publish from tap main"
   printf '%s\n' "$rebuild_job" | grep -Fx '      dry-run: false' >/dev/null ||
     fail "trusted maintenance exposes a dry run with a write-scoped token"
+
+  inline_expressions="$(workflow_run_expressions "$publisher" "$maintenance")"
+  if [ -n "$inline_expressions" ]; then
+    printf '%s\n' "$inline_expressions" >&2
+    fail "write-capable workflows interpolate GitHub expressions directly into shell syntax"
+  fi
+  inline_expressions="$(
+    printf '%s\n' \
+      'jobs:' \
+      '  privileged:' \
+      '    steps:' \
+      '      - name: Injected' \
+      '        run: |' \
+      '          echo "${{ inputs.formulae }}"' |
+      workflow_run_expressions
+  )"
+  [ -n "$inline_expressions" ] ||
+    fail "publisher shell-expression detector misses workflow inputs"
 }
 
 assert_matrix
