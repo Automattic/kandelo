@@ -8,7 +8,7 @@
 extern crate alloc;
 
 use alloc::vec::Vec;
-use wasm_posix_shared::mode::S_IFDIR;
+use wasm_posix_shared::mode::{S_IFDIR, S_IFLNK};
 use wasm_posix_shared::{Errno, WasmStat};
 
 /// Sentinel host_handle for devfs directory OFDs.
@@ -55,7 +55,7 @@ pub fn match_devfs_dir(path: &[u8]) -> Option<DevfsEntry> {
 pub fn match_devfs_stat(path: &[u8], uid: u32, gid: u32) -> Option<WasmStat> {
     if let Some(_entry) = match_devfs_dir(path) {
         return Some(WasmStat {
-            st_dev: 6,
+            st_dev: 5,
             st_ino: devfs_ino(path),
             st_mode: S_IFDIR | 0o755,
             st_nlink: 2,
@@ -72,6 +72,29 @@ pub fn match_devfs_stat(path: &[u8], uid: u32, gid: u32) -> Option<WasmStat> {
         });
     }
     None
+}
+
+/// Build metadata for a synthetic symlink owned by devfs.
+///
+/// The inode comes from the same path-based namespace used by directory
+/// entries, so repeated lstat calls and getdents report the same identity.
+pub fn devfs_symlink_stat(path: &[u8], target_len: usize, uid: u32, gid: u32) -> WasmStat {
+    WasmStat {
+        st_dev: 5,
+        st_ino: devfs_ino(path),
+        st_mode: S_IFLNK | 0o777,
+        st_nlink: 1,
+        st_uid: uid,
+        st_gid: gid,
+        st_size: target_len as u64,
+        st_atime_sec: 0,
+        st_atime_nsec: 0,
+        st_mtime_sec: 0,
+        st_mtime_nsec: 0,
+        st_ctime_sec: 0,
+        st_ctime_nsec: 0,
+        _pad: 0,
+    }
 }
 
 /// Open a devfs directory, creating an OFD with the sentinel handle.
@@ -210,7 +233,8 @@ fn dir_entries(proc: &crate::process::Process, entry: &DevfsEntry) -> Vec<(Vec<u
             for fd in 0..1024i32 {
                 if proc.fd_table.get(fd).is_ok() {
                     let name = alloc::format!("{}", fd).into_bytes();
-                    entries.push((name, DT_LNK, 0xDE0FD000 + fd as u64));
+                    let path = alloc::format!("/dev/fd/{}", fd).into_bytes();
+                    entries.push((name, DT_LNK, devfs_ino(&path)));
                 }
             }
         }
@@ -250,6 +274,7 @@ mod tests {
     #[test]
     fn test_match_devfs_stat() {
         let st = match_devfs_stat(b"/dev", 0, 0).unwrap();
+        assert_eq!(st.st_dev, 5);
         assert_eq!(st.st_mode & 0o170000, S_IFDIR);
         assert_eq!(st.st_mode & 0o777, 0o755);
 
@@ -268,6 +293,30 @@ mod tests {
         assert_ne!(ino1, ino2);
         assert_ne!(ino2, ino3);
         assert_ne!(ino1, ino3);
+    }
+
+    #[test]
+    fn devfs_symlink_stat_uses_directory_entry_inode() {
+        let st = devfs_symlink_stat(b"/dev/stdin", 9, 1000, 1001);
+        assert_eq!(st.st_dev, 5);
+        assert_eq!(st.st_ino, devfs_ino(b"/dev/stdin"));
+        assert_eq!(st.st_mode & 0o170000, S_IFLNK);
+        assert_eq!(st.st_size, 9);
+        assert_eq!(st.st_uid, 1000);
+        assert_eq!(st.st_gid, 1001);
+    }
+
+    #[test]
+    fn fd_directory_entry_inode_matches_symlink_stat() {
+        let proc = crate::process::Process::new(1);
+        let entries = dir_entries(&proc, &DevfsEntry::FdDir);
+        let (_, entry_type, entry_ino) = entries
+            .iter()
+            .find(|(name, _, _)| name.as_slice() == b"0")
+            .expect("stdin missing from /dev/fd");
+        let st = devfs_symlink_stat(b"/dev/fd/0", 10, 0, 0);
+        assert_eq!(*entry_type, DT_LNK);
+        assert_eq!(*entry_ino, st.st_ino);
     }
 
     #[test]
