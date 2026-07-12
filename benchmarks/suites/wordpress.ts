@@ -1,7 +1,7 @@
 /**
  * Suite 2: WordPress
  *
- * Two measurements:
+ * Two clean-start measurements:
  *   cli_require_ms         — php -r "require 'wp-load.php';" (process start to exit)
  *   http_first_response_ms — Start PHP built-in server, time to first HTTP response
  */
@@ -13,6 +13,12 @@ import { NodeKernelHost } from "../../host/src/node-kernel-host.js";
 import { tryResolveBinary } from "../../host/src/binary-resolver.js";
 import { NodePlatformIO } from "../../host/src/platform/node.js";
 import type { BenchmarkSuite } from "../types.js";
+import {
+  buildPhpOpcacheArgs,
+  createWordPressOpcacheRunDirectory,
+  removeWordPressOpcacheRunDirectory,
+  resetWordPressMeasurementState,
+} from "./wordpress-state.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const repoRoot = resolve(__dirname, "../..");
@@ -23,6 +29,17 @@ const phpBinaryPath =
 const opcachePath = tryResolveBinary("programs/php/opcache.so");
 const wpDir = resolve(repoRoot, "packages/registry/wordpress/wordpress");
 const routerScript = resolve(repoRoot, "packages/registry/wordpress/demo/router.php");
+const benchmarkResultsDir = resolve(repoRoot, "benchmarks/results");
+const databaseDirectory = join(wpDir, "wp-content/database");
+const debugLogPath = join(wpDir, "wp-content/debug.log");
+
+function resetMeasurementState(opcacheCacheDirectory: string): void {
+  resetWordPressMeasurementState({
+    databaseDirectory,
+    debugLogPath,
+    opcacheCacheDirectory,
+  });
+}
 
 function loadBytes(path: string): ArrayBuffer {
   const buf = readFileSync(path);
@@ -39,43 +56,44 @@ function missingPrereqsMessage(): string | null {
   return null;
 }
 
-async function measureCliRequire(): Promise<number> {
-  const opcacheArgs = phpOpcacheArgs();
-  const t0 = performance.now();
-  const result = await runCentralizedProgram({
-    programPath: phpBinaryPath,
-    argv: ["php", ...opcacheArgs, "-r", `chdir('${wpDir}'); require 'wp-load.php';`],
-    env: ["HOME=/tmp", "TMPDIR=/tmp"],
-    io: new NodePlatformIO(),
-    timeout: 120_000,
-  });
-  const t1 = performance.now();
-  if (result.exitCode !== 0) {
-    throw new Error(`PHP wp-load.php failed (exit ${result.exitCode}): ${result.stderr}`);
+async function measureCliRequire(opcacheCacheDirectory: string): Promise<number> {
+  resetMeasurementState(opcacheCacheDirectory);
+  try {
+    const opcacheArgs = phpOpcacheArgs(opcacheCacheDirectory);
+    const t0 = performance.now();
+    const result = await runCentralizedProgram({
+      programPath: phpBinaryPath,
+      argv: ["php", ...opcacheArgs, "-r", `chdir('${wpDir}'); require 'wp-load.php';`],
+      env: ["HOME=/tmp", "TMPDIR=/tmp"],
+      io: new NodePlatformIO(),
+      timeout: 120_000,
+    });
+    const t1 = performance.now();
+    if (result.exitCode !== 0) {
+      throw new Error(`PHP wp-load.php failed (exit ${result.exitCode}): ${result.stderr}`);
+    }
+    return t1 - t0;
+  } finally {
+    resetMeasurementState(opcacheCacheDirectory);
   }
-  return t1 - t0;
 }
 
-function phpOpcacheArgs(): string[] {
+function phpOpcacheArgs(fileCachePath: string): string[] {
   if (process.env.NO_OPCACHE === "1" || !opcachePath) return [];
-  return [
-    "-d", `extension_dir=${dirname(opcachePath)}`,
-    "-d", "zend_extension=opcache",
-    "-d", "opcache.enable=1",
-    "-d", "opcache.enable_cli=1",
-    "-d", "opcache.file_cache=/tmp",
-    "-d", "opcache.file_cache_only=1",
-    "-d", "opcache.memory_consumption=128",
-    "-d", "opcache.validate_timestamps=0",
-  ];
+  return buildPhpOpcacheArgs(opcachePath, fileCachePath);
 }
 
-async function measureHttpFirstResponse(): Promise<number> {
+async function measureHttpFirstResponse(opcacheCacheDirectory: string): Promise<number> {
+  resetMeasurementState(opcacheCacheDirectory);
   const port = 19400 + Math.floor(Math.random() * 100);
   const programBytes = loadBytes(phpBinaryPath);
 
   let serverStarted = false;
   let stderr = "";
+  let serverOutcome:
+    | { exitCode: number }
+    | { error: unknown }
+    | undefined;
 
   const host = new NodeKernelHost({
     maxWorkers: 4,
@@ -86,56 +104,83 @@ async function measureHttpFirstResponse(): Promise<number> {
     },
   });
 
-  await host.init();
-
-  const t0 = performance.now();
-  const opcacheArgs = phpOpcacheArgs();
-
-  const exitPromise = host.spawn(programBytes, [
-    "php", ...opcacheArgs, "-S", `0.0.0.0:${port}`, "-t", wpDir, routerScript,
-  ], {
-    env: ["HOME=/tmp", "TMPDIR=/tmp"],
-    cwd: wpDir,
-  });
-  void exitPromise;
-
-  // Wait for server startup (PHP prints "Development Server started" to stderr)
-  const startDeadline = Date.now() + 60_000;
-  while (!serverStarted && Date.now() < startDeadline) {
-    await new Promise((r) => setTimeout(r, 200));
-  }
-  if (!serverStarted) {
-    await host.destroy().catch(() => {});
-    throw new Error("PHP server did not start within 60s");
-  }
-
-  // Poll for first complete HTTP response (WordPress first page load is slow)
-  let firstResponseMs = -1;
-  const deadline = Date.now() + 180_000;
-  while (Date.now() < deadline) {
-    try {
-      const resp = await fetch(`http://localhost:${port}/`, {
-        signal: AbortSignal.timeout(120_000),
-      });
-      if (resp.status > 0) {
-        await resp.text();
-        firstResponseMs = performance.now() - t0;
-        break;
-      }
-    } catch {
-      // Not ready yet — retry
+  const throwIfServerExited = (): void => {
+    if (!serverOutcome) return;
+    if ("error" in serverOutcome) {
+      throw new Error(
+        `PHP server failed before the WordPress response: ${String(serverOutcome.error)}\n${stderr}`,
+      );
     }
-    await new Promise((r) => setTimeout(r, 1000));
+    throw new Error(
+      `PHP server exited with status ${serverOutcome.exitCode} before the WordPress response:\n${stderr}`,
+    );
+  };
+
+  try {
+    await host.init();
+
+    const t0 = performance.now();
+    const opcacheArgs = phpOpcacheArgs(opcacheCacheDirectory);
+
+    const exitPromise = host.spawn(programBytes, [
+      "php", ...opcacheArgs, "-S", `0.0.0.0:${port}`, "-t", wpDir, routerScript,
+    ], {
+      env: ["HOME=/tmp", "TMPDIR=/tmp"],
+      cwd: wpDir,
+    });
+    void exitPromise.then(
+      (exitCode) => { serverOutcome = { exitCode }; },
+      (error) => { serverOutcome = { error }; },
+    );
+
+    // Wait for server startup (PHP prints "Development Server started" to stderr)
+    const startDeadline = Date.now() + 60_000;
+    while (!serverStarted && Date.now() < startDeadline) {
+      throwIfServerExited();
+      await new Promise((r) => setTimeout(r, 200));
+    }
+    throwIfServerExited();
+    if (!serverStarted) {
+      throw new Error(`PHP server did not start within 60s:\n${stderr}`);
+    }
+
+    // Poll for the first complete, successful WordPress response.
+    let lastFetchError: unknown;
+    const deadline = Date.now() + 180_000;
+    while (Date.now() < deadline) {
+      throwIfServerExited();
+
+      let resp: Response;
+      try {
+        resp = await fetch(`http://localhost:${port}/`, {
+          signal: AbortSignal.timeout(120_000),
+        });
+      } catch (error) {
+        lastFetchError = error;
+        throwIfServerExited();
+        await new Promise((r) => setTimeout(r, 1000));
+        continue;
+      }
+
+      const body = await resp.text();
+      if (!resp.ok) {
+        throw new Error(
+          `WordPress returned HTTP ${resp.status}: ${body.replace(/\s+/g, " ").slice(0, 240)}`,
+        );
+      }
+      if (!/wordpress/i.test(body)) {
+        throw new Error("WordPress benchmark received a successful response without WordPress content");
+      }
+      return performance.now() - t0;
+    }
+
+    throw new Error(
+      `Timed out waiting for WordPress HTTP response: ${String(lastFetchError ?? "no response")}`,
+    );
+  } finally {
+    await host.destroy().catch(() => {});
+    resetMeasurementState(opcacheCacheDirectory);
   }
-
-  // Cleanup
-  await host.destroy().catch(() => {});
-
-  if (firstResponseMs < 0) {
-    throw new Error("Timed out waiting for WordPress HTTP response");
-  }
-
-  return firstResponseMs;
 }
 
 const suite: BenchmarkSuite = {
@@ -147,10 +192,17 @@ const suite: BenchmarkSuite = {
       throw new Error(`WordPress benchmark prerequisites are missing. ${missing}`);
     }
 
-    const results: Record<string, number> = {};
-    results.cli_require_ms = await measureCliRequire();
-    results.http_first_response_ms = await measureHttpFirstResponse();
-    return results;
+    const opcacheRunDirectory = createWordPressOpcacheRunDirectory(benchmarkResultsDir);
+    try {
+      const results: Record<string, number> = {};
+      results.cli_require_ms = await measureCliRequire(join(opcacheRunDirectory, "cli"));
+      results.http_first_response_ms = await measureHttpFirstResponse(
+        join(opcacheRunDirectory, "http"),
+      );
+      return results;
+    } finally {
+      removeWordPressOpcacheRunDirectory(opcacheRunDirectory);
+    }
   },
 };
 

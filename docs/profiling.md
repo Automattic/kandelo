@@ -170,6 +170,17 @@ Runs PHP 8.4 with a full WordPress 6.7 installation. Two measurements: cold CLI 
 | `cli_require_ms` | ms | `php -r "require 'wp-load.php'"` — process start to exit |
 | `http_first_response_ms` | ms | Start PHP built-in server, time to first HTTP response |
 
+Each Node measurement starts from the WordPress setup state: the benchmark
+removes and recreates `wp-content/database`, removes `wp-content/debug.log`, and
+does the same cleanup after the measurement. When the OPcache side module is
+available and `NO_OPCACHE` is not `1`, the measurement uses
+`opcache.file_cache_only=1` with timestamp validation disabled. Each suite
+round creates a private cache root under `benchmarks/results/`, and the CLI and
+HTTP measurements each receive a separate empty cache directory that is reset
+before and after timing. The run-owned cache root is removed when the round
+finishes, so compiled scripts cannot carry across metrics, rounds, concurrent
+benchmark processes, or worktrees.
+
 **Prerequisites:**
 
 | Component | Path | Build command |
