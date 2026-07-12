@@ -150,8 +150,8 @@ The split is load-bearing post the
 Required fields:
 
 ```toml
-name = "zlib"              # logical library name
-version = "1.3.1"          # upstream version
+name = "zlib"              # logical library name; one safe path component
+version = "1.3.1"          # upstream version; one safe path component
 depends_on = []            # ["zlib@1.3.1", ...] — exact versions, no ranges
 
 [source]
@@ -207,7 +207,19 @@ Repo-side VFS/test builders query the authoritative path and mode with
 `xtask build-deps runtime-file-metadata <package> <artifact>`; they must not
 scan library caches or invent environment-only guest paths. Published VFS
 images contain the installed bytes already, so this query is a build-tool
-contract rather than a runtime host API.
+contract rather than a runtime host API. The structured metadata also lists
+the package's complete mirror closure (every `[[outputs]]` artifact plus every
+`[[runtime_files]]` file). Repo-side consumers resolve that set from one
+complete provenance root: a partial local override may fall back wholesale to
+a complete fetched package, but local, fetched, and installed-package tiers
+are never combined. If artifacts exist but no tier has the complete accepted
+closure, resolution fails loudly.
+
+Top-level keys are closed-schema: misspellings such as `[[runtime_file]]`
+(singular) are rejected instead of silently dropping a runtime dependency.
+Package names, versions, dependency names, and exact dependency-version tokens
+must each be safe single filesystem components; `/`, `\`, NUL, `.` and `..`
+spellings are rejected before cache, archive, or registry path construction.
 
 `package.toml` **must NOT** carry `revision`, `[binary]`,
 `[build].repo_url`, or `[build].commit`. Those moved to `build.toml`

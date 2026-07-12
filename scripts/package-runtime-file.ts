@@ -7,19 +7,22 @@
  * TypeScript fixtures.
  */
 import { execFileSync } from "node:child_process";
-import { existsSync } from "node:fs";
 import { isAbsolute } from "node:path";
-import { tryResolveBinary } from "../host/src/binary-resolver";
+import { tryResolveBinarySet } from "../host/src/binary-resolver";
 
 export interface PackageRuntimeFileContract {
   artifact: string;
   guestPath: string;
   mode: number;
   mirrorPath: string;
+  /** Every program output + runtime file declared by this package. */
+  closureMirrorPaths: string[];
 }
 
 export interface ResolvedPackageRuntimeFile extends PackageRuntimeFileContract {
   hostPath: string;
+  /** Host paths keyed by resolver mirror path, all from one provenance root. */
+  closureHostPaths: ReadonlyMap<string, string>;
 }
 
 let cachedHostTarget: string | undefined;
@@ -72,13 +75,31 @@ export function readPackageRuntimeFileContract(
     ],
     { cwd: repoRoot, encoding: "utf8", env: hostCargoEnv() },
   ).trim();
+  return parsePackageRuntimeFileContract(raw, packageName, artifact);
+}
+
+/** Parse and validate xtask's structured runtime-file metadata. */
+export function parsePackageRuntimeFileContract(
+  raw: string,
+  packageName: string,
+  artifact: string,
+): PackageRuntimeFileContract {
   const parsed = JSON.parse(raw) as Record<string, unknown>;
   const contract: PackageRuntimeFileContract = {
     artifact: parsed.artifact as string,
     guestPath: parsed.guest_path as string,
     mode: parsed.mode as number,
     mirrorPath: parsed.mirror_path as string,
+    closureMirrorPaths: parsed.closure_mirror_paths as string[],
   };
+  const validMirrorPath = (value: unknown): value is string =>
+    typeof value === "string"
+    && !isAbsolute(value)
+    && !value.includes("\\")
+    && !value.includes("\0")
+    && value
+      .split("/")
+      .every((part) => Boolean(part) && part !== "." && part !== "..");
   if (
     contract.artifact !== artifact
     || typeof contract.guestPath !== "string"
@@ -86,9 +107,12 @@ export function readPackageRuntimeFileContract(
     || !Number.isInteger(contract.mode)
     || contract.mode < 0
     || contract.mode > 0o777
-    || typeof contract.mirrorPath !== "string"
-    || isAbsolute(contract.mirrorPath)
-    || contract.mirrorPath.split("/").some((part) => !part || part === "." || part === "..")
+    || !validMirrorPath(contract.mirrorPath)
+    || !Array.isArray(contract.closureMirrorPaths)
+    || contract.closureMirrorPaths.length === 0
+    || !contract.closureMirrorPaths.every(validMirrorPath)
+    || new Set(contract.closureMirrorPaths).size !== contract.closureMirrorPaths.length
+    || !contract.closureMirrorPaths.includes(contract.mirrorPath)
   ) {
     throw new Error(
       `invalid runtime-file metadata for ${packageName}:${artifact}: ${raw}`,
@@ -103,7 +127,21 @@ export function resolvePackageRuntimeFile(
   artifact: string,
 ): ResolvedPackageRuntimeFile | undefined {
   const contract = readPackageRuntimeFileContract(repoRoot, packageName, artifact);
-  const hostPath = tryResolveBinary(`programs/${contract.mirrorPath}`);
-  if (!hostPath || !existsSync(hostPath)) return undefined;
-  return { ...contract, hostPath };
+  const hostPaths = tryResolveBinarySet(
+    contract.closureMirrorPaths.map((mirrorPath) => `programs/${mirrorPath}`),
+  );
+  if (!hostPaths) return undefined;
+  const closureHostPaths = new Map(
+    contract.closureMirrorPaths.map((mirrorPath, index) => [
+      mirrorPath,
+      hostPaths[index],
+    ]),
+  );
+  const hostPath = closureHostPaths.get(contract.mirrorPath);
+  if (!hostPath) {
+    throw new Error(
+      `resolved package closure omitted ${packageName}:${contract.mirrorPath}`,
+    );
+  }
+  return { ...contract, hostPath, closureHostPaths };
 }

@@ -23,16 +23,16 @@ import { tryResolveBinary } from "../../../../../host/src/binary-resolver";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const repoRoot = join(__dirname, "../../../../..");
-const hasKernelWasm = tryResolveBinary("kernel.wasm") != null;
-const hasPhpWasm = tryResolveBinary("programs/php/php.wasm") != null
-  || existsSync(join(repoRoot, "packages/registry/php/php-src/sapi/cli/php"));
-const hasZipSo = tryResolveBinary("programs/php/zip.so") != null
-  || existsSync(join(repoRoot, "packages/registry/php/bin/zip.so"));
-const hasCurlSo = tryResolveBinary("programs/php/curl.so") != null
-  || existsSync(join(repoRoot, "packages/registry/php/bin/curl.so"));
-const hasIntlSo = tryResolveBinary("programs/php/intl.so") != null
-  || existsSync(join(repoRoot, "packages/registry/php/bin/intl.so"));
 const phpIcuRuntime = resolvePackageRuntimeFile(repoRoot, "php", "icu.dat");
+const hasKernelWasm = tryResolveBinary("kernel.wasm") != null;
+const hasPhpWasm = phpIcuRuntime?.closureHostPaths.has("php/php.wasm") === true
+  || existsSync(join(repoRoot, "packages/registry/php/php-src/sapi/cli/php"));
+const hasZipSo = phpIcuRuntime?.closureHostPaths.has("php/zip.so") === true
+  || existsSync(join(repoRoot, "packages/registry/php/bin/zip.so"));
+const hasCurlSo = phpIcuRuntime?.closureHostPaths.has("php/curl.so") === true
+  || existsSync(join(repoRoot, "packages/registry/php/bin/curl.so"));
+const hasIntlSo = phpIcuRuntime?.closureHostPaths.has("php/intl.so") === true
+  || existsSync(join(repoRoot, "packages/registry/php/bin/intl.so"));
 if (hasIntlSo && !phpIcuRuntime) {
   throw new Error(
     "PHP intl.so is present but the declared php:icu.dat runtime file is not materialized",

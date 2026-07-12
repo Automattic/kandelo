@@ -854,6 +854,14 @@ impl DepRef {
         if name.contains('@') {
             return Err(format!("dep name {:?} must not contain '@'", name));
         }
+        // Registry lookup joins the name directly below each registry root;
+        // cache/spec logic also treats the exact version as an identity token.
+        // Reject traversal and nested-path spellings before either value can
+        // reach filesystem interpolation.
+        validate_single_path_component(name, "dep name")
+            .map_err(|e| format!("dep reference {s:?}: {e}"))?;
+        validate_single_path_component(version, "dep version")
+            .map_err(|e| format!("dep reference {s:?}: {e}"))?;
         Ok(Self {
             name: name.into(),
             version: version.into(),
@@ -871,6 +879,7 @@ impl std::fmt::Display for DepRef {
 /// validated [`DepsManifest`] so normalization (default build script,
 /// parsed DepRefs, etc.) lives in one place.
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct Raw {
     kind: ManifestKind,
     name: String,
@@ -1358,6 +1367,11 @@ impl DepsManifest {
         if raw.version.is_empty() {
             return Err("version must not be empty".into());
         }
+        // `version` is interpolated into canonical cache directories and
+        // archive filenames. Keep it to one portable filesystem component so
+        // a manifest cannot escape those roots or create an ambiguous nested
+        // path before any resolver/archive code sees it.
+        validate_single_path_component(&raw.version, "version")?;
         // revision: archived → declared (validate_archived rejects None
         // up-front); source → defaults to 1 since source manifests no
         // longer carry it. Downstream code reads m.revision; the
@@ -1874,6 +1888,54 @@ cache_key_sha = "111111111111111111111111111111111111111111111111111111111111111
     }
 
     #[test]
+    fn source_and_archived_manifests_reject_unsafe_version_path_components() {
+        for version in [".", "..", "../escape", "nested/version", r"nested\version"] {
+            for (label, fixture, archived) in [
+                ("source", EXAMPLE, false),
+                ("archived", EXAMPLE_ARCHIVED, true),
+            ] {
+                let text = fixture.replace(
+                    "version = \"1.3.1\"",
+                    &format!("version = {version:?}"),
+                );
+                let result = if archived {
+                    DepsManifest::parse_archived(&text, PathBuf::from("/x"))
+                } else {
+                    DepsManifest::parse(&text, PathBuf::from("/x"))
+                };
+                let err = result.expect_err("unsafe version must fail before path interpolation");
+                assert!(
+                    err.contains("version") && err.contains("safe single path component"),
+                    "{label} version {version:?}: got {err}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn source_and_archived_manifests_reject_unknown_top_level_fields() {
+        for (label, fixture, archived) in [
+            ("source", EXAMPLE, false),
+            ("archived", EXAMPLE_ARCHIVED, true),
+        ] {
+            let text = fixture.replace(
+                "depends_on = []",
+                "depends_on = []\nfuture_recipe_field = true",
+            );
+            let result = if archived {
+                DepsManifest::parse_archived(&text, PathBuf::from("/x"))
+            } else {
+                DepsManifest::parse(&text, PathBuf::from("/x"))
+            };
+            let err = result.expect_err("unknown top-level field must fail loudly");
+            assert!(
+                err.contains("future_recipe_field") && err.contains("unknown field"),
+                "{label}: got {err}"
+            );
+        }
+    }
+
+    #[test]
     fn parses_library_runtime_file_outputs() {
         let text = EXAMPLE.replace(
             "headers = [\"include/zlib.h\"]",
@@ -2193,6 +2255,36 @@ spdx = "TestLicense"
     }
 
     #[test]
+    fn depref_rejects_registry_and_version_path_traversal() {
+        for reference in [
+            "../escape@1.0",
+            "nested/package@1.0",
+            r"nested\package@1.0",
+            "zlib@../escape",
+            "zlib@nested/version",
+            r"zlib@nested\version",
+            ".@1.0",
+            "zlib@..",
+        ] {
+            let err = DepRef::parse(reference).unwrap_err();
+            assert!(
+                err.contains("safe single path component"),
+                "{reference:?}: got {err}"
+            );
+        }
+
+        let text = EXAMPLE.replace(
+            "depends_on = []",
+            r#"depends_on = ["../outside@1.0"]"#,
+        );
+        let err = DepsManifest::parse(&text, PathBuf::from("/x")).unwrap_err();
+        assert!(
+            err.contains("dep name") && err.contains("safe single path component"),
+            "got: {err}"
+        );
+    }
+
+    #[test]
     fn depends_on_parsed_into_deprefs() {
         let text = EXAMPLE.replace(
             "depends_on = []",
@@ -2443,6 +2535,18 @@ wasm = "vim.wasm"
         assert!(m.outputs.pkgconfig.is_empty());
         assert!(m.outputs.files.is_empty());
         assert!(m.runtime_files.is_empty());
+    }
+
+    #[test]
+    fn rejects_singular_runtime_file_table_typo() {
+        let text = format!(
+            "{PROGRAM_EXAMPLE}\n[[runtime_file]]\nartifact = \"icu.dat\"\nguest_path = \"/usr/lib/php/icu.dat\"\n"
+        );
+        let err = DepsManifest::parse(&text, PathBuf::from("/x")).unwrap_err();
+        assert!(
+            err.contains("runtime_file") && err.contains("unknown field"),
+            "got: {err}"
+        );
     }
 
     fn program_with_runtime_file(artifact: &str, guest_path: &str, mode: Option<u32>) -> String {

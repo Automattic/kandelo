@@ -12,24 +12,24 @@ import {
 import { resolvePackageRuntimeFile } from "../../../../scripts/package-runtime-file";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
+const icuRuntime = resolvePackageRuntimeFile(
+  join(__dirname, "../../../.."),
+  "php",
+  "icu.dat",
+);
 
 // intl is a RUNTIME-OPTIONAL side module: base php.wasm is built with
 // --enable-intl=shared, so intl is NOT compiled in. intl.so is loaded on
 // demand via `extension=intl.so`, and pulls its ICU common data from the
 // separate icu.dat at runtime (udata_setCommonData in intl-icu-data-loader.c).
 const phpBinaryPath =
-  tryResolveBinary("programs/php/php.wasm") ??
+  icuRuntime?.closureHostPaths.get("php/php.wasm") ??
   join(__dirname, "../php-src/sapi/cli/php");
-const intlSoPath = tryResolveBinary("programs/php/intl.so");
+const intlSoPath = icuRuntime?.closureHostPaths.get("php/intl.so");
 const rootfsPath =
   tryResolveBinary("rootfs.vfs") ??
   tryResolveBinary("programs/rootfs.vfs") ??
   join(__dirname, "../../../../host/wasm/rootfs.vfs");
-const icuRuntime = resolvePackageRuntimeFile(
-  join(__dirname, "../../../.."),
-  "php",
-  "icu.dat",
-);
 const INTL_GUEST_PATH = "/usr/lib/php/extensions/intl.so";
 
 if (intlSoPath && !icuRuntime) {
