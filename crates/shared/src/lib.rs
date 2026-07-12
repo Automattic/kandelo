@@ -29,7 +29,9 @@ pub mod host_abi;
 /// 17: intentionally skipped during release coordination.
 /// 18: fork frame cursors are absolute save-buffer addresses, isolating
 ///     concurrent pthread unwind payloads.
-pub const ABI_VERSION: u32 = 18;
+/// 19: POSIX timer expirations are queued by the kernel with exact sigevent
+///     thread targets and SI_TIMER metadata.
+pub const ABI_VERSION: u32 = 19;
 
 /// Syscall numbers for the POSIX kernel interface.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
