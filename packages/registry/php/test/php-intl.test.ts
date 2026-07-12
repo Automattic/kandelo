@@ -110,4 +110,40 @@ describe.skipIf(!READY)("PHP intl as a runtime-loadable side module", () => {
     expect(stdout).toContain("apple,banana,cherry");
     expect(exitCode).toBe(0);
   }, 60_000);
+
+  // dlopen occurs before fork. The child therefore replays intl.so without
+  // rerunning constructors and must retain ICU's common-data pointer from the
+  // copied process image; exercising ICU in both branches verifies that real
+  // side-module replay contract rather than only the synthetic linker shape.
+  it("intl and icu.dat survive pcntl_fork replay", async () => {
+    const { stdout, stderr, exitCode } = await runCentralizedProgram({
+      programPath: phpBinaryPath,
+      argv: ["php", "-d", `extension=${intlSoPath}`, "-r", `
+        $before = Locale::getDisplayLanguage("fr", "en");
+        $pid = pcntl_fork();
+        if ($pid < 0) { fwrite(STDERR, "fork-failed"); exit(20); }
+        if ($pid === 0) {
+          $child = Locale::getDisplayLanguage("fr", "en");
+          echo "child=" . $child . "\\n";
+          exit($child === "French" ? 0 : 21);
+        }
+        $status = 0;
+        $waited = pcntl_waitpid($pid, $status);
+        $c = new Collator("en_US");
+        $a = ["banana", "apple", "cherry"];
+        $c->sort($a);
+        echo "parent=" . $before . ":" . implode(",", $a) . "\\n";
+        if ($waited !== $pid || !pcntl_wifexited($status) || pcntl_wexitstatus($status) !== 0) {
+          fwrite(STDERR, "child-status=" . $status);
+          exit(22);
+        }
+      `],
+      env: [`KANDELO_ICU_DAT_PATH=${icuDatPath}`],
+      io: new NodePlatformIO(),
+    });
+    expect(stderr).toBe("");
+    expect(stdout).toContain("child=French");
+    expect(stdout).toContain("parent=French:apple,banana,cherry");
+    expect(exitCode).toBe(0);
+  }, 60_000);
 });
