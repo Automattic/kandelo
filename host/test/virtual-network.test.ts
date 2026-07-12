@@ -11,6 +11,26 @@ const POLLOUT = 0x0004;
 const POLLHUP = 0x0010;
 
 describe("LocalVirtualNetwork", () => {
+  it("resolves bounded legacy numeric IPv4 forms and valid DNS aliases", () => {
+    const net = new LocalVirtualNetwork();
+    const backend = net.attachMachine({
+      id: "server",
+      address: [10, 88, 0, 2],
+      hostnames: ["example.test", "example.test."],
+    });
+
+    expect(Array.from(backend.getaddrinfo("2130706433"))).toEqual([127, 0, 0, 1]);
+    expect(Array.from(backend.getaddrinfo("127.1"))).toEqual([127, 0, 0, 1]);
+    expect(Array.from(backend.getaddrinfo("127.1.1"))).toEqual([127, 1, 0, 1]);
+    expect(Array.from(backend.getaddrinfo("127.0.0.1"))).toEqual([127, 0, 0, 1]);
+    expect(Array.from(backend.getaddrinfo("example.test"))).toEqual([10, 88, 0, 2]);
+    expect(Array.from(backend.getaddrinfo("example.test."))).toEqual([10, 88, 0, 2]);
+
+    expect(() => backend.getaddrinfo("4294967296")).toThrow("ENOENT");
+    expect(() => backend.getaddrinfo("1..2")).toThrow("ENOENT");
+    expect(() => backend.getaddrinfo("1.2.3.256")).toThrow("ENOENT");
+  });
+
   it("routes TCP streams between attached machines", () => {
     const net = new LocalVirtualNetwork();
     const server = net.attachMachine({ id: "server", address: [10, 88, 0, 2] });
