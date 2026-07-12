@@ -895,9 +895,10 @@ export interface CentralizedKernelCallbacks {
   /**
    * Launch a worker for the spawned child with the already-resolved bytes,
    * compiled module, and argv from `onResolveSpawn`. The kernel has
-   * constructed the child Process descriptor under `childPid` and applied
-   * file actions + attrs by the time this is called. The callback instantiates
-   * a fresh Worker and registers it via
+   * constructed the child Process descriptor under `childPid` with
+   * `parentPid` as its authoritative parent
+   * and applied file actions + attrs by the time this is called. The callback
+   * instantiates a fresh Worker and registers it via
    * `registerProcess({ skipKernelCreate: true })`.
    *
    * Returns 0 on success, negative errno on failure. On non-zero return
@@ -906,8 +907,9 @@ export interface CentralizedKernelCallbacks {
    * Distinct from `onExec` (which replaces the calling worker) and
    * `onFork` (which clones the parent's Memory): `onSpawn` always
    * creates a fresh Memory and runs the new program from `_start`.
-   */
+  */
   onSpawn?: (
+    parentPid: number,
     childPid: number,
     program: ResolvedSpawnProgram,
     envp: string[],
@@ -9065,7 +9067,7 @@ export class CentralizedKernelWorker {
     try {
       this.inheritHostFdMirrors(parentPid, childPid, false);
       launch = Promise.resolve(
-        this.callbacks.onSpawn!(childPid, program, envp),
+        this.callbacks.onSpawn!(parentPid, childPid, program, envp),
       );
     } catch (err) {
       rollbackSpawn(5, err);

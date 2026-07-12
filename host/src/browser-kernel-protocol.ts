@@ -485,15 +485,12 @@ export interface FbWriteMessage {
  * Posted whenever the kernel forks, execs, or spawns. The main thread
  * uses this to refresh Inspector-style views without polling. `kind ===
  * "exit"` is delivered via the existing ExitMessage instead; we don't
- * duplicate it here.
+ * duplicate it here. Spawn events always carry the authoritative parent pid;
+ * exec events preserve process identity and do not.
  */
-export interface ProcEventMessage {
-  type: "proc_event";
-  kind: "spawn" | "exec";
-  pid: number;
-  /** Parent pid for fork-style spawns. Omitted for execs. */
-  ppid?: number;
-}
+export type ProcEventMessage =
+  | { type: "proc_event"; kind: "spawn"; pid: number; ppid: number }
+  | { type: "proc_event"; kind: "exec"; pid: number };
 
 /**
  * Number of service-worker preview requests currently being served through

@@ -1370,6 +1370,7 @@ async function handlePosixSpawnResolve(
  * entry's `handlePosixSpawn`.
  */
 async function handlePosixSpawn(
+  parentPid: number,
   childPid: number,
   program: ResolvedSpawnProgram,
   envp: string[],
@@ -1379,7 +1380,7 @@ async function handlePosixSpawn(
   // Unrelated teardown waits yield to the event loop. Keep a successfully
   // created zombie, but never resurrect it with a new Worker.
   if (!kernelWorker.shouldLaunchPendingChild(childPid)) return 0;
-  post({ type: "proc_event", kind: "spawn", pid: childPid });
+  post({ type: "proc_event", kind: "spawn", pid: childPid, ppid: parentPid });
 
   const { programBytes, programModule, argv } = program;
   const ptrWidth = detectPtrWidth(programBytes);
@@ -1406,7 +1407,7 @@ async function handlePosixSpawn(
   const initData: CentralizedWorkerInitMessage = {
     type: "centralized_init",
     pid: childPid,
-    ppid: 0,
+    ppid: parentPid,
     programBytes,
     programModule,
     memory: newMemory,

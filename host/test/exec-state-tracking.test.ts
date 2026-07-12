@@ -372,7 +372,7 @@ describe("exec host-state transition", () => {
       program,
       [],
     );
-    expect(onSpawn).toHaveBeenCalledWith(100, program, []);
+    expect(onSpawn).toHaveBeenCalledWith(7, 100, program, []);
     worker.processes.get(7).channels = [];
     finishSpawn(0);
     await Promise.resolve();

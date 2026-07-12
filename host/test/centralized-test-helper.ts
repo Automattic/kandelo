@@ -143,6 +143,13 @@ export interface RunProgramOptions {
   /** Exact VFS image for tests that stage package runtime files. Overrides
    * `useDefaultRootfs`; omitted means the canonical image. */
   rootfsImage?: "default" | ArrayBuffer | Uint8Array;
+  /** Observe process lifecycle events emitted by NodeKernelHost. Worker-thread mode only. */
+  onProcessEvent?: (event: {
+    kind: "spawn" | "exec" | "exit";
+    pid: number;
+    ppid?: number;
+    exitStatus?: number;
+  }) => void;
 }
 
 export interface RunProgramResult {
@@ -227,6 +234,7 @@ async function runInWorkerThread(options: RunProgramOptions): Promise<RunProgram
     onHostDiagnostic: (diagnostic) => {
       hostDiagnostics.push(diagnostic);
     },
+    onProcessEvent: options.onProcessEvent,
   });
 
   await host.init();

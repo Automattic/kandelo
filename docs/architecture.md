@@ -367,9 +367,11 @@ caller now take.
    memory. The host's `onSpawn` callback (Node:
    `host/src/node-kernel-worker-entry.ts::handlePosixSpawn`; Browser:
    `host/src/browser-kernel-worker-entry.ts::handlePosixSpawn`)
-   resolves the program bytes and instantiates a fresh Worker for the
-   child, registered with `skipKernelCreate: true` because the kernel
-   already inserted the Process.
+   receives the authoritative parent pid, resolves the program bytes,
+   instantiates a fresh Worker for the child, and publishes a parented
+   `proc_event` spawn notification. The Worker is registered with
+   `skipKernelCreate: true` because the kernel already inserted the
+   Process; its initialization metadata carries the same parent pid.
 
 PATH search lives in libc (`posix_spawnp.c`); the kernel never sees
 PATH-relative names.
