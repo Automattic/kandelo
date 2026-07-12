@@ -91,8 +91,29 @@ export interface TerminateProcessMessage {
   status: number;
 }
 
+export interface VfsFileSnapshot {
+  data: Uint8Array;
+  mode: number;
+}
+
 export interface ReadVfsFileMessage {
   type: "read_vfs_file";
+  requestId: number;
+  path: string;
+  /** Return the file's permission bits with its bytes for lossless restore. */
+  includeMode?: boolean;
+}
+
+export interface WriteVfsFileMessage {
+  type: "write_vfs_file";
+  requestId: number;
+  path: string;
+  data: Uint8Array;
+  mode: number;
+}
+
+export interface UnlinkVfsFileMessage {
+  type: "unlink_vfs_file";
   requestId: number;
   path: string;
 }
@@ -329,6 +350,8 @@ export type MainToKernelMessage =
   | SpawnMessage
   | TerminateProcessMessage
   | ReadVfsFileMessage
+  | WriteVfsFileMessage
+  | UnlinkVfsFileMessage
   | AppendStdinDataMessage
   | SetStdinDataMessage
   | PtyWriteMessage

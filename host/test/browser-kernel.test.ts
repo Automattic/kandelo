@@ -253,6 +253,62 @@ describe("BrowserKernel", () => {
     expect(await readPromise).toEqual(bytes);
   });
 
+  it("mutates files through the VFS-owning worker with lossless snapshots", async () => {
+    const BrowserKernel = await loadBrowserKernel();
+    const kernel = new BrowserKernel({ kernelOwnedFs: true });
+    const initPromise = kernel.initFromImage({
+      kernelWasm: new ArrayBuffer(8),
+      vfsImage: new Uint8Array(0),
+    });
+    await new Promise((r) => setTimeout(r, 0));
+    const w = MockWorker.instances[0]!;
+    w.simulateMessage({ type: "ready" });
+    await initPromise;
+
+    const original = new Uint8Array([9, 8, 7]);
+    const writePromise = kernel.writeFileToVfs("/php-src/generated.php", original, 0o640);
+    await new Promise((r) => setTimeout(r, 0));
+    const write = w.lastMessage("write_vfs_file");
+    expect(write).toMatchObject({
+      path: "/php-src/generated.php",
+      mode: 0o640,
+    });
+    expect(write.data).toEqual(original);
+    expect(write.data).not.toBe(original);
+    w.simulateMessage({
+      type: "response",
+      requestId: write.requestId,
+      result: true,
+    });
+    await writePromise;
+
+    const snapshotPromise = kernel.readFileSnapshotFromVfs("/php-src/generated.php");
+    await new Promise((r) => setTimeout(r, 0));
+    const read = w.lastMessage("read_vfs_file");
+    expect(read).toMatchObject({
+      path: "/php-src/generated.php",
+      includeMode: true,
+    });
+    const snapshot = { data: new Uint8Array([1, 2]), mode: 0o751 };
+    w.simulateMessage({
+      type: "response",
+      requestId: read.requestId,
+      result: snapshot,
+    });
+    expect(await snapshotPromise).toEqual(snapshot);
+
+    const unlinkPromise = kernel.unlinkFileFromVfs("/php-src/generated.php");
+    await new Promise((r) => setTimeout(r, 0));
+    const unlink = w.lastMessage("unlink_vfs_file");
+    expect(unlink.path).toBe("/php-src/generated.php");
+    w.simulateMessage({
+      type: "response",
+      requestId: unlink.requestId,
+      result: true,
+    });
+    expect(await unlinkPromise).toBe(true);
+  });
+
   describe("fetchInKernel", () => {
     async function bootedKernel() {
       const BrowserKernel = await loadBrowserKernel();

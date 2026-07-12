@@ -17,6 +17,7 @@ import type {
   HostDiagnostic,
   MainToKernelMessage,
   KernelToMainMessage,
+  VfsFileSnapshot,
 } from "./browser-kernel-protocol";
 import type { HttpRequest, HttpResponse } from "./networking/in-kernel-http";
 
@@ -857,9 +858,8 @@ export class BrowserKernel {
   /**
    * Read a file out of the kernel-owned VFS from the main thread. Returns the
    * bytes, or `null` if the path does not exist / is not readable. This is the
-   * only main-thread window into the worker-owned FS — use it to collect
-   * artifacts a process wrote (the main thread no longer shares the VFS
-   * SharedArrayBuffer in kernel-owned mode).
+   * readback path for collecting artifacts a process wrote; the main thread
+   * never receives the live VFS SharedArrayBuffer.
    */
   async readFileFromVfs(path: string): Promise<Uint8Array | null> {
     const requestId = this.nextRequestId++;
@@ -869,6 +869,58 @@ export class BrowserKernel {
       path,
     });
     return (result as Uint8Array | null) ?? null;
+  }
+
+  /**
+   * Read a file and its permission bits from the worker-owned VFS. This is
+   * useful for callers that temporarily replace a path between process spawns
+   * and must restore the exact prior state afterward.
+   */
+  async readFileSnapshotFromVfs(path: string): Promise<VfsFileSnapshot | null> {
+    const requestId = this.nextRequestId++;
+    const result = await this.request(requestId, {
+      type: "read_vfs_file",
+      requestId,
+      path,
+      includeMode: true,
+    });
+    return (result as VfsFileSnapshot | null) ?? null;
+  }
+
+  /**
+   * Create or replace a regular file in the worker-owned VFS. The mutation is
+   * performed by the kernel worker, preserving exclusive VFS ownership; call
+   * this only while guest processes that could access the path are stopped.
+   * The parent directory must already exist.
+   */
+  async writeFileToVfs(
+    path: string,
+    data: Uint8Array,
+    mode = 0o644,
+  ): Promise<void> {
+    const requestId = this.nextRequestId++;
+    const owned = data.slice();
+    await this.request(requestId, {
+      type: "write_vfs_file",
+      requestId,
+      path,
+      data: owned,
+      mode: mode & 0o7777,
+    }, [owned.buffer]);
+  }
+
+  /**
+   * Remove a path from the worker-owned VFS between process spawns. Returns
+   * false when the path did not exist.
+   */
+  async unlinkFileFromVfs(path: string): Promise<boolean> {
+    const requestId = this.nextRequestId++;
+    const result = await this.request(requestId, {
+      type: "unlink_vfs_file",
+      requestId,
+      path,
+    });
+    return result === true;
   }
 
   /** Destroy the kernel and release all resources. */

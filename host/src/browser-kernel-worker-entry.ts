@@ -1744,31 +1744,85 @@ async function finishProcessExit(
 // ── Terminate ──
 
 // Read a file out of the kernel-owned VFS and return its bytes (or null if it
-// does not exist / is not readable). This is the main thread's only window
-// into the worker-owned FS — used by demos that collect artifacts a process
-// wrote (e.g. sqlite-test's result DB/logs) now that the main thread no longer
-// shares the VFS SharedArrayBuffer.
+// does not exist / is not readable). Used by demos that collect artifacts a
+// process wrote (e.g. sqlite-test's result DB/logs) without sharing the live
+// VFS SharedArrayBuffer with the main thread.
 function handleReadVfsFile(msg: Extract<MainToKernelMessage, { type: "read_vfs_file" }>) {
-  if (!memfs) { respond(msg.requestId, null); return; }
+  if (!io) { respond(msg.requestId, null); return; }
   try {
-    const st = memfs.stat(msg.path);
+    const st = io.stat(msg.path);
     const size = Number(st.size);
-    const fd = memfs.open(msg.path, 0 /* O_RDONLY */, 0);
+    const fd = io.open(msg.path, 0 /* O_RDONLY */, 0);
     try {
       const out = new Uint8Array(size);
       let off = 0;
       while (off < size) {
-        const n = memfs.read(fd, out.subarray(off), null, size - off);
+        const n = io.read(fd, out.subarray(off), null, size - off);
         if (n <= 0) break;
         off += n;
       }
       // Copy into a plain (non-shared) ArrayBuffer so it structured-clones back.
-      respond(msg.requestId, out.slice(0, off));
+      const data = out.slice(0, off);
+      respond(
+        msg.requestId,
+        msg.includeMode ? { data, mode: st.mode & 0o7777 } : data,
+      );
     } finally {
-      memfs.close(fd);
+      io.close(fd);
     }
   } catch {
     respond(msg.requestId, null);
+  }
+}
+
+// Mutate the mounted filesystem from inside its owning worker. This keeps the
+// VFS SAB off the persistent browser main thread while allowing harnesses to
+// stage transient files between process spawns.
+function handleWriteVfsFile(msg: Extract<MainToKernelMessage, { type: "write_vfs_file" }>) {
+  if (!io) { respondError(msg.requestId, "VFS is not initialized"); return; }
+  let fd: number | null = null;
+  try {
+    fd = io.open(msg.path, 0o1101 /* O_WRONLY|O_CREAT|O_TRUNC */, msg.mode & 0o7777);
+    let offset = 0;
+    while (offset < msg.data.byteLength) {
+      const written = io.write(
+        fd,
+        msg.data.subarray(offset),
+        null,
+        msg.data.byteLength - offset,
+      );
+      if (written <= 0) {
+        throw new Error(`Short write while staging ${msg.path}`);
+      }
+      offset += written;
+    }
+    io.close(fd);
+    fd = null;
+    // open(O_CREAT) preserves an existing file's mode. Apply the caller's
+    // requested mode explicitly so replacement and creation behave alike.
+    io.chmod(msg.path, msg.mode & 0o7777);
+    respond(msg.requestId, true);
+  } catch (err) {
+    if (fd !== null) {
+      try { io.close(fd); } catch { /* preserve the original failure */ }
+    }
+    respondError(msg.requestId, formatError(err));
+  }
+}
+
+function handleUnlinkVfsFile(msg: Extract<MainToKernelMessage, { type: "unlink_vfs_file" }>) {
+  if (!io) { respondError(msg.requestId, "VFS is not initialized"); return; }
+  try {
+    try {
+      io.lstat(msg.path);
+    } catch {
+      respond(msg.requestId, false);
+      return;
+    }
+    io.unlink(msg.path);
+    respond(msg.requestId, true);
+  } catch (err) {
+    respondError(msg.requestId, formatError(err));
   }
 }
 
@@ -2194,6 +2248,8 @@ sw.onmessage = (e: MessageEvent) => {
     case "spawn": void handleSpawn(msg); break;
     case "terminate_process": void handleTerminateProcess(msg); break;
     case "read_vfs_file": handleReadVfsFile(msg); break;
+    case "write_vfs_file": handleWriteVfsFile(msg); break;
+    case "unlink_vfs_file": handleUnlinkVfsFile(msg); break;
     case "append_stdin_data": kernelWorker.appendStdinData(msg.pid, msg.data); break;
     case "set_stdin_data": kernelWorker.setStdinData(msg.pid, msg.data); break;
     case "pty_write": handlePtyWrite(msg); break;
