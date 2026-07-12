@@ -305,10 +305,15 @@ function buildDlopenImports(
       mainDlopenDepth++;
       return true;
     }
-    const owner = Atomics.compareExchange(archiveLock, 0, 0, 1);
+    const owner = Atomics.compareExchange(
+      archiveLock,
+      0,
+      DLOPEN_LOCK_IDLE,
+      DLOPEN_LOCK_WRITER,
+    );
     if (owner !== 0) {
-      hostDlopenError = owner === 2
-        ? "dlopen is temporarily unavailable while a pthread is forking"
+      hostDlopenError = owner > 0
+        ? "dlopen is temporarily unavailable while pthreads are forking"
         : "dlopen is temporarily unavailable while another dlopen operation owns the process lock";
       return false;
     }
@@ -321,7 +326,17 @@ function buildDlopenImports(
     }
     mainDlopenDepth--;
     if (mainDlopenDepth === 0) {
-      Atomics.store(archiveLock, 0, 0);
+      const owner = Atomics.compareExchange(
+        archiveLock,
+        0,
+        DLOPEN_LOCK_WRITER,
+        DLOPEN_LOCK_IDLE,
+      );
+      if (owner !== DLOPEN_LOCK_WRITER) {
+        throw new Error(
+          `dlopen process lock lost writer ownership (state=${owner})`,
+        );
+      }
       Atomics.notify(archiveLock, 0);
     }
   };
@@ -1081,13 +1096,18 @@ const DLOPEN_HEAD_OFFSET_WASM32 = 12;
 const DLOPEN_HEAD_OFFSET_WASM64 = 24;
 const DLOPEN_ACTIVE_SIDE_FORK_OFFSET_WASM32 = 16;
 const DLOPEN_ACTIVE_SIDE_FORK_OFFSET_WASM64 = 32;
-// Atomic host-private arbitration between process-main dlopen and pthread
-// fork. The pthread holds value 2 from its pre-unwind archive check through
-// memory-copy/SYS_FORK and parent rewind; process dlopen holds value 1 until
-// the complete archive entry is published. A fork child clears its copied
-// value before replay because its memory is already independent.
+// Atomic host-private reader/writer arbitration between process-main dlopen
+// and pthread fork. A negative value is the exclusive main-worker dlopen
+// writer; a positive value counts concurrent pthread forks from their
+// pre-unwind archive check through memory-copy/SYS_FORK and parent rewind.
+// This preserves Kandelo's existing concurrent-pthread-fork behavior while
+// preventing a new archive entry from racing any fork snapshot. A fork child
+// clears its copied value before replay because its memory is independent.
 const DLOPEN_LOCK_OFFSET_WASM32 = 20;
 const DLOPEN_LOCK_OFFSET_WASM64 = 40;
+const DLOPEN_LOCK_IDLE = 0;
+const DLOPEN_LOCK_WRITER = -1;
+const DLOPEN_LOCK_MAX_READERS = 0x7fff_ffff;
 // Each entry also carries the side module's instance-local TLS base. Fork
 // copies the TLS bytes in memory, but a new replay instance's mutable global
 // must be restored explicitly. Zero is the explicit no-TLS sentinel; TLS
@@ -2168,11 +2188,50 @@ export async function centralizedThreadWorkerMain(
   let threadInstance: WebAssembly.Instance | undefined;
   let processDlopenLock: Int32Array | undefined;
   let pthreadForkLockHeld = false;
+  const acquirePthreadForkLock = (): boolean => {
+    if (!processDlopenLock) {
+      throw new Error(`pid=${pid} tid=${tid}: missing process dlopen lock`);
+    }
+    if (pthreadForkLockHeld) {
+      throw new Error(`pid=${pid} tid=${tid}: pthread fork lock already held`);
+    }
+    for (;;) {
+      const owner = Atomics.load(processDlopenLock, 0);
+      if (owner < DLOPEN_LOCK_IDLE) return false;
+      if (owner >= DLOPEN_LOCK_MAX_READERS) {
+        throw new Error(
+          `pid=${pid} tid=${tid}: process dlopen lock reader overflow`,
+        );
+      }
+      if (
+        Atomics.compareExchange(processDlopenLock, 0, owner, owner + 1)
+          === owner
+      ) {
+        pthreadForkLockHeld = true;
+        return true;
+      }
+    }
+  };
   const releasePthreadForkLock = (): void => {
     if (!pthreadForkLockHeld || !processDlopenLock) return;
-    Atomics.store(processDlopenLock, 0, 0);
-    Atomics.notify(processDlopenLock, 0);
-    pthreadForkLockHeld = false;
+    for (;;) {
+      const owner = Atomics.load(processDlopenLock, 0);
+      if (owner <= DLOPEN_LOCK_IDLE) {
+        pthreadForkLockHeld = false;
+        throw new Error(
+          `pid=${pid} tid=${tid}: pthread fork lost reader ownership ` +
+            `(state=${owner})`,
+        );
+      }
+      if (
+        Atomics.compareExchange(processDlopenLock, 0, owner, owner - 1)
+          === owner
+      ) {
+        pthreadForkLockHeld = false;
+        if (owner === 1) Atomics.notify(processDlopenLock, 0);
+        return;
+      }
+    }
   };
 
   try {
@@ -2240,8 +2299,11 @@ export async function centralizedThreadWorkerMain(
         const getState = threadInstance.exports.wpk_fork_state as () => number;
         const state = getState();
         if (state === 2) {
-          (threadInstance.exports.wpk_fork_rewind_end as () => void)();
-          releasePthreadForkLock();
+          try {
+            (threadInstance.exports.wpk_fork_rewind_end as () => void)();
+          } finally {
+            releasePthreadForkLock();
+          }
           return forkResult;
         }
 
@@ -2250,10 +2312,9 @@ export async function centralizedThreadWorkerMain(
         // instance, so fork must fail before unwind once the process has ever
         // loaded a side module. The head is read live from shared memory so a
         // dlopen after pthread creation is still observed.
-        if (Atomics.compareExchange(processDlopenLock!, 0, 0, 2) !== 0) {
+        if (!acquirePthreadForkLock()) {
           return -95; // ENOTSUP: process-main dlopen is active
         }
-        pthreadForkLockHeld = true;
         if (processHasDlopenArchive()) {
           releasePthreadForkLock();
           return -95; // ENOTSUP: pthreads cannot replay process side modules
@@ -2399,6 +2460,11 @@ export async function centralizedThreadWorkerMain(
         }
       }
     }
+
+    // A well-formed fork releases its reader token from the state=2 import
+    // above. Keep normal-return cleanup defensive so an unexpected
+    // instrumenter state cannot strand the process-wide writer lock.
+    releasePthreadForkLock();
 
     // A normal return has not passed through libc's noreturn kernel_exit
     // import, so publish SYS_EXIT here. When kernel_exit already ran it sent
