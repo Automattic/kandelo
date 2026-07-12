@@ -6772,13 +6772,6 @@ fn udp_send_datagram(
     use crate::socket::{Datagram, SocketState};
 
     let dst_addr = udp_canonical_dst_addr(dst_addr);
-    if !bind_device_allows_ipv4(
-        proc.sockets.get(sock_idx).ok_or(Errno::EBADF)?,
-        dst_addr,
-        false,
-    ) {
-        return Err(Errno::ENETUNREACH);
-    }
     let (state, shut_wr) = {
         let sock = proc.sockets.get(sock_idx).ok_or(Errno::EBADF)?;
         (sock.state, sock.shut_wr)
@@ -6788,6 +6781,27 @@ fn udp_send_datagram(
     }
     if state == SocketState::Connected {
         udp_take_socket_error(proc, sock_idx)?;
+    }
+    if dst_addr == [255, 255, 255, 255] {
+        use wasm_posix_shared::socket::{SO_BROADCAST, SOL_SOCKET};
+
+        let broadcast_enabled = proc
+            .sockets
+            .get(sock_idx)
+            .ok_or(Errno::EBADF)?
+            .get_option(SOL_SOCKET, SO_BROADCAST)
+            .unwrap_or(0)
+            != 0;
+        if !broadcast_enabled {
+            return Err(Errno::EACCES);
+        }
+    }
+    if !bind_device_allows_ipv4(
+        proc.sockets.get(sock_idx).ok_or(Errno::EBADF)?,
+        dst_addr,
+        false,
+    ) {
+        return Err(Errno::ENETUNREACH);
     }
     let auto_bind_addr = if state == SocketState::Connected {
         udp_route_local_addr(dst_addr)
@@ -9132,11 +9146,11 @@ pub fn sys_recvfrom(
     _host: &mut dyn HostIO,
     fd: i32,
     buf: &mut [u8],
-    _flags: u32,
+    flags: u32,
     addr_buf: &mut [u8],
 ) -> Result<(usize, usize), Errno> {
     use crate::socket::{SocketDomain, SocketState, SocketType};
-    use wasm_posix_shared::socket::MSG_PEEK;
+    use wasm_posix_shared::socket::{MSG_PEEK, MSG_TRUNC};
 
     let entry = proc.fd_table.get(fd)?;
     let ofd = proc.ofd_table.get(entry.ofd_ref.0).ok_or(Errno::EBADF)?;
@@ -9148,7 +9162,7 @@ pub fn sys_recvfrom(
 
     // For STREAM sockets, delegate to sys_recv (musl routes recv→recvfrom)
     if sock.sock_type == SocketType::Stream {
-        let n = sys_recv(proc, _host, fd, buf, _flags)?;
+        let n = sys_recv(proc, _host, fd, buf, flags)?;
         return Ok((n, 0));
     }
     if !matches!(
@@ -9175,7 +9189,7 @@ pub fn sys_recvfrom(
         return Err(Errno::EAGAIN);
     }
     let datagram_idx = datagram_idx.unwrap();
-    let peek = _flags & MSG_PEEK != 0;
+    let peek = flags & MSG_PEEK != 0;
     let was_full = sock.dgram_queue.len() >= UDP_DATAGRAM_QUEUE_LIMIT;
     let datagram = if peek {
         sock.dgram_queue[datagram_idx].clone()
@@ -9189,6 +9203,14 @@ pub fn sys_recvfrom(
     // Copy data to buffer
     let copy_len = buf.len().min(datagram.data.len());
     buf[..copy_len].copy_from_slice(&datagram.data[..copy_len]);
+    // Linux exposes the complete message length for Internet and Unix
+    // datagrams when MSG_TRUNC is requested, while still copying only what
+    // fits and discarding the unread tail of a non-peeked message.
+    let received_len = if flags & MSG_TRUNC != 0 {
+        datagram.data.len()
+    } else {
+        copy_len
+    };
 
     // Write sender sockaddr to addr_buf
     let mut addr_written = 0;
@@ -9208,7 +9230,7 @@ pub fn sys_recvfrom(
         };
     }
 
-    Ok((copy_len, addr_written))
+    Ok((received_len, addr_written))
 }
 
 /// Poll file descriptors for I/O readiness.
@@ -19766,6 +19788,423 @@ mod tests {
         assert_eq!(&buf[..data_len], b"hello UDP");
         assert_eq!(addr_len, 16);
         assert_eq!(from_addr[0], 2); // AF_INET
+    }
+
+    #[test]
+    fn test_ipv4_limited_broadcast_requires_so_broadcast() {
+        let mut proc = Process::new(9060);
+        let mut host = MockHostIO::new();
+        use wasm_posix_shared::socket::*;
+
+        let fd = sys_socket(&mut proc, &mut host, AF_INET, SOCK_DGRAM, 0).unwrap();
+        let mut dest = [0u8; 16];
+        dest[0] = AF_INET as u8;
+        dest[3] = 9;
+        dest[4..8].fill(255);
+
+        assert_eq!(
+            sys_sendto(&mut proc, &mut host, fd, b"x", 0, &dest).unwrap_err(),
+            Errno::EACCES,
+        );
+        sys_setsockopt(&mut proc, fd, SOL_SOCKET, SO_BROADCAST, 1).unwrap();
+        assert_eq!(
+            sys_sendto(&mut proc, &mut host, fd, b"x", 0, &dest).unwrap_err(),
+            Errno::ENETUNREACH,
+            "enabling SO_BROADCAST must pass the permission gate to HostIO",
+        );
+        sys_setsockopt(&mut proc, fd, SOL_SOCKET, SO_BROADCAST, 0).unwrap();
+        assert_eq!(
+            sys_sendto(&mut proc, &mut host, fd, b"x", 0, &dest).unwrap_err(),
+            Errno::EACCES,
+        );
+
+        let device_fd = sys_socket(&mut proc, &mut host, AF_INET, SOCK_DGRAM, 0).unwrap();
+        sys_setsockopt_bindtodevice(&mut proc, device_fd, b"lo\0").unwrap();
+        assert_eq!(
+            sys_sendto(&mut proc, &mut host, device_fd, b"x", 0, &dest).unwrap_err(),
+            Errno::EACCES,
+            "broadcast permission must be checked before device routing",
+        );
+        sys_setsockopt(&mut proc, device_fd, SOL_SOCKET, SO_BROADCAST, 1).unwrap();
+        assert_eq!(
+            sys_sendto(&mut proc, &mut host, device_fd, b"x", 0, &dest).unwrap_err(),
+            Errno::ENETUNREACH,
+            "the selected device may reject the route after permission is granted",
+        );
+
+        let error_fd = sys_socket(&mut proc, &mut host, AF_INET, SOCK_DGRAM, 0).unwrap();
+        let mut loopback = [0u8; 16];
+        loopback[0] = AF_INET as u8;
+        loopback[3] = 9;
+        loopback[4..8].copy_from_slice(&[127, 0, 0, 1]);
+        sys_connect(&mut proc, &mut host, error_fd, &loopback).unwrap();
+        assert_eq!(
+            sys_send(&mut proc, &mut host, error_fd, b"prime error", 0).unwrap(),
+            11,
+        );
+        assert_eq!(
+            sys_sendto(&mut proc, &mut host, error_fd, b"x", 0, &dest).unwrap_err(),
+            Errno::ECONNREFUSED,
+            "a pending connected-socket error must precede broadcast permission",
+        );
+        assert_eq!(
+            sys_sendto(&mut proc, &mut host, error_fd, b"x", 0, &dest).unwrap_err(),
+            Errno::EACCES,
+        );
+
+        let shutdown_fd = sys_socket(&mut proc, &mut host, AF_INET, SOCK_DGRAM, 0).unwrap();
+        sys_connect(&mut proc, &mut host, shutdown_fd, &loopback).unwrap();
+        sys_shutdown(&mut proc, &mut host, shutdown_fd, SHUT_WR).unwrap();
+        assert_eq!(
+            sys_sendto(&mut proc, &mut host, shutdown_fd, b"x", 0, &dest).unwrap_err(),
+            Errno::EPIPE,
+            "write shutdown must precede broadcast permission",
+        );
+    }
+
+    #[test]
+    fn test_socket_buffer_requests_do_not_fabricate_applied_capacity() {
+        let mut proc = Process::new(9061);
+        let mut host = MockHostIO::new();
+        use wasm_posix_shared::socket::*;
+
+        let fd = sys_socket(&mut proc, &mut host, AF_INET, SOCK_DGRAM, 0).unwrap();
+        let reported_default = DEFAULT_PIPE_CAPACITY as u32;
+        assert_eq!(
+            sys_getsockopt(&mut proc, fd, SOL_SOCKET, SO_RCVBUF).unwrap(),
+            reported_default,
+        );
+        assert_eq!(
+            sys_getsockopt(&mut proc, fd, SOL_SOCKET, SO_SNDBUF).unwrap(),
+            reported_default,
+        );
+
+        // Requests remain advisory until the kernel actually resizes socket
+        // storage. Retain the existing reported default rather than returning
+        // an unenforced requested value.
+        sys_setsockopt(
+            &mut proc,
+            fd,
+            SOL_SOCKET,
+            SO_RCVBUF,
+            reported_default.saturating_mul(2),
+        )
+        .unwrap();
+        sys_setsockopt(&mut proc, fd, SOL_SOCKET, SO_SNDBUF, 4096).unwrap();
+        assert_eq!(
+            sys_getsockopt(&mut proc, fd, SOL_SOCKET, SO_RCVBUF).unwrap(),
+            reported_default,
+        );
+        assert_eq!(
+            sys_getsockopt(&mut proc, fd, SOL_SOCKET, SO_SNDBUF).unwrap(),
+            reported_default,
+        );
+    }
+
+    #[test]
+    fn test_ipv4_datagram_msg_trunc_reports_full_length() {
+        let mut proc = Process::new(9062);
+        let mut host = MockHostIO::new();
+        use wasm_posix_shared::socket::*;
+
+        let recv_fd = sys_socket(&mut proc, &mut host, AF_INET, SOCK_DGRAM, 0).unwrap();
+        let mut recv_addr = [0u8; 16];
+        recv_addr[0] = AF_INET as u8;
+        sys_bind(&mut proc, &mut host, recv_fd, &recv_addr).unwrap();
+        sys_getsockname(&proc, recv_fd, &mut recv_addr).unwrap();
+        recv_addr[4..8].copy_from_slice(&[127, 0, 0, 1]);
+
+        let send_fd = sys_socket(&mut proc, &mut host, AF_INET, SOCK_DGRAM, 0).unwrap();
+        sys_sendto(
+            &mut proc,
+            &mut host,
+            send_fd,
+            b"0123456789",
+            0,
+            &recv_addr,
+        )
+        .unwrap();
+
+        let mut storage = [0xa5u8; 6];
+        let mut from = [0u8; 16];
+        let (peeked, _) = sys_recvfrom(
+            &mut proc,
+            &mut host,
+            recv_fd,
+            &mut storage[..4],
+            MSG_PEEK | MSG_TRUNC,
+            &mut from,
+        )
+        .unwrap();
+        assert_eq!(peeked, 10);
+        assert_eq!(&storage[..4], b"0123");
+        assert_eq!(&storage[4..], &[0xa5, 0xa5]);
+        let (received, _) = sys_recvfrom(
+            &mut proc,
+            &mut host,
+            recv_fd,
+            &mut storage[..4],
+            MSG_TRUNC,
+            &mut from,
+        )
+        .unwrap();
+        assert_eq!(received, 10);
+        assert_eq!(&storage[..4], b"0123");
+        assert_eq!(&storage[4..], &[0xa5, 0xa5]);
+
+        sys_sendto(
+            &mut proc,
+            &mut host,
+            send_fd,
+            b"abcdefghij",
+            0,
+            &recv_addr,
+        )
+        .unwrap();
+        let (copied, _) = sys_recvfrom(
+            &mut proc,
+            &mut host,
+            recv_fd,
+            &mut storage[..4],
+            0,
+            &mut from,
+        )
+        .unwrap();
+        assert_eq!(copied, 4);
+        assert_eq!(&storage[..4], b"abcd");
+        assert_eq!(&storage[4..], &[0xa5, 0xa5]);
+
+        sys_sendto(
+            &mut proc,
+            &mut host,
+            send_fd,
+            b"zero-buffer",
+            0,
+            &recv_addr,
+        )
+        .unwrap();
+        let mut empty = [];
+        let (zero_buffer_len, _) = sys_recvfrom(
+            &mut proc,
+            &mut host,
+            recv_fd,
+            &mut empty,
+            MSG_TRUNC,
+            &mut from,
+        )
+        .unwrap();
+        assert_eq!(zero_buffer_len, 11);
+
+        let mut sender_addr = [0u8; 16];
+        sys_getsockname(&proc, send_fd, &mut sender_addr).unwrap();
+        sender_addr[4..8].copy_from_slice(&[127, 0, 0, 1]);
+        sys_connect(&mut proc, &mut host, recv_fd, &sender_addr).unwrap();
+        sys_sendto(
+            &mut proc,
+            &mut host,
+            send_fd,
+            b"connected-recv",
+            0,
+            &recv_addr,
+        )
+        .unwrap();
+        let connected_len = sys_recv(
+            &mut proc,
+            &mut host,
+            recv_fd,
+            &mut storage[..4],
+            MSG_TRUNC,
+        )
+        .unwrap();
+        assert_eq!(connected_len, 14);
+        assert_eq!(&storage[..4], b"conn");
+    }
+
+    #[test]
+    fn test_ipv6_datagram_msg_trunc_reports_full_length() {
+        let mut proc = Process::new(9063);
+        let mut host = MockHostIO::new();
+        use wasm_posix_shared::socket::*;
+
+        let recv_fd = sys_socket(&mut proc, &mut host, AF_INET6, SOCK_DGRAM, 0).unwrap();
+        let mut recv_addr = [0u8; 28];
+        recv_addr[0] = AF_INET6 as u8;
+        recv_addr[23] = 1;
+        sys_bind(&mut proc, &mut host, recv_fd, &recv_addr).unwrap();
+        sys_getsockname(&proc, recv_fd, &mut recv_addr).unwrap();
+
+        let send_fd = sys_socket(&mut proc, &mut host, AF_INET6, SOCK_DGRAM, 0).unwrap();
+        sys_sendto(
+            &mut proc,
+            &mut host,
+            send_fd,
+            b"ipv6-truncated",
+            0,
+            &recv_addr,
+        )
+        .unwrap();
+        let mut buf = [0u8; 4];
+        let mut from = [0u8; 28];
+        let (received, from_len) = sys_recvfrom(
+            &mut proc,
+            &mut host,
+            recv_fd,
+            &mut buf,
+            MSG_TRUNC,
+            &mut from,
+        )
+        .unwrap();
+        assert_eq!(received, 14);
+        assert_eq!(from_len, 28);
+        assert_eq!(&buf, b"ipv6");
+    }
+
+    #[test]
+    fn test_unix_datagram_msg_trunc_preserves_peek_and_reports_full_length() {
+        let _lock = UNIX_REGISTRY_LOCK.lock().unwrap();
+        let mut proc = Process::new(9064);
+        let mut host = MockHostIO::new();
+        use wasm_posix_shared::socket::MSG_TRUNC;
+
+        let recv_path = b"/tmp/udg-msg-trunc-recv.sock";
+        let send_path = b"/tmp/udg-msg-trunc-send.sock";
+        let (recv_fd, recv_addr) = bind_test_unix_dgram(&mut proc, &mut host, recv_path);
+        let (send_fd, _) = bind_test_unix_dgram(&mut proc, &mut host, send_path);
+        sys_connect(&mut proc, &mut host, send_fd, &recv_addr).unwrap();
+        sys_send(
+            &mut proc,
+            &mut host,
+            send_fd,
+            b"reliable-unix",
+            0,
+        )
+        .unwrap();
+
+        let mut buf = [0u8; 4];
+        let mut from = [0u8; 16];
+        let (peeked, _) = sys_recvfrom(
+            &mut proc,
+            &mut host,
+            recv_fd,
+            &mut buf,
+            wasm_posix_shared::socket::MSG_PEEK | MSG_TRUNC,
+            &mut from,
+        )
+        .unwrap();
+        assert_eq!(peeked, 13);
+        assert_eq!(&buf, b"reli");
+        let (received, from_len) = sys_recvfrom(
+            &mut proc,
+            &mut host,
+            recv_fd,
+            &mut buf,
+            MSG_TRUNC,
+            &mut from,
+        )
+        .unwrap();
+        assert_eq!(received, 13);
+        assert_eq!(from_len, 2);
+        assert_eq!(&buf, b"reli");
+
+        for fd in [send_fd, recv_fd] {
+            sys_close(&mut proc, &mut host, fd).unwrap();
+        }
+        for path in [send_path.as_slice(), recv_path.as_slice()] {
+            sys_unlink(&mut proc, &mut host, path).unwrap();
+        }
+    }
+
+    #[test]
+    fn test_unix_datagram_msg_trunc_peek_preserves_full_queue_backpressure() {
+        let _lock = UNIX_REGISTRY_LOCK.lock().unwrap();
+        let mut proc = Process::new(9065);
+        let mut host = MockHostIO::new();
+        use wasm_posix_shared::poll::POLLOUT;
+        use wasm_posix_shared::socket::{MSG_PEEK, MSG_TRUNC};
+
+        let recv_path = b"/tmp/udg-msg-trunc-full-recv.sock";
+        let send_path = b"/tmp/udg-msg-trunc-full-send.sock";
+        let (recv_fd, recv_addr) = bind_test_unix_dgram(&mut proc, &mut host, recv_path);
+        let (send_fd, _) = bind_test_unix_dgram(&mut proc, &mut host, send_path);
+        sys_connect(&mut proc, &mut host, send_fd, &recv_addr).unwrap();
+        for sequence in 0..UDP_DATAGRAM_QUEUE_LIMIT {
+            sys_send(
+                &mut proc,
+                &mut host,
+                send_fd,
+                &(sequence as u32).to_le_bytes(),
+                0,
+            )
+            .unwrap();
+        }
+
+        let mut pollfd = WasmPollFd {
+            fd: send_fd,
+            events: POLLOUT,
+            revents: 0,
+        };
+        assert_eq!(
+            sys_poll(
+                &mut proc,
+                &mut host,
+                core::slice::from_mut(&mut pollfd),
+                0,
+            )
+            .unwrap(),
+            0,
+        );
+        let mut byte = [0u8; 1];
+        let mut from = [0u8; 16];
+        let (peeked, _) = sys_recvfrom(
+            &mut proc,
+            &mut host,
+            recv_fd,
+            &mut byte,
+            MSG_PEEK | MSG_TRUNC,
+            &mut from,
+        )
+        .unwrap();
+        assert_eq!(peeked, 4);
+        assert_eq!(
+            sys_poll(
+                &mut proc,
+                &mut host,
+                core::slice::from_mut(&mut pollfd),
+                0,
+            )
+            .unwrap(),
+            0,
+            "MSG_PEEK must neither consume capacity nor wake the sender",
+        );
+
+        let (received, _) = sys_recvfrom(
+            &mut proc,
+            &mut host,
+            recv_fd,
+            &mut byte,
+            MSG_TRUNC,
+            &mut from,
+        )
+        .unwrap();
+        assert_eq!(received, 4);
+        assert_eq!(
+            sys_poll(
+                &mut proc,
+                &mut host,
+                core::slice::from_mut(&mut pollfd),
+                0,
+            )
+            .unwrap(),
+            1,
+        );
+        assert_ne!(pollfd.revents & POLLOUT, 0);
+
+        for fd in [send_fd, recv_fd] {
+            sys_close(&mut proc, &mut host, fd).unwrap();
+        }
+        for path in [send_path.as_slice(), recv_path.as_slice()] {
+            sys_unlink(&mut proc, &mut host, path).unwrap();
+        }
     }
 
     #[test]

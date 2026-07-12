@@ -35,7 +35,7 @@ pub mod host_abi;
 ///     them under the existing syscall number.
 /// 21: missing, PID-zero, and reaped procfs paths report ENOENT instead of
 ///     returning synthetic success through stat/access/path operations.
-pub const ABI_VERSION: u32 = 24;
+pub const ABI_VERSION: u32 = 25;
 
 /// Syscall numbers for the POSIX kernel interface.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -642,6 +642,7 @@ pub mod socket {
     pub const IPV6_TCLASS: u32 = 67;
     pub const MSG_OOB: u32 = 1;
     pub const MSG_PEEK: u32 = 2;
+    pub const MSG_TRUNC: u32 = 0x20;
     pub const MSG_DONTWAIT: u32 = 64;
     pub const MSG_NOSIGNAL: u32 = 0x4000;
 }
