@@ -655,6 +655,10 @@ pub mod socket {
     pub const SO_BINDTODEVICE: u32 = 25;
     pub const SO_ATTACH_REUSEPORT_CBPF: u32 = 51;
     pub const SO_ZEROCOPY: u32 = 60;
+    // Traditional Linux numbers used when `long` is 64 bits (including
+    // wasm64). The time64 aliases below are used when `long` is 32 bits.
+    pub const SO_RCVTIMEO_OLD: u32 = 20;
+    pub const SO_SNDTIMEO_OLD: u32 = 21;
     // time64 values used by musl on wasm32 (where __LONG_MAX == 0x7fffffff)
     pub const SO_RCVTIMEO: u32 = 66;
     pub const SO_SNDTIMEO: u32 = 67;

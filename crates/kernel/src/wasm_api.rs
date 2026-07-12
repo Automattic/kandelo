@@ -7992,9 +7992,10 @@ pub extern "C" fn kernel_getsockopt(
         return result;
     }
 
-    // Handle struct timeval options (SO_RCVTIMEO, SO_SNDTIMEO)
-    if level == SOL_SOCKET && (optname == SO_RCVTIMEO || optname == SO_SNDTIMEO) {
-        let result = match syscalls::sys_getsockopt_timeout(proc, fd, optname) {
+    // Handle struct timeval options (SO_RCVTIMEO, SO_SNDTIMEO), accepting
+    // both musl's wasm32 time64 and wasm64 long64 option numbers.
+    if let Some(timeout_optname) = syscalls::canonical_socket_timeout_optname(level, optname) {
+        let result = match syscalls::sys_getsockopt_timeout(proc, fd, timeout_optname) {
             Ok(timeout_us) => {
                 let tv_sec = (timeout_us / 1_000_000) as i64;
                 let tv_usec = (timeout_us % 1_000_000) as i64;
@@ -8041,8 +8042,9 @@ pub extern "C" fn kernel_setsockopt(
     let (_gkl, proc) = unsafe { get_process() };
 
     // Handle struct timeval options (SO_RCVTIMEO, SO_SNDTIMEO).
-    // On wasm32 time64: struct timeval = { i64 tv_sec, i64 tv_usec } = 16 bytes.
-    if level == SOL_SOCKET && (optname == SO_RCVTIMEO || optname == SO_SNDTIMEO) {
+    // Both supported ABIs use two 64-bit fields here: wasm32 uses time64,
+    // while wasm64 uses native 64-bit long. Their option numbers differ.
+    if let Some(timeout_optname) = syscalls::canonical_socket_timeout_optname(level, optname) {
         if optval_ptr.is_null() || optlen < 16 {
             let mut host = WasmHostIO;
             deliver_pending_signals(proc, &mut host);
@@ -8057,7 +8059,7 @@ pub extern "C" fn kernel_setsockopt(
             return -(Errno::EINVAL as i32);
         }
         let timeout_us = (tv_sec as u64) * 1_000_000 + (tv_usec as u64);
-        let result = match syscalls::sys_setsockopt_timeout(proc, fd, optname, timeout_us) {
+        let result = match syscalls::sys_setsockopt_timeout(proc, fd, timeout_optname, timeout_us) {
             Ok(()) => 0,
             Err(e) => -(e as i32),
         };

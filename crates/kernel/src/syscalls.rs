@@ -8622,6 +8622,23 @@ pub fn sys_getsockopt_tcp_info(proc: &Process, fd: i32) -> Result<[u8; TCP_INFO_
     Ok(buf)
 }
 
+/// Map musl's long64 and time64 socket-timeout numbers to the kernel's
+/// architecture-neutral time64 constants.
+pub(crate) fn canonical_socket_timeout_optname(level: u32, optname: u32) -> Option<u32> {
+    use wasm_posix_shared::socket::{
+        SOL_SOCKET, SO_RCVTIMEO, SO_RCVTIMEO_OLD, SO_SNDTIMEO, SO_SNDTIMEO_OLD,
+    };
+
+    if level != SOL_SOCKET {
+        return None;
+    }
+    match optname {
+        SO_RCVTIMEO | SO_RCVTIMEO_OLD => Some(SO_RCVTIMEO),
+        SO_SNDTIMEO | SO_SNDTIMEO_OLD => Some(SO_SNDTIMEO),
+        _ => None,
+    }
+}
+
 /// Get socket timeout value in microseconds (SO_RCVTIMEO / SO_SNDTIMEO).
 pub fn sys_getsockopt_timeout(proc: &Process, fd: i32, optname: u32) -> Result<u64, Errno> {
     use wasm_posix_shared::socket::*;
@@ -13589,6 +13606,50 @@ mod tests {
     /// that call sys_bind/sys_connect for AF_UNIX must hold this lock.
     static UNIX_REGISTRY_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
     static THREAD_IDENTITY_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    #[test]
+    fn socket_timeout_options_accept_time64_and_long64_numbers() {
+        use wasm_posix_shared::socket::{
+            AF_INET, IPPROTO_TCP, SOCK_STREAM, SOL_SOCKET, SO_RCVTIMEO,
+            SO_RCVTIMEO_OLD, SO_SNDTIMEO, SO_SNDTIMEO_OLD,
+        };
+
+        assert_eq!(
+            canonical_socket_timeout_optname(SOL_SOCKET, SO_RCVTIMEO),
+            Some(SO_RCVTIMEO),
+        );
+        assert_eq!(
+            canonical_socket_timeout_optname(SOL_SOCKET, SO_SNDTIMEO),
+            Some(SO_SNDTIMEO),
+        );
+        assert_eq!(
+            canonical_socket_timeout_optname(SOL_SOCKET, SO_RCVTIMEO_OLD),
+            Some(SO_RCVTIMEO),
+        );
+        assert_eq!(
+            canonical_socket_timeout_optname(SOL_SOCKET, SO_SNDTIMEO_OLD),
+            Some(SO_SNDTIMEO),
+        );
+        assert_eq!(canonical_socket_timeout_optname(SOL_SOCKET, 19), None);
+        assert_eq!(
+            canonical_socket_timeout_optname(IPPROTO_TCP, SO_RCVTIMEO_OLD),
+            None,
+        );
+
+        let mut proc = Process::new(9037);
+        let mut host = MockHostIO::new();
+        let fd = sys_socket(&mut proc, &mut host, AF_INET, SOCK_STREAM, 0).unwrap();
+        let recv_opt =
+            canonical_socket_timeout_optname(SOL_SOCKET, SO_RCVTIMEO_OLD).unwrap();
+        let send_opt =
+            canonical_socket_timeout_optname(SOL_SOCKET, SO_SNDTIMEO_OLD).unwrap();
+
+        sys_setsockopt_timeout(&mut proc, fd, recv_opt, 1_250_000).unwrap();
+        sys_setsockopt_timeout(&mut proc, fd, send_opt, 2_500_000).unwrap();
+
+        assert_eq!(sys_getsockopt_timeout(&proc, fd, recv_opt), Ok(1_250_000));
+        assert_eq!(sys_getsockopt_timeout(&proc, fd, send_opt), Ok(2_500_000));
+    }
 
     fn test_unix_addr(path: &[u8]) -> Vec<u8> {
         let mut addr = vec![0; 2 + path.len() + 1];
