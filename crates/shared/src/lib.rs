@@ -35,10 +35,36 @@ pub mod host_abi;
 ///     them under the existing syscall number.
 /// 21: missing, PID-zero, and reaped procfs paths report ENOENT instead of
 ///     returning synthetic success through stat/access/path operations.
+/// 22: socket addresses, option pointers, accepted descriptors, multicast,
+///     routing, hostname errors, and inherited socket state are reconciled.
+/// 23: TCP FIN, EOF, EPIPE, wakeup, bridge-reader, and queued-data behavior
+///     use the required real-reader kernel export.
+/// 24: datagram admission, Unix EAGAIN, blocking, readiness, wakeups, and
+///     finite deadlines expose queue pressure consistently.
+/// 25: broadcast errors, MSG_TRUNC results, and zero-length output pointers
+///     follow the reconciled datagram contract.
+/// 26: wait/signal, mmap, exec, descriptor/socket/shared-memory inheritance,
+///     fork metadata, epoll, sleep, and forced-removal state are preserved.
 /// 27: rebuilt PHP programs require the cooperative VM-interrupt host hook,
 ///     and POSIX timer notifications use validated fixed-width signal fields.
 /// 28: host path, clock/timer, exec/spawn, worker, and persistent-VFS behavior
 ///     is aligned across Node and browser runtime boundaries.
+/// 29: cancellation-point function types, 64-bit argument slots, lseek state,
+///     and select/pselect signal interruption are reconciled.
+/// 30: launch environments and unchanged-ID chown operations preserve their
+///     process, authorization, and backend-error semantics.
+/// 31: operation-wide file-size preflight and exact-thread SIGXFSZ delivery
+///     are required for write-family operations.
+/// 32: component-wise path, symlink, mount, errno, and current-directory
+///     resolution use one canonical namespace contract.
+/// 33: no-follow symlink ownership requires the lchown host surface and its
+///     descriptor/flag behavior.
+/// 34: pathconf uses 64-bit result storage, live-object queries, and the
+///     required host marshalling surface.
+/// 35: wait/status/rusage, WNOWAIT, stop/continue, blocking, and pthread-exit
+///     lifecycle use the reconciled process wire contract.
+/// 36: side-module replay-control memory and concurrent pthread-fork
+///     arbitration share one host/guest continuation contract.
 pub const ABI_VERSION: u32 = 36;
 
 /// Syscall numbers for the POSIX kernel interface.
