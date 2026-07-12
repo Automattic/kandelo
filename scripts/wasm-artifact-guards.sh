@@ -101,7 +101,10 @@ wasm_extract_abi_version() {
     # Accept only constants that form the direct return value. This avoids
     # mistaking an unrelated instrumentation constant in the same function for
     # the ABI marker. A final `i32.const; end` is accepted only when that `end`
-    # is the last instruction in the function.
+    # is the last instruction in the function. wasm-ld may export a command
+    # thunk that calls constructors and then delegates to the real ABI function;
+    # accept only that exact two-call body and apply the same constant-return
+    # check to its final callee.
     local version disassembly_status=0
     version="$(
         WASM_ARTIFACT_ABI_FUNC_INDEX="$func_index" \
@@ -113,13 +116,31 @@ wasm_extract_abi_version() {
                 sub(/\]:?$/, "", value)
                 return value
             }
+            function call_index(value, target) {
+                if (value !~ /^call[[:space:]]+[0-9]+([[:space:]]|$)/) return ""
+                target = value
+                sub(/^call[[:space:]]+/, "", target)
+                sub(/[[:space:]].*$/, "", target)
+                return target
+            }
             function record(value) {
-                if (candidate_count == 0) version = value
-                else if (version != value) ambiguous = 1
+                if (candidate_count == 0) candidate_version = value
+                else if (candidate_version != value) ambiguous = 1
                 candidate_count++
             }
-            function finish_target() {
+            function finish_function(callee) {
                 if (in_target && end_candidate != "") record(end_candidate)
+                if (!in_target) return
+                if (candidate_count > 0 && !ambiguous) {
+                    direct_versions[current] = candidate_version
+                }
+                if (instruction_count == 3 && first_instruction == "call" &&
+                    second_instruction == "call" && third_instruction == "end") {
+                    callee = call_index(second_instruction_text)
+                    if (call_index(first_instruction_text) != "" && callee != "") {
+                        wrapper_callees[current] = callee
+                    }
+                }
             }
             BEGIN {
                 target = ENVIRON["WASM_ARTIFACT_ABI_FUNC_INDEX"]
@@ -127,16 +148,38 @@ wasm_extract_abi_version() {
             {
                 index_value = function_index($2)
                 if (index_value != "") {
-                    finish_target()
-                    in_target = (index_value == target)
+                    finish_function()
+                    current = index_value
+                    in_target = 1
                     pending = ""
                     end_candidate = ""
+                    candidate_count = 0
+                    candidate_version = ""
+                    ambiguous = 0
+                    instruction_count = 0
+                    first_instruction = ""
+                    second_instruction = ""
+                    third_instruction = ""
+                    first_instruction_text = ""
+                    second_instruction_text = ""
                     next
                 }
                 if (!in_target) next
 
                 instruction = $0
                 if (!sub(/^.*\|[[:space:]]*/, "", instruction)) next
+                instruction_count++
+                instruction_name = instruction
+                sub(/[[:space:]].*$/, "", instruction_name)
+                if (instruction_count == 1) {
+                    first_instruction = instruction_name
+                    first_instruction_text = instruction
+                } else if (instruction_count == 2) {
+                    second_instruction = instruction_name
+                    second_instruction_text = instruction
+                } else if (instruction_count == 3) {
+                    third_instruction = instruction_name
+                }
                 if (instruction ~ /^i32\.const[[:space:]]+-?[0-9]+$/) {
                     pending = instruction
                     sub(/^i32\.const[[:space:]]+/, "", pending)
@@ -155,9 +198,15 @@ wasm_extract_abi_version() {
                 end_candidate = ""
             }
             END {
-                finish_target()
-                if (candidate_count > 0 && !ambiguous) print version
-                else exit 1
+                finish_function()
+                if (target in direct_versions) {
+                    print direct_versions[target]
+                } else if (target in wrapper_callees &&
+                           wrapper_callees[target] in direct_versions) {
+                    print direct_versions[wrapper_callees[target]]
+                } else {
+                    exit 1
+                }
             }
         ' wasm-objdump -d "$path"
     )" || disassembly_status=$?
@@ -170,7 +219,8 @@ wasm_extract_abi_version() {
     # fail later while disassembling modern exception-reference instructions.
     # Binaryen handles those modules. Its text format retains the export-to-
     # function mapping, so follow that mapped identifier rather than looking
-    # for a function whose debug name happens to match the export.
+    # for a function whose debug name happens to match the export. As above,
+    # recognize only a two-call command thunk and inspect its final callee.
     command -v wasm-dis >/dev/null 2>&1 || return 1
     disassembly_status=0
     version="$(_wasm_stream_awk '
@@ -190,9 +240,26 @@ wasm_extract_abi_version() {
             return value
         }
         function record(value) {
-            if (candidate_count == 0) version = value
-            else if (version != value) ambiguous = 1
+            if (candidate_count == 0) candidate_version = value
+            else if (candidate_version != value) ambiguous = 1
             candidate_count++
+        }
+        function call_target(value, target) {
+            if (value !~ /^\(call[[:space:]]+\$[^[:space:]()]+\)$/) return ""
+            target = value
+            sub(/^\(call[[:space:]]+/, "", target)
+            sub(/\)$/, "", target)
+            return target
+        }
+        function finish_function(callee) {
+            if (!in_function) return
+            if (candidate_count > 0 && !ambiguous) {
+                direct_versions[current] = candidate_version
+            }
+            if (body_expression_count == 2 && first_call != "" && second_call != "") {
+                wrapper_callees[current] = second_call
+            }
+            in_function = 0
         }
         {
             text = trim($0)
@@ -204,16 +271,31 @@ wasm_extract_abi_version() {
                 next
             }
 
-            if (!in_target && target != "" &&
-                index(text, "(func " target) == 1 &&
-                substr(text, length("(func " target) + 1, 1) ~ /[[:space:])]/) {
-                in_target = 1
+            if (!in_function && text ~ /^\(func[[:space:]]+\$[^[:space:]()]+/) {
+                current = text
+                sub(/^\(func[[:space:]]+/, "", current)
+                sub(/[[:space:])].*$/, "", current)
+                in_function = 1
                 depth = paren_delta(text)
+                candidate_count = 0
+                candidate_version = ""
+                ambiguous = 0
+                return_depth = 0
+                body_expression_count = 0
+                first_call = ""
+                second_call = ""
+                if (depth == 0) finish_function()
                 next
             }
-            if (!in_target) next
+            if (!in_function) next
 
             depth_before = depth
+            if (depth_before == 1 && text != ")") {
+                body_expression_count++
+                callee = call_target(text)
+                if (body_expression_count == 1) first_call = callee
+                else if (body_expression_count == 2) second_call = callee
+            }
             if (depth_before == 1 && text ~ /^\(i32\.const[[:space:]]+-?[0-9]+\)$/) {
                 record(constant_value(text))
             } else if (depth_before == 1 &&
@@ -228,11 +310,18 @@ wasm_extract_abi_version() {
 
             depth += paren_delta(text)
             if (return_depth != 0 && depth < return_depth) return_depth = 0
-            if (depth == 0) in_target = 0
+            if (depth == 0) finish_function()
         }
         END {
-            if (candidate_count > 0 && !ambiguous) print version
-            else exit 1
+            finish_function()
+            if (target in direct_versions) {
+                print direct_versions[target]
+            } else if (target in wrapper_callees &&
+                       wrapper_callees[target] in direct_versions) {
+                print direct_versions[wrapper_callees[target]]
+            } else {
+                exit 1
+            }
         }
     ' wasm-dis "$path" -o -)" || disassembly_status=$?
     [ "$disassembly_status" -eq 0 ] && [ -n "$version" ] || return 1
