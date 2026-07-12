@@ -15,6 +15,7 @@ ABI_VERSION="$(sed -nE 's/^pub const ABI_VERSION: u32 = ([0-9]+);$/\1/p' \
   "$REPO_ROOT/crates/shared/src/lib.rs" | head -n1)"
 TAP="$TMPDIR/tap"
 DEP_OUT="$TMPDIR/dep-sidecars"
+DEP64_OUT="$TMPDIR/dep64-sidecars"
 TOOL_OUT="$TMPDIR/tool-sidecars"
 TOOL64_OUT="$TMPDIR/tool64-sidecars"
 BOTTLE_CACHE="$TMPDIR/bottle-cache"
@@ -275,8 +276,57 @@ sha256_file() {
 
 make_publication_handoff() {
   local formula="$1" arch="$2" archive="$3" bottle_json="$4" sidecars="$5" out="$6"
-  local tap_commit
+  local tap_commit dependency_provenance dependencies dependency_formula_sha dependency_sha
   tap_commit="$(jq -er '.tap_commit' "$sidecars/sidecars-input.json")"
+  dependency_provenance="$TMPDIR/${formula}-${arch}-dependency-provenance.json"
+  dependencies='[]'
+  if [ "$formula" = "sidecar-tool" ]; then
+    dependency_formula_sha="$(sha256_file "$TAP/Formula/sidecar-dep.rb")"
+    dependency_sha="${dep_bottle[2]}"
+    dependencies="$(jq -nS \
+      --arg arch "$arch" --arg tap_commit "$tap_commit" \
+      --arg formula_sha "$dependency_formula_sha" --arg bottle_sha "$dependency_sha" '[{
+        bottle: {
+          cellar: "any_skip_relocation",
+          rebuild: 0,
+          sha256: $bottle_sha,
+          tag: ($arch + "_kandelo"),
+          url: ("https://ghcr.io/v2/automattic/kandelo-homebrew/sidecar-dep/blobs/sha256:" + $bottle_sha)
+        },
+        declared_directly: true,
+        formula: {path: "Formula/sidecar-dep.rb", sha256: $formula_sha},
+        full_name: "automattic/kandelo-homebrew/sidecar-dep",
+        install_log: {
+          fetch: [("==> Downloading https://ghcr.io/v2/automattic/kandelo-homebrew/sidecar-dep/blobs/sha256:" + $bottle_sha)],
+          pour: [("==> Pouring sidecar-dep--1.0." + $arch + "_kandelo.bottle.tar.gz")],
+          source_build_absent: true
+        },
+        name: "sidecar-dep",
+        receipt: {
+          built_as_bottle: true,
+          homebrew_version: "Homebrew fixture",
+          installed_on_request: false,
+          path: "Cellar/sidecar-dep/1.0/INSTALL_RECEIPT.json",
+          poured_from_bottle: true,
+          sha256: "3333333333333333333333333333333333333333333333333333333333333333",
+          source_tap: "automattic/kandelo-homebrew",
+          source_tap_git_head: $tap_commit
+        },
+        version: "1.0"
+      }]')"
+  fi
+  jq -nS \
+    --arg formula "$formula" --arg arch "$arch" --arg tap_commit "$tap_commit" \
+    --arg bottle_tag "${arch}_kandelo" --argjson dependencies "$dependencies" '{
+      schema: 1,
+      formula: $formula,
+      arch: $arch,
+      tap_repository: "Automattic/kandelo-homebrew",
+      tap_commit: $tap_commit,
+      bottle_root_url: "https://ghcr.io/v2/automattic/kandelo-homebrew",
+      bottle_tag: $bottle_tag,
+      dependencies: $dependencies
+    }' >"$dependency_provenance"
   rm -rf "$out"
   mkdir -p "$out/composition"
   bash "$REPO_ROOT/scripts/homebrew-create-build-handoff.sh" \
@@ -289,6 +339,7 @@ make_publication_handoff() {
     --bottle-root-url https://ghcr.io/v2/automattic/kandelo-homebrew \
     --bottle "$archive" \
     --bottle-json "$bottle_json" \
+    --dependency-provenance "$dependency_provenance" \
     --out "$out/build" >/dev/null
   bash "$REPO_ROOT/scripts/homebrew-ghcr-upload.sh" \
     --tap-repository Automattic/kandelo-homebrew \
@@ -362,6 +413,23 @@ make_dep_bottle() {
         }
       }
     }' >"$bottle_json"
+  printf '%s\n%s\n%s\n%s\n' "$archive" "$bottle_json" "$sha" "$bytes"
+}
+
+make_dep_wasm64_bottle() {
+  local source_archive="$1" source_json="$2"
+  local archive="$TMPDIR/sidecar-dep--1.0.wasm64_kandelo.bottle.tar.gz"
+  local bottle_json="$TMPDIR/sidecar-dep--1.0.wasm64_kandelo.bottle.json"
+  cp "$source_archive" "$archive"
+  jq '
+    .[] |= (
+      .bottle.tags.wasm64_kandelo = .bottle.tags.wasm32_kandelo
+      | del(.bottle.tags.wasm32_kandelo)
+    )
+  ' "$source_json" >"$bottle_json"
+  local sha bytes
+  sha="$(sha256_file "$archive")"
+  bytes="$(wc -c <"$archive" | tr -d '[:space:]')"
   printf '%s\n%s\n%s\n%s\n' "$archive" "$bottle_json" "$sha" "$bytes"
 }
 
@@ -533,6 +601,7 @@ expect_generate_failure() {
 }
 
 mapfile -t dep_bottle < <(make_dep_bottle)
+mapfile -t dep64_bottle < <(make_dep_wasm64_bottle "${dep_bottle[0]}" "${dep_bottle[1]}")
 FAKE_BREW_VERSION_MODE=empty expect_generate_failure empty-brew-version \
   "brew --version returned no version" \
   sidecar-dep "${dep_bottle[@]}" "$TMPDIR/empty-version-sidecars"
@@ -540,6 +609,7 @@ FAKE_BREW_VERSION_MODE=fail expect_generate_failure failed-brew-version \
   "brew --version failed with status 9" \
   sidecar-dep "${dep_bottle[@]}" "$TMPDIR/failed-version-sidecars"
 generate_sidecars sidecar-dep "${dep_bottle[@]}" "$DEP_OUT"
+SIDECAR_TEST_ARCH=wasm64 generate_sidecars sidecar-dep "${dep64_bottle[@]}" "$DEP64_OUT"
 
 mapfile -t tool_bottle < <(make_tool_bottle)
 mapfile -t tool64_bottle < <(make_tool_wasm64_bottle "${tool_bottle[0]}" "${tool_bottle[1]}")
@@ -612,6 +682,7 @@ jq -e '.packages[0].dependencies == [
 ]' "$OPTIONAL_PRESENT_OUT/sidecars-input.json" >/dev/null
 
 DEP_HANDOFF="$TMPDIR/dep-publication-handoff"
+DEP64_HANDOFF="$TMPDIR/dep64-publication-handoff"
 make_publication_handoff sidecar-dep wasm32 \
   "${dep_bottle[0]}" "${dep_bottle[1]}" "$DEP_OUT" "$DEP_HANDOFF"
 validate_publication_handoff sidecar-dep wasm32 "$DEP_HANDOFF" "$TAP" "$TAP_SOURCE_COMMIT"
@@ -621,6 +692,25 @@ bash "$REPO_ROOT/scripts/homebrew-publish-sidecars.sh" \
   --publication-handoff "$DEP_HANDOFF" \
   --formula sidecar-dep \
   --arch wasm32 \
+  --release-tag "bottles-abi-v${ABI_VERSION}" \
+  --status success \
+  --kandelo-commit "$KANDELO_SOURCE_COMMIT" \
+  --tap-commit "$TAP_SOURCE_COMMIT" \
+  --dry-run \
+  --no-lock >/dev/null
+make_publication_handoff sidecar-dep wasm64 \
+  "${dep64_bottle[0]}" "${dep64_bottle[1]}" "$DEP64_OUT" "$DEP64_HANDOFF"
+DEP64_VALIDATION_TAP="$TMPDIR/dep64-validation-tap"
+git -C "$TAP" worktree add --detach "$DEP64_VALIDATION_TAP" "$TAP_SOURCE_COMMIT" >/dev/null
+validate_publication_handoff sidecar-dep wasm64 \
+  "$DEP64_HANDOFF" "$DEP64_VALIDATION_TAP" "$TAP_SOURCE_COMMIT"
+git -C "$TAP" worktree remove --force "$DEP64_VALIDATION_TAP" >/dev/null
+bash "$REPO_ROOT/scripts/homebrew-publish-sidecars.sh" \
+  --kandelo-root "$REPO_ROOT" \
+  --tap-root "$TAP" \
+  --publication-handoff "$DEP64_HANDOFF" \
+  --formula sidecar-dep \
+  --arch wasm64 \
   --release-tag "bottles-abi-v${ABI_VERSION}" \
   --status success \
   --kandelo-commit "$KANDELO_SOURCE_COMMIT" \
@@ -742,7 +832,7 @@ bash "$REPO_ROOT/scripts/homebrew-publish-sidecars.sh" \
 jq -e --arg tool_sha "${tool_bottle[2]}" --arg tool64_sha "${tool64_bottle[2]}" '
   [.packages[].name] == ["sidecar-dep", "sidecar-tool"] and
   (.packages[] | select(.name == "sidecar-dep") |
-    [.bottles[].arch] == ["wasm32"]) and
+    [.bottles[].arch] == ["wasm32","wasm64"]) and
   (.packages[] | select(.name == "sidecar-tool") |
     .version == "2.0_3" and
     .formula_revision == 3 and
@@ -755,6 +845,7 @@ jq -e --arg tool_sha "${tool_bottle[2]}" --arg tool64_sha "${tool64_bottle[2]}" 
     .bottles[1].fork_instrumentation == "required")
 ' "$TAP/Kandelo/metadata.json" >/dev/null
 grep -F "wasm32_kandelo: \"${dep_bottle[2]}\"" "$TAP/Formula/sidecar-dep.rb" >/dev/null
+grep -F "wasm64_kandelo: \"${dep64_bottle[2]}\"" "$TAP/Formula/sidecar-dep.rb" >/dev/null
 grep -F "wasm32_kandelo: \"${tool_bottle[2]}\"" "$TAP/Formula/sidecar-tool.rb" >/dev/null
 grep -F "wasm64_kandelo: \"${tool64_bottle[2]}\"" "$TAP/Formula/sidecar-tool.rb" >/dev/null
 jq -e --arg expected "Homebrew fixture (commit $FAKE_BREW_COMMIT)" '

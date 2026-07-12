@@ -208,6 +208,15 @@ bash "$SCRIPT_ROOT/homebrew-validate-upload-receipt.sh" \
   --kandelo-commit "$KANDELO_COMMIT" \
   --bottle-root-url "$BOTTLE_ROOT_URL" >/dev/null
 
+python3 "$SCRIPT_ROOT/homebrew-dependency-provenance.py" validate \
+  --input "$BUILD_ROOT/dependency-provenance.json" \
+  --formula "$FORMULA" \
+  --arch "$ARCH" \
+  --tap-repository "$TAP_REPOSITORY" \
+  --tap-commit "$TAP_COMMIT" \
+  --bottle-root-url "$BOTTLE_ROOT_URL" \
+  --tap-root "$TAP_ROOT"
+
 if [ ! -f "$COMPOSITION_INPUT" ] || [ -L "$COMPOSITION_INPUT" ]; then
   echo "homebrew-validate-publish-handoff.sh: composition must contain one regular sidecars-input.json" >&2
   exit 1

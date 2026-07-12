@@ -15,9 +15,9 @@ UPLOAD_ACTION = "actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0
 DOWNLOAD_ACTION = "actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c"
 BREW_COMMIT = "34c40c18ffa2029b611b61c73273e32c003d0842"
 PUBLISHER_PLAN_DIGEST = "5724fbd09d7c43ba63c5bfa58cb4e73d7f0c08247b029b49a3e4e940d0011bd5"
-PUBLISHER_BUILD_DIGEST = "62bcf58790d66f97b802713f5b85e49bc155ccc738cddc7111948bba331793cc"
+PUBLISHER_BUILD_DIGEST = "5ce983c0e3585621900fa59db7da6d5cfe255a32d9f7a468c9898e3eca4d5c3d"
 PUBLISHER_UPLOAD_DIGEST = "60a32b6c315cfbaa5b4035c67f1cbb76d17b17a6e20c4f3e06d72aa66af456bd"
-PUBLISHER_VERIFY_DIGEST = "8ec75a3dbdf3fc0df60672ef1d69d7a1e32beaa6e18cbeb91b513d289d95294c"
+PUBLISHER_VERIFY_DIGEST = "7fe231b05678e40214a360c1fe5cd923e610d65ab0fb79d8cca0c902394af730"
 PUBLISHER_FINALIZE_DIGEST = "ff194b4abd44c058c18a1a9175b9be3f02814302a19b0f2842c3c86ad025ee04"
 MAINTENANCE_VALIDATE_DIGEST = "9ab856fe40640172500d82b5179a096aa028763bf696aeac865d732298617a22"
 MAINTENANCE_ROLLBACK_DIGEST = "45ff220697da9604dbe69c82761f285ba2e3e5182ef0819360128b82dd169efc"
@@ -498,6 +498,7 @@ def check_publisher(workflow)
   [
     "scripts/homebrew-create-build-handoff.sh", '--tap-repository "$KANDELO_HOMEBREW_TAP_REPOSITORY"',
     '--bottle "$BOTTLE_ARCHIVE"', '--bottle-json "$BOTTLE_JSON"',
+    '--dependency-provenance "$DEPENDENCY_PROVENANCE"',
     '--out "$RUNNER_TEMP/homebrew-build-handoff"',
   ].each do |fragment|
     check(create_handoff_run.include?(fragment), "publisher build handoff lacks #{fragment}")
@@ -528,6 +529,8 @@ def check_publisher(workflow)
           run.include?('--out-bottle-json "$RUNNER_TEMP/homebrew-verified-input/bottle.json"'),
           "publisher does not reconstruct canonical bottle JSON")
   end
+  check(canonical_build.include?('--tap-root "$GITHUB_WORKSPACE/tap"'),
+        "publisher does not bind dependency provenance to the exact tap")
   merge_run = named_step(verify_steps,
                          "Merge only reconstructed bottle metadata into the fresh tap").fetch("run")
   [
@@ -579,6 +582,7 @@ def check_publisher(workflow)
   [
     'mkdir -p "$publish_handoff/build" "$publish_handoff/composition"',
     'homebrew-build-handoff/manifest.json', 'homebrew-build-handoff/bottle.json',
+    'homebrew-build-handoff/dependency-provenance.json',
     'cp "$RUNTIME_BOTTLE" "$publish_handoff/build/bottle.tar.gz"', "receipt.json",
     'homebrew-sidecars/sidecars-input.json',
     '.packages[0].bottles[0].bottle_file = "../build/bottle.tar.gz"',

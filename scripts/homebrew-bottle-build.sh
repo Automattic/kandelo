@@ -126,6 +126,9 @@ export HOMEBREW_KANDELO_LLVM_BIN="${LLVM_BIN:-${WASM_POSIX_LLVM_DIR:-}}"
 FORMULA_REF="$TAP_NAME/$FORMULA"
 TAPPED_TAP_ROOT="$("$BREW_BIN" --repository "$TAP_NAME")"
 TAPPED_FORMULA_PATH="$TAPPED_TAP_ROOT/Formula/$FORMULA.rb"
+INSTALL_LOG="$WORK_DIR/brew-install.log"
+DEPENDENCY_LIST="$WORK_DIR/same-tap-dependencies.txt"
+DEPENDENCY_PROVENANCE="$OUT_DIR/dependency-provenance.json"
 
 same_file() {
   [ -e "$1" ] && [ -e "$2" ] && [ "$1" -ef "$2" ]
@@ -141,14 +144,51 @@ if ! same_file "$FORMULA_PATH" "$TAPPED_FORMULA_PATH"; then
   cp "$FORMULA_PATH" "$TAPPED_FORMULA_PATH"
 fi
 
+# `brew install --build-bottle` forces only the selected formula to build from
+# source. Homebrew otherwise permits each dependency to fall back to a source
+# build when its bottle is missing. Install the same-tap runtime closure first,
+# one formula at a time, so --force-bottle applies to every Kandelo dependency.
+# Topological order plus --ignore-dependencies prevents those explicit installs
+# from recursively taking Homebrew's source fallback path.
+"$BREW_BIN" deps --topological --full-name --formula "$FORMULA_REF" |
+  awk -v prefix="$TAP_NAME/" '
+    index(tolower($0), prefix) == 1 && !seen[tolower($0)]++ { print tolower($0) }
+  ' >"$DEPENDENCY_LIST"
+
+run_brew_logged() {
+  local status
+  set +e
+  "$@" 2>&1 | tee -a "$INSTALL_LOG"
+  status="${PIPESTATUS[0]}"
+  set -e
+  return "$status"
+}
+
+while IFS= read -r dependency; do
+  [ -n "$dependency" ] || continue
+  dependency_name="${dependency#"$TAP_NAME/"}"
+  if [ "$dependency_name" = "$dependency" ] || \
+     ! [[ "$dependency_name" =~ ^[a-z0-9][a-z0-9._-]*$ ]]; then
+    echo "homebrew-bottle-build.sh: invalid same-tap dependency: $dependency" >&2
+    exit 2
+  fi
+  run_brew_logged "$BREW_BIN" install \
+    --force-bottle \
+    --as-dependency \
+    --ignore-dependencies \
+    --formula "$dependency"
+done <"$DEPENDENCY_LIST"
+
 brew_install_build_bottle() {
   local attempt status log
   status=1
   for attempt in 1 2 3; do
     log="$WORK_DIR/brew-install-attempt-${attempt}.log"
     set +e
-    "$BREW_BIN" install --build-bottle --formula "$FORMULA_REF" 2> >(tee "$log" >&2)
-    status=$?
+    "$BREW_BIN" install --build-bottle --formula "$FORMULA_REF" 2>&1 |
+      tee "$log" |
+      tee -a "$INSTALL_LOG"
+    status="${PIPESTATUS[0]}"
     set -e
     if [ "$status" -eq 0 ]; then
       return 0
@@ -171,6 +211,21 @@ brew_install_build_bottle() {
   KANDELO_HOMEBREW_BOTTLE_TAG="$BOTTLE_TAG" \
     "$BREW_BIN" bottle --json --no-rebuild --root-url "$BOTTLE_ROOT_URL" "$FORMULA_REF"
 )
+
+TAP_COMMIT="$(git -C "$TAP_ROOT" rev-parse HEAD)"
+TARGET_PREFIX="$("$BREW_BIN" --prefix "$FORMULA_REF")"
+python3 "$KANDELO_ROOT/scripts/homebrew-dependency-provenance.py" capture \
+  --brew-bin "$BREW_BIN" \
+  --tap-root "$TAP_ROOT" \
+  --tap-repository "$TAP_REPOSITORY" \
+  --tap-commit "$TAP_COMMIT" \
+  --formula "$FORMULA" \
+  --arch "$ARCH" \
+  --bottle-root-url "$BOTTLE_ROOT_URL" \
+  --target-receipt "$TARGET_PREFIX/INSTALL_RECEIPT.json" \
+  --expected-dependencies "$DEPENDENCY_LIST" \
+  --install-log "$INSTALL_LOG" \
+  --out "$DEPENDENCY_PROVENANCE"
 
 mapfile -t bottle_jsons < <(find "$WORK_DIR" -maxdepth 1 -type f -name '*.bottle.json' -print | sort)
 mapfile -t bottle_archives < <(find "$WORK_DIR" -maxdepth 1 -type f \( -name '*.bottle.tar.gz' -o -name '*.bottle.tar.zst' \) -print | sort)
@@ -215,6 +270,7 @@ fi
   printf 'ARCH=%q\n' "$ARCH"
   printf 'BOTTLE_JSON=%q\n' "$BOTTLE_JSON"
   printf 'BOTTLE_ARCHIVE=%q\n' "$BOTTLE_ARCHIVE"
+  printf 'DEPENDENCY_PROVENANCE=%q\n' "$DEPENDENCY_PROVENANCE"
   printf 'BOTTLE_ROOT_URL=%q\n' "$BOTTLE_ROOT_URL"
 } >"$OUT_DIR/build.env"
 
