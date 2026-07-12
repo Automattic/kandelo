@@ -825,6 +825,7 @@ async function handleInit(msg: Extract<MainToKernelMessage, { type: "init" }>) {
 // ── Spawn ──
 
 async function handleSpawn(msg: Extract<MainToKernelMessage, { type: "spawn" }>) {
+  let registeredPid: number | undefined;
   try {
     await waitForProcessTeardowns();
 
@@ -876,11 +877,12 @@ async function handleSpawn(msg: Extract<MainToKernelMessage, { type: "spawn" }>)
       maxAddr: layout.maxAddr,
       stdio: msg.pty ? TERMINAL_STDIO : CAPTURED_STDIO,
     });
+    registeredPid = pid;
 
+    kernelWorker.setCredentials(pid, { uid: msg.uid, gid: msg.gid });
     if (msg.cwd) {
       kernelWorker.setCwd(pid, msg.cwd);
     }
-    kernelWorker.setCredentials(pid, { uid: msg.uid, gid: msg.gid });
 
     if (msg.pty) {
       const ptyIdx = kernelWorker.setupPty(pid);
@@ -926,9 +928,13 @@ async function handleSpawn(msg: Extract<MainToKernelMessage, { type: "spawn" }>)
     });
 
     installProcessWorkerListeners(worker, pid);
+    registeredPid = undefined;
 
     respond(msg.requestId, pid);
   } catch (e) {
+    if (registeredPid !== undefined) {
+      kernelWorker.unregisterProcess(registeredPid);
+    }
     respondError(msg.requestId, String(e));
   }
 }

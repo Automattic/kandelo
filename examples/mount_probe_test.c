@@ -13,6 +13,9 @@
  *                      (proves VirtualPlatformIO's VFS-only-lens has no
  *                      fallthrough — unmounted paths must hit ENOENT)
  *
+ *   path-resolution    exercise component-wise symlink, dot-dot, and mount
+ *                      crossing behavior below the supplied scratch path
+ *
  * Output format is one machine-parseable line per probe so the host test
  * can assert on substrings without compiling-in C-specific marshalling.
  */
@@ -99,11 +102,106 @@ static int probe_unmounted(const char *path) {
     return 0;
 }
 
+static int join_path(char *out, size_t out_len, const char *base, const char *suffix) {
+    int n = snprintf(out, out_len, "%s/%s", base, suffix);
+    return n > 0 && (size_t)n < out_len ? 0 : -1;
+}
+
+static int probe_path_resolution(const char *base) {
+    char target[512], child[512], link[512], link_parent[512];
+    char missing_walk[512], regular[512], regular_dot[512];
+    char etc_link[512], services_via_link[512], cwd[512];
+    if (join_path(target, sizeof(target), base, "target") < 0 ||
+        join_path(child, sizeof(child), target, "child") < 0 ||
+        join_path(link, sizeof(link), base, "link") < 0 ||
+        join_path(link_parent, sizeof(link_parent), link, "..") < 0 ||
+        join_path(missing_walk, sizeof(missing_walk), base, "missing/../target") < 0 ||
+        join_path(regular, sizeof(regular), base, "regular") < 0 ||
+        join_path(regular_dot, sizeof(regular_dot), regular, ".") < 0 ||
+        join_path(etc_link, sizeof(etc_link), base, "etc-link") < 0 ||
+        join_path(services_via_link, sizeof(services_via_link), etc_link, "services") < 0) {
+        printf("PATH_RESOLUTION path-too-long\n");
+        return 1;
+    }
+
+    /* Make the probe repeatable after an interrupted prior run. */
+    unlink(link);
+    unlink(etc_link);
+    unlink(regular);
+    rmdir(child);
+    rmdir(target);
+    rmdir(base);
+
+    if (mkdir(base, 0700) < 0 || mkdir(target, 0700) < 0 || mkdir(child, 0700) < 0) {
+        printf("PATH_RESOLUTION mkdir-errno=%d\n", errno);
+        return 1;
+    }
+    if (symlink("target/child", link) < 0) {
+        printf("PATH_RESOLUTION symlink-errno=%d\n", errno);
+        return 1;
+    }
+    if (chdir(link_parent) < 0 || getcwd(cwd, sizeof(cwd)) == NULL) {
+        printf("PATH_RESOLUTION chdir-errno=%d\n", errno);
+        return 1;
+    }
+    if (strcmp(cwd, target) != 0) {
+        printf("PATH_RESOLUTION cwd=%s expected=%s\n", cwd, target);
+        return 1;
+    }
+    if (chdir("/") < 0) {
+        printf("PATH_RESOLUTION root-chdir-errno=%d\n", errno);
+        return 1;
+    }
+
+    struct stat st;
+    errno = 0;
+    if (stat(missing_walk, &st) == 0 || errno != ENOENT) {
+        printf("PATH_RESOLUTION missing-dotdot-errno=%d expected=%d\n", errno, ENOENT);
+        return 1;
+    }
+
+    int fd = open(regular, O_CREAT | O_WRONLY | O_TRUNC, 0600);
+    if (fd < 0) {
+        printf("PATH_RESOLUTION regular-open-errno=%d\n", errno);
+        return 1;
+    }
+    close(fd);
+    errno = 0;
+    if (stat(regular_dot, &st) == 0 || errno != ENOTDIR) {
+        printf("PATH_RESOLUTION regular-dot-errno=%d expected=%d\n", errno, ENOTDIR);
+        return 1;
+    }
+
+    if (symlink("/etc", etc_link) < 0) {
+        printf("PATH_RESOLUTION cross-mount-symlink-errno=%d\n", errno);
+        return 1;
+    }
+    struct stat direct_services;
+    if (stat(services_via_link, &st) < 0 || stat("/etc/services", &direct_services) < 0) {
+        printf("PATH_RESOLUTION cross-mount-stat-errno=%d\n", errno);
+        return 1;
+    }
+    if (st.st_size != direct_services.st_size) {
+        printf("PATH_RESOLUTION cross-mount-size=%lld expected=%lld\n",
+               (long long)st.st_size, (long long)direct_services.st_size);
+        return 1;
+    }
+
+    printf("PATH_RESOLUTION_PASS cwd=%s services=%lld\n",
+           target, (long long)st.st_size);
+    return 0;
+}
+
 int main(int argc, char **argv) {
-    if (argc < 3) {
+    if (argc < 2) {
         fprintf(stderr, "usage: %s <probe> <path>\n", argv[0]);
         return 2;
     }
+    if (strcmp(argv[1], "path-resolution") == 0) {
+        if (argc < 3) return 2;
+        return probe_path_resolution(argv[2]);
+    }
+    if (argc < 3) return 2;
     if (strcmp(argv[1], "rootfs") == 0) return probe_rootfs(argv[2]);
     if (strcmp(argv[1], "scratch") == 0) return probe_scratch(argv[2]);
     if (strcmp(argv[1], "unmounted") == 0) return probe_unmounted(argv[2]);

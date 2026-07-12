@@ -67,7 +67,21 @@ impl UnixSocketRegistry {
     /// inherited endpoint is live; otherwise it becomes reusable (which is
     /// essential for Linux abstract-namespace sockets, which have no inode).
     pub fn remove_owner(&mut self, path: &[u8], pid: u32, sock_idx: usize) -> bool {
-        let Some(entry) = self.entries.get_mut(path) else {
+        let resolved_path = if self.entries.contains_key(path) {
+            Some(path.to_vec())
+        } else {
+            // A bound pathname can be renamed while the socket remains open.
+            // SocketInfo intentionally retains the sockaddr supplied to
+            // bind(2), so locate the renamed registry entry by stable owner.
+            self.entries
+                .iter()
+                .find(|(_, entry)| entry.owners.contains(&(pid, sock_idx)))
+                .map(|(registered_path, _)| registered_path.clone())
+        };
+        let Some(resolved_path) = resolved_path else {
+            return false;
+        };
+        let Some(entry) = self.entries.get_mut(&resolved_path) else {
             return false;
         };
         let old_len = entry.owners.len();
@@ -82,13 +96,27 @@ impl UnixSocketRegistry {
             // last close; keep a metadata tombstone until unlink so stat still
             // reports S_IFSOCK and bind still sees EADDRINUSE. Abstract names
             // have no inode and disappear immediately.
-            if path.first().copied() == Some(0) {
-                self.entries.remove(path);
+            if resolved_path.first().copied() == Some(0) {
+                self.entries.remove(&resolved_path);
             }
         } else if entry.pid == pid && entry.sock_idx == sock_idx {
             (entry.pid, entry.sock_idx) = entry.owners[0];
         }
         true
+    }
+
+    /// Re-key filesystem-backed socket metadata after a successful VFS
+    /// rename. Replacing an existing destination removes that destination's
+    /// old name, exactly as the filesystem operation did.
+    pub fn rename_path(&mut self, oldpath: &[u8], newpath: &[u8]) -> bool {
+        let old_entry = self.entries.remove(oldpath);
+        let replaced = self.entries.remove(newpath).is_some();
+        if let Some(entry) = old_entry {
+            self.entries.insert(newpath.to_vec(), entry);
+            true
+        } else {
+            replaced
+        }
     }
 
     /// Look up a Unix socket by path.
@@ -166,6 +194,31 @@ mod tests {
         reg.register(b"/tmp/test.sock".to_vec(), 1, 0);
         assert!(reg.unregister(b"/tmp/test.sock"));
         assert!(reg.lookup(b"/tmp/test.sock").is_none());
+    }
+
+    #[test]
+    fn rename_rekeys_path_and_owner_cleanup_finds_new_name() {
+        let mut reg = UnixSocketRegistry::new();
+        assert!(reg.register(b"/tmp/old.sock".to_vec(), 1, 7));
+
+        assert!(reg.rename_path(b"/tmp/old.sock", b"/tmp/new.sock"));
+        assert!(reg.lookup(b"/tmp/old.sock").is_none());
+        assert!(reg.lookup(b"/tmp/new.sock").is_some());
+
+        assert!(reg.remove_owner(b"/tmp/old.sock", 1, 7));
+        assert!(reg.lookup(b"/tmp/new.sock").is_none());
+        assert!(reg.contains(b"/tmp/new.sock"));
+    }
+
+    #[test]
+    fn rename_overwrites_stale_destination_registration() {
+        let mut reg = UnixSocketRegistry::new();
+        assert!(reg.register(b"/tmp/source.sock".to_vec(), 1, 1));
+        assert!(reg.register(b"/tmp/destination.sock".to_vec(), 2, 2));
+
+        assert!(reg.rename_path(b"/tmp/source.sock", b"/tmp/destination.sock"));
+        let entry = reg.lookup(b"/tmp/destination.sock").unwrap();
+        assert_eq!((entry.pid, entry.sock_idx), (1, 1));
     }
 
     #[test]
