@@ -220,6 +220,29 @@ its fallback fields are complete.
 Homebrew-derived VFS images are built from sidecars and verified bottle bytes,
 not from Formula Ruby.
 
+The guest Homebrew bootstrap image is a separate diagnostic and integration
+artifact. Build it from the pinned, unmodified upstream Homebrew source archive
+and ABI-current Kandelo package artifacts with:
+
+```bash
+./scripts/dev-shell.sh scripts/build-homebrew-bootstrap.sh
+```
+
+The script writes `target/homebrew-bootstrap/homebrew-bootstrap.vfs`. It derives
+the ABI from `crates/shared`, resolves the Node kernel, canonical rootfs package
+set, and Homebrew bootstrap programs through `xtask build-deps`, and records
+the exact upstream Homebrew commit and archive hash in
+`/etc/kandelo/homebrew-image.json`. The default 768 MiB VFS capacity leaves
+writable space for real guest Homebrew operations; use `--sab-size` and
+`--max-size` when a specific integration test needs a different capacity.
+
+`--skip-package-resolve` is only for a worktree whose `binaries/` tree has
+already been materialized. It still validates every required output and fails
+if any artifact is absent, has a stale ABI marker, lacks executable exports, or
+contains retired Asyncify instrumentation. The bootstrap image does not prove
+that a formula was built from, published as, or poured from a Homebrew bottle;
+those claims require the trusted publish and bottle validation paths below.
+
 The shared planner is `planHomebrewVfs()` in
 `host/src/homebrew-vfs-planner.ts`. It consumes `Kandelo/metadata.json` plus a
 caller-provided link-manifest loader and rejects bad ABI, unsupported arch,
