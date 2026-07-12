@@ -126,6 +126,7 @@ describe("CentralizedKernelWorker Process Management", () => {
           kernel_fork_process: kernelForkProcess,
           kernel_clear_fork_child: vi.fn(() => 0),
           kernel_reset_signal_mask: vi.fn(() => 0),
+          kernel_get_process_exit_signal: vi.fn(() => -1),
         },
       },
     }) as CentralizedKernelWorker;
@@ -189,6 +190,7 @@ describe("CentralizedKernelWorker Process Management", () => {
           kernel_fork_process: vi.fn(() => 0),
           kernel_clear_fork_child: vi.fn(() => 0),
           kernel_reset_signal_mask: vi.fn(() => 0),
+          kernel_get_process_exit_signal: vi.fn(() => -1),
         },
       },
     }) as CentralizedKernelWorker;
@@ -230,6 +232,7 @@ describe("CentralizedKernelWorker Process Management", () => {
           kernel_clear_fork_child: vi.fn(() => 0),
           kernel_reset_signal_mask: vi.fn(() => 0),
           kernel_remove_process: removeProcess,
+          kernel_get_process_exit_signal: vi.fn(() => -1),
         },
       },
     }) as CentralizedKernelWorker;

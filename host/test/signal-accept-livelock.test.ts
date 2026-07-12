@@ -42,6 +42,7 @@ function createWorkerHarness(): any {
         kernel_set_current_tid: () => {},
         kernel_pick_signal_target_tid: (pid: number) => pid,
         kernel_thread_has_deliverable: () => 1,
+        kernel_get_process_exit_signal: () => -1,
       },
     },
     kernelMemory: createSharedMemory(),
