@@ -203,6 +203,19 @@ echo "==> Installing to $INSTALL_DIR..."
 rm -rf "$INSTALL_DIR"
 run_logged wasm-install make install
 
+# ICU's generated pkg-config metadata records --prefix verbatim. Resolver
+# builds install into a temporary directory and later rewrite that to the
+# producer's canonical cache path, which still breaks after an archive is
+# fetched or moved elsewhere. Keep the metadata package-relative instead: each
+# file lives in lib/pkgconfig, so pcfiledir/../.. is the current ICU prefix in
+# every cache, extracted archive, or local overlay.
+for pc in icu-uc.pc icu-i18n.pc icu-io.pc; do
+    pc_path="$INSTALL_DIR/lib/pkgconfig/$pc"
+    [ -f "$pc_path" ] || { echo "ERROR: missing ICU pkg-config output $pc_path" >&2; exit 1; }
+    sed 's|^prefix = .*|prefix = ${pcfiledir}/../..|' "$pc_path" > "$pc_path.tmp"
+    mv "$pc_path.tmp" "$pc_path"
+done
+
 # --- Stage the common data as icu.dat (see header) ---
 DAT_SRC="$(find "$ICU_SRC/data" "$HOST_BUILD/data" -name "icudt${ICU_MAJOR}l.dat" 2>/dev/null | head -1 || true)"
 if [ -z "$DAT_SRC" ]; then
