@@ -108,6 +108,10 @@ jobs:
       - name: Resolve release and bottle root
         id: release
         shell: bash
+        env:
+          REQUESTED_BOTTLE_ROOT_URL: ${{ inputs.bottle-root-url }}
+          REQUESTED_RELEASE_TAG: ${{ inputs.release-tag }}
+          TAP_REPOSITORY: ${{ inputs.tap-repository }}
         run: |
           set -euo pipefail
           abi=$(sed -nE 's/^pub const ABI_VERSION: u32 = ([0-9]+);$/\1/p' kandelo/crates/shared/src/lib.rs | head -n1)
@@ -115,7 +119,7 @@ jobs:
             echo "::error::could not read ABI_VERSION"
             exit 2
           fi
-          release_tag="${{ inputs.release-tag }}"
+          release_tag="$REQUESTED_RELEASE_TAG"
           if [ -z "$release_tag" ]; then
             release_tag="bottles-abi-v${abi}"
           fi
@@ -123,9 +127,9 @@ jobs:
             echo "::error::release-tag must be bottles-abi-v<N>: $release_tag"
             exit 2
           fi
-          root_prefix="${{ inputs.bottle-root-url }}"
+          root_prefix="$REQUESTED_BOTTLE_ROOT_URL"
           if [ -z "$root_prefix" ]; then
-            tap_repo="${{ inputs.tap-repository }}"
+            tap_repo="$TAP_REPOSITORY"
             owner="${tap_repo%%/*}"
             repo="${tap_repo#*/}"
             owner="$(printf '%s' "$owner" | tr '[:upper:]' '[:lower:]')"
@@ -142,8 +146,10 @@ jobs:
         id: matrix
         shell: bash
         env:
+          ARCHES: ${{ inputs.arches }}
           EXPECTED_CACHE_KEYS_JSON: ${{ inputs.expected-cache-keys }}
           FORCE_REBUILD: ${{ inputs.force }}
+          FORMULAE: ${{ inputs.formulae }}
         run: |
           set -euo pipefail
           expected_args=()
@@ -158,8 +164,8 @@ jobs:
           fi
           matrix="$(bash kandelo/scripts/homebrew-plan-matrix.sh \
             --tap-root "$GITHUB_WORKSPACE/tap" \
-            --formulae '${{ inputs.formulae }}' \
-            --arches '${{ inputs.arches }}' \
+            --formulae "$FORMULAE" \
+            --arches "$ARCHES" \
             "${expected_args[@]}")"
           echo "matrix=$matrix" >> "$GITHUB_OUTPUT"
           echo "$matrix" | jq .
