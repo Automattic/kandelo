@@ -268,29 +268,18 @@ describe("VFS image save/restore", () => {
       ]);
     });
 
-    it("materializeAll clears lazy entries from image", async () => {
+    it("O_TRUNC replacement clears lazy entries from the image", async () => {
       const mfs = createMemfs();
-      // Register a lazy file and manually write content to simulate materialization
-      // (can't actually fetch in tests, so we simulate by writing content before save)
       mfs.registerLazyFile("/bin/tool", "http://example.com/tool.wasm", 5000, 0o755);
 
-      // Manually write content to the file (simulating what ensureMaterialized does)
       const toolContent = new Uint8Array(100);
       for (let i = 0; i < 100; i++) toolContent[i] = i;
       const fd = mfs.open("/bin/tool", O_WRONLY | O_CREAT | O_TRUNC, 0o755);
       mfs.write(fd, toolContent, null, toolContent.length);
       mfs.close(fd);
 
-      // Clear the lazy entry manually to simulate materialization
-      // (ensureMaterialized would do this via fetch + delete)
-      const entries = mfs.exportLazyEntries();
-      expect(entries).toHaveLength(1);
-
-      // Instead, test that a save without lazy entries works correctly
-      // by creating a fresh mfs with no lazy files
-      const mfs2 = createMemfs();
-      writeFile(mfs2, "/bin/tool", toolContent, 0o755);
-      const image = await mfs2.saveImage();
+      expect(mfs.exportLazyEntries()).toHaveLength(0);
+      const image = await mfs.saveImage();
 
       const restored = MemoryFileSystem.fromImage(image);
       expect(restored.exportLazyEntries()).toHaveLength(0);

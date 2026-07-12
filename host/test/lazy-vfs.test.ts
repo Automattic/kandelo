@@ -184,26 +184,42 @@ describe("Lazy VFS files", () => {
     expect(second.exportLazyEntries()).toEqual(cleanEntries);
   });
 
-  it("materialized file shows real size instead of declared size", () => {
+  it("O_TRUNC through a symlink replaces a lazy stub with a concrete file", async () => {
     const mfs = createMemfs();
-    mfs.registerLazyFile("/bin/test", "http://example.com/test.wasm", 99999);
+    mfs.registerLazyFile("/usr/bin/test", "http://example.com/test.wasm", 99999);
+    mfs.mkdir("/bin", 0o755);
+    mfs.symlink("/usr/bin/test", "/bin/test");
 
-    // Manually write content (simulating materialization)
     const data = new Uint8Array([1, 2, 3, 4, 5]);
     const fd = mfs.open("/bin/test", O_WRONLY | O_CREAT | O_TRUNC, 0o755);
     mfs.write(fd, data, null, data.length);
     mfs.close(fd);
 
-    // After writing, the lazy entry's inode may have changed or been overwritten.
-    // But ensureMaterialized is the intended path. Since we can't call fetch in
-    // Node.js tests, verify the read path works with concrete data.
-    const fd2 = mfs.open("/bin/test", O_RDONLY, 0);
+    expect(mfs.getLazyEntry("/bin/test")).toBeNull();
+    expect(mfs.exportLazyEntries()).toEqual([]);
+    expect(mfs.stat("/usr/bin/test").size).toBe(data.length);
+
+    const restored = MemoryFileSystem.fromImage(await mfs.saveImage());
+    expect(restored.exportLazyEntries()).toEqual([]);
+    const fd2 = restored.open("/bin/test", O_RDONLY, 0);
     const buf = new Uint8Array(16);
-    const n = mfs.read(fd2, buf, null, 16);
+    const n = restored.read(fd2, buf, null, 16);
     expect(n).toBe(5);
-    expect(buf[0]).toBe(1);
-    expect(buf[4]).toBe(5);
-    mfs.close(fd2);
+    expect(buf.subarray(0, n)).toEqual(data);
+    restored.close(fd2);
+  });
+
+  it("ftruncate to zero replaces a lazy stub with a concrete file", () => {
+    const mfs = createMemfs();
+    mfs.registerLazyFile("/bin/test", "http://example.com/test.wasm", 99999);
+
+    const fd = mfs.open("/bin/test", O_WRONLY, 0);
+    mfs.ftruncate(fd, 0);
+    mfs.close(fd);
+
+    expect(mfs.getLazyEntry("/bin/test")).toBeNull();
+    expect(mfs.exportLazyEntries()).toEqual([]);
+    expect(mfs.stat("/bin/test").size).toBe(0);
   });
 
   it("multiple lazy files with different sizes", () => {

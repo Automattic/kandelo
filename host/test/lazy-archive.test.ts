@@ -5,6 +5,9 @@ import { parseZipCentralDirectory } from "../src/vfs/zip";
 import type { ZipEntry } from "../src/vfs/zip";
 
 const O_RDONLY = 0x0000;
+const O_WRONLY = 0x0001;
+const O_CREAT = 0x0040;
+const O_TRUNC = 0x0200;
 
 function createMemfs(): MemoryFileSystem {
   const sab = new SharedArrayBuffer(4 * 1024 * 1024);
@@ -487,6 +490,60 @@ describe("Lazy archive materialization", () => {
     // All files should now have real content, no more lazy entries
     const result = await mfs.ensureMaterialized("/opt/share/data.txt");
     expect(result).toBe(false); // already materialized, nothing to do
+  });
+
+  it("does not restore an archive member replaced through O_TRUNC", async () => {
+    const mfs = createMemfs();
+    const { zipBytes, entries } = makeRealZip();
+    mfs.registerLazyArchiveFromEntries(
+      "http://example.com/test.zip",
+      entries,
+      "/opt",
+    );
+
+    const replacement = new TextEncoder().encode("local replacement");
+    const fd = mfs.open("/opt/bin/hello", O_WRONLY | O_CREAT | O_TRUNC, 0o755);
+    mfs.write(fd, replacement, null, replacement.length);
+    mfs.close(fd);
+
+    const [serializedGroup] = mfs.exportLazyArchiveEntries();
+    expect(serializedGroup.entries.map((entry) => entry.vfsPath)).not.toContain(
+      "/opt/bin/hello",
+    );
+
+    const restored = MemoryFileSystem.fromImage(await mfs.saveImage());
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      arrayBuffer: () => Promise.resolve(zipBytes.buffer),
+    } as unknown as Response);
+    globalThis.fetch = fetchMock;
+
+    await restored.ensureMaterialized("/opt/share/data.txt");
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+
+    const replacedFd = restored.open("/opt/bin/hello", O_RDONLY, 0);
+    const replacedBytes = new Uint8Array(replacement.length);
+    const replacedLength = restored.read(
+      replacedFd,
+      replacedBytes,
+      null,
+      replacedBytes.length,
+    );
+    restored.close(replacedFd);
+    expect(replacedBytes.subarray(0, replacedLength)).toEqual(replacement);
+
+    const materializedFd = restored.open("/opt/share/data.txt", O_RDONLY, 0);
+    const materializedBytes = new Uint8Array(32);
+    const materializedLength = restored.read(
+      materializedFd,
+      materializedBytes,
+      null,
+      materializedBytes.length,
+    );
+    restored.close(materializedFd);
+    expect(new TextDecoder().decode(materializedBytes.subarray(0, materializedLength))).toBe(
+      "hello world",
+    );
   });
 
   it("double materialization is a no-op (fetch called only once)", async () => {

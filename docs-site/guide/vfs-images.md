@@ -188,6 +188,8 @@ If metadata changes for a package-backed image, bump that package's `build.toml`
 
 Lazy files and archives keep initial downloads small. A VFS image can contain a stub for a large file or archive. The real bytes are fetched only when the guest accesses the path.
 
+Replacing a lazy-backed file with `O_TRUNC`, or truncating it to zero, makes it concrete and removes its pending remote backing. If it came from a lazy archive, fetching another archive member will not overwrite the locally replaced file.
+
 Use lazy files for a few large binaries. Use lazy archives for runtime trees with many files, such as Vim runtime data or Python standard-library content.
 
 When hosting an image, host every lazy asset at the URLs encoded in the image, or boot with a `lazyUrlBase` that resolves relative URLs correctly.

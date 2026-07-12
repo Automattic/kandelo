@@ -120,6 +120,7 @@ const S_IFREG = 0x8000;
 const S_IFDIR = 0x4000;
 const S_IFLNK = 0xa000;
 const O_RDONLY = 0x0000;
+const O_TRUNC = 0x0200;
 const O_WRONLY_CREAT_TRUNC = 0o1101;
 const COPY_CHUNK_BYTES = 1024 * 1024;
 const MIN_REBASE_INITIAL_BYTES = 16 * 1024 * 1024;
@@ -439,6 +440,29 @@ export class MemoryFileSystem implements FileSystemBackend {
       (total, group) => total + group.entries.size,
       this.lazyFiles.size,
     );
+  }
+
+  /**
+   * Stop treating an inode as an unmaterialized remote stub after a local
+   * truncation has intentionally replaced its logical contents.
+   */
+  private detachLazyBacking(ino: number): void {
+    this.lazyFiles.delete(ino);
+
+    const group = this.lazyArchiveInodes.get(ino);
+    if (!group) return;
+
+    this.lazyArchiveInodes.delete(ino);
+    for (const [path, entry] of group.entries) {
+      if (entry.ino === ino) {
+        group.entries.delete(path);
+        break;
+      }
+    }
+    if (group.entries.size === 0) {
+      const index = this.lazyArchiveGroups.indexOf(group);
+      if (index >= 0) this.lazyArchiveGroups.splice(index, 1);
+    }
   }
 
   /**
@@ -1405,7 +1429,11 @@ export class MemoryFileSystem implements FileSystemBackend {
   }
 
   open(path: string, flags: number, mode: number): number {
-    return this.fs.open(path, flags, mode);
+    const handle = this.fs.open(path, flags, mode);
+    if ((flags & O_TRUNC) !== 0) {
+      this.detachLazyBacking(this.fs.fstat(handle).ino);
+    }
+    return handle;
   }
 
   close(handle: number): number {
@@ -1473,6 +1501,9 @@ export class MemoryFileSystem implements FileSystemBackend {
 
   ftruncate(handle: number, length: number): void {
     this.fs.ftruncate(handle, length);
+    if (length === 0) {
+      this.detachLazyBacking(this.fs.fstat(handle).ino);
+    }
   }
 
   // SharedFS is memory-backed, fsync is a no-op
