@@ -32,11 +32,17 @@ const hasZipSo = [
   join(repoRoot, "binaries/programs/wasm32/php/zip.so"),
   join(repoRoot, "packages/registry/php/bin/zip.so"),
 ].some((candidate) => existsSync(candidate));
+const hasCurlSo = [
+  join(repoRoot, "local-binaries/programs/wasm32/php/curl.so"),
+  join(repoRoot, "binaries/programs/wasm32/php/curl.so"),
+  join(repoRoot, "packages/registry/php/bin/curl.so"),
+].some((candidate) => existsSync(candidate));
 const hasRootfsVfs = existsSync(join(repoRoot, "host/wasm/rootfs.vfs"));
 
 test.skip(!hasKernelWasm, "kernel.wasm is not built or fetched");
 test.skip(!hasPhpWasm, "php.wasm is not built or fetched");
 test.skip(!hasZipSo, "zip.so is not built or fetched");
+test.skip(!hasCurlSo, "curl.so is not built or fetched");
 test.skip(!hasRootfsVfs, "rootfs.vfs is not built");
 
 test("PHP CLI runs in the browser (inline, file, session, SQLite, fileinfo, XML, OpenSSL, extensions)", async ({
@@ -118,5 +124,17 @@ test("PHP CLI runs in the browser (inline, file, session, SQLite, fileinfo, XML,
 
   // Packaged side module and DEFLATE behavior through the browser VFS.
   expect(results.zip).toContain("browser-zip-ok");
+
+  // Packaged curl side module and linked libcurl through browser dlopen.
+  expect(JSON.parse(results.curl)).toEqual({
+    loaded: true,
+    version: "8.11.1",
+    constant: true,
+    handle: true,
+  });
+  expect(JSON.parse(results.curlHttp)).toEqual({
+    body: "kandelo-curl-ok\n",
+    status: 200,
+  });
   expect(runtimeErrors).toEqual([]);
 });
