@@ -184,18 +184,20 @@ Each process has a dedicated channel region in its SharedArrayBuffer memory. The
 Offset  Size   Field
 0       4      status (Atomics.wait/notify target)
 4       4      syscall_number
-8       4      arg0
-12      4      arg1
-16      4      arg2
-20      4      arg3
-24      4      arg4
-28      4      arg5
-32      4      return_value
-36      4      errno_value
-40      65536  data_buffer (for path strings, read/write buffers, etc.)
+8       48     arguments (6 × i64)
+56      8      return_value (i64)
+64      4      errno_value (i32)
+68      4      reserved/padding
+72      65536  data_buffer (for path strings, read/write buffers, etc.)
 ```
 
-Total: 65,576 bytes (header 40 bytes + data buffer 65,536 bytes).
+Total: 65,608 bytes (header 72 bytes + data buffer 65,536 bytes).
+
+Both wasm32 and wasm64 write six 64-bit argument slots. On wasm32, musl's
+public variadic `syscall()` entry point still reads 32-bit `long` arguments,
+because that is the C calling convention its callers use. The non-variadic
+`__syscallN` and cancellation-point `__syscall_cp` paths widen values to 64
+bits before calling the glue layer so offsets and lengths are not truncated.
 
 ### Status Values
 

@@ -77,6 +77,7 @@ export const ENOSPC = -28;
 export const ENAMETOOLONG = -36;
 export const ENOTEMPTY = -39;
 export const ELOOP = -40;
+export const EOVERFLOW = -75;
 
 // Superblock field byte offsets
 const SB_MAGIC = 0;
@@ -205,6 +206,7 @@ const ERROR_MESSAGES: Record<number, string> = {
   [ENAMETOOLONG]: "File name too long",
   [ENOTEMPTY]: "Directory not empty",
   [ELOOP]: "Too many symbolic links",
+  [EOVERFLOW]: "Value too large for data type",
 };
 
 export class SFSError extends Error {
@@ -1313,6 +1315,12 @@ export class SharedFS {
   private validateFileSize(size: number): void {
     if (!Number.isSafeInteger(size) || size < 0) throw new SFSError(EINVAL);
     if (size > MAX_FILE_SIZE) throw new SFSError(EFBIG);
+  }
+
+  private validateSeekPosition(position: number): void {
+    if (!Number.isSafeInteger(position)) throw new SFSError(EOVERFLOW);
+    if (position < 0) throw new SFSError(EINVAL);
+    if (position > MAX_FILE_SIZE) throw new SFSError(EFBIG);
   }
 
   // ── Directory operations ─────────────────────────────────────────
@@ -2454,7 +2462,7 @@ export class SharedFS {
       throw new SFSError(EINVAL);
     }
 
-    this.validateFileSize(newOffset);
+    this.validateSeekPosition(newOffset);
 
     const base = FD_TABLE_OFFSET + fd * FD_ENTRY_SIZE;
     this.w64(base + FD_OFFSET, newOffset);

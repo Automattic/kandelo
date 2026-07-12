@@ -1,5 +1,7 @@
 /// <reference path="./opfs-types.d.ts" />
 
+import { joinSafeI64, splitSafeI64 } from "./i64";
+
 /**
  * OPFS Proxy Worker — dedicated Web Worker that executes async OPFS
  * operations on behalf of the synchronous OpfsFileSystem.
@@ -55,6 +57,7 @@ const EISDIR = -21;
 const EINVAL = -22;
 const ENOSPC = -28;
 const ENOTEMPTY = -39;
+const EOVERFLOW = -75;
 const ENOTSUP = -95;
 
 // Open flags (Linux values)
@@ -110,6 +113,10 @@ class WorkerChannel {
     return this.view.getInt32(ARGS_OFFSET + index * 4, true);
   }
 
+  getI64Arg(index: number): number {
+    return joinSafeI64(this.getArg(index), this.getArg(index + 1));
+  }
+
   set result(value: number) {
     this.view.setInt32(RESULT_OFFSET, value, true);
   }
@@ -118,16 +125,23 @@ class WorkerChannel {
     this.view.setInt32(RESULT2_OFFSET, value, true);
   }
 
+  set i64Result(value: number) {
+    const [low, high] = splitSafeI64(value);
+    this.result = low;
+    this.result2 = high;
+  }
+
   get dataBuffer(): Uint8Array {
     return new Uint8Array(this.buffer, DATA_OFFSET);
   }
 
   readString(length: number): string {
-    return new TextDecoder().decode(new Uint8Array(this.buffer, DATA_OFFSET, length));
+    const bytes = new Uint8Array(this.buffer, DATA_OFFSET, length).slice();
+    return new TextDecoder().decode(bytes);
   }
 
   readTwoStrings(totalLength: number): [string, string] {
-    const data = new Uint8Array(this.buffer, DATA_OFFSET, totalLength);
+    const data = new Uint8Array(this.buffer, DATA_OFFSET, totalLength).slice();
     const nullIdx = data.indexOf(0);
     const decoder = new TextDecoder();
     return [
@@ -376,9 +390,20 @@ async function handleRead(): Promise<void> {
   }
 
   try {
-    const readAt = hasOffset
-      ? (offsetHi * 0x100000000 + (offsetLo >>> 0))
-      : entry.position;
+    let readAt: number;
+    if (hasOffset) {
+      try {
+        readAt = joinSafeI64(offsetLo, offsetHi);
+      } catch (error) {
+        if (error instanceof RangeError) {
+          channel.notifyError(EOVERFLOW);
+          return;
+        }
+        throw error;
+      }
+    } else {
+      readAt = entry.position;
+    }
 
     const data = channel.dataBuffer;
     const target = data.subarray(0, length);
@@ -411,7 +436,15 @@ async function handleWrite(): Promise<void> {
   try {
     let writeAt: number;
     if (hasOffset) {
-      writeAt = offsetHi * 0x100000000 + (offsetLo >>> 0);
+      try {
+        writeAt = joinSafeI64(offsetLo, offsetHi);
+      } catch (error) {
+        if (error instanceof RangeError) {
+          channel.notifyError(EOVERFLOW);
+          return;
+        }
+        throw error;
+      }
     } else if (entry.appendMode) {
       writeAt = entry.handle.getSize();
     } else {
@@ -449,7 +482,16 @@ async function handleSeek(): Promise<void> {
   }
 
   try {
-    const offset = offsetHi * 0x100000000 + (offsetLo >>> 0);
+    let offset: number;
+    try {
+      offset = joinSafeI64(offsetLo, offsetHi);
+    } catch (error) {
+      if (error instanceof RangeError) {
+        channel.notifyError(EOVERFLOW);
+        return;
+      }
+      throw error;
+    }
     let newPos: number;
 
     switch (whence) {
@@ -467,13 +509,17 @@ async function handleSeek(): Promise<void> {
         return;
     }
 
+    if (!Number.isSafeInteger(newPos)) {
+      channel.notifyError(EOVERFLOW);
+      return;
+    }
     if (newPos < 0) {
       channel.notifyError(EINVAL);
       return;
     }
 
     entry.position = newPos;
-    channel.result = newPos;
+    channel.i64Result = newPos;
     channel.notifyComplete();
   } catch (err) {
     channel.notifyError(mapError(err));
@@ -515,10 +561,6 @@ async function handleFstat(): Promise<void> {
 
 async function handleFtruncate(): Promise<void> {
   const handle = channel.getArg(0);
-  const lengthLo = channel.getArg(1);
-  const lengthHi = channel.getArg(2);
-  const length = lengthHi * 0x100000000 + (lengthLo >>> 0);
-
   const entry = fileHandles.get(handle);
   if (!entry || !entry.handle) {
     channel.notifyError(EBADF);
@@ -526,6 +568,16 @@ async function handleFtruncate(): Promise<void> {
   }
 
   try {
+    let length: number;
+    try {
+      length = channel.getI64Arg(1);
+    } catch (error) {
+      if (error instanceof RangeError) {
+        channel.notifyError(EOVERFLOW);
+        return;
+      }
+      throw error;
+    }
     entry.handle.truncate(length);
     channel.result = 0;
     channel.notifyComplete();
@@ -881,11 +933,8 @@ async function pollLoop(): Promise<void> {
     }
 
     await dispatch();
-
-    // Reset to Idle after complete/error has been consumed
-    // (The caller side reads the result after waitForComplete returns,
-    //  then we're ready for the next request. The caller sets Idle
-    //  implicitly by calling setPending for the next op.)
+    // The caller resets Complete/Error to Idle only after consuming the
+    // result, so the proxy cannot race the synchronous waiter here.
   }
 }
 
