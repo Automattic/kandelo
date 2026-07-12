@@ -1,7 +1,7 @@
 script_path = "packages/registry/php/build-php.sh"
 repo_url    = "https://github.com/Automattic/kandelo.git"
 commit      = "UNPUBLISHED"
-revision    = 10
+revision    = 11
 
 [binary]
 index_url = "https://github.com/Automattic/kandelo/releases/download/binaries-abi-v{abi}/index.toml"

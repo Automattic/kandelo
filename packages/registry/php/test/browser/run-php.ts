@@ -35,6 +35,7 @@ async function runPhp(
   kernelBytes: ArrayBuffer,
   rootfsBytes: ArrayBuffer,
   files: Record<string, string>,
+  binaryFiles: Record<string, ArrayBuffer>,
   argv: string[],
 ): Promise<TestResult> {
   let stdout = "";
@@ -51,6 +52,11 @@ async function runPhp(
   writeVfsBinary(memfs, PHP_PATH, new Uint8Array(phpBytes));
   for (const [path, content] of Object.entries(files)) {
     writeVfsFile(memfs, path, content);
+  }
+  for (const [path, content] of Object.entries(binaryFiles)) {
+    const separator = path.lastIndexOf("/");
+    if (separator > 0) ensureDirRecursive(memfs, path.slice(0, separator));
+    writeVfsBinary(memfs, path, new Uint8Array(content));
   }
   const vfsImage = await memfs.saveImage();
 
@@ -93,10 +99,11 @@ async function runPhp(
 
 async function main() {
   try {
-    const [kernelBytes, rootfsBytes, phpBytes] = await Promise.all([
+    const [kernelBytes, rootfsBytes, phpBytes, zipBytes] = await Promise.all([
       fetch(kernelWasmUrl).then((r) => r.arrayBuffer()),
       fetch(rootfsVfsUrl).then((r) => r.arrayBuffer()),
-      fetch("/php.wasm").then((r) => r.arrayBuffer()),
+      fetch("/php-artifacts/php.wasm").then((r) => r.arrayBuffer()),
+      fetch("/php-artifacts/zip.so").then((r) => r.arrayBuffer()),
     ]);
 
     const files = {
@@ -104,38 +111,47 @@ async function main() {
       "/home/ext_test.php":
         '<?php echo json_encode(["mb" => mb_strlen("hello"), "ctype" => ctype_alpha("hello") ? "yes" : "no"]); ?>',
     };
+    const binaryFiles = {
+      "/usr/lib/php/extensions/zip.so": zipBytes,
+    };
 
     // Test 1: Hello World (inline)
-    const r1 = await runPhp(phpBytes, kernelBytes, rootfsBytes, files,
+    const r1 = await runPhp(phpBytes, kernelBytes, rootfsBytes, files, binaryFiles,
       ["php", "-r", 'echo "Hello World\n";']);
 
     // Test 2: File-based execution
-    const r2 = await runPhp(phpBytes, kernelBytes, rootfsBytes, files,
+    const r2 = await runPhp(phpBytes, kernelBytes, rootfsBytes, files, binaryFiles,
       ["php", "/home/script.php"]);
 
     // Test 3: Extensions (mbstring + ctype)
-    const r3 = await runPhp(phpBytes, kernelBytes, rootfsBytes, files,
+    const r3 = await runPhp(phpBytes, kernelBytes, rootfsBytes, files, binaryFiles,
       ["php", "/home/ext_test.php"]);
 
     // Test 4: Session
-    const r4 = await runPhp(phpBytes, kernelBytes, rootfsBytes, files,
+    const r4 = await runPhp(phpBytes, kernelBytes, rootfsBytes, files, binaryFiles,
       ["php", "-r", 'session_start(); echo strlen(session_id()) > 0 ? "session-ok" : "fail";']);
 
     // Test 5: SQLite3 in-memory
-    const r5 = await runPhp(phpBytes, kernelBytes, rootfsBytes, files,
+    const r5 = await runPhp(phpBytes, kernelBytes, rootfsBytes, files, binaryFiles,
       ["php", "-r", '$db=new SQLite3(":memory:");$db->exec("CREATE TABLE t(v TEXT)");$db->exec("INSERT INTO t VALUES(\'sqlite-ok\')");echo $db->querySingle("SELECT v FROM t");']);
 
     // Test 6: fileinfo
-    const r6 = await runPhp(phpBytes, kernelBytes, rootfsBytes, files,
+    const r6 = await runPhp(phpBytes, kernelBytes, rootfsBytes, files, binaryFiles,
       ["php", "-r", '$f=new finfo(FILEINFO_MIME_TYPE);echo $f->buffer("GIF89a");']);
 
     // Test 7: SimpleXML
-    const r7 = await runPhp(phpBytes, kernelBytes, rootfsBytes, files,
+    const r7 = await runPhp(phpBytes, kernelBytes, rootfsBytes, files, binaryFiles,
       ["php", "-r", '$x=new SimpleXMLElement("<r><i>xml-ok</i></r>");echo $x->i;']);
 
     // Test 8: rootfs OpenSSL defaults are present and key + CSR generation succeeds.
-    const r8 = await runPhp(phpBytes, kernelBytes, rootfsBytes, files,
+    const r8 = await runPhp(phpBytes, kernelBytes, rootfsBytes, files, binaryFiles,
       ["php", "-r", '$k=openssl_pkey_new();$c=$k?openssl_csr_new(["commonName"=>"kandelo.test"],$k):false;if(!$k||!$c){while($e=openssl_error_string()){fwrite(STDERR,$e."\\n");}exit(1);}echo "openssl-defaults-ok";']);
+
+    // Test 9: load the packaged zip side module from the kernel-owned VFS and
+    // prove that a DEFLATE archive survives close/reopen in the browser host.
+    const r9 = await runPhp(phpBytes, kernelBytes, rootfsBytes, files, binaryFiles,
+      ["php", "-n", "-d", "extension_dir=/usr/lib/php/extensions", "-d", "extension=zip.so", "-r",
+        '$p="/tmp/browser-zip-smoke.zip";$z=new ZipArchive;if($z->open($p,ZipArchive::CREATE|ZipArchive::OVERWRITE)!==true)exit(10);if(!$z->addFromString("hello.txt","browser-zip-ok"))exit(11);if(!$z->setCompressionName("hello.txt",ZipArchive::CM_DEFLATE))exit(12);if(!$z->close())exit(13);$r=new ZipArchive;if($r->open($p)!==true)exit(14);$s=$r->statName("hello.txt");if($s===false||$s["comp_method"]!==ZipArchive::CM_DEFLATE)exit(15);echo $r->getFromName("hello.txt");$r->close();']);
 
     const results = {
       hello: r1.stdout.trim(),
@@ -146,11 +162,12 @@ async function main() {
       fileinfo: r6.stdout.trim(),
       xml: r7.stdout.trim(),
       openssl: r8.stdout.trim(),
+      zip: r9.stdout.trim(),
     };
 
     stdoutEl.textContent = r1.stdout;
-    stderrEl.textContent = [r1.stderr, r2.stderr, r3.stderr, r4.stderr, r5.stderr, r6.stderr, r7.stderr, r8.stderr].filter(Boolean).join("\n---\n");
-    exitCodeEl.textContent = String(Math.max(r1.exitCode, r2.exitCode, r3.exitCode, r4.exitCode, r5.exitCode, r6.exitCode, r7.exitCode, r8.exitCode));
+    stderrEl.textContent = [r1.stderr, r2.stderr, r3.stderr, r4.stderr, r5.stderr, r6.stderr, r7.stderr, r8.stderr, r9.stderr].filter(Boolean).join("\n---\n");
+    exitCodeEl.textContent = String(Math.max(r1.exitCode, r2.exitCode, r3.exitCode, r4.exitCode, r5.exitCode, r6.exitCode, r7.exitCode, r8.exitCode, r9.exitCode));
     resultsEl.textContent = JSON.stringify(results);
     statusEl.textContent = "done";
   } catch (e) {
