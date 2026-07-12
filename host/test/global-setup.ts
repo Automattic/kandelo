@@ -31,6 +31,7 @@ const TEST_PROGRAMS = [
   "wait_lifecycle_test.c",
   "pathconf_test.c",
   "rlimit_fsize_test.c",
+  "socket_timeout_options_test.c",
   "unix_listener_exec_test.c",
   "putenv_test.c",
   "getaddrinfo_test.c",
@@ -65,6 +66,7 @@ const WASM64_TEST_PROGRAMS = [
   "chown_sentinel_test.c",
   "pathconf_test.c",
   "rlimit_fsize_test.c",
+  "socket_timeout_options_test.c",
   "wait_lifecycle_test.c",
 ];
 
