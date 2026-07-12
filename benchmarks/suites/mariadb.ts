@@ -64,6 +64,45 @@ function resolveMariaDBBootstrapSql(arch: WasmArch): { systemTables: string; sys
   };
 }
 
+/** Filesystem inputs selected by one Node MariaDB architecture. */
+export function describeMariaDBBenchmarkInputs(arch: WasmArch): {
+  serverPath: string | null;
+  serverResolverRequest: string;
+  serverResolverSelectedPath: string | null;
+  clientPath: string | null;
+  clientResolverRequest: string;
+  clientResolverSelectedPath: string | null;
+  bootstrapSql: { systemTables: string; systemData: string } | null;
+  bootstrapSqlError?: string;
+} {
+  const serverResolverRequest = resolverPathFor(arch, "mariadbd.wasm");
+  const clientResolverRequest = resolverPathFor(arch, "mysqltest.wasm");
+  const serverPath = resolveMariaDBProgram(arch, "mariadbd.wasm");
+  const clientPath = resolveMariaDBProgram(arch, "mysqltest.wasm");
+  let bootstrapSql: { systemTables: string; systemData: string } | null = null;
+  let bootstrapSqlError: string | undefined;
+  if (serverPath && clientPath) {
+    try {
+      bootstrapSql = resolveMariaDBBootstrapSql(arch);
+    } catch (error) {
+      bootstrapSqlError = error instanceof Error ? error.message : String(error);
+    }
+  } else {
+    bootstrapSqlError = "not resolved because MariaDB program prerequisites are missing";
+  }
+
+  return {
+    serverPath,
+    serverResolverRequest,
+    serverResolverSelectedPath: tryResolveBinary(serverResolverRequest),
+    clientPath,
+    clientResolverRequest,
+    clientResolverSelectedPath: tryResolveBinary(clientResolverRequest),
+    bootstrapSql,
+    bootstrapSqlError,
+  };
+}
+
 function loadBytes(path: string): ArrayBuffer {
   const buf = readFileSync(path);
   return buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength);

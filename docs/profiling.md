@@ -118,6 +118,27 @@ npx tsx benchmarks/run.ts --host=browser --suite=process-lifecycle --rounds=5
 
 Results are saved as JSON in `benchmarks/results/`.
 
+Each result records the selected benchmark artifact paths, sizes, and SHA-256
+digests for that host's measurements. The application evidence covers
+the PHP/opcache inputs, Node WordPress source/config/router, browser WordPress
+and MariaDB VFS images, and each Node MariaDB architecture's server, client,
+and bootstrap SQL. The WordPress source-tree digest follows source symlinks but
+excludes runtime-owned `wp-content/database` state and `wp-content/debug.log`.
+Resolver-selected paths are retained alongside the logical artifact names;
+browser VFS evidence reflects the public asset that the benchmark page selects
+first. Kernel fingerprints use the same policy-aware binary resolver as each
+host. Node rootfs evidence records which of the runtime's `rootfs.vfs` then
+`programs/rootfs.vfs` fallback requests won, and is required only for the
+syscall/process suites that boot that default image. Browser benchmarks do not
+record or require the default rootfs because they boot generated empty or app
+images.
+Node static benchmark Wasm inputs are required only by the syscall or process
+suite that consumes them. The browser benchmark page imports its seven micro
+Wasm URLs at module load, so every runnable browser suite requires all seven;
+`exec-bench.wasm` remains Node-only.
+After printing the artifact report, the runner stops before workloads when a
+required, selected input is missing.
+
 ### Available Suites
 
 #### syscall-io
@@ -268,7 +289,9 @@ npx tsx benchmarks/run.ts --host=browser --rounds=3
 npx tsx benchmarks/compare.ts benchmarks/results/<before>.json benchmarks/results/<after>.json
 ```
 
-Suites that cannot find their binaries will skip gracefully and report no metrics. If a suite skips, build its prerequisites (see above) before drawing conclusions about performance impact.
+When a required binary is missing, the runner prints the artifact report and
+fails before starting workloads. Build the missing prerequisites (see above)
+before drawing conclusions about performance impact.
 
 ### Comparing Results
 

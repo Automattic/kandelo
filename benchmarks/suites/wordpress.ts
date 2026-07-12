@@ -41,6 +41,33 @@ function resetMeasurementState(opcacheCacheDirectory: string): void {
   });
 }
 
+/** Filesystem inputs selected by the Node WordPress benchmark. */
+export function describeWordPressBenchmarkInputs(): {
+  phpBinaryPath: string;
+  phpResolverRequest: string;
+  phpResolverSelectedPath: string | null;
+  opcachePath: string | null;
+  opcacheResolverRequest: string;
+  opcacheUsed: boolean;
+  wpDir: string;
+  wpConfigPath: string;
+  routerScript: string;
+} {
+  const phpResolverRequest = "programs/php/php.wasm";
+  const opcacheResolverRequest = "programs/php/opcache.so";
+  return {
+    phpBinaryPath,
+    phpResolverRequest,
+    phpResolverSelectedPath: tryResolveBinary(phpResolverRequest),
+    opcachePath,
+    opcacheResolverRequest,
+    opcacheUsed: process.env.NO_OPCACHE !== "1" && opcachePath !== null,
+    wpDir,
+    wpConfigPath: join(wpDir, "wp-config.php"),
+    routerScript,
+  };
+}
+
 function loadBytes(path: string): ArrayBuffer {
   const buf = readFileSync(path);
   return buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength);

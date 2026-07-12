@@ -623,8 +623,8 @@ function resolveRootfsImage(
 ): ArrayBuffer | null {
   if (override === undefined) return null;
   if (override === "default") {
-    const path = resolveRootfsArtifact();
-    const buf = readFileSync(path);
+    const artifact = resolveRootfsArtifact();
+    const buf = readFileSync(artifact.selectedPath);
     return buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength);
   }
   if (override instanceof Uint8Array) {
@@ -637,12 +637,25 @@ function resolveRootfsImage(
   return override;
 }
 
-function resolveRootfsArtifact(): string {
+export interface ResolvedRootfsArtifact {
+  resolverRequest: "rootfs.vfs" | "programs/rootfs.vfs";
+  selectedPath: string;
+}
+
+export function resolveRootfsArtifact(
+  resolver: (request: string) => string = resolveBinary,
+): ResolvedRootfsArtifact {
   try {
-    return resolveBinary("rootfs.vfs");
+    return {
+      resolverRequest: "rootfs.vfs",
+      selectedPath: resolver("rootfs.vfs"),
+    };
   } catch (rootfsError) {
     try {
-      return resolveBinary("programs/rootfs.vfs");
+      return {
+        resolverRequest: "programs/rootfs.vfs",
+        selectedPath: resolver("programs/rootfs.vfs"),
+      };
     } catch (programsError) {
       const rootfsMessage = rootfsError instanceof Error ? rootfsError.message : String(rootfsError);
       const programsMessage = programsError instanceof Error ? programsError.message : String(programsError);

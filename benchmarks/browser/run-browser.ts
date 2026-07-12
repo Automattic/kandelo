@@ -12,9 +12,25 @@ import { copyFileSync, existsSync, mkdirSync } from "fs";
 import { resolve, dirname } from "path";
 import { fileURLToPath } from "url";
 import { tryResolveBinary } from "../../host/src/binary-resolver.js";
+import {
+  BENCHMARK_STATIC_ARTIFACTS,
+  benchmarkStaticArtifactEvidenceFlags,
+  selectBrowserBenchmarkRuntimeArtifacts,
+  type BenchmarkRuntimeArtifactSelections,
+} from "../artifact-selection.js";
+import { withRejectingTimeout } from "../timeout.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const browserDir = resolve(__dirname, "../../apps/browser-demos");
+
+declare global {
+  interface Window {
+    __runBenchmark: (
+      suiteName: string,
+      options?: { rounds?: number },
+    ) => Promise<Record<string, number>>;
+  }
+}
 
 /** Suites available in the browser benchmark page. */
 const BROWSER_SUITES = [
@@ -38,85 +54,109 @@ const SUITE_TIMEOUTS: Record<string, number> = {
   "mariadb-innodb-64": 600_000,
 };
 
-const REQUIRED_BROWSER_ARTIFACTS = [
-  {
-    label: "kernel.wasm",
-    paths: ["local-binaries/kernel.wasm", "binaries/kernel.wasm"],
-    buildHint: "bash build.sh",
-  },
-  {
-    label: "rootfs.vfs",
-    paths: ["host/wasm/rootfs.vfs"],
-    buildHint: "bash build.sh",
-  },
-  {
-    label: "browser benchmark wasm programs",
-    paths: [
-      "benchmarks/wasm/pipe-throughput.wasm",
-      "benchmarks/wasm/file-throughput.wasm",
-      "benchmarks/wasm/syscall-latency.wasm",
-      "benchmarks/wasm/hello.wasm",
-      "benchmarks/wasm/fork-bench.wasm",
-      "benchmarks/wasm/clone-bench.wasm",
-      "benchmarks/wasm/spawn-bench.wasm",
-    ],
-    buildHint: "scripts/build-programs.sh",
-    all: true,
-  },
-];
+function assertBrowserArtifactsAvailable(
+  runtimeSelections: BenchmarkRuntimeArtifactSelections,
+  suiteNames: string[],
+): void {
+  const kernel = runtimeSelections.kernel;
+  if (!kernel.selectedPath || !existsSync(kernel.selectedPath)) {
+    throw new Error(
+      "Browser benchmark prerequisite is missing: kernel.wasm.\n" +
+      "The @kernel-wasm policy resolver found no usable artifact.\n" +
+      "Run: bash build.sh",
+    );
+  }
 
-function hasAny(paths: string[]): boolean {
-  return paths.some((path) => existsSync(resolve(browserDir, "../..", path)));
-}
-
-function hasAll(paths: string[]): boolean {
-  return paths.every((path) => existsSync(resolve(browserDir, "../..", path)));
-}
-
-function assertBrowserArtifactsAvailable(): void {
-  for (const artifact of REQUIRED_BROWSER_ARTIFACTS) {
-    const found = artifact.all ? hasAll(artifact.paths) : hasAny(artifact.paths);
-    if (!found) {
-      const checked = artifact.paths
-        .map((path) => `  ${resolve(browserDir, "../..", path)}`)
-        .join("\n");
+  for (const artifact of BENCHMARK_STATIC_ARTIFACTS) {
+    const used = benchmarkStaticArtifactEvidenceFlags({
+      host: "browser",
+      suiteFilter: suiteNames.length === 1 ? suiteNames[0] : undefined,
+      artifact,
+    }).used;
+    if (used) {
+      const selectedPath = resolve(browserDir, "../..", artifact.path);
+      if (existsSync(selectedPath)) continue;
       throw new Error(
-        `Browser benchmark prerequisite is missing: ${artifact.label}.\n` +
-        `Run: ${artifact.buildHint}\n` +
-        `Checked:\n${checked}`,
+        `Browser benchmark prerequisite is missing: ${artifact.path}.\n` +
+        "Run: scripts/build-programs.sh",
       );
     }
   }
 }
 
-function materializePublicAsset(relBinaryPath: string, publicName: string): void {
+export interface BrowserBenchmarkAssetSelection {
+  publicPath: string;
+  resolverRequest: string;
+  resolverSelectedPath: string | null;
+  selectedPath: string | null;
+}
+
+function materializePublicAsset(
+  relBinaryPath: string,
+  publicName: string,
+): BrowserBenchmarkAssetSelection {
   const publicPath = resolve(browserDir, "public", publicName);
-  if (existsSync(publicPath)) return;
+  if (existsSync(publicPath)) {
+    return {
+      publicPath,
+      resolverRequest: relBinaryPath,
+      resolverSelectedPath: null,
+      selectedPath: publicPath,
+    };
+  }
 
   const sourcePath = tryResolveBinary(relBinaryPath);
-  if (!sourcePath || !existsSync(sourcePath)) return;
+  if (!sourcePath || !existsSync(sourcePath)) {
+    return {
+      publicPath,
+      resolverRequest: relBinaryPath,
+      resolverSelectedPath: sourcePath,
+      selectedPath: null,
+    };
+  }
 
   mkdirSync(dirname(publicPath), { recursive: true });
   copyFileSync(sourcePath, publicPath);
+  return {
+    publicPath,
+    resolverRequest: relBinaryPath,
+    resolverSelectedPath: sourcePath,
+    selectedPath: publicPath,
+  };
 }
 
-function materializeBrowserSuiteAssets(suiteNames: string[]): void {
+export function prepareBrowserBenchmarkAssets(
+  suiteNames: string[] = BROWSER_SUITES,
+): Record<string, BrowserBenchmarkAssetSelection> {
+  const selections: Record<string, BrowserBenchmarkAssetSelection> = {};
   if (suiteNames.includes("wordpress")) {
-    materializePublicAsset("programs/wordpress.vfs.zst", "wordpress.vfs.zst");
+    selections["browser.wordpress.vfs"] = materializePublicAsset(
+      "programs/wordpress.vfs.zst",
+      "wordpress.vfs.zst",
+    );
   }
 
   if (suiteNames.some((suite) => suite === "mariadb-aria" || suite === "mariadb-innodb")) {
-    materializePublicAsset("programs/mariadb-vfs.vfs.zst", "mariadb.vfs.zst");
+    selections["browser.mariadb.wasm32.vfs"] = materializePublicAsset(
+      "programs/mariadb-vfs.vfs.zst",
+      "mariadb.vfs.zst",
+    );
   }
 
   if (suiteNames.some((suite) => suite === "mariadb-aria-64" || suite === "mariadb-innodb-64")) {
-    materializePublicAsset("programs/wasm64/mariadb-vfs.vfs.zst", "mariadb-64.vfs.zst");
+    selections["browser.mariadb.wasm64.vfs"] = materializePublicAsset(
+      "programs/wasm64/mariadb-vfs.vfs.zst",
+      "mariadb-64.vfs.zst",
+    );
   }
+
+  return selections;
 }
 
 export interface BrowserBenchmarkOptions {
   suites?: string[];
   rounds?: number;
+  runtimeSelections?: BenchmarkRuntimeArtifactSelections;
 }
 
 function median(values: number[]): number {
@@ -155,8 +195,10 @@ export async function runBrowserBenchmarks(
     return results;
   }
 
-  assertBrowserArtifactsAvailable();
-  materializeBrowserSuiteAssets(suiteNames);
+  const runtimeSelections = options.runtimeSelections ??
+    selectBrowserBenchmarkRuntimeArtifacts();
+  assertBrowserArtifactsAvailable(runtimeSelections, suiteNames);
+  prepareBrowserBenchmarkAssets(suiteNames);
 
   // Start Vite dev server
   console.log("Starting Vite dev server...");
@@ -219,10 +261,14 @@ export async function runBrowserBenchmarks(
       for (let r = 0; r < rounds; r++) {
         console.log(`  round ${r + 1}/${rounds}...`);
         const timeout = SUITE_TIMEOUTS[suiteName] ?? 120_000;
-        page.setDefaultTimeout(timeout);
-        const metrics = await page.evaluate(
-          ([name, opts]) => window.__runBenchmark(name, opts),
-          [suiteName, { rounds: 1 }] as const,
+        const metrics = await withRejectingTimeout(
+          page.evaluate(
+            ([name, opts]) => window.__runBenchmark(name, opts),
+            [suiteName, { rounds: 1 }] as const,
+          ),
+          timeout,
+          `Browser benchmark ${suiteName} round ${r + 1}/${rounds} ` +
+            `timed out after ${timeout}ms`,
         );
 
         for (const [key, value] of Object.entries(metrics)) {
