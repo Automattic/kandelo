@@ -9735,13 +9735,17 @@ pub fn sys_connect(
 
                 Ok(())
             } else {
-                // External connection: two-phase. First call kicks off the
-                // async host-side connect; subsequent calls (driven by the
-                // userspace poll/getsockopt loop) query host_net_connect_status
-                // until the TCP handshake either completes or errors. EAGAIN
-                // surfaces while still in flight.
+                // External AF_INET connection: two-phase. The first call kicks
+                // off the async host-side connect; subsequent calls (driven by
+                // a blocking host retry or a userspace poll/getsockopt loop)
+                // query host_net_connect_status until the TCP handshake either
+                // completes or errors. Report the socket-facing connect errnos
+                // while it is pending rather than leaking HostIO's internal
+                // EAGAIN retry sentinel. AF_UNIX and local/virtual routes do not
+                // enter this branch.
                 let net_handle = sock_idx as i32;
-                if sock.state != SocketState::Connecting {
+                let was_connecting = sock.state == SocketState::Connecting;
+                if !was_connecting {
                     host.host_net_connect(net_handle, &ip, port)?;
                     let sock = proc.sockets.get_mut(sock_idx).ok_or(Errno::EBADF)?;
                     sock.state = SocketState::Connecting;
@@ -9753,7 +9757,11 @@ pub fn sys_connect(
                         sock.state = SocketState::Connected;
                         Ok(())
                     }
-                    Err(Errno::EAGAIN) => Err(Errno::EAGAIN),
+                    Err(Errno::EAGAIN) => Err(if was_connecting {
+                        Errno::EALREADY
+                    } else {
+                        Errno::EINPROGRESS
+                    }),
                     Err(e) => {
                         let sock = proc.sockets.get_mut(sock_idx).ok_or(Errno::EBADF)?;
                         sock.state = SocketState::Closed;
@@ -19022,6 +19030,110 @@ mod tests {
         let fd = sys_socket(&mut proc, &mut host, AF_INET, SOCK_STREAM, 0).unwrap();
         let result = sys_connect(&mut proc, &mut host, fd, &[0u8; 16]);
         assert_eq!(result, Err(Errno::ECONNREFUSED));
+    }
+
+    #[test]
+    fn test_external_nonblocking_connect_reports_pending_errnos_once_then_writable() {
+        use wasm_posix_shared::fcntl_cmd::F_SETFL;
+        use wasm_posix_shared::poll::POLLOUT;
+        use wasm_posix_shared::socket::*;
+        use wasm_posix_shared::WasmPollFd;
+
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        host.net_connect_result = Ok(());
+        host.net_connect_status_result = Err(Errno::EAGAIN);
+
+        let fd = sys_socket(&mut proc, &mut host, AF_INET, SOCK_STREAM, 0).unwrap();
+        sys_fcntl(&mut proc, fd, F_SETFL, O_NONBLOCK).unwrap();
+        let addr = [2, 0, 0, 80, 203, 0, 113, 5, 0, 0, 0, 0, 0, 0, 0, 0];
+
+        assert_eq!(
+            sys_connect(&mut proc, &mut host, fd, &addr).unwrap_err(),
+            Errno::EINPROGRESS,
+            "the first pending external connect must report EINPROGRESS",
+        );
+        assert_eq!(host.net_connect_calls.len(), 1);
+        assert_eq!(
+            sys_connect(&mut proc, &mut host, fd, &addr).unwrap_err(),
+            Errno::EALREADY,
+            "a repeated pending external connect must report EALREADY",
+        );
+        assert_eq!(
+            host.net_connect_calls.len(),
+            1,
+            "retries must query the existing host connection, not start another",
+        );
+
+        host.net_connect_status_result = Ok(());
+        let mut pollfd = WasmPollFd {
+            fd,
+            events: POLLOUT,
+            revents: 0,
+        };
+        assert_eq!(
+            sys_poll(
+                &mut proc,
+                &mut host,
+                core::slice::from_mut(&mut pollfd),
+                0,
+            )
+            .unwrap(),
+            1,
+        );
+        assert_ne!(pollfd.revents & POLLOUT, 0);
+        assert_eq!(sys_getsockopt(&mut proc, fd, SOL_SOCKET, SO_ERROR).unwrap(), 0);
+        assert_eq!(host.net_connect_calls.len(), 1);
+    }
+
+    #[test]
+    fn test_external_nonblocking_connect_poll_failure_caches_and_clears_so_error() {
+        use wasm_posix_shared::fcntl_cmd::F_SETFL;
+        use wasm_posix_shared::poll::{POLLERR, POLLOUT};
+        use wasm_posix_shared::socket::*;
+        use wasm_posix_shared::WasmPollFd;
+
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        host.net_connect_result = Ok(());
+        host.net_connect_status_result = Err(Errno::EAGAIN);
+
+        let fd = sys_socket(&mut proc, &mut host, AF_INET, SOCK_STREAM, 0).unwrap();
+        sys_fcntl(&mut proc, fd, F_SETFL, O_NONBLOCK).unwrap();
+        let addr = [2, 0, 0, 80, 203, 0, 113, 6, 0, 0, 0, 0, 0, 0, 0, 0];
+        assert_eq!(
+            sys_connect(&mut proc, &mut host, fd, &addr).unwrap_err(),
+            Errno::EINPROGRESS,
+        );
+
+        host.net_connect_status_result = Err(Errno::ECONNREFUSED);
+        let mut pollfd = WasmPollFd {
+            fd,
+            events: POLLOUT,
+            revents: 0,
+        };
+        assert_eq!(
+            sys_poll(
+                &mut proc,
+                &mut host,
+                core::slice::from_mut(&mut pollfd),
+                0,
+            )
+            .unwrap(),
+            1,
+        );
+        assert_ne!(pollfd.revents & POLLERR, 0);
+        assert_ne!(pollfd.revents & POLLOUT, 0);
+        assert_eq!(
+            sys_getsockopt(&mut proc, fd, SOL_SOCKET, SO_ERROR).unwrap(),
+            Errno::ECONNREFUSED as u32,
+        );
+        assert_eq!(
+            sys_getsockopt(&mut proc, fd, SOL_SOCKET, SO_ERROR).unwrap(),
+            0,
+            "SO_ERROR must clear the cached connect failure after it is read",
+        );
+        assert_eq!(host.net_connect_calls.len(), 1);
     }
 
     #[test]
