@@ -39,10 +39,10 @@ import {
   sep,
 } from "node:path";
 import { NodeKernelHost } from "../host/src/node-kernel-host";
-import { tryResolveBinary } from "../host/src/binary-resolver";
 import { ABI_SYSCALL_NAMES } from "../host/src/generated/abi";
 import { ensureSourceExtract } from "../images/vfs/scripts/source-extract-helper";
 import { preparePhpTestFixtures } from "../images/vfs/scripts/php-test-fixtures";
+import { resolvePackageRuntimeFile } from "./package-runtime-file";
 
 const REPO_ROOT = resolve(new URL(".", import.meta.url).pathname, "..");
 const LOCAL_PHP_SRC = join(REPO_ROOT, "packages/registry/php/php-src");
@@ -55,6 +55,7 @@ const BROWSER_DIR = join(REPO_ROOT, "apps/browser-demos");
 const VITE_HOST = "127.0.0.1";
 const VITE_PORT = Number(process.env.PHP_TEST_VITE_PORT ?? 5201);
 const BROWSER_EXTENSION_DIR = "/usr/lib/php/extensions";
+const PHP_ICU_RUNTIME = resolvePackageRuntimeFile(REPO_ROOT, "php", "icu.dat");
 const RUN_TESTS_BASE_INI = [
   "output_handler=",
   "open_basedir=",
@@ -217,7 +218,7 @@ async function withTimeout<T>(
 function resolvePhpBinary(): string {
   const candidate =
     process.env.PHP_WASM ??
-    tryResolveBinary("programs/php/php.wasm") ??
+    PHP_ICU_RUNTIME?.closureHostPaths.get("php/php.wasm") ??
     join(LOCAL_PHP_SRC, "sapi/cli/php");
   if (!candidate || !existsSync(candidate)) {
     throw new Error(
@@ -230,7 +231,7 @@ function resolvePhpBinary(): string {
 function resolvePhpFpmBinary(phpPath: string): string | null {
   const explicit = process.env.PHP_FPM_WASM;
   if (explicit) return resolve(explicit);
-  const resolved = tryResolveBinary("programs/php/php-fpm.wasm");
+  const resolved = PHP_ICU_RUNTIME?.closureHostPaths.get("php/php-fpm.wasm");
   if (resolved) return resolved;
   const sibling = join(dirname(phpPath), "php-fpm.wasm");
   return existsSync(sibling) ? sibling : null;
@@ -547,10 +548,24 @@ function sharedExtensionPathsForPhp(phpPath: string): Map<string, string> {
       }
     }
   }
+  // When the declared package closure is materialized, use its selected
+  // side-module paths directly. They were resolved together with php.wasm and
+  // icu.dat from one complete provenance tier.
+  for (const name of [
+    "opcache",
+    "curl",
+    "phar",
+    "zend_test",
+    "zip",
+    "intl",
+  ]) {
+    const resolved = PHP_ICU_RUNTIME?.closureHostPaths.get(`php/${name}.so`);
+    if (resolved) out.set(name, resolved);
+  }
   const phpDir = dirname(phpPath);
   const opcachePath =
     process.env.PHP_OPCACHE_SO ??
-    tryResolveBinary("programs/php/opcache.so") ??
+    PHP_ICU_RUNTIME?.closureHostPaths.get("php/opcache.so") ??
     join(phpDir, "opcache.so");
   if (opcachePath && existsSync(opcachePath)) out.set("opcache", opcachePath);
   return out;
@@ -1007,6 +1022,26 @@ class NodePhpRunner implements PhpRunner {
       // rejected by HostFileSystem's sandbox, so materialize the file bytes.
       copyFileSync(srcPath, destPath);
       chmodSync(destPath, 0o755);
+    }
+    if (this.sharedExtensionPaths.has("intl")) {
+      if (!PHP_ICU_RUNTIME) {
+        throw new Error(
+          "intl.so is available but the declared php:icu.dat runtime file is not materialized",
+        );
+      }
+      const mountPoint = "/usr/lib";
+      if (!PHP_ICU_RUNTIME.guestPath.startsWith(`${mountPoint}/`)) {
+        throw new Error(
+          `php:icu.dat guest path ${PHP_ICU_RUNTIME.guestPath} is outside ${mountPoint}`,
+        );
+      }
+      const runtimeDest = join(
+        root,
+        ...PHP_ICU_RUNTIME.guestPath.slice(mountPoint.length + 1).split("/"),
+      );
+      mkdirSync(dirname(runtimeDest), { recursive: true });
+      copyFileSync(PHP_ICU_RUNTIME.hostPath, runtimeDest);
+      chmodSync(runtimeDest, PHP_ICU_RUNTIME.mode);
     }
     this.extensionMountRoot = root;
     return root;

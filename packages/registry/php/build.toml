@@ -1,6 +1,7 @@
 script_path = "packages/registry/php/build-php.sh"
 inputs = [
   "packages/registry/php/build-php.sh",
+  "packages/registry/php/intl-icu-data-loader.c",
 ]
 repo_url    = "https://github.com/Automattic/kandelo.git"
 commit      = "UNPUBLISHED"

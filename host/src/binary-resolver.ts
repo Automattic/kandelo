@@ -111,18 +111,62 @@ function applyDefaultArch(relPath: string): string {
   return `programs/wasm32/${tail}`;
 }
 
-function packagedBinaryCandidates(relPath: string): string[] {
-  const root = packageRoot();
+function packagedBinaryCandidates(
+  relPath: string,
+  root = join(packageRoot(), "wasm"),
+): string[] {
   const adjusted = applyDefaultArch(relPath);
-  const candidates = [join(root, "wasm", adjusted)];
+  const candidates = [join(root, adjusted)];
   if (relPath === "kernel.wasm") {
-    candidates.push(join(root, "wasm", "kandelo-kernel.wasm"));
+    candidates.push(join(root, "kandelo-kernel.wasm"));
   } else if (relPath === "userspace.wasm") {
-    candidates.push(join(root, "wasm", "wasm_posix_userspace.wasm"));
+    candidates.push(join(root, "wasm_posix_userspace.wasm"));
   } else if (relPath === "rootfs.vfs") {
-    candidates.push(join(root, "wasm", "rootfs.vfs"));
+    candidates.push(join(root, "rootfs.vfs"));
   }
   return candidates;
+}
+
+interface BinaryCandidateTier {
+  label: string;
+  root: string;
+  candidatesFor(relPath: string): string[];
+}
+
+/**
+ * Ordered provenance roots used by both single-artifact and package-closure
+ * resolution. Keeping the grouping explicit lets a closure fall back as a
+ * unit without ever combining local, fetched, and installed-package bytes.
+ */
+function binaryCandidateTiers(): BinaryCandidateTier[] {
+  const tiers: BinaryCandidateTier[] = [];
+  try {
+    const repo = findRepoRoot();
+    for (const [label, root] of [
+      ["local-binaries", join(repo, "local-binaries")],
+      ["binaries", join(repo, "binaries")],
+    ] as const) {
+      tiers.push({
+        label,
+        root,
+        candidatesFor(relPath: string): string[] {
+          return [join(root, applyDefaultArch(relPath))];
+        },
+      });
+    }
+  } catch {
+    // Installed npm consumers do not carry a source repo root.
+  }
+
+  const root = join(packageRoot(), "wasm");
+  tiers.push({
+    label: "installed package",
+    root,
+    candidatesFor(relPath: string): string[] {
+      return packagedBinaryCandidates(relPath, root);
+    },
+  });
+  return tiers;
 }
 
 let cachedForkInstrumentationDisabledOutputs: Set<string> | null = null;
@@ -284,22 +328,11 @@ export function resolveBinary(relPath: string): string {
   const adjusted = applyDefaultArch(relPath);
   const checked: string[] = [];
   const candidates: string[] = [];
-  try {
-    const repo = findRepoRoot();
-    const local = join(repo, "local-binaries", adjusted);
-    checked.push(local);
-    candidates.push(local);
-    const fetched = join(repo, "binaries", adjusted);
-    checked.push(fetched);
-    candidates.push(fetched);
-  } catch {
-    // Installed npm consumers do not have a source repo root. Fall
-    // through to packaged assets below.
-  }
-  const packaged = packagedBinaryCandidates(relPath);
-  for (const candidate of packaged) {
-    checked.push(candidate);
-    candidates.push(candidate);
+  for (const tier of binaryCandidateTiers()) {
+    for (const candidate of tier.candidatesFor(relPath)) {
+      checked.push(candidate);
+      candidates.push(candidate);
+    }
   }
   const candidate = chooseBinaryCandidate(candidates, relPath);
   if (candidate) return candidate;
@@ -320,6 +353,53 @@ export function tryResolveBinary(relPath: string): string | null {
   } catch {
     return null;
   }
+}
+
+/**
+ * Resolve a related artifact set from one complete provenance tier.
+ *
+ * A partial or policy-invalid local tier is skipped as a whole when a later
+ * tier is complete. If artifacts exist across the candidate roots but no
+ * single root contains an accepted complete set, this throws instead of
+ * silently composing a package from unrelated builds. It returns `null` only
+ * when none of the requested artifacts exists in any tier.
+ *
+ * Returned paths preserve `relPaths` order and are guaranteed to share the
+ * same local, fetched, or installed-package root.
+ */
+export function tryResolveBinarySet(relPaths: readonly string[]): string[] | null {
+  if (relPaths.length === 0) return [];
+
+  let anyExisting = false;
+  const incomplete: string[] = [];
+  for (const tier of binaryCandidateTiers()) {
+    const selected: string[] = [];
+    const unavailable: string[] = [];
+    for (const relPath of relPaths) {
+      const candidates = tier.candidatesFor(relPath);
+      const existing = candidates.filter((candidate) => existsSync(candidate));
+      anyExisting ||= existing.length > 0;
+      const candidate = chooseBinaryCandidate(candidates, relPath);
+      if (candidate) {
+        selected.push(candidate);
+      } else if (existing.length > 0) {
+        unavailable.push(`${relPath} (rejected by artifact policy)`);
+      } else {
+        unavailable.push(`${relPath} (missing)`);
+      }
+    }
+    if (unavailable.length === 0) return selected;
+    incomplete.push(
+      `  ${tier.label} (${tier.root}): ${unavailable.join(", ")}`,
+    );
+  }
+
+  if (!anyExisting) return null;
+  throw new Error(
+    "Package artifact closure is incomplete: no single provenance tier " +
+      "contains every accepted artifact, and tiers will not be mixed.\n" +
+      incomplete.join("\n"),
+  );
 }
 
 /** Returns the absolute path of binaries/ whether or not it exists. */

@@ -77,8 +77,15 @@ name = "zip"
 wasm = "zip.so"
 
 # intl is a normal, opt-in PHP extension. It statically absorbs the ICU and
-# PIC libc++ archives, while ICU's common data remains a separately declared
-# icu package file that VFS consumers stage at /usr/lib/php/icu.dat.
+# PIC libc++ archives. PHP copies the exact resolved ICU common-data bytes into
+# its own declared runtime closure for VFS consumers.
 [[outputs]]
 name = "intl"
 wasm = "intl.so"
+
+# Non-Wasm runtime closure for intl. The resolver/archive mirrors this at
+# programs/<arch>/php/icu.dat; VFS consumers install it at the declared guest
+# path instead of scanning a library cache or injecting a host-only override.
+[[runtime_files]]
+artifact = "icu.dat"
+guest_path = "/usr/lib/php/icu.dat"

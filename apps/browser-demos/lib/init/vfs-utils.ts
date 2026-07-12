@@ -5,39 +5,10 @@
  * and are used by demo build scripts that construct VFS images.
  */
 import type { MemoryFileSystem } from "../../../../host/src/vfs/memory-fs";
-
-const encoder = new TextEncoder();
-
-/**
- * Write a text file to the VFS. Opens with O_WRONLY|O_CREAT|O_TRUNC,
- * writes the encoded content, and closes the fd.
- */
-export function writeVfsFile(
-  fs: MemoryFileSystem,
-  path: string,
-  content: string,
-  mode = 0o644,
-): void {
-  const data = encoder.encode(content);
-  const fd = fs.open(path, 0o1101, mode); // O_WRONLY | O_CREAT | O_TRUNC
-  fs.write(fd, data, 0, data.length);
-  fs.close(fd);
-}
-
-/**
- * Write a binary file to the VFS. Opens with O_WRONLY|O_CREAT|O_TRUNC,
- * writes the raw bytes, and closes the fd.
- */
-export function writeVfsBinary(
-  fs: MemoryFileSystem,
-  path: string,
-  data: Uint8Array,
-  mode = 0o755,
-): void {
-  const fd = fs.open(path, 0o1101, mode); // O_WRONLY | O_CREAT | O_TRUNC
-  fs.write(fd, data, 0, data.length);
-  fs.close(fd);
-}
+export {
+  writeVfsBinary,
+  writeVfsFile,
+} from "../../../../host/src/vfs/image-helpers";
 
 /**
  * Create a directory, ignoring EEXIST errors.
@@ -79,4 +50,3 @@ export function ensureDirRecursive(
     ensureDir(fs, current, mode);
   }
 }
-

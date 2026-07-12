@@ -28,8 +28,27 @@ export function writeVfsBinary(
   mode = 0o755,
 ): void {
   const fd = fs.open(path, O_WRONLY_CREAT_TRUNC, mode);
-  fs.write(fd, data, 0, data.length);
-  fs.close(fd);
+  try {
+    let offset = 0;
+    while (offset < data.length) {
+      const remaining = data.subarray(offset);
+      const written = fs.write(fd, remaining, offset, remaining.length);
+      if (
+        !Number.isInteger(written)
+        || written <= 0
+        || written > remaining.length
+      ) {
+        const detail = written < 0
+          ? `write failed with error code ${written}`
+          : `write made invalid progress ` +
+            `(${written} of ${remaining.length} remaining bytes)`;
+        throw new Error(`Failed to stage complete VFS file ${path}: ${detail}`);
+      }
+      offset += written;
+    }
+  } finally {
+    fs.close(fd);
+  }
 }
 
 /** mkdir, swallowing EEXIST. */

@@ -1,68 +1,114 @@
-import { describe, it, expect } from "vitest";
-import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
+import { beforeAll, describe, it, expect } from "vitest";
+import { createHash } from "node:crypto";
+import { existsSync, readFileSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
-import { homedir } from "node:os";
 import { runCentralizedProgram } from "../../../../host/test/centralized-test-helper";
 import { tryResolveBinary } from "../../../../host/src/binary-resolver";
-import { NodePlatformIO } from "../../../../host/src/platform/node";
+import { MemoryFileSystem } from "../../../../host/src/vfs/memory-fs";
+import {
+  ensureDirRecursive,
+  writeVfsBinary,
+} from "../../../../host/src/vfs/image-helpers";
+import { resolvePackageRuntimeFile } from "../../../../scripts/package-runtime-file";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
+const icuRuntime = resolvePackageRuntimeFile(
+  join(__dirname, "../../../.."),
+  "php",
+  "icu.dat",
+);
 
 // intl is a RUNTIME-OPTIONAL side module: base php.wasm is built with
 // --enable-intl=shared, so intl is NOT compiled in. intl.so is loaded on
 // demand via `extension=intl.so`, and pulls its ICU common data from the
 // separate icu.dat at runtime (udata_setCommonData in intl-icu-data-loader.c).
 const phpBinaryPath =
-  tryResolveBinary("programs/php/php.wasm") ??
+  icuRuntime?.closureHostPaths.get("php/php.wasm") ??
   join(__dirname, "../php-src/sapi/cli/php");
-const intlSoPath = tryResolveBinary("programs/php/intl.so");
+const intlSoPath = icuRuntime?.closureHostPaths.get("php/intl.so");
+const rootfsPath =
+  tryResolveBinary("rootfs.vfs") ??
+  tryResolveBinary("programs/rootfs.vfs") ??
+  join(__dirname, "../../../../host/wasm/rootfs.vfs");
+const INTL_GUEST_PATH = "/usr/lib/php/extensions/intl.so";
+const PHP_INTL_VFS_MAX_BYTES = 256 * 1024 * 1024;
+const O_RDONLY = 0;
 
-// icu.dat remains owned by the ICU library package, not copied into PHP's
-// program outputs. CI/manual callers can name the exact resolved file; the
-// cache fallback is restricted to this checkout's ICU version and revision so
-// an unrelated newer ICU build cannot silently satisfy the test.
-function findIcuDat(): string | undefined {
-  const explicit = process.env.PHP_INTL_ICU_DATA;
-  if (explicit !== undefined) {
-    if (!existsSync(explicit) || !statSync(explicit).isFile()) {
-      throw new Error(`PHP_INTL_ICU_DATA is not a regular file: ${explicit}`);
-    }
-    return explicit;
-  }
-
-  const icuDir = join(__dirname, "../../icu");
-  const version = readFileSync(join(icuDir, "package.toml"), "utf8")
-    .match(/^version\s*=\s*"([^"]+)"/m)?.[1];
-  const revision = readFileSync(join(icuDir, "build.toml"), "utf8")
-    .match(/^revision\s*=\s*(\d+)/m)?.[1];
-  if (!version || !revision) return undefined;
-
-  const libsDir = join(homedir(), ".cache/kandelo/libs");
-  if (!existsSync(libsDir)) return undefined;
-  const expectedPrefix = `icu-${version}-rev${revision}-wasm32-`;
-  const candidates = readdirSync(libsDir)
-    .filter((n) => n.startsWith(expectedPrefix) && !n.includes(".tmp-"))
-    .map((n) => join(libsDir, n, "share", "icu.dat"))
-    .filter((p) => existsSync(p));
-  if (candidates.length === 0) return undefined;
-  return candidates.sort((a, b) => statSync(b).mtimeMs - statSync(a).mtimeMs)[0];
+if (intlSoPath && !icuRuntime) {
+  throw new Error(
+    "PHP intl.so is present but the declared php:icu.dat runtime file is not materialized",
+  );
 }
-const icuDatPath = findIcuDat();
 
-const READY = existsSync(phpBinaryPath) && intlSoPath != null && icuDatPath != null;
+const READY = existsSync(phpBinaryPath)
+  && intlSoPath != null
+  && existsSync(rootfsPath);
+let intlRootfsImage: Uint8Array;
+
+function readVfsBinary(fs: MemoryFileSystem, path: string): Uint8Array {
+  const size = fs.stat(path).size;
+  const bytes = new Uint8Array(size);
+  const fd = fs.open(path, O_RDONLY, 0);
+  let offset = 0;
+  try {
+    while (offset < bytes.length) {
+      const read = fs.read(
+        fd,
+        bytes.subarray(offset),
+        null,
+        bytes.length - offset,
+      );
+      if (read <= 0) {
+        throw new Error(
+          `short VFS read for ${path}: ${offset} of ${bytes.length}`,
+        );
+      }
+      offset += read;
+    }
+  } finally {
+    fs.close(fd);
+  }
+  return bytes;
+}
+
+function sha256(bytes: Uint8Array): string {
+  return createHash("sha256").update(bytes).digest("hex");
+}
 
 describe.skipIf(!READY)("PHP intl as a runtime-loadable side module", () => {
+  beforeAll(async () => {
+    const fs = MemoryFileSystem
+      .fromImage(new Uint8Array(readFileSync(rootfsPath)))
+      .rebaseToNewFileSystem(PHP_INTL_VFS_MAX_BYTES);
+    ensureDirRecursive(fs, dirname(INTL_GUEST_PATH));
+    ensureDirRecursive(fs, dirname(icuRuntime!.guestPath));
+    writeVfsBinary(
+      fs,
+      INTL_GUEST_PATH,
+      new Uint8Array(readFileSync(intlSoPath!)),
+      0o755,
+    );
+    const icuBytes = new Uint8Array(readFileSync(icuRuntime!.hostPath));
+    writeVfsBinary(
+      fs,
+      icuRuntime!.guestPath,
+      icuBytes,
+      icuRuntime!.mode,
+    );
+    const stagedIcuBytes = readVfsBinary(fs, icuRuntime!.guestPath);
+    expect(stagedIcuBytes.byteLength).toBe(icuBytes.byteLength);
+    expect(sha256(stagedIcuBytes)).toBe(sha256(icuBytes));
+    intlRootfsImage = await fs.saveImage();
+  });
+
   // Proves the base binary is genuinely ICU-free / intl-free: intl only
   // appears when explicitly loaded. This is the whole point of the design.
   it("base php.wasm does NOT include intl", async () => {
     const { stdout, exitCode } = await runCentralizedProgram({
       programPath: phpBinaryPath,
       argv: ["php", "-m"],
-      // Same host-I/O adapter as the other cases: `php -m` needs no files,
-      // but it keeps the harness off the "default" rootfs.vfs image (not a
-      // fixture this package ships) so the run stays self-contained.
-      io: new NodePlatformIO(),
+      rootfsImage: intlRootfsImage,
     });
     expect(exitCode).toBe(0);
     expect(stdout.toLowerCase()).not.toContain("intl");
@@ -71,10 +117,9 @@ describe.skipIf(!READY)("PHP intl as a runtime-loadable side module", () => {
   it("loads intl.so at runtime via extension=", async () => {
     const { stdout, exitCode } = await runCentralizedProgram({
       programPath: phpBinaryPath,
-      argv: ["php", "-d", `extension=${intlSoPath}`, "-r",
+      argv: ["php", "-d", `extension=${INTL_GUEST_PATH}`, "-r",
         'echo extension_loaded("intl") ? "intl-loaded" : "intl-missing";'],
-      env: [`KANDELO_ICU_DAT_PATH=${icuDatPath}`],
-      io: new NodePlatformIO(),
+      rootfsImage: intlRootfsImage,
     });
     expect(stdout).toContain("intl-loaded");
     expect(exitCode).toBe(0);
@@ -85,10 +130,9 @@ describe.skipIf(!READY)("PHP intl as a runtime-loadable side module", () => {
   it("intl uses ICU data (Locale::getDisplayLanguage)", async () => {
     const { stdout, exitCode } = await runCentralizedProgram({
       programPath: phpBinaryPath,
-      argv: ["php", "-d", `extension=${intlSoPath}`, "-r",
+      argv: ["php", "-d", `extension=${INTL_GUEST_PATH}`, "-r",
         'echo Locale::getDisplayLanguage("fr", "en");'],
-      env: [`KANDELO_ICU_DAT_PATH=${icuDatPath}`],
-      io: new NodePlatformIO(),
+      rootfsImage: intlRootfsImage,
     });
     expect(stdout).toContain("French");
     expect(exitCode).toBe(0);
@@ -98,14 +142,13 @@ describe.skipIf(!READY)("PHP intl as a runtime-loadable side module", () => {
   it("intl Collator sorts with locale rules", async () => {
     const { stdout, exitCode } = await runCentralizedProgram({
       programPath: phpBinaryPath,
-      argv: ["php", "-d", `extension=${intlSoPath}`, "-r", `
+      argv: ["php", "-d", `extension=${INTL_GUEST_PATH}`, "-r", `
         $c = new Collator("en_US");
         $a = ["banana", "apple", "cherry"];
         $c->sort($a);
         echo implode(",", $a);
       `],
-      env: [`KANDELO_ICU_DAT_PATH=${icuDatPath}`],
-      io: new NodePlatformIO(),
+      rootfsImage: intlRootfsImage,
     });
     expect(stdout).toContain("apple,banana,cherry");
     expect(exitCode).toBe(0);
@@ -118,7 +161,7 @@ describe.skipIf(!READY)("PHP intl as a runtime-loadable side module", () => {
   it("intl and icu.dat survive pcntl_fork replay", async () => {
     const { stdout, stderr, exitCode } = await runCentralizedProgram({
       programPath: phpBinaryPath,
-      argv: ["php", "-d", `extension=${intlSoPath}`, "-r", `
+      argv: ["php", "-d", `extension=${INTL_GUEST_PATH}`, "-r", `
         $before = Locale::getDisplayLanguage("fr", "en");
         $pid = pcntl_fork();
         if ($pid < 0) { fwrite(STDERR, "fork-failed"); exit(20); }
@@ -138,8 +181,7 @@ describe.skipIf(!READY)("PHP intl as a runtime-loadable side module", () => {
           exit(22);
         }
       `],
-      env: [`KANDELO_ICU_DAT_PATH=${icuDatPath}`],
-      io: new NodePlatformIO(),
+      rootfsImage: intlRootfsImage,
     });
     expect(stderr).toBe("");
     expect(stdout).toContain("child=French");

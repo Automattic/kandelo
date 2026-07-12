@@ -1262,7 +1262,7 @@ echo "==> linking intl.so from ${#INTL_OBJS[@]} objects + ICU static libs + libc
 # archives are listed in dependency order (i18n -> io -> uc -> data), then
 # libc++/libc++abi. A -shared PIC module requires every input to be PIC, so the
 # libc++ PIC variants are named explicitly to win over the non-PIC sysroot ones.
-wasm32posix-cc -shared -fPIC -o "$BIN_DIR/intl.so" \
+wasm32posix-cc -shared -fPIC -Wl,--export=__tls_base -o "$BIN_DIR/intl.so" \
     "${INTL_OBJS[@]}" \
     ext/intl/kandelo_icu_data_loader.o \
     "$ICU_PREFIX/lib/libicui18n.a" \
@@ -1272,6 +1272,13 @@ wasm32posix-cc -shared -fPIC -o "$BIN_DIR/intl.so" \
     "$LIBCXX_PREFIX/lib/libc++-pic.a" \
     "$LIBCXX_PREFIX/lib/libc++abi-pic.a"
 echo "==> intl.so: $(wc -c < "$BIN_DIR/intl.so") bytes"
+
+# Make the program package's runtime closure self-contained. ICU remains the
+# build dependency/source of truth; PHP's archive carries these exact resolved
+# bytes so normal local/fetched materialization can stage the declared guest
+# file without inspecting the library cache.
+cp "$ICU_PREFIX/share/icu.dat" "$BIN_DIR/icu.dat"
+chmod 0644 "$BIN_DIR/icu.dat"
 
 # Copy to bin/ with .wasm extension (needed for Vite browser demos)
 cp sapi/cli/php "$BIN_DIR/php.wasm"
@@ -1319,4 +1326,5 @@ if [ -z "${WASM_POSIX_DEP_OUT_DIR:-}" ]; then
     install_local_binary php "$BIN_DIR/zend_test.so"
     install_local_binary php "$BIN_DIR/zip.so"
     install_local_binary php "$BIN_DIR/intl.so"
+    install_local_runtime_file php "$BIN_DIR/icu.dat"
 fi
