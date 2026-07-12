@@ -2,8 +2,8 @@
 
 Trusted publish workflows generate this directory in the
 `Automattic/kandelo-homebrew` tap. Checked-in files make metadata reviewable in
-the tap commit, and the same payload should be uploaded to a tap release named
-`bottles-abi-v<N>` for stable automation fetches.
+the tap commit. `bottles-abi-v<N>` is the sidecar ABI namespace; the
+current workflow does not duplicate this payload into a GitHub Release.
 
 ## Files
 
@@ -27,7 +27,7 @@ validator development. It is not published metadata.
 The publish workflow generates this directory with:
 
 ```bash
-cargo xtask homebrew-sidecars \
+scripts/dev-shell.sh cargo xtask homebrew-sidecars \
   --tap-root /path/to/kandelo-homebrew \
   --input /path/to/sidecars-input.json \
   --previous-metadata /path/to/previous/Kandelo/metadata.json
@@ -39,22 +39,24 @@ validation outcome lists, and local `bottle_file` paths. The generator hashes
 the local bottle files itself and writes the resulting `sha256` and `bytes`
 into metadata, formula sidecars, link manifests, and provenance reports.
 
+The publisher carries this evidence across fresh jobs only in strict data
+handoffs. Artifact-provided scripts and environment files are rejected. The
+trusted in-tree generator creates sidecars on a read-only verification runner,
+and a separate tap finalizer validates the complete publication payload as
+inert data before acquiring push credentials.
+
 When a current bottle is `failed`, `pending`, or `building`,
 `--previous-metadata` provides the last-green fallback. The fallback is copied
 only for the same ABI, package, version, rebuild, and arch.
 
 ## Maintenance Workflows
 
-The reusable maintenance workflow supports three operator paths:
+The reusable maintenance workflow supports two operator paths:
 
 - `rebuild` builds and uploads replacement bottles, then publishes generated
   sidecars through the same validator and tap commit path as normal publish.
   When expected cache keys are supplied, formula/arch pairs whose current
   successful metadata already matches are skipped unless `force` is set.
-- `repair-only` skips bottle build and upload. The trusted sidecar command gets
-  `KANDELO_HOMEBREW_REPAIR_ONLY=true` and
-  `KANDELO_HOMEBREW_PREVIOUS_METADATA` so it can regenerate sidecars from
-  existing bottle evidence without changing bottle bytes.
 - `rollback` records the rollback under `Kandelo/reports/rollbacks/` without
   replacing `Kandelo/metadata.json`. If a rollback publishes a non-success
   metadata payload, it must preserve the previous successful bottle as
@@ -71,7 +73,7 @@ formats, and basic path syntax.
 
 The semantic validator must still check cross-file and artifact facts:
 
-- metadata ABI matches the `bottles-abi-v<N>` release;
+- metadata ABI matches the `bottles-abi-v<N>` namespace;
 - formula sidecars match their package entry in `metadata.json`;
 - bottle `arch` and `bottle_tag` agree;
 - browser-compatible entries have browser validation evidence;
@@ -83,7 +85,8 @@ The semantic validator must still check cross-file and artifact facts:
 Run the repo-local validator against a generated tap checkout:
 
 ```bash
-cargo xtask homebrew-validate --tap-root /path/to/kandelo-homebrew
+scripts/dev-shell.sh cargo xtask homebrew-validate \
+  --tap-root /path/to/kandelo-homebrew
 ```
 
 The validator checks the current sidecar JSON, link-manifest consistency,
@@ -111,7 +114,7 @@ Build a precomposed Homebrew-prefix image from generated sidecars and verified
 bottle bytes with:
 
 ```bash
-npx tsx images/vfs/scripts/build-homebrew-vfs-image.ts \
+scripts/dev-shell.sh npx tsx images/vfs/scripts/build-homebrew-vfs-image.ts \
   --metadata /path/to/kandelo-homebrew/Kandelo/metadata.json \
   --tap-root /path/to/kandelo-homebrew \
   --package hello \
@@ -139,6 +142,12 @@ last-green `fallback`. A successful report is build evidence for the precomposed
 image only; Node and browser runtime support still require their own smoke
 tests before publishing gallery or user-facing claims.
 
+In publisher validation, the package payload is the current Homebrew bottle:
+the local bottle for a dry run, or the exact anonymously read-back GHCR digest
+for a write run. Kandelo's complete ABI release graph is fetched separately as
+the kernel, host-runtime, and VFS platform prerequisite; it is not the source of
+the migrated package payload.
+
 ## Browser Gallery Assets
 
 The trusted publisher may expose a Homebrew-built image to the browser gallery
@@ -155,7 +164,7 @@ On success, sidecars record `runtime_support = ["node", "browser"]` and
 assets are generated with:
 
 ```bash
-scripts/homebrew-create-browser-gallery.sh \
+scripts/dev-shell.sh bash scripts/homebrew-create-browser-gallery.sh \
   --metadata /path/to/kandelo-homebrew/Kandelo/metadata.json \
   --image target/homebrew-hello.vfs.zst \
   --report target/homebrew-hello.vfs-report.json \
@@ -165,7 +174,9 @@ scripts/homebrew-create-browser-gallery.sh \
 
 The script writes `gallery.json`, `index.toml`, and a `.tar.zst` archive whose
 payload is the browser-smoked VFS image. It refuses metadata where the wasm32
-bottle is not `status = "success"` and `browser_compatible = true`.
+bottle is not `status = "success"` and `browser_compatible = true`. The trusted
+publisher retains these files as run-scoped diagnostics; durable gallery
+release publication requires a separate immutable asset contract.
 
 `provenance_json.sha256` is a normalized self-hash: compute the sha256 of the
 pretty-printed provenance document after replacing

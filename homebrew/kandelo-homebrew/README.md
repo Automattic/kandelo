@@ -20,8 +20,8 @@ Kandelo/
   formula/<formula>.json
   link/<formula>-<version>-rebuild<N>-<arch>.json
   reports/<formula>-<version>-rebuild<N>-<arch>.provenance.json
-  reports/failures/<timestamp>-<formula>-<arch>.json
-  reports/rollbacks/<timestamp>-<formula>-<arch>.json
+  reports/failures/<timestamp>-run-<id>-attempt-<n>-<formula>-<arch>.json
+  reports/rollbacks/<timestamp>-run-<id>-attempt-<n>-<formula>-<arch>.json
 ```
 
 This template currently contains:
@@ -41,27 +41,47 @@ This template currently contains:
 
 The reusable trusted publisher lives in the main Kandelo repository at
 `.github/workflows/reusable-homebrew-bottle-publish.yml`. It is meant to be
-called by the tap repository after its formulae exist. The workflow
-builds selected formula bottles through `scripts/dev-shell.sh`, uploads bottle
-bytes to the GHCR/Homebrew blob URL shape, publishes generated `Kandelo/`
-sidecars into the tap, publishes browser gallery assets only after a successful
-browser smoke, and records failed attempts under
-`Kandelo/reports/failures/` without replacing the last-green
-`Kandelo/metadata.json`.
+called by the tap repository after its formulae exist. The normal tap caller is
+`.github/workflows/publish-bottles.yml`, displayed as
+**Publish Kandelo bottles**.
 
-Manual rebuilds, repair-only metadata regeneration, and rollback reporting are
+The caller grants the maximum permission ceiling. Four fresh runner roles then
+downgrade it: a read-only build/test job, a `packages: write` uploader without
+tap write access, a read-only anonymous/runtime verifier, and a
+`contents: write` tap finalizer without package write access. Dry runs never
+schedule the uploader or finalizer. Jobs exchange strict, bounded data
+handoffs; Formula builds cannot pass scripts, environment files, or credentials
+to a privileged runner.
+
+The build job produces the local Homebrew bottle. A dry verifier consumes those
+local bytes, while a write verifier anonymously reads back the exact GHCR
+digest and verifies its SHA-256 and byte count before using it. The verifier
+fetches Kandelo's complete ABI release graph only as kernel, host-runtime, and
+VFS platform prerequisites; the migrated package payload comes from the
+Homebrew bottle, not the package registry archive. The workflow retains browser
+gallery output as run-scoped diagnostics and does not publish sidecars or
+gallery assets to a GitHub Release.
+
+Only after the complete publication handoff is validated as inert data does the
+finalizer publish generated `Formula/` and `Kandelo/` state. Failed attempts go
+under `Kandelo/reports/failures/` without replacing last-green
+`Kandelo/metadata.json`. The bottle root is always derived from the lowercase
+tap repository identity; callers cannot override it.
+
+Manual rebuilds and rollback reporting are
 handled by `.github/workflows/reusable-homebrew-bottle-maintenance.yml`.
 Rebuild mode can skip formula/arch pairs whose current successful metadata
 already carries the expected cache key, unless the caller sets `force`.
-Repair-only mode bypasses bottle build and upload and expects the trusted
-sidecar command to regenerate metadata from existing bottle evidence. Rollback
-mode records a report under `Kandelo/reports/rollbacks/` while preserving
-last-green metadata; package deletion is exceptional and must be documented with
-both the deleted package URL and the operational reason.
+Rollback mode records a report under `Kandelo/reports/rollbacks/` while
+preserving last-green metadata; package deletion is exceptional and must be
+documented with both the deleted package URL and the operational reason.
 
-Sidecar generation from produced bottle bytes is a separate handoff: the
-workflow requires a trusted `sidecar-command` to populate
-`$KANDELO_HOMEBREW_SIDECAR_ROOT` before sidecars are published and validated.
+The privileged caller must remain disabled until lossless under-lock peer and
+sibling-architecture sidecar composition plus Formula-source drift protection
+land in `Automattic/kandelo#885`. New GHCR packages are private by default.
+Changing one to public is an explicit approval boundary; the workflow does not
+change package visibility. A write publication cannot finalize until its bottle
+passes anonymous digest readback.
 
 Homebrew formula and bottle metadata remain the contract consumed by `brew`.
 Kandelo sidecar metadata is the bounded contract consumed by host VFS tooling,

@@ -39,8 +39,40 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  rebuild-or-repair:
-    if: ${{ inputs.mode == 'rebuild' || inputs.mode == 'repair-only' }}
+  validate:
+    runs-on: ubuntu-latest
+    permissions: {}
+    steps:
+      - name: Validate maintenance mode
+        shell: bash
+        env:
+          CALLER_EVENT_NAME: ${{ github.event_name }}
+          CALLER_REF: ${{ github.ref }}
+          CALLER_REPOSITORY: ${{ github.repository }}
+          CALLER_WORKFLOW_REF: ${{ github.workflow_ref }}
+          MODE: ${{ inputs.mode }}
+        run: |
+          set -euo pipefail
+          [ "$CALLER_REPOSITORY" = "Automattic/kandelo-homebrew" ] || {
+            echo "::error::maintenance requires the first-party tap caller"; exit 2;
+          }
+          [ "$CALLER_REF" = "refs/heads/main" ] || {
+            echo "::error::maintenance requires the tap main branch"; exit 2;
+          }
+          [ "$CALLER_EVENT_NAME" = "repository_dispatch" ] || {
+            echo "::error::maintenance requires the reviewed repository_dispatch caller"; exit 2;
+          }
+          [ "$CALLER_WORKFLOW_REF" = "Automattic/kandelo-homebrew/.github/workflows/maintain-bottles.yml@refs/heads/main" ] || {
+            echo "::error::maintenance requires the reviewed tap maintenance workflow"; exit 2;
+          }
+          case "$MODE" in
+            rebuild|rollback) ;;
+            *) echo "::error::mode must be rebuild or rollback"; exit 2 ;;
+          esac
+
+  rebuild:
+    needs: [validate]
+    if: ${{ inputs.mode == 'rebuild' }}
     permissions:
       contents: write
       packages: write
@@ -56,10 +88,10 @@ jobs:
       release-tag: ${{ inputs.release-tag }}
       expected-cache-keys: ${{ inputs.expected-cache-keys }}
       force: ${{ inputs.force }}
-      repair-only: ${{ inputs.mode == 'repair-only' }}
       dry-run: false
 
   rollback:
+    needs: [validate]
     if: ${{ inputs.mode == 'rollback' }}
     runs-on: ubuntu-latest
     timeout-minutes: 30
@@ -74,10 +106,12 @@ jobs:
           repository: Automattic/kandelo-homebrew
           ref: main
           path: tap
+          fetch-depth: 0
 
       - name: Checkout Kandelo workflow source
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
+          persist-credentials: false
           repository: Automattic/kandelo
           ref: main
           path: kandelo
@@ -97,6 +131,7 @@ jobs:
       - name: Record rollback without replacing last-green metadata
         shell: bash
         env:
+          GH_TOKEN: ${{ github.token }}
           KANDELO_HOMEBREW_ARCH: ${{ inputs.arches }}
           KANDELO_HOMEBREW_ROLLBACK_REASON: ${{ inputs.rollback-reason }}
           KANDELO_HOMEBREW_ROLLBACK_REF: ${{ inputs.rollback-ref }}

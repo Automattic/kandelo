@@ -1,0 +1,349 @@
+#!/usr/bin/env bash
+# Validate the complete, credential-free output of one Homebrew bottle build.
+set -euo pipefail
+
+HANDOFF=""
+FORMULA=""
+ARCH=""
+RELEASE_TAG=""
+TAP_REPOSITORY=""
+TAP_COMMIT=""
+KANDELO_COMMIT=""
+BOTTLE_ROOT_URL=""
+OUT_ENV=""
+OUT_BOTTLE_JSON=""
+
+usage() {
+  cat >&2 <<'EOF'
+usage: scripts/homebrew-validate-build-handoff.sh --handoff <dir> --formula <name> --arch <wasm32|wasm64> --release-tag <tag> --tap-repository <owner/repo> --tap-commit <sha> --kandelo-commit <sha> --bottle-root-url <url> [--out-env <path>] [--out-bottle-json <path>]
+
+Validates an untrusted build handoff against values from the publisher plan.
+The handoff must contain exactly manifest.json, bottle.json, and the bottle
+archive named by the manifest. --out-env, when provided, is written outside
+the handoff only after every check succeeds. --out-bottle-json reconstructs
+the minimal metadata accepted by Homebrew; raw artifact JSON is never copied.
+EOF
+}
+
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --handoff) HANDOFF="${2:-}"; shift 2 ;;
+    --formula) FORMULA="${2:-}"; shift 2 ;;
+    --arch) ARCH="${2:-}"; shift 2 ;;
+    --release-tag) RELEASE_TAG="${2:-}"; shift 2 ;;
+    --tap-repository) TAP_REPOSITORY="${2:-}"; shift 2 ;;
+    --tap-commit) TAP_COMMIT="${2:-}"; shift 2 ;;
+    --kandelo-commit) KANDELO_COMMIT="${2:-}"; shift 2 ;;
+    --bottle-root-url) BOTTLE_ROOT_URL="${2:-}"; shift 2 ;;
+    --out-env) OUT_ENV="${2:-}"; shift 2 ;;
+    --out-bottle-json) OUT_BOTTLE_JSON="${2:-}"; shift 2 ;;
+    -h|--help) usage; exit 0 ;;
+    *) echo "homebrew-validate-build-handoff.sh: unknown flag $1" >&2; usage; exit 2 ;;
+  esac
+done
+
+require() {
+  local name="$1" value="$2"
+  if [ -z "$value" ]; then
+    echo "homebrew-validate-build-handoff.sh: --$name is required" >&2
+    exit 2
+  fi
+}
+
+for requirement in \
+  "handoff:$HANDOFF" \
+  "formula:$FORMULA" \
+  "arch:$ARCH" \
+  "release-tag:$RELEASE_TAG" \
+  "tap-repository:$TAP_REPOSITORY" \
+  "tap-commit:$TAP_COMMIT" \
+  "kandelo-commit:$KANDELO_COMMIT" \
+  "bottle-root-url:$BOTTLE_ROOT_URL"; do
+  require "${requirement%%:*}" "${requirement#*:}"
+done
+
+if ! [[ "$FORMULA" =~ ^[a-z0-9][a-z0-9._-]*$ ]]; then
+  echo "homebrew-validate-build-handoff.sh: invalid formula: $FORMULA" >&2
+  exit 2
+fi
+if ! [[ "$TAP_REPOSITORY" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]]; then
+  echo "homebrew-validate-build-handoff.sh: invalid tap repository: $TAP_REPOSITORY" >&2
+  exit 2
+fi
+case "$ARCH" in
+  wasm32|wasm64) ;;
+  *) echo "homebrew-validate-build-handoff.sh: invalid arch: $ARCH" >&2; exit 2 ;;
+esac
+if ! [[ "$RELEASE_TAG" =~ ^bottles-abi-v[0-9]+$ ]]; then
+  echo "homebrew-validate-build-handoff.sh: invalid release tag: $RELEASE_TAG" >&2
+  exit 2
+fi
+if ! [[ "$TAP_COMMIT" =~ ^[0-9a-f]{40}$ ]]; then
+  echo "homebrew-validate-build-handoff.sh: invalid tap commit: $TAP_COMMIT" >&2
+  exit 2
+fi
+if ! [[ "$KANDELO_COMMIT" =~ ^[0-9a-f]{40}$ ]]; then
+  echo "homebrew-validate-build-handoff.sh: invalid Kandelo commit: $KANDELO_COMMIT" >&2
+  exit 2
+fi
+if ! [[ "$BOTTLE_ROOT_URL" =~ ^https://[^[:space:]]+$ ]] || [[ "$BOTTLE_ROOT_URL" == */ ]]; then
+  echo "homebrew-validate-build-handoff.sh: invalid bottle root URL: $BOTTLE_ROOT_URL" >&2
+  exit 2
+fi
+if [ ! -d "$HANDOFF" ] || [ -L "$HANDOFF" ]; then
+  echo "homebrew-validate-build-handoff.sh: handoff must be a real directory: $HANDOFF" >&2
+  exit 1
+fi
+
+HANDOFF="$(cd "$HANDOFF" && pwd -P)"
+entries=()
+while IFS= read -r -d '' entry; do
+  entries+=("$entry")
+done < <(find "$HANDOFF" -mindepth 1 -maxdepth 1 -print0)
+
+if [ "${#entries[@]}" -ne 3 ]; then
+  echo "homebrew-validate-build-handoff.sh: handoff must contain exactly three files" >&2
+  exit 1
+fi
+for entry in "${entries[@]}"; do
+  if [ ! -f "$entry" ] || [ -L "$entry" ]; then
+    echo "homebrew-validate-build-handoff.sh: handoff entry is not a regular non-symlink file: $(basename "$entry")" >&2
+    exit 1
+  fi
+done
+
+MANIFEST="$HANDOFF/manifest.json"
+BOTTLE_JSON="$HANDOFF/bottle.json"
+BOTTLE_ARCHIVE="$HANDOFF/bottle.tar.gz"
+if [ ! -f "$MANIFEST" ] || [ -L "$MANIFEST" ] || \
+   [ ! -f "$BOTTLE_JSON" ] || [ -L "$BOTTLE_JSON" ] || \
+   [ ! -f "$BOTTLE_ARCHIVE" ] || [ -L "$BOTTLE_ARCHIVE" ]; then
+  echo "homebrew-validate-build-handoff.sh: manifest.json, bottle.json, and bottle.tar.gz are required regular files" >&2
+  exit 1
+fi
+
+file_size() {
+  wc -c <"$1" | tr -d '[:space:]'
+}
+
+require_max_size() {
+  local label="$1" path="$2" maximum="$3" size
+  size="$(file_size "$path")"
+  if ! [[ "$size" =~ ^[0-9]+$ ]] || [ "$size" -gt "$maximum" ]; then
+    echo "homebrew-validate-build-handoff.sh: $label exceeds $maximum bytes" >&2
+    exit 1
+  fi
+}
+
+require_max_size "manifest.json" "$MANIFEST" 65536
+require_max_size "bottle.json" "$BOTTLE_JSON" 1048576
+require_max_size "compressed bottle" "$BOTTLE_ARCHIVE" 536870912
+
+manifest_error="$(mktemp)"
+trap 'rm -f "$manifest_error"' EXIT
+if ! jq -e \
+  --arg formula "$FORMULA" \
+  --arg arch "$ARCH" \
+  --arg release_tag "$RELEASE_TAG" \
+  --arg tap_repository "$TAP_REPOSITORY" \
+  --arg tap_commit "$TAP_COMMIT" \
+  --arg kandelo_commit "$KANDELO_COMMIT" \
+  --arg bottle_root_url "$BOTTLE_ROOT_URL" '
+    def exact_keys($expected):
+      type == "object" and keys == ($expected | sort);
+    exact_keys([
+      "arch", "bottle", "bottle_root_url", "formula", "kandelo_commit",
+      "release_tag", "schema", "tap_commit", "tap_repository"
+    ]) and
+    .schema == 1 and
+    .formula == $formula and
+    .arch == $arch and
+    .release_tag == $release_tag and
+    .tap_repository == $tap_repository and
+    .tap_commit == $tap_commit and
+    .kandelo_commit == $kandelo_commit and
+    .bottle_root_url == $bottle_root_url and
+    (.bottle | exact_keys(["archive", "bytes", "cellar", "json", "sha256", "tag"])) and
+    .bottle.json == "bottle.json" and
+    .bottle.tag == ($arch + "_kandelo") and
+    (.bottle.cellar |
+      . == "any" or . == "any_skip_relocation" or
+      . == "/home/linuxbrew/.linuxbrew/Cellar") and
+    (.bottle.sha256 | type == "string" and test("^[0-9a-f]{64}$")) and
+    (.bottle.bytes | type == "number" and . >= 0 and floor == .) and
+    .bottle.archive == "bottle.tar.gz"
+  ' "$MANIFEST" >/dev/null 2>"$manifest_error"; then
+  echo "homebrew-validate-build-handoff.sh: manifest.json violates the strict build-handoff schema" >&2
+  sed -n '1,3p' "$manifest_error" >&2
+  exit 1
+fi
+
+ARCHIVE_NAME="$(jq -r '.bottle.archive' "$MANIFEST")"
+EXPECTED_SHA256="$(jq -r '.bottle.sha256' "$MANIFEST")"
+EXPECTED_BYTES="$(jq -r '.bottle.bytes' "$MANIFEST")"
+BOTTLE_RELOCATION_CELLAR="$(jq -r '.bottle.cellar' "$MANIFEST")"
+BOTTLE_TAG="${ARCH}_kandelo"
+BOTTLE_ARCHIVE="$HANDOFF/$ARCHIVE_NAME"
+OWNER_LOWER="$(printf '%s' "${TAP_REPOSITORY%%/*}" | tr '[:upper:]' '[:lower:]')"
+REPO_LOWER="$(printf '%s' "${TAP_REPOSITORY#*/}" | tr '[:upper:]' '[:lower:]')"
+FORMULA_KEY="${OWNER_LOWER}/${REPO_LOWER}/${FORMULA}"
+FORMULA_PATH="Library/Taps/${OWNER_LOWER}/homebrew-${REPO_LOWER}/Formula/${FORMULA}.rb"
+BOTTLE_INSTALL_CELLAR="/home/linuxbrew/.linuxbrew/Cellar"
+
+for entry in "${entries[@]}"; do
+  case "$(basename "$entry")" in
+    manifest.json|bottle.json|"$ARCHIVE_NAME") ;;
+    *) echo "homebrew-validate-build-handoff.sh: unexpected handoff file: $(basename "$entry")" >&2; exit 1 ;;
+  esac
+done
+if [ ! -f "$BOTTLE_ARCHIVE" ] || [ -L "$BOTTLE_ARCHIVE" ]; then
+  echo "homebrew-validate-build-handoff.sh: manifest archive is not a regular file: $ARCHIVE_NAME" >&2
+  exit 1
+fi
+if ! timeout 120s gzip -t "$BOTTLE_ARCHIVE"; then
+  echo "homebrew-validate-build-handoff.sh: bottle archive is not a valid gzip stream" >&2
+  exit 1
+fi
+
+sha256_file() {
+  if command -v sha256sum >/dev/null 2>&1; then
+    sha256sum "$1" | awk '{print $1}'
+  else
+    shasum -a 256 "$1" | awk '{print $1}'
+  fi
+}
+
+ACTUAL_SHA256="$(sha256_file "$BOTTLE_ARCHIVE")"
+ACTUAL_BYTES="$(wc -c <"$BOTTLE_ARCHIVE" | tr -d '[:space:]')"
+if [ "$ACTUAL_SHA256" != "$EXPECTED_SHA256" ]; then
+  echo "homebrew-validate-build-handoff.sh: bottle archive SHA-256 does not match manifest" >&2
+  exit 1
+fi
+if [ "$ACTUAL_BYTES" != "$EXPECTED_BYTES" ]; then
+  echo "homebrew-validate-build-handoff.sh: bottle archive byte count does not match manifest" >&2
+  exit 1
+fi
+
+if ! jq -e \
+  --arg formula "$FORMULA" \
+  --arg formula_key "$FORMULA_KEY" \
+  --arg formula_path "$FORMULA_PATH" \
+  --arg bottle_root_url "$BOTTLE_ROOT_URL" \
+  --arg bottle_tag "$BOTTLE_TAG" \
+  --arg bottle_install_cellar "$BOTTLE_INSTALL_CELLAR" \
+  --arg bottle_relocation_cellar "$BOTTLE_RELOCATION_CELLAR" \
+  --arg sha256 "$ACTUAL_SHA256" '
+    type == "object" and length == 1 and
+    to_entries[0].key == $formula_key and
+    (to_entries[0].value | type == "object") and
+    (to_entries[0].value.formula | type == "object") and
+    to_entries[0].value.formula.name == $formula and
+    to_entries[0].value.formula.path == $formula_path and
+    (to_entries[0].value.formula.pkg_version |
+      type == "string" and test("^[A-Za-z0-9][A-Za-z0-9._+,-]{0,255}$")) and
+    (to_entries[0].value.bottle | type == "object") and
+    to_entries[0].value.bottle.root_url == $bottle_root_url and
+    to_entries[0].value.bottle.cellar == $bottle_relocation_cellar and
+    (to_entries[0].value.bottle.rebuild |
+      type == "number" and . >= 0 and floor == .) and
+    (to_entries[0].value.bottle.tags | type == "object" and keys == [$bottle_tag]) and
+    (to_entries[0].value.bottle.tags[$bottle_tag] | type == "object") and
+    ((to_entries[0].value.bottle.tags[$bottle_tag].cellar //
+      to_entries[0].value.bottle.cellar) == $bottle_relocation_cellar) and
+    to_entries[0].value.bottle.tags[$bottle_tag].sha256 == $sha256
+  ' "$BOTTLE_JSON" >/dev/null; then
+  echo "homebrew-validate-build-handoff.sh: bottle.json identity, root URL, selected tag, or SHA-256 is invalid" >&2
+  exit 1
+fi
+
+PKG_VERSION="$(jq -r --arg key "$FORMULA_KEY" '.[$key].formula.pkg_version' "$BOTTLE_JSON")"
+BOTTLE_REBUILD="$(jq -r --arg key "$FORMULA_KEY" '.[$key].bottle.rebuild' "$BOTTLE_JSON")"
+CANONICAL_BOTTLE_JSON=""
+if [ -n "$OUT_BOTTLE_JSON" ]; then
+  bottle_json_parent="$(dirname "$OUT_BOTTLE_JSON")"
+  mkdir -p "$bottle_json_parent"
+  bottle_json_parent="$(cd "$bottle_json_parent" && pwd -P)"
+  CANONICAL_BOTTLE_JSON="$bottle_json_parent/$(basename "$OUT_BOTTLE_JSON")"
+  case "$CANONICAL_BOTTLE_JSON" in
+    "$HANDOFF"/*)
+      echo "homebrew-validate-build-handoff.sh: --out-bottle-json must be outside the handoff" >&2
+      exit 2
+      ;;
+  esac
+  if [ -L "$CANONICAL_BOTTLE_JSON" ]; then
+    echo "homebrew-validate-build-handoff.sh: refusing to replace symlink output: $CANONICAL_BOTTLE_JSON" >&2
+    exit 2
+  fi
+  bottle_json_tmp="$(mktemp "$bottle_json_parent/.homebrew-canonical-bottle.XXXXXX")"
+  jq -nS \
+    --arg formula "$FORMULA" \
+    --arg formula_path "$FORMULA_PATH" \
+    --arg pkg_version "$PKG_VERSION" \
+    --arg root_url "$BOTTLE_ROOT_URL" \
+    --arg rebuild "$BOTTLE_REBUILD" \
+    --arg tag "$BOTTLE_TAG" \
+    --arg cellar "$BOTTLE_RELOCATION_CELLAR" \
+    --arg sha256 "$ACTUAL_SHA256" '
+      {
+        ($formula): {
+          formula: {
+            name: $formula,
+            path: $formula_path,
+            pkg_version: $pkg_version
+          },
+          bottle: {
+            root_url: $root_url,
+            cellar: $cellar,
+            rebuild: ($rebuild | tonumber),
+            tags: {
+              ($tag): {
+                sha256: $sha256
+              }
+            }
+          }
+        }
+      }
+    ' >"$bottle_json_tmp"
+  mv "$bottle_json_tmp" "$CANONICAL_BOTTLE_JSON"
+fi
+
+if [ -n "$OUT_ENV" ]; then
+  out_parent="$(dirname "$OUT_ENV")"
+  mkdir -p "$out_parent"
+  out_parent="$(cd "$out_parent" && pwd -P)"
+  out_path="$out_parent/$(basename "$OUT_ENV")"
+  case "$out_path" in
+    "$HANDOFF"/*)
+      echo "homebrew-validate-build-handoff.sh: --out-env must be outside the handoff" >&2
+      exit 2
+      ;;
+  esac
+  if [ -L "$out_path" ]; then
+    echo "homebrew-validate-build-handoff.sh: refusing to replace symlink output: $out_path" >&2
+    exit 2
+  fi
+  if [ -n "$CANONICAL_BOTTLE_JSON" ] && [ "$out_path" = "$CANONICAL_BOTTLE_JSON" ]; then
+    echo "homebrew-validate-build-handoff.sh: --out-env and --out-bottle-json must differ" >&2
+    exit 2
+  fi
+  out_tmp="$(mktemp "$out_parent/.homebrew-build-handoff.XXXXXX")"
+  {
+    printf 'FORMULA=%q\n' "$FORMULA"
+    printf 'ARCH=%q\n' "$ARCH"
+    printf 'RELEASE_TAG=%q\n' "$RELEASE_TAG"
+    printf 'TAP_REPOSITORY=%q\n' "$TAP_REPOSITORY"
+    printf 'TAP_COMMIT=%q\n' "$TAP_COMMIT"
+    printf 'KANDELO_COMMIT=%q\n' "$KANDELO_COMMIT"
+    printf 'BOTTLE_ROOT_URL=%q\n' "$BOTTLE_ROOT_URL"
+    printf 'BOTTLE_ARCHIVE=%q\n' "$BOTTLE_ARCHIVE"
+    if [ -n "$CANONICAL_BOTTLE_JSON" ]; then
+      printf 'BOTTLE_JSON=%q\n' "$CANONICAL_BOTTLE_JSON"
+    fi
+    printf 'BOTTLE_SHA256=%q\n' "$ACTUAL_SHA256"
+    printf 'BOTTLE_BYTES=%q\n' "$ACTUAL_BYTES"
+    printf 'BOTTLE_RELOCATION_CELLAR=%q\n' "$BOTTLE_RELOCATION_CELLAR"
+  } >"$out_tmp"
+  mv "$out_tmp" "$out_path"
+fi
+
+echo "homebrew-validate-build-handoff.sh: validated $FORMULA/$ARCH"
