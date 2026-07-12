@@ -13,9 +13,10 @@
  */
 
 import { closeSync, existsSync, openSync, readFileSync, statSync, writeSync } from "fs";
-import { resolve, dirname, isAbsolute, relative } from "path";
+import { resolve, dirname, isAbsolute } from "path";
 import { NodeKernelHost } from "../host/src/node-kernel-host";
 import { tryResolveBinary } from "../host/src/binary-resolver";
+import { isWithinRealDirectory } from "./run-example-paths";
 
 const repoRoot = resolve(dirname(new URL(import.meta.url).pathname), "..");
 
@@ -253,11 +254,6 @@ function loadBytes(path: string): ArrayBuffer {
     return buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength);
 }
 
-function isWithinDirectory(parent: string, candidate: string): boolean {
-    const rel = relative(resolve(parent), resolve(candidate));
-    return rel === "" || (!!rel && !rel.startsWith("..") && !isAbsolute(rel));
-}
-
 function tryLoadGuestCandidate(candidate: string, kernelCwd: string): ArrayBuffer | null {
     const resolved = resolve(candidate);
     if (!existsSync(resolved)) return null;
@@ -265,11 +261,11 @@ function tryLoadGuestCandidate(candidate: string, kernelCwd: string): ArrayBuffe
     // Guest exec resolution may read scripts and test binaries staged under
     // KERNEL_CWD. Outside that guest workdir, only explicit .wasm paths are
     // valid candidates; never treat host /usr/bin tools as guest programs.
-    if (!isWithinDirectory(kernelCwd, resolved) && !resolved.endsWith(".wasm")) {
-        return null;
-    }
-
     try {
+        if (!resolved.endsWith(".wasm") &&
+            !isWithinRealDirectory(kernelCwd, resolved)) {
+            return null;
+        }
         if (!statSync(resolved).isFile()) return null;
         return loadBytes(resolved);
     } catch {
