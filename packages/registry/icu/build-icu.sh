@@ -98,12 +98,23 @@ NPROC="$(sysctl -n hw.ncpu 2>/dev/null || nproc)"
 # Uses the host compiler (clang/clang++ from the dev shell), NOT the wasm
 # wrappers. sdk/activate.sh only prepends SDK bin to PATH; it does not export
 # CC/CXX, so an explicit host CC/CXX keeps this stage native.
+#
+# On Linux, statically fold the GNU C++/GCC runtime into the data tools: the Nix
+# CI runner has no libstdc++.so.6 on its loader path, so a dynamically linked
+# icupkg/pkgdata (run here by Stage 2's make) aborts at exec with "cannot open
+# shared object file". macOS clang links a self-contained libc++ and rejects the
+# flags. LDFLAGS set here is honored: runConfigureICU re-exports it to configure.
+case "$(uname -s)" in
+    Linux) HOST_LDFLAGS="-static-libstdc++ -static-libgcc" ;;
+    *)     HOST_LDFLAGS="" ;;
+esac
 if [ ! -x "$HOST_BUILD/bin/icupkg" ] && [ ! -x "$HOST_BUILD/bin/genccode" ]; then
     echo "==> Stage 1: building ICU natively for host tools + data..."
     rm -rf "$HOST_BUILD"
     mkdir -p "$HOST_BUILD"
     ( cd "$HOST_BUILD"
       CC="${HOST_CC:-clang}" CXX="${HOST_CXX:-clang++}" \
+      LDFLAGS="$HOST_LDFLAGS" \
         "$ICU_SRC/runConfigureICU" MacOSX \
             --enable-static --disable-shared \
             --disable-samples --disable-tests --disable-extras
