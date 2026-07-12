@@ -11,6 +11,8 @@ ARCH=""
 RELEASE_TAG=""
 STATUS=""
 ERROR_TEXT=""
+KANDELO_COMMIT=""
+TAP_COMMIT=""
 REASON_TEXT=""
 ROLLBACK_REF=""
 DELETED_PACKAGE_URL=""
@@ -18,10 +20,11 @@ DELETION_REASON=""
 REPAIR_ONLY=0
 DRY_RUN=0
 NO_LOCK=0
+PUBLISH_BRANCH=""
 
 usage() {
   cat >&2 <<'EOF'
-usage: scripts/homebrew-publish-sidecars.sh --tap-root <tap-root> --formula <name> --arch <wasm32|wasm64> --release-tag <tag> --status <success|failed|rollback> [--sidecar-root <dir>] [--error <text>] [--reason <text>] [--rollback-ref <ref>] [--deleted-package-url <url> --deletion-reason <text>] [--repair-only] [--dry-run] [--no-lock]
+usage: scripts/homebrew-publish-sidecars.sh --tap-root <tap-root> --formula <name> --arch <wasm32|wasm64> --release-tag <tag> --status <success|failed|rollback> [--kandelo-commit <sha>] [--tap-commit <sha>] [--sidecar-root <dir>] [--error <text>] [--reason <text>] [--rollback-ref <ref>] [--deleted-package-url <url> --deletion-reason <text>] [--repair-only] [--dry-run] [--no-lock]
 
 Success publishes a generated sidecar payload from --sidecar-root into the tap
 and validates it with xtask homebrew-validate. Failed and rollback attempts
@@ -42,6 +45,8 @@ while [ "$#" -gt 0 ]; do
     --release-tag) RELEASE_TAG="${2:-}"; shift 2 ;;
     --status) STATUS="${2:-}"; shift 2 ;;
     --error) ERROR_TEXT="${2:-}"; shift 2 ;;
+    --kandelo-commit) KANDELO_COMMIT="${2:-}"; shift 2 ;;
+    --tap-commit) TAP_COMMIT="${2:-}"; shift 2 ;;
     --reason) REASON_TEXT="${2:-}"; shift 2 ;;
     --rollback-ref) ROLLBACK_REF="${2:-}"; shift 2 ;;
     --deleted-package-url) DELETED_PACKAGE_URL="${2:-}"; shift 2 ;;
@@ -100,9 +105,23 @@ if [ ! -d "$TAP_ROOT/.git" ]; then
   echo "homebrew-publish-sidecars.sh: tap root must be a git checkout: $TAP_ROOT" >&2
   exit 2
 fi
+if [ -z "$KANDELO_COMMIT" ]; then
+  KANDELO_COMMIT="$(git -C "$KANDELO_ROOT" rev-parse HEAD)"
+fi
+if [ -z "$TAP_COMMIT" ]; then
+  TAP_COMMIT="$(git -C "$TAP_ROOT" rev-parse HEAD)"
+fi
+if ! [[ "$KANDELO_COMMIT" =~ ^[0-9a-f]{40}$ ]]; then
+  echo "homebrew-publish-sidecars.sh: invalid Kandelo commit: $KANDELO_COMMIT" >&2
+  exit 2
+fi
+if ! [[ "$TAP_COMMIT" =~ ^[0-9a-f]{40}$ ]]; then
+  echo "homebrew-publish-sidecars.sh: invalid tap commit: $TAP_COMMIT" >&2
+  exit 2
+fi
 
 STATE_LOCK_SCRIPT="$KANDELO_ROOT/.github/scripts/state-lock.sh"
-LOCK_SUBJECT="homebrew-${RELEASE_TAG}"
+LOCK_SUBJECT="homebrew-tap-publish"
 LOCK_HELD=0
 
 acquire_lock() {
@@ -120,17 +139,32 @@ release_lock() {
 }
 
 refresh_tap() {
-  local branch
+  local branch head remote_head
+  if [ -n "$(git -C "$TAP_ROOT" status --short)" ]; then
+    echo "homebrew-publish-sidecars.sh: tap checkout must be clean before publication" >&2
+    exit 1
+  fi
   if [ "$DRY_RUN" = "1" ]; then
     return 0
   fi
   branch="$(git -C "$TAP_ROOT" symbolic-ref --quiet --short HEAD || true)"
   if [ -z "$branch" ]; then
-    echo "homebrew-publish-sidecars.sh: tap checkout is detached; skipping pre-publish refresh" >&2
-    return 0
+    echo "homebrew-publish-sidecars.sh: write publication requires an attached tap branch" >&2
+    exit 1
   fi
-  git -C "$TAP_ROOT" fetch origin "$branch"
+  if [ "$branch" != "main" ]; then
+    echo "homebrew-publish-sidecars.sh: write publication requires tap main, got $branch" >&2
+    exit 1
+  fi
+  git -C "$TAP_ROOT" fetch origin "+refs/heads/$branch:refs/remotes/origin/$branch"
   git -C "$TAP_ROOT" merge --ff-only "origin/$branch"
+  head="$(git -C "$TAP_ROOT" rev-parse HEAD)"
+  remote_head="$(git -C "$TAP_ROOT" rev-parse "origin/$branch")"
+  if [ "$head" != "$remote_head" ]; then
+    echo "homebrew-publish-sidecars.sh: tap checkout must match origin/$branch after refresh" >&2
+    exit 1
+  fi
+  PUBLISH_BRANCH="$branch"
 }
 
 tap_status() {
@@ -154,7 +188,12 @@ commit_and_push() {
   if [ "$DRY_RUN" = "1" ]; then
     echo "homebrew-publish-sidecars.sh: dry-run, not pushing tap commit"
   else
-    git -C "$TAP_ROOT" push origin HEAD
+    if [ -z "$PUBLISH_BRANCH" ] ||
+       [ "$(git -C "$TAP_ROOT" symbolic-ref --quiet --short HEAD || true)" != "$PUBLISH_BRANCH" ]; then
+      echo "homebrew-publish-sidecars.sh: tap publication branch changed after refresh" >&2
+      exit 1
+    fi
+    git -C "$TAP_ROOT" push origin "HEAD:refs/heads/$PUBLISH_BRANCH"
   fi
 }
 
@@ -219,11 +258,19 @@ guard_non_success_payload_preserves_last_green() {
 }
 
 write_failure_report() {
-  local now run_url report_dir report_path safe_error
+  local now run_url run_id run_attempt report_dir report_path safe_error
   now="$(date -u +%FT%TZ)"
-  run_url="${GITHUB_SERVER_URL:-https://github.com}/${GITHUB_REPOSITORY:-unknown/repository}/actions/runs/${GITHUB_RUN_ID:-local}"
+  run_id="${GITHUB_RUN_ID:-local}"
+  run_attempt="${GITHUB_RUN_ATTEMPT:-1}"
+  [[ "$run_id" =~ ^([0-9]+|local)$ ]] || {
+    echo "homebrew-publish-sidecars.sh: invalid GITHUB_RUN_ID for report path" >&2; exit 2;
+  }
+  [[ "$run_attempt" =~ ^[1-9][0-9]*$ ]] || {
+    echo "homebrew-publish-sidecars.sh: invalid GITHUB_RUN_ATTEMPT for report path" >&2; exit 2;
+  }
+  run_url="${GITHUB_SERVER_URL:-https://github.com}/${GITHUB_REPOSITORY:-unknown/repository}/actions/runs/${run_id}"
   report_dir="$TAP_ROOT/Kandelo/reports/failures"
-  report_path="$report_dir/${now//[:]/-}-${FORMULA}-${ARCH}.json"
+  report_path="$report_dir/${now//[:]/-}-run-${run_id}-attempt-${run_attempt}-${FORMULA}-${ARCH}.json"
   mkdir -p "$report_dir"
   safe_error="${ERROR_TEXT:-homebrew bottle publish failed before sidecar payload was produced}"
   jq -n \
@@ -234,7 +281,8 @@ write_failure_report() {
     --arg status "failed" \
     --arg attempted_at "$now" \
     --arg attempted_by "$run_url" \
-    --arg kandelo_commit "${GITHUB_SHA:-unknown}" \
+    --arg kandelo_commit "$KANDELO_COMMIT" \
+    --arg tap_commit "$TAP_COMMIT" \
     --arg error "$safe_error" \
     '{
       schema: ($schema | tonumber),
@@ -245,17 +293,26 @@ write_failure_report() {
       attempted_at: $attempted_at,
       attempted_by: $attempted_by,
       kandelo_commit: $kandelo_commit,
+      tap_commit: $tap_commit,
       error: $error
     }' >"$report_path"
   echo "homebrew-publish-sidecars.sh: wrote failure report $report_path"
 }
 
 write_rollback_report() {
-  local now run_url report_dir report_path
+  local now run_url run_id run_attempt report_dir report_path
   now="$(date -u +%FT%TZ)"
-  run_url="${GITHUB_SERVER_URL:-https://github.com}/${GITHUB_REPOSITORY:-unknown/repository}/actions/runs/${GITHUB_RUN_ID:-local}"
+  run_id="${GITHUB_RUN_ID:-local}"
+  run_attempt="${GITHUB_RUN_ATTEMPT:-1}"
+  [[ "$run_id" =~ ^([0-9]+|local)$ ]] || {
+    echo "homebrew-publish-sidecars.sh: invalid GITHUB_RUN_ID for report path" >&2; exit 2;
+  }
+  [[ "$run_attempt" =~ ^[1-9][0-9]*$ ]] || {
+    echo "homebrew-publish-sidecars.sh: invalid GITHUB_RUN_ATTEMPT for report path" >&2; exit 2;
+  }
+  run_url="${GITHUB_SERVER_URL:-https://github.com}/${GITHUB_REPOSITORY:-unknown/repository}/actions/runs/${run_id}"
   report_dir="$TAP_ROOT/Kandelo/reports/rollbacks"
-  report_path="$report_dir/${now//[:]/-}-${FORMULA}-${ARCH}.json"
+  report_path="$report_dir/${now//[:]/-}-run-${run_id}-attempt-${run_attempt}-${FORMULA}-${ARCH}.json"
   mkdir -p "$report_dir"
   jq -n \
     --arg schema "1" \
@@ -265,7 +322,8 @@ write_rollback_report() {
     --arg status "rollback" \
     --arg attempted_at "$now" \
     --arg attempted_by "$run_url" \
-    --arg kandelo_commit "${GITHUB_SHA:-unknown}" \
+    --arg kandelo_commit "$KANDELO_COMMIT" \
+    --arg tap_commit "$TAP_COMMIT" \
     --arg reason "$REASON_TEXT" \
     --arg rollback_ref "$ROLLBACK_REF" \
     --arg deleted_package_url "$DELETED_PACKAGE_URL" \
@@ -279,6 +337,7 @@ write_rollback_report() {
       attempted_at: $attempted_at,
       attempted_by: $attempted_by,
       kandelo_commit: $kandelo_commit,
+      tap_commit: $tap_commit,
       reason: $reason,
       rollback_ref: (if $rollback_ref == "" then null else $rollback_ref end),
       package_deletion: {

