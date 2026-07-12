@@ -979,14 +979,35 @@ describe.skipIf(!hasWat2Wasm())("weak self-import handling", () => {
     expect((lib.exports.call_self as Function)()).toBe(42);
   });
 
-  it("throws loudly when a self-import has no defining export", () => {
-    // A genuinely absent symbol must trap at call time, not silently return 0.
-    const lib = loadSharedLibrarySync("missing-import.so", assembleSideModule(`
-      (module
-        (import "env" "missing_fn" (func $missing (result i32)))
-        (func (export "call_missing") (result i32) (call $missing)))
-    `, "missing-import"), createLoadOptions());
-    expect(() => (lib.exports.call_missing as Function)()).toThrow(/not provided/);
+  it("rejects a genuinely absent env import during instantiation", () => {
+    // Only an import that the side module itself exports gets a trampoline.
+    // A real ABI gap must remain an eager load failure rather than hiding on
+    // an unexecuted path behind a delayed stub.
+    expect(() => loadSharedLibrarySync(
+      "missing-import.so",
+      assembleSideModule(`
+        (module
+          (import "env" "missing_fn" (func $missing (result i32)))
+          (func (export "call_missing") (result i32) (call $missing)))
+      `, "missing-import"),
+      createLoadOptions(),
+    )).toThrow();
+  });
+
+  it("does not mistake an imported-function re-export for a definition", () => {
+    // A same-name export can point straight back at the imported function.
+    // Treating that shape as a definition would recurse forever through the
+    // host trampoline instead of rejecting the unresolved import at dlopen.
+    expect(() => loadSharedLibrarySync(
+      "reexported-import.so",
+      assembleSideModule(`
+        (module
+          (import "env" "reexported_fn" (func $reexported (result i32)))
+          (export "reexported_fn" (func $reexported))
+          (func (export "call_reexported") (result i32) (call $reexported)))
+      `, "reexported-import"),
+      createLoadOptions(),
+    )).toThrow();
   });
 
   it("provides the __cpp_exception tag to -fwasm-exceptions modules", () => {
