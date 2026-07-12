@@ -1,4 +1,5 @@
 import { beforeAll, describe, it, expect } from "vitest";
+import { createHash } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -31,6 +32,8 @@ const rootfsPath =
   tryResolveBinary("programs/rootfs.vfs") ??
   join(__dirname, "../../../../host/wasm/rootfs.vfs");
 const INTL_GUEST_PATH = "/usr/lib/php/extensions/intl.so";
+const PHP_INTL_VFS_MAX_BYTES = 256 * 1024 * 1024;
+const O_RDONLY = 0;
 
 if (intlSoPath && !icuRuntime) {
   throw new Error(
@@ -43,9 +46,41 @@ const READY = existsSync(phpBinaryPath)
   && existsSync(rootfsPath);
 let intlRootfsImage: Uint8Array;
 
+function readVfsBinary(fs: MemoryFileSystem, path: string): Uint8Array {
+  const size = fs.stat(path).size;
+  const bytes = new Uint8Array(size);
+  const fd = fs.open(path, O_RDONLY, 0);
+  let offset = 0;
+  try {
+    while (offset < bytes.length) {
+      const read = fs.read(
+        fd,
+        bytes.subarray(offset),
+        null,
+        bytes.length - offset,
+      );
+      if (read <= 0) {
+        throw new Error(
+          `short VFS read for ${path}: ${offset} of ${bytes.length}`,
+        );
+      }
+      offset += read;
+    }
+  } finally {
+    fs.close(fd);
+  }
+  return bytes;
+}
+
+function sha256(bytes: Uint8Array): string {
+  return createHash("sha256").update(bytes).digest("hex");
+}
+
 describe.skipIf(!READY)("PHP intl as a runtime-loadable side module", () => {
   beforeAll(async () => {
-    const fs = MemoryFileSystem.fromImage(new Uint8Array(readFileSync(rootfsPath)));
+    const fs = MemoryFileSystem
+      .fromImage(new Uint8Array(readFileSync(rootfsPath)))
+      .rebaseToNewFileSystem(PHP_INTL_VFS_MAX_BYTES);
     ensureDirRecursive(fs, dirname(INTL_GUEST_PATH));
     ensureDirRecursive(fs, dirname(icuRuntime!.guestPath));
     writeVfsBinary(
@@ -54,12 +89,16 @@ describe.skipIf(!READY)("PHP intl as a runtime-loadable side module", () => {
       new Uint8Array(readFileSync(intlSoPath!)),
       0o755,
     );
+    const icuBytes = new Uint8Array(readFileSync(icuRuntime!.hostPath));
     writeVfsBinary(
       fs,
       icuRuntime!.guestPath,
-      new Uint8Array(readFileSync(icuRuntime!.hostPath)),
+      icuBytes,
       icuRuntime!.mode,
     );
+    const stagedIcuBytes = readVfsBinary(fs, icuRuntime!.guestPath);
+    expect(stagedIcuBytes.byteLength).toBe(icuBytes.byteLength);
+    expect(sha256(stagedIcuBytes)).toBe(sha256(icuBytes));
     intlRootfsImage = await fs.saveImage();
   });
 

@@ -23,6 +23,9 @@ const statusEl = document.getElementById("status")!;
 const resultsEl = document.getElementById("results")!;
 
 const PHP_PATH = "/usr/local/bin/php";
+const PHP_BROWSER_VFS_MAX_BYTES = 256 * 1024 * 1024;
+const O_RDONLY = 0;
+const VERIFY_CHUNK_BYTES = 64 * 1024;
 
 interface TestResult {
   stdout: string;
@@ -33,6 +36,44 @@ interface TestResult {
 interface BinaryFixture {
   bytes: ArrayBuffer;
   mode: number;
+}
+
+function assertVfsBinaryRoundTrip(
+  fs: MemoryFileSystem,
+  path: string,
+  expected: Uint8Array,
+): void {
+  const size = fs.stat(path).size;
+  if (size !== expected.byteLength) {
+    throw new Error(
+      `staged VFS file ${path} has ${size} bytes; expected ${expected.byteLength}`,
+    );
+  }
+
+  const fd = fs.open(path, O_RDONLY, 0);
+  const chunk = new Uint8Array(Math.min(VERIFY_CHUNK_BYTES, expected.byteLength));
+  let offset = 0;
+  try {
+    while (offset < expected.byteLength) {
+      const wanted = Math.min(chunk.byteLength, expected.byteLength - offset);
+      const read = fs.read(fd, chunk, null, wanted);
+      if (read <= 0) {
+        throw new Error(
+          `short VFS verification read for ${path}: ${offset} of ${expected.byteLength}`,
+        );
+      }
+      for (let i = 0; i < read; i++) {
+        if (chunk[i] !== expected[offset + i]) {
+          throw new Error(
+            `staged VFS file ${path} differs at byte ${offset + i}`,
+          );
+        }
+      }
+      offset += read;
+    }
+  } finally {
+    fs.close(fd);
+  }
 }
 
 async function runPhp(
@@ -48,19 +89,22 @@ async function runPhp(
   const decoder = new TextDecoder();
 
   const memfs = MemoryFileSystem.fromImage(new Uint8Array(rootfsBytes), {
-    maxByteLength: 256 * 1024 * 1024,
+    maxByteLength: PHP_BROWSER_VFS_MAX_BYTES,
   });
   for (const dir of ["/tmp", "/root", "/home", "/dev"]) ensureDir(memfs, dir);
   memfs.chmod("/tmp", 0o777);
   memfs.chmod("/root", 0o700);
   ensureDirRecursive(memfs, "/usr/local/bin");
-  writeVfsBinary(memfs, PHP_PATH, new Uint8Array(phpBytes));
+  const phpData = new Uint8Array(phpBytes);
+  writeVfsBinary(memfs, PHP_PATH, phpData);
   for (const [path, content] of Object.entries(files)) {
     writeVfsFile(memfs, path, content);
   }
   for (const [path, fixture] of Object.entries(binaryFiles)) {
     ensureDirRecursive(memfs, path.slice(0, path.lastIndexOf("/")) || "/");
-    writeVfsBinary(memfs, path, new Uint8Array(fixture.bytes), fixture.mode);
+    const data = new Uint8Array(fixture.bytes);
+    writeVfsBinary(memfs, path, data, fixture.mode);
+    assertVfsBinaryRoundTrip(memfs, path, data);
   }
   const vfsImage = await memfs.saveImage();
 
