@@ -1,5 +1,52 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it } from "vitest";
+import * as net from "node:net";
 import { TcpNetworkBackend } from "../src/networking/tcp-backend";
+
+const LOOPBACK = new Uint8Array([127, 0, 0, 1]);
+
+async function listenLoopback(): Promise<{
+  server: net.Server;
+  port: number;
+  accepted: Promise<{ data: string; ended: boolean }>;
+}> {
+  let resolveAccepted!: (value: { data: string; ended: boolean }) => void;
+  let rejectAccepted!: (error: unknown) => void;
+  const accepted = new Promise<{ data: string; ended: boolean }>((resolve, reject) => {
+    resolveAccepted = resolve;
+    rejectAccepted = reject;
+  });
+
+  const server = net.createServer((socket) => {
+    const chunks: Buffer[] = [];
+    socket.on("data", (chunk) => chunks.push(chunk));
+    socket.on("end", () => {
+      resolveAccepted({ data: Buffer.concat(chunks).toString("utf8"), ended: true });
+    });
+    socket.on("error", rejectAccepted);
+  });
+
+  await new Promise<void>((resolve, reject) => {
+    server.once("error", reject);
+    server.listen(0, "127.0.0.1", () => resolve());
+  });
+
+  return {
+    server,
+    port: (server.address() as net.AddressInfo).port,
+    accepted,
+  };
+}
+
+async function waitForConnected(backend: TcpNetworkBackend, handle: number): Promise<void> {
+  const deadline = Date.now() + 2_000;
+  while (Date.now() < deadline) {
+    const status = backend.connectStatus(handle);
+    if (status === 0) return;
+    if (status > 0) throw new Error(`connect failed with errno ${status}`);
+    await new Promise((resolve) => setTimeout(resolve, 5));
+  }
+  throw new Error("connect timed out");
+}
 
 describe("TcpNetworkBackend hostname parsing", () => {
   it.each([
@@ -22,5 +69,113 @@ describe("TcpNetworkBackend hostname parsing", () => {
   ])("rejects the invalid hostname %s before DNS", (hostname) => {
     const backend = new TcpNetworkBackend();
     expect(() => backend.getaddrinfo(hostname)).toThrow("ENOENT");
+  });
+});
+
+describe("TcpNetworkBackend", () => {
+  const servers: net.Server[] = [];
+
+  afterEach(async () => {
+    await Promise.all(servers.splice(0).map((server) => new Promise<void>((resolve) => {
+      server.close(() => resolve());
+    })));
+  });
+
+  it("closes TCP sockets with an orderly FIN after queued bytes", async () => {
+    const { server, port, accepted } = await listenLoopback();
+    servers.push(server);
+
+    const backend = new TcpNetworkBackend();
+    backend.connect(7, LOOPBACK, port);
+    await waitForConnected(backend, 7);
+
+    expect(backend.send(7, new TextEncoder().encode("hello"), 0)).toBe(5);
+    backend.close(7);
+
+    await expect(accepted).resolves.toEqual({ data: "hello", ended: true });
+  });
+  it("keeps the real writable half open after peer FIN", async () => {
+    let acceptedSocket!: net.Socket;
+    let resolveAccepted!: () => void;
+    let resolveAfterFin!: (value: string) => void;
+    const accepted = new Promise<void>((resolve) => { resolveAccepted = resolve; });
+    const afterFin = new Promise<string>((resolve) => { resolveAfterFin = resolve; });
+    const chunks: Buffer[] = [];
+
+    const server = net.createServer({ allowHalfOpen: true }, (socket) => {
+      acceptedSocket = socket;
+      socket.on("data", (chunk) => {
+        chunks.push(chunk);
+        if (Buffer.concat(chunks).toString("utf8").includes("after-fin-two")) {
+          resolveAfterFin(Buffer.concat(chunks).toString("utf8"));
+        }
+      });
+      resolveAccepted();
+    });
+    servers.push(server);
+
+    await new Promise<void>((resolve, reject) => {
+      server.once("error", reject);
+      server.listen(0, "127.0.0.1", () => resolve());
+    });
+
+    const backend = new TcpNetworkBackend();
+    backend.connect(8, LOOPBACK, (server.address() as net.AddressInfo).port);
+    await waitForConnected(backend, 8);
+    await accepted;
+
+    expect(backend.send(8, new TextEncoder().encode("before-fin"), 0)).toBe(10);
+    acceptedSocket.end();
+
+    const deadline = Date.now() + 2_000;
+    for (;;) {
+      try {
+        const eof = backend.recv(8, 16, 0);
+        if (eof.length === 0) break;
+      } catch (error) {
+        if ((error as Error & { errno?: number }).errno !== 11) throw error;
+      }
+      if (Date.now() > deadline) throw new Error("recv EOF timed out");
+      await new Promise((resolve) => setTimeout(resolve, 5));
+    }
+
+    expect(backend.send(8, new TextEncoder().encode("after-fin-one"), 0)).toBe(13);
+    expect(backend.send(8, new TextEncoder().encode("after-fin-two"), 0)).toBe(13);
+    await expect(afterFin).resolves.toBe("before-finafter-fin-oneafter-fin-two");
+
+    backend.close(8);
+    acceptedSocket.destroy();
+  });
+
+  it("reports a real reset without fabricating a successful write", async () => {
+    let acceptedSocket!: net.Socket;
+    let resolveAccepted!: () => void;
+    const accepted = new Promise<void>((resolve) => { resolveAccepted = resolve; });
+    const server = net.createServer({ allowHalfOpen: true }, (socket) => {
+      acceptedSocket = socket;
+      resolveAccepted();
+    });
+    servers.push(server);
+
+    await new Promise<void>((resolve, reject) => {
+      server.once("error", reject);
+      server.listen(0, "127.0.0.1", () => resolve());
+    });
+
+    const backend = new TcpNetworkBackend();
+    backend.connect(9, LOOPBACK, (server.address() as net.AddressInfo).port);
+    await waitForConnected(backend, 9);
+    await accepted;
+    acceptedSocket.resetAndDestroy();
+
+    const deadline = Date.now() + 2_000;
+    while ((backend.poll(9, 0x0008) & 0x0008) === 0) {
+      if (Date.now() > deadline) throw new Error("reset observation timed out");
+      await new Promise((resolve) => setTimeout(resolve, 5));
+    }
+
+    expect(() => backend.send(9, new TextEncoder().encode("after-reset"), 0))
+      .toThrowError(/ECONNRESET/);
+    backend.close(9);
   });
 });

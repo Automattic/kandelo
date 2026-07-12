@@ -8,6 +8,7 @@ import type { TcpConnectionPeer, UdpDatagram } from "../src/types";
 
 const POLLIN = 0x0001;
 const POLLOUT = 0x0004;
+const POLLERR = 0x0008;
 const POLLHUP = 0x0010;
 
 describe("LocalVirtualNetwork", () => {
@@ -72,7 +73,7 @@ describe("LocalVirtualNetwork", () => {
     expect(client.connectStatus(1)).toBe(VIRTUAL_NETWORK_ERRNO.EHOSTUNREACH);
   });
 
-  it("wakes TCP peers with EOF and EPIPE when a machine detaches", () => {
+  it("wakes TCP peers with reset when a machine detaches", () => {
     const net = new LocalVirtualNetwork();
     const server = net.attachMachine({ id: "server", address: [10, 88, 0, 2] });
     const client = net.attachMachine({ id: "client", address: [10, 88, 0, 3] });
@@ -89,16 +90,99 @@ describe("LocalVirtualNetwork", () => {
     net.detachMachine("server");
 
     const revents = client.poll!(7, POLLIN | POLLOUT);
+    expect(revents & POLLERR).toBe(POLLERR);
     expect(revents & POLLIN).toBe(POLLIN);
     expect(revents & POLLOUT).toBe(0);
     expect(revents & POLLHUP).toBe(POLLHUP);
-    expect(client.recv(7, 16, 0)).toHaveLength(0);
+    try {
+      client.recv(7, 16, 0);
+      throw new Error("recv after detached peer unexpectedly succeeded");
+    } catch (error) {
+      expect((error as Error & { errno?: number }).errno).toBe(VIRTUAL_NETWORK_ERRNO.ECONNRESET);
+    }
     try {
       client.send(7, new TextEncoder().encode("after-detach"), 0);
       throw new Error("send after detached peer unexpectedly succeeded");
     } catch (error) {
-      expect((error as Error & { errno?: number }).errno).toBe(32);
+      expect((error as Error & { errno?: number }).errno).toBe(VIRTUAL_NETWORK_ERRNO.ECONNRESET);
     }
+  });
+
+  it("drains queued TCP data before FIN and keeps an orphaned receive sink", () => {
+    const net = new LocalVirtualNetwork();
+    const server = net.attachMachine({ id: "server", address: [10, 88, 0, 2] });
+    const client = net.attachMachine({ id: "client", address: [10, 88, 0, 3] });
+    let accepted: TcpConnectionPeer | null = null;
+
+    expect(server.listenTcp!("srv:1", new Uint8Array([10, 88, 0, 2]), 8080, {
+      accept(peer) {
+        accepted = peer;
+        return 0;
+      },
+    })).toBe(0);
+
+    client.connect(7, new Uint8Array([10, 88, 0, 2]), 8080);
+    expect(client.connectStatus(7)).toBe(0);
+    expect(accepted).not.toBeNull();
+
+    expect(accepted!.send(new TextEncoder().encode("queued"), 0)).toBe(6);
+    accepted!.close();
+
+    expect(new TextDecoder().decode(client.recv(7, 16, 0))).toBe("queued");
+    expect(client.recv(7, 16, 0)).toHaveLength(0);
+    const revents = client.poll!(7, POLLIN | POLLOUT);
+    expect(revents & POLLIN).toBe(POLLIN);
+    expect(revents & POLLOUT).toBe(POLLOUT);
+    expect(client.send(7, new TextEncoder().encode("after-fin-one"), 0)).toBe(13);
+    expect(client.send(7, new TextEncoder().encode("after-fin-two"), 0)).toBe(13);
+    client.close(7);
+  });
+
+  it("preserves queued TCP data when a cleanly closed machine detaches", () => {
+    const net = new LocalVirtualNetwork();
+    const server = net.attachMachine({ id: "server", address: [10, 88, 0, 2] });
+    const client = net.attachMachine({ id: "client", address: [10, 88, 0, 3] });
+    let accepted: TcpConnectionPeer | null = null;
+
+    expect(server.listenTcp!("srv:1", new Uint8Array([10, 88, 0, 2]), 8080, {
+      accept(peer) {
+        accepted = peer;
+        return 0;
+      },
+    })).toBe(0);
+
+    client.connect(7, new Uint8Array([10, 88, 0, 2]), 8080);
+    expect(client.connectStatus(7)).toBe(0);
+    expect(accepted).not.toBeNull();
+
+    expect(client.send(7, new TextEncoder().encode("queued before close"), 0)).toBe(19);
+    client.close(7);
+    net.detachMachine("client");
+
+    expect(new TextDecoder().decode(accepted!.recv(32, 0))).toBe("queued before close");
+    expect(accepted!.recv(32, 0)).toHaveLength(0);
+  });
+
+  it("keeps the receive direction usable after SHUT_WR", () => {
+    const net = new LocalVirtualNetwork();
+    const server = net.attachMachine({ id: "server", address: [10, 88, 0, 2] });
+    const client = net.attachMachine({ id: "client", address: [10, 88, 0, 3] });
+    let accepted: TcpConnectionPeer | null = null;
+
+    expect(server.listenTcp!("srv:1", new Uint8Array([10, 88, 0, 2]), 8080, {
+      accept(peer) {
+        accepted = peer;
+        return 0;
+      },
+    })).toBe(0);
+
+    client.connect(7, new Uint8Array([10, 88, 0, 2]), 8080);
+    expect(client.connectStatus(7)).toBe(0);
+    accepted!.shutdown(1);
+
+    expect(client.recv(7, 16, 0)).toHaveLength(0);
+    expect(client.send(7, new TextEncoder().encode("still-readable"), 0)).toBe(14);
+    expect(new TextDecoder().decode(accepted!.recv(16, 0))).toBe("still-readable");
   });
 
   it("routes UDP datagrams and preserves source metadata", () => {

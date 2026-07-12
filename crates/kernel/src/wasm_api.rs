@@ -10265,7 +10265,7 @@ pub extern "C" fn kernel_pipe_is_write_open(_pid: u32, pipe_idx: u32) -> i32 {
     if pipe.is_write_end_open() { 1 } else { 0 }
 }
 
-/// Check if a pipe's read end is still open.
+/// Check if a pipe accepts writes through a real reader or TCP discard sink.
 /// Returns 1 if open, 0 if closed, negative errno on error.
 ///
 /// `pid` is ignored for ABI compatibility; `pipe_idx` addresses the global
@@ -10278,6 +10278,22 @@ pub extern "C" fn kernel_pipe_is_read_open(_pid: u32, pipe_idx: u32) -> i32 {
         None => return -(Errno::EBADF as i32),
     };
     if pipe.is_read_end_open() { 1 } else { 0 }
+}
+
+/// Check if a pipe has at least one application-owned reader.
+/// Returns 1 for a real reader, 0 for a TCP discard sink or closed read end,
+/// and negative errno on error.
+///
+/// `pid` is ignored for ABI compatibility; `pipe_idx` addresses the global
+/// pipe table.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_pipe_has_readers(_pid: u32, pipe_idx: u32) -> i32 {
+    let pipe_table = unsafe { crate::pipe::global_pipe_table() };
+    let pipe = match pipe_table.get(pipe_idx as usize) {
+        Some(p) => p,
+        None => return -(Errno::EBADF as i32),
+    };
+    if pipe.has_readers() { 1 } else { 0 }
 }
 
 /// Look up the recv pipe index for a socket fd.

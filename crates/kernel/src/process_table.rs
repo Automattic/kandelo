@@ -366,7 +366,9 @@ impl ProcessTable {
             }
         }
 
-        // Clean up socket OFDs: close pipe endpoints so peers get EOF/EPIPE.
+        // Clean up socket OFDs. Active TCP streams use the same orderly FIN
+        // and orphaned receive state as close(2); other socket kinds close
+        // their pipe endpoints directly.
         // Without this, a peer process reading from a connected socket would
         // block forever instead of getting EOF when this process exits.
         //
@@ -380,6 +382,14 @@ impl ProcessTable {
                 let sock_idx = (-(ofd.host_handle + 1)) as usize;
                 if let Some(sock) = proc.sockets.get(sock_idx) {
                     if sock.global_pipes {
+                        let orderly_tcp_close = matches!(
+                            (sock.domain, sock.sock_type),
+                            (
+                                crate::socket::SocketDomain::Inet
+                                    | crate::socket::SocketDomain::Inet6,
+                                crate::socket::SocketType::Stream,
+                            )
+                        );
                         // Cross-process socket: close pipe ends in global table
                         if let Some(send_idx) = sock.send_buf_idx {
                             if let Some(pipe) = pipe_table.get_mut(send_idx) {
@@ -389,7 +399,11 @@ impl ProcessTable {
                         }
                         if let Some(recv_idx) = sock.recv_buf_idx {
                             if let Some(pipe) = pipe_table.get_mut(recv_idx) {
-                                pipe.close_read_end();
+                                if orderly_tcp_close {
+                                    pipe.close_read_end_orderly();
+                                } else {
+                                    pipe.close_read_end();
+                                }
                             }
                             pipe_table.free_if_closed(recv_idx);
                         }
@@ -1072,6 +1086,53 @@ pub fn current_pid() -> u32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn process_exit_closes_tcp_pipes_orderly() {
+        use crate::pipe::{global_pipe_table, PipeBuffer, DEFAULT_PIPE_CAPACITY};
+        use crate::socket::{SocketDomain, SocketInfo, SocketState, SocketType};
+
+        let pipe_table = unsafe { global_pipe_table() };
+        let send_idx = pipe_table.alloc(PipeBuffer::new(DEFAULT_PIPE_CAPACITY));
+        let recv_idx = pipe_table.alloc(PipeBuffer::new(DEFAULT_PIPE_CAPACITY));
+
+        let mut table = ProcessTable::new();
+        table.create_process(950_001).unwrap();
+        let proc = table.processes.get_mut(&950_001).unwrap();
+        let mut socket = SocketInfo::new(SocketDomain::Inet, SocketType::Stream, 6);
+        socket.state = SocketState::Connected;
+        socket.send_buf_idx = Some(send_idx);
+        socket.recv_buf_idx = Some(recv_idx);
+        socket.global_pipes = true;
+        let sock_idx = proc.sockets.alloc(socket);
+        let ofd_idx = proc.ofd_table.create(
+            FileType::Socket,
+            wasm_posix_shared::flags::O_RDWR,
+            -((sock_idx as i64) + 1),
+            Vec::new(),
+        );
+        proc.fd_table
+            .alloc(crate::fd::OpenFileDescRef(ofd_idx), 0)
+            .unwrap();
+
+        table.remove_process(950_001).unwrap();
+
+        let send_pipe = pipe_table.get_mut(send_idx).unwrap();
+        assert!(!send_pipe.is_write_end_open());
+        assert!(send_pipe.is_read_end_open());
+        let recv_pipe = pipe_table.get_mut(recv_idx).unwrap();
+        assert!(recv_pipe.is_read_end_open());
+        assert_eq!(recv_pipe.write(b"after-exit-one"), 14);
+        assert_eq!(recv_pipe.write(b"after-exit-two"), 14);
+        assert_eq!(recv_pipe.available(), 0);
+
+        pipe_table.get_mut(send_idx).unwrap().close_read_end();
+        pipe_table.free_if_closed(send_idx);
+        pipe_table.get_mut(recv_idx).unwrap().close_write_end();
+        pipe_table.free_if_closed(recv_idx);
+        assert!(pipe_table.get(send_idx).is_none());
+        assert!(pipe_table.get(recv_idx).is_none());
+    }
 
     fn install_bound_udp4_socket(table: &mut ProcessTable, pid: u32, port: u16) -> usize {
         use crate::socket::{SocketDomain, SocketInfo, SocketState, SocketType};

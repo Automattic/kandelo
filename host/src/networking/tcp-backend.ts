@@ -53,6 +53,7 @@ interface Connection {
   socket: net.Socket;
   recvBuf: Buffer;
   closed: boolean;
+  readEnded: boolean;
   /** True once net.Socket has emitted 'connect' (TCP handshake done). */
   connected: boolean;
   error: Error | null;
@@ -69,11 +70,12 @@ export class TcpNetworkBackend implements NetworkIO {
 
   connect(handle: number, addr: Uint8Array, port: number): void {
     const ip = `${addr[0]}.${addr[1]}.${addr[2]}.${addr[3]}`;
-    const socket = new net.Socket();
+    const socket = new net.Socket({ allowHalfOpen: true });
     const conn: Connection = {
       socket,
       recvBuf: Buffer.alloc(0),
       closed: false,
+      readEnded: false,
       connected: false,
       error: null,
     };
@@ -84,11 +86,15 @@ export class TcpNetworkBackend implements NetworkIO {
     socket.on("data", (data: Buffer) => {
       conn.recvBuf = Buffer.concat([conn.recvBuf, data]);
     });
+    socket.on("end", () => {
+      conn.readEnded = true;
+    });
     socket.on("error", (err: Error) => {
       conn.error = err;
     });
     socket.on("close", () => {
       conn.closed = true;
+      conn.readEnded = true;
     });
 
     socket.connect(port, ip);
@@ -116,9 +122,18 @@ export class TcpNetworkBackend implements NetworkIO {
     const conn = this.connections.get(handle);
     if (!conn) throw new Error("ENOTCONN");
     if (conn.error) throw conn.error;
-    if (conn.closed) throw new Error("EPIPE");
+    if (
+      conn.closed ||
+      conn.socket.destroyed ||
+      conn.socket.writableEnded ||
+      !conn.socket.writable
+    ) {
+      throw Object.assign(new Error("EPIPE"), { code: "EPIPE", errno: 32 });
+    }
     // `net.Socket.write` buffers internally before the TCP handshake
-    // completes, so we don't need to gate on `connected`.
+    // completes, so we don't need to gate on `connected`. With allowHalfOpen,
+    // this also permits writes after a peer FIN while Node still has an open
+    // writable half, matching TCP half-close semantics.
     conn.socket.write(Buffer.from(data));
     return data.length;
   }
@@ -139,7 +154,7 @@ export class TcpNetworkBackend implements NetworkIO {
       return result;
     }
 
-    if (conn.closed) return new Uint8Array(0);
+    if (conn.readEnded || conn.closed) return new Uint8Array(0);
 
     throw new EagainError();
   }
@@ -151,13 +166,20 @@ export class TcpNetworkBackend implements NetworkIO {
     if (conn.error) return POLLERR;
 
     let revents = 0;
-    if ((events & POLLIN) !== 0 && conn.recvBuf.length > 0) {
+    if ((events & POLLIN) !== 0 && (conn.recvBuf.length > 0 || conn.readEnded || conn.closed)) {
       revents |= POLLIN;
     }
     if (conn.closed) {
       revents |= POLLHUP;
     }
-    if ((events & POLLOUT) !== 0 && conn.connected && !conn.closed) {
+    if (
+      (events & POLLOUT) !== 0 &&
+      conn.connected &&
+      !conn.closed &&
+      !conn.socket.destroyed &&
+      !conn.socket.writableEnded &&
+      conn.socket.writable
+    ) {
       revents |= POLLOUT;
     }
     return revents;
@@ -166,7 +188,13 @@ export class TcpNetworkBackend implements NetworkIO {
   close(handle: number): void {
     const conn = this.connections.get(handle);
     if (conn) {
-      conn.socket.destroy();
+      // destroySoon() ends the writable half, flushes queued bytes, and only
+      // then releases the Node handle. The operating system retains whatever
+      // TCP close state is needed; no timer or fabricated post-FIN write count
+      // is imposed here.
+      if (!conn.socket.destroyed) {
+        conn.socket.destroySoon();
+      }
       this.connections.delete(handle);
     }
   }
