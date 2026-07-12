@@ -42,5 +42,11 @@ url = "https://github.com/llvm/llvm-project/blob/main/LICENSE.TXT"
 script_path = "packages/registry/libcxx/build-libcxx.sh"
 
 [outputs]
-libs = ["lib/libc++.a", "lib/libc++abi.a"]
+# libc++.a / libc++abi.a are the default non-PIC archives for static linking
+# into a main wasm module (php.wasm, mariadb, ruby). libc++-pic.a /
+# libc++abi-pic.a are the position-independent variants required by wasm SIDE
+# MODULES (`-shared --experimental-pic`), e.g. PHP's intl.so, which statically
+# absorbs libc++ and would otherwise hit a wasm-ld "recompile with -fPIC" error.
+# Additive: existing consumers keep using the non-PIC pair unchanged.
+libs = ["lib/libc++.a", "lib/libc++abi.a", "lib/libc++-pic.a", "lib/libc++abi-pic.a"]
 headers = ["include/c++/v1"]

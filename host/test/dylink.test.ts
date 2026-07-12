@@ -912,3 +912,91 @@ describe.skipIf(!hasCompiler())("DynamicLinker", () => {
     expect(h1).toBe(h2);
   });
 });
+
+function hasWat2Wasm(): boolean {
+  try {
+    execFileSync("wat2wasm", ["--version"], { stdio: "ignore" });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+// A minimal dylink.0 section (MEM_INFO: mem/table size + align all 0), which
+// marks a module as a side module. wat2wasm emits custom sections last, but the
+// loader requires dylink.0 first, so it is injected as raw bytes below rather
+// than declared in the WAT.
+const DYLINK_SECTION = new Uint8Array([
+  0x00, 0x0f,                                            // custom section, size 15
+  0x08, 0x64, 0x79, 0x6c, 0x69, 0x6e, 0x6b, 0x2e, 0x30, // name "dylink.0"
+  0x01, 0x04, 0x00, 0x00, 0x00, 0x00,                   // MEM_INFO subsection
+]);
+
+/**
+ * Assemble a hand-written side module. Using WAT (rather than a compiled C/C++
+ * fixture) lets these tests reproduce the exact import shapes a real C++ side
+ * module produces — a self-defined symbol that is *also* an env import, and an
+ * env.__cpp_exception tag — which no self-contained C fixture can emit.
+ */
+function assembleSideModule(wat: string, name: string): Uint8Array {
+  const dir = join(tmpdir(), "wasm-dylink-test");
+  mkdirSync(dir, { recursive: true });
+  const watPath = join(dir, `${name}.wat`);
+  const wasmPath = join(dir, `${name}.wasm`);
+  writeFileSync(watPath, wat);
+  execFileSync("wat2wasm", ["--enable-exceptions", watPath, "-o", wasmPath],
+    { stdio: "pipe" });
+  const raw = new Uint8Array(readFileSync(wasmPath));
+  const out = new Uint8Array(8 + DYLINK_SECTION.length + (raw.length - 8));
+  out.set(raw.subarray(0, 8), 0);                          // magic + version
+  out.set(DYLINK_SECTION, 8);                              // dylink.0 first
+  out.set(raw.subarray(8), 8 + DYLINK_SECTION.length);
+  return out;
+}
+
+describe.skipIf(!hasWat2Wasm())("weak self-import handling", () => {
+  function createLoadOptions(): LoadSharedLibraryOptions {
+    return {
+      memory: new WebAssembly.Memory({ initial: 1, maximum: 100, shared: true }),
+      table: new WebAssembly.Table({ initial: 1, element: "anyfunc" }),
+      stackPointer: new WebAssembly.Global({ value: "i32", mutable: true }, 65536),
+      heapPointer: { value: 1024 },
+      globalSymbols: new Map(),
+      got: new Map(),
+      loadedLibraries: new Map(),
+    };
+  }
+
+  it("routes an unresolved env import to the module's own export", () => {
+    // `self_fn` is both imported from env and exported: the shape wasm-ld emits
+    // for an interposable weak C++ symbol the module also defines.
+    const lib = loadSharedLibrarySync("self-import.so", assembleSideModule(`
+      (module
+        (import "env" "self_fn" (func $self_fn (result i32)))
+        (func (export "self_fn") (result i32) (i32.const 42))
+        (func (export "call_self") (result i32) (call $self_fn)))
+    `, "self-import"), createLoadOptions());
+    expect((lib.exports.call_self as Function)()).toBe(42);
+  });
+
+  it("throws loudly when a self-import has no defining export", () => {
+    // A genuinely absent symbol must trap at call time, not silently return 0.
+    const lib = loadSharedLibrarySync("missing-import.so", assembleSideModule(`
+      (module
+        (import "env" "missing_fn" (func $missing (result i32)))
+        (func (export "call_missing") (result i32) (call $missing)))
+    `, "missing-import"), createLoadOptions());
+    expect(() => (lib.exports.call_missing as Function)()).toThrow(/not provided/);
+  });
+
+  it("provides the __cpp_exception tag to -fwasm-exceptions modules", () => {
+    // C++ side modules import this tag; without the host providing it, the
+    // module fails to instantiate with "tag import requires a WebAssembly.Tag".
+    const lib = loadSharedLibrarySync("tag.so", assembleSideModule(`
+      (module
+        (import "env" "__cpp_exception" (tag $exc (param i32)))
+        (func (export "noop")))
+    `, "tag"), createLoadOptions());
+    expect(lib.exports.noop).toBeTypeOf("function");
+  });
+});
