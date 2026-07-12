@@ -43,6 +43,18 @@ if [ $# -eq 0 ]; then
     exit 2
 fi
 
+dev_command=("$@")
+# A top-level non-interactive login Bash reads /etc/profile after Nix's
+# shellHook and can replace the declared PATH with Darwin host defaults. Keep
+# the wrapper narrow: only repair the common `bash -lc <command>` form used by
+# repository workflows. Ordinary child shells and package-specific PATH
+# prefixes are untouched.
+if [ "${dev_command[0]##*/}" = "bash" ] \
+   && [ "${dev_command[1]:-}" = "-lc" ] \
+   && [ "${#dev_command[@]}" -ge 3 ]; then
+    dev_command[2]=': "${KANDELO_DEV_SHELL_TOOL_PATH:?missing declared dev-shell tool path}"; export PATH="$KANDELO_DEV_SHELL_TOOL_PATH:$PATH"; '"${dev_command[2]}"
+fi
+
 nix_develop=(
     nix develop
     --ignore-environment \
@@ -125,7 +137,7 @@ nix_develop=(
     --keep KANDELO_HOMEBREW_BROWSER_SMOKE_URL \
     --keep KANDELO_HOMEBREW_BROWSER_SMOKE_COMMAND \
     --accept-flake-config \
-    --command "$@"
+    --command "${dev_command[@]}"
 )
 
 is_transient_nix_fetch_failure() {
