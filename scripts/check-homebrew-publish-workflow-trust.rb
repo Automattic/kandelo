@@ -94,6 +94,8 @@ def check_publisher(workflow)
   check(jobs.keys.sort == %w[build-and-publish plan], "publisher has an unexpected job set")
   check(jobs.fetch("plan").keys.sort == %w[outputs runs-on steps],
         "publisher plan execution contract changed")
+  check(jobs.fetch("plan")["runs-on"] == "ubuntu-latest",
+        "publisher plan runner trust boundary changed")
   check(jobs.fetch("build-and-publish").keys.sort ==
         %w[if needs runs-on steps strategy timeout-minutes],
         "publisher build execution contract changed")
@@ -176,12 +178,17 @@ def check_publisher(workflow)
   }
   check(jobs.fetch("plan")["outputs"] == expected_outputs, "publisher plan outputs changed")
   build = jobs.fetch("build-and-publish")
+  check(build["runs-on"] == "ubuntu-latest" && build["timeout-minutes"] == 1440,
+        "publisher build runner or timeout changed")
   check(build["needs"] == ["plan"], "publisher build does not depend exactly on plan")
   check(build["if"] == "${{ needs.plan.outputs.matrix != '[]' }}",
         "publisher build condition bypasses the validated matrix")
-  check(build.dig("strategy", "matrix", "include") ==
-        "${{ fromJson(needs.plan.outputs.matrix) }}",
-        "publisher build matrix bypasses the validated plan output")
+  expected_strategy = {
+    "fail-fast" => false,
+    "matrix" => { "include" => "${{ fromJson(needs.plan.outputs.matrix) }}" },
+  }
+  check(build["strategy"] == expected_strategy,
+        "publisher build strategy bypasses the validated plan output")
 
   plan_checkouts = plan_steps.select do |step|
     step["uses"].to_s.downcase.start_with?("actions/checkout@")
@@ -253,7 +260,9 @@ def check_maintenance(workflow)
 
   rollback = jobs.fetch("rollback")
   check(rollback.keys.sort == %w[if permissions runs-on steps timeout-minutes] &&
-        rollback["if"] == "${{ inputs.mode == 'rollback' }}",
+        rollback["if"] == "${{ inputs.mode == 'rollback' }}" &&
+        rollback["runs-on"] == "ubuntu-latest" &&
+        rollback["timeout-minutes"] == 30,
         "maintenance rollback execution contract changed")
   expected_rollback_permissions = { "contents" => "write", "packages" => "read", "actions" => "read" }
   check(exact_permissions?(rollback["permissions"], expected_rollback_permissions),
@@ -350,6 +359,16 @@ def self_test(publisher, maintenance)
     mutated.dig("jobs", "plan", "steps").first["shell"] = "bash -c 'exit 0' {0}"
     check_publisher(mutated)
   end
+  expect_rejection("a self-hosted publisher plan") do
+    mutated = deep_copy(publisher)
+    mutated.dig("jobs", "plan")["runs-on"] = "self-hosted"
+    check_publisher(mutated)
+  end
+  expect_rejection("a self-hosted publisher build") do
+    mutated = deep_copy(publisher)
+    mutated.dig("jobs", "build-and-publish")["runs-on"] = "self-hosted"
+    check_publisher(mutated)
+  end
   expect_rejection("a build detached from the validated plan") do
     mutated = deep_copy(publisher)
     build = mutated.dig("jobs", "build-and-publish")
@@ -430,6 +449,11 @@ def self_test(publisher, maintenance)
       "runs-on" => "ubuntu-latest",
       "steps" => [{ "run" => "true" }],
     }
+    check_maintenance(mutated)
+  end
+  expect_rejection("a self-hosted rollback") do
+    mutated = deep_copy(maintenance)
+    mutated.dig("jobs", "rollback")["runs-on"] = "self-hosted"
     check_maintenance(mutated)
   end
   expect_rejection("removed rollback identifier validation") do
