@@ -75,6 +75,13 @@ LIBZIP_PREFIX="${WASM_POSIX_DEP_LIBZIP_DIR:-}"
 [ -z "$LIBZIP_PREFIX" ] && { echo "==> Resolving libzip..."; LIBZIP_PREFIX="$(resolve_dep libzip)"; }
 LIBCURL_PREFIX="${WASM_POSIX_DEP_LIBCURL_DIR:-}"
 [ -z "$LIBCURL_PREFIX" ] && { echo "==> Resolving libcurl..."; LIBCURL_PREFIX="$(resolve_dep libcurl)"; }
+# ICU and libcxx back only the runtime-loadable intl side module. Keep them as
+# explicit direct dependencies so the recipe never succeeds because a prior
+# local build happened to leave C++ headers or ICU archives in the sysroot.
+ICU_PREFIX="${WASM_POSIX_DEP_ICU_DIR:-}"
+[ -z "$ICU_PREFIX" ] && { echo "==> Resolving icu..."; ICU_PREFIX="$(resolve_dep icu)"; }
+LIBCXX_PREFIX="${WASM_POSIX_DEP_LIBCXX_DIR:-}"
+[ -z "$LIBCXX_PREFIX" ] && { echo "==> Resolving libcxx..."; LIBCXX_PREFIX="$(resolve_dep libcxx)"; }
 [ -f "$ZLIB_PREFIX/lib/libz.a" ] || { echo "ERROR: zlib resolve missing libz.a"; exit 1; }
 [ -f "$SQLITE_PREFIX/lib/libsqlite3.a" ] || { echo "ERROR: sqlite resolve missing libsqlite3.a"; exit 1; }
 [ -f "$OPENSSL_PREFIX/lib/libssl.a" ] || { echo "ERROR: openssl resolve missing libssl.a"; exit 1; }
@@ -82,6 +89,16 @@ LIBCURL_PREFIX="${WASM_POSIX_DEP_LIBCURL_DIR:-}"
 [ -f "$LIBICONV_PREFIX/lib/libiconv.a" ] || { echo "ERROR: GNU libiconv resolve missing libiconv.a"; exit 1; }
 [ -f "$LIBZIP_PREFIX/lib/libzip.a" ] || { echo "ERROR: libzip resolve missing libzip.a"; exit 1; }
 [ -f "$LIBCURL_PREFIX/lib/libcurl.a" ] || { echo "ERROR: libcurl resolve missing libcurl.a"; exit 1; }
+[ -f "$ICU_PREFIX/lib/libicuuc.a" ] || { echo "ERROR: icu resolve missing libicuuc.a"; exit 1; }
+[ -f "$ICU_PREFIX/lib/libicui18n.a" ] || { echo "ERROR: icu resolve missing libicui18n.a"; exit 1; }
+[ -f "$ICU_PREFIX/lib/libicuio.a" ] || { echo "ERROR: icu resolve missing libicuio.a"; exit 1; }
+[ -f "$ICU_PREFIX/lib/libicudata.a" ] || { echo "ERROR: icu resolve missing libicudata.a"; exit 1; }
+[ -f "$ICU_PREFIX/share/icu.dat" ] || { echo "ERROR: icu resolve missing share/icu.dat"; exit 1; }
+[ -f "$LIBCXX_PREFIX/lib/libc++.a" ] || { echo "ERROR: libcxx resolve missing libc++.a"; exit 1; }
+[ -f "$LIBCXX_PREFIX/lib/libc++abi.a" ] || { echo "ERROR: libcxx resolve missing libc++abi.a"; exit 1; }
+[ -f "$LIBCXX_PREFIX/lib/libc++-pic.a" ] || { echo "ERROR: libcxx resolve missing libc++-pic.a"; exit 1; }
+[ -f "$LIBCXX_PREFIX/lib/libc++abi-pic.a" ] || { echo "ERROR: libcxx resolve missing libc++abi-pic.a"; exit 1; }
+[ -d "$LIBCXX_PREFIX/include/c++/v1" ] || { echo "ERROR: libcxx resolve missing include/c++/v1"; exit 1; }
 echo "==> zlib at $ZLIB_PREFIX"
 echo "==> sqlite at $SQLITE_PREFIX"
 echo "==> openssl at $OPENSSL_PREFIX"
@@ -89,10 +106,24 @@ echo "==> libxml2 at $LIBXML2_PREFIX"
 echo "==> GNU libiconv at $LIBICONV_PREFIX"
 echo "==> libzip at $LIBZIP_PREFIX"
 echo "==> libcurl at $LIBCURL_PREFIX"
+echo "==> icu at $ICU_PREFIX"
+echo "==> libcxx at $LIBCXX_PREFIX"
+
+# The SDK's C++ driver reads libc++ from the worktree-local sysroot. Point that
+# declared toolchain location at the resolver-owned dependency, matching the
+# existing MariaDB/SpiderMonkey package contract. The intl side-module link
+# below names the PIC archives explicitly; these non-PIC names are only for
+# configure probes and any main-module C++ checks.
+mkdir -p "$SYSROOT/lib" "$SYSROOT/include/c++"
+ln -sf "$LIBCXX_PREFIX/lib/libc++.a" "$SYSROOT/lib/libc++.a"
+ln -sf "$LIBCXX_PREFIX/lib/libc++abi.a" "$SYSROOT/lib/libc++abi.a"
+ln -sf "$LIBCXX_PREFIX/lib/libc++.a" "$SYSROOT/lib/libstdc++.a"
+rm -rf "$SYSROOT/include/c++/v1"
+ln -sfn "$LIBCXX_PREFIX/include/c++/v1" "$SYSROOT/include/c++/v1"
 
 # Compose PKG_CONFIG_PATH for all deps so wasm32posix-configure's
 # pkg-config probes can find them in the cache instead of the sysroot.
-DEP_PKG_CONFIG_PATH="$ZLIB_PREFIX/lib/pkgconfig:$SQLITE_PREFIX/lib/pkgconfig:$OPENSSL_PREFIX/lib/pkgconfig:$LIBXML2_PREFIX/lib/pkgconfig:$LIBICONV_PREFIX/lib/pkgconfig:$LIBZIP_PREFIX/lib/pkgconfig:$LIBCURL_PREFIX/lib/pkgconfig"
+DEP_PKG_CONFIG_PATH="$ZLIB_PREFIX/lib/pkgconfig:$SQLITE_PREFIX/lib/pkgconfig:$OPENSSL_PREFIX/lib/pkgconfig:$LIBXML2_PREFIX/lib/pkgconfig:$LIBICONV_PREFIX/lib/pkgconfig:$LIBZIP_PREFIX/lib/pkgconfig:$LIBCURL_PREFIX/lib/pkgconfig:$ICU_PREFIX/lib/pkgconfig"
 
 # Compose -I and -L flags for defense-in-depth (autoconf raw probes).
 DEP_CPPFLAGS="-I$ZLIB_PREFIX/include -I$SQLITE_PREFIX/include -I$OPENSSL_PREFIX/include -I$LIBXML2_PREFIX/include -I$LIBICONV_PREFIX/include -I$LIBZIP_PREFIX/include -I$LIBCURL_PREFIX/include"
@@ -137,6 +168,8 @@ REPRODUCIBLE_PREFIX_MAPS+=" $(prefix_map_flags "$LIBXML2_PREFIX" /usr/src/kandel
 REPRODUCIBLE_PREFIX_MAPS+=" $(prefix_map_flags "$LIBICONV_PREFIX" /usr/src/kandelo-deps/libiconv)"
 REPRODUCIBLE_PREFIX_MAPS+=" $(prefix_map_flags "$LIBZIP_PREFIX" /usr/src/kandelo-deps/libzip)"
 REPRODUCIBLE_PREFIX_MAPS+=" $(prefix_map_flags "$LIBCURL_PREFIX" /usr/src/kandelo-deps/libcurl)"
+REPRODUCIBLE_PREFIX_MAPS+=" $(prefix_map_flags "$ICU_PREFIX" /usr/src/kandelo-deps/icu)"
+REPRODUCIBLE_PREFIX_MAPS+=" $(prefix_map_flags "$LIBCXX_PREFIX" /usr/src/kandelo-deps/libcxx)"
 
 echo "==> Downloading PHP $PHP_VERSION..."
 TARBALL="$WORK_DIR/php.tar.gz"
@@ -1196,7 +1229,24 @@ echo "==> zip.so: $(wc -c < "$BIN_DIR/zip.so") bytes"
 # statically absorbs ICU and libc++/libc++abi so neither enters php.wasm; the ICU
 # common data stays out of the .so as icu.dat (loaded by intl-icu-data-loader.c).
 echo "==> Building intl.so (PHP extension)..."
-make -j"$(sysctl -n hw.ncpu 2>/dev/null || nproc)" EXTRA_CFLAGS="$EXTRA_INC_LIBXML" ext/intl/intl.la || true
+# Ask PHP's generated Makefile for the shared extension's complete object list
+# and build those targets directly. Invoking intl.la would deliberately reach
+# the unsupported libtool side-module link, while `|| true` would also hide a
+# genuine compile failure and could link a partial extension.
+INTL_LO_TARGETS_RAW="$(make -s --no-print-directory -f Makefile -f - print-intl-objects <<'MAKE'
+.PHONY: print-intl-objects
+print-intl-objects:
+	@printf '%s\n' $(shared_objects_intl)
+MAKE
+)"
+mapfile -t INTL_LO_TARGETS <<< "$INTL_LO_TARGETS_RAW"
+[ "${#INTL_LO_TARGETS[@]}" -gt 0 ] || {
+    echo "ERROR: PHP Makefile did not declare shared_objects_intl" >&2
+    exit 1
+}
+make -j"$(sysctl -n hw.ncpu 2>/dev/null || nproc)" \
+    EXTRA_CFLAGS="$EXTRA_INC_LIBXML" \
+    "${INTL_LO_TARGETS[@]}"
 
 # Compile the icu.dat loader (PIC) that feeds ICU its common data at dlopen.
 wasm32posix-cc -fPIC -O2 -c "$SCRIPT_DIR/intl-icu-data-loader.c" \
@@ -1212,7 +1262,7 @@ echo "==> linking intl.so from ${#INTL_OBJS[@]} objects + ICU static libs + libc
 # archives are listed in dependency order (i18n -> io -> uc -> data), then
 # libc++/libc++abi. A -shared PIC module requires every input to be PIC, so the
 # libc++ PIC variants are named explicitly to win over the non-PIC sysroot ones.
-wasm32posix-cc -shared -fPIC -o "$SCRIPT_DIR/bin/intl.so" \
+wasm32posix-cc -shared -fPIC -o "$BIN_DIR/intl.so" \
     "${INTL_OBJS[@]}" \
     ext/intl/kandelo_icu_data_loader.o \
     "$ICU_PREFIX/lib/libicui18n.a" \
@@ -1221,7 +1271,7 @@ wasm32posix-cc -shared -fPIC -o "$SCRIPT_DIR/bin/intl.so" \
     "$ICU_PREFIX/lib/libicudata.a" \
     "$LIBCXX_PREFIX/lib/libc++-pic.a" \
     "$LIBCXX_PREFIX/lib/libc++abi-pic.a"
-echo "==> intl.so: $(wc -c < "$SCRIPT_DIR/bin/intl.so") bytes"
+echo "==> intl.so: $(wc -c < "$BIN_DIR/intl.so") bytes"
 
 # Copy to bin/ with .wasm extension (needed for Vite browser demos)
 cp sapi/cli/php "$BIN_DIR/php.wasm"
@@ -1268,4 +1318,5 @@ if [ -z "${WASM_POSIX_DEP_OUT_DIR:-}" ]; then
     install_local_binary php "$BIN_DIR/phar.so"
     install_local_binary php "$BIN_DIR/zend_test.so"
     install_local_binary php "$BIN_DIR/zip.so"
+    install_local_binary php "$BIN_DIR/intl.so"
 fi
