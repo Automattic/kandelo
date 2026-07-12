@@ -78,6 +78,14 @@ kernel_set_mmap_base(pid, addr) → 0
 kernel_is_fd_nonblock(pid, fd) → bool
 ```
 
+Normal guest exit closes descriptors before the process becomes reapable.
+When the host instead removes a live process after explicit termination or a
+worker failure, `kernel_remove_process` drops its inherited resource references
+and closes its last-owned host file, directory-iteration, and network handles.
+Failed spawn setup drains the same close lists during rollback. Node.js and
+browser hosts use the common removal path, so forced termination does not
+retain those backend descriptors after the worker is gone.
+
 Host imports (provided by TypeScript):
 
 ```
@@ -212,7 +220,9 @@ Fork uses the in-tree `wasm-fork-instrument` tool to snapshot the Wasm call stac
 2. Host's `kernel_fork` override calls `wpk_fork_unwind_begin(buf)`. The tool-injected export sets state to UNWINDING, initializes the absolute frame cursor `current_pos = buf + frames_start_offset` at `*(buf+0)`, and snapshots every mutable scalar global (including `__tls_base` and `__stack_pointer`) into the buffer's `saved_globals[]` area.
 3. The return-to-caller chain unwinds; each instrumented function's postamble writes its frame to the buffer and bumps `current_pos`.
 4. Once `_start` returns (top-of-stack), the host sends SYS_FORK through the channel.
-5. Kernel's `kernel_fork_process` copies fd table, signals, env, CWD, etc.
+5. Kernel's `kernel_fork_process` copies process metadata and the fd/OFD tables,
+   while inherited stateful descriptors retain references to their existing
+   kernel-global backings.
 6. Host copies the parent's linear memory to a new `WebAssembly.Memory` and spawns a child worker.
 7. Child worker calls `wpk_fork_rewind_begin(buf)` — the tool's export restores all saved globals. The host then calls `setupChannelBase(...)` (which reads the now-correct `__tls_base`) and invokes `_start`.
 8. Each instrumented function's preamble sees state=REWINDING, reloads its frame, and re-enters the call site where the parent was interrupted. Eventually reaches the `kernel_fork` call site in the leaf function, which returns 0.
@@ -220,13 +230,52 @@ Fork uses the in-tree `wasm-fork-instrument` tool to snapshot the Wasm call stac
 
 The instrumentation handles LLVM's new-EH `try_table` output correctly, including fork from inside C++ catch handlers. See [fork-instrumentation.md](fork-instrumentation.md) for the current guarantees and documented unanticipated Wasm-level carve-outs.
 
+A fork reached directly inside an instrumented dlopened side module uses two
+ordered state machines and two save buffers: side then main during unwind, main
+then side during rewind. Versioned fork-instrument capability metadata lets
+marker-present artifacts prove their role. ABI 16 defines the historical
+five-export fallback, while ABI 18 and later require role claims and reject
+stale call-graph artifacts. Dlopen replay records both the parent's memory base
+and exact table base, including null gaps left by failed loads. The supported
+direct-main-to-side boundary and the remaining opaque cross-side callback
+limitation are specified in
+[fork-instrumentation.md](fork-instrumentation.md#fork-from-a-dlopened-side-module).
+
+Fork and non-forking spawn still copy each process's fd and OFD metadata. The
+objects whose mutable state must remain identical across those copies use
+refcounted kernel-global backings: eventfd counters, timerfd timers, signalfd
+masks, memfd contents and cursors, and procfs snapshots and cursors. Pipes,
+sockets, PTYs, terminal devices, and listener queues likewise retain their
+existing global object identity. Ordinary regular-file OFD metadata, including
+the seek position and status flags, is still copied rather than shared; that
+remaining POSIX gap is tracked in [posix-status.md](posix-status.md) and
+[future-improvements.md](future-improvements.md).
+
 ### exec()
 
 1. User calls `execve(path, argv, envp)` → kernel returns exec request to host
 2. Host resolves `path` to a Wasm binary (via filesystem or program map)
-3. `kernel_exec_setup` closes CLOEXEC fds, resets signals, and **resets the program break** (POSIX/Linux behavior — the prior program's brk does not carry over)
-4. Host terminates the old worker
-5. Host creates fresh `WebAssembly.Memory` and re-registers the PID
+3. The host compiles the replacement module, checks its ABI marker, and preallocates its fresh `WebAssembly.Memory` before the irreversible transition. It also validates a 4 MiB combined argv/environment representation (UTF-8 strings, NUL terminators, and caller-width pointer entries, with each string limited to one 64 KiB scratch transfer); oversized metadata returns `E2BIG` to the old image. After commit, argv and environment entries cross into the kernel one at a time, so the fixed host scratch allocation is never overrun and an empty environment explicitly clears the prior one.
+4. The host validates the exec caller and deferred file actions, then publishes
+   and flushes writable tracked mappings while the old image is still live.
+   Tracked shared file mappings hold a lifetime-stable host handle independent
+   of the guest fd, so closing the original fd does not by itself prevent
+   writeback. A failed flush leaves the old mapping trackers and SysV
+   attachments in place.
+   `kernel_exec_setup` then closes CLOEXEC fds and directory streams and resets
+   image-specific state **in place**, including the program break (POSIX/Linux
+   behavior — the prior program's brk does not carry over). Exact kernel objects
+   behind surviving descriptors are never fork-cloned or reconstructed: socket
+   queues, eventfd/epoll/timerfd/signalfd state, memfd contents, procfs
+   snapshots, terminal input, and OFD identity therefore survive without
+   refcount churn. After that commit the host forgets the old mapping trackers
+   and detaches SysV segments. The calling pthread's signal mask and directed
+   queue become the process state; sibling workers terminate.
+   `alarm()`/`ITIMER_REAL` survives, while `timer_create()` timers are deleted.
+   The conformance gaps in [posix-status.md](posix-status.md) still apply,
+   notably numeric-fd epoll tracking and main-thread-directed signal
+   attribution.
+5. Host terminates the old process and sibling-thread workers, then re-registers the PID with the preallocated memory
 6. Host parses the new binary's `__heap_base` export and calls `kernel_set_brk_base(pid, __heap_base)` so `brk(0)` returns a value above the new program's data + stack region
 7. Host spawns a new worker with the new program binary
 8. New program starts from `_start` with the given argv/envp
@@ -341,7 +390,44 @@ The Rust ABI declaration in `crates/shared/src/lib.rs` is the source of truth fo
 
 Processes may export `__wasm_posix_thread_slots` to declare their maximum concurrent pthread count. A value of `-1` uses the host default, `0` allows no pthreads, and a positive value sets the exact per-process limit. The kernel worker creation options expose `defaultThreadSlots` for the `-1`/missing-export case. The built-in default is 1024: an intentionally arbitrary high limit meant to avoid pthread availability problems for most programs now that slots are reserved on demand. Hosts can lower or raise it with `defaultThreadSlots` when they need a different resource policy. This limit is a resource-control guard, not a static memory reservation.
 
-`mmap` remains coherent because the kernel has one per-process address-space model for brk, mmap, and host-reserved dynamic control ranges. Automatic `mmap` starts at the process's `mmap_base`, not at the legacy fixed 64MB floor. `brk` growth succeeds only when the adjacent range is free; if an mmap region or host-reserved pthread slot occupies the next pages, `brk` fails by returning the old break. `MAP_FIXED`, `munmap`, and `mremap` growth are rejected when they would overlap the reserved prefix, legacy host-control range, or a host-reserved pthread slot. The host grows the process `WebAssembly.Memory` after successful brk/mmap/mremap syscalls and after dynamic pthread-slot reservations so returned guest addresses are backed before user code touches them.
+`mmap` remains coherent because the kernel has one per-process address-space model for brk, mmap, and host-reserved dynamic control ranges. Automatic `mmap` starts at the process's `mmap_base`, not at the legacy fixed 64MB floor. A usable non-fixed address hint is preferred after rounding it down to the 64KB Wasm page boundary; an occupied or invalid hint falls back to the ordinary first-fit search. `brk` growth succeeds only when the adjacent range is free; if an mmap region or host-reserved pthread slot occupies the next pages, `brk` fails by returning the old break. `MAP_FIXED`, `munmap`, and `mremap` growth are rejected when they would overlap the reserved prefix, legacy host-control range, or a host-reserved pthread slot. `munmap` rounds its length up to a Wasm page before updating both kernel mappings and host-owned bindings. The host grows the process `WebAssembly.Memory` after successful brk/mmap/mremap syscalls and after dynamic pthread-slot reservations so returned guest addresses are backed before user code touches them.
+
+### Shared mapping coherence
+
+Different processes have different WebAssembly memories, so a pointer store in
+one process cannot immediately mutate another process's linear memory. Kandelo
+coordinates anonymous `MAP_SHARED`, SysV SHM attachments, and regular-file
+`MAP_SHARED` mappings at guest-to-kernel syscall boundaries. For each mapping,
+the host compares process memory with the snapshot that process last observed,
+merges only changed byte runs into one authoritative backing, and then imports
+peer updates into every stale alias in the calling process. Fork force-publishes
+the parent before the child inherits the same backing; `exec`, exit, crash,
+`munmap`, `mremap`, and `MAP_FIXED` update backing ownership explicitly.
+
+Regular-file mappings add a backend-qualified stable identity and retain the
+original fd's host handle for the mapping lifetime. Identity is derived and
+revalidated through that live handle, never by reopening its remembered path.
+Node uses native device/inode identity; VFS backends scope device/inode identity
+to the handle's backend object, so hard links and the same backend mounted at
+more than one path alias correctly without colliding with a different backend.
+Dirty mapped data is published before
+direct file reads or writes and before a private mapping takes its snapshot;
+successful direct writes, truncation, allocation, splice, and copy operations
+invalidate or refresh mapped cache pages. `msync`, replacement, unmap, exec,
+and process teardown persist dirty pages through the stable handle, including
+after the original guest fd is closed or its pathname is unlinked or renamed.
+
+This is syscall-boundary coherence, not shared physical memory. A process that
+only performs direct loads/stores does not publish or import peer changes until
+it crosses into the kernel. Futex waits and wakes also target the caller's own
+process `SharedArrayBuffer`, so process-shared pthread mutexes/futexes remain
+unsupported across PIDs. Shared mappings of in-kernel memfds return `ENOTSUP`,
+as do file mappings on a backend that cannot provide stable identity (currently
+OPFS reports zero inode identity); `MAP_PRIVATE` is unaffected. File bytes past
+the current EOF are zero-filled or discarded on refresh/writeback rather than
+raising Linux's `SIGBUS`, and writes made outside Kandelo's file syscall paths
+are not detected. The boundary scans are on the syscall hot path; no performance
+claim is made without before/after Node and browser benchmarks.
 
 Every spawn or exec computes a fresh layout from the target binary's memory import and `__heap_base`; the layout is per-process and is discarded when the process is unregistered. Fork children copy the parent's current memory length, not the configured maximum, and pthread workers share the owning process memory plus that process's thread allocator. WebAssembly memory cannot shrink, so a fork child may inherit the parent's current byte length, but it does not inherit dead parent pthread slot reservations. Correctness must not depend on page reloads, context resets, periodic kernel resets, or browser garbage collection reclaiming old shared memories.
 
@@ -632,7 +718,7 @@ The kernel exposes an OSS-style `/dev/dsp` character device so unmodified Linux 
 
 The kernel does **not** mix or synthesize audio. The user program (DOOM's mixer in `i_kernel_sound.c` plus the OPL2 software synth in `i_oplmusic.c` + `opl/opl3.c` for music) does that work and writes interleaved S16_LE frames; the kernel ring is just transport. fbDOOM's mixer produces 1280 stereo frames per ~28 ms game tic — slightly more than the 1260 frames the AudioContext consumes per tic — so the ring stays full enough to hide drain jitter, and the drop-oldest-on-overflow policy keeps memory bounded.
 
-Single-open semantics match the typical OSS exclusive-grab model. Owner ownership is released on `close` of the last `/dev/dsp` fd, on `execve`, and on process exit; the ring is flushed at the same time so a successor open hears silence rather than the tail of the previous program. ABI version bumped 7 → 8 to register the new `kernel_drain_audio(i64, i32) -> i32` export plus the three readouts `kernel_audio_sample_rate / channels / pending`. The OSS ioctl encodings live in `crates/shared/src/lib.rs::oss`.
+Single-open semantics match the typical OSS exclusive-grab model. Ownership is released on `close` of the last `/dev/dsp` fd or on process exit; a surviving non-CLOEXEC fd retains both ownership and queued samples across exec. The ring is flushed when ownership is released so a successor open hears silence rather than the previous owner's tail. ABI version bumped 7 → 8 to register the new `kernel_drain_audio(i64, i32) -> i32` export plus the three readouts `kernel_audio_sample_rate / channels / pending`. The OSS ioctl encodings live in `crates/shared/src/lib.rs::oss`.
 
 ## Signal Subsystem
 
@@ -645,6 +731,13 @@ Signals are delivered at syscall boundaries. When a process has a pending signal
 5. If the signal interrupted a blocking syscall, EINTR is returned
 
 Features: RT signal queuing with `si_value`, cross-process `kill`/`killpg`, `sigaltstack` with shadow stack swap, `sigsuspend`, `sigtimedwait`, `setitimer`/`alarm` via host timers.
+
+Normal exit status and signal termination are stored separately. `_exit()` and
+`exit_group()` retain the low eight status bits, including values 128 through
+255; a default terminating signal records its signal number independently.
+`waitpid()` therefore emits the POSIX wait encoding without guessing that a
+high normal exit code was a signal, while host lifecycle callbacks may still
+present the conventional shell-style `128 + signal` value.
 
 ## Browser-Specific Architecture
 

@@ -4,10 +4,12 @@ import type { FileSystemBackend, MountConfig, TimeProvider } from "./types";
 interface MountEntry {
   prefix: string;
   backend: FileSystemBackend;
+  backendId: number;
 }
 
 interface HandleInfo {
   backend: FileSystemBackend;
+  backendId: number;
   localHandle: number;
 }
 
@@ -29,11 +31,24 @@ export class VirtualPlatformIO implements PlatformIO {
   network?: NetworkIO;
 
   constructor(mounts: MountConfig[], time: TimeProvider) {
+    // Scope inode numbers to the backend object that owns them. Assigning the
+    // id per backend (rather than per mount point) keeps aliases intact when
+    // one backend is deliberately exposed at more than one mount point.
+    const backendIds = new Map<FileSystemBackend, number>();
+    let nextBackendId = 1;
     this.mounts = mounts
-      .map((m) => ({
-        prefix: normalizeMountPoint(m.mountPoint),
-        backend: m.backend,
-      }))
+      .map((m) => {
+        let backendId = backendIds.get(m.backend);
+        if (backendId === undefined) {
+          backendId = nextBackendId++;
+          backendIds.set(m.backend, backendId);
+        }
+        return {
+          prefix: normalizeMountPoint(m.mountPoint),
+          backend: m.backend,
+          backendId,
+        };
+      })
       .sort((a, b) => b.prefix.length - a.prefix.length);
     this.time = time;
     if (this.mounts.length === 0) {
@@ -43,16 +58,25 @@ export class VirtualPlatformIO implements PlatformIO {
 
   private resolve(path: string): {
     backend: FileSystemBackend;
+    backendId: number;
     relativePath: string;
   } {
     for (const m of this.mounts) {
       if (m.prefix === "/") {
-        return { backend: m.backend, relativePath: path };
+        return {
+          backend: m.backend,
+          backendId: m.backendId,
+          relativePath: path,
+        };
       }
       if (path === m.prefix || path.startsWith(m.prefix + "/")) {
         let rel = path.slice(m.prefix.length);
         if (!rel.startsWith("/")) rel = "/" + rel;
-        return { backend: m.backend, relativePath: rel };
+        return {
+          backend: m.backend,
+          backendId: m.backendId,
+          relativePath: rel,
+        };
       }
     }
     throw new Error(`ENOENT: no mount for path: ${path}`);
@@ -82,13 +106,25 @@ export class VirtualPlatformIO implements PlatformIO {
     return info;
   }
 
+  fileIdentity(path: string, dev: bigint, ino: bigint): string | null {
+    if (ino <= 0n || dev < 0n) return null;
+    const { backendId } = this.resolve(path);
+    return `vfs:${backendId}:${dev}:${ino}`;
+  }
+
+  fileHandleIdentity(handle: number, dev: bigint, ino: bigint): string | null {
+    if (ino <= 0n || dev < 0n) return null;
+    const { backendId } = this.getFileHandle(handle);
+    return `vfs:${backendId}:${dev}:${ino}`;
+  }
+
   // --- File handle operations ---
 
   open(path: string, flags: number, mode: number): number {
-    const { backend, relativePath } = this.resolve(path);
+    const { backend, backendId, relativePath } = this.resolve(path);
     const localHandle = backend.open(relativePath, flags, mode);
     const globalHandle = this.nextFileHandle++;
-    this.fileHandles.set(globalHandle, { backend, localHandle });
+    this.fileHandles.set(globalHandle, { backend, backendId, localHandle });
     return globalHandle;
   }
 
@@ -224,10 +260,10 @@ export class VirtualPlatformIO implements PlatformIO {
   // --- Directory operations ---
 
   opendir(path: string): number {
-    const { backend, relativePath } = this.resolve(path);
+    const { backend, backendId, relativePath } = this.resolve(path);
     const localHandle = backend.opendir(relativePath);
     const globalHandle = this.nextDirHandle++;
-    this.dirHandles.set(globalHandle, { backend, localHandle });
+    this.dirHandles.set(globalHandle, { backend, backendId, localHandle });
     return globalHandle;
   }
 

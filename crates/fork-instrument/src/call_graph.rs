@@ -569,6 +569,23 @@ fn types_match(module: &Module, a: TypeId, b: TypeId) -> bool {
 
 const MAX_INDIRECT_DEPTH: u8 = 2;
 
+/// Whether this module can resolve and invoke functions installed by Kandelo's
+/// dynamic linker after static call-graph analysis has completed.
+///
+/// This predicate is also used when emitting the versioned fork capability
+/// marker. Keep it as the single source of truth for both the conservative
+/// closure below and the artifact claim consumed by the host runtime.
+pub fn has_dynamic_linker_imports(module: &Module) -> bool {
+    module.imports.iter().any(|import| {
+        import.module == "env"
+            && matches!(import.kind, ImportKind::Function(_))
+            && matches!(
+                import.name.as_str(),
+                "__wasm_dlopen" | "__wasm_dlsym" | "__wasm_dlclose" | "__wasm_dlerror"
+            )
+    })
+}
+
 /// Compute the transitive closure of functions that reach `seed` via
 /// direct calls, plus a bounded number of table/function-pointer dispatches.
 ///
@@ -589,6 +606,12 @@ const MAX_INDIRECT_DEPTH: u8 = 2;
 pub fn reaching_closure(module: &Module, seed: FunctionId) -> HashSet<FunctionId> {
     let profiles = profile_functions(module);
     let table_targets = table_targets(module, &profiles);
+    // A dlsym result can be installed into the main module's table only after
+    // static analysis. Every call_indirect in a dlopen-capable main module is
+    // therefore a possible boundary above a fork-capable side-module frame.
+    // Keep this opt-in to the dynamic-linker imports so ordinary programs
+    // retain the precise table-target closure below.
+    let has_dynamic_linker_imports = has_dynamic_linker_imports(module);
 
     // Reverse direct-call graph: `callee -> set of callers`.
     let mut reverse_direct: HashMap<FunctionId, HashSet<FunctionId>> = HashMap::new();
@@ -649,6 +672,20 @@ pub fn reaching_closure(module: &Module, seed: FunctionId) -> HashSet<FunctionId
             best_indirect_depth.insert(func, indirect_depth);
             result.insert(func);
             worklist.push_back((func, indirect_depth));
+        }
+    }
+
+    if has_dynamic_linker_imports {
+        for (&caller, profile) in &profiles {
+            if !profile.indirect.is_empty() {
+                enqueue(
+                    caller,
+                    1,
+                    &mut best_indirect_depth,
+                    &mut result,
+                    &mut worklist,
+                );
+            }
         }
     }
 

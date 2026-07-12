@@ -18,7 +18,12 @@ import { readFileSync, existsSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { CAPTURED_STDIO, CentralizedKernelWorker, TERMINAL_STDIO } from "./kernel-worker";
+import {
+  CAPTURED_STDIO,
+  CentralizedKernelWorker,
+  isCurrentProcessGeneration,
+  TERMINAL_STDIO,
+} from "./kernel-worker";
 import type {
   ForkFromThreadContext,
   ResolvedSpawnProgram,
@@ -42,7 +47,7 @@ import { NodeWorkerAdapter } from "./worker-adapter";
 import { ThreadPageAllocator } from "./thread-allocator";
 import { patchWasmForThread } from "./worker-main";
 import { ThreadExitCoordinator } from "./thread-exit-coordinator";
-import { detectPtrWidth, extractHeapBase, isWasmModuleBytes } from "./constants";
+import { detectPtrWidth, extractAbiVersion, extractHeapBase, isWasmModuleBytes } from "./constants";
 import { CH_TOTAL_SIZE, DEFAULT_MAX_PAGES, PAGES_PER_THREAD, WASM_PAGE_SIZE } from "./constants";
 import {
   classifiedSignalOrFallback,
@@ -50,7 +55,10 @@ import {
   signalExitStatus,
   SIGSEGV,
 } from "./trap-signals";
-import { threadWorkerFailureDisposition } from "./thread-worker-disposition";
+import {
+  removeThreadWorkerRegistryEntry,
+  threadWorkerFailureDisposition,
+} from "./thread-worker-disposition";
 import {
   computeProcessMemoryLayout,
   createProcessMemory,
@@ -118,7 +126,7 @@ interface ProcessInfo {
   forkReplayContext?: ForkReplayContext;
 }
 const processes = new Map<number, ProcessInfo>();
-const processTeardowns = new Map<number, Promise<void>>();
+const processTeardowns = new Map<ProcessInfo["worker"], Promise<void>>();
 const reportedExits = new Set<number>();
 
 // Workers terminated by the kernel-worker entry itself (handleExit /
@@ -184,6 +192,9 @@ async function terminateThreadWorkers(pid: number): Promise<void> {
   const threads = threadWorkers.get(pid);
   if (!threads) return;
   threadWorkers.delete(pid);
+  for (const thread of threads) {
+    intentionallyTerminated.add(thread.worker as object);
+  }
   for (const t of threads) {
     await (t.termination ?? terminateTrackedWorker(t.worker));
     threadExits.release(pid, t.channelOffset);
@@ -230,24 +241,29 @@ async function finalizeProcessWorker(
   exitStatus: number,
   crashSignum: number = signalFromExitStatus(exitStatus) ?? SIGSEGV,
 ): Promise<void> {
+  if (intentionallyTerminated.has(worker as object)) return;
   const cur = processes.get(pid);
-  if (cur && cur.worker === worker) {
-    // Synthesize a signal-style reap *before* `deactivateProcess` in
-    // case the worker died without sending SYS_EXIT_GROUP (uncaught
-    // wasm trap, instantiation failure → `{type:"error"}` path).
-    // Without this, a concurrent waitpid in the parent blocks until
-    // destroy because the kernel never marked the child as a zombie.
-    // Idempotent via `hostReaped`: when the kernel already processed
-    // a clean SYS_EXIT_GROUP for this pid, this is a no-op.
-    try { kernelWorker.notifyHostProcessCrashed(pid, crashSignum); } catch { /* best-effort */ }
-    try { kernelWorker.deactivateProcess(pid); } catch { /* best-effort */ }
-    processes.delete(pid);
-    threadModuleCache.delete(pid);
-    ptyByPid.delete(pid);
-    await terminateThreadWorkers(pid);
-    await terminateTrackedWorker(worker);
-  }
+  if (!cur || cur.worker !== worker) return;
+
+  // Synthesize a signal-style reap *before* `deactivateProcess` in
+  // case the worker died without sending SYS_EXIT_GROUP (uncaught
+  // wasm trap, instantiation failure → `{type:"error"}` path).
+  // Without this, a concurrent waitpid in the parent blocks until
+  // destroy because the kernel never marked the child as a zombie.
+  // Idempotent via `hostReaped`: when the kernel already processed
+  // a clean SYS_EXIT_GROUP for this pid, this is a no-op.
+  try { kernelWorker.notifyHostProcessCrashed(pid, crashSignum); } catch { /* best-effort */ }
+  try { kernelWorker.deactivateProcess(pid); } catch { /* best-effort */ }
+  processes.delete(pid);
+  threadModuleCache.delete(pid);
+  ptyByPid.delete(pid);
+
+  // Report while this worker is still known to be the current generation.
+  // Its asynchronous termination must not report an exit for an exec
+  // replacement that has since reused the pid.
   reportProcessExit(pid, exitStatus);
+  await terminateThreadWorkers(pid);
+  await terminateTrackedWorker(worker);
 }
 
 function processWorkerErrorDisposition(reason: string | undefined): {
@@ -273,6 +289,8 @@ function finalizeProcessWorkerError(
   worker: ReturnType<NodeWorkerAdapter["createWorker"]>,
   message: string | undefined,
 ): void {
+  if (intentionallyTerminated.has(worker as object)) return;
+  if (processes.get(pid)?.worker !== worker) return;
   const errBytes = new TextEncoder().encode(`[process-worker] ${message ?? "unknown error"}\n`);
   post({ type: "stderr", pid, data: errBytes });
   const { exitStatus, signum } = processWorkerErrorDisposition(message);
@@ -285,6 +303,8 @@ function finalizeUnexpectedWorkerError(
   label: string,
   err: unknown,
 ): void {
+  if (intentionallyTerminated.has(worker as object)) return;
+  if (processes.get(pid)?.worker !== worker) return;
   const message = err instanceof Error ? (err.message ?? String(err)) : String(err);
   const errBytes = new TextEncoder().encode(`[kernel-worker] pid=${pid}: ${label}: ${message}\n`);
   post({ type: "stderr", pid, data: errBytes });
@@ -622,11 +642,17 @@ async function handleInit(msg: InitMessage) {
         post({ type: "proc_event", kind: "spawn", pid: childPid, ppid: parentPid });
         return handleFork(parentPid, childPid, parentMemory, threadFork);
       },
-      onExec: async (pid, path, argv, envp) => {
-        const result = await handleExec(pid, path, argv, envp);
+      onExec: async (pid, path, argv, envp, callerTid) => {
+        const previousWorker = processes.get(pid)?.worker;
+        const result = await handleExec(pid, path, argv, envp, callerTid);
         // Notify after handleExec refreshes kernel-side Process.argv so
-        // process-table consumers don't refetch stale command names.
-        if (result === 0) post({ type: "proc_event", kind: "exec", pid });
+        // process-table consumers don't refetch stale command names. A
+        // post-commit signal death also returns 0 because the old syscall can
+        // no longer return; only emit exec when a replacement was installed.
+        const installedWorker = processes.get(pid)?.worker;
+        if (result === 0 && installedWorker && installedWorker !== previousWorker) {
+          post({ type: "proc_event", kind: "exec", pid });
+        }
         return result;
       },
       onResolveSpawn: handlePosixSpawnResolve,
@@ -776,11 +802,14 @@ async function handleFork(
 ): Promise<number[]> {
   const parentInfo = processes.get(parentPid);
   const parentProgram = parentInfo?.programBytes;
-  if (!parentProgram) throw new Error(`Unknown parent pid ${parentPid}`);
+  if (!parentProgram || parentInfo.memory !== parentMemory) {
+    throw new Error(`Unknown parent generation for pid ${parentPid}`);
+  }
 
   if (!parentInfo.programModule) {
     parentInfo.programModule = await WebAssembly.compile(parentProgram);
   }
+  if (!kernelWorker.shouldLaunchPendingChild(childPid)) return [];
 
   const ptrWidth = parentInfo.ptrWidth;
   const parentBuf = new Uint8Array(parentMemory.buffer);
@@ -802,6 +831,7 @@ async function handleFork(
     maxAddr: childLayout.maxAddr,
     mmapBase: childLayout.mmapBase,
   });
+  kernelWorker.inheritProcessSharedMappings(parentPid, childPid);
 
   const FORK_BUF_SIZE = FORK_SAVE_BUFFER_SIZE;
   const forkReplayContext: ForkReplayContext | undefined = threadFork
@@ -863,87 +893,173 @@ async function handleExec(
   path: string,
   argv: string[],
   envp: string[],
+  callerTid: number,
 ): Promise<number> {
+  const initiatingInfo = processes.get(pid);
+  if (!initiatingInfo) return -3; // ESRCH
+  if (!kernelWorker.supportsExecMetadataReplacement()) return -38; // ENOSYS
+
   const resolved = await resolveExecutableForLaunch(path, argv);
   if (!resolved) return -2; // ENOENT
   if ("errno" in resolved) return -resolved.errno;
   const { programBytes, argv: launchArgv } = resolved;
 
+  try {
+    await WebAssembly.compile(programBytes);
+  } catch {
+    return -8; // ENOEXEC: reject malformed modules before changing old state
+  }
+  const declaredAbi = extractAbiVersion(programBytes);
+  if (declaredAbi !== null && declaredAbi !== kernelWorker.getKernelAbiVersion()) {
+    return -8; // ENOEXEC: known ABI mismatch is a truthful launch failure
+  }
   const newPtrWidth = detectPtrWidth(programBytes);
-  const setupResult = kernelWorker.kernelExecSetup(pid);
-  if (setupResult < 0) return setupResult;
-
-  kernelWorker.prepareProcessForExec(pid);
-
-  const oldInfo = processes.get(pid);
-  if (oldInfo?.worker) {
-    intentionallyTerminated.add(oldInfo.worker as object);
-    await oldInfo.worker.terminate().catch(() => {});
+  const metadataResult = kernelWorker.validateExecMetadata(
+    launchArgv,
+    envp,
+    initiatingInfo.ptrWidth,
+  );
+  if (metadataResult < 0) return metadataResult;
+  let prepared: ReturnType<typeof createFreshProcessMemory>;
+  try {
+    prepared = createFreshProcessMemory(pid, programBytes, newPtrWidth);
+  } catch {
+    return -12; // ENOMEM before the exec commit point
   }
 
-  const {
-    memory: newMemory,
-    layout: newLayout,
-    threadAllocator: newThreadAllocator,
-  } = createFreshProcessMemory(pid, programBytes, newPtrWidth);
-  const newChannelOffset = newLayout.channelOffset;
+  // Resolution/compilation yielded to the event loop. The numeric pid may
+  // now name a replacement generation; a stale continuation must not commit
+  // exec state against it.
+  if (processes.get(pid) !== initiatingInfo
+      || kernelWorker.isExecHandoffActive(pid)
+      || !kernelWorker.isProcessExecutionActive(pid)) return -3; // ESRCH
+  const prepareResult = kernelWorker.kernelExecPrepare(pid, callerTid);
+  if (prepareResult < 0) return prepareResult;
+  const addressSpaceResult = kernelWorker.prepareAddressSpaceForExec(pid);
+  if (addressSpaceResult < 0) return addressSpaceResult;
+  let replacementWorker: ReturnType<NodeWorkerAdapter["createWorker"]> | undefined;
+  try {
+    const setupResult = kernelWorker.kernelExecSetup(pid, callerTid);
+    if (setupResult < 0) return setupResult;
 
-  kernelWorker.registerProcess(pid, newMemory, [newChannelOffset], {
-    skipKernelCreate: true,
-    ptrWidth: newPtrWidth,
-    brkBase: newLayout.brkBase,
-    mmapBase: newLayout.mmapBase,
-    maxAddr: newLayout.maxAddr,
-    // Refresh kernel-side Process.argv so /proc/<pid>/cmdline reflects
-    // the post-exec image, not the parent's argv. Mirrors the browser
-    // handleExec fix.
-    argv: launchArgv,
-  });
-
-  // Clear thread module cache — new program binary is different
-  threadModuleCache.delete(pid);
-
-  const initData: CentralizedWorkerInitMessage = {
-    type: "centralized_init",
-    pid,
-    ppid: 0,
-    programBytes,
-    memory: newMemory,
-    channelOffset: newChannelOffset,
-    argv: launchArgv,
-    env: envp,
-    ptrWidth: newPtrWidth,
-    kernelAbiVersion: kernelWorker.getKernelAbiVersion(),
-  };
-
-  const newWorker = workerAdapter.createWorker(initData);
-  processes.set(pid, {
-    memory: newMemory,
-    programBytes,
-    worker: newWorker,
-    channelOffset: newChannelOffset,
-    ptrWidth: newPtrWidth,
-    layout: newLayout,
-    threadAllocator: newThreadAllocator,
-  });
-
-  newWorker.on("error", (err: Error) => finalizeUnexpectedWorkerError(pid, newWorker, "exec worker error", err));
-
-  // Forward worker-main top-level errors (instantiation failures,
-  // uncaught wasm traps) so the host learns the process died — same
-  // wiring as handleSpawn.
-  newWorker.on("message", (raw: unknown) => {
-    const m = raw as { type: string; pid?: number; message?: string; status?: number };
-    if (m.type === "error" && m.pid === pid) {
-      finalizeProcessWorkerError(pid, newWorker, m.message);
-    } else if (m.type === "exit" && m.pid === pid) {
-      void finalizeProcessWorker(pid, newWorker, m.status ?? 0);
+    // From this point onward the old image cannot resume. Invalidate its
+    // channels and async continuations immediately, before any other
+    // post-commit operation can fail or yield.
+    if (initiatingInfo.worker) {
+      intentionallyTerminated.add(initiatingInfo.worker as object);
     }
-  });
+    kernelWorker.prepareProcessForExec(pid);
 
-  installCrashSafetyNet(newWorker, pid);
+    const finalizeResult = kernelWorker.finalizeAddressSpaceForExec(pid);
+    if (finalizeResult < 0) {
+      throw new Error("failed to detach the discarded address space");
+    }
 
-  return 0;
+    await terminateThreadWorkers(pid);
+    if (initiatingInfo.worker) {
+      await initiatingInfo.worker.terminate().catch(() => {});
+    }
+    if (kernelWorker.finalizeExecHandoffTermination(pid) > 0) return 0;
+
+    const {
+      memory: newMemory,
+      layout: newLayout,
+      threadAllocator: newThreadAllocator,
+    } = prepared;
+    const newChannelOffset = newLayout.channelOffset;
+
+    const initData: CentralizedWorkerInitMessage = {
+      type: "centralized_init",
+      pid,
+      ppid: 0,
+      programBytes,
+      memory: newMemory,
+      channelOffset: newChannelOffset,
+      argv: launchArgv,
+      env: envp,
+      ptrWidth: newPtrWidth,
+      kernelAbiVersion: kernelWorker.getKernelAbiVersion(),
+    };
+
+    kernelWorker.registerProcess(pid, newMemory, [newChannelOffset], {
+      skipKernelCreate: true,
+      ptrWidth: newPtrWidth,
+      metadataPtrWidth: initiatingInfo.ptrWidth,
+      brkBase: newLayout.brkBase,
+      mmapBase: newLayout.mmapBase,
+      maxAddr: newLayout.maxAddr,
+      // Refresh kernel-side Process.argv and environment so procfs and
+      // kernel APIs reflect the replacement image.
+      argv: launchArgv,
+      env: envp,
+    });
+    replacementWorker = workerAdapter.createWorker(initData);
+
+    // Clear thread module cache — new program binary is different
+    threadModuleCache.delete(pid);
+
+    processes.set(pid, {
+      memory: newMemory,
+      programBytes,
+      worker: replacementWorker,
+      channelOffset: newChannelOffset,
+      ptrWidth: newPtrWidth,
+      layout: newLayout,
+      threadAllocator: newThreadAllocator,
+    });
+
+    replacementWorker.on("error", (err: Error) =>
+      finalizeUnexpectedWorkerError(pid, replacementWorker!, "exec worker error", err));
+
+    // Forward worker-main top-level errors (instantiation failures,
+    // uncaught wasm traps) so the host learns the process died — same
+    // wiring as handleSpawn.
+    replacementWorker.on("message", (raw: unknown) => {
+      const m = raw as { type: string; pid?: number; message?: string; status?: number };
+      if (m.type === "error" && m.pid === pid) {
+        finalizeProcessWorkerError(pid, replacementWorker!, m.message);
+      } else if (m.type === "exit" && m.pid === pid) {
+        void finalizeProcessWorker(pid, replacementWorker!, m.status ?? 0);
+      }
+    });
+
+    installCrashSafetyNet(replacementWorker, pid);
+    kernelWorker.finishProcessExecHandoff(pid);
+    return 0;
+  } catch (err) {
+    // A kernel trap can leave the commit point uncertain. We cannot safely
+    // return to the caller, so invalidate the old generation before yielding
+    // and report a truthful signal death.
+    if (initiatingInfo.worker) {
+      intentionallyTerminated.add(initiatingInfo.worker as object);
+    }
+    try {
+      kernelWorker.prepareProcessForExec(pid);
+    } catch {
+      // Continue with best-effort process death below.
+    }
+    if (replacementWorker && processes.get(pid)?.worker !== replacementWorker) {
+      await terminateTrackedWorker(replacementWorker);
+    }
+
+    const message = err instanceof Error ? err.message : String(err);
+    try {
+      post({
+        type: "stderr",
+        pid,
+        data: new TextEncoder().encode(`[exec] post-commit transition failed: ${message}\n`),
+      });
+    } catch {
+      // A closed host port must not prevent kernel-side reap.
+    }
+    try { kernelWorker.notifyHostProcessCrashed(pid, SIGSEGV); } catch { /* best-effort */ }
+    try {
+      handleExit(pid, signalExitStatus(SIGSEGV));
+    } catch {
+      try { kernelWorker.deactivateProcess(pid); } catch { /* best-effort */ }
+    }
+    return 0;
+  }
 }
 
 /**
@@ -992,6 +1108,12 @@ async function handlePosixSpawn(
   argv: string[],
   envp: string[],
 ): Promise<number> {
+  // The kernel child is authoritative as soon as kernel_spawn_process returns.
+  // A group-directed signal may already have terminated it before the host
+  // installs a Worker. Preserve the successful spawn and its waitable zombie,
+  // but do not resurrect it by registering a new execution generation.
+  if (!kernelWorker.shouldLaunchPendingChild(childPid)) return 0;
+
   post({ type: "proc_event", kind: "spawn", pid: childPid });
 
   const ptrWidth = detectPtrWidth(programBytes);
@@ -1067,11 +1189,26 @@ async function handleClone(
 
   // Auto-compile thread module if not already cached per-PID
   let threadModule = threadModuleCache.get(pid);
+  let cacheCompiledModule = false;
   if (!threadModule) {
     const patched = patchWasmForThread(processInfo.programBytes);
     threadModule = await WebAssembly.compile(patched);
-    threadModuleCache.set(pid, threadModule);
+    cacheCompiledModule = true;
   }
+
+  // Compilation yields. A sibling pthread may have committed exec while this
+  // clone continuation was suspended; never attach the old program/Memory to
+  // the replacement process that now owns the same numeric pid.
+  if (!isCurrentProcessGeneration(
+    processes,
+    pid,
+    processInfo,
+    memory,
+    kernelWorker.isExecHandoffActive(pid),
+  ) || !kernelWorker.isProcessExecutionActive(pid)) {
+    throw new Error(`Process ${pid} changed generation during clone`);
+  }
+  if (cacheCompiledModule) threadModuleCache.set(pid, threadModule);
 
   let alloc: ReturnType<ThreadPageAllocator["allocate"]>;
   try {
@@ -1088,7 +1225,12 @@ async function handleClone(
   // Register fnPtr/argPtr so that handleFork can route a fork() from
   // this thread back through its entry point (see ForkFromThreadContext
   // in kernel-worker.ts).
-  kernelWorker.addChannel(pid, alloc.channelOffset, tid, fnPtr, argPtr);
+  try {
+    kernelWorker.addChannel(pid, alloc.channelOffset, tid, fnPtr, argPtr, memory);
+  } catch (err) {
+    processInfo.threadAllocator.free(alloc.basePage);
+    throw err;
+  }
 
   const threadInitData: CentralizedThreadInitMessage = {
     type: "centralized_thread_init",
@@ -1119,17 +1261,23 @@ async function handleClone(
   };
   threadWorkers.get(pid)!.push(threadEntry);
 
+  const belongsToCurrentProcessImage = () =>
+    isCurrentProcessGeneration(
+      processes,
+      pid,
+      processInfo,
+      memory,
+      kernelWorker.isExecHandoffActive(pid),
+    );
   let reclaimed = false;
   const reclaimThread = () => {
     if (reclaimed) return;
     reclaimed = true;
     processInfo.threadAllocator.free(alloc.basePage);
-    threadExits.release(pid, alloc.channelOffset);
-    const threads = threadWorkers.get(pid);
-    if (threads) {
-      const idx = threads.indexOf(threadEntry);
-      if (idx >= 0) threads.splice(idx, 1);
+    if (belongsToCurrentProcessImage()) {
+      threadExits.release(pid, alloc.channelOffset);
     }
+    removeThreadWorkerRegistryEntry(threadWorkers, pid, threadEntry);
   };
   const terminateThreadEntry = (): Promise<void> => {
     if (!threadEntry.termination) {
@@ -1139,7 +1287,14 @@ async function handleClone(
   };
   threadExits.register(pid, alloc.channelOffset, terminateThreadEntry);
 
+  const isCurrentThreadGeneration = () =>
+    !intentionallyTerminated.has(threadWorker as object)
+    && belongsToCurrentProcessImage();
   const failThread = (reason: string) => {
+    if (!isCurrentThreadGeneration()) {
+      void terminateThreadEntry();
+      return;
+    }
     const text = `[kernel-worker] pid=${pid} tid=${tid}: ${reason}\n`;
     post({ type: "stderr", pid, data: new TextEncoder().encode(text) });
     const disposition = threadWorkerFailureDisposition(reason);
@@ -1153,6 +1308,10 @@ async function handleClone(
   threadWorker.on("message", (msg: unknown) => {
     const m = msg as WorkerToHostMessage;
     if (m.type === "thread_exit") {
+      if (!isCurrentThreadGeneration()) {
+        void terminateThreadEntry();
+        return;
+      }
       void terminateThreadEntry();
     } else if (m.type === "error") {
       failThread(m.message);
@@ -1168,17 +1327,23 @@ function handleThreadExit(pid: number, channelOffset: number): boolean {
 }
 
 function handleExit(pid: number, exitStatus: number): void {
-  void finishProcessExit(pid, exitStatus);
+  void finishProcessExit(pid, exitStatus, processes.get(pid)?.worker);
 }
 
-async function finishProcessExit(pid: number, exitStatus: number): Promise<void> {
-  const existingTeardown = processTeardowns.get(pid);
+async function finishProcessExit(
+  pid: number,
+  exitStatus: number,
+  expectedWorker = processes.get(pid)?.worker,
+): Promise<void> {
+  if (!expectedWorker) return;
+  const info = processes.get(pid);
+  if (!info || info.worker !== expectedWorker) return;
+
+  const existingTeardown = processTeardowns.get(expectedWorker);
   if (existingTeardown) {
     reportProcessExit(pid, exitStatus);
     return;
   }
-
-  const info = processes.get(pid);
 
   const teardown = (async () => {
     // Keep the pid registered until the process worker is gone. musl's
@@ -1187,7 +1352,11 @@ async function finishProcessExit(pid: number, exitStatus: number): Promise<void>
     // completions, otherwise the worker can park in Atomics.wait with no
     // registered listener left to wake it.
     await terminateThreadWorkers(pid);
-    if (info?.worker) await terminateTrackedWorker(info.worker);
+    await terminateTrackedWorker(expectedWorker);
+
+    // Exec may have installed a replacement while old worker termination was
+    // settling. Never apply pid-wide cleanup to a different generation.
+    if (processes.get(pid)?.worker !== expectedWorker) return;
 
     // Deactivate process (zombie until reaped or destroy) after worker
     // termination so no further guest syscalls can arrive on its channel.
@@ -1197,7 +1366,7 @@ async function finishProcessExit(pid: number, exitStatus: number): Promise<void>
     threadModuleCache.delete(pid);
     ptyByPid.delete(pid);
   })();
-  processTeardowns.set(pid, teardown);
+  processTeardowns.set(expectedWorker, teardown);
 
   // The process is already a kernel-side zombie at this point. Report the
   // exit before worker-thread teardown so a slow termination cannot make
@@ -1208,7 +1377,7 @@ async function finishProcessExit(pid: number, exitStatus: number): Promise<void>
   try {
     await teardown;
   } finally {
-    processTeardowns.delete(pid);
+    processTeardowns.delete(expectedWorker);
   }
 }
 

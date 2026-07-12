@@ -1,15 +1,29 @@
 # Future Improvements
 
-Technical debt and improvement opportunities. None are bugs — all are deferred enhancements.
+Technical debt, deferred enhancements, and explicitly documented conformance
+gaps. Listing an item here does not imply that the current behavior is fully
+supported.
 
 ## Kernel
 
-### Per-process OFD storage breaks POSIX fork OFD-sharing
-Open File Descriptions live inside `Process` (`crates/kernel/src/ofd.rs`'s `OfdTable`), not in a kernel-global table. POSIX.1-2017 §2.4.1 requires that "each of the child's file descriptors shall refer to the same open file description as the corresponding file descriptor of the parent" — meaning the seek pointer, status flags, and pending I/O state are SHARED across fork siblings. Our model deep-clones the parent's `OfdTable` into the child, so each process has independent copies — independent seek pointers, independent status flags after fork.
+### Per-process ordinary OFD metadata still breaks POSIX fork sharing
+Open File Descriptions live inside `Process` (`crates/kernel/src/ofd.rs`'s
+`OfdTable`), not in a kernel-global table. POSIX requires a child descriptor to
+refer to the same open file description as its parent counterpart. Kandelo now
+retains exact refcounted backings for stateful objects that cannot be safely
+reconstructed: pipes, sockets, PTYs, eventfd, timerfd, signalfd, memfd, and
+procfs snapshots/cursors. Those fixes preserve the underlying object state but
+do not make the ordinary OFD record itself global.
 
-A program that does `fork()` then both processes append to the same fd expecting interleaved output (a common idiom for cooperative log writers, parallel `make` job-server pipes, or any pattern that relies on shared-position semantics) will silently produce garbled output instead. No regression test exercises this today; it's structurally there.
+Regular-file seek positions, status flags, and owners are therefore still
+deep-copied at fork/spawn. A program that forks and coordinates writes through
+one inherited regular fd can observe divergent positions or flag changes.
 
-The cleanest redesign: move OFDs to a kernel-global `OfdTable` and have `Process` hold `FdTable<OfdRef>` where `OfdRef` is a stable index. Fork's "fd inheritance" becomes the trivial pointer/refcount operation it should be (no deep clone, no per-resource cross-process refcount machinery). The non-forking `posix_spawn` work added a lot of refcount bookkeeping (host file handles, global pipes, PTYs, listener backlogs, host_net_handle) to compensate for the per-process model — that machinery would mostly disappear with kernel-global OFDs.
+The cleanest redesign is still to move OFDs to a kernel-global `OfdTable` and
+have `Process` hold `FdTable<OfdRef>`, where `OfdRef` is a stable index. Fork's
+fd inheritance then becomes the pointer/refcount operation POSIX describes,
+and much of the per-resource inheritance bookkeeping can collapse into the
+global OFD lifetime.
 
 Cost of the redesign: locking / borrow-checker complexity around the global table, plus a careful migration that doesn't regress the syscall hot path. Worth scheduling on the next big initiative — the savings compound across fork, spawn, exec, and dup.
 
@@ -29,6 +43,50 @@ Cost of the redesign: locking / borrow-checker complexity around the global tabl
 When `host_call_signal_handler` fails (invalid function table index, handler throws), the error is discarded via `let _ =` and the signal is consumed (already dequeued). Consider falling back to the default action on handler failure, or re-raising the signal.
 
 **Files:** `crates/kernel/src/wasm_api.rs` — `deliver_pending_signals`
+
+### Make cross-process shared memory immediate and futex-addressable
+
+Anonymous `MAP_SHARED` inherits one host-owned backing across fork; SysV SHM
+and stable-identity regular-file mappings share backings across separately
+attached or mapped processes. Because each PID still owns a different
+WebAssembly `Memory`, coherence happens only when a process crosses a syscall
+boundary: the host merges bytes changed relative to that process's snapshot and
+then imports peer changes. A direct store does not immediately change another
+PID's memory, and futex WAIT/WAKE cannot target the peer's separate
+`SharedArrayBuffer`.
+
+Closing this gap requires a memory architecture or host protocol that supports
+both immediate observation and wakeups, not just periodic byte merging. Any
+design must preserve independent process address spaces, fork continuation,
+Node/browser parity, and signal/cancellation behavior. It also needs explicit
+performance evidence: the current boundary coordinator runs in the syscall hot
+path, and its cost has not yet been established by before/after micro and full
+application benchmarks on both hosts.
+
+**Files:** `host/src/kernel-worker.ts`, `host/src/worker-main.ts`,
+`host/src/browser-kernel-worker-entry.ts`,
+`host/src/node-kernel-worker-entry.ts`
+
+### Close the remaining regular-file `MAP_SHARED` gaps
+
+The mapping cache deliberately rejects objects it cannot identify or keep
+alive safely. Current OPFS stats use inode zero, so OPFS `MAP_SHARED` returns
+`ENOTSUP`; in-kernel memfds also return `ENOTSUP` because they do not expose the
+host handle used by the file page cache. An initial mapping also needs to reopen
+the descriptor's current pathname, so mapping an already renamed/unlinked fd
+can fail even though an established mapping survives later close, rename, or
+unlink through its stable handle.
+
+Further gaps are observable VM semantics rather than cache bookkeeping. Stores
+beyond the current file size are zero-filled or discarded on refresh/writeback
+instead of raising Linux `SIGBUS`, and writers outside Kandelo's direct file
+syscall paths do not invalidate cached pages. Complete support needs stable
+OPFS identity, a kernel-owned memfd mapping bridge, external invalidation (or a
+documented ownership boundary), and a Wasm mechanism or instrumentation for
+faulting beyond EOF.
+
+**Files:** `host/src/kernel-worker.ts`, `host/src/vfs/opfs.ts`,
+`host/src/vfs/vfs.ts`, `crates/kernel/src/descriptor_backing.rs`
 
 ## Browser
 

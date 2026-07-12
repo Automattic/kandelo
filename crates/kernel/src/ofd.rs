@@ -53,6 +53,11 @@ pub fn host_handle_close_ref(h: i64) -> bool {
     true
 }
 
+#[cfg(test)]
+pub fn host_handle_ref_count(h: i64) -> u32 {
+    get_host_handle_refs().get(&h).copied().unwrap_or(0)
+}
+
 /// The set of flags that F_SETFL is allowed to modify (POSIX semantics).
 const SETFL_MODIFIABLE: u32 = O_APPEND | O_NONBLOCK;
 

@@ -1839,6 +1839,7 @@ fn classify_compat_change(old: &Value, new: &Value) -> Result<CompatReport, Stri
             "kernel_exports" => {
                 classify_additive_array_by_name(key, old_value, new_value, &mut report)?
             }
+            "host_adapter" => classify_host_adapter(old_value, new_value, &mut report)?,
             "marshalled_structs" => {
                 classify_additive_object_by_key(key, old_value, new_value, &mut report)?
             }
@@ -1859,6 +1860,57 @@ fn classify_compat_change(old: &Value, new: &Value) -> Result<CompatReport, Stri
 
 fn additive_top_level_section(section: &str) -> bool {
     matches!(section, "host_adapter" | "syscall_arg_descriptors")
+}
+
+fn classify_host_adapter(
+    old: &Value,
+    new: &Value,
+    report: &mut CompatReport,
+) -> Result<(), String> {
+    let old_obj = old
+        .as_object()
+        .ok_or("old host_adapter section must be a JSON object")?;
+    let new_obj = new
+        .as_object()
+        .ok_or("new host_adapter section must be a JSON object")?;
+
+    for key in old_obj.keys() {
+        let Some(new_value) = new_obj.get(key) else {
+            report
+                .breaking
+                .push(format!("removed host_adapter field {key:?}"));
+            continue;
+        };
+        if key == "optional_kernel_exports" {
+            classify_additive_array(
+                "host_adapter.optional_kernel_exports",
+                &old_obj[key],
+                new_value,
+                report,
+                |entry| {
+                    entry.as_str().map(ToOwned::to_owned).ok_or_else(|| {
+                        format!(
+                            "host_adapter.optional_kernel_exports entry must be a string: {entry}",
+                        )
+                    })
+                },
+            )?;
+        } else if &old_obj[key] != new_value {
+            report
+                .breaking
+                .push(format!("changed host_adapter field {key:?}"));
+        }
+    }
+
+    for key in new_obj.keys() {
+        if !old_obj.contains_key(key) {
+            report
+                .breaking
+                .push(format!("added host_adapter field {key:?}"));
+        }
+    }
+
+    Ok(())
 }
 
 fn classify_additive_object_by_key(
@@ -2143,6 +2195,37 @@ mod tests {
         assert_eq!(
             report.additive,
             vec!["added top-level section \"host_adapter\""]
+        );
+    }
+
+    #[test]
+    fn adding_optional_host_adapter_export_is_compatible() {
+        let old = base_snapshot();
+        let mut new = old.clone();
+        new["host_adapter"]["optional_kernel_exports"] =
+            json!(["kernel_get_process_exit_signal",]);
+
+        let report = classify_compat_change(&old, &new).unwrap();
+        assert!(report.breaking.is_empty(), "{report:?}");
+        assert_eq!(
+            report.additive,
+            vec![
+                "added host_adapter.optional_kernel_exports entry \"kernel_get_process_exit_signal\"",
+            ],
+        );
+    }
+
+    #[test]
+    fn changing_required_host_adapter_export_is_breaking() {
+        let old = base_snapshot();
+        let mut new = old.clone();
+        new["host_adapter"]["required_kernel_exports"] =
+            json!(["__abi_version", "kernel_new_requirement",]);
+
+        let report = classify_compat_change(&old, &new).unwrap();
+        assert_eq!(
+            report.breaking,
+            vec!["changed host_adapter field \"required_kernel_exports\""],
         );
     }
 

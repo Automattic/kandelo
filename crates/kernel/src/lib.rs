@@ -6,6 +6,7 @@ extern crate alloc;
 extern crate wasm_posix_shared;
 
 pub mod audio;
+pub(crate) mod descriptor_backing;
 pub mod devfs;
 pub mod dri;
 pub mod fd;

@@ -45,14 +45,14 @@ describe("datagram send-state wakeups", () => {
 
     const fallback = vi.fn();
     const timer = setTimeout(fallback, 1);
-    worker.pendingPollRetries.set(channel.channelOffset, {
+    worker.pendingPollRetries.set(channel, {
       timer,
       channel,
       pipeIndices: [],
       deadline: Date.now() + 1,
       isWriteRetry: true,
     });
-    worker.pendingPollRetries.set(pollChannel.channelOffset, {
+    worker.pendingPollRetries.set(pollChannel, {
       timer: null,
       channel: pollChannel,
       pipeIndices: [],
@@ -66,8 +66,8 @@ describe("datagram send-state wakeups", () => {
 
     expect(worker.retrySyscall).toHaveBeenCalledOnce();
     expect(worker.retrySyscall).toHaveBeenCalledWith(channel);
-    expect(worker.pendingPollRetries.has(channel.channelOffset)).toBe(false);
-    expect(worker.pendingPollRetries.has(pollChannel.channelOffset)).toBe(true);
+    expect(worker.pendingPollRetries.has(channel)).toBe(false);
+    expect(worker.pendingPollRetries.has(pollChannel)).toBe(true);
     expect(worker.scheduleWakeBlockedRetries).not.toHaveBeenCalled();
     expect(worker.scheduleWakeBlockedRetriesDeferred).toHaveBeenCalledOnce();
 

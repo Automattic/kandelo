@@ -52,7 +52,32 @@ Kernel-side `sys_munmap` correctly updates the MemoryManager range tracking (so 
 
 Until one of those ships, this remains a fundamental wasm limitation. The kernel's optional syscall-path EFAULT validation (defensive hardening, described in [compromising-xfails.md §2](compromising-xfails.md)) does not flip these XFAIL entries.
 
-## 7. Summary: What Cannot Be Implemented in Wasm
+## 7. Separate Process Memories Are Not Immediate Shared Memory
+
+Each Kandelo process owns a different WebAssembly `Memory`. Fork copies the
+parent's bytes into a new shared memory for the child; it does not create one
+linear memory that both PIDs can address. Kandelo therefore coordinates
+anonymous `MAP_SHARED`, SysV SHM, and stable-identity regular-file mappings at
+syscall boundaries: changed bytes are merged into a host-owned backing and peer
+updates are imported when a process next enters the kernel.
+
+That closes file/data handoff cases but is not equivalent to shared physical
+pages. Direct stores are not visible to another PID until a syscall boundary,
+and a peer that only spins on loads does not import the update. Futex WAIT/WAKE
+also operates on the caller's own `SharedArrayBuffer`, so process-shared
+pthread mutexes and similar lock protocols remain unsupported. Threads created
+with `CLONE_VM` do share one memory and are not subject to this cross-process
+boundary.
+
+Regular-file `MAP_SHARED` has further explicit limits. The backend must provide
+stable device/inode identity; current OPFS metadata reports no stable inode and
+is rejected with `ENOTSUP`. In-kernel memfds also return `ENOTSUP` for shared
+mappings until they have a mapping bridge. Bytes beyond EOF are zero-filled or
+dropped rather than raising Linux's `SIGBUS`, and changes made by an external
+host writer do not invalidate Kandelo's page cache. `MAP_PRIVATE` is unaffected
+by the identity and memfd restrictions.
+
+## 8. Summary: What Cannot Be Implemented in Wasm
 
 | Feature | Why |
 |---------|-----|
@@ -60,7 +85,7 @@ Until one of those ships, this remains a fundamental wasm limitation. The kernel
 | `munmap()` SIGSEGV-on-deref | Wasm linear memory cannot revoke page access — see §6 |
 | FP exceptions / alternate rounding | Wasm FP is non-trapping IEEE 754 with fixed round-to-nearest mode |
 | `getrusage()` with real data | No CPU/memory tracking available in Wasm runtime |
-| `mremap()` | Wasm memory can only grow, not remap regions |
+| Immediate cross-process `MAP_SHARED` + futex | Distinct process memories cannot directly address or wake on one another's bytes; Kandelo provides syscall-boundary data coherence instead |
 | Raw server sockets (browser) | Web sandbox prevents listening on ports |
 | Guest-initiated `pthread_create` | Wasm threads require host orchestration via Web Workers |
 | `pthread_cancel` | No architecture-specific `__syscall_cp_asm` for Wasm |
@@ -69,17 +94,19 @@ Until one of those ships, this remains a fundamental wasm limitation. The kernel
 
 | Feature | Status |
 |---------|--------|
-| `fork()` | `wasm-fork-instrument`-based, fully working |
+| `fork()` | `wasm-fork-instrument` resumes supported main-thread, pthread, and direct main-to-one-side-module stacks; nested/opaque cross-side and pthread-inside-side-module paths remain unsupported |
 | `sigaltstack` | Shadow stack swap via inline asm (PR #174) |
 | `dlopen()` / `dlsym()` | Dynamic Wasm module linker (host/src/dylink.ts) |
-| `exec()` / `posix_spawn()` | Full host-side exec with CWD resolution (PR #167, #178) |
+| `exec()` | In-place host-side replacement with CWD resolution and stable mapping writeback handles; remaining descriptor and signal-attribution gaps are tracked in [posix-status.md](posix-status.md) |
+| `mremap()` | Kernel range bookkeeping and in-memory move/grow/shrink are implemented; old bytes cannot be revoked after a move, for the same reason as `munmap()` |
+| `posix_spawn()` | Non-forking host-side spawn with CWD resolution and file actions |
 | SysV IPC | Host-side handlers (PR #146) |
 | POSIX mqueues | Host-side handlers (PR #147) |
 | POSIX timers | setitimer/getitimer (PR #148) |
 | `sem_open` | Implemented |
 | PTY / terminal | Full pseudoterminal with line discipline (PR #181) |
 | Threads via `clone()` | Host-managed Web Workers, MariaDB runs 5 threads (PR #88) |
-| OPFS filesystem | `host/src/vfs/opfs.ts` (browser persistence) |
+| OPFS filesystem | `host/src/vfs/opfs.ts` provides browser persistence; current zero-inode metadata means regular-file `MAP_SHARED` returns `ENOTSUP` there |
 
 ## Current libc-test Results (2026-04-05)
 
