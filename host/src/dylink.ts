@@ -223,6 +223,44 @@ export function parseDylinkSection(wasmBytes: Uint8Array): DylinkMetadata | null
   return metadata;
 }
 
+/**
+ * Return function exports whose indices refer to module-defined functions.
+ *
+ * WebAssembly.Module.exports() exposes only names and kinds. Dynamic-linker
+ * self-import handling also needs the function index: an imported function can
+ * be re-exported under the same name, but that is not a local definition and
+ * must not receive a trampoline back to itself.
+ *
+ * `module` has already validated the binary before this helper is called, so
+ * section bounds and LEB encodings are known to be structurally valid.
+ */
+function readDefinedFunctionExports(
+  wasmBytes: Uint8Array,
+  importedFunctionCount: number,
+): Set<string> {
+  const result = new Set<string>();
+  const offset = { value: 8 };
+  while (offset.value < wasmBytes.length) {
+    const sectionId = wasmBytes[offset.value++];
+    const sectionSize = readVarUint(wasmBytes, offset);
+    const sectionEnd = offset.value + sectionSize;
+    if (sectionId !== 7) {
+      offset.value = sectionEnd;
+      continue;
+    }
+
+    const exportCount = readVarUint(wasmBytes, offset);
+    for (let i = 0; i < exportCount; i++) {
+      const name = readString(wasmBytes, offset);
+      const kind = wasmBytes[offset.value++];
+      const index = readVarUint(wasmBytes, offset);
+      if (kind === 0 && index >= importedFunctionCount) result.add(name);
+    }
+    break;
+  }
+  return result;
+}
+
 /** Align a value up to the given alignment (must be power of 2). */
 function alignUp(value: number, align: number): number {
   return (value + align - 1) & ~(align - 1);
@@ -500,6 +538,26 @@ function instantiateSharedLibrary(
   const functionExports = new Set(
     moduleExports.filter((exp) => exp.kind === "function").map((exp) => exp.name),
   );
+  const importedFunctionCount = moduleImports.filter((imp) => imp.kind === "function").length;
+  const definedFunctionExports = readDefinedFunctionExports(
+    wasmBytes,
+    importedFunctionCount,
+  );
+  // wasm-ld can make an interposable C++ definition both an env import and a
+  // module export. The main process still wins when it supplies the symbol;
+  // otherwise route only this genuine self-definition back to the module.
+  // Do not manufacture trampolines for arbitrary unresolved imports: those
+  // remain instantiation errors instead of turning an ABI gap into a delayed
+  // failure on a possibly-unexecuted path.
+  const selfFunctionImports = new Set(
+    moduleImports
+      .filter((imp) =>
+        imp.module === "env"
+        && imp.kind === "function"
+        && definedFunctionExports.has(imp.name)
+      )
+      .map((imp) => imp.name),
+  );
   const importsDynamicLookup = moduleImports.some((imp) =>
     imp.module === "env"
       && imp.kind === "function"
@@ -511,6 +569,15 @@ function instantiateSharedLibrary(
       && (imp.kind as string) === "tag"
   );
   const longjmpTag = importsLongjmpTag ? resolveLongjmpTag(options) : undefined;
+  const importsCppExceptionTag = moduleImports.some((imp) =>
+    imp.module === "env"
+      && imp.name === "__cpp_exception"
+      && (imp.kind as string) === "tag"
+  );
+  const Tag = tagConstructor();
+  const cppExceptionTag = importsCppExceptionTag && Tag
+    ? new Tag({ parameters: ["i32"] })
+    : undefined;
 
   if (presentForkExports.length > 0 && !hasCompleteForkInstrumentation) {
     const missing = SIDE_MODULE_FORK_EXPORTS.filter((exportName) =>
@@ -763,19 +830,33 @@ function instantiateSharedLibrary(
             case "__table_base": return tableBaseGlobal;
             case "__stack_pointer": return options.stackPointer;
             case "__c_longjmp": return longjmpTag;
+            // C++ exceptions are currently confined to one side module. A
+            // cross-module exception contract would instead need one
+            // process-owned tag shared with every participating module.
+            case "__cpp_exception": return cppExceptionTag;
             case "fork":
               if (importsFork) return sideModuleForkImport;
               break;
           }
           const sym = options.globalSymbols.get(prop);
           if (sym !== undefined) return sym;
+          if (selfFunctionImports.has(prop)) {
+            return (...args: unknown[]) => {
+              const fn = instance?.exports[prop];
+              if (typeof fn !== "function") {
+                throw new Error(`${name}: self import env.${prop} is unavailable`);
+              }
+              return (fn as Function)(...args);
+            };
+          }
           return undefined;
         },
         has(_target, prop: string) {
           if (["memory", "__indirect_function_table", "__memory_base",
-               "__table_base", "__stack_pointer", "__c_longjmp"].includes(prop)) return true;
+               "__table_base", "__stack_pointer", "__c_longjmp",
+               "__cpp_exception"].includes(prop)) return true;
           if (prop === "fork" && importsFork) return true;
-          return options.globalSymbols.has(prop);
+          return options.globalSymbols.has(prop) || selfFunctionImports.has(prop);
         },
       }),
       "GOT.mem": new Proxy({} as Record<string, WebAssembly.Global>, {
