@@ -779,6 +779,7 @@ function handleSpawn(msg: SpawnMessage) {
     kernelWorker.registerProcess(pid, memory, [channelOffset], {
       ptrWidth,
       argv: msg.argv,
+      env: msg.env ?? [],
       brkBase: layout.brkBase,
       mmapBase: layout.mmapBase,
       maxAddr: layout.maxAddr,
