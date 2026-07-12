@@ -14,6 +14,7 @@ import { setFlagsFromString } from "node:v8";
 import {
   existsSync,
   chmodSync,
+  copyFileSync,
   cpSync,
   lstatSync,
   mkdirSync,
@@ -982,7 +983,10 @@ class NodePhpRunner implements PhpRunner {
     chmodSync(destDir, 0o755);
     for (const [name, srcPath] of this.sharedExtensionPaths) {
       const destPath = join(destDir, `${name}.so`);
-      cpSync(srcPath, destPath);
+      // Binary resolver outputs are commonly symlinks into the content cache.
+      // A copied symlink would point outside this host-backed mount and be
+      // rejected by HostFileSystem's sandbox, so materialize the file bytes.
+      copyFileSync(srcPath, destPath);
       chmodSync(destPath, 0o755);
     }
     this.extensionMountRoot = root;
@@ -994,7 +998,7 @@ class NodePhpRunner implements PhpRunner {
     const root = mkdtempSync(join(tmpdir(), "kandelo-php-bin-"));
     chmodSync(root, 0o755);
     const phpDest = join(root, basename(this.phpPath));
-    cpSync(this.phpPath, phpDest);
+    copyFileSync(this.phpPath, phpDest);
     chmodSync(phpDest, 0o755);
     if (this.phpFpmPath && existsSync(this.phpFpmPath)) {
       const sbin = join(root, "sbin");
@@ -1005,7 +1009,7 @@ class NodePhpRunner implements PhpRunner {
       // package layout in the guest rather than teaching individual tests
       // about Kandelo's .wasm artifact name.
       const fpmDest = join(sbin, "php-fpm");
-      cpSync(this.phpFpmPath, fpmDest);
+      copyFileSync(this.phpFpmPath, fpmDest);
       chmodSync(fpmDest, 0o755);
     }
     this.binaryMountRoot = root;
@@ -1299,7 +1303,10 @@ function copySourceRootForNodeRunner(sourceRoot: string, index: number): string 
         return base !== ".git" && base !== ".deps" && base !== ".libs";
       },
     });
-    return copyRoot;
+    // On macOS, tmpdir() returns /tmp while the filesystem canonicalizes it
+    // to /private/tmp. Keep the PHPT root and discovered test paths in the
+    // same namespace so relative guest paths never acquire ../ components.
+    return realpathSync(copyRoot);
   } catch (err) {
     rmSync(copyRoot, { recursive: true, force: true });
     throw err;
@@ -1735,7 +1742,8 @@ export async function probeLoadedExtensions(
   const missingShared = [...sharedExtensions].filter((name) => !loaded.has(name));
   if (missingShared.length > 0) {
     throw new Error(
-      `packaged PHP extension(s) failed to load: ${missingShared.join(", ")}`,
+      `packaged PHP extension(s) failed to load: ${missingShared.join(", ")}; ` +
+        `output: ${failureSnippet(output)}`,
     );
   }
   return loaded;
