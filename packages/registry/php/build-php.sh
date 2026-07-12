@@ -73,26 +73,30 @@ LIBICONV_PREFIX="${WASM_POSIX_DEP_LIBICONV_DIR:-}"
 [ -z "$LIBICONV_PREFIX" ] && { echo "==> Resolving GNU libiconv..."; LIBICONV_PREFIX="$(resolve_dep libiconv)"; }
 LIBZIP_PREFIX="${WASM_POSIX_DEP_LIBZIP_DIR:-}"
 [ -z "$LIBZIP_PREFIX" ] && { echo "==> Resolving libzip..."; LIBZIP_PREFIX="$(resolve_dep libzip)"; }
+LIBCURL_PREFIX="${WASM_POSIX_DEP_LIBCURL_DIR:-}"
+[ -z "$LIBCURL_PREFIX" ] && { echo "==> Resolving libcurl..."; LIBCURL_PREFIX="$(resolve_dep libcurl)"; }
 [ -f "$ZLIB_PREFIX/lib/libz.a" ] || { echo "ERROR: zlib resolve missing libz.a"; exit 1; }
 [ -f "$SQLITE_PREFIX/lib/libsqlite3.a" ] || { echo "ERROR: sqlite resolve missing libsqlite3.a"; exit 1; }
 [ -f "$OPENSSL_PREFIX/lib/libssl.a" ] || { echo "ERROR: openssl resolve missing libssl.a"; exit 1; }
 [ -f "$LIBXML2_PREFIX/lib/libxml2.a" ] || { echo "ERROR: libxml2 resolve missing libxml2.a"; exit 1; }
 [ -f "$LIBICONV_PREFIX/lib/libiconv.a" ] || { echo "ERROR: GNU libiconv resolve missing libiconv.a"; exit 1; }
 [ -f "$LIBZIP_PREFIX/lib/libzip.a" ] || { echo "ERROR: libzip resolve missing libzip.a"; exit 1; }
+[ -f "$LIBCURL_PREFIX/lib/libcurl.a" ] || { echo "ERROR: libcurl resolve missing libcurl.a"; exit 1; }
 echo "==> zlib at $ZLIB_PREFIX"
 echo "==> sqlite at $SQLITE_PREFIX"
 echo "==> openssl at $OPENSSL_PREFIX"
 echo "==> libxml2 at $LIBXML2_PREFIX"
 echo "==> GNU libiconv at $LIBICONV_PREFIX"
 echo "==> libzip at $LIBZIP_PREFIX"
+echo "==> libcurl at $LIBCURL_PREFIX"
 
 # Compose PKG_CONFIG_PATH for all deps so wasm32posix-configure's
 # pkg-config probes can find them in the cache instead of the sysroot.
-DEP_PKG_CONFIG_PATH="$ZLIB_PREFIX/lib/pkgconfig:$SQLITE_PREFIX/lib/pkgconfig:$OPENSSL_PREFIX/lib/pkgconfig:$LIBXML2_PREFIX/lib/pkgconfig:$LIBICONV_PREFIX/lib/pkgconfig:$LIBZIP_PREFIX/lib/pkgconfig"
+DEP_PKG_CONFIG_PATH="$ZLIB_PREFIX/lib/pkgconfig:$SQLITE_PREFIX/lib/pkgconfig:$OPENSSL_PREFIX/lib/pkgconfig:$LIBXML2_PREFIX/lib/pkgconfig:$LIBICONV_PREFIX/lib/pkgconfig:$LIBZIP_PREFIX/lib/pkgconfig:$LIBCURL_PREFIX/lib/pkgconfig"
 
 # Compose -I and -L flags for defense-in-depth (autoconf raw probes).
-DEP_CPPFLAGS="-I$ZLIB_PREFIX/include -I$SQLITE_PREFIX/include -I$OPENSSL_PREFIX/include -I$LIBXML2_PREFIX/include -I$LIBICONV_PREFIX/include -I$LIBZIP_PREFIX/include"
-DEP_LDFLAGS="-L$ZLIB_PREFIX/lib -L$SQLITE_PREFIX/lib -L$OPENSSL_PREFIX/lib -L$LIBXML2_PREFIX/lib -L$LIBICONV_PREFIX/lib -L$LIBZIP_PREFIX/lib"
+DEP_CPPFLAGS="-I$ZLIB_PREFIX/include -I$SQLITE_PREFIX/include -I$OPENSSL_PREFIX/include -I$LIBXML2_PREFIX/include -I$LIBICONV_PREFIX/include -I$LIBZIP_PREFIX/include -I$LIBCURL_PREFIX/include"
+DEP_LDFLAGS="-L$ZLIB_PREFIX/lib -L$SQLITE_PREFIX/lib -L$OPENSSL_PREFIX/lib -L$LIBXML2_PREFIX/lib -L$LIBICONV_PREFIX/lib -L$LIBZIP_PREFIX/lib -L$LIBCURL_PREFIX/lib"
 
 # Some locally rebuilt dependency prefixes used during PHP/kernel
 # conformance iteration intentionally contain only headers and static
@@ -112,6 +116,8 @@ ICONV_CFLAGS_VALUE="-I$LIBICONV_PREFIX/include"
 ICONV_LIBS_VALUE="-L$LIBICONV_PREFIX/lib -liconv -lcharset"
 LIBZIP_CFLAGS_VALUE="-I$LIBZIP_PREFIX/include"
 LIBZIP_LIBS_VALUE="-L$LIBZIP_PREFIX/lib -lzip -L$ZLIB_PREFIX/lib -lz"
+CURL_CFLAGS_VALUE="-I$LIBCURL_PREFIX/include -DCURL_STATICLIB"
+CURL_LIBS_VALUE="-L$LIBCURL_PREFIX/lib -lcurl"
 
 prefix_map_flags() {
     local producer_path="$1"
@@ -130,6 +136,7 @@ REPRODUCIBLE_PREFIX_MAPS+=" $(prefix_map_flags "$OPENSSL_PREFIX" /usr/src/kandel
 REPRODUCIBLE_PREFIX_MAPS+=" $(prefix_map_flags "$LIBXML2_PREFIX" /usr/src/kandelo-deps/libxml2)"
 REPRODUCIBLE_PREFIX_MAPS+=" $(prefix_map_flags "$LIBICONV_PREFIX" /usr/src/kandelo-deps/libiconv)"
 REPRODUCIBLE_PREFIX_MAPS+=" $(prefix_map_flags "$LIBZIP_PREFIX" /usr/src/kandelo-deps/libzip)"
+REPRODUCIBLE_PREFIX_MAPS+=" $(prefix_map_flags "$LIBCURL_PREFIX" /usr/src/kandelo-deps/libcurl)"
 
 echo "==> Downloading PHP $PHP_VERSION..."
 TARBALL="$WORK_DIR/php.tar.gz"
@@ -801,6 +808,12 @@ if [ ! -f Makefile ]; then
     # invokes on our wasm port — but the import has to resolve at
     # instantiation time).
     #
+    # curl.so absorbs libcurl.a but deliberately leaves libc, zlib, and
+    # OpenSSL unresolved so the process keeps one copy of each library's
+    # state. The second -u group is the measured subset that base PHP does not
+    # otherwise pull into php.wasm; --export-all then exposes those symbols to
+    # the side module. The post-build import-closure test guards this list.
+    #
     # -Wl,-z,stack-size=4194304: 4 MB wasm stack. The default wasm-ld
     # stack is 64 KB, which sits ~100 KB above PHP's `alloc_globals`
     # data segment. Opcache's PASS_6 (DFA-based SSA optimization) calls
@@ -835,6 +848,9 @@ if [ ! -f Makefile ]; then
     LDFLAGS="$DEP_LDFLAGS -ldl -Wl,--export-all \
 -u setgid -u setuid -u initgroups -u writev -u asctime \
 -u rand -u srand -u remove \
+-u inet_pton -u inet_ntop -u sched_yield -u alarm -u basename \
+-u OCSP_basic_verify -u OCSP_cert_status_str -u OCSP_crl_reason_str \
+-u OCSP_response_status_str -u SSL_alert_desc_string_long \
 -Wl,-z,stack-size=4194304" \
     ZLIB_CFLAGS="$ZLIB_CFLAGS_VALUE" \
     ZLIB_LIBS="$ZLIB_LIBS_VALUE" \
@@ -854,8 +870,11 @@ if [ ! -f Makefile ]; then
     ac_cv_lib_zip_zip_register_progress_callback_with_state=yes \
     ac_cv_lib_zip_zip_register_cancel_callback_with_state=yes \
     ac_cv_lib_zip_zip_compression_method_supported=yes \
+    CURL_CFLAGS="$CURL_CFLAGS_VALUE" \
+    CURL_LIBS="$CURL_LIBS_VALUE" \
     PHP_UNAME="Kandelo wasm32-posix-kernel" \
     ac_cv_lib_iconv_libiconv=yes \
+    ac_cv_lib_curl_curl_easy_perform=yes \
     wasm32posix-configure \
         --disable-all \
         --disable-rpath \
@@ -874,6 +893,7 @@ if [ ! -f Makefile ]; then
         --enable-dba \
         --enable-ftp \
         --with-iconv="$LIBICONV_PREFIX" \
+        --with-curl=shared \
         --enable-pcntl \
         --enable-phar=shared \
         --enable-posix \
@@ -1079,6 +1099,24 @@ echo "==> Applying fork instrumentation to opcache.so side module..."
 mv "$BIN_DIR/opcache.so.instr" "$BIN_DIR/opcache.so"
 echo "==> opcache.so: $(wc -c < "$BIN_DIR/opcache.so") bytes"
 
+# Build ext/curl as a normal shared PHP extension. libcurl.a is PIC and is
+# absorbed into curl.so; libc, zlib, and OpenSSL remain imports from php.wasm
+# so dlopen does not create duplicate process-global library state.
+echo "==> Building curl.so (extension)..."
+make -j"$(sysctl -n hw.ncpu 2>/dev/null || nproc)" \
+    EXTRA_CFLAGS="$EXTRA_INC_LIBXML -I$LIBCURL_PREFIX/include -DCURL_STATICLIB" \
+    ext/curl/interface.lo \
+    ext/curl/multi.lo \
+    ext/curl/share.lo \
+    ext/curl/curl_file.lo
+wasm32posix-cc -shared -fPIC -o "$BIN_DIR/curl.so" \
+    ext/curl/.libs/interface.o \
+    ext/curl/.libs/multi.o \
+    ext/curl/.libs/share.o \
+    ext/curl/.libs/curl_file.o \
+    "$LIBCURL_PREFIX/lib/libcurl.a"
+echo "==> curl.so: $(wc -c < "$BIN_DIR/curl.so") bytes"
+
 # Build Phar as a shared extension too. The PHP package intentionally keeps
 # shared extensions loadable through normal `extension=...` INI directives so
 # subprocesses and PHPT fixtures that opt in to extensions use the same path as
@@ -1180,6 +1218,7 @@ if [ -z "${WASM_POSIX_DEP_OUT_DIR:-}" ]; then
     install_local_binary php "$BIN_DIR/php.wasm" php.wasm
     install_local_binary php "$BIN_DIR/php-fpm.wasm" php-fpm.wasm
     install_local_binary php "$BIN_DIR/opcache.so"
+    install_local_binary php "$BIN_DIR/curl.so"
     install_local_binary php "$BIN_DIR/phar.so"
     install_local_binary php "$BIN_DIR/zend_test.so"
     install_local_binary php "$BIN_DIR/zip.so"
