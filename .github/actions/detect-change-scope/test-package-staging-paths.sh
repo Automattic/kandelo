@@ -98,5 +98,14 @@ assert_not_selected \
 assert_not_selected \
   ".github/workflows/prepare-merge.yml" \
   ".github/workflows/prepare-merge.yml"
+assert_not_selected \
+  ".github/scripts/resolve-stacked-pr-baseline.sh" \
+  ".github/scripts/resolve-stacked-pr-baseline.sh"
+assert_not_selected \
+  ".github/scripts/stacked_pr_baseline.py" \
+  ".github/scripts/stacked_pr_baseline.py"
+assert_not_selected \
+  "scripts/materialize-pr-overlays.sh" \
+  "scripts/materialize-pr-overlays.sh"
 
 echo "package-staging path filter tests passed"

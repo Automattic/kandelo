@@ -107,7 +107,9 @@ jobs:
       )
     runs-on: ubuntu-latest
     permissions:
+      actions: read            # validate built_by staging workflow runs
       contents: read           # gh release view (target tag probe)
+      pull-requests: read      # authenticate the recursive same-repo base chain
       statuses: write          # post pending merge-gate status with helpful description
     outputs:
       library_matrix: ${{ steps.compute.outputs.library_matrix }}
@@ -116,6 +118,7 @@ jobs:
       abi: ${{ steps.compute.outputs.abi }}
       target_tag: ${{ steps.compute.outputs.target_tag }}
       baseline_tag: ${{ steps.compute.outputs.baseline_tag }}
+      stacked_baseline_archives: ${{ steps.compute.outputs.stacked_baseline_archives }}
     steps:
       - uses: actions/checkout@v7.0.0
         with:
@@ -179,11 +182,22 @@ jobs:
             echo "target_tag=$TARGET_TAG" >> "$GITHUB_OUTPUT"
             echo "baseline_tag=$BASELINE_TAG" >> "$GITHUB_OUTPUT"
 
-            if [ "$PACKAGE_STAGING_REQUIRED" != "true" ]; then
+            PR_NUMBER=$(jq -r ".pull_request.number" "$GITHUB_EVENT_PATH")
+            PR_HEAD_SHA=$(jq -r ".pull_request.head.sha" "$GITHUB_EVENT_PATH")
+            PR_BASE_REF=$(jq -r ".pull_request.base.ref" "$GITHUB_EVENT_PATH")
+            PR_BASE_SHA=$(jq -r ".pull_request.base.sha" "$GITHUB_EVENT_PATH")
+            DEFAULT_BRANCH=$(jq -r ".repository.default_branch" "$GITHUB_EVENT_PATH")
+            STACKED_PR=false
+            if [ "$PR_BASE_REF" != "$DEFAULT_BRANCH" ]; then
+              STACKED_PR=true
+            fi
+
+            if [ "$PACKAGE_STAGING_REQUIRED" != "true" ] && [ "$STACKED_PR" != "true" ]; then
               echo "library_matrix=[]" >> "$GITHUB_OUTPUT"
               echo "program_matrix=[]" >> "$GITHUB_OUTPUT"
               echo "repair_index=false" >> "$GITHUB_OUTPUT"
-              echo "preflight: package staging not required; skipping package drift matrix"
+              echo "stacked_baseline_archives=false" >> "$GITHUB_OUTPUT"
+              echo "preflight: package staging not required on the default branch; skipping package drift matrix"
               exit 0
             fi
 
@@ -214,8 +228,8 @@ jobs:
             fi
 
             HOST_TARGET=$(rustc -vV | awk "/^host/ {print \$2}")
-            library_matrix="[]"
-            program_matrix="[]"
+            XTASK="target/$HOST_TARGET/release/xtask"
+            all_requirements="[]"
 
             # Temporarily disabled packages — too slow to rebuild in
             # CI while we have no separate prebuilt-package repo to
@@ -279,26 +293,63 @@ jobs:
                   echo "preflight: skipping $pkg/$arch (compute-cache-key-sha failed)" >&2
                   continue
                 }
-                short=${sha:0:8}
-                prefix="${pkg}-"
-                suffix="-abi${ABI}-${arch}-${short}.tar.zst"
-                existing_archive=$(echo "$existing_assets" | jq -r --arg pre "$prefix" --arg suf "$suffix" \
-                    "first(.[] | select(startswith(\$pre) and endswith(\$suf))) // \"\"")
-                if [ -n "$existing_archive" ] && scripts/index-has-current-entry.sh "$existing_index" "$pkg" "$arch" "$sha" "$revision"; then
-                  echo "preflight: skip $pkg/$arch (sha $short already indexed)"
-                  continue
-                fi
                 entry=$(jq -nc --arg pkg "$pkg" --arg arch "$arch" --arg sha "$sha" \
-                                --arg ver "$version" --argjson rev "$revision" \
-                  "{package: \$pkg, arch: \$arch, sha: \$sha, version: \$ver, revision: \$rev}")
-                if [ "$kind" = "library" ]; then
-                  library_matrix=$(echo "$library_matrix" | jq -c --argjson e "$entry" ". + [\$e]")
-                else
-                  program_matrix=$(echo "$program_matrix" | jq -c --argjson e "$entry" ". + [\$e]")
-                fi
+                                --arg ver "$version" --argjson rev "$revision" --arg kind "$kind" \
+                  "{package: \$pkg, arch: \$arch, sha: \$sha, version: \$ver, revision: \$rev, kind: \$kind}")
+                all_requirements=$(echo "$all_requirements" | jq -c --argjson e "$entry" ". + [\$e]")
               done
             done
 
+            requirements_file=$(mktemp)
+            printf "%s" "$all_requirements" > "$requirements_file"
+            durable_matches_file=$(mktemp)
+            if [ -s "$existing_index" ]; then
+              python3 .github/scripts/stacked_pr_baseline.py select \
+                --index "$existing_index" \
+                --requirements "$requirements_file" \
+                --output "$durable_matches_file" \
+                --expected-abi "$ABI"
+            else
+              printf "[]\n" > "$durable_matches_file"
+            fi
+            durable_matches=$(jq -c --argjson assets "$existing_assets" \
+              "[.[] | select(.archive_name as \$name | (\$assets | index(\$name)) != null)]" \
+              "$durable_matches_file")
+
+            subtract_matches() {
+              jq -nc --argjson requirements "$1" --argjson matches "$2" \
+                "[\$requirements[] | . as \$requirement | select((\$matches | any(.package == \$requirement.package and .arch == \$requirement.arch and .sha == \$requirement.sha)) | not)]"
+            }
+
+            unresolved=$(subtract_matches "$all_requirements" "$durable_matches")
+            stacked_matches="[]"
+            stacked_baseline_archives=false
+            if [ "$STACKED_PR" = "true" ] && [ "$(jq length <<< "$unresolved")" -gt 0 ]; then
+              unresolved_file=$(mktemp)
+              printf "%s" "$unresolved" > "$unresolved_file"
+              stacked_output="$RUNNER_TEMP/stacked-baseline-archives"
+              bash .github/scripts/resolve-stacked-pr-baseline.sh \
+                --repo "$GITHUB_REPOSITORY" \
+                --current-pr "$PR_NUMBER" \
+                --head-sha "$PR_HEAD_SHA" \
+                --base-ref "$PR_BASE_REF" \
+                --base-sha "$PR_BASE_SHA" \
+                --default-branch "$DEFAULT_BRANCH" \
+                --abi "$ABI" \
+                --requirements "$unresolved_file" \
+                --output "$stacked_output" \
+                --xtask "$XTASK"
+              stacked_matches=$(jq -c . "$stacked_output/selections.json")
+              if [ "$(jq length <<< "$stacked_matches")" -gt 0 ]; then
+                stacked_baseline_archives=true
+              fi
+              unresolved=$(subtract_matches "$unresolved" "$stacked_matches")
+              rm -f "$unresolved_file"
+            fi
+            rm -f "$requirements_file" "$durable_matches_file"
+
+            library_matrix=$(jq -c "[.[] | select(.kind == \"library\") | del(.kind)]" <<< "$unresolved")
+            program_matrix=$(jq -c "[.[] | select(.kind == \"program\") | del(.kind)]" <<< "$unresolved")
             program_matrix_file=$(mktemp)
             printf "%s" "$program_matrix" > "$program_matrix_file"
             program_matrix=$(cargo run --release -p xtask --target "$HOST_TARGET" --quiet -- \
@@ -320,10 +371,22 @@ jobs:
             echo "library_matrix=$library_matrix" >> "$GITHUB_OUTPUT"
             echo "program_matrix=$program_matrix" >> "$GITHUB_OUTPUT"
             echo "repair_index=$repair_index_output" >> "$GITHUB_OUTPUT"
-            echo "preflight: library=$library_count program=$program_count repair-index=$repair_index_output"
+            echo "stacked_baseline_archives=$stacked_baseline_archives" >> "$GITHUB_OUTPUT"
+            inherited_count=$(jq length <<< "$stacked_matches")
+            durable_count=$(jq length <<< "$durable_matches")
+            echo "preflight: durable=$durable_count inherited=$inherited_count library=$library_count program=$program_count repair-index=$repair_index_output"
             echo "library_matrix:"; echo "$library_matrix" | jq .
             echo "program_matrix:"; echo "$program_matrix" | jq .
           '
+
+      - name: Upload authenticated stacked baseline archives
+        if: steps.compute.outputs.stacked_baseline_archives == 'true'
+        uses: actions/upload-artifact@v7
+        with:
+          name: stacked-baseline-archives
+          path: ${{ runner.temp }}/stacked-baseline-archives
+          retention-days: 1
+          if-no-files-found: error
 
       - name: Post pending merge-gate status (instructs reviewer)
         # Branch protection on `main` requires a `merge-gate` status
@@ -429,6 +492,17 @@ jobs:
         with:
           ref: ${{ github.event.pull_request.head.sha }}
 
+      - name: Download inherited stacked baseline archives
+        if: needs.preflight.outputs.stacked_baseline_archives == 'true'
+        uses: actions/download-artifact@v8
+        with:
+          name: stacked-baseline-archives
+          path: ${{ runner.temp }}/stacked-baseline-archives
+
+      - name: Materialize inherited stacked baseline overlays
+        if: needs.preflight.outputs.stacked_baseline_archives == 'true'
+        run: bash scripts/materialize-pr-overlays.sh "$RUNNER_TEMP/stacked-baseline-archives"
+
       - name: Build ${{ matrix.package }} (${{ matrix.arch }})
         id: build
         uses: ./.github/actions/package-archive-build
@@ -503,6 +577,17 @@ jobs:
         uses: actions/checkout@v7.0.0
         with:
           ref: ${{ github.event.pull_request.head.sha }}
+
+      - name: Download inherited stacked baseline archives
+        if: needs.preflight.outputs.stacked_baseline_archives == 'true'
+        uses: actions/download-artifact@v8
+        with:
+          name: stacked-baseline-archives
+          path: ${{ runner.temp }}/stacked-baseline-archives
+
+      - name: Materialize inherited stacked baseline overlays
+        if: needs.preflight.outputs.stacked_baseline_archives == 'true'
+        run: bash scripts/materialize-pr-overlays.sh "$RUNNER_TEMP/stacked-baseline-archives"
 
       - name: Build ${{ matrix.package }} (${{ matrix.arch }})
         id: build
@@ -613,7 +698,8 @@ jobs:
       contents: read
     env:
       PACKAGE_STAGING_REQUIRED: ${{ needs.change-scope.outputs.package_staging_required }}
-      PACKAGE_STAGE_OVERLAYS_REQUIRED: ${{ needs.preflight.outputs.library_matrix != '[]' || needs.preflight.outputs.program_matrix != '[]' }}
+      PACKAGE_STAGE_OVERLAYS_REQUIRED: ${{ needs.preflight.outputs.library_matrix != '[]' || needs.preflight.outputs.program_matrix != '[]' || needs.preflight.outputs.stacked_baseline_archives == 'true' }}
+      STACKED_BASELINE_ARCHIVES: ${{ needs.preflight.outputs.stacked_baseline_archives }}
       PACKAGE_PUBLISH_FLOW_CHANGED: ${{ needs.change-scope.outputs.package_publish_flow_changed }}
       BINARY_MATERIALIZATION_CHANGED: ${{ needs.change-scope.outputs.binary_materialization_changed }}
       PACKAGE_TARGET_TAG: ${{ needs.preflight.outputs.target_tag }}
@@ -666,6 +752,13 @@ jobs:
           pattern: '*-wasm*'
           path: ${{ runner.temp }}/staged-archives
 
+      - name: Download inherited stacked baseline archives
+        if: needs.preflight.outputs.stacked_baseline_archives == 'true'
+        uses: actions/download-artifact@v8
+        with:
+          name: stacked-baseline-archives
+          path: ${{ runner.temp }}/stacked-baseline-archives
+
       - name: Install host npm deps
         # Keep this before the host typecheck, package-system tests,
         # and later test-program/rootfs build steps. Binary
@@ -687,27 +780,43 @@ jobs:
         run: |
           bash tests/scripts/index-update.sh
 
+      - name: Test package CI control contracts
+        run: |
+          bash scripts/dev-shell.sh bash -c '
+            set -euo pipefail
+            bash .github/actions/detect-change-scope/test-ci-scope-paths.sh
+            bash .github/actions/detect-change-scope/test-package-staging-paths.sh
+            bash .github/scripts/test-prepare-merge-default-base.sh
+            bash .github/scripts/test-stacked-baseline-workflow.sh
+          '
+
       - name: Test binary materialization flow
         if: env.BINARY_MATERIALIZATION_CHANGED == 'true'
         run: |
-          bash scripts/dev-shell.sh npx --prefix host vitest run --root . tests/package-system
+          bash scripts/dev-shell.sh bash -c '
+            set -euo pipefail
+            python3 .github/scripts/test_stacked_pr_baseline.py
+            bash .github/scripts/test-resolve-stacked-pr-baseline.sh
+            bash scripts/test-materialize-pr-overlays.sh
+            npx --prefix host vitest run --root . tests/package-system
+          '
 
       - name: Materialize binaries
         env:
           WASM_POSIX_FETCH_SKIP_PKGS: cpython erlang erlang-vfs perl perl-vfs python-vfs redis texlive
-        # Resolve against the durable ABI release plus local file://
-        # overlays for any matrix-built archives. Runtime-only PRs can
-        # still reach this overlay path when preflight detects durable
-        # index drift from an earlier package-key change.
+        # Resolve against the durable ABI release plus local file:// overlays
+        # for authenticated base-PR archives and this run's matrix outputs.
+        # Runtime-only stacked PRs reach this path when an unmerged base changed
+        # package keys that the durable release does not yet carry.
         run: |
           set -euo pipefail
-          if [ "$PACKAGE_STAGE_OVERLAYS_REQUIRED" = "true" ]; then
-            export WASM_POSIX_BINARY_INDEX_URL="https://github.com/${GITHUB_REPOSITORY}/releases/download/${PACKAGE_BASELINE_TAG}/index.toml"
-            STAGE="$RUNNER_TEMP/staged-overlay"
+          export WASM_POSIX_BINARY_INDEX_URL="https://github.com/${GITHUB_REPOSITORY}/releases/download/${PACKAGE_BASELINE_TAG}/index.toml"
+          STAGE="$RUNNER_TEMP/staged-overlay"
+          if [ "$STACKED_BASELINE_ARCHIVES" = "true" ]; then
+            bash scripts/materialize-pr-overlays.sh "$RUNNER_TEMP/stacked-baseline-archives" "$STAGE"
+          fi
+          if [ "$PACKAGE_STAGE_OVERLAYS_REQUIRED" = "true" ] && [ -d "$RUNNER_TEMP/staged-archives" ]; then
             bash scripts/materialize-pr-overlays.sh "$RUNNER_TEMP/staged-archives" "$STAGE"
-          else
-            ABI=$(grep -oE "ABI_VERSION: u32 = [0-9]+" crates/shared/src/lib.rs | awk '{print $4}')
-            export WASM_POSIX_BINARY_INDEX_URL="https://github.com/${GITHUB_REPOSITORY}/releases/download/binaries-abi-v${ABI}/index.toml"
           fi
           echo "WASM_POSIX_BINARY_INDEX_URL=$WASM_POSIX_BINARY_INDEX_URL" >> "$GITHUB_ENV"
           bash scripts/dev-shell.sh bash scripts/fetch-binaries.sh --fetch-only

@@ -1,9 +1,11 @@
 name: Prepare merge
 
 # Triggered when a maintainer applies the `ready-to-ship` label to an
-# approved PR. Captures the current base branch SHA once, synthesizes a
-# PR-head-into-that-base merge commit, and drives the per-package matrix
-# flow against that exact synthetic merge (preflight + toolchain-cache +
+# approved PR targeting the repository default branch. Stacked PRs are
+# rejected before publication so unmerged base-branch state cannot enter the
+# durable release. The workflow captures the current base branch SHA once,
+# synthesizes a PR-head-into-that-base merge commit, and drives the per-package
+# matrix flow against that exact synthetic merge (preflight + toolchain-cache +
 # matrix-build + test-gate; Phase B-1's pattern, targeting the durable
 # `binaries-abi-v<N>` tag). It then posts `merge-gate=success` on the
 # original PR head and enables auto-merge. PRs labeled `batched-changes`
@@ -96,6 +98,16 @@ jobs:
       PR_NUMBER: ${{ github.event.pull_request.number }}
       GH_TOKEN: ${{ github.token }}
     steps:
+      - name: Reject durable publication from a stacked PR
+        if: github.event.pull_request.base.ref != github.event.repository.default_branch
+        env:
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+        run: |
+          gh pr edit "$PR_NUMBER" --repo ${{ github.repository }} --remove-label ready-to-ship || true
+          gh pr comment "$PR_NUMBER" --repo ${{ github.repository }} --body "Cannot prepare merge: durable package releases may only be published from a PR targeting the default branch \`$DEFAULT_BRANCH\`. Land the base PRs, retarget and rebase this PR onto \`$DEFAULT_BRANCH\`, then re-apply \`ready-to-ship\`." || true
+          echo "::error::Refusing durable release publication from stacked PR #$PR_NUMBER targeting $BASE_REF instead of $DEFAULT_BRANCH"
+          exit 1
+
       - name: Capture base and synthesize PR merge
         id: synthesize
         run: |
@@ -171,7 +183,7 @@ jobs:
           if-no-files-found: error
 
       - name: Drop label + comment on synthesis failure
-        if: failure()
+        if: failure() && github.event.pull_request.base.ref == github.event.repository.default_branch
         run: |
           gh pr edit "$PR_NUMBER" --repo ${{ github.repository }} --remove-label ready-to-ship || true
           gh pr comment "$PR_NUMBER" --repo ${{ github.repository }} --body "Cannot prepare merge: prepare-merge could not synthesize and persist a merge of PR head \`$PR_HEAD_SHA\` into the current \`$BASE_REF\` base. Please rebase or merge \`$BASE_REF\` if there are conflicts, then re-apply \`ready-to-ship\`." || true

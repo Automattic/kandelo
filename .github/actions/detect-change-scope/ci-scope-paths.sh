@@ -55,7 +55,9 @@ package_publish_flow_changed_files() {
 binary_materialization_changed_files() {
   grep -E \
     -e '^tools/xtask/src/(index_toml|remote_fetch|util)\.rs$' \
-    -e '^scripts/(fetch-binaries|install-local-binary|materialize-pr-overlays|resolve-binary)\.sh$' \
+    -e '^\.github/scripts/(resolve-stacked-pr-baseline|test-resolve-stacked-pr-baseline)\.sh$' \
+    -e '^\.github/scripts/(stacked_pr_baseline|test_stacked_pr_baseline)\.py$' \
+    -e '^scripts/(fetch-binaries|install-local-binary|materialize-pr-overlays|resolve-binary|test-materialize-pr-overlays)\.sh$' \
     -e '^tests/package-system/' \
     || true
 }
@@ -73,5 +75,7 @@ ci_control_changed_files() {
   grep -E \
     -e '^\.github/workflows/(staging-build|prepare-merge)\.yml$' \
     -e '^\.github/actions/detect-change-scope/' \
+    -e '^\.github/scripts/(resolve-stacked-pr-baseline|test-resolve-stacked-pr-baseline|test-prepare-merge-default-base|test-stacked-baseline-workflow)\.sh$' \
+    -e '^\.github/scripts/(stacked_pr_baseline|test_stacked_pr_baseline)\.py$' \
     || true
 }

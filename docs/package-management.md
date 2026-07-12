@@ -873,6 +873,18 @@ That works for any `package.toml` or `build.toml` change pushed to a
 PR with CI write access, and is the path code-review and merge both
 use.
 
+For a same-repository stacked PR, CI recursively authenticates the open base
+PR chain and snapshots exact matching archives from the nearest applicable
+`pr-<N>-staging` releases. The durable ABI release remains the underlying
+index; inherited and current-run archives are applied as verified
+`package.pr.toml` overlays. An inherited key that is missing, stale, or no
+longer available is added to the child's normal package matrix, so an
+archive-neutral child does not fail merely because its unmerged base changed
+package inputs. A base/head advancement or provenance mismatch fails the run
+instead of mixing states. Durable publication remains default-branch-only:
+before applying `ready-to-ship`, land the base PRs and retarget/rebase the
+child onto the repository default branch.
+
 For pre-push iteration on packages whose source build is fast,
 just rely on the resolver's fall-through: edit `package.toml`,
 run `./run.sh browser`, and accept a one-time source build for
