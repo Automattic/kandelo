@@ -12,7 +12,7 @@
  *   npx tsx examples/run-example.ts /path/to/test.wasm
  */
 
-import { readFileSync, existsSync, statSync } from "fs";
+import { closeSync, existsSync, openSync, readFileSync, statSync, writeSync } from "fs";
 import { resolve, dirname, isAbsolute, relative } from "path";
 import { NodeKernelHost } from "../host/src/node-kernel-host";
 import { tryResolveBinary } from "../host/src/binary-resolver";
@@ -301,7 +301,11 @@ function resolveProgram(path: string): ArrayBuffer | null {
 function guestEnv(): string[] {
     const kernelPath = process.env.KERNEL_PATH ?? "/usr/local/bin:/usr/bin:/bin";
     const inherited = Object.entries(process.env)
-        .filter(([k, v]) => v !== undefined && k !== "PATH")
+        .filter(([k, v]) =>
+            v !== undefined &&
+            k !== "PATH" &&
+            k !== "KANDELO_GUEST_OUTPUT_FILE"
+        )
         .map(([k, v]) => `${k}=${v}`);
     return [...inherited, `PATH=${kernelPath}`];
 }
@@ -352,39 +356,53 @@ async function main() {
         stdinData = new Uint8Array(Buffer.concat(chunks));
     }
 
-    const host = new NodeKernelHost({
-        maxWorkers: 4,
-        onStdout: (_pid, data) => process.stdout.write(data),
-        onStderr: (_pid, data) => process.stderr.write(data),
-        onResolveExec: (path) => resolveProgram(path),
-    });
+    // Conformance runners need guest fd 1 and fd 2 in one ordered stream while
+    // keeping host-runtime diagnostics out of expectation comparisons. The
+    // explicit file sink preserves callback order without changing the normal
+    // CLI behavior or hiding worker diagnostics from the outer process streams.
+    const guestOutputPath = process.env.KANDELO_GUEST_OUTPUT_FILE;
+    const guestOutputFd = guestOutputPath ? openSync(guestOutputPath, "w") : null;
+    const writeGuestOutput = (fallback: NodeJS.WriteStream, data: Uint8Array): void => {
+        if (guestOutputFd === null) {
+            fallback.write(data);
+        } else {
+            writeSync(guestOutputFd, data);
+        }
+    };
 
-    await host.init();
-
-    const processArgv = [programPath, ...process.argv.slice(3)];
-
-    const timeoutMs = parseInt(process.env.TIMEOUT || "30000", 10);
-    const exitPromise = host.spawn(loadBytes(programPath), processArgv, {
-        env: [
-            ...guestEnv(),
-            ...gitEnv,
-        ],
-        cwd: process.env.KERNEL_CWD || process.cwd(),
-        stdin: stdinData,
-    });
-
-    const timeoutPromise = new Promise<number>((_, reject) => {
-        setTimeout(() => reject(new Error("Process timed out")), timeoutMs);
-    });
-
+    let host: NodeKernelHost | undefined;
+    let status = 1;
     try {
-        const status = await Promise.race([exitPromise, timeoutPromise]);
-        await host.destroy().catch(() => {});
-        process.exit(status);
-    } catch (e) {
-        await host.destroy().catch(() => {});
-        throw e;
+        host = new NodeKernelHost({
+            maxWorkers: 4,
+            onStdout: (_pid, data) => writeGuestOutput(process.stdout, data),
+            onStderr: (_pid, data) => writeGuestOutput(process.stderr, data),
+            onResolveExec: (path) => resolveProgram(path),
+        });
+
+        await host.init();
+
+        const processArgv = [programPath, ...process.argv.slice(3)];
+        const timeoutMs = parseInt(process.env.TIMEOUT || "30000", 10);
+        const exitPromise = host.spawn(loadBytes(programPath), processArgv, {
+            env: [
+                ...guestEnv(),
+                ...gitEnv,
+            ],
+            cwd: process.env.KERNEL_CWD || process.cwd(),
+            stdin: stdinData,
+        });
+        const timeoutPromise = new Promise<number>((_, reject) => {
+            setTimeout(() => reject(new Error("Process timed out")), timeoutMs);
+        });
+
+        status = await Promise.race([exitPromise, timeoutPromise]);
+    } finally {
+        await host?.destroy().catch(() => {});
+        if (guestOutputFd !== null) closeSync(guestOutputFd);
     }
+
+    process.exit(status);
 }
 
 main().catch((e) => {
