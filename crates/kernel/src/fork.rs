@@ -1393,6 +1393,8 @@ pub fn deserialize_fork_state(buf: &[u8], child_pid: u32) -> Result<Process, Err
         state: ProcessState::Running,
         exit_status: 0,
         exit_signal: 0,
+        // A fork child has no parent-observable status change of its own.
+        wait_event: None,
         fd_table,
         ofd_table,
         lock_table: LockTable::new(),
@@ -1823,6 +1825,8 @@ pub fn deserialize_exec_state(buf: &[u8], pid: u32) -> Result<Process, Errno> {
         state: ProcessState::Running,
         exit_status: 0,
         exit_signal: 0,
+        // ProcessTable preserves the old process's record after legacy exec.
+        wait_event: None,
         fd_table,
         ofd_table,
         lock_table: LockTable::new(),
@@ -1888,6 +1892,7 @@ mod tests {
         assert_eq!(&buf[0..4], &0x464F524Bu32.to_le_bytes());
 
         let child = deserialize_fork_state(&buf[..written], 42).unwrap();
+        assert!(child.wait_event.is_none());
         assert_eq!(child.pid, 42);
         assert_eq!(child.ppid, proc.pid); // child's ppid is parent's pid
         assert_eq!(child.uid, proc.uid);

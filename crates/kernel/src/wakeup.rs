@@ -33,6 +33,7 @@ pub struct WakeupEvent {
 }
 
 struct WakeupBuffer {
+    #[cfg(not(test))]
     events: UnsafeCell<Vec<WakeupEvent>>,
     next_accept_idx: UnsafeCell<u32>,
 }
@@ -40,9 +41,18 @@ struct WakeupBuffer {
 unsafe impl Sync for WakeupBuffer {}
 
 static WAKEUP_BUFFER: WakeupBuffer = WakeupBuffer {
+    #[cfg(not(test))]
     events: UnsafeCell::new(Vec::new()),
     next_accept_idx: UnsafeCell::new(1),
 };
+
+// Kernel Wasm execution is serialized, but native unit tests run in parallel.
+// Isolate their event queues so one test cannot drain another test's wakeups.
+#[cfg(test)]
+std::thread_local! {
+    static TEST_WAKEUP_EVENTS: core::cell::RefCell<Vec<WakeupEvent>> =
+        core::cell::RefCell::new(Vec::new());
+}
 
 /// Allocate a host-visible readiness token for a listening socket.
 pub fn alloc_accept_wake_idx() -> u32 {
@@ -57,7 +67,17 @@ pub fn alloc_accept_wake_idx() -> u32 {
 
 /// Push a wakeup event into the global buffer.
 pub fn push(idx: u32, wake_type: u8) {
+    #[cfg(test)]
+    {
+        TEST_WAKEUP_EVENTS.with(|events| {
+            events.borrow_mut().push(WakeupEvent { idx, wake_type });
+        });
+        return;
+    }
+
+    #[cfg(not(test))]
     let events = unsafe { &mut *WAKEUP_BUFFER.events.get() };
+    #[cfg(not(test))]
     events.push(WakeupEvent { idx, wake_type });
 }
 
@@ -77,7 +97,20 @@ pub fn push_datagram_writable() {
 ///
 /// Each event is serialized as: idx (u32 LE) + wake_type (u8) = 5 bytes.
 pub fn drain(out: &mut [u8], max_events: u32) -> u32 {
+    #[cfg(test)]
+    {
+        return TEST_WAKEUP_EVENTS.with(|events| {
+            drain_events(&mut events.borrow_mut(), out, max_events)
+        });
+    }
+
+    #[cfg(not(test))]
     let events = unsafe { &mut *WAKEUP_BUFFER.events.get() };
+    #[cfg(not(test))]
+    return drain_events(events, out, max_events);
+}
+
+fn drain_events(events: &mut Vec<WakeupEvent>, out: &mut [u8], max_events: u32) -> u32 {
     let count = events.len().min(max_events as usize);
     let bytes_per_event = 5;
     let max_by_buf = out.len() / bytes_per_event;
@@ -94,7 +127,10 @@ pub fn drain(out: &mut [u8], max_events: u32) -> u32 {
         out[offset + 4] = ev.wake_type;
     }
 
-    events.clear();
+    // Preserve events that did not fit this host drain. Lifecycle wakeups
+    // share this channel with readiness events, so dropping overflow could
+    // strand a stopped or resumed process indefinitely.
+    events.drain(..count);
     count as u32
 }
 
@@ -103,8 +139,7 @@ mod tests {
     use super::*;
 
     fn reset() {
-        let events = unsafe { &mut *WAKEUP_BUFFER.events.get() };
-        events.clear();
+        TEST_WAKEUP_EVENTS.with(|events| events.borrow_mut().clear());
         let next = unsafe { &mut *WAKEUP_BUFFER.next_accept_idx.get() };
         *next = 1;
     }
@@ -168,8 +203,37 @@ mod tests {
         let count = drain(&mut buf, 2);
         assert_eq!(count, 2);
 
-        // drain clears all, even if not all were written
+        assert_eq!(u32::from_le_bytes([buf[0], buf[1], buf[2], buf[3]]), 1);
+        assert_eq!(buf[4], WAKE_READABLE);
+        assert_eq!(u32::from_le_bytes([buf[5], buf[6], buf[7], buf[8]]), 2);
+        assert_eq!(buf[9], WAKE_WRITABLE);
+
+        // The event that did not fit remains queued for the next drain.
+        buf.fill(0);
         let count2 = drain(&mut buf, 10);
-        assert_eq!(count2, 0);
+        assert_eq!(count2, 1);
+        assert_eq!(u32::from_le_bytes([buf[0], buf[1], buf[2], buf[3]]), 3);
+        assert_eq!(buf[4], WAKE_READABLE);
+    }
+
+    #[test]
+    fn lifecycle_transitions_emit_exactly_one_wakeup_each() {
+        use crate::process::Process;
+        use wasm_posix_shared::signal::SIGTSTP;
+        use wasm_posix_shared::wait::{WAKE_PROCESS_CONTINUED, WAKE_PROCESS_STOPPED};
+
+        reset();
+        let mut proc = Process::new(77);
+        assert!(proc.record_stop(SIGTSTP));
+        assert!(!proc.record_stop(SIGTSTP));
+        assert!(proc.record_continue());
+        assert!(!proc.record_continue());
+
+        let mut buf = [0u8; 10];
+        assert_eq!(drain(&mut buf, 2), 2);
+        assert_eq!(u32::from_le_bytes([buf[0], buf[1], buf[2], buf[3]]), 77);
+        assert_eq!(buf[4], WAKE_PROCESS_STOPPED as u8);
+        assert_eq!(u32::from_le_bytes([buf[5], buf[6], buf[7], buf[8]]), 77);
+        assert_eq!(buf[9], WAKE_PROCESS_CONTINUED as u8);
     }
 }

@@ -675,9 +675,16 @@ pub(crate) fn commit_exec_state(
     host: &mut dyn HostIO,
     caller_tid: u32,
 ) -> Result<(), Errno> {
-    if proc.state != crate::process::ProcessState::Running {
+    if matches!(
+        proc.state,
+        crate::process::ProcessState::Exited | crate::process::ProcessState::Limbo
+    ) {
         return Err(Errno::ESRCH);
     }
+    // Exec replaces the image, not the process's job-control state. A stop
+    // can be generated while the host is asynchronously resolving the new
+    // executable, so retain it through the irreversible commit point.
+    let lifecycle_state = proc.state;
     if caller_tid != 0 && caller_tid != proc.pid {
         let thread_index = proc
             .threads
@@ -715,7 +722,7 @@ pub(crate) fn commit_exec_state(
     // descriptions and their backing tables, terminal queues, CWD, IDs,
     // rlimits, locks, and alarm/ITIMER_REAL state remain in place.
     proc.memory = crate::memory::MemoryManager::new();
-    proc.state = crate::process::ProcessState::Running;
+    proc.state = lifecycle_state;
     proc.exit_status = 0;
     proc.exit_signal = 0;
     proc.thread_name = [0; 16];
@@ -5801,7 +5808,7 @@ pub fn sys_kill(
         }
     }
     if is_local {
-        proc.signals.raise(sig);
+        proc.raise_signal(sig);
         Ok(())
     } else {
         host.host_kill(pid, sig)
@@ -6171,8 +6178,8 @@ pub fn sys_sigprocmask(proc: &mut Process, how: u32, set: u64) -> Result<u64, Er
     Ok(old_mask)
 }
 
-/// Exit the process. Closes all fds and dir streams, sets state to Exited.
-pub fn sys_exit(proc: &mut Process, host: &mut dyn HostIO, status: i32) {
+/// Release process-owned resources before recording an exit cause.
+fn cleanup_process_for_exit(proc: &mut Process, host: &mut dyn HostIO) {
     release_process_dri_mappings(proc, host);
 
     // Snapshot the sparse table because sys_close mutates it. RLIMIT_NOFILE
@@ -6194,10 +6201,25 @@ pub fn sys_exit(proc: &mut Process, host: &mut dyn HostIO, status: i32) {
     // POSIX: all advisory locks held by the process are released on exit.
     let pid = proc.pid;
     fallback_lock_table(proc).remove_all_for_pid(pid);
+}
 
-    proc.state = ProcessState::Exited;
-    proc.exit_status = status & 0xff;
-    proc.exit_signal = 0;
+/// Exit normally, publishing the parent-visible status after cleanup.
+pub fn sys_exit(proc: &mut Process, host: &mut dyn HostIO, status: i32) {
+    if matches!(proc.state, ProcessState::Exited | ProcessState::Limbo) {
+        return;
+    }
+    cleanup_process_for_exit(proc, host);
+    proc.record_normal_exit(status);
+}
+
+/// Exit for a signal's terminating default action, publishing status after
+/// cleanup completes.
+pub fn sys_exit_by_signal(proc: &mut Process, host: &mut dyn HostIO, signum: u32) {
+    if matches!(proc.state, ProcessState::Exited | ProcessState::Limbo) {
+        return;
+    }
+    cleanup_process_for_exit(proc, host);
+    proc.record_signal_exit(signum);
 }
 
 fn is_encoded_process_cpu_clock_id(clock_id: u32) -> bool {
@@ -13179,20 +13201,21 @@ pub fn can_query_sched(sender_euid: u32, target_uid: u32, target_euid: u32) -> b
 /// getrusage -- get resource usage (simulated).
 ///
 /// Returns mostly zeroed rusage struct. Wasm runtimes don't expose
-/// CPU/memory usage metrics, so we can't track actual resource usage. The struct is
-/// 144 bytes: 2 x timeval (16 bytes each) + 14 x i64.
+/// CPU/memory usage metrics, so we can't track actual resource usage. The wire
+/// size is owned by `wasm_posix_shared::WASM_RUSAGE_WIRE_SIZE`.
 pub fn sys_getrusage(_proc: &mut Process, who: i32, buf: &mut [u8]) -> Result<(), Errno> {
     use wasm_posix_shared::rusage::{RUSAGE_CHILDREN, RUSAGE_SELF};
+    let wire_size = wasm_posix_shared::WASM_RUSAGE_WIRE_SIZE as usize;
 
     if who != RUSAGE_SELF && who != RUSAGE_CHILDREN {
         return Err(Errno::EINVAL);
     }
-    if buf.len() < 144 {
+    if buf.len() < wire_size {
         return Err(Errno::EINVAL);
     }
     // Zero the entire struct — all fields are 0
     // In a more complete implementation, ru_utime could track elapsed time
-    buf[..144].fill(0);
+    buf[..wire_size].fill(0);
     Ok(())
 }
 
@@ -15670,6 +15693,11 @@ mod tests {
         assert_eq!(proc.state, ProcessState::Exited);
         assert_eq!(proc.exit_status, 42);
         assert_eq!(proc.exit_signal, 0);
+        let event = proc.wait_event.unwrap();
+        assert_eq!(event.event_mask, wasm_posix_shared::wait::EVENT_EXITED);
+        assert_eq!(event.wait_status, 42 << 8);
+        assert_eq!(event.si_code, wasm_posix_shared::wait::CLD_EXITED);
+        assert_eq!(event.si_status, 42);
 
         // All fds should be closed - trying to read from fd should fail
         let mut buf = [0u8; 10];
@@ -17806,6 +17834,23 @@ mod tests {
         assert_eq!(&buf, b"queued before exec");
         sys_close(&mut proc, &mut host, writer).unwrap();
         sys_close(&mut proc, &mut host, reader).unwrap();
+    }
+
+    #[test]
+    fn exec_preserves_stopped_state_and_parent_visible_status_record() {
+        use wasm_posix_shared::signal::SIGTSTP;
+        use wasm_posix_shared::wait::EVENT_STOPPED;
+
+        let mut proc = Process::new(19);
+        let mut host = MockHostIO::new();
+        assert!(proc.record_stop(SIGTSTP));
+
+        commit_exec_state(&mut proc, &mut host, 19).unwrap();
+
+        assert_eq!(proc.state, ProcessState::Stopped);
+        let event = proc.wait_event.unwrap();
+        assert_eq!(event.event_mask, EVENT_STOPPED);
+        assert_eq!(event.si_status, SIGTSTP as i32);
     }
 
     #[test]
@@ -21483,7 +21528,7 @@ mod tests {
     #[test]
     fn test_getrusage_self() {
         let mut proc = Process::new(1);
-        let mut buf = [0xFFu8; 144];
+        let mut buf = [0xFFu8; wasm_posix_shared::WASM_RUSAGE_WIRE_SIZE as usize];
         let result = sys_getrusage(&mut proc, 0, &mut buf);
         assert!(result.is_ok());
         // All fields should be zeroed
@@ -21493,7 +21538,7 @@ mod tests {
     #[test]
     fn test_getrusage_children() {
         let mut proc = Process::new(1);
-        let mut buf = [0xFFu8; 144];
+        let mut buf = [0xFFu8; wasm_posix_shared::WASM_RUSAGE_WIRE_SIZE as usize];
         let result = sys_getrusage(&mut proc, -1, &mut buf);
         assert!(result.is_ok());
         assert!(buf.iter().all(|&b| b == 0));
@@ -21502,7 +21547,7 @@ mod tests {
     #[test]
     fn test_getrusage_invalid_who() {
         let mut proc = Process::new(1);
-        let mut buf = [0u8; 144];
+        let mut buf = [0u8; wasm_posix_shared::WASM_RUSAGE_WIRE_SIZE as usize];
         let result = sys_getrusage(&mut proc, 5, &mut buf);
         assert_eq!(result, Err(Errno::EINVAL));
     }

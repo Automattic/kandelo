@@ -8,7 +8,7 @@
 use core::mem::size_of;
 
 use crate::abi::extended_syscalls as extra_syscalls;
-use crate::{Syscall, WasmStat, WasmStatfs, WasmTimespec};
+use crate::{Syscall, WASM_RUSAGE_WIRE_SIZE, WasmStat, WasmStatfs, WasmTimespec};
 
 /// Direction of a marshalled pointer argument.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -316,7 +316,10 @@ pub const SYSCALL_ARG_DESCRIPTORS: &[SyscallArgDescriptor] = &[
         Syscall::Readlinkat as u32,
         [desc!(1, In, cstring!()), desc!(2, Out, arg!(3)),]
     ),
-    entry!(Syscall::Getrusage as u32, [desc!(1, Out, fixed!(144))]),
+    entry!(
+        Syscall::Getrusage as u32,
+        [desc!(1, Out, fixed!(WASM_RUSAGE_WIRE_SIZE), required)]
+    ),
     entry!(
         Syscall::Realpath as u32,
         [desc!(0, In, cstring!()), desc!(1, Out, arg!(2)),]
@@ -390,7 +393,10 @@ pub const SYSCALL_ARG_DESCRIPTORS: &[SyscallArgDescriptor] = &[
     entry!(Syscall::Recvmsg as u32, [desc!(1, InOut, arg!(2))]),
     entry!(
         Syscall::Wait4 as u32,
-        [desc!(1, Out, fixed!(4)), desc!(3, Out, fixed!(32)),]
+        [
+            desc!(1, Out, fixed!(4)),
+            desc!(3, Out, fixed!(WASM_RUSAGE_WIRE_SIZE)),
+        ]
     ),
     entry!(
         Syscall::Getaddrinfo as u32,
@@ -454,6 +460,13 @@ pub const SYSCALL_ARG_DESCRIPTORS: &[SyscallArgDescriptor] = &[
     ),
     entry!(extra_syscalls::SYS_MKNOD, [desc!(0, In, cstring!())]),
     entry!(extra_syscalls::SYS_MKNODAT, [desc!(1, In, cstring!())]),
+    entry!(
+        extra_syscalls::SYS_WAITID,
+        [
+            desc!(2, Out, fixed!(128), required),
+            desc!(4, Out, fixed!(WASM_RUSAGE_WIRE_SIZE), nullable),
+        ]
+    ),
     entry!(extra_syscalls::SYS_LCHOWN, [desc!(0, In, cstring!())]),
     entry!(
         extra_syscalls::SYS_TIMER_CREATE,
@@ -572,6 +585,38 @@ mod tests {
         assert_eq!(fpathconf.direction, SyscallArgDirection::Out);
         assert_eq!(fpathconf.size, SyscallArgSize::Fixed { size: 8 });
         assert!(fpathconf.required);
+
+        let getrusage = find(Syscall::Getrusage as u32).args[0];
+        assert_eq!(
+            getrusage.size,
+            SyscallArgSize::Fixed {
+                size: WASM_RUSAGE_WIRE_SIZE,
+            }
+        );
+        assert!(getrusage.required);
+
+        let wait4 = find(Syscall::Wait4 as u32).args;
+        assert_eq!(
+            wait4[1].size,
+            SyscallArgSize::Fixed {
+                size: WASM_RUSAGE_WIRE_SIZE,
+            }
+        );
+
+        let waitid = find(extra_syscalls::SYS_WAITID).args;
+        assert_eq!(waitid[0].arg_index, 2);
+        assert_eq!(waitid[0].direction, SyscallArgDirection::Out);
+        assert_eq!(waitid[0].size, SyscallArgSize::Fixed { size: 128 });
+        assert!(waitid[0].required);
+        assert_eq!(waitid[1].arg_index, 4);
+        assert_eq!(waitid[1].direction, SyscallArgDirection::Out);
+        assert_eq!(
+            waitid[1].size,
+            SyscallArgSize::Fixed {
+                size: WASM_RUSAGE_WIRE_SIZE,
+            }
+        );
+        assert!(waitid[1].nullable);
 
         let semop = find(extra_syscalls::SYS_SEMOP).args[0].size;
         assert_eq!(
