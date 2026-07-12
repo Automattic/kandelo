@@ -39,6 +39,8 @@ unsafe extern "C" {
     fn host_stat(path_ptr: *const u8, path_len: u32, stat_ptr: *mut u8) -> i32;
     fn host_lstat(path_ptr: *const u8, path_len: u32, stat_ptr: *mut u8) -> i32;
     fn host_statfs(path_ptr: *const u8, path_len: u32, statfs_ptr: *mut u8) -> i32;
+    fn host_pathconf(path_ptr: *const u8, path_len: u32, name: i32, value_ptr: *mut i64) -> i32;
+    fn host_fpathconf(handle: i64, name: i32, value_ptr: *mut i64) -> i32;
     fn host_mkdir(path_ptr: *const u8, path_len: u32, mode: u32) -> i32;
     fn host_rmdir(path_ptr: *const u8, path_len: u32) -> i32;
     fn host_unlink(path_ptr: *const u8, path_len: u32) -> i32;
@@ -370,6 +372,27 @@ impl HostIO for WasmHostIO {
         let result = unsafe { host_statfs(path.as_ptr(), path.len() as u32, statfs_ptr) };
         i32_to_result(result)?;
         Ok(statfs)
+    }
+
+    fn host_pathconf(&mut self, path: &[u8], name: i32) -> Result<Option<i64>, Errno> {
+        let mut value = -1i64;
+        let result = unsafe {
+            host_pathconf(
+                path.as_ptr(),
+                path.len() as u32,
+                name,
+                &mut value as *mut i64,
+            )
+        };
+        i32_to_result(result)?;
+        Ok((value != -1).then_some(value))
+    }
+
+    fn host_fpathconf(&mut self, handle: i64, name: i32) -> Result<Option<i64>, Errno> {
+        let mut value = -1i64;
+        let result = unsafe { host_fpathconf(handle, name, &mut value as *mut i64) };
+        i32_to_result(result)?;
+        Ok((value != -1).then_some(value))
     }
 
     fn host_mkdir(&mut self, path: &[u8], mode: u32) -> Result<(), Errno> {
@@ -3290,9 +3313,9 @@ fn dispatch_channel_syscall(nr: u32, args: &[i64; 6]) -> i32 {
             // SYS_PATHCONF
             let p = a1 as *const u8;
             let len = unsafe { cstr_len(p) };
-            kernel_pathconf(p, len as u32, a2) as i32
+            kernel_pathconf(p, len as u32, a2, a3 as *mut i64)
         }
-        113 => kernel_fpathconf(a1, a2) as i32, // SYS_FPATHCONF
+        113 => kernel_fpathconf(a1, a2, a3 as *mut i64), // SYS_FPATHCONF
 
         // setreuid/setregid — map to setresuid/setresgid with -1 for saved ID
         215 => kernel_setresuid(a1 as u32, a2 as u32, 0xFFFFFFFF), // SYS_SETREUID
@@ -9958,27 +9981,44 @@ pub extern "C" fn kernel_rt_sigtimedwait(mask_lo: u32, mask_hi: u32, timeout_ms:
 
 /// pathconf -- get configurable pathname variable for a path.
 #[unsafe(no_mangle)]
-pub extern "C" fn kernel_pathconf(path_ptr: *const u8, path_len: u32, name: i32) -> i64 {
+pub extern "C" fn kernel_pathconf(
+    path_ptr: *const u8,
+    path_len: u32,
+    name: i32,
+    value_ptr: *mut i64,
+) -> i32 {
+    if path_ptr.is_null() || value_ptr.is_null() {
+        return -(Errno::EFAULT as i32);
+    }
     let (_gkl, proc) = unsafe { get_process() };
     let path = unsafe { core::slice::from_raw_parts(path_ptr, path_len as usize) };
-    let result = match syscalls::sys_pathconf(path, name) {
-        Ok(v) => v,
-        Err(e) => -(e as i64),
-    };
     let mut host = WasmHostIO;
+    let result = match syscalls::sys_pathconf(proc, &mut host, path, name) {
+        Ok(value) => {
+            unsafe { core::ptr::write_unaligned(value_ptr, value.unwrap_or(-1)) };
+            0
+        }
+        Err(e) => -(e as i32),
+    };
     deliver_pending_signals(proc, &mut host);
     result
 }
 
 /// fpathconf -- get configurable pathname variable for an open fd.
 #[unsafe(no_mangle)]
-pub extern "C" fn kernel_fpathconf(fd: i32, name: i32) -> i64 {
+pub extern "C" fn kernel_fpathconf(fd: i32, name: i32, value_ptr: *mut i64) -> i32 {
+    if value_ptr.is_null() {
+        return -(Errno::EFAULT as i32);
+    }
     let (_gkl, proc) = unsafe { get_process() };
-    let result = match syscalls::sys_fpathconf(proc, fd, name) {
-        Ok(v) => v,
-        Err(e) => -(e as i64),
-    };
     let mut host = WasmHostIO;
+    let result = match syscalls::sys_fpathconf(proc, &mut host, fd, name) {
+        Ok(value) => {
+            unsafe { core::ptr::write_unaligned(value_ptr, value.unwrap_or(-1)) };
+            0
+        }
+        Err(e) => -(e as i32),
+    };
     deliver_pending_signals(proc, &mut host);
     result
 }

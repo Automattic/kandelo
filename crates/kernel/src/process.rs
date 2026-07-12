@@ -34,6 +34,12 @@ pub trait HostIO {
     fn host_statfs(&mut self, _path: &[u8]) -> Result<WasmStatfs, Errno> {
         Err(Errno::ENOSYS)
     }
+    fn host_pathconf(&mut self, _path: &[u8], _name: i32) -> Result<Option<i64>, Errno> {
+        Err(Errno::ENOSYS)
+    }
+    fn host_fpathconf(&mut self, _handle: i64, _name: i32) -> Result<Option<i64>, Errno> {
+        Err(Errno::ENOSYS)
+    }
     fn host_mkdir(&mut self, path: &[u8], mode: u32) -> Result<(), Errno>;
     fn host_rmdir(&mut self, path: &[u8]) -> Result<(), Errno>;
     fn host_unlink(&mut self, path: &[u8]) -> Result<(), Errno>;

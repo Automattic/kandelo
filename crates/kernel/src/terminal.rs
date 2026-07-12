@@ -178,6 +178,14 @@ impl TerminalState {
         self.c_lflag & ICANON != 0
     }
 
+    #[inline]
+    fn control_char_matches(&self, index: usize, byte: u8) -> bool {
+        // Kandelo's guest headers define _POSIX_VDISABLE as NUL. A zero
+        // control-character slot is disabled and must not make an input NUL
+        // act as VINTR/VEOL/etc.
+        self.c_cc[index] != 0 && self.c_cc[index] == byte
+    }
+
     /// Process a byte through the line discipline.
     /// Returns echo bytes and an optional signal number if ISIG matched.
     /// ISIG is checked independently of ICANON — signal characters generate
@@ -201,11 +209,11 @@ impl TerminalState {
         // This works in both canonical and raw modes.
         if self.c_lflag & ISIG != 0 {
             use wasm_posix_shared::signal;
-            let sig = if byte == self.c_cc[VINTR] {
+            let sig = if self.control_char_matches(VINTR, byte) {
                 Some(signal::SIGINT)
-            } else if byte == self.c_cc[VQUIT] {
+            } else if self.control_char_matches(VQUIT, byte) {
                 Some(signal::SIGQUIT)
-            } else if byte == self.c_cc[VSUSP] {
+            } else if self.control_char_matches(VSUSP, byte) {
                 Some(signal::SIGTSTP)
             } else {
                 None
@@ -233,7 +241,7 @@ impl TerminalState {
         }
 
         // Check for VERASE (backspace/delete)
-        if byte == self.c_cc[VERASE] {
+        if self.control_char_matches(VERASE, byte) {
             if !self.line_buffer.is_empty() {
                 self.line_buffer.pop();
                 if do_echo && self.c_lflag & ECHOE != 0 {
@@ -245,7 +253,7 @@ impl TerminalState {
         }
 
         // Check for VKILL (kill line, ^U)
-        if byte == self.c_cc[VKILL] {
+        if self.control_char_matches(VKILL, byte) {
             if do_echo && self.c_lflag & ECHOK != 0 {
                 // Erase the whole line from display
                 for _ in 0..self.line_buffer.len() {
@@ -257,7 +265,7 @@ impl TerminalState {
         }
 
         // Check for VEOF (^D)
-        if byte == self.c_cc[VEOF] {
+        if self.control_char_matches(VEOF, byte) {
             // Flush current line buffer without adding the EOF character
             self.cooked_buffer.extend_from_slice(&self.line_buffer);
             self.line_buffer.clear();
@@ -265,7 +273,7 @@ impl TerminalState {
         }
 
         // Newline or VEOL: complete the line
-        if byte == b'\n' || byte == self.c_cc[VEOL] {
+        if byte == b'\n' || self.control_char_matches(VEOL, byte) {
             self.line_buffer.push(byte);
             self.cooked_buffer.extend_from_slice(&self.line_buffer);
             self.line_buffer.clear();
@@ -350,6 +358,20 @@ mod tests {
         let mut buf = [0u8; 64];
         let n = ts.read_cooked(&mut buf);
         assert_eq!(&buf[..n], b"hello\n");
+    }
+
+    #[test]
+    fn disabled_zero_control_char_does_not_consume_input_nul() {
+        let mut ts = TerminalState::new();
+
+        let (_, signal) = ts.process_input_byte(0);
+        assert_eq!(signal, None);
+        assert!(!ts.has_cooked_data());
+
+        ts.process_input_byte(b'\n');
+        let mut buf = [0u8; 4];
+        let n = ts.read_cooked(&mut buf);
+        assert_eq!(&buf[..n], b"\0\n");
     }
 
     #[test]

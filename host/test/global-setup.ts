@@ -27,6 +27,7 @@ const TEST_PROGRAMS = [
   "lseek_invalid_test.c",
   "environment_lifecycle_test.c",
   "chown_sentinel_test.c",
+  "pathconf_test.c",
   "rlimit_fsize_test.c",
   "unix_listener_exec_test.c",
   "putenv_test.c",
@@ -56,7 +57,11 @@ const FORK_INSTRUMENTED_PROGRAMS = new Set([
 ]);
 
 /** Operation-boundary regressions that must also run through a memory64 guest. */
-const WASM64_TEST_PROGRAMS = ["chown_sentinel_test.c", "rlimit_fsize_test.c"];
+const WASM64_TEST_PROGRAMS = [
+  "chown_sentinel_test.c",
+  "pathconf_test.c",
+  "rlimit_fsize_test.c",
+];
 
 /** WAT fixtures used by host runtime tests. */
 const WAT_FIXTURES = [

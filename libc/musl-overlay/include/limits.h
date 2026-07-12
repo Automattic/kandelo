@@ -40,7 +40,6 @@
 #include <bits/limits.h>
 
 #define PIPE_BUF 4096
-#define FILESIZEBITS 64
 #ifndef NAME_MAX
 #define NAME_MAX 255
 #endif

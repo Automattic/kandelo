@@ -152,6 +152,18 @@ function cstringCopySize(
   };
 }
 
+function isValidMemoryRange(
+  memory: Uint8Array,
+  ptr: number,
+  size: number,
+): boolean {
+  return Number.isSafeInteger(ptr)
+    && ptr > 0
+    && Number.isSafeInteger(size)
+    && size >= 0
+    && ptr <= memory.length - size;
+}
+
 /**
  * Maximum combined exec argv + environment representation: UTF-8 strings,
  * their terminating NUL bytes, and one source-width pointer per entry plus
@@ -3206,10 +3218,20 @@ export class CentralizedKernelWorker {
 
       for (const desc of argDescs) {
         const ptr = origArgs[desc.argIndex];
-        if (
-          ptr === 0
-          && (desc.size.type !== "cstring" || desc.nullable === true)
-        ) {
+        if (ptr === 0) {
+          const required = desc.required === true
+            || (desc.size.type === "cstring" && desc.nullable !== true);
+          if (required) {
+            this.completeChannel(
+              channel,
+              syscallNr,
+              origArgs,
+              undefined,
+              -1,
+              EFAULT,
+            );
+            return;
+          }
           continue;
         }
 
@@ -3241,6 +3263,17 @@ export class CentralizedKernelWorker {
           // Dereference: arg is a pointer to a u32 value (e.g. socklen_t*)
           const derefPtr = origArgs[desc.size.argIndex];
           if (derefPtr === 0) continue;
+          if (!isValidMemoryRange(processMem, derefPtr, 4)) {
+            this.completeChannel(
+              channel,
+              syscallNr,
+              origArgs,
+              undefined,
+              -1,
+              EFAULT,
+            );
+            return;
+          }
           size = processMem[derefPtr] | (processMem[derefPtr + 1] << 8)
                | (processMem[derefPtr + 2] << 16) | (processMem[derefPtr + 3] << 24);
         } else {
@@ -3261,6 +3294,18 @@ export class CentralizedKernelWorker {
           }
         }
 
+        if (!isValidMemoryRange(processMem, ptr, size)) {
+          this.completeChannel(
+            channel,
+            syscallNr,
+            origArgs,
+            undefined,
+            -1,
+            EFAULT,
+          );
+          return;
+        }
+
         const kernelPtr = dataStart + dataOffset;
 
         // Copy input data from process to kernel
@@ -3275,8 +3320,10 @@ export class CentralizedKernelWorker {
         adjustedArgs[desc.argIndex] = kernelPtr;
 
         dataOffset += size;
-        // Align to 4 bytes for next allocation
-        dataOffset = (dataOffset + 3) & ~3;
+        // Kernel exports may dereference i64-bearing structs and scalar output
+        // slots directly. Keep every following allocation eight-byte aligned;
+        // CH_DATA itself is eight-byte aligned.
+        dataOffset = (dataOffset + 7) & ~7;
       }
     }
 
@@ -3852,7 +3899,7 @@ export class CentralizedKernelWorker {
           // with zeros when the target isn't a symlink).
           if (desc.direction === "out" && retVal < 0) {
             outOffset += size;
-            outOffset = (outOffset + 3) & ~3;
+            outOffset = (outOffset + 7) & ~7;
             continue;
           }
           let copySize = size;
@@ -3870,7 +3917,7 @@ export class CentralizedKernelWorker {
         }
 
         outOffset += size;
-        outOffset = (outOffset + 3) & ~3;
+        outOffset = (outOffset + 7) & ~7;
       }
     }
 

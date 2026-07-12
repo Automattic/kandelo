@@ -1,5 +1,5 @@
 {
-  "abi_version": 33,
+  "abi_version": 34,
   "channel_buffers": {
     "data_offset": 72,
     "data_size": 65536,
@@ -113,7 +113,7 @@
   },
   "host_adapter": {
     "manifest": {
-      "abi_version": 33,
+      "abi_version": 34,
       "channel_data_offset": 72,
       "channel_data_size": 65536,
       "channel_header_size": 72,
@@ -571,7 +571,7 @@
     {
       "kind": "func",
       "name": "kernel_fpathconf",
-      "signature": "(i32,i32) -> (i64)"
+      "signature": "(i32,i32,i32) -> (i32)"
     },
     {
       "kind": "func",
@@ -1056,7 +1056,7 @@
     {
       "kind": "func",
       "name": "kernel_pathconf",
-      "signature": "(i32,i32,i32) -> (i64)"
+      "signature": "(i32,i32,i32,i32) -> (i32)"
     },
     {
       "kind": "func",
@@ -2990,6 +2990,32 @@
       "size": 16
     }
   },
+  "pathconf_names": {
+    "ALLOC_SIZE_MIN": 18,
+    "ASYNC_IO": 10,
+    "CHOWN_RESTRICTED": 6,
+    "FALLOC": 21,
+    "FILESIZEBITS": 13,
+    "LINK_MAX": 0,
+    "MAX_CANON": 1,
+    "MAX_INPUT": 2,
+    "NAME_MAX": 3,
+    "NO_TRUNC": 7,
+    "PATH_MAX": 4,
+    "PIPE_BUF": 5,
+    "POSIX2_SYMLINKS": 20,
+    "PRIO_IO": 11,
+    "REC_INCR_XFER_SIZE": 14,
+    "REC_MAX_XFER_SIZE": 15,
+    "REC_MIN_XFER_SIZE": 16,
+    "REC_XFER_ALIGN": 17,
+    "SOCK_MAXBUF": 12,
+    "SYMLINK_MAX": 19,
+    "SYNC_IO": 9,
+    "TEXTDOMAIN_MAX": 22,
+    "TIMESTAMP_RESOLUTION": 23,
+    "VDISABLE": 8
+  },
   "process_expected_globals": [
     "__channel_base",
     "__tls_base"
@@ -3164,6 +3190,35 @@
       {
         "argIndex": 0,
         "direction": "in",
+        "size": {
+          "size": 8,
+          "type": "fixed"
+        }
+      }
+    ],
+    "112": [
+      {
+        "argIndex": 0,
+        "direction": "in",
+        "size": {
+          "type": "cstring"
+        }
+      },
+      {
+        "argIndex": 2,
+        "direction": "out",
+        "required": true,
+        "size": {
+          "size": 8,
+          "type": "fixed"
+        }
+      }
+    ],
+    "113": [
+      {
+        "argIndex": 2,
+        "direction": "out",
+        "required": true,
         "size": {
           "size": 8,
           "type": "fixed"

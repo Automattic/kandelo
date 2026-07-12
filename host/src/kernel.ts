@@ -612,6 +612,12 @@ export class WasmPosixKernel {
         host_statfs: (pathPtr: bigint, pathLen: number, statfsPtr: bigint): number => {
           return this.hostStatfs(Number(pathPtr), pathLen, Number(statfsPtr));
         },
+        host_pathconf: (pathPtr: bigint, pathLen: number, name: number, valuePtr: bigint): number => {
+          return this.hostPathconf(Number(pathPtr), pathLen, name, Number(valuePtr));
+        },
+        host_fpathconf: (handle: bigint, name: number, valuePtr: bigint): number => {
+          return this.hostFpathconf(handle, name, Number(valuePtr));
+        },
         host_mkdir: (pathPtr: bigint, pathLen: number, mode: number): number => {
           return this.hostMkdir(Number(pathPtr), pathLen, mode);
         },
@@ -1483,6 +1489,44 @@ export class WasmPosixKernel {
       const path = this.readPathFromMemory(pathPtr, pathLen);
       const statfs = this.io.statfs(path);
       this.writeStatfsToMemory(statfsPtr, statfs);
+      return 0;
+    } catch (e) {
+      return negErrno(e);
+    }
+  }
+
+  private hostPathconf(
+    pathPtr: number,
+    pathLen: number,
+    name: number,
+    valuePtr: number,
+  ): number {
+    try {
+      const path = this.readPathFromMemory(pathPtr, pathLen);
+      const value = this.io.pathconf(path, name);
+      this.getMemoryDataView().setBigInt64(
+        valuePtr,
+        BigInt(value ?? -1),
+        true,
+      );
+      return 0;
+    } catch (e) {
+      return negErrno(e);
+    }
+  }
+
+  private hostFpathconf(
+    handle: bigint,
+    name: number,
+    valuePtr: number,
+  ): number {
+    try {
+      const value = this.io.fpathconf(Number(handle), name);
+      this.getMemoryDataView().setBigInt64(
+        valuePtr,
+        BigInt(value ?? -1),
+        true,
+      );
       return 0;
     } catch (e) {
       return negErrno(e);
