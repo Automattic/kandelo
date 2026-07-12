@@ -293,8 +293,8 @@ shortcuts.
 | `inotify_init()` / `inotify_init1()` | Stub | Returns ENOSYS. |
 | `inotify_add_watch()` / `inotify_rm_watch()` | Stub | Returns EBADF. |
 | `fanotify_init()` / `fanotify_mark()` | Stub | Returns ENOSYS. |
-| `timer_create()` | Full | CLOCK_REALTIME and CLOCK_MONOTONIC. SIGEV_SIGNAL delivery with si_value. Per-process timer table (max 32). |
-| `timer_settime()` / `timer_gettime()` | Full | Absolute (TIMER_ABSTIME) and relative time. Interval timers with automatic rearming. Host setTimeout-based delivery. |
+| `timer_create()` | Partial | CLOCK_REALTIME and CLOCK_MONOTONIC with `SIGEV_SIGNAL` or `SIGEV_NONE`. `SIGEV_THREAD` and Linux-specific `SIGEV_THREAD_ID` return `ENOTSUP`. The timer syscall carries a 32-bit `sival_int`; wasm64 pointer-valued `sigev_value` is not supported. |
+| `timer_settime()` / `timer_gettime()` | Partial | Absolute (TIMER_ABSTIME) and relative timers and automatic interval rearming use host timers with millisecond granularity. `timer_gettime()` and `timer_settime()`'s old-value result currently report the last configured value rather than decreasing remaining time. |
 | `timer_getoverrun()` | Full | Tracks overrun count when signal is still pending at next interval fire. Reset on successful signal delivery. |
 | `timer_delete()` | Full | Cancels timer and removes from per-process table. |
 
@@ -424,7 +424,7 @@ Systematic audit of all subsystems against POSIX specifications. Gaps are catego
 | Gap | Subsystem | Reason |
 |-----|-----------|--------|
 | **mprotect() is a no-op** | memory | Returns success but does not enforce. Wasm linear memory has no page-level protection. |
-| **No immediate cross-process shared-memory or futex semantics** | memory | Anonymous, SysV, and stable-identity regular-file shared mappings now merge and refresh across processes at syscall boundaries. They are not one physical linear memory: direct stores remain private until a syscall, a peer spinning only on loads sees no update, and futex WAIT/WAKE targets only the caller's process `SharedArrayBuffer`. Process-shared pthread locks and PHP opcache's normal shared-memory locking model therefore remain unsupported. memfd `MAP_SHARED`, current OPFS file mappings, Linux `SIGBUS` on access beyond EOF, and detection of external host writes also remain gaps. |
+| **No immediate cross-process shared-memory or futex semantics** | memory | Anonymous, SysV, and stable-identity regular-file shared mappings now merge and refresh across processes at syscall boundaries. They are not one physical linear memory: direct stores remain private until a syscall, a peer spinning only on loads sees no update, and futex WAIT/WAKE targets only the caller's process `SharedArrayBuffer`. Process-shared pthread locks and PHP opcache's normal shared-memory locking model therefore remain unsupported. The PHP package rejects its normal SHM mode and supports only explicitly configured `opcache.file_cache_only=1`; otherwise FPM workers would observe divergent cache and lock state. memfd `MAP_SHARED`, current OPFS file mappings, Linux `SIGBUS` on access beyond EOF, and detection of external host writes also remain gaps. |
 | **External raw UDP routes** | socket | AF_INET SOCK_DGRAM has POSIX-style in-kernel loopback/virtual semantics, but browsers cannot expose raw UDP and Node raw UDP is not yet wired behind HostIO. Non-loopback UDP routes currently return ENETUNREACH unless a future host backend/proxy handles them. |
 | **Setuid/setgid enforcement** | process | Single-user Wasm environment; privilege checks simulated only. |
 | **Permission checks** | filesystem | Delegated to host. Kernel does not independently verify file permissions. |
@@ -606,7 +606,11 @@ These PHP needs are well-handled by the current kernel:
 - Multi-process: fork (kernel syscall), exec (host-initiated), waitpid (kernel syscall)
 - Networking: AF_INET TCP (connect, bind, listen, accept, send, recv), getaddrinfo
 - Dynamic linking: dlopen, dlsym, dlclose, dlerror (Wasm dylink)
-- POSIX timers: timer_create, timer_settime, timer_gettime, timer_delete
+- POSIX timers: partial `SIGEV_SIGNAL`/`SIGEV_NONE` timer_create, timer_settime,
+  timer_gettime, timer_delete. The PHP package imports a cooperative Wasm host
+  hook because native `SIGEV_THREAD_ID` delivery is unavailable; that package
+  cannot instantiate until the corresponding host-runtime hook lands in the
+  same platform batch.
 - System info: uname, sysconf, umask, getrlimit/setrlimit
 
 ---

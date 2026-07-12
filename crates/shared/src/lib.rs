@@ -35,7 +35,9 @@ pub mod host_abi;
 ///     them under the existing syscall number.
 /// 21: missing, PID-zero, and reaped procfs paths report ENOENT instead of
 ///     returning synthetic success through stat/access/path operations.
-pub const ABI_VERSION: u32 = 26;
+/// 27: rebuilt PHP programs require the cooperative VM-interrupt host hook,
+///     and POSIX timer notifications use validated fixed-width signal fields.
+pub const ABI_VERSION: u32 = 27;
 
 /// Syscall numbers for the POSIX kernel interface.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

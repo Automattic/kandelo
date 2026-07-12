@@ -99,7 +99,8 @@ export type WorkerToHostMessage =
   | WorkerErrorMessage
   | ExecRequestMessage
   | ExecCompleteMessage
-  | AlarmSetMessage;
+  | AlarmSetMessage
+  | VmInterruptTimerMessage;
 
 export interface WorkerReadyMessage {
   type: "ready";
@@ -138,6 +139,14 @@ export interface ExecCompleteMessage {
 export interface AlarmSetMessage {
   type: "alarm_set";
   pid: number;
+  seconds: number;
+}
+
+export interface VmInterruptTimerMessage {
+  type: "vm_interrupt_timer";
+  pid: number;
+  timedOutPtr: number;
+  vmInterruptPtr: number;
   seconds: number;
 }
 

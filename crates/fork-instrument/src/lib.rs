@@ -175,5 +175,73 @@ pub fn instrument(input: &[u8], opts: &Options) -> Result<Vec<u8>> {
     // for the actual transform.
 
     let output = module.emit_wasm();
-    Ok(output)
+    restore_leading_dylink_section(input, output)
+}
+
+/// Walrus emits raw custom sections after the standard sections. That is
+/// normally valid, but the WebAssembly dynamic-linking convention requires a
+/// shared module's `dylink.0` custom section to be first. Preserve that input
+/// contract after instrumentation so Kandelo's dynamic loader can still
+/// recognize fork-capable side modules.
+fn restore_leading_dylink_section(input: &[u8], output: Vec<u8>) -> Result<Vec<u8>> {
+    let mut input_payloads = Parser::new(0).parse_all(input);
+    let _version = input_payloads
+        .next()
+        .transpose()
+        .context("parsing input wasm header")?;
+    let input_starts_with_dylink = matches!(
+        input_payloads.next().transpose()?,
+        Some(Payload::CustomSection(section)) if section.name() == "dylink.0"
+    );
+    if !input_starts_with_dylink {
+        return Ok(output);
+    }
+
+    let mut dylink_range = None;
+    for payload in Parser::new(0).parse_all(&output) {
+        if let Payload::CustomSection(section) = payload? {
+            if section.name() != "dylink.0" {
+                continue;
+            }
+            ensure!(
+                dylink_range.is_none(),
+                "instrumented module contains more than one dylink.0 section"
+            );
+            dylink_range = Some(section.range());
+        }
+    }
+
+    let payload_range = dylink_range.context(
+        "input shared module started with dylink.0, but the instrumented output lost it",
+    )?;
+    let payload_len = u32::try_from(payload_range.len())
+        .context("dylink.0 section is too large for a wasm section")?;
+    let section_header_len = 1 + u32_leb_len(payload_len);
+    let section_start = payload_range
+        .start
+        .checked_sub(section_header_len)
+        .context("dylink.0 section range does not include a valid header")?;
+    ensure!(
+        section_start >= 8 && output.get(section_start) == Some(&0),
+        "dylink.0 section does not have a valid custom-section header"
+    );
+    if section_start == 8 {
+        return Ok(output);
+    }
+
+    let mut reordered = Vec::with_capacity(output.len());
+    reordered.extend_from_slice(&output[..8]);
+    reordered.extend_from_slice(&output[section_start..payload_range.end]);
+    reordered.extend_from_slice(&output[8..section_start]);
+    reordered.extend_from_slice(&output[payload_range.end..]);
+    Ok(reordered)
+}
+
+fn u32_leb_len(mut value: u32) -> usize {
+    let mut len = 1;
+    while value >= 0x80 {
+        value >>= 7;
+        len += 1;
+    }
+    len
 }

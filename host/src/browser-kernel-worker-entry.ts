@@ -159,6 +159,14 @@ interface ProcessInfo {
 }
 const processes = new Map<number, ProcessInfo>();
 const processTeardowns = new Map<ProcessInfo["worker"], Promise<void>>();
+interface VmInterruptTimer {
+  timer?: ReturnType<typeof setTimeout>;
+  process: ProcessInfo;
+  deadlineMs: number;
+  timedOutPtr: number;
+  vmInterruptPtr: number;
+}
+const vmInterruptTimers = new Map<number, VmInterruptTimer>();
 // Includes standalone thread-worker teardown promises that may outlive the
 // process map entry they came from.
 const workerTeardowns = new Set<Promise<void>>();
@@ -233,6 +241,61 @@ interface ThreadWorkerInfo {
 const threadWorkers = new Map<number, ThreadWorkerInfo[]>();
 const threadExits = new ThreadExitCoordinator();
 const reportedNonzeroProcessExits = new Set<number>();
+
+function clearVmInterruptTimer(pid: number): void {
+  const entry = vmInterruptTimers.get(pid);
+  if (entry?.timer !== undefined) clearTimeout(entry.timer);
+  vmInterruptTimers.delete(pid);
+}
+
+function scheduleVmInterruptTimer(pid: number, entry: VmInterruptTimer): void {
+  if (vmInterruptTimers.get(pid) !== entry || processes.get(pid) !== entry.process) return;
+  const remainingMs = entry.deadlineMs - performance.now();
+  if (remainingMs <= 0) {
+    vmInterruptTimers.delete(pid);
+    const flags = new Uint8Array(entry.process.memory.buffer);
+    Atomics.store(flags, entry.timedOutPtr, 1);
+    Atomics.store(flags, entry.vmInterruptPtr, 1);
+    return;
+  }
+  entry.timer = setTimeout(() => {
+    entry.timer = undefined;
+    scheduleVmInterruptTimer(pid, entry);
+  }, Math.min(0x7fffffff, Math.max(1, remainingMs)));
+}
+
+function handleVmInterruptTimer(msg: {
+  pid: number;
+  timedOutPtr: number;
+  vmInterruptPtr: number;
+  seconds: number;
+}): void {
+  clearVmInterruptTimer(msg.pid);
+  if (!(msg.seconds > 0)) return;
+  const process = processes.get(msg.pid);
+  if (!process || !Number.isFinite(msg.seconds)) return;
+  const flags = new Uint8Array(process.memory.buffer);
+  if (
+    !Number.isSafeInteger(msg.timedOutPtr) ||
+    msg.timedOutPtr < 0 ||
+    msg.timedOutPtr >= flags.length ||
+    !Number.isSafeInteger(msg.vmInterruptPtr) ||
+    msg.vmInterruptPtr < 0 ||
+    msg.vmInterruptPtr >= flags.length
+  ) return;
+  // The process worker can be stuck in a CPU-bound Wasm loop, so a timer in
+  // that worker cannot set cooperative runtime interrupt flags. Run the timer
+  // from this kernel worker instead; the process memory is shared, matching
+  // the Node host's VM-interrupt timer path.
+  const entry: VmInterruptTimer = {
+    process,
+    deadlineMs: performance.now() + msg.seconds * 1000,
+    timedOutPtr: msg.timedOutPtr,
+    vmInterruptPtr: msg.vmInterruptPtr,
+  };
+  vmInterruptTimers.set(msg.pid, entry);
+  scheduleVmInterruptTimer(msg.pid, entry);
+}
 
 function delay(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -960,7 +1023,7 @@ function installProcessWorkerListeners(
   worker.on("message", (msg: unknown) => {
     if (intentionallyTerminated.has(worker as object)) return;
     if (processes.get(pid)?.worker !== worker) return;
-    const m = msg as { type?: string; message?: string; pid?: number; status?: number };
+    const m = msg as WorkerToHostMessage;
     if (m.type === "error") {
       console.error(`[kernel-worker] Process error pid=${pid}:`, m.message);
       // Forward to host stderr so the demo log shows the actual failure
@@ -977,6 +1040,9 @@ function installProcessWorkerListeners(
       finalize(classifiedTrapExitStatus(m.message) ?? -1, "worker-main error message", signum);
     } else if (m.type === "exit") {
       finalize(m.status ?? 0, "worker-main exit message");
+    } else if (m.type === "vm_interrupt_timer") {
+      if (m.pid !== pid) return;
+      handleVmInterruptTimer(m);
     }
   });
 }
@@ -1128,6 +1194,7 @@ async function handleExec(
   try {
     const setupResult = kernelWorker.kernelExecSetup(pid, callerTid);
     if (setupResult < 0) return setupResult;
+    clearVmInterruptTimer(pid);
 
     // Invalidate the discarded image synchronously at the commit point. This
     // keeps stale clone/listener continuations out even if later detach or
@@ -1499,6 +1566,9 @@ async function handleClone(
       // worker-main posted {type:"error"} — instantiation failure, top-level
       // throw, etc. Without this the parent's pthread_join blocks forever.
       failThread((m as { message?: string }).message ?? "thread error");
+    } else if (m.type === "vm_interrupt_timer") {
+      if (!isCurrentThreadGeneration() || m.pid !== pid) return;
+      handleVmInterruptTimer(m);
     }
   });
   threadWorker.on("error", (err: Error) => {
@@ -1536,6 +1606,7 @@ async function finishProcessExit(
   const info = processes.get(pid);
   if (!info || info.worker !== expectedWorker) return;
   if (processTeardowns.has(expectedWorker)) return;
+  clearVmInterruptTimer(pid);
 
   reportNonzeroProcessExitDiagnostic(pid, exitStatus, "kernel process exit");
   const threadedSettleMs = threadedProcessPids.has(pid)
@@ -1625,6 +1696,7 @@ function handleReadVfsFile(msg: Extract<MainToKernelMessage, { type: "read_vfs_f
 
 async function handleTerminateProcess(msg: Extract<MainToKernelMessage, { type: "terminate_process" }>) {
   const pid = msg.pid;
+  clearVmInterruptTimer(pid);
 
   // Terminate thread workers
   const threads = threadWorkers.get(pid);
@@ -1833,6 +1905,10 @@ async function handleDestroy(msg: Extract<MainToKernelMessage, { type: "destroy"
       );
     }
   }
+  for (const entry of vmInterruptTimers.values()) {
+    if (entry.timer !== undefined) clearTimeout(entry.timer);
+  }
+  vmInterruptTimers.clear();
   processes.clear();
   threadModuleCache.clear();
   threadWorkers.clear();

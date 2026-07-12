@@ -577,6 +577,20 @@ describe("VFS image save/restore", () => {
   });
 
   describe("rebaseToNewFileSystem", () => {
+    it("grows the initial buffer to fit metadata for a 2 GiB image", () => {
+      const source = createMemfs();
+      writeFile(source, "/data.txt", new TextEncoder().encode("base"));
+
+      const maxBytes = 2 * 1024 * 1024 * 1024;
+      const rebased = source.rebaseToNewFileSystem(maxBytes);
+      const stats = rebased.statfs("/");
+
+      expect(rebased.sharedBuffer.byteLength).toBeGreaterThan(16 * 1024 * 1024);
+      expect(rebased.sharedBuffer.maxByteLength).toBe(maxBytes);
+      expect(stats.blocks * stats.bsize).toBe(maxBytes);
+      expect(new TextDecoder().decode(readFile(rebased, "/data.txt"))).toBe("base");
+    });
+
     it("raises the filesystem max beyond the source image superblock cap", async () => {
       const initialBytes = 1 * 1024 * 1024;
       const imageMaxBytes = 2 * 1024 * 1024;
