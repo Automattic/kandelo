@@ -133,11 +133,11 @@ contract activate in the same ABI-bump commit. Changing the meaning or encoding
 of these capability claims changes fork replay assumptions and must follow the
 ABI-versioning policy.
 
-The current constituent source still declares ABI 16, so its compatibility
-fallback is active. The mandatory ABI-17 branch is staged in the runtime but is
-not a claim that ABI 17 has landed: activation is deferred to the aggregate
-ABI 16-to-17 reconciliation commit, which must bump `ABI_VERSION` and regenerate
-`abi/snapshot.json` together.
+ABI 17 was intentionally skipped. ABI 18 activated the mandatory role marker
+while repairing concurrent/nested pthread continuation buffers, and ABI 19
+retains both contracts for the reconciled PHP platform aggregate. ABI-16
+artifacts without a marker remain historical inputs for the parser's explicit
+compatibility tests; they do not satisfy an ABI-19 launch.
 
 `ptr` is `i32` on wasm32 user programs and `i64` on wasm64 user programs. The
 tool picks the pointer width from the module's primary memory — a memory64

@@ -1,5 +1,5 @@
 {
-  "abi_version": 18,
+  "abi_version": 19,
   "channel_buffers": {
     "data_offset": 72,
     "data_size": 65536,
@@ -113,7 +113,7 @@
   },
   "host_adapter": {
     "manifest": {
-      "abi_version": 18,
+      "abi_version": 19,
       "channel_data_offset": 72,
       "channel_data_size": 65536,
       "channel_header_size": 72,
@@ -183,7 +183,6 @@
       }
     ],
     "optional_kernel_exports": [
-      "kernel_get_process_exit_signal",
       "kernel_reserve_host_region",
       "kernel_reserve_host_region_at",
       "kernel_set_cwd",
@@ -198,12 +197,15 @@
       "kernel_create_process",
       "kernel_create_process_with_stdio",
       "kernel_get_parent_pid",
+      "kernel_get_process_exit_signal",
       "kernel_get_process_state",
       "kernel_handle_channel",
       "kernel_has_sa_nocldstop",
       "kernel_host_adapter_manifest_len",
       "kernel_host_adapter_manifest_ptr",
       "kernel_mark_process_signaled",
+      "kernel_pipe_has_readers",
+      "kernel_prepare_write_operation",
       "kernel_reap_exited_child",
       "kernel_remove_process",
       "kernel_wait_child_poll"

@@ -29,7 +29,10 @@ pub mod host_abi;
 /// 17: intentionally skipped during release coordination.
 /// 18: fork frame cursors are absolute save-buffer addresses, isolating
 ///     concurrent pthread unwind payloads.
-pub const ABI_VERSION: u32 = 18;
+/// 19: reconciles the PHP platform stack's wait/pathconf/host contracts with
+///     ABI 18, requires lifecycle/TCP/write-preflight exports, and rebuilds
+///     fork-capability, cancellation-point, package, and VFS artifacts.
+pub const ABI_VERSION: u32 = 19;
 
 /// Syscall numbers for the POSIX kernel interface.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1308,19 +1311,21 @@ pub mod abi {
         "kernel_create_process",
         "kernel_create_process_with_stdio",
         "kernel_get_parent_pid",
+        "kernel_get_process_exit_signal",
         "kernel_get_process_state",
         "kernel_handle_channel",
         "kernel_has_sa_nocldstop",
         "kernel_host_adapter_manifest_len",
         "kernel_host_adapter_manifest_ptr",
         "kernel_mark_process_signaled",
+        "kernel_pipe_has_readers",
+        "kernel_prepare_write_operation",
         "kernel_reap_exited_child",
         "kernel_remove_process",
         "kernel_wait_child_poll",
     ];
 
     pub const HOST_ADAPTER_OPTIONAL_KERNEL_EXPORTS: &[&str] = &[
-        "kernel_get_process_exit_signal",
         "kernel_reserve_host_region",
         "kernel_reserve_host_region_at",
         "kernel_set_cwd",

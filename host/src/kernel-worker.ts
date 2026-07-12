@@ -9600,9 +9600,10 @@ export class CentralizedKernelWorker {
   private getProcessExitSignal(pid: number): number {
     const getExitSignal = this.kernelInstance!.exports
       .kernel_get_process_exit_signal as ((pid: number) => number) | undefined;
-    // Older compatible kernels without the additive query cannot prove that a
-    // registered execution is dead, so preserve the historical live result.
-    return getExitSignal?.(pid) ?? -1;
+    if (!getExitSignal) {
+      throw new Error("Kernel missing required kernel_get_process_exit_signal export");
+    }
+    return getExitSignal(pid);
   }
 
   /** Stop a channel boundary when signal delivery transitioned its process to Exited. */

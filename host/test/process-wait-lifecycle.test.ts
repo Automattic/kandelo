@@ -1370,6 +1370,7 @@ function createWorkerHarness(exports: Record<string, unknown>, kernelPtrWidth: 4
     kernelInstance: {
       exports: {
         kernel_get_process_state: vi.fn(() => PROCESS_STATE_RUNNING),
+        kernel_get_process_exit_signal: vi.fn(() => -1),
         ...exports,
       },
     },

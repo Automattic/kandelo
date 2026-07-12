@@ -258,11 +258,12 @@ The instrumentation handles LLVM's new-EH `try_table` output correctly, includin
 A fork reached directly inside an instrumented dlopened side module uses two
 ordered state machines and two save buffers: side then main during unwind, main
 then side during rewind. Versioned fork-instrument capability metadata lets
-marker-present artifacts prove their role. The current ABI 16 source retains
-its legacy five-export fallback; mandatory role claims and rejection of stale
-call-graph artifacts are deferred to the aggregate ABI 16-to-17 bump and its
-regenerated snapshot. Dlopen replay records both the parent's memory base and
-exact table base, including null gaps left by failed loads. The supported
+marker-present artifacts prove their role. ABI 16 defines the historical
+five-export fallback, while ABI 18 and later require role claims
+and reject stale call-graph artifacts. ABI 19 combines that contract with live
+main's concurrent/nested pthread continuation-buffer repair. Dlopen replay
+records both the parent's memory base and exact table base, including null gaps
+left by failed loads. The supported
 direct-main-to-side boundary and the remaining opaque cross-side callback
 limitation are specified in
 [fork-instrumentation.md](fork-instrumentation.md#fork-from-a-dlopened-side-module).

@@ -339,7 +339,10 @@ function createWorkerHarness(
   };
   return Object.assign(Object.create(CentralizedKernelWorker.prototype), {
     kernelInstance: {
-      exports: { kernel_get_process_state: getProcessState },
+      exports: {
+        kernel_get_process_state: getProcessState,
+        kernel_get_process_exit_signal: vi.fn(() => -1),
+      },
     },
     processes: new Map([[41, { memory, channels: [channel] }]]),
     channelTids: new Map(),

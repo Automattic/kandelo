@@ -58,16 +58,18 @@ kernel. Specifically, any of the following requires an `ABI_VERSION` bump:
 The fork-capability section has an explicit ABI transition rule. ABI 16 accepts
 an absent section through the pre-existing five-export fallback, while treating
 a present marker as authoritative. ABI 17 and later require the role marker.
-Do not make absence an error on ABI 16: mandatory enforcement must land in the
-same commit as the ABI 16-to-17 bump and regenerated snapshot.
+ABI 17 was intentionally skipped; ABI 18 was the first shipped epoch above 16
+and activated the mandatory role claim. ABI 19 retains that contract while
+combining the PHP platform changes with live main's fork-buffer repair.
 
-The current constituent branch remains ABI 16. Its runtime contains the
-ABI-17 enforcement path, but that path is intentionally inactive until the
-aggregate integration change performs the single ABI 16-to-17 reconciliation,
-bumps `ABI_VERSION`, and regenerates the snapshot in that same commit.
-For the same reason, `kernel_get_process_exit_signal` is an optional runtime
-probe on ABI 16 rather than a required host-adapter export. Requiring it belongs
-in that ABI-17 reconciliation, not under the existing ABI number.
+ABI 19 also makes `kernel_get_process_exit_signal`,
+`kernel_pipe_has_readers`, and `kernel_prepare_write_operation` required
+host-adapter exports. The host uses each unconditionally for lifecycle,
+orderly-close, and operation-wide file-size semantics, so an older kernel must
+fail manifest validation rather than silently fall back. Process creation keeps
+live main's `kernel_create_process_with_stdio` contract: stdio kinds are chosen
+atomically at creation, and the discarded post-creation stdio-pipe mutation
+exports are not compatibility aliases.
 
 Pure internal refactors (renaming a kernel-side function, reorganizing
 a source file, tightening a bound in a non-ABI type) are *not* ABI

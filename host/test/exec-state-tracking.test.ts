@@ -1061,7 +1061,7 @@ describe("exec host-state transition", () => {
 });
 
 function createWorker(overrides: Record<string, unknown>): any {
-  return Object.assign(Object.create(CentralizedKernelWorker.prototype), {
+  const worker = Object.assign(Object.create(CentralizedKernelWorker.prototype), {
     processes: new Map(),
     activeChannels: [],
     execHandoffPids: new Set(),
@@ -1094,6 +1094,15 @@ function createWorker(overrides: Record<string, unknown>): any {
     io: { network: undefined },
     ...overrides,
   });
+  const kernelInstance = worker.kernelInstance ?? { exports: {} };
+  worker.kernelInstance = {
+    ...kernelInstance,
+    exports: {
+      kernel_get_process_exit_signal: vi.fn(() => -1),
+      ...(kernelInstance.exports ?? {}),
+    },
+  };
+  return worker;
 }
 
 function resolvedProgram() {
