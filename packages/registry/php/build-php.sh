@@ -881,6 +881,10 @@ if [ ! -f Makefile ]; then
     # Seed only symbols verified by the libzip recipe's upstream source graph;
     # this preserves the actual 1.11.4 API instead of silently compiling an
     # older, reduced ZipArchive surface.
+    #
+    # musl exposes Linux unshare() as an ENOSYS stub. PHP must not advertise
+    # pcntl_unshare() when this target cannot provide namespace isolation, so
+    # override the cross probe with the target's real capability.
     PKG_CONFIG_PATH="$DEP_PKG_CONFIG_PATH" \
     CPPFLAGS="$DEP_CPPFLAGS" \
     LDFLAGS="$DEP_LDFLAGS -ldl -Wl,--export-all \
@@ -920,6 +924,7 @@ if [ ! -f Makefile ]; then
     PHP_UNAME="Kandelo wasm32-posix-kernel" \
     ac_cv_lib_iconv_libiconv=yes \
     ac_cv_lib_curl_curl_easy_perform=yes \
+    ac_cv_func_unshare=no \
     wasm32posix-configure \
         --disable-all \
         --disable-rpath \
