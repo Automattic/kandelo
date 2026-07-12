@@ -27,10 +27,16 @@ const hasPhpWasm = [
   join(repoRoot, "binaries/programs/wasm32/php/php.wasm"),
   join(repoRoot, "packages/registry/php/php-src/sapi/cli/php"),
 ].some((candidate) => existsSync(candidate));
+const hasZipSo = [
+  join(repoRoot, "local-binaries/programs/wasm32/php/zip.so"),
+  join(repoRoot, "binaries/programs/wasm32/php/zip.so"),
+  join(repoRoot, "packages/registry/php/bin/zip.so"),
+].some((candidate) => existsSync(candidate));
 const hasRootfsVfs = existsSync(join(repoRoot, "host/wasm/rootfs.vfs"));
 
 test.skip(!hasKernelWasm, "kernel.wasm is not built or fetched");
 test.skip(!hasPhpWasm, "php.wasm is not built or fetched");
+test.skip(!hasZipSo, "zip.so is not built or fetched");
 test.skip(!hasRootfsVfs, "rootfs.vfs is not built");
 
 test("PHP CLI runs in the browser (inline, file, session, SQLite, fileinfo, XML, OpenSSL, extensions)", async ({
@@ -109,5 +115,8 @@ test("PHP CLI runs in the browser (inline, file, session, SQLite, fileinfo, XML,
 
   // OpenSSL defaults are present in rootfs.vfs and key + CSR generation succeeds.
   expect(results.openssl).toContain("openssl-defaults-ok");
+
+  // Packaged side module and DEFLATE behavior through the browser VFS.
+  expect(results.zip).toContain("browser-zip-ok");
   expect(runtimeErrors).toEqual([]);
 });

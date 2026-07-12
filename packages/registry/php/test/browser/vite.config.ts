@@ -44,36 +44,51 @@ function resolveKernelArtifactsAlias(): Plugin {
   };
 }
 
-function findPhpBinary(): string | null {
+function findPhpArtifact(name: string): string | null {
   const candidates = [
-    path.resolve(repoRoot, "local-binaries/programs/wasm32/php/php.wasm"),
-    path.resolve(repoRoot, "binaries/programs/wasm32/php/php.wasm"),
-    path.resolve(__dirname, "../../php-src/sapi/cli/php"),
+    path.resolve(repoRoot, "local-binaries/programs/wasm32/php", name),
+    path.resolve(repoRoot, "binaries/programs/wasm32/php", name),
+    path.resolve(__dirname, "../../bin", name),
   ];
+  if (name === "php.wasm") {
+    candidates.push(path.resolve(__dirname, "../../php-src/sapi/cli/php"));
+  }
   return candidates.find((candidate) => fs.existsSync(candidate)) ?? null;
 }
 
-function servePhpWasm(): Plugin {
+function servePhpArtifacts(): Plugin {
   return {
-    name: "serve-php-wasm",
+    name: "serve-php-artifacts",
     configureServer(server) {
       server.middlewares.use((req, res, next) => {
-        if (req.url === "/php.wasm") {
-          const phpBinary = findPhpBinary();
-          if (!phpBinary) {
-            res.statusCode = 404;
-            res.end(
-              "php.wasm not found. Run `bash packages/registry/php/build-php.sh` " +
-              "or fetch package binaries.",
-            );
-            return;
-          }
-          const data = fs.readFileSync(phpBinary);
-          res.setHeader("Content-Type", "application/wasm");
-          res.end(data);
+        const prefix = "/php-artifacts/";
+        if (!req.url?.startsWith(prefix)) {
+          next();
           return;
         }
-        next();
+        const name = decodeURIComponent(req.url.slice(prefix.length));
+        if (!/^[A-Za-z0-9._-]+$/.test(name)) {
+          res.statusCode = 400;
+          res.end("invalid PHP artifact name");
+          return;
+        }
+        const artifact = findPhpArtifact(name);
+        if (!artifact) {
+          res.statusCode = 404;
+          res.end(
+            `${name} not found. Run \`bash packages/registry/php/build-php.sh\` ` +
+            "or fetch package binaries.",
+          );
+          return;
+        }
+        const data = fs.readFileSync(artifact);
+        res.setHeader(
+          "Content-Type",
+          name.endsWith(".wasm") || name.endsWith(".so")
+            ? "application/wasm"
+            : "application/octet-stream",
+        );
+        res.end(data);
       });
     },
   };
@@ -81,7 +96,7 @@ function servePhpWasm(): Plugin {
 
 export default {
   root: __dirname,
-  plugins: [resolveKernelArtifactsAlias(), servePhpWasm()],
+  plugins: [resolveKernelArtifactsAlias(), servePhpArtifacts()],
   server: {
     headers: {
       // Required for SharedArrayBuffer

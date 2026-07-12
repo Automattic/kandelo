@@ -257,10 +257,21 @@ if [ "$actual_count" != "${#EXPECTED_OUTPUTS[@]}" ]; then
 fi
 
 symbols="$($NM "$OUT_DIR/lib/libzip.a" 2>/dev/null)"
-if ! grep -q ' T zip_open$' <<<"$symbols"; then
-    echo "ERROR: libzip.a does not export zip_open" >&2
-    exit 1
-fi
+REQUIRED_LIBZIP_SYMBOLS=(
+    zip_open
+    zip_file_set_mtime
+    zip_file_set_encryption
+    zip_libzip_version
+    zip_register_progress_callback_with_state
+    zip_register_cancel_callback_with_state
+    zip_compression_method_supported
+)
+for required_symbol in "${REQUIRED_LIBZIP_SYMBOLS[@]}"; do
+    if ! grep -q " T ${required_symbol}\$" <<<"$symbols"; then
+        echo "ERROR: libzip.a does not export $required_symbol" >&2
+        exit 1
+    fi
+done
 
 # Link every archive member into a real Kandelo executable. The SDK compiler
 # driver groups linker flags ahead of archive operands, so wrapping libzip.a in
