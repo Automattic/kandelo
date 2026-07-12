@@ -55,6 +55,8 @@ jobs:
       abi: ${{ steps.release.outputs.abi }}
       release-tag: ${{ steps.release.outputs.release-tag }}
       bottle-root-prefix: ${{ steps.release.outputs.bottle-root-prefix }}
+      kandelo-sha: ${{ steps.source-commits.outputs.kandelo-sha }}
+      tap-sha: ${{ steps.source-commits.outputs.tap-sha }}
     steps:
       - name: Validate caller trust boundary
         shell: bash
@@ -104,6 +106,24 @@ jobs:
           repository: ${{ inputs.tap-repository }}
           ref: ${{ inputs.tap-ref }}
           path: tap
+
+      - name: Resolve source commits
+        id: source-commits
+        shell: bash
+        run: |
+          set -euo pipefail
+          kandelo_sha="$(git -C kandelo rev-parse HEAD)"
+          tap_sha="$(git -C tap rev-parse HEAD)"
+          [[ "$kandelo_sha" =~ ^[0-9a-f]{40}$ ]] || {
+            echo "::error::Kandelo checkout did not resolve to a commit SHA"; exit 2;
+          }
+          [[ "$tap_sha" =~ ^[0-9a-f]{40}$ ]] || {
+            echo "::error::tap checkout did not resolve to a commit SHA"; exit 2;
+          }
+          {
+            echo "kandelo-sha=$kandelo_sha"
+            echo "tap-sha=$tap_sha"
+          } >> "$GITHUB_OUTPUT"
 
       - name: Resolve release and bottle root
         id: release
@@ -184,14 +204,14 @@ jobs:
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           repository: ${{ inputs.tap-repository }}
-          ref: ${{ inputs.tap-ref }}
+          ref: ${{ needs.plan.outputs.tap-sha }}
           path: tap
 
       - name: Checkout Kandelo workflow source
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           repository: ${{ inputs.kandelo-repository }}
-          ref: ${{ inputs.kandelo-ref }}
+          ref: ${{ needs.plan.outputs.kandelo-sha }}
           path: kandelo
           submodules: false
 
