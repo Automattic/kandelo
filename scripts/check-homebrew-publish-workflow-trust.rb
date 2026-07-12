@@ -75,6 +75,13 @@ def exact_permissions?(actual, expected)
 end
 
 def check_common(workflow, label)
+  mutable_actions = values_for_key(workflow, "uses").select do |value|
+    value.is_a?(String) && !value.start_with?("./") &&
+      !value.match?(%r{\A[^@\s]+@[0-9a-f]{40}\z})
+  end
+  check(mutable_actions.empty?,
+        "#{label} executes mutable action refs: #{mutable_actions.join(', ')}")
+
   cache_uses = values_for_key(workflow, "uses").select do |value|
     value.is_a?(String) && value.downcase.match?(%r{\Aactions/cache(?:/restore)?@})
   end
@@ -151,11 +158,11 @@ def check_publisher(workflow)
   end
 
   expected_uses = [
-    *Array.new(4, "actions/checkout@v6.0.2"),
+    *Array.new(4, "actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd"),
     "Homebrew/actions/setup-homebrew@1f8e202ffddf94def7f42f6fa3a482e821489f9c",
     "DeterminateSystems/nix-installer-action@ef8a148080ab6020fd15196c2084a2eea5ff2d25",
     "DeterminateSystems/magic-nix-cache-action@908b263ff629f4cc17666315b7fd3ec127c6244d",
-    "actions/upload-artifact@v7",
+    "actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a",
   ].sort
   check(values_for_key(workflow, "uses").sort == expected_uses,
         "publisher action set or pin changed")
@@ -257,8 +264,8 @@ def check_maintenance(workflow)
         "maintenance has an unexpected job set")
   expected_uses = [
     "./.github/workflows/reusable-homebrew-bottle-publish.yml",
-    "actions/checkout@v6.0.2",
-    "actions/checkout@v6.0.2",
+    "actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd",
+    "actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd",
     "DeterminateSystems/nix-installer-action@ef8a148080ab6020fd15196c2084a2eea5ff2d25",
   ].sort
   check(values_for_key(workflow, "uses").sort == expected_uses,
@@ -296,7 +303,7 @@ def check_maintenance(workflow)
   expected_checkout_steps = [
     {
       "name" => "Checkout tap",
-      "uses" => "actions/checkout@v6.0.2",
+      "uses" => "actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd",
       "with" => {
         "repository" => "Automattic/kandelo-homebrew",
         "ref" => "main",
@@ -305,7 +312,7 @@ def check_maintenance(workflow)
     },
     {
       "name" => "Checkout Kandelo workflow source",
-      "uses" => "actions/checkout@v6.0.2",
+      "uses" => "actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd",
       "with" => {
         "repository" => "Automattic/kandelo",
         "ref" => "main",
@@ -379,6 +386,12 @@ def self_test(publisher, maintenance)
         "self-test missed folded shell expression")
   check(values_for_key(fixture, "uses").include?("actions/checkout@v6"),
         "self-test missed unnamed checkout")
+  expect_rejection("a mutable external action ref") do
+    check_common(
+      { "jobs" => { "unsafe" => { "steps" => [{ "uses" => "actions/checkout@v6.0.2" }] } } },
+      "self-test workflow",
+    )
+  end
 
   expect_rejection("an extra publisher job") do
     mutated = deep_copy(publisher)
