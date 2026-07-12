@@ -36,6 +36,20 @@ def values_for_key(node, wanted, values = [])
   values
 end
 
+def deep_copy(value)
+  Marshal.load(Marshal.dump(value))
+end
+
+def expect_rejection(label)
+  rejected = false
+  begin
+    yield
+  rescue KeyError, RuntimeError
+    rejected = true
+  end
+  check(rejected, "self-test accepted #{label}")
+end
+
 def workflow_jobs(workflow)
   jobs = workflow["jobs"]
   check(jobs.is_a?(Hash), "workflow jobs: value is not a mapping")
@@ -47,6 +61,12 @@ def job_steps(job, name)
   check(steps.is_a?(Array), "#{name} steps: value is not an array")
   check(steps.all? { |step| step.is_a?(Hash) }, "#{name} contains a non-mapping step")
   steps
+end
+
+def workflow_steps(workflow)
+  workflow_jobs(workflow).values.flat_map do |job|
+    job.is_a?(Hash) && job["steps"].is_a?(Array) ? job["steps"] : []
+  end
 end
 
 def exact_permissions?(actual, expected)
@@ -63,10 +83,14 @@ def check_common(workflow, label)
     value.is_a?(String) && value.include?("${{")
   end
   check(unsafe_runs.empty?, "#{label} interpolates a GitHub expression into shell syntax")
+  check(values_for_key(workflow, "secrets").empty?, "#{label} passes repository secrets")
 end
 
 def check_publisher(workflow)
+  events = workflow_events(workflow)
+  check(events.keys == ["workflow_call"], "publisher must only expose workflow_call")
   jobs = workflow_jobs(workflow)
+  check(jobs.keys.sort == %w[build-and-publish plan], "publisher has an unexpected job set")
   check(!workflow.key?("permissions"), "reusable publisher requests workflow permissions")
   check(jobs.values.none? { |job| job.is_a?(Hash) && job.key?("permissions") },
         "reusable publisher requests job permissions")
@@ -102,16 +126,31 @@ def check_publisher(workflow)
         "publisher does not constrain write publication to tap main")
   check(validation_run.include?('[ "$DRY_RUN" = "true" ]'),
         "publisher does not isolate the selected-ref dry-run path")
+  required_predicates = [
+    '[ "$KANDELO_REPOSITORY" = "Automattic/kandelo" ]',
+    '[ "$TAP_REPOSITORY" = "Automattic/kandelo-homebrew" ]',
+    '[ -z "$BOTTLE_ROOT_URL" ]',
+    '[ "$SIDECAR_COMMAND" = "bash scripts/homebrew-generate-sidecars-from-env.sh" ]',
+  ]
+  required_predicates.each do |predicate|
+    check(validation_run.include?(predicate), "publisher trust validation lacks #{predicate}")
+  end
 
-  setup_steps = values_for_key(workflow, "uses").grep(
-    "Homebrew/actions/setup-homebrew@1f8e202ffddf94def7f42f6fa3a482e821489f9c"
-  )
-  check(setup_steps.length == 1, "Homebrew setup action is not pinned exactly once")
+  expected_uses = [
+    *Array.new(4, "actions/checkout@v6.0.2"),
+    "Homebrew/actions/setup-homebrew@1f8e202ffddf94def7f42f6fa3a482e821489f9c",
+    "DeterminateSystems/nix-installer-action@ef8a148080ab6020fd15196c2084a2eea5ff2d25",
+    "DeterminateSystems/magic-nix-cache-action@908b263ff629f4cc17666315b7fd3ec127c6244d",
+    "actions/upload-artifact@v7",
+  ].sort
+  check(values_for_key(workflow, "uses").sort == expected_uses,
+        "publisher action set or pin changed")
 
-  magic_step = workflow_jobs(workflow).values.flat_map do |job|
-    job.is_a?(Hash) && job["steps"].is_a?(Array) ? job["steps"] : []
-  end.find { |step| step["uses"].to_s.start_with?("DeterminateSystems/magic-nix-cache-action@") }
-  check(!magic_step.nil?, "publisher lacks the reviewed Magic Nix setup step")
+  magic_steps = workflow_steps(workflow).select do |step|
+    step["uses"] == "DeterminateSystems/magic-nix-cache-action@908b263ff629f4cc17666315b7fd3ec127c6244d"
+  end
+  check(magic_steps.length == 1, "publisher lacks exactly one reviewed Magic Nix step")
+  magic_step = magic_steps.first
   check(magic_step.dig("with", "use-gha-cache") == false,
         "publisher enables Magic Nix GitHub Actions caching")
   check(magic_step.dig("with", "use-flakehub") == false,
@@ -129,6 +168,16 @@ def check_maintenance(workflow)
   check_common(workflow, "maintenance workflow")
 
   jobs = workflow_jobs(workflow)
+  check(jobs.keys.sort == %w[rebuild-or-repair rollback],
+        "maintenance has an unexpected job set")
+  expected_uses = [
+    "./.github/workflows/reusable-homebrew-bottle-publish.yml",
+    "actions/checkout@v6.0.2",
+    "actions/checkout@v6.0.2",
+    "DeterminateSystems/nix-installer-action@ef8a148080ab6020fd15196c2084a2eea5ff2d25",
+  ].sort
+  check(values_for_key(workflow, "uses").sort == expected_uses,
+        "maintenance action set or pin changed")
   rebuild = jobs.fetch("rebuild-or-repair")
   expected_rebuild_permissions = { "contents" => "write", "packages" => "write", "actions" => "read" }
   check(exact_permissions?(rebuild["permissions"], expected_rebuild_permissions),
@@ -170,9 +219,17 @@ def check_maintenance(workflow)
   %w[KANDELO_HOMEBREW_FORMULA KANDELO_HOMEBREW_ARCH KANDELO_HOMEBREW_RELEASE_TAG].each do |name|
     check(record_run.include?("$#{name}"), "maintenance rollback does not use #{name}")
   end
+  [
+    '[[ "$KANDELO_HOMEBREW_FORMULA" =~ ^[a-z0-9][a-z0-9._-]*$ ]]',
+    'case "$KANDELO_HOMEBREW_ARCH" in',
+    'wasm32|wasm64) ;;',
+    '[[ "$KANDELO_HOMEBREW_RELEASE_TAG" =~ ^bottles-abi-v[0-9]+$ ]]',
+  ].each do |validation|
+    check(record_run.include?(validation), "maintenance rollback lacks #{validation}")
+  end
 end
 
-def self_test
+def self_test(publisher, maintenance)
   fixture = YAML.safe_load(<<~YAML, aliases: false)
     on:
       workflow_dispatch: {}
@@ -198,12 +255,92 @@ def self_test
         "self-test missed folded shell expression")
   check(values_for_key(fixture, "uses").include?("actions/checkout@v6"),
         "self-test missed unnamed checkout")
+
+  expect_rejection("an extra publisher job") do
+    mutated = deep_copy(publisher)
+    mutated.fetch("jobs")["backdoor"] = { "uses" => "owner/repo/.github/workflows/write.yml@main" }
+    check_publisher(mutated)
+  end
+  expect_rejection("direct publisher dispatch") do
+    mutated = deep_copy(publisher)
+    workflow_events(mutated)["workflow_dispatch"] = {}
+    check_publisher(mutated)
+  end
+  expect_rejection("an unpinned Homebrew setup action") do
+    mutated = deep_copy(publisher)
+    mutated.dig("jobs", "build-and-publish", "steps") << {
+      "uses" => "Homebrew/actions/setup-homebrew@master",
+    }
+    check_publisher(mutated)
+  end
+  expect_rejection("a second cache-enabled Magic Nix action") do
+    mutated = deep_copy(publisher)
+    mutated.dig("jobs", "build-and-publish", "steps") << {
+      "uses" => "DeterminateSystems/magic-nix-cache-action@908b263ff629f4cc17666315b7fd3ec127c6244d",
+      "with" => { "use-gha-cache" => true, "use-flakehub" => true },
+    }
+    check_publisher(mutated)
+  end
+  expect_rejection("cache-enabled reviewed Magic Nix action") do
+    mutated = deep_copy(publisher)
+    step = mutated.dig("jobs", "build-and-publish", "steps").find do |candidate|
+      candidate["uses"].to_s.start_with?("DeterminateSystems/magic-nix-cache-action@")
+    end
+    step.fetch("with")["use-gha-cache"] = true
+    check_publisher(mutated)
+  end
+  expect_rejection("an Actions cache restore") do
+    mutated = deep_copy(publisher)
+    mutated.dig("jobs", "build-and-publish", "steps") << {
+      "uses" => "actions/cache/restore@v4",
+    }
+    check_publisher(mutated)
+  end
+  expect_rejection("a shell-interpolated GitHub expression") do
+    mutated = deep_copy(publisher)
+    mutated.dig("jobs", "build-and-publish", "steps") << {
+      "run" => 'echo "${{ inputs.formulae }}"',
+    }
+    check_publisher(mutated)
+  end
+  expect_rejection("missing first-party repository validation") do
+    mutated = deep_copy(publisher)
+    step = mutated.dig("jobs", "plan", "steps").find do |candidate|
+      candidate["name"] == "Validate caller trust boundary"
+    end
+    step["run"] = step["run"].sub("Automattic/kandelo", "untrusted/kandelo")
+    check_publisher(mutated)
+  end
+  expect_rejection("maintenance secret inheritance") do
+    mutated = deep_copy(maintenance)
+    mutated.dig("jobs", "rebuild-or-repair")["secrets"] = "inherit"
+    check_maintenance(mutated)
+  end
+  expect_rejection("an extra maintenance job") do
+    mutated = deep_copy(maintenance)
+    mutated.fetch("jobs")["backdoor"] = {
+      "permissions" => { "contents" => "write" },
+      "runs-on" => "ubuntu-latest",
+      "steps" => [{ "run" => "true" }],
+    }
+    check_maintenance(mutated)
+  end
+  expect_rejection("removed rollback identifier validation") do
+    mutated = deep_copy(maintenance)
+    step = mutated.dig("jobs", "rollback", "steps").find do |candidate|
+      candidate["name"] == "Record rollback without replacing last-green metadata"
+    end
+    step["run"] = step["run"].sub("wasm32|wasm64", "anything")
+    check_maintenance(mutated)
+  end
 end
 
 begin
-  self_test
-  check_publisher(load_workflow(PUBLISHER_PATH))
-  check_maintenance(load_workflow(MAINTENANCE_PATH))
+  publisher = load_workflow(PUBLISHER_PATH)
+  maintenance = load_workflow(MAINTENANCE_PATH)
+  self_test(publisher, maintenance)
+  check_publisher(publisher)
+  check_maintenance(maintenance)
   puts "check-homebrew-publish-workflow-trust.rb: ok"
 rescue KeyError, Psych::Exception, RuntimeError => e
   warn "check-homebrew-publish-workflow-trust.rb: #{e.message}"
