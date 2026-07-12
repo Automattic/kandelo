@@ -141,6 +141,10 @@ The tap may call it with:
 ```yaml
 jobs:
   publish:
+    permissions:
+      contents: write
+      packages: write
+      actions: read
     uses: Automattic/kandelo/.github/workflows/reusable-homebrew-bottle-publish.yml@<trusted-ref>
     with:
       tap-repository: Automattic/kandelo-homebrew
@@ -148,9 +152,15 @@ jobs:
       arches: wasm32
 ```
 
-Required permissions are `contents: write` and `packages: write`. PRs from
-untrusted forks must not receive those permissions; they can run schema and
-local build checks but cannot publish bottles or tap metadata.
+The reusable workflow does not request token permissions of its own. The caller
+owns that trust decision: publication callers must explicitly grant
+`contents: write` and `packages: write`, while dry-run callers grant only the
+read scopes needed to fetch source and existing packages. GitHub does not allow
+a nested workflow to elevate its caller's token, so adding write permissions to
+the reusable workflow would invalidate read-only dry-run callers rather than
+silently cap them. PRs from untrusted forks must not receive write permissions;
+they can run schema and local build checks but cannot publish bottles or tap
+metadata.
 
 For each `(formula, arch)` entry, the trusted path:
 
