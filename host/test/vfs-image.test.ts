@@ -1,4 +1,4 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi } from "vitest";
 import { zstdCompressSync } from "node:zlib";
 import { mkdtempSync, readFileSync, rmSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -182,6 +182,74 @@ describe("VFS image save/restore", () => {
       expect(entries[0].size).toBe(12345);
     });
 
+    it("rejects an image whose serialized lazy size is not a safe integer", async () => {
+      const mfs = createMemfs();
+      mfs.registerLazyFile("/bin/lazy-tool", "http://example.com/tool.wasm", 12345, 0o755);
+      const image = await mfs.saveImage();
+      const marker = new TextEncoder().encode('"size":12345');
+      const replacement = new TextEncoder().encode('"size":1e999');
+      const offset = image.findIndex((_, index) =>
+        marker.every((byte, markerIndex) => image[index + markerIndex] === byte)
+      );
+      expect(offset).toBeGreaterThan(0);
+      image.set(replacement, offset);
+
+      expect(() => MemoryFileSystem.fromImage(image)).toThrow(/safe-integer size/);
+    });
+
+    it("rejects truncated, oversized, and trailing lazy metadata sections", async () => {
+      const mfs = createMemfs();
+      mfs.registerLazyFile("/bin/tool", "http://example.com/tool.wasm", 4, 0o755);
+      const image = await mfs.saveImage();
+      const sabLen = new DataView(
+        image.buffer,
+        image.byteOffset,
+        image.byteLength,
+      ).getUint32(12, true);
+      const lazyOffset = 16 + sabLen;
+
+      const truncated = image.slice();
+      const truncatedView = new DataView(truncated.buffer);
+      truncatedView.setUint32(
+        lazyOffset,
+        truncatedView.getUint32(lazyOffset, true) + 1024,
+        true,
+      );
+      expect(() => MemoryFileSystem.fromImage(truncated)).toThrow(
+        /truncated \(lazy file metadata payload\)/,
+      );
+
+      const oversized = image.slice();
+      new DataView(oversized.buffer).setUint32(lazyOffset, 16 * 1024 * 1024 + 1, true);
+      expect(() => MemoryFileSystem.fromImage(oversized)).toThrow(
+        /lazy file metadata exceeds/,
+      );
+
+      const trailing = new Uint8Array(image.byteLength + 1);
+      trailing.set(image);
+      expect(() => MemoryFileSystem.fromImage(trailing)).toThrow(/trailing bytes/);
+    });
+
+    it("materializeAll propagates a size mismatch and preserves the lazy stub", async () => {
+      const originalFetch = globalThis.fetch;
+      const mfs = createMemfs();
+      mfs.registerLazyFile("/bin/tool", "http://example.com/tool.wasm", 4, 0o755);
+      globalThis.fetch = vi.fn().mockResolvedValue(new Response(new Uint8Array([0, 1])));
+      try {
+        await expect(mfs.saveImage({ materializeAll: true })).rejects.toThrow(
+          "expected 4 bytes, received 2",
+        );
+      } finally {
+        globalThis.fetch = originalFetch;
+      }
+
+      expect(mfs.getLazyEntry("/bin/tool")).toMatchObject({ size: 4 });
+      const fd = mfs.open("/bin/tool", O_RDONLY, 0);
+      const bytes = new Uint8Array(4);
+      expect(mfs.read(fd, bytes, null, bytes.byteLength)).toBe(0);
+      mfs.close(fd);
+    });
+
     it("preserves multiple lazy files", async () => {
       const mfs = createMemfs();
       mfs.registerLazyFile("/bin/a", "http://example.com/a.wasm", 100);
@@ -200,29 +268,18 @@ describe("VFS image save/restore", () => {
       ]);
     });
 
-    it("materializeAll clears lazy entries from image", async () => {
+    it("O_TRUNC replacement clears lazy entries from the image", async () => {
       const mfs = createMemfs();
-      // Register a lazy file and manually write content to simulate materialization
-      // (can't actually fetch in tests, so we simulate by writing content before save)
       mfs.registerLazyFile("/bin/tool", "http://example.com/tool.wasm", 5000, 0o755);
 
-      // Manually write content to the file (simulating what ensureMaterialized does)
       const toolContent = new Uint8Array(100);
       for (let i = 0; i < 100; i++) toolContent[i] = i;
       const fd = mfs.open("/bin/tool", O_WRONLY | O_CREAT | O_TRUNC, 0o755);
       mfs.write(fd, toolContent, null, toolContent.length);
       mfs.close(fd);
 
-      // Clear the lazy entry manually to simulate materialization
-      // (ensureMaterialized would do this via fetch + delete)
-      const entries = mfs.exportLazyEntries();
-      expect(entries).toHaveLength(1);
-
-      // Instead, test that a save without lazy entries works correctly
-      // by creating a fresh mfs with no lazy files
-      const mfs2 = createMemfs();
-      writeFile(mfs2, "/bin/tool", toolContent, 0o755);
-      const image = await mfs2.saveImage();
+      expect(mfs.exportLazyEntries()).toHaveLength(0);
+      const image = await mfs.saveImage();
 
       const restored = MemoryFileSystem.fromImage(image);
       expect(restored.exportLazyEntries()).toHaveLength(0);

@@ -77,7 +77,7 @@ Common fields:
 | --- | --- | --- |
 | `src=<path>` | file | Use a source file other than `sourceTree/<path>`. |
 | `lazy_url=<url>` | file | Register a URL-backed file stub. |
-| `lazy_size=<n>` | file | Required with `lazy_url`. |
+| `lazy_size=<n>` | file | Required with `lazy_url`; exact logical bytes after HTTP Content-Encoding decoding, up to 1 GiB. |
 | `target=<path>` | symlink | Symlink target. |
 | `major=<n>` / `minor=<n>` | device | Device numbers. |
 
@@ -187,6 +187,8 @@ If metadata changes for a package-backed image, bump that package's `build.toml`
 ## Lazy Files And Lazy Archives
 
 Lazy files and archives keep initial downloads small. A VFS image can contain a stub for a large file or archive. The real bytes are fetched only when the guest accesses the path.
+
+Replacing a lazy-backed file with `O_TRUNC`, or truncating it to zero, makes it concrete and removes its pending remote backing. If it came from a lazy archive, fetching another archive member will not overwrite the locally replaced file.
 
 Use lazy files for a few large binaries. Use lazy archives for runtime trees with many files, such as Vim runtime data or Python standard-library content.
 

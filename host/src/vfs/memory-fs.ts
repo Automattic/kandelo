@@ -3,6 +3,12 @@ import type { StatResult, StatfsResult } from "../types";
 import { SFFS_SUPER_MAGIC } from "../statfs";
 import type { FileSystemBackend, DirEntry } from "./types";
 import {
+  assertExpectedByteLength,
+  assertValidLazyContentSize,
+  MAX_LAZY_CONTENT_BYTES,
+  readFetchBody,
+} from "./lazy-fetch";
+import {
   SharedFS,
   type StatResult as SfsStatResult,
 } from "./sharedfs-vendor";
@@ -13,6 +19,7 @@ export interface LazyFileEntry {
   ino: number;
   path: string;
   url: string;
+  /** Exact logical file bytes, after HTTP Content-Encoding decoding. */
   size: number;
 }
 
@@ -113,10 +120,16 @@ const S_IFREG = 0x8000;
 const S_IFDIR = 0x4000;
 const S_IFLNK = 0xa000;
 const O_RDONLY = 0x0000;
+const O_TRUNC = 0x0200;
 const O_WRONLY_CREAT_TRUNC = 0o1101;
 const COPY_CHUNK_BYTES = 1024 * 1024;
 const MIN_REBASE_INITIAL_BYTES = 16 * 1024 * 1024;
 const VFS_IMAGE_MAX_METADATA_BYTES = 64 * 1024;
+const VFS_IMAGE_MAX_LAZY_SECTION_BYTES = 16 * 1024 * 1024;
+const MAX_LAZY_ENTRIES = 100_000;
+const MAX_LAZY_ARCHIVE_GROUPS = 4096;
+const MAX_LAZY_PATH_BYTES = 4096;
+const MAX_LAZY_URL_BYTES = 64 * 1024;
 
 function cloneMetadata(metadata: VfsImageMetadata | null): VfsImageMetadata | null {
   return metadata === null ? null : { ...metadata };
@@ -223,26 +236,97 @@ function parseImageHeader(input: Uint8Array): ParsedImageHeader {
   return { image, view, flags, sabLen };
 }
 
-function sectionOffsetAfterArchives(
-  image: Uint8Array,
-  view: DataView,
-  flags: number,
-  sabLen: number,
-): { lazyLen: number; archiveOffset: number; metadataOffset: number } {
-  const lazyOffset = VFS_IMAGE_HEADER_SIZE + sabLen;
-  const lazyLen = view.getUint32(lazyOffset, true);
-  const archiveOffset = lazyOffset + 4 + lazyLen;
-  let metadataOffset = archiveOffset;
+interface ParsedImageSections {
+  lazyOffset: number;
+  lazyLen: number;
+  archiveOffset: number;
+  archiveLen: number;
+  metadataOffset: number;
+  metadataLen: number;
+}
 
-  if (flags & VFS_IMAGE_FLAG_HAS_LAZY_ARCHIVES) {
-    if (image.byteLength < archiveOffset + 4) {
-      throw new Error("VFS image truncated (lazy archive section)");
-    }
-    const archiveLen = view.getUint32(archiveOffset, true);
-    metadataOffset = archiveOffset + 4 + archiveLen;
+function parseImageSections(parsed: ParsedImageHeader): ParsedImageSections {
+  const { image, view, flags, sabLen } = parsed;
+  const knownFlags =
+    VFS_IMAGE_FLAG_HAS_LAZY |
+    VFS_IMAGE_FLAG_HAS_LAZY_ARCHIVES |
+    VFS_IMAGE_FLAG_HAS_METADATA;
+  if ((flags & ~knownFlags) !== 0) {
+    throw new Error(`VFS image has unknown flags: 0x${(flags & ~knownFlags).toString(16)}`);
   }
 
-  return { lazyLen, archiveOffset, metadataOffset };
+  const readSection = (
+    offset: number,
+    label: string,
+    maxBytes: number,
+  ): { length: number; end: number } => {
+    if (offset > image.byteLength - 4) {
+      throw new Error(`VFS image truncated (${label} section)`);
+    }
+    const length = view.getUint32(offset, true);
+    if (length > maxBytes) {
+      throw new Error(`VFS image ${label} exceeds ${maxBytes} bytes`);
+    }
+    const payloadOffset = offset + 4;
+    if (length > image.byteLength - payloadOffset) {
+      throw new Error(`VFS image truncated (${label} payload)`);
+    }
+    return { length, end: payloadOffset + length };
+  };
+
+  const lazyOffset = VFS_IMAGE_HEADER_SIZE + sabLen;
+  const lazy = readSection(
+    lazyOffset,
+    "lazy file metadata",
+    VFS_IMAGE_MAX_LAZY_SECTION_BYTES,
+  );
+  if ((lazy.length > 0) !== Boolean(flags & VFS_IMAGE_FLAG_HAS_LAZY)) {
+    throw new Error("VFS image lazy file flag does not match its metadata section");
+  }
+
+  const archiveOffset = lazy.end;
+  let archiveLen = 0;
+  let nextOffset = archiveOffset;
+  if (flags & VFS_IMAGE_FLAG_HAS_LAZY_ARCHIVES) {
+    const archive = readSection(
+      archiveOffset,
+      "lazy archive metadata",
+      VFS_IMAGE_MAX_LAZY_SECTION_BYTES,
+    );
+    if (archive.length === 0) {
+      throw new Error("VFS image lazy archive flag has an empty metadata section");
+    }
+    archiveLen = archive.length;
+    nextOffset = archive.end;
+  }
+
+  const metadataOffset = nextOffset;
+  let metadataLen = 0;
+  let imageEnd = metadataOffset;
+  if (flags & VFS_IMAGE_FLAG_HAS_METADATA) {
+    const metadata = readSection(
+      metadataOffset,
+      "metadata",
+      VFS_IMAGE_MAX_METADATA_BYTES,
+    );
+    if (metadata.length === 0) {
+      throw new Error("VFS image metadata flag has an empty metadata section");
+    }
+    metadataLen = metadata.length;
+    imageEnd = metadata.end;
+  }
+  if (imageEnd !== image.byteLength) {
+    throw new Error("VFS image has trailing bytes after its declared sections");
+  }
+
+  return {
+    lazyOffset,
+    lazyLen: lazy.length,
+    archiveOffset,
+    archiveLen,
+    metadataOffset,
+    metadataLen,
+  };
 }
 
 function monotonicNow(): number {
@@ -256,15 +340,68 @@ function parseContentLength(headers: Headers | undefined): number | undefined {
   return Number.isFinite(value) && value >= 0 ? value : undefined;
 }
 
-function concatChunks(chunks: Uint8Array[], total: number): Uint8Array {
-  if (chunks.length === 1) return chunks[0];
-  const out = new Uint8Array(total);
-  let offset = 0;
-  for (const chunk of chunks) {
-    out.set(chunk, offset);
-    offset += chunk.byteLength;
+function validateLazySize(size: number, context: string): void {
+  assertValidLazyContentSize(context, size);
+}
+
+function validateCanonicalAbsolutePath(
+  path: unknown,
+  context: string,
+  allowRoot = false,
+): asserts path is string {
+  if (typeof path !== "string" || path.length === 0 || path.includes("\0")) {
+    throw new Error(`${context} has an invalid absolute path`);
   }
-  return out;
+  if (new TextEncoder().encode(path).byteLength > MAX_LAZY_PATH_BYTES) {
+    throw new Error(`${context} path exceeds ${MAX_LAZY_PATH_BYTES} bytes`);
+  }
+  if (!path.startsWith("/") || (!allowRoot && path === "/")) {
+    throw new Error(`${context} has an invalid absolute path`);
+  }
+  if (path !== "/") {
+    const segments = path.slice(1).split("/");
+    if (
+      path.endsWith("/") ||
+      segments.some((segment) => segment === "" || segment === "." || segment === "..")
+    ) {
+      throw new Error(`${context} path must be canonical`);
+    }
+  }
+}
+
+function validateLazyUrl(url: unknown, context: string): asserts url is string {
+  if (typeof url !== "string" || url.length === 0 || url.includes("\0")) {
+    throw new Error(`${context} has an invalid URL`);
+  }
+  if (new TextEncoder().encode(url).byteLength > MAX_LAZY_URL_BYTES) {
+    throw new Error(`${context} URL exceeds ${MAX_LAZY_URL_BYTES} bytes`);
+  }
+}
+
+function validateLazyMountPrefix(
+  path: unknown,
+  context: string,
+): asserts path is string {
+  if (typeof path !== "string") {
+    throw new Error(`${context} has an invalid absolute path`);
+  }
+  const canonical = path !== "/" && path.endsWith("/")
+    ? path.slice(0, -1)
+    : path;
+  validateCanonicalAbsolutePath(canonical, context, true);
+}
+
+function validateLazyEntryShape(entry: unknown, context: string): asserts entry is LazyFileEntry {
+  if (typeof entry !== "object" || entry === null || Array.isArray(entry)) {
+    throw new Error(`${context} must be an object`);
+  }
+  const candidate = entry as Partial<LazyFileEntry>;
+  if (!Number.isSafeInteger(candidate.ino) || (candidate.ino ?? 0) <= 0) {
+    throw new Error(`${context} has an invalid inode`);
+  }
+  validateCanonicalAbsolutePath(candidate.path, context);
+  validateLazyUrl(candidate.url, context);
+  validateLazySize(candidate.size as number, context);
 }
 
 export class MemoryFileSystem implements FileSystemBackend {
@@ -276,6 +413,8 @@ export class MemoryFileSystem implements FileSystemBackend {
   private lazyArchiveGroups: LazyArchiveGroup[] = [];
   /** Fast lookup: inode → group it belongs to. Cleared per-group after materialization. */
   private lazyArchiveInodes = new Map<number, LazyArchiveGroup>();
+  private lazyFileMaterializations = new Map<number, Promise<void>>();
+  private lazyArchiveMaterializations = new Map<LazyArchiveGroup, Promise<void>>();
   private lazyDownloadListeners = new Set<LazyDownloadListener>();
 
   private constructor(fs: SharedFS, metadata: VfsImageMetadata | null = null) {
@@ -294,6 +433,36 @@ export class MemoryFileSystem implements FileSystemBackend {
 
   static fromExisting(sab: SharedArrayBuffer): MemoryFileSystem {
     return new MemoryFileSystem(SharedFS.mount(sab));
+  }
+
+  private lazyEntryCount(): number {
+    return this.lazyArchiveGroups.reduce(
+      (total, group) => total + group.entries.size,
+      this.lazyFiles.size,
+    );
+  }
+
+  /**
+   * Stop treating an inode as an unmaterialized remote stub after a local
+   * truncation has intentionally replaced its logical contents.
+   */
+  private detachLazyBacking(ino: number): void {
+    this.lazyFiles.delete(ino);
+
+    const group = this.lazyArchiveInodes.get(ino);
+    if (!group) return;
+
+    this.lazyArchiveInodes.delete(ino);
+    for (const [path, entry] of group.entries) {
+      if (entry.ino === ino) {
+        group.entries.delete(path);
+        break;
+      }
+    }
+    if (group.entries.size === 0) {
+      const index = this.lazyArchiveGroups.indexOf(group);
+      if (index >= 0) this.lazyArchiveGroups.splice(index, 1);
+    }
   }
 
   /**
@@ -378,11 +547,12 @@ export class MemoryFileSystem implements FileSystemBackend {
       url: string;
       path?: string;
       mountPrefix?: string;
-      fallbackTotalBytes?: number;
+      /** Expected decoded Fetch body size for a lazy file. */
+      expectedBytes?: number;
     },
   ): Promise<Uint8Array> {
     let loadedBytes = 0;
-    let totalBytes = details.fallbackTotalBytes;
+    let totalBytes = details.expectedBytes;
     const base = {
       id: details.id,
       kind: details.kind,
@@ -390,7 +560,6 @@ export class MemoryFileSystem implements FileSystemBackend {
       path: details.path,
       mountPrefix: details.mountPrefix,
     };
-
     this.emitLazyDownload({
       ...base,
       status: "started",
@@ -404,46 +573,23 @@ export class MemoryFileSystem implements FileSystemBackend {
         throw new Error(`HTTP ${resp.status}`);
       }
 
-      totalBytes = parseContentLength(resp.headers) ?? totalBytes;
-      if (!resp.body) {
-        const data = new Uint8Array(await resp.arrayBuffer());
-        loadedBytes = data.byteLength;
-        this.emitLazyDownload({
-          ...base,
-          status: "progress",
-          loadedBytes,
-          totalBytes: totalBytes ?? loadedBytes,
-        });
-        this.emitLazyDownload({
-          ...base,
-          status: "complete",
-          loadedBytes,
-          totalBytes: totalBytes ?? loadedBytes,
-        });
-        return data;
-      }
-
-      const reader = resp.body.getReader();
-      const chunks: Uint8Array[] = [];
-      try {
-        while (true) {
-          const { done, value } = await reader.read();
-          if (done) break;
-          if (!value) continue;
-          chunks.push(value);
-          loadedBytes += value.byteLength;
+      // The VFS declaration is authoritative for lazy files. A successful
+      // response can still be an HTML fallback or another wrong-sized
+      // artifact, so keep reporting the declared size and verify the bytes.
+      totalBytes = details.expectedBytes ?? parseContentLength(resp.headers);
+      const data = await readFetchBody(resp, {
+        label: details.path ?? details.url,
+        expectedBytes: details.expectedBytes,
+        onProgress: (receivedBytes) => {
+          loadedBytes = receivedBytes;
           this.emitLazyDownload({
             ...base,
             status: "progress",
             loadedBytes,
-            totalBytes,
+            totalBytes: totalBytes ?? loadedBytes,
           });
-        }
-      } finally {
-        reader.releaseLock();
-      }
-
-      const data = concatChunks(chunks, loadedBytes);
+        },
+      });
       this.emitLazyDownload({
         ...base,
         status: "complete",
@@ -470,6 +616,12 @@ export class MemoryFileSystem implements FileSystemBackend {
    * Returns the inode number (useful for forwarding to other instances).
    */
   registerLazyFile(path: string, url: string, size: number, mode = 0o755): number {
+    validateCanonicalAbsolutePath(path, "lazy file path");
+    validateLazyUrl(url, `lazy file ${path}`);
+    if (this.lazyEntryCount() >= MAX_LAZY_ENTRIES) {
+      throw new Error(`lazy entry count exceeds ${MAX_LAZY_ENTRIES}`);
+    }
+    validateLazySize(size, `lazy file ${path}`);
     // Ensure parent directories exist
     const parts = path.split("/").filter(Boolean);
     let current = "";
@@ -491,6 +643,48 @@ export class MemoryFileSystem implements FileSystemBackend {
    * Does not create files — assumes the files already exist in the SharedArrayBuffer.
    */
   importLazyEntries(entries: LazyFileEntry[]): void {
+    if (!Array.isArray(entries)) {
+      throw new Error("lazy file entries must be an array");
+    }
+    if (entries.length > MAX_LAZY_ENTRIES - this.lazyEntryCount()) {
+      throw new Error(`lazy entry count exceeds ${MAX_LAZY_ENTRIES}`);
+    }
+    const seenInodes = new Set<number>(this.lazyFiles.keys());
+    const seenPaths = new Set<string>(
+      Array.from(this.lazyFiles.values(), (entry) => entry.path),
+    );
+    for (const group of this.lazyArchiveGroups) {
+      for (const [path, entry] of group.entries) {
+        seenPaths.add(path);
+        if (!entry.deleted) seenInodes.add(entry.ino);
+      }
+    }
+    for (const [index, e] of entries.entries()) {
+      validateLazyEntryShape(e, `lazy file entry ${index}`);
+      if (seenInodes.has(e.ino) || seenPaths.has(e.path)) {
+        throw new Error(`lazy file entry ${index} duplicates an inode or path`);
+      }
+      seenInodes.add(e.ino);
+      seenPaths.add(e.path);
+      let actual: SfsStatResult;
+      try {
+        actual = this.fs.lstat(e.path);
+      } catch {
+        throw new Error(`lazy file entry ${index} path does not exist: ${e.path}`);
+      }
+      if (actual.ino !== e.ino) {
+        throw new Error(
+          `lazy file entry ${index} inode mismatch for ${e.path}: ` +
+          `expected ${actual.ino}, received ${e.ino}`,
+        );
+      }
+      if ((actual.mode & S_IFMT) !== S_IFREG) {
+        throw new Error(`lazy file entry ${index} is not a regular file: ${e.path}`);
+      }
+      if (actual.size !== 0) {
+        throw new Error(`lazy file entry ${index} is not an empty stub: ${e.path}`);
+      }
+    }
     for (const e of entries) {
       this.lazyFiles.set(e.ino, { path: e.path, url: e.url, size: e.size });
     }
@@ -523,9 +717,11 @@ export class MemoryFileSystem implements FileSystemBackend {
    */
   rewriteLazyFileUrls(transform: (url: string, path: string) => string): void {
     for (const [ino, entry] of this.lazyFiles) {
+      const url = transform(entry.url, entry.path);
+      validateLazyUrl(url, `lazy file ${entry.path}`);
       this.lazyFiles.set(ino, {
         ...entry,
-        url: transform(entry.url, entry.path),
+        url,
       });
     }
   }
@@ -546,6 +742,19 @@ export class MemoryFileSystem implements FileSystemBackend {
     mountPrefix: string,
     symlinkTargets?: Map<string, string>,
   ): LazyArchiveGroup {
+    validateLazyUrl(url, "lazy archive");
+    validateLazyMountPrefix(mountPrefix, "lazy archive mount prefix");
+    if (!Array.isArray(zipEntries)) {
+      throw new Error("lazy archive entries must be an array");
+    }
+    if (this.lazyArchiveGroups.length >= MAX_LAZY_ARCHIVE_GROUPS) {
+      throw new Error(`lazy archive group count exceeds ${MAX_LAZY_ARCHIVE_GROUPS}`);
+    }
+    const existingEntryCount = this.lazyEntryCount();
+    const fileEntryCount = zipEntries.filter((entry) => !entry.isDirectory).length;
+    if (fileEntryCount > MAX_LAZY_ENTRIES - existingEntryCount) {
+      throw new Error(`lazy entry count exceeds ${MAX_LAZY_ENTRIES}`);
+    }
     const group: LazyArchiveGroup = {
       url,
       mountPrefix,
@@ -554,10 +763,29 @@ export class MemoryFileSystem implements FileSystemBackend {
     };
 
     const normalized = mountPrefix.replace(/\/+$/, "");
+    const seenPaths = new Set<string>();
+    const pendingEntries: Array<{ zipEntry: ZipEntry; vfsPath: string }> = [];
+    let expandedBytes = 0;
     for (const ze of zipEntries) {
       if (ze.isDirectory) continue;
 
       const vfsPath = normalized + "/" + ze.fileName;
+      validateCanonicalAbsolutePath(vfsPath, "lazy archive entry");
+      validateLazySize(ze.uncompressedSize, `lazy archive entry ${vfsPath}`);
+      expandedBytes += ze.uncompressedSize;
+      if (!Number.isSafeInteger(expandedBytes) || expandedBytes > MAX_LAZY_CONTENT_BYTES) {
+        throw new Error(
+          `lazy archive expanded content exceeds ${MAX_LAZY_CONTENT_BYTES} bytes`,
+        );
+      }
+      if (seenPaths.has(vfsPath)) {
+        throw new Error(`lazy archive duplicates path: ${vfsPath}`);
+      }
+      seenPaths.add(vfsPath);
+      pendingEntries.push({ zipEntry: ze, vfsPath });
+    }
+
+    for (const { zipEntry: ze, vfsPath } of pendingEntries) {
       const parts = vfsPath.split("/").filter(Boolean);
       let current = "";
       for (let i = 0; i < parts.length - 1; i++) {
@@ -590,9 +818,116 @@ export class MemoryFileSystem implements FileSystemBackend {
 
   /** Import lazy archive groups from another instance. Assumes stubs already exist. */
   importLazyArchiveEntries(serialized: SerializedLazyArchiveEntry[]): void {
-    for (const s of serialized) {
+    if (!Array.isArray(serialized)) {
+      throw new Error("lazy archive groups must be an array");
+    }
+    if (serialized.length > MAX_LAZY_ARCHIVE_GROUPS - this.lazyArchiveGroups.length) {
+      throw new Error(`lazy archive group count exceeds ${MAX_LAZY_ARCHIVE_GROUPS}`);
+    }
+
+    const seenPaths = new Set<string>(
+      Array.from(this.lazyFiles.values(), (entry) => entry.path),
+    );
+    const seenInodes = new Set<number>(this.lazyFiles.keys());
+    let totalEntries = this.lazyEntryCount();
+    for (const existing of this.lazyArchiveGroups) {
+      for (const [path, entry] of existing.entries) {
+        seenPaths.add(path);
+        if (!entry.deleted) seenInodes.add(entry.ino);
+      }
+    }
+
+    const groups: LazyArchiveGroup[] = [];
+    for (const [groupIndex, value] of serialized.entries()) {
+      if (typeof value !== "object" || value === null || Array.isArray(value)) {
+        throw new Error(`lazy archive group ${groupIndex} must be an object`);
+      }
+      const s = value as Partial<SerializedLazyArchiveEntry>;
+      validateLazyUrl(s.url, `lazy archive group ${groupIndex}`);
+      validateLazyMountPrefix(
+        s.mountPrefix,
+        `lazy archive group ${groupIndex} mount prefix`,
+      );
+      if (typeof s.materialized !== "boolean") {
+        throw new Error(`lazy archive group ${groupIndex} has invalid materialized state`);
+      }
+      if (!Array.isArray(s.entries)) {
+        throw new Error(`lazy archive group ${groupIndex} entries must be an array`);
+      }
+      totalEntries += s.entries.length;
+      if (totalEntries > MAX_LAZY_ENTRIES) {
+        throw new Error(`lazy entry count exceeds ${MAX_LAZY_ENTRIES}`);
+      }
+
       const entries = new Map<string, LazyArchiveFileEntry>();
-      for (const e of s.entries) {
+      let expandedBytes = 0;
+      const normalizedPrefix = s.mountPrefix.replace(/\/+$/, "");
+      for (const [entryIndex, rawEntry] of s.entries.entries()) {
+        const context = `lazy archive group ${groupIndex} entry ${entryIndex}`;
+        if (
+          typeof rawEntry !== "object" ||
+          rawEntry === null ||
+          Array.isArray(rawEntry)
+        ) {
+          throw new Error(`${context} must be an object`);
+        }
+        const e = rawEntry as SerializedLazyArchiveEntry["entries"][number];
+        validateCanonicalAbsolutePath(e.vfsPath, context);
+        if (
+          normalizedPrefix !== "" &&
+          !e.vfsPath.startsWith(`${normalizedPrefix}/`)
+        ) {
+          throw new Error(`${context} is outside mount prefix ${s.mountPrefix}`);
+        }
+        if (typeof e.isSymlink !== "boolean" || typeof e.deleted !== "boolean") {
+          throw new Error(`${context} has invalid state flags`);
+        }
+        validateLazySize(e.size, context);
+        expandedBytes += e.size;
+        if (!Number.isSafeInteger(expandedBytes) || expandedBytes > MAX_LAZY_CONTENT_BYTES) {
+          throw new Error(
+            `lazy archive group ${groupIndex} expanded content exceeds ` +
+            `${MAX_LAZY_CONTENT_BYTES} bytes`,
+          );
+        }
+        if (!Number.isSafeInteger(e.ino) || e.ino < (e.deleted ? 0 : 1)) {
+          throw new Error(`${context} has an invalid inode`);
+        }
+        if (seenPaths.has(e.vfsPath) || (!e.deleted && seenInodes.has(e.ino))) {
+          throw new Error(`${context} duplicates an inode or path`);
+        }
+        seenPaths.add(e.vfsPath);
+        if (!e.deleted) seenInodes.add(e.ino);
+
+        let actual: SfsStatResult | null = null;
+        try {
+          actual = this.fs.lstat(e.vfsPath);
+        } catch {
+          // Deleted archive members are the only entries allowed to be absent.
+        }
+        if (e.deleted) {
+          if (actual !== null) {
+            throw new Error(`${context} is marked deleted but its path still exists`);
+          }
+        } else {
+          if (actual === null) {
+            throw new Error(`${context} path does not exist: ${e.vfsPath}`);
+          }
+          if (actual.ino !== e.ino) {
+            throw new Error(
+              `${context} inode mismatch for ${e.vfsPath}: ` +
+              `expected ${actual.ino}, received ${e.ino}`,
+            );
+          }
+          const expectedKind = e.isSymlink ? S_IFLNK : S_IFREG;
+          if ((actual.mode & S_IFMT) !== expectedKind) {
+            throw new Error(`${context} has the wrong file type: ${e.vfsPath}`);
+          }
+          if (!s.materialized && !e.isSymlink && actual.size !== 0) {
+            throw new Error(`${context} is not an empty stub: ${e.vfsPath}`);
+          }
+        }
+
         entries.set(e.vfsPath, {
           ino: e.ino,
           size: e.size,
@@ -606,9 +941,13 @@ export class MemoryFileSystem implements FileSystemBackend {
         materialized: s.materialized,
         entries,
       };
+      groups.push(group);
+    }
+
+    for (const group of groups) {
       this.lazyArchiveGroups.push(group);
       if (!group.materialized) {
-        for (const [, entry] of entries) {
+        for (const [, entry] of group.entries) {
           if (!entry.deleted) {
             this.lazyArchiveInodes.set(entry.ino, group);
           }
@@ -624,7 +963,9 @@ export class MemoryFileSystem implements FileSystemBackend {
    */
   rewriteLazyArchiveUrls(transform: (url: string) => string): void {
     for (const group of this.lazyArchiveGroups) {
-      group.url = transform(group.url);
+      const url = transform(group.url);
+      validateLazyUrl(url, `lazy archive ${group.mountPrefix}`);
+      group.url = url;
     }
   }
 
@@ -644,6 +985,102 @@ export class MemoryFileSystem implements FileSystemBackend {
     }));
   }
 
+  private replaceStubContents(path: string, data: Uint8Array, label: string): void {
+    let fd: number | null = null;
+    try {
+      fd = this.fs.open(path, O_WRONLY_CREAT_TRUNC, 0o755);
+      let offset = 0;
+      while (offset < data.byteLength) {
+        const written = this.fs.write(fd, data.subarray(offset));
+        if (written <= 0) {
+          throw new Error(
+            `${label} could not be stored completely: wrote ${offset} of ` +
+            `${data.byteLength} bytes`,
+          );
+        }
+        offset += written;
+      }
+    } catch (error) {
+      if (fd !== null) {
+        try {
+          this.fs.ftruncate(fd, 0);
+        } catch (rollbackError) {
+          throw new AggregateError(
+            [error, rollbackError],
+            `${label} failed and its empty stub could not be restored`,
+          );
+        }
+      }
+      throw error;
+    } finally {
+      if (fd !== null) this.fs.close(fd);
+    }
+  }
+
+  /**
+   * Replace a lazy file stub with already-fetched bytes. The metadata is
+   * removed only after every byte has been stored; failures restore an empty
+   * stub so the same entry can be retried.
+   */
+  materializeLazyFile(path: string, data: Uint8Array): boolean {
+    let st: SfsStatResult;
+    try {
+      st = this.fs.stat(path);
+    } catch {
+      return false;
+    }
+    const entry = this.lazyFiles.get(st.ino);
+    if (!entry) return false;
+
+    assertExpectedByteLength(entry.path, entry.size, data.byteLength);
+    this.replaceStubContents(entry.path, data, `lazy file ${entry.path}`);
+    this.lazyFiles.delete(st.ino);
+    return true;
+  }
+
+  /** Deduplicate concurrent fetch/materialize operations for one lazy inode. */
+  async materializeLazyFileFrom(
+    path: string,
+    load: (entry: LazyFileEntry) => Promise<Uint8Array>,
+  ): Promise<boolean> {
+    let st: SfsStatResult;
+    try {
+      st = this.fs.stat(path);
+    } catch {
+      return false;
+    }
+    const entry = this.lazyFiles.get(st.ino);
+    if (!entry) return false;
+
+    let pending = this.lazyFileMaterializations.get(st.ino);
+    if (!pending) {
+      const lazyEntry: LazyFileEntry = { ino: st.ino, ...entry };
+      pending = (async () => {
+        const data = await load(lazyEntry);
+        if (!this.materializeLazyFile(lazyEntry.path, data)) {
+          let current: SfsStatResult | null = null;
+          try { current = this.fs.stat(lazyEntry.path); } catch { /* checked below */ }
+          if (current?.ino === lazyEntry.ino && !this.lazyFiles.has(lazyEntry.ino)) {
+            return;
+          }
+          throw new Error(
+            `lazy file entry disappeared during materialization: ${lazyEntry.path}`,
+          );
+        }
+      })();
+      this.lazyFileMaterializations.set(st.ino, pending);
+    }
+
+    try {
+      await pending;
+    } finally {
+      if (this.lazyFileMaterializations.get(st.ino) === pending) {
+        this.lazyFileMaterializations.delete(st.ino);
+      }
+    }
+    return true;
+  }
+
   /**
    * Async-materialize a lazy file or archive-backed file if the given path
    * resolves to one. Call this before any synchronous read (e.g. in
@@ -652,32 +1089,31 @@ export class MemoryFileSystem implements FileSystemBackend {
    */
   async ensureMaterialized(path: string): Promise<boolean> {
     if (this.lazyFiles.size === 0 && this.lazyArchiveInodes.size === 0) return false;
+    let st: SfsStatResult;
     try {
-      const st = this.fs.stat(path); // follows symlinks
-      const entry = this.lazyFiles.get(st.ino);
-      if (entry) {
-        const data = await this.fetchLazyBytes({
-          id: `file:${st.ino}`,
-          kind: "file",
-          url: entry.url,
-          path: entry.path,
-          fallbackTotalBytes: entry.size,
-        });
-        const fd = this.fs.open(entry.path, 0o1101, 0o755); // O_WRONLY | O_CREAT | O_TRUNC
-        this.fs.write(fd, data);
-        this.fs.close(fd);
-        this.lazyFiles.delete(st.ino);
-        return true;
-      }
-      const group = this.lazyArchiveInodes.get(st.ino);
-      if (group) {
-        await this.ensureArchiveMaterialized(group);
-        return true;
-      }
-      return false;
+      st = this.fs.stat(path); // follows symlinks
     } catch {
       return false;
     }
+
+    const entry = this.lazyFiles.get(st.ino);
+    if (entry) {
+      return this.materializeLazyFileFrom(entry.path, (current) =>
+        this.fetchLazyBytes({
+          id: `file:${current.ino}`,
+          kind: "file",
+          url: current.url,
+          path: current.path,
+          expectedBytes: current.size,
+        })
+      );
+    }
+    const group = this.lazyArchiveInodes.get(st.ino);
+    if (group) {
+      await this.ensureArchiveMaterialized(group);
+      return true;
+    }
+    return false;
   }
 
   /**
@@ -686,6 +1122,23 @@ export class MemoryFileSystem implements FileSystemBackend {
    * Subsequent calls are no-ops.
    */
   async ensureArchiveMaterialized(group: LazyArchiveGroup): Promise<void> {
+    if (group.materialized) return;
+
+    let pending = this.lazyArchiveMaterializations.get(group);
+    if (!pending) {
+      pending = this.materializeLazyArchive(group);
+      this.lazyArchiveMaterializations.set(group, pending);
+    }
+    try {
+      await pending;
+    } finally {
+      if (this.lazyArchiveMaterializations.get(group) === pending) {
+        this.lazyArchiveMaterializations.delete(group);
+      }
+    }
+  }
+
+  private async materializeLazyArchive(group: LazyArchiveGroup): Promise<void> {
     if (group.materialized) return;
 
     const zipData = await this.fetchLazyBytes({
@@ -698,19 +1151,57 @@ export class MemoryFileSystem implements FileSystemBackend {
     const { parseZipCentralDirectory, extractZipEntry } = await import("./zip");
     const zipEntries = parseZipCentralDirectory(zipData);
     const zipLookup = new Map<string, ZipEntry>();
-    for (const ze of zipEntries) zipLookup.set(ze.fileName, ze);
+    for (const ze of zipEntries) {
+      if (zipLookup.has(ze.fileName)) {
+        throw new Error(`lazy archive duplicates member: ${ze.fileName}`);
+      }
+      zipLookup.set(ze.fileName, ze);
+    }
 
     const normalizedPrefix = group.mountPrefix.replace(/\/+$/, "");
+    const filesToWrite: Array<{ vfsPath: string; zipEntry: ZipEntry }> = [];
     for (const [vfsPath, archiveEntry] of group.entries) {
       if (archiveEntry.deleted) continue;
       if (archiveEntry.isSymlink) continue; // symlinks already created at registration
       const zipFileName = vfsPath.slice(normalizedPrefix.length + 1);
       const ze = zipLookup.get(zipFileName);
-      if (!ze) continue;
+      if (!ze) {
+        throw new Error(`lazy archive member is missing: ${zipFileName}`);
+      }
+      assertExpectedByteLength(vfsPath, archiveEntry.size, ze.uncompressedSize);
       const content = extractZipEntry(zipData, ze);
-      const fd = this.fs.open(vfsPath, 0o1101, 0o755); // O_WRONLY | O_CREAT | O_TRUNC
-      if (content.length > 0) this.fs.write(fd, content);
-      this.fs.close(fd);
+      assertExpectedByteLength(vfsPath, archiveEntry.size, content.byteLength);
+      filesToWrite.push({ vfsPath, zipEntry: ze });
+    }
+
+    try {
+      for (const { vfsPath, zipEntry } of filesToWrite) {
+        const content = extractZipEntry(zipData, zipEntry);
+        this.replaceStubContents(vfsPath, content, `lazy archive member ${vfsPath}`);
+      }
+    } catch (error) {
+      const rollbackErrors: unknown[] = [];
+      for (const { vfsPath } of filesToWrite) {
+        let fd: number | null = null;
+        try {
+          fd = this.fs.open(vfsPath, O_WRONLY_CREAT_TRUNC, 0o755);
+        } catch (rollbackError) {
+          rollbackErrors.push(rollbackError);
+        } finally {
+          if (fd !== null) {
+            try { this.fs.close(fd); } catch (rollbackError) {
+              rollbackErrors.push(rollbackError);
+            }
+          }
+        }
+      }
+      if (rollbackErrors.length > 0) {
+        throw new AggregateError(
+          [error, ...rollbackErrors],
+          "lazy archive materialization failed and its stubs could not be restored",
+        );
+      }
+      throw error;
     }
 
     group.materialized = true;
@@ -741,12 +1232,24 @@ export class MemoryFileSystem implements FileSystemBackend {
     const lazyJson = hasLazy
       ? new TextEncoder().encode(JSON.stringify(lazyEntries))
       : new Uint8Array(0);
+    if (lazyJson.byteLength > VFS_IMAGE_MAX_LAZY_SECTION_BYTES) {
+      throw new Error(
+        `VFS image lazy file metadata exceeds ` +
+        `${VFS_IMAGE_MAX_LAZY_SECTION_BYTES} bytes`,
+      );
+    }
 
     const archiveEntries = this.exportLazyArchiveEntries();
     const hasArchives = archiveEntries.length > 0;
     const archiveJson = hasArchives
       ? new TextEncoder().encode(JSON.stringify(archiveEntries))
       : new Uint8Array(0);
+    if (archiveJson.byteLength > VFS_IMAGE_MAX_LAZY_SECTION_BYTES) {
+      throw new Error(
+        `VFS image lazy archive metadata exceeds ` +
+        `${VFS_IMAGE_MAX_LAZY_SECTION_BYTES} bytes`,
+      );
+    }
 
     const metadata = options?.metadata === undefined
       ? this.imageMetadata
@@ -812,28 +1315,13 @@ export class MemoryFileSystem implements FileSystemBackend {
   /** Read image-level metadata without materializing the filesystem SAB. */
   static readImageMetadata(image: Uint8Array): VfsImageMetadata | null {
     const parsed = parseImageHeader(image);
-    if (!(parsed.flags & VFS_IMAGE_FLAG_HAS_METADATA)) return null;
-    const { metadataOffset } = sectionOffsetAfterArchives(
-      parsed.image,
-      parsed.view,
-      parsed.flags,
-      parsed.sabLen,
-    );
-    if (parsed.image.byteLength < metadataOffset + 4) {
-      throw new Error("VFS image truncated (metadata section)");
-    }
-    const metadataLen = parsed.view.getUint32(metadataOffset, true);
-    if (metadataLen > VFS_IMAGE_MAX_METADATA_BYTES) {
-      throw new Error(
-        `VFS image metadata exceeds ${VFS_IMAGE_MAX_METADATA_BYTES} bytes`,
-      );
-    }
-    if (parsed.image.byteLength < metadataOffset + 4 + metadataLen) {
-      throw new Error("VFS image truncated (metadata payload)");
-    }
-    if (metadataLen === 0) return null;
+    const sections = parseImageSections(parsed);
+    if (sections.metadataLen === 0) return null;
     return decodeMetadata(
-      parsed.image.subarray(metadataOffset + 4, metadataOffset + 4 + metadataLen),
+      parsed.image.subarray(
+        sections.metadataOffset + 4,
+        sections.metadataOffset + 4 + sections.metadataLen,
+      ),
     );
   }
 
@@ -868,9 +1356,8 @@ export class MemoryFileSystem implements FileSystemBackend {
    */
   static fromImage(image: Uint8Array, options?: { maxByteLength?: number }): MemoryFileSystem {
     const parsed = parseImageHeader(image);
+    const sections = parseImageSections(parsed);
     image = parsed.image;
-    const view = parsed.view;
-    const flags = parsed.flags;
     const sabLen = parsed.sabLen;
 
     // Restore SharedArrayBuffer (optionally growable). Some TypeScript lib
@@ -888,42 +1375,39 @@ export class MemoryFileSystem implements FileSystemBackend {
     sabView.set(image.subarray(VFS_IMAGE_HEADER_SIZE, VFS_IMAGE_HEADER_SIZE + sabLen));
 
     let metadata: VfsImageMetadata | null = null;
-    if (flags & VFS_IMAGE_FLAG_HAS_METADATA) {
-      metadata = MemoryFileSystem.readImageMetadata(image);
+    if (sections.metadataLen > 0) {
+      metadata = decodeMetadata(
+        image.subarray(
+          sections.metadataOffset + 4,
+          sections.metadataOffset + 4 + sections.metadataLen,
+        ),
+      );
     }
 
     const mfs = new MemoryFileSystem(SharedFS.mount(sab), metadata);
 
     // Restore lazy entries
-    const lazyOffset = VFS_IMAGE_HEADER_SIZE + sabLen;
-    const lazyLen = view.getUint32(lazyOffset, true);
-    if (flags & VFS_IMAGE_FLAG_HAS_LAZY) {
-      if (lazyLen > 0) {
-        const lazyBytes = image.subarray(lazyOffset + 4, lazyOffset + 4 + lazyLen);
-        const entries: LazyFileEntry[] = JSON.parse(
-          new TextDecoder().decode(lazyBytes),
-        );
-        mfs.importLazyEntries(entries);
-      }
+    if (sections.lazyLen > 0) {
+      const lazyBytes = image.subarray(
+        sections.lazyOffset + 4,
+        sections.lazyOffset + 4 + sections.lazyLen,
+      );
+      const entries: LazyFileEntry[] = JSON.parse(
+        new TextDecoder().decode(lazyBytes),
+      );
+      mfs.importLazyEntries(entries);
     }
 
     // Restore lazy archive groups
-    if (flags & VFS_IMAGE_FLAG_HAS_LAZY_ARCHIVES) {
-      const archiveOffset = lazyOffset + 4 + lazyLen;
-      if (image.byteLength < archiveOffset + 4) {
-        throw new Error("VFS image truncated (lazy archive section)");
-      }
-      const archiveLen = view.getUint32(archiveOffset, true);
-      if (archiveLen > 0) {
-        const archiveBytes = image.subarray(
-          archiveOffset + 4,
-          archiveOffset + 4 + archiveLen,
-        );
-        const entries: SerializedLazyArchiveEntry[] = JSON.parse(
-          new TextDecoder().decode(archiveBytes),
-        );
-        mfs.importLazyArchiveEntries(entries);
-      }
+    if (sections.archiveLen > 0) {
+      const archiveBytes = image.subarray(
+        sections.archiveOffset + 4,
+        sections.archiveOffset + 4 + sections.archiveLen,
+      );
+      const entries: SerializedLazyArchiveEntry[] = JSON.parse(
+        new TextDecoder().decode(archiveBytes),
+      );
+      mfs.importLazyArchiveEntries(entries);
     }
 
     return mfs;
@@ -945,7 +1429,11 @@ export class MemoryFileSystem implements FileSystemBackend {
   }
 
   open(path: string, flags: number, mode: number): number {
-    return this.fs.open(path, flags, mode);
+    const handle = this.fs.open(path, flags, mode);
+    if ((flags & O_TRUNC) !== 0) {
+      this.detachLazyBacking(this.fs.fstat(handle).ino);
+    }
+    return handle;
   }
 
   close(handle: number): number {
@@ -1013,6 +1501,9 @@ export class MemoryFileSystem implements FileSystemBackend {
 
   ftruncate(handle: number, length: number): void {
     this.fs.ftruncate(handle, length);
+    if (length === 0) {
+      this.detachLazyBacking(this.fs.fstat(handle).ino);
+    }
   }
 
   // SharedFS is memory-backed, fsync is a no-op
