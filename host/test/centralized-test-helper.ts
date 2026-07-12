@@ -140,6 +140,9 @@ export interface RunProgramOptions {
   captureForkCount?: boolean;
   /** Use the canonical rootfs image in worker-thread mode. Defaults to true. */
   useDefaultRootfs?: boolean;
+  /** Exact VFS image for tests that stage package runtime files. Overrides
+   * `useDefaultRootfs`; omitted means the canonical image. */
+  rootfsImage?: "default" | ArrayBuffer | Uint8Array;
 }
 
 export interface RunProgramResult {
@@ -211,7 +214,8 @@ async function runInWorkerThread(options: RunProgramOptions): Promise<RunProgram
   const host = new NodeKernelHost({
     maxWorkers: 4,
     execPrograms,
-    rootfsImage: options.useDefaultRootfs === false ? undefined : "default",
+    rootfsImage: options.rootfsImage
+      ?? (options.useDefaultRootfs === false ? undefined : "default"),
     enableTcpNetwork: options.enableTcpNetwork,
     onStdout: (_pid: number, data: Uint8Array) => {
       stdout += new TextDecoder().decode(data);
@@ -316,6 +320,7 @@ async function runOnMainThread(options: RunProgramOptions): Promise<RunProgramRe
   const threadAllocators = new Map<number, ThreadPageAllocator>();
   const processPtrWidths = new Map<number, 4 | 8>();
   const forkReplayContexts = new Map<number, ForkReplayContext>();
+  let mainThreadForkCount: bigint | undefined;
 
   const pid = 100;
 
@@ -525,6 +530,10 @@ async function runOnMainThread(options: RunProgramOptions): Promise<RunProgramRe
         const threadAllocator = threadAllocators.get(clonePid);
         if (!threadAllocator) throw new Error(`Unknown thread allocator for pid ${clonePid}`);
         const clonePtrWidth = processPtrWidths.get(clonePid) ?? ptrWidth;
+        const processChannelOffset = processLayouts.get(clonePid)?.channelOffset;
+        if (processChannelOffset === undefined) {
+          throw new Error(`Unknown process channel for pid ${clonePid}`);
+        }
         const alloc = threadAllocator.allocate(memory);
         try {
           kernelWorker.addChannel(clonePid, alloc.channelOffset, tid, fnPtr, argPtr, memory);
@@ -539,12 +548,14 @@ async function runOnMainThread(options: RunProgramOptions): Promise<RunProgramRe
           tid,
           programBytes: processProgramBytes.get(clonePid) ?? programBytes,
           memory,
+          processChannelOffset,
           channelOffset: alloc.channelOffset,
           fnPtr,
           argPtr,
           stackPtr,
           tlsPtr,
           ctidPtr,
+          tlsOffset: alloc.tlsOffset,
           tlsAllocAddr: alloc.tlsAllocAddr,
           ptrWidth: clonePtrWidth,
         };
@@ -567,6 +578,9 @@ async function runOnMainThread(options: RunProgramOptions): Promise<RunProgramRe
       },
       onExit: (exitPid, exitStatus) => {
         if (exitPid === pid) {
+          if (options.captureForkCount) {
+            mainThreadForkCount = kernelWorker.getForkCount(exitPid);
+          }
           kernelWorker.unregisterProcess(exitPid);
           processProgramBytes.delete(exitPid);
           processLayouts.delete(exitPid);
@@ -694,5 +708,12 @@ async function runOnMainThread(options: RunProgramOptions): Promise<RunProgramRe
     offset += chunk.length;
   }
 
-  return { exitCode, stdout, stderr, hostDiagnostics: [], stdoutBytes };
+  return {
+    exitCode,
+    stdout,
+    stderr,
+    hostDiagnostics: [],
+    stdoutBytes,
+    forkCount: mainThreadForkCount,
+  };
 }
