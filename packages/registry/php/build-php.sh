@@ -813,6 +813,11 @@ if [ ! -f Makefile ]; then
     # state. The second -u group is the measured subset that base PHP does not
     # otherwise pull into php.wasm; --export-all then exposes those symbols to
     # the side module. The post-build import-closure test guards this list.
+    # The following group forces libc symbols intl.so imports but base PHP
+    # never references (allocator, wide-char, math, and the pthread mutex/
+    # cond/TLS that ICU's UMutex uses). They must resolve to php.wasm's own
+    # musl so intl.so shares one libc state — one allocator, one pthread key
+    # table; without -u they never enter php.wasm and intl.so fails to load.
     #
     # -Wl,-z,stack-size=4194304: 4 MB wasm stack. The default wasm-ld
     # stack is 64 KB, which sits ~100 KB above PHP's `alloc_globals`
@@ -851,6 +856,13 @@ if [ ! -f Makefile ]; then
 -u inet_pton -u inet_ntop -u sched_yield -u alarm -u basename \
 -u OCSP_basic_verify -u OCSP_cert_status_str -u OCSP_crl_reason_str \
 -u OCSP_response_status_str -u SSL_alert_desc_string_long \
+-u aligned_alloc -u div -u modf -u round -u tanhf \
+-u swprintf -u wcstod -u wcstof -u wcstol -u wcstold \
+-u wcstoll -u wcstoul -u wcstoull -u wmemchr -u wmemcmp \
+-u pthread_cond_broadcast -u pthread_cond_destroy -u pthread_cond_signal \
+-u pthread_cond_timedwait -u pthread_cond_wait -u pthread_detach \
+-u pthread_getspecific -u pthread_key_create -u pthread_self \
+-u pthread_setspecific \
 -Wl,-z,stack-size=4194304" \
     ZLIB_CFLAGS="$ZLIB_CFLAGS_VALUE" \
     ZLIB_LIBS="$ZLIB_LIBS_VALUE" \
@@ -883,6 +895,7 @@ if [ ! -f Makefile ]; then
         --enable-cli \
         --enable-fpm \
         --enable-opcache \
+        --enable-intl=shared \
         --enable-mbstring \
         --disable-mbregex \
         --enable-ctype \
@@ -1176,6 +1189,39 @@ wasm32posix-cc -shared -fPIC -o "$BIN_DIR/zip.so" \
     ext/zip/.libs/zip_stream.o \
     "$LIBZIP_PREFIX/lib/libzip.a"
 echo "==> zip.so: $(wc -c < "$BIN_DIR/zip.so") bytes"
+
+# Build intl as a shared .so, same libtool workaround as opcache: make compiles
+# the PIC objects under ext/intl/**/.libs/ but the bundled libtool can't emit the
+# final .so on this target, so we link it with `wasm32posix-cc -shared`. intl
+# statically absorbs ICU and libc++/libc++abi so neither enters php.wasm; the ICU
+# common data stays out of the .so as icu.dat (loaded by intl-icu-data-loader.c).
+echo "==> Building intl.so (PHP extension)..."
+make -j"$(sysctl -n hw.ncpu 2>/dev/null || nproc)" EXTRA_CFLAGS="$EXTRA_INC_LIBXML" ext/intl/intl.la || true
+
+# Compile the icu.dat loader (PIC) that feeds ICU its common data at dlopen.
+wasm32posix-cc -fPIC -O2 -c "$SCRIPT_DIR/intl-icu-data-loader.c" \
+    -I"$ICU_PREFIX/include" -o ext/intl/kandelo_icu_data_loader.o
+
+# Collect every PIC object libtool produced for ext/intl (top dir + the
+# collator/, dateformat/, formatter/, … subdirs each have their own .libs/).
+mapfile -t INTL_OBJS < <(find ext/intl -path '*/.libs/*.o' | sort)
+[ "${#INTL_OBJS[@]}" -gt 0 ] || { echo "ERROR: no ext/intl PIC objects found — did 'make ext/intl/intl.la' compile?" >&2; exit 1; }
+echo "==> linking intl.so from ${#INTL_OBJS[@]} objects + ICU static libs + libc++"
+
+# wasm-ld resolves archive back-references without --start-group, so the ICU
+# archives are listed in dependency order (i18n -> io -> uc -> data), then
+# libc++/libc++abi. A -shared PIC module requires every input to be PIC, so the
+# libc++ PIC variants are named explicitly to win over the non-PIC sysroot ones.
+wasm32posix-cc -shared -fPIC -o "$SCRIPT_DIR/bin/intl.so" \
+    "${INTL_OBJS[@]}" \
+    ext/intl/kandelo_icu_data_loader.o \
+    "$ICU_PREFIX/lib/libicui18n.a" \
+    "$ICU_PREFIX/lib/libicuio.a" \
+    "$ICU_PREFIX/lib/libicuuc.a" \
+    "$ICU_PREFIX/lib/libicudata.a" \
+    "$LIBCXX_PREFIX/lib/libc++-pic.a" \
+    "$LIBCXX_PREFIX/lib/libc++abi-pic.a"
+echo "==> intl.so: $(wc -c < "$SCRIPT_DIR/bin/intl.so") bytes"
 
 # Copy to bin/ with .wasm extension (needed for Vite browser demos)
 cp sapi/cli/php "$BIN_DIR/php.wasm"
