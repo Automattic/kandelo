@@ -81,12 +81,17 @@ Injected TCP pipes live in the kernel's global pipe table (`pid == 0` for
 connection in any nginx worker. The standalone nginx image runs with
 `master_process on` and `worker_processes 2`.
 
+AF_UNIX stream listeners use the same shared-queue ownership model. This is the
+path used by pre-fork PHP-FPM workers: a connection is queued once and whichever
+worker wins `accept()` materializes its own connected socket around the global
+pipe pair.
+
 ## Capabilities
 
 ### Multi-Process
 - `fork()` via `wasm-fork-instrument` snapshot/restore — child runs in new sub-worker with copied memory
 - `exec()` reads program binary from the shared filesystem, replaces process
-- `posix_spawn()` — fork+exec with file actions (addchdir, addfchdir, addclose, adddup2)
+- `posix_spawn()` — non-forking child creation with file actions (addchdir, addfchdir, addclose, adddup2)
 - Process groups, wait/waitpid, cross-process signals, pipes
 
 ### Threads
@@ -105,8 +110,9 @@ connection in any nginx worker. The standalone nginx image runs with
 
 ### Filesystem
 - `MemoryFileSystem` — SharedArrayBuffer-based VFS shared between main thread and kernel worker
-- `OpfsFileSystem` — Origin Private File System for browser persistence
+- `OpfsFileSystem` — Origin Private File System for browser persistence. Its current stat metadata has no stable inode identity, so regular-file `MAP_SHARED` returns `ENOTSUP` instead of using unsafe pathname identity; `MAP_PRIVATE` is unaffected.
 - `DeviceFileSystem` — `/dev/null`, `/dev/zero`, `/dev/urandom`, `/dev/ptmx`
+- Stable-identity regular files can be shared across process memories through the host mapping cache, but updates become visible at syscall boundaries rather than immediately on direct loads/stores. Cross-process futex waits/wakes remain unsupported; see [architecture.md](architecture.md#shared-mapping-coherence).
 
 ### Terminal
 - PTY support with full line discipline
@@ -130,7 +136,7 @@ connection in any nginx worker. The standalone nginx image runs with
 ### Audio output (`/dev/dsp`)
 - The kernel exposes an OSS-style `/dev/dsp` character device. User programs `open(O_WRONLY)`, configure rate / channels / format via `SNDCTL_DSP_*` ioctls, and `write()` interleaved 16-bit-LE PCM. The kernel buffers samples in a 256 KiB ring (~1.5 s of stereo S16 @ 44.1 kHz). On overflow the *oldest* whole frame drops — same trade-off real OSS hardware makes under hardware overrun.
 - Demo pages drive a `setInterval` loop (~50 ms cadence) that calls `BrowserKernel.drainAudio(maxBytes)`. The kernel-worker drains the ring via the `kernel_drain_audio` wasm export (which respects whole-frame boundaries so stereo L/R never tear) and posts the bytes back. Main thread converts S16 → Float32, builds an `AudioBuffer`, and schedules an `AudioBufferSourceNode` on the `AudioContext` clock with a small lookahead so brief drain hiccups don't underrun.
-- Single-owner device. Owner is released on close-of-last-fd / `execve` / `exit`; the ring is flushed at the same time so a successor open starts from silence. Format must be `AFMT_S16_LE`; other formats are `EINVAL`.
+- Single-owner device. A non-CLOEXEC fd retains ownership and queued samples across `execve`; last close or process exit releases the owner and flushes the ring so a successor starts from silence. Format must be `AFMT_S16_LE`; other formats are `EINVAL`.
 - **AudioContext gesture requirement.** `new AudioContext()` starts suspended in modern browsers and only resumes after a user gesture. The DOOM demo creates the context immediately after the user's "Start" click (which is itself a gesture), so `audioCtx.resume()` succeeds without a separate prompt.
 
 ## Browser Demos

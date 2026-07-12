@@ -38,9 +38,6 @@ INCLUDE_EXPECTED_FAIL=(
 
 BASIC_EXPECTED_FAIL=(
     "devctl/posix_devctl"                                 # device control (Sortix/2024, not in musl)
-    "pthread/pthread_condattr_setpshared"                 # cross-process MAP_SHARED|MAP_ANONYMOUS memory
-                                                          # not supported on wasm (pthread primitives ARE
-                                                          # supported — see crates/kernel/src/pshared.rs)
     "pthread/pthread_attr_setinheritsched"                # priority scheduling not supported
     "strings/ffsll"                                       # wasm32 test bug (long vs long long)
     # aio/aio_cancel was flaky (FAIL once, XPASS next run) — left

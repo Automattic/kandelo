@@ -389,6 +389,35 @@ fn passive_element_with_table_init_is_followed() {
 }
 
 #[test]
+fn dynamic_linker_indirect_call_is_conservative_fork_boundary() {
+    // Side-module functions inserted after instrumentation are absent from
+    // every static element segment. A dlopen-capable main must still preserve
+    // the call_indirect frame and its direct callers when that side function
+    // later reaches fork().
+    let wat = r#"
+        (module
+          (import "kernel" "kernel_fork" (func $fork (result i32)))
+          (import "env" "__wasm_dlsym" (func $dlsym (param i32 i32 i32) (result i32)))
+          (type $side_fn_ty (func (result i32)))
+          (table $t 1 funcref)
+          (func $dispatch_side_callback (export "dispatch_side_callback") (result i32)
+            i32.const 0
+            call_indirect $t (type $side_fn_ty))
+          (func $parent_frame (export "parent_frame") (result i32)
+            call $dispatch_side_callback)
+          (func $ordinary (export "ordinary") (result i32)
+            i32.const 7))
+    "#;
+    let found = discover(wat);
+    assert!(found.iter().any(|n| n == "dispatch_side_callback"));
+    assert!(found.iter().any(|n| n == "parent_frame"));
+    assert!(
+        !found.iter().any(|n| n == "ordinary"),
+        "unrelated functions must stay out of the dynamic fork closure: {found:?}"
+    );
+}
+
+#[test]
 fn constant_slot_pointing_to_safe_target_excludes_indirect_caller() {
     // Both functions have the same signature and inhabit the same table.
     // The caller indexes slot 0, which can only dispatch to $safe_target,

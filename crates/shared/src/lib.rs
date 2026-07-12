@@ -35,7 +35,7 @@ pub mod host_abi;
 ///     them under the existing syscall number.
 /// 21: missing, PID-zero, and reaped procfs paths report ENOENT instead of
 ///     returning synthetic success through stat/access/path operations.
-pub const ABI_VERSION: u32 = 25;
+pub const ABI_VERSION: u32 = 26;
 
 /// Syscall numbers for the POSIX kernel interface.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1146,6 +1146,7 @@ pub mod abi {
         "kernel_create_process",
         "kernel_create_process_with_stdio",
         "kernel_get_parent_pid",
+        "kernel_get_process_exit_signal",
         "kernel_handle_channel",
         "kernel_host_adapter_manifest_len",
         "kernel_host_adapter_manifest_ptr",

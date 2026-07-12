@@ -511,7 +511,11 @@ pub struct Process {
     /// POSIX uses this flag (not `sid == pid`) to gate setpgid EPERM checks.
     pub is_session_leader: bool,
     pub state: ProcessState,
+    /// Low 8-bit status supplied to `_exit()`/`exit_group()` for a normal
+    /// exit. Signal termination is recorded separately in `exit_signal` so
+    /// normal statuses 128..=255 remain distinguishable to waiters.
     pub exit_status: i32,
+    pub exit_signal: u32,
     pub fd_table: FdTable,
     pub ofd_table: OfdTable,
     pub lock_table: LockTable,
@@ -548,14 +552,8 @@ pub struct Process {
     pub threads: Vec<ThreadInfo>,
     /// Next thread ID to allocate.
     pub next_tid: u32,
-    /// Eventfd instances owned by this process.
-    pub eventfds: Vec<Option<EventFdState>>,
     /// Epoll instances owned by this process.
     pub epolls: Vec<Option<EpollInstance>>,
-    /// Timerfd instances owned by this process.
-    pub timerfds: Vec<Option<TimerFdState>>,
-    /// Signalfd instances owned by this process.
-    pub signalfds: Vec<Option<SignalFdState>>,
     /// POSIX timers (timer_create / timer_settime).
     pub posix_timers: Vec<Option<PosixTimerState>>,
     /// Alternate signal stack (sigaltstack): ss_sp, ss_flags, ss_size.
@@ -570,10 +568,6 @@ pub struct Process {
     /// from this list to return the correct FDs when the child re-runs
     /// code before fork(). Empty in non-fork-child processes.
     pub fork_pipe_replay: Vec<(i32, i32)>,
-    /// In-memory file buffers for memfd_create fds.
-    pub memfds: Vec<Option<Vec<u8>>>,
-    /// Content buffers for open procfs files (snapshot at open time).
-    pub procfs_bufs: Vec<Option<Vec<u8>>>,
     /// True if this process has called exec (for POSIX setpgid EACCES check).
     pub has_exec: bool,
     /// Live mmap of `/dev/fb0`, if any. `Some` between successful
@@ -647,6 +641,9 @@ impl StdioConfig {
     }
 }
 
+pub(crate) const PROCESS_METADATA_ARGV: u32 = 0;
+pub(crate) const PROCESS_METADATA_ENVIRONMENT: u32 = 1;
+
 impl Process {
     /// Create a new process with captured, pipe-backed stdio.
     pub fn new(pid: u32) -> Self {
@@ -700,6 +697,7 @@ impl Process {
             is_session_leader: false,
             state: ProcessState::Running,
             exit_status: 0,
+            exit_signal: 0,
             fd_table,
             ofd_table,
             lock_table: LockTable::new(),
@@ -726,18 +724,13 @@ impl Process {
             next_ephemeral_port: 49152,
             threads: Vec::new(),
             next_tid: 0, // will be set to pid + 1 after pid is known
-            eventfds: Vec::new(),
             epolls: Vec::new(),
-            timerfds: Vec::new(),
-            signalfds: Vec::new(),
             posix_timers: Vec::new(),
             alt_stack_sp: 0,
             alt_stack_flags: 2, // SS_DISABLE
             alt_stack_size: 0,
             alt_stack_depth: 0,
             fork_pipe_replay: Vec::new(),
-            memfds: Vec::new(),
-            procfs_bufs: Vec::new(),
             has_exec: false,
             fb_binding: None,
             dri_bindings: Vec::new(),
@@ -970,6 +963,32 @@ impl Process {
         }
         out
     }
+
+    fn metadata_vector_mut(&mut self, kind: u32) -> Result<&mut Vec<Vec<u8>>, Errno> {
+        match kind {
+            PROCESS_METADATA_ARGV => Ok(&mut self.argv),
+            PROCESS_METADATA_ENVIRONMENT => Ok(&mut self.environ),
+            _ => Err(Errno::EINVAL),
+        }
+    }
+
+    pub(crate) fn clear_metadata(&mut self, kind: u32) -> Result<(), Errno> {
+        self.metadata_vector_mut(kind)?.clear();
+        Ok(())
+    }
+
+    pub(crate) fn push_metadata_entry(&mut self, kind: u32, entry: &[u8]) -> Result<(), Errno> {
+        let mut owned = Vec::new();
+        owned
+            .try_reserve_exact(entry.len())
+            .map_err(|_| Errno::ENOMEM)?;
+        owned.extend_from_slice(entry);
+
+        let entries = self.metadata_vector_mut(kind)?;
+        entries.try_reserve(1).map_err(|_| Errno::ENOMEM)?;
+        entries.push(owned);
+        Ok(())
+    }
 }
 
 /// A `HostIO` impl that returns sensible defaults for the methods our
@@ -1197,6 +1216,30 @@ mod tests {
     fn fork_count_starts_at_zero() {
         let proc = Process::new(1);
         assert_eq!(proc.fork_count(), 0);
+    }
+
+    #[test]
+    fn metadata_entry_transport_preserves_empty_values_and_empty_environment() {
+        let mut proc = Process::new(77);
+        proc.argv = vec![b"old".to_vec()];
+        proc.environ = vec![b"OLD=value".to_vec()];
+
+        proc.clear_metadata(PROCESS_METADATA_ARGV).unwrap();
+        proc.push_metadata_entry(PROCESS_METADATA_ARGV, b"new")
+            .unwrap();
+        proc.push_metadata_entry(PROCESS_METADATA_ARGV, b"")
+            .unwrap();
+        proc.clear_metadata(PROCESS_METADATA_ENVIRONMENT).unwrap();
+
+        assert_eq!(proc.argv, vec![b"new".to_vec(), Vec::new()]);
+        assert!(proc.environ.is_empty());
+    }
+
+    #[test]
+    fn metadata_entry_transport_rejects_unknown_vector_kind() {
+        let mut proc = Process::new(78);
+        assert_eq!(proc.clear_metadata(99), Err(Errno::EINVAL));
+        assert_eq!(proc.push_metadata_entry(99, b"value"), Err(Errno::EINVAL));
     }
 
     #[test]
@@ -1587,6 +1630,82 @@ mod tests {
         );
         // The refcount table entry should be gone (close_ref dropped to 0).
         assert_eq!(host_net_handle_ref_count(HANDLE), 0);
+    }
+
+    #[test]
+    fn remove_process_emits_host_file_close_only_on_last_ref() {
+        // Forced host teardown removes a process without running sys_exit.
+        // Its live host-backed OFDs must still drop their inherited ownership,
+        // and only the last owner may close the shared backend handle.
+        use crate::fd::FdTable;
+        use crate::ofd::{FileType, OfdTable, host_handle_ref_count};
+        use crate::process_table::ProcessTable;
+
+        const HANDLE: i64 = 900_000_091;
+        let mut table = ProcessTable::new();
+        table.create_process(610).unwrap();
+        let parent = table.processes.get_mut(&610).unwrap();
+        // Keep the assertion independent of globally-numbered stdio handles,
+        // which other ProcessTable tests may share while the test runner is
+        // executing in parallel.
+        parent.fd_table = FdTable::new();
+        parent.ofd_table = OfdTable::new();
+        let ofd_idx = parent.ofd_table.create(
+            FileType::Regular,
+            wasm_posix_shared::flags::O_RDONLY,
+            HANDLE,
+            b"/tmp/forced-exit-file".to_vec(),
+        );
+        parent
+            .fd_table
+            .alloc(crate::fd::OpenFileDescRef(ofd_idx), 0)
+            .unwrap();
+
+        table.fork_process(610, 611).expect("fork_process");
+        assert_eq!(host_handle_ref_count(HANDLE), 2);
+
+        let child = table.remove_process(611).expect("remove child");
+        assert!(child.host_closes.is_empty());
+        assert_eq!(host_handle_ref_count(HANDLE), 1);
+
+        let parent = table.remove_process(610).expect("remove parent");
+        assert_eq!(parent.host_closes, alloc::vec![HANDLE]);
+        assert_eq!(host_handle_ref_count(HANDLE), 0);
+    }
+
+    #[test]
+    fn remove_process_emits_all_uninherited_directory_handles() {
+        use crate::fd::FdTable;
+        use crate::ofd::{FileType, OfdTable};
+        use crate::process::{DirStream, Process};
+        use crate::process_table::ProcessTable;
+
+        let mut table = ProcessTable::new();
+        table.processes.insert(620, Process::new(620));
+        let process = table.processes.get_mut(&620).unwrap();
+        process.fd_table = FdTable::new();
+        process.ofd_table = OfdTable::new();
+        let ofd_idx = process.ofd_table.create(
+            FileType::Directory,
+            wasm_posix_shared::flags::O_RDONLY,
+            92,
+            b"/tmp".to_vec(),
+        );
+        process.ofd_table.get_mut(ofd_idx).unwrap().dir_host_handle = 7;
+        process
+            .fd_table
+            .alloc(crate::fd::OpenFileDescRef(ofd_idx), 0)
+            .unwrap();
+        process.dir_streams.push(Some(DirStream {
+            host_handle: 8,
+            path: b"/var".to_vec(),
+            position: 0,
+            synth_dot_state: 0,
+        }));
+
+        let removed = table.remove_process(620).expect("remove process");
+        assert_eq!(removed.host_dir_closes, alloc::vec![7, 8]);
+        assert_eq!(removed.host_closes, alloc::vec![92]);
     }
 
     #[test]

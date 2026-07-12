@@ -36,7 +36,6 @@ BASIC_EXPECTED_FAIL=(
     # (exec/spawn/popen/system/wordexp now pass — browser exec support with tool binaries)
     "aio/aio_fsync"
     "pthread/pthread_barrierattr_setpshared"
-    "pthread/pthread_condattr_setpshared"
     "pthread/pthread_create"
     "threads/thrd_create"
     "pthread/pthread_attr_setinheritsched"

@@ -6,6 +6,9 @@
  * https://github.com/WebAssembly/tool-conventions/blob/main/DynamicLinking.md
  */
 
+import { ABI_VERSION } from "./generated/abi";
+import { FORK_SAVE_BUFFER_SIZE } from "./process-memory";
+
 // dylink.0 sub-section types
 const WASM_DYLINK_MEM_INFO = 1;
 const WASM_DYLINK_NEEDED = 2;
@@ -15,6 +18,77 @@ const WASM_DYLINK_IMPORT_INFO = 4;
 // Export/import flags
 const WASM_DYLINK_FLAG_TLS = 0x01;
 const WASM_DYLINK_FLAG_WEAK = 0x02;
+
+export const SIDE_MODULE_FORK_EXPORTS = [
+  "wpk_fork_unwind_begin",
+  "wpk_fork_unwind_end",
+  "wpk_fork_rewind_begin",
+  "wpk_fork_rewind_end",
+  "wpk_fork_state",
+] as const;
+
+export const FORK_CAPABILITIES_SECTION = "kandelo.wpk_fork.capabilities";
+export const FORK_CAPABILITIES_VERSION = 1;
+export const FORK_CAP_SIDE_ENTRY = 1 << 0;
+export const FORK_CAP_DYLINK_MAIN = 1 << 1;
+const FORK_CAP_KNOWN_MASK = FORK_CAP_SIDE_ENTRY | FORK_CAP_DYLINK_MAIN;
+export const FORK_CAPABILITIES_REQUIRED_ABI = 17;
+
+const WPK_FORK_NORMAL = 0;
+const WPK_FORK_UNWINDING = 1;
+const WPK_FORK_REWINDING = 2;
+
+export interface ForkInstrumentCapabilityClaim {
+  /** False for an ABI-16 artifact built before role markers were introduced. */
+  present: boolean;
+  flags: number;
+}
+
+/** Read and validate the explicit call-graph claims emitted by the tool. */
+export function readForkInstrumentCapabilityClaim(
+  module: WebAssembly.Module,
+): ForkInstrumentCapabilityClaim {
+  const sections = WebAssembly.Module.customSections(module, FORK_CAPABILITIES_SECTION);
+  if (sections.length === 0) return { present: false, flags: 0 };
+  if (sections.length !== 1) {
+    throw new Error(`duplicate ${FORK_CAPABILITIES_SECTION} custom sections`);
+  }
+  const data = new Uint8Array(sections[0]!);
+  if (data.length !== 2) {
+    throw new Error(`malformed ${FORK_CAPABILITIES_SECTION} custom section`);
+  }
+  if (data[0] !== FORK_CAPABILITIES_VERSION) {
+    throw new Error(
+      `unsupported fork-instrument capability version ${data[0]}; ` +
+        `expected ${FORK_CAPABILITIES_VERSION}`,
+    );
+  }
+  if ((data[1]! & ~FORK_CAP_KNOWN_MASK) !== 0) {
+    throw new Error(`unknown fork-instrument capability flags 0x${data[1]!.toString(16)}`);
+  }
+  return { present: true, flags: data[1]! };
+}
+
+/** Return just the validated flags for callers that do not need presence. */
+export function readForkInstrumentCapabilities(module: WebAssembly.Module): number {
+  return readForkInstrumentCapabilityClaim(module).flags;
+}
+
+/**
+ * Decide whether an artifact may serve one fork-instrument role.
+ *
+ * ABI 16 predates role markers, so an absent section falls back to the legacy
+ * five-export contract. ABI 17 makes the role claim mandatory. A marker that
+ * is present is always authoritative, including during ABI 16 migration.
+ */
+export function forkInstrumentRoleAvailable(
+  claim: ForkInstrumentCapabilityClaim,
+  roleFlag: number,
+  abiVersion: number = ABI_VERSION,
+): boolean {
+  if (claim.present) return (claim.flags & roleFlag) !== 0;
+  return abiVersion < FORK_CAPABILITIES_REQUIRED_ABI;
+}
 
 export interface DylinkMetadata {
   /** Bytes of linear memory this module needs */
@@ -170,18 +244,47 @@ export interface LoadedSharedLibrary {
   metadata: DylinkMetadata;
   /** Path/name of the library */
   name: string;
+  /** Fork save buffer for an instrumented side module importing env.fork. */
+  forkBufAddr?: number;
+  /** Whether this module can originate a coordinated env.fork unwind. */
+  forkCapable: boolean;
+  /** Function/GOT.func imports used for conservative cross-side isolation. */
+  functionImports: ReadonlySet<string>;
+  /** Function exports visible to later side modules. */
+  functionExports: ReadonlySet<string>;
+  /** Dynamic lookup from a side module defeats static cross-side isolation. */
+  importsDynamicLookup: boolean;
+}
+
+export interface SideModuleForkState {
+  name: string;
+  instance: WebAssembly.Instance;
+  forkBufAddr: number;
+}
+
+/**
+ * Process-worker coordination for the one supported side-module fork shape:
+ * a main-module call_indirect directly invokes one instrumented side module.
+ * The loader rejects statically visible side-to-side linkage and side-owned
+ * dlopen/dlsym around a fork-capable module. Opaque callbacks passed through
+ * main memory or the shared table cannot yet be attributed to a module at
+ * runtime and remain an explicit unsupported residual.
+ */
+export interface SideModuleForkSupport {
+  setActiveFork: (state: SideModuleForkState) => void;
+  clearActiveFork: (state: SideModuleForkState) => void;
+  /** Invoke the immutable main-module fork trampoline and verify its state. */
+  invokeMainFork: (expectedStateAfter: 0 | 1) => number;
 }
 
 /**
  * Options used when re-instantiating a side module in a fork child.
  *
  * Preconditions:
- *   - Replay must run in the same order as the parent's original dlopens,
- *     against the same initial table/memory state. `__table_base` is
- *     captured from `options.table.length` at replay time and must equal
- *     the parent's value — anything that grows the child's table before
- *     replay (a future GOT-prealloc pass, an interleaved dlsym, etc.)
- *     diverges the layout and corrupts call_indirect targets.
+ *   - Replay must run in the same order as the parent's original dlopens.
+ *     Each entry supplies the parent's exact `__table_base`; replay may pad
+ *     null gaps up to that base but rejects a child table that already grew
+ *     past it (an interleaved dlsym, future GOT preallocation, etc.).
  *   - `options.loadedLibraries` must NOT already contain `name`. Replay
  *     does not refresh existing entries; a duplicate would be silently
  *     deduped and return a handle whose memoryBase may not match.
@@ -193,6 +296,10 @@ export interface DylinkReplayOptions {
    *  the memcpy'd data section encode (memoryBase + offset); using any
    *  other base corrupts pointers. */
   memoryBase: number;
+  /** Exact table base observed in the parent, including failed-load gaps. */
+  tableBase: number;
+  /** Exact side-module save buffer copied from the fork parent. */
+  forkBufAddr?: number;
 }
 
 /**
@@ -209,16 +316,88 @@ export interface LoadSharedLibraryOptions {
   heapPointer?: { value: number };
   /** Allocate side-module linear-memory data in the process address space */
   allocateMemory?: (size: number, align: number) => number;
+  /** Release a successful allocateMemory result when loading rolls back. */
+  deallocateMemory?: (addr: number, size: number) => void;
   /** Global symbol table: name → function or WebAssembly.Global */
   globalSymbols: Map<string, Function | WebAssembly.Global>;
   /** GOT entries: symbol name → mutable i32 WebAssembly.Global */
   got: Map<string, WebAssembly.Global>;
   /** Already-loaded libraries for dedup and dependency resolution */
   loadedLibraries: Map<string, LoadedSharedLibrary>;
+  /** Immutable symbol names exported by the main module. */
+  mainModuleSymbols?: ReadonlySet<string>;
+  /** Present only in a process worker that can drive side-module unwind. */
+  sideModuleFork?: SideModuleForkSupport;
+  /** Precise rebuild/boundary diagnostic when sideModuleFork is unavailable. */
+  sideModuleForkUnavailableReason?: string;
   /** Callback to locate and read a library file by name (async version) */
   resolveLibrary?: (name: string) => Promise<Uint8Array | null>;
   /** Callback to locate and read a library file by name (sync version) */
   resolveLibrarySync?: (name: string) => Uint8Array | null;
+}
+
+const SIDE_DYNAMIC_LOOKUP_IMPORTS = new Set([
+  "__wasm_dlopen",
+  "__wasm_dlsym",
+  "dlopen",
+  "dlsym",
+]);
+
+function intersectSideSymbols(
+  imports: ReadonlySet<string>,
+  exports: ReadonlySet<string>,
+  mainSymbols: ReadonlySet<string>,
+): string[] {
+  return Array.from(imports)
+    .filter((name) => !mainSymbols.has(name) && exports.has(name))
+    .sort();
+}
+
+/**
+ * The current two-module unwind protocol supports main -> one side module.
+ * It cannot serialize an intervening side-module frame. Preserve ordinary
+ * independent multi-extension loading, but reject statically visible
+ * side-to-side linkage and side-originated dynamic lookup whenever either
+ * participant can fork. Function pointers passed opaquely through main memory
+ * remain a documented residual until the runtime has module activation hooks.
+ */
+function enforceDirectMainSideForkBoundary(
+  name: string,
+  forkCapable: boolean,
+  functionImports: ReadonlySet<string>,
+  functionExports: ReadonlySet<string>,
+  importsDynamicLookup: boolean,
+  options: LoadSharedLibraryOptions,
+): void {
+  const mainSymbols = options.mainModuleSymbols ?? new Set<string>();
+  for (const loaded of options.loadedLibraries.values()) {
+    if (!forkCapable && !loaded.forkCapable) continue;
+
+    if (importsDynamicLookup || loaded.importsDynamicLookup) {
+      throw new Error(
+        `${name}: fork-capable side modules cannot coexist with side-originated ` +
+          `dlopen/dlsym; only a direct main-module-to-side fork path is supported`,
+      );
+    }
+
+    const newToLoaded = intersectSideSymbols(
+      functionImports,
+      loaded.functionExports,
+      mainSymbols,
+    );
+    const loadedToNew = intersectSideSymbols(
+      loaded.functionImports,
+      functionExports,
+      mainSymbols,
+    );
+    const crossSymbols = [...newToLoaded, ...loadedToNew];
+    if (crossSymbols.length > 0) {
+      throw new Error(
+        `${name}: fork-capable side-module nesting through ${loaded.name} is unsupported ` +
+          `(cross-side symbols: ${Array.from(new Set(crossSymbols)).join(", ")})`,
+      );
+    }
+  }
 }
 
 /**
@@ -233,225 +412,436 @@ function instantiateSharedLibrary(
   options: LoadSharedLibraryOptions,
   replay?: DylinkReplayOptions,
 ): LoadedSharedLibrary {
-  // Allocate memory region
-  const memAlign = 1 << metadata.memoryAlign;
-  let memoryBase = 0;
-  if (metadata.memorySize > 0) {
+  const module = new WebAssembly.Module(wasmBytes as unknown as BufferSource);
+  const moduleImports = WebAssembly.Module.imports(module);
+  const moduleExports = WebAssembly.Module.exports(module);
+  const importsFork = moduleImports.some((imp) =>
+    imp.module === "env" && imp.name === "fork" && imp.kind === "function"
+  );
+  const presentForkExports = SIDE_MODULE_FORK_EXPORTS.filter((exportName) =>
+    moduleExports.some((exp) => exp.kind === "function" && exp.name === exportName)
+  );
+  const hasCompleteForkInstrumentation =
+    presentForkExports.length === SIDE_MODULE_FORK_EXPORTS.length;
+  const forkCapabilityClaim = readForkInstrumentCapabilityClaim(module);
+  const claimsSideEntry =
+    forkCapabilityClaim.present
+    && (forkCapabilityClaim.flags & FORK_CAP_SIDE_ENTRY) !== 0;
+  const sideEntryAvailable = forkInstrumentRoleAvailable(
+    forkCapabilityClaim,
+    FORK_CAP_SIDE_ENTRY,
+  );
+  const functionImports = new Set(
+    moduleImports
+      .filter((imp) =>
+        (imp.module === "env" && imp.kind === "function")
+        || imp.module === "GOT.func"
+      )
+      .map((imp) => imp.name),
+  );
+  const functionExports = new Set(
+    moduleExports.filter((exp) => exp.kind === "function").map((exp) => exp.name),
+  );
+  const importsDynamicLookup = moduleImports.some((imp) =>
+    imp.module === "env"
+      && imp.kind === "function"
+      && SIDE_DYNAMIC_LOOKUP_IMPORTS.has(imp.name)
+  );
+
+  if (presentForkExports.length > 0 && !hasCompleteForkInstrumentation) {
+    const missing = SIDE_MODULE_FORK_EXPORTS.filter((exportName) =>
+      !moduleExports.some((exp) => exp.kind === "function" && exp.name === exportName)
+    );
+    throw new Error(
+      `${name}: incomplete wasm-fork-instrument exports; missing ${missing.join(", ")}`,
+    );
+  }
+  if (importsFork && !hasCompleteForkInstrumentation) {
+    throw new Error(
+      `${name}: env.fork requires complete side-module instrumentation; ` +
+        "rebuild with wasm-fork-instrument --entry env.fork",
+    );
+  }
+  if (importsFork && !sideEntryAvailable) {
+    throw new Error(
+      `${name}: env.fork requires the versioned side-entry capability; ` +
+        "rebuild with the current wasm-fork-instrument --entry env.fork",
+    );
+  }
+  if (claimsSideEntry && !importsFork) {
+    throw new Error(`${name}: side-entry capability is present without an env.fork import`);
+  }
+  if (importsFork && !options.sideModuleFork) {
+    throw new Error(
+      `${name}: env.fork cannot be coordinated: ` +
+        (options.sideModuleForkUnavailableReason
+          ?? "side-module fork requires a process-worker unwind coordinator"),
+    );
+  }
+  enforceDirectMainSideForkBoundary(
+    name,
+    importsFork,
+    functionImports,
+    functionExports,
+    importsDynamicLookup,
+    options,
+  );
+
+  const tableRollbackBase = options.table.length;
+  const heapRollbackValue = options.heapPointer?.value;
+  const symbolRollback = new Map(options.globalSymbols);
+  const gotRollback = new Map(
+    Array.from(options.got, ([symbol, global]) => [
+      symbol,
+      { global, value: global.value },
+    ] as const),
+  );
+  const allocations: Array<{ addr: number; size: number }> = [];
+  const allocate = (size: number, align: number): number => {
+    if (!options.allocateMemory) {
+      throw new Error(`${name}: no side-module memory allocator configured`);
+    }
+    const addr = options.allocateMemory(size, align);
+    allocations.push({ addr, size });
+    return addr;
+  };
+
+  try {
+    // Allocate memory region
+    const memAlign = 1 << metadata.memoryAlign;
+    let memoryBase = 0;
+    if (metadata.memorySize > 0) {
+      if (replay) {
+        // Reuse parent's memoryBase: data-reloc'd pointers baked into the
+        // memcpy'd data section already encode (parentMemoryBase + offset).
+        memoryBase = replay.memoryBase;
+      } else if (options.allocateMemory) {
+        memoryBase = allocate(metadata.memorySize, memAlign);
+        const end = memoryBase + metadata.memorySize;
+        if (end > options.memory.buffer.byteLength) {
+          throw new Error(
+            `${name}: allocator returned 0x${memoryBase.toString(16)} but memory only covers 0x${options.memory.buffer.byteLength.toString(16)}`,
+          );
+        }
+      } else {
+        if (!options.heapPointer) {
+          throw new Error(`${name}: no side-module memory allocator configured`);
+        }
+        memoryBase = alignUp(options.heapPointer.value, memAlign);
+        options.heapPointer.value = memoryBase + metadata.memorySize;
+
+        // Ensure the memory is large enough for standalone linker tests and
+        // non-POSIX embedders. Process workers pass allocateMemory so side-module
+        // data is tracked by the guest allocator instead of a host-only pointer.
+        const neededPages = Math.ceil(options.heapPointer.value / 65536);
+        const currentPages = options.memory.buffer.byteLength / 65536;
+        if (neededPages > currentPages) {
+          options.memory.grow(neededPages - currentPages);
+        }
+      }
+
+      if (!replay) {
+        // Skip zero-init in replay: child memory already holds parent's
+        // post-startup data via fork memcpy.
+        new Uint8Array(options.memory.buffer, memoryBase, metadata.memorySize).fill(0);
+      }
+    }
+
+    // Reproduce the parent's exact table base, including null gaps left by a
+    // failed dlopen. WebAssembly.Table cannot shrink, so successful archive
+    // entries carry the next library's exact base and replay pads up to it.
+    let tableBase = options.table.length;
     if (replay) {
-      // Reuse parent's memoryBase: data-reloc'd pointers baked into the
-      // memcpy'd data section already encode (parentMemoryBase + offset).
-      memoryBase = replay.memoryBase;
-    } else if (options.allocateMemory) {
-      memoryBase = options.allocateMemory(metadata.memorySize, memAlign);
-      const end = memoryBase + metadata.memorySize;
-      if (end > options.memory.buffer.byteLength) {
+      if (!Number.isSafeInteger(replay.tableBase) || replay.tableBase < 0) {
+        throw new Error(`${name}: invalid replay table base ${replay.tableBase}`);
+      }
+      if (tableBase > replay.tableBase) {
         throw new Error(
-          `${name}: allocator returned 0x${memoryBase.toString(16)} but memory only covers 0x${options.memory.buffer.byteLength.toString(16)}`,
+          `${name}: replay table already at ${tableBase}, past parent base ${replay.tableBase}`,
         );
       }
-    } else {
-      if (!options.heapPointer) {
-        throw new Error(`${name}: no side-module memory allocator configured`);
+      if (tableBase < replay.tableBase) {
+        options.table.grow(replay.tableBase - tableBase);
       }
-      memoryBase = alignUp(options.heapPointer.value, memAlign);
-      options.heapPointer.value = memoryBase + metadata.memorySize;
+      tableBase = replay.tableBase;
+    }
+    if (metadata.tableSize > 0) options.table.grow(metadata.tableSize);
 
-      // Ensure the memory is large enough for standalone linker tests and
-      // non-POSIX embedders. Process workers pass allocateMemory so side-module
-      // data is tracked by the guest allocator instead of a host-only pointer.
-      const neededPages = Math.ceil(options.heapPointer.value / 65536);
-      const currentPages = options.memory.buffer.byteLength / 65536;
-      if (neededPages > currentPages) {
-        options.memory.grow(neededPages - currentPages);
+    let sideForkBufAddr = 0;
+    if (importsFork) {
+      if (replay) {
+        sideForkBufAddr = replay.forkBufAddr ?? 0;
+      } else if (options.allocateMemory) {
+        sideForkBufAddr = allocate(FORK_SAVE_BUFFER_SIZE, 16);
+      } else if (options.heapPointer) {
+        sideForkBufAddr = alignUp(options.heapPointer.value, 16);
+        options.heapPointer.value = sideForkBufAddr + FORK_SAVE_BUFFER_SIZE;
+        const neededPages = Math.ceil(options.heapPointer.value / 65536);
+        const currentPages = options.memory.buffer.byteLength / 65536;
+        if (neededPages > currentPages) options.memory.grow(neededPages - currentPages);
       }
+      if (
+        sideForkBufAddr <= 0
+        || sideForkBufAddr + FORK_SAVE_BUFFER_SIZE > options.memory.buffer.byteLength
+      ) {
+        throw new Error(`${name}: invalid side-module fork save buffer`);
+      }
+    }
+
+    // Create immutable globals for memory_base and table_base
+    const memoryBaseGlobal = new WebAssembly.Global(
+      { value: "i32", mutable: false },
+      memoryBase,
+    );
+    const tableBaseGlobal = new WebAssembly.Global(
+      { value: "i32", mutable: false },
+      tableBase,
+    );
+
+    // Build GOT proxy for imports.
+    //
+    // GOT.mem entries hold the *address in linear memory* of a data symbol the
+    // side module imports from the main process. If the main module exports
+    // that symbol as a WebAssembly.Global (typical for `--export-all`), its
+    // value is the address. Without this seeding, side modules read 0 for
+    // any imported global — silent NULL deref (e.g. opcache.so reads
+    // `sapi_module.name` as NULL, accel_find_sapi fails at startup).
+    //
+    // GOT.func entries hold a *table index* — the address-of-function value
+    // a C function pointer stores. Side-module data sections capture function
+    // pointers (e.g. opcache.so's ini_entries[].on_modify == &OnUpdateString
+    // exported from main). For those references to dispatch to the real
+    // function at runtime, the function must live in the shared
+    // indirect_function_table and the GOT entry must hold its index.
+    const tableIndexFor = (fn: Function): number => {
+      const tbl = options.table;
+      for (let i = 0; i < tbl.length; i++) {
+        if (tbl.get(i) === fn) return i;
+      }
+      const idx = tbl.length;
+      tbl.grow(1);
+      tbl.set(idx, fn);
+      return idx;
+    };
+
+    const getOrCreateGOTEntry = (
+      symName: string,
+      kind: "mem" | "func",
+    ): WebAssembly.Global => {
+      let entry = options.got.get(symName);
+      if (!entry) {
+        let initial = 0;
+        const sym = options.globalSymbols.get(symName);
+        if (kind === "mem" && sym instanceof WebAssembly.Global) {
+          initial = sym.value as number;
+        } else if (kind === "func" && typeof sym === "function") {
+          initial = tableIndexFor(sym);
+        }
+        entry = new WebAssembly.Global({ value: "i32", mutable: true }, initial);
+        options.got.set(symName, entry);
+      }
+      return entry;
+    };
+
+    // Tag imported by side modules compiled with clang's wasm SjLj lowering
+    // (`-mllvm -wasm-enable-sjlj`). The host doesn't actually catch these — the
+    // main process either has its own __c_longjmp tag (LLVM 22) or doesn't use
+    // SjLj (LLVM 21). A stub Tag lets the side module's import type-check and
+    // instantiate; behavior at throw time is undefined but the side module
+    // typically never throws this tag itself.
+    const longjmpTag = (typeof (WebAssembly as any).Tag === "function")
+      ? new (WebAssembly as any).Tag({ parameters: ["i32"] })
+      : undefined;
+
+    let instance: WebAssembly.Instance | null = null;
+    let sideForkState: SideModuleForkState | null = null;
+    const forkState = (): number => {
+      if (!instance) throw new Error(`${name}: side-module fork before instantiation`);
+      return Number((instance.exports.wpk_fork_state as () => number)());
+    };
+
+    const sideModuleForkImport = (): number => {
+      if (!instance || !options.sideModuleFork || sideForkBufAddr === 0) {
+        throw new Error(`${name}: side-module fork coordinator is unavailable`);
+      }
+      const state = forkState();
+      if (state === WPK_FORK_NORMAL) {
+        (instance.exports.wpk_fork_unwind_begin as (addr: number) => void)(sideForkBufAddr);
+        if (forkState() !== WPK_FORK_UNWINDING) {
+          throw new Error(`${name}: side-module fork failed to enter UNWINDING`);
+        }
+        sideForkState = { name, instance, forkBufAddr: sideForkBufAddr };
+        options.sideModuleFork.setActiveFork(sideForkState);
+        return options.sideModuleFork.invokeMainFork(WPK_FORK_UNWINDING);
+      }
+
+      if (state === WPK_FORK_REWINDING) {
+        (instance.exports.wpk_fork_rewind_end as () => void)();
+        if (forkState() !== WPK_FORK_NORMAL) {
+          throw new Error(`${name}: side-module fork failed to finish REWINDING`);
+        }
+        // A fork child re-instantiates this module, so its closure cannot retain
+        // the parent's SideModuleForkState object. The worker reconstructs the
+        // active identity from the copied archive/buffer metadata; rebuild the
+        // same structural identity here before clearing it.
+        const completedState = sideForkState ?? {
+          name,
+          instance,
+          forkBufAddr: sideForkBufAddr,
+        };
+        const result = options.sideModuleFork.invokeMainFork(WPK_FORK_NORMAL);
+        options.sideModuleFork.clearActiveFork(completedState);
+        sideForkState = null;
+        return result;
+      }
+
+      throw new Error(`${name}: env.fork reached in unexpected state ${state}`);
+    };
+
+    // Construct imports
+    const imports: WebAssembly.Imports = {
+      env: new Proxy({} as Record<string, WebAssembly.ImportValue>, {
+        get(_target, prop: string) {
+          switch (prop) {
+            case "memory": return options.memory;
+            case "__indirect_function_table": return options.table;
+            case "__memory_base": return memoryBaseGlobal;
+            case "__table_base": return tableBaseGlobal;
+            case "__stack_pointer": return options.stackPointer;
+            case "__c_longjmp": return longjmpTag;
+            case "fork":
+              if (importsFork) return sideModuleForkImport;
+              break;
+          }
+          const sym = options.globalSymbols.get(prop);
+          if (sym !== undefined) return sym;
+          return undefined;
+        },
+        has(_target, prop: string) {
+          if (["memory", "__indirect_function_table", "__memory_base",
+               "__table_base", "__stack_pointer", "__c_longjmp"].includes(prop)) return true;
+          if (prop === "fork" && importsFork) return true;
+          return options.globalSymbols.has(prop);
+        },
+      }),
+      "GOT.mem": new Proxy({} as Record<string, WebAssembly.Global>, {
+        get(_target, prop: string) {
+          return getOrCreateGOTEntry(prop, "mem");
+        },
+      }),
+      "GOT.func": new Proxy({} as Record<string, WebAssembly.Global>, {
+        get(_target, prop: string) {
+          return getOrCreateGOTEntry(prop, "func");
+        },
+      }),
+    };
+
+    // Instantiate synchronously after validating the side-module fork contract.
+    instance = new WebAssembly.Instance(module, imports);
+
+    // Relocate exports: data address globals need memoryBase added
+    const relocatedExports: Record<string, WebAssembly.ExportValue> = {};
+    for (const [exportName, exportValue] of Object.entries(instance.exports)) {
+      if (exportValue instanceof WebAssembly.Global) {
+        try {
+          (exportValue as any).value = (exportValue as any).value;
+          relocatedExports[exportName] = exportValue;
+        } catch {
+          relocatedExports[exportName] = new WebAssembly.Global(
+            { value: "i32", mutable: false },
+            (exportValue as WebAssembly.Global).value + memoryBase,
+          );
+        }
+      } else {
+        relocatedExports[exportName] = exportValue;
+      }
+    }
+
+    // Update GOT with this library's exports
+    for (const [exportName, exportValue] of Object.entries(relocatedExports)) {
+      if (exportName.startsWith("__")) continue;
+      const alreadyDefined = options.globalSymbols.has(exportName);
+
+      if (typeof exportValue === "function") {
+        const tableIdx = options.table.length;
+        options.table.grow(1);
+        options.table.set(tableIdx, exportValue as unknown as Function);
+
+        const gotEntry = options.got.get(exportName);
+        if (gotEntry && !alreadyDefined) {
+          gotEntry.value = tableIdx;
+        }
+        if (!alreadyDefined) {
+          options.globalSymbols.set(exportName, exportValue as Function);
+        }
+      } else if (exportValue instanceof WebAssembly.Global) {
+        const addr = (exportValue as WebAssembly.Global).value;
+        const gotEntry = options.got.get(exportName);
+        if (gotEntry && !alreadyDefined) {
+          gotEntry.value = addr as number;
+        }
+        if (!alreadyDefined) {
+          options.globalSymbols.set(exportName, exportValue);
+        }
+      }
+    }
+
+    // Run data relocations
+    const applyRelocs = instance.exports.__wasm_apply_data_relocs as Function | undefined;
+    if (applyRelocs) {
+      applyRelocs();
     }
 
     if (!replay) {
-      // Skip zero-init in replay: child memory already holds parent's
-      // post-startup data via fork memcpy.
-      new Uint8Array(options.memory.buffer, memoryBase, metadata.memorySize).fill(0);
-    }
-  }
-
-  // Allocate table slots
-  let tableBase = 0;
-  if (metadata.tableSize > 0) {
-    tableBase = options.table.length;
-    options.table.grow(metadata.tableSize);
-  }
-
-  // Create immutable globals for memory_base and table_base
-  const memoryBaseGlobal = new WebAssembly.Global(
-    { value: "i32", mutable: false },
-    memoryBase,
-  );
-  const tableBaseGlobal = new WebAssembly.Global(
-    { value: "i32", mutable: false },
-    tableBase,
-  );
-
-  // Build GOT proxy for imports.
-  //
-  // GOT.mem entries hold the *address in linear memory* of a data symbol the
-  // side module imports from the main process. If the main module exports
-  // that symbol as a WebAssembly.Global (typical for `--export-all`), its
-  // value is the address. Without this seeding, side modules read 0 for
-  // any imported global — silent NULL deref (e.g. opcache.so reads
-  // `sapi_module.name` as NULL, accel_find_sapi fails at startup).
-  //
-  // GOT.func entries hold a *table index* — the address-of-function value
-  // a C function pointer stores. Side-module data sections capture function
-  // pointers (e.g. opcache.so's ini_entries[].on_modify == &OnUpdateString
-  // exported from main). For those references to dispatch to the real
-  // function at runtime, the function must live in the shared
-  // indirect_function_table and the GOT entry must hold its index.
-  const tableIndexFor = (fn: Function): number => {
-    const tbl = options.table;
-    for (let i = 0; i < tbl.length; i++) {
-      if (tbl.get(i) === fn) return i;
-    }
-    const idx = tbl.length;
-    tbl.grow(1);
-    tbl.set(idx, fn);
-    return idx;
-  };
-
-  const getOrCreateGOTEntry = (
-    symName: string,
-    kind: "mem" | "func",
-  ): WebAssembly.Global => {
-    let entry = options.got.get(symName);
-    if (!entry) {
-      let initial = 0;
-      const sym = options.globalSymbols.get(symName);
-      if (kind === "mem" && sym instanceof WebAssembly.Global) {
-        initial = sym.value as number;
-      } else if (kind === "func" && typeof sym === "function") {
-        initial = tableIndexFor(sym);
+      // Skip ctors in replay: parent already ran them and post-startup state
+      // (e.g. opcache accel_globals, registered INI entries) is in the
+      // memcpy'd data; re-running would clobber it.
+      const ctors = instance.exports.__wasm_call_ctors as Function | undefined;
+      if (ctors) {
+        ctors();
       }
-      entry = new WebAssembly.Global({ value: "i32", mutable: true }, initial);
-      options.got.set(symName, entry);
     }
-    return entry;
-  };
 
-  // Tag imported by side modules compiled with clang's wasm SjLj lowering
-  // (`-mllvm -wasm-enable-sjlj`). The host doesn't actually catch these — the
-  // main process either has its own __c_longjmp tag (LLVM 22) or doesn't use
-  // SjLj (LLVM 21). A stub Tag lets the side module's import type-check and
-  // instantiate; behavior at throw time is undefined but the side module
-  // typically never throws this tag itself.
-  const longjmpTag = (typeof (WebAssembly as any).Tag === "function")
-    ? new (WebAssembly as any).Tag({ parameters: ["i32"] })
-    : undefined;
+    const loaded: LoadedSharedLibrary = {
+      instance,
+      memoryBase,
+      tableBase,
+      exports: relocatedExports,
+      metadata,
+      name,
+      forkBufAddr: sideForkBufAddr || undefined,
+      forkCapable: importsFork,
+      functionImports,
+      functionExports,
+      importsDynamicLookup,
+    };
 
-  // Construct imports
-  const imports: WebAssembly.Imports = {
-    env: new Proxy({} as Record<string, WebAssembly.ImportValue>, {
-      get(_target, prop: string) {
-        switch (prop) {
-          case "memory": return options.memory;
-          case "__indirect_function_table": return options.table;
-          case "__memory_base": return memoryBaseGlobal;
-          case "__table_base": return tableBaseGlobal;
-          case "__stack_pointer": return options.stackPointer;
-          case "__c_longjmp": return longjmpTag;
-        }
-        const sym = options.globalSymbols.get(prop);
-        if (sym !== undefined) return sym;
-        return undefined;
-      },
-      has(_target, prop: string) {
-        if (["memory", "__indirect_function_table", "__memory_base",
-             "__table_base", "__stack_pointer", "__c_longjmp"].includes(prop)) return true;
-        return options.globalSymbols.has(prop);
-      },
-    }),
-    "GOT.mem": new Proxy({} as Record<string, WebAssembly.Global>, {
-      get(_target, prop: string) {
-        return getOrCreateGOTEntry(prop, "mem");
-      },
-    }),
-    "GOT.func": new Proxy({} as Record<string, WebAssembly.Global>, {
-      get(_target, prop: string) {
-        return getOrCreateGOTEntry(prop, "func");
-      },
-    }),
-  };
-
-  // Compile and instantiate synchronously
-  const module = new WebAssembly.Module(wasmBytes as unknown as BufferSource);
-  const instance = new WebAssembly.Instance(module, imports);
-
-  // Relocate exports: data address globals need memoryBase added
-  const relocatedExports: Record<string, WebAssembly.ExportValue> = {};
-  for (const [exportName, exportValue] of Object.entries(instance.exports)) {
-    if (exportValue instanceof WebAssembly.Global) {
-      try {
-        (exportValue as any).value = (exportValue as any).value;
-        relocatedExports[exportName] = exportValue;
-      } catch {
-        relocatedExports[exportName] = new WebAssembly.Global(
-          { value: "i32", mutable: false },
-          (exportValue as WebAssembly.Global).value + memoryBase,
-        );
+    options.loadedLibraries.set(name, loaded);
+    return loaded;
+  } catch (error) {
+    // Restore every mutable host-side linker structure we can. Table length and
+    // Wasm memory cannot shrink, so clear newly-addressable table slots and let
+    // the next successful archive entry record the resulting exact table base.
+    for (let i = tableRollbackBase; i < options.table.length; i++) {
+      try { options.table.set(i, null); } catch { /* best-effort for nullable funcref */ }
+    }
+    options.globalSymbols.clear();
+    for (const [symbol, value] of symbolRollback) options.globalSymbols.set(symbol, value);
+    options.got.clear();
+    for (const [symbol, snapshot] of gotRollback) {
+      try { snapshot.global.value = snapshot.value; } catch { /* immutable should not occur */ }
+      options.got.set(symbol, snapshot.global);
+    }
+    if (options.heapPointer && heapRollbackValue !== undefined) {
+      options.heapPointer.value = heapRollbackValue;
+    }
+    if (options.deallocateMemory) {
+      for (const allocation of allocations.reverse()) {
+        try { options.deallocateMemory(allocation.addr, allocation.size); } catch { /* preserve cause */ }
       }
-    } else {
-      relocatedExports[exportName] = exportValue;
     }
+    throw error;
   }
-
-  // Update GOT with this library's exports
-  for (const [exportName, exportValue] of Object.entries(relocatedExports)) {
-    if (exportName.startsWith("__")) continue;
-
-    if (typeof exportValue === "function") {
-      const tableIdx = options.table.length;
-      options.table.grow(1);
-      options.table.set(tableIdx, exportValue as unknown as Function);
-
-      const gotEntry = options.got.get(exportName);
-      if (gotEntry) {
-        gotEntry.value = tableIdx;
-      }
-      options.globalSymbols.set(exportName, exportValue as Function);
-    } else if (exportValue instanceof WebAssembly.Global) {
-      const addr = (exportValue as WebAssembly.Global).value;
-      const gotEntry = options.got.get(exportName);
-      if (gotEntry) {
-        gotEntry.value = addr as number;
-      }
-      options.globalSymbols.set(exportName, exportValue);
-    }
-  }
-
-  // Run data relocations
-  const applyRelocs = instance.exports.__wasm_apply_data_relocs as Function | undefined;
-  if (applyRelocs) {
-    applyRelocs();
-  }
-
-  if (!replay) {
-    // Skip ctors in replay: parent already ran them and post-startup state
-    // (e.g. opcache accel_globals, registered INI entries) is in the
-    // memcpy'd data; re-running would clobber it.
-    const ctors = instance.exports.__wasm_call_ctors as Function | undefined;
-    if (ctors) {
-      ctors();
-    }
-  }
-
-  const loaded: LoadedSharedLibrary = {
-    instance,
-    memoryBase,
-    tableBase,
-    exports: relocatedExports,
-    metadata,
-    name,
-  };
-
-  options.loadedLibraries.set(name, loaded);
-  return loaded;
 }
 
 /**
