@@ -43,9 +43,7 @@
             llvmPkg.libcxx.dev
           ];
         };
-      in {
-        devShells.default = pkgs.mkShell {
-          packages = [
+        devShellPackages = [
             rustToolchain
             llvmTree
             # Node 24, not 22: the host code constructs
@@ -179,14 +177,19 @@
             # cross-build under packages/registry/sqlite/ — that's the
             # target binary, this is the host CLI used by tests.
             pkgs.sqlite
-          ];
+        ];
+      in {
+        devShells.default = pkgs.mkShell {
+          packages = devShellPackages;
 
           shellHook = ''
             # On Darwin, nix develop can leave user profile and
-            # /opt/homebrew entries ahead of mkShell package bins. Put the
-            # declared Rust toolchain first so source fallbacks that require
-            # nightly flags do not accidentally run a host stable cargo.
-            export PATH="${rustToolchain}/bin:$PATH"
+            # /opt/homebrew entries ahead of mkShell package bins. Reassert
+            # the complete declared tool set, not only Rust, so package builds
+            # cannot silently select host CMake, make, or another ambient
+            # binary ahead of the flake-pinned version.
+            export KANDELO_DEV_SHELL_TOOL_PATH="${pkgs.lib.makeBinPath devShellPackages}"
+            export PATH="$KANDELO_DEV_SHELL_TOOL_PATH:$PATH"
             export LLVM_BIN=${llvmTree}/bin
             export LLVM_PREFIX=${llvmTree}
             export LLVM_VERSION=${llvmVersion}
@@ -215,10 +218,11 @@
             # (shouldn't happen in this repo, but cheap to guard).
             __repo_root=$(git rev-parse --show-toplevel 2>/dev/null || echo "$PWD")
             if [ -d "$__repo_root/sdk/bin" ]; then
-              case ":$PATH:" in
-                *:"$__repo_root/sdk/bin":*) ;;
-                *) export PATH="$__repo_root/sdk/bin:$PATH" ;;
-              esac
+              export KANDELO_DEV_SHELL_TOOL_PATH="$__repo_root/sdk/bin:$KANDELO_DEV_SHELL_TOOL_PATH"
+              export PATH="$__repo_root/sdk/bin:$PATH"
+            fi
+            if [ -f "$__repo_root/scripts/check-dev-shell-tools.sh" ]; then
+              bash "$__repo_root/scripts/check-dev-shell-tools.sh"
             fi
             unset __repo_root
             echo "kandelo dev shell — LLVM ${llvmVersion}, Rust (pinned via rust-toolchain.toml), Node 24, Erlang 28 (minimal), SDK on PATH"
