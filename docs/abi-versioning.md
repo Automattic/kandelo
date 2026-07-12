@@ -39,6 +39,10 @@ kernel. Specifically, any of the following requires an `ABI_VERSION` bump:
   fork-using user program. The kernel does not read these exports
   directly, but the host runtime in `host/src/worker-main.ts` does —
   a rename here silently breaks fork for every already-built binary.
+- Changing the linked musl/glue syscall function types or argument-slot widths,
+  including the wasm32 cancellation-point `__syscall_cp` path. These are not
+  currently visible in the structural snapshot, but stale objects and archives
+  can otherwise link with incompatible Wasm function signatures.
 - Changing the name, version, encoding, or role semantics of the
   `kandelo.wpk_fork.capabilities` custom section. The host uses these claims to
   decide whether a main/side-module pair can safely coordinate fork replay.

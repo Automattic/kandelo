@@ -2933,6 +2933,9 @@ pub fn sys_lseek(
     // directory position. The cookie is the d_off value from getdents64.
     if ofd.file_type == FileType::Directory {
         if whence == SEEK_SET {
+            if offset < 0 {
+                return Err(Errno::EINVAL);
+            }
             // Close the existing dir handle if open
             if ofd.dir_host_handle >= 0 {
                 let _ = host.host_closedir(ofd.dir_host_handle);
@@ -2987,8 +2990,10 @@ pub fn sys_lseek(
                 let cur = ofd.offset;
                 let new_off = match whence {
                     SEEK_SET => offset,
-                    SEEK_CUR => cur + offset,
-                    SEEK_END => FB_SMEM_LEN as i64 + offset,
+                    SEEK_CUR => cur.checked_add(offset).ok_or(Errno::EOVERFLOW)?,
+                    SEEK_END => (FB_SMEM_LEN as i64)
+                        .checked_add(offset)
+                        .ok_or(Errno::EOVERFLOW)?,
                     _ => return Err(Errno::EINVAL),
                 };
                 if new_off < 0 {
@@ -3006,6 +3011,9 @@ pub fn sys_lseek(
         || ofd.host_handle == crate::devfs::DEVFS_DIR_HANDLE
     {
         if whence == SEEK_SET {
+            if offset < 0 {
+                return Err(Errno::EINVAL);
+            }
             ofd.dir_synth_state = 0;
             ofd.dir_entry_offset = 0;
             ofd.offset = offset;
@@ -3042,7 +3050,7 @@ pub fn sys_lseek(
         let size = synthetic_file_content(&ofd.path).map_or(0, |d| d.len() as i64);
         let new_pos = match whence {
             SEEK_SET => offset,
-            SEEK_CUR => ofd.offset + offset,
+            SEEK_CUR => ofd.offset.checked_add(offset).ok_or(Errno::EOVERFLOW)?,
             SEEK_END => size.checked_add(offset).ok_or(Errno::EOVERFLOW)?,
             _ => return Err(Errno::EINVAL),
         };
@@ -3067,7 +3075,7 @@ pub fn sys_lseek(
         let new_pos = match whence {
             SEEK_SET => offset,
             SEEK_CUR => current.checked_add(offset).ok_or(Errno::EOVERFLOW)?,
-            SEEK_END => size + offset,
+            SEEK_END => size.checked_add(offset).ok_or(Errno::EOVERFLOW)?,
             _ => return Err(Errno::EINVAL),
         };
         if new_pos < 0 {
@@ -3079,11 +3087,17 @@ pub fn sys_lseek(
 
     let new_offset = match whence {
         SEEK_SET => {
+            if offset < 0 {
+                return Err(Errno::EINVAL);
+            }
             host.host_seek(ofd.host_handle, offset, whence)?;
             offset
         }
         SEEK_CUR => {
-            let pos = ofd.offset + offset;
+            let pos = ofd.offset.checked_add(offset).ok_or(Errno::EOVERFLOW)?;
+            if pos < 0 {
+                return Err(Errno::EINVAL);
+            }
             host.host_seek(ofd.host_handle, pos, SEEK_SET)?;
             pos
         }
@@ -13658,6 +13672,108 @@ mod tests {
         // SEEK_CUR -10 -> 90
         let pos = sys_lseek(&mut proc, &mut host, fd, -10, SEEK_CUR).unwrap();
         assert_eq!(pos, 90);
+    }
+
+    #[test]
+    fn lseek_errors_preserve_kernel_owned_offsets() {
+        fn install_fd(
+            proc: &mut Process,
+            file_type: FileType,
+            host_handle: i64,
+            path: &[u8],
+        ) -> (i32, usize) {
+            let ofd_idx = proc
+                .ofd_table
+                .create(file_type, O_RDWR, host_handle, path.to_vec());
+            let fd = proc
+                .fd_table
+                .alloc(crate::fd::OpenFileDescRef(ofd_idx), 0)
+                .unwrap();
+            (fd, ofd_idx)
+        }
+
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+
+        let (dir_fd, dir_ofd) = install_fd(&mut proc, FileType::Directory, 71, b"/dir");
+        {
+            let ofd = proc.ofd_table.get_mut(dir_ofd).unwrap();
+            ofd.offset = 4;
+            ofd.dir_synth_state = 2;
+            ofd.dir_entry_offset = 4;
+        }
+        assert_eq!(
+            sys_lseek(&mut proc, &mut host, dir_fd, -1, SEEK_SET),
+            Err(Errno::EINVAL)
+        );
+        let ofd = proc.ofd_table.get(dir_ofd).unwrap();
+        assert_eq!((ofd.offset, ofd.dir_synth_state, ofd.dir_entry_offset), (4, 2, 4));
+
+        let (proc_fd, proc_ofd) = install_fd(
+            &mut proc,
+            FileType::Regular,
+            crate::procfs::PROCFS_DIR_HANDLE,
+            b"/proc",
+        );
+        proc.ofd_table.get_mut(proc_ofd).unwrap().offset = 3;
+        assert_eq!(
+            sys_lseek(&mut proc, &mut host, proc_fd, -1, SEEK_SET),
+            Err(Errno::EINVAL)
+        );
+        assert_eq!(proc.ofd_table.get(proc_ofd).unwrap().offset, 3);
+
+        let (fb_fd, fb_ofd) = install_fd(
+            &mut proc,
+            FileType::CharDevice,
+            VirtualDevice::Fb0.host_handle(),
+            b"/dev/fb0",
+        );
+        assert_eq!(
+            sys_lseek(&mut proc, &mut host, fb_fd, 7, SEEK_SET),
+            Ok(7)
+        );
+        assert_eq!(
+            sys_lseek(&mut proc, &mut host, fb_fd, i64::MAX, SEEK_CUR),
+            Err(Errno::EOVERFLOW)
+        );
+        assert_eq!(proc.ofd_table.get(fb_ofd).unwrap().offset, 7);
+
+        let (synthetic_fd, synthetic_ofd) = install_fd(
+            &mut proc,
+            FileType::Regular,
+            SYNTHETIC_FILE_HANDLE,
+            b"/etc/mtab",
+        );
+        assert_eq!(
+            sys_lseek(&mut proc, &mut host, synthetic_fd, 2, SEEK_SET),
+            Ok(2)
+        );
+        assert_eq!(
+            sys_lseek(
+                &mut proc,
+                &mut host,
+                synthetic_fd,
+                i64::MAX,
+                SEEK_CUR,
+            ),
+            Err(Errno::EOVERFLOW)
+        );
+        assert_eq!(proc.ofd_table.get(synthetic_ofd).unwrap().offset, 2);
+
+        let memfd = sys_memfd_create(&mut proc, b"seek-overflow", 0).unwrap();
+        sys_write(&mut proc, &mut host, memfd, b"abcdef").unwrap();
+        assert_eq!(
+            sys_lseek(&mut proc, &mut host, memfd, 2, SEEK_SET),
+            Ok(2)
+        );
+        assert_eq!(
+            sys_lseek(&mut proc, &mut host, memfd, i64::MAX, SEEK_END),
+            Err(Errno::EOVERFLOW)
+        );
+        assert_eq!(
+            sys_lseek(&mut proc, &mut host, memfd, 0, SEEK_CUR),
+            Ok(2)
+        );
     }
 
     #[test]

@@ -8,10 +8,12 @@
  *   0       4B     status (IDLE=0, PENDING=1, COMPLETE=2, ERROR=3)
  *   4       4B     opcode
  *   8       48B    args (12 × i32)
- *   56      4B     result
- *   60      4B     result2 (secondary return value)
+ *   56      4B     result / i64 result low word
+ *   60      4B     result2 / i64 result high word
  *   64      ...    data section (path strings, read/write buffers)
  */
+
+import { joinSafeI64, splitSafeI64 } from "./i64";
 
 const STATUS_OFFSET = 0;
 const OPCODE_OFFSET = 4;
@@ -94,6 +96,16 @@ export class OpfsChannel {
     this.view.setInt32(ARGS_OFFSET + index * 4, value, true);
   }
 
+  setI64Arg(index: number, value: number): void {
+    const [low, high] = splitSafeI64(value);
+    this.setArg(index, low);
+    this.setArg(index + 1, high);
+  }
+
+  getI64Arg(index: number): number {
+    return joinSafeI64(this.getArg(index), this.getArg(index + 1));
+  }
+
   // --- Result ---
 
   get result(): number {
@@ -110,6 +122,16 @@ export class OpfsChannel {
 
   set result2(value: number) {
     this.view.setInt32(RESULT2_OFFSET, value, true);
+  }
+
+  get i64Result(): number {
+    return joinSafeI64(this.result, this.result2);
+  }
+
+  set i64Result(value: number) {
+    const [low, high] = splitSafeI64(value);
+    this.result = low;
+    this.result2 = high;
   }
 
   // --- Data section ---
@@ -134,7 +156,8 @@ export class OpfsChannel {
   /** Read a UTF-8 string from the data section, up to `length` bytes. */
   readString(length: number): string {
     const decoder = new TextDecoder();
-    return decoder.decode(new Uint8Array(this.buffer, DATA_OFFSET, length));
+    const bytes = new Uint8Array(this.buffer, DATA_OFFSET, length).slice();
+    return decoder.decode(bytes);
   }
 
   /**
@@ -156,7 +179,7 @@ export class OpfsChannel {
    * Read two null-separated strings from the data section.
    */
   readTwoStrings(totalLength: number): [string, string] {
-    const data = new Uint8Array(this.buffer, DATA_OFFSET, totalLength);
+    const data = new Uint8Array(this.buffer, DATA_OFFSET, totalLength).slice();
     const nullIdx = data.indexOf(0);
     const decoder = new TextDecoder();
     const s1 = decoder.decode(data.subarray(0, nullIdx));
