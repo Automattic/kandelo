@@ -197,10 +197,18 @@ commit, ABI namespace, derived bottle root, and formula matrix, each
    trusts only the reviewed selected tap before evaluating its dependency
    Formulae. The store is removed with the build work directory; the publisher
    does not disable tap-trust enforcement or reuse persistent account state.
-   The job then builds the required Kandelo pieces and executes the Formula
-   build and test without publisher credentials. Its strict handoff contains
-   only `manifest.json`, Homebrew's bottle JSON, and one gzip bottle archive.
-   It contains no Formula source, scripts, environment files, or credentials.
+   The job then builds the required Kandelo pieces. Before Formula execution it
+   uses the authoritative package resolver in fetch-only mode to materialize a
+   wasm32 base shell-script test runtime: Dash, Coreutils, Grep, and Sed. The
+   host resolver intentionally maps unqualified `programs/<tool>.wasm` paths to
+   wasm32 even for a wasm64 bottle matrix entry, so this runtime does not vary
+   with the Formula's target architecture. These binaries are Kandelo
+   base-system prerequisites, not Formula dependencies or evidence for the
+   migrated package; source-build fallback is disabled. The job executes the
+   Formula build and test without publisher credentials. Its
+   strict handoff contains only `manifest.json`, Homebrew's bottle JSON, and one
+   gzip bottle archive. It contains no Formula source, scripts, environment
+   files, or credentials.
 2. `upload-bottle` runs only for a write publication and receives only
    `packages: write`. On a fresh runner it validates the strict build handoff
    against the plan before exposing the token to an isolated ORAS upload. Its

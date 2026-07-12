@@ -15,7 +15,7 @@ UPLOAD_ACTION = "actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0
 DOWNLOAD_ACTION = "actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c"
 BREW_COMMIT = "34c40c18ffa2029b611b61c73273e32c003d0842"
 PUBLISHER_PLAN_DIGEST = "5724fbd09d7c43ba63c5bfa58cb4e73d7f0c08247b029b49a3e4e940d0011bd5"
-PUBLISHER_BUILD_DIGEST = "7c4141acf50a353846fc87c9a8a9928efb5ba717e25793908f14c31b96045022"
+PUBLISHER_BUILD_DIGEST = "62bcf58790d66f97b802713f5b85e49bc155ccc738cddc7111948bba331793cc"
 PUBLISHER_UPLOAD_DIGEST = "60a32b6c315cfbaa5b4035c67f1cbb76d17b17a6e20c4f3e06d72aa66af456bd"
 PUBLISHER_VERIFY_DIGEST = "8ec75a3dbdf3fc0df60672ef1d69d7a1e32beaa6e18cbeb91b513d289d95294c"
 PUBLISHER_FINALIZE_DIGEST = "ff194b4abd44c058c18a1a9175b9be3f02814302a19b0f2842c3c86ad025ee04"
@@ -475,6 +475,25 @@ def check_publisher(workflow)
   check(build_run.include?("unprivileged bottle build received $secret_name") &&
         build_run.include?("scripts/homebrew-bottle-build.sh"),
         "publisher build phase no longer rejects credentials or uses the reviewed builder")
+  runtime_step = named_step(build_steps, "Materialize shell-script runtime for Formula tests")
+  check(runtime_step.keys.sort == %w[name run shell] && runtime_step["shell"] == "bash",
+        "publisher Formula test runtime mapping changed")
+  runtime_run = runtime_step.fetch("run")
+  [
+    "bash scripts/dev-shell.sh bash -c", 'host="$(rustc -vV | sed -n "s/^host: //p")"',
+    "for package in dash coreutils grep sed", 'cargo run --release -p xtask --target "$host" --quiet --',
+    "build-deps --arch wasm32", '--binaries-dir "$PWD/binaries"', '--fetch-only resolve "$package"',
+  ].each do |fragment|
+    check(runtime_run.include?(fragment), "publisher Formula test runtime lacks #{fragment}")
+  end
+  kernel_step = named_step(build_steps, "Build Kandelo kernel")
+  javascript_step = named_step(build_steps, "Install JavaScript dependencies for formula tests")
+  build_formula_step = named_step(build_steps,
+                                  "Build and test Homebrew bottle without publisher credentials")
+  check(build_steps.index(kernel_step) < build_steps.index(runtime_step) &&
+        build_steps.index(runtime_step) < build_steps.index(javascript_step) &&
+        build_steps.index(runtime_step) < build_steps.index(build_formula_step),
+        "publisher Formula test runtime is materialized outside the unprivileged pre-test phase")
   create_handoff_run = named_step(build_steps, "Create strict bottle data handoff").fetch("run")
   [
     "scripts/homebrew-create-build-handoff.sh", '--tap-repository "$KANDELO_HOMEBREW_TAP_REPOSITORY"',
@@ -862,6 +881,31 @@ def self_test(publisher, maintenance)
       step = mutate_named_step(w, "build-and-test",
                                "Build and test Homebrew bottle without publisher credentials")
       step["env"]["GH_TOKEN"] = "${{ github.token }}"
+    },
+    "Formula test runtime source fallback" => lambda { |w|
+      step = mutate_named_step(w, "build-and-test",
+                               "Materialize shell-script runtime for Formula tests")
+      step["run"] = step.fetch("run").sub("--fetch-only resolve", "resolve")
+    },
+    "Formula test runtime architecture drift" => lambda { |w|
+      step = mutate_named_step(w, "build-and-test",
+                               "Materialize shell-script runtime for Formula tests")
+      step["run"] = step.fetch("run").sub("--arch wasm32", "--arch wasm64")
+    },
+    "Formula test runtime package drift" => lambda { |w|
+      step = mutate_named_step(w, "build-and-test",
+                               "Materialize shell-script runtime for Formula tests")
+      step["run"] = step.fetch("run").sub("dash coreutils grep sed", "dash")
+    },
+    "Formula test runtime ordering bypass" => lambda { |w|
+      steps = w.fetch("jobs").fetch("build-and-test").fetch("steps")
+      runtime_index = steps.index do |step|
+        step["name"] == "Materialize shell-script runtime for Formula tests"
+      end
+      formula_index = steps.index do |step|
+        step["name"] == "Build and test Homebrew bottle without publisher credentials"
+      end
+      steps[runtime_index], steps[formula_index] = steps[formula_index], steps[runtime_index]
     },
     "verifier token exposure" => lambda { |w|
       step = mutate_named_step(w, "verify-bottle",

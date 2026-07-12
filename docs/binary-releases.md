@@ -32,9 +32,13 @@ do not appear in the main repository's `binaries-abi-v<N>` `index.toml`
 ledger. See [docs/homebrew-publishing.md](homebrew-publishing.md) for formula
 authoring and operations.
 
-Homebrew runtime verification still fetches the complete
-`binaries-abi-v<N>` graph needed to boot Kandelo in Node and the browser. Those
-kernel, host-runtime, and VFS artifacts are platform prerequisites. The
+The unprivileged Homebrew build job fetch-only materializes the wasm32 Dash,
+Coreutils, Grep, and Sed artifacts from `binaries-abi-v<N>` so Formula tests can
+execute installed shell scripts on Kandelo. These unqualified host-resolver
+paths intentionally remain wasm32 when the bottle matrix target is wasm64.
+Homebrew runtime verification also fetches the complete ABI graph needed to
+boot Kandelo in Node and the browser. These base tools, kernel, host-runtime,
+and VFS artifacts are platform prerequisites. The
 migrated package being verified is poured from the Homebrew bottle: the local
 bottle in a dry run, or the anonymously read-back GHCR bottle in a write run.
 It is not selected from Kandelo's package registry archive ledger.
