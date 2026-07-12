@@ -411,7 +411,9 @@ The legacy `kernel.spawn(programBytes, argv, { fsSab })` path is still supported
 
 ### Lazy Files
 
-`MemoryFileSystem` supports **lazy files** — files registered with a URL and declared size that are only fetched on first access. This enables loading large binaries (e.g., nginx, PHP-FPM, coreutils) without fetching everything upfront — they are only fetched when a process exec's them.
+`MemoryFileSystem` supports **lazy files** — files registered with a URL and declared logical size that are only fetched on first access. This enables loading large binaries (e.g., nginx, PHP-FPM, coreutils) without fetching everything upfront — they are only fetched when a process exec's them. Materialization verifies the decoded Fetch body byte count against the declaration before replacing the lazy stub. It also requires the complete write to fit in the VFS; a wrong-sized response or short VFS write restores the empty stub and remains retryable. Node and browser hosts both materialize the successful bytes into the VFS before exec.
+
+Lazy content is limited to 1 GiB per file or archive. Version 1 images cap each lazy-metadata section at 16 MiB, allow at most 100,000 total lazy entries and 4,096 archive groups, and reject non-canonical entry paths, invalid inode/type mappings, truncated sections, and trailing bytes. Lazy archives additionally verify every decoded member against its declared size and roll all regular-file stubs back if any member cannot be stored.
 
 ```typescript
 // Register a lazy file (creates empty stub, fetches on demand)

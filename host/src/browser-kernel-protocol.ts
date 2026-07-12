@@ -192,6 +192,7 @@ export interface RegisterPtyOutputMessage {
 export interface RegisterLazyFilesMessage {
   type: "register_lazy_files";
   requestId?: number;
+  /** Exact decoded logical bytes, capped at the VFS's 1 GiB content limit. */
   entries: Array<{ ino: number; path: string; url: string; size: number }>;
 }
 

@@ -61,6 +61,22 @@ function makeRealZip() {
   return { zipBytes, entries: parseZipCentralDirectory(zipBytes) };
 }
 
+function rewriteCentralUncompressedSize(zipBytes: Uint8Array, size: number): Uint8Array {
+  const rewritten = zipBytes.slice();
+  const view = new DataView(
+    rewritten.buffer,
+    rewritten.byteOffset,
+    rewritten.byteLength,
+  );
+  for (let offset = 0; offset <= rewritten.byteLength - 46; offset++) {
+    if (view.getUint32(offset, true) === 0x02014b50) {
+      view.setUint32(offset + 24, size, true);
+      return rewritten;
+    }
+  }
+  throw new Error("zip central directory not found");
+}
+
 // --- Task 3: Registration ---
 
 describe("Lazy archive group registration", () => {
@@ -336,6 +352,121 @@ describe("Lazy archive materialization", () => {
     );
   });
 
+  it("preserves archive stubs after a fetch or parse failure so materialization can retry", async () => {
+    const mfs = createMemfs();
+    const { zipBytes, entries } = makeRealZip();
+    const group = mfs.registerLazyArchiveFromEntries(
+      "http://example.com/test.zip",
+      entries,
+      "/opt",
+    );
+
+    globalThis.fetch = vi.fn().mockResolvedValueOnce({
+      ok: true,
+      headers: new Headers({ "content-length": "8" }),
+      body: null,
+      arrayBuffer: async () => new TextEncoder().encode("not-a-zip").buffer,
+    } as unknown as Response);
+    await expect(mfs.ensureMaterialized("/opt/bin/hello")).rejects.toThrow();
+    expect(group.materialized).toBe(false);
+    expect(mfs.stat("/opt/bin/hello").size).toBe(entries[0].uncompressedSize);
+    const stubFd = mfs.open("/opt/bin/hello", O_RDONLY, 0);
+    const stubBytes = new Uint8Array(8);
+    expect(mfs.read(stubFd, stubBytes, null, stubBytes.byteLength)).toBe(0);
+    mfs.close(stubFd);
+
+    globalThis.fetch = vi.fn().mockResolvedValueOnce({
+      ok: true,
+      headers: new Headers({ "content-length": String(zipBytes.byteLength) }),
+      body: null,
+      arrayBuffer: async () => zipBytes.buffer,
+    } as unknown as Response);
+    await expect(mfs.ensureMaterialized("/opt/bin/hello")).resolves.toBe(true);
+    expect(group.materialized).toBe(true);
+  });
+
+  it("rejects decoded member size drift before writing any archive stub", async () => {
+    const mfs = createMemfs();
+    const { zipBytes, entries } = makeRealZip();
+    const group = mfs.registerLazyArchiveFromEntries(
+      "http://example.com/test.zip",
+      entries,
+      "/opt",
+    );
+    const hello = group.entries.get("/opt/bin/hello")!;
+    hello.size += 1;
+    globalThis.fetch = vi.fn().mockResolvedValue({
+      ok: true,
+      body: null,
+      arrayBuffer: async () => zipBytes.buffer,
+    } as unknown as Response);
+
+    await expect(mfs.ensureMaterialized("/opt/bin/hello")).rejects.toThrow(
+      /lazy file size mismatch/,
+    );
+    expect(group.materialized).toBe(false);
+    for (const path of ["/opt/bin/hello", "/opt/share/data.txt"]) {
+      const fd = mfs.open(path, O_RDONLY, 0);
+      const bytes = new Uint8Array(8);
+      expect(mfs.read(fd, bytes, null, bytes.byteLength)).toBe(0);
+      mfs.close(fd);
+    }
+  });
+
+  it("bounds deflate output using the declared member size", async () => {
+    const mfs = createMemfs();
+    const original = zipSync({ "bin/expanded": new Uint8Array(1024 * 1024) });
+    const zipBytes = rewriteCentralUncompressedSize(original, 1);
+    const entries = parseZipCentralDirectory(zipBytes);
+    expect(entries[0].compressionMethod).toBe(8);
+    const group = mfs.registerLazyArchiveFromEntries(
+      "http://example.com/expanded.zip",
+      entries,
+      "/opt",
+    );
+    globalThis.fetch = vi.fn().mockResolvedValue({
+      ok: true,
+      body: null,
+      arrayBuffer: async () => zipBytes.buffer,
+    } as unknown as Response);
+
+    await expect(mfs.ensureMaterialized("/opt/bin/expanded")).rejects.toThrow(
+      /Zip member size mismatch.*expected 1 bytes, received at least 2/,
+    );
+    expect(group.materialized).toBe(false);
+    const fd = mfs.open("/opt/bin/expanded", O_RDONLY, 0);
+    const bytes = new Uint8Array(8);
+    expect(mfs.read(fd, bytes, null, bytes.byteLength)).toBe(0);
+    mfs.close(fd);
+  });
+
+  it("rolls every archive member back to an empty stub after ENOSPC", async () => {
+    const mfs = MemoryFileSystem.create(new SharedArrayBuffer(64 * 1024));
+    const content = new Uint8Array(128 * 1024);
+    const zipBytes = zipSync({ "bin/large": content }, { level: 0 });
+    const entries = parseZipCentralDirectory(zipBytes);
+    const group = mfs.registerLazyArchiveFromEntries(
+      "http://example.com/large.zip",
+      entries,
+      "/opt",
+    );
+    globalThis.fetch = vi.fn().mockResolvedValue({
+      ok: true,
+      body: null,
+      arrayBuffer: async () => zipBytes.buffer,
+    } as unknown as Response);
+
+    await expect(mfs.ensureMaterialized("/opt/bin/large")).rejects.toThrow(
+      /could not be stored completely/,
+    );
+    expect(group.materialized).toBe(false);
+    expect(mfs.stat("/opt/bin/large").size).toBe(content.byteLength);
+    const fd = mfs.open("/opt/bin/large", O_RDONLY, 0);
+    const bytes = new Uint8Array(8);
+    expect(mfs.read(fd, bytes, null, bytes.byteLength)).toBe(0);
+    mfs.close(fd);
+  });
+
   it("all files materialized when any one is accessed", async () => {
     const mfs = createMemfs();
     const { zipBytes, entries } = makeRealZip();
@@ -374,7 +505,10 @@ describe("Lazy archive materialization", () => {
     } as unknown as Response);
     globalThis.fetch = fetchMock;
 
-    await mfs.ensureArchiveMaterialized(group);
+    await Promise.all([
+      mfs.ensureArchiveMaterialized(group),
+      mfs.ensureArchiveMaterialized(group),
+    ]);
     await mfs.ensureArchiveMaterialized(group);
 
     expect(fetchMock).toHaveBeenCalledTimes(1);
@@ -528,6 +662,47 @@ describe("Lazy archive export/import", () => {
     expect(mfs2.stat("/usr/bin/vim").size).toBe(500000);
     expect(mfs2.stat("/usr/share/vim/syntax/c.vim").size).toBe(2048);
     expect(mfs2.stat("/usr/share/vim/README").size).toBe(0);
+  });
+
+  it("preserves the established trailing-slash mount prefix representation", () => {
+    const sab = new SharedArrayBuffer(4 * 1024 * 1024);
+    const source = MemoryFileSystem.create(sab);
+    const { entries } = makeRealZip();
+    source.registerLazyArchiveFromEntries("test.zip", entries, "/usr/");
+
+    const imported = MemoryFileSystem.fromExisting(sab);
+    imported.importLazyArchiveEntries(source.exportLazyArchiveEntries());
+
+    expect(imported.exportLazyArchiveEntries()[0].mountPrefix).toBe("/usr/");
+    expect(imported.stat("/usr/bin/hello").size).toBe(20);
+  });
+
+  it("rejects malformed archive imports transactionally", () => {
+    const sab = new SharedArrayBuffer(4 * 1024 * 1024);
+    const source = MemoryFileSystem.create(sab);
+    source.registerLazyArchiveFromEntries(
+      "http://example.com/vim.zip",
+      makeFakeEntries(),
+      "/",
+    );
+    const serialized = source.exportLazyArchiveEntries();
+    const malformed = structuredClone(serialized);
+    malformed[0].entries[1] = {
+      ...malformed[0].entries[1],
+      vfsPath: "/usr/bin",
+      ino: source.lstat("/usr/bin").ino,
+    };
+
+    const imported = MemoryFileSystem.fromExisting(sab);
+    expect(() => imported.importLazyArchiveEntries(malformed)).toThrow(/wrong file type/);
+    expect(imported.exportLazyArchiveEntries()).toEqual([]);
+
+    const invalidSize = structuredClone(serialized);
+    invalidSize[0].entries[0].size = -1;
+    expect(() => imported.importLazyArchiveEntries(invalidSize)).toThrow(
+      /non-negative safe-integer size/,
+    );
+    expect(imported.exportLazyArchiveEntries()).toEqual([]);
   });
 
   it("rebaseToNewFileSystem preserves unmaterialized archive metadata", () => {

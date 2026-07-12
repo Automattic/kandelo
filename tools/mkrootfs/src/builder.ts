@@ -117,7 +117,10 @@ function buildFiles(
   );
   for (const f of files) {
     if (f.lazyUrl !== undefined) {
-      mfs.registerLazyFile(f.path, f.lazyUrl, f.lazySize ?? 0, f.mode);
+      if (f.lazySize === undefined) {
+        throw new Error(`manifest line ${f.lineNumber}: lazy file is missing its logical size`);
+      }
+      mfs.registerLazyFile(f.path, f.lazyUrl, f.lazySize, f.mode);
       mfs.chown(f.path, f.uid, f.gid);
       mfs.chmod(f.path, f.mode);
       continue;
