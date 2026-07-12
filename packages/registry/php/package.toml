@@ -5,7 +5,7 @@ kernel_abi = 19
 # The rebuilt executables import `__wasm_posix_vm_interrupt_after`, which is
 # part of the ABI-19 host contract. Older package archives must not satisfy this
 # recipe; rebuild the CLI, FPM, and side modules for this exact ABI epoch.
-depends_on = ["zlib@1.3.1", "openssl@3.3.2", "sqlite@3.49.1", "libxml2@2.13.8", "libiconv@1.17", "libzip@1.11.4"]
+depends_on = ["zlib@1.3.1", "openssl@3.3.2", "sqlite@3.49.1", "libxml2@2.13.8", "libiconv@1.17", "libzip@1.11.4", "libcurl@8.11.1"]
 # wasm32 only: build-php.sh invokes the wasm32 SDK explicitly. If a wasm64 PHP
 # build is introduced later, make the recipe architecture-aware and validate
 # every CLI, FPM, and extension output before advertising that architecture.
@@ -48,6 +48,13 @@ wasm = "php-fpm.wasm"
 [[outputs]]
 name = "opcache"
 wasm = "opcache.so"
+
+# ext/curl is an opt-in shared PHP extension loaded through the standard
+# `extension=curl.so` path. curl.so absorbs PIC libcurl code while resolving
+# libc, zlib, and OpenSSL against php.wasm at dlopen time.
+[[outputs]]
+name = "curl"
+wasm = "curl.so"
 
 # Phar ships as a normal shared PHP extension. PHPT tests and real
 # applications can opt in with the standard `extension=phar.so` mechanism
