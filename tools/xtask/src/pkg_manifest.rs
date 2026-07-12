@@ -180,6 +180,25 @@ pub struct ProgramOutput {
     pub fork_instrumentation: ForkInstrumentationPolicy,
 }
 
+/// A non-Wasm file that a program package needs at runtime.
+///
+/// `artifact` is produced in the package cache/archive; `guest_path` is where
+/// VFS consumers install those bytes. Runtime files are mirrored separately
+/// from `[[outputs]]` so the latter remains truthful about executable/archive
+/// program artifacts and its legacy output-count layout stays unchanged.
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct RuntimeFile {
+    pub artifact: String,
+    pub guest_path: String,
+    #[serde(default = "default_runtime_file_mode")]
+    pub mode: u32,
+}
+
+fn default_runtime_file_mode() -> u32 {
+    0o644
+}
+
 /// One entry in a manifest's `[[host_tools]]` array. Inline
 /// declaration on the consumer site — no separate registry entry,
 /// per design 10.
@@ -413,6 +432,10 @@ pub struct DepsManifest {
     /// `kind = "source"`. Read by `canonical_path` and
     /// `validate_outputs` in the resolver (wired in Chunk B Task B.2).
     pub program_outputs: Vec<ProgramOutput>,
+
+    /// Non-Wasm runtime closure declared by `kind = "program"` manifests.
+    /// Empty for library/source manifests.
+    pub runtime_files: Vec<RuntimeFile>,
 
     /// Build-time provenance + ABI compatibility. Always `None` for
     /// manifests parsed via [`DepsManifest::parse`] (source `package.toml`)
@@ -699,6 +722,98 @@ fn validate_build_input_path(path: &str) -> Result<(), String> {
     Ok(())
 }
 
+/// Validate an artifact path before it can be joined to a build/cache root.
+///
+/// This is shared by library and program outputs so neither manifest shape can
+/// escape its package directory through an absolute path or `..` component.
+fn validate_output_path(path: &str, context: &str) -> Result<(), String> {
+    if path.is_empty() {
+        return Err(format!("{context} must not be empty"));
+    }
+    if path.contains('\0') || path.contains('\\') {
+        return Err(format!(
+            "{context} must be a portable '/'-separated path, got {path:?}"
+        ));
+    }
+    if path.starts_with('/') || Path::new(path).is_absolute() {
+        return Err(format!(
+            "{context} must be relative to the package output directory, got {path:?}"
+        ));
+    }
+    for component in path.split('/') {
+        if component.is_empty() {
+            return Err(format!(
+                "{context} must not contain empty path components, got {path:?}"
+            ));
+        }
+        if component == "." {
+            return Err(format!("{context} must not contain '.', got {path:?}"));
+        }
+        if component == ".." {
+            return Err(format!("{context} must not contain '..', got {path:?}"));
+        }
+    }
+    Ok(())
+}
+
+fn validate_single_path_component(value: &str, context: &str) -> Result<(), String> {
+    if value.is_empty() {
+        return Err(format!("{context} must not be empty"));
+    }
+    if value == "."
+        || value == ".."
+        || value.contains('/')
+        || value.contains('\\')
+        || value.contains('\0')
+    {
+        return Err(format!(
+            "{context} must be a safe single path component, got {value:?}"
+        ));
+    }
+    Ok(())
+}
+
+/// Both paths describe files. Equal paths and ancestor/descendant pairs are
+/// therefore unsatisfiable in one artifact or VFS closure.
+fn file_paths_conflict(a: &str, b: &str) -> bool {
+    a == b
+        || a.strip_prefix(b)
+            .is_some_and(|suffix| suffix.starts_with('/'))
+        || b.strip_prefix(a)
+            .is_some_and(|suffix| suffix.starts_with('/'))
+}
+
+fn validate_runtime_guest_path(path: &str, context: &str) -> Result<(), String> {
+    if path.contains('\0') || path.contains('\\') {
+        return Err(format!(
+            "{context} must be a normalized absolute POSIX path, got {path:?}"
+        ));
+    }
+    if !path.starts_with('/') || path == "/" {
+        return Err(format!(
+            "{context} must be a non-root absolute POSIX path, got {path:?}"
+        ));
+    }
+    if path.ends_with('/') {
+        return Err(format!(
+            "{context} must not have a trailing '/', got {path:?}"
+        ));
+    }
+    for component in path[1..].split('/') {
+        if component.is_empty() {
+            return Err(format!(
+                "{context} must not contain empty path components, got {path:?}"
+            ));
+        }
+        if component == "." || component == ".." {
+            return Err(format!(
+                "{context} must not contain {component:?}, got {path:?}"
+            ));
+        }
+    }
+    Ok(())
+}
+
 #[derive(Debug, Clone, Deserialize, Default)]
 pub struct Outputs {
     #[serde(default)]
@@ -785,6 +900,8 @@ struct Raw {
     #[serde(default = "default_outputs_value")]
     outputs: toml::Value,
     #[serde(default)]
+    runtime_files: Vec<RuntimeFile>,
+    #[serde(default)]
     compatibility: Option<Compatibility>,
     // `binary` accepts two shapes:
     //   * bare `[binary]` (archive_url + archive_sha256 directly),
@@ -816,7 +933,63 @@ fn default_outputs_value() -> toml::Value {
     toml::Value::Table(toml::value::Table::new())
 }
 
+fn program_output_dest_rel(
+    package_name: &str,
+    output_count: usize,
+    out: &ProgramOutput,
+) -> PathBuf {
+    let basename = Path::new(&out.wasm)
+        .file_name()
+        .and_then(|s| s.to_str())
+        .unwrap_or(&out.wasm);
+    let ext = match basename.find('.') {
+        Some(i) => &basename[i..],
+        None => "",
+    };
+    let dest_name = format!("{}{}", out.name, ext);
+    if output_count > 1 {
+        Path::new(package_name).join(dest_name)
+    } else {
+        PathBuf::from(dest_name)
+    }
+}
+
 impl DepsManifest {
+    /// Resolver mirror path under `programs/<arch>/` for a runtime file.
+    /// Runtime files always live below the package name, independently of the
+    /// number of executable `[[outputs]]` entries.
+    pub fn runtime_file_dest_rel_for(&self, runtime_file: &RuntimeFile) -> PathBuf {
+        Path::new(&self.name).join(&runtime_file.artifact)
+    }
+
+    /// Runtime-file mirror path keyed by the exact declared artifact path.
+    /// Exact lookup keeps nested runtime closures representable and avoids
+    /// basename ambiguity (`a/data` versus `b/data`).
+    pub fn runtime_file_dest_rel(&self, artifact: &str) -> Result<PathBuf, String> {
+        if self.kind != ManifestKind::Program {
+            return Err(format!(
+                "manifest {:?} is kind={:?}; runtime-file lookup is program-only",
+                self.name, self.kind
+            ));
+        }
+        let matches: Vec<&RuntimeFile> = self
+            .runtime_files
+            .iter()
+            .filter(|runtime_file| runtime_file.artifact == artifact)
+            .collect();
+        match matches.as_slice() {
+            [runtime_file] => Ok(self.runtime_file_dest_rel_for(runtime_file)),
+            [] => Err(format!(
+                "program {:?} has no [[runtime_files]] artifact {:?}",
+                self.name, artifact
+            )),
+            _ => Err(format!(
+                "program {:?} has multiple [[runtime_files]] artifacts {:?}",
+                self.name, artifact
+            )),
+        }
+    }
+
     /// Relative path under `programs/<arch>/` where `out` should land
     /// once produced. Single source of truth for the placement
     /// convention; both `place_binaries_symlinks` (resolver-driven
@@ -832,20 +1005,7 @@ impl DepsManifest {
     /// `<ext>` is everything from the first `.` onward in `out.wasm`'s
     /// basename, so `.vfs.zst`, `.tar.gz`, etc. round-trip intact.
     pub fn output_dest_rel_for(&self, out: &ProgramOutput) -> PathBuf {
-        let basename = Path::new(&out.wasm)
-            .file_name()
-            .and_then(|s| s.to_str())
-            .unwrap_or(&out.wasm);
-        let ext = match basename.find('.') {
-            Some(i) => &basename[i..],
-            None => "",
-        };
-        let dest_name = format!("{}{}", out.name, ext);
-        if self.program_outputs.len() > 1 {
-            Path::new(&self.name).join(dest_name)
-        } else {
-            PathBuf::from(dest_name)
-        }
+        program_output_dest_rel(&self.name, self.program_outputs.len(), out)
     }
 
     /// Same as [`output_dest_rel_for`] but keyed by the `wasm`
@@ -1191,6 +1351,7 @@ impl DepsManifest {
         if raw.name.is_empty() {
             return Err("name must not be empty".into());
         }
+        validate_single_path_component(&raw.name, "name")?;
         if raw.name.contains('@') {
             return Err(format!("name {:?} must not contain '@'", raw.name));
         }
@@ -1334,6 +1495,57 @@ impl DepsManifest {
             });
         }
 
+        let runtime_files = raw.runtime_files;
+        if !matches!(raw.kind, ManifestKind::Program) && !runtime_files.is_empty() {
+            return Err("[[runtime_files]] is allowed only for kind = \"program\"".into());
+        }
+        let mut runtime_artifacts = BTreeSet::new();
+        let mut runtime_guest_paths = BTreeSet::new();
+        for (idx, runtime_file) in runtime_files.iter().enumerate() {
+            validate_output_path(
+                &runtime_file.artifact,
+                &format!("[[runtime_files]][{idx}].artifact"),
+            )?;
+            validate_runtime_guest_path(
+                &runtime_file.guest_path,
+                &format!("[[runtime_files]][{idx}].guest_path"),
+            )?;
+            if runtime_file.mode > 0o777 {
+                return Err(format!(
+                    "[[runtime_files]][{idx}].mode must be between 0 and 0777, got {}",
+                    runtime_file.mode
+                ));
+            }
+            if !runtime_artifacts.insert(runtime_file.artifact.clone()) {
+                return Err(format!(
+                    "[[runtime_files]] declares artifact {:?} more than once",
+                    runtime_file.artifact
+                ));
+            }
+            if !runtime_guest_paths.insert(runtime_file.guest_path.clone()) {
+                return Err(format!(
+                    "[[runtime_files]] declares guest_path {:?} more than once",
+                    runtime_file.guest_path
+                ));
+            }
+        }
+        for (index, left) in runtime_files.iter().enumerate() {
+            for right in runtime_files.iter().skip(index + 1) {
+                if file_paths_conflict(&left.artifact, &right.artifact) {
+                    return Err(format!(
+                        "[[runtime_files]] artifact paths {:?} and {:?} conflict as file/ancestor paths",
+                        left.artifact, right.artifact
+                    ));
+                }
+                if file_paths_conflict(&left.guest_path, &right.guest_path) {
+                    return Err(format!(
+                        "[[runtime_files]] guest paths {:?} and {:?} conflict as file/ancestor paths",
+                        left.guest_path, right.guest_path
+                    ));
+                }
+            }
+        }
+
         // Dispatch on `kind` to decide whether `outputs` is the
         // library shape (`[outputs]` table with libs/headers/pkgconfig/files)
         // or the program shape (`[[outputs]]` array-of-tables with
@@ -1350,6 +1562,16 @@ impl DepsManifest {
                     .outputs
                     .try_into()
                     .map_err(|e| format!("parse [outputs] table: {e}"))?;
+                for (field, paths) in [
+                    ("libs", &outputs.libs),
+                    ("headers", &outputs.headers),
+                    ("pkgconfig", &outputs.pkgconfig),
+                    ("files", &outputs.files),
+                ] {
+                    for (idx, path) in paths.iter().enumerate() {
+                        validate_output_path(path, &format!("[outputs].{field}[{idx}]"))?;
+                    }
+                }
                 (outputs, Vec::new())
             }
             ManifestKind::Program => {
@@ -1379,12 +1601,11 @@ impl DepsManifest {
                     );
                 }
                 for (idx, out) in program_outputs.iter().enumerate() {
-                    if out.name.is_empty() {
-                        return Err(format!("[[outputs]][{idx}].name must not be empty"));
-                    }
+                    validate_single_path_component(&out.name, &format!("[[outputs]][{idx}].name"))?;
                     if out.wasm.is_empty() {
                         return Err(format!("[[outputs]][{idx}].wasm must not be empty"));
                     }
+                    validate_output_path(&out.wasm, &format!("[[outputs]][{idx}].wasm"))?;
                 }
                 (Outputs::default(), program_outputs)
             }
@@ -1411,6 +1632,56 @@ impl DepsManifest {
             }
         };
 
+        if matches!(raw.kind, ManifestKind::Program) {
+            let mut output_artifacts: Vec<&str> = Vec::new();
+            let mut output_mirrors: Vec<PathBuf> = Vec::new();
+            for (idx, out) in program_outputs.iter().enumerate() {
+                for (prior_idx, prior_artifact) in output_artifacts.iter().enumerate() {
+                    if file_paths_conflict(prior_artifact, &out.wasm) {
+                        return Err(format!(
+                            "[[outputs]][{prior_idx}].wasm {:?} conflicts with [[outputs]][{idx}].wasm {:?}",
+                            prior_artifact, out.wasm
+                        ));
+                    }
+                }
+                let mirror = program_output_dest_rel(&raw.name, program_outputs.len(), out);
+                for prior in &output_mirrors {
+                    if file_paths_conflict(&prior.to_string_lossy(), &mirror.to_string_lossy()) {
+                        return Err(format!(
+                            "program outputs collide in the resolver mirror at {} and {}",
+                            prior.display(),
+                            mirror.display()
+                        ));
+                    }
+                }
+                output_artifacts.push(&out.wasm);
+                output_mirrors.push(mirror);
+            }
+            for (idx, runtime_file) in runtime_files.iter().enumerate() {
+                for out in &program_outputs {
+                    if file_paths_conflict(&out.wasm, &runtime_file.artifact) {
+                        return Err(format!(
+                            "[[runtime_files]][{idx}].artifact {:?} conflicts with [[outputs]].wasm {:?}",
+                            runtime_file.artifact, out.wasm
+                        ));
+                    }
+                }
+                let mirror = Path::new(&raw.name).join(&runtime_file.artifact);
+                for output_mirror in &output_mirrors {
+                    if file_paths_conflict(
+                        &output_mirror.to_string_lossy(),
+                        &mirror.to_string_lossy(),
+                    ) {
+                        return Err(format!(
+                            "[[runtime_files]][{idx}].artifact {:?} collides with a program output mirror at {}",
+                            runtime_file.artifact,
+                            output_mirror.display()
+                        ));
+                    }
+                }
+            }
+        }
+
         // Default `arches` to `["wasm32"]` when omitted. Reject
         // duplicates so a manifest can't say `["wasm32", "wasm32"]`.
         let target_arches = if raw.arches.is_empty() {
@@ -1436,6 +1707,7 @@ impl DepsManifest {
             build: raw.build,
             outputs,
             program_outputs,
+            runtime_files,
             compatibility: raw.compatibility,
             binary,
             host_tools,
@@ -1609,6 +1881,47 @@ cache_key_sha = "111111111111111111111111111111111111111111111111111111111111111
         );
         let m = DepsManifest::parse(&text, PathBuf::from("/x")).unwrap();
         assert_eq!(m.outputs.files, vec!["share/zlib/runtime.dat"]);
+    }
+
+    #[test]
+    fn rejects_library_output_paths_outside_the_package_root() {
+        for (path, expected) in [
+            ("/tmp/runtime.dat", "must be relative"),
+            ("share/../../runtime.dat", "must not contain '..'"),
+        ] {
+            let text = EXAMPLE.replace(
+                "headers = [\"include/zlib.h\"]",
+                &format!("headers = [\"include/zlib.h\"]\nfiles = [{path:?}]"),
+            );
+            let err = DepsManifest::parse(&text, PathBuf::from("/x")).unwrap_err();
+            assert!(err.contains("[outputs].files[0]"), "got: {err}");
+            assert!(err.contains(expected), "got: {err}");
+        }
+    }
+
+    #[test]
+    fn rejects_program_output_paths_outside_the_package_root() {
+        let text = r#"
+kind = "program"
+name = "escape"
+version = "1.0.0"
+kernel_abi = 8
+depends_on = []
+
+[source]
+url = "https://example.test/escape.tar.gz"
+sha256 = "0000000000000000000000000000000000000000000000000000000000000000"
+
+[license]
+spdx = "MIT"
+
+[[outputs]]
+name = "escape"
+wasm = "../escape.wasm"
+"#;
+        let err = DepsManifest::parse(text, PathBuf::from("/x")).unwrap_err();
+        assert!(err.contains("[[outputs]][0].wasm"), "got: {err}");
+        assert!(err.contains("must not contain '..'"), "got: {err}");
     }
 
     #[test]
@@ -2129,6 +2442,181 @@ wasm = "vim.wasm"
         assert!(m.outputs.headers.is_empty());
         assert!(m.outputs.pkgconfig.is_empty());
         assert!(m.outputs.files.is_empty());
+        assert!(m.runtime_files.is_empty());
+    }
+
+    fn program_with_runtime_file(artifact: &str, guest_path: &str, mode: Option<u32>) -> String {
+        format!(
+            "{PROGRAM_EXAMPLE}\n[[runtime_files]]\nartifact = {artifact:?}\nguest_path = {guest_path:?}\n{}",
+            mode.map(|value| format!("mode = {value}\n")).unwrap_or_default(),
+        )
+    }
+
+    #[test]
+    fn parses_program_runtime_file_and_stable_mirror_path() {
+        let text = program_with_runtime_file("icu.dat", "/usr/lib/php/icu.dat", None);
+        let m = DepsManifest::parse(&text, PathBuf::from("/x")).unwrap();
+        assert_eq!(
+            m.runtime_files,
+            vec![RuntimeFile {
+                artifact: "icu.dat".into(),
+                guest_path: "/usr/lib/php/icu.dat".into(),
+                mode: 0o644,
+            }]
+        );
+        assert_eq!(
+            m.runtime_file_dest_rel("icu.dat").unwrap(),
+            PathBuf::from("vim/icu.dat")
+        );
+        // Runtime-file placement must not perturb the legacy single-output
+        // destination convention.
+        assert_eq!(
+            m.output_dest_rel("vim.wasm").unwrap(),
+            PathBuf::from("vim.wasm")
+        );
+
+        let nested = program_with_runtime_file("share/icu/icu.dat", "/usr/lib/php/icu.dat", None);
+        let nested = DepsManifest::parse(&nested, PathBuf::from("/x")).unwrap();
+        assert_eq!(
+            nested.runtime_file_dest_rel("share/icu/icu.dat").unwrap(),
+            PathBuf::from("vim/share/icu/icu.dat")
+        );
+        assert!(nested.runtime_file_dest_rel("icu.dat").is_err());
+    }
+
+    #[test]
+    fn rejects_unsafe_runtime_artifact_paths() {
+        for (artifact, expected) in [
+            ("", "must not be empty"),
+            ("/icu.dat", "must be relative"),
+            ("../icu.dat", "must not contain '..'"),
+            ("./icu.dat", "must not contain '.'"),
+            ("share//icu.dat", "empty path components"),
+            ("share/icu.dat/", "empty path components"),
+            (r"share\icu.dat", "portable"),
+        ] {
+            let text = program_with_runtime_file(artifact, "/usr/lib/php/icu.dat", None);
+            let err = DepsManifest::parse(&text, PathBuf::from("/x")).unwrap_err();
+            assert!(err.contains("[[runtime_files]][0].artifact"), "got: {err}");
+            assert!(err.contains(expected), "got: {err}");
+        }
+    }
+
+    #[test]
+    fn rejects_unsafe_runtime_guest_paths() {
+        for (guest_path, expected) in [
+            ("icu.dat", "non-root absolute"),
+            ("/", "non-root absolute"),
+            ("/usr/lib/php/", "trailing"),
+            ("/usr//php/icu.dat", "empty path components"),
+            ("/usr/./icu.dat", "must not contain"),
+            ("/usr/../icu.dat", "must not contain"),
+            (r"/usr/lib\icu.dat", "normalized absolute POSIX"),
+        ] {
+            let text = program_with_runtime_file("icu.dat", guest_path, None);
+            let err = DepsManifest::parse(&text, PathBuf::from("/x")).unwrap_err();
+            assert!(
+                err.contains("[[runtime_files]][0].guest_path"),
+                "got: {err}"
+            );
+            assert!(err.contains(expected), "got: {err}");
+        }
+    }
+
+    #[test]
+    fn rejects_runtime_file_on_non_program_and_invalid_mode() {
+        let library = format!(
+            "{EXAMPLE}\n[[runtime_files]]\nartifact = \"icu.dat\"\nguest_path = \"/usr/lib/php/icu.dat\"\n"
+        );
+        let err = DepsManifest::parse(&library, PathBuf::from("/x")).unwrap_err();
+        assert!(err.contains("program"), "got: {err}");
+
+        let text = program_with_runtime_file("icu.dat", "/usr/lib/php/icu.dat", Some(0o1000));
+        let err = DepsManifest::parse(&text, PathBuf::from("/x")).unwrap_err();
+        assert!(err.contains("0777"), "got: {err}");
+
+        let unknown = format!(
+            "{PROGRAM_EXAMPLE}\n[[runtime_files]]\nartifact = \"icu.dat\"\nguest_path = \"/usr/lib/php/icu.dat\"\nmod = 384\n"
+        );
+        let err = DepsManifest::parse(&unknown, PathBuf::from("/x")).unwrap_err();
+        assert!(
+            err.contains("unknown field") && err.contains("mod"),
+            "got: {err}"
+        );
+    }
+
+    #[test]
+    fn rejects_duplicate_and_colliding_runtime_files() {
+        let duplicate = format!(
+            "{}\n[[runtime_files]]\nartifact = \"icu.dat\"\nguest_path = \"/other.dat\"\n",
+            program_with_runtime_file("icu.dat", "/usr/lib/php/icu.dat", None),
+        );
+        let err = DepsManifest::parse(&duplicate, PathBuf::from("/x")).unwrap_err();
+        assert!(
+            err.contains("artifact") && err.contains("more than once"),
+            "got: {err}"
+        );
+
+        let duplicate_guest = format!(
+            "{}\n[[runtime_files]]\nartifact = \"other.dat\"\nguest_path = \"/usr/lib/php/icu.dat\"\n",
+            program_with_runtime_file("icu.dat", "/usr/lib/php/icu.dat", None),
+        );
+        let err = DepsManifest::parse(&duplicate_guest, PathBuf::from("/x")).unwrap_err();
+        assert!(
+            err.contains("guest_path") && err.contains("more than once"),
+            "got: {err}"
+        );
+
+        let artifact_collision = PROGRAM_EXAMPLE.replace(
+            "wasm = \"vim.wasm\"",
+            "wasm = \"vim.wasm\"\n\n[[runtime_files]]\nartifact = \"vim.wasm\"\nguest_path = \"/usr/lib/vim.wasm\"",
+        );
+        let err = DepsManifest::parse(&artifact_collision, PathBuf::from("/x")).unwrap_err();
+        assert!(err.contains("conflict"), "got: {err}");
+
+        let prefix = format!(
+            "{}\n[[runtime_files]]\nartifact = \"share/icu.dat\"\nguest_path = \"/usr/lib/php/icu.dat\"\n",
+            program_with_runtime_file("share", "/usr/lib/php", None),
+        );
+        let err = DepsManifest::parse(&prefix, PathBuf::from("/x")).unwrap_err();
+        assert!(err.contains("ancestor"), "got: {err}");
+
+        let output_prefix = PROGRAM_EXAMPLE.replace(
+            "wasm = \"vim.wasm\"",
+            "wasm = \"share\"\n\n[[runtime_files]]\nartifact = \"share/icu.dat\"\nguest_path = \"/usr/lib/php/icu.dat\"",
+        );
+        let err = DepsManifest::parse(&output_prefix, PathBuf::from("/x")).unwrap_err();
+        assert!(
+            err.contains("conflicts with [[outputs]].wasm"),
+            "got: {err}"
+        );
+    }
+
+    #[test]
+    fn rejects_unsafe_names_and_duplicate_program_mirrors() {
+        for package_name in ["../escape", "/absolute", "a/b", r"a\b"] {
+            let text =
+                PROGRAM_EXAMPLE.replacen("name = \"vim\"", &format!("name = {package_name:?}"), 1);
+            let err = DepsManifest::parse(&text, PathBuf::from("/x")).unwrap_err();
+            assert!(err.contains("safe single path component"), "got: {err}");
+        }
+
+        let unsafe_output = PROGRAM_EXAMPLE.replace(
+            "[[outputs]]\nname = \"vim\"",
+            "[[outputs]]\nname = \"../vim\"",
+        );
+        let err = DepsManifest::parse(&unsafe_output, PathBuf::from("/x")).unwrap_err();
+        assert!(err.contains("[[outputs]][0].name"), "got: {err}");
+
+        let duplicate_mirror = PROGRAM_EXAMPLE.replace(
+            "[[outputs]]\nname = \"vim\"\nwasm = \"vim.wasm\"",
+            "[[outputs]]\nname = \"same\"\nwasm = \"a.wasm\"\n\n[[outputs]]\nname = \"same\"\nwasm = \"b.wasm\"",
+        );
+        let err = DepsManifest::parse(&duplicate_mirror, PathBuf::from("/x")).unwrap_err();
+        assert!(
+            err.contains("collide") && err.contains("same.wasm"),
+            "got: {err}"
+        );
     }
 
     #[test]

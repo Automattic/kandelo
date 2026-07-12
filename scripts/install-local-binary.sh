@@ -58,6 +58,14 @@ install_local_binary() {
         echo "install_local_binary: source file not found: $src" >&2
         return 1
     fi
+    local arch="${WASM_POSIX_DEP_TARGET_ARCH:-wasm32}"
+    case "$arch" in
+        wasm32|wasm64) ;;
+        *)
+            echo "install_local_binary: unsupported target arch '$arch' (expected wasm32 or wasm64)" >&2
+            return 2
+            ;;
+    esac
 
     # Repo root must be derived from this helper, not from the caller's
     # current directory: package builds often `cd` into an upstream git
@@ -110,8 +118,6 @@ install_local_binary() {
             return 2
             ;;
     esac
-
-    local arch="${WASM_POSIX_DEP_TARGET_ARCH:-wasm32}"
 
     # Take everything from the FIRST dot in the source basename onward
     # so compound extensions like `.vfs.zst` round-trip intact (matches
@@ -176,4 +182,57 @@ install_local_binary() {
         cp "$src" "$resolver_dest"
         echo "  installed $resolver_dest (resolver scratch)"
     fi
+}
+
+# Install a declared non-Wasm `[[runtime_files]]` artifact into the same local
+# resolver mirror used by published archives. This is intentionally separate
+# from install_local_binary: data files must not pass Wasm/fork guards or be
+# described as executable outputs.
+install_local_runtime_file() {
+    local program="$1"
+    local src="$2"
+    local artifact="${3:-}"
+
+    if [ -z "$program" ] || [ -z "$src" ]; then
+        echo "install_local_runtime_file: usage: install_local_runtime_file <program> <src> [artifact]" >&2
+        return 2
+    fi
+    if [ ! -f "$src" ] || [ -L "$src" ]; then
+        echo "install_local_runtime_file: source must be a regular non-symlink file: $src" >&2
+        return 1
+    fi
+    local arch="${WASM_POSIX_DEP_TARGET_ARCH:-wasm32}"
+    case "$arch" in
+        wasm32|wasm64) ;;
+        *)
+            echo "install_local_runtime_file: unsupported target arch '$arch' (expected wasm32 or wasm64)" >&2
+            return 2
+            ;;
+    esac
+
+    local repo_root
+    repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+    local host_target
+    host_target="$(rustc -vV 2>/dev/null | awk '/^host/ {print $2}')"
+    if [ -z "$host_target" ]; then
+        echo "install_local_runtime_file: rustc did not report a host target" >&2
+        return 1
+    fi
+    local src_basename
+    src_basename="$(basename "$src")"
+    artifact="${artifact:-$src_basename}"
+    local rel
+    rel="$(cd "$repo_root" && \
+        env -u CC -u CXX -u AR -u RANLIB -u CFLAGS -u CXXFLAGS -u CPPFLAGS -u LDFLAGS \
+        cargo run -p xtask --target "$host_target" --quiet -- \
+            build-deps runtime-file-path "$program" "$artifact")" || return 1
+    if [ -z "$rel" ]; then
+        echo "install_local_runtime_file: manifest lookup returned an empty path" >&2
+        return 1
+    fi
+
+    local dest="$repo_root/local-binaries/programs/$arch/$rel"
+    mkdir -p "$(dirname "$dest")"
+    cp "$src" "$dest"
+    echo "  installed $dest"
 }
